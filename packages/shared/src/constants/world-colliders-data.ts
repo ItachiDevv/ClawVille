@@ -203,3 +203,14 @@ export function clampPosition2D(
 
 /** MAP_HALF constant for callers converting game-px ↔ world-space. */
 export const WORLD_COLLIDER_MAP_HALF = MAP_HALF;
+
+/** TILE_SIZE for game-px → tile conversions. Mirrors tilemap-data.ts. */
+export const WORLD_COLLIDER_TILE_SIZE = TILE_SIZE;
+
+// ---------------------------------------------------------------------------
+// Server-side entity-half constants (duplicated from
+// apps/web/src/lib/three/collision/world-colliders.ts so server code that
+// cannot import from apps/web has access). KEEP IN SYNC with that file.
+// ---------------------------------------------------------------------------
+export const ENTITY_HALF_CHIBI = 25;    // chibi VRM (135 wu height)
+export const ENTITY_HALF_HUMANOID = 50; // adult humanoid (270 wu height)

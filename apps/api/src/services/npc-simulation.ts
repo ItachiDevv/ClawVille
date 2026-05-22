@@ -15,9 +15,16 @@ import {
   DEFAULT_ARENA_SETTINGS,
   clampPosition2D,
   WORLD_COLLIDER_MAP_HALF,
+  ENTITY_HALF_CHIBI,
 } from '@clawville/shared';
 import { generateNpcConversation, generateOpenClawConversation } from './npc-conversation-engine';
-import { findPath, hasClearance, type PathNode } from './pathfinding';
+import {
+  findPath,
+  hasClearance,
+  isCollisionFreeWorld,
+  findNearestWalkable,
+  type PathNode,
+} from './pathfinding';
 import { AvatarSimulationBridge } from './avatar-simulation-bridge';
 import { memoryService } from './memory-service';
 import {
@@ -72,6 +79,15 @@ export interface NpcRuntimeState {
   activityEndsAt: number;
   behaviorCooldown: number;
   intentDescription: string;
+  /**
+   * Ticks-in-a-row that AABB clamp blocked movement (2026-05-22).
+   * Incremented every movement tick where clamped.hit is true; reset on a
+   * net position delta ≥ 2 px. When stuckTicks ≥ 4 (≈800 ms at 5 Hz), the
+   * NPC abandons its current path/target and re-plans — safety net for
+   * cases where a path's final waypoint sits in the gap between A* grid
+   * and pixel-accurate clamp, or a target NPC parked against a wall.
+   */
+  stuckTicks: number;
   // Arena-only fields
   hp: number;
   maxHp: number;
@@ -312,6 +328,7 @@ class NpcSimulation {
         path: [], pathIndex: 0, activityEndsAt: 0,
         behaviorCooldown: 5 + Math.floor(Math.random() * 10),
         intentDescription: '',
+        stuckTicks: 0,
         hp: def.stats.hp, maxHp: def.stats.hp,
         attack: def.stats.attack, defense: def.stats.defense, speed: def.stats.speed,
         inCombat: false, inventory: [], isDead: false, respawnAt: 0,
@@ -363,6 +380,7 @@ class NpcSimulation {
         inConversation: false, conversationCooldownUntil: 0,
         activity: 'idle', activityEmoji: '', destinationBuildingId: null,
         path: [], pathIndex: 0, activityEndsAt: 0, behaviorCooldown: 30, intentDescription: '',
+        stuckTicks: 0,
         hp: avatarConfig.stats.hp, maxHp: avatarConfig.stats.hp,
         attack: avatarConfig.stats.attack, defense: avatarConfig.stats.defense, speed: avatarConfig.stats.speed,
         inCombat: false, inventory: [], isDead: false, respawnAt: 0,
@@ -711,6 +729,7 @@ class NpcSimulation {
         npc.direction = 'idle'; npc.activity = 'idle'; npc.activityEmoji = '';
         npc.path = []; npc.pathIndex = 0; npc.destinationBuildingId = null;
         npc.behaviorCooldown = 10;
+        npc.stuckTicks = 0;
         npc.combatTargetId = null;
         npc.respawnedAt = now;
         npc.invulnerableUntil = now + 3000;
@@ -720,6 +739,34 @@ class NpcSimulation {
   }
 
   // --- Behavior Planning (World Mode) ---
+
+  /**
+   * Validate a candidate (gamePx) target against the pixel-accurate AABB
+   * clamp. If the target sits inside a collider, snap it outward to the
+   * nearest collision-free game-pixel via `findNearestWalkable`. Returns
+   * null when no safe spot exists within the search radius — callers must
+   * then re-pick or fall back to behaviorCooldown.
+   *
+   * Added 2026-05-22 to plug RCA gap #3: planners used to validate only
+   * against `hasClearance` (coarse A* grid) and skipped the per-axis pad-
+   * vs-real-extent test. A "valid" wander/visit/approach target could land
+   * inside a prop AABB or in the gap between A*'s 11-tile pad and the
+   * real building half-extents (e.g. messaging-channels halfX=850 wu vs
+   * pad-only=576 wu).
+   */
+  private snapPlannerTarget(
+    tx: number,
+    ty: number,
+    entityHalf: number = ENTITY_HALF_CHIBI,
+  ): { x: number; y: number } | null {
+    if (
+      hasClearance(tx, ty, 3) &&
+      isCollisionFreeWorld(tx, ty, entityHalf)
+    ) {
+      return { x: tx, y: ty };
+    }
+    return findNearestWalkable(tx, ty, entityHalf);
+  }
 
   private planNpcBehaviors() {
     for (const npc of this.npcs.values()) {
@@ -774,19 +821,28 @@ class NpcSimulation {
     const candidates = withDist.slice(0, 5);
     const target = candidates[Math.floor(Math.random() * candidates.length)];
     const center = NPC_BUILDING_CENTERS[target.id];
-    const offsetX = (Math.random() - 0.5) * 40;
-    const offsetY = 20 + Math.random() * 20;
-    const path = findPath(npc.x, npc.y, center.x + offsetX, center.y + offsetY);
 
-    if (path.length > 0) {
-      npc.activity = 'walking'; npc.activityEmoji = '';
-      npc.destinationBuildingId = target.id;
-      npc.path = path; npc.pathIndex = 0;
-      npc.intentDescription = `Walking to ${target.id}`;
-      npc.behaviorCooldown = 120;
-    } else {
-      npc.behaviorCooldown = 20;
+    // Up to 5 attempts to find a building approach point that's both
+    // pathable AND outside the building AABB (2026-05-22). The naive
+    // center+offset frequently lands inside the new larger building
+    // colliders (e.g. messaging-channels halfX=850 wu). When the raw
+    // candidate fails the collision test, snapPlannerTarget snaps outward.
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const offsetX = (Math.random() - 0.5) * 40;
+      const offsetY = 20 + Math.random() * 20;
+      const snapped = this.snapPlannerTarget(center.x + offsetX, center.y + offsetY);
+      if (!snapped) continue;
+      const path = findPath(npc.x, npc.y, snapped.x, snapped.y);
+      if (path.length > 0) {
+        npc.activity = 'walking'; npc.activityEmoji = '';
+        npc.destinationBuildingId = target.id;
+        npc.path = path; npc.pathIndex = 0;
+        npc.intentDescription = `Walking to ${target.id}`;
+        npc.behaviorCooldown = 120;
+        return;
+      }
     }
+    npc.behaviorCooldown = 20;
   }
 
   private planApproachNpc(npc: NpcRuntimeState) {
@@ -796,45 +852,84 @@ class NpcSimulation {
     if (others.length === 0) { npc.behaviorCooldown = 20; return; }
 
     const target = others[Math.floor(Math.random() * others.length)];
-    const path = findPath(npc.x, npc.y, target.x, target.y);
-    if (path.length > 0) {
-      npc.activity = 'walking'; npc.activityEmoji = '';
-      npc.path = path; npc.pathIndex = 0;
-      npc.intentDescription = `Approaching ${target.name}`;
-      npc.behaviorCooldown = 80;
-    } else {
-      npc.behaviorCooldown = 20;
+
+    // Pick a stand-off point 80 wu from the target toward us. Walking to
+    // target.x/y directly can land us on top of (or inside) the target's
+    // own AABB or wedge us against whatever wall the target is parked at
+    // (2026-05-22). 5 attempts: first the chaser-direction stand-off,
+    // then random angles if that's blocked.
+    const STAND_OFF = 80;
+    const tdx = target.x - npc.x;
+    const tdy = target.y - npc.y;
+    const tdist = Math.sqrt(tdx * tdx + tdy * tdy) || 1;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      let standX: number;
+      let standY: number;
+      if (attempt === 0) {
+        // Stand-off along the line from chaser → target.
+        standX = target.x - (tdx / tdist) * STAND_OFF;
+        standY = target.y - (tdy / tdist) * STAND_OFF;
+      } else {
+        const angle = Math.random() * Math.PI * 2;
+        standX = target.x + Math.cos(angle) * STAND_OFF;
+        standY = target.y + Math.sin(angle) * STAND_OFF;
+      }
+      const snapped = this.snapPlannerTarget(standX, standY);
+      if (!snapped) continue;
+      const path = findPath(npc.x, npc.y, snapped.x, snapped.y);
+      if (path.length > 0) {
+        npc.activity = 'walking'; npc.activityEmoji = '';
+        npc.path = path; npc.pathIndex = 0;
+        npc.intentDescription = `Approaching ${target.name}`;
+        npc.behaviorCooldown = 80;
+        return;
+      }
     }
+    npc.behaviorCooldown = 20;
   }
 
   private planIdleNearHome(npc: NpcRuntimeState) {
-    const angle = Math.random() * Math.PI * 2;
-    const radius = 20 + Math.random() * 40;
-    const tx = Math.max(32, Math.min(MAP_WIDTH - 32, npc.homeX + Math.cos(angle) * radius));
-    const ty = Math.max(32, Math.min(MAP_HEIGHT - 32, npc.homeY + Math.sin(angle) * radius));
-    const path = findPath(npc.x, npc.y, tx, ty);
-    if (path.length > 0) {
-      npc.activity = 'walking'; npc.activityEmoji = '';
-      npc.path = path; npc.pathIndex = 0;
-      npc.intentDescription = 'Strolling nearby';
-      npc.behaviorCooldown = 40 + Math.floor(Math.random() * 40);
-    } else {
-      npc.behaviorCooldown = 20;
+    // Up to 5 attempts — the home position may sit just outside a building
+    // AABB and a small wiggle radius can land the candidate inside
+    // (2026-05-22).
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const angle = Math.random() * Math.PI * 2;
+      const radius = 20 + Math.random() * 40;
+      const tx = Math.max(32, Math.min(MAP_WIDTH - 32, npc.homeX + Math.cos(angle) * radius));
+      const ty = Math.max(32, Math.min(MAP_HEIGHT - 32, npc.homeY + Math.sin(angle) * radius));
+      const snapped = this.snapPlannerTarget(tx, ty);
+      if (!snapped) continue;
+      const path = findPath(npc.x, npc.y, snapped.x, snapped.y);
+      if (path.length > 0) {
+        npc.activity = 'walking'; npc.activityEmoji = '';
+        npc.path = path; npc.pathIndex = 0;
+        npc.intentDescription = 'Strolling nearby';
+        npc.behaviorCooldown = 40 + Math.floor(Math.random() * 40);
+        return;
+      }
     }
+    npc.behaviorCooldown = 20;
   }
 
   private planWander(npc: NpcRuntimeState) {
-    const tx = 64 + Math.random() * (MAP_WIDTH - 128);
-    const ty = 64 + Math.random() * (MAP_HEIGHT - 128);
-    const path = findPath(npc.x, npc.y, tx, ty);
-    if (path.length > 0) {
-      npc.activity = 'walking'; npc.activityEmoji = '';
-      npc.path = path; npc.pathIndex = 0;
-      npc.intentDescription = 'Wandering';
-      npc.behaviorCooldown = 80 + Math.floor(Math.random() * 60);
-    } else {
-      npc.behaviorCooldown = 20;
+    // Up to 5 attempts so a single bad random sample doesn't burn the tick
+    // (2026-05-22). Random map points can easily land in a building or
+    // prop AABB now that we rasterize 18 colliders with real extents.
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const tx = 64 + Math.random() * (MAP_WIDTH - 128);
+      const ty = 64 + Math.random() * (MAP_HEIGHT - 128);
+      const snapped = this.snapPlannerTarget(tx, ty);
+      if (!snapped) continue;
+      const path = findPath(npc.x, npc.y, snapped.x, snapped.y);
+      if (path.length > 0) {
+        npc.activity = 'walking'; npc.activityEmoji = '';
+        npc.path = path; npc.pathIndex = 0;
+        npc.intentDescription = 'Wandering';
+        npc.behaviorCooldown = 80 + Math.floor(Math.random() * 60);
+        return;
+      }
     }
+    npc.behaviorCooldown = 20;
   }
 
   // Free-roamer wander that picks a point inside the town RING (annulus
@@ -863,8 +958,12 @@ class NpcSimulation {
       // Reject targets with < 3 tiles of clearance from any blocked tile —
       // prevents NPCs pathfinding to the edge of a building exclusion zone
       // where they then stop pressed against the visible wall.
-      if (!hasClearance(tx, ty, 3)) continue;
-      const path = findPath(npc.x, npc.y, tx, ty);
+      // 2026-05-22: also reject targets inside any pixel-accurate AABB
+      // (covers town-center props like shisha-oasis halfX=420 wu that
+      // wouldn't show up in the coarse A* grid for the FREE_ROAMER ring).
+      const snapped = this.snapPlannerTarget(tx, ty);
+      if (!snapped) continue;
+      const path = findPath(npc.x, npc.y, snapped.x, snapped.y);
       if (path.length > 0) {
         npc.activity = 'walking'; npc.activityEmoji = '';
         npc.path = path; npc.pathIndex = 0;
@@ -929,8 +1028,13 @@ class NpcSimulation {
       const approachAngle = Math.random() * Math.PI * 2;
       const tx = target.x + Math.cos(approachAngle) * standOff;
       const ty = target.y + Math.sin(approachAngle) * standOff;
-      if (!hasClearance(tx, ty, 3)) continue;
-      const path = findPath(npc.x, npc.y, tx, ty);
+      // Combined clearance + pixel-accurate AABB test (2026-05-22).
+      // Without the AABB test the stand-off can sit inside a prop the
+      // target was parked next to (shisha-oasis is 420 wu half-extent,
+      // bigger than the 250 wu stand-off itself).
+      const snapped = this.snapPlannerTarget(tx, ty);
+      if (!snapped) continue;
+      const path = findPath(npc.x, npc.y, snapped.x, snapped.y);
       if (path.length > 0) {
         npc.activity = 'walking'; npc.activityEmoji = '';
         npc.path = path; npc.pathIndex = 0;
@@ -1044,6 +1148,7 @@ class NpcSimulation {
         if (dist < 4) {
           npc.pathIndex++;
           if (npc.pathIndex >= npc.path.length) npc.direction = 'idle';
+          npc.stuckTicks = 0;
         } else {
           const step = Math.min(baseStep, dist);
           const desiredX = npc.x + (dx / dist) * step;
@@ -1051,26 +1156,42 @@ class NpcSimulation {
 
           // AABB world-collider clamp — convert game-px to world-space, clamp,
           // then convert back. entityHalf=30 (NPC capsule half-width in wu).
+          const prevX = npc.x;
+          const prevY = npc.y;
           const wx = desiredX - WORLD_COLLIDER_MAP_HALF;
           const wz = desiredY - WORLD_COLLIDER_MAP_HALF;
           const clamped = clampPosition2D(wx, wz, 30);
           npc.x = Math.max(16, Math.min(MAP_WIDTH - 16, clamped.x + WORLD_COLLIDER_MAP_HALF));
           npc.y = Math.max(16, Math.min(MAP_HEIGHT - 16, clamped.z + WORLD_COLLIDER_MAP_HALF));
 
+          // Track stuck state (2026-05-22). The existing single-frame "abandon
+          // on first clamp hit" is good, but path-following can produce
+          // wedge-walks where the clamp shaves a little distance off and the
+          // NPC creeps along the wall. stuckTicks catches that residual case.
+          const moved = Math.abs(npc.x - prevX) + Math.abs(npc.y - prevY);
+          if (moved < 2) {
+            npc.stuckTicks++;
+          } else {
+            npc.stuckTicks = 0;
+          }
+
           // If collider blocked this step, abandon current path and pick a new
           // patrol target — prevents NPCs humping a wall for the whole path.
-          if (clamped.hit) {
+          if (clamped.hit || npc.stuckTicks >= 4) {
             npc.path = [];
             npc.pathIndex = 0;
             npc.activity = 'idle';
             npc.activityEmoji = '';
+            npc.destinationBuildingId = null;
             npc.behaviorCooldown = 5 + Math.floor(Math.random() * 10);
+            npc.stuckTicks = 0;
           } else {
             npc.direction = Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'right' : 'left') : (dy > 0 ? 'down' : 'up');
           }
         }
       } else if (npc.activity === 'idle' && npc.path.length === 0) {
         npc.direction = 'idle';
+        npc.stuckTicks = 0;
       }
     }
   }
@@ -1080,11 +1201,14 @@ class NpcSimulation {
     const dist = Math.sqrt(dx * dx + dy * dy);
     if (dist < (this.arenaMode ? 35 : 10)) {
       npc.direction = 'idle';
+      npc.stuckTicks = 0;
     } else {
       const step = Math.min(baseStep, dist);
       const desiredX = npc.x + (dx / dist) * step;
       const desiredY = npc.y + (dy / dist) * step;
       if (!this.arenaMode) {
+        const prevX = npc.x;
+        const prevY = npc.y;
         const clamped = clampPosition2D(
           desiredX - WORLD_COLLIDER_MAP_HALF,
           desiredY - WORLD_COLLIDER_MAP_HALF,
@@ -1092,6 +1216,29 @@ class NpcSimulation {
         );
         npc.x = Math.max(16, Math.min(MAP_WIDTH - 16, clamped.x + WORLD_COLLIDER_MAP_HALF));
         npc.y = Math.max(16, Math.min(MAP_HEIGHT - 16, clamped.z + WORLD_COLLIDER_MAP_HALF));
+
+        // Mirror of path-step abandon at L~1062 — direct-target walkers also
+        // need stuck-recovery (2026-05-22). Without this, an NPC whose target
+        // sits inside an AABB wedges against the wall forever — activity stays
+        // 'walking', behaviorCooldown never re-arms, planNpcBehaviors skips
+        // them on every tick (gated on activity === 'idle').
+        const moved = Math.abs(npc.x - prevX) + Math.abs(npc.y - prevY);
+        if (clamped.hit || moved < 2) {
+          npc.stuckTicks++;
+        } else {
+          npc.stuckTicks = 0;
+        }
+        if (clamped.hit || npc.stuckTicks >= 4) {
+          npc.path = [];
+          npc.pathIndex = 0;
+          npc.activity = 'idle';
+          npc.activityEmoji = '';
+          npc.destinationBuildingId = null;
+          npc.behaviorCooldown = 5 + Math.floor(Math.random() * 10);
+          npc.stuckTicks = 0;
+          npc.direction = 'idle';
+          return;
+        }
       } else {
         npc.x = Math.max(16, Math.min(MAP_WIDTH - 16, desiredX));
         npc.y = Math.max(16, Math.min(MAP_HEIGHT - 16, desiredY));
