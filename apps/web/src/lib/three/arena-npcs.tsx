@@ -594,9 +594,15 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
     // never enters a building even if the server-side sim doesn't have walls.
     // Wandering NPCs use simPos.current as the "from" position (previous
     // render-frame position). clampMovement2D is zero-alloc (module-scope scratch).
-    const npcClamped = clampMovement2D(simPos.current.x, simPos.current.z, renderX, renderZ);
+    // entityHalf: chibi-type NPCs use a smaller radius than adult humanoids.
+    const glbNpcHalf = (npc.id.startsWith('milady-') || npc.id.startsWith('chibi-'))
+      ? ENTITY_HALF_CHIBI
+      : ENTITY_HALF_HUMANOID;
+    const npcClamped = clampMovement2D(simPos.current.x, simPos.current.z, renderX, renderZ, glbNpcHalf);
     simPos.current.x = npcClamped.x;
     simPos.current.z = npcClamped.z;
+    // Track walkable surface Y for stair/ramp zones. Used below in group.position.y.
+    const npcGroundY = npcClamped.groundY;
 
     // Entity-vs-player push-out (Phase 4 — client-side visual correction).
     // Only active when a real player avatar is present ('player'/'npc' mode).
@@ -667,7 +673,10 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
       : 0;
     const isMoving = d.direction !== 'idle' && !d.isDead;
     const bob = (isMoving && !airborne) ? Math.sin(clock.elapsedTime * 4.0 + seed) * 0.6 : 0;
-    group.position.y = currentTerrainY.current + 2 + bob + jumpY - pivotOffsetY;
+    // effectiveFloorY: when npcGroundY > currentTerrainY (NPC is on a stair/ramp
+    // collider zone), use the walkable surface height so feet ride the stair.
+    const npcEffectiveFloorY = Math.max(currentTerrainY.current, npcGroundY);
+    group.position.y = npcEffectiveFloorY + 2 + bob + jumpY - pivotOffsetY;
 
     // Direction rotation. Possessed NPC uses server-provided facingAngle for
     // smooth camera-relative input. Autonomous wanderers use per-frame velocity
@@ -997,11 +1006,17 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
 
     // XZ AABB collision clamp for VRM NPC — mirrors GLBNpcMesh pattern.
     // Clamp AFTER entity-interpolation so visible position never enters a building.
-    const vrmClamped = clampMovement2D(simPos.current.x, simPos.current.z, renderX, renderZ);
+    // entityHalf: chibi-type VRM NPCs use smaller radius than adult humanoids.
+    const vrmNpcHalf = (npc.id.startsWith('milady-') || npc.id.startsWith('chibi-'))
+      ? ENTITY_HALF_CHIBI
+      : ENTITY_HALF_HUMANOID;
+    const vrmClamped = clampMovement2D(simPos.current.x, simPos.current.z, renderX, renderZ, vrmNpcHalf);
     const prevX = simPos.current.x;
     const prevZ = simPos.current.z;
     simPos.current.x = vrmClamped.x;
     simPos.current.z = vrmClamped.z;
+    // Track walkable surface Y for stair/ramp zones. Used below in group.position.y.
+    const vrmNpcGroundY = vrmClamped.groundY;
 
     // Entity-vs-player push-out (Phase 4) — mirrors GLBNpcMesh inline push-out.
     // Guard: only active when a real player avatar is present ('player'/'npc').
@@ -1055,7 +1070,10 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
       ? (jumpState.heightOffset + jumpState.playerAltitude)
       : 0;
     const bob = (isMoving && !airborne) ? Math.sin(clock.elapsedTime * 4.0 + seed) * 0.6 : 0;
-    group.position.y = currentTerrainY.current + bob + jumpY;
+    // effectiveFloorY: when vrmNpcGroundY > currentTerrainY (NPC is on a stair/ramp
+    // collider zone), use the walkable surface height so feet ride the stair.
+    const vrmNpcEffectiveFloorY = Math.max(currentTerrainY.current, vrmNpcGroundY);
+    group.position.y = vrmNpcEffectiveFloorY + bob + jumpY;
 
     // VRM facing — LOCKED 2026-04-25 (re-locked 2026-04-26 after PR #65 regression).
     // The Milady VRMs in this project are rigged with Mixamo bones facing -Z natively
