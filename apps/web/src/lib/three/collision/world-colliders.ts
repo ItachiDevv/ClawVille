@@ -219,35 +219,29 @@ function buildColliders(): Collider2D[] {
     { id: 'town-directory-sign',  centerX:     0, centerZ:  -120, halfX:  70, halfZ:  40, kind: 'prop' },
     { id: 'bazaar-stall',         centerX: -1273, centerZ:  -120, halfX: 180, halfZ: 140, kind: 'prop' },
     // -----------------------------------------------------------------------
-    // Shisha-oasis (MarketplaceStall) — 2026-05-22 per-GLB collider rework.
-    // Two zones replace the prior single AABB at (1273, -120) halfX=200 halfZ=160.
+    // Shisha-oasis (MarketplaceStall) — 2026-05-22 ROUND 2 (pure-solid).
     //
-    // Zone A — walkable outer approach ring: the stair steps and open deck area.
-    //   Sized to 70% of the full GLB footprint so the very edge of the structure
-    //   (decorative filigree, canopy overhang) is accessible without a collider
-    //   stopping the player before they reach the visible architecture.
-    //   When overlapping, entity Y is raised to SHISHA_STEP_TOP_Y (38 wu).
+    // The earlier walkable-outer-ring (halfX=348 halfZ=340 topY=38) was wrong:
+    // 38 wu lift is only ~21% of avatar height, so crossing the visible wall
+    // produced "phasing through the wall" rather than "climbing a porch step".
+    // User reported NPCs spawning inside the mesh and the player walking into
+    // the visible structure with no resistance.
     //
-    // Zone B — solid central kiosk: the bar/column structure at the heart of
-    //   the pavilion. The player cannot enter this volume; it is a solid blocker.
-    //   Sized to 40% of the full footprint (halfX=200, halfZ=195).
+    // Real stair-climb is deferred until per-step GLB geometry can be measured
+    // in Blender — the merged single-mesh GLB doesn't expose stairs vs walls
+    // via gltf-transform inspection (only 3 merged meshes: main body, canopy,
+    // lantern emission). Until then the whole structure is a solid blocker.
+    //
+    // Footprint: manager measured GLB native maxDim=0.0836, applied scale
+    // 994/0.0836 = 11,897, world footprint 994×972 wu. Tightened by ~15% to
+    // halfX=420 halfZ=410 to exclude lantern-overhang bbox padding.
     // -----------------------------------------------------------------------
-    {
-      id: 'shisha-approach',
-      centerX: SHISHA_CENTER_X,
-      centerZ: SHISHA_CENTER_Z,
-      halfX: 348,
-      halfZ: 340,
-      kind: 'prop',
-      walkable: true,
-      topY: SHISHA_STEP_TOP_Y,
-    },
     {
       id: 'marketplace-stall',
       centerX: SHISHA_CENTER_X,
       centerZ: SHISHA_CENTER_Z,
-      halfX: 200,
-      halfZ: 195,
+      halfX: 420,
+      halfZ: 410,
       kind: 'prop',
     },
     { id: 'quest-bounty-pavilion',centerX:     0, centerZ: -1220, halfX: 280, halfZ: 280, kind: 'prop' },
