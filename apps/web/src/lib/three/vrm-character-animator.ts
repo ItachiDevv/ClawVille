@@ -546,6 +546,17 @@ export class VRMCharacterAnimator {
    */
   private characterId: string | undefined;
 
+  /**
+   * Set by dispose(). Guards the async init() path: if the owning component
+   * unmounts while init's `await Promise.all(loadRawGltf…)` is still pending
+   * (StrictMode double-mount, HMR teardown, fast route swap), dispose() nulls
+   * `this.vrm` and `this.mixer` — without this flag, init resumes against null
+   * refs and the entire retarget + locomotion-action wiring throws, leaving
+   * `ready=false` permanently (avatar stuck T-posing, no walk/run/idle).
+   * Reference: regression 2026-05-22 from commit 8064ef5b.
+   */
+  private disposed = false;
+
   constructor(vrm: VRM, characterId?: string) {
     this.vrm = vrm;
     this.characterId = characterId;
@@ -615,6 +626,11 @@ export class VRMCharacterAnimator {
 
     try {
       const rawGltfs = await Promise.all(toLoad.map((n) => loadRawGltf(n, this.characterId)));
+
+      // Bail if dispose() ran while we were awaiting clip loads. this.vrm /
+      // this.mixer are now null and the retarget + clipAction calls below would
+      // throw, leaving ready=false (avatar permanently T-poses).
+      if (this.disposed) return;
 
       for (let i = 0; i < toLoad.length; i++) {
         const name = toLoad[i]!;
@@ -936,6 +952,7 @@ export class VRMCharacterAnimator {
     if (!this.actions[name]) {
       try {
         const gltf = await loadRawGltf(name, this.characterId);
+        if (this.disposed) return;
         const retargeted = retargetMixamoClip(gltf, this.vrm, name);
         if (shouldStripPosition(name, this.characterId)) stripPositionTracks(retargeted);
         const action = this.mixer.clipAction(retargeted);
@@ -946,7 +963,7 @@ export class VRMCharacterAnimator {
       }
     }
     // Re-check post-await — we may have been disposed mid-load.
-    if (!this.mixer) return;
+    if (this.disposed) return;
 
     const oneShot = this.actions[name];
     if (!oneShot) return;
@@ -1006,6 +1023,9 @@ export class VRMCharacterAnimator {
    * The VRM scene itself is not disposed here — caller manages scene lifetime.
    */
   dispose(): void {
+    // Mark disposed FIRST so any in-flight init() awaiting clip loads bails
+    // before touching the about-to-be-nulled vrm/mixer refs.
+    this.disposed = true;
     if (this.oneShotFinishedHandler) {
       this.mixer.removeEventListener('finished', this.oneShotFinishedHandler as any);
       this.oneShotFinishedHandler = null;
