@@ -288,11 +288,23 @@ class NpcSimulation {
   private initNpcs() {
     this.npcs.clear();
     for (const def of NPC_DEFINITIONS) {
+      // Spawn-clamp: push the NPC out of any solid collider its home position
+      // happens to overlap (e.g. the shisha-oasis kiosk after the 2026-05-22
+      // pure-solid resize). Without this, NPCs whose homeX/Y landed inside the
+      // new larger AABB would visibly spawn inside the building mesh.
+      // Game-px → world conversion: world = game_px - MAP_HALF.
+      const clampedHome = clampPosition2D(
+        def.homeX - WORLD_COLLIDER_MAP_HALF,
+        def.homeY - WORLD_COLLIDER_MAP_HALF,
+        30, // NPC half-width — sized for chibi humanoid
+      );
+      const spawnX = clampedHome.x + WORLD_COLLIDER_MAP_HALF;
+      const spawnY = clampedHome.z + WORLD_COLLIDER_MAP_HALF;
       this.npcs.set(def.id, {
         id: def.id, name: def.name,
-        x: def.homeX, y: def.homeY,
-        targetX: def.homeX, targetY: def.homeY,
-        homeX: def.homeX, homeY: def.homeY,
+        x: spawnX, y: spawnY,
+        targetX: spawnX, targetY: spawnY,
+        homeX: spawnX, homeY: spawnY,
         patrolRadius: def.patrolRadius,
         direction: 'idle', species: def.species, color: def.color,
         inConversation: false, conversationCooldownUntil: 0,
@@ -330,13 +342,22 @@ class NpcSimulation {
     } else {
       const avatarConfig = config as OpenClawAvatarConfig;
       const npcId = `oc-${config.sessionId}`;
-      const spawnX = restoredState?.lastX ?? avatarConfig.homeX;
-      const spawnY = restoredState?.lastY ?? avatarConfig.homeY;
+      const rawSpawnX = restoredState?.lastX ?? avatarConfig.homeX;
+      const rawSpawnY = restoredState?.lastY ?? avatarConfig.homeY;
+      // Spawn-clamp against world solid colliders so OpenClaw avatars never
+      // appear inside a building. Game-px → world conversion: world = game_px - MAP_HALF.
+      const clampedSpawn = clampPosition2D(
+        rawSpawnX - WORLD_COLLIDER_MAP_HALF,
+        rawSpawnY - WORLD_COLLIDER_MAP_HALF,
+        30, // chibi half-width
+      );
+      const spawnX = clampedSpawn.x + WORLD_COLLIDER_MAP_HALF;
+      const spawnY = clampedSpawn.z + WORLD_COLLIDER_MAP_HALF;
       this.npcs.set(npcId, {
         id: npcId, name: avatarConfig.name,
         x: spawnX, y: spawnY,
         targetX: spawnX, targetY: spawnY,
-        homeX: avatarConfig.homeX, homeY: avatarConfig.homeY,
+        homeX: spawnX, homeY: spawnY,
         patrolRadius: avatarConfig.patrolRadius,
         direction: 'idle', species: avatarConfig.species, color: avatarConfig.color,
         inConversation: false, conversationCooldownUntil: 0,
