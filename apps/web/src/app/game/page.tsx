@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import dynamic from 'next/dynamic';
+import Link from 'next/link';
 import { useQuery } from '@tanstack/react-query';
 import { useAvatar } from '@/hooks/use-avatar';
 import { useMiladyEmbed } from '@/hooks/use-milady-embed';
@@ -99,19 +100,28 @@ const SidebarMenu = dynamic(() => import('@/components/game/sidebar-menu'), {
   ssr: false,
 });
 
-function NanoClawBanner({ hasAvatar }: { hasAvatar: boolean }) {
+function NanoClawBanner({
+  hasAvatar,
+  isAuthenticated,
+}: {
+  hasAvatar: boolean;
+  isAuthenticated: boolean;
+}) {
   const agentConnected = useGameStore((s: GameState) => s.agentConnected);
   const agentSessionId = useGameStore((s: GameState) => s.agentSessionId);
   const setAgentConnectModalOpen = useGameStore((s: GameState) => s.setAgentConnectModalOpen);
 
-  // Banner has three states keyed on (agentConnected, hasAvatar):
-  //   agentConnected=true                 → green "Bot Training Active" pill
-  //   !agentConnected && !hasAvatar       → "Create Agent" + "Connect Your Agent"
-  //                                          side-by-side (matches landing-page
-  //                                          CTAs so NPC-mode visitors have
-  //                                          both onramps in view — user
-  //                                          request 2026-05-12)
-  //   !agentConnected &&  hasAvatar       → "Connect Your Agent" alone
+  // Banner has four states keyed on (isAuthenticated, agentConnected, hasAvatar):
+  //   agentConnected=true                       → green "Bot Training Active" pill
+  //   !isAuthenticated                          → "Log In" + "Sign Up" (agent CTAs hidden:
+  //                                                connecting an agent requires an account,
+  //                                                so showing them to a logged-out visitor
+  //                                                just routes them through the connect
+  //                                                modal which then bounces them to /login)
+  //   isAuthenticated && !agentConnected &&
+  //     !hasAvatar                              → "Create Agent" + "Connect Your Agent"
+  //   isAuthenticated && !agentConnected &&
+  //      hasAvatar                              → "Connect Your Agent" alone
 
   if (agentConnected) {
     return (
@@ -124,6 +134,25 @@ function NanoClawBanner({ hasAvatar }: { hasAvatar: boolean }) {
           <span className="text-white font-bold text-sm">Bot Training Active</span>
           <span className="text-green-200/70 text-xs font-mono hidden md:inline">{agentSessionId?.slice(0, 12)}</span>
         </button>
+      </div>
+    );
+  }
+
+  if (!isAuthenticated) {
+    return (
+      <div className="fixed left-1/2 -translate-x-1/2 z-50 top-3 flex items-center gap-2">
+        <Link
+          href="/login"
+          className="flex items-center gap-2 px-4 py-2 rounded-full bg-black/60 backdrop-blur-sm border border-cyan-400/40 shadow-lg hover:bg-black/80 hover:border-cyan-300/60 transition-all"
+        >
+          <span className="text-cyan-200 font-bold text-sm">Log In</span>
+        </Link>
+        <Link
+          href="/login?mode=signup"
+          className="flex items-center gap-2 px-4 py-2 rounded-full bg-gradient-to-r from-pink-600 to-pink-500 shadow-[0_0_18px_rgba(236,72,153,0.3)] hover:shadow-[0_0_24px_rgba(236,72,153,0.45)] transition-all"
+        >
+          <span className="text-white font-bold text-sm">Sign Up</span>
+        </Link>
       </div>
     );
   }
@@ -347,7 +376,7 @@ export default function GamePage() {
       <SeaLoadingScreen />
       <World3DCanvas mode="game" />
       <BuildingTooltip />
-      <NanoClawBanner hasAvatar={hasAvatar} />
+      <NanoClawBanner hasAvatar={hasAvatar} isAuthenticated={isAuthenticated} />
       <AgentConnectModal />
       <BuildingPortalModal />
       {/* Lobby modal mounts whenever activityLobbyId is set; reads
