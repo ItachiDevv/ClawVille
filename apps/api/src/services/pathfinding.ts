@@ -1,13 +1,47 @@
 /**
  * A* pathfinding for NPC navigation on the 360×360 tile grid (Phase 6.2, 2026-05-18).
- * Buildings are blocked tiles; NPCs navigate around them.
+ *
+ * 2026-05-22: collider-aware rewrite. The previous version only blocked
+ * BUILDING_TILE_ZONES with a fixed 11-tile pad — too narrow for the big
+ * buildings (messaging-channels/api-integrations halfX=850 wu = 26.5 tiles)
+ * and completely ignored the seven town-center prop AABBs (shisha-oasis,
+ * bazaar-stall, auction-podium, quest-bounty-pavilion, marketplace-stall,
+ * town-directory-sign, quest-npc, town-guide). NPCs would path THROUGH
+ * those props, wedge against the server-side AABB clamp, and oscillate or
+ * freeze.
+ *
+ * Now: every server collider from getServerColliders() is rasterized onto
+ * the grid with its real half-extents plus a 4-tile safety margin. The
+ * planner-side `isCollisionFreeWorld` + `findNearestWalkable` helpers let
+ * the NPC simulation reject or snap candidate targets that pass the A* grid
+ * check but still land inside an AABB (gap between coarse grid and the
+ * pixel-accurate clamp).
  */
 
-import { BUILDING_TILE_ZONES } from '@clawville/shared';
+import {
+  clampPosition2D,
+  getServerColliders,
+  WORLD_COLLIDER_MAP_HALF,
+  WORLD_COLLIDER_TILE_SIZE,
+  ENTITY_HALF_CHIBI,
+} from '@clawville/shared';
 
 const COLS = 360;
 const ROWS = 360;
-const TILE = 32;
+const TILE = WORLD_COLLIDER_TILE_SIZE;
+
+/** Extra tile padding added around every rasterized collider. Buffers the A*
+ *  grid against the visible wall so NPCs don't pathfind to a tile that sits
+ *  exactly at the AABB boundary (where the clamp then keeps shoving them
+ *  back, oscillating). 4 tiles = 128 wu — enough that the clearance(3) check
+ *  on candidate targets still has slack. */
+const COLLIDER_SAFETY_TILES = 4;
+
+/** Tile cost converters (world-space ↔ tile-index). */
+function worldToTile(coord: number): number {
+  // worldCoord in wu (centered at 0) → game-px (centered at MAP_HALF) → tile
+  return Math.floor((coord + WORLD_COLLIDER_MAP_HALF) / TILE);
+}
 
 export interface PathNode {
   x: number; // pixel coord
@@ -15,19 +49,13 @@ export interface PathNode {
 }
 
 /** Compute walkability grid: true = walkable, false = blocked.
- *  BUILDING_TILE_ZONES is authoritative tile zone (14×14) but the rendered
- *  building footprint can reach MAX_FOOTPRINT = 1000 wu = 31.25 tiles.
- *  BUILDING_EXCLUSION_PAD expands the zone by N tiles in each direction so
- *  pathfinding blocks the visual footprint AND keeps a buffer so NPCs don't
- *  walk right up to the wall and stop there.
  *
- *  History: 9 (default) → 14 (Apr 24, NPCs were pressing against walls)
- *  → 11 (Apr 25, user wanted more breathing room without moving buildings).
- *  Effective half-extent now = 7+11 = 18 tiles = 576 wu per building. The
- *  hasClearance(margin=3) check in npc-simulation gives final waypoints
- *  another 3-tile buffer, so visible NPC distance from walls stays safe. */
-const BUILDING_EXCLUSION_PAD = 11;
-
+ *  Source of truth: getServerColliders() returns every building + prop
+ *  AABB used by clampPosition2D at movement time. We rasterize each
+ *  AABB's full extents onto the grid plus COLLIDER_SAFETY_TILES.
+ *
+ *  Skips walkable=true zones (lifting platforms, currently unused on the
+ *  server) — those don't block XZ travel. */
 function buildWalkabilityGrid(): boolean[][] {
   const grid: boolean[][] = [];
   for (let r = 0; r < ROWS; r++) {
@@ -37,17 +65,29 @@ function buildWalkabilityGrid(): boolean[][] {
     }
   }
 
-  // Mark building tiles as blocked — expanded by BUILDING_EXCLUSION_PAD
-  for (const zone of Object.values(BUILDING_TILE_ZONES) as { x: number; y: number; w: number; h: number }[]) {
-    const r0 = zone.y - BUILDING_EXCLUSION_PAD;
-    const r1 = zone.y + zone.h + BUILDING_EXCLUSION_PAD;
-    const c0 = zone.x - BUILDING_EXCLUSION_PAD;
-    const c1 = zone.x + zone.w + BUILDING_EXCLUSION_PAD;
-    for (let r = r0; r < r1; r++) {
-      for (let c = c0; c < c1; c++) {
-        if (r >= 0 && r < ROWS && c >= 0 && c < COLS) {
-          grid[r][c] = false;
-        }
+  const colliders = getServerColliders();
+  for (let i = 0; i < colliders.length; i++) {
+    const col = colliders[i]!;
+    if (col.walkable) continue;
+
+    // Convert centered world-space → tile-index. Per-axis tile half-extents
+    // = ceil(halfX / TILE) so we never under-cover a real AABB pixel. Add
+    // COLLIDER_SAFETY_TILES for the buffer-zone fix to RCA gap #2.
+    const cTileX = worldToTile(col.centerX);
+    const cTileZ = worldToTile(col.centerZ);
+    const halfTileX = Math.ceil(col.halfX / TILE) + COLLIDER_SAFETY_TILES;
+    const halfTileZ = Math.ceil(col.halfZ / TILE) + COLLIDER_SAFETY_TILES;
+
+    const r0 = cTileZ - halfTileZ;
+    const r1 = cTileZ + halfTileZ;
+    const c0 = cTileX - halfTileX;
+    const c1 = cTileX + halfTileX;
+    for (let r = r0; r <= r1; r++) {
+      if (r < 0 || r >= ROWS) continue;
+      const rowArr = grid[r]!;
+      for (let c = c0; c <= c1; c++) {
+        if (c < 0 || c >= COLS) continue;
+        rowArr[c] = false;
       }
     }
   }
@@ -77,10 +117,31 @@ export function hasClearance(x: number, y: number, margin: number = 3): boolean 
       const rr = r + dr;
       const cc = c + dc;
       if (rr < 0 || rr >= ROWS || cc < 0 || cc >= COLS) return false;
-      if (!grid[rr][cc]) return false;
+      if (!grid[rr]![cc]) return false;
     }
   }
   return true;
+}
+
+/**
+ * Test whether a game-pixel target lies OUTSIDE every world-collider AABB
+ * (with the entity's own half-width expanding each collider via Minkowski
+ * sum, matching clampPosition2D's semantics). This catches targets that
+ * pass the coarse A* grid check but still sit inside a clamped AABB
+ * (e.g. inside the per-axis pad-vs-extent gap exposed by RCA gap #2).
+ *
+ * Caller passes GAME-PIXEL coords (NPC sim coords). We convert to centered
+ * world-space internally before consulting clampPosition2D.
+ */
+export function isCollisionFreeWorld(
+  gamePxX: number,
+  gamePxY: number,
+  entityHalf: number = ENTITY_HALF_CHIBI,
+): boolean {
+  const wx = gamePxX - WORLD_COLLIDER_MAP_HALF;
+  const wz = gamePxY - WORLD_COLLIDER_MAP_HALF;
+  const clamped = clampPosition2D(wx, wz, entityHalf);
+  return !clamped.hit;
 }
 
 interface AStarNode {
@@ -122,8 +183,8 @@ class MinHeap {
   private bubbleUp(i: number) {
     while (i > 0) {
       const parent = (i - 1) >> 1;
-      if (this.items[i].f >= this.items[parent].f) break;
-      [this.items[i], this.items[parent]] = [this.items[parent], this.items[i]];
+      if (this.items[i]!.f >= this.items[parent]!.f) break;
+      [this.items[i], this.items[parent]] = [this.items[parent]!, this.items[i]!];
       i = parent;
     }
   }
@@ -134,10 +195,10 @@ class MinHeap {
       let smallest = i;
       const left = 2 * i + 1;
       const right = 2 * i + 2;
-      if (left < len && this.items[left].f < this.items[smallest].f) smallest = left;
-      if (right < len && this.items[right].f < this.items[smallest].f) smallest = right;
+      if (left < len && this.items[left]!.f < this.items[smallest]!.f) smallest = left;
+      if (right < len && this.items[right]!.f < this.items[smallest]!.f) smallest = right;
       if (smallest === i) break;
-      [this.items[i], this.items[smallest]] = [this.items[smallest], this.items[i]];
+      [this.items[i], this.items[smallest]] = [this.items[smallest]!, this.items[i]!];
       i = smallest;
     }
   }
@@ -175,16 +236,16 @@ export function findPath(startX: number, startY: number, endX: number, endY: num
   // deep inside an exclusion zone has zero reachable neighbors and returns
   // empty. Treating a blocked start the same as a blocked end unsticks
   // NPCs automatically on their next plan tick.
-  if (!grid[startRow][startCol]) {
-    const nearest = findNearestWalkable(startCol, startRow, grid);
+  if (!grid[startRow]![startCol]) {
+    const nearest = findNearestWalkableTile(startCol, startRow, grid);
     if (!nearest) return [];
     startCol = nearest.col;
     startRow = nearest.row;
   }
 
   // If end is blocked, find nearest walkable tile
-  if (!grid[endRow][endCol]) {
-    const nearest = findNearestWalkable(endCol, endRow, grid);
+  if (!grid[endRow]![endCol]) {
+    const nearest = findNearestWalkableTile(endCol, endRow, grid);
     if (!nearest) return [];
     endCol = nearest.col;
     endRow = nearest.row;
@@ -226,16 +287,16 @@ export function findPath(startX: number, startY: number, endX: number, endY: num
     closed.add(ck);
 
     for (const [dc, dr] of DIRS) {
-      const nc = current.col + dc;
-      const nr = current.row + dr;
+      const nc = current.col + dc!;
+      const nr = current.row + dr!;
 
       if (nc < 0 || nc >= COLS || nr < 0 || nr >= ROWS) continue;
-      if (!grid[nr][nc]) continue;
+      if (!grid[nr]![nc]) continue;
       if (closed.has(key(nc, nr))) continue;
 
       // Diagonal movement: check that both adjacent cardinal tiles are walkable
       if (dc !== 0 && dr !== 0) {
-        if (!grid[current.row + dr][current.col] || !grid[current.row][current.col + dc]) continue;
+        if (!grid[current.row + dr!]![current.col] || !grid[current.row]![current.col + dc!]) continue;
       }
 
       const moveCost = (dc !== 0 && dr !== 0) ? 1.41 : 1;
@@ -284,41 +345,111 @@ function reconstructPath(end: AStarNode, targetX: number, targetY: number): Path
 function smoothPath(path: PathNode[]): PathNode[] {
   if (path.length <= 2) return path;
 
-  const smoothed: PathNode[] = [path[0]];
+  const smoothed: PathNode[] = [path[0]!];
   let lastDir = { x: 0, y: 0 };
 
   for (let i = 1; i < path.length; i++) {
-    const prev = smoothed[smoothed.length - 1];
-    const dx = Math.sign(path[i].x - prev.x);
-    const dy = Math.sign(path[i].y - prev.y);
+    const prev = smoothed[smoothed.length - 1]!;
+    const dx = Math.sign(path[i]!.x - prev.x);
+    const dy = Math.sign(path[i]!.y - prev.y);
 
     if (dx !== lastDir.x || dy !== lastDir.y) {
       // Direction changed — keep the previous point
-      if (i > 1) smoothed.push(path[i - 1]);
+      if (i > 1) smoothed.push(path[i - 1]!);
       lastDir = { x: dx, y: dy };
     }
   }
 
-  smoothed.push(path[path.length - 1]);
+  smoothed.push(path[path.length - 1]!);
   return smoothed;
 }
 
-function findNearestWalkable(col: number, row: number, grid: boolean[][]): { col: number; row: number } | null {
-  // A building's center tile is half_w (7) tiles from the zone edge, plus
-  // BUILDING_EXCLUSION_PAD (9) more tiles of blocked margin — minimum
-  // Chebyshev distance from center to a walkable tile is 16. The old
-  // ceiling of 10 guaranteed failure on every building target, so the
-  // autonomy engine looped "can't find a path" forever. 20 = safe margin.
-  const maxRadius = 20;
+function findNearestWalkableTile(col: number, row: number, grid: boolean[][]): { col: number; row: number } | null {
+  // Per-collider half-extents now feed the grid (2026-05-22). The biggest
+  // building (messaging-channels) is halfX=850 wu = ceil(850/32)+4 = 31 tiles
+  // half-extent. From a deep-center blocked tile the nearest walkable tile is
+  // 31 tiles away. Old hard-coded 20 became too small once we rasterized real
+  // extents — every messaging-channels-target was failing. 40 covers every
+  // current collider with safety margin and is still <2 ms in the worst case.
+  const maxRadius = 40;
   for (let radius = 1; radius <= maxRadius; radius++) {
     for (let dr = -radius; dr <= radius; dr++) {
       for (let dc = -radius; dc <= radius; dc++) {
         if (Math.abs(dr) !== radius && Math.abs(dc) !== radius) continue;
         const nc = col + dc;
         const nr = row + dr;
-        if (nc >= 0 && nc < COLS && nr >= 0 && nr < ROWS && grid[nr][nc]) {
+        if (nc >= 0 && nc < COLS && nr >= 0 && nr < ROWS && grid[nr]![nc]) {
           return { col: nc, row: nr };
         }
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Snap a candidate game-pixel target outward (spiral search) until we find
+ * a point that passes BOTH the A* grid clearance check AND the
+ * pixel-accurate AABB clamp test. Used by NPC planners to recover when a
+ * first-choice target falls inside a collider — without this, the planner
+ * would either reject the candidate (and burn its attempt budget) or
+ * commit to a path whose final waypoint is unreachable.
+ *
+ * Returns the snapped game-px coord or null if nothing usable inside
+ * `maxRadiusPx` (default 600 wu ≈ 18.75 tiles — large enough to escape any
+ * prop AABB; small enough that the snapped point is still meaningfully
+ * "near" the requested target).
+ */
+export function findNearestWalkable(
+  gamePxX: number,
+  gamePxY: number,
+  entityHalf: number = ENTITY_HALF_CHIBI,
+  maxRadiusPx: number = 600,
+): { x: number; y: number } | null {
+  // Quick win if the input is already valid.
+  if (hasClearance(gamePxX, gamePxY, 3) && isCollisionFreeWorld(gamePxX, gamePxY, entityHalf)) {
+    return { x: gamePxX, y: gamePxY };
+  }
+
+  const stepPx = TILE; // search at tile resolution
+  const maxRadiusTiles = Math.ceil(maxRadiusPx / stepPx);
+  // 8 cardinal+diagonal directions — same compass as DIRS above but typed
+  // as (dx, dy) tile offsets. Per-tick allocations are unavoidable here
+  // (planner-only, runs at most a few times per second across all NPCs).
+  const DXY = [
+    [0, -1], [1, -1], [1, 0], [1, 1],
+    [0, 1], [-1, 1], [-1, 0], [-1, -1],
+  ];
+
+  for (let radius = 1; radius <= maxRadiusTiles; radius++) {
+    // Walk the perimeter of the radius=N square. For each direction,
+    // jitter the inner offset across [-radius, radius] so we cover the
+    // whole ring rather than just 8 specific points.
+    for (let i = 0; i < DXY.length; i++) {
+      const dx = DXY[i]![0]!;
+      const dy = DXY[i]![1]!;
+      for (let offset = -radius; offset <= radius; offset++) {
+        // Build a (dx*radius, dy*radius) ring-cell with offset on the
+        // tangential axis. For pure cardinal (dx=0 OR dy=0) the offset
+        // walks along the opposite axis; for diagonals it walks both.
+        let tx: number;
+        let ty: number;
+        if (dx === 0) {
+          tx = gamePxX + offset * stepPx;
+          ty = gamePxY + dy * radius * stepPx;
+        } else if (dy === 0) {
+          tx = gamePxX + dx * radius * stepPx;
+          ty = gamePxY + offset * stepPx;
+        } else {
+          tx = gamePxX + dx * radius * stepPx;
+          ty = gamePxY + dy * radius * stepPx + offset * stepPx;
+        }
+        // Out-of-bounds map test — leave a 32 px margin off each edge.
+        if (tx < 32 || tx > COLS * TILE - 32) continue;
+        if (ty < 32 || ty > ROWS * TILE - 32) continue;
+        if (!hasClearance(tx, ty, 3)) continue;
+        if (!isCollisionFreeWorld(tx, ty, entityHalf)) continue;
+        return { x: tx, y: ty };
       }
     }
   }
