@@ -296,7 +296,9 @@ Three controllers, mutually exclusive except arrow rotation:
 
 **Canvas initial camera:** `fov=50, near=1, far=16000`, `position = mode==='game' ? [0, 600, 1300] : [0, 560, 1000]`. (camera.far raised from 6800→10000 in Phase 6.2.1, then 10000→16000 in Phase 6.2.3. Invariant: fog.far MUST equal camera.far — currently both 16000.)
 
-**DPR cap:** `dpr={LOW_END_GPU_DETECTED ? [0.55, 0.7] : [0.75, 1]}`. `LOW_END_GPU_DETECTED` is computed once at module load via `WEBGL_debug_renderer_info` — Intel/Iris/UHD/Adreno/Mali/PowerVR/Apple-integrated + `pointer:coarse` mobile. Do NOT call `gl.setPixelRatio()` inside `onCreated` — that overrides the prop and was reverted 2026-04-21.
+**DPR cap:** `dpr={LOW_END_GPU_DETECTED ? [0.5, 0.65] : [0.75, 1]}`. `LOW_END_GPU_DETECTED` is computed once at module load via `WEBGL_debug_renderer_info` — Intel/Iris/UHD/Adreno/Mali/PowerVR/Apple-integrated + `pointer:coarse` mobile. Do NOT call `gl.setPixelRatio()` inside `onCreated` — that overrides the prop and was reverted 2026-04-21. Floor lowered 0.55 → 0.5 on 2026-05-22 (Wave 3) after scene became less fragment-bound from Wave 1 NPC cap + pavilion VRAM relief.
+
+**Adaptive DPR feedback loop (2026-05-22, Wave 3 — `AdaptiveDprMonitor` in `World3DCanvas.tsx`):** runtime DPR adjuster that drops DPR by 0.05 when rolling-avg frame time > 18 ms (=55 FPS budget) and raises by 0.05 when < 12 ms (=83 FPS budget). 30-frame ring-buffer sampling; 1-second cooldown between adjustments. Bounded by Iris-Xe `[0.4, 0.7]` / desktop `[0.6, 1.0]`. Uses R3F `setDpr()` (not `gl.setPixelRatio()` directly) to reconcile canvas backing-store + camera aspect cleanly. Zero per-frame allocations — ring buffer is pre-allocated at mount. The system always converges toward the 80 FPS target — if scene complexity rises (more NPCs / decorations added later), DPR drops automatically to maintain the floor.
 
 ---
 

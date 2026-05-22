@@ -277,7 +277,7 @@ const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: n
   // Slot 10 — WNW (cx=67, cy=115): dx=113, dz=65 → atan2(113,65)≈1.049 (π/3)
   // Phase 6.1 swap preserved: agent-security at slot 10/WNW.
   // targetMaxDim: 1100 — wide dome, max-dim normalization prevents over-inflation.
-  'agent-security':      { model: '/models/patricks-rock-v2.glb',    yOffset: 0, rotY:  1.049, targetMaxDim: 1100 },
+  'agent-security':      { model: '/models/patricks-rock-v2.glb?v=2',    yOffset: 0, rotY:  1.049, targetMaxDim: 1100 },
   // Slot 11 — NNW (cx=115, cy=67): dx=65, dz=113 → atan2(65,113)≈0.522 (π/6)
   // squidward-house.glb = Easter Island moai head (CC-BY, Yanez Designs).
   // GLB node tree (AUTHORITATIVE — verified via CDP live scene traversal 2026-05-21):
@@ -296,7 +296,7 @@ const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: n
   // bodyAnchorChild "Squidward’s_House": stone steps extend in +Z from the moai body,
   //   pulling full-GLB bbox center toward the pathway. The dynamic anchor aligns the
   //   moai body center (after 1.7× override) with the ring slot — not the combined bbox.
-  "memory-rag":          { model: '/models/squidward-house.glb',     yOffset: 0, rotY:  0.522, targetMaxDim: 1700,
+  "memory-rag":          { model: '/models/squidward-house.glb?v=2',     yOffset: 0, rotY:  0.522, targetMaxDim: 1700,
                            childScaleOverrides: { "Squidward's_House": 1.7 },
                            bodyAnchorChild: "Squidward's_House" },
 };
