@@ -141,12 +141,48 @@ function normaliseVRM(vrm: VRM): void {
     }
   });
 
-  // Disable frustum culling on every node. VRM SkinnedMesh nodes have
-  // bounding spheres computed from the bind pose (T-pose); animated geometry
-  // extends outside that sphere, causing Three.js to incorrectly cull the
-  // mesh at close range or steep camera angles.
+  // Fattened-bounding-sphere frustum culling (2026-05-22 perf wave 3).
+  //
+  // Previously this loop disabled frustumCulled entirely on every VRM node
+  // because Three.js computes SkinnedMesh bounding spheres from the BIND
+  // pose (T-pose), which is smaller than the animated pose envelope —
+  // walk/run cycles extend the geometry past the bind sphere, causing
+  // Three.js to incorrectly cull the mesh at close range / steep camera.
+  //
+  // The fix: keep frustumCulled = true (so off-screen VRMs get culled
+  // for free) but fatten each SkinnedMesh's bounding sphere by 1.6× radius
+  // so the animated pose stays inside the bound. Static meshes inside
+  // the VRM (eyes, accessory geometry) keep their stock bounding spheres
+  // since they don't deform — only SkinnedMesh nodes need fattening.
+  //
+  // Trade-off: a tiny band around the camera frustum where the mesh would
+  // be marginally off-screen but stays drawn. Cheap. The win is that the
+  // 11 stationary building-resident VRMs facing away from the camera
+  // (or behind the player) get correctly culled instead of being drawn
+  // every frame. Estimated -10 to -30 draw calls when looking away from
+  // a cluster of NPCs.
+  const FATTEN_FACTOR = 1.6;
   vrm.scene.traverse((obj) => {
-    obj.frustumCulled = false;
+    // SkinnedMesh check via duck-typed property — avoids the dual-three-types
+    // cast issue between the 0.170 and 0.182 @types/three (the unknown→cast
+    // pattern would be safe but noisier; the runtime check is equivalent).
+    const mesh = obj as unknown as THREE.SkinnedMesh;
+    if (mesh.isSkinnedMesh && mesh.geometry) {
+      const geom = mesh.geometry;
+      // Compute the bind-pose bounding sphere if it doesn't exist.
+      if (!geom.boundingSphere) geom.computeBoundingSphere();
+      // Fatten radius in place. Safe because the geometry is shared per-VRM-instance
+      // (useVRMInstance pattern); siblings of the same VRM at the same scale see the
+      // same animation envelope, so one shared fattened sphere is correct.
+      if (geom.boundingSphere) {
+        geom.boundingSphere.radius *= FATTEN_FACTOR;
+      }
+      mesh.frustumCulled = true;
+    } else {
+      // Non-skinned meshes (eyes, accessory geometry, lookAt helpers):
+      // keep frustumCulled enabled with stock bounding sphere.
+      obj.frustumCulled = true;
+    }
   });
 
   // Spring-bone scale compensation. NOTE (CDP probe 2026-04-25): Milady VRMs
