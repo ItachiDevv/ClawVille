@@ -605,6 +605,37 @@ export default function SlotReels3D({
     }
   }, []);
 
+  // Phase 6.1.18 — showcase initial snap.
+  // When the modal mounts with a curated initial `reels` window (e.g. the
+  // CLASSIC_SHOWCASE / BONUS_SHOWCASE used to advertise the roster), the
+  // rig's default offset of `1 - VISIBLE_REPEAT` would show the strip's
+  // first three cells instead. Snap each idle reel directly to its
+  // requested window so the player sees the curated showcase on first paint.
+  // No-op once spins have started — runs only while reels are settled and
+  // no spinTrigger has fired.
+  useEffect(() => {
+    if (!reels || !imagesReady) return;
+    if (spinTrigger !== 0 && spinTrigger !== prevTrigger.current) return;
+    for (let r = 0; r < REEL_COUNT; r++) {
+      const a = animState.current[r];
+      if (!a.settled || a.phase === PHASE_BOUNCE || a.phase === PHASE_DECEL) continue;
+      const window3 = reels[r];
+      if (!window3 || window3.length < 3) continue;
+      const strip = strips[r];
+      const p     = findStripPosition(strip, window3[0], window3[1], window3[2]);
+      const off   = offsetForStripPosition(p);
+      const map   = reelMaterials[r]?.map;
+      if (map) {
+        map.repeat.set(1, VISIBLE_REPEAT);
+        map.offset.y = off;
+        map.needsUpdate = true;
+      }
+      a.offset = off;
+      a.targetOffset = off;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reels, imagesReady]);
+
   // -------------------------------------------------------------------------
   // useFrame — pure scalar arithmetic, ZERO allocations
   // -------------------------------------------------------------------------
