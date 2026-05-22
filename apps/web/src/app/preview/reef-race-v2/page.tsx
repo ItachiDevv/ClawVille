@@ -294,7 +294,7 @@ function safeBBox(obj: THREE.Object3D): THREE.Box3 {
   const box = new THREE.Box3();
   obj.traverse((o) => {
     const mesh = o as THREE.Mesh;
-    if (!mesh.isMesh || (o as THREE.SkinnedMesh).isSkinnedMesh) return;
+    if (!mesh.isMesh || (o as unknown as THREE.SkinnedMesh).isSkinnedMesh) return;
     if (!mesh.geometry) return;
     mesh.geometry.computeBoundingBox();
     const local = mesh.geometry.boundingBox!.clone();

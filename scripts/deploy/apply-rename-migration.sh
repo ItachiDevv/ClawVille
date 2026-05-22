@@ -3,7 +3,7 @@
 #
 # Applies a hand-authored Drizzle SQL migration (e.g. 0007_pets_to_avatars.sql)
 # to the production Postgres instance. ClawVille's prod DB is Supabase
-# (aws-1-us-east-1.pooler.supabase.com:6543) — NOT the coolify-db Postgres
+# (endpoint in scripts/deploy/.env.deploy) — NOT the coolify-db Postgres
 # stack. The DATABASE_URL is set as an env var inside the api container
 # on the Hetzner VPS. We exec into the api container, install psql if
 # absent, and apply the migration via psql against $DATABASE_URL.
@@ -112,7 +112,11 @@ run_remote() {
 }
 
 find_api_container() {
-  run_remote "docker ps --format '{{.Names}}' | grep -E 'yvtwz7snaghxifkjhyxknffu' | head -1"
+  if [[ -z "${API_APP_UUID:-}" ]]; then
+    echo "[apply-rename-migration] API_APP_UUID not set — source scripts/deploy/.env.deploy first or export it." >&2
+    return 1
+  fi
+  run_remote "docker ps --format '{{.Names}}' | grep -E '${API_APP_UUID}' | head -1"
 }
 
 ensure_psql_in_container() {
