@@ -789,7 +789,7 @@ export class VRMCharacterAnimator {
     if (!this.actions[name]) {
       void loadRawGltf(name, this.characterId)
         .then((gltf) => {
-          if (!this.mixer) return; // disposed mid-load
+          if (this.disposed) return; // disposed mid-load — vrm/mixer nulled
           const retargeted = retargetMixamoClip(gltf, this.vrm, name);
           if (shouldStripPosition(name, this.characterId)) stripPositionTracks(retargeted);
           const action = this.mixer.clipAction(retargeted);
@@ -996,7 +996,7 @@ export class VRMCharacterAnimator {
 
     const onFinished = (e: { action: THREE.AnimationAction }) => {
       if (e.action !== oneShot) return;
-      if (!this.mixer) return; // disposed mid-emote
+      if (this.disposed) return; // disposed mid-emote — vrm/mixer nulled
       this.mixer.removeEventListener('finished', onFinished as any);
       this.oneShotFinishedHandler = null;
       this.oneShotActive = false;
@@ -1040,6 +1040,11 @@ export class VRMCharacterAnimator {
     // Mark disposed FIRST so any in-flight init() awaiting clip loads bails
     // before touching the about-to-be-nulled vrm/mixer refs.
     this.disposed = true;
+    // Also clear `ready` so update/updateMixerOnly/updateSpringOnly (all of
+    // which short-circuit on `!this.ready`) become safe no-ops if a stale
+    // useFrame closure on the parent component fires after dispose — defense
+    // in depth against the same crash class init() was hitting.
+    this.ready = false;
     if (this.oneShotFinishedHandler) {
       this.mixer.removeEventListener('finished', this.oneShotFinishedHandler as any);
       this.oneShotFinishedHandler = null;
