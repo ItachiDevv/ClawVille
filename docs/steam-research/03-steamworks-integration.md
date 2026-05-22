@@ -161,9 +161,9 @@ Steps 6 + 9 cite:
 **Storage plan for ClawVille:**
 
 - Name: `STEAM_PUBLISHER_API_KEY`
-- Location: Coolify env var on the **api** app only (`yvtwz7snaghxifkjhyxknffu`, App ID 3). NOT set on the web app.
+- Location: Coolify env var on the **api** app only (App ID 3, UUID in `scripts/deploy/.env.deploy` as `API_APP_UUID`). NOT set on the web app.
 - Access: Only `apps/api/src/routes/auth-steam.ts` reads it.
-- Optional hardening: IP-whitelist the Hetzner VPS egress IP (`87.99.142.34`) in the Steamworks admin — any leak of the key then fails any call from off-box.
+- Optional hardening: IP-whitelist the Hetzner VPS egress IP (`<PROD_VPS_IP>`, see `scripts/deploy/.env.deploy`) in the Steamworks admin — any leak of the key then fails any call from off-box.
 - Rotation: documented in `docs/DEPLOY-HETZNER.md` once the route ships.
 
 ### 2.4 Federating SteamID64 → our `users` + `avatars` model
@@ -601,7 +601,7 @@ app.route('/api/auth', authSteamRoutes);
 - [x] Reject Family-Sharing for v1 (steamid ≠ ownersteamid)
 - [x] Hex validation on ticket input (Valve returns 400 on malformed ticket anyway, but fail fast)
 - [x] HTTPS-only (Coolify Traefik terminates TLS; the outbound fetch is also HTTPS)
-- [ ] IP-whitelist the publisher key to `87.99.142.34` in Steamworks admin (manual step at deploy time)
+- [ ] IP-whitelist the publisher key to `<PROD_VPS_IP>` (see `scripts/deploy/.env.deploy`) in Steamworks admin (manual step at deploy time)
 - [ ] Add `STEAM_APP_ID` + `STEAM_PUBLISHER_API_KEY` to Coolify env before deploy
 
 ### 5.6 `getUserAttributes` update
@@ -634,12 +634,12 @@ Lucia reads this via its adapter's `getUserAttributes` callback — no other cod
 
 ## 6. Coolify env var plan
 
-Add to the **api** app (App ID 3, UUID `yvtwz7snaghxifkjhyxknffu`) via the tinker pattern documented in root `CLAUDE.md`:
+Add to the **api** app (App ID 3, UUID in `scripts/deploy/.env.deploy` as `API_APP_UUID`) via the tinker pattern documented in root `CLAUDE.md`:
 
 | Key | Value | Notes |
 |---|---|---|
 | `STEAM_APP_ID` | (assigned after Steam Direct payment) | not sensitive; appears in SteamPipe uploads too |
-| `STEAM_PUBLISHER_API_KEY` | (generated in Steamworks admin under Users & Permissions) | **secret**. IP-whitelist to `87.99.142.34` |
+| `STEAM_PUBLISHER_API_KEY` | (generated in Steamworks admin under Users & Permissions) | **secret**. IP-whitelist to `<PROD_VPS_IP>` (see `scripts/deploy/.env.deploy`) |
 
 `STEAM_APP_ID` is also needed by the **Electron build CI** (not a runtime env on the api app or web app — it's compiled into the main-process bundle). Store it alongside the code-signing cert secrets in the GitHub Actions secrets panel of the Electron repo.
 

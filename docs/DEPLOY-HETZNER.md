@@ -1,7 +1,8 @@
 # ClawVille → Hetzner Deploy Playbook
 
 > **Status (2026-04-10): MIGRATION COMPLETE.** Production is live on Hetzner CCX13
-> at `<PROD_VPS_IP>`, managed by Coolify at `https://coolify.clawville.world`. DNS
+> at `<PROD_VPS_IP>` (see `scripts/deploy/.env.deploy`, gitignored), managed by Coolify
+> at the admin subdomain configured in `CF_COOLIFY_SUBDOMAIN` (same env file). DNS
 > cutover done, Let's Encrypt certs issued, Railway services stopped (not yet deleted).
 > Steps 0-7 are done. Step 8 (delete Railway project) is pending and requires an
 > explicit "go" from the user after the 24h Hetzner soak. Keep this playbook as the
@@ -113,7 +114,7 @@ bash scripts/deploy/setup-cloudflare-dns.sh
 This adds three **additive, DNS-only** records:
 - `new.clawville.world`          → Hetzner IP  (staging web)
 - `api-new.clawville.world`      → Hetzner IP  (staging api)
-- `coolify.clawville.world`      → Hetzner IP  (admin UI)
+- `<CF_COOLIFY_SUBDOMAIN>.<CF_ZONE_NAME>` → Hetzner IP  (admin UI — values in `scripts/deploy/.env.deploy`)
 
 It **does not touch** the existing `clawville.world` / `api.clawville.world` records that point at Railway. That's deliberate — you'll swap those over in Step 7 after you've confirmed the new stack works.
 
@@ -142,8 +143,8 @@ When it finishes, Coolify is running at `http://<IPV4>:8000`.
 3. You'll land on the dashboard
 
 ### Set the Coolify instance domain
-- Settings → Instance Domain: `https://coolify.clawville.world`
-- Save. Coolify will request a Let's Encrypt cert via Traefik. Wait ~30 seconds, then browse to https://coolify.clawville.world to confirm.
+- Settings → Instance Domain: `https://<CF_COOLIFY_SUBDOMAIN>.<CF_ZONE_NAME>` (resolve from `scripts/deploy/.env.deploy`)
+- Save. Coolify will request a Let's Encrypt cert via Traefik. Wait ~30 seconds, then browse to that URL to confirm.
 - Once confirmed, **close port 8000** from the internet:
   ```bash
   ssh clawops@<IPV4> 'sudo ufw delete allow 8000/tcp && sudo ufw reload'
