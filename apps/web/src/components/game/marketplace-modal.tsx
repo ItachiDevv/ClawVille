@@ -186,9 +186,9 @@ export default function MarketplaceModal() {
         <div className="claw-panel flex flex-col overflow-hidden">
           {/* Header */}
           <div className="flex items-center justify-between px-4 pt-4 pb-2">
-            <h2 className="font-clawville text-xl text-gray-900">
+            <h2 className="font-clawville text-xl text-cyan-50">
               {detailSkill ? (
-                <button onClick={() => setDetailSkill(null)} className="text-purple-700 hover:underline mr-2">
+                <button onClick={() => setDetailSkill(null)} className="text-cyan-300 hover:text-cyan-100 hover:underline mr-2">
                   ← Back
                 </button>
               ) : null}
@@ -196,7 +196,7 @@ export default function MarketplaceModal() {
             </h2>
             <button
               onClick={() => { setDetailSkill(null); closeMarketplace(); }}
-              className="text-gray-600 hover:text-gray-900 font-bold text-lg"
+              className="text-slate-300 hover:text-white font-bold text-lg"
             >
               ×
             </button>
@@ -205,10 +205,10 @@ export default function MarketplaceModal() {
           {/* === Detail view (ClawHub-style skill page) === */}
           {detailSkill ? (
             <div className="flex-1 overflow-y-auto px-4 pb-4 space-y-3">
-              {/* Title + author */}
+              {/* Title + author — direct children of .claw-panel (dark navy). Light text only. */}
               <div>
-                <h3 className="font-bold text-lg text-gray-900">{detailSkill.name}</h3>
-                <p className="text-sm text-gray-500">
+                <h3 className="font-bold text-lg text-cyan-50">{detailSkill.name}</h3>
+                <p className="text-sm text-slate-300">
                   {detailSkill.authorAvatarName}/{toSlug(detailSkill.name)}
                 </p>
               </div>
@@ -225,15 +225,15 @@ export default function MarketplaceModal() {
                 >
                   {detailSkill.hasUpvoted ? '★' : '☆'} {detailSkill.upvoteCount}
                 </button>
-                <span className="text-gray-500 text-xs flex items-center gap-1">
+                <span className="text-slate-300 text-xs flex items-center gap-1">
                   <span className="text-base">⬇</span> {detailSkill.downloadCount} installs
                 </span>
-                <span className="text-gray-400 text-xs">
+                <span className="text-slate-400 text-xs">
                   {new Date(detailSkill.createdAt).toLocaleDateString()}
                 </span>
               </div>
 
-              <p className="text-sm text-gray-700">{detailSkill.description}</p>
+              <p className="text-sm text-slate-200">{detailSkill.description}</p>
 
               {/* Install command */}
               <div className="bg-gray-900 rounded-lg overflow-hidden">
