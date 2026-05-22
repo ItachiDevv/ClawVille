@@ -398,17 +398,16 @@ export default function SlotReels3D({
   useEffect(() => {
     const orthoCam = camera as THREE.OrthographicCamera;
     if (orthoCam.isOrthographicCamera) {
-      // World height is FIXED to fit cabinet + lever (5.65 + breathing room).
-      // World WIDTH follows canvas aspect so cells stay square regardless of
-      // modal width — wide modals just show more side breathing room.
-      // Without this, ortho's stretch-to-fit distorts cells (Phase 6.1.15.1).
-      const aspect = (size.width > 0 && size.height > 0) ? (size.width / size.height) : 1.78;
-      const halfH  = 3.2;
-      const halfW  = Math.max(halfH * aspect, 5.7);  // floor at 5.7 so lever stays in view on narrow modals
-      orthoCam.left   = -halfW;
-      orthoCam.right  =  halfW;
-      orthoCam.top    =  halfH;
-      orthoCam.bottom = -halfH;
+      // Phase 6.1.18 — tight ortho bounds matching the tight cabinet.
+      // The modal CSS gives the canvas a controlled aspect, so we don't
+      // chase canvas dimensions anymore — fixed world bounds keep the cabinet
+      // a slot-machine shape instead of stretching with viewport width.
+      // Bounds: ±5.6 horizontal (cabinet half 4.95 + lever extending to 5.36)
+      //         ±3.3 vertical (cabinet half 3.0 + breathing)
+      orthoCam.left   = -5.6;
+      orthoCam.right  =  5.6;
+      orthoCam.top    =  3.3;
+      orthoCam.bottom = -3.3;
       orthoCam.near   =  0.1;
       orthoCam.far    = 30;
       orthoCam.zoom   = 1;
@@ -692,20 +691,18 @@ export default function SlotReels3D({
   }, []);
 
   // -------------------------------------------------------------------------
-  // Cabinet geometry — bright brass frame + rivets (Phase 6.1.15.2)
-  // Cabinet SCALES with canvas aspect so it fills the visible width on wide
-  // modals instead of leaving dead teal space on the sides. Inner ledge
-  // (between reel cluster and brass edge) grows with cabinet width.
+  // Cabinet geometry — Phase 6.1.18: TIGHT cabinet that HUGS the reel cluster.
+  // The previous canvas-aspect-following frameW was creating a stretched-gold-
+  // bar look. Cabinet is now a fixed real-slot-machine shape that scales with
+  // the canvas only via the canvas CSS aspect ratio (set by the modal card).
   // -------------------------------------------------------------------------
   const clusterW       = REEL_PITCH * REEL_COUNT;             // 9.0 wu (fixed)
-  const REEL_INNER_GAP = 0.55;                                // min ledge from reel to brass
-  const aspect         = (size.width > 0 && size.height > 0) ? size.width / size.height : 1.78;
-  const halfH          = 3.2;
-  const halfW          = Math.max(halfH * aspect, 5.7);       // matches ortho fix
-  // Cabinet width = full visible width minus a small breathing margin,
-  // but never smaller than (reel cluster + inner gap).
-  const frameW         = Math.max(halfW * 2 - 0.4, clusterW + REEL_INNER_GAP * 2);
-  const frameH         = REEL_HEIGHT + REEL_INNER_GAP;
+  const REEL_INNER_GAP = 0.45;                                // ledge from reel to brass
+  // Cabinet is SYMMETRIC and TIGHT around the reels. Lever is rendered
+  // OUTSIDE the brass to the right (real slot-machine style), with the
+  // shaft socket sitting just past the cabinet edge.
+  const frameW         = clusterW + REEL_INNER_GAP * 2;
+  const frameH         = REEL_HEIGHT + REEL_INNER_GAP * 2;
 
   const rivetPositions = useMemo<Array<[number, number]>>(() => {
     const out: Array<[number, number]> = [];
