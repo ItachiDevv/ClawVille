@@ -187,6 +187,14 @@ function LoginForm() {
               </button>
             </form>
 
+            {!isSignup && (
+              <p className="text-center text-white/40 text-xs mt-4 font-mono">
+                <Link href="/forgot-password" className="text-cyan-400/80 hover:text-cyan-300 transition-colors">
+                  Forgot password?
+                </Link>
+              </p>
+            )}
+
             {isSignup && (
               <p className="text-center text-white/30 text-xs mt-4 leading-relaxed font-mono">
                 Pick your species and archetype next.
