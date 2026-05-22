@@ -102,7 +102,8 @@ export const MODEL_REGISTRY = {
   // tekk-male/ → Tekk rig.
   hermes_female: { path: '/avatars/hermes-female.vrm', scale: 13, label: 'Hermes',      category: 'hermes', avatar_type: 'vrm', animatorId: 'hermes-female', preview: '/models/hermes-turnaround/female-front.png' },
   hermes_male:   { path: '/avatars/hermes-male.vrm',   scale: 13, label: 'Hermes Male', category: 'hermes', avatar_type: 'vrm', animatorId: 'hermes-male',   preview: '/models/hermes-turnaround/male-front.png' },
-  tekk:          { path: '/avatars/tekk.vrm',          scale: 13, label: 'Tekk',        category: 'hermes', avatar_type: 'vrm', animatorId: 'tekk',          preview: '/models/tekk-turnaround/with-wings-front.png' },
+  // ?v=2 bust 2026-05-22 — Cloudflare cached a 404 for this URL from the window before the PNG was committed; CF edge TTL is 7d and our deploy token lacks cache_purge scope, so the URL query is the only invalidator. See "Asset cache-bust" kill-the-build rule in CLAUDE.md.
+  tekk:          { path: '/avatars/tekk.vrm',          scale: 13, label: 'Tekk',        category: 'hermes', avatar_type: 'vrm', animatorId: 'tekk',          preview: '/models/tekk-turnaround/with-wings-front.png?v=2' },
 
   // ── Chibi VRM avatars (added 2026-05-21) ──────────────────────────────────
   // Mini-Nori-style stylized humanoids — large head, short stubby limbs.
