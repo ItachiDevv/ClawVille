@@ -251,6 +251,8 @@ Required in `.env.local`:
 - `ITACHI_DEBUG_BOT_TOKEN` + `ITACHI_DEBUG_CHAT_ID` — itachi-debug Telegram bot for `alert-error.ts`. Missing ⇒ degrades to `console.warn`. Staged via tinker from `~/.itachi-api-keys`.
 - `METRICS_MEASUREMENT_START` — ISO date for `/dash` "Measuring since …" banner. Default `2026-04-21`.
 - `AGENT_SESSION_TICKET_TTL_SECONDS` — Phase 5 magic-link TTL (default 600, min 60, max 3600 — `session-ticket-service.ts`).
+- `RESEND_API_KEY` — Resend SDK key for transactional emails (verify-email + reset-password). Optional in dev (console fallback prints the email payload to stdout); set in prod or Resend rejects all sends. Get from https://resend.com/api-keys.
+- `FROM_EMAIL` — RFC 5322 From-address for transactional emails. Default `ClawVille <noreply@clawville.world>`. Sender domain MUST be verified in the Resend dashboard before prod will actually deliver — unverified sends bounce with 403.
 - **Phase 5.1 env vars** (`CLOUDFLARE_WORKER_URL/_BEARER`, `CLAWVILLE_SERVICE_ISSUER_SK/_PUBKEY`, `SCAPE_HOSTED_SESSION_URL`, `SCAPE_WEB_ORIGIN`, `PARTNER_PUBKEYS`) — see `ARCHITECTURE.md §7`. Crash-loud rule: `FINGERPRINT_SECRET` + `CLOUDFLARE_WORKER_*` are hard-required on boot; missing ⇒ API refuses to start.
 - **Wager program env vars** (`SOLANA_RPC_URL`, `WAGER_SETTLEMENT_AUTHORITY_PUBKEY`, `WAGER_SETTLEMENT_AUTHORITY_KEYPAIR_PATH`, `WAGER_PROGRAM_CLUSTER`) — see `ARCHITECTURE.md §13` (2026-05-13 entry). Devnet-only; mainnet requires a code change, not just `WAGER_PROGRAM_CLUSTER=mainnet`.
 
