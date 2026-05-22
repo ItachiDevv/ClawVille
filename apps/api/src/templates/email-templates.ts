@@ -47,26 +47,33 @@ function safeName(raw: string | null | undefined): string {
 }
 
 /**
- * Branded shell — full ClawVille treatment: deep-sea navy gradient
- * background, 🦞 lobster mascot, oversized cyan wordmark with glow,
- * tagline, framed CTA card with cyan-to-pink dual-tone hero gradient,
- * Mono caption block + monospace URL fallback, footer with
- * underwater-themed micro-copy.
+ * Branded shell — LIGHT-mode transactional email (rewritten 2026-05-22
+ * after dark-bg + low-opacity text got eaten by Apple Mail's dark-mode
+ * dimming heuristic).
  *
- * Email client gotchas (do not break without testing):
- *   - Table-based layout only — Outlook drops flexbox/grid silently.
- *   - All styles inline — Gmail strips <style> blocks in some flows.
+ * Design: warm off-white canvas, white card with cyan accent stripe at
+ * the top, dark-navy heading, slate body text, 🦞 mascot + cyan brand
+ * wordmark, dual-tone CTA gradient (cyan for welcome/verify, pink for
+ * reset/alert) — Stripe / Linear / Vercel pattern. Brand identity
+ * lives in the accent colors and the mascot, not the background.
+ *
+ * Why not dark mode: Apple Mail / Gmail iOS apply a CSS overlay that
+ * dims "near-white" text under user-dark-mode regardless of the email's
+ * own color-scheme meta. Dark-on-dark = unreadable in their hands. Light
+ * mode renders identically across every client + dark-mode UA.
+ *
+ * Email client gotchas (do not regress):
+ *   - Table-based layout — Outlook drops flexbox/grid silently.
+ *   - Inline styles only — Gmail strips <style>.
  *   - System font stack — web fonts fail in most inboxes.
- *   - Gradients fall back to the first stop color in clients that don't
- *     support `linear-gradient` (Outlook) — `bgcolor` attrs provide a
- *     readable solid fallback.
- *   - `text-shadow` is ignored by many clients — purely decorative on
- *     supported clients (Apple Mail, modern Gmail webview), no fallback
- *     loss.
- *   - Emoji renders consistently across iOS / Gmail / Outlook 365 —
- *     safer than image hosting + tracking-blocker friction.
- *   - Dark-mode auto-inversion (Outlook) is bypassed by explicit inline
- *     colors on every text node.
+ *   - Solid hex colors only on text — NO rgba(...) opacity. Apple Mail
+ *     dims rgba text aggressively in dark mode. Use named slate hex
+ *     values (#0f172a, #334155, #64748b) for contrast tiers instead.
+ *   - Gradients fall back to first stop in clients without support;
+ *     `bgcolor` attrs provide a readable solid fallback.
+ *   - Bulletproof button = <a> wrapped in a <table> with bgcolor — works
+ *     in Outlook 2007+ and every modern client.
+ *   - Emojis (🦞 ⚓ 🐚) render natively cross-client.
  */
 function wrapShell({
   heading,
@@ -83,71 +90,99 @@ function wrapShell({
   ctaUrl: string;
   fallbackLabel: string;
   expiryNote: string;
-  /** 'cyan' = welcome/verify (positive), 'pink' = reset (alert). Picks the CTA gradient. */
+  /** 'cyan' = welcome/verify (positive), 'pink' = reset (alert). Picks the CTA gradient + accent strip. */
   ctaTone: 'cyan' | 'pink';
 }): string {
   const ctaGradient =
     ctaTone === 'pink'
       ? 'linear-gradient(90deg, #db2777 0%, #ec4899 50%, #f472b6 100%)'
-      : 'linear-gradient(90deg, #0891b2 0%, #06b6d4 50%, #00e5ff 100%)';
+      : 'linear-gradient(90deg, #0891b2 0%, #06b6d4 50%, #22d3ee 100%)';
   const ctaSolidFallback = ctaTone === 'pink' ? '#ec4899' : '#06b6d4';
-  const ctaGlow = ctaTone === 'pink' ? 'rgba(236,72,153,0.35)' : 'rgba(0,229,255,0.30)';
-  const accentRgba = ctaTone === 'pink' ? 'rgba(236,72,153,0.7)' : 'rgba(0,229,255,0.7)';
+  const accentColor = ctaTone === 'pink' ? '#ec4899' : '#06b6d4';
+  const accentDark = ctaTone === 'pink' ? '#be185d' : '#0e7490';
+  const accentStripGradient =
+    ctaTone === 'pink'
+      ? 'linear-gradient(90deg, #db2777 0%, #ec4899 50%, #06b6d4 100%)'
+      : 'linear-gradient(90deg, #06b6d4 0%, #22d3ee 50%, #06b6d4 100%)';
+
+  // Color tiers — solid hex, no rgba (Apple Mail dark-mode dimming compatible)
+  const PAGE_BG = '#f1f5f9';        // slate-100 — warm off-white canvas
+  const CARD_BG = '#ffffff';        // pure white card
+  const TEXT_STRONG = '#0f172a';    // slate-900 — heading
+  const TEXT_BODY = '#334155';      // slate-700 — body
+  const TEXT_MUTED = '#64748b';     // slate-500 — labels, footer
+  const TEXT_FAINT = '#94a3b8';     // slate-400 — micro caption
+  const BORDER = '#e2e8f0';         // slate-200 — hairlines
 
   return `<!doctype html>
 <html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="color-scheme" content="dark" />
-    <meta name="supported-color-schemes" content="dark" />
+    <meta name="color-scheme" content="light" />
+    <meta name="supported-color-schemes" content="light" />
     <title>ClawVille</title>
   </head>
-  <body style="margin:0; padding:0; background:#04101a; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; color:#e5f6ff;">
+  <body style="margin:0; padding:0; background:${PAGE_BG}; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; color:${TEXT_BODY};">
     <!-- Preheader (hidden, but shows as inbox preview text) -->
     <div style="display:none; max-height:0; overflow:hidden; mso-hide:all; font-size:1px; line-height:1px; color:transparent;">${intro.replace(/<[^>]+>/g, '').slice(0, 110)}</div>
 
-    <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" bgcolor="#04101a" style="background:#04101a; background:radial-gradient(ellipse at top, #082035 0%, #04101a 70%); padding:40px 16px;">
+    <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" bgcolor="${PAGE_BG}" style="background:${PAGE_BG}; padding:40px 16px;">
       <tr>
         <td align="center">
           <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="max-width:560px;">
 
             <!-- Mascot + wordmark hero -->
             <tr>
-              <td style="text-align:center; padding-bottom:8px;">
-                <div style="font-size:56px; line-height:1; margin-bottom:8px;">🦞</div>
-                <div style="font-family: 'Segoe UI', Roboto, sans-serif; font-size:36px; font-weight:800; letter-spacing:0.06em; color:#00e5ff; text-shadow:0 0 18px rgba(0,229,255,0.5); text-transform:uppercase;">ClawVille</div>
-                <div style="font-family:'SFMono-Regular', Consolas, Menlo, monospace; font-size:10px; letter-spacing:0.28em; color:rgba(0,229,255,0.55); text-transform:uppercase; margin-top:8px;">A deep-sea world of autonomous agents</div>
+              <td style="text-align:center; padding-bottom:24px;">
+                <div style="font-size:56px; line-height:1; margin-bottom:10px;">🦞</div>
+                <div style="font-family: 'Segoe UI', Roboto, sans-serif; font-size:34px; font-weight:800; letter-spacing:0.06em; color:${accentDark}; text-transform:uppercase;">ClawVille</div>
+                <div style="font-family:'SFMono-Regular', Consolas, Menlo, monospace; font-size:10px; letter-spacing:0.26em; color:${TEXT_MUTED}; text-transform:uppercase; margin-top:8px;">A deep-sea world of autonomous agents</div>
               </td>
             </tr>
 
-            <!-- Spacer -->
-            <tr><td style="height:24px; line-height:24px; font-size:0;">&nbsp;</td></tr>
-
             <!-- CTA card -->
             <tr>
-              <td bgcolor="#0a1628" style="background:#0a1628; background:linear-gradient(180deg,#0a1c30 0%,#06141f 100%); border:1px solid rgba(0,229,255,0.25); border-radius:18px; padding:36px 32px; box-shadow:0 0 40px rgba(0,229,255,0.06);">
-                <h1 style="margin:0 0 14px 0; font-size:23px; line-height:1.3; color:#ffffff; font-weight:700; letter-spacing:0.01em;">${heading}</h1>
-                <p style="margin:0 0 24px 0; font-size:15px; line-height:1.6; color:rgba(229,246,255,0.82);">${intro}</p>
-
-                <!-- Hero CTA — bulletproof button (table-wrapped for Outlook) -->
-                <table role="presentation" cellpadding="0" cellspacing="0" border="0" align="center" style="margin:8px auto 28px auto;">
+              <td bgcolor="${CARD_BG}" style="background:${CARD_BG}; border:1px solid ${BORDER}; border-radius:16px; padding:0; overflow:hidden; box-shadow:0 1px 3px rgba(15,23,42,0.06), 0 4px 12px rgba(15,23,42,0.04);">
+                <!-- Top accent stripe — brand color band -->
+                <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
                   <tr>
-                    <td align="center" bgcolor="${ctaSolidFallback}" style="background:${ctaSolidFallback}; background:${ctaGradient}; border-radius:12px; box-shadow:0 0 28px ${ctaGlow};">
-                      <a href="${ctaUrl}" style="display:inline-block; padding:16px 34px; color:#04101a; text-decoration:none; font-weight:700; font-size:15px; letter-spacing:0.04em; text-transform:uppercase; font-family:'Segoe UI', Roboto, sans-serif;">${ctaLabel}</a>
-                    </td>
+                    <td height="4" bgcolor="${accentColor}" style="height:4px; line-height:4px; font-size:0; background:${accentColor}; background:${accentStripGradient};">&nbsp;</td>
                   </tr>
                 </table>
 
-                <p style="margin:0 0 6px 0; font-size:11px; line-height:1.5; color:rgba(229,246,255,0.45); font-family:'SFMono-Regular', Consolas, Menlo, monospace; letter-spacing:0.04em; text-transform:uppercase;">${fallbackLabel}</p>
-                <p style="margin:0; word-break:break-all; font-family:'SFMono-Regular', Consolas, Menlo, monospace; font-size:12px; line-height:1.5; color:${accentRgba};">${ctaUrl}</p>
-
-                <hr style="border:none; border-top:1px solid rgba(0,229,255,0.15); margin:28px 0 20px 0;" />
-
+                <!-- Card content -->
                 <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
                   <tr>
-                    <td valign="top" style="padding-right:10px; font-size:14px; line-height:1; color:${accentRgba}; width:18px;">⚓</td>
-                    <td style="font-size:12px; line-height:1.55; color:rgba(229,246,255,0.55);">${expiryNote}</td>
+                    <td style="padding:36px 32px;">
+                      <h1 style="margin:0 0 14px 0; font-size:22px; line-height:1.35; color:${TEXT_STRONG}; font-weight:700; letter-spacing:-0.01em;">${heading}</h1>
+                      <p style="margin:0 0 28px 0; font-size:15px; line-height:1.6; color:${TEXT_BODY};">${intro}</p>
+
+                      <!-- Hero CTA — bulletproof button (table-wrapped for Outlook) -->
+                      <table role="presentation" cellpadding="0" cellspacing="0" border="0" align="center" style="margin:0 auto 28px auto;">
+                        <tr>
+                          <td align="center" bgcolor="${ctaSolidFallback}" style="background:${ctaSolidFallback}; background:${ctaGradient}; border-radius:10px;">
+                            <a href="${ctaUrl}" style="display:inline-block; padding:14px 32px; color:#ffffff; text-decoration:none; font-weight:700; font-size:15px; letter-spacing:0.04em; text-transform:uppercase; font-family:'Segoe UI', Roboto, sans-serif;">${ctaLabel}</a>
+                          </td>
+                        </tr>
+                      </table>
+
+                      <p style="margin:0 0 6px 0; font-size:11px; line-height:1.5; color:${TEXT_MUTED}; font-family:'SFMono-Regular', Consolas, Menlo, monospace; letter-spacing:0.04em; text-transform:uppercase;">${fallbackLabel}</p>
+                      <p style="margin:0; word-break:break-all; font-family:'SFMono-Regular', Consolas, Menlo, monospace; font-size:12px; line-height:1.5;"><a href="${ctaUrl}" style="color:${accentDark}; text-decoration:underline;">${ctaUrl}</a></p>
+
+                      <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin-top:28px;">
+                        <tr>
+                          <td height="1" bgcolor="${BORDER}" style="height:1px; line-height:1px; font-size:0; background:${BORDER};">&nbsp;</td>
+                        </tr>
+                      </table>
+
+                      <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin-top:20px;">
+                        <tr>
+                          <td valign="top" style="padding-right:10px; font-size:14px; line-height:1; color:${accentColor}; width:18px;">⚓</td>
+                          <td style="font-size:12px; line-height:1.55; color:${TEXT_MUTED};">${expiryNote}</td>
+                        </tr>
+                      </table>
+                    </td>
                   </tr>
                 </table>
               </td>
@@ -156,11 +191,11 @@ function wrapShell({
             <!-- Footer -->
             <tr>
               <td style="text-align:center; padding-top:28px;">
-                <div style="font-family:'SFMono-Regular', Consolas, Menlo, monospace; font-size:10px; letter-spacing:0.24em; color:rgba(229,246,255,0.35); text-transform:uppercase;">
+                <div style="font-family:'SFMono-Regular', Consolas, Menlo, monospace; font-size:10px; letter-spacing:0.24em; color:${TEXT_FAINT}; text-transform:uppercase;">
                   🐚 &nbsp;sent from the sea floor &nbsp; 🐚
                 </div>
-                <div style="font-family:'SFMono-Regular', Consolas, Menlo, monospace; font-size:11px; letter-spacing:0.14em; color:rgba(0,229,255,0.55); margin-top:10px;">
-                  <a href="https://clawville.world" style="color:rgba(0,229,255,0.7); text-decoration:none;">clawville.world</a>
+                <div style="font-family:'SFMono-Regular', Consolas, Menlo, monospace; font-size:11px; letter-spacing:0.14em; margin-top:10px;">
+                  <a href="https://clawville.world" style="color:${accentDark}; text-decoration:none;">clawville.world</a>
                 </div>
               </td>
             </tr>
