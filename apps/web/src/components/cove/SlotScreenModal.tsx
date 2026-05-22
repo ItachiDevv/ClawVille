@@ -698,7 +698,9 @@ export default function SlotScreenModal() {
               </button>
             </div>
 
-            <div className="pt-header-title">Tide Pool Cove · Classic 3×5</div>
+            <div className="pt-header-title">
+              Tide Pool Cove · {paytableId === 'classic-3x5-bonus' ? 'Bonus 3×5' : 'Classic 3×5'}
+            </div>
 
             <div className="pt-header-side">
               <button
