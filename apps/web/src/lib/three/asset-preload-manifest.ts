@@ -186,6 +186,24 @@ export const DECORATION_GLBS: readonly string[] = [
   '/models/building-tower2.glb',
 ] as const;
 
+/**
+ * Town-center prop GLBs — always-present world structures the player sees on
+ * spawn. These were missing from the preload manifest at audit time so they
+ * streamed in only after the canvas mounted, contributing to the "loading
+ * screen feels idle" effect. Added 2026-05-22 alongside the perf pass.
+ * The pavilion gets a `?v=2` cache-bust because its texture-resize pass
+ * (1024→512) mutated the file in place; without the query bump Cloudflare's
+ * 7-day edge cache would keep serving the old 8.7 MB version.
+ */
+export const TOWN_PROP_GLBS: readonly string[] = [
+  '/models/quest-bounty-pavilion.glb?v=2',
+  '/models/bazaar-merchant-stand.glb',
+  '/models/shisha-oasis.glb',
+  '/models/auction-dome.glb',
+  // town-directory-sign.tsx uses Three.js primitives only (no GLB) — nothing to preload here.
+  // auction-podium.tsx loads jellyfish.glb too, but that's already in WANDERING_NPC_GLBS.
+] as const;
+
 // ---------------------------------------------------------------------------
 // Priority 2: Locomotion animation GLBs — needed by every VRM avatar
 // (also precached by sw.js v3, so second visit is free)
@@ -251,6 +269,13 @@ export function preloadWorldAssets(): void {
     useGLTF.preload(url);
   }
 
+  // Town-center prop GLBs — always-present world structures (pavilion, bazaar,
+  // shisha-oasis, auction-dome). Added 2026-05-22 — were previously missing
+  // from the manifest, which is why they streamed in only after canvas mount.
+  for (const url of TOWN_PROP_GLBS) {
+    useGLTF.preload(url);
+  }
+
   // Wandering VRM bytes — 6 paths used by the live wandering VRM NPC roster.
   for (const url of WANDERING_VRM_PATHS) {
     preloadVRMBytes(url);
@@ -279,6 +304,7 @@ export function preloadWorldAssets(): void {
 export const ALL_WORLD_GLBS: readonly string[] = [
   ...BUILDING_GLBS,
   ...WANDERING_NPC_GLBS,
+  ...TOWN_PROP_GLBS,
   ...LOCATION_NPC_GLBS,
   ...DECORATION_GLBS,
   ...LOCOMOTION_ANIM_GLBS,
@@ -318,6 +344,7 @@ export const ALL_WORLD_VRMS: readonly string[] = [
 export const WORLD_PRELOAD_MANIFEST: readonly string[] = [
   // Tier 1 — critical path (fired immediately by preloadWorldAssets)
   ...BUILDING_GLBS,
+  ...TOWN_PROP_GLBS,
   ...LOCOMOTION_ANIM_GLBS,
   ...WANDERING_NPC_GLBS,
   ...WANDERING_VRM_PATHS,
