@@ -18,6 +18,7 @@ import { z } from 'zod';
 import type { AppContext } from '../types';
 import { sessionMiddleware, requireAuth } from '../middleware/auth';
 import { creditClawTokens, debitClawTokens } from '../services/claw-token-ledger';
+import { logEventFromContext } from '../services/event-logger';
 import {
   db,
   avatars,
@@ -235,6 +236,29 @@ exchangeRoutes.post('/create', requireAuth, async (c) => {
     return inserted;
   });
 
+  // Audit trail (2026-05-22 split-brain audit). The escrow itself is
+  // captured in `claw_token_transactions`, but the events spine is what
+  // the recovery doc queries — emit the high-level "user created a
+  // listing that put N CT into escrow" row so we can reconstruct
+  // creator activity by (userId, route) without joining the ledger.
+  void logEventFromContext(c, {
+    eventType: 'exchange.listing.created',
+    userId: user.id,
+    avatarId: me.id,
+    payload: {
+      route: 'POST /api/exchange/create',
+      listingId: listingRow.id,
+      listingType: data.listingType,
+      offerMode: isNeed ? null : (data as any).offerMode,
+      priceCt: data.priceCt,
+      capacity,
+      escrowAmount,
+      beforeBalance: me.clawTokens,
+      afterBalance: me.clawTokens - escrowAmount,
+      outcome: 'success',
+    },
+  });
+
   return c.json({ listing: shape(listingRow, me.name) }, 201);
 });
 
@@ -309,6 +333,26 @@ exchangeRoutes.post('/:id/order', requireAuth, async (c) => {
     return { order, listing };
   });
 
+  void logEventFromContext(c, {
+    eventType: 'exchange.order.placed',
+    userId: user.id,
+    avatarId: me.id,
+    payload: {
+      route: 'POST /api/exchange/:id/order',
+      orderId: result.order.id,
+      listingId: result.listing.id,
+      listingType: result.listing.listingType,
+      amountCt: result.order.amountCt,
+      escrowedByBuyer: result.listing.listingType === 'offer',
+      beforeBalance: me.clawTokens,
+      afterBalance:
+        result.listing.listingType === 'offer'
+          ? me.clawTokens - result.order.amountCt
+          : me.clawTokens,
+      outcome: 'success',
+    },
+  });
+
   return c.json({ order: shapeOrder(result.order), listing: shape(result.listing) }, 201);
 });
 
@@ -366,6 +410,20 @@ exchangeRoutes.post('/orders/:orderId/submit', requireAuth, async (c) => {
       .returning();
     if (!updated) throw new HTTPException(500, { message: 'Update failed' });
     return updated;
+  });
+
+  void logEventFromContext(c, {
+    eventType: 'exchange.order.submitted',
+    userId: user.id,
+    avatarId: me.id,
+    payload: {
+      route: 'POST /api/exchange/orders/:orderId/submit',
+      orderId: result.id,
+      listingId: result.listingId,
+      hasDeliveryUrl: Boolean(result.deliveryUrl),
+      hasDeliveryNote: Boolean(result.deliveryNote),
+      outcome: 'success',
+    },
   });
 
   return c.json({ order: shapeOrder(result) });
@@ -437,6 +495,12 @@ exchangeRoutes.post('/orders/:orderId/confirm', requireAuth, async (c) => {
       .returning();
     if (!updated) throw new HTTPException(500, { message: 'Update failed' });
 
+    // Stash for the post-tx audit emit so we have stable handles to
+    // listing.listingType + recipient/amount without a re-query.
+    (updated as any).__auditRecipientId = recipientId;
+    (updated as any).__auditListingType = listing.listingType;
+    (updated as any).__auditListingId = listing.id;
+
     // If listing is one_shot and now fully fulfilled, auto-close.
     if (
       listing.capacity !== null &&
@@ -450,6 +514,21 @@ exchangeRoutes.post('/orders/:orderId/confirm', requireAuth, async (c) => {
     }
 
     return updated;
+  });
+
+  void logEventFromContext(c, {
+    eventType: 'exchange.order.confirmed',
+    userId: user.id,
+    avatarId: me.id,
+    payload: {
+      route: 'POST /api/exchange/orders/:orderId/confirm',
+      orderId: result.id,
+      listingId: (result as any).__auditListingId,
+      listingType: (result as any).__auditListingType,
+      recipientAvatarId: (result as any).__auditRecipientId,
+      amountCreditedCt: result.amountCt,
+      outcome: 'success',
+    },
   });
 
   return c.json({ order: shapeOrder(result) });
@@ -518,7 +597,26 @@ exchangeRoutes.post('/orders/:orderId/cancel', requireAuth, async (c) => {
       .where(eq(exchangeOrders.id, order.id))
       .returning();
     if (!updated) throw new HTTPException(500, { message: 'Update failed' });
+    (updated as any).__auditListingType = listing.listingType;
+    (updated as any).__auditRefundedTo =
+      listing.listingType === 'need' ? listing.creatorId : order.buyerId;
     return updated;
+  });
+
+  void logEventFromContext(c, {
+    eventType: 'exchange.order.cancelled',
+    userId: user.id,
+    avatarId: me.id,
+    payload: {
+      route: 'POST /api/exchange/orders/:orderId/cancel',
+      orderId: result.id,
+      listingId: result.listingId,
+      listingType: (result as any).__auditListingType,
+      refundedAvatarId: (result as any).__auditRefundedTo,
+      refundedAmountCt: result.amountCt,
+      cancelledBy: me.id,
+      outcome: 'success',
+    },
   });
 
   return c.json({ order: shapeOrder(result) });
@@ -624,6 +722,18 @@ exchangeRoutes.post('/:id/cancel', requireAuth, async (c) => {
       .returning();
     if (!updated) throw new HTTPException(500, { message: 'Update failed' });
     return updated;
+  });
+
+  void logEventFromContext(c, {
+    eventType: 'exchange.listing.cancelled',
+    userId: user.id,
+    avatarId: me.id,
+    payload: {
+      route: 'POST /api/exchange/:id/cancel',
+      listingId: result.id,
+      listingType: result.listingType,
+      outcome: 'success',
+    },
   });
 
   return c.json({ listing: shape(result) });
