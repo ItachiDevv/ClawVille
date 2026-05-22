@@ -17,7 +17,11 @@ export default function ToastNotifications() {
           onClick={() => removeToast(toast.id)}
         >
           <span className="text-xl">{toast.icon}</span>
-          <span className="text-sm font-bold text-gray-900">{toast.message}</span>
+          {/* text-cyan-50 (#ecfeff) on .claw-panel (rgba(10,22,40,0.92) → rgba(6,13,23,0.96)) gives
+              ~14:1 contrast ratio — well above WCAG AAA 7:1 for normal text. NEVER use text-gray-700/
+              800/900 inside .claw-panel — those tokens are <2:1 contrast = unreadable on the dark navy
+              background. See [[feedback_no_dark_text_on_dark_panel]] memory. */}
+          <span className="text-sm font-bold text-cyan-50">{toast.message}</span>
         </div>
       ))}
     </div>
