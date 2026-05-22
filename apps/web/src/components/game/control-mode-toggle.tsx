@@ -24,10 +24,15 @@ export default function ControlModeToggle() {
     ? controlMode !== 'autonomous' // default: Controlled highlighted when mode isn't autonomous
     : controlMode === 'explore';
 
-  // Position below NanoClawBanner:
-  // Spectator: banner sits at top-[4.5rem], banner height ~36px → toggle at top-[8rem]
-  // No spectator: banner sits at top-3, banner height ~36px → toggle at top-[3.5rem]
-  const topClass = isSpectator ? 'top-[8rem]' : 'top-[3.5rem]';
+  // Position below NanoClawBanner. The banner is ~36–40px tall plus its
+  // shadow/glow; the toggle needs ≥16px of breathing room or its own glow
+  // visually merges into the banner above. Previous values (top-[3.5rem] /
+  // top-[8rem]) left ~4–8px of gap — buttons "stacked on top of" the banner
+  // CTAs per the user's 2026-05-21 report.
+  //
+  // No spectator: banner ends ~52px from top → toggle at top-[5rem] (80px = 28px gap).
+  // Spectator:    second banner ends ~108px  → toggle at top-[9.5rem] (152px = 24px gap).
+  const topClass = isSpectator ? 'top-[9.5rem]' : 'top-[5rem]';
 
   return (
     <div
