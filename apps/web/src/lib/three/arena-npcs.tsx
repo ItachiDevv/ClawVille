@@ -18,7 +18,6 @@ import {
   MODEL_KEY_TO_TYPE,
 } from '@/lib/three/character-animations';
 import { MAP_WIDTH, MAP_HEIGHT } from '@/lib/pixi/tilemap-data';
-import { LOW_END_GPU_DETECTED } from '@/components/three/World3DCanvas';
 import { useGameStore } from '@/stores/game';
 import { PLAYER_NPC_ID } from '@/stores/npc';
 import { makeObject3DWebGPUSafe } from '@/lib/three/webgpu-geometry';
@@ -97,19 +96,6 @@ const HALF_H = MAP_HEIGHT / 2;
 const TARGET_NPC_HEIGHT = 45;
 
 // ---------------------------------------------------------------------------
-// WIN A — Iris Xe NPC count cap (perf-audit-2026-05-22 §E Win #6)
-// ---------------------------------------------------------------------------
-// On LOW_END_GPU_DETECTED hardware, cap the number of wandering NPCs rendered
-// to this value. All NPCs in ArenaNpcs are server-controlled wanderers — the
-// 10 building residents (Sandy, SpongeBob, etc.) are in ArenaLocationNpcs and
-// are unaffected. The cap selects the nearest-N NPCs by XZ distance to the
-// player avatar so the user always sees the most-relevant characters.
-// Server keeps its full simulation roster; only the client render is capped.
-export const LOW_END_NPC_CAP = 6;
-
-// Module-scope scratch for the NPC distance-sort in ArenaNpcs. Zero per-frame
-// allocations — sorted index array is pre-allocated once and reused.
-
 // WIN B — Spring-bone distance LOD scratch vector (perf-audit-2026-05-22)
 // Shared across all VRMNpcMesh useFrame calls in a single frame. Each NPC
 // writes camera world-pos here once; subsequent reads within the same frame
@@ -1315,25 +1301,9 @@ export default function ArenaNpcs() {
     ? allNpcs
     : allNpcs.filter((n) => n.id !== PLAYER_NPC_ID);
 
-  // WIN A — Iris Xe NPC count cap (perf-audit-2026-05-22 §E Win #6)
-  // On low-end GPUs, sort wandering NPCs by XZ distance to player and keep the
-  // nearest LOW_END_NPC_CAP. avatarPositionRef is in game-px; convert to world units.
-  // Zero per-frame allocations — sort uses primitive comparisons on a derived array.
-  const npcs: typeof unposessedNpcs = (() => {
-    if (!LOW_END_GPU_DETECTED || unposessedNpcs.length <= LOW_END_NPC_CAP) {
-      return unposessedNpcs;
-    }
-    const playerWX = avatarPositionRef.x - HALF_W;
-    const playerWZ = avatarPositionRef.y - HALF_H;
-    const sorted = unposessedNpcs.slice().sort((a, b) => {
-      const ax = (a.x - HALF_W) - playerWX;
-      const az = (a.y - HALF_H) - playerWZ;
-      const bx = (b.x - HALF_W) - playerWX;
-      const bz = (b.y - HALF_H) - playerWZ;
-      return (ax * ax + az * az) - (bx * bx + bz * bz);
-    });
-    return sorted.slice(0, LOW_END_NPC_CAP);
-  })();
+  // (NPC count cap removed 2026-05-22 per user direction — was a bad fix.
+  // Wandering NPCs render uncapped regardless of GPU class.)
+  const npcs = unposessedNpcs;
 
   return (
     <Suspense fallback={null}>
