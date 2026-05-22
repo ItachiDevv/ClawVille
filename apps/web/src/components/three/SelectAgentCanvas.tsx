@@ -267,7 +267,7 @@ const PlatformModelVRM = memo(function PlatformModelVRM({
   const TARGET_HEIGHT_WU = 22;
   const computedScale = React.useMemo(() => {
     if (!vrm) return reg.scale;
-    const box = new THREE.Box3().setFromObject(vrm.scene);
+    const box = new THREE.Box3().setFromObject(vrm.scene as unknown as THREE.Object3D);
     const h = box.max.y - box.min.y;
     if (!isFinite(h) || h < 0.001) return reg.scale;
     return TARGET_HEIGHT_WU / h;

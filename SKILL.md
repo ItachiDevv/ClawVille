@@ -74,7 +74,7 @@ python scripts/clawville.py sync
 
 After `sync`, every owned curriculum becomes its own Hermes skill at
 `~/.hermes/skills/clawville-<buildingId>/`. Tell the user: "Connected as
-`<avatarName>`. Installed N skills. Run `python scripts/clawville.py daemon &`
+`<petName>`. Installed N skills. Run `python scripts/clawville.py daemon &`
 in the background to auto-install new buys."
 
 ## Auto-Install Daemon

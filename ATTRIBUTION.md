@@ -50,3 +50,40 @@ The following 3D models are used under CC-BY license. Full credit to their creat
   https://sketchfab.com/3d-models/arcade-city-2619e948be514311b234c4e55f91ed20
   12th-building exterior — domed building with ARCADE CITY signage and arched entrance. 4.2 MB, 2,473 tris.
   Interior added separately in Phase 6.3 (claw machine game).
+
+- **Slot Machine Symbol Set** (ClawVille first-party, hand-drafted; third pass 2026-05-19) —
+  `apps/web/public/assets/slot-symbols/s0.svg` … `s9.svg`
+  Ten hand-drafted SVG reel symbols. Every symbol uses a heavy dark outline (`#0a1428`, stroke 6)
+  + 3-stop linearGradient bevel + radialGradient highlight + drop-shadow ellipse for a "cast plastic"
+  classic-slot read. All path data, gradients, masks authored by hand.
+
+  **Pass history:**
+  - First pass (14 SVGs) — rejected; only s1 (Anemones), s2 (Starfish), s3 (Pufferfish), and s7
+    (Coral 7) read as recognizable Vegas symbols. Six SVGs deleted as unused.
+  - Second pass (8 SVGs, 2026-05-18) — Pearl/Anemones/Starfish/Pufferfish low/mid + Bell/BAR/7/WILD high.
+  - **Third pass (10 SVGs, 2026-05-19)** — Vegas-accurate ordering with 3-tier BAR added (modern
+    5-reel convention: each tier evaluates independently, no "any BAR" mixed-tier rule). Anemones
+    art moved from id 1 → id 0 (renamed Cherry); Pufferfish art moved from id 3 → id 2 (renamed
+    Orange). New art authored for Lemon (id 1), Plum (id 3), BAR×2 (id 8), BAR×3 (id 9).
+
+  Final 10-symbol set (id → asset file → description):
+  - `s0.svg` — CHERRY (was Pearl/Anemones; uses crimson anemone art the user approved as cherries):
+    pair of crimson anemones with pink tentacle tips on coral stems
+  - `s1.svg` — LEMON (new third-pass art; replaces Starfish): oval citrus body with classic
+    "nipple" tip on the side, cream→yellow→amber bevel, green leaf + stem at top
+  - `s2.svg` — ORANGE (was Starfish/Pufferfish; uses round orange-puffer art the user approved
+    as orange): round orange puffer with 16-spike halo
+  - `s3.svg` — PLUM (new third-pass art; replaces Pufferfish in slot 3): round-oval plum with
+    small heart-indent at top, lavender→purple→violet bevel, waxy-bloom ellipse, stem + green leaf
+  - `s4.svg` — BELL (unchanged from pass-2): classic Vegas brass bell — dome, flared rim, hanging
+    brass clapper, coral-tinted top loop for thin sea twist
+  - `s5.svg` — BAR (unchanged; tier 1): red-top + gold-bottom rounded plaque with path-traced
+    chunky "BAR" letters, gold inner border, 4 corner rivets
+  - `s6.svg` — SEVEN (unchanged): chunky crimson "7" with coral branches + gold drop shadow
+  - `s7.svg` — WILD (unchanged): steel-blue/cyan plaque with cyan glow halo, horizontal SHARK
+    silhouette behind path-traced "WILD" letters
+  - `s8.svg` — BAR×2 (new third-pass art; tier 2): two BAR plaques stacked at 0.8 scale,
+    deeper red (#c0223a) bevel for tier distinction, identical text/rivet pattern as s5
+  - `s9.svg` — BAR×3 (new third-pass art; tier 3): three BAR plaques stacked at 0.62 scale,
+    deepest red (#a01828) bevel, identical text/rivet pattern
+  No external license; covered by the ClawVille repo license.
