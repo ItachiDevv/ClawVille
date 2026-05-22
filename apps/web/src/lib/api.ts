@@ -109,8 +109,48 @@ export const api = {
         name: string;
         /** Public handle — added 2026-05-19, null for legacy un-backfilled rows */
         username: string | null;
+        /**
+         * Email-verification state — added 2026-05-21. Drives the soft
+         * "Confirm your email" banner on /game. `false` for legacy users
+         * pre-verification rollout (they get the banner one time, dismiss
+         * to silence). `true` once the user clicks the verify link.
+         */
+        emailVerified: boolean;
+        /**
+         * Guest accounts (Milady-bootstrapped or unauth visitor guest
+         * avatar) have placeholder emails and skip the verify banner.
+         * Surfaced here so the UI doesn't need a second round trip.
+         */
+        isGuest: boolean;
       };
     }>('/api/auth/me'),
+
+  // -------------------------------------------------------------------------
+  // Email-driven auth flows (added 2026-05-21).
+  // forgotPassword + resetPassword + sendVerification follow the same
+  // "never leak whether the email exists" discipline as the server
+  // routes — they always resolve, even when the server returns 4xx for
+  // a bad token, so the UI can render the generic success/failure copy
+  // without branching on enumeration signals.
+  // -------------------------------------------------------------------------
+  forgotPassword: (email: string) =>
+    request<{ ok: boolean; message: string }>('/api/auth/forgot-password', {
+      method: 'POST',
+      body: JSON.stringify({ email }),
+    }),
+
+  resetPassword: (token: string, newPassword: string) =>
+    request<{ ok: boolean }>('/api/auth/reset-password', {
+      method: 'POST',
+      body: JSON.stringify({ token, newPassword }),
+    }),
+
+  // Authenticated — re-sends the verification email to the current
+  // user's address. No-op for guests (returns 200 with sent=false).
+  sendVerification: () =>
+    request<{ ok: boolean; sent: boolean; reason?: string }>('/api/auth/send-verification', {
+      method: 'POST',
+    }),
 
   // Username availability probe — public, case-insensitive. Used by the
   // settings modal as the user types a new handle.
