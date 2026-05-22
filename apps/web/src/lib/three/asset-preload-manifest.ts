@@ -94,8 +94,8 @@ export const BUILDING_GLBS: readonly string[] = [
   '/models/building-lighthouse.glb',
   '/models/arcade/claw-arcade-exterior.glb',
   '/models/cove/cove-exterior.glb',
-  '/models/patricks-rock-v2.glb',
-  '/models/squidward-house.glb',
+  '/models/patricks-rock-v2.glb?v=2',
+  '/models/squidward-house.glb?v=2',
 ] as const;
 
 // ---------------------------------------------------------------------------
