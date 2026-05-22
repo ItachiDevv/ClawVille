@@ -553,32 +553,29 @@ function PlayerAvatarVRMInner({ reg }: { reg: ModelRegistryEntry }) {
     group.position.y = effectiveFloorY + bob
                      + jumpState.heightOffset + jumpState.playerAltitude;
 
-    // Runtime foot-anchor (2026-05-18). The Mixamo crouch/squat clip
-    // has hip-translation tracks that lower the hip in world space;
-    // the legs bend per their rotation tracks and the feet end up
-    // ABOVE the floor (user-reported "floating mid-air, feet tucked
-    // up"). Mixamo bakes don't ship IK so the rig can't auto-plant.
-    // Fix: after group.position.y is set + animator has flushed bones,
-    // measure where the foot bone actually IS in world space and add a
-    // compensating offset so feet land at terrainYRef.current. Only
-    // active while charging (and any future clip flagged for anchoring)
-    // — locomotion clips intentionally let the body bob naturally.
-    if (jumpState.phase === 'charging' && vrm?.humanoid) {
-      const footNode =
-        vrm.humanoid.getNormalizedBoneNode('leftFoot' as any) ??
-        vrm.humanoid.getNormalizedBoneNode('rightFoot' as any);
-      if (footNode) {
-        // Bone world matrix is current — updateMixerOnly (called above
-        // via animator.update on the prior frame, or via the next call
-        // this same frame) refreshes scene.updateMatrixWorld every
-        // frame so footNode.matrixWorld reflects the current pose.
-        footNode.updateMatrixWorld(true);
-        const footWorldY = footNode.matrixWorld.elements[13]; // m[3][1]
-        const desiredFootY = terrainYRef.current;
-        // Positive when foot was lifted; subtract to bring it back down.
-        group.position.y += desiredFootY - footWorldY;
-      }
-    }
+    // Runtime foot-anchor REMOVED 2026-05-22.
+    //
+    // History: a 2026-05-18 patch added a per-frame foot-Y compensator
+    // to fight the Mixamo squat clip's hip-translation track, which was
+    // dropping the hip in world space and lifting the feet above the
+    // floor. The compensator measured `footNode.matrixWorld.elements[13]`
+    // BEFORE the same-frame `animator.update()` call (~85 lines below),
+    // so it always read the PREVIOUS frame's pose — turning the
+    // correction into a one-frame-lagged feedback loop that diverged on
+    // every loop boundary of the squat clip.
+    //
+    // User-reported 2026-05-22: "avatars glitch up and down rapidly,
+    // like lightning speed, above and below ground level before actually
+    // jumping" — screenshots showed the head barely above the sand on
+    // one frame and a normal crouch above ground on the next.
+    //
+    // Root cause was the squat clip's hip-Y track being preserved by
+    // the retargeter. Fix: add 'squat' to IN_PLACE_CLIPS in
+    // vrm-character-animator.ts so position tracks are stripped at
+    // retarget time. With positions stripped, the squat is rotation-
+    // only — knees bend, feet stay flush at VRM-local Y=0 = world
+    // group.position.y — so this compensator is no longer needed AND
+    // its stale-matrixWorld read was harmful. Delete-not-disable.
 
     // Rotation: see atan2(-vx, -vy) derivation above (VRM faces -Z, need sign negation).
     if (continuousRot !== null) {
