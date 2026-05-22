@@ -61,13 +61,18 @@ const SpeechBubble = memo(function SpeechBubble({ npc, bubble }: SpeechBubblePro
     offset: [0, 0, 0],
     initialVisible: true,
     // Light proximity fade so distant NPC chatter doesn't clutter the screen
-    // with unreadable text — bubbles stay full opacity within ~4000wu of the
-    // camera and fade out by ~10000wu. NPC name labels above are NOT faded
-    // (they're identity, not content). Bubbles ARE content the player has
-    // to read, so fading them at distance keeps the world calm.
-    fadeNear: 4000,
-    fadeFar: 10000,
+    // with unreadable text — bubbles stay full opacity within ~1800wu of the
+    // camera and fade out by ~5000wu (was 4000/10000 — too generous; off-ring
+    // NPCs filled the screen with unreadable bubbles). NPC name labels above
+    // are NOT faded this aggressively (they're identity, not content).
+    fadeNear: 1800,
+    fadeFar: 5000,
     fadeBaseOpacity: 1.0,
+    // Same occlusion raycast NPC name tags use — hides bubbles behind buildings,
+    // shisha-oasis, bazaar/marketplace stalls, auction podium, quest pavilion,
+    // town-directory sign, and Nori. Every structure with userData.isOccluder
+    // blocks the camera→anchor ray; the 10Hz staggered raycast keeps cost low.
+    occlude: true,
   });
 
   // Update group world position each frame to track NPC movement.
