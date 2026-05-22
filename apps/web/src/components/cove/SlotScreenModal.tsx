@@ -680,7 +680,7 @@ export default function SlotScreenModal() {
         }
       `}</style>
 
-      {/* Full-viewport overlay */}
+      {/* Backdrop — dims the cove behind the centered modal card */}
       <div
         role="dialog"
         aria-modal="true"
@@ -692,25 +692,33 @@ export default function SlotScreenModal() {
           inset: 0,
           zIndex: 9990,
           display: 'flex',
-          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'center',
+          padding: 20,
+          background: 'rgba(2, 16, 24, 0.78)',
+          backdropFilter: 'blur(6px)',
           animation: 'cv-modal-bg-in var(--cv-motion-base) var(--cv-ease-standard)',
         }}
       >
-        {/* Modal card — fills viewport on wide screens (was capped at 1200 leaving teal gutters).
-            min-width:0 / min-height:0 lets the flex-column card shrink below its content
-            min-size — required so the reel-frame + canvas chain can shrink on viewport
-            resize. Without these the card pinned itself to ~820px even on a 700px viewport. */}
+        {/* Phase 6.1.18 — modal is now a centered CARD sized to fit only the
+            cabinet + chips + action strip. No more full-viewport stretch.
+            Card aspect (W:H) ≈ 1.55:1 matches the canvas world bounds
+            (11.2:6.6 → 1.70) plus header (≈48px) + chip strip (≈110px) below.
+            Width capped at 1080px; on narrower viewports we shrink proportionally. */}
         <div
           style={{
-            flex: 1,
             display: 'flex',
             flexDirection: 'column',
             minWidth: 0,
             minHeight: 0,
-            maxWidth: 1680,
             width: '100%',
-            margin: '0 auto',
+            maxWidth: 1080,
+            maxHeight: '90vh',
             position: 'relative',
+            borderRadius: 14,
+            overflow: 'hidden',
+            boxShadow: `0 24px 64px rgba(0, 0, 0, 0.55), 0 0 0 1px ${themeAccent}55`,
+            background: 'var(--pt-velvet, #062e3b)',
             animation: 'cv-modal-in var(--cv-motion-base) var(--cv-ease-bounce)',
           }}
         >
@@ -785,9 +793,12 @@ export default function SlotScreenModal() {
             {themeName}
           </div>
 
-          {/* ── Reel hero ─────────────────────────────────────────── */}
+          {/* ── Reel hero — aspect-locked to match the world bounds
+                 (ortho ±5.6 × ±3.3 → 11.2 × 6.6 ≈ 1.70:1) so the cabinet
+                 renders square-on without vertical stretching. */}
           <div
             className={`pt-reel-frame${fx.state.isGlowActive ? ' pt-reel-frame-active' : ''}`}
+            style={{ aspectRatio: '11.2 / 6.6', width: '100%', flex: 'none' }}
           >
             {/* 3D reel canvas + bonus overlays — fills full reel area */}
             <div style={{ position: 'relative', width: '100%', height: '100%' }}>
