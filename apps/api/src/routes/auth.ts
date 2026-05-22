@@ -7,6 +7,12 @@ import { sessionMiddleware, requireAuth } from '../middleware/auth';
 import { npcSimulation } from '../services/npc-simulation';
 import { consumeTicket } from '../services/session-ticket-service';
 import { createRateLimiter, getClientIp } from '../middleware/rate-limit';
+import { issueAuthToken, consumeAuthToken } from '../services/auth-token-service';
+import { sendEmail, isGuestEmail } from '../services/email-service';
+import {
+  verifyEmailTemplate,
+  resetPasswordTemplate,
+} from '../templates/email-templates';
 import type { AppContext } from '../types';
 import { z } from 'zod';
 import { DEFAULT_AGENT_MODEL_KEY } from '@clawville/shared';
@@ -15,10 +21,27 @@ export const authRoutes = new Hono<AppContext>();
 
 authRoutes.use('*', sessionMiddleware);
 
-// Get current user
+// Get current user.
+//
+// Surface `emailVerified` + `isGuest` alongside the Lucia attributes so
+// the frontend banner (`/game` soft-verify nudge) can render off a
+// single `api.me()` call without a second round-trip. Lucia's attribute
+// mapping doesn't include either column today, so we read them off the
+// raw `users` row. Cost: one indexed PK lookup per `/me` call — same
+// shape as the agent-banner dismissal read below.
 authRoutes.get('/me', requireAuth, async (c) => {
   const user = c.get('user');
-  return c.json({ user });
+  const row = await db.query.users.findFirst({
+    where: eq(users.id, user.id),
+    columns: { emailVerified: true, isGuest: true },
+  });
+  return c.json({
+    user: {
+      ...user,
+      emailVerified: !!row?.emailVerified,
+      isGuest: !!row?.isGuest,
+    },
+  });
 });
 
 // Phase 6 — authoritative server-side "is the user's agent connected?"
@@ -209,6 +232,33 @@ authRoutes.post('/signup', async (c) => {
   const cookie = lucia.createSessionCookie(session.id);
   c.header('Set-Cookie', cookie.serialize());
 
+  // Soft email-verification — fire-and-forget. Signup succeeds even if
+  // the email send fails (degraded UX is recoverable; failed signup is
+  // not). Guest placeholders never receive mail. Errors are logged
+  // inside `sendEmail`; we still `.catch` here to belt-and-braces the
+  // promise so an unexpected throw can't unhandled-reject the worker.
+  if (!isGuestEmail(email)) {
+    (async () => {
+      try {
+        const token = await issueAuthToken({ userId, purpose: 'email-verify' });
+        const verifyUrl = `${webOriginForRedirect()}/verify-email?token=${encodeURIComponent(token.rawToken)}`;
+        const payload = verifyEmailTemplate({
+          userName: name || email.split('@')[0],
+          verifyUrl,
+        });
+        await sendEmail({
+          to: email,
+          subject: payload.subject,
+          html: payload.html,
+          text: payload.text,
+          tag: 'verify-email-signup',
+        });
+      } catch (err) {
+        console.warn('[auth/signup] verification email failed', err);
+      }
+    })().catch(() => {});
+  }
+
   return c.json({ success: true });
 });
 
@@ -247,6 +297,336 @@ authRoutes.post('/login', async (c) => {
   c.header('Set-Cookie', cookie.serialize());
 
   return c.json({ success: true });
+});
+
+// ---------------------------------------------------------------------------
+// Password reset + email verification
+// ---------------------------------------------------------------------------
+//
+// Four endpoints share one design discipline: NEVER leak whether a
+// given email is registered. `/forgot-password` always returns 200,
+// `/reset-password` returns the same 400 for "bad token" / "expired" /
+// "already used", and the GET verify route always 302s.
+//
+// Tokens are stored sha256-hashed (`auth_tokens.tokenHash`) and consumed
+// atomically via UPDATE ... RETURNING in `auth-token-service`. The raw
+// token lives only inside the email URL.
+
+const FORGOT_PWD_IP_LIMITER = createRateLimiter({
+  maxPerWindow: 5,
+  windowMs: 60 * 60 * 1000, // 1 hr
+});
+const FORGOT_PWD_EMAIL_LIMITER = createRateLimiter({
+  maxPerWindow: 3,
+  windowMs: 60 * 60 * 1000, // 1 hr
+});
+const SEND_VERIFY_USER_LIMITER = createRateLimiter({
+  maxPerWindow: 3,
+  windowMs: 60 * 60 * 1000, // 1 hr
+});
+
+// Constant-time bcrypt dummy hash — burned once at module load so the
+// `enumeration-prevention` branch in /forgot-password does the same
+// amount of CPU work as a real verify regardless of whether the email
+// exists. Without this an attacker can probe "is foo@x.com registered"
+// by measuring response latency. Bcrypt cost 10 matches the login
+// path's cost (signup uses cost 10), so both branches converge on the
+// same wall clock.
+//
+// `Bun.password.verify` does a constant-time compare internally — the
+// only cost variance comes from "is there a hash to verify against".
+// Verifying against THIS hash with any password takes the same time as
+// verifying against a real user's hash, so an attacker watching the
+// latency curve sees a flat line whether or not the email is in the DB.
+const DUMMY_PWD_HASH_PROMISE: Promise<string> = Bun.password.hash(
+  'enumeration-prevention-dummy-input',
+  { algorithm: 'bcrypt', cost: 10 },
+);
+
+const forgotPasswordSchema = z.object({
+  email: z.string().email().max(255),
+});
+
+authRoutes.post('/forgot-password', async (c) => {
+  const ip = getClientIp(c.req.raw.headers);
+
+  // IP rate limit first — burned even on bad body. Stops a single IP
+  // from sweeping a leaked email list. 429 is intentional even though
+  // it leaks "you hit the limit"; the limit is high enough relative to
+  // typical legit retries that a real user almost never sees it.
+  if (!FORGOT_PWD_IP_LIMITER.check(ip)) {
+    throw new HTTPException(429, {
+      message: 'Too many password reset requests. Try again in an hour.',
+    });
+  }
+
+  const body = await c.req.json().catch(() => ({}));
+  const parsed = forgotPasswordSchema.safeParse(body);
+
+  // Invalid body: still return the generic success message — never
+  // let a 400 distinguish "email format wrong" from "email not on the
+  // list". The shape of the response stays identical so the client
+  // can't infer anything about the input.
+  if (!parsed.success) {
+    return c.json({
+      ok: true,
+      message: 'If that email is registered, we sent you a link.',
+    });
+  }
+
+  const email = parsed.data.email.toLowerCase();
+
+  // Per-email rate limit — independent bucket so an attacker can't
+  // burn the IP budget to mask the per-email signal. If both limits
+  // pass we proceed to token issuance.
+  const overEmailLimit = !FORGOT_PWD_EMAIL_LIMITER.check(`pw:${email}`);
+
+  // Look up the user — but ALWAYS execute the constant-time bcrypt
+  // verify regardless of result so the response time is independent
+  // of "user exists?".
+  const user = !isGuestEmail(email)
+    ? await db.query.users.findFirst({
+        where: eq(users.email, email),
+        columns: { id: true, name: true, email: true, isGuest: true },
+      })
+    : null;
+
+  // Constant-time arm — fire the bcrypt verify whether or not we
+  // found a user. Result discarded. This burns ~70-100ms of cost so
+  // the timing of /forgot-password matches /login regardless of
+  // outcome. Done in parallel with the conditional send below so we
+  // don't double the response latency.
+  const timingPromise = DUMMY_PWD_HASH_PROMISE.then((hash) =>
+    Bun.password.verify('enumeration-prevention-dummy-input', hash),
+  ).catch(() => false);
+
+  // Conditional send — only if the user exists AND isn't a guest AND
+  // we're not over the email bucket. CRITICAL: dispatched as a
+  // fire-and-forget IIFE so the awaited Resend round-trip (~100-500ms)
+  // does NOT extend the response window for real-user-email branches
+  // (adversary H1, 2026-05-22). The earlier `await sendEmail(...)`
+  // here re-opened the timing channel the dummy bcrypt was supposed
+  // to close — existing email = ~150-500ms, missing email = ~70-100ms
+  // was enumerable via wall-clock latency. Mirrors the fire-and-forget
+  // verify-email pattern in /signup.
+  if (user && !user.isGuest && user.email && !overEmailLimit) {
+    const { id: userId, name: userName, email: userEmail } = user;
+    void (async () => {
+      try {
+        const token = await issueAuthToken({
+          userId,
+          purpose: 'password-reset',
+        });
+        const resetUrl = `${webOriginForRedirect()}/reset-password?token=${encodeURIComponent(token.rawToken)}`;
+        const payload = resetPasswordTemplate({
+          userName: userName || userEmail.split('@')[0],
+          resetUrl,
+        });
+        await sendEmail({
+          to: userEmail,
+          subject: payload.subject,
+          html: payload.html,
+          text: payload.text,
+          tag: 'password-reset',
+        });
+      } catch (err) {
+        // Log only — never surface failures to the caller (would leak
+        // existence by virtue of a 500 on real-user-email vs 200 on
+        // bogus-email).
+        console.warn('[auth/forgot-password] token issue / send failed', err);
+      }
+    })();
+  }
+
+  // Await ONLY the constant-time bcrypt arm so the response can't
+  // return before the dummy verify completes. Both branches now
+  // produce a response after the SAME awaited work — flat timing.
+  await timingPromise;
+
+  return c.json({
+    ok: true,
+    message: 'If that email is registered, we sent you a link.',
+  });
+});
+
+const resetPasswordSchema = z.object({
+  token: z.string().min(16).max(256),
+  newPassword: z.string().min(8).max(200),
+});
+
+authRoutes.post('/reset-password', async (c) => {
+  const ip = getClientIp(c.req.raw.headers);
+
+  // Same IP rate limit as /forgot — prevents bruteforcing the token
+  // space (already ~256 bits but defense-in-depth).
+  if (!FORGOT_PWD_IP_LIMITER.check(`reset:${ip}`)) {
+    throw new HTTPException(429, {
+      message: 'Too many reset attempts. Try again in an hour.',
+    });
+  }
+
+  const body = await c.req.json().catch(() => ({}));
+  const parsed = resetPasswordSchema.safeParse(body);
+
+  // Generic 400 for any failure — body shape, missing fields, weak
+  // password, whatever. Never specify which field failed.
+  if (!parsed.success) {
+    throw new HTTPException(400, {
+      message: 'Invalid or expired reset link.',
+    });
+  }
+
+  const consumed = await consumeAuthToken({
+    rawToken: parsed.data.token,
+    purpose: 'password-reset',
+  });
+
+  if (!consumed) {
+    throw new HTTPException(400, {
+      message: 'Invalid or expired reset link.',
+    });
+  }
+
+  // Refuse to reset a guest user's "password" — guests have a
+  // placeholder `$guest$disabled$...` hash that's never meant to be
+  // overwritten. Treat as if the token had expired so an attacker
+  // who somehow got a guest's token (which they shouldn't — guests
+  // can't trigger /forgot-password because their email pattern is
+  // filtered) still sees the generic failure path.
+  const target = await db.query.users.findFirst({
+    where: eq(users.id, consumed.userId),
+    columns: { id: true, email: true, isGuest: true, passwordHash: true },
+  });
+  if (!target || target.isGuest || !target.email) {
+    throw new HTTPException(400, {
+      message: 'Invalid or expired reset link.',
+    });
+  }
+
+  // Hash + persist. Cost 10 matches login + signup so login timing
+  // stays consistent post-reset.
+  const newHash = await Bun.password.hash(parsed.data.newPassword, {
+    algorithm: 'bcrypt',
+    cost: 10,
+  });
+
+  // Invalidate ALL existing Lucia sessions BEFORE issuing the fresh
+  // one. If the reset was triggered because the account was
+  // compromised, this is the moment the attacker's stolen cookie
+  // dies. Order matters: invalidate THEN write the new hash THEN
+  // create the new session — so a race that interleaves the two
+  // pages can't leave a stale session valid.
+  await lucia.invalidateUserSessions(target.id);
+
+  await db
+    .update(users)
+    .set({ passwordHash: newHash, updatedAt: new Date() })
+    .where(eq(users.id, target.id));
+
+  return c.json({ ok: true });
+});
+
+// POST /api/auth/send-verification — authenticated users only.
+// No-op (silent 200) for guests so the UI can render the same banner
+// state for every account without branching client-side. 3/hr/user
+// rate limit; 3 retries is plenty (one initial + two "try the spam
+// folder" attempts) without giving attackers a budget to enumerate.
+authRoutes.post('/send-verification', requireAuth, async (c) => {
+  const user = c.get('user');
+
+  if (!user.email || isGuestEmail(user.email)) {
+    // Silent no-op — return 200 so the UI doesn't show a confusing
+    // error to a guest who clicked the banner button.
+    return c.json({ ok: true, sent: false, reason: 'no_email' });
+  }
+
+  // Re-read to pick up isGuest (Lucia attributes don't expose it).
+  const row = await db.query.users.findFirst({
+    where: eq(users.id, user.id),
+    columns: { id: true, email: true, name: true, isGuest: true, emailVerified: true },
+  });
+  if (!row || row.isGuest || !row.email) {
+    return c.json({ ok: true, sent: false, reason: 'no_email' });
+  }
+  if (row.emailVerified) {
+    // Already done — don't spam. Return a benign 200 so the UI can
+    // clear the banner without an error.
+    return c.json({ ok: true, sent: false, reason: 'already_verified' });
+  }
+
+  if (!SEND_VERIFY_USER_LIMITER.check(`verify:${user.id}`)) {
+    throw new HTTPException(429, {
+      message: 'Too many verification emails. Try again in an hour.',
+    });
+  }
+
+  try {
+    const token = await issueAuthToken({
+      userId: row.id,
+      purpose: 'email-verify',
+    });
+    const verifyUrl = `${webOriginForRedirect()}/verify-email?token=${encodeURIComponent(token.rawToken)}`;
+    const payload = verifyEmailTemplate({
+      userName: row.name || row.email.split('@')[0],
+      verifyUrl,
+    });
+    await sendEmail({
+      to: row.email,
+      subject: payload.subject,
+      html: payload.html,
+      text: payload.text,
+      tag: 'verify-email-resend',
+    });
+  } catch (err) {
+    console.warn('[auth/send-verification] failed', err);
+    // Still 200 — caller doesn't need to know about server-side
+    // email plumbing; retry budget already burned.
+  }
+
+  return c.json({ ok: true, sent: true });
+});
+
+// GET /api/auth/verify-email?t=... — consume the token, flip
+// `users.emailVerified=true`, redirect to /game?verified=1. Mirrors
+// the `Referrer-Policy: no-referrer` discipline from /enter so the
+// token never leaks via the Referer header on the next outbound
+// request from /game.
+authRoutes.get('/verify-email', async (c) => {
+  const token = c.req.query('t');
+  const webOrigin = webOriginForRedirect();
+
+  c.header('Referrer-Policy', 'no-referrer');
+
+  if (!token) {
+    return c.redirect(`${webOrigin}/?error=verify-failed`, 302);
+  }
+
+  let consumed;
+  try {
+    consumed = await consumeAuthToken({
+      rawToken: token,
+      purpose: 'email-verify',
+    });
+  } catch (err) {
+    console.warn('[auth/verify-email] consume threw', err);
+    return c.redirect(`${webOrigin}/?error=verify-failed`, 302);
+  }
+
+  if (!consumed) {
+    return c.redirect(`${webOrigin}/?error=verify-failed`, 302);
+  }
+
+  try {
+    await db
+      .update(users)
+      .set({ emailVerified: true, updatedAt: new Date() })
+      .where(eq(users.id, consumed.userId));
+  } catch (err) {
+    console.warn('[auth/verify-email] flag update failed', err);
+    return c.redirect(`${webOrigin}/?error=verify-failed`, 302);
+  }
+
+  return c.redirect(`${webOrigin}/game?verified=1`, 302);
 });
 
 // ---------------------------------------------------------------------------

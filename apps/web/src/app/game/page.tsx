@@ -27,6 +27,7 @@ import CosmeticDrawer from '@/components/game/cosmetic-drawer';
 import EmoteHotbar from '@/components/game/emote-hotbar';
 import ActivityFeed from '@/components/game/activity-feed';
 import AgentConnectModal from '@/components/game/agent-connect-modal';
+import EmailVerifyBanner from '@/components/game/email-verify-banner';
 
 const BuildingPortalModal = dynamic(
   () => import('@/components/game/building-portal-modal'),
@@ -377,6 +378,16 @@ export default function GamePage() {
       <World3DCanvas mode="game" />
       <BuildingTooltip />
       <NanoClawBanner hasAvatar={hasAvatar} isAuthenticated={isAuthenticated} />
+      {/* Soft email-verification nudge — renders only when the user is
+          authenticated, not a guest, and hasn't dismissed within the
+          last 7d. Positioned at top-14 to clear NanoClawBanner. */}
+      {isAuthenticated && authData?.user && (
+        <EmailVerifyBanner
+          userId={authData.user.id}
+          verified={authData.user.emailVerified}
+          isGuest={authData.user.isGuest}
+        />
+      )}
       <AgentConnectModal />
       <BuildingPortalModal />
       {/* Lobby modal mounts whenever activityLobbyId is set; reads

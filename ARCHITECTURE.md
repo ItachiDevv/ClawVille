@@ -372,14 +372,14 @@ See `WorldContent.md` §3 for the canonical roster.
 
 ## 12. Deployment
 
-Hetzner CCX13 (Ashburn, `ash-dc1`) orchestrated by Coolify v4. Cloudflare in front for DNS/CDN/DDoS.
+Hetzner VPS orchestrated by Coolify. Cloudflare in front for DNS/CDN/DDoS. Real VPS IP, Coolify subdomain, and app UUIDs in `scripts/deploy/.env.deploy` (gitignored).
 
-| App | Coolify ID / UUID | Port | Domain |
+| App | Coolify App ID | Port | Domain |
 |---|---|---|---|
-| web | 4 / `ju0n3sddhll3cuhbrspt4muy` | 3000 | `clawville.world` |
-| api | 3 / `yvtwz7snaghxifkjhyxknffu` | 4000 | `api.clawville.world` |
+| web | 4 | 3000 | `clawville.world` |
+| api | 3 | 4000 | `api.clawville.world` |
 
-DB: Supabase Postgres (external, paid tier — `aws-1-us-east-1.pooler.supabase.com:6543`).
+DB: Supabase Postgres (external, paid tier — endpoint in env).
 
 Auto-deploy on `git push origin master` via GitHub webhook. Manual redeploys via `php artisan tinker` queue inside the Coolify container — pattern in `CLAUDE.md` "Manual redeploy" section. Full playbook + emergency access in `DEPLOY-HETZNER.md`.
 
