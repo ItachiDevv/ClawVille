@@ -652,33 +652,6 @@ const ENTERTAINMENT_LABELS: Record<string, { label: string; category: string }> 
 };
 
 // ---------------------------------------------------------------------------
-// BuildingPedestal — flat stone disc under each building.
-// Visually separates the building base from the sand terrain so buildings
-// don't blend into the floor. Geometry: flat CylinderGeometry (radiusTop =
-// radiusBottom), slightly wider than MAX_FOOTPRINT / 2 and only 15wu thick.
-// Positioned just above the sand plane (y=-2) so it caps flush with the floor.
-// One shared material instance across all pedestals (static, no disposal needed).
-// ---------------------------------------------------------------------------
-const _pedestalMaterial = new THREE.MeshStandardMaterial({
-  color: 0x8b7d6b,   // warm sandstone
-  roughness: 0.85,
-  metalness: 0.05,
-});
-
-function BuildingPedestal({ cx, cz }: { cx: number; cz: number }) {
-  return (
-    <mesh
-      position={[cx, -2, cz]}
-      rotation={[-Math.PI / 2, 0, 0]}
-      receiveShadow={false}
-    >
-      <cylinderGeometry args={[560, 560, 15, 32, 1]} />
-      <primitive object={_pedestalMaterial} attach="material" />
-    </mesh>
-  );
-}
-
-// ---------------------------------------------------------------------------
 // Normal mode: static buildings with terrain raycasting
 // ---------------------------------------------------------------------------
 
