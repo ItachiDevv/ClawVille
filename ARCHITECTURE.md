@@ -81,7 +81,7 @@ LLM: **Gemini only**. `plugin-anthropic` and `plugin-openai` were ripped out 202
 
 | File | Applied | What it does |
 |---|---|---|
-| `auth.ts` | Global `sessionMiddleware` on `app.ts` · per-route `requireAuth` | Resolves Lucia cookie → `c.get('user') / c.get('session')`. `requireAuth` throws HTTPException(401) when no session. |
+| `auth.ts` | Global `sessionMiddleware` on `app.ts` · per-route `requireAuth` | Resolves Lucia cookie → `c.get('user') / c.get('session')`. `requireAuth` throws HTTPException(401) when no session. **Cookie domain** (2026-05-22): both Hono (`apps/api/src/lib/auth.ts`) and Next.js (`apps/web/src/lib/auth.ts`) set `domain: '.clawville.world'` in production via `resolveSessionCookieDomain()`; override with `SESSION_COOKIE_DOMAIN` env var for staging. Dev keeps host-only. This eliminates the split-brain that 401'd `clawville.world/api/auth/me` for sessions minted by `api.clawville.world`. Recovery playbook in `docs/auth-security-recovery.md`. |
 | `rate-limit.ts` | `/connect` (10/min/IP) · `/export-character` (CF-aware IP via `cf-connecting-ip`) · `/api/auth/guest` (5/min/IP) · `/api/leaderboard/agents` (60/min/IP) · `/api/leaderboard/reef-race/daily-best-lap` (60/min/IP — separate limiter) | `createRateLimiter` + `getClientIp` helpers |
 | `admin-only.ts` | `/api/dashboard/*` | Reads `ADMIN_USER_IDS` env at module load. 401 if no user, 403 if not on allowlist. Must run AFTER `sessionMiddleware`. |
 | `fingerprint.ts` | Every request | Populates `fp_hash` + `ip_prefix_hash` from sha256 of `FINGERPRINT_SECRET || raw_browser_fingerprint`. Module load throws if `FINGERPRINT_SECRET` is missing or <32 chars — crashes API boot rather than silently emitting unsalted hashes. |
@@ -162,6 +162,8 @@ Every meaningful app action writes one row into `events` via `event-logger.logEv
 | `activity.match.placed` | `reward-pipeline.ts` post-commit, one per participant | `activityId`, `subjectType: 'agent' \| 'bot' \| 'avatar'`, `placement`, `tokensAwarded`, `isGuest` |
 | `agent.session.expired` | `openclaw-session-sweeper.sweepExpiredSessions` | `sessionId`, `expiredAt` |
 | `agent.session.disconnected` | `POST /api/agent/disconnect` | `sessionId` |
+| `auth.signup` / `auth.login` / `auth.logout` / `auth.login.failed` / `auth.password.reset` / `auth.magic_link.enter` / `auth.guest.created` / `auth.milady_session.exchanged` | `apps/api/src/routes/auth.ts` (2026-05-22) | `route`, `outcome`, `sessionId`. `auth.login.failed` carries `reason: 'no_user_or_no_hash' \| 'bad_password'` — pair with `fp_hash` + `ip_prefix_hash` to detect credential stuffing. |
+| `exchange.listing.created` / `exchange.order.placed` / `exchange.order.submitted` / `exchange.order.confirmed` / `exchange.order.cancelled` / `exchange.listing.cancelled` | `apps/api/src/routes/exchange.ts` (2026-05-22) | `route`, `outcome`, `beforeBalance`/`afterBalance` for escrow steps, `amountCt`, `recipientAvatarId` on confirm. Pair with `claw_token_transactions` for the per-cent reconciliation in §3 of the recovery doc. |
 
 ### 5b. Free agent leaderboard
 
