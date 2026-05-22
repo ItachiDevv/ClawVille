@@ -171,16 +171,17 @@ export default function DrumRig({
   // Created in a useMemo so they exist before first render — otherwise the
   // mesh prop binding tries to render before useEffect populates the ref
   // and crashes on undefined material.
-  const reelMaterials = useMemo<THREE.MeshBasicMaterial[][]>(() =>
-    Array.from({ length: REEL_COUNT }, () =>
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const reelMaterials = useMemo<THREE.MeshBasicMaterial[][]>(
+    () => Array.from({ length: REEL_COUNT }, () =>
       Array.from({ length: CELLS_PER_DRUM }, () => new THREE.MeshBasicMaterial({
         transparent: true,
         depthWrite:  false,
         side:        THREE.FrontSide,
       })),
     ),
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  , []);
+    [],
+  );
   useEffect(() => () => {
     for (const reel of reelMaterials) for (const m of reel) m.dispose();
   }, [reelMaterials]);

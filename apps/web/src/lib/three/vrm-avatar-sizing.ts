@@ -118,7 +118,7 @@ export function computeVRMAvatarFit(
   const prev = vrm.scene.scale.clone();
   vrm.scene.scale.setScalar(1);
   vrm.scene.updateMatrixWorld(true);
-  const box = new THREE.Box3().setFromObject(vrm.scene);
+  const box = new THREE.Box3().setFromObject(vrm.scene as unknown as THREE.Object3D);
   const size = new THREE.Vector3();
   box.getSize(size);
   vrm.scene.scale.copy(prev);
