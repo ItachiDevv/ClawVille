@@ -57,8 +57,10 @@ import type { MachineSlug } from '@/lib/cove/types';
 // Constants
 // ---------------------------------------------------------------------------
 
-/** Gameready GLB path */
-const INTERIOR_GLB = '/models/cove/cove-interior.glb';
+/** Gameready GLB path — temporarily pointed at cleaned-v1 to evaluate the
+ *  Blender artifact removal pass (pillar fragments + Material4 ghost mesh
+ *  removed; stump cleanup possibly over-broad — visual verification pending). */
+const INTERIOR_GLB = '/models/cove/cove-interior-cleaned-v1.glb?v=1';
 /** Fallback cartoon GLB */
 const FALLBACK_GLB = '/models/cove/cove-interior-fallback.glb';
 
