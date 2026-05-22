@@ -20,6 +20,9 @@ export * from './bounties';
 export * from './building-skills';
 export * from './wallets';
 export * from './agent-session-tickets';
+// Email-driven auth (password reset + soft email verification). One row per
+// issued token; raw token never stored — only sha256(token).
+export * from './auth-tokens';
 export * from './events';
 export * from './event-write-failures';
 export * from './pending-account-links';
