@@ -16,9 +16,23 @@ import { MAP_WIDTH, MAP_HEIGHT } from '@/lib/pixi/tilemap-data';
 const HALF_W = MAP_WIDTH / 2;
 const HALF_H = MAP_HEIGHT / 2;
 
-// Y height above ground in world units (wandering NPCs sit ~2 units above terrain,
-// scaled by NPC_SCALE=13, so their tops are roughly 26-36 units up).
-const BUBBLE_Y = 20;
+// Y height above ground in world units — raised from 20 to 150 (2026-05-22).
+//
+// WHY 150 INSTEAD OF 20:
+//   Occlusion raycasting uses the bubble anchor as the ray target. At Y=20 the ray
+//   from the camera struck the BASE of structures (shisha-oasis, stalls) from above.
+//   Those base-platform triangles have normals pointing +Y (upward). The ray coming
+//   DOWN from the camera hits them on their back face. Three.js Raycaster skips
+//   back-face hits when material.side === FrontSide, so the intersection returned 0
+//   hits → bubble rendered in front of the structure instead of being hidden.
+//
+//   At Y=150 the anchor sits within the walls/canopy area of every structure (all are
+//   ≥500wu tall). Wall triangles face horizontally toward the camera — the ray hits
+//   their front face and the intersection is counted → bubble is correctly hidden.
+//
+//   Visual bonus: speech bubbles floating above the NPC's head (~150wu = 3× NPC
+//   height of 45wu) is the conventional game convention for chat bubbles.
+const BUBBLE_Y = 150;
 
 // Maximum concurrent speech bubbles to render
 const MAX_BUBBLES = 10;
