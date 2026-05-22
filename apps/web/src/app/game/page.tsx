@@ -11,6 +11,7 @@ import { useGameStore, type GameState } from '@/stores/game';
 import { useQuestStore } from '@/stores/quest';
 import { api } from '@/lib/api';
 import SeaLoadingScreen from '@/components/game/sea-loading-screen';
+import { preloadWorldAssets } from '@/lib/three/asset-preload-manifest';
 import AvatarSettingsModal from '@/components/game/avatar-settings-modal';
 import FirstTimeBackupModal from '@/components/game/first-time-backup-modal';
 import LocationConfigModal from '@/components/game/location-config-modal';
@@ -193,6 +194,17 @@ export default function GamePage() {
   // loading screen paints; acceptable vs an error spamming every load.
   const [mounted, setMounted] = useState(false);
   useEffect(() => { setMounted(true); }, []);
+
+  // Kick off ALL heavy world assets the moment the page mounts, in parallel
+  // with the dynamic() World3DCanvas chunk download. Without this, no asset
+  // fetch starts until the canvas chunk resolves and React renders it — which
+  // is why the loading screen used to feel idle. preloadWorldAssets() fires
+  // useGLTF.preload() for every always-loaded GLB/VRM/KTX2 in the world
+  // scene (see asset-preload-manifest.ts) so THREE.DefaultLoadingManager
+  // starts emitting progress events and SeaLoadingScreen's __W3D_PROGRESS
+  // bar actually fills. Fire-and-forget — duplicate preload calls inside
+  // each mounting component are cheap (useGLTF.preload is idempotent).
+  useEffect(() => { preloadWorldAssets(); }, []);
 
   const { data: avatar, isLoading } = useAvatar();
   const controlMode = useGameStore((s: GameState) => s.controlMode);
