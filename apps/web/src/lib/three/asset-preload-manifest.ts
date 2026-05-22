@@ -130,25 +130,10 @@ export const WANDERING_VRM_PATHS: readonly string[] = [
   '/avatars/tekk.vrm',
 ] as const;
 
-/**
- * Chibi VRM paths — 5.3–5.6 MB each (eliza-chibi + milady-chibi).
- * These are NOT fetched unconditionally on every page load. They are
- * loaded lazily via `preloadChibiVrm()` only when:
- *   (a) the user's own avatar.modelKey is 'eliza_chibi' or 'milady_chibi', OR
- *   (b) the avatar picker is opened (SelectAgentCanvas calls preloadVRMBytes
- *       for all registry entries on its first mount).
- *
- * Rationale: 10.8 MB of extra VRM bytes fetched on every game load for users
- * who have never picked a chibi avatar is wasteful bandwidth + parse time.
- * On Iris Xe the parse cost is estimated 150–400 ms per VRM at this size.
- */
-export const CHIBI_VRM_PATHS: readonly string[] = [
-  '/avatars/eliza-chibi.vrm?v=2',
-  '/avatars/milady-chibi.vrm?v=2',
-] as const;
-
 /** All selectable player VRM paths (agent-model-registry.ts MODEL_REGISTRY).
- *  Does NOT include chibi VRMs — those are in CHIBI_VRM_PATHS and fetched lazily. */
+ *  Chibi VRMs are preloaded alongside the others — the lazy-chibi gating was
+ *  removed 2026-05-22 per user direction (it was a bad fix that hid chibi NPCs
+ *  for non-chibi players when wandering NPC rosters included chibi species). */
 export const PLAYER_VRM_PATHS: readonly string[] = [
   '/avatars/milady-official-1.vrm',
   '/avatars/milady-official-2.vrm',
@@ -161,6 +146,8 @@ export const PLAYER_VRM_PATHS: readonly string[] = [
   '/avatars/hermes-female.vrm',
   '/avatars/hermes-male.vrm',
   '/avatars/tekk.vrm',
+  '/avatars/eliza-chibi.vrm?v=2',
+  '/avatars/milady-chibi.vrm?v=2',
 ] as const;
 
 // ---------------------------------------------------------------------------
@@ -298,17 +285,11 @@ export function preloadWorldAssets(): void {
     preloadVRMBytes(url);
   }
 
-  // --- Tier 2 — next microtask (player VRM pool, non-chibi) ---
+  // --- Tier 2 — next microtask (player VRM pool, all archetypes incl. chibi) ---
   // Deferred by a zero-delay setTimeout so tier-1 fetch slots are committed
-  // to the browser's HTTP/2 connection pool before we add 11 more requests.
-  // Chibi VRMs (eliza-chibi, milady-chibi) are intentionally excluded —
-  // they total 10.8 MB and are only needed if the user's avatar is a chibi.
-  // Call `preloadChibiVrm(modelKey)` from game/page.tsx when avatar data
-  // arrives and avatar.modelKey is 'eliza_chibi' or 'milady_chibi'.
+  // to the browser's HTTP/2 connection pool before we add 13 more requests.
   setTimeout(() => {
     for (const url of PLAYER_VRM_PATHS) {
-      // CHIBI_VRM_PATHS are not in PLAYER_VRM_PATHS, so this loop is already
-      // chibi-free. Comment kept for clarity during future audits.
       preloadVRMBytes(url);
     }
   }, 0);
@@ -319,26 +300,6 @@ export function preloadWorldAssets(): void {
   //   DeferredTerrainPreloads (rAF in game/page.tsx)
   // Those hooks fire their own useGLTF.preload() calls after first paint.
   // No duplication needed here.
-}
-
-/**
- * Warm the byte cache for one chibi VRM.
- *
- * Call this from game/page.tsx in a useEffect that runs after `avatar` loads,
- * guarded by `avatar.modelKey === 'eliza_chibi' || avatar.modelKey === 'milady_chibi'`.
- *
- * The picker (SelectAgentCanvas) calls preloadVRMBytes for all registry entries
- * on its first mount, so chibi bytes will be warmed for picker users regardless.
- * This function covers the case where the user skips the picker (returning user
- * with an existing chibi avatar) and goes straight into the game.
- *
- * Safe to call multiple times — preloadVRMBytes is idempotent (no-op if cached).
- */
-export function preloadChibiVrm(modelKey: 'eliza_chibi' | 'milady_chibi'): void {
-  const url = modelKey === 'eliza_chibi'
-    ? '/avatars/eliza-chibi.vrm?v=2'
-    : '/avatars/milady-chibi.vrm?v=2';
-  preloadVRMBytes(url);
 }
 
 // ---------------------------------------------------------------------------
@@ -356,7 +317,6 @@ export const ALL_WORLD_GLBS: readonly string[] = [
 
 export const ALL_WORLD_VRMS: readonly string[] = [
   ...PLAYER_VRM_PATHS,
-  ...CHIBI_VRM_PATHS,  // included in full manifest but loaded lazily at runtime
 ] as const;
 
 // ---------------------------------------------------------------------------
@@ -392,11 +352,8 @@ export const WORLD_PRELOAD_MANIFEST: readonly string[] = [
   ...LOCOMOTION_ANIM_GLBS,
   ...WANDERING_NPC_GLBS,
   ...WANDERING_VRM_PATHS,
-  // Tier 2 — next microtask (player VRM pool, non-chibi)
+  // Tier 2 — next microtask (player VRM pool, all archetypes incl. chibi)
   ...PLAYER_VRM_PATHS,
-  // Tier 2 lazy — only fetched at runtime when avatar.modelKey is chibi
-  // (SW should still precache these so the lazy fetch is from disk, not network)
-  ...CHIBI_VRM_PATHS,
   // Tier 3 — deferred (after first paint, handled by DeferredTerrainPreloads / DeferredNpcPreloads)
   ...LOCATION_NPC_GLBS,
   ...DECORATION_GLBS,
