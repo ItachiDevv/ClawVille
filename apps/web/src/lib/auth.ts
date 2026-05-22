@@ -6,11 +6,35 @@ import { cache } from 'react';
 
 const adapter = new DrizzlePostgreSQLAdapter(db as any, sessions as any, users as any);
 
+/**
+ * Cookie-domain split-brain fix (2026-05-22). Mirror image of the
+ * comment + helper in `apps/api/src/lib/auth.ts`. Both backends MUST
+ * stay in lockstep on this attribute — drift here re-opens the split-
+ * brain by having one backend's `Set-Cookie` not overwrite the
+ * other's. See `docs/auth-security-recovery.md` §2 for the full
+ * incident retrospective.
+ *
+ * Note on `sameSite`: this file historically used `'lax'` while the
+ * Hono side flipped to `'none'` in prod for cross-subdomain XHR. We
+ * leave that asymmetry alone because Next.js writes the cookie on
+ * same-origin POSTs from clawville.world only (the api.* path writes
+ * via Hono). The shared `domain=.clawville.world` is what unifies
+ * them; sameSite is per-issuer and can stay tuned to its caller's
+ * traffic shape.
+ */
+function resolveSessionCookieDomain(): string | undefined {
+  const explicit = process.env.SESSION_COOKIE_DOMAIN?.trim();
+  if (explicit) return explicit;
+  if (process.env.NODE_ENV === 'production') return '.clawville.world';
+  return undefined;
+}
+
 export const lucia = new Lucia(adapter, {
   sessionCookie: {
     attributes: {
       secure: process.env.NODE_ENV === 'production',
       sameSite: 'lax',
+      domain: resolveSessionCookieDomain(),
     },
   },
   getUserAttributes: (attributes) => {
