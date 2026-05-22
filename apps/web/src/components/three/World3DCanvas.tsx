@@ -101,6 +101,9 @@ const LOW_END_GPU_DETECTED: boolean = (() => {
 if (typeof window !== 'undefined') {
   console.log('[World3D] Low-end GPU detected:', LOW_END_GPU_DETECTED);
 }
+// Export so arena-npcs and other consumers can gate low-end-only code paths
+// without duplicating the GPU probe.
+export { LOW_END_GPU_DETECTED };
 const SKY_COLOR = new THREE.Color(0x0a2a4a); // Deeper ocean blue
 const FOG_COLOR = new THREE.Color(0x0e3458); // Underwater haze — matches sky
 
@@ -774,7 +777,12 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
             mid       (10000wu): factor = (10000−6000)/9000 ≈ 0.44 → gradual fade
             horizon   (15000wu): factor = 1.00 → full fog at horizon
           fog.far rule: camera.far raised 10000→16000 to satisfy fog.far(15000) ≤ camera.far(16000). */}
-      <fog attach="fog" args={[FOG_COLOR, 6000, 15000]} />
+      {/* fog.far=16000 matches camera.far exactly — eliminates the 1000 wu over-draw
+          band where geometry was vertex-processed + rasterised at full fog opacity
+          before the depth clip. No visual change: geometry at 15000–16000 wu was
+          already 100% fog-coloured; now it clips instead of rasterising.
+          WIN C — perf-audit-2026-05-22 §A */}
+      <fog attach="fog" args={[FOG_COLOR, 6000, 16000]} />
 
       {/* Shared world geometry */}
       <ArenaTerrain />
