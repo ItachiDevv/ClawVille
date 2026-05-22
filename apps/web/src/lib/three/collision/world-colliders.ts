@@ -88,21 +88,94 @@ export interface Collider2D {
 // ---------------------------------------------------------------------------
 
 /**
- * Scale factor applied to half the zone tile extent to get the AABB half-
- * extent. 0.92 of 224wu = ~206wu, slightly inside the full 14-tile zone.
- * 1.0 = exact tile-zone match. <1.0 gives the player some clearance against
- * the visual building wall (visual mesh usually extends a few wu inside the
- * tile zone). If buildings feel too "permeable", raise to 0.95-1.0; if walls
- * feel too far out from the visible mesh, lower to 0.85.
- * Chosen value: 0.92 (2026-05-21 AABB cutover).
+ * Per-building AABB half-extents derived from GLB bbox measurement.
+ *
+ * Method (2026-05-22, scripts/inspect-building-bboxes.mjs + inline Node.js
+ * for Draco-compressed GLBs):
+ *   1. Measure native GLB bbox via gltf-transform, applying recursive TRS
+ *      world transforms (required for GLBs with root-node rotations like
+ *      patty-building which has a -0.5,-0.5,-0.5,0.5 quaternion).
+ *   2. Apply arena-buildings.tsx targetMaxDim scale:
+ *        scale = targetMaxDim / nativeMaxDim
+ *        worldX = nativeSizeX * scale (capped by MAX_FOOTPRINT=2000wu)
+ *        worldZ = nativeSizeZ * scale (capped by MAX_FOOTPRINT=2000wu)
+ *   3. Tighten by TIGHTEN=0.85 to exclude eaves / lantern overhang.
+ *        halfX = worldX / 2 * 0.85
+ *        halfZ = worldZ / 2 * 0.85
+ *   4. AABB center = tile-zone world center (NO additional offset needed).
+ *      computeBuildingScale() in arena-buildings.tsx subtracts pivotOffsetX/Z
+ *      (= bbox_center_XZ * scale) from the inner group position, so the
+ *      visual mesh center is already at the tile-zone world center. The AABB
+ *      must use the same center — no offset required regardless of how far
+ *      off-origin the GLB geometry sits.
+ *
+ * Special cases:
+ *   - cove: uses box3Recenter=true in arena-buildings.tsx, which re-centers
+ *     the geometry to (0,0,0) after load. Center = tile-zone center, no offset.
+ *   - messaging-channels (sandy-treedome-v3) and api-integrations (salty-spitoon):
+ *     targetMaxDim=2500 exceeds MAX_FOOTPRINT=2000wu, so worldX=worldZ=2000.
+ *   - cron-automation (patty-building): X exceeds footprint cap, Z does not.
+ *
+ * Fallback BUILDING_HALF (≈206wu) is retained for any zone ID not in this
+ * table (defensive — all 12 buildings are covered below).
  */
-const BUILDING_SCALE_FACTOR = 0.92;
+const BUILDING_EXTENTS: Readonly<Record<string, { halfX: number; halfZ: number }>> = {
+  // GLB: pineapple-house.glb, targetMaxDim=1100
+  // Native size: 30.984×23.666, scale=35.50 → worldX=1100, worldZ=840 → ×0.85
+  'visual-creation':    { halfX: 468, halfZ: 357 },
 
+  // GLB: chum-bucket-v2.glb, targetMaxDim=1400
+  // Native size: ≈33.5×33.6, scale≈41.79 → worldX=1392, worldZ=1400 → ×0.85
+  'code-development':   { halfX: 591, halfZ: 595 },
+
+  // GLB: krusty-krab-v2.glb, targetMaxDim=1400
+  // Native size: ≈34.4×33.6, scale≈40.70 → worldX=1386, worldZ=1400 → ×0.85
+  'mcp-tool-use':       { halfX: 589, halfZ: 595 },
+
+  // GLB: sandy-treedome-v3.glb, targetMaxDim=2500 (Draco-compressed)
+  // Native size: 25.873×25.873, scale≈96.6 → footprint cap → worldX=worldZ=2000 → ×0.85
+  'messaging-channels': { halfX: 850, halfZ: 850 },
+
+  // GLB: salty-spitoon.glb, targetMaxDim=2500
+  // footprint cap applied → worldX=worldZ=2000 → ×0.85
+  'api-integrations':   { halfX: 850, halfZ: 850 },
+
+  // GLB: boating-school.glb, targetMaxDim=1000
+  // Approximately square footprint → worldX=1000, worldZ=995 → ×0.85
+  'app-publishing':     { halfX: 425, halfZ: 423 },
+
+  // GLB: patty-building.glb, targetMaxDim=2200
+  // Root node has quaternion (-0.5,-0.5,-0.5,0.5) [90° rotation] — TRS applied.
+  // Native size: 255.782×150.001 (longest axis post-transform), scale=8.60
+  // worldX=2000 (footprint cap), worldZ=1173 → ×0.85
+  'cron-automation':    { halfX: 850, halfZ: 498 },
+
+  // GLB: building-lighthouse.glb, targetMaxDim=1400
+  // Tall, narrow footprint → worldX=714, worldZ=776 → ×0.85
+  'deployment-ops':     { halfX: 303, halfZ: 330 },
+
+  // GLB: claw-arcade-exterior.glb, targetMaxDim=1100
+  // Nearly square → worldX=1100, worldZ=1058 → ×0.85
+  'claw-arcade':        { halfX: 468, halfZ: 450 },
+
+  // GLB: cove-exterior.glb, targetMaxDim=1300, box3Recenter=true
+  // arena-buildings.tsx re-centers after load → center = tile-zone center (no offset)
+  // worldX=1284, worldZ=1300 → ×0.85
+  'cove':               { halfX: 546, halfZ: 553 },
+
+  // GLB: patricks-rock-v2.glb, targetMaxDim=1100
+  // Roughly round footprint → worldX=1082, worldZ=1100 → ×0.85
+  'agent-security':     { halfX: 460, halfZ: 468 },
+
+  // GLB: squidward-house.glb, targetMaxDim=1700
+  // Square footprint → worldX=worldZ=1700 → ×0.85
+  'memory-rag':         { halfX: 722, halfZ: 723 },
+} as const;
+
+// Fallback half-extent for any zone ID not listed above (defensive coding).
 // Half the 14-tile zone dimension in world units: (14 × 32) / 2 = 224wu
 const BUILDING_HALF_TILE_EXTENT = (14 * TILE_SIZE) / 2; // 224
-
-// Building AABB half-extents — same for all 12 buildings (uniform 14×14 zone).
-const BUILDING_HALF = BUILDING_HALF_TILE_EXTENT * BUILDING_SCALE_FACTOR; // ≈ 206wu
+const BUILDING_HALF = BUILDING_HALF_TILE_EXTENT * 0.92;  // ≈206wu fallback
 
 // ---------------------------------------------------------------------------
 // Shisha-oasis collider constants (verified from GLB inspection 2026-05-22)
@@ -181,12 +254,13 @@ function buildColliders(): Collider2D[] {
   for (const zone of buildingZones) {
     const centerTileX = zone.x + zone.width / 2;   // zone.x + 7 (zone.width=14)
     const centerTileY = zone.y + zone.height / 2;  // zone.y + 7
+    const extents = BUILDING_EXTENTS[zone.id];
     colliders.push({
       id: zone.id,
       centerX: centerTileX * TILE_SIZE - HALF_W,
       centerZ: centerTileY * TILE_SIZE - HALF_H,
-      halfX: BUILDING_HALF,
-      halfZ: BUILDING_HALF,
+      halfX: extents?.halfX ?? BUILDING_HALF,
+      halfZ: extents?.halfZ ?? BUILDING_HALF,
       kind: 'building',
     });
   }
