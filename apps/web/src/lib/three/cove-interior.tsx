@@ -1503,16 +1503,24 @@ function InteriorScene({ useFallback, onFallbackRequest, onSceneEmpty }: Interio
       classicCentroid = [cx - halfHalfW, clickCenterY, cz];
       bonusCentroid   = [cx + halfHalfW, clickCenterY, cz];
 
+      // Hotspot X-size is `halfW` (a HALF of the bank), NOT `halfW + reach`.
+      // Previously each hotspot covered the FULL bank width — they overlapped
+      // in the middle and the array-first (classic) hotspot always won the
+      // raycast hit, so the BONUS side opened the classic modal. The `reach`
+      // value is applied to Z (depth into the room toward the player) only.
+      // Tiny 0.92 squeeze leaves a hairline dead-zone at the split so a click
+      // exactly on the seam doesn't double-hit (Phase 6.1.16).
+      const halfHotspotW = halfW * 0.92;
       discoveredHotspots.push({
         position: classicCentroid,
-        size:     [halfW + reach, clickHeight, depth + reach],
+        size:     [halfHotspotW, clickHeight, depth + reach],
         machineSlug: 'classic-3x5' as MachineSlug,
         paytableId:  'classic-3x5' as MachineSlug,
         isBonus:     false,
       });
       discoveredHotspots.push({
         position: bonusCentroid,
-        size:     [halfW + reach, clickHeight, depth + reach],
+        size:     [halfHotspotW, clickHeight, depth + reach],
         machineSlug: 'classic-3x5-bonus' as MachineSlug,
         paytableId:  'classic-3x5-bonus' as MachineSlug,
         isBonus:     true,
