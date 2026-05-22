@@ -31,14 +31,33 @@ const TILE_SIZE = 32;
 const MAP_HALF = 5760; // MAP_WIDTH / 2 = MAP_HEIGHT / 2
 
 /**
- * Scale factor applied to the 14-tile zone half-extent to get the AABB
- * half-extent. Must match BUILDING_SCALE_FACTOR in world-colliders.ts.
+ * Per-building AABB half-extents — mirrors BUILDING_EXTENTS in world-colliders.ts.
+ * Must be updated in the same diff as world-colliders.ts. See that file for the
+ * full measurement methodology and derivation notes (2026-05-22).
+ *
+ * All centers use tile-zone world center (no offset). computeBuildingScale() in
+ * arena-buildings.tsx corrects the pivot so the visual mesh center == tile-zone
+ * world center, making AABB center == tile-zone center for all 12 buildings.
  */
-const BUILDING_SCALE_FACTOR = 0.92;
+const BUILDING_EXTENTS: Readonly<Record<string, { halfX: number; halfZ: number }>> = {
+  'visual-creation':    { halfX: 468, halfZ: 357 },
+  'code-development':   { halfX: 591, halfZ: 595 },
+  'mcp-tool-use':       { halfX: 589, halfZ: 595 },
+  'messaging-channels': { halfX: 850, halfZ: 850 },
+  'api-integrations':   { halfX: 850, halfZ: 850 },
+  'app-publishing':     { halfX: 425, halfZ: 423 },
+  'cron-automation':    { halfX: 850, halfZ: 498 },
+  'deployment-ops':     { halfX: 303, halfZ: 330 },
+  'claw-arcade':        { halfX: 468, halfZ: 450 },
+  'cove':               { halfX: 546, halfZ: 553 },
+  'agent-security':     { halfX: 460, halfZ: 468 },
+  'memory-rag':         { halfX: 722, halfZ: 723 },
+} as const;
 
+// Fallback half-extent for any zone ID not in the table above (defensive).
 // Half of the 14-tile zone in world units: (14 × 32) / 2 = 224 wu
 const BUILDING_HALF_TILE_EXTENT = (14 * TILE_SIZE) / 2; // 224
-const BUILDING_HALF = BUILDING_HALF_TILE_EXTENT * BUILDING_SCALE_FACTOR; // ≈ 206 wu
+const BUILDING_HALF = BUILDING_HALF_TILE_EXTENT * 0.92;  // ≈ 206 wu fallback
 
 // ---------------------------------------------------------------------------
 // Collider type
@@ -79,17 +98,19 @@ function buildServerColliders(): ServerCollider2D[] {
   //    Zone center tile: (zone.x + w/2, zone.y + h/2).
   //    Game-pixel center: centerTile × TILE_SIZE.
   //    Three.js world center: gamePx − MAP_HALF.
+  //    Per-building halfX/halfZ from BUILDING_EXTENTS (GLB-measured, 2026-05-22).
   for (const [id, zone] of Object.entries(BUILDING_TILE_ZONES)) {
     const centerTileX = zone.x + zone.w / 2;
     const centerTileY = zone.y + zone.h / 2;
     const gamePxX = centerTileX * TILE_SIZE;
     const gamePxY = centerTileY * TILE_SIZE;
+    const extents = BUILDING_EXTENTS[id];
     list.push({
       id,
       centerX: gamePxX - MAP_HALF,
       centerZ: gamePxY - MAP_HALF,
-      halfX: BUILDING_HALF,
-      halfZ: BUILDING_HALF,
+      halfX: extents?.halfX ?? BUILDING_HALF,
+      halfZ: extents?.halfZ ?? BUILDING_HALF,
     });
   }
 
