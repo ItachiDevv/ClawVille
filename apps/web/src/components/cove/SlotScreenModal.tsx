@@ -137,8 +137,28 @@ export default function SlotScreenModal() {
   // ── FX hook (5-tier dispatcher) ────────────────────────────────────────
   const fx = useFX();
 
-  // Current reel window to display
-  const [displayWindow, setDisplayWindow] = useState<number[][] | null>(null);
+  // Phase 6.1.17 — curated showcase reel windows shown BEFORE the first spin.
+  // Designed to advertise the roster at a glance:
+  //   - Classic: high-pay symbols + WILD on the middle row, low-pay roster filling rows 0/2
+  //   - Bonus:   3 scatter coins spread across the top, wild + sevens centered, full roster on row 2
+  // Wild = 7 (Clawbster), Scatter = 10 (Eliza Coin) — only valid on bonus paytable.
+  const CLASSIC_SHOWCASE: number[][] = [
+    [0, 1, 2, 3, 4],   // top:    Claw, Robot, Eliza, Squirrel, Milady
+    [5, 6, 7, 8, 9],   // middle: BAR, Seven, Clawbster (WILD), BAR×2, BAR×3
+    [4, 3, 2, 1, 0],   // bot:    Milady, Squirrel, Eliza, Robot, Claw
+  ];
+  const BONUS_SHOWCASE: number[][] = [
+    [10, 6, 10, 7, 10],   // top:    Coin, Seven, Coin, Clawbster (WILD), Coin (3 scatters → trigger zone)
+    [4, 9, 7, 5, 4],      // middle: Milady, BAR×3, Clawbster (WILD), BAR, Milady
+    [3, 1, 2, 4, 3],      // bot:    Squirrel, Robot, Eliza, Milady, Squirrel
+  ];
+
+  // Current reel window to display.
+  // Initial value is paytable-aware showcase so the open modal advertises the
+  // roster without forcing a spin. First /spin call replaces it with server result.
+  const [displayWindow, setDisplayWindow] = useState<number[][] | null>(
+    paytableId === 'classic-3x5-bonus' ? BONUS_SHOWCASE : CLASSIC_SHOWCASE,
+  );
   const [pendingWinLines, setPendingWinLines] = useState<SpinResult['winningLines']>([]);
 
   // Increments each spin press to trigger the 3D reel animation
@@ -639,6 +659,14 @@ export default function SlotScreenModal() {
     ? `pt-toast${toast.tone === 'warn' ? ' pt-toast-warn' : toast.tone === 'error' ? ' pt-toast-error' : ''}`
     : '';
 
+  // Phase 6.1.17 — paytable-aware theming tokens for header gradient + accent
+  // strip. Drives the only DOM-side visual difference between classic + bonus
+  // outside the cabinet itself.
+  const isBonusPaytable = paytableId === 'classic-3x5-bonus';
+  const themeAccent     = isBonusPaytable ? '#ffd54f' : '#00d4ff';        // marquee strip color
+  const themeAccentDeep = isBonusPaytable ? '#c8420e' : '#0066a8';        // gradient inner stop
+  const themeName       = isBonusPaytable ? 'BONUS · scatters + free spins' : 'CLASSIC · 10 lines';
+
   return (
     <>
       <style>{`
@@ -646,6 +674,10 @@ export default function SlotScreenModal() {
         @media (min-width: 481px) and (max-width: 640px) { :root { --slot-cell-size: 60px; } }
         @media (min-width: 641px) and (max-width: 900px) { :root { --slot-cell-size: 70px; } }
         @media (min-width: 901px) { :root { --slot-cell-size: 80px; } }
+        @keyframes pt-marquee-pulse {
+          0%, 100% { opacity: 0.85; }
+          50%      { opacity: 1; }
+        }
       `}</style>
 
       {/* Full-viewport overlay */}
@@ -654,6 +686,7 @@ export default function SlotScreenModal() {
         aria-modal="true"
         aria-label="Slot Machine"
         className="pt-modal-shell"
+        data-paytable={paytableId ?? 'classic-3x5'}
         style={{
           position: 'fixed',
           inset: 0,
@@ -698,8 +731,18 @@ export default function SlotScreenModal() {
               </button>
             </div>
 
-            <div className="pt-header-title">
-              Tide Pool Cove · {paytableId === 'classic-3x5-bonus' ? 'Bonus 3×5' : 'Classic 3×5'}
+            <div
+              className="pt-header-title"
+              style={{
+                background: `linear-gradient(90deg, ${themeAccent} 0%, ${themeAccentDeep} 100%)`,
+                WebkitBackgroundClip: 'text',
+                backgroundClip: 'text',
+                WebkitTextFillColor: 'transparent',
+                fontWeight: 800,
+                letterSpacing: '0.08em',
+              }}
+            >
+              Tide Pool Cove · {isBonusPaytable ? 'Bonus 3×5' : 'Classic 3×5'}
             </div>
 
             <div className="pt-header-side">
@@ -717,6 +760,30 @@ export default function SlotScreenModal() {
               </button>
             </div>
           </header>
+
+          {/* Paytable accent strip — thin themed bar between header + reels.
+              Cyan for classic, gold for bonus. Phase 6.1.17. */}
+          <div
+            style={{
+              height: 26,
+              flexShrink: 0,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              background: `linear-gradient(90deg, transparent 0%, ${themeAccent}44 25%, ${themeAccent}88 50%, ${themeAccent}44 75%, transparent 100%)`,
+              borderBottom: `1px solid ${themeAccent}66`,
+              color: themeAccent,
+              fontFamily: 'JetBrains Mono, ui-monospace, monospace',
+              fontSize: 11,
+              fontWeight: 700,
+              letterSpacing: '0.18em',
+              textTransform: 'uppercase',
+              animation: 'pt-marquee-pulse 3.2s ease-in-out infinite',
+              userSelect: 'none',
+            }}
+          >
+            {themeName}
+          </div>
 
           {/* ── Reel hero ─────────────────────────────────────────── */}
           <div

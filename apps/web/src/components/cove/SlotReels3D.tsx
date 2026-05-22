@@ -728,32 +728,40 @@ export default function SlotReels3D({
     return out;
   }, [frameW, frameH]);
 
+  // Phase 6.1.17 — paytable-aware cabinet theming.
+  // Classic: brass-yellow (warm gold). Bonus: deep amber-red (rich casino).
+  const isBonus = paytableId === 'classic-3x5-bonus';
+  const CABINET_OUTER  = isBonus ? 0xc02038 : 0xf4b840;  // bonus: crimson red · classic: brass yellow
+  const CABINET_BEZEL  = isBonus ? 0x6d0a1f : 0xb8801f;  // bonus: dark wine · classic: dark brass
+  const CABINET_RIVET  = isBonus ? 0xfff1a3 : 0xfff1a3;  // gold rivets pop on both
+  const CABINET_SHADOW = isBonus ? 0x1a0508 : 0x2a1810;  // bonus: near-black wine · classic: dark brown
+
   // -------------------------------------------------------------------------
   // Scene graph
   // -------------------------------------------------------------------------
   return (
     <group>
-      {/* Cabinet outer frame — bright brass */}
+      {/* Cabinet outer frame */}
       <mesh position={[0, 0, -0.04]}>
         <planeGeometry args={[frameW + 0.18, frameH + 0.18]} />
-        <meshBasicMaterial color={0xf4b840} />
+        <meshBasicMaterial color={CABINET_OUTER} />
       </mesh>
-      {/* Cabinet inner bezel — darker brass for depth */}
+      {/* Cabinet inner bezel — darker for depth */}
       <mesh position={[0, 0, -0.03]}>
         <planeGeometry args={[frameW, frameH]} />
-        <meshBasicMaterial color={0xb8801f} />
+        <meshBasicMaterial color={CABINET_BEZEL} />
       </mesh>
       {/* Inner shadow rim — thin dark line just outside reels */}
       <mesh position={[0, 0, -0.02]}>
         <planeGeometry args={[clusterW + 0.08, REEL_HEIGHT + 0.08]} />
-        <meshBasicMaterial color={0x2a1810} />
+        <meshBasicMaterial color={CABINET_SHADOW} />
       </mesh>
 
       {/* Brass rivets around the cabinet perimeter */}
       {rivetPositions.map(([rx, ry], i) => (
         <mesh key={`rivet-${i}`} position={[rx, ry, -0.025]}>
           <circleGeometry args={[0.06, 12]} />
-          <meshBasicMaterial color={0xfff1a3} />
+          <meshBasicMaterial color={CABINET_RIVET} />
         </mesh>
       ))}
 
