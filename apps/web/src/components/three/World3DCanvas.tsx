@@ -670,6 +670,89 @@ function StaggeredTextureUpload() {
 }
 
 // ---------------------------------------------------------------------------
+// AdaptiveDprMonitor (Wave 3 — perf feedback loop, 2026-05-22)
+// ---------------------------------------------------------------------------
+// Reads rolling avg frame time and adjusts DPR to converge toward 80 FPS,
+// with a hard floor at 60 FPS budget. Bounded by LOW_END_GPU_DETECTED-aware
+// dpr range so quality never drops past visually-acceptable.
+//
+// Rules of the game:
+//   - Sample window: 30 frames (~0.5s at 60 FPS) — enough to smooth jitter
+//   - Cooldown: 1 second between DPR changes — avoids oscillation
+//   - Drop when rolling avg > 18 ms (=55 FPS), step 0.05 down
+//   - Raise when rolling avg < 12 ms (=83 FPS), step 0.05 up
+//   - Hysteresis gap of 6 ms prevents flapping
+//
+// Why r3f's setDpr() not gl.setPixelRatio() directly:
+//   R3F's setDpr() handles the whole reconcile: pixelRatio + canvas
+//   backing-store dims + camera aspect + render target invalidation. Doing
+//   the same via gl.setPixelRatio() leaves R3F's internal pixelRatio state
+//   stale, causing the next render to size the canvas wrong.
+//
+// Why call between frames, not mid-frame:
+//   WebGPU depth-stencil mismatch sweat — changing canvas backing-store
+//   size after BeginRenderPass is undefined behavior. useFrame runs BEFORE
+//   the render pass; setDpr defers the actual setSize until the next
+//   commit, which is safe.
+// ---------------------------------------------------------------------------
+
+function AdaptiveDprMonitor() {
+  // R3F state: setDpr triggers a clean re-init of the canvas backing store.
+  const setDpr = useThree((s) => s.setDpr);
+  const initialDpr = useThree((s) => s.viewport.dpr);
+
+  // Module-scope refs — zero per-frame allocations
+  const frameTimesRef = useRef<number[]>([]);
+  const frameTimeIdxRef = useRef(0);
+  const lastFrameTimeRef = useRef(0);
+  const lastDprChangeRef = useRef(0);
+  const currentDprRef = useRef(initialDpr);
+
+  const minDpr = LOW_END_GPU_DETECTED ? 0.4 : 0.6;
+  const maxDpr = LOW_END_GPU_DETECTED ? 0.7 : 1.0;
+  const SAMPLE_SIZE = 30;
+  const COOLDOWN_MS = 1000;
+  const DROP_THRESHOLD_MS = 18; // < 55 FPS
+  const RAISE_THRESHOLD_MS = 12; // > 83 FPS
+  const STEP = 0.05;
+
+  // Pre-allocate the ring buffer once
+  if (frameTimesRef.current.length === 0) {
+    frameTimesRef.current = new Array(SAMPLE_SIZE).fill(16);
+  }
+
+  useFrame(() => {
+    const now = performance.now();
+    if (lastFrameTimeRef.current > 0) {
+      const dt = now - lastFrameTimeRef.current;
+      // Ring buffer — overwrite oldest slot, zero allocations
+      frameTimesRef.current[frameTimeIdxRef.current] = dt;
+      frameTimeIdxRef.current = (frameTimeIdxRef.current + 1) % SAMPLE_SIZE;
+
+      // Decide whether to adjust DPR every COOLDOWN_MS
+      if (now - lastDprChangeRef.current > COOLDOWN_MS) {
+        let sum = 0;
+        for (let i = 0; i < SAMPLE_SIZE; i++) sum += frameTimesRef.current[i]!;
+        const avg = sum / SAMPLE_SIZE;
+
+        if (avg > DROP_THRESHOLD_MS && currentDprRef.current > minDpr) {
+          currentDprRef.current = Math.max(minDpr, currentDprRef.current - STEP);
+          setDpr(currentDprRef.current);
+          lastDprChangeRef.current = now;
+        } else if (avg < RAISE_THRESHOLD_MS && currentDprRef.current < maxDpr) {
+          currentDprRef.current = Math.min(maxDpr, currentDprRef.current + STEP);
+          setDpr(currentDprRef.current);
+          lastDprChangeRef.current = now;
+        }
+      }
+    }
+    lastFrameTimeRef.current = now;
+  });
+
+  return null;
+}
+
+// ---------------------------------------------------------------------------
 // Scene contents (inside Canvas)
 // ---------------------------------------------------------------------------
 // Detect touch/mobile once (stable across re-renders)
@@ -694,6 +777,13 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
 
   return (
     <>
+      {/* Adaptive DPR feedback loop — drops DPR when rolling-avg frame time
+          exceeds 18 ms (=55 FPS budget), raises when < 12 ms (=83 FPS).
+          Bounded by Iris-Xe / desktop dpr ranges. Critical for hitting the
+          80 FPS target sustained on integrated GPUs as scene complexity
+          grows. See AdaptiveDprMonitor definition above. */}
+      <AdaptiveDprMonitor />
+
       {/* Pre-compile WebGPU render pipelines once after the first frame commit.
           Eliminates the 274ms post-mount main-thread hitch. No-ops on WebGL. */}
       <PreCompilePipelines />
