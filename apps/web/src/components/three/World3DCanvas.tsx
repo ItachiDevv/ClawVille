@@ -917,11 +917,25 @@ const WEBGPU_ABSENT =
 // compiles the same TSL materials via GLSLNodeBuilder — visually identical,
 // no swap-chain device-rotation issue. Dedicated desktop GPUs (NVIDIA /
 // AMD / Apple M-series) still get WebGPU.
-const FORCE_WEBGL = IOS_SAFARI || WEBGPU_ABSENT || LOW_END_GPU_DETECTED;
+//
+// 2026-05-23 — A/B override added: `?webgpu=1` query string forces the
+// WebGPU path even on integrated GPUs. Lets us empirically test whether
+// Chrome's WebGPU swap-chain bug has been fixed in current Chrome (the
+// Needle Tools meshlet demo at three-meshlets-z23hmxbz1jwlff.needle.run
+// runs at 41 FPS full-res on this Iris Xe, suggesting the bug is gone).
+// The query is opt-in so the default-safe WebGL2 path stays in place for
+// all other users. Once we've validated the WebGPU path is stable across
+// sessions, the LOW_END_GPU_DETECTED branch can be removed from FORCE_WEBGL.
+const FORCE_WEBGPU_OVERRIDE =
+  typeof window !== 'undefined' &&
+  new URLSearchParams(window.location.search).get('webgpu') === '1';
+const FORCE_WEBGL = FORCE_WEBGPU_OVERRIDE
+  ? (IOS_SAFARI || WEBGPU_ABSENT)              // override: drop the low-end gate
+  : (IOS_SAFARI || WEBGPU_ABSENT || LOW_END_GPU_DETECTED);
 
 if (typeof window !== 'undefined') {
   console.log(
-    `[World3D] GPU path: ${FORCE_WEBGL ? 'forceWebGL (WebGL2+TSL)' : 'WebGPU'} — iOS:${IOS_SAFARI} noGPU:${WEBGPU_ABSENT}`,
+    `[World3D] GPU path: ${FORCE_WEBGL ? 'forceWebGL (WebGL2+TSL)' : 'WebGPU'} — iOS:${IOS_SAFARI} noGPU:${WEBGPU_ABSENT} lowEnd:${LOW_END_GPU_DETECTED} webgpuOverride:${FORCE_WEBGPU_OVERRIDE}`,
   );
 }
 
