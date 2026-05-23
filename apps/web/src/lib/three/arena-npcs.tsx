@@ -24,7 +24,7 @@ import { makeObject3DWebGPUSafe } from '@/lib/three/webgpu-geometry';
 import { jumpState } from '@/lib/three/jump-state';
 import { clampMovement2D, ENTITY_HALF_HUMANOID, ENTITY_HALF_CHIBI } from '@/lib/three/collision/world-colliders';
 import { avatarPositionRef } from '@/stores/game';
-import { useVRMInstance, disposeVRMInstance, preloadVRMBytes } from '@/lib/three/vrm-loader';
+import { useVRMInstance, disposeVRMInstance, preloadVRMBytes, applyFattenedFrustumCulling } from '@/lib/three/vrm-loader';
 import { VRMCharacterAnimator, preloadMixamoClips, type AnimName } from '@/lib/three/vrm-character-animator';
 import { MODEL_REGISTRY, getAnimatorIdByPath } from '@/lib/three/agent-model-registry';
 import {
@@ -471,13 +471,14 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
     const tint = new THREE.Color(npc.color);
     applyColorTint(c, tint, 0.7, 0.25);
 
-    // Disable frustum culling on every node in the clone.
-    // GLB NPCs with SkinnedMesh (animated crabs, hermit crabs, etc.) have their
-    // bounding spheres computed from the bind pose (T-pose). When the camera is
-    // close to the NPC or looking steeply down, the animated geometry extends
-    // outside the bind-pose sphere and Three.js wrongly culls the mesh, making
-    // the NPC disappear at close range. frustumCulled=false prevents this.
-    c.traverse((obj) => { obj.frustumCulled = false; });
+    // Fatten SkinnedMesh bounding spheres + re-enable frustumCulled (Win G fix,
+    // 2026-05-22 perf wave 3). Old pattern set frustumCulled=false universally,
+    // preventing Three.js from culling off-screen GLB NPCs at all.
+    // applyFattenedFrustumCulling fattens each SkinnedMesh's bind-pose sphere by
+    // 1.6× so animated poses stay inside the bound, then sets frustumCulled=true
+    // so off-screen NPCs are correctly skipped. Idempotent via _fattenedBy geometry
+    // tag — safe if called again downstream.
+    applyFattenedFrustumCulling(c);
 
     // Compute per-species normalized scale + pivot offset.
     // npcScale normalizes the model's above-pivot height to TARGET_NPC_HEIGHT.
@@ -957,11 +958,13 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
 
   useEffect(() => {
     if (!vrm) return;
-    // Defensive re-apply of frustumCulled=false on every node in vrm.scene.
-    // vrm-loader already does this once per path at load, but this guards
-    // against any three-vrm / three-stdlib / post-processing pass that
-    // toggles frustumCulled back on. Cheap (no-op if already false).
-    vrm.scene.traverse((o) => { o.frustumCulled = false; });
+    // Defensive re-apply of fattened frustum culling on vrm.scene (Win G fix).
+    // vrm-loader's normaliseVRM already called applyFattenedFrustumCulling once
+    // at parse time, but this useEffect runs AFTER mount and guards against any
+    // downstream pass that overwrites frustumCulled. The idempotent _fattenedBy
+    // geometry tag means repeated calls don't compound sphere fattening — the
+    // geometry stays fattened and frustumCulled is re-asserted to true.
+    applyFattenedFrustumCulling(vrm.scene);
     // characterId routes per-character Mixamo overrides in VRMCharacterAnimator.
     // Sourced from the model registry's animatorId field — single source of
     // truth so picker + arena + player all agree. Hermes/Tekk use distinct

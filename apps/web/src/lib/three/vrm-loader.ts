@@ -46,6 +46,56 @@ import type { VRM } from '@pixiv/three-vrm';
 //   the /nodes path references THREE_WEBGPU.tslFn which Turbopack rejects.
 
 // ---------------------------------------------------------------------------
+// Shared frustum-culling helper (exported for VRM consumer call sites)
+// ---------------------------------------------------------------------------
+
+/**
+ * applyFattenedFrustumCulling — replaces the defensive `frustumCulled = false`
+ * traversal pattern with one that ACTUALLY culls off-screen VRMs and GLBs.
+ *
+ * For SkinnedMesh: fattens the geometry's bounding sphere by `factor` (default
+ * 1.6) to cover the animated pose envelope. The bind-pose sphere computed by
+ * Three.js is too tight — walk/run/emote cycles extend geometry outside it,
+ * causing Three.js to wrongly cull the mesh when camera is close or angled.
+ * Fattening gives a conservative bound that stays valid throughout the animation.
+ *
+ * Idempotent: tags the geometry with `_fattenedBy` so repeated calls from
+ * multiple defensive call sites do NOT compound the fattening. Safe to call on
+ * the same root multiple times (e.g. normaliseVRM + VRMNpcMesh useEffect).
+ *
+ * For Mesh / InstancedMesh: simply sets `frustumCulled = true` (restores the
+ * Three.js default that was disabled by the old defensive pattern).
+ *
+ * For Object3D / Group / Bone: leaves `frustumCulled` at its default (true).
+ * Groups use their children's world AABBs for culling — no change needed.
+ *
+ * Call this EVERYWHERE the old pattern `traverse((o) => { o.frustumCulled = false; })`
+ * appeared in VRM-consumer code paths.
+ */
+export function applyFattenedFrustumCulling(root: THREE.Object3D, factor: number = 1.6): void {
+  root.traverse((obj) => {
+    if ((obj as unknown as THREE.SkinnedMesh).isSkinnedMesh) {
+      const sm = obj as unknown as THREE.SkinnedMesh;
+      const geom = sm.geometry;
+      if (geom) {
+        if (!geom.boundingSphere) geom.computeBoundingSphere();
+        // Idempotent — tag the geometry so repeated calls don't compound fattening.
+        const tag = '_fattenedBy';
+        const already = (geom as unknown as Record<string, number>)[tag];
+        if (already == null && geom.boundingSphere) {
+          geom.boundingSphere.radius *= factor;
+          (geom as unknown as Record<string, number>)[tag] = factor;
+        }
+      }
+      sm.frustumCulled = true;
+    } else if ((obj as THREE.Mesh).isMesh || (obj as THREE.InstancedMesh).isInstancedMesh) {
+      obj.frustumCulled = true;
+    }
+    // Object3D / Group / Bone / etc — leave frustumCulled at default (true).
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Caches
 // ---------------------------------------------------------------------------
 
@@ -143,47 +193,15 @@ function normaliseVRM(vrm: VRM): void {
 
   // Fattened-bounding-sphere frustum culling (2026-05-22 perf wave 3).
   //
-  // Previously this loop disabled frustumCulled entirely on every VRM node
-  // because Three.js computes SkinnedMesh bounding spheres from the BIND
-  // pose (T-pose), which is smaller than the animated pose envelope —
-  // walk/run cycles extend the geometry past the bind sphere, causing
-  // Three.js to incorrectly cull the mesh at close range / steep camera.
+  // applyFattenedFrustumCulling (exported above) fattens each SkinnedMesh's
+  // bounding sphere by 1.6× so the animated pose envelope stays inside the
+  // bound, then sets frustumCulled = true. Off-screen VRMs are now culled by
+  // Three.js's built-in frustum check instead of being drawn every frame.
   //
-  // The fix: keep frustumCulled = true (so off-screen VRMs get culled
-  // for free) but fatten each SkinnedMesh's bounding sphere by 1.6× radius
-  // so the animated pose stays inside the bound. Static meshes inside
-  // the VRM (eyes, accessory geometry) keep their stock bounding spheres
-  // since they don't deform — only SkinnedMesh nodes need fattening.
-  //
-  // Trade-off: a tiny band around the camera frustum where the mesh would
-  // be marginally off-screen but stays drawn. Cheap. The win is that the
-  // 11 stationary building-resident VRMs facing away from the camera
-  // (or behind the player) get correctly culled instead of being drawn
-  // every frame. Estimated -10 to -30 draw calls when looking away from
-  // a cluster of NPCs.
-  const FATTEN_FACTOR = 1.6;
-  vrm.scene.traverse((obj) => {
-    // SkinnedMesh check via duck-typed property — avoids the dual-three-types
-    // cast issue between the 0.170 and 0.182 @types/three (the unknown→cast
-    // pattern would be safe but noisier; the runtime check is equivalent).
-    const mesh = obj as unknown as THREE.SkinnedMesh;
-    if (mesh.isSkinnedMesh && mesh.geometry) {
-      const geom = mesh.geometry;
-      // Compute the bind-pose bounding sphere if it doesn't exist.
-      if (!geom.boundingSphere) geom.computeBoundingSphere();
-      // Fatten radius in place. Safe because the geometry is shared per-VRM-instance
-      // (useVRMInstance pattern); siblings of the same VRM at the same scale see the
-      // same animation envelope, so one shared fattened sphere is correct.
-      if (geom.boundingSphere) {
-        geom.boundingSphere.radius *= FATTEN_FACTOR;
-      }
-      mesh.frustumCulled = true;
-    } else {
-      // Non-skinned meshes (eyes, accessory geometry, lookAt helpers):
-      // keep frustumCulled enabled with stock bounding sphere.
-      obj.frustumCulled = true;
-    }
-  });
+  // The idempotent geometry tag (_fattenedBy) prevents compounding when
+  // consumer call sites (VRMNpcMesh useEffect, cosmetic-loader) call this
+  // helper again on the same VRM scene as a defensive re-apply.
+  applyFattenedFrustumCulling(vrm.scene);
 
   // Spring-bone scale compensation. NOTE (CDP probe 2026-04-25): Milady VRMs
   // have springBoneManager.joints.size === 0 — the loop below is a no-op.
