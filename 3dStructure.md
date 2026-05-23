@@ -884,4 +884,6 @@ Compact log. Single line per change with commit reference where applicable.
 - 2026-05-13 — Building ring expanded 68 → 72 tiles (R=2176 → 2304 wu) for inner-band breathing room post decoration retune. All 10 zone coords recomputed in `tilemap-data.ts`.
 - 2026-04-10 — Ultrathink decommission: `plugin-anthropic` + `plugin-openai` removed. Gemini providers only.
 
+- 2026-05-23 — **Experimental: Nanite-style GPU rasterizer spike** (worktree `perf/meshlet-integration` only, NOT on master). Two new files: `apps/web/src/lib/three/experimental/nanite-rasterizer.ts` (exports `NaniteRasterizer`, `geometryToMeshletAsset`, `MeshletAsset`, `RasterizerOptions` — 5-pass compute pipeline: Clear→Frustum→Dispatch→Rasterize→HWArgs, visibility buffer, SW barycentric rasterizer, HW fallback scene) and `apps/web/src/app/preview/meshlet-spike/page.tsx` (loads `building-lighthouse.glb`, single instance, DOM FPS overlay, WebGPU-only — blank/error if `navigator.gpu` absent). Route: `/preview/meshlet-spike`. No production-rendering files touched; spike is fully isolated.
+
 Older history: `git log apps/web/src/lib/three/ apps/web/src/components/three/`.
