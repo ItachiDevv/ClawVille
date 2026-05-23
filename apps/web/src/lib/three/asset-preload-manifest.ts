@@ -25,11 +25,13 @@
  * (update this comment + the arrays below whenever an asset is added/removed)
  *
  * BUILDINGS (12 GLBs, arena-buildings.tsx BUILDING_MODELS):
- *   pineapple-house.glb, chum-bucket-v2.glb, krusty-krab-v2.glb,
- *   sandy-treedome-v3.glb, salty-spitoon.glb, boating-school.glb,
- *   patty-building.glb, building-lighthouse.glb,
- *   arcade/claw-arcade-exterior.glb, cove/cove-exterior.glb,
- *   patricks-rock-v2.glb, squidward-house.glb
+ *   pineapple-house-opt1.glb?v=2, chum-bucket-v2-opt1.glb?v=2,
+ *   krusty-krab-v2-opt1.glb?v=2, sandy-treedome-v3-opt1.glb?v=2,
+ *   salty-spitoon-opt1.glb?v=2, boating-school-opt1.glb?v=2,
+ *   patty-building-opt1.glb?v=2, building-lighthouse-opt1.glb?v=2,
+ *   arcade/claw-arcade-exterior-opt1.glb?v=2, cove/cove-exterior-opt1.glb?v=2,
+ *   patricks-rock-v2-opt1.glb?v=3, squidward-house-opt1.glb?v=3
+ *   (Phase 2 perf: all 12 are material-dedup'd *-opt1 variants; 142→133 materials)
  *
  * LOCATION NPC CHARACTERS (10 SpongeBob + 2 companions, arena-location-npcs.tsx):
  *   spongebob.glb, gary.glb, squidward.glb, flying-dutchman.glb,
@@ -46,9 +48,10 @@
  *   hermes-female.vrm, hermes-male.vrm, tekk.vrm
  *
  * PLAYER VRMs (8 Milady + 3 Hermes/Tekk + 2 Chibi, agent-model-registry.ts):
- *   milady-official-1..8.vrm, hermes-female.vrm, hermes-male.vrm, tekk.vrm
- *   eliza-chibi.vrm?v=2, milady-chibi.vrm?v=2 (lazy — only fetched when the
- *   user's avatar IS a chibi; skipped in the tier-2 pool otherwise).
+ *   milady-official-1..8.vrm, hermes-female.vrm, hermes-male.vrm, tekk.vrm,
+ *   eliza-chibi.vrm?v=2, milady-chibi.vrm?v=2 (all preloaded in tier-2 —
+ *   lazy chibi gating reverted 2026-05-22 because it hid chibi NPC species
+ *   for non-chibi players when the wandering roster included them).
  *
  * TERRAIN DECORATIONS (12 models, arena-terrain.tsx DECO_MODEL_PATHS):
  *   coral-reef1.glb, coral-reef2.glb, coral-reef3.glb, kelp.glb,
@@ -84,18 +87,18 @@ import { preloadMixamoClips } from '@/lib/three/vrm-character-animator';
 
 /** All 12 building GLBs from arena-buildings.tsx BUILDING_MODELS */
 export const BUILDING_GLBS: readonly string[] = [
-  '/models/pineapple-house.glb',
-  '/models/chum-bucket-v2.glb',
-  '/models/krusty-krab-v2.glb',
-  '/models/sandy-treedome-v3.glb',
-  '/models/salty-spitoon.glb',
-  '/models/boating-school.glb',
-  '/models/patty-building.glb',
-  '/models/building-lighthouse.glb',
-  '/models/arcade/claw-arcade-exterior.glb',
-  '/models/cove/cove-exterior.glb',
-  '/models/patricks-rock-v2.glb?v=2',
-  '/models/squidward-house.glb?v=2',
+  '/models/pineapple-house-opt1.glb?v=2',
+  '/models/chum-bucket-v2-opt1.glb?v=2',
+  '/models/krusty-krab-v2-opt1.glb?v=2',
+  '/models/sandy-treedome-v3-opt1.glb?v=2',
+  '/models/salty-spitoon-opt1.glb?v=2',
+  '/models/boating-school-opt1.glb?v=2',
+  '/models/patty-building-opt1.glb?v=2',
+  '/models/building-lighthouse-opt1.glb?v=2',
+  '/models/arcade/claw-arcade-exterior-opt1.glb?v=2',
+  '/models/cove/cove-exterior-opt1.glb?v=2',
+  '/models/patricks-rock-v2-opt1.glb?v=3',
+  '/models/squidward-house-opt1.glb?v=3',
 ] as const;
 
 // ---------------------------------------------------------------------------

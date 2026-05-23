@@ -23,6 +23,7 @@ import { applyStationaryIdleAnimation, idToSeed } from '@/lib/three/procedural-a
 import { makeObject3DWebGPUSafe } from '@/lib/three/webgpu-geometry';
 import { applyColorTint } from '@/lib/three/character-animations';
 import { clampMovement2D } from '@/lib/three/collision/world-colliders';
+import { applyFattenedFrustumCulling } from '@/lib/three/vrm-loader';
 
 // ---------------------------------------------------------------------------
 // Location NPCs — SpongeBob characters at their canonical buildings
@@ -449,10 +450,12 @@ const NpcMesh = memo(function NpcMesh({
     // surfaced this. Safe for non-skinned scenes (falls back to standard clone).
     const c = SkeletonUtils.clone(scene);
     makeObject3DWebGPUSafe(c);
-    // SkinnedMesh bounding spheres come from bind pose (T-pose); animated geometry
-    // extends past them, causing the character to disappear when camera is close/angled.
-    // Must be applied at every clone site — not just arena-npcs.tsx.
-    c.traverse((obj) => { obj.frustumCulled = false; });
+    // Fatten SkinnedMesh bounding spheres + re-enable frustumCulled (Win G fix,
+    // 2026-05-22 perf wave 3). SkinnedMesh bind-pose spheres are too tight for
+    // animated characters; applyFattenedFrustumCulling fattens each by 1.6× so
+    // animated poses stay inside the bound, then enables culling so off-screen
+    // location NPCs are correctly skipped. Idempotent via _fattenedBy geometry tag.
+    applyFattenedFrustumCulling(c);
     if (modelCfg.color != null) {
       applyColorTint(c, new THREE.Color(modelCfg.color), 0.7, 0.25);
     }

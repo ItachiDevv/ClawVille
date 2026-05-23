@@ -37,7 +37,7 @@
  * GPU constraints (Iris Xe invariants):
  *   - NO drei Text/Billboard — hard crash
  *   - NO InstancedMesh + ShaderMaterial — silent WebGPU crash
- *   - frustumCulled=false on every mesh after SkeletonUtils.clone
+ *   - applyFattenedFrustumCulling() on every mesh after SkeletonUtils.clone (Win G, 2026-05-22)
  *   - No per-frame allocations — mixer/action refs at component scope
  */
 
@@ -47,6 +47,7 @@ import { useGLTF } from '@react-three/drei';
 import * as THREE from 'three';
 import { clone as skeletonClone } from 'three/examples/jsm/utils/SkeletonUtils.js';
 import { useGameStore } from '@/stores/game';
+import { applyFattenedFrustumCulling } from '@/lib/three/vrm-loader';
 
 useGLTF.preload('/models/guide-rigged.glb');
 
@@ -99,10 +100,11 @@ const TownGuideInner = memo(function TownGuideInner() {
   // SkeletonUtils.clone rebinds SkinnedMesh.skeleton correctly — plain clone(true) shares bones.
   const cloned = useMemo(() => {
     const c = skeletonClone(gltfScene) as THREE.Group;
-    // Bind-pose bounding sphere culls animated verts at close range — disable culling.
-    c.traverse((obj) => {
-      if ((obj as THREE.Mesh).isMesh) obj.frustumCulled = false;
-    });
+    // Fatten SkinnedMesh bounding spheres + re-enable frustumCulled (Win G fix,
+    // 2026-05-22 perf wave 3). Bind-pose sphere is too tight for animated poses;
+    // applyFattenedFrustumCulling fattens each SkinnedMesh sphere by 1.6× and
+    // enables culling so off-screen guide renders are correctly skipped.
+    applyFattenedFrustumCulling(c);
     return c;
   }, [gltfScene]);
 

@@ -210,11 +210,11 @@ const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: n
 
   // Slot 0 — N (cx=180, cy=50): dx=0, dz=130 → atan2(0,130)=0
   // targetMaxDim: 1100 — pineapple house needs extra size to read from a distance.
-  'visual-creation':     { model: '/models/pineapple-house.glb',     yOffset: 0, rotY:  0.000, targetMaxDim: 1100 },
+  'visual-creation':     { model: '/models/pineapple-house-opt1.glb?v=2',     yOffset: 0, rotY:  0.000, targetMaxDim: 1100 },
   // Slot 1 — NNE (cx=245, cy=67): dx=-65, dz=113 → atan2(-65,113)≈-0.522 (-π/6)
   // Phase 6.2: targetMaxDim=1000→1400 — user reports bucket reads too small vs adjacent buildings.
   // 1400 puts Chum Bucket in the same landmark tier as Squidward + Krusty Krab (5-7× avatar height).
-  'code-development':    { model: '/models/chum-bucket-v2.glb',      yOffset: 0, rotY: -0.522, targetMaxDim: 1400 },
+  'code-development':    { model: '/models/chum-bucket-v2-opt1.glb?v=2',      yOffset: 0, rotY: -0.522, targetMaxDim: 1400 },
   // Slot 2 — ENE (cx=293, cy=115): dx=-113, dz=65 → atan2(-113,65)≈-1.049 (-π/3)
   // krusty-krab-v2.glb = iconic ship restaurant (CC-BY, Yanez Designs, 1.59 MB original).
   // GLB node tree (verified 2026-05-18): RootNode → "The Krusty Krab" (with spaces),
@@ -226,7 +226,7 @@ const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: n
   // body was behind the slot. Dynamic anchor ensures the restaurant body center lands at the slot.
   // FIXED in Phase 6.2.2: was "The_Krusty_Krab" (underscores) — never matched the real node
   //   name "The Krusty Krab" (spaces). Both childScaleOverrides and bodyAnchorChild were no-ops.
-  'mcp-tool-use':        { model: '/models/krusty-krab-v2.glb',      yOffset: 0, rotY: -1.049, targetMaxDim: 1400,
+  'mcp-tool-use':        { model: '/models/krusty-krab-v2-opt1.glb?v=2',      yOffset: 0, rotY: -1.049, targetMaxDim: 1400,
                            childScaleOverrides: { 'The Krusty Krab': 1.5 },
                            bodyAnchorChild: 'The Krusty Krab' },
   // Slot 3 — E (cx=310, cy=180): dx=-130, dz=0 → atan2(-130,0)=-π/2≈-1.571
@@ -238,7 +238,7 @@ const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: n
   // MAX_FOOTPRINT=2000, effective scale = 2000/25.87=77.3; height = 10.61×77.3≈820wu (≈4.6× avatar).
   // The dome is wide by design — the globe shape naturally tapers, so visual overlap with
   // adjacent buildings at the 2000wu footprint is minimal.
-  'messaging-channels':  { model: '/models/sandy-treedome-v3.glb',   yOffset: 0, rotY: -1.571, rotYOffset: Math.PI, targetMaxDim: 2500 },
+  'messaging-channels':  { model: '/models/sandy-treedome-v3-opt1.glb?v=2',   yOffset: 0, rotY: -1.571, rotYOffset: Math.PI, targetMaxDim: 2500 },
   // Slot 4 — ESE (cx=293, cy=245): dx=-113, dz=-65 → atan2(-113,-65)≈-2.093 (-2π/3)
   // rotYOffset: salty-spitoon.glb authored facing +X; -π/2 aligns toward village center.
   // Phase 6.2.2: targetMaxDim 1300→2500. salty-spitoon.glb is authored at km-scale
@@ -247,23 +247,23 @@ const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: n
   // Height = 340557×0.00493 = 1679wu — hits MAX_FOOTPRINT=2000: cap adjusts to
   // scale×(2000/XZ_scaled). Final height ≈ 1209wu (≈6.7× avatar). Visible improvement.
   // rotYOffset -π/2: the spitoon GLB is authored facing +X; rotate to face village center.
-  'api-integrations':    { model: '/models/salty-spitoon.glb',       yOffset: 0, rotY: -2.093, rotYOffset: -Math.PI / 2, targetMaxDim: 2500 },
+  'api-integrations':    { model: '/models/salty-spitoon-opt1.glb?v=2',       yOffset: 0, rotY: -2.093, rotYOffset: -Math.PI / 2, targetMaxDim: 2500 },
   // Slot 5 — SSE (cx=245, cy=293): dx=-65, dz=-113 → atan2(-65,-113)≈-2.620 (-5π/6)
   // rotYOffset: boating-school.glb classroom must face center (model-authored offset).
-  'app-publishing':      { model: '/models/boating-school.glb',      yOffset: 0, rotY: -2.620, rotYOffset: Math.PI / 2, targetMaxDim: 1000 },
+  'app-publishing':      { model: '/models/boating-school-opt1.glb?v=2',      yOffset: 0, rotY: -2.620, rotYOffset: Math.PI / 2, targetMaxDim: 1000 },
   // Slot 6 — S (cx=180, cy=310): dx=0, dz=-130 → atan2(0,-130)=π≈3.142
   // Phase 6.2.2: targetMaxDim 1300→2200. patty-building.glb bbox ≈255.78×193.50×150.
   // Max dim = 255.78 (X width). At targetMaxDim=2200: scale = 2200/255.78 = 8.6.
   // Height = 193.50×8.6 = 1664wu. XZ = 255.78×8.6 = 2200 — hits MAX_FOOTPRINT=2000.
   // Adjusted: scale×(2000/2200) = 7.82. Height = 193.50×7.82 = 1513wu (≈8.4× avatar). ✓
   // The civic anchor building visually dominates the south slot as intended.
-  'cron-automation':     { model: '/models/patty-building.glb',      yOffset: 0, rotY:  3.142, targetMaxDim: 2200 },
+  'cron-automation':     { model: '/models/patty-building-opt1.glb?v=2',      yOffset: 0, rotY:  3.142, targetMaxDim: 2200 },
   // Slot 7 — SSW (cx=115, cy=293): dx=65, dz=-113 → atan2(65,-113)≈2.620 (5π/6)
   // Lighthouse is the tallest landmark — targetMaxDim 1400 keeps it visually dominant.
-  'deployment-ops':      { model: '/models/building-lighthouse.glb', yOffset: 0, rotY:  2.620, targetMaxDim: 1400 },
+  'deployment-ops':      { model: '/models/building-lighthouse-opt1.glb?v=2', yOffset: 0, rotY:  2.620, targetMaxDim: 1400 },
   // Slot 8 — WSW (cx=67, cy=245): dx=113, dz=-65 → atan2(113,-65)≈2.093 (2π/3)
   // Phase 6.1 swap preserved: claw-arcade at slot 8/WSW. Cove is at slot 9/W (2 slots away).
-  'claw-arcade':         { model: '/models/arcade/claw-arcade-exterior.glb', yOffset: 0, rotY:  2.093, targetMaxDim: 1100,
+  'claw-arcade':         { model: '/models/arcade/claw-arcade-exterior-opt1.glb?v=2', yOffset: 0, rotY:  2.093, targetMaxDim: 1100,
                            onClick: () => { console.info('[claw-arcade] interior pending — Concern 6.3'); } },
   // Slot 9 — W (cx=50, cy=180): dx=130, dz=0 → atan2(130,0)=π/2≈1.571  ← entertainment district
   // cove-exterior.glb = "Pyramid Cove" by tl0615 (CC-BY-4.0, Sketchfab).
@@ -272,12 +272,12 @@ const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: n
   // onClick: Phase 6.0.3 walk-in flow — avatar walks toward door, then SceneTransition fades to /cove.
   // Door target in game-px: cove zone cx=50 tiles → x=1600, cy=180 tiles → y=5760; door is ~300 game-px
   // east of building center (toward town center at 5760,5760).
-  'cove':              { model: '/models/cove/cove-exterior.glb', yOffset: 0, rotY:  1.571, targetMaxDim: 1300, box3Recenter: true,
+  'cove':              { model: '/models/cove/cove-exterior-opt1.glb?v=2', yOffset: 0, rotY:  1.571, targetMaxDim: 1300, box3Recenter: true,
                            onClick: () => { triggerCoveWalkIn(); } },
   // Slot 10 — WNW (cx=67, cy=115): dx=113, dz=65 → atan2(113,65)≈1.049 (π/3)
   // Phase 6.1 swap preserved: agent-security at slot 10/WNW.
   // targetMaxDim: 1100 — wide dome, max-dim normalization prevents over-inflation.
-  'agent-security':      { model: '/models/patricks-rock-v2.glb?v=2',    yOffset: 0, rotY:  1.049, targetMaxDim: 1100 },
+  'agent-security':      { model: '/models/patricks-rock-v2-opt1.glb?v=3',    yOffset: 0, rotY:  1.049, targetMaxDim: 1100 },
   // Slot 11 — NNW (cx=115, cy=67): dx=65, dz=113 → atan2(65,113)≈0.522 (π/6)
   // squidward-house.glb = Easter Island moai head (CC-BY, Yanez Designs).
   // GLB node tree (AUTHORITATIVE — verified via CDP live scene traversal 2026-05-21):
@@ -296,7 +296,7 @@ const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: n
   // bodyAnchorChild "Squidward’s_House": stone steps extend in +Z from the moai body,
   //   pulling full-GLB bbox center toward the pathway. The dynamic anchor aligns the
   //   moai body center (after 1.7× override) with the ring slot — not the combined bbox.
-  "memory-rag":          { model: '/models/squidward-house.glb?v=2',     yOffset: 0, rotY:  0.522, targetMaxDim: 1700,
+  "memory-rag":          { model: '/models/squidward-house-opt1.glb?v=3',     yOffset: 0, rotY:  0.522, targetMaxDim: 1700,
                            childScaleOverrides: { "Squidward's_House": 1.7 },
                            bodyAnchorChild: "Squidward's_House" },
 };
