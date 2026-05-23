@@ -43,7 +43,7 @@ import type { VRM } from '@pixiv/three-vrm';
 const VRM_PATH  = '/avatars/milady-official-3.vrm';
 const VRM_ID    = 'building-visit-vignette';
 const WALK_PATH = '/avatars/animations/walk.glb';
-const BLDG_PATH = '/models/pineapple-house.glb';
+const BLDG_PATH = '/models/pineapple-house-opt1.glb?v=2';
 
 // ---------------------------------------------------------------------------
 // Scene constants

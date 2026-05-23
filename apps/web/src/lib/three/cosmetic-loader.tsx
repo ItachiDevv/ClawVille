@@ -38,6 +38,7 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { MeshoptDecoder } from 'meshoptimizer';
 import { useQuery } from '@tanstack/react-query';
 import { emitParticles } from '@/lib/three/particle-system';
+import { applyFattenedFrustumCulling } from '@/lib/three/vrm-loader';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -306,9 +307,12 @@ async function loadGlbAsset(assetUrl: string): Promise<THREE.Group> {
       assetUrl,
       (gltf) => {
         const group = gltf.scene;
-        // Frustum culling off — anchored accessory bounding boxes may not cover
-        // the actual render area (SkinnedMesh T-pose bbox issue)
-        group.traverse((c) => { c.frustumCulled = false; });
+        // Fatten SkinnedMesh bounding spheres + re-enable frustumCulled (Win G fix,
+        // 2026-05-22 perf wave 3). Hat/glasses GLBs may contain SkinnedMesh nodes
+        // whose T-pose spheres are too tight for animated poses. applyFattenedFrustumCulling
+        // fattens each sphere by 1.6× and re-enables culling so accessories attached to
+        // off-screen avatars are correctly skipped. Idempotent via _fattenedBy tag.
+        applyFattenedFrustumCulling(group);
         GLB_CACHE.set(assetUrl, group);
         resolve(group.clone(true));
       },
@@ -467,6 +471,11 @@ function HatOrGlassesRenderer({
       attachedGroup.position.set(offsetXYZ[0], offsetXYZ[1], offsetXYZ[2]);
       attachedGroup.scale.setScalar(scaleFactor);
       attachedGroup.rotation.set(rotationXYZ[0], rotationXYZ[1], rotationXYZ[2]);
+      // Intentionally kept false on this Group wrapper (not a SkinnedMesh / Mesh).
+      // A Group's frustum test uses its children's world AABBs; leaving it true would
+      // cull the wrapper before Three.js can check the children's actual bounds.
+      // The GLB meshes INSIDE (glbGroup) already have correct culling applied by
+      // applyFattenedFrustumCulling in loadGlbAsset above.
       attachedGroup.frustumCulled = false;
       attachedGroup.add(glbGroup);
       anchor.add(attachedGroup);
