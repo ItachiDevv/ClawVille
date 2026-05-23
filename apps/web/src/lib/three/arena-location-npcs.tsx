@@ -46,6 +46,9 @@ const _locRaycaster = new THREE.Raycaster();
 _locRaycaster.layers.set(TERRAIN_LAYER);
 const _locRayOrigin = new THREE.Vector3();
 const _locRayDir = new THREE.Vector3(0, -1, 0);
+// PHASE 1.5 — module-scope camera-position scratch for far-NPC mixer gate.
+// Zero per-frame allocations across all 11 location-NPC useFrame calls per frame.
+const _locCamPos = new THREE.Vector3();
 
 // Sanity bounds for computeNormalizedScale. Some GLBs have broken bounding boxes
 // (e.g. tiny non-skinned accessories inflate the scale because their bbox height
@@ -545,16 +548,26 @@ const NpcMesh = memo(function NpcMesh({
     };
   }, [cloned, animations]);
 
-  useFrame(({ clock }, delta) => {
+  useFrame(({ clock, camera }, delta) => {
     if (!groupRef.current) return;
 
-    // Drive built-in AnimationMixer if present (Pearl Krabs etc.).
-    // AnimationMixer runs every frame — its keyframe interpolation is already
-    // efficient (Float32Array lerp) and skipping it causes visible animation pops
-    // on GLBs with fast skeletal clips (Pearl's breathing idle ~0.5 Hz is fine at
-    // 60Hz; dropping to 20Hz would require per-frame caching of pose which is
-    // more complex than the cost saved).
-    if (mixerRef.current) mixerRef.current.update(delta);
+    // PHASE 1.5 — Far-location-NPC mixer gate (2026-05-22).
+    // Past 5000 wu (distSq > 25M) the building resident's idle/breathing
+    // animation is imperceptible from the camera; skip mixer.update() to
+    // recover main-thread CPU. Pose freezes at the last frame; resumes
+    // seamlessly when the player walks closer. Module-scope scratch,
+    // zero per-frame allocations.
+    _locCamPos.set(camera.position.x, camera.position.y, camera.position.z);
+    const _ldx = worldX - _locCamPos.x;
+    const _ldz = worldZ - _locCamPos.z;
+    const _locDistSq = _ldx * _ldx + _ldz * _ldz;
+    const FAR_LOC_NPC_DIST_SQ = 25_000_000; // 5000 wu²
+    const isFarLocNpc = _locDistSq > FAR_LOC_NPC_DIST_SQ;
+
+    // Drive built-in AnimationMixer if present (Pearl Krabs etc.). Skip
+    // entirely for far NPCs — biggest CPU win available without altering
+    // visible NPC density.
+    if (!isFarLocNpc && mixerRef.current) mixerRef.current.update(delta);
 
     // Re-raycast terrain Y periodically (not just once) to handle late terrain loading.
     // Stagger by seedBase so NPCs don't all spike CPU on the same frame.

@@ -1171,26 +1171,44 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
       // held mid-leap.
       const npcLockIdle = isPossessedPlayerNpc &&
         (airborne || jumpState.phase === 'charging');
-      animator.updateMixerOnly(dt, npcLockIdle ? false : isMoving);
-      // WIN B — Spring-bone distance LOD (perf-audit-2026-05-22 Q4)
-      // Close NPCs (<2500wu) run at 30Hz — better perceived quality for
-      // the character the user is staring at. Far NPCs (>6000wu) drop to
-      // ~7.5Hz — imperceptible at range. Read camera.position directly
-      // (no getWorldPosition call) — camera is a scene-root object, its
-      // local position IS world position. Module-scope _springLodCamPos
-      // scratch: ZERO per-frame allocations (Iris Xe invariant).
+
+      // Compute distance² to camera ONCE — drives both Phase 1.5 far-gate
+      // and the existing Win B spring-bone distance LOD. Zero per-frame
+      // allocations via the module-scope _springLodCamPos scratch.
       _springLodCamPos.set(camera.position.x, camera.position.y, camera.position.z);
       const _sdx = group.position.x - _springLodCamPos.x;
       const _sdz = group.position.z - _springLodCamPos.z;
       const _springDistSq = _sdx * _sdx + _sdz * _sdz;
-      const springMod =
-        _springDistSq < 6_250_000  ? 2 :   // < 2500wu → 30Hz
-        _springDistSq < 36_000_000 ? 4 :   // < 6000wu → 15Hz
-                                     8;    // ≥ 6000wu → ~7.5Hz
-      if ((frame + seed) % springMod === 0) {
-        const acc = Math.min(springDeltaAccRef.current, 0.1);
-        animator.updateSpringOnly(acc);
-        springDeltaAccRef.current = 0;
+
+      // PHASE 1.5 — Far-NPC mixer + spring-bone gate (2026-05-22).
+      // Past 5000 wu (distSq > 25M) the VRM is far enough from the camera
+      // that its frame-by-frame animation is imperceptible; the cost of
+      // AnimationMixer.update + spring physics dominates the main-thread
+      // long-task budget. Skipping both entirely for far NPCs is the only
+      // CPU saving Phase 1 (Three.js frustum culling) didn't cover —
+      // Three.js culling only skips the GPU draw, not the per-frame JS
+      // tick. Pose freezes at last value; resumes seamlessly when player
+      // approaches. springDeltaAccRef keeps accumulating dt so spring
+      // resumes with the correct delta on re-entry.
+      const FAR_NPC_DIST_SQ = 25_000_000; // 5000 wu²
+      const isFarNpc = _springDistSq > FAR_NPC_DIST_SQ;
+
+      if (!isFarNpc) {
+        animator.updateMixerOnly(dt, npcLockIdle ? false : isMoving);
+
+        // WIN B — Spring-bone distance LOD (perf-audit-2026-05-22 Q4)
+        // Close NPCs (<2500wu) run at 30Hz — better perceived quality for
+        // the character the user is staring at. Far NPCs (>6000wu) drop to
+        // ~7.5Hz — imperceptible at range.
+        const springMod =
+          _springDistSq < 6_250_000  ? 2 :   // < 2500wu → 30Hz
+          _springDistSq < 36_000_000 ? 4 :   // < 6000wu → 15Hz
+                                       8;    // ≥ 6000wu → ~7.5Hz
+        if ((frame + seed) % springMod === 0) {
+          const acc = Math.min(springDeltaAccRef.current, 0.1);
+          animator.updateSpringOnly(acc);
+          springDeltaAccRef.current = 0;
+        }
       }
     }
   });
