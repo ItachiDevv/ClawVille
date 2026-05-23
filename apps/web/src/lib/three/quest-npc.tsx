@@ -29,6 +29,7 @@ import { useGLTF } from '@react-three/drei';
 import * as THREE from 'three/webgpu';
 import { color, float, sin, time } from 'three/tsl';
 import { useGameStore } from '@/stores/game';
+import { applyFattenedFrustumCulling } from '@/lib/three/vrm-loader';
 
 // ---------------------------------------------------------------------------
 // World-space position
@@ -106,9 +107,11 @@ const QuestNpcInner = memo(function QuestNpcInner() {
   // guide reads at the same prominence as building characters).
   const { cloned, npcScale } = useMemo(() => {
     const c = scene.clone(true);
-    // SkinnedMesh bounding spheres come from bind pose (T-pose); animated geometry
-    // extends past them, causing the NPC to disappear when camera is close/angled.
-    c.traverse((obj) => { obj.frustumCulled = false; });
+    // Fatten SkinnedMesh bounding spheres + re-enable frustumCulled (Win G fix,
+    // 2026-05-22 perf wave 3). Bind-pose sphere too tight for animated crayfish;
+    // applyFattenedFrustumCulling fattens each SkinnedMesh sphere by 1.6× and
+    // enables culling so off-screen quest NPC renders are correctly skipped.
+    applyFattenedFrustumCulling(c);
     const box = new THREE.Box3().setFromObject(c);
     const sz  = new THREE.Vector3();
     box.getSize(sz);

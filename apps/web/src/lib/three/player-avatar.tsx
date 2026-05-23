@@ -24,7 +24,7 @@ import {
   type CharacterAnimator,
 } from '@/lib/three/character-animations';
 import { jumpState, isEditable } from '@/lib/three/jump-state';
-import { useVRMInstance, disposeVRMInstance, preloadVRMBytes } from '@/lib/three/vrm-loader';
+import { useVRMInstance, disposeVRMInstance, preloadVRMBytes, applyFattenedFrustumCulling } from '@/lib/three/vrm-loader';
 import {
   VRMCharacterAnimator,
   preloadMixamoClips,
@@ -709,10 +709,12 @@ function PlayerAvatarGLBInner() {
   const { cloned, lobsterAnimator, charAnimator, pivotOffsetY } = useMemo(() => {
     const c = scene.clone(true);
     makeObject3DWebGPUSafe(c);
-    // SkinnedMesh bounding spheres come from bind pose (T-pose); animated geometry
-    // extends past them, causing the player avatar to disappear when camera is close/angled.
-    // Must be applied at every clone site — not just arena-npcs.tsx.
-    c.traverse((obj) => { obj.frustumCulled = false; });
+    // Fatten SkinnedMesh bounding spheres + re-enable frustumCulled (Win G fix,
+    // 2026-05-22 perf wave 3). SkinnedMesh bind-pose spheres are too tight for
+    // animated avatars; applyFattenedFrustumCulling fattens each by 1.6× so the
+    // animated pose stays inside the bound, then enables culling so the player
+    // avatar is correctly skipped when off-screen. Idempotent via _fattenedBy tag.
+    applyFattenedFrustumCulling(c);
     const avatarColor = useGameStore.getState().avatarColor;
     const tint = new THREE.Color(COLOR_TINTS[avatarColor] ?? 0xffffff);
 

@@ -22,8 +22,14 @@
 //     (forceWebGL iOS fix). v3 clients would receive the pre-fix JS bundle
 //     from the static cache on first load, causing a double-load appearance
 //     on iOS Safari as the SW update cycle completed in the background.
+//
+// 2026-05-22 v5 (Phase 2 perf):
+//   - Updated PRECACHE_GLBS to match the current 12-building roster
+//     (all 12 now point to *-opt1.glb variants, 142→133 materials saved).
+//   - Previous roster (chum-bucket.glb, downtown-building.glb, etc.) was
+//     stale — those assets are no longer loaded by arena-buildings.tsx.
 
-const CACHE_VERSION = 'v4';
+const CACHE_VERSION = 'v5';
 const GLB_CACHE = `clawville-assets-${CACHE_VERSION}`;
 const STATIC_CACHE = `clawville-static-${CACHE_VERSION}`;
 
@@ -34,7 +40,9 @@ const MAX_INDIVIDUAL_BYTES = 10 * 1024 * 1024; // 10 MB
 const MAX_GLB_CACHE_BYTES = 60 * 1024 * 1024; // 60 MB
 
 // Critical-path GLBs pre-cached at install time.
-// All 10 building models + player + terrain decorations (~6.2 MB total).
+// All 12 building models (opt1 variants) + terrain decorations.
+// Phase 2 perf (2026-05-22): updated to *-opt1.glb paths that match
+// arena-buildings.tsx BUILDING_MODELS. Old roster removed.
 const PRECACHE_GLBS = [
   '/models/lobster.glb',               // 196 KB — player character
   '/models/underwater-decorations.glb', // 1.0 MB — terrain decoration layer
@@ -43,17 +51,19 @@ const PRECACHE_GLBS = [
   '/models/coral-reef3.glb',            // 260 KB
   '/models/kelp.glb',                   //  25 KB
   '/models/building-seashell.glb',      // 108 KB
-  // All 10 building models — visible from any camera angle
-  '/models/pineapple-house.glb',        // 544 KB
-  '/models/salty-spitoon.glb',          // 380 KB
-  '/models/chum-bucket.glb',            // 608 KB
-  '/models/downtown-building.glb',      // 289 KB
-  '/models/bb-building.glb',            // 209 KB
-  '/models/building-cave.glb',          // 309 KB
-  '/models/patty-building.glb',         // 506 KB
-  '/models/boating-school.glb',         // 548 KB
-  '/models/building-submarine.glb',     // 363 KB
-  '/models/building-lighthouse.glb',    // 197 KB
+  // All 12 building models (Phase 2 opt1 variants, ?v= queries busted)
+  '/models/pineapple-house-opt1.glb?v=2',
+  '/models/chum-bucket-v2-opt1.glb?v=2',
+  '/models/krusty-krab-v2-opt1.glb?v=2',
+  '/models/sandy-treedome-v3-opt1.glb?v=2',
+  '/models/salty-spitoon-opt1.glb?v=2',
+  '/models/boating-school-opt1.glb?v=2',
+  '/models/patty-building-opt1.glb?v=2',
+  '/models/building-lighthouse-opt1.glb?v=2',
+  '/models/arcade/claw-arcade-exterior-opt1.glb?v=2',
+  '/models/cove/cove-exterior-opt1.glb?v=2',
+  '/models/patricks-rock-v2-opt1.glb?v=3',
+  '/models/squidward-house-opt1.glb?v=3',
   // The 3 locomotion clips every VRM avatar needs to render without a T-pose
   // flash. Loaded eagerly on /game mount by preloadLocomotionClips() —
   // pre-caching them here means the SECOND-visit network panel has 0 anim GLB
