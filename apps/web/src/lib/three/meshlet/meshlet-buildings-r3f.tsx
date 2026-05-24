@@ -65,6 +65,19 @@ export default function MeshletBuildingsR3F() {
       try {
         const renderer = gl as unknown as THREE.WebGPURenderer;
 
+        // Guard: rasterizer's TSL compute uses WGSL pointer-atomic syntax that
+        // CANNOT compile to GLSL. If the renderer fell back to WebGL2 (low-end
+        // GPU detect, iOS Safari, no WebGPU adapter), bail out silently rather
+        // than flooding console with hundreds of shader compile errors and
+        // rendering nothing. ?meshlets=1 SHOULD also force-WebGPU via the
+        // FORCE_WEBGPU_OVERRIDE check in World3DCanvas, but defense-in-depth.
+        const isWebGPU = (renderer as any).isWebGPURenderer === true &&
+                         (renderer as any).backend?.constructor?.name !== 'WebGLBackend';
+        if (!isWebGPU) {
+          console.warn('[MeshletBuildingsR3F] renderer is not WebGPU — skipping rasterizer init. The rasterizer requires WebGPU; the WebGL fallback path is not supported.');
+          return;
+        }
+
         // Disable R3F's autoClear so the rasterizer's earlier-in-frame output
         // isn't cleared by R3F's later render pass. The rasterizer manages its
         // own framebuffer clearing internally.

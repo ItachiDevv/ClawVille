@@ -946,9 +946,15 @@ const WEBGPU_ABSENT =
 // The query is opt-in so the default-safe WebGL2 path stays in place for
 // all other users. Once we've validated the WebGPU path is stable across
 // sessions, the LOW_END_GPU_DETECTED branch can be removed from FORCE_WEBGL.
+// ?meshlets=1 ALSO implies WebGPU override — the rasterizer's TSL compute
+// shaders emit WGSL pointer-atomic syntax (`atomicStore(&buf, 0u)`) which
+// CANNOT compile to GLSL. If the renderer falls back to WebGL2 on a
+// low-end GPU detect, the rasterizer floods the console with shader compile
+// errors and renders nothing. So treat ?meshlets=1 as ?webgpu=1 too.
 const FORCE_WEBGPU_OVERRIDE =
   typeof window !== 'undefined' &&
-  new URLSearchParams(window.location.search).get('webgpu') === '1';
+  (new URLSearchParams(window.location.search).get('webgpu') === '1' ||
+   new URLSearchParams(window.location.search).get('meshlets') === '1');
 const FORCE_WEBGL = FORCE_WEBGPU_OVERRIDE
   ? (IOS_SAFARI || WEBGPU_ABSENT)              // override: drop the low-end gate
   : (IOS_SAFARI || WEBGPU_ABSENT || LOW_END_GPU_DETECTED);
