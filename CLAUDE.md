@@ -254,16 +254,25 @@ Required in `.env.local`:
 
 ### Infrastructure
 
-Hetzner VPS — `<PROD_VPS_IP>` (real IP in gitignored `scripts/deploy/.env.deploy` under `PROD_VPS_IP=…`), name `clawville-prod`. Coolify + Traefik + Let's Encrypt. DNS: Cloudflare-proxied (subdomains in `scripts/deploy/.env.deploy`). DB: Supabase Postgres (endpoint in env). SSH key `~/.ssh/clawville_deploy` (`provision-hetzner.sh`).
+Two Hetzner VPS hosts since the 2026-05-23 migration:
+
+- **Production:** `<PROD_VPS_IP>` (real IP in gitignored `scripts/deploy/.env.deploy` under `PROD_VPS_IP=…`), Hillsboro (us-west), Coolify 4.1, SSH key `~/.ssh/clawville_hillsboro` (passphrase-protected — load into Windows ssh-agent once with `ssh-add`). Serves `clawville.world` + `api.clawville.world`.
+- **Staging:** `<STAGING_VPS_IP>` (real IP in `STAGING_VPS_IP=…`), Ashburn, Coolify 4.0, SSH key `~/.ssh/clawville_deploy`. Serves `staging.clawville.world` + `api-staging.clawville.world`. Shares prod Supabase — any staging write touches prod data.
+
+Both run Coolify + Traefik + Let's Encrypt. DNS: Cloudflare-proxied (subdomains in `scripts/deploy/.env.deploy`). DB: Supabase Postgres (endpoint in env) — single instance shared across prod + staging.
 
 ### Coolify app IDs
 
-| App | ID | Domain |
-|---|---|---|
-| web | 4 | `clawville.world` |
-| api | 3 | `api.clawville.world` |
+| Env | App | ID | UUID env-var | Domain |
+|---|---|---|---|---|
+| prod    | api | 2 | `API_APP_UUID`         | `api.clawville.world` (+ `api-new.clawville.world`) |
+| prod    | web | 3 | `WEB_APP_UUID`         | `clawville.world` (+ `new.clawville.world`) |
+| staging | api | 3 | `STAGING_API_APP_UUID` | `api-staging.clawville.world` |
+| staging | web | 4 | `STAGING_WEB_APP_UUID` | `staging.clawville.world` |
 
-Both pull from `github.com/ItachiDevv/ClawVille` via deploy key, auto-deploy on push to `master`. Web ~3–5 min, api ~2–3 min. Verify: `curl -sS --ssl-no-revoke https://api.clawville.world/health`.
+Both pull from `github.com/ItachiDevv/ClawVille` via the SAME shared deploy key (exported from old box, imported on new), auto-deploy on push to `master`. Web ~3–5 min, api ~2–3 min. Verify: `curl -sS --ssl-no-revoke https://api.clawville.world/health`.
+
+**Coolify admin UIs:** prod at `https://coolify-new.clawville.world` (eventually rename to `coolify.clawville.world` after migration soaks 24h), staging at `https://coolify-staging.clawville.world`. Both use the same admin credentials (mirrored on migration).
 
 ### Deploy paths — prefer the script, do not hand-roll tinker
 
@@ -280,32 +289,39 @@ Coolify is FIFO. Push B while A is building → A finishes serving its supersede
 **Rule:** when you push and an older-commit deploy is still `in_progress`/`queued` for the same app, cancel it. Only the latest commit finishes. Two-step cancel:
 
 ```bash
+# Prereq: ssh-add ~/.ssh/clawville_hillsboro once (passphrase prompt locally), then the
+# Windows ssh-agent caches it for all subsequent root@$PROD_VPS_IP commands.
+# For STAGING, use `-i ~/.ssh/clawville_deploy root@$STAGING_VPS_IP` instead.
+
 # (a) Find redundant pids:
-ssh -i ~/.ssh/clawville_deploy root@$PROD_VPS_IP \
+ssh root@$PROD_VPS_IP \
   "docker exec coolify php artisan tinker --execute='use App\\Models\\ApplicationDeploymentQueue; \$q = ApplicationDeploymentQueue::orderByDesc(\"id\")->limit(8)->get([\"id\",\"application_id\",\"status\",\"commit\",\"current_process_id\"]); foreach(\$q as \$r) { echo \$r->id.\"|app\".\$r->application_id.\"|\".\$r->status.\"|\".substr(\$r->commit,0,7).\"|pid:\".\$r->current_process_id.PHP_EOL; }'"
 
 # (b) Kill the build container PID + mark queue rows cancelled (only for
 #     rows whose commit ≠ your latest HEAD; never touch the latest):
-ssh -i ~/.ssh/clawville_deploy root@$PROD_VPS_IP \
+ssh root@$PROD_VPS_IP \
   "kill -9 <PID> 2>/dev/null; docker exec coolify php artisan tinker --execute='use App\\Models\\ApplicationDeploymentQueue; foreach([<IDs>] as \$id) { \$r = ApplicationDeploymentQueue::find(\$id); if (\$r) { \$r->status = \"cancelled-by-user\"; \$r->save(); echo \"canceled \$id\".PHP_EOL; } }'"
 ```
 
-The latest-commit row is the ONLY survivor — starts immediately if nothing else running, else runs next. Never cancel the latest, even if it's been running a while. Cancel older same-app rows `queued` first, then `in_progress`. Apply per app: app 3 (api) and app 4 (web) have independent queues.
+The latest-commit row is the ONLY survivor — starts immediately if nothing else running, else runs next. Never cancel the latest, even if it's been running a while. Cancel older same-app rows `queued` first, then `in_progress`. Apply per app: prod api (id 2) and prod web (id 3) have independent queues; staging api (id 3) and staging web (id 4) on the old box have their own.
 
 ### Manual redeploy via SSH tinker (env-var add/update — swap the closure body)
 
-Load IP first: `source scripts/deploy/.env.deploy` (gitignored). Then:
+Load IP first: `source scripts/deploy/.env.deploy` (gitignored). PROD uses `~/.ssh/clawville_hillsboro` (passphrase — must be in ssh-agent), STAGING uses `~/.ssh/clawville_deploy`. Then:
 
 ```bash
-ssh -i ~/.ssh/clawville_deploy root@$PROD_VPS_IP \
+# PROD (new box, IDs are api=2 web=3)
+ssh root@$PROD_VPS_IP \
   "docker exec coolify php artisan tinker --execute='
     use App\\Models\\Application;
-    \$app = Application::find(3);  // 3=api, 4=web
+    \$app = Application::find(2);  // prod: 2=api, 3=web
     \$uuid = (string) new \\Visus\\Cuid2\\Cuid2;
     queue_application_deployment(application: \$app, deployment_uuid: \$uuid, is_api: true, no_questions_asked: true);
     echo \$uuid . PHP_EOL;
   '"
 ```
+
+> **Encryption gotcha (learned 2026-05-23 migration):** never write to `environment_variables.value` via raw `DB::update()` with `\Crypt::encryptString(...)` — Coolify's `EnvironmentVariable` model has a mutator that re-encrypts on save, and raw-SQL writes produce values the model's decrypt accessor cannot read, which breaks `queue_application_deployment` with a `decrypt()` exception during the build step. ALWAYS write via the Eloquent model: `$row->value = '<plaintext>'; $row->save();` — the mutator handles encryption correctly.
 
 For env-var add/update, replace the closure body with `$app->environment_variables()->create([...])` (or `update([...])` on the existing row). Coolify auto-rebuilds on next deploy.
 
@@ -335,7 +351,9 @@ After every push to master, verify visually. NOT optional.
 
 ### Emergency access
 
-SSH `ssh -i ~/.ssh/clawville_deploy root@$PROD_VPS_IP` (load IP from `scripts/deploy/.env.deploy`) · container restart `docker restart <name>` · Coolify UI subdomain in env · logs `docker logs --tail 200 <name>` · DB `docker exec coolify-db psql -U coolify -d coolify -c "<sql>"` · full playbook `docs/DEPLOY-HETZNER.md`.
+PROD: `ssh root@$PROD_VPS_IP` (uses `~/.ssh/clawville_hillsboro` via Windows ssh-agent — `ssh-add` it once with the passphrase, persists across reboots). STAGING: `ssh -i ~/.ssh/clawville_deploy root@$STAGING_VPS_IP`. Load both IPs from `scripts/deploy/.env.deploy`. Container restart `docker restart <name>` · Coolify UI subdomains in env (`https://coolify-new.clawville.world` prod, `https://coolify-staging.clawville.world` staging) · logs `docker logs --tail 200 <name>` · Coolify DB `docker exec coolify-db psql -U coolify -d coolify -c "<sql>"` (NOT the ClawVille app DB — that's Supabase) · full playbook `docs/DEPLOY-HETZNER.md`.
+
+**Emergency rollback (prod → staging):** the staging box has the exact same containers/DB as it had when it was prod. To revert, flip Cloudflare A records for `clawville.world` + `api.clawville.world` from `$PROD_VPS_IP` back to `$STAGING_VPS_IP` (~30s propagation), then re-add the prod FQDNs to the staging Coolify apps (Application::find(3 for api / 4 for web)->fqdn = '...,https://clawville.world' + redeploy). Reverse the same steps once the prod issue is fixed.
 
 ### Curl gotcha on Windows
 

@@ -11,9 +11,11 @@
  *
  * Run via the Hetzner tinker pattern:
  *
- *   ssh -i ~/.ssh/clawville_deploy root@<PROD_VPS_IP> \
+ *   # PROD (post-2026-05-23 migration: uses ~/.ssh/clawville_hillsboro via ssh-agent)
+ *   ssh root@<PROD_VPS_IP> \
  *     "docker exec -e DATABASE_URL='...' api-container-name \
  *       bun run /app/scripts/migrate-town-guide-to-system-agent.ts"
+ *   # STAGING uses `-i ~/.ssh/clawville_deploy root@<STAGING_VPS_IP>`.
  *
  * Or locally against prod DB with a one-off session:
  *

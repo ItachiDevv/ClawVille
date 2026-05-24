@@ -1,19 +1,31 @@
 name: Auto-deploy to Coolify
 
-# Triggers a Coolify deploy for both the api (app 3) and web (app 4)
-# on every push to master. Coolify's built-in webhook delivery is not
-# configured for this repo (source_type/source_id are null on both apps;
-# only "Public GitHub" placeholder exists in coolify). Instead of
-# reconfiguring Coolify's GitHub App integration, this workflow SSHes
-# into the VPS and invokes /root/clawville-deploy.sh, which runs the
-# same `php artisan tinker` deploy command we'd run manually.
+# Triggers a Coolify deploy for both the api (app 2) and web (app 3) on
+# the PROD box (Hillsboro, post-2026-05-23 migration) on every push to
+# master. Real IPs/UUIDs are gitignored in `scripts/deploy/.env.deploy`.
+# Coolify's built-in webhook delivery is not configured for this repo
+# (source_type/source_id are null on both apps; only "Public GitHub"
+# placeholder exists in coolify). Instead of reconfiguring Coolify's
+# GitHub App integration, this workflow SSHes into the prod VPS and
+# invokes /root/clawville-deploy.sh, which runs the same
+# `php artisan tinker` deploy command we'd run manually.
+#
+# IMPORTANT: This workflow's `host:` and `key:` MUST be filled via GitHub
+# Actions secrets — the literal `<PROD_VPS_IP>` and `${{ secrets.COOLIFY_SSH_KEY }}`
+# need to be set in the repo's Settings → Secrets. If `<PROD_VPS_IP>` is
+# still a literal placeholder in this file, GitHub Actions WILL FAIL on
+# every push. Check repo secrets or replace inline with `${{ secrets.PROD_VPS_IP }}`.
+#
+# Staging is NOT auto-deployed from this workflow — push to staging only
+# via manual tinker against `$STAGING_VPS_IP` (api id=3, web id=4).
 #
 # The script lives ON the VPS to avoid YAML→bash→tinker quote escaping
 # hell. Source of truth is in this repo at scripts/deploy/clawville-deploy.sh
-# — copy any changes there to /root/ on the VPS via:
-#   scp -i ~/.ssh/clawville_deploy scripts/deploy/clawville-deploy.sh \
-#     root@<PROD_VPS_IP>:/root/ && \
+# (already updated to app IDs 2/3 for the new prod box) — copy any changes
+# there to /root/ on the new VPS via:
+#   scp scripts/deploy/clawville-deploy.sh root@<PROD_VPS_IP>:/root/ && \
 #   ssh ... 'chmod +x /root/clawville-deploy.sh'
+# (use ~/.ssh/clawville_hillsboro for PROD, ~/.ssh/clawville_deploy for STAGING)
 
 on:
   push:
