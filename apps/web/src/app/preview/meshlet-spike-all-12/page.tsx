@@ -45,7 +45,6 @@ export const dynamic = 'force-dynamic';
 import * as THREE from 'three/webgpu';
 
 import React, { useEffect, useRef, useState, useCallback } from 'react';
-import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js';
 import { MeshoptDecoder } from 'meshoptimizer';
@@ -332,162 +331,148 @@ function loadAllBuildings(
 }
 
 // ---------------------------------------------------------------------------
-// All12RasterizerScene — inner R3F component that manages all rasterizers
+// BareAll12Canvas — non-R3F canvas + manual rAF loop.
+//
+// We bailed on R3F (Canvas + useFrame + useThree) because the only known way
+// to suppress R3F's end-of-frame renderer.render() call was to overwrite
+// (renderer as any).render = () => {}, but that ALSO no-ops the rasterizer's
+// own this.renderer.render(this.hwScene, camera) and (quadMesh as any).render(
+// this.renderer) calls — killing all output.
+//
+// Bare path mirrors /preview/meshlet-spike-bare verbatim. Confirmed working
+// architecture: 145 FPS with a lighthouse visible.
 // ---------------------------------------------------------------------------
 
-interface All12SceneProps {
+interface BareAll12CanvasProps {
   buildings: LoadedBuilding[];
   onFps: (fps: number) => void;
   onPixelProbe: (msg: string) => void;
   onMergedReady: (asset: MergedMeshletAsset) => void;
+  onStatus: (status: string) => void;
 }
 
-function All12RasterizerScene({ buildings, onFps, onPixelProbe, onMergedReady }: All12SceneProps) {
-  const { gl, size } = useThree();
-
-  // SINGLE rasterizer over a merged asset (proper Nanite architecture).
-  // One-rasterizer-per-building doesn't compose because each quadMesh.render()
-  // clears the previous output. See ARCHITECTURE.md drift note (added with this
-  // commit) and the spike-page comments for the failure mode.
-  const rasterizerRef = useRef<NaniteRasterizer | null>(null);
-  const readyRef = useRef(false);
-
-  // Zero-alloc FPS meter
-  const fpsFramesRef = useRef(0);
-  const fpsLastRef = useRef(performance.now());
-  const pixelProbeLastRef = useRef(performance.now());
+function BareAll12Canvas({ buildings, onFps, onPixelProbe, onMergedReady, onStatus }: BareAll12CanvasProps) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
   useEffect(() => {
-    if (buildings.length === 0) return;
+    if (!canvasRef.current || buildings.length === 0) return;
 
-    const renderer = gl as unknown as THREE.WebGPURenderer;
-    let cancelled = false;
-
-    // Dispose any stale rasterizer first.
-    rasterizerRef.current?.dispose();
-    rasterizerRef.current = null;
-    readyRef.current = false;
+    const canvas = canvasRef.current;
+    let disposed = false;
+    let rafId = 0;
+    let renderer: THREE.WebGPURenderer | null = null;
+    let rasterizer: NaniteRasterizer | null = null;
+    let camera: THREE.PerspectiveCamera | null = null;
 
     (async () => {
-      try {
-        // Build the merged asset from all loaded buildings.
-        const mergedAsset = await mergeGeometriesToMeshletAsset(
-          buildings.map((b, idx) => ({
-            geometry: b.geometry,
-            worldMatrix: b.worldMatrix,
-            sourceId: idx,
-          })),
-        );
-        if (cancelled) return;
+      onStatus('Sizing canvas…');
+      const rect = canvas.getBoundingClientRect();
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      canvas.width = Math.round(rect.width * dpr);
+      canvas.height = Math.round(rect.height * dpr);
 
-        onMergedReady(mergedAsset);
+      onStatus('Creating WebGPURenderer…');
+      renderer = new THREE.WebGPURenderer({
+        canvas,
+        antialias: false,
+        forceWebGL: false,
+      });
+      (renderer as any).setPixelRatio(dpr);
+      await renderer.init();
+      renderer.setSize(rect.width, rect.height, false);
+      if (disposed) return;
 
-        // Identity instance — the merged asset's vertices are already in world space.
-        // instanceBoundingRadius MUST cover the merged asset's world-space extent
-        // (ring radius 4160 + building radius ~50). Otherwise the rasterizer's
-        // per-instance frustum cull (radius = scale × this value) shrinks the
-        // instance bounding sphere to ~2wu at origin and culls the whole scene
-        // unless the camera looks at origin within 2wu.
-        const r = new NaniteRasterizer(renderer, mergedAsset, {
-          instanceCount: 1,
-          staticInstanceData: new Float32Array([0, 0, 0, 1]),
-          maxRasterSize: 16,
-          instanceBoundingRadius: 5000,
-        });
-        await r.init();
-        if (cancelled) {
-          r.dispose();
-          return;
+      onStatus('Building merged asset…');
+      const mergedAsset = await mergeGeometriesToMeshletAsset(
+        buildings.map((b, idx) => ({
+          geometry: b.geometry,
+          worldMatrix: b.worldMatrix,
+          sourceId: idx,
+        })),
+      );
+      if (disposed) return;
+      onMergedReady(mergedAsset);
+
+      onStatus('Constructing NaniteRasterizer…');
+      // instanceBoundingRadius covers the world-space extent of the ring
+      // (R=4160 + ~50wu per building → 5000 is safe).
+      rasterizer = new NaniteRasterizer(renderer, mergedAsset, {
+        instanceCount: 1,
+        staticInstanceData: new Float32Array([0, 0, 0, 1]),
+        maxRasterSize: 16,
+        instanceBoundingRadius: 5000,
+      });
+      await rasterizer.init();
+      if (disposed) return;
+
+      // Game-distance camera mirroring the World3DCanvas default: high + far
+      // back, looking at origin (centre of ring).
+      camera = new THREE.PerspectiveCamera(45, rect.width / rect.height, 10, 20000);
+      camera.position.set(0, 2000, 5000);
+      camera.lookAt(0, 0, 0);
+      camera.updateMatrixWorld();
+
+      onStatus('Running render loop…');
+
+      let frames = 0;
+      let lastFpsT = performance.now();
+      let lastPixelT = performance.now();
+
+      const tick = async () => {
+        if (disposed || !renderer || !rasterizer || !camera) return;
+        try {
+          await rasterizer.render(camera, canvas.width / dpr, canvas.height / dpr);
+        } catch (err) {
+          console.error('[meshlet-all-12 bare] render error:', err);
         }
-        rasterizerRef.current = r;
-        readyRef.current = true;
-      } catch (err) {
-        console.error('[meshlet-all-12] merged-asset init failed:', err);
-      }
-    })();
+
+        frames++;
+        const now = performance.now();
+        if (now - lastFpsT >= 1000) {
+          onFps(Math.round((frames * 1000) / (now - lastFpsT)));
+          frames = 0;
+          lastFpsT = now;
+        }
+        if (now - lastPixelT >= 2000) {
+          lastPixelT = now;
+          try {
+            const probe = document.createElement('canvas');
+            probe.width = canvas.width; probe.height = canvas.height;
+            const ctx = probe.getContext('2d');
+            if (ctx) {
+              ctx.drawImage(canvas, 0, 0);
+              const d = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+              let coloured = 0, nonZero = 0, sampled = 0;
+              const step = Math.max(1, Math.floor((d.length/4) / 5000));
+              for (let i = 0; i < d.length; i += 4 * step) {
+                sampled++;
+                if (d[i] || d[i+1] || d[i+2] || d[i+3]) nonZero++;
+                if (d[i] > 4 || d[i+1] > 4 || d[i+2] > 4) coloured++;
+              }
+              onPixelProbe(`${coloured}/${sampled} colored (${(coloured/sampled*100).toFixed(1)}%) · ${nonZero} any`);
+            }
+          } catch (e) {
+            onPixelProbe('probe failed: ' + (e as Error).message);
+          }
+        }
+
+        rafId = requestAnimationFrame(tick);
+      };
+      tick();
+    })().catch((err) => {
+      console.error('[meshlet-all-12 bare] init failed:', err);
+      onStatus('FAILED: ' + String(err?.message ?? err));
+    });
 
     return () => {
-      cancelled = true;
-      readyRef.current = false;
-      rasterizerRef.current?.dispose();
-      rasterizerRef.current = null;
-      // Source geometries are owned by the LoadedBuilding objects; the page's
-      // load effect disposes them on unmount.
+      disposed = true;
+      if (rafId) cancelAnimationFrame(rafId);
+      rasterizer?.dispose();
+      try { (renderer as any)?.dispose?.(); } catch {}
     };
-  }, [gl, buildings, onMergedReady]);
+  }, [buildings, onFps, onPixelProbe, onMergedReady, onStatus]);
 
-  // Track in-flight render so we don't overlap frames + can attribute errors.
-  const renderInFlightRef = useRef(false);
-  const renderErrorRef = useRef<string | null>(null);
-
-  useFrame(async (state) => {
-    if (!readyRef.current || !rasterizerRef.current) return;
-    if (renderInFlightRef.current) return; // skip frame if previous still running
-
-    const camera = state.camera as unknown as THREE.PerspectiveCamera;
-    const w = size.width;
-    const h = size.height;
-
-    renderInFlightRef.current = true;
-    try {
-      await rasterizerRef.current.render(camera, w, h);
-      renderErrorRef.current = null;
-    } catch (err) {
-      const msg = String((err as Error)?.message ?? err);
-      if (renderErrorRef.current !== msg) {
-        renderErrorRef.current = msg;
-        console.error('[meshlet-all-12] render error:', err);
-      }
-    } finally {
-      renderInFlightRef.current = false;
-    }
-
-    // FPS meter — accumulate and report once per second.
-    fpsFramesRef.current += 1;
-    const now = performance.now();
-    const elapsed = now - fpsLastRef.current;
-    if (elapsed >= 1000) {
-      onFps(Math.round((fpsFramesRef.current * 1000) / elapsed));
-      fpsFramesRef.current = 0;
-      fpsLastRef.current = now;
-    }
-
-    // Pixel probe every 2s — verifies the canvas is actually being painted.
-    // Runs SYNCHRONOUSLY after our rasterizer renders so the WebGPU drawing
-    // buffer still has content (external probes after compositing read blank).
-    if (now - pixelProbeLastRef.current >= 2000) {
-      pixelProbeLastRef.current = now;
-      try {
-        const canvas = (state.gl as any).domElement as HTMLCanvasElement;
-        const probe = document.createElement('canvas');
-        probe.width = canvas.width; probe.height = canvas.height;
-        const ctx = probe.getContext('2d');
-        if (ctx) {
-          ctx.drawImage(canvas, 0, 0);
-          const d = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
-          let nonZero = 0;
-          const total = d.length / 4;
-          const step = Math.max(1, Math.floor(total / 5000));
-          let sampled = 0;
-          for (let i = 0; i < d.length; i += 4 * step) {
-            sampled++;
-            if (d[i] || d[i+1] || d[i+2] || d[i+3]) nonZero++;
-          }
-          // Count RGB-distinguishable pixels (NOT alpha-only) so we don't false-positive
-          // on a black-with-alpha=1 clear. coloured = at least one RGB channel > 4.
-          let coloured = 0;
-          for (let i = 0; i < d.length; i += 4 * step) {
-            if (d[i] > 4 || d[i+1] > 4 || d[i+2] > 4) coloured++;
-          }
-          onPixelProbe(`${coloured}/${sampled} colored (${(coloured/sampled*100).toFixed(1)}%) · ${nonZero} any-channel`);
-        }
-      } catch (e) {
-        onPixelProbe('probe failed');
-      }
-    }
-  });
-
-  return null;
+  return <canvas ref={canvasRef} style={styles.canvas} />;
 }
 
 // ---------------------------------------------------------------------------
@@ -548,28 +533,12 @@ export default function MeshletSpikeAll12Page() {
     };
   }, [loadedBuildings]);
 
-  // R3F gl factory — WebGPU ONLY.
-  const glFactory = useCallback(async ({ canvas }: { canvas: HTMLCanvasElement }) => {
-    // Pre-stamp canvas dimensions to avoid 300×150 depth-buffer mismatch.
-    const rect = canvas.getBoundingClientRect();
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    canvas.width = Math.round(rect.width * dpr);
-    canvas.height = Math.round(rect.height * dpr);
-
-    const renderer = new THREE.WebGPURenderer({
-      canvas,
-      antialias: false,
-      forceWebGL: false,
-    });
-    renderer.setPixelRatio(dpr);
-    await renderer.init();
-    renderer.setSize(rect.width, rect.height, false);
-    return renderer;
-  }, []);
+  const [status, setStatus] = useState<string>('Initialising…');
 
   const handleFps = useCallback((f: number) => setFps(f), []);
   const handlePixelProbe = useCallback((m: string) => setPixelProbe(m), []);
   const handleMergedReady = useCallback((a: MergedMeshletAsset) => setMergedAsset(a), []);
+  const handleStatus = useCallback((s: string) => setStatus(s), []);
 
   // --- WebGPU absent ---
   if (webGpuAbsent) {
@@ -587,32 +556,20 @@ export default function MeshletSpikeAll12Page() {
 
   return (
     <div style={styles.root}>
-      {/* R3F Canvas — drives all 12 rasterizers via useFrame. */}
-      {/* Camera: back from the ring, looking at origin. */}
-      <Canvas
-        gl={glFactory as any}
-        frameloop="always"
-        camera={{ position: [0, 2000, 5000], fov: 45, near: 10, far: 20000 }}
-        style={styles.canvas}
-        onCreated={({ gl: renderer }) => {
-          // Suppress R3F's default scene clear — each rasterizer manages
-          // its own framebuffer via a fullscreen quad.
-          // ALSO: no-op renderer.render to prevent R3F's end-of-frame call
-          // from acquiring a fresh WebGPU swap-chain texture and blanking
-          // our rasterizer output. Verified via /preview/meshlet-spike-bare.
-          (renderer as any).render = () => {};
-          (renderer as any).autoClear = false;
-        }}
-      >
-        {loadComplete && loadedBuildings.length > 0 && (
-          <All12RasterizerScene
-            buildings={loadedBuildings}
-            onFps={handleFps}
-            onPixelProbe={handlePixelProbe}
-            onMergedReady={handleMergedReady}
-          />
-        )}
-      </Canvas>
+      {/* BARE canvas — no R3F. Owns its own WebGPURenderer + rAF loop.
+          R3F kept overwriting renderer.render to bypass its end-of-frame render
+          which ALSO killed the rasterizer's internal renderer.render(hwScene)
+          and quadMesh.render(renderer) calls. Bare path matches the proven
+          /preview/meshlet-spike-bare architecture (145 FPS, visible mesh). */}
+      {loadComplete && loadedBuildings.length > 0 && (
+        <BareAll12Canvas
+          buildings={loadedBuildings}
+          onFps={handleFps}
+          onPixelProbe={handlePixelProbe}
+          onMergedReady={handleMergedReady}
+          onStatus={handleStatus}
+        />
+      )}
 
       {/* FPS + stats overlay — plain HTML DOM, no drei Text (Iris Xe rule). */}
       <div style={styles.overlay}>
