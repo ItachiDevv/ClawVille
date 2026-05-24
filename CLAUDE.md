@@ -77,8 +77,9 @@ Complex AI integrations: multi-phase plan in `.claude/plans/` + research deep-di
 
 These cost real money / crash the GPU / leak secrets. They stay inline regardless of scope.
 
+- **PUSH FLOW — staging-first (set 2026-05-24):** ALL new work goes to the `staging` branch first. `git push origin staging` → `.github/workflows/deploy-staging.yml` ships to the staging box → verify on `https://staging.clawville.world` + `https://api-staging.clawville.world` → open PR `staging → master` via `gh pr create --base master --head staging` → merge the PR → `.github/workflows/deploy.yml` ships to prod. **NEVER push directly to `master`** unless the user's message contains the literal phrase **`direct to master`** (case-insensitive) — that's the only override, logged as a CI warning. Hotfix is the only legitimate use. Both Coolify boxes share the same Supabase DB, so a staging deploy that mutates state mutates prod data too — treat staging deploys with the same care as prod for anything that writes.
 - **Iris Xe GPU:** NO drei `<Text>` / `<Billboard>` in game/world scenes — hard crash. NO `InstancedMesh + ShaderMaterial` — silent WebGPU crash. NO per-frame `new Vector3()` in `useFrame` — GC thrash.
-- **Local dev:** NEVER run `bun run dev` locally (Iris Xe crash → PC restart). Push → Coolify auto-deploys → test against prod.
+- **Local dev:** NEVER run `bun run dev` locally (Iris Xe crash → PC restart). Push → Coolify auto-deploys → test against staging first, then prod.
 - **Phase 5.1 wallet:** `wallet.secretKey` is returned **EXACTLY ONCE** on first-connect. Subsequent reads MUST omit it. SKILL.md instructs agent to display once + store only pubkey. Server never re-emits — no recovery path. Full spec: `ARCHITECTURE.md §7`.
 - **Verification:** never claim deployed/fixed without evidence (curl, bundle grep, DOM read). "Should work" is banned.
 - **Push-auth fallback chain:** `gh auth status` → `unset GITHUB_TOKEN && gh auth setup-git` → SSH remote → `gh` CLI. Only escalate with all errors quoted. Never hand the push to the user as the first move.
