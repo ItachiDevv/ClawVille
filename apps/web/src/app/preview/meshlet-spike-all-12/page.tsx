@@ -427,7 +427,11 @@ function BareAll12Canvas({ buildings, onFps, onPixelProbe, onMergedReady, onStat
       rasterizer = new NaniteRasterizer(renderer, mergedAsset, {
         instanceCount: 1,
         staticInstanceData: new Float32Array([0, 0, 0, 1]),
-        maxRasterSize: 16,
+        // DIAGNOSTIC: bumped from 16 → 4096 to force every triangle through
+        // the SW raster path. If buildings missing walls now appear, the HW
+        // fallback path has a merged-asset bug. If still missing, the SW path
+        // has a winding/edge issue with large tris. Will revert based on result.
+        maxRasterSize: 4096,
         instanceBoundingRadius: 5000,
         pixelErrorThreshold: 0,
       });
