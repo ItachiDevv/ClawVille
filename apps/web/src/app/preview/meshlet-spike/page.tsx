@@ -180,11 +180,18 @@ export default function MeshletSpikePage() {
 
         try {
           const a = geometryToMeshletAsset(mesh.geometry);
+          const coarsestTris = a.lodTriCounts[a.lodCount - 1] ?? a.triangleCount;
+          const reductionPct = a.triangleCount > 0
+            ? Math.round((1 - coarsestTris / a.triangleCount) * 100)
+            : 0;
+          const lodSuffix = a.lodCount > 1
+            ? ` · ${a.lodCount} LODs (→${reductionPct}% fewer tris)`
+            : ' · 1 LOD (no simplification)';
           setMeshletInfo(
             `${a.totalVertices.toLocaleString()} verts · ` +
             `${a.triangleCount.toLocaleString()} tris · ` +
-            `${a.totalChunks} chunks · ` +
-            `${a.lodCount} LOD`
+            `${a.totalChunks} chunks` +
+            lodSuffix
           );
           setAsset(a);
         } catch (err) {
