@@ -41,16 +41,15 @@ import { NaniteRasterizer } from '@/lib/three/experimental/nanite-rasterizer';
 import { useMergedBuildingsAsset } from './use-merged-buildings-asset';
 import { RING_BOUNDING_RADIUS } from './buildings-manifest';
 
-// NOTE: do NOT use useFrame renderPriority here. Setting renderPriority on
-// any useFrame call disables R3F's automatic end-of-frame scene render — and
-// while we tried calling gl.render(scene,camera) ourselves, something about
-// that path left the canvas blank (probably autoClear / depth interaction
-// in the WebGPU backend). Instead we use default-priority useFrame and rely
-// on autoClearColor=false (with autoClear & autoClearDepth still TRUE) so
-// R3F's normal end-of-frame render preserves the rasterizer's color output
-// but still clears depth so the scene renders correctly. The fact that all
-// renders within a single rAF tick share the same WebGPU swap-chain texture
-// means rasterizer pixels + R3F scene pixels coexist on the canvas.
+/**
+ * Render priority for the meshlet pass. Negative = runs BEFORE R3F's default
+ * scene render (priority 0+). When ANY useFrame has a non-zero renderPriority,
+ * R3F switches from "always auto-render scene at end of frame" to "manual" —
+ * the highest-priority hook is expected to drive rendering. So with a single
+ * negative-priority hook here, we ALSO need to render R3F's scene ourselves
+ * after the rasterizer pass. See useFrame body for that explicit call.
+ */
+const MESHLET_RENDER_PRIORITY = -10;
 
 export default function MeshletBuildingsR3F() {
   const { gl, scene, camera, size } = useThree();
@@ -79,12 +78,10 @@ export default function MeshletBuildingsR3F() {
           return;
         }
 
-        // Preserve rasterizer color output across R3F's auto-render, but let
-        // R3F still clear depth + stencil so its scene renders correctly. With
-        // depth NOT preserved, the scene won't depth-test against buildings (so
-        // VRMs always composite over buildings — known v1 limitation, fix in v2
-        // by also preserving depth + doing a single depth clear ourselves).
-        (renderer as any).autoClearColor = false;
+        // Disable R3F's autoClear so the rasterizer's earlier-in-frame output
+        // isn't cleared by R3F's later render pass. The rasterizer manages its
+        // own framebuffer clearing internally.
+        (renderer as any).autoClear = false;
 
         const r = new NaniteRasterizer(renderer, asset, {
           instanceCount: 1,
@@ -114,12 +111,14 @@ export default function MeshletBuildingsR3F() {
   }, [gl, asset]);
 
   useFrame((state) => {
-    if (!readyRef.current || !rasterizerRef.current) return;
+    if (!readyRef.current || !rasterizerRef.current) {
+      // While rasterizer is loading, still drive R3F's render (we suppressed
+      // R3F's default render by claiming a renderPriority).
+      state.gl.render(state.scene, state.camera);
+      return;
+    }
     try {
-      // Rasterizer pass — populates swap chain color with building pixels.
-      // R3F's end-of-frame auto-render then adds terrain/NPCs/player on top
-      // (autoClearColor=false set in init so color is preserved; depth is
-      // still cleared by autoClear so the scene depth-tests within itself).
+      // 1. Rasterizer pass — populates swap chain with building pixels
       rasterizerRef.current.render(
         state.camera as THREE.PerspectiveCamera,
         state.size.width,
@@ -128,7 +127,10 @@ export default function MeshletBuildingsR3F() {
     } catch (err) {
       console.error('[MeshletBuildingsR3F] rasterizer render failed:', err);
     }
-  });
+    // 2. R3F scene pass — terrain, NPCs, player VRM render on top of buildings.
+    // autoClear=false is set in init so this doesn't wipe the rasterizer output.
+    state.gl.render(state.scene, state.camera);
+  }, MESHLET_RENDER_PRIORITY);
 
   // No DOM output — we live entirely inside R3F's render loop.
   return null;
