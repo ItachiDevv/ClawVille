@@ -139,6 +139,17 @@ export interface RasterizerOptions {
    * Default: 16 (matches the original example).
    */
   maxRasterSize?: number;
+  /**
+   * Per-instance bounding-sphere radius MULTIPLIER (default 2.0, matching the
+   * reference example which renders teapots of unit radius scaled by scale).
+   *
+   * For merged-asset usage where ALL geometry lives inside a single instance
+   * with world-space-baked vertices and identity transform, the default radius
+   * of 2.0 culls the entire scene unless the camera looks at the origin within
+   * a 2wu radius. Pass the actual world-space radius of the merged asset here
+   * (e.g. for an 8000wu-wide ring, pass 5000).
+   */
+  instanceBoundingRadius?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -819,6 +830,7 @@ export class NaniteRasterizer {
   private cotHalfFovUniform!: ReturnType<typeof uniform>;
   private pixelErrorThresholdUniform!: ReturnType<typeof uniform>;
   private maxRasterSizeUniform!: ReturnType<typeof uniform>;
+  private instanceBoundingRadiusUniform!: ReturnType<typeof uniform>;
 
   // Screen buffers (resize-aware)
   private screenTriAttr!: THREE.StorageBufferAttribute;
@@ -996,6 +1008,9 @@ export class NaniteRasterizer {
     this.cotHalfFovUniform = uniform(1.0);
     this.pixelErrorThresholdUniform = uniform(4.0);
     this.maxRasterSizeUniform = uniform(this.opts.maxRasterSize, 'int');
+    this.instanceBoundingRadiusUniform = uniform(
+      (this.opts as any).instanceBoundingRadius ?? 2.0,
+    );
 
     // ---- LOD error values as a uniform array (JS floats → GPU floats) ----
     // uniformArray of floats: one per LOD level.
@@ -1125,7 +1140,7 @@ export class NaniteRasterizer {
       );
 
       const visible = bool(true).toVar() as any;
-      const radius = scale.mul(2.0);
+      const radius = scale.mul(this.instanceBoundingRadiusUniform);
 
       // Frustum culling (6 world-space planes)
       Loop({ start: 0, end: 6 }, ({ i: planeIndex }: any) => {
