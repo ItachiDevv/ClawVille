@@ -427,11 +427,12 @@ function BareAll12Canvas({ buildings, onFps, onPixelProbe, onMergedReady, onStat
       rasterizer = new NaniteRasterizer(renderer, mergedAsset, {
         instanceCount: 1,
         staticInstanceData: new Float32Array([0, 0, 0, 1]),
-        // DIAGNOSTIC: bumped from 16 → 4096 to force every triangle through
-        // the SW raster path. If buildings missing walls now appear, the HW
-        // fallback path has a merged-asset bug. If still missing, the SW path
-        // has a winding/edge issue with large tris. Will revert based on result.
-        maxRasterSize: 4096,
+        // Default 16 — large tris fall through to HW fallback. Was bumped to
+        // 4096 for the diagnostic that uncovered the TRIANGLE_INDEX_BITS=14
+        // truncation bug in the HW path (fixed in nanite-rasterizer.ts with
+        // 14→18 bit widening). Now we measure FPS + visibility with HW path
+        // active again — should be 167 FPS AND all walls visible.
+        maxRasterSize: 16,
         instanceBoundingRadius: 5000,
         pixelErrorThreshold: 0,
       });
