@@ -1564,7 +1564,12 @@ export class NaniteRasterizer {
       material.colorNode = Fn(() => {
         const { pixelIndex } = getPixelIndex();
         const depth32 = (screenTriRead as any).element(pixelIndex);
-        const background = vec4(0.1, 0.1, 0.1, 1.0);
+        // Background was vec4(0.1, 0.1, 0.1, 1.0) — opaque gray. For
+        // overlay-on-scene compositing (Phase B /game integration), we need
+        // non-hit pixels to be TRANSPARENT so R3F's already-rendered scene
+        // shows through. material.transparent is set true on the QuadMesh
+        // below so alpha is honored at blend time.
+        const background = vec4(0.0, 0.0, 0.0, 0.0);
         const outColor = background.toVar() as any;
 
         If(depth32.greaterThan(0), () => {
@@ -1660,6 +1665,10 @@ export class NaniteRasterizer {
 
         return outColor;
       })();
+
+      // Enable alpha blending so non-hit pixels (alpha=0) preserve the
+      // underlying scene render instead of painting opaque background.
+      material.transparent = true;
 
       this.quadMesh = new THREE.QuadMesh(material);
     }
