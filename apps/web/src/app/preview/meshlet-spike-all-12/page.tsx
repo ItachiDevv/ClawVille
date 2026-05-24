@@ -383,10 +383,16 @@ function All12RasterizerScene({ buildings, onFps, onPixelProbe, onMergedReady }:
         onMergedReady(mergedAsset);
 
         // Identity instance — the merged asset's vertices are already in world space.
+        // instanceBoundingRadius MUST cover the merged asset's world-space extent
+        // (ring radius 4160 + building radius ~50). Otherwise the rasterizer's
+        // per-instance frustum cull (radius = scale × this value) shrinks the
+        // instance bounding sphere to ~2wu at origin and culls the whole scene
+        // unless the camera looks at origin within 2wu.
         const r = new NaniteRasterizer(renderer, mergedAsset, {
           instanceCount: 1,
           staticInstanceData: new Float32Array([0, 0, 0, 1]),
           maxRasterSize: 16,
+          instanceBoundingRadius: 5000,
         });
         await r.init();
         if (cancelled) {
