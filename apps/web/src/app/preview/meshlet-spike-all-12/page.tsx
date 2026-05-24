@@ -297,9 +297,31 @@ function loadAllBuildings(
               return;
             }
 
-            // World-space ring-slot transform. mergeGeometriesToMeshletAsset
-            // bakes this into vertex positions when building the merged asset.
-            const worldMatrix = new THREE.Matrix4().makeTranslation(spec.posX, 0, spec.posZ);
+            // Compute per-building scale to bring the GLB up to the same world
+            // size /game uses (BUILDING_TARGET_HEIGHT = 1000wu max-dim). Without
+            // this step buildings stay at native GLB scale (~5-10wu each) and
+            // are sub-pixel from any sane camera. Matches the logic in
+            // apps/web/src/lib/three/arena-buildings.tsx computeBuildingScale.
+            const BUILDING_TARGET_HEIGHT = 1000;
+            mergedGeo.computeBoundingBox();
+            const bbox = mergedGeo.boundingBox!;
+            const maxDim = Math.max(
+              bbox.max.x - bbox.min.x,
+              bbox.max.y - bbox.min.y,
+              bbox.max.z - bbox.min.z,
+            );
+            const buildingScale = maxDim > 0.001 ? BUILDING_TARGET_HEIGHT / maxDim : 1;
+            // Anchor the building so its bottom centre sits on the ring slot.
+            const centreX = (bbox.min.x + bbox.max.x) / 2;
+            const centreZ = (bbox.min.z + bbox.max.z) / 2;
+            const minY = bbox.min.y;
+
+            // worldMatrix = translate(slot) × scale(s) × translate(-centre, -minY, -centre)
+            // Applies scale AROUND the bottom-centre anchor, then places at ring pos.
+            const worldMatrix = new THREE.Matrix4()
+              .makeTranslation(spec.posX, 0, spec.posZ)
+              .multiply(new THREE.Matrix4().makeScale(buildingScale, buildingScale, buildingScale))
+              .multiply(new THREE.Matrix4().makeTranslation(-centreX, -minY, -centreZ));
 
             const triCount = mergedGeo.index ? mergedGeo.index.count / 3 : mergedGeo.attributes.position.count / 3;
 
@@ -405,15 +427,12 @@ function BareAll12Canvas({ buildings, onFps, onPixelProbe, onMergedReady, onStat
       await rasterizer.init();
       if (disposed) return;
 
-      // Close-up camera on slot-0 (pineapple-house at world z=-4160).
-      // ClawVille building GLBs are small in object-space (~5-10wu native)
-      // before /game's per-building scale-up — they're sub-pixel from any
-      // sensible "see the whole ring" distance. So this view sacrifices the
-      // ring view to PROVE the rasterizer is producing recognisable geometry.
-      // Position offset by +50wu on Z (camera is "in front of" slot 0).
-      camera = new THREE.PerspectiveCamera(60, rect.width / rect.height, 0.1, 20000);
-      camera.position.set(0, 5, -4110);
-      camera.lookAt(0, 0, -4160);
+      // Game-distance camera mirroring World3DCanvas default. Each building is
+      // now scaled up to BUILDING_TARGET_HEIGHT=1000wu (matches /game) so the
+      // whole ring is visible at this distance with buildings at ~50-100px each.
+      camera = new THREE.PerspectiveCamera(45, rect.width / rect.height, 10, 20000);
+      camera.position.set(0, 2000, 5000);
+      camera.lookAt(0, 0, 0);
       camera.updateMatrixWorld();
 
       onStatus('Running render loop…');
