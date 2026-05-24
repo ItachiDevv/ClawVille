@@ -78,6 +78,20 @@ const World3DCanvas = dynamic(() => import('@/components/three/World3DCanvas'), 
   loading: () => null,
 });
 
+// Phase B meshlet integration — gated by ?meshlets=1 URL query.
+// When ON: the rasterizer renders all 11 buildings on its own canvas UNDER
+// World3DCanvas's R3F canvas (R3F's bg becomes transparent so this shows
+// through). When OFF: ArenaBuildings inside R3F renders normally and this
+// layer doesn't mount. Same module-load gate as World3DCanvas's check.
+const MeshletBuildingsLayer = dynamic(() => import('@/components/three/MeshletBuildingsLayer'), {
+  ssr: false,
+  loading: () => null,
+});
+
+const USE_MESHLET_BUILDINGS: boolean =
+  typeof window !== 'undefined' &&
+  new URLSearchParams(window.location.search).get('meshlets') === '1';
+
 const ChatPanel = dynamic(() => import('@/components/game/chat-panel'), {
   ssr: false,
 });
@@ -387,6 +401,11 @@ export default function GamePage() {
     <div className="game-container" suppressHydrationWarning>
       {/* Sea loading overlay — renders immediately, fades out once window.__W3D is set */}
       <SeaLoadingScreen />
+      {/* Phase B meshlet layer — must mount BEFORE World3DCanvas so its
+          z-index:0 canvas sits underneath R3F's canvas. Only mounts when
+          ?meshlets=1 is set. World3DCanvas sees the same flag and skips
+          its own <ArenaBuildings />. */}
+      {USE_MESHLET_BUILDINGS && <MeshletBuildingsLayer />}
       <World3DCanvas mode="game" />
       <BuildingTooltip />
       <NanoClawBanner hasAvatar={hasAvatar} isAuthenticated={isAuthenticated} />
