@@ -266,8 +266,13 @@ export default function MeshletSpikePage() {
         style={styles.canvas}
         // Suppress R3F's default scene clear — the rasterizer manages its own
         // framebuffer via a fullscreen quad.
+        // ALSO: no-op renderer.render — R3F calls render(r3fScene, r3fCamera) at
+        // the end of every frame, which in WebGPU acquires a fresh swap-chain
+        // texture AFTER our useFrame finishes, presenting a blank texture to the
+        // canvas. Proven by /preview/meshlet-spike-bare (no R3F, renders fine).
         onCreated={({ gl: renderer }) => {
           (renderer as any).autoClear = false;
+          (renderer as any).render = () => {};
         }}
       >
         {asset && (
