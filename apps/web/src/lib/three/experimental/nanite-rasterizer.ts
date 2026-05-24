@@ -150,6 +150,16 @@ export interface RasterizerOptions {
    * (e.g. for an 8000wu-wide ring, pass 5000).
    */
   instanceBoundingRadius?: number;
+  /**
+   * Pixel-space screen-error threshold for LOD selection (default 4.0).
+   * The compute-frustum picks the COARSEST LOD whose projected error ≤ this
+   * value. Lowering this forces finer LODs (more detail, more work).
+   *
+   * Pass `0` or a negative number to force LOD 0 (full detail) for every
+   * cluster — useful for visual validation of merged assets where the default
+   * cascading per-instance LOD picks too coarse a level at game distance.
+   */
+  pixelErrorThreshold?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -866,6 +876,7 @@ export class NaniteRasterizer {
       staticInstanceData: opts.staticInstanceData,
       maxRasterSize: opts.maxRasterSize ?? 16,
       instanceBoundingRadius: opts.instanceBoundingRadius ?? 2.0,
+      pixelErrorThreshold: opts.pixelErrorThreshold ?? 4.0,
     };
   }
 
@@ -1007,7 +1018,7 @@ export class NaniteRasterizer {
     );
     this.cameraPos = uniform(new THREE.Vector3());
     this.cotHalfFovUniform = uniform(1.0);
-    this.pixelErrorThresholdUniform = uniform(4.0);
+    this.pixelErrorThresholdUniform = uniform(this.opts.pixelErrorThreshold);
     this.maxRasterSizeUniform = uniform(this.opts.maxRasterSize, 'int');
     this.instanceBoundingRadiusUniform = uniform(this.opts.instanceBoundingRadius);
 
