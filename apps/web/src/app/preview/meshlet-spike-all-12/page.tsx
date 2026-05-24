@@ -50,9 +50,9 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js';
 import { MeshoptDecoder } from 'meshoptimizer';
 import {
-  geometryToMeshletAssetAsync,
+  mergeGeometriesToMeshletAsset,
   NaniteRasterizer,
-  type MeshletAsset,
+  type MergedMeshletAsset,
 } from '@/lib/three/experimental/nanite-rasterizer';
 
 // ---------------------------------------------------------------------------
@@ -124,9 +124,12 @@ const BUILDINGS: BuildingSpec[] = [
 
 interface LoadedBuilding {
   spec: BuildingSpec;
-  asset: MeshletAsset;
-  /** Instance data: vec4(posX, 0, posZ, 1.0) — scale=1 for the spike. */
-  instanceData: Float32Array;
+  /** Per-GLB merged BufferGeometry — internal GLB transforms already baked, but NOT the ring-position translation. */
+  geometry: THREE.BufferGeometry;
+  /** World-space translation matrix for this building's ring slot. mergeGeometriesToMeshletAsset bakes this into positions. */
+  worldMatrix: THREE.Matrix4;
+  /** Triangle count of this building's source geometry — for HUD diagnostics. */
+  triCount: number;
 }
 
 interface BuildingStatus {
@@ -290,31 +293,27 @@ function loadAllBuildings(
           try {
             const mergedGeo = collectAndMergeGeometries(gltf.scene);
             if (!mergedGeo) {
-              onProgress({ id: spec.id, status: 'error', tris: 0, error: 'No geometry found' });
+              onProgress({ id: spec.id, status: 'error', tris: 0, lodCount: 0, coarsestLodTris: 0, error: 'No geometry found' });
               resolve(null);
               return;
             }
-            // ASYNC variant — awaits MeshoptSimplifier WASM ready before generating
-            // LODs. The sync version silently fell back to single-LOD when the WASM
-            // race hit (load callback fired before WASM init complete) — that's why
-            // the 12-building spike measured 5-7 FPS with the LOD code deployed.
-            const asset = await geometryToMeshletAssetAsync(mergedGeo);
-            mergedGeo.dispose();
 
-            // Instance data: one instance at [posX, 0, posZ, scale=1]
-            const instanceData = new Float32Array([spec.posX, 0, spec.posZ, 1.0]);
+            // World-space ring-slot transform. mergeGeometriesToMeshletAsset
+            // bakes this into vertex positions when building the merged asset.
+            const worldMatrix = new THREE.Matrix4().makeTranslation(spec.posX, 0, spec.posZ);
 
-            const coarsestLodTris = asset.lodTriCounts[asset.lodCount - 1] ?? asset.triangleCount;
+            const triCount = mergedGeo.index ? mergedGeo.index.count / 3 : mergedGeo.attributes.position.count / 3;
+
             onProgress({
               id: spec.id,
               status: 'loaded',
-              tris: asset.triangleCount,
-              lodCount: asset.lodCount,
-              coarsestLodTris,
+              tris: triCount,
+              lodCount: 0, // LOD count is now global to the merged asset, not per-building
+              coarsestLodTris: 0,
             });
-            resolve({ spec, asset, instanceData });
+            resolve({ spec, geometry: mergedGeo, worldMatrix, triCount });
           } catch (err) {
-            onProgress({ id: spec.id, status: 'error', tris: 0, error: String(err) });
+            onProgress({ id: spec.id, status: 'error', tris: 0, lodCount: 0, coarsestLodTris: 0, error: String(err) });
             resolve(null);
           }
         },
@@ -340,14 +339,18 @@ interface All12SceneProps {
   buildings: LoadedBuilding[];
   onFps: (fps: number) => void;
   onPixelProbe: (msg: string) => void;
+  onMergedReady: (asset: MergedMeshletAsset) => void;
 }
 
-function All12RasterizerScene({ buildings, onFps, onPixelProbe }: All12SceneProps) {
+function All12RasterizerScene({ buildings, onFps, onPixelProbe, onMergedReady }: All12SceneProps) {
   const { gl, size } = useThree();
 
-  // One rasterizer per building — keyed by spec.id.
-  const rasterizerMapRef = useRef<Map<string, NaniteRasterizer>>(new Map());
-  const readySetRef = useRef<Set<string>>(new Set());
+  // SINGLE rasterizer over a merged asset (proper Nanite architecture).
+  // One-rasterizer-per-building doesn't compose because each quadMesh.render()
+  // clears the previous output. See ARCHITECTURE.md drift note (added with this
+  // commit) and the spike-page comments for the failure mode.
+  const rasterizerRef = useRef<NaniteRasterizer | null>(null);
+  const readyRef = useRef(false);
 
   // Zero-alloc FPS meter
   const fpsFramesRef = useRef(0);
@@ -355,58 +358,67 @@ function All12RasterizerScene({ buildings, onFps, onPixelProbe }: All12SceneProp
   const pixelProbeLastRef = useRef(performance.now());
 
   useEffect(() => {
+    if (buildings.length === 0) return;
+
     const renderer = gl as unknown as THREE.WebGPURenderer;
-    const map = rasterizerMapRef.current;
-    const readySet = readySetRef.current;
+    let cancelled = false;
 
-    // Dispose any stale rasterizers first.
-    map.forEach((r) => r.dispose());
-    map.clear();
-    readySet.clear();
+    // Dispose any stale rasterizer first.
+    rasterizerRef.current?.dispose();
+    rasterizerRef.current = null;
+    readyRef.current = false;
 
-    // Initialise one rasterizer per loaded building.
-    buildings.forEach((b) => {
-      const r = new NaniteRasterizer(renderer, b.asset, {
-        instanceCount: 1,
-        staticInstanceData: b.instanceData,
-        maxRasterSize: 16,
-      });
-      map.set(b.spec.id, r);
+    (async () => {
+      try {
+        // Build the merged asset from all loaded buildings.
+        const mergedAsset = await mergeGeometriesToMeshletAsset(
+          buildings.map((b, idx) => ({
+            geometry: b.geometry,
+            worldMatrix: b.worldMatrix,
+            sourceId: idx,
+          })),
+        );
+        if (cancelled) return;
 
-      r.init()
-        .then(() => {
-          readySet.add(b.spec.id);
-        })
-        .catch((err) => {
-          console.error(`[meshlet-all-12] NaniteRasterizer.init() failed for ${b.spec.id}:`, err);
+        onMergedReady(mergedAsset);
+
+        // Identity instance — the merged asset's vertices are already in world space.
+        const r = new NaniteRasterizer(renderer, mergedAsset, {
+          instanceCount: 1,
+          staticInstanceData: new Float32Array([0, 0, 0, 1]),
+          maxRasterSize: 16,
         });
-    });
+        await r.init();
+        if (cancelled) {
+          r.dispose();
+          return;
+        }
+        rasterizerRef.current = r;
+        readyRef.current = true;
+      } catch (err) {
+        console.error('[meshlet-all-12] merged-asset init failed:', err);
+      }
+    })();
 
     return () => {
-      map.forEach((r) => r.dispose());
-      map.clear();
-      readySet.clear();
+      cancelled = true;
+      readyRef.current = false;
+      rasterizerRef.current?.dispose();
+      rasterizerRef.current = null;
+      // Source geometries are owned by the LoadedBuilding objects; the page's
+      // load effect disposes them on unmount.
     };
-  }, [gl, buildings]);
+  }, [gl, buildings, onMergedReady]);
 
   useFrame((state) => {
+    if (!readyRef.current || !rasterizerRef.current) return;
+
     const camera = state.camera as unknown as THREE.PerspectiveCamera;
     const w = size.width;
     const h = size.height;
-    const map = rasterizerMapRef.current;
-    const readySet = readySetRef.current;
 
-    // Fire all ready rasterizers. Order matters: each rasterizer manages its
-    // own screen-space visibility buffer and fullscreen quad. Because they all
-    // write to the same framebuffer and use autoClear=false, rasterizer N's
-    // output overlays rasterizer N-1's. This is visually correct for the spike
-    // (each building's pixels overwrite each other based on depth, as the SW
-    // rasterizer packs depth into the visibility buffer).
-    map.forEach((r, id) => {
-      if (!readySet.has(id)) return;
-      r.render(camera, w, h).catch((err) => {
-        console.error(`[meshlet-all-12] render error for ${id}:`, err);
-      });
+    rasterizerRef.current.render(camera, w, h).catch((err) => {
+      console.error('[meshlet-all-12] render error:', err);
     });
 
     // FPS meter — accumulate and report once per second.
@@ -469,19 +481,20 @@ export default function MeshletSpikeAll12Page() {
   const [loadComplete, setLoadComplete] = useState(false);
   const [fps, setFps] = useState(0);
   const [pixelProbe, setPixelProbe] = useState<string>('—');
+  const [mergedAsset, setMergedAsset] = useState<MergedMeshletAsset | null>(null);
 
   const totalTris = Array.from(buildingStatuses.values()).reduce((s, b) => s + b.tris, 0);
   const loadedCount = Array.from(buildingStatuses.values()).filter((b) => b.status === 'loaded').length;
   const errorCount = Array.from(buildingStatuses.values()).filter((b) => b.status === 'error').length;
 
-  // LOD summary: expected tris at coarsest LOD vs full detail.
-  const loadedStatuses = Array.from(buildingStatuses.values()).filter((b) => b.status === 'loaded');
-  const totalCoarsestTris = loadedStatuses.reduce((s, b) => s + b.coarsestLodTris, 0);
-  const avgLodCount = loadedStatuses.length > 0
-    ? Math.round(loadedStatuses.reduce((s, b) => s + b.lodCount, 0) / loadedStatuses.length)
+  // Stats now come from the merged asset (post-LOD), not the per-building progress entries.
+  const mergedTotalTris = mergedAsset?.triangleCount ?? 0;
+  const mergedCoarsestTris = mergedAsset
+    ? (mergedAsset.lodTriCounts[mergedAsset.lodCount - 1] ?? mergedAsset.triangleCount)
     : 0;
-  const reductionPct = totalTris > 0
-    ? Math.round((1 - totalCoarsestTris / totalTris) * 100)
+  const mergedLodCount = mergedAsset?.lodCount ?? 0;
+  const mergedReductionPct = mergedTotalTris > 0
+    ? Math.round((1 - mergedCoarsestTris / mergedTotalTris) * 100)
     : 0;
 
   useEffect(() => {
@@ -500,6 +513,13 @@ export default function MeshletSpikeAll12Page() {
       setLoadComplete(true);
     });
   }, [webGpuAbsent]);
+
+  // Dispose source BufferGeometries on unmount / reload.
+  useEffect(() => {
+    return () => {
+      loadedBuildings.forEach((b) => b.geometry.dispose());
+    };
+  }, [loadedBuildings]);
 
   // R3F gl factory — WebGPU ONLY.
   const glFactory = useCallback(async ({ canvas }: { canvas: HTMLCanvasElement }) => {
@@ -522,6 +542,7 @@ export default function MeshletSpikeAll12Page() {
 
   const handleFps = useCallback((f: number) => setFps(f), []);
   const handlePixelProbe = useCallback((m: string) => setPixelProbe(m), []);
+  const handleMergedReady = useCallback((a: MergedMeshletAsset) => setMergedAsset(a), []);
 
   // --- WebGPU absent ---
   if (webGpuAbsent) {
@@ -557,7 +578,12 @@ export default function MeshletSpikeAll12Page() {
         }}
       >
         {loadComplete && loadedBuildings.length > 0 && (
-          <All12RasterizerScene buildings={loadedBuildings} onFps={handleFps} onPixelProbe={handlePixelProbe} />
+          <All12RasterizerScene
+            buildings={loadedBuildings}
+            onFps={handleFps}
+            onPixelProbe={handlePixelProbe}
+            onMergedReady={handleMergedReady}
+          />
         )}
       </Canvas>
 
@@ -583,29 +609,44 @@ export default function MeshletSpikeAll12Page() {
         </div>
 
         <div style={styles.overlayRow}>
-          <span style={styles.overlayLabel}>Total tris (LOD 0)</span>
+          <span style={styles.overlayLabel}>Source tris (sum)</span>
           <span style={styles.overlayValue}>{totalTris.toLocaleString()}</span>
         </div>
 
-        {loadedStatuses.length > 0 && (
+        {mergedAsset && (
           <>
             <div style={styles.overlayRow}>
-              <span style={styles.overlayLabel}>Coarsest LOD tris</span>
+              <span style={styles.overlayLabel}>Merged LOD 0 tris</span>
+              <span style={styles.overlayValue}>{mergedTotalTris.toLocaleString()}</span>
+            </div>
+            <div style={styles.overlayRow}>
+              <span style={styles.overlayLabel}>Merged coarsest tris</span>
               <span style={{ ...styles.overlayValue, color: '#60a5fa' }}>
-                {totalCoarsestTris.toLocaleString()}
+                {mergedCoarsestTris.toLocaleString()}
               </span>
             </div>
             <div style={styles.overlayRow}>
-              <span style={styles.overlayLabel}>LOD reduction</span>
-              <span style={{ ...styles.overlayValue, color: reductionPct >= 80 ? '#4ade80' : '#facc15' }}>
-                {reductionPct}% ({avgLodCount} levels avg)
+              <span style={styles.overlayLabel}>Merged LOD count</span>
+              <span style={styles.overlayValue}>
+                {mergedLodCount} ({mergedReductionPct}% reduction)
               </span>
+            </div>
+            <div style={styles.overlayRow}>
+              <span style={styles.overlayLabel}>Total chunks</span>
+              <span style={styles.overlayValue}>{mergedAsset.totalChunks.toLocaleString()}</span>
             </div>
           </>
         )}
 
         <div style={styles.overlayRow}>
-          <span style={styles.overlayLabel}>Rasterizers ready</span>
+          <span style={styles.overlayLabel}>Rasterizer</span>
+          <span style={{ ...styles.overlayValue, color: mergedAsset ? '#4ade80' : '#facc15' }}>
+            {mergedAsset ? 'merged-asset ready' : 'building merged asset…'}
+          </span>
+        </div>
+
+        <div style={styles.overlayRow}>
+          <span style={styles.overlayLabel}>Buildings loaded</span>
           <span style={styles.overlayValue}>
             {loadComplete ? loadedBuildings.length : loadedCount} / {BUILDINGS.length}
           </span>
@@ -627,9 +668,6 @@ export default function MeshletSpikeAll12Page() {
         <div style={styles.separator} />
         {BUILDINGS.map((b) => {
           const status = buildingStatuses.get(b.id);
-          const lodLabel = status?.status === 'loaded' && status.lodCount > 1
-            ? ` ×${status.lodCount}LOD`
-            : '';
           return (
             <div key={b.id} style={styles.buildingRow}>
               <span style={styles.buildingId}>{b.id.replace(/-/g, '‑')}</span>
@@ -642,7 +680,7 @@ export default function MeshletSpikeAll12Page() {
                   : '#6b7280',
               }}>
                 {status?.status === 'loaded'
-                  ? `${(status.tris).toLocaleString()}${lodLabel}`
+                  ? status.tris.toLocaleString()
                   : status?.status === 'error'
                   ? 'ERR'
                   : '...'}
