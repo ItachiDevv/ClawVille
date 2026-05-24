@@ -50,7 +50,7 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js';
 import { MeshoptDecoder } from 'meshoptimizer';
 import {
-  geometryToMeshletAsset,
+  geometryToMeshletAssetAsync,
   NaniteRasterizer,
   type MeshletAsset,
 } from '@/lib/three/experimental/nanite-rasterizer';
@@ -282,7 +282,7 @@ function loadAllBuildings(
     return new Promise((resolve) => {
       loader.load(
         spec.model,
-        (gltf) => {
+        async (gltf) => {
           try {
             const mergedGeo = collectAndMergeGeometries(gltf.scene);
             if (!mergedGeo) {
@@ -290,7 +290,11 @@ function loadAllBuildings(
               resolve(null);
               return;
             }
-            const asset = geometryToMeshletAsset(mergedGeo);
+            // ASYNC variant — awaits MeshoptSimplifier WASM ready before generating
+            // LODs. The sync version silently fell back to single-LOD when the WASM
+            // race hit (load callback fired before WASM init complete) — that's why
+            // the 12-building spike measured 5-7 FPS with the LOD code deployed.
+            const asset = await geometryToMeshletAssetAsync(mergedGeo);
             mergedGeo.dispose();
 
             // Instance data: one instance at [posX, 0, posZ, scale=1]
