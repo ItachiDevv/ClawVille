@@ -376,18 +376,18 @@ See `WorldContent.md` §3 for the canonical roster.
 
 Two Hetzner VPS hosts since the 2026-05-23 migration. Both orchestrated by Coolify, Cloudflare in front for DNS/CDN/DDoS. Real IPs, SSH keys, and app UUIDs in `scripts/deploy/.env.deploy` (gitignored — `PROD_VPS_IP=…` + `STAGING_VPS_IP=…`).
 
-| Env | App | Coolify App ID | Port | Domain |
-|---|---|---|---|---|
-| prod    | web | 3 | 3000 | `clawville.world` (+ `new.clawville.world`) |
-| prod    | api | 2 | 4000 | `api.clawville.world` (+ `api-new.clawville.world`) |
-| staging | web | 4 | 3000 | `staging.clawville.world` |
-| staging | api | 3 | 4000 | `api-staging.clawville.world` |
+| Env | App | Coolify App ID | Git branch | Port | Domain |
+|---|---|---|---|---|---|
+| prod    | web | 3 | `master`  | 3000 | `clawville.world` (+ `new.clawville.world`) |
+| prod    | api | 2 | `master`  | 4000 | `api.clawville.world` (+ `api-new.clawville.world`) |
+| staging | web | 4 | `staging` | 3000 | `staging.clawville.world` |
+| staging | api | 3 | `staging` | 4000 | `api-staging.clawville.world` |
 
 SSH keys: PROD = `~/.ssh/clawville_hillsboro` (passphrase — load into Windows ssh-agent once), STAGING = `~/.ssh/clawville_deploy`. Coolify admin UIs: prod `https://coolify-new.clawville.world`, staging `https://coolify-staging.clawville.world`.
 
 DB: Supabase Postgres (external, paid tier — endpoint in env). **Single instance shared across prod + staging** — any staging write touches prod data. Wallets / encryption keys / fingerprint secret are byte-identical between environments by design (makes staging a 30s DNS-swap rollback target).
 
-Auto-deploy on `git push origin master` via GitHub webhook. Manual redeploys via `php artisan tinker` queue inside the Coolify container — pattern in `CLAUDE.md` "Manual redeploy" section. Full playbook + emergency access in `DEPLOY-HETZNER.md`.
+**Push flow (set 2026-05-24):** `git push origin staging` → `.github/workflows/deploy-staging.yml` → STAGING Coolify (apps 3+4). Verify on staging URLs. Open PR `staging → master` via `gh pr create --base master --head staging`. Merging triggers `.github/workflows/deploy.yml` → PROD Coolify (apps 2+3). **Direct push to `master` is forbidden** unless the commit message contains the literal phrase `direct to master` (case-insensitive hotfix override, CI-logged). Manual redeploys via `php artisan tinker` queue inside the Coolify container — pattern in `CLAUDE.md` "Manual redeploy" section. Full playbook + emergency access in `DEPLOY-HETZNER.md`.
 
 **Migrations:** Coolify does NOT run them. Run `bun run db:push` from root before deploy if you touched `packages/database/src/schema/*.ts`. Destructive migrations require `ELIZA_ALLOW_DESTRUCTIVE_MIGRATIONS=true`.
 

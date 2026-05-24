@@ -1,31 +1,31 @@
-name: Auto-deploy to Coolify
+name: Auto-deploy PROD on push to master
 
-# Triggers a Coolify deploy for both the api (app 2) and web (app 3) on
-# the PROD box (Hillsboro, post-2026-05-23 migration) on every push to
-# master. Real IPs/UUIDs are gitignored in `scripts/deploy/.env.deploy`.
-# Coolify's built-in webhook delivery is not configured for this repo
-# (source_type/source_id are null on both apps; only "Public GitHub"
-# placeholder exists in coolify). Instead of reconfiguring Coolify's
-# GitHub App integration, this workflow SSHes into the prod VPS and
-# invokes /root/clawville-deploy.sh, which runs the same
-# `php artisan tinker` deploy command we'd run manually.
+# Triggers Coolify deploys on the PROD box (Hillsboro, post-2026-05-23 migration)
+# for both api (app 2) and web (app 3) on every push to `master`.
+# Staging deploys are handled by .github/workflows/deploy-staging.yml.
 #
-# IMPORTANT: This workflow's `host:` and `key:` MUST be filled via GitHub
-# Actions secrets — the literal `<PROD_VPS_IP>` and `${{ secrets.COOLIFY_SSH_KEY }}`
-# need to be set in the repo's Settings → Secrets. If `<PROD_VPS_IP>` is
-# still a literal placeholder in this file, GitHub Actions WILL FAIL on
-# every push. Check repo secrets or replace inline with `${{ secrets.PROD_VPS_IP }}`.
+# Push flow guardrail (see CLAUDE.md "PUSH FLOW"):
+#   - New work goes to `staging` branch first → deploy-staging.yml fires →
+#     verify on staging.clawville.world / api-staging.clawville.world.
+#   - After verification, open a PR `staging → master` and merge to promote.
+#     This workflow runs on the master merge and ships to prod.
+#   - Override: a commit message containing the literal phrase "direct to master"
+#     (case-insensitive) signals that staging was intentionally bypassed (hotfix
+#     window only). Logged for audit.
 #
-# Staging is NOT auto-deployed from this workflow — push to staging only
-# via manual tinker against `$STAGING_VPS_IP` (api id=3, web id=4).
+# REQUIRED GITHUB REPO SECRETS (Settings → Secrets and variables → Actions):
+#   PROD_VPS_IP        — the real IP from scripts/deploy/.env.deploy
+#   COOLIFY_SSH_KEY    — contents of ~/.ssh/clawville_hillsboro (private key,
+#                        the passphrase-free build; if your local key has a
+#                        passphrase, export a copy without one for CI use)
+# Until BOTH secrets exist, this workflow will fail and prod deploys must run
+# manually via `ssh root@$PROD_VPS_IP 'bash /root/clawville-deploy.sh'`.
 #
-# The script lives ON the VPS to avoid YAML→bash→tinker quote escaping
-# hell. Source of truth is in this repo at scripts/deploy/clawville-deploy.sh
-# (already updated to app IDs 2/3 for the new prod box) — copy any changes
-# there to /root/ on the new VPS via:
-#   scp scripts/deploy/clawville-deploy.sh root@<PROD_VPS_IP>:/root/ && \
-#   ssh ... 'chmod +x /root/clawville-deploy.sh'
-# (use ~/.ssh/clawville_hillsboro for PROD, ~/.ssh/clawville_deploy for STAGING)
+# clawville-deploy.sh lives on the VPS at /root/ and is the authoritative copy
+# of scripts/deploy/clawville-deploy.sh in this repo. After editing the repo
+# copy, scp it onto the box:
+#   scp scripts/deploy/clawville-deploy.sh root@$PROD_VPS_IP:/root/ && \
+#     ssh root@$PROD_VPS_IP 'chmod +x /root/clawville-deploy.sh'
 
 on:
   push:
@@ -33,17 +33,25 @@ on:
       - master
 
 concurrency:
-  group: coolify-deploy-${{ github.ref }}
+  group: coolify-deploy-prod
   cancel-in-progress: false
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
+      - name: Flag direct-to-master deploys (audit log)
+        env:
+          COMMIT_MSG: ${{ github.event.head_commit.message }}
+        run: |
+          if echo "$COMMIT_MSG" | grep -iqE 'direct to master'; then
+            echo "::warning::This commit explicitly bypassed staging (commit message contains 'direct to master')."
+          fi
+
       - name: Trigger Coolify deploys via SSH
         uses: appleboy/ssh-action@v1.2.0
         with:
-          host: <PROD_VPS_IP>
+          host: ${{ secrets.PROD_VPS_IP }}
           username: root
           key: ${{ secrets.COOLIFY_SSH_KEY }}
           port: 22
@@ -51,6 +59,6 @@ jobs:
           command_timeout: 5m
           script: |
             set -eo pipefail
-            echo "Triggering Coolify deploys for commit ${{ github.sha }}"
+            echo "Triggering PROD Coolify deploys for commit ${{ github.sha }}"
             /root/clawville-deploy.sh
-            echo "Both deploys queued."
+            echo "Both prod deploys queued."
