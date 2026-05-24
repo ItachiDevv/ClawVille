@@ -78,10 +78,19 @@ export default function MeshletBuildingsR3F() {
           return;
         }
 
-        // Disable R3F's autoClear so the rasterizer's earlier-in-frame output
-        // isn't cleared by R3F's later render pass. The rasterizer manages its
-        // own framebuffer clearing internally.
-        (renderer as any).autoClear = false;
+        // v1.7 architecture: R3F renders the FULL scene first (sky + terrain +
+        // NPCs + player + everything else) as normal — autoClear, scene
+        // background, all default. Then our useFrame runs at HIGH renderPriority
+        // (after R3F's auto-render is disabled), manually drives R3F's render
+        // FIRST, then overlays the rasterizer LAST with transparent non-hit
+        // pixels (alpha=0) so the R3F scene shows through where no building
+        // is drawn. This is the cleanest compositing model and also means both
+        // renders use the SAME camera state at the SAME instant in the rAF
+        // tick → no 1-frame building-position lag during rotation.
+
+        console.log('[MeshletBuildingsR3F] init complete — backend:',
+          (renderer as any).backend?.constructor?.name,
+          'isWebGPU:', (renderer as any).isWebGPURenderer);
 
         const r = new NaniteRasterizer(renderer, asset, {
           instanceCount: 1,
@@ -110,27 +119,41 @@ export default function MeshletBuildingsR3F() {
     };
   }, [gl, asset]);
 
+  // v1.8: HIGH renderPriority (10) — disables R3F's auto-render. We then
+  // manually drive: 1) R3F scene first (with autoClear=true to clear+render),
+  // 2) rasterizer overlay second WITH autoClear=false so its internal
+  // quadMesh.render() doesn't wipe the scene we just rendered.
+  const frameCountRef = useRef(0);
   useFrame((state) => {
-    if (!readyRef.current || !rasterizerRef.current) {
-      // While rasterizer is loading, still drive R3F's render (we suppressed
-      // R3F's default render by claiming a renderPriority).
-      state.gl.render(state.scene, state.camera);
-      return;
-    }
+    // 1. R3F scene — autoClear=true (default) clears swap chain then renders
+    //    sky + terrain + NPCs + player + everything else.
+    state.gl.render(state.scene, state.camera);
+
+    // 2. Meshlet rasterizer overlay (transparent where no building drawn).
+    //    MUST set autoClear=false before this — otherwise the rasterizer's
+    //    internal quadMesh.render(renderer) call uses the renderer's current
+    //    autoClear (true), which clears the framebuffer BEFORE drawing the
+    //    transparent quad → wipes everything we just rendered.
+    if (!readyRef.current || !rasterizerRef.current) return;
+    frameCountRef.current += 1;
+    const logThisFrame = frameCountRef.current === 1 ||
+                         frameCountRef.current === 60 ||
+                         frameCountRef.current === 300;
+    const _prevAutoClear = (state.gl as any).autoClear;
+    (state.gl as any).autoClear = false;
     try {
-      // 1. Rasterizer pass — populates swap chain with building pixels
       rasterizerRef.current.render(
         state.camera as THREE.PerspectiveCamera,
         state.size.width,
         state.size.height,
       );
+      if (logThisFrame) console.log('[MeshletBuildingsR3F] frame', frameCountRef.current, 'rasterizer overlay OK');
     } catch (err) {
       console.error('[MeshletBuildingsR3F] rasterizer render failed:', err);
+    } finally {
+      (state.gl as any).autoClear = _prevAutoClear;
     }
-    // 2. R3F scene pass — terrain, NPCs, player VRM render on top of buildings.
-    // autoClear=false is set in init so this doesn't wipe the rasterizer output.
-    state.gl.render(state.scene, state.camera);
-  }, MESHLET_RENDER_PRIORITY);
+  }, 10);
 
   // No DOM output — we live entirely inside R3F's render loop.
   return null;
