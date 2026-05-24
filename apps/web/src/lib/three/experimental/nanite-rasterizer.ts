@@ -865,6 +865,7 @@ export class NaniteRasterizer {
       instanceCount: opts.instanceCount,
       staticInstanceData: opts.staticInstanceData,
       maxRasterSize: opts.maxRasterSize ?? 16,
+      instanceBoundingRadius: opts.instanceBoundingRadius ?? 2.0,
     };
   }
 
@@ -1008,9 +1009,7 @@ export class NaniteRasterizer {
     this.cotHalfFovUniform = uniform(1.0);
     this.pixelErrorThresholdUniform = uniform(4.0);
     this.maxRasterSizeUniform = uniform(this.opts.maxRasterSize, 'int');
-    this.instanceBoundingRadiusUniform = uniform(
-      (this.opts as any).instanceBoundingRadius ?? 2.0,
-    );
+    this.instanceBoundingRadiusUniform = uniform(this.opts.instanceBoundingRadius);
 
     // ---- LOD error values as a uniform array (JS floats → GPU floats) ----
     // uniformArray of floats: one per LOD level.
