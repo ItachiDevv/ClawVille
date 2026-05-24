@@ -565,7 +565,7 @@ export default function MeshletSpikeAll12Page() {
       <Canvas
         gl={glFactory as any}
         frameloop="always"
-        camera={{ position: [0, 50, 50], fov: 60, near: 0.5, far: 20000 }}
+        camera={{ position: [0, 100, -3800], fov: 60, near: 0.5, far: 20000 }}
         style={styles.canvas}
         onCreated={({ gl: renderer }) => {
           // Suppress R3F's default scene clear — each rasterizer manages
