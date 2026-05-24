@@ -416,16 +416,31 @@ function All12RasterizerScene({ buildings, onFps, onPixelProbe, onMergedReady }:
     };
   }, [gl, buildings, onMergedReady]);
 
-  useFrame((state) => {
+  // Track in-flight render so we don't overlap frames + can attribute errors.
+  const renderInFlightRef = useRef(false);
+  const renderErrorRef = useRef<string | null>(null);
+
+  useFrame(async (state) => {
     if (!readyRef.current || !rasterizerRef.current) return;
+    if (renderInFlightRef.current) return; // skip frame if previous still running
 
     const camera = state.camera as unknown as THREE.PerspectiveCamera;
     const w = size.width;
     const h = size.height;
 
-    rasterizerRef.current.render(camera, w, h).catch((err) => {
-      console.error('[meshlet-all-12] render error:', err);
-    });
+    renderInFlightRef.current = true;
+    try {
+      await rasterizerRef.current.render(camera, w, h);
+      renderErrorRef.current = null;
+    } catch (err) {
+      const msg = String((err as Error)?.message ?? err);
+      if (renderErrorRef.current !== msg) {
+        renderErrorRef.current = msg;
+        console.error('[meshlet-all-12] render error:', err);
+      }
+    } finally {
+      renderInFlightRef.current = false;
+    }
 
     // FPS meter — accumulate and report once per second.
     fpsFramesRef.current += 1;
