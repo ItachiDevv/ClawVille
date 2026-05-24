@@ -94,8 +94,12 @@ const BUILDINGS: BuildingSpec[] = [
   { id: 'code-development',   model: '/models/chum-bucket-v2-opt1.glb?v=2',                     posX: ringPos(1)[0],  posZ: ringPos(1)[1]  },
   // Slot 2 — ENE — mcp-tool-use (krusty-krab)
   { id: 'mcp-tool-use',       model: '/models/krusty-krab-v2-opt1.glb?v=2',                     posX: ringPos(2)[0],  posZ: ringPos(2)[1]  },
-  // Slot 3 — E — messaging-channels (sandy-treedome)
-  { id: 'messaging-channels', model: '/models/sandy-treedome-v3-opt1.glb?v=2',                  posX: ringPos(3)[0],  posZ: ringPos(3)[1]  },
+  // Slot 3 — E — messaging-channels (sandy-treedome) — DISABLED for spike
+  // 2026-05-24: source GLB is a 1.1M-tri Draco vertex-color tree, 22× the rest
+  // of the scene combined. User will replace with a lower-poly variant later.
+  // Until then, spike runs with 11 buildings to measure meshlet path without
+  // this single outlier dragging the average.
+  // { id: 'messaging-channels', model: '/models/sandy-treedome-v3-opt1.glb?v=2',                  posX: ringPos(3)[0],  posZ: ringPos(3)[1]  },
   // Slot 4 — ESE — api-integrations (salty-spitoon)
   { id: 'api-integrations',   model: '/models/salty-spitoon-opt1.glb?v=2',                      posX: ringPos(4)[0],  posZ: ringPos(4)[1]  },
   // Slot 5 — SSE — app-publishing (boating-school)
