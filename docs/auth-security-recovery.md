@@ -311,7 +311,7 @@ Five failed logins for a single user in 15 minutes ⇒ credential stuffing attem
 
 | Need | Where |
 |---|---|
-| Production DB shell | `ssh -i ~/.ssh/clawville_deploy root@$PROD_VPS_IP` then `docker exec -it coolify-db psql -U coolify -d coolify` (Coolify DB — NOT the ClawVille app DB). For ClawVille DB: connection string in Coolify env, run `psql $DATABASE_URL` from your local machine. |
+| Production DB shell | `ssh root@$PROD_VPS_IP` (uses `~/.ssh/clawville_hillsboro` via Windows ssh-agent — post-2026-05-23 migration), then `docker exec -it coolify-db psql -U coolify -d coolify` (Coolify DB — NOT the ClawVille app DB). For ClawVille DB: connection string in Coolify env (single Supabase instance shared prod+staging), run `psql $DATABASE_URL` from your local machine. Staging box: `ssh -i ~/.ssh/clawville_deploy root@$STAGING_VPS_IP`. |
 | Tinker recipes | `CLAUDE.md` "Coolify SSH Operations" section |
 | Event taxonomy | `apps/api/src/services/event-logger.ts` |
 | Money ledger source | `apps/api/src/services/claw-token-ledger.ts` |

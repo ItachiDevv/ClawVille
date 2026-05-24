@@ -27,7 +27,8 @@
 # Flags:
 #   --migration <NUMBER>   4-digit migration prefix (default: 0007)
 #   --vps-ip <IP>          Production VPS IP (else PROD_VPS_IP env var; no default)
-#   --ssh-key <PATH>       SSH key path (default: ~/.ssh/clawville_deploy)
+#   --ssh-key <PATH>       SSH key path (default: ~/.ssh/clawville_hillsboro for prod;
+#                          use ~/.ssh/clawville_deploy for staging)
 #   --dry-run              Print commands instead of executing
 #   --probe-table <NAME>   Pre-flight existence check; if non-NULL, abort
 #                          gracefully (default: avatars — only valid for 0007)
@@ -54,7 +55,7 @@ set -euo pipefail
 
 MIGRATION="0007"
 VPS_IP="${PROD_VPS_IP:-}"
-SSH_KEY="${HOME}/.ssh/clawville_deploy"
+SSH_KEY="${HOME}/.ssh/clawville_hillsboro"  # prod post-2026-05-23; use clawville_deploy for staging
 DRY_RUN=0
 PROBE_TABLE="avatars"
 VERIFY_TABLE="avatars"

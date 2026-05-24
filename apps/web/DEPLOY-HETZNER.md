@@ -1,6 +1,15 @@
 # ClawVille → Hetzner Deploy Playbook
 
-> **Status (2026-04-10): MIGRATION COMPLETE.** Production is live on Hetzner CCX13
+> ⚠️ **STALE DUPLICATE.** This file is a copy of the original Railway→Hetzner
+> migration playbook from 2026-04-10 and was NOT updated for the 2026-05-23
+> prod migration. **Canonical version:** `docs/DEPLOY-HETZNER.md` (root of repo)
+> — has the two-box (Hillsboro prod + Ashburn staging) headnote and post-migration
+> lessons-learned. **Current production reality:** see `CLAUDE.md` / `AGENTS.md`
+> "Deployment — Hetzner + Coolify" section. The content below is preserved as
+> historical reference only; do not act on its single-box assumptions or its
+> outdated `<PROD_VPS_IP>` + `coolify.clawville.world` (now staging) values.
+
+> **Original status (2026-04-10): MIGRATION COMPLETE.** Production was live on a single Hetzner CCX13
 > at `<PROD_VPS_IP>`, managed by Coolify at `https://coolify.clawville.world`. DNS
 > cutover done, Let's Encrypt certs issued, Railway services stopped (not yet deleted).
 > Steps 0-7 are done. Step 8 (delete Railway project) is pending and requires an

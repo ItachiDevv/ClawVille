@@ -1,12 +1,28 @@
 # ClawVille → Hetzner Deploy Playbook
 
-> **Status (2026-04-10): MIGRATION COMPLETE.** Production is live on Hetzner CCX13
-> at `<PROD_VPS_IP>` (see `scripts/deploy/.env.deploy`, gitignored), managed by Coolify
-> at the admin subdomain configured in `CF_COOLIFY_SUBDOMAIN` (same env file). DNS
-> cutover done, Let's Encrypt certs issued, Railway services stopped (not yet deleted).
-> Steps 0-7 are done. Step 8 (delete Railway project) is pending and requires an
-> explicit "go" from the user after the 24h Hetzner soak. Keep this playbook as the
-> canonical reference for the next migration or rebuild.
+> **Status (2026-05-24): TWO-BOX SETUP.** Production migrated from the original
+> Ashburn box (now `<STAGING_VPS_IP>`, Coolify 4.0) to a new Hillsboro box
+> (`<PROD_VPS_IP>`, Coolify 4.1) on 2026-05-23. The old box now serves `staging.clawville.world`
+> + `api-staging.clawville.world` as a hot rollback target (DNS swap = 30s
+> rollback). Both share the same Supabase DB — any staging write touches prod
+> data. Authoritative IPs/keys/app-IDs live in `scripts/deploy/.env.deploy`
+> (gitignored). See `CLAUDE.md` / `AGENTS.md` "Deployment — Hetzner + Coolify"
+> for the live two-env table.
+>
+> **This playbook below is the one-time Railway→Hetzner migration history,
+> kept as reference for the NEXT migration or rebuild.** When provisioning a
+> third box (e.g. EU region), the same scripts (`provision-hetzner.sh`,
+> `bootstrap-server.sh`, `setup-cloudflare-dns.sh`) apply. Lessons learned
+> 2026-05-23 (CRLF on bootstrap, Coolify 4.0→4.1 schema drift on
+> `environment_variables`, Crypt::encryptString-via-raw-SQL breakage, stale
+> `custom_labels` requiring `null + re-save`) live in:
+> - `~/.claude/projects/.../memory/feedback_coolify_envvar_encryption.md`
+> - `~/.claude/projects/.../memory/project_deploy_infrastructure.md`
+>
+> **Migration scripts used 2026-05-23** are saved to `.migration-out/`
+> (gitignored). Reuse them as templates for the next migration: `create-apps.php`,
+> `cutover-prod-fix.php` (must use Eloquent model for env writes), `reconfig-staging.php`,
+> `init-new-coolify.php` (admin user + instance fqdn + deploy key import in one tinker call).
 
 Migrate ClawVille from Railway Pro (~$55/mo) to a single Hetzner CCX13 VPS
 running Coolify, with Cloudflare in front. Actual cost: **~$19.99/mo gross**
