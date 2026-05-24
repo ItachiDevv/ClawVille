@@ -444,6 +444,346 @@ export async function geometryToMeshletAssetAsync(
 }
 
 // ---------------------------------------------------------------------------
+// mergeGeometriesToMeshletAsset — merge N source meshes into ONE asset
+// ---------------------------------------------------------------------------
+
+export interface MergeInput {
+  geometry: THREE.BufferGeometry;
+  /** World-space transform — baked into vertex positions before LOD generation. */
+  worldMatrix: THREE.Matrix4;
+  /**
+   * Tag stored in meshletTriangleArray's high bits — lets the shader colour
+   * each source mesh distinctly via hashColor(meshletId | (sourceId<<20)).
+   * Range: 0..1023. Default: index of input.
+   */
+  sourceId?: number;
+}
+
+export interface MergedMeshletAsset extends MeshletAsset {
+  /** Per-source-mesh metadata for diagnostics — index into MergeInput[]. */
+  perSource: Array<{
+    sourceId: number;
+    triangleCount: number;
+    vertexStart: number;
+    vertexCount: number;
+    lodCount: number;
+    lodTriCounts: number[];
+  }>;
+}
+
+/**
+ * Merge N source geometries into ONE MeshletAsset rendered by a SINGLE
+ * NaniteRasterizer. This is the proper "one big virtual geometry buffer"
+ * pattern from the Nanite paper — N separate rasterizers don't compose
+ * because each quadMesh.render() clears the previous one's output.
+ *
+ * Per-source pipeline:
+ *   1. Bake worldMatrix into vertex positions (translate + scale + rotate).
+ *      This means the merged asset is rendered with instanceCount=1 and
+ *      an identity instance transform; no per-instance positions needed.
+ *   2. Run meshoptimizer LOD chain per source mesh independently. Each
+ *      source's LODs are stored as contiguous triangle ranges in the merged
+ *      index buffer.
+ *   3. Concatenate: vertices, UVs, indices (with vertex-offset adjustment),
+ *      meshlet IDs (unique across all sources), chunkBoundsData (in world
+ *      space — transforms already baked).
+ *
+ * LOD layout in the merged asset:
+ *   The merged asset's lodCount = max(per-source lodCount). All sources
+ *   contribute to LOD slot `i` if they have a LOD i. The compute shader's
+ *   per-cluster LOD selection picks the coarsest acceptable LOD per cluster
+ *   independently — so a complex building can use LOD 0 while a simple one
+ *   uses LOD 2, even though they share the same asset.
+ *
+ *   lodOffsetsData[i*4 + 0] = triangleStart of LOD i (first source's LOD i)
+ *   lodOffsetsData[i*4 + 1] = triangleCount across ALL sources at LOD i
+ *   lodOffsetsData[i*4 + 2] = chunkStart of LOD i
+ *
+ *   This works because the compute shader iterates clusters by chunkStart..end
+ *   and each chunk knows its own world-space bounds for screen-error selection.
+ */
+export async function mergeGeometriesToMeshletAsset(
+  inputs: MergeInput[],
+): Promise<MergedMeshletAsset> {
+  await MeshoptSimplifier.ready;
+
+  if (inputs.length === 0) {
+    throw new Error('mergeGeometriesToMeshletAsset: at least one input required');
+  }
+
+  // ---- Step 1: bake transforms + build per-source flat data ----
+  interface PerSourceData {
+    sourceId: number;
+    flatPositions: Float32Array; // world-space, post-bake
+    flatUVs: Float32Array;       // numVertices * 2 (zeros if input had no UVs)
+    numVertices: number;
+    lodList: Array<{ indices: Uint32Array; numTriangles: number; error: number }>;
+  }
+
+  const perSourceData: PerSourceData[] = [];
+
+  for (let inputIdx = 0; inputIdx < inputs.length; inputIdx++) {
+    const input = inputs[inputIdx];
+    const sourceId = input.sourceId ?? inputIdx;
+    const posAttr = input.geometry.attributes['position'] as THREE.BufferAttribute;
+    if (!posAttr) {
+      throw new Error(`mergeGeometriesToMeshletAsset: input ${inputIdx} missing position attribute`);
+    }
+    const uvAttr = input.geometry.attributes['uv'] as THREE.BufferAttribute | undefined;
+    const numVertices = posAttr.count;
+
+    // Bake worldMatrix into positions.
+    const flatPositions = new Float32Array(numVertices * 3);
+    const tmpVec = new THREE.Vector3();
+    for (let v = 0; v < numVertices; v++) {
+      tmpVec.set(posAttr.getX(v), posAttr.getY(v), posAttr.getZ(v));
+      tmpVec.applyMatrix4(input.worldMatrix);
+      flatPositions[v * 3 + 0] = tmpVec.x;
+      flatPositions[v * 3 + 1] = tmpVec.y;
+      flatPositions[v * 3 + 2] = tmpVec.z;
+    }
+
+    const flatUVs = new Float32Array(numVertices * 2);
+    if (uvAttr) {
+      for (let v = 0; v < numVertices; v++) {
+        flatUVs[v * 2 + 0] = uvAttr.getX(v);
+        flatUVs[v * 2 + 1] = uvAttr.getY(v);
+      }
+    }
+
+    // LOD 0 indices.
+    let lod0Indices: Uint32Array;
+    if (input.geometry.index) {
+      const src = input.geometry.index.array;
+      lod0Indices = new Uint32Array(src.length);
+      for (let i = 0; i < src.length; i++) lod0Indices[i] = src[i];
+    } else {
+      lod0Indices = new Uint32Array(numVertices);
+      for (let i = 0; i < numVertices; i++) lod0Indices[i] = i;
+    }
+    const lod0TriCount = lod0Indices.length / 3;
+
+    const lodList: PerSourceData['lodList'] = [{
+      indices: lod0Indices,
+      numTriangles: lod0TriCount,
+      error: 0.0,
+    }];
+
+    // LOD chain.
+    let prevIndices = lod0Indices;
+    let prevTriCount = lod0TriCount;
+    for (let lodIdx = 1; lodIdx < MAX_LOD_LEVELS; lodIdx++) {
+      if (prevTriCount < MIN_TRIANGLES_FOR_LOD) break;
+      const targetTriCount = Math.max(MIN_TRIANGLES_FOR_LOD, Math.floor(prevTriCount * 0.5));
+      const targetIndexCount = targetTriCount * 3;
+      const errorThreshold = LOD_ERRORS[lodIdx] ?? 0.25;
+      try {
+        const [simplified, err] = MeshoptSimplifier.simplify(
+          prevIndices, flatPositions, 3, targetIndexCount, errorThreshold, 0,
+        );
+        const simplifiedIndices = simplified as Uint32Array;
+        const simplifiedTriCount = simplifiedIndices.length / 3;
+        if (simplifiedTriCount >= prevTriCount * 0.95) break;
+        lodList.push({
+          indices: simplifiedIndices,
+          numTriangles: simplifiedTriCount,
+          error: Math.max(errorThreshold, err as number),
+        });
+        prevIndices = simplifiedIndices;
+        prevTriCount = simplifiedTriCount;
+        if (simplifiedTriCount <= MIN_TRIANGLES_FOR_LOD) break;
+      } catch (e) {
+        console.warn(`[nanite-merge] source ${sourceId} LOD ${lodIdx} simplify failed:`, e);
+        break;
+      }
+    }
+
+    perSourceData.push({ sourceId, flatPositions, flatUVs, numVertices, lodList });
+  }
+
+  // ---- Step 2: compute totals + global LOD count ----
+  const totalVertices = perSourceData.reduce((s, p) => s + p.numVertices, 0);
+  const globalLodCount = Math.max(...perSourceData.map((p) => p.lodList.length));
+
+  // ---- Step 3: write merged vertex arrays ----
+  const vertexArray = new Float32Array(totalVertices * 4);
+  const uvArray = new Float32Array(totalVertices * 2);
+  const perSourceVertexStart: number[] = [];
+  {
+    let cursor = 0;
+    for (const p of perSourceData) {
+      perSourceVertexStart.push(cursor);
+      for (let v = 0; v < p.numVertices; v++) {
+        vertexArray[(cursor + v) * 4 + 0] = p.flatPositions[v * 3 + 0];
+        vertexArray[(cursor + v) * 4 + 1] = p.flatPositions[v * 3 + 1];
+        vertexArray[(cursor + v) * 4 + 2] = p.flatPositions[v * 3 + 2];
+        vertexArray[(cursor + v) * 4 + 3] = 1.0;
+        uvArray[(cursor + v) * 2 + 0] = p.flatUVs[v * 2 + 0];
+        uvArray[(cursor + v) * 2 + 1] = p.flatUVs[v * 2 + 1];
+      }
+      cursor += p.numVertices;
+    }
+  }
+
+  // ---- Step 4: build merged LOD layout ----
+  // Layout: LOD 0 of source 0, LOD 0 of source 1, ..., LOD 0 of source N-1,
+  //         LOD 1 of source 0, LOD 1 of source 1 (if has LOD 1), ...
+  // Each LOD slot in the merged asset contains all sources' LOD-i triangles
+  // contiguously. lodOffsetsData[i*4 + 0..1] points to that range.
+  interface LodTriRange { srcIdx: number; lodIdx: number; numTriangles: number; }
+  const lodSlots: LodTriRange[][] = Array.from({ length: globalLodCount }, () => []);
+  for (let srcIdx = 0; srcIdx < perSourceData.length; srcIdx++) {
+    const p = perSourceData[srcIdx];
+    for (let lodIdx = 0; lodIdx < p.lodList.length; lodIdx++) {
+      lodSlots[lodIdx].push({
+        srcIdx,
+        lodIdx,
+        numTriangles: p.lodList[lodIdx].numTriangles,
+      });
+    }
+  }
+
+  let totalTriangles = 0;
+  const lodTriStarts: number[] = [];
+  const lodTriCountsGlobal: number[] = [];
+  for (let i = 0; i < globalLodCount; i++) {
+    lodTriStarts.push(totalTriangles);
+    const slotTris = lodSlots[i].reduce((s, r) => s + r.numTriangles, 0);
+    lodTriCountsGlobal.push(slotTris);
+    totalTriangles += slotTris;
+  }
+
+  const totalIndices = totalTriangles * 3;
+  const indexArray = new Uint32Array(totalIndices);
+  const meshletTriangleArray = new Uint32Array(totalTriangles);
+
+  // ---- Step 5: write indices + meshlet IDs ----
+  let currentMeshletId = 1;
+  let triCursor = 0;
+  for (let lodIdx = 0; lodIdx < globalLodCount; lodIdx++) {
+    for (const range of lodSlots[lodIdx]) {
+      const p = perSourceData[range.srcIdx];
+      const vertOffset = perSourceVertexStart[range.srcIdx];
+      const lod = p.lodList[range.lodIdx];
+      let currentTriInMeshlet = 0;
+      for (let t = 0; t < lod.numTriangles; t++) {
+        indexArray[(triCursor + t) * 3 + 0] = lod.indices[t * 3 + 0] + vertOffset;
+        indexArray[(triCursor + t) * 3 + 1] = lod.indices[t * 3 + 1] + vertOffset;
+        indexArray[(triCursor + t) * 3 + 2] = lod.indices[t * 3 + 2] + vertOffset;
+        if (currentTriInMeshlet >= 126) {
+          currentMeshletId++;
+          currentTriInMeshlet = 0;
+        }
+        // Tag meshlet ID with source ID in high bits so hashColor distinguishes buildings.
+        meshletTriangleArray[triCursor + t] = currentMeshletId | (range.srcIdx << 20);
+        currentTriInMeshlet++;
+      }
+      currentMeshletId++;
+      triCursor += lod.numTriangles;
+    }
+  }
+
+  // ---- Step 6: per-chunk bounding spheres (64 tris/chunk, world-space) ----
+  let totalChunks = 0;
+  const lodChunkStarts: number[] = [];
+  const lodChunkCounts: number[] = [];
+  for (let lodIdx = 0; lodIdx < globalLodCount; lodIdx++) {
+    lodChunkStarts.push(totalChunks);
+    const slotTris = lodTriCountsGlobal[lodIdx];
+    const numChunks = Math.ceil(slotTris / 64);
+    lodChunkCounts.push(numChunks);
+    totalChunks += numChunks;
+  }
+
+  const chunkBoundsData = new Float32Array(totalChunks * 4);
+  let chunkCursor = 0;
+  let chunkTriCursor = 0;
+  for (let lodIdx = 0; lodIdx < globalLodCount; lodIdx++) {
+    const slotTris = lodTriCountsGlobal[lodIdx];
+    const numChunks = lodChunkCounts[lodIdx];
+    for (let c = 0; c < numChunks; c++) {
+      const startTri = chunkTriCursor + c * 64;
+      const endTri = Math.min(startTri + 64, chunkTriCursor + slotTris);
+      const vertCount = (endTri - startTri) * 3;
+      let cx = 0, cy = 0, cz = 0;
+      for (let t = startTri; t < endTri; t++) {
+        for (let v = 0; v < 3; v++) {
+          const idx = indexArray[t * 3 + v];
+          cx += vertexArray[idx * 4 + 0];
+          cy += vertexArray[idx * 4 + 1];
+          cz += vertexArray[idx * 4 + 2];
+        }
+      }
+      cx /= vertCount; cy /= vertCount; cz /= vertCount;
+      let maxDistSq = 0;
+      for (let t = startTri; t < endTri; t++) {
+        for (let v = 0; v < 3; v++) {
+          const idx = indexArray[t * 3 + v];
+          const dx = vertexArray[idx * 4 + 0] - cx;
+          const dy = vertexArray[idx * 4 + 1] - cy;
+          const dz = vertexArray[idx * 4 + 2] - cz;
+          const dSq = dx * dx + dy * dy + dz * dz;
+          if (dSq > maxDistSq) maxDistSq = dSq;
+        }
+      }
+      chunkBoundsData[chunkCursor * 4 + 0] = cx;
+      chunkBoundsData[chunkCursor * 4 + 1] = cy;
+      chunkBoundsData[chunkCursor * 4 + 2] = cz;
+      chunkBoundsData[chunkCursor * 4 + 3] = Math.sqrt(maxDistSq);
+      chunkCursor++;
+    }
+    chunkTriCursor += slotTris;
+  }
+
+  // ---- Step 7: LOD offset table + per-LOD errors ----
+  const lodOffsetsData = new Uint32Array(globalLodCount * 4);
+  const lodErrors = new Float32Array(globalLodCount);
+  const lodTriCounts: number[] = [];
+  for (let i = 0; i < globalLodCount; i++) {
+    lodOffsetsData[i * 4 + 0] = lodTriStarts[i];
+    lodOffsetsData[i * 4 + 1] = lodTriCountsGlobal[i];
+    lodOffsetsData[i * 4 + 2] = lodChunkStarts[i];
+    lodOffsetsData[i * 4 + 3] = 0;
+    // Per-LOD error is the MAX across sources that contributed to this slot
+    // (worst-quality source dictates when this LOD becomes acceptable).
+    let maxErr = 0;
+    for (const range of lodSlots[i]) {
+      const sErr = perSourceData[range.srcIdx].lodList[range.lodIdx].error;
+      if (sErr > maxErr) maxErr = sErr;
+    }
+    lodErrors[i] = maxErr;
+    lodTriCounts.push(lodTriCountsGlobal[i]);
+  }
+
+  // ---- Step 8: per-source diagnostics ----
+  const perSource = perSourceData.map((p) => ({
+    sourceId: p.sourceId,
+    triangleCount: p.lodList[0].numTriangles,
+    vertexStart: perSourceVertexStart[perSourceData.indexOf(p)],
+    vertexCount: p.numVertices,
+    lodCount: p.lodList.length,
+    lodTriCounts: p.lodList.map((l) => l.numTriangles),
+  }));
+
+  return {
+    vertexArray,
+    uvArray,
+    indexArray,
+    meshletTriangleArray,
+    chunkBoundsData,
+    lodOffsetsData,
+    lodErrors,
+    totalVertices,
+    totalIndices,
+    totalChunks,
+    triangleCount: lodTriCountsGlobal[0],
+    lodCount: globalLodCount,
+    lodTriCounts,
+    perSource,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // NaniteRasterizer class
 // ---------------------------------------------------------------------------
 
