@@ -31,11 +31,11 @@ delegates to this one for the "land it" half.
    git push origin master
    ```
    - `gh auth setup-git` + `unset GITHUB_TOKEN` if push auth fails. Do not hand the user the push — see the "No lazy handoffs" rule in `CLAUDE.md`.
-7. **Wait for Coolify.** ~3–5 minutes for web builds. Watch via:
+7. **Wait for Coolify.** ~3–5 minutes for web builds. Watch via (PROD box, app id 3 = web; the SSH key must be in your Windows ssh-agent — `ssh-add ~/.ssh/clawville_hillsboro` once):
    ```bash
-   ssh -i ~/.ssh/clawville_deploy root@<PROD_VPS_IP> "docker exec coolify php artisan tinker --execute='use App\Models\ApplicationDeploymentQueue; \$d = ApplicationDeploymentQueue::where(\"application_id\",4)->orderByDesc(\"id\")->first(); echo \$d->status . \" \" . substr(\$d->commit,0,7);'"
+   ssh root@$PROD_VPS_IP "docker exec coolify php artisan tinker --execute='use App\Models\ApplicationDeploymentQueue; \$d = ApplicationDeploymentQueue::where(\"application_id\",3)->orderByDesc(\"id\")->first(); echo \$d->status . \" \" . substr(\$d->commit,0,7);'"
    ```
-   Status flow: `queued → in_progress → finished`. App IDs: web=4, api=3.
+   Status flow: `queued → in_progress → finished`. Prod app IDs: web=3, api=2 (post-2026-05-23 migration). Staging on old box: web=4, api=3 — use `-i ~/.ssh/clawville_deploy root@$STAGING_VPS_IP`.
 8. **Verify in browser.** Per the CLAUDE.md MANDATORY rule:
    - Open `https://clawville.world/game` via Chrome DevTools MCP / Playwright.
    - Check the feature's golden path. Take a screenshot. Confirm no console errors.

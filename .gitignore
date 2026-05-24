@@ -13,6 +13,9 @@ build
 .env
 .env.*
 !.env.example
+
+# 2026-05-23 prod migration sandbox — contains deploy private key + env values
+.migration-out/
 !.env.deploy.example
 
 # IDE
