@@ -944,11 +944,17 @@ export class NaniteRasterizer {
     // SW presentation (fullscreen quad reads atomic buffer)
     (this.quadMesh as any).render(this.renderer);
 
-    // HW fallback (large triangles rasterised by GPU hardware pipeline)
+    // HW fallback (large triangles rasterised by GPU hardware pipeline).
+    // SAVE caller's autoClear and RESTORE it (not force-restore to true). The
+    // /game integration sets renderer.autoClear=false in init so subsequent
+    // R3F gl.render(scene, camera) calls within the same rAF tick preserve
+    // the rasterizer's swap-chain output. Forcing autoClear=true here was
+    // silently breaking that — R3F's render after ours cleared everything.
+    const _prevAutoClear = (this.renderer as any).autoClear;
     this.hwScene.background = null;
-    this.renderer.autoClear = false;
+    (this.renderer as any).autoClear = false;
     this.renderer.render(this.hwScene, camera);
-    this.renderer.autoClear = true;
+    (this.renderer as any).autoClear = _prevAutoClear;
   }
 
   dispose(): void {
