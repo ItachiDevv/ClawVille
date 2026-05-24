@@ -134,6 +134,83 @@ interface LoadedBuildingGeo {
   geometry: THREE.BufferGeometry;
   worldMatrix: THREE.Matrix4;
   triCount: number;
+  /** Per-building diffuse colour extracted from the first mesh's material. RGB in [0,1]. Defaults to white. */
+  color: [number, number, number];
+}
+
+/**
+ * Sample a diffuse texture's central region and return the average RGB.
+ * Returns null if the image isn't drawable (e.g. compressed texture format).
+ */
+function sampleTextureAverage(tex: THREE.Texture | null | undefined): [number, number, number] | null {
+  if (!tex) return null;
+  const img = (tex as any).image as HTMLImageElement | ImageBitmap | HTMLCanvasElement | null;
+  if (!img) return null;
+  const w = (img as any).width;
+  const h = (img as any).height;
+  if (!w || !h) return null;
+  try {
+    const c = document.createElement('canvas');
+    // Downsample for speed — 32×32 is enough for an average tint.
+    c.width = 32; c.height = 32;
+    const ctx = c.getContext('2d');
+    if (!ctx) return null;
+    ctx.drawImage(img as any, 0, 0, 32, 32);
+    const data = ctx.getImageData(0, 0, 32, 32).data;
+    let r = 0, g = 0, b = 0, n = 0;
+    for (let i = 0; i < data.length; i += 4) {
+      // Skip nearly-transparent pixels (alpha < 32) — they're likely cutouts.
+      if (data[i + 3] < 32) continue;
+      r += data[i]; g += data[i + 1]; b += data[i + 2]; n++;
+    }
+    if (n === 0) return null;
+    return [r / n / 255, g / n / 255, b / n / 255];
+  } catch {
+    // drawImage can throw for unloadable images (KTX2, etc.) or CORS.
+    return null;
+  }
+}
+
+/**
+ * Walk the GLTF scene, find the first mesh's material, return a representative
+ * RGB color. Priority order:
+ *   1. material.map (diffuse texture) → average centre 32×32 pixel
+ *   2. material.color (THREE.Color) → use directly
+ *   3. fallback white (1,1,1)
+ * Most ClawVille GLBs are PBR (material.color is white, color lives in map).
+ */
+function extractDiffuseColor(root: THREE.Object3D): [number, number, number] {
+  let result: [number, number, number] = [1, 1, 1];
+  let found = false;
+  root.traverse((obj) => {
+    if (found) return;
+    if (!(obj as THREE.Mesh).isMesh) return;
+    const mesh = obj as THREE.Mesh;
+    const mat = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
+    if (!mat) return;
+
+    // Try diffuse texture average first.
+    const map = (mat as any).map as THREE.Texture | undefined;
+    const sampled = sampleTextureAverage(map);
+    if (sampled) {
+      result = sampled;
+      found = true;
+      return;
+    }
+
+    // Fallback to material.color if no map (or map not drawable).
+    const col = (mat as any).color as THREE.Color | undefined;
+    if (col && typeof col.r === 'number') {
+      // If the color is pure white AND there was a map we couldn't sample,
+      // keep looking — next mesh's material might have a usable colour.
+      const isWhite = col.r > 0.95 && col.g > 0.95 && col.b > 0.95;
+      if (!isWhite || !map) {
+        result = [col.r, col.g, col.b];
+        found = true;
+      }
+    }
+  });
+  return result;
 }
 
 export function useMergedBuildingsAsset(): UseMergedBuildingsAssetReturn {
@@ -197,8 +274,22 @@ export function useMergedBuildingsAsset(): UseMergedBuildingsAssetReturn {
                   const triCount = mergedGeo.index
                     ? mergedGeo.index.count / 3
                     : mergedGeo.attributes.position.count / 3;
+                  // Try real texture/material color first; if it returns the
+                  // default white sentinel (which happens for KTX2 textures and
+                  // PBR materials whose color is white), use the building's
+                  // hand-curated fallbackColor instead.
+                  const extracted = extractDiffuseColor(gltf.scene);
+                  const isPureWhite = extracted[0] > 0.95 && extracted[1] > 0.95 && extracted[2] > 0.95;
+                  const color: [number, number, number] = isPureWhite ? spec.fallbackColor : extracted;
+                  console.log(
+                    '[meshlet-color]', spec.id,
+                    'extracted=', extracted.map((v) => v.toFixed(2)).join(','),
+                    'fallback=', spec.fallbackColor.map((v) => v.toFixed(2)).join(','),
+                    'isPureWhite=', isPureWhite,
+                    'chosen=', color.map((v) => v.toFixed(2)).join(','),
+                  );
                   updateStatus({ id: spec.id, status: 'loaded', tris: triCount });
-                  resolve({ spec, geometry: mergedGeo, worldMatrix, triCount });
+                  resolve({ spec, geometry: mergedGeo, worldMatrix, triCount, color });
                 } catch (err) {
                   updateStatus({ id: spec.id, status: 'error', tris: 0, error: String(err) });
                   resolve(null);
@@ -231,6 +322,7 @@ export function useMergedBuildingsAsset(): UseMergedBuildingsAssetReturn {
             geometry: g.geometry,
             worldMatrix: g.worldMatrix,
             sourceId: idx,
+            color: g.color,
           })),
         );
         if (cancelled) return;

@@ -129,6 +129,8 @@ interface LoadedBuilding {
   worldMatrix: THREE.Matrix4;
   /** Triangle count of this building's source geometry — for HUD diagnostics. */
   triCount: number;
+  /** Hand-curated fallback color used to render this building distinctly. */
+  color: [number, number, number];
 }
 
 interface BuildingStatus {
@@ -332,7 +334,10 @@ function loadAllBuildings(
               lodCount: 0, // LOD count is now global to the merged asset, not per-building
               coarsestLodTris: 0,
             });
-            resolve({ spec, geometry: mergedGeo, worldMatrix, triCount });
+            // Pass spec.fallbackColor so the merged asset includes per-source
+            // colours and the rasterizer's per-source-colour shader path
+            // renders each building distinctly (otherwise all white).
+            resolve({ spec, geometry: mergedGeo, worldMatrix, triCount, color: spec.fallbackColor });
           } catch (err) {
             onProgress({ id: spec.id, status: 'error', tris: 0, lodCount: 0, coarsestLodTris: 0, error: String(err) });
             resolve(null);
@@ -410,6 +415,7 @@ function BareAll12Canvas({ buildings, onFps, onPixelProbe, onMergedReady, onStat
           geometry: b.geometry,
           worldMatrix: b.worldMatrix,
           sourceId: idx,
+          color: b.color,
         })),
       );
       if (disposed) return;
