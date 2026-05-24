@@ -426,12 +426,16 @@ export class NaniteRasterizer {
     if (this._disposed) return;
     this._disposed = true;
 
-    if (this.screenTriAttr) this.screenTriAttr.dispose();
-    if (this.screenInstAttr) this.screenInstAttr.dispose();
+    // StorageBufferAttribute in r182 doesn't expose .dispose() (added in r183+).
+    // Guard so we don't throw 60×/sec on resize / dispose. GC reclaims the
+    // backing GPU buffer when the renderer releases the binding on next compute.
+    if (this.screenTriAttr && typeof (this.screenTriAttr as any).dispose === 'function') (this.screenTriAttr as any).dispose();
+    if (this.screenInstAttr && typeof (this.screenInstAttr as any).dispose === 'function') (this.screenInstAttr as any).dispose();
     if (this.quadMesh?.material) (this.quadMesh.material as THREE.Material).dispose();
     if (this.hwMesh?.material) (this.hwMesh.material as THREE.Material).dispose();
     if (this.hwMesh?.geometry) this.hwMesh.geometry.dispose();
-    if (this.instanceWorldAttr) this.instanceWorldAttr.dispose();
+    // instanceWorldAttr is a StorageBufferAttribute (same r182 caveat as screenTriAttr above).
+    if (this.instanceWorldAttr && typeof (this.instanceWorldAttr as any).dispose === 'function') (this.instanceWorldAttr as any).dispose();
     // Dispose compute nodes
     for (const key of [
       'computeClear', 'computeFrustum', 'computeDispatch',
@@ -1122,8 +1126,11 @@ export class NaniteRasterizer {
     if (px === this.maxPixels) return;
 
     // Dispose old
-    if (this.screenTriAttr) this.screenTriAttr.dispose();
-    if (this.screenInstAttr) this.screenInstAttr.dispose();
+    // StorageBufferAttribute in r182 doesn't expose .dispose() (added in r183+).
+    // Guard so we don't throw 60×/sec on resize / dispose. GC reclaims the
+    // backing GPU buffer when the renderer releases the binding on next compute.
+    if (this.screenTriAttr && typeof (this.screenTriAttr as any).dispose === 'function') (this.screenTriAttr as any).dispose();
+    if (this.screenInstAttr && typeof (this.screenInstAttr as any).dispose === 'function') (this.screenInstAttr as any).dispose();
 
     // The compute clear count must also update
     if (this.computeClear) {
