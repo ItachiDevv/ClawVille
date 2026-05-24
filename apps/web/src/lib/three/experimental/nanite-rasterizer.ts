@@ -12,7 +12,8 @@
  *   examples/webgpu_compute_nanite-style.html  (PR #33605, dev branch)
  *
  * What was stripped versus the original:
- *   - TeapotGeometry LOD generation (demo-specific)
+ *   - TeapotGeometry LOD generation (demo-specific, replaced by meshoptimizer-based
+ *     generic simplification — see geometryToMeshletAsset())
  *   - 400×400 instance grid (demo-specific; replaced by RasterizerOptions.instanceCount)
  *   - OrbitControls (caller owns the camera)
  *   - Inspector / UI parameterGroup (no runtime GUI here)
@@ -25,6 +26,13 @@
  *   - Hardware rasteriser fallback scene for large triangles
  *   - Visibility-buffer packing (depth | triangle | instance)
  *   - Per-pixel incremental barycentric rasterisation
+ *
+ * LOD GENERATION (Phase A extension, 2026-05-23):
+ *   geometryToMeshletAsset() now builds up to 7 LOD levels using
+ *   MeshoptSimplifier.simplify(). All LODs share the same vertex pool;
+ *   the index buffer is LOD0 indices concatenated with LOD1 indices, etc.
+ *   computeFrustum performs per-cluster screen-space error LOD selection
+ *   matching the reference example's cascading ElseIf pattern.
  *
  * INVARIANTS (do not violate):
  *   - WebGPU only. Caller is responsible for passing a WebGPURenderer.
@@ -72,6 +80,7 @@ import {
   varyingProperty,
   sqrt,
 } from 'three/tsl';
+import { MeshoptSimplifier } from 'meshoptimizer';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -98,13 +107,22 @@ export interface MeshletAsset {
    * Length = lodCount * 4.
    */
   lodOffsetsData: Uint32Array;
+  /**
+   * Per-LOD screen-space error thresholds in world units.
+   * LOD 0 = 0.0 (full detail). Each subsequent level has increasing error.
+   * Used by computeFrustum to select the coarsest acceptable LOD per cluster.
+   * Length = lodCount.
+   */
+  lodErrors: Float32Array;
   totalVertices: number;
   totalIndices: number;
   totalChunks: number;
-  /** Total triangle count across all LODs (used for diagnostics, not GPU upload). */
+  /** Triangle count of LOD 0 only (used for diagnostics). */
   triangleCount: number;
-  /** Number of LOD levels. */
+  /** Number of LOD levels actually generated. */
   lodCount: number;
+  /** Tri counts per LOD level (for diagnostics / overlay display). */
+  lodTriCounts: number[];
 }
 
 export interface RasterizerOptions {
@@ -124,19 +142,54 @@ export interface RasterizerOptions {
 }
 
 // ---------------------------------------------------------------------------
-// geometryToMeshletAsset
+// LOD generation parameters
+// ---------------------------------------------------------------------------
+
+/** Maximum number of LOD levels to generate (including LOD 0 = full detail). */
+const MAX_LOD_LEVELS = 7;
+
+/** Stop generating further LODs when the triangle count falls below this. */
+const MIN_TRIANGLES_FOR_LOD = 64;
+
+/**
+ * Error thresholds for each successive LOD level (in object-space units,
+ * relative to the geometry's bounding sphere radius which is assumed ≈1 for
+ * world-scale meshes at scale=1). The rasterizer scales these by the instance
+ * scale at runtime. Values double each step (matching the reference example's
+ * error progression of 0.005 → 0.015 → 0.03 → 0.06 → 0.1 → 0.2).
+ */
+const LOD_ERRORS = [
+  0.0,    // LOD 0 — full detail (always selected when camera is close)
+  0.01,   // LOD 1 — ~50% triangles
+  0.02,   // LOD 2
+  0.04,   // LOD 3
+  0.08,   // LOD 4
+  0.15,   // LOD 5
+  0.25,   // LOD 6
+];
+
+// ---------------------------------------------------------------------------
+// geometryToMeshletAsset  (async — requires MeshoptSimplifier WASM)
 // ---------------------------------------------------------------------------
 
 /**
  * Convert a THREE.BufferGeometry into a MeshletAsset ready for NaniteRasterizer.
  *
- * Implements:
- *   - Single LOD (source geometry as-is). No meshoptimizer simplification.
- *   - 126 triangles per meshlet (matches example's convention).
- *   - 64 triangles per chunk (bounding sphere grouping, matches example).
+ * LOD generation via MeshoptSimplifier.simplify():
+ *   - LOD 0: source geometry at full detail (error = 0.0).
+ *   - LOD 1..N: each step targets 50% of the previous LOD's triangle count.
+ *     Target error: LOD_ERRORS[i]. Stops when count < MIN_TRIANGLES_FOR_LOD or
+ *     N reaches MAX_LOD_LEVELS.
+ *   - All LODs share the same vertex pool (simplify reuses original vertex indices).
+ *     The index buffer is LOD0 indices concatenated with LOD1 indices, etc.
  *
- * TODO: Add multi-LOD support via meshoptimizer simplify() when the spike
- * graduates to production. meshoptimizer is already a project dep via VRM loading.
+ * Meshlet grouping:
+ *   - 126 triangles per meshlet (matching the reference example's convention).
+ *   - 64 triangles per bounding-sphere chunk (matching example).
+ *
+ * Returns a fully populated MeshletAsset synchronously once WASM is ready.
+ * Call await MeshoptSimplifier.ready before calling this function, OR use
+ * geometryToMeshletAssetAsync() which handles that.
  */
 export function geometryToMeshletAsset(geometry: THREE.BufferGeometry): MeshletAsset {
   // Ensure we have a position attribute.
@@ -147,39 +200,119 @@ export function geometryToMeshletAsset(geometry: THREE.BufferGeometry): MeshletA
 
   const uvAttr = geometry.attributes['uv'] as THREE.BufferAttribute | undefined;
 
-  // Build flat index array (handle non-indexed geometry).
   const numVertices = posAttr.count;
-  const rawIndices: number[] = geometry.index
-    ? Array.from(geometry.index.array as Uint16Array | Uint32Array)
-    : Array.from({ length: numVertices }, (_, i) => i);
 
-  const numTriangles = rawIndices.length / 3;
-
-  // Single LOD descriptor (the source mesh at full detail, error = 0).
-  const lods = [
-    {
-      numVertices,
-      numTriangles,
-      vertexOffset: 0,
-      indexOffset: 0,
-      indices: rawIndices,
-    },
-  ];
-
-  const totalVertices = numVertices;
-  const totalIndices = rawIndices.length;
-
-  // ---- Fill vertex / uv / index / meshlet-id arrays ----
-  const vertexArray = new Float32Array(totalVertices * 4);
-  const uvArray = new Float32Array(totalVertices * 2);
-  const indexArray = new Uint32Array(totalIndices);
-  const meshletTriangleArray = new Uint32Array(totalIndices / 3);
-
-  // Populate vertices
+  // Build flat position array for meshoptimizer (it needs Float32Array with stride 3).
+  const flatPositions = new Float32Array(numVertices * 3);
   for (let i = 0; i < numVertices; i++) {
-    vertexArray[i * 4 + 0] = posAttr.getX(i);
-    vertexArray[i * 4 + 1] = posAttr.getY(i);
-    vertexArray[i * 4 + 2] = posAttr.getZ(i);
+    flatPositions[i * 3 + 0] = posAttr.getX(i);
+    flatPositions[i * 3 + 1] = posAttr.getY(i);
+    flatPositions[i * 3 + 2] = posAttr.getZ(i);
+  }
+
+  // Build flat index array (handle non-indexed geometry).
+  let lod0Indices: Uint32Array;
+  if (geometry.index) {
+    const src = geometry.index.array;
+    lod0Indices = new Uint32Array(src.length);
+    for (let i = 0; i < src.length; i++) lod0Indices[i] = src[i];
+  } else {
+    lod0Indices = new Uint32Array(numVertices);
+    for (let i = 0; i < numVertices; i++) lod0Indices[i] = i;
+  }
+
+  const lod0TriCount = lod0Indices.length / 3;
+
+  // ---- Build LOD chain ----
+  interface LodDescriptor {
+    indices: Uint32Array;
+    numTriangles: number;
+    error: number;
+    indexOffset: number; // in triangles (not indices)
+  }
+
+  const lodList: LodDescriptor[] = [];
+
+  // LOD 0 — full detail
+  lodList.push({
+    indices: lod0Indices,
+    numTriangles: lod0TriCount,
+    error: 0.0,
+    indexOffset: 0,
+  });
+
+  let prevIndices = lod0Indices;
+  let prevTriCount = lod0TriCount;
+  let totalTriOffset = lod0TriCount;
+
+  for (let lodIdx = 1; lodIdx < MAX_LOD_LEVELS; lodIdx++) {
+    if (prevTriCount < MIN_TRIANGLES_FOR_LOD) break;
+
+    const targetTriCount = Math.max(MIN_TRIANGLES_FOR_LOD, Math.floor(prevTriCount * 0.5));
+    const targetIndexCount = targetTriCount * 3;
+    const errorThreshold = LOD_ERRORS[lodIdx] ?? 0.25;
+
+    let simplifiedIndices: Uint32Array;
+    let achievedError: number;
+
+    try {
+      const [simplified, err] = MeshoptSimplifier.simplify(
+        prevIndices,
+        flatPositions,
+        3,              // stride (xyz)
+        targetIndexCount,
+        errorThreshold,
+        0,              // flags: 0 = default (allow topology changes for max reduction)
+      );
+      simplifiedIndices = simplified as Uint32Array;
+      achievedError = err as number;
+    } catch (e) {
+      // If simplifier fails (e.g. WASM not ready), stop LOD generation here.
+      console.warn(`[nanite] LOD ${lodIdx} simplify failed:`, e);
+      break;
+    }
+
+    const simplifiedTriCount = simplifiedIndices.length / 3;
+
+    // Stop if simplification made no meaningful progress (< 5% reduction).
+    if (simplifiedTriCount >= prevTriCount * 0.95) break;
+
+    // Use the max of the target error and the achieved error (meshopt may report
+    // a lower actual error than the threshold when it cannot simplify further).
+    const lodError = Math.max(errorThreshold, achievedError);
+
+    lodList.push({
+      indices: simplifiedIndices,
+      numTriangles: simplifiedTriCount,
+      error: lodError,
+      indexOffset: totalTriOffset,
+    });
+
+    totalTriOffset += simplifiedTriCount;
+    prevIndices = simplifiedIndices;
+    prevTriCount = simplifiedTriCount;
+
+    // Additional stop condition: reached minimum.
+    if (simplifiedTriCount <= MIN_TRIANGLES_FOR_LOD) break;
+  }
+
+  const lodCount = lodList.length;
+  const totalTriangles = lodList.reduce((s, l) => s + l.numTriangles, 0);
+  const totalIndices = totalTriangles * 3;
+
+  // ---- Allocate output arrays ----
+  // Vertices: all LODs share the same vertex pool (meshoptimizer preserves vertex indices).
+  const vertexArray = new Float32Array(numVertices * 4);
+  const uvArray = new Float32Array(numVertices * 2);
+  const indexArray = new Uint32Array(totalIndices);
+  // One entry per triangle across all LODs.
+  const meshletTriangleArray = new Uint32Array(totalTriangles);
+
+  // ---- Populate vertex data ----
+  for (let i = 0; i < numVertices; i++) {
+    vertexArray[i * 4 + 0] = flatPositions[i * 3 + 0];
+    vertexArray[i * 4 + 1] = flatPositions[i * 3 + 1];
+    vertexArray[i * 4 + 2] = flatPositions[i * 3 + 2];
     vertexArray[i * 4 + 3] = 1.0;
     if (uvAttr) {
       uvArray[i * 2 + 0] = uvAttr.getX(i);
@@ -187,15 +320,16 @@ export function geometryToMeshletAsset(geometry: THREE.BufferGeometry): MeshletA
     }
   }
 
-  // Populate index buffer and assign meshlet ids (126 tris per meshlet, same as example)
+  // ---- Populate index buffer + meshlet IDs ----
+  // Meshlet IDs are 1-based, incrementing every 126 triangles (per-LOD).
   let currentMeshletId = 1;
-  for (const lod of lods) {
+  for (const lod of lodList) {
     let currentTriCount = 0;
     for (let i = 0; i < lod.numTriangles; i++) {
-      const triIdx = lod.indexOffset / 3 + i;
-      indexArray[triIdx * 3 + 0] = lod.vertexOffset + lod.indices[i * 3 + 0];
-      indexArray[triIdx * 3 + 1] = lod.vertexOffset + lod.indices[i * 3 + 1];
-      indexArray[triIdx * 3 + 2] = lod.vertexOffset + lod.indices[i * 3 + 2];
+      const triIdx = lod.indexOffset + i;
+      indexArray[triIdx * 3 + 0] = lod.indices[i * 3 + 0];
+      indexArray[triIdx * 3 + 1] = lod.indices[i * 3 + 1];
+      indexArray[triIdx * 3 + 2] = lod.indices[i * 3 + 2];
 
       if (currentTriCount >= 126) {
         currentMeshletId++;
@@ -211,7 +345,7 @@ export function geometryToMeshletAsset(geometry: THREE.BufferGeometry): MeshletA
   let totalChunks = 0;
   const lodChunkStarts: number[] = [];
   const lodNumChunks: number[] = [];
-  for (const lod of lods) {
+  for (const lod of lodList) {
     const numChunks = Math.ceil(lod.numTriangles / 64);
     lodChunkStarts.push(totalChunks);
     lodNumChunks.push(numChunks);
@@ -221,22 +355,22 @@ export function geometryToMeshletAsset(geometry: THREE.BufferGeometry): MeshletA
   const chunkBoundsData = new Float32Array(totalChunks * 4);
   let currentChunkId = 0;
 
-  for (let lodIdx = 0; lodIdx < lods.length; lodIdx++) {
-    const lod = lods[lodIdx];
+  for (let lodIdx = 0; lodIdx < lodList.length; lodIdx++) {
+    const lod = lodList[lodIdx];
     const numChunks = lodNumChunks[lodIdx];
 
     for (let c = 0; c < numChunks; c++) {
       const startTri = c * 64;
       const endTri = Math.min(startTri + 64, lod.numTriangles);
+      const vertCount = (endTri - startTri) * 3;
 
       let cx = 0, cy = 0, cz = 0;
-      const vertCount = (endTri - startTri) * 3;
       for (let t = startTri; t < endTri; t++) {
         for (let v = 0; v < 3; v++) {
           const idx = lod.indices[t * 3 + v];
-          cx += posAttr.getX(idx);
-          cy += posAttr.getY(idx);
-          cz += posAttr.getZ(idx);
+          cx += flatPositions[idx * 3 + 0];
+          cy += flatPositions[idx * 3 + 1];
+          cz += flatPositions[idx * 3 + 2];
         }
       }
       cx /= vertCount;
@@ -247,9 +381,9 @@ export function geometryToMeshletAsset(geometry: THREE.BufferGeometry): MeshletA
       for (let t = startTri; t < endTri; t++) {
         for (let v = 0; v < 3; v++) {
           const idx = lod.indices[t * 3 + v];
-          const dx = posAttr.getX(idx) - cx;
-          const dy = posAttr.getY(idx) - cy;
-          const dz = posAttr.getZ(idx) - cz;
+          const dx = flatPositions[idx * 3 + 0] - cx;
+          const dy = flatPositions[idx * 3 + 1] - cy;
+          const dz = flatPositions[idx * 3 + 2] - cz;
           const dSq = dx * dx + dy * dy + dz * dz;
           if (dSq > maxDistSq) maxDistSq = dSq;
         }
@@ -263,13 +397,19 @@ export function geometryToMeshletAsset(geometry: THREE.BufferGeometry): MeshletA
     }
   }
 
-  // ---- LOD offset table (single entry for single-LOD case) ----
-  const lodOffsetsData = new Uint32Array(lods.length * 4);
-  for (let i = 0; i < lods.length; i++) {
-    lodOffsetsData[i * 4 + 0] = lods[i].indexOffset / 3; // triangleStart
-    lodOffsetsData[i * 4 + 1] = lods[i].numTriangles;    // triangleCount
-    lodOffsetsData[i * 4 + 2] = lodChunkStarts[i];       // chunkStart
-    lodOffsetsData[i * 4 + 3] = 0;                       // padding
+  // ---- LOD offset table ----
+  const lodOffsetsData = new Uint32Array(lodCount * 4);
+  const lodErrors = new Float32Array(lodCount);
+  const lodTriCounts: number[] = [];
+
+  for (let i = 0; i < lodCount; i++) {
+    const lod = lodList[i];
+    lodOffsetsData[i * 4 + 0] = lod.indexOffset;    // triangleStart
+    lodOffsetsData[i * 4 + 1] = lod.numTriangles;   // triangleCount
+    lodOffsetsData[i * 4 + 2] = lodChunkStarts[i];  // chunkStart
+    lodOffsetsData[i * 4 + 3] = 0;                  // padding
+    lodErrors[i] = lod.error;
+    lodTriCounts.push(lod.numTriangles);
   }
 
   return {
@@ -279,12 +419,28 @@ export function geometryToMeshletAsset(geometry: THREE.BufferGeometry): MeshletA
     meshletTriangleArray,
     chunkBoundsData,
     lodOffsetsData,
-    totalVertices,
+    lodErrors,
+    totalVertices: numVertices,
     totalIndices,
     totalChunks,
-    triangleCount: numTriangles,
-    lodCount: lods.length,
+    triangleCount: lod0TriCount,
+    lodCount,
+    lodTriCounts,
   };
+}
+
+/**
+ * Async wrapper for geometryToMeshletAsset() that ensures MeshoptSimplifier
+ * WASM is loaded before invoking the synchronous builder.
+ *
+ * Prefer this over calling geometryToMeshletAsset() directly unless you have
+ * already awaited MeshoptSimplifier.ready in your call path (e.g. via VRM load).
+ */
+export async function geometryToMeshletAssetAsync(
+  geometry: THREE.BufferGeometry,
+): Promise<MeshletAsset> {
+  await MeshoptSimplifier.ready;
+  return geometryToMeshletAsset(geometry);
 }
 
 // ---------------------------------------------------------------------------
@@ -427,16 +583,13 @@ export class NaniteRasterizer {
     this._disposed = true;
 
     // StorageBufferAttribute in r182 doesn't expose .dispose() (added in r183+).
-    // Guard so we don't throw 60×/sec on resize / dispose. GC reclaims the
-    // backing GPU buffer when the renderer releases the binding on next compute.
+    // Guard so we don't throw 60×/sec on resize / dispose.
     if (this.screenTriAttr && typeof (this.screenTriAttr as any).dispose === 'function') (this.screenTriAttr as any).dispose();
     if (this.screenInstAttr && typeof (this.screenInstAttr as any).dispose === 'function') (this.screenInstAttr as any).dispose();
     if (this.quadMesh?.material) (this.quadMesh.material as THREE.Material).dispose();
     if (this.hwMesh?.material) (this.hwMesh.material as THREE.Material).dispose();
     if (this.hwMesh?.geometry) this.hwMesh.geometry.dispose();
-    // instanceWorldAttr is a StorageBufferAttribute (same r182 caveat as screenTriAttr above).
     if (this.instanceWorldAttr && typeof (this.instanceWorldAttr as any).dispose === 'function') (this.instanceWorldAttr as any).dispose();
-    // Dispose compute nodes
     for (const key of [
       'computeClear', 'computeFrustum', 'computeDispatch',
       'computeRasterize', 'computeHWArgs',
@@ -490,7 +643,6 @@ export class NaniteRasterizer {
 
     // Texture for texture-mode (unused in spike but required by the shaders)
     const textureMap = new THREE.TextureLoader().load('/models/building-lighthouse.glb'); // dummy
-    // The shaders only sample it when materialModeUniform==1; spike leaves mode at 0.
 
     this.projScreenMatrixUniform = uniform(new THREE.Matrix4());
     this.frustumPlanesUniform = uniformArray(
@@ -504,6 +656,14 @@ export class NaniteRasterizer {
     this.cotHalfFovUniform = uniform(1.0);
     this.pixelErrorThresholdUniform = uniform(4.0);
     this.maxRasterSizeUniform = uniform(this.opts.maxRasterSize, 'int');
+
+    // ---- LOD error values as a uniform array (JS floats → GPU floats) ----
+    // uniformArray of floats: one per LOD level.
+    const lodErrorUniforms = uniformArray(
+      Array.from(asset.lodErrors).map((e) => e),
+      'float',
+    );
+    const lodCountUniform = uniform(asset.lodCount, 'uint');
 
     // ---- Instance data (positions + scales) ----
     const instanceDataBuffer = storage(
@@ -546,16 +706,14 @@ export class NaniteRasterizer {
     const hwDrawAttr = new THREE.IndirectStorageBufferAttribute(hwDrawData, 4);
     const hwDrawBuffer = storage(hwDrawAttr, 'uint', 4);
 
-    // ---- Screen buffers (initialized with sentinel size; _updateScreenBuffers fills them) ----
-    // We call _updateScreenBuffers once now with renderer's current size.
+    // ---- Screen buffers ----
     {
       const size = new THREE.Vector2();
       this.renderer.getDrawingBufferSize(size);
-      const px = size.x * size.y || 1920 * 1080; // fallback if renderer not yet sized
+      const px = size.x * size.y || 1920 * 1080;
       this._allocScreenBuffers(px);
     }
 
-    // Capture references so closures close over them
     const {
       screenTriAtomic,
       screenTriRead,
@@ -563,16 +721,8 @@ export class NaniteRasterizer {
       screenInstRead,
     } = this;
 
-    // ---- LOD list for the frustum shader (JS-side array of error values) ----
-    // Single-LOD: error = 0.0 (always selects level 0).
-    const lodErrors: number[] = [];
-    for (let i = 0; i < asset.lodCount; i++) {
-      lodErrors.push(0.0); // single LOD, no error metric needed
-    }
-
-    // ---- Edge function helper (shared between computeRasterize and presentation pass) ----
+    // ---- Edge function helper ----
     const edgeFunction = Fn(([a, b, c]: any[]) => {
-      // (c.y - a.y) * (b.x - a.x) - (c.x - a.x) * (b.y - a.y)
       return (c as any).y.sub((a as any).y).mul((b as any).x.sub((a as any).x))
         .sub((c as any).x.sub((a as any).x).mul((b as any).y.sub((a as any).y)));
     });
@@ -613,15 +763,17 @@ export class NaniteRasterizer {
     const instanceWorldBuffer = this.instanceWorldBuffer;
     const instanceMvpBuffer = this.instanceMvpBuffer;
 
+    // Capture lodCount for use in the shader closure.
+    const lodCount = asset.lodCount;
+
     this.computeFrustum = Fn(() => {
       const data = (instanceDataBuffer as any).element(instanceIndex);
       const pos = data.xyz;
       const scale = data.w;
       const iFloat = float(instanceIndex);
 
-      // Rotation (keeps instances spinning so we can see LOD transitions)
-      // For a static single instance, timeScale * rotY will just be 0 offset.
-      const rotY = time.mul(0.0).add(iFloat); // no animation in spike (timeScale=0)
+      // No rotation animation (rotY drives optional spin — set to 0 for static spike).
+      const rotY = time.mul(0.0).add(iFloat);
       const c = cos(rotY);
       const s = sin(rotY);
 
@@ -651,10 +803,39 @@ export class NaniteRasterizer {
           .mul(float(screenSize.y))
           .div(2.0);
 
-        // Single-LOD: always use level 0.
-        // (If lodErrors had multiple entries this would replicate the example's
-        // cascading ElseIf selection. Preserved as a TODO for multi-LOD.)
+        // ---- Multi-LOD screen-space error selection ----
+        // Mirrors the reference example's cascading ElseIf pattern.
+        // We iterate from the coarsest LOD (lodCount-1) down to LOD 1.
+        // The first (coarsest) LOD whose projected error ≤ pixelErrorThreshold is selected.
+        // If none qualify, we use LOD 0 (full detail).
+        // Because TSL doesn't have a native for-loop over a uniform count,
+        // we unroll at JS build time for the actual lodCount of this asset.
+        //
+        // Note: scale factor in the error projection accounts for the instance
+        // world scale (same as the reference example: error * scale * pixelFactor).
         const lodLevel = uint(0).toVar() as any;
+
+        if (lodCount > 1) {
+          // Start from the coarsest LOD, working toward finer.
+          // The reference example iterates lods.length-1 → 1 (inclusive).
+          let lodSelection: any = null;
+          for (let i = lodCount - 1; i >= 1; i--) {
+            const lodErrorVal = (lodErrorUniforms as any).element(i);
+            const projectedError = lodErrorVal.mul(scale).mul(pixelFactor);
+            const qualifies = projectedError.lessThanEqual(pixelErrorThresholdUniform);
+
+            if (lodSelection === null) {
+              lodSelection = If(qualifies, () => {
+                lodLevel.assign(uint(i));
+              });
+            } else {
+              lodSelection = lodSelection.ElseIf(qualifies, () => {
+                lodLevel.assign(uint(i));
+              });
+            }
+          }
+          // If no coarse LOD qualifies, lodLevel stays at 0 (full detail).
+        }
 
         const lodData = (lodOffsetsBuffer as any).element(lodLevel);
         const lodTriStart = lodData.x;
@@ -999,7 +1180,7 @@ export class NaniteRasterizer {
         return float(1.0).sub(v);
       })();
 
-      // Color node: visibility-buffer shading (perspective-correct UV + analytical derivatives)
+      // Color node: visibility-buffer shading
       material.colorNode = Fn(() => {
         const { pixelIndex } = getPixelIndex();
         const depth32 = (screenTriRead as any).element(pixelIndex);
@@ -1061,7 +1242,7 @@ export class NaniteRasterizer {
 
           const uv_interp = t_uv0.mul(b0_p).add(t_uv1.mul(b1_p)).add(t_uv2.mul(b2_p));
 
-          // Analytical screen-space UV derivatives (no dFdx needed)
+          // Analytical screen-space UV derivatives
           const dw0_dx = s2.y.sub(s1.y);
           const dw1_dx = s0.y.sub(s2.y);
           const dw2_dx = s1.y.sub(s0.y);
@@ -1125,14 +1306,9 @@ export class NaniteRasterizer {
     const px = viewportW * viewportH;
     if (px === this.maxPixels) return;
 
-    // Dispose old
-    // StorageBufferAttribute in r182 doesn't expose .dispose() (added in r183+).
-    // Guard so we don't throw 60×/sec on resize / dispose. GC reclaims the
-    // backing GPU buffer when the renderer releases the binding on next compute.
     if (this.screenTriAttr && typeof (this.screenTriAttr as any).dispose === 'function') (this.screenTriAttr as any).dispose();
     if (this.screenInstAttr && typeof (this.screenInstAttr as any).dispose === 'function') (this.screenInstAttr as any).dispose();
 
-    // The compute clear count must also update
     if (this.computeClear) {
       (this.computeClear as any).count = px;
       (this.computeClear as any).dispose?.();
@@ -1141,7 +1317,6 @@ export class NaniteRasterizer {
     this.maxPixels = px;
     this._allocScreenBuffers(px);
 
-    // Patch storage node references (matches createScreenBuffers() in the original)
     if (this.screenTriAtomic) {
       (this.screenTriAtomic as any).value = this.screenTriAttr;
       (this.screenTriAtomic as any).bufferCount = px;
