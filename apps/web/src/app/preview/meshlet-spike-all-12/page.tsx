@@ -418,21 +418,29 @@ function BareAll12Canvas({ buildings, onFps, onPixelProbe, onMergedReady, onStat
       onStatus('Constructing NaniteRasterizer…');
       // instanceBoundingRadius covers the world-space extent of the ring
       // (R=4160 + ~50wu per building → 5000 is safe).
+      // pixelErrorThreshold=0 forces every cluster to render at LOD 0 (full
+      // detail). With merged assets the per-instance LOD cascade picks ONE
+      // level for everything — at game distance that's LOD 6 = 277 tris across
+      // 11 buildings = nearly invisible. Forcing LOD 0 renders all 68k tris
+      // so every building is clearly visible. Real Nanite uses per-cluster
+      // LOD selection which is the proper fix; tracked as task #33.
       rasterizer = new NaniteRasterizer(renderer, mergedAsset, {
         instanceCount: 1,
         staticInstanceData: new Float32Array([0, 0, 0, 1]),
         maxRasterSize: 16,
         instanceBoundingRadius: 5000,
+        pixelErrorThreshold: 0,
       });
       await rasterizer.init();
       if (disposed) return;
 
-      // Game-distance camera mirroring World3DCanvas default. Each building is
-      // now scaled up to BUILDING_TARGET_HEIGHT=1000wu (matches /game) so the
-      // whole ring is visible at this distance with buildings at ~50-100px each.
-      camera = new THREE.PerspectiveCamera(45, rect.width / rect.height, 10, 20000);
-      camera.position.set(0, 2000, 5000);
-      camera.lookAt(0, 0, 0);
+      // Bird's-eye camera framing the whole 11-building ring. Higher than the
+      // /game default so all 11 ring slots are clearly in frame. Each building
+      // is 1000wu tall; ring radius 4160wu; this camera sits 8000wu above and
+      // back, giving each building ~80-150px on a 1080p viewport.
+      camera = new THREE.PerspectiveCamera(50, rect.width / rect.height, 10, 30000);
+      camera.position.set(0, 5000, 7500);
+      camera.lookAt(0, 500, 0);
       camera.updateMatrixWorld();
 
       onStatus('Running render loop…');
