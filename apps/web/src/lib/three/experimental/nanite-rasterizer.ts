@@ -809,8 +809,17 @@ export async function mergeGeometriesToMeshletAsset(
 // ---------------------------------------------------------------------------
 
 // Constants matching the original example
-const TRIANGLE_INDEX_BITS = 14;           // 2^14 = 16384 max triangles per payload
-const TRIANGLE_INDEX_MASK = 0x3fff;       // 14-bit bitmask
+// 2026-05-24: widened from 14→18 bits to fix HW-path silent truncation on
+// merged assets > 16k tris. The merged 11-building ClawVille asset has ~136k
+// tris across all 7 LOD levels; the 14-bit mask truncated indices > 16383,
+// causing the HW fallback to look up wrong vertices for boating-school walls
+// etc. (rendered nothing). instId field correspondingly narrows from 18→14
+// bits (16384 instances max — irrelevant for merged-asset use which is always
+// instanceCount=1). Diagnostic that proved the bug: maxRasterSize=4096 (force
+// every tri through SW path) renders ALL geometry; maxRasterSize=16 (default,
+// large tris go through HW) renders only the first 16k tri indices' worth.
+const TRIANGLE_INDEX_BITS = 18;           // 2^18 = 262144 max triangles per asset
+const TRIANGLE_INDEX_MASK = 0x3ffff;      // 18-bit bitmask
 const DEPTH_PRECISION_MAX = 4294967295.0; // 2^32 - 1
 
 const MAX_WORK_ITEMS = 2_820_000;  // 60k instances × 47 chunks
