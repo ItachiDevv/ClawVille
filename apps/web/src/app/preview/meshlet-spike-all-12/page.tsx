@@ -452,7 +452,13 @@ function All12RasterizerScene({ buildings, onFps, onPixelProbe, onMergedReady }:
             sampled++;
             if (d[i] || d[i+1] || d[i+2] || d[i+3]) nonZero++;
           }
-          onPixelProbe(`${nonZero}/${sampled} non-zero (${(nonZero/sampled*100).toFixed(1)}%)`);
+          // Count RGB-distinguishable pixels (NOT alpha-only) so we don't false-positive
+          // on a black-with-alpha=1 clear. coloured = at least one RGB channel > 4.
+          let coloured = 0;
+          for (let i = 0; i < d.length; i += 4 * step) {
+            if (d[i] > 4 || d[i+1] > 4 || d[i+2] > 4) coloured++;
+          }
+          onPixelProbe(`${coloured}/${sampled} colored (${(coloured/sampled*100).toFixed(1)}%) · ${nonZero} any-channel`);
         }
       } catch (e) {
         onPixelProbe('probe failed');
@@ -565,7 +571,7 @@ export default function MeshletSpikeAll12Page() {
       <Canvas
         gl={glFactory as any}
         frameloop="always"
-        camera={{ position: [3000, 6000, 3000], fov: 75, near: 1, far: 20000 }}
+        camera={{ position: [0, 2000, 5000], fov: 45, near: 10, far: 20000 }}
         style={styles.canvas}
         onCreated={({ gl: renderer }) => {
           // Suppress R3F's default scene clear — each rasterizer manages
