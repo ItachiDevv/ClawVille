@@ -39,7 +39,7 @@ import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { MeshoptDecoder } from 'meshoptimizer';
 import {
-  geometryToMeshletAsset,
+  geometryToMeshletAssetAsync,
   NaniteRasterizer,
   type MeshletAsset,
 } from '@/lib/three/experimental/nanite-rasterizer';
@@ -171,7 +171,7 @@ export default function MeshletSpikePage() {
     loader.setMeshoptDecoder(MeshoptDecoder);
     loader.load(
       MODEL_URL,
-      (gltf) => {
+      async (gltf) => {
         const mesh = findFirstMesh(gltf.scene);
         if (!mesh) {
           setLoadError('No Mesh found in lighthouse GLB scene graph.');
@@ -179,7 +179,8 @@ export default function MeshletSpikePage() {
         }
 
         try {
-          const a = geometryToMeshletAsset(mesh.geometry);
+          // ASYNC variant — awaits MeshoptSimplifier WASM (see rasterizer notes).
+          const a = await geometryToMeshletAssetAsync(mesh.geometry);
           const coarsestTris = a.lodTriCounts[a.lodCount - 1] ?? a.triangleCount;
           const reductionPct = a.triangleCount > 0
             ? Math.round((1 - coarsestTris / a.triangleCount) * 100)
