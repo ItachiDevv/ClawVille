@@ -92,6 +92,16 @@ export default function MeshletBuildingsR3F() {
           (renderer as any).backend?.constructor?.name,
           'isWebGPU:', (renderer as any).isWebGPURenderer);
 
+        const _sc = (asset as any).sourceColors;
+        if (_sc) {
+          const colorPreview: string[] = [];
+          for (let i = 0; i < _sc.length / 3; i++) {
+            colorPreview.push(`#${i}: ${_sc[i*3].toFixed(2)},${_sc[i*3+1].toFixed(2)},${_sc[i*3+2].toFixed(2)}`);
+          }
+          console.log('[MeshletBuildingsR3F] sourceColors in asset:', colorPreview.join(' | '));
+        } else {
+          console.warn('[MeshletBuildingsR3F] asset has no sourceColors field!');
+        }
         const r = new NaniteRasterizer(renderer, asset, {
           instanceCount: 1,
           staticInstanceData: new Float32Array([0, 0, 0, 1]),
