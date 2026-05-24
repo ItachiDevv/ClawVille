@@ -14,6 +14,7 @@ declare module '@react-three/fiber' {
 extend(THREE as any);
 import ArenaTerrain from '@/lib/three/arena-terrain';
 import ArenaBuildings from '@/lib/three/arena-buildings';
+import CameraExporter from '@/lib/three/meshlet/camera-exporter';
 import ArenaNpcs from '@/lib/three/arena-npcs';
 import ArenaLocationNpcs from '@/lib/three/arena-location-npcs';
 import PlayerAvatar from '@/lib/three/player-avatar';
@@ -105,6 +106,17 @@ if (typeof window !== 'undefined') {
 // without duplicating the GPU probe.
 export { LOW_END_GPU_DETECTED };
 const SKY_COLOR = new THREE.Color(0x0a2a4a); // Deeper ocean blue
+
+// Phase B meshlet integration — gated by URL query ?meshlets=1.
+// When ON: <ArenaBuildings> is replaced by <MeshletBuildingsLayer> rendered
+// on a separate canvas underneath (see /game/page.tsx). R3F canvas background
+// becomes transparent so the meshlet layer shows through. The CameraExporter
+// component syncs R3F's camera state to gameCameraRef so the meshlet layer
+// can render with the same camera matrices.
+// History: spike measured 167 FPS at full LOD 0 vs /game baseline ~18 FPS = ~9× lift.
+const USE_MESHLET_BUILDINGS: boolean =
+  typeof window !== 'undefined' &&
+  new URLSearchParams(window.location.search).get('meshlets') === '1';
 const FOG_COLOR = new THREE.Color(0x0e3458); // Underwater haze — matches sky
 
 export type WorldMode = 'game' | 'arena';
@@ -789,7 +801,16 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
 
       {/* Shared world geometry */}
       <ArenaTerrain />
-      <ArenaBuildings />
+      {/* Phase B: when ?meshlets=1, ArenaBuildings is replaced by the out-of-tree
+          MeshletBuildingsLayer (see /game/page.tsx). Collision colliders are
+          built from tilemap data not meshes, so dropping ArenaBuildings does
+          NOT let players walk through buildings (world-colliders.ts line 248). */}
+      {!USE_MESHLET_BUILDINGS && <ArenaBuildings />}
+      {/* CameraExporter syncs R3F's camera state into gameCameraRef so the
+          out-of-tree MeshletBuildingsLayer can render with the same camera.
+          Mounted always (no-op when meshlets path is off — the ref just keeps
+          updating but no consumer reads it). */}
+      <CameraExporter />
       <ArenaNpcs />
       <ArenaLocationNpcs />
 
@@ -1116,7 +1137,11 @@ function World3DCanvas({ mode }: World3DCanvasProps) {
         }}
         onCreated={(state) => {
           const { scene, gl } = state;
-          scene.background = SKY_COLOR;
+          // When the meshlet layer is on, R3F canvas is transparent so the
+          // meshlet buildings render underneath. ArenaTerrain still paints
+          // ground (full screen) so users still see a coloured world floor;
+          // sky-fade is provided by fog<color>=FOG_COLOR around buildings.
+          scene.background = USE_MESHLET_BUILDINGS ? null : SKY_COLOR;
           // PERF: do NOT call gl.setPixelRatio() here — it overrides the Canvas
           // dpr={[0.75, 1]} prop cap. R3F resolves the DPR from the prop before
           // onCreated fires; a manual setPixelRatio resets it and can raise DPR
