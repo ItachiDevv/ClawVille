@@ -339,9 +339,10 @@ function loadAllBuildings(
 interface All12SceneProps {
   buildings: LoadedBuilding[];
   onFps: (fps: number) => void;
+  onPixelProbe: (msg: string) => void;
 }
 
-function All12RasterizerScene({ buildings, onFps }: All12SceneProps) {
+function All12RasterizerScene({ buildings, onFps, onPixelProbe }: All12SceneProps) {
   const { gl, size } = useThree();
 
   // One rasterizer per building — keyed by spec.id.
@@ -351,6 +352,7 @@ function All12RasterizerScene({ buildings, onFps }: All12SceneProps) {
   // Zero-alloc FPS meter
   const fpsFramesRef = useRef(0);
   const fpsLastRef = useRef(performance.now());
+  const pixelProbeLastRef = useRef(performance.now());
 
   useEffect(() => {
     const renderer = gl as unknown as THREE.WebGPURenderer;
@@ -416,6 +418,34 @@ function All12RasterizerScene({ buildings, onFps }: All12SceneProps) {
       fpsFramesRef.current = 0;
       fpsLastRef.current = now;
     }
+
+    // Pixel probe every 2s — verifies the canvas is actually being painted.
+    // Runs SYNCHRONOUSLY after our rasterizer renders so the WebGPU drawing
+    // buffer still has content (external probes after compositing read blank).
+    if (now - pixelProbeLastRef.current >= 2000) {
+      pixelProbeLastRef.current = now;
+      try {
+        const canvas = (state.gl as any).domElement as HTMLCanvasElement;
+        const probe = document.createElement('canvas');
+        probe.width = canvas.width; probe.height = canvas.height;
+        const ctx = probe.getContext('2d');
+        if (ctx) {
+          ctx.drawImage(canvas, 0, 0);
+          const d = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+          let nonZero = 0;
+          const total = d.length / 4;
+          const step = Math.max(1, Math.floor(total / 5000));
+          let sampled = 0;
+          for (let i = 0; i < d.length; i += 4 * step) {
+            sampled++;
+            if (d[i] || d[i+1] || d[i+2] || d[i+3]) nonZero++;
+          }
+          onPixelProbe(`${nonZero}/${sampled} non-zero (${(nonZero/sampled*100).toFixed(1)}%)`);
+        }
+      } catch (e) {
+        onPixelProbe('probe failed');
+      }
+    }
   });
 
   return null;
@@ -438,6 +468,7 @@ export default function MeshletSpikeAll12Page() {
   const [loadedBuildings, setLoadedBuildings] = useState<LoadedBuilding[]>([]);
   const [loadComplete, setLoadComplete] = useState(false);
   const [fps, setFps] = useState(0);
+  const [pixelProbe, setPixelProbe] = useState<string>('—');
 
   const totalTris = Array.from(buildingStatuses.values()).reduce((s, b) => s + b.tris, 0);
   const loadedCount = Array.from(buildingStatuses.values()).filter((b) => b.status === 'loaded').length;
@@ -490,6 +521,7 @@ export default function MeshletSpikeAll12Page() {
   }, []);
 
   const handleFps = useCallback((f: number) => setFps(f), []);
+  const handlePixelProbe = useCallback((m: string) => setPixelProbe(m), []);
 
   // --- WebGPU absent ---
   if (webGpuAbsent) {
@@ -517,11 +549,15 @@ export default function MeshletSpikeAll12Page() {
         onCreated={({ gl: renderer }) => {
           // Suppress R3F's default scene clear — each rasterizer manages
           // its own framebuffer via a fullscreen quad.
+          // ALSO: no-op renderer.render to prevent R3F's end-of-frame call
+          // from acquiring a fresh WebGPU swap-chain texture and blanking
+          // our rasterizer output. Verified via /preview/meshlet-spike-bare.
+          (renderer as any).render = () => {};
           (renderer as any).autoClear = false;
         }}
       >
         {loadComplete && loadedBuildings.length > 0 && (
-          <All12RasterizerScene buildings={loadedBuildings} onFps={handleFps} />
+          <All12RasterizerScene buildings={loadedBuildings} onFps={handleFps} onPixelProbe={handlePixelProbe} />
         )}
       </Canvas>
 
@@ -536,6 +572,13 @@ export default function MeshletSpikeAll12Page() {
             color: fps >= 60 ? '#4ade80' : fps >= 30 ? '#facc15' : '#f87171',
           }}>
             {loadComplete ? fps : '—'}
+          </span>
+        </div>
+
+        <div style={styles.overlayRow}>
+          <span style={styles.overlayLabel}>Pixel probe</span>
+          <span style={{ ...styles.overlayValue, color: pixelProbe.startsWith('0/') ? '#f87171' : '#4ade80' }}>
+            {pixelProbe}
           </span>
         </div>
 
