@@ -47,6 +47,7 @@ import * as THREE from 'three/webgpu';
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js';
 import { MeshoptDecoder } from 'meshoptimizer';
 import {
   geometryToMeshletAsset,
@@ -267,6 +268,11 @@ function loadAllBuildings(
 ): Promise<LoadedBuilding[]> {
   const loader = new GLTFLoader();
   loader.setMeshoptDecoder(MeshoptDecoder);
+  // Two buildings (visual-creation, messaging-channels) use KHR_draco_mesh_compression.
+  // Without this they ERR out at load with "no DRACOLoader instance provided".
+  const draco = new DRACOLoader();
+  draco.setDecoderPath('https://www.gstatic.com/draco/versioned/decoders/1.5.6/');
+  loader.setDRACOLoader(draco);
 
   const promises = BUILDINGS.map((spec): Promise<LoadedBuilding | null> => {
     return new Promise((resolve) => {
