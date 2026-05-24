@@ -130,6 +130,10 @@ interface BuildingStatus {
   /** 'pending' | 'loaded' | 'error' */
   status: 'pending' | 'loaded' | 'error';
   tris: number;
+  /** Number of LOD levels generated (1 = no LOD, just full detail). */
+  lodCount: number;
+  /** Triangle count of the coarsest LOD (for expected-savings display). */
+  coarsestLodTris: number;
   error?: string;
 }
 
@@ -292,7 +296,14 @@ function loadAllBuildings(
             // Instance data: one instance at [posX, 0, posZ, scale=1]
             const instanceData = new Float32Array([spec.posX, 0, spec.posZ, 1.0]);
 
-            onProgress({ id: spec.id, status: 'loaded', tris: asset.triangleCount });
+            const coarsestLodTris = asset.lodTriCounts[asset.lodCount - 1] ?? asset.triangleCount;
+            onProgress({
+              id: spec.id,
+              status: 'loaded',
+              tris: asset.triangleCount,
+              lodCount: asset.lodCount,
+              coarsestLodTris,
+            });
             resolve({ spec, asset, instanceData });
           } catch (err) {
             onProgress({ id: spec.id, status: 'error', tris: 0, error: String(err) });
@@ -414,7 +425,7 @@ export default function MeshletSpikeAll12Page() {
 
   // Loading state per building.
   const [buildingStatuses, setBuildingStatuses] = useState<Map<string, BuildingStatus>>(
-    () => new Map(BUILDINGS.map((b) => [b.id, { id: b.id, status: 'pending', tris: 0 }])),
+    () => new Map(BUILDINGS.map((b) => [b.id, { id: b.id, status: 'pending', tris: 0, lodCount: 0, coarsestLodTris: 0 }])),
   );
   const [loadedBuildings, setLoadedBuildings] = useState<LoadedBuilding[]>([]);
   const [loadComplete, setLoadComplete] = useState(false);
@@ -423,6 +434,16 @@ export default function MeshletSpikeAll12Page() {
   const totalTris = Array.from(buildingStatuses.values()).reduce((s, b) => s + b.tris, 0);
   const loadedCount = Array.from(buildingStatuses.values()).filter((b) => b.status === 'loaded').length;
   const errorCount = Array.from(buildingStatuses.values()).filter((b) => b.status === 'error').length;
+
+  // LOD summary: expected tris at coarsest LOD vs full detail.
+  const loadedStatuses = Array.from(buildingStatuses.values()).filter((b) => b.status === 'loaded');
+  const totalCoarsestTris = loadedStatuses.reduce((s, b) => s + b.coarsestLodTris, 0);
+  const avgLodCount = loadedStatuses.length > 0
+    ? Math.round(loadedStatuses.reduce((s, b) => s + b.lodCount, 0) / loadedStatuses.length)
+    : 0;
+  const reductionPct = totalTris > 0
+    ? Math.round((1 - totalCoarsestTris / totalTris) * 100)
+    : 0;
 
   useEffect(() => {
     if (webGpuAbsent) return;
@@ -511,9 +532,26 @@ export default function MeshletSpikeAll12Page() {
         </div>
 
         <div style={styles.overlayRow}>
-          <span style={styles.overlayLabel}>Total tris</span>
+          <span style={styles.overlayLabel}>Total tris (LOD 0)</span>
           <span style={styles.overlayValue}>{totalTris.toLocaleString()}</span>
         </div>
+
+        {loadedStatuses.length > 0 && (
+          <>
+            <div style={styles.overlayRow}>
+              <span style={styles.overlayLabel}>Coarsest LOD tris</span>
+              <span style={{ ...styles.overlayValue, color: '#60a5fa' }}>
+                {totalCoarsestTris.toLocaleString()}
+              </span>
+            </div>
+            <div style={styles.overlayRow}>
+              <span style={styles.overlayLabel}>LOD reduction</span>
+              <span style={{ ...styles.overlayValue, color: reductionPct >= 80 ? '#4ade80' : '#facc15' }}>
+                {reductionPct}% ({avgLodCount} levels avg)
+              </span>
+            </div>
+          </>
+        )}
 
         <div style={styles.overlayRow}>
           <span style={styles.overlayLabel}>Rasterizers ready</span>
@@ -538,6 +576,9 @@ export default function MeshletSpikeAll12Page() {
         <div style={styles.separator} />
         {BUILDINGS.map((b) => {
           const status = buildingStatuses.get(b.id);
+          const lodLabel = status?.status === 'loaded' && status.lodCount > 1
+            ? ` ×${status.lodCount}LOD`
+            : '';
           return (
             <div key={b.id} style={styles.buildingRow}>
               <span style={styles.buildingId}>{b.id.replace(/-/g, '‑')}</span>
@@ -550,7 +591,7 @@ export default function MeshletSpikeAll12Page() {
                   : '#6b7280',
               }}>
                 {status?.status === 'loaded'
-                  ? `${(status.tris).toLocaleString()} tris`
+                  ? `${(status.tris).toLocaleString()}${lodLabel}`
                   : status?.status === 'error'
                   ? 'ERR'
                   : '...'}
