@@ -37,6 +37,7 @@ import * as THREE from 'three/webgpu';
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { MeshoptDecoder } from 'meshoptimizer';
 import {
   geometryToMeshletAsset,
   NaniteRasterizer,
@@ -163,6 +164,11 @@ export default function MeshletSpikePage() {
     if (webGpuAbsent) return;
 
     const loader = new GLTFLoader();
+    // building-lighthouse.glb (like most ClawVille building GLBs) is processed
+    // through gltfpack -cc which emits EXT_meshopt_compression buffers. Without
+    // the decoder the loader throws "setMeshoptDecoder must be called before
+    // loading compressed files" at first buffer read.
+    loader.setMeshoptDecoder(MeshoptDecoder);
     loader.load(
       MODEL_URL,
       (gltf) => {
