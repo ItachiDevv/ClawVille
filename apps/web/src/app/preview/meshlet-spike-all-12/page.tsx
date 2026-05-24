@@ -405,11 +405,15 @@ function BareAll12Canvas({ buildings, onFps, onPixelProbe, onMergedReady, onStat
       await rasterizer.init();
       if (disposed) return;
 
-      // Game-distance camera mirroring the World3DCanvas default: high + far
-      // back, looking at origin (centre of ring).
-      camera = new THREE.PerspectiveCamera(45, rect.width / rect.height, 10, 20000);
-      camera.position.set(0, 2000, 5000);
-      camera.lookAt(0, 0, 0);
+      // Close-orbit camera positioned to FRAME slot-0 (pineapple-house at
+      // world z=-4160) with two adjacent buildings on either side visible.
+      // Buildings are ~30-60wu tall; at this distance they render at full,
+      // recognisable pixel size. The (0,2000,5000) game-distance camera was
+      // correct for the FPS measurement but rendered buildings at sub-pixel
+      // size — visually empty. This is the user-facing visual-validation view.
+      camera = new THREE.PerspectiveCamera(60, rect.width / rect.height, 1, 20000);
+      camera.position.set(800, 300, -3500);
+      camera.lookAt(0, 0, -4160);
       camera.updateMatrixWorld();
 
       onStatus('Running render loop…');
