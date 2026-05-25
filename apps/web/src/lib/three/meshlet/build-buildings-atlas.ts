@@ -75,6 +75,24 @@ export function getDrawableTextureImage(tex: THREE.Texture | null | undefined):
   return img;
 }
 
+export function canDrawTextureToCanvas(tex: THREE.Texture | null | undefined): boolean {
+  const img = getDrawableTextureImage(tex);
+  if (!img) return false;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = 1;
+  canvas.height = 1;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return false;
+
+  try {
+    ctx.drawImage(img as any, 0, 0, 1, 1);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function textureDedupeKey(tex: THREE.Texture): object | string {
   const img = getDrawableTextureImage(tex) as any;
   const src = img?.currentSrc || img?.src || (tex as any).source?.data?.currentSrc || (tex as any).source?.data?.src;
@@ -137,43 +155,38 @@ function remapGeometryUvs(input: SubMeshInput, slotIndex: number, width: number,
  * THREE.Texture ready to attach to `MergedMeshletAsset.atlasTexture`.
  */
 export function buildSubMeshAtlas(inputs: SubMeshInput[]): SubMeshAtlasResult {
-  const textureSlots = new Map<object | string, AtlasSlot>();
-  const slots: AtlasSlot[] = [];
+  const textureInputs = new Map<object | string, { diffuse: THREE.Texture; inputs: SubMeshInput[] }>();
+  let failedTextureCount = 0;
 
-  const reserveSlot = (diffuse: THREE.Texture): AtlasSlot => {
-    const slot: AtlasSlot = { index: slots.length, diffuse, drawn: false };
-    slots.push(slot);
-    return slot;
-  };
-
-  const inputSlots = inputs.map((input) => {
-    const img = getDrawableTextureImage(input.diffuse);
-    if (!img) {
-      throw new Error(`buildSubMeshAtlas: ${input.id} missing drawable diffuse texture`);
+  for (const input of inputs) {
+    if (!canDrawTextureToCanvas(input.diffuse)) {
+      failedTextureCount++;
+      continue;
     }
 
     const key = textureDedupeKey(input.diffuse);
-    let slot = textureSlots.get(key);
-    if (!slot) {
-      slot = reserveSlot(input.diffuse);
-      textureSlots.set(key, slot);
+    let group = textureInputs.get(key);
+    if (!group) {
+      group = { diffuse: input.diffuse, inputs: [] };
+      textureInputs.set(key, group);
     }
-    return slot;
-  });
+    group.inputs.push(input);
+  }
 
-  const rows = slots.length > ATLAS_BASE_MAX_SLOTS ? ATLAS_EXTENDED_ROWS : ATLAS_BASE_ROWS;
+  const candidateSlotCount = textureInputs.size;
+  const rows = candidateSlotCount > ATLAS_BASE_MAX_SLOTS ? ATLAS_EXTENDED_ROWS : ATLAS_BASE_ROWS;
   const height = rows === ATLAS_BASE_ROWS ? ATLAS_BASE_HEIGHT : ATLAS_EXTENDED_HEIGHT;
   const capacity = ATLAS_COLS * rows;
 
-  if (slots.length > ATLAS_EXTENDED_MAX_SLOTS) {
+  if (candidateSlotCount > ATLAS_EXTENDED_MAX_SLOTS) {
     throw new Error(
-      `buildSubMeshAtlas: ${slots.length} atlas slots exceeds capacity ${ATLAS_EXTENDED_MAX_SLOTS}. ` +
+      `buildSubMeshAtlas: ${candidateSlotCount} atlas slots exceeds capacity ${ATLAS_EXTENDED_MAX_SLOTS}. ` +
       'The meshlet shader uses one texture_2d atlas; add a second atlas or reduce unique materials.',
     );
   }
-  if (slots.length > ATLAS_BASE_MAX_SLOTS) {
+  if (candidateSlotCount > ATLAS_BASE_MAX_SLOTS) {
     console.warn(
-      `[atlas] ${slots.length} slots exceeds 8x8 capacity; using ${ATLAS_COLS}x${ATLAS_EXTENDED_ROWS} ` +
+      `[atlas] ${candidateSlotCount} slots exceeds 8x8 capacity; using ${ATLAS_COLS}x${ATLAS_EXTENDED_ROWS} ` +
       `${ATLAS_WIDTH}x${ATLAS_EXTENDED_HEIGHT} atlas`,
     );
   }
@@ -188,8 +201,11 @@ export function buildSubMeshAtlas(inputs: SubMeshInput[]): SubMeshAtlasResult {
   // only from real GLB diffuse images.
   ctx.clearRect(0, 0, ATLAS_WIDTH, height);
 
-  let failedTextureCount = 0;
-  for (const slot of slots) {
+  const textureSlots = new Map<object | string, AtlasSlot>();
+  const slots: AtlasSlot[] = [];
+
+  for (const [key, group] of textureInputs) {
+    const slot: AtlasSlot = { index: slots.length, diffuse: group.diffuse, drawn: false };
     const slotCol = slot.index % ATLAS_COLS;
     const slotRow = Math.floor(slot.index / ATLAS_COLS);
     const slotX = slotCol * ATLAS_SLOT_SIZE;
@@ -204,29 +220,32 @@ export function buildSubMeshAtlas(inputs: SubMeshInput[]): SubMeshAtlasResult {
         ctx.drawImage(img as any, innerX, innerY, innerSize, innerSize);
         slot.drawn = true;
       } catch {
-        failedTextureCount++;
       }
-    } else {
-      failedTextureCount++;
     }
 
     if (!slot.drawn) {
-      throw new Error(`buildSubMeshAtlas: texture slot ${slot.index} was not drawable`);
+      failedTextureCount++;
+      continue;
     }
 
     replicatePadding(ctx, slotX, slotY, innerX, innerY, innerSize);
+    textureSlots.set(key, slot);
+    slots.push(slot);
   }
 
-  const perSubMesh = inputs.map((input, idx) => {
-    const slot = inputSlots[idx];
-    remapGeometryUvs(input, slot.index, ATLAS_WIDTH, height);
-    return {
-      id: input.id,
-      slotIndex: slot.index,
-      slotCol: slot.index % ATLAS_COLS,
-      slotRow: Math.floor(slot.index / ATLAS_COLS),
-      drawn: slot.drawn,
-    };
+  const perSubMesh = Array.from(textureInputs.entries()).flatMap(([key, group]) => {
+    const slot = textureSlots.get(key);
+    if (!slot) return [];
+    return group.inputs.map((input) => {
+      remapGeometryUvs(input, slot.index, ATLAS_WIDTH, height);
+      return {
+        id: input.id,
+        slotIndex: slot.index,
+        slotCol: slot.index % ATLAS_COLS,
+        slotRow: Math.floor(slot.index / ATLAS_COLS),
+        drawn: slot.drawn,
+      };
+    });
   });
 
   const texture = new THREE.Texture(canvas);

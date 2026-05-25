@@ -20,7 +20,7 @@ import {
   BUILDING_TARGET_HEIGHT,
   type BuildingSpec,
 } from './buildings-manifest';
-import { buildSubMeshAtlas } from './build-buildings-atlas';
+import { buildSubMeshAtlas, canDrawTextureToCanvas } from './build-buildings-atlas';
 
 export interface BuildingLoadStatus {
   id: string;
@@ -46,19 +46,12 @@ interface LoadedSubMesh {
   worldMatrix: THREE.Matrix4;
   triCount: number;
   diffuse: THREE.Texture;
-  materialColor: [number, number, number];
   materialName: string;
 }
 
 function materialAt(material: THREE.Material | THREE.Material[], index: number): THREE.Material | null {
   if (Array.isArray(material)) return material[index] ?? material[0] ?? null;
   return material ?? null;
-}
-
-function materialColor(material: THREE.Material | null): [number, number, number] {
-  const col = (material as any)?.color as THREE.Color | undefined;
-  if (!col || typeof col.r !== 'number') return [1, 1, 1];
-  return [col.r, col.g, col.b];
 }
 
 function materialMap(material: THREE.Material | null): THREE.Texture | null {
@@ -83,7 +76,6 @@ function dumpMeshletSubMeshesOnce(subMeshes: LoadedSubMesh[]) {
       diffuseImageSrc: img?.src ?? '(canvas/bitmap/null)',
       diffuseImageWidth: img?.width ?? null,
       diffuseImageHeight: img?.height ?? null,
-      materialColor: sub.materialColor,
       materialName: sub.materialName,
     };
   });
@@ -221,7 +213,7 @@ function collectBuildingSubMeshes(spec: BuildingSpec, root: THREE.Object3D): Loa
         const group = groups[groupIdx];
         const material = materialAt(materials, group.materialIndex ?? 0);
         const diffuse = materialMap(material);
-        if (!diffuse) continue;
+        if (!canDrawTextureToCanvas(diffuse)) continue;
         const geometry = copyGeometryGroup(sourceGeo, group);
         if (!geometry) continue;
         const triCount = geometryTriCount(geometry);
@@ -238,14 +230,13 @@ function collectBuildingSubMeshes(spec: BuildingSpec, root: THREE.Object3D): Loa
           worldMatrix: meshWorldMatrix.clone(),
           triCount,
           diffuse,
-          materialColor: materialColor(material),
           materialName: material?.name ?? '',
         });
       }
     } else {
       const material = materialAt(materials, 0);
       const diffuse = materialMap(material);
-      if (!diffuse) return;
+      if (!canDrawTextureToCanvas(diffuse)) return;
       const geometry = copyFullGeometry(sourceGeo);
       if (!geometry) return;
       const triCount = geometryTriCount(geometry);
@@ -262,7 +253,6 @@ function collectBuildingSubMeshes(spec: BuildingSpec, root: THREE.Object3D): Loa
         worldMatrix: meshWorldMatrix.clone(),
         triCount,
         diffuse,
-        materialColor: materialColor(material),
         materialName: material?.name ?? '',
       });
     }
@@ -336,7 +326,7 @@ export function useMergedBuildingsAsset(): UseMergedBuildingsAssetReturn {
 
         const results = await Promise.all(loadPromises);
         if (cancelled) return;
-        const valid = results.flat().filter((sub) => getDrawableTextureImage(sub.diffuse));
+        const valid = results.flat().filter((sub) => canDrawTextureToCanvas(sub.diffuse));
         loadedSubMeshes.push(...valid);
         dumpMeshletSubMeshesOnce(valid);
         if (valid.length === 0) {
@@ -360,11 +350,18 @@ export function useMergedBuildingsAsset(): UseMergedBuildingsAssetReturn {
           '[useMergedBuildingsAsset] atlas built —',
           `${atlasResult.slotCount}/${atlasResult.capacity} slots`,
           `${atlasResult.uniqueTextureCount} textures`,
-          '0 solid colors',
         );
 
+        const atlasSubMeshIds = new Set(atlasResult.perSubMesh.map((sub) => sub.id));
+        const atlasValid = valid.filter((sub) => atlasSubMeshIds.has(sub.id));
+        if (atlasValid.length === 0) {
+          setError('No buildings loaded');
+          setState('error');
+          return;
+        }
+
         const merged = await mergeGeometriesToMeshletAsset(
-          valid.map((sub, idx) => ({
+          atlasValid.map((sub, idx) => ({
             geometry: sub.geometry,
             worldMatrix: sub.worldMatrix,
             sourceId: idx,
