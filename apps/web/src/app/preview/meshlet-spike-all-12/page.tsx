@@ -53,7 +53,7 @@ import {
   NaniteRasterizer,
   type MergedMeshletAsset,
 } from '@/lib/three/experimental/nanite-rasterizer';
-import { buildBuildingsAtlas } from '@/lib/three/meshlet/build-buildings-atlas';
+import { buildSubMeshAtlas, getDrawableTextureImage } from '@/lib/three/meshlet/build-buildings-atlas';
 
 // ---------------------------------------------------------------------------
 // Building manifest — mirrors the 12-slot ring from BUILDING_MODELS in arena-buildings.tsx.
@@ -89,29 +89,29 @@ function ringPos(slot: number): [number, number] {
 
 const BUILDINGS: BuildingSpec[] = [
   // Slot 0 — N — visual-creation (pineapple-house)
-  { id: 'visual-creation',    model: '/models/pineapple-house-opt1.glb?v=2',                    posX: ringPos(0)[0],  posZ: ringPos(0)[1]  },
+  { id: 'visual-creation',    model: '/models/pineapple-house-opt1.glb?v=2',                    posX: ringPos(0)[0],  posZ: ringPos(0)[1] },
   // Slot 1 — NNE — code-development (chum-bucket)
-  { id: 'code-development',   model: '/models/chum-bucket-v2-opt1.glb?v=2',                     posX: ringPos(1)[0],  posZ: ringPos(1)[1]  },
+  { id: 'code-development',   model: '/models/chum-bucket-v2-opt1.glb?v=2',                     posX: ringPos(1)[0],  posZ: ringPos(1)[1] },
   // Slot 2 — ENE — mcp-tool-use (krusty-krab)
-  { id: 'mcp-tool-use',       model: '/models/krusty-krab-v2-opt1.glb?v=2',                     posX: ringPos(2)[0],  posZ: ringPos(2)[1]  },
+  { id: 'mcp-tool-use',       model: '/models/krusty-krab-v2-opt1.glb?v=2',                     posX: ringPos(2)[0],  posZ: ringPos(2)[1] },
   // Slot 3 — E — messaging-channels (sandy-treedome) — DISABLED for spike
   // 2026-05-24: source GLB is a 1.1M-tri Draco vertex-color tree, 22× the rest
   // of the scene combined. User will replace with a lower-poly variant later.
   // Until then, spike runs with 11 buildings to measure meshlet path without
   // this single outlier dragging the average.
-  // { id: 'messaging-channels', model: '/models/sandy-treedome-v3-opt1.glb?v=2',                  posX: ringPos(3)[0],  posZ: ringPos(3)[1]  },
+  // { id: 'messaging-channels', model: '/models/sandy-treedome-v3-opt1.glb?v=2',                  posX: ringPos(3)[0],  posZ: ringPos(3)[1] },
   // Slot 4 — ESE — api-integrations (salty-spitoon)
-  { id: 'api-integrations',   model: '/models/salty-spitoon-opt1.glb?v=2',                      posX: ringPos(4)[0],  posZ: ringPos(4)[1]  },
+  { id: 'api-integrations',   model: '/models/salty-spitoon-opt1.glb?v=2',                      posX: ringPos(4)[0],  posZ: ringPos(4)[1] },
   // Slot 5 — SSE — app-publishing (boating-school)
-  { id: 'app-publishing',     model: '/models/boating-school-opt1.glb?v=2',                     posX: ringPos(5)[0],  posZ: ringPos(5)[1]  },
+  { id: 'app-publishing',     model: '/models/boating-school-opt1.glb?v=2',                     posX: ringPos(5)[0],  posZ: ringPos(5)[1] },
   // Slot 6 — S — cron-automation (patty-building)
-  { id: 'cron-automation',    model: '/models/patty-building-opt1.glb?v=2',                     posX: ringPos(6)[0],  posZ: ringPos(6)[1]  },
+  { id: 'cron-automation',    model: '/models/patty-building-opt1.glb?v=2',                     posX: ringPos(6)[0],  posZ: ringPos(6)[1] },
   // Slot 7 — SSW — deployment-ops (lighthouse)
-  { id: 'deployment-ops',     model: '/models/building-lighthouse-opt1.glb?v=2',                posX: ringPos(7)[0],  posZ: ringPos(7)[1]  },
+  { id: 'deployment-ops',     model: '/models/building-lighthouse-opt1.glb?v=2',                posX: ringPos(7)[0],  posZ: ringPos(7)[1] },
   // Slot 8 — WSW — claw-arcade
-  { id: 'claw-arcade',        model: '/models/arcade/claw-arcade-exterior-opt1.glb?v=2',        posX: ringPos(8)[0],  posZ: ringPos(8)[1]  },
+  { id: 'claw-arcade',        model: '/models/arcade/claw-arcade-exterior-opt1.glb?v=2',        posX: ringPos(8)[0],  posZ: ringPos(8)[1] },
   // Slot 9 — W — cove
-  { id: 'cove',               model: '/models/cove/cove-exterior-opt1.glb?v=2',                 posX: ringPos(9)[0],  posZ: ringPos(9)[1]  },
+  { id: 'cove',               model: '/models/cove/cove-exterior-opt1.glb?v=2',                 posX: ringPos(9)[0],  posZ: ringPos(9)[1] },
   // Slot 10 — WNW — agent-security (patricks-rock)
   { id: 'agent-security',     model: '/models/patricks-rock-v2-opt1.glb?v=3',                   posX: ringPos(10)[0], posZ: ringPos(10)[1] },
   // Slot 11 — NNW — memory-rag (squidward-house)
@@ -122,18 +122,20 @@ const BUILDINGS: BuildingSpec[] = [
 // Types
 // ---------------------------------------------------------------------------
 
-interface LoadedBuilding {
+interface LoadedSubMesh {
   spec: BuildingSpec;
-  /** Per-GLB merged BufferGeometry — internal GLB transforms already baked, but NOT the ring-position translation. */
+  id: string;
+  subMeshName: string;
+  /** One mesh node, or one material group from a multi-material mesh. */
   geometry: THREE.BufferGeometry;
-  /** World-space translation matrix for this building's ring slot. mergeGeometriesToMeshletAsset bakes this into positions. */
+  /** Full world transform: building ring transform × mesh.matrixWorld. */
   worldMatrix: THREE.Matrix4;
-  /** Triangle count of this building's source geometry — for HUD diagnostics. */
+  /** Triangle count for this sub-mesh source geometry. */
   triCount: number;
-  /** Hand-curated fallback color used to render this building distinctly. */
-  color: [number, number, number];
-  /** Original GLB scene — required by buildBuildingsAtlas to extract the largest-mesh diffuse texture. */
-  scene: THREE.Object3D;
+  /** Drawable sub-mesh diffuse texture, deduped by image identity in the atlas builder. */
+  diffuse: THREE.Texture;
+  materialColor: [number, number, number];
+  materialName: string;
 }
 
 interface BuildingStatus {
@@ -152,126 +154,226 @@ interface BuildingStatus {
 // Geometry helpers
 // ---------------------------------------------------------------------------
 
-/**
- * Walk the GLTF scene and collect ALL mesh geometries, merging them into one
- * BufferGeometry (position + optional uv only — the rasterizer only needs those).
- *
- * This is a conservative approach: it does not apply per-mesh transforms from
- * the scene graph (those transforms affect visual position but not tri count),
- * and it does not strip ground planes or decorative meshes (out of scope for
- * the spike). The goal is tri count measurement and FPS, not visual correctness.
- *
- * Returns null if the scene has no Mesh geometry at all.
- */
-function collectAndMergeGeometries(root: THREE.Object3D): THREE.BufferGeometry | null {
-  // Gather all mesh geometries. We apply each mesh's world matrix to the
-  // position attribute so the final merged geometry occupies the right world
-  // space (needed for bounding-sphere correctness in the meshlet chunker).
-  const posArrays: Float32Array[] = [];
-  const uvArrays: (Float32Array | null)[] = [];
-  const indexArrays: (Uint32Array | Uint16Array | null)[] = [];
-  const vertexOffsets: number[] = [];
+function materialAt(material: THREE.Material | THREE.Material[], index: number): THREE.Material | null {
+  if (Array.isArray(material)) return material[index] ?? material[0] ?? null;
+  return material ?? null;
+}
 
-  let totalVertices = 0;
+function materialColor(material: THREE.Material | null): [number, number, number] {
+  const col = (material as any)?.color as THREE.Color | undefined;
+  if (!col || typeof col.r !== 'number') return [1, 1, 1];
+  return [col.r, col.g, col.b];
+}
 
+function materialMap(material: THREE.Material | null): THREE.Texture | null {
+  return ((material as any)?.map as THREE.Texture | undefined) ?? null;
+}
+
+function dumpMeshletSubMeshesOnce(subMeshes: LoadedSubMesh[]) {
+  if ((globalThis as any).__meshletSubMeshDumped) return;
+  (globalThis as any).__meshletSubMeshDumped = true;
+
+  const dump = subMeshes.map((sub) => {
+    const m = sub.worldMatrix.elements;
+    const img = ((sub.diffuse as any)?.image ?? (sub.diffuse as any)?.source?.data) as any;
+    const posAttr = sub.geometry.attributes['position'] as THREE.BufferAttribute | undefined;
+    return {
+      buildingId: sub.spec.id,
+      subMeshName: sub.subMeshName,
+      vertexCount: posAttr?.count ?? 0,
+      triCount: sub.triCount,
+      worldMatrixFirstRow: [m[0], m[4], m[8], m[12]],
+      hasDiffuseMap: true,
+      diffuseImageSrc: img?.src ?? '(canvas/bitmap/null)',
+      diffuseImageWidth: img?.width ?? null,
+      diffuseImageHeight: img?.height ?? null,
+      materialColor: sub.materialColor,
+      materialName: sub.materialName,
+    };
+  });
+  (globalThis as any).__meshletDump = dump;
+  console.log('[meshlet-dump]', dump);
+}
+
+function geometryTriCount(geometry: THREE.BufferGeometry): number {
+  return geometry.index
+    ? geometry.index.count / 3
+    : (geometry.attributes.position?.count ?? 0) / 3;
+}
+
+function computeSceneGeometryBox(root: THREE.Object3D): THREE.Box3 | null {
   root.updateMatrixWorld(true);
+  const box = new THREE.Box3();
+  const tmp = new THREE.Vector3();
+  let found = false;
 
   root.traverse((obj) => {
     if (!(obj as THREE.Mesh).isMesh) return;
     const mesh = obj as THREE.Mesh;
-    const geo = mesh.geometry;
-    if (!geo) return;
-
-    const posAttr = geo.attributes['position'] as THREE.BufferAttribute | undefined;
+    const posAttr = mesh.geometry?.attributes?.['position'] as THREE.BufferAttribute | undefined;
     if (!posAttr) return;
-
-    const count = posAttr.count;
-
-    // Copy positions, applying the mesh's world matrix so bounding spheres
-    // inside the meshlet chunker are in world space.
-    const pos = new Float32Array(count * 3);
-    const worldMat = mesh.matrixWorld;
-    const tmp = new THREE.Vector3();
-    for (let i = 0; i < count; i++) {
-      tmp.fromBufferAttribute(posAttr, i);
-      tmp.applyMatrix4(worldMat);
-      pos[i * 3 + 0] = tmp.x;
-      pos[i * 3 + 1] = tmp.y;
-      pos[i * 3 + 2] = tmp.z;
-    }
-
-    const uvAttr = geo.attributes['uv'] as THREE.BufferAttribute | undefined;
-    let uvData: Float32Array | null = null;
-    if (uvAttr) {
-      uvData = new Float32Array(count * 2);
-      for (let i = 0; i < count; i++) {
-        uvData[i * 2 + 0] = uvAttr.getX(i);
-        uvData[i * 2 + 1] = uvAttr.getY(i);
-      }
-    }
-
-    vertexOffsets.push(totalVertices);
-    totalVertices += count;
-    posArrays.push(pos);
-    uvArrays.push(uvData);
-
-    if (geo.index) {
-      indexArrays.push(geo.index.array as Uint32Array | Uint16Array);
-    } else {
-      indexArrays.push(null);
+    for (let i = 0; i < posAttr.count; i++) {
+      tmp.fromBufferAttribute(posAttr, i).applyMatrix4(mesh.matrixWorld);
+      box.expandByPoint(tmp);
+      found = true;
     }
   });
 
-  if (totalVertices === 0) return null;
+  return found ? box : null;
+}
 
-  // Merge into a single BufferGeometry.
-  // Build merged position array.
-  const mergedPos = new Float32Array(totalVertices * 3);
-  let posWriteOffset = 0;
-  for (const p of posArrays) {
-    mergedPos.set(p, posWriteOffset);
-    posWriteOffset += p.length;
+function buildBuildingWorldMatrix(spec: BuildingSpec, sceneBox: THREE.Box3): THREE.Matrix4 {
+  const BUILDING_TARGET_HEIGHT = 1000;
+  const maxDim = Math.max(
+    sceneBox.max.x - sceneBox.min.x,
+    sceneBox.max.y - sceneBox.min.y,
+    sceneBox.max.z - sceneBox.min.z,
+  );
+  const buildingScale = maxDim > 0.001 ? BUILDING_TARGET_HEIGHT / maxDim : 1;
+  const centreX = (sceneBox.min.x + sceneBox.max.x) / 2;
+  const centreZ = (sceneBox.min.z + sceneBox.max.z) / 2;
+  const minY = sceneBox.min.y;
+
+  return new THREE.Matrix4()
+    .makeTranslation(spec.posX, 0, spec.posZ)
+    .multiply(new THREE.Matrix4().makeScale(buildingScale, buildingScale, buildingScale))
+    .multiply(new THREE.Matrix4().makeTranslation(-centreX, -minY, -centreZ));
+}
+
+function copyFullGeometry(source: THREE.BufferGeometry): THREE.BufferGeometry | null {
+  const posAttr = source.attributes['position'] as THREE.BufferAttribute | undefined;
+  if (!posAttr) return null;
+
+  const pos = new Float32Array(posAttr.count * 3);
+  for (let i = 0; i < posAttr.count; i++) {
+    pos[i * 3 + 0] = posAttr.getX(i);
+    pos[i * 3 + 1] = posAttr.getY(i);
+    pos[i * 3 + 2] = posAttr.getZ(i);
   }
 
-  // Build merged uv array (fill zeros for sub-meshes without UVs).
-  const mergedUv = new Float32Array(totalVertices * 2);
-  let uvWriteOffset = 0;
-  for (let i = 0; i < uvArrays.length; i++) {
-    const u = uvArrays[i];
-    if (u) {
-      mergedUv.set(u, uvWriteOffset);
+  const uvAttr = source.attributes['uv'] as THREE.BufferAttribute | undefined;
+  const uv = new Float32Array(posAttr.count * 2);
+  if (uvAttr) {
+    for (let i = 0; i < posAttr.count; i++) {
+      uv[i * 2 + 0] = uvAttr.getX(i);
+      uv[i * 2 + 1] = uvAttr.getY(i);
     }
-    // Advance by the number of UVs for this sub-mesh (whether or not it had UVs).
-    const subVertCount = posArrays[i].length / 3;
-    uvWriteOffset += subVertCount * 2;
   }
 
-  // Build merged index array (offset indices by their sub-mesh vertex base).
-  const indexParts: number[] = [];
-  for (let i = 0; i < indexArrays.length; i++) {
-    const idxArr = indexArrays[i];
-    const base = vertexOffsets[i];
-    const vCount = posArrays[i].length / 3;
-    if (idxArr) {
-      for (let j = 0; j < idxArr.length; j++) {
-        indexParts.push(idxArr[j] + base);
+  const out = new THREE.BufferGeometry();
+  out.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  out.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+  if (source.index) {
+    const src = source.index.array;
+    const index = new Uint32Array(src.length);
+    for (let i = 0; i < src.length; i++) index[i] = src[i];
+    out.setIndex(new THREE.BufferAttribute(index, 1));
+  }
+  return out;
+}
+
+function copyGeometryGroup(source: THREE.BufferGeometry, group: { start: number; count: number }): THREE.BufferGeometry | null {
+  const posAttr = source.attributes['position'] as THREE.BufferAttribute | undefined;
+  if (!posAttr || group.count <= 0) return null;
+
+  const uvAttr = source.attributes['uv'] as THREE.BufferAttribute | undefined;
+  const srcIndex = source.index?.array as ArrayLike<number> | undefined;
+  const vertexCount = group.count;
+  const pos = new Float32Array(vertexCount * 3);
+  const uv = new Float32Array(vertexCount * 2);
+
+  for (let i = 0; i < vertexCount; i++) {
+    const srcVertex = srcIndex ? srcIndex[group.start + i] : group.start + i;
+    pos[i * 3 + 0] = posAttr.getX(srcVertex);
+    pos[i * 3 + 1] = posAttr.getY(srcVertex);
+    pos[i * 3 + 2] = posAttr.getZ(srcVertex);
+    if (uvAttr) {
+      uv[i * 2 + 0] = uvAttr.getX(srcVertex);
+      uv[i * 2 + 1] = uvAttr.getY(srcVertex);
+    }
+  }
+
+  const out = new THREE.BufferGeometry();
+  out.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  out.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+  return out;
+}
+
+function collectBuildingSubMeshes(spec: BuildingSpec, root: THREE.Object3D): LoadedSubMesh[] {
+  const sceneBox = computeSceneGeometryBox(root);
+  if (!sceneBox) return [];
+
+  const buildingWorldMatrix = buildBuildingWorldMatrix(spec, sceneBox);
+  const subMeshes: LoadedSubMesh[] = [];
+  let meshOrdinal = 0;
+
+  root.traverse((obj) => {
+    if (!(obj as THREE.Mesh).isMesh) return;
+    const mesh = obj as THREE.Mesh;
+    const sourceGeo = mesh.geometry;
+    if (!sourceGeo?.attributes?.['position'] || !mesh.material) return;
+
+    const meshWorldMatrix = buildingWorldMatrix.clone().multiply(mesh.matrixWorld);
+    const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+    const groups = Array.isArray(mesh.material) && sourceGeo.groups?.length > 0
+      ? sourceGeo.groups
+      : null;
+
+    if (groups) {
+      for (let groupIdx = 0; groupIdx < groups.length; groupIdx++) {
+        const group = groups[groupIdx];
+        const material = materialAt(materials, group.materialIndex ?? 0);
+        const diffuse = materialMap(material);
+        if (!diffuse) continue;
+        const geometry = copyGeometryGroup(sourceGeo, group);
+        if (!geometry) continue;
+        const triCount = geometryTriCount(geometry);
+        if (triCount <= 0) {
+          geometry.dispose();
+          continue;
+        }
+        const nodeName = mesh.name || `mesh-${meshOrdinal}`;
+        subMeshes.push({
+          spec,
+          id: `${spec.id}/${nodeName}/mat-${group.materialIndex ?? groupIdx}`,
+          subMeshName: nodeName,
+          geometry,
+          worldMatrix: meshWorldMatrix.clone(),
+          triCount,
+          diffuse,
+          materialColor: materialColor(material),
+          materialName: material?.name ?? '',
+        });
       }
     } else {
-      // Non-indexed: sequential indices.
-      for (let j = 0; j < vCount; j++) {
-        indexParts.push(base + j);
+      const material = materialAt(materials, 0);
+      const diffuse = materialMap(material);
+      if (!diffuse) return;
+      const geometry = copyFullGeometry(sourceGeo);
+      if (!geometry) return;
+      const triCount = geometryTriCount(geometry);
+      if (triCount <= 0) {
+        geometry.dispose();
+        return;
       }
+      const nodeName = mesh.name || `mesh-${meshOrdinal}`;
+      subMeshes.push({
+        spec,
+        id: `${spec.id}/${nodeName}`,
+        subMeshName: nodeName,
+        geometry,
+        worldMatrix: meshWorldMatrix.clone(),
+        triCount,
+        diffuse,
+        materialColor: materialColor(material),
+        materialName: material?.name ?? '',
+      });
     }
-  }
 
-  const mergedGeo = new THREE.BufferGeometry();
-  mergedGeo.setAttribute('position', new THREE.BufferAttribute(mergedPos, 3));
-  mergedGeo.setAttribute('uv', new THREE.BufferAttribute(mergedUv, 2));
-  if (indexParts.length > 0) {
-    mergedGeo.setIndex(new THREE.BufferAttribute(new Uint32Array(indexParts), 1));
-  }
+    meshOrdinal++;
+  });
 
-  return mergedGeo;
+  return subMeshes;
 }
 
 // ---------------------------------------------------------------------------
@@ -280,7 +382,7 @@ function collectAndMergeGeometries(root: THREE.Object3D): THREE.BufferGeometry |
 
 function loadAllBuildings(
   onProgress: (update: BuildingStatus) => void,
-): Promise<LoadedBuilding[]> {
+): Promise<LoadedSubMesh[]> {
   const loader = new GLTFLoader();
   loader.setMeshoptDecoder(MeshoptDecoder);
   // Two buildings (visual-creation, messaging-channels) use KHR_draco_mesh_compression.
@@ -289,47 +391,20 @@ function loadAllBuildings(
   draco.setDecoderPath('https://www.gstatic.com/draco/versioned/decoders/1.5.6/');
   loader.setDRACOLoader(draco);
 
-  const promises = BUILDINGS.map((spec): Promise<LoadedBuilding | null> => {
+  const promises = BUILDINGS.map((spec): Promise<LoadedSubMesh[]> => {
     return new Promise((resolve) => {
       loader.load(
         spec.model,
         async (gltf) => {
           try {
-            const mergedGeo = collectAndMergeGeometries(gltf.scene);
-            if (!mergedGeo) {
+            const subMeshes = collectBuildingSubMeshes(spec, gltf.scene);
+            if (subMeshes.length === 0) {
               onProgress({ id: spec.id, status: 'error', tris: 0, lodCount: 0, coarsestLodTris: 0, error: 'No geometry found' });
-              resolve(null);
+              resolve([]);
               return;
             }
 
-            // Compute per-building scale to bring the GLB up to the same world
-            // size /game uses (BUILDING_TARGET_HEIGHT = 1000wu max-dim). Without
-            // this step buildings stay at native GLB scale (~5-10wu each) and
-            // are sub-pixel from any sane camera. Matches the logic in
-            // apps/web/src/lib/three/arena-buildings.tsx computeBuildingScale.
-            const BUILDING_TARGET_HEIGHT = 1000;
-            mergedGeo.computeBoundingBox();
-            const bbox = mergedGeo.boundingBox!;
-            const maxDim = Math.max(
-              bbox.max.x - bbox.min.x,
-              bbox.max.y - bbox.min.y,
-              bbox.max.z - bbox.min.z,
-            );
-            const buildingScale = maxDim > 0.001 ? BUILDING_TARGET_HEIGHT / maxDim : 1;
-            // Anchor the building so its bottom centre sits on the ring slot.
-            const centreX = (bbox.min.x + bbox.max.x) / 2;
-            const centreZ = (bbox.min.z + bbox.max.z) / 2;
-            const minY = bbox.min.y;
-
-            // worldMatrix = translate(slot) × scale(s) × translate(-centre, -minY, -centre)
-            // Applies scale AROUND the bottom-centre anchor, then places at ring pos.
-            const worldMatrix = new THREE.Matrix4()
-              .makeTranslation(spec.posX, 0, spec.posZ)
-              .multiply(new THREE.Matrix4().makeScale(buildingScale, buildingScale, buildingScale))
-              .multiply(new THREE.Matrix4().makeTranslation(-centreX, -minY, -centreZ));
-
-            const triCount = mergedGeo.index ? mergedGeo.index.count / 3 : mergedGeo.attributes.position.count / 3;
-
+            const triCount = subMeshes.reduce((sum, sub) => sum + sub.triCount, 0);
             onProgress({
               id: spec.id,
               status: 'loaded',
@@ -337,27 +412,27 @@ function loadAllBuildings(
               lodCount: 0, // LOD count is now global to the merged asset, not per-building
               coarsestLodTris: 0,
             });
-            // Pass spec.fallbackColor so the merged asset includes per-source
-            // colours and the rasterizer's per-source-colour shader path
-            // renders each building distinctly (otherwise all white).
-            resolve({ spec, geometry: mergedGeo, worldMatrix, triCount, color: spec.fallbackColor, scene: gltf.scene });
+            console.log('[meshlet-submeshes]', spec.id, `${subMeshes.length} sub-meshes`, `${triCount} tris`);
+            resolve(subMeshes);
           } catch (err) {
             onProgress({ id: spec.id, status: 'error', tris: 0, lodCount: 0, coarsestLodTris: 0, error: String(err) });
-            resolve(null);
+            resolve([]);
           }
         },
         undefined,
         (err) => {
           onProgress({ id: spec.id, status: 'error', tris: 0, error: String(err) });
-          resolve(null);
+          resolve([]);
         },
       );
     });
   });
 
-  return Promise.all(promises).then((results) =>
-    results.filter((r): r is LoadedBuilding => r !== null),
-  );
+  return Promise.all(promises).then((results) => {
+    const subMeshes = results.flat().filter((sub) => getDrawableTextureImage(sub.diffuse));
+    dumpMeshletSubMeshesOnce(subMeshes);
+    return subMeshes;
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -374,7 +449,7 @@ function loadAllBuildings(
 // ---------------------------------------------------------------------------
 
 interface BareAll12CanvasProps {
-  buildings: LoadedBuilding[];
+  buildings: LoadedSubMesh[];
   onFps: (fps: number) => void;
   onPixelProbe: (msg: string) => void;
   onMergedReady: (asset: MergedMeshletAsset) => void;
@@ -412,22 +487,20 @@ function BareAll12Canvas({ buildings, onFps, onPixelProbe, onMergedReady, onStat
       renderer.setSize(rect.width, rect.height, false);
       if (disposed) return;
 
-      // Build shared 4×3 atlas of building diffuse textures + remap each
-      // building's UVs into its slot region BEFORE merge reads them. This
-      // makes materialMode=1 render real building textures instead of the
-      // 1×1 magenta fallback. Shared util — same call in /game's hook.
-      onStatus('Packing diffuse atlas…');
-      const atlasResult = buildBuildingsAtlas(
+      // Build shared per-sub-mesh atlas + remap UVs before merge reads them.
+      onStatus('Packing per-sub-mesh diffuse atlas…');
+      const atlasResult = buildSubMeshAtlas(
         buildings.map((b) => ({
-          id: b.spec.id,
-          scene: b.scene,
+          id: b.id,
           geometry: b.geometry,
-          fallbackColor: b.color,
+          diffuse: b.diffuse,
         })),
       );
       console.log(
         '[spike-all-12] atlas built —',
-        `${atlasResult.texturedSlots} textured, ${atlasResult.solidSlots} solid-color fallback`,
+        `${atlasResult.slotCount}/${atlasResult.capacity} slots`,
+        `${atlasResult.uniqueTextureCount} textures`,
+        '0 solid colors',
       );
       if (disposed) return;
 
@@ -437,7 +510,6 @@ function BareAll12Canvas({ buildings, onFps, onPixelProbe, onMergedReady, onStat
           geometry: b.geometry,
           worldMatrix: b.worldMatrix,
           sourceId: idx,
-          color: b.color,
         })),
       );
       if (disposed) return;
@@ -558,7 +630,7 @@ export default function MeshletSpikeAll12Page() {
   const [buildingStatuses, setBuildingStatuses] = useState<Map<string, BuildingStatus>>(
     () => new Map(BUILDINGS.map((b) => [b.id, { id: b.id, status: 'pending', tris: 0, lodCount: 0, coarsestLodTris: 0 }])),
   );
-  const [loadedBuildings, setLoadedBuildings] = useState<LoadedBuilding[]>([]);
+  const [loadedBuildings, setLoadedBuildings] = useState<LoadedSubMesh[]>([]);
   const [loadComplete, setLoadComplete] = useState(false);
   const [fps, setFps] = useState(0);
   const [pixelProbe, setPixelProbe] = useState<string>('—');
@@ -701,7 +773,7 @@ export default function MeshletSpikeAll12Page() {
         <div style={styles.overlayRow}>
           <span style={styles.overlayLabel}>Buildings loaded</span>
           <span style={styles.overlayValue}>
-            {loadComplete ? loadedBuildings.length : loadedCount} / {BUILDINGS.length}
+            {loadedCount} / {BUILDINGS.length}
           </span>
         </div>
 

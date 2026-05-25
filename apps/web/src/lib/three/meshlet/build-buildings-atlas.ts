@@ -1,198 +1,233 @@
 // @ts-nocheck
 /**
- * build-buildings-atlas — pack N building diffuse textures into one shared
- * texture_2d atlas + remap each building's vertex UVs to its slot region.
- *
- * Used by BOTH the /game integration (use-merged-buildings-asset hook) AND
- * the /preview/meshlet-spike-all-12 standalone preview so that:
- *   1. Atlas behaviour stays in one place — fixing slot padding, mipmap
- *      bleeding, or sRGB handling fixes both call sites at once.
- *   2. The spike preview reflects production rendering exactly. Without this
- *      shared util the spike showed hashColor pastels while /game showed
- *      atlas textures — diverged tests are worse than no tests.
+ * build-buildings-atlas — pack per-sub-mesh diffuse textures into one shared
+ * texture_2d atlas + remap each sub-mesh geometry's vertex UVs to its slot.
  *
  * Why an atlas over THREE.DataArrayTexture:
  *   r182 has an unfixed codegen bug in WGSLNodeBuilder.js's
- *   generateTextureGrad / generateTextureLevel — they accept a depthSnippet
- *   (array_index) param but never emit it, so any sampler chain that combines
- *   .depth(layer) with .grad(dx,dy) fails to compile for texture_2d_array.
- *   See nanite-rasterizer.ts MergedMeshletAsset.atlasTexture doc for details.
- *
- * Approach:
- *   - 4×3 grid of 1024px slots = 4096×3072 atlas (12 slots, supports up to
- *     12 buildings; ClawVille has 11 today). Well under the 8192 adapter cap.
- *   - 2px clamping padding inside each slot to prevent bilinear / mipmap
- *     fetches from reaching across slot boundaries (visible at distance as
- *     "leakage" of neighbour-slot colour). Inner draws + edge-replication
- *     copies into the gutter cover this.
- *   - Per-building UV remap: each vertex's UV [0,1]^2 → that slot's
- *     [u0+0.5/W..u0+(inner-0.5)/W, v0+0.5/H..v0+(inner-0.5)/H] range.
- *     fract() applied first so buildings whose textures tile (UVs > 1)
- *     collapse into a single slot copy instead of bleeding across slots.
- *   - Buildings whose largest-mesh diffuse can't be drawn to canvas (KTX2,
- *     CORS) get a solid-color slot fill using their fallbackColor — keeps
- *     atlas slots non-magenta so missing textures look intentional.
+ *   generateTextureGrad / generateTextureLevel. They accept a depthSnippet
+ *   (array_index) param but never emit it, so sampler chains combining
+ *   .depth(layer) with .grad(dx,dy) fail to compile for texture_2d_array.
  */
 'use client';
 
 import * as THREE from 'three/webgpu';
 
-export const ATLAS_COLS = 4;
-export const ATLAS_ROWS = 3;
-export const ATLAS_SLOT_SIZE = 1024;
+export const ATLAS_COLS = 8;
+export const ATLAS_BASE_ROWS = 8;
+export const ATLAS_EXTENDED_ROWS = 16;
+export const ATLAS_SLOT_SIZE = 512;
 export const ATLAS_SLOT_PAD = 2;
-export const ATLAS_WIDTH = ATLAS_COLS * ATLAS_SLOT_SIZE;   // 4096
-export const ATLAS_HEIGHT = ATLAS_ROWS * ATLAS_SLOT_SIZE;  // 3072
-export const ATLAS_MAX_SLOTS = ATLAS_COLS * ATLAS_ROWS;    // 12
+export const ATLAS_WIDTH = ATLAS_COLS * ATLAS_SLOT_SIZE; // 4096
+export const ATLAS_BASE_HEIGHT = ATLAS_BASE_ROWS * ATLAS_SLOT_SIZE; // 4096
+export const ATLAS_EXTENDED_HEIGHT = ATLAS_EXTENDED_ROWS * ATLAS_SLOT_SIZE; // 8192
+export const ATLAS_BASE_MAX_SLOTS = ATLAS_COLS * ATLAS_BASE_ROWS; // 64
+export const ATLAS_EXTENDED_MAX_SLOTS = ATLAS_COLS * ATLAS_EXTENDED_ROWS; // 128
 
-export interface AtlasBuildingInput {
-  /** Original GLB scene root — searched for the largest-mesh diffuse texture. */
-  scene: THREE.Object3D;
-  /** Merged geometry whose UV attribute will be remapped in-place into the slot. */
-  geometry: THREE.BufferGeometry;
-  /** Fallback flat colour [0..1] when no drawable diffuse can be sampled. */
-  fallbackColor: [number, number, number];
-  /** Identifier used only for logging. */
+export interface SubMeshInput {
+  /** Stable diagnostic id, e.g. "mcp-tool-use/roof". */
   id: string;
+  /** Geometry whose UV attribute will be remapped in-place into its atlas slot. */
+  geometry: THREE.BufferGeometry;
+  /** Drawable diffuse/albedo map from the GLB material. Dedupe is by image identity. */
+  diffuse: THREE.Texture;
 }
 
-export interface AtlasBuildResult {
-  /** The shared THREE.Texture (canvas-backed) ready to attach to merged asset. */
+export interface SubMeshAtlasResult {
   texture: THREE.Texture;
-  /** Per-input report — useful for debug overlays. */
-  perInput: Array<{ id: string; slotCol: number; slotRow: number; drawn: boolean }>;
-  /** Count of slots that got a real drawn texture vs solid-colour fallback. */
-  texturedSlots: number;
-  solidSlots: number;
+  uniqueTextureCount: number;
+  failedTextureCount: number;
+  slotCount: number;
+  cols: number;
+  rows: number;
+  slotSize: number;
+  width: number;
+  height: number;
+  capacity: number;
+  perSubMesh: Array<{
+    id: string;
+    slotIndex: number;
+    slotCol: number;
+    slotRow: number;
+    drawn: boolean;
+  }>;
+}
+
+interface AtlasSlot {
+  index: number;
+  diffuse: THREE.Texture;
+  drawn: boolean;
+}
+
+function fract(v: number): number {
+  return ((v % 1) + 1) % 1;
+}
+
+export function getDrawableTextureImage(tex: THREE.Texture | null | undefined):
+  | HTMLImageElement
+  | HTMLCanvasElement
+  | HTMLVideoElement
+  | ImageBitmap
+  | null {
+  if (!tex) return null;
+  const img = ((tex as any).image ?? (tex as any).source?.data) as any;
+  if (!img || !img.width || !img.height) return null;
+  return img;
+}
+
+function textureDedupeKey(tex: THREE.Texture): object | string {
+  const img = getDrawableTextureImage(tex) as any;
+  const src = img?.currentSrc || img?.src || (tex as any).source?.data?.currentSrc || (tex as any).source?.data?.src;
+  if (typeof src === 'string' && src.length > 0) return `src:${src}`;
+  if (typeof tex.name === 'string' && tex.name.length > 0) return `name:${tex.name}`;
+  return (img as object | null) ?? tex;
+}
+
+function replicatePadding(
+  ctx: CanvasRenderingContext2D,
+  slotX: number,
+  slotY: number,
+  innerX: number,
+  innerY: number,
+  innerSize: number,
+) {
+  const canvas = ctx.canvas as HTMLCanvasElement;
+  ctx.drawImage(canvas, innerX, innerY, innerSize, 1, innerX, slotY, innerSize, ATLAS_SLOT_PAD);
+  ctx.drawImage(canvas, innerX, innerY + innerSize - 1, innerSize, 1, innerX, innerY + innerSize, innerSize, ATLAS_SLOT_PAD);
+  ctx.drawImage(canvas, innerX, innerY, 1, innerSize, slotX, innerY, ATLAS_SLOT_PAD, innerSize);
+  ctx.drawImage(canvas, innerX + innerSize - 1, innerY, 1, innerSize, innerX + innerSize, innerY, ATLAS_SLOT_PAD, innerSize);
+  ctx.drawImage(canvas, innerX, innerY, 1, 1, slotX, slotY, ATLAS_SLOT_PAD, ATLAS_SLOT_PAD);
+  ctx.drawImage(canvas, innerX + innerSize - 1, innerY, 1, 1, innerX + innerSize, slotY, ATLAS_SLOT_PAD, ATLAS_SLOT_PAD);
+  ctx.drawImage(canvas, innerX, innerY + innerSize - 1, 1, 1, slotX, innerY + innerSize, ATLAS_SLOT_PAD, ATLAS_SLOT_PAD);
+  ctx.drawImage(canvas, innerX + innerSize - 1, innerY + innerSize - 1, 1, 1, innerX + innerSize, innerY + innerSize, ATLAS_SLOT_PAD, ATLAS_SLOT_PAD);
+}
+
+function remapGeometryUvs(input: SubMeshInput, slotIndex: number, width: number, height: number) {
+  const uvAttr = input.geometry.attributes['uv'] as THREE.BufferAttribute | undefined;
+  if (!uvAttr) return;
+
+  const slotCol = slotIndex % ATLAS_COLS;
+  const slotRow = Math.floor(slotIndex / ATLAS_COLS);
+  const slotX = slotCol * ATLAS_SLOT_SIZE;
+  const slotY = slotRow * ATLAS_SLOT_SIZE;
+  const innerSize = ATLAS_SLOT_SIZE - ATLAS_SLOT_PAD * 2;
+  const innerX = slotX + ATLAS_SLOT_PAD;
+  const innerY = slotY + ATLAS_SLOT_PAD;
+  const uvSlotU0 = (innerX + 0.5) / width;
+  const uvSlotV0 = (innerY + 0.5) / height;
+  const uvSlotW = (innerSize - 1) / width;
+  const uvSlotH = (innerSize - 1) / height;
+
+  const tex = input.diffuse;
+  if (tex.matrixAutoUpdate) tex.updateMatrix();
+  const uv = new THREE.Vector2();
+
+  for (let v = 0; v < uvAttr.count; v++) {
+    uv.set(uvAttr.getX(v), uvAttr.getY(v));
+    if (tex.matrix) uv.applyMatrix3(tex.matrix);
+    uvAttr.setXY(v, uvSlotU0 + fract(uv.x) * uvSlotW, uvSlotV0 + fract(uv.y) * uvSlotH);
+  }
+  uvAttr.needsUpdate = true;
 }
 
 /**
- * Walk a GLTF scene and return the diffuse texture of the LARGEST mesh (by
- * vertex count). Largest mesh is usually the building's main body, whose
- * texture best represents the building when the atlas packs only one
- * diffuse per slot. krusty-krab has ~20 sub-meshes with distinct textures
- * — picking the dominant one is the standard atlas compromise.
- */
-function pickLargestMeshDiffuse(root: THREE.Object3D): THREE.Texture | null {
-  let bestTex: THREE.Texture | null = null;
-  let bestVerts = -1;
-  root.traverse((obj) => {
-    if (!(obj as THREE.Mesh).isMesh) return;
-    const mesh = obj as THREE.Mesh;
-    const posAttr = mesh.geometry?.attributes?.['position'] as THREE.BufferAttribute | undefined;
-    if (!posAttr) return;
-    const verts = posAttr.count;
-    if (verts <= bestVerts) return;
-    const mat = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
-    if (!mat) return;
-    const map = (mat as any).map as THREE.Texture | undefined;
-    if (!map) return;
-    bestTex = map;
-    bestVerts = verts;
-  });
-  return bestTex;
-}
-
-/**
- * Build the shared atlas + remap each input's UVs into its slot.
+ * Build the shared atlas + remap each input's UVs into its assigned slot.
  *
- * Mutates inputs[].geometry's UV attribute in-place. Returns a fully-configured
- * THREE.Texture (sRGB color space, mipmaps enabled, clamp wrap, anisotropy 4)
- * ready to attach to the merged asset's `atlasTexture` field.
+ * Mutates inputs[].geometry's UV attribute in-place. Returns a configured
+ * THREE.Texture ready to attach to `MergedMeshletAsset.atlasTexture`.
  */
-export function buildBuildingsAtlas(inputs: AtlasBuildingInput[]): AtlasBuildResult {
-  if (inputs.length > ATLAS_MAX_SLOTS) {
+export function buildSubMeshAtlas(inputs: SubMeshInput[]): SubMeshAtlasResult {
+  const textureSlots = new Map<object | string, AtlasSlot>();
+  const slots: AtlasSlot[] = [];
+
+  const reserveSlot = (diffuse: THREE.Texture): AtlasSlot => {
+    const slot: AtlasSlot = { index: slots.length, diffuse, drawn: false };
+    slots.push(slot);
+    return slot;
+  };
+
+  const inputSlots = inputs.map((input) => {
+    const img = getDrawableTextureImage(input.diffuse);
+    if (!img) {
+      throw new Error(`buildSubMeshAtlas: ${input.id} missing drawable diffuse texture`);
+    }
+
+    const key = textureDedupeKey(input.diffuse);
+    let slot = textureSlots.get(key);
+    if (!slot) {
+      slot = reserveSlot(input.diffuse);
+      textureSlots.set(key, slot);
+    }
+    return slot;
+  });
+
+  const rows = slots.length > ATLAS_BASE_MAX_SLOTS ? ATLAS_EXTENDED_ROWS : ATLAS_BASE_ROWS;
+  const height = rows === ATLAS_BASE_ROWS ? ATLAS_BASE_HEIGHT : ATLAS_EXTENDED_HEIGHT;
+  const capacity = ATLAS_COLS * rows;
+
+  if (slots.length > ATLAS_EXTENDED_MAX_SLOTS) {
     throw new Error(
-      `buildBuildingsAtlas: ${inputs.length} inputs exceeds atlas capacity ${ATLAS_MAX_SLOTS}. ` +
-      `Bump ATLAS_COLS/ATLAS_ROWS or migrate to a larger atlas / DataArrayTexture once r182 TSL bug is fixed.`,
+      `buildSubMeshAtlas: ${slots.length} atlas slots exceeds capacity ${ATLAS_EXTENDED_MAX_SLOTS}. ` +
+      'The meshlet shader uses one texture_2d atlas; add a second atlas or reduce unique materials.',
+    );
+  }
+  if (slots.length > ATLAS_BASE_MAX_SLOTS) {
+    console.warn(
+      `[atlas] ${slots.length} slots exceeds 8x8 capacity; using ${ATLAS_COLS}x${ATLAS_EXTENDED_ROWS} ` +
+      `${ATLAS_WIDTH}x${ATLAS_EXTENDED_HEIGHT} atlas`,
     );
   }
 
   const canvas = document.createElement('canvas');
   canvas.width = ATLAS_WIDTH;
-  canvas.height = ATLAS_HEIGHT;
+  canvas.height = height;
   const ctx = canvas.getContext('2d');
-  if (!ctx) throw new Error('buildBuildingsAtlas: 2D canvas context unavailable');
+  if (!ctx) throw new Error('buildSubMeshAtlas: 2D canvas context unavailable');
 
-  // Magenta default fills unused slots + flags any draw-failure visually.
-  ctx.fillStyle = 'rgb(255,0,255)';
-  ctx.fillRect(0, 0, ATLAS_WIDTH, ATLAS_HEIGHT);
+  // Empty atlas pixels stay transparent black. Used sub-mesh slots are populated
+  // only from real GLB diffuse images.
+  ctx.clearRect(0, 0, ATLAS_WIDTH, height);
 
-  const perInput: AtlasBuildResult['perInput'] = [];
-  let texturedSlots = 0;
-  let solidSlots = 0;
-
-  for (let i = 0; i < inputs.length; i++) {
-    const inp = inputs[i];
-    const slotCol = i % ATLAS_COLS;
-    const slotRow = Math.floor(i / ATLAS_COLS);
+  let failedTextureCount = 0;
+  for (const slot of slots) {
+    const slotCol = slot.index % ATLAS_COLS;
+    const slotRow = Math.floor(slot.index / ATLAS_COLS);
     const slotX = slotCol * ATLAS_SLOT_SIZE;
     const slotY = slotRow * ATLAS_SLOT_SIZE;
     const innerSize = ATLAS_SLOT_SIZE - ATLAS_SLOT_PAD * 2;
     const innerX = slotX + ATLAS_SLOT_PAD;
     const innerY = slotY + ATLAS_SLOT_PAD;
 
-    const dominant = pickLargestMeshDiffuse(inp.scene);
-    let drawn = false;
-    if (dominant) {
-      const img = (dominant as any).image as
-        | HTMLImageElement
-        | ImageBitmap
-        | HTMLCanvasElement
-        | undefined;
-      if (img && (img as any).width && (img as any).height) {
-        try {
-          ctx.drawImage(img as any, innerX, innerY, innerSize, innerSize);
-          drawn = true;
-          texturedSlots++;
-        } catch {
-          // drawImage throws on KTX2 / CORS — fall through to solid.
-        }
+    const img = getDrawableTextureImage(slot.diffuse);
+    if (img) {
+      try {
+        ctx.drawImage(img as any, innerX, innerY, innerSize, innerSize);
+        slot.drawn = true;
+      } catch {
+        failedTextureCount++;
       }
-    }
-    if (!drawn) {
-      solidSlots++;
-      const [r, g, b] = inp.fallbackColor;
-      ctx.fillStyle = `rgb(${Math.round(r * 255)},${Math.round(g * 255)},${Math.round(b * 255)})`;
-      ctx.fillRect(innerX, innerY, innerSize, innerSize);
+    } else {
+      failedTextureCount++;
     }
 
-    // Replicate inner top/bottom edges into the 2px padding band so sampling
-    // at the slot boundary returns slot pixels, not magenta gutter. Note:
-    // this is intentionally TOP/BOTTOM only because horizontal padding for
-    // texture-edge wrap would need a Y-axis copy pass — the dominant
-    // mip-leak failure mode in screen-space is vertical (buildings stand
-    // upright; top/bottom of the texture spans the largest screen extent).
-    ctx.drawImage(
-      canvas,
-      innerX, innerY, innerSize, 1,
-      slotX, slotY, ATLAS_SLOT_SIZE, ATLAS_SLOT_PAD,
-    );
-    ctx.drawImage(
-      canvas,
-      innerX, innerY + innerSize - 1, innerSize, 1,
-      slotX, slotY + ATLAS_SLOT_SIZE - ATLAS_SLOT_PAD, ATLAS_SLOT_SIZE, ATLAS_SLOT_PAD,
-    );
-
-    // Remap vertex UVs in-place to this slot's inner region.
-    const uvAttr = inp.geometry.attributes['uv'] as THREE.BufferAttribute | undefined;
-    if (uvAttr) {
-      const uvSlotU0 = (innerX + 0.5) / ATLAS_WIDTH;
-      const uvSlotV0 = (innerY + 0.5) / ATLAS_HEIGHT;
-      const uvSlotW = (innerSize - 1) / ATLAS_WIDTH;
-      const uvSlotH = (innerSize - 1) / ATLAS_HEIGHT;
-      for (let v = 0; v < uvAttr.count; v++) {
-        const ou = uvAttr.getX(v);
-        const ov = uvAttr.getY(v);
-        const wu = ((ou % 1) + 1) % 1;
-        const wv = ((ov % 1) + 1) % 1;
-        uvAttr.setXY(v, uvSlotU0 + wu * uvSlotW, uvSlotV0 + wv * uvSlotH);
-      }
-      uvAttr.needsUpdate = true;
+    if (!slot.drawn) {
+      throw new Error(`buildSubMeshAtlas: texture slot ${slot.index} was not drawable`);
     }
 
-    perInput.push({ id: inp.id, slotCol, slotRow, drawn });
+    replicatePadding(ctx, slotX, slotY, innerX, innerY, innerSize);
   }
+
+  const perSubMesh = inputs.map((input, idx) => {
+    const slot = inputSlots[idx];
+    remapGeometryUvs(input, slot.index, ATLAS_WIDTH, height);
+    return {
+      id: input.id,
+      slotIndex: slot.index,
+      slotCol: slot.index % ATLAS_COLS,
+      slotRow: Math.floor(slot.index / ATLAS_COLS),
+      drawn: slot.drawn,
+    };
+  });
 
   const texture = new THREE.Texture(canvas);
   texture.minFilter = THREE.LinearMipmapLinearFilter;
@@ -200,9 +235,26 @@ export function buildBuildingsAtlas(inputs: AtlasBuildingInput[]): AtlasBuildRes
   texture.wrapS = THREE.ClampToEdgeWrapping;
   texture.wrapT = THREE.ClampToEdgeWrapping;
   texture.generateMipmaps = true;
-  texture.colorSpace = THREE.SRGBColorSpace; // PNG/JPG diffuses are sRGB
+  texture.colorSpace = THREE.SRGBColorSpace;
   texture.anisotropy = 4;
   texture.needsUpdate = true;
 
-  return { texture, perInput, texturedSlots, solidSlots };
+  console.log(
+    `[atlas] ${textureSlots.size} unique textures packed ` +
+    `grid=${ATLAS_COLS}x${rows} slots=${slots.length}/${capacity}`,
+  );
+
+  return {
+    texture,
+    uniqueTextureCount: textureSlots.size,
+    failedTextureCount,
+    slotCount: slots.length,
+    cols: ATLAS_COLS,
+    rows,
+    slotSize: ATLAS_SLOT_SIZE,
+    width: ATLAS_WIDTH,
+    height,
+    capacity,
+    perSubMesh,
+  };
 }
