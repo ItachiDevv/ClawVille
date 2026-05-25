@@ -53,7 +53,7 @@ import {
   NaniteRasterizer,
   type MergedMeshletAsset,
 } from '@/lib/three/experimental/nanite-rasterizer';
-import { buildSubMeshAtlas, getDrawableTextureImage } from '@/lib/three/meshlet/build-buildings-atlas';
+import { buildSubMeshAtlas, canDrawTextureToCanvas } from '@/lib/three/meshlet/build-buildings-atlas';
 
 // ---------------------------------------------------------------------------
 // Building manifest — mirrors the 12-slot ring from BUILDING_MODELS in arena-buildings.tsx.
@@ -134,7 +134,6 @@ interface LoadedSubMesh {
   triCount: number;
   /** Drawable sub-mesh diffuse texture, deduped by image identity in the atlas builder. */
   diffuse: THREE.Texture;
-  materialColor: [number, number, number];
   materialName: string;
 }
 
@@ -159,12 +158,6 @@ function materialAt(material: THREE.Material | THREE.Material[], index: number):
   return material ?? null;
 }
 
-function materialColor(material: THREE.Material | null): [number, number, number] {
-  const col = (material as any)?.color as THREE.Color | undefined;
-  if (!col || typeof col.r !== 'number') return [1, 1, 1];
-  return [col.r, col.g, col.b];
-}
-
 function materialMap(material: THREE.Material | null): THREE.Texture | null {
   return ((material as any)?.map as THREE.Texture | undefined) ?? null;
 }
@@ -187,7 +180,6 @@ function dumpMeshletSubMeshesOnce(subMeshes: LoadedSubMesh[]) {
       diffuseImageSrc: img?.src ?? '(canvas/bitmap/null)',
       diffuseImageWidth: img?.width ?? null,
       diffuseImageHeight: img?.height ?? null,
-      materialColor: sub.materialColor,
       materialName: sub.materialName,
     };
   });
@@ -324,7 +316,7 @@ function collectBuildingSubMeshes(spec: BuildingSpec, root: THREE.Object3D): Loa
         const group = groups[groupIdx];
         const material = materialAt(materials, group.materialIndex ?? 0);
         const diffuse = materialMap(material);
-        if (!diffuse) continue;
+        if (!canDrawTextureToCanvas(diffuse)) continue;
         const geometry = copyGeometryGroup(sourceGeo, group);
         if (!geometry) continue;
         const triCount = geometryTriCount(geometry);
@@ -341,14 +333,13 @@ function collectBuildingSubMeshes(spec: BuildingSpec, root: THREE.Object3D): Loa
           worldMatrix: meshWorldMatrix.clone(),
           triCount,
           diffuse,
-          materialColor: materialColor(material),
           materialName: material?.name ?? '',
         });
       }
     } else {
       const material = materialAt(materials, 0);
       const diffuse = materialMap(material);
-      if (!diffuse) return;
+      if (!canDrawTextureToCanvas(diffuse)) return;
       const geometry = copyFullGeometry(sourceGeo);
       if (!geometry) return;
       const triCount = geometryTriCount(geometry);
@@ -365,7 +356,6 @@ function collectBuildingSubMeshes(spec: BuildingSpec, root: THREE.Object3D): Loa
         worldMatrix: meshWorldMatrix.clone(),
         triCount,
         diffuse,
-        materialColor: materialColor(material),
         materialName: material?.name ?? '',
       });
     }
@@ -429,7 +419,7 @@ function loadAllBuildings(
   });
 
   return Promise.all(promises).then((results) => {
-    const subMeshes = results.flat().filter((sub) => getDrawableTextureImage(sub.diffuse));
+    const subMeshes = results.flat().filter((sub) => canDrawTextureToCanvas(sub.diffuse));
     dumpMeshletSubMeshesOnce(subMeshes);
     return subMeshes;
   });
@@ -500,13 +490,18 @@ function BareAll12Canvas({ buildings, onFps, onPixelProbe, onMergedReady, onStat
         '[spike-all-12] atlas built —',
         `${atlasResult.slotCount}/${atlasResult.capacity} slots`,
         `${atlasResult.uniqueTextureCount} textures`,
-        '0 solid colors',
       );
       if (disposed) return;
 
+      const atlasSubMeshIds = new Set(atlasResult.perSubMesh.map((sub) => sub.id));
+      const atlasBuildings = buildings.filter((b) => atlasSubMeshIds.has(b.id));
+      if (atlasBuildings.length === 0) {
+        throw new Error('No drawable diffuse sub-meshes loaded');
+      }
+
       onStatus('Building merged asset…');
       const mergedAsset = await mergeGeometriesToMeshletAsset(
-        buildings.map((b, idx) => ({
+        atlasBuildings.map((b, idx) => ({
           geometry: b.geometry,
           worldMatrix: b.worldMatrix,
           sourceId: idx,
