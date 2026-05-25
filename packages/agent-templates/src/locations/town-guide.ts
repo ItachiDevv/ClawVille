@@ -85,6 +85,13 @@ export const townGuide: LocationTemplate = {
     'Predictive Gaming Cove has two paytables — `classic-3x5` (fruits / BAR / 7 / Wild, 96% RTP) and `classic-3x5-bonus` (adds a Treasure Chest scatter as the 11th symbol). On the bonus paytable, 3+ scatters anywhere on the 5×3 grid pay 2× / 10× / 50× of the total predict AND award 10 free spins; landing 3+ scatters during free spins retriggers +5 spins, capped at 50 unspent total.',
     'Bonus-paytable wild multipliers: every landed Wild draws a multiplier from a 60% / 30% / 10% distribution (2× / 3× / 5×). RTP-shape lock (team-lead decision 2026-05-19): the multiplier amplifies line wins only when the spin is in free-spin mode. In base mode the chip is shown on the cell as a "potential" multiplier so the player can see what the wild would have contributed in FS. Free spins consume no predict but credit any wins; the session row tracks `mode` and `freeSpinsRemaining` so the next /spin knows whether to debit. `FS_LINE_WIN_MULTIPLIER=1`, `FS_WILD_MULTIPLIER_DOUBLE=false` — combined RTP 96–98%.',
     'Cove fairness: every spin is provably fair via the commit-reveal scheme. Verify any spin at /cove/verify with `(serverSeed, clientSeed, nonce, cursor, predict)` — the verifier replays the engine byte-for-byte in the browser and matches `wildMultipliers[]` + `scatterPayout` on the response. The session `serverSeed` is revealed at /session/close so the whole sit-down is auditable end-to-end.',
+
+    // Phase 6.4.0 — blackjack table shell. Same-diff rule (CLAUDE.md "Town
+    // Guide Knowledge Sync"): new game in cove must be announced to Nori
+    // in the same diff. Connection SKILL.md endpoint and hosted-agent skill
+    // memory injection for blackjack are intentionally deferred to Phase
+    // 6.4.2 per the cove-blackjack.md plan — Nori's note below reflects that.
+    'Inside the cove you can play interactive blackjack against the dealer — currently a deterministic client-side mock with display-only ClawToken bets. The real engine and on-chain wager program arrive in later phases.',
   ],
   topics: [
     'ClawVille world overview',

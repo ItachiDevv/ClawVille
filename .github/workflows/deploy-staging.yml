@@ -1,0 +1,52 @@
+name: Auto-deploy STAGING on push to staging
+
+# Triggers Coolify deploys on the STAGING box (Ashburn region; real IP in
+# gitignored scripts/deploy/.env.deploy as $STAGING_VPS_IP) for both api
+# (app 3) and web (app 4) on every push to the `staging` branch.
+# Counterpart to .github/workflows/deploy.yml (which runs on master → prod).
+#
+# Staging shares the same Supabase DB as prod. Any staging write touches prod
+# data — treat staging deploys with the same caution as prod for anything that
+# mutates state.
+#
+# REQUIRED GITHUB REPO SECRETS (Settings → Secrets and variables → Actions):
+#   STAGING_VPS_IP             — real IP of the staging box (from scripts/deploy/.env.deploy)
+#   STAGING_COOLIFY_SSH_KEY    — contents of ~/.ssh/clawville_deploy (no passphrase
+#                                for CI use; key already has password-less variant)
+# Until BOTH secrets exist, this workflow will fail and staging deploys must run
+# manually via `ssh -i ~/.ssh/clawville_deploy root@$STAGING_VPS_IP 'bash /root/clawville-staging-deploy.sh'`.
+#
+# clawville-staging-deploy.sh lives on the STAGING box at /root/ and is the
+# authoritative copy of scripts/deploy/clawville-staging-deploy.sh in this repo.
+# After editing the repo copy, scp it onto the box:
+#   scp -i ~/.ssh/clawville_deploy scripts/deploy/clawville-staging-deploy.sh \
+#     root@$STAGING_VPS_IP:/root/ && \
+#   ssh -i ~/.ssh/clawville_deploy root@$STAGING_VPS_IP 'chmod +x /root/clawville-staging-deploy.sh'
+
+on:
+  push:
+    branches:
+      - staging
+
+concurrency:
+  group: coolify-deploy-staging
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Coolify deploys via SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.STAGING_VPS_IP }}
+          username: root
+          key: ${{ secrets.STAGING_COOLIFY_SSH_KEY }}
+          port: 22
+          script_stop: true
+          command_timeout: 5m
+          script: |
+            set -eo pipefail
+            echo "Triggering STAGING Coolify deploys for commit ${{ github.sha }}"
+            /root/clawville-staging-deploy.sh
+            echo "Both staging deploys queued."
