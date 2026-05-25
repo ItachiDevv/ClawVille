@@ -217,18 +217,18 @@ const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: n
   'code-development':    { model: '/models/chum-bucket-v2-opt1.glb?v=2',      yOffset: 0, rotY: -0.522, targetMaxDim: 1400 },
   // Slot 2 — ENE (cx=293, cy=115): dx=-113, dz=65 → atan2(-113,65)≈-1.049 (-π/3)
   // krusty-krab-v2.glb = iconic ship restaurant (CC-BY, Yanez Designs, 1.59 MB original).
-  // GLB node tree (verified 2026-05-18): RootNode → "The Krusty Krab" (with spaces),
+  // GLB node tree (runtime GLTFLoader dump verified 2026-05-25): RootNode → "The_Krusty_Krab" (underscores),
   //   "Road", "Skybox", "Sand", "Pole", "Enter Sign". Three.js preserves names verbatim.
   // targetMaxDim 1000→1400: sign pole Z (≈1438 GLB units) dominates bbox — raises base scale so
-  // building reads bigger. childScaleOverride 1.5× on "The Krusty Krab" node (ship body) gives
+  // building reads bigger. childScaleOverride 1.5× on "The_Krusty_Krab" node (ship body) gives
   // differential sizing: restaurant body ≈600wu, sign stays at base scale proportionally.
   // bodyAnchorChild: sign extends in front → full-GLB bbox center is pulled toward sign → restaurant
   // body was behind the slot. Dynamic anchor ensures the restaurant body center lands at the slot.
-  // FIXED in Phase 6.2.2: was "The_Krusty_Krab" (underscores) — never matched the real node
-  //   name "The Krusty Krab" (spaces). Both childScaleOverrides and bodyAnchorChild were no-ops.
+  // FIXED 2026-05-25: the real runtime node is "The_Krusty_Krab"; the prior
+  //   "The Krusty Krab" key was a no-op and logged a body-anchor warning.
   'mcp-tool-use':        { model: '/models/krusty-krab-v2-opt1.glb?v=2',      yOffset: 0, rotY: -1.049, targetMaxDim: 1400,
-                           childScaleOverrides: { 'The Krusty Krab': 1.5 },
-                           bodyAnchorChild: 'The Krusty Krab' },
+                           childScaleOverrides: { 'The_Krusty_Krab': 1.5 },
+                           bodyAnchorChild: 'The_Krusty_Krab' },
   // Slot 3 — E (cx=310, cy=180): dx=-130, dz=0 → atan2(-130,0)=-π/2≈-1.571
   // sandy-treedome-v3.glb: rotYOffset +π for inward-facing door.
   // Phase 6.2: dome glass DoubleSide fix applied post-load (see GLBBuilding).
