@@ -108,6 +108,9 @@ export default function MeshletBuildingsR3F() {
           maxRasterSize: 16,
           instanceBoundingRadius: RING_BOUNDING_RADIUS,
           pixelErrorThreshold: 0, // force LOD 0 — proven 167 FPS in spike
+          // v3: real textured rendering. The asset's textureArray is sampled
+          // per-fragment at layer=sourceId (encoded in meshletId's high bits).
+          materialMode: 1,
         });
         await r.init();
         if (cancelled) {

@@ -77,6 +77,8 @@ import {
   screenSize,
   time,
   texture as tslTexture,
+  textureLoad,
+  ivec2,
   varyingProperty,
   sqrt,
 } from 'three/tsl';
@@ -160,6 +162,15 @@ export interface RasterizerOptions {
    * cascading per-instance LOD picks too coarse a level at game distance.
    */
   pixelErrorThreshold?: number;
+  /**
+   * Material rendering mode.
+   *   0 = hashColor(sourceId) debug — each source gets one distinct pastel.
+   *   1 = textured sampling — fragment samples `asset.textureArray` at
+   *       (uv_interp, sourceId). Requires `asset.textureArray` to be present;
+   *       otherwise the shader uses a 1×1 magenta fallback so it's obvious.
+   * Default: 0.
+   */
+  materialMode?: 0 | 1;
 }
 
 // ---------------------------------------------------------------------------
@@ -504,6 +515,24 @@ export interface MergedMeshletAsset extends MeshletAsset {
    * reads this via uniformArray to colour each building distinctly.
    */
   sourceColors: Float32Array;
+  /**
+   * OPTIONAL — per-source diffuse texture array. One layer per source mesh,
+   * indexed by sourceId. Used when the rasterizer runs with materialMode=1.
+   *
+   * Built outside the merge function (by the caller — see
+   * use-merged-buildings-asset.ts) because the merge step is geometry-only
+   * and shouldn't depend on the rendering backend. Caller attaches via:
+   *
+   *   const merged = await mergeGeometriesToMeshletAsset(inputs);
+   *   merged.textureArray = await buildBuildingTextureArray(...);
+   *
+   * Caveat: a single texture per BUILDING is a visual compromise. A real
+   * Nanite implementation maps a per-MESH texture index via an extra
+   * per-vertex/cluster channel. Buildings with multiple sub-meshes
+   * (krusty-krab has ~20 distinct textures) will look uniform-skinned with
+   * the LARGEST mesh's diffuse.
+   */
+  textureArray?: THREE.DataArrayTexture;
 }
 
 /**
@@ -912,6 +941,7 @@ export class NaniteRasterizer {
       maxRasterSize: opts.maxRasterSize ?? 16,
       instanceBoundingRadius: opts.instanceBoundingRadius ?? 2.0,
       pixelErrorThreshold: opts.pixelErrorThreshold ?? 4.0,
+      materialMode: opts.materialMode ?? 0,
     };
   }
 
@@ -1044,10 +1074,30 @@ export class NaniteRasterizer {
     ).toReadOnly();
 
     // ---- Uniforms ----
-    const materialModeUniform = uniform(0, 'uint'); // 0 = meshlet debug colour
+    // Initial value comes from constructor opts — runtime mode switching would
+    // require exposing this uniform on `this` and adding a setter. Not needed
+    // yet: ClawVille mounts the rasterizer once per asset with a fixed mode.
+    const materialModeUniform = uniform(this.opts.materialMode, 'uint');
 
-    // Texture for texture-mode (unused in spike but required by the shaders)
-    const textureMap = new THREE.TextureLoader().load('/models/building-lighthouse.glb'); // dummy
+    // Per-source texture array (sampled in materialMode=1). The merge function
+    // does not build textures (geometry-only); callers attach via
+    // `mergedAsset.textureArray = ...`. When the asset has none, we synthesise
+    // a 1×1 single-layer magenta texture so the WGSL shader compile succeeds
+    // AND so missing-texture buildings are visually loud rather than silent.
+    let textureMap: THREE.DataArrayTexture;
+    const providedArray = (asset as MergedMeshletAsset).textureArray;
+    if (providedArray) {
+      textureMap = providedArray;
+    } else {
+      const magenta = new Uint8Array([255, 0, 255, 255]);
+      const fallback = new THREE.DataArrayTexture(magenta, 1, 1, 1);
+      fallback.format = THREE.RGBAFormat;
+      fallback.type = THREE.UnsignedByteType;
+      fallback.minFilter = THREE.LinearFilter;
+      fallback.magFilter = THREE.LinearFilter;
+      fallback.needsUpdate = true;
+      textureMap = fallback;
+    }
 
     this.projScreenMatrixUniform = uniform(new THREE.Matrix4());
     this.frustumPlanesUniform = uniformArray(
@@ -1570,7 +1620,25 @@ export class NaniteRasterizer {
           const sourceId = rawMeshletId.shiftRight(uint(20));
           outColor.assign(hashColor(sourceId.add(uint(1))));
         }).Else(() => {
-          outColor.assign(tslTexture(textureMap, vUvVar));
+          // materialMode=1 (HW): same textureLoad path as SW for symmetry
+          // and to avoid the r182 TSL Grad/Level array_index bug. The HW
+          // raster path COULD use textureSample (which has its own
+          // generateTexture codegen that DOES honour depthSnippet — see
+          // WGSLNodeBuilder line 504-506) but that requires the texture's
+          // sampler to be filterable for the fragment shader. textureLoad
+          // sidesteps the sampler entirely and works identically on both
+          // paths.
+          const rawMeshletIdHW = (meshletIdBuffer as any).element(megaTriIdxHW);
+          const sourceIdHW = rawMeshletIdHW.shiftRight(uint(20));
+          const layerSizeHW = (textureMap.image?.width ?? 512);
+          const uvWrapHW = vec2(vUvVar.x.fract(), vUvVar.y.fract());
+          const pxHW = int(uvWrapHW.x.mul(float(layerSizeHW)));
+          const pyHW = int(uvWrapHW.y.mul(float(layerSizeHW)));
+          outColor.assign(
+            (textureLoad(textureMap, ivec2(pxHW, pyHW)) as any)
+              .depth(int(sourceIdHW))
+              .level(0),
+          );
         });
 
         return outColor;
@@ -1703,18 +1771,57 @@ export class NaniteRasterizer {
               .add(dw2_dy.mul(q2).mul(t_uv2.sub(uv_interp)))
           ).div(safe_sum_w_q);
 
+          // Decode sourceId (high 12 bits of meshletId) BEFORE branching so
+          // both shader branches can reference it. TSL If/Else callbacks are
+          // independent JS scopes — a `const` declared in one is not visible
+          // in the other, and the compile fails with `sourceId is not defined`
+          // when the texture-mode branch tries to read it.
+          const rawMeshletId = (meshletIdBuffer as any).element(megaTriangleIndex);
+          const sourceId = rawMeshletId.shiftRight(uint(20));
+
           If(materialModeUniform.equal(0), () => {
             // SW path: hash sourceId (not meshletId) — gives each building ONE
             // consistent colour instead of per-meshlet rainbow. Per-source
             // colour cascades via uniformArray / storage / If-chains all
             // failed in r182 TSL (see commit history). hashColor is the
             // proven-working primitive from the original PR.
-            const rawMeshletId = (meshletIdBuffer as any).element(megaTriangleIndex);
-            const sourceId = rawMeshletId.shiftRight(uint(20));
-            // Add 1 so sourceId=0 doesn't hash to dark colour.
+            // +1 so sourceId=0 doesn't hash to a dark colour.
             outColor.assign(hashColor(sourceId.add(uint(1))));
           }).Else(() => {
-            outColor.assign((tslTexture(textureMap, uv_interp) as any).grad(dUvDx, dUvDy));
+            // materialMode=1 (SW): sample DataArrayTexture at layer=sourceId.
+            //
+            // We MUST use textureLoad (not texture().depth().grad()/.level())
+            // because r182 has a Known Bug in WGSLNodeBuilder.js — both
+            // `generateTextureGrad` and `generateTextureLevel` accept the
+            // depthSnippet parameter but NEVER USE IT in the emitted WGSL.
+            // The literal source comment is `// TODO handle i32 or u32 -->
+            // uvSnippet, array_index: A, ddx, ddy` (see line ~654 of that
+            // file). The chain compiles to textureSampleGrad/SampleLevel
+            // WITHOUT array_index → WGSL parse error "no matching call".
+            //
+            // textureLoad goes through `generateTextureLoad` which DOES
+            // honour depthSnippet (emits `textureLoad(tex, vec2i(coords),
+            // arrayIndex, u32(level))` — see WGSLNodeBuilder.js line ~535).
+            //
+            // Cost of going via textureLoad:
+            //   - No bilinear filtering — nearest-neighbor only.
+            //   - No mipmap LOD selection — always reads from level 0.
+            //   - At game distance (buildings ~200 px on screen, 512 px
+            //     texture) the undersample is 2.5×, so moire and pixel
+            //     crawl appear in finely-textured zones (krusty-krab tiles,
+            //     boating-school planks).
+            // Task #43 tracks the followup: either patch the TSL codegen
+            // (preferred — submits upstream) or implement a manual filtering
+            // function that averages a 2×2 block at the right mip level.
+            const layerSize = (textureMap.image?.width ?? 512);
+            const uvWrap = vec2(uv_interp.x.fract(), uv_interp.y.fract());
+            const px = int(uvWrap.x.mul(float(layerSize)));
+            const py = int(uvWrap.y.mul(float(layerSize)));
+            outColor.assign(
+              (textureLoad(textureMap, ivec2(px, py)) as any)
+                .depth(int(sourceId))
+                .level(0),
+            );
           });
         });
 
