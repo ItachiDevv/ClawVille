@@ -136,7 +136,29 @@ interface LoadedBuildingGeo {
   triCount: number;
   /** Per-building diffuse colour extracted from the first mesh's material. RGB in [0,1]. Defaults to white. */
   color: [number, number, number];
+  /**
+   * Raw RGBA pixels for the LARGEST mesh's diffuse texture, downsampled to
+   * TEXTURE_ARRAY_LAYER_SIZE × TEXTURE_ARRAY_LAYER_SIZE. Null when no diffuse
+   * was extractable — caller fills the layer with `color` instead so
+   * materialMode=1 still produces something other than magenta.
+   */
+  textureLayer: Uint8Array | null;
 }
+
+/**
+ * Fixed size for every layer in the per-source DataArrayTexture. Every
+ * building's diffuse is downscaled to this resolution at load time so all
+ * layers share dimensions (a hard WebGPU/DataArrayTexture requirement).
+ *
+ * 512 was picked as a balance between:
+ *   - visual fidelity at game viewing distance (buildings are 1000wu tall,
+ *     screen-projection is at most ~200px tall, so 512 has headroom)
+ *   - GPU upload cost (11 layers × 512×512 × 4 bytes = ~11.5 MB)
+ *   - mipmap headroom (log2(512) = 9 mip levels available)
+ *
+ * Bump to 1024 if buildings look mushy on close approach.
+ */
+const TEXTURE_ARRAY_LAYER_SIZE = 512;
 
 /**
  * Sample a diffuse texture's central region and return the average RGB.
@@ -169,6 +191,79 @@ function sampleTextureAverage(tex: THREE.Texture | null | undefined): [number, n
     // drawImage can throw for unloadable images (KTX2, etc.) or CORS.
     return null;
   }
+}
+
+/**
+ * Render a Texture's image to a TEXTURE_ARRAY_LAYER_SIZE-square canvas and
+ * return RGBA bytes. Returns null if the image isn't drawable (compressed
+ * format, CORS, not-yet-loaded image). PNG/JPEG/WebP all draw fine.
+ */
+function rasterizeTextureToLayer(tex: THREE.Texture | null | undefined): Uint8Array | null {
+  if (!tex) return null;
+  const img = (tex as any).image as
+    | HTMLImageElement
+    | ImageBitmap
+    | HTMLCanvasElement
+    | null;
+  if (!img) return null;
+  const w = (img as any).width;
+  const h = (img as any).height;
+  if (!w || !h) return null;
+  try {
+    const c = document.createElement('canvas');
+    c.width = TEXTURE_ARRAY_LAYER_SIZE;
+    c.height = TEXTURE_ARRAY_LAYER_SIZE;
+    const ctx = c.getContext('2d', { willReadFrequently: true });
+    if (!ctx) return null;
+    // Flip Y to convert from glTF UV convention (origin bottom-left) to
+    // canvas2d convention (origin top-left). The rasterizer samples
+    // texture(arrayTex, uv) without any flipY metadata baked into the
+    // DataArrayTexture, so we do the flip at upload time.
+    ctx.save();
+    ctx.scale(1, -1);
+    ctx.drawImage(
+      img as any,
+      0,
+      -TEXTURE_ARRAY_LAYER_SIZE,
+      TEXTURE_ARRAY_LAYER_SIZE,
+      TEXTURE_ARRAY_LAYER_SIZE,
+    );
+    ctx.restore();
+    const data = ctx.getImageData(0, 0, TEXTURE_ARRAY_LAYER_SIZE, TEXTURE_ARRAY_LAYER_SIZE).data;
+    return new Uint8Array(data.buffer.slice(0));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Find the diffuse texture belonging to the LARGEST mesh (by vertex count) in
+ * the GLB scene. We use vertex count as a proxy for "this is the dominant
+ * mesh whose texture best represents the building." krusty-krab has 20 sub-
+ * meshes with 20 distinct textures; picking the largest one's diffuse is a
+ * compromise that produces sensible output for the common case.
+ *
+ * Returns null when no mesh has a sampleable diffuse texture.
+ */
+function pickLargestMeshDiffuse(root: THREE.Object3D): THREE.Texture | null {
+  let bestTex: THREE.Texture | null = null;
+  let bestVerts = -1;
+  root.traverse((obj) => {
+    if (!(obj as THREE.Mesh).isMesh) return;
+    const mesh = obj as THREE.Mesh;
+    const geo = mesh.geometry;
+    const posAttr = geo?.attributes?.['position'] as THREE.BufferAttribute | undefined;
+    if (!posAttr) return;
+    const verts = posAttr.count;
+    if (verts <= bestVerts) return;
+    const mat = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
+    if (!mat) return;
+    const map = (mat as any).map as THREE.Texture | undefined;
+    if (!map) return;
+    bestTex = map;
+    bestVerts = verts;
+  });
+  return bestTex;
 }
 
 /**
@@ -281,15 +376,19 @@ export function useMergedBuildingsAsset(): UseMergedBuildingsAssetReturn {
                   const extracted = extractDiffuseColor(gltf.scene);
                   const isPureWhite = extracted[0] > 0.95 && extracted[1] > 0.95 && extracted[2] > 0.95;
                   const color: [number, number, number] = isPureWhite ? spec.fallbackColor : extracted;
+                  // Extract the LARGEST mesh's diffuse texture as a 512×512
+                  // RGBA layer for the rasterizer's materialMode=1 sampler.
+                  // Null when the texture isn't drawable — caller fills the
+                  // layer with solid `color` instead of crashing.
+                  const dominantDiffuse = pickLargestMeshDiffuse(gltf.scene);
+                  const textureLayer = rasterizeTextureToLayer(dominantDiffuse);
                   console.log(
-                    '[meshlet-color]', spec.id,
-                    'extracted=', extracted.map((v) => v.toFixed(2)).join(','),
-                    'fallback=', spec.fallbackColor.map((v) => v.toFixed(2)).join(','),
-                    'isPureWhite=', isPureWhite,
-                    'chosen=', color.map((v) => v.toFixed(2)).join(','),
+                    '[meshlet-tex]', spec.id,
+                    'color=', color.map((v) => v.toFixed(2)).join(','),
+                    'tex=', textureLayer ? `${TEXTURE_ARRAY_LAYER_SIZE}^2 RGBA` : 'fallback-solid',
                   );
                   updateStatus({ id: spec.id, status: 'loaded', tris: triCount });
-                  resolve({ spec, geometry: mergedGeo, worldMatrix, triCount, color });
+                  resolve({ spec, geometry: mergedGeo, worldMatrix, triCount, color, textureLayer });
                 } catch (err) {
                   updateStatus({ id: spec.id, status: 'error', tris: 0, error: String(err) });
                   resolve(null);
@@ -326,6 +425,55 @@ export function useMergedBuildingsAsset(): UseMergedBuildingsAssetReturn {
           })),
         );
         if (cancelled) return;
+
+        // Build the per-source DataArrayTexture for materialMode=1 sampling.
+        // One layer per source mesh. Buildings whose largest mesh had no
+        // sampleable diffuse get a solid-color layer (their fallbackColor)
+        // so the shader still produces meaningful output instead of magenta.
+        const N = valid.length;
+        const layerBytes = TEXTURE_ARRAY_LAYER_SIZE * TEXTURE_ARRAY_LAYER_SIZE * 4;
+        const flat = new Uint8Array(N * layerBytes);
+        let solidLayers = 0;
+        for (let i = 0; i < N; i++) {
+          const g = valid[i];
+          const offset = i * layerBytes;
+          if (g.textureLayer && g.textureLayer.length === layerBytes) {
+            flat.set(g.textureLayer, offset);
+          } else {
+            solidLayers++;
+            const r = Math.round(g.color[0] * 255);
+            const gC = Math.round(g.color[1] * 255);
+            const b = Math.round(g.color[2] * 255);
+            for (let p = 0; p < layerBytes; p += 4) {
+              flat[offset + p + 0] = r;
+              flat[offset + p + 1] = gC;
+              flat[offset + p + 2] = b;
+              flat[offset + p + 3] = 255;
+            }
+          }
+        }
+        const arrayTex = new THREE.DataArrayTexture(
+          flat,
+          TEXTURE_ARRAY_LAYER_SIZE,
+          TEXTURE_ARRAY_LAYER_SIZE,
+          N,
+        );
+        arrayTex.format = THREE.RGBAFormat;
+        arrayTex.type = THREE.UnsignedByteType;
+        arrayTex.minFilter = THREE.LinearMipmapLinearFilter;
+        arrayTex.magFilter = THREE.LinearFilter;
+        arrayTex.wrapS = THREE.RepeatWrapping;
+        arrayTex.wrapT = THREE.RepeatWrapping;
+        arrayTex.generateMipmaps = true;
+        arrayTex.needsUpdate = true;
+        (merged as any).textureArray = arrayTex;
+        console.log(
+          '[useMergedBuildingsAsset] textureArray ready —',
+          N, 'layers @', TEXTURE_ARRAY_LAYER_SIZE, '×', TEXTURE_ARRAY_LAYER_SIZE,
+          `(${(N * layerBytes / 1024 / 1024).toFixed(1)} MB)`,
+          solidLayers > 0 ? `(${solidLayers} solid-color fallback)` : '',
+        );
+
         setAsset(merged);
         setState('ready');
       } catch (err) {
