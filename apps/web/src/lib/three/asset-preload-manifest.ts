@@ -240,8 +240,9 @@ export const EMOTE_BUNDLE = '/avatars/animations/_emotes.glb?v=1' as const;
 //
 // Tier 1 — fire immediately (parallel with canvas chunk download):
 //   buildings + locomotion + wandering NPC GLBs + wandering VRM bytes
-// Tier 2 — fire in next microtask (don't block tier-1 queue slot):
-//   player VRM bytes (all 13 selectable avatars)
+// Tier 2 — intentionally lazy:
+//   selectable player VRM bytes are loaded by the active avatar or the avatar picker,
+//   not by the open-world boot path
 // Tier 3 — fire after first rAF (exact timing matches DeferredNpcPreloads):
 //   location NPC GLBs + decoration GLBs (currently done by DeferredTerrainPreloads
 //   + DeferredNpcPreloads, which fire their own rAF preloads from game/page.tsx —
@@ -287,15 +288,6 @@ export function preloadWorldAssets(): void {
   for (const url of WANDERING_VRM_PATHS) {
     preloadVRMBytes(url);
   }
-
-  // --- Tier 2 — next microtask (player VRM pool, all archetypes incl. chibi) ---
-  // Deferred by a zero-delay setTimeout so tier-1 fetch slots are committed
-  // to the browser's HTTP/2 connection pool before we add 13 more requests.
-  setTimeout(() => {
-    for (const url of PLAYER_VRM_PATHS) {
-      preloadVRMBytes(url);
-    }
-  }, 0);
 
   // --- Tier 3 note ---
   // Location NPC GLBs and decoration GLBs are already covered by:
@@ -355,8 +347,7 @@ export const WORLD_PRELOAD_MANIFEST: readonly string[] = [
   ...LOCOMOTION_ANIM_GLBS,
   ...WANDERING_NPC_GLBS,
   ...WANDERING_VRM_PATHS,
-  // Tier 2 — next microtask (player VRM pool, all archetypes incl. chibi)
-  ...PLAYER_VRM_PATHS,
+  // Tier 2 — lazy player VRMs are intentionally omitted from boot preloads.
   // Tier 3 — deferred (after first paint, handled by DeferredTerrainPreloads / DeferredNpcPreloads)
   ...LOCATION_NPC_GLBS,
   ...DECORATION_GLBS,

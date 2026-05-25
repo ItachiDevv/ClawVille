@@ -81,11 +81,11 @@ interface LabelEntry {
   // ---------------------------------------------------------------------------
   // Occlusion raycast — skip for building labels (occlude: false).
   // ---------------------------------------------------------------------------
-  /** Whether to run 10Hz occluder raycast against building meshes. */
+  /** Whether to run low-rate occluder raycasts against building meshes. */
   occlude: boolean;
-  /** Frame-stagger phase (0–5) so not all labels raycast in the same frame. */
+  /** Frame-stagger phase (0–29) so not all labels raycast in the same frame. */
   occludePhase: number;
-  /** Cached occlude result — updated at 10Hz, read every frame. */
+  /** Cached occlude result — updated at 2Hz, read every frame. */
   _occludeResult: boolean;
 }
 
@@ -150,6 +150,7 @@ const _scratchAnchorWorld = new THREE.Vector3();
 
 const _occRaycaster = new THREE.Raycaster();
 const _occDir = new THREE.Vector3();
+const _occHits: THREE.Intersection[] = [];
 /** Lazily built from userData.isOccluder meshes; rebuilt every 2 s (wall-clock)
  *  so late-mounted buildings and hot-swaps in edit mode are picked up regardless
  *  of framerate. Frame-counter cadence (300 frames) caused a 10 s stale window
@@ -157,7 +158,7 @@ const _occDir = new THREE.Vector3();
 let _occluderMeshes: THREE.Mesh[] | null = null;
 /** Timestamp (performance.now()) of the last occluder-list rebuild. 0 = force rebuild on first frame. */
 let _occluderRebuildTime = 0;
-/** Frame counter incremented in the projection useFrame for 10Hz stagger. */
+/** Frame counter incremented in the projection useFrame for 2Hz stagger. */
 let _occFrameCounter = 0;
 /** Three.js scene reference captured in WorldLabelsOverlayMount. */
 let _sceneRef: THREE.Scene | null = null;
@@ -190,7 +191,9 @@ function _checkOcclusion(anchorWorld: THREE.Vector3, cameraPos: THREE.Vector3): 
   // Stop 80wu before anchor to avoid catching the building in front of which
   // an NPC is standing (teacher NPCs at building entrances).
   _occRaycaster.far = Math.max(0, anchorDist - 80);
-  return _occRaycaster.intersectObjects(_occluderMeshes, false).length > 0;
+  _occHits.length = 0;
+  _occRaycaster.intersectObjects(_occluderMeshes, false, _occHits);
+  return _occHits.length > 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -371,10 +374,20 @@ export function WorldLabelsOverlayMount() {
         targetOpacity = entry.fadeBaseOpacity * (1 - t);
       }
 
-      // --- Occlusion check (10Hz stagger) ---
+      // If distance fade already hides the label, skip projection and the
+      // expensive occlusion raycast entirely.
+      if (targetOpacity < 0.01) {
+        if (entry._prevDisplay !== 'none') {
+          div.style.display = 'none';
+          entry._prevDisplay = 'none';
+        }
+        return;
+      }
+
+      // --- Occlusion check (2Hz stagger) ---
       // Only runs for NPC labels (occlude: true). Skip building labels.
       if (entry.occlude) {
-        if ((_occFrameCounter + entry.occludePhase) % 6 === 0) {
+        if ((_occFrameCounter + entry.occludePhase) % 30 === 0) {
           entry._occludeResult = _checkOcclusion(_scratchAnchorWorld, camera.position);
         }
         if (entry._occludeResult) {
@@ -382,7 +395,7 @@ export function WorldLabelsOverlayMount() {
         }
       }
 
-      // If fully transparent, hide the div entirely (no pointer events, no render).
+      // If occlusion made it fully transparent, hide the div entirely.
       if (targetOpacity < 0.01) {
         if (entry._prevDisplay !== 'none') {
           div.style.display = 'none';
@@ -463,7 +476,7 @@ export interface UseWorldLabelOpts {
    */
   fadeBaseOpacity?: number;
   /**
-   * If true, runs a 10Hz raycast against building occluder meshes.
+   * If true, runs a low-rate raycast against building occluder meshes.
    * Use for NPC labels. Default: false.
    */
   occlude?: boolean;
@@ -515,8 +528,8 @@ export function useWorldLabel({
       fadeBaseOpacity,
       _prevOpacity: -1,
       occlude,
-      // Stagger phase based on registry size at registration time (0–5).
-      occludePhase: _registry.size % 6,
+      // Stagger phase based on registry size at registration time (0–29).
+      occludePhase: _registry.size % 30,
       _occludeResult: false,
     };
     _registry.set(id, entry);
