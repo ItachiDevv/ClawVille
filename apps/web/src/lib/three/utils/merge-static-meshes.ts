@@ -23,9 +23,10 @@
  *     intact in the tree.
  *
  * Risks
- *   - Loses per-submesh frustum culling (one mesh = whole bucket).
- *     Fine for buildings — the user already turned all culling off and a
- *     building is small relative to the world.
+ *   - Loses per-submesh frustum culling (one mesh = whole bucket), but keeps
+ *     normal Three.js frustum culling for the merged bucket. That is safe for
+ *     static building geometry because the merged BufferGeometry owns a correct
+ *     root-local bound after transforms are baked.
  *   - Geometry attribute mismatches (one mesh has tangents, another
  *     doesn't) throw inside mergeGeometries — we normalize to a
  *     {position, normal, uv} subset before merging.
@@ -178,7 +179,9 @@ export function mergeStaticMeshesByMaterial(root: THREE.Object3D): MergeResult {
       // Carry over receive/cast-shadow flags from the first source mesh.
       mergedMesh.castShadow = bucket.meshes[0].castShadow;
       mergedMesh.receiveShadow = bucket.meshes[0].receiveShadow;
-      mergedMesh.frustumCulled = false;
+      merged.computeBoundingSphere();
+      merged.computeBoundingBox();
+      mergedMesh.frustumCulled = true;
       root.add(mergedMesh);
       mergedBuckets++;
       mergedMeshCount++;
