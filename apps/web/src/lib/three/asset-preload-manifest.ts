@@ -24,14 +24,15 @@
  * --- Asset inventory ---
  * (update this comment + the arrays below whenever an asset is added/removed)
  *
- * BUILDINGS (12 GLBs, arena-buildings.tsx BUILDING_MODELS):
+ * BUILDINGS (11 GLBs + 1 procedural treedome, arena-buildings.tsx BUILDING_MODELS):
  *   pineapple-house-opt1.glb?v=2, chum-bucket-v2-opt1.glb?v=2,
- *   krusty-krab-v2-opt1.glb?v=2, sandy-treedome-v3-opt1.glb?v=2,
- *   salty-spitoon-opt1.glb?v=2, boating-school-opt1.glb?v=2,
+ *   krusty-krab-v2-opt1.glb?v=2, salty-spitoon-opt1.glb?v=2,
+ *   boating-school-opt1.glb?v=2,
  *   patty-building-opt1.glb?v=2, building-lighthouse-opt1.glb?v=2,
  *   arcade/claw-arcade-exterior-opt1.glb?v=2, cove/cove-exterior-opt1.glb?v=2,
  *   patricks-rock-v2-opt1.glb?v=3, squidward-house-opt1.glb?v=3
- *   (Phase 2 perf: all 12 are material-dedup'd *-opt1 variants; 142→133 materials)
+ *   Sandy's Treedome is procedural in /game after 2026-05-25 perf pass; the
+ *   old GLB contributed ~1.13M live tris after material merge.
  *
  * LOCATION NPC CHARACTERS (10 SpongeBob + 2 companions, arena-location-npcs.tsx):
  *   spongebob.glb, gary.glb, squidward.glb, flying-dutchman.glb,
@@ -85,12 +86,11 @@ import { preloadMixamoClips } from '@/lib/three/vrm-character-animator';
 // also fire when called explicitly before the dynamic chunk downloads.
 // ---------------------------------------------------------------------------
 
-/** All 12 building GLBs from arena-buildings.tsx BUILDING_MODELS */
+/** Building GLBs from arena-buildings.tsx BUILDING_MODELS. Sandy's Treedome is procedural. */
 export const BUILDING_GLBS: readonly string[] = [
   '/models/pineapple-house-opt1.glb?v=2',
   '/models/chum-bucket-v2-opt1.glb?v=2',
   '/models/krusty-krab-v2-opt1.glb?v=2',
-  '/models/sandy-treedome-v3-opt1.glb?v=2',
   '/models/salty-spitoon-opt1.glb?v=2',
   '/models/boating-school-opt1.glb?v=2',
   '/models/patty-building-opt1.glb?v=2',
