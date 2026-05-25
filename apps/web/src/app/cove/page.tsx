@@ -30,6 +30,7 @@ import dynamic from 'next/dynamic';
 import Link from 'next/link';
 import SceneTransition, { useSceneTransition } from '@/components/transitions/SceneTransition';
 import SlotScreenModal from '@/components/cove/SlotScreenModal';
+import BlackjackModal from '@/components/cove/blackjack/BlackjackModal';
 import { useAvatar } from '@/hooks/use-avatar';
 import { useGameStore } from '@/stores/game';
 
@@ -224,6 +225,11 @@ export default function CovePage() {
           browser UI. The 3D interior stays mounted and rendering underneath. */}
       <SlotScreenModal />
 
+      {/* Phase 6.4.0 — Blackjack table modal (display shell, fun-money only).
+          Same z-index as slot modal so only one game modal is open at a time.
+          Real engine + per-card decisions land in Phase 6.4.1. */}
+      <BlackjackModal />
+
       {/* Interior branding — bottom-center */}
       <div
         style={{
@@ -249,7 +255,7 @@ export default function CovePage() {
             Predictive Gaming Cove
           </span>
           <span style={{ color: 'rgba(255,255,255,0.35)', fontSize: 11, marginLeft: 8 }}>
-            Click a slot machine to play
+            Slots · Blackjack
           </span>
         </div>
       </div>

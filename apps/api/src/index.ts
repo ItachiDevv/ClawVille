@@ -65,6 +65,8 @@ import { wagerRoutes } from './routes/wager';
 // Phase 6.1 slice 3 — cove slots fun-money backend wire (ClawTokens live;
 // SOL/USDC return 501 until Phase 6.2 custody).
 import { coveSlotsRouter } from './routes/cove-slots';
+// Phase 6.4.0 — cove blackjack mock route (display shell, no engine yet).
+import { coveBlackjackRouter } from './routes/cove-blackjack';
 import type { AppContext } from './types';
 
 const app = new Hono<AppContext>();
@@ -202,6 +204,8 @@ app.route('/api/wager', wagerRoutes);
 // ClawTokens path is fully wired; SOL/USDC routes return 501 with a
 // friendly message until Phase 6.2 lands real-money custody.
 app.route('/api/cove/slots', coveSlotsRouter);
+// Phase 6.4.0 — cove blackjack mock (display shell; real engine in 6.4.1).
+app.route('/api/cove/blackjack', coveBlackjackRouter);
 // Phase 5.1 — admin identity recovery stub. Returns 501 behind a
 // FEATURE_GATE until the support-chat verification workflow lights up.
 app.route('/api/admin', adminIdentityRoutes);
