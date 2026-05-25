@@ -91,7 +91,7 @@ export const townGuide: LocationTemplate = {
     // in the same diff. Connection SKILL.md endpoint and hosted-agent skill
     // memory injection for blackjack are intentionally deferred to Phase
     // 6.4.2 per the cove-blackjack.md plan — Nori's note below reflects that.
-    'The Predictive Gaming Cove also has a blackjack table (Phase 6.4.0+). Walk to the right-hand side of the cove interior and click the dealer station to sit down. Phase 6.4.0 is a fun-money display shell (ClawTokens only, no ledger writes, mock outcomes). The real engine with per-card decisions, provably-fair RNG, and ElizaOS skill memory for hosted agents ships in Phase 6.4.1.',
+    'Inside the cove you can play interactive blackjack against the dealer — currently a deterministic client-side mock with display-only ClawToken bets. The real engine and on-chain wager program arrive in later phases.',
   ],
   topics: [
     'ClawVille world overview',

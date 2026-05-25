@@ -19,10 +19,10 @@ const SUIT_SYMBOL: Record<string, string> = {
 };
 
 const SUIT_COLOR: Record<string, string> = {
-  clubs:    'var(--pt-cream)',
-  diamonds: '#e85555',
-  hearts:   '#e85555',
-  spades:   'var(--pt-cream)',
+  clubs:    '#111111',
+  diamonds: '#c0202c',
+  hearts:   '#c0202c',
+  spades:   '#111111',
 };
 
 interface BlackjackCardProps {
@@ -82,7 +82,7 @@ export default function BlackjackCard({ card, slideIn, delay = 0 }: BlackjackCar
           height: 76,
           borderRadius: 6,
           background: 'linear-gradient(160deg, #f0ead4 0%, #e8e0c8 100%)',
-          border: '1px solid rgba(180,160,120,0.5)',
+          border: '2px solid #b0b8c4',
           boxShadow: '0 2px 8px rgba(0,0,0,0.45)',
           position: 'relative',
           display: 'flex',
@@ -108,14 +108,14 @@ export default function BlackjackCard({ card, slideIn, delay = 0 }: BlackjackCar
             color: suitColor,
           }}
         >
-          <span style={{ fontSize: 11, fontWeight: 700, fontFamily: 'monospace', color: suitColor }}>
+          <span style={{ fontSize: 18, fontWeight: 800, fontFamily: 'monospace', color: suitColor, lineHeight: 1 }}>
             {card.rank}
           </span>
-          <span style={{ fontSize: 9, color: suitColor }}>{suitSymbol}</span>
+          <span style={{ fontSize: 16, color: suitColor, lineHeight: 1 }}>{suitSymbol}</span>
         </div>
 
         {/* Center suit */}
-        <span style={{ fontSize: 24, color: suitColor, lineHeight: 1 }}>{suitSymbol}</span>
+        <span style={{ fontSize: 32, color: suitColor, lineHeight: 1 }}>{suitSymbol}</span>
 
         {/* Bottom-right rank + suit (rotated) */}
         <div
@@ -130,10 +130,10 @@ export default function BlackjackCard({ card, slideIn, delay = 0 }: BlackjackCar
             lineHeight: 1,
           }}
         >
-          <span style={{ fontSize: 11, fontWeight: 700, fontFamily: 'monospace', color: suitColor }}>
+          <span style={{ fontSize: 18, fontWeight: 800, fontFamily: 'monospace', color: suitColor, lineHeight: 1 }}>
             {card.rank}
           </span>
-          <span style={{ fontSize: 9, color: suitColor }}>{suitSymbol}</span>
+          <span style={{ fontSize: 16, color: suitColor, lineHeight: 1 }}>{suitSymbol}</span>
         </div>
       </div>
     </>
