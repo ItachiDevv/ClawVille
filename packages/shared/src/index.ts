@@ -41,6 +41,8 @@ export * from './constants/milady-skills';
 export * from './constants/slot-paytables';
 // Phase 6.0.4 — slot symbol SVG asset manifest (UI polish pass)
 export * from './constants/slot-symbols';
+// Phase 6.4.0 — cove blackjack shared types (mock + future engine).
+export * from './types/cove-blackjack';
 export * from './constants/orientation-skill';
 // Q3 plan §2.6 — server-credited token rewards for tutorial quests.
 export * from './constants/tutorial-quest-rewards';
