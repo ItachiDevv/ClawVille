@@ -108,6 +108,11 @@ export default function MeshletBuildingsR3F() {
           maxRasterSize: 16,
           instanceBoundingRadius: RING_BOUNDING_RADIUS,
           pixelErrorThreshold: 0, // force LOD 0 — proven 167 FPS in spike
+          // v3 atlas: real building diffuse textures sampled via the same
+          // working `texture(atlas, uv).grad()` codepath as the Three.js
+          // example's PBR mode. Per-vertex UVs were remapped into atlas
+          // slots in use-merged-buildings-asset.ts.
+          materialMode: 1,
         });
         await r.init();
         if (cancelled) {

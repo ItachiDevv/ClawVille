@@ -25,6 +25,7 @@ import {
   BUILDING_TARGET_HEIGHT,
   type BuildingSpec,
 } from './buildings-manifest';
+import { buildBuildingsAtlas } from './build-buildings-atlas';
 
 export interface BuildingLoadStatus {
   id: string;
@@ -136,6 +137,8 @@ interface LoadedBuildingGeo {
   triCount: number;
   /** Per-building diffuse colour extracted from the first mesh's material. RGB in [0,1]. Defaults to white. */
   color: [number, number, number];
+  /** Raw GLB scene retained so the atlas builder can read the largest-mesh diffuse. Released post-merge. */
+  scene: THREE.Object3D;
 }
 
 /**
@@ -289,7 +292,10 @@ export function useMergedBuildingsAsset(): UseMergedBuildingsAssetReturn {
                     'chosen=', color.map((v) => v.toFixed(2)).join(','),
                   );
                   updateStatus({ id: spec.id, status: 'loaded', tris: triCount });
-                  resolve({ spec, geometry: mergedGeo, worldMatrix, triCount, color });
+                  // Keep the GLB scene around so the atlas builder can pull
+                  // each building's largest-mesh diffuse map. Disposed after
+                  // merge to free memory.
+                  resolve({ spec, geometry: mergedGeo, worldMatrix, triCount, color, scene: gltf.scene });
                 } catch (err) {
                   updateStatus({ id: spec.id, status: 'error', tris: 0, error: String(err) });
                   resolve(null);
@@ -317,6 +323,22 @@ export function useMergedBuildingsAsset(): UseMergedBuildingsAssetReturn {
         setTotalSourceTris(valid.reduce((s, g) => s + g.triCount, 0));
         setState('merging');
 
+        // Build shared atlas + remap each building's UVs in-place (mutates
+        // valid[i].geometry's UV attribute) BEFORE the geometry-merge step
+        // reads them. Atlas detail/why lives in build-buildings-atlas.ts.
+        const atlasResult = buildBuildingsAtlas(
+          valid.map((g) => ({
+            id: g.spec.id,
+            scene: g.scene,
+            geometry: g.geometry,
+            fallbackColor: g.color,
+          })),
+        );
+        console.log(
+          '[useMergedBuildingsAsset] atlas built —',
+          `${atlasResult.texturedSlots} textured, ${atlasResult.solidSlots} solid-color fallback`,
+        );
+
         const merged = await mergeGeometriesToMeshletAsset(
           valid.map((g, idx) => ({
             geometry: g.geometry,
@@ -326,6 +348,13 @@ export function useMergedBuildingsAsset(): UseMergedBuildingsAssetReturn {
           })),
         );
         if (cancelled) return;
+        (merged as any).atlasTexture = atlasResult.texture;
+
+        // Release per-building GLB scenes — atlas already has the pixels.
+        for (const g of valid) {
+          try { (g as any).scene = null; } catch {}
+        }
+
         setAsset(merged);
         setState('ready');
       } catch (err) {

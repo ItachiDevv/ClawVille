@@ -53,6 +53,7 @@ import {
   NaniteRasterizer,
   type MergedMeshletAsset,
 } from '@/lib/three/experimental/nanite-rasterizer';
+import { buildBuildingsAtlas } from '@/lib/three/meshlet/build-buildings-atlas';
 
 // ---------------------------------------------------------------------------
 // Building manifest — mirrors the 12-slot ring from BUILDING_MODELS in arena-buildings.tsx.
@@ -131,6 +132,8 @@ interface LoadedBuilding {
   triCount: number;
   /** Hand-curated fallback color used to render this building distinctly. */
   color: [number, number, number];
+  /** Original GLB scene — required by buildBuildingsAtlas to extract the largest-mesh diffuse texture. */
+  scene: THREE.Object3D;
 }
 
 interface BuildingStatus {
@@ -337,7 +340,7 @@ function loadAllBuildings(
             // Pass spec.fallbackColor so the merged asset includes per-source
             // colours and the rasterizer's per-source-colour shader path
             // renders each building distinctly (otherwise all white).
-            resolve({ spec, geometry: mergedGeo, worldMatrix, triCount, color: spec.fallbackColor });
+            resolve({ spec, geometry: mergedGeo, worldMatrix, triCount, color: spec.fallbackColor, scene: gltf.scene });
           } catch (err) {
             onProgress({ id: spec.id, status: 'error', tris: 0, lodCount: 0, coarsestLodTris: 0, error: String(err) });
             resolve(null);
@@ -409,6 +412,25 @@ function BareAll12Canvas({ buildings, onFps, onPixelProbe, onMergedReady, onStat
       renderer.setSize(rect.width, rect.height, false);
       if (disposed) return;
 
+      // Build shared 4×3 atlas of building diffuse textures + remap each
+      // building's UVs into its slot region BEFORE merge reads them. This
+      // makes materialMode=1 render real building textures instead of the
+      // 1×1 magenta fallback. Shared util — same call in /game's hook.
+      onStatus('Packing diffuse atlas…');
+      const atlasResult = buildBuildingsAtlas(
+        buildings.map((b) => ({
+          id: b.spec.id,
+          scene: b.scene,
+          geometry: b.geometry,
+          fallbackColor: b.color,
+        })),
+      );
+      console.log(
+        '[spike-all-12] atlas built —',
+        `${atlasResult.texturedSlots} textured, ${atlasResult.solidSlots} solid-color fallback`,
+      );
+      if (disposed) return;
+
       onStatus('Building merged asset…');
       const mergedAsset = await mergeGeometriesToMeshletAsset(
         buildings.map((b, idx) => ({
@@ -419,6 +441,7 @@ function BareAll12Canvas({ buildings, onFps, onPixelProbe, onMergedReady, onStat
         })),
       );
       if (disposed) return;
+      (mergedAsset as any).atlasTexture = atlasResult.texture;
       onMergedReady(mergedAsset);
 
       onStatus('Constructing NaniteRasterizer…');
@@ -441,6 +464,10 @@ function BareAll12Canvas({ buildings, onFps, onPixelProbe, onMergedReady, onStat
         maxRasterSize: 16,
         instanceBoundingRadius: 5000,
         pixelErrorThreshold: 0,
+        // Sample the atlas texture per fragment — same codepath as the
+        // Three.js example's PBR mode. Set 0 to fall back to hashColor
+        // sourceId pastels for debugging.
+        materialMode: 1,
       });
       await rasterizer.init();
       if (disposed) return;
