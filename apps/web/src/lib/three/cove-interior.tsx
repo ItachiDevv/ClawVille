@@ -43,6 +43,7 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 import { CoveLighting } from '@/components/three/CoveLighting';
 import { useCoveStore } from '@/stores/cove';
 import { useAvatar } from '@/hooks/use-avatar';
+// Phase 6.4.0 — blackjack table hotspot uses the store action openBlackjackTable
 import { useGameStore } from '@/stores/game';
 import { useVRMInstance, disposeVRMInstance } from '@/lib/three/vrm-loader';
 import { VRMCharacterAnimator } from '@/lib/three/vrm-character-animator';
@@ -888,6 +889,72 @@ function SlotHotspot({ def }: { def: HotspotDef }) {
       }}
     >
       <boxGeometry args={def.size} />
+      <meshBasicMaterial visible={false} />
+    </mesh>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Blackjack table hotspot (Phase 6.4.0)
+//
+// The cove-interior GLB has a dealer station on the right wall.
+// The AABB collision system already tracks this station at
+// _DEALER_CENTER_X=367, _DEALER_CENTER_Z=0 with HALF extents 100×100 wu.
+//
+// We place the click hotspot at the same XZ centre, slightly in front
+// of the table face (toward the player spawn at +Z), so the invisible
+// hit-test box sits between the player and the dealer station.
+//
+// Size: 200wu wide × 200wu tall × 150wu deep — generous so the player
+// can click from normal approach distance without pixel-perfect aim.
+// Y: 0→200 wu range, centre at 100 wu (covers table-top + standing zone).
+//
+// Iris Xe safe: meshBasicMaterial visible=false = no draw call.
+// matrixAutoUpdate=false after first frame = zero matrix recomputes.
+// ---------------------------------------------------------------------------
+
+const _BJ_HOTSPOT_POS: [number, number, number] = [
+  _DEALER_CENTER_X - 60, // pull slightly toward room centre (away from right wall)
+  100,                   // Y centre = halfway up the table height
+  _DEALER_CENTER_Z,      // Z = room centre-line (same as dealer station)
+];
+const _BJ_HOTSPOT_SIZE: [number, number, number] = [200, 200, 150];
+
+function BlackjackTableHotspot() {
+  const meshRef = useRef<THREE.Mesh>(null);
+  const openBlackjackTable = useCoveStore((s) => s.openBlackjackTable);
+  const { data: avatar } = useAvatar();
+
+  useEffect(() => {
+    const mesh = meshRef.current;
+    if (!mesh) return;
+    mesh.matrixAutoUpdate = false;
+    mesh.updateMatrix();
+  }, []);
+
+  const handleClick = () => {
+    const balance = avatar?.clawTokens ?? 0;
+    openBlackjackTable(balance);
+  };
+
+  return (
+    <mesh
+      ref={meshRef}
+      position={_BJ_HOTSPOT_POS}
+      onPointerOver={(e) => {
+        e.stopPropagation();
+        if (typeof document !== 'undefined') document.body.style.cursor = 'pointer';
+      }}
+      onPointerOut={(e) => {
+        e.stopPropagation();
+        if (typeof document !== 'undefined') document.body.style.cursor = 'default';
+      }}
+      onClick={(e) => {
+        e.stopPropagation();
+        handleClick();
+      }}
+    >
+      <boxGeometry args={_BJ_HOTSPOT_SIZE} />
       <meshBasicMaterial visible={false} />
     </mesh>
   );
@@ -1843,6 +1910,18 @@ export default function CoveInteriorScene({ onSceneEmpty }: CoveInteriorScenePro
 
       {/* Bank labels + E-key proximity hints */}
       <BankLabels />
+
+      {/* Phase 6.4.0 — blackjack table click hotspot.
+          Positioned at the dealer station (right wall, X≈307, Z=0).
+          Invisible mesh — cursor: pointer on hover. Opens BlackjackModal. */}
+      <BlackjackTableHotspot />
+
+      {/* Blackjack table label — rendered above the dealer station */}
+      <BankBanner
+        label="BLACKJACK"
+        color="#22dd88"
+        position={[_BJ_HOTSPOT_POS[0], 280, _BJ_HOTSPOT_POS[2]]}
+      />
     </>
   );
 }
