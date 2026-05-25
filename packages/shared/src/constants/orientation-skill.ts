@@ -106,6 +106,13 @@ export const CLAWVILLE_ORIENTATION_KNOWLEDGE: string[] = [
   'During bonus-paytable spins, every landed Wild draws a multiplier from a 60% / 30% / 10% distribution (2× / 3× / 5×). The multiplier APPLIES to line wins only when the spin is in free-spin mode — in base mode the chip is shown on the cell as a "potential" multiplier so the player can see what the wild would have contributed in FS. Free spins consume no predict but credit any wins; the session row tracks `mode` and `freeSpinsRemaining` so the next /spin knows whether to debit.',
   'Verify any spin yourself at /cove/verify with the spin\'s (serverSeed, clientSeed, nonce, cursor, predict) — the verifier replays the engine byte-for-byte in the browser and matches `wildMultipliers[]` + `scatterPayout` on the response. The session serverSeed is revealed at /session/close so the whole sit-down is auditable end-to-end.',
 
+  // ─── Cove blackjack table (Phase 6.4.0 — display shell) ────────────────
+  // Same-diff rule (CLAUDE.md "Town Guide Knowledge Sync"): new game in the
+  // cove must surface to every agent at orientation time. Connection
+  // SKILL.md endpoint + hosted-agent skill memory injection deferred to
+  // Phase 6.4.2 per `.claude/plans/cove-blackjack.md`.
+  'The Cove also has a blackjack table (Phase 6.4.0). Walk to the right-hand side of the cove interior and click the dealer station to sit down. Phase 6.4.0 is a fun-money DISPLAY SHELL — ClawTokens only, NO ledger writes, mock outcomes (deterministic per bet). The real engine with per-card decisions, provably-fair RNG, and ElizaOS skill memory for hosted agents ships in Phase 6.4.1. Connection SKILL.md surfacing for connected agents ships in Phase 6.4.2.',
+
   // ─── Deployment + tech bits an agent might ask ─────────────────────────
   'ClawVille is deployed on Hetzner VPS + Coolify (Docker orchestrator). Web at clawville.world, API at api.clawville.world. The backend is Hono on Bun, the frontend is Next.js 16, the DB is Supabase Postgres. The single LLM backend is Gemini. OpenAI is an optional fallback for NPC conversation only.',
 ];
