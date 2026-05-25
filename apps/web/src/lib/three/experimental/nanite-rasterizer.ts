@@ -160,6 +160,19 @@ export interface RasterizerOptions {
    * cascading per-instance LOD picks too coarse a level at game distance.
    */
   pixelErrorThreshold?: number;
+  /**
+   * Material rendering mode.
+   *   0 = hashColor(sourceId) debug — each source gets one distinct pastel.
+   *   1 = textured sampling — fragment samples `asset.atlasTexture` with
+   *       per-vertex UVs that the caller already remapped into per-source
+   *       atlas slots (see use-merged-buildings-asset.ts). Uses the EXACT
+   *       same WGSL codepath the Three.js example's PBR mode uses
+   *       (texture_2d + textureSampleGrad), so we get free bilinear filter
+   *       and free mipmaps without tripping the r182 array_index codegen
+   *       bug that DataArrayTexture sampling exposes.
+   * Default: 0.
+   */
+  materialMode?: 0 | 1;
 }
 
 // ---------------------------------------------------------------------------
@@ -504,6 +517,32 @@ export interface MergedMeshletAsset extends MeshletAsset {
    * reads this via uniformArray to colour each building distinctly.
    */
   sourceColors: Float32Array;
+  /**
+   * OPTIONAL — single shared atlas texture sampled in materialMode=1.
+   *
+   * The atlas packs all per-source diffuse maps into ONE texture_2d (e.g.
+   * 4×3 grid of 1024px slots for 11 buildings). The caller is responsible
+   * for ALSO remapping each source's vertex UVs into its slot region BEFORE
+   * merging — i.e., the UVs stored in `vertexUVData` already contain
+   * `(fract(uv) * slotSize) + slotOrigin`. This way the shader stays a
+   * plain `texture(atlas, uv).grad(ddx, ddy)` call (the demo's working
+   * PBR codepath) with no per-source array indexing.
+   *
+   * Why an atlas instead of `THREE.DataArrayTexture` + per-source sample:
+   *   r182's `generateTextureGrad` / `generateTextureLevel` in
+   *   WGSLNodeBuilder.js accept the `depthSnippet` (array_index) parameter
+   *   but DON'T emit it in the WGSL output — literal `// TODO handle...
+   *   array_index` comment. So sampling a texture_2d_array with grad/level
+   *   fails to compile. textureLoad works but loses filtering + mipmaps.
+   *   The atlas detour sidesteps the bug entirely while matching the demo.
+   *
+   * Trade-offs:
+   *   - Hard slot edges can bleed at high mip levels (mitigated by leaving
+   *     a 2-texel padding inside each slot — see use-merged-buildings-asset).
+   *   - Atlas size capped at 8192×8192 on most adapters; 4096×3072 leaves
+   *     headroom for 16-slot expansion if we need more buildings.
+   */
+  atlasTexture?: THREE.Texture;
 }
 
 /**
@@ -912,6 +951,7 @@ export class NaniteRasterizer {
       maxRasterSize: opts.maxRasterSize ?? 16,
       instanceBoundingRadius: opts.instanceBoundingRadius ?? 2.0,
       pixelErrorThreshold: opts.pixelErrorThreshold ?? 4.0,
+      materialMode: opts.materialMode ?? 0,
     };
   }
 
@@ -1044,10 +1084,29 @@ export class NaniteRasterizer {
     ).toReadOnly();
 
     // ---- Uniforms ----
-    const materialModeUniform = uniform(0, 'uint'); // 0 = meshlet debug colour
+    // Initial value comes from constructor opts — runtime mode switching would
+    // require exposing this uniform on `this` and adding a setter. Not needed
+    // yet: ClawVille mounts the rasterizer once per asset with a fixed mode.
+    const materialModeUniform = uniform(this.opts.materialMode, 'uint');
 
-    // Texture for texture-mode (unused in spike but required by the shaders)
-    const textureMap = new THREE.TextureLoader().load('/models/building-lighthouse.glb'); // dummy
+    // Atlas texture (sampled in materialMode=1). The caller attaches
+    // `asset.atlasTexture` via use-merged-buildings-asset.ts and ALSO
+    // remaps every per-source UV into its slot region. When the asset
+    // has no atlas (debug-only mode), we synthesise a 1×1 magenta texture
+    // so the shader compile succeeds AND missing-atlas paths render
+    // loudly instead of silently sampling stale GPU memory.
+    let textureMap: THREE.Texture;
+    const providedAtlas = (asset as MergedMeshletAsset).atlasTexture;
+    if (providedAtlas) {
+      textureMap = providedAtlas;
+    } else {
+      const magenta = new Uint8Array([255, 0, 255, 255]);
+      const fallback = new THREE.DataTexture(magenta, 1, 1, THREE.RGBAFormat, THREE.UnsignedByteType);
+      fallback.minFilter = THREE.LinearFilter;
+      fallback.magFilter = THREE.LinearFilter;
+      fallback.needsUpdate = true;
+      textureMap = fallback;
+    }
 
     this.projScreenMatrixUniform = uniform(new THREE.Matrix4());
     this.frustumPlanesUniform = uniformArray(
@@ -1570,6 +1629,10 @@ export class NaniteRasterizer {
           const sourceId = rawMeshletId.shiftRight(uint(20));
           outColor.assign(hashColor(sourceId.add(uint(1))));
         }).Else(() => {
+          // materialMode=1 (HW): plain texture_2d sample with auto-derivative
+          // mip selection — the per-vertex UVs already encode atlas slot
+          // position (caller remapped them at merge time). Same shader call
+          // as the Three.js demo's PBR mode.
           outColor.assign(tslTexture(textureMap, vUvVar));
         });
 
@@ -1714,7 +1777,17 @@ export class NaniteRasterizer {
             // Add 1 so sourceId=0 doesn't hash to dark colour.
             outColor.assign(hashColor(sourceId.add(uint(1))));
           }).Else(() => {
-            outColor.assign((tslTexture(textureMap, uv_interp) as any).grad(dUvDx, dUvDy));
+            // materialMode=1 (SW): plain texture_2d sample with manually
+            // computed ddx/ddy for mipmap LOD. The per-vertex UVs already
+            // encode atlas slot position (caller remapped them at merge
+            // time), so this is just `texture(atlas, uv).grad(dx, dy)` —
+            // the exact codepath the Three.js example's PBR mode uses.
+            // Compiles cleanly because texture_2d.grad has a working
+            // codegen (unlike texture_2d_array.grad which is bugged in
+            // r182 — see MergedMeshletAsset.atlasTexture docs).
+            outColor.assign(
+              (tslTexture(textureMap, uv_interp) as any).grad(dUvDx, dUvDy),
+            );
           });
         });
 
