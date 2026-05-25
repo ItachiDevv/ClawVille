@@ -1,14 +1,9 @@
 'use client';
 
-import { Suspense, useEffect, useRef, useMemo, useState, type ReactElement } from 'react';
+import { Suspense, useEffect, useRef, useMemo, type ReactElement } from 'react';
 import { useGLTF } from '@react-three/drei';
 import * as THREE from 'three/webgpu';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import {
-  float, vec3, sin, cos, fract,
-  positionLocal, vertexColor,
-  mix, smoothstep,
-} from 'three/tsl';
 import { MAP_WIDTH, MAP_HEIGHT, TILE_SIZE, buildingZones } from '@/lib/pixi/tilemap-data';
 import { makeGeometryWebGPUSafe, makeObject3DWebGPUSafe } from '@/lib/three/webgpu-geometry';
 
@@ -107,130 +102,12 @@ function createSandGeometry(): THREE.PlaneGeometry {
   return geo;
 }
 
-// ---------------------------------------------------------------------------
-// TSL sand ripple helper — fract(sin(dot)) hash gives cheap 2D noise
-// ---------------------------------------------------------------------------
-function createSandMaterial(): THREE.MeshStandardNodeMaterial {
-  const mat = new THREE.MeshStandardNodeMaterial({
-    vertexColors: true,
-    metalness: 0.0,
-  });
-
-  // World-space XZ position of each fragment (before the -PI/2 rotation the
-  // mesh applies, positionLocal.xz gives us the geometry's pre-rotation XY —
-  // that's fine for a purely procedural pattern).
-  const px = positionLocal.x;
-  const py = positionLocal.y; // geometry Y = world Z before rotation
-
-  // ---- Sand ripple pattern ----
-  // Two overlapping sine waves at different angles simulate wind-blown ripples.
-  const rippleA = sin(px.mul(float(0.07)).add(py.mul(float(0.05))));
-  const rippleB = sin(px.mul(float(0.11)).sub(py.mul(float(0.08))).add(float(2.3)));
-  // Combine and remap to [0, 1]
-  const ripple = rippleA.add(rippleB).mul(float(0.25)).add(float(0.5));
-
-  // ---- Cheap 2D hash for grain noise ----
-  // fract(sin(dot(floor(p * scale), vec2(127.1, 311.7))) * 43758.5453)
-  // We approximate with two orthogonal high-freq sines combined via fract.
-  const grainScale = float(3.7);
-  const grainA = sin(px.mul(grainScale).add(py.mul(float(7.3))));
-  const grainB = sin(px.mul(float(5.1)).sub(py.mul(grainScale.mul(float(1.9)))));
-  const grain = fract(grainA.add(grainB).mul(float(43.758)));
-
-  // ---- Height-based color blend ----
-  // positionLocal.z holds the displaced height baked by createSandGeometry.
-  // Range is roughly -28..+28 → normalise to 0..1
-  const h = positionLocal.z;
-  const heightT = smoothstep(float(-28.0), float(28.0), h);
-
-  // Warm ridge tone vs cool deep-water valley tone
-  const warmSand = vec3(float(1.0), float(0.91), float(0.78));   // near-white peaks
-  const coolDeep = vec3(float(0.25), float(0.19), float(0.12));  // dark wet valley
-
-  // Blend vertex color with the height-driven warm/cool tint
-  const heightTint = mix(coolDeep, warmSand, heightT);
-  const baseColor = vertexColor();
-
-  // Mix vertex color with height tint (keep vertex color dominant)
-  const tintStrength = float(0.28);
-  const blendedColor = mix(baseColor, heightTint, tintStrength);
-
-  // Ripple pattern darkens the color slightly in troughs (multiply)
-  const rippleMul = ripple.mul(float(0.18)).add(float(0.82));
-
-  // Grain adds a very subtle speckling
-  const grainMul = grain.mul(float(0.06)).add(float(0.97));
-
-  mat.colorNode = blendedColor.mul(rippleMul).mul(grainMul);
-
-  // ---- Roughness: valleys are smoother (wet), ridges rougher (dry sand) ----
-  // heightT=0 → valley (smoother ~0.55), heightT=1 → ridge (rougher ~0.92)
-  mat.roughnessNode = mix(float(0.55), float(0.92), heightT);
-
-  // ---- Normal perturbation — sand grain feel ----
-  // Perturb the flat normals with a sin-based bump in XY, scaled very small
-  // 2026-05-13: bumped bumpFreq 0.15 → 1.5 (10× higher freq, ~4.2wu wavelength
-  // so detail reads from gameplay camera distance instead of being sub-pixel
-  // at the Iris Xe dpr=0.7 cap) and bumpAmp 0.04 → 0.08 for more visible
-  // normal variation. Combined with the existing height-driven colour bands
-  // this gives the sand actual texture from afar.
-  const bumpFreq = float(1.5);
-  const bumpAmp  = float(0.08);
-  const bumpX = sin(px.mul(bumpFreq).add(float(1.1))).mul(bumpAmp);
-  const bumpY = cos(py.mul(bumpFreq).add(float(0.7))).mul(bumpAmp);
-  // vec3(perturbX, perturbY, 1) normalised approximation — sufficient at low amp
-  const perturbedNormal = vec3(bumpX, bumpY, float(1.0));
-  mat.normalNode = perturbedNormal;
-
-  return mat;
-}
-
-// iOS/forceWebGL: skip TSL NodeMaterial (MeshStandardNodeMaterial with 3 node
-// channels on 14k vertices compiles to GLSL loops on WebGL2 backend and stalls
-// the A-series GPU for 200-400ms on first draw). Vertex colors are baked into
-// the geometry so a plain MeshStandardMaterial preserves the sand appearance.
-//
-// PERF + SSR: this branch decision MUST be made AT MODULE SCOPE on the
-// client only. Doing it at module scope evaluates on the server too
-// (navigator is undefined → returns FORCE_WEBGL_TERRAIN=false), then the
-// client evaluates again → may differ → hydration mismatch → React #418.
-//
-// Five other files statically import this module (World3DCanvas,
-// arena-buildings, arena-location-npcs, arena-npcs, player-avatar), so we
-// can't dodge SSR with a dynamic wrapper. Compute the flag lazily inside
-// the component so the module's first evaluation is server-safe.
-function detectForceWebglTerrain(): boolean {
-  if (typeof navigator === 'undefined') return false;
-  const ua = navigator.userAgent;
-  const isIOSSafari =
-    /iP(hone|ad|od)/i.test(ua) &&
-    /WebKit/i.test(ua) &&
-    !/CriOS|FxiOS|OPiOS|mercury/i.test(ua);
-  return isIOSSafari || !('gpu' in navigator);
-}
-
 function SandFloor() {
   const ref = useRef<THREE.Mesh>(null);
-  // Defer the navigator-touching decision until AFTER hydration. On SSR + first
-  // client render we use the SSR default (false → TSL NodeMaterial path), then
-  // after mount we may switch to the WebGL fallback. React will reconcile the
-  // swap as a normal re-render rather than a hydration mismatch.
-  const [forceWebgl, setForceWebgl] = useState(false);
-  useEffect(() => {
-    setForceWebgl(detectForceWebglTerrain());
-  }, []);
-
   const sandGeo = useMemo(() => createSandGeometry(), []);
   const sandMat = useMemo(
-    () =>
-      forceWebgl
-        ? new THREE.MeshStandardMaterial({
-            vertexColors: true,
-            roughness: 0.8,
-            metalness: 0,
-          })
-        : createSandMaterial(),
-    [forceWebgl],
+    () => new THREE.MeshBasicMaterial({ vertexColors: true, fog: true }),
+    [],
   );
 
   useEffect(() => {

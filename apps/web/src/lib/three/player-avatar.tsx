@@ -24,7 +24,7 @@ import {
   type CharacterAnimator,
 } from '@/lib/three/character-animations';
 import { jumpState, isEditable } from '@/lib/three/jump-state';
-import { useVRMInstance, disposeVRMInstance, preloadVRMBytes, applyFattenedFrustumCulling } from '@/lib/three/vrm-loader';
+import { useVRMInstance, disposeVRMInstance, applyFattenedFrustumCulling } from '@/lib/three/vrm-loader';
 import {
   VRMCharacterAnimator,
   preloadMixamoClips,
@@ -1101,15 +1101,11 @@ function PlayerAvatarRouter() {
 }
 
 export default function PlayerAvatar() {
-  // Preload VRM assets and Mixamo anim clips for fast switch if user picks a Milady avatar
+  // Locomotion clips are shared by every VRM avatar. The selected VRM itself is
+  // loaded on demand by useVRMInstance; avatar-picker choices are warmed only
+  // when the picker opens so /game does not fetch the full avatar catalog.
   useEffect(() => {
     preloadMixamoClips();
-    // Preload all 8 VRM byte caches so first useVRMInstance call hits the
-    // browser HTTP cache instead of round-tripping. Per-instance parse still
-    // happens at mount time.
-    for (let i = 1; i <= 8; i++) {
-      preloadVRMBytes(`/avatars/milady-official-${i}.vrm`);
-    }
   }, []);
 
   return (
