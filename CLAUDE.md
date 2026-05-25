@@ -1,5 +1,28 @@
 # ClawVille
 
+## ENFORCEMENT — mechanical, not judgment-based (set 2026-05-25 after meshlet/atlas session where zero-laziness rules failed to bind because Claude judged work "small enough" to shortcut)
+
+### Rule E1 — "plan first, no code" session lock
+User opens a session with **"plan first, no code"** (case-insensitive substring) → Claude is FORBIDDEN from `Edit`/`Write`/mutating-`Bash` until explicit approval ("approved" / "go" / "ship it" / "yes start"). Non-approval replies ("looks fine, but…") keep the lock active. Read/Grep/Glob/Agent-investigate/WebFetch allowed.
+
+Plan must include: (1) the PRODUCTION reference (screenshot or curl evidence), (2) the smallest visible diff that proves correctness, (3) granularity choice + why it matches the reference, (4) which agent team + team_name, (5) what gets reverted if "broken" after first attempt.
+
+Violation → `git stash` whatever was written and restart from the plan step.
+
+### Rule E3 — Codex-first for 3D / shader / WebGPU / meshlet work
+Categories: Three.js / R3F / WebGPU / WGSL / TSL shaders · meshlet rasterizer (`apps/web/src/lib/three/experimental/nanite-rasterizer.ts` + `meshlet/`) · atlas packing, UV remapping, texture-array indexing · any GLB pipeline branching into shaders.
+
+First edit on those files MUST be authored by `codex:codex-rescue` via Agent. Claude decomposes the prompt (prod reference, constraints, file paths, known bugs, verify loop, success criterion), spawns Codex, does browser verification, commits + pushes. Claude does NOT hand-write the shader, UV remap, atlas builder, or merge pipeline.
+
+Override: user types **"claude implement"** → rule lifts for the session.
+
+### Rule E4 — no "shipped" / "done" / "complete" / "milestone" / "working" / "ready" / "fixed" without same-turn user sign-off
+"Sign-off" = a screenshot the user posted, or "looks good" / "ship it" / "yes that works" in this conversation. Green build, passing test, clean console — NONE substitute.
+
+Allowed alternatives without sign-off: "compiled and rendering — needs your eyes to confirm", "builds without errors — does it look right to you?". Asking IS allowed; declaring is not. Violation → retract the claim and re-describe in allowed phrasing.
+
+---
+
 ## Brand Identity
 
 > Every product decision, metric, feature gate, and scope cut traces back here. Added 2026-04-21.
@@ -91,102 +114,44 @@ These cost real money / crash the GPU / leak secrets. They stay inline regardles
 
 ## MANDATORY: Non-trivial implementation runs as EXPERIMENTAL COLLABORATIVE AGENT TEAMS
 
-**Status (2026-05-19):** `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` + `teammateMode=in-process` enabled globally. Use the real teams feature — specialist agents spawned in PARALLEL sharing a `team_name`, coordinating via `TaskList`/`TaskUpdate`/`SendMessage`. Not "one agent that recursively sub-spawns" — that's the legacy fallback, only acceptable when teammateMode is unavailable.
+`CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` + `teammateMode=in-process` are on globally (set 2026-05-19). Specialist agents spawn in PARALLEL sharing a `team_name`, coordinating via `TaskList`/`TaskUpdate`/`SendMessage`.
 
-### ANTI-PATTERN (do not do this)
+**Right pattern:** ONE parallel message spawns the WHOLE TEAM upfront (Lead Implementer + Reconciler + Spec/Regression/Adversarial auditors, shared `team_name`). Auditors are created with `addBlockedBy: [implementer_task_id]` and auto-start when impl flips to `completed`. Fixers spawn themselves on BLOCKING ISSUES. Orchestrator only commits + pushes + verifies.
 
-> "Dispatch one Implementer. When it returns, dispatch 3 auditors in parallel. If any block, dispatch a Fixer. Then re-dispatch."
-
-**Wrong** — serializes 4+ round-trips per concern, turning 5 min of work into 30 min of wall-clock wait. Every dispatch = full agent context load + warm-up + streaming.
-
-**Right pattern:** ONE parallel message spawning the WHOLE TEAM upfront (Lead Implementer + Reconciler + Spec + Regression + Adversarial auditors, shared `team_name`). They coordinate via `SendMessage`/`TaskList`; auditors block-wait on impl via task deps; fixers spawn themselves when blocked. Orchestrator only commits + pushes + verifies.
-
-If you catch yourself thinking "auditors after implementer" — STOP. Spawn them now with `addBlockedBy: [implementer_task_id]`; they auto-start when impl flips to `completed`. Zero round-trip cost.
+**Anti-pattern (banned):** "dispatch impl, then dispatch auditors after it returns" — that serializes 4+ round-trips per concern. If you catch yourself thinking "auditors after implementer" — STOP, spawn them now with `addBlockedBy`.
 
 ### When teams are mandatory
 
-- **3D work** — Three.js / R3F / shaders / GLB / post-proc / materials / lights / cameras / TSL / WGSL / WebGPU under `apps/web/src/lib/three/**`, `apps/web/src/components/three/**`, `apps/web/public/models/**`, render-loop, animations, rigs, atmosphere/particles, new world-surface 3D objects.
-- **Blender pipelines** — multi-asset exports, mesh edits, rigging, MMD/glTF/FBX imports, Mixamo, Marvelous Designer.
-- **Backend / API / DB work** — Hono routes, Drizzle schemas, services, money paths, auth, custodial wallets, anything user-facing or financially load-bearing. **`bun test` green in impl's report is NOT a substitute for the Adversarial-lens audit.**
-- **Any task** > 5 min runtime, > 300 LOC, or ≥ 3 files across subsystems.
-- User quality verbs ("polish", "iterate", "rework", "feel like X", "elite", "professional").
+3D / Blender pipelines / Backend / API / DB / money paths · any task > 5 min runtime, > 300 LOC, or ≥ 3 files across subsystems · user quality verbs ("polish", "iterate", "rework", "elite"). `bun test` green is NOT a substitute for the Adversarial audit on backend work.
 
-Teams are the DEFAULT for the above. Solo dispatch = rare exception (trivial work — see below).
+### Standard compositions (spawn whole team in ONE message, parallel Agent calls, shared `team_name` like `casino-routes-2026-05-19`)
 
-### Standard team compositions
+**3D / world-structure:** `3da` × { `3da-impl-1` lead, `3da-impl-2` reconciler, `3da-spec`, `3da-regress`, `3da-adversary` }. Add `blend007:mesh` as `blender-inspect` when GLB inspection needed; substitute `blend007:mesh` for impl roles on Blender-heavy work.
 
-**Spawn the whole team in ONE message (multiple parallel Agent tool calls in a single assistant turn).** All agents share a `team_name` like `'casino-routes-2026-05-19'` (concern + date, unique per dispatch).
+**Backend / API / DB / money:** `general-purpose` × { `impl-1`, `impl-2`, `spec-auditor`, `regress-auditor`, `adversary` }. Add `solana-auditor` for `contracts/` or `apps/api/src/services/wager-program-client.ts`. Invoke `codex:codex-rescue` as `codex-rescue` LATER if impl-1 gets stuck — not at team launch.
 
-#### 3D / world-structure task
+Reconciler (impl-2) doubles as the Fixer on BLOCKING ISSUES — no new dispatch, just `SendMessage` with the punch list; auditors re-run via task re-trigger after fix.
 
-| Role | subagent_type | name (addressable via SendMessage) |
-|---|---|---|
-| **Lead implementer** | `3da` | `3da-impl-1` |
-| **Reconciler implementer** | `3da` or `blend007:three` | `3da-impl-2` |
-| **Spec auditor** | `3da` | `3da-spec` |
-| **Regression auditor** | `3da` | `3da-regress` |
-| **Adversarial auditor** | `3da` or `blend007:three` | `3da-adversary` |
-| **Blender inspector** (when GLB inspection needed) | `blend007:mesh` | `blender-inspect` |
+### Coordination
 
-For Blender-heavy work, substitute `blend007:mesh` for the implementer roles. For pure Three.js with no GLB editing, drop `blender-inspect`.
-
-#### Backend / API / DB / money-handling task
-
-| Role | subagent_type | name |
-|---|---|---|
-| **Lead implementer** | `general-purpose` | `impl-1` |
-| **Reconciler implementer** | `general-purpose` | `impl-2` |
-| **Spec auditor** | `general-purpose` | `spec-auditor` |
-| **Regression auditor** | `general-purpose` | `regress-auditor` |
-| **Adversarial auditor** | `general-purpose` | `adversary` |
-| **Solana auditor** (when Anchor program logic touched) | `solana-auditor` | `solana-auditor` |
-| **Codex rescue** (when Claude impl-1 gets stuck — invoked LATER, not at team launch) | `codex:codex-rescue` | `codex-rescue` |
-
-For ClawTokens-only paths drop `solana-auditor`. For anything in `contracts/` or `apps/api/src/services/wager-program-client.ts` keep it.
-
-The Lead Implementer drafts the diff and reports via `TaskUpdate(status='completed')`. The 3 auditors are blocked on the impl task via `addBlockedBy` and start the moment the implementer finishes. Each posts APPROVED or BLOCKING ISSUES. If any block, the team's Reconciler (impl-2) becomes the Fixer (no new dispatch needed — `SendMessage` with the consolidated punch list). After fix, the auditors that blocked re-run automatically via task re-trigger.
-
-The orchestrator (you) only sees the team's final consolidated status — never the back-and-forth between members.
-
-### Coordination protocol
-
-- **`TaskList`**: orchestrator creates one task per role with `addBlockedBy` deps. Each agent updates its own status.
-- **`SendMessage`**: implementers DM auditors ("diff ready"); auditors DM back APPROVED or BLOCKING ISSUES. No silent drops.
-- **Memory share** is automatic within a team_name (in-process mode).
-- **Orchestrator never writes code** — decomposes, picks composition, monitors tasks, commits, pushes, polls Coolify, verifies.
+`TaskList` for status (one task per role, `addBlockedBy` deps). `SendMessage` for cross-agent ("diff ready" / APPROVED / BLOCKING ISSUES — no silent drops). Memory is auto-shared within a `team_name`. Orchestrator never writes code.
 
 ### Required prompt elements
 
-Every agent prompt MUST include:
-1. Literal **"use ultrathink reasoning before writing code"** (or "before reviewing code" for auditors) in para 1 — Agent tool has no thinking-mode flag.
-2. Addressable team name + role: "You are `3da-spec` in team `<team_name>`. Other members: …"
-3. Explicit blocking deps + downstream consumers ("you start after impl-2 reports diff ready; your verdict gates the commit").
-4. Hard constraints from this CLAUDE.md (Iris Xe, same-diff doc updates) — don't assume they read it.
+(1) Literal **"use ultrathink reasoning before writing code"** (or "before reviewing code" for auditors) in para 1 — Agent tool has no thinking-mode flag. (2) Addressable team name + role + other members. (3) Explicit blocking deps + downstream consumers. (4) Hard constraints from this CLAUDE.md (Iris Xe, same-diff doc updates) — don't assume they read it.
 
 ### When to skip the full team
 
-- **Direct edit, no agent:** single typo/comment/env-var/SVG path tweak, regen from a script — 5-line edits.
-- **Light (2-agent):** ≤ 100 LOC or single-file doc/refactor with deterministic tests. 1 ultrathink Implementer + 1 combined-lens Auditor, shared `team_name`.
-- **Full team (DEFAULT):** 3D, Blender, backend, money paths, > 100 LOC or > 3 files — 5 agents in one parallel dispatch.
-- **High-stakes** (DB migrations, custodial keys, auth, billing, rewrites) → full team + `reconciler-manager` that re-implements independently and compares vs impl-1. No exceptions.
+- **Direct edit (no agent):** 5-line edits — typo, comment, env-var, SVG path, script regen.
+- **Light (2-agent, shared team_name):** ≤ 100 LOC or single-file with deterministic tests — 1 ultrathink Implementer + 1 combined-lens Auditor.
+- **Full team (DEFAULT, 5 agents in one parallel dispatch):** 3D, Blender, backend, money, > 100 LOC or > 3 files.
+- **High-stakes** (DB migrations, custodial keys, auth, billing, rewrites) → full team + `reconciler-manager` that re-implements independently. No exceptions.
 
-**Test:** would the cost of getting this wrong justify ~5× parallel invocations? No → light/direct. Yes → full team. When in doubt, full team.
+Test: would the cost of getting this wrong justify ~5× parallel invocations? When in doubt, full team. Independent concerns → separate teams in parallel; shared state → single team with task deps.
 
-### Concerns: sequential or parallel?
+### 3da + Blender context
 
-Truly independent (different files, no shared state) → separate teams in parallel, each own `team_name`. Shared state or sequenced → single team, task deps. Default sequential when in doubt.
-
-### Orchestrator responsibilities (never delegated)
-
-Decompose · pick composition + team_name · spawn team in one parallel Agent call · poll TaskList · resolve audit-disagreement (DON'T silently drop blocking issues) · build/push/deploy (manual Coolify tinker on missed webhook) · browser verification.
-
-### 3da context
-
-Agent def: `.claude/agents/3da.md`; memory: `.claude/memory/threejs/` (`gotchas/`, `patterns/`, `solutions/`, `performance/`, `webgpu/`, `MEMORY.md`). Both committed; migrated 2026-04-16 — do NOT use user-level paths.
-
-**3da burns prevented:** `InstancedMesh + ShaderMaterial` silent WebGPU crash, drei `<Text>`/`<Billboard>` killing Iris Xe, per-frame `new Vector3()` GC thrash, pipeline compile spikes, rotation sign errors.
-
-### Blender notes
+3da def: `.claude/agents/3da.md`; memory: `.claude/memory/threejs/` (committed, migrated 2026-04-16 — do NOT use user-level paths). Burns prevented: `InstancedMesh + ShaderMaterial` WebGPU crash, drei `<Text>`/`<Billboard>` Iris Xe crash, per-frame `new Vector3()` GC thrash, pipeline compile spikes, rotation sign errors.
 
 Local Blender is exclusive. Tell blender07 to launch a NEW instance, or fall back to direct GLB downloads (Polyhaven, Sketchfab CC0/CC-BY, Kenney, Quaternius). Don't loop on exclusivity.
 
@@ -198,17 +163,28 @@ Sea-themed OpenClaw game on ElizaOS. Users create an avatar, explore a 3D/2D sea
 
 Core requirement — do NOT remove or stub. Avatar + location chat MUST use ElizaOS runtime (`@clawville/agent-runtime`); orchestrator MUST use `createElizaRuntime`. Deploy to persistent-server platforms (Hetzner+Coolify, Render, Fly.io) — NOT Vercel serverless. Never replace with direct API calls or stubs.
 
-## MANDATORY: Gameplay changes update system agents' knowledge in the same diff
+## MANDATORY: Game-flow changes propagate to all three operational-knowledge surfaces in the same diff
 
-**System agents** = world-wide NPCs not tied to a building. Today: Nori the Town Guide, slug `town-guide`. Plural scaffolding from day 1 (future: arena host, quest giver, lore-keeper). Expertise = ClawVille ITSELF (modes, 10 buildings + teachers, economy, connect flow, daily login, tutorial, paused features). Knowledge in `packages/agent-templates/src/locations/<slug>.ts` → `knowledge[]`, registered in `SYSTEM_AGENT_TEMPLATES`, chunked into ElizaOS RAG on every API boot via `ensureSystemAgents()` in `apps/api/src/services/system-npc-seeder.ts`.
+Any new game flow, world addition, or edit to a current mechanic (modes, buildings, currencies, quests, wager rules, casino/arcade games, table rules, connect flow, disconnect/timer behavior, leaderboard weights, paused features, etc.) MUST update **all three** in the same diff. PRs missing any are not mergeable.
 
-**Rule:** any gameplay/world change (new mode, building, token formula, quest type, paused feature, connect flow, renamed building, moved NPC, leaderboard weight) MUST update the correct system agent's `knowledge[]` same diff. Town Guide: `packages/agent-templates/src/locations/town-guide.ts`. Skip = broken onboarding.
+**1. Nori the Town Guide's `knowledge[]`** — world-orientation surface for any visitor (hosted/connected agent or human).
+- Path: `packages/agent-templates/src/locations/town-guide.ts` → `knowledge[]`, registered in `SYSTEM_AGENT_TEMPLATES`. Re-seeded by `ensureSystemAgents()` in `apps/api/src/services/system-npc-seeder.ts` on every API boot.
+- Chat: `POST /api/chat/system/:slug` (lookup `getSystemAgent(slug)`; platform type `'system-agent'`; slug at `customization.slug`; no `location_agents` row; 3D click at `apps/web/src/lib/three/town-guide.tsx`). Rate limit: +1 ClawToken + 5 XP/turn, capped one per `(userId, slug)`/60s (`system-agent-reward-limiter.ts`). Logs `chatType: 'system-agent'` — does NOT inflate `/dash` teacher-chat metric (teachers = 10 residents only).
+- Goes in `knowledge[]`: what ClawVille is, 4 modes, 10 buildings + teachers + focus, Moltbook connect flow, Milady sideload, ClawToken rules, leaderboard weights, casino/arcade games + table rules, quest/bounty state, tutorial. **Not in:** domain-specific skill knowledge (cron, RAG, MCP, Solana signing) — those live in the 10 residents. Rule: "point at the teacher, don't replace."
+- Add new system agent: write template → register in `SYSTEM_AGENT_TEMPLATES` → ship; `ensureSystemAgents()` upserts on boot. Partial unique index `platform_agents_system_singleton` enforces one row per (userId, type='system-agent', slug).
 
-**Chat:** `POST /api/chat/system/:slug`. Lookup `getSystemAgent(slug)`. Platform type `'system-agent'`; slug at `customization.slug`. No `location_agents` row. 3D click: `apps/web/src/lib/three/town-guide.tsx`. **Rate limit:** +1 ClawToken + 5 XP/turn, cap one per `(userId, slug)`/60s (`system-agent-reward-limiter.ts`). Logs `chatType: 'system-agent'` — does NOT inflate `/dash` teacher-chat metric (teachers = 10 residents only).
+**2. Connection SKILL.md** — protocol/operating manual for external/magic-link agents. HOW to connect and play, NOT in-world earned skill.
+- Contains: auth handshake, WebSocket protocol, event/action schemas, current table rules, disconnect/timer behavior, advisor-mode contract, content-hash version.
+- **CRITICAL:** fetched fresh on every connect with version tracking. Stale manual = connected agent playing a different game than hosted agents = playing field broken.
+- **Distinct from** existing per-building `/api/agent/:sid/skills/:bid/skill.md` endpoints — those serve in-world earned teacher knowledge, NOT the protocol manual.
+- **Infra gap:** the global connection SKILL.md endpoint + content-hash manifest does NOT exist today. Until shipped, content updates are required (rule binds), but eager-on-connect enforcement is TODO/best-effort.
 
-**Add new system agent:** (1) write template, (2) register in `SYSTEM_AGENT_TEMPLATES`, (3) ship — `ensureSystemAgents()` upserts on boot. Partial unique index `platform_agents_system_singleton` guarantees one row per (userId, type='system-agent', slug).
+**3. Hosted-agent runtime knowledge of #2** — server-side equivalent for hosted Milady/Hermes runtimes on our boxes.
+- Same content as #2, different delivery: `createMemory()` injection via extension of `ensureSystemAgents()` (or sibling) into each hosted agent's ElizaOS runtime on restart. Metadata namespace `subtype: 'protocol-knowledge'` (distinct from `subtype: 'world-knowledge'`). After write, `agentOrchestrator.stopAgent()` so next chat reload picks up the new manual.
 
-**Goes in `knowledge[]`:** "what ClawVille is", 4 modes, 10 buildings + teachers + focus, Moltbook connect flow, Milady sideload, ClawToken rules, leaderboard weights, quest/bounty state, tutorial. **Not in:** domain-specific skill knowledge (cron, RAG, MCP, Solana signing) — those live in the 10 residents. Rule: "point at the teacher, don't replace." Orientation → Nori. Internal (migration, refactor, infra) → skip.
+**NOT in this rule (separate category — earned/exportable per-agent skills):** gameplay knowledge accumulated through play (blackjack hand outcomes, basic-strategy mastery, count-tracking accuracy, teacher knowledge fetched by visiting a building). That's per-agent ElizaOS memory, written continuously during play via `createMemory()` for hosted agents and via optional ingestion of protocol-event payloads for connected agents. Per-agent state, not world-state — no same-diff requirement.
+
+**Rationale:** the game's competitive premise is that agents with up-to-date manual knowledge play the right game, and accumulated earned-skill memory gives them an edge. Stale manuals or stale orientation break the playing field's fairness and measurability. Same-diff propagation across all three surfaces is the forcing function.
 
 ## Tech Stack
 
@@ -249,116 +225,41 @@ Required in `.env.local`:
 
 **Optional:** `OPENAI_API_KEY` — fallback ONLY for `npc-conversation-engine.ts` on Gemini `GEMINI_MAX_FAILURES` backoff. **Removed:** `ANTHROPIC_API_KEY` (ultrathink decommission).
 
-## Deployment — Hetzner + Coolify
+## Deployment — Hetzner + Coolify (Railway decommissioned)
 
-**Production is self-hosted Hetzner CCX13 on Coolify. Railway decommissioned.**
+**Two Hetzner VPS hosts (since 2026-05-23 migration):**
+- **Production:** `$PROD_VPS_IP` (in gitignored `scripts/deploy/.env.deploy`), Hillsboro, Coolify 4.1, key `~/.ssh/clawville_hillsboro` (passphrase — `ssh-add` once into Windows ssh-agent). Serves `clawville.world` + `api.clawville.world`. Admin UI `https://coolify-new.clawville.world`.
+- **Staging:** `$STAGING_VPS_IP`, Ashburn, Coolify 4.0, key `~/.ssh/clawville_deploy`. Serves `staging.clawville.world` + `api-staging.clawville.world`. Admin UI `https://coolify-staging.clawville.world`.
 
-### Infrastructure
+Both Traefik + Let's Encrypt, Cloudflare-proxied DNS, **shared Supabase Postgres** — staging writes mutate prod data. Both pull from `github.com/ItachiDevv/ClawVille` via the same shared deploy key, auto-deploy on push. Web ~3–5 min, api ~2–3 min.
 
-Two Hetzner VPS hosts since the 2026-05-23 migration:
+**Coolify app IDs:** prod api=2, prod web=3, staging api=3, staging web=4. UUIDs in `.env.deploy` as `API_APP_UUID`, `WEB_APP_UUID`, `STAGING_API_APP_UUID`, `STAGING_WEB_APP_UUID`.
 
-- **Production:** `<PROD_VPS_IP>` (real IP in gitignored `scripts/deploy/.env.deploy` under `PROD_VPS_IP=…`), Hillsboro (us-west), Coolify 4.1, SSH key `~/.ssh/clawville_hillsboro` (passphrase-protected — load into Windows ssh-agent once with `ssh-add`). Serves `clawville.world` + `api.clawville.world`.
-- **Staging:** `<STAGING_VPS_IP>` (real IP in `STAGING_VPS_IP=…`), Ashburn, Coolify 4.0, SSH key `~/.ssh/clawville_deploy`. Serves `staging.clawville.world` + `api-staging.clawville.world`. Shares prod Supabase — any staging write touches prod data.
+### Deploy paths
 
-Both run Coolify + Traefik + Let's Encrypt. DNS: Cloudflare-proxied (subdomains in `scripts/deploy/.env.deploy`). DB: Supabase Postgres (endpoint in env) — single instance shared across prod + staging.
+- **Normal:** `git push origin staging` (or `master` per staging-first rule) — Coolify auto-builds.
+- **Force-redeploy / missed webhook:** SSH in → `bash scripts/deploy/clawville-deploy.sh` (wraps api+web tinker).
+- **Env-var add/update:** SSH in → tinker. **Encryption gotcha (2026-05-23):** NEVER write `environment_variables.value` via raw `DB::update()` + `\Crypt::encryptString()` — Coolify's model mutator re-encrypts on save; raw writes break `decrypt()` and crash builds with `unserialize()` exception. ALWAYS `$row->value = $plain; $row->save();`.
+- **Skip-ahead-to-latest:** Coolify queue is FIFO — when you push B while A still building for the same app, kill A's PID and mark its `ApplicationDeploymentQueue` row `cancelled-by-user`. Never cancel the latest. Recipe in `docs/DEPLOY-HETZNER.md`.
+- **DB migrations:** `bun run db:push` from root before deploy if you touched `packages/database/src/schema/*.ts` — Coolify does NOT run migrations. Destructive needs `ELIZA_ALLOW_DESTRUCTIVE_MIGRATIONS=true`.
+- **`@clawville/database` local rebuild:** `cd packages/database && bun run build` for scripts importing the package (Coolify builds from source on deploy).
 
-### Coolify app IDs
+### Provisioning + emergency
 
-| Env | App | ID | UUID env-var | Domain |
-|---|---|---|---|---|
-| prod    | api | 2 | `API_APP_UUID`         | `api.clawville.world` (+ `api-new.clawville.world`) |
-| prod    | web | 3 | `WEB_APP_UUID`         | `clawville.world` (+ `new.clawville.world`) |
-| staging | api | 3 | `STAGING_API_APP_UUID` | `api-staging.clawville.world` |
-| staging | web | 4 | `STAGING_WEB_APP_UUID` | `staging.clawville.world` |
+Scripts in `scripts/deploy/`: `provision-hetzner.sh`, `setup-cloudflare-dns.sh`, `bootstrap-server.sh`, `add-zone-to-cloudflare.sh`. `.env.deploy` gitignored.
 
-Both pull from `github.com/ItachiDevv/ClawVille` via the SAME shared deploy key (exported from old box, imported on new), auto-deploy on push to `master`. Web ~3–5 min, api ~2–3 min. Verify: `curl -sS --ssl-no-revoke https://api.clawville.world/health`.
+Emergency SSH: PROD `ssh root@$PROD_VPS_IP` (key in ssh-agent), STAGING `ssh -i ~/.ssh/clawville_deploy root@$STAGING_VPS_IP`. Container restart `docker restart <name>` · logs `docker logs --tail 200 <name>` · Coolify DB `docker exec coolify-db psql -U coolify -d coolify -c "<sql>"` (NOT the ClawVille app DB — that's Supabase) · full playbook `docs/DEPLOY-HETZNER.md`.
 
-**Coolify admin UIs:** prod at `https://coolify-new.clawville.world` (eventually rename to `coolify.clawville.world` after migration soaks 24h), staging at `https://coolify-staging.clawville.world`. Both use the same admin credentials (mirrored on migration).
+**Rollback (prod → staging):** staging box still has the prod containers/DB. Flip Cloudflare A records back to `$STAGING_VPS_IP` (~30s), then add prod FQDNs to staging Coolify apps (`Application::find(3|4)->fqdn = '…,https://clawville.world'` + redeploy).
 
-### Deploy paths — prefer the script, do not hand-roll tinker
+### Browser verification after every deploy — MANDATORY
 
-| Goal | Path |
-|---|---|
-| Normal code deploy | `git push origin master` (Coolify auto-build via deploy key) |
-| Force-redeploy / missed webhook | SSH in, then `bash scripts/deploy/clawville-deploy.sh` (wraps both api+web tinker) |
-| Env-var add/update | SSH in, run targeted tinker per template below |
+(1) Wait for Coolify (~3–5 min) or `curl -sS --ssl-no-revoke https://api.clawville.world/health`. (2) Open `https://clawville.world/game` via Chrome MCP. (3) Check buildings visible + not clipped, camera zoom, player spawn center, FPS > 50, no console errors. (4) If Chrome disconnected, tell user "I cannot verify — please screenshot". (5) NEVER claim a visual fix done without seeing it.
 
-### Skip-ahead-to-latest — MANDATORY when newer commits queue up
+### Local + Windows gotchas
 
-Coolify is FIFO. Push B while A is building → A finishes serving its superseded bundle, then B starts (total ≈ build_A + build_B, plus a window where users get stale A).
-
-**Rule:** when you push and an older-commit deploy is still `in_progress`/`queued` for the same app, cancel it. Only the latest commit finishes. Two-step cancel:
-
-```bash
-# Prereq: ssh-add ~/.ssh/clawville_hillsboro once (passphrase prompt locally), then the
-# Windows ssh-agent caches it for all subsequent root@$PROD_VPS_IP commands.
-# For STAGING, use `-i ~/.ssh/clawville_deploy root@$STAGING_VPS_IP` instead.
-
-# (a) Find redundant pids:
-ssh root@$PROD_VPS_IP \
-  "docker exec coolify php artisan tinker --execute='use App\\Models\\ApplicationDeploymentQueue; \$q = ApplicationDeploymentQueue::orderByDesc(\"id\")->limit(8)->get([\"id\",\"application_id\",\"status\",\"commit\",\"current_process_id\"]); foreach(\$q as \$r) { echo \$r->id.\"|app\".\$r->application_id.\"|\".\$r->status.\"|\".substr(\$r->commit,0,7).\"|pid:\".\$r->current_process_id.PHP_EOL; }'"
-
-# (b) Kill the build container PID + mark queue rows cancelled (only for
-#     rows whose commit ≠ your latest HEAD; never touch the latest):
-ssh root@$PROD_VPS_IP \
-  "kill -9 <PID> 2>/dev/null; docker exec coolify php artisan tinker --execute='use App\\Models\\ApplicationDeploymentQueue; foreach([<IDs>] as \$id) { \$r = ApplicationDeploymentQueue::find(\$id); if (\$r) { \$r->status = \"cancelled-by-user\"; \$r->save(); echo \"canceled \$id\".PHP_EOL; } }'"
-```
-
-The latest-commit row is the ONLY survivor — starts immediately if nothing else running, else runs next. Never cancel the latest, even if it's been running a while. Cancel older same-app rows `queued` first, then `in_progress`. Apply per app: prod api (id 2) and prod web (id 3) have independent queues; staging api (id 3) and staging web (id 4) on the old box have their own.
-
-### Manual redeploy via SSH tinker (env-var add/update — swap the closure body)
-
-Load IP first: `source scripts/deploy/.env.deploy` (gitignored). PROD uses `~/.ssh/clawville_hillsboro` (passphrase — must be in ssh-agent), STAGING uses `~/.ssh/clawville_deploy`. Then:
-
-```bash
-# PROD (new box, IDs are api=2 web=3)
-ssh root@$PROD_VPS_IP \
-  "docker exec coolify php artisan tinker --execute='
-    use App\\Models\\Application;
-    \$app = Application::find(2);  // prod: 2=api, 3=web
-    \$uuid = (string) new \\Visus\\Cuid2\\Cuid2;
-    queue_application_deployment(application: \$app, deployment_uuid: \$uuid, is_api: true, no_questions_asked: true);
-    echo \$uuid . PHP_EOL;
-  '"
-```
-
-> **Encryption gotcha (learned 2026-05-23 migration):** never write to `environment_variables.value` via raw `DB::update()` with `\Crypt::encryptString(...)` — Coolify's `EnvironmentVariable` model has a mutator that re-encrypts on save, and raw-SQL writes produce values the model's decrypt accessor cannot read, which breaks `queue_application_deployment` with a `decrypt()` exception during the build step. ALWAYS write via the Eloquent model: `$row->value = '<plaintext>'; $row->save();` — the mutator handles encryption correctly.
-
-For env-var add/update, replace the closure body with `$app->environment_variables()->create([...])` (or `update([...])` on the existing row). Coolify auto-rebuilds on next deploy.
-
-**Database package rebuild:** Coolify builds from source so `packages/database/dist/` auto-refreshes on deploy. For local scripts importing `@clawville/database`, run `cd packages/database && bun run build` first.
-
-### Provisioning scripts (`scripts/deploy/`)
-
-`provision-hetzner.sh` (VPS via Hetzner Cloud API, `HCLOUD_TOKEN`) · `setup-cloudflare-dns.sh` (A records web/api/coolify) · `bootstrap-server.sh` (Docker + Coolify + firewall on fresh Ubuntu) · `add-zone-to-cloudflare.sh` (add zone + swap Namecheap NS) · `.env.deploy` gitignored.
-
-### Database migrations
-
-`bun run db:push` from root before deploy if you touched `packages/database/src/schema/*.ts`. Coolify does NOT run migrations — Drizzle push is manual. Destructive migrations need `ELIZA_ALLOW_DESTRUCTIVE_MIGRATIONS=true`.
-
-### Testing rule — NEVER run `bun run dev` locally
-
-Intel Iris Xe crashes on the Three.js/WebGPU scene and needs a PC restart. Always: push → Coolify auto-deploys → test against prod.
-
-### MANDATORY: Browser verification after every deploy
-
-After every push to master, verify visually. NOT optional.
-
-1. Wait for Coolify (~3–5 min, or `curl -sS --ssl-no-revoke https://api.clawville.world/health`).
-2. Open `https://clawville.world/game` via Chrome MCP or ask for screenshot.
-3. Check: buildings visible + not clipped by atmosphere planes, camera zoom works, player spawns center, FPS > 50, no console errors.
-4. If Chrome extension disconnected, tell user "I cannot verify — please screenshot".
-5. **NEVER claim a visual fix done without seeing it.** "I pushed" ≠ verification.
-
-### Emergency access
-
-PROD: `ssh root@$PROD_VPS_IP` (uses `~/.ssh/clawville_hillsboro` via Windows ssh-agent — `ssh-add` it once with the passphrase, persists across reboots). STAGING: `ssh -i ~/.ssh/clawville_deploy root@$STAGING_VPS_IP`. Load both IPs from `scripts/deploy/.env.deploy`. Container restart `docker restart <name>` · Coolify UI subdomains in env (`https://coolify-new.clawville.world` prod, `https://coolify-staging.clawville.world` staging) · logs `docker logs --tail 200 <name>` · Coolify DB `docker exec coolify-db psql -U coolify -d coolify -c "<sql>"` (NOT the ClawVille app DB — that's Supabase) · full playbook `docs/DEPLOY-HETZNER.md`.
-
-**Emergency rollback (prod → staging):** the staging box has the exact same containers/DB as it had when it was prod. To revert, flip Cloudflare A records for `clawville.world` + `api.clawville.world` from `$PROD_VPS_IP` back to `$STAGING_VPS_IP` (~30s propagation), then re-add the prod FQDNs to the staging Coolify apps (Application::find(3 for api / 4 for web)->fqdn = '...,https://clawville.world' + redeploy). Reverse the same steps once the prod issue is fixed.
-
-### Curl gotcha on Windows
-
-Git Bash uses schannel and rejects CRLs — always pass `--ssl-no-revoke`.
+NEVER run `bun run dev` locally — Iris Xe crashes the Three.js/WebGPU scene → PC restart. Push → staging → prod.
+Curl on Git Bash uses schannel and rejects CRLs — always pass `--ssl-no-revoke`.
 
 ## Game Modes
 
@@ -385,82 +286,19 @@ These topics used to be inlined here; they're now owned by the canonical doc tha
 
 TypeScript strict. Bun for API, Next.js for web. Kebab-case files, PascalCase components. Zod on all API inputs. `@/` path alias in web; `@clawville/*` for packages.
 
-## Memory System
+## Memory System (Itachi)
 <!-- itachi-memory-system v5 -->
 
-Itachi Memory System for persistent context across sessions. Two pools: `<project>` (this repo) and `_global` (cross-project).
+Persistent context across sessions. Two pools: `<project>` (this repo) and `_global` (cross-project). Full rules + recipes in the `itachi-init` skill — block is intentionally short here.
 
-### RULE 1 — Recall before you act (MANDATORY)
+- **RULE 1 — Recall before you act.** Before unfamiliar work (new MCP/lang/framework, accumulating topic, error you may have solved before) query both pools via `POST $ITACHI_API_URL/api/memory/search` with `category: "lesson"`. Use `/recall <query>` as the shortcut. Higher `metadata.confidence` + `outcome:"success"` = stronger signal.
+- **RULE 2 — Record immediately.** Quirk/constraint/API surprise / non-obvious pattern / A-failed-B-succeeded → `POST /api/memory/create` with `category: "lesson"`, one-line `summary` ("WHEN X, DO Y because Z"), `metadata.confidence` 0.6 start, `lesson_category ∈ tool-usage|debugging|pattern|constraint|workflow`. `_global` for tool quirks; `<project>` for repo-specific.
+- **RULE 3 — Category discipline.** Only `lesson` is production. Don't write `task_lesson` or `project_rule`.
+- **RULE 4 — Drive the test yourself.** User reports broken → reproduce end-to-end YOURSELF before asking. Confirm via DOM/logs, not speculation.
+- **RULE 5 — Never assume, always verify.** Banned without same-response evidence: "should work", "looks right", "logic is correct", "I'm confident…". Verify by claim: "deployed" → `curl`/grep bundle; "build passes" → exit code; "env set" → `ssh env | grep`; "memory written" → query DB. When verification is impossible, say so.
+- **RULE 6 — Find a bug, fix it.** Noticing ≠ fixing. No "note for later". Small → this session. Exhaust alternatives before escalating ("Tried A→err X, B→err Y, C→err Z, blocked by …").
 
-BEFORE working on anything unfamiliar, query memory for prior lessons. Don't pay the learning tax twice.
-
-**Triggers:** new MCP; unfamiliar lang/framework; specific system (Supabase RLS, systemd, Docker, Coolify, Helius, Stripe…); accumulating topic (`tokenomics`, `vrm-avatars`, `webgpu-shaders`…); error you may have solved before; unfamiliar API/SDK.
-
-**How** — query both pools (POST `$ITACHI_API_URL/api/memory/search`, `Authorization: Bearer $ITACHI_API_KEY`):
-
-```bash
-for SCOPE in "$(basename "$PWD")" "_global"; do
-  curl -sk -X POST "$ITACHI_API_URL/api/memory/search" \
-    -H "Content-Type: application/json" -H "Authorization: Bearer $ITACHI_API_KEY" \
-    -d "{\"project\":\"$SCOPE\",\"category\":\"lesson\",\"limit\":8,\"query\":\"$TOPIC\"}" \
-    --max-time 5
-done
-```
-
-Higher `metadata.confidence` + `outcome:"success"` = stronger signal.
-
-### RULE 2 — Record what you learn the moment you learn it (MANDATORY)
-
-DURING the session, record anything non-obvious immediately. Session-end extraction is a safety net, not primary capture.
-
-**Triggers:** error solved that docs don't cover; quirk/constraint/API surprise; non-obvious pattern that worked; A failed + B succeeded (record both + why); correct default/flag/version after trial.
-
-**Scope:** `_global` for tool/lang/framework quirks (default); `<current project>` for repo-specific.
-
-POST `/api/memory/create` with `category: "lesson"`, one-line `summary` ("WHEN X, DO Y because Z"), `content`, `metadata.confidence` start 0.6, `lesson_category` ∈ `tool-usage|debugging|pattern|constraint|workflow`. Confidence climbs when confirmed, decays when contradicted.
-
-### RULE 3 — Category discipline
-
-Only production lesson category is `lesson`. Do NOT write to `task_lesson` or `project_rule` (test fixtures, zero prod rows).
-
-### RULE 4 — Drive the test yourself, don't loop the user (MANDATORY)
-
-User reports broken → reproduce end-to-end YOURSELF before asking. "Try again / what do you see" loops are laziness. Confirm via DOM/logs, not speculation. Telegram repro + ElizaOS silent-`Response discarded` signatures live in `_global` — `/recall telegram itachi`.
-
-### RULE 5 — NEVER ASSUME, always verify (MANDATORY)
-
-Before saying something is true/working/deployed/fixed — VERIFY. "I think / should / probably / likely works" are banned unless followed by verification.
-
-**Verify by claim:** "Deployed" → `curl` or grep bundle. "Fix works" → rerun repro, attach output. "Build passes" → `bun run build`, paste exit code. "Tests pass" → `bun test`, show summary. "Env var set" → `ssh … env | grep FOO`. "File contains X" → `Read`. "Function Y exists" → `Grep`. "Telegram got msg" → `journalctl` AND DOM. "Memory written" → query DB or `/api/…/get`, show row.
-
-Banned without same-response evidence: "should work", "looks right", "logic is correct", "probably compiles", "I'm confident…".
-
-When verification is impossible, say so: *"I wrote the code but can't run the build here."* Claiming it works without checking is lying — has cost thousands.
-
-### RULE 6 — NEVER BE LAZY: if you find a bug, fix it (MANDATORY)
-
-Zero tolerance for noticing a problem and walking past. Every bug, broken check, stale comment, wrong env var, dead import, failing test, misconfig gets fixed — even if not asked.
-
-- **Noticing ≠ fixing.** Senior engineer wouldn't leave it? Fix it.
-- **Never "note it for later."** Small → fix this session. Large → real task (Supabase, Linear, GitHub).
-- **Check BEFORE acting.** Read code, grep helpers, check current state.
-- **Before declaring done:** run, read output, verify end-to-end. Tests + build + live-check green = done.
-- **Exhaust alternatives before escalating.** Evidence only: "Tried A (error X), B (error Y), C (error Z) — blocked by [root cause]".
-- **No surface audits.** Claim = you actually read + ran + checked.
-
-### Commands
-
-- `/recall <query>` — semantic search (wraps RULE 1)
-- `/recent [limit]` — recent changes in this project
-- `/itachi-init` — install/upgrade this block
-
-### Memory Categories
-
-Auto-categorized by PostToolUse hook: `code_change` (default), `test`, `documentation` (.md), `dependencies` (package.json, requirements.txt). Lessons + facts use `category: "lesson"` (knowledge) or `category: "fact"` (state).
-
-### Disable
-
-Create `.no-memory` at project root.
+Commands: `/recall <query>`, `/recent [limit]`, `/itachi-init` (install/upgrade). Disable: create `.no-memory` at project root.
 
 ## Audit + Bug Fix Policy
 
