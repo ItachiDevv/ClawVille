@@ -26,13 +26,6 @@ export interface BuildingSpec {
   posX: number;
   /** World-space Z position (centre of ring slot). */
   posZ: number;
-  /**
-   * Hand-curated representative RGB colour [0..1] for the meshlet rasterizer.
-   * Used when texture sampling fails (compressed/KTX2 textures aren't drawable
-   * to a 2D canvas → sampleTextureAverage returns null). Pick a colour that
-   * matches the building's overall visual identity in /game.
-   */
-  fallbackColor: [number, number, number];
 }
 
 const R = 4160;
@@ -43,18 +36,18 @@ function ringPos(slot: number): [number, number] {
 }
 
 export const MESHLET_BUILDINGS: BuildingSpec[] = [
-  { id: 'visual-creation',    model: '/models/pineapple-house-opt1.glb?v=2',                    posX: ringPos(0)[0],  posZ: ringPos(0)[1],  fallbackColor: [1.00, 0.80, 0.25] }, // pineapple yellow
-  { id: 'code-development',   model: '/models/chum-bucket-v2-opt1.glb?v=2',                     posX: ringPos(1)[0],  posZ: ringPos(1)[1],  fallbackColor: [0.35, 0.65, 0.65] }, // teal chum-bucket
-  { id: 'mcp-tool-use',       model: '/models/krusty-krab-v2-opt1.glb?v=2',                     posX: ringPos(2)[0],  posZ: ringPos(2)[1],  fallbackColor: [0.75, 0.55, 0.30] }, // krusty-krab tan/brown
+  { id: 'visual-creation',    model: '/models/pineapple-house-opt1.glb?v=2',                    posX: ringPos(0)[0],  posZ: ringPos(0)[1] },
+  { id: 'code-development',   model: '/models/chum-bucket-v2-opt1.glb?v=2',                     posX: ringPos(1)[0],  posZ: ringPos(1)[1] },
+  { id: 'mcp-tool-use',       model: '/models/krusty-krab-v2-opt1.glb?v=2',                     posX: ringPos(2)[0],  posZ: ringPos(2)[1] },
   // Slot 3 (messaging-channels / sandy-treedome) — disabled, see header.
-  { id: 'api-integrations',   model: '/models/salty-spitoon-opt1.glb?v=2',                      posX: ringPos(4)[0],  posZ: ringPos(4)[1],  fallbackColor: [0.80, 0.80, 0.85] }, // salty-spitoon light grey
-  { id: 'app-publishing',     model: '/models/boating-school-opt1.glb?v=2',                     posX: ringPos(5)[0],  posZ: ringPos(5)[1],  fallbackColor: [0.55, 0.45, 0.30] }, // boating-school brown wood
-  { id: 'cron-automation',    model: '/models/patty-building-opt1.glb?v=2',                     posX: ringPos(6)[0],  posZ: ringPos(6)[1],  fallbackColor: [0.85, 0.65, 0.35] }, // patty-building golden bun
-  { id: 'deployment-ops',     model: '/models/building-lighthouse-opt1.glb?v=2',                posX: ringPos(7)[0],  posZ: ringPos(7)[1],  fallbackColor: [0.90, 0.25, 0.25] }, // lighthouse red
-  { id: 'claw-arcade',        model: '/models/arcade/claw-arcade-exterior-opt1.glb?v=2',        posX: ringPos(8)[0],  posZ: ringPos(8)[1],  fallbackColor: [0.55, 0.30, 0.80] }, // arcade purple/neon
-  { id: 'cove',               model: '/models/cove/cove-exterior-opt1.glb?v=2',                 posX: ringPos(9)[0],  posZ: ringPos(9)[1],  fallbackColor: [0.30, 0.70, 0.85] }, // cove aqua
-  { id: 'agent-security',     model: '/models/patricks-rock-v2-opt1.glb?v=3',                   posX: ringPos(10)[0], posZ: ringPos(10)[1], fallbackColor: [0.95, 0.55, 0.65] }, // patrick pink
-  { id: 'memory-rag',         model: '/models/squidward-house-opt1.glb?v=3',                    posX: ringPos(11)[0], posZ: ringPos(11)[1], fallbackColor: [0.50, 0.50, 0.60] }, // squidward stone-grey
+  { id: 'api-integrations',   model: '/models/salty-spitoon-opt1.glb?v=2',                      posX: ringPos(4)[0],  posZ: ringPos(4)[1] },
+  { id: 'app-publishing',     model: '/models/boating-school-opt1.glb?v=2',                     posX: ringPos(5)[0],  posZ: ringPos(5)[1] },
+  { id: 'cron-automation',    model: '/models/patty-building-opt1.glb?v=2',                     posX: ringPos(6)[0],  posZ: ringPos(6)[1] },
+  { id: 'deployment-ops',     model: '/models/building-lighthouse-opt1.glb?v=2',                posX: ringPos(7)[0],  posZ: ringPos(7)[1] },
+  { id: 'claw-arcade',        model: '/models/arcade/claw-arcade-exterior-opt1.glb?v=2',        posX: ringPos(8)[0],  posZ: ringPos(8)[1] },
+  { id: 'cove',               model: '/models/cove/cove-exterior-opt1.glb?v=2',                 posX: ringPos(9)[0],  posZ: ringPos(9)[1] },
+  { id: 'agent-security',     model: '/models/patricks-rock-v2-opt1.glb?v=3',                   posX: ringPos(10)[0], posZ: ringPos(10)[1] },
+  { id: 'memory-rag',         model: '/models/squidward-house-opt1.glb?v=3',                    posX: ringPos(11)[0], posZ: ringPos(11)[1] },
 ];
 
 /** World-space target max-dim for each building. Matches arena-buildings.tsx BUILDING_TARGET_HEIGHT. */
