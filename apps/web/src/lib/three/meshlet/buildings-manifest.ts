@@ -26,6 +26,13 @@ export interface BuildingSpec {
   posX: number;
   /** World-space Z position (centre of ring slot). */
   posZ: number;
+  yOffset?: number;
+  rotY?: number;
+  rotYOffset?: number;
+  targetMaxDim?: number;
+  pivotZBias?: number;
+  childScaleOverrides?: Record<string, number>;
+  bodyAnchorChild?: string;
 }
 
 const R = 4160;
@@ -36,18 +43,18 @@ function ringPos(slot: number): [number, number] {
 }
 
 export const MESHLET_BUILDINGS: BuildingSpec[] = [
-  { id: 'visual-creation',    model: '/models/pineapple-house-opt1.glb?v=2',                    posX: ringPos(0)[0],  posZ: ringPos(0)[1] },
-  { id: 'code-development',   model: '/models/chum-bucket-v2-opt1.glb?v=2',                     posX: ringPos(1)[0],  posZ: ringPos(1)[1] },
-  { id: 'mcp-tool-use',       model: '/models/krusty-krab-v2-opt1.glb?v=2',                     posX: ringPos(2)[0],  posZ: ringPos(2)[1] },
+  { id: 'visual-creation',    model: '/models/pineapple-house-opt1.glb?v=2',                    posX: ringPos(0)[0],  posZ: ringPos(0)[1],  rotY:  0.000, targetMaxDim: 1100 },
+  { id: 'code-development',   model: '/models/chum-bucket-v2-opt1.glb?v=2',                     posX: ringPos(1)[0],  posZ: ringPos(1)[1],  rotY: -0.522, targetMaxDim: 1400 },
+  { id: 'mcp-tool-use',       model: '/models/krusty-krab-v2-opt1.glb?v=2',                     posX: ringPos(2)[0],  posZ: ringPos(2)[1],  rotY: -1.049, targetMaxDim: 1400, childScaleOverrides: { 'The_Krusty_Krab': 1.5 }, bodyAnchorChild: 'The_Krusty_Krab' },
   // Slot 3 (messaging-channels / sandy-treedome) — disabled, see header.
-  { id: 'api-integrations',   model: '/models/salty-spitoon-opt1.glb?v=2',                      posX: ringPos(4)[0],  posZ: ringPos(4)[1] },
-  { id: 'app-publishing',     model: '/models/boating-school-opt1.glb?v=2',                     posX: ringPos(5)[0],  posZ: ringPos(5)[1] },
-  { id: 'cron-automation',    model: '/models/patty-building-opt1.glb?v=2',                     posX: ringPos(6)[0],  posZ: ringPos(6)[1] },
-  { id: 'deployment-ops',     model: '/models/building-lighthouse-opt1.glb?v=2',                posX: ringPos(7)[0],  posZ: ringPos(7)[1] },
-  { id: 'claw-arcade',        model: '/models/arcade/claw-arcade-exterior-opt1.glb?v=2',        posX: ringPos(8)[0],  posZ: ringPos(8)[1] },
-  { id: 'cove',               model: '/models/cove/cove-exterior-opt1.glb?v=2',                 posX: ringPos(9)[0],  posZ: ringPos(9)[1] },
-  { id: 'agent-security',     model: '/models/patricks-rock-v2-opt1.glb?v=3',                   posX: ringPos(10)[0], posZ: ringPos(10)[1] },
-  { id: 'memory-rag',         model: '/models/squidward-house-opt1.glb?v=3',                    posX: ringPos(11)[0], posZ: ringPos(11)[1] },
+  { id: 'api-integrations',   model: '/models/salty-spitoon-opt1.glb?v=2',                      posX: ringPos(4)[0],  posZ: ringPos(4)[1],  rotY: -2.093, rotYOffset: -Math.PI / 2, targetMaxDim: 2500 },
+  { id: 'app-publishing',     model: '/models/boating-school-opt1.glb?v=2',                     posX: ringPos(5)[0],  posZ: ringPos(5)[1],  rotY: -2.620, rotYOffset: Math.PI / 2, targetMaxDim: 1000 },
+  { id: 'cron-automation',    model: '/models/patty-building-opt1.glb?v=2',                     posX: ringPos(6)[0],  posZ: ringPos(6)[1],  rotY:  3.142, targetMaxDim: 2200 },
+  { id: 'deployment-ops',     model: '/models/building-lighthouse-opt1.glb?v=2',                posX: ringPos(7)[0],  posZ: ringPos(7)[1],  rotY:  2.620, targetMaxDim: 1400 },
+  { id: 'claw-arcade',        model: '/models/arcade/claw-arcade-exterior-opt1.glb?v=2',        posX: ringPos(8)[0],  posZ: ringPos(8)[1],  rotY:  2.093, targetMaxDim: 1100 },
+  { id: 'cove',               model: '/models/cove/cove-exterior-opt1.glb?v=2',                 posX: ringPos(9)[0],  posZ: ringPos(9)[1],  rotY:  1.571, targetMaxDim: 1300 },
+  { id: 'agent-security',     model: '/models/patricks-rock-v2-opt1.glb?v=3',                   posX: ringPos(10)[0], posZ: ringPos(10)[1], rotY:  1.049, targetMaxDim: 1100 },
+  { id: 'memory-rag',         model: '/models/squidward-house-opt1.glb?v=3',                    posX: ringPos(11)[0], posZ: ringPos(11)[1], rotY:  0.522, targetMaxDim: 1700, childScaleOverrides: { "Squidward's_House": 1.7 }, bodyAnchorChild: "Squidward's_House" },
 ];
 
 /** World-space target max-dim for each building. Matches arena-buildings.tsx BUILDING_TARGET_HEIGHT. */

@@ -17,7 +17,6 @@ import {
 } from '@/lib/three/experimental/nanite-rasterizer';
 import {
   MESHLET_BUILDINGS,
-  BUILDING_TARGET_HEIGHT,
   type BuildingSpec,
 } from './buildings-manifest';
 import {
@@ -26,6 +25,7 @@ import {
   materialVisualSource,
   type MaterialVisualSource,
 } from './build-buildings-atlas';
+import { prepareMeshletBuildingScene } from './building-scene-normalization';
 
 export interface BuildingLoadStatus {
   id: string;
@@ -92,44 +92,6 @@ function geometryTriCount(geometry: THREE.BufferGeometry): number {
     : (geometry.attributes.position?.count ?? 0) / 3;
 }
 
-function computeSceneGeometryBox(root: THREE.Object3D): THREE.Box3 | null {
-  root.updateMatrixWorld(true);
-  const box = new THREE.Box3();
-  const tmp = new THREE.Vector3();
-  let found = false;
-
-  root.traverse((obj) => {
-    if (!(obj as THREE.Mesh).isMesh) return;
-    const mesh = obj as THREE.Mesh;
-    const posAttr = mesh.geometry?.attributes?.['position'] as THREE.BufferAttribute | undefined;
-    if (!posAttr) return;
-    for (let i = 0; i < posAttr.count; i++) {
-      tmp.fromBufferAttribute(posAttr, i).applyMatrix4(mesh.matrixWorld);
-      box.expandByPoint(tmp);
-      found = true;
-    }
-  });
-
-  return found ? box : null;
-}
-
-function buildBuildingWorldMatrix(spec: BuildingSpec, sceneBox: THREE.Box3): THREE.Matrix4 {
-  const maxDim = Math.max(
-    sceneBox.max.x - sceneBox.min.x,
-    sceneBox.max.y - sceneBox.min.y,
-    sceneBox.max.z - sceneBox.min.z,
-  );
-  const buildingScale = maxDim > 0.001 ? BUILDING_TARGET_HEIGHT / maxDim : 1;
-  const centreX = (sceneBox.min.x + sceneBox.max.x) / 2;
-  const centreZ = (sceneBox.min.z + sceneBox.max.z) / 2;
-  const minY = sceneBox.min.y;
-
-  return new THREE.Matrix4()
-    .makeTranslation(spec.posX, 0, spec.posZ)
-    .multiply(new THREE.Matrix4().makeScale(buildingScale, buildingScale, buildingScale))
-    .multiply(new THREE.Matrix4().makeTranslation(-centreX, -minY, -centreZ));
-}
-
 function copyFullGeometry(source: THREE.BufferGeometry): THREE.BufferGeometry | null {
   const posAttr = source.attributes['position'] as THREE.BufferAttribute | undefined;
   if (!posAttr) return null;
@@ -192,10 +154,8 @@ function copyGeometryGroup(source: THREE.BufferGeometry, group: { start: number;
 }
 
 function collectBuildingSubMeshes(spec: BuildingSpec, root: THREE.Object3D): LoadedSubMesh[] {
-  const sceneBox = computeSceneGeometryBox(root);
+  const { worldMatrix: buildingWorldMatrix, sceneBox } = prepareMeshletBuildingScene(spec, root);
   if (!sceneBox) return [];
-
-  const buildingWorldMatrix = buildBuildingWorldMatrix(spec, sceneBox);
   const subMeshes: LoadedSubMesh[] = [];
   let meshOrdinal = 0;
 

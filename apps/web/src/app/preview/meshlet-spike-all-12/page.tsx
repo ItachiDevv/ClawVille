@@ -59,6 +59,11 @@ import {
   materialVisualSource,
   type MaterialVisualSource,
 } from '@/lib/three/meshlet/build-buildings-atlas';
+import {
+  MESHLET_BUILDINGS,
+  type BuildingSpec,
+} from '@/lib/three/meshlet/buildings-manifest';
+import { prepareMeshletBuildingScene } from '@/lib/three/meshlet/building-scene-normalization';
 
 // ---------------------------------------------------------------------------
 // Building manifest — mirrors the 12-slot ring from BUILDING_MODELS in arena-buildings.tsx.
@@ -71,57 +76,7 @@ import {
 // computeBuildingScale pipeline, which is out of scope for Phase A.
 // ---------------------------------------------------------------------------
 
-interface BuildingSpec {
-  /** Zone id for logging. */
-  id: string;
-  /** URL of the -opt1.glb file (relative to public/). */
-  model: string;
-  /** World-space X position (centre of ring slot). */
-  posX: number;
-  /** World-space Z position (centre of ring slot). */
-  posZ: number;
-}
-
-// Ring radius 4160 wu, 12 slots × 30°, starting North (0°).
-// Slot angle θ = -π/2 + slot × π/6; posX = R × sin(θ); posZ = -R × cos(θ)
-// (Three.js +Z is toward viewer / South in ClawVille convention).
-const R = 4160;
-
-function ringPos(slot: number): [number, number] {
-  const theta = (-Math.PI / 2) + slot * (Math.PI / 6);
-  return [R * Math.cos(theta), R * Math.sin(theta)];
-}
-
-const BUILDINGS: BuildingSpec[] = [
-  // Slot 0 — N — visual-creation (pineapple-house)
-  { id: 'visual-creation',    model: '/models/pineapple-house-opt1.glb?v=2',                    posX: ringPos(0)[0],  posZ: ringPos(0)[1] },
-  // Slot 1 — NNE — code-development (chum-bucket)
-  { id: 'code-development',   model: '/models/chum-bucket-v2-opt1.glb?v=2',                     posX: ringPos(1)[0],  posZ: ringPos(1)[1] },
-  // Slot 2 — ENE — mcp-tool-use (krusty-krab)
-  { id: 'mcp-tool-use',       model: '/models/krusty-krab-v2-opt1.glb?v=2',                     posX: ringPos(2)[0],  posZ: ringPos(2)[1] },
-  // Slot 3 — E — messaging-channels (sandy-treedome) — DISABLED for spike
-  // 2026-05-24: source GLB is a 1.1M-tri Draco vertex-color tree, 22× the rest
-  // of the scene combined. User will replace with a lower-poly variant later.
-  // Until then, spike runs with 11 buildings to measure meshlet path without
-  // this single outlier dragging the average.
-  // { id: 'messaging-channels', model: '/models/sandy-treedome-v3-opt1.glb?v=2',                  posX: ringPos(3)[0],  posZ: ringPos(3)[1] },
-  // Slot 4 — ESE — api-integrations (salty-spitoon)
-  { id: 'api-integrations',   model: '/models/salty-spitoon-opt1.glb?v=2',                      posX: ringPos(4)[0],  posZ: ringPos(4)[1] },
-  // Slot 5 — SSE — app-publishing (boating-school)
-  { id: 'app-publishing',     model: '/models/boating-school-opt1.glb?v=2',                     posX: ringPos(5)[0],  posZ: ringPos(5)[1] },
-  // Slot 6 — S — cron-automation (patty-building)
-  { id: 'cron-automation',    model: '/models/patty-building-opt1.glb?v=2',                     posX: ringPos(6)[0],  posZ: ringPos(6)[1] },
-  // Slot 7 — SSW — deployment-ops (lighthouse)
-  { id: 'deployment-ops',     model: '/models/building-lighthouse-opt1.glb?v=2',                posX: ringPos(7)[0],  posZ: ringPos(7)[1] },
-  // Slot 8 — WSW — claw-arcade
-  { id: 'claw-arcade',        model: '/models/arcade/claw-arcade-exterior-opt1.glb?v=2',        posX: ringPos(8)[0],  posZ: ringPos(8)[1] },
-  // Slot 9 — W — cove
-  { id: 'cove',               model: '/models/cove/cove-exterior-opt1.glb?v=2',                 posX: ringPos(9)[0],  posZ: ringPos(9)[1] },
-  // Slot 10 — WNW — agent-security (patricks-rock)
-  { id: 'agent-security',     model: '/models/patricks-rock-v2-opt1.glb?v=3',                   posX: ringPos(10)[0], posZ: ringPos(10)[1] },
-  // Slot 11 — NNW — memory-rag (squidward-house)
-  { id: 'memory-rag',         model: '/models/squidward-house-opt1.glb?v=3',                    posX: ringPos(11)[0], posZ: ringPos(11)[1] },
-];
+const BUILDINGS: BuildingSpec[] = MESHLET_BUILDINGS;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -196,45 +151,6 @@ function geometryTriCount(geometry: THREE.BufferGeometry): number {
     : (geometry.attributes.position?.count ?? 0) / 3;
 }
 
-function computeSceneGeometryBox(root: THREE.Object3D): THREE.Box3 | null {
-  root.updateMatrixWorld(true);
-  const box = new THREE.Box3();
-  const tmp = new THREE.Vector3();
-  let found = false;
-
-  root.traverse((obj) => {
-    if (!(obj as THREE.Mesh).isMesh) return;
-    const mesh = obj as THREE.Mesh;
-    const posAttr = mesh.geometry?.attributes?.['position'] as THREE.BufferAttribute | undefined;
-    if (!posAttr) return;
-    for (let i = 0; i < posAttr.count; i++) {
-      tmp.fromBufferAttribute(posAttr, i).applyMatrix4(mesh.matrixWorld);
-      box.expandByPoint(tmp);
-      found = true;
-    }
-  });
-
-  return found ? box : null;
-}
-
-function buildBuildingWorldMatrix(spec: BuildingSpec, sceneBox: THREE.Box3): THREE.Matrix4 {
-  const BUILDING_TARGET_HEIGHT = 1000;
-  const maxDim = Math.max(
-    sceneBox.max.x - sceneBox.min.x,
-    sceneBox.max.y - sceneBox.min.y,
-    sceneBox.max.z - sceneBox.min.z,
-  );
-  const buildingScale = maxDim > 0.001 ? BUILDING_TARGET_HEIGHT / maxDim : 1;
-  const centreX = (sceneBox.min.x + sceneBox.max.x) / 2;
-  const centreZ = (sceneBox.min.z + sceneBox.max.z) / 2;
-  const minY = sceneBox.min.y;
-
-  return new THREE.Matrix4()
-    .makeTranslation(spec.posX, 0, spec.posZ)
-    .multiply(new THREE.Matrix4().makeScale(buildingScale, buildingScale, buildingScale))
-    .multiply(new THREE.Matrix4().makeTranslation(-centreX, -minY, -centreZ));
-}
-
 function copyFullGeometry(source: THREE.BufferGeometry): THREE.BufferGeometry | null {
   const posAttr = source.attributes['position'] as THREE.BufferAttribute | undefined;
   if (!posAttr) return null;
@@ -295,10 +211,8 @@ function copyGeometryGroup(source: THREE.BufferGeometry, group: { start: number;
 }
 
 function collectBuildingSubMeshes(spec: BuildingSpec, root: THREE.Object3D): LoadedSubMesh[] {
-  const sceneBox = computeSceneGeometryBox(root);
+  const { worldMatrix: buildingWorldMatrix, sceneBox } = prepareMeshletBuildingScene(spec, root);
   if (!sceneBox) return [];
-
-  const buildingWorldMatrix = buildBuildingWorldMatrix(spec, sceneBox);
   const subMeshes: LoadedSubMesh[] = [];
   let meshOrdinal = 0;
 
@@ -619,6 +533,7 @@ function BareAll12Canvas({ buildings, onFps, onPixelProbe, onMergedReady, onStat
 // ---------------------------------------------------------------------------
 
 export default function MeshletSpikeAll12Page() {
+  const [mounted, setMounted] = useState(false);
   const [webGpuAbsent] = useState<boolean>(() => {
     if (typeof navigator === 'undefined') return false;
     return !('gpu' in navigator);
@@ -633,6 +548,10 @@ export default function MeshletSpikeAll12Page() {
   const [fps, setFps] = useState(0);
   const [pixelProbe, setPixelProbe] = useState<string>('—');
   const [mergedAsset, setMergedAsset] = useState<MergedMeshletAsset | null>(null);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
   const totalTris = Array.from(buildingStatuses.values()).reduce((s, b) => s + b.tris, 0);
   const loadedCount = Array.from(buildingStatuses.values()).filter((b) => b.status === 'loaded').length;
@@ -649,7 +568,7 @@ export default function MeshletSpikeAll12Page() {
     : 0;
 
   useEffect(() => {
-    if (webGpuAbsent) return;
+    if (!mounted || webGpuAbsent) return;
 
     const onProgress = (update: BuildingStatus) => {
       setBuildingStatuses((prev) => {
@@ -663,7 +582,7 @@ export default function MeshletSpikeAll12Page() {
       setLoadedBuildings(buildings);
       setLoadComplete(true);
     });
-  }, [webGpuAbsent]);
+  }, [mounted, webGpuAbsent]);
 
   // Dispose source BufferGeometries on unmount / reload.
   useEffect(() => {
@@ -678,6 +597,10 @@ export default function MeshletSpikeAll12Page() {
   const handlePixelProbe = useCallback((m: string) => setPixelProbe(m), []);
   const handleMergedReady = useCallback((a: MergedMeshletAsset) => setMergedAsset(a), []);
   const handleStatus = useCallback((s: string) => setStatus(s), []);
+
+  if (!mounted) {
+    return <div style={styles.root} />;
+  }
 
   // --- WebGPU absent ---
   if (webGpuAbsent) {

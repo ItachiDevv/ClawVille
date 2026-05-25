@@ -34,7 +34,7 @@ export interface SubMeshInput {
 }
 
 export type MaterialVisualSource =
-  | { kind: 'texture'; texture: THREE.Texture; label?: string }
+  | { kind: 'texture'; texture: THREE.Texture; tint?: [number, number, number, number]; label?: string }
   | { kind: 'solid'; color: [number, number, number, number]; label?: string };
 
 export interface SubMeshAtlasResult {
@@ -106,7 +106,14 @@ function textureDedupeKey(tex: THREE.Texture): object | string {
 }
 
 function visualSourceDedupeKey(source: MaterialVisualSource): object | string {
-  if (source.kind === 'texture') return textureDedupeKey(source.texture);
+  if (source.kind === 'texture') {
+    const key = textureDedupeKey(source.texture);
+    const tint = source.tint ?? [1, 1, 1, 1];
+    const tintKey = tint.map((v) => v.toFixed(5)).join(',');
+    if (typeof key === 'string') return `${key}|tint:${tintKey}`;
+    if (tintKey === '1.00000,1.00000,1.00000,1.00000') return key;
+    return source.texture;
+  }
   const [r, g, b, a] = source.color;
   return `solid:${r.toFixed(5)},${g.toFixed(5)},${b.toFixed(5)},${a.toFixed(5)}`;
 }
@@ -137,6 +144,24 @@ function drawVisualSource(
   if (!img) return false;
   try {
     ctx.drawImage(img as any, innerX, innerY, innerSize, innerSize);
+    const tint = source.tint ?? [1, 1, 1, 1];
+    const needsTint = Math.abs(tint[0] - 1) > 1e-4 || Math.abs(tint[1] - 1) > 1e-4 || Math.abs(tint[2] - 1) > 1e-4;
+    const needsOpacity = Math.abs(tint[3] - 1) > 1e-4;
+    if (needsTint) {
+      const tintColor = cssColorFromLinearRgba([tint[0], tint[1], tint[2], 1]);
+      ctx.save();
+      ctx.globalCompositeOperation = 'multiply';
+      ctx.fillStyle = tintColor;
+      ctx.fillRect(innerX, innerY, innerSize, innerSize);
+      ctx.restore();
+    }
+    if (needsOpacity) {
+      ctx.save();
+      ctx.globalCompositeOperation = 'destination-in';
+      ctx.fillStyle = `rgba(0, 0, 0, ${THREE.MathUtils.clamp(tint[3], 0, 1)})`;
+      ctx.fillRect(innerX, innerY, innerSize, innerSize);
+      ctx.restore();
+    }
     return true;
   } catch {
     return false;
@@ -147,24 +172,29 @@ export function materialVisualSource(material: THREE.Material | null): MaterialV
   if (!material) return null;
   const m = material as any;
 
-  const texture =
-    (m.map as THREE.Texture | undefined)
-    ?? (m.emissiveMap as THREE.Texture | undefined)
-    ?? (m.specularColorMap as THREE.Texture | undefined)
-    ?? (m.sheenColorMap as THREE.Texture | undefined)
-    ?? null;
+  const color = m.color as THREE.Color | undefined;
+  const opacity = typeof m.opacity === 'number' ? m.opacity : 1;
+  const texture = (m.map as THREE.Texture | undefined) ?? null;
   if (texture && canDrawTextureToCanvas(texture)) {
-    return { kind: 'texture', texture, label: texture === m.map ? 'map' : 'secondary-map' };
+    const tint = color?.isColor ? [color.r, color.g, color.b, opacity] as [number, number, number, number] : [1, 1, 1, opacity];
+    return { kind: 'texture', texture, tint, label: 'map' };
   }
 
-  const color = m.color as THREE.Color | undefined;
   if (color?.isColor) {
-    const opacity = typeof m.opacity === 'number' ? m.opacity : 1;
     return {
       kind: 'solid',
       color: [color.r, color.g, color.b, opacity],
       label: 'base-color',
     };
+  }
+
+  const secondaryTexture =
+    (m.emissiveMap as THREE.Texture | undefined)
+    ?? (m.specularColorMap as THREE.Texture | undefined)
+    ?? (m.sheenColorMap as THREE.Texture | undefined)
+    ?? null;
+  if (secondaryTexture && canDrawTextureToCanvas(secondaryTexture)) {
+    return { kind: 'texture', texture: secondaryTexture, tint: [1, 1, 1, opacity], label: 'secondary-map' };
   }
 
   return null;
