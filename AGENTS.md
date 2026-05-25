@@ -204,17 +204,28 @@ Sea-themed OpenClaw game on ElizaOS. Users create an avatar, explore a 3D/2D sea
 
 Core requirement — do NOT remove or stub. Avatar + location chat MUST use ElizaOS runtime (`@clawville/agent-runtime`); orchestrator MUST use `createElizaRuntime`. Deploy to persistent-server platforms (Hetzner+Coolify, Render, Fly.io) — NOT Vercel serverless. Never replace with direct API calls or stubs.
 
-## MANDATORY: Gameplay changes update system agents' knowledge in the same diff
+## MANDATORY: Game-flow changes propagate to all three operational-knowledge surfaces in the same diff
 
-**System agents** = world-wide NPCs not tied to a building. Today: Nori the Town Guide, slug `town-guide`. Plural scaffolding from day 1 (future: arena host, quest giver, lore-keeper). Their expertise is ClawVille ITSELF (modes, 10 buildings + teachers, economy, connect flow, daily login, tutorial, paused features). Knowledge in `packages/agent-templates/src/locations/<slug>.ts` → `knowledge[]`, registered in `SYSTEM_AGENT_TEMPLATES`, chunked into ElizaOS RAG on every API boot via `ensureSystemAgents()` in `apps/api/src/services/system-npc-seeder.ts`.
+Any new game flow, world addition, or edit to a current mechanic (modes, buildings, currencies, quests, wager rules, casino/arcade games, table rules, connect flow, disconnect/timer behavior, leaderboard weights, paused features, etc.) MUST update **all three** in the same diff. PRs missing any are not mergeable.
 
-**Rule:** any gameplay/world change (new mode, building, token formula, quest type, paused feature, connect flow, renamed building, moved NPC, leaderboard weight) MUST update the correct system agent's `knowledge[]` same diff. Town Guide: `packages/agent-templates/src/locations/town-guide.ts`. Skip = broken onboarding.
+**1. Nori the Town Guide's `knowledge[]`** — world-orientation surface for any visitor (hosted/connected agent or human).
+- Path: `packages/agent-templates/src/locations/town-guide.ts` → `knowledge[]`, registered in `SYSTEM_AGENT_TEMPLATES`. Re-seeded by `ensureSystemAgents()` in `apps/api/src/services/system-npc-seeder.ts` on every API boot.
+- Chat: `POST /api/chat/system/:slug` (lookup `getSystemAgent(slug)`; platform type `'system-agent'`; slug at `customization.slug`; no `location_agents` row; 3D click at `apps/web/src/lib/three/town-guide.tsx`). Rate limit: +1 ClawToken + 5 XP/turn, capped one per `(userId, slug)`/60s (`system-agent-reward-limiter.ts`). Logs `chatType: 'system-agent'` — does NOT inflate `/dash` teacher-chat metric (teachers = 10 residents only).
+- Goes in `knowledge[]`: what ClawVille is, 4 modes, 10 buildings + teachers + focus, Moltbook connect flow, Milady sideload, ClawToken rules, leaderboard weights, casino/arcade games + table rules, quest/bounty state, tutorial. **Not in:** domain-specific skill knowledge (cron, RAG, MCP, Solana signing) — those live in the 10 residents. Rule: "point at the teacher, don't replace."
+- Add new system agent: write template → register in `SYSTEM_AGENT_TEMPLATES` → ship; `ensureSystemAgents()` upserts on boot. Partial unique index `platform_agents_system_singleton` enforces one row per (userId, type='system-agent', slug).
 
-**Chat:** `POST /api/chat/system/:slug`. Lookup `getSystemAgent(slug)`. Platform type `'system-agent'`; slug at `customization.slug`. No `location_agents` row. 3D click handler `apps/web/src/lib/three/town-guide.tsx`. **Rate limit:** +1 ClawToken + 5 XP per turn, capped one per `(userId, slug)` per 60s (`system-agent-reward-limiter.ts`). Logs `chatType: 'system-agent'` — does NOT inflate `/dash` teacher-chat metric (teachers = 10 residents only).
+**2. Connection SKILL.md** — protocol/operating manual for external/magic-link agents. HOW to connect and play, NOT in-world earned skill.
+- Contains: auth handshake, WebSocket protocol, event/action schemas, current table rules, disconnect/timer behavior, advisor-mode contract, content-hash version.
+- **CRITICAL:** fetched fresh on every connect with version tracking. Stale manual = connected agent playing a different game than hosted agents = playing field broken.
+- **Distinct from** existing per-building `/api/agent/:sid/skills/:bid/skill.md` endpoints — those serve in-world earned teacher knowledge, NOT the protocol manual.
+- **Infra gap:** the global connection SKILL.md endpoint + content-hash manifest does NOT exist today. Until shipped, content updates are required (rule binds), but eager-on-connect enforcement is TODO/best-effort.
 
-**Add new system agent:** (1) write template, (2) register in `SYSTEM_AGENT_TEMPLATES`, (3) ship — `ensureSystemAgents()` upserts on boot. Partial unique index `platform_agents_system_singleton` guarantees one row per (userId, type='system-agent', slug).
+**3. Hosted-agent runtime knowledge of #2** — server-side equivalent for hosted Milady/Hermes runtimes on our boxes.
+- Same content as #2, different delivery: `createMemory()` injection via extension of `ensureSystemAgents()` (or sibling) into each hosted agent's ElizaOS runtime on restart. Metadata namespace `subtype: 'protocol-knowledge'` (distinct from `subtype: 'world-knowledge'`). After write, `agentOrchestrator.stopAgent()` so next chat reload picks up the new manual.
 
-**Goes in `knowledge[]`:** one-sentence "what ClawVille is", 4 game modes, 10 buildings + teachers + focus, Moltbook connect flow, Milady sideload path, ClawToken rules, leaderboard weights, quest/bounty state, tutorial. **Does NOT go in:** domain-specific skill knowledge (cron, RAG, MCP, Solana signing) — those live in the 10 residents. Rule: "point at the teacher, don't replace." Orientation → update Nori. Internal (migration, refactor, infra) → skip.
+**NOT in this rule (separate category — earned/exportable per-agent skills):** gameplay knowledge accumulated through play (blackjack hand outcomes, basic-strategy mastery, count-tracking accuracy, teacher knowledge fetched by visiting a building). That's per-agent ElizaOS memory, written continuously during play via `createMemory()` for hosted agents and via optional ingestion of protocol-event payloads for connected agents. Per-agent state, not world-state — no same-diff requirement.
+
+**Rationale:** the game's competitive premise is that agents with up-to-date manual knowledge play the right game, and accumulated earned-skill memory gives them an edge. Stale manuals or stale orientation break the playing field's fairness and measurability. Same-diff propagation across all three surfaces is the forcing function.
 
 ## Tech Stack
 
