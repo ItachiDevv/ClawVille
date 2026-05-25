@@ -109,14 +109,12 @@ const SKY_COLOR = new THREE.Color(0x0a2a4a); // Deeper ocean blue
 
 // Phase B meshlet integration — gated by URL query ?meshlets=1.
 // When ON: <ArenaBuildings> is replaced by <MeshletBuildingsR3F>, which
-// runs the Nanite-style WebGPU compute rasterizer as a high-priority
-// useFrame hook INSIDE R3F's tree. Both the rasterizer and R3F's scene
-// render write to the same WebGPU swap-chain texture each frame (rasterizer
-// first, R3F's scene second). One canvas, one renderer — see file header
-// of meshlet-buildings-r3f.tsx for the architectural reasoning.
+// appends a transparent WebGPU overlay canvas for the Nanite-style compute
+// rasterizer while the main R3F world remains on the stable WebGL/WebGLBackend
+// path. See meshlet-buildings-r3f.tsx for the architectural reasoning.
 // History: spike measured 167 FPS at full LOD 0 vs /game baseline ~18 FPS = ~9× lift.
-// Layered-canvas v1 attempt broke /game (R3F rendered nothing visible) — pivoted
-// to in-tree v1.1 architecture.
+// In-tree WebGPU v1.1 blanked /game on Iris Xe, so the guarded path isolates
+// WebGPU to the building overlay only.
 const USE_MESHLET_BUILDINGS: boolean =
   typeof window !== 'undefined' &&
   new URLSearchParams(window.location.search).get('meshlets') === '1';
@@ -805,11 +803,11 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
       {/* Shared world geometry */}
       <ArenaTerrain />
       {/* Phase B: when ?meshlets=1, ArenaBuildings is replaced by
-          <MeshletBuildingsR3F /> which runs the rasterizer as a high-priority
-          useFrame hook inside R3F's frame loop. Collision colliders are built
-          from tilemap data not meshes, so dropping ArenaBuildings does NOT
-          let players walk through buildings (world-colliders.ts line 248). */}
-      {USE_MESHLET_BUILDINGS ? <MeshletBuildingsR3F /> : <ArenaBuildings />}
+          <MeshletBuildingsR3F /> which renders meshlet buildings into a separate
+          transparent WebGPU overlay canvas. Collision colliders are built from
+          tilemap data not meshes, so dropping ArenaBuildings does NOT let players
+          walk through buildings (world-colliders.ts line 248). */}
+      {USE_MESHLET_BUILDINGS && !WEBGPU_ABSENT ? <MeshletBuildingsR3F /> : <ArenaBuildings />}
       <ArenaNpcs />
       <ArenaLocationNpcs />
 
@@ -946,15 +944,12 @@ const WEBGPU_ABSENT =
 // The query is opt-in so the default-safe WebGL2 path stays in place for
 // all other users. Once we've validated the WebGPU path is stable across
 // sessions, the LOW_END_GPU_DETECTED branch can be removed from FORCE_WEBGL.
-// ?meshlets=1 ALSO implies WebGPU override — the rasterizer's TSL compute
-// shaders emit WGSL pointer-atomic syntax (`atomicStore(&buf, 0u)`) which
-// CANNOT compile to GLSL. If the renderer falls back to WebGL2 on a
-// low-end GPU detect, the rasterizer floods the console with shader compile
-// errors and renders nothing. So treat ?meshlets=1 as ?webgpu=1 too.
+// ?meshlets=1 no longer implies a main-scene WebGPU override. The meshlet
+// renderer owns a separate WebGPU overlay canvas; forcing the whole /game R3F
+// scene through WebGPU currently blanks the local Iris Xe path.
 const FORCE_WEBGPU_OVERRIDE =
   typeof window !== 'undefined' &&
-  (new URLSearchParams(window.location.search).get('webgpu') === '1' ||
-   new URLSearchParams(window.location.search).get('meshlets') === '1');
+  new URLSearchParams(window.location.search).get('webgpu') === '1';
 const FORCE_WEBGL = FORCE_WEBGPU_OVERRIDE
   ? (IOS_SAFARI || WEBGPU_ABSENT)              // override: drop the low-end gate
   : (IOS_SAFARI || WEBGPU_ABSENT || LOW_END_GPU_DETECTED);

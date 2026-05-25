@@ -1,94 +1,95 @@
 // @ts-nocheck
 /**
- * <MeshletBuildingsR3F /> — in-tree R3F component that runs the meshlet
- * rasterizer as a high-priority useFrame hook so it renders into R3F's OWN
- * WebGPU swap-chain texture BEFORE R3F's end-of-frame scene render.
+ * <MeshletBuildingsR3F /> — R3F-mounted coordinator for a separate transparent
+ * WebGPU overlay canvas that draws only the meshlet building layer.
  *
- * Why in-tree instead of layered canvases:
- *   The first Phase B attempt mounted a separate <canvas> with its own
- *   WebGPURenderer underneath R3F's canvas. That broke /game?meshlets=1 —
- *   R3F's canvas rendered nothing visible. Suspected cause: two competing
- *   WebGPU adapter requests on the same page, or DOM stacking semantics
- *   that put the meshlet layer on top of (rather than underneath) R3F.
- *
- *   The proper architecture is what the original Three.js example does:
- *   ONE renderer, ONE swap chain. Multiple render passes per frame all
- *   write to the same WebGPU texture; the browser presents that texture
- *   on the next vsync.
- *
- *   useFrame's renderPriority lets us order passes within a single R3F
- *   frame. We pick a NEGATIVE priority so we run BEFORE R3F's default
- *   render pass (priority 0). Order per frame:
- *     1. Our useFrame: rasterizer.render() → fills swap-chain with buildings
- *     2. R3F default: gl.render(scene, camera) → adds terrain/NPCs/etc on top
- *
- *   Because R3F's render uses autoClear=true by default, it would CLEAR
- *   the rasterizer's output before drawing. So we set autoClear=false in
- *   onCreated (one-time), and accept that the rasterizer itself owns the
- *   clear (it clears as part of its compute setup).
- *
- *   Caveat: setting autoClear=false means R3F's scene.background (sky color)
- *   only paints on the first frame. We compensate by setting scene.background
- *   to null and letting the rasterizer's quad-mesh clear color provide the
- *   default world background.
+ * Why not share R3F's renderer:
+ *   /game?webgpu=1 currently renders a blank world on the local Iris Xe path,
+ *   while the standalone meshlet preview renders correctly. Therefore the
+ *   guarded meshlet path must keep the production R3F scene on its existing
+ *   WebGL/WebGLBackend path and use WebGPU only for the building overlay.
  */
 'use client';
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three/webgpu';
 import { NaniteRasterizer } from '@/lib/three/experimental/nanite-rasterizer';
 import { useMergedBuildingsAsset } from './use-merged-buildings-asset';
 import { RING_BOUNDING_RADIUS } from './buildings-manifest';
 
-/**
- * Render priority for the meshlet pass. Negative = runs BEFORE R3F's default
- * scene render (priority 0+). When ANY useFrame has a non-zero renderPriority,
- * R3F switches from "always auto-render scene at end of frame" to "manual" —
- * the highest-priority hook is expected to drive rendering. So with a single
- * negative-priority hook here, we ALSO need to render R3F's scene ourselves
- * after the rasterizer pass. See useFrame body for that explicit call.
- */
-const MESHLET_RENDER_PRIORITY = -10;
-
 export default function MeshletBuildingsR3F() {
-  const { gl, scene, camera, size } = useThree();
+  const { gl, size } = useThree();
   const { asset, state } = useMergedBuildingsAsset();
+  const [overlayCanvas, setOverlayCanvas] = useState<HTMLCanvasElement | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const rendererRef = useRef<THREE.WebGPURenderer | null>(null);
   const rasterizerRef = useRef<NaniteRasterizer | null>(null);
   const readyRef = useRef(false);
+  const inFlightRef = useRef(false);
+  const lastSizeRef = useRef({ width: 0, height: 0, dpr: 0 });
 
   useEffect(() => {
-    if (!asset || !gl) return;
+    const host = gl.domElement.parentElement;
+    if (!host) return;
+
+    const previousPosition = host.style.position;
+    if (!previousPosition) host.style.position = 'relative';
+
+    gl.domElement.style.position = 'absolute';
+    gl.domElement.style.inset = '0';
+    gl.domElement.style.zIndex = '0';
+
+    const canvas = document.createElement('canvas');
+    canvas.dataset.meshletBuildingsLayer = 'true';
+    Object.assign(canvas.style, {
+      position: 'absolute',
+      inset: '0',
+      width: '100%',
+      height: '100%',
+      zIndex: '1',
+      pointerEvents: 'none',
+      background: 'transparent',
+    });
+    host.appendChild(canvas);
+    canvasRef.current = canvas;
+    setOverlayCanvas(canvas);
+
+    return () => {
+      canvasRef.current = null;
+      setOverlayCanvas(null);
+      canvas.remove();
+      if (!previousPosition) host.style.position = previousPosition;
+    };
+  }, [gl]);
+
+  useEffect(() => {
+    if (!asset || !overlayCanvas) return;
     let cancelled = false;
 
     (async () => {
       try {
-        const renderer = gl as unknown as THREE.WebGPURenderer;
-
-        // Guard: rasterizer's TSL compute uses WGSL pointer-atomic syntax that
-        // CANNOT compile to GLSL. If the renderer fell back to WebGL2 (low-end
-        // GPU detect, iOS Safari, no WebGPU adapter), bail out silently rather
-        // than flooding console with hundreds of shader compile errors and
-        // rendering nothing. ?meshlets=1 SHOULD also force-WebGPU via the
-        // FORCE_WEBGPU_OVERRIDE check in World3DCanvas, but defense-in-depth.
-        const isWebGPU = (renderer as any).isWebGPURenderer === true &&
-                         (renderer as any).backend?.constructor?.name !== 'WebGLBackend';
-        if (!isWebGPU) {
-          console.warn('[MeshletBuildingsR3F] renderer is not WebGPU — skipping rasterizer init. The rasterizer requires WebGPU; the WebGL fallback path is not supported.');
+        if (typeof navigator === 'undefined' || !('gpu' in navigator)) {
+          console.warn('[MeshletBuildingsR3F] WebGPU unavailable — skipping meshlet overlay.');
           return;
         }
 
-        // v1.7 architecture: R3F renders the FULL scene first (sky + terrain +
-        // NPCs + player + everything else) as normal — autoClear, scene
-        // background, all default. Then our useFrame runs at HIGH renderPriority
-        // (after R3F's auto-render is disabled), manually drives R3F's render
-        // FIRST, then overlays the rasterizer LAST with transparent non-hit
-        // pixels (alpha=0) so the R3F scene shows through where no building
-        // is drawn. This is the cleanest compositing model and also means both
-        // renders use the SAME camera state at the SAME instant in the rAF
-        // tick → no 1-frame building-position lag during rotation.
+        const renderer = new THREE.WebGPURenderer({
+          canvas: overlayCanvas,
+          antialias: false,
+          alpha: true,
+          forceWebGL: false,
+        });
+        rendererRef.current = renderer;
+        (renderer as any).setClearColor?.(0x000000, 0);
+        (renderer as any).autoClear = true;
+        await renderer.init();
+        if (cancelled) {
+          renderer.dispose();
+          return;
+        }
 
-        console.log('[MeshletBuildingsR3F] init complete — backend:',
+        console.log('[MeshletBuildingsR3F] overlay init complete — backend:',
           (renderer as any).backend?.constructor?.name,
           'isWebGPU:', (renderer as any).isWebGPURenderer);
 
@@ -131,45 +132,52 @@ export default function MeshletBuildingsR3F() {
       readyRef.current = false;
       rasterizerRef.current?.dispose();
       rasterizerRef.current = null;
+      rendererRef.current?.dispose();
+      rendererRef.current = null;
     };
-  }, [gl, asset]);
+  }, [asset, overlayCanvas]);
 
-  // v1.8: HIGH renderPriority (10) — disables R3F's auto-render. We then
-  // manually drive: 1) R3F scene first (with autoClear=true to clear+render),
-  // 2) rasterizer overlay second WITH autoClear=false so its internal
-  // quadMesh.render() doesn't wipe the scene we just rendered.
   const frameCountRef = useRef(0);
   useFrame((state) => {
-    // 1. R3F scene — autoClear=true (default) clears swap chain then renders
-    //    sky + terrain + NPCs + player + everything else.
-    state.gl.render(state.scene, state.camera);
+    const renderer = rendererRef.current;
+    const rasterizer = rasterizerRef.current;
+    const overlayCanvas = canvasRef.current;
+    if (!readyRef.current || !renderer || !rasterizer || !overlayCanvas || inFlightRef.current) return;
 
-    // 2. Meshlet rasterizer overlay (transparent where no building drawn).
-    //    MUST set autoClear=false before this — otherwise the rasterizer's
-    //    internal quadMesh.render(renderer) call uses the renderer's current
-    //    autoClear (true), which clears the framebuffer BEFORE drawing the
-    //    transparent quad → wipes everything we just rendered.
-    if (!readyRef.current || !rasterizerRef.current) return;
+    const dpr = Math.min(window.devicePixelRatio || 1, 1);
+    const width = Math.max(1, Math.round(size.width));
+    const height = Math.max(1, Math.round(size.height));
+    const last = lastSizeRef.current;
+    if (last.width !== width || last.height !== height || last.dpr !== dpr) {
+      last.width = width;
+      last.height = height;
+      last.dpr = dpr;
+      overlayCanvas.width = Math.round(width * dpr);
+      overlayCanvas.height = Math.round(height * dpr);
+      (renderer as any).setPixelRatio?.(dpr);
+      renderer.setSize(width, height, false);
+    }
+
     frameCountRef.current += 1;
     const logThisFrame = frameCountRef.current === 1 ||
                          frameCountRef.current === 60 ||
                          frameCountRef.current === 300;
-    const _prevAutoClear = (state.gl as any).autoClear;
-    (state.gl as any).autoClear = false;
-    try {
-      rasterizerRef.current.render(
-        state.camera as THREE.PerspectiveCamera,
-        state.size.width,
-        state.size.height,
-      );
-      if (logThisFrame) console.log('[MeshletBuildingsR3F] frame', frameCountRef.current, 'rasterizer overlay OK');
-    } catch (err) {
+    inFlightRef.current = true;
+    (renderer as any).autoClear = true;
+    rasterizer.render(
+      state.camera as THREE.PerspectiveCamera,
+      width,
+      height,
+    ).then(() => {
+      if (logThisFrame) console.log('[MeshletBuildingsR3F] frame', frameCountRef.current, 'transparent overlay OK');
+    }).catch((err) => {
       console.error('[MeshletBuildingsR3F] rasterizer render failed:', err);
-    } finally {
-      (state.gl as any).autoClear = _prevAutoClear;
-    }
-  }, 10);
+    }).finally(() => {
+      inFlightRef.current = false;
+    });
+  });
 
-  // No DOM output — we live entirely inside R3F's render loop.
+  // No React DOM output — the overlay canvas is imperatively attached next to
+  // R3F's canvas so the main scene can stay on the stable WebGL path.
   return null;
 }
