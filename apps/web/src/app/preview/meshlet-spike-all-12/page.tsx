@@ -53,7 +53,12 @@ import {
   NaniteRasterizer,
   type MergedMeshletAsset,
 } from '@/lib/three/experimental/nanite-rasterizer';
-import { buildSubMeshAtlas, canDrawTextureToCanvas } from '@/lib/three/meshlet/build-buildings-atlas';
+import {
+  buildSubMeshAtlas,
+  canDrawMaterialVisualSource,
+  materialVisualSource,
+  type MaterialVisualSource,
+} from '@/lib/three/meshlet/build-buildings-atlas';
 
 // ---------------------------------------------------------------------------
 // Building manifest — mirrors the 12-slot ring from BUILDING_MODELS in arena-buildings.tsx.
@@ -132,8 +137,8 @@ interface LoadedSubMesh {
   worldMatrix: THREE.Matrix4;
   /** Triangle count for this sub-mesh source geometry. */
   triCount: number;
-  /** Drawable sub-mesh diffuse texture, deduped by image identity in the atlas builder. */
-  diffuse: THREE.Texture;
+  /** Drawable sub-mesh visual source, deduped by image identity or color in the atlas builder. */
+  source: MaterialVisualSource;
   materialName: string;
 }
 
@@ -158,17 +163,15 @@ function materialAt(material: THREE.Material | THREE.Material[], index: number):
   return material ?? null;
 }
 
-function materialMap(material: THREE.Material | null): THREE.Texture | null {
-  return ((material as any)?.map as THREE.Texture | undefined) ?? null;
-}
-
 function dumpMeshletSubMeshesOnce(subMeshes: LoadedSubMesh[]) {
   if ((globalThis as any).__meshletSubMeshDumped) return;
   (globalThis as any).__meshletSubMeshDumped = true;
 
   const dump = subMeshes.map((sub) => {
     const m = sub.worldMatrix.elements;
-    const img = ((sub.diffuse as any)?.image ?? (sub.diffuse as any)?.source?.data) as any;
+    const img = sub.source.kind === 'texture'
+      ? (((sub.source.texture as any)?.image ?? (sub.source.texture as any)?.source?.data) as any)
+      : null;
     const posAttr = sub.geometry.attributes['position'] as THREE.BufferAttribute | undefined;
     return {
       buildingId: sub.spec.id,
@@ -176,7 +179,7 @@ function dumpMeshletSubMeshesOnce(subMeshes: LoadedSubMesh[]) {
       vertexCount: posAttr?.count ?? 0,
       triCount: sub.triCount,
       worldMatrixFirstRow: [m[0], m[4], m[8], m[12]],
-      hasDiffuseMap: true,
+      visualSource: sub.source.kind,
       diffuseImageSrc: img?.src ?? '(canvas/bitmap/null)',
       diffuseImageWidth: img?.width ?? null,
       diffuseImageHeight: img?.height ?? null,
@@ -315,8 +318,8 @@ function collectBuildingSubMeshes(spec: BuildingSpec, root: THREE.Object3D): Loa
       for (let groupIdx = 0; groupIdx < groups.length; groupIdx++) {
         const group = groups[groupIdx];
         const material = materialAt(materials, group.materialIndex ?? 0);
-        const diffuse = materialMap(material);
-        if (!canDrawTextureToCanvas(diffuse)) continue;
+        const source = materialVisualSource(material);
+        if (!canDrawMaterialVisualSource(source)) continue;
         const geometry = copyGeometryGroup(sourceGeo, group);
         if (!geometry) continue;
         const triCount = geometryTriCount(geometry);
@@ -332,14 +335,14 @@ function collectBuildingSubMeshes(spec: BuildingSpec, root: THREE.Object3D): Loa
           geometry,
           worldMatrix: meshWorldMatrix.clone(),
           triCount,
-          diffuse,
+          source,
           materialName: material?.name ?? '',
         });
       }
     } else {
       const material = materialAt(materials, 0);
-      const diffuse = materialMap(material);
-      if (!canDrawTextureToCanvas(diffuse)) return;
+      const source = materialVisualSource(material);
+      if (!canDrawMaterialVisualSource(source)) return;
       const geometry = copyFullGeometry(sourceGeo);
       if (!geometry) return;
       const triCount = geometryTriCount(geometry);
@@ -355,7 +358,7 @@ function collectBuildingSubMeshes(spec: BuildingSpec, root: THREE.Object3D): Loa
         geometry,
         worldMatrix: meshWorldMatrix.clone(),
         triCount,
-        diffuse,
+        source,
         materialName: material?.name ?? '',
       });
     }
@@ -419,7 +422,7 @@ function loadAllBuildings(
   });
 
   return Promise.all(promises).then((results) => {
-    const subMeshes = results.flat().filter((sub) => canDrawTextureToCanvas(sub.diffuse));
+    const subMeshes = results.flat().filter((sub) => canDrawMaterialVisualSource(sub.source));
     dumpMeshletSubMeshesOnce(subMeshes);
     return subMeshes;
   });
@@ -483,7 +486,7 @@ function BareAll12Canvas({ buildings, onFps, onPixelProbe, onMergedReady, onStat
         buildings.map((b) => ({
           id: b.id,
           geometry: b.geometry,
-          diffuse: b.diffuse,
+          source: b.source,
         })),
       );
       console.log(

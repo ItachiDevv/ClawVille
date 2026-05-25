@@ -29,9 +29,13 @@ export interface SubMeshInput {
   id: string;
   /** Geometry whose UV attribute will be remapped in-place into its atlas slot. */
   geometry: THREE.BufferGeometry;
-  /** Drawable diffuse/albedo map from the GLB material. Dedupe is by image identity. */
-  diffuse: THREE.Texture;
+  /** Visual source from the GLB material. Dedupe is by image identity or color. */
+  source: MaterialVisualSource;
 }
+
+export type MaterialVisualSource =
+  | { kind: 'texture'; texture: THREE.Texture; label?: string }
+  | { kind: 'solid'; color: [number, number, number, number]; label?: string };
 
 export interface SubMeshAtlasResult {
   texture: THREE.Texture;
@@ -55,7 +59,7 @@ export interface SubMeshAtlasResult {
 
 interface AtlasSlot {
   index: number;
-  diffuse: THREE.Texture;
+  source: MaterialVisualSource;
   drawn: boolean;
 }
 
@@ -101,6 +105,76 @@ function textureDedupeKey(tex: THREE.Texture): object | string {
   return (img as object | null) ?? tex;
 }
 
+function visualSourceDedupeKey(source: MaterialVisualSource): object | string {
+  if (source.kind === 'texture') return textureDedupeKey(source.texture);
+  const [r, g, b, a] = source.color;
+  return `solid:${r.toFixed(5)},${g.toFixed(5)},${b.toFixed(5)},${a.toFixed(5)}`;
+}
+
+function cssColorFromLinearRgba(color: [number, number, number, number]): string {
+  const srgb = new THREE.Color(color[0], color[1], color[2]).convertLinearToSRGB();
+  const r = Math.round(THREE.MathUtils.clamp(srgb.r, 0, 1) * 255);
+  const g = Math.round(THREE.MathUtils.clamp(srgb.g, 0, 1) * 255);
+  const b = Math.round(THREE.MathUtils.clamp(srgb.b, 0, 1) * 255);
+  const a = THREE.MathUtils.clamp(color[3], 0, 1);
+  return `rgba(${r}, ${g}, ${b}, ${a})`;
+}
+
+function drawVisualSource(
+  ctx: CanvasRenderingContext2D,
+  source: MaterialVisualSource,
+  innerX: number,
+  innerY: number,
+  innerSize: number,
+): boolean {
+  if (source.kind === 'solid') {
+    ctx.fillStyle = cssColorFromLinearRgba(source.color);
+    ctx.fillRect(innerX, innerY, innerSize, innerSize);
+    return true;
+  }
+
+  const img = getDrawableTextureImage(source.texture);
+  if (!img) return false;
+  try {
+    ctx.drawImage(img as any, innerX, innerY, innerSize, innerSize);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function materialVisualSource(material: THREE.Material | null): MaterialVisualSource | null {
+  if (!material) return null;
+  const m = material as any;
+
+  const texture =
+    (m.map as THREE.Texture | undefined)
+    ?? (m.emissiveMap as THREE.Texture | undefined)
+    ?? (m.specularColorMap as THREE.Texture | undefined)
+    ?? (m.sheenColorMap as THREE.Texture | undefined)
+    ?? null;
+  if (texture && canDrawTextureToCanvas(texture)) {
+    return { kind: 'texture', texture, label: texture === m.map ? 'map' : 'secondary-map' };
+  }
+
+  const color = m.color as THREE.Color | undefined;
+  if (color?.isColor) {
+    const opacity = typeof m.opacity === 'number' ? m.opacity : 1;
+    return {
+      kind: 'solid',
+      color: [color.r, color.g, color.b, opacity],
+      label: 'base-color',
+    };
+  }
+
+  return null;
+}
+
+export function canDrawMaterialVisualSource(source: MaterialVisualSource | null | undefined): boolean {
+  if (!source) return false;
+  return source.kind === 'solid' || canDrawTextureToCanvas(source.texture);
+}
+
 function replicatePadding(
   ctx: CanvasRenderingContext2D,
   slotX: number,
@@ -136,13 +210,13 @@ function remapGeometryUvs(input: SubMeshInput, slotIndex: number, width: number,
   const uvSlotW = (innerSize - 1) / width;
   const uvSlotH = (innerSize - 1) / height;
 
-  const tex = input.diffuse;
-  if (tex.matrixAutoUpdate) tex.updateMatrix();
+  const tex = input.source.kind === 'texture' ? input.source.texture : null;
+  if (tex?.matrixAutoUpdate) tex.updateMatrix();
   const uv = new THREE.Vector2();
 
   for (let v = 0; v < uvAttr.count; v++) {
     uv.set(uvAttr.getX(v), uvAttr.getY(v));
-    if (tex.matrix) uv.applyMatrix3(tex.matrix);
+    if (tex?.matrix) uv.applyMatrix3(tex.matrix);
     uvAttr.setXY(v, uvSlotU0 + fract(uv.x) * uvSlotW, uvSlotV0 + fract(uv.y) * uvSlotH);
   }
   uvAttr.needsUpdate = true;
@@ -155,19 +229,19 @@ function remapGeometryUvs(input: SubMeshInput, slotIndex: number, width: number,
  * THREE.Texture ready to attach to `MergedMeshletAsset.atlasTexture`.
  */
 export function buildSubMeshAtlas(inputs: SubMeshInput[]): SubMeshAtlasResult {
-  const textureInputs = new Map<object | string, { diffuse: THREE.Texture; inputs: SubMeshInput[] }>();
+  const textureInputs = new Map<object | string, { source: MaterialVisualSource; inputs: SubMeshInput[] }>();
   let failedTextureCount = 0;
 
   for (const input of inputs) {
-    if (!canDrawTextureToCanvas(input.diffuse)) {
+    if (!canDrawMaterialVisualSource(input.source)) {
       failedTextureCount++;
       continue;
     }
 
-    const key = textureDedupeKey(input.diffuse);
+    const key = visualSourceDedupeKey(input.source);
     let group = textureInputs.get(key);
     if (!group) {
-      group = { diffuse: input.diffuse, inputs: [] };
+      group = { source: input.source, inputs: [] };
       textureInputs.set(key, group);
     }
     group.inputs.push(input);
@@ -205,7 +279,7 @@ export function buildSubMeshAtlas(inputs: SubMeshInput[]): SubMeshAtlasResult {
   const slots: AtlasSlot[] = [];
 
   for (const [key, group] of textureInputs) {
-    const slot: AtlasSlot = { index: slots.length, diffuse: group.diffuse, drawn: false };
+    const slot: AtlasSlot = { index: slots.length, source: group.source, drawn: false };
     const slotCol = slot.index % ATLAS_COLS;
     const slotRow = Math.floor(slot.index / ATLAS_COLS);
     const slotX = slotCol * ATLAS_SLOT_SIZE;
@@ -214,14 +288,7 @@ export function buildSubMeshAtlas(inputs: SubMeshInput[]): SubMeshAtlasResult {
     const innerX = slotX + ATLAS_SLOT_PAD;
     const innerY = slotY + ATLAS_SLOT_PAD;
 
-    const img = getDrawableTextureImage(slot.diffuse);
-    if (img) {
-      try {
-        ctx.drawImage(img as any, innerX, innerY, innerSize, innerSize);
-        slot.drawn = true;
-      } catch {
-      }
-    }
+    slot.drawn = drawVisualSource(ctx, slot.source, innerX, innerY, innerSize);
 
     if (!slot.drawn) {
       failedTextureCount++;

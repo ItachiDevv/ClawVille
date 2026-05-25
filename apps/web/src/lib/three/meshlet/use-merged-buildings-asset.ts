@@ -20,7 +20,12 @@ import {
   BUILDING_TARGET_HEIGHT,
   type BuildingSpec,
 } from './buildings-manifest';
-import { buildSubMeshAtlas, canDrawTextureToCanvas } from './build-buildings-atlas';
+import {
+  buildSubMeshAtlas,
+  canDrawMaterialVisualSource,
+  materialVisualSource,
+  type MaterialVisualSource,
+} from './build-buildings-atlas';
 
 export interface BuildingLoadStatus {
   id: string;
@@ -45,7 +50,7 @@ interface LoadedSubMesh {
   geometry: THREE.BufferGeometry;
   worldMatrix: THREE.Matrix4;
   triCount: number;
-  diffuse: THREE.Texture;
+  source: MaterialVisualSource;
   materialName: string;
 }
 
@@ -54,17 +59,15 @@ function materialAt(material: THREE.Material | THREE.Material[], index: number):
   return material ?? null;
 }
 
-function materialMap(material: THREE.Material | null): THREE.Texture | null {
-  return ((material as any)?.map as THREE.Texture | undefined) ?? null;
-}
-
 function dumpMeshletSubMeshesOnce(subMeshes: LoadedSubMesh[]) {
   if ((globalThis as any).__meshletSubMeshDumped) return;
   (globalThis as any).__meshletSubMeshDumped = true;
 
   const dump = subMeshes.map((sub) => {
     const m = sub.worldMatrix.elements;
-    const img = ((sub.diffuse as any)?.image ?? (sub.diffuse as any)?.source?.data) as any;
+    const img = sub.source.kind === 'texture'
+      ? (((sub.source.texture as any)?.image ?? (sub.source.texture as any)?.source?.data) as any)
+      : null;
     const posAttr = sub.geometry.attributes['position'] as THREE.BufferAttribute | undefined;
     return {
       buildingId: sub.buildingId,
@@ -72,7 +75,7 @@ function dumpMeshletSubMeshesOnce(subMeshes: LoadedSubMesh[]) {
       vertexCount: posAttr?.count ?? 0,
       triCount: sub.triCount,
       worldMatrixFirstRow: [m[0], m[4], m[8], m[12]],
-      hasDiffuseMap: true,
+      visualSource: sub.source.kind,
       diffuseImageSrc: img?.src ?? '(canvas/bitmap/null)',
       diffuseImageWidth: img?.width ?? null,
       diffuseImageHeight: img?.height ?? null,
@@ -212,8 +215,8 @@ function collectBuildingSubMeshes(spec: BuildingSpec, root: THREE.Object3D): Loa
       for (let groupIdx = 0; groupIdx < groups.length; groupIdx++) {
         const group = groups[groupIdx];
         const material = materialAt(materials, group.materialIndex ?? 0);
-        const diffuse = materialMap(material);
-        if (!canDrawTextureToCanvas(diffuse)) continue;
+        const source = materialVisualSource(material);
+        if (!canDrawMaterialVisualSource(source)) continue;
         const geometry = copyGeometryGroup(sourceGeo, group);
         if (!geometry) continue;
         const triCount = geometryTriCount(geometry);
@@ -229,14 +232,14 @@ function collectBuildingSubMeshes(spec: BuildingSpec, root: THREE.Object3D): Loa
           geometry,
           worldMatrix: meshWorldMatrix.clone(),
           triCount,
-          diffuse,
+          source,
           materialName: material?.name ?? '',
         });
       }
     } else {
       const material = materialAt(materials, 0);
-      const diffuse = materialMap(material);
-      if (!canDrawTextureToCanvas(diffuse)) return;
+      const source = materialVisualSource(material);
+      if (!canDrawMaterialVisualSource(source)) return;
       const geometry = copyFullGeometry(sourceGeo);
       if (!geometry) return;
       const triCount = geometryTriCount(geometry);
@@ -252,7 +255,7 @@ function collectBuildingSubMeshes(spec: BuildingSpec, root: THREE.Object3D): Loa
         geometry,
         worldMatrix: meshWorldMatrix.clone(),
         triCount,
-        diffuse,
+        source,
         materialName: material?.name ?? '',
       });
     }
@@ -326,7 +329,7 @@ export function useMergedBuildingsAsset(): UseMergedBuildingsAssetReturn {
 
         const results = await Promise.all(loadPromises);
         if (cancelled) return;
-        const valid = results.flat().filter((sub) => canDrawTextureToCanvas(sub.diffuse));
+        const valid = results.flat().filter((sub) => canDrawMaterialVisualSource(sub.source));
         loadedSubMeshes.push(...valid);
         dumpMeshletSubMeshesOnce(valid);
         if (valid.length === 0) {
@@ -343,7 +346,7 @@ export function useMergedBuildingsAsset(): UseMergedBuildingsAssetReturn {
           valid.map((sub) => ({
             id: sub.id,
             geometry: sub.geometry,
-            diffuse: sub.diffuse,
+            source: sub.source,
           })),
         );
         console.log(
