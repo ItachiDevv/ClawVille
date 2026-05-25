@@ -26,20 +26,29 @@ delegates to this one for the "land it" half.
    docs(world-content): add the underwater greenhouse to §2
    ```
    The commit body should describe **what changed and why**, not what the doc says now.
-6. **Push.**
+6. **Push to STAGING.** Per CLAUDE.md PUSH FLOW: all new work lands on the `staging` branch first.
    ```bash
-   git push origin master
+   git checkout staging
+   git merge --ff-only <your-feature-branch>   # or just commit directly on staging
+   git push origin staging
    ```
    - `gh auth setup-git` + `unset GITHUB_TOKEN` if push auth fails. Do not hand the user the push — see the "No lazy handoffs" rule in `CLAUDE.md`.
-7. **Wait for Coolify.** ~3–5 minutes for web builds. Watch via (PROD box, app id 3 = web; the SSH key must be in your Windows ssh-agent — `ssh-add ~/.ssh/clawville_hillsboro` once):
+   - **Override:** only if the commit message contains the literal phrase `direct to master` (hotfix path) is it OK to skip steps 7–9 and push to master directly.
+7. **Wait for STAGING Coolify.** `deploy-staging.yml` fires on push to `staging`. ~3–5 min for web builds. Watch via (staging box, app id 4 = web):
    ```bash
-   ssh root@$PROD_VPS_IP "docker exec coolify php artisan tinker --execute='use App\Models\ApplicationDeploymentQueue; \$d = ApplicationDeploymentQueue::where(\"application_id\",3)->orderByDesc(\"id\")->first(); echo \$d->status . \" \" . substr(\$d->commit,0,7);'"
+   ssh -i ~/.ssh/clawville_deploy root@$STAGING_VPS_IP "docker exec coolify php artisan tinker --execute='use App\Models\ApplicationDeploymentQueue; \$d = ApplicationDeploymentQueue::where(\"application_id\",4)->orderByDesc(\"id\")->first(); echo \$d->status . \" \" . substr(\$d->commit,0,7);'"
    ```
-   Status flow: `queued → in_progress → finished`. Prod app IDs: web=3, api=2 (post-2026-05-23 migration). Staging on old box: web=4, api=3 — use `-i ~/.ssh/clawville_deploy root@$STAGING_VPS_IP`.
-8. **Verify in browser.** Per the CLAUDE.md MANDATORY rule:
-   - Open `https://clawville.world/game` via Chrome DevTools MCP / Playwright.
+   Status flow: `queued → in_progress → finished`.
+8. **Verify on STAGING in browser.** Per the CLAUDE.md MANDATORY rule:
+   - Open `https://staging.clawville.world/game` via Chrome DevTools MCP / Playwright.
    - Check the feature's golden path. Take a screenshot. Confirm no console errors.
    - If you can't visually verify because of tool limits, say so explicitly — never claim a visual fix done without seeing it.
+9. **Promote to PROD.** After staging verification:
+   ```bash
+   gh pr create --base master --head staging --title "promote: <feature summary>" --body "Verified on staging.clawville.world\n\n<paste evidence: screenshot path, perf numbers, etc>"
+   gh pr merge <PR#> --merge   # or --squash if you prefer a clean master history
+   ```
+   `deploy.yml` then ships to PROD on the master merge. Watch prod the same way (app id 3 = web on the Hillsboro box, key `~/.ssh/clawville_hillsboro` via ssh-agent). Final browser verify on `https://clawville.world/game`.
 
 ## Doc updates required
 

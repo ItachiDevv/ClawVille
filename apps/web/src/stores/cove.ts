@@ -19,6 +19,7 @@
 
 import { create } from 'zustand';
 import type { MachineSlug, SpinResult } from '@/lib/cove/types';
+import type { BlackjackOutcome, BlackjackCard } from '@/lib/cove/blackjack-types';
 
 // ---------------------------------------------------------------------------
 // Store state
@@ -85,6 +86,29 @@ export interface CoveStore {
   recordSpin: (result: SpinResult, balance: number, spinCount: number) => void;
   /** Update session balance directly (for win credit, loss debit). */
   adjustBalance: (delta: number) => void;
+
+  // ── Blackjack modal state (Phase 6.4.0 display shell) ────────────────────
+  blackjackOpen: boolean;
+  blackjackBet: number;
+  blackjackOutcome: BlackjackOutcome | null;
+  blackjackPayout: number;
+  blackjackPlayerHand: BlackjackCard[];
+  blackjackDealerHand: BlackjackCard[];
+  blackjackOutcomeLabel: string | null;
+  blackjackIsDealing: boolean;
+  /** Stub balance shown in modal — not from ledger in 6.4.0. */
+  blackjackDisplayBalance: number;
+  openBlackjackTable: (displayBalance: number) => void;
+  closeBlackjackTable: () => void;
+  setBlackjackBet: (bet: number) => void;
+  setBlackjackResult: (
+    outcome: BlackjackOutcome,
+    payout: number,
+    playerHand: BlackjackCard[],
+    dealerHand: BlackjackCard[],
+    outcomeLabel: string,
+  ) => void;
+  setBlackjackIsDealing: (dealing: boolean) => void;
 }
 
 export const useCoveStore = create<CoveStore>((set, get) => ({
@@ -177,4 +201,49 @@ export const useCoveStore = create<CoveStore>((set, get) => ({
     const { sessionBalance } = get();
     set({ sessionBalance: sessionBalance + delta });
   },
+
+  // Blackjack state (Phase 6.4.0)
+  blackjackOpen: false,
+  blackjackBet: 50,
+  blackjackOutcome: null,
+  blackjackPayout: 0,
+  blackjackPlayerHand: [],
+  blackjackDealerHand: [],
+  blackjackOutcomeLabel: null,
+  blackjackIsDealing: false,
+  blackjackDisplayBalance: 0,
+
+  openBlackjackTable: (displayBalance) => {
+    set({
+      blackjackOpen: true,
+      blackjackBet: 50,
+      blackjackOutcome: null,
+      blackjackPayout: 0,
+      blackjackPlayerHand: [],
+      blackjackDealerHand: [],
+      blackjackOutcomeLabel: null,
+      blackjackIsDealing: false,
+      blackjackDisplayBalance: displayBalance,
+    });
+  },
+
+  closeBlackjackTable: () => {
+    set({
+      blackjackOpen: false,
+      blackjackOutcome: null,
+      blackjackPayout: 0,
+      blackjackPlayerHand: [],
+      blackjackDealerHand: [],
+      blackjackOutcomeLabel: null,
+      blackjackIsDealing: false,
+    });
+  },
+
+  setBlackjackBet: (bet) => set({ blackjackBet: bet }),
+
+  setBlackjackResult: (outcome, payout, playerHand, dealerHand, outcomeLabel) => {
+    set({ blackjackOutcome: outcome, blackjackPayout: payout, blackjackPlayerHand: playerHand, blackjackDealerHand: dealerHand, blackjackOutcomeLabel: outcomeLabel });
+  },
+
+  setBlackjackIsDealing: (dealing) => set({ blackjackIsDealing: dealing }),
 }));
