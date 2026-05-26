@@ -39,10 +39,8 @@
  *   pearl.glb, mrs-puff.glb, lobster_plush.glb, mr-krabs.glb,
  *   plankton.glb, karen.glb, sandy.glb, patrick.glb
  *
- * WANDERING NPC GLBs (8 species, arena-npcs.tsx SPECIES_MODEL):
- *   lobster.glb, crayfish.glb, sweet_crab_sketchfabweekly.glb,
- *   lobster_plush.glb, hermitcrab.glb, jellyfish.glb,
- *   octopus_toy.glb, sea_horse.glb
+ * WANDERING NPC GLBs (1 live species, arena-npcs.tsx SPECIES_MODEL):
+ *   lobster.glb
  *
  * WANDERING NPC VRMs (6 distinct paths, arena-npcs.tsx preloadVRMBytes):
  *   milady-official-2.vrm, milady-official-7.vrm, milady-official-8.vrm,
@@ -105,16 +103,9 @@ export const BUILDING_GLBS: readonly string[] = [
 // Priority 2: Wandering NPC GLBs — visible from the start in the open world
 // ---------------------------------------------------------------------------
 
-/** GLB species used by arena-npcs.tsx wandering GLB NPCs */
+/** GLB species used by the live arena-npcs.tsx wandering GLB roster */
 export const WANDERING_NPC_GLBS: readonly string[] = [
   '/models/lobster.glb',
-  '/models/crayfish.glb',
-  '/models/sweet_crab_sketchfabweekly.glb',
-  '/models/lobster_plush.glb',
-  '/models/hermitcrab.glb',
-  '/models/jellyfish.glb',
-  '/models/octopus_toy.glb',
-  '/models/sea_horse.glb',
 ] as const;
 
 // ---------------------------------------------------------------------------
@@ -208,7 +199,7 @@ export const TOWN_PROP_GLBS: readonly string[] = [
   '/models/shisha-oasis.glb',
   '/models/auction-dome.glb',
   // town-directory-sign.tsx uses Three.js primitives only (no GLB) — nothing to preload here.
-  // auction-podium.tsx loads jellyfish.glb too, but that's already in WANDERING_NPC_GLBS.
+  // auction-podium.tsx preloads its own jellyfish.glb path.
 ] as const;
 
 // ---------------------------------------------------------------------------
@@ -272,7 +263,7 @@ export function preloadWorldAssets(): void {
   // preloadMixamoClips() calls preloadLocomotionClips() internally.
   preloadMixamoClips();
 
-  // Wandering NPC GLBs — 8 species.
+  // Wandering NPC GLBs — 1 live crustacean species.
   for (const url of WANDERING_NPC_GLBS) {
     useGLTF.preload(url);
   }
