@@ -2,26 +2,29 @@ name: Casino RTP Monte Carlo gate
 
 # Phase 6.1 — slot RTP CI gate.
 #
-# Runs a 100k-spin Monte Carlo simulation against `classic-3x5` on every
-# PR that touches:
+# Runs two 100k-spin Monte Carlo simulations on every PR that touches:
 #   - packages/shared/src/constants/slot-paytables.ts  (reel strips, payouts)
 #   - apps/api/src/services/slot-engine.ts             (spin logic)
 #   - apps/api/src/services/provable-rng.ts            (HMAC stream)
 #   - scripts/casino/rtp-sim.ts                        (simulator itself)
 #
-# Fails the build if RTP lands outside [95.00%, 97.00%]. The local 1M
-# acceptance band is the tighter [95.50%, 96.50%]; the CI band is
-# widened by ~0.5% on each side to absorb 100k Monte Carlo stderr
-# (empirically ~0.3% half-width per `_analyze.ts` variance estimate).
+# Bands:
+#   - classic-3x5        — strict RTP ∈ [95.00%, 97.00%] (1M local: ~96.00%)
+#   - classic-3x5-bonus  — strict combined RTP ∈ [96.50%, 99.50%] (bonus
+#                          features add scatter pay + free-spin doubling)
 #
 # Local equivalent of this gate:
 #   bun scripts/casino/rtp-sim.ts --spins 100000 \
 #     --strict-rtp 0.95,0.97 --exit-on-fail
+#   bun scripts/casino/rtp-sim.ts --spins 100000 \
+#     --paytable classic-3x5-bonus --strict-rtp 0.965,0.995 --exit-on-fail
 #
 # Intentionally pinned: --seed is OMITTED so we sample a fresh server
 # seed each CI run. With a 100k sample the variance is small enough
 # that any genuine paytable regression (e.g. doubling a payout, deleting
-# a wild) bursts the band on every seed.
+# a wild) bursts the band on every seed. The bonus-paytable band is
+# WIDER because trigger-chain variance dominates the 100k stderr — a
+# single mega-chain on a CI seed can swing combined RTP by >1.5%.
 
 on:
   pull_request:
@@ -67,9 +70,23 @@ jobs:
         # in next, etc.) — only the shared package is on the import path.
         run: bun run --filter @clawville/shared build
 
-      - name: Run 100k Monte Carlo with strict RTP gate
+      - name: Run 100k Monte Carlo with strict RTP gate (classic-3x5)
         run: |
           bun scripts/casino/rtp-sim.ts \
             --spins 100000 \
+            --paytable classic-3x5 \
             --strict-rtp 0.95,0.97 \
+            --exit-on-fail
+
+      - name: Run 100k Monte Carlo with strict RTP gate (classic-3x5-bonus)
+        # 100k Monte Carlo half-width on the bonus paytable is ~1.5%
+        # (trigger-chain variance dominates). Local 1M acceptance band
+        # is the tighter [96.5%, 99.5%]; CI band is widened by 1pp on
+        # each side to absorb the per-seed variance — same pattern as
+        # the classic-3x5 gate above.
+        run: |
+          bun scripts/casino/rtp-sim.ts \
+            --spins 100000 \
+            --paytable classic-3x5-bonus \
+            --strict-rtp 0.955,0.995 \
             --exit-on-fail

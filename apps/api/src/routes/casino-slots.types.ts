@@ -16,6 +16,7 @@
 import type {
   SpinResult,
   WinningLine,
+  WildMultiplier,
   SymbolId,
   MachineSlug,
 } from '../services/slot-engine';
@@ -27,12 +28,27 @@ export type SerializedWinningLine = {
   multiplier: number;
 };
 
+/**
+ * Phase 6.1.5 — serialized mirror of `WildMultiplier`. No bigint fields,
+ * so structurally identical to the engine type; defined explicitly here
+ * so the web type-graph doesn't have to reach across to apps/api.
+ */
+export type SerializedWildMultiplier = {
+  reelIndex: number;
+  rowIndex: number;
+  multiplier: number;
+};
+
 export interface SerializedSpinResult {
   reels: SymbolId[][];
   winningLines: SerializedWinningLine[];
   winAmount: string;
   freeSpinsAwarded: number;
   isFreeSpin: boolean;
+  /** Phase 6.1.5 — per-landed-Wild multiplier (empty array on `classic-3x5`). */
+  wildMultipliers: SerializedWildMultiplier[];
+  /** Phase 6.1.5 — total scatter pay × total predict, stringified bigint. '0' on `classic-3x5`. */
+  scatterPayout: string;
   cursorAfter: number;
 }
 
@@ -43,7 +59,17 @@ export function serializeSpinResult(result: SpinResult): SerializedSpinResult {
     winAmount: result.winAmount.toString(),
     freeSpinsAwarded: result.freeSpinsAwarded,
     isFreeSpin: result.isFreeSpin,
+    wildMultipliers: result.wildMultipliers.map(serializeWildMultiplier),
+    scatterPayout: result.scatterPayout.toString(),
     cursorAfter: result.cursorAfter,
+  };
+}
+
+export function serializeWildMultiplier(wm: WildMultiplier): SerializedWildMultiplier {
+  return {
+    reelIndex: wm.reelIndex,
+    rowIndex: wm.rowIndex,
+    multiplier: wm.multiplier,
   };
 }
 
@@ -85,6 +111,14 @@ export interface SpinResponse extends SerializedSpinResult {
   totalStaked: string;
   totalWon: string;
   spinCount: number;
+  /**
+   * Phase 6.1.5 — session-level bonus mode AFTER this spin.
+   *   • 'base'      — predict-debiting spins.
+   *   • 'free-spin' — predict-free spins, frontend should display banner.
+   */
+  mode: 'base' | 'free-spin';
+  /** Phase 6.1.5 — unspent free-spin balance AFTER this spin. */
+  freeSpinsRemaining: number;
   idempotencyReplay: boolean;
 }
 

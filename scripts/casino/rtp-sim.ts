@@ -44,13 +44,18 @@
 
 import { performance } from 'node:perf_hooks';
 
-import { runSpin } from '../../apps/api/src/services/slot-engine';
+import { runSpin, type MachineSlug } from '../../apps/api/src/services/slot-engine';
 import { createServerSeed } from '../../apps/api/src/services/provable-rng';
 import {
+  BONUS_REEL_STRIPS,
+  BONUS_SYMBOLS,
   CLASSIC_LINES,
   CLASSIC_REEL_STRIPS,
   CLASSIC_SYMBOLS,
+  FREE_SPIN_RULES,
 } from '@clawville/shared';
+
+import type { SlotSymbolDef } from '@clawville/shared';
 
 // ---------------------------------------------------------------------------
 // CLI parsing
@@ -64,6 +69,7 @@ interface CliOptions {
   strictRtpLow: number | null;
   strictRtpHigh: number | null;
   exitOnFail: boolean;
+  paytable: MachineSlug;
 }
 
 function parseCli(argv: readonly string[]): CliOptions {
@@ -75,6 +81,7 @@ function parseCli(argv: readonly string[]): CliOptions {
     strictRtpLow: null,
     strictRtpHigh: null,
     exitOnFail: false,
+    paytable: 'classic-3x5',
   };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
@@ -131,6 +138,17 @@ function parseCli(argv: readonly string[]): CliOptions {
       case '--exit-on-fail':
         opts.exitOnFail = true;
         break;
+      case '--paytable': {
+        const v = argv[++i];
+        if (!v) throw new Error('--paytable requires a value');
+        if (v !== 'classic-3x5' && v !== 'classic-3x5-bonus') {
+          throw new Error(
+            `--paytable must be 'classic-3x5' or 'classic-3x5-bonus', got '${v}'`,
+          );
+        }
+        opts.paytable = v as MachineSlug;
+        break;
+      }
       case '--help':
       case '-h':
         printHelpAndExit();
@@ -149,13 +167,20 @@ Usage:
   bun scripts/casino/rtp-sim.ts [options]
 
 Options:
-  --spins <n>             Number of spins to simulate (default 1000000)
+  --paytable <id>         'classic-3x5' (default) or 'classic-3x5-bonus'.
+                          Bonus paytable engages multiplier wilds + scatter
+                          + free-spin state machine; report separates base /
+                          free-spin / combined RTP.
+  --spins <n>             Number of BASE spins to simulate (default 1000000;
+                          free spins triggered inside base spins count
+                          separately and do NOT decrement this counter)
   --bet <n>               Stake per spin in atomic units (default 100, must
                           be divisible by line count = 20)
   --seed <64hex>          Pin server seed for reproducibility (default:
                           freshly generated each run)
-  --client-seed <hex>     Client seed (default 'rtp-sim')
-  --strict-rtp <lo>,<hi>  Assert RTP ∈ [lo, hi] (e.g. 0.95,0.97)
+  --client-seed <hex>     Client seed (default 'deadbeef')
+  --strict-rtp <lo>,<hi>  Assert COMBINED RTP ∈ [lo, hi] (e.g. 0.95,0.97 or
+                          0.965,0.995 for the bonus paytable)
   --exit-on-fail          Exit non-zero if --strict-rtp violated
                           (without this flag, violation just prints a
                           warning — useful for local exploration)
@@ -184,6 +209,17 @@ interface SimResult {
   /** Cumulative tally of every visible cell (top/mid/bot across 5 reels). */
   symbolVisibleHits: number[];
   wallClockMs: number;
+
+  // Phase 6.1.5 Bundle B — separate FS-mode accounting. On classic-3x5
+  // these stay at zero (no FS path). On classic-3x5-bonus, freeSpinPaid
+  // tracks payout earned WHILE in FS mode; freeSpinWagered tracks the
+  // PSEUDO-wager (predict × free spins played) so we can derive an FS
+  // RTP independent of base. `triggerCount` = base spins that awarded FS.
+  freeSpinCount: number;
+  freeSpinPaid: bigint;
+  freeSpinPseudoWagered: bigint;
+  triggerCount: number;
+  retriggerCount: number;
 }
 
 const BUCKETS = [
@@ -203,7 +239,12 @@ function runSimulation(opts: CliOptions, serverSeed: string): SimResult {
     );
   }
 
-  const symbolCount = CLASSIC_SYMBOLS.length;
+  // Paytable-aware symbol catalogue. Bonus paytable has 11 symbols
+  // (10 + Scatter); per-symbol histograms must size accordingly.
+  const symbolTable: SlotSymbolDef[] =
+    opts.paytable === 'classic-3x5-bonus' ? BONUS_SYMBOLS : CLASSIC_SYMBOLS;
+  const symbolCount = symbolTable.length;
+
   const result: SimResult = {
     spins: opts.spins,
     totalWagered: 0n,
@@ -215,11 +256,18 @@ function runSimulation(opts: CliOptions, serverSeed: string): SimResult {
     symbolMiddleHits: new Array<number>(symbolCount).fill(0),
     symbolVisibleHits: new Array<number>(symbolCount).fill(0),
     wallClockMs: 0,
+    freeSpinCount: 0,
+    freeSpinPaid: 0n,
+    freeSpinPseudoWagered: 0n,
+    triggerCount: 0,
+    retriggerCount: 0,
   };
 
   const betFloat = Number(opts.bet);
   const t0 = performance.now();
   let cursor = 0;
+  let nonce = 1;
+  let freeSpinsRemaining = 0;
 
   // Progress dots — emit at ~5% intervals for long runs, suppress for
   // short CI runs where the chatter would clutter logs.
@@ -227,44 +275,58 @@ function runSimulation(opts: CliOptions, serverSeed: string): SimResult {
     opts.spins >= 100_000 ? Math.floor(opts.spins / 20) : 0;
 
   for (let i = 0; i < opts.spins; i++) {
+    // ---- BASE SPIN ------------------------------------------------------
     const spin = runSpin({
-      paytableId: 'classic-3x5',
+      paytableId: opts.paytable,
       serverSeed,
       clientSeed: opts.clientSeed,
-      nonce: i + 1,
+      nonce: nonce++,
       cursor,
       bet: opts.bet,
+      freeSpinMode: false,
     });
 
     cursor = spin.cursorAfter;
     result.totalWagered += opts.bet;
     result.totalPaid += spin.winAmount;
+    accumulateSpin(spin, opts.bet, betFloat, result);
 
-    if (spin.winAmount > 0n) {
-      result.hitCount++;
-      const winFloat = Number(spin.winAmount);
-      const ratio = winFloat / betFloat;
-      if (ratio > result.maxWinStake) {
-        result.maxWinStake = ratio;
-        result.maxWinRaw = spin.winAmount;
-      }
-      for (const b of BUCKETS) {
-        if (b.test(ratio)) {
-          result.histogram[b.name]!++;
-          break;
-        }
-      }
-    } else {
-      result.histogram.loss!++;
+    // Track free-spin trigger from a BASE spin.
+    if (spin.freeSpinsAwarded > 0) {
+      result.triggerCount++;
+      freeSpinsRemaining = Math.min(
+        FREE_SPIN_RULES.CAP_REMAINING,
+        freeSpinsRemaining + spin.freeSpinsAwarded,
+      );
     }
 
-    // Tally symbol occurrences for sanity check (no symbol starved).
-    for (let r = 0; r < 5; r++) {
-      const reel = spin.reels[r]!;
-      result.symbolMiddleHits[reel[1]!]!++;
-      result.symbolVisibleHits[reel[0]!]!++;
-      result.symbolVisibleHits[reel[1]!]!++;
-      result.symbolVisibleHits[reel[2]!]!++;
+    // ---- FREE SPINS (drain the budget) ----------------------------------
+    while (freeSpinsRemaining > 0) {
+      const fs = runSpin({
+        paytableId: opts.paytable,
+        serverSeed,
+        clientSeed: opts.clientSeed,
+        nonce: nonce++,
+        cursor,
+        bet: opts.bet,
+        freeSpinMode: true,
+      });
+      cursor = fs.cursorAfter;
+      result.freeSpinCount++;
+      result.freeSpinPaid += fs.winAmount;
+      result.freeSpinPseudoWagered += opts.bet;
+      result.totalPaid += fs.winAmount;
+      // NOTE: totalWagered does NOT include FS predicts (FS is free) —
+      // that's why combined RTP can exceed 100% in principle.
+      accumulateSpin(fs, opts.bet, betFloat, result);
+      freeSpinsRemaining--;
+      if (fs.freeSpinsAwarded > 0) {
+        result.retriggerCount++;
+        freeSpinsRemaining = Math.min(
+          FREE_SPIN_RULES.CAP_REMAINING,
+          freeSpinsRemaining + fs.freeSpinsAwarded,
+        );
+      }
     }
 
     if (progressStride > 0 && i > 0 && i % progressStride === 0) {
@@ -273,7 +335,9 @@ function runSimulation(opts: CliOptions, serverSeed: string): SimResult {
         (Number(result.totalPaid) / Number(result.totalWagered)) *
         100
       ).toFixed(2);
-      process.stderr.write(`  ${pct}% (RTP so far: ${rtpSoFar}%)\n`);
+      process.stderr.write(
+        `  ${pct}% (RTP so far: ${rtpSoFar}%${result.freeSpinCount > 0 ? `, FS played: ${result.freeSpinCount}` : ''})\n`,
+      );
     }
   }
 
@@ -281,13 +345,63 @@ function runSimulation(opts: CliOptions, serverSeed: string): SimResult {
   return result;
 }
 
+/** Accumulate single-spin tallies into the running SimResult. */
+function accumulateSpin(
+  spin: { winAmount: bigint; reels: number[][] },
+  bet: bigint,
+  betFloat: number,
+  result: SimResult,
+): void {
+  if (spin.winAmount > 0n) {
+    result.hitCount++;
+    const winFloat = Number(spin.winAmount);
+    const ratio = winFloat / betFloat;
+    if (ratio > result.maxWinStake) {
+      result.maxWinStake = ratio;
+      result.maxWinRaw = spin.winAmount;
+    }
+    for (const b of BUCKETS) {
+      if (b.test(ratio)) {
+        result.histogram[b.name]!++;
+        break;
+      }
+    }
+  } else {
+    result.histogram.loss!++;
+  }
+  for (let r = 0; r < 5; r++) {
+    const reel = spin.reels[r]!;
+    if (reel[1]! < result.symbolMiddleHits.length) {
+      result.symbolMiddleHits[reel[1]!]!++;
+    }
+    for (let row = 0; row < 3; row++) {
+      const id = reel[row]!;
+      if (id < result.symbolVisibleHits.length) {
+        result.symbolVisibleHits[id]++;
+      }
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Reporting
 // ---------------------------------------------------------------------------
 
 function formatReport(opts: CliOptions, serverSeed: string, r: SimResult): string {
+  // Combined RTP (base spins + free spins, divided by base wagering).
   const rtp = Number(r.totalPaid) / Number(r.totalWagered);
-  const hitFreq = r.hitCount / r.spins;
+  // Base-only RTP: paid on BASE spins (totalPaid - freeSpinPaid) / base wager.
+  const basePaid = r.totalPaid - r.freeSpinPaid;
+  const baseRtp = Number(basePaid) / Number(r.totalWagered);
+  // Free-spin RTP: paid in FS / pseudo-wagered (predict × FS plays).
+  const fsRtp = r.freeSpinPseudoWagered > 0n
+    ? Number(r.freeSpinPaid) / Number(r.freeSpinPseudoWagered)
+    : 0;
+  // Combined denominator includes BASE spins only; total spins (base + FS)
+  // for hit-freq denominator.
+  const totalActualSpins = r.spins + r.freeSpinCount;
+  const hitFreq = r.hitCount / totalActualSpins;
+  const triggerRate = r.spins > 0 ? r.triggerCount / r.spins : 0;
 
   // 95% CI half-width for a Bernoulli-ish per-spin payout ratio. We use a
   // simple normal approximation: stderr = sqrt(p*(1-p)/n) IS WRONG for
@@ -302,20 +416,27 @@ function formatReport(opts: CliOptions, serverSeed: string, r: SimResult): strin
 
   const lines: string[] = [];
   lines.push('═'.repeat(72));
-  lines.push('Monte Carlo RTP simulation — paytable: classic-3x5');
+  lines.push(`Monte Carlo RTP simulation — paytable: ${opts.paytable}`);
   lines.push('═'.repeat(72));
   lines.push('');
-  lines.push(`Spins:           ${r.spins.toLocaleString()}`);
+  lines.push(`Base spins:      ${r.spins.toLocaleString()}`);
+  lines.push(`Free spins:      ${r.freeSpinCount.toLocaleString()}  (avg ${r.spins > 0 ? (r.freeSpinCount / r.spins).toFixed(3) : '0.000'} per base spin)`);
+  lines.push(`Triggers:        ${r.triggerCount.toLocaleString()}  (rate ${(triggerRate * 100).toFixed(3)}%, 1 per ${triggerRate > 0 ? Math.round(1 / triggerRate) : '∞'} base spins)`);
+  lines.push(`Retriggers:      ${r.retriggerCount.toLocaleString()}`);
   lines.push(`Bet/spin:        ${opts.bet} (${Number(opts.bet)})`);
   lines.push(`Server seed:     ${serverSeed}`);
   lines.push(`Client seed:     ${opts.clientSeed}`);
   lines.push(`Wall clock:      ${(r.wallClockMs / 1000).toFixed(2)}s`);
-  lines.push(`Spins/sec:       ${(r.spins / (r.wallClockMs / 1000)).toFixed(0)}`);
+  lines.push(`Spins/sec:       ${((r.spins + r.freeSpinCount) / (r.wallClockMs / 1000)).toFixed(0)}`);
   lines.push('');
-  lines.push(`Total wagered:   ${r.totalWagered}`);
+  lines.push(`Total wagered:   ${r.totalWagered}  (BASE spins only; FS is free)`);
   lines.push(`Total paid:      ${r.totalPaid}`);
-  lines.push(`RTP:             ${(rtp * 100).toFixed(4)}%  (±${(ciHalfWidth * 100).toFixed(3)}% approx 95% CI)`);
-  lines.push(`Hit frequency:   ${(hitFreq * 100).toFixed(3)}%  (${r.hitCount.toLocaleString()} spins)`);
+  lines.push(`  base paid:     ${basePaid}`);
+  lines.push(`  FS paid:       ${r.freeSpinPaid}`);
+  lines.push(`Base RTP:        ${(baseRtp * 100).toFixed(4)}%  (paid-from-base-spins / base-wager)`);
+  lines.push(`FS RTP:          ${(fsRtp * 100).toFixed(4)}%  (paid-from-FS-spins / pseudo-FS-wager)`);
+  lines.push(`Combined RTP:    ${(rtp * 100).toFixed(4)}%  (±${(ciHalfWidth * 100).toFixed(3)}% approx 95% CI)`);
+  lines.push(`Hit frequency:   ${(hitFreq * 100).toFixed(3)}%  (${r.hitCount.toLocaleString()} winning spins / ${totalActualSpins.toLocaleString()} total spins)`);
   lines.push(`Max win:         ${r.maxWinStake.toFixed(2)}x stake  (raw: ${r.maxWinRaw})`);
   lines.push('');
   lines.push('Win-ratio histogram (% of all spins):');
@@ -330,15 +451,20 @@ function formatReport(opts: CliOptions, serverSeed: string, r: SimResult): strin
   lines.push('');
   lines.push('Per-symbol middle-row hit rate (sanity vs reel density):');
   lines.push('  id  name           middle-hits  visible-hits  middle%  expected%');
-  const totalMiddle = r.spins * 5;
-  const totalVisible = r.spins * 15;
-  for (let id = 0; id < CLASSIC_SYMBOLS.length; id++) {
-    const sym = CLASSIC_SYMBOLS[id]!;
+  const symbolTable: SlotSymbolDef[] =
+    opts.paytable === 'classic-3x5-bonus' ? BONUS_SYMBOLS : CLASSIC_SYMBOLS;
+  const reelStrips =
+    opts.paytable === 'classic-3x5-bonus' ? BONUS_REEL_STRIPS : CLASSIC_REEL_STRIPS;
+  const totalActualSpinsCount = r.spins + r.freeSpinCount;
+  const totalMiddle = totalActualSpinsCount * 5;
+  const totalVisible = totalActualSpinsCount * 15;
+  for (let id = 0; id < symbolTable.length; id++) {
+    const sym = symbolTable[id]!;
     const middle = r.symbolMiddleHits[id]!;
     const visible = r.symbolVisibleHits[id]!;
     const middlePct = (middle / totalMiddle) * 100;
     const visiblePct = (visible / totalVisible) * 100;
-    const expected = expectedSymbolPercent(id);
+    const expected = expectedSymbolPercent(id, reelStrips);
     void visiblePct;
     lines.push(
       `  ${String(id).padEnd(3)} ${sym.name.padEnd(14)} ${middle.toLocaleString().padStart(10)}  ${visible.toLocaleString().padStart(12)}  ${middlePct.toFixed(3).padStart(7)}%  ${expected.toFixed(3).padStart(7)}%`,
@@ -347,12 +473,12 @@ function formatReport(opts: CliOptions, serverSeed: string, r: SimResult): strin
   lines.push('');
   // Adversarial sanity: warn if ANY symbol is <0.1% or >50% in middle hits.
   const middleAlerts: string[] = [];
-  for (let id = 0; id < CLASSIC_SYMBOLS.length; id++) {
+  for (let id = 0; id < symbolTable.length; id++) {
     const middlePct = (r.symbolMiddleHits[id]! / totalMiddle) * 100;
     if (middlePct < 0.1) {
-      middleAlerts.push(`  WARN: symbol ${id} (${CLASSIC_SYMBOLS[id]!.name}) middle hit rate ${middlePct.toFixed(3)}% < 0.1% — starved`);
+      middleAlerts.push(`  WARN: symbol ${id} (${symbolTable[id]!.name}) middle hit rate ${middlePct.toFixed(3)}% < 0.1% — starved`);
     } else if (middlePct > 50) {
-      middleAlerts.push(`  WARN: symbol ${id} (${CLASSIC_SYMBOLS[id]!.name}) middle hit rate ${middlePct.toFixed(3)}% > 50% — overrepresented`);
+      middleAlerts.push(`  WARN: symbol ${id} (${symbolTable[id]!.name}) middle hit rate ${middlePct.toFixed(3)}% > 50% — overrepresented`);
     }
   }
   if (middleAlerts.length > 0) {
@@ -369,10 +495,10 @@ function formatReport(opts: CliOptions, serverSeed: string, r: SimResult): strin
  * on strip density). This is purely from the reel strips — independent
  * of any RNG draw.
  */
-function expectedSymbolPercent(symbolId: number): number {
+function expectedSymbolPercent(symbolId: number, reelStrips: readonly (readonly number[])[]): number {
   let total = 0;
   let hits = 0;
-  for (const strip of CLASSIC_REEL_STRIPS) {
+  for (const strip of reelStrips) {
     total += strip.length;
     for (const s of strip) if (s === symbolId) hits++;
   }
@@ -418,8 +544,11 @@ function main(): void {
   const opts = parseCli(process.argv.slice(2));
   const serverSeed = opts.seed ?? createServerSeed().serverSeed;
 
-  process.stderr.write(`Starting Monte Carlo: ${opts.spins.toLocaleString()} spins, bet=${opts.bet}\n`);
-  process.stderr.write(`Reel strip lengths: [${CLASSIC_REEL_STRIPS.map((s) => s.length).join(', ')}]\n\n`);
+  const strips = opts.paytable === 'classic-3x5-bonus' ? BONUS_REEL_STRIPS : CLASSIC_REEL_STRIPS;
+  process.stderr.write(
+    `Starting Monte Carlo: ${opts.spins.toLocaleString()} BASE spins, bet=${opts.bet}, paytable=${opts.paytable}\n`,
+  );
+  process.stderr.write(`Reel strip lengths: [${strips.map((s) => s.length).join(', ')}]\n\n`);
 
   const result = runSimulation(opts, serverSeed);
   const report = formatReport(opts, serverSeed, result);
