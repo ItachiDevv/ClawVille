@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef, useState, useEffect, useCallback, memo, Suspense } from 'react';
+import { useRef, useState, useEffect, useCallback, memo, Suspense, type RefObject } from 'react';
 import { Canvas, useFrame, extend, useThree } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import * as THREE from 'three/webgpu';
@@ -541,6 +541,27 @@ function PreCompilePipelines() {
   return null;
 }
 
+function PerfCameraPreset({
+  controlsRef,
+}: {
+  controlsRef: RefObject<OrbitControlsImpl | null>;
+}) {
+  const { camera } = useThree();
+
+  useEffect(() => {
+    camera.position.set(0, 600, 1300);
+    camera.lookAt(0, 80, 0);
+    camera.updateProjectionMatrix();
+    const controls = controlsRef.current;
+    if (controls) {
+      controls.target.set(0, 80, 0);
+      controls.update();
+    }
+  }, [camera, controlsRef]);
+
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // StaggeredTextureUpload — spread GPU texture uploads across idle time
 // ---------------------------------------------------------------------------
@@ -770,6 +791,7 @@ const SceneContents = memo(function SceneContents({
         zoomSpeed={isTouchDevice ? 0.6 : 1}
         target={[0, 10, 0]}
       />
+      {perfFlags && <PerfCameraPreset controlsRef={controlsRef} />}
 
       {/* Camera controller routing based on controlMode:
             explore           → WASDCameraController (free cam, WASD pans world)
