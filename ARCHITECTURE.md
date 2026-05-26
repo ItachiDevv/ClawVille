@@ -106,7 +106,7 @@ LLM: **Gemini only**. `plugin-anthropic` and `plugin-openai` were ripped out 202
 | `memory-service` | RAG + embeddings helper for Eliza characters. |
 | `milady-gateway` | Inbound dispatcher for Milady plugin traffic. |
 | `npc-conversation-engine` | NPC ↔ NPC banter generator (Gemini direct, bypasses Eliza). |
-| `npc-simulation` | Authoritative NPC-world tick + SSE fan-out. Default wanderers are identified by `NPC_DEFINITIONS.buildingId === ''` and constrained to the 1700-3000wu town-commons annulus before AABB-aware pathing. |
+| `npc-simulation` | Authoritative NPC-world tick + SSE fan-out. Default wanderers are identified by `NPC_DEFINITIONS.buildingId === ''` and constrained to the 900-2400wu town-commons annulus before AABB-aware pathing. |
 | `openclaw-client` | Outbound bridge to a user-hosted OpenClaw gateway. |
 | `openclaw-session-sweeper` | Phase 6 sliding 24h TTL on `openclaw_bots.session_expires_at`. Functions: `computeSessionExpiresAt`, `extendSessionTtl`, `expireSession`, `sweepExpiredSessions`. Wired into `apps/api/src/index.ts` boot + `gracefulShutdown`. |
 | `pathfinding` | A* over the shared server collider AABB grid from `getServerColliders()`, matching the movement clamp used by NPC simulation. |
@@ -363,7 +363,7 @@ Toggle via `<ControlModeToggle>`. Without agent → Explore/NPC. With agent → 
 
 ## 11. NPC simulation
 
-- 9 default wandering NPCs (Milady, Hermes, chibi, one crustacean) roam the town commons; server pathing keeps them inside the 1700-3000wu free-roam annulus and away from central prop/building-ring AABBs.
+- 9 default wandering NPCs (Milady, Hermes, chibi, one crustacean) roam the town commons; server pathing keeps them inside the 900-2400wu free-roam annulus and away from central prop/building-ring AABBs.
 - Each building has a dedicated location NPC at its entrance.
 - Server-authoritative simulation (`npc-simulation.ts`) streams state to clients via SSE (`npc-sse.ts`).
 - Client-side wander (`stores/npc.ts`) takes over when disconnected.
