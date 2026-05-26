@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef, useState, useEffect, useCallback, memo, Suspense } from 'react';
+import { useRef, useState, useEffect, useCallback, memo, Suspense, type RefObject } from 'react';
 import { Canvas, useFrame, extend, useThree } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import * as THREE from 'three/webgpu';
@@ -39,6 +39,7 @@ import { jumpState } from '@/lib/three/jump-state';
 import { useGameStore, avatarPositionRef } from '@/stores/game';
 import { useNpcStore } from '@/stores/npc';
 import { MAP_WIDTH, MAP_HEIGHT } from '@/lib/pixi/tilemap-data';
+import { DEFAULT_WORLD_PERF_FLAGS, type WorldPerfFlags } from '@/lib/three/PerfAudit';
 
 // ---------------------------------------------------------------------------
 // SeaLoadingScreen progress bridge — wire THREE.DefaultLoadingManager.onProgress
@@ -126,6 +127,7 @@ export type WorldMode = 'game' | 'arena';
 
 interface World3DCanvasProps {
   mode: WorldMode;
+  perfFlags?: Partial<WorldPerfFlags>;
 }
 
 // ---------------------------------------------------------------------------
@@ -174,6 +176,9 @@ const _wasdWorldUp = new THREE.Vector3(0, 1, 0);
 const FPS_FOLLOW_DISTANCE = 240;
 // How high above the 2D game-plane the character target sits (approximate)
 const CHAR_TARGET_Y = 15;
+// Frame-rate independent follow stiffness. The previous fixed 0.1/frame lerp
+// became visibly mushy when the scene dipped below 60 FPS.
+const FPS_FOLLOW_STIFFNESS = 14;
 
 // ---------------------------------------------------------------------------
 // Arrow key camera rotation — active in ALL modes
@@ -358,7 +363,7 @@ function FPSFollowCamera({
 }: {
   controlsRef: React.RefObject<OrbitControlsImpl | null>;
 }) {
-  useFrame(() => {
+  useFrame((_, delta) => {
     const controls = controlsRef.current;
     if (!controls) return;
 
@@ -393,9 +398,10 @@ function FPSFollowCamera({
     const prevTgtX = tgt.x;
     const prevTgtY = tgt.y;
     const prevTgtZ = tgt.z;
-    tgt.x += (worldX - tgt.x) * 0.1;
-    tgt.y += ((CHAR_TARGET_Y + extraY) - tgt.y) * 0.1;
-    tgt.z += (worldZ - tgt.z) * 0.1;
+    const followAlpha = 1 - Math.exp(-FPS_FOLLOW_STIFFNESS * Math.min(delta, 0.05));
+    tgt.x += (worldX - tgt.x) * followAlpha;
+    tgt.y += ((CHAR_TARGET_Y + extraY) - tgt.y) * followAlpha;
+    tgt.z += (worldZ - tgt.z) * followAlpha;
 
     // Translate camera by the same delta as the target so the orbit geometry
     // (angle, zoom distance, phi/theta) is preserved. Without this, a high jump
@@ -432,6 +438,14 @@ function FPSFollowCamera({
 // internally via its store subscriber, but belt-and-suspenders — if anything
 // races in future upgrades, the explicit kick keeps the scene alive.
 // ---------------------------------------------------------------------------
+function markWorldReadyIfUploadsDone(): void {
+  if (typeof window === 'undefined') return;
+  const bridge = window as any;
+  if (bridge.__W3D_CANVAS_READY && bridge.__W3D_TEXTURES_READY) {
+    bridge.__W3D_READY = true;
+  }
+}
+
 function kickRenderLoop(state: any): void {
   if (typeof state.invalidate === 'function') {
     state.invalidate();
@@ -444,6 +458,8 @@ function kickRenderLoop(state: any): void {
   if (typeof window !== 'undefined') {
     requestAnimationFrame(() => {
       (window as any).__W3D = state;
+      (window as any).__W3D_CANVAS_READY = true;
+      markWorldReadyIfUploadsDone();
       // Convenience helper for MCP browser automation / devtools — call
       // window.__W3D_step() to manually advance one frame when the tab is
       // hidden and RAF is throttled to 0 Hz.
@@ -539,6 +555,48 @@ function PreCompilePipelines() {
   return null;
 }
 
+function PerfCameraPreset({
+  controlsRef,
+}: {
+  controlsRef: RefObject<OrbitControlsImpl | null>;
+}) {
+  const { camera } = useThree();
+
+  useEffect(() => {
+    camera.position.set(0, 600, 1300);
+    camera.lookAt(0, 80, 0);
+    camera.updateProjectionMatrix();
+    const controls = controlsRef.current;
+    if (controls) {
+      controls.target.set(0, 80, 0);
+      controls.update();
+    }
+  }, [camera, controlsRef]);
+
+  return null;
+}
+
+function OpaqueCanvasClearGuard() {
+  const { camera, gl, scene } = useThree();
+  useEffect(() => {
+    let raf = 0;
+    let disposed = false;
+    const present = () => {
+      if (disposed) return;
+      gl.setClearColor(SKY_COLOR, 1);
+      gl.setClearAlpha?.(1);
+      gl.render(scene, camera);
+      raf = requestAnimationFrame(present);
+    };
+    raf = requestAnimationFrame(present);
+    return () => {
+      disposed = true;
+      cancelAnimationFrame(raf);
+    };
+  }, [camera, gl, scene]);
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // StaggeredTextureUpload — spread GPU texture uploads across idle time
 // ---------------------------------------------------------------------------
@@ -573,12 +631,22 @@ const TEXTURE_SLOTS = [
 ] as const;
 
 function StaggeredTextureUpload() {
-  const { gl, scene } = useThree();
+  const { camera, gl, scene } = useThree();
 
   useEffect(() => {
+    const markTextureUploadReady = () => {
+      gl.setClearColor(SKY_COLOR, 1);
+      gl.setClearAlpha?.(1);
+      gl.render(scene, camera);
+      if (typeof window === 'undefined') return;
+      (window as any).__W3D_TEXTURES_READY = true;
+      markWorldReadyIfUploadsDone();
+    };
+
     // Verify initTexture is available (guard for unusual renderer builds)
     if (typeof (gl as any).initTexture !== 'function') {
       console.warn('[World3D] StaggeredTextureUpload: renderer.initTexture() not available, skipping');
+      markTextureUploadReady();
       return;
     }
 
@@ -611,7 +679,10 @@ function StaggeredTextureUpload() {
         });
 
         const unique = Array.from(seen);
-        if (unique.length === 0) return;
+        if (unique.length === 0) {
+          markTextureUploadReady();
+          return;
+        }
 
         const hasIdle = typeof (window as any).requestIdleCallback === 'function';
         console.log(`[World3D] StaggeredTextureUpload: uploading ${unique.length} textures via ${hasIdle ? 'rIC' : 'rAF'} budget`);
@@ -636,6 +707,7 @@ function StaggeredTextureUpload() {
           } else {
             idleHandle = undefined;
             console.log('[World3D] StaggeredTextureUpload: all textures uploaded');
+            markTextureUploadReady();
           }
         }
 
@@ -658,6 +730,7 @@ function StaggeredTextureUpload() {
           } else {
             uploadRaf = undefined;
             console.log('[World3D] StaggeredTextureUpload: all textures uploaded');
+            markTextureUploadReady();
           }
         }
 
@@ -677,7 +750,7 @@ function StaggeredTextureUpload() {
         (window as any).cancelIdleCallback(idleHandle);
       }
     };
-    // gl/scene are stable R3F refs — intentionally omitted from deps
+    // gl/scene/camera are stable R3F refs — intentionally omitted from deps
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -691,9 +764,20 @@ function StaggeredTextureUpload() {
 const isTouchDevice = typeof window !== 'undefined' &&
   (window.matchMedia('(pointer: coarse)').matches || window.innerWidth < 768);
 
-const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode }) {
+const SceneContents = memo(function SceneContents({
+  mode,
+  perfFlags,
+}: {
+  mode: WorldMode;
+  perfFlags?: Partial<WorldPerfFlags>;
+}) {
   const controlsRef = useRef<OrbitControlsImpl | null>(null);
   const isGame = mode === 'game';
+  const flags = { ...DEFAULT_WORLD_PERF_FLAGS, ...perfFlags };
+  const staticOnly = flags.staticWorldOnly;
+  const showLabels = flags.labels && !staticOnly;
+  const showNpcs = flags.npcs && !staticOnly;
+  const showWaterFogParticles = flags.waterFogParticles && !staticOnly;
   // Read controlMode once at mount for camera routing; camera routing uses
   // getState() inside useFrame so it always has the latest value at zero cost.
   // We only need a reactive read here if we conditionally render JSX based on
@@ -709,6 +793,8 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
 
   return (
     <>
+      <OpaqueCanvasClearGuard />
+
       {/* Pre-compile WebGPU render pipelines once after the first frame commit.
           Eliminates the 274ms post-mount main-thread hitch. No-ops on WebGL. */}
       <PreCompilePipelines />
@@ -739,7 +825,7 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
           speech bubbles). Replaces 30+ per-instance drei <Html> portals.
           Mount early so consumers (ArenaNpcs, ArenaBuildings, etc.) see the overlay
           node ready on their first render. */}
-      <WorldLabelsOverlayMount />
+      {showLabels && <WorldLabelsOverlayMount />}
 
       {/* Camera controls.
           Target at z=-50 centres on the middle building row (z ≈ -64) so the
@@ -757,6 +843,7 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
         zoomSpeed={isTouchDevice ? 0.6 : 1}
         target={[0, 10, 0]}
       />
+      {perfFlags && <PerfCameraPreset controlsRef={controlsRef} />}
 
       {/* Camera controller routing based on controlMode:
             explore           → WASDCameraController (free cam, WASD pans world)
@@ -800,28 +887,44 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
           buildings at 5493wu start fogging at ~10%, fully fogged by 10000wu,
           depth-clipped at 10000wu. Real distance culling for the half of the
           world the player isn't looking at. */}
-      <fog attach="fog" args={[FOG_COLOR, 5000, 10000]} />
+      {showWaterFogParticles && <fog attach="fog" args={[FOG_COLOR, 5000, 10000]} />}
 
       {/* Shared world geometry */}
-      <ArenaTerrain />
+      <group name="perf:terrain" userData={{ perfChunk: 'terrain' }}>
+        <ArenaTerrain />
+      </group>
       {/* Phase B: when ?meshlets=1, ArenaBuildings is replaced by
           <MeshletBuildingsR3F /> which runs the rasterizer as a high-priority
           useFrame hook inside R3F's frame loop. Collision colliders are built
           from tilemap data not meshes, so dropping ArenaBuildings does NOT
           let players walk through buildings (world-colliders.ts line 248). */}
-      {USE_MESHLET_BUILDINGS ? <MeshletBuildingsR3F /> : <ArenaBuildings />}
-      <ArenaNpcs />
-      <ArenaLocationNpcs />
+      <group name="perf:buildings" userData={{ perfChunk: 'buildings' }}>
+        {USE_MESHLET_BUILDINGS ? <MeshletBuildingsR3F /> : <ArenaBuildings />}
+      </group>
+      {showNpcs && (
+        <group name="perf:wandering-npcs" userData={{ perfChunk: 'wandering-npcs' }}>
+          <ArenaNpcs />
+        </group>
+      )}
+      {showNpcs && (
+        <group name="perf:location-npcs" userData={{ perfChunk: 'location-npcs' }}>
+          <ArenaLocationNpcs />
+        </group>
+      )}
 
       {/* Seaweed ground cover — merged geometry + TSL GPU animation (no InstancedMesh).
           Skipped on iOS/forceWebGL: 4500 blades with per-vertex TSL positionNode wind
           animation compile to GLSL loops on WebGL2 backend and spike frame time past
           the A-series GPU budget on first draw. Plain WebGL path has no equivalent
           GPU-side procedural animation so the cost isn't recoverable. */}
-      {!FORCE_WEBGL && <MergedSeaweed />}
+      {showWaterFogParticles && !FORCE_WEBGL && (
+        <group name="perf:seaweed" userData={{ perfChunk: 'seaweed' }}>
+          <MergedSeaweed />
+        </group>
+      )}
 
       {/* NPC possession controller — active when controlMode === 'npc' */}
-      <NpcController />
+      {showNpcs && <NpcController />}
 
       {/* Minimap position tracker — updates avatarPosition in gameStore so the
           minimap blip reflects whichever entity the user is currently following
@@ -830,35 +933,65 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
       <MinimapPositionTracker />
 
       {/* Town center — guide NPC + scaled marketplace anchors (8× from original sizes) */}
-      <QuestNpc />
-      <TownGuide />
-      <BazaarStall />
-      <MarketplaceStall />
-      <AuctionPodium />
+      {showNpcs && (
+        <group name="perf:quest-npc" userData={{ perfChunk: 'quest-npc' }}>
+          <QuestNpc />
+        </group>
+      )}
+      {showNpcs && (
+        <group name="perf:town-guide" userData={{ perfChunk: 'town-guide' }}>
+          <TownGuide />
+        </group>
+      )}
+      <group name="perf:bazaar-stall" userData={{ perfChunk: 'bazaar-stall' }}>
+        <BazaarStall />
+      </group>
+      <group name="perf:marketplace-stall" userData={{ perfChunk: 'marketplace-stall' }}>
+        <MarketplaceStall />
+      </group>
+      <group name="perf:auction-podium" userData={{ perfChunk: 'auction-podium' }}>
+        <AuctionPodium />
+      </group>
       {/* Quest + Bounty Pavilion — octagonal open-air pavilion 1100wu behind
           the town directory sign. Houses both the Quest Board (boards 1+2, left
           half) and the Bounty Board (boards 3+4, right half). Replaces the
           standalone BountyBoardObject mount. Click zones split L/R; bio-luminescent
           labels float above each half. See quest-bounty-pavilion.tsx for layout. */}
-      <QuestBountyPavilion />
+      <group name="perf:quest-bounty-pavilion" userData={{ perfChunk: 'quest-bounty-pavilion' }}>
+        <QuestBountyPavilion />
+      </group>
       {/* Wooden signboard directory — informational landmark at centre of stall row */}
-      <TownDirectorySign />
+      <group name="perf:town-directory-sign" userData={{ perfChunk: 'town-directory-sign' }}>
+        <TownDirectorySign />
+      </group>
 
       {/* NPC speech bubbles — Dom overlay, renders chat from SSE stream */}
-      <NpcSpeechBubbles />
+      {showLabels && showNpcs && <NpcSpeechBubbles />}
 
       {/* NPC activity indicators — pulsing spheres + typing dots above NPCs */}
-      <ActivityIndicators />
+      {showWaterFogParticles && showNpcs && (
+        <group name="perf:activity-indicators" userData={{ perfChunk: 'activity-indicators' }}>
+          <ActivityIndicators />
+        </group>
+      )}
 
       {/* Floating reward texts — spheres that float upward on token earn */}
-      <FloatingTexts3D />
+      {showWaterFogParticles && (
+        <group name="perf:floating-texts" userData={{ perfChunk: 'floating-texts' }}>
+          <FloatingTexts3D />
+        </group>
+      )}
 
       {/* Click-to-move — only in modes where the user drives a character */}
-      {isGame && (controlMode === 'player' || controlMode === 'autonomous') && <ClickToMove />}
+      {isGame && !staticOnly && (controlMode === 'player' || controlMode === 'autonomous') && <ClickToMove />}
 
       {/* Player avatar lobster — only renders when an agent is connected (player/autonomous).
           Explore = floating spectator (no character), NPC = user controls a spawned NPC. */}
-      {isGame && (controlMode === 'player' || controlMode === 'autonomous') && <PlayerAvatar />}
+      {isGame && !staticOnly && (controlMode === 'player' || controlMode === 'autonomous') && (
+        <group name="perf:player-avatar" userData={{ perfChunk: 'player-avatar' }}>
+          <PlayerAvatar />
+        </group>
+      )}
     </>
   );
 });
@@ -1017,6 +1150,7 @@ async function createWebGPURenderer(canvas: HTMLCanvasElement): Promise<any> {
   const renderer = new THREE.WebGPURenderer({
     canvas,
     antialias: false,
+    alpha: false,
     // forceWebGL: bypass the navigator.gpu adapter path on iOS Safari and any
     // browser where WebGPU is absent. WebGLBackend with TSL (GLSLNodeBuilder)
     // compiles all MeshBasicNodeMaterial / PointsNodeMaterial / MeshStandardNodeMaterial
@@ -1030,6 +1164,8 @@ async function createWebGPURenderer(canvas: HTMLCanvasElement): Promise<any> {
   // With forceWebGL:true, init() goes straight to WebGLBackend (no adapter request).
   // Without forceWebGL, init() tries WebGPU first then falls back to WebGL2.
   await renderer.init();
+  renderer.setClearColor(SKY_COLOR, 1);
+  renderer.setClearAlpha?.(1);
   renderer.setSize(cssW, cssH, false);
 
   // Device-loss handler — log and attempt page reload on unexpected loss
@@ -1074,7 +1210,7 @@ function ContextLostFallback() {
   );
 }
 
-function World3DCanvas({ mode }: World3DCanvasProps) {
+function World3DCanvas({ mode, perfFlags }: World3DCanvasProps) {
   // Stable async gl factory — R3F v9 awaits this before rendering.
   // Returns a WebGPURenderer (with automatic WebGL2 fallback built in).
   // Falls back to standard WebGLRenderer if the dynamic import or init fails.
@@ -1094,9 +1230,12 @@ function World3DCanvas({ mode }: World3DCanvasProps) {
         const fallbackRenderer = new THREE.WebGPURenderer({
           canvas: fallbackCanvas,
           antialias: false,
+          alpha: false,
           forceWebGL: true,
         });
         await fallbackRenderer.init();
+        fallbackRenderer.setClearColor(SKY_COLOR, 1);
+        fallbackRenderer.setClearAlpha?.(1);
         fallbackRenderer.setSize(fallbackCanvas.width, fallbackCanvas.height, false);
         return fallbackRenderer;
       }
@@ -1143,6 +1282,9 @@ function World3DCanvas({ mode }: World3DCanvasProps) {
         onCreated={(state) => {
           const { scene, gl } = state;
           scene.background = SKY_COLOR;
+          gl.setClearColor(SKY_COLOR, 1);
+          gl.setClearAlpha?.(1);
+          gl.shadowMap.enabled = perfFlags?.shadows ?? DEFAULT_WORLD_PERF_FLAGS.shadows;
           // PERF: do NOT call gl.setPixelRatio() here — it overrides the Canvas
           // dpr={[0.75, 1]} prop cap. R3F resolves the DPR from the prop before
           // onCreated fires; a manual setPixelRatio resets it and can raise DPR
@@ -1158,7 +1300,7 @@ function World3DCanvas({ mode }: World3DCanvasProps) {
           kickRenderLoop(state);
         }}
       >
-        <SceneContents mode={mode} />
+        <SceneContents mode={mode} perfFlags={perfFlags} />
       </Canvas>
     </div>
   );

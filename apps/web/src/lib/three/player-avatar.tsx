@@ -24,7 +24,7 @@ import {
   type CharacterAnimator,
 } from '@/lib/three/character-animations';
 import { jumpState, isEditable } from '@/lib/three/jump-state';
-import { useVRMInstance, disposeVRMInstance, preloadVRMBytes, applyFattenedFrustumCulling } from '@/lib/three/vrm-loader';
+import { useVRMInstance, disposeVRMInstance, applyFattenedFrustumCulling } from '@/lib/three/vrm-loader';
 import {
   VRMCharacterAnimator,
   preloadMixamoClips,
@@ -153,11 +153,25 @@ function attachKeyListeners() {
     // NOTE: keyup intentionally has NO target guard — it must always clear state
     // so keys don't get stranded 'true' when the user taps into an input mid-move.
     if (isEditable(e.target)) return;
-    const key = e.key.toLowerCase() as keyof KeyState;
+    const rawKey = e.key.toLowerCase();
+    const rawCode = e.code.toLowerCase();
+    if (rawKey === 'shift' || rawCode === 'shiftleft' || rawCode === 'shiftright') {
+      keyState.shift = true;
+      return;
+    }
+    keyState.shift = e.shiftKey;
+    const key = rawKey as keyof KeyState;
     if (key in keyState) keyState[key] = true;
   };
   const onKeyUp = (e: KeyboardEvent) => {
-    const key = e.key.toLowerCase() as keyof KeyState;
+    const rawKey = e.key.toLowerCase();
+    const rawCode = e.code.toLowerCase();
+    if (rawKey === 'shift' || rawCode === 'shiftleft' || rawCode === 'shiftright') {
+      keyState.shift = false;
+      return;
+    }
+    keyState.shift = e.shiftKey;
+    const key = rawKey as keyof KeyState;
     if (key in keyState) keyState[key] = false;
   };
   // Prevent phantom movement when the window loses focus mid-hold (browser skips keyup).
@@ -650,7 +664,7 @@ function PlayerAvatarVRMInner({ reg }: { reg: ModelRegistryEntry }) {
       const lockIdle = phaseCharging || airborne;
       animator.update(dt, lockIdle ? false : isMoving, lockIdle ? false : isRunning);
     }
-  });
+  }, -100);
 
   return (
     <group ref={groupRef}>
@@ -1062,7 +1076,7 @@ function PlayerAvatarGLBInner() {
         applyIdleAnimation(animStateData);
       }
     }
-  });
+  }, -100);
 
   return (
     <group ref={groupRef}>
@@ -1101,15 +1115,11 @@ function PlayerAvatarRouter() {
 }
 
 export default function PlayerAvatar() {
-  // Preload VRM assets and Mixamo anim clips for fast switch if user picks a Milady avatar
+  // Locomotion clips are shared by every VRM avatar. The selected VRM itself is
+  // loaded on demand by useVRMInstance; avatar-picker choices are warmed only
+  // when the picker opens so /game does not fetch the full avatar catalog.
   useEffect(() => {
     preloadMixamoClips();
-    // Preload all 8 VRM byte caches so first useVRMInstance call hits the
-    // browser HTTP cache instead of round-tripping. Per-instance parse still
-    // happens at mount time.
-    for (let i = 1; i <= 8; i++) {
-      preloadVRMBytes(`/avatars/milady-official-${i}.vrm`);
-    }
   }, []);
 
   return (

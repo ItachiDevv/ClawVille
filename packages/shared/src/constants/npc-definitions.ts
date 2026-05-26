@@ -8,11 +8,8 @@ export interface NpcStats {
 export interface NpcDefinition {
   id: string;
   name: string;
-  /** Visual species key — maps to SPECIES_MODEL in arena-npcs.tsx for GLB selection.
-   *  Not constrained to AvatarSpecies (player avatar creation enum); wandering NPCs use
-   *  sea-creature GLBs only: lobster, crayfish, sweet_crab, hermitcrab,
-   *  jellyfish, octopus, seahorse. VRM Milady avatars (milady_official_1..8) are
-   *  player-avatar-only and do not appear as wandering NPCs. */
+  /** Visual species key — maps to arena-npcs.tsx GLB/VRM selection.
+   *  Not constrained to AvatarSpecies (player avatar creation enum). */
   species: string;
   color: number; // hex tint
   buildingId: string;
@@ -74,27 +71,22 @@ export const NPC_BUILDING_CENTERS: Record<string, { x: number; y: number }> = Ob
   Object.entries(NPC_HOME_POSITIONS).map(([id, p]) => [id, { x: p.homeX, y: p.homeY }])
 );
 
-// Wandering NPC species distribution — 2 model categories:
-//   milady   (neo-chibi VRMs): milady_official_2/3/4/7/8                (5 of 8) — free wanderers
-//   openclaw (crustaceans):    lobster, sweet_crab, hermitcrab          (3 of 8) — free wanderers
-//   Total: 8 NPCs — all free wanderers (buildingId='').
+// Wandering NPC species distribution — 4 model categories:
+//   milady   (neo-chibi VRMs): milady_official_2/7/8                    (3 of 9) — free wanderers
+//   hermes   (VRMs):           hermes_female, hermes_male, tekk          (3 of 9) — free wanderers
+//   chibi    (VRMs):           eliza_chibi, milady_chibi                 (2 of 9) — free wanderers
+//   openclaw (crustacean):     lobster                                   (1 of 9) — free wanderer
+//   Total: 9 NPCs — all free wanderers (buildingId='').
 //   The 10 SpongeBob building residents at each building entrance are
 //   rendered by arena-location-npcs.tsx and are the canonical per-building
 //   characters.
-//   2026-05-12 (PM): Hermes-female (Mira) and Hermes-male (Tekk) were swapped
-//   in earlier today, then reverted same day — the Hermes VRMs render
-//   massively oversized at the shared VRM_NPC_SCALE=112 and overshadow the
-//   rest of the cast. Scaffold for Hermes wanderers (MODEL_REGISTRY entries,
-//   preloads, characterId switch in VRMNpcMesh) stays in place; the roster
-//   reverts to the original 5 Milady picks until a per-species VRM scale
-//   override lands in arena-npcs.tsx.
+//   2026-05-12 (PM): Hermes-female (Mira), Hermes-male (Cyrus), and Tekk
+//   were restored after per-VRM bbox auto-fit landed in arena-npcs.tsx.
 //   The 10 SpongeBob building residents (SpongeBob, Patrick, Squidward, etc.)
 //   at each building entrance are rendered by arena-location-npcs.tsx and are
-//   the canonical per-building characters. Previously there was ALSO one
-//   crustacean per building (Pebbles/Crusty/Inky/Speck/Hazel/Whisk/Bubbles/
-//   Tide/Boulder/Coral) wandering nearby — removed 2026-04-24 because they
-//   were redundant with the SpongeBob residents: the user should see one
-//   character per building, not two.
+//   the canonical per-building characters. Previously there were more
+//   crustaceans wandering nearby; reduced to one live lobster on 2026-05-26
+//   so the user sees one version of each avatar family, not a crustacean crowd.
 //   Each Milady NPC MUST use a unique VRM path due to the module-level
 //   single-instance-per-path cache in vrm-loader.ts.
 export const NPC_DEFINITIONS: NpcDefinition[] = [
@@ -212,8 +204,8 @@ export const NPC_DEFINITIONS: NpcDefinition[] = [
     color: 0xff7043,             // ignored — MToon
     buildingId: '',
     patrolRadius: 400,
-    homeX: 6700,
-    homeY: 5500,                 // ESE of center, plaza-adjacent
+    homeX: 6900,
+    homeY: 6500,                 // ESE of center, plaza-adjacent, outside town prop AABBs
     stats: { hp: 70, attack: 10, defense: 12, speed: 18 },
     personality: 'A pint-sized ClawVille intern who claims she invented the orange tee.',
   },
@@ -229,9 +221,10 @@ export const NPC_DEFINITIONS: NpcDefinition[] = [
     stats: { hp: 70, attack: 10, defense: 13, speed: 17 },
     personality: 'An eliza-labs partner chibi taking notes on every passing agent in the plaza.',
   },
-  // ─── Additional free-roaming crustaceans (added 2026-04-22) ──────────────
-  // Sea-creature GLBs scale + clone per-instance, so multiple NPCs can share
-  // the same species path without cache collision (unlike VRMs).
+  // ─── Free-roaming crustacean (reduced 2026-05-26) ────────────────────────
+  // Keep one live OpenClaw crustacean in the roaming cast. Other sea-creature
+  // species remain supported as legacy/render-on-demand paths but are not in
+  // the default free-roaming roster.
   //
   // Positions updated 2026-05-18 (Phase 6.2): ring is now R=160 tiles (5120 wu)
   // centered at game-space pixel (5760, 5760) in the 11520×11520 world.
@@ -249,30 +242,6 @@ export const NPC_DEFINITIONS: NpcDefinition[] = [
     homeY: 5112,                 // W inner — between cove (slot 9, W) + claw-arcade (slot 8, WSW)
     stats: { hp: 100, attack: 14, defense: 14, speed: 12 },
     personality: 'A weather-worn vagabond lobster who treats the whole reef as his personal backyard.',
-  },
-  {
-    id: 'wanderer-marlin',
-    name: 'Marlin',
-    species: 'sweet_crab',
-    color: 0x00acc1,             // teal
-    buildingId: '',
-    patrolRadius: 500,
-    homeX: 7650,
-    homeY: 6300,                 // E inner — between messaging-channels (slot 3, E) + api-integrations (slot 4, ESE)
-    stats: { hp: 85, attack: 17, defense: 11, speed: 19 },
-    personality: 'A speedy crab courier who claims to know every tide pool shortcut on the map.',
-  },
-  {
-    id: 'wanderer-riptide',
-    name: 'Riptide',
-    species: 'hermitcrab',
-    color: 0xa1887f,             // sand
-    buildingId: '',
-    patrolRadius: 500,
-    homeX: 4275,
-    homeY: 7200,                 // SW inner — between deployment-ops (slot 7, SSW) + agent-security (slot 10, WNW)
-    stats: { hp: 110, attack: 13, defense: 17, speed: 11 },
-    personality: 'A philosophical hermit crab who borrows shells from every building he visits and returns each one.',
   },
 ];
 

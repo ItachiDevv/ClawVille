@@ -37,6 +37,8 @@
  */
 
 import {
+  Children,
+  isValidElement,
   useEffect,
   useMemo,
   useRef,
@@ -59,6 +61,7 @@ interface LabelEntry {
   offset: [number, number, number];
   visible: boolean;
   content: ReactNode;
+  contentSignature: string;
   className: string | undefined;
   pointerEvents: 'none' | 'auto';
   /** Public ref the consumer holds; LabelView writes its real DOM node here. */
@@ -81,18 +84,109 @@ interface LabelEntry {
   // ---------------------------------------------------------------------------
   // Occlusion raycast — skip for building labels (occlude: false).
   // ---------------------------------------------------------------------------
-  /** Whether to run 10Hz occluder raycast against building meshes. */
+  /** Whether to run low-rate occluder raycasts against building meshes. */
   occlude: boolean;
-  /** Frame-stagger phase (0–5) so not all labels raycast in the same frame. */
+  /** Frame-stagger phase (0–29) so not all labels raycast in the same frame. */
   occludePhase: number;
-  /** Cached occlude result — updated at 10Hz, read every frame. */
+  /** Cached occlude result — updated at 2Hz, read every frame. */
   _occludeResult: boolean;
+  /** Whether the projection pass currently keeps this label displayed. */
+  _active: boolean;
 }
 
 const _registry = new Map<string, LabelEntry>();
 
 /** Reverse lookup so <WorldLabel divRef={...}> can find its entry in O(1). */
 const _refToId = new WeakMap<RefObject<HTMLDivElement | null>, string>();
+let _labelRenderWindowStart = 0;
+let _labelRenderCount = 0;
+let _labelRenderRate = 0;
+let _overlayActive = false;
+
+const LABEL_HARD_CULL_FAR = 6500;
+const LABEL_FULL_RATE_FAR = 3500;
+const LABEL_MID_DISTANCE_FRAME_MOD = 3;
+const LABEL_NDC_MARGIN = 1.15;
+
+function _recordLabelRender(): void {
+  if (typeof performance === 'undefined') return;
+  const now = performance.now();
+  if (_labelRenderWindowStart === 0) _labelRenderWindowStart = now;
+  _labelRenderCount++;
+  const elapsed = now - _labelRenderWindowStart;
+  if (elapsed >= 1000) {
+    _labelRenderRate = (_labelRenderCount * 1000) / elapsed;
+    _labelRenderCount = 0;
+    _labelRenderWindowStart = now;
+  }
+}
+
+export function getWorldLabelPerfStats(): { labelCount: number; reactRendersPerSec: number } {
+  if (typeof performance !== 'undefined' && _labelRenderWindowStart > 0) {
+    const elapsed = performance.now() - _labelRenderWindowStart;
+    if (elapsed >= 1000) {
+      _labelRenderRate = _labelRenderCount > 0 ? (_labelRenderCount * 1000) / elapsed : 0;
+      _labelRenderCount = 0;
+      _labelRenderWindowStart = performance.now();
+    }
+  }
+  const activeLabelCount = _overlayActive
+    ? Array.from(_registry.values()).filter((entry) => entry._active).length
+    : 0;
+  return {
+    labelCount: activeLabelCount,
+    reactRendersPerSec: _overlayActive ? Math.round(_labelRenderRate * 10) / 10 : 0,
+  };
+}
+
+function _styleSignature(style: unknown): string {
+  if (!style || typeof style !== 'object') return '';
+  const record = style as Record<string, unknown>;
+  return Object.keys(record)
+    .sort()
+    .map((key) => `${key}:${String(record[key])}`)
+    .join(';');
+}
+
+function _contentSignature(node: ReactNode, depth = 0): string {
+  if (node == null || typeof node === 'boolean') return '';
+  if (typeof node === 'string' || typeof node === 'number') return String(node);
+  if (Array.isArray(node)) {
+    return node.map((child) => _contentSignature(child, depth + 1)).join('|');
+  }
+  if (isValidElement(node)) {
+    const typeName = typeof node.type === 'string'
+      ? node.type
+      : ((node.type as { displayName?: string; name?: string }).displayName
+        ?? (node.type as { name?: string }).name
+        ?? 'component');
+    const props = node.props as {
+      children?: ReactNode;
+      className?: string;
+      style?: unknown;
+      ['data-bio-capsule']?: unknown;
+    };
+    const children = depth > 12
+      ? ''
+      : Children.toArray(props.children).map((child) => _contentSignature(child, depth + 1)).join('|');
+    return [
+      typeName,
+      props.className ?? '',
+      props['data-bio-capsule'] != null ? 'bio' : '',
+      _styleSignature(props.style),
+      children,
+    ].join(':');
+  }
+  return typeof node;
+}
+
+function _hideEntry(entry: LabelEntry, div: HTMLDivElement): void {
+  entry._active = false;
+  if (entry._prevDisplay !== 'none') {
+    div.style.display = 'none';
+    entry._prevDisplay = 'none';
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Subscribers + microtask-coalesced notify
@@ -150,6 +244,7 @@ const _scratchAnchorWorld = new THREE.Vector3();
 
 const _occRaycaster = new THREE.Raycaster();
 const _occDir = new THREE.Vector3();
+const _occHits: THREE.Intersection[] = [];
 /** Lazily built from userData.isOccluder meshes; rebuilt every 2 s (wall-clock)
  *  so late-mounted buildings and hot-swaps in edit mode are picked up regardless
  *  of framerate. Frame-counter cadence (300 frames) caused a 10 s stale window
@@ -157,7 +252,7 @@ const _occDir = new THREE.Vector3();
 let _occluderMeshes: THREE.Mesh[] | null = null;
 /** Timestamp (performance.now()) of the last occluder-list rebuild. 0 = force rebuild on first frame. */
 let _occluderRebuildTime = 0;
-/** Frame counter incremented in the projection useFrame for 10Hz stagger. */
+/** Frame counter incremented in the projection useFrame for 2Hz stagger. */
 let _occFrameCounter = 0;
 /** Three.js scene reference captured in WorldLabelsOverlayMount. */
 let _sceneRef: THREE.Scene | null = null;
@@ -190,7 +285,9 @@ function _checkOcclusion(anchorWorld: THREE.Vector3, cameraPos: THREE.Vector3): 
   // Stop 80wu before anchor to avoid catching the building in front of which
   // an NPC is standing (teacher NPCs at building entrances).
   _occRaycaster.far = Math.max(0, anchorDist - 80);
-  return _occRaycaster.intersectObjects(_occluderMeshes, false).length > 0;
+  _occHits.length = 0;
+  _occRaycaster.intersectObjects(_occluderMeshes, false, _occHits);
+  return _occHits.length > 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -217,6 +314,7 @@ function LabelsHost() {
 }
 
 function LabelView({ entry }: { entry: LabelEntry }) {
+  _recordLabelRender();
   const localRef = useRef<HTMLDivElement | null>(null);
 
   // Wire entry.divRef to this DOM node so the projection useFrame can write
@@ -280,6 +378,7 @@ export function WorldLabelsOverlayMount() {
     container.appendChild(overlay);
 
     _overlayNode = overlay;
+    _overlayActive = true;
 
     const root = createRoot(overlay);
     _overlayRoot = root;
@@ -305,6 +404,9 @@ export function WorldLabelsOverlayMount() {
       const r = _overlayRoot;
       _overlayRoot = null;
       _overlayNode = null;
+      _overlayActive = false;
+      _labelRenderRate = 0;
+      _labelRenderCount = 0;
       // Defer unmount past the parent's commit phase to avoid React's "race
       // calling root.unmount() while reconciling" warning.
       queueMicrotask(() => {
@@ -334,19 +436,13 @@ export function WorldLabelsOverlayMount() {
       if (!div) return;
 
       if (!entry.visible) {
-        if (entry._prevDisplay !== 'none') {
-          div.style.display = 'none';
-          entry._prevDisplay = 'none';
-        }
+        _hideEntry(entry, div);
         return;
       }
 
       const anchor = entry.anchorRef.current;
       if (!anchor) {
-        if (entry._prevDisplay !== 'none') {
-          div.style.display = 'none';
-          entry._prevDisplay = 'none';
-        }
+        _hideEntry(entry, div);
         return;
       }
 
@@ -359,6 +455,17 @@ export function WorldLabelsOverlayMount() {
       // _scratchAnchorWorld holds the world-space anchor for the occlusion ray.
       _scratchAnchorWorld.copy(_scratchPos);
       const distToCamera = camera.position.distanceTo(_scratchAnchorWorld);
+      if (distToCamera > LABEL_HARD_CULL_FAR) {
+        _hideEntry(entry, div);
+        return;
+      }
+
+      if (
+        distToCamera > LABEL_FULL_RATE_FAR &&
+        (_occFrameCounter + entry.occludePhase) % LABEL_MID_DISTANCE_FRAME_MOD !== 0
+      ) {
+        return;
+      }
 
       // Compute target opacity from distance band.
       let targetOpacity: number;
@@ -371,10 +478,17 @@ export function WorldLabelsOverlayMount() {
         targetOpacity = entry.fadeBaseOpacity * (1 - t);
       }
 
-      // --- Occlusion check (10Hz stagger) ---
+      // If distance fade already hides the label, skip projection and the
+      // expensive occlusion raycast entirely.
+      if (targetOpacity < 0.01) {
+        _hideEntry(entry, div);
+        return;
+      }
+
+      // --- Occlusion check (2Hz stagger) ---
       // Only runs for NPC labels (occlude: true). Skip building labels.
       if (entry.occlude) {
-        if ((_occFrameCounter + entry.occludePhase) % 6 === 0) {
+        if ((_occFrameCounter + entry.occludePhase) % 30 === 0) {
           entry._occludeResult = _checkOcclusion(_scratchAnchorWorld, camera.position);
         }
         if (entry._occludeResult) {
@@ -382,23 +496,23 @@ export function WorldLabelsOverlayMount() {
         }
       }
 
-      // If fully transparent, hide the div entirely (no pointer events, no render).
+      // If occlusion made it fully transparent, hide the div entirely.
       if (targetOpacity < 0.01) {
-        if (entry._prevDisplay !== 'none') {
-          div.style.display = 'none';
-          entry._prevDisplay = 'none';
-        }
+        _hideEntry(entry, div);
         return;
       }
 
       _scratchPos.project(camera);
 
       // NDC z > 1 → behind near plane → hide.
-      if (_scratchPos.z > 1) {
-        if (entry._prevDisplay !== 'none') {
-          div.style.display = 'none';
-          entry._prevDisplay = 'none';
-        }
+      if (
+        _scratchPos.z > 1 ||
+        _scratchPos.x < -LABEL_NDC_MARGIN ||
+        _scratchPos.x > LABEL_NDC_MARGIN ||
+        _scratchPos.y < -LABEL_NDC_MARGIN ||
+        _scratchPos.y > LABEL_NDC_MARGIN
+      ) {
+        _hideEntry(entry, div);
         return;
       }
 
@@ -409,6 +523,7 @@ export function WorldLabelsOverlayMount() {
         div.style.display = 'block';
         entry._prevDisplay = 'block';
       }
+      entry._active = true;
 
       if (
         Math.abs(cssX - entry._prevX) >= 0.5 ||
@@ -463,7 +578,7 @@ export interface UseWorldLabelOpts {
    */
   fadeBaseOpacity?: number;
   /**
-   * If true, runs a 10Hz raycast against building occluder meshes.
+   * If true, runs a low-rate raycast against building occluder meshes.
    * Use for NPC labels. Default: false.
    */
   occlude?: boolean;
@@ -504,6 +619,7 @@ export function useWorldLabel({
       offset: [offset[0], offset[1], offset[2]],
       visible: initialVisible,
       content: null,
+      contentSignature: '',
       className: undefined,
       pointerEvents: 'none',
       divRef,
@@ -515,9 +631,10 @@ export function useWorldLabel({
       fadeBaseOpacity,
       _prevOpacity: -1,
       occlude,
-      // Stagger phase based on registry size at registration time (0–5).
-      occludePhase: _registry.size % 6,
+      // Stagger phase based on registry size at registration time (0–29).
+      occludePhase: _registry.size % 30,
       _occludeResult: false,
+      _active: false,
     };
     _registry.set(id, entry);
     _refToId.set(divRef, id);
@@ -606,8 +723,10 @@ export function WorldLabel({
     if (!entry) return;
 
     let dirty = false;
-    if (entry.content !== children) {
+    const contentSignature = _contentSignature(children);
+    if (entry.contentSignature !== contentSignature) {
       entry.content = children;
+      entry.contentSignature = contentSignature;
       dirty = true;
     }
     if (entry.className !== className) {
