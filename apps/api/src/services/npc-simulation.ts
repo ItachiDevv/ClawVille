@@ -15,7 +15,6 @@ import {
   DEFAULT_ARENA_SETTINGS,
   clampPosition2D,
   WORLD_COLLIDER_MAP_HALF,
-  ENTITY_HALF_CHIBI,
 } from '@clawville/shared';
 import { generateNpcConversation, generateOpenClawConversation } from './npc-conversation-engine';
 import {
@@ -23,6 +22,7 @@ import {
   hasClearance,
   isCollisionFreeWorld,
   findNearestWalkable,
+  isPathCollisionFree,
   type PathNode,
 } from './pathfinding';
 import { AvatarSimulationBridge } from './avatar-simulation-bridge';
@@ -47,6 +47,7 @@ const TOWN_CENTER_X = MAP_WIDTH / 2;       // 5760
 const TOWN_CENTER_Y = MAP_HEIGHT / 2;      // 5760
 const FREE_ROAMER_MIN_RADIUS = 900;
 const FREE_ROAMER_MAX_RADIUS = 2400;
+const NPC_COLLISION_HALF = 30;
 
 const FREE_ROAMER_IDS = new Set(
   NPC_DEFINITIONS.filter((def) => def.buildingId === '').map((def) => def.id),
@@ -300,21 +301,32 @@ class NpcSimulation {
     return snapshot;
   }
 
+  private resolveSafeSpawn(rawX: number, rawY: number): { x: number; y: number } {
+    const snapped = findNearestWalkable(rawX, rawY, NPC_COLLISION_HALF);
+    if (snapped) return snapped;
+
+    // Fallback for deep-in-collider legacy/restored positions where the
+    // walkable search cannot escape within its planner radius.
+    const clamped = clampPosition2D(
+      rawX - WORLD_COLLIDER_MAP_HALF,
+      rawY - WORLD_COLLIDER_MAP_HALF,
+      NPC_COLLISION_HALF,
+    );
+    return {
+      x: clamped.x + WORLD_COLLIDER_MAP_HALF,
+      y: clamped.z + WORLD_COLLIDER_MAP_HALF,
+    };
+  }
+
   private initNpcs() {
     this.npcs.clear();
     for (const def of NPC_DEFINITIONS) {
-      // Spawn-clamp: push the NPC out of any solid collider its home position
-      // happens to overlap (e.g. the shisha-oasis kiosk after the 2026-05-22
-      // pure-solid resize). Without this, NPCs whose homeX/Y landed inside the
-      // new larger AABB would visibly spawn inside the building mesh.
-      // Game-px → world conversion: world = game_px - MAP_HALF.
-      const clampedHome = clampPosition2D(
-        def.homeX - WORLD_COLLIDER_MAP_HALF,
-        def.homeY - WORLD_COLLIDER_MAP_HALF,
-        30, // NPC half-width — sized for chibi humanoid
-      );
-      const spawnX = clampedHome.x + WORLD_COLLIDER_MAP_HALF;
-      const spawnY = clampedHome.z + WORLD_COLLIDER_MAP_HALF;
+      // Spawn resolve: choose a planner-valid walkable point before falling
+      // back to raw clamp output. Clamp-only starts can sit on an AABB edge
+      // without the clearance that path planning assumes.
+      const spawn = this.resolveSafeSpawn(def.homeX, def.homeY);
+      const spawnX = spawn.x;
+      const spawnY = spawn.y;
       this.npcs.set(def.id, {
         id: def.id, name: def.name,
         x: spawnX, y: spawnY,
@@ -360,15 +372,9 @@ class NpcSimulation {
       const npcId = `oc-${config.sessionId}`;
       const rawSpawnX = restoredState?.lastX ?? avatarConfig.homeX;
       const rawSpawnY = restoredState?.lastY ?? avatarConfig.homeY;
-      // Spawn-clamp against world solid colliders so OpenClaw avatars never
-      // appear inside a building. Game-px → world conversion: world = game_px - MAP_HALF.
-      const clampedSpawn = clampPosition2D(
-        rawSpawnX - WORLD_COLLIDER_MAP_HALF,
-        rawSpawnY - WORLD_COLLIDER_MAP_HALF,
-        30, // chibi half-width
-      );
-      const spawnX = clampedSpawn.x + WORLD_COLLIDER_MAP_HALF;
-      const spawnY = clampedSpawn.z + WORLD_COLLIDER_MAP_HALF;
+      const spawn = this.resolveSafeSpawn(rawSpawnX, rawSpawnY);
+      const spawnX = spawn.x;
+      const spawnY = spawn.y;
       this.npcs.set(npcId, {
         id: npcId, name: avatarConfig.name,
         x: spawnX, y: spawnY,
@@ -756,7 +762,7 @@ class NpcSimulation {
   private snapPlannerTarget(
     tx: number,
     ty: number,
-    entityHalf: number = ENTITY_HALF_CHIBI,
+    entityHalf: number = NPC_COLLISION_HALF,
   ): { x: number; y: number } | null {
     if (
       hasClearance(tx, ty, 3) &&
@@ -765,6 +771,17 @@ class NpcSimulation {
       return { x: tx, y: ty };
     }
     return findNearestWalkable(tx, ty, entityHalf);
+  }
+
+  private findSafePath(
+    npc: NpcRuntimeState,
+    tx: number,
+    ty: number,
+    entityHalf: number = NPC_COLLISION_HALF,
+  ): PathNode[] {
+    const path = findPath(npc.x, npc.y, tx, ty);
+    if (path.length === 0) return [];
+    return isPathCollisionFree(npc.x, npc.y, path, entityHalf) ? path : [];
   }
 
   private planNpcBehaviors() {
@@ -828,7 +845,7 @@ class NpcSimulation {
       const offsetY = 20 + Math.random() * 20;
       const snapped = this.snapPlannerTarget(center.x + offsetX, center.y + offsetY);
       if (!snapped) continue;
-      const path = findPath(npc.x, npc.y, snapped.x, snapped.y);
+      const path = this.findSafePath(npc, snapped.x, snapped.y);
       if (path.length > 0) {
         npc.activity = 'walking'; npc.activityEmoji = '';
         npc.destinationBuildingId = target.id;
@@ -872,7 +889,7 @@ class NpcSimulation {
       }
       const snapped = this.snapPlannerTarget(standX, standY);
       if (!snapped) continue;
-      const path = findPath(npc.x, npc.y, snapped.x, snapped.y);
+      const path = this.findSafePath(npc, snapped.x, snapped.y);
       if (path.length > 0) {
         npc.activity = 'walking'; npc.activityEmoji = '';
         npc.path = path; npc.pathIndex = 0;
@@ -895,7 +912,7 @@ class NpcSimulation {
       const ty = Math.max(32, Math.min(MAP_HEIGHT - 32, npc.homeY + Math.sin(angle) * radius));
       const snapped = this.snapPlannerTarget(tx, ty);
       if (!snapped) continue;
-      const path = findPath(npc.x, npc.y, snapped.x, snapped.y);
+      const path = this.findSafePath(npc, snapped.x, snapped.y);
       if (path.length > 0) {
         npc.activity = 'walking'; npc.activityEmoji = '';
         npc.path = path; npc.pathIndex = 0;
@@ -916,7 +933,7 @@ class NpcSimulation {
       const ty = 64 + Math.random() * (MAP_HEIGHT - 128);
       const snapped = this.snapPlannerTarget(tx, ty);
       if (!snapped) continue;
-      const path = findPath(npc.x, npc.y, snapped.x, snapped.y);
+      const path = this.findSafePath(npc, snapped.x, snapped.y);
       if (path.length > 0) {
         npc.activity = 'walking'; npc.activityEmoji = '';
         npc.path = path; npc.pathIndex = 0;
@@ -956,7 +973,7 @@ class NpcSimulation {
       // wouldn't show up in the coarse A* grid for the FREE_ROAMER ring).
       const snapped = this.snapPlannerTarget(tx, ty);
       if (!snapped) continue;
-      const path = findPath(npc.x, npc.y, snapped.x, snapped.y);
+      const path = this.findSafePath(npc, snapped.x, snapped.y);
       if (path.length > 0) {
         npc.activity = 'walking'; npc.activityEmoji = '';
         npc.path = path; npc.pathIndex = 0;
@@ -1025,7 +1042,7 @@ class NpcSimulation {
       // bigger than the 250 wu stand-off itself).
       const snapped = this.snapPlannerTarget(tx, ty);
       if (!snapped) continue;
-      const path = findPath(npc.x, npc.y, snapped.x, snapped.y);
+      const path = this.findSafePath(npc, snapped.x, snapped.y);
       if (path.length > 0) {
         npc.activity = 'walking'; npc.activityEmoji = '';
         npc.path = path; npc.pathIndex = 0;
@@ -1149,6 +1166,17 @@ class NpcSimulation {
           // then convert back. entityHalf=30 (NPC capsule half-width in wu).
           const prevX = npc.x;
           const prevY = npc.y;
+          if (!isCollisionFreeWorld(desiredX, desiredY, 30)) {
+            npc.path = [];
+            npc.pathIndex = 0;
+            npc.activity = 'idle';
+            npc.activityEmoji = '';
+            npc.destinationBuildingId = null;
+            npc.behaviorCooldown = 5 + Math.floor(Math.random() * 10);
+            npc.stuckTicks = 0;
+            npc.direction = 'idle';
+            continue;
+          }
           const wx = desiredX - WORLD_COLLIDER_MAP_HALF;
           const wz = desiredY - WORLD_COLLIDER_MAP_HALF;
           const clamped = clampPosition2D(wx, wz, 30);
@@ -1200,6 +1228,17 @@ class NpcSimulation {
       if (!this.arenaMode) {
         const prevX = npc.x;
         const prevY = npc.y;
+        if (!isCollisionFreeWorld(desiredX, desiredY, 30)) {
+          npc.path = [];
+          npc.pathIndex = 0;
+          npc.activity = 'idle';
+          npc.activityEmoji = '';
+          npc.destinationBuildingId = null;
+          npc.behaviorCooldown = 5 + Math.floor(Math.random() * 10);
+          npc.stuckTicks = 0;
+          npc.direction = 'idle';
+          return;
+        }
         const clamped = clampPosition2D(
           desiredX - WORLD_COLLIDER_MAP_HALF,
           desiredY - WORLD_COLLIDER_MAP_HALF,
