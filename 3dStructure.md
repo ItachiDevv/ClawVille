@@ -277,6 +277,7 @@ GLB is a single merged mesh (3 primitives — main body, canopy, lantern emissio
 - `arena-npcs.tsx` — `GLBNpcMesh` useFrame + `VRMNpcMesh` useFrame. Same pattern: per-NPC `entityHalf` (CHIBI vs HUMANOID based on npc.id prefix), `npcGroundY`/`vrmNpcGroundY` from clamped result, `effectiveFloorY = Math.max(currentTerrainY.current, groundY)` in Y position.
 - `arena-location-npcs.tsx` — Sanity push-out at spawn time: `clampMovement2D(0, 0, worldX, worldZ)`.
 - `npc-simulation.ts` (server) — `clampPosition2D()` from `@clawville/shared` applied to all NPC movement paths: pathfinding waypoint steps (path-following abandoned on wall-hit so NPC re-plans), combat approach, and `moveTowardTarget`. `resolveNpcNpcOverlaps()` runs after `moveNpcs()` each world-mode tick: O(n²) pairwise push-out, half-widths 25wu (Milady chibi) / 50wu (adult humanoid/crustacean), symmetric impulse.
+- 2026-05-26 free-roam correction: server wanderers are classified from `NPC_DEFINITIONS.buildingId === ''` (not ID prefixes), so Hermes/chibi wanderers stay on the same collision-aware town-commons planner as Milady/crustacean wanderers. Free-roam target radius is 1700-3000wu from center, outside central prop AABBs and inside the building ring AABBs.
 
 **What is NOT covered (by design):**
 - Vertical collision (Y axis) — terrain raycasting handles Y grounding (walkable colliders add a surface-Y layer on top of this).

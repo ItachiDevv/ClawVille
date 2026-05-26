@@ -38,20 +38,17 @@ const MAP_WIDTH = 11520;
 const MAP_HEIGHT = 11520;
 
 // Town-center anchor and the annulus (ring) free-roaming wanderers stay inside.
-// Buildings are on a ring at ~5120wu from center (R=160 tiles). The annulus keeps
-// free roamers (Miladys + crustacean wanderers) in the OPEN BAND between the
-// town-center furniture (Nori, auction podium, bazaar pedestals, bounty
-// board, quest NPC — all within ~300wu of center) and the outer building
-// ring. They read as "town residents patrolling the commons" instead of
-// either crowding on top of the podium (previous disk sampling) or
-// walking off toward the map edge (original behavior before the fix).
+// Buildings are on a ring at ~4160wu from center (R=130 tiles). Keep free
+// roamers in the open commons well inside that ring so they do not path to
+// building walls or look like they have nowhere meaningful to go.
 const TOWN_CENTER_X = MAP_WIDTH / 2;       // 5760
 const TOWN_CENTER_Y = MAP_HEIGHT / 2;      // 5760
-// Ring of wander bounds: scaled ×1.5 from Phase 6.1 values (1800→2700, 4125→6200).
-// Phase 6.2: R=160 tiles (5120wu); free roamers stay between 2700–6200wu from center,
-// which is comfortably inside the building ring while well clear of the town plaza.
-const FREE_ROAMER_MIN_RADIUS = 2700;
-const FREE_ROAMER_MAX_RADIUS = 6200;
+const FREE_ROAMER_MIN_RADIUS = 1700;
+const FREE_ROAMER_MAX_RADIUS = 3000;
+
+const FREE_ROAMER_IDS = new Set(
+  NPC_DEFINITIONS.filter((def) => def.buildingId === '').map((def) => def.id),
+);
 
 // --- Types ---
 
@@ -777,22 +774,19 @@ class NpcSimulation {
       npc.behaviorCooldown--;
       if (npc.behaviorCooldown > 0) continue;
 
-      // Free-roaming wanderers (id prefix `milady-` or `wanderer-`) skip the
-      // 30% "idle near home" branch entirely. They're meant to be visibly
-      // roaming the world, not wiggling within 60px of a coordinate they share
-      // with no building. Bias to 60% visit-building / 20% approach-NPC / 20%
-      // wander, then halve post-plan cooldown so they re-plan faster.
+      // Free-roaming wanderers (`buildingId === ''` in NPC_DEFINITIONS) skip
+      // the building-visit and idle-near-home branches entirely. Hermes and
+      // chibi wanderers do not use the old milady-/wanderer- ID prefixes, so
+      // prefix checks quietly sent them back into building-wall paths.
       // Building-anchored NPCs (Bubbles, Inky, Hazel, etc.) keep the original
       // distribution — for them the idle-near-home wiggle is a meaningful
       // behavior because they have a real anchor (their building).
-      // NpcRuntimeState doesn't carry buildingId — we use id prefix as the
-      // canonical "is free roamer" signal. Both prefixes are reserved.
-      const isFreeRoamer = npc.id.startsWith('milady-') || npc.id.startsWith('wanderer-');
+      const isFreeRoamer = FREE_ROAMER_IDS.has(npc.id);
       const roll = Math.random();
       if (isFreeRoamer) {
-        // Free roamers (Miladys + crustacean wanderers) stay in the inner
-        // town ring. They skip building visits entirely (buildings live on
-        // the ~2176wu outer ring — walking there reads as leaving town) and
+        // Free roamers (Milady/Hermes/chibi/crustacean wanderers) stay in the
+        // town commons. They skip building visits entirely (buildings live on
+        // the outer ring — walking there reads as leaving town) and
         // only approach nearby NPCs that are also inside the ring. The
         // dedicated `planCenterWander` picks targets within
         // FREE_ROAMER_MAX_RADIUS of the town center.
@@ -943,11 +937,8 @@ class NpcSimulation {
     // preserves equal area density at every radius — without the sqrt
     // more points would cluster near the inner edge.
     //
-    // The 1400-2600 wander ring (expanded 2026-04-24 per user request) OVERLAPS
-    // the 2176wu building ring. Random samples frequently land on blocked
-    // building tiles, findPath returns empty, and the NPC idles for a full
-    // planning cycle. Retry up to 8 times per plan call so a single failed
-    // sample doesn't freeze movement for 10+ seconds.
+    // Retry up to 12 times per plan call so a single blocked sample near a
+    // town-center prop doesn't freeze movement for a full planning cycle.
     const rMinSq = FREE_ROAMER_MIN_RADIUS * FREE_ROAMER_MIN_RADIUS;
     const rMaxSq = FREE_ROAMER_MAX_RADIUS * FREE_ROAMER_MAX_RADIUS;
     for (let attempt = 0; attempt < 12; attempt++) {
@@ -1019,11 +1010,9 @@ class NpcSimulation {
     // other into an ~100wu cluster. 250wu is roughly 2.5× a Milady's visible
     // height (112 * 1.6m ≈ 180 wu), enough daylight between NPCs that they
     // read as distinct.
-    // Try up to 8 stand-off angles before giving up — a single angle may land
-    // in a building tile, especially now that NPCs roam the 1400-2600 ring
-    // which overlaps buildings. Reject targets without ≥3 tiles of clearance
-    // so approachers don't end up pressed against a building wall near the
-    // target NPC.
+    // Try up to 8 stand-off angles before giving up. Reject targets without
+    // >=3 tiles of clearance so approachers don't end up pressed against
+    // town props or each other near the target NPC.
     for (let attempt = 0; attempt < 8; attempt++) {
       const approachAngle = Math.random() * Math.PI * 2;
       const tx = target.x + Math.cos(approachAngle) * standOff;
