@@ -438,6 +438,14 @@ function FPSFollowCamera({
 // internally via its store subscriber, but belt-and-suspenders — if anything
 // races in future upgrades, the explicit kick keeps the scene alive.
 // ---------------------------------------------------------------------------
+function markWorldReadyIfUploadsDone(): void {
+  if (typeof window === 'undefined') return;
+  const bridge = window as any;
+  if (bridge.__W3D_CANVAS_READY && bridge.__W3D_TEXTURES_READY) {
+    bridge.__W3D_READY = true;
+  }
+}
+
 function kickRenderLoop(state: any): void {
   if (typeof state.invalidate === 'function') {
     state.invalidate();
@@ -450,6 +458,8 @@ function kickRenderLoop(state: any): void {
   if (typeof window !== 'undefined') {
     requestAnimationFrame(() => {
       (window as any).__W3D = state;
+      (window as any).__W3D_CANVAS_READY = true;
+      markWorldReadyIfUploadsDone();
       // Convenience helper for MCP browser automation / devtools — call
       // window.__W3D_step() to manually advance one frame when the tab is
       // hidden and RAF is throttled to 0 Hz.
@@ -603,9 +613,16 @@ function StaggeredTextureUpload() {
   const { gl, scene } = useThree();
 
   useEffect(() => {
+    const markTextureUploadReady = () => {
+      if (typeof window === 'undefined') return;
+      (window as any).__W3D_TEXTURES_READY = true;
+      markWorldReadyIfUploadsDone();
+    };
+
     // Verify initTexture is available (guard for unusual renderer builds)
     if (typeof (gl as any).initTexture !== 'function') {
       console.warn('[World3D] StaggeredTextureUpload: renderer.initTexture() not available, skipping');
+      markTextureUploadReady();
       return;
     }
 
@@ -638,7 +655,10 @@ function StaggeredTextureUpload() {
         });
 
         const unique = Array.from(seen);
-        if (unique.length === 0) return;
+        if (unique.length === 0) {
+          markTextureUploadReady();
+          return;
+        }
 
         const hasIdle = typeof (window as any).requestIdleCallback === 'function';
         console.log(`[World3D] StaggeredTextureUpload: uploading ${unique.length} textures via ${hasIdle ? 'rIC' : 'rAF'} budget`);
@@ -663,6 +683,7 @@ function StaggeredTextureUpload() {
           } else {
             idleHandle = undefined;
             console.log('[World3D] StaggeredTextureUpload: all textures uploaded');
+            markTextureUploadReady();
           }
         }
 
@@ -685,6 +706,7 @@ function StaggeredTextureUpload() {
           } else {
             uploadRaf = undefined;
             console.log('[World3D] StaggeredTextureUpload: all textures uploaded');
+            markTextureUploadReady();
           }
         }
 
