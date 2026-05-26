@@ -105,9 +105,11 @@ const SidebarMenu = dynamic(() => import('@/components/game/sidebar-menu'), {
 function NanoClawBanner({
   hasAvatar,
   isAuthenticated,
+  isGuest,
 }: {
   hasAvatar: boolean;
   isAuthenticated: boolean;
+  isGuest: boolean;
 }) {
   const agentConnected = useGameStore((s: GameState) => s.agentConnected);
   const agentSessionId = useGameStore((s: GameState) => s.agentSessionId);
@@ -115,7 +117,7 @@ function NanoClawBanner({
 
   // Banner has four states keyed on (isAuthenticated, agentConnected, hasAvatar):
   //   agentConnected=true                       → green "Bot Training Active" pill
-  //   !isAuthenticated                          → "Log In" + "Sign Up" (agent CTAs hidden:
+  //   !isAuthenticated || guest user            → "Log In" + "Sign Up" (agent CTAs hidden:
   //                                                connecting an agent requires an account,
   //                                                so showing them to a logged-out visitor
   //                                                just routes them through the connect
@@ -140,7 +142,7 @@ function NanoClawBanner({
     );
   }
 
-  if (!isAuthenticated) {
+  if (!isAuthenticated || isGuest) {
     return (
       <div className="fixed left-1/2 -translate-x-1/2 z-50 top-3 flex items-center gap-2">
         <Link
@@ -279,6 +281,7 @@ export default function GamePage() {
   });
 
   const isAuthenticated = !!authData?.user;
+  const isGuest = !!authData?.user?.isGuest;
 
   // Phase 6 — hydrate `agentConnected` from the server on mount.
   //
@@ -389,7 +392,7 @@ export default function GamePage() {
       <SeaLoadingScreen />
       <World3DCanvas mode="game" />
       <BuildingTooltip />
-      <NanoClawBanner hasAvatar={hasAvatar} isAuthenticated={isAuthenticated} />
+      <NanoClawBanner hasAvatar={hasAvatar} isAuthenticated={isAuthenticated} isGuest={isGuest} />
       {/* Soft email-verification nudge — renders only when the user is
           authenticated, not a guest, and hasn't dismissed within the
           last 7d. Positioned at top-14 to clear NanoClawBanner. */}
