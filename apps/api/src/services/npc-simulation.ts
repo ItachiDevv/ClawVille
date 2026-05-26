@@ -15,7 +15,6 @@ import {
   DEFAULT_ARENA_SETTINGS,
   clampPosition2D,
   WORLD_COLLIDER_MAP_HALF,
-  ENTITY_HALF_CHIBI,
 } from '@clawville/shared';
 import { generateNpcConversation, generateOpenClawConversation } from './npc-conversation-engine';
 import {
@@ -23,6 +22,7 @@ import {
   hasClearance,
   isCollisionFreeWorld,
   findNearestWalkable,
+  isPathCollisionFree,
   type PathNode,
 } from './pathfinding';
 import { AvatarSimulationBridge } from './avatar-simulation-bridge';
@@ -38,20 +38,20 @@ const MAP_WIDTH = 11520;
 const MAP_HEIGHT = 11520;
 
 // Town-center anchor and the annulus (ring) free-roaming wanderers stay inside.
-// Buildings are on a ring at ~5120wu from center (R=160 tiles). The annulus keeps
-// free roamers (Miladys + crustacean wanderers) in the OPEN BAND between the
-// town-center furniture (Nori, auction podium, bazaar pedestals, bounty
-// board, quest NPC — all within ~300wu of center) and the outer building
-// ring. They read as "town residents patrolling the commons" instead of
-// either crowding on top of the podium (previous disk sampling) or
-// walking off toward the map edge (original behavior before the fix).
+// Buildings are on a ring at ~4160wu from center (R=130 tiles). Keep free
+// roamers in the open commons well inside that ring so they do not path to
+// building walls or look like they have nowhere meaningful to go. The inner
+// radius keeps random wander targets off the dense Nori/bazaar/pavilion prop
+// cluster; AABB snapping still handles approach targets that pass closer.
 const TOWN_CENTER_X = MAP_WIDTH / 2;       // 5760
 const TOWN_CENTER_Y = MAP_HEIGHT / 2;      // 5760
-// Ring of wander bounds: scaled ×1.5 from Phase 6.1 values (1800→2700, 4125→6200).
-// Phase 6.2: R=160 tiles (5120wu); free roamers stay between 2700–6200wu from center,
-// which is comfortably inside the building ring while well clear of the town plaza.
-const FREE_ROAMER_MIN_RADIUS = 2700;
-const FREE_ROAMER_MAX_RADIUS = 6200;
+const FREE_ROAMER_MIN_RADIUS = 900;
+const FREE_ROAMER_MAX_RADIUS = 2400;
+const NPC_COLLISION_HALF = 30;
+
+const FREE_ROAMER_IDS = new Set(
+  NPC_DEFINITIONS.filter((def) => def.buildingId === '').map((def) => def.id),
+);
 
 // --- Types ---
 
@@ -301,21 +301,32 @@ class NpcSimulation {
     return snapshot;
   }
 
+  private resolveSafeSpawn(rawX: number, rawY: number): { x: number; y: number } {
+    const snapped = findNearestWalkable(rawX, rawY, NPC_COLLISION_HALF);
+    if (snapped) return snapped;
+
+    // Fallback for deep-in-collider legacy/restored positions where the
+    // walkable search cannot escape within its planner radius.
+    const clamped = clampPosition2D(
+      rawX - WORLD_COLLIDER_MAP_HALF,
+      rawY - WORLD_COLLIDER_MAP_HALF,
+      NPC_COLLISION_HALF,
+    );
+    return {
+      x: clamped.x + WORLD_COLLIDER_MAP_HALF,
+      y: clamped.z + WORLD_COLLIDER_MAP_HALF,
+    };
+  }
+
   private initNpcs() {
     this.npcs.clear();
     for (const def of NPC_DEFINITIONS) {
-      // Spawn-clamp: push the NPC out of any solid collider its home position
-      // happens to overlap (e.g. the shisha-oasis kiosk after the 2026-05-22
-      // pure-solid resize). Without this, NPCs whose homeX/Y landed inside the
-      // new larger AABB would visibly spawn inside the building mesh.
-      // Game-px → world conversion: world = game_px - MAP_HALF.
-      const clampedHome = clampPosition2D(
-        def.homeX - WORLD_COLLIDER_MAP_HALF,
-        def.homeY - WORLD_COLLIDER_MAP_HALF,
-        30, // NPC half-width — sized for chibi humanoid
-      );
-      const spawnX = clampedHome.x + WORLD_COLLIDER_MAP_HALF;
-      const spawnY = clampedHome.z + WORLD_COLLIDER_MAP_HALF;
+      // Spawn resolve: choose a planner-valid walkable point before falling
+      // back to raw clamp output. Clamp-only starts can sit on an AABB edge
+      // without the clearance that path planning assumes.
+      const spawn = this.resolveSafeSpawn(def.homeX, def.homeY);
+      const spawnX = spawn.x;
+      const spawnY = spawn.y;
       this.npcs.set(def.id, {
         id: def.id, name: def.name,
         x: spawnX, y: spawnY,
@@ -361,15 +372,9 @@ class NpcSimulation {
       const npcId = `oc-${config.sessionId}`;
       const rawSpawnX = restoredState?.lastX ?? avatarConfig.homeX;
       const rawSpawnY = restoredState?.lastY ?? avatarConfig.homeY;
-      // Spawn-clamp against world solid colliders so OpenClaw avatars never
-      // appear inside a building. Game-px → world conversion: world = game_px - MAP_HALF.
-      const clampedSpawn = clampPosition2D(
-        rawSpawnX - WORLD_COLLIDER_MAP_HALF,
-        rawSpawnY - WORLD_COLLIDER_MAP_HALF,
-        30, // chibi half-width
-      );
-      const spawnX = clampedSpawn.x + WORLD_COLLIDER_MAP_HALF;
-      const spawnY = clampedSpawn.z + WORLD_COLLIDER_MAP_HALF;
+      const spawn = this.resolveSafeSpawn(rawSpawnX, rawSpawnY);
+      const spawnX = spawn.x;
+      const spawnY = spawn.y;
       this.npcs.set(npcId, {
         id: npcId, name: avatarConfig.name,
         x: spawnX, y: spawnY,
@@ -757,7 +762,7 @@ class NpcSimulation {
   private snapPlannerTarget(
     tx: number,
     ty: number,
-    entityHalf: number = ENTITY_HALF_CHIBI,
+    entityHalf: number = NPC_COLLISION_HALF,
   ): { x: number; y: number } | null {
     if (
       hasClearance(tx, ty, 3) &&
@@ -766,6 +771,17 @@ class NpcSimulation {
       return { x: tx, y: ty };
     }
     return findNearestWalkable(tx, ty, entityHalf);
+  }
+
+  private findSafePath(
+    npc: NpcRuntimeState,
+    tx: number,
+    ty: number,
+    entityHalf: number = NPC_COLLISION_HALF,
+  ): PathNode[] {
+    const path = findPath(npc.x, npc.y, tx, ty);
+    if (path.length === 0) return [];
+    return isPathCollisionFree(npc.x, npc.y, path, entityHalf) ? path : [];
   }
 
   private planNpcBehaviors() {
@@ -777,22 +793,19 @@ class NpcSimulation {
       npc.behaviorCooldown--;
       if (npc.behaviorCooldown > 0) continue;
 
-      // Free-roaming wanderers (id prefix `milady-` or `wanderer-`) skip the
-      // 30% "idle near home" branch entirely. They're meant to be visibly
-      // roaming the world, not wiggling within 60px of a coordinate they share
-      // with no building. Bias to 60% visit-building / 20% approach-NPC / 20%
-      // wander, then halve post-plan cooldown so they re-plan faster.
+      // Free-roaming wanderers (`buildingId === ''` in NPC_DEFINITIONS) skip
+      // the building-visit and idle-near-home branches entirely. Hermes and
+      // chibi wanderers do not use the old milady-/wanderer- ID prefixes, so
+      // prefix checks quietly sent them back into building-wall paths.
       // Building-anchored NPCs (Bubbles, Inky, Hazel, etc.) keep the original
       // distribution — for them the idle-near-home wiggle is a meaningful
       // behavior because they have a real anchor (their building).
-      // NpcRuntimeState doesn't carry buildingId — we use id prefix as the
-      // canonical "is free roamer" signal. Both prefixes are reserved.
-      const isFreeRoamer = npc.id.startsWith('milady-') || npc.id.startsWith('wanderer-');
+      const isFreeRoamer = FREE_ROAMER_IDS.has(npc.id);
       const roll = Math.random();
       if (isFreeRoamer) {
-        // Free roamers (Miladys + crustacean wanderers) stay in the inner
-        // town ring. They skip building visits entirely (buildings live on
-        // the ~2176wu outer ring — walking there reads as leaving town) and
+        // Free roamers (Milady/Hermes/chibi/crustacean wanderers) stay in the
+        // town commons. They skip building visits entirely (buildings live on
+        // the outer ring — walking there reads as leaving town) and
         // only approach nearby NPCs that are also inside the ring. The
         // dedicated `planCenterWander` picks targets within
         // FREE_ROAMER_MAX_RADIUS of the town center.
@@ -832,7 +845,7 @@ class NpcSimulation {
       const offsetY = 20 + Math.random() * 20;
       const snapped = this.snapPlannerTarget(center.x + offsetX, center.y + offsetY);
       if (!snapped) continue;
-      const path = findPath(npc.x, npc.y, snapped.x, snapped.y);
+      const path = this.findSafePath(npc, snapped.x, snapped.y);
       if (path.length > 0) {
         npc.activity = 'walking'; npc.activityEmoji = '';
         npc.destinationBuildingId = target.id;
@@ -876,7 +889,7 @@ class NpcSimulation {
       }
       const snapped = this.snapPlannerTarget(standX, standY);
       if (!snapped) continue;
-      const path = findPath(npc.x, npc.y, snapped.x, snapped.y);
+      const path = this.findSafePath(npc, snapped.x, snapped.y);
       if (path.length > 0) {
         npc.activity = 'walking'; npc.activityEmoji = '';
         npc.path = path; npc.pathIndex = 0;
@@ -899,7 +912,7 @@ class NpcSimulation {
       const ty = Math.max(32, Math.min(MAP_HEIGHT - 32, npc.homeY + Math.sin(angle) * radius));
       const snapped = this.snapPlannerTarget(tx, ty);
       if (!snapped) continue;
-      const path = findPath(npc.x, npc.y, snapped.x, snapped.y);
+      const path = this.findSafePath(npc, snapped.x, snapped.y);
       if (path.length > 0) {
         npc.activity = 'walking'; npc.activityEmoji = '';
         npc.path = path; npc.pathIndex = 0;
@@ -920,7 +933,7 @@ class NpcSimulation {
       const ty = 64 + Math.random() * (MAP_HEIGHT - 128);
       const snapped = this.snapPlannerTarget(tx, ty);
       if (!snapped) continue;
-      const path = findPath(npc.x, npc.y, snapped.x, snapped.y);
+      const path = this.findSafePath(npc, snapped.x, snapped.y);
       if (path.length > 0) {
         npc.activity = 'walking'; npc.activityEmoji = '';
         npc.path = path; npc.pathIndex = 0;
@@ -943,11 +956,8 @@ class NpcSimulation {
     // preserves equal area density at every radius — without the sqrt
     // more points would cluster near the inner edge.
     //
-    // The 1400-2600 wander ring (expanded 2026-04-24 per user request) OVERLAPS
-    // the 2176wu building ring. Random samples frequently land on blocked
-    // building tiles, findPath returns empty, and the NPC idles for a full
-    // planning cycle. Retry up to 8 times per plan call so a single failed
-    // sample doesn't freeze movement for 10+ seconds.
+    // Retry up to 12 times per plan call so a single blocked sample near a
+    // town-center prop doesn't freeze movement for a full planning cycle.
     const rMinSq = FREE_ROAMER_MIN_RADIUS * FREE_ROAMER_MIN_RADIUS;
     const rMaxSq = FREE_ROAMER_MAX_RADIUS * FREE_ROAMER_MAX_RADIUS;
     for (let attempt = 0; attempt < 12; attempt++) {
@@ -963,7 +973,7 @@ class NpcSimulation {
       // wouldn't show up in the coarse A* grid for the FREE_ROAMER ring).
       const snapped = this.snapPlannerTarget(tx, ty);
       if (!snapped) continue;
-      const path = findPath(npc.x, npc.y, snapped.x, snapped.y);
+      const path = this.findSafePath(npc, snapped.x, snapped.y);
       if (path.length > 0) {
         npc.activity = 'walking'; npc.activityEmoji = '';
         npc.path = path; npc.pathIndex = 0;
@@ -1019,11 +1029,9 @@ class NpcSimulation {
     // other into an ~100wu cluster. 250wu is roughly 2.5× a Milady's visible
     // height (112 * 1.6m ≈ 180 wu), enough daylight between NPCs that they
     // read as distinct.
-    // Try up to 8 stand-off angles before giving up — a single angle may land
-    // in a building tile, especially now that NPCs roam the 1400-2600 ring
-    // which overlaps buildings. Reject targets without ≥3 tiles of clearance
-    // so approachers don't end up pressed against a building wall near the
-    // target NPC.
+    // Try up to 8 stand-off angles before giving up. Reject targets without
+    // >=3 tiles of clearance so approachers don't end up pressed against
+    // town props or each other near the target NPC.
     for (let attempt = 0; attempt < 8; attempt++) {
       const approachAngle = Math.random() * Math.PI * 2;
       const tx = target.x + Math.cos(approachAngle) * standOff;
@@ -1034,7 +1042,7 @@ class NpcSimulation {
       // bigger than the 250 wu stand-off itself).
       const snapped = this.snapPlannerTarget(tx, ty);
       if (!snapped) continue;
-      const path = findPath(npc.x, npc.y, snapped.x, snapped.y);
+      const path = this.findSafePath(npc, snapped.x, snapped.y);
       if (path.length > 0) {
         npc.activity = 'walking'; npc.activityEmoji = '';
         npc.path = path; npc.pathIndex = 0;
@@ -1158,6 +1166,17 @@ class NpcSimulation {
           // then convert back. entityHalf=30 (NPC capsule half-width in wu).
           const prevX = npc.x;
           const prevY = npc.y;
+          if (!isCollisionFreeWorld(desiredX, desiredY, 30)) {
+            npc.path = [];
+            npc.pathIndex = 0;
+            npc.activity = 'idle';
+            npc.activityEmoji = '';
+            npc.destinationBuildingId = null;
+            npc.behaviorCooldown = 5 + Math.floor(Math.random() * 10);
+            npc.stuckTicks = 0;
+            npc.direction = 'idle';
+            continue;
+          }
           const wx = desiredX - WORLD_COLLIDER_MAP_HALF;
           const wz = desiredY - WORLD_COLLIDER_MAP_HALF;
           const clamped = clampPosition2D(wx, wz, 30);
@@ -1209,6 +1228,17 @@ class NpcSimulation {
       if (!this.arenaMode) {
         const prevX = npc.x;
         const prevY = npc.y;
+        if (!isCollisionFreeWorld(desiredX, desiredY, 30)) {
+          npc.path = [];
+          npc.pathIndex = 0;
+          npc.activity = 'idle';
+          npc.activityEmoji = '';
+          npc.destinationBuildingId = null;
+          npc.behaviorCooldown = 5 + Math.floor(Math.random() * 10);
+          npc.stuckTicks = 0;
+          npc.direction = 'idle';
+          return;
+        }
         const clamped = clampPosition2D(
           desiredX - WORLD_COLLIDER_MAP_HALF,
           desiredY - WORLD_COLLIDER_MAP_HALF,
