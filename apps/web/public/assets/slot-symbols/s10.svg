@@ -1,0 +1,136 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <!-- Chest wood bevel -->
+    <linearGradient id="b10wood" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#a86a32"/>
+      <stop offset="0.5" stop-color="#6b3d18"/>
+      <stop offset="1" stop-color="#2a1605"/>
+    </linearGradient>
+    <!-- Brass straps + lock -->
+    <linearGradient id="b10brass" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffe48a"/>
+      <stop offset="0.5" stop-color="#d6a23a"/>
+      <stop offset="1" stop-color="#6c4d10"/>
+    </linearGradient>
+    <!-- Coin gradient (treasure gold) -->
+    <linearGradient id="b10coin" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fff2a8"/>
+      <stop offset="0.5" stop-color="#ffd778"/>
+      <stop offset="1" stop-color="#a06a08"/>
+    </linearGradient>
+    <!-- Inner glow inside open lid -->
+    <radialGradient id="b10glow" cx="50%" cy="50%" r="60%">
+      <stop offset="0" stop-color="#fff7c8" stop-opacity="0.9"/>
+      <stop offset="0.65" stop-color="#ffd778" stop-opacity="0.4"/>
+      <stop offset="1" stop-color="#ffd778" stop-opacity="0"/>
+    </radialGradient>
+    <!-- Top specular highlight overlay -->
+    <radialGradient id="b10hl" cx="35%" cy="22%" r="55%">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.55"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <!-- ground shadow -->
+  <ellipse cx="128" cy="226" rx="94" ry="11" fill="#0a1428" opacity="0.55"/>
+
+  <!-- spilling-coin glow halo behind chest -->
+  <ellipse cx="128" cy="148" rx="118" ry="60" fill="url(#b10glow)" opacity="0.65"/>
+
+  <!-- Chest body (rectangular base) -->
+  <rect x="40" y="128" width="176" height="84" rx="10"
+        fill="url(#b10wood)" stroke="#0a1428" stroke-width="6" stroke-linejoin="round"/>
+
+  <!-- Vertical wood plank lines on body -->
+  <g stroke="#3a200a" stroke-width="3" opacity="0.65">
+    <line x1="80" y1="134" x2="80" y2="206"/>
+    <line x1="128" y1="134" x2="128" y2="206"/>
+    <line x1="176" y1="134" x2="176" y2="206"/>
+  </g>
+
+  <!-- Brass strap horizontal mid -->
+  <rect x="40" y="166" width="176" height="14"
+        fill="url(#b10brass)" stroke="#0a1428" stroke-width="4"/>
+
+  <!-- Lock plate front center -->
+  <rect x="116" y="158" width="24" height="32" rx="3"
+        fill="url(#b10brass)" stroke="#0a1428" stroke-width="4"/>
+  <circle cx="128" cy="174" r="3" fill="#0a1428"/>
+
+  <!-- Open lid — rotated back, showing inner glow -->
+  <!-- Lid back-face (inside, lighter) -->
+  <path d="M44 124
+           L212 124
+           L222 66
+           L34 66 Z"
+        fill="#3a200a" stroke="#0a1428" stroke-width="6" stroke-linejoin="round"/>
+
+  <!-- Inner-lid glow patch -->
+  <path d="M50 122
+           L206 122
+           L214 76
+           L42 76 Z"
+        fill="url(#b10glow)"/>
+
+  <!-- Lid front rim (brass) -->
+  <rect x="36" y="118" width="184" height="14" rx="5"
+        fill="url(#b10brass)" stroke="#0a1428" stroke-width="5" stroke-linejoin="round"/>
+
+  <!-- Spilling coins overflowing front rim — 5 stacked discs -->
+  <g stroke="#0a1428" stroke-width="3.5" stroke-linejoin="round">
+    <!-- left front coin -->
+    <ellipse cx="72" cy="134" rx="16" ry="6" fill="url(#b10coin)"/>
+    <!-- center mound coin (largest) -->
+    <ellipse cx="128" cy="130" rx="22" ry="7" fill="url(#b10coin)"/>
+    <!-- right front coin -->
+    <ellipse cx="184" cy="134" rx="16" ry="6" fill="url(#b10coin)"/>
+    <!-- back-left tilted coin -->
+    <circle cx="92" cy="116" r="13" fill="url(#b10coin)"/>
+    <!-- back-right tilted coin -->
+    <circle cx="164" cy="116" r="13" fill="url(#b10coin)"/>
+  </g>
+
+  <!-- Coin face marks (small inner circles for read at thumbnail size) -->
+  <g fill="none" stroke="#8a5808" stroke-width="2" opacity="0.85">
+    <circle cx="92" cy="116" r="6"/>
+    <circle cx="164" cy="116" r="6"/>
+  </g>
+
+  <!-- Sparkles (4-point stars) framing the chest -->
+  <g fill="#fff7c8" stroke="#0a1428" stroke-width="2" stroke-linejoin="round">
+    <!-- top-left sparkle -->
+    <path d="M28 56
+             L33 70
+             L47 75
+             L33 80
+             L28 94
+             L23 80
+             L9 75
+             L23 70 Z"/>
+    <!-- top-right sparkle -->
+    <path d="M228 50
+             L232 60
+             L242 64
+             L232 68
+             L228 78
+             L224 68
+             L214 64
+             L224 60 Z"/>
+    <!-- mid-right small sparkle -->
+    <path d="M236 132
+             L239 140
+             L247 143
+             L239 146
+             L236 154
+             L233 146
+             L225 143
+             L233 140 Z"/>
+  </g>
+
+  <!-- Highlight overlay across upper chest + lid -->
+  <rect x="40" y="64" width="176" height="76" rx="10" fill="url(#b10hl)" opacity="0.55"/>
+
+  <!-- Top-left spec streak -->
+  <ellipse cx="78" cy="80" rx="20" ry="5" fill="#ffffff" opacity="0.55"/>
+</svg>
