@@ -39,14 +39,23 @@ const MAP_HEIGHT = 11520;
 
 // Town-center anchor and the annulus (ring) free-roaming wanderers stay inside.
 // Buildings are on a ring at ~4160wu from center (R=130 tiles). Keep free
-// roamers in the open commons well inside that ring so they do not path to
-// building walls or look like they have nowhere meaningful to go. The inner
-// radius keeps random wander targets off the dense Nori/bazaar/pavilion prop
-// cluster; AABB snapping still handles approach targets that pass closer.
+// roamers in the open commons between the dense town-center prop cluster
+// (Nori, auction podium, bazaar pedestals, bounty board, town directory sign
+// — all within ~700wu of center) and the outer building ring (~3600wu inner
+// edge once exclusion padding is applied).
+//
+// 2026-05-26: ring re-widened to 1500-3200 after the 900-2400 setting from
+// `cf1feb96` allowed planApproachNearbyNpc to drag every free roamer into a
+// tight cluster against the town-center sign. Symptoms: 8 NPCs piled inside
+// 300wu of center, walking through the directory sign, with near-zero
+// velocity (client clamp + entity push-out cancelled out their motion → no
+// facing update → "walking aimlessly" visual).
 const TOWN_CENTER_X = MAP_WIDTH / 2;       // 5760
 const TOWN_CENTER_Y = MAP_HEIGHT / 2;      // 5760
-const FREE_ROAMER_MIN_RADIUS = 900;
-const FREE_ROAMER_MAX_RADIUS = 2400;
+const FREE_ROAMER_MIN_RADIUS = 1500;
+const FREE_ROAMER_MAX_RADIUS = 3200;
+const FREE_ROAMER_MIN_RADIUS_SQ = FREE_ROAMER_MIN_RADIUS * FREE_ROAMER_MIN_RADIUS;
+const FREE_ROAMER_MAX_RADIUS_SQ = FREE_ROAMER_MAX_RADIUS * FREE_ROAMER_MAX_RADIUS;
 const NPC_COLLISION_HALF = 30;
 
 const FREE_ROAMER_IDS = new Set(
@@ -806,11 +815,31 @@ class NpcSimulation {
         // Free roamers (Milady/Hermes/chibi/crustacean wanderers) stay in the
         // town commons. They skip building visits entirely (buildings live on
         // the outer ring — walking there reads as leaving town) and
-        // only approach nearby NPCs that are also inside the ring. The
-        // dedicated `planCenterWander` picks targets within
-        // FREE_ROAMER_MAX_RADIUS of the town center.
-        if (roll < 0.50) this.planApproachNearbyNpc(npc);
-        else this.planCenterWander(npc);
+        // only occasionally approach nearby NPCs. The dedicated
+        // `planCenterWander` picks targets within the FREE_ROAMER annulus.
+        //
+        // 2026-05-26: approach probability dropped 0.50 → 0.20. At 0.50, every
+        // 9-NPC tick had ~4-5 approach plans queued, all converging on each
+        // other inside the 250wu stand-off — producing the town-center pile-up
+        // the user reported as "walking aimlessly into buildings". Wandering
+        // 80% of the time keeps them visibly traversing the commons; the
+        // remaining 20% still produces the occasional chat-bubble pairing.
+        // If an NPC is currently OUTSIDE the annulus (got dragged in by a
+        // chained approach or pushed out by entity overlap), force a wander
+        // so its next decision pulls it back into the commons.
+        const dx = npc.x - TOWN_CENTER_X;
+        const dy = npc.y - TOWN_CENTER_Y;
+        const distSqFromCenter = dx * dx + dy * dy;
+        const isInAnnulus =
+          distSqFromCenter >= FREE_ROAMER_MIN_RADIUS_SQ &&
+          distSqFromCenter <= FREE_ROAMER_MAX_RADIUS_SQ;
+        if (!isInAnnulus) {
+          this.planCenterWander(npc);
+        } else if (roll < 0.20) {
+          this.planApproachNearbyNpc(npc);
+        } else {
+          this.planCenterWander(npc);
+        }
         npc.behaviorCooldown = Math.floor(npc.behaviorCooldown / 2);
       } else {
         if (roll < 0.40) this.planVisitBuilding(npc);
@@ -958,11 +987,11 @@ class NpcSimulation {
     //
     // Retry up to 12 times per plan call so a single blocked sample near a
     // town-center prop doesn't freeze movement for a full planning cycle.
-    const rMinSq = FREE_ROAMER_MIN_RADIUS * FREE_ROAMER_MIN_RADIUS;
-    const rMaxSq = FREE_ROAMER_MAX_RADIUS * FREE_ROAMER_MAX_RADIUS;
     for (let attempt = 0; attempt < 12; attempt++) {
       const angle = Math.random() * Math.PI * 2;
-      const radius = Math.sqrt(Math.random() * (rMaxSq - rMinSq) + rMinSq);
+      const radius = Math.sqrt(
+        Math.random() * (FREE_ROAMER_MAX_RADIUS_SQ - FREE_ROAMER_MIN_RADIUS_SQ) + FREE_ROAMER_MIN_RADIUS_SQ,
+      );
       const tx = TOWN_CENTER_X + Math.cos(angle) * radius;
       const ty = TOWN_CENTER_Y + Math.sin(angle) * radius;
       // Reject targets with < 3 tiles of clearance from any blocked tile —
@@ -1003,43 +1032,49 @@ class NpcSimulation {
   // angle around the target so multiple approachers spread around the
   // target instead of stacking.
   private planApproachNearbyNpc(npc: NpcRuntimeState) {
-    const rMaxSq = FREE_ROAMER_MAX_RADIUS * FREE_ROAMER_MAX_RADIUS;
+    // Candidate targets MUST be inside the FREE_ROAMER annulus — never the
+    // inner core (town-center props live there) and never outside the outer
+    // ring (buildings live there). Restricting to the annulus prevents an
+    // approach chain from dragging the cluster into the town-center pile-up.
     const others = Array.from(this.npcs.values()).filter((o) => {
       if (o.id === npc.id) return false;
       if (o.isDead || o.inCombat || o.inConversation) return false;
       if (o.activity === 'sleeping') return false;
       const dx = o.x - TOWN_CENTER_X;
       const dy = o.y - TOWN_CENTER_Y;
-      return dx * dx + dy * dy <= rMaxSq;
+      const distSq = dx * dx + dy * dy;
+      return distSq >= FREE_ROAMER_MIN_RADIUS_SQ && distSq <= FREE_ROAMER_MAX_RADIUS_SQ;
     });
     if (others.length === 0) { this.planCenterWander(npc); return; }
     const target = others[Math.floor(Math.random() * others.length)];
-    // If approacher is already within the stand-off radius of this target,
-    // approaching them again just keeps us clustered. Wander instead.
+    // 2026-05-26: stand-off bumped 250 → 400 wu. The 250 setting let 8
+    // free-roamers chain-approach into a ~300wu cluster against the town
+    // directory sign even when each individual approach landed at the right
+    // distance — once everyone was clustered the next planApproachNearbyNpc
+    // tick picked a fresh "nearby" target that was also inside the cluster.
+    // 400wu is 1.6× a Milady's visible height and is enough that individual
+    // labels stay legible.
+    const standOff = 400;
     const dx0 = target.x - npc.x; const dy0 = target.y - npc.y;
     const distToTargetSq = dx0 * dx0 + dy0 * dy0;
-    const standOff = 250;
     if (distToTargetSq <= standOff * standOff) {
       this.planCenterWander(npc);
       return;
     }
-    // Stand-off: aim `standOff` wu from the target at a random angle, not AT
-    // the target. 2026-04-24: bumped 80 → 250 because the 80wu gap wasn't
-    // enough separation — all 3 crustaceans + 5 Miladys chain-approached each
-    // other into an ~100wu cluster. 250wu is roughly 2.5× a Milady's visible
-    // height (112 * 1.6m ≈ 180 wu), enough daylight between NPCs that they
-    // read as distinct.
     // Try up to 8 stand-off angles before giving up. Reject targets without
-    // >=3 tiles of clearance so approachers don't end up pressed against
-    // town props or each other near the target NPC.
+    // ≥3 tiles of clearance OR that land outside the FREE_ROAMER annulus —
+    // either keeps approachers in the safe commons zone.
     for (let attempt = 0; attempt < 8; attempt++) {
       const approachAngle = Math.random() * Math.PI * 2;
       const tx = target.x + Math.cos(approachAngle) * standOff;
       const ty = target.y + Math.sin(approachAngle) * standOff;
+      // Annulus gate: reject stand-off points that would push the approacher
+      // into the inner-core props or outside the outer-ring buildings.
+      const sdx = tx - TOWN_CENTER_X;
+      const sdy = ty - TOWN_CENTER_Y;
+      const sDistSq = sdx * sdx + sdy * sdy;
+      if (sDistSq < FREE_ROAMER_MIN_RADIUS_SQ || sDistSq > FREE_ROAMER_MAX_RADIUS_SQ) continue;
       // Combined clearance + pixel-accurate AABB test (2026-05-22).
-      // Without the AABB test the stand-off can sit inside a prop the
-      // target was parked next to (shisha-oasis is 420 wu half-extent,
-      // bigger than the 250 wu stand-off itself).
       const snapped = this.snapPlannerTarget(tx, ty);
       if (!snapped) continue;
       const path = this.findSafePath(npc, snapped.x, snapped.y);

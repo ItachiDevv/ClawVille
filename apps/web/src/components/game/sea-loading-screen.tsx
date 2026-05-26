@@ -90,8 +90,23 @@ export default function SeaLoadingScreen({ forceReady }: Props) {
     // starts honest at 0% rather than inheriting the previous session's
     // high-water-mark. World3DCanvas's onProgress hook will re-fill this as
     // the next batch of assets loads.
+    // 2026-05-26: re-zero ALL readiness bridge values so a re-mounted loader
+    // (SPA route swap, fast refresh) cannot dismiss on stale flags from a
+    // previous session. `__W3D_READY` is the two-gate dismissal signal —
+    // World3DCanvas sets `__W3D_CANVAS_READY` after the first canvas frame
+    // and `__W3D_TEXTURES_READY` after StaggeredTextureUpload completes;
+    // `__W3D_READY` only flips when BOTH are true.
     if (typeof window !== 'undefined') {
-      (window as unknown as { __W3D_PROGRESS?: number }).__W3D_PROGRESS = 0;
+      const bridge = window as unknown as {
+        __W3D_CANVAS_READY?: boolean;
+        __W3D_PROGRESS?: number;
+        __W3D_READY?: boolean;
+        __W3D_TEXTURES_READY?: boolean;
+      };
+      bridge.__W3D_CANVAS_READY = false;
+      bridge.__W3D_PROGRESS = 0;
+      bridge.__W3D_READY = false;
+      bridge.__W3D_TEXTURES_READY = false;
     }
 
     // Show "taking longer" hint after 15s
@@ -118,7 +133,11 @@ export default function SeaLoadingScreen({ forceReady }: Props) {
     let highWaterMark = 0;
     function tick() {
       if (!mountedRef.current) return;
-      const ready = forceReady || !!(window as any).__W3D;
+      // 2026-05-26: dismiss on __W3D_READY (canvas first-frame AND
+      // StaggeredTextureUpload complete), NOT __W3D (canvas first-frame only).
+      // The first-frame-only signal dismissed the overlay before WebGPU
+      // texture uploads finished, exposing a blue/blank world under the UI.
+      const ready = forceReady || !!(window as any).__W3D_READY;
       if (ready) {
         readyRef.current = true;
         setProgress(1);
