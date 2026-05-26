@@ -349,8 +349,10 @@ const PROCEDURAL_WANDERER_SPECIES = new Set([
 ]);
 
 const PROCEDURAL_HUMANOID_WANDERERS = new Set([
+  'eliza_chibi',
   'hermes_female',
   'hermes_male',
+  'milady_chibi',
   'tekk',
 ]);
 
@@ -429,10 +431,18 @@ function ProceduralSeaCreature({ species, color }: { species: string; color: str
 
 function ProceduralHumanoidWanderer({ species }: { species: string }) {
   const isTekk = species === 'tekk';
-  const bodyColor = isTekk ? 0x22283a : species === 'hermes_female' ? 0x7b4e72 : 0x36556d;
-  const accent = isTekk ? 0x83e6ff : 0xffd37a;
+  const isChibi = species === 'eliza_chibi' || species === 'milady_chibi';
+  const bodyColor = isTekk
+    ? 0x22283a
+    : species === 'hermes_female'
+      ? 0x7b4e72
+      : isChibi
+        ? 0xd18ba7
+        : 0x36556d;
+  const accent = isTekk ? 0x83e6ff : isChibi ? 0x5fe8ff : 0xffd37a;
+  const height = isChibi ? 0.72 : 1;
   return (
-    <group>
+    <group scale={[height, height, height]}>
       <mesh position={[0, 88, 0]} scale={[19, 21, 16]}>
         <sphereGeometry args={[1, 12, 8]} />
         <meshBasicMaterial color={0xf0d0b8} />
@@ -445,6 +455,12 @@ function ProceduralHumanoidWanderer({ species }: { species: string }) {
         <boxGeometry args={[1, 1, 1]} />
         <meshBasicMaterial color={0x26334a} />
       </mesh>
+      {isChibi && (
+        <mesh position={[0, 104, 0]} scale={[22, 8, 18]}>
+          <sphereGeometry args={[1, 10, 6]} />
+          <meshBasicMaterial color={accent} />
+        </mesh>
+      )}
       {[-18, 18].map((x) => (
         <mesh key={`arm-${x}`} position={[x, 48, 0]} scale={[5, 27, 5]} rotation={[0, 0, x > 0 ? -0.18 : 0.18]}>
           <cylinderGeometry args={[1, 1, 1, 6]} />
