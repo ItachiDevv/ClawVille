@@ -49,6 +49,14 @@ const _locRayDir = new THREE.Vector3(0, -1, 0);
 // PHASE 1.5 — module-scope camera-position scratch for far-NPC mixer gate.
 // Zero per-frame allocations across all 11 location-NPC useFrame calls per frame.
 const _locCamPos = new THREE.Vector3();
+const LOCATION_NPC_RENDER_SHOW_DIST_SQ = 1_200 * 1_200;
+const LOCATION_NPC_RENDER_HIDE_DIST_SQ = 1_500 * 1_500;
+
+function shouldRenderLocationNpc(current: boolean, distSq: number): boolean {
+  return current
+    ? distSq < LOCATION_NPC_RENDER_HIDE_DIST_SQ
+    : distSq < LOCATION_NPC_RENDER_SHOW_DIST_SQ;
+}
 
 // Sanity bounds for computeNormalizedScale. Some GLBs have broken bounding boxes
 // (e.g. tiny non-skinned accessories inflate the scale because their bbox height
@@ -411,7 +419,7 @@ const NpcMesh = memo(function NpcMesh({
   // sea-floor crustaceans (Patrick, Sandy, Squidward all read ~300-350wu
   // tall after scale). A 150wu offset sits at the chest; 320wu sits above
   // the head where the label belongs.
-  const { divRef: locationLabelRef } = useWorldLabel({
+  const { divRef: locationLabelRef, setVisible: setLocationLabelVisible } = useWorldLabel({
     id: `location-npc-label-${modelCfg.model}-${worldX}-${worldZ}`,
     anchorRef: groupRef,
     offset: [0, 320, 0],
@@ -429,6 +437,7 @@ const NpcMesh = memo(function NpcMesh({
   const { scene, animations } = useGLTF(modelCfg.model, undefined, undefined, extendLoaderWithMeshopt);
   const terrainY = useRef(-2);
   const placed = useRef(false);
+  const renderVisibleRef = useRef(true);
 
   // Clone and compute normalized scale; apply optional color tint.
   // scaleOverride is used for characters whose GLB bbox is broken (Karen, Larry):
@@ -561,6 +570,14 @@ const NpcMesh = memo(function NpcMesh({
     const _ldx = worldX - _locCamPos.x;
     const _ldz = worldZ - _locCamPos.z;
     const _locDistSq = _ldx * _ldx + _ldz * _ldz;
+    const renderVisible = shouldRenderLocationNpc(renderVisibleRef.current, _locDistSq);
+    if (renderVisible !== renderVisibleRef.current) {
+      renderVisibleRef.current = renderVisible;
+      setLocationLabelVisible(showLabel && renderVisible);
+    }
+    groupRef.current.visible = renderVisible;
+    if (!renderVisible) return;
+
     const FAR_LOC_NPC_DIST_SQ = 25_000_000; // 5000 wu²
     const isFarLocNpc = _locDistSq > FAR_LOC_NPC_DIST_SQ;
 
