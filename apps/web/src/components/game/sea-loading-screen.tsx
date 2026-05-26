@@ -19,7 +19,7 @@ import { useGameStore } from '@/stores/game';
 // ---------------------------------------------------------------------------
 
 interface Props {
-  /** Override ready signal for testing — defaults to polling window.__W3D_READY */
+  /** Override ready signal for testing — defaults to polling window.__W3D */
   forceReady?: boolean;
 }
 
@@ -91,16 +91,7 @@ export default function SeaLoadingScreen({ forceReady }: Props) {
     // high-water-mark. World3DCanvas's onProgress hook will re-fill this as
     // the next batch of assets loads.
     if (typeof window !== 'undefined') {
-      const bridge = window as unknown as {
-        __W3D_CANVAS_READY?: boolean;
-        __W3D_PROGRESS?: number;
-        __W3D_READY?: boolean;
-        __W3D_TEXTURES_READY?: boolean;
-      };
-      bridge.__W3D_CANVAS_READY = false;
-      bridge.__W3D_PROGRESS = 0;
-      bridge.__W3D_READY = false;
-      bridge.__W3D_TEXTURES_READY = false;
+      (window as unknown as { __W3D_PROGRESS?: number }).__W3D_PROGRESS = 0;
     }
 
     // Show "taking longer" hint after 15s
@@ -127,7 +118,7 @@ export default function SeaLoadingScreen({ forceReady }: Props) {
     let highWaterMark = 0;
     function tick() {
       if (!mountedRef.current) return;
-      const ready = forceReady || !!(window as any).__W3D_READY;
+      const ready = forceReady || !!(window as any).__W3D;
       if (ready) {
         readyRef.current = true;
         setProgress(1);
@@ -348,7 +339,7 @@ export default function SeaLoadingScreen({ forceReady }: Props) {
 
         {/* ── Avatar lobster ──────────────────────────────────────────────── */}
         {/* Single 7s looping keyframe combining drop + splash + sink + reset.  */}
-        {/* Loops until window.__W3D_READY fires and the overlay fades.          */}
+        {/* Loops infinitely until window.__W3D fires and the overlay fades.    */}
         <div
           aria-hidden="true"
           style={{
@@ -485,7 +476,7 @@ export default function SeaLoadingScreen({ forceReady }: Props) {
           </p>
 
           {/* Progress bar — width = real % loaded (THREE.DefaultLoadingManager),
-              capped at 99% until window.__W3D_READY fires, then snaps to 100%. */}
+              capped at 99% until window.__W3D fires, then snaps to 100%. */}
           <div
             role="progressbar"
             aria-valuemin={0}
