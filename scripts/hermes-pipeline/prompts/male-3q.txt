@@ -1,0 +1,15 @@
+Same character (preserve face, dark curly hair, olive skin, athletic medium build). Redraw in strict T-pose with the WHOLE BODY ROTATED 45 DEGREES TO THE RIGHT around the vertical axis (his right shoulder is closer to camera, left shoulder farther away from camera) — this is a true 3/4 perspective view, NOT a frontal view.
+
+Both arms extended horizontally outward at shoulder height — right arm foreshortened toward camera (palm visible, pointing at viewer), left arm extending back away into space (back of hand visible). Both arms clearly drawn, attached to the body, neither floating.
+
+Legs straight parallel, feet flat (also rotated 45 with the body).
+
+CRITICAL CLOTHING CONSTRAINT:
+
+He wears a dark-navy back cape attached at the BACK OF THE NECK, hanging STRAIGHT DOWN BEHIND THE BODY to mid-thigh level. From this 3/4 angle, the cape is partially visible BEHIND THE FARTHER SHOULDER (the left shoulder, in the background) as a dark fabric panel hanging down. The cape MUST NOT come over either shoulder, MUST NOT appear in front of the chest, MUST NOT touch either arm.
+
+Visible clothing: fitted dark high-neck tunic with vertical chest seam, wide brown leather utility belt at the waist with small pouches, dark leather pants tucked into brown lace-up boots.
+
+BOTH LEGS visible as separate silhouettes (rotated 45 in perspective).
+
+White background, full body, orthographic 3/4 view, square 1024x1024.

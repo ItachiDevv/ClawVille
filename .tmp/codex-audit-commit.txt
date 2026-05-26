@@ -1,0 +1,77 @@
+fix(casino): post-audit cleanup — cache-fast-path, FS restore, paytable version
+
+Codex review pass on a394a2b/125b941/1a1c90a surfaced 4 BLOCKING + INFO items.
+All addressed here. None are double-debit risks but each was a real loss
+of money / fairness / UX once real currency starts flowing.
+
+[1] BLOCKING — Idempotency-Key cache must check BEFORE session-status
+    A spin that committed and was then auto-closed (or cron-expired)
+    would return 409 session_not_open on the legitimate replay of its
+    Idempotency-Key. The cache fast-path now runs immediately after the
+    ownership check, before status/predict validation. Cache HIT returns
+    the cached row verbatim (idempotencyReplay:true) regardless of
+    whether the session is still open.
+
+[2] BLOCKING — Free-spin balance not restored on /session/current
+    A player who hit the bonus, refreshed, and reopened the modal lost
+    their unspent free spins from the HUD because mode/freeSpinsRemaining
+    were not part of CurrentSessionResponse and were not restored to
+    Zustand. They also got soft-locked by the balance gate (free spins
+    cost 0 predict but doSpin checked sessionBalance < predict).
+
+    Fix: CurrentSessionResponse now carries mode + freeSpinsRemaining.
+    Eager-restore in SlotScreenModal calls setInFreeSpin(true) +
+    setFreeSpinsRemaining(N) when present. doSpin balance gate bypasses
+    when inFreeSpin && freeSpinsRemaining > 0.
+
+[3] BLOCKING — buildPaytableResponse() returned stale rtp 0.96 / 0.98
+    The /paytables/:id endpoint was hard-coded to the pre-retune values.
+    Frontend display strings were updated (94%) but the SERVER was still
+    telling clients 96/98 — confusing fairness audits.
+
+    Fix: import CLASSIC_PAYTABLE / CLASSIC_BONUS_PAYTABLE from shared
+    and use their .rtp fields. Single source of truth.
+
+[4] BLOCKING — Verifier replays pre-retune spins under post-retune payouts
+    Spins recorded before 125b941 have winAmount stored under the old
+    multipliers. The current verifier recomputes via runSpin(current
+    payouts) and surfaces a winAmount mismatch even though reels +
+    cursor are byte-identical. Players auditing old spins see a
+    fairness FAIL on legitimate history.
+
+    Fix:
+      - slot_spins gains paytable_version text NOT NULL DEFAULT 'v2'
+        column. Migration backfills existing rows to 'v1'.
+      - Shared package exports PAYTABLE_V1 / PAYTABLE_V2 / PAYTABLE_SNAPSHOTS
+        + CURRENT_PAYTABLE_VERSION = 'v2'. v1 captures pre-retune
+        payouts (Cherry 5-of=20, Seven 5-of=800, etc); v2 mirrors
+        live constants.
+      - GET /session/:id/spins now returns paytableVersion on each row.
+      - Verifier accepts paytableVersion arg; for 'v1' it SKIPS the
+        winAmount cross-check while still verifying reels + cursor
+        (the load-bearing provably-fair half). v2 spins do the full
+        comparison.
+
+    Follow-up: engine-side bundle dispatch on paytableVersion (so v1
+    replays use v1 payouts) is reserved for the next pass. Today's
+    verifier is "trust stored winAmount on v1, fully verify on v2".
+
+[INFO 1] 23505 race path on /session/open now carries existingSessionId=<uuid>
+         so the frontend auto-close parser (a394a2b) recovers that rare
+         race too, not just the FOR-UPDATE path.
+
+[INFO 2] Two-tab auto-close race — verified NOT double-debiting.
+         Loser hits session_not_open per the regular /close handler.
+
+Verified end-to-end:
+  - apps/api tsc clean
+  - apps/web tsc clean
+  - shared package rebuilt (PAYTABLE_V1/V2 exports compile)
+  - database package rebuilt (slot_spins.paytable_version column added)
+
+Required manual step after deploy:
+  psql $DATABASE_URL -f packages/database/migrations-manual/2026-05-20_add_slot_spins_paytable_version.sql
+  (Drizzle's bun run db:push will add the column with DEFAULT 'v2' but
+  does NOT run the backfill — apply the SQL file by hand.)
+
+Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>

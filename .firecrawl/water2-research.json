@@ -1,0 +1,23 @@
+THREE.js Flowing Water - CodePen
+  URL: https://codepen.io/xeloo/pen/eVWQvQ
+  A flowing water experiment we did as a prototype. Based on [this](http://threejs.org/examples/webgl_gpgpu_water). Uses the [THREE.BAS](https://github.c...
+
+Anyone gotten 'Water2' to work while looking upward from ...
+  URL: https://discourse.threejs.org/t/anyone-gotten-water2-to-work-while-looking-upward-from-underneath-the-water-surface/85114
+  three.js forum · Anyone gotten 'Water2' to work while looking upward from underneath the water surface? Questions · water, help.
+
+flowing river - CodePen
+  URL: https://codepen.io/zai24/pen/LYRXGVj
+  1. <div id="box"> ; 2. <div class="river river--1"></div> ; 3. <div class="river river--2"></div> ; 4. ​ ; 5. <svg>.
+
+How to use THREE.Water2? - Questions - three.js forum
+  URL: https://discourse.threejs.org/t/how-to-use-three-water2/8512
+  I'm trying to generate a flowmap with Three.js: https://threejs.org/examples/#webgl_water_flowmap I've used parts of the code source indicated here.
+
+24b How to make a river three.js - YouTube
+  URL: https://www.youtube.com/watch?v=FT1O2G55yS8
+  Learn how to make moving water in three.js. Learn how to read, use, and make a flow map in three.js. Learn how to read, use, and make a ...
+
+Three js water shader - CodePen
+  URL: https://codepen.io/knoland/pen/XKxAJb
+  1. <div id="container"></div> ; 2. <script id="vertex-shader" type="no-js"> ; 3. void main() { ; 4. gl_Position = vec4( position, 1.0 ); ; 5. }.

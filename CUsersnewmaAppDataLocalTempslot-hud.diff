@@ -1,0 +1,590 @@
+diff --git a/apps/web/src/components/casino/SlotHUD.tsx b/apps/web/src/components/casino/SlotHUD.tsx
+index fa45e19..3d0ec3f 100644
+--- a/apps/web/src/components/casino/SlotHUD.tsx
++++ b/apps/web/src/components/casino/SlotHUD.tsx
+@@ -1,26 +1,22 @@
+ 'use client';
+ 
+ /**
+- * SlotHUD — Top balance strip + bottom controls
++ * SlotActionStrip (legacy default export: SlotHUD) — Predict Terminal
++ * action strip rendered once at the bottom of the slot modal.
+  *
+- * Polish pass (Concern 6.0.4):
+- *   - Uses design tokens from `casino-tokens.css`
+- *   - NeonButton for SPIN, Walk Away, and icon utility buttons
+- *   - PredictChips replace the legacy +/− stepper on screens wide enough
+- *   - Bottom bar sticks to the safe area on mobile
++ * Three-column layout:
++ *   LEFT   — BALANCE display + session PnL chip
++ *   CENTER — PredictChips
++ *   RIGHT  — SPIN hero button + small icon row (walkaway, autoplay, mute, paytable)
+  *
+- * SPIN button states:
+- *   ready      → cyan neon primary
+- *   spinning   → dimmed shimmer
+- *   evaluating → brief pulse
+- *   insufficient → greyed
+- *   locked     → mega-win 3s lockout (separate from insufficient)
++ * Iris Xe safe: pure DOM/CSS, zero Three.js. Animates `transform`/opacity only.
+  *
+- * Iris Xe safe: pure DOM/CSS, zero Three.js
++ * The legacy `section` prop is accepted but ignored — the action strip is
++ * now rendered ONCE at the bottom of the modal.
+  */
+ 
+ import { useCallback } from 'react';
+-import { NeonButton, PredictChips } from './ui';
++import { PredictChips } from './ui';
+ 
+ // ---------------------------------------------------------------------------
+ // Props
+@@ -37,19 +33,12 @@ export interface SlotHUDProps {
+   isLockedOut?: boolean;
+   autoplayCount: number | 'until-cashout' | 'until-big-win';
+   isMuted: boolean;
+-  /** Which section to render: 'top' = balance strip only, 'bottom' = controls only, undefined = both (legacy). */
+-  section?: 'top' | 'bottom';
+   /**
+-   * Phase 6.1.5 — true while the session is in free-spin mode (i.e.
+-   * `mode === 'free-spin'` on the most-recent SpinResponse). Drives the
+-   * spin button label swap ("SPIN" → "FREE SPIN") and gates the FS
+-   * counter chip.
++   * Legacy section prop — ignored. Action strip renders once.
++   * Kept in the type for back-compat with parent call sites.
+    */
++  section?: 'top' | 'bottom';
+   inFreeSpin?: boolean;
+-  /**
+-   * Phase 6.1.5 — unspent free-spin balance from the most-recent
+-   * SpinResponse. Shown next to the button as `× N` when > 0.
+-   */
+   freeSpinsRemaining?: number;
+   onPredictChange: (predict: number) => void;
+   onSpin: () => void;
+@@ -61,21 +50,19 @@ export interface SlotHUDProps {
+ }
+ 
+ const AUTOPLAY_OPTIONS: Array<{ label: string; value: number | 'until-cashout' | 'until-big-win' }> = [
+-  { label: 'Off',           value: 0              },
+-  { label: '10 spins',      value: 10             },
+-  { label: '25 spins',      value: 25             },
+-  { label: '100 spins',     value: 100            },
+-  { label: 'Until cash-out',value: 'until-cashout' },
+-  { label: 'Win > 10× predict', value: 'until-big-win' },
++  { label: 'Off',                value: 0              },
++  { label: '10 spins',           value: 10             },
++  { label: '25 spins',           value: 25             },
++  { label: '100 spins',          value: 100            },
++  { label: 'Until cash-out',     value: 'until-cashout' },
++  { label: 'Win > 10× predict',  value: 'until-big-win' },
+ ];
+ 
+-// Phase 6.1 slice 5: predict must be divisible by CLASSIC_LINES.length=20.
+-// The slot-engine rejects non-divisible predict amounts to avoid silent
+-// value-truncation in `perLinePredict = predict / lineCount`.
++// Phase 6.1 — predict must be divisible by CLASSIC_LINES.length=20.
+ const PREDICT_CHIPS = [20, 40, 100, 200, 500, 1000];
+ 
+ // ---------------------------------------------------------------------------
+-// Spin button state
++// Spin button state machine
+ // ---------------------------------------------------------------------------
+ type SpinButtonState = 'ready' | 'spinning' | 'evaluating' | 'insufficient' | 'locked';
+ 
+@@ -95,12 +82,61 @@ function getSpinState(
+ 
+ const SPIN_LABEL: Record<SpinButtonState, string> = {
+   ready:        'SPIN',
+-  spinning:     'SPINNING…',
+-  evaluating:   'CHECKING…',
++  spinning:     '…',
++  evaluating:   '…',
+   insufficient: 'NO FUNDS',
+-  locked:       'MEGA WIN!',
++  locked:       'WIN!',
+ };
+ 
++// ---------------------------------------------------------------------------
++// Inline-SVG icons (brass stroke, 18px nominal)
++// ---------------------------------------------------------------------------
++function IconWalkAway() {
++  return (
++    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
++      <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
++      <polyline points="16 17 21 12 16 7" />
++      <line x1="21" y1="12" x2="9" y2="12" />
++    </svg>
++  );
++}
++function IconAutoplay({ active }: { active?: boolean }) {
++  return (
++    <svg width="18" height="18" viewBox="0 0 24 24" fill={active ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
++      <polygon points="6 4 20 12 6 20 6 4" />
++    </svg>
++  );
++}
++function IconMuted() {
++  return (
++    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
++      <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
++      <line x1="23" y1="9" x2="17" y2="15" />
++      <line x1="17" y1="9" x2="23" y2="15" />
++    </svg>
++  );
++}
++function IconAudio() {
++  return (
++    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
++      <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
++      <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
++      <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />
++    </svg>
++  );
++}
++function IconPaytable() {
++  return (
++    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
++      <rect x="3" y="3" width="18" height="18" rx="1" />
++      <line x1="3" y1="9" x2="21" y2="9" />
++      <line x1="3" y1="15" x2="21" y2="15" />
++      <line x1="9" y1="3" x2="9" y2="21" />
++      <line x1="15" y1="3" x2="15" y2="21" />
++    </svg>
++  );
++}
++
+ // ---------------------------------------------------------------------------
+ // Main component
+ // ---------------------------------------------------------------------------
+@@ -127,314 +163,144 @@ export default function SlotHUD({
+   onFairnessOpen,
+   onWalkAway,
+ }: SlotHUDProps) {
+-  const spinState = getSpinState(isSpinning, isEvaluating, isLockedOut, balance, predict);
+-  const disabled = spinState !== 'ready';
+-
+-  // Step in multiples of 20 — server requires `predict % lineCount === 0`.
+-  const handlePredictDown = useCallback(() => {
+-    onPredictChange(Math.max(minPredict, predict - 20));
+-  }, [predict, minPredict, onPredictChange]);
+-
+-  const handlePredictUp = useCallback(() => {
+-    onPredictChange(Math.min(maxPredict, predict + 20));
+-  }, [predict, maxPredict, onPredictChange]);
++  void minPredict;
++  void maxPredict;
++  void spinCount;
++  void onFairnessOpen;
+ 
+-  const handleAutoplay = useCallback((e: React.ChangeEvent<HTMLSelectElement>) => {
+-    const val = e.target.value;
+-    if (val === 'until-cashout' || val === 'until-big-win') {
+-      onAutoplayChange(val);
+-    } else {
+-      onAutoplayChange(Number(val));
+-    }
+-  }, [onAutoplayChange]);
++  const handleAutoplayClick = useCallback(() => {
++    // Cycle through Off → 10 → 25 → 100 → until-cashout → until-big-win → Off
++    const idx = AUTOPLAY_OPTIONS.findIndex(o => o.value === autoplayCount);
++    const next = AUTOPLAY_OPTIONS[(idx + 1) % AUTOPLAY_OPTIONS.length];
++    onAutoplayChange(next.value);
++  }, [autoplayCount, onAutoplayChange]);
+ 
+-  const pnlColor = sessionPnl > 0 ? 'var(--cv-tier-small)' : sessionPnl < 0 ? '#ff4466' : 'rgba(255,255,255,0.5)';
+-  const pnlSign  = sessionPnl > 0 ? '+' : '';
++  // Legacy `top`-section render: produce nothing (action strip is unified).
++  if (section === 'top') return null;
+ 
+-  const showTop    = !section || section === 'top';
+-  const showBottom = !section || section === 'bottom';
+-
+-  return (
+-    <>
+-      {showTop && <style>{`
+-        @keyframes cv-spin-shimmer {
+-          0%   { opacity: 0.55; }
+-          50%  { opacity: 0.85; }
+-          100% { opacity: 0.55; }
+-        }
+-        @keyframes cv-spin-evaluate {
+-          0%   { box-shadow: 0 0 12px rgba(0,170,255,0.4); }
+-          50%  { box-shadow: 0 0 28px rgba(0,170,255,0.85); }
+-          100% { box-shadow: 0 0 12px rgba(0,170,255,0.4); }
+-        }
+-        @keyframes cv-spin-locked {
+-          0%, 100% { box-shadow: 0 0 18px rgba(255,200,87,0.6); }
+-          50%      { box-shadow: 0 0 36px rgba(255,200,87,1); }
+-        }
+-
+-        /* Stack HUD on mobile portrait */
+-        @media (max-width: 640px) {
+-          .cv-hud-bottom { flex-direction: column !important; align-items: stretch !important; gap: var(--cv-space-3) !important; }
+-          .cv-hud-spin-row { width: 100%; }
+-        }
+-
+-        /* Hide chips on very narrow screens — stepper still works */
+-        @media (max-width: 380px) {
+-          .cv-predict-chips-wrap { display: none !important; }
+-        }
+-
+-        /* Sticky bottom bar on mobile to clear the safe-area inset */
+-        @media (max-width: 640px) {
+-          .cv-hud-bottom {
+-            position: sticky;
+-            bottom: 12px;
+-            padding-bottom: calc(var(--cv-space-3) + env(safe-area-inset-bottom, 0px)) !important;
+-          }
+-        }
+-      `}</style>}
+-
+-      {/* ── Top strip ────────────────────────────────────────────────────── */}
+-      {showTop && <div style={{
+-        display: 'flex',
+-        justifyContent: 'space-between',
+-        alignItems: 'center',
+-        padding: 'var(--cv-space-3) var(--cv-space-5)',
+-        background: 'var(--cv-surface-1)',
+-        borderBottom: '1px solid rgba(0,255,224,0.12)',
+-        fontFamily: 'monospace',
+-        flexWrap: 'wrap',
+-        gap: 'var(--cv-space-3)',
+-      }}>
+-        {/* Balance */}
+-        <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
+-          <span style={{ color: 'rgba(255,255,255,0.45)', fontSize: 11, letterSpacing: '0.12em', textTransform: 'uppercase' }}>Balance</span>
+-          <span style={{ color: 'var(--cv-neon-cyan)', fontSize: 22, fontWeight: 900, textShadow: '0 0 14px rgba(0,255,224,0.4)' }}>
+-            {balance.toLocaleString()}
+-          </span>
+-          <span style={{ color: 'rgba(0,255,224,0.45)', fontSize: 11 }}>CT</span>
+-        </div>
+-
+-        {/* Session P&L */}
+-        <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
+-          <span style={{ color: 'rgba(255,255,255,0.35)', fontSize: 11, letterSpacing: '0.1em', textTransform: 'uppercase' }}>Session</span>
+-          <span style={{ color: pnlColor, fontSize: 15, fontWeight: 700 }}>
+-            {pnlSign}{sessionPnl.toLocaleString()} CT
+-          </span>
+-        </div>
+-
+-        {/* Spin count */}
+-        <div style={{ display: 'flex', alignItems: 'baseline', gap: 5 }}>
+-          <span style={{ color: 'rgba(255,255,255,0.35)', fontSize: 11, letterSpacing: '0.1em', textTransform: 'uppercase' }}>Spins</span>
+-          <span style={{ color: 'rgba(255,255,255,0.65)', fontSize: 14, fontWeight: 600 }}>{spinCount}</span>
+-        </div>
+-      </div>}
+-
+-      {/* ── Bottom control bar ───────────────────────────────────────────── */}
+-      {showBottom && <div
+-        className="cv-hud-bottom"
+-        style={{
+-          display: 'flex',
+-          alignItems: 'center',
+-          gap: 'var(--cv-space-3)',
+-          padding: 'var(--cv-space-3) var(--cv-space-5)',
+-          background: 'var(--cv-surface-1)',
+-          borderTop: '1px solid rgba(0,255,224,0.12)',
+-          flexWrap: 'wrap',
+-          zIndex: 5,
+-        }}
+-      >
+-        {/* Predict stepper + chips */}
+-        <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--cv-space-2)', flex: '1 1 auto', flexWrap: 'wrap' }}>
+-          <span style={{
+-            color: 'rgba(255,255,255,0.5)',
+-            fontSize: 11,
+-            fontFamily: 'monospace',
+-            letterSpacing: '0.16em',
+-            textTransform: 'uppercase',
+-          }}>PREDICT</span>
++  const spinState = getSpinState(isSpinning, isEvaluating, isLockedOut, balance, predict);
++  const spinDisabled = spinState !== 'ready';
+ 
+-          <NeonButton
+-            variant="secondary"
+-            size="sm"
+-            onClick={handlePredictDown}
+-            disabled={isSpinning || predict <= minPredict}
+-            aria-label="Decrease predict"
+-            style={{ minWidth: 32, padding: '0 10px' }}
+-          >−</NeonButton>
++  const pnlClass =
++    sessionPnl > 0 ? 'pt-pnl pt-pnl-up'
++    : sessionPnl < 0 ? 'pt-pnl pt-pnl-down'
++    : 'pt-pnl pt-pnl-flat';
++  const pnlGlyph = sessionPnl > 0 ? '▲' : sessionPnl < 0 ? '▼' : '·';
+ 
+-          <span style={{
+-            color: '#fff',
+-            fontSize: 18,
+-            fontWeight: 900,
+-            fontFamily: 'monospace',
+-            minWidth: 44,
+-            textAlign: 'center',
+-            textShadow: '0 0 10px rgba(0,255,224,0.35)',
+-          }}>
+-            {predict}
+-          </span>
++  const spinLabel = spinState === 'ready' && inFreeSpin ? 'FREE' : SPIN_LABEL[spinState];
+ 
+-          <NeonButton
+-            variant="secondary"
+-            size="sm"
+-            onClick={handlePredictUp}
+-            disabled={isSpinning || predict >= maxPredict}
+-            aria-label="Increase predict"
+-            style={{ minWidth: 32, padding: '0 10px' }}
+-          >+</NeonButton>
++  const autoplayActive = autoplayCount !== 0;
++  const autoplayLabel =
++    autoplayCount === 0 ? 'AUTO'
++    : autoplayCount === 'until-cashout' ? 'AUTO ∞'
++    : autoplayCount === 'until-big-win' ? 'AUTO 10×'
++    : `AUTO ${autoplayCount}`;
+ 
+-          <div className="cv-predict-chips-wrap" style={{ marginLeft: 'var(--cv-space-2)' }}>
+-            <PredictChips
+-              options={PREDICT_CHIPS}
+-              value={predict}
+-              onChange={onPredictChange}
+-              disabled={isSpinning}
+-              ariaLabel="Predict size in ClawTokens"
+-            />
++  return (
++    <div className="pt-action-strip">
++      {/* ── LEFT: balance + PnL ───────────────────────────────────────── */}
++      <div className="pt-action-col-left">
++        <span className="pt-label">Balance</span>
++        <div className="pt-balance">
++          <div>
++            <span className="pt-balance-value">{balance.toLocaleString()}</span>
++            <span className="pt-balance-suffix">CT</span>
++          </div>
++          <div className={pnlClass} aria-label={`Session profit and loss: ${sessionPnl}`}>
++            <span aria-hidden>{pnlGlyph}</span>
++            <span>{sessionPnl === 0 ? '0' : `${sessionPnl > 0 ? '+' : ''}${sessionPnl.toLocaleString()}`} CT</span>
+           </div>
+         </div>
+-
+-        {/* SPIN button */}
+-        <div
+-          className="cv-hud-spin-row"
+-          style={{
+-            display: 'flex',
+-            justifyContent: 'center',
+-            alignItems: 'center',
+-            gap: 'var(--cv-space-2)',
+-            flex: '0 0 auto',
+-          }}
+-        >
+-          <NeonButton
+-            variant="primary"
+-            size="lg"
+-            onClick={disabled ? undefined : onSpin}
+-            disabled={disabled}
+-            aria-label={spinState === 'ready' && inFreeSpin ? 'FREE SPIN' : SPIN_LABEL[spinState]}
++        {freeSpinsRemaining > 0 && (
++          <div
++            role="status"
++            aria-label={`${freeSpinsRemaining} free spins remaining`}
+             style={{
+-              minWidth: 160,
+-              animation:
+-                spinState === 'spinning'   ? 'cv-spin-shimmer 0.8s ease-in-out infinite'
+-                : spinState === 'evaluating' ? 'cv-spin-evaluate 0.5s ease-in-out 2'
+-                : spinState === 'locked'     ? 'cv-spin-locked 0.6s ease-in-out infinite'
+-                : undefined,
+-              fontSize: 18,
+-              letterSpacing: '0.2em',
+-              /* Phase 6.1.5 — distinct gold tint when the next spin is
+-                 a free spin so the player notices the predict won't
+-                 debit. Layered on top of the variant gradient. */
+-              ...(spinState === 'ready' && inFreeSpin
+-                ? {
+-                    boxShadow:
+-                      '0 0 18px var(--cv-gold-accent, #ffc857), 0 0 36px rgba(255, 200, 87, 0.55)',
+-                    borderColor: 'var(--cv-gold-accent, #ffc857)',
+-                  }
+-                : {}),
++              marginTop: 4,
++              padding: '3px 9px',
++              border: '1px solid var(--pt-amber)',
++              color: 'var(--pt-amber-glow)',
++              fontFamily: 'var(--pt-data)',
++              fontSize: 10,
++              fontWeight: 500,
++              letterSpacing: '0.18em',
++              textTransform: 'uppercase',
+             }}
+           >
+-            {spinState === 'ready' && inFreeSpin ? 'FREE SPIN' : SPIN_LABEL[spinState]}
+-          </NeonButton>
+-
+-          {/* Phase 6.1.5 — unspent free-spin counter chip. Shown only
+-              when the session has free spins in the bank, regardless
+-              of whether this particular spin is FS (so the player can
+-              see the remaining count winding down). */}
+-          {freeSpinsRemaining > 0 && (
+-            <div
+-              role="status"
+-              aria-label={`${freeSpinsRemaining} free spins remaining`}
+-              style={{
+-                padding: '6px 12px',
+-                borderRadius: 'var(--cv-radius-pill, 999px)',
+-                background:
+-                  'linear-gradient(180deg, rgba(10,20,40,0.95) 0%, rgba(5,10,24,0.97) 100%)',
+-                border: '2px solid var(--cv-gold-accent, #ffc857)',
+-                color: 'var(--cv-gold-bright, #ffd684)',
+-                fontFamily: 'monospace',
+-                fontSize: 12,
+-                fontWeight: 900,
+-                letterSpacing: '0.1em',
+-                textShadow: '0 0 8px rgba(255, 200, 87, 0.7)',
+-                boxShadow: '0 0 12px rgba(255, 200, 87, 0.4)',
+-                whiteSpace: 'nowrap',
+-              }}
+-            >
+-              FS × {freeSpinsRemaining}
+-            </div>
+-          )}
+-        </div>
++            FS × {freeSpinsRemaining}
++          </div>
++        )}
++      </div>
+ 
+-        {/* Autoplay select */}
+-        <select
+-          value={String(autoplayCount)}
+-          onChange={handleAutoplay}
++      {/* ── CENTER: predict chips ────────────────────────────────────── */}
++      <div className="pt-action-col-center">
++        <span className="pt-label">Predict</span>
++        <PredictChips
++          options={PREDICT_CHIPS}
++          value={predict}
++          onChange={onPredictChange}
+           disabled={isSpinning}
+-          aria-label="Autoplay settings"
+-          style={{
+-            background: 'rgba(5,10,24,0.85)',
+-            border: '1px solid rgba(0,255,224,0.2)',
+-            borderRadius: 'var(--cv-radius-sm)',
+-            color: 'rgba(255,255,255,0.75)',
+-            fontSize: 12,
+-            fontFamily: 'monospace',
+-            letterSpacing: '0.04em',
+-            padding: '8px 12px',
+-            cursor: isSpinning ? 'not-allowed' : 'pointer',
+-            flex: '0 0 auto',
+-            height: 42,
+-          }}
++          ariaLabel="Predict size in ClawTokens"
++        />
++      </div>
++
++      {/* ── RIGHT: SPIN button + icon row ────────────────────────────── */}
++      <div className="pt-action-col-right">
++        <button
++          type="button"
++          className={`pt-spin-btn${spinDisabled ? ' pt-spin-btn-disabled' : ''}`}
++          onClick={spinDisabled ? undefined : onSpin}
++          disabled={spinDisabled}
++          aria-label={spinState === 'ready' && inFreeSpin ? 'FREE SPIN' : `SPIN, ${SPIN_LABEL[spinState]}`}
+         >
+-          {AUTOPLAY_OPTIONS.map((opt) => (
+-            <option key={String(opt.value)} value={String(opt.value)}>
+-              {opt.label}
+-            </option>
+-          ))}
+-        </select>
++          {spinLabel}
++        </button>
+ 
+-        {/* Icon utility buttons */}
+-        <div style={{ display: 'flex', gap: 'var(--cv-space-1)', flex: '0 0 auto' }}>
+-          <NeonButton
+-            variant="ghost"
+-            size="sm"
++        <div className="pt-icon-row">
++          <button
++            type="button"
++            className="pt-icon-btn"
++            onClick={onWalkAway}
++            aria-label="Walk away — leave the slot screen"
++            title="Walk away"
++          >
++            <IconWalkAway />
++            <span>WALK</span>
++          </button>
++          <button
++            type="button"
++            className={`pt-icon-btn${autoplayActive ? ' pt-icon-btn-active' : ''}`}
++            onClick={handleAutoplayClick}
++            disabled={isSpinning}
++            aria-label={`Autoplay: ${autoplayLabel}`}
++            title={autoplayLabel}
++          >
++            <IconAutoplay active={autoplayActive} />
++            <span>{autoplayLabel}</span>
++          </button>
++          <button
++            type="button"
++            className={`pt-icon-btn${isMuted ? ' pt-icon-btn-active' : ''}`}
+             onClick={onMuteToggle}
+-            aria-label={isMuted ? 'Unmute' : 'Mute'}
++            aria-label={isMuted ? 'Unmute audio' : 'Mute audio'}
+             title={isMuted ? 'Unmute' : 'Mute'}
+-            style={{ width: 36, padding: 0 }}
+           >
+-            {isMuted ? '🔇' : '🔊'}
+-          </NeonButton>
+-          <NeonButton
+-            variant="ghost"
+-            size="sm"
++            {isMuted ? <IconMuted /> : <IconAudio />}
++            <span>{isMuted ? 'MUTED' : 'AUDIO'}</span>
++          </button>
++          <button
++            type="button"
++            className="pt-icon-btn"
+             onClick={onPaytableOpen}
+             aria-label="View paytable"
+-            title="View paytable"
+-            style={{ width: 36, padding: 0 }}
+-          >📊</NeonButton>
+-          <NeonButton
+-            variant="ghost"
+-            size="sm"
+-            onClick={onFairnessOpen}
+-            aria-label="Provably fair (coming soon)"
+-            title="Provably fair verifier (coming 6.1)"
+-            style={{ width: 36, padding: 0, opacity: 0.55 }}
+-          >🔐</NeonButton>
++            title="Paytable"
++          >
++            <IconPaytable />
++            <span>TABLE</span>
++          </button>
+         </div>
++      </div>
+ 
+-        {/* Walk Away */}
+-        <NeonButton
+-          variant="secondary"
+-          size="md"
+-          onClick={onWalkAway}
+-          aria-label="Walk away — leave the slot screen"
+-          style={{
+-            color: 'rgba(255,120,160,0.95)',
+-            borderColor: 'rgba(255,0,100,0.35)',
+-          }}
+-        >
+-          Walk Away
+-        </NeonButton>
+-      </div>}
+-    </>
++    </div>
+   );
+ }

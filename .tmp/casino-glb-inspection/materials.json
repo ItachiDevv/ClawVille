@@ -1,0 +1,62 @@
+[
+  {
+    "name": "material0.001",
+    "alpha": 1.0,
+    "blend_method": "HASHED",
+    "use_backface_culling": false
+  },
+  {
+    "name": "material1.001",
+    "alpha": 1.0,
+    "blend_method": "HASHED",
+    "use_backface_culling": false
+  },
+  {
+    "name": "material2.001",
+    "alpha": 1.0,
+    "blend_method": "HASHED",
+    "use_backface_culling": false
+  },
+  {
+    "name": "material3.001",
+    "alpha": 1.0,
+    "blend_method": "HASHED",
+    "use_backface_culling": false
+  },
+  {
+    "name": "material4.001",
+    "alpha": 1.0,
+    "blend_method": "HASHED",
+    "use_backface_culling": false
+  },
+  {
+    "name": "material5.001",
+    "alpha": 1.0,
+    "blend_method": "HASHED",
+    "use_backface_culling": false
+  },
+  {
+    "name": "material6.001",
+    "alpha": 1.0,
+    "blend_method": "HASHED",
+    "use_backface_culling": false
+  },
+  {
+    "name": "material7.001",
+    "alpha": 1.0,
+    "blend_method": "HASHED",
+    "use_backface_culling": false
+  },
+  {
+    "name": "material8.001",
+    "alpha": 1.0,
+    "blend_method": "HASHED",
+    "use_backface_culling": false
+  },
+  {
+    "name": "material9.001",
+    "alpha": 1.0,
+    "blend_method": "HASHED",
+    "use_backface_culling": false
+  }
+]

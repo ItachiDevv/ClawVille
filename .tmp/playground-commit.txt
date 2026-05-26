@@ -1,0 +1,50 @@
+feat(slot-playground): StackBlitz-runnable sandbox for slot 3D rig iteration
+
+Sandbox URL: https://stackblitz.com/github/ItachiDevv/ClawVille/tree/master/apps/slot-playground
+
+Standalone Vite + React 19 + R3F + drei + leva. Bypasses the bun run dev
+local Iris Xe crash AND the production push/deploy/verify cycle — iterate
+in browser, lift winning variant into apps/web when ready.
+
+Three rig variants selectable in the Leva panel:
+
+  1. Drum (3D) — primary attempt this round. Per-character billboard
+     sprites orbit a horizontal cylinder axis. 8 visible cells per drum,
+     decoupled from the 84-position virtual strip via buildDrumWindow()
+     which slices an 8-cell window around the landing position. Each
+     plane gets its OWN texture (not a baked-into-cylinder UV wrap),
+     so symbols stay readable. TorusGeometry bezel rings frame the
+     drum's left/right faces.
+
+  2. Hybrid — stub, fleshes out if Drum fails (planar with perspective
+     tilt + alpha-fade vertical drum-curvature fake).
+
+  3. Planar (shipped) — stub baseline, lifts in the production rig
+     for side-by-side comparison if both above fail.
+
+Contract (`src/types.ts`) mirrors apps/web's SlotReels3DProps exactly,
+so a winning variant lifts into apps/web/src/components/casino/SlotReels3D.tsx
+with zero contract changes.
+
+Mock data (`src/constants.ts`):
+  - CLASSIC_REEL_STRIPS — verbatim copy of the production 5×84 strips
+  - SYMBOL_ASSETS — verbatim copy of CLASSIC_SLOT_SYMBOL_ASSETS
+  - mockSpinResult(seed) — deterministic fake-spin generator
+  - 18 asset files mirrored into apps/slot-playground/public/symbols/
+
+Spin physics phases (Drum):
+  ACCEL  280ms easeInQuad, 0 → MAX_RPS
+  STEADY ≥600ms hold, staggered DECEL entry per reel
+  DECEL  720ms easeOutCubic toward exact landing rotation
+  BOUNCE 220ms easeOutBack with 0.12rad overshoot
+All durations/values exposed as live Leva sliders.
+
+Iteration loop:
+  1. Open StackBlitz URL in browser
+  2. Tweak Leva sliders live (DRUM_RADIUS, DRUM_DEPTH, MAX_RPS, etc.)
+  3. Press SPIN button (also in Leva) — animation fires
+  4. Screenshot tuned values when a config reads well
+  5. Tell me which variant + values to bake in
+  6. I lift the file into apps/web with the tuned values as constants
+
+Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>

@@ -1,0 +1,374 @@
+diff --git a/apps/web/src/components/casino/SlotScreenModal.tsx b/apps/web/src/components/casino/SlotScreenModal.tsx
+index 7e42b1f..cf55875 100644
+--- a/apps/web/src/components/casino/SlotScreenModal.tsx
++++ b/apps/web/src/components/casino/SlotScreenModal.tsx
+@@ -548,6 +548,10 @@ export default function SlotScreenModal() {
+ 
+   if (!slotScreenOpen) return null;
+ 
++  const toastClass = toast
++    ? `pt-toast${toast.tone === 'warn' ? ' pt-toast-warn' : toast.tone === 'error' ? ' pt-toast-error' : ''}`
++    : '';
++
+   return (
+     <>
+       <style>{`
+@@ -562,17 +566,13 @@ export default function SlotScreenModal() {
+         role="dialog"
+         aria-modal="true"
+         aria-label="Slot Machine"
++        className="pt-modal-shell"
+         style={{
+           position: 'fixed',
+           inset: 0,
+           zIndex: 9990,
+           display: 'flex',
+           flexDirection: 'column',
+-          background:
+-            'radial-gradient(ellipse at 50% 30%, rgba(123,47,247,0.08) 0%, transparent 60%), ' +
+-            'linear-gradient(180deg, rgba(5,10,24,0.94) 0%, rgba(2,4,10,0.97) 100%)',
+-          backdropFilter: 'blur(4px)',
+-          WebkitBackdropFilter: 'blur(4px)',
+           animation: 'cv-modal-bg-in var(--cv-motion-base) var(--cv-ease-standard)',
+         }}
+       >
+@@ -589,141 +589,45 @@ export default function SlotScreenModal() {
+             animation: 'cv-modal-in var(--cv-motion-base) var(--cv-ease-bounce)',
+           }}
+         >
+-          {/* ── Header ─────────────────────────────────────────────── */}
+-          <div
+-            style={{
+-              display: 'flex',
+-              justifyContent: 'space-between',
+-              alignItems: 'center',
+-              padding: 'var(--cv-space-4) var(--cv-space-5)',
+-              background: 'var(--cv-surface-1)',
+-              borderBottom: '1px solid rgba(0,255,224,0.15)',
+-              flexShrink: 0,
+-            }}
+-          >
+-            <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--cv-space-3)' }}>
+-              <span style={{ fontSize: 24, filter: 'drop-shadow(0 0 6px rgba(0,255,224,0.4))' }}>🎰</span>
+-              <div>
+-                <div style={{
+-                  color: 'var(--cv-neon-cyan)',
+-                  fontFamily: 'monospace',
+-                  fontSize: 14,
+-                  fontWeight: 800,
+-                  letterSpacing: '0.12em',
+-                  textShadow: '0 0 10px rgba(0,255,224,0.4)',
+-                }}>
+-                  CLASSIC 3×5
+-                </div>
+-                <div style={{
+-                  color: 'rgba(255,255,255,0.4)',
+-                  fontFamily: 'monospace',
+-                  fontSize: 10,
+-                  letterSpacing: '0.18em',
+-                  textTransform: 'uppercase',
+-                }}>
+-                  20 Paylines · 94% RTP · Provably Fair
+-                </div>
+-              </div>
++          {/* ── Header (≤ 48px) — lock · name · close ──────────────── */}
++          <header className="pt-header">
++            <div className="pt-header-side">
++              <button
++                type="button"
++                className="pt-icon-stroke"
++                onClick={handleFairness}
++                aria-label={`Fairness commitment: ${fairnessSummary}`}
++                title={fairnessSummary}
++              >
++                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
++                  <rect x="3" y="11" width="18" height="11" rx="1" />
++                  <path d="M7 11V7a5 5 0 0 1 10 0v4" />
++                </svg>
++              </button>
+             </div>
+ 
+-            <NeonButton
+-              variant="ghost"
+-              size="sm"
+-              onClick={handleCashOut}
+-              aria-label="Close slot machine"
+-              style={{ width: 38, padding: 0, fontSize: 18 }}
+-            >✕</NeonButton>
+-          </div>
+-
+-          {/* ── Fairness chip ──────────────────────────────────────── */}
+-          <div
+-            onClick={handleFairness}
+-            role="button"
+-            aria-label="Show fairness commitment"
+-            style={{
+-              padding: '6px 14px',
+-              background: 'rgba(0, 255, 224, 0.06)',
+-              borderBottom: '1px solid rgba(0,255,224,0.08)',
+-              color: 'rgba(0,255,224,0.85)',
+-              fontFamily: 'monospace',
+-              fontSize: 11,
+-              letterSpacing: '0.05em',
+-              cursor: 'pointer',
+-              display: 'flex',
+-              justifyContent: 'space-between',
+-              alignItems: 'center',
+-              gap: 12,
+-            }}
+-          >
+-            <span>🔐 {fairnessSummary}</span>
+-            <span style={{ color: 'rgba(255,255,255,0.4)', fontSize: 10 }}>tap to verify</span>
+-          </div>
+-
+-          {/* ── HUD top strip (balance / session / spins) ────────────── */}
+-          <SlotHUD
+-            section="top"
+-            balance={sessionBalance}
+-            sessionPnl={sessionPnl}
+-            spinCount={spinCount}
+-            predict={predict}
+-            minPredict={20}
+-            maxPredict={2000}
+-            isSpinning={isSpinning || openSession.isPending || spin.isPending}
+-            isEvaluating={isEvaluating}
+-            isLockedOut={fx.state.isLockedOut}
+-            autoplayCount={autoplay.count}
+-            isMuted={muted}
+-            inFreeSpin={inFreeSpin}
+-            freeSpinsRemaining={freeSpinsRemaining}
+-            onPredictChange={handlePredictChange}
+-            onSpin={() => { void doSpin(); }}
+-            onAutoplayChange={handleAutoplayChange}
+-            onMuteToggle={toggleMute}
+-            onPaytableOpen={() => setPaytableOpen(true)}
+-            onFairnessOpen={handleFairness}
+-            onWalkAway={() => { void handleCashOut(); }}
+-          />
++            <div className="pt-header-title">CLASSIC 3×5 · PREDICT TERMINAL</div>
++
++            <div className="pt-header-side">
++              <button
++                type="button"
++                className="pt-icon-stroke"
++                onClick={handleCashOut}
++                aria-label="Close slot machine"
++                title="Close"
++              >
++                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
++                  <line x1="6" y1="6" x2="18" y2="18" />
++                  <line x1="18" y1="6" x2="6" y2="18" />
++                </svg>
++              </button>
++            </div>
++          </header>
+ 
+-          {/* ── Reel area — dominant, fills available flex space ────── */}
++          {/* ── Reel hero ─────────────────────────────────────────── */}
+           <div
+-            style={{
+-              flex: 1,
+-              minHeight: '50vh',
+-              display: 'flex',
+-              alignItems: 'stretch',
+-              justifyContent: 'center',
+-              background: `
+-                radial-gradient(ellipse at 50% 30%, rgba(0,255,224,0.07) 0%, transparent 65%),
+-                radial-gradient(ellipse at 50% 80%, rgba(255,0,204,0.04) 0%, transparent 60%),
+-                linear-gradient(180deg, rgba(5,10,24,0.98) 0%, rgba(2,4,10,0.99) 100%)
+-              `,
+-              padding: '16px',
+-              position: 'relative',
+-              filter: fx.state.isGlowActive ? 'saturate(1.15)' : 'saturate(1)',
+-              transition: 'filter var(--cv-motion-base) var(--cv-ease-standard)',
+-            }}
++            className={`pt-reel-frame${fx.state.isGlowActive ? ' pt-reel-frame-active' : ''}`}
+           >
+-            {/* Decorative corner lights */}
+-            {(['topleft','topright','botleft','botright'] as const).map((pos) => (
+-              <div
+-                key={pos}
+-                style={{
+-                  position: 'absolute',
+-                  width: 10, height: 10,
+-                  borderRadius: '50%',
+-                  background: 'var(--cv-neon-cyan)',
+-                  boxShadow: '0 0 14px var(--cv-neon-cyan), 0 0 28px var(--cv-neon-cyan)',
+-                  ...(pos === 'topleft'  ? { top: 14, left: 14  } : {}),
+-                  ...(pos === 'topright' ? { top: 14, right: 14 } : {}),
+-                  ...(pos === 'botleft'  ? { bottom: 14, left: 14  } : {}),
+-                  ...(pos === 'botright' ? { bottom: 14, right: 14 } : {}),
+-                  opacity: isSpinning ? 1 : 0.55,
+-                  transition: 'opacity 0.3s var(--cv-ease-standard)',
+-                  pointerEvents: 'none',
+-                }}
+-              />
+-            ))}
+-
+             {/* 3D reel canvas + bonus overlays — fills full reel area */}
+             <div style={{ position: 'relative', width: '100%', height: '100%' }}>
+               <SlotReelsCanvas
+@@ -757,9 +661,8 @@ export default function SlotScreenModal() {
+             </div>
+           </div>
+ 
+-          {/* ── HUD bottom controls (predict + spin + walk away) ─────── */}
++          {/* ── Unified action strip (balance · chips · spin) ───────── */}
+           <SlotHUD
+-            section="bottom"
+             balance={sessionBalance}
+             sessionPnl={sessionPnl}
+             spinCount={spinCount}
+@@ -785,44 +688,7 @@ export default function SlotScreenModal() {
+ 
+         {/* Toast */}
+         {toast && (
+-          <div
+-            role="status"
+-            aria-live="polite"
+-            style={{
+-              position: 'fixed',
+-              bottom: 90,
+-              left: '50%',
+-              transform: 'translateX(-50%)',
+-              zIndex: 10000,
+-              padding: '10px 18px',
+-              borderRadius: 10,
+-              maxWidth: 460,
+-              textAlign: 'center',
+-              fontSize: 13,
+-              fontFamily: 'monospace',
+-              background:
+-                toast.tone === 'error'
+-                  ? 'rgba(255, 56, 96, 0.16)'
+-                  : toast.tone === 'warn'
+-                    ? 'rgba(255, 200, 87, 0.16)'
+-                    : 'rgba(0, 255, 224, 0.12)',
+-              border: `1px solid ${
+-                toast.tone === 'error'
+-                  ? 'rgba(255, 56, 96, 0.6)'
+-                  : toast.tone === 'warn'
+-                    ? 'rgba(255, 200, 87, 0.6)'
+-                    : 'rgba(0, 255, 224, 0.5)'
+-              }`,
+-              color:
+-                toast.tone === 'error'
+-                  ? '#ff8aa0'
+-                  : toast.tone === 'warn'
+-                    ? '#ffd684'
+-                    : '#9bfff0',
+-              boxShadow: '0 0 16px rgba(0,0,0,0.5)',
+-              animation: 'cv-modal-in var(--cv-motion-base) var(--cv-ease-standard)',
+-            }}
+-          >
++          <div role="status" aria-live="polite" className={toastClass}>
+             {toast.message}
+           </div>
+         )}
+@@ -841,53 +707,37 @@ export default function SlotScreenModal() {
+               display: 'flex',
+               alignItems: 'center',
+               justifyContent: 'center',
+-              background: 'rgba(0,0,0,0.55)',
++              background: 'rgba(2, 1, 3, 0.78)',
+               padding: 20,
+             }}
+           >
+-            <div
+-              onClick={(e) => e.stopPropagation()}
+-              style={{
+-                background: 'rgba(5, 10, 24, 0.96)',
+-                border: '1px solid rgba(0,255,224,0.35)',
+-                borderRadius: 14,
+-                padding: 24,
+-                maxWidth: 540,
+-                width: '100%',
+-                color: '#e0fff8',
+-                fontFamily: 'monospace',
+-                fontSize: 13,
+-                lineHeight: 1.5,
+-                boxShadow: '0 0 32px rgba(0, 255, 224, 0.18)',
+-              }}
+-            >
+-              <div style={{ color: 'var(--cv-neon-cyan)', fontWeight: 800, fontSize: 15, letterSpacing: '0.08em', marginBottom: 12 }}>
+-                PROVABLY FAIR
+-              </div>
+-              <p style={{ margin: '0 0 12px 0', color: 'rgba(255,255,255,0.7)' }}>
+-                Before any spin, the server publishes <code>sha256(serverSeed)</code> as a commitment.
+-                It cannot change the seed after seeing your clientSeed + nonce.
++            <div onClick={(e) => e.stopPropagation()} className="pt-fairness-modal">
++              <div className="pt-fairness-eyebrow">Provably Fair</div>
++              <div className="pt-fairness-title">Commitment & Reveal</div>
++              <p style={{ margin: '0 0 14px 0', color: 'var(--pt-cream-soft)' }}>
++                Before any spin, the server publishes <code>sha256(serverSeed)</code> as a
++                commitment. It cannot change the seed after seeing your clientSeed + nonce.
+               </p>
+-              <div style={{ display: 'grid', gap: 8, fontSize: 11 }}>
++              <div style={{ display: 'grid', gap: 8, fontSize: 12, fontFamily: 'var(--pt-data)' }}>
+                 <div>
+-                  <span style={{ color: 'rgba(0,255,224,0.6)' }}>Server seed hash: </span>
+-                  <span style={{ wordBreak: 'break-all' }}>
++                  <span style={{ color: 'var(--pt-brass)' }}>Server seed hash: </span>
++                  <span style={{ wordBreak: 'break-all', color: 'var(--pt-cream)' }}>
+                     {serverSeedHash ?? '— (no session open yet)'}
+                   </span>
+                 </div>
+                 <div>
+-                  <span style={{ color: 'rgba(0,255,224,0.6)' }}>Client seed: </span>
+-                  <span style={{ wordBreak: 'break-all' }}>
++                  <span style={{ color: 'var(--pt-brass)' }}>Client seed: </span>
++                  <span style={{ wordBreak: 'break-all', color: 'var(--pt-cream)' }}>
+                     {useCasinoStore.getState().clientSeed ?? '—'}
+                   </span>
+                 </div>
+                 {revealedServerSeed ? (
+                   <div>
+-                    <span style={{ color: 'rgba(255,200,87,0.85)' }}>Revealed server seed: </span>
+-                    <span style={{ wordBreak: 'break-all' }}>{revealedServerSeed}</span>
++                    <span style={{ color: 'var(--pt-amber)' }}>Revealed server seed: </span>
++                    <span style={{ wordBreak: 'break-all', color: 'var(--pt-cream)' }}>{revealedServerSeed}</span>
+                   </div>
+                 ) : (
+-                  <div style={{ color: 'rgba(255,255,255,0.45)' }}>
++                  <div style={{ color: 'var(--pt-mute)' }}>
+                     Server seed will be revealed when you cash out — use the verifier below to replay your spins.
+                   </div>
+                 )}
+@@ -897,16 +747,8 @@ export default function SlotScreenModal() {
+                   <Link
+                     href={`/casino/verify/${sessionId}`}
+                     target="_blank"
+-                    style={{
+-                      padding: '8px 14px',
+-                      borderRadius: 8,
+-                      background: 'rgba(0, 255, 224, 0.1)',
+-                      border: '1px solid rgba(0, 255, 224, 0.45)',
+-                      color: 'var(--cv-neon-cyan)',
+-                      textDecoration: 'none',
+-                      fontWeight: 700,
+-                      fontSize: 12,
+-                    }}
++                    className="pt-btn pt-btn-ghost"
++                    style={{ padding: '0 14px', height: 36, fontSize: 11, textDecoration: 'none' }}
+                   >
+                     Verify this session →
+                   </Link>
+@@ -914,16 +756,8 @@ export default function SlotScreenModal() {
+                 <Link
+                   href="/casino/verify"
+                   target="_blank"
+-                  style={{
+-                    padding: '8px 14px',
+-                    borderRadius: 8,
+-                    background: 'transparent',
+-                    border: '1px solid rgba(255,255,255,0.2)',
+-                    color: 'rgba(255,255,255,0.8)',
+-                    textDecoration: 'none',
+-                    fontWeight: 700,
+-                    fontSize: 12,
+-                  }}
++                  className="pt-btn pt-btn-ghost"
++                  style={{ padding: '0 14px', height: 36, fontSize: 11, textDecoration: 'none' }}
+                 >
+                   Manual verifier
+                 </Link>

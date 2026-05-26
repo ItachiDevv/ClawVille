@@ -1,0 +1,10 @@
+[mcp_servers.blender]
+args = [
+    "/c",
+    "uvx",
+    "blender-mcp",
+]
+command = "cmd"
+
+[mcp_servers.chrome-devtools]
+command = "npx chrome-devtools-mcp@latest"

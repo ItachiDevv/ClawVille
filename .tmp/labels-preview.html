@@ -1,0 +1,764 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>ClawVille Label Previews — A vs D</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300..800&family=Outfit:wght@300..700&family=Cinzel+Decorative:wght@400;700&family=Pirata+One&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --abyss-0: #02080f;
+    --abyss-1: #051121;
+    --abyss-2: #0a1f3a;
+    --abyss-3: #11355b;
+    --bio-cyan: #67e8f9;
+    --bio-cyan-warm: #a0eaff;
+    --bio-pink: #f0abfc;
+    --bio-amber: #fde68a;
+    --soft: #cbd5e1;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--abyss-0); color: #e2e8f0; font-family: "Outfit", system-ui, sans-serif; min-height: 100%; }
+  body { padding: 32px clamp(16px, 4vw, 48px) 64px; }
+  h1 {
+    font-family: "Fraunces", serif; font-weight: 320; font-size: clamp(22px, 3vw, 32px);
+    margin: 0 0 4px; letter-spacing: 0.01em;
+  }
+  .sub {
+    color: #64748b; font-size: 13px; max-width: 70ch; line-height: 1.5; margin: 0 0 28px;
+  }
+  .legend {
+    display: inline-flex; gap: 14px; font-size: 11px; color: #94a3b8; margin-bottom: 18px;
+    text-transform: uppercase; letter-spacing: 0.12em;
+  }
+  .legend b { color: #cbd5e1; font-weight: 600; }
+
+  .panel-wrap {
+    display: grid; gap: 28px;
+  }
+  .panel {
+    position: relative;
+    border-radius: 14px;
+    overflow: hidden;
+    border: 1px solid rgba(56, 189, 248, 0.18);
+    box-shadow: 0 18px 60px rgba(0,0,0,0.5);
+  }
+  .panel-label {
+    position: absolute; top: 14px; left: 14px; z-index: 50;
+    background: rgba(2, 8, 15, 0.72);
+    backdrop-filter: blur(8px);
+    padding: 8px 12px 9px; border-radius: 8px;
+    border: 1px solid rgba(56, 189, 248, 0.22);
+    font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase;
+    color: #cbd5e1; max-width: 360px;
+  }
+  .panel-label .pk {
+    font-family: "Fraunces", serif;
+    font-weight: 460; font-size: 15px; letter-spacing: 0;
+    text-transform: none; color: #f8fafc; display: block; margin-bottom: 3px;
+  }
+  .panel-label .pn { color: #94a3b8; text-transform: none; letter-spacing: 0; font-size: 12px; line-height: 1.45; }
+
+  /* The "underwater stage" */
+  .stage {
+    position: relative;
+    aspect-ratio: 21 / 9;
+    width: 100%;
+    background:
+      radial-gradient(ellipse at 50% 110%, rgba(120, 230, 255, 0.18), transparent 55%),
+      radial-gradient(ellipse at 10% 0%, rgba(20, 60, 110, 0.55), transparent 65%),
+      linear-gradient(180deg, var(--abyss-3) 0%, var(--abyss-2) 35%, var(--abyss-1) 70%, var(--abyss-0) 100%);
+    overflow: hidden;
+  }
+  /* Caustic / current shimmer (super cheap) */
+  .stage::before {
+    content: ""; position: absolute; inset: 0;
+    background:
+      radial-gradient(circle at 28% 22%, rgba(160, 234, 255, 0.07), transparent 32%),
+      radial-gradient(circle at 78% 12%, rgba(160, 234, 255, 0.05), transparent 28%);
+    mix-blend-mode: screen; pointer-events: none;
+  }
+  /* Sea floor */
+  .stage::after {
+    content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 28%;
+    background:
+      radial-gradient(ellipse 80% 100% at 50% 100%, rgba(95, 75, 50, 0.95), rgba(40, 35, 30, 0.6) 60%, transparent 100%);
+    pointer-events: none;
+  }
+
+  /* Tiny bubbles */
+  .bubble {
+    position: absolute; bottom: -10%; width: 6px; height: 6px;
+    border-radius: 50%; background: rgba(180, 240, 255, 0.45);
+    box-shadow: inset -1px -1px 2px rgba(255,255,255,0.6);
+    animation: rise linear infinite; pointer-events: none; opacity: 0.7;
+  }
+  @keyframes rise { from { transform: translateY(0); } to { transform: translateY(-130%); } }
+
+  /* Entity = an absolutely-positioned group containing a silhouette + label rig */
+  .entity { position: absolute; display: grid; place-items: end center; transform: translate(-50%, 0); }
+  .entity .body { width: 56px; height: 90px; display: block; opacity: 0.95; filter: drop-shadow(0 6px 12px rgba(0,0,0,0.55)); }
+  .entity.small .body { width: 42px; height: 68px; }
+  .entity.large .body { width: 90px; height: 140px; }
+  .entity.building .body { width: 200px; height: 180px; }
+
+  /* Anchor — small dot on the entity's head */
+  .entity .anchor {
+    position: absolute; top: 4%; left: 50%; width: 5px; height: 5px;
+    background: var(--bio-cyan-warm); border-radius: 50%; transform: translate(-50%, -50%);
+    box-shadow: 0 0 10px 1px rgba(120, 240, 255, 0.65);
+  }
+  .entity .label-rig {
+    position: absolute;
+    left: 50%;
+    bottom: calc(100% + 6px);
+    transform: translateX(-50%);
+    pointer-events: none;
+    display: grid; place-items: center;
+  }
+  .entity.building .label-rig { bottom: calc(100% + 18px); }
+
+  /* ─────────────────────────────────────────────────────────── */
+  /* DIRECTION A — BIO-LUMINESCENT TAG                            */
+  /* ─────────────────────────────────────────────────────────── */
+  .stage.A .tether {
+    width: 1px;
+    height: 38px;
+    background: linear-gradient(to bottom, rgba(140, 240, 255, 0.7), rgba(140, 240, 255, 0));
+    background-size: 1px 6px;
+    background-repeat: repeat-y;
+    background-image: linear-gradient(rgba(140, 240, 255, 0.78) 50%, transparent 50%);
+    margin-bottom: 2px;
+    box-shadow: 0 0 6px rgba(120, 240, 255, 0.55);
+  }
+  .stage.A .anchor { animation: bio-pulse 2.4s ease-in-out infinite; }
+  @keyframes bio-pulse {
+    0%, 100% { opacity: 0.45; transform: translate(-50%, -50%) scale(0.85); box-shadow: 0 0 6px rgba(120, 240, 255, 0.45); }
+    50% { opacity: 1; transform: translate(-50%, -50%) scale(1.15); box-shadow: 0 0 14px 2px rgba(120, 240, 255, 0.85); }
+  }
+  .stage.A .bio-tag {
+    font-family: "Fraunces", serif;
+    font-optical-sizing: auto; font-variation-settings: "opsz" 9;
+    font-weight: 480;
+    font-size: 13px;
+    color: #effeff;
+    padding: 6px 12px 7px;
+    border-radius: 999px;
+    background:
+      radial-gradient(ellipse at center, rgba(80, 220, 255, 0.16), rgba(80, 220, 255, 0.04));
+    box-shadow:
+      0 0 14px rgba(100, 230, 255, 0.55),
+      0 0 38px -4px rgba(80, 220, 255, 0.45),
+      inset 0 0 12px rgba(180, 245, 255, 0.18);
+    white-space: nowrap;
+    letter-spacing: 0.01em;
+    line-height: 1;
+    animation: bio-drift 5.4s ease-in-out infinite;
+  }
+  .stage.A .bio-tag .small {
+    display: block; font-size: 9px; font-style: italic; opacity: 0.7; margin-top: 1px;
+    color: #b9f0ff; letter-spacing: 0.1em; text-transform: uppercase; font-family: "Outfit", sans-serif; font-weight: 400;
+  }
+  .stage.A .bio-tag.building {
+    font-size: 16px; font-weight: 520; letter-spacing: 0.02em; padding: 8px 16px 10px;
+    color: var(--bio-cyan-warm);
+    background:
+      radial-gradient(ellipse at center, rgba(80, 220, 255, 0.18), rgba(80, 220, 255, 0.04));
+    box-shadow:
+      0 0 22px rgba(120, 240, 255, 0.6),
+      0 0 60px -10px rgba(120, 240, 255, 0.55),
+      inset 0 0 16px rgba(180, 245, 255, 0.2);
+  }
+  .stage.A .bio-tag.building .small {
+    font-size: 10px; color: #cdf5ff; opacity: 0.7;
+  }
+  .stage.A .openclaw {
+    display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+    background: #4ade80; margin-right: 6px; vertical-align: middle;
+    box-shadow: 0 0 8px rgba(74, 222, 128, 0.8);
+  }
+  @keyframes bio-drift {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(-2.5px); }
+  }
+
+  /* ─────────────────────────────────────────────────────────── */
+  /* DIRECTION D — MINIMAL TOTEM                                  */
+  /* ─────────────────────────────────────────────────────────── */
+  .stage.D .tether {
+    width: 1px;
+    height: 30px;
+    background-image: linear-gradient(to bottom, rgba(120, 230, 255, 0.45) 60%, transparent 60%);
+    background-size: 1px 4px;
+    margin-bottom: 2px;
+  }
+  .stage.D .anchor { background: rgba(180, 240, 255, 0.95); box-shadow: 0 0 6px rgba(120, 240, 255, 0.55); }
+  .stage.D .totem {
+    width: 22px; height: 22px;
+    display: grid; place-items: center;
+    border-radius: 50%;
+    background: radial-gradient(circle at 50% 35%, rgba(120, 230, 255, 0.25), rgba(20, 50, 80, 0.55));
+    box-shadow:
+      0 0 10px rgba(120, 230, 255, 0.5),
+      inset 0 0 8px rgba(180, 245, 255, 0.22);
+    border: 1px solid rgba(140, 220, 255, 0.45);
+    color: #e0f7ff;
+    font-size: 13px;
+    line-height: 1;
+    animation: float-bob 2.8s ease-in-out infinite;
+    cursor: pointer;
+  }
+  .stage.D .totem.building {
+    width: 30px; height: 30px; font-size: 17px;
+    border-color: rgba(160, 230, 255, 0.7);
+    box-shadow:
+      0 0 14px rgba(120, 230, 255, 0.7),
+      inset 0 0 10px rgba(180, 245, 255, 0.3);
+  }
+  .stage.D .totem.openclaw { box-shadow: 0 0 10px rgba(74, 222, 128, 0.6), inset 0 0 8px rgba(180, 245, 255, 0.2); border-color: rgba(74, 222, 128, 0.6); }
+  @keyframes float-bob {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(-3px); }
+  }
+  .stage.D .name-plaque {
+    position: absolute; top: calc(100% + 6px); left: 50%;
+    transform: translate(-50%, -4px);
+    background: rgba(2, 12, 24, 0.72);
+    border: 1px solid rgba(120, 230, 255, 0.32);
+    border-radius: 5px;
+    padding: 3px 8px 4px;
+    font-family: "Outfit", sans-serif;
+    font-weight: 500;
+    font-size: 10px;
+    letter-spacing: 0.06em;
+    color: #e0f7ff;
+    white-space: nowrap;
+    opacity: 0; pointer-events: none;
+    transition: opacity 200ms ease, transform 220ms cubic-bezier(0.16, 1, 0.3, 1);
+    box-shadow: 0 4px 14px rgba(0,0,0,0.4);
+  }
+  .stage.D .totem.always-near + .name-plaque { /* "near" — proximity-revealed */
+    opacity: 1; transform: translate(-50%, 0);
+  }
+  .stage.D .entity:hover .name-plaque,
+  .stage.D .entity:focus-within .name-plaque {
+    opacity: 1; transform: translate(-50%, 0);
+  }
+  .stage.D .building-plaque {
+    position: absolute; top: calc(100% + 8px); left: 50%; transform: translate(-50%, -2px);
+    background: rgba(8, 20, 36, 0.78);
+    border: 1px solid rgba(140, 220, 255, 0.42);
+    border-radius: 4px;
+    padding: 5px 14px 6px;
+    font-family: "Cinzel Decorative", serif;
+    font-weight: 400;
+    font-size: 12px;
+    letter-spacing: 0.18em;
+    color: #cdebff;
+    text-transform: uppercase;
+    white-space: nowrap;
+    opacity: 0; pointer-events: none;
+    transition: opacity 220ms ease, transform 260ms cubic-bezier(0.16, 1, 0.3, 1);
+    box-shadow: 0 6px 18px rgba(0,0,0,0.5);
+  }
+  .stage.D .entity.building:hover .building-plaque,
+  .stage.D .entity.building.always-near .building-plaque {
+    opacity: 1; transform: translate(-50%, 0);
+  }
+  .stage.D .building-plaque .cat {
+    display: block; margin-top: 2px;
+    font-family: "Outfit", sans-serif; font-weight: 400; font-style: italic;
+    font-size: 9px; letter-spacing: 0.06em; text-transform: none; color: #94d5f0;
+  }
+
+  /* The "near radius" ring around the player avatar (decorative — illustrates proximity reveal in D) */
+  .stage.D .player-radius {
+    position: absolute;
+    width: 380px; height: 100px;
+    border-radius: 50%;
+    border: 1px dashed rgba(120, 230, 255, 0.16);
+    transform: translate(-50%, -50%);
+    pointer-events: none;
+  }
+
+  /* ─────────────────────────────────────────────────────────── */
+  /* DIRECTION C — REEF PENNANT                                   */
+  /* ─────────────────────────────────────────────────────────── */
+  .stage.C .tether {
+    width: 1.5px;
+    height: 26px;
+    background: linear-gradient(to bottom, #b89260 0%, #6b4f2e 100%);
+    margin: -2px 0 2px;
+    border-radius: 1px;
+    opacity: 0.85;
+  }
+  .stage.C .anchor {
+    background: #b89260; box-shadow: 0 0 4px rgba(184, 146, 96, 0.6);
+    width: 6px; height: 6px;
+  }
+  /* Per-species fabric colors set inline via --pennant-fill */
+  .stage.C .pennant {
+    position: relative;
+    padding: 7px 14px 8px;
+    color: #fff;
+    font-family: "Outfit", sans-serif;
+    font-weight: 600;
+    font-size: 11px;
+    letter-spacing: 0.02em;
+    line-height: 1.05;
+    white-space: nowrap;
+    background: var(--pennant-fill, #475569);
+    border: 1.5px solid rgba(0, 0, 0, 0.5);
+    border-right: none;
+    transform-origin: 30% 100%;
+    animation: sway 3.6s ease-in-out infinite;
+    box-shadow:
+      0 4px 10px rgba(0, 0, 0, 0.45),
+      inset 0 1px 0 rgba(255, 255, 255, 0.22);
+    /* Swallow-tail right edge using clip-path */
+    clip-path: polygon(0 0, 100% 0, 78% 50%, 100% 100%, 0 100%);
+    text-shadow: 0 1px 1px rgba(0,0,0,0.5);
+  }
+  .stage.C .entity:nth-child(odd) .pennant { animation-delay: -1.1s; }
+  .stage.C .entity:nth-child(even) .pennant { animation-delay: -2.3s; }
+  @keyframes sway {
+    0%, 100% { transform: rotate(-1.5deg); }
+    50% { transform: rotate(2deg); }
+  }
+  .stage.C .pennant-star {
+    position: absolute; top: -3px; left: 4px;
+    color: #fde047; font-size: 12px;
+    text-shadow: 0 0 6px rgba(253, 224, 71, 0.85);
+    pointer-events: none;
+  }
+  /* Building banner — bigger, two-tailed, Pirata One serif on cream */
+  .stage.C .banner {
+    position: relative;
+    padding: 10px 22px 12px;
+    background: linear-gradient(180deg, #f5e9d2 0%, #e7d3a4 100%);
+    color: #1e293b;
+    font-family: "Pirata One", display, serif;
+    font-size: 18px;
+    letter-spacing: 0.04em;
+    line-height: 1;
+    white-space: nowrap;
+    border: 1.5px solid rgba(20, 30, 48, 0.7);
+    box-shadow:
+      0 6px 16px rgba(0, 0, 0, 0.55),
+      inset 0 1px 0 rgba(255, 255, 255, 0.55),
+      inset 0 -2px 6px rgba(120, 78, 22, 0.18);
+    /* Two-tailed pennant — swallow-tail both ends */
+    clip-path: polygon(0 0, 100% 0, 92% 50%, 100% 100%, 0 100%, 8% 50%);
+    animation: banner-sway 4.2s ease-in-out infinite;
+    transform-origin: 50% 0;
+    transition: transform 200ms ease-out, box-shadow 200ms ease-out;
+  }
+  @keyframes banner-sway {
+    0%, 100% { transform: rotate(-0.8deg); }
+    50% { transform: rotate(0.8deg); }
+  }
+  .stage.C .banner .cat {
+    display: block; margin-top: 2px;
+    font-family: "Outfit", sans-serif; font-weight: 500; font-style: italic;
+    font-size: 10px; letter-spacing: 0.08em; color: #57534e;
+  }
+  .stage.C .entity.building:hover .banner {
+    transform: translateY(-3px) rotate(0deg);
+    box-shadow:
+      0 12px 26px rgba(0, 0, 0, 0.6),
+      inset 0 1px 0 rgba(255, 255, 255, 0.65);
+  }
+
+  .hint {
+    position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%);
+    font-size: 11px; color: #64748b; letter-spacing: 0.16em; text-transform: uppercase;
+    background: rgba(2, 8, 15, 0.65);
+    padding: 5px 10px; border-radius: 4px; border: 1px solid rgba(56, 189, 248, 0.12);
+  }
+
+  .footer-note {
+    margin-top: 32px; color: #475569; font-size: 12px; line-height: 1.6;
+  }
+
+  /* ─────── shared NPC silhouettes (drawn inline as SVG below) ─────── */
+  svg.body { display: block; }
+</style>
+</head>
+<body>
+
+<h1>ClawVille — Label Previews</h1>
+<p class="sub">Three underwater stages. Each shows the same 6 entities (4 NPCs, 1 building, 1 player silhouette) with one direction's label treatment. <b style="color:#cbd5e1">Hover any entity in stage D</b> to see the proximity reveal; the rightmost NPC in stage D is in the "always-near" state. Hover the pyramid in stage C to see the banner lift.</p>
+
+<div class="legend"><span><b>A</b>&nbsp;Bio-luminescent</span> · <span><b>C</b>&nbsp;Reef Pennant</span> · <span><b>D</b>&nbsp;Minimal Totem</span></div>
+
+<div class="panel-wrap">
+
+  <!-- ─────────────── DIRECTION A ─────────────── -->
+  <div class="panel">
+    <div class="panel-label">
+      <span class="pk">A · Bio-luminescent Tag</span>
+      <span class="pn">Soft glowing capsules in Fraunces serif. Always visible. Reads as luminescent organisms native to the underwater world. Tether keeps the body unobscured.</span>
+    </div>
+
+    <div class="stage A">
+      <!-- bubbles -->
+      <div class="bubble" style="left: 12%; animation-duration: 9s; animation-delay: -1s;"></div>
+      <div class="bubble" style="left: 22%; animation-duration: 13s; animation-delay: -4s; width:4px;height:4px;"></div>
+      <div class="bubble" style="left: 38%; animation-duration: 11s; animation-delay: -7s;"></div>
+      <div class="bubble" style="left: 55%; animation-duration: 14s; animation-delay: -3s; width:5px;height:5px;"></div>
+      <div class="bubble" style="left: 71%; animation-duration: 10s; animation-delay: -2s;"></div>
+      <div class="bubble" style="left: 88%; animation-duration: 12s; animation-delay: -6s; width:4px;height:4px;"></div>
+
+      <!-- BUILDING (pyramid silhouette) -->
+      <div class="entity building" style="left: 22%; bottom: 25%;">
+        <svg class="body" viewBox="0 0 200 180" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <linearGradient id="bld-a" x1="0" x2="0" y1="0" y2="1">
+              <stop offset="0" stop-color="#1e3a5f"/>
+              <stop offset="1" stop-color="#0a1928"/>
+            </linearGradient>
+          </defs>
+          <polygon points="100,10 190,170 10,170" fill="url(#bld-a)" stroke="rgba(120,200,240,0.35)" stroke-width="1.5"/>
+          <rect x="88" y="120" width="24" height="50" fill="#0a1928" stroke="rgba(120,200,240,0.4)" stroke-width="1"/>
+          <line x1="100" y1="10" x2="100" y2="170" stroke="rgba(140,220,255,0.18)" stroke-width="0.6"/>
+        </svg>
+        <div class="anchor"></div>
+        <div class="label-rig">
+          <div class="bio-tag building">
+            Pyramid Casino
+            <span class="small">Entertainment · Click to enter</span>
+          </div>
+          <div class="tether"></div>
+        </div>
+      </div>
+
+      <!-- NPC 1: Mrs Puff (yellow puffer) -->
+      <div class="entity" style="left: 50%; bottom: 17%;">
+        <svg class="body" viewBox="0 0 56 90" xmlns="http://www.w3.org/2000/svg">
+          <ellipse cx="28" cy="35" rx="22" ry="20" fill="#fbbf24" stroke="#92400e" stroke-width="1.4"/>
+          <circle cx="20" cy="32" r="2" fill="#1c1917"/>
+          <circle cx="36" cy="32" r="2" fill="#1c1917"/>
+          <rect x="20" y="56" width="16" height="26" rx="3" fill="#2563eb"/>
+          <line x1="14" y1="35" x2="6" y2="38" stroke="#fbbf24" stroke-width="2"/>
+          <line x1="42" y1="35" x2="50" y2="38" stroke="#fbbf24" stroke-width="2"/>
+        </svg>
+        <div class="anchor"></div>
+        <div class="label-rig">
+          <div class="bio-tag">Mrs. Puff</div>
+          <div class="tether"></div>
+        </div>
+      </div>
+
+      <!-- NPC 2: Patrick (pink) — OpenClaw -->
+      <div class="entity small" style="left: 64%; bottom: 18%;">
+        <svg class="body" viewBox="0 0 42 68" xmlns="http://www.w3.org/2000/svg">
+          <path d="M21 6 L36 28 L34 52 L8 52 L6 28 Z" fill="#fb7185" stroke="#9f1239" stroke-width="1.4"/>
+          <circle cx="15" cy="24" r="2" fill="#1c1917"/>
+          <circle cx="27" cy="24" r="2" fill="#1c1917"/>
+        </svg>
+        <div class="anchor"></div>
+        <div class="label-rig">
+          <div class="bio-tag"><span class="openclaw"></span>Patrick</div>
+          <div class="tether"></div>
+        </div>
+      </div>
+
+      <!-- NPC 3: Driftwood (a fish-shaped npc) -->
+      <div class="entity" style="left: 78%; bottom: 20%;">
+        <svg class="body" viewBox="0 0 56 90" xmlns="http://www.w3.org/2000/svg">
+          <ellipse cx="28" cy="40" rx="24" ry="14" fill="#0ea5e9" stroke="#075985" stroke-width="1.4"/>
+          <polygon points="4,40 -6,28 -6,52" fill="#0ea5e9" stroke="#075985" stroke-width="1.2"/>
+          <circle cx="42" cy="36" r="2.5" fill="#1c1917"/>
+          <rect x="24" y="56" width="8" height="22" fill="#075985"/>
+        </svg>
+        <div class="anchor"></div>
+        <div class="label-rig">
+          <div class="bio-tag">Driftwood</div>
+          <div class="tether"></div>
+        </div>
+      </div>
+
+      <!-- NPC 4: Cyrus (small lobster) -->
+      <div class="entity small" style="left: 89%; bottom: 16%;">
+        <svg class="body" viewBox="0 0 42 68" xmlns="http://www.w3.org/2000/svg">
+          <ellipse cx="21" cy="34" rx="14" ry="20" fill="#dc2626" stroke="#7f1d1d" stroke-width="1.4"/>
+          <path d="M6 28 Q-2 22 6 18 M36 28 Q44 22 36 18" stroke="#7f1d1d" stroke-width="2" fill="none"/>
+          <circle cx="17" cy="30" r="2" fill="#fde68a"/>
+          <circle cx="25" cy="30" r="2" fill="#fde68a"/>
+        </svg>
+        <div class="anchor"></div>
+        <div class="label-rig">
+          <div class="bio-tag">Cyrus</div>
+          <div class="tether"></div>
+        </div>
+      </div>
+
+      <!-- PLAYER (centered, no label) -->
+      <div class="entity large" style="left: 35%; bottom: 14%;">
+        <svg class="body" viewBox="0 0 90 140" xmlns="http://www.w3.org/2000/svg">
+          <circle cx="45" cy="28" r="20" fill="#e2e8f0" stroke="#475569" stroke-width="1.6"/>
+          <circle cx="38" cy="26" r="2.5" fill="#1c1917"/>
+          <circle cx="52" cy="26" r="2.5" fill="#1c1917"/>
+          <rect x="28" y="46" width="34" height="50" rx="4" fill="#0ea5e9" stroke="#075985" stroke-width="1.4"/>
+          <rect x="32" y="96" width="11" height="40" fill="#1e3a8a"/>
+          <rect x="47" y="96" width="11" height="40" fill="#1e3a8a"/>
+        </svg>
+      </div>
+
+      <div class="hint">stage A · always-on luminescent tags</div>
+    </div>
+  </div>
+
+  <!-- ─────────────── DIRECTION C ─────────────── -->
+  <div class="panel">
+    <div class="panel-label">
+      <span class="pk">C · Reef Pennant</span>
+      <span class="pn">Hand-illustrated fabric flags swaying above each entity, anchored by a brass-tone rope. Per-species color, Outfit display, gold star ★ for OpenClaw. Buildings get a two-tailed cream banner in Pirata One serif. Hover the pyramid for the lift state.</span>
+    </div>
+
+    <div class="stage C">
+      <!-- bubbles -->
+      <div class="bubble" style="left: 13%; animation-duration: 11s; animation-delay: -3s;"></div>
+      <div class="bubble" style="left: 24%; animation-duration: 13s; animation-delay: -6s; width:4px;height:4px;"></div>
+      <div class="bubble" style="left: 40%; animation-duration: 10s; animation-delay: -1s;"></div>
+      <div class="bubble" style="left: 56%; animation-duration: 14s; animation-delay: -4s; width:5px;height:5px;"></div>
+      <div class="bubble" style="left: 72%; animation-duration: 9s; animation-delay: -2s;"></div>
+      <div class="bubble" style="left: 89%; animation-duration: 12s; animation-delay: -7s; width:4px;height:4px;"></div>
+
+      <!-- BUILDING (pyramid) with two-tail banner -->
+      <div class="entity building" style="left: 22%; bottom: 25%;">
+        <svg class="body" viewBox="0 0 200 180" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <linearGradient id="bld-c" x1="0" x2="0" y1="0" y2="1">
+              <stop offset="0" stop-color="#1e3a5f"/>
+              <stop offset="1" stop-color="#0a1928"/>
+            </linearGradient>
+          </defs>
+          <polygon points="100,10 190,170 10,170" fill="url(#bld-c)" stroke="rgba(120,200,240,0.35)" stroke-width="1.5"/>
+          <rect x="88" y="120" width="24" height="50" fill="#0a1928" stroke="rgba(120,200,240,0.4)" stroke-width="1"/>
+          <line x1="100" y1="10" x2="100" y2="170" stroke="rgba(140,220,255,0.18)" stroke-width="0.6"/>
+        </svg>
+        <div class="anchor"></div>
+        <div class="label-rig">
+          <div class="banner">
+            Pyramid Casino
+            <span class="cat">Entertainment</span>
+          </div>
+          <div class="tether"></div>
+        </div>
+      </div>
+
+      <!-- NPC 1: Mrs Puff (puffer-yellow pennant) -->
+      <div class="entity" style="left: 50%; bottom: 17%;">
+        <svg class="body" viewBox="0 0 56 90" xmlns="http://www.w3.org/2000/svg">
+          <ellipse cx="28" cy="35" rx="22" ry="20" fill="#fbbf24" stroke="#92400e" stroke-width="1.4"/>
+          <circle cx="20" cy="32" r="2" fill="#1c1917"/>
+          <circle cx="36" cy="32" r="2" fill="#1c1917"/>
+          <rect x="20" y="56" width="16" height="26" rx="3" fill="#2563eb"/>
+          <line x1="14" y1="35" x2="6" y2="38" stroke="#fbbf24" stroke-width="2"/>
+          <line x1="42" y1="35" x2="50" y2="38" stroke="#fbbf24" stroke-width="2"/>
+        </svg>
+        <div class="anchor"></div>
+        <div class="label-rig">
+          <div class="pennant" style="--pennant-fill: #f59e0b;">Mrs. Puff</div>
+          <div class="tether"></div>
+        </div>
+      </div>
+
+      <!-- NPC 2: Patrick (pink, OpenClaw star) -->
+      <div class="entity small" style="left: 64%; bottom: 18%;">
+        <svg class="body" viewBox="0 0 42 68" xmlns="http://www.w3.org/2000/svg">
+          <path d="M21 6 L36 28 L34 52 L8 52 L6 28 Z" fill="#fb7185" stroke="#9f1239" stroke-width="1.4"/>
+          <circle cx="15" cy="24" r="2" fill="#1c1917"/>
+          <circle cx="27" cy="24" r="2" fill="#1c1917"/>
+        </svg>
+        <div class="anchor"></div>
+        <div class="label-rig">
+          <div class="pennant" style="--pennant-fill: #ec4899;">
+            <span class="pennant-star">★</span>Patrick
+          </div>
+          <div class="tether"></div>
+        </div>
+      </div>
+
+      <!-- NPC 3: Driftwood (cyan pennant) -->
+      <div class="entity" style="left: 78%; bottom: 20%;">
+        <svg class="body" viewBox="0 0 56 90" xmlns="http://www.w3.org/2000/svg">
+          <ellipse cx="28" cy="40" rx="24" ry="14" fill="#0ea5e9" stroke="#075985" stroke-width="1.4"/>
+          <polygon points="4,40 -6,28 -6,52" fill="#0ea5e9" stroke="#075985" stroke-width="1.2"/>
+          <circle cx="42" cy="36" r="2.5" fill="#1c1917"/>
+          <rect x="24" y="56" width="8" height="22" fill="#075985"/>
+        </svg>
+        <div class="anchor"></div>
+        <div class="label-rig">
+          <div class="pennant" style="--pennant-fill: #0ea5e9;">Driftwood</div>
+          <div class="tether"></div>
+        </div>
+      </div>
+
+      <!-- NPC 4: Cyrus (red pennant) -->
+      <div class="entity small" style="left: 89%; bottom: 16%;">
+        <svg class="body" viewBox="0 0 42 68" xmlns="http://www.w3.org/2000/svg">
+          <ellipse cx="21" cy="34" rx="14" ry="20" fill="#dc2626" stroke="#7f1d1d" stroke-width="1.4"/>
+          <path d="M6 28 Q-2 22 6 18 M36 28 Q44 22 36 18" stroke="#7f1d1d" stroke-width="2" fill="none"/>
+          <circle cx="17" cy="30" r="2" fill="#fde68a"/>
+          <circle cx="25" cy="30" r="2" fill="#fde68a"/>
+        </svg>
+        <div class="anchor"></div>
+        <div class="label-rig">
+          <div class="pennant" style="--pennant-fill: #b91c1c;">Cyrus</div>
+          <div class="tether"></div>
+        </div>
+      </div>
+
+      <!-- PLAYER (no label, center-ish) -->
+      <div class="entity large" style="left: 35%; bottom: 14%;">
+        <svg class="body" viewBox="0 0 90 140" xmlns="http://www.w3.org/2000/svg">
+          <circle cx="45" cy="28" r="20" fill="#e2e8f0" stroke="#475569" stroke-width="1.6"/>
+          <circle cx="38" cy="26" r="2.5" fill="#1c1917"/>
+          <circle cx="52" cy="26" r="2.5" fill="#1c1917"/>
+          <rect x="28" y="46" width="34" height="50" rx="4" fill="#0ea5e9" stroke="#075985" stroke-width="1.4"/>
+          <rect x="32" y="96" width="11" height="40" fill="#1e3a8a"/>
+          <rect x="47" y="96" width="11" height="40" fill="#1e3a8a"/>
+        </svg>
+      </div>
+
+      <div class="hint">stage C · always-on pennants · hover building for lift</div>
+    </div>
+  </div>
+
+  <!-- ─────────────── DIRECTION D ─────────────── -->
+  <div class="panel">
+    <div class="panel-label">
+      <span class="pk">D · Minimal Totem</span>
+      <span class="pn">Default state is a small species icon only. Names appear on hover (try it) or on proximity (rightmost NPC is in the always-near state to demonstrate).</span>
+    </div>
+
+    <div class="stage D">
+      <!-- bubbles -->
+      <div class="bubble" style="left: 14%; animation-duration: 10s; animation-delay: -2s;"></div>
+      <div class="bubble" style="left: 26%; animation-duration: 12s; animation-delay: -5s; width:4px;height:4px;"></div>
+      <div class="bubble" style="left: 41%; animation-duration: 11s; animation-delay: -7s;"></div>
+      <div class="bubble" style="left: 57%; animation-duration: 13s; animation-delay: -3s; width:5px;height:5px;"></div>
+      <div class="bubble" style="left: 73%; animation-duration: 9s; animation-delay: -1s;"></div>
+      <div class="bubble" style="left: 90%; animation-duration: 14s; animation-delay: -6s; width:4px;height:4px;"></div>
+
+      <!-- Decorative "proximity ring" around the player to illustrate the always-near radius -->
+      <div class="player-radius" style="left: 35%; bottom: 22%;"></div>
+
+      <!-- BUILDING (pyramid silhouette) -->
+      <div class="entity building" tabindex="0" style="left: 22%; bottom: 25%;">
+        <svg class="body" viewBox="0 0 200 180" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <linearGradient id="bld-d" x1="0" x2="0" y1="0" y2="1">
+              <stop offset="0" stop-color="#1e3a5f"/>
+              <stop offset="1" stop-color="#0a1928"/>
+            </linearGradient>
+          </defs>
+          <polygon points="100,10 190,170 10,170" fill="url(#bld-d)" stroke="rgba(120,200,240,0.35)" stroke-width="1.5"/>
+          <rect x="88" y="120" width="24" height="50" fill="#0a1928" stroke="rgba(120,200,240,0.4)" stroke-width="1"/>
+          <line x1="100" y1="10" x2="100" y2="170" stroke="rgba(140,220,255,0.18)" stroke-width="0.6"/>
+        </svg>
+        <div class="anchor"></div>
+        <div class="label-rig">
+          <div class="totem building">◈</div>
+          <div class="tether"></div>
+        </div>
+        <div class="building-plaque">
+          Pyramid Casino
+          <span class="cat">Entertainment</span>
+        </div>
+      </div>
+
+      <!-- NPC 1: Mrs Puff -->
+      <div class="entity" tabindex="0" style="left: 50%; bottom: 17%;">
+        <svg class="body" viewBox="0 0 56 90" xmlns="http://www.w3.org/2000/svg">
+          <ellipse cx="28" cy="35" rx="22" ry="20" fill="#fbbf24" stroke="#92400e" stroke-width="1.4"/>
+          <circle cx="20" cy="32" r="2" fill="#1c1917"/>
+          <circle cx="36" cy="32" r="2" fill="#1c1917"/>
+          <rect x="20" y="56" width="16" height="26" rx="3" fill="#2563eb"/>
+          <line x1="14" y1="35" x2="6" y2="38" stroke="#fbbf24" stroke-width="2"/>
+          <line x1="42" y1="35" x2="50" y2="38" stroke="#fbbf24" stroke-width="2"/>
+        </svg>
+        <div class="anchor"></div>
+        <div class="label-rig">
+          <div class="totem">◐</div>
+          <div class="tether"></div>
+          <div class="name-plaque">Mrs. Puff</div>
+        </div>
+      </div>
+
+      <!-- NPC 2: Patrick — OpenClaw -->
+      <div class="entity small" tabindex="0" style="left: 64%; bottom: 18%;">
+        <svg class="body" viewBox="0 0 42 68" xmlns="http://www.w3.org/2000/svg">
+          <path d="M21 6 L36 28 L34 52 L8 52 L6 28 Z" fill="#fb7185" stroke="#9f1239" stroke-width="1.4"/>
+          <circle cx="15" cy="24" r="2" fill="#1c1917"/>
+          <circle cx="27" cy="24" r="2" fill="#1c1917"/>
+        </svg>
+        <div class="anchor"></div>
+        <div class="label-rig">
+          <div class="totem openclaw">★</div>
+          <div class="tether"></div>
+          <div class="name-plaque">Patrick</div>
+        </div>
+      </div>
+
+      <!-- NPC 3: Driftwood -->
+      <div class="entity" tabindex="0" style="left: 78%; bottom: 20%;">
+        <svg class="body" viewBox="0 0 56 90" xmlns="http://www.w3.org/2000/svg">
+          <ellipse cx="28" cy="40" rx="24" ry="14" fill="#0ea5e9" stroke="#075985" stroke-width="1.4"/>
+          <polygon points="4,40 -6,28 -6,52" fill="#0ea5e9" stroke="#075985" stroke-width="1.2"/>
+          <circle cx="42" cy="36" r="2.5" fill="#1c1917"/>
+          <rect x="24" y="56" width="8" height="22" fill="#075985"/>
+        </svg>
+        <div class="anchor"></div>
+        <div class="label-rig">
+          <div class="totem">◇</div>
+          <div class="tether"></div>
+          <div class="name-plaque">Driftwood</div>
+        </div>
+      </div>
+
+      <!-- NPC 4: Cyrus — always-near so name is visible by default -->
+      <div class="entity small" tabindex="0" style="left: 89%; bottom: 16%;">
+        <svg class="body" viewBox="0 0 42 68" xmlns="http://www.w3.org/2000/svg">
+          <ellipse cx="21" cy="34" rx="14" ry="20" fill="#dc2626" stroke="#7f1d1d" stroke-width="1.4"/>
+          <path d="M6 28 Q-2 22 6 18 M36 28 Q44 22 36 18" stroke="#7f1d1d" stroke-width="2" fill="none"/>
+          <circle cx="17" cy="30" r="2" fill="#fde68a"/>
+          <circle cx="25" cy="30" r="2" fill="#fde68a"/>
+        </svg>
+        <div class="anchor"></div>
+        <div class="label-rig">
+          <div class="totem always-near">●</div>
+          <div class="name-plaque" style="opacity:1; transform: translate(-50%, 0);">Cyrus</div>
+          <div class="tether"></div>
+        </div>
+      </div>
+
+      <!-- PLAYER (no label, center) -->
+      <div class="entity large" style="left: 35%; bottom: 14%;">
+        <svg class="body" viewBox="0 0 90 140" xmlns="http://www.w3.org/2000/svg">
+          <circle cx="45" cy="28" r="20" fill="#e2e8f0" stroke="#475569" stroke-width="1.6"/>
+          <circle cx="38" cy="26" r="2.5" fill="#1c1917"/>
+          <circle cx="52" cy="26" r="2.5" fill="#1c1917"/>
+          <rect x="28" y="46" width="34" height="50" rx="4" fill="#0ea5e9" stroke="#075985" stroke-width="1.4"/>
+          <rect x="32" y="96" width="11" height="40" fill="#1e3a8a"/>
+          <rect x="47" y="96" width="11" height="40" fill="#1e3a8a"/>
+        </svg>
+      </div>
+
+      <div class="hint">stage D · hover any entity to reveal its name</div>
+    </div>
+  </div>
+
+</div>
+
+<p class="footer-note">
+  Mockup notes — fonts loaded from Google Fonts (Fraunces + Outfit + Cinzel Decorative). Bubbles, sway, pulse, and totem float-bob are all CSS-only with the cadences we'd ship.
+  Real implementation in the game uses the same DOM markup driven by the existing WorldLabelsOverlay projection useFrame — no new per-frame allocations.
+</p>
+
+</body>
+</html>

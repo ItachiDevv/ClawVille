@@ -1,0 +1,886 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1520" height="692" viewBox="0 0 1520 692">
+  <rect width="1520" height="692" fill="#06101f"/>
+  <text x="760" y="24" text-anchor="middle" font-family="Impact, Arial Black, sans-serif" font-size="0" fill="transparent">ClawVille Slot Symbol Sheet — 2026-05-19 round 3</text>
+  
+    <g transform="translate(20,20)">
+      <rect x="0" y="0" width="280" height="280" rx="14" fill="#0a1428" stroke="#2a3a55" stroke-width="2"/>
+      <svg x="8" y="8" width="264" height="264" viewBox="0 0 256 256">
+        
+
+  <defs>
+    <radialGradient id="b1r" cx="35%" cy="30%" r="70%">
+      <stop offset="0" stop-color="#ff7a7a"/>
+      <stop offset="0.55" stop-color="#d62828"/>
+      <stop offset="1" stop-color="#5a0a14"/>
+    </radialGradient>
+    <radialGradient id="b1p" cx="35%" cy="30%" r="70%">
+      <stop offset="0" stop-color="#ffc7cc"/>
+      <stop offset="0.6" stop-color="#ff8aa0"/>
+      <stop offset="1" stop-color="#a04055"/>
+    </radialGradient>
+    <linearGradient id="b1s" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#5fcf7a"/>
+      <stop offset="1" stop-color="#1a5a2a"/>
+    </linearGradient>
+    <radialGradient id="hl1" cx="35%" cy="25%" r="50%">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.65"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <ellipse cx="128" cy="225" rx="68" ry="10" fill="#0a1428" opacity="0.5"/>
+  <!-- coiled coral stems -->
+  <path d="M128 40 Q128 60 108 78 Q86 96 90 130" fill="none" stroke="#0a1428" stroke-width="6" stroke-linecap="round"/>
+  <path d="M128 40 Q128 60 148 78 Q170 96 166 130" fill="none" stroke="#0a1428" stroke-width="6" stroke-linecap="round"/>
+  <path d="M128 40 Q128 60 108 78 Q86 96 90 130" fill="none" stroke="url(#b1s)" stroke-width="3.5" stroke-linecap="round"/>
+  <path d="M128 40 Q128 60 148 78 Q170 96 166 130" fill="none" stroke="url(#b1s)" stroke-width="3.5" stroke-linecap="round"/>
+  <!-- leaf at stem join -->
+  <path d="M118 50 Q108 38 120 30 Q138 30 138 50 Z" fill="url(#b1s)" stroke="#0a1428" stroke-width="3.5" stroke-linejoin="round"/>
+  <!-- LEFT cherry -->
+  <g>
+    <circle cx="90" cy="160" r="38" fill="url(#b1r)" stroke="#0a1428" stroke-width="6"/>
+    <circle cx="90" cy="160" r="38" fill="url(#hl1)"/>
+    <ellipse cx="76" cy="146" rx="8" ry="5" fill="#ffffff" opacity="0.55"/>
+  </g>
+  <!-- RIGHT cherry (slightly bigger, front-overlap) -->
+  <g>
+    <circle cx="166" cy="172" r="42" fill="url(#b1r)" stroke="#0a1428" stroke-width="6"/>
+    <circle cx="166" cy="172" r="42" fill="url(#hl1)"/>
+    <ellipse cx="150" cy="156" rx="10" ry="6" fill="#ffffff" opacity="0.6"/>
+  </g>
+
+      </svg>
+      <text x="140" y="304" text-anchor="middle" font-family="Impact, Arial Black, sans-serif" font-size="20" font-weight="700" fill="#e2e8f0" letter-spacing="0.5">s0 · Cherry</text>
+    </g>
+
+    <g transform="translate(320,20)">
+      <rect x="0" y="0" width="280" height="280" rx="14" fill="#0a1428" stroke="#2a3a55" stroke-width="2"/>
+      <svg x="8" y="8" width="264" height="264" viewBox="0 0 256 256">
+        
+
+  <defs>
+    <!-- Lemon body: cream-yellow → saturated yellow → amber -->
+    <linearGradient id="b1L" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0"    stop-color="#fff7c2"/>
+      <stop offset="0.5"  stop-color="#f1c40f"/>
+      <stop offset="1"    stop-color="#c89b00"/>
+    </linearGradient>
+    <!-- Leaf gradient -->
+    <linearGradient id="b1Lf" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#4caf50"/>
+      <stop offset="1" stop-color="#2e7d32"/>
+    </linearGradient>
+    <!-- Top-left specular highlight -->
+    <radialGradient id="hl1L" cx="30%" cy="25%" r="55%">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.65"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <!-- Drop-shadow ellipse beneath object -->
+  <ellipse cx="128" cy="225" rx="72" ry="10" fill="#0a1428" opacity="0.25"/>
+
+  <!-- LEMON BODY — four cubic Bezier segments producing genuine pointed tips at left (~38,128) and right (~218,128)
+       Top arc rises to y≈70 at center; bottom arc falls to y≈186 at center.
+       Tips are formed by identical control-point y values forcing the curve to arrive horizontally. -->
+  <path d="M 38,128
+           C  55,70  98,52 128,52
+           C 158,52 201,70 218,128
+           C 201,186 158,204 128,204
+           C  98,204  55,186  38,128
+           Z"
+        fill="url(#b1L)" stroke="#0a1428" stroke-width="6" stroke-linejoin="round"/>
+
+  <!-- Citrus pore dots (5 dots, darker amber, scattered naturally) -->
+  <ellipse cx="100" cy="105" rx="5" ry="3.5" fill="#d4a800" opacity="0.70"/>
+  <ellipse cx="148" cy="102" rx="4.5" ry="3"   fill="#d4a800" opacity="0.70"/>
+  <ellipse cx="115" cy="142" rx="5" ry="3.5"   fill="#d4a800" opacity="0.70"/>
+  <ellipse cx="158" cy="146" rx="4.5" ry="3"   fill="#d4a800" opacity="0.70"/>
+  <ellipse cx="130" cy="122" rx="4" ry="2.8"   fill="#d4a800" opacity="0.65"/>
+
+  <!-- Specular white highlight, top-left of body -->
+  <ellipse cx="88" cy="88" rx="28" ry="18" fill="#ffffff" opacity="0.65" transform="rotate(-20 88 88)"/>
+
+  <!-- Radial highlight overlay matching lemon shape -->
+  <path d="M 38,128
+           C  55,70  98,52 128,52
+           C 158,52 201,70 218,128
+           C 201,186 158,204 128,204
+           C  98,204  55,186  38,128
+           Z"
+        fill="url(#hl1L)"/>
+
+  <!-- Leaf + stem (angled ~30° right, attached at top of lemon) -->
+  <g>
+    <!-- Short stem from lemon top up to leaf base -->
+    <path d="M128,54 Q132,42 136,34"
+          fill="none" stroke="#0a1428" stroke-width="5" stroke-linecap="round"/>
+    <path d="M128,54 Q132,42 136,34"
+          fill="none" stroke="#2e7d32" stroke-width="3" stroke-linecap="round"/>
+    <!-- Leaf body: teardrop, angled ~30° clockwise -->
+    <path d="M 136,34
+             C 148,12 174,16 176,32
+             C 178,46 158,60 136,34
+             Z"
+          fill="url(#b1Lf)" stroke="#0a1428" stroke-width="4" stroke-linejoin="round"/>
+    <!-- Leaf center vein -->
+    <path d="M138,36 Q157,28 172,34"
+          fill="none" stroke="#1b5e20" stroke-width="1.8" opacity="0.55"/>
+  </g>
+
+      </svg>
+      <text x="140" y="304" text-anchor="middle" font-family="Impact, Arial Black, sans-serif" font-size="20" font-weight="700" fill="#e2e8f0" letter-spacing="0.5">s1 · Lemon</text>
+    </g>
+
+    <g transform="translate(620,20)">
+      <rect x="0" y="0" width="280" height="280" rx="14" fill="#0a1428" stroke="#2a3a55" stroke-width="2"/>
+      <svg x="8" y="8" width="264" height="264" viewBox="0 0 256 256">
+        
+
+  <defs>
+    <!-- Orange body: light orange highlight → saturated orange → deep rust -->
+    <radialGradient id="b2O" cx="38%" cy="30%" r="72%">
+      <stop offset="0"    stop-color="#ffd28a"/>
+      <stop offset="0.5"  stop-color="#ff8a2a"/>
+      <stop offset="1"    stop-color="#7a2a04"/>
+    </radialGradient>
+    <!-- Leaf gradient -->
+    <linearGradient id="b2Lf" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#4caf50"/>
+      <stop offset="1" stop-color="#2e7d32"/>
+    </linearGradient>
+    <!-- Top-left specular highlight -->
+    <radialGradient id="hl2O" cx="30%" cy="25%" r="55%">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.65"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <!-- Drop-shadow ellipse beneath object -->
+  <ellipse cx="128" cy="228" rx="72" ry="10" fill="#0a1428" opacity="0.25"/>
+
+  <!-- ORANGE BODY — clean round sphere -->
+  <circle cx="128" cy="132" r="80" fill="url(#b2O)" stroke="#0a1428" stroke-width="6"/>
+
+  <!-- Faint segment lines (subtle — radial cuts to suggest citrus segments) -->
+  <g fill="none" stroke="#cc5a0c" stroke-width="2" opacity="0.45" stroke-linecap="round">
+    <path d="M128 56 Q128 132 128 208"/>
+    <path d="M58 100 Q128 132 198 100" opacity="0.35"/>
+    <path d="M58 164 Q128 132 198 164" opacity="0.35"/>
+  </g>
+
+  <!-- Specular white highlight, top-left of body -->
+  <ellipse cx="92" cy="92" rx="28" ry="18" fill="#ffffff" opacity="0.65" transform="rotate(-20 92 92)"/>
+
+  <!-- Radial highlight overlay matching sphere -->
+  <circle cx="128" cy="132" r="80" fill="url(#hl2O)"/>
+
+  <!-- Leaf + stem on top (angled ~30° right, attached at top of orange) -->
+  <g>
+    <!-- Short stem -->
+    <path d="M128,54 Q132,42 136,34"
+          fill="none" stroke="#0a1428" stroke-width="5" stroke-linecap="round"/>
+    <path d="M128,54 Q132,42 136,34"
+          fill="none" stroke="#2e7d32" stroke-width="3" stroke-linecap="round"/>
+    <!-- Leaf body: teardrop, angled ~30° clockwise -->
+    <path d="M 136,34
+             C 148,12 174,16 176,32
+             C 178,46 158,60 136,34
+             Z"
+          fill="url(#b2Lf)" stroke="#0a1428" stroke-width="4" stroke-linejoin="round"/>
+    <!-- Leaf center vein -->
+    <path d="M138,36 Q157,28 172,34"
+          fill="none" stroke="#1b5e20" stroke-width="1.8" opacity="0.55"/>
+  </g>
+
+      </svg>
+      <text x="140" y="304" text-anchor="middle" font-family="Impact, Arial Black, sans-serif" font-size="20" font-weight="700" fill="#e2e8f0" letter-spacing="0.5">s2 · Orange</text>
+    </g>
+
+    <g transform="translate(920,20)">
+      <rect x="0" y="0" width="280" height="280" rx="14" fill="#0a1428" stroke="#2a3a55" stroke-width="2"/>
+      <svg x="8" y="8" width="264" height="264" viewBox="0 0 256 256">
+        
+
+  <defs>
+    <!-- Plum body: light lavender → deep purple → near-black violet -->
+    <radialGradient id="b3P" cx="38%" cy="28%" r="78%">
+      <stop offset="0" stop-color="#d3aaff"/>
+      <stop offset="0.45" stop-color="#7c3aed"/>
+      <stop offset="1" stop-color="#3b0764"/>
+    </radialGradient>
+    <!-- Stem gradient -->
+    <linearGradient id="b3St" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#6b4226"/>
+      <stop offset="1" stop-color="#2a1608"/>
+    </linearGradient>
+    <!-- Leaf gradient -->
+    <linearGradient id="b3Le" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#7fd58a"/>
+      <stop offset="1" stop-color="#1f5a2a"/>
+    </linearGradient>
+    <!-- Specular highlight -->
+    <radialGradient id="hl3P" cx="35%" cy="22%" r="55%">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.6"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <!-- ground shadow -->
+  <ellipse cx="128" cy="228" rx="78" ry="10" fill="#0a1428" opacity="0.5"/>
+
+  <!-- Plum body — round-oval with small indent at top (heart-ish where stem joins) -->
+  <path d="M128 64
+           Q124 78 116 80
+           Q72 88 64 138
+           Q60 188 110 204
+           Q160 218 196 184
+           Q220 148 204 110
+           Q188 80 140 80
+           Q132 78 128 64 Z"
+        fill="url(#b3P)" stroke="#0a1428" stroke-width="6" stroke-linejoin="round"/>
+
+  <!-- Subtle longitudinal crease down the body (classic plum) -->
+  <path d="M128 80 Q124 130 130 200" fill="none" stroke="#3b0764" stroke-width="3" opacity="0.55"/>
+
+  <!-- "Waxy bloom" — soft white semi-transparent ellipse on side -->
+  <ellipse cx="92" cy="140" rx="20" ry="36" fill="#ffffff" opacity="0.18" transform="rotate(-18 92 140)"/>
+
+  <!-- Specular highlight (white ellipse top-left) -->
+  <ellipse cx="106" cy="106" rx="22" ry="14" fill="#ffffff" opacity="0.6" transform="rotate(-25 106 106)"/>
+
+  <!-- Highlight overlay -->
+  <path d="M128 64
+           Q124 78 116 80
+           Q72 88 64 138
+           Q60 188 110 204
+           Q160 218 196 184
+           Q220 148 204 110
+           Q188 80 140 80
+           Q132 78 128 64 Z"
+        fill="url(#hl3P)"/>
+
+  <!-- Stem at top -->
+  <path d="M128 64 Q132 50 138 38"
+        fill="none" stroke="#0a1428" stroke-width="6" stroke-linecap="round"/>
+  <path d="M128 64 Q132 50 138 38"
+        fill="none" stroke="url(#b3St)" stroke-width="3" stroke-linecap="round"/>
+
+  <!-- Leaf at top, angled -->
+  <g>
+    <path d="M138 38
+             Q160 18 192 24
+             Q198 50 174 58
+             Q150 62 138 38 Z"
+          fill="url(#b3Le)" stroke="#0a1428" stroke-width="5" stroke-linejoin="round"/>
+    <!-- leaf vein -->
+    <path d="M146 40 Q166 36 188 32" fill="none" stroke="#0a1428" stroke-width="2" opacity="0.6"/>
+  </g>
+
+      </svg>
+      <text x="140" y="304" text-anchor="middle" font-family="Impact, Arial Black, sans-serif" font-size="20" font-weight="700" fill="#e2e8f0" letter-spacing="0.5">s3 · Plum</text>
+    </g>
+
+    <g transform="translate(1220,20)">
+      <rect x="0" y="0" width="280" height="280" rx="14" fill="#0a1428" stroke="#2a3a55" stroke-width="2"/>
+      <svg x="8" y="8" width="264" height="264" viewBox="0 0 256 256">
+        
+
+  <defs>
+    <!-- Brass bell bevel: light brass top → mid-gold → dark bronze bottom -->
+    <linearGradient id="b4b" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffe9a8"/>
+      <stop offset="0.45" stop-color="#ffc857"/>
+      <stop offset="1" stop-color="#6a4408"/>
+    </linearGradient>
+    <!-- Clapper / dark brass ball -->
+    <linearGradient id="b4c" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#c08828"/>
+      <stop offset="1" stop-color="#3a2604"/>
+    </linearGradient>
+    <!-- Specular highlight -->
+    <radialGradient id="hl4" cx="35%" cy="22%" r="55%">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.7"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+    <!-- Coral-tinged loop top (sea twist) -->
+    <linearGradient id="b4l" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffb08a"/>
+      <stop offset="1" stop-color="#a04020"/>
+    </linearGradient>
+  </defs>
+  <!-- ground shadow -->
+  <ellipse cx="128" cy="228" rx="84" ry="10" fill="#0a1428" opacity="0.5"/>
+
+  <!-- coral-tinted top loop (small sea twist) -->
+  <path d="M114 36 Q100 12 128 12 Q156 12 142 36"
+        fill="url(#b4l)" stroke="#0a1428" stroke-width="5"
+        stroke-linejoin="round" stroke-linecap="round"/>
+
+  <!-- bell crown stem between loop and dome -->
+  <rect x="118" y="32" width="20" height="18"
+        fill="url(#b4b)" stroke="#0a1428" stroke-width="5" stroke-linejoin="round"/>
+
+  <!-- MAIN BELL BODY: dome + flared rim. Fills ~75% of frame -->
+  <path d="M128 48
+           C 72 48 52 112 52 158
+           L 52 178
+           Q 52 188 64 188
+           L 192 188
+           Q 204 188 204 178
+           L 204 158
+           C 204 112 184 48 128 48 Z"
+        fill="url(#b4b)" stroke="#0a1428" stroke-width="6" stroke-linejoin="round"/>
+
+  <!-- inner ridge stroke for slot-cast depth -->
+  <path d="M128 60
+           C 86 60 70 118 70 156
+           L 70 174
+           L 186 174
+           L 186 156
+           C 186 118 170 60 128 60 Z"
+        fill="none" stroke="#8a5a08" stroke-width="2.5"
+        stroke-linejoin="round" opacity="0.75"/>
+
+  <!-- bell rim base lip (darker band) -->
+  <rect x="52" y="174" width="152" height="16" rx="7"
+        fill="url(#b4b)" stroke="#0a1428" stroke-width="6" stroke-linejoin="round"/>
+  <line x1="62" y1="182" x2="194" y2="182" stroke="#7a5208" stroke-width="1.5" opacity="0.7"/>
+
+  <!-- highlight overlay -->
+  <path d="M128 48
+           C 72 48 52 112 52 158
+           L 52 178
+           Q 52 188 64 188
+           L 192 188
+           Q 204 188 204 178
+           L 204 158
+           C 204 112 184 48 128 48 Z"
+        fill="url(#hl4)"/>
+
+  <!-- crisp top-left spec ellipse -->
+  <ellipse cx="92" cy="86" rx="18" ry="9" fill="#ffffff" opacity="0.72"
+           transform="rotate(-32 92 86)"/>
+
+  <!-- clapper (small brass ball hanging below the rim) -->
+  <line x1="128" y1="190" x2="128" y2="206" stroke="#0a1428" stroke-width="4" stroke-linecap="round"/>
+  <circle cx="128" cy="214" r="13" fill="url(#b4c)" stroke="#0a1428" stroke-width="4.5"/>
+  <ellipse cx="124" cy="210" rx="4.5" ry="2.5" fill="#ffffff" opacity="0.6"/>
+
+      </svg>
+      <text x="140" y="304" text-anchor="middle" font-family="Impact, Arial Black, sans-serif" font-size="20" font-weight="700" fill="#e2e8f0" letter-spacing="0.5">s4 · Bell</text>
+    </g>
+
+    <g transform="translate(20,356)">
+      <rect x="0" y="0" width="280" height="280" rx="14" fill="#0a1428" stroke="#2a3a55" stroke-width="2"/>
+      <svg x="8" y="8" width="264" height="264" viewBox="0 0 256 256">
+        
+
+  <defs>
+    <!-- Plaque top half: deep red gradient -->
+    <linearGradient id="b5r" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ff6a6a"/>
+      <stop offset="0.5" stop-color="#d62828"/>
+      <stop offset="1" stop-color="#7a0a14"/>
+    </linearGradient>
+    <!-- Plaque bottom half: gold/cream gradient -->
+    <linearGradient id="b5g" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffe28a"/>
+      <stop offset="0.5" stop-color="#ffc857"/>
+      <stop offset="1" stop-color="#9a6a08"/>
+    </linearGradient>
+    <!-- Rivet bevel -->
+    <radialGradient id="b5riv" cx="50%" cy="35%" r="60%">
+      <stop offset="0" stop-color="#fff3c0"/>
+      <stop offset="0.6" stop-color="#ffc857"/>
+      <stop offset="1" stop-color="#6a4408"/>
+    </radialGradient>
+    <!-- Specular highlight overlay -->
+    <radialGradient id="hl5" cx="35%" cy="22%" r="55%">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.55"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+    <!-- Cream gradient for BAR letters -->
+    <linearGradient id="b5letter" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fff7d8"/>
+      <stop offset="1" stop-color="#f0c860"/>
+    </linearGradient>
+  </defs>
+  <!-- ground shadow -->
+  <ellipse cx="128" cy="222" rx="92" ry="11" fill="#0a1428" opacity="0.5"/>
+
+  <!-- gold drop-plate behind (offset for layered look) -->
+  <rect x="22" y="62" width="212" height="132" rx="20"
+        fill="url(#b5g)" stroke="#0a1428" stroke-width="6" stroke-linejoin="round"
+        transform="translate(6,6)" opacity="0.65"/>
+
+  <!-- main plaque (red top) -->
+  <rect x="22" y="56" width="212" height="132" rx="20"
+        fill="url(#b5r)" stroke="#0a1428" stroke-width="6" stroke-linejoin="round"/>
+
+  <!-- bottom gold half overlay (clipped to plaque footprint by matching radius) -->
+  <path d="M22 124 L234 124 L234 168 Q234 188 214 188 L42 188 Q22 188 22 168 Z"
+        fill="url(#b5g)" stroke="#0a1428" stroke-width="6" stroke-linejoin="round"/>
+
+  <!-- inner gold border (offset inset) -->
+  <rect x="34" y="68" width="188" height="108" rx="14"
+        fill="none" stroke="url(#b5g)" stroke-width="3" opacity="0.95"/>
+  <rect x="34" y="68" width="188" height="108" rx="14"
+        fill="none" stroke="#5a3a08" stroke-width="1.2" opacity="0.8"/>
+
+  <!-- corner rivets (4) -->
+  <g stroke="#0a1428" stroke-width="2">
+    <circle cx="44"  cy="78"  r="6" fill="url(#b5riv)"/>
+    <circle cx="212" cy="78"  r="6" fill="url(#b5riv)"/>
+    <circle cx="44"  cy="166" r="6" fill="url(#b5riv)"/>
+    <circle cx="212" cy="166" r="6" fill="url(#b5riv)"/>
+  </g>
+
+  <!-- BAR text — path-traced chunky condensed letters (cross-browser identical) -->
+  <!-- Letter span x=56..230 (174 wide), shifted left 14 so it centers on the 256 frame
+       between the two rivets at x=44 / x=212. -->
+  <g fill="url(#b5letter)" stroke="#0a1428" stroke-width="5"
+     stroke-linejoin="round" stroke-linecap="round" transform="translate(-14,0)">
+    <!-- B (x: 56-100) -->
+    <path d="M56 84
+             L92 84
+             Q108 84 108 100
+             Q108 114 96 118
+             Q112 122 112 138
+             Q112 160 92 160
+             L56 160 Z
+             M72 96
+             L88 96
+             Q96 96 96 104
+             Q96 112 88 112
+             L72 112 Z
+             M72 124
+             L90 124
+             Q98 124 98 134
+             Q98 148 88 148
+             L72 148 Z"
+          fill-rule="evenodd"/>
+
+    <!-- A (x: 116-164) -->
+    <path d="M116 160
+             L134 84
+             L156 84
+             L174 160
+             L158 160
+             L154 144
+             L136 144
+             L132 160 Z
+             M139 132
+             L151 132
+             L145 108 Z"
+          fill-rule="evenodd"/>
+
+    <!-- R (x: 180-220) -->
+    <path d="M180 160
+             L180 84
+             L210 84
+             Q228 84 228 102
+             Q228 116 216 122
+             L230 160
+             L214 160
+             L204 128
+             L196 128
+             L196 160 Z
+             M196 96
+             L208 96
+             Q216 96 216 104
+             Q216 116 208 116
+             L196 116 Z"
+          fill-rule="evenodd"/>
+  </g>
+
+  <!-- highlight overlay on plaque -->
+  <rect x="22" y="56" width="212" height="132" rx="20" fill="url(#hl5)"/>
+
+  <!-- top-left spec streak -->
+  <ellipse cx="62" cy="74" rx="22" ry="6" fill="#ffffff" opacity="0.55"/>
+
+      </svg>
+      <text x="140" y="304" text-anchor="middle" font-family="Impact, Arial Black, sans-serif" font-size="20" font-weight="700" fill="#e2e8f0" letter-spacing="0.5">s5 · BAR</text>
+    </g>
+
+    <g transform="translate(320,356)">
+      <rect x="0" y="0" width="280" height="280" rx="14" fill="#0a1428" stroke="#2a3a55" stroke-width="2"/>
+      <svg x="8" y="8" width="264" height="264" viewBox="0 0 256 256">
+        
+
+  <defs>
+    <linearGradient id="b7r" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ff5a5a"/>
+      <stop offset="0.45" stop-color="#d62828"/>
+      <stop offset="1" stop-color="#7a0a14"/>
+    </linearGradient>
+    <linearGradient id="b7g" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffe28a"/>
+      <stop offset="0.5" stop-color="#ffc857"/>
+      <stop offset="1" stop-color="#9a6a08"/>
+    </linearGradient>
+    <radialGradient id="hl7" cx="35%" cy="22%" r="55%">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.65"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="b7c" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffa07a"/>
+      <stop offset="0.5" stop-color="#ff6b4a"/>
+      <stop offset="1" stop-color="#7a2010"/>
+    </linearGradient>
+  </defs>
+  <!-- ground shadow -->
+  <ellipse cx="128" cy="225" rx="72" ry="10" fill="#0a1428" opacity="0.5"/>
+  <!-- gold drop shadow behind 7 -->
+  <path d="M70 64 L196 64 L196 96 L150 232 L96 232 L142 96 L70 96 Z"
+        fill="url(#b7g)" stroke="#0a1428" stroke-width="6" stroke-linejoin="round" transform="translate(8,8)" opacity="0.85"/>
+  <!-- coral branches on top of 7 -->
+  <g stroke="#0a1428" stroke-width="4.5" stroke-linejoin="round" stroke-linecap="round" fill="url(#b7c)">
+    <path d="M84 64 Q78 44 66 36 Q78 38 86 50 Q84 36 92 26 Q94 42 92 56 Q104 44 116 42 Q108 54 96 64 Z"/>
+    <path d="M156 64 Q170 48 184 44 Q176 56 168 62 Q184 60 192 50 Q188 64 178 70 Q190 70 198 64 Q188 78 172 78 Z"/>
+    <path d="M120 60 Q124 42 132 34 Q138 44 134 60 Q146 50 156 50 Q150 62 138 66 Z"/>
+  </g>
+  <!-- main red 7 silhouette -->
+  <path d="M62 60 L188 60 L188 92 L142 228 L88 228 L134 92 L62 92 Z"
+        fill="url(#b7r)" stroke="#0a1428" stroke-width="6" stroke-linejoin="round"/>
+  <!-- inner stroke for slot-cast depth -->
+  <path d="M74 72 L176 72 L176 86 L130 220 L98 220 L144 86 L74 86 Z"
+        fill="none" stroke="#9c0e0e" stroke-width="2.5" stroke-linejoin="round" opacity="0.85"/>
+  <!-- highlight overlay -->
+  <path d="M62 60 L188 60 L188 92 L142 228 L88 228 L134 92 L62 92 Z"
+        fill="url(#hl7)"/>
+  <!-- spec dot top-left -->
+  <ellipse cx="80" cy="76" rx="10" ry="4" fill="#ffffff" opacity="0.7"/>
+
+      </svg>
+      <text x="140" y="304" text-anchor="middle" font-family="Impact, Arial Black, sans-serif" font-size="20" font-weight="700" fill="#e2e8f0" letter-spacing="0.5">s6 · Seven</text>
+    </g>
+
+    <g transform="translate(620,356)">
+      <rect x="0" y="0" width="280" height="280" rx="14" fill="#0a1428" stroke="#2a3a55" stroke-width="2"/>
+      <svg x="8" y="8" width="264" height="264" viewBox="0 0 256 256">
+        
+
+  <defs>
+    <!-- Plaque steel-blue → electric-cyan bevel -->
+    <linearGradient id="b7w" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#7feaff"/>
+      <stop offset="0.5" stop-color="#1a9adb"/>
+      <stop offset="1" stop-color="#06223a"/>
+    </linearGradient>
+    <!-- Cyan glow ring -->
+    <radialGradient id="b7glow" cx="50%" cy="50%" r="55%">
+      <stop offset="0" stop-color="#00d4ff" stop-opacity="0"/>
+      <stop offset="0.75" stop-color="#00d4ff" stop-opacity="0.45"/>
+      <stop offset="1" stop-color="#00d4ff" stop-opacity="0"/>
+    </radialGradient>
+    <!-- Shark body gradient -->
+    <linearGradient id="b7shark" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#8ea8c4"/>
+      <stop offset="0.5" stop-color="#4a6680"/>
+      <stop offset="1" stop-color="#1a2638"/>
+    </linearGradient>
+    <!-- Specular highlight overlay -->
+    <radialGradient id="hl7" cx="35%" cy="22%" r="55%">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.55"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+    <!-- WILD letter cream-gold gradient -->
+    <linearGradient id="b7letter" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fff7d8"/>
+      <stop offset="1" stop-color="#f0c860"/>
+    </linearGradient>
+  </defs>
+
+  <!-- ground shadow -->
+  <ellipse cx="128" cy="226" rx="94" ry="11" fill="#0a1428" opacity="0.5"/>
+
+  <!-- outer cyan glow halo (suggests "special tier") -->
+  <rect x="10" y="48" width="236" height="148" rx="26" fill="url(#b7glow)"/>
+
+  <!-- main plaque -->
+  <rect x="22" y="56" width="212" height="132" rx="20"
+        fill="url(#b7w)" stroke="#0a1428" stroke-width="6" stroke-linejoin="round"/>
+
+  <!-- SHARK silhouette behind the WILD text (left-facing, body sweeping right→left across plaque) -->
+  <g stroke="#0a1428" stroke-width="5" stroke-linejoin="round" stroke-linecap="round">
+    <!-- shark body (torpedo) -->
+    <path d="M220 124
+             Q176 90 110 96
+             Q66 100 38 124
+             Q66 148 110 152
+             Q176 158 220 124 Z"
+          fill="url(#b7shark)"/>
+    <!-- dorsal fin -->
+    <path d="M140 96
+             L150 60
+             L172 96 Z"
+          fill="url(#b7shark)"/>
+    <!-- tail fluke (right side) -->
+    <path d="M220 124
+             L246 96
+             L240 124
+             L246 152
+             Z"
+          fill="url(#b7shark)"/>
+    <!-- pectoral fin -->
+    <path d="M120 148
+             L102 174
+             L138 152 Z"
+          fill="url(#b7shark)"/>
+    <!-- gill slashes -->
+    <g stroke="#0a1428" stroke-width="2.5" fill="none" opacity="0.7">
+      <path d="M64 116 L60 132"/>
+      <path d="M72 114 L68 134"/>
+      <path d="M80 114 L76 134"/>
+    </g>
+    <!-- eye -->
+    <circle cx="56" cy="120" r="3.5" fill="#ffffff" stroke="#0a1428" stroke-width="2"/>
+    <circle cx="55" cy="120" r="1.5" fill="#0a1428" stroke="none"/>
+    <!-- toothy mouth (small open snarl) -->
+    <path d="M38 130 L52 134 L48 130 L56 132 L52 128 L60 130"
+          fill="none" stroke="#ffffff" stroke-width="2" opacity="0.85"/>
+  </g>
+
+  <!-- "WILD" — path-traced chunky condensed letters, cream/gold with dark outline -->
+  <!-- Letters sit centered horizontally; baseline y=152, cap y=88 -->
+  <g fill="url(#b7letter)" stroke="#0a1428" stroke-width="5"
+     stroke-linejoin="round" stroke-linecap="round">
+    <!-- W (x: 36-86) -->
+    <path d="M36 88
+             L48 88
+             L54 130
+             L62 88
+             L72 88
+             L80 130
+             L86 88
+             L98 88
+             L86 152
+             L74 152
+             L66 110
+             L58 152
+             L46 152 Z"/>
+
+    <!-- I (x: 104-122) -->
+    <path d="M104 88
+             L122 88
+             L122 152
+             L104 152 Z"/>
+
+    <!-- L (x: 130-172) -->
+    <path d="M130 88
+             L148 88
+             L148 138
+             L172 138
+             L172 152
+             L130 152 Z"/>
+
+    <!-- D (x: 180-220) -->
+    <path d="M180 88
+             L210 88
+             Q228 88 228 120
+             Q228 152 210 152
+             L180 152 Z
+             M196 102
+             L204 102
+             Q212 102 212 120
+             Q212 138 204 138
+             L196 138 Z"
+          fill-rule="evenodd"/>
+  </g>
+
+  <!-- highlight overlay -->
+  <rect x="22" y="56" width="212" height="132" rx="20" fill="url(#hl7)"/>
+
+  <!-- top-left spec streak -->
+  <ellipse cx="62" cy="72" rx="22" ry="6" fill="#ffffff" opacity="0.6"/>
+
+      </svg>
+      <text x="140" y="304" text-anchor="middle" font-family="Impact, Arial Black, sans-serif" font-size="20" font-weight="700" fill="#e2e8f0" letter-spacing="0.5">s7 · WILD</text>
+    </g>
+
+    <g transform="translate(920,356)">
+      <rect x="0" y="0" width="280" height="280" rx="14" fill="#0a1428" stroke="#2a3a55" stroke-width="2"/>
+      <svg x="8" y="8" width="264" height="264" viewBox="0 0 256 256">
+        
+
+  <defs>
+    <!-- Plaque top half: deeper red gradient (tier 2 distinction) -->
+    <linearGradient id="b8r" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ff5a6a"/>
+      <stop offset="0.5" stop-color="#c0223a"/>
+      <stop offset="1" stop-color="#5a0a14"/>
+    </linearGradient>
+    <linearGradient id="b8g" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffe28a"/>
+      <stop offset="0.5" stop-color="#ffc857"/>
+      <stop offset="1" stop-color="#9a6a08"/>
+    </linearGradient>
+    <radialGradient id="b8riv" cx="50%" cy="35%" r="60%">
+      <stop offset="0" stop-color="#fff3c0"/>
+      <stop offset="0.6" stop-color="#ffc857"/>
+      <stop offset="1" stop-color="#6a4408"/>
+    </radialGradient>
+    <radialGradient id="hl8" cx="35%" cy="22%" r="55%">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.5"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="b8letter" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fff7d8"/>
+      <stop offset="1" stop-color="#f0c860"/>
+    </linearGradient>
+
+    <!-- Reusable plaque (native: occupies x=22..234, y=56..188; center 128,122) -->
+    <g id="bar2plaque">
+      <rect x="22" y="56" width="212" height="132" rx="20"
+            fill="url(#b8g)" stroke="#0a1428" stroke-width="6" stroke-linejoin="round"
+            transform="translate(4,4)" opacity="0.55"/>
+      <rect x="22" y="56" width="212" height="132" rx="20"
+            fill="url(#b8r)" stroke="#0a1428" stroke-width="6" stroke-linejoin="round"/>
+      <path d="M22 124 L234 124 L234 168 Q234 188 214 188 L42 188 Q22 188 22 168 Z"
+            fill="url(#b8g)" stroke="#0a1428" stroke-width="6" stroke-linejoin="round"/>
+      <rect x="34" y="68" width="188" height="108" rx="14"
+            fill="none" stroke="url(#b8g)" stroke-width="3" opacity="0.95"/>
+      <rect x="34" y="68" width="188" height="108" rx="14"
+            fill="none" stroke="#5a3a08" stroke-width="1.2" opacity="0.8"/>
+      <g stroke="#0a1428" stroke-width="2">
+        <circle cx="44"  cy="78"  r="6" fill="url(#b8riv)"/>
+        <circle cx="212" cy="78"  r="6" fill="url(#b8riv)"/>
+        <circle cx="44"  cy="166" r="6" fill="url(#b8riv)"/>
+        <circle cx="212" cy="166" r="6" fill="url(#b8riv)"/>
+      </g>
+      <g fill="url(#b8letter)" stroke="#0a1428" stroke-width="5"
+         stroke-linejoin="round" stroke-linecap="round" transform="translate(-14,0)">
+        <path d="M56 84 L92 84 Q108 84 108 100 Q108 114 96 118 Q112 122 112 138 Q112 160 92 160 L56 160 Z
+                 M72 96 L88 96 Q96 96 96 104 Q96 112 88 112 L72 112 Z
+                 M72 124 L90 124 Q98 124 98 134 Q98 148 88 148 L72 148 Z"
+              fill-rule="evenodd"/>
+        <path d="M116 160 L134 84 L156 84 L174 160 L158 160 L154 144 L136 144 L132 160 Z
+                 M139 132 L151 132 L145 108 Z"
+              fill-rule="evenodd"/>
+        <path d="M180 160 L180 84 L210 84 Q228 84 228 102 Q228 116 216 122 L230 160 L214 160 L204 128 L196 128 L196 160 Z
+                 M196 96 L208 96 Q216 96 216 104 Q216 116 208 116 L196 116 Z"
+              fill-rule="evenodd"/>
+      </g>
+      <rect x="22" y="56" width="212" height="132" rx="20" fill="url(#hl8)"/>
+      <ellipse cx="62" cy="74" rx="22" ry="6" fill="#ffffff" opacity="0.5"/>
+    </g>
+  </defs>
+
+  <!-- ground shadow at bottom -->
+  <ellipse cx="128" cy="240" rx="86" ry="9" fill="#0a1428" opacity="0.55"/>
+
+  <!-- TOP plaque: scale 0.8 about plaque-native center (128,122), final center (128, 75)
+       Composite transform: translate to final center, scale, translate back from native center.
+       i.e. matrix = T(128,75) * S(0.8) * T(-128,-122)
+       Equivalent flat: translate(25.6, -22.6) scale(0.8) -->
+  <g transform="translate(25.6,-22.6) scale(0.8)">
+    <use href="#bar2plaque"/>
+  </g>
+
+  <!-- BOTTOM plaque: final center (128, 181)
+       translate = (128 - 102.4, 181 - 97.6) = (25.6, 83.4) -->
+  <g transform="translate(25.6,83.4) scale(0.8)">
+    <use href="#bar2plaque"/>
+  </g>
+
+      </svg>
+      <text x="140" y="304" text-anchor="middle" font-family="Impact, Arial Black, sans-serif" font-size="20" font-weight="700" fill="#e2e8f0" letter-spacing="0.5">s8 · BAR×2</text>
+    </g>
+
+    <g transform="translate(1220,356)">
+      <rect x="0" y="0" width="280" height="280" rx="14" fill="#0a1428" stroke="#2a3a55" stroke-width="2"/>
+      <svg x="8" y="8" width="264" height="264" viewBox="0 0 256 256">
+        
+
+  <defs>
+    <!-- Plaque top half: deepest red (tier 3 / top-tier distinction) -->
+    <linearGradient id="b9r" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ff4858"/>
+      <stop offset="0.5" stop-color="#a01828"/>
+      <stop offset="1" stop-color="#3a0810"/>
+    </linearGradient>
+    <linearGradient id="b9g" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffe28a"/>
+      <stop offset="0.5" stop-color="#ffc857"/>
+      <stop offset="1" stop-color="#9a6a08"/>
+    </linearGradient>
+    <radialGradient id="b9riv" cx="50%" cy="35%" r="60%">
+      <stop offset="0" stop-color="#fff3c0"/>
+      <stop offset="0.6" stop-color="#ffc857"/>
+      <stop offset="1" stop-color="#6a4408"/>
+    </radialGradient>
+    <radialGradient id="hl9" cx="35%" cy="22%" r="55%">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.45"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="b9letter" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fff7d8"/>
+      <stop offset="1" stop-color="#f0c860"/>
+    </linearGradient>
+
+    <!-- Reusable plaque (native: x=22..234, y=56..188; center 128,122)
+         Letters here are taller-than-stock to survive 0.62 scale-down (legibility). -->
+    <g id="bar3plaque">
+      <rect x="22" y="56" width="212" height="132" rx="20"
+            fill="url(#b9g)" stroke="#0a1428" stroke-width="6" stroke-linejoin="round"
+            transform="translate(4,4)" opacity="0.55"/>
+      <rect x="22" y="56" width="212" height="132" rx="20"
+            fill="url(#b9r)" stroke="#0a1428" stroke-width="6" stroke-linejoin="round"/>
+      <path d="M22 124 L234 124 L234 168 Q234 188 214 188 L42 188 Q22 188 22 168 Z"
+            fill="url(#b9g)" stroke="#0a1428" stroke-width="6" stroke-linejoin="round"/>
+      <rect x="34" y="68" width="188" height="108" rx="14"
+            fill="none" stroke="url(#b9g)" stroke-width="3" opacity="0.95"/>
+      <rect x="34" y="68" width="188" height="108" rx="14"
+            fill="none" stroke="#5a3a08" stroke-width="1.2" opacity="0.8"/>
+      <g stroke="#0a1428" stroke-width="2">
+        <circle cx="44"  cy="78"  r="6" fill="url(#b9riv)"/>
+        <circle cx="212" cy="78"  r="6" fill="url(#b9riv)"/>
+        <circle cx="44"  cy="166" r="6" fill="url(#b9riv)"/>
+        <circle cx="212" cy="166" r="6" fill="url(#b9riv)"/>
+      </g>
+      <!-- BAR text — same chunky path-traced letters from s5 (occupies y=84..160, h=76 within plaque h=132 → ~58% of plaque height; chunky enough to survive 0.62 scale to ~47px tall at 256 frame; remains legible) -->
+      <g fill="url(#b9letter)" stroke="#0a1428" stroke-width="5"
+         stroke-linejoin="round" stroke-linecap="round" transform="translate(-14,0)">
+        <path d="M56 84 L92 84 Q108 84 108 100 Q108 114 96 118 Q112 122 112 138 Q112 160 92 160 L56 160 Z
+                 M72 96 L88 96 Q96 96 96 104 Q96 112 88 112 L72 112 Z
+                 M72 124 L90 124 Q98 124 98 134 Q98 148 88 148 L72 148 Z"
+              fill-rule="evenodd"/>
+        <path d="M116 160 L134 84 L156 84 L174 160 L158 160 L154 144 L136 144 L132 160 Z
+                 M139 132 L151 132 L145 108 Z"
+              fill-rule="evenodd"/>
+        <path d="M180 160 L180 84 L210 84 Q228 84 228 102 Q228 116 216 122 L230 160 L214 160 L204 128 L196 128 L196 160 Z
+                 M196 96 L208 96 Q216 96 216 104 Q216 116 208 116 L196 116 Z"
+              fill-rule="evenodd"/>
+      </g>
+      <rect x="22" y="56" width="212" height="132" rx="20" fill="url(#hl9)"/>
+      <ellipse cx="62" cy="74" rx="22" ry="6" fill="#ffffff" opacity="0.45"/>
+    </g>
+  </defs>
+
+  <!-- ground shadow at bottom -->
+  <ellipse cx="128" cy="246" rx="84" ry="7" fill="#0a1428" opacity="0.55"/>
+
+  <!-- Three plaques stacked, scale 0.62. Native plaque h=132 → scaled 81.84.
+       Stack of 3 with no gap = 245.5 — fits in 256 frame with ~5px margins each side.
+       Plaque centers at y: 50, 132, 214 (stack centered at y=132). -->
+  <!-- TOP plaque: final center (128, 50) → translate = (128 - 79.36, 50 - 75.64) = (48.64, -25.64) -->
+  <g transform="translate(48.64,-25.64) scale(0.62)">
+    <use href="#bar3plaque"/>
+  </g>
+
+  <!-- MIDDLE plaque: final center (128, 132) → translate = (48.64, 56.36) -->
+  <g transform="translate(48.64,56.36) scale(0.62)">
+    <use href="#bar3plaque"/>
+  </g>
+
+  <!-- BOTTOM plaque: final center (128, 214) → translate = (48.64, 138.36) -->
+  <g transform="translate(48.64,138.36) scale(0.62)">
+    <use href="#bar3plaque"/>
+  </g>
+
+      </svg>
+      <text x="140" y="304" text-anchor="middle" font-family="Impact, Arial Black, sans-serif" font-size="20" font-weight="700" fill="#e2e8f0" letter-spacing="0.5">s9 · BAR×3</text>
+    </g>
+</svg>

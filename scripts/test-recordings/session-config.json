@@ -1,0 +1,13 @@
+{
+  "url": "https://clawville.world/game",
+  "viewport": { "width": 1280, "height": 720 },
+  "fps": 30,
+  "duration_sec": 35,
+  "output_dir": "C:/Users/newma/Documents/Crypto/ClawVille/scripts/test-recordings/output",
+  "output_name": "npc_mode_movement",
+  "headless": false,
+  "capture_method": "playwright",
+  "scenarios": ["C:/Users/newma/Documents/Crypto/ClawVille/scripts/test-recordings/npc-movement-scenario.json"],
+  "pre_actions": [],
+  "post_actions": []
+}

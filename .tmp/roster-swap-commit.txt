@@ -1,0 +1,64 @@
+feat(casino): Phase 6.1.12 — ClawVille character roster replaces fruit icons
+
+Brand swap. Engine math UNCHANGED (94% RTP, same strip frequencies, same
+payout multipliers, same wild/scatter flags). The 7 fruit-machine symbols
+become the ClawVille character roster:
+
+  s0  (low-pay, 26% freq)        Cherry    →  Claw         (#d62828 red)
+  s1  (low-pay, 26% freq)        Lemon     →  Robot        (#fbbf24 yellow)
+  s2  (low/mid, 16.7% freq)      Orange    →  Eliza        (#ff8c42 orange)
+  s3  (mid, 16.7% freq)          Plum      →  Squirrel     (#ff6b35 burnt-orange)
+  s4  (mid/high, 8.3% freq)      Bell      →  Milady       (#ec4899 pink)
+  s7  (WILD, substitutes any)    WILD      →  Clawbster    (#d65950 coral)
+  s10 (Scatter, bonus only)      Scatter   →  Eliza Coin   (#3b82f6 blue)
+
+Kept on their existing SVG art:
+  s5 (BAR), s6 (Seven), s8 (BAR×2), s9 (BAR×3)
+
+Asset pipeline:
+  - 7 source 1024×1024 PNGs in ~/Downloads/clawville-new (3D-rendered
+    chibi characters + lobster + pixel-art coin).
+  - .tmp/optimize-slot-icons.mjs runs a 4-step sharp pipeline:
+      1. Knock near-white background → alpha 0..255 ramp (threshold
+         230..250 to soften edges, no hard mask jaggies).
+      2. Trim transparent edges (threshold 10 to clear the alpha-ramp
+         tail).
+      3. Extend → centered square with 6% breathing-room padding.
+      4. Resize to 512×512 (lanczos3) + PNG palette encode (192 colours,
+         quality 92).
+  - File-size reduction: ~89-95% (source ~700 KB-1 MB → output 21-89 KB).
+  - Total roster GPU footprint: ~376 KB across 7 PNGs. Well inside the
+    ~2 MB texture budget the SlotReels3D CanvasTexture cells consume.
+
+Manifest updates:
+  - packages/shared/src/constants/slot-symbols.ts —
+    CLASSIC_SLOT_SYMBOL_ASSETS now points at the new .png paths with new
+    displayName + themeColor per character. `svgPath` field name kept
+    (carries .png paths now — renaming would ripple through 6+ consumer
+    files for label change with no behavioural value).
+  - packages/shared/src/constants/slot-paytables.ts —
+    CLASSIC_SYMBOLS + BONUS_SYMBOLS keep id/payouts/wild/scatter
+    EXACTLY identical; only name/emoji/color updated. No payout math
+    change.
+
+Engine + verifier impact:
+  - runSpin() reads PAYTABLE_BUNDLES which builds from CLASSIC_SYMBOLS.
+    Same payouts → same RTP → same byte-identical replay.
+  - PAYTABLE_V1 / PAYTABLE_V2 snapshots are FROZEN (Phase 6.1.10) — they
+    keep their pre-swap names for historical accuracy. Future verifier
+    replays of pre-6.1.12 spins still show "Cherry" / "Lemon" etc. via
+    those snapshots if needed; live game uses the current roster names.
+  - Monte Carlo 50k:
+      classic-3x5:        93.98% combined (±1.93%, target band [92.5, 95.5])
+      classic-3x5-bonus:  93.26% combined (±2.00%, target band [92.0, 96.0])
+    Both inside the CI gate.
+
+Frontend impact:
+  - SlotReels3D drawCell uses asset.svgPath via Image() — PNGs decode
+    the same way SVGs did, no code change beyond the unicode fallback
+    map (which only renders if the image fails to load).
+  - WildMultiplierBadge / ScatterCelebration / SpinResultPanel all
+    pull displayName from the manifest — automatically picks up "Eliza
+    Coin" instead of "Scatter" etc.
+
+Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>

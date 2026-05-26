@@ -1,0 +1,32 @@
+WaterMesh – three.js docs
+  URL: https://threejs.org/docs/pages/WaterMesh.html
+  EventDispatcher → Object3D → Mesh →. WaterMesh. A basic flat, reflective water effect. Note that this class can only be used with WebGPURenderer.
+
+Low-poly ocean/water - Questions - three.js forum
+  URL: https://discourse.threejs.org/t/low-poly-ocean-water/33513
+  There is any way to create a floor that is similar to a low poly ocean (maybe a little animation for the waves)? Can be achieved with #threejs ?
+
+Creating Stylized Water Effects with React Three Fiber - Codrops
+  URL: https://tympanus.net/codrops/2025/03/04/creating-stylized-water-effects-with-react-three-fiber/
+  Learn how to craft smooth, cartoon-style water effects with dynamic movement, optimized for performance, using React Three Fiber.
+
+Low-Poly water help - Unity Discussions
+  URL: https://discussions.unity.com/t/low-poly-water-help/555003
+  Hi there, I'm trying to make a low-poly water for my game. Right now I have this: Which is kinda good but not great. I made it in Shader ...
+
+Three.js Water Pro - YouTube
+  URL: https://www.youtube.com/watch?v=L7K_bfI9iZc
+  Share your videos with friends, family, and the world.
+
+Stylized Water with React Three Fiber - GitHub
+  URL: https://github.com/thaslle/stylized-water
+  A cartoon-style water effect with custom shaders, optimized for performance, built with React Three Fiber. - thaslle/stylized-water.
+  Category: github
+
+How to make Low-Poly Water? - Questions - three.js forum
+  URL: https://discourse.threejs.org/t/how-to-make-low-poly-water/37854
+  I am trying to create Low-Poly style water just like this for my game using Three.js and WebGL. I took this image from an example that uses ...
+
+THREEjs - using an animated gif as a displacement map - shaders
+  URL: https://stackoverflow.com/questions/46397010/threejs-using-an-animated-gif-as-a-displacement-map-shaders
+  Much less complicated than I thought. In r85 no need to explicitly set up the uniforms. Only had to import the gif, create the material then ...

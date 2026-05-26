@@ -1,0 +1,35 @@
+{
+  "name": "npc_mode_movement_test",
+  "description": "Toggle to NPC Mode, walk in all 4 directions, verify animation and facing",
+  "steps": [
+    { "action": "wait", "ms": 10000 },
+    { "action": "screenshot", "label": "01_page_loaded" },
+
+    { "action": "js", "script": "document.querySelector('button')?.textContent?.includes('Collect') && document.querySelector('button:has-text(\"Collect\")')?.click(); true" },
+    { "action": "wait", "ms": 2000 },
+
+    { "action": "js", "script": "document.querySelectorAll('button').forEach(b => { if (b.textContent.includes('NPC Mode')) b.click(); }); true" },
+    { "action": "wait", "ms": 3000 },
+    { "action": "screenshot", "label": "02_npc_mode_idle" },
+
+    { "action": "hold_key", "key": "w", "duration_ms": 3000 },
+    { "action": "screenshot", "label": "03_walking_forward" },
+    { "action": "wait", "ms": 500 },
+
+    { "action": "hold_key", "key": "d", "duration_ms": 3000 },
+    { "action": "screenshot", "label": "04_strafing_right" },
+    { "action": "wait", "ms": 500 },
+
+    { "action": "hold_key", "key": "s", "duration_ms": 3000 },
+    { "action": "screenshot", "label": "05_walking_backward" },
+    { "action": "wait", "ms": 500 },
+
+    { "action": "hold_key", "key": "a", "duration_ms": 3000 },
+    { "action": "screenshot", "label": "06_strafing_left" },
+    { "action": "wait", "ms": 1000 },
+
+    { "action": "js", "script": "document.querySelectorAll('button').forEach(b => { if (b.textContent.includes('Explore')) b.click(); }); true" },
+    { "action": "wait", "ms": 2000 },
+    { "action": "screenshot", "label": "07_back_to_explore" }
+  ]
+}

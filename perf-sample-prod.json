@@ -1,0 +1,195 @@
+{
+  "ready": true,
+  "backend": "WebGPU",
+  "pixelRatio": 0.7,
+  "canvas": {
+    "w": 1195,
+    "h": 541,
+    "cssW": 1707,
+    "cssH": 773
+  },
+  "render": {
+    "calls": 229,
+    "triangles": 1837263,
+    "points": 0,
+    "lines": 512
+  },
+  "memory": {
+    "geometries": 207,
+    "textures": 269
+  },
+  "scene": {
+    "meshes": 301,
+    "skinned": 57,
+    "visibleMeshes": 297,
+    "materials": 254,
+    "textures": 240,
+    "topTriangles": [
+      {
+        "name": "Sketchfab_Scene",
+        "tri": 1101411,
+        "visible": true
+      },
+      {
+        "name": "Mesh_0",
+        "tri": 118782,
+        "visible": true
+      },
+      {
+        "name": "Mesh_0",
+        "tri": 118304,
+        "visible": true
+      },
+      {
+        "name": "Mesh_0",
+        "tri": 117861,
+        "visible": true
+      },
+      {
+        "name": "model",
+        "tri": 97186,
+        "visible": true
+      },
+      {
+        "name": "model",
+        "tri": 95712,
+        "visible": true
+      },
+      {
+        "name": "Object_3",
+        "tri": 65536,
+        "visible": true
+      },
+      {
+        "name": "Mesh",
+        "tri": 28800,
+        "visible": true
+      },
+      {
+        "name": "Object_2",
+        "tri": 24080,
+        "visible": true
+      },
+      {
+        "name": "defaultMaterial",
+        "tri": 19865,
+        "visible": true
+      },
+      {
+        "name": "1",
+        "tri": 19483,
+        "visible": true
+      },
+      {
+        "name": "G_main_texture1_0",
+        "tri": 18281,
+        "visible": true
+      },
+      {
+        "name": "Skirt",
+        "tri": 18140,
+        "visible": true
+      },
+      {
+        "name": "defaultMaterial",
+        "tri": 17898,
+        "visible": true
+      },
+      {
+        "name": "Object_7",
+        "tri": 17152,
+        "visible": true
+      },
+      {
+        "name": "Sketchfab_Scene",
+        "tri": 11088,
+        "visible": true
+      },
+      {
+        "name": "Sketchfab_Scene",
+        "tri": 10876,
+        "visible": true
+      },
+      {
+        "name": "jellyfish_jellyfish_0",
+        "tri": 10240,
+        "visible": true
+      },
+      {
+        "name": "defaultMaterial_1",
+        "tri": 9970,
+        "visible": true
+      },
+      {
+        "name": "Object_58",
+        "tri": 9412,
+        "visible": true
+      },
+      {
+        "name": "G_main_M_tex2_0",
+        "tri": 8131,
+        "visible": true
+      },
+      {
+        "name": "Object_6",
+        "tri": 6413,
+        "visible": true
+      },
+      {
+        "name": "Object_23",
+        "tri": 6000,
+        "visible": true
+      },
+      {
+        "name": "0",
+        "tri": 5858,
+        "visible": true
+      },
+      {
+        "name": "Object_1003_1",
+        "tri": 5640,
+        "visible": true
+      }
+    ]
+  },
+  "sample": {
+    "fps": 8,
+    "frameAvg": 120.6,
+    "frameMax": 396.2,
+    "longTasks": [
+      62,
+      57,
+      53,
+      341,
+      75,
+      54,
+      63,
+      325,
+      70,
+      59,
+      60,
+      110,
+      338,
+      91,
+      78,
+      64,
+      57,
+      374,
+      63,
+      52,
+      61,
+      376,
+      385,
+      70,
+      64,
+      333,
+      390,
+      55,
+      64,
+      64,
+      338
+    ]
+  },
+  "heapMB": 317,
+  "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36"
+}

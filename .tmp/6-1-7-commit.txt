@@ -1,0 +1,59 @@
+feat(casino): Phase 6.1.7 — slot modal layout overhaul + cylinder drums
+
+Cherry-charm-inspired redesign. Reels now dominate the modal (~70% of
+viewport) and render as 3D rotating drums instead of flat planes.
+
+Layout (SlotScreenModal.tsx + SlotHUD.tsx):
+  - Modal maxWidth 720→1200.
+  - SlotHUD gains `section?: 'top' | 'bottom'` prop; undefined renders
+    both sections (backwards-compat). Modal mounts two instances:
+    section="top" above reels (balance / session / spins strip),
+    section="bottom" below reels (predict chips + SPIN + walk-away).
+  - Reel area = `flex:1 minHeight:50vh` flexbox child between the two
+    HUD strips. SlotReelsCanvas container 100%×100% (was fixed
+    480×360). At 1280×800 viewport the reels canvas now occupies
+    ~55-60% of modal viewport area, up from 22%.
+  - "PREDICTIVE GAMING COVE" subtitle text deleted (redundant with the
+    header chip; was stealing vertical space).
+
+Cylinder drums (SlotReels3D.tsx — full rewrite):
+  - CYLINDER_RADIUS = (STRIP_LEN × CELL_WU) / 2π ≈ 13.37 wu. Derived
+    from the wrap math: 84 cells × 1.0wu = circumference, so radius is
+    determined.
+  - REEL_SPACING = 27.5 wu (was 1.3 in be14553 — that was the geometric
+    bug that made all 5 drums overlap into a single tangled mass).
+    Now 2×radius + 0.76 gap.
+  - CylinderGeometry(13.37, 13.37, 3, 84, 3, true). Open-ended (no
+    end caps).
+  - Spin animation rotates mesh around Y-axis; texture is static and
+    UV-wraps around the cylinder circumference via wrapS=RepeatWrapping.
+  - 4-phase physics preserved (ACCEL 200ms / STEADY 1.5s / DECEL 600ms
+    staggered / POP 120ms).
+  - Texture relayout: 84 columns × 3 rows on the canvas (was 1 column ×
+    84 rows in the planar version). Cell (k, row) at texture coord
+    (k × TILE_PX, row × TILE_PX). UV mapping: theta=0..2π → u=0..1;
+    y=-h/2..+h/2 → v=0..1 split into 3 rows.
+  - Cell backgrounds changed from rgba(17,32,61,0.88) dark slate to
+    #6b3aa0 Tyrian purple with rounded corners — matches cherry-charm
+    aesthetic.
+  - White bezel rings: TorusGeometry(13.52, 0.12, 8, 84) at y=±1.5wu
+    on each drum, rotated π/2 to lie horizontal. Two per drum, 10 total
+    bezels. MeshBasicMaterial white.
+  - Deadlock fix from Phase 6.1.6 preserved: useEffect([reels]) has NO
+    isSpinning guard. `anim.targetSet` flag inside the loop prevents
+    double-computation; `setDisplayWindow(spinResult.reels)` from
+    SlotScreenModal lands reels mid-animation.
+
+Canvas (SlotReelsCanvas.tsx):
+  - camera position [0, 0, 120], fov 60° (was z=5, fov 65°).
+  - 5 drums × 27.5 wu = 137.5 wu wide. Viewport at z=0 with fov 60°
+    from z=120 = 2 × 120 × tan(30°) = 138.6 wu. Fits with 1.1 wu margin.
+  - frameloop="always" + preserveDrawingBuffer:true preserved from
+    Phase 6.1.6 (don't regress 812fea9 / d7949ca).
+  - DPR cap [0.55, 0.7] on Iris Xe baseline.
+
+The cylinder concept was right in be14553; only the spacing+camera
+were wrong. Two refactor rounds (cylinder→plane→cylinder) confirmed
+the planar approach was a dead end for the cherry-charm visual target.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>

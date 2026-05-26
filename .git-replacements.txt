@@ -1,0 +1,11 @@
+ElizaPets==>Avatar
+Elizapets==>Avatar
+ELIZAPETS==>AVATAR
+elizapets==>avatar
+ElizaPet==>Avatar
+elizapet==>avatar
+Neopets==>Clawvatars
+NEOPETS==>CLAWVATARS
+neopets==>clawvatars
+NeoTokens==>ClawTokens
+neotokens==>clawtokens

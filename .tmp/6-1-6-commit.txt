@@ -1,0 +1,86 @@
+feat(casino): Phase 6.1.6 — R3F 3D reel rig + bonus cabinet differentiation
+
+Ships the cherry-charm-inspired R3F reel animation deferred from
+Phase 6.1.5 (plan §6.5 acceptance #7) PLUS differentiates in-world
+slot cabinets so the bonus paytable is actually reachable from the 3D
+scene (previously all 4 cabinets hardcoded `classic-3x5`).
+
+3D reel rig (NEW files):
+  apps/web/src/components/casino/SlotReels3D.tsx (16.9 KB)
+    - 5 CylinderGeometry drums (radius=STRIP_LEN×CELL_WU/2π, h=3wu,
+      84 radial × 3 height segments, openEnded, FrontSide).
+    - Per-reel CanvasTexture (84×128×3×128px), built once via useMemo.
+      Texture is a vertical strip of all 84 strip-positions × 3 rows.
+    - Spin physics phases: ACCEL 200ms easeInQuad → STEADY → DECEL
+      600ms easeOutCubic (staggered DECEL_AT=[2000,2400,2800,3200,
+      3600]ms L→R) → POP 120ms tiny over-rotation + spring back.
+    - Reel-blur: texture.repeat.y=0.35 during ACCEL/STEADY,
+      restored on DECEL.
+    - Deterministic landing: findStripPosition(strip, top, mid, bot)
+      scans the reel strip for the 3-row window matching the server's
+      SpinResult.reels[r]. Target rotation = 2π × (p / L). After POP,
+      the visible middle row equals reels[r][1] exactly.
+    - compileAsync on mount. No per-frame allocations. No drei
+      Text/Billboard. MeshBasicMaterial only.
+  apps/web/src/components/casino/SlotReelsCanvas.tsx (3.3 KB)
+    - R3F Canvas wrapper, 480×360px modal-sized.
+    - frameloop='demand', DPR capped [0.55, 0.7] on Iris Xe.
+  apps/web/src/components/casino/WinCascadeOverlay3D.tsx (16.1 KB)
+    - Sequential win-cell glow + torus rings per winning cell.
+    - 200ms stagger in reel order. onCascadeComplete fires after the
+      last cell + 800ms hold.
+    - Multiplier-wild cells get brighter magenta glow + DOM label via
+      createPortal(document.body) + camera projection (30Hz
+      throttle).
+    - All geometry + template materials at module scope.
+    - Iris Xe: posAccumRef accumulates every frame, state flushes at
+      10Hz only (posPositions); prevVisibleRef tracks visible:true→
+      false transitions to avoid setPositions([]) firing every frame.
+    - cellWorldPos returns plain {x,y,z} (no Vector3 alloc in JSX).
+
+Cabinet differentiation in casino-interior.tsx:
+  - HotspotDef gains paytableId: MachineSlug + isBonus: boolean.
+  - GAMEREADY_HOTSPOTS: 4 cabinets split 2 classic + 2 bonus
+    (isBonus = i >= 2).
+  - Bonus cabinets use CABINET_BODY_BONUS_MAT (gold tint, emissive
+    0.18) and render a BONUS badge: 120×30wu PlaneGeometry +
+    MeshBasicMaterial with canvas-texture pill (built once at module
+    scope, lazy-init guard for SSR). Positioned Y=194wu.
+  - SlotHotspot.handleClick now routes:
+      openSlotScreen(def.machineSlug, def.paytableId, startBalance)
+    (was hardcoded 'classic-3x5'). Player who clicks a gold BONUS
+    cabinet now actually opens a classic-3x5-bonus session.
+  - Module-load constant order fixed: _CAB_BASE_H/_CAB_BODY_H/
+    _CAB_BODY_CY moved to lines 428-430, BEFORE _BADGE_Y reference
+    at line 490 (TDZ ReferenceError that previously crashed the
+    casino on first load — caught by adversarial audit).
+
+SlotScreenModal integration:
+  - Replaced 2D SlotReels with SlotReelsCanvas (line 49 import, line
+    644 mount).
+  - New spinTrigger counter increments on each spin to fire the 3D
+    animation.
+  - winningCells3D memo deduplicates winning (reel,row) pairs from
+    pendingWinLines via CLASSIC_LINES.
+
+Same-diff doc updates:
+  - 3dStructure.md §10d "Slot Modal R3F Reel Rig" + §10e "Bonus
+    Cabinet Differentiation + WinCascadeOverlay3D".
+  - .claude/plans/phase6-casino-slots.md §6.5 acceptance #7 flipped
+    [ ] → [x] with file path citations.
+
+Review chain: TeamCreate (phase-6-1-6-3d-reels-2026-05-19) + 5
+parallel members (impl-1 + impl-2 + 3 audit lenses). Round 1: 3
+auditors BLOCKED — TDZ ReferenceError, hardcoded 'classic-3x5' in
+handleClick, modal not yet swapped, 3 perf bugs in
+WinCascadeOverlay3D, missing same-diff doc updates. Round 2: all
+fixes landed, manual orchestrator verification per file:line.
+
+Tests: 40/40 verifier (byte-identical replay still intact across the
+3D presentation layer change). apps/web tsc --noEmit exit 0.
+
+The 3D rig is pure presentation — server-authoritative SpinResult is
+the only source of truth for reel positions. Replay integrity via
+/casino/verify/[sessionId] preserved.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>

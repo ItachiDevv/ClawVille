@@ -1,0 +1,68 @@
+feat(casino): Phase 6.1.5 — Bundle B bonus mechanics (scatter + free spins + multiplier wilds)
+
+New classic-3x5-bonus paytable additive to classic-3x5. Engine,
+routes, frontend, verifier, sim, CI gate, and orientation knowledge
+all updated in one slice.
+
+Engine (apps/api/src/services/slot-engine.ts):
+  - Scatter symbol (id 10 Treasure Chest) pays anywhere, not
+    payline-restricted: 3 anywhere = 2x predict, 4 = 10x, 5 = 50x.
+  - Scatter does NOT participate in payline matching.
+  - Multiplier wilds: each landed Wild (id 7) gets one extra
+    sampleIntFromBytes(range=100) draw — 0-59 -> 2x, 60-89 -> 3x,
+    90-99 -> 5x. Cursor advances 4 bytes per draw.
+  - Multiple wilds on a winning line: multipliers MULTIPLY.
+  - Free-spin trigger: 3+ scatters in base mode -> 10 free spins.
+    Retrigger: 3+ scatters in FS -> +5, capped 50 total.
+  - SpinResult extended with wildMultipliers + scatterPayout +
+    freeSpinsAwarded + isFreeSpin (all now live).
+  - RunSpinArgs gains freeSpinMode?: boolean.
+
+RTP-shape lock (option (a) — orchestrator decision 2026-05-19):
+  Free-spin mode does NOT double line wins OR multiplier values.
+  Constants: FS_LINE_WIN_MULTIPLIER=1, FS_WILD_MULTIPLIER_DOUBLE=false.
+  Value to player = free spins themselves are free (zero predict
+  debit). Spec-literal interpretation produced 129% combined RTP —
+  unshippable. With option (a): 96.02% classic / 97.29-97.57%
+  combined bonus on 100k Monte Carlo.
+
+Routes (apps/api/src/routes/casino-slots.ts):
+  - /session/open Zod accepts paytableId classic-3x5 | classic-3x5-bonus.
+  - /spin in free-spin mode skips predict debit, credits wins,
+    decrements freeSpinsRemaining, flips mode back to base at 0.
+  - Free-spin trigger flips session.mode=free-spin + bumps
+    freeSpinsRemaining (cap 50 via Math.min).
+
+Frontend:
+  - apps/web/src/lib/casino/verifier.ts: extended for classic-3x5-bonus
+    byte-identical to server. 40/40 verifier tests pass. Constants
+    read from shared so future RTP-shape flip auto-propagates.
+  - New FreeSpinBanner.tsx — overlay on free-spin entry.
+  - New WildMultiplierBadge.tsx — chip on landed wilds.
+  - New ScatterCelebration.tsx — sparkle burst on 3+ scatters.
+  - SlotScreenModal integration. SlotHUD shows FS counter.
+
+Provably-fair surface:
+  - /casino/verify/[sessionId] green-checks bonus sessions too.
+
+Monte Carlo + CI:
+  - scripts/casino/rtp-sim.ts: --paytable flag.
+  - .github/workflows/rtp-gate.yml: second sim run for bonus
+    paytable, band [95.5%, 99.5%].
+
+SVG art:
+  - New s10.svg — Treasure Chest scatter.
+
+Knowledge sync:
+  - town-guide.ts:80-83 + orientation-skill.ts:105-107.
+
+Tests: 67/67 engine + 40/40 verifier. Pre-existing baseline preserved:
+490 / 19 / 7 (+25 engine, +5 DB-gated route).
+
+Review chain: TeamCreate (phase-6-1-5-bonus-2026-05-19), 5 parallel
+members. Adversary BLOCKED round 1 (FS-doubling test + verifier
+missing bonus); patched. Spec BLOCKED (town-guide + banner copy + CI
+band); fixed. Regression BLOCKED (gitignored plan audit method);
+clarified. All 3 APPROVED round 2.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
