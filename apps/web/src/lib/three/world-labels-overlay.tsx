@@ -93,6 +93,30 @@ const _registry = new Map<string, LabelEntry>();
 
 /** Reverse lookup so <WorldLabel divRef={...}> can find its entry in O(1). */
 const _refToId = new WeakMap<RefObject<HTMLDivElement | null>, string>();
+let _labelRenderWindowStart = 0;
+let _labelRenderCount = 0;
+let _labelRenderRate = 0;
+let _overlayActive = false;
+
+function _recordLabelRender(): void {
+  if (typeof performance === 'undefined') return;
+  const now = performance.now();
+  if (_labelRenderWindowStart === 0) _labelRenderWindowStart = now;
+  _labelRenderCount++;
+  const elapsed = now - _labelRenderWindowStart;
+  if (elapsed >= 1000) {
+    _labelRenderRate = (_labelRenderCount * 1000) / elapsed;
+    _labelRenderCount = 0;
+    _labelRenderWindowStart = now;
+  }
+}
+
+export function getWorldLabelPerfStats(): { labelCount: number; reactRendersPerSec: number } {
+  return {
+    labelCount: _overlayActive ? _registry.size : 0,
+    reactRendersPerSec: _overlayActive ? Math.round(_labelRenderRate * 10) / 10 : 0,
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Subscribers + microtask-coalesced notify
@@ -220,6 +244,7 @@ function LabelsHost() {
 }
 
 function LabelView({ entry }: { entry: LabelEntry }) {
+  _recordLabelRender();
   const localRef = useRef<HTMLDivElement | null>(null);
 
   // Wire entry.divRef to this DOM node so the projection useFrame can write
@@ -283,6 +308,7 @@ export function WorldLabelsOverlayMount() {
     container.appendChild(overlay);
 
     _overlayNode = overlay;
+    _overlayActive = true;
 
     const root = createRoot(overlay);
     _overlayRoot = root;
@@ -308,6 +334,9 @@ export function WorldLabelsOverlayMount() {
       const r = _overlayRoot;
       _overlayRoot = null;
       _overlayNode = null;
+      _overlayActive = false;
+      _labelRenderRate = 0;
+      _labelRenderCount = 0;
       // Defer unmount past the parent's commit phase to avoid React's "race
       // calling root.unmount() while reconciling" warning.
       queueMicrotask(() => {
