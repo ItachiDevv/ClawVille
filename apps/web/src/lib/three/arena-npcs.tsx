@@ -337,6 +337,136 @@ const SPECIES_WANDER_SCALE_OVERRIDE: Partial<Record<string, number>> = {
   sweet_crab: 7.6,
 };
 
+const PROCEDURAL_WANDERER_SPECIES = new Set([
+  'lobster',
+  'crayfish',
+  'sweet_crab',
+  'lobster_plush',
+  'hermitcrab',
+  'jellyfish',
+  'octopus',
+  'seahorse',
+]);
+
+const PROCEDURAL_HUMANOID_WANDERERS = new Set([
+  'hermes_female',
+  'hermes_male',
+  'tekk',
+]);
+
+function ProceduralSeaCreature({ species, color }: { species: string; color: string }) {
+  const base = useMemo(() => new THREE.Color(color), [color]);
+  const dark = useMemo(() => base.clone().multiplyScalar(0.58), [base]);
+  const light = useMemo(() => base.clone().lerp(new THREE.Color(0xffffff), 0.28), [base]);
+
+  if (species === 'jellyfish') {
+    return (
+      <group>
+        <mesh scale={[24, 12, 24]} position={[0, 24, 0]}>
+          <sphereGeometry args={[1, 12, 8]} />
+          <meshBasicMaterial color={light} transparent opacity={0.72} />
+        </mesh>
+        {[-12, 0, 12].map((x) => (
+          <mesh key={x} position={[x, 8, 0]} scale={[2, 22, 2]}>
+            <cylinderGeometry args={[1, 1, 1, 5]} />
+            <meshBasicMaterial color={base} />
+          </mesh>
+        ))}
+      </group>
+    );
+  }
+
+  if (species === 'seahorse') {
+    return (
+      <group>
+        <mesh scale={[11, 28, 8]} position={[0, 28, 0]}>
+          <sphereGeometry args={[1, 10, 8]} />
+          <meshBasicMaterial color={base} />
+        </mesh>
+        <mesh scale={[10, 9, 10]} position={[0, 57, 8]}>
+          <sphereGeometry args={[1, 10, 8]} />
+          <meshBasicMaterial color={light} />
+        </mesh>
+        <mesh scale={[3, 20, 3]} position={[0, 20, -14]} rotation={[0.7, 0, 0]}>
+          <cylinderGeometry args={[1, 1, 1, 6]} />
+          <meshBasicMaterial color={dark} />
+        </mesh>
+      </group>
+    );
+  }
+
+  const isHermit = species === 'hermitcrab';
+  const isPlush = species === 'lobster_plush';
+  return (
+    <group>
+      <mesh scale={[26, isHermit ? 17 : 13, 38]} position={[0, 24, 0]}>
+        <sphereGeometry args={[1, 12, 8]} />
+        <meshBasicMaterial color={isPlush ? light : base} />
+      </mesh>
+      {isHermit && (
+        <mesh scale={[28, 22, 28]} position={[0, 37, -8]}>
+          <sphereGeometry args={[1, 10, 8]} />
+          <meshBasicMaterial color={dark} />
+        </mesh>
+      )}
+      {[-30, 30].map((x) => (
+        <group key={x} position={[x, 23, 20]}>
+          <mesh scale={[15, 7, 19]} rotation={[0, 0, x > 0 ? -0.35 : 0.35]}>
+            <sphereGeometry args={[1, 8, 6]} />
+            <meshBasicMaterial color={light} />
+          </mesh>
+        </group>
+      ))}
+      {[-18, -8, 8, 18].map((x) => (
+        <mesh key={x} position={[x, 14, -5]} scale={[3, 4, 22]} rotation={[0.7, 0, x * 0.015]}>
+          <cylinderGeometry args={[1, 1, 1, 5]} />
+          <meshBasicMaterial color={dark} />
+        </mesh>
+      ))}
+    </group>
+  );
+}
+
+function ProceduralHumanoidWanderer({ species }: { species: string }) {
+  const isTekk = species === 'tekk';
+  const bodyColor = isTekk ? 0x22283a : species === 'hermes_female' ? 0x7b4e72 : 0x36556d;
+  const accent = isTekk ? 0x83e6ff : 0xffd37a;
+  return (
+    <group>
+      <mesh position={[0, 88, 0]} scale={[19, 21, 16]}>
+        <sphereGeometry args={[1, 12, 8]} />
+        <meshBasicMaterial color={0xf0d0b8} />
+      </mesh>
+      <mesh position={[0, 50, 0]} scale={[22, 34, 13]}>
+        <boxGeometry args={[1, 1, 1]} />
+        <meshBasicMaterial color={bodyColor} />
+      </mesh>
+      <mesh position={[0, 18, 0]} scale={[18, 18, 10]}>
+        <boxGeometry args={[1, 1, 1]} />
+        <meshBasicMaterial color={0x26334a} />
+      </mesh>
+      {[-18, 18].map((x) => (
+        <mesh key={`arm-${x}`} position={[x, 48, 0]} scale={[5, 27, 5]} rotation={[0, 0, x > 0 ? -0.18 : 0.18]}>
+          <cylinderGeometry args={[1, 1, 1, 6]} />
+          <meshBasicMaterial color={bodyColor} />
+        </mesh>
+      ))}
+      {[-8, 8].map((x) => (
+        <mesh key={`leg-${x}`} position={[x, 2, 0]} scale={[5, 28, 5]}>
+          <cylinderGeometry args={[1, 1, 1, 6]} />
+          <meshBasicMaterial color={0x1b2333} />
+        </mesh>
+      ))}
+      {isTekk && (
+        <mesh position={[0, 50, -13]} scale={[34, 24, 3]}>
+          <boxGeometry args={[1, 1, 1]} />
+          <meshBasicMaterial color={accent} />
+        </mesh>
+      )}
+    </group>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // VRM NPC constants
 // ---------------------------------------------------------------------------
@@ -453,12 +583,23 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
 
   const resolvedSpecies = resolveSpecies(npc.species);
   const speciesInfo = SPECIES_MODEL[resolvedSpecies] ?? DEFAULT_SPECIES;
+  const useProceduralWanderer = PROCEDURAL_WANDERER_SPECIES.has(speciesInfo.key);
   const { scene } = useGLTF(speciesInfo.path);
 
   // Determine which animation system to use
-  const useNewSystem = speciesInfo.key !== 'lobster' && speciesInfo.key !== 'crayfish';
+  const useNewSystem = !useProceduralWanderer && speciesInfo.key !== 'lobster' && speciesInfo.key !== 'crayfish';
 
   const { cloned, npcScale, lobsterAnimator, charAnimator, pivotOffsetY } = useMemo(() => {
+    if (useProceduralWanderer) {
+      return {
+        cloned: new THREE.Group(),
+        npcScale: 1,
+        lobsterAnimator: null as LobsterAnimator | null,
+        charAnimator: null as CharacterAnimator | null,
+        pivotOffsetY: 0,
+      };
+    }
+
     // SkeletonUtils.clone rebinds SkinnedMesh.skeleton correctly — plain
     // scene.clone(true) shares bones across instances, which causes every
     // instance after the first to render bound to another NPC's skeleton
@@ -511,7 +652,7 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
         pivotOffsetY: pivotOffset,
       };
     }
-  }, [scene, npc.color, speciesInfo.key, useNewSystem]);
+  }, [scene, npc.color, speciesInfo.key, useNewSystem, useProceduralWanderer]);
 
   // Dispose cloned geometry + materials when the NPC is removed from the store
   useEffect(() => {
@@ -724,7 +865,7 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
     // making it invisible. When a SPECIES_WANDER_SCALE_OVERRIDE is applied
     // we trust the measured override and skip the cap entirely — the override
     // was measured against the rendered mesh, not bind-pose.
-    if (!rescaleAppliedRef.current && clock.elapsedTime > 0.5) {
+    if (!useProceduralWanderer && !rescaleAppliedRef.current && clock.elapsedTime > 0.5) {
       const speciesHasOverride = SPECIES_WANDER_SCALE_OVERRIDE[speciesInfo.key] != null;
       if (!speciesHasOverride) {
         _renderedBbox.setFromObject(group);
@@ -785,7 +926,11 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
       {/* Scaled model sub-group — per-species normalized scale */}
       <group scale={[npcScale, npcScale, npcScale]}>
         <group ref={animGroupRef}>
-          <primitive object={cloned} />
+          {useProceduralWanderer ? (
+            <ProceduralSeaCreature species={speciesInfo.key} color={npc.color} />
+          ) : (
+            <primitive object={cloned} />
+          )}
         </group>
       </group>
       {/* Bio-luminescent NPC label — Fraunces serif capsule + dashed-cyan tether + pulsing anchor dot.
@@ -934,6 +1079,7 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
   // Resolve VRM path from the model registry (or use the species key directly as path suffix)
   const regEntry = MODEL_REGISTRY[npc.species as keyof typeof MODEL_REGISTRY];
   const vrmPath = regEntry?.path ?? `/avatars/${npc.species.replace('milady_official_', 'milady-official-')}.vrm`;
+  const useProceduralHumanoid = PROCEDURAL_HUMANOID_WANDERERS.has(npc.species);
 
   // Load a fresh VRM instance for this NPC — each NPC gets its own scene,
   // skeleton, humanoid, no sharing with player-avatar or other NPCs (Codex Critical #1).
@@ -944,8 +1090,10 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
   // (VRoid spec, feet at origin) both land at VRM_NPC_TARGET_HEIGHT_WU with
   // feet on the terrain. Runs once per loaded VRM instance.
   const { scale: vrmRenderScale, offsetY: vrmFootOffsetY } = useMemo(
-    () => computeVRMNpcScale(vrm, npc.species),
-    [vrm, npc.species],
+    () => useProceduralHumanoid
+      ? { scale: 1, offsetY: 0 }
+      : computeVRMNpcScale(vrm, npc.species),
+    [vrm, npc.species, useProceduralHumanoid],
   );
 
   // Dispose this instance when the NPC unmounts or path/id changes.
@@ -957,6 +1105,7 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
   const vrmAnimatorRef = useRef<VRMCharacterAnimator | null>(null);
 
   useEffect(() => {
+    if (useProceduralHumanoid) return;
     if (!vrm) return;
     // Defensive re-apply of fattened frustum culling on vrm.scene (Win G fix).
     // vrm-loader's normaliseVRM already called applyFattenedFrustumCulling once
@@ -995,7 +1144,7 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
       }
       animator.dispose();
     };
-  }, [vrm]);
+  }, [vrm, useProceduralHumanoid]);
 
   useFrame(({ clock, camera }, delta) => {
     const d = npcRef.current;
@@ -1218,11 +1367,15 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
       {/* VRM scale + foot-ground offset: per-VRM auto-fit (computeVRMNpcScale).
           Milady (1.6m, feet at Y=0)        → scale ~112, offsetY ~0.
           Hermes/Tekk (Mixamo, hips at Y=0) → scale ~0.93, offsetY ~+87. */}
-      <primitive
-        object={vrm.scene}
-        scale={[vrmRenderScale, vrmRenderScale, vrmRenderScale]}
-        position={[0, vrmFootOffsetY, 0]}
-      />
+      {useProceduralHumanoid ? (
+        <ProceduralHumanoidWanderer species={npc.species} />
+      ) : (
+        <primitive
+          object={vrm.scene}
+          scale={[vrmRenderScale, vrmRenderScale, vrmRenderScale]}
+          position={[0, vrmFootOffsetY, 0]}
+        />
+      )}
       {/* Bio-luminescent NPC label — same rig as GLBNpcMesh. */}
       <WorldLabel divRef={labelRef}>
         <div
