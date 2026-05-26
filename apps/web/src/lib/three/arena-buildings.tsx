@@ -230,14 +230,11 @@ const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: n
                            childScaleOverrides: { 'The_Krusty_Krab': 1.5 },
                            bodyAnchorChild: 'The_Krusty_Krab' },
   // Slot 3 — E (cx=310, cy=180): dx=-130, dz=0 → atan2(-130,0)=-π/2≈-1.571
-  // sandy-treedome-v3.glb: rotYOffset +π for inward-facing door.
-  // Phase 6.2: dome glass DoubleSide fix applied post-load (see GLBBuilding).
-  // Phase 6.2.2: targetMaxDim 1000→2500. The dome GLB is square (XZ≈25.87, Y≈10.61),
-  // so max-dim normalization limits height to 410wu at targetMaxDim=1000 — dome always
-  // hits the footprint cap, not the height target. With targetMaxDim=2500 and
-  // MAX_FOOTPRINT=2000, effective scale = 2000/25.87=77.3; height = 10.61×77.3≈820wu (≈4.6× avatar).
-  // The dome is wide by design — the globe shape naturally tapers, so visual overlap with
-  // adjacent buildings at the 2000wu footprint is minimal.
+  // Sandy's Treedome was previously /models/sandy-treedome-v3-opt1.glb?v=2.
+  // Runtime measurement on 2026-05-25 showed that asset still contributed a
+  // single merged green material bucket of ~1.1M tris at world x=4160,z=0.
+  // Meshlet work is deferred, so production uses a procedural low-poly dome
+  // component for the messaging building instead of loading the GLB.
   'messaging-channels':  { model: '/models/sandy-treedome-v3-opt1.glb?v=2',   yOffset: 0, rotY: -1.571, rotYOffset: Math.PI, targetMaxDim: 2500 },
   // Slot 4 — ESE (cx=293, cy=245): dx=-113, dz=-65 → atan2(-113,-65)≈-2.093 (-2π/3)
   // rotYOffset: salty-spitoon.glb authored facing +X; -π/2 aligns toward village center.
@@ -640,7 +637,8 @@ function applyChildScaleOverrides(scene: THREE.Object3D, overrides: Record<strin
 // decode at preload time. Without this, the module-scope preload fires before
 // drei's shared loader has the decoder registered → those buildings load as
 // empty scenes and don't render.
-Object.values(BUILDING_MODELS).forEach(({ model }) => {
+Object.entries(BUILDING_MODELS).forEach(([id, { model }]) => {
+  if (id === 'messaging-channels') return;
   useGLTF.preload(model, undefined, undefined, extendLoaderWithMeshopt);
 });
 
@@ -650,6 +648,167 @@ const ENTERTAINMENT_LABELS: Record<string, { label: string; category: string }> 
   'cove':      { label: 'Predictive Gaming Cove', category: 'Entertainment' },
   'claw-arcade': { label: 'Arcade City',    category: 'Arcade' },
 };
+
+function ProceduralSandyTreedome({ zone }: { zone: BuildingZone }) {
+  const [cx, , cz] = zoneCenter(zone);
+  const groupRef = useRef<THREE.Group>(null);
+  const labelYOffset = 1020;
+  const { divRef: labelDivRef } = useWorldLabel({
+    id: `building-label-${zone.id}`,
+    anchorRef: groupRef,
+    offset: [0, labelYOffset, 0],
+    initialVisible: true,
+    fadeNear: 15000,
+    fadeFar: 25000,
+    fadeBaseOpacity: 0.85,
+    occlude: false,
+  });
+
+  useEffect(() => {
+    const g = groupRef.current;
+    if (!g) return;
+    g.userData.isOccluder = true;
+    g.matrixAutoUpdate = false;
+    g.traverse((obj) => {
+      obj.matrixAutoUpdate = false;
+      obj.updateMatrix();
+      const mesh = obj as THREE.Mesh;
+      if (mesh.isMesh) mesh.frustumCulled = true;
+    });
+    g.updateMatrix();
+  }, []);
+
+  return (
+    <group ref={groupRef} position={[cx, -2, cz]} rotation={[0, -Math.PI / 2 + Math.PI, 0]}>
+      <mesh position={[0, 14, 0]} frustumCulled>
+        <cylinderGeometry args={[640, 680, 28, 36]} />
+        <meshBasicMaterial color="#7cc6aa" />
+      </mesh>
+      <mesh position={[0, 448, 0]} scale={[1, 0.7, 1]} frustumCulled>
+        <sphereGeometry args={[640, 28, 14]} />
+        <meshBasicMaterial color="#8ee8ff" transparent opacity={0.24} depthWrite={false} side={THREE.DoubleSide} />
+      </mesh>
+      <mesh position={[0, 42, 0]} rotation={[Math.PI / 2, 0, 0]} frustumCulled>
+        <torusGeometry args={[640, 7, 8, 64]} />
+        <meshBasicMaterial color="#d6fff5" />
+      </mesh>
+      <mesh position={[0, 240, 0]} frustumCulled>
+        <cylinderGeometry args={[54, 74, 420, 10]} />
+        <meshBasicMaterial color="#8a5b36" />
+      </mesh>
+      <mesh position={[0, 500, 0]} frustumCulled>
+        <icosahedronGeometry args={[250, 2]} />
+        <meshBasicMaterial color="#3fb66b" />
+      </mesh>
+      <mesh position={[-170, 390, 70]} frustumCulled>
+        <icosahedronGeometry args={[170, 1]} />
+        <meshBasicMaterial color="#47c978" />
+      </mesh>
+      <mesh position={[180, 405, -80]} frustumCulled>
+        <icosahedronGeometry args={[165, 1]} />
+        <meshBasicMaterial color="#2fa85b" />
+      </mesh>
+      <mesh position={[0, 110, -600]} frustumCulled>
+        <boxGeometry args={[180, 220, 18]} />
+        <meshBasicMaterial color="#f8df8d" />
+      </mesh>
+      <mesh position={[0, 34, -600]} rotation={[Math.PI / 2, 0, 0]} frustumCulled>
+        <torusGeometry args={[104, 6, 8, 24]} />
+        <meshBasicMaterial color="#7ed7ff" />
+      </mesh>
+      <WorldLabel divRef={labelDivRef} pointerEvents="auto">
+        <div
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            transform: 'translateY(-50%)',
+            ['--label-phase' as string]: '0.7',
+          }}
+          onMouseEnter={() => {
+            if (labelDivRef.current) {
+              labelDivRef.current.style.opacity = '1';
+              const capsule = labelDivRef.current.querySelector<HTMLElement>('[data-bio-capsule]');
+              if (capsule) capsule.style.boxShadow = '0 0 28px rgba(120,240,255,0.85), 0 0 70px -8px rgba(80,220,255,0.7), inset 0 0 16px rgba(180,245,255,0.25)';
+            }
+          }}
+          onMouseLeave={() => {
+            if (labelDivRef.current) {
+              labelDivRef.current.style.opacity = '';
+              const capsule = labelDivRef.current.querySelector<HTMLElement>('[data-bio-capsule]');
+              if (capsule) capsule.style.boxShadow = '';
+            }
+            resetLabelPrevOpacity(labelDivRef);
+          }}
+        >
+          <div
+            data-bio-capsule
+            style={{
+              fontFamily: 'var(--font-fraunces, "Cormorant Garamond", "Spectral", Georgia, serif)',
+              fontVariationSettings: '"opsz" 9',
+              fontWeight: 520,
+              fontSize: 15,
+              color: '#a0eaff',
+              padding: '7px 15px 9px',
+              borderRadius: 999,
+              background: 'rgba(8, 18, 32, 0.85)',
+              border: '1px solid rgba(120, 220, 255, 0.55)',
+              boxShadow: '0 0 22px rgba(120,240,255,0.5), 0 0 60px -10px rgba(120,240,255,0.45), inset 0 0 14px rgba(120,200,240,0.18)',
+              whiteSpace: 'nowrap',
+              letterSpacing: '0.02em',
+              lineHeight: 1,
+              userSelect: 'none',
+              cursor: 'pointer',
+              animation: 'bio-drift 5.4s ease-in-out infinite',
+              animationDelay: 'calc(var(--label-phase, 0) * -5.4s)',
+              transition: 'box-shadow 0.18s ease',
+            }}
+          >
+            Sandy's Treedome
+            <span
+              style={{
+                display: 'block',
+                fontSize: 9,
+                fontStyle: 'italic',
+                fontFamily: 'var(--font-oxanium, sans-serif)',
+                fontWeight: 400,
+                color: '#cdf5ff',
+                opacity: 0.7,
+                marginTop: 2,
+                letterSpacing: '0.1em',
+                textTransform: 'uppercase',
+              }}
+            >
+              Communication
+            </span>
+          </div>
+          <div
+            style={{
+              width: 1,
+              height: 56,
+              backgroundImage: 'linear-gradient(rgba(140,240,255,0.78) 50%, transparent 50%)',
+              backgroundSize: '1px 6px',
+              backgroundRepeat: 'repeat-y',
+              boxShadow: '0 0 6px rgba(120,240,255,0.55)',
+              marginBottom: 2,
+            }}
+          />
+          <div
+            className="bio-anchor"
+            style={{
+              width: 5,
+              height: 5,
+              borderRadius: '50%',
+              background: 'rgba(160,234,255,1)',
+              animation: 'bio-pulse 2.4s ease-in-out infinite',
+              animationDelay: 'calc(var(--label-phase, 0) * -2.4s)',
+            }}
+          />
+        </div>
+      </WorldLabel>
+    </group>
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Normal mode: static buildings with terrain raycasting
@@ -1294,7 +1453,9 @@ export default function ArenaBuildings() {
     <Suspense fallback={null}>
       <group>
         {buildingZones.map((zone) => (
-          <GLBBuilding key={zone.id} zone={zone} />
+          zone.id === 'messaging-channels'
+            ? <ProceduralSandyTreedome key={zone.id} zone={zone} />
+            : <GLBBuilding key={zone.id} zone={zone} />
         ))}
       </group>
     </Suspense>
