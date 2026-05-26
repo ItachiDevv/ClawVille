@@ -144,6 +144,47 @@ export function isCollisionFreeWorld(
   return !clamped.hit;
 }
 
+/**
+ * Test a pixel-space segment against the same AABB clamp used by movement.
+ * A* validates tile nodes, but any segment from the live position to a waypoint
+ * can still cross an AABB edge; reject those paths up front.
+ */
+export function isSegmentCollisionFree(
+  ax: number,
+  ay: number,
+  bx: number,
+  by: number,
+  entityHalf: number = ENTITY_HALF_CHIBI,
+): boolean {
+  const dx = bx - ax;
+  const dy = by - ay;
+  const dist = Math.sqrt(dx * dx + dy * dy);
+  const steps = Math.max(1, Math.ceil(dist / (TILE / 2)));
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    const x = ax + dx * t;
+    const y = ay + dy * t;
+    if (!isCollisionFreeWorld(x, y, entityHalf)) return false;
+  }
+  return true;
+}
+
+export function isPathCollisionFree(
+  startX: number,
+  startY: number,
+  path: readonly PathNode[],
+  entityHalf: number = ENTITY_HALF_CHIBI,
+): boolean {
+  let ax = startX;
+  let ay = startY;
+  for (const wp of path) {
+    if (!isSegmentCollisionFree(ax, ay, wp.x, wp.y, entityHalf)) return false;
+    ax = wp.x;
+    ay = wp.y;
+  }
+  return true;
+}
+
 interface AStarNode {
   col: number;
   row: number;
@@ -327,7 +368,9 @@ function reconstructPath(end: AStarNode, targetX: number, targetY: number): Path
     node = node.parent;
   }
 
-  // Convert to pixel coords (tile center), then smooth
+  // Convert to pixel coords (tile center). Keep the raw A* waypoints rather
+  // than direction-smoothing them: smoothed diagonals can create long segments
+  // that cross between blocked AABB cells even when every tile node is valid.
   const pixelPath: PathNode[] = tilePath.map((n) => ({
     x: n.col * TILE + TILE / 2,
     y: n.row * TILE + TILE / 2,
@@ -338,30 +381,7 @@ function reconstructPath(end: AStarNode, targetX: number, targetY: number): Path
     pixelPath[pixelPath.length - 1] = { x: targetX, y: targetY };
   }
 
-  // Path smoothing: skip intermediate waypoints when direction doesn't change
-  return smoothPath(pixelPath);
-}
-
-function smoothPath(path: PathNode[]): PathNode[] {
-  if (path.length <= 2) return path;
-
-  const smoothed: PathNode[] = [path[0]!];
-  let lastDir = { x: 0, y: 0 };
-
-  for (let i = 1; i < path.length; i++) {
-    const prev = smoothed[smoothed.length - 1]!;
-    const dx = Math.sign(path[i]!.x - prev.x);
-    const dy = Math.sign(path[i]!.y - prev.y);
-
-    if (dx !== lastDir.x || dy !== lastDir.y) {
-      // Direction changed — keep the previous point
-      if (i > 1) smoothed.push(path[i - 1]!);
-      lastDir = { x: dx, y: dy };
-    }
-  }
-
-  smoothed.push(path[path.length - 1]!);
-  return smoothed;
+  return pixelPath;
 }
 
 function findNearestWalkableTile(col: number, row: number, grid: boolean[][]): { col: number; row: number } | null {
