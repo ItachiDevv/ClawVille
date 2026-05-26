@@ -315,9 +315,10 @@ function resolveSpecies(raw: string): string {
   return LEGACY_SPECIES_REMAP[raw] ?? raw;
 }
 
-// Preload all species GLBs at module level (11 models, ~3-4 MB total) so
-// wandering NPCs don't cause network+parse pops when they first appear.
-Object.values(SPECIES_MODEL).forEach(({ path }) => useGLTF.preload(path));
+// Preload only the live roaming GLB species. Legacy / user-configured species
+// still resolve through SPECIES_MODEL, but they load on demand instead of adding
+// every retired sea-creature GLB to the open-world boot path.
+useGLTF.preload(DEFAULT_SPECIES.path);
 
 // Per-species npcScale override. computeNpcScale measures the bind-pose
 // Per-species scale overrides — calibrated AFTER the SkeletonUtils.clone fix.
