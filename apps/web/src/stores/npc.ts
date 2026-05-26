@@ -4,6 +4,7 @@ import { clampMovement2D, ENTITY_HALF_HUMANOID } from '@/lib/three/collision/wor
 
 const NPC_HALF_W = MAP_WIDTH / 2;
 const NPC_HALF_H = MAP_HEIGHT / 2;
+const RETIRED_WANDERING_NPC_IDS = new Set(['wanderer-marlin', 'wanderer-riptide']);
 
 export interface NpcSpriteState {
   id: string;
@@ -344,8 +345,9 @@ export const useNpcStore = create<NpcStoreState>((set, get) => ({
     // If a server NPC is idle, keep the client-side position so wander can move it.
     // Skip the possessed NPC entirely so player input isn't overwritten by the server.
     const { possessedNpcId } = (require('@/stores/game') as typeof import('@/stores/game')).useGameStore.getState();
+    const activeSnapshotNpcs = snapshot.npcs.filter((n) => !RETIRED_WANDERING_NPC_IDS.has(n.id));
     const prevMap = new Map(state.npcs.map((n) => [n.id, n]));
-    const npcs: NpcSpriteState[] = snapshot.npcs.map((n) => {
+    const npcs: NpcSpriteState[] = activeSnapshotNpcs.map((n) => {
       const prev = prevMap.get(n.id);
       // Never overwrite the possessed NPC — player controls it via NpcController
       if (n.id === possessedNpcId && prev) {
@@ -451,6 +453,7 @@ export const useNpcStore = create<NpcStoreState>((set, get) => ({
     for (const convo of snapshot.conversations) {
       if (convo.state !== 'active' || convo.currentIndex >= convo.messages.length) continue;
       const msg = convo.messages[convo.currentIndex];
+      if (RETIRED_WANDERING_NPC_IDS.has(msg.npcId)) continue;
       // Only add if we don't already have this exact bubble
       const exists = newBubbles.some(
         (b) => b.npcId === msg.npcId && b.text === msg.text
@@ -468,6 +471,7 @@ export const useNpcStore = create<NpcStoreState>((set, get) => ({
     // Process events (agent chat bubbles, etc.)
     if (snapshot.events) {
       for (const event of snapshot.events) {
+        if (RETIRED_WANDERING_NPC_IDS.has(event.npcId)) continue;
         // Agent chat bubbles
         if (event.type === 'agent_chat' && event.data?.message) {
           const exists = newBubbles.some(
@@ -513,8 +517,8 @@ export const useNpcStore = create<NpcStoreState>((set, get) => ({
       if (combat.state === 'done' && combat.winner) {
         const winnerId = combat.winner;
         const loserId = winnerId === combat.attacker ? combat.defender : combat.attacker;
-        const winnerNpc = snapshot.npcs.find((n) => n.id === winnerId);
-        const loserNpc = snapshot.npcs.find((n) => n.id === loserId);
+        const winnerNpc = activeSnapshotNpcs.find((n) => n.id === winnerId);
+        const loserNpc = activeSnapshotNpcs.find((n) => n.id === loserId);
         if (winnerNpc && loserNpc) {
           const lootId = `loot-${combat.id}`;
           const lootExists = newLootEvents.some((e) => e.id === lootId);
