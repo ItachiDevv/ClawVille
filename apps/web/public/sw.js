@@ -28,8 +28,13 @@
 //     (all 12 now point to *-opt1.glb variants, 142→133 materials saved).
 //   - Previous roster (chum-bucket.glb, downtown-building.glb, etc.) was
 //     stale — those assets are no longer loaded by arena-buildings.tsx.
+//
+// 2026-05-25 v6 (world perf):
+//   - Removed sandy-treedome-v3-opt1.glb from install-time precache. /game now
+//     renders Sandy's Treedome procedurally because the GLB contributed ~1.13M
+//     live triangles after material merge.
 
-const CACHE_VERSION = 'v5';
+const CACHE_VERSION = 'v6';
 const GLB_CACHE = `clawville-assets-${CACHE_VERSION}`;
 const STATIC_CACHE = `clawville-static-${CACHE_VERSION}`;
 
@@ -40,7 +45,7 @@ const MAX_INDIVIDUAL_BYTES = 10 * 1024 * 1024; // 10 MB
 const MAX_GLB_CACHE_BYTES = 60 * 1024 * 1024; // 60 MB
 
 // Critical-path GLBs pre-cached at install time.
-// All 12 building models (opt1 variants) + terrain decorations.
+// Building models (opt1 variants) + terrain decorations.
 // Phase 2 perf (2026-05-22): updated to *-opt1.glb paths that match
 // arena-buildings.tsx BUILDING_MODELS. Old roster removed.
 const PRECACHE_GLBS = [
@@ -51,11 +56,11 @@ const PRECACHE_GLBS = [
   '/models/coral-reef3.glb',            // 260 KB
   '/models/kelp.glb',                   //  25 KB
   '/models/building-seashell.glb',      // 108 KB
-  // All 12 building models (Phase 2 opt1 variants, ?v= queries busted)
+  // Building models (Phase 2 opt1 variants, ?v= queries busted). Sandy's
+  // Treedome is procedural and intentionally not pre-cached.
   '/models/pineapple-house-opt1.glb?v=2',
   '/models/chum-bucket-v2-opt1.glb?v=2',
   '/models/krusty-krab-v2-opt1.glb?v=2',
-  '/models/sandy-treedome-v3-opt1.glb?v=2',
   '/models/salty-spitoon-opt1.glb?v=2',
   '/models/boating-school-opt1.glb?v=2',
   '/models/patty-building-opt1.glb?v=2',

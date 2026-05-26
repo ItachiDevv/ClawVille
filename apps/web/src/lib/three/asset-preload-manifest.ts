@@ -24,24 +24,23 @@
  * --- Asset inventory ---
  * (update this comment + the arrays below whenever an asset is added/removed)
  *
- * BUILDINGS (12 GLBs, arena-buildings.tsx BUILDING_MODELS):
+ * BUILDINGS (11 GLBs + 1 procedural treedome, arena-buildings.tsx BUILDING_MODELS):
  *   pineapple-house-opt1.glb?v=2, chum-bucket-v2-opt1.glb?v=2,
- *   krusty-krab-v2-opt1.glb?v=2, sandy-treedome-v3-opt1.glb?v=2,
- *   salty-spitoon-opt1.glb?v=2, boating-school-opt1.glb?v=2,
+ *   krusty-krab-v2-opt1.glb?v=2, salty-spitoon-opt1.glb?v=2,
+ *   boating-school-opt1.glb?v=2,
  *   patty-building-opt1.glb?v=2, building-lighthouse-opt1.glb?v=2,
  *   arcade/claw-arcade-exterior-opt1.glb?v=2, cove/cove-exterior-opt1.glb?v=2,
  *   patricks-rock-v2-opt1.glb?v=3, squidward-house-opt1.glb?v=3
- *   (Phase 2 perf: all 12 are material-dedup'd *-opt1 variants; 142→133 materials)
+ *   Sandy's Treedome is procedural in /game after 2026-05-25 perf pass; the
+ *   old GLB contributed ~1.13M live tris after material merge.
  *
  * LOCATION NPC CHARACTERS (10 SpongeBob + 2 companions, arena-location-npcs.tsx):
  *   spongebob.glb, gary.glb, squidward.glb, flying-dutchman.glb,
  *   pearl.glb, mrs-puff.glb, lobster_plush.glb, mr-krabs.glb,
  *   plankton.glb, karen.glb, sandy.glb, patrick.glb
  *
- * WANDERING NPC GLBs (8 species, arena-npcs.tsx SPECIES_MODEL):
- *   lobster.glb, crayfish.glb, sweet_crab_sketchfabweekly.glb,
- *   lobster_plush.glb, hermitcrab.glb, jellyfish.glb,
- *   octopus_toy.glb, sea_horse.glb
+ * WANDERING NPC GLBs (1 live species, arena-npcs.tsx SPECIES_MODEL):
+ *   lobster.glb
  *
  * WANDERING NPC VRMs (6 distinct paths, arena-npcs.tsx preloadVRMBytes):
  *   milady-official-2.vrm, milady-official-7.vrm, milady-official-8.vrm,
@@ -85,12 +84,11 @@ import { preloadMixamoClips } from '@/lib/three/vrm-character-animator';
 // also fire when called explicitly before the dynamic chunk downloads.
 // ---------------------------------------------------------------------------
 
-/** All 12 building GLBs from arena-buildings.tsx BUILDING_MODELS */
+/** Building GLBs from arena-buildings.tsx BUILDING_MODELS. Sandy's Treedome is procedural. */
 export const BUILDING_GLBS: readonly string[] = [
   '/models/pineapple-house-opt1.glb?v=2',
   '/models/chum-bucket-v2-opt1.glb?v=2',
   '/models/krusty-krab-v2-opt1.glb?v=2',
-  '/models/sandy-treedome-v3-opt1.glb?v=2',
   '/models/salty-spitoon-opt1.glb?v=2',
   '/models/boating-school-opt1.glb?v=2',
   '/models/patty-building-opt1.glb?v=2',
@@ -105,16 +103,9 @@ export const BUILDING_GLBS: readonly string[] = [
 // Priority 2: Wandering NPC GLBs — visible from the start in the open world
 // ---------------------------------------------------------------------------
 
-/** GLB species used by arena-npcs.tsx wandering GLB NPCs */
+/** GLB species used by the live arena-npcs.tsx wandering GLB roster */
 export const WANDERING_NPC_GLBS: readonly string[] = [
   '/models/lobster.glb',
-  '/models/crayfish.glb',
-  '/models/sweet_crab_sketchfabweekly.glb',
-  '/models/lobster_plush.glb',
-  '/models/hermitcrab.glb',
-  '/models/jellyfish.glb',
-  '/models/octopus_toy.glb',
-  '/models/sea_horse.glb',
 ] as const;
 
 // ---------------------------------------------------------------------------
@@ -208,7 +199,7 @@ export const TOWN_PROP_GLBS: readonly string[] = [
   '/models/shisha-oasis.glb',
   '/models/auction-dome.glb',
   // town-directory-sign.tsx uses Three.js primitives only (no GLB) — nothing to preload here.
-  // auction-podium.tsx loads jellyfish.glb too, but that's already in WANDERING_NPC_GLBS.
+  // auction-podium.tsx preloads its own jellyfish.glb path.
 ] as const;
 
 // ---------------------------------------------------------------------------
@@ -240,8 +231,9 @@ export const EMOTE_BUNDLE = '/avatars/animations/_emotes.glb?v=1' as const;
 //
 // Tier 1 — fire immediately (parallel with canvas chunk download):
 //   buildings + locomotion + wandering NPC GLBs + wandering VRM bytes
-// Tier 2 — fire in next microtask (don't block tier-1 queue slot):
-//   player VRM bytes (all 13 selectable avatars)
+// Tier 2 — intentionally lazy:
+//   selectable player VRM bytes are loaded by the active avatar or the avatar picker,
+//   not by the open-world boot path
 // Tier 3 — fire after first rAF (exact timing matches DeferredNpcPreloads):
 //   location NPC GLBs + decoration GLBs (currently done by DeferredTerrainPreloads
 //   + DeferredNpcPreloads, which fire their own rAF preloads from game/page.tsx —
@@ -271,7 +263,7 @@ export function preloadWorldAssets(): void {
   // preloadMixamoClips() calls preloadLocomotionClips() internally.
   preloadMixamoClips();
 
-  // Wandering NPC GLBs — 8 species.
+  // Wandering NPC GLBs — 1 live crustacean species.
   for (const url of WANDERING_NPC_GLBS) {
     useGLTF.preload(url);
   }
@@ -287,15 +279,6 @@ export function preloadWorldAssets(): void {
   for (const url of WANDERING_VRM_PATHS) {
     preloadVRMBytes(url);
   }
-
-  // --- Tier 2 — next microtask (player VRM pool, all archetypes incl. chibi) ---
-  // Deferred by a zero-delay setTimeout so tier-1 fetch slots are committed
-  // to the browser's HTTP/2 connection pool before we add 13 more requests.
-  setTimeout(() => {
-    for (const url of PLAYER_VRM_PATHS) {
-      preloadVRMBytes(url);
-    }
-  }, 0);
 
   // --- Tier 3 note ---
   // Location NPC GLBs and decoration GLBs are already covered by:
@@ -355,8 +338,7 @@ export const WORLD_PRELOAD_MANIFEST: readonly string[] = [
   ...LOCOMOTION_ANIM_GLBS,
   ...WANDERING_NPC_GLBS,
   ...WANDERING_VRM_PATHS,
-  // Tier 2 — next microtask (player VRM pool, all archetypes incl. chibi)
-  ...PLAYER_VRM_PATHS,
+  // Tier 2 — lazy player VRMs are intentionally omitted from boot preloads.
   // Tier 3 — deferred (after first paint, handled by DeferredTerrainPreloads / DeferredNpcPreloads)
   ...LOCATION_NPC_GLBS,
   ...DECORATION_GLBS,

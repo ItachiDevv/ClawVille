@@ -8,19 +8,21 @@
  *   - Push joystick right / press D → strafe right from camera's perspective
  *
  * This works correctly regardless of camera rotation / orbit angle.
- * No building collision — just map bounds. Keeps movement simple and predictable.
+ * Uses the same world AABB collision as the connected player avatar so the
+ * possessed NPC cannot walk into buildings or town props.
  */
 
 import { useEffect, useRef } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
-import { useGameStore, type GameState } from '@/stores/game';
+import { useGameStore, avatarPositionRef, type GameState } from '@/stores/game';
 import { useNpcStore } from '@/stores/npc';
 import type { NpcSpriteState } from '@/stores/npc';
 import { MAP_WIDTH, MAP_HEIGHT } from '@/lib/pixi/tilemap-data';
 import { findNearestCharacter } from '@/lib/three/character-positions';
 import { NORI_WORLD_X, NORI_WORLD_Z, NORI_TALK_RADIUS_SQ } from '@/lib/three/town-guide';
 import { isEditable, jumpState } from '@/lib/three/jump-state';
+import { clampMovement2D, ENTITY_HALF_HUMANOID } from '@/lib/three/collision/world-colliders';
 
 const SPEED = 550; // pixels/sec — pass 2 2026-04-16: bumped 320→550 (user tested pass 1 at 320,
                    // still felt sluggish crossing ~2000-wu visible area; target 3-4s crossing time → 2000/550≈3.6s)
@@ -36,16 +38,19 @@ const Y_MAX = MAP_HEIGHT - 16;
 interface NpcKeyState {
   w: boolean; a: boolean; s: boolean; d: boolean;
   arrowup: boolean; arrowdown: boolean;
-  e: boolean; escape: boolean;
+  e: boolean; escape: boolean; shift: boolean;
 }
 const _keys: NpcKeyState = {
   w: false, a: false, s: false, d: false,
   arrowup: false, arrowdown: false,
-  e: false, escape: false,
+  e: false, escape: false, shift: false,
 };
 let _listenersAttached = false;
 let _lastEState = false;
 let _lastEscState = false;
+
+const RUN_SPEED_MULT = 1.5;
+const RUN_JOYSTICK_THRESHOLD = 0.7;
 
 // Scratch vectors — allocated once, reused every frame
 const _camForward = new THREE.Vector3();
@@ -68,11 +73,25 @@ function attachNpcKeyListeners() {
     // NOTE: onUp intentionally has NO target guard — it must always clear state
     // so keys don't get stranded 'true' when the user taps into an input mid-move.
     if (isEditable(e.target)) return;
-    const k = e.key.toLowerCase() as keyof NpcKeyState;
+    const rawKey = e.key.toLowerCase();
+    const rawCode = e.code.toLowerCase();
+    if (rawKey === 'shift' || rawCode === 'shiftleft' || rawCode === 'shiftright') {
+      _keys.shift = true;
+      return;
+    }
+    _keys.shift = e.shiftKey;
+    const k = rawKey as keyof NpcKeyState;
     if (k in _keys) _keys[k] = true;
   };
   const onUp = (e: KeyboardEvent) => {
-    const k = e.key.toLowerCase() as keyof NpcKeyState;
+    const rawKey = e.key.toLowerCase();
+    const rawCode = e.code.toLowerCase();
+    if (rawKey === 'shift' || rawCode === 'shiftleft' || rawCode === 'shiftright') {
+      _keys.shift = false;
+      return;
+    }
+    _keys.shift = e.shiftKey;
+    const k = rawKey as keyof NpcKeyState;
     if (k in _keys) _keys[k] = false;
   };
   // When the window loses focus the browser stops firing keyup for held keys.
@@ -190,6 +209,12 @@ export default function NpcController() {
 
     // No input → set idle (keep last facingAngle so model doesn't snap)
     if (inputFwd === 0 && inputRight === 0) {
+      if (
+        Math.abs(avatarPositionRef.x - npc.x) > 0.5 ||
+        Math.abs(avatarPositionRef.y - npc.y) > 0.5
+      ) {
+        store.setAvatarPosition(npc.x, npc.y);
+      }
       if (npc.direction !== 'idle') {
         npcStore.moveNpc(possessedNpcId, npc.x, npc.y, 'idle', npc.facingAngle);
       }
@@ -207,6 +232,8 @@ export default function NpcController() {
 
     const worldVx = _camForward.x * inputFwd + _camRight.x * inputRight;
     const worldVz = _camForward.z * inputFwd + _camRight.z * inputRight;
+    const joyMag = Math.hypot(store.joystickVelocity.x, store.joystickVelocity.y);
+    const speedMult = _keys.shift || joyMag > RUN_JOYSTICK_THRESHOLD ? RUN_SPEED_MULT : 1;
 
     // Vertical swim: arrow up/down only, gated on airborne.
     // Decoupled from camera pitch — mouse orbit never causes altitude drift.
@@ -233,13 +260,23 @@ export default function NpcController() {
     // Cardinal direction for sprite system
     const dir = directionFromVelocity(worldVx, worldVz);
 
-    // Position update — map bounds only, no building collision
+    // Position update — clamp against the same world AABBs as the player path.
     // worldX maps to pixelX, worldZ maps to pixelY (same scale, different offset)
-    const newX = Math.max(X_MIN, Math.min(X_MAX, npc.x + worldVx * SPEED * delta));
-    const newY = Math.max(Y_MIN, Math.min(Y_MAX, npc.y + worldVz * SPEED * delta));
+    const targetX = Math.max(X_MIN, Math.min(X_MAX, npc.x + worldVx * SPEED * speedMult * delta));
+    const targetY = Math.max(Y_MIN, Math.min(Y_MAX, npc.y + worldVz * SPEED * speedMult * delta));
+    const clamped = clampMovement2D(
+      npc.x - MAP_WIDTH / 2,
+      npc.y - MAP_HEIGHT / 2,
+      targetX - MAP_WIDTH / 2,
+      targetY - MAP_HEIGHT / 2,
+      ENTITY_HALF_HUMANOID,
+    );
+    const newX = Math.max(X_MIN, Math.min(X_MAX, clamped.x + MAP_WIDTH / 2));
+    const newY = Math.max(Y_MIN, Math.min(Y_MAX, clamped.z + MAP_HEIGHT / 2));
 
     npcStore.moveNpc(possessedNpcId, newX, newY, dir, facingAngle);
-  });
+    store.setAvatarPosition(newX, newY);
+  }, -100);
 
   return null;
 }
