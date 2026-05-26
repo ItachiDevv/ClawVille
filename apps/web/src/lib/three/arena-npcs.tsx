@@ -110,6 +110,9 @@ const _springLodCamPos = new THREE.Vector3();
 // visual body native height ≈ 1.0 unit, which is true for the humanoid species).
 const NPC_SCALE_CLAMP_MIN = TARGET_NPC_HEIGHT / 200; // ~0.225
 const NPC_SCALE_CLAMP_MAX = TARGET_NPC_HEIGHT / 0.5; // 90
+const NPC_LOD_NEAR_DIST_SQ = 2_500 * 2_500;
+const NPC_LOD_FAR_DIST_SQ = 5_000 * 5_000;
+const NPC_LOD_VERY_FAR_DIST_SQ = 6_000 * 6_000;
 
 // Preload deferred to after SPECIES_MODEL declaration — see below.
 
@@ -640,23 +643,26 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
     group.position.x = simPos.current.x;
     group.position.z = simPos.current.z;
 
-    // 2026-05-11 — All NPC culling removed per user directive.
-    // Previously: distance-cull (hide group past 10000² wu), behind-camera cull
-    // (hide label when anchor outside frustum), occlusion raycast (hide label
-    // when blocked by building). Every layer caused visible bugs (NPCs popping
-    // in/out, labels flashing, race conditions with React.memo). The user
-    // explicitly said "let's remove all the culling completely it ruins the
-    // game" 2026-05-11. NDC z>1 hide in WorldLabelsOverlay still applies
-    // (correct projection math, not culling).
-    group.visible = true;
     const frame = Math.floor(clock.elapsedTime * 60);
+    _springLodCamPos.set(camera.position.x, camera.position.y, camera.position.z);
+    const glbCamDx = group.position.x - _springLodCamPos.x;
+    const glbCamDz = group.position.z - _springLodCamPos.z;
+    const glbDistSq = glbCamDx * glbCamDx + glbCamDz * glbCamDz;
+    const isPossessedPlayerNpc =
+      d.id === PLAYER_NPC_ID &&
+      useGameStore.getState().controlMode === 'npc';
+    group.visible = true;
 
-    // Raycast to find terrain surface Y (every 3rd frame to save perf).
-    // Use (frame + seed) % 3 to stagger across NPCs — prevents all NPCs from
-    // raycasting on the same frame tick (which would spike the CPU every 150ms).
+    // Raycast to find terrain surface Y. Close NPCs retain the historical 20Hz
+    // cadence; mid/far NPCs throttle progressively because terrain height changes
+    // are visually imperceptible at distance, but the raycast still costs CPU.
     // Use clock.elapsedTime (already available) instead of Date.now() to avoid
     // a syscall allocation in the hot path.
-    if ((frame + seed) % 3 === 0) {
+    const terrainMod =
+      glbDistSq < NPC_LOD_NEAR_DIST_SQ ? 3 :
+      glbDistSq < NPC_LOD_VERY_FAR_DIST_SQ ? 6 :
+      12;
+    if ((frame + seed) % terrainMod === 0) {
       const terrainY = getTerrainY(group.position.x, group.position.z, threeScene);
       currentTerrainY.current += (terrainY - currentTerrainY.current) * 0.3;
     }
@@ -670,9 +676,6 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
     //
     // Jump support: only the possessed player NPC (PLAYER_NPC_ID while controlMode='npc')
     // reads jumpState. Wandering NPCs never jump. Bob is suppressed while airborne.
-    const isPossessedPlayerNpc =
-      d.id === PLAYER_NPC_ID &&
-      useGameStore.getState().controlMode === 'npc';
     // 'charging' keeps the NPC on the ground (heightOffset=0), so it is not airborne.
     // playerAltitude > 0 means the NPC is swimming above the ocean floor — also airborne.
     const airborne = isPossessedPlayerNpc &&
@@ -745,9 +748,13 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
       rescaleAppliedRef.current = true;
     }
 
+    const skipFarGlbAnimation = !isPossessedPlayerNpc && glbDistSq > NPC_LOD_FAR_DIST_SQ;
+
     if (useNewSystem && charAnimator) {
       // Universal character animation system — handles all secondary motion internally
-      charAnimator.update(animGroup, clock.elapsedTime, dt, isMoving);
+      if (!skipFarGlbAnimation) {
+        charAnimator.update(animGroup, clock.elapsedTime, dt, isMoving);
+      }
     } else if (lobsterAnimator) {
       // Legacy lobster skeletal animation
       const suggestedState = resolveAnimState({
@@ -757,7 +764,9 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
         direction: d.direction,
         inConversation: false,
       });
-      lobsterAnimator.update(dt, clock.elapsedTime, suggestedState, d.direction);
+      if (!skipFarGlbAnimation) {
+        lobsterAnimator.update(dt, clock.elapsedTime, suggestedState, d.direction);
+      }
 
       // Procedural group-level squash/stretch/tilt.
       // Walk animation needs full 60Hz — squash/stretch is fast (8 rad/s bob cycle).
@@ -771,7 +780,10 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
         direction: d.direction,
         seed,
       };
-      if (isMoving) {
+      if (skipFarGlbAnimation) {
+        // Keep the far NPC at its last believable pose. Position/facing still
+        // update every frame, so identity and activity remain visible.
+      } else if (isMoving) {
         applyWalkAnimation(animStateData);
       } else if ((frame + seed) % 3 === 0) {
         // PERF: idle animation throttled to 20Hz — 5 trig calls × 18 NPCs was
@@ -1054,14 +1066,25 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
     group.position.x = simPos.current.x;
     group.position.z = simPos.current.z;
 
-    // 2026-05-11 — All VRM NPC culling removed per user directive
-    // ("remove all the culling completely it ruins the game"). Mirrors GLBNpcMesh.
     const isMoving = d.direction !== 'idle' && !d.isDead;
     const frame = Math.floor(clock.elapsedTime * 60);
+
+    _springLodCamPos.set(camera.position.x, camera.position.y, camera.position.z);
+    const vrmTerrainDx = group.position.x - _springLodCamPos.x;
+    const vrmTerrainDz = group.position.z - _springLodCamPos.z;
+    const vrmTerrainDistSq = vrmTerrainDx * vrmTerrainDx + vrmTerrainDz * vrmTerrainDz;
+    const isPossessedPlayerNpc =
+      d.id === PLAYER_NPC_ID &&
+      useGameStore.getState().controlMode === 'npc';
     group.visible = true;
 
-    // Raycast terrain every 3rd frame (staggered by seed to avoid per-frame spikes)
-    if ((frame + seed) % 3 === 0) {
+    // Raycast terrain at distance-based cadence. Position still updates every
+    // frame; only the floor-height sample is throttled for far NPCs.
+    const terrainMod =
+      vrmTerrainDistSq < NPC_LOD_NEAR_DIST_SQ ? 3 :
+      vrmTerrainDistSq < NPC_LOD_VERY_FAR_DIST_SQ ? 6 :
+      12;
+    if ((frame + seed) % terrainMod === 0) {
       const terrainY = getTerrainY(group.position.x, group.position.z, threeScene);
       currentTerrainY.current += (terrainY - currentTerrainY.current) * 0.3;
     }
@@ -1072,9 +1095,6 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
     //   2. No `+ 2` baseline — player-avatar.tsx VRM branch confirms VRM feet sit flush on
     //      currentTerrainY with no extra offset.
     // Bob frequency (4.0) and amplitude (0.6) match GLBNpcMesh so jump feels identical.
-    const isPossessedPlayerNpc =
-      d.id === PLAYER_NPC_ID &&
-      useGameStore.getState().controlMode === 'npc';
     const airborne = isPossessedPlayerNpc &&
                      (jumpState.phase !== 'grounded' && jumpState.phase !== 'charging'
                    || jumpState.playerAltitude > 0);
@@ -1176,10 +1196,7 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
       // Compute distance² to camera ONCE — drives both Phase 1.5 far-gate
       // and the existing Win B spring-bone distance LOD. Zero per-frame
       // allocations via the module-scope _springLodCamPos scratch.
-      _springLodCamPos.set(camera.position.x, camera.position.y, camera.position.z);
-      const _sdx = group.position.x - _springLodCamPos.x;
-      const _sdz = group.position.z - _springLodCamPos.z;
-      const _springDistSq = _sdx * _sdx + _sdz * _sdz;
+      const _springDistSq = vrmTerrainDistSq;
 
       // PHASE 1.5 — Far-NPC mixer + spring-bone gate (2026-05-22).
       // Past 5000 wu (distSq > 25M) the VRM is far enough from the camera
@@ -1191,8 +1208,7 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
       // tick. Pose freezes at last value; resumes seamlessly when player
       // approaches. springDeltaAccRef keeps accumulating dt so spring
       // resumes with the correct delta on re-entry.
-      const FAR_NPC_DIST_SQ = 25_000_000; // 5000 wu²
-      const isFarNpc = _springDistSq > FAR_NPC_DIST_SQ;
+      const isFarNpc = _springDistSq > NPC_LOD_FAR_DIST_SQ;
 
       if (!isFarNpc) {
         animator.updateMixerOnly(dt, npcLockIdle ? false : isMoving);
