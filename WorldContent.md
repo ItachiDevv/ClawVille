@@ -72,7 +72,7 @@ Slot geometry: cx=180+130×cos(θ), cy=180+130×sin(θ), θ=−π/2+slot×(π/6)
 
 ### 3a. Wandering NPCs — 9 total
 
-3 Milady VRMs + 3 Hermes/Tekk VRMs + 2 chibi VRMs + 1 lobster GLB. Server-driven positions via SSE; client smooths them. Code: `lib/three/arena-npcs.tsx`. Definitions: `packages/shared/src/constants/npc-definitions.ts` (or the demo NPCs in `stores/npc.ts` when SSE is disconnected). All VRM sizing is handled by `computeVRMAvatarFit()` from `lib/three/vrm-avatar-sizing.ts` — every humanoid renders at `VRM_AVATAR_TARGET_HEIGHT_WU = 179.2` regardless of native bbox unit convention.
+3 Milady VRMs + 3 Hermes/Tekk VRMs + 2 chibi VRMs + 1 lobster GLB. Server-driven positions via SSE; client smooths them. Code: `lib/three/arena-npcs.tsx`. Definitions: `packages/shared/src/constants/npc-definitions.ts` (or the demo NPCs in `stores/npc.ts` when SSE is disconnected). The web store filters retired IDs (`wanderer-marlin`, `wanderer-riptide`) as a partial-deploy guard. All VRM sizing is handled by `computeVRMAvatarFit()` from `lib/three/vrm-avatar-sizing.ts` — every humanoid renders at `VRM_AVATAR_TARGET_HEIGHT_WU = 179.2` regardless of native bbox unit convention.
 
 | Species | Count | Asset |
 |---|---|---|
