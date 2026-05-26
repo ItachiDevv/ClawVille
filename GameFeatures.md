@@ -12,7 +12,9 @@
 > - **`ARCHITECTURE.md`** — backend routes / services / schema / events / leaderboard rubric.
 > - **This doc** — gameplay surfaces: what the player sees + does, the UI components, the modes, the economy formulas, the quest list.
 
-**Last edit:** 2026-05-26 — NPC Mode control parity/fix: possessed player-NPC movement now supports Shift sprint and high-deflection joystick sprint, uses the same AABB building/prop blockers as the connected player avatar, writes the live avatar position for minimap/follow camera sync, and runs before camera sampling so movement feels immediate. Visual NPC/resident visibility culling was removed; NPC activity should remain visible instead of popping out at distance.
+**Last edit:** 2026-05-26 — `/game` SeaLoadingScreen now waits for `window.__W3D_READY` (first canvas frame plus staged texture-upload completion) instead of dismissing on the older `window.__W3D` devtools handle. The loading overlay should cover the blue/blank world phase while WebGPU textures are still being uploaded.
+
+**Prior Last edit:** 2026-05-26 — NPC Mode control parity/fix: possessed player-NPC movement now supports Shift sprint and high-deflection joystick sprint, uses the same AABB building/prop blockers as the connected player avatar, writes the live avatar position for minimap/follow camera sync, and runs before camera sampling so movement feels immediate. Visual NPC/resident visibility culling was removed; NPC activity should remain visible instead of popping out at distance.
 
 **Current drift note:** 2026-05-26 — `/game` NanoClawBanner treats guest-auth users as upgradeable visitors for account CTAs, so Log In / Sign Up remain visible after guest bootstrap.
 **Current drift note:** 2026-05-26 — NPC free-roam planner now derives wanderer status from `NPC_DEFINITIONS.buildingId === ''` and keeps all default wandering avatar families inside a 900-2400wu town-commons annulus, avoiding central prop AABBs and building-ring wall paths while improving NPC chat proximity.
@@ -311,7 +313,7 @@ All composed in `apps/web/src/app/game/page.tsx`. The component matrix is gated 
 | Component | Purpose |
 |---|---|
 | `<World3DCanvas>` | Three.js 3D world. See `3dStructure.md` + `WorldContent.md`. |
-| `<SeaLoadingScreen>` | Fade-out overlay until `window.__W3D` is set |
+| `<SeaLoadingScreen>` | Fade-out overlay until `window.__W3D_READY` confirms first canvas frame + staged texture upload completion |
 | `<BuildingTooltip>` | Hover tooltip for buildings |
 | `<NanoClawBanner>` (inline component, `page.tsx`) | Four states: (a) green "Bot Training Active" pill when `agentConnected`. (b) **"Log In" + "Sign Up"** when unauthenticated OR authenticated as a guest (`users.is_guest=true`) so `/game` guest bootstrap does not hide account CTAs. (c) **"Create Agent" + "Connect Your Agent" pair** when authenticated, non-guest, no avatar, and no agent — covers NPC-mode visitors so both onramps are in view. (d) "Connect Your Agent" alone when a non-guest avatar exists but no agent is connected. |
 | `<AgentConnectModal>` | Quick-Connect modal — Manual tab removed in `984627d` |
