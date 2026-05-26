@@ -30,6 +30,7 @@ import { useFrame } from '@react-three/fiber';
 import { useGLTF } from '@react-three/drei';
 import * as THREE from 'three/webgpu';
 import { useGameStore } from '@/stores/game';
+import { mergeStaticMeshesByMaterial } from '@/lib/three/utils/merge-static-meshes';
 
 // ---------------------------------------------------------------------------
 // Preloads at module scope
@@ -120,7 +121,22 @@ function FloatingJellyfish() {
 function DomeGlb() {
   const { scene } = useGLTF('/models/auction-dome.glb');
 
-  const cloned = useMemo(() => scene.clone(true), [scene]);
+  const cloned = useMemo(() => {
+    const c = scene.clone(true);
+    // Hide the Sketchfab background plate before merging so it does not get
+    // baked into a merged material bucket.
+    c.traverse((obj) => {
+      if (/^Background_Material/i.test(obj.name)) {
+        obj.visible = false;
+      }
+    });
+    const merge = mergeStaticMeshesByMaterial(c);
+    if (typeof window !== 'undefined') {
+      (window as any).__CV_STATIC_MERGE = (window as any).__CV_STATIC_MERGE || {};
+      (window as any).__CV_STATIC_MERGE.auctionDome = merge;
+    }
+    return c;
+  }, [scene]);
 
   const scale = useMemo(() => computeScale(cloned as THREE.Group, DOME_TARGET_HEIGHT_WU), [cloned]);
 

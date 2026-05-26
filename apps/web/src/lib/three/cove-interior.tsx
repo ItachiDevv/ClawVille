@@ -955,9 +955,42 @@ function BlackjackTableHotspot() {
       }}
     >
       <boxGeometry args={_BJ_HOTSPOT_SIZE} />
-      <meshBasicMaterial visible={false} />
+      {/* TEMP DEBUG: visible cyan wireframe + green tint on candidate tables. REVERT both after position-tune. */}
+      <meshBasicMaterial color="#00ffff" wireframe transparent opacity={0.6} />
     </mesh>
   );
+}
+
+// TEMP-PROBE — one-shot dump of large flat meshes (likely tables) so we can pick the right hotspot location.
+// REMOVE this component + its mount call after the hotspot lands.
+function _BJTableProbe() {
+  const { scene, camera } = useThree();
+  useEffect(() => {
+    // @ts-expect-error TEMP — expose for devtools probing
+    if (typeof window !== 'undefined') { window.__bjScene = scene; window.__bjCamera = camera; }
+    const rows: Array<{ name: string; w: number; h: number; d: number; x: number; y: number; z: number }> = [];
+    scene.traverse((obj: THREE.Object3D) => {
+      const mesh = obj as THREE.Mesh;
+      if (!mesh.isMesh) return;
+      if (!mesh.geometry) return;
+      if (!mesh.geometry.boundingBox) mesh.geometry.computeBoundingBox();
+      const b = mesh.geometry.boundingBox;
+      if (!b) return;
+      const w = b.max.x - b.min.x;
+      const h = b.max.y - b.min.y;
+      const d = b.max.z - b.min.z;
+      const m = mesh.matrixWorld.elements;
+      if (w > 80 && d > 80) {
+        rows.push({
+          name: mesh.name || mesh.type,
+          w: Math.round(w), h: Math.round(h), d: Math.round(d),
+          x: Math.round(m[12]), y: Math.round(m[13]), z: Math.round(m[14]),
+        });
+      }
+    });
+    console.log('[BJ-PROBE] candidate tables (w*h*d, world x/y/z):', JSON.stringify(rows, null, 2));
+  }, [scene]);
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -1915,6 +1948,29 @@ export default function CoveInteriorScene({ onSceneEmpty }: CoveInteriorScenePro
           Positioned at the dealer station (right wall, X≈307, Z=0).
           Invisible mesh — cursor: pointer on hover. Opens BlackjackModal. */}
       <BlackjackTableHotspot />
+      {/* TEMP-PROBE — REMOVE after hotspot lands on correct table */}
+      <_BJTableProbe />
+      {/* TEMP candidate markers — different color = different X. Visually pick which color lands on the target table. */}
+      <mesh position={[307, 60, 0]}>
+        <boxGeometry args={[80, 120, 80]} />
+        <meshBasicMaterial color="#00ffff" wireframe transparent opacity={0.9} />
+      </mesh>
+      <mesh position={[0, 60, 0]}>
+        <boxGeometry args={[80, 120, 80]} />
+        <meshBasicMaterial color="#ff00ff" wireframe transparent opacity={0.9} />
+      </mesh>
+      <mesh position={[-307, 60, 0]}>
+        <boxGeometry args={[80, 120, 80]} />
+        <meshBasicMaterial color="#ffff00" wireframe transparent opacity={0.9} />
+      </mesh>
+      <mesh position={[307, 60, 200]}>
+        <boxGeometry args={[80, 120, 80]} />
+        <meshBasicMaterial color="#ff8800" wireframe transparent opacity={0.9} />
+      </mesh>
+      <mesh position={[307, 60, -200]}>
+        <boxGeometry args={[80, 120, 80]} />
+        <meshBasicMaterial color="#88ff00" wireframe transparent opacity={0.9} />
+      </mesh>
 
       {/* Blackjack table label — rendered above the dealer station */}
       <BankBanner

@@ -25,6 +25,7 @@ import { useGLTF } from '@react-three/drei';
 import * as THREE from 'three/webgpu';
 import { useGameStore } from '@/stores/game';
 import { groundedYOffset } from '@/lib/three/utils/ground-prop';
+import { mergeStaticMeshesByMaterial } from '@/lib/three/utils/merge-static-meshes';
 
 // ---------------------------------------------------------------------------
 // Preload at module scope so Suspense has the data ready before first render.
@@ -68,8 +69,17 @@ function computeScale(root: THREE.Group): number {
 const BazaarStallInner = memo(function BazaarStallInner() {
   const { scene } = useGLTF('/models/bazaar-merchant-stand.glb');
 
-  // Clone so multiple mounts don't share mutable scene state.
-  const cloned = useMemo(() => scene.clone(true), [scene]);
+  // Clone so multiple mounts don't share mutable scene state, then merge
+  // static submeshes by shared material to reduce draw calls.
+  const cloned = useMemo(() => {
+    const c = scene.clone(true);
+    const merge = mergeStaticMeshesByMaterial(c);
+    if (typeof window !== 'undefined') {
+      (window as any).__CV_STATIC_MERGE = (window as any).__CV_STATIC_MERGE || {};
+      (window as any).__CV_STATIC_MERGE.bazaarStall = merge;
+    }
+    return c;
+  }, [scene]);
 
   // Compute normalized scale and apply it.
   const scale = useMemo(() => computeScale(cloned), [cloned]);

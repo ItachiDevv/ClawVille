@@ -34,7 +34,7 @@ on:
 
 concurrency:
   group: coolify-deploy-prod
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   deploy:
