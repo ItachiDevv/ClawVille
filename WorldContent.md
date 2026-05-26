@@ -22,7 +22,7 @@ Composes the entire R3F scene. Mounted by `SceneContents` in `apps/web/src/compo
 | **Lighting** | inline JSX | 1 hemisphere + 2 directional + fog (4500→9000wu) | `World3DCanvas.tsx` ~778 |
 | **Terrain** | `<ArenaTerrain>` | sand floor + decorations + (disabled landmarks) | `lib/three/arena-terrain.tsx` |
 | **Buildings** | `<ArenaBuildings>` | 12 themed building GLBs on a circular ring (R=130 tiles = 4160wu, 30° spacing; Phase 6.2.1 2026-05-18) | `lib/three/arena-buildings.tsx` |
-| **Wandering NPCs** | `<ArenaNpcs>` | 18 NPCs (5 VRM + 13 GLB), SSE-driven positions | `lib/three/arena-npcs.tsx` |
+| **Wandering NPCs** | `<ArenaNpcs>` | 9 free-roaming NPCs (8 VRM + 1 GLB), SSE-driven positions | `lib/three/arena-npcs.tsx` |
 | **Building residents** | `<ArenaLocationNpcs>` | 10 character NPCs, one per building | `lib/three/arena-location-npcs.tsx` |
 | **Ground cover** | `<MergedSeaweed>` | TSL-animated seaweed, single merged mesh | `lib/three/merged-seaweed.tsx` |
 | **Town center props** | 5 components | quest NPC, town guide, bazaar, marketplace, auction, directory sign | listed in §6 |
@@ -72,16 +72,15 @@ Slot geometry: cx=180+130×cos(θ), cy=180+130×sin(θ), θ=−π/2+slot×(π/6)
 
 ### 3a. Wandering NPCs — 9 total
 
-3 Milady VRMs + 3 Hermes/Tekk VRMs + 3 GLB sea creatures. Server-driven positions via SSE; client smooths them. Code: `lib/three/arena-npcs.tsx`. Definitions: `packages/shared/src/constants/npc-definitions.ts` (or the demo NPCs in `stores/npc.ts` when SSE is disconnected). All VRM sizing is handled by `computeVRMAvatarFit()` from `lib/three/vrm-avatar-sizing.ts` — every humanoid renders at `VRM_AVATAR_TARGET_HEIGHT_WU = 179.2` regardless of native bbox unit convention.
+3 Milady VRMs + 3 Hermes/Tekk VRMs + 2 chibi VRMs + 1 lobster GLB. Server-driven positions via SSE; client smooths them. Code: `lib/three/arena-npcs.tsx`. Definitions: `packages/shared/src/constants/npc-definitions.ts` (or the demo NPCs in `stores/npc.ts` when SSE is disconnected). The web store filters retired IDs (`wanderer-marlin`, `wanderer-riptide`) as a partial-deploy guard. All VRM sizing is handled by `computeVRMAvatarFit()` from `lib/three/vrm-avatar-sizing.ts` — every humanoid renders at `VRM_AVATAR_TARGET_HEIGHT_WU = 179.2` regardless of native bbox unit convention.
 
 | Species | Count | Asset |
 |---|---|---|
 | Milady VRM | 3 | `milady-official-{2,7,8}.vrm` (Vivi / Miu / Kyoko — distinct paths required, shared paths cause T-pose collisions) |
 | Hermes VRM | 2 | `hermes-female.vrm` (Mira), `hermes-male.vrm` (Cyrus) |
 | Tekk VRM | 1 | `tekk.vrm` — uses `SPECIES_TARGET_HEIGHT_WU.tekk = 230` so wings can overshoot the body silhouette |
+| Chibi VRM | 2 | `eliza-chibi.vrm?v=2` (Eliza), `milady-chibi.vrm?v=2` (Mila) |
 | Lobster GLB | 1 | `models/lobster.glb` (Driftwood) — homeX 3348, homeY 5112, W inner (Phase 6.2 scaled ×1.5 from Phase 6.1) |
-| Sweet crab | 1 | `models/sweet_crab.glb` (Marlin) — homeX 7650, homeY 6300, E inner |
-| Hermit crab | 1 | `models/hermitcrab.glb` (Riptide) — homeX 4275, homeY 7200, SW inner |
 
 ### 3b. Building residents — 10 total
 

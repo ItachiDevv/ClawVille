@@ -3,7 +3,7 @@
 import { useRef, useMemo, useCallback, useEffect } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
-import { useGameStore } from '@/stores/game';
+import { useGameStore, avatarPositionRef } from '@/stores/game';
 import { findPath } from '@/lib/pixi/client-pathfinding';
 import {
   MAP_WIDTH,
@@ -86,8 +86,7 @@ function ClickPlane() {
       pixel.y = Math.max(16, Math.min(MAP_HEIGHT - 16, pixel.y));
 
       // Run A* from current position to click position
-      const { avatarPosition } = store;
-      const path = findPath(avatarPosition.x, avatarPosition.y, pixel.x, pixel.y);
+      const path = findPath(avatarPositionRef.x, avatarPositionRef.y, pixel.x, pixel.y);
 
       if (path.length > 0) {
         // Check if destination is inside a building zone
