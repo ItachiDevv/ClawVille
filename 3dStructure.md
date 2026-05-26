@@ -11,7 +11,9 @@
 > - **`GameFeatures.md`** — gameplay.
 > - **This doc** — *how* the 3D scene is wired: coordinates, camera, lights, GPU budget, animation, asset pipeline.
 
-**Last edit:** 2026-05-26 — Avatar feel correction: controlled player/NPC movement hooks now run before follow-camera sampling, follow camera smoothing is frame-rate-independent, NPC Mode has sprint parity, and distance-based visibility culling for wandering/building NPC meshes was removed after it caused missing/popping characters. Distance-based animation/raycast throttles remain only where they do not hide characters.
+**Last edit:** 2026-05-26 — `/game` loader readiness now waits for both first canvas paint and `StaggeredTextureUpload` completion via `window.__W3D_READY`; `window.__W3D` remains a devtools handle only. This keeps the SeaLoadingScreen visible during the blue/blank staged texture-upload phase instead of exposing an empty world under the UI.
+
+**Prior Last edit:** 2026-05-26 — Avatar feel correction: controlled player/NPC movement hooks now run before follow-camera sampling, follow camera smoothing is frame-rate-independent, NPC Mode has sprint parity, and distance-based visibility culling for wandering/building NPC meshes was removed after it caused missing/popping characters. Distance-based animation/raycast throttles remain only where they do not hide characters.
 
 **Prior Last edit:** 2026-05-26 — Perf Milestone 1 pass: `/perf` now reports effectively visible meshes only, `TownDirectorySign` collapses three wooden boxes + face into one multi-material mesh (19 sign draw groups -> 2 draws, 4 meshes -> 1), and real NPC models use distance-based render visibility while their simulation/pathing/chat state remains live. Current local `bun run --filter @clawville/web start` A-E run after production build: baseline 61 FPS / 115 renderer draws / 177 visible objs; labels off 87 FPS (+26); NPCs off 90 FPS (+29); shadows off 59 FPS (-2); postprocessing off 64 FPS (+3); static world only 89 FPS (+28). No meshlet work, no proxy/replacement NPC models.
 
@@ -388,7 +390,7 @@ Every hot path uses module-scope `THREE.Vector3 / Matrix4 / Raycaster` scratch o
 | VRM AnimationMixer | Full 60 Hz unconditional (B9 fix 2026-04-24). | `vrm-character-animator.ts:updateMixerOnly` |
 | VRM spring bones | Distance-LOD (WIN B — 2026-05-22): <2500wu→mod=2 (30Hz), 2500–6000wu→mod=4 (15Hz), ≥6000wu→mod=8 (~7.5Hz). Uses `camera.getWorldPosition(_springLodCamPos)` on module-scope scratch (zero per-frame allocs). Was uniform 15Hz (`springMod=4`); flattened from tiered 10/20Hz with culling removal 2026-05-11. | `arena-npcs.tsx:VRMNpcMesh` |
 | WorldLabelsOverlay projection | Full 60 Hz, single root, ResizeObserver-cached canvas size. Per-label: distance-fade opacity (linear, no allocations), 10 Hz building-occluder raycast (staggered by `occludePhase % 6`). **Label rig (bio-luminescent):** Fraunces-serif capsule + 38/56 px dashed-cyan tether + 5 px pulsing anchor dot. Rig uses `translateY(-50%)` so anchor dot lands at projected head point. Two CSS keyframes (`bio-pulse` 2.4 s, `bio-drift` 5.4 s) in `globals.css`; staggered per-label via `--label-phase` CSS var (hash mod 10 / 10). NPC `fadeBaseOpacity` 0.65 → 0.85. Building label: brighter glow (`0 0 22px`), longer tether (56 px), category sub-line. Fraunces loaded via `next/font/google` (`--font-fraunces`). Zero new per-frame allocations. | `world-labels-overlay.tsx`, `arena-buildings.tsx`, `arena-npcs.tsx`, `arena-location-npcs.tsx`, `globals.css`, `layout.tsx` |
-| Texture upload | `requestIdleCallback` with 6 ms time budget per slice. 98 textures via rIC = ~352 ms total (down from 8 s rAF-based). | `World3DCanvas.tsx:StaggeredTextureUpload` |
+| Texture upload | `requestIdleCallback` with 6 ms time budget per slice. 98 textures via rIC = ~352 ms total (down from 8 s rAF-based). Completion flips `window.__W3D_TEXTURES_READY`; the loader dismisses only after this and the first canvas frame set `window.__W3D_READY`. | `World3DCanvas.tsx:StaggeredTextureUpload` |
 
 ### 5e. Static meshes — `matrixAutoUpdate = false`
 
@@ -630,7 +632,7 @@ No `InstancedMesh + ShaderMaterial` — known WebGPU silent crash on Iris Xe. Me
 ### 9b. Pre-compile + staggered upload
 
 - `<PreCompilePipelines />` (`World3DCanvas.tsx`) — `gl.compileAsync(scene, camera)` after first RAF. Moves 274 ms hitch into loading spinner. WebGL no-op.
-- `<StaggeredTextureUpload />` — `requestIdleCallback` with 6 ms budget per slice (~98 textures in ~352 ms). Safari fallback: rAF batched 4/frame. Was 200 textures × 2/frame = 8 s pre-rIC.
+- `<StaggeredTextureUpload />` — `requestIdleCallback` with 6 ms budget per slice (~98 textures in ~352 ms). Safari fallback: rAF batched 4/frame. Was 200 textures × 2/frame = 8 s pre-rIC. It now gates `window.__W3D_READY` so the loading overlay stays up until texture upload is done or intentionally skipped.
 - `<DeferredTerrainPreloads />` (rendered outside the Canvas) — fires `useGLTF.preload()` for all decoration + environment GLBs inside a `requestAnimationFrame` so the preloads land AFTER the first painted frame, not at module evaluation.
 
 ### 9d. Mixamo animation GLB load policy (2026-05-17)
