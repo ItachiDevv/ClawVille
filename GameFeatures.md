@@ -360,7 +360,7 @@ See `WorldContent.md §3` for the canonical NPC roster + counts. This section co
 
 Server tick (`apps/api/src/services/npc-simulation.ts`) streams positions/directions/conversations to clients via SSE (`/api/npc/*`). Client smooths positions via lerp — see `3dStructure.md §6a`.
 
-When disconnected from SSE, `stores/npc.ts` runs a client-side wander loop at 10 Hz so the world doesn't go static. Server connection takes over via `setConnected(true)`.
+When disconnected from SSE, `stores/npc.ts` runs a client-side wander loop at 10 Hz so the world doesn't go static. The fallback roster mirrors the live unique free-roaming cast — 3 Milady VRMs, Mira/Cyrus/Tekk, Eliza/Mila chibis, and one lobster (`Driftwood`) — with collision-safe target repicks so fallback NPCs do not walk into building colliders. Server connection takes over via `setConnected(true)`.
 
 ### 12b. NPC ↔ NPC conversations
 

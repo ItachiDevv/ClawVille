@@ -161,20 +161,10 @@ function makeDemoNpc(id: string, name: string, x: number, y: number, species: st
   return { id, name, x, y, prevX: x, prevY: y, ts: 0, tsDelta: 200, direction: 'idle', species, color, hp: 100, maxHp: 100, isDead: false, hasSword: false, inCombat: false, inConversation: false, inventory: [], isOpenClaw, combatAction: null, combatActionAt: 0, facingAngle: null, defaultIdleClip };
 }
 
-// Demo NPC positions spread around the village center (3840,3840) in the
-// 7680×7680 map (240×240 tiles). Phase 6.1 (2026-05-18): all coords scaled
-// ×1.5 from the old 5120×5120 world (160×160 tiles).
+// Demo NPC positions mirror the live free-roaming roster when SSE is down.
+// Keep this list intentionally small: one version of each avatar family, no
+// duplicate lobster crowd.
 const DEMO_NPCS: NpcSpriteState[] = [
-  makeDemoNpc('demo-1',  'Captain Claw', 3900, 3300, 'lobster',          0xff2020),       // bright red
-  makeDemoNpc('demo-2',  'Pearl',        4500, 2700, 'lobster',          0xff80ab),       // pink
-  makeDemoNpc('demo-3',  'Rusty',        2700, 4200, 'lobster',          0xff8c00),       // orange
-  makeDemoNpc('demo-4',  'Abyssal',      5100, 3600, 'lobster',          0x2244ff, true), // deep blue
-  makeDemoNpc('demo-5',  'Mantis',       3300, 2400, 'lobster',          0x00e676),       // green
-  makeDemoNpc('demo-6',  'Goldie',       4200, 4500, 'lobster',          0xffd700),       // gold
-  makeDemoNpc('demo-7',  'Shadow',       2400, 3300, 'lobster',          0x8844cc),       // purple
-  makeDemoNpc('demo-8',  'Coral',        5400, 3000, 'lobster',          0xff4488),       // hot pink
-  makeDemoNpc('demo-9',  'Frost',        3600, 2100, 'lobster',          0x00ccdd),       // cyan/teal
-  makeDemoNpc('demo-10', 'Ember',        4800, 4800, 'lobster',          0xff5500),       // burnt orange
   // Milady VRM wandering NPCs — use milady_official_7 and milady_official_8 to avoid
   // sharing a VRM instance with the most-common player avatar picks (official_1 is the
   // default; official_5 is popular). The vrm-loader caches one VRM per path — two NPCs
@@ -192,9 +182,9 @@ const DEMO_NPCS: NpcSpriteState[] = [
   makeDemoNpc('hermes-mira',  'Mira',  5250, 5250, 'hermes_female', 0xb088ff),
   makeDemoNpc('hermes-cyrus', 'Cyrus', 4050, 2250, 'hermes_male',   0x4b6cb7),
   makeDemoNpc('hermes-tekk',  'Tekk',  2850, 5700, 'tekk',          0x30c060),
+  makeDemoNpc('chibi-eliza',  'Eliza', 6700, 5500, 'eliza_chibi',   0xff7043),
+  makeDemoNpc('chibi-milady', 'Mila',  4900, 6100, 'milady_chibi',  0xec407a),
   makeDemoNpc('wanderer-driftwood', 'Driftwood', 2250, 3600, 'lobster',     0x8d6e63),
-  makeDemoNpc('wanderer-marlin',    'Marlin',    5550, 4050, 'sweet_crab',  0x00acc1),
-  makeDemoNpc('wanderer-riptide',   'Riptide',   3900, 5250, 'hermitcrab',  0xa1887f),
 ];
 
 // Demo NPC wandering — makes NPCs walk around when not connected to server
@@ -204,11 +194,27 @@ const wanderStates = new Map<string, WanderState>();
 const WANDER_MARGIN = 80;
 const WANDER_MAX_X = MAP_WIDTH - WANDER_MARGIN;
 const WANDER_MAX_Y = MAP_HEIGHT - WANDER_MARGIN;
+const WANDER_TARGET_MIN_DIST = 280;
+const WANDER_TARGET_MAX_DIST = 760;
+
+function isWalkableGamePoint(x: number, y: number): boolean {
+  const worldX = x - NPC_HALF_W;
+  const worldZ = y - NPC_HALF_H;
+  const clamped = clampMovement2D(worldX, worldZ, worldX, worldZ, ENTITY_HALF_HUMANOID);
+  return !clamped.hit;
+}
 
 function pickNewTarget(npc: NpcSpriteState): WanderState {
-  const tx = WANDER_MARGIN + Math.random() * (WANDER_MAX_X - WANDER_MARGIN);
-  const ty = WANDER_MARGIN + Math.random() * (WANDER_MAX_Y - WANDER_MARGIN);
-  return { targetX: tx, targetY: ty, waitUntil: 0 };
+  for (let attempt = 0; attempt < 24; attempt++) {
+    const angle = Math.random() * Math.PI * 2;
+    const radius = WANDER_TARGET_MIN_DIST + Math.random() * (WANDER_TARGET_MAX_DIST - WANDER_TARGET_MIN_DIST);
+    const tx = Math.max(WANDER_MARGIN, Math.min(WANDER_MAX_X, npc.x + Math.cos(angle) * radius));
+    const ty = Math.max(WANDER_MARGIN, Math.min(WANDER_MAX_Y, npc.y + Math.sin(angle) * radius));
+    if (isWalkableGamePoint(tx, ty)) {
+      return { targetX: tx, targetY: ty, waitUntil: 0 };
+    }
+  }
+  return { targetX: npc.x, targetY: npc.y, waitUntil: Date.now() + 1000 };
 }
 
 function tickDemoNpcs(npcs: NpcSpriteState[]): NpcSpriteState[] {
@@ -268,6 +274,14 @@ function tickDemoNpcs(npcs: NpcSpriteState[]): NpcSpriteState[] {
     );
     npc.x = clamped.x + NPC_HALF_W;
     npc.y = clamped.z + NPC_HALF_H;
+    const moved = Math.abs(npc.x - npc.prevX) + Math.abs(npc.y - npc.prevY);
+    if (clamped.hit || moved < 0.5) {
+      const newWs = pickNewTarget(npc);
+      newWs.waitUntil = now + 500 + Math.random() * 1200;
+      wanderStates.set(npc.id, newWs);
+      npc.direction = 'idle';
+      continue;
+    }
     if (Math.abs(dx) > Math.abs(dy)) {
       npc.direction = dx > 0 ? 'right' : 'left';
     } else {
