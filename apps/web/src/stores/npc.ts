@@ -353,13 +353,10 @@ export const useNpcStore = create<NpcStoreState>((set, get) => ({
       if (n.id === possessedNpcId && prev) {
         return prev;
       }
-      const serverIsIdle = n.direction === 'idle' && !n.inCombat && !n.inConversation;
-      // useClientPos: when server is idle, keep the client's previous position
-      // (so demo-mode wander animations don't snap NPCs back). BUT direction
-      // is ALWAYS authoritative from the server — keeping prev.direction caused
-      // NPCs to play walk-cycle animation forever after server transitioned to
-      // idle (user-reported "walking in place" 2026-04-25).
-      const useClientPos = serverIsIdle && prev;
+      // Connected SSE snapshots are authoritative for position, including idle
+      // frames. Keeping prior client coordinates when the server goes idle
+      // leaves the rendered NPC short of its final waypoint; the next movement
+      // then reads as a sideways slide/snap from stale coordinates.
       // Build the candidate object first, then check identity against prev.
       // If every field is equal we return the PREVIOUS reference — this preserves
       // React.memo's shallow-prop bailout in GLBNpcMesh / VRMNpcMesh and prevents
@@ -374,8 +371,8 @@ export const useNpcStore = create<NpcStoreState>((set, get) => ({
       const candidate: NpcSpriteState = {
         id: n.id,
         name: n.name,
-        x: useClientPos ? prev.x : n.x,
-        y: useClientPos ? prev.y : n.y,
+        x: n.x,
+        y: n.y,
         prevX: prev?.x ?? n.x,
         prevY: prev?.y ?? n.y,
         ts: now,

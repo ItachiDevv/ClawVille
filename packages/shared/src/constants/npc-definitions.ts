@@ -204,8 +204,8 @@ export const NPC_DEFINITIONS: NpcDefinition[] = [
     color: 0xff7043,             // ignored — MToon
     buildingId: '',
     patrolRadius: 400,
-    homeX: 6700,
-    homeY: 5500,                 // ESE of center, plaza-adjacent
+    homeX: 6900,
+    homeY: 6500,                 // ESE of center, plaza-adjacent, outside town prop AABBs
     stats: { hp: 70, attack: 10, defense: 12, speed: 18 },
     personality: 'A pint-sized ClawVille intern who claims she invented the orange tee.',
   },
