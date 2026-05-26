@@ -113,6 +113,13 @@ const NPC_SCALE_CLAMP_MAX = TARGET_NPC_HEIGHT / 0.5; // 90
 const NPC_LOD_NEAR_DIST_SQ = 2_500 * 2_500;
 const NPC_LOD_FAR_DIST_SQ = 5_000 * 5_000;
 const NPC_LOD_VERY_FAR_DIST_SQ = 6_000 * 6_000;
+const NPC_RENDER_SHOW_DIST_SQ = 1_600 * 1_600;
+const NPC_RENDER_HIDE_DIST_SQ = 1_800 * 1_800;
+
+function shouldRenderNpc(current: boolean, distSq: number, forceVisible: boolean): boolean {
+  if (forceVisible) return true;
+  return current ? distSq < NPC_RENDER_HIDE_DIST_SQ : distSq < NPC_RENDER_SHOW_DIST_SQ;
+}
 
 // Preload deferred to after SPECIES_MODEL declaration — see below.
 
@@ -434,7 +441,7 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
   // WorldLabelsOverlay label — subtle wordmark with distance fade + occlusion.
   // Baseline opacity 0.65 at ≤800wu; fades to 0 at 3000wu.
   // 10Hz raycast against building occluder meshes hides when covered.
-  const { divRef: labelRef } = useWorldLabel({
+  const { divRef: labelRef, setVisible: setLabelVisible } = useWorldLabel({
     id: `glb-npc-label-${npc.id}`,
     anchorRef: groupRef,
     offset: [0, 100, 0],
@@ -454,6 +461,7 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
   const simPos = useRef(new THREE.Vector3(...mapToWorld(npc.x, npc.y)));
   const currentRotY = useRef(0);
   const currentTerrainY = useRef(0);
+  const renderVisibleRef = useRef(true);
 
   const resolvedSpecies = resolveSpecies(npc.species);
   const speciesInfo = SPECIES_MODEL[resolvedSpecies] ?? DEFAULT_SPECIES;
@@ -651,7 +659,13 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
     const isPossessedPlayerNpc =
       d.id === PLAYER_NPC_ID &&
       useGameStore.getState().controlMode === 'npc';
-    group.visible = true;
+    const renderVisible = shouldRenderNpc(renderVisibleRef.current, glbDistSq, isPossessedPlayerNpc);
+    if (renderVisible !== renderVisibleRef.current) {
+      renderVisibleRef.current = renderVisible;
+      setLabelVisible(renderVisible);
+    }
+    group.visible = renderVisible;
+    if (!renderVisible) return;
 
     // Raycast to find terrain surface Y. Close NPCs retain the historical 20Hz
     // cadence; mid/far NPCs throttle progressively because terrain height changes
@@ -908,7 +922,7 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
   // Y offset: VRM humanoids are ~270wu tall (vs ~45wu for GLB crustaceans),
   // so a 100wu offset would land the capsule at the VRM's waist/chest and
   // cover the body. 320wu sits cleanly above the head.
-  const { divRef: labelRef } = useWorldLabel({
+  const { divRef: labelRef, setVisible: setLabelVisible } = useWorldLabel({
     id: `vrm-npc-label-${npc.id}`,
     anchorRef: groupRef,
     offset: [0, 320, 0],
@@ -925,6 +939,7 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
   // position each frame so the facing math can read previous-frame state.
   const simPos = useRef(new THREE.Vector3(...mapToWorld(npc.x, npc.y)));
   const currentRotY = useRef(VRM_DIR_ROTATION.idle);
+  const renderVisibleRef = useRef(true);
   // Pitch ref for the swim-upward lean — see player-avatar.tsx for full
   // rationale. Only meaningful for the possessed-player NPC; wandering
   // NPCs stay at pitch=0 because they're never airborne. Apply via the
@@ -1076,7 +1091,13 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
     const isPossessedPlayerNpc =
       d.id === PLAYER_NPC_ID &&
       useGameStore.getState().controlMode === 'npc';
-    group.visible = true;
+    const renderVisible = shouldRenderNpc(renderVisibleRef.current, vrmTerrainDistSq, isPossessedPlayerNpc);
+    if (renderVisible !== renderVisibleRef.current) {
+      renderVisibleRef.current = renderVisible;
+      setLabelVisible(renderVisible);
+    }
+    group.visible = renderVisible;
+    if (!renderVisible) return;
 
     // Raycast terrain at distance-based cadence. Position still updates every
     // frame; only the floor-height sample is throttled for far NPCs.
