@@ -1124,6 +1124,7 @@ async function createWebGPURenderer(canvas: HTMLCanvasElement): Promise<any> {
   const renderer = new THREE.WebGPURenderer({
     canvas,
     antialias: false,
+    alpha: false,
     // forceWebGL: bypass the navigator.gpu adapter path on iOS Safari and any
     // browser where WebGPU is absent. WebGLBackend with TSL (GLSLNodeBuilder)
     // compiles all MeshBasicNodeMaterial / PointsNodeMaterial / MeshStandardNodeMaterial
@@ -1137,6 +1138,8 @@ async function createWebGPURenderer(canvas: HTMLCanvasElement): Promise<any> {
   // With forceWebGL:true, init() goes straight to WebGLBackend (no adapter request).
   // Without forceWebGL, init() tries WebGPU first then falls back to WebGL2.
   await renderer.init();
+  renderer.setClearColor(SKY_COLOR, 1);
+  renderer.setClearAlpha?.(1);
   renderer.setSize(cssW, cssH, false);
 
   // Device-loss handler — log and attempt page reload on unexpected loss
@@ -1201,9 +1204,12 @@ function World3DCanvas({ mode, perfFlags }: World3DCanvasProps) {
         const fallbackRenderer = new THREE.WebGPURenderer({
           canvas: fallbackCanvas,
           antialias: false,
+          alpha: false,
           forceWebGL: true,
         });
         await fallbackRenderer.init();
+        fallbackRenderer.setClearColor(SKY_COLOR, 1);
+        fallbackRenderer.setClearAlpha?.(1);
         fallbackRenderer.setSize(fallbackCanvas.width, fallbackCanvas.height, false);
         return fallbackRenderer;
       }
@@ -1250,6 +1256,8 @@ function World3DCanvas({ mode, perfFlags }: World3DCanvasProps) {
         onCreated={(state) => {
           const { scene, gl } = state;
           scene.background = SKY_COLOR;
+          gl.setClearColor(SKY_COLOR, 1);
+          gl.setClearAlpha?.(1);
           gl.shadowMap.enabled = perfFlags?.shadows ?? DEFAULT_WORLD_PERF_FLAGS.shadows;
           // PERF: do NOT call gl.setPixelRatio() here — it overrides the Canvas
           // dpr={[0.75, 1]} prop cap. R3F resolves the DPR from the prop before
