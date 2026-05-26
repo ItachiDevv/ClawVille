@@ -176,6 +176,9 @@ const _wasdWorldUp = new THREE.Vector3(0, 1, 0);
 const FPS_FOLLOW_DISTANCE = 240;
 // How high above the 2D game-plane the character target sits (approximate)
 const CHAR_TARGET_Y = 15;
+// Frame-rate independent follow stiffness. The previous fixed 0.1/frame lerp
+// became visibly mushy when the scene dipped below 60 FPS.
+const FPS_FOLLOW_STIFFNESS = 14;
 
 // ---------------------------------------------------------------------------
 // Arrow key camera rotation — active in ALL modes
@@ -360,7 +363,7 @@ function FPSFollowCamera({
 }: {
   controlsRef: React.RefObject<OrbitControlsImpl | null>;
 }) {
-  useFrame(() => {
+  useFrame((_, delta) => {
     const controls = controlsRef.current;
     if (!controls) return;
 
@@ -395,9 +398,10 @@ function FPSFollowCamera({
     const prevTgtX = tgt.x;
     const prevTgtY = tgt.y;
     const prevTgtZ = tgt.z;
-    tgt.x += (worldX - tgt.x) * 0.1;
-    tgt.y += ((CHAR_TARGET_Y + extraY) - tgt.y) * 0.1;
-    tgt.z += (worldZ - tgt.z) * 0.1;
+    const followAlpha = 1 - Math.exp(-FPS_FOLLOW_STIFFNESS * Math.min(delta, 0.05));
+    tgt.x += (worldX - tgt.x) * followAlpha;
+    tgt.y += ((CHAR_TARGET_Y + extraY) - tgt.y) * followAlpha;
+    tgt.z += (worldZ - tgt.z) * followAlpha;
 
     // Translate camera by the same delta as the target so the orbit geometry
     // (angle, zoom distance, phi/theta) is preserved. Without this, a high jump

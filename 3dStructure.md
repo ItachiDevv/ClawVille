@@ -11,9 +11,11 @@
 > - **`GameFeatures.md`** — gameplay.
 > - **This doc** — *how* the 3D scene is wired: coordinates, camera, lights, GPU budget, animation, asset pipeline.
 
-**Last edit:** 2026-05-26 — Perf Milestone 1 pass: `/perf` now reports effectively visible meshes only, `TownDirectorySign` collapses three wooden boxes + face into one multi-material mesh (19 sign draw groups -> 2 draws, 4 meshes -> 1), and real NPC models use distance-based render visibility while their simulation/pathing/chat state remains live. Current local `bun run --filter @clawville/web start` A-E run after production build: baseline 61 FPS / 115 renderer draws / 177 visible objs; labels off 87 FPS (+26); NPCs off 90 FPS (+29); shadows off 59 FPS (-2); postprocessing off 64 FPS (+3); static world only 89 FPS (+28). No meshlet work, no proxy/replacement NPC models.
+**Last edit:** 2026-05-26 — Avatar feel correction: controlled player/NPC movement hooks now run before follow-camera sampling, follow camera smoothing is frame-rate-independent, NPC Mode has sprint parity, and distance-based visibility culling for wandering/building NPC meshes was removed after it caused missing/popping characters. Distance-based animation/raycast throttles remain only where they do not hide characters.
 
-**Last edit:** 2026-05-26 — `/perf` camera + label audit correction. `World3DCanvas` now mounts a perf-only camera preset (camera `[0,600,1300]`, target `[0,80,0]`) whenever `perfFlags` are passed, so the audit route always frames real town geometry instead of empty blue water/sky. `world-labels-overlay.tsx` now reports active labels, decays label renders/sec back to zero after idle, skips redundant React content updates via semantic signatures, hard-culls/offscreen-culls label DOM projection, and runs far label projection at reduced cadence. `arena-npcs.tsx` keeps every NPC model rendered but throttles far terrain sampling and far animation mixer/procedural updates; it does not hide NPC groups, cap the roster, replace models, or alter pathing/chat simulation. Corrected local `/perf` A-E run from the town camera: baseline 22 FPS / 218 renderer draws / 276 visible objects / 947k tris; labels off 31 FPS (+9); NPCs off 93 FPS (+71); shadows off 22 FPS (+0); postprocessing off 23 FPS (+1); static world only 87 FPS (+65). Prior: `/perf` instrumentation route added before the next optimization pass. `apps/web/src/lib/three/PerfAudit.ts` walks the live Three.js scene and reports renderer counters plus per-scene-chunk draw estimates, mesh/visible-object/material/texture/triangle/skinned-mesh counts, label count, label React renders/sec, and top 20 objects by tris/materials/draws. `World3DCanvas` accepts `perfFlags` and wraps major scene chunks with `userData.perfChunk` so `/perf` can run controlled FPS-delta tests: labels off, NPCs off, shadows off, postprocessing off, water/fog/particles off, static world only, and UI overlay off. This is measurement only; no asset simplification or replacement.
+**Prior Last edit:** 2026-05-26 — Perf Milestone 1 pass: `/perf` now reports effectively visible meshes only, `TownDirectorySign` collapses three wooden boxes + face into one multi-material mesh (19 sign draw groups -> 2 draws, 4 meshes -> 1), and real NPC models use distance-based render visibility while their simulation/pathing/chat state remains live. Current local `bun run --filter @clawville/web start` A-E run after production build: baseline 61 FPS / 115 renderer draws / 177 visible objs; labels off 87 FPS (+26); NPCs off 90 FPS (+29); shadows off 59 FPS (-2); postprocessing off 64 FPS (+3); static world only 89 FPS (+28). No meshlet work, no proxy/replacement NPC models.
+
+**Prior Last edit:** 2026-05-26 — `/perf` camera + label audit correction. `World3DCanvas` now mounts a perf-only camera preset (camera `[0,600,1300]`, target `[0,80,0]`) whenever `perfFlags` are passed, so the audit route always frames real town geometry instead of empty blue water/sky. `world-labels-overlay.tsx` now reports active labels, decays label renders/sec back to zero after idle, skips redundant React content updates via semantic signatures, hard-culls/offscreen-culls label DOM projection, and runs far label projection at reduced cadence. `arena-npcs.tsx` keeps every NPC model rendered but throttles far terrain sampling and far animation mixer/procedural updates; it does not hide NPC groups, cap the roster, replace models, or alter pathing/chat simulation. Corrected local `/perf` A-E run from the town camera: baseline 22 FPS / 218 renderer draws / 276 visible objects / 947k tris; labels off 31 FPS (+9); NPCs off 93 FPS (+71); shadows off 22 FPS (+0); postprocessing off 23 FPS (+1); static world only 87 FPS (+65). Prior: `/perf` instrumentation route added before the next optimization pass. `apps/web/src/lib/three/PerfAudit.ts` walks the live Three.js scene and reports renderer counters plus per-scene-chunk draw estimates, mesh/visible-object/material/texture/triangle/skinned-mesh counts, label count, label React renders/sec, and top 20 objects by tris/materials/draws. `World3DCanvas` accepts `perfFlags` and wraps major scene chunks with `userData.perfChunk` so `/perf` can run controlled FPS-delta tests: labels off, NPCs off, shadows off, postprocessing off, water/fog/particles off, static world only, and UI overlay off. This is measurement only; no asset simplification or replacement.
 
 **Prior Last edit:** 2026-05-26 — Identity-preserving NPC load cut. `NPC_DEFINITIONS` and disconnected-mode `DEMO_NPCS` keep the unique free-roaming cast to 9 NPCs: 3 Milady VRMs, Mira/Cyrus/Tekk, Eliza/Mila chibis, and one lobster (`Driftwood`). `asset-preload-manifest.ts` and `arena-npcs.tsx` preload only the live roaming GLB (`lobster.glb`); retired sea-creature species remain render-on-demand for legacy rows. `stores/npc.ts` fallback wander target selection rejects solid collider targets and repicks on clamp/stall, matching server-side collider-aware pathing behavior; it also filters retired server IDs (`wanderer-marlin`, `wanderer-riptide`) so a stale API container cannot reintroduce removed crustaceans during a partial deploy.
 
@@ -144,7 +146,6 @@ Currently active:
 2. `stripGroundPlanes(c)` — flat-and-at-bottom geometric test (sy/maxXZ < 0.005 AND bb.max.y < fullMinY + 5%·fullHeight).
 
 `mergeStaticMeshesByMaterial(c)` runs after the strips — buckets same-material submeshes within each building and collapses to one mesh per bucket (`apps/web/src/lib/three/utils/merge-static-meshes.ts`).
-Merged buckets keep computed `boundingBox`/`boundingSphere` and `frustumCulled=true` (2026-05-25); do not force static buckets visible unless a measured bound bug proves it necessary.
 
 ### 2g. Canonical floor grounding for new props/stalls/buildings (added 2026-05-19)
 
@@ -196,7 +197,6 @@ Pure XZ-plane AABB (axis-aligned bounding box) collision — no physics engine, 
 - MTV push-out semantics: push along the axis of SMALLER overlap — entity slides along walls naturally.
 - **Entity constants** exported from `world-colliders.ts`: `ENTITY_HALF_CHIBI = 25`, `ENTITY_HALF_HUMANOID = 50`.
 - Server counterpart: `clampPosition2D(worldX, worldZ, entityHalf?)` in `packages/shared/src/constants/world-colliders-data.ts`. Accepts Three.js world-space coords (convert: `worldX = npc.x − MAP_HALF`). Both client and server derive building AABBs from the same `BUILDING_TILE_ZONES` source in `@clawville/shared`.
-- NPC route contract (2026-05-26): server A* outputs raw tile-center waypoints, then `npc-simulation.ts` accepts only routes whose every segment samples collision-free through `clampPosition2D`. Do not direction-smooth waypoint output across AABB corners unless segment validation stays mandatory.
 
 **Collider counts:**
 
@@ -220,8 +220,7 @@ Special cases:
 - `cove`: uses `box3Recenter=true` — arena-buildings.tsx re-centers geometry to (0,0,0) after load, so center = tile-zone center always.
 - `messaging-channels`, `api-integrations`: `targetMaxDim=2500` exceeds `MAX_FOOTPRINT=2000`; both axes capped to 2000 wu.
 - `cron-automation` (patty-building): X axis capped to 2000 wu; Z axis measured naturally.
-- `pineapple-house` (visual-creation): Draco-compressed GLB; required `draco3d` npm package to read vertex data.
-- `messaging-channels`: production visual is procedural after 2026-05-25; collider extents intentionally retain the prior treedome footprint.
+- `pineapple-house` (visual-creation), `sandy-treedome-v3` (messaging-channels): Draco-compressed GLBs; required `draco3d` npm package to read vertex data.
 
 **Per-building AABB extents (BUILDING_EXTENTS table, 2026-05-22):**
 
@@ -230,7 +229,7 @@ Special cases:
 | visual-creation | pineapple-house.glb | 1100 | 1100 × 841 | 468 × 357 |
 | code-development | chum-bucket-v2.glb | 1400 | 1392 × 1400 | 591 × 595 |
 | mcp-tool-use | krusty-krab-v2.glb | 1400 | 1386 × 1400 | 589 × 595 |
-| messaging-channels | procedural treedome (old sandy-treedome footprint) | 2500 | 2000 × 2000 (cap) | 850 × 850 |
+| messaging-channels | sandy-treedome-v3.glb | 2500 | 2000 × 2000 (cap) | 850 × 850 |
 | api-integrations | salty-spitoon.glb | 2500 | 2000 × 2000 (cap) | 850 × 850 |
 | app-publishing | boating-school.glb | 1000 | 1000 × 995 | 425 × 423 |
 | cron-automation | patty-building.glb | 2200 | 2000 × 1173 (X cap) | 850 × 498 |
@@ -286,7 +285,6 @@ GLB is a single merged mesh (3 primitives — main body, canopy, lantern emissio
 - `arena-npcs.tsx` — `GLBNpcMesh` useFrame + `VRMNpcMesh` useFrame. Same pattern: per-NPC `entityHalf` (CHIBI vs HUMANOID based on npc.id prefix), `npcGroundY`/`vrmNpcGroundY` from clamped result, `effectiveFloorY = Math.max(currentTerrainY.current, groundY)` in Y position.
 - `arena-location-npcs.tsx` — Sanity push-out at spawn time: `clampMovement2D(0, 0, worldX, worldZ)`.
 - `npc-simulation.ts` (server) — `clampPosition2D()` from `@clawville/shared` applied to all NPC movement paths: pathfinding waypoint steps (path-following abandoned on wall-hit so NPC re-plans), combat approach, and `moveTowardTarget`. `resolveNpcNpcOverlaps()` runs after `moveNpcs()` each world-mode tick: O(n²) pairwise push-out, half-widths 25wu (Milady chibi) / 50wu (adult humanoid/crustacean), symmetric impulse.
-- 2026-05-26 free-roam correction: server wanderers are classified from `NPC_DEFINITIONS.buildingId === ''` (not ID prefixes), so Hermes/chibi wanderers stay on the same collision-aware town-commons planner as Milady/crustacean wanderers. Free-roam target radius is 900-2400wu from center, outside the densest central prop cluster and well inside the building ring AABBs.
 
 **What is NOT covered (by design):**
 - Vertical collision (Y axis) — terrain raycasting handles Y grounding (walkable colliders add a surface-Y layer on top of this).
@@ -383,19 +381,19 @@ Every hot path uses module-scope `THREE.Vector3 / Matrix4 / Raycaster` scratch o
 
 | Cost | Throttle | Where |
 |---|---|---|
-| **Wandering NPC render count** | No active count cap. The prior low-end cap was removed 2026-05-22 per user direction because it hid world activity. Current perf work must preserve character identity and use measured animation/material/loading/LOD changes instead of silently dropping or visually replacing NPCs. | `arena-npcs.tsx:ArenaNpcs` |
+| **Wandering NPC render count** | No active count cap and no distance-based `group.visible` hiding. The prior culling pass was removed because it made wandering/building characters pop or disappear. Current perf work must preserve character identity and use measured animation/material/loading/batching changes instead of silently dropping or visually replacing NPCs. | `arena-npcs.tsx:ArenaNpcs`, `arena-location-npcs.tsx` |
 | Terrain raycast | Every 3rd frame, offset by `(frame + seed) % 3` per NPC so spikes stagger. | `arena-npcs.tsx`, `arena-location-npcs.tsx`, `player-avatar.tsx` |
 | GLB NPC idle animation | 20 Hz (`(frame + seed) % 3 === 0`). | `arena-npcs.tsx` |
 | GLB walk animation | Full 60 Hz — 8 rad/s cycle needs Nyquist. | `arena-npcs.tsx` |
 | VRM AnimationMixer | Full 60 Hz unconditional (B9 fix 2026-04-24). | `vrm-character-animator.ts:updateMixerOnly` |
 | VRM spring bones | Distance-LOD (WIN B — 2026-05-22): <2500wu→mod=2 (30Hz), 2500–6000wu→mod=4 (15Hz), ≥6000wu→mod=8 (~7.5Hz). Uses `camera.getWorldPosition(_springLodCamPos)` on module-scope scratch (zero per-frame allocs). Was uniform 15Hz (`springMod=4`); flattened from tiered 10/20Hz with culling removal 2026-05-11. | `arena-npcs.tsx:VRMNpcMesh` |
-| WorldLabelsOverlay projection | Full 60 Hz, single root, ResizeObserver-cached canvas size. Per-label: distance-fade opacity (linear, no allocations); building-occluder raycast is 2 Hz and staggered by `occludePhase % 30`, with distance-hidden labels skipped before raycast. **Label rig (bio-luminescent):** Fraunces-serif capsule + 38/56 px dashed-cyan tether + 5 px pulsing anchor dot. Rig uses `translateY(-50%)` so anchor dot lands at projected head point. Two CSS keyframes (`bio-pulse` 2.4 s, `bio-drift` 5.4 s) in `globals.css`; staggered per-label via `--label-phase` CSS var (hash mod 10 / 10). NPC `fadeBaseOpacity` 0.65 → 0.85. Building label: brighter glow (`0 0 22px`), longer tether (56 px), category sub-line. Fraunces loaded via `next/font/google` (`--font-fraunces`). Zero new per-frame allocations. | `world-labels-overlay.tsx`, `arena-buildings.tsx`, `arena-npcs.tsx`, `arena-location-npcs.tsx`, `globals.css`, `layout.tsx` |
-| Texture upload | `requestIdleCallback` with 6 ms time budget per slice. Before the 2026-05-25 Sandy GLB removal, live `/game?perf=1` reported 240 material texture refs. | `World3DCanvas.tsx:StaggeredTextureUpload` |
+| WorldLabelsOverlay projection | Full 60 Hz, single root, ResizeObserver-cached canvas size. Per-label: distance-fade opacity (linear, no allocations), 10 Hz building-occluder raycast (staggered by `occludePhase % 6`). **Label rig (bio-luminescent):** Fraunces-serif capsule + 38/56 px dashed-cyan tether + 5 px pulsing anchor dot. Rig uses `translateY(-50%)` so anchor dot lands at projected head point. Two CSS keyframes (`bio-pulse` 2.4 s, `bio-drift` 5.4 s) in `globals.css`; staggered per-label via `--label-phase` CSS var (hash mod 10 / 10). NPC `fadeBaseOpacity` 0.65 → 0.85. Building label: brighter glow (`0 0 22px`), longer tether (56 px), category sub-line. Fraunces loaded via `next/font/google` (`--font-fraunces`). Zero new per-frame allocations. | `world-labels-overlay.tsx`, `arena-buildings.tsx`, `arena-npcs.tsx`, `arena-location-npcs.tsx`, `globals.css`, `layout.tsx` |
+| Texture upload | `requestIdleCallback` with 6 ms time budget per slice. 98 textures via rIC = ~352 ms total (down from 8 s rAF-based). | `World3DCanvas.tsx:StaggeredTextureUpload` |
 
 ### 5e. Static meshes — `matrixAutoUpdate = false`
 
 Set during clone for every static object so `updateMatrixWorld` skips them:
-- 11 GLB buildings + their cloned children, plus the procedural Sandy Treedome (`arena-buildings.tsx`; Sandy GLB removed from production `/game` 2026-05-25)
+- All 12 buildings + their cloned children (`arena-buildings.tsx` — Phase 6.0.1: was 10)
 - 80 → 30 → 60 decoration groups + their merged children (`arena-terrain.tsx` — 2026-05-13 retune: 60 props in 1500–3800wu visible annulus, was 30 props in 2700–4500wu hidden behind ring buildings)
 - 3 underwater atmosphere meshes (when enabled) + 7 light ray cones
 - Bounty board (4 meshes), bazaar fish stall, marketplace stall, auction dome, auction podium
@@ -574,7 +572,7 @@ Lobster / crayfish GLB avatars don't participate (no swim/fly clip in their proc
 |---|---|
 | Plane size | `MAP_WIDTH × 3` × `MAP_HEIGHT × 3` = 34560 × 34560 wu (Phase 6.2: MAP_WIDTH=11520) |
 | Segments | 120 × 120 |
-| Material | `MeshBasicMaterial` with baked vertex colors + fog |
+| Material | `MeshStandardNodeMaterial` (TSL) |
 | Render Y | -2 |
 
 Dune field — summed sin/cos at three frequencies + per-vertex noise, baked into vertex positions:
@@ -596,12 +594,10 @@ SAND_DEEP   0x5c4a32  deep brown-black troughs
 ```
 `t = clamp((totalHeight + 28) / 56, 0, 1)`, interpolated through the ramp.
 
-2026-05-25 perf change: the old `MeshStandardNodeMaterial` TSL fragment shader
-was removed from the open-world sand floor. It used position-driven ripple
-noise, grain noise, a smoothstep height tint, and normal perturbation across
-the full screen. The current material relies on the baked vertex displacement
-and vertex color ramp above, so the visual read stays sandy while removing
-per-fragment shader work on desktop and mobile.
+TSL fragment shader (`createSandMaterial()`):
+- Position-driven ripple noise (`sin(px·0.07 + py·0.05)`)
+- Grain detail (`fract(sin(px·3.7 + py·7.3) · 43.758)`)
+- Smoothstep height blend (`smoothstep(-28, 28, h)`) between `warmSand(1.0, 0.91, 0.78)` and `coolDeep(0.25, 0.19, 0.12)`
 
 **Terrain raycast (NPC grounding):** the terrain mesh sets `layers = TERRAIN_LAYER (=1)`. Raycasters subscribed only to layer 1 — saves traversing the rest of the scene.
 
@@ -652,14 +648,14 @@ Called from `game/page.tsx` via `useEffect(() => { preloadWorldAssets(); }, [])`
 
 | Tier | When | Assets | Notes |
 |---|---|---|---|
-| **1 — critical** | Immediately | 11 building GLBs + procedural Sandy, 3 locomotion GLBs, 1 live wandering NPC GLB, 4 town-prop GLBs, 6 wandering VRM bytes | Parallel with canvas chunk download |
-| **2 — lazy player VRMs** | On active avatar mount or avatar-picker open | Selectable player VRM bytes (Milady×8 + Hermes×2 + Tekk + chibis) | Removed from `/game` boot on 2026-05-25 so unopened avatar choices do not consume network/cache/memory during play |
+| **1 — critical** | Immediately | 12 building GLBs, 3 locomotion GLBs, 8 wandering NPC GLBs, 4 town-prop GLBs, 6 wandering VRM bytes | Parallel with canvas chunk download |
+| **2 — deferred** | `setTimeout(0)` | 11 player VRM bytes (Milady×8 + Hermes×2 + Tekk) | Avoids contending with tier-1 HTTP/2 slots |
+| **2-lazy — chibi** | On `avatar.modelKey` | `eliza-chibi.vrm?v=2` (5.3 MB) + `milady-chibi.vrm?v=2` (5.6 MB) via `preloadChibiVrm()` | Only fetched when user's avatar IS a chibi (≈2% of players). Avatar picker also warms these on open. |
 | **3 — post-paint** | `rAF` via `DeferredTerrainPreloads` / `DeferredNpcPreloads` | 12 location NPC GLBs, 12 decoration GLBs | Handled by existing deferred hooks in `game/page.tsx` |
 
-**Player VRM rationale (2026-05-25):** the prior tier-2 loop fetched every selectable
-player VRM during `/game` boot. `useVRMInstance()` already fetches/parses the active
-avatar path on demand, and `SelectAgentCanvas` warms the full picker catalog when
-appearance editing opens, so the world boot path only needs live wandering VRMs.
+**WIN F rationale (2026-05-22):** eliza-chibi + milady-chibi were previously in the unconditional tier-2 loop — 10.8 MB fetched for every user on every page load. On Iris Xe the parse cost per VRM is estimated 150–400 ms at this file size. Moving them to the lazy tier saves these resources for non-chibi players (~98%).
+
+**SW cache manifest:** `WORLD_PRELOAD_MANIFEST` still includes `CHIBI_VRM_PATHS` so the service worker precaches them on first install — lazy fetches hit disk, not the network.
 
 ### 9c. Renderer factory
 
@@ -856,9 +852,6 @@ Draw-call budget (full equipped set): hat ≤ 1, aura ≤ 4 (instanced particles
 
 Compact log. Single line per change with commit reference where applicable.
 
-- 2026-05-25 — Reverted emergency perf round 3: wandering sea-creature GLBs and chibi/Hermes/Tekk wandering VRMs render as their original models again. Do not replace recognizable character/NPC visuals with procedural stand-ins without explicit product approval.
-- 2026-05-25 — Emergency perf round 2: sand floor switched from full-screen TSL `MeshStandardNodeMaterial` to baked-color `MeshBasicMaterial`; `/game` boot no longer eager-fetches the selectable player VRM catalog. Active VRM avatars and avatar-picker choices still load on demand.
-- 2026-05-25 — Label-overlay CPU fix: `world-labels-overlay.tsx` skips occlusion raycasts once distance fade already hides a label, reduces occlusion cadence from 10Hz (`%6`) to 2Hz (`%30`) with staggered phases, and reuses a module-scope raycast hit array to avoid per-label garbage.
 - 2026-05-21 — Quest+Bounty Pavilion: new `quest-bounty-pavilion.tsx` mounts the `Can You Dig It?` octagonal pavilion GLB (8.7 MB optimized from 35 MB raw via gltf-transform dedup→metalrough→resize 1024→webp). Position (0, groundedY, −1220) i.e. 1100 wu behind town-directory-sign. Size 1080 wu (matches stalls after their 15% reduction: 1020 / 1105). Left half-zone → `openQuestBoard()`, right half-zone → `openBountyBoard()`. Two bio-luminescent labels (cyan "Quests", amber "Bounties") above each half via WorldLabel rig. Standalone `bounty-board-object.tsx` removed; collider `bounty-board` (50, 0) → `quest-bounty-pavilion` (0, −1220) radius 320. World3DCanvas mount swapped. §2h prop colliders table updated.
 - 2026-05-19 — Phase 6.1.8 adversarial pass (3da-impl-2): MAX_RPS 4→2 (4 RPS = 1.6 planes/frame at 30fps = wagon-wheel strobe on Iris Xe); faceMaterials FrontSide→DoubleSide (prevents hollow-drum void visible through side planes). §10d spin phases + Iris Xe invariants updated.
 - 2026-05-19 — Phase 6.1.8 reconciler (3da-impl-2): BAR/BAR×2/BAR×3 emojis disambiguated (1️⃣/2️⃣/3️⃣ — were all identical 🎰); TILE_PX 128→192 for sharper mipmap steps (~2.1MB GPU). §10d textures entry updated.
