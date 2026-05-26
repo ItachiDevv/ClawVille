@@ -576,6 +576,27 @@ function PerfCameraPreset({
   return null;
 }
 
+function OpaqueCanvasClearGuard() {
+  const { camera, gl, scene } = useThree();
+  useEffect(() => {
+    let raf = 0;
+    let disposed = false;
+    const present = () => {
+      if (disposed) return;
+      gl.setClearColor(SKY_COLOR, 1);
+      gl.setClearAlpha?.(1);
+      gl.render(scene, camera);
+      raf = requestAnimationFrame(present);
+    };
+    raf = requestAnimationFrame(present);
+    return () => {
+      disposed = true;
+      cancelAnimationFrame(raf);
+    };
+  }, [camera, gl, scene]);
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // StaggeredTextureUpload — spread GPU texture uploads across idle time
 // ---------------------------------------------------------------------------
@@ -610,10 +631,13 @@ const TEXTURE_SLOTS = [
 ] as const;
 
 function StaggeredTextureUpload() {
-  const { gl, scene } = useThree();
+  const { camera, gl, scene } = useThree();
 
   useEffect(() => {
     const markTextureUploadReady = () => {
+      gl.setClearColor(SKY_COLOR, 1);
+      gl.setClearAlpha?.(1);
+      gl.render(scene, camera);
       if (typeof window === 'undefined') return;
       (window as any).__W3D_TEXTURES_READY = true;
       markWorldReadyIfUploadsDone();
@@ -726,7 +750,7 @@ function StaggeredTextureUpload() {
         (window as any).cancelIdleCallback(idleHandle);
       }
     };
-    // gl/scene are stable R3F refs — intentionally omitted from deps
+    // gl/scene/camera are stable R3F refs — intentionally omitted from deps
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -769,6 +793,8 @@ const SceneContents = memo(function SceneContents({
 
   return (
     <>
+      <OpaqueCanvasClearGuard />
+
       {/* Pre-compile WebGPU render pipelines once after the first frame commit.
           Eliminates the 274ms post-mount main-thread hitch. No-ops on WebGL. */}
       <PreCompilePipelines />
