@@ -149,6 +149,15 @@ function chunkNameFor(obj: THREE.Object3D): string {
   return top?.name || obj.name || 'unclassified';
 }
 
+function isEffectivelyVisible(obj: THREE.Object3D): boolean {
+  let cur: THREE.Object3D | null = obj;
+  while (cur) {
+    if (!cur.visible) return false;
+    cur = cur.parent;
+  }
+  return true;
+}
+
 function emptyChunk(name: string): PerfChunkCost {
   return {
     name,
@@ -188,7 +197,7 @@ export function auditThreeScene(scene: THREE.Scene, renderer: any): PerfSceneAud
   scene.updateMatrixWorld(false);
 
   scene.traverse((obj) => {
-    if (!obj.visible) return;
+    if (!isEffectivelyVisible(obj)) return;
 
     const mesh = obj as THREE.Mesh;
     if (!mesh.isMesh) return;

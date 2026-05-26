@@ -7,6 +7,7 @@
  */
 
 import * as THREE from 'three/webgpu';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 
 // 2026-05-21 — Bumped all sign geometry by ×1.4 per user direction
 // (was POST 14×280×14 / SPACING 280 / PLANK 380×190 / BACK 6).
@@ -29,6 +30,37 @@ const WOOD_COLOR = 0x7c4a1b;
 const postGeo = new THREE.BoxGeometry(POST_W, POST_H, POST_D);
 const plankBackGeo = new THREE.BoxGeometry(PLANK_W, PLANK_H, BACKING_D);
 const plankFaceGeo = new THREE.PlaneGeometry(PLANK_W, PLANK_H);
+
+function translatedGeometry(geometry: THREE.BufferGeometry, x: number, y: number, z: number) {
+  const clone = geometry.clone();
+  clone.clearGroups();
+  clone.applyMatrix4(new THREE.Matrix4().makeTranslation(x, y, z));
+  return clone;
+}
+
+const woodSignGeo =
+  mergeGeometries(
+    [
+      translatedGeometry(postGeo, -POST_SPACING / 2, POST_H / 2, 0),
+      translatedGeometry(postGeo, POST_SPACING / 2, POST_H / 2, 0),
+      translatedGeometry(plankBackGeo, 0, PLANK_Y, -BACKING_D / 2),
+    ],
+    false,
+  ) ?? plankBackGeo.clone();
+woodSignGeo.clearGroups();
+woodSignGeo.computeBoundingBox();
+woodSignGeo.computeBoundingSphere();
+
+const signGeo =
+  mergeGeometries(
+    [
+      woodSignGeo.clone(),
+      translatedGeometry(plankFaceGeo, 0, PLANK_Y, 12),
+    ],
+    true,
+  ) ?? woodSignGeo.clone();
+signGeo.computeBoundingBox();
+signGeo.computeBoundingSphere();
 
 const woodMat = new THREE.MeshBasicMaterial({ color: WOOD_COLOR });
 const faceMat = new THREE.MeshBasicMaterial({
@@ -58,26 +90,7 @@ export default function TownDirectorySign() {
   }
   return (
     <group position={[SIGN_X, SIGN_Y, SIGN_Z]} userData={{ isOccluder: true }}>
-      <mesh
-        geometry={postGeo}
-        material={woodMat}
-        position={[-POST_SPACING / 2, POST_H / 2, 0]}
-      />
-      <mesh
-        geometry={postGeo}
-        material={woodMat}
-        position={[POST_SPACING / 2, POST_H / 2, 0]}
-      />
-      <mesh
-        geometry={plankBackGeo}
-        material={woodMat}
-        position={[0, PLANK_Y, -BACKING_D / 2]}
-      />
-      <mesh
-        geometry={plankFaceGeo}
-        material={faceMat}
-        position={[0, PLANK_Y, 12]}
-      />
+      <mesh geometry={signGeo} material={[woodMat, faceMat]} />
     </group>
   );
 }
