@@ -320,6 +320,7 @@ export const useNpcStore = create<NpcStoreState>((set, get) => ({
   connected: false,
 
   setConnected: (v) => {
+    if (get().connected === v) return;
     set({ connected: v });
     if (v) {
       // Server connected — stop client wander. The server NPC sim now drives

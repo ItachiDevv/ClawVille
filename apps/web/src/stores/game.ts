@@ -656,10 +656,18 @@ export const useGameStore = create<GameState>((set, get) => ({
   closeShop: () => set({ shopOpen: false }),
 
   joystickVelocity: { x: 0, y: 0 },
-  setJoystickVelocity: (x, y) => set({ joystickVelocity: { x, y } }),
+  setJoystickVelocity: (x, y) => {
+    const current = get().joystickVelocity;
+    if (current.x === x && current.y === y) return;
+    set({ joystickVelocity: { x, y } });
+  },
 
   cameraJoystickVelocity: { x: 0, y: 0 },
-  setCameraJoystickVelocity: (x, y) => set({ cameraJoystickVelocity: { x, y } }),
+  setCameraJoystickVelocity: (x, y) => {
+    const current = get().cameraJoystickVelocity;
+    if (current.x === x && current.y === y) return;
+    set({ cameraJoystickVelocity: { x, y } });
+  },
 
   // SSR/client hydration safety — start as empty Set on BOTH server and
   // client. A top-level effect (game/page.tsx) calls
