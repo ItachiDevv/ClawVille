@@ -40,11 +40,13 @@ const MAP_HEIGHT = 11520;
 // Town-center anchor and the annulus (ring) free-roaming wanderers stay inside.
 // Buildings are on a ring at ~4160wu from center (R=130 tiles). Keep free
 // roamers in the open commons well inside that ring so they do not path to
-// building walls or look like they have nowhere meaningful to go.
+// building walls or look like they have nowhere meaningful to go. The inner
+// radius keeps random wander targets off the dense Nori/bazaar/pavilion prop
+// cluster; AABB snapping still handles approach targets that pass closer.
 const TOWN_CENTER_X = MAP_WIDTH / 2;       // 5760
 const TOWN_CENTER_Y = MAP_HEIGHT / 2;      // 5760
-const FREE_ROAMER_MIN_RADIUS = 1700;
-const FREE_ROAMER_MAX_RADIUS = 3000;
+const FREE_ROAMER_MIN_RADIUS = 900;
+const FREE_ROAMER_MAX_RADIUS = 2400;
 
 const FREE_ROAMER_IDS = new Set(
   NPC_DEFINITIONS.filter((def) => def.buildingId === '').map((def) => def.id),
