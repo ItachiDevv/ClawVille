@@ -37,6 +37,8 @@
  */
 
 import {
+  Children,
+  isValidElement,
   useEffect,
   useMemo,
   useRef,
@@ -59,6 +61,7 @@ interface LabelEntry {
   offset: [number, number, number];
   visible: boolean;
   content: ReactNode;
+  contentSignature: string;
   className: string | undefined;
   pointerEvents: 'none' | 'auto';
   /** Public ref the consumer holds; LabelView writes its real DOM node here. */
@@ -87,6 +90,8 @@ interface LabelEntry {
   occludePhase: number;
   /** Cached occlude result — updated at 2Hz, read every frame. */
   _occludeResult: boolean;
+  /** Whether the projection pass currently keeps this label displayed. */
+  _active: boolean;
 }
 
 const _registry = new Map<string, LabelEntry>();
@@ -97,6 +102,11 @@ let _labelRenderWindowStart = 0;
 let _labelRenderCount = 0;
 let _labelRenderRate = 0;
 let _overlayActive = false;
+
+const LABEL_HARD_CULL_FAR = 6500;
+const LABEL_FULL_RATE_FAR = 3500;
+const LABEL_MID_DISTANCE_FRAME_MOD = 3;
+const LABEL_NDC_MARGIN = 1.15;
 
 function _recordLabelRender(): void {
   if (typeof performance === 'undefined') return;
@@ -112,10 +122,70 @@ function _recordLabelRender(): void {
 }
 
 export function getWorldLabelPerfStats(): { labelCount: number; reactRendersPerSec: number } {
+  if (typeof performance !== 'undefined' && _labelRenderWindowStart > 0) {
+    const elapsed = performance.now() - _labelRenderWindowStart;
+    if (elapsed >= 1000) {
+      _labelRenderRate = _labelRenderCount > 0 ? (_labelRenderCount * 1000) / elapsed : 0;
+      _labelRenderCount = 0;
+      _labelRenderWindowStart = performance.now();
+    }
+  }
+  const activeLabelCount = _overlayActive
+    ? Array.from(_registry.values()).filter((entry) => entry._active).length
+    : 0;
   return {
-    labelCount: _overlayActive ? _registry.size : 0,
+    labelCount: activeLabelCount,
     reactRendersPerSec: _overlayActive ? Math.round(_labelRenderRate * 10) / 10 : 0,
   };
+}
+
+function _styleSignature(style: unknown): string {
+  if (!style || typeof style !== 'object') return '';
+  const record = style as Record<string, unknown>;
+  return Object.keys(record)
+    .sort()
+    .map((key) => `${key}:${String(record[key])}`)
+    .join(';');
+}
+
+function _contentSignature(node: ReactNode, depth = 0): string {
+  if (node == null || typeof node === 'boolean') return '';
+  if (typeof node === 'string' || typeof node === 'number') return String(node);
+  if (Array.isArray(node)) {
+    return node.map((child) => _contentSignature(child, depth + 1)).join('|');
+  }
+  if (isValidElement(node)) {
+    const typeName = typeof node.type === 'string'
+      ? node.type
+      : ((node.type as { displayName?: string; name?: string }).displayName
+        ?? (node.type as { name?: string }).name
+        ?? 'component');
+    const props = node.props as {
+      children?: ReactNode;
+      className?: string;
+      style?: unknown;
+      ['data-bio-capsule']?: unknown;
+    };
+    const children = depth > 12
+      ? ''
+      : Children.toArray(props.children).map((child) => _contentSignature(child, depth + 1)).join('|');
+    return [
+      typeName,
+      props.className ?? '',
+      props['data-bio-capsule'] != null ? 'bio' : '',
+      _styleSignature(props.style),
+      children,
+    ].join(':');
+  }
+  return typeof node;
+}
+
+function _hideEntry(entry: LabelEntry, div: HTMLDivElement): void {
+  entry._active = false;
+  if (entry._prevDisplay !== 'none') {
+    div.style.display = 'none';
+    entry._prevDisplay = 'none';
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -366,19 +436,13 @@ export function WorldLabelsOverlayMount() {
       if (!div) return;
 
       if (!entry.visible) {
-        if (entry._prevDisplay !== 'none') {
-          div.style.display = 'none';
-          entry._prevDisplay = 'none';
-        }
+        _hideEntry(entry, div);
         return;
       }
 
       const anchor = entry.anchorRef.current;
       if (!anchor) {
-        if (entry._prevDisplay !== 'none') {
-          div.style.display = 'none';
-          entry._prevDisplay = 'none';
-        }
+        _hideEntry(entry, div);
         return;
       }
 
@@ -391,6 +455,17 @@ export function WorldLabelsOverlayMount() {
       // _scratchAnchorWorld holds the world-space anchor for the occlusion ray.
       _scratchAnchorWorld.copy(_scratchPos);
       const distToCamera = camera.position.distanceTo(_scratchAnchorWorld);
+      if (distToCamera > LABEL_HARD_CULL_FAR) {
+        _hideEntry(entry, div);
+        return;
+      }
+
+      if (
+        distToCamera > LABEL_FULL_RATE_FAR &&
+        (_occFrameCounter + entry.occludePhase) % LABEL_MID_DISTANCE_FRAME_MOD !== 0
+      ) {
+        return;
+      }
 
       // Compute target opacity from distance band.
       let targetOpacity: number;
@@ -406,10 +481,7 @@ export function WorldLabelsOverlayMount() {
       // If distance fade already hides the label, skip projection and the
       // expensive occlusion raycast entirely.
       if (targetOpacity < 0.01) {
-        if (entry._prevDisplay !== 'none') {
-          div.style.display = 'none';
-          entry._prevDisplay = 'none';
-        }
+        _hideEntry(entry, div);
         return;
       }
 
@@ -426,21 +498,21 @@ export function WorldLabelsOverlayMount() {
 
       // If occlusion made it fully transparent, hide the div entirely.
       if (targetOpacity < 0.01) {
-        if (entry._prevDisplay !== 'none') {
-          div.style.display = 'none';
-          entry._prevDisplay = 'none';
-        }
+        _hideEntry(entry, div);
         return;
       }
 
       _scratchPos.project(camera);
 
       // NDC z > 1 → behind near plane → hide.
-      if (_scratchPos.z > 1) {
-        if (entry._prevDisplay !== 'none') {
-          div.style.display = 'none';
-          entry._prevDisplay = 'none';
-        }
+      if (
+        _scratchPos.z > 1 ||
+        _scratchPos.x < -LABEL_NDC_MARGIN ||
+        _scratchPos.x > LABEL_NDC_MARGIN ||
+        _scratchPos.y < -LABEL_NDC_MARGIN ||
+        _scratchPos.y > LABEL_NDC_MARGIN
+      ) {
+        _hideEntry(entry, div);
         return;
       }
 
@@ -451,6 +523,7 @@ export function WorldLabelsOverlayMount() {
         div.style.display = 'block';
         entry._prevDisplay = 'block';
       }
+      entry._active = true;
 
       if (
         Math.abs(cssX - entry._prevX) >= 0.5 ||
@@ -546,6 +619,7 @@ export function useWorldLabel({
       offset: [offset[0], offset[1], offset[2]],
       visible: initialVisible,
       content: null,
+      contentSignature: '',
       className: undefined,
       pointerEvents: 'none',
       divRef,
@@ -560,6 +634,7 @@ export function useWorldLabel({
       // Stagger phase based on registry size at registration time (0–29).
       occludePhase: _registry.size % 30,
       _occludeResult: false,
+      _active: false,
     };
     _registry.set(id, entry);
     _refToId.set(divRef, id);
@@ -648,8 +723,10 @@ export function WorldLabel({
     if (!entry) return;
 
     let dirty = false;
-    if (entry.content !== children) {
+    const contentSignature = _contentSignature(children);
+    if (entry.contentSignature !== contentSignature) {
       entry.content = children;
+      entry.contentSignature = contentSignature;
       dirty = true;
     }
     if (entry.className !== className) {
