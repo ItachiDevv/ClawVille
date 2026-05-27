@@ -420,7 +420,7 @@ preloadMixamoClips();
 // ---------------------------------------------------------------------------
 // Single NPC using GLB model with terrain following
 // ---------------------------------------------------------------------------
-const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
+export const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
   const groupRef = useRef<THREE.Group>(null!);
   const animGroupRef = useRef<THREE.Group>(null!);
   // Layer 2 safety net: one-shot rendered-height hard cap applied after first render.
@@ -898,7 +898,7 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
 // Do NOT render two VRMNpcMesh components with the same VRM path — they would
 // share vrm.scene and clobber each other's position/animation state every frame.
 // The 2 demo Milady NPCs intentionally use different paths (official_7 / official_8).
-const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
+export const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
   const groupRef = useRef<THREE.Group>(null!);
   const { scene: threeScene } = useThree();
   const npcRef = useRef(npc);
@@ -1324,6 +1324,37 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
 // ---------------------------------------------------------------------------
 // Main export
 // ---------------------------------------------------------------------------
+
+import { useLodStore } from '@/stores/lod';
+import { NpcProxy } from '@/lib/three/remote-player-proxy';
+
+// Per-NPC entry — subscribes to its own LOD tier so a single NPC flipping
+// full↔proxy doesn't re-render any sibling. Mirrors the player-side
+// `RemotePlayerEntry` in `remote-players.tsx`.
+const NpcEntry = memo(function NpcEntry({ npc }: { npc: NpcSpriteState }) {
+  const isFull = useLodStore((s) => s.fullSet.has(npc.id));
+  // The possessed player NPC (NPC mode) always renders full — the LOD
+  // orchestrator excludes it from the candidate pool, so isFull will be
+  // false unless we force-allow here. Player input drives that mesh, so
+  // demoting it to a capsule mid-play is unacceptable.
+  const forceFull = npc.id === PLAYER_NPC_ID;
+  const showFull = forceFull || isFull;
+
+  if (!showFull) {
+    return <NpcProxy npc={npc} />;
+  }
+
+  const regEntry = MODEL_REGISTRY[npc.species as keyof typeof MODEL_REGISTRY];
+  if (regEntry?.avatar_type === 'vrm') {
+    return (
+      <Suspense fallback={null}>
+        <VRMNpcMesh npc={npc} />
+      </Suspense>
+    );
+  }
+  return <GLBNpcMesh npc={npc} />;
+});
+
 export default function ArenaNpcs() {
   // useShallow on the npcs array — combined with NPC-identity preservation in
   // updateFromSnapshot (see stores/npc.ts npcFieldsEqual), this skips re-renders
@@ -1342,26 +1373,14 @@ export default function ArenaNpcs() {
     ? allNpcs
     : allNpcs.filter((n) => n.id !== PLAYER_NPC_ID);
 
-  // (NPC count cap removed 2026-05-22 per user direction — was a bad fix.
-  // Wandering NPCs render uncapped regardless of GPU class.)
   const npcs = unposessedNpcs;
 
   return (
     <Suspense fallback={null}>
       <group>
-        {npcs.map((npc) => {
-          // Route to VRM renderer if the species maps to a VRM entry in the registry.
-          // All other species fall through to the existing GLB renderer.
-          const regEntry = MODEL_REGISTRY[npc.species as keyof typeof MODEL_REGISTRY];
-          if (regEntry?.avatar_type === 'vrm') {
-            return (
-              <Suspense key={npc.id} fallback={null}>
-                <VRMNpcMesh npc={npc} />
-              </Suspense>
-            );
-          }
-          return <GLBNpcMesh key={npc.id} npc={npc} />;
-        })}
+        {npcs.map((npc) => (
+          <NpcEntry key={npc.id} npc={npc} />
+        ))}
       </group>
     </Suspense>
   );
