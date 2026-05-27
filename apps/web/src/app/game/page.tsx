@@ -6,7 +6,7 @@ import Link from 'next/link';
 import { useQuery } from '@tanstack/react-query';
 import { useAvatar } from '@/hooks/use-avatar';
 import { useMiladyEmbed } from '@/hooks/use-milady-embed';
-import { useNpcStream } from '@/hooks/use-npc-stream';
+import { useWorldStream } from '@/hooks/use-world-stream';
 import { useGameStore, type GameState } from '@/stores/game';
 import { useQuestStore } from '@/stores/quest';
 import { api } from '@/lib/api';
@@ -320,8 +320,11 @@ export default function GamePage() {
     }
   }, [agentSession]);
 
-  // NPC SSE stream — populates npc store for NPC mode possession + rendering
-  useNpcStream();
+  // Multiplayer world stream — REPLACES the legacy useNpcStream. Drives
+  // BOTH the NPC store (room-filtered roster + conversations + combats + events)
+  // AND the player store (remote viewers in the same room). Uploads the local
+  // avatar position at 5 Hz so other clients can render us.
+  useWorldStream();
 
   // Connect to research thought stream
   useResearchStream();
