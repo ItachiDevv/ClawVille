@@ -58,6 +58,7 @@ import { useRouter } from 'next/navigation';
 import { MAP_LOCATIONS, AVATAR_SPECIES, KNOWLEDGE_BOOKS } from '@clawville/shared';
 import { RuneFrame, RpgButton, RpgModal, RpgTooltip, getRarity, type RarityId } from '@/components/rpg';
 import { useGameStore, type GameState } from '@/stores/game';
+import { usePlayerStore } from '@/stores/players';
 import { useLocationAgent } from '@/hooks/use-locations';
 import { useAvatar } from '@/hooks/use-avatar';
 import { api } from '@/lib/api';
@@ -253,6 +254,117 @@ function CharacterFrame({ onCreateAvatar }: { onCreateAvatar: () => void }) {
           {tokens.toLocaleString()}
         </span>
       </div>
+
+      {/* Multiplayer Phase 1 — room code chip + invite-friends button. Renders
+          beneath the ClawTokens strip so it sits in the same per-player metadata
+          block. Chip shows the assigned 4-char roomId; button copies a shareable
+          deeplink to the clipboard. */}
+      <RoomCodeChip />
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// RoomCodeChip — displays the current multiplayer room code + an "Invite
+// Friends" button that copies ${origin}/game?room=CODE to the clipboard.
+// Mounted inside CharacterFrame so it inherits the player-metadata block.
+// ---------------------------------------------------------------------------
+
+function RoomCodeChip() {
+  const roomId = usePlayerStore((s) => s.roomId);
+  const addToast = useGameStore((s) => s.addToast);
+
+  if (!roomId) return null;
+
+  const handleCopy = () => {
+    if (typeof window === 'undefined') return;
+    const url = `${window.location.origin}/game?room=${roomId}`;
+    const fallback = () => {
+      // Some browsers (older Safari) require user-gesture + execCommand. The
+      // sidebar click IS the gesture; this catches the rare case where
+      // clipboard-write is blocked by permissions.
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = url;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+        addToast('🔗', `Invite link copied — ${roomId}`);
+      } catch {
+        addToast('⚠️', 'Clipboard blocked — share manually');
+      }
+    };
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(url).then(
+        () => addToast('🔗', `Invite link copied — ${roomId}`),
+        fallback,
+      );
+    } else {
+      fallback();
+    }
+  };
+
+  return (
+    <div
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        gap: 8,
+        padding: '6px 10px',
+        marginTop: 6,
+        borderRadius: 6,
+        background: 'rgba(10, 22, 40, 0.65)',
+        border: '1px solid rgba(56, 189, 248, 0.25)',
+      }}
+    >
+      <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+        <span
+          style={{
+            fontSize: 9,
+            letterSpacing: '0.16em',
+            textTransform: 'uppercase',
+            color: 'rgba(56, 189, 248, 0.7)',
+            fontWeight: 700,
+          }}
+        >
+          Room
+        </span>
+        <span
+          style={{
+            fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+            fontSize: 13,
+            fontWeight: 700,
+            color: '#38bdf8',
+            letterSpacing: '0.18em',
+          }}
+        >
+          {roomId}
+        </span>
+      </div>
+      <button
+        type="button"
+        onClick={handleCopy}
+        title="Copy invite link to clipboard"
+        style={{
+          fontFamily: 'var(--font-orbitron, ui-sans-serif), sans-serif',
+          fontSize: 10,
+          fontWeight: 700,
+          letterSpacing: '0.12em',
+          textTransform: 'uppercase',
+          color: '#effeff',
+          background: 'rgba(56, 189, 248, 0.18)',
+          border: '1px solid rgba(56, 189, 248, 0.45)',
+          borderRadius: 4,
+          padding: '4px 8px',
+          cursor: 'pointer',
+        }}
+      >
+        Invite
+      </button>
     </div>
   );
 }
