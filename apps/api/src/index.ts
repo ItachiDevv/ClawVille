@@ -69,6 +69,8 @@ import { coveSlotsRouter } from './routes/cove-slots';
 import { coveBlackjackRouter } from './routes/cove-blackjack';
 // Phase 6.5.0 — cove Texas Hold'em mock route (visual shell, no engine yet).
 import { coveHoldemRouter } from './routes/cove-holdem';
+// Phase 6.7.0 — cove cross-game history + per-event provable-fair verifier.
+import { coveHistoryRouter } from './routes/cove-history';
 import type { AppContext } from './types';
 
 const app = new Hono<AppContext>();
@@ -210,6 +212,9 @@ app.route('/api/cove/slots', coveSlotsRouter);
 app.route('/api/cove/blackjack', coveBlackjackRouter);
 // Phase 6.5.0 — cove Texas Hold'em mock (visual shell; pokerpocket engine in 6.5.1).
 app.route('/api/cove/holdem', coveHoldemRouter);
+// Phase 6.7.0 — cross-game history (owner-only list + owner|admin verify).
+// Slots integration ships in-line with this mount (see cove-slots.ts spin txn).
+app.route('/api/cove/history', coveHistoryRouter);
 // Phase 5.1 — admin identity recovery stub. Returns 501 behind a
 // FEATURE_GATE until the support-chat verification workflow lights up.
 app.route('/api/admin', adminIdentityRoutes);

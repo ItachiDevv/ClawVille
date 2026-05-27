@@ -86,6 +86,7 @@ import {
   avatars,
   slotSessions,
   slotSpins,
+  coveGameEvents,
   type SlotSession,
 } from '@clawville/database';
 import {
@@ -930,6 +931,60 @@ coveSlotsRouter.post('/spin', requireAuth, async (c) => {
         throw new HTTPException(500, { message: 'spin_insert_failed' });
       }
 
+      // Phase 6.7.0 — same-transaction write to the cross-game history
+      // table. cove_game_events is a parallel write to slot_spins (NOT a
+      // replacement) so the existing slot-spin replay flow keeps working
+      // and a revert of 6.7.0 leaves slot_spins untouched (plan §6 revert
+      // policy). revealedServerSeed stays null until /session/close flips
+      // session.status — that's the commit-reveal contract (plan §0 #2).
+      // engineVersion mirrors slot_spins.paytableVersion so the verifier
+      // can pin against the correct historical engine on replay.
+      await tx.insert(coveGameEvents).values({
+        userId: user.id,
+        gameType: 'slots',
+        sessionId: session.id,
+        shoeId: session.id, // slots: one session == one shoe
+        // betAmount + payout are TEXT-stringified bigints in the schema
+        // (matches slot_spins.win_amount / slot_sessions.starting_balance).
+        betAmount: predictBig.toString(),
+        payout: winAmountStr,
+        outcomeJson: {
+          // Discriminator for the cross-game outcomeJson union (plan §9 risk
+          // "outcomeJson schema drift"). Browser verifier's `isSlotsOutcome`
+          // guard branches on `kind === 'slots'` as its first check. Backfill
+          // emits the same field — live + backfilled rows share one schema.
+          kind: 'slots',
+          // paytableId is captured here so the cross-game verifier (which
+          // doesn't know about slot_sessions) can route to the right paytable
+          // version. See cove-history.ts extractSlotPaytableId().
+          paytableId: session.paytableId,
+          reels: spinResult.reels,
+          winningLines: winningLinesJson,
+          winAmount: winAmountStr,
+          isFreeSpin: spinResult.isFreeSpin,
+          wildMultipliers: wildMultipliersJson,
+          scatterPayout: spinResult.scatterPayout.toString(),
+          // Engine-replay inputs embedded for the BROWSER verifier (canonical
+          // surface per plan §0 #5). Without these the client-side
+          // `isSlotsOutcome` guard rejects the row and the verifier shows
+          // an error instead of replaying. Server-side /verify can read
+          // cursorBefore from slot_spins as a fallback; embedding here lets
+          // the browser run without a second round-trip and matches the
+          // engine-version pin pattern (plan §9 #engine drift).
+          cursorBefore: session.cursorCounter,
+          cursorAfter: spinResult.cursorAfter,
+          predict: predictBig.toString(),
+          nonce: session.nonceCounter,
+          paytableVersion: spinRow.paytableVersion,
+        },
+        serverSeedHash: session.serverSeedHash,
+        revealedServerSeed: null,
+        clientSeed: session.clientSeed,
+        nonce: session.nonceCounter,
+        txSignature: null,
+        engineVersion: `slot-engine-${spinRow.paytableVersion ?? 'v2'}`,
+      });
+
       // Update session counters.
       const newNonce = session.nonceCounter + 1;
       const newCursor = spinResult.cursorAfter;
@@ -1196,6 +1251,23 @@ coveSlotsRouter.post('/session/close', requireAuth, async (c) => {
     if (!closed) {
       throw new HTTPException(500, { message: 'session_close_failed' });
     }
+
+    // Phase 6.7.0 — reveal the serverSeed on every cove_game_events row
+    // for this session. The commit-reveal contract (plan §0 #2) requires
+    // that once the shoe closes, the revealed preimage is published so
+    // any third party can run sha256(revealedServerSeed) === serverSeedHash
+    // and replay each spin deterministically. This UPDATE runs in the
+    // same transaction as the session close so the two states never drift.
+    await tx
+      .update(coveGameEvents)
+      .set({ revealedServerSeed: closed.serverSeed })
+      .where(
+        and(
+          eq(coveGameEvents.sessionId, session.id),
+          eq(coveGameEvents.gameType, 'slots'),
+        ),
+      );
+
     return { closedSession: closed, finalBalance: finalBal };
   });
 
