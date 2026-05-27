@@ -399,7 +399,14 @@ const computeVRMNpcScale = computeVRMAvatarFit;
 // instance per path. The 5 paths below cover both the live NPC roster AND the
 // retired Milady paths still selectable in the player-avatar picker (preloading
 // _3/_4 is cheap and avoids T-pose hitches when a guest picks them).
+// Full 8-Milady wanderer cast (restored 2026-05-27) — every path distinct,
+// no instance sharing via the vrm-loader cache.
+preloadVRMBytes('/avatars/milady-official-1.vrm');
 preloadVRMBytes('/avatars/milady-official-2.vrm');
+preloadVRMBytes('/avatars/milady-official-3.vrm');
+preloadVRMBytes('/avatars/milady-official-4.vrm');
+preloadVRMBytes('/avatars/milady-official-5.vrm');
+preloadVRMBytes('/avatars/milady-official-6.vrm');
 preloadVRMBytes('/avatars/milady-official-7.vrm');
 preloadVRMBytes('/avatars/milady-official-8.vrm');
 // Hermes wanderers (Mira / Cyrus / Tekk) — re-added 2026-05-12 PM after the
