@@ -11,6 +11,7 @@ import { chatRoutes } from './routes/chat';
 import { transientChatRoutes } from './routes/chat-transient';
 import { itemRoutes } from './routes/items';
 import { npcRoutes } from './routes/npc-sse';
+import { worldRoutes } from './routes/world';
 import { openclawRoutes } from './routes/openclaw';
 import { activityRoutes } from './routes/activity';
 import { activitiesV2Routes } from './routes/activities';
@@ -164,6 +165,8 @@ app.route('/api/items', itemRoutes);
 app.route('/api/cosmetics', cosmeticsRoutes);
 app.route('/api/dash-auth', dashAuthRoutes);
 app.route('/api/npc', npcRoutes);
+// Multiplayer Phase 1 — room registry + per-room snapshot SSE.
+app.route('/api/world', worldRoutes);
 app.route('/api/openclaw', openclawRoutes);
 app.route('/api/avatars', activityRoutes);
 // Q2 Activity Portals — chunk #2 backend skeleton (REST routes; WS hub

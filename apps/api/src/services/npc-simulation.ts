@@ -32,6 +32,8 @@ import {
   type CollaborationLogEntry,
 } from '@clawville/agent-runtime';
 import type { OpenClawClient } from './openclaw-client';
+import { roomRegistry, FREE_ROAMER_NPC_IDS } from './room-registry';
+import type { PlayerSnapshot } from '@clawville/shared';
 
 // Map dimensions — Phase 6.2 (2026-05-18): 360×360 grid of 32px tiles = 11520×11520 world.
 const MAP_WIDTH = 11520;
@@ -161,6 +163,15 @@ export interface SimulationEvent {
 }
 
 export interface SimulationSnapshot {
+  /**
+   * Multiplayer Phase 1 — set on per-room snapshots from
+   * `getRoomSnapshot(roomId)`. Legacy callers of `getSnapshot()` see this as
+   * an empty string. SSE consumers should always read this off the parsed
+   * payload rather than trusting URL state alone.
+   */
+  roomId: string;
+  /** Remote players in the same room (always empty for the global snapshot). */
+  players: PlayerSnapshot[];
   npcs: NpcRuntimeState[];
   conversations: NpcConversation[];
   combats: NpcCombat[];
@@ -190,7 +201,20 @@ class NpcSimulation {
   private npcs: Map<string, NpcRuntimeState> = new Map();
   private conversations: Map<string, NpcConversation> = new Map();
   private combats: Map<string, NpcCombat> = new Map();
+  /**
+   * Legacy global listener bucket — receives the room-less snapshot via
+   * `getSnapshot()`. Kept so the existing `/api/npc/stream` SSE route can
+   * stay live during the multiplayer rollout. New consumers should
+   * `addRoomListener(roomId, fn)` instead.
+   */
   private listeners: Set<SSEListener> = new Set();
+  /**
+   * Multiplayer Phase 1 — per-room SSE buckets. Each room ID maps to the
+   * set of listeners attached to `/api/world/:roomId/stream`. tick() loops
+   * over rooms and broadcasts a per-room snapshot (NPC roster filtered to
+   * `room.npcs`, players from RoomRegistry).
+   */
+  private roomListeners: Map<string, Set<SSEListener>> = new Map();
   private intervalId: ReturnType<typeof setInterval> | null = null;
   private arenaMode = false;
   private tickCount = 0;
@@ -277,12 +301,34 @@ class NpcSimulation {
   removeListener(listener: SSEListener) { this.listeners.delete(listener); }
 
   /**
+   * Multiplayer Phase 1 — subscribe to per-room snapshot broadcasts. The
+   * caller is responsible for matching `removeRoomListener(roomId, fn)` on
+   * SSE disconnect — leaked listeners pile up forever.
+   */
+  addRoomListener(roomId: string, listener: SSEListener) {
+    let bucket = this.roomListeners.get(roomId);
+    if (!bucket) {
+      bucket = new Set();
+      this.roomListeners.set(roomId, bucket);
+    }
+    bucket.add(listener);
+  }
+  removeRoomListener(roomId: string, listener: SSEListener) {
+    const bucket = this.roomListeners.get(roomId);
+    if (!bucket) return;
+    bucket.delete(listener);
+    if (bucket.size === 0) this.roomListeners.delete(roomId);
+  }
+
+  /**
    * Read-only snapshot — safe for non-broadcast callers (avatar chat context,
    * agent gateway perception, REST /api/npc/state, etc.). Does NOT drain
    * the collaboration broker queue; collaborationEvents is always empty.
    */
   getSnapshot(): SimulationSnapshot {
     return {
+      roomId: '',
+      players: [],
       npcs: Array.from(this.npcs.values()).map((n) => ({ ...n })),
       conversations: Array.from(this.conversations.values()).filter((c) => c.state === 'active').map((c) => ({ ...c, messages: [...c.messages] })),
       combats: Array.from(this.combats.values()).filter((c) => c.state === 'active').map((c) => ({ ...c, rounds: [...c.rounds] })),
@@ -294,6 +340,34 @@ class NpcSimulation {
       collaborationEvents: [],
       timestamp: Date.now(),
     };
+  }
+
+  /**
+   * Multiplayer Phase 1 — same payload as `getSnapshot()` but:
+   *   - `npcs` is filtered to the room's swap-eligible roster + every
+   *     building resident (residents are always present in every room).
+   *   - `players` is the room's PlayerSnapshot[] from the RoomRegistry.
+   *   - `roomId` is stamped onto the payload so SSE clients can verify
+   *     they're seeing the room they think they are.
+   *
+   * Behavior when the room doesn't exist: returns a snapshot with the
+   * legacy roster (every NPC, no players). This keeps backwards-compat
+   * paths like the `solo-${sessionId}` alias from the npc-sse shim working
+   * even before the explicit `POST /api/world/join` lands.
+   */
+  getRoomSnapshot(roomId: string): SimulationSnapshot {
+    const room = roomRegistry.getRoom(roomId);
+    const base = this.getSnapshot();
+    base.roomId = roomId;
+    base.players = roomRegistry.getPlayerSnapshots(roomId);
+    if (room) {
+      base.npcs = base.npcs.filter((n) => {
+        // Always include building residents — they're never swap-eligible.
+        if (!FREE_ROAMER_NPC_IDS.has(n.id)) return true;
+        return room.npcs.has(n.id);
+      });
+    }
+    return base;
   }
 
   /**
@@ -1775,6 +1849,29 @@ class NpcSimulation {
     // Use the broadcast-specific snapshot that drains the collaboration
     // broker queue. Non-broadcast callers (avatar chat, agent gateway, REST)
     // must NOT call this method to avoid losing collab events.
+    //
+    // Phase 1 multiplayer — we run the registry's GC pass here so empty
+    // rooms / stale players are reaped at the same 5 Hz cadence as the
+    // snapshot publish, then broadcast per-room first (the new path) and
+    // the legacy global bucket (the npc-sse shim) afterwards. The
+    // collaboration-broker drain happens in the global path; per-room
+    // snapshots see `collaborationEvents: []` so two SSE consumers can't
+    // race for the same drained entries.
+    roomRegistry.tick();
+
+    for (const [roomId, bucket] of this.roomListeners) {
+      if (bucket.size === 0) continue;
+      const snapshot = this.getRoomSnapshot(roomId);
+      for (const listener of bucket) {
+        try {
+          listener(snapshot);
+        } catch {
+          bucket.delete(listener);
+        }
+      }
+    }
+
+    if (this.listeners.size === 0) return;
     const snapshot = this.buildBroadcastSnapshot();
     for (const listener of this.listeners) {
       try {
