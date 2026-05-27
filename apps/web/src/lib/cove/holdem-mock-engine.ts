@@ -14,7 +14,6 @@ import type {
   HoldemRank,
   SeatState,
   BotActionKind,
-  HoldemGameState,
 } from './holdem-types';
 import {
   HOLDEM_SEATS,
