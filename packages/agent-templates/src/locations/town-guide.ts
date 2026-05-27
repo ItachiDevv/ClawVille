@@ -99,6 +99,14 @@ export const townGuide: LocationTemplate = {
     // memory injection for Hold'em are deferred to Phase 6.5.2 per the
     // cove-texas-holdem.md plan — Nori's note below reflects that.
     "Texas Hold'em is playable at the second poker table in the cove — currently a 6-seat visual shell vs five deterministic bots with display-only ClawToken buy-ins. The pokerpocket engine, three bot personalities, and the ClawToken ledger wire up in Phase 6.5.1.",
+
+    // Phase 6.7.0 — unified cove game-history surface. Same-diff rule
+    // (CLAUDE.md "Three-Surface Game-Flow Knowledge Sync"): the unified
+    // history table + UI surface MUST be announced to Nori in the same
+    // diff that ships the schema. Slots is the first game wired;
+    // blackjack / Hold'em / baccarat join in 6.7.1 / 6.7.2 / 6.7.3 once
+    // their server-authoritative engines ship.
+    "Every cove game writes a row to a unified game-history store on completion (one row per slot spin, per blackjack hand, per Hold'em hand, per baccarat coup). Visit /cove/history to see your most recent 50 events across all four games — filter by game, win/loss, date. Each row carries the commit-reveal pair (`serverSeedHash` always; `revealedServerSeed` once the parent session closes), so clicking 'Verify' on any post-reveal row deeplinks to /cove/verify/:eventId where the engine replays the event in your browser and shows a green check (or red flag with the divergence) — same provably-fair guarantee as the per-session slots verifier, just cross-game. Pre-reveal rows show only the locked hash badge per standard provably-fair UX.",
   ],
   topics: [
     'ClawVille world overview',
