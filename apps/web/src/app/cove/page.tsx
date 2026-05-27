@@ -31,6 +31,7 @@ import Link from 'next/link';
 import SceneTransition, { useSceneTransition } from '@/components/transitions/SceneTransition';
 import SlotScreenModal from '@/components/cove/SlotScreenModal';
 import BlackjackModal from '@/components/cove/blackjack/BlackjackModal';
+import HoldemModal from '@/components/cove/holdem/HoldemModal';
 import { useAvatar } from '@/hooks/use-avatar';
 import { useGameStore } from '@/stores/game';
 
@@ -230,6 +231,12 @@ export default function CovePage() {
           Real engine + per-card decisions land in Phase 6.4.1. */}
       <BlackjackModal />
 
+      {/* Phase 6.5.0 — Texas Hold'em table modal (6-seat visual shell,
+          display-only ClawTokens). Same z-index policy as the other game
+          modals. Real pokerpocket engine + bot personalities + ClawToken
+          ledger integration land in Phase 6.5.1. */}
+      <HoldemModal />
+
       {/* Interior branding — bottom-center */}
       <div
         style={{
@@ -255,7 +262,7 @@ export default function CovePage() {
             Predictive Gaming Cove
           </span>
           <span style={{ color: 'rgba(255,255,255,0.35)', fontSize: 11, marginLeft: 8 }}>
-            Slots · Blackjack
+            Slots · Blackjack · Hold&apos;em
           </span>
         </div>
       </div>
