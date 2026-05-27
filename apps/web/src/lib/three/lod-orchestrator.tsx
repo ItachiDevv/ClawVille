@@ -43,14 +43,64 @@ const _frustum = new THREE.Frustum();
 const _projScreenMatrix = new THREE.Matrix4();
 const _entitySphere = new THREE.Sphere(new THREE.Vector3(), 200);
 
+/**
+ * Candidate object pool — pre-allocated at module scope so the per-frame
+ * useFrame can FILL existing entries (`.id = ...; .distSq = ...`) instead of
+ * allocating object literals. Worst case is the entire room: 14 wanderers + 20
+ * remote players = 34 entities. Pool size 64 leaves headroom for any future
+ * roster bump without re-allocation.
+ *
+ * `_candidateCount` is the live slice length. The sort below operates on the
+ * full pool but the hysteresis loop reads only `[0, _candidateCount)`.
+ *
+ * Pool slots not in the live slice keep their previous payload — that's
+ * harmless because (a) we sort the full array but only iterate the prefix,
+ * (b) the next frame overwrites positions 0..count-1 unconditionally.
+ *
+ * Actually we sort an Array slice — see _sortCandidates() below.
+ */
 interface Candidate {
   id: string;
-  x: number;
-  y: number;
   distSq: number;
 }
+const POOL_SIZE = 64;
+const _candidatePool: Candidate[] = new Array(POOL_SIZE);
+for (let i = 0; i < POOL_SIZE; i++) {
+  _candidatePool[i] = { id: '', distSq: 0 };
+}
+let _candidateCount = 0;
 
-const _candidates: Candidate[] = [];
+/**
+ * Module-scope sort comparator — hoisted so we don't allocate a new arrow
+ * every frame. Sorts ascending by distSq (closest first).
+ */
+function _byDistSq(a: Candidate, b: Candidate): number {
+  return a.distSq - b.distSq;
+}
+
+/**
+ * Module-scope "seen" Set — used by the GC pass to test candidate membership
+ * without allocating. Cleared at the start of each GC pass and re-filled from
+ * the live candidate slice. Reusing this avoids the `new Set(_candidates.map(...))`
+ * double allocation the audit flagged.
+ */
+const _seenIds = new Set<string>();
+
+/**
+ * Ping-pong full-set buffers. Each frame writes into the inactive Set, swaps,
+ * and passes the active Set to `useLodStore.setFullSet`. The store's cheap
+ * size+membership equality check bails out when membership is unchanged, so
+ * the reference flip never propagates to renderers unless tiers actually
+ * shifted. Zero per-frame `new Set()` allocation.
+ *
+ * Two buffers (not one) because Zustand readers may still hold a reference to
+ * the previous frame's Set during their render pass — mutating it in-place
+ * would risk an inconsistent read. Swapping between A and B gives consumers a
+ * stable snapshot until the orchestrator's next write.
+ */
+const _fullSetA = new Set<string>();
+const _fullSetB = new Set<string>();
+let _useSetB = false;
 
 /**
  * Distance-LOD orchestrator. Mounts inside the R3F Canvas tree. Runs every
@@ -85,8 +135,13 @@ export default function LodOrchestrator() {
   useEffect(() => {
     return () => {
       // Reset to empty set on unmount so a future remount starts clean.
+      // One-off allocation on unmount is acceptable (vs. per-frame).
       useLodStore.getState().setFullSet(new Set());
       tierHistoryRef.current.clear();
+      _fullSetA.clear();
+      _fullSetB.clear();
+      _seenIds.clear();
+      _candidateCount = 0;
     };
   }, []);
 
@@ -100,7 +155,8 @@ export default function LodOrchestrator() {
     _projScreenMatrix.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
     _frustum.setFromProjectionMatrix(_projScreenMatrix);
 
-    _candidates.length = 0;
+    // Reset live slice — overwrites pool entries in place, no clear() needed.
+    _candidateCount = 0;
 
     for (let i = 0; i < npcs.length; i++) {
       const n = npcs[i];
@@ -116,7 +172,14 @@ export default function LodOrchestrator() {
       // Frustum test using a 200wu sphere (covers head-to-toe humanoid bbox).
       _entitySphere.center.set(wx, _camPos.y, wz);
       if (!_frustum.intersectsSphere(_entitySphere)) continue;
-      _candidates.push({ id: n.id, x: wx, y: wz, distSq });
+      // Pool overflow guard — silently drop entities past POOL_SIZE. Worst
+      // case (34 entities) is well under 64; logging here would spam on a
+      // genuinely degenerate room. The dropped entities just don't get
+      // tracked this frame, will be picked up next frame as the pool drains.
+      if (_candidateCount >= POOL_SIZE) break;
+      const slot = _candidatePool[_candidateCount++];
+      slot.id = n.id;
+      slot.distSq = distSq;
     }
 
     for (let i = 0; i < players.length; i++) {
@@ -130,27 +193,51 @@ export default function LodOrchestrator() {
       if (distSq > VISIBILITY_RADIUS_SQ) continue;
       _entitySphere.center.set(wx, _camPos.y, wz);
       if (!_frustum.intersectsSphere(_entitySphere)) continue;
-      _candidates.push({ id: p.sessionId, x: wx, y: wz, distSq });
+      if (_candidateCount >= POOL_SIZE) break;
+      const slot = _candidatePool[_candidateCount++];
+      slot.id = p.sessionId;
+      slot.distSq = distSq;
     }
 
-    _candidates.sort((a, b) => a.distSq - b.distSq);
+    // Tombstone stale pool slots so the sort doesn't shuffle their old distSq
+    // values into the live range. Slots past _candidateCount get distSq =
+    // +Infinity and id = '' — they fall to the tail of the sorted array,
+    // leaving [0, _candidateCount) as the in-order live slice. Empty-id
+    // tombstones are also a defensive guard: if [0, _candidateCount) ever
+    // overruns (it shouldn't — _candidateCount is the exact pre-sort live
+    // count), reads of `slot.id === ''` will fail the `history.get('')`
+    // path harmlessly.
+    for (let i = _candidateCount; i < POOL_SIZE; i++) {
+      const slot = _candidatePool[i];
+      slot.id = '';
+      slot.distSq = Infinity;
+    }
 
-    // Provisional tier assignment from sort.
-    // Then apply hysteresis: if an entity is flipping, only allow the flip
-    // when HYSTERESIS_MS has elapsed since its last flip. Otherwise hold
-    // the previous tier.
-    const fullSet = new Set<string>();
+    // Sort the full pool with the module-scope comparator (no per-frame arrow
+    // allocation). V8 TimSort is in-place + stable — no internal array
+    // allocation. Sorting 64 entries (≤34 live + ≥30 tombstoned to +Infinity)
+    // is < 200 comparisons worst case; trivial vs. the per-frame alloc cost
+    // we're eliminating. After sort, [0, _candidateCount) is the live slice
+    // ascending by distSq.
+    _candidatePool.sort(_byDistSq);
 
-    // First pass: walk candidates in sort order, assign provisional tier
-    // (top FULL_CAP = full; rest = proxy), and apply hysteresis.
-    for (let i = 0; i < _candidates.length; i++) {
-      const c = _candidates[i];
+    // Tier assignment + hysteresis. Walks the live slice in distance order.
+    // Build the inactive Set ping-pong buffer.
+    const next = _useSetB ? _fullSetA : _fullSetB;
+    next.clear();
+
+    for (let i = 0; i < _candidateCount; i++) {
+      const c = _candidatePool[i];
       const provisional: 'full' | 'proxy' = i < FULL_CAP ? 'full' : 'proxy';
       const prev = history.get(c.id);
       let effective: 'full' | 'proxy';
       if (!prev) {
         // First sighting — accept provisional and stamp the timestamp.
         effective = provisional;
+        // Note: this `history.set` allocates a small `{tier, lastFlippedAt}`
+        // object. It only fires on entity FIRST SIGHTING (not every frame),
+        // so allocation cost is bounded by room turnover, not frame rate.
+        // GC'd by the pass below when entities leave.
         history.set(c.id, { tier: provisional, lastFlippedAt: now });
       } else if (prev.tier === provisional) {
         effective = provisional;
@@ -164,24 +251,29 @@ export default function LodOrchestrator() {
           effective = prev.tier;
         }
       }
-      if (effective === 'full') fullSet.add(c.id);
+      if (effective === 'full') next.add(c.id);
     }
 
     // GC tier history entries for entities that disappeared from the candidate
-    // pool (left the room, died, despawned). Lazy — only when the map grows
-    // past a small threshold so we don't pay this every frame.
+    // pool (left the room, despawned). Reuse the module-scope `_seenIds` Set
+    // — clear + fill from the live slice rather than `new Set(...map(...))`.
+    // Worst case 64 entries × O(1) ops = 192 ops on the GC frame.
     if (history.size > 64) {
-      const seen = new Set(_candidates.map((c) => c.id));
+      _seenIds.clear();
+      for (let i = 0; i < _candidateCount; i++) {
+        _seenIds.add(_candidatePool[i].id);
+      }
       for (const id of history.keys()) {
-        if (!seen.has(id)) history.delete(id);
+        if (!_seenIds.has(id)) history.delete(id);
       }
     }
 
-    // Write to the store — setFullSet bails out cheaply when membership is
-    // unchanged (size match + every member present). Renderers subscribing
-    // via `useLodStore((s) => s.fullSet.has(id))` re-render at most once
-    // per per-entity tier flip.
-    useLodStore.getState().setFullSet(fullSet);
+    // Flip ping-pong buffer and publish. setFullSet's cheap size+membership
+    // equality check inside the store bails out when membership is unchanged
+    // — so consumers subscribed via `useLodStore((s) => s.fullSet.has(id))`
+    // only re-render on actual tier flips.
+    _useSetB = !_useSetB;
+    useLodStore.getState().setFullSet(next);
   });
 
   return null;
