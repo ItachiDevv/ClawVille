@@ -70,5 +70,8 @@ export type {
 // Q2 Activity Portals — protocol types + activity registry. See
 // `packages/shared/src/activities/index.ts` for the surface.
 export * from './activities';
+// Multiplayer Phase 1 — room snapshot + player wire types shared by
+// `/api/world/:roomId/stream` and the web client's world-stream hook.
+export * from './types/world';
 // Server-usable AABB collision data (buildings + town-center props).
 export * from './constants/world-colliders-data';
