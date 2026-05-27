@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
-import { npcSimulation, type SimulationSnapshot } from '../services/npc-simulation';
+import { npcSimulation } from '../services/npc-simulation';
 import type { AppContext } from '../types';
 
 export const npcRoutes = new Hono<AppContext>();
@@ -23,11 +23,13 @@ npcRoutes.get('/stream', (c) => {
       event: 'snapshot',
     });
 
-    // Set up listener for subsequent snapshots
-    const listener = async (snapshot: SimulationSnapshot) => {
+    // Set up listener for subsequent snapshots — receives pre-serialized
+    // JSON (B6 punch list); broadcast loop stringifies once and shares
+    // the buffer across all consumers.
+    const listener = async (snapshotJson: string) => {
       try {
         await stream.writeSSE({
-          data: JSON.stringify(snapshot),
+          data: snapshotJson,
           event: 'snapshot',
         });
       } catch {
