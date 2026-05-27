@@ -188,7 +188,16 @@ export interface SimulationSnapshot {
   timestamp: number;
 }
 
-type SSEListener = (snapshot: SimulationSnapshot) => void;
+/**
+ * SSE listener signature — receives a PRE-SERIALIZED JSON string of the
+ * snapshot. Multiplayer Phase 1 changed this from `(snapshot: object) =>
+ * void` to a string so the broadcast loop can `JSON.stringify` once per
+ * room and reuse the same buffer across every consumer in that room (B6
+ * — punch list). Listeners that need the structured object can call
+ * `npcSimulation.getRoomSnapshot(roomId)` themselves; SSE consumers
+ * write the raw string to the stream and never need to re-parse.
+ */
+type SSEListener = (snapshotJson: string) => void;
 
 // Arena round constants
 const DEFAULT_MAX_ROUNDS = 5;
@@ -357,17 +366,45 @@ class NpcSimulation {
    */
   getRoomSnapshot(roomId: string): SimulationSnapshot {
     const room = roomRegistry.getRoom(roomId);
-    const base = this.getSnapshot();
-    base.roomId = roomId;
-    base.players = roomRegistry.getPlayerSnapshots(roomId);
+    // Build NPC list directly from `room.npcs` + the resident set rather
+    // than cloning every global NPC and filtering — at 20 rooms this saved
+    // ~20× redundant clone work per tick (B6 — punch list). Residents
+    // (buildingId !== '') are never swap-eligible so they're always
+    // present; wanderers are looked up by ID from `room.npcs`.
+    const npcs: NpcRuntimeState[] = [];
     if (room) {
-      base.npcs = base.npcs.filter((n) => {
-        // Always include building residents — they're never swap-eligible.
-        if (!FREE_ROAMER_NPC_IDS.has(n.id)) return true;
-        return room.npcs.has(n.id);
-      });
+      for (const npc of this.npcs.values()) {
+        if (!FREE_ROAMER_NPC_IDS.has(npc.id)) {
+          npcs.push({ ...npc });
+        } else if (room.npcs.has(npc.id)) {
+          npcs.push({ ...npc });
+        }
+      }
+    } else {
+      // Unknown room (e.g. solo- alias from npc-sse shim) → full roster.
+      for (const npc of this.npcs.values()) npcs.push({ ...npc });
     }
-    return base;
+
+    return {
+      roomId,
+      players: roomRegistry.getPlayerSnapshots(roomId),
+      npcs,
+      conversations: Array.from(this.conversations.values())
+        .filter((c) => c.state === 'active')
+        .map((c) => ({ ...c, messages: [...c.messages] })),
+      combats: Array.from(this.combats.values())
+        .filter((c) => c.state === 'active')
+        .map((c) => ({ ...c, rounds: [...c.rounds] })),
+      events: [...this.pendingEvents],
+      autonomousAvatars: this.avatarAutonomyManager.getAutonomousAvatars(),
+      browserClaws: this.getBrowserClawSnapshots(),
+      arenaRound: this.arenaRound ? { ...this.arenaRound } : null,
+      arenaSettings: { ...this.arenaSettings },
+      // Per-room snapshots don't drain the broker queue (the global
+      // broadcast does that). See broadcast() for the rationale.
+      collaborationEvents: [],
+      timestamp: Date.now(),
+    };
   }
 
   /**
@@ -1859,12 +1896,16 @@ class NpcSimulation {
     // race for the same drained entries.
     roomRegistry.tick();
 
+    // Per-room broadcast — pre-serialize ONCE per room (B6 punch list).
+    // SSE consumers in the same room share the same string; we don't
+    // re-stringify the same object N times.
     for (const [roomId, bucket] of this.roomListeners) {
       if (bucket.size === 0) continue;
       const snapshot = this.getRoomSnapshot(roomId);
+      const json = JSON.stringify(snapshot);
       for (const listener of bucket) {
         try {
-          listener(snapshot);
+          listener(json);
         } catch {
           bucket.delete(listener);
         }
@@ -1872,10 +1913,12 @@ class NpcSimulation {
     }
 
     if (this.listeners.size === 0) return;
-    const snapshot = this.buildBroadcastSnapshot();
+    // Same pattern for the legacy global bucket.
+    const globalSnapshot = this.buildBroadcastSnapshot();
+    const globalJson = JSON.stringify(globalSnapshot);
     for (const listener of this.listeners) {
       try {
-        listener(snapshot);
+        listener(globalJson);
       } catch {
         // Listener may have disconnected
         this.listeners.delete(listener);
