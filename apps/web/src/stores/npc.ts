@@ -174,9 +174,15 @@ const DEMO_NPCS: NpcSpriteState[] = [
   // are clear of building pathfinding-blocked zones. When connected, server
   // snapshots replace these in place by id; disconnected mode runs them
   // through the client wander loop.
-  makeDemoNpc('milady-miu',     'Miu',       2100, 4500, 'milady_official_7', 0xffc0ff, false, 'looking_around'),
-  makeDemoNpc('milady-kyoko',   'Kyoko',     5550, 3000, 'milady_official_8', 0xc0e8ff, false, 'squat'),
-  makeDemoNpc('milady-vivi',    'Vivi',      2400, 2250, 'milady_official_2', 0xffd0a0),
+  makeDemoNpc('milady-miu',     'Miu',       3825, 7200, 'milady_official_7', 0xffc0ff, false, 'looking_around'),
+  makeDemoNpc('milady-kyoko',   'Kyoko',     7650, 4275, 'milady_official_8', 0xc0e8ff, false, 'squat'),
+  makeDemoNpc('milady-vivi',    'Vivi',      3825, 4275, 'milady_official_2', 0xffd0a0),
+  // 5 additional Miladys restored 2026-05-27 (full 8-Milady cast)
+  makeDemoNpc('milady-aria',    'Aria',      4900, 3700, 'milady_official_1', 0xffb0c8),
+  makeDemoNpc('milady-suki',    'Suki',      8200, 5100, 'milady_official_3', 0xc0ffd8),
+  makeDemoNpc('milady-hana',    'Hana',      6400, 8100, 'milady_official_4', 0xfff0a0),
+  makeDemoNpc('milady-yumi',    'Yumi',      3400, 6800, 'milady_official_5', 0xb0e0ff),
+  makeDemoNpc('milady-ren',     'Ren',       3300, 4900, 'milady_official_6', 0xd0b0ff),
   // 2026-05-12 PM: Hermes wanderers restored with per-VRM auto-fit (Mira,
   // Cyrus, Tekk) — see npc-definitions.ts. Each species lands at
   // VRM_NPC_TARGET_HEIGHT_WU regardless of cm-vs-m authoring units.
