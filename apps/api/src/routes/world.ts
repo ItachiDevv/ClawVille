@@ -25,8 +25,9 @@ import { eq } from 'drizzle-orm';
 import { db, avatars } from '@clawville/database';
 import { sessionMiddleware } from '../middleware/auth';
 import { adminOnly } from '../middleware/admin-only';
-import { npcSimulation, type SimulationSnapshot } from '../services/npc-simulation';
+import { npcSimulation } from '../services/npc-simulation';
 import { roomRegistry, ROOM_MAX_PLAYERS } from '../services/room-registry';
+import { createRateLimiter, getClientIp } from '../middleware/rate-limit';
 import type { Context } from 'hono';
 import type { AppContext } from '../types';
 
@@ -103,14 +104,38 @@ async function resolveAvatarMeta(userId: string | null) {
 const POSITION_MIN_INTERVAL_MS = 100;
 const positionLastSeen = new Map<string, number>();
 
+// B3 (punch list) — when RoomRegistry kicks stale sessions inside its
+// tick GC, drop their throttle entries too so the Map can't grow
+// unbounded across an attacker spamming /position with rotating
+// fingerprints. RoomRegistry already enumerates the kicked sessionIds
+// in `staleSessionsRemoved`; we just hook the tick result.
+roomRegistry.subscribeTick((result) => {
+  for (const sid of result.staleSessionsRemoved) {
+    positionLastSeen.delete(sid);
+  }
+});
+
+// B2 (punch list) — per-IP rate limit on POST /join. Caps anonymous
+// room-mint spam at 3/min/IP; auth'd users hit the same limit but
+// they're already individually accountable via the Lucia session.
+const joinRateLimiter = createRateLimiter({
+  maxPerWindow: 3,
+  windowMs: 60_000,
+});
+
 // ---------------------------------------------------------------------------
 // Schemas
 // ---------------------------------------------------------------------------
 
+// B5 (punch list) — tighten the regex to the SAME alphabet RoomRegistry
+// uses when minting IDs (excludes 0/O/1/I/L). Otherwise a deeplink with
+// a confusable character would pass validation, get force-minted, and
+// produce a permanent room ID that no future /join can collide with.
+const ROOM_ID_REGEX = /^[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{4}$/u;
 const joinSchema = z.object({
   roomId: z
     .string()
-    .regex(/^[A-Z0-9]{4}$/u, 'roomId must be 4 alphanumeric uppercase chars')
+    .regex(ROOM_ID_REGEX, 'roomId must be 4 chars from the safe alphabet')
     .optional(),
 });
 
@@ -126,6 +151,10 @@ const positionSchema = z.object({
 // ---------------------------------------------------------------------------
 
 worldRoutes.post('/join', async (c) => {
+  const ip = getClientIp(c.req.raw.headers);
+  if (!joinRateLimiter.check(ip)) {
+    throw new HTTPException(429, { message: 'Too many join attempts — try again in a minute' });
+  }
   const sessionId = resolveSessionId(c);
   const user = c.get('user');
   const body = (await c.req.json().catch(() => ({}))) as unknown;
@@ -136,11 +165,13 @@ worldRoutes.post('/join', async (c) => {
   const requestedRoomId = parsed.data.roomId;
 
   const avatarMeta = await resolveAvatarMeta(user?.id ?? null);
-  const { room, swappedOutNpcId } = roomRegistry.joinPlayer(
-    sessionId,
-    avatarMeta,
+  const { room, swappedOutNpcId } = roomRegistry.joinPlayer(sessionId, avatarMeta, {
     requestedRoomId,
-  );
+    // B2 — only auth'd callers can mint never-before-seen invite codes.
+    // Guests with an unknown code fall through to auto-fill inside the
+    // registry.
+    isAuthenticated: !!user,
+  });
 
   return c.json({
     roomId: room.id,
@@ -191,7 +222,8 @@ worldRoutes.post('/position', async (c) => {
 
 worldRoutes.get('/:roomId/stream', (c) => {
   const roomId = c.req.param('roomId');
-  if (!/^[A-Z0-9]{4}$/u.test(roomId) && !roomId.startsWith('solo-')) {
+  // B5 — same safe-alphabet regex as the /join schema.
+  if (!ROOM_ID_REGEX.test(roomId) && !roomId.startsWith('solo-')) {
     throw new HTTPException(400, { message: 'Invalid room id' });
   }
 
@@ -202,10 +234,10 @@ worldRoutes.get('/:roomId/stream', (c) => {
       event: 'snapshot',
     });
 
-    const listener = async (snapshot: SimulationSnapshot) => {
+    const listener = async (snapshotJson: string) => {
       try {
         await stream.writeSSE({
-          data: JSON.stringify(snapshot),
+          data: snapshotJson,
           event: 'snapshot',
         });
       } catch {
