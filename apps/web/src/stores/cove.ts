@@ -20,6 +20,7 @@
 import { create } from 'zustand';
 import type { MachineSlug, SpinResult } from '@/lib/cove/types';
 import type { BlackjackOutcome, BlackjackCard } from '@/lib/cove/blackjack-types';
+import { COVE_HOLDEM_DEFAULT_BUYIN } from '@clawville/shared';
 
 // ---------------------------------------------------------------------------
 // Store state
@@ -86,6 +87,25 @@ export interface CoveStore {
   recordSpin: (result: SpinResult, balance: number, spinCount: number) => void;
   /** Update session balance directly (for win credit, loss debit). */
   adjustBalance: (delta: number) => void;
+
+  // ── Hold'em modal state (Phase 6.5.0 visual shell) ───────────────────────
+  // The modal state machine + bot opponents + bankroll display are owned
+  // entirely inside `HoldemModal` (impl-modal). The store only tracks
+  // open/closed + the initial buy-in so the 3D hotspot can launch the
+  // modal with a sensible default (capped to current bankroll). Real
+  // ledger integration arrives in Phase 6.5.1.
+  holdemModalOpen: boolean;
+  /** Buy-in offered when the modal opens, in display ClawTokens. */
+  holdemBuyIn: number;
+  /**
+   * Open the Hold'em table modal.
+   *
+   * @param balance — current display bankroll (avatar.clawTokens). Used to
+   *   cap the offered buy-in at `min(balance, COVE_HOLDEM_DEFAULT_BUYIN)`
+   *   so a low-balance player isn't auto-bet over their stack.
+   */
+  openHoldemTable: (balance: number) => void;
+  closeHoldemTable: () => void;
 
   // ── Blackjack modal state (Phase 6.4.0 display shell) ────────────────────
   blackjackOpen: boolean;
@@ -200,6 +220,22 @@ export const useCoveStore = create<CoveStore>((set, get) => ({
   adjustBalance: (delta) => {
     const { sessionBalance } = get();
     set({ sessionBalance: sessionBalance + delta });
+  },
+
+  // Hold'em state (Phase 6.5.0 visual shell)
+  holdemModalOpen: false,
+  holdemBuyIn: COVE_HOLDEM_DEFAULT_BUYIN,
+
+  openHoldemTable: (balance) => {
+    // Cap suggested buy-in at the caller's bankroll so low-balance players
+    // don't get auto-bet over their stack. Floor at 0 so a negative value
+    // (shouldn't happen but defensive) doesn't pass through to the modal.
+    const buyIn = Math.max(0, Math.min(balance, COVE_HOLDEM_DEFAULT_BUYIN));
+    set({ holdemModalOpen: true, holdemBuyIn: buyIn });
+  },
+
+  closeHoldemTable: () => {
+    set({ holdemModalOpen: false });
   },
 
   // Blackjack state (Phase 6.4.0)

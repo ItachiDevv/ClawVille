@@ -637,8 +637,12 @@ const _cabinetAABBs: CabinetAABB[] = SLOT_CABINET_POSITIONS.map((pos) => ({
 }));
 
 // Dealer station AABB (world X ≈ +367 post-autofit, Z ≈ 0)
-const _DEALER_CENTER_X =  367;
-const _DEALER_CENTER_Z =    0;
+// Blackjack table center — measured 2026-05-27 by walking the player to the
+// target poker table and reading the BJ-POS log. Was (367, 0) which placed
+// the sign over the roulette wheel; now matches the poker table the user
+// arrowed in their screenshot.
+const _DEALER_CENTER_X = -299;
+const _DEALER_CENTER_Z =  331;
 const _DEALER_HALF_X   =  100;
 const _DEALER_HALF_Z   =  100;
 
@@ -914,11 +918,30 @@ function SlotHotspot({ def }: { def: HotspotDef }) {
 // ---------------------------------------------------------------------------
 
 const _BJ_HOTSPOT_POS: [number, number, number] = [
-  _DEALER_CENTER_X - 60, // pull slightly toward room centre (away from right wall)
+  _DEALER_CENTER_X,      // X = dealer station X (poker table center)
   100,                   // Y centre = halfway up the table height
-  _DEALER_CENTER_Z,      // Z = room centre-line (same as dealer station)
+  _DEALER_CENTER_Z,      // Z = dealer station Z (poker table center)
 ];
 const _BJ_HOTSPOT_SIZE: [number, number, number] = [200, 200, 150];
+
+// ---------------------------------------------------------------------------
+// Phase 6.5.0 — Texas Hold'em hotspot.
+//
+// Mirror of the blackjack hotspot across X. The cove interior GLB has a
+// second poker table at (~294, 335) — captured via the `[BJ-POS]` probe
+// 2026-05-27 and locked in the cove-texas-holdem plan §0 decision row 1.
+// Same invisible boxGeometry pattern as BlackjackTableHotspot: no draw
+// call, matrixAutoUpdate=false after first updateMatrix (Iris Xe rule).
+// ---------------------------------------------------------------------------
+
+const _HOLDEM_CENTER_X = 294;
+const _HOLDEM_CENTER_Z = 335;
+const _HOLDEM_HOTSPOT_POS: [number, number, number] = [
+  _HOLDEM_CENTER_X,
+  100,
+  _HOLDEM_CENTER_Z,
+];
+const _HOLDEM_HOTSPOT_SIZE: [number, number, number] = [200, 200, 150];
 
 function BlackjackTableHotspot() {
   const meshRef = useRef<THREE.Mesh>(null);
@@ -955,6 +978,55 @@ function BlackjackTableHotspot() {
       }}
     >
       <boxGeometry args={_BJ_HOTSPOT_SIZE} />
+      <meshBasicMaterial visible={false} />
+    </mesh>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Phase 6.5.0 — Texas Hold'em table hotspot.
+//
+// Mirror of BlackjackTableHotspot at the second poker table (+X mirror of
+// the blackjack station). Click opens the HoldemModal with the current
+// avatar's ClawToken balance as the suggested buy-in cap (clamped inside
+// the store via `min(balance, COVE_HOLDEM_DEFAULT_BUYIN)`).
+// ---------------------------------------------------------------------------
+
+function HoldemTableHotspot() {
+  const meshRef = useRef<THREE.Mesh>(null);
+  const openHoldemTable = useCoveStore((s) => s.openHoldemTable);
+  const { data: avatar } = useAvatar();
+
+  useEffect(() => {
+    const mesh = meshRef.current;
+    if (!mesh) return;
+    mesh.matrixAutoUpdate = false;
+    mesh.updateMatrix();
+  }, []);
+
+  const handleClick = () => {
+    const balance = avatar?.clawTokens ?? 0;
+    openHoldemTable(balance);
+  };
+
+  return (
+    <mesh
+      ref={meshRef}
+      position={_HOLDEM_HOTSPOT_POS}
+      onPointerOver={(e) => {
+        e.stopPropagation();
+        if (typeof document !== 'undefined') document.body.style.cursor = 'pointer';
+      }}
+      onPointerOut={(e) => {
+        e.stopPropagation();
+        if (typeof document !== 'undefined') document.body.style.cursor = 'default';
+      }}
+      onClick={(e) => {
+        e.stopPropagation();
+        handleClick();
+      }}
+    >
+      <boxGeometry args={_HOLDEM_HOTSPOT_SIZE} />
       <meshBasicMaterial visible={false} />
     </mesh>
   );
@@ -1921,6 +1993,18 @@ export default function CoveInteriorScene({ onSceneEmpty }: CoveInteriorScenePro
         label="BLACKJACK"
         color="#22dd88"
         position={[_BJ_HOTSPOT_POS[0], 280, _BJ_HOTSPOT_POS[2]]}
+      />
+
+      {/* Phase 6.5.0 — Texas Hold'em table click hotspot at the second
+          poker table (mirror across X of the blackjack station). Same
+          invisible hit-box pattern; opens HoldemModal. */}
+      <HoldemTableHotspot />
+
+      {/* Hold'em table label — rendered above the second poker table. */}
+      <BankBanner
+        label="TEXAS HOLD'EM"
+        color="#22dd88"
+        position={[_HOLDEM_HOTSPOT_POS[0], 280, _HOLDEM_HOTSPOT_POS[2]]}
       />
     </>
   );
