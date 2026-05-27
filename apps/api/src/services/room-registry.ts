@@ -82,6 +82,19 @@ export interface JoinAvatarMeta {
   y?: number;
 }
 
+export interface JoinOptions {
+  /**
+   * Optional 4-char invite code from the deeplink. Honored only when the
+   * room exists with capacity. When the room does NOT exist, the code is
+   * only minted for authenticated callers (`isAuthenticated: true`); guests
+   * fall through to auto-fill so an anonymous attacker can't pin ID-space
+   * by replaying random 4-char codes (B2 — punch list).
+   */
+  requestedRoomId?: string;
+  /** True when the caller has a Lucia session; false for fingerprint guests. */
+  isAuthenticated?: boolean;
+}
+
 export interface JoinResult {
   room: Room;
   player: PlayerState;
@@ -109,6 +122,13 @@ export class RoomRegistry {
   private sessionToRoom = new Map<string, string>();
   private readonly now: () => number;
   private readonly randomChar: () => string;
+  /**
+   * Tick-result subscribers — invoked synchronously inside `tick()` AFTER
+   * the GC passes complete. Lets world.ts drop entries from its
+   * positionLastSeen throttle map without having to inspect every
+   * `/position` POST (B3 — punch list).
+   */
+  private tickSubscribers = new Set<(result: RoomTickResult) => void>();
 
   /**
    * @param opts.now           Clock (defaults to `Date.now`).
@@ -121,6 +141,16 @@ export class RoomRegistry {
     this.randomChar =
       opts?.randomChar ??
       (() => ROOM_ID_ALPHABET[Math.floor(Math.random() * ROOM_ID_ALPHABET.length)]!);
+  }
+
+  /**
+   * Register a side-effect callback for tick GC results. Used by world.ts
+   * to purge `positionLastSeen` for kicked-stale sessions. Returns an
+   * unsubscribe handle.
+   */
+  subscribeTick(fn: (result: RoomTickResult) => void): () => void {
+    this.tickSubscribers.add(fn);
+    return () => this.tickSubscribers.delete(fn);
   }
 
   // ---------------------------------------------------------------------------
@@ -180,8 +210,17 @@ export class RoomRegistry {
   joinPlayer(
     sessionId: string,
     avatar: JoinAvatarMeta,
-    requestedRoomId?: string,
+    optionsOrRoomId?: JoinOptions | string,
   ): JoinResult {
+    // Backwards-compat: legacy callers passed `requestedRoomId` as a plain
+    // string. Normalize to the options object so the test fixtures + the
+    // route can keep their existing call sites.
+    const options: JoinOptions =
+      typeof optionsOrRoomId === 'string'
+        ? { requestedRoomId: optionsOrRoomId, isAuthenticated: false }
+        : optionsOrRoomId ?? {};
+    const { requestedRoomId, isAuthenticated = false } = options;
+
     const now = this.now();
 
     // Already in a room → idempotent refresh.
@@ -200,7 +239,16 @@ export class RoomRegistry {
       this.sessionToRoom.delete(sessionId);
     }
 
-    const room = this.pickOrCreateRoom(requestedRoomId);
+    const room = this.pickOrCreateRoom(requestedRoomId, isAuthenticated);
+
+    // B1 — cancel any pending NPC restore queued by this session's prior
+    // leave. Without this, a player who rage-quits then rejoins within
+    // RESTORE_GRACE_MS gets a SECOND NPC swapped out (the original NPC
+    // restores 5 s later via tick(), but a fresh NPC has already been
+    // pulled to make capacity for the rejoiner — net result: room
+    // permanently lost an NPC slot every rage-rejoin cycle).
+    const restored = this.cancelPendingRestoresFor(room, sessionId);
+
     const player: PlayerState = {
       sessionId,
       userId: avatar.userId,
@@ -221,7 +269,29 @@ export class RoomRegistry {
     room.lastActivityAt = now;
 
     const swappedOutNpcId = this.swapOutNpcFor(room, player);
+    // If the rejoin reseat already brought back the player's prior NPC and
+    // the species-match path picked the SAME one again, that's the desired
+    // behaviour (visual continuity). Either way, `restored` is informational
+    // — the swap result is what callers act on.
+    void restored;
     return { room, player, swappedOutNpcId };
+  }
+
+  /**
+   * Sweep `room.removedNpcs` for entries queued by this sessionId and
+   * reseat them. Returns the list of restored NPC IDs. Used by joinPlayer
+   * to cancel a pending restore on fast rejoin (B1 — punch list).
+   */
+  private cancelPendingRestoresFor(room: Room, sessionId: string): string[] {
+    const restored: string[] = [];
+    for (const [npcId, entry] of Array.from(room.removedNpcs)) {
+      if (entry.byPlayer === sessionId) {
+        room.npcs.add(npcId);
+        room.removedNpcs.delete(npcId);
+        restored.push(npcId);
+      }
+    }
+    return restored;
   }
 
   /**
@@ -339,6 +409,17 @@ export class RoomRegistry {
       }
     }
 
+    // Fan out to subscribers (world.ts uses this to purge positionLastSeen).
+    // Subscribers are best-effort; a throwing handler must not abort the
+    // tick for other consumers or leak the exception up to NpcSimulation.
+    if (this.tickSubscribers.size > 0) {
+      for (const fn of this.tickSubscribers) {
+        try { fn(result); } catch (err) {
+          console.error('[RoomRegistry] tick subscriber threw:', err);
+        }
+      }
+    }
+
     return result;
   }
 
@@ -346,15 +427,19 @@ export class RoomRegistry {
   // Internals
   // ---------------------------------------------------------------------------
 
-  private pickOrCreateRoom(requestedRoomId: string | undefined): Room {
+  private pickOrCreateRoom(
+    requestedRoomId: string | undefined,
+    isAuthenticated: boolean,
+  ): Room {
     if (requestedRoomId) {
       const room = this.rooms.get(requestedRoomId);
       if (room && room.players.size < ROOM_MAX_PLAYERS) return room;
-      // Requested room is full or doesn't exist → mint with the requested ID
-      // ONLY when it doesn't exist (i.e. accept invite-code deeplinks even
-      // for never-before-seen codes). If it exists but is full, fall through
-      // to auto-fill so the player doesn't get a hard 503.
-      if (!room) {
+      // Requested room is full or doesn't exist. Mint a fresh room with the
+      // requested ID ONLY for authenticated callers — guests cannot pin
+      // ID-space by replaying random 4-char codes (B2 — punch list). When a
+      // guest sends an unknown code, we fall through to auto-fill so they
+      // still get a playable room without the attacker-controlled mint.
+      if (!room && isAuthenticated) {
         return this.createRoomWithId(requestedRoomId);
       }
     }

@@ -152,25 +152,171 @@ describe('RoomRegistry — overflow + invite codes', () => {
     expect(guest.room.players.size).toBe(2);
   });
 
-  it('mints the requested code when the room doesn\'t exist yet', () => {
+  it('mints the requested code when the room doesn\'t exist yet (auth\'d only — see B2)', () => {
     const { registry } = makeRegistry();
-    const r = registry.joinPlayer('host', makeAvatar({ species: 'no_such_species' }), 'XYZW');
+    const r = registry.joinPlayer('host', makeAvatar({ species: 'no_such_species' }), {
+      requestedRoomId: 'XYZW',
+      isAuthenticated: true,
+    });
     expect(r.room.id).toBe('XYZW');
   });
 
   it('falls back to auto-fill when the requested room is full', () => {
     const { registry } = makeRegistry();
-    // Fill an explicit invite code.
+    // Fill an explicit invite code as an auth'd host so the mint goes
+    // through (B2 — only authenticated callers can mint a never-before-
+    // seen invite ID). The remaining 19 fillers can be guests joining the
+    // now-existing room.
     for (let i = 0; i < ROOM_MAX_PLAYERS; i++) {
-      registry.joinPlayer(`s${i}`, makeAvatar({ species: 'no_such_species' }), 'AAAA');
+      registry.joinPlayer(`s${i}`, makeAvatar({ species: 'no_such_species' }), {
+        requestedRoomId: 'AAAA',
+        isAuthenticated: true,
+      });
     }
-    const overflow = registry.joinPlayer(
-      'late',
-      makeAvatar({ species: 'no_such_species' }),
-      'AAAA',
-    );
+    const overflow = registry.joinPlayer('late', makeAvatar({ species: 'no_such_species' }), {
+      requestedRoomId: 'AAAA',
+      isAuthenticated: true,
+    });
     expect(overflow.room.id).not.toBe('AAAA');
     expect(overflow.room.players.size).toBe(1);
+  });
+});
+
+describe('RoomRegistry — rejoin cancels pending restore (B1 punch list)', () => {
+  it('a fast rejoin within the grace window restores the original NPC and does NOT permanently lose a slot', () => {
+    const { registry, clock } = makeRegistry();
+    const join1 = registry.joinPlayer('s1', makeAvatar({ species: 'milady_official_1' }));
+    expect(join1.swappedOutNpcId).toBe('milady-aria');
+    const roomId = join1.room.id;
+
+    // Player leaves.
+    clock.advance(1_000);
+    const leave = registry.leavePlayer('s1');
+    expect(leave?.pendingRestoreNpcId).toBe('milady-aria');
+
+    // Player rage-rejoins 2 s later — well inside the 5 s grace window.
+    clock.advance(2_000);
+    const join2 = registry.joinPlayer('s1', makeAvatar({ species: 'milady_official_1' }), roomId);
+    // The rejoin should:
+    //   (a) reseat milady-aria (cancel the pending restore)
+    //   (b) THEN run the species-match swap, picking milady-aria again
+    // Net result: room.npcs still has 13 wanderers (one slot for the
+    // player), removedNpcs has milady-aria swapped on the new session.
+    expect(join2.room.id).toBe(roomId);
+    expect(join2.swappedOutNpcId).toBe('milady-aria');
+    expect(join2.room.removedNpcs.size).toBe(1);
+    expect(join2.room.npcs.size).toBe(FREE_ROAMER_NPC_IDS.size - 1);
+
+    // Advance past the original grace window — tick must NOT restore
+    // because the player is back in the room.
+    clock.advance(RESTORE_GRACE_MS + 1_000);
+    const tick = registry.tick();
+    expect(tick.restoredNpcs.length).toBe(0);
+    expect(registry.getRoom(roomId)?.npcs.has('milady-aria')).toBe(false);
+
+    // When the player finally leaves for good and the grace elapses,
+    // milady-aria reappears exactly once.
+    registry.leavePlayer('s1');
+    clock.advance(RESTORE_GRACE_MS + 100);
+    const finalTick = registry.tick();
+    expect(finalTick.restoredNpcs).toEqual([{ roomId, npcId: 'milady-aria' }]);
+    expect(registry.getRoom(roomId)?.npcs.size).toBe(FREE_ROAMER_NPC_IDS.size);
+  });
+
+  it('regression: three rage-rejoin cycles leak ZERO NPC slots (without B1 fix each cycle leaked one)', () => {
+    const { registry, clock } = makeRegistry();
+    const SPECIES = 'no_such_species'; // forces lex-first fallback every time
+    registry.joinPlayer('s1', makeAvatar({ species: SPECIES }));
+    for (let i = 0; i < 3; i++) {
+      clock.advance(500);
+      registry.leavePlayer('s1');
+      clock.advance(500);
+      registry.joinPlayer('s1', makeAvatar({ species: SPECIES }));
+    }
+    const rooms = registry.listRooms();
+    expect(rooms.length).toBe(1);
+    expect(rooms[0]!.removedNpcs.size).toBe(1);
+    expect(rooms[0]!.npcs.size).toBe(FREE_ROAMER_NPC_IDS.size - 1);
+  });
+});
+
+describe('RoomRegistry — guests cannot mint invite IDs (B2 punch list)', () => {
+  it('an unauthenticated caller requesting an unknown 4-char ID falls through to auto-fill', () => {
+    const { registry } = makeRegistry();
+    const r = registry.joinPlayer('guest1', makeAvatar({ species: 'no_such_species' }), {
+      requestedRoomId: 'WXYZ',
+      isAuthenticated: false,
+    });
+    // Guest did NOT mint WXYZ — they landed in an auto-filled room with
+    // a server-generated ID (NOT 'WXYZ').
+    expect(r.room.id).not.toBe('WXYZ');
+    expect(registry.getRoom('WXYZ')).toBeNull();
+  });
+
+  it('an authenticated caller CAN mint a never-before-seen ID (back-compat with the deeplink-host flow)', () => {
+    const { registry } = makeRegistry();
+    const r = registry.joinPlayer('user1', makeAvatar({ species: 'no_such_species' }), {
+      requestedRoomId: 'WXYZ',
+      isAuthenticated: true,
+    });
+    expect(r.room.id).toBe('WXYZ');
+  });
+
+  it('a guest joining an EXISTING valid invite code still lands in that room', () => {
+    const { registry } = makeRegistry();
+    const host = registry.joinPlayer('user1', makeAvatar({ species: 'no_such_species' }), {
+      requestedRoomId: 'JOIN',
+      isAuthenticated: true,
+    });
+    const guest = registry.joinPlayer('guest1', makeAvatar({ species: 'no_such_species' }), {
+      requestedRoomId: 'JOIN',
+      isAuthenticated: false,
+    });
+    expect(guest.room.id).toBe(host.room.id);
+  });
+
+  it('legacy plain-string requestedRoomId still works (back-compat — treated as un-authed)', () => {
+    const { registry } = makeRegistry();
+    // Legacy call signature passed a string. Should be treated as a
+    // guest (un-auth'd) request for safety.
+    const r = registry.joinPlayer('s1', makeAvatar({ species: 'no_such_species' }), 'NEWW');
+    expect(r.room.id).not.toBe('NEWW');
+  });
+});
+
+describe('RoomRegistry — tick subscriber fanout (B3 punch list)', () => {
+  it('subscribers receive the kicked-session list — used by world.ts to purge positionLastSeen', () => {
+    const { registry, clock } = makeRegistry();
+    const fakeThrottle = new Map<string, number>();
+    fakeThrottle.set('s1', 123);
+    registry.subscribeTick((result) => {
+      for (const sid of result.staleSessionsRemoved) fakeThrottle.delete(sid);
+    });
+
+    registry.joinPlayer('s1', makeAvatar({ species: 'no_such_species' }));
+    clock.advance(STALE_PLAYER_MS + 1);
+    registry.tick();
+    expect(fakeThrottle.has('s1')).toBe(false);
+  });
+
+  it('subscribe returns an unsubscribe handle', () => {
+    const { registry } = makeRegistry();
+    let calls = 0;
+    const unsub = registry.subscribeTick(() => { calls++; });
+    registry.tick();
+    expect(calls).toBe(1);
+    unsub();
+    registry.tick();
+    expect(calls).toBe(1);
+  });
+
+  it('a throwing subscriber does NOT abort the tick or other subscribers', () => {
+    const { registry } = makeRegistry();
+    let goodCalls = 0;
+    registry.subscribeTick(() => { throw new Error('boom'); });
+    registry.subscribeTick(() => { goodCalls++; });
+    expect(() => registry.tick()).not.toThrow();
+    expect(goodCalls).toBe(1);
   });
 });
 
