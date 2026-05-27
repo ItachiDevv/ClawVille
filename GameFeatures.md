@@ -352,6 +352,67 @@ Gated on `agentConnected` after the **2026-04-24 fix** that re-gated from `hasAv
 
 ---
 
+## 11z. Multiplayer (Phase 1 — 2026-05-27)
+
+Player rooms are server-authoritative buckets of ≤20 players each. The
+20-player ceiling is set by the Iris Xe full-VRM budget (14 simultaneous
+wanderer VRMs + 10 building residents). Every player that joins a room
+**swaps out** one wanderer NPC (preferring the same species so the visual
+cast stays balanced) so the total drawn VRM count never exceeds the
+budget. The NPC reappears 5 s after the player leaves.
+
+### 11z.a Room model
+
+- **ID format:** 4 chars from `ABCDEFGHJKMNPQRSTUVWXYZ23456789` (no 0/O/1/I/L).
+- **Capacity:** 20 players. The 21st joiner spills into a new room.
+- **Auto-fill:** `POST /api/world/join` lands the caller in the lowest-id
+  room with capacity, or mints a fresh one.
+- **Invite code:** `POST /api/world/join { roomId: "ABCD" }` honors a
+  4-char code. If the room exists with capacity → join. If it doesn't
+  exist → mint with that ID. If it's full → fall back to auto-fill.
+- **GC:** rooms with zero players for 5 min are deleted; players idle
+  for 30 s with no `POST /api/world/position` get kicked.
+
+### 11z.b NPC swap-out
+
+When a player joins a room, the registry picks one NPC from the room's
+swap-eligible roster (every `NPC_DEFINITIONS` entry where `buildingId === ''`
+— the 14 wanderers). Priority order:
+
+1. NPC whose species matches the joiner's avatar species (lex-first).
+2. Any other wanderer (lex-first by ID).
+3. No swap — the room is already at the 14-VRM floor.
+
+Building residents (Patrick, Gary, Karen, …) are **never** swap-eligible.
+They hold load-bearing knowledge and stay in every room.
+
+### 11z.c Leave + restore
+
+When the player leaves, the registry restamps the swap's `removedAt` to
+"now". The room's next tick (≥5 s later) re-adds the NPC to
+`room.npcs` — the snapshot filter promptly stops hiding it and the
+client renders it again.
+
+### 11z.d Wire surface
+
+- `POST /api/world/join` → `{ roomId, sessionId, capacity, playerCount, swappedOutNpcId, players }`.
+- `POST /api/world/leave` → fire-and-forget; idempotent if the session isn't in a room.
+- `POST /api/world/position` → 5 Hz position update. Server enforces a 10 Hz
+  per-session ceiling and silently drops excess.
+- `GET /api/world/:roomId/stream` → SSE snapshot every 200 ms. Payload
+  shape is the existing `SimulationSnapshot` with `roomId` stamped and
+  `players: PlayerSnapshot[]` populated; the `npcs` array is filtered to
+  the room's current roster.
+- `GET /api/world/rooms` → admin-only roster of live rooms.
+
+### 11z.e Backwards compat
+
+`/api/npc/stream` keeps emitting the legacy world-wide snapshot (no
+players, full NPC roster) so any dashboard or stale client still works
+for one release.
+
+---
+
 ## 12. NPC simulation
 
 See `WorldContent.md §3` for the canonical NPC roster + counts. This section covers the gameplay-facing behavior.
