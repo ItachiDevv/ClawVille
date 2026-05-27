@@ -72,11 +72,14 @@ export const NPC_BUILDING_CENTERS: Record<string, { x: number; y: number }> = Ob
 );
 
 // Wandering NPC species distribution — 4 model categories:
-//   milady   (neo-chibi VRMs): milady_official_2/7/8                    (3 of 9) — free wanderers
-//   hermes   (VRMs):           hermes_female, hermes_male, tekk          (3 of 9) — free wanderers
-//   chibi    (VRMs):           eliza_chibi, milady_chibi                 (2 of 9) — free wanderers
-//   openclaw (crustacean):     lobster                                   (1 of 9) — free wanderer
-//   Total: 9 NPCs — all free wanderers (buildingId='').
+//   milady   (neo-chibi VRMs): milady_official_1..8                      (8 of 14) — free wanderers
+//   hermes   (VRMs):           hermes_female, hermes_male, tekk          (3 of 14) — free wanderers
+//   chibi    (VRMs):           eliza_chibi, milady_chibi                 (2 of 14) — free wanderers
+//   openclaw (crustacean):     lobster                                   (1 of 14) — free wanderer
+//   Total: 14 NPCs — all free wanderers (buildingId='').
+//   2026-05-27: restored full 8-Milady cast (aria/suki/hana/yumi/ren added
+//   to the original miu/kyoko/vivi). Each uses a UNIQUE VRM path; sharing
+//   any path would corrupt scene/skeleton via the vrm-loader cache.
 //   The 10 SpongeBob building residents at each building entrance are
 //   rendered by arena-location-npcs.tsx and are the canonical per-building
 //   characters.
@@ -133,10 +136,6 @@ export const NPC_DEFINITIONS: NpcDefinition[] = [
     stats: { hp: 90, attack: 13, defense: 14, speed: 16 },
     personality: 'A curious Milady explorer cataloguing every agent signal she overhears across ClawVille.',
   },
-  // ─── Additional Milady wanderer (added 2026-04-22) ───────────────────────
-  // Uses VRM path official_2 — official_1 is the picker default and
-  // official_5/6 are most-frequently-picked, keeping NPC paths off the
-  // common player-avatar picks to avoid VRM module-cache scene-sharing.
   {
     id: 'milady-vivi',
     name: 'Vivi',
@@ -148,6 +147,72 @@ export const NPC_DEFINITIONS: NpcDefinition[] = [
     homeY: 4275,                 // NW of town, inside the ring
     stats: { hp: 90, attack: 13, defense: 13, speed: 16 },
     personality: 'A bookish Milady sketcher who maps every reef formation she encounters into her field journal.',
+  },
+  // ─── Additional Miladys restored 2026-05-27 ──────────────────────────────
+  // User asked for full 8-Milady cast back. Each MUST use a unique VRM path
+  // — vrm-loader caches one VRM instance per path; two NPCs sharing a path
+  // would clobber each other's scene/skeleton. Available paths: official_1
+  // and official_3..6 (2/7/8 already used above). All homes inside the
+  // FREE_ROAMER annulus (1500-3200 wu from center 5760, 5760).
+  {
+    id: 'milady-aria',
+    name: 'Aria',
+    species: 'milady_official_1',
+    color: 0xffb0c8,
+    buildingId: '',
+    patrolRadius: 500,
+    homeX: 4900,
+    homeY: 3700,                 // NNW gap between Cyrus (N) and Vivi (NW)
+    stats: { hp: 92, attack: 13, defense: 12, speed: 16 },
+    personality: 'A bright-eyed Milady who hums along to the tide pumps every dawn shift.',
+  },
+  {
+    id: 'milady-suki',
+    name: 'Suki',
+    species: 'milady_official_3',
+    color: 0xc0ffd8,
+    buildingId: '',
+    patrolRadius: 500,
+    homeX: 8200,
+    homeY: 5100,                 // ENE gap between Kyoko (NE) and Mira (SE)
+    stats: { hp: 90, attack: 14, defense: 11, speed: 17 },
+    personality: 'A coffee-fueled Milady whose notebook is half sketches, half cron schedules.',
+  },
+  {
+    id: 'milady-hana',
+    name: 'Hana',
+    species: 'milady_official_4',
+    color: 0xfff0a0,
+    buildingId: '',
+    patrolRadius: 500,
+    homeX: 6400,
+    homeY: 8100,                 // SSE gap between Mira (SE) and Tekk (S)
+    stats: { hp: 88, attack: 13, defense: 13, speed: 16 },
+    personality: 'A gentle Milady who treats every new agent in town like a long-lost penpal.',
+  },
+  {
+    id: 'milady-yumi',
+    name: 'Yumi',
+    species: 'milady_official_5',
+    color: 0xb0e0ff,
+    buildingId: '',
+    patrolRadius: 500,
+    homeX: 3400,
+    homeY: 6800,                 // WSW gap between Tekk and Miu
+    stats: { hp: 94, attack: 12, defense: 14, speed: 15 },
+    personality: 'A quietly competitive Milady racing her own personal leaderboard of building visits.',
+  },
+  {
+    id: 'milady-ren',
+    name: 'Ren',
+    species: 'milady_official_6',
+    color: 0xd0b0ff,
+    buildingId: '',
+    patrolRadius: 500,
+    homeX: 3300,
+    homeY: 4900,                 // W gap between Vivi (NW) and the WSW arc
+    stats: { hp: 91, attack: 14, defense: 12, speed: 17 },
+    personality: 'A wandering Milady archivist who narrates every doorway she passes under her breath.',
   },
   // ─── Hermes wanderers (re-restored 2026-05-12 after per-VRM auto-fit) ────
   // 3 of the 5 Milady wanderer slots replaced with Mira (hermes_female),
