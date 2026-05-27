@@ -67,6 +67,8 @@ import { wagerRoutes } from './routes/wager';
 import { coveSlotsRouter } from './routes/cove-slots';
 // Phase 6.4.0 — cove blackjack mock route (display shell, no engine yet).
 import { coveBlackjackRouter } from './routes/cove-blackjack';
+// Phase 6.5.0 — cove Texas Hold'em mock route (visual shell, no engine yet).
+import { coveHoldemRouter } from './routes/cove-holdem';
 import type { AppContext } from './types';
 
 const app = new Hono<AppContext>();
@@ -206,6 +208,8 @@ app.route('/api/wager', wagerRoutes);
 app.route('/api/cove/slots', coveSlotsRouter);
 // Phase 6.4.0 — cove blackjack mock (display shell; real engine in 6.4.1).
 app.route('/api/cove/blackjack', coveBlackjackRouter);
+// Phase 6.5.0 — cove Texas Hold'em mock (visual shell; pokerpocket engine in 6.5.1).
+app.route('/api/cove/holdem', coveHoldemRouter);
 // Phase 5.1 — admin identity recovery stub. Returns 501 behind a
 // FEATURE_GATE until the support-chat verification workflow lights up.
 app.route('/api/admin', adminIdentityRoutes);
