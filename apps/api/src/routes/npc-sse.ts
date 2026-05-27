@@ -6,7 +6,12 @@ import type { AppContext } from '../types';
 export const npcRoutes = new Hono<AppContext>();
 
 /**
- * GET /api/npc/stream — SSE stream of simulation snapshots every 2s
+ * GET /api/npc/stream — legacy SSE stream of the WHOLE-world simulation
+ * snapshot. Multiplayer Phase 1 introduced per-room snapshots at
+ * `/api/world/:roomId/stream` — every new client should use that path.
+ * This route stays live for one release so dashboards / pre-Phase-1
+ * tabs keep working; the payload is the same shape with `roomId: ''`
+ * and `players: []`.
  * No auth required (spectator-friendly)
  */
 npcRoutes.get('/stream', (c) => {
