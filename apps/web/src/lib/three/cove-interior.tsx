@@ -84,9 +84,11 @@ const INTERIOR_TARGET_HEIGHT = 2000; // world units — was 600
 /** Scale factor applied to all room-relative coordinates (bounds, spawn, cabinets). */
 const _ROOM_SCALE = 2000 / 600; // ≈ 3.333
 
-/** Player spawn position — near the front entrance, facing into the room (-Z) */
-const PLAYER_SPAWN_X = 0;
-const PLAYER_SPAWN_Z = Math.round(240 * _ROOM_SCALE); // ≈ 800
+/** Player spawn position — at the door side near the slot machines (back wall area).
+ *  Captured via [BJ-POS] probe 2026-05-27. Was (0, 800) which placed player at the
+ *  opposite side; user clarified door is on the slot/back-wall end of the cove. */
+const PLAYER_SPAWN_X = -12;
+const PLAYER_SPAWN_Z = -411;
 
 /** Interior bounds — keep avatar inside the room */
 const BOUNDS_X     = Math.round(115 * _ROOM_SCALE); // ≈ 383
@@ -192,12 +194,13 @@ const _meshBbox = new THREE.Box3();
 const _camTarget = new THREE.Vector3();
 const _camDesiredPos = new THREE.Vector3();
 
-// Camera yaw anchor — STATIC spawn-direction reference (avatar faces -Z = Math.PI).
+// Camera yaw anchor — STATIC spawn-direction reference (avatar faces +Z = 0
+// from the new -411 spawn at the door side, into the room).
 // Bug 4 fix 2026-05-19: this is no longer auto-tracked to `rotRef.current`.
 // Camera-relative WASD + auto-track = positive feedback loop on strafe input
 // (every A/D press snapped the viewport ~45°). The camera now stays at spawn
 // yaw and only orbits via `_coveArrowYawOffset` (arrow-key controlled).
-let _coveCamYaw = Math.PI;
+let _coveCamYaw = 0;
 
 // Arrow-key perspective-orbit offsets (Bug 2 fix 2026-05-19).
 // These accumulate while arrow keys are held, exactly like
@@ -823,7 +826,7 @@ function _getBankBanner(label: string, color: string) {
     const mat = new THREE.MeshBasicMaterial({
       map: tex,
       transparent: true,
-      side: THREE.DoubleSide,
+      side: THREE.FrontSide, // single-sided; the back-plane mesh uses a flipped-UV geometry to show readable text from the back
       depthWrite: false,
     });
     cached = { tex, mat };
@@ -839,19 +842,32 @@ const _BANK_BANNER_GEO = (() => {
 })();
 
 function BankBanner({ label, color, position }: { label: string; color: string; position: [number, number, number] }) {
-  const meshRef = useRef<THREE.Mesh>(null);
+  // Two back-to-back planes so the label reads correctly from BOTH sides
+  // (a single PlaneGeometry is single-sided; viewing from behind shows mirrored text).
+  // The two meshes share the same canvas texture; the second is rotated 180° around Y.
+  // Both lock matrixAutoUpdate=false after first updateMatrix() for Iris Xe.
+  const frontRef = useRef<THREE.Mesh>(null);
+  const backRef = useRef<THREE.Mesh>(null);
   const cached = useMemo(() => {
     if (typeof window === 'undefined') return null;
     return _getBankBanner(label, color);
   }, [label, color]);
   useEffect(() => {
-    if (!meshRef.current) return;
-    meshRef.current.matrixAutoUpdate = false;
-    meshRef.current.updateMatrix();
+    if (frontRef.current) {
+      frontRef.current.matrixAutoUpdate = false;
+      frontRef.current.updateMatrix();
+    }
+    if (backRef.current) {
+      backRef.current.matrixAutoUpdate = false;
+      backRef.current.updateMatrix();
+    }
   }, []);
   if (!cached) return null;
   return (
-    <mesh ref={meshRef} geometry={_BANK_BANNER_GEO} material={cached.mat} position={position} />
+    <group position={position}>
+      <mesh ref={frontRef} geometry={_BANK_BANNER_GEO} material={cached.mat} />
+      <mesh ref={backRef} geometry={_BANK_BANNER_GEO} material={cached.mat} rotation={[0, Math.PI, 0]} />
+    </group>
   );
 }
 
@@ -1049,7 +1065,7 @@ interface CoveVRMAvatarProps {
 
 function CoveVRMAvatarInner({ reg }: CoveVRMAvatarProps) {
   const groupRef = useRef<THREE.Group>(null);
-  const rotRef = useRef(Math.PI); // face -Z = into the room on spawn
+  const rotRef = useRef(0); // face +Z = into the room from the new -411 spawn (door side)
   const { camera } = useThree();
   const { data: avatar } = useAvatar();
 
@@ -1062,7 +1078,7 @@ function CoveVRMAvatarInner({ reg }: CoveVRMAvatarProps) {
   // starts with the camera directly behind the avatar (no stale yaw /
   // arrow offsets from a previous visit).
   useEffect(() => {
-    _coveCamYaw          = Math.PI;
+    _coveCamYaw          = 0;
     _coveArrowYawOffset   = 0;
     _coveArrowPitchOffset = 0;
   }, []);
@@ -1245,7 +1261,7 @@ function CoveVRMAvatarInner({ reg }: CoveVRMAvatarProps) {
   });
 
   return (
-    <group ref={groupRef} position={[PLAYER_SPAWN_X, 0, PLAYER_SPAWN_Z]} rotation={[0, Math.PI, 0]}>
+    <group ref={groupRef} position={[PLAYER_SPAWN_X, 0, PLAYER_SPAWN_Z]} rotation={[0, 0, 0]}>
       <primitive
         object={vrm.scene}
         scale={[vrmRenderScale, vrmRenderScale, vrmRenderScale]}
@@ -1282,7 +1298,7 @@ function computeGlbLocalMinY(scene: THREE.Object3D): number {
 
 function CoveGLBAvatarInner() {
   const groupRef  = useRef<THREE.Group>(null);
-  const rotRef    = useRef(Math.PI);
+  const rotRef    = useRef(0); // face +Z = into the room from the -411 spawn (door side)
   const { camera } = useThree();
   const { data: avatar } = useAvatar();
 
@@ -1293,7 +1309,7 @@ function CoveGLBAvatarInner() {
 
   // Reset module-scope camera state on mount (mirrors VRM branch).
   useEffect(() => {
-    _coveCamYaw          = Math.PI;
+    _coveCamYaw          = 0;
     _coveArrowYawOffset   = 0;
     _coveArrowPitchOffset = 0;
   }, []);
@@ -1991,7 +2007,7 @@ export default function CoveInteriorScene({ onSceneEmpty }: CoveInteriorScenePro
       {/* Blackjack table label — rendered above the dealer station */}
       <BankBanner
         label="BLACKJACK"
-        color="#22dd88"
+        color="#ef4444"
         position={[_BJ_HOTSPOT_POS[0], 280, _BJ_HOTSPOT_POS[2]]}
       />
 
@@ -2003,8 +2019,18 @@ export default function CoveInteriorScene({ onSceneEmpty }: CoveInteriorScenePro
       {/* Hold'em table label — rendered above the second poker table. */}
       <BankBanner
         label="TEXAS HOLD'EM"
-        color="#22dd88"
+        color="#ffffff"
         position={[_HOLDEM_HOTSPOT_POS[0], 280, _HOLDEM_HOTSPOT_POS[2]]}
+      />
+
+      {/* Phase 6.6.0 prep — Baccarat sign placeholder at the open floor
+          position captured via [BJ-POS] probe (X=285, Z=584). Hotspot +
+          modal arrive when the baccarat team dispatches; this is just the
+          visual label so the cove reads as a 3-game venue. */}
+      <BankBanner
+        label="BACCARAT"
+        color="#3b82f6"
+        position={[285, 280, 584]}
       />
     </>
   );
