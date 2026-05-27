@@ -90,6 +90,45 @@ export function useWorldStream() {
       }
     }
 
+    function stopPositionUpload() {
+      if (positionInterval) {
+        clearInterval(positionInterval);
+        positionInterval = null;
+      }
+    }
+
+    /**
+     * Detects HTTP 409 from `/api/world/position` (server: "Session is not in
+     * a room — call /api/world/join first") and recovers by tearing down the
+     * stale 5 Hz interval, re-running the join flow, and re-arming the
+     * interval if join succeeds. The SSE downlink may still be alive (Coolify
+     * keepalive separate from server-side room TTL), so we don't recreate it
+     * — just rejoin and continue. Guarded by `recoveryInFlightRef` so concurrent
+     * 409s don't trigger multiple parallel rejoins.
+     */
+    let recoveryInFlight = false;
+    async function recoverFrom409() {
+      if (cancelled || recoveryInFlight) return;
+      recoveryInFlight = true;
+      stopPositionUpload();
+      try {
+        const rejoined = await join();
+        if (cancelled) return;
+        if (rejoined) {
+          sessionIdRef.current = rejoined.sessionId;
+          roomIdRef.current = rejoined.roomId;
+          setLocalSessionId(rejoined.sessionId);
+          setRoomId(rejoined.roomId);
+          startPositionUpload();
+        }
+        // If rejoin failed, the next position upload won't fire (interval
+        // stays stopped). The SSE downlink's onerror handler will eventually
+        // tear down + bootstrap() retry the whole flow, restoring uploads.
+      } finally {
+        recoveryInFlight = false;
+      }
+    }
+
     function startPositionUpload() {
       if (positionInterval) return;
       positionInterval = setInterval(() => {
@@ -127,14 +166,27 @@ export function useWorldStream() {
           dirZ: lastDirZRef.current,
           activity,
         });
-        // Fire-and-forget. keepalive=true lets the request survive page nav.
+        // keepalive=true lets the request survive page nav. We DO inspect
+        // status now — a 409 "Session is not in a room" means the server
+        // GC'd our session (30s no-position-update timeout) and we need to
+        // re-join. Other non-OK statuses are best-effort silent (server's
+        // 10 Hz throttle returns 200 with {throttled:true}, not an error).
         fetch(`${WORLD_API_URL}/api/world/position`, {
           method: 'POST',
           credentials: 'include',
           headers: { 'Content-Type': 'application/json' },
           body,
           keepalive: true,
-        }).catch(() => { /* best-effort, GC handles stale */ });
+        }).then((res) => {
+          if (res.status === 409) {
+            // Don't await — recovery runs async; this fetch handler returns
+            // immediately so the interval can continue (though recoverFrom409
+            // stops the interval almost immediately). Worst case: 1 more
+            // upload fires before stopPositionUpload runs, also gets 409,
+            // gets dropped by recoveryInFlight guard.
+            void recoverFrom409();
+          }
+        }).catch(() => { /* network/abort — best-effort, GC handles stale */ });
       }, POSITION_UPLOAD_INTERVAL_MS);
     }
 
