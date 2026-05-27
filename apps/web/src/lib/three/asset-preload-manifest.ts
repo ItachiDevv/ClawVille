@@ -43,7 +43,7 @@
  *   lobster.glb
  *
  * WANDERING NPC VRMs (6 distinct paths, arena-npcs.tsx preloadVRMBytes):
- *   milady-official-2.vrm, milady-official-7.vrm, milady-official-8.vrm,
+ *   milady-official-1..8.vrm (8 wanderers + Hermes/chibi),
  *   hermes-female.vrm, hermes-male.vrm, tekk.vrm
  *
  * PLAYER VRMs (8 Milady + 3 Hermes/Tekk + 2 Chibi, agent-model-registry.ts):
@@ -114,14 +114,22 @@ export const WANDERING_NPC_GLBS: readonly string[] = [
 // useVRMInstance() parse hits memory, not the network.
 // ---------------------------------------------------------------------------
 
-/** VRM paths used by the 5 wandering VRM NPCs (arena-npcs.tsx) */
+/** VRM paths used by the 13 wandering VRM NPCs (arena-npcs.tsx).
+ *  2026-05-27: restored full 8-Milady cast; was 3 Miladys + 3 Hermes. */
 export const WANDERING_VRM_PATHS: readonly string[] = [
+  '/avatars/milady-official-1.vrm',
   '/avatars/milady-official-2.vrm',
+  '/avatars/milady-official-3.vrm',
+  '/avatars/milady-official-4.vrm',
+  '/avatars/milady-official-5.vrm',
+  '/avatars/milady-official-6.vrm',
   '/avatars/milady-official-7.vrm',
   '/avatars/milady-official-8.vrm',
   '/avatars/hermes-female.vrm',
   '/avatars/hermes-male.vrm',
   '/avatars/tekk.vrm',
+  '/avatars/eliza-chibi.vrm?v=2',
+  '/avatars/milady-chibi.vrm?v=2',
 ] as const;
 
 /** All selectable player VRM paths (agent-model-registry.ts MODEL_REGISTRY).
