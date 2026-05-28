@@ -97,6 +97,20 @@ export interface NpcRuntimeState {
    * and pixel-accurate clamp, or a target NPC parked against a wall.
    */
   stuckTicks: number;
+  /**
+   * Ticks-in-a-row this NPC was involved in an entity push-out with
+   * another NPC (2026-05-31). Incremented inside `resolveNpcNpcOverlaps`
+   * for every NPC that overlapped another this tick; reset to 0 when
+   * the NPC has no overlap. When ≥ 3 (≈ 600 ms at 5 Hz), the LEX-LOWER
+   * id of an overlapping pair yields — abandons its path, drops to idle,
+   * and waits 8-15 ticks before re-planning so the other NPC walks past.
+   * Symptom this catches: two NPCs walking toward each other freeze at
+   * exactly combinedHalf distance because the half-push cancels each
+   * step. `stuckTicks` doesn't trip because the perpendicular push
+   * counts as `moved >= 2`. The client sees `direction !== 'idle'` and
+   * plays the walk cycle in place → "moonwalk".
+   */
+  overlapTicks: number;
   // Arena-only fields
   hp: number;
   maxHp: number;
@@ -349,6 +363,7 @@ class NpcSimulation {
         behaviorCooldown: 5 + Math.floor(Math.random() * 10),
         intentDescription: '',
         stuckTicks: 0,
+        overlapTicks: 0,
         hp: def.stats.hp, maxHp: def.stats.hp,
         attack: def.stats.attack, defense: def.stats.defense, speed: def.stats.speed,
         inCombat: false, inventory: [], isDead: false, respawnAt: 0,
@@ -395,6 +410,7 @@ class NpcSimulation {
         activity: 'idle', activityEmoji: '', destinationBuildingId: null,
         path: [], pathIndex: 0, activityEndsAt: 0, behaviorCooldown: 30, intentDescription: '',
         stuckTicks: 0,
+        overlapTicks: 0,
         hp: avatarConfig.stats.hp, maxHp: avatarConfig.stats.hp,
         attack: avatarConfig.stats.attack, defense: avatarConfig.stats.defense, speed: avatarConfig.stats.speed,
         inCombat: false, inventory: [], isDead: false, respawnAt: 0,
@@ -636,6 +652,12 @@ class NpcSimulation {
     const halfOf = (npc: NpcRuntimeState): number =>
       npc.id.startsWith('milady-') || npc.id.startsWith('chibi-') ? 25 : 50;
 
+    // Track which NPCs participated in any overlap this tick. Bounded by alive.length
+    // (≈14) — small enough that a Set is fine. Pairs that overlapped get queued for
+    // the deadlock-yield pass below.
+    const overlappedIds = new Set<string>();
+    const overlappingPairs: Array<[NpcRuntimeState, NpcRuntimeState]> = [];
+
     for (let i = 0; i < alive.length; i++) {
       for (let j = i + 1; j < alive.length; j++) {
         const a = alive[i]!;
@@ -665,7 +687,52 @@ class NpcSimulation {
         const clB = clampPosition2D(rawBX - WORLD_COLLIDER_MAP_HALF, rawBY - WORLD_COLLIDER_MAP_HALF, halfOf(b));
         b.x = Math.max(16, Math.min(MAP_WIDTH - 16, clB.x + WORLD_COLLIDER_MAP_HALF));
         b.y = Math.max(16, Math.min(MAP_HEIGHT - 16, clB.z + WORLD_COLLIDER_MAP_HALF));
+
+        overlappedIds.add(a.id);
+        overlappedIds.add(b.id);
+        overlappingPairs.push([a, b]);
       }
+    }
+
+    // Overlap-counter maintenance. NPCs in an overlap this tick → ++; everyone
+    // else resets to 0. Counter persists between ticks so deadlocked pairs can
+    // accumulate the YIELD_THRESHOLD even though each individual tick "moved"
+    // them sideways by the half-push (which fools stuckTicks).
+    for (const npc of alive) {
+      if (overlappedIds.has(npc.id)) {
+        npc.overlapTicks++;
+      } else {
+        npc.overlapTicks = 0;
+      }
+    }
+
+    // Deadlock-yield pass. For each overlapping pair, the LEX-LOWER id is the
+    // yielder. Asymmetric on purpose — if both yielded, both would replan and
+    // potentially reconverge on the same area. Lex-lower is deterministic and
+    // testable. Threshold = 3 ticks (~600 ms at 5 Hz) so a transient
+    // push-through doesn't trigger a spurious yield, but a true deadlock breaks
+    // before the user perceives it as a stuck character.
+    const YIELD_THRESHOLD = 3;
+    for (const [a, b] of overlappingPairs) {
+      const yielder = a.id < b.id ? a : b;
+      // Already yielded this tick (path empty) or busy in combat — skip.
+      if (yielder.path.length === 0) continue;
+      if (yielder.inCombat || yielder.inConversation) continue;
+      if (yielder.overlapTicks < YIELD_THRESHOLD) continue;
+
+      // Abandon current path, drop to idle so the client stops playing the
+      // walk-in-place animation immediately. Cooldown 8-15 ticks (≈ 1.6-3s)
+      // before re-planning so the higher-id NPC walks past before the yielder
+      // picks a new target — prevents immediate re-collision.
+      yielder.path = [];
+      yielder.pathIndex = 0;
+      yielder.activity = 'idle';
+      yielder.activityEmoji = '';
+      yielder.destinationBuildingId = null;
+      yielder.direction = 'idle';
+      yielder.intentDescription = 'Stepping aside';
+      yielder.behaviorCooldown = 8 + Math.floor(Math.random() * 8);
+      yielder.overlapTicks = 0;
     }
   }
 
@@ -744,6 +811,7 @@ class NpcSimulation {
         npc.path = []; npc.pathIndex = 0; npc.destinationBuildingId = null;
         npc.behaviorCooldown = 10;
         npc.stuckTicks = 0;
+        npc.overlapTicks = 0;
         npc.combatTargetId = null;
         npc.respawnedAt = now;
         npc.invulnerableUntil = now + 3000;
