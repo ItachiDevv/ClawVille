@@ -146,7 +146,7 @@ export default function CoveMobileControls() {
         style={{
           position: 'fixed',
           left: 0,
-          bottom: 'max(env(safe-area-inset-bottom, 0px), 24px)',
+          bottom: 'max(env(safe-area-inset-bottom, 0px), 32px)',
           width: '50vw',
           height: '240px',
           zIndex: 50,
@@ -160,7 +160,7 @@ export default function CoveMobileControls() {
         style={{
           position: 'fixed',
           right: 0,
-          bottom: 'max(env(safe-area-inset-bottom, 0px), 24px)',
+          bottom: 'max(env(safe-area-inset-bottom, 0px), 32px)',
           width: '50vw',
           height: '240px',
           zIndex: 50,
