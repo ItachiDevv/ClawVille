@@ -47,7 +47,7 @@ export default function AvatarStatusBar() {
   const totalBuildings = buildingZones.length;
 
   return (
-    <div className="claw-panel fixed bottom-4 left-4 z-40 w-auto md:w-56">
+    <div className="claw-panel fixed bottom-4 left-4 z-40 w-auto md:w-56 hidden md:block">
       {/* Avatar identity row */}
       <div className="flex items-center gap-2 md:mb-3">
         <span className="text-xl">{emoji}</span>
