@@ -28,7 +28,7 @@ export default function LocationHUD() {
   const controlMode = useGameStore((s: GameState) => s.controlMode);
   const enterBuilding = useGameStore((s: GameState) => s.enterBuilding);
   const buildingChatOpen = useGameStore((s: GameState) => s.chatOpen);
-  const systemAgentChatOpen = useGameStore((s: GameState) => s.systemAgentChatOpen);
+  const systemAgentChatOpen = useGameStore((s: GameState) => s.guideChatOpen);
   const isMobile = useIsMobile();
 
   // Spectator/explore mode has no character to walk in — suppress the
