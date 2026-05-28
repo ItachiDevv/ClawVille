@@ -141,7 +141,7 @@ export default function MobileControls() {
         // Without this the nipples render INSIDE the viewport but UNDER
         // Safari's chrome on a real iPad — invisible/untappable.
         // Min 32px so it stays clear even without safe-area (devtools/etc).
-        bottom: 'max(env(safe-area-inset-bottom, 0px), 32px)',
+        bottom: 'max(calc(env(safe-area-inset-bottom, 0px) + 60px), 80px)',
         width: '100vw',
         height: '220px',
       }}
