@@ -15,14 +15,24 @@ export default function MobileControls() {
   const movementFrozen = useGameStore((s) => s.movementFrozen);
   const nearLocation = useGameStore((s) => s.nearLocation);
   const controlMode = useGameStore((s) => s.controlMode);
+  // When a chat panel is open (building chat or the Nori system-agent
+  // overlay) the chat input sits at the bottom of the screen. With the
+  // joystick lift (2026-05-28) the nipples now occupy the same band and
+  // float over the text input. Suppress BOTH joysticks while any chat is
+  // open — you're talking, not walking.
+  const activeChatLocation = useGameStore((s) => s.activeChatLocation);
+  const activeSystemAgent = useGameStore((s) => s.activeSystemAgent);
+  const chatOpen = activeChatLocation !== null || activeSystemAgent !== null;
 
   // Explore mode = pure spectator with no character — no movement joystick, no building entry
   const isExplore = controlMode === 'explore';
+  // Joysticks hidden entirely while a chat panel is open.
+  const hideControls = chatOpen;
 
   // Left joystick — movement/pan. In explore mode it drives the free-roam spectator
   // camera via WASDCameraController (World3DCanvas.tsx) reading joystickVelocity.
   useEffect(() => {
-    if (!isMobile || movementFrozen || !leftContainerRef.current) {
+    if (!isMobile || movementFrozen || hideControls || !leftContainerRef.current) {
       if (leftJoystickRef.current) {
         leftJoystickRef.current.destroy();
         leftJoystickRef.current = null;
@@ -70,7 +80,7 @@ export default function MobileControls() {
         useGameStore.getState().setJoystickVelocity(0, 0);
       }
     };
-  }, [isMobile, movementFrozen]);
+  }, [isMobile, movementFrozen, hideControls]);
 
   // Right joystick — camera orbit (arrow key equivalent)
   useEffect(() => {
@@ -122,9 +132,12 @@ export default function MobileControls() {
         useGameStore.getState().setCameraJoystickVelocity(0, 0);
       }
     };
-  }, [isMobile]);
+  }, [isMobile, hideControls]);
 
   if (!isMobile) return null;
+  // Chat open → suppress the whole control layer (joysticks would float over
+  // the chat input at the bottom of the screen).
+  if (hideControls) return null;
 
   const handleEnterBuilding = () => {
     const store = useGameStore.getState();
