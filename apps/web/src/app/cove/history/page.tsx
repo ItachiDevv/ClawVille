@@ -1,4 +1,3 @@
-import { redirect } from 'next/navigation';
 import Link from 'next/link';
 import { getSession } from '@/lib/auth';
 import HistoryTable from '@/components/cove/history/HistoryTable';
@@ -6,10 +5,15 @@ import '@/styles/cove-tokens.css';
 
 /**
  * Phase 6.7.0 — Player game history page.
+ * Phase 6.7.5 — open to guests. Unauthenticated visitors see their guest
+ * history (scoped server-side by guest_fp_hash). Header copy switches to
+ * a "Sign up to claim →" prompt when not authed. On signup, the login
+ * page calls POST /api/cove/history/claim which migrates the rows to
+ * the new user_id.
  *
- * Server component: auth-gates with Lucia. Redirect to /login if not
- * authenticated. TanStack Query infinite-scroll runs client-side in
- * <HistoryTable>.
+ * Server component: reads Lucia session to pick the header variant. The
+ * actual table fetches via TanStack Query client-side and is identical
+ * regardless of subject.
  */
 export const metadata = {
   title: 'Game History — Cove',
@@ -18,9 +22,7 @@ export const metadata = {
 
 export default async function CoveHistoryPage() {
   const { user } = await getSession();
-  if (!user) {
-    redirect('/login');
-  }
+  const isGuest = !user;
 
   return (
     <div
@@ -57,9 +59,14 @@ export default async function CoveHistoryPage() {
               fontFamily: 'var(--cv-data)',
             }}
           >
-            Game History
+            {isGuest ? 'Guest History' : 'Game History'}
           </h1>
           <div style={{ display: 'flex', gap: 10 }}>
+            {isGuest && (
+              <Link href="/login?mode=signup&claim=1" style={signupLink()}>
+                Sign up to claim →
+              </Link>
+            )}
             <Link href="/cove/verify" style={navLink()}>
               Manual verifier
             </Link>
@@ -71,7 +78,7 @@ export default async function CoveHistoryPage() {
 
         <p
           style={{
-            color: 'rgba(224,255,248,0.45)',
+            color: 'rgba(224,255,248,0.65)',
             fontSize: 12,
             marginTop: 4,
             marginBottom: 20,
@@ -79,9 +86,20 @@ export default async function CoveHistoryPage() {
             lineHeight: 1.6,
           }}
         >
-          All games are provably fair. Click any row to see the hash chain and outcome data.
-          Use the <strong style={{ color: 'rgba(0,255,224,0.7)' }}>Verify</strong> button to
-          replay a spin or hand locally in your browser.
+          {isGuest ? (
+            <>
+              You're browsing in <strong style={{ color: 'rgba(0,255,224,0.85)' }}>guest mode</strong>.
+              These plays are tagged to this browser. Sign up and we'll claim them to your account in
+              one tap — the audit trail survives. (Your in-session demo balance does not — only the
+              verifiable history rows carry over.)
+            </>
+          ) : (
+            <>
+              All games are provably fair. Click any row to see the hash chain and outcome data.
+              Use the <strong style={{ color: 'rgba(0,255,224,0.7)' }}>Verify</strong> button to
+              replay a spin or hand locally in your browser.
+            </>
+          )}
         </p>
 
         {/* The actual table — client component */}
@@ -101,5 +119,21 @@ function navLink(): React.CSSProperties {
     borderRadius: 6,
     fontFamily: 'monospace',
     letterSpacing: '0.04em',
+  };
+}
+
+function signupLink(): React.CSSProperties {
+  return {
+    color: '#04141c',
+    textDecoration: 'none',
+    fontSize: 12,
+    fontWeight: 700,
+    background: 'linear-gradient(180deg, rgba(0,255,224,0.92), rgba(0,200,180,0.85))',
+    border: '1px solid rgba(0,255,224,0.7)',
+    padding: '6px 14px',
+    borderRadius: 6,
+    fontFamily: 'monospace',
+    letterSpacing: '0.04em',
+    boxShadow: '0 0 16px rgba(0,229,255,0.25)',
   };
 }

@@ -51,15 +51,28 @@ import {
   index,
   uniqueIndex,
 } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
 import { users } from './users';
 
 export const coveGameEvents = pgTable(
   'cove_game_events',
   {
     id: uuid('id').primaryKey().defaultRandom(),
-    userId: uuid('user_id')
-      .notNull()
-      .references(() => users.id, { onDelete: 'cascade' }),
+    /**
+     * Phase 6.7.5 — nullable for guest plays. Exactly one of (`userId`,
+     * `guestFpHash`) is set per row; a DB check constraint
+     * (`cove_game_events_subject_check`) enforces the XOR. Guest rows
+     * carry `guestFpHash` instead and get re-stamped to a real user_id
+     * on signup via `POST /api/cove/history/claim`.
+     */
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }),
+    /**
+     * Phase 6.7.5 — set on guest plays (NPC mode, no auth). Salted-sha256
+     * fingerprint from `fingerprintMiddleware`; NEVER the raw fp value (which
+     * lives only in browser localStorage as `cv-fp`). NULL once claimed by a
+     * signed-up user.
+     */
+    guestFpHash: text('guest_fp_hash'),
 
     /** 'slots' | 'blackjack' | 'holdem' | 'baccarat'. Discriminator for `outcomeJson`. */
     gameType: text('game_type').notNull(),
@@ -132,17 +145,28 @@ export const coveGameEvents = pgTable(
       .defaultNow(),
   },
   (table) => ({
-    /** Primary history-fetch path: `WHERE user_id = $1 ORDER BY created_at DESC LIMIT 50`. */
-    userCreatedAtIdx: index('cove_game_events_user_created_at_idx').on(
-      table.userId,
-      table.createdAt.desc(),
-    ),
+    /**
+     * Primary authed history-fetch path: `WHERE user_id = $1 ORDER BY
+     * created_at DESC LIMIT 50`. Partial so guest rows don't bloat the
+     * index — guest reads ride `guestCreatedAtIdx` instead.
+     */
+    userCreatedAtIdx: index('cove_game_events_user_created_at_idx')
+      .on(table.userId, table.createdAt.desc())
+      .where(sql`user_id IS NOT NULL`),
     /** Per-shoe audit + bulk-verify queries. */
     shoeIdIdx: index('cove_game_events_shoe_id_idx').on(table.shoeId),
-    /** Per-game-filtered history (`?game=blackjack`). */
-    userGameCreatedAtIdx: index(
-      'cove_game_events_user_game_created_at_idx',
-    ).on(table.userId, table.gameType, table.createdAt.desc()),
+    /** Per-game-filtered authed history (`?game=blackjack`). Partial — see userCreatedAtIdx. */
+    userGameCreatedAtIdx: index('cove_game_events_user_game_created_at_idx')
+      .on(table.userId, table.gameType, table.createdAt.desc())
+      .where(sql`user_id IS NOT NULL`),
+    /**
+     * Phase 6.7.5 — guest history-fetch path. Indexes only rows where
+     * `guest_fp_hash IS NOT NULL` so authed rows don't bloat it. Read
+     * path mirrors `userCreatedAtIdx` with fp_hash equality.
+     */
+    guestCreatedAtIdx: index('cove_game_events_guest_fp_created_at_idx')
+      .on(table.guestFpHash, table.createdAt.desc())
+      .where(sql`guest_fp_hash IS NOT NULL`),
     /**
      * Idempotent backfill key — `ON CONFLICT (game_type, session_id, nonce)
      * DO NOTHING`. Without this the slots backfill duplicates every row
