@@ -35,6 +35,7 @@ import HoldemModal from '@/components/cove/holdem/HoldemModal';
 import CoveMobileControls from '@/components/cove/CoveMobileControls';
 import { useAvatar } from '@/hooks/use-avatar';
 import { useGameStore } from '@/stores/game';
+import { useIsMobile } from '@/hooks/use-is-mobile';
 
 /**
  * CoveCanvas — dynamically imported with ssr:false so Three.js /
@@ -88,6 +89,7 @@ const COVE_EXIT_PX = { x: 2000, y: 5760 };
 // ---------------------------------------------------------------------------
 export default function CovePage() {
   const { triggerTransition } = useSceneTransition();
+  const isMobile = useIsMobile();
 
   // Phase 6.1.20 — sync the user's authenticated avatar into the gameStore
   // every time this page mounts. Mirrors the same effect on /game (line 346)
@@ -243,35 +245,40 @@ export default function CovePage() {
           could see the scene but not move. */}
       <CoveMobileControls />
 
-      {/* Interior branding — bottom-center */}
-      <div
-        style={{
-          position: 'absolute',
-          bottom: 24,
-          left: '50%',
-          transform: 'translateX(-50%)',
-          zIndex: 30,
-          pointerEvents: 'none',
-          textAlign: 'center',
-        }}
-      >
+      {/* Interior branding — bottom-center. Hidden on mobile so it doesn't
+          sit visually over the CoveMobileControls joystick zones (each zone
+          is 50vw × 240px from bottom, meeting at center where this banner
+          lives). Desktop only — decoration, not load-bearing. */}
+      {!isMobile && (
         <div
           style={{
-            background: 'rgba(10, 0, 21, 0.75)',
-            backdropFilter: 'blur(4px)',
-            border: '1px solid rgba(255, 0, 204, 0.25)',
-            borderRadius: 8,
-            padding: '6px 20px',
+            position: 'absolute',
+            bottom: 24,
+            left: '50%',
+            transform: 'translateX(-50%)',
+            zIndex: 30,
+            pointerEvents: 'none',
+            textAlign: 'center',
           }}
         >
-          <span style={{ color: '#ff00cc', fontWeight: 700, fontSize: 13, fontFamily: 'monospace' }}>
-            Predictive Gaming Cove
-          </span>
-          <span style={{ color: 'rgba(255,255,255,0.35)', fontSize: 11, marginLeft: 8 }}>
-            Slots · Blackjack · Hold&apos;em
-          </span>
+          <div
+            style={{
+              background: 'rgba(10, 0, 21, 0.75)',
+              backdropFilter: 'blur(4px)',
+              border: '1px solid rgba(255, 0, 204, 0.25)',
+              borderRadius: 8,
+              padding: '6px 20px',
+            }}
+          >
+            <span style={{ color: '#ff00cc', fontWeight: 700, fontSize: 13, fontFamily: 'monospace' }}>
+              Predictive Gaming Cove
+            </span>
+            <span style={{ color: 'rgba(255,255,255,0.35)', fontSize: 11, marginLeft: 8 }}>
+              Slots · Blackjack · Hold&apos;em
+            </span>
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }
