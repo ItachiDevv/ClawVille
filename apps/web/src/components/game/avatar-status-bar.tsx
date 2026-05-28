@@ -3,6 +3,7 @@
 import { useAvatar } from '@/hooks/use-avatar';
 import { AVATAR_SPECIES, KNOWLEDGE_BOOKS } from '@clawville/shared';
 import { useGameStore } from '@/stores/game';
+import { useIsMobile } from '@/hooks/use-is-mobile';
 import { buildingZones } from '@/lib/pixi/tilemap-data';
 
 function StatBar({ label, value, max = 20, color = 'bg-emerald-400' }: { label: string; value: number; max?: number; color?: string }) {
@@ -26,8 +27,12 @@ export default function AvatarStatusBar() {
   const { data: avatar, isLoading } = useAvatar();
   const openInventory = useGameStore((s) => s.openInventory);
   const visitedBuildings = useGameStore((s) => s.visitedBuildings);
+  const isMobile = useIsMobile();
 
   if (isLoading || !avatar) return null;
+  // Hide on ALL touch devices (incl. iPad Air/Pro which exceed Tailwind's
+  // md: breakpoint) so it never covers the mobile-controls left joystick.
+  if (isMobile) return null;
 
   const species = AVATAR_SPECIES.find((s) => s.id === avatar.species);
   const emoji = species?.emoji ?? '?';
@@ -47,7 +52,7 @@ export default function AvatarStatusBar() {
   const totalBuildings = buildingZones.length;
 
   return (
-    <div className="claw-panel fixed bottom-4 left-4 z-40 w-auto md:w-56 hidden md:block">
+    <div className="claw-panel fixed bottom-4 left-4 z-40 w-56">
       {/* Avatar identity row */}
       <div className="flex items-center gap-2 md:mb-3">
         <span className="text-xl">{emoji}</span>
