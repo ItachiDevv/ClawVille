@@ -20,14 +20,14 @@ export default function MobileControls() {
   // joystick lift (2026-05-28) the nipples now occupy the same band and
   // float over the text input. Suppress BOTH joysticks while any chat is
   // open — you're talking, not walking.
-  const activeChatLocation = useGameStore((s) => s.activeChatLocation);
-  const activeSystemAgent = useGameStore((s) => s.activeSystemAgent);
-  const chatOpen = activeChatLocation !== null || activeSystemAgent !== null;
+  const buildingChatOpen = useGameStore((s) => s.chatOpen);
+  const systemAgentChatOpen = useGameStore((s) => s.systemAgentChatOpen);
+  const chatActive = buildingChatOpen || systemAgentChatOpen;
 
   // Explore mode = pure spectator with no character — no movement joystick, no building entry
   const isExplore = controlMode === 'explore';
   // Joysticks hidden entirely while a chat panel is open.
-  const hideControls = chatOpen;
+  const hideControls = chatActive;
 
   // Left joystick — movement/pan. In explore mode it drives the free-roam spectator
   // camera via WASDCameraController (World3DCanvas.tsx) reading joystickVelocity.
