@@ -255,7 +255,7 @@ export default function CoveVerifyPage() {
             style={inputStyle({ flex: '1 1 240px', minWidth: 0 })}
           />
           <Link
-            href={`/cove/verify/${deeplink.trim()}`}
+            href={`/cove/verify/session/${deeplink.trim()}`}
             style={{
               padding: '8px 14px',
               borderRadius: 8,
