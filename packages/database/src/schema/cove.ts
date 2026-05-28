@@ -49,9 +49,19 @@ export const slotSessions = pgTable(
   'slot_sessions',
   {
     id: uuid('id').primaryKey().defaultRandom(),
-    userId: uuid('user_id')
-      .notNull()
-      .references(() => users.id, { onDelete: 'cascade' }),
+    /**
+     * Phase 6.7.5 — nullable for guest sessions. Exactly one of (`userId`,
+     * `guestFpHash`) must be set; enforced by the
+     * `slot_sessions_subject_check` DB constraint. Guest sessions get
+     * re-stamped to a real user_id on signup via `POST /api/cove/history/claim`.
+     */
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }),
+    /**
+     * Phase 6.7.5 — salted-sha256 fingerprint from `fingerprintMiddleware`,
+     * set when the session opener is unauthenticated (NPC mode). NULL once
+     * claimed.
+     */
+    guestFpHash: text('guest_fp_hash'),
     /** Machine identifier — only 'classic-3x5' in MVP. */
     paytableId: text('paytable_id').notNull(),
     /** 'clawtokens' | 'sol' | 'usdc'. Non-clawtokens currencies return 501 at the route. */
@@ -107,18 +117,33 @@ export const slotSessions = pgTable(
     closedAt: timestamp('closed_at', { withTimezone: true }),
   },
   (table) => ({
-    userIdIdx: index('slot_sessions_user_id_idx').on(table.userId),
+    /** Partial — guest sessions ride `guestFpIdx`. */
+    userIdIdx: index('slot_sessions_user_id_idx')
+      .on(table.userId)
+      .where(sql`user_id IS NOT NULL`),
     statusIdx: index('slot_sessions_status_idx').on(table.status),
     /**
      * One open session per user. The route layer SELECTs for an existing
      * `status='open'` row first and returns 409 cleanly, but the DB
      * unique index is the load-bearing race-safety guarantee — two
      * concurrent /session/open calls can't both win because one of them
-     * will trip this partial index and fail at INSERT time.
+     * will trip this partial index and fail at INSERT time. Guest open
+     * sessions ride `openGuestSessionUnique` below.
      */
     openSessionUnique: uniqueIndex('slot_sessions_user_open_unique')
       .on(table.userId)
-      .where(sql`status = 'open'`),
+      .where(sql`status = 'open' AND user_id IS NOT NULL`),
+    /**
+     * Phase 6.7.5 — guest history index + one-open-session-per-fp guard.
+     * Guests can't bypass the open-session race by simply not having a
+     * user_id.
+     */
+    guestFpIdx: index('slot_sessions_guest_fp_idx')
+      .on(table.guestFpHash)
+      .where(sql`guest_fp_hash IS NOT NULL`),
+    openGuestSessionUnique: uniqueIndex('slot_sessions_guest_open_unique')
+      .on(table.guestFpHash)
+      .where(sql`status = 'open' AND guest_fp_hash IS NOT NULL`),
   }),
 );
 
