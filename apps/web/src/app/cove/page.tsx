@@ -32,6 +32,7 @@ import SceneTransition, { useSceneTransition } from '@/components/transitions/Sc
 import SlotScreenModal from '@/components/cove/SlotScreenModal';
 import BlackjackModal from '@/components/cove/blackjack/BlackjackModal';
 import HoldemModal from '@/components/cove/holdem/HoldemModal';
+import CoveMobileControls from '@/components/cove/CoveMobileControls';
 import { useAvatar } from '@/hooks/use-avatar';
 import { useGameStore } from '@/stores/game';
 
@@ -236,6 +237,11 @@ export default function CovePage() {
           modals. Real pokerpocket engine + bot personalities + ClawToken
           ledger integration land in Phase 6.5.1. */}
       <HoldemModal />
+
+      {/* iPad / phone touch controls — auto-hidden on desktop via useIsMobile.
+          Critical fix 2026-05-27: cove had zero touch input; iPad users
+          could see the scene but not move. */}
+      <CoveMobileControls />
 
       {/* Interior branding — bottom-center */}
       <div

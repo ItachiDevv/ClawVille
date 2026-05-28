@@ -225,6 +225,25 @@ interface CoveKeyState {
   w: boolean; a: boolean; s: boolean; d: boolean; e: boolean;
 }
 const coveKeys: CoveKeyState = { w: false, a: false, s: false, d: false, e: false };
+
+/**
+ * Touch-input bridge — mobile joystick controls (iPad / phone) write to
+ * `_coveTouchVec` and the useFrame movement loop folds these values into
+ * the WASD vector. Phase 6.7.x iPad fix (2026-05-27): cove had no touch
+ * controls — user could SEE but not move.
+ */
+export const _coveTouchVec: { x: number; z: number } = { x: 0, z: 0 };
+export function setCoveTouchVelocity(x: number, z: number) {
+  _coveTouchVec.x = x;
+  _coveTouchVec.z = z;
+}
+export function setCoveTouchArrowKey(key: 'left' | 'right' | 'up' | 'down', pressed: boolean) {
+  _coveArrowKeys[key] = pressed;
+}
+export function setCoveTouchInteract(pressed: boolean) {
+  coveKeys.e = pressed;
+  if (!pressed) _eKeyConsumed = false;
+}
 let coveKeyListenersAttached = false;
 
 function attachCoveKeyListeners() {
@@ -1134,6 +1153,11 @@ function CoveVRMAvatarInner({ reg }: CoveVRMAvatarProps) {
       if (coveKeys.s) inputFwd -= 1;
       if (coveKeys.a) inputRight -= 1;
       if (coveKeys.d) inputRight += 1;
+      // iPad / touch joystick contribution — folded on top of WASD so a user
+      // with both keyboard and touch could combine inputs without conflict.
+      // _coveTouchVec.x = strafe (+right), _coveTouchVec.z = forward (+fwd).
+      inputFwd  += _coveTouchVec.z;
+      inputRight += _coveTouchVec.x;
       if (inputFwd !== 0 || inputRight !== 0) {
         vx = _coveAvatarFwd.x * inputFwd + _coveAvatarRight.x * inputRight;
         vz = _coveAvatarFwd.z * inputFwd + _coveAvatarRight.z * inputRight;
@@ -1366,6 +1390,11 @@ function CoveGLBAvatarInner() {
       if (coveKeys.s) inputFwd -= 1;
       if (coveKeys.a) inputRight -= 1;
       if (coveKeys.d) inputRight += 1;
+      // iPad / touch joystick contribution — folded on top of WASD so a user
+      // with both keyboard and touch could combine inputs without conflict.
+      // _coveTouchVec.x = strafe (+right), _coveTouchVec.z = forward (+fwd).
+      inputFwd  += _coveTouchVec.z;
+      inputRight += _coveTouchVec.x;
       if (inputFwd !== 0 || inputRight !== 0) {
         vx = _coveAvatarFwd.x * inputFwd + _coveAvatarRight.x * inputRight;
         vz = _coveAvatarFwd.z * inputFwd + _coveAvatarRight.z * inputRight;
