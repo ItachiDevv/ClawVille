@@ -174,32 +174,8 @@ export default function MobileControls() {
         }}
       />
 
-      {/* Enter building button — centered between joysticks (hidden in explore mode) */}
-      {!movementFrozen && !isExplore && nearLocation && (
-        <button
-          onClick={handleEnterBuilding}
-          className="pointer-events-auto absolute"
-          style={{
-            left: '50%',
-            bottom: '70px',
-            transform: 'translateX(-50%)',
-            width: '56px',
-            height: '56px',
-            borderRadius: '50%',
-            background: 'rgba(255,255,255,0.3)',
-            backdropFilter: 'blur(4px)',
-            border: '2px solid rgba(255,255,255,0.5)',
-            color: 'white',
-            fontWeight: 'bold',
-            fontSize: '18px',
-            touchAction: 'manipulation',
-            boxShadow: '0 2px 12px rgba(0,0,0,0.3)',
-          }}
-          aria-label="Enter building"
-        >
-          E
-        </button>
-      )}
+      {/* Building enter is now owned by the bottom-center floating prompt
+          in `location-hud.tsx` (single source of truth, bigger tap target). */}
     </div>
   );
 }
