@@ -135,8 +135,16 @@ export default function MobileControls() {
 
   return (
     <div
-      className="fixed bottom-0 left-0 z-40 pointer-events-none"
-      style={{ width: '100vw', height: '220px' }}
+      className="fixed left-0 z-40 pointer-events-none"
+      style={{
+        // Lift above iOS Safari bottom toolbar + home-indicator safe area.
+        // Without this the nipples render INSIDE the viewport but UNDER
+        // Safari's chrome on a real iPad — invisible/untappable.
+        bottom: 'max(env(safe-area-inset-bottom, 0px), 0px)',
+        paddingBottom: '24px',
+        width: '100vw',
+        height: '244px',
+      }}
     >
       {/* Left joystick zone — movement / explore-mode camera pan */}
       {!movementFrozen && (
