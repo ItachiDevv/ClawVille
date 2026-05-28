@@ -136,38 +136,53 @@ export default function CoveMobileControls() {
 
   return (
     <>
-      {/* Left joystick zone — movement.
-          `bottom: max(env(safe-area-inset-bottom), 24px)` lifts the nipple
-          above iOS Safari's bottom toolbar + home-indicator safe area on
-          real iPads (without this the nipple sits IN the viewport but
-          UNDER Safari's chrome — invisible/untappable). */}
+      {/* Joystick container — mirrors the working /game MobileControls
+          structure EXACTLY: a `position:fixed` lifted OUTER container with
+          `position:absolute` inner zones at bottom:0. nipplejs places its
+          handle relative to the zone; with per-zone `position:fixed` the
+          handle landed 80px lower than /game (cove joysticks at 50px vs
+          game's 130px from bottom — under the iPad Safari toolbar). The
+          outer-container pattern is the one that positions the nipple
+          correctly. Lift via safe-area so it clears Safari chrome on real
+          iPads. (Fixed 2026-05-28.) */}
       <div
-        ref={leftRef}
         style={{
           position: 'fixed',
           left: 0,
           bottom: 'max(calc(env(safe-area-inset-bottom, 0px) + 60px), 80px)',
-          width: '50vw',
-          height: '240px',
+          width: '100vw',
+          height: '220px',
           zIndex: 50,
-          pointerEvents: 'auto',
-          touchAction: 'none',
+          pointerEvents: 'none',
         }}
-      />
-      {/* Right joystick zone — camera */}
-      <div
-        ref={rightRef}
-        style={{
-          position: 'fixed',
-          right: 0,
-          bottom: 'max(calc(env(safe-area-inset-bottom, 0px) + 60px), 80px)',
-          width: '50vw',
-          height: '240px',
-          zIndex: 50,
-          pointerEvents: 'auto',
-          touchAction: 'none',
-        }}
-      />
+      >
+        {/* Left zone — movement */}
+        <div
+          ref={leftRef}
+          style={{
+            position: 'absolute',
+            left: 0,
+            bottom: 0,
+            width: '50vw',
+            height: '220px',
+            pointerEvents: 'auto',
+            touchAction: 'none',
+          }}
+        />
+        {/* Right zone — camera */}
+        <div
+          ref={rightRef}
+          style={{
+            position: 'absolute',
+            right: 0,
+            bottom: 0,
+            width: '50vw',
+            height: '220px',
+            pointerEvents: 'auto',
+            touchAction: 'none',
+          }}
+        />
+      </div>
       {/* INTERACT button — E-key proxy. Tap-and-hold for E. */}
       <button
         type="button"
@@ -178,7 +193,9 @@ export default function CoveMobileControls() {
         style={{
           position: 'fixed',
           right: 30,
-          bottom: 260,
+          // Sit above the lifted joystick zone (zone top ≈ 300px from bottom
+          // on a device with safe-area); keep it clear of Safari chrome.
+          bottom: 'max(calc(env(safe-area-inset-bottom, 0px) + 240px), 260px)',
           width: 72,
           height: 72,
           borderRadius: '50%',
