@@ -446,6 +446,54 @@ function markWorldReadyIfUploadsDone(): void {
   }
 }
 
+/**
+ * Async-WebGPU first-paint kick (2026-05-31).
+ *
+ * Symptom: the world rendered nothing (uniform SKY_COLOR blue) on initial
+ * load and only painted once the user RESIZED the window. Measured live:
+ * frameloop='always', RAF firing, 328 visible meshes, 1 render/frame,
+ * canvas full-screen opacity 1 — yet no visible output until a real resize.
+ *
+ * Cause: the WebGPU swapchain context is configured inside the async
+ * `glFactory` (during `await renderer.init()` + the factory's `setSize`)
+ * BEFORE R3F finishes wiring its render pipeline. The first frames render
+ * into a swapchain that never presents until something re-runs
+ * `gl.setSize()` → `backend.updateSize()` → context reconfigure. A manual
+ * window resize does exactly that (R3F's ResizeObserver → setSize), which
+ * is why resizing "fixed" it.
+ *
+ * Fix: replicate that resize ONCE after layout settles by re-issuing
+ * `gl.setSize()` with the real container dimensions. `setSize` is NOT
+ * deduped — three r170 always calls `backend.updateSize()` — so this
+ * reliably forces the reconfigure. Re-issued across a few frames to cover
+ * the init-resolve race.
+ *
+ * This is a one-shot SIZE re-issue, NOT a render loop. Do NOT turn this
+ * into a recurring `gl.render` call — a second render per frame is exactly
+ * what the removed OpaqueCanvasClearGuard did, and on WebGPU that
+ * double-render presented only the clear color (the blue screen).
+ */
+function forceWebGpuFirstPaint(state: any): void {
+  const gl = state?.gl;
+  if (!gl || typeof gl.setSize !== 'function') return;
+  let attempts = 0;
+  const reissue = () => {
+    const canvas: HTMLCanvasElement | undefined = gl.domElement;
+    const host = canvas?.parentElement;
+    const w = Math.round(host?.clientWidth || canvas?.clientWidth || window.innerWidth);
+    const h = Math.round(host?.clientHeight || canvas?.clientHeight || window.innerHeight);
+    if (w > 0 && h > 0) {
+      // updateStyle=false — R3F owns the canvas CSS box; we only re-issue the
+      // backing-store size so backend.updateSize() reconfigures the swapchain.
+      gl.setSize(w, h, false);
+      if (typeof state.invalidate === 'function') state.invalidate();
+    }
+    attempts += 1;
+    if (attempts < 3) requestAnimationFrame(reissue);
+  };
+  requestAnimationFrame(reissue);
+}
+
 function kickRenderLoop(state: any): void {
   if (typeof state.invalidate === 'function') {
     state.invalidate();
@@ -465,6 +513,9 @@ function kickRenderLoop(state: any): void {
       // hidden and RAF is throttled to 0 Hz.
       (window as any).__W3D_step = () =>
         state.advance(performance.now() / 1000, true);
+      // Force the WebGPU swapchain to reconfigure so the world paints on
+      // first load instead of staying blue until a manual resize.
+      forceWebGpuFirstPaint(state);
     });
   }
 }
