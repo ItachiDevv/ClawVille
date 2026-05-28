@@ -27,11 +27,15 @@ export default function LocationHUD() {
   const agentConnected = useGameStore((s: GameState) => s.agentConnected);
   const controlMode = useGameStore((s: GameState) => s.controlMode);
   const enterBuilding = useGameStore((s: GameState) => s.enterBuilding);
+  const buildingChatOpen = useGameStore((s: GameState) => s.chatOpen);
+  const systemAgentChatOpen = useGameStore((s: GameState) => s.guideChatOpen);
   const isMobile = useIsMobile();
 
   // Spectator/explore mode has no character to walk in — suppress the
   // prompt so it doesn't dangle from the free-cam.
   if (controlMode === 'explore') return null;
+  // A chat panel is open — the prompt would float over the chat UI.
+  if (buildingChatOpen || systemAgentChatOpen) return null;
   if (!nearLocation) return null;
 
   const location = MAP_LOCATIONS.find((l) => l.id === nearLocation);
