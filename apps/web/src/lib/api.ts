@@ -180,6 +180,15 @@ export const api = {
       reason?: 'no_bot' | 'expired';
     }>('/api/auth/me/agent-session'),
 
+  // Phase 6.7.5 — claim guest cove history rows for the current Lucia
+  // session. Called from the signup success path. Idempotent — repeat
+  // calls for the same fp_hash return claimed=0.
+  claimCoveHistory: () =>
+    honoRequest<{ claimed: number; eventIds: string[]; sessionsClaimed: number }>(
+      '/api/cove/history/claim',
+      { method: 'POST' },
+    ),
+
   // Avatars
   createAvatar: (data: {
     name: string;
