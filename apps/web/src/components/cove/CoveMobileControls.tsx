@@ -136,13 +136,17 @@ export default function CoveMobileControls() {
 
   return (
     <>
-      {/* Left joystick zone — movement */}
+      {/* Left joystick zone — movement.
+          `bottom: max(env(safe-area-inset-bottom), 24px)` lifts the nipple
+          above iOS Safari's bottom toolbar + home-indicator safe area on
+          real iPads (without this the nipple sits IN the viewport but
+          UNDER Safari's chrome — invisible/untappable). */}
       <div
         ref={leftRef}
         style={{
           position: 'fixed',
           left: 0,
-          bottom: 0,
+          bottom: 'max(env(safe-area-inset-bottom, 0px), 24px)',
           width: '50vw',
           height: '240px',
           zIndex: 50,
@@ -156,7 +160,7 @@ export default function CoveMobileControls() {
         style={{
           position: 'fixed',
           right: 0,
-          bottom: 0,
+          bottom: 'max(env(safe-area-inset-bottom, 0px), 24px)',
           width: '50vw',
           height: '240px',
           zIndex: 50,
