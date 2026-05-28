@@ -256,6 +256,18 @@ Emergency SSH: PROD `ssh root@$PROD_VPS_IP` (key in ssh-agent), STAGING `ssh -i 
 
 (1) Wait for Coolify (~3–5 min) or `curl -sS --ssl-no-revoke https://api.clawville.world/health`. (2) Open `https://clawville.world/game` via Chrome MCP. (3) Check buildings visible + not clipped, camera zoom, player spawn center, FPS > 50, no console errors. (4) If Chrome disconnected, tell user "I cannot verify — please screenshot". (5) NEVER claim a visual fix done without seeing it.
 
+### Mobile + iPad verification — MANDATORY for EVERY UI/UX feature (set 2026-05-28 after iPad joysticks shipped covered 3× in a row)
+
+Any change that adds/moves on-screen UI (HUD, button, panel, modal, joystick, prompt, toast, banner) is NOT done until verified at mobile AND iPad viewports — desktop-only checking is the #1 source of repeat regressions here. Run BEFORE claiming done:
+
+1. **Viewport sweep** via `chrome-devtools` `emulate` `<w>x<h>x2,mobile,touch` at minimum: phone 390×844, iPad mini 744×1133, iPad Air 820×1180, iPad Pro 13 1024×1366 — **portrait AND landscape** (swap w/h + add `,landscape`).
+2. **Per size, confirm:** (a) both joystick zones visible + NOT covered by any panel/sidebar/HUD; (b) no two fixed/absolute elements overlapping (gear vs Nori, prompt vs joystick, status-bar vs joystick); (c) the feature's own tap target is reachable (≥44px, not under Safari chrome); (d) any modal it opens fits the viewport and is dismissable.
+3. **Touch-aware gating:** mobile/desktop visibility MUST use the canonical `useIsMobile()` hook (`maxTouchPoints > 1` + coarse-pointer), NEVER a bare Tailwind `md:` / `max-width` media query — those miss iPad Air/Pro/landscape (the exact bug that shipped covered joysticks). [[feedback_ipad_detection_maxtouchpoints]]
+4. **Safe-area caveat:** devtools has NO `env(safe-area-inset-*)`, so any bottom-anchored element using safe-area math (joysticks, bottom prompts) CANNOT be fully proven in emulation — it needs a real-iPad screenshot from the user. State this explicitly; do not claim the safe-area lift verified from devtools alone.
+5. **Interaction, not just layout:** force the feature's live state (walk to a building / open the modal / trigger the toast) — a component that returns `null` until `nearLocation` is set proves nothing rendered. Use click-to-move on the minimap or inject store state.
+
+Skipping this = the change is not done, regardless of green build or desktop screenshot.
+
 ### Local + Windows gotchas
 
 NEVER run `bun run dev` locally — Iris Xe crashes the Three.js/WebGPU scene → PC restart. Push → staging → prod.
