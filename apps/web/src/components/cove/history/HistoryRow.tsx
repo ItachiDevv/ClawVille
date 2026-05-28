@@ -130,7 +130,7 @@ export default function HistoryRow({ event }: HistoryRowProps) {
         {/* Verify button */}
         <td style={td()} onClick={(e) => e.stopPropagation()}>
           <Link
-            href={`/cove/verify/${event.id}`}
+            href={`/cove/verify/event/${event.id}`}
             style={{
               padding: '4px 10px',
               borderRadius: 6,

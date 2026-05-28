@@ -1,12 +1,19 @@
 /**
  * Phase 6.1 — slice 3: ClawTokens fun-money cove-slots backend wire.
+ * Phase 6.7.5 (2026-05-28) — guest plays. `/session/open` + `/spin` accept
+ * unauthenticated callers. Guest sessions seed a 100-fun-CT in-session
+ * demo balance (`slot_sessions.starting_balance`); win/loss moves only
+ * the session balance — no `avatars.clawTokens` read/write. Guest plays
+ * do NOT count toward `/dash` daily caps because `cove_game_events` is a
+ * player-facing history table, not a leaderboard event source. Per-fp
+ * rate limit (10 sessions/hour) on `/session/open` is the only abuse gate.
  *
  * Mount: `app.route('/api/cove/slots', coveSlotsRouter)` from index.ts.
  *
  * Surfaces:
  *
- *   POST /session/open              (Lucia auth) — open commit-reveal session
- *   POST /spin                      (Lucia auth) — execute one spin (idempotent)
+ *   POST /session/open              (auth optional) — open commit-reveal session
+ *   POST /spin                      (auth optional) — execute one spin (idempotent)
  *   POST /session/close             (Lucia auth) — close + reveal serverSeed
  *   GET  /session/:id               (Lucia auth) — owner-only session detail
  *   GET  /session/:id/spins         (Lucia auth) — owner-only paginated spins
@@ -182,6 +189,84 @@ export function __resetSpinRateLimit(): void {
   spinRateBuckets.clear();
 }
 
+// ─── Guest session-open rate limit (10/hour/fp_hash) ──────────────────────
+//
+// Phase 6.7.5 — guests can't be scoped by user_id, so we key on the salted
+// fp_hash (the only stable cross-request identifier we have for unauth
+// callers). Single-process / in-memory: this is best-effort, not a hard
+// ceiling — if api is horizontally scaled (it isn't today) each replica
+// has its own bucket. Acceptable for fun-money guest demo; tighten when
+// guest real-money lands.
+
+interface GuestOpenBucket {
+  count: number;
+  resetAt: number;
+}
+const GUEST_SESSION_OPEN_LIMIT = 10;
+const GUEST_SESSION_OPEN_WINDOW_MS = 60 * 60 * 1_000; // 1 hour
+const guestSessionOpenBuckets = new Map<string, GuestOpenBucket>();
+
+function checkGuestSessionOpenRate(fpHash: string): void {
+  const now = Date.now();
+  if (guestSessionOpenBuckets.size > 10_000) {
+    for (const [k, v] of guestSessionOpenBuckets) {
+      if (now > v.resetAt) guestSessionOpenBuckets.delete(k);
+    }
+  }
+  const entry = guestSessionOpenBuckets.get(fpHash);
+  if (!entry || now > entry.resetAt) {
+    guestSessionOpenBuckets.set(fpHash, {
+      count: 1,
+      resetAt: now + GUEST_SESSION_OPEN_WINDOW_MS,
+    });
+    return;
+  }
+  entry.count++;
+  if (entry.count > GUEST_SESSION_OPEN_LIMIT) {
+    throw new HTTPException(429, {
+      message: `cove_slots_guest_session_rate_limit: max ${GUEST_SESSION_OPEN_LIMIT} guest sessions/hour. Sign up to keep playing.`,
+    });
+  }
+}
+
+/** Test-only — exported for unit tests to reset between assertions. */
+export function __resetGuestSessionOpenRate(): void {
+  guestSessionOpenBuckets.clear();
+}
+
+// ─── Subject resolution (user OR guest, never both) ───────────────────────
+//
+// Phase 6.7.5 — every write path consumes this. If the caller is
+// authenticated, the row is stamped with `userId`; otherwise the fp_hash
+// from the global fingerprintMiddleware (always non-empty per its fallback
+// chain) becomes the subject. The DB check constraint
+// (`cove_game_events_subject_check` / `slot_sessions_subject_check`)
+// enforces XOR — passing both is a server bug.
+
+type SlotSubject =
+  | { kind: 'user'; userId: string; guestFpHash: null }
+  | { kind: 'guest'; userId: null; guestFpHash: string };
+
+function getSubject(c: {
+  get(key: 'user'): { id: string } | null;
+  get(key: 'fpHash'): string;
+}): SlotSubject {
+  const user = c.get('user');
+  if (user) {
+    return { kind: 'user', userId: user.id, guestFpHash: null };
+  }
+  const fpHash = c.get('fpHash');
+  // fingerprintMiddleware crashes API boot if FINGERPRINT_SECRET is unset,
+  // and its three-tier fallback (X-CV-Fingerprint → UA+IP → no-fp:<prefix>)
+  // guarantees fpHash is never empty. Defense-in-depth check anyway.
+  if (!fpHash) {
+    throw new HTTPException(500, {
+      message: 'fpHash_missing_for_guest_request',
+    });
+  }
+  return { kind: 'guest', userId: null, guestFpHash: fpHash };
+}
+
 // ─── Schemas ──────────────────────────────────────────────────────────────
 
 const bigintPositiveString = z
@@ -321,7 +406,7 @@ async function loadAvatarForUser(userId: string): Promise<{
 
 // ─── POST /session/open ───────────────────────────────────────────────────
 
-coveSlotsRouter.post('/session/open', requireAuth, async (c) => {
+coveSlotsRouter.post('/session/open', async (c) => {
   const body = await c.req.json().catch(() => null);
   const parsed = openSchema.safeParse(body);
   if (!parsed.success) {
@@ -330,9 +415,10 @@ coveSlotsRouter.post('/session/open', requireAuth, async (c) => {
     });
   }
   const input = parsed.data;
-  const user = c.get('user')!;
+  const subject = getSubject(c);
 
-  // 501 stub for SOL/USDC — Phase 6.2 custody not wired.
+  // 501 stub for SOL/USDC — Phase 6.2 custody not wired. Guests are also
+  // gated to ClawTokens (no real-money guest play per plan §0).
   if (input.currency !== 'clawtokens') {
     return c.json(
       {
@@ -354,20 +440,30 @@ coveSlotsRouter.post('/session/open', requireAuth, async (c) => {
   }
   const predictNumber = Number(predictBig);
 
-  // Load avatar — required so a user without an active avatar gets a
-  // clean 400 instead of a foreign-key surprise downstream, and so we can
-  // pre-flight check their ClawTokens balance before opening the session.
-  const avatar = await loadAvatarForUser(user.id);
-
-  // Pre-flight balance check: can they afford their first spin? No
-  // open-time debit happens here (slice-3 money model — see file docstring),
-  // but we still gate at open time so we don't strand the player with an
-  // unspendable session. A later spin will re-check inside its txn under
-  // the row lock — that's the authoritative gate; this is UX.
-  if (avatar.clawTokens < predictNumber) {
-    throw new HTTPException(400, {
-      message: `insufficient_clawtokens: need ${predictNumber}, have ${avatar.clawTokens}`,
-    });
+  // ── Subject-conditioned pre-flight ─────────────────────────────────────
+  //
+  // Authed: load avatar, gate on clawTokens. UX-only pre-flight; the spin
+  // txn re-checks under the row lock.
+  // Guest: hardcoded 100-fun-CT demo balance per plan §0 #6. Rate-limit
+  // per-fp here so a single fp can't open arbitrarily many sessions to
+  // farm RNG seeds or DoS the DB.
+  let avatar: { id: string; clawTokens: number } | null = null;
+  let guestStartingBalance = 0n;
+  if (subject.kind === 'user') {
+    avatar = await loadAvatarForUser(subject.userId);
+    if (avatar.clawTokens < predictNumber) {
+      throw new HTTPException(400, {
+        message: `insufficient_clawtokens: need ${predictNumber}, have ${avatar.clawTokens}`,
+      });
+    }
+  } else {
+    checkGuestSessionOpenRate(subject.guestFpHash);
+    guestStartingBalance = 100n;
+    if (predictBig > guestStartingBalance) {
+      throw new HTTPException(400, {
+        message: `insufficient_guest_demo_balance: need ${predictNumber}, have ${guestStartingBalance.toString()}. Sign up to play with more.`,
+      });
+    }
   }
 
   // Idempotent open: if an open session already exists for this user, return
@@ -383,9 +479,16 @@ coveSlotsRouter.post('/session/open', requireAuth, async (c) => {
   let resumed: SlotSession | null = null;
   try {
     resumed = await db.transaction(async (tx) => {
+      // Phase 6.7.5 — subject-conditioned lookup. The partial unique indexes
+      // `slot_sessions_user_open_unique` / `slot_sessions_guest_open_unique`
+      // guarantee at most one open row matches.
+      const lockWhere = subject.kind === 'user'
+        ? sql`user_id = ${subject.userId} AND status = 'open'`
+        : sql`guest_fp_hash = ${subject.guestFpHash} AND status = 'open'`;
       const lockRows = await tx.execute<{
         id: string;
-        user_id: string;
+        user_id: string | null;
+        guest_fp_hash: string | null;
         paytable_id: string;
         currency: string;
         server_seed: string;
@@ -406,13 +509,13 @@ coveSlotsRouter.post('/session/open', requireAuth, async (c) => {
         last_spin_at: Date | null;
         closed_at: Date | null;
       }>(
-        sql`SELECT id, user_id, paytable_id, currency, server_seed, server_seed_hash,
+        sql`SELECT id, user_id, guest_fp_hash, paytable_id, currency, server_seed, server_seed_hash,
                    client_seed, nonce_counter, cursor_counter, starting_balance,
                    current_balance, escrow_amount, total_staked, total_won, status,
                    mode, free_spins_remaining, spin_count, created_at, last_spin_at,
                    closed_at
             FROM slot_sessions
-            WHERE user_id = ${user.id} AND status = 'open'
+            WHERE ${lockWhere}
             FOR UPDATE`,
       );
       const lockRow = lockRows[0];
@@ -433,6 +536,7 @@ coveSlotsRouter.post('/session/open', requireAuth, async (c) => {
       return {
         id:                  lockRow.id,
         userId:              lockRow.user_id,
+        guestFpHash:         lockRow.guest_fp_hash,
         paytableId:          lockRow.paytable_id,
         currency:            lockRow.currency,
         serverSeed:          lockRow.server_seed,
@@ -462,14 +566,15 @@ coveSlotsRouter.post('/session/open', requireAuth, async (c) => {
   if (resumed) {
     void logEventFromContext(c, {
       eventType: 'cove.slots.session.resumed',
-      userId: user.id,
-      avatarId: avatar.id,
+      userId: subject.kind === 'user' ? subject.userId : null,
+      avatarId: avatar?.id ?? null,
       payload: {
         sessionId: resumed.id,
         paytableId: resumed.paytableId,
         currency: resumed.currency,
         nonceCounter: resumed.nonceCounter,
         spinCount: resumed.spinCount,
+        isGuest: subject.kind === 'guest',
       },
     });
     const response: OpenSessionResponse = {
@@ -492,7 +597,15 @@ coveSlotsRouter.post('/session/open', requireAuth, async (c) => {
         resumed.createdAt instanceof Date
           ? resumed.createdAt.toISOString()
           : new Date(resumed.createdAt as unknown as string).toISOString(),
-      walletBalance: avatar.clawTokens,
+      // Authed users see real clawTokens; guests see derived demo balance
+      // (starting + totalWon - totalStaked, never negative by spin guard).
+      walletBalance: avatar
+        ? avatar.clawTokens
+        : Number(
+            BigInt(resumed.startingBalance) +
+              BigInt(resumed.totalWon) -
+              BigInt(resumed.totalStaked),
+          ),
     };
     return c.json(response, 200);
   }
@@ -512,20 +625,30 @@ coveSlotsRouter.post('/session/open', requireAuth, async (c) => {
   let inserted: SlotSession;
   try {
     inserted = await db.transaction(async (tx) => {
+      // Phase 6.7.5 — subject XOR (DB-enforced by check constraint). For
+      // guests, startingBalance is the 100-fun-CT demo wallet (NOT the
+      // per-spin predict snapshot used by the authed flow). The spin
+      // handler reads startingBalance + totalWon - totalStaked to derive
+      // the live demo balance and refuses spins that would go negative.
       const [row] = await tx
         .insert(slotSessions)
         .values({
-          userId: user.id,
+          userId: subject.userId,
+          guestFpHash: subject.guestFpHash,
           paytableId: input.paytableId,
           currency: input.currency,
           serverSeed,
           serverSeedHash,
           clientSeed,
-          // startingBalance: informational snapshot of the user's chosen
-          // per-spin predict at open time. Used by the UI; not load-bearing.
-          startingBalance: predictBig.toString(),
+          // Authed: per-spin predict snapshot (existing semantics — the
+          // /spin handler pins against this). Guest: demo wallet seed.
+          startingBalance: subject.kind === 'user'
+            ? predictBig.toString()
+            : guestStartingBalance.toString(),
           // currentBalance: net session P&L (negative = down, positive = up).
           // Starts at 0 because no real money has moved at open time.
+          // For guest demo, this stays = totalWon - totalStaked just like
+          // authed — we never write avatars.clawTokens for guests.
           currentBalance: '0',
           // escrowAmount: reserved for Phase 6.2 SOL/USDC buy-in model.
           // ClawTokens path keeps it at '0' — no reservation, no refund.
@@ -545,10 +668,15 @@ coveSlotsRouter.post('/session/open', requireAuth, async (c) => {
     // idempotently — same paytable → 200, different paytable → 409.
     const pgCode = (err as { code?: string } | undefined)?.code;
     if (pgCode === '23505') {
+      // Same subject-conditioned WHERE as the FOR UPDATE block above; one
+      // of the partial unique indexes tripped.
+      const raceWhere = subject.kind === 'user'
+        ? and(eq(slotSessions.userId, subject.userId), eq(slotSessions.status, 'open'))
+        : and(eq(slotSessions.guestFpHash, subject.guestFpHash), eq(slotSessions.status, 'open'));
       const raceRows = await db
         .select()
         .from(slotSessions)
-        .where(and(eq(slotSessions.userId, user.id), eq(slotSessions.status, 'open')))
+        .where(raceWhere)
         .limit(1);
       const raceRow = raceRows[0];
       if (raceRow) {
@@ -570,7 +698,13 @@ coveSlotsRouter.post('/session/open', requireAuth, async (c) => {
           escrowAmount: raceRow.escrowAmount,
           predict: predictBig.toString(),
           createdAt: raceRow.createdAt.toISOString(),
-          walletBalance: avatar.clawTokens,
+          walletBalance: avatar
+            ? avatar.clawTokens
+            : Number(
+                BigInt(raceRow.startingBalance) +
+                  BigInt(raceRow.totalWon) -
+                  BigInt(raceRow.totalStaked),
+              ),
         };
         return c.json(response, 200);
       }
@@ -584,13 +718,14 @@ coveSlotsRouter.post('/session/open', requireAuth, async (c) => {
 
   void logEventFromContext(c, {
     eventType: 'cove.slots.session.opened',
-    userId: user.id,
-    avatarId: avatar.id,
+    userId: subject.kind === 'user' ? subject.userId : null,
+    avatarId: avatar?.id ?? null,
     payload: {
       sessionId: inserted.id,
       paytableId: input.paytableId,
       currency: input.currency,
       predict: predictBig.toString(),
+      isGuest: subject.kind === 'guest',
     },
   });
 
@@ -604,14 +739,17 @@ coveSlotsRouter.post('/session/open', requireAuth, async (c) => {
     escrowAmount: inserted.escrowAmount,
     predict: predictBig.toString(),
     createdAt: inserted.createdAt.toISOString(),
-    walletBalance: avatar.clawTokens,
+    walletBalance: avatar
+      ? avatar.clawTokens
+      // Fresh guest session: starting demo wallet, nothing won/staked yet.
+      : Number(guestStartingBalance),
   };
   return c.json(response, 200);
 });
 
 // ─── POST /spin ────────────────────────────────────────────────────────────
 
-coveSlotsRouter.post('/spin', requireAuth, async (c) => {
+coveSlotsRouter.post('/spin', async (c) => {
   const idempotencyKey = c.req.header('Idempotency-Key');
   if (!idempotencyKey) {
     throw new HTTPException(400, {
@@ -632,10 +770,15 @@ coveSlotsRouter.post('/spin', requireAuth, async (c) => {
     });
   }
   const input = parsed.data;
-  const user = c.get('user')!;
+  const subject = getSubject(c);
 
-  // User-scoped rate limit (auth-bound, not IP-bound).
-  checkSpinRate(user.id);
+  // Phase 6.7.5 — rate limit keyed on user OR fp_hash; we want guests
+  // bounded too (a guest fp shouldn't be able to spin > 60/min). Same
+  // 60/min ceiling either way; the spin-rate bucket map keys on any
+  // string so we just use the subject identity.
+  checkSpinRate(
+    subject.kind === 'user' ? `u:${subject.userId}` : `g:${subject.guestFpHash}`,
+  );
 
   const session = await db.query.slotSessions.findFirst({
     where: eq(slotSessions.id, input.sessionId),
@@ -643,7 +786,12 @@ coveSlotsRouter.post('/spin', requireAuth, async (c) => {
   if (!session) {
     throw new HTTPException(404, { message: 'session_not_found' });
   }
-  if (session.userId !== user.id) {
+  // Subject-conditioned owner check — authed users can't read guest
+  // sessions, guests can't read authed sessions.
+  const ownerMatch = subject.kind === 'user'
+    ? session.userId === subject.userId
+    : session.guestFpHash === subject.guestFpHash;
+  if (!ownerMatch) {
     throw new HTTPException(403, { message: 'session_not_owned' });
   }
 
@@ -679,7 +827,15 @@ coveSlotsRouter.post('/spin', requireAuth, async (c) => {
     const fresh = await db.query.slotSessions.findFirst({
       where: eq(slotSessions.id, session.id),
     });
-    const avatar = await loadAvatarForUser(user.id);
+    // Authed: real avatar balance. Guest: demo balance derived from
+    // session counters (starting + totalWon - totalStaked).
+    const balanceForResponse = subject.kind === 'user'
+      ? (await loadAvatarForUser(subject.userId)).clawTokens
+      : Number(
+          BigInt(fresh?.startingBalance ?? session.startingBalance) +
+            BigInt(fresh?.totalWon ?? session.totalWon) -
+            BigInt(fresh?.totalStaked ?? session.totalStaked),
+        );
     // winningLines was stored as the already-SERIALIZED shape (winAmount
     // as string) by the spin txn below, so we pass it through verbatim.
     // Cast through `unknown` because jsonb's typing on the way out is
@@ -705,7 +861,7 @@ coveSlotsRouter.post('/spin', requireAuth, async (c) => {
       scatterPayout: cached.scatterPayout,
       cursorAfter: cached.cursorAfter,
       predict: cached.predict,
-      balance: avatar.clawTokens,
+      balance: balanceForResponse,
       escrowRemaining: fresh?.escrowAmount ?? session.escrowAmount,
       totalStaked: fresh?.totalStaked ?? session.totalStaked,
       totalWon: fresh?.totalWon ?? session.totalWon,
@@ -724,7 +880,14 @@ coveSlotsRouter.post('/spin', requireAuth, async (c) => {
       message: `session_not_open: status=${session.status}`,
     });
   }
-  if (input.predict !== session.startingBalance) {
+  // Phase 6.7.5 — predict-pin policy differs by subject:
+  //   • Authed sessions store the per-spin predict in `startingBalance` at
+  //     open time (existing semantics); every spin must match it exactly.
+  //   • Guest sessions store a 100-fun-CT demo wallet in `startingBalance`;
+  //     each spin's predict can be any positive bigint that fits in the
+  //     remaining demo balance (UX gate; the spin-time balance check
+  //     inside the txn is authoritative).
+  if (subject.kind === 'user' && input.predict !== session.startingBalance) {
     throw new HTTPException(400, {
       message: `predict_must_equal_session_reserved_predict (expected ${session.startingBalance}, got ${input.predict})`,
     });
@@ -738,7 +901,11 @@ coveSlotsRouter.post('/spin', requireAuth, async (c) => {
   }
   const predictNumber = Number(predictBig);
 
-  const avatar = await loadAvatarForUser(user.id);
+  // Authed: load avatar for the ClawTokens ledger. Guest: avatar=null,
+  // demo wallet accounting lives entirely in slot_sessions row.
+  const avatar = subject.kind === 'user'
+    ? await loadAvatarForUser(subject.userId)
+    : null;
 
   // Phase 6.1.5 — derive free-spin mode from the session row read above.
   // Defensive: only the bonus paytable can ever set mode='free-spin', so
@@ -869,8 +1036,40 @@ coveSlotsRouter.post('/spin', requireAuth, async (c) => {
 
       // Phase 6.1.5 — debit only on BASE spins. Free spins consume no
       // predict (FREE in name and in money), but still credit any win.
+      // Phase 6.7.5 — for GUEST sessions, debit/credit never touch the
+      // ClawTokens ledger; the demo balance lives entirely on the
+      // slot_sessions row (startingBalance + totalWon - totalStaked).
       let debitBalance: number;
-      if (isFreeSpinSpin) {
+      if (subject.kind === 'guest' || !avatar) {
+        // Guest demo balance check under the row lock. Refuse if this
+        // spin's predict would push the demo wallet negative. Free spins
+        // bypass the check (no debit).
+        if (!isFreeSpinSpin) {
+          const demoBalanceBefore =
+            BigInt(session.startingBalance) +
+            BigInt(lockRow.total_won) -
+            BigInt(lockRow.total_staked);
+          if (demoBalanceBefore < predictBig) {
+            throw new HTTPException(400, {
+              message: `insufficient_guest_demo_balance: need ${predictNumber}, have ${demoBalanceBefore.toString()}. Sign up to play with more.`,
+            });
+          }
+        }
+        // No ClawTokens row; just compute what we'll report. Update the
+        // running demo balance to reflect post-debit / pre-credit state.
+        debitBalance = isFreeSpinSpin
+          ? Number(
+              BigInt(session.startingBalance) +
+                BigInt(lockRow.total_won) -
+                BigInt(lockRow.total_staked),
+            )
+          : Number(
+              BigInt(session.startingBalance) +
+                BigInt(lockRow.total_won) -
+                BigInt(lockRow.total_staked) -
+                predictBig,
+            );
+      } else if (isFreeSpinSpin) {
         // Re-read balance so the response reflects current truth without
         // a debit. The credit path below mutates this if winAmount > 0.
         const balRows = await tx.execute<{ claw_tokens: number }>(
@@ -940,7 +1139,9 @@ coveSlotsRouter.post('/spin', requireAuth, async (c) => {
       // engineVersion mirrors slot_spins.paytableVersion so the verifier
       // can pin against the correct historical engine on replay.
       await tx.insert(coveGameEvents).values({
-        userId: user.id,
+        // Phase 6.7.5 — subject XOR; DB check constraint enforces.
+        userId: subject.userId,
+        guestFpHash: subject.guestFpHash,
         gameType: 'slots',
         sessionId: session.id,
         shoeId: session.id, // slots: one session == one shoe
@@ -1054,7 +1255,9 @@ coveSlotsRouter.post('/spin', requireAuth, async (c) => {
         throw new HTTPException(500, { message: 'session_update_failed' });
       }
 
-      // Credit winnings (if any).
+      // Credit winnings (if any). Phase 6.7.5: guest sessions skip the
+      // ClawTokens ledger entirely — winAmount flows through the demo
+      // balance via `totalWon` (already incremented above on `updated`).
       let creditBalance = debitBalance;
       if (winAmountBig > 0n) {
         if (winAmountBig > BigInt(Number.MAX_SAFE_INTEGER)) {
@@ -1062,21 +1265,26 @@ coveSlotsRouter.post('/spin', requireAuth, async (c) => {
             message: 'win_amount_exceeds_int4_range',
           });
         }
-        const credit = await creditClawTokens(
-          {
-            avatarId: avatar.id,
-            amount: Number(winAmountBig),
-            reason: 'cove_slots_win',
-            source: 'api',
-            metadata: {
-              sessionId: session.id,
-              spinId: spinRow.id,
-              nonce: session.nonceCounter,
+        if (subject.kind === 'user' && avatar) {
+          const credit = await creditClawTokens(
+            {
+              avatarId: avatar.id,
+              amount: Number(winAmountBig),
+              reason: 'cove_slots_win',
+              source: 'api',
+              metadata: {
+                sessionId: session.id,
+                spinId: spinRow.id,
+                nonce: session.nonceCounter,
+              },
             },
-          },
-          tx,
-        );
-        creditBalance = credit.balanceAfter;
+            tx,
+          );
+          creditBalance = credit.balanceAfter;
+        } else {
+          // Guest: bump the running demo balance by the win amount.
+          creditBalance = debitBalance + Number(winAmountBig);
+        }
       }
 
       return {
@@ -1112,7 +1320,13 @@ coveSlotsRouter.post('/spin', requireAuth, async (c) => {
         const fresh = await db.query.slotSessions.findFirst({
           where: eq(slotSessions.id, session.id),
         });
-        const avatarAfter = await loadAvatarForUser(user.id);
+        const balanceAfter = subject.kind === 'user'
+          ? (await loadAvatarForUser(subject.userId)).clawTokens
+          : Number(
+              BigInt(fresh?.startingBalance ?? session.startingBalance) +
+                BigInt(fresh?.totalWon ?? session.totalWon) -
+                BigInt(fresh?.totalStaked ?? session.totalStaked),
+            );
         const response: SpinResponse = {
           spinId: cachedRetry.id,
           reels: cachedRetry.reels as SpinResult['reels'],
@@ -1129,7 +1343,7 @@ coveSlotsRouter.post('/spin', requireAuth, async (c) => {
           scatterPayout: cachedRetry.scatterPayout,
           cursorAfter: cachedRetry.cursorAfter,
           predict: cachedRetry.predict,
-          balance: avatarAfter.clawTokens,
+          balance: balanceAfter,
           escrowRemaining: fresh?.escrowAmount ?? session.escrowAmount,
           totalStaked: fresh?.totalStaked ?? session.totalStaked,
           totalWon: fresh?.totalWon ?? session.totalWon,
@@ -1146,14 +1360,15 @@ coveSlotsRouter.post('/spin', requireAuth, async (c) => {
 
   void logEventFromContext(c, {
     eventType: 'cove.slots.spin.executed',
-    userId: user.id,
-    avatarId: avatar.id,
+    userId: subject.kind === 'user' ? subject.userId : null,
+    avatarId: avatar?.id ?? null,
     payload: {
       sessionId: session.id,
       spinId: spinRowId,
       predict: predictBig.toString(),
       winAmount: winAmountBig.toString(),
       nonce: session.nonceCounter,
+      isGuest: subject.kind === 'guest',
     },
   });
 
