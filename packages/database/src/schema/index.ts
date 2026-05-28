@@ -55,6 +55,10 @@ export * from './wager';
 // Phase 6.1 slice 3 — cove slot sessions + spin audit trail. ClawTokens
 // fun-money tier today; SOL/USDC route paths return 501 until 6.2 custody.
 export * from './cove';
+// Phase 6.7.0 — unified cross-game history table for Cove casino. Parallel
+// write to per-game tables (slot_spins etc.); one row per atomic gameplay
+// unit. Verifier replay surface for slots / blackjack / Hold'em / baccarat.
+export * from './cove-events';
 
 import { users, sessions } from './users';
 import { npcMemories, activityLog } from './memories';
