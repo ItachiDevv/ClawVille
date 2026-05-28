@@ -576,26 +576,18 @@ function PerfCameraPreset({
   return null;
 }
 
-function OpaqueCanvasClearGuard() {
-  const { camera, gl, scene } = useThree();
-  useEffect(() => {
-    let raf = 0;
-    let disposed = false;
-    const present = () => {
-      if (disposed) return;
-      gl.setClearColor(SKY_COLOR, 1);
-      gl.setClearAlpha?.(1);
-      gl.render(scene, camera);
-      raf = requestAnimationFrame(present);
-    };
-    raf = requestAnimationFrame(present);
-    return () => {
-      disposed = true;
-      cancelAnimationFrame(raf);
-    };
-  }, [camera, gl, scene]);
-  return null;
-}
+// REMOVED 2026-05-31 — OpaqueCanvasClearGuard caused the permanent blue screen.
+// It ran an INDEPENDENT requestAnimationFrame loop calling gl.render(scene, camera)
+// on top of R3F's own frameloop='always' render loop — measured live at exactly
+// 2.00 gl.render() calls per frame. On WebGPU the swapchain texture can only be
+// acquired once per frame (context.getCurrentTexture()); the guard's second
+// render presented only the SKY_COLOR clear and clobbered R3F's real frame, so
+// the whole world showed as uniform blue. Opaque presentation is already
+// guaranteed by: alpha:false on the renderer + renderer.setClearColor(SKY_COLOR,1)
+// in createWebGPURenderer/onCreated + scene.background=SKY_COLOR. R3F's
+// frameloop='always' renders the populated scene every frame on its own — the
+// guard added nothing but the fatal double-render. Introduced in commit 11034881
+// ("stabilize world canvas presentation"); that "stabilization" was the regression.
 
 // ---------------------------------------------------------------------------
 // StaggeredTextureUpload — spread GPU texture uploads across idle time
@@ -810,8 +802,6 @@ const SceneContents = memo(function SceneContents({
 
   return (
     <>
-      <OpaqueCanvasClearGuard />
-
       {/* Pre-compile WebGPU render pipelines once after the first frame commit.
           Eliminates the 274ms post-mount main-thread hitch. No-ops on WebGL. */}
       <PreCompilePipelines />
