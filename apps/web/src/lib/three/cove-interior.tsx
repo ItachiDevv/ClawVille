@@ -84,9 +84,11 @@ const INTERIOR_TARGET_HEIGHT = 2000; // world units — was 600
 /** Scale factor applied to all room-relative coordinates (bounds, spawn, cabinets). */
 const _ROOM_SCALE = 2000 / 600; // ≈ 3.333
 
-/** Player spawn position — near the front entrance, facing into the room (-Z) */
-const PLAYER_SPAWN_X = 0;
-const PLAYER_SPAWN_Z = Math.round(240 * _ROOM_SCALE); // ≈ 800
+/** Player spawn position — at the door side near the slot machines (back wall area).
+ *  Captured via [BJ-POS] probe 2026-05-27. Was (0, 800) which placed player at the
+ *  opposite side; user clarified door is on the slot/back-wall end of the cove. */
+const PLAYER_SPAWN_X = -12;
+const PLAYER_SPAWN_Z = -411;
 
 /** Interior bounds — keep avatar inside the room */
 const BOUNDS_X     = Math.round(115 * _ROOM_SCALE); // ≈ 383
@@ -192,12 +194,13 @@ const _meshBbox = new THREE.Box3();
 const _camTarget = new THREE.Vector3();
 const _camDesiredPos = new THREE.Vector3();
 
-// Camera yaw anchor — STATIC spawn-direction reference (avatar faces -Z = Math.PI).
+// Camera yaw anchor — STATIC spawn-direction reference (avatar faces +Z = 0
+// from the new -411 spawn at the door side, into the room).
 // Bug 4 fix 2026-05-19: this is no longer auto-tracked to `rotRef.current`.
 // Camera-relative WASD + auto-track = positive feedback loop on strafe input
 // (every A/D press snapped the viewport ~45°). The camera now stays at spawn
 // yaw and only orbits via `_coveArrowYawOffset` (arrow-key controlled).
-let _coveCamYaw = Math.PI;
+let _coveCamYaw = 0;
 
 // Arrow-key perspective-orbit offsets (Bug 2 fix 2026-05-19).
 // These accumulate while arrow keys are held, exactly like
@@ -222,6 +225,25 @@ interface CoveKeyState {
   w: boolean; a: boolean; s: boolean; d: boolean; e: boolean;
 }
 const coveKeys: CoveKeyState = { w: false, a: false, s: false, d: false, e: false };
+
+/**
+ * Touch-input bridge — mobile joystick controls (iPad / phone) write to
+ * `_coveTouchVec` and the useFrame movement loop folds these values into
+ * the WASD vector. Phase 6.7.x iPad fix (2026-05-27): cove had no touch
+ * controls — user could SEE but not move.
+ */
+export const _coveTouchVec: { x: number; z: number } = { x: 0, z: 0 };
+export function setCoveTouchVelocity(x: number, z: number) {
+  _coveTouchVec.x = x;
+  _coveTouchVec.z = z;
+}
+export function setCoveTouchArrowKey(key: 'left' | 'right' | 'up' | 'down', pressed: boolean) {
+  _coveArrowKeys[key] = pressed;
+}
+export function setCoveTouchInteract(pressed: boolean) {
+  coveKeys.e = pressed;
+  if (!pressed) _eKeyConsumed = false;
+}
 let coveKeyListenersAttached = false;
 
 function attachCoveKeyListeners() {
@@ -637,8 +659,12 @@ const _cabinetAABBs: CabinetAABB[] = SLOT_CABINET_POSITIONS.map((pos) => ({
 }));
 
 // Dealer station AABB (world X ≈ +367 post-autofit, Z ≈ 0)
-const _DEALER_CENTER_X =  367;
-const _DEALER_CENTER_Z =    0;
+// Blackjack table center — measured 2026-05-27 by walking the player to the
+// target poker table and reading the BJ-POS log. Was (367, 0) which placed
+// the sign over the roulette wheel; now matches the poker table the user
+// arrowed in their screenshot.
+const _DEALER_CENTER_X = -299;
+const _DEALER_CENTER_Z =  331;
 const _DEALER_HALF_X   =  100;
 const _DEALER_HALF_Z   =  100;
 
@@ -819,7 +845,7 @@ function _getBankBanner(label: string, color: string) {
     const mat = new THREE.MeshBasicMaterial({
       map: tex,
       transparent: true,
-      side: THREE.DoubleSide,
+      side: THREE.FrontSide, // single-sided; the back-plane mesh uses a flipped-UV geometry to show readable text from the back
       depthWrite: false,
     });
     cached = { tex, mat };
@@ -835,19 +861,32 @@ const _BANK_BANNER_GEO = (() => {
 })();
 
 function BankBanner({ label, color, position }: { label: string; color: string; position: [number, number, number] }) {
-  const meshRef = useRef<THREE.Mesh>(null);
+  // Two back-to-back planes so the label reads correctly from BOTH sides
+  // (a single PlaneGeometry is single-sided; viewing from behind shows mirrored text).
+  // The two meshes share the same canvas texture; the second is rotated 180° around Y.
+  // Both lock matrixAutoUpdate=false after first updateMatrix() for Iris Xe.
+  const frontRef = useRef<THREE.Mesh>(null);
+  const backRef = useRef<THREE.Mesh>(null);
   const cached = useMemo(() => {
     if (typeof window === 'undefined') return null;
     return _getBankBanner(label, color);
   }, [label, color]);
   useEffect(() => {
-    if (!meshRef.current) return;
-    meshRef.current.matrixAutoUpdate = false;
-    meshRef.current.updateMatrix();
+    if (frontRef.current) {
+      frontRef.current.matrixAutoUpdate = false;
+      frontRef.current.updateMatrix();
+    }
+    if (backRef.current) {
+      backRef.current.matrixAutoUpdate = false;
+      backRef.current.updateMatrix();
+    }
   }, []);
   if (!cached) return null;
   return (
-    <mesh ref={meshRef} geometry={_BANK_BANNER_GEO} material={cached.mat} position={position} />
+    <group position={position}>
+      <mesh ref={frontRef} geometry={_BANK_BANNER_GEO} material={cached.mat} />
+      <mesh ref={backRef} geometry={_BANK_BANNER_GEO} material={cached.mat} rotation={[0, Math.PI, 0]} />
+    </group>
   );
 }
 
@@ -914,11 +953,30 @@ function SlotHotspot({ def }: { def: HotspotDef }) {
 // ---------------------------------------------------------------------------
 
 const _BJ_HOTSPOT_POS: [number, number, number] = [
-  _DEALER_CENTER_X - 60, // pull slightly toward room centre (away from right wall)
+  _DEALER_CENTER_X,      // X = dealer station X (poker table center)
   100,                   // Y centre = halfway up the table height
-  _DEALER_CENTER_Z,      // Z = room centre-line (same as dealer station)
+  _DEALER_CENTER_Z,      // Z = dealer station Z (poker table center)
 ];
 const _BJ_HOTSPOT_SIZE: [number, number, number] = [200, 200, 150];
+
+// ---------------------------------------------------------------------------
+// Phase 6.5.0 — Texas Hold'em hotspot.
+//
+// Mirror of the blackjack hotspot across X. The cove interior GLB has a
+// second poker table at (~294, 335) — captured via the `[BJ-POS]` probe
+// 2026-05-27 and locked in the cove-texas-holdem plan §0 decision row 1.
+// Same invisible boxGeometry pattern as BlackjackTableHotspot: no draw
+// call, matrixAutoUpdate=false after first updateMatrix (Iris Xe rule).
+// ---------------------------------------------------------------------------
+
+const _HOLDEM_CENTER_X = 294;
+const _HOLDEM_CENTER_Z = 335;
+const _HOLDEM_HOTSPOT_POS: [number, number, number] = [
+  _HOLDEM_CENTER_X,
+  100,
+  _HOLDEM_CENTER_Z,
+];
+const _HOLDEM_HOTSPOT_SIZE: [number, number, number] = [200, 200, 150];
 
 function BlackjackTableHotspot() {
   const meshRef = useRef<THREE.Mesh>(null);
@@ -961,6 +1019,55 @@ function BlackjackTableHotspot() {
 }
 
 // ---------------------------------------------------------------------------
+// Phase 6.5.0 — Texas Hold'em table hotspot.
+//
+// Mirror of BlackjackTableHotspot at the second poker table (+X mirror of
+// the blackjack station). Click opens the HoldemModal with the current
+// avatar's ClawToken balance as the suggested buy-in cap (clamped inside
+// the store via `min(balance, COVE_HOLDEM_DEFAULT_BUYIN)`).
+// ---------------------------------------------------------------------------
+
+function HoldemTableHotspot() {
+  const meshRef = useRef<THREE.Mesh>(null);
+  const openHoldemTable = useCoveStore((s) => s.openHoldemTable);
+  const { data: avatar } = useAvatar();
+
+  useEffect(() => {
+    const mesh = meshRef.current;
+    if (!mesh) return;
+    mesh.matrixAutoUpdate = false;
+    mesh.updateMatrix();
+  }, []);
+
+  const handleClick = () => {
+    const balance = avatar?.clawTokens ?? 0;
+    openHoldemTable(balance);
+  };
+
+  return (
+    <mesh
+      ref={meshRef}
+      position={_HOLDEM_HOTSPOT_POS}
+      onPointerOver={(e) => {
+        e.stopPropagation();
+        if (typeof document !== 'undefined') document.body.style.cursor = 'pointer';
+      }}
+      onPointerOut={(e) => {
+        e.stopPropagation();
+        if (typeof document !== 'undefined') document.body.style.cursor = 'default';
+      }}
+      onClick={(e) => {
+        e.stopPropagation();
+        handleClick();
+      }}
+    >
+      <boxGeometry args={_HOLDEM_HOTSPOT_SIZE} />
+      <meshBasicMaterial visible={false} />
+    </mesh>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // VRM player avatar for cove interior
 // Minimal version: loads VRM via useVRMInstance, drives VRMCharacterAnimator,
 // WASD movement, no world-map coupling, no terrain raycast (flat floor).
@@ -977,7 +1084,7 @@ interface CoveVRMAvatarProps {
 
 function CoveVRMAvatarInner({ reg }: CoveVRMAvatarProps) {
   const groupRef = useRef<THREE.Group>(null);
-  const rotRef = useRef(Math.PI); // face -Z = into the room on spawn
+  const rotRef = useRef(0); // face +Z = into the room from the new -411 spawn (door side)
   const { camera } = useThree();
   const { data: avatar } = useAvatar();
 
@@ -990,7 +1097,7 @@ function CoveVRMAvatarInner({ reg }: CoveVRMAvatarProps) {
   // starts with the camera directly behind the avatar (no stale yaw /
   // arrow offsets from a previous visit).
   useEffect(() => {
-    _coveCamYaw          = Math.PI;
+    _coveCamYaw          = 0;
     _coveArrowYawOffset   = 0;
     _coveArrowPitchOffset = 0;
   }, []);
@@ -1046,6 +1153,11 @@ function CoveVRMAvatarInner({ reg }: CoveVRMAvatarProps) {
       if (coveKeys.s) inputFwd -= 1;
       if (coveKeys.a) inputRight -= 1;
       if (coveKeys.d) inputRight += 1;
+      // iPad / touch joystick contribution — folded on top of WASD so a user
+      // with both keyboard and touch could combine inputs without conflict.
+      // _coveTouchVec.x = strafe (+right), _coveTouchVec.z = forward (+fwd).
+      inputFwd  += _coveTouchVec.z;
+      inputRight += _coveTouchVec.x;
       if (inputFwd !== 0 || inputRight !== 0) {
         vx = _coveAvatarFwd.x * inputFwd + _coveAvatarRight.x * inputRight;
         vz = _coveAvatarFwd.z * inputFwd + _coveAvatarRight.z * inputRight;
@@ -1173,7 +1285,7 @@ function CoveVRMAvatarInner({ reg }: CoveVRMAvatarProps) {
   });
 
   return (
-    <group ref={groupRef} position={[PLAYER_SPAWN_X, 0, PLAYER_SPAWN_Z]} rotation={[0, Math.PI, 0]}>
+    <group ref={groupRef} position={[PLAYER_SPAWN_X, 0, PLAYER_SPAWN_Z]} rotation={[0, 0, 0]}>
       <primitive
         object={vrm.scene}
         scale={[vrmRenderScale, vrmRenderScale, vrmRenderScale]}
@@ -1210,7 +1322,7 @@ function computeGlbLocalMinY(scene: THREE.Object3D): number {
 
 function CoveGLBAvatarInner() {
   const groupRef  = useRef<THREE.Group>(null);
-  const rotRef    = useRef(Math.PI);
+  const rotRef    = useRef(0); // face +Z = into the room from the -411 spawn (door side)
   const { camera } = useThree();
   const { data: avatar } = useAvatar();
 
@@ -1221,7 +1333,7 @@ function CoveGLBAvatarInner() {
 
   // Reset module-scope camera state on mount (mirrors VRM branch).
   useEffect(() => {
-    _coveCamYaw          = Math.PI;
+    _coveCamYaw          = 0;
     _coveArrowYawOffset   = 0;
     _coveArrowPitchOffset = 0;
   }, []);
@@ -1278,6 +1390,11 @@ function CoveGLBAvatarInner() {
       if (coveKeys.s) inputFwd -= 1;
       if (coveKeys.a) inputRight -= 1;
       if (coveKeys.d) inputRight += 1;
+      // iPad / touch joystick contribution — folded on top of WASD so a user
+      // with both keyboard and touch could combine inputs without conflict.
+      // _coveTouchVec.x = strafe (+right), _coveTouchVec.z = forward (+fwd).
+      inputFwd  += _coveTouchVec.z;
+      inputRight += _coveTouchVec.x;
       if (inputFwd !== 0 || inputRight !== 0) {
         vx = _coveAvatarFwd.x * inputFwd + _coveAvatarRight.x * inputRight;
         vz = _coveAvatarFwd.z * inputFwd + _coveAvatarRight.z * inputRight;
@@ -1919,8 +2036,30 @@ export default function CoveInteriorScene({ onSceneEmpty }: CoveInteriorScenePro
       {/* Blackjack table label — rendered above the dealer station */}
       <BankBanner
         label="BLACKJACK"
-        color="#22dd88"
+        color="#ef4444"
         position={[_BJ_HOTSPOT_POS[0], 280, _BJ_HOTSPOT_POS[2]]}
+      />
+
+      {/* Phase 6.5.0 — Texas Hold'em table click hotspot at the second
+          poker table (mirror across X of the blackjack station). Same
+          invisible hit-box pattern; opens HoldemModal. */}
+      <HoldemTableHotspot />
+
+      {/* Hold'em table label — rendered above the second poker table. */}
+      <BankBanner
+        label="TEXAS HOLD'EM"
+        color="#ffffff"
+        position={[_HOLDEM_HOTSPOT_POS[0], 280, _HOLDEM_HOTSPOT_POS[2]]}
+      />
+
+      {/* Phase 6.6.0 prep — Baccarat sign placeholder at the open floor
+          position captured via [BJ-POS] probe (X=285, Z=584). Hotspot +
+          modal arrive when the baccarat team dispatches; this is just the
+          visual label so the cove reads as a 3-game venue. */}
+      <BankBanner
+        label="BACCARAT"
+        color="#3b82f6"
+        position={[285, 280, 584]}
       />
     </>
   );
