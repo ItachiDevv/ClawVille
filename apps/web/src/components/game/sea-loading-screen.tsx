@@ -66,12 +66,30 @@ export default function SeaLoadingScreen({ forceReady }: Props) {
   const [fading, setFading]         = useState(false);
   const [slow, setSlow]             = useState(false);
   /**
-   * Progress in [0, 1]. Driven directly from `window.__W3D_PROGRESS`
-   * (THREE.DefaultLoadingManager: loaded/total). Capped at 0.99 until the
-   * ready signal fires so the bar never hits 100% with a black world still
-   * compiling. Ratcheted forward so it never moves backward.
+   * Progress in [0, 1]. Composite signal so the bar tracks the user's
+   * actual wait, not just network downloads. Rewritten 2026-05-31 after
+   * the previous bar (driven only by `__W3D_PROGRESS`) reached 99% the
+   * moment asset downloads finished and then stalled for the entire
+   * GPU texture-upload window — typically 2-3× the download time on
+   * Iris Xe. Phases:
+   *   0    – 0.60   `__W3D_PROGRESS` (network download via
+   *                  THREE.DefaultLoadingManager — fast, often cached)
+   *   0.60 – 0.92   `__W3D_TEXTURE_UPLOAD_DONE / __W3D_TEXTURE_UPLOAD_TOTAL`
+   *                  (GPU texture upload via StaggeredTextureUpload —
+   *                   slow on Iris Xe)
+   *   0.92 – 0.99   `__W3D_CANVAS_READY` (first frame compile + paint;
+   *                  pipeline compile hitch lives here)
+   *   1.00          `__W3D_READY` (canvas + textures both done — bar
+   *                  snaps + fade)
+   * Ratcheted forward so the bar never moves backward.
    */
   const [progress, setProgress]     = useState(0);
+  /**
+   * Current phase shown under the bar. Communicates WHY the user is
+   * waiting at each step — "Downloading assets…" vs "Uploading to GPU…"
+   * — instead of a single misleading percentage.
+   */
+  const [phase, setPhase] = useState<'downloading' | 'uploading' | 'compiling' | 'ready'>('downloading');
   const rafRef     = useRef<number | null>(null);
   const mountedRef = useRef(true);
   const startedAtRef = useRef<number>(0);
@@ -102,11 +120,15 @@ export default function SeaLoadingScreen({ forceReady }: Props) {
         __W3D_PROGRESS?: number;
         __W3D_READY?: boolean;
         __W3D_TEXTURES_READY?: boolean;
+        __W3D_TEXTURE_UPLOAD_TOTAL?: number;
+        __W3D_TEXTURE_UPLOAD_DONE?: number;
       };
       bridge.__W3D_CANVAS_READY = false;
       bridge.__W3D_PROGRESS = 0;
       bridge.__W3D_READY = false;
       bridge.__W3D_TEXTURES_READY = false;
+      bridge.__W3D_TEXTURE_UPLOAD_TOTAL = 0;
+      bridge.__W3D_TEXTURE_UPLOAD_DONE = 0;
     }
 
     // Show "taking longer" hint after 15s
@@ -126,20 +148,25 @@ export default function SeaLoadingScreen({ forceReady }: Props) {
       }
     }, TIMEOUT_MS);
 
-    // Bar = real progress, full stop. window.__W3D_PROGRESS comes from
-    // THREE.DefaultLoadingManager (wired in World3DCanvas at module load),
-    // updates with every GLB/VRM/texture load. Bar tracks it 1:1 and snaps
-    // to 100% when the world ready signal fires.
+    // Composite bar formula (2026-05-31). Three phases stitched into
+    // [0, 1] so the bar's velocity reflects the user's actual wait, not
+    // just network downloads. Old bar: pure `__W3D_PROGRESS` capped at
+    // 0.99 — hit 99% the moment THREE.DefaultLoadingManager drained and
+    // then sat there for the full StaggeredTextureUpload window. New
+    // bar: maps each phase to a band and shows a phase label so the
+    // user can SEE which step is running.
+    const DOWNLOAD_BAND_END = 0.60;
+    const UPLOAD_BAND_END = 0.92;
+    const COMPILE_BAND_END = 0.99;
     let highWaterMark = 0;
     function tick() {
       if (!mountedRef.current) return;
-      // 2026-05-26: dismiss on __W3D_READY (canvas first-frame AND
-      // StaggeredTextureUpload complete), NOT __W3D (canvas first-frame only).
-      // The first-frame-only signal dismissed the overlay before WebGPU
-      // texture uploads finished, exposing a blue/blank world under the UI.
+      // Dismiss only when both canvas AND textures are ready (keeps the
+      // blue-flash fix from 2026-05-26).
       const ready = forceReady || !!(window as any).__W3D_READY;
       if (ready) {
         readyRef.current = true;
+        setPhase('ready');
         setProgress(1);
         setFading(true);
         setTimeout(() => {
@@ -147,14 +174,56 @@ export default function SeaLoadingScreen({ forceReady }: Props) {
         }, 420);
         return;
       }
-      const real = (window as unknown as { __W3D_PROGRESS?: number }).__W3D_PROGRESS;
-      // Ratchet — bar never moves backward (e.g. if a new loader registers
-      // mid-stream and total spikes faster than loaded).
-      highWaterMark = Math.max(highWaterMark, typeof real === 'number' ? real : 0);
-      // Cap at 0.99 so the bar never hits 100% before the ready signal —
-      // otherwise the bar fills, the % shows 100, and the user stares at a
-      // "complete" bar while the world is still mounting.
-      setProgress(Math.min(0.99, highWaterMark));
+
+      const bridge = window as unknown as {
+        __W3D_PROGRESS?: number;
+        __W3D_TEXTURE_UPLOAD_TOTAL?: number;
+        __W3D_TEXTURE_UPLOAD_DONE?: number;
+        __W3D_CANVAS_READY?: boolean;
+        __W3D_TEXTURES_READY?: boolean;
+      };
+
+      // Phase 1 — asset download (THREE.DefaultLoadingManager loaded/total).
+      const downloadFrac = Math.max(0, Math.min(1, bridge.__W3D_PROGRESS ?? 0));
+
+      // Phase 2 — GPU texture upload (StaggeredTextureUpload counter).
+      // Only counts once asset downloads are essentially complete AND
+      // upload has actually started (TOTAL > 0). Stays at 0 until then.
+      const uploadTotal = bridge.__W3D_TEXTURE_UPLOAD_TOTAL ?? 0;
+      const uploadDone = bridge.__W3D_TEXTURE_UPLOAD_DONE ?? 0;
+      const uploadFrac = uploadTotal > 0
+        ? Math.max(0, Math.min(1, uploadDone / uploadTotal))
+        : 0;
+
+      // Phase 3 — first-canvas-frame paint + pipeline compile.
+      const canvasReady = !!bridge.__W3D_CANVAS_READY;
+      const texturesReady = !!bridge.__W3D_TEXTURES_READY;
+
+      // Determine the current phase + composite value. Each phase fills
+      // its allocated band; the next phase carries over from there.
+      let composite = downloadFrac * DOWNLOAD_BAND_END;
+      let currentPhase: typeof phase = 'downloading';
+
+      if (downloadFrac >= 0.999 || uploadTotal > 0) {
+        // Downloads done — credit the full band and start tracking upload.
+        composite = DOWNLOAD_BAND_END + uploadFrac * (UPLOAD_BAND_END - DOWNLOAD_BAND_END);
+        currentPhase = 'uploading';
+      }
+
+      if (texturesReady) {
+        // GPU uploads done — credit the full upload band. The bar now
+        // sits at COMPILE_BAND_END waiting for the canvas-first-frame
+        // signal (pipeline compile + paint).
+        composite = canvasReady ? COMPILE_BAND_END : UPLOAD_BAND_END;
+        currentPhase = canvasReady ? 'compiling' : 'compiling';
+      }
+
+      // Ratchet — never move backward (asset retries / late re-registers
+      // could otherwise rewind the bar).
+      highWaterMark = Math.max(highWaterMark, composite);
+      setProgress(Math.min(COMPILE_BAND_END, highWaterMark));
+      setPhase(currentPhase);
+
       rafRef.current = requestAnimationFrame(tick);
     }
 
@@ -494,8 +563,10 @@ export default function SeaLoadingScreen({ forceReady }: Props) {
             Dropping in...
           </p>
 
-          {/* Progress bar — width = real % loaded (THREE.DefaultLoadingManager),
-              capped at 99% until window.__W3D fires, then snaps to 100%. */}
+          {/* Progress bar — composite signal stitching three phases
+              (asset download → texture upload → pipeline compile).
+              See the `tick()` doc-block at the top of the component for
+              the band split. */}
           <div
             role="progressbar"
             aria-valuemin={0}
@@ -527,12 +598,20 @@ export default function SeaLoadingScreen({ forceReady }: Props) {
             style={{
               fontFamily: 'var(--font-oxanium), sans-serif',
               fontSize: '10px',
-              color: 'rgba(125,211,252,0.45)',
+              color: 'rgba(125,211,252,0.55)',
               letterSpacing: '0.18em',
+              textAlign: 'center',
+              lineHeight: 1.45,
             }}
             aria-hidden="true"
           >
             {Math.round(progress * 100)}%
+            <div style={{ fontSize: '9px', opacity: 0.7, marginTop: 2 }}>
+              {phase === 'downloading' && 'Downloading assets…'}
+              {phase === 'uploading' && 'Uploading to GPU…'}
+              {phase === 'compiling' && 'Compiling shaders…'}
+              {phase === 'ready' && 'Ready'}
+            </div>
           </div>
 
           {/* Three pulsing dots */}

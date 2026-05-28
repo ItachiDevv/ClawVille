@@ -646,6 +646,8 @@ function StaggeredTextureUpload() {
     // Verify initTexture is available (guard for unusual renderer builds)
     if (typeof (gl as any).initTexture !== 'function') {
       console.warn('[World3D] StaggeredTextureUpload: renderer.initTexture() not available, skipping');
+      (window as any).__W3D_TEXTURE_UPLOAD_TOTAL = 0;
+      (window as any).__W3D_TEXTURE_UPLOAD_DONE = 0;
       markTextureUploadReady();
       return;
     }
@@ -680,12 +682,25 @@ function StaggeredTextureUpload() {
 
         const unique = Array.from(seen);
         if (unique.length === 0) {
+          // No-textures path — still publish the counters so the loader bar
+          // doesn't get stuck waiting for an update that never arrives.
+          (window as any).__W3D_TEXTURE_UPLOAD_TOTAL = 0;
+          (window as any).__W3D_TEXTURE_UPLOAD_DONE = 0;
           markTextureUploadReady();
           return;
         }
 
         const hasIdle = typeof (window as any).requestIdleCallback === 'function';
         console.log(`[World3D] StaggeredTextureUpload: uploading ${unique.length} textures via ${hasIdle ? 'rIC' : 'rAF'} budget`);
+
+        // 2026-05-31: publish upload progress so the SeaLoadingScreen bar can
+        // track the GPU-upload phase honestly. Without this the bar hit 99%
+        // once asset downloads finished and then stalled for the entire
+        // texture-upload window — the user's "loads another 2-3× the wait"
+        // complaint. Window flags are cheap (no React state, no allocs in
+        // the slice loop).
+        (window as any).__W3D_TEXTURE_UPLOAD_TOTAL = unique.length;
+        (window as any).__W3D_TEXTURE_UPLOAD_DONE = 0;
 
         let i = 0;
 
@@ -702,6 +717,7 @@ function StaggeredTextureUpload() {
             }
             i++;
           }
+          (window as any).__W3D_TEXTURE_UPLOAD_DONE = i;
           if (i < unique.length) {
             idleHandle = (window as any).requestIdleCallback(uploadIdle, { timeout: 200 });
           } else {
@@ -721,6 +737,7 @@ function StaggeredTextureUpload() {
               console.warn('[World3D] initTexture error (non-fatal):', err);
             }
           }
+          (window as any).__W3D_TEXTURE_UPLOAD_DONE = i;
           const elapsed = performance.now() - t0;
           if (elapsed > 20) {
             console.warn(`[World3D] StaggeredTextureUpload: batch took ${elapsed.toFixed(1)}ms`);
