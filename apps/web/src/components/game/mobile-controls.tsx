@@ -140,10 +140,10 @@ export default function MobileControls() {
         // Lift above iOS Safari bottom toolbar + home-indicator safe area.
         // Without this the nipples render INSIDE the viewport but UNDER
         // Safari's chrome on a real iPad — invisible/untappable.
-        bottom: 'max(env(safe-area-inset-bottom, 0px), 0px)',
-        paddingBottom: '24px',
+        // Min 32px so it stays clear even without safe-area (devtools/etc).
+        bottom: 'max(env(safe-area-inset-bottom, 0px), 32px)',
         width: '100vw',
-        height: '244px',
+        height: '220px',
       }}
     >
       {/* Left joystick zone — movement / explore-mode camera pan */}
