@@ -60,26 +60,14 @@ import { RuneFrame, RpgButton, RpgModal, RpgTooltip, getRarity, type RarityId } 
 import { useGameStore, type GameState } from '@/stores/game';
 import { useLocationAgent } from '@/hooks/use-locations';
 import { useAvatar } from '@/hooks/use-avatar';
+import { useIsMobile } from '@/hooks/use-is-mobile';
 import { api } from '@/lib/api';
 
-// ---------------------------------------------------------------------------
-// Responsive hook — matches the same 768px breakpoint AvatarStatusBar uses.
-// ---------------------------------------------------------------------------
-
-function useIsMobile(): boolean {
-  const [isMobile, setIsMobile] = useState(false);
-
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    const mq = window.matchMedia('(max-width: 767px)');
-    const onChange = () => setIsMobile(mq.matches);
-    onChange();
-    mq.addEventListener('change', onChange);
-    return () => mq.removeEventListener('change', onChange);
-  }, []);
-
-  return isMobile;
-}
+// Responsive: uses the global `useIsMobile` which catches iPad-on-Mac-UA
+// via `navigator.maxTouchPoints > 1`. The previous local hook was a
+// pure-CSS `max-width: 767px` check, which let iPad Air / Pro render the
+// full desktop sidebar and cover the right mobile joystick. Critical fix
+// 2026-05-28.
 
 // ---------------------------------------------------------------------------
 // Character frame — top-of-sidebar "unit frame" showing the avatar identity.
