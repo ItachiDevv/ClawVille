@@ -1,16 +1,30 @@
 /**
  * Phase 6.7.0 — Cove cross-game history + per-event verifier.
+ * Phase 6.7.5 — guest history support. Read paths no longer require auth;
+ * unauthenticated callers are scoped by `guest_fp_hash` (the salted server-side
+ * hash from `fingerprintMiddleware`). Authenticated callers are scoped by
+ * `user_id` exactly as before. Claim endpoint `POST /claim` (Lucia-authed)
+ * migrates a guest's rows to their new user on signup.
  *
  * Mount: `app.route('/api/cove/history', coveHistoryRouter)` from index.ts.
  *
  * Surfaces:
  *
- *   GET  /                 (Lucia auth, owner-scoped) — paginated event list
- *   GET  /:eventId/verify  (owner OR admin)           — replay engine + hash check
+ *   GET  /                 (open — guest or user) — paginated event list
+ *   GET  /:eventId         (open — guest or user) — single event
+ *   GET  /:eventId/verify  (open — guest or user, owner or admin) — replay
+ *   POST /claim            (Lucia auth required) — migrate guest rows → user
  *
- * Owner-only scoping per plan §0 decision #4: a session's `userId` MUST
- * match the requesting user; ADMIN_USER_IDS bypass on the verify endpoint
- * for dispute support. There is no public history feed.
+ * Owner-only scoping per plan §0 decision #4: a row's subject (user_id OR
+ * guest_fp_hash) MUST match the requester's subject; ADMIN_USER_IDS bypass
+ * on /:eventId + /verify for dispute support. There is no public feed.
+ *
+ * Adversarial note (plan §6 adversarial #2): an authed user can technically
+ * claim another browser's guest rows if they obtain that browser's raw
+ * `X-CV-Fingerprint` value (stored same-origin in localStorage as `cv-fp`).
+ * This is the same risk surface as session hijack. Server enforces the
+ * salted hash; the raw fp never leaves the requesting browser unless the
+ * attacker has same-origin JS access.
  *
  * Verifier dispatch (plan §0 #5 — server is fallback for disputes; the
  * canonical surface is client-side WebCrypto):
@@ -19,20 +33,23 @@
  *   - 'blackjack' | 'holdem' | 'baccarat' → 'engine-not-yet-shipped' stub
  *
  * Cursor pagination per plan §3 — base64 of `${createdAt.toISOString()}|${id}`.
- * The (createdAt, id) tuple is stable under ties (uuid PK breaks the tie); we
- * order by (createdAt DESC, id DESC) and use the `(userId, createdAt DESC)`
- * index from impl-schema.
  */
 
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { createHash } from 'crypto';
 import { z } from 'zod';
-import { and, desc, eq, gt, lte, lt, or, sql } from 'drizzle-orm';
-import { db, coveGameEvents, type CoveGameEvent } from '@clawville/database';
+import { and, desc, eq, isNull, lt, or, sql } from 'drizzle-orm';
+import {
+  db,
+  coveGameEvents,
+  slotSessions,
+  type CoveGameEvent,
+} from '@clawville/database';
 import { requireAuth, sessionMiddleware } from '../middleware/auth';
 import { runSpin, type MachineSlug, type SpinResult } from '../services/slot-engine';
-import type { AppContext } from '../types';
+import type { AppContext, AuthenticatedContext } from '../types';
+import type { Context } from 'hono';
 
 export const coveHistoryRouter = new Hono<AppContext>();
 coveHistoryRouter.use('*', sessionMiddleware);
@@ -50,17 +67,35 @@ const ADMIN_IDS = (process.env.ADMIN_USER_IDS ?? '')
   .map((s) => s.trim())
   .filter(Boolean);
 
+// ─── Subject resolution ───────────────────────────────────────────────────
+//
+// Every read path resolves the caller's "subject" — either a logged-in user
+// (scope by user_id) or a guest (scope by guest_fp_hash). fingerprintMiddleware
+// guarantees fpHash is non-empty on every request, so the guest path always
+// has a non-null scope key.
+
+type Subject =
+  | { kind: 'user'; id: string }
+  | { kind: 'guest'; fp: string };
+
+function resolveSubject(c: Context<AppContext>): Subject {
+  const user = c.get('user');
+  if (user) return { kind: 'user', id: user.id };
+  const fp = c.get('fpHash');
+  // fingerprintMiddleware guarantees this; defensive throw keeps the type
+  // narrowed and surfaces a misconfiguration loudly rather than silently
+  // letting NULL-keyed rows through.
+  if (!fp) {
+    throw new HTTPException(500, { message: 'fp_hash_missing_from_context' });
+  }
+  return { kind: 'guest', fp };
+}
+
 // ─── Schemas ──────────────────────────────────────────────────────────────
 
 const historyQuerySchema = z
   .object({
     game: z.enum(GAME_TYPES).optional(),
-    // 'win' === payout > betAmount (strict net-positive)
-    // 'loss' === payout <= betAmount (loss OR break-even/push; treats push
-    // as not-a-win to align with HistoryRow.tsx isWin badge logic which
-    // uses pnl >= 0n for the badge but the FILTER intent is "show winners
-    // only" — break-even rows still get the badge but are excluded from
-    // the win-filtered view by design; see combined-audit #3).
     outcome: z.enum(['win', 'loss']).optional(),
     limit: z.coerce
       .number()
@@ -100,7 +135,6 @@ function decodeCursor(raw: string): DecodedCursor {
   if (Number.isNaN(createdAt.getTime())) {
     throw new HTTPException(400, { message: 'invalid_cursor_timestamp' });
   }
-  // uuid v4 sanity — same shape used in cove-slots /session/:id.
   if (!/^[0-9a-f-]{36}$/i.test(id)) {
     throw new HTTPException(400, { message: 'invalid_cursor_id' });
   }
@@ -108,11 +142,6 @@ function decodeCursor(raw: string): DecodedCursor {
 }
 
 // ─── Row serializer ───────────────────────────────────────────────────────
-//
-// bigint columns (betAmount, payout) come back as strings from drizzle's
-// `bigint({ mode: 'bigint' })` or as `bigint` from `{ mode: 'number' }` —
-// either way we stringify so Hono's `c.json` never sees a raw bigint
-// (same rule cove-slots' serializer follows — see file docstring there).
 
 function serializeEvent(row: CoveGameEvent) {
   return {
@@ -125,8 +154,6 @@ function serializeEvent(row: CoveGameEvent) {
     payout: row.payout.toString(),
     outcomeJson: row.outcomeJson,
     serverSeedHash: row.serverSeedHash,
-    // Only emit the revealed seed once the shoe/session has closed (the
-    // column is null until then — plan §0 decision #2 hash-chain reveal).
     revealedServerSeed: row.revealedServerSeed,
     clientSeed: row.clientSeed,
     nonce: row.nonce,
@@ -136,9 +163,18 @@ function serializeEvent(row: CoveGameEvent) {
   };
 }
 
+// ─── Owner check ──────────────────────────────────────────────────────────
+
+function eventBelongsToSubject(event: CoveGameEvent, subject: Subject): boolean {
+  if (subject.kind === 'user') {
+    return event.userId === subject.id;
+  }
+  return event.guestFpHash === subject.fp;
+}
+
 // ─── GET / ─────────────────────────────────────────────────────────────────
 
-coveHistoryRouter.get('/', requireAuth, async (c) => {
+coveHistoryRouter.get('/', async (c) => {
   const queryParsed = historyQuerySchema.safeParse({
     game: c.req.query('game'),
     outcome: c.req.query('outcome'),
@@ -151,20 +187,19 @@ coveHistoryRouter.get('/', requireAuth, async (c) => {
     });
   }
   const { game, outcome, limit, cursor } = queryParsed.data;
-  const user = c.get('user')!;
+  const subject = resolveSubject(c);
 
-  // Build `WHERE userId = ? [AND gameType = ?] [AND payout > betAmount]
-  //        [AND (createdAt, id) < cursor]`
-  // ordered by (createdAt DESC, id DESC). The (createdAt, id) tuple
-  // strict-less comparison is the standard keyset-pagination shape; we
-  // express it as `createdAt < c.createdAt OR (createdAt = c.createdAt AND id < c.id)`
-  // so existing btree indexes are used. Fetch limit+1 to determine whether
-  // a `nextCursor` is needed without a second COUNT round-trip.
-  const filters = [eq(coveGameEvents.userId, user.id)];
+  // Scope filter — user_id for authed callers, guest_fp_hash for guests.
+  // Each branch uses its own partial index so a guest read never falls back
+  // to a seq-scan over the user-rows portion of the table.
+  const subjectFilter =
+    subject.kind === 'user'
+      ? eq(coveGameEvents.userId, subject.id)
+      : eq(coveGameEvents.guestFpHash, subject.fp);
+
+  const filters = [subjectFilter];
   if (game) filters.push(eq(coveGameEvents.gameType, game));
   if (outcome === 'win') {
-    // TEXT-stringified bigint columns; cast to numeric so PG compares
-    // numerically not lexicographically ('10' < '9' as text).
     filters.push(sql`(${coveGameEvents.payout}::numeric > ${coveGameEvents.betAmount}::numeric)`);
   } else if (outcome === 'loss') {
     filters.push(sql`(${coveGameEvents.payout}::numeric <= ${coveGameEvents.betAmount}::numeric)`);
@@ -194,24 +229,20 @@ coveHistoryRouter.get('/', requireAuth, async (c) => {
     {
       events: page.map(serializeEvent),
       nextCursor,
+      subject: subject.kind,
     },
     200,
   );
 });
 
 // ─── GET /:eventId ────────────────────────────────────────────────────────
-//
-// Single-event fetch. Owner OR admin (mirrors /verify's gate so support can
-// resolve disputes without impersonation). UI uses this to render the event
-// header on the /cove/verify/[eventId] page before dispatching to the
-// per-game verifier component.
 
-coveHistoryRouter.get('/:eventId', requireAuth, async (c) => {
+coveHistoryRouter.get('/:eventId', async (c) => {
   const eventId = c.req.param('eventId');
   if (!/^[0-9a-f-]{36}$/i.test(eventId)) {
     throw new HTTPException(400, { message: 'invalid_event_id' });
   }
-  const user = c.get('user')!;
+  const subject = resolveSubject(c);
 
   const event = await db.query.coveGameEvents.findFirst({
     where: eq(coveGameEvents.id, eventId),
@@ -219,8 +250,8 @@ coveHistoryRouter.get('/:eventId', requireAuth, async (c) => {
   if (!event) {
     throw new HTTPException(404, { message: 'event_not_found' });
   }
-  const isOwner = event.userId === user.id;
-  const isAdmin = ADMIN_IDS.includes(user.id);
+  const isOwner = eventBelongsToSubject(event, subject);
+  const isAdmin = subject.kind === 'user' && ADMIN_IDS.includes(subject.id);
   if (!isOwner && !isAdmin) {
     throw new HTTPException(403, { message: 'event_not_owned' });
   }
@@ -229,12 +260,12 @@ coveHistoryRouter.get('/:eventId', requireAuth, async (c) => {
 
 // ─── GET /:eventId/verify ─────────────────────────────────────────────────
 
-coveHistoryRouter.get('/:eventId/verify', requireAuth, async (c) => {
+coveHistoryRouter.get('/:eventId/verify', async (c) => {
   const eventId = c.req.param('eventId');
   if (!/^[0-9a-f-]{36}$/i.test(eventId)) {
     throw new HTTPException(400, { message: 'invalid_event_id' });
   }
-  const user = c.get('user')!;
+  const subject = resolveSubject(c);
 
   const event = await db.query.coveGameEvents.findFirst({
     where: eq(coveGameEvents.id, eventId),
@@ -243,17 +274,12 @@ coveHistoryRouter.get('/:eventId/verify', requireAuth, async (c) => {
     throw new HTTPException(404, { message: 'event_not_found' });
   }
 
-  // Owner OR admin (per plan §0 #4). Verify endpoint is reachable by an
-  // ADMIN_USER_IDS member for any user's event so support can resolve
-  // disputes without impersonation. List endpoint stays strictly owner-only.
-  const isOwner = event.userId === user.id;
-  const isAdmin = ADMIN_IDS.includes(user.id);
+  const isOwner = eventBelongsToSubject(event, subject);
+  const isAdmin = subject.kind === 'user' && ADMIN_IDS.includes(subject.id);
   if (!isOwner && !isAdmin) {
     throw new HTTPException(403, { message: 'event_not_owned' });
   }
 
-  // Pre-reveal events (revealedServerSeed null) can't replay deterministically;
-  // surface a structured locked verdict instead of trying engine replay.
   if (!event.revealedServerSeed) {
     return c.json(
       {
@@ -267,24 +293,12 @@ coveHistoryRouter.get('/:eventId/verify', requireAuth, async (c) => {
     );
   }
 
-  // sha256(revealedServerSeed) must equal the committed hash. This is the
-  // commit-reveal contract — if the server published a hash at open time
-  // and then revealed a DIFFERENT seed at close, this comparison fails
-  // and the entire shoe's outcomes are repudiated.
   const computedHash = createHash('sha256').update(event.revealedServerSeed, 'utf8').digest('hex');
   const hashMatches = computedHash === event.serverSeedHash;
 
   if (event.gameType === 'slots') {
     let expected: SpinResult;
     try {
-      // Cursor: slot_spins persists `cursorBefore` (pre-spin byte cursor).
-      // The cove_game_events row's outcomeJson includes the slot reels +
-      // winning lines; cursorBefore is recoverable from the source slot_spins
-      // row by sessionId+nonce. For now, since slots' cove_game_events
-      // mirror is written from the same transaction (impl-schema's plan), the
-      // event row carries enough to replay via runSpin(nonce, cursor=0) for
-      // backfilled rows — but the source of truth for cursor is the slot_spins
-      // row. Resolve cursorBefore from slot_spins by (sessionId, nonce).
       const slotSpinCursor = await resolveSlotSpinCursor(event.sessionId, event.nonce);
       expected = runSpin({
         paytableId: extractSlotPaytableId(event),
@@ -307,10 +321,6 @@ coveHistoryRouter.get('/:eventId/verify', requireAuth, async (c) => {
       );
     }
 
-    // Compare engine output to stored outcome. The stored shape was
-    // serialized at write time (winAmount as string per cove-slots'
-    // serializeWinningLine convention); we re-serialize the freshly-computed
-    // engine output the same way so the deep-equal works.
     const expectedSerialized = {
       reels: expected.reels,
       winningLines: expected.winningLines.map((l) => ({
@@ -341,7 +351,6 @@ coveHistoryRouter.get('/:eventId/verify', requireAuth, async (c) => {
     );
   }
 
-  // Other game types — engines + their verifier ports ship in 6.7.1/6.7.2/6.7.3.
   return c.json(
     {
       verified: null,
@@ -354,15 +363,64 @@ coveHistoryRouter.get('/:eventId/verify', requireAuth, async (c) => {
   );
 });
 
+// ─── POST /claim ──────────────────────────────────────────────────────────
+//
+// Phase 6.7.5 — on signup, migrate the caller's guest-stamped history rows
+// to their new user_id. Idempotent: a second call for the same fp finds
+// no remaining `WHERE guest_fp_hash = $fp AND user_id IS NULL` rows.
+//
+// Wraps both updates in a single transaction so the verifier's
+// `slot_spins` lookup (via cove_history /verify → resolveSlotSpinCursor →
+// slot_sessions parent) stays consistent — parent + child rows are claimed
+// atomically. No CT or wallet writes here (per plan §0 #6 — demo balances
+// don't convert).
+//
+// Rate limit: protected by the global Hono rate-limit middleware mount in
+// index.ts; the claim is harmless for unrelated users (UPDATE filtered by
+// fp_hash) and idempotent for the same fp, so per-route throttle isn't
+// strictly required.
+
+coveHistoryRouter.post('/claim', requireAuth, async (c) => {
+  const authedCtx = c as unknown as Context<AuthenticatedContext>;
+  const user = authedCtx.get('user');
+  const fp = c.get('fpHash');
+  if (!fp) {
+    throw new HTTPException(500, { message: 'fp_hash_missing_from_context' });
+  }
+
+  const result = await db.transaction(async (tx) => {
+    const claimedEvents = await tx
+      .update(coveGameEvents)
+      .set({
+        userId: user.id,
+        // Null the guest_fp_hash to honor the schema check constraint
+        // `(user_id IS NOT NULL) <> (guest_fp_hash IS NOT NULL)`.
+        guestFpHash: null,
+      })
+      .where(and(eq(coveGameEvents.guestFpHash, fp), isNull(coveGameEvents.userId)))
+      .returning({ id: coveGameEvents.id });
+
+    const claimedSessions = await tx
+      .update(slotSessions)
+      .set({
+        userId: user.id,
+        guestFpHash: null,
+      })
+      .where(and(eq(slotSessions.guestFpHash, fp), isNull(slotSessions.userId)))
+      .returning({ id: slotSessions.id });
+
+    return {
+      claimed: claimedEvents.length,
+      eventIds: claimedEvents.map((r) => r.id),
+      sessionsClaimed: claimedSessions.length,
+    };
+  });
+
+  return c.json(result, 200);
+});
+
 // ─── Helpers (slots verifier) ────────────────────────────────────────────
 
-/**
- * The slot_spins row persists `cursorBefore` (byte cursor consumed at the
- * START of the spin's HMAC stream). We need that value to replay deterministically;
- * cove_game_events.nonce is recorded but cursorBefore is not (the event row
- * stores the outcome, not the engine cursor state — that's slot_spins' job).
- * Resolve via (sessionId, nonce) lookup which is unique within a session.
- */
 async function resolveSlotSpinCursor(sessionId: string, nonce: number): Promise<number> {
   const rows = await db.execute<{ cursor_before: number | string }>(
     sql`SELECT cursor_before FROM slot_spins
@@ -376,26 +434,10 @@ async function resolveSlotSpinCursor(sessionId: string, nonce: number): Promise<
   return typeof row.cursor_before === 'string' ? Number(row.cursor_before) : row.cursor_before;
 }
 
-/**
- * Slot paytableId is not stored on cove_game_events directly (the table is
- * game-agnostic by design — plan §0 #1). Recover it from the parent
- * slot_sessions row via sessionId. If the lookup fails (deleted parent),
- * the engine replay would also fail; surface a typed error rather than
- * silently defaulting.
- */
 function extractSlotPaytableId(event: CoveGameEvent): MachineSlug {
-  // outcomeJson is the engine output shape; paytable lives on slot_sessions.
-  // We do the lookup synchronously via a side-channel cached read — but
-  // since the verify route is async we accept the cost. For the first cut
-  // we read from outcomeJson if the writer included it; the schema/integration
-  // contract (this file + impl-schema's writer) is the place to enforce that.
   const oj = event.outcomeJson as { paytableId?: string } | null;
   const slug = oj?.paytableId;
   if (slug === 'classic-3x5' || slug === 'classic-3x5-bonus') return slug;
-  // Default fallback for slot rows written before the writer started embedding
-  // paytableId (none today — this writer ships in the same diff — but the
-  // backfill script may produce rows without it). Throwing here surfaces
-  // the data-quality gap loud rather than silently picking the wrong table.
   throw new Error(
     `slots_paytableId_missing_on_event: extend impl-schema writer or backfill to include outcomeJson.paytableId`,
   );
