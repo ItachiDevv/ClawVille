@@ -43,6 +43,8 @@ export * from './constants/slot-paytables';
 export * from './constants/slot-symbols';
 // Phase 6.4.0 — cove blackjack shared types (mock + future engine).
 export * from './types/cove-blackjack';
+// Phase 6.5.0 — cove Texas Hold'em shared types (visual shell).
+export * from './types/cove-holdem';
 export * from './constants/orientation-skill';
 // Q3 plan §2.6 — server-credited token rewards for tutorial quests.
 export * from './constants/tutorial-quest-rewards';
