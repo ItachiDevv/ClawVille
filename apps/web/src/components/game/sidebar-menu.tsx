@@ -947,11 +947,13 @@ export default function SidebarMenu() {
   if (isMobile) {
     return (
       <>
-        {/* Gear FAB */}
+        {/* Gear FAB — stacked BELOW the Nori button (which sits at
+            top:16 right:16). Nori is ~44px tall, so top:72 keeps a 12px
+            gap. Without this offset the gear sat on top of Nori on iPad. */}
         <div
           style={{
             position: 'fixed',
-            top: 12,
+            top: 72,
             right: 12,
             zIndex: 45,
           }}
