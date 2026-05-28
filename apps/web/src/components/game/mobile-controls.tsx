@@ -21,7 +21,7 @@ export default function MobileControls() {
   // float over the text input. Suppress BOTH joysticks while any chat is
   // open — you're talking, not walking.
   const buildingChatOpen = useGameStore((s) => s.chatOpen);
-  const systemAgentChatOpen = useGameStore((s) => s.systemAgentChatOpen);
+  const systemAgentChatOpen = useGameStore((s) => s.guideChatOpen);
   const chatActive = buildingChatOpen || systemAgentChatOpen;
 
   // Explore mode = pure spectator with no character — no movement joystick, no building entry
