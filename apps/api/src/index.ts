@@ -65,7 +65,8 @@ import { wagerRoutes } from './routes/wager';
 // Phase 6.1 slice 3 — cove slots fun-money backend wire (ClawTokens live;
 // SOL/USDC return 501 until Phase 6.2 custody).
 import { coveSlotsRouter } from './routes/cove-slots';
-// Phase 6.4.0 — cove blackjack mock route (display shell, no engine yet).
+// Phase 6.4.1 — cove blackjack AUTHORITATIVE route (6-deck shoe, S17, BJ 3:2,
+// commit-reveal provably-fair engine, ClawToken ledger; SOL/USDC seam returns 501).
 import { coveBlackjackRouter } from './routes/cove-blackjack';
 // Phase 6.5.0 — cove Texas Hold'em mock route (visual shell, no engine yet).
 import { coveHoldemRouter } from './routes/cove-holdem';
@@ -208,7 +209,7 @@ app.route('/api/wager', wagerRoutes);
 // ClawTokens path is fully wired; SOL/USDC routes return 501 with a
 // friendly message until Phase 6.2 lands real-money custody.
 app.route('/api/cove/slots', coveSlotsRouter);
-// Phase 6.4.0 — cove blackjack mock (display shell; real engine in 6.4.1).
+// Phase 6.4.1 — cove blackjack authoritative engine (replaces the 6.4.0 mock).
 app.route('/api/cove/blackjack', coveBlackjackRouter);
 // Phase 6.5.0 — cove Texas Hold'em mock (visual shell; pokerpocket engine in 6.5.1).
 app.route('/api/cove/holdem', coveHoldemRouter);

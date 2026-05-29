@@ -1,5 +1,5 @@
 /**
- * Phase 6.4.0 — frontend re-export shim for blackjack types.
+ * Phase 6.4.1 — frontend re-export shim for blackjack types.
  *
  * Canonical home is `@clawville/shared` (`packages/shared/src/types/cove-blackjack.ts`).
  * Components/clients in `apps/web` import from here so existing import paths
@@ -11,11 +11,18 @@ export {
   BLACKJACK_RANKS,
   COVE_BLACKJACK_MIN_BET,
   COVE_BLACKJACK_MAX_BET,
+  COVE_BLACKJACK_SHOE_DECKS,
+  COVE_BLACKJACK_CARDS_PER_SHOE,
+  COVE_BLACKJACK_RESHUFFLE_THRESHOLD,
 } from '@clawville/shared';
 export type {
   BlackjackSuit,
   BlackjackRank,
   BlackjackCard,
   BlackjackOutcome,
-  PlayMockHandResponse,
+  BlackjackActionType,
+  SerializedPlayerHand,
+  SerializedDealerHand,
+  SerializedInsurance,
+  SerializedBlackjackHandResult,
 } from '@clawville/shared';
