@@ -45,6 +45,8 @@ export * from './constants/slot-symbols';
 export * from './types/cove-blackjack';
 // Phase 6.5.0 — cove Texas Hold'em shared types (visual shell).
 export * from './types/cove-holdem';
+// Phase 6.6.1 — cove Baccarat (Punto Banco) shared wire types.
+export * from './types/cove-baccarat';
 export * from './constants/orientation-skill';
 // Q3 plan §2.6 — server-credited token rewards for tutorial quests.
 export * from './constants/tutorial-quest-rewards';

@@ -32,6 +32,7 @@ import SceneTransition, { useSceneTransition } from '@/components/transitions/Sc
 import SlotScreenModal from '@/components/cove/SlotScreenModal';
 import BlackjackModal from '@/components/cove/blackjack/BlackjackModal';
 import HoldemModal from '@/components/cove/holdem/HoldemModal';
+import BaccaratModal from '@/components/cove/baccarat/BaccaratModal';
 import CoveMobileControls from '@/components/cove/CoveMobileControls';
 import { useAvatar } from '@/hooks/use-avatar';
 import { useGameStore } from '@/stores/game';
@@ -240,6 +241,13 @@ export default function CovePage() {
           WebSocket protocol + real-money SOL/USDC land in Phase 6.5.2 / 6.5.4. */}
       <HoldemModal />
 
+      {/* Phase 6.6.1 — Baccarat (Punto Banco) table modal (REAL engine,
+          server-authoritative, ClawToken fun-money tier, 8-deck commit-reveal
+          shoe). Same z-index policy as the other game modals so only one game
+          modal is open at a time. SOL/USDC + connected-agent protocol land in
+          a later phase (currency seam returns 501 today). */}
+      <BaccaratModal />
+
       {/* iPad / phone touch controls — auto-hidden on desktop via useIsMobile.
           Critical fix 2026-05-27: cove had zero touch input; iPad users
           could see the scene but not move. */}
@@ -274,7 +282,7 @@ export default function CovePage() {
               Predictive Gaming Cove
             </span>
             <span style={{ color: 'rgba(255,255,255,0.35)', fontSize: 11, marginLeft: 8 }}>
-              Slots · Blackjack · Hold&apos;em
+              Slots · Blackjack · Hold&apos;em · Baccarat
             </span>
           </div>
         </div>

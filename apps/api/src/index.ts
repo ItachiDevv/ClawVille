@@ -70,6 +70,9 @@ import { coveSlotsRouter } from './routes/cove-slots';
 import { coveBlackjackRouter } from './routes/cove-blackjack';
 // Phase 6.5.0 — cove Texas Hold'em mock route (visual shell, no engine yet).
 import { coveHoldemRouter } from './routes/cove-holdem';
+// Phase 6.6.1 — cove Baccarat (Punto Banco) AUTHORITATIVE route (8-deck shoe,
+// fixed tableau, commit-reveal provably-fair engine, ClawToken ledger; SOL/USDC seam 501).
+import { coveBaccaratRouter } from './routes/cove-baccarat';
 // Phase 6.7.0 — cove cross-game history + per-event provable-fair verifier.
 import { coveHistoryRouter } from './routes/cove-history';
 import type { AppContext } from './types';
@@ -213,6 +216,10 @@ app.route('/api/cove/slots', coveSlotsRouter);
 app.route('/api/cove/blackjack', coveBlackjackRouter);
 // Phase 6.5.0 — cove Texas Hold'em mock (visual shell; pokerpocket engine in 6.5.1).
 app.route('/api/cove/holdem', coveHoldemRouter);
+// Phase 6.6.1 — cove Baccarat (Punto Banco) authoritative engine (8-deck shoe,
+// fixed third-card tableau, commit-reveal provably-fair; ClawToken ledger;
+// SOL/USDC seam returns 501).
+app.route('/api/cove/baccarat', coveBaccaratRouter);
 // Phase 6.7.0 — cross-game history (owner-only list + owner|admin verify).
 // Slots integration ships in-line with this mount (see cove-slots.ts spin txn).
 app.route('/api/cove/history', coveHistoryRouter);
