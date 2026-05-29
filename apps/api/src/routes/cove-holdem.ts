@@ -302,8 +302,9 @@ function loadActions(hand: HoldemHand): HoldemActionRecord[] {
   return raw;
 }
 
-/** Run the engine for a hand from its recorded actions + the table seed. */
-function runEngine(
+/** Run the engine for a hand from its recorded actions + the table seed.
+ * Exported for the route's pure in-progress-view regression tests. */
+export function runEngine(
   table: { serverSeed: string; clientSeed: string },
   hand: { handIndex: number; buttonSeat: number; startingStack: string },
   actions: HoldemActionRecord[],
@@ -364,7 +365,7 @@ function isHandTerminal(
  * NOTE: this peek is for DISPLAY ONLY. It is never persisted. The authoritative
  * settle recomputes from the REAL recorded actions under the lock.
  */
-function peekState(
+export function peekState(
   table: { serverSeed: string; clientSeed: string },
   hand: { handIndex: number; buttonSeat: number; startingStack: string },
   actions: HoldemActionRecord[],
@@ -378,23 +379,64 @@ function peekState(
 } {
   // Reconstruct the live betting context by replaying the recorded actions and
   // stopping right where the human is next to act. We do this by running the
-  // engine with a 'fold' appended and inspecting the resulting human seat —
-  // but that resolves the hand. Instead we derive the visible context directly
-  // from a fold-terminated peek: it deals all cards the human has SEEN.
+  // engine with a synthetic 'fold' appended and inspecting the resulting human
+  // seat. CRITICAL FAIRNESS NOTE: appending the human's fold RESOLVES the entire
+  // hand — the remaining bots play on to showdown, so the engine deals ALL FIVE
+  // community cards and `peek.board` is the FULL board regardless of which street
+  // the human is actually on. We MUST NOT return that full board: a preflop
+  // decision would over-reveal the flop/turn/river, the flop would over-reveal
+  // turn/river, etc. — letting a connected agent (or the human) see undealt cards
+  // before betting (a critical money/fairness leak). So we truncate `peek.board`
+  // to exactly the community cards visible at the human's CURRENT street:
+  // preflop=0, flop=3, turn=4, river=5.
+  //
+  // humanHole, toCall, currentBet, and the human's committed/stack are all FINE
+  // from the fold-peek — folding does not change the human's already-dealt hole
+  // cards nor their committed-so-far on the current street, and we derive
+  // toCall/currentBet from the action log (not from any future bot action).
   const peek = runEngine(table, hand, [...actions, { type: 'fold' }]);
   const human = peek.seats.find((s) => s.isHuman)!;
-  // The board shown is whatever the peek revealed (up to the street reached).
-  // toCall/currentBet are recomputed from the action log: find the max street
-  // commitment on the human's CURRENT street vs the human's own commitment.
+  // The human's CURRENT street = the street the synthetic fold landed on (the
+  // last human entry in the action log). toCall/currentBet are recomputed from
+  // that street's commitments; the visible board count is fixed by that street.
   const ctx = deriveToCall(peek, actions.length);
+  const visibleBoardCount = visibleBoardCountForStreet(ctx.humanStreet);
   return {
     humanHole: human.holeCards,
-    board: peek.board,
+    // Truncate to ONLY the cards dealt by the human's current street. Never the
+    // full fold-peek board (which always contains all 5).
+    board: peek.board.slice(0, visibleBoardCount),
     toCall: ctx.toCall.toString(),
     currentBet: ctx.currentBet.toString(),
     humanStack: (BigInt(hand.startingStack) - human.committed).toString(),
     humanCommitted: human.committed.toString(),
   };
+}
+
+/**
+ * Number of community cards visible to a player who is currently to act on a
+ * given street. Preflop no board is dealt yet; the flop reveals 3; the turn
+ * reveals a 4th; the river reveals the 5th. A null street (no human action in
+ * the log — should not happen on a real in-progress peek) reveals nothing.
+ *
+ * This is the truncation contract that prevents the in-progress response from
+ * over-revealing undealt board cards (see peekState's fairness note).
+ */
+export function visibleBoardCountForStreet(
+  street: HoldemHandResult['actionLog'][number]['street'] | null,
+): number {
+  switch (street) {
+    case 'preflop': return 0;
+    case 'flop': return 3;
+    case 'turn': return 4;
+    case 'river': return 5;
+    case null: return 0;
+    default: {
+      const _exhaustive: never = street;
+      void _exhaustive;
+      return 0;
+    }
+  }
 }
 
 /**
@@ -407,7 +449,13 @@ function peekState(
 function deriveToCall(
   peek: HoldemHandResult,
   recordedHumanActions: number,
-): { toCall: bigint; currentBet: bigint } {
+): {
+  toCall: bigint;
+  currentBet: bigint;
+  /** The human's CURRENT street (street of the synthetic fold). Null only if the
+   * human never appears in the log (defensive — should not happen on a peek). */
+  humanStreet: HoldemHandResult['actionLog'][number]['street'] | null;
+} {
   void recordedHumanActions;
   // The synthetic fold is the LAST human entry in the log. The street it was on
   // is the human's current street. Compute per-seat street commitment on that
@@ -418,7 +466,7 @@ function deriveToCall(
   for (let i = log.length - 1; i >= 0; i--) {
     if (log[i]!.isHuman) { humanStreet = log[i]!.street; break; }
   }
-  if (!humanStreet) return { toCall: 0n, currentBet: 0n };
+  if (!humanStreet) return { toCall: 0n, currentBet: 0n, humanStreet: null };
 
   // Per-seat latest street commitment on humanStreet.
   const bySeat = new Map<number, bigint>();
@@ -433,7 +481,7 @@ function deriveToCall(
     if (seat === HUMAN_SEAT) humanCommit = amt;
   }
   const toCall = currentBet > humanCommit ? currentBet - humanCommit : 0n;
-  return { toCall, currentBet };
+  return { toCall, currentBet, humanStreet };
 }
 
 // ─── POST /session/open ───────────────────────────────────────────────────────
