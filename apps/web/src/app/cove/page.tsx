@@ -195,35 +195,45 @@ export default function CovePage() {
         Back to World
       </button>
 
-      {/* Provably-fair verifier link — top-right, mirrors the Back button style. */}
-      <Link
-        href="/cove/verify"
-        target="_blank"
-        rel="noopener noreferrer"
-        style={{
-          position: 'absolute',
-          top: 16,
-          right: 16,
-          zIndex: 50,
+      {/* Top-right actions — betting history + provably-fair verifier. */}
+      {(() => {
+        const pill = {
           display: 'flex',
           alignItems: 'center',
-          gap: 8,
-          padding: '10px 18px',
+          gap: 6,
+          padding: '10px 16px',
           background: 'rgba(10, 0, 21, 0.82)',
           backdropFilter: 'blur(6px)',
           border: '1px solid rgba(0, 255, 224, 0.35)',
           borderRadius: 10,
           color: '#00ffe0',
           fontWeight: 700,
-          fontSize: 14,
+          fontSize: 13,
           fontFamily: 'monospace',
           textDecoration: 'none',
           letterSpacing: '0.04em',
-          transition: 'border-color 0.2s, background 0.2s',
-        }}
-      >
-        🔐 Verify
-      </Link>
+          whiteSpace: 'nowrap' as const,
+        };
+        return (
+          <div
+            style={{
+              position: 'absolute',
+              top: 16,
+              right: 16,
+              zIndex: 50,
+              display: 'flex',
+              gap: 8,
+            }}
+          >
+            <Link href="/cove/history" target="_blank" rel="noopener noreferrer" style={pill}>
+              📜 History
+            </Link>
+            <Link href="/cove/verify" target="_blank" rel="noopener noreferrer" style={pill}>
+              🔐 Verify
+            </Link>
+          </div>
+        );
+      })()}
 
       {/* 2D Slot Screen Modal — DOM overlay, renders on top of 3D canvas.
           z-index 9990 ensures it layers above the Canvas (z-index ~0) but below
