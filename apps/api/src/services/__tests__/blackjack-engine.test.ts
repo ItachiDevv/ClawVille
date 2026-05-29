@@ -14,8 +14,10 @@ import {
   handTotal,
   cardBaseValue,
   serializeHandResult,
+  computeBlackjackRake,
   CARDS_PER_SHOE,
   RESHUFFLE_CARD_THRESHOLD,
+  BLACKJACK_RAKE_PERCENT,
   type HandScript,
   type Card,
 } from '../blackjack-engine';
@@ -625,5 +627,97 @@ describe('blackjack-engine — multi-hand shoe replay (no-replacement)', () => {
     }
     // Each rank has 24 physical copies in a 6-deck shoe (6 decks × 4 suits).
     for (const [, v] of counts) expect(v).toBeLessThanOrEqual(24);
+  });
+});
+
+// ───────────────────────── Rake on net winnings (economy fix 2026-05-29) ─────
+//
+// Blackjack is a SKILL game (countable) so a skilled agent goes +EV. A small
+// rake on the player's NET WINNINGS (winners only) keeps the house whole without
+// touching the strategy surface. rake = floor(max(0, payout-bet)*5/100); pushes
+// and losses pay NO rake; the rake reduces the credited payout (a net burn).
+
+describe('blackjack-engine — computeBlackjackRake (net-winnings rake)', () => {
+  it('rake percent constant is 5', () => {
+    expect(BLACKJACK_RAKE_PERCENT).toBe(5n);
+  });
+
+  it('net win 100 → rake 5 → credited net 95 (task example)', () => {
+    // bet 100, gross payout 200 → net winnings 100 → rake floor(100*5/100)=5.
+    const r = computeBlackjackRake({ totalBet: 100n, totalPayout: 200n });
+    expect(r.netWinnings).toBe(100n);
+    expect(r.rake).toBe(5n);
+    expect(r.rakedPayout).toBe(195n); // 200 - 5
+    expect(r.rakedNet).toBe(95n); // 195 - 100
+  });
+
+  it('a PUSH pays no rake (payout === bet → net winnings 0)', () => {
+    const r = computeBlackjackRake({ totalBet: 50n, totalPayout: 50n });
+    expect(r.netWinnings).toBe(0n);
+    expect(r.rake).toBe(0n);
+    expect(r.rakedPayout).toBe(50n); // full stake returned, unraked
+    expect(r.rakedNet).toBe(0n);
+  });
+
+  it('a LOSS pays no rake (payout < bet → net winnings 0, not negative)', () => {
+    const r = computeBlackjackRake({ totalBet: 100n, totalPayout: 0n });
+    expect(r.netWinnings).toBe(0n);
+    expect(r.rake).toBe(0n);
+    expect(r.rakedPayout).toBe(0n); // nothing credited
+    expect(r.rakedNet).toBe(-100n); // the full loss, unraked
+  });
+
+  it('rake is on WINNINGS only, never the returned stake', () => {
+    // 3:2 blackjack: bet 100, gross payout 250 → net winnings 150 → rake floor(150*5/100)=7.
+    const r = computeBlackjackRake({ totalBet: 100n, totalPayout: 250n });
+    expect(r.netWinnings).toBe(150n);
+    expect(r.rake).toBe(7n); // floor(7.5)
+    expect(r.rakedPayout).toBe(243n); // 250 - 7
+    expect(r.rakedNet).toBe(143n);
+  });
+
+  it('rake floors small winnings to 0 (net win 19 → floor(0.95)=0)', () => {
+    const r = computeBlackjackRake({ totalBet: 5n, totalPayout: 24n });
+    expect(r.netWinnings).toBe(19n);
+    expect(r.rake).toBe(0n); // floor(19*5/100)=floor(0.95)=0
+    expect(r.rakedPayout).toBe(24n);
+  });
+
+  it('property: rake = floor(max(0, payout-bet)*5/100); credit = payout - rake; never negative payout', () => {
+    for (let bet = 5n; bet <= 500n; bet += 7n) {
+      for (const mult of [0n, 1n, 2n, 3n] as const) {
+        // gross payouts spanning loss (0), push (bet), 1:1 (2×), 3:2-ish (2.5×).
+        const payout = mult === 0n ? 0n : (bet * (mult + 1n)) / 2n + (mult === 1n ? bet / 2n : 0n);
+        const r = computeBlackjackRake({ totalBet: bet, totalPayout: payout });
+        const expectNetWin = payout > bet ? payout - bet : 0n;
+        const expectRake = (expectNetWin * 5n) / 100n;
+        expect(r.netWinnings).toBe(expectNetWin);
+        expect(r.rake).toBe(expectRake);
+        expect(r.rakedPayout).toBe(payout - expectRake);
+        expect(r.rakedPayout).toBeGreaterThanOrEqual(0n);
+        // House-positive bias: a net win always credits strictly less than gross.
+        if (expectNetWin >= 20n) expect(r.rakedPayout).toBeLessThan(payout);
+      }
+    }
+  });
+
+  it('serializeHandResult carries rake + rakedPayout + rakedNet; gross fields unchanged', () => {
+    // A real settled stand-only hand; assert the serialized rake matches the helper.
+    const r = playHand({
+      serverSeed: SERVER,
+      clientSeed: CLIENT,
+      nonce: 0,
+      cursor: 0,
+      bet: 100n,
+      script: standOnly(),
+    });
+    const s = serializeHandResult(r, { cursorBefore: 0, dealtBefore: 0, nonce: 0 });
+    const raked = computeBlackjackRake(r);
+    expect(s.rake).toBe(raked.rake.toString());
+    expect(s.rakedPayout).toBe(raked.rakedPayout.toString());
+    expect(s.rakedNet).toBe(raked.rakedNet.toString());
+    // GROSS fields unchanged.
+    expect(s.totalPayout).toBe(r.totalPayout.toString());
+    expect(s.net).toBe(r.net.toString());
   });
 });

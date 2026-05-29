@@ -15,19 +15,24 @@ import {
   estimateStrength,
   buildSidePots,
   serializeHoldemHand,
+  computeHoldemRake,
   HandCategory,
   DECK_SIZE,
   SEATS,
   SMALL_BLIND,
   BIG_BLIND,
+  HOLDEM_RAKE_PERCENT,
+  HOLDEM_RAKE_CAP,
   type Card,
   type HoldemActionRecord,
   type PlayHoldemHandArgs,
+  type SerializedHoldemHand,
 } from '../holdem-engine';
 import {
   peekState,
   runEngine,
   visibleBoardCountForStreet,
+  rakedFiguresFromOutcome,
 } from '../../routes/cove-holdem';
 
 const SERVER = 'a'.repeat(64);
@@ -698,6 +703,187 @@ describe('holdem-engine — in-progress view board truncation (fairness)', () =>
         expect(p.boardKeys).toEqual(fullBoardKeys.slice(0, p.boardLen));
       }
     }
+  });
+});
+
+// ───────────────────────── Rake the pot (economy fix 2026-05-29) ─────────────
+//
+// Standard "rake the pot": at settle the house takes min(floor(pot*5/100), 5) CT
+// from the pot before awarding winners; the raked CT is not credited → net burn.
+// These tests pin: (1) chip conservation sum(rakedWon)+rake === pot, (2) the rake
+// formula + cap, (3) the human's raked payout never goes negative, (4) the rake
+// makes the table house-positive (every chip the human nets is reduced by rake).
+
+describe("holdem-engine — computeHoldemRake", () => {
+  it('rake constants are 5% capped at 5 CT', () => {
+    expect(HOLDEM_RAKE_PERCENT).toBe(5n);
+    expect(HOLDEM_RAKE_CAP).toBe(5n);
+  });
+
+  it('rake == min(floor(pot*5/100), 5) AND sum(rakedWon) + rake === pot (chip conservation)', () => {
+    // Sweep many real hands across nonces + buttons + stacks so we cover small
+    // pots (no rake / sub-cap rake) and big pots (capped rake), single + multi
+    // winner, side pots.
+    let sawRake = false; // at least one hand actually charged a rake
+    for (let nonce = 0; nonce < 60; nonce++) {
+      const button = nonce % SEATS;
+      const r = playHand(baseArgs({ nonce, buttonSeat: button, humanActions: callDown() }));
+      const raked = computeHoldemRake(r);
+
+      // pot = sum of all committed (chip-conserving: equals sum of `won`).
+      const pot = r.seats.reduce((acc, s) => acc + s.committed, 0n);
+      expect(raked.pot).toBe(pot);
+
+      // Rake formula + cap.
+      const expectFloor = (pot * HOLDEM_RAKE_PERCENT) / 100n;
+      const expectRake = expectFloor < HOLDEM_RAKE_CAP ? expectFloor : HOLDEM_RAKE_CAP;
+      expect(raked.rake).toBe(expectRake);
+      expect(raked.rake).toBeLessThanOrEqual(HOLDEM_RAKE_CAP);
+      if (raked.rake > 0n) sawRake = true;
+
+      // CHIP CONSERVATION: every chip is accounted for — the rake plus every
+      // winner's raked award sum back to the full pot.
+      let sumRaked = 0n;
+      for (const award of raked.rakedWonBySeat.values()) {
+        expect(award).toBeGreaterThanOrEqual(0n); // never rake a seat negative
+        sumRaked += award;
+      }
+      expect(sumRaked + raked.rake).toBe(pot);
+
+      // The human's raked payout is the human seat's raked award (or 0).
+      const humanGross = r.seats.find((s) => s.isHuman)!.won;
+      expect(raked.humanRakedPayout).toBeLessThanOrEqual(humanGross);
+      expect(raked.humanRakedPayout).toBeGreaterThanOrEqual(0n);
+      // Raked net = rakedPayout - committed.
+      const humanCommitted = r.seats.find((s) => s.isHuman)!.committed;
+      expect(raked.humanRakedNet).toBe(raked.humanRakedPayout - humanCommitted);
+      // The rake only ever REDUCES the human's payout vs the gross engine award.
+      expect(raked.humanRakedNet).toBeLessThanOrEqual(r.humanNet);
+    }
+    // Coverage: at least one swept hand actually charged a rake (the formula +
+    // conservation are asserted on EVERY hand above; the explicit cap + split-pot
+    // paths are pinned by the deterministic synthetic-hand tests below).
+    expect(sawRake).toBe(true);
+  });
+
+  it('a 200-chip pot rakes exactly the 5 CT cap (floor(200*5/100)=10 → capped to 5)', () => {
+    // Craft a deterministic single-winner pot via a synthetic resolved hand so
+    // the cap path is asserted on an exact number (independent of deck luck).
+    const fakeResult = {
+      handIndex: 0,
+      buttonSeat: 0,
+      smallBlindSeat: 1,
+      bigBlindSeat: 2,
+      board: [],
+      pots: [],
+      actionLog: [],
+      endedAt: 'showdown' as const,
+      humanBet: 100n,
+      humanPayout: 200n,
+      humanNet: 100n,
+      seats: [
+        { seat: 0, isHuman: true, personality: null, holeCards: [], committed: 100n, won: 200n, net: 100n, status: 'active' as const, handRank: null, isWinner: true },
+        { seat: 1, isHuman: false, personality: 'tag' as const, holeCards: [], committed: 100n, won: 0n, net: -100n, status: 'folded' as const, handRank: null, isWinner: false },
+      ],
+    };
+    const raked = computeHoldemRake(fakeResult);
+    expect(raked.pot).toBe(200n); // 100 + 100
+    expect(raked.rake).toBe(5n); // floor(200*5/100)=10, capped to 5
+    expect(raked.humanRakedPayout).toBe(195n); // sole winner absorbs the whole rake
+    expect(raked.humanRakedNet).toBe(95n);
+    // Conservation: 195 (human) + 0 (folded bot) + 5 (rake) = 200.
+    let sum = 0n;
+    for (const v of raked.rakedWonBySeat.values()) sum += v;
+    expect(sum + raked.rake).toBe(200n);
+  });
+
+  it('a tiny pot (3 chips) rakes 0 (floor(3*5/100)=0); winner keeps the whole pot', () => {
+    const fakeResult = {
+      handIndex: 0, buttonSeat: 0, smallBlindSeat: 1, bigBlindSeat: 2,
+      board: [], pots: [], actionLog: [], endedAt: 'preflop' as const,
+      humanBet: 1n, humanPayout: 3n, humanNet: 2n,
+      seats: [
+        { seat: 0, isHuman: true, personality: null, holeCards: [], committed: 1n, won: 3n, net: 2n, status: 'active' as const, handRank: null, isWinner: true },
+        { seat: 1, isHuman: false, personality: 'tag' as const, holeCards: [], committed: 2n, won: 0n, net: -2n, status: 'folded' as const, handRank: null, isWinner: false },
+      ],
+    };
+    const raked = computeHoldemRake(fakeResult);
+    expect(raked.pot).toBe(3n);
+    expect(raked.rake).toBe(0n);
+    expect(raked.humanRakedPayout).toBe(3n); // no rake on a sub-20 pot
+  });
+
+  it('split pot: rake is taken ONCE total then distributed proportionally (conservation holds)', () => {
+    // Two winners split a 200 pot 100/100. Rake = 5 (cap). Each absorbs floor(5*100/200)=2,
+    // remainder 1 chip to the earliest winning seat → seat0 raked 100-3=97, seat1 100-2=98.
+    const fakeResult = {
+      handIndex: 0, buttonSeat: 0, smallBlindSeat: 1, bigBlindSeat: 2,
+      board: [], pots: [], actionLog: [], endedAt: 'showdown' as const,
+      humanBet: 100n, humanPayout: 100n, humanNet: 0n,
+      seats: [
+        { seat: 0, isHuman: true, personality: null, holeCards: [], committed: 100n, won: 100n, net: 0n, status: 'active' as const, handRank: null, isWinner: true },
+        { seat: 1, isHuman: false, personality: 'tag' as const, holeCards: [], committed: 100n, won: 100n, net: 0n, status: 'active' as const, handRank: null, isWinner: true },
+      ],
+    };
+    const raked = computeHoldemRake(fakeResult);
+    expect(raked.pot).toBe(200n);
+    expect(raked.rake).toBe(5n);
+    // Conservation: raked awards + rake === pot.
+    let sum = 0n;
+    for (const v of raked.rakedWonBySeat.values()) sum += v;
+    expect(sum + raked.rake).toBe(200n);
+    // Earliest winning seat absorbs the odd remainder chip.
+    expect(raked.rakedWonBySeat.get(0)).toBe(97n);
+    expect(raked.rakedWonBySeat.get(1)).toBe(98n);
+    expect(raked.humanRakedPayout).toBe(97n);
+  });
+
+  it('serialized outcome carries rake + humanRakedPayout + humanRakedNet', () => {
+    const r = playHand(baseArgs({ nonce: 5, humanActions: callDown() }));
+    const s = serializeHoldemHand(r);
+    const raked = computeHoldemRake(r);
+    expect(s.rake).toBe(raked.rake.toString());
+    expect(s.humanRakedPayout).toBe(raked.humanRakedPayout.toString());
+    expect(s.humanRakedNet).toBe(raked.humanRakedNet.toString());
+    // GROSS fields unchanged.
+    expect(s.humanPayout).toBe(r.humanPayout.toString());
+    expect(s.humanNet).toBe(r.humanNet.toString());
+  });
+
+  it('idempotent replay of a POST-rake row returns the stored RAKED figures', () => {
+    const r = playHand(baseArgs({ nonce: 5, humanActions: callDown() }));
+    const s = serializeHoldemHand(r);
+    // s has the raked fields → replay must surface them verbatim, NOT the gross.
+    expect(rakedFiguresFromOutcome(s)).toEqual({
+      payout: s.humanRakedPayout!,
+      net: s.humanRakedNet!,
+      rake: s.rake!,
+    });
+  });
+
+  it('idempotent replay of a PRE-rake row falls back to GROSS figures (regression)', () => {
+    // Simulate a hand SETTLED BY OLD CODE: stored outcomeJson with NO rake,
+    // humanRakedPayout, or humanRakedNet fields (they predate the rake diff).
+    // The route must replay the figures the player actually received (gross),
+    // not undefined — `SettledResponse.payout/net/rake` are typed `string`.
+    const r = playHand(baseArgs({ nonce: 5, humanActions: callDown() }));
+    const full = serializeHoldemHand(r);
+    // Strip exactly the three optional rake fields → a pre-fix stored row shape.
+    const preRake: SerializedHoldemHand = { ...full };
+    delete (preRake as Partial<SerializedHoldemHand>).rake;
+    delete (preRake as Partial<SerializedHoldemHand>).humanRakedPayout;
+    delete (preRake as Partial<SerializedHoldemHand>).humanRakedNet;
+
+    const figures = rakedFiguresFromOutcome(preRake);
+    // Must fall back to the always-present GROSS figures, never undefined.
+    expect(figures.payout).toBe(full.humanPayout);
+    expect(figures.net).toBe(full.humanNet);
+    expect(figures.rake).toBe('0');
+    expect(figures.payout).toBeDefined();
+    expect(figures.net).toBeDefined();
+    expect(typeof figures.payout).toBe('string');
+    expect(typeof figures.net).toBe('string');
+    expect(typeof figures.rake).toBe('string');
   });
 });
 

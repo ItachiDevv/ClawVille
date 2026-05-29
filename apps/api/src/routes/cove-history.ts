@@ -67,6 +67,11 @@ import {
   serializeCoupResult,
   type BaccaratBet,
 } from '../services/baccarat-engine';
+import {
+  blackjackOutcomesMatch,
+  holdemOutcomesMatch,
+  baccaratOutcomesMatch,
+} from '../services/cove-verify-compat';
 import { blackjackHands, holdemHands, baccaratCoups } from '@clawville/database';
 import type { AppContext, AuthenticatedContext } from '../types';
 import type { Context } from 'hono';
@@ -426,18 +431,18 @@ coveHistoryRouter.get('/:eventId/verify', async (c) => {
     }
 
     const stored = event.outcomeJson as Record<string, unknown>;
-    // Compare the engine-derived outcome to the stored one field-by-field.
-    // cursorBefore/dealtBefore are persisted-only metadata (not re-derived by a
-    // single-hand replay starting from nonce 0), so exclude them from equality.
-    const norm = (o: Record<string, unknown>) => {
-      const { cursorBefore: _cb, dealtBefore: _db, ...rest } = o;
-      void _cb;
-      void _db;
-      return JSON.stringify(rest);
-    };
+    // Compare the engine-derived outcome to the stored one. cursorBefore/
+    // dealtBefore are persisted-only metadata (not re-derived by a single-hand
+    // replay). `blackjackOutcomesMatch` also tolerates a PRE-RAKE stored row
+    // (no rake/rakedPayout/rakedNet keys) by comparing only the gross fields the
+    // stored row carries — otherwise every fair pre-fix net-win would falsely
+    // report verified:false (economy-fix back-compat, 2026-05-29).
     const verified =
       hashMatches &&
-      norm(expectedSerialized as unknown as Record<string, unknown>) === norm(stored);
+      blackjackOutcomesMatch(
+        expectedSerialized as unknown as Record<string, unknown>,
+        stored,
+      );
 
     return c.json(
       {
@@ -495,9 +500,17 @@ coveHistoryRouter.get('/:eventId/verify', async (c) => {
     }
 
     const stored = event.outcomeJson as Record<string, unknown>;
+    // `holdemOutcomesMatch` tolerates a PRE-RAKE stored row (no rake/
+    // humanRakedPayout/humanRakedNet keys) by comparing only the gross fields
+    // the stored row carries — otherwise every fair pre-fix hand (even a rake=0
+    // fold) would falsely report verified:false (economy-fix back-compat,
+    // 2026-05-29). A post-fix row keeps all keys and compares strictly.
     const verified =
       hashMatches &&
-      JSON.stringify(expectedSerialized) === JSON.stringify(stored);
+      holdemOutcomesMatch(
+        expectedSerialized as unknown as Record<string, unknown>,
+        stored,
+      );
 
     return c.json(
       {
@@ -563,18 +576,20 @@ coveHistoryRouter.get('/:eventId/verify', async (c) => {
     }
 
     const stored = event.outcomeJson as Record<string, unknown>;
-    // Compare the engine-derived outcome to the stored one field-by-field.
-    // cursorBefore/dealtBefore are persisted-only metadata (not re-derived by a
-    // single-coup replay starting from nonce 0), so exclude them from equality.
-    const norm = (o: Record<string, unknown>) => {
-      const { cursorBefore: _cb, dealtBefore: _db, ...rest } = o;
-      void _cb;
-      void _db;
-      return JSON.stringify(rest);
-    };
+    // Compare the engine-derived outcome to the stored one. cursorBefore/
+    // dealtBefore are persisted-only metadata (excluded). `baccaratOutcomesMatch`
+    // compares every non-monetary field strictly, but accepts the stored
+    // payout/net/commission if they match EITHER the NEW commission-rounding
+    // formula (the replayed `expected`) OR the OLD formula recomputed from the
+    // coup's own bet/stake/winner — so a fair PRE-FIX banker win (which stored
+    // different payout/commission values) isn't falsely reported verified:false
+    // (economy-fix back-compat, 2026-05-29).
     const verified =
       hashMatches &&
-      norm(expectedSerialized as unknown as Record<string, unknown>) === norm(stored);
+      baccaratOutcomesMatch(
+        expectedSerialized as unknown as Record<string, unknown>,
+        stored,
+      );
 
     return c.json(
       {
