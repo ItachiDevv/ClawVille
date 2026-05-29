@@ -24,6 +24,11 @@ import {
   type HoldemActionRecord,
   type PlayHoldemHandArgs,
 } from '../holdem-engine';
+import {
+  peekState,
+  runEngine,
+  visibleBoardCountForStreet,
+} from '../../routes/cove-holdem';
 
 const SERVER = 'a'.repeat(64);
 const CLIENT = 'deadbeef';
@@ -527,6 +532,172 @@ describe('holdem-engine — constants', () => {
     expect(SEATS).toBe(6);
     expect(SMALL_BLIND).toBe(1n);
     expect(BIG_BLIND).toBe(2n);
+  });
+});
+
+// ───────────────────────── In-progress view board truncation ─────────────────
+//
+// REGRESSION (critical fairness/money leak): the route's peekState() builds the
+// human's mid-hand view by appending a SYNTHETIC FOLD and running the engine to
+// completion. Folding the human resolves the WHOLE hand — bots play on to
+// showdown and the engine deals ALL FIVE community cards. The route must NOT
+// return that full board: at a preflop decision the board must be [], at the
+// flop 3 cards, turn 4, river 5. Otherwise a connected agent (or the human)
+// reading the API sees undealt cards before betting. These tests assert the
+// in-progress board length equals the visible-street count at each decision
+// point, that it NEVER exceeds the current street, and that bot hole cards are
+// never present in an in-progress view.
+
+const PEEK_TABLE = { serverSeed: SERVER, clientSeed: CLIENT };
+
+/** Mirror the route's isHandTerminal probe (run engine; "ran out" ⇒ not done). */
+function peekIsTerminal(handMeta: { handIndex: number; buttonSeat: number; startingStack: string }, actions: HoldemActionRecord[]): boolean {
+  try {
+    runEngine(PEEK_TABLE, handMeta, actions);
+    return true;
+  } catch (err) {
+    const msg = (err as Error).message ?? '';
+    if (msg.includes('ran out of human actions')) return false;
+    throw err; // a genuine illegal-script error — fail loudly
+  }
+}
+
+/**
+ * Walk a hand exactly like the route does: at each non-terminal step take a peek
+ * (this is what the API would return to the client) then append a 'call' and
+ * advance, until the hand settles. Returns every in-progress peek + the street
+ * it was on. 'call' is legal in every spot (acts as check when nothing is owed,
+ * a call when facing a bet, capped at stack), so this never produces an illegal
+ * script and lets us observe decisions across all four streets.
+ */
+function walkPeeks(handIndex: number, buttonSeat: number, startingStack: bigint) {
+  const handMeta = { handIndex, buttonSeat, startingStack: startingStack.toString() };
+  const peeks: Array<{
+    street: 'preflop' | 'flop' | 'turn' | 'river';
+    boardLen: number;
+    boardKeys: string[];
+    humanHoleLen: number;
+  }> = [];
+  const actions: HoldemActionRecord[] = [];
+  // Generous bound: at most one human decision per street + slack.
+  for (let guard = 0; guard < 64; guard++) {
+    if (peekIsTerminal(handMeta, actions)) break;
+    const view = peekState(PEEK_TABLE, handMeta, actions);
+    // Re-derive the street the human is on by inspecting the synthetic-fold peek
+    // log (same source peekState uses for truncation).
+    const full = runEngine(PEEK_TABLE, handMeta, [...actions, { type: 'fold' }]);
+    let street: 'preflop' | 'flop' | 'turn' | 'river' | null = null;
+    for (let i = full.actionLog.length - 1; i >= 0; i--) {
+      if (full.actionLog[i]!.isHuman) { street = full.actionLog[i]!.street; break; }
+    }
+    expect(street).not.toBeNull();
+    peeks.push({
+      street: street!,
+      boardLen: view.board.length,
+      boardKeys: view.board.map((c) => `${c.suit}:${c.rank}`),
+      humanHoleLen: view.humanHole.length,
+    });
+    actions.push({ type: 'call' });
+  }
+  return { peeks, handMeta };
+}
+
+describe('holdem-engine — in-progress view board truncation (fairness)', () => {
+  it('visibleBoardCountForStreet maps streets to dealt-card counts', () => {
+    expect(visibleBoardCountForStreet('preflop')).toBe(0);
+    expect(visibleBoardCountForStreet('flop')).toBe(3);
+    expect(visibleBoardCountForStreet('turn')).toBe(4);
+    expect(visibleBoardCountForStreet('river')).toBe(5);
+    expect(visibleBoardCountForStreet(null)).toBe(0);
+  });
+
+  const STREET_COUNT: Record<'preflop' | 'flop' | 'turn' | 'river', number> = {
+    preflop: 0, flop: 3, turn: 4, river: 5,
+  };
+
+  it('every in-progress peek board length === the visible-street count, NEVER more', () => {
+    // Scan many nonces + buttons so the human lands on decisions across all
+    // four streets at least once each (asserted below).
+    const seenStreets = new Set<'preflop' | 'flop' | 'turn' | 'river'>();
+    for (let nonce = 0; nonce < 40; nonce++) {
+      const button = nonce % SEATS;
+      const { peeks } = walkPeeks(nonce, button, 100n);
+      for (const p of peeks) {
+        // EXACT contract: board length is exactly the current street's count.
+        expect(p.boardLen).toBe(STREET_COUNT[p.street]);
+        // Hard invariant: never exceed the current street (the leak being fixed).
+        expect(p.boardLen).toBeLessThanOrEqual(STREET_COUNT[p.street]);
+        // Human always sees exactly their 2 hole cards.
+        expect(p.humanHoleLen).toBe(2);
+        // Board cards are distinct (no duplicate reveal).
+        expect(new Set(p.boardKeys).size).toBe(p.boardKeys.length);
+        seenStreets.add(p.street);
+      }
+    }
+    // Coverage: we must have observed a decision on every street at least once,
+    // otherwise the "flop/turn/river truncation" claim is untested.
+    expect(seenStreets.has('preflop')).toBe(true);
+    expect(seenStreets.has('flop')).toBe(true);
+    expect(seenStreets.has('turn')).toBe(true);
+    expect(seenStreets.has('river')).toBe(true);
+  });
+
+  it('PREFLOP decision reveals ZERO board cards (the originally-reported leak)', () => {
+    // The bug report: a preflop deal returned a full 5-card board. The very
+    // first peek of a fresh hand (no recorded actions) is a preflop decision
+    // whenever the human is required to act preflop — assert board === [] there.
+    let checked = 0;
+    for (let nonce = 0; nonce < 40; nonce++) {
+      const button = nonce % SEATS;
+      const handMeta = { handIndex: nonce, buttonSeat: button, startingStack: '100' };
+      if (peekIsTerminal(handMeta, [])) continue; // human not required preflop
+      const view = peekState(PEEK_TABLE, handMeta, []);
+      // First decision of a fresh hand is ALWAYS preflop.
+      const full = runEngine(PEEK_TABLE, handMeta, [{ type: 'fold' }]);
+      let firstHumanStreet: string | null = null;
+      for (const e of full.actionLog) { if (e.isHuman) { firstHumanStreet = e.street; break; } }
+      expect(firstHumanStreet).toBe('preflop');
+      expect(view.board.length).toBe(0);
+      checked++;
+    }
+    expect(checked).toBeGreaterThan(0); // we actually exercised the preflop path
+  });
+
+  it('the in-progress view NEVER leaks any bot hole cards', () => {
+    // peekState returns ONLY humanHole. Confirm the returned object exposes no
+    // seat array / no other hole cards, and that humanHole matches seat 0 only.
+    for (let nonce = 0; nonce < 20; nonce++) {
+      const button = nonce % SEATS;
+      const handMeta = { handIndex: nonce, buttonSeat: button, startingStack: '100' };
+      if (peekIsTerminal(handMeta, [])) continue;
+      const view = peekState(PEEK_TABLE, handMeta, []);
+      // Structural: the shape has no `seats` and no per-bot hole field.
+      expect(Object.prototype.hasOwnProperty.call(view, 'seats')).toBe(false);
+      expect(view.humanHole.length).toBe(2);
+      // The view's humanHole must equal the engine's seat-0 (human) hole cards,
+      // and must NOT equal any bot's hole cards (i.e. it is genuinely seat 0's).
+      const full = runEngine(PEEK_TABLE, handMeta, [{ type: 'fold' }]);
+      const humanSeat = full.seats.find((s) => s.isHuman)!;
+      expect(view.humanHole.map((c) => `${c.suit}:${c.rank}`)).toEqual(
+        humanSeat.holeCards.map((c) => `${c.suit}:${c.rank}`),
+      );
+    }
+  });
+
+  it('a deeper street peek is a strict prefix of the eventual full board', () => {
+    // The cards shown on the flop/turn MUST be the first N of the final 5-card
+    // board — we reveal a true prefix, never a different/garbled subset.
+    for (let nonce = 0; nonce < 40; nonce++) {
+      const button = nonce % SEATS;
+      const { peeks, handMeta } = walkPeeks(nonce, button, 100n);
+      // The full settled hand (all calls) reveals the complete board.
+      const settled = runEngine(PEEK_TABLE, handMeta, callDown());
+      const fullBoardKeys = settled.board.map((c) => `${c.suit}:${c.rank}`);
+      for (const p of peeks) {
+        // Every in-progress board must be the leading prefix of the final board.
+        expect(p.boardKeys).toEqual(fullBoardKeys.slice(0, p.boardLen));
+      }
+    }
   });
 });
 
