@@ -84,6 +84,16 @@ export const BLACKJACK_PAYOUT_DEN = 2n;
 export const INSURANCE_PAYOUT_NUM = 2n;
 export const INSURANCE_PAYOUT_DEN = 1n;
 
+/**
+ * Rake on NET WINNINGS (economy fix 2026-05-29; `.claude/plans/cove-casino-economy.md`
+ * §1 Blackjack + §2). Blackjack is a SKILL game (intentionally countable) so a
+ * skilled/counting agent goes +EV — a small rake on the player's net winnings
+ * keeps the house whole without changing the strategy surface. WINNERS ONLY:
+ * rake = floor(max(0, totalPayout - totalBet) * 5/100). Losses/pushes pay no
+ * rake. The raked CT is simply NOT credited → net burn → house-positive bias.
+ */
+export const BLACKJACK_RAKE_PERCENT = 5n; // 5% of NET WINNINGS
+
 /** Engine version pin for the cove_game_events row (mirrors slot-engine convention). */
 export const BLACKJACK_ENGINE_VERSION = 'bj-v1';
 
@@ -904,6 +914,50 @@ function validateScript(script: HandScript): void {
 // Serialization for cove_game_events.outcomeJson
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Rake on net winnings (economy fix 2026-05-29)
+// ---------------------------------------------------------------------------
+
+/** Result of raking a settled blackjack hand's NET WINNINGS. */
+export interface BlackjackRakeResult {
+  /** Net winnings before rake = max(0, totalPayout - totalBet). 0 on loss/push. */
+  netWinnings: bigint;
+  /** House take = floor(netWinnings * 5/100). 0 unless the player NET won. */
+  rake: bigint;
+  /** Payout AFTER the rake = totalPayout - rake (what the route credits). */
+  rakedPayout: bigint;
+  /** Net AFTER the rake = rakedPayout - totalBet (= netWinnings - rake on a win). */
+  rakedNet: bigint;
+}
+
+/**
+ * Compute the net-winnings rake for a settled hand. Pure.
+ *
+ *   netWinnings = max(0, totalPayout - totalBet)   // 0 on a loss or a push
+ *   rake        = floor(netWinnings * BLACKJACK_RAKE_PERCENT / 100)   // winners only
+ *   rakedPayout = totalPayout - rake
+ *
+ * A push (totalPayout === totalBet) and a loss (totalPayout < totalBet) both have
+ * netWinnings 0 → rake 0 → rakedPayout === totalPayout (the player keeps the
+ * returned stake on a push, loses the bet on a loss — neither is raked). Only a
+ * NET WIN is raked, and only on the WINNINGS portion, never the returned stake.
+ */
+export function computeBlackjackRake(result: {
+  totalBet: bigint;
+  totalPayout: bigint;
+}): BlackjackRakeResult {
+  const gross = result.totalPayout - result.totalBet;
+  const netWinnings = gross > 0n ? gross : 0n;
+  const rake = (netWinnings * BLACKJACK_RAKE_PERCENT) / 100n; // floored
+  const rakedPayout = result.totalPayout - rake;
+  return {
+    netWinnings,
+    rake,
+    rakedPayout,
+    rakedNet: rakedPayout - result.totalBet,
+  };
+}
+
 /**
  * Stringify a HandResult for the `cove_game_events.outcomeJson` column.
  * Bigints become decimal strings (matching the slots convention). The
@@ -924,9 +978,18 @@ export interface SerializedHandResult {
   }>;
   dealer: DealerHand;
   insurance: { bet: string; payout: string; dealerHadBlackjack: boolean } | null;
+  /** GROSS stake risked across all hands + insurance. */
   totalBet: string;
+  /** GROSS gross returned BEFORE the rake. */
   totalPayout: string;
+  /** GROSS net = totalPayout - totalBet (signed). */
   net: string;
+  /** House rake on net winnings = floor(max(0, net) * 5/100). 0 on loss/push. */
+  rake: string;
+  /** Payout AFTER the rake — what the route actually credits. */
+  rakedPayout: string;
+  /** Net AFTER the rake = rakedPayout - totalBet. */
+  rakedNet: string;
   cursorBefore: number;
   cursorAfter: number;
   dealtBefore: number;
@@ -939,6 +1002,7 @@ export function serializeHandResult(
   result: HandResult,
   meta: { cursorBefore: number; dealtBefore: number; nonce: number },
 ): SerializedHandResult {
+  const raked = computeBlackjackRake(result);
   return {
     kind: 'blackjack',
     playerHands: result.playerHands.map((h) => ({
@@ -963,6 +1027,9 @@ export function serializeHandResult(
     totalBet: result.totalBet.toString(),
     totalPayout: result.totalPayout.toString(),
     net: result.net.toString(),
+    rake: raked.rake.toString(),
+    rakedPayout: raked.rakedPayout.toString(),
+    rakedNet: raked.rakedNet.toString(),
     cursorBefore: meta.cursorBefore,
     cursorAfter: result.cursorAfter,
     dealtBefore: meta.dealtBefore,

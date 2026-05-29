@@ -85,6 +85,7 @@ import { createServerSeed } from '../services/provable-rng';
 import {
   playHand,
   serializeHoldemHand,
+  computeHoldemRake,
   SMALL_BLIND,
   BIG_BLIND,
   SEATS,
@@ -933,9 +934,35 @@ interface SettledResponse {
   playerStack: string;
   walletBalance: number;
   betAmount: string;
+  /** RAKED payout the player actually received (post-rake). */
+  payout: string;
+  /** RAKED net (post-rake). */
+  net: string;
+  /** House rake taken from the pot this hand (5% capped at 5 CT). */
+  rake: string;
+  idempotencyReplay: boolean;
+}
+
+/**
+ * Map a (possibly pre-rake) stored `outcomeJson` to the RAKED figures the route
+ * returns. A hand SETTLED BY PRE-RAKE CODE stored no `humanRakedPayout`,
+ * `humanRakedNet`, or `rake` (those fields are optional in the serialized type
+ * for exactly this back-compat reason). For such rows there was no rake, so the
+ * raked payout/net IS the gross payout/net the player actually received, and the
+ * rake was 0. Falling back to the GROSS fields keeps the idempotent settled
+ * replay correct (same hand → the figures the player actually got). Mirrors
+ * blackjack's `outcome.rake ?? '0'` + gross-derived posture in cove-blackjack.ts.
+ */
+export function rakedFiguresFromOutcome(outcome: SerializedHoldemHand): {
   payout: string;
   net: string;
-  idempotencyReplay: boolean;
+  rake: string;
+} {
+  return {
+    payout: outcome.humanRakedPayout ?? outcome.humanPayout,
+    net: outcome.humanRakedNet ?? outcome.humanNet,
+    rake: outcome.rake ?? '0',
+  };
 }
 
 class IdempotencyReplayError extends Error {
@@ -955,9 +982,17 @@ class IdempotencyReplayError extends Error {
  * a re-entry on a settled hand replays.
  *
  * MONEY MODEL: chips moved WITHIN the playerStack (no per-hand ledger write).
- * The hand's net (humanPayout - humanBet) is applied to playerStack:
- *   newPlayerStack = startingStack - humanBet + humanPayout = startingStack + net
+ * The hand's RAKED net (humanRakedPayout - humanBet) is applied to playerStack:
+ *   newPlayerStack = startingStack - humanBet + humanRakedPayout
  * The ledger is only touched at buy-in (open) + cash-out (close).
+ *
+ * RAKE (economy fix 2026-05-29; `.claude/plans/cove-casino-economy.md` §1/§2):
+ * the house takes a 5%-of-pot rake capped at 5 CT at settle, removed BEFORE the
+ * human is credited (`computeHoldemRake`). The raked CT is simply NOT credited
+ * back to the playerStack → a net CT burn that makes the vs-bots table
+ * house-positive (no faucet). The rake is part of the settled `outcomeJson` and
+ * `holdem_hands.payout/net` (raked figures), computed ONCE under the table FOR
+ * UPDATE lock; a settled-replay reads the stored raked figures and NEVER re-rakes.
  */
 async function settleHand(
   c: Context<AppContext>,
@@ -1046,6 +1081,13 @@ async function settleHand(
         throw new HTTPException(400, { message: `holdem_engine_error: ${(err as Error).message}` });
       }
 
+      // ── Rake the pot (economy fix 2026-05-29) ──────────────────────────────
+      // Take 5% of the pot capped at 5 CT BEFORE crediting the human, computed
+      // deterministically from the resolved hand. The raked CT is not credited
+      // back → net burn → house-positive. Applied exactly once here under the
+      // table lock; the figures are stored so a settled-replay never re-rakes.
+      const raked = computeHoldemRake(r);
+
       // Money safety: refuse payout/stack exceeding JS-number range (defensive;
       // stacks are ≤ 500 CT today so this never trips legitimately).
       if (r.humanPayout > BigInt(Number.MAX_SAFE_INTEGER)) {
@@ -1055,14 +1097,16 @@ async function settleHand(
         throw new HTTPException(400, { message: 'bet_exceeds_supported_range' });
       }
 
-      // Apply net to the playerStack. The human committed humanBet during the
-      // hand (already "behind" in playerStack accounting) and won humanPayout.
+      // Apply the RAKED net to the playerStack. The human committed humanBet
+      // during the hand (already "behind" in playerStack accounting) and is
+      // credited the post-rake payout (humanRakedPayout = humanPayout - rakeShare).
       const startingStack = BigInt(hand.startingStack);
-      const endingStack = startingStack - r.humanBet + r.humanPayout; // = starting + net
+      const endingStack = startingStack - r.humanBet + raked.humanRakedPayout; // = starting + rakedNet
       if (endingStack < 0n) {
-        // Impossible — the engine never lets a seat commit more than its stack.
+        // Impossible — the engine never lets a seat commit more than its stack,
+        // and the rake only ever REDUCES a positive payout.
         throw new HTTPException(500, {
-          message: `holdem_stack_underflow: starting=${startingStack} bet=${r.humanBet} payout=${r.humanPayout}`,
+          message: `holdem_stack_underflow: starting=${startingStack} bet=${r.humanBet} rakedPayout=${raked.humanRakedPayout}`,
         });
       }
 
@@ -1075,10 +1119,13 @@ async function settleHand(
           .update(holdemHands)
           .set({
             status: 'settled',
+            // outcomeJson carries the GROSS engine figures + the rake + raked
+            // figures (serializeHoldemHand). The flat payout/net columns store
+            // the RAKED (credited) figures — what actually moved on the stack.
             outcomeJson: serialized,
             betAmount: r.humanBet.toString(),
-            payout: r.humanPayout.toString(),
-            net: r.humanNet.toString(),
+            payout: raked.humanRakedPayout.toString(),
+            net: raked.humanRakedNet.toString(),
             endingStack: endingStack.toString(),
             idempotencyKey: idempotencyKey ?? null,
             settledAt: new Date(),
@@ -1112,7 +1159,10 @@ async function settleHand(
         sessionId: tableId,
         shoeId: tableId,
         betAmount: r.humanBet.toString(),
-        payout: r.humanPayout.toString(),
+        // payout is the RAKED (credited) figure so the cross-game economy
+        // monitor's burn = bet - payout includes the rake. outcomeJson keeps the
+        // gross award + the explicit `rake` field for the per-hand breakdown.
+        payout: raked.humanRakedPayout.toString(),
         outcomeJson: serialized,
         serverSeedHash: tableLock.server_seed_hash,
         revealedServerSeed: null,
@@ -1122,9 +1172,10 @@ async function settleHand(
         engineVersion: `holdem-engine-${HOLDEM_ENGINE_VERSION}`,
       });
 
-      // Advance the table's playerStack + session aggregates.
+      // Advance the table's playerStack + session aggregates. totalPayout uses
+      // the RAKED payout so the session P&L reflects the rake the player paid.
       const newTotalBet = (BigInt(tableLock.total_bet) + r.humanBet).toString();
-      const newTotalPayout = (BigInt(tableLock.total_payout) + r.humanPayout).toString();
+      const newTotalPayout = (BigInt(tableLock.total_payout) + raked.humanRakedPayout).toString();
       const [updatedTable] = await tx
         .update(holdemTables)
         .set({
@@ -1177,8 +1228,9 @@ async function settleHand(
     playerStack: table.playerStack,
     walletBalance,
     betAmount: outcome.humanBet,
-    payout: outcome.humanPayout,
-    net: outcome.humanNet,
+    // RAKED figures — what the player actually received this hand. Back-compat
+    // fallback to GROSS for pre-rake rows lives in `rakedFiguresFromOutcome`.
+    ...rakedFiguresFromOutcome(outcome),
     idempotencyReplay: txResult.replay,
   };
 }
@@ -1203,8 +1255,9 @@ async function buildSettledResponse(
     playerStack: table.playerStack,
     walletBalance,
     betAmount: outcome.humanBet,
-    payout: outcome.humanPayout,
-    net: outcome.humanNet,
+    // RAKED figures — what the player actually received (stored row replay).
+    // Back-compat fallback to GROSS for pre-rake rows lives in the shared helper.
+    ...rakedFiguresFromOutcome(outcome),
     idempotencyReplay: true,
   };
 }
