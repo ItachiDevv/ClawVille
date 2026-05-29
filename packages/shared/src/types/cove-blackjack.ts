@@ -93,8 +93,19 @@ export interface SerializedBlackjackHandResult {
   dealer: SerializedDealerHand;
   insurance: SerializedInsurance | null;
   totalBet: string;
+  /** GROSS gross returned BEFORE the net-winnings rake (stringified bigint). */
   totalPayout: string;
+  /** GROSS net = totalPayout - totalBet (stringified bigint). */
   net: string;
+  /**
+   * House rake on net winnings = floor(max(0, net) * 5/100) (economy fix
+   * 2026-05-29). 0 on a loss or a push. Optional for back-compat with pre-fix rows.
+   */
+  rake?: string;
+  /** Payout AFTER the rake — what the balance was actually credited. */
+  rakedPayout?: string;
+  /** Net AFTER the rake = rakedPayout - totalBet. */
+  rakedNet?: string;
   cursorBefore: number;
   cursorAfter: number;
   dealtBefore: number;

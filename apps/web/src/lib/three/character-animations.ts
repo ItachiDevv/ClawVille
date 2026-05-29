@@ -226,25 +226,23 @@ export class CharacterAnimator {
    * @param elapsed    clock.elapsedTime
    * @param dt         clamped delta (Math.min(delta, 0.1))
    * @param isMoving   true when NPC is walking
-   * @param walkPhase  continuous speed-matched phase for walk cycles
    */
-  update(group: THREE.Group, elapsed: number, dt: number, isMoving: boolean, walkPhase = elapsed): void {
-    const idleT = elapsed + this.seed;
-    const walkT = walkPhase + this.seed;
+  update(group: THREE.Group, elapsed: number, dt: number, isMoving: boolean): void {
+    const t = elapsed + this.seed;
 
     switch (this.type) {
-      case 'crab':        isMoving ? this.walkCrab(group, walkT, dt)    : this.idleCrab(group, idleT, dt);    break;
-      case 'lobster_plush': isMoving ? this.walkPlush(group, walkT, dt) : this.idlePlush(group, idleT, dt);   break;
-      case 'hermit_crab': isMoving ? this.walkHermit(group, walkT, dt)  : this.idleHermit(group, idleT, dt);  break;
-      case 'anime':       isMoving ? this.walkAnime(group, walkT, dt)   : this.idleAnime(group, idleT, dt);   break;
-      case 'jellyfish':   isMoving ? this.walkJelly(group, walkT, dt)   : this.idleJelly(group, idleT, dt);   break;
-      case 'octopus':     isMoving ? this.walkOcto(group, walkT, dt)    : this.idleOcto(group, idleT, dt);    break;
-      case 'seahorse':    isMoving ? this.walkSeahorse(group, walkT, dt): this.idleSeahorse(group, idleT, dt);break;
-      default:            isMoving ? this.walkGeneric(group, walkT, dt) : this.idleGeneric(group, idleT, dt); break;
+      case 'crab':        isMoving ? this.walkCrab(group, t, dt)    : this.idleCrab(group, t, dt);    break;
+      case 'lobster_plush': isMoving ? this.walkPlush(group, t, dt) : this.idlePlush(group, t, dt);   break;
+      case 'hermit_crab': isMoving ? this.walkHermit(group, t, dt)  : this.idleHermit(group, t, dt);  break;
+      case 'anime':       isMoving ? this.walkAnime(group, t, dt)   : this.idleAnime(group, t, dt);   break;
+      case 'jellyfish':   isMoving ? this.walkJelly(group, t, dt)   : this.idleJelly(group, t, dt);   break;
+      case 'octopus':     isMoving ? this.walkOcto(group, t, dt)    : this.idleOcto(group, t, dt);    break;
+      case 'seahorse':    isMoving ? this.walkSeahorse(group, t, dt): this.idleSeahorse(group, t, dt);break;
+      default:            isMoving ? this.walkGeneric(group, t, dt) : this.idleGeneric(group, t, dt); break;
     }
 
     // Always animate individual meshes for richness
-    this.animateMeshes(isMoving ? walkT : idleT, dt, isMoving);
+    this.animateMeshes(t, dt, isMoving);
   }
 
   // =========================================================================

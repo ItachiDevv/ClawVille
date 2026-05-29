@@ -203,23 +203,44 @@ describe('baccarat-engine — settleBet payouts', () => {
     expect(settleBet('player', 100n, 'tie')).toEqual({ payout: 100n, commission: 0n });
   });
 
-  it('BANKER bet, banker wins → 0.95:1 with floored 5% commission', () => {
-    // stake 100: commission = floor(100*5/100) = 5; winnings = 95; gross = 195.
+  it('BANKER bet, banker wins → 0.95:1 by flooring the player winnings', () => {
+    // stake 100: winnings = floor(100*95/100) = 95; gross = 195; commission = 5.
     expect(settleBet('banker', 100n, 'banker')).toEqual({ payout: 195n, commission: 5n });
   });
-  it('BANKER bet, banker wins → commission FLOORS for non-multiple-of-20 stakes', () => {
-    // stake 5: floor(5*5/100) = floor(0.25) = 0; winnings = 5; gross = 10.
-    expect(settleBet('banker', 5n, 'banker')).toEqual({ payout: 10n, commission: 0n });
-    // stake 7: floor(35/100) = 0; gross = 14.
-    expect(settleBet('banker', 7n, 'banker')).toEqual({ payout: 14n, commission: 0n });
-    // stake 19: floor(95/100) = 0; gross = 38.
-    expect(settleBet('banker', 19n, 'banker')).toEqual({ payout: 38n, commission: 0n });
-    // stake 20: floor(100/100) = 1; winnings = 19; gross = 39.
+  it('BANKER bet, banker wins → house-POSITIVE at EVERY stake (economy fix 2026-05-29)', () => {
+    // The OLD leak: commission floored to 0 below stake 20 → banker flipped
+    // +EV for the player. NOW the player's winnings are floored instead, so the
+    // house keeps the fraction (commission ≥ 1) at every stake. net (to player)
+    // = winnings = floor(stake*95/100); house take = commission = stake - winnings.
+    // stake 5:  floor(4.75)=4  → gross 9   (was 10), commission 1, net +4  (was +5).
+    expect(settleBet('banker', 5n, 'banker')).toEqual({ payout: 9n, commission: 1n });
+    // stake 7:  floor(6.65)=6  → gross 13  (was 14), commission 1.
+    expect(settleBet('banker', 7n, 'banker')).toEqual({ payout: 13n, commission: 1n });
+    // stake 10: floor(9.5)=9   → gross 19  (was 20), commission 1, net +9  (task example).
+    expect(settleBet('banker', 10n, 'banker')).toEqual({ payout: 19n, commission: 1n });
+    // stake 19: floor(18.05)=18 → gross 37 (was 38), commission 1.
+    expect(settleBet('banker', 19n, 'banker')).toEqual({ payout: 37n, commission: 1n });
+    // stake 20: floor(19)=19   → gross 39, commission 1 (unchanged — already correct).
     expect(settleBet('banker', 20n, 'banker')).toEqual({ payout: 39n, commission: 1n });
-    // stake 41: floor(205/100) = 2; winnings = 39; gross = 80.
-    expect(settleBet('banker', 41n, 'banker')).toEqual({ payout: 80n, commission: 2n });
-    // stake 500: floor(2500/100) = 25; winnings = 475; gross = 975.
+    // stake 30: floor(28.5)=28 → gross 58, commission 2 (was floor(1.5)=1 commission = 3.3%).
+    expect(settleBet('banker', 30n, 'banker')).toEqual({ payout: 58n, commission: 2n });
+    // stake 41: floor(38.95)=38 → gross 79, commission 3 (was 2).
+    expect(settleBet('banker', 41n, 'banker')).toEqual({ payout: 79n, commission: 3n });
+    // stake 500: floor(475)=475 → gross 975, commission 25 (multiple of 20 — unchanged).
     expect(settleBet('banker', 500n, 'banker')).toEqual({ payout: 975n, commission: 25n });
+  });
+  it('BANKER win: house take = commission = stake - payoutWinnings is ALWAYS ≥ 1 for stake ≥ 1', () => {
+    // Property: the house never under-charges. For every stake in 1..500 the
+    // commission (kept fraction) is strictly positive and equals stake - floor(stake*95/100).
+    for (let s = 1n; s <= 500n; s++) {
+      const { payout, commission } = settleBet('banker', s, 'banker');
+      const winnings = (s * 95n) / 100n;
+      expect(payout).toBe(s + winnings); // gross = stake + floored winnings
+      expect(commission).toBe(s - winnings); // kept fraction
+      expect(commission).toBeGreaterThanOrEqual(1n); // never 0 — the faucet is closed
+      // House is net-positive on a banker win: it pays out < 2× the stake.
+      expect(payout).toBeLessThan(s * 2n);
+    }
   });
   it('BANKER bet, player wins → loss (gross 0)', () => {
     expect(settleBet('banker', 100n, 'player')).toEqual({ payout: 0n, commission: 0n });

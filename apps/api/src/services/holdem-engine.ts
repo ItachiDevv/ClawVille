@@ -60,6 +60,17 @@ export const HUMAN_SEAT = 0;
 export const SMALL_BLIND = 1n;
 export const BIG_BLIND = 2n;
 
+/**
+ * Rake parameters (economy fix 2026-05-29; `.claude/plans/cove-casino-economy.md`
+ * §1 Hold'em + §2). Standard "rake the pot": at settle the house takes a small %
+ * of the TOTAL pot, capped, removed BEFORE awarding winners. The raked CT is
+ * simply NOT credited back → a net CT burn that guarantees the table is
+ * house-positive (no faucet). Applied EXACTLY ONCE per hand at settle under the
+ * table FOR UPDATE lock; a settled-replay must never re-rake.
+ */
+export const HOLDEM_RAKE_PERCENT = 5n; // 5% of the pot
+export const HOLDEM_RAKE_CAP = 5n; // capped at 5 CT (≈ 2.5 BB at SB/BB 1/2)
+
 /** Cards in a fresh single deck. */
 export const DECK_SIZE = 52;
 
@@ -1412,6 +1423,115 @@ function distributeWithRemainder(
 }
 
 // ---------------------------------------------------------------------------
+// Rake — "rake the pot, then distribute" (economy fix 2026-05-29)
+// ---------------------------------------------------------------------------
+
+/** Result of raking a resolved hand's pot. */
+export interface HoldemRakeResult {
+  /** Total chips in the pot = sum of every seat's committed (= sum of awards). */
+  pot: bigint;
+  /** House take = min(floor(pot * 5/100), 5). Removed from the pot, not credited. */
+  rake: bigint;
+  /**
+   * Each WINNING seat's raked award after the pot rake is removed. Keyed by
+   * seat index; non-winning seats are absent (award 0). Sum of values = pot - rake.
+   */
+  rakedWonBySeat: Map<number, bigint>;
+  /** The human seat's (seat 0) raked payout — what the route credits. */
+  humanRakedPayout: bigint;
+  /** Human net after rake = humanRakedPayout - humanBet. */
+  humanRakedNet: bigint;
+}
+
+/**
+ * Compute the standard "rake the pot" outcome for a resolved hand. Pure.
+ *
+ *   pot  = sum of every seat's committed chips (chip-conserving: equals the sum
+ *          of every seat's `won`, since the engine never creates/destroys chips).
+ *   rake = min(floor(pot * HOLDEM_RAKE_PERCENT / 100), HOLDEM_RAKE_CAP).
+ *
+ * The rake is taken from the pot BEFORE awarding, so winners split `pot - rake`.
+ * We realize this by distributing the rake across the WINNING seats in
+ * proportion to each winner's gross `won`, integer floor, with the odd-chip
+ * remainder taken from the earliest winning seat (deterministic, so the verifier
+ * reproduces it). Each winner's raked award = won - rakeShare. Chip conservation:
+ * sum(rakedWonBySeat) + rake === pot.
+ *
+ * NB: in the current vs-bots table only the human seat is credited real CT (the
+ * bots are the house). So the rake the HOUSE actually keeps from the player is
+ * `humanRakedPayout`'s shortfall vs the gross `humanPayout`; the bot-side rake is
+ * a no-op on the ledger (bot chips are minted/burned by the house either way).
+ * The chip-conservation identity is asserted over ALL seats for correctness.
+ */
+export function computeHoldemRake(result: HoldemHandResult): HoldemRakeResult {
+  let pot = 0n;
+  for (const s of result.seats) pot += s.committed;
+
+  const rawRake = (pot * HOLDEM_RAKE_PERCENT) / 100n; // floored
+  const rake = rawRake < HOLDEM_RAKE_CAP ? rawRake : HOLDEM_RAKE_CAP;
+
+  // Winners (seats that collected chips), ascending seat order (deterministic).
+  const winners = result.seats
+    .filter((s) => s.won > 0n)
+    .map((s) => ({ seat: s.seat, won: s.won }))
+    .sort((a, b) => a.seat - b.seat);
+
+  const rakedWonBySeat = new Map<number, bigint>();
+
+  if (winners.length === 0 || rake === 0n) {
+    // No winners (impossible at settle — chips always go somewhere) or no rake
+    // (tiny pot): every winner keeps its gross award.
+    for (const w of winners) rakedWonBySeat.set(w.seat, w.won);
+  } else {
+    const totalWon = winners.reduce((acc, w) => acc + w.won, 0n); // == pot
+    // Proportional rake share per winner = floor(rake * won / totalWon).
+    let allocated = 0n;
+    const shares = winners.map((w) => {
+      const share = (rake * w.won) / totalWon; // floored
+      allocated += share;
+      return { seat: w.seat, won: w.won, rakeShare: share };
+    });
+    // Remainder chips (rake - sum of floored shares) come off the EARLIEST
+    // winning seats, one chip each — same deterministic remainder rule as
+    // distributeWithRemainder, so the total raked equals exactly `rake`.
+    let remainder = rake - allocated;
+    for (const sh of shares) {
+      let take = sh.rakeShare;
+      if (remainder > 0n) {
+        // Never rake a seat below 0 — cap the extra chip at the seat's won.
+        if (take < sh.won) {
+          take += 1n;
+          remainder -= 1n;
+        }
+      }
+      const raked = sh.won - take;
+      rakedWonBySeat.set(sh.seat, raked < 0n ? 0n : raked);
+    }
+    // Defensive: if rounding left remainder unassigned (only possible when every
+    // winner was already at its cap — impossible since sum(won)=pot>=rake), drop
+    // it from the largest winner. Keeps sum + rake == pot exactly.
+    if (remainder > 0n) {
+      const largest = [...shares].sort((a, b) => (b.won > a.won ? 1 : b.won < a.won ? -1 : a.seat - b.seat))[0]!;
+      const cur = rakedWonBySeat.get(largest.seat) ?? 0n;
+      const adj = cur - remainder;
+      rakedWonBySeat.set(largest.seat, adj < 0n ? 0n : adj);
+      remainder = 0n;
+    }
+  }
+
+  const humanRakedPayout = rakedWonBySeat.get(HUMAN_SEAT) ?? 0n;
+  const humanSeat = result.seats.find((s) => s.isHuman)!;
+
+  return {
+    pot,
+    rake,
+    rakedWonBySeat,
+    humanRakedPayout,
+    humanRakedNet: humanRakedPayout - humanSeat.committed,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Small helpers
 // ---------------------------------------------------------------------------
 
@@ -1506,14 +1626,33 @@ export interface SerializedHoldemHand {
     perWinner: string;
   }>;
   actionLog: ActionLogEntry[];
+  /** GROSS chips the human won back before the rake (engine award). */
   humanBet: string;
   humanPayout: string;
   humanNet: string;
+  /**
+   * Total pot raked = min(floor(pot*5/100), 5). House take, not credited.
+   * OPTIONAL for back-compat with pre-fix rows stored before the rake existed
+   * (mirrors the shared @clawville/shared copy). `serializeHoldemHand` always
+   * sets it; readers of a stored `outcomeJson` MUST `?? '0'`-fallback.
+   */
+  rake?: string;
+  /**
+   * Human payout AFTER the rake — what the route actually credits to the stack.
+   * OPTIONAL for back-compat; readers MUST `?? humanPayout`-fallback.
+   */
+  humanRakedPayout?: string;
+  /**
+   * Human net AFTER the rake = humanRakedPayout - humanBet.
+   * OPTIONAL for back-compat; readers MUST `?? humanNet`-fallback.
+   */
+  humanRakedNet?: string;
   nonce: number;
   engineVersion: string;
 }
 
 export function serializeHoldemHand(result: HoldemHandResult): SerializedHoldemHand {
+  const raked = computeHoldemRake(result);
   return {
     kind: 'holdem',
     handIndex: result.handIndex,
@@ -1528,6 +1667,8 @@ export function serializeHoldemHand(result: HoldemHandResult): SerializedHoldemH
       personality: s.personality,
       holeCards: s.holeCards,
       committed: s.committed.toString(),
+      // `won` stays the GROSS engine award (chip-conserving). The rake is
+      // recorded separately + applied to the credited human payout below.
       won: s.won.toString(),
       net: s.net.toString(),
       status: s.status,
@@ -1545,6 +1686,9 @@ export function serializeHoldemHand(result: HoldemHandResult): SerializedHoldemH
     humanBet: result.humanBet.toString(),
     humanPayout: result.humanPayout.toString(),
     humanNet: result.humanNet.toString(),
+    rake: raked.rake.toString(),
+    humanRakedPayout: raked.humanRakedPayout.toString(),
+    humanRakedNet: raked.humanRakedNet.toString(),
     nonce: result.handIndex,
     engineVersion: HOLDEM_ENGINE_VERSION,
   };
