@@ -30,7 +30,10 @@
  * canonical surface is client-side WebCrypto):
  *
  *   - 'slots'    → engine port `runSpin` replay + sha256(serverSeed) hash check
- *   - 'blackjack' | 'holdem' | 'baccarat' → 'engine-not-yet-shipped' stub
+ *   - 'blackjack'→ `replayShoeUpToHand` (shared-shoe no-replacement replay)
+ *   - 'holdem'   → `playHoldemHand` (per-hand fresh-deck replay from the table's
+ *                  recorded human actions + buttonSeat + startingStack)
+ *   - 'baccarat' → 'engine-not-yet-shipped' stub
  *
  * Cursor pagination per plan §3 — base64 of `${createdAt.toISOString()}|${id}`.
  */
@@ -53,7 +56,12 @@ import {
   serializeHandResult,
   type HandScript,
 } from '../services/blackjack-engine';
-import { blackjackHands } from '@clawville/database';
+import {
+  playHand as playHoldemHand,
+  serializeHoldemHand,
+  type HoldemActionRecord,
+} from '../services/holdem-engine';
+import { blackjackHands, holdemHands } from '@clawville/database';
 import type { AppContext, AuthenticatedContext } from '../types';
 import type { Context } from 'hono';
 
@@ -424,6 +432,66 @@ coveHistoryRouter.get('/:eventId/verify', async (c) => {
     const verified =
       hashMatches &&
       norm(expectedSerialized as unknown as Record<string, unknown>) === norm(stored);
+
+    return c.json(
+      {
+        verified,
+        expected: expectedSerialized,
+        stored,
+        hashMatches,
+      },
+      200,
+    );
+  }
+
+  if (event.gameType === 'holdem') {
+    // Hold'em hands each shuffle a FRESH 52-card deck from (serverSeed,
+    // clientSeed, nonce=handIndex, cursor=0) — NO shared shoe, so replaying a
+    // single hand needs only the seed + the hand row's buttonSeat +
+    // startingStack + recorded human actions. The target hand is event.nonce
+    // (= handIndex) within event.sessionId (= tableId).
+    let expectedSerialized: ReturnType<typeof serializeHoldemHand>;
+    try {
+      const handRow = (
+        await db
+          .select()
+          .from(holdemHands)
+          .where(and(eq(holdemHands.tableId, event.sessionId), eq(holdemHands.handIndex, event.nonce)))
+          .limit(1)
+      )[0];
+      if (!handRow) {
+        throw new Error(
+          `holdem_hand_missing_for_replay: tableId=${event.sessionId} handIndex=${event.nonce}`,
+        );
+      }
+      const actions = (handRow.actions as HoldemActionRecord[]) ?? [];
+      const replayed = playHoldemHand({
+        serverSeed: event.revealedServerSeed,
+        clientSeed: event.clientSeed,
+        nonce: event.nonce,
+        buttonSeat: handRow.buttonSeat,
+        humanStartingStack: BigInt(handRow.startingStack),
+        botStartingStack: 100n,
+        humanActions: actions,
+      });
+      expectedSerialized = serializeHoldemHand(replayed);
+    } catch (err) {
+      return c.json(
+        {
+          verified: false,
+          reason: `engine_replay_failed: ${(err as Error).message}`,
+          expected: null,
+          stored: event.outcomeJson,
+          hashMatches,
+        },
+        200,
+      );
+    }
+
+    const stored = event.outcomeJson as Record<string, unknown>;
+    const verified =
+      hashMatches &&
+      JSON.stringify(expectedSerialized) === JSON.stringify(stored);
 
     return c.json(
       {
