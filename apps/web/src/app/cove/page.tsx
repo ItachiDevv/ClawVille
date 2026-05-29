@@ -234,10 +234,10 @@ export default function CovePage() {
           Real engine + per-card decisions land in Phase 6.4.1. */}
       <BlackjackModal />
 
-      {/* Phase 6.5.0 — Texas Hold'em table modal (6-seat visual shell,
-          display-only ClawTokens). Same z-index policy as the other game
-          modals. Real pokerpocket engine + bot personalities + ClawToken
-          ledger integration land in Phase 6.5.1. */}
+      {/* Phase 6.5.1 — Texas Hold'em table modal (REAL No-Limit engine,
+          server-authoritative, ClawToken stack custody, 5 deterministic bots).
+          Same z-index policy as the other game modals. Connected-agent
+          WebSocket protocol + real-money SOL/USDC land in Phase 6.5.2 / 6.5.4. */}
       <HoldemModal />
 
       {/* iPad / phone touch controls — auto-hidden on desktop via useIsMobile.
