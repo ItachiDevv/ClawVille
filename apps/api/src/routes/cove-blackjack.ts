@@ -78,6 +78,7 @@ import {
   playHand,
   playHandWithState,
   serializeHandResult,
+  computeBlackjackRake,
   buildShoe,
   RESHUFFLE_CARD_THRESHOLD,
   BLACKJACK_ENGINE_VERSION,
@@ -1193,8 +1194,12 @@ interface SettledResponse {
   outcome: SerializedHandResult;
   balance: number;
   totalBet: string;
+  /** GROSS payout before the net-winnings rake (stringified bigint). */
   totalPayout: string;
+  /** GROSS net before the rake (stringified bigint). */
   net: string;
+  /** House rake on net winnings this hand = floor(max(0, net)*5/100). 0 on loss/push. */
+  rake: string;
   dealtCount: number;
   reshuffleSuggested: boolean;
   idempotencyReplay: boolean;
@@ -1353,14 +1358,24 @@ async function settleHand(
       throw new HTTPException(400, { message: 'bet_exceeds_supported_range' });
     }
 
+    // ── Rake the NET WINNINGS (economy fix 2026-05-29) ─────────────────────
+    // Blackjack is a skill game (countable) → a skilled agent goes +EV. A small
+    // rake on the player's NET WINNINGS (winners only) keeps the house whole
+    // without changing the strategy surface. rake = floor(max(0, payout-bet)*5/100);
+    // a push or loss is NOT raked. The credited payout is reduced by the rake →
+    // net CT burn. Computed once here under the shoe lock; the stored
+    // outcomeJson carries `rake`/`rakedPayout` so a settled-replay never re-rakes.
+    const raked = computeBlackjackRake(r);
+
     // ── Ledger debit/credit (authed) OR demo accounting (guest) ────────────
     //
     // The base stake (+ deal-time insurance) was ALREADY committed at /hand/deal
     // (finding #3). At settle we:
     //   - debit only the INCREMENTAL stake delta `r.totalBet - stakedAmount`
     //     (the extra stake a double or each split sub-hand adds);
-    //   - credit the full gross payout `r.totalPayout` (which includes the
-    //     returned base stake on wins/pushes + any insurance return).
+    //   - credit the RAKED payout `raked.rakedPayout` (gross payout minus the
+    //     net-winnings rake; includes the returned base stake on wins/pushes +
+    //     any insurance return).
     // `r.totalBet` MUST be >= stakedAmount (engine can only ADD stake via
     // double/split; it never reduces below the opening bet + insurance).
     const incrementalBet = r.totalBet - stakedAmount;
@@ -1402,7 +1417,9 @@ async function settleHand(
           throw err;
         }
       }
-      const payoutNumber = Number(r.totalPayout);
+      // Credit the RAKED payout (gross minus the net-winnings rake). The raked
+      // CT is never credited → the house keeps it.
+      const payoutNumber = Number(raked.rakedPayout);
       if (payoutNumber > 0) {
         const credit = await creditClawTokens(
           {
@@ -1410,7 +1427,7 @@ async function settleHand(
             amount: payoutNumber,
             reason: 'cove_blackjack_payout',
             source: 'api',
-            metadata: { shoeId, handId, handIndex },
+            metadata: { shoeId, handId, handIndex, rake: raked.rake.toString() },
           },
           tx,
         );
@@ -1419,9 +1436,9 @@ async function settleHand(
     } else {
       // Guest demo accounting — no ledger writes. The base stake already folded
       // into shoeLock.total_bet at deal; here we add only the incremental stake
-      // delta + the gross payout. Balance = starting + total_payout - total_bet.
+      // delta + the RAKED payout. Balance = starting + total_payout - total_bet.
       const newTotalBetGuest = BigInt(shoeLock.total_bet) + incrementalBet;
-      const newTotalPayoutGuest = BigInt(shoeLock.total_payout) + r.totalPayout;
+      const newTotalPayoutGuest = BigInt(shoeLock.total_payout) + raked.rakedPayout;
       const newDemo =
         BigInt(shoeLock.starting_balance) + newTotalPayoutGuest - newTotalBetGuest;
       if (newDemo < 0n) {
@@ -1448,9 +1465,12 @@ async function settleHand(
           status: 'settled',
           cursorAfter: r.cursorAfter,
           dealtAfter: r.dealtAfter,
+          // outcomeJson carries the GROSS figures + rake + raked figures
+          // (serializeHandResult). The flat payout/net columns store the RAKED
+          // (credited) figures — what actually moved on the balance.
           outcomeJson: serialized,
-          payout: r.totalPayout.toString(),
-          net: r.net.toString(),
+          payout: raked.rakedPayout.toString(),
+          net: raked.rakedNet.toString(),
           idempotencyKey: idempotencyKey ?? null,
           settledAt: new Date(),
         })
@@ -1486,7 +1506,9 @@ async function settleHand(
       sessionId: shoeId,
       shoeId,
       betAmount: r.totalBet.toString(),
-      payout: r.totalPayout.toString(),
+      // RAKED payout so the cross-game economy monitor's burn = bet - payout
+      // includes the rake; outcomeJson keeps the gross figures + explicit `rake`.
+      payout: raked.rakedPayout.toString(),
       outcomeJson: serialized,
       serverSeedHash: shoeLock.server_seed_hash,
       revealedServerSeed: null,
@@ -1500,7 +1522,8 @@ async function settleHand(
     // total_bet already includes the base stake (committed at deal); add only
     // the incremental double/split delta here so it isn't double-counted.
     const newTotalBet = (BigInt(shoeLock.total_bet) + incrementalBet).toString();
-    const newTotalPayout = (BigInt(shoeLock.total_payout) + r.totalPayout).toString();
+    // totalPayout uses the RAKED payout so session P&L reflects the rake kept.
+    const newTotalPayout = (BigInt(shoeLock.total_payout) + raked.rakedPayout).toString();
     const newCurrentBalance = (BigInt(newTotalPayout) - BigInt(newTotalBet)).toString();
     await tx
       .update(blackjackShoes)
@@ -1562,6 +1585,7 @@ async function settleHand(
     totalBet: outcome.totalBet,
     totalPayout: outcome.totalPayout,
     net: outcome.net,
+    rake: outcome.rake ?? '0',
     dealtCount,
     reshuffleSuggested: dealtCount >= RESHUFFLE_CARD_THRESHOLD,
     idempotencyReplay: txResult.replay,
@@ -1590,6 +1614,7 @@ async function buildSettledResponse(
     totalBet: outcome.totalBet,
     totalPayout: outcome.totalPayout,
     net: outcome.net,
+    rake: outcome.rake ?? '0',
     dealtCount,
     reshuffleSuggested: dealtCount >= RESHUFFLE_CARD_THRESHOLD,
     idempotencyReplay: true,

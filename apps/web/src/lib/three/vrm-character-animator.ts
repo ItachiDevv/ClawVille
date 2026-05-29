@@ -860,19 +860,14 @@ export class VRMCharacterAnimator {
    *
    * @param delta    Clamped frame delta
    * @param isMoving true when walking/running
-   * @param walkTimeScale speed-matched timeScale for the walk action only
    */
-  updateMixerOnly(delta: number, isMoving: boolean, isRunning = false, walkTimeScale = 1): void {
+  updateMixerOnly(delta: number, isMoving: boolean, isRunning = false): void {
     if (!this.ready) return;
 
     // Same one-shot guard as update() — see that method for rationale.
     const motion: 'idle' | 'walk' | 'run' = !isMoving
       ? 'idle'
       : isRunning ? 'run' : 'walk';
-    const walkAction = this.actions.walk;
-    if (walkAction) {
-      walkAction.timeScale = walkTimeScale;
-    }
     if (this.oneShotActive) {
       this.wasMoving = isMoving;
       this.wasMotion = motion;
