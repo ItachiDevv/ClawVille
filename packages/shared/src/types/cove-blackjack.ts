@@ -1,15 +1,19 @@
 /**
- * Phase 6.4.0 — Cove blackjack shared type surface.
+ * Phase 6.4.1 — Cove blackjack shared type surface (AUTHORITATIVE engine).
  *
  * Promoted from `apps/web/src/lib/cove/blackjack-types.ts` to `packages/shared`
  * so the API route + web client + (Phase 6.4.2) connected-agent SKILL.md
- * consume the same shape.
+ * consume the same card/outcome shape.
  *
- * Phase 6.4.0 is DISPLAY-ONLY: no engine, no ledger writes. `payout` is a
- * signed delta against the player's bet (positive = win credit, negative =
- * loss debit, zero = push). Real engine in Phase 6.4.1 will introduce richer
- * per-decision event/action schemas; this file stays the canonical home and
- * those will be added alongside.
+ * Phase 6.4.1 replaces the 6.4.0 DISPLAY-ONLY mock: the server is fully
+ * authoritative (every card derived from a commit-reveal HMAC stream), bets
+ * settle through the real ClawToken ledger, and the wire types here mirror the
+ * engine's `SerializedHandResult` exactly. The 6.4.0 `PlayMockHandResponse`
+ * (signed-delta, mock) is GONE — the live response shapes (session/deal/
+ * action/settle) live next to the fetch hooks in
+ * `apps/web/src/lib/cove/blackjack-api-client.ts` (mirroring how
+ * `slot-api-client.ts` owns the slots wire types). This file owns the small,
+ * cross-package primitives those response shapes are built from.
  */
 
 export const BLACKJACK_SUITS = ['clubs', 'diamonds', 'hearts', 'spades'] as const;
@@ -23,33 +27,99 @@ export type BlackjackRank = (typeof BLACKJACK_RANKS)[number];
 export interface BlackjackCard {
   suit: BlackjackSuit;
   rank: BlackjackRank;
-  /** Phase 6.4.1 — dealer hole card hidden until reveal. Unused in 6.4.0. */
+  /** Dealer hole card hidden until reveal (client-rendered placeholder). */
   hidden?: boolean;
 }
 
-export type BlackjackOutcome = 'win' | 'loss' | 'push' | 'blackjack';
+/**
+ * Terminal outcome of one player hand vs. the dealer. Mirrors the engine's
+ * `HandOutcome` (`blackjack-engine.ts`). `surrender` returns half the stake.
+ */
+export type BlackjackOutcome =
+  | 'blackjack'
+  | 'win'
+  | 'push'
+  | 'loss'
+  | 'surrender';
+
+/** Player decision types the engine accepts (insurance is a distinct call). */
+export type BlackjackActionType =
+  | 'hit'
+  | 'stand'
+  | 'double'
+  | 'split'
+  | 'surrender';
 
 /**
- * Response from `POST /api/cove/blackjack/play-mock-hand`.
- *
- * `payout` is a SIGNED DELTA against the player's bet:
- *   - `outcome:'blackjack'` → +Math.floor(bet * 1.5) (3:2 payout)
- *   - `outcome:'win'`       → +bet
- *   - `outcome:'push'`      →  0
- *   - `outcome:'loss'`      → -bet
- *
- * The client adds `payout` to its local display balance directly. No real
- * ClawToken ledger transfer happens server-side in Phase 6.4.0.
+ * One resolved player hand inside the settled outcome. All bigint money
+ * fields are decimal STRINGS on the wire (atomic ClawTokens), matching the
+ * slots convention — the client keeps them as strings and only `Number()`s
+ * for display where the value provably fits in a JS number.
  */
-export interface PlayMockHandResponse {
+export interface SerializedPlayerHand {
+  cards: BlackjackCard[];
+  total: number;
+  isSoft: boolean;
+  isBust: boolean;
+  isBlackjack: boolean;
+  isDoubled: boolean;
+  bet: string;
   outcome: BlackjackOutcome;
-  payout: number;
-  playerHand: BlackjackCard[];
-  dealerHand: BlackjackCard[];
-  /** Human-readable label for the OutcomeBanner — e.g. "Blackjack!", "Push". */
-  outcomeLabel: string;
+  payout: string;
 }
 
-/** Min / max bet allowed by the 6.4.0 mock route. Bet must be a positive integer. */
-export const COVE_BLACKJACK_MIN_BET = 1;
-export const COVE_BLACKJACK_MAX_BET = 10_000;
+export interface SerializedDealerHand {
+  cards: BlackjackCard[];
+  total: number;
+  isSoft: boolean;
+  isBust: boolean;
+  isBlackjack: boolean;
+}
+
+export interface SerializedInsurance {
+  bet: string;
+  payout: string;
+  dealerHadBlackjack: boolean;
+}
+
+/**
+ * The settled outcome payload stored in `cove_game_events.outcomeJson` and
+ * returned in the `outcome` field of a settled deal/action response. The
+ * `kind` discriminator routes the cross-game verifier.
+ */
+export interface SerializedBlackjackHandResult {
+  kind: 'blackjack';
+  playerHands: SerializedPlayerHand[];
+  dealer: SerializedDealerHand;
+  insurance: SerializedInsurance | null;
+  totalBet: string;
+  /** GROSS gross returned BEFORE the net-winnings rake (stringified bigint). */
+  totalPayout: string;
+  /** GROSS net = totalPayout - totalBet (stringified bigint). */
+  net: string;
+  /**
+   * House rake on net winnings = floor(max(0, net) * 5/100) (economy fix
+   * 2026-05-29). 0 on a loss or a push. Optional for back-compat with pre-fix rows.
+   */
+  rake?: string;
+  /** Payout AFTER the rake — what the balance was actually credited. */
+  rakedPayout?: string;
+  /** Net AFTER the rake = rakedPayout - totalBet. */
+  rakedNet?: string;
+  cursorBefore: number;
+  cursorAfter: number;
+  dealtBefore: number;
+  dealtAfter: number;
+  nonce: number;
+  engineVersion: string;
+}
+
+/** Bet bounds (LOCKED rule, Phase 6.4.1): 5–500 ClawTokens per hand. */
+export const COVE_BLACKJACK_MIN_BET = 5;
+export const COVE_BLACKJACK_MAX_BET = 500;
+
+/** Engine card-draw constants (mirrors `blackjack-engine.ts`). */
+export const COVE_BLACKJACK_SHOE_DECKS = 6;
+export const COVE_BLACKJACK_CARDS_PER_SHOE = 312;
+/** 75% penetration — at this dealt-count the client opens a fresh shoe. */
+export const COVE_BLACKJACK_RESHUFFLE_THRESHOLD = 234;

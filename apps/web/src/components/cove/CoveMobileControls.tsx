@@ -51,8 +51,11 @@ export default function CoveMobileControls() {
         mode: 'static',
         position: { left: '80px', bottom: '80px' },
         size: 120,
-        color: 'rgba(255, 255, 255, 0.5)',
-        restOpacity: 0.6,
+        // Brighter cyan + high rest opacity so the stick is clearly visible
+        // against the busy casino-floor background (was rgba 0.5 / 0.6 — users
+        // reported "no joysticks" on iPad; they were rendering but too faint).
+        color: 'rgba(125, 224, 255, 0.9)',
+        restOpacity: 0.95,
         fadeTime: 100,
       });
       m.on('move', (_, data) => {
@@ -99,8 +102,9 @@ export default function CoveMobileControls() {
         mode: 'static',
         position: { right: '80px', bottom: '80px' },
         size: 120,
-        color: 'rgba(255, 200, 100, 0.5)',
-        restOpacity: 0.6,
+        // Brighter amber + high rest opacity (visibility fix, see left stick).
+        color: 'rgba(255, 200, 100, 0.9)',
+        restOpacity: 0.95,
         fadeTime: 100,
       });
       const THRESHOLD = 0.3;
@@ -156,7 +160,8 @@ export default function CoveMobileControls() {
           pointerEvents: 'none',
         }}
       >
-        {/* Left zone — movement */}
+        {/* Left zone — movement. The base ring marks the touch spot so the
+            stick is obviously visible on the busy casino floor. */}
         <div
           ref={leftRef}
           style={{
@@ -168,7 +173,16 @@ export default function CoveMobileControls() {
             pointerEvents: 'auto',
             touchAction: 'none',
           }}
-        />
+        >
+          <div
+            aria-hidden
+            style={{
+              position: 'absolute', left: 20, bottom: 20, width: 120, height: 120,
+              borderRadius: '50%', border: '2px solid rgba(125,224,255,0.45)',
+              background: 'rgba(125,224,255,0.08)', pointerEvents: 'none',
+            }}
+          />
+        </div>
         {/* Right zone — camera */}
         <div
           ref={rightRef}
@@ -181,7 +195,16 @@ export default function CoveMobileControls() {
             pointerEvents: 'auto',
             touchAction: 'none',
           }}
-        />
+        >
+          <div
+            aria-hidden
+            style={{
+              position: 'absolute', right: 20, bottom: 20, width: 120, height: 120,
+              borderRadius: '50%', border: '2px solid rgba(255,200,100,0.45)',
+              background: 'rgba(255,200,100,0.08)', pointerEvents: 'none',
+            }}
+          />
+        </div>
       </div>
       {/* INTERACT button — E-key proxy. Tap-and-hold for E. */}
       <button

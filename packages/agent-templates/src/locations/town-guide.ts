@@ -86,19 +86,48 @@ export const townGuide: LocationTemplate = {
     'Bonus-paytable wild multipliers: every landed Wild draws a multiplier from a 60% / 30% / 10% distribution (2× / 3× / 5×). RTP-shape lock (team-lead decision 2026-05-19): the multiplier amplifies line wins only when the spin is in free-spin mode. In base mode the chip is shown on the cell as a "potential" multiplier so the player can see what the wild would have contributed in FS. Free spins consume no predict but credit any wins; the session row tracks `mode` and `freeSpinsRemaining` so the next /spin knows whether to debit. `FS_LINE_WIN_MULTIPLIER=1`, `FS_WILD_MULTIPLIER_DOUBLE=false` — combined RTP 96–98%.',
     'Cove fairness: every spin is provably fair via the commit-reveal scheme. Verify any spin at /cove/verify with `(serverSeed, clientSeed, nonce, cursor, predict)` — the verifier replays the engine byte-for-byte in the browser and matches `wildMultipliers[]` + `scatterPayout` on the response. The session `serverSeed` is revealed at /session/close so the whole sit-down is auditable end-to-end.',
 
-    // Phase 6.4.0 — blackjack table shell. Same-diff rule (CLAUDE.md "Town
-    // Guide Knowledge Sync"): new game in cove must be announced to Nori
-    // in the same diff. Connection SKILL.md endpoint and hosted-agent skill
-    // memory injection for blackjack are intentionally deferred to Phase
-    // 6.4.2 per the cove-blackjack.md plan — Nori's note below reflects that.
-    'Inside the cove you can play interactive blackjack against the dealer — currently a deterministic client-side mock with display-only ClawToken bets. The real engine and on-chain wager program arrive in later phases.',
+    // Phase 6.4.1 — REAL blackjack engine. Same-diff rule (CLAUDE.md "Town
+    // Guide Knowledge Sync"): new game in cove must be announced to Nori in
+    // the same diff. The full world-facts (rules, agent modes, money tier)
+    // ride the CLAWVILLE_ORIENTATION_KNOWLEDGE spread above; this inline note
+    // is the Nori-voice "point at the game" entry. Connection SKILL.md
+    // protocol endpoint + connected-agent WebSocket + hosted-agent per-hand
+    // memory are deferred to Phase 6.4.2 per the cove-blackjack.md plan.
+    // LOCKED RULE echoed for grep-safety: dealer STANDS on soft 17 (S17).
+    // ECONOMY FIX 2026-05-29: house rake = 5% of NET WINNINGS (winners only).
+    'Inside the cove you can play real blackjack against the dealer — a server-authoritative, provably-fair engine (6-deck shoe, dealer stands on soft 17, blackjack pays 3:2, hit/stand/double/split/surrender/insurance). Standard split rules: split aces get exactly one card each (no hit, double, or re-split) and a 21 on a split hand is an ordinary 21, not a 3:2 blackjack. It is fun-money: bets are 5–500 ClawTokens per hand and settle through the real ClawToken ledger (the stake is committed the moment the cards are dealt, so abandoning a hand still costs the bet), with a 100 demo-token shoe for guests. The house takes a small rake of 5% of your NET WINNINGS on a winning hand only (`floor((payout − bet) × 5%)`) — pushes and losses pay no rake and your returned stake is never raked, so a net-100 win credits you 95. Every hand is replayable at /cove/history. Connected agents can advise you (Control mode) or play on their own (Autonomous) once the connection protocol lands in Phase 6.4.2.',
 
-    // Phase 6.5.0 — Texas Hold'em table shell. Same-diff rule (CLAUDE.md
-    // "Three-Surface Game-Flow Knowledge Sync"): new game in cove must be
-    // announced to Nori in the same diff. Connection SKILL.md + hosted-agent
-    // memory injection for Hold'em are deferred to Phase 6.5.2 per the
-    // cove-texas-holdem.md plan — Nori's note below reflects that.
-    "Texas Hold'em is playable at the second poker table in the cove — currently a 6-seat visual shell vs five deterministic bots with display-only ClawToken buy-ins. The pokerpocket engine, three bot personalities, and the ClawToken ledger wire up in Phase 6.5.1.",
+    // Phase 6.5.1 — REAL No-Limit Texas Hold'em engine. Same-diff rule
+    // (CLAUDE.md "Three-Surface Game-Flow Knowledge Sync"): new game in cove
+    // must be announced to Nori in the same diff. The 6.5.1 drop ships the
+    // server-authoritative commit-reveal engine (in-house 7-card evaluator +
+    // HMAC deck shuffle), the five deterministic bot personalities, the real
+    // ClawToken stack custody (buy-in debit / cash-out credit), and the
+    // Control/Autonomous agent-mode UI seam. The global connection SKILL.md
+    // protocol endpoint + connected-agent WebSocket + hosted-agent per-hand
+    // memory writes all ship in Phase 6.5.2 (no global SKILL.md endpoint or
+    // game-skill-memory service exists yet — both are TODO).
+    // LOCKED RULES echoed for grep-safety: blinds SB=1/BB=2, 6-max, buy-in 20–500 CT.
+    // ECONOMY FIX 2026-05-29: pot rake = min(floor(pot*5/100), 5) CT, once before distribution.
+    "The cove has a real No-Limit Texas Hold'em table — server-authoritative and provably fair. It's 6-max: your seat plus five house bots with distinct deterministic personalities (tight-aggressive, loose-aggressive, tight-passive, calling-station, and nit). Blinds are 1/2 ClawTokens; you buy in for 20–500 CT (default 100), the chips become your table stack, and you cash out whatever's left when you walk away. Streets play out normally — preflop, flop, turn, river, showdown — with fold/check/call/bet/raise, min-raises, all-ins, and correct side-pot splits. It's fun-money: buy-in debits and cash-out credit through the real ClawToken ledger (SOL/USDC is a later tier); guests get a 100 demo-CT stack with no ledger writes. The house rakes the pot at showdown — 5% of the total pot capped at 5 CT (`min(floor(pot × 5%), 5)`), taken once before winners are paid (split/side pots are raked once then distributed) — so a won pot credits slightly less than the raw pot. The button rotates each hand and every hand is replayable at /cove/history.",
+    "Hold'em is server-authoritative end to end: each hand shuffles its own fresh 52-card deck from the commit-reveal stream (serverSeed, clientSeed, handIndex), and the bots decide deterministically from that same stream — so you only ever send your decision, never the cards. The table commits a server-seed hash before any hand is dealt and reveals the server seed when you walk away (close the table), so you can replay every hand and its bot play byte-for-byte at /cove/history and confirm nothing was changed after you acted. Same commit-reveal guarantee as the slots and blackjack.",
+    "Hold'em has two agent modes via the cove chat bar: Control (you tap the actions; a connected agent acts as an ADVISOR, posting pot-odds and range hints to the advisor panel but NEVER making the decision) and Autonomous (a connected agent plays on its own). Autonomous + the connected-agent advisor wiring ship with the WebSocket connection protocol in Phase 6.5.2; the Control-mode human game is live today.",
+
+    // Phase 6.6.1 — REAL baccarat (Punto Banco) engine. Same-diff rule
+    // (CLAUDE.md "Three-Surface Game-Flow Knowledge Sync"): new game in cove
+    // must be announced to Nori in the same diff. The 6.6.1 drop ships the
+    // server-authoritative commit-reveal engine (8-deck no-replacement HMAC
+    // shoe + the fixed standard third-card tableau), the real ClawToken ledger
+    // (one-shot stake+settle per coup), and the Control/Autonomous agent-mode
+    // UI seam. The global connection SKILL.md protocol endpoint +
+    // connected-agent WebSocket + hosted-agent per-coup memory writes all ship
+    // with the connected-agent protocol drop (no global SKILL.md endpoint or
+    // game-skill-memory service exists yet — both are TODO).
+    // LOCKED RULES echoed for grep-safety: 8-deck, reshuffle at 75%, bets
+    // PLAYER/BANKER/TIE 5–500 CT, Player 1:1, Banker 0.95:1 (5% comm.), Tie 8:1.
+    // ECONOMY FIX 2026-05-29: banker commission realized by flooring the player's
+    // winnings to floor(stake*95/100) → house-positive at EVERY stake.
+    'The cove has a real baccarat (Punto Banco) table — server-authoritative and provably fair. It is the standard casino game with NO player decisions: you place one bet per coup — PLAYER, BANKER, or TIE (stake 5–500 ClawTokens) — and the server deals both two-card hands, applies the fixed standard drawing rules (naturals, the player stand-on-6/7 rule, and the full banker tableau), and settles. A PLAYER win pays 1:1, a BANKER win pays 0.95:1, and a TIE pays 8:1; on a tie your PLAYER/BANKER bet pushes (stake returned). The 5% banker commission is taken by flooring your winnings to `floor(stake × 95%)` (2026-05-29 fix), so the house keeps the commission at EVERY stake — a banker win on a 10-CT stake pays 19, not the old 20. It is fun-money — ClawTokens only, settling through the real ClawToken ledger, with a 100 demo-token shoe for guests. The 8-deck shoe reshuffles into a fresh provably-fair seed pair at 75% penetration, and every coup is replayable at /cove/history. Connected agents can advise you (Control mode) or play on their own (Autonomous) once the connection protocol lands.',
 
     // Phase 6.7.0 — unified cove game-history surface. Same-diff rule
     // (CLAUDE.md "Three-Surface Game-Flow Knowledge Sync"): the unified
