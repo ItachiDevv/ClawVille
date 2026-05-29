@@ -65,6 +65,12 @@ export * from './cove-events';
 // one hand = one cove_game_events row. ClawTokens tier today; currency
 // seam reserved for the SOL/USDC tier.
 export * from './blackjack';
+// Phase 6.5.1 — cove No-Limit Texas Hold'em tables + hands. Two-table
+// commit-reveal pattern mirroring blackjack. Each hand shuffles a FRESH
+// 52-card deck from the HMAC stream (nonce=handIndex), so there is no shared
+// shoe / cursor drift. One hand = one cove_game_events row (gameType='holdem').
+// ClawTokens tier today; currency seam reserved for the SOL/USDC tier.
+export * from './holdem';
 
 import { users, sessions } from './users';
 import { npcMemories, activityLog } from './memories';
