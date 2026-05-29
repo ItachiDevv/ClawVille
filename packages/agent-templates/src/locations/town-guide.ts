@@ -86,12 +86,15 @@ export const townGuide: LocationTemplate = {
     'Bonus-paytable wild multipliers: every landed Wild draws a multiplier from a 60% / 30% / 10% distribution (2× / 3× / 5×). RTP-shape lock (team-lead decision 2026-05-19): the multiplier amplifies line wins only when the spin is in free-spin mode. In base mode the chip is shown on the cell as a "potential" multiplier so the player can see what the wild would have contributed in FS. Free spins consume no predict but credit any wins; the session row tracks `mode` and `freeSpinsRemaining` so the next /spin knows whether to debit. `FS_LINE_WIN_MULTIPLIER=1`, `FS_WILD_MULTIPLIER_DOUBLE=false` — combined RTP 96–98%.',
     'Cove fairness: every spin is provably fair via the commit-reveal scheme. Verify any spin at /cove/verify with `(serverSeed, clientSeed, nonce, cursor, predict)` — the verifier replays the engine byte-for-byte in the browser and matches `wildMultipliers[]` + `scatterPayout` on the response. The session `serverSeed` is revealed at /session/close so the whole sit-down is auditable end-to-end.',
 
-    // Phase 6.4.0 — blackjack table shell. Same-diff rule (CLAUDE.md "Town
-    // Guide Knowledge Sync"): new game in cove must be announced to Nori
-    // in the same diff. Connection SKILL.md endpoint and hosted-agent skill
-    // memory injection for blackjack are intentionally deferred to Phase
-    // 6.4.2 per the cove-blackjack.md plan — Nori's note below reflects that.
-    'Inside the cove you can play interactive blackjack against the dealer — currently a deterministic client-side mock with display-only ClawToken bets. The real engine and on-chain wager program arrive in later phases.',
+    // Phase 6.4.1 — REAL blackjack engine. Same-diff rule (CLAUDE.md "Town
+    // Guide Knowledge Sync"): new game in cove must be announced to Nori in
+    // the same diff. The full world-facts (rules, agent modes, money tier)
+    // ride the CLAWVILLE_ORIENTATION_KNOWLEDGE spread above; this inline note
+    // is the Nori-voice "point at the game" entry. Connection SKILL.md
+    // protocol endpoint + connected-agent WebSocket + hosted-agent per-hand
+    // memory are deferred to Phase 6.4.2 per the cove-blackjack.md plan.
+    // LOCKED RULE echoed for grep-safety: dealer STANDS on soft 17 (S17).
+    'Inside the cove you can play real blackjack against the dealer — a server-authoritative, provably-fair engine (6-deck shoe, dealer stands on soft 17, blackjack pays 3:2, hit/stand/double/split/surrender/insurance). Standard split rules: split aces get exactly one card each (no hit, double, or re-split) and a 21 on a split hand is an ordinary 21, not a 3:2 blackjack. It is fun-money: bets are 5–500 ClawTokens per hand and settle through the real ClawToken ledger (the stake is committed the moment the cards are dealt, so abandoning a hand still costs the bet), with a 100 demo-token shoe for guests. Every hand is replayable at /cove/history. Connected agents can advise you (Control mode) or play on their own (Autonomous) once the connection protocol lands in Phase 6.4.2.',
 
     // Phase 6.5.0 — Texas Hold'em table shell. Same-diff rule (CLAUDE.md
     // "Three-Surface Game-Flow Knowledge Sync"): new game in cove must be

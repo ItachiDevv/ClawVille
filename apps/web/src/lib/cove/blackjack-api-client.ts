@@ -1,14 +1,422 @@
+'use client';
+
 /**
- * Phase 6.4.0 — blackjack API client.
+ * Phase 6.4.1 — blackjack API client (TanStack Query hooks + wire types).
  *
- * The mock-hand fetch was removed; game logic is now client-side
- * (local deck shuffle + deterministic RNG in BlackjackModal.tsx).
+ * Replaces the 6.4.0 no-op stub. Mirrors `slot-api-client.ts`: every
+ * stringified-bigint money field stays a STRING on the wire (the client only
+ * `Number()`s a balance where it provably fits in a JS number for display);
+ * `credentials: 'include'` rides the Lucia cookie; the caller mints the
+ * `Idempotency-Key` per deal / per terminal action so retries dedupe.
  *
- * Phase 6.4.1 will re-introduce real deal/hit/stand/double/split/surrender
- * API calls here when the backend engine lands.
+ * Server is AUTHORITATIVE — the client sends ONLY its decision + bet, never
+ * cards/outcomes/payouts. Every response is rendered verbatim; the modal never
+ * computes a payout or settles a hand locally.
+ *
+ * The wire types live HERE (next to the hooks) exactly like SlotResponse lives
+ * in slot-api-client.ts — the cross-package CARD/OUTCOME primitives come from
+ * `@clawville/shared` so the API route + verifier + (6.4.2) connection
+ * SKILL.md stay one-shape with the client.
  */
 
-// File intentionally left as a no-op stub so existing import paths compile.
-// BlackjackModal no longer calls anything from this module.
+import { useMutation, useQueryClient } from '@tanstack/react-query';
+import type {
+  BlackjackCard,
+  BlackjackActionType,
+  SerializedBlackjackHandResult,
+} from './blackjack-types';
 
-export {};
+// ---------------------------------------------------------------------------
+// Env + shared fetch helper (re-uses the slots error model)
+// ---------------------------------------------------------------------------
+
+import { CoveApiError } from './slot-api-client';
+export { CoveApiError } from './slot-api-client';
+
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000';
+
+/**
+ * Same contract as slot-api-client's coveFetch (kept local so a future
+ * blackjack-only header/retry tweak doesn't perturb the slots hot path).
+ */
+async function coveFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const url = `${API_BASE}${path}`;
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...(init.headers as Record<string, string> | undefined),
+  };
+  const res = await fetch(url, { ...init, credentials: 'include', headers });
+  if (!res.ok) {
+    let body: unknown = null;
+    try {
+      body = await res.json();
+    } catch {
+      // empty / non-JSON body — fall through with HTTP <status> message
+    }
+    const obj = (body ?? {}) as { error?: string; message?: string } & Record<string, unknown>;
+    const serverMessage = obj.message || obj.error || `HTTP ${res.status}`;
+    const code =
+      typeof serverMessage === 'string' ? serverMessage.split(/[\s:]/)[0] || null : null;
+    // The 409 reshuffle response carries `reshuffled:true` in the BODY (not
+    // an error string); surface the raw body on the error so callers can
+    // branch on it without a second parse.
+    const err = new CoveApiError(res.status, serverMessage, code);
+    (err as CoveApiError & { body?: unknown }).body = obj;
+    throw err;
+  }
+  if (res.status === 204) return undefined as T;
+  return (await res.json()) as T;
+}
+
+// ---------------------------------------------------------------------------
+// Wire types — mirror apps/api/src/routes/cove-blackjack.ts verbatim.
+// ---------------------------------------------------------------------------
+
+/** Public shoe shape (serverSeed redacted while status='open'). */
+export interface BlackjackShoeWire {
+  id: string;
+  userId: string | null;
+  currency: string;
+  serverSeedHash: string;
+  clientSeed: string;
+  handCounter: number;
+  cursorCounter: number;
+  dealtCount: number;
+  startingBalance: string;
+  currentBalance: string;
+  totalBet: string;
+  totalPayout: string;
+  status: 'open' | 'closed';
+  handsPlayed: number;
+  createdAt: string;
+  lastHandAt: string | null;
+  closedAt: string | null;
+  /** null while status='open' (revealing it would leak future cards). */
+  serverSeed: string | null;
+}
+
+export interface OpenShoeResponse {
+  shoe: BlackjackShoeWire;
+  walletBalance: number;
+}
+
+export type CurrentShoeResponse = OpenShoeResponse;
+
+export interface ShoeDetailResponse {
+  shoe: BlackjackShoeWire;
+}
+
+/** In-progress response from POST /hand/deal (non-natural). */
+export interface DealInProgressResponse {
+  handId: string;
+  shoeId: string;
+  handIndex: number;
+  bet: string;
+  playerHand: BlackjackCard[];
+  dealerUpcard: BlackjackCard;
+  insuranceOffered: boolean;
+  tookInsurance: boolean;
+  /**
+   * Balance AFTER the deal-time stake commit (Phase 6.4.1 finding #3). The base
+   * bet (+ deal-time insurance) is debited when the cards are dealt, so this
+   * reflects the post-stake balance — the modal updates the HUD immediately
+   * instead of waiting for settle. `undefined` only on older API builds.
+   */
+  balance?: number;
+  status: 'in_progress';
+}
+
+/** In-progress response from POST /action (non-terminal decision). */
+export interface ActionInProgressResponse {
+  handId: string;
+  status: 'in_progress';
+  playerHands: Array<{
+    cards: BlackjackCard[];
+    total: number;
+    isSoft: boolean;
+    isBust: boolean;
+  }>;
+  dealerUpcard: BlackjackCard;
+  didSplit: boolean;
+}
+
+/** Response from POST /action with action:'insure'. */
+export interface InsureResponse {
+  handId: string;
+  tookInsurance: true;
+  status: 'in_progress';
+}
+
+/** Settled response (terminal action, natural, or idempotent replay). */
+export interface SettledHandResponse {
+  handId: string;
+  shoeId: string;
+  handIndex: number;
+  status: 'settled';
+  outcome: SerializedBlackjackHandResult;
+  balance: number;
+  totalBet: string;
+  totalPayout: string;
+  net: string;
+  dealtCount: number;
+  reshuffleSuggested: boolean;
+  idempotencyReplay: boolean;
+  /** Present (true) when a natural settled inline on the deal round-trip. */
+  dealtImmediately?: boolean;
+}
+
+/** /hand/deal returns either an in-progress hand OR a settled natural. */
+export type DealResponse = DealInProgressResponse | SettledHandResponse;
+/** /action returns in-progress, an insure ack, or a settled hand. */
+export type ActionResponse =
+  | ActionInProgressResponse
+  | InsureResponse
+  | SettledHandResponse;
+
+export interface CloseShoeResponse {
+  shoeId: string;
+  status: 'closed';
+  serverSeed: string;
+  serverSeedHash: string;
+  clientSeed: string;
+  handsPlayed: number;
+  totalBet: string;
+  totalPayout: string;
+  closedAt: string;
+}
+
+/** 409 body returned by /hand/deal when penetration >= 75% (open a new shoe). */
+export interface ReshuffledBody {
+  reshuffled: true;
+  message: string;
+  dealtCount: number;
+  threshold: number;
+}
+
+// ---------------------------------------------------------------------------
+// Type guards (response is a union — the modal branches on these)
+// ---------------------------------------------------------------------------
+
+export function isSettled(r: DealResponse | ActionResponse): r is SettledHandResponse {
+  return r.status === 'settled';
+}
+
+export function isInsureAck(r: ActionResponse): r is InsureResponse {
+  return r.status === 'in_progress' && 'tookInsurance' in r && r.tookInsurance === true;
+}
+
+export function isActionInProgress(r: ActionResponse): r is ActionInProgressResponse {
+  return r.status === 'in_progress' && 'playerHands' in r;
+}
+
+/** Pull a `{reshuffled:true}` body off a 409 CoveApiError (or null). */
+export function reshuffledBody(err: unknown): ReshuffledBody | null {
+  if (!(err instanceof CoveApiError) || err.status !== 409) return null;
+  const body = (err as CoveApiError & { body?: unknown }).body as
+    | Partial<ReshuffledBody>
+    | undefined;
+  return body && body.reshuffled === true ? (body as ReshuffledBody) : null;
+}
+
+// ---------------------------------------------------------------------------
+// Query keys
+// ---------------------------------------------------------------------------
+
+export const blackjackKeys = {
+  all: ['cove', 'blackjack'] as const,
+  shoe: (shoeId: string) => [...blackjackKeys.all, 'shoe', shoeId] as const,
+};
+
+// ---------------------------------------------------------------------------
+// useOpenBlackjackShoe — POST /session/open
+// ---------------------------------------------------------------------------
+
+export interface OpenShoeArgs {
+  currency?: 'clawtoken' | 'sol' | 'usdc';
+}
+
+export function useOpenBlackjackShoe() {
+  return useMutation<OpenShoeResponse, CoveApiError, OpenShoeArgs>({
+    mutationFn: (args) =>
+      coveFetch<OpenShoeResponse>('/api/cove/blackjack/session/open', {
+        method: 'POST',
+        body: JSON.stringify({ currency: args.currency ?? 'clawtoken' }),
+      }),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// fetchCurrentBlackjackShoe — GET /session/current (Lucia auth; 404 = none)
+// ---------------------------------------------------------------------------
+
+export async function fetchCurrentBlackjackShoe(): Promise<CurrentShoeResponse | null> {
+  try {
+    return await coveFetch<CurrentShoeResponse>('/api/cove/blackjack/session/current', {
+      method: 'GET',
+    });
+  } catch (err) {
+    // 404 = no open shoe (expected). 401 = guest (no auth) — also "no shoe
+    // to restore"; the lazy-open path handles guests on first Deal.
+    if (err instanceof CoveApiError && (err.status === 404 || err.status === 401)) {
+      return null;
+    }
+    throw err;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// useDealHand — POST /hand/deal (idempotency-keyed)
+// ---------------------------------------------------------------------------
+
+export interface DealArgs {
+  shoeId: string;
+  bet: number;
+  insurance?: boolean;
+  /** Caller-minted UUID; reuse on retry within one Deal press. */
+  idempotencyKey: string;
+}
+
+export function useDealHand() {
+  return useMutation<DealResponse, CoveApiError, DealArgs>({
+    mutationFn: ({ shoeId, bet, insurance, idempotencyKey }) =>
+      coveFetch<DealResponse>('/api/cove/blackjack/hand/deal', {
+        method: 'POST',
+        headers: { 'Idempotency-Key': idempotencyKey },
+        body: JSON.stringify({ shoeId, bet, insurance: insurance ?? false }),
+      }),
+    // No blind react-query retry — the idempotency key is caller-managed.
+    retry: false,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// useBlackjackAction — POST /action (idempotency-keyed on terminal actions)
+// ---------------------------------------------------------------------------
+
+export interface PlayerActionArgs {
+  handId: string;
+  action: BlackjackActionType;
+  handSlot?: 0 | 1;
+  /** Required for terminal actions; harmless on a hit/stand-in-progress. */
+  idempotencyKey: string;
+}
+
+export function useBlackjackAction() {
+  const qc = useQueryClient();
+  return useMutation<ActionResponse, CoveApiError, PlayerActionArgs>({
+    mutationFn: ({ handId, action, handSlot, idempotencyKey }) =>
+      coveFetch<ActionResponse>('/api/cove/blackjack/action', {
+        method: 'POST',
+        headers: { 'Idempotency-Key': idempotencyKey },
+        body: JSON.stringify({ handId, action, handSlot: handSlot ?? 0 }),
+      }),
+    onSuccess: (res) => {
+      if ('shoeId' in res && res.shoeId) {
+        qc.invalidateQueries({ queryKey: blackjackKeys.shoe(res.shoeId) });
+      }
+    },
+    retry: false,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// useTakeInsurance — POST /action {action:'insure'} (before main-hand actions)
+// ---------------------------------------------------------------------------
+
+export interface InsureArgs {
+  handId: string;
+}
+
+export function useTakeInsurance() {
+  return useMutation<InsureResponse, CoveApiError, InsureArgs>({
+    mutationFn: ({ handId }) =>
+      coveFetch<InsureResponse>('/api/cove/blackjack/action', {
+        method: 'POST',
+        body: JSON.stringify({ handId, action: 'insure' }),
+      }),
+    retry: false,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// useCloseBlackjackShoe — POST /session/close (Lucia auth → reveals seed)
+// ---------------------------------------------------------------------------
+
+export interface CloseShoeArgs {
+  shoeId: string;
+}
+
+export function useCloseBlackjackShoe() {
+  const qc = useQueryClient();
+  return useMutation<CloseShoeResponse, CoveApiError, CloseShoeArgs>({
+    mutationFn: ({ shoeId }) =>
+      coveFetch<CloseShoeResponse>('/api/cove/blackjack/session/close', {
+        method: 'POST',
+        body: JSON.stringify({ shoeId }),
+      }),
+    onSuccess: (_d, vars) => {
+      qc.invalidateQueries({ queryKey: blackjackKeys.shoe(vars.shoeId) });
+    },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Friendly user-facing error mapping (blackjack-specific codes + slots reuse).
+// ---------------------------------------------------------------------------
+
+export function describeBlackjackError(err: unknown): string {
+  if (!(err instanceof CoveApiError)) {
+    return err instanceof Error ? err.message : 'Unknown error';
+  }
+  switch (err.status) {
+    case 400:
+      if (err.code?.startsWith('insufficient_clawtokens')) {
+        return 'Not enough ClawTokens for that bet.';
+      }
+      if (err.code?.startsWith('insufficient_guest_demo_balance')) {
+        return 'Out of demo ClawTokens. Sign up to keep playing with a real balance.';
+      }
+      if (err.code === 'bet_exceeds_supported_range') {
+        return 'That bet is out of range. Bets are 5–500 ClawTokens.';
+      }
+      if (err.code === 'already_split') {
+        return 'You can only split once per hand.';
+      }
+      if (err.code === 'sub_hand_already_terminal') {
+        return 'That hand is already finished — act on the other hand.';
+      }
+      if (err.code === 'split_ace_one_card_only') {
+        return 'Split aces get exactly one card each — you cannot hit or double them.';
+      }
+      return err.serverMessage;
+    case 401:
+      return 'You need to sign in to do that.';
+    case 403:
+      return 'That table belongs to a different player.';
+    case 404:
+      return 'Hand or shoe not found — it may have expired. Start a new hand.';
+    case 409:
+      if (reshuffledBody(err)) {
+        return 'Shoe is 75% dealt — shuffling a fresh shoe.';
+      }
+      if (err.code?.startsWith('shoe_has_in_progress_hand')) {
+        return 'Finish the current hand before you walk away.';
+      }
+      if (err.code?.startsWith('hand_in_progress')) {
+        return 'Finish the current hand before dealing another.';
+      }
+      if (err.code?.startsWith('shoe_not_open')) {
+        return 'That shoe is no longer open. Start a new hand.';
+      }
+      if (err.code?.startsWith('hand_not_in_progress')) {
+        return 'That hand is already resolved.';
+      }
+      return err.serverMessage;
+    case 429:
+      return 'Slow down a moment, then try again.';
+    case 501:
+      return 'SOL/USDC blackjack is coming later. ClawTokens play is live today.';
+    default:
+      return err.serverMessage || `Cove server error (${err.status}).`;
+  }
+}
