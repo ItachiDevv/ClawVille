@@ -48,6 +48,12 @@ import {
 } from '@clawville/database';
 import { requireAuth, sessionMiddleware } from '../middleware/auth';
 import { runSpin, type MachineSlug, type SpinResult } from '../services/slot-engine';
+import {
+  replayShoeUpToHand,
+  serializeHandResult,
+  type HandScript,
+} from '../services/blackjack-engine';
+import { blackjackHands } from '@clawville/database';
 import type { AppContext, AuthenticatedContext } from '../types';
 import type { Context } from 'hono';
 
@@ -339,6 +345,85 @@ coveHistoryRouter.get('/:eventId/verify', async (c) => {
     const linesMatch =
       JSON.stringify(expectedSerialized.winningLines) === JSON.stringify(stored.winningLines);
     const verified = hashMatches && reelsMatch && winAmountMatches && linesMatch;
+
+    return c.json(
+      {
+        verified,
+        expected: expectedSerialized,
+        stored,
+        hashMatches,
+      },
+      200,
+    );
+  }
+
+  if (event.gameType === 'blackjack') {
+    // Blackjack draws are no-replacement against a shared shoe, so replaying a
+    // single hand requires the shoe state at the start of that hand. We
+    // reconstruct it by loading every settled hand's recorded script for the
+    // shoe (sessionId === shoeId) and replaying from nonce 0 via
+    // `replayShoeUpToHand`. The target hand is `event.nonce` (= handIndex).
+    let expectedSerialized: ReturnType<typeof serializeHandResult>;
+    try {
+      const handRows = await db
+        .select()
+        .from(blackjackHands)
+        .where(
+          and(eq(blackjackHands.shoeId, event.sessionId), eq(blackjackHands.status, 'settled')),
+        )
+        .orderBy(blackjackHands.handIndex);
+
+      const scripts: Array<{ bet: bigint; script: HandScript }> = [];
+      for (let n = 0; n <= event.nonce; n++) {
+        const row = handRows.find((h) => h.handIndex === n);
+        if (!row) {
+          throw new Error(`blackjack_hand_missing_for_replay: shoeId=${event.sessionId} handIndex=${n}`);
+        }
+        const s = row.script as HandScript;
+        scripts.push({
+          bet: BigInt(row.bet),
+          script: { hands: s.hands, didSplit: s.didSplit, tookInsurance: row.tookInsurance },
+        });
+      }
+
+      const replayed = replayShoeUpToHand({
+        serverSeed: event.revealedServerSeed,
+        clientSeed: event.clientSeed,
+        targetNonce: event.nonce,
+        scripts,
+      });
+      const targetRow = handRows.find((h) => h.handIndex === event.nonce)!;
+      expectedSerialized = serializeHandResult(replayed, {
+        cursorBefore: targetRow.cursorBefore,
+        dealtBefore: targetRow.dealtBefore,
+        nonce: event.nonce,
+      });
+    } catch (err) {
+      return c.json(
+        {
+          verified: false,
+          reason: `engine_replay_failed: ${(err as Error).message}`,
+          expected: null,
+          stored: event.outcomeJson,
+          hashMatches,
+        },
+        200,
+      );
+    }
+
+    const stored = event.outcomeJson as Record<string, unknown>;
+    // Compare the engine-derived outcome to the stored one field-by-field.
+    // cursorBefore/dealtBefore are persisted-only metadata (not re-derived by a
+    // single-hand replay starting from nonce 0), so exclude them from equality.
+    const norm = (o: Record<string, unknown>) => {
+      const { cursorBefore: _cb, dealtBefore: _db, ...rest } = o;
+      void _cb;
+      void _db;
+      return JSON.stringify(rest);
+    };
+    const verified =
+      hashMatches &&
+      norm(expectedSerialized as unknown as Record<string, unknown>) === norm(stored);
 
     return c.json(
       {
