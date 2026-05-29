@@ -1,177 +1,123 @@
 /**
- * Phase 6.5.0 — Texas Hold'em type definitions.
+ * Phase 6.5.1 — Hold'em web VIEW-MODEL types.
  *
- * Pure types + constants. No runtime logic here.
+ * Pure types + display constants for the polished felt sub-components
+ * (`PokerCard`, `SeatPosition`, `CommunityCardRow`, `PotDisplay`, `ChipStack`)
+ * and the server-authoritative `HoldemModal`. These describe how the modal
+ * RENDERS a hand — they are NOT the wire shape. The authoritative wire types
+ * (`SerializedHoldemHand`, `HoldemTableWire`, deal/action/settle responses)
+ * live in `@clawville/shared` (cove-holdem.ts) and mirror the engine.
+ *
+ * The 6.5.0 client-side mock state machine (`HoldemGameState`, `HoldemAction`,
+ * `HoldemPhase`, `BotActionKind`, `RaiseConfig`, `Street`) is RETIRED — the
+ * modal no longer runs a local reducer/engine; it builds these view rows
+ * purely from the server's responses. `holdem-mock-engine.ts` was deleted.
+ *
  * Iris Xe safe: no Three.js imports, no DOM.
  */
 
 // ---------------------------------------------------------------------------
-// Card primitives
+// Card primitive (view-model superset of the wire card — adds `hidden`)
 // ---------------------------------------------------------------------------
 export type HoldemSuit = 'clubs' | 'diamonds' | 'hearts' | 'spades';
-export type HoldemRank = '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' | '10' | 'J' | 'Q' | 'K' | 'A';
+export type HoldemRank =
+  | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' | '10' | 'J' | 'Q' | 'K' | 'A';
 
 export interface HoldemCard {
   suit: HoldemSuit;
   rank: HoldemRank;
-  /** Face-down (bot hole cards, undealt community cards) */
+  /** Face-down (opponent hole cards while the hand is live, undealt board slots). */
   hidden?: boolean;
 }
 
 // ---------------------------------------------------------------------------
-// Seat
+// Seat view-model (rendered by SeatPosition; built from server responses)
 // ---------------------------------------------------------------------------
 export type SeatStatus = 'active' | 'folded' | 'allin' | 'out';
 
 export interface SeatState {
-  /** 0 = player; 1–5 = bots */
+  /** 0 = the human player; 1–5 = house bots. */
   seatIndex: number;
-  /** Display label */
+  /** Display label (e.g. "You", "Vex (LAG)"). */
   name: string;
+  /** Chips behind (remaining stack) — for bots this is the per-hand house stack. */
   stack: number;
-  /** Chips bet in current street */
+  /** Chips committed on the CURRENT street (drives the "bet N" pill). */
   streetBet: number;
   holeCards: [HoldemCard, HoldemCard] | null;
   status: SeatStatus;
-  /** True for the small blind seat (seat 1 in 6.5.0) */
+  /** True for the small blind seat this hand. */
   isSmallBlind: boolean;
-  /** True for the big blind seat (seat 2 in 6.5.0) */
+  /** True for the big blind seat this hand. */
   isBigBlind: boolean;
-  /** True for the dealer button seat (seat 0 in 6.5.0, player) */
+  /** True for the dealer button seat this hand. */
   isDealer: boolean;
-  /** Seat currently acting */
+  /** Seat currently to act (highlight ring). */
   isActing: boolean;
 }
 
 // ---------------------------------------------------------------------------
-// State machine phases
-// ---------------------------------------------------------------------------
-export type HoldemPhase =
-  | 'idle'
-  | 'dealing'
-  | 'player-turn'
-  | 'bot-turn'
-  | 'flop-deal'
-  | 'turn-deal'
-  | 'river-deal'
-  | 'showdown'
-  | 'resolved';
-
-// ---------------------------------------------------------------------------
-// Community card street
-// ---------------------------------------------------------------------------
-export type Street = 'preflop' | 'flop' | 'turn' | 'river';
-
-// ---------------------------------------------------------------------------
-// Game state
-// ---------------------------------------------------------------------------
-export interface HoldemGameState {
-  phase: HoldemPhase;
-  street: Street;
-  seats: SeatState[];
-  /** 5-card community deck (may be hidden/null for undealt cards) */
-  communityCards: (HoldemCard | null)[];
-  pot: number;
-  /** Current bet amount players must call */
-  currentBet: number;
-  /** Index of the seat that must act next (only relevant in player-turn / bot-turn) */
-  actingSeatIndex: number;
-  /** Bot seats still to act this street (queue) */
-  botQueue: number[];
-  /** Remaining deck for dealing */
-  deck: HoldemCard[];
-  /** Winner seat index (set at showdown) */
-  winnerSeatIndex: number | null;
-  /** Amount won from pot */
-  potWon: number;
-  /** Player's local display balance (no ledger writes in 6.5.0) */
-  localBalance: number;
-}
-
-// ---------------------------------------------------------------------------
-// Actions
-// ---------------------------------------------------------------------------
-export type HoldemAction =
-  | { type: 'INIT_DEAL'; deck: HoldemCard[]; seats: SeatState[]; localBalance: number }
-  | { type: 'DEALING_DONE' }
-  | { type: 'PLAYER_FOLD' }
-  | { type: 'PLAYER_CHECK' }
-  | { type: 'PLAYER_CALL' }
-  | { type: 'PLAYER_RAISE'; amount: number }
-  | { type: 'PLAYER_ALLIN' }
-  | { type: 'BOT_ACT'; seatIndex: number; action: BotActionKind; amount: number }
-  | { type: 'BOT_QUEUE_DONE' }
-  | { type: 'DEAL_FLOP'; cards: [HoldemCard, HoldemCard, HoldemCard] }
-  | { type: 'DEAL_TURN'; card: HoldemCard }
-  | { type: 'DEAL_RIVER'; card: HoldemCard }
-  | { type: 'BEGIN_SHOWDOWN' }
-  | { type: 'RESOLVE'; winnerSeatIndex: number; potWon: number }
-  | { type: 'RESET'; localBalance: number };
-
-export type BotActionKind = 'call' | 'allin' | 'fold';
-
-// ---------------------------------------------------------------------------
-// Raise slider config
+// Raise slider config (the only local UI state the modal still owns)
 // ---------------------------------------------------------------------------
 export interface RaiseConfig {
+  /** Minimum legal TOTAL street commitment for a bet/raise. */
   min: number;
+  /** Maximum (all-in shove) TOTAL street commitment. */
   max: number;
   value: number;
+  /** 'bet' when currentBet === 0 (opening), 'raise' otherwise. */
+  verb: 'bet' | 'raise';
 }
 
 // ---------------------------------------------------------------------------
-// Constants
+// Display constants
 // ---------------------------------------------------------------------------
 export const HOLDEM_SEATS = 6;
-export const HOLDEM_SMALL_BLIND = 10;
-export const HOLDEM_BIG_BLIND = 20;
-export const HOLDEM_DEFAULT_BUY_IN = 1000;
-export const HOLDEM_BOT_ACTION_DELAY_MS = 400;
-export const HOLDEM_DEAL_DELAY_MS = 800;
-export const HOLDEM_FLOP_CARD_DELAY_MS = 200;
-export const HOLDEM_SHOWDOWN_PAUSE_MS = 2000;
+/** LOCKED blinds (mirror the engine SMALL_BLIND/BIG_BLIND). */
+export const HOLDEM_SMALL_BLIND = 1;
+export const HOLDEM_BIG_BLIND = 2;
 
-/** Rank → numeric value for mock winner evaluation */
+/** Rank → numeric value (display sorting only; the server evaluates hands). */
 export const RANK_VALUE: Record<HoldemRank, number> = {
   '2': 2, '3': 3, '4': 4, '5': 5, '6': 6, '7': 7, '8': 8,
   '9': 9, '10': 10, 'J': 11, 'Q': 12, 'K': 13, 'A': 14,
 };
 
 // ---------------------------------------------------------------------------
-// Primitive component prop shapes (consumed by impl-card and HoldemModal)
+// Primitive component prop shapes (consumed by the polished felt sub-components)
 // ---------------------------------------------------------------------------
 
-/** Props for a single poker card visual */
+/** Props for a single poker card visual. */
 export interface PokerCardProps {
   card: HoldemCard;
-  /** Slide-in animation delay ms */
+  /** Slide-in animation delay ms. */
   delay?: number;
-  /** Compact (smaller) variant for bot seats */
+  /** Compact (smaller) variant for bot seats. */
   compact?: boolean;
 }
 
-/** Props for a single seat position in the oval layout */
+/** Props for a single seat position in the oval layout. */
 export interface SeatPositionProps {
   seat: SeatState;
-  /** Whether this is the player's own seat */
+  /** Whether this is the player's own seat. */
   isPlayer: boolean;
-  /** Whether to show hole cards face-up (showdown or player's own seat) */
+  /** Whether to show hole cards face-up (showdown or player's own seat). */
   revealCards: boolean;
 }
 
-/** Props for the community card row */
+/** Props for the community card row. */
 export interface CommunityCardRowProps {
   cards: (HoldemCard | null)[];
 }
 
-/** Props for the pot display */
+/** Props for the pot display. */
 export interface PotDisplayProps {
   pot: number;
 }
 
-/** Props for a chip stack indicator */
+/** Props for a chip stack indicator. */
 export interface ChipStackProps {
   amount: number;
-  /** If true, renders in compact inline mode */
+  /** If true, renders in compact inline mode. */
   inline?: boolean;
 }
