@@ -71,6 +71,13 @@ export * from './blackjack';
 // shoe / cursor drift. One hand = one cove_game_events row (gameType='holdem').
 // ClawTokens tier today; currency seam reserved for the SOL/USDC tier.
 export * from './holdem';
+// Phase 6.6.1 — cove Baccarat (Punto Banco) shoes + coups. Two-table
+// commit-reveal pattern mirroring blackjack (8-deck shared no-replacement shoe;
+// ~75% penetration reshuffle = new shoe row). Punto Banco has NO player
+// decisions, so each coup is dealt + resolved atomically — one coup = one
+// cove_game_events row (gameType='baccarat'). ClawTokens tier today; currency
+// seam reserved for the SOL/USDC tier.
+export * from './baccarat';
 
 import { users, sessions } from './users';
 import { npcMemories, activityLog } from './memories';

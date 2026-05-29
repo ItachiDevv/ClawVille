@@ -111,6 +111,20 @@ export const townGuide: LocationTemplate = {
     "Hold'em is server-authoritative end to end: each hand shuffles its own fresh 52-card deck from the commit-reveal stream (serverSeed, clientSeed, handIndex), and the bots decide deterministically from that same stream — so you only ever send your decision, never the cards. The table commits a server-seed hash before any hand is dealt and reveals the server seed when you walk away (close the table), so you can replay every hand and its bot play byte-for-byte at /cove/history and confirm nothing was changed after you acted. Same commit-reveal guarantee as the slots and blackjack.",
     "Hold'em has two agent modes via the cove chat bar: Control (you tap the actions; a connected agent acts as an ADVISOR, posting pot-odds and range hints to the advisor panel but NEVER making the decision) and Autonomous (a connected agent plays on its own). Autonomous + the connected-agent advisor wiring ship with the WebSocket connection protocol in Phase 6.5.2; the Control-mode human game is live today.",
 
+    // Phase 6.6.1 — REAL baccarat (Punto Banco) engine. Same-diff rule
+    // (CLAUDE.md "Three-Surface Game-Flow Knowledge Sync"): new game in cove
+    // must be announced to Nori in the same diff. The 6.6.1 drop ships the
+    // server-authoritative commit-reveal engine (8-deck no-replacement HMAC
+    // shoe + the fixed standard third-card tableau), the real ClawToken ledger
+    // (one-shot stake+settle per coup), and the Control/Autonomous agent-mode
+    // UI seam. The global connection SKILL.md protocol endpoint +
+    // connected-agent WebSocket + hosted-agent per-coup memory writes all ship
+    // with the connected-agent protocol drop (no global SKILL.md endpoint or
+    // game-skill-memory service exists yet — both are TODO).
+    // LOCKED RULES echoed for grep-safety: 8-deck, reshuffle at 75%, bets
+    // PLAYER/BANKER/TIE 5–500 CT, Player 1:1, Banker 0.95:1 (5% comm.), Tie 8:1.
+    'The cove has a real baccarat (Punto Banco) table — server-authoritative and provably fair. It is the standard casino game with NO player decisions: you place one bet per coup — PLAYER, BANKER, or TIE (stake 5–500 ClawTokens) — and the server deals both two-card hands, applies the fixed standard drawing rules (naturals, the player stand-on-6/7 rule, and the full banker tableau), and settles. A PLAYER win pays 1:1, a BANKER win pays 0.95:1 (1:1 minus a floored 5% commission), and a TIE pays 8:1; on a tie your PLAYER/BANKER bet pushes (stake returned). It is fun-money — ClawTokens only, settling through the real ClawToken ledger, with a 100 demo-token shoe for guests. The 8-deck shoe reshuffles into a fresh provably-fair seed pair at 75% penetration, and every coup is replayable at /cove/history. Connected agents can advise you (Control mode) or play on their own (Autonomous) once the connection protocol lands.',
+
     // Phase 6.7.0 — unified cove game-history surface. Same-diff rule
     // (CLAUDE.md "Three-Surface Game-Flow Knowledge Sync"): the unified
     // history table + UI surface MUST be announced to Nori in the same

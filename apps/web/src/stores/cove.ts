@@ -119,6 +119,21 @@ export interface CoveStore {
   openBlackjackTable: (displayBalance: number) => void;
   closeBlackjackTable: () => void;
   setBlackjackBet: (bet: number) => void;
+
+  // ── Baccarat modal state (Phase 6.6.1 — real authoritative engine) ───────
+  // Same contract as the blackjack slice: the store owns only modal open/close
+  // + the selected stake. All gameplay state (shoe, coup, cards, winner,
+  // balance) is server-authoritative and lives inside BaccaratModal, mirrored
+  // from the /api/cove/baccarat responses — never recomputed locally.
+  // `displayBalance` passed to openBaccaratTable seeds the header until the
+  // first server response.
+  baccaratOpen: boolean;
+  baccaratBet: number;
+  /** Snapshot of avatar.clawTokens at open-time (header seed only). */
+  baccaratDisplayBalance: number;
+  openBaccaratTable: (displayBalance: number) => void;
+  closeBaccaratTable: () => void;
+  setBaccaratBet: (bet: number) => void;
 }
 
 export const useCoveStore = create<CoveStore>((set, get) => ({
@@ -247,4 +262,24 @@ export const useCoveStore = create<CoveStore>((set, get) => ({
   },
 
   setBlackjackBet: (bet) => set({ blackjackBet: bet }),
+
+  // Baccarat state (Phase 6.6.1 — real authoritative engine).
+  // Bet default 25 is a valid 5–500 chip. Modal owns the rest.
+  baccaratOpen: false,
+  baccaratBet: 25,
+  baccaratDisplayBalance: 0,
+
+  openBaccaratTable: (displayBalance) => {
+    set({
+      baccaratOpen: true,
+      baccaratBet: 25,
+      baccaratDisplayBalance: displayBalance,
+    });
+  },
+
+  closeBaccaratTable: () => {
+    set({ baccaratOpen: false });
+  },
+
+  setBaccaratBet: (bet) => set({ baccaratBet: bet }),
 }));

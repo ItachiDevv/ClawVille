@@ -1068,6 +1068,66 @@ function HoldemTableHotspot() {
 }
 
 // ---------------------------------------------------------------------------
+// Phase 6.6.1 — Baccarat (Punto Banco) table hotspot.
+//
+// The baccarat sign sits at the open-floor position (X=285, Z=584) captured via
+// the [BJ-POS] probe (was a sign-only placeholder in Phase 6.6.0). Same invisible
+// hit-box pattern as the blackjack/holdem hotspots: no draw call
+// (meshBasicMaterial visible={false}), matrixAutoUpdate=false after the first
+// updateMatrix() (Iris Xe rule — zero matrix recomputes). Click opens the
+// BaccaratModal with the current avatar's ClawToken balance as the header seed.
+// ---------------------------------------------------------------------------
+
+const _BACCARAT_CENTER_X = 285;
+const _BACCARAT_CENTER_Z = 584;
+const _BACCARAT_HOTSPOT_POS: [number, number, number] = [
+  _BACCARAT_CENTER_X,
+  100,
+  _BACCARAT_CENTER_Z,
+];
+const _BACCARAT_HOTSPOT_SIZE: [number, number, number] = [200, 200, 150];
+
+function BaccaratTableHotspot() {
+  const meshRef = useRef<THREE.Mesh>(null);
+  const openBaccaratTable = useCoveStore((s) => s.openBaccaratTable);
+  const { data: avatar } = useAvatar();
+
+  useEffect(() => {
+    const mesh = meshRef.current;
+    if (!mesh) return;
+    mesh.matrixAutoUpdate = false;
+    mesh.updateMatrix();
+  }, []);
+
+  const handleClick = () => {
+    const balance = avatar?.clawTokens ?? 0;
+    openBaccaratTable(balance);
+  };
+
+  return (
+    <mesh
+      ref={meshRef}
+      position={_BACCARAT_HOTSPOT_POS}
+      onPointerOver={(e) => {
+        e.stopPropagation();
+        if (typeof document !== 'undefined') document.body.style.cursor = 'pointer';
+      }}
+      onPointerOut={(e) => {
+        e.stopPropagation();
+        if (typeof document !== 'undefined') document.body.style.cursor = 'default';
+      }}
+      onClick={(e) => {
+        e.stopPropagation();
+        handleClick();
+      }}
+    >
+      <boxGeometry args={_BACCARAT_HOTSPOT_SIZE} />
+      <meshBasicMaterial visible={false} />
+    </mesh>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // VRM player avatar for cove interior
 // Minimal version: loads VRM via useVRMInstance, drives VRMCharacterAnimator,
 // WASD movement, no world-map coupling, no terrain raycast (flat floor).
@@ -2052,14 +2112,16 @@ export default function CoveInteriorScene({ onSceneEmpty }: CoveInteriorScenePro
         position={[_HOLDEM_HOTSPOT_POS[0], 280, _HOLDEM_HOTSPOT_POS[2]]}
       />
 
-      {/* Phase 6.6.0 prep — Baccarat sign placeholder at the open floor
-          position captured via [BJ-POS] probe (X=285, Z=584). Hotspot +
-          modal arrive when the baccarat team dispatches; this is just the
-          visual label so the cove reads as a 3-game venue. */}
+      {/* Phase 6.6.1 — Baccarat (Punto Banco) table click hotspot at the
+          open-floor position (X=285, Z=584). Invisible hit-box (same pattern
+          as the blackjack/holdem hotspots); opens BaccaratModal. */}
+      <BaccaratTableHotspot />
+
+      {/* Baccarat table label — rendered above the baccarat station. */}
       <BankBanner
         label="BACCARAT"
         color="#3b82f6"
-        position={[285, 280, 584]}
+        position={[_BACCARAT_HOTSPOT_POS[0], 280, _BACCARAT_HOTSPOT_POS[2]]}
       />
     </>
   );
