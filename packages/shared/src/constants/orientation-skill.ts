@@ -123,6 +123,21 @@ export const CLAWVILLE_ORIENTATION_KNOWLEDGE: string[] = [
   'Blackjack has two agent modes via the cove chat bar: Control (you tap the actions; a connected agent acts as an ADVISOR, posting basic-strategy hints to the advisor panel but NEVER making the decision) and Autonomous (a connected agent makes the decisions on its own). Autonomous + the connected-agent advisor wiring ship with the WebSocket connection protocol in Phase 6.4.2; the Control-mode human game is live today.',
   'Blackjack skill loop: when a hosted agent (a Milady/Hermes/ElizaOS runtime on our boxes) plays a hand, the outcome is written into its ElizaOS memory as an earned skill — over many hands the agent accumulates basic-strategy and counting skill that gives it a measurable edge. That is the brand premise: agents get better by playing. (Hosted-agent per-hand memory writes and connected-agent play both ship with the Phase 6.4.2 protocol drop; the 6.4.1 engine is the foundation they build on.)',
 
+  // ─── Cove Texas Hold'em table (Phase 6.5.1 — real authoritative engine) ─
+  // Same-diff rule (CLAUDE.md "Three-Surface Game-Flow Knowledge Sync"): the
+  // 6.5.1 drop ships the server-authoritative commit-reveal engine (in-house
+  // 7-card evaluator + HMAC Fisher-Yates per-hand deck, deterministic bots),
+  // the real ClawToken stack custody (buy-in / cash-out), and the
+  // Control/Autonomous agent-mode UI seam. The global connection SKILL.md
+  // protocol endpoint, the connected-agent WebSocket protocol, AND hosted-agent
+  // per-hand SKILL memory writes all ship in Phase 6.5.2 per
+  // `.claude/plans/cove-texas-holdem.md` (no global SKILL.md endpoint or
+  // game-skill-memory service exists yet — both are TODO).
+  // LOCKED RULES: No-Limit, 6-max, blinds SB=1/BB=2, buy-in 20–500 CT (default 100).
+  "The Cove has a real No-Limit Texas Hold'em table — server-authoritative and provably fair. Walk to the second poker table in the cove interior and click it to sit down. It's 6-max: seat 0 is you, seats 1–5 are house bots with distinct deterministic personalities (tight-aggressive, loose-aggressive, tight-passive, calling-station, nit). Blinds are 1/2 ClawTokens. You buy in for 20–500 CT (default 100); the buy-in becomes your table stack and you cash out the remainder when you walk away. Hands play preflop → flop → turn → river → showdown with fold/check/call/bet/raise, no-limit bet sizing, min-raises, all-ins, and correct multi-way side-pot splits. It is fun-money — buy-in debits and cash-out credit through the real ClawToken ledger (no SOL/USDC tier yet) — and guests get a 100 demo-CT stack with no ledger writes.",
+  "Hold'em is fully server-authoritative: each hand shuffles its OWN fresh 52-card deck from the commit-reveal stream (serverSeed, clientSeed, handIndex) — there is no shared shoe — and the bots decide deterministically from that same HMAC stream, never from nondeterministic randomness. So you only ever send your decision (fold/check/call/bet/raise + amount); the server deals every card, runs all five bots, and resolves the pot. The table commits a server-seed hash before any hand and reveals the server seed when you close the table, so you can replay every hand AND its bot play byte-for-byte at /cove/history and confirm nothing changed after you acted. The button rotates each hand so you cycle through every position over a session.",
+  "Hold'em has two agent modes via the cove chat bar: Control (you tap the actions; a connected agent acts as an ADVISOR, posting pot-odds and range hints to the advisor panel but NEVER making the decision) and Autonomous (a connected agent makes the decisions on its own). Autonomous + the connected-agent advisor wiring ship with the WebSocket connection protocol in Phase 6.5.2; the Control-mode human game is live today.",
+
   // ─── Deployment + tech bits an agent might ask ─────────────────────────
   'ClawVille is deployed on Hetzner VPS + Coolify (Docker orchestrator). Web at clawville.world, API at api.clawville.world. The backend is Hono on Bun, the frontend is Next.js 16, the DB is Supabase Postgres. The single LLM backend is Gemini. OpenAI is an optional fallback for NPC conversation only.',
 ];
