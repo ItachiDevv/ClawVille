@@ -446,52 +446,103 @@ function markWorldReadyIfUploadsDone(): void {
   }
 }
 
+function measureCanvasHost(canvas: HTMLCanvasElement | undefined): { width: number; height: number; top: number; left: number } | null {
+  const host = canvas?.parentElement;
+  const rect = host?.getBoundingClientRect() ?? canvas?.getBoundingClientRect();
+  if (!rect) return null;
+
+  const width = Math.round(rect.width);
+  const height = Math.round(rect.height);
+  if (width <= 0 || height <= 0) return null;
+
+  return {
+    width,
+    height,
+    top: rect.top,
+    left: rect.left,
+  };
+}
+
 /**
- * Async-WebGPU first-paint kick (2026-05-31).
+ * Async-WebGPU first-paint kick.
  *
- * Symptom: the world rendered nothing (uniform SKY_COLOR blue) on initial
- * load and only painted once the user RESIZED the window. Measured live:
- * frameloop='always', RAF firing, 328 visible meshes, 1 render/frame,
- * canvas full-screen opacity 1 — yet no visible output until a real resize.
- *
- * Cause: the WebGPU swapchain context is configured inside the async
- * `glFactory` (during `await renderer.init()` + the factory's `setSize`)
- * BEFORE R3F finishes wiring its render pipeline. The first frames render
- * into a swapchain that never presents until something re-runs
- * `gl.setSize()` → `backend.updateSize()` → context reconfigure. A manual
- * window resize does exactly that (R3F's ResizeObserver → setSize), which
- * is why resizing "fixed" it.
- *
- * Fix: replicate that resize ONCE after layout settles by re-issuing
- * `gl.setSize()` with the real container dimensions. `setSize` is NOT
- * deduped — three r170 always calls `backend.updateSize()` — so this
- * reliably forces the reconfigure. Re-issued across a few frames to cover
- * the init-resolve race.
- *
- * This is a one-shot SIZE re-issue, NOT a render loop. Do NOT turn this
- * into a recurring `gl.render` call — a second render per frame is exactly
- * what the removed OpaqueCanvasClearGuard did, and on WebGPU that
- * double-render presented only the clear color (the blue screen).
+ * This does not render. It runs once after the first normal R3F frame has had
+ * a chance to call WebGPUBackend.context.getCurrentTexture(), then forces the
+ * same state path as R3F's ResizeObserver and explicitly refreshes three's
+ * WebGPU canvas context.
  */
 function forceWebGpuFirstPaint(state: any): void {
   const gl = state?.gl;
-  if (!gl || typeof gl.setSize !== 'function') return;
-  let attempts = 0;
-  const reissue = () => {
-    const canvas: HTMLCanvasElement | undefined = gl.domElement;
-    const host = canvas?.parentElement;
-    const w = Math.round(host?.clientWidth || canvas?.clientWidth || window.innerWidth);
-    const h = Math.round(host?.clientHeight || canvas?.clientHeight || window.innerHeight);
-    if (w > 0 && h > 0) {
-      // updateStyle=false — R3F owns the canvas CSS box; we only re-issue the
-      // backing-store size so backend.updateSize() reconfigures the swapchain.
-      gl.setSize(w, h, false);
-      if (typeof state.invalidate === 'function') state.invalidate();
+  const backend = gl?.backend;
+  const canvas: HTMLCanvasElement | undefined = gl?.domElement;
+
+  // WebGPURenderer can be backed by WebGLBackend when forceWebGL/fallback is
+  // active. Only the real WebGPU backend owns a GPUCanvasContext swapchain.
+  if (!canvas || !backend?.isWebGPUBackend || typeof gl.setSize !== 'function') return;
+
+  let cancelled = false;
+
+  const reconfigure = () => {
+    if (cancelled) return;
+
+    const measured = measureCanvasHost(canvas);
+    if (!measured) return;
+
+    if (
+      state.size?.width !== measured.width ||
+      state.size?.height !== measured.height ||
+      state.size?.top !== measured.top ||
+      state.size?.left !== measured.left
+    ) {
+      state.setSize?.(measured.width, measured.height, measured.top, measured.left);
     }
-    attempts += 1;
-    if (attempts < 3) requestAnimationFrame(reissue);
+
+    // gl.setSize() → WebGPUBackend.updateSize() nulls the cached render-pass
+    // descriptor + color buffer, but in the BUILT three r170 it does NOT
+    // re-call GPUCanvasContext.configure() — that runs exactly once in init().
+    // (backend.context is a plain property, not a reconfiguring getter, in the
+    // shipped build — verified against three.webgpu.js.) So if the swapchain was
+    // configured while the canvas was a transient/wrong size, nothing re-syncs
+    // it and the canvas presents only the clear color (blue) until a real
+    // dimension change. Fix: after the canvas has its final backing size,
+    // EXPLICITLY re-call context.configure() with three's own params. configure()
+    // sizes the swapchain to the canvas's CURRENT backing store, so the next
+    // getCurrentTexture() returns a correctly-sized texture and the world paints.
+    gl.setSize(measured.width, measured.height, false);
+    try {
+      const ctx = backend.context as GPUCanvasContext | undefined;
+      const device = backend.device as GPUDevice | undefined;
+      const format: GPUTextureFormat | undefined = backend.utils?.getPreferredCanvasFormat?.();
+      if (ctx && device && format) {
+        // Mirror WebGPUBackend.init()'s configure exactly.
+        ctx.configure({
+          device,
+          format,
+          usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
+          alphaMode: backend.parameters?.alpha ? 'premultiplied' : 'opaque',
+        });
+      }
+    } catch (err) {
+      console.warn('[World3D] WebGPU context reconfigure skipped:', err);
+    }
+
+    state.invalidate?.();
   };
-  requestAnimationFrame(reissue);
+
+  // onCreated fires before the first frame. Two RAFs place this after the first
+  // ordinary frame in frameloop="always", so the reconfigure replaces an actual
+  // first swapchain texture instead of racing initial context creation.
+  requestAnimationFrame(() => {
+    requestAnimationFrame(reconfigure);
+  });
+
+  // Late one-shot guard for async layout/font/texture pressure during initial
+  // load. It is idempotent and still only touches size/context state.
+  const lateTimer = window.setTimeout(reconfigure, 750);
+  window.setTimeout(() => {
+    cancelled = true;
+    window.clearTimeout(lateTimer);
+  }, 1500);
 }
 
 function kickRenderLoop(state: any): void {
