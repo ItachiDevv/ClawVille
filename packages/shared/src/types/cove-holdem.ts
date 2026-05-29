@@ -151,10 +151,20 @@ export interface SerializedHoldemHand {
   actionLog: SerializedHoldemLogEntry[];
   /** Total chips the human put in the pot this hand (stringified bigint). */
   humanBet: string;
-  /** Gross chips the human won back, 0 if none (stringified bigint). */
+  /** GROSS chips the human won back before the rake, 0 if none (stringified bigint). */
   humanPayout: string;
-  /** humanPayout - humanBet (signed, stringified bigint). */
+  /** GROSS humanPayout - humanBet (signed, stringified bigint). */
   humanNet: string;
+  /**
+   * House rake taken from the pot this hand = min(floor(pot*5/100), 5)
+   * (economy fix 2026-05-29). Stringified bigint. Optional for back-compat with
+   * pre-fix rows whose outcomeJson predates the rake field.
+   */
+  rake?: string;
+  /** Human payout AFTER the rake — what the stack was actually credited. */
+  humanRakedPayout?: string;
+  /** Human net AFTER the rake = humanRakedPayout - humanBet. */
+  humanRakedNet?: string;
   nonce: number;
   engineVersion: string;
 }

@@ -75,6 +75,9 @@ import { coveHoldemRouter } from './routes/cove-holdem';
 import { coveBaccaratRouter } from './routes/cove-baccarat';
 // Phase 6.7.0 — cove cross-game history + per-event provable-fair verifier.
 import { coveHistoryRouter } from './routes/cove-history';
+// Economy fix 2026-05-29 — admin-only CT-economy monitor (minted/burned/houseNet
+// per gameType; faucet detector). FEATURE_GATE: cove_ct_economy_monitor.
+import { coveEconomyRouter } from './routes/cove-economy';
 import type { AppContext } from './types';
 
 const app = new Hono<AppContext>();
@@ -223,6 +226,10 @@ app.route('/api/cove/baccarat', coveBaccaratRouter);
 // Phase 6.7.0 — cross-game history (owner-only list + owner|admin verify).
 // Slots integration ships in-line with this mount (see cove-slots.ts spin txn).
 app.route('/api/cove/history', coveHistoryRouter);
+// Economy fix 2026-05-29 — admin-only CT-economy monitor: GET /api/cove/economy/
+// summary aggregates cove_game_events minted/burned/houseNet by gameType to
+// detect any game that has gone net-positive to players (a faucet).
+app.route('/api/cove/economy', coveEconomyRouter);
 // Phase 5.1 — admin identity recovery stub. Returns 501 behind a
 // FEATURE_GATE until the support-chat verification workflow lights up.
 app.route('/api/admin', adminIdentityRoutes);

@@ -41,9 +41,16 @@
  *       - BANKER (if Player did NOT draw): draws on 0-5, stands on 6-7.
  *   • PAYOUTS (integer math, house-friendly rounding):
  *       - PLAYER win: 1:1 → gross = stake * 2 (stake back + 1:1 winnings).
- *       - BANKER win: 1:1 minus 5% commission → net 0.95:1; the commission is
- *         FLOORED so the house keeps fractional cents. winnings = stake -
- *         floor(stake * 5 / 100); gross = stake + winnings.
+ *       - BANKER win: 1:1 minus 5% commission → net 0.95:1. The PLAYER's
+ *         winnings are FLOORED (house-favorable) so the house keeps the
+ *         fraction AT EVERY STAKE, not only at multiples of 20:
+ *           winnings = floor(stake * 95 / 100); gross = stake + winnings;
+ *           commission = stake - winnings  (the kept fraction, ≥ ceil(5%)).
+ *         (The old `stake - floor(stake*5/100)` rounded the COMMISSION down →
+ *         no commission below stake 20 → the banker bet flipped +EV for the
+ *         player on small stakes. Flooring the winnings restores the ~1.06%
+ *         banker edge at every stake. Economy-fix 2026-05-29; see
+ *         `.claude/plans/cove-casino-economy.md` §1 Baccarat.)
  *       - TIE bet win: 8:1 → gross = stake * 9 (stake back + 8:1 winnings).
  *       - On a TIE, PLAYER and BANKER bets PUSH: stake is returned (gross =
  *         stake); only the TIE bet wins.
@@ -90,8 +97,13 @@ export const CARDS_PER_SHOE = SHOE_DECKS * 52; // 416
 export const RESHUFFLE_PENETRATION = 0.75;
 export const RESHUFFLE_CARD_THRESHOLD = Math.floor(CARDS_PER_SHOE * RESHUFFLE_PENETRATION); // 312
 
-/** Banker commission, percent (5%), floored at settle (house-friendly). */
+/** Banker commission, percent (5%). Realized by flooring the PLAYER's winnings
+ * (`floor(stake * 95 / 100)`) so the house keeps the fraction at every stake. */
 export const BANKER_COMMISSION_PERCENT = 5n;
+
+/** Banker WIN winnings numerator: floor(stake * 95 / 100) = the 0.95:1 net,
+ * rounded DOWN (house-favorable) at every stake. */
+export const BANKER_WIN_NUMERATOR = 95n;
 
 /** Tie payout (8:1). Tie WIN gross = stake * (TIE_PAYOUT_NUM + 1). */
 export const TIE_PAYOUT_NUM = 8n;
@@ -155,7 +167,13 @@ export interface CoupResult {
   payout: bigint;
   /** Net P&L = payout - stake (signed; negative = player down). */
   net: bigint;
-  /** Banker commission deducted (atomic CT). 0 unless the player WON a BANKER bet. */
+  /**
+   * Banker commission kept by the house on a WON banker bet (atomic CT). It is
+   * the fraction lost to flooring the player's 0.95:1 winnings:
+   * `stake - floor(stake * 95 / 100)`. 0 unless the player WON a BANKER bet.
+   * Always ≥ ceil(5% of stake) — strictly positive for any stake ≥ 1 (so a
+   * stake-1 banker win keeps 1 CT, never 0). Serialized for the verifier.
+   */
   commission: bigint;
   /** Byte cursor AFTER all draws for this coup — the next coup starts here. */
   cursorAfter: number;
@@ -465,9 +483,11 @@ function playCoupInternal(args: PlayCoupArgs): PlayCoupInternal {
  *     winner=tie    → PUSH → gross = stake; commission 0.
  *     winner=banker → loss → gross = 0; commission 0.
  *   BANKER bet:
- *     winner=banker → 1:1 minus floored 5% commission →
- *                     commission = floor(stake * 5 / 100);
- *                     winnings = stake - commission; gross = stake + winnings.
+ *     winner=banker → 1:1 minus 5% commission, realized by flooring the
+ *                     player's winnings (house-favorable at EVERY stake) →
+ *                     winnings = floor(stake * 95 / 100);
+ *                     commission = stake - winnings (the kept fraction);
+ *                     gross = stake + winnings.
  *     winner=tie    → PUSH → gross = stake; commission 0.
  *     winner=player → loss → gross = 0; commission 0.
  *   TIE bet:
@@ -486,8 +506,12 @@ export function settleBet(
   }
   if (bet === 'banker') {
     if (winner === 'banker') {
-      const commission = (stake * BANKER_COMMISSION_PERCENT) / 100n; // floored
-      const winnings = stake - commission; // net 0.95:1
+      // Floor the PLAYER's winnings (house-favorable at every stake), NOT the
+      // commission. winnings = floor(stake * 95/100); the kept fraction is the
+      // commission. This restores the ~1.06% banker edge at all stakes — the
+      // old `stake - floor(stake*5/100)` undercharged below stake 20 (faucet).
+      const winnings = (stake * BANKER_WIN_NUMERATOR) / 100n; // floored, net 0.95:1
+      const commission = stake - winnings; // the fraction the house keeps
       return { payout: stake + winnings, commission };
     }
     if (winner === 'tie') return { payout: stake, commission: 0n }; // push
