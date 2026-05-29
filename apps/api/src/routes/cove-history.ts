@@ -33,7 +33,8 @@
  *   - 'blackjack'→ `replayShoeUpToHand` (shared-shoe no-replacement replay)
  *   - 'holdem'   → `playHoldemHand` (per-hand fresh-deck replay from the table's
  *                  recorded human actions + buttonSeat + startingStack)
- *   - 'baccarat' → 'engine-not-yet-shipped' stub
+ *   - 'baccarat' → `replayShoeUpToCoup` (shared-shoe no-replacement replay from the
+ *                  shoe's recorded per-coup bet/stake; target coup = event.nonce)
  *
  * Cursor pagination per plan §3 — base64 of `${createdAt.toISOString()}|${id}`.
  */
@@ -61,7 +62,12 @@ import {
   serializeHoldemHand,
   type HoldemActionRecord,
 } from '../services/holdem-engine';
-import { blackjackHands, holdemHands } from '@clawville/database';
+import {
+  replayShoeUpToCoup,
+  serializeCoupResult,
+  type BaccaratBet,
+} from '../services/baccarat-engine';
+import { blackjackHands, holdemHands, baccaratCoups } from '@clawville/database';
 import type { AppContext, AuthenticatedContext } from '../types';
 import type { Context } from 'hono';
 
@@ -492,6 +498,83 @@ coveHistoryRouter.get('/:eventId/verify', async (c) => {
     const verified =
       hashMatches &&
       JSON.stringify(expectedSerialized) === JSON.stringify(stored);
+
+    return c.json(
+      {
+        verified,
+        expected: expectedSerialized,
+        stored,
+        hashMatches,
+      },
+      200,
+    );
+  }
+
+  if (event.gameType === 'baccarat') {
+    // Baccarat draws are no-replacement against a shared 8-deck shoe, so replaying
+    // a single coup requires the shoe state at the start of that coup. We
+    // reconstruct it by loading every settled coup's recorded (bet, stake) for the
+    // shoe (sessionId === shoeId) and replaying from nonce 0 via
+    // `replayShoeUpToCoup`. The target coup is `event.nonce` (= coupIndex).
+    let expectedSerialized: ReturnType<typeof serializeCoupResult>;
+    try {
+      const coupRows = await db
+        .select()
+        .from(baccaratCoups)
+        .where(
+          and(eq(baccaratCoups.shoeId, event.sessionId), eq(baccaratCoups.status, 'settled')),
+        )
+        .orderBy(baccaratCoups.coupIndex);
+
+      const coups: Array<{ bet: BaccaratBet; stake: bigint }> = [];
+      for (let n = 0; n <= event.nonce; n++) {
+        const row = coupRows.find((coup) => coup.coupIndex === n);
+        if (!row) {
+          throw new Error(
+            `baccarat_coup_missing_for_replay: shoeId=${event.sessionId} coupIndex=${n}`,
+          );
+        }
+        coups.push({ bet: row.bet as BaccaratBet, stake: BigInt(row.stake) });
+      }
+
+      const replayed = replayShoeUpToCoup({
+        serverSeed: event.revealedServerSeed,
+        clientSeed: event.clientSeed,
+        targetNonce: event.nonce,
+        coups,
+      });
+      const targetRow = coupRows.find((coup) => coup.coupIndex === event.nonce)!;
+      expectedSerialized = serializeCoupResult(replayed, {
+        cursorBefore: targetRow.cursorBefore,
+        dealtBefore: targetRow.dealtBefore,
+        nonce: event.nonce,
+      });
+    } catch (err) {
+      return c.json(
+        {
+          verified: false,
+          reason: `engine_replay_failed: ${(err as Error).message}`,
+          expected: null,
+          stored: event.outcomeJson,
+          hashMatches,
+        },
+        200,
+      );
+    }
+
+    const stored = event.outcomeJson as Record<string, unknown>;
+    // Compare the engine-derived outcome to the stored one field-by-field.
+    // cursorBefore/dealtBefore are persisted-only metadata (not re-derived by a
+    // single-coup replay starting from nonce 0), so exclude them from equality.
+    const norm = (o: Record<string, unknown>) => {
+      const { cursorBefore: _cb, dealtBefore: _db, ...rest } = o;
+      void _cb;
+      void _db;
+      return JSON.stringify(rest);
+    };
+    const verified =
+      hashMatches &&
+      norm(expectedSerialized as unknown as Record<string, unknown>) === norm(stored);
 
     return c.json(
       {
