@@ -32,6 +32,7 @@ import SceneTransition, { useSceneTransition } from '@/components/transitions/Sc
 import SlotScreenModal from '@/components/cove/SlotScreenModal';
 import BlackjackModal from '@/components/cove/blackjack/BlackjackModal';
 import HoldemModal from '@/components/cove/holdem/HoldemModal';
+import BaccaratModal from '@/components/cove/baccarat/BaccaratModal';
 import CoveMobileControls from '@/components/cove/CoveMobileControls';
 import { useAvatar } from '@/hooks/use-avatar';
 import { useGameStore } from '@/stores/game';
@@ -194,35 +195,45 @@ export default function CovePage() {
         Back to World
       </button>
 
-      {/* Provably-fair verifier link — top-right, mirrors the Back button style. */}
-      <Link
-        href="/cove/verify"
-        target="_blank"
-        rel="noopener noreferrer"
-        style={{
-          position: 'absolute',
-          top: 16,
-          right: 16,
-          zIndex: 50,
+      {/* Top-right actions — betting history + provably-fair verifier. */}
+      {(() => {
+        const pill = {
           display: 'flex',
           alignItems: 'center',
-          gap: 8,
-          padding: '10px 18px',
+          gap: 6,
+          padding: '10px 16px',
           background: 'rgba(10, 0, 21, 0.82)',
           backdropFilter: 'blur(6px)',
           border: '1px solid rgba(0, 255, 224, 0.35)',
           borderRadius: 10,
           color: '#00ffe0',
           fontWeight: 700,
-          fontSize: 14,
+          fontSize: 13,
           fontFamily: 'monospace',
           textDecoration: 'none',
           letterSpacing: '0.04em',
-          transition: 'border-color 0.2s, background 0.2s',
-        }}
-      >
-        🔐 Verify
-      </Link>
+          whiteSpace: 'nowrap' as const,
+        };
+        return (
+          <div
+            style={{
+              position: 'absolute',
+              top: 16,
+              right: 16,
+              zIndex: 50,
+              display: 'flex',
+              gap: 8,
+            }}
+          >
+            <Link href="/cove/history" target="_blank" rel="noopener noreferrer" style={pill}>
+              📜 History
+            </Link>
+            <Link href="/cove/verify" target="_blank" rel="noopener noreferrer" style={pill}>
+              🔐 Verify
+            </Link>
+          </div>
+        );
+      })()}
 
       {/* 2D Slot Screen Modal — DOM overlay, renders on top of 3D canvas.
           z-index 9990 ensures it layers above the Canvas (z-index ~0) but below
@@ -234,11 +245,18 @@ export default function CovePage() {
           Real engine + per-card decisions land in Phase 6.4.1. */}
       <BlackjackModal />
 
-      {/* Phase 6.5.0 — Texas Hold'em table modal (6-seat visual shell,
-          display-only ClawTokens). Same z-index policy as the other game
-          modals. Real pokerpocket engine + bot personalities + ClawToken
-          ledger integration land in Phase 6.5.1. */}
+      {/* Phase 6.5.1 — Texas Hold'em table modal (REAL No-Limit engine,
+          server-authoritative, ClawToken stack custody, 5 deterministic bots).
+          Same z-index policy as the other game modals. Connected-agent
+          WebSocket protocol + real-money SOL/USDC land in Phase 6.5.2 / 6.5.4. */}
       <HoldemModal />
+
+      {/* Phase 6.6.1 — Baccarat (Punto Banco) table modal (REAL engine,
+          server-authoritative, ClawToken fun-money tier, 8-deck commit-reveal
+          shoe). Same z-index policy as the other game modals so only one game
+          modal is open at a time. SOL/USDC + connected-agent protocol land in
+          a later phase (currency seam returns 501 today). */}
+      <BaccaratModal />
 
       {/* iPad / phone touch controls — auto-hidden on desktop via useIsMobile.
           Critical fix 2026-05-27: cove had zero touch input; iPad users
@@ -274,7 +292,7 @@ export default function CovePage() {
               Predictive Gaming Cove
             </span>
             <span style={{ color: 'rgba(255,255,255,0.35)', fontSize: 11, marginLeft: 8 }}>
-              Slots · Blackjack · Hold&apos;em
+              Slots · Blackjack · Hold&apos;em · Baccarat
             </span>
           </div>
         </div>
