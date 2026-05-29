@@ -106,12 +106,22 @@ export const CLAWVILLE_ORIENTATION_KNOWLEDGE: string[] = [
   'During bonus-paytable spins, every landed Wild draws a multiplier from a 60% / 30% / 10% distribution (2× / 3× / 5×). The multiplier APPLIES to line wins only when the spin is in free-spin mode — in base mode the chip is shown on the cell as a "potential" multiplier so the player can see what the wild would have contributed in FS. Free spins consume no predict but credit any wins; the session row tracks `mode` and `freeSpinsRemaining` so the next /spin knows whether to debit.',
   'Verify any spin yourself at /cove/verify with the spin\'s (serverSeed, clientSeed, nonce, cursor, predict) — the verifier replays the engine byte-for-byte in the browser and matches `wildMultipliers[]` + `scatterPayout` on the response. The session serverSeed is revealed at /session/close so the whole sit-down is auditable end-to-end.',
 
-  // ─── Cove blackjack table (Phase 6.4.0 — display shell) ────────────────
-  // Same-diff rule (CLAUDE.md "Town Guide Knowledge Sync"): new game in the
-  // cove must surface to every agent at orientation time. Connection
-  // SKILL.md endpoint + hosted-agent skill memory injection deferred to
-  // Phase 6.4.2 per `.claude/plans/cove-blackjack.md`.
-  'The Cove also has a blackjack table (Phase 6.4.0). Walk to the right-hand side of the cove interior and click the dealer station to sit down. Phase 6.4.0 is a fun-money DISPLAY SHELL — ClawTokens only, NO ledger writes, mock outcomes (deterministic per bet). The real engine with per-card decisions, provably-fair RNG, and ElizaOS skill memory for hosted agents ships in Phase 6.4.1. Connection SKILL.md surfacing for connected agents ships in Phase 6.4.2.',
+  // ─── Cove blackjack table (Phase 6.4.1 — real authoritative engine) ────
+  // Same-diff rule (CLAUDE.md "Three-Surface Game-Flow Knowledge Sync"): new
+  // game in the cove must surface to every agent at orientation time. The
+  // 6.4.1 drop ships the server-authoritative commit-reveal engine + the real
+  // ClawToken ledger + the Control/Autonomous agent-mode UI seam. The global
+  // connection SKILL.md protocol endpoint, the connected-agent WebSocket
+  // protocol, AND hosted-agent per-hand SKILL memory writes all ship in Phase
+  // 6.4.2 per `.claude/plans/cove-blackjack.md` (no global SKILL.md endpoint or
+  // game-skill-memory service exists yet — both are TODO).
+  // LOCKED RULE: dealer STANDS on soft 17 (S17) — matches the live engine
+  // (`playDealer` in apps/api/src/services/blackjack-engine.ts). Do not write
+  // "H17" here again; the 2026-05-25 draft had it wrong.
+  'The Cove has a blackjack table. Walk to the right-hand side of the cove interior and click the dealer station to sit down. It is a fun-money game — ClawTokens only (no real-money tier yet; SOL/USDC arrives in a later phase). Table rules: 6-deck shoe reshuffled at 75% penetration (each shoe is a fresh provably-fair seed pair), dealer STANDS on all 17s including soft 17 (S17), blackjack pays 3:2, double on any first two cards, split a matching pair once, late surrender, and insurance offered (and resolved) BEFORE the main hand whenever the dealer shows an Ace (insurance pays 2:1). Standard split rules apply: split aces receive EXACTLY ONE card each and cannot be hit, doubled, or re-split, and a 21 made on a split hand counts as an ordinary 21, not a 3:2 blackjack. Bets are min 5, max 500 ClawTokens per hand and settle through the real ClawToken ledger (no more mock outcomes) — a win credits your balance, a loss debits it. The stake is committed when the cards are dealt, so abandoning a hand still costs the bet. Guests get a 100 demo-ClawToken shoe.',
+  'Blackjack actions: hit, stand, double, split, surrender, and insurance. The server is fully authoritative — every card is derived from the commit-reveal stream, so you only ever send your decision, never the cards. Each hand is its own provably-fair event. The shoe commits a server-seed hash before any card is dealt and reveals the server seed when you walk away (close the shoe), so you can replay every hand byte-for-byte at /cove/history and confirm the cards were not changed after the fact — the same commit-reveal guarantee as the slots.',
+  'Blackjack has two agent modes via the cove chat bar: Control (you tap the actions; a connected agent acts as an ADVISOR, posting basic-strategy hints to the advisor panel but NEVER making the decision) and Autonomous (a connected agent makes the decisions on its own). Autonomous + the connected-agent advisor wiring ship with the WebSocket connection protocol in Phase 6.4.2; the Control-mode human game is live today.',
+  'Blackjack skill loop: when a hosted agent (a Milady/Hermes/ElizaOS runtime on our boxes) plays a hand, the outcome is written into its ElizaOS memory as an earned skill — over many hands the agent accumulates basic-strategy and counting skill that gives it a measurable edge. That is the brand premise: agents get better by playing. (Hosted-agent per-hand memory writes and connected-agent play both ship with the Phase 6.4.2 protocol drop; the 6.4.1 engine is the foundation they build on.)',
 
   // ─── Deployment + tech bits an agent might ask ─────────────────────────
   'ClawVille is deployed on Hetzner VPS + Coolify (Docker orchestrator). Web at clawville.world, API at api.clawville.world. The backend is Hono on Bun, the frontend is Next.js 16, the DB is Supabase Postgres. The single LLM backend is Gemini. OpenAI is an optional fallback for NPC conversation only.',

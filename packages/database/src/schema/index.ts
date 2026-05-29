@@ -59,6 +59,12 @@ export * from './cove';
 // write to per-game tables (slot_spins etc.); one row per atomic gameplay
 // unit. Verifier replay surface for slots / blackjack / Hold'em / baccarat.
 export * from './cove-events';
+// Phase 6.4.1 — cove blackjack shoes + hands. Two-table commit-reveal
+// pattern mirroring cove (slot_sessions/slot_spins). One shoe = one
+// commit-reveal seed pair (75% penetration reshuffle = new shoe row);
+// one hand = one cove_game_events row. ClawTokens tier today; currency
+// seam reserved for the SOL/USDC tier.
+export * from './blackjack';
 
 import { users, sessions } from './users';
 import { npcMemories, activityLog } from './memories';
