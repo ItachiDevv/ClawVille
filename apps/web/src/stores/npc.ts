@@ -47,6 +47,13 @@ export interface NpcSpriteState {
   combatActionAt: number;
   /** Smooth facing angle (radians) — set by NPC controller for possessed NPCs */
   facingAngle: number | null;
+  /**
+   * True while the possessed player NPC is sprinting (shift held / joystick past
+   * the run threshold). Set by NpcController via moveNpc; read in arena-npcs.tsx
+   * VRMNpcMesh to switch the animator to the 'run' clip. Undefined on wandering
+   * NPCs (they never sprint) → treated as false.
+   */
+  isRunning?: boolean;
   /** Override the default idle clip for VRM NPCs. Undefined = use 'idle'. */
   defaultIdleClip?: string;
 }
@@ -146,7 +153,7 @@ export interface NpcStoreState {
   updateFromSnapshot: (snapshot: ServerSnapshot) => void;
   cleanupExpired: () => void;
   /** Directly move a possessed NPC — skips wander logic, updates prevX/prevY for interpolation */
-  moveNpc: (id: string, x: number, y: number, direction: NpcSpriteState['direction'], facingAngle?: number | null) => void;
+  moveNpc: (id: string, x: number, y: number, direction: NpcSpriteState['direction'], facingAngle?: number | null, isRunning?: boolean) => void;
   /** Spawn a dedicated player NPC at world center for NPC mode */
   spawnPlayerNpc: () => void;
   /** Remove the dedicated player NPC when leaving NPC mode */
@@ -226,7 +233,11 @@ function pickNewTarget(npc: NpcSpriteState): WanderState {
 
 function tickDemoNpcs(npcs: NpcSpriteState[]): NpcSpriteState[] {
   const now = Date.now();
-  const speed = 4; // pixels per tick
+  // 2026-05-29: was 4 px/tick (=40 px/s) — 5.5× slower than the real 5 Hz server
+  // sim (npc-simulation baseStep 44/tick = 220 px/s). The slow fallback made every
+  // local `bun run start` playtest read as slow-motion + foot-slide, because leg
+  // cadence is tuned for the real sim speed. Match it: 22 px/tick @ 10 Hz = 220 px/s.
+  const speed = 22; // px/tick → 220 px/s, matches server sim (44/tick @ 5 Hz)
 
   // Lazy import to avoid circular dep — both stores are plain Zustand, no circular JS modules
   // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -242,7 +253,7 @@ function tickDemoNpcs(npcs: NpcSpriteState[]): NpcSpriteState[] {
     let ws = wanderStates.get(npc.id);
     if (!ws) {
       ws = pickNewTarget(npc);
-      ws.waitUntil = now + Math.random() * 3000;
+      ws.waitUntil = now + Math.random() * 800; // stagger starts, not multi-second freezes
       wanderStates.set(npc.id, ws);
     }
 
@@ -257,14 +268,22 @@ function tickDemoNpcs(npcs: NpcSpriteState[]): NpcSpriteState[] {
 
     if (dist < 10) {
       const newWs = pickNewTarget(npc);
-      newWs.waitUntil = now + 2000 + Math.random() * 4000;
+      // Real free-roamers rarely freeze for seconds — brief pause then move on.
+      newWs.waitUntil = now + Math.random() * 600;
       wanderStates.set(npc.id, newWs);
       npc.direction = 'idle';
       continue;
     }
 
-    const mx = (dx / dist) * speed;
-    const my = (dy / dist) * speed;
+    // Clamp the step to the remaining distance so a fast NPC can NEVER overshoot
+    // its target. Without this, a 22 px/tick step that lands ~11 px past a target
+    // leaves dist≈11 (>the 10 px arrival threshold), so the NPC never re-targets
+    // and bounces ±11 px around the point forever — a stable overshoot limit cycle
+    // that reads as "spinning in place" (facing flips 180° each bounce). At the old
+    // 4 px/tick speed the overshoot was always <10 px so the arrival check caught it.
+    const moveLen = Math.min(speed, dist);
+    const mx = (dx / dist) * moveLen;
+    const my = (dy / dist) * moveLen;
     npc.prevX = npc.x;
     npc.prevY = npc.y;
     // SIM-LEVEL collision clamp against world AABB colliders. Without this
@@ -284,11 +303,17 @@ function tickDemoNpcs(npcs: NpcSpriteState[]): NpcSpriteState[] {
     const moved = Math.abs(npc.x - npc.prevX) + Math.abs(npc.y - npc.prevY);
     if (clamped.hit || moved < 0.5) {
       const newWs = pickNewTarget(npc);
-      newWs.waitUntil = now + 500 + Math.random() * 1200;
+      newWs.waitUntil = now + 200 + Math.random() * 300;
       wanderStates.set(npc.id, newWs);
       npc.direction = 'idle';
       continue;
     }
+    // Give the moving NPC a real ts/tsDelta so the renderer's entity-interpolation
+    // lerp path (arena-npcs.tsx alpha = elapsed/tsDelta) drives it, instead of the
+    // ts===0 snap-to-current branch that produced visible 10 Hz stepping. prevX/prevY
+    // were captured above before the move, so prev→x lerps continuously each 100 ms.
+    npc.ts = now;
+    npc.tsDelta = 100;
     if (Math.abs(dx) > Math.abs(dy)) {
       npc.direction = dx > 0 ? 'right' : 'left';
     } else {
@@ -573,7 +598,7 @@ export const useNpcStore = create<NpcStoreState>((set, get) => ({
     }));
   },
 
-  moveNpc: (id, x, y, direction, facingAngle = null) => {
+  moveNpc: (id, x, y, direction, facingAngle = null, isRunning = false) => {
     // 2026-05-11 — Mutate in place + skip setState entirely if no identity-check
     // field changed. moveNpc fires at 60Hz during NPC-mode play; the old
     // `s.npcs.map(...)` returned a new array + new element every call, kicking
@@ -587,6 +612,7 @@ export const useNpcStore = create<NpcStoreState>((set, get) => ({
     npc.y = y;
     npc.direction = direction;
     npc.facingAngle = facingAngle;
+    npc.isRunning = isRunning;
     // No setState call — the mutated object is the same reference subscribers
     // already hold, and useFrame reads via npcRef.current.
   },
