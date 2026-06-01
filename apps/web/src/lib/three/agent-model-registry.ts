@@ -18,7 +18,7 @@
  *            rendered visually on VRM avatars.
  */
 
-export type AgentCategory = 'openclaw' | 'hermes' | 'milady' | 'chibi' | 'other';
+export type AgentCategory = 'openclaw' | 'hermes' | 'milady' | 'chibi' | 'other' | 'hatcher';
 
 export interface ModelRegistryEntry {
   path: string;
@@ -121,6 +121,28 @@ export const MODEL_REGISTRY = {
   eliza_chibi:   { path: '/avatars/eliza-chibi.vrm?v=2',   scale: 13, label: 'Eliza Chibi',  category: 'chibi',  avatar_type: 'vrm', animatorId: 'chibi', preview: '/models/eliza-chibi-turnaround/front.png' },
   milady_chibi:  { path: '/avatars/milady-chibi.vrm?v=2',  scale: 13, label: 'Milady Chibi', category: 'chibi',  avatar_type: 'vrm', animatorId: 'chibi', preview: '/models/milady-chibi-turnaround/front.png' },
 
+  // ── Hatcher (placeholder — Phase 4 swap) ─────────────────────────────────
+  // PLACEHOLDER (Phase 4 swap): these 8 keys point at existing Milady VRMs
+  // as stand-in art until bespoke Hatcher VRMs are authored (see
+  // hatcher-integration.md §5 Workstream 4). They render today via the
+  // vrm-milady animator with zero new rendering code.
+  //
+  // Phase 4 repoints each `path` to `/avatars/hatcher-N.vrm` AND bumps a
+  // `?v=1` query (first mutation of a stable URL → cache-bust required per
+  // §6f rule 9 / 3dStructure.md §6f rule 9). The category name, scale,
+  // animatorId, and MODEL_KEY_TO_LEGACY_SPECIES mapping stay unchanged.
+  //
+  // Color tinting: NOT applied (MToon pipeline — same rule as Milady/Hermes).
+  // Facing: atan2(vx, vz) — same -Z convention as all Milady VRMs.
+  hatcher_1: { path: '/avatars/milady-official-1.vrm', scale: 13, label: 'Hatcher 1', category: 'hatcher', avatar_type: 'vrm', animatorId: 'vrm-milady', preview: '/avatars/previews/milady-official-1.png' }, // PLACEHOLDER (Phase 4 swap)
+  hatcher_2: { path: '/avatars/milady-official-2.vrm', scale: 13, label: 'Hatcher 2', category: 'hatcher', avatar_type: 'vrm', animatorId: 'vrm-milady', preview: '/avatars/previews/milady-official-2.png' }, // PLACEHOLDER (Phase 4 swap)
+  hatcher_3: { path: '/avatars/milady-official-3.vrm', scale: 13, label: 'Hatcher 3', category: 'hatcher', avatar_type: 'vrm', animatorId: 'vrm-milady', preview: '/avatars/previews/milady-official-3.png' }, // PLACEHOLDER (Phase 4 swap)
+  hatcher_4: { path: '/avatars/milady-official-4.vrm', scale: 13, label: 'Hatcher 4', category: 'hatcher', avatar_type: 'vrm', animatorId: 'vrm-milady', preview: '/avatars/previews/milady-official-4.png' }, // PLACEHOLDER (Phase 4 swap)
+  hatcher_5: { path: '/avatars/milady-official-5.vrm', scale: 13, label: 'Hatcher 5', category: 'hatcher', avatar_type: 'vrm', animatorId: 'vrm-milady', preview: '/avatars/previews/milady-official-5.png' }, // PLACEHOLDER (Phase 4 swap)
+  hatcher_6: { path: '/avatars/milady-official-6.vrm', scale: 13, label: 'Hatcher 6', category: 'hatcher', avatar_type: 'vrm', animatorId: 'vrm-milady', preview: '/avatars/previews/milady-official-6.png' }, // PLACEHOLDER (Phase 4 swap)
+  hatcher_7: { path: '/avatars/milady-official-7.vrm', scale: 13, label: 'Hatcher 7', category: 'hatcher', avatar_type: 'vrm', animatorId: 'vrm-milady', preview: '/avatars/previews/milady-official-7.png' }, // PLACEHOLDER (Phase 4 swap)
+  hatcher_8: { path: '/avatars/milady-official-8.vrm', scale: 13, label: 'Hatcher 8', category: 'hatcher', avatar_type: 'vrm', animatorId: 'vrm-milady', preview: '/avatars/previews/milady-official-8.png' }, // PLACEHOLDER (Phase 4 swap)
+
   // NOTE: `crayfish` removed from the picker 2026-04-16 — the mesh renders
   // noticeably larger than lobster at the same scale (different pivot) and
   // consistently clipped the modal card. The GLB still ships under
@@ -155,11 +177,14 @@ export const CATEGORY_META: Partial<Record<AgentCategory, { label: string; descr
   milady:   { label: 'Milady',   description: 'Milady VRM avatars — humanoid Milady AI characters' },
   hermes:   { label: 'Hermes',   description: 'Hermes VRM avatars — ClawVille-hosted Hermes runtimes' },
   chibi:    { label: 'Chibi',    description: 'Mini stylized humanoids — half-height chibi proportions' },
+  // PLACEHOLDER (Phase 4 swap): description + label will update when bespoke Hatcher VRMs ship.
+  hatcher:  { label: 'Hatcher',  description: 'Hatcher-hosted agents — placeholder Milady avatars until bespoke meshes (Phase 4)' },
 };
 
 // Ordered list of categories for tab rendering.
 // milady restored 2026-04-21 with 8 VRM avatars; hermes added 2026-05-12; chibi added 2026-05-21.
-export const CATEGORY_ORDER: AgentCategory[] = ['openclaw', 'other', 'milady', 'hermes', 'chibi'];
+// hatcher added 2026-06-01 (Phase 2 — placeholder Milady VRMs; Phase 4 swaps to bespoke Hatcher meshes).
+export const CATEGORY_ORDER: AgentCategory[] = ['openclaw', 'other', 'milady', 'hermes', 'chibi', 'hatcher'];
 
 // Color presets — aligned with COLOR_TINTS hex values in SelectAgentCanvas so
 // the button background matches the actual GLB tint applied.
@@ -180,6 +205,7 @@ export const CATEGORY_DEFAULT_MODEL: Partial<Record<AgentCategory, ModelKey>> = 
   milady:   'milady_official_1',
   hermes:   'hermes_female',
   chibi:    'eliza_chibi',
+  hatcher:  'hatcher_1', // PLACEHOLDER (Phase 4 swap)
 };
 
 // Agent harness options — controls which export format Phase 3 uses.
@@ -242,4 +268,16 @@ export const MODEL_KEY_TO_LEGACY_SPECIES: Record<ModelKey, LegacySpecies> = {
   // Chibi VRMs (added 2026-05-21) — same 'fox' fallback as other humanoids.
   eliza_chibi:        'fox',
   milady_chibi:       'fox',
+  // Hatcher placeholder VRMs (added 2026-06-01) — humanoid → 'fox' fallback,
+  // same as Milady/Hermes/Chibi. Phase 4 does not change this mapping; only
+  // the MODEL_REGISTRY path entries are swapped to bespoke Hatcher VRMs.
+  // PLACEHOLDER (Phase 4 swap)
+  hatcher_1:          'fox',
+  hatcher_2:          'fox',
+  hatcher_3:          'fox',
+  hatcher_4:          'fox',
+  hatcher_5:          'fox',
+  hatcher_6:          'fox',
+  hatcher_7:          'fox',
+  hatcher_8:          'fox',
 };
