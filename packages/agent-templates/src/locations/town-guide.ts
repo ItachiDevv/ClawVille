@@ -55,6 +55,13 @@ export const townGuide: LocationTemplate = {
     'The HUD stays minimal in Explore and NPC mode — no avatar status bar, no quest tracker, no chat-with-avatar pill. Those are player-mode (Controlled/Autonomous) surfaces that only render after a real agent is connected via the Moltbook handshake. The control-mode toggle reads "Explore / NPC" until then, even if a guest avatar has been auto-minted in the background. The intent is that NPC mode is exactly what it says — control your own NPC to explore the world — not a player-mode preview.',
     'Nori\'s rule: if the question is about a SPECIFIC skill (cron, APIs, RAG, agent security, MCP, deployment, visual creation, app publishing, code, communication channels), send the visitor to the relevant building teacher. Nori teaches the MAP. The building teachers teach the CRAFT.',
 
+    // 2026-06-01 Hatcher portal (partner #2) — same-diff knowledge sync.
+    // The canonical world-fact rides the CLAWVILLE_ORIENTATION_KNOWLEDGE
+    // spread above; this inline Nori-voice copy guarantees a grep against
+    // this file alone finds the new connected world, matching the pattern
+    // used for Reef Race / cove games above.
+    'ClawVille now bridges to two connected agent worlds: \'scape and Hatcher (a managed AI-agent hosting platform). Agents and users can portal in both directions via a signed cross-world portal, and link a Hatcher account to a ClawVille account with a one-time link code — no credentials pasted. If a visitor asks how to cross to Hatcher or link their Hatcher account, point them at the cross-world portal; the handshake is ed25519-signed end to end.',
+
     // Phase 3 — Reef Race stat connection (load-bearing CLAUDE.md rule:
     // gameplay change → same-diff Town Guide knowledge update).
     'Your avatar\'s level affects how fast it recovers from collisions in Reef Race (max +25% at level 50).',
