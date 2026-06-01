@@ -3,11 +3,14 @@
  *
  * Sanity tests for the locked v2 default track. Catches geometric regressions
  * before they reach the sim:
- *   - Exactly 22 control points (any add/remove must be intentional)
+ *   - Exactly 19 control points (any add/remove must be intentional)
  *   - All adjacent CP-pair distances > 88 wu (Newton mis-segmenting guard)
  *   - Total spline arclength in [28 000, 31 500] wu (~90s race window)
  *   - First CP at origin (z = 0, x = 0) — start-line invariant
  *   - Last CP near (x ≈ 0, z ≈ 28 000) — finish-line invariant
+ *   - STEERING IS MANDATORY: a straight constant-x=startX line EXITS the
+ *     corridor on a slalom peak (the 2026-06-01 re-tune regression guard —
+ *     this gap let the original "straight bypass is optimal" bug ship green)
  *
  * The 88 wu threshold comes from `.claude/plans/reef-race-v2-spline-architecture.md`
  * Risk #1: "no folds within 88 wu of itself in XZ".
@@ -46,9 +49,9 @@ const POSITION_TOLERANCE_WU = 50;
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 describe('REEF_RACE_DEFAULT_TRACK — locked v2 layout', () => {
-  it('contains exactly 22 control points', () => {
-    expect(REEF_RACE_DEFAULT_TRACK.length).toBe(22);
-    expect(REEF_RACE_DEFAULT_TRACK_LENGTH).toBe(22);
+  it('contains exactly 19 control points', () => {
+    expect(REEF_RACE_DEFAULT_TRACK.length).toBe(19);
+    expect(REEF_RACE_DEFAULT_TRACK_LENGTH).toBe(19);
   });
 
   it('first CP sits exactly at the origin (start line)', () => {
@@ -124,6 +127,89 @@ describe('REEF_RACE_DEFAULT_TRACK — spline integration', () => {
     expect(arc).toBeLessThanOrEqual(ARC_LENGTH_UPPER_WU);
   });
 
+  it('STEERING IS MANDATORY — a straight constant-x=startX line EXITS the corridor', () => {
+    // The 2026-06-01 regression guard. The original v2 layout had slalom
+    // amplitudes SMALLER than the local halfWidths, so a kart driving dead-
+    // straight down the x=startX axis stayed inside the corridor the entire
+    // race (zero wall contact) — and that straight path was ~8.6% SHORTER than
+    // the meander, making the slalom strictly suboptimal to follow. This test
+    // drives the REAL spline (exactly what the sim's wall-clamp does via
+    // closestPointOnSpline) and asserts that the straight line leaves the
+    // corridor — i.e. the walls engage and steering is required to finish.
+    //
+    // Metric: for a point on the straight x=startX path at many z, the
+    // perpendicular distance to the centerline must EXCEED the local halfWidth
+    // SOMEWHERE on the track. max(distance - halfWidth) > 0 proves a wall.
+    const startX = REEF_RACE_DEFAULT_TRACK[0].x;
+    const zMax = REEF_RACE_DEFAULT_TRACK[REEF_RACE_DEFAULT_TRACK.length - 1].z;
+    const SAMPLES = 2000;
+
+    let maxExitMargin = -Infinity;
+    let exitZ = 0;
+    let exitT = 0;
+    for (let i = 0; i <= SAMPLES; i++) {
+      const z = (i / SAMPLES) * zMax;
+      const closest = spline.closestPointOnSpline({ x: startX, z });
+      const halfW = spline.widthAt(closest.t);
+      const margin = closest.distance - halfW; // > 0 ⇒ outside the corridor
+      if (margin > maxExitMargin) {
+        maxExitMargin = margin;
+        exitZ = z;
+        exitT = closest.t;
+      }
+    }
+
+    // eslint-disable-next-line no-console
+    console.log(
+      `  straight x=${startX} path: max(distance - halfWidth) = ` +
+        `${maxExitMargin.toFixed(1)} wu @ z=${exitZ.toFixed(0)} (t=${exitT.toFixed(3)})`,
+    );
+
+    // Walls MUST engage on the straight line.
+    expect(maxExitMargin).toBeGreaterThan(0);
+    // And with real margin (≳150 wu past the wall at the worst peak) so a
+    // small future amplitude/halfWidth drift can't silently re-open the bypass.
+    expect(maxExitMargin).toBeGreaterThanOrEqual(150);
+  });
+
+  it('the meander is followable — min radius of curvature ≥ the carve floor', () => {
+    // Constraint #2: a clean carve at REEF_MAX_SPEED=500 with REEF_TURN_RATE≈2.6
+    // can hold the line only if the meander's radius of curvature stays above
+    // speed/turnRate ≈ 192 wu. We compute the worst-case (minimum) radius of
+    // curvature numerically off the centerline and assert it clears the floor
+    // with margin (design target ≳250 wu). A meander a kart physically cannot
+    // follow at speed (constant wall-clamp) is as bad as a too-wide one.
+    const MIN_TURN_RADIUS_FLOOR_WU = 500 / 2.6; // ≈ 192.3 wu
+    const h = 1e-3;
+    let minR = Infinity;
+    let minRT = 0;
+    for (let i = 20; i <= 980; i++) {
+      const t = i / 1000;
+      const p0 = spline.centerlineAt(t - h);
+      const p1 = spline.centerlineAt(t);
+      const p2 = spline.centerlineAt(t + h);
+      const vx = (p2.x - p0.x) / (2 * h);
+      const vz = (p2.z - p0.z) / (2 * h);
+      const ax = (p2.x - 2 * p1.x + p0.x) / (h * h);
+      const az = (p2.z - 2 * p1.z + p0.z) / (h * h);
+      const speed = Math.hypot(vx, vz);
+      const cross = Math.abs(vx * az - vz * ax);
+      if (cross < 1e-9) continue;
+      const R = (speed * speed * speed) / cross;
+      if (R < minR) {
+        minR = R;
+        minRT = t;
+      }
+    }
+    // eslint-disable-next-line no-console
+    console.log(
+      `  min radius of curvature = ${minR.toFixed(1)} wu @ t=${minRT.toFixed(3)} ` +
+        `(floor=${MIN_TURN_RADIUS_FLOOR_WU.toFixed(1)} wu)`,
+    );
+    expect(minR).toBeGreaterThanOrEqual(MIN_TURN_RADIUS_FLOOR_WU);
+    expect(minR).toBeGreaterThanOrEqual(250);
+  });
+
   it('centerlineAt(0) lands at the start CP', () => {
     const start = spline.centerlineAt(0);
     expect(Math.abs(start.x)).toBeLessThan(0.01);
@@ -147,23 +233,29 @@ describe('REEF_RACE_DEFAULT_TRACK — spline integration', () => {
   });
 
   it('halfWidth interpolation respects per-segment design intent', () => {
-    // Spot-check: t=0 sits in the lagoon (halfWidth ~3300), t≈0.45 sits in
-    // the shipwreck segment (halfWidth ~1650), t=1 sits in the finish
-    // (halfWidth ~3300). We don't pin to exact numbers since centripetal
-    // interpolation smooths across the boundary; we check ranges.
-    // Updated 2026-04-29 (iter-9) after ×1.5 widening from iter-8:
-    // lagoon/finish 2200→3300, kelp 1325→1990, shipwreck 1100→1650, coral 880→1320.
+    // Spot-check: t=0 sits in the lagoon (halfWidth ~540), t=1 sits in the
+    // finish (halfWidth ~540), mid-track is tighter (chokepoints). We don't
+    // pin to exact numbers since centripetal interpolation smooths across the
+    // boundary; we check ranges.
+    // Updated 2026-06-01 (steering-mandatory re-tune): lagoon/finish 600→540,
+    // kelp/shipwreck/coral all 290 (was 480/440/400) so the corridor is a few
+    // kart-widths AND amplitude (440/460) exceeds it → walls actually engage.
     const wStart = spline.widthAt(0);
     const wFinish = spline.widthAt(1);
-    expect(wStart).toBeGreaterThanOrEqual(3200);
-    expect(wStart).toBeLessThanOrEqual(3400);
-    expect(wFinish).toBeGreaterThanOrEqual(3200);
-    expect(wFinish).toBeLessThanOrEqual(3400);
+    expect(wStart).toBeGreaterThanOrEqual(500);
+    expect(wStart).toBeLessThanOrEqual(580);
+    expect(wFinish).toBeGreaterThanOrEqual(500);
+    expect(wFinish).toBeLessThanOrEqual(580);
 
     // Mid-track must be tighter than start/finish (we have chokepoints there).
     const wMid = spline.widthAt(0.5);
     expect(wMid).toBeLessThan(wStart);
     expect(wMid).toBeLessThan(wFinish);
+
+    // Tightest segments (kelp/shipwreck/coral) are now only a few kart-widths
+    // (kart radius 22 → ~44 wu). Assert the corridor is genuinely tight so a
+    // regression that re-widens it (walls never engaging again) fails here.
+    expect(wMid).toBeLessThan(700);
   });
 });
 
