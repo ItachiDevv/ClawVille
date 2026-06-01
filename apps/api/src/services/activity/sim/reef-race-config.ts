@@ -1156,3 +1156,69 @@ export function buildSplineRamps(): SplineRampPatch[] {
     { id: 'ramp-canyon-2',  t: 0.78, lateralOffset: 0, halfLength: RAMP_HALF_LENGTH, halfWidth: RAMP_HALF_WIDTH, launchImpulse: REEF_JUMP_IMPULSE_RAMP, cooldownMs: RAMP_COOLDOWN_MS },
   ];
 }
+
+// ─── Slow-zone obstacle clusters (2026-06-02 water-dominant wide rebuild) ────
+//
+// "Steering matters via COURSE DESIGN, not narrow walls." The wide track
+// (`track-layout.ts`) has no walls forcing a line, so these urchin-rock
+// clusters create the line-choice pressure: each cluster sits on the INSIDE
+// (geometric-shortest) line of a sweeping bend, or dead-center at a chicane
+// pinch — so the fastest geometric line CLIPS them, eating a brief -40% slow
+// (HAZARD_SLOW_MULT, HAZARD_TICK_DURATION_MS). The wide outside line dodges
+// them but covers more distance: a real risk/reward tradeoff.
+//
+// Mirrors `SplineRampPatch` / `buildSplineRamps()` exactly so the sim's AABB-
+// in-tangent-frame resolver (`resolveObstacles`, cloned from `resolveRamps`)
+// reuses the identical math. The slow-effect plumbing (`hazard-slow` speedMod
+// block + HAZARD_* consts) already exists — these just feed it geometry.
+
+export interface SplineObstaclePatch {
+  id: string;
+  /** Progress fraction along spline (0..1). */
+  t: number;
+  /**
+   * Lateral offset from centerline (wu). The sim's resolveObstacles uses the
+   * LEFT normal n=(-tang.z, tang.x), so POSITIVE shifts toward LEFT-of-travel.
+   * Inside-of-bend offsets are pre-signed per-cluster below (computed from the
+   * 2026-06-02 layout: kelp/coral bends curve so inside = +offset, shipwreck
+   * bend inside = -offset; chicanes are dead-center 0).
+   */
+  lateralOffset: number;
+  /** Half-length along spline tangent (wu). */
+  halfLength: number;
+  /** Half-width perpendicular to tangent (wu). */
+  halfWidth: number;
+}
+
+/** AABB half-length of an obstacle cluster along the tangent (wu). */
+export const OBSTACLE_HALF_LENGTH = 120;
+/** AABB half-width of an obstacle cluster perpendicular to the tangent (wu). */
+export const OBSTACLE_HALF_WIDTH = 120;
+/**
+ * Inside-line lateral offset magnitude for bend clusters (wu). ~0.4× the
+ * straight halfWidth (1200) → 480 wu inside; the cluster sits on the shortcut
+ * line but stays well inside the corridor (480 < 960 even at the chicane).
+ */
+export const OBSTACLE_INSIDE_OFFSET = 480;
+
+/**
+ * Obstacle clusters — 6 slow zones forcing line choices on the wide course.
+ * t-values + inside-line signs are taken from driving the real spline against
+ * the 2026-06-02 layout:
+ *   kelp bend apex  ≈ t 0.27 (+x bulge, inside = +offset toward axis)
+ *   wreck bend apex ≈ t 0.55 (-x bulge, inside = -offset toward axis)
+ *   coral bend apex ≈ t 0.82 (+x bulge, inside = +offset toward axis)
+ *   chicane 1 (kelp→wreck pinch)  ≈ t 0.41 (dead-center funnel, offset 0)
+ *   chicane 2 (wreck→coral pinch) ≈ t 0.69 (dead-center funnel, offset 0)
+ * plus a kelp bend-entry cluster (t 0.20) so the racing line meets one early.
+ */
+export function buildSplineObstacles(): SplineObstaclePatch[] {
+  return [
+    { id: 'obs-kelp-entry', t: 0.20, lateralOffset:  OBSTACLE_INSIDE_OFFSET, halfLength: OBSTACLE_HALF_LENGTH, halfWidth: OBSTACLE_HALF_WIDTH },
+    { id: 'obs-kelp-apex',  t: 0.27, lateralOffset:  OBSTACLE_INSIDE_OFFSET, halfLength: OBSTACLE_HALF_LENGTH, halfWidth: OBSTACLE_HALF_WIDTH },
+    { id: 'obs-chicane-1',  t: 0.41, lateralOffset:  0,                      halfLength: OBSTACLE_HALF_LENGTH, halfWidth: OBSTACLE_HALF_WIDTH },
+    { id: 'obs-wreck-apex', t: 0.55, lateralOffset: -OBSTACLE_INSIDE_OFFSET, halfLength: OBSTACLE_HALF_LENGTH, halfWidth: OBSTACLE_HALF_WIDTH },
+    { id: 'obs-chicane-2',  t: 0.69, lateralOffset:  0,                      halfLength: OBSTACLE_HALF_LENGTH, halfWidth: OBSTACLE_HALF_WIDTH },
+    { id: 'obs-coral-apex', t: 0.82, lateralOffset:  OBSTACLE_INSIDE_OFFSET, halfLength: OBSTACLE_HALF_LENGTH, halfWidth: OBSTACLE_HALF_WIDTH },
+  ];
+}

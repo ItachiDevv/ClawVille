@@ -103,6 +103,9 @@ import {
   // SPEC 3 — ramps
   buildSplineRamps,
   type SplineRampPatch,
+  // 2026-06-02 — slow-zone obstacle clusters (wide-course steering pressure)
+  buildSplineObstacles,
+  type SplineObstaclePatch,
   REEF_AIRBORNE_STEER_MULT,
   ACTION_BIT_POWERUP_0,
   ACTION_BIT_POWERUP_1,
@@ -337,6 +340,14 @@ interface SplineRoomState {
   ramps: SplineRampPatch[];
   /** SPEC 3 — per-body ramp cooldown map: avatarId → (rampId → expiresAt ms). */
   rampCooldowns: Map<string, Map<string, number>>;
+
+  /**
+   * 2026-06-02 — slow-zone obstacle clusters (built once per room). On the
+   * wide course these create line-choice pressure: a body whose AABB overlaps
+   * an obstacle eats a brief `hazard-slow` (-40%) speedMod. Static for the
+   * room's lifetime; also surfaced to the client via `getStaticZones`.
+   */
+  obstacles: SplineObstaclePatch[];
 }
 
 type SimBroadcastFn = (roomId: string, frame: ServerFrame) => void;
@@ -455,6 +466,8 @@ export class ReefRaceSplineSim {
       // SPEC 3 — ramp trigger volumes, built once per room.
       ramps: buildSplineRamps(),
       rampCooldowns: new Map(),
+      // 2026-06-02 — slow-zone obstacle clusters, built once per room.
+      obstacles: buildSplineObstacles(),
     };
 
     // ── Spawn bodies at the start line (t=0, z=0) ─────────────────────────
@@ -764,6 +777,53 @@ export class ReefRaceSplineSim {
     return this.rooms.get(roomId);
   }
 
+  /**
+   * 2026-06-02 — server-authoritative static zones for the client's
+   * `RoomMeta.reefStaticZones` channel (the same surface the ellipse sim's
+   * `getStaticZones` feeds; `ReefRaceHazards.tsx` reads `.hazards`). The spline
+   * sim has NO ribbons / apex zones (those were oval-only mechanics), so those
+   * arrays are empty; the obstacle clusters map onto `hazards` so the existing
+   * urchin-field renderer draws them at their world XZ positions.
+   *
+   * Protocol convention (matches bodyToWireEntity + ReefRaceHazards): the
+   * returned `center` is `{ x: sceneX, y: sceneZ }`. `radius` is the obstacle's
+   * tangent-perpendicular half-width (the visible footprint of the slow zone).
+   */
+  getStaticZones(roomId: string): {
+    // Protocol Vec2 ({x,y}) shape — IDENTICAL to the ellipse sim's
+    // `getStaticZones` so the ws-hub's conditional union collapses to one type
+    // and assigns cleanly to `RoomMeta.reefStaticZones`. (The spline's internal
+    // Vec2 is {x,z}; we map z→y at the boundary, same as bodyToWireEntity.)
+    ribbons: Array<{ id: string; a: { x: number; y: number }; b: { x: number; y: number } }>;
+    apexZones: Array<{
+      hairpinIndex: number;
+      innerCenter: { x: number; y: number };
+      outerCenter: { x: number; y: number };
+    }>;
+    hazards: Array<{ id: string; center: { x: number; y: number }; radius: number }>;
+  } | null {
+    const state = this.rooms.get(roomId);
+    if (!state) return null;
+    return {
+      ribbons: [],
+      apexZones: [],
+      hazards: state.obstacles.map((obs) => {
+        const pt   = state.spline.centerlineAt(obs.t);
+        const tang = state.spline.tangentAt(obs.t);
+        const nx = -tang.z;
+        const nz =  tang.x;
+        const cx = pt.x + nx * obs.lateralOffset;
+        const cz = pt.z + nz * obs.lateralOffset;
+        return {
+          id: obs.id,
+          // protocol y = scene Z (same map as bodyToWireEntity).
+          center: { x: cx, y: cz },
+          radius: obs.halfWidth,
+        };
+      }),
+    };
+  }
+
   // ─── Internal — tick loop ──────────────────────────────────────────────────
 
   private tickRoom(state: SplineRoomState): void {
@@ -822,6 +882,11 @@ export class ReefRaceSplineSim {
 
     // 5d. Ramp launch triggers (SPEC 3).
     this.resolveRamps(state, now);
+
+    // 5e. Slow-zone obstacle clusters (2026-06-02). Bodies whose AABB overlaps
+    //     an obstacle on the inside racing line / chicane center eat a brief
+    //     hazard-slow — the wide course's steering-via-design pressure.
+    this.resolveObstacles(state, now);
 
     // 6. Pickup respawn cycle.
     this.tickPickups(state, now);
@@ -1360,6 +1425,63 @@ export class ReefRaceSplineSim {
         });
 
         // One ramp per body per tick — stop checking ramps for this body.
+        break;
+      }
+    }
+  }
+
+  // ─── Slow-zone obstacle clusters (2026-06-02 wide-course rebuild) ──────────
+
+  /**
+   * Check each racing body against all obstacle AABB volumes (clone of
+   * `resolveRamps`'s AABB-in-tangent-frame test). On overlap, set a
+   * `hazard-slow` activeBoost — the SAME speedMod path the ellipse sim's
+   * urchin patches used (the `hazard-slow` block in `applyIntentForTick` step
+   * 3 + the HAZARD_* consts already exist). Re-applying every overlapping tick
+   * keeps the slow alive while inside (HAZARD_TICK_DURATION_MS = 200 ms absorbs
+   * tick jitter, so leaving the patch lets it expire cleanly).
+   *
+   * Unlike ramps there is NO per-body cooldown — the effect is a continuous
+   * slow while overlapping, not a one-shot impulse. Airborne bodies are NOT
+   * skipped (a kart jumping over a reef shouldn't be slowed, but the obstacle
+   * is a ground hazard — we keep the parity with hazards staying ground-bound
+   * by skipping airborne bodies, matching the "fits between apex marker and
+   * centerline on the surface" intent).
+   */
+  private resolveObstacles(state: SplineRoomState, now: number): void {
+    for (const body of state.bodies.values()) {
+      if (!body.alive || body.forfeited || body.finishedAt !== null) continue;
+      // Airborne karts clear ground hazards.
+      if (body.airborneTicks !== 0 || body.heightOffset > 0) continue;
+
+      for (const obs of state.obstacles) {
+        // Compute obstacle centerline world position via spline (same basis as
+        // resolveRamps): normal = 90° CCW of tangent = LEFT of travel.
+        const pt   = state.spline.centerlineAt(obs.t);
+        const tang = state.spline.tangentAt(obs.t);
+        const nx = -tang.z;
+        const nz =  tang.x;
+        const cx = pt.x + nx * obs.lateralOffset;
+        const cz = pt.z + nz * obs.lateralOffset;
+
+        // Project body delta onto tangent/normal basis (AABB-in-tangent-frame).
+        const dx    = body.x - cx;
+        const dz    = body.z - cz;
+        const along = dx * tang.x + dz * tang.z;
+        const perp  = dx * nx     + dz * nz;
+
+        if (Math.abs(along) > obs.halfLength) continue;
+        if (Math.abs(perp)  > obs.halfWidth)  continue;
+
+        // Overlap → apply / refresh the hazard-slow speedMod. `mult` is stored
+        // as `1 + HAZARD_SLOW_MULT` to match the ellipse sim's convention; the
+        // applyIntentForTick hazard block reads `(mult ?? 0) - 1` back to the
+        // additive negative (-0.40). Re-firing every tick extends the window.
+        body.activeBoosts.set('hazard-slow', {
+          expiresAt: now + HAZARD_TICK_DURATION_MS,
+          mult: 1 + HAZARD_SLOW_MULT,
+        });
+        // One obstacle is enough to slow this tick — stop scanning for this body.
         break;
       }
     }
