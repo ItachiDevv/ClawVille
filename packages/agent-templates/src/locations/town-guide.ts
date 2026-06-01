@@ -61,6 +61,10 @@ export const townGuide: LocationTemplate = {
     'Your avatar\'s archetype matters in Reef Race: Agility = tighter turns + longer slipstream window. Strength = faster drift charge + 40% knockback resistance. Intelligence = +20% power-up duration + 30% wider ribbon detection.',
     'Bots in Reef Race always race with neutral stats. So your investment in your avatar\'s archetype actually shows up against them.',
 
+    // 2026-06-01 surf rebuild — same-diff knowledge sync: the control feel +
+    // course identity changed (carve a tight river, not float open water).
+    'Reef Race is a surfing race down a winding river canyon — you ride ON the flowing water, not a flat track. Hold thrust to build speed and it CARRIES; ease off and you coast rather than stop. Lean left/right to carve the board through the bends. The river is a tight slalom, so the fast line is a clean carve through the meander — drive dead-straight and you slam the canyon walls. Reading the line, keeping momentum, and smooth carving are the skill; top speed is the same for everyone, so a careful racer beats a button-masher.',
+
     // Phase 4 — PB ghost + streak + Lobster of the Day + match-end summary.
     // Same-diff rule (CLAUDE.md "Town Guide Knowledge Sync") — anything new
     // a player can SEE in the world or HEAR about must land on Nori too.
