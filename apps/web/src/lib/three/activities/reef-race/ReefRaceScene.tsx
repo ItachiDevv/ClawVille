@@ -66,8 +66,13 @@ import {
   DIR_SHADOW_CAM_BOUNDS,
   VOID_BACKDROP_Y,
   VOID_BACKDROP_SIZE,
+  TRACK_SURFACE_Y,
 } from './reef-race-config';
+import { selfPoseBus, SELF_POSE_BUS_STALE_MS } from './reef-race-self-bus';
 import type { ReefRaceEntity } from './reef-race-types';
+
+// ─── v2 feature flag (mirror ReefRacePlayer) ──────────────────────────────────
+const USE_SPLINE_CAMERA = process.env.NEXT_PUBLIC_REEF_RACE_USE_SPLINE === 'true';
 
 // ─── Dev debug surface ────────────────────────────────────────────────────────
 // Exposed when NODE_ENV=development OR ?debug=1 in URL.
@@ -268,6 +273,25 @@ function ChaseCamera({ selfEntity, shakeRef }: ChaseCamProps) {
     }
     lastRotRef.current = heading;
 
+    // ─── v2 camera unify — follow the self body's PREDICTED pose ──────────────
+    // When the self kart is running client prediction (reef-race v2), the body
+    // renders from selfPoseBus, NOT the 200 ms server interp above. Follow the
+    // SAME pose so camera + body share one timebase — this kills the rubber-band
+    // where the kart slid to the screen edge on every turn while the camera
+    // lagged. The interp above still ran (keeps history/lastRot warm) and is the
+    // FALLBACK: if the bus is invalid or stale (no self, spectator, v1 path,
+    // tab-throttle), we keep the interp-derived renderX/renderZ/heading.
+    if (
+      USE_SPLINE_CAMERA &&
+      selfPoseBus.valid &&
+      performance.now() - selfPoseBus.updatedAt <= SELF_POSE_BUS_STALE_MS
+    ) {
+      renderX = selfPoseBus.x;
+      renderZ = selfPoseBus.z;
+      heading = selfPoseBus.rot;
+      lastRotRef.current = heading;
+    }
+
     // Direction player is heading (facing).
     _playerWorldDir.set(Math.sin(heading), 0, Math.cos(heading));
 
@@ -293,7 +317,7 @@ function ChaseCamera({ selfEntity, shakeRef }: ChaseCamProps) {
       CAMERA_OFFSET.y,
       -CAMERA_OFFSET.x * Math.sin(heading) + CAMERA_OFFSET.z * Math.cos(heading),
     );
-    _targetPos.set(renderX, 0, renderZ).add(_rotatedOffset);
+    _targetPos.set(renderX, TRACK_SURFACE_Y, renderZ).add(_rotatedOffset);
 
     // Lerp camera position.
     const lerpFactor = Math.min(1, CAMERA_LERP * delta);
@@ -301,7 +325,7 @@ function ChaseCamera({ selfEntity, shakeRef }: ChaseCamProps) {
     cam.position.copy(_camPos);
 
     // Look at kart + upward offset.
-    _lookAt.set(renderX, 0, renderZ).add(CAMERA_LOOK_OFFSET);
+    _lookAt.set(renderX, TRACK_SURFACE_Y, renderZ).add(CAMERA_LOOK_OFFSET);
     cam.lookAt(_lookAt);
 
     // Screen shake — decay and apply camera position offset.
@@ -407,47 +431,49 @@ function SceneContents({ entities, selfAvatarId, matchPhase, raceStartMs }: Scen
       {/* Depth backdrop (below track plane) */}
       <DepthBackdrop />
 
-      {/* Static track geometry */}
-      <Suspense fallback={null}>
-        <ReefRaceTrack />
-      </Suspense>
+      <group position-y={TRACK_SURFACE_Y}>
+        {/* Static track geometry */}
+        <Suspense fallback={null}>
+          <ReefRaceTrack />
+        </Suspense>
 
-      {/* Checkpoints (merged static) */}
-      <ReefRaceCheckpoints />
+        {/* Checkpoints (merged static) */}
+        <ReefRaceCheckpoints />
 
-      {/* Phase 2 — boost ribbons, hazard patches, apex markers (static) */}
-      <ReefRaceBoostRibbons />
-      <ReefRaceHazards />
-      <ReefRaceApexMarkers />
+        {/* Phase 2 — boost ribbons, hazard patches, apex markers (static) */}
+        <ReefRaceBoostRibbons />
+        <ReefRaceHazards />
+        <ReefRaceApexMarkers />
 
-      {/* Start grid + gantry + flags */}
-      <ReefRaceStartGrid gantryPhase={gantryPhase} />
+        {/* Start grid + gantry + flags */}
+        <ReefRaceStartGrid gantryPhase={gantryPhase} />
 
-      {/* Player karts — up to 8 draw calls */}
-      <Suspense fallback={null}>
-        {Array.from(entities.values()).map((entity) => (
-          <ReefRacePlayer
-            key={entity.avatarId}
-            entity={entity}
-            isSelf={entity.avatarId === selfAvatarId}
-            triggerScreenShake={entity.avatarId === selfAvatarId ? triggerScreenShake : undefined}
-          />
-        ))}
-      </Suspense>
+        {/* Player karts — up to 8 draw calls */}
+        <Suspense fallback={null}>
+          {Array.from(entities.values()).map((entity) => (
+            <ReefRacePlayer
+              key={entity.avatarId}
+              entity={entity}
+              isSelf={entity.avatarId === selfAvatarId}
+              triggerScreenShake={entity.avatarId === selfAvatarId ? triggerScreenShake : undefined}
+            />
+          ))}
+        </Suspense>
 
-      {/* Ghost kart — 1 draw call (max 1, own best only) */}
-      <Suspense fallback={null}>
-        <ReefRaceGhost raceStartMs={raceStartMs} />
-      </Suspense>
+        {/* Ghost kart — 1 draw call (max 1, own best only) */}
+        <Suspense fallback={null}>
+          <ReefRaceGhost raceStartMs={raceStartMs} />
+        </Suspense>
 
-      {/* Pickup boxes — 1 draw call (InstancedMesh) */}
-      <ReefRacePickups />
+        {/* Pickup boxes — 1 draw call (InstancedMesh) */}
+        <ReefRacePickups />
 
-      {/* Boost visual effects — 2 draw calls */}
-      <ReefRaceBoostFX playerPos={selfPos} boostActive={boostActive} />
+        {/* Boost visual effects — 2 draw calls */}
+        <ReefRaceBoostFX playerPos={selfPos} boostActive={boostActive} />
 
-      {/* Shared burst particle pool — up to 8 Points objects */}
-      <ActivityBursts />
+        {/* Shared burst particle pool — up to 8 Points objects */}
+        <ActivityBursts />
+      </group>
 
       {/* Dev debug surface — exposes window.__reefDebug in dev / ?debug=1 */}
       <DebugExpose entities={entities} />
