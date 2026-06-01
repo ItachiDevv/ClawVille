@@ -20,12 +20,27 @@
 // ── Categories ──────────────────────────────────────────────────────────────
 // DB CHECK constraint `avatars_agent_category_valid` mirrors this list. If
 // you add a value here, update the check() call in packages/database/src/
-// schema/avatars.ts in the same diff and run `bun run db:push`.
+// schema/avatars.ts in the same diff. db:push is flaky on the `avatars` table,
+// so the CHECK is applied via an idempotent raw migration under
+// packages/database/migrations-manual/ (the 'hatcher' add ships
+// 2026-06-01_add_hatcher_agent_category.sql). The web-side AgentCategory in
+// apps/web/src/lib/three/agent-model-registry.ts (3da-owned) must also include
+// any new value.
 export const AGENT_CATEGORIES = [
   'openclaw',
   'hermes',
   'milady',
   'other',
+  // ── Hatcher (partner #2) — added 2026-06-01 ──
+  // Dedicated category for agents that enter ClawVille from the Hatcher
+  // hosting platform (`.claude/plans/hatcher-integration.md` §5). Backed by
+  // the 8 Milady VRMs as PLACEHOLDER art in Phase 2; Phase 4 repoints the
+  // hatcher_* asset paths to bespoke Hatcher VRMs (no registry/category
+  // change at that point — just the web-side `path`). The registry enforces
+  // `category === getAgentCategoryForModel(modelKey)`, so a distinct
+  // `hatcher` category needs its own keys (`hatcher_1..8` below) — we cannot
+  // reuse `category:'milady'` + a random milady key.
+  'hatcher',
 ] as const;
 export type AgentCategory = typeof AGENT_CATEGORIES[number];
 
@@ -94,6 +109,26 @@ export const AGENT_MODELS = [
   { key: 'hermes_female', label: 'Hermes',      category: 'hermes' },
   { key: 'hermes_male',   label: 'Hermes Male', category: 'hermes' },
   { key: 'tekk',          label: 'Tekk',        category: 'hermes' },
+
+  // ── Hatcher (VRM humanoid avatars) — added 2026-06-01 ──
+  // PLACEHOLDER (Phase 4 swap): these 8 keys currently point at the existing
+  // 8 Milady Official VRMs on the WEB side (agent-model-registry.ts maps
+  // hatcher_N → /avatars/milady-official-N.vrm, scale 13, animatorId
+  // 'vrm-milady', preview /avatars/previews/milady-official-N.png). A
+  // connecting Hatcher agent is assigned a RANDOM hatcher_N via
+  // pickRandomHatcherModelKey() so the placeholder fleet is visually varied.
+  // Phase 4 authors bespoke Hatcher VRMs and repoints ONLY the web-side
+  // `path` (cache-bust `?v=N` since the URLs already exist) — no change to
+  // these keys, the category, or the connect-time random pick.
+  // See `.claude/plans/hatcher-integration.md` §5 + Phase 2/4 in §6.
+  { key: 'hatcher_1', label: 'Hatcher 1', category: 'hatcher' },
+  { key: 'hatcher_2', label: 'Hatcher 2', category: 'hatcher' },
+  { key: 'hatcher_3', label: 'Hatcher 3', category: 'hatcher' },
+  { key: 'hatcher_4', label: 'Hatcher 4', category: 'hatcher' },
+  { key: 'hatcher_5', label: 'Hatcher 5', category: 'hatcher' },
+  { key: 'hatcher_6', label: 'Hatcher 6', category: 'hatcher' },
+  { key: 'hatcher_7', label: 'Hatcher 7', category: 'hatcher' },
+  { key: 'hatcher_8', label: 'Hatcher 8', category: 'hatcher' },
 
   // NOTE: `crayfish` entry removed 2026-04-16 — the GLB renders visually
   // close to `lobster` but with a larger silhouette that clipped the
@@ -166,4 +201,44 @@ export function getAgentModel(key: string): AgentModelMeta | undefined {
  */
 export function getAgentCategoryForModel(modelKey: string): AgentCategory | undefined {
   return AGENT_MODELS.find((m) => m.key === modelKey)?.category;
+}
+
+// ── Hatcher random render-model pick (partner #2) ─────────────────────────────
+// Every connecting Hatcher agent draws a uniformly-random `hatcher_N` render
+// model so the placeholder Milady fleet looks varied (and the bespoke Phase-4
+// fleet will too without a code change). This is a COSMETIC pick — not a
+// security boundary — so it falls back to Math.random when a CSPRNG isn't
+// available (e.g. accidental web-bundle inclusion of this barrel). `crypto` is
+// lazy-`require`d INSIDE the function on purpose: a module-level
+// `import { randomInt } from 'crypto'` would pull a Node builtin into the web
+// bundle, since both web and API import the shared barrel. Server-side
+// (agent-gateway `/connect`) gets the real `crypto.randomInt`.
+
+/** All hatcher_* model keys, derived from the registry (stays in sync). */
+export const HATCHER_MODEL_KEYS: readonly AgentModelKey[] = AGENT_MODELS.filter(
+  (m) => m.category === 'hatcher',
+).map((m) => m.key) as readonly AgentModelKey[];
+
+/**
+ * Returns a uniformly-random `hatcher_N` model key. Cosmetic only — uses
+ * `crypto.randomInt` server-side, falls back to `Math.random` if the CSPRNG
+ * isn't reachable. Throws only if the hatcher fleet is somehow empty (a
+ * registry edit that removed every hatcher entry without updating callers).
+ */
+export function pickRandomHatcherModelKey(): AgentModelKey {
+  const keys = HATCHER_MODEL_KEYS;
+  if (keys.length === 0) {
+    // Unreachable while the 8 hatcher_* entries exist — guards a future
+    // registry edit that strips the category without fixing this helper.
+    throw new Error('pickRandomHatcherModelKey: no hatcher models registered');
+  }
+  let idx: number;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const nodeCrypto = require('crypto') as { randomInt(min: number, max: number): number };
+    idx = nodeCrypto.randomInt(0, keys.length);
+  } catch {
+    idx = Math.floor(Math.random() * keys.length);
+  }
+  return keys[idx];
 }
