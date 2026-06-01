@@ -92,3 +92,107 @@ export function verifyPartnerSignature(
   }
   return { ok: true, partnerId };
 }
+
+/**
+ * Freshness window for partner-signed GETs. A GET carries no body to sign, so
+ * the signed bytes are a CANONICAL CHALLENGE derived from method + path +
+ * timestamp. The signature alone can't prevent replay (the same bytes verify
+ * forever), so the timestamp must fall inside this window — past requests
+ * expire and clock-skew-from-the-future requests are rejected. 5 min matches
+ * Hatcher's `authNonceExpirySecs:300` (plan §1) so both sides agree on skew.
+ */
+export const PARTNER_GET_SIGNATURE_WINDOW_MS = 5 * 60_000;
+
+/**
+ * The CANONICAL CHALLENGE a partner must sign for a GET. Newline-joined,
+ * fixed field order, no JSON/whitespace ambiguity, so the partner can
+ * reproduce it byte-for-byte:
+ *
+ *   clawville-partner-get\n<METHOD>\n<PATH>\n<UNIX_MS>
+ *
+ *   - METHOD  uppercased HTTP method (always `GET`).
+ *   - PATH    the request path INCLUDING the leading slash, EXCLUDING the
+ *             scheme/host AND the query string (e.g.
+ *             `/api/partner/hatcher/agents/abc/stats`). The server uses Hono's
+ *             `c.req.path`, which is the decoded path with NO query string, so
+ *             the partner MUST sign the same path-only value — do not append
+ *             `?foo=bar` to the signed material even if the URL carries a query.
+ *   - UNIX_MS the millisecond unix timestamp the partner also sends in the
+ *             `X-Hatcher-Timestamp` header (decimal digits, no fraction).
+ *
+ * The domain-separator prefix (`clawville-partner-get`) prevents a GET
+ * signature from ever being replayed against a body-signed (POST/PATCH/DELETE)
+ * verifier and vice-versa.
+ */
+export function partnerGetChallenge(args: {
+  method: string;
+  path: string;
+  tsMillis: string;
+}): string {
+  return `clawville-partner-get\n${args.method.toUpperCase()}\n${args.path}\n${args.tsMillis}`;
+}
+
+/**
+ * Verify a partner-signed GET. Same ed25519 key + `PARTNER_PUBKEYS[partnerId]`
+ * allowlist as the body-signed path, but the signed material is
+ * `sha256(partnerGetChallenge(...))` instead of `sha256(rawBody)` and a
+ * freshness window gates replay. All failures collapse to a generic reason so
+ * callers return an opaque 401.
+ */
+export function verifyPartnerGetSignature(
+  partnerId: string,
+  args: {
+    method: string;
+    path: string;
+    tsHeader: string | null;
+    pubkeyHeader: string | null;
+    sigHeader: string | null;
+    nowMs?: number;
+  },
+): PartnerSignatureResult {
+  if (!args.pubkeyHeader || !args.sigHeader || !args.tsHeader) {
+    return { ok: false, reason: 'missing_signature' };
+  }
+
+  // Timestamp must be a plain integer of milliseconds inside the freshness
+  // window. Reject NaN, fractional, negative, stale (past) and early (future)
+  // timestamps. `Number.parseInt` would silently accept `"123abc"`, so guard
+  // with a strict digits-only test first.
+  if (!/^\d{1,15}$/.test(args.tsHeader)) {
+    return { ok: false, reason: 'bad_timestamp' };
+  }
+  const tsMs = Number(args.tsHeader);
+  const now = args.nowMs ?? Date.now();
+  if (Math.abs(now - tsMs) > PARTNER_GET_SIGNATURE_WINDOW_MS) {
+    return { ok: false, reason: 'stale_timestamp' };
+  }
+
+  const allowlist = loadPartnerPubkeys();
+  if (!allowlist) return { ok: false, reason: 'no_partner_allowlist' };
+  const expectedPubkey = allowlist[partnerId];
+  if (!expectedPubkey || args.pubkeyHeader !== expectedPubkey) {
+    return { ok: false, reason: 'unknown_partner' };
+  }
+
+  const challenge = partnerGetChallenge({
+    method: args.method,
+    path: args.path,
+    tsMillis: args.tsHeader,
+  });
+  const digest = createHash('sha256').update(challenge).digest();
+  let sigBytes: Uint8Array;
+  let pubBytes: Uint8Array;
+  try {
+    sigBytes = bs58.decode(args.sigHeader);
+    pubBytes = bs58.decode(args.pubkeyHeader);
+  } catch {
+    return { ok: false, reason: 'bad_signature_encoding' };
+  }
+  if (sigBytes.length !== 64 || pubBytes.length !== 32) {
+    return { ok: false, reason: 'bad_signature_length' };
+  }
+  if (!nacl.sign.detached.verify(new Uint8Array(digest), sigBytes, pubBytes)) {
+    return { ok: false, reason: 'bad_signature' };
+  }
+  return { ok: true, partnerId };
+}
