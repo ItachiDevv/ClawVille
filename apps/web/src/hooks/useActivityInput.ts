@@ -37,6 +37,10 @@ import { usePathname } from 'next/navigation';
 import type { ClientFrame } from '@clawville/shared';
 import { useGameStore } from '@/stores/game';
 import { useActivityStore } from '@/stores/activity';
+import {
+  selfInputBus,
+  resetSelfInputBus,
+} from '@/lib/three/activities/reef-race/reef-race-self-bus';
 
 export const ACTION_BIT_BOOST = 1 << 0;
 export const ACTION_BIT_USE_POWERUP = 1 << 1;
@@ -495,7 +499,12 @@ export function useActivityInput({ send, enabled }: UseActivityInputOptions): vo
       const targetMag = Math.hypot(targetDir.x, targetDir.y);
       if (isReefRaceRef.current) {
         const current = dirRef.current;
-        const responsePerSec = targetMag > 0.001 ? 11 : 18;
+        // Crisper steering for the v2 surf model (2026-06-01): moving 11→22,
+        // centering 18→30. Keeps an exp-filter so the sent dir (and the
+        // identical client-predicted dir) don't jitter, but the lag between a
+        // keypress and the kart leaning is roughly halved. Both the wire value
+        // and the prediction read this same smoothed dir, so they stay in sync.
+        const responsePerSec = targetMag > 0.001 ? 22 : 30;
         const alpha = 1 - Math.exp(-responsePerSec * frameDt);
         const nextX = current.x + (targetDir.x - current.x) * alpha;
         const nextY = current.y + (targetDir.y - current.y) * alpha;
@@ -528,6 +537,18 @@ export function useActivityInput({ send, enabled }: UseActivityInputOptions): vo
           : Math.min(1, dirMag)
         : 0;
 
+      // Publish the SAME smoothed dir/thrust to the self-input bus for the
+      // self kart's client prediction (reef-race v2 only). Map sim {x,y} →
+      // {x,z} (z = forward axis) to match SurfInput. dir=null + thrust=0 when
+      // not moving — identical to what omitting `dir` on the wire means
+      // server-side. Reading the SENT value (not the raw target) keeps the
+      // predicted heading locked to what the server integrates.
+      if (isReefRaceRef.current) {
+        selfInputBus.dir = moving ? { x: dir.x, z: dir.y } : null;
+        selfInputBus.thrust = moving ? thrust : 0;
+        selfInputBus.valid = true;
+      }
+
       const frame: ClientFrame = {
         type: 'input',
         seq: seqRef.current,
@@ -542,6 +563,9 @@ export function useActivityInput({ send, enabled }: UseActivityInputOptions): vo
     return () => {
       if (timer) clearInterval(timer);
       lastSendAtRef.current = 0;
+      // Clear the self-input bus so a stale dir/thrust can't drive prediction
+      // after the input loop is gone (room exit, WS reconnect remount).
+      resetSelfInputBus();
     };
   }, [send]);
 }
