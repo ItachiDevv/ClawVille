@@ -126,9 +126,10 @@ export const townGuide: LocationTemplate = {
     // HMAC deck shuffle), the five deterministic bot personalities, the real
     // ClawToken stack custody (buy-in debit / cash-out credit), and the
     // Control/Autonomous agent-mode UI seam. The global connection SKILL.md
-    // protocol endpoint + connected-agent WebSocket + hosted-agent per-hand
-    // memory writes all ship in Phase 6.5.2 (no global SKILL.md endpoint or
-    // game-skill-memory service exists yet — both are TODO).
+    // protocol endpoint now EXISTS (Hatcher Phase C, 2026-06-01 —
+    // `GET /api/skills/protocol/skill.md` + `/manifest.json`); the connected-agent
+    // WebSocket + hosted-agent per-hand memory writes still ship in Phase 6.5.2
+    // (the game-skill-memory service is still TODO).
     // LOCKED RULES echoed for grep-safety: blinds SB=1/BB=2, 6-max, buy-in 20–500 CT.
     // ECONOMY FIX 2026-05-29: pot rake = min(floor(pot*5/100), 5) CT, once before distribution.
     "The cove has a real No-Limit Texas Hold'em table — server-authoritative and provably fair. It's 6-max: your seat plus five house bots with distinct deterministic personalities (tight-aggressive, loose-aggressive, tight-passive, calling-station, and nit). Blinds are 1/2 ClawTokens; you buy in for 20–500 CT (default 100), the chips become your table stack, and you cash out whatever's left when you walk away. Streets play out normally — preflop, flop, turn, river, showdown — with fold/check/call/bet/raise, min-raises, all-ins, and correct side-pot splits. It's fun-money: buy-in debits and cash-out credit through the real ClawToken ledger (SOL/USDC is a later tier); guests get a 100 demo-CT stack with no ledger writes. The house rakes the pot at showdown — 5% of the total pot capped at 5 CT (`min(floor(pot × 5%), 5)`), taken once before winners are paid (split/side pots are raked once then distributed) — so a won pot credits slightly less than the raw pot. The button rotates each hand and every hand is replayable at /cove/history.",
@@ -141,10 +142,11 @@ export const townGuide: LocationTemplate = {
     // server-authoritative commit-reveal engine (8-deck no-replacement HMAC
     // shoe + the fixed standard third-card tableau), the real ClawToken ledger
     // (one-shot stake+settle per coup), and the Control/Autonomous agent-mode
-    // UI seam. The global connection SKILL.md protocol endpoint +
-    // connected-agent WebSocket + hosted-agent per-coup memory writes all ship
-    // with the connected-agent protocol drop (no global SKILL.md endpoint or
-    // game-skill-memory service exists yet — both are TODO).
+    // UI seam. The global connection SKILL.md protocol endpoint now EXISTS
+    // (Hatcher Phase C, 2026-06-01 — `GET /api/skills/protocol/skill.md` +
+    // `/manifest.json`); the connected-agent WebSocket + hosted-agent per-coup
+    // memory writes still ship with the connected-agent protocol drop (the
+    // game-skill-memory service is still TODO).
     // LOCKED RULES echoed for grep-safety: 8-deck, reshuffle at 75%, bets
     // PLAYER/BANKER/TIE 5–500 CT, Player 1:1, Banker 0.95:1 (5% comm.), Tie 8:1.
     // ECONOMY FIX 2026-05-29: banker commission realized by flooring the player's
