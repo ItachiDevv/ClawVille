@@ -15,6 +15,26 @@ export interface AppContext {
      * Same lifecycle as fpHash.
      */
     ipPrefixHash: string;
+    /**
+     * Hatcher partner #2 Phase C — set by `requirePartnerKey()` on the partner-
+     * gated skill routes ONLY. Identifies the validated partner key holder.
+     * Undefined on every other request (the middleware never runs there).
+     */
+    partnerId?: string;
+    /**
+     * Hatcher partner #2 Phase C — granted scopes for the validated partner key.
+     * Set alongside `partnerId` by `requirePartnerKey()`.
+     */
+    partnerScopes?: string[];
+    /**
+     * Hatcher partner #2 Phase C — how the per-building SKILL.md read was
+     * authorized, tagged onto the `skill_md.fetched` event payload's `via`.
+     * `'partner-import'` for partner-key bulk fetches (excluded from the
+     * leaderboard); `undefined` for organic end-user fetches (in-game "Claim
+     * Skill" button, connected agents — still count, under the 11/day cap).
+     * Set by the `endUserOrPartnerKey` gate in `routes/skills.ts`.
+     */
+    skillReadVia?: 'partner-import' | undefined;
   };
 }
 

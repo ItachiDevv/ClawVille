@@ -45,11 +45,11 @@ import {
   SHOP_BUILDINGS,
   BUILDING_TOOLS,
   CLAWVILLE_GAME_TOOLS,
-  // Hatcher partner #2 (2026-06-01): random render-model pick for incoming
-  // Hatcher agents + the canonical "you are inside ClawVille" orientation
-  // text returned on /connect so an external agent embeds it in its own
-  // system prompt.
-  pickRandomHatcherModelKey,
+  // Hatcher partner #2 (2026-06-01): canonical "you are inside ClawVille"
+  // orientation text returned on /connect so an external agent embeds it in
+  // its own system prompt. (The random hatcher-model pick is NOT imported here
+  // — Hatcher agents register via the partner-signed path, not /connect; see
+  // the `identityType` enum comment re: the Phase C lockdown.)
   CLAWVILLE_ORIENTATION_KNOWLEDGE,
 } from '@clawville/shared';
 import nacl from 'tweetnacl';
@@ -196,12 +196,17 @@ const connectSchema = z.object({
   targetNpcId: z.string().optional(),
 
   // Identity type hint (inferred from other fields if omitted).
-  // `hatcher` (added 2026-06-01) = an external agent entering from the Hatcher
-  // hosting platform. It rides the same universal connect path as the other
-  // external types; the only behavioural difference is the render model — a
-  // Hatcher agent is assigned a RANDOM `hatcher_N` placeholder avatar (the
-  // `hatcher` category). See `.claude/plans/hatcher-integration.md` §3 + §5.
-  identityType: z.enum(['openclaw', 'ironclaw', 'nanoclaw', 'milady', 'custom', 'anonymous', 'hatcher']).optional(),
+  //
+  // `hatcher` is INTENTIONALLY EXCLUDED from this public enum (Phase C lockdown,
+  // 2026-06-01). A Hatcher agent must be registered through the partner-SIGNED
+  // path `POST /api/partner/hatcher/agents` (`partner-hatcher.ts`), which owns
+  // the random-`hatcher_N` avatar assignment, the encrypted-at-rest cognition
+  // token, and the `hatcher:`-namespaced agent_id ownership guard. Accepting
+  // `identityType:'hatcher'` here would let any unauthenticated caller mint a
+  // row that masquerades as a Hatcher agent (and claim the hatcher avatar
+  // category) without the partner signature — so it's not allowed on /connect.
+  // See `.claude/plans/hatcher-integration.md` §13/§14 (proxy model is primary).
+  identityType: z.enum(['openclaw', 'ironclaw', 'nanoclaw', 'milady', 'custom', 'anonymous']).optional(),
 
   // Phase 5 — explicit identity key for first-contact bootstrap. When
   // `identityType` + `identityKey` are both present we resolve-or-
@@ -304,15 +309,17 @@ agentGatewayRoutes.post('/connect', async (c) => {
   // Render-model surface for a connected agent = `species` (the
   // openclaw_bots.species column + the OpenClawRegistration config). Resolved
   // ONCE here so the persisted row, the spawn config, and the in-world sim all
-  // agree. Hatcher partner #2 (2026-06-01): a first-time Hatcher agent with no
-  // explicit species gets a RANDOM `hatcher_N` placeholder model; the value is
-  // then persisted so reconnects keep the SAME avatar instead of re-rolling.
-  // A returning agent always keeps its stored species (set in the existing-row
-  // branch below). The connect path does NOT write avatars.agent_category, so
-  // no DB CHECK is involved — only /join writes agent_category.
-  let resolvedSpecies: string | null =
-    data.species ??
-    (identityType === 'hatcher' ? pickRandomHatcherModelKey() : null);
+  // agree. A returning agent keeps its stored species (set in the existing-row
+  // branch below); a new one falls back to the Milady default (Step 2b) when no
+  // species is supplied. The connect path does NOT write avatars.agent_category,
+  // so no DB CHECK is involved — only /join writes agent_category.
+  //
+  // NOTE: Hatcher agents do NOT come through /connect (Phase C lockdown — see
+  // the `identityType` enum comment). The random-`hatcher_N` placeholder
+  // assignment lives in `POST /api/partner/hatcher/agents` (`partner-hatcher.ts`),
+  // which is the only partner-authenticated path that can claim that avatar
+  // category. So there is no hatcher branch here.
+  let resolvedSpecies: string | null = data.species ?? null;
 
   // The connection-token flow knows which user issued the token (the
   // human pasted the URL into their authed agent's chat, the modal
@@ -344,11 +351,9 @@ agentGatewayRoutes.post('/connect', async (c) => {
       const preferredName = data.miladyCharacterName ?? data.name ?? existing.name;
 
       // Returning agent keeps its previously-assigned render model unless the
-      // caller explicitly overrides `species`. For a Hatcher agent this means
-      // it keeps the SAME random hatcher_N placeholder it was first assigned,
-      // rather than re-rolling on every reconnect. Falls back to the freshly
-      // resolved species (a random hatcher pick) only if the stored row had
-      // none — e.g. a hatcher agent whose first connect predated this code.
+      // caller explicitly overrides `species`, so it renders the SAME avatar
+      // across reconnects rather than re-rolling. Falls back to the freshly
+      // resolved species only if the stored row had none.
       const persistedSpecies = data.species ?? existing.species ?? resolvedSpecies;
       resolvedSpecies = persistedSpecies;
 
@@ -393,8 +398,7 @@ agentGatewayRoutes.post('/connect', async (c) => {
         protocol: wireProtocol,
         mode: data.mode,
         name: insertName,
-        // Persist the resolved render model (random hatcher_N for a first-time
-        // Hatcher agent) so reconnects keep the same avatar.
+        // Persist the resolved render model so reconnects keep the same avatar.
         species: resolvedSpecies,
         color: data.color ?? null,
         // Bind to the human who issued the connection token so the bot
@@ -465,8 +469,7 @@ agentGatewayRoutes.post('/connect', async (c) => {
     // so 'milady_official_1' takes the VRMNpcMesh path.
     //
     // `resolvedSpecies` was computed + persisted above (Step 2): it is the
-    // caller's explicit species, OR a random `hatcher_N` placeholder for a
-    // first-time Hatcher agent, OR a returning agent's stored species. We fall
+    // caller's explicit species OR a returning agent's stored species. We fall
     // back to the Milady default only when it's still null (e.g. an anonymous
     // agent with no species). This keeps the persisted row, the spawn config,
     // and the in-world render in lockstep.
