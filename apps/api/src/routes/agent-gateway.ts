@@ -45,11 +45,48 @@ import {
   SHOP_BUILDINGS,
   BUILDING_TOOLS,
   CLAWVILLE_GAME_TOOLS,
+  // Hatcher partner #2 (2026-06-01): canonical "you are inside ClawVille"
+  // orientation text returned on /connect so an external agent embeds it in
+  // its own system prompt. (The random hatcher-model pick is NOT imported here
+  // — Hatcher agents register via the partner-signed path, not /connect; see
+  // the `identityType` enum comment re: the Phase C lockdown.)
+  CLAWVILLE_ORIENTATION_KNOWLEDGE,
 } from '@clawville/shared';
 import nacl from 'tweetnacl';
 import bs58 from 'bs58';
 
 const agentGatewayRoutes = new Hono();
+
+// ---------------------------------------------------------------------------
+// Hatcher partner #2 (2026-06-01) — /connect orientation payload.
+// ---------------------------------------------------------------------------
+// `CLAWVILLE_ORIENTATION_KNOWLEDGE` (the canonical "you are inside ClawVille"
+// world-facts, single source of truth in
+// packages/shared/src/constants/orientation-skill.ts) is returned on every
+// /connect so an EXTERNAL agent — which brings its own model and gets NO
+// server-side Eliza runtime for its chat — can embed orientation into its own
+// system prompt at connect time. Additive field; existing connect consumers
+// ignore unknown keys, so this does not break them.
+//
+// Phase 3 (`.claude/plans/hatcher-integration.md` §4) will swap this inline
+// text for a manifest URL + content-hash (GET /api/skills/manifest.json +
+// /api/skills/protocol/skill.md) so agents poll-and-diff instead of re-reading
+// the full body every connect. Until that endpoint exists, the inline text is
+// the only delivery surface.
+//
+// Joined + frozen once at module load — the body is identical for every
+// connect, so there's no reason to re-join the ~70-entry array per request.
+const CONNECT_ORIENTATION_TEXT = CLAWVILLE_ORIENTATION_KNOWLEDGE.join('\n\n');
+const CONNECT_ORIENTATION = Object.freeze({
+  // Plain-text orientation body the agent should prepend to its system prompt.
+  text: CONNECT_ORIENTATION_TEXT,
+  // Number of discrete world-facts, for an agent that wants to chunk/embed.
+  factCount: CLAWVILLE_ORIENTATION_KNOWLEDGE.length,
+  // Provenance note so an agent (or its operator) knows this is the canonical
+  // orientation surface and what supersedes it.
+  source: 'CLAWVILLE_ORIENTATION_KNOWLEDGE',
+  note: 'Embed this in your system prompt so you act as an agent inside ClawVille. Phase 3 replaces this inline text with a manifest URL + content-hash.',
+});
 
 // ---------------------------------------------------------------------------
 // Rate limiter for /connect — prevents unlimited bot registration spam.
@@ -79,6 +116,25 @@ const reconnectRateLimiter = createRateLimiter({
   maxPerWindow: 5,
   windowMs: 60_000,
 });
+
+// ---------------------------------------------------------------------------
+// resolveAvatarIdForBot — map an openclaw_bots.userId to that user's avatars.id
+// ---------------------------------------------------------------------------
+// CT credits MUST target an `avatars.id` (the ledger row-locks the avatars
+// row). A connected agent's `openclaw_bots.id` is NOT an avatars PK — crediting
+// it threw "avatar not found" (swallowed), so connected agents never earned CT
+// for building visits / teacher chats. This resolves the human's avatar via the
+// bot's bound userId. Returns null when the bot is anonymous (no userId) or the
+// user has no avatar yet — callers then skip the credit honestly (tokenAwarded
+// stays 0) rather than throwing. (2026-06-01, Hatcher Phase A bug fix.)
+async function resolveAvatarIdForBot(botUserId: string | null): Promise<string | null> {
+  if (!botUserId) return null;
+  const avatar = await db.query.avatars.findFirst({
+    where: eq(avatars.userId, botUserId),
+    columns: { id: true },
+  });
+  return avatar?.id ?? null;
+}
 
 // ---------------------------------------------------------------------------
 // POST /api/agent/connect  — Universal agent registration
@@ -139,7 +195,17 @@ const connectSchema = z.object({
   mode: z.enum(['avatar', 'override']).optional().default('avatar'),
   targetNpcId: z.string().optional(),
 
-  // Identity type hint (inferred from other fields if omitted)
+  // Identity type hint (inferred from other fields if omitted).
+  //
+  // `hatcher` is INTENTIONALLY EXCLUDED from this public enum (Phase C lockdown,
+  // 2026-06-01). A Hatcher agent must be registered through the partner-SIGNED
+  // path `POST /api/partner/hatcher/agents` (`partner-hatcher.ts`), which owns
+  // the random-`hatcher_N` avatar assignment, the encrypted-at-rest cognition
+  // token, and the `hatcher:`-namespaced agent_id ownership guard. Accepting
+  // `identityType:'hatcher'` here would let any unauthenticated caller mint a
+  // row that masquerades as a Hatcher agent (and claim the hatcher avatar
+  // category) without the partner signature — so it's not allowed on /connect.
+  // See `.claude/plans/hatcher-integration.md` §13/§14 (proxy model is primary).
   identityType: z.enum(['openclaw', 'ironclaw', 'nanoclaw', 'milady', 'custom', 'anonymous']).optional(),
 
   // Phase 5 — explicit identity key for first-contact bootstrap. When
@@ -240,6 +306,21 @@ agentGatewayRoutes.post('/connect', async (c) => {
   let lastY: number | undefined;
   const agentStats = data.stats ?? { hp: 100, attack: 10, defense: 8, speed: 6 };
 
+  // Render-model surface for a connected agent = `species` (the
+  // openclaw_bots.species column + the OpenClawRegistration config). Resolved
+  // ONCE here so the persisted row, the spawn config, and the in-world sim all
+  // agree. A returning agent keeps its stored species (set in the existing-row
+  // branch below); a new one falls back to the Milady default (Step 2b) when no
+  // species is supplied. The connect path does NOT write avatars.agent_category,
+  // so no DB CHECK is involved — only /join writes agent_category.
+  //
+  // NOTE: Hatcher agents do NOT come through /connect (Phase C lockdown — see
+  // the `identityType` enum comment). The random-`hatcher_N` placeholder
+  // assignment lives in `POST /api/partner/hatcher/agents` (`partner-hatcher.ts`),
+  // which is the only partner-authenticated path that can claim that avatar
+  // category. So there is no hatcher branch here.
+  let resolvedSpecies: string | null = data.species ?? null;
+
   // The connection-token flow knows which user issued the token (the
   // human pasted the URL into their authed agent's chat, the modal
   // captured `avatarId` + `userId` at issue time). Wire that userId onto
@@ -269,13 +350,20 @@ agentGatewayRoutes.post('/connect', async (c) => {
       // whatever's stored — Milady is the source of truth for agent naming.
       const preferredName = data.miladyCharacterName ?? data.name ?? existing.name;
 
+      // Returning agent keeps its previously-assigned render model unless the
+      // caller explicitly overrides `species`, so it renders the SAME avatar
+      // across reconnects rather than re-rolling. Falls back to the freshly
+      // resolved species only if the stored row had none.
+      const persistedSpecies = data.species ?? existing.species ?? resolvedSpecies;
+      resolvedSpecies = persistedSpecies;
+
       await db.update(openclawBots).set({
         identityType,
         gatewayUrl: data.gatewayUrl ?? existing.gatewayUrl,
         protocol: data.protocol ? wireProtocol : existing.protocol,
         mode: data.mode,
         name: preferredName,
-        species: data.species ?? existing.species,
+        species: persistedSpecies,
         color: data.color ?? existing.color,
         totalSessions,
         lastSeenAt: new Date(),
@@ -310,7 +398,8 @@ agentGatewayRoutes.post('/connect', async (c) => {
         protocol: wireProtocol,
         mode: data.mode,
         name: insertName,
-        species: data.species ?? null,
+        // Persist the resolved render model so reconnects keep the same avatar.
+        species: resolvedSpecies,
         color: data.color ?? null,
         // Bind to the human who issued the connection token so the bot
         // is recognized on later page loads + cross-session reconnect
@@ -378,8 +467,14 @@ agentGatewayRoutes.post('/connect', async (c) => {
     // VRM default so connected agents render as Miladys (not lobsters) when
     // the caller omits species. Renderer routes by species via MODEL_REGISTRY,
     // so 'milady_official_1' takes the VRMNpcMesh path.
+    //
+    // `resolvedSpecies` was computed + persisted above (Step 2): it is the
+    // caller's explicit species OR a returning agent's stored species. We fall
+    // back to the Milady default only when it's still null (e.g. an anonymous
+    // agent with no species). This keeps the persisted row, the spawn config,
+    // and the in-world render in lockstep.
     const spawnName = data.name ?? data.miladyCharacterName ?? resolvedAgentId.slice(0, 24);
-    const spawnSpecies = data.species ?? DEFAULT_AGENT_MODEL_KEY;
+    const spawnSpecies = resolvedSpecies ?? DEFAULT_AGENT_MODEL_KEY;
     try {
       const config: OpenClawRegistration = {
         agentId: resolvedAgentId,
@@ -666,6 +761,11 @@ agentGatewayRoutes.post('/connect', async (c) => {
     identityType,
     autonomyMode,
     walletAddress,
+    // Additive (2026-06-01) — canonical "you are inside ClawVille" orientation
+    // for external agents to embed in their own system prompt. Returned for
+    // every connecting agent (not just Hatcher) so any framework that brings
+    // its own brain starts orientation-aware. See CONNECT_ORIENTATION above.
+    orientation: CONNECT_ORIENTATION,
     ...(sessionTicket ? { sessionTicket } : {}),
     ...(identityBlock ? { identity: identityBlock } : {}),
     ...(walletBlock ? { wallet: walletBlock } : {}),
@@ -1089,11 +1189,27 @@ agentGatewayRoutes.post('/disconnect', async (c) => {
 
   await expireSession(agentId);
 
+  // BUG FIX (2026-06-01, Hatcher Phase A): disconnect previously flipped the
+  // session TTL + stopped the runtime but NEVER removed the in-world body, so
+  // the spawned NPC (avatar) / override lingered until the next API restart.
+  // Remove every live in-world session bound to this agentId so a clean signed
+  // disconnect actually frees the seat. Idempotent (no-op if already gone), so
+  // reconnect is unaffected — /connect re-registers a fresh session anyway.
+  let removedBodies = 0;
+  try {
+    const liveSessions = npcSimulation.findActiveSessionsByAgentIds([agentId]);
+    for (const sid of liveSessions) {
+      if (npcSimulation.unregisterOpenClaw(sid)) removedBodies++;
+    }
+  } catch (err) {
+    console.error('[AgentDisconnect] in-world body removal failed (non-fatal):', err);
+  }
+
   void logEvent({
     eventType: 'agent.session.disconnected',
     userId,
     agentId,
-    payload: { via: 'signed-challenge' },
+    payload: { via: 'signed-challenge', removedBodies },
   });
 
   return c.json({ disconnected: true, agentId });
@@ -1831,17 +1947,28 @@ agentGatewayRoutes.post('/:sessionId/visit-building', async (c) => {
       });
       if (bot) {
         visitUserId = bot.userId ?? null;
-        await creditClawTokens({
-          avatarId: bot.id,
-          amount: 1,
-          reason: 'building_visit',
-          source: 'api',
-          metadata: { buildingId, sessionId },
-        });
-        tokenAwarded = 1;
+        // BUG FIX (2026-06-01, Hatcher Phase A): credit the BOUND AVATAR, not
+        // `bot.id`. `bot.id` is an openclaw_bots PK, not an avatars PK, so the
+        // ledger threw "avatar not found" (swallowed) and connected agents
+        // never earned CT for building visits. Resolve the avatar via
+        // bot.userId -> avatars.id and credit that. If the bot has no
+        // userId/avatar, skip the credit honestly (tokenAwarded stays 0).
+        const avatarId = await resolveAvatarIdForBot(bot.userId ?? null);
+        if (avatarId) {
+          await creditClawTokens({
+            avatarId,
+            amount: 1,
+            reason: 'building_visit',
+            source: 'api',
+            metadata: { buildingId, sessionId, agentId: bot.agentId },
+          });
+          tokenAwarded = 1;
+        }
       }
-    } catch {
-      // Avatar row doesn't exist for this bot — credit failed, tokenAwarded stays 0
+    } catch (err) {
+      // Genuine ledger/DB error — log it (don't silently swallow). Credit
+      // failed, tokenAwarded stays 0.
+      console.error('[AgentGateway] building-visit CT credit failed:', err);
       tokenAwarded = 0;
     }
   }
@@ -2024,15 +2151,22 @@ agentGatewayRoutes.post('/:sessionId/building/:buildingId/chat', async (c) => {
             .where(eq(openclawBots.id, bot.id));
           knowledgePersisted = true;
         }
-        // Award +1 ClawToken for successful teaching turn
-        await creditClawTokens({
-          avatarId: bot.id,
-          amount: 1,
-          reason: 'building_chat_teaching',
-          source: 'api',
-          metadata: { buildingId, sessionId, characterName: system.locationAgent.agentName },
-        });
-        tokenAwarded = 1;
+        // Award +1 ClawToken for successful teaching turn.
+        // BUG FIX (2026-06-01, Hatcher Phase A): credit the BOUND AVATAR, not
+        // `bot.id` (same no-op bug as building-visit). Resolve the avatar via
+        // bot.userId -> avatars.id; skip honestly if the bot has no
+        // userId/avatar (tokenAwarded stays 0).
+        const avatarId = await resolveAvatarIdForBot(bot.userId ?? null);
+        if (avatarId) {
+          await creditClawTokens({
+            avatarId,
+            amount: 1,
+            reason: 'building_chat_teaching',
+            source: 'api',
+            metadata: { buildingId, sessionId, agentId: bot.agentId, characterName: system.locationAgent.agentName },
+          });
+          tokenAwarded = 1;
+        }
       }
     } catch (err) {
       console.error('[AgentGateway] building-chat knowledge persist failed:', err);
