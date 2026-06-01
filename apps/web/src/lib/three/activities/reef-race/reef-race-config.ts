@@ -305,10 +305,21 @@ export const CAMERA_FAR = 5000;
  * Chase-cam offset in player-local space (behind and above).
  * Y raised 200→280→320 (2026-04-29 QA: 280 still clipped Milady's hair tip ~5-10px;
  * 320 gives ~12° headroom above lookAt, well clear of 30° FOV half-angle top edge).
- * Math: lookAt at Y=130 from camera Y=320 at chase 350wu = 32° down pitch;
- * head_top at world Y≈175 → relative pitch atan2(45,350)=7.3° above lookAt = -25° from top edge.
+ *
+ * Z pushed -350 → -530 (2026-06-01 playtest: avatar filled ~40% frame height — too
+ * close for a racing game). Z pushed -530 → -700 (v2-wide-water: wide channel needs
+ * a further-back camera to show the river breadth and sweeping bends).
+ *
+ * At 700wu arm, standard framing math:
+ *   lookAt Y=130, camera Y=360 → atan2(230, 700) ≈ 18° down pitch (good horizon line).
+ *   VRM head_top at world Y≈230 → atan2(100, 700) ≈ 8° above lookAt = -10° from top edge.
+ *   River channel 2600wu wide at lagoon: at 700wu arm the half-angle subtension of the
+ *   channel width ≈ atan2(1300, 700) ≈ 62° — fills the 60° horizontal FOV edge-to-edge,
+ *   giving a water-dominant frame with both banks visible.
+ *
+ * Y raised 320→360 to compensate for the extra arm length (keeps horizon line consistent).
  */
-export const CAMERA_OFFSET = new THREE.Vector3(0, 320, -350);
+export const CAMERA_OFFSET = new THREE.Vector3(0, 360, -700);
 
 /**
  * Chase-cam look-at offset from player position (slightly above kart).
