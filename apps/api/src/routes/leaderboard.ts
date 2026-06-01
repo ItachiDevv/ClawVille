@@ -425,6 +425,42 @@ function setAgentCache(window: AgentLeaderboardWindow, snapshot: AgentLeaderboar
   agentCache.set(window, { snapshot, expiresAt: Date.now() + AGENT_CACHE_TTL_MS });
 }
 
+/**
+ * Single-agent leaderboard lookup — REUSES the exact public-board snapshot
+ * (`buildAgentSnapshot` CTE + scoring + per-(subject,day) caps) and its 60s
+ * window cache, so a per-agent stats surface (e.g. the Hatcher partner
+ * dashboard at `GET /api/partner/hatcher/agents/:id/stats`) shows the SAME
+ * score + rank the agent sees on the public `/leaderboard`. No re-derivation
+ * of the rubric: we build/reuse the cached ranked set and find the agent's row.
+ *
+ * `agentId` is the leaderboard subject id for an agent row — the text
+ * `openclaw_bots.agent_id` (for Hatcher agents that is the namespaced
+ * `hatcher:<rawId>`). Returns the entry (true rank within the full unified
+ * board + breakdown + score) or `null` when the agent has no scored events in
+ * the window (or ranks beyond the snapshot's 500-row cap — the same horizon
+ * the public board itself uses). Callers treat `null` as "score 0, unranked".
+ *
+ * Window defaults to `'all'` so a dashboard reflects lifetime contribution.
+ */
+export async function getAgentLeaderboardEntry(
+  agentId: string,
+  window: AgentLeaderboardWindow = 'all',
+): Promise<{ score: number; rank: number; breakdown: AgentScoreBreakdown } | null> {
+  let snapshot = getAgentCache(window);
+  if (!snapshot) {
+    snapshot = await buildAgentSnapshot(window, 500);
+    setAgentCache(window, snapshot);
+  }
+  // Match on the agent subject only — avatar rows carry a synthetic
+  // `avatar:<uuid>` agentId and a `subjectType:'avatar'`, so an exact agentId
+  // match against an `agent` row can never collide with a player avatar.
+  const entry = snapshot.agents.find(
+    (e) => e.subjectType === 'agent' && e.agentId === agentId,
+  );
+  if (!entry) return null;
+  return { score: entry.score, rank: entry.rank, breakdown: entry.breakdown };
+}
+
 function windowToInterval(window: AgentLeaderboardWindow): string {
   // Whitelisted — no user input reaches the SQL string beyond this switch.
   switch (window) {
@@ -525,7 +561,15 @@ async function buildAgentSnapshot(
         LEAST(COUNT(*) FILTER (WHERE event_type = 'building.visited'), ${C.buildingVisit})::int AS visits_c,
         LEAST(COUNT(*) FILTER (WHERE event_type = 'agent.chat.turn'), ${C.teacherChat})::int AS chats_c,
         LEAST(COUNT(*) FILTER (WHERE event_type = 'agent.collaboration.turn'), ${C.collaboration})::int AS collabs_c,
-        LEAST(COUNT(*) FILTER (WHERE event_type = 'skill_md.fetched'), ${C.skillFetch})::int AS skills_c,
+        -- Partner-import carve-out (Hatcher Phase C — 2026-06-01): a partner
+        -- re-embedding our SKILL.md daily via a partner key tags its fetches
+        -- payload.via='partner-import'. Exclude them so a partner can't farm
+        -- skill_md.fetched rank or trip the 11/day cap. Organic fetches (no
+        -- via, or via != 'partner-import') still count.
+        LEAST(COUNT(*) FILTER (
+          WHERE event_type = 'skill_md.fetched'
+            AND coalesce(payload->>'via','') <> 'partner-import'
+        ), ${C.skillFetch})::int AS skills_c,
         MAX(CASE WHEN event_type = 'identity.issued' THEN 1 ELSE 0 END)::int AS onboarded,
         COUNT(*) FILTER (
           WHERE event_type = 'activity.match.placed'
@@ -570,7 +614,11 @@ async function buildAgentSnapshot(
         LEAST(COUNT(*) FILTER (WHERE event_type = 'building.visited'), ${C.buildingVisit})::int AS visits_c,
         LEAST(COUNT(*) FILTER (WHERE event_type = 'agent.chat.turn'), ${C.teacherChat})::int AS chats_c,
         LEAST(COUNT(*) FILTER (WHERE event_type = 'agent.collaboration.turn'), ${C.collaboration})::int AS collabs_c,
-        LEAST(COUNT(*) FILTER (WHERE event_type = 'skill_md.fetched'), ${C.skillFetch})::int AS skills_c,
+        -- Partner-import carve-out (Hatcher Phase C) — same as agent_daily.
+        LEAST(COUNT(*) FILTER (
+          WHERE event_type = 'skill_md.fetched'
+            AND coalesce(payload->>'via','') <> 'partner-import'
+        ), ${C.skillFetch})::int AS skills_c,
         MAX(CASE WHEN event_type = 'identity.issued' THEN 1 ELSE 0 END)::int AS onboarded,
         COUNT(*) FILTER (
           WHERE event_type = 'activity.match.placed'

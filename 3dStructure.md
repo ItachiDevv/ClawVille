@@ -11,9 +11,13 @@
 > - **`GameFeatures.md`** — gameplay.
 > - **This doc** — *how* the 3D scene is wired: coordinates, camera, lights, GPU budget, animation, asset pipeline.
 
-**Last edit:** 2026-06-01 (later) — Reef Race v2 **wide water-dominant overhaul** (supersedes the skinny corridor from the surf rebuild below). **Course:** `track-layout.ts` corridor widened from halfWidth 290–540 (the skinny-canal bug) to **1300 lagoon/finish · 1200 sweeping straights · ~960 chicane pinch** (corridor 2400–2600wu ≈ 54 kart-diameters — fits all 8 racers + overtaking; min corridor 960 > the 590wu 8-kart floor). 16 CPs, three WIDE sweeping bends (centerline max|x|=606 ≈ 25% of corridor so water NEVER walls), arc 28356wu, min radius 1591wu. Steering now matters by **course design, not walls**: 6 slow urchin-rock **obstacle clusters** (`buildSplineObstacles()` mirroring ramps; `resolveObstacles()` in the sim applies `hazard-slow` −40%/200ms) sit on the inside line of each bend + dead-center at the 2 chicanes, so cutting the apex is faster only if you thread them. Server `getStaticZones()` now emits the clusters as `reefStaticZones.hazards` and `activity-ws-hub` wires them into `snapshot.init` so the client `ReefRaceHazards` renders them (was hard-omitted for the spline path). The "STEERING IS MANDATORY / straight-line-exits-corridor" test (which CAUSED the skinny bug) was replaced with 3 design guards (centerline bends ≥300, straight corridor ≥2000, chicane pinch ∈[800,1200]). **Water-dominant scene:** `river-scene.tsx` land bands shrunk — `GROUND_INNER_OFFSET` 873→250, `GROUND_W` 6000→2500, `LATERAL_BAND_MIN/MAX` 180/600→120/350, `GATE_POST_HALF_W` 520→1400, `BRIDGE_W` 1100→2800, `MARKER_X_OFFSET`→1800 — water rises from ~4% to ~27–34% of the cross-section (fixes "90% land for a water game"). **Flowing water:** `water-surf.tsx` was flat because the glint used a hardcoded `(0,1,0)` normal + no flow; now computes **analytical gradient normals** from the 3-octave displacement (finite-diff eps=2) so highlights ride the crests, adds downstream Z flow, faster UV scroll (0.10/0.18), crest foam from `vDisp`, current-line streaks, and `uSunDir` redirected to −Z so specular reflects toward the chase cam; `RIBBON_SAMPLES` 64→128 to kill displacement aliasing. **Camera:** `CAMERA_OFFSET` −530→**−700** behind, Y 320→**360**, to frame the wide channel + bends. All on branch `feat/reef-overhaul-v2` (worktree off staging). 45/45 reef sim tests pass with the flag.
+**Last edit:** 2026-06-01 — Landing page 3D scenes overhaul (§11 added). Hero section capped to `h-[100svh]` — svh handles mobile browser chrome. `page.tsx` hero now contains only: powered-by badge, h1, tagline, one-line subtitle, two CTAs, login link, scroll cue. MiladyAvatarShowcase + CollaborationAxes + stats strip + nav pills relocated into a new `#collaboration` `<section>` immediately after the hero. Legibility overlay added in hero at `z-[5]` (radial + vertical dark gradient between LandingScene z-0 and hero content z-10). `live-demo-strip.tsx` updated: ReefRaceVignette + BumperShellsPlaceholder removed; three new live tiles — AgentChatVignette (accent=cyan, href=/leaderboard), CoveVignette (accent=pink, href=/cove), BuildingVisitVignette (accent=amber, href=/game). `ReefRaceVignette.tsx` deleted (zero remaining imports). — Prior **Last edit:** 2026-06-01 — Reef Race v2 playtest fixes: (A) surfboard_1.glb centering — after `sb.scale.set(GLIDER_WIDTH, GLIDER_HEIGHT*4, GLIDER_LENGTH)` in the `clonedSurfboard` useMemo a `Box3.setFromObject` bbox pass shifts the board so its geometry centroid lands at `[0, 0, RIDER_MOUNT_OFFSET_DEFAULT[2]]` (-0.3 local) directly under the rider mount. One-time alloc inside useMemo, not per-frame. Fixes reverted "center surfboard" commits. (B) `CAMERA_OFFSET.z` -350 → -530: avatar angular subtension reduced ~40%→~20% of vertical FOV, matching conventional racing-game framing. Math: atan2(112wu VRM height, 530wu arm) ≈ 12° ≈ 20% of 60° vFOV. (C) Procedural VRM-only surf stance: `riderMount.rotation.x = -0.087` (-5° forward lean) + `riderMount.rotation.z` = ±3° idle sway (half-freq of bob, using `_bobTime` accumulator) + subtle bank coupling (-bankDelta * 0.08). GLB species (`lobster`, `sea_horse`, `crayfish`) continue to receive `riderMount.rotation.z = 0` exactly as before — gated by `isVRM`. All changes in `reef-race-config.ts` + `ReefRacePlayer.tsx`. No new per-frame allocs. No new GLB assets. Pose fix cannot be verified without a moving playtest — needs user sign-off on staging. — Prior Last edit: 2026-06-01 — Hatcher avatar category (Phase 2 placeholder): new `'hatcher'` `AgentCategory` + 8 `hatcher_1..8` `ModelRegistryEntry` keys in `agent-model-registry.ts`, pointing at existing Milady VRM files as placeholder art. `CATEGORY_META.hatcher`, `CATEGORY_ORDER`, `CATEGORY_DEFAULT_MODEL.hatcher`, `MODEL_KEY_TO_LEGACY_SPECIES` all updated. Skeleton classes table updated (hatcher keys share `vrm-milady` class). New §6h documents the category, Phase 4 swap procedure, and cache-bust requirement. Zero new rendering code — existing `vrm-milady` animator + `computeVRMAvatarFit` auto-sizing cover all 8 keys today.
 
-**Last edit:** 2026-06-01 — Reef Race v2 surf rebuild. **Visual:** the gameplay track layer (SplineTrack bed, players, pickups, checkpoints, start grid, finish gate, ribbons, hazards, apex markers) is wrapped in `<group position-y={TRACK_SURFACE_Y}>` in `ReefRaceScene.tsx` (`TRACK_SURFACE_Y = -200`, = WaterSurf `WATER_Y`) and the chase camera's target/eye/lookAt base Y shifts to the same — so the surfer rides ON the flowing water inside the rocky-cliff ravine. `RiverScene` (sky dome, water, terrain, `RockyCliffs`) stays at ABSOLUTE world Y. SplineTrack river-bed at local −2 (world −202, just under the surface); old grass-green bank walls `visible={false}` (RockyCliffs are the canyon walls). Fixes the "water disappeared, surfer on a green chunky track" report — the camera was framing the Y=0 grass plane 200wu above the water. **Physics:** velocity-steering replaced by surf-carving — heading-rate turn + lateral grip + carried momentum + coast-on-release — in the pure shared `integrateSurfStep` (`packages/shared/src/reef-race/surf-physics.ts`), run by the server per 30Hz tick AND mirrored client-side. Corridor tightened (halfWidth ~290–540, slalom ±440–460 > halfWidth) so a straight line is walled off → steering mandatory; jumps cut turn authority only (not forward speed); collisions spread over ticks. **Client feel:** self-kart client-side prediction (fixed 1/30 accumulator + per-snapshot re-baseline pos0.4/vel0.5/rot0.5, hard-snap >250wu) + chase camera follows the predicted pose via `selfPoseBus` (150ms stale fallback to server-interp) — kills the ~300ms input lag + body-vs-camera rubber-band. New `reef-race-self-bus.ts`. All client behavior gated `NEXT_PUBLIC_REEF_RACE_USE_SPLINE && isSelf`; remote karts + v1 ellipse path render byte-identically. Both server `REEF_RACE_USE_SPLINE` + client `NEXT_PUBLIC_REEF_RACE_USE_SPLINE` are ON on staging (verified on the live containers).
+**Prior Last edit:** 2026-06-01 — Reef Race v2 surf rebuild. **Visual:** the gameplay track layer (SplineTrack bed, players, pickups, checkpoints, start grid, finish gate, ribbons, hazards, apex markers) is wrapped in `<group position-y={TRACK_SURFACE_Y}>` in `ReefRaceScene.tsx` (`TRACK_SURFACE_Y = -200`, = WaterSurf `WATER_Y`) and the chase camera's target/eye/lookAt base Y shifts to the same — so the surfer rides ON the flowing water inside the rocky-cliff ravine. `RiverScene` (sky dome, water, terrain, `RockyCliffs`) stays at ABSOLUTE world Y. SplineTrack river-bed at local −2 (world −202, just under the surface); old grass-green bank walls `visible={false}` (RockyCliffs are the canyon walls). Fixes the "water disappeared, surfer on a green chunky track" report — the camera was framing the Y=0 grass plane 200wu above the water. **Physics:** velocity-steering replaced by surf-carving — heading-rate turn + lateral grip + carried momentum + coast-on-release — in the pure shared `integrateSurfStep` (`packages/shared/src/reef-race/surf-physics.ts`), run by the server per 30Hz tick AND mirrored client-side. Corridor tightened (halfWidth ~290–540, slalom ±440–460 > halfWidth) so a straight line is walled off → steering mandatory; jumps cut turn authority only (not forward speed); collisions spread over ticks. **Client feel:** self-kart client-side prediction (fixed 1/30 accumulator + per-snapshot re-baseline pos0.4/vel0.5/rot0.5, hard-snap >250wu) + chase camera follows the predicted pose via `selfPoseBus` (150ms stale fallback to server-interp) — kills the ~300ms input lag + body-vs-camera rubber-band. New `reef-race-self-bus.ts`. All client behavior gated `NEXT_PUBLIC_REEF_RACE_USE_SPLINE && isSelf`; remote karts + v1 ellipse path render byte-identically. Both server `REEF_RACE_USE_SPLINE` + client `NEXT_PUBLIC_REEF_RACE_USE_SPLINE` are ON on staging (verified on the live containers).
+
+**Prior Last edit:** 2026-06-01 (later) — Reef Race v2 **wide water-dominant overhaul** (supersedes the skinny corridor from the surf rebuild below). **Course:** `track-layout.ts` corridor widened from halfWidth 290–540 (the skinny-canal bug) to **1300 lagoon/finish · 1200 sweeping straights · ~960 chicane pinch** (corridor 2400–2600wu ≈ 54 kart-diameters — fits all 8 racers + overtaking; min corridor 960 > the 590wu 8-kart floor). 16 CPs, three WIDE sweeping bends (centerline max|x|=606 ≈ 25% of corridor so water NEVER walls), arc 28356wu, min radius 1591wu. Steering now matters by **course design, not walls**: 6 slow urchin-rock **obstacle clusters** (`buildSplineObstacles()` mirroring ramps; `resolveObstacles()` in the sim applies `hazard-slow` −40%/200ms) sit on the inside line of each bend + dead-center at the 2 chicanes, so cutting the apex is faster only if you thread them. Server `getStaticZones()` now emits the clusters as `reefStaticZones.hazards` and `activity-ws-hub` wires them into `snapshot.init` so the client `ReefRaceHazards` renders them (was hard-omitted for the spline path). The "STEERING IS MANDATORY / straight-line-exits-corridor" test (which CAUSED the skinny bug) was replaced with 3 design guards (centerline bends ≥300, straight corridor ≥2000, chicane pinch ∈[800,1200]). **Water-dominant scene:** `river-scene.tsx` land bands shrunk — `GROUND_INNER_OFFSET` 873→250, `GROUND_W` 6000→2500, `LATERAL_BAND_MIN/MAX` 180/600→120/350, `GATE_POST_HALF_W` 520→1400, `BRIDGE_W` 1100→2800, `MARKER_X_OFFSET`→1800 — water rises from ~4% to ~27–34% of the cross-section (fixes "90% land for a water game"). **Flowing water:** `water-surf.tsx` was flat because the glint used a hardcoded `(0,1,0)` normal + no flow; now computes **analytical gradient normals** from the 3-octave displacement (finite-diff eps=2) so highlights ride the crests, adds downstream Z flow, faster UV scroll (0.10/0.18), crest foam from `vDisp`, current-line streaks, and `uSunDir` redirected to −Z so specular reflects toward the chase cam; `RIBBON_SAMPLES` 64→128 to kill displacement aliasing. **Camera:** `CAMERA_OFFSET` −530→**−700** behind, Y 320→**360**, to frame the wide channel + bends. All on branch `feat/reef-overhaul-v2` (worktree off staging). 45/45 reef sim tests pass with the flag.
+
+(surf rebuild changelog entry above; staging's duplicate omitted on merge.)
 
 **Prior Last edit:** 2026-05-28 — Wandering NPC locomotion animation is speed-matched to rendered XZ translation; see §13 for tunables and phase-continuity note.
 
@@ -453,7 +457,7 @@ Per VRM, `VRMCharacterAnimator` retargets `mixamorig:*` bone tracks onto the VRM
 |---|---|---|
 | `mixamo-adult-male` | tekk, hermes-male | Per-character (different proportions: wings vs lean adult) |
 | `mixamo-adult-female` | hermes-female | Per-character bake |
-| `vrm-milady` | all 8 Milady VRMs | **Shared** — one Mixamo upload powers every Milady; `animatorId='vrm-milady'` on every entry |
+| `vrm-milady` | all 8 Milady VRMs + all 8 Hatcher placeholder VRMs (`hatcher_1..8`) | **Shared** — one Mixamo upload powers every Milady/Hatcher placeholder; `animatorId='vrm-milady'` on every entry. Phase 4 adds a `vrm-hatcher` class when bespoke Hatcher VRMs ship. |
 | `crustacean` | lobster + future GLB crustaceans | No Mixamo path; hand-animated in Blender |
 
 CLI: `bun scripts/mixamo/save-character.ts <slug> <character_id> <skeletonClass>` registers; `bun scripts/mixamo/add-anim-everywhere.ts <AnimName> <skeletonClass>` fetches the new bake for every character in the class, auto-patches `character-anim-overrides.json` via `patch-overrides.ts`. Smoke test: `bun scripts/mixamo/smoke-patcher.ts` (10 assertions, ~5 s).
@@ -558,6 +562,45 @@ Lobster / crayfish GLB avatars don't participate (no swim/fly clip in their proc
 - The helper is **idempotent**: a `_fattenedBy` property tag on each `BufferGeometry` prevents repeated calls from compounding sphere inflation. Safe to call in `normaliseVRM` AND in consumer `useMemo`/`useEffect`s.
 - **Never write `obj.frustumCulled = false` in a clone/attach path.** That pattern was the root cause of 41 SkinnedMeshes rendering without any culling (CDP probe 2026-05-22). It saves zero GPU on the current frame and permanently disables culling for the mesh's lifetime.
 - **Exceptions (document them when you add one):** `THREE.Group` containers may keep `frustumCulled = false` — Three.js derives the Group's AABB from its children, but the children's culling flags are what matter. Module-scope shared geometry (e.g. the aura sphere in `cosmetic-loader.tsx`) must not be tagged because the tag would affect every consumer of that geometry.
+
+### 6h. Hatcher avatar category (added 2026-06-01 — Phase 2 placeholder)
+
+Source: `apps/web/src/lib/three/agent-model-registry.ts`.
+
+A new `'hatcher'` `AgentCategory` is registered alongside `'milady'`, `'hermes'`, `'chibi'`, etc. It holds 8 model keys (`hatcher_1..hatcher_8`) used by Hatcher-platform agents connecting to ClawVille via the inbound portal (Phase 2, `hatcher-integration.md §3`).
+
+**Phase 2 state (placeholder art):** every `hatcher_N` key points at the matching existing Milady VRM:
+
+| Key | Path (PLACEHOLDER) | Phase 4 target |
+|---|---|---|
+| `hatcher_1` | `/avatars/milady-official-1.vrm` | `/avatars/hatcher-1.vrm?v=1` |
+| `hatcher_2` | `/avatars/milady-official-2.vrm` | `/avatars/hatcher-2.vrm?v=1` |
+| `hatcher_3` | `/avatars/milady-official-3.vrm` | `/avatars/hatcher-3.vrm?v=1` |
+| `hatcher_4` | `/avatars/milady-official-4.vrm` | `/avatars/hatcher-4.vrm?v=1` |
+| `hatcher_5` | `/avatars/milady-official-5.vrm` | `/avatars/hatcher-5.vrm?v=1` |
+| `hatcher_6` | `/avatars/milady-official-6.vrm` | `/avatars/hatcher-6.vrm?v=1` |
+| `hatcher_7` | `/avatars/milady-official-7.vrm` | `/avatars/hatcher-7.vrm?v=1` |
+| `hatcher_8` | `/avatars/milady-official-8.vrm` | `/avatars/hatcher-8.vrm?v=1` |
+
+**Rendering:** paths resolve to existing Milady VRM files → zero new assets, zero new rendering code. The `vrm-milady` animator is reused for all 8 keys. `computeVRMAvatarFit()` auto-sizes at the same `VRM_AVATAR_TARGET_HEIGHT_WU = 270 wu` as every other humanoid. Color tinting is NOT applied (MToon rule).
+
+**Scale (picker):** `scale: 13` — same as Milady/Hermes/Chibi entries; picker's camera auto-frames via the standard bounding-box approach.
+
+**Category metadata:**
+```ts
+CATEGORY_META.hatcher = { label: 'Hatcher', description: 'Hatcher-hosted agents — placeholder Milady avatars until bespoke meshes (Phase 4)' }
+CATEGORY_ORDER → [..., 'hatcher']       // appended last
+CATEGORY_DEFAULT_MODEL.hatcher = 'hatcher_1'
+MODEL_KEY_TO_LEGACY_SPECIES: hatcher_N → 'fox'  // same PixiJS 2D fallback as Milady/Hermes
+```
+
+**Phase 4 swap procedure (when bespoke Hatcher VRMs are authored):**
+1. Author 8 VRMs via `scripts/hermes-pipeline/` (gemini turnaround → Meshy → rig → `blender-vrm0-finalize.py`). Get user approval on turnarounds BEFORE the paid Meshy step.
+2. Place them at `/avatars/hatcher-N.vrm` (new paths — NO `?v=` needed on first publish of a new URL).
+3. Update the 8 `path` fields in `MODEL_REGISTRY` to the new paths (e.g. `/avatars/hatcher-1.vrm`). Remove the `// PLACEHOLDER` comments.
+4. If a bespoke Hatcher VRM was previously at a stable path AND you are mutating its content, bump `?v=N` per §6f rule 9 (Cloudflare 1-week edge TTL, no cache_purge token).
+5. Update this table + bump Last Audited.
+6. Optionally add a `vrm-hatcher` skeleton class in `scripts/mixamo/characters.json` if the Hatcher rig proportions diverge from `vrm-milady` enough to produce foot-slide.
 
 ---
 
@@ -896,5 +939,67 @@ Compact log. Single line per change with commit reference where applicable.
 - 2026-04-10 — Ultrathink decommission: `plugin-anthropic` + `plugin-openai` removed. Gemini providers only.
 
 - 2026-05-23 — **Experimental: Nanite-style GPU rasterizer spike** (worktree `perf/meshlet-integration` only, NOT on master). Two new files: `apps/web/src/lib/three/experimental/nanite-rasterizer.ts` (exports `NaniteRasterizer`, `geometryToMeshletAsset`, `MeshletAsset`, `RasterizerOptions` — 5-pass compute pipeline: Clear→Frustum→Dispatch→Rasterize→HWArgs, visibility buffer, SW barycentric rasterizer, HW fallback scene) and `apps/web/src/app/preview/meshlet-spike/page.tsx` (loads `building-lighthouse.glb`, single instance, DOM FPS overlay, WebGPU-only — blank/error if `navigator.gpu` absent). Route: `/preview/meshlet-spike`. No production-rendering files touched; spike is fully isolated.
+- 2026-06-01 — Landing page 3D scenes overhaul. `page.tsx` hero section capped to `h-[100svh]`. Three live vignette tiles replace Reef Race + Bumper-Shells-soon. See §11.
+
+---
+
+## 11. Landing page 3D scenes
+
+Source files: `apps/web/src/components/three/LandingScene.tsx`, `apps/web/src/components/landing/AgentChatVignette.tsx`, `apps/web/src/components/landing/CoveVignette.tsx`, `apps/web/src/components/landing/BuildingVisitVignette.tsx`.
+
+### 11a. Hero backdrop — LandingScene
+
+| Property | Value |
+|---|---|
+| File | `apps/web/src/components/three/LandingScene.tsx` |
+| Mount site | `apps/web/src/app/page.tsx` — dynamic import (SSR disabled), renders behind hero `z-0` |
+| Camera | Slow cinematic dolly forward + sinusoidal bob/sway |
+| Scene | Reef-canyon vista: moving water surface (3-octave heave + foam + sun glint adapted from `water-surf.tsx`), canyon cliff walls (rock GLBs receding to horizon), foreground coral/kelp/jellyfish, town silhouette buildings darkened by fog |
+| Sky | Gradient backdrop (deep teal → horizon cyan band) |
+| DPR | `[1, 1.25]` cap |
+| frameloop | `useVisibleFrameloop` — pauses when scrolled offscreen |
+| Lighting | 3 lights MAX: `hemisphereLight` + 1 directional + 1 point (bioluminescence) |
+
+**Iris Xe compliance:** no drei `<Text>`/`<Billboard>`, no `InstancedMesh + ShaderMaterial`, no per-frame `new THREE.Vector3()`, frustumCulled=false on water mesh (bounding box stale after vertex shader), all geometry/materials disposed on unmount.
+
+### 11b. Live demo tile — AgentChatVignette
+
+| Property | Value |
+|---|---|
+| File | `apps/web/src/components/landing/AgentChatVignette.tsx` |
+| Tile config | title="Agent ↔ Agent", caption="Bots teaching bots", href="/leaderboard", accent=cyan |
+| Loop | ~16 s (4-beat scripted Agent↔Agent chat cycle) |
+| Composition | Two Milady VRM avatars facing each other at 3/4 angle toward camera. DOM chat-bubble overlay (NOT drei Text/Billboard). Speaking agent plays `talk` emote; listener plays `idle`. |
+| VRM loading | Uses per-instance cache — distinct `instanceId` per avatar; VRM instances never shared |
+| Lighting | 2 lights: hemisphere + 1 directional |
+
+**Iris Xe compliance:** no drei Text/Billboard, no InstancedMesh + ShaderMaterial, no per-frame allocs, all VRM instances + geometries/materials disposed on unmount.
+
+### 11c. Live demo tile — CoveVignette
+
+| Property | Value |
+|---|---|
+| File | `apps/web/src/components/landing/CoveVignette.tsx` |
+| Tile config | title="The Cove", caption="Casino floor", href="/cove", accent=pink |
+| Loop | ~16 s — slow lateral dolly across neon-lit gaming floor |
+| Composition | Reuses `<CoveLighting />` from production cove scene (ambient + hemisphere + 3 point lights = 5 total). Cove interior GLB (`cove-interior.glb`) cloned at load. One Milady VRM standing idle at a poker table. |
+| Asset reuse | Shares the same `cove-interior.glb` path as `/cove/page.tsx` — cache-busted via `?v=N` suffix when interior GLB mutates |
+| VRM | Single Milady VRM, frustumCulled=false on all SkinnedMesh/VRM nodes |
+| Lighting | 5 lights (via CoveLighting — ambient + hemisphere + 3 point) |
+
+**Iris Xe compliance:** no drei Text/Billboard (any in-world text uses CanvasTexture only), no InstancedMesh + ShaderMaterial, no per-frame allocs (module-scope scratch only), all geometry/materials/textures/cloned GLB disposed on unmount.
+
+### 11d. Live demo tile — BuildingVisitVignette
+
+| Property | Value |
+|---|---|
+| File | `apps/web/src/components/landing/BuildingVisitVignette.tsx` |
+| Tile config | title="Building Visit", caption="Learn from MiladyAI teachers", href="/game", accent=amber |
+| Loop | 10 s — walk cycle + greeting chat-bubble keyed to the same period |
+| Composition | Milady character walks toward Pineapple House GLB (`pineapple-house-opt1.glb?v=2`). SpongeBob GLB at door. Chat bubble DOM overlay ("Welcome! Today: AI image + video pipelines."). |
+| Lighting | 3 lights MAX: hemisphere + directional + 1 warm point |
+| VRM facing | `rotation.y = atan2(vx, vz)` — verified ClawVille convention |
+
+**Iris Xe compliance:** no drei Text/Billboard, no InstancedMesh + ShaderMaterial, no per-frame `new Vector3/Quaternion`, frustumCulled=false on all VRM nodes (bind-pose cull gotcha), lights ≤ 3.
 
 Older history: `git log apps/web/src/lib/three/ apps/web/src/components/three/`.
