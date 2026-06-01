@@ -15,6 +15,7 @@ import {
   DEFAULT_ARENA_SETTINGS,
   clampPosition2D,
   WORLD_COLLIDER_MAP_HALF,
+  CLAWVILLE_ORIENTATION_KNOWLEDGE,
 } from '@clawville/shared';
 import { generateNpcConversation, generateOpenClawConversation } from './npc-conversation-engine';
 import {
@@ -36,6 +37,15 @@ import type { OpenClawClient } from './openclaw-client';
 // Map dimensions — Phase 6.2 (2026-05-18): 360×360 grid of 32px tiles = 11520×11520 world.
 const MAP_WIDTH = 11520;
 const MAP_HEIGHT = 11520;
+
+// Hatcher proxy-cognition (partner #2, Phase A — 2026-06-01). The canonical
+// "you are inside ClawVille" orientation text, joined + frozen once at module
+// load. Prepended (with a per-call serialized world-state block) as the
+// system message for a hatcher-proxy agent so the Hatcher-hosted brain acts
+// as an agent inside ClawVille. Single source of truth lives in
+// packages/shared/src/constants/orientation-skill.ts (same body returned on
+// /api/agent/connect). See `.claude/plans/hatcher-integration.md` §14.
+const HATCHER_ORIENTATION_TEXT = CLAWVILLE_ORIENTATION_KNOWLEDGE.join('\n');
 
 // Town-center anchor and the annulus (ring) free-roaming wanderers stay inside.
 // Buildings are on a ring at ~4160wu from center (R=130 tiles). Keep free
@@ -390,6 +400,13 @@ class NpcSimulation {
       const npc = this.npcs.get(config.targetNpcId)!;
       npc.isOpenClaw = true;
       npc.autonomyMode = config.autonomyMode ?? 'server-managed';
+      // Hatcher proxy-cognition: bind the orientation + world-state system
+      // provider to the overridden NPC's body so the Hatcher brain acts in
+      // ClawVille context (no-op for non-proxy protocols).
+      if (config.protocol === 'hatcher-proxy') {
+        const boundNpcId = config.targetNpcId;
+        client.setSystemContextProvider(() => this.buildHatcherSystemContext(boundNpcId));
+      }
       console.log(`[OpenClaw] Override registered: ${config.targetNpcId} -> ${config.sessionId} (${npc.autonomyMode})`);
     } else {
       const avatarConfig = config as OpenClawAvatarConfig;
@@ -425,6 +442,11 @@ class NpcSimulation {
       });
       this.openClawBots.set(config.sessionId, { config, client });
       this.npcOverrides.set(npcId, config.sessionId);
+      // Hatcher proxy-cognition: bind the orientation + world-state system
+      // provider to the freshly-spawned avatar body (no-op for non-proxy).
+      if (config.protocol === 'hatcher-proxy') {
+        client.setSystemContextProvider(() => this.buildHatcherSystemContext(npcId));
+      }
       console.log(`[OpenClaw] Avatar injected: "${avatarConfig.name}" (${npcId}) [${config.autonomyMode ?? 'server-managed'}]${restoredState?.lastX != null ? ' [restored position]' : ''}`);
     }
   }
@@ -496,6 +518,65 @@ class NpcSimulation {
     const npcId = `oc-${sessionId}`;
     const npc = this.npcs.get(npcId);
     return npc ? { x: npc.x, y: npc.y } : null;
+  }
+
+  /**
+   * Hatcher proxy-cognition (Phase A) — build the system-message context for
+   * an agent's body: the canonical ClawVille orientation + a serialized,
+   * compact world-state snapshot for THIS NPC (self pose/hp/activity, nearby
+   * NPCs within radius, nearest buildings + their crypto focus). Returns null
+   * if the body isn't in the world (so the client skips system injection).
+   *
+   * This is a TEXT serialization of the same world-state shape `buildPerception`
+   * (apps/api/src/routes/agent-gateway.ts) exposes as JSON — kept here so the
+   * sim (which can't import a route) can produce a self-contained system prompt
+   * for the cognition seam. Bound to `npcId` at registration time via a
+   * provider closure on the OpenClawClient config.
+   */
+  buildHatcherSystemContext(npcId: string): string | null {
+    const npc = this.npcs.get(npcId);
+    if (!npc) return null;
+
+    const PERCEPTION_RADIUS = 500;
+    const nearby = this.getAllNpcs()
+      .filter((o) => o.id !== npcId)
+      .map((o) => {
+        const dx = o.x - npc.x;
+        const dy = o.y - npc.y;
+        return { o, dist: Math.round(Math.sqrt(dx * dx + dy * dy)) };
+      })
+      .filter(({ dist }) => dist <= PERCEPTION_RADIUS)
+      .sort((a, b) => a.dist - b.dist)
+      .slice(0, 8)
+      .map(({ o, dist }) =>
+        `- ${o.name} (${o.species}, ${dist}px${o.isOpenClaw ? ', agent' : ''}${o.inCombat ? ', in combat' : ''}, doing ${o.activity})`,
+      );
+
+    const buildings = (Object.entries(NPC_BUILDING_CENTERS) as [string, { x: number; y: number }][])
+      .map(([buildingId, center]) => {
+        const dx = center.x - npc.x;
+        const dy = center.y - npc.y;
+        const theme = BUILDING_OPENCLAW_THEMES[buildingId];
+        return {
+          buildingId,
+          label: theme?.label ?? buildingId,
+          focus: theme?.focus ?? '',
+          dist: Math.round(Math.sqrt(dx * dx + dy * dy)),
+        };
+      })
+      .sort((a, b) => a.dist - b.dist)
+      .slice(0, 5)
+      .map((b) => `- ${b.label} [${b.buildingId}] (${b.dist}px)${b.focus ? `: ${b.focus.split(',')[0]}` : ''}`);
+
+    const worldState = [
+      '--- ClawVille world state (live) ---',
+      `You are at (${Math.round(npc.x)}, ${Math.round(npc.y)}) in a ${MAP_WIDTH}x${MAP_HEIGHT} world. HP ${npc.hp}/${npc.maxHp}, level ${npc.level}, currently ${npc.activity}${npc.inCombat ? ' (in combat)' : ''}.`,
+      `Game mode: ${this.getMode()}.`,
+      nearby.length > 0 ? `Nearby (within ${PERCEPTION_RADIUS}px):\n${nearby.join('\n')}` : `No one nearby (within ${PERCEPTION_RADIUS}px).`,
+      `Nearest buildings:\n${buildings.join('\n')}`,
+    ].join('\n');
+
+    return `${HATCHER_ORIENTATION_TEXT}\n\n${worldState}`;
   }
 
   // --- Agent Gateway Accessors ---

@@ -54,6 +54,7 @@ import { skillsRoutes } from './routes/skills';
 import { agentV2Routes } from './routes/agent-v2';
 import { dashboardRoutes } from './routes/dashboard';
 import { portalRoutes } from './routes/portal';
+import { partnerHatcherRoutes } from './routes/partner-hatcher';
 import { agentRegistrationRoutes } from './routes/agent-registration';
 import { adminIdentityRoutes } from './routes/admin-identity';
 import { startSimulation } from './services/npc-simulation';
@@ -222,6 +223,9 @@ app.route('/api/v2/agent', agentV2Routes);
 app.route('/api/dashboard', dashboardRoutes);
 // Phase 5.1 — cross-world portal + account linking (see plan §6.2 + §15).
 app.route('/api/portal', portalRoutes);
+// Hatcher partner #2 — partner-signed agent registration API (proxy
+// cognition). See routes/partner-hatcher.ts + plan §13/§14 (Phase A).
+app.route('/api/partner/hatcher', partnerHatcherRoutes);
 // Wager lobbies + escrow (gambling-contracts vertical slice).
 // See routes/wager.ts header for the full surface + feature gates.
 app.route('/api/wager', wagerRoutes);
