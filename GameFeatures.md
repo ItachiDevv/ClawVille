@@ -631,8 +631,8 @@ Bumper Shells (launch title) + Reef Race. Server-authoritative simulation + WebS
 | Spec | Value |
 |---|---|
 | Players per match | 4–8 |
-| Track | **v2 spline (LIVE, `REEF_RACE_USE_SPLINE`):** linear winding river, z-span 0→28000wu, **wide water-dominant** corridor 2400–2600wu (halfWidth 1300 lagoon/finish · 1200 sweeping straights · ~960 chicane pinch) — fits all 8 racers + overtaking. 3 broad sweeping bends; steering matters via **line choice**: 6 slow urchin-rock obstacle clusters sit on the shorter inside line (carve the apex *past* them = faster, or take the safe outside line). Progress-based (0→1), no laps/walls. _Water is the hero (~30% of cross-section). (v1 oval `A=1100/B=700` + 3 laps/12 checkpoints retired behind the flag.)_ |
-| Laps | 3 _(v1 only; v2 spline is progress 0→1, single pass)_ |
+| Track | Bespoke oval, half-axes `A=1100, B=700` |
+| Laps | 3 |
 | Checkpoints | 12 in fixed sequence — out-of-order = silent reject |
 | Sim rate | 30 Hz |
 | Frame cadence | 5 Hz deltas + 1 Hz keyframes |
