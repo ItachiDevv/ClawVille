@@ -115,10 +115,11 @@ export const CLAWVILLE_ORIENTATION_KNOWLEDGE: string[] = [
   // game in the cove must surface to every agent at orientation time. The
   // 6.4.1 drop ships the server-authoritative commit-reveal engine + the real
   // ClawToken ledger + the Control/Autonomous agent-mode UI seam. The global
-  // connection SKILL.md protocol endpoint, the connected-agent WebSocket
-  // protocol, AND hosted-agent per-hand SKILL memory writes all ship in Phase
-  // 6.4.2 per `.claude/plans/cove-blackjack.md` (no global SKILL.md endpoint or
-  // game-skill-memory service exists yet — both are TODO).
+  // connection SKILL.md protocol endpoint now EXISTS (Hatcher Phase C, 2026-06-01:
+  // `GET /api/skills/protocol/skill.md` + `GET /api/skills/manifest.json`, the
+  // documented infra gap is closed); the connected-agent WebSocket protocol AND
+  // hosted-agent per-hand SKILL memory writes still ship in Phase 6.4.2 per
+  // `.claude/plans/cove-blackjack.md` (the game-skill-memory service is still TODO).
   // LOCKED RULE: dealer STANDS on soft 17 (S17) — matches the live engine
   // (`playDealer` in apps/api/src/services/blackjack-engine.ts). Do not write
   // "H17" here again; the 2026-05-25 draft had it wrong.
@@ -136,10 +137,11 @@ export const CLAWVILLE_ORIENTATION_KNOWLEDGE: string[] = [
   // 7-card evaluator + HMAC Fisher-Yates per-hand deck, deterministic bots),
   // the real ClawToken stack custody (buy-in / cash-out), and the
   // Control/Autonomous agent-mode UI seam. The global connection SKILL.md
-  // protocol endpoint, the connected-agent WebSocket protocol, AND hosted-agent
-  // per-hand SKILL memory writes all ship in Phase 6.5.2 per
-  // `.claude/plans/cove-texas-holdem.md` (no global SKILL.md endpoint or
-  // game-skill-memory service exists yet — both are TODO).
+  // protocol endpoint now EXISTS (Hatcher Phase C, 2026-06-01 —
+  // `GET /api/skills/protocol/skill.md` + `/manifest.json`); the connected-agent
+  // WebSocket protocol AND hosted-agent per-hand SKILL memory writes still ship
+  // in Phase 6.5.2 per `.claude/plans/cove-texas-holdem.md` (the
+  // game-skill-memory service is still TODO).
   // LOCKED RULES: No-Limit, 6-max, blinds SB=1/BB=2, buy-in 20–500 CT (default 100).
   // LOCKED RULE (economy fix 2026-05-29): pot rake = min(floor(pot*5/100), 5) CT,
   // raked once before distribution. See `computeHoldemRake` in holdem-engine.ts.
@@ -153,10 +155,11 @@ export const CLAWVILLE_ORIENTATION_KNOWLEDGE: string[] = [
   // no-replacement HMAC shoe + the fixed standard Punto Banco third-card
   // tableau), the real ClawToken ledger (one-shot stake+settle per coup), and
   // the Control/Autonomous agent-mode UI seam. The global connection SKILL.md
-  // protocol endpoint, the connected-agent WebSocket protocol, AND hosted-agent
-  // per-coup SKILL memory writes all ship with the connected-agent protocol
-  // drop (no global SKILL.md endpoint or game-skill-memory service exists yet —
-  // both are TODO). LOCKED RULES echoed for grep-safety: 8-deck shoe, reshuffle
+  // protocol endpoint now EXISTS (Hatcher Phase C, 2026-06-01 —
+  // `GET /api/skills/protocol/skill.md` + `/manifest.json`); the connected-agent
+  // WebSocket protocol AND hosted-agent per-coup SKILL memory writes still ship
+  // with the connected-agent protocol drop (the game-skill-memory service is
+  // still TODO). LOCKED RULES echoed for grep-safety: 8-deck shoe, reshuffle
   // at 75% (312 cards), bets PLAYER/BANKER/TIE 5–500 CT, Player 1:1, Banker
   // 0.95:1, Tie 8:1, P/B PUSH on a tie. ECONOMY FIX 2026-05-29: the banker 5%
   // commission is realized by FLOORING the player's winnings to floor(stake*95/100)
