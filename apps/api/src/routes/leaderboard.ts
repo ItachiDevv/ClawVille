@@ -425,6 +425,42 @@ function setAgentCache(window: AgentLeaderboardWindow, snapshot: AgentLeaderboar
   agentCache.set(window, { snapshot, expiresAt: Date.now() + AGENT_CACHE_TTL_MS });
 }
 
+/**
+ * Single-agent leaderboard lookup — REUSES the exact public-board snapshot
+ * (`buildAgentSnapshot` CTE + scoring + per-(subject,day) caps) and its 60s
+ * window cache, so a per-agent stats surface (e.g. the Hatcher partner
+ * dashboard at `GET /api/partner/hatcher/agents/:id/stats`) shows the SAME
+ * score + rank the agent sees on the public `/leaderboard`. No re-derivation
+ * of the rubric: we build/reuse the cached ranked set and find the agent's row.
+ *
+ * `agentId` is the leaderboard subject id for an agent row — the text
+ * `openclaw_bots.agent_id` (for Hatcher agents that is the namespaced
+ * `hatcher:<rawId>`). Returns the entry (true rank within the full unified
+ * board + breakdown + score) or `null` when the agent has no scored events in
+ * the window (or ranks beyond the snapshot's 500-row cap — the same horizon
+ * the public board itself uses). Callers treat `null` as "score 0, unranked".
+ *
+ * Window defaults to `'all'` so a dashboard reflects lifetime contribution.
+ */
+export async function getAgentLeaderboardEntry(
+  agentId: string,
+  window: AgentLeaderboardWindow = 'all',
+): Promise<{ score: number; rank: number; breakdown: AgentScoreBreakdown } | null> {
+  let snapshot = getAgentCache(window);
+  if (!snapshot) {
+    snapshot = await buildAgentSnapshot(window, 500);
+    setAgentCache(window, snapshot);
+  }
+  // Match on the agent subject only — avatar rows carry a synthetic
+  // `avatar:<uuid>` agentId and a `subjectType:'avatar'`, so an exact agentId
+  // match against an `agent` row can never collide with a player avatar.
+  const entry = snapshot.agents.find(
+    (e) => e.subjectType === 'agent' && e.agentId === agentId,
+  );
+  if (!entry) return null;
+  return { score: entry.score, rank: entry.rank, breakdown: entry.breakdown };
+}
+
 function windowToInterval(window: AgentLeaderboardWindow): string {
   // Whitelisted — no user input reaches the SQL string beyond this switch.
   switch (window) {
