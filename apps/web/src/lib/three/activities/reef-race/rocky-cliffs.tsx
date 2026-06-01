@@ -87,23 +87,17 @@ const ROCKS_PER_CELL = 2;
  * uniform width — they bulge IN and OUT along the river length, creating an organic,
  * irregular silhouette. This is the key realism feature the user requested.
  *
- * v2-wide-water: bands tightened (120–350wu) so the cliff rim hugs the now-wide
- * river corridor rather than forming a thick wall that eats into the water view.
- * With halfWidths expanded to 800–1300wu the river IS the hero — cliffs are accent.
+ * Instead of a constant LATERAL_MAX, we use a per-section seeded hash (mulberry32)
+ * to vary the cliff band width between [LATERAL_BAND_MIN, LATERAL_BAND_MAX].
+ * Some sections will have FAT cliff bands (600wu), others THIN (180wu) — intentional.
  *
- * Bounds-check at new narrowest corridor (shipwreck chicane pinch, hw≈500):
- *   fattest band: rock center = 500+350 = 850wu, body half ±173 → inner edge 677 > 500. SAFE (177wu gap).
- *   thinnest band: rock center = 500+120 = 620wu, body half ±173 → inner edge 447 < 500 — INTENTIONAL press-in.
- *   At the chicane pinch the visual rock rim slightly encroaches the corridor, giving a canyon-press feel.
- *   Server sim uses halfWidth (not visual cliffs) so racing line is unaffected — pure visual.
- *
- * Bounds-check at lagoon/finish (hw=1300):
- *   fattest band: rock center = 1300+350 = 1650wu, body half ±173 → inner edge 1477 > 1300. SAFE (177wu gap).
- *   thinnest band: 1300+120 = 1420wu, inner edge 1247 < 1300 — 53wu visual press-in. Negligible.
+ * Bounds-check at narrowest corridor (coral, hw=880):
+ *   fattest band: rock center = 880+600 = 1480wu, body half ±135 → inner edge 1345 > 880. SAFE.
+ *   thinnest band: rock center = 880+180 = 1060wu, body half ±135 → inner edge 925 > 880. SAFE (45wu margin).
  */
 const LATERAL_MIN = 0;           // wu beyond halfWidth (inward edge flush with corridor)
-const LATERAL_BAND_MIN = 120;    // minimum cliff-band width (wu) — tightened for water-dominance
-const LATERAL_BAND_MAX = 350;    // maximum cliff-band width (wu) — tightened from 600
+const LATERAL_BAND_MIN = 180;    // minimum cliff-band width (wu)
+const LATERAL_BAND_MAX = 600;    // maximum cliff-band width (wu)
 
 /**
  * Deterministic per-section lateral maximum using mulberry32 hash.
@@ -145,12 +139,14 @@ const CANYON_TOP    =    0;   // ground / cliff top
  * and ROW C (base=-100, body up/down), all three rows stack to cover the full
  * canyon face from y≈-200 to y≈+197.
  *
- * v2-wide-water (LATERAL_BAND 120–350wu): tight rim around the now-wide river.
- *   At lagoon/finish (hw=1300): fat rim center = 1650wu, inner edge ≈ 1477wu > 1300. Clean gap.
- *   At slalom straights (hw=1200): fat rim center = 1550wu, inner edge ≈ 1377wu > 1200. Clean gap.
- *   At chicane pinch (hw≈500): fat rim center = 850wu, inner edge ≈ 677wu > 500. Canyon press-in.
- *   Thin rim (120wu) at any section creates mild visual press, matching the German River organic feel.
- *   Server sim uses halfWidth (not visual cliffs), so racing line is unaffected — pure visual.
+ * LATERAL_BAND_MAX=600wu behavior at narrow chokepoints (hw=880, iter-8):
+ *   fat band: rock center = 880 + 600 = 1480wu from centerline.
+ *   rock inner edge ≈ 1480 − (3.85wu × SCALE_MAX=90) ≈ 1480 − 347 = 1133wu (outside 880 corridor).
+ *   thin band (min=180): center=880+180=1060, inner edge=1060−347=713wu.
+ *   713 < 880 → rock body intrudes ~167wu INTO the corridor at the narrowest sections.
+ *   This is INTENTIONAL canyon press-in (German River reference): thin-band sections
+ *   feel walled, fat-band sections feel open. Server sim uses halfWidth, not visual cliffs,
+ *   so racing line is unaffected — pure visual realism.
  */
 const ROW_B_BASE_Y  = -200;
 
