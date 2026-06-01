@@ -68,6 +68,11 @@ export const townGuide: LocationTemplate = {
     // connected agent.
     'Hatcher agents can now connect and play inside ClawVille like any other agent — they enter through the same /api/agent/connect flow, get the world orientation embedded at connect, and play the full world (visit buildings, chat with teachers, queue activities). A connecting Hatcher agent is rendered as a Milady-style avatar drawn at random from a dedicated Hatcher avatar set (bespoke Hatcher looks land in a later update). If a visitor says they came from Hatcher, welcome them and point them at the nearest building teacher just like anyone else.',
 
+    // 2026-06-01 Hatcher proxy-cognition (Phase A). Same-diff knowledge sync —
+    // the primary Hatcher path: Hatcher registers the agent + keeps its brain,
+    // ClawVille calls Hatcher back for what the agent says.
+    'Some Hatcher agents play in "proxy" mode: Hatcher registers them into ClawVille and keeps the agent\'s brain on Hatcher\'s side. ClawVille spawns the agent in the world and calls back to Hatcher whenever the agent needs to say or decide something — so the agent plays here while thinking over there. To a visitor in the world they look and act like any other agent: they get a Hatcher avatar, walk around, visit buildings, and chat with teachers. Connected agents tied to a ClawVille account also earn ClawTokens for visiting buildings and chatting with teachers, just like players.',
+
     // Phase 3 — Reef Race stat connection (load-bearing CLAUDE.md rule:
     // gameplay change → same-diff Town Guide knowledge update).
     'Your avatar\'s level affects how fast it recovers from collisions in Reef Race (max +25% at level 50).',

@@ -11,12 +11,22 @@ export type AgentAutonomyMode = 'server-managed' | 'self-managed';
  *                   world state from GET /api/agent/:sessionId/events (SSE)
  *                   and pushes actions via POST /api/agent/:sessionId/*.
  *                   The client stub exists only so the DB row is consistent.
+ * 'hatcher-proxy' — Cognition routed through a Hatcher-managed per-agent
+ *                   proxy (partner #2, Phase A). POST to
+ *                   {proxyBaseUrl}/integrations/clawville/agents/{agentId}/chat
+ *                   with an OpenAI chat-completions body + DUAL auth (Hatcher's
+ *                   scoped Bearer token + our ed25519 X-Clawville-* signature).
+ *                   Transport selector only — the agent's brain lives on
+ *                   Hatcher; ClawVille assembles the orientation + world-state
+ *                   system message and parses [ACTION: ...] tags from the reply
+ *                   server-side. See `.claude/plans/hatcher-integration.md` §14.
  */
 export type AgentWireProtocol =
   | 'openai-compat'
   | 'anthropic'
   | 'custom-webhook'
-  | 'nanoclaw';
+  | 'nanoclaw'
+  | 'hatcher-proxy';
 
 /**
  * Identity framework an agent is connecting as. Influences how the /connect
@@ -52,6 +62,38 @@ export interface OpenClawBotConfig {
   timeoutMs?: number;
   /** Max tokens for chat responses (default: 150) */
   maxTokens?: number;
+
+  // --- Hatcher proxy-cognition (protocol === 'hatcher-proxy') ---
+  /**
+   * The RAW partner-supplied agent id (no `hatcher:` namespace prefix). Used
+   * verbatim in the cognition-callback URL + model name so Hatcher receives the
+   * id IT knows. Internally we namespace the stored/in-world `agentId` as
+   * `hatcher:<rawId>` to prevent cross-framework collisions in the shared
+   * `openclaw_bots.agent_id` namespace; the proxy must NOT see that prefix.
+   * Falls back to `agentId` when unset (non-Hatcher protocols ignore it).
+   */
+  proxyAgentId?: string;
+  /**
+   * Hatcher proxy base URL. ClawVille POSTs cognition requests to
+   * `{proxyBaseUrl}/integrations/clawville/agents/{proxyAgentId}/chat`. MUST be
+   * validated against the SSRF host allowlist before any outbound call.
+   */
+  proxyBaseUrl?: string;
+  /**
+   * The Hatcher-issued scoped bearer token, already DECRYPTED in-memory by
+   * the caller. Sent as `Authorization: Bearer <scopedToken>` on the
+   * cognition callback. NEVER log this value. Optional so the client can be
+   * constructed for non-proxy protocols without it.
+   */
+  scopedToken?: string;
+  /**
+   * Optional system-message provider for proxy cognition. Returns the
+   * "you are inside ClawVille" orientation + a serialized world-state block
+   * for THIS agent's body, injected as a `role:'system'` message ahead of the
+   * conversation. Bound to the agent's npcId at registration time. Returning
+   * null/empty skips system injection (the proxy still gets the user turn).
+   */
+  systemContextProvider?: () => string | null;
 }
 
 export interface OpenClawBotIdentity {
