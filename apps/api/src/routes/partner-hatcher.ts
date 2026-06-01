@@ -1,0 +1,660 @@
+/**
+ * Hatcher partner #2 — partner-registration API (Phase A — 2026-06-01).
+ *
+ * The REFRAME (`.claude/plans/hatcher-integration.md` §13/§14): Hatcher keeps
+ * the agent's brain. An owner enables "Enter ClawVille" in Hatcher's dashboard;
+ * Hatcher then registers the agent in ClawVille on the agent's behalf and
+ * provisions a scoped cognition endpoint/token. ClawVille spawns the agent's
+ * in-world body and, when the agent needs to speak, calls back to Hatcher's
+ * per-agent proxy for cognition (the `hatcher-proxy` case in
+ * `OpenClawClient.chat()`).
+ *
+ * This router is the registration surface:
+ *   POST   /api/partner/hatcher/agents              — register / upsert an agent
+ *   PATCH  /api/partner/hatcher/agents/:agentId     — update mutable fields +
+ *                                                     propagate to the live entity
+ *   DELETE /api/partner/hatcher/agents/:agentId     — remove the in-world body +
+ *                                                     tombstone the row
+ *
+ * AUTH: every route is gated by `verifyPartnerSignature('hatcher')` over the
+ * EXACT raw request body (read before JSON.parse — NO Lucia, NO cookie).
+ * Headers: `X-Hatcher-Issuer-Pubkey` + `X-Hatcher-Signature` (ed25519 over
+ * sha256(rawBody)). The presented pubkey must equal `PARTNER_PUBKEYS.hatcher`.
+ *
+ * SECRETS: the per-agent scoped token is stored ENCRYPTED AT REST
+ * (`openclaw_bots.proxy_token_*`, AES-256-GCM under VANITY_ENCRYPTION_KEY) and
+ * is NEVER echoed in any response and NEVER logged. It is decrypted in-memory
+ * only at cognition-callback time.
+ *
+ * SSRF: the partner-supplied `proxyBaseUrl` is validated (https + host
+ * allowlist) at registration time before persisting; the cognition seam
+ * re-validates at call time.
+ */
+
+import { Hono } from 'hono';
+import type { Context } from 'hono';
+import { z } from 'zod';
+import { eq } from 'drizzle-orm';
+import {
+  db,
+  openclawBots,
+  avatars,
+} from '@clawville/database';
+import {
+  NPC_IDS,
+  DEFAULT_AGENT_MODEL_KEY,
+  pickRandomHatcherModelKey,
+  type OpenClawRegistration,
+} from '@clawville/shared';
+import type { AppContext } from '../types';
+import { createRateLimiter, getClientIp } from '../middleware/rate-limit';
+import { verifyPartnerSignature } from '../services/partner-signature';
+import { encryptToken, decryptToken } from '../services/keypair-vault';
+import { validateHatcherProxyUrl, validateHatcherProxyUrlResolved } from '../services/hatcher-config';
+import { npcSimulation } from '../services/npc-simulation';
+import { OpenClawClient } from '../services/openclaw-client';
+import { ensureWallet } from '../services/wallet-service';
+import { resolveOrCreateUserByIdentity } from '../services/identity-service';
+import { computeSessionExpiresAt } from '../services/openclaw-session-sweeper';
+import { logEvent } from '../services/event-logger';
+
+export const partnerHatcherRoutes = new Hono<AppContext>();
+
+/**
+ * `openclaw_bots.agent_id` is a SHARED, globally-unique namespace across every
+ * framework — `/api/agent/connect` lets ANY caller pick an arbitrary raw
+ * `agentId` (milady prefixes `milady:<id>`, openclaw/nanoclaw/custom register
+ * their own). A holder of the single Hatcher partner key must therefore NOT be
+ * able to address (and overwrite / rebind / tombstone) a row that belongs to a
+ * different framework. We defend two ways:
+ *   1. NAMESPACE: every Hatcher agent's stored id is `hatcher:<rawId>`, so it
+ *      can only ever collide with another Hatcher agent — never an openclaw,
+ *      milady, or custom row. The RAW id is sent to Hatcher's proxy verbatim.
+ *   2. OWNERSHIP GUARD: even if a `hatcher:`-prefixed row somehow existed with a
+ *      non-hatcher identityType, every register/patch/delete refuses to mutate a
+ *      row whose `identityType !== 'hatcher'`.
+ */
+const HATCHER_AGENT_PREFIX = 'hatcher:';
+
+/** Namespace a raw partner agent id into the Hatcher-owned `agent_id` space. */
+function namespaceHatcherAgentId(rawAgentId: string): string {
+  return rawAgentId.startsWith(HATCHER_AGENT_PREFIX)
+    ? rawAgentId
+    : `${HATCHER_AGENT_PREFIX}${rawAgentId}`;
+}
+
+/** Strip the namespace prefix to recover the raw partner id for the proxy. */
+function rawHatcherAgentId(namespacedAgentId: string): string {
+  return namespacedAgentId.startsWith(HATCHER_AGENT_PREFIX)
+    ? namespacedAgentId.slice(HATCHER_AGENT_PREFIX.length)
+    : namespacedAgentId;
+}
+
+// Per-IP limiter. Per the Phase 1 deferred finding, a per-partner-keyed Redis
+// limiter is the correct fix (a single partner's egress collapses to one IP),
+// tracked for the Phase C `partner_api_keys` work. Per-IP is the pragmatic
+// in-process guard until then.
+const partnerRegisterRateLimiter = createRateLimiter({
+  maxPerWindow: 30,
+  windowMs: 60_000,
+});
+
+// ---------------------------------------------------------------------------
+// Schemas
+// ---------------------------------------------------------------------------
+
+const cognitionSchema = z.object({
+  backend: z.literal('hatcher-proxy'),
+  proxyBaseUrl: z.string().url().max(500),
+  scopedToken: z.string().min(8).max(2048),
+});
+
+const statsSchema = z.object({
+  hp: z.number().int().min(50).max(150),
+  attack: z.number().int().min(5).max(25),
+  defense: z.number().int().min(5).max(25),
+  speed: z.number().int().min(5).max(25),
+});
+
+const registerSchema = z.object({
+  agentId: z.string().min(1).max(200),
+  mode: z.enum(['avatar', 'override']).default('avatar'),
+  targetNpcId: z.string().min(1).max(100).optional(),
+  name: z.string().min(1).max(100).optional(),
+  species: z.string().min(1).max(50).optional(),
+  color: z.number().int().min(0).max(0xffffff).optional(),
+  personality: z.string().max(400).optional(),
+  stats: statsSchema.optional(),
+  homeX: z.number().min(32).max(11488).optional(),
+  homeY: z.number().min(32).max(11488).optional(),
+  patrolRadius: z.number().min(32).max(256).optional(),
+  cognition: cognitionSchema,
+  // Optional identity binding: when present we resolve-or-create the user so
+  // the agent's in-world economic activity (CT credits) attributes to a
+  // ClawVille account. Hatcher controls this key (e.g. their principal id).
+  identityKey: z.string().min(1).max(256).optional(),
+});
+
+const patchSchema = z.object({
+  name: z.string().min(1).max(100).optional(),
+  species: z.string().min(1).max(50).optional(),
+  color: z.number().int().min(0).max(0xffffff).optional(),
+  personality: z.string().max(400).optional(),
+  mode: z.enum(['avatar', 'override']).optional(),
+  targetNpcId: z.string().min(1).max(100).optional(),
+  cognition: cognitionSchema.optional(),
+}).refine((d) => Object.keys(d).length > 0, { message: 'No mutable fields provided' });
+
+// ---------------------------------------------------------------------------
+// Shared helper — verify the partner signature over the raw body, then parse.
+// ---------------------------------------------------------------------------
+async function readSignedBody(
+  c: Context<AppContext>,
+): Promise<{ ok: true; raw: string; json: unknown } | { ok: false }> {
+  const raw = await c.req.text();
+  const verify = verifyPartnerSignature('hatcher', {
+    pubkeyHeader: c.req.header('X-Hatcher-Issuer-Pubkey') ?? null,
+    signatureHeader: c.req.header('X-Hatcher-Signature') ?? null,
+    rawBody: raw,
+  });
+  if (!verify.ok) return { ok: false };
+  let json: unknown;
+  try {
+    json = JSON.parse(raw);
+  } catch {
+    return { ok: false };
+  }
+  return { ok: true, raw, json };
+}
+
+/**
+ * Build an OpenClawClient for a hatcher-proxy agent with the DECRYPTED scoped
+ * token in-memory. The token is never persisted in plaintext nor logged. The
+ * systemContextProvider (orientation + world-state) is bound by
+ * `npcSimulation.registerOpenClaw` once the body's npcId is resolved.
+ */
+function buildHatcherClient(
+  config: OpenClawRegistration,
+  proxyBaseUrl: string,
+  decryptedToken: string,
+  rawProxyAgentId: string,
+): OpenClawClient {
+  return new OpenClawClient({
+    ...config,
+    protocol: 'hatcher-proxy',
+    proxyBaseUrl,
+    // The proxy callback URL + model use the RAW partner id, NOT our internal
+    // `hatcher:<id>` namespace key (config.agentId is the namespaced one).
+    proxyAgentId: rawProxyAgentId,
+    scopedToken: decryptedToken,
+  });
+}
+
+/** Public-safe view of an agent row (NEVER includes the proxy token). */
+function publicAgentRecord(row: typeof openclawBots.$inferSelect) {
+  return {
+    // Echo the RAW partner id back (strip our internal `hatcher:` namespace) so
+    // Hatcher sees the id it sent, not our storage key.
+    agentId: rawHatcherAgentId(row.agentId),
+    uuid: row.id,
+    identityType: row.identityType,
+    mode: row.mode,
+    targetNpcId: row.targetNpcId,
+    name: row.name,
+    species: row.species,
+    color: row.color,
+    cognitionBackend: row.cognitionBackend,
+    // proxyUrl is the partner's own URL — safe to echo back; the TOKEN is not.
+    proxyUrl: row.proxyUrl,
+    walletAddress: row.walletAddress,
+    userId: row.userId,
+    sessionExpiresAt: row.sessionExpiresAt,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// POST /api/partner/hatcher/agents  — register / upsert an agent
+// ---------------------------------------------------------------------------
+partnerHatcherRoutes.post('/agents', async (c) => {
+  const ip = getClientIp({ get: (n) => c.req.header(n) ?? null });
+  if (!partnerRegisterRateLimiter.check(ip)) {
+    return c.json({ error: 'Too many registration requests. Try again in 1 minute.' }, 429);
+  }
+
+  const signed = await readSignedBody(c);
+  if (!signed.ok) return c.json({ error: 'unauthorized' }, 401);
+
+  const parsed = registerSchema.safeParse(signed.json);
+  if (!parsed.success) {
+    return c.json({ error: 'Invalid request', details: parsed.error.flatten() }, 400);
+  }
+  const data = parsed.data;
+
+  // Namespace the partner-supplied id so a Hatcher key can only ever address a
+  // Hatcher-owned row (never collide with an openclaw/milady/custom agent that
+  // chose the same raw agentId via /api/agent/connect). The RAW id is what we
+  // send to Hatcher's proxy.
+  const rawAgentId = data.agentId;
+  const namespacedAgentId = namespaceHatcherAgentId(rawAgentId);
+
+  // SSRF guard at registration time — reject bad proxy URLs before persisting.
+  // Use the DNS-resolving variant here (one-time round-trip is acceptable on
+  // register) so an allowlisted hostname that RESOLVES to a private/internal IP
+  // (rebind / attacker subdomain) is rejected, not just bad hostnames.
+  const urlCheck = await validateHatcherProxyUrlResolved(data.cognition.proxyBaseUrl);
+  if (!urlCheck.ok) {
+    return c.json({ error: 'invalid_proxy_url', reason: urlCheck.reason }, 400);
+  }
+
+  // Override target validation (mirrors /connect).
+  if (data.mode === 'override') {
+    if (!data.targetNpcId || !NPC_IDS.includes(data.targetNpcId)) {
+      return c.json({ error: `Unknown or missing targetNpcId for override mode` }, 400);
+    }
+  }
+
+  // Optional identity binding so in-world CT credits attribute to a user.
+  let userId: string | null = null;
+  if (data.identityKey) {
+    try {
+      const user = await resolveOrCreateUserByIdentity('hatcher', data.identityKey);
+      userId = user.id;
+    } catch (err) {
+      console.error('[Hatcher/register] identity resolve failed (non-fatal):', err);
+    }
+  }
+
+  // Encrypt the scoped token AT REST. The plaintext lives only in `data` for
+  // the duration of this request; we decrypt a fresh copy below to construct
+  // the in-memory client.
+  const encToken = encryptToken(data.cognition.scopedToken);
+
+  // Resolve the render model. A Hatcher agent with no explicit species gets a
+  // random `hatcher_N` placeholder (persisted so reconnects keep the same).
+  const resolvedSpecies =
+    data.species ?? (data.mode === 'avatar' ? pickRandomHatcherModelKey() : null);
+
+  // Upsert the openclaw_bots row.
+  let row: typeof openclawBots.$inferSelect;
+  try {
+    const existing = await db.query.openclawBots.findFirst({
+      where: eq(openclawBots.agentId, namespacedAgentId),
+    });
+    if (existing) {
+      // OWNERSHIP GUARD: never mutate a row that isn't a Hatcher row. (With
+      // namespacing this should be impossible, but defend in depth — a future
+      // identityType that legitimately uses a `hatcher:` prefix, or a manual
+      // DB edit, must not become a hijack vector.)
+      if (existing.identityType !== 'hatcher') {
+        return c.json({ error: 'agent_id_conflict' }, 409);
+      }
+      const persistedSpecies = data.species ?? existing.species ?? resolvedSpecies;
+      const [updated] = await db
+        .update(openclawBots)
+        .set({
+          identityType: 'hatcher',
+          protocol: 'hatcher-proxy',
+          cognitionBackend: 'hatcher-proxy',
+          proxyUrl: urlCheck.url,
+          proxyTokenEnc: encToken.enc,
+          proxyTokenIv: encToken.iv,
+          proxyTokenTag: encToken.tag,
+          mode: data.mode,
+          targetNpcId: data.mode === 'override' ? data.targetNpcId ?? null : null,
+          name: data.name ?? existing.name,
+          species: persistedSpecies,
+          color: data.color ?? existing.color,
+          // Only overwrite userId when we resolved one — never NULL out a prior bind.
+          userId: userId ?? existing.userId,
+          metadata: {
+            ...(existing.metadata ?? {}),
+            personality: data.personality ?? existing.metadata?.personality,
+            homeX: data.homeX ?? existing.metadata?.homeX ?? 2560,
+            homeY: data.homeY ?? existing.metadata?.homeY ?? 2560,
+            patrolRadius: data.patrolRadius ?? existing.metadata?.patrolRadius ?? 100,
+            stats: data.stats ?? existing.metadata?.stats ?? { hp: 100, attack: 10, defense: 8, speed: 6 },
+          },
+          totalSessions: (existing.totalSessions ?? 0) + 1,
+          lastSeenAt: new Date(),
+          sessionExpiresAt: computeSessionExpiresAt(),
+          sessionSweptAt: null,
+          updatedAt: new Date(),
+        })
+        .where(eq(openclawBots.id, existing.id))
+        .returning();
+      row = updated;
+    } else {
+      const [inserted] = await db
+        .insert(openclawBots)
+        .values({
+          agentId: namespacedAgentId,
+          identityType: 'hatcher',
+          protocol: 'hatcher-proxy',
+          cognitionBackend: 'hatcher-proxy',
+          proxyUrl: urlCheck.url,
+          proxyTokenEnc: encToken.enc,
+          proxyTokenIv: encToken.iv,
+          proxyTokenTag: encToken.tag,
+          mode: data.mode,
+          targetNpcId: data.mode === 'override' ? data.targetNpcId ?? null : null,
+          name: data.name ?? null,
+          species: resolvedSpecies,
+          color: data.color ?? null,
+          userId,
+          metadata: {
+            personality: data.personality,
+            homeX: data.homeX ?? 2560,
+            homeY: data.homeY ?? 2560,
+            patrolRadius: data.patrolRadius ?? 100,
+            stats: data.stats ?? { hp: 100, attack: 10, defense: 8, speed: 6 },
+          },
+          totalSessions: 1,
+          sessionExpiresAt: computeSessionExpiresAt(),
+        })
+        .returning();
+      row = inserted;
+    }
+  } catch (err) {
+    console.error('[Hatcher/register] DB upsert error:', err);
+    return c.json({ error: 'registration_failed' }, 500);
+  }
+
+  // Ensure a custodial wallet (idempotent, non-fatal).
+  try {
+    const wallet = await ensureWallet('agent', row.id);
+    if (wallet.publicKey !== row.walletAddress) {
+      await db.update(openclawBots)
+        .set({ walletAddress: wallet.publicKey, updatedAt: new Date() })
+        .where(eq(openclawBots.id, row.id));
+      row = { ...row, walletAddress: wallet.publicKey };
+    }
+  } catch (err) {
+    console.error('[Hatcher/register] wallet provisioning failed (non-fatal):', err);
+  }
+
+  // Spawn / take over the in-world body. Use a fresh session id per
+  // registration. Remove any stale live session for this agent first so a
+  // re-register doesn't leave an orphaned body (idempotent).
+  try {
+    for (const stale of npcSimulation.findActiveSessionsByAgentIds([namespacedAgentId])) {
+      npcSimulation.unregisterOpenClaw(stale);
+    }
+  } catch (err) {
+    console.error('[Hatcher/register] stale session cleanup failed (non-fatal):', err);
+  }
+
+  const sessionId = `hat-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const stats = row.metadata?.stats ?? { hp: 100, attack: 10, defense: 8, speed: 6 };
+  let spawned = false;
+  try {
+    let config: OpenClawRegistration;
+    if (data.mode === 'override' && data.targetNpcId) {
+      config = {
+        // In-world/session tracking uses the namespaced id (matches the row);
+        // the proxy callback uses the raw id via buildHatcherClient below.
+        agentId: namespacedAgentId,
+        sessionId,
+        sessionKey: sessionId,
+        gatewayUrl: 'http://localhost:0',
+        authToken: '',
+        protocol: 'hatcher-proxy',
+        mode: 'override',
+        autonomyMode: 'server-managed',
+        targetNpcId: data.targetNpcId,
+      } as OpenClawRegistration;
+    } else {
+      config = {
+        agentId: namespacedAgentId,
+        sessionId,
+        sessionKey: sessionId,
+        gatewayUrl: 'http://localhost:0',
+        authToken: '',
+        protocol: 'hatcher-proxy',
+        mode: 'avatar',
+        autonomyMode: 'server-managed',
+        name: data.name ?? rawAgentId.slice(0, 24),
+        species: row.species ?? DEFAULT_AGENT_MODEL_KEY,
+        color: data.color ?? 0x888888,
+        stats,
+        homeX: row.metadata?.homeX ?? 2560,
+        homeY: row.metadata?.homeY ?? 2560,
+        patrolRadius: row.metadata?.patrolRadius ?? 100,
+        personality: data.personality ?? '',
+      } as OpenClawRegistration;
+    }
+    const client = buildHatcherClient(config, urlCheck.url, data.cognition.scopedToken, rawAgentId);
+    npcSimulation.registerOpenClaw(config, client);
+    spawned = true;
+  } catch (err) {
+    console.error('[Hatcher/register] in-world spawn failed:', err);
+    // Non-fatal — the row is persisted; the body can be re-registered.
+  }
+
+  void logEvent({
+    eventType: 'agent.connected',
+    userId,
+    agentId: namespacedAgentId,
+    sessionId,
+    payload: {
+      identityType: 'hatcher',
+      via: 'partner-register',
+      mode: data.mode,
+      spawned,
+      cognitionBackend: 'hatcher-proxy',
+    },
+  });
+
+  return c.json({ ok: true, sessionId, spawned, agent: publicAgentRecord(row) });
+});
+
+// ---------------------------------------------------------------------------
+// PATCH /api/partner/hatcher/agents/:agentId — update mutable fields + live
+// ---------------------------------------------------------------------------
+partnerHatcherRoutes.patch('/agents/:agentId', async (c) => {
+  const ip = getClientIp({ get: (n) => c.req.header(n) ?? null });
+  if (!partnerRegisterRateLimiter.check(ip)) {
+    return c.json({ error: 'Too many requests. Try again in 1 minute.' }, 429);
+  }
+
+  const rawAgentId = c.req.param('agentId');
+  const namespacedAgentId = namespaceHatcherAgentId(rawAgentId);
+  const signed = await readSignedBody(c);
+  if (!signed.ok) return c.json({ error: 'unauthorized' }, 401);
+
+  const parsed = patchSchema.safeParse(signed.json);
+  if (!parsed.success) {
+    return c.json({ error: 'Invalid request', details: parsed.error.flatten() }, 400);
+  }
+  const data = parsed.data;
+
+  const existing = await db.query.openclawBots.findFirst({
+    where: eq(openclawBots.agentId, namespacedAgentId),
+  });
+  // 404 on both "no row" AND "row is not a Hatcher row" — a Hatcher key must
+  // never read/mutate (or even confirm the existence of) another framework's
+  // agent. (Namespacing already makes a cross-framework hit impossible; this is
+  // defense-in-depth against a manual DB edit or future prefix reuse.)
+  if (!existing || existing.identityType !== 'hatcher') {
+    return c.json({ error: 'not_found' }, 404);
+  }
+
+  // Validate + encrypt a rotated cognition token if provided. Use the
+  // DNS-resolving SSRF guard (one-time round-trip acceptable on patch).
+  let encToken: { enc: string; iv: string; tag: string } | null = null;
+  let newProxyUrl: string | null = null;
+  if (data.cognition) {
+    const urlCheck = await validateHatcherProxyUrlResolved(data.cognition.proxyBaseUrl);
+    if (!urlCheck.ok) {
+      return c.json({ error: 'invalid_proxy_url', reason: urlCheck.reason }, 400);
+    }
+    newProxyUrl = urlCheck.url;
+    encToken = encryptToken(data.cognition.scopedToken);
+  }
+
+  // Validate override target if mode flips to override.
+  const nextMode = data.mode ?? existing.mode;
+  let nextTargetNpcId = data.targetNpcId ?? existing.targetNpcId;
+  if (nextMode === 'override') {
+    if (!nextTargetNpcId || !NPC_IDS.includes(nextTargetNpcId)) {
+      return c.json({ error: 'Unknown or missing targetNpcId for override mode' }, 400);
+    }
+  } else {
+    nextTargetNpcId = null;
+  }
+
+  let row: typeof openclawBots.$inferSelect;
+  try {
+    const [updated] = await db
+      .update(openclawBots)
+      .set({
+        name: data.name ?? existing.name,
+        species: data.species ?? existing.species,
+        color: data.color ?? existing.color,
+        mode: nextMode,
+        targetNpcId: nextTargetNpcId,
+        ...(data.personality !== undefined
+          ? { metadata: { ...(existing.metadata ?? {}), personality: data.personality } }
+          : {}),
+        ...(encToken && newProxyUrl
+          ? {
+              proxyUrl: newProxyUrl,
+              proxyTokenEnc: encToken.enc,
+              proxyTokenIv: encToken.iv,
+              proxyTokenTag: encToken.tag,
+            }
+          : {}),
+        updatedAt: new Date(),
+      })
+      .where(eq(openclawBots.id, existing.id))
+      .returning();
+    row = updated;
+  } catch (err) {
+    console.error('[Hatcher/patch] DB update error:', err);
+    return c.json({ error: 'update_failed' }, 500);
+  }
+
+  // Propagate to the LIVE in-world entity. Re-connect previously only mutated
+  // the DB row; for PATCH we re-register so name/species/personality/mode +
+  // a rotated cognition token take effect on the spawned body. If a mode flip
+  // requires a different body shape (avatar<->override), the re-register
+  // handles it. We need the DECRYPTED token to rebuild the client — use the
+  // freshly-supplied plaintext, else decrypt the stored row.
+  let propagated = false;
+  try {
+    let plaintextToken: string | null = data.cognition?.scopedToken ?? null;
+    if (!plaintextToken) {
+      if (row.proxyTokenEnc && row.proxyTokenIv && row.proxyTokenTag) {
+        plaintextToken = decryptToken(row.proxyTokenEnc, row.proxyTokenIv, row.proxyTokenTag);
+      }
+    }
+    const proxyUrl = row.proxyUrl ?? newProxyUrl;
+    if (plaintextToken && proxyUrl) {
+      const urlCheck = validateHatcherProxyUrl(proxyUrl);
+      if (urlCheck.ok) {
+        // Tear down any live session, then re-register with the new fields.
+        for (const stale of npcSimulation.findActiveSessionsByAgentIds([namespacedAgentId])) {
+          npcSimulation.unregisterOpenClaw(stale);
+        }
+        const sessionId = `hat-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        const stats = row.metadata?.stats ?? { hp: 100, attack: 10, defense: 8, speed: 6 };
+        let config: OpenClawRegistration;
+        if (nextMode === 'override' && nextTargetNpcId) {
+          config = {
+            agentId: namespacedAgentId, sessionId, sessionKey: sessionId,
+            gatewayUrl: 'http://localhost:0', authToken: '',
+            protocol: 'hatcher-proxy', mode: 'override',
+            autonomyMode: 'server-managed', targetNpcId: nextTargetNpcId,
+          } as OpenClawRegistration;
+        } else {
+          config = {
+            agentId: namespacedAgentId, sessionId, sessionKey: sessionId,
+            gatewayUrl: 'http://localhost:0', authToken: '',
+            protocol: 'hatcher-proxy', mode: 'avatar',
+            autonomyMode: 'server-managed',
+            name: row.name ?? rawAgentId.slice(0, 24),
+            species: row.species ?? DEFAULT_AGENT_MODEL_KEY,
+            color: row.color ?? 0x888888,
+            stats,
+            homeX: row.metadata?.homeX ?? 2560,
+            homeY: row.metadata?.homeY ?? 2560,
+            patrolRadius: row.metadata?.patrolRadius ?? 100,
+            personality: row.metadata?.personality ?? '',
+          } as OpenClawRegistration;
+        }
+        const client = buildHatcherClient(config, urlCheck.url, plaintextToken, rawAgentId);
+        npcSimulation.registerOpenClaw(config, client);
+        propagated = true;
+      }
+    }
+  } catch (err) {
+    console.error('[Hatcher/patch] live-entity propagation failed (non-fatal):', err);
+  }
+
+  return c.json({ ok: true, propagated, agent: publicAgentRecord(row) });
+});
+
+// ---------------------------------------------------------------------------
+// DELETE /api/partner/hatcher/agents/:agentId — remove body + tombstone row
+// ---------------------------------------------------------------------------
+partnerHatcherRoutes.delete('/agents/:agentId', async (c) => {
+  const ip = getClientIp({ get: (n) => c.req.header(n) ?? null });
+  if (!partnerRegisterRateLimiter.check(ip)) {
+    return c.json({ error: 'Too many requests. Try again in 1 minute.' }, 429);
+  }
+
+  const rawAgentId = c.req.param('agentId');
+  const namespacedAgentId = namespaceHatcherAgentId(rawAgentId);
+  // DELETE may carry an empty body; verify the signature over whatever raw
+  // bytes were sent (the partner signs the empty string in that case).
+  const signed = await readSignedBody(c);
+  if (!signed.ok) return c.json({ error: 'unauthorized' }, 401);
+
+  const existing = await db.query.openclawBots.findFirst({
+    where: eq(openclawBots.agentId, namespacedAgentId),
+    columns: { id: true, userId: true, identityType: true },
+  });
+  // 404 on missing OR non-hatcher row — a Hatcher key cannot tombstone/scrub
+  // another framework's agent (cross-namespace impossible; this guards manual
+  // DB edits / future prefix reuse).
+  if (!existing || existing.identityType !== 'hatcher') {
+    return c.json({ error: 'not_found' }, 404);
+  }
+
+  // Remove the in-world body for every live session bound to this agent.
+  let removedBodies = 0;
+  try {
+    for (const sid of npcSimulation.findActiveSessionsByAgentIds([namespacedAgentId])) {
+      if (npcSimulation.unregisterOpenClaw(sid)) removedBodies++;
+    }
+  } catch (err) {
+    console.error('[Hatcher/delete] body removal failed (non-fatal):', err);
+  }
+
+  // Tombstone the row: expire the session immediately and scrub the cognition
+  // route + encrypted token so no further callbacks can fire for this agent.
+  try {
+    await db.update(openclawBots)
+      .set({
+        sessionExpiresAt: new Date(),
+        cognitionBackend: null,
+        proxyUrl: null,
+        proxyTokenEnc: null,
+        proxyTokenIv: null,
+        proxyTokenTag: null,
+        updatedAt: new Date(),
+      })
+      .where(eq(openclawBots.id, existing.id));
+  } catch (err) {
+    console.error('[Hatcher/delete] tombstone failed:', err);
+    return c.json({ error: 'delete_failed' }, 500);
+  }
+
+  void logEvent({
+    eventType: 'agent.session.disconnected',
+    userId: existing.userId,
+    agentId: namespacedAgentId,
+    payload: { via: 'partner-delete', removedBodies },
+  });
+
+  return c.json({ ok: true, removedBodies });
+});
