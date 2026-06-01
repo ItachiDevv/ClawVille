@@ -34,21 +34,26 @@
 import { Hono } from 'hono';
 import type { Context } from 'hono';
 import { z } from 'zod';
-import { eq } from 'drizzle-orm';
+import { eq, desc, count } from 'drizzle-orm';
 import {
   db,
   openclawBots,
   avatars,
+  events,
+  questRewards,
+  tutorialQuestClaims,
 } from '@clawville/database';
 import {
   NPC_IDS,
   DEFAULT_AGENT_MODEL_KEY,
+  KNOWLEDGE_BOOKS,
   pickRandomHatcherModelKey,
   type OpenClawRegistration,
+  type KnowledgeBook,
 } from '@clawville/shared';
 import type { AppContext } from '../types';
 import { createRateLimiter, getClientIp } from '../middleware/rate-limit';
-import { verifyPartnerSignature } from '../services/partner-signature';
+import { verifyPartnerSignature, verifyPartnerGetSignature } from '../services/partner-signature';
 import { encryptToken, decryptToken } from '../services/keypair-vault';
 import { validateHatcherProxyUrl, validateHatcherProxyUrlResolved } from '../services/hatcher-config';
 import { npcSimulation } from '../services/npc-simulation';
@@ -57,6 +62,7 @@ import { ensureWallet } from '../services/wallet-service';
 import { resolveOrCreateUserByIdentity } from '../services/identity-service';
 import { computeSessionExpiresAt } from '../services/openclaw-session-sweeper';
 import { logEvent } from '../services/event-logger';
+import { getAgentLeaderboardEntry } from './leaderboard';
 
 export const partnerHatcherRoutes = new Hono<AppContext>();
 
@@ -98,6 +104,105 @@ const partnerRegisterRateLimiter = createRateLimiter({
   maxPerWindow: 30,
   windowMs: 60_000,
 });
+
+// Read-side limiter for the stats dashboard poll. Separate bucket from the
+// write limiter so a dashboard refresh loop can't starve register/patch/delete.
+// Per-IP (a single partner's egress collapses to one IP — same Phase 1
+// deferred finding; the per-partner-keyed Redis limiter is the Phase C fix).
+const partnerStatsRateLimiter = createRateLimiter({
+  maxPerWindow: 60,
+  windowMs: 60_000,
+});
+
+// ---------------------------------------------------------------------------
+// Stats endpoint — config + helpers
+// ---------------------------------------------------------------------------
+
+/** How many recent events the dashboard surfaces per agent. */
+const RECENT_INTERACTIONS_LIMIT = 20;
+
+/** Leaderboard window the dashboard reflects (lifetime contribution). */
+const STATS_LEADERBOARD_WINDOW = 'all' as const;
+
+/** 60s in-process stats cache keyed by namespaced agentId (plan §14). */
+const STATS_CACHE_TTL_MS = 60_000;
+interface StatsCacheEntry {
+  expiresAt: number;
+  // The fully-serialized public response body.
+  body: Record<string, unknown>;
+}
+const statsCache = new Map<string, StatsCacheEntry>();
+
+/**
+ * Pre-compute (buildingId → KnowledgeBook[]) from the shared registry once at
+ * module load. Mirrors `apps/api/src/routes/agent-export.ts` so "books learned"
+ * is computed the SAME way the take-home export does: a building counts as
+ * learned when the agent's knowledge set contains at least one entry from EACH
+ * book published at that building.
+ */
+const BOOKS_BY_BUILDING: Readonly<Record<string, readonly KnowledgeBook[]>> = (() => {
+  const m: Record<string, KnowledgeBook[]> = {};
+  for (const book of KNOWLEDGE_BOOKS) {
+    (m[book.building] ??= []).push(book);
+  }
+  for (const arr of Object.values(m)) Object.freeze(arr);
+  return Object.freeze(m);
+})();
+
+/**
+ * Count fully-learned buildings from the agent's knowledge lines. A connected
+ * agent accumulates teacher-chat knowledge on `openclaw_bots.knowledge[]`
+ * (see `agent-gateway.ts` building-chat persist). Each line is matched as a
+ * SUBSTRING containing a book's canonical knowledge entry, because the bot's
+ * stored lines are summaries (`[building] Q: … | A: …`) that EMBED the chunk
+ * rather than equalling it verbatim — exact-equality (the avatar export path)
+ * would never match a bot's summarized line.
+ */
+function countBooksLearned(knowledge: readonly string[]): number {
+  if (knowledge.length === 0) return 0;
+  let learned = 0;
+  for (const buildingBooks of Object.values(BOOKS_BY_BUILDING)) {
+    if (buildingBooks.length === 0) continue;
+    const fullyLearned = buildingBooks.every((book) =>
+      book.knowledgeEntries.some((entry) =>
+        knowledge.some((line) => line.includes(entry)),
+      ),
+    );
+    if (fullyLearned) learned += 1;
+  }
+  return learned;
+}
+
+/**
+ * Defense-in-depth scrub of an event payload before it leaves on the public
+ * stats response. Today NO event payload logged for a Hatcher agentId carries
+ * a secret (the cognition token is encrypted at rest + never logged; wallet
+ * secretKey is returned in a response body, never written to `events`), but a
+ * dashboard echoing arbitrary payloads is a future foot-gun. We drop any
+ * top-level key whose name matches a secret-ish pattern so a future event type
+ * that accidentally logs a token/key/secret can never surface here. Public
+ * fields (`identityPubkey`, `walletAddress` pubkey, `via`, `mode`, etc.) pass
+ * through. Non-object payloads are dropped entirely.
+ */
+const SENSITIVE_KEY_RE =
+  /secret|token|password|passwd|private|priv_?key|secretkey|seed|mnemonic|credential|bearer|authorization|api_?key|dek|encrypted|cipher/i;
+
+function scrubEventPayload(
+  payload: Record<string, unknown> | null,
+): Record<string, unknown> | null {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null;
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(payload)) {
+    if (SENSITIVE_KEY_RE.test(k)) continue;
+    // Only surface JSON-scalar values; nested objects/arrays are summarized
+    // away (a partner dashboard wants flat interaction breadcrumbs, and a
+    // nested object could smuggle a secret under a non-matching parent key).
+    if (v === null || ['string', 'number', 'boolean'].includes(typeof v)) {
+      out[k] = v;
+    }
+  }
+  return out;
+}
 
 // ---------------------------------------------------------------------------
 // Schemas
@@ -657,4 +762,247 @@ partnerHatcherRoutes.delete('/agents/:agentId', async (c) => {
   });
 
   return c.json({ ok: true, removedBodies });
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/partner/hatcher/agents/:agentId/stats — dashboard stats (read-only)
+// ---------------------------------------------------------------------------
+//
+// Powers the Hatcher-side per-agent dashboard (plan §13 item 5: registration
+// status, avatar identity, mode, quests completed, books learned, rank, recent
+// interactions). READ-ONLY aggregation — no DB writes, no migration.
+//
+// AUTH (partner-signed GET): a GET carries no body to sign, so the partner
+// signs a CANONICAL CHALLENGE over method + path + a unix-ms timestamp with a
+// 5-min freshness window (replay defence). The challenge string is documented
+// verbatim in `partnerGetChallenge()` (`services/partner-signature.ts`) so
+// Hatcher can reproduce it byte-for-byte:
+//
+//   clawville-partner-get\nGET\n<request path incl. leading slash>\n<unix_ms>
+//
+// Headers: `X-Hatcher-Issuer-Pubkey` + `X-Hatcher-Signature` (ed25519 over
+// sha256(challenge), base58) + `X-Hatcher-Timestamp` (the same unix-ms).
+//
+// OWNERSHIP: the raw `:agentId` resolves to the `hatcher:<rawId>` key; a row
+// that is missing OR whose `identityType !== 'hatcher'` returns an opaque 404,
+// so a Hatcher key can never read (or confirm the existence of) a non-Hatcher
+// agent's stats — identical guard to register/patch/delete.
+//
+// SECURITY: column-pinned SELECTs; the response exposes ONLY public values
+// (wallet PUBKEY is fine). The encrypted proxy token columns
+// (`proxy_token_enc/iv/tag`) + the scoped/proxy token are NEVER selected,
+// NEVER decrypted, and NEVER echoed.
+partnerHatcherRoutes.get('/agents/:agentId/stats', async (c) => {
+  const ip = getClientIp({ get: (n) => c.req.header(n) ?? null });
+  if (!partnerStatsRateLimiter.check(ip)) {
+    return c.json({ error: 'Too many requests. Try again in 1 minute.' }, 429);
+  }
+
+  const rawAgentId = c.req.param('agentId');
+  const namespacedAgentId = namespaceHatcherAgentId(rawAgentId);
+
+  // Verify the partner-signed GET over (method, path, timestamp). `c.req.path`
+  // is the path the server received (no scheme/host) — the partner signs the
+  // identical path it requested.
+  const verify = verifyPartnerGetSignature('hatcher', {
+    method: c.req.method,
+    path: c.req.path,
+    tsHeader: c.req.header('X-Hatcher-Timestamp') ?? null,
+    pubkeyHeader: c.req.header('X-Hatcher-Issuer-Pubkey') ?? null,
+    sigHeader: c.req.header('X-Hatcher-Signature') ?? null,
+  });
+  if (!verify.ok) return c.json({ error: 'unauthorized' }, 401);
+
+  // 60s cache keyed by the namespaced id (plan §14). Served only after auth so
+  // an unauthenticated caller can never read a cached body.
+  const cached = statsCache.get(namespacedAgentId);
+  if (cached && cached.expiresAt > Date.now()) {
+    return c.json(cached.body);
+  }
+
+  // Registration row — column-pinned, NEVER selects the proxy token columns.
+  const row = await db.query.openclawBots.findFirst({
+    where: eq(openclawBots.agentId, namespacedAgentId),
+    columns: {
+      id: true,
+      agentId: true,
+      identityType: true,
+      mode: true,
+      name: true,
+      species: true,
+      cognitionBackend: true,
+      walletAddress: true,
+      knowledge: true,
+      userId: true,
+      totalSessions: true,
+      lastSeenAt: true,
+      sessionExpiresAt: true,
+    },
+  });
+  // 404 (opaque) on missing OR non-hatcher row — same cross-namespace guard as
+  // register/patch/delete; a Hatcher key cannot probe another framework's agent.
+  if (!row || row.identityType !== 'hatcher') {
+    return c.json({ error: 'not_found' }, 404);
+  }
+
+  // Resolve the bound avatar (if any) for quest attribution. A Hatcher agent
+  // only has an avatar/user when it was registered with an `identityKey`.
+  const boundUserId = row.userId ?? null;
+  let boundAvatarId: string | null = null;
+  if (boundUserId) {
+    const avatar = await db.query.avatars.findFirst({
+      where: eq(avatars.userId, boundUserId),
+      columns: { id: true },
+    });
+    boundAvatarId = avatar?.id ?? null;
+  }
+
+  // Leaderboard block — REUSES the exact public-board snapshot (CTE + scoring +
+  // caps + 60s window cache). `null` = no scored events in the window (or
+  // ranked beyond the 500-row board horizon) → score 0, rank null.
+  let leaderboard: {
+    score: number;
+    rank: number | null;
+    building_visits: number;
+    teacher_chats: number;
+    collaborations: number;
+    skill_fetches: number;
+    activity_placements: number;
+  };
+  try {
+    const entry = await getAgentLeaderboardEntry(
+      namespacedAgentId,
+      STATS_LEADERBOARD_WINDOW,
+    );
+    if (entry) {
+      const b = entry.breakdown;
+      leaderboard = {
+        score: entry.score,
+        rank: entry.rank,
+        building_visits: b.building_visits,
+        teacher_chats: b.teacher_chats,
+        collaborations: b.collaborations,
+        skill_fetches: b.skill_fetches,
+        activity_placements:
+          b.activity_wins + b.activity_silver + b.activity_bronze + b.activity_other,
+      };
+    } else {
+      leaderboard = {
+        score: 0,
+        rank: null,
+        building_visits: 0,
+        teacher_chats: 0,
+        collaborations: 0,
+        skill_fetches: 0,
+        activity_placements: 0,
+      };
+    }
+  } catch (err) {
+    // Degrade gracefully — a leaderboard-build failure must not 500 the whole
+    // dashboard. Mirrors the public `/agents` empty-board fallback.
+    console.error('[Hatcher/stats] leaderboard lookup failed (non-fatal):', err);
+    leaderboard = {
+      score: 0,
+      rank: null,
+      building_visits: 0,
+      teacher_chats: 0,
+      collaborations: 0,
+      skill_fetches: 0,
+      activity_placements: 0,
+    };
+  }
+
+  // Learning block.
+  const knowledge = row.knowledge ?? [];
+  const knowledgeCount = knowledge.length;
+  const booksLearned = countBooksLearned(knowledge);
+
+  // Quests — only attributable when the agent is bound to a user/avatar.
+  //   - quest_rewards: admin-curated PR-submission quests, keyed by avatarId.
+  //   - tutorial_quest_claims: client-side onboarding checklist, keyed by userId.
+  let questsCompleted = 0;
+  try {
+    if (boundAvatarId) {
+      const [qr] = await db
+        .select({ n: count() })
+        .from(questRewards)
+        .where(eq(questRewards.avatarId, boundAvatarId));
+      questsCompleted += Number(qr?.n ?? 0);
+    }
+    if (boundUserId) {
+      const [tc] = await db
+        .select({ n: count() })
+        .from(tutorialQuestClaims)
+        .where(eq(tutorialQuestClaims.userId, boundUserId));
+      questsCompleted += Number(tc?.n ?? 0);
+    }
+  } catch (err) {
+    console.error('[Hatcher/stats] quest count failed (non-fatal):', err);
+  }
+
+  // Recent interactions — last N events for THIS agent (events.agent_id stores
+  // the namespaced id, matching every register/connect/action log). Column-
+  // pinned; payload is partner-safe (it never carries secrets — the cognition
+  // token is encrypted at rest and never logged).
+  let recentInteractions: Array<{
+    type: string;
+    ts: string;
+    buildingId: string | null;
+    payload: Record<string, unknown> | null;
+  }> = [];
+  try {
+    const rows = await db
+      .select({
+        eventType: events.eventType,
+        ts: events.ts,
+        buildingId: events.buildingId,
+        payload: events.payload,
+      })
+      .from(events)
+      .where(eq(events.agentId, namespacedAgentId))
+      .orderBy(desc(events.ts))
+      .limit(RECENT_INTERACTIONS_LIMIT);
+    recentInteractions = rows.map((r) => ({
+      type: r.eventType,
+      ts: (r.ts instanceof Date ? r.ts : new Date(r.ts as unknown as string)).toISOString(),
+      buildingId: r.buildingId ?? null,
+      payload: scrubEventPayload(r.payload ?? null),
+    }));
+  } catch (err) {
+    console.error('[Hatcher/stats] recent interactions failed (non-fatal):', err);
+  }
+
+  const now = Date.now();
+  const active = row.sessionExpiresAt
+    ? row.sessionExpiresAt.getTime() > now
+    : false;
+
+  const body: Record<string, unknown> = {
+    registration: {
+      // Echo the RAW partner id (strip our `hatcher:` namespace).
+      agentId: rawHatcherAgentId(row.agentId),
+      name: row.name ?? null,
+      mode: row.mode,
+      // The plan asks for species/avatarModel — for Hatcher agents the render
+      // model lives on `species` (a `hatcher_N` model key or a custom species).
+      species: row.species ?? null,
+      avatarModel: row.species ?? null,
+      cognitionBackend: row.cognitionBackend ?? null,
+      walletAddress: row.walletAddress ?? null,
+      active,
+      lastSeenAt: row.lastSeenAt ? row.lastSeenAt.toISOString() : null,
+      totalSessions: row.totalSessions ?? 0,
+    },
+    leaderboard,
+    learning: {
+      booksLearned,
+      knowledgeCount,
+      questsCompleted,
+    },
+    recentInteractions,
+  };
+
+  statsCache.set(namespacedAgentId, { expiresAt: now + STATS_CACHE_TTL_MS, body });
+
+  return c.json(body);
 });
