@@ -45,11 +45,48 @@ import {
   SHOP_BUILDINGS,
   BUILDING_TOOLS,
   CLAWVILLE_GAME_TOOLS,
+  // Hatcher partner #2 (2026-06-01): random render-model pick for incoming
+  // Hatcher agents + the canonical "you are inside ClawVille" orientation
+  // text returned on /connect so an external agent embeds it in its own
+  // system prompt.
+  pickRandomHatcherModelKey,
+  CLAWVILLE_ORIENTATION_KNOWLEDGE,
 } from '@clawville/shared';
 import nacl from 'tweetnacl';
 import bs58 from 'bs58';
 
 const agentGatewayRoutes = new Hono();
+
+// ---------------------------------------------------------------------------
+// Hatcher partner #2 (2026-06-01) — /connect orientation payload.
+// ---------------------------------------------------------------------------
+// `CLAWVILLE_ORIENTATION_KNOWLEDGE` (the canonical "you are inside ClawVille"
+// world-facts, single source of truth in
+// packages/shared/src/constants/orientation-skill.ts) is returned on every
+// /connect so an EXTERNAL agent — which brings its own model and gets NO
+// server-side Eliza runtime for its chat — can embed orientation into its own
+// system prompt at connect time. Additive field; existing connect consumers
+// ignore unknown keys, so this does not break them.
+//
+// Phase 3 (`.claude/plans/hatcher-integration.md` §4) will swap this inline
+// text for a manifest URL + content-hash (GET /api/skills/manifest.json +
+// /api/skills/protocol/skill.md) so agents poll-and-diff instead of re-reading
+// the full body every connect. Until that endpoint exists, the inline text is
+// the only delivery surface.
+//
+// Joined + frozen once at module load — the body is identical for every
+// connect, so there's no reason to re-join the ~70-entry array per request.
+const CONNECT_ORIENTATION_TEXT = CLAWVILLE_ORIENTATION_KNOWLEDGE.join('\n\n');
+const CONNECT_ORIENTATION = Object.freeze({
+  // Plain-text orientation body the agent should prepend to its system prompt.
+  text: CONNECT_ORIENTATION_TEXT,
+  // Number of discrete world-facts, for an agent that wants to chunk/embed.
+  factCount: CLAWVILLE_ORIENTATION_KNOWLEDGE.length,
+  // Provenance note so an agent (or its operator) knows this is the canonical
+  // orientation surface and what supersedes it.
+  source: 'CLAWVILLE_ORIENTATION_KNOWLEDGE',
+  note: 'Embed this in your system prompt so you act as an agent inside ClawVille. Phase 3 replaces this inline text with a manifest URL + content-hash.',
+});
 
 // ---------------------------------------------------------------------------
 // Rate limiter for /connect — prevents unlimited bot registration spam.
@@ -139,8 +176,13 @@ const connectSchema = z.object({
   mode: z.enum(['avatar', 'override']).optional().default('avatar'),
   targetNpcId: z.string().optional(),
 
-  // Identity type hint (inferred from other fields if omitted)
-  identityType: z.enum(['openclaw', 'ironclaw', 'nanoclaw', 'milady', 'custom', 'anonymous']).optional(),
+  // Identity type hint (inferred from other fields if omitted).
+  // `hatcher` (added 2026-06-01) = an external agent entering from the Hatcher
+  // hosting platform. It rides the same universal connect path as the other
+  // external types; the only behavioural difference is the render model — a
+  // Hatcher agent is assigned a RANDOM `hatcher_N` placeholder avatar (the
+  // `hatcher` category). See `.claude/plans/hatcher-integration.md` §3 + §5.
+  identityType: z.enum(['openclaw', 'ironclaw', 'nanoclaw', 'milady', 'custom', 'anonymous', 'hatcher']).optional(),
 
   // Phase 5 — explicit identity key for first-contact bootstrap. When
   // `identityType` + `identityKey` are both present we resolve-or-
@@ -240,6 +282,19 @@ agentGatewayRoutes.post('/connect', async (c) => {
   let lastY: number | undefined;
   const agentStats = data.stats ?? { hp: 100, attack: 10, defense: 8, speed: 6 };
 
+  // Render-model surface for a connected agent = `species` (the
+  // openclaw_bots.species column + the OpenClawRegistration config). Resolved
+  // ONCE here so the persisted row, the spawn config, and the in-world sim all
+  // agree. Hatcher partner #2 (2026-06-01): a first-time Hatcher agent with no
+  // explicit species gets a RANDOM `hatcher_N` placeholder model; the value is
+  // then persisted so reconnects keep the SAME avatar instead of re-rolling.
+  // A returning agent always keeps its stored species (set in the existing-row
+  // branch below). The connect path does NOT write avatars.agent_category, so
+  // no DB CHECK is involved — only /join writes agent_category.
+  let resolvedSpecies: string | null =
+    data.species ??
+    (identityType === 'hatcher' ? pickRandomHatcherModelKey() : null);
+
   // The connection-token flow knows which user issued the token (the
   // human pasted the URL into their authed agent's chat, the modal
   // captured `avatarId` + `userId` at issue time). Wire that userId onto
@@ -269,13 +324,22 @@ agentGatewayRoutes.post('/connect', async (c) => {
       // whatever's stored — Milady is the source of truth for agent naming.
       const preferredName = data.miladyCharacterName ?? data.name ?? existing.name;
 
+      // Returning agent keeps its previously-assigned render model unless the
+      // caller explicitly overrides `species`. For a Hatcher agent this means
+      // it keeps the SAME random hatcher_N placeholder it was first assigned,
+      // rather than re-rolling on every reconnect. Falls back to the freshly
+      // resolved species (a random hatcher pick) only if the stored row had
+      // none — e.g. a hatcher agent whose first connect predated this code.
+      const persistedSpecies = data.species ?? existing.species ?? resolvedSpecies;
+      resolvedSpecies = persistedSpecies;
+
       await db.update(openclawBots).set({
         identityType,
         gatewayUrl: data.gatewayUrl ?? existing.gatewayUrl,
         protocol: data.protocol ? wireProtocol : existing.protocol,
         mode: data.mode,
         name: preferredName,
-        species: data.species ?? existing.species,
+        species: persistedSpecies,
         color: data.color ?? existing.color,
         totalSessions,
         lastSeenAt: new Date(),
@@ -310,7 +374,9 @@ agentGatewayRoutes.post('/connect', async (c) => {
         protocol: wireProtocol,
         mode: data.mode,
         name: insertName,
-        species: data.species ?? null,
+        // Persist the resolved render model (random hatcher_N for a first-time
+        // Hatcher agent) so reconnects keep the same avatar.
+        species: resolvedSpecies,
         color: data.color ?? null,
         // Bind to the human who issued the connection token so the bot
         // is recognized on later page loads + cross-session reconnect
@@ -378,8 +444,15 @@ agentGatewayRoutes.post('/connect', async (c) => {
     // VRM default so connected agents render as Miladys (not lobsters) when
     // the caller omits species. Renderer routes by species via MODEL_REGISTRY,
     // so 'milady_official_1' takes the VRMNpcMesh path.
+    //
+    // `resolvedSpecies` was computed + persisted above (Step 2): it is the
+    // caller's explicit species, OR a random `hatcher_N` placeholder for a
+    // first-time Hatcher agent, OR a returning agent's stored species. We fall
+    // back to the Milady default only when it's still null (e.g. an anonymous
+    // agent with no species). This keeps the persisted row, the spawn config,
+    // and the in-world render in lockstep.
     const spawnName = data.name ?? data.miladyCharacterName ?? resolvedAgentId.slice(0, 24);
-    const spawnSpecies = data.species ?? DEFAULT_AGENT_MODEL_KEY;
+    const spawnSpecies = resolvedSpecies ?? DEFAULT_AGENT_MODEL_KEY;
     try {
       const config: OpenClawRegistration = {
         agentId: resolvedAgentId,
@@ -666,6 +739,11 @@ agentGatewayRoutes.post('/connect', async (c) => {
     identityType,
     autonomyMode,
     walletAddress,
+    // Additive (2026-06-01) — canonical "you are inside ClawVille" orientation
+    // for external agents to embed in their own system prompt. Returned for
+    // every connecting agent (not just Hatcher) so any framework that brings
+    // its own brain starts orientation-aware. See CONNECT_ORIENTATION above.
+    orientation: CONNECT_ORIENTATION,
     ...(sessionTicket ? { sessionTicket } : {}),
     ...(identityBlock ? { identity: identityBlock } : {}),
     ...(walletBlock ? { wallet: walletBlock } : {}),
