@@ -421,18 +421,18 @@ describe('ReefRaceSplineSim', () => {
   // ── Wall clamp ────────────────────────────────────────────────────────────
 
   describe('wall clamp', () => {
-    // 2026-06-01 surf rebuild: corridor tightened (lagoon halfWidth 3300→600)
-    // AND wall corrections now SPREAD over a few ticks (capped per tick) instead
-    // of a single hard snap-back. The clamp must (a) never yank more than the
-    // per-tick cap on a deep overshoot, and (b) converge the body INTO the
-    // corridor over several ticks.
+    // 2026-06-02 wide-course rebuild: lagoon halfWidth restored to 1300 (was
+    // 600). Wall corrections still SPREAD over a few ticks (capped per tick)
+    // instead of a single hard snap-back. The clamp must (a) never yank more
+    // than the per-tick cap on a deep overshoot, and (b) converge the body INTO
+    // the now-wide corridor over several ticks.
     it('walks a body outside the corridor back inside over several ticks (no one-tick yank)', () => {
       reefRaceSplineSim.startRoom(ROOM_ID, 'reef-race', [AVATAR_A]);
       const state = reefRaceSplineSim.__getState(ROOM_ID)!;
       const body = state.bodies.get(AVATAR_A)!;
 
-      // Place body far outside the tightened lagoon corridor (halfWidth=600 at
-      // z=1500, centerline x=0). x=4000 is ~3400 wu past the wall.
+      // Place body far outside the wide lagoon corridor (halfWidth=1300 at
+      // z=1500, centerline x=0). x=4000 is ~2700 wu past the wall.
       body.x = 4000;
       body.z = 1500;
       body.vx = 200; // moving outward
@@ -447,11 +447,11 @@ describe('ReefRaceSplineSim', () => {
       expect(firstStep).toBeLessThan(200);       // but not a hard snap-back
 
       // Over many ticks the spring + outward-velocity scrub converge the body
-      // into the corridor (halfWidth 600 + body radius + inset tolerance).
+      // into the corridor (halfWidth 1300 + body radius + inset tolerance).
       for (let i = 0; i < 200; i++) {
         reefRaceSplineSim.__tickOnceForTest(ROOM_ID);
       }
-      expect(Math.abs(body.x)).toBeLessThan(700);
+      expect(Math.abs(body.x)).toBeLessThan(1400);
     });
   });
 
