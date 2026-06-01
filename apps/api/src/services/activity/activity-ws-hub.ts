@@ -567,15 +567,13 @@ class ActivityWsHub {
     // can build visual meshes (ribbons, apex markers, hazards) from a single
     // server-authoritative source. `null` for non-reef-race rooms.
     //
-    // Ellipse sim (v1): ribbons + apex zones + urchin hazards.
-    // Spline sim (v2, 2026-06-02): no ribbons/apex (oval-only), but DOES expose
-    // its slow-zone obstacle clusters on the same `.hazards` channel so the
-    // client's ReefRaceHazards renderer draws them on the wide course.
+    // Spline-sim (v2) has NO ribbons/apex/hazards (oval-only mechanics) — the
+    // method itself doesn't exist on the v2 sim. Wave 2 follow-up: spline
+    // sim should expose its own static zones (jump ramps, dive arches) on
+    // a parallel surface; until then, omit and the client renders no zones.
     const reefStaticZones =
-      room.activityId === 'reef-race'
-        ? (REEF_RACE_USE_SPLINE
-            ? reefRaceSplineSim.getStaticZones(room.id)
-            : reefRaceSim.getStaticZones(room.id)) ?? undefined
+      room.activityId === 'reef-race' && !REEF_RACE_USE_SPLINE
+        ? reefRaceSim.getStaticZones(room.id) ?? undefined
         : undefined;
     // Phase 3 — pull per-avatar racing profile (class + level) for reef-race
     // rooms so the HUD's archetype tile can show the player WHY they have
