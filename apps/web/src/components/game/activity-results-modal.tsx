@@ -301,18 +301,12 @@ export default function ActivityResultsModal({
     return 0;
   }, [myAuthRow, rewardPreview, winners, selfAvatarId]);
 
-  // Podium = top 3 (preferring authoritative); winners array fallback.
-  // `scoreMs` (positive finish-time ms) is threaded through so the Reef
-  // Race podium can render finish times instead of the sim's internal
-  // `score` sort-key (which is -totalTimeMs → renders as garbage negative
-  // "pts"). Null on the live fallback branch (no authoritative finish-time
-  // until /results lands) and on Bumper Shells rows.
+  // Podium = top 3 (preferring authoritative); winners array fallback
   const podium: Array<{
     avatarId: string;
     placement: number;
     displayName: string;
     score: number | null;
-    scoreMs: number | null;
     isSelf: boolean;
   }> = useMemo(() => {
     const rows: Array<{
@@ -320,7 +314,6 @@ export default function ActivityResultsModal({
       placement: number;
       displayName: string;
       score: number | null;
-      scoreMs: number | null;
       isSelf: boolean;
     }> = [];
     if (authResults && authResults.length > 0) {
@@ -330,15 +323,12 @@ export default function ActivityResultsModal({
           placement: r.placement,
           displayName: r.displayName,
           score: r.score,
-          scoreMs: r.scoreMs,
           isSelf: r.avatarId === selfAvatarId,
         });
       }
       return rows;
     }
-    // Fallback: combine winners + scores map. Live score entries carry no
-    // finish-time, so scoreMs stays null here — the live Reef "score" is
-    // progress-derived, not the -totalTimeMs sort-key, so it renders fine.
+    // Fallback: combine winners + scores map
     for (const w of winners.slice(0, 3)) {
       const s = scoresMap.get(w.avatarId);
       rows.push({
@@ -346,7 +336,6 @@ export default function ActivityResultsModal({
         placement: w.placement,
         displayName: s?.displayName ?? shortAvatarId(w.avatarId),
         score: s?.score ?? null,
-        scoreMs: null,
         isSelf: w.avatarId === selfAvatarId,
       });
     }
@@ -744,7 +733,7 @@ export default function ActivityResultsModal({
           >
             <SectionHeader label="Podium" />
             {podium.map((row) => (
-              <PodiumRow key={row.avatarId} row={row} isReefRace={isReefRace} />
+              <PodiumRow key={row.avatarId} row={row} />
             ))}
             {remainingRoster.length > 0 && (
               <details
@@ -781,15 +770,7 @@ export default function ActivityResultsModal({
                       <span>
                         #{r.placement} {r.displayName}
                       </span>
-                      {/* Reef Race renders finish time (scoreMs); the raw
-                          `score` (-totalTimeMs sort-key) would show garbage
-                          negative "pts". DNF when scoreMs is null. Bumper
-                          Shells keeps "{score} pts" (score = kills). */}
-                      {isReefRace ? (
-                        <span>{r.scoreMs != null ? formatLapMs(r.scoreMs) : 'DNF'}</span>
-                      ) : (
-                        r.score !== null && <span>{r.score} pts</span>
-                      )}
+                      {r.score !== null && <span>{r.score} pts</span>}
                     </div>
                   ))}
                 </div>
@@ -1163,31 +1144,16 @@ function StatRow({
 
 function PodiumRow({
   row,
-  isReefRace,
 }: {
   row: {
     avatarId: string;
     placement: number;
     displayName: string;
     score: number | null;
-    scoreMs: number | null;
     isSelf: boolean;
   };
-  isReefRace: boolean;
 }) {
   const medal = row.placement === 1 ? '🥇' : row.placement === 2 ? '🥈' : '🥉';
-  // Reef Race: render finish time from `scoreMs`. The sim's `score` field is
-  // an internal DESC-sort key (-totalTimeMs), NOT a display value — rendering
-  // it raw produced garbage like "-70470 pts". A finisher has a positive
-  // scoreMs; a DNFer has scoreMs === null → "DNF". Bumper Shells keeps the
-  // "{score} pts" rendering (score = kills, a sensible positive integer).
-  const trailing = isReefRace
-    ? row.scoreMs != null
-      ? formatLapMs(row.scoreMs)
-      : 'DNF'
-    : row.score != null
-    ? `${row.score} pts`
-    : null;
   return (
     <div
       style={{
@@ -1218,7 +1184,7 @@ function PodiumRow({
           </span>
         )}
       </span>
-      {trailing !== null && (
+      {row.score !== null && (
         <span
           style={{
             fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
@@ -1226,7 +1192,7 @@ function PodiumRow({
             color: 'rgba(226, 232, 240, 0.85)',
           }}
         >
-          {trailing}
+          {row.score} pts
         </span>
       )}
     </div>
