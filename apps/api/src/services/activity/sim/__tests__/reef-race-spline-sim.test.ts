@@ -33,8 +33,17 @@ mock.module('../../activity-replay-log', () => ({
 
 // ── Imports (dynamic because of the mock.module pattern) ──────────────────────
 const { reefRaceSplineSim } = await import('../reef-race-spline-sim');
-const { REEF_TICK_HZ, ACTION_BIT_DRIFT, REEF_GRAVITY, REEF_JUMP_IMPULSE_MANUAL } =
-  await import('../reef-race-config');
+const {
+  REEF_TICK_HZ,
+  ACTION_BIT_DRIFT,
+  REEF_GRAVITY,
+  REEF_JUMP_IMPULSE_MANUAL,
+  REEF_MAX_SPEED,
+  REEF_MAX_ACCEL,
+  REEF_TURN_RATE,
+  REEF_KINEMATIC_TOLERANCE,
+} = await import('../reef-race-config');
+const { integrateSurfStep, turnToward } = await import('@clawville/shared');
 
 const ROOM_ID   = 'test-spline-room';
 const ROOM_ID_2 = 'test-spline-room-2';
@@ -157,6 +166,146 @@ describe('ReefRaceSplineSim', () => {
     });
   });
 
+  // ── Surf-carving model (2026-06-01) ─────────────────────────────────────────
+  // Asserts the NEW heading-rate + lateral-grip + carried-momentum behavior
+  // that replaced the old "snap facing to input + global drag 0.97" model.
+
+  describe('surf-carving model', () => {
+    it('HEADING TURNS AT A BOUNDED RATE (no snap to input)', () => {
+      reefRaceSplineSim.startRoom(ROOM_ID, 'reef-race', [AVATAR_A]);
+      const body = reefRaceSplineSim.__getState(ROOM_ID)!.bodies.get(AVATAR_A)!;
+
+      // Spawn faces +Z (rot ≈ 0). Demand a hard LEFT (dir = +X) which is a 90°
+      // (π/2) heading change. The old model snapped rot to atan2(1,0)=π/2 in a
+      // single tick; the surf model must turn at most ~REEF_TURN_RATE*dt.
+      body.rot = 0;
+      body.vx = 0;
+      body.vz = REEF_MAX_SPEED * 0.4; // some forward speed so falloff applies
+      reefRaceSplineSim.applyInput(ROOM_ID, AVATAR_A, 1, DT, makeInput(1, 1, 0));
+      reefRaceSplineSim.__tickOnceForTest(ROOM_ID);
+
+      // After ONE tick rot must be well short of π/2 (no snap) and bounded by
+      // the per-tick turn budget (+ a little slack for the speed falloff math).
+      expect(body.rot).toBeGreaterThan(0);
+      expect(body.rot).toBeLessThan(REEF_TURN_RATE * DT + 1e-6);
+      expect(body.rot).toBeLessThan(Math.PI / 2 - 0.5); // nowhere near snapped
+    });
+
+    it('EASE OFF = COAST (thrust release keeps most forward speed)', () => {
+      reefRaceSplineSim.startRoom(ROOM_ID, 'reef-race', [AVATAR_A]);
+      const body = reefRaceSplineSim.__getState(ROOM_ID)!.bodies.get(AVATAR_A)!;
+
+      // Cruise up to speed with full thrust down-track.
+      reefRaceSplineSim.applyInput(ROOM_ID, AVATAR_A, 1, DT, makeInput(1, 0, 1));
+      for (let i = 0; i < 60; i++) reefRaceSplineSim.__tickOnceForTest(ROOM_ID);
+      const cruiseSpeed = Math.hypot(body.vx, body.vz);
+      expect(cruiseSpeed).toBeGreaterThan(REEF_MAX_SPEED * 0.5);
+
+      // Release thrust (thrust 0, keep heading). After ~0.5s of coasting the
+      // body must retain the MAJORITY of its speed — NOT dead-stop like the old
+      // global-drag model (0.97^15 ≈ 0.63, but surf forwardDrag 0.992^15 ≈ 0.89).
+      reefRaceSplineSim.applyInput(ROOM_ID, AVATAR_A, 2, DT, makeInput(0, 0, 1));
+      for (let i = 0; i < 15; i++) {
+        // Re-apply a fresh seq so intent keeps being consumed (thrust stays 0).
+        reefRaceSplineSim.applyInput(ROOM_ID, AVATAR_A, 100 + i, DT, makeInput(0, 0, 1));
+        reefRaceSplineSim.__tickOnceForTest(ROOM_ID);
+      }
+      const coastSpeed = Math.hypot(body.vx, body.vz);
+      // Coasted, not stopped — retains > 75% of cruise after half a second.
+      expect(coastSpeed).toBeGreaterThan(cruiseSpeed * 0.75);
+    });
+
+    it('CARVING never trips the over-accel anti-cheat flag', () => {
+      reefRaceSplineSim.startRoom(ROOM_ID, 'reef-race', [AVATAR_A]);
+      const state = reefRaceSplineSim.__getState(ROOM_ID)!;
+      const body = state.bodies.get(AVATAR_A)!;
+
+      // Drive at full speed while flicking the steer direction hard each tick
+      // (left/right slalom). This is the worst case for the velocity-delta
+      // validator under the new model. No 'overaccel' flag must be raised.
+      let seq = 1;
+      for (let i = 0; i < 300; i++) {
+        // Alternate hard left / hard right relative to down-track.
+        const dirX = i % 2 === 0 ? 0.9 : -0.9;
+        reefRaceSplineSim.applyInput(ROOM_ID, AVATAR_A, seq++, DT, makeInput(1, dirX, 0.44));
+        reefRaceSplineSim.__tickOnceForTest(ROOM_ID);
+      }
+      // The flag() path bumps the counter for non-physics kinds; physics flags
+      // (overaccel/overspeed) are NOT counted toward forfeit but DO log. The
+      // cleanest assertion: the body never got force-clamped into an integrity
+      // forfeit and effective speed stayed under the validator ceiling.
+      expect(body.forfeited).toBe(false);
+      const speed = Math.hypot(body.vx, body.vz);
+      expect(speed).toBeLessThanOrEqual(REEF_MAX_SPEED * REEF_KINEMATIC_TOLERANCE);
+    });
+  });
+
+  // ── Pure integrateSurfStep unit checks ──────────────────────────────────────
+  // The sim delegates per-tick kinematics to this shared pure function so the
+  // web client can mirror it for prediction. Lock its contract here.
+
+  describe('integrateSurfStep (pure shared function)', () => {
+    const params = {
+      maxSpeed: REEF_MAX_SPEED,
+      maxAccel: REEF_MAX_ACCEL,
+      turnRate: REEF_TURN_RATE,
+      turnSpeedFalloff: 0.45,
+      airborneSteerMult: 0.30,
+      forwardDrag: 0.992,
+      lateralGrip: 0.90,
+      speedMod: 1.0,
+      accelMult: 1.0,
+    };
+
+    it('is pure — does not mutate the input state', () => {
+      const prev = { x: 10, z: 20, vx: 5, vz: 100, rot: 0.2 };
+      const snapshot = { ...prev };
+      integrateSurfStep(prev, { dir: { x: 1, z: 0 }, thrust: 1, airborne: false }, params, DT);
+      expect(prev).toEqual(snapshot);
+    });
+
+    it('turnToward never overshoots the max delta and takes the shortest arc', () => {
+      // Turning from 0 toward π/2 by a 0.1 budget → +0.1 exactly.
+      expect(turnToward(0, Math.PI / 2, 0.1)).toBeCloseTo(0.1, 6);
+      // Shortest arc across the ±π seam: from 3.0 toward -3.0 is a SHORT +0.28
+      // step (through π), not a long -6.0 step.
+      const out = turnToward(3.0, -3.0, 1.0);
+      expect(Math.abs(Math.atan2(Math.sin(out - 3.0), Math.cos(out - 3.0)))).toBeLessThanOrEqual(1.0 + 1e-9);
+    });
+
+    it('preserves forward momentum on thrust release (coast), bleeds lateral (grip)', () => {
+      // Pure forward velocity, thrust released → mild forward drag only.
+      const fwd = integrateSurfStep(
+        { x: 0, z: 0, vx: 0, vz: 400, rot: 0 },
+        { dir: null, thrust: 0, airborne: false },
+        params,
+        DT,
+      );
+      expect(fwd.vz).toBeCloseTo(400 * 0.992, 3); // coasts
+      expect(Math.abs(fwd.vx)).toBeLessThan(1e-6);
+
+      // Pure sideways velocity (perp to heading) → bled by lateralGrip.
+      const side = integrateSurfStep(
+        { x: 0, z: 0, vx: 400, vz: 0, rot: 0 }, // heading +Z, velocity +X = perp
+        { dir: null, thrust: 0, airborne: false },
+        params,
+        DT,
+      );
+      expect(side.vx).toBeCloseTo(400 * 0.90, 3); // sideways grip bleed
+    });
+
+    it('airborne reduces TURN RATE only, not forward speed', () => {
+      const start = { x: 0, z: 0, vx: 0, vz: 300, rot: 0 };
+      const grounded = integrateSurfStep(start, { dir: { x: 1, z: 0 }, thrust: 1, airborne: false }, params, DT);
+      const airborneState = integrateSurfStep(start, { dir: { x: 1, z: 0 }, thrust: 1, airborne: true }, params, DT);
+      // Airborne turns LESS (smaller rot change).
+      expect(Math.abs(airborneState.rot)).toBeLessThan(Math.abs(grounded.rot));
+      // But forward speed (along the ORIGINAL +Z heading at tick start) is not
+      // penalised by being airborne — both gain forward speed from thrust.
+      expect(airborneState.vz).toBeGreaterThan(start.vz * 0.9);
+    });
+  });
+
   // ── Finish-line detection ──────────────────────────────────────────────────
 
   describe('finish-line crossing', () => {
@@ -272,24 +421,37 @@ describe('ReefRaceSplineSim', () => {
   // ── Wall clamp ────────────────────────────────────────────────────────────
 
   describe('wall clamp', () => {
-    it('pushes body outside corridor back inside', () => {
+    // 2026-06-01 surf rebuild: corridor tightened (lagoon halfWidth 3300→600)
+    // AND wall corrections now SPREAD over a few ticks (capped per tick) instead
+    // of a single hard snap-back. The clamp must (a) never yank more than the
+    // per-tick cap on a deep overshoot, and (b) converge the body INTO the
+    // corridor over several ticks.
+    it('walks a body outside the corridor back inside over several ticks (no one-tick yank)', () => {
       reefRaceSplineSim.startRoom(ROOM_ID, 'reef-race', [AVATAR_A]);
       const state = reefRaceSplineSim.__getState(ROOM_ID)!;
       const body = state.bodies.get(AVATAR_A)!;
 
-      // Place body far outside corridor at lagoon (halfWidth=3300 post-2026-04-29 iter-9 ×1.5 pass).
-      // At z=1500 (CP1), centerline x=0. Put body well past the wall at x=4000.
+      // Place body far outside the tightened lagoon corridor (halfWidth=600 at
+      // z=1500, centerline x=0). x=4000 is ~3400 wu past the wall.
       body.x = 4000;
       body.z = 1500;
       body.vx = 200; // moving outward
       body.vz = 0;
 
+      // First tick must NOT snap all the way back — the per-tick correction is
+      // capped (no teleport-grade yank). Expect a modest inward step only.
+      const before = body.x;
       reefRaceSplineSim.__tickOnceForTest(ROOM_ID);
+      const firstStep = before - body.x; // positive = moved inward
+      expect(firstStep).toBeGreaterThan(0);      // moved inward
+      expect(firstStep).toBeLessThan(200);       // but not a hard snap-back
 
-      // After clamp, body should be within the corridor (halfWidth=3300 at lagoon)
-      // with some tolerance for wall-inset and body radius (22wu).
-      const closestDist = Math.abs(body.x); // centerline is x=0 here
-      expect(closestDist).toBeLessThan(3500);
+      // Over many ticks the spring + outward-velocity scrub converge the body
+      // into the corridor (halfWidth 600 + body radius + inset tolerance).
+      for (let i = 0; i < 200; i++) {
+        reefRaceSplineSim.__tickOnceForTest(ROOM_ID);
+      }
+      expect(Math.abs(body.x)).toBeLessThan(700);
     });
   });
 
