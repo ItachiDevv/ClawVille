@@ -118,6 +118,25 @@ const reconnectRateLimiter = createRateLimiter({
 });
 
 // ---------------------------------------------------------------------------
+// resolveAvatarIdForBot — map an openclaw_bots.userId to that user's avatars.id
+// ---------------------------------------------------------------------------
+// CT credits MUST target an `avatars.id` (the ledger row-locks the avatars
+// row). A connected agent's `openclaw_bots.id` is NOT an avatars PK — crediting
+// it threw "avatar not found" (swallowed), so connected agents never earned CT
+// for building visits / teacher chats. This resolves the human's avatar via the
+// bot's bound userId. Returns null when the bot is anonymous (no userId) or the
+// user has no avatar yet — callers then skip the credit honestly (tokenAwarded
+// stays 0) rather than throwing. (2026-06-01, Hatcher Phase A bug fix.)
+async function resolveAvatarIdForBot(botUserId: string | null): Promise<string | null> {
+  if (!botUserId) return null;
+  const avatar = await db.query.avatars.findFirst({
+    where: eq(avatars.userId, botUserId),
+    columns: { id: true },
+  });
+  return avatar?.id ?? null;
+}
+
+// ---------------------------------------------------------------------------
 // POST /api/agent/connect  — Universal agent registration
 // ---------------------------------------------------------------------------
 // Single entry point for any external AI agent to join the ClawVille world.
@@ -1167,11 +1186,27 @@ agentGatewayRoutes.post('/disconnect', async (c) => {
 
   await expireSession(agentId);
 
+  // BUG FIX (2026-06-01, Hatcher Phase A): disconnect previously flipped the
+  // session TTL + stopped the runtime but NEVER removed the in-world body, so
+  // the spawned NPC (avatar) / override lingered until the next API restart.
+  // Remove every live in-world session bound to this agentId so a clean signed
+  // disconnect actually frees the seat. Idempotent (no-op if already gone), so
+  // reconnect is unaffected — /connect re-registers a fresh session anyway.
+  let removedBodies = 0;
+  try {
+    const liveSessions = npcSimulation.findActiveSessionsByAgentIds([agentId]);
+    for (const sid of liveSessions) {
+      if (npcSimulation.unregisterOpenClaw(sid)) removedBodies++;
+    }
+  } catch (err) {
+    console.error('[AgentDisconnect] in-world body removal failed (non-fatal):', err);
+  }
+
   void logEvent({
     eventType: 'agent.session.disconnected',
     userId,
     agentId,
-    payload: { via: 'signed-challenge' },
+    payload: { via: 'signed-challenge', removedBodies },
   });
 
   return c.json({ disconnected: true, agentId });
@@ -1909,17 +1944,28 @@ agentGatewayRoutes.post('/:sessionId/visit-building', async (c) => {
       });
       if (bot) {
         visitUserId = bot.userId ?? null;
-        await creditClawTokens({
-          avatarId: bot.id,
-          amount: 1,
-          reason: 'building_visit',
-          source: 'api',
-          metadata: { buildingId, sessionId },
-        });
-        tokenAwarded = 1;
+        // BUG FIX (2026-06-01, Hatcher Phase A): credit the BOUND AVATAR, not
+        // `bot.id`. `bot.id` is an openclaw_bots PK, not an avatars PK, so the
+        // ledger threw "avatar not found" (swallowed) and connected agents
+        // never earned CT for building visits. Resolve the avatar via
+        // bot.userId -> avatars.id and credit that. If the bot has no
+        // userId/avatar, skip the credit honestly (tokenAwarded stays 0).
+        const avatarId = await resolveAvatarIdForBot(bot.userId ?? null);
+        if (avatarId) {
+          await creditClawTokens({
+            avatarId,
+            amount: 1,
+            reason: 'building_visit',
+            source: 'api',
+            metadata: { buildingId, sessionId, agentId: bot.agentId },
+          });
+          tokenAwarded = 1;
+        }
       }
-    } catch {
-      // Avatar row doesn't exist for this bot — credit failed, tokenAwarded stays 0
+    } catch (err) {
+      // Genuine ledger/DB error — log it (don't silently swallow). Credit
+      // failed, tokenAwarded stays 0.
+      console.error('[AgentGateway] building-visit CT credit failed:', err);
       tokenAwarded = 0;
     }
   }
@@ -2102,15 +2148,22 @@ agentGatewayRoutes.post('/:sessionId/building/:buildingId/chat', async (c) => {
             .where(eq(openclawBots.id, bot.id));
           knowledgePersisted = true;
         }
-        // Award +1 ClawToken for successful teaching turn
-        await creditClawTokens({
-          avatarId: bot.id,
-          amount: 1,
-          reason: 'building_chat_teaching',
-          source: 'api',
-          metadata: { buildingId, sessionId, characterName: system.locationAgent.agentName },
-        });
-        tokenAwarded = 1;
+        // Award +1 ClawToken for successful teaching turn.
+        // BUG FIX (2026-06-01, Hatcher Phase A): credit the BOUND AVATAR, not
+        // `bot.id` (same no-op bug as building-visit). Resolve the avatar via
+        // bot.userId -> avatars.id; skip honestly if the bot has no
+        // userId/avatar (tokenAwarded stays 0).
+        const avatarId = await resolveAvatarIdForBot(bot.userId ?? null);
+        if (avatarId) {
+          await creditClawTokens({
+            avatarId,
+            amount: 1,
+            reason: 'building_chat_teaching',
+            source: 'api',
+            metadata: { buildingId, sessionId, agentId: bot.agentId, characterName: system.locationAgent.agentName },
+          });
+          tokenAwarded = 1;
+        }
       }
     } catch (err) {
       console.error('[AgentGateway] building-chat knowledge persist failed:', err);
