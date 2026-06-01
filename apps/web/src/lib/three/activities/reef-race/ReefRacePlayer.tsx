@@ -564,32 +564,6 @@ function ReefRacePlayerInner({ entity, isSelf = false, triggerScreenShake }: Ree
     // target roughly GLIDER_LENGTH (5) in Z and GLIDER_WIDTH (2.5) in X.
     // A scale of GLIDER_LENGTH fits the board footprint to the old BoxGeometry.
     sb.scale.set(GLIDER_WIDTH, GLIDER_HEIGHT * 4, GLIDER_LENGTH);
-
-    // Center the surfboard GLB under the rider.
-    //
-    // surfboard_1.glb was authored with an uncentered pivot (nose or stern at
-    // local origin), so after scaling the board renders displaced in Z relative
-    // to the gliderRef origin. The reverted "center surfboard" commits left this
-    // in its pre-fix broken state.
-    //
-    // Fix: compute the scaled bbox center in the clone's own local space, then
-    // shift the clone so its geometry center sits at
-    //   [0, 0, RIDER_MOUNT_OFFSET_DEFAULT[2]] (-0.3 local)
-    // — directly under the rider mount point.
-    //
-    // Box3/Vector3 allocated once inside useMemo (not per-frame) — Iris Xe safe.
-    // updateWorldMatrix(true, true) bakes the scale.set() into the matrix before
-    // setFromObject traverses descendants.
-    sb.updateWorldMatrix(true, true);
-    const _sbBbox   = new THREE.Box3().setFromObject(sb);
-    const _sbCenter = new THREE.Vector3();
-    _sbBbox.getCenter(_sbCenter);
-    // _sbCenter is the geometry's centroid in the gliderRef-local frame
-    // (sb starts at position (0,0,0) before these lines). Move sb so that
-    // centroid lands at the desired attachment point.
-    sb.position.x = -_sbCenter.x;                          // centre in X
-    sb.position.y = -_sbCenter.y;                          // centre in Y
-    sb.position.z = RIDER_MOUNT_OFFSET_DEFAULT[2] - _sbCenter.z; // align to rider Z
     return sb;
   }, [surfboardSrc, entity.color]);
 
@@ -1050,28 +1024,16 @@ function ReefRacePlayerInner({ entity, isSelf = false, triggerScreenShake }: Ree
     bankDelta = ((bankDelta % (Math.PI * 2)) + Math.PI * 3) % (Math.PI * 2) - Math.PI;
     glider.rotation.z = -bankDelta * 0.15;
 
-    // ─── Gentle bob + rider stance (2026-06-01) ──────────────────────────────
-    // Accumulate per-avatarId bob time first so it is available to both the
-    // VRM sway block and the position.y bob below. Module-scope scratch — no alloc.
+    // ─── Rider stays level (Phase 1 §4) ──────────────────────────────────────
+    // riderMountRef.rotation.z is explicitly kept at 0 — the rider does not lean
+    // even as the board banks. This is the key visual distinction of the glider prop.
+    riderMount.rotation.z = 0;
+
+    // ─── Gentle bob on riderMountRef.position.y (Phase 1 §4) ─────────────────
+    // ±BOB_AMP_LOCAL local units at BOB_FREQ_HZ — rider appears to float on board.
+    // Accumulate per-avatarId bob time in module-scope scratch (no per-frame alloc).
     if (!_bobTime[entity.avatarId]) _bobTime[entity.avatarId] = 0;
     _bobTime[entity.avatarId] += dt;
-
-    // Rider rotation: GLB species are pinned level (rotation.z = 0, Phase 1 §4).
-    // VRM species (Milady) get a procedural surf-stance sway (2026-06-01):
-    //   - rotation.x: −5° forward lean (surf crouch)
-    //   - rotation.z: ±3° idle sway at half-bob-freq + subtle bank coupling
-    // Reversible: remove the isVRM branch to revert all species to pure-zero.
-    if (isVRM) {
-      const swayZ =
-        Math.sin(_bobTime[entity.avatarId] * BOB_FREQ_HZ * Math.PI * 2 * 0.5) * 0.052 // ±3° idle sway
-        - bankDelta * 0.08; // subtle bank coupling (board tilts more than rider)
-      riderMount.rotation.x = -0.087; // -5° forward lean (surf crouch)
-      riderMount.rotation.z = swayZ;
-    } else {
-      riderMount.rotation.z = 0;
-    }
-
-    // Gentle bob on riderMountRef.position.y — ±BOB_AMP_LOCAL local units at BOB_FREQ_HZ.
     riderMount.position.y =
       RIDER_MOUNT_OFFSET_DEFAULT[1] +
       Math.sin(_bobTime[entity.avatarId] * BOB_FREQ_HZ * Math.PI * 2) * BOB_AMP_LOCAL;

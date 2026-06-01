@@ -3,23 +3,14 @@
  *
  * Sanity tests for the locked v2 default track. Catches geometric regressions
  * before they reach the sim:
- *   - Exactly 16 control points (any add/remove must be intentional)
+ *   - Exactly 19 control points (any add/remove must be intentional)
  *   - All adjacent CP-pair distances > 88 wu (Newton mis-segmenting guard)
  *   - Total spline arclength in [28 000, 31 500] wu (~90s race window)
  *   - First CP at origin (z = 0, x = 0) — start-line invariant
  *   - Last CP near (x ≈ 0, z ≈ 28 000) — finish-line invariant
- *   - WIDE WATER-DOMINANT COURSE (2026-06-02 rebuild — these REPLACE the old
- *     "STEERING IS MANDATORY straight-line-exits-corridor" guard, which CAUSED
- *     the skinny-canal bug by forcing amplitude > halfWidth so a wall engaged):
- *       (a) the centerline genuinely BENDS — max|x| ≥ 300 wu (sweeping bends
- *           exist; a re-straighten fails here);
- *       (b) the straight segments are WIDE — corridor (2×widthAt) ≥ 2000 wu so
- *           8 karts fit + overtake (a re-skinny fails here);
- *       (c) a CHICANE PINCH exists — min widthAt over the track sits in
- *           [800, 1200] wu (multi-kart but tighter; guards BOTH a re-skinny
- *           below 800 AND a "no pinch at all" above 1200).
- *     Steering pressure now comes from bends + chicanes + obstacle clusters
- *     (`reef-race-config.ts buildSplineObstacles()`), NOT narrow walls.
+ *   - STEERING IS MANDATORY: a straight constant-x=startX line EXITS the
+ *     corridor on a slalom peak (the 2026-06-01 re-tune regression guard —
+ *     this gap let the original "straight bypass is optimal" bug ship green)
  *
  * The 88 wu threshold comes from `.claude/plans/reef-race-v2-spline-architecture.md`
  * Risk #1: "no folds within 88 wu of itself in XZ".
@@ -58,9 +49,9 @@ const POSITION_TOLERANCE_WU = 50;
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 describe('REEF_RACE_DEFAULT_TRACK — locked v2 layout', () => {
-  it('contains exactly 16 control points', () => {
-    expect(REEF_RACE_DEFAULT_TRACK.length).toBe(16);
-    expect(REEF_RACE_DEFAULT_TRACK_LENGTH).toBe(16);
+  it('contains exactly 19 control points', () => {
+    expect(REEF_RACE_DEFAULT_TRACK.length).toBe(19);
+    expect(REEF_RACE_DEFAULT_TRACK_LENGTH).toBe(19);
   });
 
   it('first CP sits exactly at the origin (start line)', () => {
@@ -136,83 +127,49 @@ describe('REEF_RACE_DEFAULT_TRACK — spline integration', () => {
     expect(arc).toBeLessThanOrEqual(ARC_LENGTH_UPPER_WU);
   });
 
-  it('(a) the centerline genuinely BENDS — max|x| ≥ 300 wu (sweeping bends exist)', () => {
-    // 2026-06-02 wide-course guard (REPLACES the old "straight-line-exits-
-    // corridor" test that caused the skinny-canal bug). Steering now comes from
-    // COURSE DESIGN, not walls — so the FIRST thing to assert is that the
-    // course actually curves. A future re-straighten (centerline collapsing to
-    // x≈0 everywhere) fails here. We sample the real centerline densely and
-    // take the max absolute lateral excursion.
-    const MIN_CENTERLINE_EXCURSION_WU = 300;
+  it('STEERING IS MANDATORY — a straight constant-x=startX line EXITS the corridor', () => {
+    // The 2026-06-01 regression guard. The original v2 layout had slalom
+    // amplitudes SMALLER than the local halfWidths, so a kart driving dead-
+    // straight down the x=startX axis stayed inside the corridor the entire
+    // race (zero wall contact) — and that straight path was ~8.6% SHORTER than
+    // the meander, making the slalom strictly suboptimal to follow. This test
+    // drives the REAL spline (exactly what the sim's wall-clamp does via
+    // closestPointOnSpline) and asserts that the straight line leaves the
+    // corridor — i.e. the walls engage and steering is required to finish.
+    //
+    // Metric: for a point on the straight x=startX path at many z, the
+    // perpendicular distance to the centerline must EXCEED the local halfWidth
+    // SOMEWHERE on the track. max(distance - halfWidth) > 0 proves a wall.
+    const startX = REEF_RACE_DEFAULT_TRACK[0].x;
+    const zMax = REEF_RACE_DEFAULT_TRACK[REEF_RACE_DEFAULT_TRACK.length - 1].z;
     const SAMPLES = 2000;
-    let maxAbsX = 0;
-    let atT = 0;
+
+    let maxExitMargin = -Infinity;
+    let exitZ = 0;
+    let exitT = 0;
     for (let i = 0; i <= SAMPLES; i++) {
-      const t = i / SAMPLES;
-      const x = Math.abs(spline.centerlineAt(t).x);
-      if (x > maxAbsX) {
-        maxAbsX = x;
-        atT = t;
+      const z = (i / SAMPLES) * zMax;
+      const closest = spline.closestPointOnSpline({ x: startX, z });
+      const halfW = spline.widthAt(closest.t);
+      const margin = closest.distance - halfW; // > 0 ⇒ outside the corridor
+      if (margin > maxExitMargin) {
+        maxExitMargin = margin;
+        exitZ = z;
+        exitT = closest.t;
       }
     }
-    // eslint-disable-next-line no-console
-    console.log(
-      `  centerline max|x| = ${maxAbsX.toFixed(1)} wu @ t=${atT.toFixed(3)} ` +
-        `(need ≥ ${MIN_CENTERLINE_EXCURSION_WU})`,
-    );
-    expect(maxAbsX).toBeGreaterThanOrEqual(MIN_CENTERLINE_EXCURSION_WU);
-  });
 
-  it('(b) straight segments are WIDE — corridor (2×widthAt) ≥ 2000 wu (8-kart-fit)', () => {
-    // 2026-06-02 anti-re-skinny guard. The whole point of the rebuild is that
-    // the water is wide enough to be the hero + fit 8 karts abreast with
-    // overtaking room. The non-chicane straights must keep a corridor of at
-    // least 2000 wu (= 2 × halfWidth 1000). We assert this on the lagoon,
-    // finish, and bend-apex regions (sampled t-values that are NOT chicanes).
-    // A regression that re-collapses the corridor to ~580 wu fails here.
-    const MIN_STRAIGHT_CORRIDOR_WU = 2000;
-    // Sample points known to be on the wide straights / bend apexes (NOT the
-    // chicane pinches at t≈0.41 / t≈0.69). See track-layout.ts schematic.
-    const straightTs = [0.02, 0.08, 0.16, 0.27, 0.55, 0.82, 0.92, 0.98];
-    for (const t of straightTs) {
-      const corridor = 2 * spline.widthAt(t);
-      expect(corridor).toBeGreaterThanOrEqual(MIN_STRAIGHT_CORRIDOR_WU);
-    }
     // eslint-disable-next-line no-console
     console.log(
-      `  straight corridors (2×widthAt): ` +
-        straightTs
-          .map((t) => `t=${t}:${(2 * spline.widthAt(t)).toFixed(0)}`)
-          .join('  '),
+      `  straight x=${startX} path: max(distance - halfWidth) = ` +
+        `${maxExitMargin.toFixed(1)} wu @ z=${exitZ.toFixed(0)} (t=${exitT.toFixed(3)})`,
     );
-  });
 
-  it('(c) a CHICANE PINCH exists — min widthAt over track in [800, 1200] wu', () => {
-    // 2026-06-02 guard: the course MUST have a deliberate pinch (a committed,
-    // tighter-but-still-multi-kart section), but NOT re-skinny below 800 wu
-    // half-width (that's the canal bug) NOR be so wide everywhere that there's
-    // no pinch at all (> 1200). We drive the real spline and take the global
-    // minimum widthAt — exactly the value the sim's wall-clamp reads.
-    const CHICANE_MIN_HALF_WIDTH = 800;
-    const CHICANE_MAX_HALF_WIDTH = 1200;
-    const SAMPLES = 2000;
-    let minW = Infinity;
-    let atT = 0;
-    for (let i = 0; i <= SAMPLES; i++) {
-      const t = i / SAMPLES;
-      const w = spline.widthAt(t);
-      if (w < minW) {
-        minW = w;
-        atT = t;
-      }
-    }
-    // eslint-disable-next-line no-console
-    console.log(
-      `  min widthAt (chicane pinch) = ${minW.toFixed(1)} wu @ t=${atT.toFixed(3)} ` +
-        `(need [${CHICANE_MIN_HALF_WIDTH}, ${CHICANE_MAX_HALF_WIDTH}])`,
-    );
-    expect(minW).toBeGreaterThanOrEqual(CHICANE_MIN_HALF_WIDTH);
-    expect(minW).toBeLessThanOrEqual(CHICANE_MAX_HALF_WIDTH);
+    // Walls MUST engage on the straight line.
+    expect(maxExitMargin).toBeGreaterThan(0);
+    // And with real margin (≳150 wu past the wall at the worst peak) so a
+    // small future amplitude/halfWidth drift can't silently re-open the bypass.
+    expect(maxExitMargin).toBeGreaterThanOrEqual(150);
   });
 
   it('the meander is followable — min radius of curvature ≥ the carve floor', () => {
@@ -276,30 +233,29 @@ describe('REEF_RACE_DEFAULT_TRACK — spline integration', () => {
   });
 
   it('halfWidth interpolation respects per-segment design intent', () => {
-    // 2026-06-02 wide-course intent: t=0 sits in the lagoon (halfWidth ~1300),
-    // t=1 in the finish (~1300) — WIDE open water at the gates. The chicane
-    // pinches (t≈0.41 / t≈0.69) are TIGHTER than the lagoon/finish but still
-    // multi-kart. We check ranges (centripetal interpolation smooths the
-    // boundaries) rather than pinning exact numbers.
+    // Spot-check: t=0 sits in the lagoon (halfWidth ~540), t=1 sits in the
+    // finish (halfWidth ~540), mid-track is tighter (chokepoints). We don't
+    // pin to exact numbers since centripetal interpolation smooths across the
+    // boundary; we check ranges.
+    // Updated 2026-06-01 (steering-mandatory re-tune): lagoon/finish 600→540,
+    // kelp/shipwreck/coral all 290 (was 480/440/400) so the corridor is a few
+    // kart-widths AND amplitude (440/460) exceeds it → walls actually engage.
     const wStart = spline.widthAt(0);
     const wFinish = spline.widthAt(1);
-    expect(wStart).toBeGreaterThanOrEqual(1250);
-    expect(wStart).toBeLessThanOrEqual(1320);
-    expect(wFinish).toBeGreaterThanOrEqual(1250);
-    expect(wFinish).toBeLessThanOrEqual(1320);
+    expect(wStart).toBeGreaterThanOrEqual(500);
+    expect(wStart).toBeLessThanOrEqual(580);
+    expect(wFinish).toBeGreaterThanOrEqual(500);
+    expect(wFinish).toBeLessThanOrEqual(580);
 
-    // The chicane pinches must be TIGHTER than the wide lagoon/finish gates —
-    // a regression that flattens the corridor to a uniform width (no pinch)
-    // fails here. Sample the two chicane t-values (kelp→wreck, wreck→coral).
-    const wChicane1 = spline.widthAt(0.41);
-    const wChicane2 = spline.widthAt(0.69);
-    expect(wChicane1).toBeLessThan(wStart);
-    expect(wChicane2).toBeLessThan(wFinish);
+    // Mid-track must be tighter than start/finish (we have chokepoints there).
+    const wMid = spline.widthAt(0.5);
+    expect(wMid).toBeLessThan(wStart);
+    expect(wMid).toBeLessThan(wFinish);
 
-    // But the pinch stays WIDE enough to be a river, not a canal: ≥ 800 wu
-    // half-width (corridor ≥ 1600 wu ≈ multi-kart). A re-skinny fails here.
-    expect(wChicane1).toBeGreaterThanOrEqual(800);
-    expect(wChicane2).toBeGreaterThanOrEqual(800);
+    // Tightest segments (kelp/shipwreck/coral) are now only a few kart-widths
+    // (kart radius 22 → ~44 wu). Assert the corridor is genuinely tight so a
+    // regression that re-widens it (walls never engaging again) fails here.
+    expect(wMid).toBeLessThan(700);
   });
 });
 
