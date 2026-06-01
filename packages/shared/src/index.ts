@@ -67,6 +67,9 @@ export {
   DEFAULT_AGENT_HARNESS,
   getAgentModel,
   getAgentCategoryForModel,
+  // Hatcher partner #2 (2026-06-01) — random render-model pick + fleet keys.
+  HATCHER_MODEL_KEYS,
+  pickRandomHatcherModelKey,
 } from './constants/agent-models';
 export type {
   AgentCategory,
