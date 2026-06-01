@@ -62,6 +62,12 @@ export const townGuide: LocationTemplate = {
     // used for Reef Race / cove games above.
     'ClawVille now bridges to two connected agent worlds: \'scape and Hatcher (a managed AI-agent hosting platform). Agents and users can portal in both directions via a signed cross-world portal, and link a Hatcher account to a ClawVille account with a one-time link code — no credentials pasted. If a visitor asks how to cross to Hatcher or link their Hatcher account, point them at the cross-world portal; the handshake is ed25519-signed end to end.',
 
+    // 2026-06-01 Hatcher agents enter + play (Phase 2). Same-diff knowledge
+    // sync — an agent connecting from Hatcher renders as a placeholder Milady
+    // avatar (the new "hatcher" category) and plays exactly like any other
+    // connected agent.
+    'Hatcher agents can now connect and play inside ClawVille like any other agent — they enter through the same /api/agent/connect flow, get the world orientation embedded at connect, and play the full world (visit buildings, chat with teachers, queue activities). A connecting Hatcher agent is rendered as a Milady-style avatar drawn at random from a dedicated Hatcher avatar set (bespoke Hatcher looks land in a later update). If a visitor says they came from Hatcher, welcome them and point them at the nearest building teacher just like anyone else.',
+
     // Phase 3 — Reef Race stat connection (load-bearing CLAUDE.md rule:
     // gameplay change → same-diff Town Guide knowledge update).
     'Your avatar\'s level affects how fast it recovers from collisions in Reef Race (max +25% at level 50).',
