@@ -236,10 +236,20 @@ function LocationChatBody({ locationId }: { locationId: string }) {
    * same payload the agent-gateway returns to autonomous agents. The
    * `/api/skills/:buildingId/skill.md` route serves it as text/markdown
    * straight from `building_skills.content`.
+   *
+   * `credentials: 'include'` is REQUIRED — Phase C (Hatcher) put the
+   * per-building read behind an end-user-OR-partner-key gate. The human
+   * download path authenticates via the Lucia session cookie, which only
+   * rides cross-origin to the API when credentials are included. Without it
+   * the server sees an anonymous caller, demands a partner key, and 401s →
+   * the misleading "No skill available" toast. (See routes/skills.ts
+   * `endUserOrPartnerKey`.)
    */
   const handleClaimSkill = async () => {
     try {
-      const res = await fetch(`${API_BASE}/api/skills/${locationId}/skill.md`);
+      const res = await fetch(`${API_BASE}/api/skills/${locationId}/skill.md`, {
+        credentials: 'include',
+      });
       if (!res.ok) {
         addToast?.('⚠️', `No skill available for ${locationId}`);
         return;

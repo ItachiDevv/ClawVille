@@ -27,6 +27,9 @@ const CATEGORY_GLYPH: Record<AgentCategory, string> = {
   hermes: '⚡',
   milady: '💗',
   other: '🐠',
+  // Hatcher (partner #2, added 2026-06-01) — egg/hatch motif. Phase 2 art is
+  // the placeholder Milady VRM fleet, but the chat-pill glyph stays distinct.
+  hatcher: '🐣',
 };
 
 function getAgentChatPreview(modelKey: string | undefined): string | undefined {
