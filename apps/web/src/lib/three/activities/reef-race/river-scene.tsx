@@ -73,25 +73,31 @@ const TRACK_LEN_Z    = 30000;
 const TRACK_START_Z  = -500;
 const TRACK_CENTER_Z = TRACK_START_Z + TRACK_LEN_Z / 2; // 14500
 
-// ─── Ground shader terrain — spline-following ribbon (iter-9) ────────────────
+// ─── Ground shader terrain — spline-following ribbon (v2-wide-water) ─────────
 // Two ribbons (left + right) swept along clientSpline following the river path.
 // Each ribbon's inner edge sits at (halfWidth + GROUND_INNER_OFFSET) from the
-// spline centerline, so it is always OUTSIDE the max cliff outer envelope.
+// spline centerline.
 //
-// Non-overlap proof (iter-9, halfWidths ×1.5 from iter-8):
-//   max corridor halfWidth = 3300wu (lagoon/finish)
-//   max cliff lateralMax   =  600wu (German River variable-width bands)
+// Non-overlap proof (v2-wide-water, halfWidths expanded to 800–1300wu):
+//   max corridor halfWidth = 1300wu (lagoon/finish, track-layout v2)
+//   new cliff LATERAL_BAND_MAX = 350wu
 //   rock body half-width   ≈  173wu (3.85wu × SCALE_MAX=90 / 2)
-//   → max rock outer edge  = 3300 + 600 + 173 = 4073wu from centerline
+//   → max rock outer edge  = 1300 + 350 + 173 = 1823wu from centerline
 //
-//   GROUND_INNER_OFFSET = max cliff lateralMax (600) + rock half (173) + buffer (100) = 873wu
-//   ground inner edge at lagoon = 3300 + 873 = 4173wu ≥ 4073wu (100wu safety buffer)
+//   GROUND_INNER_OFFSET = 250wu — ground inner edge at lagoon = 1300+250 = 1550wu
+//   1550 < 1823 → ground starts 273wu INSIDE the rock zone (rocks sit ON the grass).
+//   This is the intended look (boulders resting on the bank), not a visual bug.
+//   The critical invariant is that ground does NOT intrude into the water corridor:
+//     ground inner 1550wu >> corridor halfWidth 1300wu — 250wu clearance ✓
 //
-//   Per-section check:
-//     Lagoon  hw=3300: rock outer 4073, ground inner 4173 — 100wu gap ✓
-//     Kelp    hw=1990: rock outer 2763, ground inner 2863 — 100wu gap ✓
-//     Shipwreck hw=1650: rock outer 2423, ground inner 2523 — 100wu gap ✓
-//     Coral   hw=1320: rock outer 2093, ground inner 2193 — 100wu gap ✓
+//   Per-section water-clearance check (ground inner must > halfWidth):
+//     Lagoon  hw=1300: ground inner 1550 — 250wu gap ✓
+//     Kelp    hw=1200: ground inner 1450 — 250wu gap ✓
+//     Shipwreck pinch hw≈500: ground inner 750 — 250wu gap ✓
+//     Coral   hw=1200: ground inner 1450 — 250wu gap ✓
+//
+//   Result: GROUND_W 2500 (halved from 6000) + GROUND_INNER_OFFSET 250 (cut from 873)
+//   makes water ~27–34% of the total cross-section vs the old 3.7% — water dominant.
 //
 // Tri budget:
 //   RIBBON_SAMPLES=128, RIBBON_W_SEGS=64.
@@ -99,8 +105,8 @@ const TRACK_CENTER_Z = TRACK_START_Z + TRACK_LEN_Z / 2; // 14500
 //
 // Iris Xe safety: plain Mesh + existing _groundShaderMat (THREE.ShaderMaterial).
 // NO InstancedMesh. matrixAutoUpdate=false. frustumCulled=false.
-const GROUND_INNER_OFFSET = 873;  // wu from cliff-max outer edge to ribbon inner edge
-const GROUND_W            = 6000; // ribbon width per side (wu)
+const GROUND_INNER_OFFSET = 250;  // wu from corridor edge to ribbon inner edge (tight bank)
+const GROUND_W            = 2500; // ribbon width per side (wu) — halved for water-dominance
 const GROUND_RIBBON_SAMPLES = 128; // longitudinal samples along spline (t-axis)
 const GROUND_RIBBON_W_SEGS  = 64;  // lateral segments per ribbon
 const GROUND_Y            = -1;   // slight Y below grass to avoid z-fight
@@ -122,7 +128,7 @@ if (process.env.NODE_ENV === 'development' && WATER_Y >= 0) {
 
 // ─── Gameplay prop constants ──────────────────────────────────────────────────
 // Part 2A: Finish-line gate
-const GATE_POST_HALF_W = 520;  // half-width: gates span full river + margin
+const GATE_POST_HALF_W = 1400; // half-width: spans wide lagoon corridor (halfWidth 1300 + 100wu margin)
 const GATE_POST_W      = 40;
 const GATE_POST_H      = 250;
 const GATE_POST_D      = 60;
@@ -132,7 +138,7 @@ const GATE_Z           = 28200; // just past finish line CP21 z≈28000 (90s reb
 
 // Part 2B: Distance markers
 const MARKER_SPACING   = 2000;  // wu between markers
-const MARKER_X_OFFSET  = 650;   // outside grass, +X side
+const MARKER_X_OFFSET  = 1800;  // absolute +X world position — past wide lagoon corridor edge (lagoon hw=1300 + 250 margin = 1550; at slalom peaks where CL.x=+500, effective clearance from corridor edge = 1800-(500+1200) = 100wu, just outside)
 const MARKER_POLE_W    = 4;
 const MARKER_POLE_H    = 200;
 const MARKER_FLAG_W    = 80;
@@ -157,8 +163,8 @@ const POWERUP_BOB_AMP  = 5;
 const POWERUP_BOB_FREQ = 2;
 
 // Part 2F: Bridge
-const BRIDGE_Z         = 8500; // mid-track z position
-const BRIDGE_W         = 1100; // wu span (covers full river + banks)
+const BRIDGE_Z         = 8500; // mid-track z position (kelp zone, halfWidth ~1200 → corridor 2400wu)
+const BRIDGE_W         = 2800; // wu span — covers wide kelp corridor (2400wu) + 400wu margin for bank props
 const BRIDGE_H         = 80;   // option-C: deep canyon, bridge floor y=+80, clearance over water (-200) = 280wu
 const BRIDGE_PLANK_H   = 30;   // plank thickness
 const BRIDGE_SUPPORT_W = 30;
@@ -184,7 +190,7 @@ interface SpawnerDef {
   path: string;
   tValues: number[];
   side: number;   // +1 = left, -1 = right
-  xJitter: number; // wu from centerline (must be >= GROUND_INNER_OFFSET=873 to land on grass)
+  xJitter: number; // wu from corridor edge (must be >= GROUND_INNER_OFFSET=250 to land on grass, v2-wide-water)
   scaleMin: number;
   scaleMax: number;
   seed: number;
@@ -215,10 +221,10 @@ function spawnPos(t: number, side: number, xJitter: number): THREE.Vector3 {
   );
 }
 
-// Spawner defs: xJitter is the TOTAL lateral offset from the spline centerline.
-// Ground inner edge = halfWidth + GROUND_INNER_OFFSET (873wu).
-// Props MUST have xJitter >= 873 to land on grass, not inside the cliff zone.
-// Grass extends from halfWidth+873 to halfWidth+873+6000wu — target [1000, 6500].
+// Spawner defs: xJitter is the extra lateral offset BEYOND the spline corridor halfWidth.
+// Ground inner edge = halfWidth + GROUND_INNER_OFFSET (250wu, v2-wide-water).
+// Props MUST have xJitter >= 250 to land on grass, not inside the cliff zone.
+// Grass extends from halfWidth+250 to halfWidth+2750wu — target [300, 2700].
 //
 // Per-type notes:
 //   Pine ~765 tris, Leafy ~724 tris, Rock-1/2 ~80 tris, Fence ~50 tris, Grass ~30 tris.
@@ -233,18 +239,19 @@ const SPAWNER_DEFS: SpawnerDef[] = [
   // ── Pine trees — left side (near cliff edge, into grass)
   // Quaternius prop-tree-pine.glb has hidden compounding-scale node transforms.
   // Empirically scale 17 gave 3000-wu mountain trees. Tuned to 1.0-1.5 range.
+  // xJitter rescaled for v2-wide-water grass band [250, 2750wu from corridor edge].
   {
     key: 'pine-L',
     path: '/models/reef-race/scenery/prop-tree-pine.glb',
     tValues: Array.from({ length: 11 }, (_, i) => (i + 0.3) / 11),
-    side: 1, xJitter: 1500, scaleMin: 1.0, scaleMax: 1.5, seed: 1,
+    side: 1, xJitter: 500, scaleMin: 1.0, scaleMax: 1.5, seed: 1,
   },
   // ── Pine trees — right side (deeper into grass, cross-side visual layering)
   {
     key: 'pine-R',
     path: '/models/reef-race/scenery/prop-tree-pine.glb',
     tValues: Array.from({ length: 11 }, (_, i) => (i + 0.65) / 11),
-    side: -1, xJitter: 1800, scaleMin: 0.9, scaleMax: 1.4, seed: 11,
+    side: -1, xJitter: 650, scaleMin: 0.9, scaleMax: 1.4, seed: 11,
   },
   // ── Leafy trees — right side
   // Same compounding-scale issue. Scale range 1.6-2.1 empirically safe.
@@ -252,56 +259,56 @@ const SPAWNER_DEFS: SpawnerDef[] = [
     key: 'leafy-R',
     path: '/models/reef-race/scenery/prop-tree-leafy.glb',
     tValues: Array.from({ length: 10 }, (_, i) => (i + 0.1) / 10),
-    side: -1, xJitter: 2200, scaleMin: 1.6, scaleMax: 2.1, seed: 2,
+    side: -1, xJitter: 850, scaleMin: 1.6, scaleMax: 2.1, seed: 2,
   },
   // ── Leafy trees — left side (creates depth-of-field of trees from both banks)
   {
     key: 'leafy-L',
     path: '/models/reef-race/scenery/prop-tree-leafy.glb',
     tValues: Array.from({ length: 10 }, (_, i) => (i + 0.55) / 10),
-    side: 1, xJitter: 2500, scaleMin: 1.4, scaleMax: 1.9, seed: 22,
+    side: 1, xJitter: 1000, scaleMin: 1.4, scaleMax: 1.9, seed: 22,
   },
   // ── Rocks — left bank (at the cliff/grass boundary)
   {
     key: 'rock1-L',
     path: '/models/reef-race/scenery/prop-rock-1.glb',
     tValues: Array.from({ length: 14 }, (_, i) => (i + 0.05) / 14),
-    side: 1, xJitter: 1100, scaleMin: 0.7, scaleMax: 1.3, seed: 3,
+    side: 1, xJitter: 350, scaleMin: 0.7, scaleMax: 1.3, seed: 3,
   },
   // ── Rocks — right bank (slightly further out)
   {
     key: 'rock2-R',
     path: '/models/reef-race/scenery/prop-rock-2.glb',
     tValues: Array.from({ length: 14 }, (_, i) => (i + 0.55) / 14),
-    side: -1, xJitter: 1500, scaleMin: 0.8, scaleMax: 1.4, seed: 4,
+    side: -1, xJitter: 500, scaleMin: 0.8, scaleMax: 1.4, seed: 4,
   },
   // ── Fences — left bank (right at the cliff/grass border — decorative line)
   {
     key: 'fence-L',
     path: '/models/reef-race/scenery/prop-fence.glb',
     tValues: Array.from({ length: 18 }, (_, i) => i / 18),
-    side: 1, xJitter: 950, scaleMin: 1.0, scaleMax: 1.0, seed: 5,
+    side: 1, xJitter: 270, scaleMin: 1.0, scaleMax: 1.0, seed: 5,
   },
   // ── Fences — right bank
   {
     key: 'fence-R',
     path: '/models/reef-race/scenery/prop-fence.glb',
     tValues: Array.from({ length: 18 }, (_, i) => (i + 0.5) / 18),
-    side: -1, xJitter: 1000, scaleMin: 1.0, scaleMax: 1.0, seed: 55,
+    side: -1, xJitter: 280, scaleMin: 1.0, scaleMax: 1.0, seed: 55,
   },
   // ── Grass tufts — right bank (clustered near cliff edge, on grass)
   {
     key: 'grass-R',
     path: '/models/reef-race/scenery/prop-grass-tuft.glb',
     tValues: Array.from({ length: 28 }, (_, i) => (i + 0.15) / 28),
-    side: -1, xJitter: 1100, scaleMin: 0.8, scaleMax: 1.5, seed: 6,
+    side: -1, xJitter: 350, scaleMin: 0.8, scaleMax: 1.5, seed: 6,
   },
   // ── Grass tufts — left bank (denser second pass)
   {
     key: 'grass-L',
     path: '/models/reef-race/scenery/prop-grass-tuft.glb',
     tValues: Array.from({ length: 28 }, (_, i) => (i + 0.65) / 28),
-    side: 1, xJitter: 1200, scaleMin: 0.9, scaleMax: 1.6, seed: 66,
+    side: 1, xJitter: 400, scaleMin: 0.9, scaleMax: 1.6, seed: 66,
   },
 ];
 
@@ -1135,12 +1142,12 @@ function Bridge() {
  *   Drei `shaderMaterial()` factory + `extend()`. Iris Xe safe (plain Mesh).
  *   Water surface at WATER_Y=-200 (200wu deep ravine).
  *
- * GROUND SHADER (iter-9, spline-following ribbon — German River reference):
+ * GROUND SHADER (v2-wide-water, spline-following ribbon — tight framing band):
  *   THREE.ShaderMaterial on TWO plain Meshes (one per side, sign ±1).
  *   Geometry = `buildGroundRibbonGeo` — 128 spline samples × 64 width-segments
  *   per side, ~32k tris total. Each ribbon cross-section sweeps along the spline
- *   at lateral `hw + 873wu` (max cliff outer envelope + 100wu safety buffer)
- *   outward to `+ GROUND_W (6000wu)` so the ground ENDS AT THE CLIFF BORDER.
+ *   at lateral `hw + 250wu` (tight cliff-rim buffer, v2-wide-water)
+ *   outward to `+ GROUND_W (2500wu)` — narrow framing band, water is the hero.
  *   Vertex: value-noise Y displacement (mask removed; geometry is always outside corridor).
  *   Fragment: 3-tone grass+dirt blending with berm highlight.
  *
