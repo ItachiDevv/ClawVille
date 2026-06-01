@@ -54,6 +54,7 @@ import { skillsRoutes } from './routes/skills';
 import { agentV2Routes } from './routes/agent-v2';
 import { dashboardRoutes } from './routes/dashboard';
 import { portalRoutes } from './routes/portal';
+import { agentRegistrationRoutes } from './routes/agent-registration';
 import { adminIdentityRoutes } from './routes/admin-identity';
 import { startSimulation } from './services/npc-simulation';
 import { alertError } from './services/alert-error';
@@ -154,6 +155,19 @@ app.get('/.well-known/clawville-issuer.json', (c) => {
     return c.json({ error: 'issuer_key_unconfigured', detail: String(err) }, 503);
   }
 });
+
+// ---------------------------------------------------------------------------
+// ERC-8004-ready agent registration files (off-chain tier)
+// ---------------------------------------------------------------------------
+// Public, per-agent ERC-8004 registration-file FORMAT served at
+//   GET /.well-known/agents/:fingerprint/agent-registration.json
+// keyed on users.identity_fingerprint. Self-signed with the service-issuer
+// key; `registrations:[]` always (NOT on-chain-anchored — BSC upgrade
+// deferred per .claude/plans/hatcher-integration.md §12). Mounted beside
+// the issuer well-known route above; both are Hono-served (not Next.js) so
+// `.well-known/*` isn't special-cased. The sub-app holds only the
+// `:fingerprint/...` path so the full mount path is the canonical URL.
+app.route('/.well-known/agents', agentRegistrationRoutes);
 
 // API routes
 app.route('/api/auth', authRoutes);
