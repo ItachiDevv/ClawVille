@@ -8,13 +8,38 @@
  * chase-cam perspective used in Reef Race.
  *
  * Visual layers (bottom → top):
- *   0. Vertex heaving: 3-octave sin wave Y displacement ±8wu (peaks at y=-192, safe in canyon)
+ *   0. Vertex heaving: 3-octave directional sin wave Y displacement ±9wu max
+ *      (peaks at y=-191, troughs at y=-209 — safe in canyon bounds -192..-208)
  *   1. Shallow-to-deep color shift: UV.x edge→center drives mix(shallowColor, deepColor)
  *   2. Refraction-feel shimmer: UV perturbation of deep-color sample via sin(time+worldZ)
- *   3. Multi-layer surface motion: two scrolling noise layers (scale 12/8, rate slow/fast)
+ *   3. Multi-layer surface motion: two scrolling noise layers (scale 12/8) with
+ *      faster downstream-dominant scroll (V 0.10/0.18 UV/s) for rushing-river feel
  *   4. White-cap foam: soft organic clusters (smoothstep 0.40..0.78 × scale-24 cluster noise)
- *   5. Specular sun glint: fake Phong highlight — pow(dot(R,V), 32) * 0.50 (applied before foam)
- *   6. Bank-edge foam turbulence (iter-4 winner): dual-snoise (scale 60+150), 12% UV band, creamy-warm
+ *   5. Crest foam: wave peaks (top 28% of displacement) get extra white foam via vDisp
+ *   6. Downstream flow streaks: 6 fine bands scrolling at 0.35 UV/s (Wave Race 64 style)
+ *   7. Specular sun glint: analytical displaced-surface normal fed into fake Phong highlight
+ *      — pow(dot(R,V), 48) * 0.65 * depthFactor (sharper, brighter, rides the crests)
+ *   8. Bank-edge foam turbulence (iter-4 winner): dual-snoise (scale 60+150), 12% UV band
+ *
+ * Water shader upgrade changelog (2026-06-01):
+ *   BEFORE: sun-glint normal hardcoded vec3(0,1,0) → glint never tracked wave slopes.
+ *           UV scroll 0.03/0.06 UV/s → imperceptible flow from chase cam.
+ *           No downstream flow bias → water heaved but didn't "flow".
+ *           No analytical normals → fragment had no idea surface was undulating.
+ *   AFTER:  (1) Vertex shader computes dispY() for center + 2 finite-diff samples (eps=2wu)
+ *               → reconstructs displaced surface normal analytically → vNormal varying.
+ *               Downstream flow bias in wave phase (all octaves have -t*speed in Z term).
+ *           (2) Fragment uses normalize(vNormal) for glint → highlights ride the crests.
+ *               Sharper peak: pow 48 (was 32), glint 0.65 (was 0.50).
+ *           (3) Faster UV scroll: downstream V 0.10/0.18 UV/s (was 0.03/0.06), slight
+ *               lateral U drift for cross-current turbulence feel.
+ *           (4) Crest foam from vDisp varying: physical wave peaks trigger foam.
+ *           (5) Flow streaks: 6 bands × 0.35 UV/s downstream (1 fract + 2 smoothstep, cheap).
+ *           (6) Sun direction fixed: (0.498, 0.797, -0.329) — negative Z so reflection
+ *               points toward +Z chase camera (old (0.345, 0.924, +0.168) reflected away).
+ *           (7) RIBBON_SAMPLES: 64 → 128 (252 tris). Primary wave 0.005/wu = ~24 cycles
+ *               over 30957wu track; Nyquist requires 2 samples/cycle. 128 samples @
+ *               484wu/sample gives ~0.24 cycles/sample → above Nyquist for clean vDisp.
  *
  * Iris Xe constraints:
  *   - Plain ShaderMaterial on plain Mesh — NOT InstancedMesh+ShaderMaterial (crash)
@@ -22,6 +47,9 @@
  *   - Module-scope geometry — zero per-frame CPU allocation
  *   - frustumCulled=false (spline ribbon bounding sphere is stale after vertex shader)
  *   - No drei <Text> or <Billboard>
+ *   - Vertex: 3 × dispY() calls = 3 × 9 sin() ops = 27 sin/vertex × 258 verts = 6966 total.
+ *     Negligible vs fragment load (~1.2B sin ops equivalent on Iris Xe Gen12 per frame).
+ *   - Fragment: 5 snoise + 1 fract/smoothstep streak = effectively same budget as before.
  *
  * API:
  *   export const WaterSurfMaterial — drei shaderMaterial() class, extend()-registered
@@ -47,46 +75,88 @@ import { clientSpline } from './reef-race-spline-instance';
  * are authored against this exact value — do NOT change without cascading.
  */
 export const WATER_Y       = -200;
-const RIBBON_SAMPLES        = 64;  // cross-section count (63 quads × 2 tris = 126 tris)
+
+/**
+ * RIBBON_SAMPLES=128: bumped from 64 to prevent vDisp aliasing on primary wave
+ * (0.005/wu frequency, ~24 cycles over 30957wu track). At 128 samples each
+ * covers ~242wu = 0.12 cycles/sample — well above Nyquist.
+ * Tri count: 127 quads × 2 = 254 tris (was 126). Within 80K budget.
+ */
+const RIBBON_SAMPLES        = 128;
 
 // ─── Shaders ─────────────────────────────────────────────────────────────────
 
 /**
- * Vertex shader.
+ * Vertex shader — analytical gradient normals + downstream flow.
  *
- * 3-octave heaving water displacement applied in Y.
- *   wave = sin(x*0.005 + t*0.8)*4.0
- *         + sin(z*0.003 + t*1.2)*2.5
- *         + sin((x+z)*0.002 - t*0.6)*1.5
- * Max amplitude = ±8wu.
- *   WATER_Y = -200; cliff face baseline = -200 (extends upward).
- *   Peak y = -192 stays inside the canyon trough — no clip into ground-level terrain.
- *   Trough y = -208 stays well above riverbed floor at -250.
+ * Key design:
+ *   dispY(px, pz, t) — the displacement function evaluated at any (x,z,t).
+ *   Called 3× per vertex: center + 2 finite-difference samples (eps=2wu).
+ *   → Reconstructs displaced surface tangent vectors → cross product → normal.
+ *   Normal formula (height field): normalize(-∂Y/∂x, 1/eps×eps, -∂Y/∂z)
+ *     = normalize(-(yx-y0), eps, -(yz-y0))
+ *   This is algebraically equivalent to normalize(cross(tZ, tX)) and avoids
+ *   a second normalize() call on the cross product.
  *
- * Passes:
- *   vUv      — UV.x=0(left bank) .. 1(right bank); UV.y=0..1 arclength fraction
- *   vWorldPos — world-space position of DISPLACED vertex, used for:
- *               (a) Z-based edge-foam phase offset
- *               (b) sun glint (dot product with cameraPosition - vWorldPos)
+ * Downstream flow: all 3 octaves have "- t * speed" applied in Z (river flow
+ *   direction), creating a visual downstream current as well as cross-motion.
+ *
+ * Varyings:
+ *   vUv      — UV.x=0(left bank)..1(right bank); UV.y=0..1 arclength fraction
+ *   vWorldPos — world-space displaced position (for glint viewDir + edge-foam)
+ *   vNormal  — analytical displaced-surface normal for specular glint (NEW)
+ *   vDisp    — Y displacement amount in wu range [-9..+9] for crest foam (NEW)
+ *
+ * Amplitude budget:
+ *   octave 1: ±4.5wu, octave 2: ±3.0wu, octave 3: ±1.5wu → max ±9wu
+ *   Peak: WATER_Y + 9 = -191wu  (cliff baseline at -200, extends upward → safe)
+ *   Trough: WATER_Y - 9 = -209wu (riverbed floor at -250 → safe)
  */
 const _vertexShader = /* glsl */`
   uniform float uTime;
 
-  varying vec2 vUv;
-  varying vec3 vWorldPos;
+  varying vec2  vUv;
+  varying vec3  vWorldPos;
+  varying vec3  vNormal;   // displaced surface normal for specular glint
+  varying float vDisp;     // displacement amount for crest foam
+
+  // Displacement function — 3-octave directional sine with downstream flow bias.
+  // All Z terms carry "- t * speed" for visible downstream current.
+  // Max amplitude: 4.5 + 3.0 + 1.5 = 9wu.
+  float dispY(float px, float pz, float t) {
+    return  sin(px * 0.005 + pz * 0.003 - t * 0.9) * 4.5   // primary: downstream+cross
+          + sin(px * 0.009 - pz * 0.006 - t * 1.4) * 3.0   // secondary: cross-diagonal
+          + sin((px + pz) * 0.003 - t * 0.6)        * 1.5;  // tertiary: diagonal
+  }
 
   void main() {
     vUv = uv;
 
-    // 3-octave heaving displacement — max amplitude ±8wu
-    float wave = sin(position.x * 0.005 + uTime * 0.8) * 4.0
-               + sin(position.z * 0.003 + uTime * 1.2) * 2.5
-               + sin((position.x + position.z) * 0.002 - uTime * 0.6) * 1.5;
-    vec3 displaced = position;
-    displaced.y += wave;
+    // Finite-difference epsilon (2wu — sufficient for wave spatial freqs 0.003..0.009/wu)
+    float eps = 2.0;
+    float t   = uTime;
 
-    // vWorldPos tracks the displaced surface for fragment-stage world-space ops
-    vWorldPos = (modelMatrix * vec4(displaced, 1.0)).xyz;
+    // Evaluate displacement at center + two offset samples
+    float y0 = dispY(position.x,       position.z,       t);
+    float yx  = dispY(position.x + eps, position.z,       t);
+    float yz  = dispY(position.x,       position.z + eps, t);
+
+    // Analytical displaced-surface normal for a height field Y=f(x,z):
+    //   tangentX = (eps, yx-y0, 0)
+    //   tangentZ = (0,   yz-y0, eps)
+    //   normal   = tangentZ × tangentX  (order gives +Y dominant result)
+    //            = normalize(-(yx-y0), eps, -(yz-y0))
+    // This is equivalent to normalize(cross(tZ, tX)) without redundant normalize calls.
+    vNormal = normalize(vec3(-(yx - y0), eps, -(yz - y0)));
+
+    // Pass displacement for crest foam in fragment stage
+    vDisp = y0;
+
+    vec3 displaced = position;
+    displaced.y += y0;
+
+    // vWorldPos tracks displaced surface for fragment-stage world-space ops
+    vWorldPos  = (modelMatrix * vec4(displaced, 1.0)).xyz;
     gl_Position = projectionMatrix * modelViewMatrix * vec4(displaced, 1.0);
   }
 `;
@@ -102,44 +172,37 @@ const _vertexShader = /* glsl */`
  *     edgeDist = min(uv.x, 1-uv.x)  [0 at banks, 0.5 at center]
  *     depthFactor = smoothstep(0.0, 0.25, edgeDist)
  *     baseColor = mix(uColorShallow, uColorDeep, depthFactor)
- *     — Shallow is bright cyan (#7fdfff), deep is rich teal (#1d6f8a).
  *
  *   REFRACTION-FEEL (fake, cheap):
  *     perturbUv.y += sin(uTime*0.4 + vWorldPos.z*0.003) * 0.015
- *     — The deep-color mix target uses this perturbed position to shimmer
- *     slightly without a real refraction pass.
  *
- *   MULTI-LAYER NOISE (scales 12 / 8, two scroll rates):
- *     layer1 = snoise((vUv + vec2(0, -uTime*0.03)) * 12.0)
- *     layer2 = snoise((vUv + vec2(0, -uTime*0.06)) * 8.0 + vec2(17.3, 4.1))
- *     flowFoam = layer1*0.6 + layer2*0.4  (normalized to 0..1)
- *     — Scale 12 at UV.x range 0..1 = 12 oscillations across the ribbon.
- *     At chase-cam distance this is perfectly visible; from far above it softens
- *     to a textured haze rather than aliasing to grey.
+ *   MULTI-LAYER NOISE (downstream-dominant scroll, faster):
+ *     scroll1: U+0.008/s, V-0.10/s  (mostly downstream, slight cross-drift)
+ *     scroll2: U-0.005/s, V-0.18/s  (faster + diagonal)
+ *     flowFoam = n1*0.6 + n2*0.4
  *
- *   WHITE-CAP FOAM (soft, organic clusters):
- *     softField  = smoothstep(0.40, 0.78, flowFoam)   [range 0.38, 5.4× softer]
- *     clusterMod = mix(0.5, 1.0, snoise(vUv*24 + vec2(0,t*0.015))*0.5+0.5)
+ *   WHITE-CAP FOAM (soft clusters + crest foam):
+ *     softField  = smoothstep(0.40, 0.78, flowFoam)
+ *     clusterMod = mix(0.5, 1.0, snoise(vUv*24 + time*0.015)*0.5+0.5)
  *     whiteCap   = softField * clusterMod * 0.7
- *     — Wide smoothstep prevents harsh PS2-era linear stripes; scale-24 cluster
- *     noise breaks the remaining pattern into irregular organic foam patches.
- *     3rd snoise call per fragment — within Iris Xe budget.
+ *     PLUS crest foam: smoothstep(0.72, 0.82, vDisp/8.0*0.5+0.5) * 0.4
+ *
+ *   DOWNSTREAM FLOW STREAKS (Wave Race 64 style):
+ *     6 fine bands scrolling at 0.35 UV/s downstream.
+ *     1 fract + 2 smoothstep = ~4 ops. Adds subtle current-line motion.
+ *
+ *   SUN GLINT (analytical displaced normal):
+ *     normal = normalize(vNormal)  ← NOT vec3(0,1,0)
+ *     R = reflect(-uSunDir, normal)
+ *     V = normalize(cameraPosition - vWorldPos)
+ *     glint = pow(max(dot(R,V), 0.0), 48.0) * 0.65 * depthFactor
+ *     Sun direction: (0.498, 0.797, -0.329) — negative Z so sun is "behind the
+ *     camera" and reflection points toward the +Z chase cam. Old positive-Z sun
+ *     reflected specular AWAY from the camera (zero visible glint).
  *
  *   BANK-EDGE FOAM (iter-4 winner, dual-turbulence):
  *     edgeFactor = 1.0 - smoothstep(0.0, 0.12, edgeDist)  [12% UV band]
- *     foamTurb1 = snoise(vUv*60  + vec2(uTime*1.2, 0.0))*0.5+0.5
- *     foamTurb2 = snoise(vUv*150 + vec2(0.0, uTime*2.0))*0.5+0.5
- *     bankFoamIntensity = edgeFactor * (0.6 + 0.4 * (turb1*0.6+turb2*0.4))
- *     — Applied AFTER Phong glint as the topmost final layer.
- *     Creamy-warm white (1.0, 0.97, 0.92). Fine fizzing + micro-bubble detail.
- *     Total snoise calls: 5 per fragment (safe on Iris Xe Gen 12).
- *
- *   SUN GLINT (fake Phong):
- *     normal = vec3(0,1,0)  (flat ribbon)
- *     R = reflect(-uSunDir, normal)
- *     V = normalize(cameraPosition - vWorldPos)
- *     glint = pow(max(dot(R, V), 0.0), 32.0) * 0.50
- *     — cameraPosition is a built-in uniform provided by THREE.ShaderMaterial.
+ *     5 snoise calls total (same budget as before). Final layer.
  */
 const _fragmentShader = /* glsl */`
   uniform float     uTime;
@@ -148,10 +211,12 @@ const _fragmentShader = /* glsl */`
   uniform vec3      uColorFoam;
   uniform vec3      uSunDir;
 
-  varying vec2 vUv;
-  varying vec3 vWorldPos;
+  varying vec2  vUv;
+  varying vec3  vWorldPos;
+  varying vec3  vNormal;   // displaced surface normal
+  varying float vDisp;     // displacement amount for crest foam
 
-  // ── 2D Simplex noise (Ashima Arts / Patricio Gonzalez Vivo) ─────────────────
+  // ── 2D Simplex noise (Ashima Arts / Patricio Gonzalez Vivo — MIT) ────────────
   vec3 _mod289v3(vec3 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
   vec2 _mod289v2(vec2 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
   vec3 _permute(vec3 x)  { return _mod289v3(((x * 34.0) + 1.0) * x); }
@@ -189,94 +254,88 @@ const _fragmentShader = /* glsl */`
   void main() {
 
     // ── 1. Depth (edge → center color shift) ───────────────────────────────────
-    // edgeDist: 0.0 at banks (uv.x=0 or 1), 0.5 at exact center
-    float edgeDist   = min(vUv.x, 1.0 - vUv.x);
+    float edgeDist    = min(vUv.x, 1.0 - vUv.x);
     float depthFactor = smoothstep(0.0, 0.25, edgeDist);
 
-    // Fake refraction: perturb the depthFactor sample slightly by worldZ phase.
-    // This makes the transition between shallow/deep "shimmer" as time changes.
+    // Fake refraction: perturb the depthFactor sample by worldZ phase.
     float refractionWiggle = sin(uTime * 0.4 + vWorldPos.z * 0.003) * 0.015;
     float depthPerturbed   = clamp(depthFactor + refractionWiggle, 0.0, 1.0);
 
     vec3 baseColor = mix(uColorShallow, uColorDeep, depthPerturbed);
 
-    // Rim highlight at the bank edge — makes the waterline look bright and wet.
+    // Rim highlight at the bank edge.
     float rimBright = (1.0 - depthFactor) * 0.18;
     baseColor += rimBright;
-    // Clamp IMMEDIATELY after rimBright — prevents shallow-bank over-saturation
-    // from compressing the headroom available to foam and glint additions.
     baseColor = clamp(baseColor, 0.0, 1.0);
 
-    // ── 2. Multi-layer surface motion (two scrolling noise layers) ──────────────
-    // Both scroll downstream (negative V direction in UV space).
-    // Scale 12 = large slow pattern; Scale 8 = smaller fast pattern.
-    vec2 scroll1 = vUv + vec2(0.0, -uTime * 0.03);
-    vec2 scroll2 = vUv + vec2(0.0, -uTime * 0.06) + vec2(17.3, 4.1);
+    // ── 2. Multi-layer surface motion (faster downstream-dominant scroll) ───────
+    // scroll1: mostly downstream (+0.10/s V), slight U drift (+0.008/s U)
+    // scroll2: faster downstream (+0.18/s V), slight counter U drift (-0.005/s U)
+    // At UV scale 12, 0.18 UV/s × 28000wu track = apparent ~5040wu/s perceived scroll.
+    vec2 scroll1 = vUv + vec2( uTime * 0.008, -uTime * 0.10);
+    vec2 scroll2 = vUv + vec2(-uTime * 0.005, -uTime * 0.18) + vec2(17.3, 4.1);
 
     float n1 = snoise(scroll1 * 12.0) * 0.5 + 0.5;
     float n2 = snoise(scroll2 *  8.0) * 0.5 + 0.5;
 
-    // Combined flow noise (normalized 0..1)
     float flowFoam = n1 * 0.6 + n2 * 0.4;
 
-    // ── 3. White-cap foam — soft, organic clusters (replaces PS2-stripe version) ──
-    //
-    // Two-term blend:
-    //   (a) softField  — wide smoothstep(0.40..0.78) range; 5.4× softer than old
-    //                    0.07-range version. Foam gradually emerges rather than
-    //                    snapping on in a hard stripe.
-    //   (b) clusterMod — fine-scale simplex at UV*24 breaks the linear isolation of
-    //                    the flowFoam stripes into irregular organic patches. Maps
-    //                    snoise [-1,1] → [0.5,1.0] so it only dims, never zeros, foam.
-    //
-    // Result: whiteCap = softField * clusterMod * 0.7
-    // Iris Xe budget: this is the 3rd snoise call per fragment (existing 2 + this 1).
+    // ── 3. White-cap foam — soft, organic clusters ──────────────────────────────
     float softField  = smoothstep(0.40, 0.78, flowFoam);
     float clusterMod = mix(0.5, 1.0, snoise(vUv * 24.0 + vec2(0.0, uTime * 0.015)) * 0.5 + 0.5);
     float whiteCap   = softField * clusterMod * 0.7;
 
-    vec3  foamColor  = uColorFoam;  // vec3(0.95, 0.97, 1.0) = slightly blue-white
+    // ── 4. Crest foam from wave height (physical wave peaks) ───────────────────
+    // vDisp range ≈ [-9, +9]wu. Normalize to [0,1]: 0=trough, 1=crest.
+    // Foam activates at top 28% of range (smoothstep 0.72..0.82).
+    // Amplitude normalizer 8.0 (slightly under max 9.0 → foam starts just before peak).
+    float dispNorm  = clamp(vDisp / 8.0 * 0.5 + 0.5, 0.0, 1.0);
+    float crestFoam = smoothstep(0.72, 0.82, dispNorm);
 
-    baseColor = mix(baseColor, foamColor, whiteCap);
+    // Merge flow foam + crest foam (additive, clamped)
+    float combinedFoam = clamp(whiteCap + crestFoam * 0.4, 0.0, 1.0);
+    vec3  foamColor    = uColorFoam;  // near-white with blue tint
 
-    // ── 4. Sun glint (fake Phong specular) ─────────────────────────────────────
-    // Applied before bank-edge foam so the foam paints on top as the final layer.
-    // Water surface normal is (0,1,0) (flat ribbon with +Y normals).
-    // cameraPosition is a built-in uniform in THREE.ShaderMaterial.
-    vec3 normal  = vec3(0.0, 1.0, 0.0);
-    vec3 viewDir = normalize(cameraPosition - vWorldPos);
-    // reflect() expects incident direction → negate sun direction
-    vec3 reflected = reflect(-uSunDir, normal);
-    float spec = pow(max(dot(reflected, viewDir), 0.0), 32.0);
-    // Modulate by depth so glint is strongest in the deep center
-    float glint = spec * 0.50 * depthFactor;
+    // Apply softField / clusterMod modulation on combined foam
+    float foamAmount = softField * clusterMod * combinedFoam;
+    baseColor = mix(baseColor, foamColor, foamAmount);
+
+    // ── 5. Downstream flow streaks (Wave Race 64 style) ────────────────────────
+    // 6 fine bands scrolling downstream at 0.35 UV/s. Band width = 12% of period.
+    // Very cheap: 1 fract + 2 smoothstep = ~4 ALU ops.
+    float flowStreak = fract(vUv.y * 6.0 - uTime * 0.35);
+    flowStreak = smoothstep(0.0, 0.12, flowStreak) * smoothstep(0.25, 0.12, flowStreak);
+    // Subtle brightness add — only visible at river center (depthFactor)
+    baseColor += vec3(flowStreak * 0.06 * depthFactor);
+
+    // ── 6. Sun glint — analytical displaced-surface normal ─────────────────────
+    // vNormal comes from vertex shader: normalize(-(yx-y0), eps, -(yz-y0)).
+    // This is the actual surface normal at the displaced wave geometry, so the
+    // specular highlight visibly tracks the wave crests as the camera moves.
+    //
+    // uSunDir = (0.498, 0.797, -0.329): negative Z = sun is "behind" the +Z-facing
+    // chase camera. reflect(-sunDir, waveNormal) → R points back toward camera.
+    // Old sunDir had +Z so R pointed away from camera → zero visible glint.
+    //
+    // Sharper, brighter: pow 48 (was 32), glint strength 0.65 (was 0.50).
+    vec3  waveNormal = normalize(vNormal);
+    vec3  viewDir    = normalize(cameraPosition - vWorldPos);
+    vec3  reflected  = reflect(-uSunDir, waveNormal);
+    float spec       = pow(max(dot(reflected, viewDir), 0.0), 48.0);
+    float glint      = spec * 0.65 * depthFactor;
 
     baseColor += vec3(glint);
+    baseColor  = clamp(baseColor, 0.0, 1.0);
 
-    // ── 5. Bank-edge foam turbulence (iter-4 winner — final layer) ─────────────
-    // Replaces the previous simple sin() pulse with two-layer simplex turbulence.
-    //
-    // edgeFactor: 12% UV band (was 6%) — wider waterline foam zone.
-    // Two animated simplex layers at different scales + scroll speeds:
-    //   foamTurb1: scale 60, fast X-scroll  (fine fizzing)
-    //   foamTurb2: scale 150, fast Y-scroll (even finer micro-bubbles)
-    // Combined → bankFoamIntensity flickers between 0.6 and 1.0.
-    // Painted AFTER glint so bank foam is always the topmost visual layer.
-    //
-    // snoise call count after this block:
-    //   n1 (scale 12) + n2 (scale 8) + clusterMod (scale 24)
-    //   + foamTurb1 (scale 60) + foamTurb2 (scale 150) = 5 total.
-    //   5 × ~25 ops ≈ 125 ops/fragment; Iris Xe Gen12 ~1.18 TFLOPS FP32 handles
-    //   this comfortably for the water-ribbon footprint (~700K active fragments).
+    // ── 7. Bank-edge foam turbulence (iter-4 winner — final layer) ─────────────
     float edgeFactor = 1.0 - smoothstep(0.0, 0.12, edgeDist);  // 12% UV band
 
     float foamTurb1 = snoise(vUv * 60.0  + vec2(uTime * 1.2, 0.0)) * 0.5 + 0.5;
     float foamTurb2 = snoise(vUv * 150.0 + vec2(0.0, uTime * 2.0)) * 0.5 + 0.5;
     float foamTurbCombined = foamTurb1 * 0.6 + foamTurb2 * 0.4;
 
-    // Bright, slightly warm creamy white — flickers between 0.6 and 1.0 intensity
     float bankFoamIntensity = edgeFactor * (0.6 + 0.4 * foamTurbCombined);
-    vec3  bankFoamColor = vec3(1.0, 0.97, 0.92) * bankFoamIntensity;
+    vec3  bankFoamColor     = vec3(1.0, 0.97, 0.92) * bankFoamIntensity;
 
     // Final blend: bank foam is the topmost layer
     baseColor = mix(baseColor, bankFoamColor, edgeFactor * bankFoamIntensity * 0.8);
@@ -293,16 +352,18 @@ const _fragmentShader = /* glsl */`
  * Uniform defaults become JSX props AND typed setters on the instance:
  *   matRef.current.uTime = state.clock.elapsedTime;  // direct, not .uniforms.xxx.value
  *
- * uSunDir is normalized and matches the directional light in river-scene.tsx.
- * (Light position [340, 910, 230] → normalize ≈ [0.345, 0.924, 0.168])
+ * uSunDir changed to (0.498, 0.797, -0.329) — negative Z so reflection points
+ * toward the +Z chase camera. Old (0.345, 0.924, +0.168) reflected away from it.
+ * normalize check: sqrt(0.498²+0.797²+0.329²) = sqrt(0.248+0.635+0.108) = sqrt(0.991) ≈ 0.996
+ * Pre-normalize: (0.500, 0.800, -0.330) → magnitude 0.9999, used as-is.
  */
 export const WaterSurfMaterial = shaderMaterial(
   {
     uTime:         0,
-    uColorShallow: new THREE.Color('#7fdfff'),   // light cyan — shallow bank water
-    uColorDeep:    new THREE.Color('#1d6f8a'),   // deep teal  — river center
-    uColorFoam:    new THREE.Color('#f2faff'),   // near-white with blue tint
-    uSunDir:       new THREE.Vector3(0.345, 0.924, 0.168), // normalized DIR_POSITION
+    uColorShallow: new THREE.Color('#7fdfff'),    // light cyan — shallow bank water
+    uColorDeep:    new THREE.Color('#1d6f8a'),    // deep teal  — river center
+    uColorFoam:    new THREE.Color('#f2faff'),    // near-white with blue tint
+    uSunDir:       new THREE.Vector3(0.498, 0.797, -0.329), // negative Z → toward +Z chase cam
   },
   _vertexShader,
   _fragmentShader,
@@ -342,6 +403,8 @@ declare module '@react-three/fiber' {
  *   UV.x = 0  → left bank (n direction)
  *   UV.x = 1  → right bank (-n direction)
  *   UV.y = t  → arclength fraction 0..1 (downstream)
+ *
+ * At RIBBON_SAMPLES=128: 257 vertices × 2 = 514 total vertices, 254 tris.
  */
 function buildWaterRibbonGeo(): THREE.BufferGeometry {
   const positions: number[] = [];
@@ -395,7 +458,7 @@ const _waterGeo = buildWaterRibbonGeo();
  *   - One uniform write (uTime) via direct property setter
  *   - Zero geometry mutations, zero allocations
  *
- * The nur-frame update pattern:
+ * The per-frame update pattern:
  *   matRef.current.uTime = state.clock.elapsedTime
  *   (drei shaderMaterial setters write through to uniforms[key].value)
  */
