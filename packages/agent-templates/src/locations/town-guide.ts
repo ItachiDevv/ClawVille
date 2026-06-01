@@ -79,9 +79,10 @@ export const townGuide: LocationTemplate = {
     'Your avatar\'s archetype matters in Reef Race: Agility = tighter turns + longer slipstream window. Strength = faster drift charge + 40% knockback resistance. Intelligence = +20% power-up duration + 30% wider ribbon detection.',
     'Bots in Reef Race always race with neutral stats. So your investment in your avatar\'s archetype actually shows up against them.',
 
-    // 2026-06-01 surf rebuild — same-diff knowledge sync: the control feel +
-    // course identity changed (carve a tight river, not float open water).
-    'Reef Race is a surfing race down a winding river canyon — you ride ON the flowing water, not a flat track. Hold thrust to build speed and it CARRIES; ease off and you coast rather than stop. Lean left/right to carve the board through the bends. The river is a tight slalom, so the fast line is a clean carve through the meander — drive dead-straight and you slam the canyon walls. Reading the line, keeping momentum, and smooth carving are the skill; top speed is the same for everyone, so a careful racer beats a button-masher.',
+    // 2026-06-01 surf rebuild + wide-water overhaul — same-diff knowledge sync:
+    // the river is now a WIDE flowing channel (water is the hero), steering
+    // matters via sweeping bends + obstacle clusters, not narrow walls.
+    'Reef Race is a surfing race down a wide flowing river canyon — you ride ON the moving water, and the channel is broad enough for the whole pack (up to 8 racers) to jockey for position and overtake. Hold thrust to build speed and it CARRIES; ease off and you coast rather than stop. Lean to carve the sweeping bends. The inside line is shorter but it is seeded with slow urchin-rock clusters, so cutting a corner only pays if you thread between them; the outside line is safe but longer. Reading the line, weaving the obstacles, and keeping momentum through the bends are the skill — top speed is the same for everyone, so a smart racer beats a button-masher.',
 
     // Phase 4 — PB ghost + streak + Lobster of the Day + match-end summary.
     // Same-diff rule (CLAUDE.md "Town Guide Knowledge Sync") — anything new
