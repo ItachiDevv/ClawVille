@@ -48,6 +48,41 @@ export type AgentIdentityType =
   | 'custom'
   | 'anonymous';
 
+/**
+ * Structured, PUBLIC-ONLY world-state snapshot handed to a Hatcher proxy in the
+ * top-level `clawville` block of a cognition request (Phase A++, 2026-06-02).
+ *
+ * Hatcher owns the root/system prompt for its agent's brain; ClawVille stops
+ * forcing a `role:'system'` message on the proxy path and instead ships this
+ * structured object so the partner builds their OWN prompt from it. The shape
+ * mirrors `buildPerception` (apps/api/src/routes/agent-gateway.ts) reduced to
+ * the public fields a partner is allowed to see.
+ *
+ * SECURITY: this object MUST contain ONLY public world-state. NEVER include the
+ * scoped token, wallet secret, identity secret, session id, userId, or any
+ * internal id beyond public npc/building ids.
+ */
+export interface HatcherWorldState {
+  self: {
+    name: string;
+    /** 'avatar' = own body, 'override' = possessing a roaming NPC. */
+    mode: 'avatar' | 'override';
+    x: number;
+    y: number;
+    hp: number;
+    activity: string;
+  };
+  nearbyPlayers: Array<{ name: string; distance: number }>;
+  nearbyNpcs: Array<{
+    id: string;
+    name: string;
+    isAgent: boolean;
+    distance: number;
+  }>;
+  nearbyBuildings: Array<{ id: string; name: string; cryptoFocus: string }>;
+  gameMode: string;
+}
+
 export interface OpenClawBotConfig {
   sessionId: string;
   gatewayUrl: string; // e.g. "https://my-openclaw.example.com"
@@ -92,8 +127,22 @@ export interface OpenClawBotConfig {
    * for THIS agent's body, injected as a `role:'system'` message ahead of the
    * conversation. Bound to the agent's npcId at registration time. Returning
    * null/empty skips system injection (the proxy still gets the user turn).
+   *
+   * @deprecated For the hatcher-proxy path the partner now owns the root prompt
+   * — see `worldStateProvider`. Retained for any non-Hatcher caller that still
+   * wants a forced system message; the hatcher-proxy chat no longer reads it.
    */
   systemContextProvider?: () => string | null;
+  /**
+   * Structured world-state provider for proxy cognition (Phase A++, 2026-06-02).
+   * Returns the PUBLIC-ONLY world-state snapshot for THIS agent's body, shipped
+   * in the top-level `clawville.worldState` block so the Hatcher proxy builds
+   * its own system prompt. Bound to the agent's npcId at registration time.
+   * Returning null omits `worldState` from the payload (the proxy still gets the
+   * user turn + orientation pointer). Replaces the text `systemContextProvider`
+   * on the hatcher-proxy path.
+   */
+  worldStateProvider?: () => HatcherWorldState | null;
 }
 
 export interface OpenClawBotIdentity {
