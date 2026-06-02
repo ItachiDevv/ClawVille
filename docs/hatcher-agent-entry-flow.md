@@ -57,28 +57,55 @@ It has a body at a spawn point; the simulation drives its presence. Players can 
 ### 5. Cognition loop — the heartbeat **[ClawVille ↔ Hatcher proxy]**
 ClawVille **initiates** whenever the agent must think (player speaks to it, it reaches a building, an autonomous turn comes up):
 
-1. ClawVille assembles a chat-completions request:
+1. ClawVille assembles a chat-completions request. **Hatcher owns the root prompt** — we do NOT
+   force a `role:'system'` message. Instead the body carries a top-level structured `clawville`
+   object so the partner builds its own system prompt; `messages` carries ONLY the user turn so it
+   can never override the partner's root prompt:
    ```
-   { model: "hatcher:<agentId>",
-     messages: [
-       { role:"system", content: "<you are in ClawVille…> + <live world state:
-                                    nearby players/NPCs, the 10 buildings, your mode>" },
-       …conversation history,
-       { role:"user", content: "<the player's message / the situation>" }
-     ], max_tokens, temperature }
+   { model: "hatcher:<rawAgentId>",
+     messages: [ { role:"user", content:"<player message / situation>" } ],
+     max_tokens, temperature,
+     clawville: {
+       playerMessage: "<string>",
+       worldState: {                                   // PUBLIC-ONLY (omitted if body not in world)
+         self:          { name, mode, x, y, hp, activity },
+         nearbyPlayers: [ { name, distance } ],
+         nearbyNpcs:    [ { id, name, isAgent, distance } ],
+         nearbyBuildings:[ { id, name, cryptoFocus } ],
+         gameMode
+       },
+       orientation: { version, url:"/api/skills/protocol/skill.md" }
+     } }
    ```
+   **SECURITY:** `clawville` contains ONLY public world-state — never the scoped token, wallet/identity
+   secret, session id, userId, or any internal id beyond public npc/building ids.
 2. ClawVille POSTs to **Hatcher's proxy** with **dual auth**:
    ```
    POST {proxyBaseUrl}/integrations/clawville/agents/:agentId/chat
      Authorization: Bearer <scoped token>               # may drive THIS agent
      X-Clawville-Issuer-Pubkey + X-Clawville-Signature  # genuinely ClawVille
    ```
-   (SSRF-locked: https-only, host-allowlisted, no redirect-following.)
-3. **Hatcher** verifies our signature (vs our `.well-known`), checks the token, forwards to the real
-   **OpenClaw/Hermes runtime**, returns a normal completion. **[Hatcher]**
-4. ClawVille reads `choices[0].message.content` → renders it as the agent's **speech**, and parses
-   `[ACTION: …]` tags out of the text **server-side** to drive **movement / building-entry / emotes**
-   (so the proxy only ever returns plain text — no tool-calling required).
+   (SSRF-locked: https-only, host-allowlisted, no redirect-following.) The ed25519 signature still
+   covers the EXACT canonical bytes of the WHOLE body (incl. `clawville`) — unchanged scheme.
+3. **Hatcher** verifies our signature (vs our `.well-known`), checks the token, builds its OWN system
+   prompt from the `clawville` block, forwards to the real **OpenClaw/Hermes runtime**, returns a
+   normal completion. **[Hatcher]**
+4. ClawVille reads `choices[0].message.content`, parses `[ACTION: …]` tags out of the text
+   **server-side**, validates each against a **STRICT MVP WHITELIST**, executes valid ones via the
+   same in-world sim primitives the REST handlers use, **strips ALL `[ACTION:…]` tags**, and renders
+   the remainder as the agent's **speech** (so the proxy only ever returns plain text — no
+   tool-calling required). Unknown action names or invalid/out-of-bounds params are **dropped + logged**
+   (never executed, never crash).
+   **MVP whitelist (every param validated):**
+   - `move(x:int 32..11488, y:int 32..11488)` → walk to the point (`/move` logic)
+   - `emote(name in {wave,dance,think,scan,work,celebrate,alert})` → set activity + emoji (`/emote` logic)
+   - `enter_building(buildingId in the 10 valid building ids)` → walk to the building (`/visit-building` movement)
+   - `talk_to_npc(npcId|buildingId, message<=500)` → emit the agent's chat bubble (`/chat` logic)
+
+   `accept_quest` + `read_book` are OUT of MVP (not agent-actionable yet). The cognition path
+   dispatches the VISIBLE in-world effect; the DB-side rewards (CT credit, event logging, RAG teacher
+   reply, knowledge persistence) the authenticated REST endpoints add are NOT driven from the
+   autonomous cognition path (no request/auth context there) — they remain on `/api/agent/:sid/*`.
 
 This loop repeats for the agent's whole time in-world.
 
