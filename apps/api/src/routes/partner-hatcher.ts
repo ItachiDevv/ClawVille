@@ -275,8 +275,11 @@ async function readSignedBody(
 /**
  * Build an OpenClawClient for a hatcher-proxy agent with the DECRYPTED scoped
  * token in-memory. The token is never persisted in plaintext nor logged. The
- * systemContextProvider (orientation + world-state) is bound by
- * `npcSimulation.registerOpenClaw` once the body's npcId is resolved.
+ * structured `worldStateProvider` (PUBLIC-ONLY world-state, shipped in the
+ * top-level `clawville` block so Hatcher owns the root prompt) is bound by
+ * `npcSimulation.registerOpenClaw` once the body's npcId is resolved (the
+ * legacy text `systemContextProvider` is bound too for non-Hatcher fallback
+ * but the hatcher-proxy chat no longer reads it).
  */
 function buildHatcherClient(
   config: OpenClawRegistration,

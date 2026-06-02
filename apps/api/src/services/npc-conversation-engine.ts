@@ -256,6 +256,14 @@ export async function generateOpenClawConversation(
   client2: OpenClawClient | null,
   arenaMode: boolean,
   _cryptoContext?: string,
+  /**
+   * Hatcher proxy-cognition hook (Phase A++, 2026-06-02). For a hatcher-proxy
+   * client the reply may carry [ACTION: ...] tags; this callback (provided by
+   * the sim) validates + executes the whitelisted actions against THIS npcId
+   * and returns the cleaned (action-stripped) speech. Returns the raw reply
+   * unchanged for non-proxy clients / when omitted.
+   */
+  processProxyReply?: (npcId: string, client: OpenClawClient, rawReply: string) => string,
 ): Promise<ConversationMessage[]> {
   const arenaContext = arenaMode
     ? ' You are in the ClawVille Arena where NPCs battle each other.'
@@ -282,6 +290,12 @@ Reply as ${npc.name} with a single short sentence (1-2 sentences max). Stay in c
       if (client) {
         try {
           reply = await client.chat([{ role: 'user', content: contextMsg }]);
+          // Hatcher proxy-cognition: parse + execute [ACTION:] tags from the
+          // reply and strip them so only clean speech remains. No-op for
+          // non-proxy clients (the callback gates on protocol internally).
+          if (reply && processProxyReply) {
+            reply = processProxyReply(npc.id, client, reply);
+          }
         } catch (err) {
           console.error(`[OpenClaw] Chat failed for ${npc.name}:`, err);
           reply = '';
