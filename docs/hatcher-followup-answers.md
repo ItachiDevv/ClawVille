@@ -1,8 +1,6 @@
 # Hatcher × ClawVille — Answers to Implementation Follow-Ups
 
-Send-ready reply to Hatcher's 6 follow-up questions. Most of this is **built + live on
-ClawVille staging** (`https://api-staging.clawville.world`; prod will be
-`https://api.clawville.world`, identical paths). Companion: `docs/hatcher-agent-entry-flow.md`.
+Companion: `docs/hatcher-agent-entry-flow.md`.
 
 Status legend: **✅ live on staging** · **[needs Hatcher]**.
 
