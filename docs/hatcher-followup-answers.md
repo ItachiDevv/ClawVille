@@ -15,11 +15,11 @@ Three signing contexts. All ed25519 (`nacl.sign.detached`), **base58** encoding,
 
 **(a) Your inbound writes** — `POST/PATCH/DELETE /api/partner/hatcher/agents`:
 - **Signed material:** `SHA-256(rawBody)` over the **exact UTF-8 bytes you transmit**. We hash the
-  body as-received — **no canonicalization** — so don't let a serializer reformat between signing and
+  body as-received — **no canonicalization** - so don't let a serializer reformat between signing and
   sending.
 - **Headers:** `X-Hatcher-Issuer-Pubkey: <base58>`, `X-Hatcher-Signature: <base58>`.
 - **Replay/nonce:** none on writes — idempotent by `agentId` (POST upserts, DELETE no-ops if gone).
-  We can add a timestamp+window to writes if you want hard replay protection there — just ask.
+  We can add a timestamp+window to writes if you want hard replay protection there, just let us know your preference.
 
 **(b) Your inbound reads** — `GET …/stats` (no body):
 - **Signed material:** `SHA-256(challenge)`, `challenge = "clawville-partner-get\n<METHOD>\n<PATH>\n<UNIX_MS>"`
@@ -38,7 +38,7 @@ Three signing contexts. All ed25519 (`nacl.sign.detached`), **base58** encoding,
 
 **Key rotation:** one active pubkey per partner in our allowlist; to rotate, send the new key and we
 swap the env on both boxes at an agreed instant. Zero-downtime → we can run a brief **dual-key overlap
-window**; tell us if you need it.
+window**; just tell us if you need it.
 
 ---
 
