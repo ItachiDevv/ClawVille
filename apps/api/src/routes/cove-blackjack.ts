@@ -336,6 +336,15 @@ const actionSchema = z
     action: z.enum(ACTION_TYPES),
     /** 0 = original/first hand; 1 = the second hand after a split. */
     handSlot: z.number().int().min(0).max(1).default(0),
+    /**
+     * OPTIONAL stale-decision guard for the human-supervised Autonomous relay.
+     * The Autonomous driver threads the `handVersion` it got from /agent/decide
+     * here; under the hand lock /action rejects (409) if the freshly-locked
+     * hand's `handDecisionVersion` no longer matches — so a human tap beats a
+     * stale in-flight agent decision server-side. OMITTED on every human manual
+     * tap, which keeps the unconditional legacy behavior.
+     */
+    expectedHandVersion: z.number().int().optional(),
   })
   .strict();
 
@@ -431,6 +440,8 @@ interface ShoeLockRow {
   total_payout: string;
   starting_balance: string;
   status: string;
+  user_id: string | null;
+  guest_fp_hash: string | null;
   // Index signature so the row type satisfies Drizzle's
   // `tx.execute<T extends Record<string, unknown>>` constraint.
   [key: string]: unknown;
@@ -487,6 +498,33 @@ async function reconstructShoeState(
 function loadScript(hand: BlackjackHand): HandScript {
   const s = hand.script as HandScript;
   return { hands: s.hands, didSplit: s.didSplit, tookInsurance: hand.tookInsurance };
+}
+
+/**
+ * A monotonically-increasing integer that strictly increases by exactly 1 on
+ * EVERY decision applied to an in-progress hand. Used by the human-supervised
+ * Autonomous relay so a stale agent decision (decided against an earlier
+ * snapshot) cannot land after a human has already changed the hand: the relay
+ * stamps the version it decided at, and /action rejects an apply whose
+ * `expectedHandVersion` no longer matches the freshly-locked hand.
+ *
+ * DEFINITION (must be identical wherever the version is computed):
+ *   sum(hands[*].length) + (didSplit ? 1 : 0) + (tookInsurance ? 1 : 0)
+ *
+ * Why each term is needed for strict monotonicity vs `applyDecision`:
+ *   - hit/stand/double/surrender push one entry → sum grows by 1.
+ *   - split RESETS `hands` to [[], []] (sum stays 0) but flips didSplit
+ *     false->true, so the +1 didSplit term carries the increment. A bare
+ *     sum-of-lengths would NOT change across a split, leaving the exact
+ *     human-tap-split-beats-agent race unguarded.
+ *   - insurance appends no script entry but flips tookInsurance false->true
+ *     (legal only before any main action), so the +1 tookInsurance term
+ *     carries that increment too.
+ * Every mutating /action path therefore advances this by exactly 1.
+ */
+function handDecisionVersion(script: HandScript): number {
+  const decisionCount = script.hands.reduce((sum, sub) => sum + sub.length, 0);
+  return decisionCount + (script.didSplit ? 1 : 0) + (script.tookInsurance ? 1 : 0);
 }
 
 /**
@@ -1216,6 +1254,8 @@ coveBlackjackRouter.post('/action', async (c) => {
 
   const action = parsed.data!.action as BlackjackActionType;
   const handSlot = parsed.data!.handSlot;
+  // Optional stale-agent-decision precondition (relay-supplied; see actionSchema).
+  const expectedHandVersion = parsed.data!.expectedHandVersion;
 
   // ── Main-hand decision — read-modify-write the script UNDER the hand lock ──
   // so two concurrent /action calls serialize instead of last-writer-wins
@@ -1240,6 +1280,20 @@ coveBlackjackRouter.post('/action', async (c) => {
     const locked = await tx.query.blackjackHands.findFirst({ where: eq(blackjackHands.id, hand.id) });
     if (!locked) throw new HTTPException(404, { message: 'hand_not_found' });
     const lockedScript = loadScript(locked);
+    // Stale-agent-decision guard (human-supervised Autonomous relay). When the
+    // driver supplies `expectedHandVersion`, the agent decided against a SNAPSHOT
+    // of this hand; if the freshly-locked hand has advanced since (e.g. a human
+    // already tapped an action), reject so the human's tap beats the stale
+    // in-flight agent apply. Computed UNDER the lock against the authoritative
+    // (not pre-lock) script so it is race-safe. OMITTED on human manual taps,
+    // which preserves the unconditional legacy behavior exactly. The version
+    // definition here MUST match the one stamped by /agent/decide.
+    if (expectedHandVersion !== undefined &&
+        handDecisionVersion(lockedScript) !== expectedHandVersion) {
+      throw new HTTPException(409, {
+        message: 'stale_agent_decision: hand changed since the agent decided',
+      });
+    }
     // For a split hand, peek the dealt sub-hand cards to identify split-ace
     // slots so `applyDecision` can reject the forbidden hit/double on them
     // (split aces get exactly one card). Non-split hands can't be split aces.
@@ -1376,11 +1430,20 @@ async function settleHand(
     // gives authoritative counters for the engine recompute.
     const shoeRows = await tx.execute<ShoeLockRow>(
       sql`SELECT id, server_seed, server_seed_hash, client_seed, cursor_counter,
-                 dealt_count, total_bet, total_payout, starting_balance, status
+                 dealt_count, total_bet, total_payout, starting_balance, status,
+                 user_id, guest_fp_hash
           FROM blackjack_shoes WHERE id = ${shoeId} FOR UPDATE`,
     );
     const shoeLock = shoeRows[0];
     if (!shoeLock) throw new HTTPException(404, { message: 'shoe_not_found' });
+
+    // Defense-in-depth (Codex review 2026-06-03, BLOCKING #1): re-assert ownership
+    // UNDER the lock. Callers pre-validate ownerMatch, but a money-settling fn must
+    // never trust callers — a future no-pre-check call path would otherwise settle a
+    // different avatar's ledger. Valid flows never trip this (shoe.user_id===subject.userId).
+    if (!ownerMatch({ userId: shoeLock.user_id, guestFpHash: shoeLock.guest_fp_hash }, subject)) {
+      throw new HTTPException(403, { message: 'settle_subject_mismatch' });
+    }
 
     const hand = await tx.query.blackjackHands.findFirst({ where: eq(blackjackHands.id, handId) });
     if (!hand) throw new HTTPException(404, { message: 'hand_not_found' });
@@ -2033,6 +2096,12 @@ coveBlackjackRouter.post('/agent/decide', requireAuth, async (c) => {
   const legal = new Set<DecideAction>();
   let targetHandId: string | null = null;
   let targetHandSlot: 0 | 1 = 0;
+  // The decision version of the hand the agent is deciding for. Threaded back to
+  // /action as `expectedHandVersion` so a human tap that advances the hand before
+  // this (possibly in-flight) decision applies is rejected server-side. null when
+  // no hand is live (the decision is a 'deal', which opens a fresh hand and has
+  // no version to guard). MUST use the same definition /action enforces against.
+  let targetHandVersion: number | null = null;
 
   if (!liveHand) {
     legal.add('deal');
@@ -2065,6 +2134,10 @@ coveBlackjackRouter.post('/agent/decide', requireAuth, async (c) => {
     targetHandSlot = (activeSlot < 0 ? (script.didSplit ? 1 : 0) : activeSlot) as 0 | 1;
     const active = peek.playerHands[targetHandSlot] ?? peek.playerHands[0]!;
     targetHandId = liveHand.id;
+    // Stamp the version the agent is deciding at (same definition /action
+    // enforces). `script` already carries the authoritative tookInsurance via
+    // loadScript, so the insurance term matches what /action recomputes.
+    targetHandVersion = handDecisionVersion(script);
 
     // Legal actions for the active sub-hand.
     legal.add('hit');
@@ -2127,6 +2200,10 @@ coveBlackjackRouter.post('/agent/decide', requireAuth, async (c) => {
       ...(decision.action === 'deal' ? { amount: decision.amount } : {}),
       handId: decision.action === 'deal' ? null : targetHandId,
       handSlot: targetHandSlot,
+      // The decision version of the hand the agent decided for; the driver passes
+      // it back to /action as `expectedHandVersion`. null for 'deal' (no hand to
+      // guard) and for any decision made when no hand was live.
+      handVersion: decision.action === 'deal' ? null : targetHandVersion,
       rationale: cleanRationale(reply),
       source: 'agent' as const,
     },
