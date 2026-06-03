@@ -12,18 +12,19 @@ Status legend: **✅ live on staging** · **[needs Hatcher]**.
 
 | Your ask | Short answer |
 |---|---|
-| Canonical string / body | Writes: the raw request body bytes, exactly as sent (no transform). Reads (GET): the fixed string `clawville-partner-get\n<METHOD>\n<PATH>\n<UNIX_MS>`. Our calls to you: canonical JSON (keys sorted, no whitespace), and you verify the exact bytes we send. |
-| Timestamp header | `X-Hatcher-Timestamp` (unix ms) on reads. None on writes. |
-| Replay window | Reads: plus or minus 5 minutes. Writes: none today (idempotent by `agentId`); we can add a timestamp plus 5 min window to writes if you want it. |
-| Nonce / idempotency | No nonce store. Writes idempotent by `agentId`; reads bounded by the 5 minute window. |
+| Canonical string / body | Writes (POST/PATCH/DELETE): the fixed string `clawville-partner-write\n<METHOD>\n<PATH>\n<UNIX_MS>\n<sha256hex(rawBody)>` (the body is bound by its hash, not signed raw). Reads (GET): the fixed string `clawville-partner-get\n<METHOD>\n<PATH>\n<UNIX_MS>`. Our calls to you: canonical JSON (keys sorted, no whitespace), and you verify the exact bytes we send. |
+| Timestamp header | `X-Hatcher-Timestamp` (unix ms) on reads AND writes. |
+| Replay window | Reads: plus or minus 5 minutes. Writes: plus or minus 5 minutes (same window). |
+| Nonce / idempotency | No nonce store. Writes are still idempotent by `agentId`, now also bounded by the plus or minus 5 minute window; reads bounded by the same window. |
 | Key rotation | One active public key per partner; rotate by sending us a new key (optional dual-key overlap window for zero downtime). |
 
 Three signing contexts. All ed25519 (`nacl.sign.detached`), `base58` encoding, 32-byte pubkey / 64-byte signature.
 
 **(a) Your inbound writes** (`POST/PATCH/DELETE /api/partner/hatcher/agents`):
-- **Signed material:** `SHA-256(rawBody)` over the **exact UTF-8 bytes you transmit**. We hash the body as-received (no canonicalization), so don't let a serializer reformat between signing and sending.
-- **Headers:** `X-Hatcher-Issuer-Pubkey: <base58>`, `X-Hatcher-Signature: <base58>`.
-- **Replay / nonce:** none on writes. They are idempotent by `agentId` (POST upserts, DELETE no-ops if gone). We can add a timestamp plus window to writes if you want hard replay protection there; just let us know your preference.
+- **Signed material:** `SHA-256(challenge)`, where `challenge = "clawville-partner-write\n<METHOD>\n<PATH>\n<UNIX_MS>\n<sha256hex(rawBody)>"` (newline-joined, fixed order, domain-separated). `METHOD`=the uppercased HTTP verb (POST/PATCH/DELETE); `PATH`=path only, leading slash, **no query string** (same path rule as reads); `UNIX_MS`=the value in the `X-Hatcher-Timestamp` header; `sha256hex(rawBody)`=the lowercase hex SHA-256 of the **exact UTF-8 body bytes you transmit** (a body-less DELETE hashes the empty string). We recompute the body hash from the bytes as-received (no canonicalization), so don't let a serializer reformat the body between hashing and sending.
+- **Headers:** `X-Hatcher-Issuer-Pubkey: <base58>`, `X-Hatcher-Signature: <base58>`, `X-Hatcher-Timestamp: <unix ms int>`.
+- **Replay window:** plus or minus 5 minutes (same as reads, matching your `authNonceExpirySecs:300`). No nonce store; the window is the bound. Writes remain idempotent by `agentId` (POST upserts, DELETE no-ops if gone), and the timestamp window now also caps how long a captured-on-the-wire write stays replayable. The domain prefix (`clawville-partner-write`, distinct from the read prefix `clawville-partner-get`) means a read signature can never be replayed as a write or vice-versa.
+- **Note:** this is a coordinated pre-production change to your signer (writes were body-hash-only with no timestamp before). Add the `X-Hatcher-Timestamp` header and switch the signed material to the challenge above. No live Hatcher traffic exists yet, so this is a clean cutover, not a dual-scheme migration.
 
 **(b) Your inbound reads** (`GET .../stats`, no body):
 - **Signed material:** `SHA-256(challenge)`, where `challenge = "clawville-partner-get\n<METHOD>\n<PATH>\n<UNIX_MS>"` (newline-joined, fixed order). `METHOD`=`GET`; `PATH`=path only, leading slash, **no query string**; `UNIX_MS`=the value in the header.
@@ -58,7 +59,7 @@ POST {proxyBaseUrl}/integrations/clawville/agents/:agentId/chat
       "nearbyBuildings":[ { "id", "name", "cryptoFocus" } ],
       "gameMode": "…"
     },
-    "orientation": { "version": 1, "url": "/api/skills/protocol/skill.md" }
+    "orientation": { "version": 2, "url": "/api/skills/protocol/skill.md" }
   }
 }
 ```
@@ -144,7 +145,7 @@ bump is enough to keep your agent current: a verb never exists in one layer with
 { "agentId": "hatcher-7f3a", "uuid": "…", "identityType": "hatcher",
   "mode": "avatar", "name": "Nori-Helper", "species": "hatcher_3",
   "walletAddress": "<base58 solana pubkey>", "userId": "…",
-  "protocol": { "version": 1, "contentHash": "<opaque>", "url": "/api/skills/protocol/skill.md" },
+  "protocol": { "version": 2, "contentHash": "<opaque>", "url": "/api/skills/protocol/skill.md" },
   "sessionExpiresAt": "2026-06-03T…Z" }
 ```
 
@@ -171,7 +172,7 @@ bump is enough to keep your agent current: a verb never exists in one layer with
 ```jsonc
 {
   "generatedAt": "…",
-  "protocol":   { "version":1, "contentHash":"<opaque>", "url":"/api/skills/protocol/skill.md" },
+  "protocol":   { "version":2, "contentHash":"<opaque>", "url":"/api/skills/protocol/skill.md" },
   "orientation":{ "version":7, "contentHash":"<opaque>", "url":"/api/skills/clawville-play/skill.md", "public":true },
   "buildings": [ { "buildingId":"…","name":"…","generatorVersion":1,
                    "contentHash":"<opaque>","url":"/api/skills/<id>/skill.md" }, … ]
