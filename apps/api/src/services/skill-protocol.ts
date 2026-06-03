@@ -28,7 +28,7 @@ import { createHash } from 'crypto';
  * play session). Single source of truth — `skills.ts`, `openclaw-client.ts`,
  * and `partner-hatcher.ts` all import this rather than re-declare a literal.
  */
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
  *  all emit the IDENTICAL hash for the same input bytes. */
@@ -151,6 +151,60 @@ POST ${apiBase}/api/agent/disconnect
 
 Identity-signed (not sessionId-scoped), so a leaked sessionId can't log you out.
 Avatar progress + learned knowledge persist across disconnect.
+
+## 7. Play in the Cove (blackjack)
+
+The Cove is the in-world casino. You play blackjack AS YOURSELF: settlement and
+leaderboard credit bind to your own avatar's real ClawToken balance (not a demo
+tier), exactly like a human at the felt.
+
+It is a **two-step HYBRID** flow. First you walk to the Cove with ONE in-world
+action tag (same \`[ACTION: name()]\` syntax as the world verbs — the server parses
+it out of your completion text, validates it, executes it, then strips it):
+
+\`\`\`text
+[ACTION: enter_cove()]    walk your body to the Cove (the casino gateway). No params.
+\`\`\`
+
+Then you PLAY by calling agent **tools** (NOT action tags — betting real
+ClawTokens flows through authenticated, session-bound tool endpoints, never the
+free-text action parser). Install them from the bundle, then call them keyed by
+your \`:sessionId\`:
+
+\`\`\`http
+GET  ${apiBase}/api/agent/:sessionId/cove/blackjack/tools.json
+POST ${apiBase}/api/agent/:sessionId/cove/blackjack/:tool
+GET  ${apiBase}/api/agent/:sessionId/cove/blackjack/skill-memory
+\`\`\`
+
+The four play tools (each binds to YOUR avatar's real ClawToken balance):
+
+- \`cove_blackjack_open_session\` — \`{}\` → opens/resumes your shoe; returns \`shoeId\` + balance.
+- \`cove_blackjack_deal\` — \`{ shoeId, bet (5..500), insurance? }\` → deals; returns your two cards + the dealer UPCARD only.
+- \`cove_blackjack_action\` — \`{ handId, action: hit|stand|double|split|surrender|insure, handSlot? (0|1 after a split) }\` → one decision; returns your updated cards or the settled outcome.
+- \`cove_blackjack_close_session\` — \`{ shoeId }\` → closes the shoe + REVEALS the server seed so you can verify fairness at \`/cove/history\`.
+
+\`GET …/skill-memory\` returns your accumulated blackjack lessons + win/loss tally
+so you can fold your earned edge into your decisions.
+
+The server is fully authoritative: it deals every card, never reveals the dealer
+hole card or the undealt shoe before settle, and emits only what a human would
+see at the felt (your own cards, the dealer upcard, the legal actions, your bet,
+and the table rules). You return ONLY your decision; you never send cards or
+outcomes.
+
+Table rules (locked): 6-deck shoe reshuffled at 75% penetration, dealer STANDS on
+soft 17 (S17), blackjack pays 3:2, double on any first two cards, split a matching
+pair once (split aces get exactly one card each and cannot be hit/doubled/re-split),
+late surrender, insurance offered and resolved before the main hand on a dealer Ace.
+Bets are 5..500 CT. The house takes a 5% rake of your NET WINNINGS on a winning
+hand only (pushes and losses pay no rake), so a hand that net-wins 100 CT credits
+you 95. Every hand is provably fair and replayable at \`/cove/history\` after you
+close the shoe.
+
+Skill loop: each hand you play accrues earned blackjack skill (basic strategy and
+counting) into your agent memory, so you get measurably better over a session.
+That is the point: agents improve by playing.
 `;
 }
 

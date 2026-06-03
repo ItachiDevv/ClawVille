@@ -40,6 +40,8 @@ import {
 } from '../services/openclaw-session-sweeper';
 import { drainKnowledgeEvents, clearSessionQueue } from '../services/skill-event-bus';
 import { runTool } from '../services/skill-tools-dispatcher';
+import { coveBlackjackRouter } from './cove-blackjack';
+import { getBlackjackSkillContext } from '../services/game-skill-memory';
 import {
   getBooksForBuilding,
   SHOP_BUILDINGS,
@@ -3227,6 +3229,280 @@ This token expires in ${Math.max(0, Math.floor((pending.expiresAt - Date.now()) 
 
   c.header('Content-Type', 'text/markdown; charset=utf-8');
   return c.text(markdown);
+});
+
+// ---------------------------------------------------------------------------
+// Cove BLACKJACK — agent-callable play surface (Rule E5 — human↔agent parity).
+// ---------------------------------------------------------------------------
+// A connected/hosted agent plays REAL-CT blackjack AS ITSELF through these tools
+// (the [cards] HYBRID model: `[ACTION: enter_cove()]` puts the body at the cove,
+// then the agent drives play via these tool calls). The agent receives hand
+// state OUTBOUND and returns ONLY its decision — the server is authoritative and
+// NEVER reveals the dealer hole card, undealt cards, or the server seed before
+// the commit-reveal close.
+//
+// REUSE, NOT REIMPLEMENTATION: every tool forwards to the audited
+// `coveBlackjackRouter` via an in-process sub-request carrying the agent-session
+// header. The cove route's `getSubject` resolves that header → the agent's bound
+// avatar → its REAL CT (debit/creditClawTokens) — the SAME ledger path a human
+// uses. There is ZERO duplicated money/engine logic here: the provably-fair
+// engine, the rake, the idempotency + locking all live in the cove route exactly
+// once. This surface is a thin, parity-preserving adapter.
+//
+// The tool JSON is Anthropic/OpenAI-compatible (input_schema + parameters) so a
+// harness can install it straight from /cove/blackjack/tools.json.
+
+const COVE_BLACKJACK_TOOLS = [
+  {
+    name: 'cove_blackjack_open_session',
+    description:
+      'Open (or resume) your real-ClawToken blackjack shoe at the Cove. Returns a commit-reveal shoe id + your current ClawToken balance. Call this once before dealing; it is idempotent (re-opens your existing shoe). You must already be a connected agent with a bound avatar.',
+    input_schema: { type: 'object', properties: {}, additionalProperties: false },
+    parameters: { type: 'object', properties: {}, additionalProperties: false },
+  },
+  {
+    name: 'cove_blackjack_deal',
+    description:
+      'Deal a new blackjack hand on your open shoe. Stake is debited from your real ClawToken balance now. Returns your two cards + the dealer UPCARD only (the hole card stays hidden until the hand resolves). If insurance is offered (dealer Ace) you may pass insurance=true.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        shoeId: { type: 'string', description: 'The shoe id from cove_blackjack_open_session.' },
+        bet: { type: 'integer', minimum: 5, maximum: 500, description: 'Stake in ClawTokens (5–500).' },
+        insurance: { type: 'boolean', description: 'Take insurance — only honored on a dealer-Ace upcard.' },
+      },
+      required: ['shoeId', 'bet'],
+      additionalProperties: false,
+    },
+    parameters: {
+      type: 'object',
+      properties: {
+        shoeId: { type: 'string' },
+        bet: { type: 'integer', minimum: 5, maximum: 500 },
+        insurance: { type: 'boolean' },
+      },
+      required: ['shoeId', 'bet'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'cove_blackjack_action',
+    description:
+      'Take ONE decision on your in-progress hand: hit, stand, double, split, surrender, or insure. Returns your updated visible cards (or the settled outcome if the decision ends the hand). The dealer hole card and undealt cards are never returned before the hand settles.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        handId: { type: 'string', description: 'The hand id from cove_blackjack_deal.' },
+        action: {
+          type: 'string',
+          enum: ['hit', 'stand', 'double', 'split', 'surrender', 'insure'],
+          description: 'Your decision for this turn.',
+        },
+        handSlot: {
+          type: 'integer',
+          enum: [0, 1],
+          description: 'After a split: 0 = first hand, 1 = second hand. Omit for non-split hands.',
+        },
+      },
+      required: ['handId', 'action'],
+      additionalProperties: false,
+    },
+    parameters: {
+      type: 'object',
+      properties: {
+        handId: { type: 'string' },
+        action: { type: 'string', enum: ['hit', 'stand', 'double', 'split', 'surrender', 'insure'] },
+        handSlot: { type: 'integer', enum: [0, 1] },
+      },
+      required: ['handId', 'action'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'cove_blackjack_close_session',
+    description:
+      'Close your shoe and REVEAL the server seed so you can verify every hand was provably fair at /api/cove/history. Finish any in-progress hand first.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        shoeId: { type: 'string', description: 'The shoe id to close.' },
+      },
+      required: ['shoeId'],
+      additionalProperties: false,
+    },
+    parameters: {
+      type: 'object',
+      properties: { shoeId: { type: 'string' } },
+      required: ['shoeId'],
+      additionalProperties: false,
+    },
+  },
+] as const;
+
+// The cove route mount path (index.ts: app.route('/api/cove/blackjack', ...)).
+// We forward via the router's in-process `.request()`, so the path here is the
+// router-RELATIVE sub-path (the mount prefix is already stripped by Hono).
+const COVE_BJ_TOOL_ROUTES: Record<
+  string,
+  { method: 'POST'; path: string } | undefined
+> = {
+  cove_blackjack_open_session: { method: 'POST', path: '/session/open' },
+  cove_blackjack_deal: { method: 'POST', path: '/hand/deal' },
+  cove_blackjack_action: { method: 'POST', path: '/action' },
+  cove_blackjack_close_session: { method: 'POST', path: '/session/close' },
+};
+
+// ---------------------------------------------------------------------------
+// GET /api/agent/:sessionId/cove/blackjack/tools.json
+// ---------------------------------------------------------------------------
+// The installable agent-tool bundle for cove blackjack. Session-gated (same as
+// the universal tools.json) so only a live agent can fetch it.
+// ---------------------------------------------------------------------------
+agentGatewayRoutes.get('/:sessionId/cove/blackjack/tools.json', async (c) => {
+  const sessionId = c.req.param('sessionId');
+  const resolved = resolveSession(sessionId);
+  if (!resolved) return c.json({ error: 'Invalid or expired agent session' }, 404);
+
+  return new Response(JSON.stringify(COVE_BLACKJACK_TOOLS, null, 2), {
+    status: 200,
+    headers: {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Content-Disposition': 'attachment; filename="clawville-cove-blackjack.tools.json"',
+      'Cache-Control': 'private, max-age=300',
+      'X-Skill-Filename': 'clawville-cove-blackjack.tools.json',
+      'Access-Control-Expose-Headers': 'Content-Disposition, X-Skill-Filename',
+    },
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/agent/:sessionId/cove/blackjack/skill-memory
+// ---------------------------------------------------------------------------
+// The READ half of the learn-through-play loop (msg 6): the agent's accumulated
+// blackjack lessons + win/loss tally, so a connected agent can fold its earned
+// edge into its own reasoning before deciding. Bound to the agent's avatar.
+// ---------------------------------------------------------------------------
+agentGatewayRoutes.get('/:sessionId/cove/blackjack/skill-memory', async (c) => {
+  const sessionId = c.req.param('sessionId');
+  if (!npcSimulation.isValidAgentSession(sessionId)) {
+    return c.json({ error: 'Invalid or expired agent session' }, 404);
+  }
+  const botConfig = npcSimulation.getOpenClawBotConfig(sessionId);
+  if (!botConfig) return c.json({ error: 'No agent config for session' }, 404);
+
+  const bot = await db.query.openclawBots.findFirst({
+    where: eq(openclawBots.agentId, botConfig.agentId),
+    columns: { userId: true },
+  });
+  if (!bot?.userId) return c.json({ error: 'Agent not linked to a user' }, 404);
+
+  const avatar = await db.query.avatars.findFirst({
+    where: and(eq(avatars.userId, bot.userId), eq(avatars.isActive, true)),
+    columns: { id: true },
+  });
+  if (!avatar) return c.json({ error: 'No active avatar for user' }, 404);
+
+  const ctx = await getBlackjackSkillContext(avatar.id);
+  return c.json({ game: 'blackjack', ...ctx });
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/agent/:sessionId/cove/blackjack/:tool
+// ---------------------------------------------------------------------------
+// Server-side execution endpoint for the cove-blackjack agent tools. Forwards to
+// the audited coveBlackjackRouter via an in-process sub-request carrying the
+// agent-session header — so the cove route's getSubject binds the agent to its
+// avatar's REAL CT. The agent NEVER touches the guest demo tier (the E5 fix).
+//
+// Hidden-state safety lives in the cove route + engine (unchanged): the
+// forwarded responses already omit the dealer hole card / undealt cards / seed
+// before reveal. This adapter adds NO new disclosure.
+//
+// NOTE on event provenance: the sub-request runs the cove router's own
+// middleware chain (sessionMiddleware), NOT the app-level fingerprint
+// middleware, so cove events logged from the forwarded call carry a null
+// fp_hash. That is acceptable — agent events are anchored by the strong
+// userId/agentId identity (the agent is bound to a real avatar/user), and the
+// fp_hash anti-farm signal targets anonymous/guest abuse, which an agent is not.
+// ---------------------------------------------------------------------------
+agentGatewayRoutes.post('/:sessionId/cove/blackjack/:tool', async (c) => {
+  const sessionId = c.req.param('sessionId');
+  const tool = c.req.param('tool');
+
+  // Session must be a live, valid agent session.
+  if (!npcSimulation.isValidAgentSession(sessionId)) {
+    return c.json({ error: 'Invalid or expired agent session' }, 404);
+  }
+
+  // Object.hasOwn guard so an inherited prototype key (constructor, __proto__,
+  // toString, …) can NEVER resolve to a route — only a declared tool maps to a
+  // cove endpoint.
+  if (!Object.hasOwn(COVE_BJ_TOOL_ROUTES, tool)) {
+    return c.json(
+      {
+        error: 'unknown_tool',
+        tool,
+        knownTools: Object.keys(COVE_BJ_TOOL_ROUTES),
+      },
+      404,
+    );
+  }
+  const route = COVE_BJ_TOOL_ROUTES[tool]!;
+
+  // Read the agent's body (may be empty for the no-arg open tool). We re-stringify
+  // so the forwarded sub-request carries a clean JSON body the cove Zod schema
+  // can parse.
+  let body: unknown = {};
+  try {
+    const raw = await c.req.text();
+    body = raw && raw.length > 0 ? JSON.parse(raw) : {};
+  } catch {
+    return c.json({ error: 'invalid_json_body' }, 400);
+  }
+
+  // Build the forwarded headers. The agent-session header is what the cove
+  // route's getSubject resolves to bind real CT. We pass through an
+  // Idempotency-Key when the agent supplied one (terminal-action safety), and
+  // forward the fingerprint/UA so downstream provenance is best-effort intact.
+  const fwdHeaders: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'X-Clawville-Agent-Session': sessionId,
+  };
+  const idem = c.req.header('Idempotency-Key');
+  if (idem) fwdHeaders['Idempotency-Key'] = idem;
+  const fp = c.req.header('X-CV-Fingerprint');
+  if (fp) fwdHeaders['X-CV-Fingerprint'] = fp;
+  const ua = c.req.header('User-Agent');
+  if (ua) fwdHeaders['User-Agent'] = ua;
+
+  // In-process sub-request to the cove router — same code path a human hits,
+  // zero duplicated money/engine logic.
+  const res = await coveBlackjackRouter.request(route.path, {
+    method: route.method,
+    headers: fwdHeaders,
+    body: JSON.stringify(body ?? {}),
+  });
+
+  const text = await res.text();
+  let payload: unknown;
+  try {
+    payload = text.length > 0 ? JSON.parse(text) : {};
+  } catch {
+    // The cove route's HTTPException bodies are plain-text messages. Surface
+    // them as a structured { error } so the agent gets a consistent JSON shape
+    // regardless of whether the underlying handler returned JSON or threw.
+    payload = { error: text };
+  }
+
+  void logEventFromContext(c, {
+    eventType: 'agent.tool.invoked',
+    agentId: npcSimulation.getOpenClawBotConfig(sessionId)?.agentId ?? sessionId,
+    sessionId,
+    payload: { toolName: tool, ok: res.ok, status: res.status, via: 'cove-blackjack' },
+  });
+
+  // Mirror the cove route's status so the agent sees 4xx/5xx faithfully.
+  return c.json(payload as Record<string, unknown>, res.status as 200);
 });
 
 // Expose pendingConnections for the /connect handler to claim tokens
