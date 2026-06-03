@@ -56,6 +56,7 @@ import {
 } from '@clawville/shared';
 import nacl from 'tweetnacl';
 import bs58 from 'bs58';
+import { randomBytes } from 'crypto';
 
 const agentGatewayRoutes = new Hono();
 
@@ -299,7 +300,21 @@ agentGatewayRoutes.post('/connect', async (c) => {
     : (data.autonomyMode ?? 'server-managed');
 
   // Step 2: Upsert openclaw_bots row
-  const sessionId = `ag-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  //
+  // Hardening (Codex dual-review, 2026-06-03): the session id IS the bearer
+  // credential the cove trusts for REAL-ClawToken play — cove-blackjack.ts
+  // getSubject reads the X-Clawville-Agent-Session header, resolveAgentSession
+  // looks it up in npc-simulation's in-memory map, and any caller holding a
+  // live session id can open/deal/action/close against the bound avatar's real
+  // CT. The previous `Date.now()` + `Math.random().toString(36).slice(2,8)`
+  // scheme was predictable (wall-clock) and ~6 chars of NON-cryptographic PRNG
+  // — guessable/forgeable. We now draw 24 bytes (~192 bits) from
+  // crypto.randomBytes and base64url-encode them. The `ag-` prefix is kept for
+  // log readability only. The id is validated purely by Map membership
+  // (npcSimulation.isValidAgentSession === Map.has), so the format change is
+  // transparent to validation; sessions are ephemeral/in-memory, so old weak
+  // ids simply age out with no migration.
+  const sessionId = `ag-${randomBytes(24).toString('base64url')}`;
   let isReturning = false;
   let totalSessions = 1;
   let knowledge: string[] = [];
@@ -2864,7 +2879,12 @@ agentGatewayRoutes.post('/connect-token', async (c) => {
       console.warn('[connect-token] clear agentBannerDismissed failed (non-fatal):', err);
     });
 
-  const token = `ct-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  // Crypto-strong (Codex dual-review 2026-06-03): a forged connect token would let
+  // an attacker claim this flow and bind their bot to the victim's userId/avatar
+  // (account-takeover-adjacent → victim's real CT). Date.now()+Math.random() is a
+  // predictable PRNG; consumer is a Map lookup (`pendingConnections`) so format is
+  // irrelevant. Single-use + short TTL semantics unchanged.
+  const token = `ct-${randomBytes(24).toString('base64url')}`;
   const apiBase = process.env.CORS_ORIGIN?.includes('clawville.world')
     ? 'https://api.clawville.world'
     : `http://localhost:${process.env.PORT ?? 4001}`;

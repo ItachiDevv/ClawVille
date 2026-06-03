@@ -299,16 +299,30 @@ export interface PlayerActionArgs {
   handSlot?: 0 | 1;
   /** Required for terminal actions; harmless on a hit/stand-in-progress. */
   idempotencyKey: string;
+  /**
+   * OPTIONAL stale-agent-decision precondition. Set ONLY by the Autonomous
+   * driver (threaded from /agent/decide's `handVersion`); the server rejects
+   * with 409 stale_agent_decision if the hand advanced since the agent decided.
+   * Human manual taps MUST omit this so /action stays unconditional for them.
+   */
+  expectedHandVersion?: number;
 }
 
 export function useBlackjackAction() {
   const qc = useQueryClient();
   return useMutation<ActionResponse, CoveApiError, PlayerActionArgs>({
-    mutationFn: ({ handId, action, handSlot, idempotencyKey }) =>
+    mutationFn: ({ handId, action, handSlot, idempotencyKey, expectedHandVersion }) =>
       coveFetch<ActionResponse>('/api/cove/blackjack/action', {
         method: 'POST',
         headers: { 'Idempotency-Key': idempotencyKey },
-        body: JSON.stringify({ handId, action, handSlot: handSlot ?? 0 }),
+        body: JSON.stringify({
+          handId,
+          action,
+          handSlot: handSlot ?? 0,
+          // Only included for the agent-apply path; undefined keys are dropped by
+          // JSON.stringify so human manual taps send the legacy unconditional body.
+          ...(expectedHandVersion !== undefined ? { expectedHandVersion } : {}),
+        }),
       }),
     onSuccess: (res) => {
       if ('shoeId' in res && res.shoeId) {
@@ -410,6 +424,13 @@ export interface AgentDecisionResponse {
   handId?: string | null;
   /** Sub-hand slot for split hands (server-authoritative). */
   handSlot?: 0 | 1;
+  /**
+   * The decision version of the hand the agent decided for (null for `deal` or
+   * when no hand was live). The driver threads this back to /action as
+   * `expectedHandVersion` so a human tap that advanced the hand in the meantime
+   * rejects the stale agent apply server-side (409 stale_agent_decision).
+   */
+  handVersion?: number | null;
   /** Optional one-line rationale the modal surfaces in the advisor panel. */
   rationale?: string;
   /** Always 'agent' from the relay — provenance marker. */
