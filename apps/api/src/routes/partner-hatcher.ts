@@ -524,6 +524,11 @@ partnerHatcherRoutes.post('/agents', async (c) => {
   let spawned = false;
   try {
     let config: OpenClawRegistration;
+    // Ledger-capability (Codex auth-lens fix #2/#3, 2026-06-03): the Hatcher
+    // partner path is reached only through the ed25519 partner-SIGNED guard on
+    // this route, so the caller's ownership of the agent is cryptographically
+    // proven. These sessions ARE real-CT-trusted — set `ledgerCapable: true` so
+    // the cove gate honors them (parity with the owned-token /connect flow).
     if (data.mode === 'override' && data.targetNpcId) {
       config = {
         // In-world/session tracking uses the namespaced id (matches the row);
@@ -537,6 +542,13 @@ partnerHatcherRoutes.post('/agents', async (c) => {
         mode: 'override',
         autonomyMode: 'server-managed',
         targetNpcId: data.targetNpcId,
+        ledgerCapable: true,
+        // Proven owner (partner-signed) — re-validated against the live row at
+        // spend time (rebind backstop, hardening round 2). Use `row.userId` (what
+        // was actually PERSISTED) not the request-local `userId`: the upsert keeps
+        // `userId ?? existing.userId`, so a request that resolved no identity still
+        // leaves a prior bound user on the row, and boundUserId must match THAT.
+        boundUserId: row.userId ?? null,
       } as OpenClawRegistration;
     } else {
       config = {
@@ -556,6 +568,8 @@ partnerHatcherRoutes.post('/agents', async (c) => {
         homeY: row.metadata?.homeY ?? 2560,
         patrolRadius: row.metadata?.patrolRadius ?? 100,
         personality: data.personality ?? '',
+        ledgerCapable: true,
+        boundUserId: row.userId ?? null,
       } as OpenClawRegistration;
     }
     const client = buildHatcherClient(config, urlCheck.url, data.cognition.scopedToken, rawAgentId);
@@ -696,13 +710,19 @@ partnerHatcherRoutes.patch('/agents/:agentId', async (c) => {
         // bearer credential, not a display handle.
         const sessionId = `hat-${randomBytes(24).toString('base64url')}`;
         const stats = row.metadata?.stats ?? { hp: 100, attack: 10, defense: 8, speed: 6 };
+        // Ledger-capable: partner-signed path (proven ownership), same as the
+        // /register mint above (auth-lens fix #2/#3, 2026-06-03).
         let config: OpenClawRegistration;
+        // boundUserId = the partner-bound owner on the row — re-validated against
+        // the live row at spend time (rebind backstop, hardening round 2).
         if (nextMode === 'override' && nextTargetNpcId) {
           config = {
             agentId: namespacedAgentId, sessionId, sessionKey: sessionId,
             gatewayUrl: 'http://localhost:0', authToken: '',
             protocol: 'hatcher-proxy', mode: 'override',
             autonomyMode: 'server-managed', targetNpcId: nextTargetNpcId,
+            ledgerCapable: true,
+            boundUserId: row.userId ?? null,
           } as OpenClawRegistration;
         } else {
           config = {
@@ -718,6 +738,8 @@ partnerHatcherRoutes.patch('/agents/:agentId', async (c) => {
             homeY: row.metadata?.homeY ?? 2560,
             patrolRadius: row.metadata?.patrolRadius ?? 100,
             personality: row.metadata?.personality ?? '',
+            ledgerCapable: true,
+            boundUserId: row.userId ?? null,
           } as OpenClawRegistration;
         }
         const client = buildHatcherClient(config, urlCheck.url, plaintextToken, rawAgentId);
