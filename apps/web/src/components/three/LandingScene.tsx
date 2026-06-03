@@ -8,12 +8,13 @@
  * — deep-blue fog (#0e3458), hemisphere sky #66bbdd / ground #223344, warm
  * key light — rather than the washed teal/tan it had before.
  *
- * Camera: a 3/4 overview vantage (57° elevation, arm=250wu) that drifts gently
+ * Camera: a 3/4 overview vantage (57° elevation, arm=295wu) that drifts gently
  * (±0.22 rad sway + slow bob) — NOT a full 360° orbit. A full orbit swung the
  * finite seabed plane edge-on into a "wall"; a gentle drift keeps a cinematic,
  * stable composition. 57° gives readable building facades/silhouettes (65° only
- * showed rooftops). Shorter arm (250wu) fills the ring across ~80% of frame
- * width. Belt-and-suspenders: seabed is 6000wu wide so edges are always fully
+ * showed rooftops). Arm pulled back to 295wu (R3) so the ring FRAMES the
+ * centered logo/CTAs instead of crowding them. Belt-and-suspenders: seabed is
+ * 6000wu wide so edges are always fully
  * fogged out (>fog.far from camera) — no hard edge can ever appear.
  *
  * Iris Xe GPU constraints:
@@ -41,10 +42,11 @@ import { extendLoaderWithMeshopt } from '@/lib/three/meshopt-loader-setup';
 // ─── Ring layout constants ────────────────────────────────────────────────────
 
 /** Target max dimension for each building in the landing scene (world units).
- *  Raised to 118 so buildings fill more of each ring slot — they were reading
- *  as tiny islands at 96. Footprint cap = 118×1.5 = 177wu; slot arc-spacing =
+ *  Trimmed to 100 (R3) so buildings frame the centered text rather than
+ *  crowding it. Was 118 (R2) which made the arcade dome cluster right behind
+ *  the logo. Footprint cap = 100×1.5 = 150wu; slot arc-spacing =
  *  2π×195/10 = 122wu, so most buildings stay within one slot. */
-const HERO_TARGET_MAX_DIM = 118;
+const HERO_TARGET_MAX_DIM = 100;
 
 /** Ring radius for the overview shot (world units). Tighter = town reads as a
  *  compact, CENTERED cluster behind the logo rather than spread to the edges. */
@@ -54,13 +56,13 @@ const HERO_RING_RADIUS = 195;
 const HERO_SLOT_COUNT = 10;
 
 /** Camera height + orbit-arm length.
- *  CAM_ARM=250, CAM_Y=385 → elevation ≈ 57° from horizon (atan2(385,250)).
- *  57° restores iconic facade/silhouette readability (65° showed rooftops only).
- *  Shorter arm (250 vs 280) brings the camera closer so the ring fills ~80% of
- *  horizontal FOV instead of floating as a small cluster in a large dark void.
- *  Camera distance from origin: sqrt(385²+250²) ≈ 459wu. */
-const CAM_Y   = 385;
-const CAM_ARM = 250;
+ *  CAM_ARM=295, CAM_Y=454 → elevation ≈ 57° from horizon (atan2(454,295)).
+ *  R3: scaled ×1.18 from R2 (250/385) to pull camera back ~18% while
+ *  preserving the 57° elevation — the ring now frames the centered text/CTAs
+ *  instead of crowding them (arcade dome was sitting right behind the logo).
+ *  Camera distance from origin: sqrt(454²+295²) ≈ 541wu. */
+const CAM_Y   = 454;
+const CAM_ARM = 295;
 
 /** Base azimuth of the fixed 3/4 vantage (radians). The camera only sways a
  *  small amount around this — it never does a full revolution.
@@ -444,7 +446,7 @@ function SceneContents() {
 
       {/* Dark-blue underwater fog (#0a2236). near=360 keeps the compact ring
           (radius 195) fully visible; far=1400 fades distance + fully hides the
-          6000wu seabed's edges (always >1400 from camera at ~459wu from origin). */}
+          6000wu seabed's edges (always >1400 from camera at ~541wu from origin). */}
       <fog attach="fog" args={[_fogColor, 360, 1400]} />
 
       <GradientSky />
