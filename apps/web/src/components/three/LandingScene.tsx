@@ -613,9 +613,9 @@ function BuildingRing() {
 
 // ─── DriftCamera ──────────────────────────────────────────────────────────────
 // 3/4 overview vantage (57° elevation, arm=295wu) with GENTLE sway + bob.
-// Never a full 360° orbit (seabed edge-on wall). lookAt Y=−120 (CAM_LOOK_Y)
-// tilts the camera to look further down so the building ring sits in the LOWER
-// ~45–50% of frame; the upper half is open water/sky for the hero text.
+// Never a full 360° orbit (seabed edge-on wall). lookAt Y=−350 (CAM_LOOK_Y)
+// aggressively tilts the camera down so the building ring sits in the LOWER
+// ~40% of frame; the upper ~60% is open water/sky for the hero text.
 
 function DriftCamera() {
   useFrame(({ camera, clock }) => {
