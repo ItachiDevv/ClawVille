@@ -8,12 +8,13 @@
  * — deep-blue fog (#0e3458), hemisphere sky #66bbdd / ground #223344, warm
  * key light — rather than the washed teal/tan it had before.
  *
- * Camera: a COMPOSED 3/4 establishing vantage that drifts gently (±0.22 rad
- * sway + slow bob) — NOT a full 360° orbit. A full orbit swung the finite
- * seabed plane edge-on into a "wall" cutting across the frame; a gentle drift
- * keeps a cinematic, stable composition. Belt-and-suspenders: the seabed is
- * 6000wu wide so its edges are always FULLY fogged out (>fog.far from camera)
- * — no hard edge can ever appear.
+ * Camera: a 3/4 overview vantage (57° elevation, arm=250wu) that drifts gently
+ * (±0.22 rad sway + slow bob) — NOT a full 360° orbit. A full orbit swung the
+ * finite seabed plane edge-on into a "wall"; a gentle drift keeps a cinematic,
+ * stable composition. 57° gives readable building facades/silhouettes (65° only
+ * showed rooftops). Shorter arm (250wu) fills the ring across ~80% of frame
+ * width. Belt-and-suspenders: seabed is 6000wu wide so edges are always fully
+ * fogged out (>fog.far from camera) — no hard edge can ever appear.
  *
  * Iris Xe GPU constraints:
  *   1. MAX 3 lights (hemisphere + 1 directional + 1 point)
@@ -39,8 +40,11 @@ import { extendLoaderWithMeshopt } from '@/lib/three/meshopt-loader-setup';
 
 // ─── Ring layout constants ────────────────────────────────────────────────────
 
-/** Target max dimension for each building in the landing scene (world units). */
-const HERO_TARGET_MAX_DIM = 88;
+/** Target max dimension for each building in the landing scene (world units).
+ *  Raised to 118 so buildings fill more of each ring slot — they were reading
+ *  as tiny islands at 96. Footprint cap = 118×1.5 = 177wu; slot arc-spacing =
+ *  2π×195/10 = 122wu, so most buildings stay within one slot. */
+const HERO_TARGET_MAX_DIM = 118;
 
 /** Ring radius for the overview shot (world units). Tighter = town reads as a
  *  compact, CENTERED cluster behind the logo rather than spread to the edges. */
@@ -49,15 +53,19 @@ const HERO_RING_RADIUS = 195;
 /** Number of building slots. */
 const HERO_SLOT_COUNT = 10;
 
-/** Camera height + orbit-arm length. High + close = a steep TOP-DOWN overview
- *  where the ring reads as a symmetric circle centered in frame (and the bright
- *  horizon is pushed out of view → no sky band). */
-const CAM_Y   = 480;
-const CAM_ARM = 420;
+/** Camera height + orbit-arm length.
+ *  CAM_ARM=250, CAM_Y=385 → elevation ≈ 57° from horizon (atan2(385,250)).
+ *  57° restores iconic facade/silhouette readability (65° showed rooftops only).
+ *  Shorter arm (250 vs 280) brings the camera closer so the ring fills ~80% of
+ *  horizontal FOV instead of floating as a small cluster in a large dark void.
+ *  Camera distance from origin: sqrt(385²+250²) ≈ 459wu. */
+const CAM_Y   = 385;
+const CAM_ARM = 250;
 
 /** Base azimuth of the fixed 3/4 vantage (radians). The camera only sways a
- *  small amount around this — it never does a full revolution. */
-const CAM_BASE_AZIMUTH = -Math.PI * 0.60;
+ *  small amount around this — it never does a full revolution.
+ *  Shifted slightly from -0.60π → -0.55π to improve left/right balance. */
+const CAM_BASE_AZIMUTH = -Math.PI * 0.55;
 
 // ─── Module-scope scratch objects (rule #4 — zero per-frame allocation) ──────
 
@@ -218,7 +226,12 @@ function getSkyTexture(): THREE.CanvasTexture | null {
   if (_skyTexture) return _skyTexture;
   if (typeof document === 'undefined') return null;
   const canvas = document.createElement('canvas');
-  canvas.width  = 2;
+  // width=1: a single-column texture has no U-axis seam. The sphere maps this
+  // column across all 360° of azimuth, so the hard "date-line" UV discontinuity
+  // on the sphere geometry has nothing to interpolate across → seam invisible.
+  // (Prior width=2 left a 1-texel discontinuity at u=0/1 that showed as a bright
+  // vertical line at the canvas edge under certain drift angles.)
+  canvas.width  = 1;
   canvas.height = 256;
   const ctx = canvas.getContext('2d')!;
   const grad = ctx.createLinearGradient(0, 0, 0, 256);
@@ -229,7 +242,7 @@ function getSkyTexture(): THREE.CanvasTexture | null {
   grad.addColorStop(0.8,  '#0a2032');
   grad.addColorStop(1.0,  '#0e2c42');
   ctx.fillStyle = grad;
-  ctx.fillRect(0, 0, 2, 256);
+  ctx.fillRect(0, 0, 1, 256);
   _skyTexture = new THREE.CanvasTexture(canvas);
   _skyTexture.needsUpdate = true;
   return _skyTexture;
@@ -253,7 +266,7 @@ function GradientSky() {
 
   return (
     <mesh renderOrder={-1} frustumCulled={false}>
-      <sphereGeometry args={[1200, 24, 12]} />
+      <sphereGeometry args={[1200, 32, 16]} />
       <primitive object={mat} attach="material" />
     </mesh>
   );
@@ -388,9 +401,9 @@ function BuildingRing() {
 }
 
 // ─── DriftCamera ──────────────────────────────────────────────────────────────
-// Composed 3/4 establishing vantage with a GENTLE sway + bob — never a full
-// 360° orbit (which swung the seabed edge-on into a wall). Looks at the ring's
-// mid-height so the town is vertically centered.
+// 3/4 overview vantage (57° elevation, arm=250wu) with GENTLE sway + bob.
+// Never a full 360° orbit (seabed edge-on wall). LookAt lifted to Y=30 so the
+// ring sits vertically centered in the frame at 57° elevation.
 
 function DriftCamera() {
   useFrame(({ camera, clock }) => {
@@ -403,7 +416,7 @@ function DriftCamera() {
       Math.sin(azimuth) * CAM_ARM,
     );
     camera.position.copy(_scratchVec3A);
-    _scratchVec3B.set(0, 0, 0); // ring center → symmetric, centered overview
+    _scratchVec3B.set(0, 30, 0); // lifted slightly so the ring occupies frame center vertically
     camera.lookAt(_scratchVec3B);
   });
   return null;
@@ -416,16 +429,22 @@ function SceneContents() {
     <>
       <DriftCamera />
 
-      {/* Lighting (MAX 3 — Iris Xe rule #1). DARK + moody: dim cool ambient +
-          dim warm key for form, with a strong CYAN bioluminescent core that
-          glows the central town — matches the page's navy + cyan-glow theme. */}
-      <hemisphereLight color={_hemiSkyColor} groundColor={_hemiGroundColor} intensity={0.62} />
-      <directionalLight color={_sunColor} intensity={0.9} position={[180, 420, 140]} />
-      <pointLight color={_bioColor} intensity={2.4} distance={720} position={[0, 60, 0]} />
+      {/* Lighting (MAX 3 — Iris Xe rule #1). Lit SUBJECTS on a DARK stage.
+          hemisphere 1.45→1.60: slightly warmer ambient fill on all building faces.
+          directional 1.75→2.20: the main brightness lever for building facades at
+          57° elevation — buildings now face more toward camera, so a stronger key
+          reads as clear subject lighting. Position [0,500,60] unchanged (near-
+          vertical ensures even coverage across all ring positions). Seabed and fog
+          stay dark — the seabed is #172834 navy and fogged; brightening the
+          directional makes BUILDINGS pop, not the background.
+          Point unchanged at 1.9 / [0,150,0]. */}
+      <hemisphereLight color={_hemiSkyColor} groundColor={_hemiGroundColor} intensity={1.60} />
+      <directionalLight color={_sunColor} intensity={2.20} position={[0, 500, 60]} />
+      <pointLight color={_bioColor} intensity={1.9} distance={760} position={[0, 150, 0]} />
 
       {/* Dark-blue underwater fog (#0a2236). near=360 keeps the compact ring
-          (radius 195) clear; far=1400 fades the distance + fully hides the
-          6000wu seabed's edges (always >1400 from camera → invisible). */}
+          (radius 195) fully visible; far=1400 fades distance + fully hides the
+          6000wu seabed's edges (always >1400 from camera at ~459wu from origin). */}
       <fog attach="fog" args={[_fogColor, 360, 1400]} />
 
       <GradientSky />
@@ -459,7 +478,7 @@ export default function LandingScene() {
           fov:  50,
           near: 1,
           // far clears the sky dome (radius 1200) from the orbiting camera
-          // (~690wu from origin): 1200 + 690 ≈ 1890 < 2400.
+          // (~459wu from origin at 57° elevation): 1200 + 459 ≈ 1659 < 2400.
           far:  2400,
           position: [CAM_ARM, CAM_Y, 0],
         }}
