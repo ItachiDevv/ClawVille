@@ -338,6 +338,127 @@ describe('blackjack-engine — double', () => {
   });
 });
 
+describe('blackjack-engine: hit into a bust settles as a LOSS (no throw)', () => {
+  /**
+   * Regression for cove-parity finding A6: a 'hit' that BUSTS must settle as a
+   * LOSS with NO throw. The engine throws 'action recorded after bust' ONLY when
+   * an action FOLLOWS the bust; a RAW trailing busting 'hit' (no following
+   * action) must NOT throw. The route's peek layer (toPeekScript) relies on this
+   * exact engine contract: it must never append a 'stand' after a busting hit.
+   *
+   * Find a seed where hitting from the opening hand busts. We hit ONLY while the
+   * visible total <= 11 cannot describe a bust, so to FORCE a bust we hit
+   * repeatedly with a long ['hit', ...] script and look for a result whose
+   * final total > 21. Because the engine accepts a trailing busting hit, the
+   * call returns the busted result rather than throwing.
+   */
+  function findHitBustSeed(): { nonce: number; hits: number } | null {
+    for (let n = 0; n < 5000; n++) {
+      // Skip naturals: they short-circuit before the player can hit.
+      const opener = playHand({
+        serverSeed: SERVER,
+        clientSeed: CLIENT,
+        nonce: n,
+        cursor: 0,
+        bet: 100n,
+        script: standOnly(),
+      });
+      if (opener.playerHands[0]!.isBlackjack || opener.dealer.isBlackjack) continue;
+
+      // Try increasing numbers of trailing hits until the LAST action busts the
+      // hand. We stop adding hits the moment the result is a bust (a busting hit
+      // is always the final action → no throw). Cap the chain so a non-busting
+      // line just falls through to the next seed.
+      for (let hits = 1; hits <= 8; hits++) {
+        const script: HandScript = {
+          hands: [Array.from({ length: hits }, () => 'hit' as const)],
+          didSplit: false,
+          tookInsurance: false,
+        };
+        let r;
+        try {
+          r = playHand({
+            serverSeed: SERVER,
+            clientSeed: CLIENT,
+            nonce: n,
+            cursor: 0,
+            bet: 100n,
+            script,
+          });
+        } catch {
+          // A throw here would only happen if a NON-final action followed a bust,
+          // impossible for an all-hits script (the busting hit is always last,
+          // because we stop adding hits as soon as it busts). Treat as a miss.
+          break;
+        }
+        if (r.playerHands[0]!.isBust) return { nonce: n, hits };
+        // Not busted yet AND the dealer already played out past the trailing hit:
+        // a longer all-hits chain on this seed would record an action after a
+        // (future) bust which is what the engine forbids; move to next seed.
+        if (r.playerHands[0]!.total >= 21) break;
+      }
+    }
+    return null;
+  }
+
+  it('a raw trailing hit that busts returns a settled LOSS without throwing', () => {
+    const found = findHitBustSeed();
+    expect(found).not.toBeNull();
+    const { nonce, hits } = found!;
+    const script: HandScript = {
+      hands: [Array.from({ length: hits }, () => 'hit' as const)],
+      didSplit: false,
+      tookInsurance: false,
+    };
+    // MUST NOT throw.
+    const r = playHand({
+      serverSeed: SERVER,
+      clientSeed: CLIENT,
+      nonce,
+      cursor: 0,
+      bet: 100n,
+      script,
+    });
+    const ph = r.playerHands[0]!;
+    expect(ph.isBust).toBe(true);
+    expect(ph.total).toBeGreaterThan(21);
+    // Busted player → LOSS: 0 payout, full stake lost, net -bet.
+    expect(ph.outcome).toBe('loss');
+    expect(ph.payout).toBe(0n);
+    expect(r.totalPayout).toBe(0n);
+    expect(r.net).toBe(-100n);
+    // No rake on a loss (net winnings 0).
+    const raked = computeBlackjackRake(r);
+    expect(raked.rake).toBe(0n);
+    expect(raked.rakedPayout).toBe(0n);
+    expect(raked.rakedNet).toBe(-100n);
+  });
+
+  it('appending a stand AFTER a busting hit DOES throw (the exact crash the peek must avoid)', () => {
+    const found = findHitBustSeed();
+    expect(found).not.toBeNull();
+    const { nonce, hits } = found!;
+    // The peek bug was: toPeekScript appended 'stand' after a busting hit, and
+    // the engine threw 'action recorded after bust'. Pin that engine contract so
+    // the peek-layer fix (never append after a bust) stays load-bearing.
+    const script: HandScript = {
+      hands: [[...Array.from({ length: hits }, () => 'hit' as const), 'stand']],
+      didSplit: false,
+      tookInsurance: false,
+    };
+    expect(() =>
+      playHand({
+        serverSeed: SERVER,
+        clientSeed: CLIENT,
+        nonce,
+        cursor: 0,
+        bet: 100n,
+        script,
+      }),
+    ).toThrow(/action recorded after bust/i);
+  });
+});
+
 describe('blackjack-engine — surrender', () => {
   it('surrender returns half the stake (net -50 on a 100 bet)', () => {
     let found = false;
