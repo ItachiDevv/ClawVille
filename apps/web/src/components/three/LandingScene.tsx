@@ -403,7 +403,7 @@ function BuildingRing() {
 }
 
 // ─── DriftCamera ──────────────────────────────────────────────────────────────
-// 3/4 overview vantage (57° elevation, arm=250wu) with GENTLE sway + bob.
+// 3/4 overview vantage (57° elevation, arm=295wu) with GENTLE sway + bob.
 // Never a full 360° orbit (seabed edge-on wall). LookAt lifted to Y=30 so the
 // ring sits vertically centered in the frame at 57° elevation.
 
@@ -480,7 +480,7 @@ export default function LandingScene() {
           fov:  50,
           near: 1,
           // far clears the sky dome (radius 1200) from the orbiting camera
-          // (~459wu from origin at 57° elevation): 1200 + 459 ≈ 1659 < 2400.
+          // (~541wu from origin at 57° elevation): 1200 + 541 ≈ 1741 < 2400.
           far:  2400,
           position: [CAM_ARM, CAM_Y, 0],
         }}
