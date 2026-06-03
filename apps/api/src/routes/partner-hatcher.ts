@@ -299,8 +299,10 @@ function buildHatcherClient(
   });
 }
 
-/** Public-safe view of an agent row (NEVER includes the proxy token). */
-function publicAgentRecord(row: typeof openclawBots.$inferSelect) {
+/** Public-safe view of an agent row (NEVER includes the proxy token).
+ *  Exported for the Hatcher e2e self-test (apps/api/scripts/hatcher/selftest-e2e.ts),
+ *  which asserts the token-never-echoed + protocol-pointer + userId-binding contract. */
+export function publicAgentRecord(row: typeof openclawBots.$inferSelect) {
   return {
     // Echo the RAW partner id back (strip our internal `hatcher:` namespace) so
     // Hatcher sees the id it sent, not our storage key.
