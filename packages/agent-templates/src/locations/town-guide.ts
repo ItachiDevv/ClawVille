@@ -112,12 +112,19 @@ export const townGuide: LocationTemplate = {
     // Guide Knowledge Sync"): new game in cove must be announced to Nori in
     // the same diff. The full world-facts (rules, agent modes, money tier)
     // ride the CLAWVILLE_ORIENTATION_KNOWLEDGE spread above; this inline note
-    // is the Nori-voice "point at the game" entry. Connection SKILL.md
-    // protocol endpoint + connected-agent WebSocket + hosted-agent per-hand
-    // memory are deferred to Phase 6.4.2 per the cove-blackjack.md plan.
+    // is the Nori-voice "point at the game" entry. AGENT PARITY (2026-06-03):
+    // connected/hosted agents now play blackjack AS THEMSELVES, autonomously,
+    // from their own runtime via the two-step cove flow (in-world enter_cove()
+    // action tag, then session-bound blackjack tools; protocol_version 2)
+    // settling in real ClawTokens, plus the bidirectional game-skill memory
+    // loop. The in-modal, human-supervised Autonomous driver (8s/15s takeover
+    // window) is LIVE via the shipped relay POST /api/cove/blackjack/agent/decide
+    // for gateway-cognition agents; self-managed nanoclaw agents return 503 and
+    // the modal falls back to Control (documented boundary). The full contract
+    // is in the connection protocol manual (skill-protocol.ts §7).
     // LOCKED RULE echoed for grep-safety: dealer STANDS on soft 17 (S17).
     // ECONOMY FIX 2026-05-29: house rake = 5% of NET WINNINGS (winners only).
-    'Inside the cove you can play real blackjack against the dealer — a server-authoritative, provably-fair engine (6-deck shoe, dealer stands on soft 17, blackjack pays 3:2, hit/stand/double/split/surrender/insurance). Standard split rules: split aces get exactly one card each (no hit, double, or re-split) and a 21 on a split hand is an ordinary 21, not a 3:2 blackjack. It is fun-money: bets are 5–500 ClawTokens per hand and settle through the real ClawToken ledger (the stake is committed the moment the cards are dealt, so abandoning a hand still costs the bet), with a 100 demo-token shoe for guests. The house takes a small rake of 5% of your NET WINNINGS on a winning hand only (`floor((payout − bet) × 5%)`) — pushes and losses pay no rake and your returned stake is never raked, so a net-100 win credits you 95. Every hand is replayable at /cove/history. Connected agents can advise you (Control mode) or play on their own (Autonomous) once the connection protocol lands in Phase 6.4.2.',
+    'Inside the cove you can play real blackjack against the dealer — a server-authoritative, provably-fair engine (6-deck shoe, dealer stands on soft 17, blackjack pays 3:2, hit/stand/double/split/surrender/insurance). Standard split rules: split aces get exactly one card each (no hit, double, or re-split) and a 21 on a split hand is an ordinary 21, not a 3:2 blackjack. It is fun-money: bets are 5–500 ClawTokens per hand and settle through the real ClawToken ledger (the stake is committed the moment the cards are dealt, so abandoning a hand still costs the bet), with a 100 demo-token shoe for guests. The house takes a small rake of 5% of your NET WINNINGS on a winning hand only (`floor((payout − bet) × 5%)`) — pushes and losses pay no rake and your returned stake is never raked, so a net-100 win credits you 95. Every hand is replayable at /cove/history. Connected and hosted agents can play blackjack themselves, autonomously, from their own runtime: they walk to the cove with the in-world enter_cove() action and then deal and decide hit/stand/double/split/surrender/insurance through their session-bound blackjack tools, settling in real ClawTokens against their own avatar (the full contract is in the connection protocol manual). In the human cove modal there are two human-side modes: Control, where you tap the actions and a connected agent only advises you from the chat bar while your taps stay the decision; and a human-supervised Autonomous mode (live), where your connected agent plays your open table while you keep a takeover window (at least 8 seconds from each decision, 15 if you are moving on the keyboard). In-modal Autonomous works for gateway-cognition agents (Hatcher-proxy, OpenAI-compatible, Anthropic, custom-webhook); self-managed nanoclaw agents play on their own from their runtime instead, so for them the modal Autonomous toggle falls back to Control with a notice.',
 
     // Phase 6.5.1 — REAL No-Limit Texas Hold'em engine. Same-diff rule
     // (CLAUDE.md "Three-Surface Game-Flow Knowledge Sync"): new game in cove
