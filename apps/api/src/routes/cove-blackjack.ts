@@ -8,14 +8,20 @@
  *   POST /session/open    (auth optional) — open a commit-reveal SHOE, commit serverSeedHash
  *   POST /hand/deal       (auth optional) — start a hand (insurance offered if dealer-Ace)
  *   POST /action          (auth optional) — hit / stand / double / split / surrender / insure
- *   POST /session/close   (Lucia auth)    — close the shoe + reveal serverSeed
- *   GET  /session/current (Lucia auth)    — restore the user's open shoe after refresh
- *   GET  /session/:id      (Lucia auth)   — owner-only shoe detail (serverSeed redacted while open)
+ *   POST /session/close   (user or agent) — close the shoe + reveal serverSeed
+ *   GET  /session/current (user or agent) — restore the open shoe after refresh/reconnect
+ *   GET  /session/:id      (user or agent) — owner-only shoe detail (serverSeed redacted while open)
  *
- * Model mirrors cove-slots.ts (the audited template):
- *   - getSubject(c): authed user OR guest (100 demo CT). XOR enforced by the
- *     DB check constraint. Guests never touch the ClawTokens ledger; demo
- *     balance lives on the shoe row (startingBalance + totalPayout - totalBet).
+ * Model mirrors cove-slots.ts (the audited template), EXTENDED for agent parity:
+ *   - getSubject(c): authed human (Lucia) OR a connected/hosted AGENT playing AS
+ *     ITSELF (X-Clawville-Agent-Session header → its bound avatar's userId) OR a
+ *     guest (100 demo CT). Human + agent are BOTH real-CT "ledger subjects" — an
+ *     agent shoe is just a `userId` shoe, so the DB `userId XOR guestFpHash`
+ *     check constraint still holds and the audited settle path is reused
+ *     verbatim (the agent kind adds NO new money branch — see `isLedgerSubject`).
+ *     Agents are NEVER routed to the guest/demo tier (Rule E5 parity fix). Guests
+ *     never touch the ClawTokens ledger; demo balance lives on the shoe row
+ *     (startingBalance + totalPayout - totalBet).
  *   - claw-token-ledger.debit/creditClawTokens is the ONLY balance write path,
  *     composed into the settle transaction via the passed `tx`.
  *   - One commit-reveal SHOE = one slot-session analogue. Reshuffle at 75%
@@ -69,10 +75,13 @@ import {
   blackjackShoes,
   blackjackHands,
   coveGameEvents,
+  openclawBots,
   type BlackjackShoe,
   type BlackjackHand,
 } from '@clawville/database';
 import { sessionMiddleware, requireAuth } from '../middleware/auth';
+import { resolveAgentSession } from '../middleware/require-auth-or-agent';
+import { npcSimulation } from '../services/npc-simulation';
 import { createServerSeed } from '../services/provable-rng';
 import {
   playHand,
@@ -94,6 +103,7 @@ import {
   InsufficientTokensError,
 } from '../services/claw-token-ledger';
 import { logEventFromContext } from '../services/event-logger';
+import { recordBlackjackSkillMemory } from '../services/game-skill-memory';
 import type { AppContext } from '../types';
 
 export const coveBlackjackRouter = new Hono<AppContext>();
@@ -180,31 +190,121 @@ export function __resetBlackjackRateLimits(): void {
   guestShoeOpenBuckets.clear();
 }
 
-// ─── Subject resolution (user OR guest, never both) — mirrors cove-slots ─────
+// ─── Subject resolution (user OR agent OR guest, never combined) ─────────────
+//
+// THREE subject kinds (Rule E5 — human↔agent parity):
+//   - 'user'  — Lucia-authed human. Settles in REAL CT on `avatars.clawTokens`.
+//   - 'agent' — a connected/hosted agent playing AS ITSELF via the agent gateway
+//     session header. It resolves through `resolveAgentSession` → its BOUND
+//     avatar's `userId`/`avatarId`, and settles in the SAME real-CT ledger path
+//     as a human (debit/creditClawTokens). An agent is NEVER routed to the guest
+//     demo tier — that XOR-with-guest gap was the E5 violation this fixes.
+//   - 'guest' — anonymous fingerprint, demo-CT only (no ledger, no leaderboard).
+//
+// Money parity rule: 'user' and 'agent' are both LEDGER subjects (they carry a
+// real `userId`/`avatarId` and write the ClawToken ledger). Only the in-world
+// provenance + earned-skill-memory binding differ. `isLedgerSubject()` collapses
+// the two for every balance/owner branch so the audited settle path is reused
+// verbatim — the agent kind adds NO new money code path.
+//
+// The agent-session header name matches the existing activity-portal convention
+// (`require-auth-or-agent.ts`); Hono lower-cases header reads so case-insensitive.
+
+const AGENT_SESSION_HEADER = 'X-Clawville-Agent-Session';
 
 type BjSubject =
-  | { kind: 'user'; userId: string; guestFpHash: null }
-  | { kind: 'guest'; userId: null; guestFpHash: string };
+  | { kind: 'user'; userId: string; avatarId: null; agentId: null; sessionId: null; guestFpHash: null }
+  | { kind: 'agent'; userId: string; avatarId: string; agentId: string; sessionId: string; guestFpHash: null }
+  | { kind: 'guest'; userId: null; avatarId: null; agentId: null; sessionId: null; guestFpHash: string };
 
-function getSubject(c: {
+/**
+ * Resolve the request subject. Precedence: Lucia human → agent session → guest.
+ *
+ * Async (was sync) because the agent branch does a DB lookup to map the opaque
+ * session id → bound avatar/user. The human + guest branches stay synchronous in
+ * effect (no await on those paths) so existing latency is unchanged.
+ *
+ * An agent session header that resolves to a bot WITHOUT a bound active avatar
+ * is a 403 (it can perceive/chat but cannot stake real CT) — it does NOT fall
+ * through to the guest tier, because that would silently route a connected agent
+ * into demo play (the exact E5 violation). A logged-in human cookie ALWAYS wins
+ * over an agent header on the same request (so a human can't be impersonated by
+ * smuggling a session header into their own authed call).
+ */
+async function getSubject(c: {
   get(key: 'user'): { id: string } | null;
   get(key: 'fpHash'): string;
-}): BjSubject {
+  req: { header(name: string): string | undefined };
+}): Promise<BjSubject> {
   const user = c.get('user');
-  if (user) return { kind: 'user', userId: user.id, guestFpHash: null };
+  if (user) {
+    return { kind: 'user', userId: user.id, avatarId: null, agentId: null, sessionId: null, guestFpHash: null };
+  }
+
+  const agentSessionId = c.req.header(AGENT_SESSION_HEADER);
+  if (agentSessionId) {
+    const resolved = await resolveAgentSession(agentSessionId);
+    if (!resolved) {
+      throw new HTTPException(401, { message: 'invalid_or_expired_agent_session' });
+    }
+    if (!resolved.userId || !resolved.avatarId) {
+      // Known agent, but not bound to an active avatar — cannot stake real CT.
+      // Surfaced as 403 (not a fall-through to guest) so a connected agent is
+      // never silently demoted to demo play.
+      throw new HTTPException(403, {
+        message:
+          'agent_session_has_no_active_avatar: connect an avatar before playing the Cove for real ClawTokens',
+      });
+    }
+    return {
+      kind: 'agent',
+      userId: resolved.userId,
+      avatarId: resolved.avatarId,
+      agentId: resolved.agentId,
+      sessionId: agentSessionId,
+      guestFpHash: null,
+    };
+  }
+
   const fpHash = c.get('fpHash');
   if (!fpHash) {
     throw new HTTPException(500, { message: 'fpHash_missing_for_guest_request' });
   }
-  return { kind: 'guest', userId: null, guestFpHash: fpHash };
+  return { kind: 'guest', userId: null, avatarId: null, agentId: null, sessionId: null, guestFpHash: fpHash };
+}
+
+/**
+ * The real-CT ledger userId for a subject, or null for a guest. 'user' and
+ * 'agent' are BOTH ledger subjects — this collapses them so the money path is
+ * written once.
+ */
+function ledgerUserId(subject: BjSubject): string | null {
+  return subject.kind === 'guest' ? null : subject.userId;
+}
+
+/** True iff the subject settles in real CT (human or agent). */
+function isLedgerSubject(
+  subject: BjSubject,
+): subject is Extract<BjSubject, { kind: 'user' | 'agent' }> {
+  return subject.kind !== 'guest';
 }
 
 function subjectKey(subject: BjSubject): string {
-  return subject.kind === 'user' ? `u:${subject.userId}` : `g:${subject.guestFpHash}`;
+  if (subject.kind === 'guest') return `g:${subject.guestFpHash}`;
+  // 'user' and 'agent' rate-limit on userId — an agent and its bound human share
+  // one avatar/wallet, so they SHOULD share one action-rate bucket (you can't
+  // dodge the limit by toggling between cookie + agent header on one avatar).
+  return `u:${subject.userId}`;
 }
 
+/**
+ * A real-CT shoe is keyed on `userId` (NOT on agent/guest). Both human and agent
+ * subjects for the same bound avatar therefore see + own the SAME shoe — exactly
+ * right: an agent playing AS its avatar continues the human's session, never
+ * forks a parallel one. Guests own by fingerprint.
+ */
 function ownerMatch(shoe: { userId: string | null; guestFpHash: string | null }, subject: BjSubject): boolean {
-  return subject.kind === 'user'
+  return isLedgerSubject(subject)
     ? shoe.userId === subject.userId
     : shoe.guestFpHash === subject.guestFpHash;
 }
@@ -538,7 +638,7 @@ coveBlackjackRouter.post('/session/open', async (c) => {
     throw new HTTPException(400, { message: 'invalid_input: ' + parsed.error.message });
   }
   const input = parsed.data;
-  const subject = getSubject(c);
+  const subject = await getSubject(c);
 
   // Currency seam — SOL/USDC custody is a later tier. Same 501 shape as slots.
   if (input.currency !== 'clawtoken') {
@@ -554,7 +654,7 @@ coveBlackjackRouter.post('/session/open', async (c) => {
   // Pre-flight balance gate (UX only; settle re-checks under the lock).
   let avatar: { id: string; clawTokens: number } | null = null;
   let guestStartingBalance = 0n;
-  if (subject.kind === 'user') {
+  if (isLedgerSubject(subject)) {
     avatar = await loadAvatarForUser(subject.userId);
     if (avatar.clawTokens < BLACKJACK_MIN_BET) {
       throw new HTTPException(400, {
@@ -570,7 +670,7 @@ coveBlackjackRouter.post('/session/open', async (c) => {
   // we never return data another request is mid-mutating (mirrors cove-slots).
   const resumed = await db.transaction(async (tx) => {
     const lockWhere =
-      subject.kind === 'user'
+      isLedgerSubject(subject)
         ? sql`user_id = ${subject.userId} AND status = 'open'`
         : sql`guest_fp_hash = ${subject.guestFpHash} AND status = 'open'`;
     const rows = await tx.execute<{ id: string }>(
@@ -606,7 +706,7 @@ coveBlackjackRouter.post('/session/open', async (c) => {
           serverSeed,
           serverSeedHash,
           clientSeed,
-          startingBalance: subject.kind === 'user' ? '0' : guestStartingBalance.toString(),
+          startingBalance: isLedgerSubject(subject) ? '0' : guestStartingBalance.toString(),
           engineVersion: BLACKJACK_ENGINE_VERSION,
         })
         .returning();
@@ -618,7 +718,7 @@ coveBlackjackRouter.post('/session/open', async (c) => {
     const pgCode = (err as { code?: string } | undefined)?.code;
     if (pgCode === '23505') {
       const raceWhere =
-        subject.kind === 'user'
+        isLedgerSubject(subject)
           ? and(eq(blackjackShoes.userId, subject.userId), eq(blackjackShoes.status, 'open'))
           : and(eq(blackjackShoes.guestFpHash, subject.guestFpHash), eq(blackjackShoes.status, 'open'));
       const raceRow = (await db.select().from(blackjackShoes).where(raceWhere).limit(1))[0];
@@ -638,9 +738,15 @@ coveBlackjackRouter.post('/session/open', async (c) => {
 
   void logEventFromContext(c, {
     eventType: 'cove.blackjack.shoe.opened',
-    userId: subject.kind === 'user' ? subject.userId : null,
+    userId: ledgerUserId(subject),
     avatarId: avatar?.id ?? null,
-    payload: { shoeId: inserted.id, currency: 'clawtoken', isGuest: subject.kind === 'guest' },
+    agentId: subject.kind === 'agent' ? subject.agentId : null,
+    payload: {
+      shoeId: inserted.id,
+      currency: 'clawtoken',
+      isGuest: subject.kind === 'guest',
+      isAgent: subject.kind === 'agent',
+    },
   });
 
   return c.json(
@@ -674,7 +780,7 @@ coveBlackjackRouter.post('/hand/deal', async (c) => {
     throw new HTTPException(400, { message: 'invalid_input: ' + parsed.error.message });
   }
   const input = parsed.data;
-  const subject = getSubject(c);
+  const subject = await getSubject(c);
   checkActionRate(subjectKey(subject));
 
   const shoe = await db.query.blackjackShoes.findFirst({
@@ -705,7 +811,7 @@ coveBlackjackRouter.post('/hand/deal', async (c) => {
 
   // Pre-flight affordability (UX). Authoritative re-check happens at settle.
   let avatar: { id: string; clawTokens: number } | null = null;
-  if (subject.kind === 'user') {
+  if (isLedgerSubject(subject)) {
     avatar = await loadAvatarForUser(subject.userId);
     if (avatar.clawTokens < input.bet) {
       throw new HTTPException(400, {
@@ -815,7 +921,7 @@ coveBlackjackRouter.post('/hand/deal', async (c) => {
     const insuranceStake = tookInsurance ? betBig / 2n : 0n;
     const stakeNow = betBig + insuranceStake;
     let balanceAfterDeal: number | undefined;
-    if (subject.kind === 'user') {
+    if (isLedgerSubject(subject)) {
       const dealAvatar = avatar ?? (await loadAvatarForUser(subject.userId));
       const stakeNumber = Number(stakeNow);
       try {
@@ -944,7 +1050,7 @@ coveBlackjackRouter.post('/action', async (c) => {
     throw new HTTPException(400, { message: 'invalid_input: ' + parsed.error.message });
   }
 
-  const subject = getSubject(c);
+  const subject = await getSubject(c);
   checkActionRate(subjectKey(subject));
 
   const handId = insureParsed.success ? insureParsed.data.handId : parsed.data!.handId;
@@ -1047,7 +1153,7 @@ coveBlackjackRouter.post('/action', async (c) => {
           throw new HTTPException(409, { message: `shoe_not_open: status=${shoeLock.status}` });
         }
 
-        if (subject.kind === 'user') {
+        if (isLedgerSubject(subject)) {
           const insAvatar = await loadAvatarForUser(subject.userId);
           try {
             await debitClawTokens(
@@ -1235,7 +1341,7 @@ async function settleHand(
   subject: BjSubject,
   idempotencyKey: string | undefined,
 ): Promise<SettledResponse> {
-  const avatar = subject.kind === 'user' ? await loadAvatarForUser(subject.userId) : null;
+  const avatar = isLedgerSubject(subject) ? await loadAvatarForUser(subject.userId) : null;
 
   let txResult: { hand: BlackjackHand; replay: boolean; balanceAfter: number | undefined };
   try {
@@ -1387,7 +1493,7 @@ async function settleHand(
       });
     }
     let balanceAfter: number;
-    if (subject.kind === 'user' && avatar) {
+    if (isLedgerSubject(subject) && avatar) {
       // Default to the live balance; only debit/credit when there is a delta.
       const balRows = await tx.execute<{ claw_tokens: number }>(
         sql`SELECT claw_tokens FROM avatars WHERE id = ${avatar.id}`,
@@ -1549,7 +1655,7 @@ async function settleHand(
   // Compute the response balance.
   let balance: number;
   if (txResult.replay || txResult.balanceAfter === undefined) {
-    if (subject.kind === 'user') {
+    if (isLedgerSubject(subject)) {
       balance = (await loadAvatarForUser(subject.userId)).clawTokens;
     } else {
       const shoe = await db.query.blackjackShoes.findFirst({ where: eq(blackjackShoes.id, shoeId) });
@@ -1561,8 +1667,9 @@ async function settleHand(
 
   void logEventFromContext(c, {
     eventType: 'cove.blackjack.hand.settled',
-    userId: subject.kind === 'user' ? subject.userId : null,
+    userId: ledgerUserId(subject),
     avatarId: avatar?.id ?? null,
+    agentId: subject.kind === 'agent' ? subject.agentId : null,
     payload: {
       shoeId,
       handId: hand.id,
@@ -1571,9 +1678,31 @@ async function settleHand(
       payout: hand.payout,
       net: hand.net,
       isGuest: subject.kind === 'guest',
+      isAgent: subject.kind === 'agent',
       replay: txResult.replay,
     },
   });
+
+  // ── Learn-through-play (Rule E5 / msg 6) ───────────────────────────────────
+  // On a FRESH settle (never on an idempotent replay — that would double-write
+  // the same lesson) write the agent's earned-skill memory: the hand it just
+  // played, the dealer board, its decisions, and the outcome. This is per-agent
+  // ElizaOS/avatar memory (subtype 'game-skill', distinct from world/protocol
+  // knowledge), so accumulated play makes a connected/hosted agent measurably
+  // better at the game over time. Best-effort + non-fatal — a memory write must
+  // NEVER roll back a settled-CT outcome. Only AGENT subjects accrue earned
+  // skill (a human's UI play is not an agent's learnable memory stream).
+  if (subject.kind === 'agent' && !txResult.replay && hand.status === 'settled') {
+    void recordBlackjackSkillMemory({
+      avatarId: subject.avatarId,
+      agentId: subject.agentId,
+      shoeId,
+      hand,
+      outcome,
+    }).catch((err) => {
+      console.error('[cove-blackjack] skill-memory write failed (non-fatal):', err);
+    });
+  }
 
   return {
     handId: hand.id,
@@ -1601,7 +1730,7 @@ async function buildSettledResponse(
   const outcome = hand.outcomeJson as SerializedHandResult;
   const dealtCount = hand.dealtAfter ?? shoe.dealtCount;
   const balance =
-    subject.kind === 'user'
+    isLedgerSubject(subject)
       ? (await loadAvatarForUser(subject.userId)).clawTokens
       : Number(guestDemoBalance(shoe));
   return {
@@ -1624,21 +1753,31 @@ async function buildSettledResponse(
 // ─── POST /session/close ──────────────────────────────────────────────────────
 //
 // Close the shoe + reveal serverSeed on every cove_game_events row for the
-// shoe (commit-reveal contract — mirrors slots /session/close). Lucia-authed.
+// shoe (commit-reveal contract — mirrors slots /session/close).
+//
+// Subject-resolved (NOT requireAuth) so a connected AGENT can close its own shoe
+// and reveal the seed — without this the agent could never satisfy the §7
+// fairness promise and its shoe would wedge open forever at 75% penetration.
+// Ledger subjects only (human or agent): a guest demo shoe has no persistent
+// fairness contract to honor and the prior Lucia-only gate already excluded
+// guests here, so we keep that exclusion (403) rather than widening it.
 
-coveBlackjackRouter.post('/session/close', requireAuth, async (c) => {
+coveBlackjackRouter.post('/session/close', async (c) => {
   const body = await c.req.json().catch(() => null);
   const parsed = closeSchema.safeParse(body);
   if (!parsed.success) {
     throw new HTTPException(400, { message: 'invalid_input: ' + parsed.error.message });
   }
-  const user = c.get('user')!;
+  const subject = await getSubject(c);
+  if (!isLedgerSubject(subject)) {
+    throw new HTTPException(403, { message: 'guest_cannot_close_shoe: sign in or connect an agent' });
+  }
 
   const shoe = await db.query.blackjackShoes.findFirst({
     where: eq(blackjackShoes.id, parsed.data.shoeId),
   });
   if (!shoe) throw new HTTPException(404, { message: 'shoe_not_found' });
-  if (shoe.userId !== user.id) throw new HTTPException(403, { message: 'shoe_not_owned' });
+  if (!ownerMatch(shoe, subject)) throw new HTTPException(403, { message: 'shoe_not_owned' });
   if (shoe.status !== 'open') {
     throw new HTTPException(409, { message: `shoe_not_open: status=${shoe.status}` });
   }
@@ -1682,12 +1821,14 @@ coveBlackjackRouter.post('/session/close', requireAuth, async (c) => {
 
   void logEventFromContext(c, {
     eventType: 'cove.blackjack.shoe.closed',
-    userId: user.id,
+    userId: subject.userId,
+    agentId: subject.kind === 'agent' ? subject.agentId : null,
     payload: {
       shoeId: closed.id,
       handsPlayed: closed.handsPlayed,
       totalBet: closed.totalBet,
       totalPayout: closed.totalPayout,
+      isAgent: subject.kind === 'agent',
     },
   });
 
@@ -1708,29 +1849,289 @@ coveBlackjackRouter.post('/session/close', requireAuth, async (c) => {
 });
 
 // ─── GET /session/current ─────────────────────────────────────────────────────
+//
+// Subject-resolved (ledger subjects only) so a connected agent can restore its
+// open shoe after a reconnect, exactly like a human after a page refresh. An
+// agent + its bound human share one userId-keyed shoe, so both see the same row.
 
-coveBlackjackRouter.get('/session/current', requireAuth, async (c) => {
-  const user = c.get('user')!;
+coveBlackjackRouter.get('/session/current', async (c) => {
+  const subject = await getSubject(c);
+  if (!isLedgerSubject(subject)) {
+    throw new HTTPException(403, { message: 'guest_has_no_persistent_shoe: sign in or connect an agent' });
+  }
   const row = await db.query.blackjackShoes.findFirst({
-    where: and(eq(blackjackShoes.userId, user.id), eq(blackjackShoes.status, 'open')),
+    where: and(eq(blackjackShoes.userId, subject.userId), eq(blackjackShoes.status, 'open')),
   });
   if (!row) throw new HTTPException(404, { message: 'no_open_shoe' });
-  const avatar = await loadAvatarForUser(user.id);
+  const avatar = await loadAvatarForUser(subject.userId);
   return c.json({ shoe: publicShoe(row), walletBalance: avatar.clawTokens }, 200);
 });
 
 // ─── GET /session/:id ─────────────────────────────────────────────────────────
+//
+// Owner-only shoe detail (serverSeed redacted while open). Subject-resolved so an
+// agent can inspect its own shoe; ownerMatch binds to the resolved userId, so an
+// agent can never read another user's shoe by id.
 
-coveBlackjackRouter.get('/session/:id', requireAuth, async (c) => {
+coveBlackjackRouter.get('/session/:id', async (c) => {
   const shoeId = c.req.param('id');
   if (!/^[0-9a-f-]{36}$/i.test(shoeId)) {
     throw new HTTPException(400, { message: 'invalid_shoe_id' });
   }
-  const user = c.get('user')!;
+  const subject = await getSubject(c);
+  if (!isLedgerSubject(subject)) {
+    throw new HTTPException(403, { message: 'guest_cannot_inspect_shoe: sign in or connect an agent' });
+  }
   const row = await db.query.blackjackShoes.findFirst({ where: eq(blackjackShoes.id, shoeId) });
   if (!row) throw new HTTPException(404, { message: 'shoe_not_found' });
-  if (row.userId !== user.id) throw new HTTPException(403, { message: 'shoe_not_owned' });
+  if (!ownerMatch(row, subject)) throw new HTTPException(403, { message: 'shoe_not_owned' });
   return c.json({ shoe: publicShoe(row) }, 200);
+});
+
+// ─── POST /agent/decide — human-supervised Autonomous decision relay ──────────
+//
+// The [cards] msg3 / Rule E5 human-supervised Autonomous surface. A HUMAN at
+// /game with a connected/hosted agent flips the BlackjackModal to Autonomous;
+// the BROWSER (human Lucia cookie) asks THIS endpoint for the agent's next
+// decision on the human's open table, then — after the 8s/15s human-input
+// window enforced client-side — applies it through the EXISTING authed
+// /hand/deal or /action path. This relay is a PURE DECISION ORACLE: it asks the
+// human's bound agent runtime for a move and returns it. It NEVER deals, never
+// settles, never writes the ledger — no duplicated engine/money logic (the
+// settle stays on the one audited path the human's own clicks use).
+//
+// AUTH: requireAuth (Lucia). The human owns the table; we resolve THEIR bound
+// connected agent and ask its runtime. This is deliberately NOT the agent-
+// session-header surface (that's the agent-plays-from-its-own-runtime path).
+//
+// HIDDEN STATE: the prompt we send the agent carries ONLY the player's own
+// cards + the dealer UPCARD + legal actions + bet bounds. We read peek.dealer
+// .cards[0] exclusively — never cards[1] (hole) or the remaining shoe or the
+// seed. Server stays authoritative; the agent sees exactly what a human sees.
+
+const decideSchema = z
+  .object({
+    shoeId: z.string().uuid(),
+    // handId + handSlot are ACCEPTED (the modal sends them as its current view)
+    // but IGNORED for safety — the server derives the AUTHORITATIVE in-progress
+    // hand + active slot from the shoe itself, so a client can't aim the agent
+    // at a stale/foreign hand or a slot it doesn't actually own. `null` is
+    // allowed (the modal sends handId:null at idle when no hand is live).
+    handId: z.string().uuid().nullable().optional(),
+    handSlot: z.number().int().min(0).max(1).optional(),
+  })
+  // NOT .strict() — tolerate extra client fields (the modal may add UI-only
+  // keys over time) without 400ing the whole Autonomous request. We read only
+  // shoeId; everything else is advisory and re-derived server-side.
+  ;
+
+/** The decision vocabulary the relay can return (mirrors the play actions + deal). */
+const DECIDE_ACTIONS = ['deal', 'hit', 'stand', 'double', 'split', 'surrender', 'insure'] as const;
+type DecideAction = (typeof DECIDE_ACTIONS)[number];
+
+/**
+ * Parse a free-text agent completion into ONE decision token. Accepts a bare
+ * word, an [ACTION: name(...)] tag, or a token embedded in prose; for 'deal'
+ * also extracts a bet amount (`bet 50`, `amount=50`, `deal 50`). Returns null
+ * when nothing parseable is found (caller → 422 agent_undecided). First match
+ * in priority order wins so "I'll stand, not hit" resolves deterministically to
+ * the FIRST surface token.
+ */
+function parseAgentDecision(
+  reply: string,
+  legal: ReadonlySet<DecideAction>,
+): { action: DecideAction; amount?: number } | null {
+  if (!reply) return null;
+  const lower = reply.toLowerCase();
+
+  // Find the earliest-occurring legal action keyword in the text, matched at a
+  // WORD BOUNDARY so "understand"/"within"/"doubled" don't false-trigger
+  // stand/hit/double. 'insure' also matches "insurance" (\binsur...).
+  let best: { action: DecideAction; index: number } | null = null;
+  for (const action of DECIDE_ACTIONS) {
+    if (!legal.has(action)) continue;
+    const re = action === 'insure' ? /\binsur\w*/ : new RegExp(`\\b${action}\\w*`);
+    const m = re.exec(lower);
+    if (m && (best === null || m.index < best.index)) {
+      best = { action, index: m.index };
+    }
+  }
+  if (!best) return null;
+
+  if (best.action === 'deal') {
+    // Extract a bet amount near the deal token; default to BLACKJACK_MIN_BET.
+    const m = lower.match(/(?:bet|amount|deal|stake)\D{0,8}(\d{1,6})/) ?? lower.match(/\b(\d{1,6})\b/);
+    let amount = m ? parseInt(m[1]!, 10) : BLACKJACK_MIN_BET;
+    if (!Number.isFinite(amount)) amount = BLACKJACK_MIN_BET;
+    amount = Math.max(BLACKJACK_MIN_BET, Math.min(BLACKJACK_MAX_BET, Math.floor(amount)));
+    return { action: 'deal', amount };
+  }
+  return { action: best.action };
+}
+
+/** Strip [ACTION:...] tags + collapse whitespace so the rationale is clean prose. */
+function cleanRationale(reply: string): string {
+  return reply
+    .replace(/\[ACTION:[^\]]*\]/gi, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim()
+    .slice(0, 280);
+}
+
+coveBlackjackRouter.post('/agent/decide', requireAuth, async (c) => {
+  const body = await c.req.json().catch(() => null);
+  const parsed = decideSchema.safeParse(body);
+  if (!parsed.success) {
+    throw new HTTPException(400, { message: 'invalid_input: ' + parsed.error.message });
+  }
+  const user = c.get('user')!;
+
+  // The shoe must exist, be open, and belong to THIS human.
+  const shoe = await db.query.blackjackShoes.findFirst({
+    where: eq(blackjackShoes.id, parsed.data.shoeId),
+  });
+  if (!shoe) return c.json({ error: 'no_open_shoe' }, 404);
+  if (shoe.userId !== user.id) return c.json({ error: 'shoe_not_owned' }, 403);
+  if (shoe.status !== 'open') return c.json({ error: 'shoe_not_open' }, 409);
+
+  // Resolve the human's bound connected agent + its LIVE session client. The
+  // agent must be currently connected (a live npc-simulation session) for us to
+  // synchronously ask it; otherwise there's nothing to relay → fall back.
+  const bot = await db.query.openclawBots.findFirst({
+    where: eq(openclawBots.userId, user.id),
+    columns: { agentId: true },
+  });
+  if (!bot) return c.json({ error: 'no_connected_agent' }, 404);
+  const liveSessions = npcSimulation.findActiveSessionsByAgentIds([bot.agentId]);
+  const liveSessionId = liveSessions[0];
+  if (!liveSessionId) return c.json({ error: 'no_connected_agent' }, 404);
+  const client = npcSimulation.getOpenClawClientBySession(liveSessionId);
+  if (!client) return c.json({ error: 'no_connected_agent' }, 404);
+  // nanoclaw/self-managed agents pull world-state + decide client-side; they
+  // can't be synchronously asked via gateway push (chat() returns ''), so the
+  // human-supervised relay can't drive them. Honest 503 → driver shows notice.
+  if (client.getProtocol() === 'nanoclaw') {
+    return c.json({ error: 'agent_unavailable', reason: 'self_managed_agent' }, 503);
+  }
+
+  const seedState: ShoeSeedState = {
+    id: shoe.id,
+    serverSeed: shoe.serverSeed,
+    clientSeed: shoe.clientSeed,
+  };
+
+  // Derive the AUTHORITATIVE in-progress hand from the shoe (ignore any
+  // client-supplied handId). No in-progress hand → the decision is whether to
+  // open the next hand (action 'deal').
+  const liveHand = await db.query.blackjackHands.findFirst({
+    where: and(eq(blackjackHands.shoeId, shoe.id), eq(blackjackHands.status, 'in_progress')),
+  });
+
+  // Build the VISIBLE hand-state prompt (player cards + dealer UPCARD + legal
+  // actions + bet bounds). Strictly no hole card / undealt / seed.
+  let promptState: string;
+  const legal = new Set<DecideAction>();
+  let targetHandId: string | null = null;
+  let targetHandSlot: 0 | 1 = 0;
+
+  if (!liveHand) {
+    legal.add('deal');
+    const demoNote =
+      shoe.dealtCount >= RESHUFFLE_CARD_THRESHOLD
+        ? ' The shoe has passed 75% penetration; a deal will require a fresh shoe.'
+        : '';
+    promptState =
+      `You are playing blackjack at the ClawVille Cove with your own ClawTokens. ` +
+      `No hand is in progress.${demoNote} Decide your next move: deal a new hand ` +
+      `(bet ${BLACKJACK_MIN_BET}-${BLACKJACK_MAX_BET} CT) or stop. ` +
+      `Reply with exactly one decision: "deal <bet>".`;
+  } else {
+    const script = loadScript(liveHand);
+    let peek: HandResult;
+    try {
+      peek = await dryRunHand(seedState, liveHand, script, db);
+    } catch (err) {
+      return c.json({ error: 'agent_unavailable', reason: 'state_peek_failed' }, 503);
+    }
+    // UPCARD ONLY — never the hole card.
+    const dealerUpcard = peek.dealer.cards[0];
+    // Active sub-hand: for a split, the first non-terminal slot; else slot 0.
+    const activeSlot = script.didSplit
+      ? script.hands.findIndex((h) => {
+          const last = h[h.length - 1];
+          return last !== 'stand' && last !== 'double' && last !== 'surrender';
+        })
+      : 0;
+    targetHandSlot = (activeSlot < 0 ? (script.didSplit ? 1 : 0) : activeSlot) as 0 | 1;
+    const active = peek.playerHands[targetHandSlot] ?? peek.playerHands[0]!;
+    targetHandId = liveHand.id;
+
+    // Legal actions for the active sub-hand.
+    legal.add('hit');
+    legal.add('stand');
+    const isTwoCard = active.cards.length === 2;
+    if (isTwoCard) legal.add('double');
+    if (isTwoCard && !script.didSplit && active.cards[0]?.rank === active.cards[1]?.rank) {
+      legal.add('split');
+    }
+    if (isTwoCard && !script.didSplit) legal.add('surrender');
+    // Insurance: dealer-Ace upcard, before any main-hand action, not yet taken.
+    const noDecisionsYet = !script.didSplit && script.hands.every((h) => h.length === 0);
+    if (dealerUpcard?.rank === 'A' && noDecisionsYet && !script.tookInsurance) {
+      legal.add('insure');
+    }
+
+    const playerStr = peek.playerHands
+      .map((h, i) => `hand${i} [${h.cards.map((cd) => cd.rank).join(' ')}] total ${h.total}${h.isSoft ? ' (soft)' : ''}`)
+      .join('; ');
+    promptState =
+      `You are playing blackjack at the ClawVille Cove with your own ClawTokens. ` +
+      `Your cards: ${playerStr}. Dealer shows: ${dealerUpcard?.rank ?? '?'} (the hole card is hidden). ` +
+      `It is your turn on hand${targetHandSlot}. Legal actions: ${[...legal].join(', ')}. ` +
+      `Reply with exactly one of those words as your decision.`;
+  }
+
+  // Ask the agent's runtime. chat() fails soft (returns '') on any error.
+  let reply = '';
+  try {
+    reply = await client.chat([{ role: 'user', content: promptState }]);
+  } catch (err) {
+    console.error('[cove-blackjack] agent decide cognition error (fail soft):', err);
+    return c.json({ error: 'agent_unavailable', reason: 'cognition_error' }, 503);
+  }
+  if (!reply || reply.trim().length === 0) {
+    return c.json({ error: 'agent_unavailable', reason: 'empty_reply' }, 503);
+  }
+
+  const decision = parseAgentDecision(reply, legal);
+  if (!decision) {
+    return c.json({ error: 'agent_undecided', raw: reply.slice(0, 200) }, 422);
+  }
+
+  void logEventFromContext(c, {
+    eventType: 'cove.blackjack.agent.decided',
+    userId: user.id,
+    agentId: bot.agentId,
+    payload: {
+      shoeId: shoe.id,
+      handId: targetHandId,
+      action: decision.action,
+      amount: decision.amount ?? null,
+      via: 'human-supervised-relay',
+    },
+  });
+
+  return c.json(
+    {
+      action: decision.action,
+      ...(decision.action === 'deal' ? { amount: decision.amount } : {}),
+      handId: decision.action === 'deal' ? null : targetHandId,
+      handSlot: targetHandSlot,
+      rationale: cleanRationale(reply),
+      source: 'agent' as const,
+    },
+    200,
+  );
 });
 
 export default coveBlackjackRouter;
