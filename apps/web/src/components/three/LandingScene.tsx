@@ -444,7 +444,7 @@ function SceneContents() {
 
       {/* Dark-blue underwater fog (#0a2236). near=360 keeps the compact ring
           (radius 195) fully visible; far=1400 fades distance + fully hides the
-          6000wu seabed's edges (always >1400 from camera at 659wu from origin). */}
+          6000wu seabed's edges (always >1400 from camera at ~459wu from origin). */}
       <fog attach="fog" args={[_fogColor, 360, 1400]} />
 
       <GradientSky />
