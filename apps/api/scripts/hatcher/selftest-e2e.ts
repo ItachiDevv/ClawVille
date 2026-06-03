@@ -12,7 +12,10 @@
  *
  * This harness imports the REAL ClawVille functions (never reimplements the
  * contract) and exercises:
- *   A. Inbound WRITE signature  (verifyPartnerSignature) + canonicalization trap
+ *   A. Body-hash signature primitive (verifyPartnerSignature, the shared
+ *      primitive portal.ts still uses) + canonicalization trap
+ *   W. Inbound WRITE signature  (verifyPartnerWriteSignature + partnerWriteChallenge):
+ *      timestamp + replay window + domain separation on POST/PATCH/DELETE
  *   B. Inbound GET signature    (verifyPartnerGetSignature + partnerGetChallenge)
  *   C. Register Zod contract + publicAgentRecord() shape + userId-binding parity
  *   D. Hatcher [ACTION:] whitelist executor incl. enter_cove HAPPY PATH (NO DB)
@@ -115,6 +118,18 @@ function signChallenge(challenge: string, sk: Uint8Array): string {
   const digest = createHash('sha256').update(challenge).digest();
   return bs58.encode(nacl.sign.detached(new Uint8Array(digest), sk));
 }
+// WRITE scheme (POST/PATCH/DELETE): the partner signs sha256(challenge) where
+// challenge = clawville-partner-write\nMETHOD\nPATH\nUNIX_MS\nsha256hex(rawBody).
+// This binds the verb, path, timestamp, and body hash, with a +/- 5 min window.
+function sha256hex(s: string): string {
+  return createHash('sha256').update(s).digest('hex');
+}
+function buildWriteChallenge(method: string, path: string, tsMillis: string, rawBody: string): string {
+  return `clawville-partner-write\n${method.toUpperCase()}\n${path}\n${tsMillis}\n${sha256hex(rawBody)}`;
+}
+function signWriteChallenge(method: string, path: string, tsMillis: string, rawBody: string, sk: Uint8Array): string {
+  return signChallenge(buildWriteChallenge(method, path, tsMillis, rawBody), sk);
+}
 
 async function main() {
   console.log('=== Hatcher partner-integration self-test (v2 — shipping HEAD) ===');
@@ -132,6 +147,9 @@ async function main() {
     partnerGetChallenge,
     loadPartnerPubkeys,
     PARTNER_GET_SIGNATURE_WINDOW_MS,
+    verifyPartnerWriteSignature,
+    partnerWriteChallenge,
+    PARTNER_WRITE_SIGNATURE_WINDOW_MS,
   } = partnerSig;
 
   await safe('A0 loadPartnerPubkeys parses PARTNER_PUBKEYS env', () => {
@@ -277,6 +295,116 @@ async function main() {
       rejected && canonicalDiffers,
       `canonicalForm(${canonical.slice(0, 60)}...) != rawBytes(${writeBody.slice(0, 60)}...) => differ=${canonicalDiffers}\nverify(sig-over-canonical, transmit-raw) => ${JSON.stringify(r)} (expect bad_signature)`,
     );
+  });
+
+  // ===================================================================
+  // CASE W: Inbound WRITE signature (verifyPartnerWriteSignature)
+  // ===================================================================
+  // The pre-production cutover: writes (POST/PATCH/DELETE) now require a
+  // timestamp + replay window, signing the domain-separated challenge
+  // clawville-partner-write\nMETHOD\nPATH\nUNIX_MS\nsha256hex(rawBody). These
+  // cases mirror the GET cases (B*) but for the body-bearing write verbs, and
+  // add the body-tamper / cross-verb / cross-path / domain-separation guards.
+  const writePath = '/api/partner/hatcher/agents';
+  const wBody = JSON.stringify({ agentId: 'selftest-w', cognition: { backend: 'hatcher-proxy', proxyBaseUrl: 'https://api.hatcher.host', scopedToken: 'tok-w-12345' } });
+
+  await safe('W0 partnerWriteChallenge format is exact (domain-separated, body-hash bound, LF-joined)', () => {
+    const ch = partnerWriteChallenge({ method: 'post', path: '/x', tsMillis: '99', rawBody: 'hello' });
+    const expected = `clawville-partner-write\nPOST\n/x\n99\n${sha256hex('hello')}`;
+    check('W0 partnerWriteChallenge format is exact (domain-separated, body-hash bound, LF-joined)', ch === expected, `partnerWriteChallenge({post,/x,99,'hello'}) => ${JSON.stringify(ch)}\nexpected ${JSON.stringify(expected)}`);
+  });
+
+  await safe('W1 WRITE accepts a fresh, correct signature within the window', () => {
+    const now = Date.now();
+    const ts = String(now);
+    const sig = signWriteChallenge('POST', writePath, ts, wBody, partnerKp.secretKey);
+    const r = verifyPartnerWriteSignature('hatcher', { method: 'POST', path: writePath, tsHeader: ts, pubkeyHeader: partnerPubB58, sigHeader: sig, rawBody: wBody, nowMs: now });
+    check('W1 WRITE accepts a fresh, correct signature within the window', r.ok === true && (r as { partnerId: string }).partnerId === 'hatcher', `verifyPartnerWriteSignature(fresh) => ${JSON.stringify(r)} (expect ok:true)`);
+  });
+
+  await safe('W2 WRITE rejects a missing X-Hatcher-Timestamp (tsHeader null)', () => {
+    const now = Date.now();
+    const ts = String(now);
+    const sig = signWriteChallenge('POST', writePath, ts, wBody, partnerKp.secretKey);
+    const r = verifyPartnerWriteSignature('hatcher', { method: 'POST', path: writePath, tsHeader: null, pubkeyHeader: partnerPubB58, sigHeader: sig, rawBody: wBody, nowMs: now });
+    check('W2 WRITE rejects a missing X-Hatcher-Timestamp (tsHeader null)', r.ok === false && (r as { reason: string }).reason === 'missing_signature', `verify(ts=null) => ${JSON.stringify(r)} (expect missing_signature)`);
+  });
+
+  await safe('W3 WRITE rejects an expired timestamp (outside the window, past)', () => {
+    const now = Date.now();
+    const staleTs = String(now - (PARTNER_WRITE_SIGNATURE_WINDOW_MS + 1));
+    const sig = signWriteChallenge('POST', writePath, staleTs, wBody, partnerKp.secretKey);
+    const r = verifyPartnerWriteSignature('hatcher', { method: 'POST', path: writePath, tsHeader: staleTs, pubkeyHeader: partnerPubB58, sigHeader: sig, rawBody: wBody, nowMs: now });
+    check('W3 WRITE rejects an expired timestamp (outside the window, past)', r.ok === false && (r as { reason: string }).reason === 'stale_timestamp', `verify(ts=window+1ms old) => ${JSON.stringify(r)} (expect stale_timestamp); window=${PARTNER_WRITE_SIGNATURE_WINDOW_MS}ms`);
+  });
+
+  await safe('W4 WRITE rejects a future timestamp beyond the window', () => {
+    const now = Date.now();
+    const futureTs = String(now + (PARTNER_WRITE_SIGNATURE_WINDOW_MS + 1));
+    const sig = signWriteChallenge('POST', writePath, futureTs, wBody, partnerKp.secretKey);
+    const r = verifyPartnerWriteSignature('hatcher', { method: 'POST', path: writePath, tsHeader: futureTs, pubkeyHeader: partnerPubB58, sigHeader: sig, rawBody: wBody, nowMs: now });
+    check('W4 WRITE rejects a future timestamp beyond the window', r.ok === false && (r as { reason: string }).reason === 'stale_timestamp', `verify(ts=window+1ms future) => ${JSON.stringify(r)} (expect stale_timestamp)`);
+  });
+
+  await safe('W5 WRITE rejects a non-digit timestamp header', () => {
+    const now = Date.now();
+    const sig = signWriteChallenge('POST', writePath, '123abc', wBody, partnerKp.secretKey);
+    const r = verifyPartnerWriteSignature('hatcher', { method: 'POST', path: writePath, tsHeader: '123abc', pubkeyHeader: partnerPubB58, sigHeader: sig, rawBody: wBody, nowMs: now });
+    check('W5 WRITE rejects a non-digit timestamp header', r.ok === false && (r as { reason: string }).reason === 'bad_timestamp', `verify(ts='123abc') => ${JSON.stringify(r)} (expect bad_timestamp)`);
+  });
+
+  await safe('W6 WRITE rejects a body tamper (sig over original body, verify with mutated body)', () => {
+    const now = Date.now();
+    const ts = String(now);
+    // Sign the challenge for the ORIGINAL body, then verify with a MUTATED body
+    // (different body hash => the challenge the server recomputes differs).
+    const sig = signWriteChallenge('POST', writePath, ts, wBody, partnerKp.secretKey);
+    const mutated = wBody.replace('selftest-w', 'selftest-w-EVIL');
+    const r = verifyPartnerWriteSignature('hatcher', { method: 'POST', path: writePath, tsHeader: ts, pubkeyHeader: partnerPubB58, sigHeader: sig, rawBody: mutated, nowMs: now });
+    check('W6 WRITE rejects a body tamper (sig over original body, verify with mutated body)', r.ok === false && (r as { reason: string }).reason === 'bad_signature', `verify(sig-over-original, mutated-body) => ${JSON.stringify(r)} (expect bad_signature)`);
+  });
+
+  await safe('W7 WRITE rejects a wrong method (sign POST, verify PATCH)', () => {
+    const now = Date.now();
+    const ts = String(now);
+    const sig = signWriteChallenge('POST', writePath, ts, wBody, partnerKp.secretKey);
+    const r = verifyPartnerWriteSignature('hatcher', { method: 'PATCH', path: writePath, tsHeader: ts, pubkeyHeader: partnerPubB58, sigHeader: sig, rawBody: wBody, nowMs: now });
+    check('W7 WRITE rejects a wrong method (sign POST, verify PATCH)', r.ok === false && (r as { reason: string }).reason === 'bad_signature', `verify(sig-for-POST, method=PATCH) => ${JSON.stringify(r)} (expect bad_signature, cross-verb replay blocked)`);
+  });
+
+  await safe('W8 WRITE rejects a wrong path (sign /a, verify /b)', () => {
+    const now = Date.now();
+    const ts = String(now);
+    const sig = signWriteChallenge('POST', '/a', ts, wBody, partnerKp.secretKey);
+    const r = verifyPartnerWriteSignature('hatcher', { method: 'POST', path: '/b', tsHeader: ts, pubkeyHeader: partnerPubB58, sigHeader: sig, rawBody: wBody, nowMs: now });
+    check('W8 WRITE rejects a wrong path (sign /a, verify /b)', r.ok === false && (r as { reason: string }).reason === 'bad_signature', `verify(sig-for-/a, path=/b) => ${JSON.stringify(r)} (expect bad_signature, cross-path replay blocked)`);
+  });
+
+  await safe('W9 DOMAIN SEPARATION (a GET-scheme signature does NOT verify as a write)', () => {
+    const now = Date.now();
+    const ts = String(now);
+    // Make a signature over the GET challenge (clawville-partner-get domain) for
+    // the SAME path/ts, then present it to the WRITE verifier. The differing
+    // domain prefix means the recomputed write challenge can never match.
+    const getCh = partnerGetChallenge({ method: 'POST', path: writePath, tsMillis: ts });
+    const getSig = signChallenge(getCh, partnerKp.secretKey);
+    const r = verifyPartnerWriteSignature('hatcher', { method: 'POST', path: writePath, tsHeader: ts, pubkeyHeader: partnerPubB58, sigHeader: getSig, rawBody: wBody, nowMs: now });
+    if (!(r.ok === false && (r as { reason: string }).reason === 'bad_signature')) bugs.push('a GET-scheme signature verified as a WRITE: domain separation broken (cross-context replay)');
+    check('W9 DOMAIN SEPARATION (a GET-scheme signature does NOT verify as a write)', r.ok === false && (r as { reason: string }).reason === 'bad_signature', `verify(GET-domain sig, WRITE verifier, same path/ts) => ${JSON.stringify(r)} (expect bad_signature, a GET sig must NOT verify as a write)`);
+  });
+
+  await safe('W10 WRITE rejects a wrong key not in the allowlist (unknown_partner); and missing pubkey/sig (missing_signature)', () => {
+    const now = Date.now();
+    const ts = String(now);
+    const evil = nacl.sign.keyPair();
+    const evilPub = bs58.encode(evil.publicKey);
+    const evilSig = signWriteChallenge('POST', writePath, ts, wBody, evil.secretKey);
+    const rEvil = verifyPartnerWriteSignature('hatcher', { method: 'POST', path: writePath, tsHeader: ts, pubkeyHeader: evilPub, sigHeader: evilSig, rawBody: wBody, nowMs: now });
+    const goodSigW = signWriteChallenge('POST', writePath, ts, wBody, partnerKp.secretKey);
+    const rNoPub = verifyPartnerWriteSignature('hatcher', { method: 'POST', path: writePath, tsHeader: ts, pubkeyHeader: null, sigHeader: goodSigW, rawBody: wBody, nowMs: now });
+    const rNoSig = verifyPartnerWriteSignature('hatcher', { method: 'POST', path: writePath, tsHeader: ts, pubkeyHeader: partnerPubB58, sigHeader: null, rawBody: wBody, nowMs: now });
+    const ok = rEvil.ok === false && (rEvil as { reason: string }).reason === 'unknown_partner' && rNoPub.ok === false && (rNoPub as { reason: string }).reason === 'missing_signature' && rNoSig.ok === false && (rNoSig as { reason: string }).reason === 'missing_signature';
+    check('W10 WRITE rejects a wrong key not in the allowlist (unknown_partner); and missing pubkey/sig (missing_signature)', ok, `evil-key => ${JSON.stringify(rEvil)} (expect unknown_partner); missing pubkey => ${JSON.stringify(rNoPub)}; missing sig => ${JSON.stringify(rNoSig)} (both expect missing_signature)`);
   });
 
   // ===================================================================
@@ -834,15 +962,19 @@ async function main() {
 
   await safe('H2 POST /agents with BAD signature -> 401 (before persistence)', async () => {
     const body = JSON.stringify({ agentId: 'x', cognition: { backend: 'hatcher-proxy', proxyBaseUrl: 'https://api.hatcher.host', scopedToken: 'tok12345' } });
-    const badSig = signRawBody('{"different":"body"}', partnerKp.secretKey);
-    const res = await app.request('/api/partner/hatcher/agents', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Hatcher-Issuer-Pubkey': partnerPubB58, 'X-Hatcher-Signature': badSig }, body });
+    // Valid fresh timestamp, but the write challenge is signed over a DIFFERENT
+    // body, so the recomputed body hash differs => bad_signature => 401.
+    const ts = String(Date.now());
+    const badSig = signWriteChallenge('POST', '/api/partner/hatcher/agents', ts, '{"different":"body"}', partnerKp.secretKey);
+    const res = await app.request('/api/partner/hatcher/agents', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Hatcher-Issuer-Pubkey': partnerPubB58, 'X-Hatcher-Signature': badSig, 'X-Hatcher-Timestamp': ts }, body });
     check('H2 POST /agents with BAD signature -> 401 (before persistence)', res.status === 401, `status=${res.status} body=${JSON.stringify(await res.json())} (expect 401)`);
   });
 
   await safe('H3 POST /agents with VALID signature but Zod-INVALID body -> 400 (stops before persistence)', async () => {
     const body = JSON.stringify({ notAgentId: 'oops', cognition: { backend: 'WRONG-BACKEND' } });
-    const sig = signRawBody(body, partnerKp.secretKey);
-    const res = await app.request('/api/partner/hatcher/agents', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Hatcher-Issuer-Pubkey': partnerPubB58, 'X-Hatcher-Signature': sig }, body });
+    const ts = String(Date.now());
+    const sig = signWriteChallenge('POST', '/api/partner/hatcher/agents', ts, body, partnerKp.secretKey);
+    const res = await app.request('/api/partner/hatcher/agents', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Hatcher-Issuer-Pubkey': partnerPubB58, 'X-Hatcher-Signature': sig, 'X-Hatcher-Timestamp': ts }, body });
     const j = (await res.json()) as { error?: string };
     check('H3 POST /agents with VALID signature but Zod-INVALID body -> 400 (stops before persistence)', res.status === 400 && j.error === 'Invalid request', `status=${res.status} body=${JSON.stringify(j)} (expect 400 Invalid request — Zod reject after auth, before DB)`);
   });
@@ -870,8 +1002,10 @@ async function main() {
   // the no-DB-writes invariant holds. (Versus H5, the no-sig twin: clean 401.)
   await safe('H6 PATCH /agents/:id with VALID signature -> auth-ACCEPTED (passes the 401 gate, reaches DB read; no write)', async () => {
     const body = JSON.stringify({ name: 'NewName' });
-    const sig = signRawBody(body, partnerKp.secretKey);
-    const res = await app.request('/api/partner/hatcher/agents/selftest-nonexistent-patch', { method: 'PATCH', headers: { 'Content-Type': 'application/json', 'X-Hatcher-Issuer-Pubkey': partnerPubB58, 'X-Hatcher-Signature': sig }, body });
+    const patchPath = '/api/partner/hatcher/agents/selftest-nonexistent-patch';
+    const ts = String(Date.now());
+    const sig = signWriteChallenge('PATCH', patchPath, ts, body, partnerKp.secretKey);
+    const res = await app.request(patchPath, { method: 'PATCH', headers: { 'Content-Type': 'application/json', 'X-Hatcher-Issuer-Pubkey': partnerPubB58, 'X-Hatcher-Signature': sig, 'X-Hatcher-Timestamp': ts }, body });
     const text = await res.text();
     let parsedErr: string | undefined;
     try { parsedErr = (JSON.parse(text) as { error?: string }).error; } catch { /* non-JSON DB-error 500 body */ }
@@ -889,8 +1023,10 @@ async function main() {
   // clean 401-unauthorized of the no-sig twin (H8). No row is read/written.
   await safe('H7 DELETE /agents/:id with VALID signed body -> auth-ACCEPTED (passes the 401 gate, reaches DB read; no write)', async () => {
     const body = '{}';
-    const sig = signRawBody(body, partnerKp.secretKey);
-    const res = await app.request('/api/partner/hatcher/agents/selftest-nonexistent-delete', { method: 'DELETE', headers: { 'Content-Type': 'application/json', 'X-Hatcher-Issuer-Pubkey': partnerPubB58, 'X-Hatcher-Signature': sig }, body });
+    const deletePath = '/api/partner/hatcher/agents/selftest-nonexistent-delete';
+    const ts = String(Date.now());
+    const sig = signWriteChallenge('DELETE', deletePath, ts, body, partnerKp.secretKey);
+    const res = await app.request(deletePath, { method: 'DELETE', headers: { 'Content-Type': 'application/json', 'X-Hatcher-Issuer-Pubkey': partnerPubB58, 'X-Hatcher-Signature': sig, 'X-Hatcher-Timestamp': ts }, body });
     const text = await res.text();
     let parsedErr: string | undefined;
     try { parsedErr = (JSON.parse(text) as { error?: string }).error; } catch { /* non-JSON DB-error 500 body */ }
@@ -902,6 +1038,28 @@ async function main() {
   await safe('H8 DELETE /agents/:id with NO signature -> 401', async () => {
     const res = await app.request('/api/partner/hatcher/agents/selftest-agent-1', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: '{}' });
     check('H8 DELETE /agents/:id with NO signature -> 401', res.status === 401, `status=${res.status} body=${JSON.stringify(await res.json())} (expect 401)`);
+  });
+
+  // NEW (H-REPLAY): a write with a CORRECT signature over an EXPIRED timestamp is
+  // rejected at the route with a clean 401 (stale_timestamp inside readSignedBody
+  // => {ok:false} => 401 unauthorized), proving the +/- 5 min replay window is
+  // enforced end-to-end through the HTTP gate, not just in the unit verifier. The
+  // window check fires BEFORE the allowlist/sig/DB work, so this stops before
+  // persistence. The signature itself is valid for the (expired) challenge, so the
+  // ONLY thing rejecting it is the window: a captured-and-replayed real request
+  // expires instead of being accepted forever.
+  await safe('H-REPLAY POST /agents with a correctly-signed but EXPIRED timestamp -> 401 (replay window enforced at the route)', async () => {
+    const body = JSON.stringify({ agentId: 'replay', cognition: { backend: 'hatcher-proxy', proxyBaseUrl: 'https://api.hatcher.host', scopedToken: 'tok-replay-1' } });
+    const writePathH = '/api/partner/hatcher/agents';
+    // Timestamp well outside the window in the past; sign the challenge for that
+    // exact expired ts so the signature is otherwise valid.
+    const expiredTs = String(Date.now() - (PARTNER_WRITE_SIGNATURE_WINDOW_MS + 60_000));
+    const sig = signWriteChallenge('POST', writePathH, expiredTs, body, partnerKp.secretKey);
+    const res = await app.request(writePathH, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Hatcher-Issuer-Pubkey': partnerPubB58, 'X-Hatcher-Signature': sig, 'X-Hatcher-Timestamp': expiredTs }, body });
+    const j = (await res.json()) as { error?: string };
+    const ok = res.status === 401 && j.error === 'unauthorized';
+    if (!ok) bugs.push('a correctly-signed write with an EXPIRED timestamp was NOT rejected at the route: replay window not enforced end-to-end through readSignedBody');
+    check('H-REPLAY POST /agents with a correctly-signed but EXPIRED timestamp -> 401 (replay window enforced at the route)', ok, `status=${res.status} body=${JSON.stringify(j)} (expect 401 unauthorized: stale_timestamp rejected inside readSignedBody before any DB write); window=${PARTNER_WRITE_SIGNATURE_WINDOW_MS}ms`);
   });
 
   // ===================================================================
