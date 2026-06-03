@@ -27,7 +27,7 @@ Allowed alternatives without sign-off: "compiled and rendering — needs your ey
 
 > Every product decision, metric, feature gate, and scope cut traces back here. Added 2026-04-21.
 
-Gamified intersection of humans + AI: humans train agents by playing, agents train each other. Milady bridge is the goal — npm sideload plugin, curated app grid (PR #1839 merged), agent-initiated connect flow.
+Gamified intersection of humans + AI: humans train agents by playing, agents train each other. **Primary distribution is direct-web (`clawville.world`) to a crypto-native audience** (set 2026-06-02). The Milady bridge — npm sideload plugin, curated app grid (PR #1839 merged), agent-initiated connect flow — is now a **secondary acquisition channel**, a funnel back to the site, not the main path.
 
 **Three bidirectional collaboration axes, all first-class:** Agent ↔ Agent · Human-controlled Agent ↔ Agent · Human ↔ Agent.
 
@@ -39,11 +39,13 @@ Gamified intersection of humans + AI: humans train agents by playing, agents tra
 
 ---
 
-## TOP PROJECT PRIORITIES (equal weight)
+## TOP PROJECT PRIORITIES
 
-Every design decision is measured against all four. Equal constraints, not ordered — don't trade off without flagging.
+**#1 — WEB PERFORMANCE (overriding constraint).** _Set 2026-06-02._ Direct-web (`clawville.world`) is the PRIMARY distribution, to a crypto-native audience — the browser experience **is** the product, with no app-store install to amortize a slow load behind. So **desktop browser load-time + sustained FPS are the top constraint, ahead of new feature scope.** Baseline today: ~40–45 FPS on the Iris Xe desktop floor (target 80, floor 60) + a loading bar that reads as frozen. **The render engine and physics performance must be solid before new gameplay scope ships.** Tracking: `docs/perf-audit-2026-05-22.md` (+ `perf-research-2026-05-22.md`, `perf-phase2-recon-2026-05-22.md`). Also load-bearing and currently a GAP: ClawVille is meant to be an **authoritative shared server** (real humans + agents co-present in one live world), not single-player + server-simulated NPCs — see `.claude/plans/multiplayer-phase1.md`.
 
-1. **Ship to Milady AI app store.** Two-track:
+**The four product priorities below are equal weight among themselves, each measured against #1. Don't trade off without flagging.**
+
+1. **Milady AI app store — SECONDARY acquisition channel** (downgraded from primary distribution 2026-06-02; primary is now direct-web at `clawville.world`). Still live as a funnel back to the site. Two-track:
    - **Sideload (LIVE 2026-04-12):** `@clawville/app-clawville@0.1.0` on npm. Installs via `POST /api/plugins/install`. Registers `LAUNCH_CLAWVILLE`. Repo: https://github.com/ItachiDevv/clawville-milady-plugin.
    - **Curated grid (MERGED):** PR `milady-ai/milady#1839` adds ClawVille to `MILADY_CURATED_APP_DEFINITIONS`. See `docs/milady-integration-plan.md`.
 
@@ -61,7 +63,7 @@ Every design decision is measured against all four. Equal constraints, not order
 
 4. **Gamified UI + free promotion + unified leaderboard.** Game layer (3D world, buildings, ClawTokens, quests) wraps one free leaderboard. All three axes feed the same leaderboard. `/dash` = internal metrics.
 
-**Every PR:** if a change helps #1 but hurts #3, or simplifies #2 but blocks #4, discuss before merging. Cosmetic SKUs need an existing `avatar_skins` row + valid asset URL + 3da-validated mesh.
+**Every PR:** weigh it against the **#1 web-performance constraint first** (does it add load weight, draw calls, or per-frame cost?), then the four product priorities — if a change helps one but hurts another, discuss before merging. Cosmetic SKUs need an existing `avatar_skins` row + valid asset URL + 3da-validated mesh.
 
 ---
 
@@ -102,7 +104,7 @@ These cost real money / crash the GPU / leak secrets. They stay inline regardles
 
 - **PUSH FLOW — staging-first (set 2026-05-24):** ALL new work goes to the `staging` branch first. `git push origin staging` → `.github/workflows/deploy-staging.yml` ships to the staging box → verify on `https://staging.clawville.world` + `https://api-staging.clawville.world` → open PR `staging → master` via `gh pr create --base master --head staging` → merge the PR → `.github/workflows/deploy.yml` ships to prod. **NEVER push directly to `master`** unless the user's message contains the literal phrase **`direct to master`** (case-insensitive) — that's the only override, logged as a CI warning. Hotfix is the only legitimate use. Both Coolify boxes share the same Supabase DB, so a staging deploy that mutates state mutates prod data too — treat staging deploys with the same care as prod for anything that writes.
 - **Iris Xe GPU:** NO drei `<Text>` / `<Billboard>` in game/world scenes — hard crash. NO `InstancedMesh + ShaderMaterial` — silent WebGPU crash. NO per-frame `new Vector3()` in `useFrame` — GC thrash.
-- **Local dev:** NEVER run `bun run dev` locally (Iris Xe crash → PC restart). Push → Coolify auto-deploys → test against staging first, then prod.
+- **Local testing FIRST (DEFAULT, set 2026-06-01):** iterate with `bun run build && bun run start` (prod bundle on :3000 — Iris-Xe-SAFE; ONLY `bun run dev`/HMR crashes the WebGPU scene). Test in-browser on `localhost`. NEVER run `bun run dev`. Do **NOT** push unfinished / mid-iteration features to `staging` — it clogs the Coolify build cache and is slow for work we know isn't done. Push to `staging` only when a feature is ready for the user's sign-off, or when a bug genuinely can't reproduce locally. [[feedback_local_testing_bun_run_start]]
 - **Phase 5.1 wallet:** `wallet.secretKey` is returned **EXACTLY ONCE** on first-connect. Subsequent reads MUST omit it. SKILL.md instructs agent to display once + store only pubkey. Server never re-emits — no recovery path. Full spec: `ARCHITECTURE.md §7`.
 - **Verification:** never claim deployed/fixed without evidence (curl, bundle grep, DOM read). "Should work" is banned.
 - **Push-auth fallback chain:** `gh auth status` → `unset GITHUB_TOKEN && gh auth setup-git` → SSH remote → `gh` CLI. Only escalate with all errors quoted. Never hand the push to the user as the first move.
@@ -162,6 +164,14 @@ Sea-themed OpenClaw game on ElizaOS. Users create an avatar, explore a 3D/2D sea
 ## IMPORTANT: ElizaOS is MANDATORY
 
 Core requirement — do NOT remove or stub. Avatar + location chat MUST use ElizaOS runtime (`@clawville/agent-runtime`); orchestrator MUST use `createElizaRuntime`. Deploy to persistent-server platforms (Hetzner+Coolify, Render, Fly.io) — NOT Vercel serverless. Never replace with direct API calls or stubs.
+
+## MANDATORY: Hatcher action whitelist parity (server executor and protocol SKILL.md)
+
+The Hatcher in-world ACTION WHITELIST lives in two files that MUST stay in parity, same diff, with `PROTOCOL_VERSION` bumped together:
+- ENFORCEMENT (authoritative): `apps/api/src/services/npc-simulation.ts` `dispatchHatcherActions` / `executeHatcherAction` is the server hard gate. Only whitelisted verbs execute; everything else is dropped. Safety lives here and never depends on the SKILL.md.
+- DOCUMENTATION: the protocol SKILL.md emitted by `apps/api/src/services/skill-protocol.ts buildProtocolManual` (the single source of `PROTOCOL_VERSION`). This is what a connected agent is TOLD it can do.
+
+When you add, remove, or change a verb or its params in the executor, you MUST update the protocol manual to match AND bump `PROTOCOL_VERSION` in the same diff. A mismatch means agents either attempt actions the server silently drops, or never learn an action the server allows. Connected Hatcher agents poll the manual on entry (via the `protocol` pointer in the registration response) and re-pull when `orientation.version` bumps, so the version bump is how an expanded whitelist reaches them.
 
 ## MANDATORY: Game-flow changes propagate to all three operational-knowledge surfaces in the same diff
 
@@ -270,7 +280,7 @@ Skipping this = the change is not done, regardless of green build or desktop scr
 
 ### Local + Windows gotchas
 
-NEVER run `bun run dev` locally — Iris Xe crashes the Three.js/WebGPU scene → PC restart. Push → staging → prod.
+**Test locally FIRST:** `bun run build && bun run start` (prod bundle on :3000, Iris-Xe-safe) is the default test path for in-progress work — iterate on `localhost`, NOT staging (staging pushes clog the Coolify build cache; reserve them for sign-off-ready features). NEVER run `bun run dev` — Iris Xe crashes the WebGPU scene → PC restart (HMR only; the prod `start` bundle is fine).
 Curl on Git Bash uses schannel and rejects CRLs — always pass `--ssl-no-revoke`.
 
 ## Game Modes
