@@ -392,7 +392,18 @@ const ACTIVITY_PLACEMENT_WEIGHTS = {
  * the per-tier weighting is preserved by scaling `(wins*12 + silver*6 +
  * bronze*3 + other*1)` by `LEAST(total, 10) / total`.
  *
- * Sessions and identity.issued are inherently rare — no cap.
+ * `session` (distinct `agent.connected` session_ids) is now daily-capped too
+ * (anti-farm 2026-06-03): agents lazy-start on first chat and auto-stop after
+ * 30 min of inactivity, so an honest agent legitimately reconnects several
+ * times a day — but a 10/day cap means "showed up repeatedly today" credits at
+ * most 10 sessions at the minimum weight (1), while connect-spam can no longer
+ * climb the board by re-registering hundreds of times. `agent.connected` is a
+ * POINT event (one row per connect, one session_id, one timestamp, one day) so
+ * a per-day distinct-session cap is midnight-safe: no session_id spans two days
+ * and so none is double-counted across the boundary. Tunable.
+ *
+ * identity.issued stays a 0/1 MAX per subject (inherently rare — one onboarding
+ * per agent) — no count cap needed there.
  */
 const DAILY_CAPS = {
   buildingVisit: 10,    // 10 buildings exist; visiting each once is the natural max
@@ -400,6 +411,7 @@ const DAILY_CAPS = {
   collaboration: 50,    // mirrors chat
   skillFetch: 11,       // 11 SKILL.md files exist; one fetch each
   activity: 10,         // ~3-min races × 10 = 30min, reasonable ceiling
+  session: 10,          // distinct agent.connected/day; lazy-start+30min auto-stop → honest reconnects, but caps connect-spam at the min weight (1). Tunable.
 } as const;
 
 const AGENT_CACHE_TTL_MS = 60_000;
@@ -499,7 +511,7 @@ function windowToInterval(window: AgentLeaderboardWindow): string {
  * Joining avatar / openclaw_bots / wallets happens in memory via batched
  * `inArray` round trips, never a cartesian.
  */
-async function buildAgentSnapshot(
+export async function buildAgentSnapshot(
   window: AgentLeaderboardWindow,
   limit: number,
 ): Promise<AgentLeaderboardSnapshot> {
@@ -528,36 +540,23 @@ async function buildAgentSnapshot(
     score: number;
   }>(sql`
     WITH
-    -- Distinct session counts (kept outside the daily CTE so cross-day
-    -- session distinctness is preserved — losing it inside daily aggregation
-    -- would over-count agents that span midnight on the same connect).
-    agent_sessions AS (
-      SELECT
-        agent_id,
-        COUNT(DISTINCT session_id)::int AS sessions
-      FROM events
-      WHERE event_type = 'agent.connected'
-        AND agent_id IS NOT NULL
-        AND ts > now() - ${sql.raw(`interval '${interval}'`)}
-      GROUP BY agent_id
-    ),
-    avatar_sessions AS (
-      SELECT
-        avatar_id,
-        COUNT(DISTINCT session_id)::int AS sessions
-      FROM events
-      WHERE event_type = 'agent.connected'
-        AND agent_id IS NULL
-        AND avatar_id IS NOT NULL
-        AND ts > now() - ${sql.raw(`interval '${interval}'`)}
-      GROUP BY avatar_id
-    ),
     -- Per-(agent, day) capped counts. LEAST applies the cap inside one row
     -- per (agent, day); SUM in the next CTE adds capped values across days.
+    --
+    -- Sessions (distinct agent.connected session_ids) are now folded INTO this
+    -- daily CTE and capped per-day (anti-farm 2026-06-03). This is midnight-safe
+    -- because agent.connected is a POINT event: exactly one row per connect, with
+    -- a fresh session_id at a single timestamp, so a given session_id lands in
+    -- exactly ONE day. Counting DISTINCT session_id PER DAY therefore never
+    -- double-counts across the midnight boundary — the original "keep sessions
+    -- outside the daily CTE" guard was only needed for multi-row-per-session
+    -- spanning, which does not occur here. SUM(sessions_c) across days, capped
+    -- per day at C.session, stops a connect-spam farm from climbing the board.
     agent_daily AS (
       SELECT
         agent_id,
         date_trunc('day', ts) AS day,
+        LEAST(COUNT(DISTINCT session_id) FILTER (WHERE event_type = 'agent.connected'), ${C.session})::int AS sessions_c,
         LEAST(COUNT(*) FILTER (WHERE event_type = 'building.visited'), ${C.buildingVisit})::int AS visits_c,
         LEAST(COUNT(*) FILTER (WHERE event_type = 'agent.chat.turn'), ${C.teacherChat})::int AS chats_c,
         LEAST(COUNT(*) FILTER (WHERE event_type = 'agent.collaboration.turn'), ${C.collaboration})::int AS collabs_c,
@@ -611,6 +610,9 @@ async function buildAgentSnapshot(
       SELECT
         avatar_id,
         date_trunc('day', ts) AS day,
+        -- Same per-day distinct-session cap as agent_daily — midnight-safe for
+        -- the agent.connected POINT event (see agent_daily comment).
+        LEAST(COUNT(DISTINCT session_id) FILTER (WHERE event_type = 'agent.connected'), ${C.session})::int AS sessions_c,
         LEAST(COUNT(*) FILTER (WHERE event_type = 'building.visited'), ${C.buildingVisit})::int AS visits_c,
         LEAST(COUNT(*) FILTER (WHERE event_type = 'agent.chat.turn'), ${C.teacherChat})::int AS chats_c,
         LEAST(COUNT(*) FILTER (WHERE event_type = 'agent.collaboration.turn'), ${C.collaboration})::int AS collabs_c,
@@ -666,7 +668,7 @@ async function buildAgentSnapshot(
         SUM(ad.chats_c)::int AS teacher_chats,
         SUM(ad.collabs_c)::int AS collaborations,
         SUM(ad.skills_c)::int AS skill_fetches,
-        COALESCE(MAX(s.sessions), 0)::int AS sessions,
+        SUM(ad.sessions_c)::int AS sessions,
         MAX(ad.onboarded)::int AS onboarded,
         SUM(ad.act_wins)::int AS activity_wins,
         SUM(ad.act_silver)::int AS activity_silver,
@@ -677,7 +679,7 @@ async function buildAgentSnapshot(
           + SUM(ad.chats_c) * ${W.teacherChat}
           + SUM(ad.collabs_c) * ${W.collaboration}
           + SUM(ad.skills_c) * ${W.skillFetch}
-          + COALESCE(MAX(s.sessions), 0) * ${W.session}
+          + SUM(ad.sessions_c) * ${W.session}
           + MAX(ad.onboarded) * ${W.identityIssued}
           + ROUND(SUM(
               CASE WHEN ad.act_total = 0 THEN 0
@@ -687,7 +689,6 @@ async function buildAgentSnapshot(
             ))::int
         )::int AS score
       FROM agent_daily ad
-      LEFT JOIN agent_sessions s ON s.agent_id = ad.agent_id
       GROUP BY ad.agent_id
     ),
     avatar_scores AS (
@@ -698,7 +699,7 @@ async function buildAgentSnapshot(
         SUM(pd.chats_c)::int AS teacher_chats,
         SUM(pd.collabs_c)::int AS collaborations,
         SUM(pd.skills_c)::int AS skill_fetches,
-        COALESCE(MAX(s.sessions), 0)::int AS sessions,
+        SUM(pd.sessions_c)::int AS sessions,
         MAX(pd.onboarded)::int AS onboarded,
         SUM(pd.act_wins)::int AS activity_wins,
         SUM(pd.act_silver)::int AS activity_silver,
@@ -709,7 +710,7 @@ async function buildAgentSnapshot(
           + SUM(pd.chats_c) * ${W.teacherChat}
           + SUM(pd.collabs_c) * ${W.collaboration}
           + SUM(pd.skills_c) * ${W.skillFetch}
-          + COALESCE(MAX(s.sessions), 0) * ${W.session}
+          + SUM(pd.sessions_c) * ${W.session}
           + MAX(pd.onboarded) * ${W.identityIssued}
           + ROUND(SUM(
               CASE WHEN pd.act_total = 0 THEN 0
@@ -719,7 +720,6 @@ async function buildAgentSnapshot(
             ))::int
         )::int AS score
       FROM avatar_daily pd
-      LEFT JOIN avatar_sessions s ON s.avatar_id = pd.avatar_id
       GROUP BY pd.avatar_id
     )
     SELECT * FROM (
