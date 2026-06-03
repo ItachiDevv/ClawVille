@@ -1,5 +1,9 @@
 # ClawVille
 
+> # ⛔ TOP DIRECTIVE (read before anything) ⛔
+> **DOCUMENT EVERYTHING METICULOUSLY AND MAKE SURE THERE IS ALWAYS HUMAN-AGENT PARITY FOR ALL FEATURES.**
+> Every feature ships fully usable by BOTH a human AND a connected/hosted agent (agent plays as itself: agent session → bound avatar → real CT + leaderboard, never a guest fallback), and every change is documented in the same diff (canonical doc + PARITY note). Human-only or agent-only is a defect, not a scope cut. Enforced mechanically by Rule E5 below. Set 2026-06-03 after the Cove shipped with autonomous/connected-agent play left as disabled scaffolding.
+
 ## ENFORCEMENT — mechanical, not judgment-based (set 2026-05-25 after meshlet/atlas session where zero-laziness rules failed to bind because Claude judged work "small enough" to shortcut)
 
 ### Rule E1 — "plan first, no code" session lock
