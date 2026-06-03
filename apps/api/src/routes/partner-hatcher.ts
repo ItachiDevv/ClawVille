@@ -62,6 +62,7 @@ import { ensureWallet } from '../services/wallet-service';
 import { resolveOrCreateUserByIdentity } from '../services/identity-service';
 import { computeSessionExpiresAt } from '../services/openclaw-session-sweeper';
 import { logEvent } from '../services/event-logger';
+import { protocolPointer, resolveApiBase } from '../services/skill-protocol';
 import { getAgentLeaderboardEntry } from './leaderboard';
 
 export const partnerHatcherRoutes = new Hono<AppContext>();
@@ -317,6 +318,12 @@ function publicAgentRecord(row: typeof openclawBots.$inferSelect) {
     walletAddress: row.walletAddress,
     userId: row.userId,
     sessionExpiresAt: row.sessionExpiresAt,
+    // PUBLIC protocol pointer so a partner knows ON ENTRY exactly which protocol
+    // SKILL.md version to pull (and the contentHash to diff against). All three
+    // fields are public — version, contentHash, relative url — never a secret.
+    // Same `resolveApiBase()` the manifest + served body use, so the hash here
+    // is byte-identical to `/api/skills/manifest.json`'s `protocol.contentHash`.
+    protocol: protocolPointer(resolveApiBase()),
   };
 }
 
