@@ -16,10 +16,18 @@
  *   DELETE /api/partner/hatcher/agents/:agentId     — remove the in-world body +
  *                                                     tombstone the row
  *
- * AUTH: every route is gated by `verifyPartnerSignature('hatcher')` over the
- * EXACT raw request body (read before JSON.parse — NO Lucia, NO cookie).
- * Headers: `X-Hatcher-Issuer-Pubkey` + `X-Hatcher-Signature` (ed25519 over
- * sha256(rawBody)). The presented pubkey must equal `PARTNER_PUBKEYS.hatcher`.
+ * AUTH: every WRITE route (POST/PATCH/DELETE) is gated by
+ * `verifyPartnerWriteSignature('hatcher')` (read before JSON.parse, NO Lucia,
+ * NO cookie). Writes now ALSO require a timestamp + replay window, matching the
+ * GET path. Headers: `X-Hatcher-Issuer-Pubkey` + `X-Hatcher-Signature` (ed25519
+ * over sha256(challenge)) + `X-Hatcher-Timestamp` (unix ms). The signed
+ * challenge is the domain-separated string
+ * `clawville-partner-write\n<METHOD>\n<PATH>\n<UNIX_MS>\n<sha256hex(rawBody)>`,
+ * so the signature binds the verb, path, timestamp, and body hash together. The
+ * timestamp must fall within +/- 5 min of server time (same window as GET), and
+ * the presented pubkey must equal `PARTNER_PUBKEYS.hatcher`. (Pre-production
+ * cutover: writes were body-hash-only before; the coordinated signer change adds
+ * the timestamp + window.)
  *
  * SECRETS: the per-agent scoped token is stored ENCRYPTED AT REST
  * (`openclaw_bots.proxy_token_*`, AES-256-GCM under VANITY_ENCRYPTION_KEY) and
@@ -34,6 +42,7 @@
 import { Hono } from 'hono';
 import type { Context } from 'hono';
 import { z } from 'zod';
+import { randomBytes } from 'crypto';
 import { eq, desc, count } from 'drizzle-orm';
 import {
   db,
@@ -53,7 +62,7 @@ import {
 } from '@clawville/shared';
 import type { AppContext } from '../types';
 import { createRateLimiter, getClientIp } from '../middleware/rate-limit';
-import { verifyPartnerSignature, verifyPartnerGetSignature } from '../services/partner-signature';
+import { verifyPartnerWriteSignature, verifyPartnerGetSignature } from '../services/partner-signature';
 import { encryptToken, decryptToken } from '../services/keypair-vault';
 import { validateHatcherProxyUrl, validateHatcherProxyUrlResolved } from '../services/hatcher-config';
 import { npcSimulation } from '../services/npc-simulation';
@@ -258,9 +267,12 @@ async function readSignedBody(
   c: Context<AppContext>,
 ): Promise<{ ok: true; raw: string; json: unknown } | { ok: false }> {
   const raw = await c.req.text();
-  const verify = verifyPartnerSignature('hatcher', {
+  const verify = verifyPartnerWriteSignature('hatcher', {
+    method: c.req.method,
+    path: c.req.path,
+    tsHeader: c.req.header('X-Hatcher-Timestamp') ?? null,
     pubkeyHeader: c.req.header('X-Hatcher-Issuer-Pubkey') ?? null,
-    signatureHeader: c.req.header('X-Hatcher-Signature') ?? null,
+    sigHeader: c.req.header('X-Hatcher-Signature') ?? null,
     rawBody: raw,
   });
   if (!verify.ok) return { ok: false };
@@ -299,8 +311,10 @@ function buildHatcherClient(
   });
 }
 
-/** Public-safe view of an agent row (NEVER includes the proxy token). */
-function publicAgentRecord(row: typeof openclawBots.$inferSelect) {
+/** Public-safe view of an agent row (NEVER includes the proxy token).
+ *  Exported for the Hatcher e2e self-test (apps/api/scripts/hatcher/selftest-e2e.ts),
+ *  which asserts the token-never-echoed + protocol-pointer + userId-binding contract. */
+export function publicAgentRecord(row: typeof openclawBots.$inferSelect) {
   return {
     // Echo the RAW partner id back (strip our internal `hatcher:` namespace) so
     // Hatcher sees the id it sent, not our storage key.
@@ -498,7 +512,14 @@ partnerHatcherRoutes.post('/agents', async (c) => {
     console.error('[Hatcher/register] stale session cleanup failed (non-fatal):', err);
   }
 
-  const sessionId = `hat-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  // Hardening (Codex dual-review, 2026-06-03): this session id is registered
+  // into the SAME npc-simulation map as /connect and returned to the partner as
+  // the X-Clawville-Agent-Session bearer credential — a Hatcher agent is bound
+  // to a real user/avatar, so a guessed session id spends real CT in the cove.
+  // Draw 24 bytes (~192 bits) from crypto.randomBytes (was Date.now() +
+  // Math.random, both predictable). `hat-` prefix kept for log readability;
+  // validation is Map membership so the format change is transparent.
+  const sessionId = `hat-${randomBytes(24).toString('base64url')}`;
   const stats = row.metadata?.stats ?? { hp: 100, attack: 10, defense: 8, speed: 6 };
   let spawned = false;
   try {
@@ -670,7 +691,10 @@ partnerHatcherRoutes.patch('/agents/:agentId', async (c) => {
         for (const stale of npcSimulation.findActiveSessionsByAgentIds([namespacedAgentId])) {
           npcSimulation.unregisterOpenClaw(stale);
         }
-        const sessionId = `hat-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        // Hardening (Codex dual-review, 2026-06-03): crypto-strong session id,
+        // same rationale as the /register mint above — this is the real-CT
+        // bearer credential, not a display handle.
+        const sessionId = `hat-${randomBytes(24).toString('base64url')}`;
         const stats = row.metadata?.stats ?? { hp: 100, attack: 10, defense: 8, speed: 6 };
         let config: OpenClawRegistration;
         if (nextMode === 'override' && nextTargetNpcId) {
@@ -719,8 +743,10 @@ partnerHatcherRoutes.delete('/agents/:agentId', async (c) => {
 
   const rawAgentId = c.req.param('agentId');
   const namespacedAgentId = namespaceHatcherAgentId(rawAgentId);
-  // DELETE may carry an empty body; verify the signature over whatever raw
-  // bytes were sent (the partner signs the empty string in that case).
+  // DELETE may carry an empty body; the write challenge binds sha256hex of
+  // whatever raw bytes were sent (the empty string hashes to a fixed digest in
+  // that case), plus the method, path, and the `X-Hatcher-Timestamp` inside the
+  // +/- 5 min window.
   const signed = await readSignedBody(c);
   if (!signed.ok) return c.json({ error: 'unauthorized' }, 401);
 
