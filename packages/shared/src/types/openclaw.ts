@@ -91,6 +91,49 @@ export interface OpenClawBotConfig {
   sessionKey: string; // for memory persistence
   protocol?: AgentWireProtocol;
   autonomyMode?: AgentAutonomyMode;
+  /**
+   * Security (Codex auth-lens hardening, 2026-06-03): does THIS session prove
+   * ownership of the avatar it is bound to, and may it therefore spend that
+   * avatar's REAL ClawTokens in the Cove?
+   *
+   * TRUE only when ownership was proven at registration time:
+   *   (a) a valid OWNED Moltbook connection token,
+   *   (b) the ed25519 partner-signed Hatcher path (`partner-hatcher.ts`),
+   *   (c) genuine first-contact where no existing bound `userId` exists (the
+   *       agent self-creates its own avatar), or
+   *   (d) the signed-challenge magic-link reconnect.
+   *
+   * FALSE for an `agentId`-only reconnect to an ALREADY-BOUND bot (the bot
+   * already has a `userId` but the caller presented no token/signature) — that
+   * caller can perceive/chat but the cove rejects it with 403 rather than
+   * granting real-CT play or silently demoting it to the guest demo tier.
+   *
+   * In-memory only (ephemeral session config) — never persisted; defaults to
+   * FALSE when omitted so any path that forgets to set it fails CLOSED.
+   */
+  ledgerCapable?: boolean;
+  /**
+   * Security (Codex auth-lens hardening round 2, 2026-06-03): the userId this
+   * session PROVED ownership of at registration time. This is the resolve-time
+   * backstop for the stale-session rebind theft vector — `ledgerCapable` alone
+   * is frozen at registration, but the bound `userId` on the live
+   * `openclaw_bots` row can CHANGE underneath it (an unbound/other-user agentId
+   * later rebinds to a victim via an owned-token connect). Without this, a stale
+   * session registered while the row was unbound would illegitimately authorize
+   * real-CT spend against whatever user the row was LATER rebound to.
+   *
+   * `resolveAgentSession` grants ledger capability ONLY when
+   * `boundUserId === liveBot.userId` (and both non-null). A mismatch means the
+   * row was rebound after this session was issued → non-ledger (and the stale
+   * session is unregistered). Set to the proven owner wherever `ledgerCapable`
+   * is set TRUE with a concrete user (owned-token `tokenUserId`, partner-signed
+   * Hatcher userId). NULL for first-contact / anonymous sessions — which the
+   * cove already rejects for having no bound active avatar, so a null
+   * `boundUserId` keeps them non-ledger and consistent.
+   *
+   * In-memory only; never persisted.
+   */
+  boundUserId?: string | null;
   /** Override model name sent to the gateway (default: "openclaw:<agentId>") */
   modelName?: string;
   /** Request timeout in ms (default: 10000) */

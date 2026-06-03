@@ -140,6 +140,40 @@ export interface ActionInProgressResponse {
   didSplit: boolean;
 }
 
+/**
+ * GET /hand/current — the authoritative in-progress hand's VISIBLE view, or
+ * `{ hand: null }` when no hand is live (the prior hand settled). Used by the
+ * Autonomous driver to RESTORE the real server hand after a stale 409 instead of
+ * stranding on a cleared local view. Upcard only (never the hole card/seed).
+ */
+export interface CurrentHandLive {
+  handId: string;
+  shoeId: string;
+  handIndex: number;
+  status: 'in_progress';
+  playerHands: Array<{
+    cards: BlackjackCard[];
+    total: number;
+    isSoft: boolean;
+    isBust: boolean;
+  }>;
+  dealerUpcard: BlackjackCard | null;
+  didSplit: boolean;
+  insuranceOffered: boolean;
+  tookInsurance: boolean;
+  bet: string;
+}
+export interface CurrentHandNone {
+  hand: null;
+  shoeId: string;
+}
+export type CurrentHandResponse = CurrentHandLive | CurrentHandNone;
+
+/** True when GET /hand/current returned a live in-progress hand (not `{hand:null}`). */
+export function isCurrentHandLive(r: CurrentHandResponse): r is CurrentHandLive {
+  return (r as CurrentHandLive).status === 'in_progress';
+}
+
 /** Response from POST /action with action:'insure'. */
 export interface InsureResponse {
   handId: string;
@@ -265,6 +299,29 @@ export async function fetchCurrentBlackjackShoe(): Promise<CurrentShoeResponse |
 }
 
 // ---------------------------------------------------------------------------
+// fetchCurrentBlackjackHand — GET /hand/current (Lucia auth)
+//
+// Returns the authoritative in-progress hand's visible view, or CurrentHandNone
+// (`{hand:null}`) when the prior hand settled. The Autonomous driver uses this to
+// RESTORE the real server hand after a stale 409 instead of stranding on a
+// cleared local view. A 404 (no open shoe) / 401 (guest) resolves to null, which
+// the caller treats as "no live hand to restore" — same as CurrentHandNone.
+// ---------------------------------------------------------------------------
+
+export async function fetchCurrentBlackjackHand(): Promise<CurrentHandResponse | null> {
+  try {
+    return await coveFetch<CurrentHandResponse>('/api/cove/blackjack/hand/current', {
+      method: 'GET',
+    });
+  } catch (err) {
+    if (err instanceof CoveApiError && (err.status === 404 || err.status === 401)) {
+      return null;
+    }
+    throw err;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // useDealHand — POST /hand/deal (idempotency-keyed)
 // ---------------------------------------------------------------------------
 
@@ -274,15 +331,29 @@ export interface DealArgs {
   insurance?: boolean;
   /** Caller-minted UUID; reuse on retry within one Deal press. */
   idempotencyKey: string;
+  /**
+   * OPTIONAL stale-agent-deal precondition. Set ONLY by the Autonomous driver
+   * (threaded from /agent/decide's `expectedHandsPlayed`); the server rejects
+   * with 409 stale_agent_deal if a hand was dealt since the agent decided. Human
+   * manual deals MUST omit this so /hand/deal stays unconditional for them.
+   */
+  expectedHandsPlayed?: number;
 }
 
 export function useDealHand() {
   return useMutation<DealResponse, CoveApiError, DealArgs>({
-    mutationFn: ({ shoeId, bet, insurance, idempotencyKey }) =>
+    mutationFn: ({ shoeId, bet, insurance, idempotencyKey, expectedHandsPlayed }) =>
       coveFetch<DealResponse>('/api/cove/blackjack/hand/deal', {
         method: 'POST',
         headers: { 'Idempotency-Key': idempotencyKey },
-        body: JSON.stringify({ shoeId, bet, insurance: insurance ?? false }),
+        body: JSON.stringify({
+          shoeId,
+          bet,
+          insurance: insurance ?? false,
+          // Only included for the agent-driven deal; undefined keys are dropped by
+          // JSON.stringify so human manual deals send the legacy unconditional body.
+          ...(expectedHandsPlayed !== undefined ? { expectedHandsPlayed } : {}),
+        }),
       }),
     // No blind react-query retry — the idempotency key is caller-managed.
     retry: false,
@@ -431,6 +502,14 @@ export interface AgentDecisionResponse {
    * rejects the stale agent apply server-side (409 stale_agent_decision).
    */
   handVersion?: number | null;
+  /**
+   * Shoe EPOCH for a `deal` decision (shoe.handCounter at decision time; null for
+   * non-deal verbs). The driver threads this back to /hand/deal as
+   * `expectedHandsPlayed` so a stale agent `deal` that lands after an intervening
+   * human deal (even one that natural-settled inline) rejects server-side with
+   * 409 stale_agent_deal instead of opening an extra unwanted hand.
+   */
+  expectedHandsPlayed?: number | null;
   /** Optional one-line rationale the modal surfaces in the advisor panel. */
   rationale?: string;
   /** Always 'agent' from the relay — provenance marker. */
