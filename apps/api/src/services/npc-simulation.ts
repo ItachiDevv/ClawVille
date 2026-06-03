@@ -540,13 +540,29 @@ class NpcSimulation {
     return this.openClawBots.get(sessionId)?.client ?? null;
   }
 
-  getActiveOpenClawBots(): Array<{ sessionId: string; mode: string; npcId?: string; name?: string }> {
-    const result: Array<{ sessionId: string; mode: string; npcId?: string; name?: string }> = [];
-    for (const [sid, { config }] of this.openClawBots) {
+  /**
+   * Public roster of connected agent bodies for the world view.
+   *
+   * SECURITY (Codex auth-lens fix #1, 2026-06-03): this is surfaced by the
+   * PUBLIC `GET /api/openclaw/active` endpoint, so it must carry NO recoverable
+   * session id. The session id is the bearer credential the cove trusts for
+   * real-CT play; previously this returned the raw `sessionId` AND embedded it
+   * a second time inside the avatar `npcId` (`oc-${sid}`) — so any unauthenticated
+   * caller could harvest live bearer creds and spend a victim's real CT.
+   *
+   * We now emit only NON-secret identifiers: the bot's stable public `agentId`
+   * and (for override bodies) the public `targetNpcId`. The avatar `npcId`
+   * remains `oc-${sid}` ONLY in the in-memory sim (it's the internal map key);
+   * it is NEVER surfaced here. Callers that need to address a body publicly use
+   * `agentId`.
+   */
+  getActiveOpenClawBots(): Array<{ agentId: string; mode: string; npcId?: string; name?: string }> {
+    const result: Array<{ agentId: string; mode: string; npcId?: string; name?: string }> = [];
+    for (const [, { config }] of this.openClawBots) {
       if (config.mode === 'override') {
-        result.push({ sessionId: sid, mode: 'override', npcId: config.targetNpcId });
+        result.push({ agentId: config.agentId, mode: 'override', npcId: config.targetNpcId });
       } else {
-        result.push({ sessionId: sid, mode: 'avatar', npcId: `oc-${sid}`, name: config.name });
+        result.push({ agentId: config.agentId, mode: 'avatar', name: config.name });
       }
     }
     return result;
