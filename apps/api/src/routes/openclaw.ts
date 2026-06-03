@@ -131,9 +131,28 @@ openclawRoutes.post('/register', async (c) => {
   // transparent and old in-memory ids age out with no migration.
   const sessionId = `oc-${randomBytes(24).toString('base64url')}`;
 
+  // Ledger-capability (Codex auth-lens fix #2/#3, 2026-06-03): the legacy
+  // /openclaw/register path is UNAUTHENTICATED and upserts by caller-supplied
+  // agentId with no ownership proof, so it must NEVER mint a real-CT-trusted
+  // session — anyone could register a known agentId and inherit a victim's
+  // bound avatar's CT. Sessions from this path are non-ledger by default: they
+  // can perceive/chat/move, but the cove getSubject rejects them with 403. A
+  // real-CT-capable session is only minted via the owned-connection-token flow
+  // on /api/agent/connect or the ed25519 partner-signed Hatcher path.
+  //
+  // Rebind hardening (round 2, 2026-06-03): `boundUserId: null` keeps these
+  // fail-closed at the resolveAgentSession rebind backstop too. NOTE on Option B
+  // (eviction): this path NEVER writes `openclaw_bots.userId` (see the upsert
+  // below — neither branch sets it), so it can never REBIND a row's owner. We
+  // therefore do NOT evict prior sessions here: a blanket eviction would let an
+  // unauthenticated caller knock a victim's legitimate live (ledger-capable)
+  // session out of the map just by re-registering the victim's known agentId — a
+  // griefing/DoS vector. No rebind happens, so no eviction is warranted.
   const config: OpenClawRegistration = {
     ...data,
     sessionId,
+    ledgerCapable: false,
+    boundUserId: null,
   } as OpenClawRegistration;
 
   // Test connectivity (skip if skipPing query param is set — for testing)
@@ -371,7 +390,15 @@ openclawRoutes.delete('/unregister/:sessionId', async (c) => {
   return c.json({ success: true });
 });
 
-// GET /api/openclaw/active
+// GET /api/openclaw/active — PUBLIC world-view roster.
+//
+// SECURITY (Codex auth-lens fix #1, 2026-06-03): this endpoint is unauthenticated,
+// so it must never leak a session id. The session id is the bearer credential the
+// cove trusts for real-CT play; this previously returned the raw `sessionId` and
+// also embedded it inside the avatar `npcId` (`oc-${sid}`), letting anyone harvest
+// live bearer creds + spend a victim's real CT. `getActiveOpenClawBots()` now emits
+// only non-secret identifiers (public `agentId` + override `targetNpcId`). Do NOT
+// add the session id back to this shape.
 openclawRoutes.get('/active', (c) => {
   const bots = npcSimulation.getActiveOpenClawBots();
   return c.json({ bots });
