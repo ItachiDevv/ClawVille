@@ -11,7 +11,7 @@ formulas, example payloads, edge cases) lives in `docs/hatcher-followup-answers.
 | Item | Value / source | Use |
 |---|---|---|
 | **Partner read key** | `hk_…` (sent separately over a secure channel, scope `skills:read`, shown once, never committed) | `Authorization: Bearer hk_…` on the skills/manifest/protocol reads |
-| **Our issuer public key** | self-serve: `GET https://api-staging.clawville.world/.well-known/clawville-issuer.json` (cache it; 5 min TTL) | verify our outbound cognition signatures (`X-Clawville-Signature`) |
+| **Our issuer public key** | self-serve public GET (no auth): `GET https://api-staging.clawville.world/.well-known/clawville-issuer.json` returns `{ publicKey: <base58 ed25519>, algorithm: "ed25519", purposes: [...] }`. Read `publicKey`, cache it (5 min TTL). | verify our outbound cognition signatures (`X-Clawville-Signature`) |
 
 ## 2. What you send us (the one hard blocker)
 
