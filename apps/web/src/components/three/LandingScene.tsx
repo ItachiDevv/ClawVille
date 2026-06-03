@@ -8,13 +8,15 @@
  * — deep-blue fog (#0e3458), hemisphere sky #66bbdd / ground #223344, warm
  * key light — rather than the washed teal/tan it had before.
  *
- * Camera: a 3/4 overview vantage (57° elevation, arm=295wu) that drifts gently
- * (±0.22 rad sway + slow bob) — NOT a full 360° orbit. A full orbit swung the
- * finite seabed plane edge-on into a "wall"; a gentle drift keeps a cinematic,
- * stable composition. 57° gives readable building facades/silhouettes (65° only
- * showed rooftops). lookAt Y=−350 (R5) aggressively drops the town ring to the
- * LOWER ~40% of frame — tallest building tops at ~55–60% frame height, upper
- * 60% is open dark water for the hero title/CTAs with no buildings behind them.
+ * Camera: a near-horizontal horizon shot (elevation ≈38° from horizon,
+ * arm=295wu, height=380wu) that drifts gently (±0.22 rad sway + slow bob).
+ * NOT a full 360° orbit — a gentle drift keeps a cinematic, stable composition.
+ * lookAt Y=+220 (R6) aims the camera near-horizontal toward open water so the
+ * sandy floor reads as a FOGGY HORIZON LINE at ~38–42% up from the bottom of
+ * frame; the building ring sits in the LOWER ~40% of frame and the upper ~60%
+ * is dark open water where the hero title/CTAs float with no buildings behind
+ * them. (R5 used lookAt Y=−350 which aimed steeply DOWN at the floor, filling
+ * ~70% of the frame with bright sand — the opposite of intent.)
  * Belt-and-suspenders: seabed is 6000wu wide so edges are always fully
  * fogged out (>fog.far from camera) — no hard edge can ever appear.
  *
@@ -57,21 +59,23 @@ const HERO_RING_RADIUS = 195;
 const HERO_SLOT_COUNT = 10;
 
 /** Camera height + orbit-arm length.
- *  CAM_ARM=295, CAM_Y=454 → elevation ≈ 57° from horizon (atan2(454,295)).
- *  R3: scaled ×1.18 from R2 (250/385) to pull camera back ~18% while
- *  preserving the 57° elevation — the ring now frames the centered text/CTAs
- *  instead of crowding them (arcade dome was sitting right behind the logo).
- *  Camera distance from origin: sqrt(454²+295²) ≈ 541wu. */
-const CAM_Y   = 454;
+ *  CAM_ARM=295, CAM_Y=380 → elevation ≈ 52° from horizon (atan2(380,295)).
+ *  R6: lowered CAM_Y 454→380 to flatten the shot toward a horizon establishing
+ *  view; combined with CAM_LOOK_Y=+220 this gives ~18° below horizontal pitch
+ *  (atan2(380-220, 295) ≈ 28° — foggy sandy horizon at ~38–42% frame height).
+ *  Camera distance from origin: sqrt(380²+295²) ≈ 479wu. */
+const CAM_Y   = 380;
 const CAM_ARM = 295;
 
 /** LookAt target Y.
- *  R5: pushed from −120 to −350 so the town ring sits in the LOWER ~40% of
- *  the frame — tops of tallest buildings at ~55–60% frame height. The upper
- *  ~60% is open dark water where the hero title + CTAs float with no buildings
- *  behind them. Camera still at 57° elevation; the heavy downward tilt shifts
- *  the ring to a lower "horizon vista" without changing the camera position. */
-const CAM_LOOK_Y = -350;
+ *  R6: changed from −350 → +220 (POSITIVE). Looking at (0,+220,0) from camera
+ *  at height 380 and arm 295 gives pitch ≈ 28° BELOW horizontal — the sandy
+ *  floor reads as a foggy horizon line at ~38–42% up from frame bottom, the
+ *  building ring sits in the lower ~40%, and the upper ~58% is open dark water
+ *  for the hero title + CTAs with no buildings behind them.
+ *  (R5 used −350 which looked steeply DOWN at the floor, pitch≈56° below
+ *  horizontal — the bright sandy floor filled ~70% of the frame.) */
+const CAM_LOOK_Y = 220;
 
 /** Base azimuth of the fixed 3/4 vantage (radians). The camera only sways a
  *  small amount around this — it never does a full revolution.
@@ -293,13 +297,17 @@ function GradientSky() {
 // colors alone (MeshBasicMaterial) couldn't read warm enough. Module-scope
 // singleton (never disposed — same rule as _skyTexture).
 
-// Real in-game sand palette — direct copy from arena-terrain.tsx SAND_* constants.
-// Warm whites/tans for ridges, warm golden mids, dark warm-brown troughs.
-const _sandRidge  = new THREE.Color(0xfff0d4); // bright white-sand peaks
-const _sandHigh   = new THREE.Color(0xe8d0a8); // warm sand
-const _sandMid    = new THREE.Color(0xc4a878); // golden mid-tone
-const _sandValley = new THREE.Color(0x8a7050); // dark moody valleys
-const _sandDeep   = new THREE.Color(0x5c4a32); // deep brown-black troughs
+// Moody deep-ocean sand palette — warm-hued but VALUE-DARKENED ~50% from R5's
+// near-white arena-terrain tones. At depth, MeshStandardMaterial + directional
+// 2.20 + hemi 1.60 will lift these toward a mid-warm sand tone; starting dark
+// prevents the "blown-out bright beach" appearance that R5 had.
+// (R5 values: ridge 0xfff0d4, high 0xe8d0a8, mid 0xc4a878, valley 0x8a7050,
+//  deep 0x5c4a32 — all too bright for an underwater scene.)
+const _sandRidge  = new THREE.Color(0x7a6848); // dark warm sand peaks
+const _sandHigh   = new THREE.Color(0x5e4f36); // deep warm sand
+const _sandMid    = new THREE.Color(0x473a28); // dark golden mid-tone
+const _sandValley = new THREE.Color(0x2e2518); // near-black warm valley
+const _sandDeep   = new THREE.Color(0x1a140d); // deepest trough
 
 function seededRng(seed: number): () => number {
   let s = seed;
@@ -612,10 +620,11 @@ function BuildingRing() {
 }
 
 // ─── DriftCamera ──────────────────────────────────────────────────────────────
-// 3/4 overview vantage (57° elevation, arm=295wu) with GENTLE sway + bob.
-// Never a full 360° orbit (seabed edge-on wall). lookAt Y=−350 (CAM_LOOK_Y)
-// aggressively tilts the camera down so the building ring sits in the LOWER
-// ~40% of frame; the upper ~60% is open water/sky for the hero text.
+// Near-horizontal horizon shot (elevation ≈52°, arm=295wu) with GENTLE sway +
+// bob. Never a full 360° orbit (seabed edge-on wall). lookAt Y=+220 (R6)
+// aims the camera ~28° below horizontal so the sandy floor reads as a foggy
+// horizon at ~38–42% from bottom; the building ring sits in the lower ~40% of
+// frame and the upper ~58% is dark open water for the hero title + CTAs.
 
 function DriftCamera() {
   useFrame(({ camera, clock }) => {
@@ -628,7 +637,7 @@ function DriftCamera() {
       Math.sin(azimuth) * CAM_ARM,
     );
     camera.position.copy(_scratchVec3A);
-    _scratchVec3B.set(0, CAM_LOOK_Y, 0); // low target drops ring into lower frame half
+    _scratchVec3B.set(0, CAM_LOOK_Y, 0); // +220 aims near-horizontal; ring in lower ~40%, water above
     camera.lookAt(_scratchVec3B);
   });
   return null;
@@ -689,7 +698,7 @@ export default function LandingScene() {
           fov:  50,
           near: 1,
           // far clears the sky dome (radius 1200) from the orbiting camera
-          // (~541wu from origin at 57° elevation): 1200 + 541 ≈ 1741 < 2400.
+          // (~479wu from origin at 52° elevation): 1200 + 479 ≈ 1679 < 2400.
           far:  2400,
           position: [CAM_ARM, CAM_Y, 0],
         }}
