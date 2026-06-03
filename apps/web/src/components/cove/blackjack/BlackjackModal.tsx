@@ -60,7 +60,9 @@ import {
   describeBlackjackError,
   fetchAgentBlackjackDecision,
   fetchCurrentBlackjackShoe,
+  fetchCurrentBlackjackHand,
   isActionInProgress,
+  isCurrentHandLive,
   isSettled,
   reshuffledBody,
   useBlackjackAction,
@@ -71,6 +73,7 @@ import {
   type ActionResponse,
   type AgentDecisionAction,
   type BlackjackShoeWire,
+  type CurrentHandLive,
   type DealResponse,
   type SettledHandResponse,
 } from '@/lib/cove/blackjack-api-client';
@@ -369,6 +372,13 @@ export default function BlackjackModal() {
      * a human tap that advanced the hand mid-window rejects this stale apply.
      */
     handVersion?: number | null;
+    /**
+     * Stale-DEAL guard: the shoe epoch (handCounter) the agent decided at
+     * (relay-derived, set only for `deal`). Threaded to /hand/deal as
+     * expectedHandsPlayed so a deal that lands after an intervening human deal
+     * rejects this stale apply (409 stale_agent_deal).
+     */
+    expectedHandsPlayed?: number | null;
     deadline: number;
   } | null>(null);
   // True while a decision is being applied (so we don't double-fire).
@@ -573,6 +583,12 @@ export default function BlackjackModal() {
       }));
       return {
         ...prev,
+        // Reflect the SERVER-AUTHORITATIVE hand id the action actually targeted
+        // (concurrency minor #2). After an agent action applied to the relay's
+        // decision.handId (which may differ from the modal's prev.handId when the
+        // local view was stale), the merged view must carry res.handId so the next
+        // human/agent action targets the same server hand, not the stale local one.
+        handId: res.handId,
         playerHands: merged,
         dealerUpcard: res.dealerUpcard ?? prev.dealerUpcard,
         didSplit: res.didSplit,
@@ -585,6 +601,77 @@ export default function BlackjackModal() {
     }
   }, []);
 
+  // ── Re-sync live state after a stale agent 409 (concurrency BLOCKING fix) ──
+  // When /action (stale_agent_decision) or /hand/deal (stale_agent_deal) 409s
+  // because the hand/shoe advanced since the agent decided, the agent's apply is
+  // discarded. Before the NEXT autonomous loop we re-derive the AUTHORITATIVE
+  // state from the server, never guess from the stale local view:
+  //   1. refetch the shoe (dealtCount, balance) so the penetration gate + HUD are
+  //      fresh;
+  //   2. fetch the server's in-progress hand via GET /hand/current and RESTORE it
+  //      if one exists, or CLEAR the local hand only when the server confirms NO
+  //      live hand (the prior hand truly settled).
+  // The earlier version cleared the local hand on a handId match but only
+  // refetched the shoe — so when the server still had an in_progress hand the
+  // modal stranded in idle and the autonomous loop spun (runAction no-ops on
+  // !hand; a deal 409s hand_in_progress). Restoring from /hand/current is correct
+  // for ALL staleness sources (same-tab human takeover, deal-epoch race, external
+  // races), not just same-tab takeover. Best-effort + non-fatal: a refetch blip
+  // leaves the local hand as-is and the next /agent/decide re-derives server-side.
+  // Authed-only (guests never run the autonomous relay).
+  const resyncAfterStaleDecision = useCallback(async () => {
+    try {
+      const [shoeRes, handRes] = await Promise.all([
+        fetchCurrentBlackjackShoe(),
+        fetchCurrentBlackjackHand(),
+      ]);
+      if (shoeRes && shoeRes.shoe.status === 'open') {
+        setShoe(shoeRes.shoe);
+        setBalance(shoeRes.walletBalance);
+      }
+      // Authoritative hand reconciliation. A null result (no open shoe / network
+      // blip) leaves the local hand untouched so we never strand on a transient
+      // miss; the next /agent/decide corrects it server-side.
+      if (handRes) {
+        if (isCurrentHandLive(handRes)) {
+          // Server has a live hand — rebuild the local view from it (this is the
+          // hand the next decision must target; never leave a stale/cleared one).
+          const live: CurrentHandLive = handRes;
+          const subHands: SubHandView[] = live.playerHands.map((h) => ({
+            cards: h.cards,
+            total: h.total,
+            isSoft: h.isSoft,
+            isBust: h.isBust,
+          }));
+          setHand({
+            handId: live.handId,
+            shoeId: live.shoeId,
+            playerHands: subHands.length > 0 ? subHands : [{ cards: [], total: 0, isSoft: false, isBust: false }],
+            dealerUpcard: live.dealerUpcard,
+            insuranceOffered: live.insuranceOffered,
+            tookInsurance: live.tookInsurance,
+            didSplit: live.didSplit,
+            bet: Number(live.bet),
+          });
+          // Focus the first non-resolved sub-hand for a split (mirrors merge).
+          if (live.didSplit) {
+            const firstLive = live.playerHands.findIndex((h) => !h.isBust);
+            setActiveSlot((firstLive === 1 ? 1 : 0) as 0 | 1);
+          } else {
+            setActiveSlot(0);
+          }
+          setSettled(null);
+        } else {
+          // Server confirms NO in-progress hand (the prior hand settled) → clear.
+          setHand(null);
+        }
+      }
+    } catch {
+      // Network blip — leave local state as-is; the next /agent/decide re-derives
+      // authoritative state server-side regardless.
+    }
+  }, []);
+
   // ── DEAL ────────────────────────────────────────────────────────────────────
   // `agentDriven` is set ONLY by the autonomous driver after the human-input
   // window elapses; a human tap leaves it false and is blocked in autonomous
@@ -594,7 +681,17 @@ export default function BlackjackModal() {
   // (React state updates are async, so reading `blackjackBet` right after
   // setting it would use the stale value). Human deals omit it and use the
   // selected chip.
-  const handleDeal = useCallback(async (agentDriven = false, betOverride?: number) => {
+  // `expectedHandsPlayed` is the stale-agent-deal precondition (relay-supplied
+  // shoe epoch); set ONLY by the autonomous driver. /hand/deal 409s
+  // `stale_agent_deal` if a hand was opened since the agent decided, so a stale
+  // agent deal can't open an extra hand after an intervening human deal. Human
+  // taps omit it (unconditional). Discarded on a reshuffle-retry (the fresh shoe
+  // has its own epoch the agent never decided against).
+  const handleDeal = useCallback(async (
+    agentDriven = false,
+    betOverride?: number,
+    expectedHandsPlayed?: number,
+  ) => {
     if (busyRef.current || phase !== 'idle') return;
     // Human tap in autonomous mode = take over THIS decision: void the agent's
     // queued decision (bump the run token so a late timer can't fire) and play
@@ -621,9 +718,16 @@ export default function BlackjackModal() {
           bet: betForHand,
           insurance: wantInsurance,
           idempotencyKey: dealKeyRef.current,
+          // Only the agent-driven deal carries the stale-deal precondition; human
+          // taps omit it so /hand/deal stays unconditional for them.
+          ...(agentDriven && expectedHandsPlayed !== undefined
+            ? { expectedHandsPlayed }
+            : {}),
         });
       } catch (err) {
-        // 75% penetration → open a fresh shoe (new seed pair) + retry once.
+        // 75% penetration → open a fresh shoe (new seed pair) + retry once. The
+        // fresh shoe has its OWN epoch the agent never decided against, so the
+        // retry deal MUST omit expectedHandsPlayed (the original epoch is stale).
         if (reshuffledBody(err)) {
           showToast('Shoe reshuffled — dealing from a fresh shoe.', 'info');
           setShoe(null);
@@ -652,12 +756,25 @@ export default function BlackjackModal() {
         if (typeof res.balance === 'number') setBalance(res.balance);
       }
     } catch (err) {
-      showToast(describeBlackjackError(err), err instanceof CoveApiError && err.status >= 500 ? 'error' : 'warn');
+      // Stale agent DEAL (409): an intervening human deal opened a hand since the
+      // agent decided (possibly natural-settled inline), so the server rejected
+      // this stale in-flight agent deal. Discard silently — same as a skipped
+      // turn — refetch the live shoe, and stay in Autonomous so the next decision
+      // point re-asks against fresh state. Never crash, never blind-retry.
+      if (
+        agentDriven && err instanceof CoveApiError &&
+        err.status === 409 && err.code === 'stale_agent_deal'
+      ) {
+        void resyncAfterStaleDecision();
+        pushAdvisor('You dealt this hand — the agent stood down. Still in Autonomous.');
+      } else {
+        showToast(describeBlackjackError(err), err instanceof CoveApiError && err.status >= 500 ? 'error' : 'warn');
+      }
     } finally {
       dealKeyRef.current = null;
       busyRef.current = false;
     }
-  }, [phase, agentMode, ensureShoe, dealHand, blackjackBet, showToast, applySettled, handViewFromDeal]);
+  }, [phase, agentMode, ensureShoe, dealHand, blackjackBet, showToast, applySettled, handViewFromDeal, resyncAfterStaleDecision, pushAdvisor]);
 
   // ── INSURANCE (before any main-hand action; dealer-Ace only) ───────────────
   const handleInsure = useCallback(async (agentDriven = false) => {
@@ -684,6 +801,7 @@ export default function BlackjackModal() {
     agentDriven = false,
     slotOverride?: 0 | 1,
     expectedHandVersion?: number,
+    handIdOverride?: string | null,
   ) => {
     if (busyRef.current || !hand) return;
     if (agentMode === 'autonomous' && !agentDriven) {
@@ -693,6 +811,12 @@ export default function BlackjackModal() {
     // The agent driver passes the relay's server-authoritative slot; humans use
     // the focused slot. Avoids a stale-closure read of activeSlot in the driver.
     const slot = slotOverride ?? activeSlot;
+    // Target the relay's SERVER-AUTHORITATIVE hand (concurrency minor a), not the
+    // modal's possibly-stale local view. /agent/decide derives the in-progress
+    // hand from the shoe and returns its id; applying to that id (with the
+    // matching handVersion precondition) means the action lands on the hand the
+    // agent actually decided for. Human taps pass no override → modal's hand.
+    const targetHandId = handIdOverride ?? hand.handId;
     busyRef.current = true;
     // Terminal actions need a stable idempotency key reused across retries.
     const terminal = act === 'stand' || act === 'double' || act === 'surrender';
@@ -703,7 +827,7 @@ export default function BlackjackModal() {
     if (!actionKeyRef.current) actionKeyRef.current = crypto.randomUUID();
     try {
       const res = await action.mutateAsync({
-        handId: hand.handId,
+        handId: targetHandId,
         action: act,
         handSlot: slot,
         idempotencyKey: actionKeyRef.current,
@@ -739,6 +863,10 @@ export default function BlackjackModal() {
         err.status === 409 && err.code === 'stale_agent_decision'
       ) {
         actionKeyRef.current = null;
+        // Refetch the live shoe/balance before the next loop (concurrency minor
+        // b) so the agent's next decision is made against fresh state, not the
+        // stale local view the human already advanced past.
+        void resyncAfterStaleDecision();
         pushAdvisor('You took over this hand — the agent stood down. Still in Autonomous.');
       } else {
         showToast(describeBlackjackError(err), err instanceof CoveApiError && err.status >= 500 ? 'error' : 'warn');
@@ -746,7 +874,7 @@ export default function BlackjackModal() {
     } finally {
       busyRef.current = false;
     }
-  }, [hand, agentMode, action, activeSlot, applySettled, mergeActionInProgress, showToast, pushAdvisor]);
+  }, [hand, agentMode, action, activeSlot, applySettled, mergeActionInProgress, showToast, pushAdvisor, resyncAfterStaleDecision]);
 
   // ── NEXT HAND ───────────────────────────────────────────────────────────────
   const handleNextHand = useCallback(() => {
@@ -812,8 +940,10 @@ export default function BlackjackModal() {
     decision: {
       action: AgentDecisionAction;
       amount?: number;
+      handId?: string | null;
       handSlot?: 0 | 1;
       handVersion?: number | null;
+      expectedHandsPlayed?: number | null;
     },
   ) => {
     switch (decision.action) {
@@ -829,8 +959,14 @@ export default function BlackjackModal() {
           setBlackjackBet(clamped); // reflect the agent's bet on the HUD chip
         }
         // Pass the bet explicitly so the deal does not depend on the async
-        // setBlackjackBet landing first (stale-closure-safe).
-        await handleDeal(true, betOverride);
+        // setBlackjackBet landing first (stale-closure-safe). Thread the relay's
+        // shoe epoch as the stale-agent-deal precondition (concurrency BLOCKING
+        // #2) so a deal that lands after an intervening human deal is rejected.
+        await handleDeal(
+          true,
+          betOverride,
+          decision.expectedHandsPlayed ?? undefined,
+        );
         break;
       }
       case 'insure':
@@ -841,14 +977,16 @@ export default function BlackjackModal() {
       case 'double':
       case 'split':
       case 'surrender':
-        // Honor the relay's server-authoritative target slot for split hands, and
-        // thread the relay's handVersion as the stale-decision precondition (a
-        // human tap that advanced the hand mid-window makes /action 409 this).
+        // Honor the relay's server-authoritative target hand + slot for split
+        // hands (concurrency minor a — apply to the server's hand, not the modal's
+        // local view), and thread the relay's handVersion as the stale-decision
+        // precondition (a human tap that advanced the hand mid-window 409s this).
         await runAction(
           decision.action,
           true,
           decision.handSlot,
           decision.handVersion ?? undefined,
+          decision.handId ?? undefined,
         );
         break;
     }
@@ -925,6 +1063,7 @@ export default function BlackjackModal() {
           handId: decision.handId ?? null,
           handSlot: decision.handSlot,
           handVersion: decision.handVersion ?? null,
+          expectedHandsPlayed: decision.expectedHandsPlayed ?? null,
           deadline: Date.now() + waitMs,
         });
       } catch (err) {
@@ -975,8 +1114,14 @@ export default function BlackjackModal() {
       void applyAgentDecision({
         action: agentPending.action,
         amount: agentPending.amount,
+        // Thread the relay's server-authoritative target hand (minor a) + the
+        // shoe epoch (BLOCKING #2) so the apply lands on the agent's decided hand
+        // and a stale deal is rejected. Previously handId/expectedHandsPlayed were
+        // dropped here, so the action applied to the modal's local handId.
+        handId: agentPending.handId,
         handSlot: agentPending.handSlot,
         handVersion: agentPending.handVersion,
+        expectedHandsPlayed: agentPending.expectedHandsPlayed,
       })
         .finally(() => {
           agentBusyRef.current = false;
