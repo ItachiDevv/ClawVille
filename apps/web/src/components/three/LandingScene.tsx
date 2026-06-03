@@ -12,8 +12,9 @@
  * (±0.22 rad sway + slow bob) — NOT a full 360° orbit. A full orbit swung the
  * finite seabed plane edge-on into a "wall"; a gentle drift keeps a cinematic,
  * stable composition. 57° gives readable building facades/silhouettes (65° only
- * showed rooftops). lookAt Y=−120 drops the building ring into the LOWER half
- * of the frame so hero text floats in open water above the town (R4).
+ * showed rooftops). lookAt Y=−350 (R5) aggressively drops the town ring to the
+ * LOWER ~40% of frame — tallest building tops at ~55–60% frame height, upper
+ * 60% is open dark water for the hero title/CTAs with no buildings behind them.
  * Belt-and-suspenders: seabed is 6000wu wide so edges are always fully
  * fogged out (>fog.far from camera) — no hard edge can ever appear.
  *
@@ -65,11 +66,12 @@ const CAM_Y   = 454;
 const CAM_ARM = 295;
 
 /** LookAt target Y.
- *  R4: lowered from +30 to -120 so the camera tilts to look further down,
- *  dropping the building ring into the LOWER ~45–50% of the frame. The upper
- *  half becomes open water/atmosphere — hero text floats in clear water above
- *  the town ring. The ring itself still appears at full 57° 3/4 overview. */
-const CAM_LOOK_Y = -120;
+ *  R5: pushed from −120 to −350 so the town ring sits in the LOWER ~40% of
+ *  the frame — tops of tallest buildings at ~55–60% frame height. The upper
+ *  ~60% is open dark water where the hero title + CTAs float with no buildings
+ *  behind them. Camera still at 57° elevation; the heavy downward tilt shifts
+ *  the ring to a lower "horizon vista" without changing the camera position. */
+const CAM_LOOK_Y = -350;
 
 /** Base azimuth of the fixed 3/4 vantage (radians). The camera only sways a
  *  small amount around this — it never does a full revolution.
@@ -282,21 +284,22 @@ function GradientSky() {
 }
 
 // ─── Seabed ───────────────────────────────────────────────────────────────────
-// Procedural sandy seabed with multi-octave undulation + vertex color bands,
-// matching the real ClawVille arena-terrain.tsx sand geometry but tuned to
-// a MOODY dark underwater palette. 6000wu so edges are >fog.far from camera
-// at all drift angles. MeshBasicMaterial (vertexColors) — no light dependency,
-// vertex colors baked in, fog-blended at far reaches. Module-scope singleton
-// (never disposed — same rule as _skyTexture).
+// Procedural sandy seabed with multi-octave undulation + vertex color bands.
+// R5: palette swapped to the REAL arena-terrain.tsx warm sandy tones so it
+// reads as the actual in-game floor. Upper atmosphere stays dark navy (sky dome
+// + fog) — only the floor (lower ~40% of frame) goes warm/tan. 6000wu so edges
+// are >fog.far from camera at all drift angles. MeshStandardMaterial so the
+// warm directional key (#ffeedd) actually tints the sandy surface — vertex
+// colors alone (MeshBasicMaterial) couldn't read warm enough. Module-scope
+// singleton (never disposed — same rule as _skyTexture).
 
-// Moody underwater sand palette — darker than the in-game world so it stays
-// on-theme with the deep navy page. Visible tonal variation at close range;
-// fog merges everything to near-black at the edges.
-const _sandRidge  = new THREE.Color(0x4a6070); // muted blue-grey peaks
-const _sandHigh   = new THREE.Color(0x2e4a58); // cooler mid-tone
-const _sandMid    = new THREE.Color(0x1e3545); // dark blue-grey
-const _sandValley = new THREE.Color(0x122232); // deep navy troughs
-const _sandDeep   = new THREE.Color(0x0a1520); // near-black floor
+// Real in-game sand palette — direct copy from arena-terrain.tsx SAND_* constants.
+// Warm whites/tans for ridges, warm golden mids, dark warm-brown troughs.
+const _sandRidge  = new THREE.Color(0xfff0d4); // bright white-sand peaks
+const _sandHigh   = new THREE.Color(0xe8d0a8); // warm sand
+const _sandMid    = new THREE.Color(0xc4a878); // golden mid-tone
+const _sandValley = new THREE.Color(0x8a7050); // dark moody valleys
+const _sandDeep   = new THREE.Color(0x5c4a32); // deep brown-black troughs
 
 function seededRng(seed: number): () => number {
   let s = seed;
@@ -351,10 +354,19 @@ function getSeabedGeo(): THREE.BufferGeometry {
   return _seabedGeo;
 }
 
-let _seabedMat: THREE.MeshBasicMaterial | null = null;
-function getSeabedMat(): THREE.MeshBasicMaterial {
+let _seabedMat: THREE.MeshStandardMaterial | null = null;
+function getSeabedMat(): THREE.MeshStandardMaterial {
   if (!_seabedMat) {
-    _seabedMat = new THREE.MeshBasicMaterial({ vertexColors: true, fog: true });
+    // MeshStandardMaterial: vertexColors + fog so the warm directional key
+    // (#ffeedd) tints the sandy vertex colors — MeshBasicMaterial ignores
+    // lights so warm tones read as flat unlit, which was the R4 "blue-grey"
+    // complaint. roughness/metalness tuned for sandy ocean floor (no speculars).
+    _seabedMat = new THREE.MeshStandardMaterial({
+      vertexColors: true,
+      fog:          true,
+      roughness:    0.97,
+      metalness:    0,
+    });
   }
   return _seabedMat;
 }
@@ -402,17 +414,18 @@ interface ReefDecoDef {
 // is even. Models reuse what is already preloaded by LANDING_BUILDINGS or the
 // sw.js PRECACHE_GLBS list. underwater-decorations is the richest single GLB
 // (coral clusters + kelp merged); coral-reef1/2/3 + kelp fill the rest.
+// R5: sizes bumped ~15-20% so decos pop against the new sandy floor.
 const REEF_DECOS: ReefDecoDef[] = [
-  { model: '/models/coral-reef1.glb',            x:  260, z:   30, size: 45, rotY: 0.3 },
-  { model: '/models/coral-reef2.glb',            x: -220, z:  120, size: 40, rotY: 1.8 },
-  { model: '/models/coral-reef3.glb',            x:   80, z: -270, size: 42, rotY: 0.9 },
-  { model: '/models/kelp.glb',                   x: -290, z: -100, size: 35, rotY: 2.4 },
-  { model: '/models/kelp.glb',                   x:  160, z:  290, size: 30, rotY: 0.6 },
-  { model: '/models/coral-reef1.glb',            x: -150, z: -310, size: 38, rotY: 3.1 },
-  { model: '/models/coral-reef2.glb',            x:  310, z: -200, size: 36, rotY: 1.2 },
-  { model: '/models/coral-reef3.glb',            x: -330, z:  180, size: 40, rotY: 2.7 },
-  { model: '/models/underwater-decorations.glb', x:  220, z: -340, size: 50, rotY: 0.5 },
-  { model: '/models/underwater-decorations.glb', x: -200, z:  340, size: 48, rotY: 1.5 },
+  { model: '/models/coral-reef1.glb',            x:  260, z:   30, size: 52, rotY: 0.3 },
+  { model: '/models/coral-reef2.glb',            x: -220, z:  120, size: 46, rotY: 1.8 },
+  { model: '/models/coral-reef3.glb',            x:   80, z: -270, size: 49, rotY: 0.9 },
+  { model: '/models/kelp.glb',                   x: -290, z: -100, size: 41, rotY: 2.4 },
+  { model: '/models/kelp.glb',                   x:  160, z:  290, size: 35, rotY: 0.6 },
+  { model: '/models/coral-reef1.glb',            x: -150, z: -310, size: 44, rotY: 3.1 },
+  { model: '/models/coral-reef2.glb',            x:  310, z: -200, size: 42, rotY: 1.2 },
+  { model: '/models/coral-reef3.glb',            x: -330, z:  180, size: 46, rotY: 2.7 },
+  { model: '/models/underwater-decorations.glb', x:  220, z: -340, size: 58, rotY: 0.5 },
+  { model: '/models/underwater-decorations.glb', x: -200, z:  340, size: 56, rotY: 1.5 },
 ];
 
 // Preload all deco GLBs at module scope (deduped — coral-reef1/2/3, kelp may
@@ -629,13 +642,12 @@ function SceneContents() {
       <DriftCamera />
 
       {/* Lighting (MAX 3 — Iris Xe rule #1). Lit SUBJECTS on a DARK stage.
-          hemisphere 1.60: ambient fill on buildings + sandy seabed vertex colors.
-          directional 2.20: strong key light from near-vertical [0,500,60] — even
-          coverage across all 10 ring positions regardless of azimuth. Seabed uses
-          MeshBasicMaterial (vertexColors) so it ignores lighting, relying entirely
-          on baked vertex tones for its sandy look — the directional only lifts
-          building facades. Point 1.9 / [0,150,0]: bioluminescent cyan fill from
-          the ring center, touches reef decorations in the near field. */}
+          hemisphere 1.60: warm ambient fill on buildings + seabed surface.
+          directional 2.20 (#ffeedd) near-vertical [0,500,60]: even key coverage
+          across all ring positions; also warms the sandy seabed — R5 switched
+          seabed to MeshStandardMaterial so the warm key (#ffeedd) can actually
+          tint the sandy vertex colors (MeshBasicMaterial ignores lights).
+          Point 1.9 / [0,150,0]: bioluminescent cyan fill, touches reef decos. */}
       <hemisphereLight color={_hemiSkyColor} groundColor={_hemiGroundColor} intensity={1.60} />
       <directionalLight color={_sunColor} intensity={2.20} position={[0, 500, 60]} />
       <pointLight color={_bioColor} intensity={1.9} distance={760} position={[0, 150, 0]} />
