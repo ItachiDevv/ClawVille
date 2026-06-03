@@ -5,19 +5,9 @@ import type {
 } from '@clawville/shared';
 import { signPayload } from './service-issuer';
 import { validateHatcherProxyUrl } from './hatcher-config';
+import { PROTOCOL_VERSION } from './skill-protocol';
 
 type Protocol = AgentWireProtocol;
-
-/**
- * Orientation contract version shipped in `clawville.orientation.version` on the
- * hatcher-proxy cognition body. Bump when the orientation surface
- * (`CLAWVILLE_ORIENTATION_KNOWLEDGE`) or the protocol manual at
- * `/api/skills/protocol/skill.md` changes meaningfully, so a polling partner can
- * detect it needs to re-fetch. Mirrors `PROTOCOL_VERSION` in
- * `apps/api/src/routes/skills.ts` (the manifest's canonical version) — kept as a
- * local literal to avoid a route↔service import cycle.
- */
-const HATCHER_ORIENTATION_VERSION = 1;
 
 /**
  * Hard cap on the raw proxy-cognition reply we will accept (chars). Our
@@ -228,7 +218,10 @@ export class OpenClawClient {
         // keeps the canonical signed bytes clean for the partner's verifier.
         ...(worldState ? { worldState } : {}),
         orientation: {
-          version: HATCHER_ORIENTATION_VERSION,
+          // Single source of truth — the manifest's canonical protocol version
+          // (services/skill-protocol.ts), so this pointer never drifts from the
+          // served `/api/skills/protocol/skill.md` manual.
+          version: PROTOCOL_VERSION,
           url: '/api/skills/protocol/skill.md',
         },
       },
