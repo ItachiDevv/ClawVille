@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
+import { randomBytes } from 'crypto';
 import { NPC_IDS, BUILDING_OPENCLAW_THEMES } from '@clawville/shared';
 import type { OpenClawRegistration, OpenClawBotIdentity } from '@clawville/shared';
 import { OpenClawClient } from '../services/openclaw-client';
@@ -121,7 +122,14 @@ openclawRoutes.post('/register', async (c) => {
   }
 
   const data = parsed.data;
-  const sessionId = `oc-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  // Hardening (Codex dual-review, 2026-06-03): this legacy /openclaw/register
+  // path registers into the SAME npc-simulation map as /connect and returns the
+  // session id as the X-Clawville-Agent-Session bearer credential the cove
+  // trusts for real-CT play. Mint it with crypto.randomBytes (~192 bits, was
+  // Date.now() + Math.random — both predictable/forgeable). `oc-` prefix kept
+  // for log readability; validation is Map membership so the change is
+  // transparent and old in-memory ids age out with no migration.
+  const sessionId = `oc-${randomBytes(24).toString('base64url')}`;
 
   const config: OpenClawRegistration = {
     ...data,
