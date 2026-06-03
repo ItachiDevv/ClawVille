@@ -1,8 +1,6 @@
 # Hatcher × ClawVille — Answers to Implementation Follow-Ups
 
-Send-ready reply to Hatcher's 6 follow-up questions. Most of this is **built + live on
-ClawVille staging** (`https://api-staging.clawville.world`; prod will be
-`https://api.clawville.world`, identical paths). Companion: `docs/hatcher-agent-entry-flow.md`.
+Companion: `docs/hatcher-agent-entry-flow.md`.
 
 Status legend: **✅ live on staging** · **[needs Hatcher]**.
 
@@ -10,35 +8,34 @@ Status legend: **✅ live on staging** · **[needs Hatcher]**.
 
 ## 1. Exact ed25519 signing format
 
-Three signing contexts. All ed25519 (`nacl.sign.detached`), **base58** encoding,
-32-byte pubkey / 64-byte signature.
+**Quick map to your 5 sub-questions** (full detail in (a), (b), (c) below):
 
-**(a) Your inbound writes** — `POST/PATCH/DELETE /api/partner/hatcher/agents`:
-- **Signed material:** `SHA-256(rawBody)` over the **exact UTF-8 bytes you transmit**. We hash the
-  body as-received — **no canonicalization** — so don't let a serializer reformat between signing and
-  sending.
+| Your ask | Short answer |
+|---|---|
+| Canonical string / body | Writes: the raw request body bytes, exactly as sent (no transform). Reads (GET): the fixed string `clawville-partner-get\n<METHOD>\n<PATH>\n<UNIX_MS>`. Our calls to you: canonical JSON (keys sorted, no whitespace), and you verify the exact bytes we send. |
+| Timestamp header | `X-Hatcher-Timestamp` (unix ms) on reads. None on writes. |
+| Replay window | Reads: plus or minus 5 minutes. Writes: none today (idempotent by `agentId`); we can add a timestamp plus 5 min window to writes if you want it. |
+| Nonce / idempotency | No nonce store. Writes idempotent by `agentId`; reads bounded by the 5 minute window. |
+| Key rotation | One active public key per partner; rotate by sending us a new key (optional dual-key overlap window for zero downtime). |
+
+Three signing contexts. All ed25519 (`nacl.sign.detached`), `base58` encoding, 32-byte pubkey / 64-byte signature.
+
+**(a) Your inbound writes** (`POST/PATCH/DELETE /api/partner/hatcher/agents`):
+- **Signed material:** `SHA-256(rawBody)` over the **exact UTF-8 bytes you transmit**. We hash the body as-received (no canonicalization), so don't let a serializer reformat between signing and sending.
 - **Headers:** `X-Hatcher-Issuer-Pubkey: <base58>`, `X-Hatcher-Signature: <base58>`.
-- **Replay/nonce:** none on writes — idempotent by `agentId` (POST upserts, DELETE no-ops if gone).
-  We can add a timestamp+window to writes if you want hard replay protection there — just ask.
+- **Replay / nonce:** none on writes. They are idempotent by `agentId` (POST upserts, DELETE no-ops if gone). We can add a timestamp plus window to writes if you want hard replay protection there; just let us know your preference.
 
-**(b) Your inbound reads** — `GET …/stats` (no body):
-- **Signed material:** `SHA-256(challenge)`, `challenge = "clawville-partner-get\n<METHOD>\n<PATH>\n<UNIX_MS>"`
-  (newline-joined, fixed order). `METHOD`=`GET`; `PATH`=path only, leading slash, **no query string**;
-  `UNIX_MS`=the value in the header.
+**(b) Your inbound reads** (`GET .../stats`, no body):
+- **Signed material:** `SHA-256(challenge)`, where `challenge = "clawville-partner-get\n<METHOD>\n<PATH>\n<UNIX_MS>"` (newline-joined, fixed order). `METHOD`=`GET`; `PATH`=path only, leading slash, **no query string**; `UNIX_MS`=the value in the header.
 - **Headers:** `X-Hatcher-Issuer-Pubkey`, `X-Hatcher-Signature`, `X-Hatcher-Timestamp: <unix ms int>`.
-- **Replay window:** **±5 min** (matches your `authNonceExpirySecs:300`); no nonce store (window is
-  the bound — read-only own-data endpoint).
+- **Replay window:** plus or minus 5 minutes (matches your `authNonceExpirySecs:300`). No nonce store; the window is the bound (read-only own-data endpoint).
 
-**(c) Our outbound cognition callback** — you **verify** these:
-- **Signed material:** `SHA-256(canonicalJSON(body))` — we sort keys + strip whitespace and send
-  **exactly those canonical bytes**. Verify against the bytes you receive; **don't re-parse-then-re-stringify**.
-- **Headers we send:** `X-Clawville-Issuer-Pubkey`, `X-Clawville-Signature`, plus
-  `Authorization: Bearer <your scoped token>`.
-- **Our pubkey:** fetch + cache from `https://api-staging.clawville.world/.well-known/clawville-issuer.json`.
+**(c) Our outbound cognition callback** (you **verify** these):
+- **Signed material:** `SHA-256(canonicalJSON(body))`. We sort keys and strip whitespace and send **exactly those canonical bytes**. Verify against the bytes you receive; **do not re-parse then re-stringify**.
+- **Headers we send:** `X-Clawville-Issuer-Pubkey`, `X-Clawville-Signature`, plus `Authorization: Bearer <your scoped token>`.
+- **Our pubkey:** fetch and cache from `https://api-staging.clawville.world/.well-known/clawville-issuer.json`.
 
-**Key rotation:** one active pubkey per partner in our allowlist; to rotate, send the new key and we
-swap the env on both boxes at an agreed instant. Zero-downtime → we can run a brief **dual-key overlap
-window**; tell us if you need it.
+**Key rotation:** one active public key per partner in our allowlist. To rotate, send the new key and we swap the env on both servers at an agreed instant. For zero downtime we can run a brief **dual-key overlap window**; just tell us if you need it.
 
 ---
 
