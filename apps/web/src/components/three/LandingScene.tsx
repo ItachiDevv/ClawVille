@@ -8,12 +8,13 @@
  * — deep-blue fog (#0e3458), hemisphere sky #66bbdd / ground #223344, warm
  * key light — rather than the washed teal/tan it had before.
  *
- * Camera: a COMPOSED 3/4 establishing vantage that drifts gently (±0.22 rad
- * sway + slow bob) — NOT a full 360° orbit. A full orbit swung the finite
- * seabed plane edge-on into a "wall" cutting across the frame; a gentle drift
- * keeps a cinematic, stable composition. Belt-and-suspenders: the seabed is
- * 6000wu wide so its edges are always FULLY fogged out (>fog.far from camera)
- * — no hard edge can ever appear.
+ * Camera: a steep top-down 3/4 vantage (65° elevation, arm=280wu) that drifts
+ * gently (±0.22 rad sway + slow bob) — NOT a full 360° orbit. A full orbit
+ * swung the finite seabed plane edge-on into a "wall"; a gentle drift keeps a
+ * cinematic, stable composition. The steeper 65° angle (was 49°) collapses
+ * near/far size disparity so the ring reads as a balanced symmetric circle.
+ * Belt-and-suspenders: the seabed is 6000wu wide so its edges are always FULLY
+ * fogged out (>fog.far from camera) — no hard edge can ever appear.
  *
  * Iris Xe GPU constraints:
  *   1. MAX 3 lights (hemisphere + 1 directional + 1 point)
@@ -39,8 +40,10 @@ import { extendLoaderWithMeshopt } from '@/lib/three/meshopt-loader-setup';
 
 // ─── Ring layout constants ────────────────────────────────────────────────────
 
-/** Target max dimension for each building in the landing scene (world units). */
-const HERO_TARGET_MAX_DIM = 88;
+/** Target max dimension for each building in the landing scene (world units).
+ *  Slightly larger than before to compensate for the steeper top-down angle
+ *  compressing apparent building height. */
+const HERO_TARGET_MAX_DIM = 96;
 
 /** Ring radius for the overview shot (world units). Tighter = town reads as a
  *  compact, CENTERED cluster behind the logo rather than spread to the edges. */
@@ -49,15 +52,18 @@ const HERO_RING_RADIUS = 195;
 /** Number of building slots. */
 const HERO_SLOT_COUNT = 10;
 
-/** Camera height + orbit-arm length. High + close = a steep TOP-DOWN overview
- *  where the ring reads as a symmetric circle centered in frame (and the bright
- *  horizon is pushed out of view → no sky band). */
-const CAM_Y   = 480;
-const CAM_ARM = 420;
+/** Camera height + orbit-arm length.
+ *  CAM_Y=600, CAM_ARM=280 → elevation ≈ 65° from horizon (atan2(600,280)).
+ *  Steeper angle collapses near/far size disparity so the ring reads as a
+ *  symmetric circle. Prior 49° (480/420) left front buildings 2-3× larger than
+ *  back ones, creating a lopsided pile rather than a town overview. */
+const CAM_Y   = 600;
+const CAM_ARM = 280;
 
 /** Base azimuth of the fixed 3/4 vantage (radians). The camera only sways a
- *  small amount around this — it never does a full revolution. */
-const CAM_BASE_AZIMUTH = -Math.PI * 0.60;
+ *  small amount around this — it never does a full revolution.
+ *  Shifted slightly from -0.60π → -0.55π to improve left/right balance. */
+const CAM_BASE_AZIMUTH = -Math.PI * 0.55;
 
 // ─── Module-scope scratch objects (rule #4 — zero per-frame allocation) ──────
 
@@ -388,9 +394,9 @@ function BuildingRing() {
 }
 
 // ─── DriftCamera ──────────────────────────────────────────────────────────────
-// Composed 3/4 establishing vantage with a GENTLE sway + bob — never a full
-// 360° orbit (which swung the seabed edge-on into a wall). Looks at the ring's
-// mid-height so the town is vertically centered.
+// Steep top-down 3/4 vantage (65° elevation, arm=280wu) with GENTLE sway + bob.
+// Never a full 360° orbit (seabed edge-on wall). LookAt lifted to Y=30 so the
+// ring's upper buildings don't vanish above the frame at the steep angle.
 
 function DriftCamera() {
   useFrame(({ camera, clock }) => {
@@ -403,7 +409,7 @@ function DriftCamera() {
       Math.sin(azimuth) * CAM_ARM,
     );
     camera.position.copy(_scratchVec3A);
-    _scratchVec3B.set(0, 0, 0); // ring center → symmetric, centered overview
+    _scratchVec3B.set(0, 30, 0); // lifted slightly so the ring occupies frame center vertically
     camera.lookAt(_scratchVec3B);
   });
   return null;
@@ -416,16 +422,25 @@ function SceneContents() {
     <>
       <DriftCamera />
 
-      {/* Lighting (MAX 3 — Iris Xe rule #1). DARK + moody: dim cool ambient +
-          dim warm key for form, with a strong CYAN bioluminescent core that
-          glows the central town — matches the page's navy + cyan-glow theme. */}
-      <hemisphereLight color={_hemiSkyColor} groundColor={_hemiGroundColor} intensity={0.62} />
-      <directionalLight color={_sunColor} intensity={0.9} position={[180, 420, 140]} />
-      <pointLight color={_bioColor} intensity={2.4} distance={720} position={[0, 60, 0]} />
+      {/* Lighting (MAX 3 — Iris Xe rule #1). Lit SUBJECTS on a DARK stage.
+          Key changes for even ring coverage at the steeper 65° camera:
+          - hemisphere raised 1.05 → 1.45: wraps all 10 buildings equally with
+            sky/ground fill regardless of their angular position in the ring.
+          - directional moved more overhead [180,420,140] → [0,500,60]: near-vertical
+            key rakes building TOPS on all sides (elevation ≈ 83°) so the back-left
+            buildings (patricks-rock, squidward, boating-school) get the same key
+            contribution as the front-right ones. The small +Z offset keeps a faint
+            directional cue so it isn't purely flat.
+          - cyan point lifted [0,70,0] → [0,150,0]: sits above most building tops
+            (~96wu target), emitting warm bioluminescent fill downward into the ring
+            center from a higher vantage. */}
+      <hemisphereLight color={_hemiSkyColor} groundColor={_hemiGroundColor} intensity={1.45} />
+      <directionalLight color={_sunColor} intensity={1.75} position={[0, 500, 60]} />
+      <pointLight color={_bioColor} intensity={1.9} distance={760} position={[0, 150, 0]} />
 
       {/* Dark-blue underwater fog (#0a2236). near=360 keeps the compact ring
-          (radius 195) clear; far=1400 fades the distance + fully hides the
-          6000wu seabed's edges (always >1400 from camera → invisible). */}
+          (radius 195) fully visible; far=1400 fades distance + fully hides the
+          6000wu seabed's edges (always >1400 from camera at 659wu from origin). */}
       <fog attach="fog" args={[_fogColor, 360, 1400]} />
 
       <GradientSky />
@@ -459,7 +474,7 @@ export default function LandingScene() {
           fov:  50,
           near: 1,
           // far clears the sky dome (radius 1200) from the orbiting camera
-          // (~690wu from origin): 1200 + 690 ≈ 1890 < 2400.
+          // (~659wu from origin at 65° elevation): 1200 + 659 ≈ 1859 < 2400.
           far:  2400,
           position: [CAM_ARM, CAM_Y, 0],
         }}
