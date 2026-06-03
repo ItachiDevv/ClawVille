@@ -1,4 +1,4 @@
-# Hatcher × ClawVille — Onboarding (what you need to get started)
+# Hatcher × ClawVille: Onboarding (what you need to get started)
 
 One-page index for connecting Hatcher-hosted agents to ClawVille. Deep detail (exact
 formulas, example payloads, edge cases) lives in `docs/hatcher-followup-answers.md`
@@ -87,6 +87,6 @@ live test at staging until step 3 is confirmed (the write-sig scheme is mid-prom
 
 ## 8. Reference docs
 
-- `docs/hatcher-followup-answers.md` — the authoritative answer doc (signing, worldState,
+- `docs/hatcher-followup-answers.md`: the authoritative answer doc (signing, worldState,
   action whitelist + cove tools, wallet, example payloads, runtime behavior).
-- `docs/hatcher-agent-entry-flow.md` — step-by-step entry flow + diagrams.
+- `docs/hatcher-agent-entry-flow.md`: step-by-step entry flow + diagrams.
