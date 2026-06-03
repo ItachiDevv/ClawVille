@@ -94,6 +94,135 @@ export function verifyPartnerSignature(
 }
 
 /**
+ * Freshness window for partner-signed WRITES (POST/PATCH/DELETE). Mirrors the
+ * GET window (5 min) but is a SEPARATE constant so the write window can be tuned
+ * independently of the read window later (e.g. a tighter write window once we
+ * have live traffic) without touching the read path. See
+ * `verifyPartnerWriteSignature` below for the full scheme rationale.
+ */
+export const PARTNER_WRITE_SIGNATURE_WINDOW_MS = 5 * 60_000;
+
+/**
+ * The CANONICAL CHALLENGE a partner must sign for a WRITE (POST/PATCH/DELETE).
+ * Newline-joined, fixed field order, domain-separated, so the partner can
+ * reproduce it byte-for-byte:
+ *
+ *   clawville-partner-write\n<METHOD>\n<PATH>\n<UNIX_MS>\n<sha256hex(rawBody)>
+ *
+ *   - METHOD  uppercased HTTP method (POST / PATCH / DELETE).
+ *   - PATH    the request path INCLUDING the leading slash, EXCLUDING the
+ *             scheme/host AND the query string (Hono `c.req.path` semantics),
+ *             identical to the GET challenge's path field.
+ *   - UNIX_MS the millisecond unix timestamp the partner also sends in the
+ *             `X-Hatcher-Timestamp` header (decimal digits, no fraction).
+ *   - sha256hex(rawBody) the lowercase hex sha256 of the EXACT raw request body
+ *             bytes (the empty string hashes to a fixed digest for body-less
+ *             DELETEs).
+ *
+ * Why a write needs all four bindings PLUS a window, even though the write
+ * handlers are idempotent by `agentId` (POST upserts, DELETE no-ops if gone):
+ * defense in depth before production. The four bindings each close a distinct
+ * gap, and the window caps how long a captured-on-the-wire request stays
+ * replayable:
+ *   - The DOMAIN PREFIX (`clawville-partner-write`, distinct from
+ *     `clawville-partner-get`) means a GET signature can NEVER be replayed as a
+ *     write and vice-versa, even for the same path/timestamp.
+ *   - Binding METHOD + PATH stops a captured POST sig from being replayed as a
+ *     PATCH/DELETE, or against a different agent's path (cross-verb,
+ *     cross-path replay).
+ *   - Binding the body HASH gives body integrity: a captured signature cannot be
+ *     reattached to a mutated body.
+ *   - Binding the TIMESTAMP + enforcing the window gives replay-window
+ *     protection: a captured-on-the-wire request expires after the window
+ *     instead of being replayable forever (idempotency alone does not bound how
+ *     LONG a captured request stays valid, and a future non-idempotent write
+ *     verb would inherit this protection for free).
+ */
+export function partnerWriteChallenge(args: {
+  method: string;
+  path: string;
+  tsMillis: string;
+  rawBody: string;
+}): string {
+  const bodyHashHex = createHash('sha256').update(args.rawBody).digest('hex');
+  return `clawville-partner-write\n${args.method.toUpperCase()}\n${args.path}\n${args.tsMillis}\n${bodyHashHex}`;
+}
+
+/**
+ * Verify a partner-signed WRITE (POST/PATCH/DELETE). Structurally MIRRORS
+ * `verifyPartnerGetSignature`: same ed25519 key + `PARTNER_PUBKEYS[partnerId]`
+ * allowlist, same strict timestamp parse + freshness window, same generic
+ * failure reasons so callers return an opaque 401. The signed material is
+ * `sha256(partnerWriteChallenge(...))` (which itself binds method, path,
+ * timestamp, and the body hash) rather than the GET challenge, and the window
+ * is the WRITE window so it can be tuned independently.
+ *
+ * The domain-separated prefix (`clawville-partner-write`) is what makes a write
+ * signature unforgeable from a GET signature and vice-versa: even an attacker
+ * holding a valid GET signature for the same path/timestamp cannot present it
+ * here, because the signed bytes start with a different domain string.
+ */
+export function verifyPartnerWriteSignature(
+  partnerId: string,
+  args: {
+    method: string;
+    path: string;
+    tsHeader: string | null;
+    pubkeyHeader: string | null;
+    sigHeader: string | null;
+    rawBody: string;
+    nowMs?: number;
+  },
+): PartnerSignatureResult {
+  if (!args.pubkeyHeader || !args.sigHeader || !args.tsHeader) {
+    return { ok: false, reason: 'missing_signature' };
+  }
+
+  // Timestamp must be a plain integer of milliseconds inside the freshness
+  // window. Reject NaN, fractional, negative, stale (past) and early (future)
+  // timestamps. `Number.parseInt` would silently accept `"123abc"`, so guard
+  // with a strict digits-only test first (identical to the GET path).
+  if (!/^\d{1,15}$/.test(args.tsHeader)) {
+    return { ok: false, reason: 'bad_timestamp' };
+  }
+  const tsMs = Number(args.tsHeader);
+  const now = args.nowMs ?? Date.now();
+  if (Math.abs(now - tsMs) > PARTNER_WRITE_SIGNATURE_WINDOW_MS) {
+    return { ok: false, reason: 'stale_timestamp' };
+  }
+
+  const allowlist = loadPartnerPubkeys();
+  if (!allowlist) return { ok: false, reason: 'no_partner_allowlist' };
+  const expectedPubkey = allowlist[partnerId];
+  if (!expectedPubkey || args.pubkeyHeader !== expectedPubkey) {
+    return { ok: false, reason: 'unknown_partner' };
+  }
+
+  const challenge = partnerWriteChallenge({
+    method: args.method,
+    path: args.path,
+    tsMillis: args.tsHeader,
+    rawBody: args.rawBody,
+  });
+  const digest = createHash('sha256').update(challenge).digest();
+  let sigBytes: Uint8Array;
+  let pubBytes: Uint8Array;
+  try {
+    sigBytes = bs58.decode(args.sigHeader);
+    pubBytes = bs58.decode(args.pubkeyHeader);
+  } catch {
+    return { ok: false, reason: 'bad_signature_encoding' };
+  }
+  if (sigBytes.length !== 64 || pubBytes.length !== 32) {
+    return { ok: false, reason: 'bad_signature_length' };
+  }
+  if (!nacl.sign.detached.verify(new Uint8Array(digest), sigBytes, pubBytes)) {
+    return { ok: false, reason: 'bad_signature' };
+  }
+  return { ok: true, partnerId };
+}
+
+/**
  * Freshness window for partner-signed GETs. A GET carries no body to sign, so
  * the signed bytes are a CANONICAL CHALLENGE derived from method + path +
  * timestamp. The signature alone can't prevent replay (the same bytes verify
