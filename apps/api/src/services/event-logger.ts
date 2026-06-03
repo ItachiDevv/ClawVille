@@ -249,7 +249,67 @@ export interface ActivityPodPressurePayload {
   level: 'warn' | 'reduce_tick' | 'refuse_new_rooms';
 }
 
+// ─── agent.connected rapid-reconnect coalescing (Fix B, 2026-06-03) ─────────
+//
+// Defense-in-depth backstop for the uncapped agent.connected session farm.
+// The authoritative fix is the leaderboard-side per-day distinct-session cap
+// (DAILY_CAPS.session in leaderboard.ts); this emission-side gate additionally
+// DROPS duplicate `agent.connected` rows for the same (subject, fingerprint)
+// within a short window so a replayed / rapid re-register doesn't even write an
+// extra session row in the first place. It is fingerprint-scoped (a real new
+// browser/session legitimately earns a new row); the DB daily cap remains the
+// fp-independent authority.
+const AGENT_CONNECTED_COALESCE_MS = 60_000;
+const AGENT_CONNECTED_MAP_MAX = 10_000;
+const lastAgentConnectedAt = new Map<string, number>();
+
+/**
+ * Pure-ish coalescing gate for `agent.connected` emission.
+ *
+ * Returns `true` (EMIT) on the first call for `subjectKey`, or once
+ * AGENT_CONNECTED_COALESCE_MS has elapsed since the last recorded emit for that
+ * key; returns `false` (SKIP) when a prior emit is still within the window. On
+ * an EMIT decision it records `nowMs` as the new last-emit time. Exported so the
+ * leaderboard self-tests can drive it directly with an injected clock.
+ *
+ * Includes an opportunistic, size-bounded cleanup: when the map grows past
+ * AGENT_CONNECTED_MAP_MAX entries, stale entries (older than the window) are
+ * evicted so a long-lived process with many distinct subjects can't leak memory.
+ */
+export function shouldEmitAgentConnected(subjectKey: string, nowMs: number): boolean {
+  const last = lastAgentConnectedAt.get(subjectKey);
+  if (last !== undefined && nowMs - last < AGENT_CONNECTED_COALESCE_MS) {
+    // Within the coalescing window — duplicate connect, drop it.
+    return false;
+  }
+
+  // Opportunistic eviction BEFORE recording the new key so the size guard also
+  // bounds the set we're about to grow.
+  if (lastAgentConnectedAt.size >= AGENT_CONNECTED_MAP_MAX) {
+    for (const [k, t] of lastAgentConnectedAt) {
+      if (nowMs - t >= AGENT_CONNECTED_COALESCE_MS) lastAgentConnectedAt.delete(k);
+    }
+  }
+
+  lastAgentConnectedAt.set(subjectKey, nowMs);
+  return true;
+}
+
 export async function logEvent(input: EventInput): Promise<void> {
+  // Fix B — coalesce rapid-reconnect agent.connected duplicates BEFORE any
+  // insert. Subject precedence agentId → avatarId → userId; key includes the
+  // fingerprint so distinct browsers stay independent. When no subject can be
+  // resolved we do NOT coalesce (always emit) — a null subject can't be farmed.
+  if (input.eventType === 'agent.connected') {
+    const subj = input.agentId ?? input.avatarId ?? input.userId ?? null;
+    if (subj !== null) {
+      const key = `${subj}:${input.fpHash ?? 'nofp'}`;
+      if (!shouldEmitAgentConnected(key, Date.now())) {
+        return;
+      }
+    }
+  }
+
   const row = {
     eventType: input.eventType,
     userId: input.userId ?? null,
