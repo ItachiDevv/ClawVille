@@ -1,6 +1,7 @@
 import {
   NPC_DEFINITIONS,
   NPC_BUILDING_CENTERS,
+  MAP_LOCATIONS,
   BUILDING_OPENCLAW_THEMES,
   type NpcDefinition,
   type OpenClawRegistration,
@@ -90,6 +91,18 @@ const HATCHER_TALK_MESSAGE_MAX = 500;
 // for one cognition turn. Tags beyond the cap are STILL stripped from speech,
 // just never executed.
 const MAX_HATCHER_ACTIONS_PER_REPLY = 4;
+
+// Cove center, in world pixel coords, for the enter_cove() verb. The Cove is
+// NOT in NPC_BUILDING_CENTERS (that map is the 10 teaching buildings only), so
+// we derive the center from its MAP_LOCATIONS rect (positionX/Y is the top-left
+// corner; center = corner + half the width/height). Computed once at module
+// load; null if the 'cove' location is somehow missing (enter_cove then no-ops
+// loudly rather than crashing).
+const COVE_CENTER: { x: number; y: number } | null = (() => {
+  const cove = MAP_LOCATIONS.find((l) => l.id === 'cove');
+  if (!cove) return null;
+  return { x: cove.positionX + cove.width / 2, y: cove.positionY + cove.height / 2 };
+})();
 
 // Town-center anchor and the annulus (ring) free-roaming wanderers stay inside.
 // Buildings are on a ring at ~4160wu from center (R=130 tiles). Keep free
@@ -803,6 +816,7 @@ class NpcSimulation {
    *   move(x:int 32..11488, y:int 32..11488)             -> setNpcPath (findPath)
    *   emote(name in {wave,dance,think,scan,work,celebrate,alert}) -> setNpcActivity
    *   enter_building(buildingId in the 10 MAP_LOCATIONS ids)      -> walk to building
+   *   enter_cove()                                        -> walk to the Cove (casino gateway)
    *   talk_to_npc(npcId|buildingId, message<=500)         -> injectAgentChat bubble
    *
    * Unknown names / bad params are DROPPED (never executed, never throw). Only
@@ -923,6 +937,34 @@ class NpcSimulation {
           return;
         }
         this.setNpcPath(npcId, path, buildingId);
+        return;
+      }
+      case 'enter_cove': {
+        // enter_cove() — the HYBRID gateway verb (Rule E5 / [cards] spec). Walks
+        // the agent body to the Predictive Gaming Cove and tags the destination
+        // so the sim shows the approach. This is the VISIBLE in-world effect of
+        // "I am going to the casino"; the agent then drives REAL-CT blackjack via
+        // the agent-callable cove tools (GET/POST /api/agent/:sid/cove/blackjack/*),
+        // which bind to its avatar's ClawToken ledger. No params.
+        //
+        // The Cove is NOT in NPC_BUILDING_CENTERS (10 teaching buildings only);
+        // its center comes from the MAP_LOCATIONS rect, resolved once at module
+        // load into COVE_CENTER. Drop loudly (never crash) if it's missing.
+        if (!COVE_CENTER) {
+          console.warn('[Hatcher] enter_cove dropped — cove location missing from MAP_LOCATIONS');
+          return;
+        }
+        const destX = COVE_CENTER.x + (Math.random() - 0.5) * 40;
+        const destY = COVE_CENTER.y + 20 + Math.random() * 20;
+        const path = findPath(npc.x, npc.y, destX, destY);
+        if (path.length === 0) {
+          console.warn('[Hatcher] enter_cove dropped — no path to the cove');
+          return;
+        }
+        this.setNpcPath(npcId, path, 'cove');
+        // 'trading' is the closest valid NpcActivity for casino play; override
+        // the emoji to the slot 🎰 so the bubble reads as "at the Cove".
+        this.setNpcActivity(npcId, 'trading', '🎰');
         return;
       }
       case 'talk_to_npc': {
