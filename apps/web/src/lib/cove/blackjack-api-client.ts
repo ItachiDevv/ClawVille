@@ -361,6 +361,138 @@ export function useCloseBlackjackShoe() {
 }
 
 // ---------------------------------------------------------------------------
+// useBlackjackAgentDecision — POST /agent/decide (autonomous-mode relay)
+//
+// When a HUMAN is at /game with a CONNECTED agent and flips the table to
+// Autonomous, the browser asks the agent (server-side, bound to the live
+// session) for its next decision on the currently-open shoe/hand. The server
+// is authoritative: it sees the hand state and the agent's bound skill memory,
+// runs the agent's decision, and returns ONLY the decision verb (+ a bet amount
+// for the opening `deal`). The browser then APPLIES that verb through the same
+// /hand/deal or /action endpoints after the human-input window — it never
+// receives undealt cards, the dealer hole, or the seed.
+//
+// FEATURE_GATE: blackjack_autonomous_agent_mode (graduation handled in the
+// modal's AgentModeBar block). The relay contract is locked with impl-1's
+// `POST /api/cove/blackjack/agent/decide` route. Two distinct failure shapes
+// the driver MUST treat differently:
+//   - AgentDriverUnavailableError (sticky → drop the whole table to Control):
+//     403 shoe_not_owned, 404 no_open_shoe | no_connected_agent, 409
+//     shoe_not_open, 503 agent_unavailable (carries a `reason`; `self_managed_agent`
+//     = a nanoclaw agent that decides client-side and can't be push-asked). 501
+//     kept defensively though the live relay never emits it.
+//   - AgentUndecidedError (transient → skip THIS decision, stay Autonomous):
+//     422 agent_undecided — the agent replied but produced no parseable verb;
+//     the human can act this decision, the agent may decide fine next time.
+// Either way the modal never crashes.
+// ---------------------------------------------------------------------------
+
+/** Decision verbs the relay can return. `deal` opens the next hand at `amount`. */
+export type AgentDecisionAction =
+  | 'deal'
+  | 'hit'
+  | 'stand'
+  | 'double'
+  | 'split'
+  | 'surrender'
+  | 'insure';
+
+export interface AgentDecisionResponse {
+  action: AgentDecisionAction;
+  /** Present only for `deal` — the agent's chosen bet (server-clamped 5..500). */
+  amount?: number;
+  /**
+   * The in-progress hand the decision targets (null when action==='deal'). The
+   * SERVER derives this authoritatively from the shoe, so the driver applies the
+   * action against THIS handId/handSlot rather than its local view (prevents
+   * acting on a stale hand).
+   */
+  handId?: string | null;
+  /** Sub-hand slot for split hands (server-authoritative). */
+  handSlot?: 0 | 1;
+  /** Optional one-line rationale the modal surfaces in the advisor panel. */
+  rationale?: string;
+  /** Always 'agent' from the relay — provenance marker. */
+  source?: 'agent';
+}
+
+export interface AgentDecideArgs {
+  shoeId: string;
+}
+
+/**
+ * Sticky failure: the agent cannot be asked at all for this table (no bound
+ * agent, no open shoe, relay missing, or the agent's runtime can't be reached
+ * synchronously). The modal drops to Control mode for the rest of the sit-down.
+ */
+export class AgentDriverUnavailableError extends Error {
+  constructor(
+    public status: number,
+    public code: string | null,
+    /** Relay `reason` (e.g. 'self_managed_agent' on a nanoclaw 503). */
+    public reason?: string,
+  ) {
+    super(`agent decision relay unavailable (${status}${code ? ` ${code}` : ''})`);
+    this.name = 'AgentDriverUnavailableError';
+  }
+  /** True only for a nanoclaw self-managed agent that decides client-side. */
+  get isSelfManaged(): boolean {
+    return this.reason === 'self_managed_agent';
+  }
+}
+
+/**
+ * Transient failure: the agent was asked but produced no parseable decision
+ * for THIS spot. The driver skips this one decision (the human can act) and
+ * stays in Autonomous so the next decision point still asks the agent.
+ */
+export class AgentUndecidedError extends Error {
+  constructor(public raw?: string) {
+    super('agent produced no parseable decision');
+    this.name = 'AgentUndecidedError';
+  }
+}
+
+/**
+ * Ask the human's connected agent for its next decision on its open shoe. The
+ * server derives the authoritative in-progress hand from the shoe (the request
+ * carries ONLY the shoeId). Resolves to the decision, or throws a typed error
+ * the caller branches on (sticky-unavailable vs transient-undecided). Any other
+ * error propagates.
+ */
+export async function fetchAgentBlackjackDecision(
+  args: AgentDecideArgs,
+): Promise<AgentDecisionResponse> {
+  try {
+    return await coveFetch<AgentDecisionResponse>('/api/cove/blackjack/agent/decide', {
+      method: 'POST',
+      body: JSON.stringify({ shoeId: args.shoeId }),
+    });
+  } catch (err) {
+    if (err instanceof CoveApiError) {
+      // Transient: agent replied, no parseable verb → skip this decision only.
+      if (err.status === 422 || err.code === 'agent_undecided') {
+        const raw = (err as CoveApiError & { body?: { raw?: string } }).body?.raw;
+        throw new AgentUndecidedError(raw);
+      }
+      // Sticky: cannot ask the agent for this table → fall back to Control.
+      // 403 shoe_not_owned, 404 no_open_shoe|no_connected_agent, 409 shoe_not_open,
+      // 503 agent_unavailable (e.g. a self-managed nanoclaw agent that decides
+      // client-side and cannot be push-asked). 501 kept defensively though the
+      // relay does not emit it.
+      if (
+        err.status === 403 || err.status === 404 || err.status === 409 ||
+        err.status === 501 || err.status === 503
+      ) {
+        const reason = (err as CoveApiError & { body?: { reason?: string } }).body?.reason;
+        throw new AgentDriverUnavailableError(err.status, err.code, reason);
+      }
+    }
+    throw err;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Friendly user-facing error mapping (blackjack-specific codes + slots reuse).
 // ---------------------------------------------------------------------------
 

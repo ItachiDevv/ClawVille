@@ -39,6 +39,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useCoveStore } from '@/stores/cove';
+import { useGameStore } from '@/stores/game';
 import { useAvatar } from '@/hooks/use-avatar';
 import BlackjackCard from './BlackjackCard';
 import '@/styles/cove-tokens.css';
@@ -53,8 +54,11 @@ import type {
   SerializedPlayerHand,
 } from '@/lib/cove/blackjack-types';
 import {
+  AgentDriverUnavailableError,
+  AgentUndecidedError,
   CoveApiError,
   describeBlackjackError,
+  fetchAgentBlackjackDecision,
   fetchCurrentBlackjackShoe,
   isActionInProgress,
   isSettled,
@@ -65,6 +69,7 @@ import {
   useOpenBlackjackShoe,
   useTakeInsurance,
   type ActionResponse,
+  type AgentDecisionAction,
   type BlackjackShoeWire,
   type DealResponse,
   type SettledHandResponse,
@@ -254,10 +259,46 @@ type ToastTone = 'info' | 'warn' | 'error';
 interface ToastState { message: string; tone: ToastTone; id: number; }
 
 // ---------------------------------------------------------------------------
-// Agent mode (UI seam — see SEAM markers; no WS protocol yet)
+// Agent mode
+//   - control     — the human taps; a connected agent advises read-only.
+//   - autonomous  — a connected agent decides; the human keeps a veto window.
 // ---------------------------------------------------------------------------
 type AgentMode = 'control' | 'autonomous';
 interface AdvisorMessage { id: number; text: string; }
+
+// ── Autonomous-mode human-input window ([cards] spec msg 8) ────────────────
+// The agent WAITS this long after a decision point before it auto-applies its
+// decision, so a human can always step in. The base wait is 8s; if the human
+// is actively steering with the keyboard the wait extends to 15s. Any human
+// action (a button tap that changes phase, or closing the modal) cancels the
+// pending auto-apply outright.
+const AGENT_DECISION_WAIT_BASE_MS = 8000;
+const AGENT_DECISION_WAIT_KEYBOARD_MS = 15000;
+// How recent a keypress must be to count as "actively steering".
+const KEYBOARD_ACTIVE_WINDOW_MS = 5000;
+// Keys that count as movement steering (WASD + arrows). Matches the open-world
+// keyboard movement set so "moving on the keyboard" means the same thing here.
+const MOVEMENT_KEYS = new Set([
+  'w', 'a', 's', 'd', 'W', 'A', 'S', 'D',
+  'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
+]);
+// Pause between a settled hand and the agent auto-dealing the next one.
+const AGENT_NEXT_HAND_PAUSE_MS = 2200;
+
+// ── In-modal Autonomous availability ───────────────────────────────────────
+// The in-modal, human-supervised Autonomous driver below is LIVE: it asks the
+// human's connected agent for a decision via the
+// `POST /api/cove/blackjack/agent/decide` relay (shipped on the cove router —
+// resolves the human's bound connected agent and queries its runtime), then
+// applies the returned verb through the same server-authoritative deal/action
+// endpoints after the 8s/15s human-veto window. Enabled only when an agent is
+// connected (autonomousEnabled also gates on agentConnected). Honest boundary:
+// self-managed nanoclaw agents decide client-side and cannot be push-asked, so
+// the relay returns 503 agent_unavailable for them and the driver degrades to
+// Control with a clear notice (NOT a crash). The separate, also-live autonomous
+// path is the agent playing entirely from its OWN runtime via the session-bound
+// cove tools (cove_blackjack_*), which needs no browser driver.
+const AUTONOMOUS_RELAY_LIVE = true;
 
 // ---------------------------------------------------------------------------
 // Local in-progress hand view (built from server responses only)
@@ -303,10 +344,36 @@ export default function BlackjackModal() {
   const [toast, setToast] = useState<ToastState | null>(null);
   const [fairnessOpen, setFairnessOpen] = useState(false);
 
-  // ── Agent mode + advisor surface (seam) ─────────────────────────────────
+  // ── Connected-agent presence (drives Autonomous availability) ────────────
+  // A connected agent is what makes Autonomous mode real — without one, the
+  // browser has no agent to ask for a decision, so the radio stays disabled.
+  const agentConnected = useGameStore((s) => s.agentConnected);
+
+  // ── Agent mode + advisor surface ─────────────────────────────────────────
   const [agentMode, setAgentMode] = useState<AgentMode>('control');
   const [advisorMessages, setAdvisorMessages] = useState<AdvisorMessage[]>([]);
   const advisorSeqRef = useRef(0);
+
+  // ── Autonomous-driver state ──────────────────────────────────────────────
+  // `agentPending` is the human-veto countdown: the agent has chosen, and we
+  // are waiting AGENT_DECISION_WAIT_* before applying so a human can step in.
+  const [agentPending, setAgentPending] = useState<{
+    action: AgentDecisionAction;
+    amount?: number;
+    /** Server-authoritative target hand/slot for the apply (relay-derived). */
+    handId?: string | null;
+    handSlot?: 0 | 1;
+    deadline: number;
+  } | null>(null);
+  // True while a decision is being applied (so we don't double-fire).
+  const agentBusyRef = useRef(false);
+  // Last movement keypress timestamp — extends the wait window to 15s.
+  const lastKeyMoveRef = useRef(0);
+  // If the relay 404/501s once, stop trying for the rest of this sit-down.
+  const [agentDriverUnavailable, setAgentDriverUnavailable] = useState(false);
+  // Monotonic token so a stale in-flight decision can't apply after the phase
+  // moved on or the human took over.
+  const agentRunRef = useRef(0);
 
   // ── API hooks ─────────────────────────────────────────────────────────────
   const openShoe = useOpenBlackjackShoe();
@@ -383,8 +450,39 @@ export default function BlackjackModal() {
       setRevealedSeed(null);
       setAdvisorMessages([]);
       busyRef.current = false;
+      // Autonomous-driver teardown — cancel any pending auto-apply + reset the
+      // run token so a stale in-flight decision can't fire after re-open.
+      setAgentPending(null);
+      setAgentMode('control');
+      setAgentDriverUnavailable(false);
+      agentBusyRef.current = false;
+      agentRunRef.current += 1;
     }
   }, [blackjackOpen, resetHand]);
+
+  // ── Force back to Control if the agent disconnects mid-session ──────────────
+  // Autonomous has no decision source without a connected agent, so drop the
+  // human back into Control rather than stranding a dead table.
+  useEffect(() => {
+    if (!agentConnected && agentMode === 'autonomous') {
+      setAgentMode('control');
+      setAgentPending(null);
+      agentRunRef.current += 1;
+      showToast('Agent disconnected — back to Control mode.', 'warn');
+    }
+  }, [agentConnected, agentMode, showToast]);
+
+  // ── Keyboard-movement detector (extends the auto-decide window 8s→15s) ─────
+  // Only while the modal is open + autonomous. A movement keypress marks the
+  // human as "actively steering" so the agent waits the longer window.
+  useEffect(() => {
+    if (!blackjackOpen || agentMode !== 'autonomous') return;
+    const onMoveKey = (e: KeyboardEvent) => {
+      if (MOVEMENT_KEYS.has(e.key)) lastKeyMoveRef.current = Date.now();
+    };
+    window.addEventListener('keydown', onMoveKey);
+    return () => window.removeEventListener('keydown', onMoveKey);
+  }, [blackjackOpen, agentMode]);
 
   // ── Close handler ───────────────────────────────────────────────────────────
   const handleClose = useCallback(() => {
@@ -482,21 +580,39 @@ export default function BlackjackModal() {
   }, []);
 
   // ── DEAL ────────────────────────────────────────────────────────────────────
-  const handleDeal = useCallback(async () => {
+  // `agentDriven` is set ONLY by the autonomous driver after the human-input
+  // window elapses; a human tap leaves it false and is blocked in autonomous
+  // mode (the agent owns the decision channel then).
+  // `betOverride` lets the autonomous driver deal at the agent's chosen bet
+  // WITHOUT depending on a `setBlackjackBet()` store round-trip landing first
+  // (React state updates are async, so reading `blackjackBet` right after
+  // setting it would use the stale value). Human deals omit it and use the
+  // selected chip.
+  const handleDeal = useCallback(async (agentDriven = false, betOverride?: number) => {
     if (busyRef.current || phase !== 'idle') return;
-    if (agentMode === 'autonomous') return; // gated — no connected-agent driver yet
+    // Human tap in autonomous mode = take over THIS decision: void the agent's
+    // queued decision (bump the run token so a late timer can't fire) and play
+    // the human's choice instead.
+    if (agentMode === 'autonomous' && !agentDriven) {
+      agentRunRef.current += 1;
+      setAgentPending(null);
+    }
     busyRef.current = true;
     try {
       const s = await ensureShoe();
       if (!s) return;
       if (!dealKeyRef.current) dealKeyRef.current = crypto.randomUUID();
 
+      // The agent's bet (clamped) wins when driven; otherwise the chip value.
+      const betForHand = typeof betOverride === 'number'
+        ? Math.max(COVE_BLACKJACK_MIN_BET, Math.min(COVE_BLACKJACK_MAX_BET, Math.round(betOverride)))
+        : blackjackBet;
       const wantInsurance = false; // insurance is taken AFTER the upcard shows
       let res: DealResponse;
       try {
         res = await dealHand.mutateAsync({
           shoeId: s.id,
-          bet: blackjackBet,
+          bet: betForHand,
           insurance: wantInsurance,
           idempotencyKey: dealKeyRef.current,
         });
@@ -510,7 +626,7 @@ export default function BlackjackModal() {
           dealKeyRef.current = crypto.randomUUID();
           res = await dealHand.mutateAsync({
             shoeId: fresh.id,
-            bet: blackjackBet,
+            bet: betForHand,
             insurance: wantInsurance,
             idempotencyKey: dealKeyRef.current,
           });
@@ -538,8 +654,12 @@ export default function BlackjackModal() {
   }, [phase, agentMode, ensureShoe, dealHand, blackjackBet, showToast, applySettled, handViewFromDeal]);
 
   // ── INSURANCE (before any main-hand action; dealer-Ace only) ───────────────
-  const handleInsure = useCallback(async () => {
+  const handleInsure = useCallback(async (agentDriven = false) => {
     if (busyRef.current || !hand || hand.tookInsurance || !hand.insuranceOffered) return;
+    if (agentMode === 'autonomous' && !agentDriven) {
+      agentRunRef.current += 1;
+      setAgentPending(null);
+    }
     busyRef.current = true;
     try {
       const res = await takeInsurance.mutateAsync({ handId: hand.handId });
@@ -550,14 +670,22 @@ export default function BlackjackModal() {
     } finally {
       busyRef.current = false;
     }
-  }, [hand, takeInsurance, showToast]);
+  }, [hand, agentMode, takeInsurance, showToast]);
 
   // ── ACTION (hit / stand / double / split / surrender) ──────────────────────
   const runAction = useCallback(async (
     act: 'hit' | 'stand' | 'double' | 'split' | 'surrender',
+    agentDriven = false,
+    slotOverride?: 0 | 1,
   ) => {
     if (busyRef.current || !hand) return;
-    if (agentMode === 'autonomous') return;
+    if (agentMode === 'autonomous' && !agentDriven) {
+      agentRunRef.current += 1;
+      setAgentPending(null);
+    }
+    // The agent driver passes the relay's server-authoritative slot; humans use
+    // the focused slot. Avoids a stale-closure read of activeSlot in the driver.
+    const slot = slotOverride ?? activeSlot;
     busyRef.current = true;
     // Terminal actions need a stable idempotency key reused across retries.
     const terminal = act === 'stand' || act === 'double' || act === 'surrender';
@@ -570,7 +698,7 @@ export default function BlackjackModal() {
       const res = await action.mutateAsync({
         handId: hand.handId,
         action: act,
-        handSlot: activeSlot,
+        handSlot: slot,
         idempotencyKey: actionKeyRef.current,
       });
       if (isSettled(res)) {
@@ -635,6 +763,188 @@ export default function BlackjackModal() {
 
   const inFlight = openShoe.isPending || dealHand.isPending || action.isPending ||
     takeInsurance.isPending || closeShoe.isPending;
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // AUTONOMOUS DRIVER (FEATURE_GATE: blackjack_autonomous_agent_mode)
+  //
+  // When a connected agent is present and the human flips the table to
+  // Autonomous, the browser asks the agent (server-side, bound to this live
+  // session) for its decision at each decision point, surfaces it in the
+  // advisor panel, then waits the human-input window ([cards] spec msg 8 —
+  // 8s base, 15s if the human is steering with the keyboard) before APPLYING
+  // it through the SAME server-authoritative deal/action endpoints. A human
+  // tap during the window pre-empts the agent (handleDeal/runAction return
+  // early for agent-driven calls once the phase has moved on). The server is
+  // still the only authority — the browser never receives undealt cards, the
+  // dealer hole, or the seed; it only relays the agent's chosen verb.
+  // ─────────────────────────────────────────────────────────────────────────
+
+  // Apply a relayed agent decision through the existing handlers (driven=true
+  // bypasses the human-yields-to-agent guard). Split-aware: the relay returns
+  // the verb for the active slot; activeSlot is already focused by the merge.
+  const applyAgentDecision = useCallback(async (
+    decision: { action: AgentDecisionAction; amount?: number; handSlot?: 0 | 1 },
+  ) => {
+    switch (decision.action) {
+      case 'deal': {
+        let betOverride: number | undefined;
+        if (typeof decision.amount === 'number') {
+          // Clamp to engine bounds defensively; the server re-validates.
+          const clamped = Math.max(
+            COVE_BLACKJACK_MIN_BET,
+            Math.min(COVE_BLACKJACK_MAX_BET, Math.round(decision.amount)),
+          );
+          betOverride = clamped;
+          setBlackjackBet(clamped); // reflect the agent's bet on the HUD chip
+        }
+        // Pass the bet explicitly so the deal does not depend on the async
+        // setBlackjackBet landing first (stale-closure-safe).
+        await handleDeal(true, betOverride);
+        break;
+      }
+      case 'insure':
+        await handleInsure(true);
+        break;
+      case 'hit':
+      case 'stand':
+      case 'double':
+      case 'split':
+      case 'surrender':
+        // Honor the relay's server-authoritative target slot for split hands.
+        await runAction(decision.action, true, decision.handSlot);
+        break;
+    }
+  }, [handleDeal, handleInsure, runAction, setBlackjackBet]);
+
+  // Clear any pending auto-apply the instant the decision context changes
+  // (new hand, phase change, mode switch, modal close) so a stale decision can
+  // never apply to the wrong state.
+  const decisionContextKey = `${phase}:${hand?.handId ?? 'none'}:${activeSlot}:${settled?.handId ?? 'none'}`;
+  useEffect(() => {
+    setAgentPending(null);
+  }, [decisionContextKey, agentMode]);
+
+  // Driver step 1 — REQUEST a decision at a fresh decision point.
+  useEffect(() => {
+    if (agentMode !== 'autonomous' || !agentConnected || agentDriverUnavailable) return;
+    if (inFlight || busyRef.current || agentBusyRef.current) return;
+    if (agentPending) return; // already waiting to apply
+    if (revealedSeed) return; // shoe closed — nothing to decide
+
+    // Decide only at points where an action is legal: idle (→ deal), settled
+    // (→ next hand then deal), or player-turn (→ hit/stand/etc). We let the
+    // settled→next-hand advance happen below without a relay call.
+    const s = shoeRef.current;
+    const shoeId = s?.id ?? null;
+
+    if (phase === 'settled') {
+      // Auto-advance to the next hand after a short pause so the human can read
+      // the result; the next idle tick then requests a deal decision.
+      const t = setTimeout(() => {
+        if (agentMode === 'autonomous') handleNextHand();
+      }, AGENT_NEXT_HAND_PAUSE_MS);
+      return () => clearTimeout(t);
+    }
+
+    if (phase !== 'idle' && phase !== 'player-turn') return;
+    // The relay requires a valid shoeId (uuid). During a hand we always have
+    // one; at idle we may need to open one first so the agent has a table to
+    // decide on.
+    if (phase === 'player-turn' && !shoeId) return;
+
+    const myRun = ++agentRunRef.current;
+    let cancelled = false;
+    void (async () => {
+      try {
+        // Ensure an open shoe exists before asking the relay (it needs the
+        // shoeId; at idle this lazy-opens one, matching the human deal path).
+        let activeShoeId = shoeId;
+        if (!activeShoeId) {
+          const opened = await ensureShoe();
+          if (cancelled || myRun !== agentRunRef.current) return;
+          if (!opened) return; // ensureShoe surfaced its own toast
+          activeShoeId = opened.id;
+        }
+        // Request carries ONLY the shoeId — the server derives the authoritative
+        // in-progress hand + slot from the shoe (a client can't aim the agent at
+        // a stale/foreign hand).
+        const decision = await fetchAgentBlackjackDecision({ shoeId: activeShoeId });
+        if (cancelled || myRun !== agentRunRef.current) return;
+        if (decision.rationale) pushAdvisor(decision.rationale);
+        // Open the human-veto window. The keyboard-active check uses the most
+        // recent movement keypress.
+        const keyboardActive =
+          Date.now() - lastKeyMoveRef.current < KEYBOARD_ACTIVE_WINDOW_MS;
+        const waitMs = keyboardActive
+          ? AGENT_DECISION_WAIT_KEYBOARD_MS
+          : AGENT_DECISION_WAIT_BASE_MS;
+        pushAdvisor(
+          `Agent will ${decision.action}${decision.amount ? ` ${decision.amount} CT` : ''} in ${Math.round(waitMs / 1000)}s — tap any action to take over.`,
+        );
+        setAgentPending({
+          action: decision.action,
+          amount: decision.amount,
+          handId: decision.handId ?? null,
+          handSlot: decision.handSlot,
+          deadline: Date.now() + waitMs,
+        });
+      } catch (err) {
+        if (cancelled || myRun !== agentRunRef.current) return;
+        if (err instanceof AgentUndecidedError) {
+          // Transient: the agent replied but produced no parseable move for this
+          // spot. Skip THIS decision (the human can act) and stay in Autonomous
+          // so the next decision point asks the agent again.
+          pushAdvisor('Agent could not decide this hand — your call. Still in Autonomous.');
+          showToast('Agent did not return a decision — tap an action; autonomous resumes next hand.', 'info');
+        } else if (err instanceof AgentDriverUnavailableError) {
+          // Sticky: cannot ask the agent for this table at all → Control. Only a
+          // nanoclaw self-managed agent gets the "plays itself" message; other
+          // sticky failures (no agent, transient cognition error) get a generic
+          // notice.
+          setAgentDriverUnavailable(true);
+          setAgentMode('control');
+          showToast(
+            err.isSelfManaged
+              ? 'This agent plays itself from its own runtime and cannot be co-piloted here. Switched to Control.'
+              : 'Could not reach your agent for this table. Switched to Control.',
+            'warn',
+          );
+        } else {
+          showToast(describeBlackjackError(err), 'warn');
+        }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [
+    agentMode, agentConnected, agentDriverUnavailable, phase, inFlight,
+    agentPending, revealedSeed, hand?.handId, activeSlot, ensureShoe,
+    handleNextHand, pushAdvisor, showToast,
+  ]);
+
+  // Driver step 2 — APPLY the pending decision when the veto window elapses.
+  useEffect(() => {
+    if (!agentPending || agentMode !== 'autonomous') return;
+    const remaining = agentPending.deadline - Date.now();
+    const myRun = agentRunRef.current;
+    const t = setTimeout(() => {
+      // Re-check guards at fire time — the human may have acted, or the phase
+      // moved on, in which case the context-change effect already cleared
+      // agentPending and bumped agentRunRef.
+      if (myRun !== agentRunRef.current) return;
+      if (busyRef.current || agentBusyRef.current) return;
+      agentBusyRef.current = true;
+      void applyAgentDecision({
+        action: agentPending.action,
+        amount: agentPending.amount,
+        handSlot: agentPending.handSlot,
+      })
+        .finally(() => {
+          agentBusyRef.current = false;
+          setAgentPending(null);
+        });
+    }, Math.max(0, remaining));
+    return () => clearTimeout(t);
+  }, [agentPending, agentMode, applyAgentDecision]);
 
   // ── Settled outcome view helpers ───────────────────────────────────────────
   const settledOutcome: SerializedBlackjackHandResult | null = settled?.outcome ?? null;
@@ -755,6 +1065,9 @@ export default function BlackjackModal() {
           mode={agentMode}
           onMode={setAgentMode}
           advisorMessages={advisorMessages}
+          agentConnected={agentConnected}
+          driverUnavailable={agentDriverUnavailable}
+          pendingAction={agentPending?.action ?? null}
         />
 
         {/* ── Felt ─────────────────────────────────────────────────────── */}
@@ -828,7 +1141,7 @@ export default function BlackjackModal() {
                 Dealer shows an Ace. Insurance? (pays 2:1 if dealer has blackjack)
               </span>
               <button
-                type="button" onClick={() => { void handleInsure(); }} disabled={inFlight || agentMode === 'autonomous'}
+                type="button" onClick={() => { void handleInsure(); }} disabled={inFlight}
                 className="pt-btn pt-btn-ghost"
                 style={{ height: 30, fontSize: 11, minWidth: 80, color: 'var(--pt-amber)', flexShrink: 0 }}
               >
@@ -879,11 +1192,11 @@ export default function BlackjackModal() {
               <button
                 type="button"
                 onClick={() => { void handleDeal(); }}
-                disabled={inFlight || agentMode === 'autonomous'}
+                disabled={inFlight}
                 className="pt-btn pt-btn-primary"
                 style={{ minWidth: 110, height: 40, fontSize: 13, fontWeight: 700 }}
               >
-                {inFlight ? 'Dealing…' : `Deal (${blackjackBet} CT)`}
+                {inFlight ? 'Dealing…' : agentMode === 'autonomous' ? `Deal now (${blackjackBet} CT)` : `Deal (${blackjackBet} CT)`}
               </button>
             )}
 
@@ -891,33 +1204,33 @@ export default function BlackjackModal() {
             {phase === 'player-turn' && (
               <>
                 <button type="button" onClick={() => { void runAction('hit'); }}
-                  disabled={inFlight || agentMode === 'autonomous'}
+                  disabled={inFlight}
                   className="pt-btn pt-btn-primary"
                   style={{ height: 40, fontSize: 13, fontWeight: 700, minWidth: 70 }}>
                   Hit
                 </button>
                 <button type="button" onClick={() => { void runAction('stand'); }}
-                  disabled={inFlight || agentMode === 'autonomous'}
+                  disabled={inFlight}
                   className="pt-btn pt-btn-ghost"
                   style={{ height: 40, fontSize: 12, minWidth: 70 }}>
                   Stand
                 </button>
                 <button type="button" onClick={() => { void runAction('double'); }}
-                  disabled={inFlight || !canDouble || agentMode === 'autonomous'}
+                  disabled={inFlight || !canDouble}
                   className="pt-btn pt-btn-ghost"
                   title={canDouble ? 'Double down (one card, doubled stake)' : 'Double only on your first two cards'}
                   style={{ height: 40, fontSize: 12, minWidth: 70, opacity: canDouble ? 1 : 0.4 }}>
                   Double
                 </button>
                 <button type="button" onClick={() => { void runAction('split'); }}
-                  disabled={inFlight || !canSplit || agentMode === 'autonomous'}
+                  disabled={inFlight || !canSplit}
                   className="pt-btn pt-btn-ghost"
                   title={canSplit ? 'Split your pair into two hands' : 'Split only on a matching pair'}
                   style={{ height: 40, fontSize: 12, minWidth: 70, opacity: canSplit ? 1 : 0.4 }}>
                   Split
                 </button>
                 <button type="button" onClick={() => { void runAction('surrender'); }}
-                  disabled={inFlight || !canSurrender || agentMode === 'autonomous'}
+                  disabled={inFlight || !canSurrender}
                   className="pt-btn pt-btn-ghost"
                   title={canSurrender ? 'Surrender — forfeit half your bet' : 'Surrender only on your first two cards (no split)'}
                   style={{ height: 40, fontSize: 12, minWidth: 90, opacity: canSurrender ? 1 : 0.4 }}>
@@ -1037,32 +1350,59 @@ export default function BlackjackModal() {
 }
 
 // ---------------------------------------------------------------------------
-// AgentModeBar — Control vs Autonomous toggle + read-only advisor surface.
+// AgentModeBar — Control vs Autonomous toggle + advisor surface.
 //
 // FEATURE_GATE: blackjack_autonomous_agent_mode
-// Status: UI seam only — the Control/Autonomous toggle + advisor display panel
-//   are rendered, but the connected-agent WebSocket protocol that would drive
-//   Autonomous mode (or feed Control-mode advisor messages) does NOT exist yet.
-//   Autonomous is rendered disabled; the advisor panel shows a placeholder.
-// Metric to graduate: ≥ 1 connected agent completing a blackjack hand via the
-//   WS protocol in a 7-day window (event: cove.blackjack.agent.hand.settled).
-// Current reading: 0 (protocol not shipped — Phase 6.4.2).
+// Status: WIRED (2026-06-03, gateway-cognition agents). The in-modal,
+//   human-supervised Autonomous DRIVER is LIVE: with a connected agent it asks
+//   the relay (POST /api/cove/blackjack/agent/decide, shipped) for a decision,
+//   shows it in the read-only advisor panel, and applies it via the
+//   server-authoritative deal/action endpoints after the 8s/15s human-veto
+//   window. `AUTONOMOUS_RELAY_LIVE = true`; the radio enables only when an agent
+//   is connected. HONEST BOUNDARY: self-managed nanoclaw agents decide
+//   client-side and cannot be push-asked, so the relay returns 503 and the
+//   driver degrades to Control with a clear notice (a documented capability
+//   boundary, NOT a disabled feature). The separate also-live autonomous path is
+//   the agent playing entirely from its OWN runtime via the cove tools.
+// Metric to graduate: ≥ 1 connected agent completing a blackjack hand in
+//   Autonomous mode in a 7-day window (event: cove.blackjack.agent.hand.settled).
+// Current reading: 0 (newly shipped — to fill from /dash).
 // Review deadline: 2026-07-15
-// On deadline: if the WS protocol has not shipped, DELETE the Autonomous radio
-//   + advisor panel and keep Control-only until the protocol lands.
-// Reference: GameFeatures.md §18a.f (agent modes) + CLAUDE.md three-surface rule.
+// On deadline: if the metric is unmet, keep it gated on connected-agent presence
+//   (already done) and revisit; do NOT delete — it is the human-supervised
+//   parity path (CLAUDE.md TOP DIRECTIVE + Rule E5).
+// Known LATENT follow-up (FOLLOW-UP task #6): server-side rate-limit on
+//   /agent/decide (today the 8s/15s client window is the only throttle) — a
+//   hardening item, not a functional gap.
+// Reference: GameFeatures.md §18a.f (agent modes) + CLAUDE.md three-surface rule
+//   + .claude/plans/cove-blackjack.md.
 //
-// SEAM (Phase 6.4.2): a connected-agent WS client would, in Control mode, call
-//   the (future) advisor callback to push strategy hints into `advisorMessages`
-//   WITHOUT ever submitting a decision — the human's buttons stay the only
-//   decision channel. In Autonomous mode the same WS client would submit
-//   /action calls on the agent's behalf. Neither path is wired here.
+// Advisor surface stays a read-only display channel — it NEVER submits a
+// decision. In Control mode it shows the agent's hints; in Autonomous mode it
+// shows the agent's chosen action + the veto countdown.
 // ---------------------------------------------------------------------------
-function AgentModeBar({ mode, onMode, advisorMessages }: {
+function AgentModeBar({
+  mode, onMode, advisorMessages, agentConnected, driverUnavailable, pendingAction,
+}: {
   mode: AgentMode;
   onMode: (m: AgentMode) => void;
   advisorMessages: AdvisorMessage[];
+  agentConnected: boolean;
+  driverUnavailable: boolean;
+  pendingAction: AgentDecisionAction | null;
 }) {
+  // The in-modal driver is LIVE (AUTONOMOUS_RELAY_LIVE) and enables only when an
+  // agent is connected. driverUnavailable flips true after a sticky relay
+  // failure (e.g. a self-managed nanoclaw agent that returns 503), dropping the
+  // table back to Control with a clear notice.
+  const autonomousEnabled = AUTONOMOUS_RELAY_LIVE && agentConnected && !driverUnavailable;
+  const autonomousTitle = !AUTONOMOUS_RELAY_LIVE
+    ? 'In-modal autonomous play arrives with the agent-decision relay. Today a connected agent plays on its own from its runtime via the cove tools.'
+    : !agentConnected
+      ? 'Connect an agent to let it play your open table on its own'
+      : driverUnavailable
+        ? 'This agent plays itself from its own runtime and cannot be co-piloted here — switch to Control'
+        : 'Let your connected agent decide — you keep an 8s (15s if steering) window to take over';
   return (
     <div style={{
       flexShrink: 0, background: 'rgba(0,0,0,0.28)',
@@ -1092,24 +1432,31 @@ function AgentModeBar({ mode, onMode, advisorMessages }: {
           </button>
           <button
             type="button" role="radio" aria-checked={mode === 'autonomous'}
-            onClick={() => onMode('autonomous')}
-            disabled
-            title="Autonomous agent mode arrives with the connected-agent protocol (Phase 6.4.2)"
+            onClick={() => { if (autonomousEnabled) onMode('autonomous'); }}
+            disabled={!autonomousEnabled}
+            title={autonomousTitle}
             style={{
               padding: '4px 12px', borderRadius: 6, fontSize: 11, fontFamily: 'var(--pt-data)',
-              cursor: 'not-allowed', opacity: 0.5,
-              border: '1.5px solid rgba(160,140,100,0.3)',
-              background: 'rgba(10,30,20,0.5)', color: 'var(--pt-cream-soft)',
+              fontWeight: mode === 'autonomous' ? 700 : 400,
+              cursor: autonomousEnabled ? 'pointer' : 'not-allowed',
+              opacity: autonomousEnabled ? 1 : 0.5,
+              border: mode === 'autonomous' ? '1.5px solid var(--pt-amber)' : '1.5px solid rgba(160,140,100,0.3)',
+              background: mode === 'autonomous' ? 'rgba(200,150,50,0.18)' : 'rgba(10,30,20,0.5)',
+              color: mode === 'autonomous' ? 'var(--pt-amber)' : 'var(--pt-cream-soft)',
             }}
           >
-            Autonomous (soon)
+            {autonomousEnabled
+              ? 'Autonomous'
+              : !AUTONOMOUS_RELAY_LIVE
+                ? 'Autonomous (agent plays from its runtime)'
+                : 'Autonomous (connect agent)'}
           </button>
         </div>
         <span style={{
           marginLeft: 'auto', fontSize: 9, fontFamily: 'var(--pt-data)',
           color: 'var(--pt-mute)', letterSpacing: '0.06em',
         }}>
-          {mode === 'control' ? 'You decide · agent advises' : 'Agent decides'}
+          {mode === 'control' ? 'You decide · agent advises' : 'Agent decides · tap to take over'}
         </span>
       </div>
 
@@ -1119,9 +1466,18 @@ function AgentModeBar({ mode, onMode, advisorMessages }: {
         borderRadius: 6, padding: '6px 10px', minHeight: 26, maxHeight: 64,
         overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 3,
       }}>
+        {mode === 'autonomous' && pendingAction && (
+          <span style={{ fontSize: 10, color: 'var(--pt-amber)', fontFamily: 'var(--pt-data)', fontWeight: 700 }}>
+            Agent is about to {pendingAction} — tap any action to take over.
+          </span>
+        )}
         {advisorMessages.length === 0 ? (
           <span style={{ fontSize: 10, color: 'var(--pt-cream-soft)', fontFamily: 'var(--pt-data)', fontStyle: 'italic' }}>
-            Advisor: connect an agent to get basic-strategy hints here (read-only — your taps stay the decision). Coming in Phase 6.4.2.
+            {!AUTONOMOUS_RELAY_LIVE
+              ? 'Advisor: a connected agent plays blackjack on its own from its runtime (via the cove tools). In-modal supervised Autonomous, where it plays your open table and you keep an 8s/15s window to take over, arrives with the agent-decision relay.'
+              : agentConnected
+                ? 'Advisor: your connected agent posts hints here (read-only — your taps stay the decision in Control mode). Switch to Autonomous to let it play.'
+                : 'Advisor: connect an agent to get basic-strategy hints here (read-only — your taps stay the decision).'}
           </span>
         ) : (
           advisorMessages.map((m) => (
