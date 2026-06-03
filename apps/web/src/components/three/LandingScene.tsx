@@ -12,9 +12,9 @@
  * (±0.22 rad sway + slow bob) — NOT a full 360° orbit. A full orbit swung the
  * finite seabed plane edge-on into a "wall"; a gentle drift keeps a cinematic,
  * stable composition. 57° gives readable building facades/silhouettes (65° only
- * showed rooftops). Arm pulled back to 295wu (R3) so the ring FRAMES the
- * centered logo/CTAs instead of crowding them. Belt-and-suspenders: seabed is
- * 6000wu wide so edges are always fully
+ * showed rooftops). lookAt Y=−120 drops the building ring into the LOWER half
+ * of the frame so hero text floats in open water above the town (R4).
+ * Belt-and-suspenders: seabed is 6000wu wide so edges are always fully
  * fogged out (>fog.far from camera) — no hard edge can ever appear.
  *
  * Iris Xe GPU constraints:
@@ -63,6 +63,13 @@ const HERO_SLOT_COUNT = 10;
  *  Camera distance from origin: sqrt(454²+295²) ≈ 541wu. */
 const CAM_Y   = 454;
 const CAM_ARM = 295;
+
+/** LookAt target Y.
+ *  R4: lowered from +30 to -120 so the camera tilts to look further down,
+ *  dropping the building ring into the LOWER ~45–50% of the frame. The upper
+ *  half becomes open water/atmosphere — hero text floats in clear water above
+ *  the town ring. The ring itself still appears at full 57° 3/4 overview. */
+const CAM_LOOK_Y = -120;
 
 /** Base azimuth of the fixed 3/4 vantage (radians). The camera only sways a
  *  small amount around this — it never does a full revolution.
@@ -275,26 +282,79 @@ function GradientSky() {
 }
 
 // ─── Seabed ───────────────────────────────────────────────────────────────────
-// HUGE flat lit sand floor. 6000wu wide so its edges are always >fog.far from
-// the camera → fully fogged out → no hard edge / "wall" can ever appear at any
-// drift angle. Lit (MeshStandardMaterial) so it responds to the scene lighting
-// and the deep-blue fog blends its far reaches into the water.
+// Procedural sandy seabed with multi-octave undulation + vertex color bands,
+// matching the real ClawVille arena-terrain.tsx sand geometry but tuned to
+// a MOODY dark underwater palette. 6000wu so edges are >fog.far from camera
+// at all drift angles. MeshBasicMaterial (vertexColors) — no light dependency,
+// vertex colors baked in, fog-blended at far reaches. Module-scope singleton
+// (never disposed — same rule as _skyTexture).
 
-let _seabedGeo: THREE.PlaneGeometry | null = null;
-function getSeabedGeo(): THREE.PlaneGeometry {
-  if (!_seabedGeo) _seabedGeo = new THREE.PlaneGeometry(6000, 6000, 1, 1);
+// Moody underwater sand palette — darker than the in-game world so it stays
+// on-theme with the deep navy page. Visible tonal variation at close range;
+// fog merges everything to near-black at the edges.
+const _sandRidge  = new THREE.Color(0x4a6070); // muted blue-grey peaks
+const _sandHigh   = new THREE.Color(0x2e4a58); // cooler mid-tone
+const _sandMid    = new THREE.Color(0x1e3545); // dark blue-grey
+const _sandValley = new THREE.Color(0x122232); // deep navy troughs
+const _sandDeep   = new THREE.Color(0x0a1520); // near-black floor
+
+function seededRng(seed: number): () => number {
+  let s = seed;
+  return () => {
+    s = (s * 16807) % 2147483647;
+    return (s - 1) / 2147483646;
+  };
+}
+
+let _seabedGeo: THREE.BufferGeometry | null = null;
+function getSeabedGeo(): THREE.BufferGeometry {
+  if (_seabedGeo) return _seabedGeo;
+  const geo = new THREE.PlaneGeometry(6000, 6000, 60, 60);
+  const pos    = geo.attributes.position as THREE.BufferAttribute;
+  const count  = pos.count;
+  const colors = new Float32Array(count * 3);
+  const rng    = seededRng(42);
+  const tmp    = new THREE.Color();
+
+  for (let i = 0; i < count; i++) {
+    const x = pos.getX(i);
+    const y = pos.getY(i);
+
+    // Multi-octave dunes — same algorithm as arena-terrain.tsx
+    const dune1  = Math.sin(x * 0.004 + 1.3) * Math.cos(y * 0.006 + 0.7) * 14;
+    const dune2  = Math.sin(x * 0.010 + 3.1) * Math.sin(y * 0.013 + 2.4) *  8;
+    const dune3  = Math.sin(x * 0.025 + 0.5) * Math.cos(y * 0.030 + 1.2) *  4;
+    const ripple = Math.sin(x * 0.08  + y * 0.06) * 2;
+    const noise  = (rng() - 0.5) * 1.5;
+    const h      = dune1 + dune2 + dune3 + ripple + noise;
+    pos.setZ(i, h);
+
+    // Map height −28..+28 to 0..1, apply moody underwater color bands
+    const t = Math.max(0, Math.min(1, (h + 28) / 56));
+    if      (t < 0.20) tmp.lerpColors(_sandDeep,   _sandValley, t / 0.20);
+    else if (t < 0.40) tmp.lerpColors(_sandValley,  _sandMid,   (t - 0.20) / 0.20);
+    else if (t < 0.65) tmp.lerpColors(_sandMid,     _sandHigh,  (t - 0.40) / 0.25);
+    else if (t < 0.85) tmp.lerpColors(_sandHigh,    _sandRidge, (t - 0.65) / 0.20);
+    else               tmp.copy(_sandRidge);
+
+    // Occasional darker wet patches — same as arena terrain
+    if (rng() < 0.08) tmp.lerp(_sandDeep, 0.45);
+
+    colors[i * 3    ] = tmp.r;
+    colors[i * 3 + 1] = tmp.g;
+    colors[i * 3 + 2] = tmp.b;
+  }
+
+  geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  geo.computeVertexNormals();
+  _seabedGeo = geo;
   return _seabedGeo;
 }
 
-let _seabedMat: THREE.MeshStandardMaterial | null = null;
-function getSeabedMat(): THREE.MeshStandardMaterial {
+let _seabedMat: THREE.MeshBasicMaterial | null = null;
+function getSeabedMat(): THREE.MeshBasicMaterial {
   if (!_seabedMat) {
-    _seabedMat = new THREE.MeshStandardMaterial({
-      color:     new THREE.Color('#172834'), // DARK navy seabed — flows into the page theme, fog blends it deeper
-      roughness: 0.97,
-      metalness: 0,
-      fog:       true,
-    });
+    _seabedMat = new THREE.MeshBasicMaterial({ vertexColors: true, fog: true });
   }
   return _seabedMat;
 }
@@ -316,6 +376,142 @@ function Seabed() {
       position={[0, -2, 0]}
       frustumCulled={false}
     />
+  );
+}
+
+// ─── Reef decorations ─────────────────────────────────────────────────────────
+// 10 GLB instances from the scene's already-preloaded asset set, scattered in
+// a loose ring around the town (radius 240–400wu) to make the seabed read as
+// a populated reef, not a void. Sizes 25–50wu. All Iris Xe rules apply:
+//   - clone.traverse frustumCulled=false (small assets at known positions)
+//   - matrixAutoUpdate=false after first transform
+//   - clones disposed on unmount
+//   - NO per-frame allocs
+//   - NO new lights (stays within 3-light budget)
+
+interface ReefDecoDef {
+  model: string;
+  x:    number;
+  z:    number;
+  size: number;  // targetMaxDim in wu
+  rotY: number;
+}
+
+// Seeded placement: 10 pieces around the town ring at radius 240–400, outside
+// the 195wu building ring. Each placed at a different angle band so coverage
+// is even. Models reuse what is already preloaded by LANDING_BUILDINGS or the
+// sw.js PRECACHE_GLBS list. underwater-decorations is the richest single GLB
+// (coral clusters + kelp merged); coral-reef1/2/3 + kelp fill the rest.
+const REEF_DECOS: ReefDecoDef[] = [
+  { model: '/models/coral-reef1.glb',            x:  260, z:   30, size: 45, rotY: 0.3 },
+  { model: '/models/coral-reef2.glb',            x: -220, z:  120, size: 40, rotY: 1.8 },
+  { model: '/models/coral-reef3.glb',            x:   80, z: -270, size: 42, rotY: 0.9 },
+  { model: '/models/kelp.glb',                   x: -290, z: -100, size: 35, rotY: 2.4 },
+  { model: '/models/kelp.glb',                   x:  160, z:  290, size: 30, rotY: 0.6 },
+  { model: '/models/coral-reef1.glb',            x: -150, z: -310, size: 38, rotY: 3.1 },
+  { model: '/models/coral-reef2.glb',            x:  310, z: -200, size: 36, rotY: 1.2 },
+  { model: '/models/coral-reef3.glb',            x: -330, z:  180, size: 40, rotY: 2.7 },
+  { model: '/models/underwater-decorations.glb', x:  220, z: -340, size: 50, rotY: 0.5 },
+  { model: '/models/underwater-decorations.glb', x: -200, z:  340, size: 48, rotY: 1.5 },
+];
+
+// Preload all deco GLBs at module scope (deduped — coral-reef1/2/3, kelp may
+// already be preloaded by the sw.js PRECACHE_GLBS; preload is a no-op if
+// already resolved).
+const _DECO_MODELS = [...new Set(REEF_DECOS.map((d) => d.model))];
+_DECO_MODELS.forEach((m) => {
+  useGLTF.preload(m, undefined, undefined, extendLoaderWithMeshopt);
+});
+
+// Module-scope bbox scratch for deco sizing (avoids new allocations per mount)
+const _decoBbox   = new THREE.Box3();
+const _decoSize   = new THREE.Vector3();
+const _decoCenter = new THREE.Vector3();
+
+interface ReefDecoInnerProps { def: ReefDecoDef }
+
+function ReefDecoInner({ def }: ReefDecoInnerProps) {
+  const { scene } = useGLTF(def.model, undefined, undefined, extendLoaderWithMeshopt);
+  const groupRef  = useRef<THREE.Group>(null);
+
+  const { cloned, scale, pivotOffsetX, pivotOffsetY, pivotOffsetZ } = useMemo(() => {
+    const c = scene.clone(true);
+    c.updateMatrixWorld(true);
+    _decoBbox.makeEmpty();
+    c.traverse((obj) => {
+      const mesh = obj as THREE.Mesh;
+      if (mesh.isMesh && mesh.geometry) {
+        mesh.geometry.computeBoundingBox();
+        if (mesh.geometry.boundingBox) {
+          _decoBbox.union(mesh.geometry.boundingBox.clone().applyMatrix4(mesh.matrixWorld));
+        }
+      }
+    });
+    if (_decoBbox.isEmpty()) _decoBbox.setFromObject(c);
+    _decoBbox.getSize(_decoSize);
+    const maxDim = Math.max(_decoSize.x, _decoSize.y, _decoSize.z);
+    const s = maxDim > 0.001 ? def.size / maxDim : 1;
+    _decoBbox.getCenter(_decoCenter);
+    c.traverse((obj) => {
+      (obj as THREE.Mesh).frustumCulled = false;
+    });
+    return {
+      cloned:        c,
+      scale:         s,
+      pivotOffsetX:  _decoCenter.x * s,
+      pivotOffsetY:  _decoBbox.min.y * s,
+      pivotOffsetZ:  _decoCenter.z * s,
+    };
+  }, [scene, def.size]);
+
+  useEffect(() => {
+    return () => {
+      cloned.traverse((obj) => {
+        const mesh = obj as THREE.Mesh;
+        if (mesh.isMesh) {
+          mesh.geometry?.dispose();
+          if (Array.isArray(mesh.material)) mesh.material.forEach((m) => m.dispose());
+          else mesh.material?.dispose();
+        }
+      });
+    };
+  }, [cloned]);
+
+  useEffect(() => {
+    const g = groupRef.current;
+    if (!g) return;
+    g.matrixAutoUpdate = false;
+    g.updateMatrix();
+    cloned.traverse((obj) => {
+      obj.matrixAutoUpdate = false;
+      obj.updateMatrix();
+    });
+  }, [cloned]);
+
+  return (
+    <group ref={groupRef} position={[def.x, -2, def.z]} rotation={[0, def.rotY, 0]}>
+      <group position={[-pivotOffsetX, -pivotOffsetY, -pivotOffsetZ]}>
+        <primitive object={cloned} scale={scale} />
+      </group>
+    </group>
+  );
+}
+
+function ReefDeco({ def }: ReefDecoInnerProps) {
+  return (
+    <Suspense fallback={null}>
+      <ReefDecoInner def={def} />
+    </Suspense>
+  );
+}
+
+function ReefDecorations() {
+  return (
+    <>
+      {REEF_DECOS.map((def, i) => (
+        <ReefDeco key={`reef-deco-${i}`} def={def} />
+      ))}
+    </>
   );
 }
 
@@ -404,8 +600,9 @@ function BuildingRing() {
 
 // ─── DriftCamera ──────────────────────────────────────────────────────────────
 // 3/4 overview vantage (57° elevation, arm=295wu) with GENTLE sway + bob.
-// Never a full 360° orbit (seabed edge-on wall). LookAt lifted to Y=30 so the
-// ring sits vertically centered in the frame at 57° elevation.
+// Never a full 360° orbit (seabed edge-on wall). lookAt Y=−120 (CAM_LOOK_Y)
+// tilts the camera to look further down so the building ring sits in the LOWER
+// ~45–50% of frame; the upper half is open water/sky for the hero text.
 
 function DriftCamera() {
   useFrame(({ camera, clock }) => {
@@ -418,7 +615,7 @@ function DriftCamera() {
       Math.sin(azimuth) * CAM_ARM,
     );
     camera.position.copy(_scratchVec3A);
-    _scratchVec3B.set(0, 30, 0); // lifted slightly so the ring occupies frame center vertically
+    _scratchVec3B.set(0, CAM_LOOK_Y, 0); // low target drops ring into lower frame half
     camera.lookAt(_scratchVec3B);
   });
   return null;
@@ -432,25 +629,25 @@ function SceneContents() {
       <DriftCamera />
 
       {/* Lighting (MAX 3 — Iris Xe rule #1). Lit SUBJECTS on a DARK stage.
-          hemisphere 1.45→1.60: slightly warmer ambient fill on all building faces.
-          directional 1.75→2.20: the main brightness lever for building facades at
-          57° elevation — buildings now face more toward camera, so a stronger key
-          reads as clear subject lighting. Position [0,500,60] unchanged (near-
-          vertical ensures even coverage across all ring positions). Seabed and fog
-          stay dark — the seabed is #172834 navy and fogged; brightening the
-          directional makes BUILDINGS pop, not the background.
-          Point unchanged at 1.9 / [0,150,0]. */}
+          hemisphere 1.60: ambient fill on buildings + sandy seabed vertex colors.
+          directional 2.20: strong key light from near-vertical [0,500,60] — even
+          coverage across all 10 ring positions regardless of azimuth. Seabed uses
+          MeshBasicMaterial (vertexColors) so it ignores lighting, relying entirely
+          on baked vertex tones for its sandy look — the directional only lifts
+          building facades. Point 1.9 / [0,150,0]: bioluminescent cyan fill from
+          the ring center, touches reef decorations in the near field. */}
       <hemisphereLight color={_hemiSkyColor} groundColor={_hemiGroundColor} intensity={1.60} />
       <directionalLight color={_sunColor} intensity={2.20} position={[0, 500, 60]} />
       <pointLight color={_bioColor} intensity={1.9} distance={760} position={[0, 150, 0]} />
 
       {/* Dark-blue underwater fog (#0a2236). near=360 keeps the compact ring
-          (radius 195) fully visible; far=1400 fades distance + fully hides the
-          6000wu seabed's edges (always >1400 from camera at ~541wu from origin). */}
+          (radius 195) + reef decos fully visible; far=1400 fades distance + hides
+          the 6000wu seabed's edges (always >1400 from camera at ~541wu from origin). */}
       <fog attach="fog" args={[_fogColor, 360, 1400]} />
 
       <GradientSky />
       <Seabed />
+      <ReefDecorations />
       <BuildingRing />
     </>
   );
