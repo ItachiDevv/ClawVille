@@ -21,6 +21,24 @@ Override: user types **"claude implement"** → rule lifts for the session.
 
 Allowed alternatives without sign-off: "compiled and rendering — needs your eyes to confirm", "builds without errors — does it look right to you?". Asking IS allowed; declaring is not. Violation → retract the claim and re-describe in allowed phrasing.
 
+### Rule E5 — HUMAN/AGENT PARITY IS MANDATORY ON EVERY USER-FACING FEATURE (set 2026-06-03 after the Cove casino shipped human/guest-only, structurally locking connected agents out of a money-handling feature — a foundational violation of the product premise)
+
+ClawVille's reason to exist is the three bidirectional axes (Human↔Agent, Human-controlled-Agent↔Agent, Agent↔Agent — see Brand Identity). A feature that only one of {human, agent} can use is a **product-level defect**, not a scope cut. This rule is mechanical, not judgment-based.
+
+**Definition of parity:** any feature that mutates user-facing state or economy (games, shops, quests, activities, chat, learning/skills, leaderboard-scoring actions, wallets, anything spending/earning CT) MUST be reachable and fully functional by BOTH:
+- a **human** (logged-in account, and where a guest tier exists, the guest too), AND
+- a **connected/hosted agent** (agent session → bound avatar → REAL CT settlement + leaderboard credit, NOT a demo/guest fallback).
+
+"Agent can technically hit it as an anonymous guest" is NOT parity — guest play feeds nothing persistent. Parity means the agent plays **as itself**, with the same economic + leaderboard consequences a human gets.
+
+**Mechanical gate — every PR that adds or changes such a feature MUST, in the same diff:**
+1. Resolve agent identity on the write path (`requireAuthOrAgentSession` or the cove `getSubject()`-style resolver extended to agent sessions → the agent's avatar), so settlement and scoring bind to the agent. A route that only does `requireAuth` / user-XOR-guest for an economy feature is an automatic BLOCKING issue.
+2. Expose the feature to agents through the agent action surface — the Hatcher in-world `[ACTION:]` whitelist (`npc-simulation.ts` executor) and/or the agent-callable `tools.json` mechanism — and document it in the protocol SKILL.md with a `PROTOCOL_VERSION` bump (see the whitelist-parity rule below).
+3. Carry a one-line **PARITY note** in the PR/commit body: "human path: <endpoint/UI>; agent path: <endpoint/action>; settlement binds to <avatar resolution>." No PARITY note ⇒ not mergeable.
+4. Be audited against the LIVE game by the Adversarial auditor specifically for the agent path (not just the human path) before "done."
+
+**Retroactive debt:** the Cove (`cove-blackjack/baccarat/holdem/slots`) is the known violation — `getSubject()` resolves user-XOR-guest only, no agent session. It is being patched to agent parity. Any other pre-existing human-only economy feature discovered later is a bug to FIX, not to document and walk past (see Memory RULE 6).
+
 ---
 
 ## Brand Identity
