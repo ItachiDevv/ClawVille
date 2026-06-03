@@ -363,6 +363,12 @@ export default function BlackjackModal() {
     /** Server-authoritative target hand/slot for the apply (relay-derived). */
     handId?: string | null;
     handSlot?: 0 | 1;
+    /**
+     * Stale-decision guard: the hand version the agent decided at (relay-derived,
+     * null for `deal`/no live hand). Threaded to /action as expectedHandVersion so
+     * a human tap that advanced the hand mid-window rejects this stale apply.
+     */
+    handVersion?: number | null;
     deadline: number;
   } | null>(null);
   // True while a decision is being applied (so we don't double-fire).
@@ -677,6 +683,7 @@ export default function BlackjackModal() {
     act: 'hit' | 'stand' | 'double' | 'split' | 'surrender',
     agentDriven = false,
     slotOverride?: 0 | 1,
+    expectedHandVersion?: number,
   ) => {
     if (busyRef.current || !hand) return;
     if (agentMode === 'autonomous' && !agentDriven) {
@@ -700,6 +707,11 @@ export default function BlackjackModal() {
         action: act,
         handSlot: slot,
         idempotencyKey: actionKeyRef.current,
+        // Only the agent-driven apply carries the stale-decision precondition;
+        // human manual taps omit it so /action stays unconditional for them.
+        ...(agentDriven && expectedHandVersion !== undefined
+          ? { expectedHandVersion }
+          : {}),
       });
       if (isSettled(res)) {
         applySettled(res);
@@ -716,11 +728,25 @@ export default function BlackjackModal() {
         actionKeyRef.current = null;
       }
     } catch (err) {
-      showToast(describeBlackjackError(err), err instanceof CoveApiError && err.status >= 500 ? 'error' : 'warn');
+      // Stale agent decision (409): the human (or a prior apply) already advanced
+      // the hand, so the server rejected this in-flight agent apply. DISCARD it
+      // silently — same as a skipped turn — and stay in Autonomous; the next
+      // decision point re-asks the agent against the fresh state. Never crash,
+      // never blind-retry. Mint a fresh idempotency key so the discarded key is
+      // not reused on the next (different) decision.
+      if (
+        agentDriven && err instanceof CoveApiError &&
+        err.status === 409 && err.code === 'stale_agent_decision'
+      ) {
+        actionKeyRef.current = null;
+        pushAdvisor('You took over this hand — the agent stood down. Still in Autonomous.');
+      } else {
+        showToast(describeBlackjackError(err), err instanceof CoveApiError && err.status >= 500 ? 'error' : 'warn');
+      }
     } finally {
       busyRef.current = false;
     }
-  }, [hand, agentMode, action, activeSlot, applySettled, mergeActionInProgress, showToast]);
+  }, [hand, agentMode, action, activeSlot, applySettled, mergeActionInProgress, showToast, pushAdvisor]);
 
   // ── NEXT HAND ───────────────────────────────────────────────────────────────
   const handleNextHand = useCallback(() => {
@@ -783,7 +809,12 @@ export default function BlackjackModal() {
   // bypasses the human-yields-to-agent guard). Split-aware: the relay returns
   // the verb for the active slot; activeSlot is already focused by the merge.
   const applyAgentDecision = useCallback(async (
-    decision: { action: AgentDecisionAction; amount?: number; handSlot?: 0 | 1 },
+    decision: {
+      action: AgentDecisionAction;
+      amount?: number;
+      handSlot?: 0 | 1;
+      handVersion?: number | null;
+    },
   ) => {
     switch (decision.action) {
       case 'deal': {
@@ -810,8 +841,15 @@ export default function BlackjackModal() {
       case 'double':
       case 'split':
       case 'surrender':
-        // Honor the relay's server-authoritative target slot for split hands.
-        await runAction(decision.action, true, decision.handSlot);
+        // Honor the relay's server-authoritative target slot for split hands, and
+        // thread the relay's handVersion as the stale-decision precondition (a
+        // human tap that advanced the hand mid-window makes /action 409 this).
+        await runAction(
+          decision.action,
+          true,
+          decision.handSlot,
+          decision.handVersion ?? undefined,
+        );
         break;
     }
   }, [handleDeal, handleInsure, runAction, setBlackjackBet]);
@@ -886,6 +924,7 @@ export default function BlackjackModal() {
           amount: decision.amount,
           handId: decision.handId ?? null,
           handSlot: decision.handSlot,
+          handVersion: decision.handVersion ?? null,
           deadline: Date.now() + waitMs,
         });
       } catch (err) {
@@ -937,6 +976,7 @@ export default function BlackjackModal() {
         action: agentPending.action,
         amount: agentPending.amount,
         handSlot: agentPending.handSlot,
+        handVersion: agentPending.handVersion,
       })
         .finally(() => {
           agentBusyRef.current = false;
