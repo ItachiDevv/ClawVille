@@ -138,17 +138,22 @@ These cost real money / crash the GPU / leak secrets. They stay inline regardles
 
 ## MANDATORY: Non-trivial implementation runs as EXPERIMENTAL COLLABORATIVE AGENT TEAMS
 
-`CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` + `teammateMode=in-process` are on globally (set 2026-05-19). Specialist agents spawn in PARALLEL sharing a `team_name`, coordinating via `TaskList`/`TaskUpdate`/`SendMessage`.
+`CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` + `teammateMode=in-process` are on globally (set 2026-05-19; the feature was NOT enabled when the older manager-of-managers memory was written, so that memory is now superseded by this section). The point of teams is LIVE COLLABORATION — agents working concurrently, dividing non-blocking work, and DMing via `SendMessage` — NOT a fan-out where most agents sit `blockedBy` others doing nothing.
 
-**Right pattern:** ONE parallel message spawns the WHOLE TEAM upfront (Lead Implementer + Reconciler + Spec/Regression/Adversarial auditors, shared `team_name`). Auditors are created with `addBlockedBy: [implementer_task_id]` and auto-start when impl flips to `completed`. Fixers spawn themselves on BLOCKING ISSUES. Orchestrator only commits + pushes + verifies.
+**"Parallel" means COLLABORATIVE-concurrent, NOT blocked-idle (clarified 2026-06-03 by the user).** Spawning 5 agents at once where 3 are `blockedBy` the 2 implementers is fan-out-with-a-barrier, not collaboration — the blocked agents just burn context idling. Only spawn a member at launch if it has useful work to do NOW. Auditors qualify at launch ONLY when they actively PRE-READ the baseline and surface constraints to the implementers BEFORE the diff exists (e.g. a spec auditor posting the "executor can't settle CT, route through the authed path" trap up front — that is real early collaboration that prevents a wrong build). An auditor that would merely idle until `addBlockedBy` releases should instead be spawned WHEN there is a diff to review. Prefer carving work so members collaborate on non-blocking pieces simultaneously over a static dependency DAG.
 
-**Anti-pattern (banned):** "dispatch impl, then dispatch auditors after it returns" — that serializes 4+ round-trips per concern. If you catch yourself thinking "auditors after implementer" — STOP, spawn them now with `addBlockedBy`.
+**Dispatch shape — HYBRID by domain (set 2026-06-03; supersedes BOTH the flat-only doc rule and the manager-of-managers-only memory `feedback_agent_team_managers`):**
+- **Specialized domains → manager-of-managers.** 3D / Three.js / shaders / WebGPU → dispatch `3da` as ONE manager; Blender → `blend007:mesh`; Anchor / Solana → `solana-auditor`. The manager runs `TeamCreate`, spawns its own sub-team, and posts ONE consolidated report. This preserves each specialist's curated memory (`3da` → `.claude/memory/threejs/`, etc.) and keeps the orchestrator's context clean.
+- **Plain backend / general-purpose → flat top-level team is fine.** No specialized manager exists to gain from, so the orchestrator may spawn the `general-purpose` team directly. Insert a `general-purpose` manager layer ONLY if it does not cost quality — the extra layer must earn its keep in context savings, never dilute the work.
+- Either way the team must be genuinely COLLABORATIVE (concurrent + DMing), and you only spawn members who can do useful work now.
+
+**Fixers** spawn no new agent — the Reconciler (impl-2) applies BLOCKING-ISSUE punch lists in place. Orchestrator only commits + pushes + verifies.
 
 ### When teams are mandatory
 
 3D / Blender pipelines / Backend / API / DB / money paths · any task > 5 min runtime, > 300 LOC, or ≥ 3 files across subsystems · user quality verbs ("polish", "iterate", "rework", "elite"). `bun test` green is NOT a substitute for the Adversarial audit on backend work.
 
-### Standard compositions (spawn whole team in ONE message, parallel Agent calls, shared `team_name` like `casino-routes-2026-05-19`)
+### Standard compositions (roles per concern; spawn members per the collaborative-concurrent rule above — only those with work to do now — shared `team_name` like `casino-routes-2026-05-19`)
 
 **3D / world-structure:** `3da` × { `3da-impl-1` lead, `3da-impl-2` reconciler, `3da-spec`, `3da-regress`, `3da-adversary` }. Add `blend007:mesh` as `blender-inspect` when GLB inspection needed; substitute `blend007:mesh` for impl roles on Blender-heavy work.
 
@@ -168,7 +173,7 @@ Reconciler (impl-2) doubles as the Fixer on BLOCKING ISSUES — no new dispatch,
 
 - **Direct edit (no agent):** 5-line edits — typo, comment, env-var, SVG path, script regen.
 - **Light (2-agent, shared team_name):** ≤ 100 LOC or single-file with deterministic tests — 1 ultrathink Implementer + 1 combined-lens Auditor.
-- **Full team (DEFAULT, 5 agents in one parallel dispatch):** 3D, Blender, backend, money, > 100 LOC or > 3 files.
+- **Full team (DEFAULT, 5 collaborative-concurrent roles):** 3D, Blender, backend, money, > 100 LOC or > 3 files.
 - **High-stakes** (DB migrations, custodial keys, auth, billing, rewrites) → full team + `reconciler-manager` that re-implements independently. No exceptions.
 
 Test: would the cost of getting this wrong justify ~5× parallel invocations? When in doubt, full team. Independent concerns → separate teams in parallel; shared state → single team with task deps.
