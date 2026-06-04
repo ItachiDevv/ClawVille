@@ -43,7 +43,7 @@ import { Hono } from 'hono';
 import type { Context } from 'hono';
 import { z } from 'zod';
 import { randomBytes } from 'crypto';
-import { eq, desc, count } from 'drizzle-orm';
+import { eq, and, desc, count } from 'drizzle-orm';
 import {
   db,
   openclawBots,
@@ -57,6 +57,8 @@ import {
   DEFAULT_AGENT_MODEL_KEY,
   KNOWLEDGE_BOOKS,
   pickRandomHatcherModelKey,
+  AVATAR_ARCHETYPES,
+  getAgentModel,
   type OpenClawRegistration,
   type KnowledgeBook,
 } from '@clawville/shared';
@@ -311,6 +313,191 @@ function buildHatcherClient(
   });
 }
 
+// ---------------------------------------------------------------------------
+// Hatcher avatar auto-provision (Rule E5 — agent plays AS ITSELF for real CT)
+// ---------------------------------------------------------------------------
+//
+// A Hatcher register that carries an `identityKey` resolves/creates a USER, but
+// historically created NO avatar — so a fresh Hatcher agent hit a 403 at the
+// Cove (`agent_session_has_no_active_avatar`, cove-blackjack.ts getSubject)
+// because `resolveAgentSession` (require-auth-or-agent.ts) resolves the
+// session's `avatarId` via `avatars.findFirst({ userId, isActive: true })` and
+// found none. This closes that gap: on register with an identityKey we ensure
+// the bound user has an active avatar, so the verified parity model holds end to
+// end (Hatcher-signed + identityKey + active avatar => ledgerCapable => REAL CT
+// to the bound avatar).
+//
+// PARITY + NO-FAUCET CONTRACT (matches the canonical agent-facing avatar path,
+// `agent-gateway.ts` POST /api/agent/join lines ~1577-1656):
+//   - The starting balance is the SCHEMA DEFAULT `avatars.clawTokens = 100`
+//     (packages/database/src/schema/avatars.ts) — the EXACT same balance a human
+//     avatar (POST /api/avatars) and a /join agent avatar get. We do NOT call
+//     creditClawTokens / claw-token-ledger here: the human + /join paths don't
+//     either, so matching them is the no-faucet guarantee. 100 CT >= the Cove
+//     min bet (COVE_BLACKJACK_MIN_BET = 5), so the avatar can immediately play.
+//   - `isActive` defaults to true (schema), which is what getSubject/resolve
+//     require to bind real-CT play.
+//   - One avatar per user (UNIQUE `avatars.user_id`). This helper is IDEMPOTENT:
+//     it reuses an existing active avatar and NEVER mints a second one nor
+//     re-grants the starting balance. Re-register of the same agent/identityKey
+//     therefore cannot faucet CT — the avatar-exists check gates the one-time
+//     grant exactly once (the default applies only on the single INSERT).
+//   - Differences from /join: a Hatcher avatar's render model is its assigned
+//     `hatcher_N` modelKey (category 'hatcher'); harness 'custom' (externally
+//     hosted via hatcher-proxy, NOT our Milady hosting). The legacy NOT-NULL
+//     species/color/gender enums get the same neutral sea-creature defaults
+//     /join uses (they only feed the PixiJS 2D fallback; the 3D world reads
+//     modelKey).
+//
+// Default archetype for the auto-provisioned body. Same archetype /join uses so
+// the orientation knowledge + character shape match the human/agent baseline.
+const DEFAULT_HATCHER_ARCHETYPE = 'curious-scholar';
+
+/**
+ * PURE builder for the auto-provisioned Hatcher avatar's INSERT values. No I/O —
+ * extracted so the no-faucet money-shape is unit-assertable with NO DB write.
+ *
+ * CONTRACT (the money invariants):
+ *   - `clawTokens` is NEVER set => the schema default `avatars.clawTokens = 100`
+ *     applies on INSERT — the EXACT same starting balance the human path
+ *     (POST /api/avatars) and the agent /join path get. Matching them (not an
+ *     inflated literal) is the no-faucet guarantee.
+ *   - `isActive` / `positionX|Y` are NEVER set => schema defaults
+ *     (isActive:true, center spawn) — true isActive is what binds real-CT play.
+ *   - `userId` binds the avatar to the agent's resolved user (settlement anchor).
+ *   - `agentCategory:'hatcher'` (CHECK includes it) + `harness:'custom'` (the
+ *     only valid externally-hosted harness in the CHECK) + `modelKey` = a valid
+ *     `hatcher_N` (validated against the registry; random fallback if absent).
+ */
+export function buildHatcherAvatarValues(
+  userId: string,
+  modelKey: string | null | undefined,
+  name: string | null | undefined,
+): typeof avatars.$inferInsert {
+  // Resolve the render model: prefer the persisted hatcher_N; validate against
+  // the registry and fall back to a random hatcher_N placeholder if absent or
+  // not a known hatcher key (mirrors the register handler's species resolution).
+  const resolvedModel =
+    modelKey && getAgentModel(modelKey)?.category === 'hatcher'
+      ? modelKey
+      : pickRandomHatcherModelKey();
+  const modelLabel = getAgentModel(resolvedModel)?.label ?? 'Hatcher';
+
+  const archetype = AVATAR_ARCHETYPES.find((a) => a.id === DEFAULT_HATCHER_ARCHETYPE);
+  if (!archetype) {
+    // Unreachable unless the archetype registry was edited without updating the
+    // constant above — surface loudly rather than silently skipping the avatar.
+    throw new Error(
+      `Default Hatcher archetype '${DEFAULT_HATCHER_ARCHETYPE}' missing from registry`,
+    );
+  }
+
+  // Unique avatar name (avatars.name is UNIQUE). Append 6 hex of the user id so
+  // two first-contact Hatcher agents don't collide. Human/Hatcher-overridable
+  // later via PATCH. Same pattern as agent-gateway /join.
+  const requestedName = name?.trim() || 'Hatcher Agent';
+  const suffix = userId.replace(/-/g, '').slice(0, 6);
+  const avatarName = `${requestedName} ${suffix}`.slice(0, 100);
+
+  return {
+    userId,
+    name: avatarName,
+    // Legacy NOT-NULL enums — neutral sea-creature defaults (feed the 2D
+    // fallback only; the 3D world renders the hatcher_N modelKey).
+    species: 'turtle',
+    color: 'blue',
+    gender: 'male',
+    archetype: archetype.id,
+    personality: {
+      habitat: 'sea',
+      hobby: 'reading-and-learning',
+      greeting: 'wave-hello',
+    },
+    stats: { strength: 5, defence: 8, movement: 7 },
+    characterConfig: {
+      bio: archetype.bio,
+      greeting: archetype.greeting,
+      tone: archetype.tone,
+      topics: archetype.topics,
+      adjectives: archetype.adjectives,
+      rules: archetype.rules,
+      style: archetype.style,
+      messageExamples: archetype.messageExamples,
+      lore: archetype.lore,
+      knowledge: archetype.knowledge,
+      system: `You are ${requestedName}, a ${modelLabel} in the sea-themed world of ClawVille. Your archetype is "${archetype.label}". Stay in character.`,
+    },
+    modelKey: resolvedModel,
+    agentCategory: 'hatcher',
+    // Externally hosted via hatcher-proxy, NOT our Milady hosting — and the
+    // avatars_harness_valid CHECK is ('openclaw','hermes','milady','custom'),
+    // so 'custom' is the correct (and only valid) externally-hosted harness.
+    harness: 'custom',
+    // clawTokens / isActive / positionX|Y intentionally OMITTED — the schema
+    // defaults (100 CT, isActive:true, center spawn) ARE the human-parity grant.
+    // Setting them here would risk diverging from that baseline (faucet risk).
+  };
+}
+
+/**
+ * Ensure the resolved Hatcher user has an ACTIVE avatar, creating a default one
+ * via the canonical agent-avatar shape if absent. Idempotent + race-safe.
+ *
+ * @param userId   the user resolved from the register `identityKey` (row.userId)
+ * @param modelKey the assigned `hatcher_N` render model (row.species) — falls
+ *                 back to a random hatcher_N if absent/invalid
+ * @param name     the partner-supplied display name (register body `name`)
+ * @returns `{ avatarId, created }` — `created:false` when an avatar already
+ *          existed (no second row, no re-grant).
+ *
+ * The insert-VALUES are built by the exported pure `buildHatcherAvatarValues`
+ * (below) so the no-faucet money-shape (clawTokens OMITTED => schema default 100,
+ * agentCategory 'hatcher', harness 'custom', userId binding) is unit-assertable
+ * WITHOUT a DB write (apps/api/scripts/hatcher/verify-avatar-provision.ts). The
+ * I/O wrapper here is the only DB-touching part.
+ */
+export async function ensureHatcherAvatar(
+  userId: string,
+  modelKey: string | null | undefined,
+  name: string | null | undefined,
+): Promise<{ avatarId: string; created: boolean }> {
+  // Idempotency gate: reuse an existing ACTIVE avatar. This is the single guard
+  // that makes the one-time starting-CT grant (the schema default on INSERT)
+  // fire exactly once — a re-register finds this row and returns without writing.
+  const existing = await db.query.avatars.findFirst({
+    where: and(eq(avatars.userId, userId), eq(avatars.isActive, true)),
+    columns: { id: true },
+  });
+  if (existing) return { avatarId: existing.id, created: false };
+
+  const values = buildHatcherAvatarValues(userId, modelKey, name);
+
+  try {
+    const [inserted] = await db
+      .insert(avatars)
+      .values(values)
+      .returning({ id: avatars.id });
+    return { avatarId: inserted.id, created: true };
+  } catch (err: unknown) {
+    // Race-safe recovery: two concurrent registers for the same identityKey both
+    // resolve the same user, both observe "no avatar", both INSERT.
+    // `avatars.user_id` is UNIQUE, so the loser catches 23505 and re-reads the
+    // row the winner committed. Without this the loser would error on what should
+    // be a deterministic "use my existing avatar" path. (Mirrors /join.)
+    const code =
+      (err as { code?: string; cause?: { code?: string } } | null)?.code ??
+      (err as { cause?: { code?: string } } | null)?.cause?.code;
+    if (code === '23505') {
+      const raced = await db.query.avatars.findFirst({
+        where: and(eq(avatars.userId, userId), eq(avatars.isActive, true)),
+        columns: { id: true },
+      });
+      if (raced) return { avatarId: raced.id, created: false };
+    }
+    throw err;
+  }
+}
+
 /** Public-safe view of an agent row (NEVER includes the proxy token).
  *  Exported for the Hatcher e2e self-test (apps/api/scripts/hatcher/selftest-e2e.ts),
  *  which asserts the token-never-echoed + protocol-pointer + userId-binding contract. */
@@ -501,6 +688,35 @@ partnerHatcherRoutes.post('/agents', async (c) => {
     console.error('[Hatcher/register] wallet provisioning failed (non-fatal):', err);
   }
 
+  // Rule E5 — auto-provision a default avatar so the bound user is immediately
+  // ledger-capable + can play the Cove for REAL CT (closes the prior
+  // `agent_session_has_no_active_avatar` 403). Keyed on `row.userId` (what was
+  // actually PERSISTED — the upsert keeps `userId ?? existing.userId`, so a
+  // re-register that resolved no identity still finds the prior bound user) so
+  // it is idempotent across re-registers AND respects the one-avatar-per-user
+  // UNIQUE constraint. Only runs when the agent is identity-bound; an anonymous
+  // register (no identityKey, row.userId null) stays intentionally non-ledger
+  // and creates no avatar. Non-fatal: a transient failure leaves the row
+  // persisted (the agent can still perceive/chat), and the next register
+  // retries; the cove gate fails CLOSED (403, never a silent guest demotion).
+  let avatarProvisioned = false;
+  if (row.userId) {
+    try {
+      const { created } = await ensureHatcherAvatar(row.userId, row.species, data.name);
+      avatarProvisioned = true;
+      if (created) {
+        void logEvent({
+          eventType: 'avatar.created',
+          userId: row.userId,
+          agentId: namespacedAgentId,
+          payload: { via: 'partner-register', identityType: 'hatcher' },
+        });
+      }
+    } catch (err) {
+      console.error('[Hatcher/register] avatar auto-provision failed (non-fatal):', err);
+    }
+  }
+
   // Spawn / take over the in-world body. Use a fresh session id per
   // registration. Remove any stale live session for this agent first so a
   // re-register doesn't leave an orphaned body (idempotent).
@@ -590,11 +806,12 @@ partnerHatcherRoutes.post('/agents', async (c) => {
       via: 'partner-register',
       mode: data.mode,
       spawned,
+      avatarProvisioned,
       cognitionBackend: 'hatcher-proxy',
     },
   });
 
-  return c.json({ ok: true, sessionId, spawned, agent: publicAgentRecord(row) });
+  return c.json({ ok: true, sessionId, spawned, avatarProvisioned, agent: publicAgentRecord(row) });
 });
 
 // ---------------------------------------------------------------------------
