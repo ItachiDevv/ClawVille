@@ -297,7 +297,9 @@ export default function CreateAgentPage() {
 
   // --- Gate answer handler ------------------------------------------------
   const handleGateAnswer = useCallback(
-    (answer: boolean) => {
+    // answer === null resets to the choice screen (instructions "← back"), so a
+    // user who picked self-host can get back to the "Host it for me" option.
+    (answer: boolean | null) => {
       setHasAgentByTab((prev) => ({ ...prev, [selectedTab]: answer }));
     },
     [selectedTab],

@@ -4,7 +4,7 @@ import { eq, and } from 'drizzle-orm';
 import { lucia } from '../lib/auth';
 import { db, users, openclawBots, avatars } from '@clawville/database';
 import { sessionMiddleware, requireAuth } from '../middleware/auth';
-import { npcSimulation } from '../services/npc-simulation';
+import { validateLiveAgentSession } from '../middleware/require-auth-or-agent';
 import { consumeTicket } from '../services/session-ticket-service';
 import { createRateLimiter, getClientIp } from '../middleware/rate-limit';
 import { issueAuthToken, consumeAuthToken } from '../services/auth-token-service';
@@ -843,25 +843,20 @@ authRoutes.post('/milady-session-exchange', async (c) => {
 
   const { sessionId } = parsed.data;
 
-  // Validate the session exists in the NPC simulation
-  if (!npcSimulation.isValidAgentSession(sessionId)) {
+  // Fail-closed liveness gate (Codex auth-lens hardening round 3, 2026-06-03).
+  // This endpoint mints a full Lucia COOKIE from an agent-session bearer, so it
+  // is auth-critical: previously it trusted bare Map membership
+  // (`isValidAgentSession`), which let an EXPIRED-but-still-in-memory session
+  // exchange into a real authed browser session. Route through the SAME shared
+  // validator every other bearer path uses (DB `session_expires_at > now`, NULL
+  // = expired, unregister stale body) so the TTL is enforced before any cookie.
+  // The validator returns the in-memory config + live row in one shot, so the
+  // redundant config/row lookups this used to do are gone.
+  const live = await validateLiveAgentSession(sessionId);
+  if (!live) {
     throw new HTTPException(404, { message: 'Agent session not found or expired' });
   }
-
-  // Get the bot's config to find the resolved agentId
-  const botConfig = npcSimulation.getOpenClawBotConfig(sessionId);
-  if (!botConfig) {
-    throw new HTTPException(404, { message: 'Bot configuration not found for session' });
-  }
-
-  // Look up the openclawBots row
-  const bot = await db.query.openclawBots.findFirst({
-    where: eq(openclawBots.agentId, botConfig.agentId),
-  });
-
-  if (!bot) {
-    throw new HTTPException(404, { message: 'Agent not registered in ClawVille' });
-  }
+  const { config: botConfig, bot } = live;
 
   // Find or create a guest user for this Milady agent
   const guestEmail = `milady-${botConfig.agentId}@clawville.guest`;

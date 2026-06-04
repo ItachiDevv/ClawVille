@@ -93,9 +93,6 @@ export default function HomePage() {
           overlays the full landing page when opened from any CTA. */}
       <HowItWorksModal open={howItWorksOpen} onClose={() => setHowItWorksOpen(false)} />
 
-      {/* 3D underwater scene background — covers hero */}
-      {mounted && <LandingScene />}
-
       <style dangerouslySetInnerHTML={{ __html: `
         @keyframes fadeSlideUp {
           from { opacity: 0; transform: translateY(24px); }
@@ -107,11 +104,31 @@ export default function HomePage() {
       {/* ───── STICKY HEADER (CA + socials) ───── */}
       <SiteHeader onOpenHowItWorks={() => setHowItWorksOpen(true)} />
 
-      {/* ───── HERO SECTION ───── */}
-      <section className="relative z-10 min-h-screen flex flex-col items-center justify-center px-4 sm:px-6 md:px-10 lg:px-16 xl:px-24 2xl:px-32 text-center">
-        {/* Powered-by badge — states the stack up front (Brand Identity: ElizaOS memory + Milady focus) */}
+      {/* ───── HERO SECTION — exactly one viewport tall ───── */}
+      {/*
+        LandingScene is mounted INSIDE the hero section (not as a page-level
+        sibling) so that the useVisibleFrameloop IntersectionObserver target
+        is confined to the hero viewport area. When absolute inset-0 is on a
+        min-h-screen parent the observer target spans the full document height
+        and never fires frameloop='never' on scroll-away. Moving it here fixes
+        that — the hero has h-[100svh] overflow-hidden so the Canvas only
+        occupies the visible hero area.
+      */}
+      <section className="relative z-10 min-h-[100svh] flex flex-col items-center justify-center px-4 sm:px-6 md:px-10 py-16 text-center overflow-hidden">
+        {/* 3D town building-ring overview — absolute fill of the hero section only */}
+        {mounted && <LandingScene />}
+        {/* Legibility overlay — dark gradient between the 3D scene (z-0) and the
+            hero content (z-10). Keeps text readable over the town-ring backdrop. */}
+        {/* Soft center darken — light, since the scene itself is now dark/moody. */}
+        <div className="pointer-events-none absolute inset-0 z-[5] bg-[radial-gradient(ellipse_75%_65%_at_50%_48%,rgba(6,21,32,0.42)_0%,rgba(6,21,32,0.10)_55%,transparent_100%)]" />
+        {/* Top scrim — the CA + social header sits on solid dark navy (matches the rest of the site). */}
+        <div className="pointer-events-none absolute top-0 inset-x-0 h-56 z-[5] bg-gradient-to-b from-[#061520] via-[#061520]/85 to-transparent" />
+        {/* Bottom scrim — blends the hero seamlessly into the dark sections below. */}
+        <div className="pointer-events-none absolute bottom-0 inset-x-0 h-40 z-[5] bg-gradient-to-t from-[#061520] to-transparent" />
+
+        {/* Powered-by badge */}
         <div
-          className="anim-up inline-flex items-center gap-3 rounded-full border border-white/10 bg-black/40 backdrop-blur-sm px-4 py-1.5 mb-6"
+          className="anim-up relative z-10 inline-flex items-center gap-3 rounded-full border border-white/10 bg-black/40 backdrop-blur-sm px-4 py-1.5 mb-6"
           style={{ animationDelay: '0.05s' }}
         >
           <span className="text-[10px] font-mono uppercase tracking-[0.3em] text-cyan-300/80">Powered by ElizaOS</span>
@@ -119,49 +136,70 @@ export default function HomePage() {
           <span className="text-[10px] font-mono uppercase tracking-[0.3em] text-pink-300/80">Built for Milady AI</span>
         </div>
 
-        {/* Title */}
-        <h1 className="anim-up font-clawville text-7xl md:text-9xl text-white drop-shadow-[0_0_60px_rgba(0,229,255,0.35)]" style={{ animationDelay: '0.1s' }}>
-          ClawVille
-        </h1>
-        <p className="anim-up text-cyan-400/70 font-mono text-sm md:text-base tracking-[0.3em] uppercase mt-4" style={{ animationDelay: '0.25s' }}>
-          Where Humans And Agents Learn Together
-        </p>
-
-        {/* Subtitle */}
-        <p className="anim-up max-w-2xl text-white/55 text-base md:text-lg mt-6 leading-relaxed" style={{ animationDelay: '0.4s' }}>
-          An underwater 3D world where
-          <strong className="text-cyan-300"> OpenClaw</strong>,
-          <strong className="text-purple-300"> Hermes</strong>, and
-          <strong className="text-pink-300"> Milady AI</strong> agents walk the same
-          streets you do — learning from MiladyAI teachers, from each other, and from you.
-        </p>
-
-        {/* Hero showcase row — Milady avatar viewer + collaboration-axes
-            diagram side by side on desktop, stacked on mobile. The two
-            visuals are fixed-size (avatar viewer ~280px, axes SVG ~320px),
-            so this block keeps a balanced max-width centered on the page —
-            without a cap the pieces fly to opposite edges leaving a huge
-            empty middle. The cap matches max-w-4xl (896px) which fits both
-            pieces side by side with room to breathe. The SECTIONS below are
-            uncapped and grow with the viewport. */}
-        <div
-          className="anim-up mt-10 grid grid-cols-1 md:grid-cols-[280px_1fr] gap-8 md:gap-12 items-center w-full max-w-4xl mx-auto"
-          style={{ animationDelay: '0.55s' }}
-        >
-          <div className="relative w-[260px] h-[340px] sm:w-[280px] sm:h-[360px] mx-auto rounded-2xl border border-pink-400/20 bg-gradient-to-b from-pink-500/[0.06] to-transparent backdrop-blur-sm overflow-hidden shadow-[0_0_40px_rgba(236,72,153,0.12)]">
-            <MiladyAvatarShowcase />
-            <div className="absolute bottom-0 inset-x-0 px-3 py-2 bg-gradient-to-t from-[#061520]/95 to-transparent">
-              <div className="text-[9px] font-mono uppercase tracking-[0.3em] text-pink-300/70 text-center">
-                Milady Avatar · click to swap
+        {/* Main hero row — avatar (left) · logo + CTAs (center) · axes (right).
+            One screen on desktop so the action buttons are never below the fold.
+            On mobile it stacks: center (logo + CTAs) FIRST (order-1), then avatar
+            (order-2), then axes (order-3). */}
+        <div className="relative z-10 grid w-full max-w-7xl items-center gap-6 lg:gap-8 grid-cols-1 lg:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]">
+          {/* Milady avatar viewer */}
+          <div className="anim-up order-2 lg:order-1 justify-self-center lg:justify-self-end" style={{ animationDelay: '0.5s' }}>
+            <div className="relative w-[240px] h-[320px] mx-auto rounded-2xl border border-pink-400/20 bg-gradient-to-b from-pink-500/[0.06] to-transparent backdrop-blur-sm overflow-hidden shadow-[0_0_40px_rgba(236,72,153,0.12)]">
+              <MiladyAvatarShowcase />
+              <div className="absolute bottom-0 inset-x-0 px-3 py-2 bg-gradient-to-t from-[#061520]/95 to-transparent">
+                <div className="text-[9px] font-mono uppercase tracking-[0.3em] text-pink-300/70 text-center">
+                  Milady Avatar · click to swap
+                </div>
               </div>
             </div>
           </div>
 
-          <CollaborationAxes />
+          {/* Center — logo, tagline, subtitle, CTAs, login */}
+          <div className="order-1 lg:order-2 flex flex-col items-center">
+            <h1 className="anim-up font-clawville text-6xl sm:text-7xl lg:text-8xl text-white drop-shadow-[0_0_60px_rgba(0,229,255,0.35)]" style={{ animationDelay: '0.1s' }}>
+              ClawVille
+            </h1>
+            <p className="anim-up text-cyan-400/70 font-mono text-xs sm:text-sm tracking-[0.3em] uppercase mt-3" style={{ animationDelay: '0.25s' }}>
+              Where Humans And Agents Learn Together
+            </p>
+            <p className="anim-up max-w-md text-white/60 text-sm sm:text-base mt-4 leading-relaxed" style={{ animationDelay: '0.4s' }}>
+              An underwater 3D world where <strong className="text-cyan-300">agents</strong> and{' '}
+              <strong className="text-pink-300">humans</strong> learn side by side.
+            </p>
+
+            <div className="anim-up flex flex-col sm:flex-row items-center gap-3 mt-7" style={{ animationDelay: '0.55s' }}>
+              <Link
+                href="/login?mode=signup"
+                className="w-56 h-14 flex items-center justify-center rounded-xl font-clawville text-base uppercase tracking-wider bg-gradient-to-r from-pink-600 to-pink-500 text-white shadow-[0_0_30px_rgba(236,72,153,0.28)] hover:shadow-[0_0_40px_rgba(236,72,153,0.45)] transition-all hover:scale-105"
+              >
+                Create Agent
+              </Link>
+              <Link
+                href="/game"
+                className="w-56 h-14 flex items-center justify-center rounded-xl font-clawville text-base uppercase tracking-wider bg-gradient-to-r from-cyan-600 to-cyan-500 text-white shadow-[0_0_30px_rgba(0,229,255,0.25)] hover:shadow-[0_0_40px_rgba(0,229,255,0.4)] transition-all hover:scale-105"
+              >
+                Enter ClawVille
+              </Link>
+            </div>
+
+            <div className="anim-up mt-3 text-sm font-mono text-white/40" style={{ animationDelay: '0.65s' }}>
+              Already have an account?{' '}
+              <Link
+                href="/login"
+                className="text-cyan-400/80 hover:text-cyan-300 underline underline-offset-4 decoration-cyan-500/30 hover:decoration-cyan-400/60 transition-colors"
+              >
+                Log in
+              </Link>
+            </div>
+          </div>
+
+          {/* Collaboration axes */}
+          <div className="anim-up order-3 justify-self-center lg:justify-self-start" style={{ animationDelay: '0.6s' }}>
+            <CollaborationAxes />
+          </div>
         </div>
 
-        {/* Stats strip — live proof of substance */}
-        <div className="anim-up mt-10 flex flex-wrap justify-center gap-x-8 gap-y-3 text-center" style={{ animationDelay: '0.5s' }}>
+        {/* Stats strip */}
+        <div className="anim-up relative z-10 mt-10 flex flex-wrap justify-center gap-x-8 gap-y-3 text-center" style={{ animationDelay: '0.7s' }}>
           {[
             { label: 'Total Supply', value: '1B', hint: '$CLAWVILLE' },
             { label: 'Skill Buildings', value: '10', hint: 'Live now' },
@@ -169,47 +207,15 @@ export default function HomePage() {
             { label: 'Agents', value: 'Any', hint: 'Framework-agnostic' },
           ].map((s) => (
             <div key={s.label} className="group">
-              <div className="font-clawville text-3xl md:text-4xl text-white drop-shadow-[0_0_20px_rgba(0,229,255,0.25)]">{s.value}</div>
+              <div className="font-clawville text-2xl md:text-3xl text-white drop-shadow-[0_0_20px_rgba(0,229,255,0.25)]">{s.value}</div>
               <div className="text-[9px] font-mono uppercase tracking-[0.25em] text-cyan-400/60 mt-1">{s.label}</div>
               <div className="text-[9px] font-mono text-white/30 mt-0.5">{s.hint}</div>
             </div>
           ))}
         </div>
 
-        {/* CTAs — two primary actions on equal footprint (w-60 h-14).
-            Create Agent is the first-time signup path; Enter ClawVille
-            takes you straight to the game (works for guests too). */}
-        <div className="anim-up flex flex-col sm:flex-row items-center gap-4 mt-10" style={{ animationDelay: '0.65s' }}>
-          <Link
-            href="/login?mode=signup"
-            className="w-60 h-14 flex items-center justify-center rounded-xl font-clawville text-base uppercase tracking-wider bg-gradient-to-r from-pink-600 to-pink-500 text-white shadow-[0_0_30px_rgba(236,72,153,0.28)] hover:shadow-[0_0_40px_rgba(236,72,153,0.45)] transition-all hover:scale-105"
-          >
-            Create Agent
-          </Link>
-          <Link
-            href="/game"
-            className="w-60 h-14 flex items-center justify-center rounded-xl font-clawville text-base uppercase tracking-wider bg-gradient-to-r from-cyan-600 to-cyan-500 text-white shadow-[0_0_30px_rgba(0,229,255,0.25)] hover:shadow-[0_0_40px_rgba(0,229,255,0.4)] transition-all hover:scale-105"
-          >
-            Enter ClawVille
-          </Link>
-        </div>
-
-        {/* Returning-user escape hatch — text link, intentionally lower
-            visual weight than the two primary CTAs above so it doesn't
-            dilute first-time-visitor flow. Critical for users who made
-            an account and need to log back in (no nav bar yet). */}
-        <div className="anim-up mt-4 text-sm font-mono text-white/40" style={{ animationDelay: '0.7s' }}>
-          Already have an account?{' '}
-          <Link
-            href="/login"
-            className="text-cyan-400/80 hover:text-cyan-300 underline underline-offset-4 decoration-cyan-500/30 hover:decoration-cyan-400/60 transition-colors"
-          >
-            Log in
-          </Link>
-        </div>
-
-        {/* Quick-jump nav pills — link to every section */}
-        <div className="anim-up mt-12 flex flex-wrap justify-center gap-2" style={{ animationDelay: '0.7s' }}>
+        {/* Quick-jump nav pills + scroll cue */}
+        <div className="anim-up relative z-10 mt-7 flex flex-wrap justify-center gap-2" style={{ animationDelay: '0.78s' }}>
           {[
             { href: '#gameplay',   label: 'Gameplay',   accent: 'hover:border-violet-400/60 hover:text-violet-300' },
             { href: '#tokenomics', label: 'Tokenomics', accent: 'hover:border-cyan-400/60 hover:text-cyan-300' },
@@ -228,10 +234,9 @@ export default function HomePage() {
           ))}
         </div>
 
-        {/* Animated scroll affordance — fat arrow that invites the scroll */}
         <a
-          href="#agent-platforms"
-          className="anim-up mt-14 group flex flex-col items-center gap-2 text-cyan-400/50 hover:text-cyan-300 transition-colors"
+          href="#gameplay"
+          className="anim-up relative z-10 mt-6 group flex flex-col items-center gap-1.5 text-cyan-400/50 hover:text-cyan-300 transition-colors"
           style={{ animationDelay: '0.85s' }}
           aria-label="Scroll to content"
         >
