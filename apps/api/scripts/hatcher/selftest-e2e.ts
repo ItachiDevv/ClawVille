@@ -1118,13 +1118,20 @@ async function main() {
   //   (a) Hatcher register WITHOUT a `data.identityKey` → `row.userId` null →
   //       `boundUserId` null → resolveAgentSession DEMOTES to non-ledger →
   //       cove 403 `agent_session_not_ledger_authorized` (cove-blackjack.ts:271).
-  //   (b) Hatcher register WITH identityKey but the bound user has NO active avatar →
-  //       `ledgerCapable` stays true but `resolved.avatarId` null →
-  //       cove 403 `agent_session_has_no_active_avatar` (cove-blackjack.ts:276-284).
-  //   Both are clean 403s (NOT a silent demotion to the guest/demo tier), so E5's
-  //   "never silently downgrade a connected agent" guarantee is intact. The fix for
-  //   (a)/(b) is OPERATIONAL (Hatcher sends identityKey + ensures an avatar exists),
-  //   not a code change. This harness models the HAPPY path (identityKey + avatar).
+  //       Still operational (Hatcher must send identityKey to be a ledger subject);
+  //       the no-key path is intentionally non-ledger and creates no avatar.
+  //   (b) CLOSED 2026-06-04 (was: "register WITH identityKey but NO active avatar →
+  //       cove 403 agent_session_has_no_active_avatar"). The register handler now
+  //       AUTO-PROVISIONS a default avatar for the bound user on every
+  //       identityKey-bound register (partner-hatcher.ts ensureHatcherAvatar /
+  //       buildHatcherAvatarValues), so a fresh Hatcher agent is immediately
+  //       ledger-capable + Cove-playable for real CT. Idempotent + no-faucet: it
+  //       reuses an existing active avatar and never re-grants the schema-default
+  //       100 CT (same balance the human + /join paths get). Covered by the
+  //       focused verify scripts/hatcher/verify-avatar-provision.ts (4/4).
+  //   (a) remains a clean 403 (NOT a silent demotion to the guest/demo tier), so
+  //   E5's "never silently downgrade a connected agent" guarantee is intact. This
+  //   harness models the HAPPY path (identityKey + avatar — now the default).
   //
   // WHY I1/I4 PREVIOUSLY 404'd (the stale-fixture root cause — NOT ledgerCapable):
   //   I1 (tools.json) routes via resolveSession→validateLiveAgentSession and I4
