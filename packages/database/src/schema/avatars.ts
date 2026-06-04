@@ -219,9 +219,19 @@ export const avatars = pgTable('avatars', {
   // constraints as part of the push. If push errors with "constraint
   // already exists", drop the existing one manually (the name matches
   // the first argument to check()).
+  // MIRROR of AGENT_CATEGORIES in @clawville/shared (agent-models.ts). 'hatcher'
+  // added 2026-06-01 (partner #2): although connected Hatcher agents render via
+  // openclaw_bots.species (NOT an avatars row), `'hatcher'` is now a member of
+  // the shared AGENT_CATEGORIES tuple, which the avatars route validates with
+  // `z.enum(AGENT_CATEGORIES)` and writes to agent_category. Keeping this CHECK
+  // in lockstep with the tuple is the documented invariant (see the block
+  // comment on the columns above) — without 'hatcher' here, an avatars write
+  // carrying it would hit a Postgres CHECK violation. Applied to the shared
+  // Supabase via migrations-manual/2026-06-01_add_hatcher_agent_category.sql
+  // (NOT auto-run — db:push is flaky on this table; raw drop+recreate, once).
   agentCategoryCheck: check(
     'avatars_agent_category_valid',
-    sql`${t.agentCategory} IN ('openclaw','hermes','milady','other')`,
+    sql`${t.agentCategory} IN ('openclaw','hermes','milady','other','hatcher')`,
   ),
   harnessCheck: check(
     'avatars_harness_valid',

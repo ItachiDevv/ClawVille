@@ -40,16 +40,57 @@ import {
 } from '../services/openclaw-session-sweeper';
 import { drainKnowledgeEvents, clearSessionQueue } from '../services/skill-event-bus';
 import { runTool } from '../services/skill-tools-dispatcher';
+import { coveBlackjackRouter } from './cove-blackjack';
+import { validateLiveAgentSession } from '../middleware/require-auth-or-agent';
+import { getBlackjackSkillContext } from '../services/game-skill-memory';
 import {
   getBooksForBuilding,
   SHOP_BUILDINGS,
   BUILDING_TOOLS,
   CLAWVILLE_GAME_TOOLS,
+  // Hatcher partner #2 (2026-06-01): canonical "you are inside ClawVille"
+  // orientation text returned on /connect so an external agent embeds it in
+  // its own system prompt. (The random hatcher-model pick is NOT imported here
+  // — Hatcher agents register via the partner-signed path, not /connect; see
+  // the `identityType` enum comment re: the Phase C lockdown.)
+  CLAWVILLE_ORIENTATION_KNOWLEDGE,
 } from '@clawville/shared';
 import nacl from 'tweetnacl';
 import bs58 from 'bs58';
+import { randomBytes } from 'crypto';
 
 const agentGatewayRoutes = new Hono();
+
+// ---------------------------------------------------------------------------
+// Hatcher partner #2 (2026-06-01) — /connect orientation payload.
+// ---------------------------------------------------------------------------
+// `CLAWVILLE_ORIENTATION_KNOWLEDGE` (the canonical "you are inside ClawVille"
+// world-facts, single source of truth in
+// packages/shared/src/constants/orientation-skill.ts) is returned on every
+// /connect so an EXTERNAL agent — which brings its own model and gets NO
+// server-side Eliza runtime for its chat — can embed orientation into its own
+// system prompt at connect time. Additive field; existing connect consumers
+// ignore unknown keys, so this does not break them.
+//
+// Phase 3 (`.claude/plans/hatcher-integration.md` §4) will swap this inline
+// text for a manifest URL + content-hash (GET /api/skills/manifest.json +
+// /api/skills/protocol/skill.md) so agents poll-and-diff instead of re-reading
+// the full body every connect. Until that endpoint exists, the inline text is
+// the only delivery surface.
+//
+// Joined + frozen once at module load — the body is identical for every
+// connect, so there's no reason to re-join the ~70-entry array per request.
+const CONNECT_ORIENTATION_TEXT = CLAWVILLE_ORIENTATION_KNOWLEDGE.join('\n\n');
+const CONNECT_ORIENTATION = Object.freeze({
+  // Plain-text orientation body the agent should prepend to its system prompt.
+  text: CONNECT_ORIENTATION_TEXT,
+  // Number of discrete world-facts, for an agent that wants to chunk/embed.
+  factCount: CLAWVILLE_ORIENTATION_KNOWLEDGE.length,
+  // Provenance note so an agent (or its operator) knows this is the canonical
+  // orientation surface and what supersedes it.
+  source: 'CLAWVILLE_ORIENTATION_KNOWLEDGE',
+  note: 'Embed this in your system prompt so you act as an agent inside ClawVille. Phase 3 replaces this inline text with a manifest URL + content-hash.',
+});
 
 // ---------------------------------------------------------------------------
 // Rate limiter for /connect — prevents unlimited bot registration spam.
@@ -79,6 +120,25 @@ const reconnectRateLimiter = createRateLimiter({
   maxPerWindow: 5,
   windowMs: 60_000,
 });
+
+// ---------------------------------------------------------------------------
+// resolveAvatarIdForBot — map an openclaw_bots.userId to that user's avatars.id
+// ---------------------------------------------------------------------------
+// CT credits MUST target an `avatars.id` (the ledger row-locks the avatars
+// row). A connected agent's `openclaw_bots.id` is NOT an avatars PK — crediting
+// it threw "avatar not found" (swallowed), so connected agents never earned CT
+// for building visits / teacher chats. This resolves the human's avatar via the
+// bot's bound userId. Returns null when the bot is anonymous (no userId) or the
+// user has no avatar yet — callers then skip the credit honestly (tokenAwarded
+// stays 0) rather than throwing. (2026-06-01, Hatcher Phase A bug fix.)
+async function resolveAvatarIdForBot(botUserId: string | null): Promise<string | null> {
+  if (!botUserId) return null;
+  const avatar = await db.query.avatars.findFirst({
+    where: eq(avatars.userId, botUserId),
+    columns: { id: true },
+  });
+  return avatar?.id ?? null;
+}
 
 // ---------------------------------------------------------------------------
 // POST /api/agent/connect  — Universal agent registration
@@ -139,7 +199,17 @@ const connectSchema = z.object({
   mode: z.enum(['avatar', 'override']).optional().default('avatar'),
   targetNpcId: z.string().optional(),
 
-  // Identity type hint (inferred from other fields if omitted)
+  // Identity type hint (inferred from other fields if omitted).
+  //
+  // `hatcher` is INTENTIONALLY EXCLUDED from this public enum (Phase C lockdown,
+  // 2026-06-01). A Hatcher agent must be registered through the partner-SIGNED
+  // path `POST /api/partner/hatcher/agents` (`partner-hatcher.ts`), which owns
+  // the random-`hatcher_N` avatar assignment, the encrypted-at-rest cognition
+  // token, and the `hatcher:`-namespaced agent_id ownership guard. Accepting
+  // `identityType:'hatcher'` here would let any unauthenticated caller mint a
+  // row that masquerades as a Hatcher agent (and claim the hatcher avatar
+  // category) without the partner signature — so it's not allowed on /connect.
+  // See `.claude/plans/hatcher-integration.md` §13/§14 (proxy model is primary).
   identityType: z.enum(['openclaw', 'ironclaw', 'nanoclaw', 'milady', 'custom', 'anonymous']).optional(),
 
   // Phase 5 — explicit identity key for first-contact bootstrap. When
@@ -174,6 +244,21 @@ agentGatewayRoutes.post('/connect', async (c) => {
   const data = parsed.data;
   let resolvedAgentId: string = data.agentId ?? '';
 
+  // Captured once at Step 0 so every later read (userId/avatarId/learningFocus,
+  // the claim block, the event payload) uses the SAME pending object — never a
+  // fresh `pendingConnections.get()` that could observe a concurrently-mutated
+  // or deleted entry. Null when no token was supplied.
+  let pendingConn: PendingConnection | null = null;
+
+  // Deterministic input validation FIRST (Codex auth-lens fix #6 refinement,
+  // 2026-06-03). This synchronous, body-only check can reject the request, so it
+  // MUST run BEFORE the token reservation below — otherwise a bad targetNpcId
+  // would burn the (single-use) connection token on a 400 the caller could have
+  // retried. No awaits here, so it can't interleave with a concurrent claim.
+  if (data.mode === 'override' && data.targetNpcId && !NPC_IDS.includes(data.targetNpcId)) {
+    return c.json({ error: `Unknown targetNpcId: ${data.targetNpcId}` }, 400);
+  }
+
   // Step 0: If connectionToken is present, validate it and auto-generate agentId if missing
   if (data.connectionToken) {
     const pending = pendingConnections.get(data.connectionToken);
@@ -184,9 +269,24 @@ agentGatewayRoutes.post('/connect', async (c) => {
       pendingConnections.delete(data.connectionToken);
       return c.json({ error: 'Connection token expired' }, 410);
     }
+    // Single-use guard (Codex auth-lens fix #6, 2026-06-03): the original code
+    // only flipped `pending.connected` at the END of the handler, AFTER several
+    // awaited DB calls. Two concurrent claims for the same token both passed
+    // this check and both proceeded — a TOCTOU race that minted two ledger
+    // sessions for one owned token. We now ATOMICALLY reserve the token here,
+    // BEFORE any awaited work: the first claimant flips `connected` synchronously
+    // (Node runs this check-and-set with no interleaving await between the read
+    // and the write), so the second concurrent claimant sees `connected === true`
+    // and is rejected. The session id is back-filled in the claim block below.
+    // All deterministic input validation that could reject already ran ABOVE this
+    // flip; any failure AFTER it (a DB error before the session is registered)
+    // ROLLS BACK the reservation (`pending.connected = false`) so the human can
+    // retry without regenerating the token.
     if (pending.connected) {
       return c.json({ error: 'Connection token already claimed' }, 409);
     }
+    pending.connected = true;
+    pendingConn = pending;
     // Auto-generate agentId from token if not provided
     if (!resolvedAgentId) {
       resolvedAgentId = data.agentId ?? `agent-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -209,11 +309,6 @@ agentGatewayRoutes.post('/connect', async (c) => {
     resolvedAgentId = `agent-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   }
 
-  // Validate override target before touching the DB
-  if (data.mode === 'override' && data.targetNpcId && !NPC_IDS.includes(data.targetNpcId)) {
-    return c.json({ error: `Unknown targetNpcId: ${data.targetNpcId}` }, 400);
-  }
-
   // nanoclaw is an identity concept — on the wire it still speaks openai-compat shape
   // (or nothing, because it won't be POSTing anywhere)
   const wireProtocol = data.protocol ?? 'openai-compat';
@@ -231,7 +326,21 @@ agentGatewayRoutes.post('/connect', async (c) => {
     : (data.autonomyMode ?? 'server-managed');
 
   // Step 2: Upsert openclaw_bots row
-  const sessionId = `ag-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  //
+  // Hardening (Codex dual-review, 2026-06-03): the session id IS the bearer
+  // credential the cove trusts for REAL-ClawToken play — cove-blackjack.ts
+  // getSubject reads the X-Clawville-Agent-Session header, resolveAgentSession
+  // looks it up in npc-simulation's in-memory map, and any caller holding a
+  // live session id can open/deal/action/close against the bound avatar's real
+  // CT. The previous `Date.now()` + `Math.random().toString(36).slice(2,8)`
+  // scheme was predictable (wall-clock) and ~6 chars of NON-cryptographic PRNG
+  // — guessable/forgeable. We now draw 24 bytes (~192 bits) from
+  // crypto.randomBytes and base64url-encode them. The `ag-` prefix is kept for
+  // log readability only. The id is validated purely by Map membership
+  // (npcSimulation.isValidAgentSession === Map.has), so the format change is
+  // transparent to validation; sessions are ephemeral/in-memory, so old weak
+  // ids simply age out with no migration.
+  const sessionId = `ag-${randomBytes(24).toString('base64url')}`;
   let isReturning = false;
   let totalSessions = 1;
   let knowledge: string[] = [];
@@ -240,6 +349,21 @@ agentGatewayRoutes.post('/connect', async (c) => {
   let lastY: number | undefined;
   const agentStats = data.stats ?? { hp: 100, attack: 10, defense: 8, speed: 6 };
 
+  // Render-model surface for a connected agent = `species` (the
+  // openclaw_bots.species column + the OpenClawRegistration config). Resolved
+  // ONCE here so the persisted row, the spawn config, and the in-world sim all
+  // agree. A returning agent keeps its stored species (set in the existing-row
+  // branch below); a new one falls back to the Milady default (Step 2b) when no
+  // species is supplied. The connect path does NOT write avatars.agent_category,
+  // so no DB CHECK is involved — only /join writes agent_category.
+  //
+  // NOTE: Hatcher agents do NOT come through /connect (Phase C lockdown — see
+  // the `identityType` enum comment). The random-`hatcher_N` placeholder
+  // assignment lives in `POST /api/partner/hatcher/agents` (`partner-hatcher.ts`),
+  // which is the only partner-authenticated path that can claim that avatar
+  // category. So there is no hatcher branch here.
+  let resolvedSpecies: string | null = data.species ?? null;
+
   // The connection-token flow knows which user issued the token (the
   // human pasted the URL into their authed agent's chat, the modal
   // captured `avatarId` + `userId` at issue time). Wire that userId onto
@@ -247,9 +371,16 @@ agentGatewayRoutes.post('/connect', async (c) => {
   // userId) can find this bot on every subsequent page load. Without it,
   // the connect succeeds server-side but agentConnected reverts to false
   // on the next reload — agent state evaporates between sessions.
-  const tokenUserId = data.connectionToken
-    ? pendingConnections.get(data.connectionToken)?.userId ?? null
-    : null;
+  const tokenUserId = pendingConn?.userId ?? null;
+
+  // Ledger-capability (Codex auth-lens fix #2/#3, 2026-06-03). The session this
+  // /connect mints is the bearer the cove trusts for REAL-CT play. Previously an
+  // `agentId`-only reconnect to an ALREADY-BOUND bot returned a fully-trusted
+  // session, so anyone who learned a victim's stable agentId could mint a session
+  // for the victim's avatar and spend its real CT. We now grant ledger capability
+  // ONLY when ownership is proven (see below). `existingBoundUserId` records
+  // whether the matched row was already bound to a human before this connect.
+  let existingBoundUserId: string | null = null;
 
   try {
     const existing = await db.query.openclawBots.findFirst({
@@ -257,6 +388,7 @@ agentGatewayRoutes.post('/connect', async (c) => {
     });
 
     if (existing) {
+      existingBoundUserId = existing.userId ?? null;
       isReturning = true;
       totalSessions = (existing.totalSessions ?? 0) + 1;
       knowledge = existing.knowledge ?? [];
@@ -269,13 +401,20 @@ agentGatewayRoutes.post('/connect', async (c) => {
       // whatever's stored — Milady is the source of truth for agent naming.
       const preferredName = data.miladyCharacterName ?? data.name ?? existing.name;
 
+      // Returning agent keeps its previously-assigned render model unless the
+      // caller explicitly overrides `species`, so it renders the SAME avatar
+      // across reconnects rather than re-rolling. Falls back to the freshly
+      // resolved species only if the stored row had none.
+      const persistedSpecies = data.species ?? existing.species ?? resolvedSpecies;
+      resolvedSpecies = persistedSpecies;
+
       await db.update(openclawBots).set({
         identityType,
         gatewayUrl: data.gatewayUrl ?? existing.gatewayUrl,
         protocol: data.protocol ? wireProtocol : existing.protocol,
         mode: data.mode,
         name: preferredName,
-        species: data.species ?? existing.species,
+        species: persistedSpecies,
         color: data.color ?? existing.color,
         totalSessions,
         lastSeenAt: new Date(),
@@ -310,7 +449,8 @@ agentGatewayRoutes.post('/connect', async (c) => {
         protocol: wireProtocol,
         mode: data.mode,
         name: insertName,
-        species: data.species ?? null,
+        // Persist the resolved render model so reconnects keep the same avatar.
+        species: resolvedSpecies,
         color: data.color ?? null,
         // Bind to the human who issued the connection token so the bot
         // is recognized on later page loads + cross-session reconnect
@@ -335,7 +475,64 @@ agentGatewayRoutes.post('/connect', async (c) => {
     }
   } catch (err) {
     console.error('[AgentConnect] DB error:', err);
+    // Roll back the single-use token reservation (fix #6) — the session was
+    // never registered, so the human should be able to retry with the SAME
+    // token rather than being told it was "already claimed".
+    if (pendingConn) pendingConn.connected = false;
     return c.json({ error: 'Database error during agent registration' }, 500);
+  }
+
+  // Ledger-capability decision (Codex auth-lens fix #2/#3, 2026-06-03). Grant
+  // real-CT trust ONLY when ownership of the bound avatar is proven on THIS
+  // request:
+  //   (a) a valid OWNED connection token brought a userId (`tokenUserId`) — the
+  //       Moltbook claim, where an authed human issued the token for their own
+  //       avatar; OR
+  //   (b) genuine first-contact: the matched row was NOT already bound to a
+  //       human before this connect (`existingBoundUserId === null`) — either a
+  //       brand-new bot, or one that was only ever anonymous (no victim to take
+  //       over; the agent self-owns its avatar).
+  //
+  // Set FALSE for the takeover vector: an `agentId`-only reconnect to a bot that
+  // was ALREADY bound to a human, with no owned token on this request. Such a
+  // session can still perceive/chat/move, but the cove getSubject rejects it with
+  // 403 `agent_session_not_ledger_authorized` (NOT a guest demote, NOT real-CT
+  // play). A returning owner that wants real-CT play re-proves ownership via a
+  // fresh connect-token or the signed-challenge reconnect.
+  const ledgerCapable = tokenUserId !== null || existingBoundUserId === null;
+
+  // `boundUserId` (Codex auth-lens hardening round 2, 2026-06-03) — the user this
+  // session proves ownership of, stamped onto the session config so
+  // resolveAgentSession can re-validate it against the LIVE row at spend time.
+  // It is exactly the userId now written to `openclaw_bots.userId` (see the
+  // upsert: `tokenUserId ?? existing.userId` on the returning branch,
+  // `tokenUserId` on insert). For a pure owned-token claim that's the proven
+  // owner; for first-contact it's null (and the cove rejects a null-bound session
+  // anyway). It is NOT a free-floating value — it must equal what the row carries,
+  // so a later rebind to a different user makes them diverge and demotes the
+  // stale session.
+  const boundUserId: string | null = tokenUserId ?? existingBoundUserId;
+
+  // Eviction on ownership rebind (Codex auth-lens hardening round 2 — Option B,
+  // the primary close). If this connect CHANGES the row's bound userId (an
+  // agentId that was unbound or owned by user A is now bound to user B via an
+  // owned token), every PRIOR in-memory session for this agentId is stale: it was
+  // issued against the old owner (or no owner) and must never resolve against the
+  // new owner's avatar. Evict them BEFORE registering the new session so a stale
+  // ledger-capable handle can't spend the new owner's real CT. The map is keyed on
+  // sessionId, so we scan by agentId (same helper partner-hatcher already uses for
+  // its re-register hygiene). A rebind is only possible when an owned token brought
+  // a userId that differs from the prior bound userId.
+  const ownershipRebound =
+    tokenUserId !== null && tokenUserId !== existingBoundUserId;
+  if (ownershipRebound) {
+    try {
+      for (const stale of npcSimulation.findActiveSessionsByAgentIds([resolvedAgentId])) {
+        npcSimulation.unregisterOpenClaw(stale);
+      }
+    } catch (err) {
+      console.error('[AgentConnect] stale-session eviction on rebind failed (non-fatal):', err);
+    }
   }
 
   // Step 2b: Ensure the bot has a custodial Solana wallet. Idempotent —
@@ -366,11 +563,21 @@ agentGatewayRoutes.post('/connect', async (c) => {
         mode: 'override',
         autonomyMode,
         targetNpcId: data.targetNpcId,
+        // Carries the proven-ownership decision into the in-memory session so
+        // the cove gate (resolveAgentSession → getSubject) can honor it.
+        ledgerCapable,
+        // The user this session proved ownership of — re-validated against the
+        // live row at spend time (rebind backstop, hardening round 2).
+        boundUserId,
       } as OpenClawRegistration;
       const client = new OpenClawClient(config);
       npcSimulation.registerOpenClaw(config, client);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
+      // Override registration failed (e.g. NPC already taken) — no session was
+      // registered, so roll back the single-use token reservation (fix #6) so the
+      // caller can retry with the same token.
+      if (pendingConn) pendingConn.connected = false;
       return c.json({ error: msg }, 409);
     }
   } else {
@@ -378,8 +585,14 @@ agentGatewayRoutes.post('/connect', async (c) => {
     // VRM default so connected agents render as Miladys (not lobsters) when
     // the caller omits species. Renderer routes by species via MODEL_REGISTRY,
     // so 'milady_official_1' takes the VRMNpcMesh path.
+    //
+    // `resolvedSpecies` was computed + persisted above (Step 2): it is the
+    // caller's explicit species OR a returning agent's stored species. We fall
+    // back to the Milady default only when it's still null (e.g. an anonymous
+    // agent with no species). This keeps the persisted row, the spawn config,
+    // and the in-world render in lockstep.
     const spawnName = data.name ?? data.miladyCharacterName ?? resolvedAgentId.slice(0, 24);
-    const spawnSpecies = data.species ?? DEFAULT_AGENT_MODEL_KEY;
+    const spawnSpecies = resolvedSpecies ?? DEFAULT_AGENT_MODEL_KEY;
     try {
       const config: OpenClawRegistration = {
         agentId: resolvedAgentId,
@@ -398,6 +611,12 @@ agentGatewayRoutes.post('/connect', async (c) => {
         homeY: data.homeY ?? 2560,
         patrolRadius: data.patrolRadius ?? 100,
         personality: data.personality ?? '',
+        // Carries the proven-ownership decision into the in-memory session so
+        // the cove gate (resolveAgentSession → getSubject) can honor it.
+        ledgerCapable,
+        // The user this session proved ownership of — re-validated against the
+        // live row at spend time (rebind backstop, hardening round 2).
+        boundUserId,
       } as OpenClawRegistration;
 
       // Stub client — nanoclaw/anonymous agents don't use outbound chat routing
@@ -415,34 +634,34 @@ agentGatewayRoutes.post('/connect', async (c) => {
     }
   }
 
-  // Claim connection token if present (Moltbook pattern — flips polling status to connected)
-  if (data.connectionToken) {
-    const pending = pendingConnections.get(data.connectionToken);
-    if (pending) {
-      pending.connected = true;
-      pending.sessionId = sessionId;
-      pending.agentId = resolvedAgentId;
+  // Claim connection token if present (Moltbook pattern). `pending.connected`
+  // was already flipped true at Step 0 to atomically reserve the token against
+  // a concurrent double-claim (auth-lens fix #6); here we back-fill the session
+  // id + agentId on that SAME captured object so the issuing browser's
+  // /connect-status poll can hand the bearer back to its owner.
+  if (pendingConn) {
+    pendingConn.sessionId = sessionId;
+    pendingConn.agentId = resolvedAgentId;
 
-      // Phase 6.1 — if the human gave the token a learning focus at
-      // issuance time, persist it on their avatar now that the agent has
-      // claimed the token. Non-fatal on failure — the connect succeeds
-      // either way, the avatar just won't have a focus-biased prompt
-      // until next /create-agent or next connect-token flow.
-      if (pending.learningFocus && pending.avatarId) {
-        try {
-          await db
-            .update(avatars)
-            .set({
-              learningFocus: pending.learningFocus,
-              updatedAt: new Date(),
-            })
-            .where(eq(avatars.id, pending.avatarId));
-        } catch (err) {
-          console.error(
-            '[AgentConnect] learningFocus persist failed (non-fatal):',
-            err,
-          );
-        }
+    // Phase 6.1 — if the human gave the token a learning focus at
+    // issuance time, persist it on their avatar now that the agent has
+    // claimed the token. Non-fatal on failure — the connect succeeds
+    // either way, the avatar just won't have a focus-biased prompt
+    // until next /create-agent or next connect-token flow.
+    if (pendingConn.learningFocus && pendingConn.avatarId) {
+      try {
+        await db
+          .update(avatars)
+          .set({
+            learningFocus: pendingConn.learningFocus,
+            updatedAt: new Date(),
+          })
+          .where(eq(avatars.id, pendingConn.avatarId));
+      } catch (err) {
+        console.error(
+          '[AgentConnect] learningFocus persist failed (non-fatal):',
+          err,
+        );
       }
     }
   }
@@ -460,20 +679,28 @@ agentGatewayRoutes.post('/connect', async (c) => {
     resolvedAgentId,
     identityType,
     sessionId,
-    existingUserId:
-      data.connectionToken
-        ? pendingConnections.get(data.connectionToken)?.userId ?? null
-        : null,
-    existingAvatarId:
-      data.connectionToken
-        ? pendingConnections.get(data.connectionToken)?.avatarId ?? null
-        : null,
-    existingAvatarName:
-      data.connectionToken
-        ? pendingConnections.get(data.connectionToken)?.avatarName ?? null
-        : null,
+    existingUserId: pendingConn?.userId ?? null,
+    existingAvatarId: pendingConn?.avatarId ?? null,
+    existingAvatarName: pendingConn?.avatarName ?? null,
   });
   const sessionTicket = resolved.ticket;
+
+  // First-contact stays NON-LEDGER by design (Codex auth-lens, orchestrator
+  // decision 2026-06-03 — BLOCKING #3 is the inconsistency, NOT the feature).
+  // A first-contact /connect grants the config-level `ledgerCapable=true` flag
+  // (no existing bound owner), but its `boundUserId` is null and the bot row's
+  // `userId` stays null, so the round-2 resolve-time backstop
+  // (`config.boundUserId === liveBot.userId`, both non-null) DEMOTES it to
+  // non-ledger — the cove then rejects it the same as any no-active-avatar
+  // session. That demotion is what RESOLVES the lens's "ledgerCapable=true but
+  // can't actually play" contradiction: it's simply non-ledger, consistently.
+  //
+  // We deliberately do NOT bind the row's `userId` back to the agent's
+  // self-resolved user here. "A first-contact agent plays its OWN avatar for
+  // real CT" is a deferred FEATURE (needs the bot-row userId bind + an active
+  // avatar) tracked as FOLLOW-UP #6, not part of this security pass. First-
+  // contact agents reach real-CT play through the owned-connection-token claim
+  // or the ed25519 partner-signed Hatcher path (both ledger-capable).
 
   // Phase 5.1 — first-time identity keypair. The `/connect` response
   // gains an `identity` block the agent is instructed (via SKILL.md) to
@@ -572,9 +799,7 @@ agentGatewayRoutes.post('/connect', async (c) => {
   // Event payload — enrich with userId/avatarId when we resolved them from a
   // connection token. Dashboard funnels join events by userId/avatarId when
   // available, by agentId otherwise.
-  const pendingForEvent = data.connectionToken
-    ? pendingConnections.get(data.connectionToken)
-    : null;
+  const pendingForEvent = pendingConn;
   void logEventFromContext(c, {
     eventType: 'agent.connected',
     userId: pendingForEvent?.userId ?? resolved.userId ?? null,
@@ -666,6 +891,11 @@ agentGatewayRoutes.post('/connect', async (c) => {
     identityType,
     autonomyMode,
     walletAddress,
+    // Additive (2026-06-01) — canonical "you are inside ClawVille" orientation
+    // for external agents to embed in their own system prompt. Returned for
+    // every connecting agent (not just Hatcher) so any framework that brings
+    // its own brain starts orientation-aware. See CONNECT_ORIENTATION above.
+    orientation: CONNECT_ORIENTATION,
     ...(sessionTicket ? { sessionTicket } : {}),
     ...(identityBlock ? { identity: identityBlock } : {}),
     ...(walletBlock ? { wallet: walletBlock } : {}),
@@ -899,12 +1129,16 @@ agentGatewayRoutes.get('/session-status', async (c) => {
   }
 
   const now = new Date();
-  // `session_expires_at = null` means the row pre-dates the Phase 6 TTL
-  // column. Treat as connected-but-stale so legacy rows don't all 410
-  // on first boot after the migration; the next /connect from the agent
-  // will populate the column.
+  // Fail-closed (Codex auth-lens hardening round 3, 2026-06-03). A NULL
+  // `session_expires_at` is now treated as EXPIRED, matching the shared
+  // `validateLiveAgentSession` gate every bearer-trusting path uses — a session
+  // status that reported "connected" for a NULL TTL while the cove/gateway gates
+  // reject the same session would be a confusing contradiction that nudges agents
+  // to act on a dead handle. Every live session carries a populated 24h sliding
+  // TTL, so a NULL one is a never-refreshed/pre-column row: report it gone so the
+  // agent's retry loop falls into /reconnect.
   const expired =
-    row.sessionExpiresAt !== null && row.sessionExpiresAt <= now;
+    row.sessionExpiresAt === null || row.sessionExpiresAt <= now;
 
   if (expired) {
     return c.json(
@@ -912,7 +1146,7 @@ agentGatewayRoutes.get('/session-status', async (c) => {
         connected: false,
         expired: true,
         lastSeenAt: row.lastSeenAt.toISOString(),
-        expiresAt: row.sessionExpiresAt!.toISOString(),
+        expiresAt: row.sessionExpiresAt?.toISOString() ?? null,
         hint: 'Call POST /api/agent/reconnect with a signed challenge to get a fresh sessionId.',
       },
       410,
@@ -922,7 +1156,8 @@ agentGatewayRoutes.get('/session-status', async (c) => {
   return c.json({
     connected: true,
     lastSeenAt: row.lastSeenAt.toISOString(),
-    expiresAt: row.sessionExpiresAt?.toISOString() ?? null,
+    // Non-null: the `expired` guard above returned on a NULL sessionExpiresAt.
+    expiresAt: row.sessionExpiresAt!.toISOString(),
   });
 });
 
@@ -1089,11 +1324,27 @@ agentGatewayRoutes.post('/disconnect', async (c) => {
 
   await expireSession(agentId);
 
+  // BUG FIX (2026-06-01, Hatcher Phase A): disconnect previously flipped the
+  // session TTL + stopped the runtime but NEVER removed the in-world body, so
+  // the spawned NPC (avatar) / override lingered until the next API restart.
+  // Remove every live in-world session bound to this agentId so a clean signed
+  // disconnect actually frees the seat. Idempotent (no-op if already gone), so
+  // reconnect is unaffected — /connect re-registers a fresh session anyway.
+  let removedBodies = 0;
+  try {
+    const liveSessions = npcSimulation.findActiveSessionsByAgentIds([agentId]);
+    for (const sid of liveSessions) {
+      if (npcSimulation.unregisterOpenClaw(sid)) removedBodies++;
+    }
+  } catch (err) {
+    console.error('[AgentDisconnect] in-world body removal failed (non-fatal):', err);
+  }
+
   void logEvent({
     eventType: 'agent.session.disconnected',
     userId,
     agentId,
-    payload: { via: 'signed-challenge' },
+    payload: { via: 'signed-challenge', removedBodies },
   });
 
   return c.json({ disconnected: true, agentId });
@@ -1490,8 +1741,18 @@ agentGatewayRoutes.post('/join', async (c) => {
 
 // --- Middleware: validate session and resolve NPC ---
 
-function resolveSession(sessionId: string) {
-  if (!npcSimulation.isValidAgentSession(sessionId)) return null;
+// Fail-closed liveness gate for the agent-gateway routes (Codex auth-lens
+// hardening round 3, 2026-06-03). Previously this only did `isValidAgentSession`
+// (bare Map membership) with NO DB TTL check — so an EXPIRED session still
+// resolved, and the visit-building + building-chat routes below credit REAL CT,
+// meaning an expired bearer kept earning. It now routes through the SAME shared
+// `validateLiveAgentSession` the cove ledger resolver uses (DB
+// `session_expires_at > now`, NULL = expired, unregister stale body), so the TTL
+// can never drift between the two. Async because the liveness check hits the DB;
+// every caller awaits.
+async function resolveSession(sessionId: string) {
+  const live = await validateLiveAgentSession(sessionId);
+  if (!live) return null;
   const npcId = npcSimulation.getNpcIdForSession(sessionId);
   if (!npcId) return null;
   const npc = npcSimulation.getNpcById(npcId);
@@ -1610,9 +1871,9 @@ function buildPerception(npcId: string): AgentPerception | null {
 // ---------------------------------------------------------------------------
 // GET /api/agent/:sessionId/perception
 // ---------------------------------------------------------------------------
-agentGatewayRoutes.get('/:sessionId/perception', (c) => {
+agentGatewayRoutes.get('/:sessionId/perception', async (c) => {
   const sessionId = c.req.param('sessionId');
-  const resolved = resolveSession(sessionId);
+  const resolved = await resolveSession(sessionId);
   if (!resolved) return c.json({ error: 'Invalid or expired agent session' }, 404);
 
   const perception = buildPerception(resolved.npcId);
@@ -1635,7 +1896,7 @@ const moveSchema = z.object({
 
 agentGatewayRoutes.post('/:sessionId/move', async (c) => {
   const sessionId = c.req.param('sessionId');
-  const resolved = resolveSession(sessionId);
+  const resolved = await resolveSession(sessionId);
   if (!resolved) return c.json({ error: 'Invalid or expired agent session' }, 404);
 
   const body = await c.req.json();
@@ -1679,7 +1940,7 @@ const chatSchema = z.object({
 
 agentGatewayRoutes.post('/:sessionId/chat', async (c) => {
   const sessionId = c.req.param('sessionId');
-  const resolved = resolveSession(sessionId);
+  const resolved = await resolveSession(sessionId);
   if (!resolved) return c.json({ error: 'Invalid or expired agent session' }, 404);
 
   const body = await c.req.json();
@@ -1783,7 +2044,7 @@ const visitSchema = z.object({
 
 agentGatewayRoutes.post('/:sessionId/visit-building', async (c) => {
   const sessionId = c.req.param('sessionId');
-  const resolved = resolveSession(sessionId);
+  const resolved = await resolveSession(sessionId);
   if (!resolved) return c.json({ error: 'Invalid or expired agent session' }, 404);
 
   const body = await c.req.json();
@@ -1831,17 +2092,28 @@ agentGatewayRoutes.post('/:sessionId/visit-building', async (c) => {
       });
       if (bot) {
         visitUserId = bot.userId ?? null;
-        await creditClawTokens({
-          avatarId: bot.id,
-          amount: 1,
-          reason: 'building_visit',
-          source: 'api',
-          metadata: { buildingId, sessionId },
-        });
-        tokenAwarded = 1;
+        // BUG FIX (2026-06-01, Hatcher Phase A): credit the BOUND AVATAR, not
+        // `bot.id`. `bot.id` is an openclaw_bots PK, not an avatars PK, so the
+        // ledger threw "avatar not found" (swallowed) and connected agents
+        // never earned CT for building visits. Resolve the avatar via
+        // bot.userId -> avatars.id and credit that. If the bot has no
+        // userId/avatar, skip the credit honestly (tokenAwarded stays 0).
+        const avatarId = await resolveAvatarIdForBot(bot.userId ?? null);
+        if (avatarId) {
+          await creditClawTokens({
+            avatarId,
+            amount: 1,
+            reason: 'building_visit',
+            source: 'api',
+            metadata: { buildingId, sessionId, agentId: bot.agentId },
+          });
+          tokenAwarded = 1;
+        }
       }
-    } catch {
-      // Avatar row doesn't exist for this bot — credit failed, tokenAwarded stays 0
+    } catch (err) {
+      // Genuine ledger/DB error — log it (don't silently swallow). Credit
+      // failed, tokenAwarded stays 0.
+      console.error('[AgentGateway] building-visit CT credit failed:', err);
       tokenAwarded = 0;
     }
   }
@@ -1926,7 +2198,7 @@ const buildingChatSchema = z.object({
 agentGatewayRoutes.post('/:sessionId/building/:buildingId/chat', async (c) => {
   const sessionId = c.req.param('sessionId');
   const buildingId = c.req.param('buildingId');
-  const resolved = resolveSession(sessionId);
+  const resolved = await resolveSession(sessionId);
   if (!resolved) return c.json({ error: 'Invalid or expired agent session' }, 404);
 
   const body = await c.req.json().catch(() => null);
@@ -2024,15 +2296,22 @@ agentGatewayRoutes.post('/:sessionId/building/:buildingId/chat', async (c) => {
             .where(eq(openclawBots.id, bot.id));
           knowledgePersisted = true;
         }
-        // Award +1 ClawToken for successful teaching turn
-        await creditClawTokens({
-          avatarId: bot.id,
-          amount: 1,
-          reason: 'building_chat_teaching',
-          source: 'api',
-          metadata: { buildingId, sessionId, characterName: system.locationAgent.agentName },
-        });
-        tokenAwarded = 1;
+        // Award +1 ClawToken for successful teaching turn.
+        // BUG FIX (2026-06-01, Hatcher Phase A): credit the BOUND AVATAR, not
+        // `bot.id` (same no-op bug as building-visit). Resolve the avatar via
+        // bot.userId -> avatars.id; skip honestly if the bot has no
+        // userId/avatar (tokenAwarded stays 0).
+        const avatarId = await resolveAvatarIdForBot(bot.userId ?? null);
+        if (avatarId) {
+          await creditClawTokens({
+            avatarId,
+            amount: 1,
+            reason: 'building_chat_teaching',
+            source: 'api',
+            metadata: { buildingId, sessionId, agentId: bot.agentId, characterName: system.locationAgent.agentName },
+          });
+          tokenAwarded = 1;
+        }
       }
     } catch (err) {
       console.error('[AgentGateway] building-chat knowledge persist failed:', err);
@@ -2072,7 +2351,7 @@ const combatActionSchema = z.object({
 
 agentGatewayRoutes.post('/:sessionId/combat-action', async (c) => {
   const sessionId = c.req.param('sessionId');
-  const resolved = resolveSession(sessionId);
+  const resolved = await resolveSession(sessionId);
   if (!resolved) return c.json({ error: 'Invalid or expired agent session' }, 404);
 
   const body = await c.req.json();
@@ -2098,7 +2377,7 @@ const emoteSchema = z.object({
 
 agentGatewayRoutes.post('/:sessionId/emote', async (c) => {
   const sessionId = c.req.param('sessionId');
-  const resolved = resolveSession(sessionId);
+  const resolved = await resolveSession(sessionId);
   if (!resolved) return c.json({ error: 'Invalid or expired agent session' }, 404);
 
   const body = await c.req.json();
@@ -2116,7 +2395,8 @@ agentGatewayRoutes.post('/:sessionId/emote', async (c) => {
 // ---------------------------------------------------------------------------
 agentGatewayRoutes.get('/:sessionId/knowledge', async (c) => {
   const sessionId = c.req.param('sessionId');
-  if (!npcSimulation.isValidAgentSession(sessionId)) {
+  // Fail-closed liveness gate (shared validator) instead of bare Map membership.
+  if (!(await validateLiveAgentSession(sessionId))) {
     return c.json({ error: 'Invalid or expired agent session' }, 404);
   }
 
@@ -2138,7 +2418,7 @@ agentGatewayRoutes.get('/:sessionId/knowledge', async (c) => {
 // ---------------------------------------------------------------------------
 agentGatewayRoutes.get('/:sessionId/stats', async (c) => {
   const sessionId = c.req.param('sessionId');
-  const resolved = resolveSession(sessionId);
+  const resolved = await resolveSession(sessionId);
   if (!resolved) return c.json({ error: 'Invalid or expired agent session' }, 404);
 
   const { npcId, npc } = resolved;
@@ -2184,7 +2464,7 @@ agentGatewayRoutes.get('/:sessionId/stats', async (c) => {
 // ---------------------------------------------------------------------------
 agentGatewayRoutes.get('/:sessionId/pending-installs', async (c) => {
   const sessionId = c.req.param('sessionId');
-  const resolved = resolveSession(sessionId);
+  const resolved = await resolveSession(sessionId);
   if (!resolved) return c.json({ error: 'Invalid or expired agent session' }, 404);
   const events = drainKnowledgeEvents(sessionId);
   return c.json({ events, drainedAt: new Date().toISOString() });
@@ -2200,7 +2480,7 @@ agentGatewayRoutes.get('/:sessionId/pending-installs', async (c) => {
 // ---------------------------------------------------------------------------
 agentGatewayRoutes.get('/:sessionId/tools.json', async (c) => {
   const sessionId = c.req.param('sessionId');
-  const resolved = resolveSession(sessionId);
+  const resolved = await resolveSession(sessionId);
   if (!resolved) return c.json({ error: 'Invalid or expired agent session' }, 404);
 
   return new Response(JSON.stringify(CLAWVILLE_GAME_TOOLS, null, 2), {
@@ -2226,7 +2506,7 @@ agentGatewayRoutes.get('/:sessionId/tools.json', async (c) => {
 // ---------------------------------------------------------------------------
 agentGatewayRoutes.get('/:sessionId/owned-skills', async (c) => {
   const sessionId = c.req.param('sessionId');
-  const resolved = resolveSession(sessionId);
+  const resolved = await resolveSession(sessionId);
   if (!resolved) return c.json({ error: 'Invalid or expired agent session' }, 404);
 
   const botConfig = npcSimulation.getOpenClawBotConfig(sessionId);
@@ -2292,7 +2572,7 @@ agentGatewayRoutes.get('/:sessionId/skills/:buildingId/tools.json', async (c) =>
   const sessionId = c.req.param('sessionId');
   const buildingId = c.req.param('buildingId');
 
-  const resolved = resolveSession(sessionId);
+  const resolved = await resolveSession(sessionId);
   if (!resolved) return c.json({ error: 'Invalid or expired agent session' }, 404);
 
   const botConfig = npcSimulation.getOpenClawBotConfig(sessionId);
@@ -2364,7 +2644,7 @@ agentGatewayRoutes.post('/:sessionId/skills/:buildingId/tools/:toolName', async 
   const buildingId = c.req.param('buildingId');
   const toolName = c.req.param('toolName');
 
-  const resolved = resolveSession(sessionId);
+  const resolved = await resolveSession(sessionId);
   if (!resolved) return c.json({ error: 'Invalid or expired agent session' }, 404);
 
   const botConfig = npcSimulation.getOpenClawBotConfig(sessionId);
@@ -2446,7 +2726,7 @@ agentGatewayRoutes.get('/:sessionId/skills/:buildingId/skill.md', async (c) => {
   const sessionId = c.req.param('sessionId');
   const buildingId = c.req.param('buildingId');
 
-  const resolved = resolveSession(sessionId);
+  const resolved = await resolveSession(sessionId);
   if (!resolved) return c.json({ error: 'Invalid or expired agent session' }, 404);
 
   const botConfig = npcSimulation.getOpenClawBotConfig(sessionId);
@@ -2540,9 +2820,9 @@ agentGatewayRoutes.get('/:sessionId/skills/:buildingId/skill.md', async (c) => {
 //
 // Session is re-validated each tick — if the bot is unregistered the stream
 // ends cleanly.
-agentGatewayRoutes.get('/:sessionId/events', (c) => {
+agentGatewayRoutes.get('/:sessionId/events', async (c) => {
   const sessionId = c.req.param('sessionId');
-  const resolved = resolveSession(sessionId);
+  const resolved = await resolveSession(sessionId);
   if (!resolved) return c.json({ error: 'Invalid or expired agent session' }, 404);
 
   const { npcId } = resolved;
@@ -2560,7 +2840,7 @@ agentGatewayRoutes.get('/:sessionId/events', (c) => {
       await stream.sleep(2000);
 
       // Re-validate session each tick — break if expired
-      const current = resolveSession(sessionId);
+      const current = await resolveSession(sessionId);
       if (!current) break;
 
       const npc = npcSimulation.getNpcById(npcId);
@@ -2728,7 +3008,12 @@ agentGatewayRoutes.post('/connect-token', async (c) => {
       console.warn('[connect-token] clear agentBannerDismissed failed (non-fatal):', err);
     });
 
-  const token = `ct-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  // Crypto-strong (Codex dual-review 2026-06-03): a forged connect token would let
+  // an attacker claim this flow and bind their bot to the victim's userId/avatar
+  // (account-takeover-adjacent → victim's real CT). Date.now()+Math.random() is a
+  // predictable PRNG; consumer is a Map lookup (`pendingConnections`) so format is
+  // irrelevant. Single-use + short TTL semantics unchanged.
+  const token = `ct-${randomBytes(24).toString('base64url')}`;
   const apiBase = process.env.CORS_ORIGIN?.includes('clawville.world')
     ? 'https://api.clawville.world'
     : `http://localhost:${process.env.PORT ?? 4001}`;
@@ -2750,7 +3035,23 @@ agentGatewayRoutes.post('/connect-token', async (c) => {
 });
 
 // GET /api/agent/connect-status/:token — frontend polls this
-agentGatewayRoutes.get('/connect-status/:token', (c) => {
+//
+// SECURITY (Codex auth-lens fix #5, 2026-06-03): the session id this returns is
+// the bearer credential the cove trusts for real-CT play, and the token sits in
+// a URL the human pastes into their agent's chat (so it can leak into logs /
+// history / third-party LLM transcripts). Previously ANY caller holding the
+// token got `pending.sessionId` back — a leaked URL handed an attacker a live
+// real-CT bearer for the victim's avatar.
+//
+// We now gate the session id to the ORIGINAL Lucia user who issued the token
+// (the same authed browser that opened the modal). Behavior:
+//   - Caller's Lucia cookie === pending.userId  → owner: return the session id,
+//     and (once connected) DELETE the pending row so the bearer is read exactly
+//     once and can never be re-fetched from a stale/leaked URL.
+//   - Anyone else (no cookie / wrong user)      → redacted: connected flag only,
+//     NEVER the session id or agentId. The poll still works for the owner; a
+//     leaked URL is now inert.
+agentGatewayRoutes.get('/connect-status/:token', async (c) => {
   const token = c.req.param('token');
   const pending = pendingConnections.get(token);
 
@@ -2763,12 +3064,49 @@ agentGatewayRoutes.get('/connect-status/:token', (c) => {
     return c.json({ error: 'Token expired' }, 410);
   }
 
-  return c.json({
+  // Resolve the caller's Lucia identity (the polling modal is the authed
+  // issuer's own browser). No cookie / invalid session → treated as a
+  // non-owner: redacted response only.
+  let callerUserId: string | null = null;
+  try {
+    const { lucia } = await import('../lib/auth');
+    const luciaSessionId = lucia.readSessionCookie(c.req.header('Cookie') ?? '');
+    if (luciaSessionId) {
+      const { session, user } = await lucia.validateSession(luciaSessionId);
+      if (session && user) callerUserId = user.id;
+    }
+  } catch {
+    // Malformed cookie → non-owner. Fall through to the redacted branch.
+  }
+
+  const isOwner = callerUserId !== null && callerUserId === pending.userId;
+
+  if (!isOwner) {
+    // Redacted — leaked-URL holders learn liveness at most, never the bearer.
+    return c.json({
+      connected: pending.connected,
+      sessionId: null,
+      agentId: null,
+      expiresIn: Math.max(0, Math.floor((pending.expiresAt - Date.now()) / 1000)),
+    });
+  }
+
+  const response = {
     connected: pending.connected,
     sessionId: pending.sessionId ?? null,
     agentId: pending.agentId ?? null,
     expiresIn: Math.max(0, Math.floor((pending.expiresAt - Date.now()) / 1000)),
-  });
+  };
+
+  // Burn the pending row once the owner has read the connected session id, so
+  // the bearer can't be re-pulled from this (or a leaked) URL afterward. The
+  // agent has already claimed its session via /connect — this map entry exists
+  // only to hand the id back to the issuing browser exactly once.
+  if (pending.connected && pending.sessionId) {
+    pendingConnections.delete(token);
+  }
+
+  return c.json(response);
 });
 
 // GET /api/skills/connect — machine-readable SKILL.md for agents
@@ -3093,6 +3431,283 @@ This token expires in ${Math.max(0, Math.floor((pending.expiresAt - Date.now()) 
 
   c.header('Content-Type', 'text/markdown; charset=utf-8');
   return c.text(markdown);
+});
+
+// ---------------------------------------------------------------------------
+// Cove BLACKJACK — agent-callable play surface (Rule E5 — human↔agent parity).
+// ---------------------------------------------------------------------------
+// A connected/hosted agent plays REAL-CT blackjack AS ITSELF through these tools
+// (the [cards] HYBRID model: `[ACTION: enter_cove()]` puts the body at the cove,
+// then the agent drives play via these tool calls). The agent receives hand
+// state OUTBOUND and returns ONLY its decision — the server is authoritative and
+// NEVER reveals the dealer hole card, undealt cards, or the server seed before
+// the commit-reveal close.
+//
+// REUSE, NOT REIMPLEMENTATION: every tool forwards to the audited
+// `coveBlackjackRouter` via an in-process sub-request carrying the agent-session
+// header. The cove route's `getSubject` resolves that header → the agent's bound
+// avatar → its REAL CT (debit/creditClawTokens) — the SAME ledger path a human
+// uses. There is ZERO duplicated money/engine logic here: the provably-fair
+// engine, the rake, the idempotency + locking all live in the cove route exactly
+// once. This surface is a thin, parity-preserving adapter.
+//
+// The tool JSON is Anthropic/OpenAI-compatible (input_schema + parameters) so a
+// harness can install it straight from /cove/blackjack/tools.json.
+
+const COVE_BLACKJACK_TOOLS = [
+  {
+    name: 'cove_blackjack_open_session',
+    description:
+      'Open (or resume) your real-ClawToken blackjack shoe at the Cove. Returns a commit-reveal shoe id + your current ClawToken balance. Call this once before dealing; it is idempotent (re-opens your existing shoe). You must already be a connected agent with a bound avatar.',
+    input_schema: { type: 'object', properties: {}, additionalProperties: false },
+    parameters: { type: 'object', properties: {}, additionalProperties: false },
+  },
+  {
+    name: 'cove_blackjack_deal',
+    description:
+      'Deal a new blackjack hand on your open shoe. Stake is debited from your real ClawToken balance now. Returns your two cards + the dealer UPCARD only (the hole card stays hidden until the hand resolves). If insurance is offered (dealer Ace) you may pass insurance=true.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        shoeId: { type: 'string', description: 'The shoe id from cove_blackjack_open_session.' },
+        bet: { type: 'integer', minimum: 5, maximum: 500, description: 'Stake in ClawTokens (5–500).' },
+        insurance: { type: 'boolean', description: 'Take insurance — only honored on a dealer-Ace upcard.' },
+      },
+      required: ['shoeId', 'bet'],
+      additionalProperties: false,
+    },
+    parameters: {
+      type: 'object',
+      properties: {
+        shoeId: { type: 'string' },
+        bet: { type: 'integer', minimum: 5, maximum: 500 },
+        insurance: { type: 'boolean' },
+      },
+      required: ['shoeId', 'bet'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'cove_blackjack_action',
+    description:
+      'Take ONE decision on your in-progress hand: hit, stand, double, split, surrender, or insure. Returns your updated visible cards (or the settled outcome if the decision ends the hand). The dealer hole card and undealt cards are never returned before the hand settles.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        handId: { type: 'string', description: 'The hand id from cove_blackjack_deal.' },
+        action: {
+          type: 'string',
+          enum: ['hit', 'stand', 'double', 'split', 'surrender', 'insure'],
+          description: 'Your decision for this turn.',
+        },
+        handSlot: {
+          type: 'integer',
+          enum: [0, 1],
+          description: 'After a split: 0 = first hand, 1 = second hand. Omit for non-split hands.',
+        },
+      },
+      required: ['handId', 'action'],
+      additionalProperties: false,
+    },
+    parameters: {
+      type: 'object',
+      properties: {
+        handId: { type: 'string' },
+        action: { type: 'string', enum: ['hit', 'stand', 'double', 'split', 'surrender', 'insure'] },
+        handSlot: { type: 'integer', enum: [0, 1] },
+      },
+      required: ['handId', 'action'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'cove_blackjack_close_session',
+    description:
+      'Close your shoe and REVEAL the server seed so you can verify every hand was provably fair at /api/cove/history. Finish any in-progress hand first.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        shoeId: { type: 'string', description: 'The shoe id to close.' },
+      },
+      required: ['shoeId'],
+      additionalProperties: false,
+    },
+    parameters: {
+      type: 'object',
+      properties: { shoeId: { type: 'string' } },
+      required: ['shoeId'],
+      additionalProperties: false,
+    },
+  },
+] as const;
+
+// The cove route mount path (index.ts: app.route('/api/cove/blackjack', ...)).
+// We forward via the router's in-process `.request()`, so the path here is the
+// router-RELATIVE sub-path (the mount prefix is already stripped by Hono).
+const COVE_BJ_TOOL_ROUTES: Record<
+  string,
+  { method: 'POST'; path: string } | undefined
+> = {
+  cove_blackjack_open_session: { method: 'POST', path: '/session/open' },
+  cove_blackjack_deal: { method: 'POST', path: '/hand/deal' },
+  cove_blackjack_action: { method: 'POST', path: '/action' },
+  cove_blackjack_close_session: { method: 'POST', path: '/session/close' },
+};
+
+// ---------------------------------------------------------------------------
+// GET /api/agent/:sessionId/cove/blackjack/tools.json
+// ---------------------------------------------------------------------------
+// The installable agent-tool bundle for cove blackjack. Session-gated (same as
+// the universal tools.json) so only a live agent can fetch it.
+// ---------------------------------------------------------------------------
+agentGatewayRoutes.get('/:sessionId/cove/blackjack/tools.json', async (c) => {
+  const sessionId = c.req.param('sessionId');
+  const resolved = await resolveSession(sessionId);
+  if (!resolved) return c.json({ error: 'Invalid or expired agent session' }, 404);
+
+  return new Response(JSON.stringify(COVE_BLACKJACK_TOOLS, null, 2), {
+    status: 200,
+    headers: {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Content-Disposition': 'attachment; filename="clawville-cove-blackjack.tools.json"',
+      'Cache-Control': 'private, max-age=300',
+      'X-Skill-Filename': 'clawville-cove-blackjack.tools.json',
+      'Access-Control-Expose-Headers': 'Content-Disposition, X-Skill-Filename',
+    },
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/agent/:sessionId/cove/blackjack/skill-memory
+// ---------------------------------------------------------------------------
+// The READ half of the learn-through-play loop (msg 6): the agent's accumulated
+// blackjack lessons + win/loss tally, so a connected agent can fold its earned
+// edge into its own reasoning before deciding. Bound to the agent's avatar.
+// ---------------------------------------------------------------------------
+agentGatewayRoutes.get('/:sessionId/cove/blackjack/skill-memory', async (c) => {
+  const sessionId = c.req.param('sessionId');
+  // Fail-closed liveness gate (shared validator) instead of bare Map membership.
+  if (!(await validateLiveAgentSession(sessionId))) {
+    return c.json({ error: 'Invalid or expired agent session' }, 404);
+  }
+  const botConfig = npcSimulation.getOpenClawBotConfig(sessionId);
+  if (!botConfig) return c.json({ error: 'No agent config for session' }, 404);
+
+  const bot = await db.query.openclawBots.findFirst({
+    where: eq(openclawBots.agentId, botConfig.agentId),
+    columns: { userId: true },
+  });
+  if (!bot?.userId) return c.json({ error: 'Agent not linked to a user' }, 404);
+
+  const avatar = await db.query.avatars.findFirst({
+    where: and(eq(avatars.userId, bot.userId), eq(avatars.isActive, true)),
+    columns: { id: true },
+  });
+  if (!avatar) return c.json({ error: 'No active avatar for user' }, 404);
+
+  const ctx = await getBlackjackSkillContext(avatar.id);
+  return c.json({ game: 'blackjack', ...ctx });
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/agent/:sessionId/cove/blackjack/:tool
+// ---------------------------------------------------------------------------
+// Server-side execution endpoint for the cove-blackjack agent tools. Forwards to
+// the audited coveBlackjackRouter via an in-process sub-request carrying the
+// agent-session header — so the cove route's getSubject binds the agent to its
+// avatar's REAL CT. The agent NEVER touches the guest demo tier (the E5 fix).
+//
+// Hidden-state safety lives in the cove route + engine (unchanged): the
+// forwarded responses already omit the dealer hole card / undealt cards / seed
+// before reveal. This adapter adds NO new disclosure.
+//
+// NOTE on event provenance: the sub-request runs the cove router's own
+// middleware chain (sessionMiddleware), NOT the app-level fingerprint
+// middleware, so cove events logged from the forwarded call carry a null
+// fp_hash. That is acceptable — agent events are anchored by the strong
+// userId/agentId identity (the agent is bound to a real avatar/user), and the
+// fp_hash anti-farm signal targets anonymous/guest abuse, which an agent is not.
+// ---------------------------------------------------------------------------
+agentGatewayRoutes.post('/:sessionId/cove/blackjack/:tool', async (c) => {
+  const sessionId = c.req.param('sessionId');
+  const tool = c.req.param('tool');
+
+  // Session must be a live, valid agent session. Fail-closed liveness gate
+  // (shared validator) here as a fast pre-filter; the forwarded cove router also
+  // re-resolves via the same validator in getSubject before any real-CT move.
+  if (!(await validateLiveAgentSession(sessionId))) {
+    return c.json({ error: 'Invalid or expired agent session' }, 404);
+  }
+
+  // Object.hasOwn guard so an inherited prototype key (constructor, __proto__,
+  // toString, …) can NEVER resolve to a route — only a declared tool maps to a
+  // cove endpoint.
+  if (!Object.hasOwn(COVE_BJ_TOOL_ROUTES, tool)) {
+    return c.json(
+      {
+        error: 'unknown_tool',
+        tool,
+        knownTools: Object.keys(COVE_BJ_TOOL_ROUTES),
+      },
+      404,
+    );
+  }
+  const route = COVE_BJ_TOOL_ROUTES[tool]!;
+
+  // Read the agent's body (may be empty for the no-arg open tool). We re-stringify
+  // so the forwarded sub-request carries a clean JSON body the cove Zod schema
+  // can parse.
+  let body: unknown = {};
+  try {
+    const raw = await c.req.text();
+    body = raw && raw.length > 0 ? JSON.parse(raw) : {};
+  } catch {
+    return c.json({ error: 'invalid_json_body' }, 400);
+  }
+
+  // Build the forwarded headers. The agent-session header is what the cove
+  // route's getSubject resolves to bind real CT. We pass through an
+  // Idempotency-Key when the agent supplied one (terminal-action safety), and
+  // forward the fingerprint/UA so downstream provenance is best-effort intact.
+  const fwdHeaders: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'X-Clawville-Agent-Session': sessionId,
+  };
+  const idem = c.req.header('Idempotency-Key');
+  if (idem) fwdHeaders['Idempotency-Key'] = idem;
+  const fp = c.req.header('X-CV-Fingerprint');
+  if (fp) fwdHeaders['X-CV-Fingerprint'] = fp;
+  const ua = c.req.header('User-Agent');
+  if (ua) fwdHeaders['User-Agent'] = ua;
+
+  // In-process sub-request to the cove router — same code path a human hits,
+  // zero duplicated money/engine logic.
+  const res = await coveBlackjackRouter.request(route.path, {
+    method: route.method,
+    headers: fwdHeaders,
+    body: JSON.stringify(body ?? {}),
+  });
+
+  const text = await res.text();
+  let payload: unknown;
+  try {
+    payload = text.length > 0 ? JSON.parse(text) : {};
+  } catch {
+    // The cove route's HTTPException bodies are plain-text messages. Surface
+    // them as a structured { error } so the agent gets a consistent JSON shape
+    // regardless of whether the underlying handler returned JSON or threw.
+    payload = { error: text };
+  }
+
+  void logEventFromContext(c, {
+    eventType: 'agent.tool.invoked',
+    agentId: npcSimulation.getOpenClawBotConfig(sessionId)?.agentId ?? sessionId,
+    sessionId,
+    payload: { toolName: tool, ok: res.ok, status: res.status, via: 'cove-blackjack' },
+  });
+
+  // Mirror the cove route's status so the agent sees 4xx/5xx faithfully.
+  return c.json(payload as Record<string, unknown>, res.status as 200);
 });
 
 // Expose pendingConnections for the /connect handler to claim tokens

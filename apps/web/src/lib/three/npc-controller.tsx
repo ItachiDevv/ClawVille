@@ -274,7 +274,10 @@ export default function NpcController() {
     const newX = Math.max(X_MIN, Math.min(X_MAX, clamped.x + MAP_WIDTH / 2));
     const newY = Math.max(Y_MIN, Math.min(Y_MAX, clamped.z + MAP_HEIGHT / 2));
 
-    npcStore.moveNpc(possessedNpcId, newX, newY, dir, facingAngle);
+    // speedMult>1 means shift/joystick-sprint is engaged → tell the animator to
+    // play the run clip (gated by isMoving in updateMixerOnly, so a held shift
+    // while standing still still reads as idle).
+    npcStore.moveNpc(possessedNpcId, newX, newY, dir, facingAngle, speedMult > 1);
     store.setAvatarPosition(newX, newY);
   }, -100);
 

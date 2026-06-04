@@ -27,13 +27,52 @@
  */
 
 import { Hono } from 'hono';
+import type { MiddlewareHandler } from 'hono';
 import { db, buildingSkills, openclawBots, avatars, eq, and } from '@clawville/database';
 import { getBooksForBuilding, BUILDING_OPENCLAW_THEMES } from '@clawville/shared';
 import { lucia } from '../lib/auth';
 import { logEventFromContext } from '../services/event-logger';
+import { requirePartnerKey, partnerRateLimit } from '../middleware/partner-key';
+import {
+  PROTOCOL_VERSION,
+  buildProtocolManual,
+  contentHashOf,
+  resolveApiBase,
+} from '../services/skill-protocol';
 import type { AppContext } from '../types';
 
 export const skillsRoutes = new Hono<AppContext>();
+
+// ---------------------------------------------------------------------------
+// Hatcher partner #2 Phase C — manifest + protocol manual + partner auth.
+// ---------------------------------------------------------------------------
+//
+// Two new partner-facing surfaces gate the high-volume skill-learning loop:
+//   - GET /api/skills/manifest.json   — single poll target (per-skill content
+//     hashes so a partner re-embeds ONLY what changed).
+//   - GET /api/skills/protocol/skill.md — the STABLE, token-free connection
+//     protocol manual (the three-surface "connection SKILL.md" — closes the
+//     documented infra gap).
+//
+// Both, plus the per-building `:buildingId/skill.md` reads, are gated by
+// `requirePartnerKey('skills:read')` + a generous per-partner rate ceiling.
+// The `clawville-play` meta skill stays PUBLIC (open-onboarding brand priority).
+// See `.claude/plans/hatcher-integration.md` §4.
+
+// Per-partner read limiter — keyed on the validated partnerId, NOT IP (a
+// partner egresses every agent from one IP, so per-IP would mis-bucket the
+// whole partner). Generous ceiling for the manifest poll + per-skill fetches.
+// POD-LOCAL — see `middleware/partner-key.ts` header re: the Redis swap.
+const partnerSkillsRateLimit = partnerRateLimit({ maxPerWindow: 60, windowMs: 60_000 });
+
+// ---------------------------------------------------------------------------
+// Protocol manual — the STABLE, token-free connection SKILL.md surface.
+// ---------------------------------------------------------------------------
+//
+// PROTOCOL_VERSION + buildProtocolManual + contentHashOf + resolveApiBase now
+// live in `services/skill-protocol.ts` (single source of truth), so the manifest
+// block here, the served `/protocol/skill.md` body, the openclaw-client
+// orientation pointer, and the partner-hatcher protocol pointer never drift.
 
 skillsRoutes.get('/', async (c) => {
   const rows = await db
@@ -54,6 +93,203 @@ skillsRoutes.get('/', async (c) => {
     })),
   });
 });
+
+// ---------------------------------------------------------------------------
+// GET /api/skills/manifest.json — single poll target (partner-key gated).
+// ---------------------------------------------------------------------------
+//
+// Returns the protocol + orientation + per-building skill versions with a
+// content hash for each, so a partner diffs and re-fetches ONLY what changed.
+// Content hashes are computed LIVE from the served markdown at request time
+// (cached 60s), so this works even before the `building_skills.content_hash`
+// column migration is applied/backfilled — it never depends on the column.
+//
+// Registered BEFORE the `:buildingId` wildcard routes so `manifest.json` and
+// `protocol/skill.md` are not captured as a buildingId.
+interface ManifestCache {
+  body: Record<string, unknown>;
+  expiresAt: number;
+}
+const MANIFEST_CACHE_TTL_MS = 60_000;
+let manifestCache: ManifestCache | null = null;
+
+skillsRoutes.get(
+  '/manifest.json',
+  requirePartnerKey('skills:read'),
+  partnerSkillsRateLimit,
+  async (c) => {
+    if (manifestCache && manifestCache.expiresAt > Date.now()) {
+      c.header('Cache-Control', 'private, max-age=60');
+      return c.json(manifestCache.body);
+    }
+
+    const apiBase = resolveApiBase();
+    const rows = await db
+      .select({
+        buildingId: buildingSkills.buildingId,
+        name: buildingSkills.name,
+        content: buildingSkills.content,
+        generatorVersion: buildingSkills.generatorVersion,
+      })
+      .from(buildingSkills);
+
+    // The protocol manual is generated in-process — hash the SAME bytes the
+    // protocol endpoint serves so a partner's diff is exact.
+    const protocolMd = buildProtocolManual(apiBase);
+
+    const buildings = rows
+      .filter((r) => r.buildingId !== 'clawville-play')
+      .map((r) => ({
+        buildingId: r.buildingId,
+        name: r.name,
+        generatorVersion: r.generatorVersion,
+        // LIVE hash of the served body — robust whether or not content_hash is
+        // backfilled. (We intentionally do NOT trust a possibly-stale column.)
+        contentHash: contentHashOf(r.content),
+        url: `/api/skills/${r.buildingId}/skill.md`,
+      }));
+
+    // The public entry skill is listed separately so a partner knows it's the
+    // one body it can fetch WITHOUT a partner key.
+    const playRow = rows.find((r) => r.buildingId === 'clawville-play');
+
+    const body: Record<string, unknown> = {
+      generatedAt: new Date().toISOString(),
+      protocol: {
+        version: PROTOCOL_VERSION,
+        contentHash: contentHashOf(protocolMd),
+        url: '/api/skills/protocol/skill.md',
+      },
+      orientation: playRow
+        ? {
+            version: playRow.generatorVersion,
+            contentHash: contentHashOf(playRow.content),
+            url: '/api/skills/clawville-play/skill.md',
+            public: true,
+          }
+        : null,
+      buildings,
+    };
+
+    manifestCache = { body, expiresAt: Date.now() + MANIFEST_CACHE_TTL_MS };
+    c.header('Cache-Control', 'private, max-age=60');
+    return c.json(body);
+  },
+);
+
+// ---------------------------------------------------------------------------
+// GET /api/skills/protocol/skill.md — stable, token-free protocol manual.
+// ---------------------------------------------------------------------------
+//
+// Partner-key gated (the protocol manual is part of the gated read surface).
+// The per-token connect block stays dynamic on /api/agent/connect-skill.
+skillsRoutes.get(
+  '/protocol/skill.md',
+  requirePartnerKey('skills:read'),
+  partnerSkillsRateLimit,
+  (c) => {
+    const md = buildProtocolManual(resolveApiBase());
+    return new Response(md, {
+      status: 200,
+      headers: {
+        'Content-Type': 'text/markdown; charset=utf-8',
+        'Content-Disposition': 'attachment; filename="clawville-connection-protocol.md"',
+        'Cache-Control': 'private, max-age=60',
+        'X-Skill-Name': 'clawville-connection-protocol',
+        'X-Skill-Version': String(PROTOCOL_VERSION),
+        'X-Skill-Content-Hash': contentHashOf(md),
+        'Access-Control-Expose-Headers':
+          'Content-Disposition, X-Skill-Name, X-Skill-Version, X-Skill-Content-Hash',
+      },
+    });
+  },
+);
+
+/**
+ * Returns true when the caller carries an end-user identity that legitimately
+ * owns the in-world read path — a Lucia browser session cookie OR an agent
+ * `Authorization: Bearer <sessionId>` that resolves to a live OpenClaw session.
+ * This is the orthogonal end-user layer from plan §4 point (E): the partner
+ * key gates *who
+ * polls in bulk*, but an authenticated end-user (the in-game "Claim Skill"
+ * button, a connected agent) must still reach the per-building bodies WITHOUT a
+ * partner key. We only need presence-of-identity here, not avatar ownership —
+ * the avatarOwnsBuilding() paywall is DISABLED (FEATURE_GATE below), so any
+ * authenticated end-user may download, exactly as before Phase C.
+ *
+ * Cheap by design: a Lucia cookie validation OR an in-memory session-map hit;
+ * it does NOT load the avatar row (resolveAvatarId does, and we don't need it).
+ */
+async function hasEndUserIdentity(c: import('hono').Context<AppContext>): Promise<boolean> {
+  // Lucia browser session (the human "Claim Skill" path).
+  const cookieHeader = c.req.header('Cookie');
+  if (cookieHeader) {
+    const cookieName = lucia.sessionCookieName;
+    const sessionMatch = cookieHeader.match(new RegExp(`${cookieName}=([^;]+)`));
+    if (sessionMatch) {
+      try {
+        const { user } = await lucia.validateSession(sessionMatch[1]);
+        if (user) return true;
+      } catch {
+        /* fall through to agent-session check */
+      }
+    }
+  }
+
+  // Connected-agent session: a Bearer sessionId that resolves to a LIVE
+  // OpenClaw bot session. We deliberately do NOT trust a bare
+  // X-Clawville-Agent-Id header as proof of identity here — a partner key
+  // holder could otherwise spoof any agent-id to get the organic `via=undefined`
+  // tag and farm leaderboard rank for arbitrary agents. The header must be
+  // backed by a resolvable live session (the same in-memory session map the
+  // gateway maintains). A partner KEY is also presented as
+  // `Authorization: Bearer <token>`; an unresolvable bearer falls through to
+  // requirePartnerKey, which validates whether it is in fact a partner key.
+  const auth = c.req.header('Authorization');
+  if (auth?.startsWith('Bearer ')) {
+    const sid = auth.slice(7).trim();
+    if (sid) {
+      try {
+        const { npcSimulation } = await import('../services/npc-simulation');
+        const cfg = npcSimulation.getOpenClawBotConfig(sid);
+        if (cfg?.agentId) return true;
+      } catch {
+        /* fall through to partner-key gate */
+      }
+    }
+  }
+
+  return false;
+}
+
+/**
+ * Composite gate for the per-building `:buildingId/skill.md` read (plan §4
+ * points B + E). Authenticated END-USERS (Lucia cookie or connected-agent
+ * session) pass straight through with NO partner key and are tagged as organic
+ * (`via=undefined`) so the in-game "Claim Skill" button and connected agents
+ * keep working AND still count toward the leaderboard under the 11/day cap.
+ * Everyone else (anonymous bulk pollers, partner integrations) MUST present a
+ * valid partner key + obey the per-partner rate limit, and their fetches are
+ * tagged `via='partner-import'` so the leaderboard carve-out excludes them.
+ *
+ * `c.set('skillReadVia', …)` carries the tag to the handler.
+ */
+const partnerKeyGate = requirePartnerKey('skills:read');
+const endUserOrPartnerKey: MiddlewareHandler<AppContext> = async (c, next) => {
+  if (await hasEndUserIdentity(c)) {
+    c.set('skillReadVia', undefined);
+    await next();
+    return;
+  }
+  // No end-user identity → require a partner key, then the per-partner limit.
+  // We run them inline (not as a route-array) so the limiter sees the partnerId
+  // requirePartnerKey just set. requirePartnerKey short-circuits with an opaque
+  // 401 if the bearer isn't a valid skills:read key.
+  c.set('skillReadVia', 'partner-import');
+  return partnerKeyGate(c, async () => {
+    await partnerSkillsRateLimit(c, next);
+  });
+};
 
 /**
  * Resolve the caller's avatar ID via either Lucia session cookie or
@@ -172,8 +408,34 @@ function teaserBody(buildingId: string, skillName: string, description: string):
   ].join('\n');
 }
 
-skillsRoutes.get('/:buildingId/skill.md', async (c) => {
-  const buildingId = c.req.param('buildingId');
+/**
+ * Shared SKILL.md responder for the building-skill GETs. `via` tags the
+ * `skill_md.fetched` event payload so the leaderboard aggregation can carve out
+ * partner re-imports: `'partner-import'` for partner-key bulk fetches (set by
+ * the `endUserOrPartnerKey` gate when no end-user identity is present), and
+ * `undefined` for organic end-user fetches — the in-game "Claim Skill" button
+ * (Lucia cookie) and connected-agent reads — which still count toward the
+ * leaderboard under the 11/day cap. `clawville-play` is always organic.
+ *
+ * FEATURE_GATE: skill_ownership_paywall
+ * Status: DISABLED 2026-05-21 per user direction ("these are not payment-gated
+ *   skills right now"). All SKILL.md bodies are public until peer-skill commerce
+ *   un-pauses (CLAUDE.md Brand Identity §3 cosmetic-shop carve-out). Phase C
+ *   layers a PARTNER-KEY gate on the building reads (who polls), orthogonal to
+ *   the avatar-ownership gate below (which building bodies an end-user agent gets).
+ * Metric to graduate: peer-skill-commerce unpause shipping (improvements.md §7)
+ * Current reading: paused
+ * Review deadline: TBD on commerce re-enable
+ * On deadline: re-enable the avatarOwnsBuilding(avatarId, buildingId) gate by
+ *   uncommenting the resolveAvatarId + check + 402 teaser block. Preserved
+ *   commented so re-enable is a 3-line diff.
+ * Reference: CLAUDE.md Brand Identity §3, improvements.md §7
+ */
+async function serveBuildingSkill(
+  c: import('hono').Context<AppContext>,
+  buildingId: string,
+  via: 'partner-import' | undefined,
+): Promise<Response> {
   const [row] = await db
     .select()
     .from(buildingSkills)
@@ -189,20 +451,6 @@ skillsRoutes.get('/:buildingId/skill.md', async (c) => {
   // Entry-point skill: always public so agents can install the play loop.
   const isEntrySkill = buildingId === 'clawville-play';
 
-  // FEATURE_GATE: skill_ownership_paywall
-  // Status: DISABLED 2026-05-21 per user direction ("these are not payment-
-  //   gated skills right now"). All SKILL.md endpoints are public until peer-
-  //   skill commerce un-pauses (see CLAUDE.md Brand Identity §3 "Cosmetic
-  //   shop carve-out... marketplace pause applies to peer skill commerce").
-  // Metric to graduate: peer-skill-commerce unpause shipping (improvements.md §7)
-  // Current reading: paused
-  // Review deadline: TBD on commerce re-enable
-  // On deadline: re-enable the avatarOwnsBuilding(avatarId, buildingId) gate
-  //   below by uncommenting the resolveAvatarId + check block and the 402
-  //   teaser return. The 402 path code is preserved but commented to make
-  //   re-enable a 3-line diff.
-  // Reference: CLAUDE.md Brand Identity §3, improvements.md §7
-  //
   // // const avatarId = await resolveAvatarId(c);
   // // const unlocked = isEntrySkill || (avatarId ? await avatarOwnsBuilding(avatarId, buildingId) : false);
   // // if (!unlocked) {
@@ -224,6 +472,10 @@ skillsRoutes.get('/:buildingId/skill.md', async (c) => {
       skillName: row.name,
       generatorVersion: row.generatorVersion,
       gated: !isEntrySkill,
+      // Partner re-imports of our manual are tagged so the leaderboard CTE can
+      // exclude them — a partner polling daily must not farm skill_md.fetched
+      // rank or trip the 11/day cap. Omitted for organic fetches.
+      ...(via ? { via } : {}),
     },
   });
 
@@ -236,10 +488,33 @@ skillsRoutes.get('/:buildingId/skill.md', async (c) => {
       'X-Skill-Name': row.name,
       'X-Skill-Filename': `clawville-${buildingId}.md`,
       'X-Skill-Version': String(row.generatorVersion),
-      'Access-Control-Expose-Headers': 'Content-Disposition, X-Skill-Name, X-Skill-Filename, X-Skill-Version',
+      'X-Skill-Content-Hash': contentHashOf(row.content),
+      'Access-Control-Expose-Headers':
+        'Content-Disposition, X-Skill-Name, X-Skill-Filename, X-Skill-Version, X-Skill-Content-Hash',
     },
   });
-});
+}
+
+// PUBLIC entry skill — registered BEFORE the gated wildcard so the open-
+// onboarding `clawville-play` meta skill is reachable with no partner key
+// (brand priority #2). No `via` tag — an organic fetch of the play skill counts.
+skillsRoutes.get('/clawville-play/skill.md', (c) => serveBuildingSkill(c, 'clawville-play', undefined));
+
+// Per-building reads — DUAL gate (plan §4 points B + E):
+//   • Authenticated END-USERS (Lucia browser cookie or connected-agent session)
+//     pass through with NO partner key, tagged `via=undefined` (organic) so the
+//     in-game "Claim Skill" button + connected agents keep working and still
+//     count toward the leaderboard under the 11/day cap.
+//   • Anonymous bulk pollers / partner integrations MUST present a valid
+//     `skills:read` partner key + obey the per-partner rate limit; their fetches
+//     are tagged `via:'partner-import'` so the leaderboard carve-out excludes
+//     them. The `endUserOrPartnerKey` gate decides which branch applies and sets
+//     `c.get('skillReadVia')` accordingly. `clawville-play` above stays open.
+skillsRoutes.get(
+  '/:buildingId/skill.md',
+  endUserOrPartnerKey,
+  (c) => serveBuildingSkill(c, c.req.param('buildingId'), c.get('skillReadVia')),
+);
 
 skillsRoutes.get('/:buildingId', async (c) => {
   const buildingId = c.req.param('buildingId');

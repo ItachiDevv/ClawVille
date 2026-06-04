@@ -1,6 +1,7 @@
 import {
   NPC_DEFINITIONS,
   NPC_BUILDING_CENTERS,
+  MAP_LOCATIONS,
   BUILDING_OPENCLAW_THEMES,
   type NpcDefinition,
   type OpenClawRegistration,
@@ -15,6 +16,8 @@ import {
   DEFAULT_ARENA_SETTINGS,
   clampPosition2D,
   WORLD_COLLIDER_MAP_HALF,
+  CLAWVILLE_ORIENTATION_KNOWLEDGE,
+  type HatcherWorldState,
 } from '@clawville/shared';
 import { generateNpcConversation, generateOpenClawConversation } from './npc-conversation-engine';
 import {
@@ -36,6 +39,70 @@ import type { OpenClawClient } from './openclaw-client';
 // Map dimensions — Phase 6.2 (2026-05-18): 360×360 grid of 32px tiles = 11520×11520 world.
 const MAP_WIDTH = 11520;
 const MAP_HEIGHT = 11520;
+
+// Hatcher proxy-cognition (partner #2, Phase A — 2026-06-01). The canonical
+// "you are inside ClawVille" orientation text, joined + frozen once at module
+// load. Prepended (with a per-call serialized world-state block) as the
+// system message for a hatcher-proxy agent so the Hatcher-hosted brain acts
+// as an agent inside ClawVille. Single source of truth lives in
+// packages/shared/src/constants/orientation-skill.ts (same body returned on
+// /api/agent/connect). See `.claude/plans/hatcher-integration.md` §14.
+const HATCHER_ORIENTATION_TEXT = CLAWVILLE_ORIENTATION_KNOWLEDGE.join('\n');
+
+// --- Hatcher proxy-cognition [ACTION:] whitelist (Phase A++, 2026-06-02) ---
+//
+// A Hatcher-hosted brain returns plain text; ClawVille parses [ACTION: ...]
+// tags out of the reply server-side and executes ONLY the strict MVP whitelist
+// below. Unknown action names or invalid/out-of-bounds params are DROPPED +
+// logged (never executed, never crash). The remaining (action-stripped) text is
+// the agent's speech. accept_quest + read_book are intentionally OUT of MVP
+// (not agent-actionable yet). See `.claude/plans/hatcher-integration.md` §14.
+//
+// World bounds for move(): 32..(MAP_WIDTH-32). Town-px coords (the same space
+// `move`'s targetX/targetY use in the REST handler).
+const HATCHER_MOVE_MIN = 32;
+const HATCHER_MOVE_MAX = MAP_WIDTH - 32; // 11488 for the 11520 world
+
+// emote(name) — the partner-facing emote vocabulary mapped to a real in-world
+// NpcActivity + emoji so the avatar visibly reacts. (The sim's activity enum is
+// the truth; this maps the 7 MVP emote names onto it.)
+const HATCHER_EMOTE_MAP: Record<string, { activity: NpcActivity; emoji: string }> = {
+  wave: { activity: 'socializing', emoji: '👋' },
+  dance: { activity: 'socializing', emoji: '💃' },
+  think: { activity: 'thinking', emoji: ACTIVITY_EMOJIS.thinking },
+  scan: { activity: 'exploring', emoji: ACTIVITY_EMOJIS.exploring },
+  work: { activity: 'crafting', emoji: ACTIVITY_EMOJIS.crafting },
+  celebrate: { activity: 'socializing', emoji: '🎉' },
+  alert: { activity: 'training', emoji: '⚠️' },
+};
+
+// Parse pattern shared with eliza-runtime.ts (parseActionInvocations) so the
+// hatcher-proxy reply and the Eliza action path stay consistent.
+const HATCHER_ACTION_REGEX = /\[ACTION:\s*(\w+)\(([^)]*)\)\]/g;
+const HATCHER_TALK_MESSAGE_MAX = 500;
+
+// Hard cap on how many [ACTION:] tags we will EXECUTE per cognition reply.
+// Each move()/enter_building() runs an A* search (up to ~6000 iterations) and
+// each talk_to_npc() pushes a pending event broadcast to every connected
+// client. NpcSimulation is a SHARED singleton, so an unbounded action count
+// from a single (hostile / prompt-injected) Hatcher reply would block the
+// single-threaded event loop and stall the sim tick for ALL co-present users.
+// Cap matches the 4-verb MVP whitelist — one of each is the realistic ceiling
+// for one cognition turn. Tags beyond the cap are STILL stripped from speech,
+// just never executed.
+const MAX_HATCHER_ACTIONS_PER_REPLY = 4;
+
+// Cove center, in world pixel coords, for the enter_cove() verb. The Cove is
+// NOT in NPC_BUILDING_CENTERS (that map is the 10 teaching buildings only), so
+// we derive the center from its MAP_LOCATIONS rect (positionX/Y is the top-left
+// corner; center = corner + half the width/height). Computed once at module
+// load; null if the 'cove' location is somehow missing (enter_cove then no-ops
+// loudly rather than crashing).
+const COVE_CENTER: { x: number; y: number } | null = (() => {
+  const cove = MAP_LOCATIONS.find((l) => l.id === 'cove');
+  if (!cove) return null;
+  return { x: cove.positionX + cove.width / 2, y: cove.positionY + cove.height / 2 };
+})();
 
 // Town-center anchor and the annulus (ring) free-roaming wanderers stay inside.
 // Buildings are on a ring at ~4160wu from center (R=130 tiles). Keep free
@@ -390,6 +457,16 @@ class NpcSimulation {
       const npc = this.npcs.get(config.targetNpcId)!;
       npc.isOpenClaw = true;
       npc.autonomyMode = config.autonomyMode ?? 'server-managed';
+      // Hatcher proxy-cognition: bind the STRUCTURED world-state provider to
+      // the overridden NPC's body. Hatcher owns the root prompt and builds it
+      // from the `clawville` block we ship (no forced system message). Also
+      // bind the legacy text provider for any non-Hatcher caller / fallback
+      // (no-op for non-proxy protocols).
+      if (config.protocol === 'hatcher-proxy') {
+        const boundNpcId = config.targetNpcId;
+        client.setWorldStateProvider(() => this.buildHatcherWorldState(boundNpcId, 'override'));
+        client.setSystemContextProvider(() => this.buildHatcherSystemContext(boundNpcId));
+      }
       console.log(`[OpenClaw] Override registered: ${config.targetNpcId} -> ${config.sessionId} (${npc.autonomyMode})`);
     } else {
       const avatarConfig = config as OpenClawAvatarConfig;
@@ -425,6 +502,14 @@ class NpcSimulation {
       });
       this.openClawBots.set(config.sessionId, { config, client });
       this.npcOverrides.set(npcId, config.sessionId);
+      // Hatcher proxy-cognition: bind the STRUCTURED world-state provider to
+      // the freshly-spawned avatar body (Hatcher owns the root prompt). Also
+      // bind the legacy text provider for any non-Hatcher fallback (no-op for
+      // non-proxy protocols).
+      if (config.protocol === 'hatcher-proxy') {
+        client.setWorldStateProvider(() => this.buildHatcherWorldState(npcId, 'avatar'));
+        client.setSystemContextProvider(() => this.buildHatcherSystemContext(npcId));
+      }
       console.log(`[OpenClaw] Avatar injected: "${avatarConfig.name}" (${npcId}) [${config.autonomyMode ?? 'server-managed'}]${restoredState?.lastX != null ? ' [restored position]' : ''}`);
     }
   }
@@ -455,13 +540,29 @@ class NpcSimulation {
     return this.openClawBots.get(sessionId)?.client ?? null;
   }
 
-  getActiveOpenClawBots(): Array<{ sessionId: string; mode: string; npcId?: string; name?: string }> {
-    const result: Array<{ sessionId: string; mode: string; npcId?: string; name?: string }> = [];
-    for (const [sid, { config }] of this.openClawBots) {
+  /**
+   * Public roster of connected agent bodies for the world view.
+   *
+   * SECURITY (Codex auth-lens fix #1, 2026-06-03): this is surfaced by the
+   * PUBLIC `GET /api/openclaw/active` endpoint, so it must carry NO recoverable
+   * session id. The session id is the bearer credential the cove trusts for
+   * real-CT play; previously this returned the raw `sessionId` AND embedded it
+   * a second time inside the avatar `npcId` (`oc-${sid}`) — so any unauthenticated
+   * caller could harvest live bearer creds and spend a victim's real CT.
+   *
+   * We now emit only NON-secret identifiers: the bot's stable public `agentId`
+   * and (for override bodies) the public `targetNpcId`. The avatar `npcId`
+   * remains `oc-${sid}` ONLY in the in-memory sim (it's the internal map key);
+   * it is NEVER surfaced here. Callers that need to address a body publicly use
+   * `agentId`.
+   */
+  getActiveOpenClawBots(): Array<{ agentId: string; mode: string; npcId?: string; name?: string }> {
+    const result: Array<{ agentId: string; mode: string; npcId?: string; name?: string }> = [];
+    for (const [, { config }] of this.openClawBots) {
       if (config.mode === 'override') {
-        result.push({ sessionId: sid, mode: 'override', npcId: config.targetNpcId });
+        result.push({ agentId: config.agentId, mode: 'override', npcId: config.targetNpcId });
       } else {
-        result.push({ sessionId: sid, mode: 'avatar', npcId: `oc-${sid}`, name: config.name });
+        result.push({ agentId: config.agentId, mode: 'avatar', name: config.name });
       }
     }
     return result;
@@ -496,6 +597,152 @@ class NpcSimulation {
     const npcId = `oc-${sessionId}`;
     const npc = this.npcs.get(npcId);
     return npc ? { x: npc.x, y: npc.y } : null;
+  }
+
+  /**
+   * Hatcher proxy-cognition (Phase A) — build the system-message context for
+   * an agent's body: the canonical ClawVille orientation + a serialized,
+   * compact world-state snapshot for THIS NPC (self pose/hp/activity, nearby
+   * NPCs within radius, nearest buildings + their crypto focus). Returns null
+   * if the body isn't in the world (so the client skips system injection).
+   *
+   * This is a TEXT serialization of the same world-state shape `buildPerception`
+   * (apps/api/src/routes/agent-gateway.ts) exposes as JSON — kept here so the
+   * sim (which can't import a route) can produce a self-contained system prompt
+   * for the cognition seam. Bound to `npcId` at registration time via a
+   * provider closure on the OpenClawClient config.
+   */
+  buildHatcherSystemContext(npcId: string): string | null {
+    const npc = this.npcs.get(npcId);
+    if (!npc) return null;
+
+    const PERCEPTION_RADIUS = 500;
+    const nearby = this.getAllNpcs()
+      .filter((o) => o.id !== npcId)
+      .map((o) => {
+        const dx = o.x - npc.x;
+        const dy = o.y - npc.y;
+        return { o, dist: Math.round(Math.sqrt(dx * dx + dy * dy)) };
+      })
+      .filter(({ dist }) => dist <= PERCEPTION_RADIUS)
+      .sort((a, b) => a.dist - b.dist)
+      .slice(0, 8)
+      .map(({ o, dist }) =>
+        `- ${o.name} (${o.species}, ${dist}px${o.isOpenClaw ? ', agent' : ''}${o.inCombat ? ', in combat' : ''}, doing ${o.activity})`,
+      );
+
+    const buildings = (Object.entries(NPC_BUILDING_CENTERS) as [string, { x: number; y: number }][])
+      .map(([buildingId, center]) => {
+        const dx = center.x - npc.x;
+        const dy = center.y - npc.y;
+        const theme = BUILDING_OPENCLAW_THEMES[buildingId];
+        return {
+          buildingId,
+          label: theme?.label ?? buildingId,
+          focus: theme?.focus ?? '',
+          dist: Math.round(Math.sqrt(dx * dx + dy * dy)),
+        };
+      })
+      .sort((a, b) => a.dist - b.dist)
+      .slice(0, 5)
+      .map((b) => `- ${b.label} [${b.buildingId}] (${b.dist}px)${b.focus ? `: ${b.focus.split(',')[0]}` : ''}`);
+
+    const worldState = [
+      '--- ClawVille world state (live) ---',
+      `You are at (${Math.round(npc.x)}, ${Math.round(npc.y)}) in a ${MAP_WIDTH}x${MAP_HEIGHT} world. HP ${npc.hp}/${npc.maxHp}, level ${npc.level}, currently ${npc.activity}${npc.inCombat ? ' (in combat)' : ''}.`,
+      `Game mode: ${this.getMode()}.`,
+      nearby.length > 0 ? `Nearby (within ${PERCEPTION_RADIUS}px):\n${nearby.join('\n')}` : `No one nearby (within ${PERCEPTION_RADIUS}px).`,
+      `Nearest buildings:\n${buildings.join('\n')}`,
+    ].join('\n');
+
+    return `${HATCHER_ORIENTATION_TEXT}\n\n${worldState}`;
+  }
+
+  /**
+   * Hatcher proxy-cognition (Phase A++, 2026-06-02) — build the STRUCTURED,
+   * PUBLIC-ONLY world-state snapshot shipped in the top-level `clawville`
+   * block of the cognition request so Hatcher builds its own system prompt.
+   *
+   * This is the structured sibling of `buildHatcherSystemContext` (which
+   * serialized the same data to text). It mirrors `buildPerception`
+   * (apps/api/src/routes/agent-gateway.ts) reduced to public fields. Returns
+   * null if the body isn't in the world (so the client omits `worldState`).
+   *
+   * SECURITY: emit ONLY public world-state — never the scoped token, wallet /
+   * identity secret, session id, userId, or any internal id beyond public
+   * npc/building ids. (Browser players are exposed by display name + distance
+   * only; agent npcs by their public npcId.)
+   *
+   * @param mode 'avatar' (own body) | 'override' (possessing a roaming NPC) —
+   *   exposed so the partner's prompt can reflect what kind of body it drives.
+   */
+  buildHatcherWorldState(npcId: string, mode: 'avatar' | 'override'): HatcherWorldState | null {
+    const npc = this.npcs.get(npcId);
+    if (!npc) return null;
+
+    const PERCEPTION_RADIUS = 500;
+
+    // Nearby agent/NPC bodies (public npcId + name + distance + isAgent flag).
+    const nearbyNpcs = this.getAllNpcs()
+      .filter((o) => o.id !== npcId)
+      .map((o) => {
+        const dx = o.x - npc.x;
+        const dy = o.y - npc.y;
+        return { o, dist: Math.round(Math.sqrt(dx * dx + dy * dy)) };
+      })
+      .filter(({ dist }) => dist <= PERCEPTION_RADIUS)
+      .sort((a, b) => a.dist - b.dist)
+      .slice(0, 8)
+      .map(({ o, dist }) => ({
+        id: o.id,
+        name: o.name,
+        isAgent: o.isOpenClaw,
+        distance: dist,
+      }));
+
+    // Nearby human players (browser claws) — display name + distance ONLY (no
+    // session id, no internal handle).
+    const nearbyPlayers = this.getBrowserClawSnapshots()
+      .map((p) => {
+        const dx = p.x - npc.x;
+        const dy = p.y - npc.y;
+        return { name: p.name, distance: Math.round(Math.sqrt(dx * dx + dy * dy)) };
+      })
+      .filter((p) => p.distance <= PERCEPTION_RADIUS)
+      .sort((a, b) => a.distance - b.distance)
+      .slice(0, 8);
+
+    // Nearest 5 buildings + their public crypto focus.
+    const nearbyBuildings = (Object.entries(NPC_BUILDING_CENTERS) as [string, { x: number; y: number }][])
+      .map(([buildingId, center]) => {
+        const dx = center.x - npc.x;
+        const dy = center.y - npc.y;
+        const theme = BUILDING_OPENCLAW_THEMES[buildingId];
+        return {
+          id: buildingId,
+          name: theme?.label ?? buildingId,
+          cryptoFocus: theme?.focus ?? '',
+          dist: Math.round(Math.sqrt(dx * dx + dy * dy)),
+        };
+      })
+      .sort((a, b) => a.dist - b.dist)
+      .slice(0, 5)
+      .map(({ id, name, cryptoFocus }) => ({ id, name, cryptoFocus }));
+
+    return {
+      self: {
+        name: npc.name,
+        mode,
+        x: Math.round(npc.x),
+        y: Math.round(npc.y),
+        hp: npc.hp,
+        activity: npc.activity,
+      },
+      nearbyPlayers,
+      nearbyNpcs,
+      nearbyBuildings,
+      gameMode: this.getMode(),
+    };
   }
 
   // --- Agent Gateway Accessors ---
@@ -573,6 +820,197 @@ class NpcSimulation {
     npc.activity = activity;
     npc.activityEmoji = emoji;
     npc.activityEndsAt = Date.now() + 8000 + Math.random() * 12000;
+  }
+
+  /**
+   * Hatcher proxy-cognition (Phase A++, 2026-06-02) — parse [ACTION: ...] tags
+   * out of a Hatcher proxy reply, execute the STRICT MVP whitelist via the same
+   * in-world sim primitives the REST handlers use, and return the cleaned
+   * (action-stripped) speech text.
+   *
+   * Whitelist (validate EVERY param; drop+log anything invalid):
+   *   move(x:int 32..11488, y:int 32..11488)             -> setNpcPath (findPath)
+   *   emote(name in {wave,dance,think,scan,work,celebrate,alert}) -> setNpcActivity
+   *   enter_building(buildingId in the 10 MAP_LOCATIONS ids)      -> walk to building
+   *   enter_cove()                                        -> walk to the Cove (casino gateway)
+   *   talk_to_npc(npcId|buildingId, message<=500)         -> injectAgentChat bubble
+   *
+   * Unknown names / bad params are DROPPED (never executed, never throw). Only
+   * applies to a body that is in the world; otherwise tags are still stripped.
+   *
+   * NOTE (honest scope): this dispatches the VISIBLE in-world effect via sim
+   * methods. The DB-side rewards the authenticated REST handlers add — CT
+   * credit, event logging, RAG teacher reply, knowledge persistence — are NOT
+   * driven from this autonomous cognition path (no request/auth context here).
+   * Those remain available via the authenticated /api/agent/:sid/* endpoints.
+   */
+  dispatchHatcherActions(npcId: string, replyText: string): string {
+    if (!replyText) return replyText;
+    const npc = this.npcs.get(npcId);
+
+    let match: RegExpExecArray | null;
+    let executed = 0; // bound A*/broadcast cost per reply (DoS guard)
+    HATCHER_ACTION_REGEX.lastIndex = 0; // regex has /g state — reset per call
+    while ((match = HATCHER_ACTION_REGEX.exec(replyText)) !== null) {
+      // Stop EXECUTING once the per-reply cap is hit — remaining tags are still
+      // stripped from speech by the .replace() below. This caps the number of
+      // synchronous A* searches / pending-event broadcasts to a small constant
+      // regardless of how many tags a hostile proxy reply contains.
+      if (executed >= MAX_HATCHER_ACTIONS_PER_REPLY) {
+        console.warn(
+          `[Hatcher] action cap (${MAX_HATCHER_ACTIONS_PER_REPLY}) reached for ${npcId} — remaining tags stripped, not executed`,
+        );
+        break;
+      }
+      const name = match[1];
+      const paramStr = match[2].trim();
+      const params: Record<string, string> = {};
+      if (paramStr.length > 0) {
+        for (const part of paramStr.split(',')) {
+          const eq = part.indexOf('=');
+          if (eq > 0) {
+            const k = part.slice(0, eq).trim();
+            const v = part.slice(eq + 1).trim();
+            if (k.length > 0) params[k] = v;
+          }
+        }
+      }
+      // Body must be in-world to act; still strip the tag below either way.
+      if (!npc) {
+        console.warn(`[Hatcher] action "${name}" dropped — body ${npcId} not in world`);
+        continue;
+      }
+      executed++; // counts attempts that reach execution (A*/broadcast cost)
+      try {
+        this.executeHatcherAction(npcId, npc, name, params);
+      } catch (err) {
+        console.error(`[Hatcher] action "${name}" execution failed for ${npcId} — dropped:`, err);
+      }
+    }
+
+    // Strip ALL [ACTION:...] tags (including any dropped/unknown ones) so the
+    // remainder is clean agent speech. Collapse whitespace left behind.
+    return replyText.replace(HATCHER_ACTION_REGEX, '').replace(/\s{2,}/g, ' ').trim();
+  }
+
+  /** Validate + execute ONE whitelisted Hatcher action. Invalid params drop. */
+  private executeHatcherAction(
+    npcId: string,
+    npc: NpcRuntimeState,
+    name: string,
+    params: Record<string, string>,
+  ): void {
+    switch (name) {
+      case 'move': {
+        const x = Number(params.x);
+        const y = Number(params.y);
+        if (
+          !Number.isFinite(x) || !Number.isFinite(y) ||
+          x < HATCHER_MOVE_MIN || x > HATCHER_MOVE_MAX ||
+          y < HATCHER_MOVE_MIN || y > HATCHER_MOVE_MAX
+        ) {
+          console.warn(`[Hatcher] move dropped — out-of-bounds/invalid (x=${params.x}, y=${params.y})`);
+          return;
+        }
+        const path = findPath(npc.x, npc.y, Math.round(x), Math.round(y));
+        if (path.length === 0) {
+          console.warn(`[Hatcher] move dropped — no path to (${Math.round(x)}, ${Math.round(y)})`);
+          return;
+        }
+        this.setNpcPath(npcId, path);
+        return;
+      }
+      case 'emote': {
+        // Object.hasOwn guard: inherited prototype keys (constructor, __proto__,
+        // toString, hasOwnProperty, …) must NEVER satisfy the whitelist. A bare
+        // truthy bracket-access guard would treat `HATCHER_EMOTE_MAP['constructor']`
+        // (the Object ctor fn) as a valid emote and corrupt NPC activity state.
+        if (!Object.hasOwn(HATCHER_EMOTE_MAP, params.name)) {
+          console.warn(`[Hatcher] emote dropped — unknown name "${params.name}"`);
+          return;
+        }
+        const emote = HATCHER_EMOTE_MAP[params.name];
+        this.setNpcActivity(npcId, emote.activity, emote.emoji);
+        return;
+      }
+      case 'enter_building': {
+        const buildingId = params.buildingId;
+        // Object.hasOwn guard (defense-in-depth): keep inherited prototype keys
+        // out of the building whitelist lookup.
+        if (!buildingId || !Object.hasOwn(NPC_BUILDING_CENTERS, buildingId)) {
+          console.warn(`[Hatcher] enter_building dropped — unknown buildingId "${buildingId}"`);
+          return;
+        }
+        const center = NPC_BUILDING_CENTERS[buildingId];
+        // Mirror the /move?buildingId path: walk toward the building (slight
+        // jitter at the entrance) and tag the destination so the sim shows the
+        // approach. The visible in-world effect of entering a building.
+        const destX = center.x + (Math.random() - 0.5) * 40;
+        const destY = center.y + 20 + Math.random() * 20;
+        const path = findPath(npc.x, npc.y, destX, destY);
+        if (path.length === 0) {
+          console.warn(`[Hatcher] enter_building dropped — no path to "${buildingId}"`);
+          return;
+        }
+        this.setNpcPath(npcId, path, buildingId);
+        return;
+      }
+      case 'enter_cove': {
+        // enter_cove() — the HYBRID gateway verb (Rule E5 / [cards] spec). Walks
+        // the agent body to the Predictive Gaming Cove and tags the destination
+        // so the sim shows the approach. This is the VISIBLE in-world effect of
+        // "I am going to the casino"; the agent then drives REAL-CT blackjack via
+        // the agent-callable cove tools (GET/POST /api/agent/:sid/cove/blackjack/*),
+        // which bind to its avatar's ClawToken ledger. No params.
+        //
+        // The Cove is NOT in NPC_BUILDING_CENTERS (10 teaching buildings only);
+        // its center comes from the MAP_LOCATIONS rect, resolved once at module
+        // load into COVE_CENTER. Drop loudly (never crash) if it's missing.
+        if (!COVE_CENTER) {
+          console.warn('[Hatcher] enter_cove dropped — cove location missing from MAP_LOCATIONS');
+          return;
+        }
+        const destX = COVE_CENTER.x + (Math.random() - 0.5) * 40;
+        const destY = COVE_CENTER.y + 20 + Math.random() * 20;
+        const path = findPath(npc.x, npc.y, destX, destY);
+        if (path.length === 0) {
+          console.warn('[Hatcher] enter_cove dropped — no path to the cove');
+          return;
+        }
+        this.setNpcPath(npcId, path, 'cove');
+        // 'trading' is the closest valid NpcActivity for casino play; override
+        // the emoji to the slot 🎰 so the bubble reads as "at the Cove".
+        this.setNpcActivity(npcId, 'trading', '🎰');
+        return;
+      }
+      case 'talk_to_npc': {
+        // Target is a public npcId OR a buildingId; message is the speech. The
+        // visible effect is the agent's own chat bubble (mirror of /chat's
+        // injectAgentChat). Validate the target exists + bound the message.
+        const target = params.npcId ?? params.buildingId;
+        if (!target) {
+          console.warn('[Hatcher] talk_to_npc dropped — no npcId/buildingId target');
+          return;
+        }
+        // Object.hasOwn guard (defense-in-depth): a real npc OR an own-property
+        // building key — never an inherited prototype key.
+        const validTarget =
+          this.npcs.has(target) || Object.hasOwn(NPC_BUILDING_CENTERS, target);
+        if (!validTarget) {
+          console.warn(`[Hatcher] talk_to_npc dropped — unknown target "${target}"`);
+          return;
+        }
+        const message = (params.message ?? '').slice(0, HATCHER_TALK_MESSAGE_MAX).trim();
+        if (!message) {
+          console.warn('[Hatcher] talk_to_npc dropped — empty message');
+          return;
+        }
+        this.injectAgentChat(npcId, message);
+        return;
+      }
+      default:
+        console.warn(`[Hatcher] action dropped — not in whitelist: "${name}"`);
+    }
   }
 
   // --- Browser Claw Methods ---
@@ -1457,7 +1895,21 @@ class NpcSimulation {
 
       let messages;
       if (client1 || client2) {
-        messages = await generateOpenClawConversation(def1, def2, client1, client2, this.arenaMode, cryptoContext);
+        messages = await generateOpenClawConversation(
+          def1,
+          def2,
+          client1,
+          client2,
+          this.arenaMode,
+          cryptoContext,
+          // Hatcher proxy-cognition: only the hatcher-proxy path parses +
+          // dispatches [ACTION:] tags and strips them; every other protocol
+          // returns the reply unchanged.
+          (npcId, client, rawReply) =>
+            client.getProtocol() === 'hatcher-proxy'
+              ? this.dispatchHatcherActions(npcId, rawReply)
+              : rawReply,
+        );
       } else {
         messages = await generateNpcConversation(def1, def2, this.arenaMode, cryptoContext);
       }
