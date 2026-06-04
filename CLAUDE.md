@@ -1,5 +1,9 @@
 # ClawVille
 
+> # ⛔ TOP DIRECTIVE (read before anything) ⛔
+> **DOCUMENT EVERYTHING METICULOUSLY AND MAKE SURE THERE IS ALWAYS HUMAN-AGENT PARITY FOR ALL FEATURES.**
+> Every feature ships fully usable by BOTH a human AND a connected/hosted agent (agent plays as itself: agent session → bound avatar → real CT + leaderboard, never a guest fallback), and every change is documented in the same diff (canonical doc + PARITY note). Human-only or agent-only is a defect, not a scope cut. Enforced mechanically by Rule E5 below. Set 2026-06-03 after the Cove shipped with autonomous/connected-agent play left as disabled scaffolding.
+
 ## ENFORCEMENT — mechanical, not judgment-based (set 2026-05-25 after meshlet/atlas session where zero-laziness rules failed to bind because Claude judged work "small enough" to shortcut)
 
 ### Rule E1 — "plan first, no code" session lock
@@ -21,13 +25,31 @@ Override: user types **"claude implement"** → rule lifts for the session.
 
 Allowed alternatives without sign-off: "compiled and rendering — needs your eyes to confirm", "builds without errors — does it look right to you?". Asking IS allowed; declaring is not. Violation → retract the claim and re-describe in allowed phrasing.
 
+### Rule E5 — HUMAN/AGENT PARITY IS MANDATORY ON EVERY USER-FACING FEATURE (set 2026-06-03 after the Cove casino shipped human/guest-only, structurally locking connected agents out of a money-handling feature — a foundational violation of the product premise)
+
+ClawVille's reason to exist is the three bidirectional axes (Human↔Agent, Human-controlled-Agent↔Agent, Agent↔Agent — see Brand Identity). A feature that only one of {human, agent} can use is a **product-level defect**, not a scope cut. This rule is mechanical, not judgment-based.
+
+**Definition of parity:** any feature that mutates user-facing state or economy (games, shops, quests, activities, chat, learning/skills, leaderboard-scoring actions, wallets, anything spending/earning CT) MUST be reachable and fully functional by BOTH:
+- a **human** (logged-in account, and where a guest tier exists, the guest too), AND
+- a **connected/hosted agent** (agent session → bound avatar → REAL CT settlement + leaderboard credit, NOT a demo/guest fallback).
+
+"Agent can technically hit it as an anonymous guest" is NOT parity — guest play feeds nothing persistent. Parity means the agent plays **as itself**, with the same economic + leaderboard consequences a human gets.
+
+**Mechanical gate — every PR that adds or changes such a feature MUST, in the same diff:**
+1. Resolve agent identity on the write path (`requireAuthOrAgentSession` or the cove `getSubject()`-style resolver extended to agent sessions → the agent's avatar), so settlement and scoring bind to the agent. A route that only does `requireAuth` / user-XOR-guest for an economy feature is an automatic BLOCKING issue.
+2. Expose the feature to agents through the agent action surface — the Hatcher in-world `[ACTION:]` whitelist (`npc-simulation.ts` executor) and/or the agent-callable `tools.json` mechanism — and document it in the protocol SKILL.md with a `PROTOCOL_VERSION` bump (see the whitelist-parity rule below).
+3. Carry a one-line **PARITY note** in the PR/commit body: "human path: <endpoint/UI>; agent path: <endpoint/action>; settlement binds to <avatar resolution>." No PARITY note ⇒ not mergeable.
+4. Be audited against the LIVE game by the Adversarial auditor specifically for the agent path (not just the human path) before "done."
+
+**Retroactive debt:** the Cove (`cove-blackjack/baccarat/holdem/slots`) is the known violation — `getSubject()` resolves user-XOR-guest only, no agent session. It is being patched to agent parity. Any other pre-existing human-only economy feature discovered later is a bug to FIX, not to document and walk past (see Memory RULE 6).
+
 ---
 
 ## Brand Identity
 
 > Every product decision, metric, feature gate, and scope cut traces back here. Added 2026-04-21.
 
-Gamified intersection of humans + AI: humans train agents by playing, agents train each other. Milady bridge is the goal — npm sideload plugin, curated app grid (PR #1839 merged), agent-initiated connect flow.
+Gamified intersection of humans + AI: humans train agents by playing, agents train each other. **Primary distribution is direct-web (`clawville.world`) to a crypto-native audience** (set 2026-06-02). The Milady bridge — npm sideload plugin, curated app grid (PR #1839 merged), agent-initiated connect flow — is now a **secondary acquisition channel**, a funnel back to the site, not the main path.
 
 **Three bidirectional collaboration axes, all first-class:** Agent ↔ Agent · Human-controlled Agent ↔ Agent · Human ↔ Agent.
 
@@ -39,11 +61,13 @@ Gamified intersection of humans + AI: humans train agents by playing, agents tra
 
 ---
 
-## TOP PROJECT PRIORITIES (equal weight)
+## TOP PROJECT PRIORITIES
 
-Every design decision is measured against all four. Equal constraints, not ordered — don't trade off without flagging.
+**#1 — WEB PERFORMANCE (overriding constraint).** _Set 2026-06-02._ Direct-web (`clawville.world`) is the PRIMARY distribution, to a crypto-native audience — the browser experience **is** the product, with no app-store install to amortize a slow load behind. So **desktop browser load-time + sustained FPS are the top constraint, ahead of new feature scope.** Baseline today: ~40–45 FPS on the Iris Xe desktop floor (target 80, floor 60) + a loading bar that reads as frozen. **The render engine and physics performance must be solid before new gameplay scope ships.** Tracking: `docs/perf-audit-2026-05-22.md` (+ `perf-research-2026-05-22.md`, `perf-phase2-recon-2026-05-22.md`). Also load-bearing and currently a GAP: ClawVille is meant to be an **authoritative shared server** (real humans + agents co-present in one live world), not single-player + server-simulated NPCs — see `.claude/plans/multiplayer-phase1.md`.
 
-1. **Ship to Milady AI app store.** Two-track:
+**The four product priorities below are equal weight among themselves, each measured against #1. Don't trade off without flagging.**
+
+1. **Milady AI app store — SECONDARY acquisition channel** (downgraded from primary distribution 2026-06-02; primary is now direct-web at `clawville.world`). Still live as a funnel back to the site. Two-track:
    - **Sideload (LIVE 2026-04-12):** `@clawville/app-clawville@0.1.0` on npm. Installs via `POST /api/plugins/install`. Registers `LAUNCH_CLAWVILLE`. Repo: https://github.com/ItachiDevv/clawville-milady-plugin.
    - **Curated grid (MERGED):** PR `milady-ai/milady#1839` adds ClawVille to `MILADY_CURATED_APP_DEFINITIONS`. See `docs/milady-integration-plan.md`.
 
@@ -61,7 +85,7 @@ Every design decision is measured against all four. Equal constraints, not order
 
 4. **Gamified UI + free promotion + unified leaderboard.** Game layer (3D world, buildings, ClawTokens, quests) wraps one free leaderboard. All three axes feed the same leaderboard. `/dash` = internal metrics.
 
-**Every PR:** if a change helps #1 but hurts #3, or simplifies #2 but blocks #4, discuss before merging. Cosmetic SKUs need an existing `avatar_skins` row + valid asset URL + 3da-validated mesh.
+**Every PR:** weigh it against the **#1 web-performance constraint first** (does it add load weight, draw calls, or per-frame cost?), then the four product priorities — if a change helps one but hurts another, discuss before merging. Cosmetic SKUs need an existing `avatar_skins` row + valid asset URL + 3da-validated mesh.
 
 ---
 
@@ -102,7 +126,7 @@ These cost real money / crash the GPU / leak secrets. They stay inline regardles
 
 - **PUSH FLOW — staging-first (set 2026-05-24):** ALL new work goes to the `staging` branch first. `git push origin staging` → `.github/workflows/deploy-staging.yml` ships to the staging box → verify on `https://staging.clawville.world` + `https://api-staging.clawville.world` → open PR `staging → master` via `gh pr create --base master --head staging` → merge the PR → `.github/workflows/deploy.yml` ships to prod. **NEVER push directly to `master`** unless the user's message contains the literal phrase **`direct to master`** (case-insensitive) — that's the only override, logged as a CI warning. Hotfix is the only legitimate use. Both Coolify boxes share the same Supabase DB, so a staging deploy that mutates state mutates prod data too — treat staging deploys with the same care as prod for anything that writes.
 - **Iris Xe GPU:** NO drei `<Text>` / `<Billboard>` in game/world scenes — hard crash. NO `InstancedMesh + ShaderMaterial` — silent WebGPU crash. NO per-frame `new Vector3()` in `useFrame` — GC thrash.
-- **Local dev:** NEVER run `bun run dev` locally (Iris Xe crash → PC restart). Push → Coolify auto-deploys → test against staging first, then prod.
+- **Local testing FIRST (DEFAULT, set 2026-06-01):** iterate with `bun run build && bun run start` (prod bundle on :3000 — Iris-Xe-SAFE; ONLY `bun run dev`/HMR crashes the WebGPU scene). Test in-browser on `localhost`. NEVER run `bun run dev`. Do **NOT** push unfinished / mid-iteration features to `staging` — it clogs the Coolify build cache and is slow for work we know isn't done. Push to `staging` only when a feature is ready for the user's sign-off, or when a bug genuinely can't reproduce locally. [[feedback_local_testing_bun_run_start]]
 - **Phase 5.1 wallet:** `wallet.secretKey` is returned **EXACTLY ONCE** on first-connect. Subsequent reads MUST omit it. SKILL.md instructs agent to display once + store only pubkey. Server never re-emits — no recovery path. Full spec: `ARCHITECTURE.md §7`.
 - **Verification:** never claim deployed/fixed without evidence (curl, bundle grep, DOM read). "Should work" is banned.
 - **Push-auth fallback chain:** `gh auth status` → `unset GITHUB_TOKEN && gh auth setup-git` → SSH remote → `gh` CLI. Only escalate with all errors quoted. Never hand the push to the user as the first move.
@@ -114,17 +138,22 @@ These cost real money / crash the GPU / leak secrets. They stay inline regardles
 
 ## MANDATORY: Non-trivial implementation runs as EXPERIMENTAL COLLABORATIVE AGENT TEAMS
 
-`CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` + `teammateMode=in-process` are on globally (set 2026-05-19). Specialist agents spawn in PARALLEL sharing a `team_name`, coordinating via `TaskList`/`TaskUpdate`/`SendMessage`.
+`CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` + `teammateMode=in-process` are on globally (set 2026-05-19; the feature was NOT enabled when the older manager-of-managers memory was written, so that memory is now superseded by this section). The point of teams is LIVE COLLABORATION — agents working concurrently, dividing non-blocking work, and DMing via `SendMessage` — NOT a fan-out where most agents sit `blockedBy` others doing nothing.
 
-**Right pattern:** ONE parallel message spawns the WHOLE TEAM upfront (Lead Implementer + Reconciler + Spec/Regression/Adversarial auditors, shared `team_name`). Auditors are created with `addBlockedBy: [implementer_task_id]` and auto-start when impl flips to `completed`. Fixers spawn themselves on BLOCKING ISSUES. Orchestrator only commits + pushes + verifies.
+**"Parallel" means COLLABORATIVE-concurrent, NOT blocked-idle (clarified 2026-06-03 by the user).** Spawning 5 agents at once where 3 are `blockedBy` the 2 implementers is fan-out-with-a-barrier, not collaboration — the blocked agents just burn context idling. Only spawn a member at launch if it has useful work to do NOW. Auditors qualify at launch ONLY when they actively PRE-READ the baseline and surface constraints to the implementers BEFORE the diff exists (e.g. a spec auditor posting the "executor can't settle CT, route through the authed path" trap up front — that is real early collaboration that prevents a wrong build). An auditor that would merely idle until `addBlockedBy` releases should instead be spawned WHEN there is a diff to review. Prefer carving work so members collaborate on non-blocking pieces simultaneously over a static dependency DAG.
 
-**Anti-pattern (banned):** "dispatch impl, then dispatch auditors after it returns" — that serializes 4+ round-trips per concern. If you catch yourself thinking "auditors after implementer" — STOP, spawn them now with `addBlockedBy`.
+**Dispatch shape — HYBRID by domain (set 2026-06-03; supersedes BOTH the flat-only doc rule and the manager-of-managers-only memory `feedback_agent_team_managers`):**
+- **Specialized domains → manager-of-managers.** 3D / Three.js / shaders / WebGPU → dispatch `3da` as ONE manager; Blender → `blend007:mesh`; Anchor / Solana → `solana-auditor`. The manager runs `TeamCreate`, spawns its own sub-team, and posts ONE consolidated report. This preserves each specialist's curated memory (`3da` → `.claude/memory/threejs/`, etc.) and keeps the orchestrator's context clean.
+- **Plain backend / general-purpose → flat top-level team is fine.** No specialized manager exists to gain from, so the orchestrator may spawn the `general-purpose` team directly. Insert a `general-purpose` manager layer ONLY if it does not cost quality — the extra layer must earn its keep in context savings, never dilute the work.
+- Either way the team must be genuinely COLLABORATIVE (concurrent + DMing), and you only spawn members who can do useful work now.
+
+**Fixers** spawn no new agent — the Reconciler (impl-2) applies BLOCKING-ISSUE punch lists in place. Orchestrator only commits + pushes + verifies.
 
 ### When teams are mandatory
 
 3D / Blender pipelines / Backend / API / DB / money paths · any task > 5 min runtime, > 300 LOC, or ≥ 3 files across subsystems · user quality verbs ("polish", "iterate", "rework", "elite"). `bun test` green is NOT a substitute for the Adversarial audit on backend work.
 
-### Standard compositions (spawn whole team in ONE message, parallel Agent calls, shared `team_name` like `casino-routes-2026-05-19`)
+### Standard compositions (roles per concern; spawn members per the collaborative-concurrent rule above — only those with work to do now — shared `team_name` like `casino-routes-2026-05-19`)
 
 **3D / world-structure:** `3da` × { `3da-impl-1` lead, `3da-impl-2` reconciler, `3da-spec`, `3da-regress`, `3da-adversary` }. Add `blend007:mesh` as `blender-inspect` when GLB inspection needed; substitute `blend007:mesh` for impl roles on Blender-heavy work.
 
@@ -144,7 +173,7 @@ Reconciler (impl-2) doubles as the Fixer on BLOCKING ISSUES — no new dispatch,
 
 - **Direct edit (no agent):** 5-line edits — typo, comment, env-var, SVG path, script regen.
 - **Light (2-agent, shared team_name):** ≤ 100 LOC or single-file with deterministic tests — 1 ultrathink Implementer + 1 combined-lens Auditor.
-- **Full team (DEFAULT, 5 agents in one parallel dispatch):** 3D, Blender, backend, money, > 100 LOC or > 3 files.
+- **Full team (DEFAULT, 5 collaborative-concurrent roles):** 3D, Blender, backend, money, > 100 LOC or > 3 files.
 - **High-stakes** (DB migrations, custodial keys, auth, billing, rewrites) → full team + `reconciler-manager` that re-implements independently. No exceptions.
 
 Test: would the cost of getting this wrong justify ~5× parallel invocations? When in doubt, full team. Independent concerns → separate teams in parallel; shared state → single team with task deps.
@@ -162,6 +191,14 @@ Sea-themed OpenClaw game on ElizaOS. Users create an avatar, explore a 3D/2D sea
 ## IMPORTANT: ElizaOS is MANDATORY
 
 Core requirement — do NOT remove or stub. Avatar + location chat MUST use ElizaOS runtime (`@clawville/agent-runtime`); orchestrator MUST use `createElizaRuntime`. Deploy to persistent-server platforms (Hetzner+Coolify, Render, Fly.io) — NOT Vercel serverless. Never replace with direct API calls or stubs.
+
+## MANDATORY: Hatcher action whitelist parity (server executor and protocol SKILL.md)
+
+The Hatcher in-world ACTION WHITELIST lives in two files that MUST stay in parity, same diff, with `PROTOCOL_VERSION` bumped together:
+- ENFORCEMENT (authoritative): `apps/api/src/services/npc-simulation.ts` `dispatchHatcherActions` / `executeHatcherAction` is the server hard gate. Only whitelisted verbs execute; everything else is dropped. Safety lives here and never depends on the SKILL.md.
+- DOCUMENTATION: the protocol SKILL.md emitted by `apps/api/src/services/skill-protocol.ts buildProtocolManual` (the single source of `PROTOCOL_VERSION`). This is what a connected agent is TOLD it can do.
+
+When you add, remove, or change a verb or its params in the executor, you MUST update the protocol manual to match AND bump `PROTOCOL_VERSION` in the same diff. A mismatch means agents either attempt actions the server silently drops, or never learn an action the server allows. Connected Hatcher agents poll the manual on entry (via the `protocol` pointer in the registration response) and re-pull when `orientation.version` bumps, so the version bump is how an expanded whitelist reaches them.
 
 ## MANDATORY: Game-flow changes propagate to all three operational-knowledge surfaces in the same diff
 
@@ -270,7 +307,7 @@ Skipping this = the change is not done, regardless of green build or desktop scr
 
 ### Local + Windows gotchas
 
-NEVER run `bun run dev` locally — Iris Xe crashes the Three.js/WebGPU scene → PC restart. Push → staging → prod.
+**Test locally FIRST:** `bun run build && bun run start` (prod bundle on :3000, Iris-Xe-safe) is the default test path for in-progress work — iterate on `localhost`, NOT staging (staging pushes clog the Coolify build cache; reserve them for sign-off-ready features). NEVER run `bun run dev` — Iris Xe crashes the WebGPU scene → PC restart (HMR only; the prod `start` bundle is fine).
 Curl on Git Bash uses schannel and rejects CRLs — always pass `--ssl-no-revoke`.
 
 ## Game Modes

@@ -14,10 +14,12 @@
  * meshes.
  *
  * Track shape (v2 spline, 2026-04-30 90s rebuild):
- *   - Open spline track, 22 control points, z-span 0→28000 wu
- *   - ~30 000 wu arc length, single lap = ~90s at ~330 wu/s cruise
+ *   - Open spline track, 19 control points, z-span 0→28000 wu
+ *   - ~31 000 wu arc length (30957), single lap = ~90s at ~330 wu/s cruise
  *   - 5 themed segments (lagoon → kelp → shipwreck → coral → finish)
- *   - Slalom amplitudes ±170/±200/±180 wu in kelp/shipwreck/coral
+ *   - Slalom amplitudes ±440/±460/±440 wu in kelp/shipwreck/coral — amplitude
+ *     EXCEEDS halfWidth (~290-540) so a dead-straight line is walled off and
+ *     steering is mandatory (surf-carving rebuild 2026-06-01)
  *
  * Checkpoint sequence: 12 AABB volumes evenly spaced around the
  * centerline. `0` is the start/finish line; `1..11` advance counter-
@@ -1034,8 +1036,68 @@ export const REEF_GRAVITY = 1200; // wu/s²
 /**
  * Steering authority multiplier while airborne (heightOffset > 0).
  * Player can mid-air correct but cannot snap-turn. 30% per locked spec.
+ *
+ * v2 surf model (2026-06-01): this now scales the HEADING TURN RATE only —
+ * it no longer multiplies forward speed (a jump used to slow the kart down).
+ * Forward momentum is preserved/coasts through the air.
  */
 export const REEF_AIRBORNE_STEER_MULT = 0.30;
+
+// ─── Reef Race v2 — surf-carving kinematics (2026-06-01) ────────────────────
+//
+// Replaces the old direct-velocity-steering + global REEF_DRAG=0.97 model with
+// a heading-rate + lateral-grip + carried-momentum model. The per-tick math
+// lives in the PURE shared function `integrateSurfStep`
+// (`@clawville/shared/reef-race/surf-physics`) so the web client can mirror it
+// for prediction. These constants are the canonical tunables fed into it.
+//
+// TARGET FEEL: hold to accelerate, speed CARRIES; ease off = COAST (not dead
+// stop). A/D leans → heading turns at a bounded rate, the board ARCS. Forward
+// (along-heading) velocity is well-preserved; the perpendicular component
+// bleeds off over time (carve + controlled slide).
+
+/**
+ * Base heading turn rate (rad/s) at low speed, grounded. 2.6 rad/s ≈ 149°/s →
+ * a full 180° about-face takes ~1.2s at low speed, and arcs are even wider at
+ * speed (see REEF_TURN_SPEED_FALLOFF). Tuned so a tight river (halfWidth
+ * ~290-540 wu, slalom ±440-460) is threadable without snap-turning.
+ *
+ * Anti-cheat check: per-tick velocity-vector change from a hard turn at top
+ * speed ≈ speed * turnRate * dt = 500 * 2.6 * (1/30) ≈ 43 wu/s, far under the
+ * velocity-delta ceiling MAX_ACCEL*dt*REEF_KINEMATIC_TOLERANCE ≈ 140 wu/s.
+ */
+export const REEF_TURN_RATE = 2.6;
+
+/**
+ * Fraction by which the turn rate is reduced at full speed (0..1).
+ *   effectiveTurnRate = REEF_TURN_RATE * (1 - REEF_TURN_SPEED_FALLOFF * speedFrac)
+ * At full speed the kart still turns at (1 - 0.45) = 55% of base rate → wide,
+ * committed racing arcs; at a near-stop it pivots at full rate.
+ */
+export const REEF_TURN_SPEED_FALLOFF = 0.45;
+
+/**
+ * Per-tick survival fraction of the ALONG-heading velocity. Mild (close to 1)
+ * so releasing thrust COASTS instead of stopping. 0.992^30 ≈ 0.79 → loses
+ * ~21% of forward speed per second of coasting — a long, surfy glide.
+ *
+ * Anti-cheat: forward drag pulls steady-state cruise slightly BELOW the thrust
+ * target (target = MAX_SPEED*thrust*speedMod), so effective XZ speed stays
+ * capped near MAX_SPEED*speedMod — never above it.
+ */
+export const REEF_FORWARD_DRAG = 0.992;
+
+/**
+ * Per-tick survival fraction of the PERPENDICULAR (sideways) velocity. < 1 →
+ * grip. 0.90^30 ≈ 0.042 → ~96% of any sideways slide is killed per second:
+ * the board carves and holds a line but can still drift through a hard flick.
+ *
+ * Lower = grippier (less slide). Kept at 0.90 (not 0.80) to leave anti-cheat
+ * headroom — a single tick of lateral bleed at top speed is ≤ 0.10*500 = 50
+ * wu/s, which combined with a hard turn (~43 wu/s) stays under the 140 wu/s
+ * velocity-delta ceiling.
+ */
+export const REEF_LATERAL_GRIP = 0.90;
 
 /**
  * Migration gate (per architecture doc section 8). When true, the spline

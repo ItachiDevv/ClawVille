@@ -234,8 +234,9 @@ describe('validateProgressMonotonic', () => {
 
 describe('validateSegmentTime', () => {
   // The kelp segment (index 1) is the easiest to construct a deterministic
-  // test from: REEF_RACE_SEGMENTS[1] z-range = [3000, 7500] = 4500 wu.
-  // minSegmentMs = 4500 / REEF_MAX_SPEED * 0.7 * 1000 = 4500 / 500 * 700 = 6300 ms.
+  // test from: REEF_RACE_SEGMENTS[1] z-range = [3000, 12100] = 9100 wu
+  // (90s rebuild, 2026-04-30).
+  // minSegmentMs = 9100 / REEF_MAX_SPEED * 0.7 * 1000 = 9100 / 500 * 700 = 12 740 ms.
   // The cached t-range table maps that z-range onto the spline.
   const ranges = __getSegmentTRangesForTest(REEF_RACE_SEGMENTS);
 
@@ -244,7 +245,7 @@ describe('validateSegmentTime', () => {
     const kelp = ranges[1];
     expect(kelp.id).toBe('kelp');
     const tMid = (kelp.tStart + kelp.tEnd) * 0.5;
-    // Body entered the segment 1000ms ago — way under the ~6300ms floor.
+    // Body entered the segment 1000ms ago — way under the ~12 740ms floor.
     const v = validateSegmentTime(tMid, 1_000_000, 999_000, REEF_RACE_SEGMENTS);
     expect(v.ok).toBe(false);
     expect(v.flagged).toBe(true);
@@ -252,11 +253,12 @@ describe('validateSegmentTime', () => {
     expect(v.detail).toContain('kelp');
   });
 
-  it('T6: ok when traversal exceeds min time (12s in a 6.3s-floor segment)', () => {
+  it('T6: ok when traversal exceeds min time (20s in a ~12.7s-floor segment)', () => {
+    // kelp z-length = 12100 - 3000 = 9100 wu (90s rebuild, 2026-04-30) →
+    // floor = (9100/500)*0.7*1000 = 12 740 ms. Use 20s elapsed (> floor) → ok.
     const kelp = ranges[1];
     const tMid = (kelp.tStart + kelp.tEnd) * 0.5;
-    // 12s elapsed > 6.3s floor → ok.
-    const v = validateSegmentTime(tMid, 1_000_000, 988_000, REEF_RACE_SEGMENTS);
+    const v = validateSegmentTime(tMid, 1_000_000, 980_000, REEF_RACE_SEGMENTS);
     expect(v.ok).toBe(true);
     expect(v.flagged).toBe(false);
   });
@@ -281,10 +283,14 @@ describe('validateSegmentTime', () => {
   });
 
   it('verifies the min-time formula matches the spec (z-length / speed * 0.7)', () => {
-    // kelp z-length = 7500 - 3000 = 4500 wu
+    // kelp z-length = 12100 - 3000 = 9100 wu (90s rebuild, 2026-04-30).
+    // The formula reads the segment z-span, NOT the corridor halfWidth, so the
+    // 2026-06-01 surf-carving halfWidth tighten does not affect this floor.
     const kelp = ranges[1];
+    const kelpSeg = REEF_RACE_SEGMENTS[1];
+    const zLen = kelpSeg.zEnd - kelpSeg.zStart; // 9100
     const expectedMs =
-      (4500 / REEF_MAX_SPEED) * REEF_SEGMENT_MIN_TIME_FRACTION * 1000;
+      (zLen / REEF_MAX_SPEED) * REEF_SEGMENT_MIN_TIME_FRACTION * 1000;
     expect(kelp.minSegmentMs).toBeCloseTo(expectedMs, 5);
   });
 });

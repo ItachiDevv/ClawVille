@@ -113,14 +113,6 @@ const NPC_SCALE_CLAMP_MAX = TARGET_NPC_HEIGHT / 0.5; // 90
 const NPC_LOD_NEAR_DIST_SQ = 2_500 * 2_500;
 const NPC_LOD_FAR_DIST_SQ = 5_000 * 5_000;
 const NPC_LOD_VERY_FAR_DIST_SQ = 6_000 * 6_000;
-// Authored walk-cycle reference speed for matching leg cadence to rendered translation.
-const REF_WALK_SPEED = 130;
-// Render-speed threshold below which wandering NPC locomotion visually idles.
-const MOVE_DEADBAND = 14;
-// Upper clamp for walk-cycle playback when interpolation briefly spikes.
-const WALK_SPEED_SCALE_MAX = 1.6;
-// Low-pass response for smoothing rendered-speed based locomotion gating.
-const WALK_SPEED_SMOOTHING = 8;
 
 // Preload deferred to after SPECIES_MODEL declaration — see below.
 
@@ -469,8 +461,6 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
   const simPos = useRef(new THREE.Vector3(...mapToWorld(npc.x, npc.y)));
   const currentRotY = useRef(0);
   const currentTerrainY = useRef(0);
-  const smoothedSpeedRef = useRef(0);
-  const locoPhaseRef = useRef(0);
 
   const resolvedSpecies = resolveSpecies(npc.species);
   const speciesInfo = SPECIES_MODEL[resolvedSpecies] ?? DEFAULT_SPECIES;
@@ -668,17 +658,6 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
     const isPossessedPlayerNpc =
       d.id === PLAYER_NPC_ID &&
       useGameStore.getState().controlMode === 'npc';
-    const glbVx = simPos.current.x - glbPrevX;
-    const glbVz = simPos.current.z - glbPrevZ;
-    const velMagSq = glbVx * glbVx + glbVz * glbVz;
-    const instSpeed = Math.sqrt(velMagSq) / Math.max(dt, 1e-3);
-    smoothedSpeedRef.current += (instSpeed - smoothedSpeedRef.current) * Math.min(1, dt * WALK_SPEED_SMOOTHING);
-    const speedScale = Math.min(WALK_SPEED_SCALE_MAX, Math.max(0, smoothedSpeedRef.current / REF_WALK_SPEED));
-    if (!isPossessedPlayerNpc) {
-      locoPhaseRef.current += dt * speedScale;
-    }
-    const movingVisual = smoothedSpeedRef.current > MOVE_DEADBAND;
-    const locoPhase = isPossessedPlayerNpc ? clock.elapsedTime : locoPhaseRef.current;
     // Raycast to find terrain surface Y. Close NPCs retain the historical 20Hz
     // cadence; mid/far NPCs throttle progressively because terrain height changes
     // are visually imperceptible at distance, but the raycast still costs CPU.
@@ -711,8 +690,7 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
       ? (jumpState.heightOffset + jumpState.playerAltitude)
       : 0;
     const isMoving = d.direction !== 'idle' && !d.isDead;
-    const animationMoving = isPossessedPlayerNpc ? isMoving : movingVisual && !d.isDead;
-    const bob = (animationMoving && !airborne) ? Math.sin(clock.elapsedTime * 4.0 + seed) * 0.6 : 0;
+    const bob = (isMoving && !airborne) ? Math.sin(clock.elapsedTime * 4.0 + seed) * 0.6 : 0;
     // effectiveFloorY: when npcGroundY > currentTerrainY (NPC is on a stair/ramp
     // collider zone), use the walkable surface height so feet ride the stair.
     const npcEffectiveFloorY = Math.max(currentTerrainY.current, npcGroundY);
@@ -726,6 +704,9 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
     if (d.facingAngle != null) {
       targetRot = d.facingAngle;
     } else {
+      const glbVx = simPos.current.x - glbPrevX;
+      const glbVz = simPos.current.z - glbPrevZ;
+      const velMagSq = glbVx * glbVx + glbVz * glbVz;
       if (velMagSq > 0.25 && d.direction !== 'idle') {
         // GLB crustaceans face +Z at rest (model faces +Z after preview calibration
         // 2026-04-16 late PM). For velocity (vx, vz), targetRot = atan2(vx, vz).
@@ -777,20 +758,19 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
     if (useNewSystem && charAnimator) {
       // Universal character animation system — handles all secondary motion internally
       if (!skipFarGlbAnimation) {
-        charAnimator.update(animGroup, clock.elapsedTime, dt, animationMoving, locoPhase);
+        charAnimator.update(animGroup, clock.elapsedTime, dt, isMoving);
       }
     } else if (lobsterAnimator) {
       // Legacy lobster skeletal animation
-      const lobsterDirection = animationMoving ? d.direction : 'idle';
       const suggestedState = resolveAnimState({
         isDead: d.isDead,
         inCombat: false,
         combatAction: null,
-        direction: lobsterDirection,
+        direction: d.direction,
         inConversation: false,
       });
       if (!skipFarGlbAnimation) {
-        lobsterAnimator.update(dt, clock.elapsedTime, suggestedState, lobsterDirection, locoPhase);
+        lobsterAnimator.update(dt, clock.elapsedTime, suggestedState, d.direction);
       }
 
       // Procedural group-level squash/stretch/tilt.
@@ -799,17 +779,16 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
       // Stagger by seed so NPCs don't all update on the same frame.
       const animStateData = {
         group: animGroup,
-        isMoving: animationMoving,
+        isMoving,
         elapsed: clock.elapsedTime,
-        walkPhase: locoPhase,
         delta: dt,
-        direction: lobsterDirection,
+        direction: d.direction,
         seed,
       };
       if (skipFarGlbAnimation) {
         // Keep the far NPC at its last believable pose. Position/facing still
         // update every frame, so identity and activity remain visible.
-      } else if (animationMoving) {
+      } else if (isMoving) {
         applyWalkAnimation(animStateData);
       } else if ((frame + seed) % 3 === 0) {
         // PERF: idle animation throttled to 20Hz — 5 trig calls × 18 NPCs was
@@ -957,8 +936,6 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
   // YXZ Euler order so .x is in the local frame after the facing .y.
   const currentPitchX = useRef(0);
   const currentTerrainY = useRef(-2);
-  const smoothedSpeedRef = useRef(0);
-  const locoPhaseRef = useRef(0);
   // PERF: accumulated spring delta — we tick spring bones at 30Hz (every 2nd frame for
   // idle NPCs) by summing frame deltas and flushing them in a single vrm.update() call.
   // The verlet integrator is time-step independent so passing 2× dt is physically correct.
@@ -1104,17 +1081,6 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
     const isPossessedPlayerNpc =
       d.id === PLAYER_NPC_ID &&
       useGameStore.getState().controlMode === 'npc';
-    const vx = simPos.current.x - prevX;
-    const vz = simPos.current.z - prevZ;
-    const velMagSq = vx * vx + vz * vz;
-    const instSpeed = Math.sqrt(velMagSq) / Math.max(dt, 1e-3);
-    smoothedSpeedRef.current += (instSpeed - smoothedSpeedRef.current) * Math.min(1, dt * WALK_SPEED_SMOOTHING);
-    const speedScale = Math.min(WALK_SPEED_SCALE_MAX, Math.max(0, smoothedSpeedRef.current / REF_WALK_SPEED));
-    if (!isPossessedPlayerNpc) {
-      locoPhaseRef.current += dt * speedScale;
-    }
-    const movingVisual = smoothedSpeedRef.current > MOVE_DEADBAND;
-    const animationMoving = isPossessedPlayerNpc ? isMoving : movingVisual && !d.isDead;
     // Raycast terrain at distance-based cadence. Position still updates every
     // frame; only the floor-height sample is throttled for far NPCs.
     const terrainMod =
@@ -1138,7 +1104,7 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
     const jumpY = isPossessedPlayerNpc
       ? (jumpState.heightOffset + jumpState.playerAltitude)
       : 0;
-    const bob = (animationMoving && !airborne) ? Math.sin(clock.elapsedTime * 4.0 + seed) * 0.6 : 0;
+    const bob = (isMoving && !airborne) ? Math.sin(clock.elapsedTime * 4.0 + seed) * 0.6 : 0;
     // effectiveFloorY: when vrmNpcGroundY > currentTerrainY (NPC is on a stair/ramp
     // collider zone), use the walkable surface height so feet ride the stair.
     const vrmNpcEffectiveFloorY = Math.max(currentTerrainY.current, vrmNpcGroundY);
@@ -1152,6 +1118,9 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
     // User confirmed live 2026-04-25; PR #65 "resolve to master version" reverted to
     // atan2(vx, -vz) which makes Miladys walk backwards. DO NOT change this without
     // a screenshot proving otherwise — see .claude/memory/feedback_vrm_facing_formula.md.
+    const vx = simPos.current.x - prevX;
+    const vz = simPos.current.z - prevZ;
+    const velMagSq = vx * vx + vz * vz;
     if (velMagSq > 0.1 && d.direction !== 'idle') {
       const targetRot = Math.atan2(vx, vz);
       let diff = targetRot - currentRotY.current;
@@ -1245,12 +1214,10 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
       const isFarNpc = _springDistSq > NPC_LOD_FAR_DIST_SQ;
 
       if (!isFarNpc) {
-        animator.updateMixerOnly(
-          dt,
-          npcLockIdle ? false : animationMoving,
-          false,
-          isPossessedPlayerNpc ? 1 : speedScale
-        );
+        // isRunning: only the possessed player NPC sets d.isRunning (via moveNpc
+        // when sprinting). Wandering NPCs leave it undefined → walk. Gated to
+        // false while charging/airborne so a held sprint mid-leap doesn't run.
+        animator.updateMixerOnly(dt, npcLockIdle ? false : isMoving, npcLockIdle ? false : (d.isRunning ?? false));
 
         // WIN B — Spring-bone distance LOD (perf-audit-2026-05-22 Q4)
         // Close NPCs (<2500wu) run at 30Hz — better perceived quality for
