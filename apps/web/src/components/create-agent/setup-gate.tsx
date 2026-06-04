@@ -27,7 +27,13 @@ export interface SetupGateProps {
    * `true` = they've said they have one, render children instead.
    */
   hasAgent: boolean | null;
-  onAnswer: (hasAgent: boolean) => void;
+  /**
+   * Accepts `null` so the instructions screen's "← back" can return to the
+   * choice screen (incl. the Hermes "Host it for me" option). Passing `false`
+   * here previously re-asserted the local-instructions state, trapping the user
+   * with no way back to the hosted path.
+   */
+  onAnswer: (hasAgent: boolean | null) => void;
   children?: React.ReactNode;
 }
 
@@ -68,6 +74,9 @@ export function SetupGate({
 
   const handleYes = useCallback(() => onAnswer(true), [onAnswer]);
   const handleNo = useCallback(() => onAnswer(false), [onAnswer]);
+  // Reset to the choice screen (null) — used by the instructions "← back" so a
+  // user who picked "run locally" can return to the Host-it-for-me option.
+  const handleReset = useCallback(() => onAnswer(null), [onAnswer]);
 
   if (hasAgent === true) {
     return <>{children}</>;
@@ -83,7 +92,7 @@ export function SetupGate({
             <div className="pt-3 border-t border-white/10 flex items-center justify-between">
               <button
                 type="button"
-                onClick={handleNo}
+                onClick={handleReset}
                 className="font-mono text-[10px] uppercase tracking-[0.2em] text-white/30 hover:text-white/60"
               >
                 ← back

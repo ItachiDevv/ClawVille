@@ -24,9 +24,13 @@ export interface AgentConfigExport {
   totalXp: number;
   exportedAt: string;
   /** Phase 2 — optional. Older exports predate these fields; import falls
-   *  back to DB DEFAULTs ('lobster', 'openclaw', 'milady') when omitted. */
+   *  back to DB DEFAULTs ('lobster', 'openclaw', 'milady') when omitted.
+   *  `agentCategory` mirrors the shared AGENT_CATEGORIES tuple (hardcoded here
+   *  to avoid a @clawville/shared → @clawville/database dependency cycle).
+   *  'hatcher' added 2026-06-01 (partner #2) — keep in lockstep with
+   *  AGENT_CATEGORIES in packages/shared/src/constants/agent-models.ts. */
   modelKey?: string;
-  agentCategory?: 'openclaw' | 'hermes' | 'milady' | 'other';
+  agentCategory?: 'openclaw' | 'hermes' | 'milady' | 'other' | 'hatcher';
   harness?: 'openclaw' | 'hermes' | 'milady' | 'custom';
 }
 

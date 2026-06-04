@@ -18,6 +18,9 @@ export * from './quests';
 export * from './agent-configs';
 export * from './bounties';
 export * from './building-skills';
+// Partner #2 (Hatcher) Phase C — scoped, revocable read-token table for partner
+// integrations. Hash-not-plaintext, show-once mint. See `partner-api-keys.ts`.
+export * from './partner-api-keys';
 export * from './wallets';
 export * from './agent-session-tickets';
 // Email-driven auth (password reset + soft email verification). One row per
