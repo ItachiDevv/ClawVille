@@ -11,7 +11,7 @@
  *
  * This replaces the Gemini text provider for TEXT generation only —
  * Gemini's billing died (403 dunning), OpenAI is the new text backend.
- * EMBEDDINGS still go through gemini-embedding-provider (untouched).
+ * EMBEDDINGS go through openai-embedding-provider (text-embedding-3-small, 1536-dim).
  *
  * Unlike Gemini (one model id for both sizes), OpenAI splits TEXT_SMALL
  * and TEXT_LARGE across two models:
