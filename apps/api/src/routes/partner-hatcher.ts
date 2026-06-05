@@ -73,6 +73,7 @@ import { ensureWallet } from '../services/wallet-service';
 import { resolveOrCreateUserByIdentity } from '../services/identity-service';
 import { computeSessionExpiresAt } from '../services/openclaw-session-sweeper';
 import { logEvent } from '../services/event-logger';
+import { sessionDigest } from '../services/session-digest';
 import { protocolPointer, resolveApiBase } from '../services/skill-protocol';
 import { getAgentLeaderboardEntry } from './leaderboard';
 
@@ -800,7 +801,10 @@ partnerHatcherRoutes.post('/agents', async (c) => {
     eventType: 'agent.connected',
     userId,
     agentId: namespacedAgentId,
-    sessionId,
+    // Digest, NOT the raw `hat-` bearer (Codex auth-lens fix #4): the raw
+    // session id is the real-CT bearer credential the cove trusts via the
+    // X-Clawville-Agent-Session header — never write it into events.session_id.
+    sessionId: sessionDigest(sessionId),
     payload: {
       identityType: 'hatcher',
       via: 'partner-register',
