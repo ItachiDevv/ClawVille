@@ -7,7 +7,7 @@
  *   2. Broker ensures target building runtime via BuildingRuntimeRegistry
  *   3. Broker emits CLAWVILLE_CONSULT_REQUEST on that runtime
  *   4. Broker calls runtime.useModel(TEXT_LARGE) with specialist prompt
- *      (routes through Gemini text provider at priority 95)
+ *      (routes through the OpenAI text provider at priority 95 → gpt-4o)
  *   5. Broker emits CLAWVILLE_CONSULT_COMPLETED on that runtime
  *   6. Broker also enqueues a CollaborationLogEntry for SSE broadcast
  *
@@ -254,7 +254,7 @@ export class CollaborationBroker {
       );
 
       // Route through the runtime's model priority chain
-      // (Gemini text provider at 95 wins by default)
+      // (OpenAI text provider at 95 wins by default; TEXT_LARGE → gpt-4o)
       const underlying = (runtime as unknown as {
         runtime: { useModel: any } | null;
       }).runtime;
@@ -419,7 +419,9 @@ export function getCollaborationBroker(
       config ?? {
         databaseUrl: process.env.DATABASE_URL,
         apiKeys: {
+          // Gemini = embeddings only; OpenAI = TEXT_SMALL/TEXT_LARGE generation.
           gemini: process.env.GEMINI_API_KEY,
+          openai: process.env.OPENAI_API_KEY,
         },
       },
     );

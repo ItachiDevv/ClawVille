@@ -146,6 +146,9 @@ class AgentOrchestrator {
         openclawGateway,
         databaseUrl: process.env.DATABASE_URL,
         apiKeys: {
+          // OpenAI is the primary text-generation backend (openai-text-provider).
+          openai: process.env.OPENAI_API_KEY,
+          // Gemini is retained for EMBEDDINGS only (gemini-embedding-provider).
           gemini: process.env.GEMINI_API_KEY,
         },
       });
