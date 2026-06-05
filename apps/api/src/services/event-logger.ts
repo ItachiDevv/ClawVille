@@ -22,6 +22,58 @@
 
 import { db, events, eventWriteFailures } from '@clawville/database';
 import { alertError } from './alert-error';
+import { sessionDigest } from './session-digest';
+
+// ─── Central raw-bearer redaction chokepoint (Codex auth-lens fix #4 — 2026-06-03) ──
+//
+// The raw agent-session id (`ag-…` / `oc-…` / `hat-…` / `claw-…`) is the REAL-CT
+// bearer the Cove reads from the `X-Clawville-Agent-Session` header. Scattered
+// call-site `sessionDigest(...)` edits proved INCOMPLETE — e.g. skills.ts logs a
+// caller-supplied `X-Clawville-Session-Id` header RAW. This is the single insert
+// chokepoint, so redact here regardless of which call site (or header) supplied
+// the value: every raw bearer that reaches the `events` table is digested before
+// it lands.
+//
+// IDEMPOTENT BY CONSTRUCTION: `redactBearer` ONLY transforms a value that matches
+// the RAW-bearer shape (`^(ag|oc|hat|claw)-<16+ url-safe chars>`). An already-
+// digested 16-hex value (`a1b2c3d4e5f60718`) does NOT start with one of those
+// prefixes, so it passes through UNCHANGED. Consequences:
+//   (a) call sites that already pass `sessionDigest(sessionId)` are untouched
+//       here (no double-digest),
+//   (b) call sites / headers that pass a RAW bearer get digested here,
+//   (c) `COUNT(DISTINCT session_id)` for `agent.connected` stays correct because
+//       `sessionDigest` is a deterministic 1:1 map — the same raw session always
+//       digests to the same value whether the digest happened at the call site or
+//       here.
+const RAW_BEARER_RE = /^(ag|oc|hat|claw)-[A-Za-z0-9_-]{16,}$/;
+
+function redactBearer(v: unknown): unknown {
+  return typeof v === 'string' && RAW_BEARER_RE.test(v) ? sessionDigest(v) : v;
+}
+
+// Recursively walk objects/arrays and redact any RAW-bearer string leaf. Depth-
+// capped (~6) so a pathologically nested payload can't blow the stack; below the
+// cap we stop recursing and return the value as-is (a deep object can't hide a
+// bearer behind 6 levels of nesting in practice, and `sanitize()` upstream
+// already strips secret-keyed fields).
+function redactBearersDeep(v: unknown, depth = 0): unknown {
+  if (depth > 6) return v;
+  if (typeof v === 'string') return redactBearer(v);
+  if (v === null || typeof v !== 'object') return v;
+  if (Array.isArray(v)) return v.map((el) => redactBearersDeep(el, depth + 1));
+  // Only walk plain objects; Date/Buffer/Map/RegExp/etc. pass through untouched
+  // (same carve-out as sanitizeValue, so jsonb serialization stays intact).
+  const proto = Object.getPrototypeOf(v as object);
+  if (proto === Object.prototype || proto === null) {
+    return Object.fromEntries(
+      Object.entries(v as Record<string, unknown>).map(([k, val]) => [
+        k,
+        redactBearersDeep(val, depth + 1),
+      ]),
+    );
+  }
+  return v;
+}
 
 /**
  * Duck-typed Hono context — any object with a string-keyed `.get()` method
@@ -310,14 +362,28 @@ export async function logEvent(input: EventInput): Promise<void> {
     }
   }
 
+  // Central raw-bearer redaction (see RAW_BEARER_RE block above). Applied to the
+  // `session_id` column and run over the (already secret-key-sanitized) payload so
+  // a RAW agent-session bearer can never land in the events table from ANY call
+  // site or caller-supplied header. Idempotent: an already-digested value is left
+  // unchanged.
+  //
+  // NOT applied to `agent_id`: that column is the STABLE agent handle the
+  // leaderboard groups by (GROUP BY / COUNT(DISTINCT) agent_id). A handle can
+  // legitimately share a bearer prefix (an openclaw `data.agentId` may be
+  // `oc-…`, identical in shape to an `oc-` SESSION bearer), so redacting it would
+  // false-positive and split that agent's score across the raw handle (old rows)
+  // and its digest (new rows). The bearer never legitimately lands in agent_id:
+  // every call site that used a `?? sessionId` fallback already digests it
+  // (`?? sessionDigest(sessionId)`), so there is nothing to redact here anyway.
   const row = {
     eventType: input.eventType,
     userId: input.userId ?? null,
     agentId: input.agentId ?? null,
     avatarId: input.avatarId ?? null,
     buildingId: input.buildingId ?? null,
-    sessionId: input.sessionId ?? null,
-    payload: sanitize(input.payload),
+    sessionId: redactBearer(input.sessionId ?? null) as string | null,
+    payload: redactBearersDeep(sanitize(input.payload)) as Record<string, unknown> | undefined,
     fpHash: input.fpHash ?? null,
     ipPrefixHash: input.ipPrefixHash ?? null,
   };
