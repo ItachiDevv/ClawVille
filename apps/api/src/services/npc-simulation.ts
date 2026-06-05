@@ -30,6 +30,7 @@ import {
 } from './pathfinding';
 import { AvatarSimulationBridge } from './avatar-simulation-bridge';
 import { memoryService } from './memory-service';
+import { sessionDigest } from './session-digest';
 import {
   getCollaborationBroker,
   type CollaborationLogEntry,
@@ -467,7 +468,10 @@ class NpcSimulation {
         client.setWorldStateProvider(() => this.buildHatcherWorldState(boundNpcId, 'override'));
         client.setSystemContextProvider(() => this.buildHatcherSystemContext(boundNpcId));
       }
-      console.log(`[OpenClaw] Override registered: ${config.targetNpcId} -> ${config.sessionId} (${npc.autonomyMode})`);
+      // Log the sessionDigest, NOT the raw sessionId (Codex auth-lens fix #4):
+      // the raw id is the real-CT bearer credential; a leaked log line must not
+      // hand it back. Digest is correlation-only.
+      console.log(`[OpenClaw] Override registered: ${config.targetNpcId} -> sess:${sessionDigest(config.sessionId)} (${npc.autonomyMode})`);
     } else {
       const avatarConfig = config as OpenClawAvatarConfig;
       const npcId = `oc-${config.sessionId}`;
@@ -510,7 +514,10 @@ class NpcSimulation {
         client.setWorldStateProvider(() => this.buildHatcherWorldState(npcId, 'avatar'));
         client.setSystemContextProvider(() => this.buildHatcherSystemContext(npcId));
       }
-      console.log(`[OpenClaw] Avatar injected: "${avatarConfig.name}" (${npcId}) [${config.autonomyMode ?? 'server-managed'}]${restoredState?.lastX != null ? ' [restored position]' : ''}`);
+      // Log the sessionDigest, NOT the raw npcId (Codex auth-lens fix #4): the
+      // avatar npcId is literally `oc-${config.sessionId}`, so printing it leaks
+      // the real-CT bearer credential into logs. Digest is correlation-only.
+      console.log(`[OpenClaw] Avatar injected: "${avatarConfig.name}" (oc-sess:${sessionDigest(config.sessionId)}) [${config.autonomyMode ?? 'server-managed'}]${restoredState?.lastX != null ? ' [restored position]' : ''}`);
     }
   }
 
@@ -530,7 +537,9 @@ class NpcSimulation {
       this.npcs.delete(npcId);
     }
     this.openClawBots.delete(sessionId);
-    console.log(`[OpenClaw] Unregistered: ${sessionId}`);
+    // sessionDigest, NOT the raw sessionId (Codex auth-lens fix #4) - bearer
+    // credential, must not appear in logs.
+    console.log(`[OpenClaw] Unregistered: sess:${sessionDigest(sessionId)}`);
     return true;
   }
 
@@ -1028,12 +1037,12 @@ class NpcSimulation {
       activityEmoji: '',
       lastHeartbeat: Date.now(),
     });
-    console.log(`[BrowserClaw] Connected: "${config.name}" (${sessionId})`);
+    console.log(`[BrowserClaw] Connected: "${config.name}" (sess:${sessionDigest(sessionId)})`);
   }
 
   unregisterBrowserClaw(sessionId: string): boolean {
     const existed = this.browserClaws.delete(sessionId);
-    if (existed) console.log(`[BrowserClaw] Disconnected: ${sessionId}`);
+    if (existed) console.log(`[BrowserClaw] Disconnected: sess:${sessionDigest(sessionId)}`);
     return existed;
   }
 
@@ -1071,7 +1080,7 @@ class NpcSimulation {
     for (const [sid, claw] of this.browserClaws) {
       if (claw.lastHeartbeat < cutoff) {
         this.browserClaws.delete(sid);
-        console.log(`[BrowserClaw] Stale timeout: "${claw.config.name}" (${sid})`);
+        console.log(`[BrowserClaw] Stale timeout: "${claw.config.name}" (sess:${sessionDigest(sid)})`);
       }
     }
   }

@@ -410,14 +410,37 @@ export function useBlackjackAction() {
 
 export interface InsureArgs {
   handId: string;
+  /**
+   * OPTIONAL stale-agent-decision precondition — parity with PlayerActionArgs.
+   * Set ONLY by the Autonomous driver (threaded from /agent/decide's
+   * `handVersion`); the server rejects with 409 stale_agent_decision if the hand
+   * advanced since the agent decided. Human manual insure taps MUST omit this so
+   * /action stays unconditional for them.
+   */
+  expectedHandVersion?: number;
 }
 
+/**
+ * Insure can come back as the in-progress ack OR — when a stale agent insure
+ * decision races an already-settled hand — a full settled-hand replay (the
+ * server's settled-replay path returns `status:'settled'`). The Autonomous
+ * driver must branch on both, so the response type is the union, not bare
+ * InsureResponse. A human manual insure on a live hand always gets InsureResponse.
+ */
+export type InsureMutationResponse = InsureResponse | SettledHandResponse;
+
 export function useTakeInsurance() {
-  return useMutation<InsureResponse, CoveApiError, InsureArgs>({
-    mutationFn: ({ handId }) =>
-      coveFetch<InsureResponse>('/api/cove/blackjack/action', {
+  return useMutation<InsureMutationResponse, CoveApiError, InsureArgs>({
+    mutationFn: ({ handId, expectedHandVersion }) =>
+      coveFetch<InsureMutationResponse>('/api/cove/blackjack/action', {
         method: 'POST',
-        body: JSON.stringify({ handId, action: 'insure' }),
+        body: JSON.stringify({
+          handId,
+          action: 'insure',
+          // Only included for the agent-apply path; undefined keys are dropped by
+          // JSON.stringify so human manual insure taps send the legacy body.
+          ...(expectedHandVersion !== undefined ? { expectedHandVersion } : {}),
+        }),
       }),
     retry: false,
   });
