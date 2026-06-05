@@ -19,11 +19,13 @@ import { v5 as uuidv5 } from 'uuid';
 import type { LocationTemplate } from '@clawville/agent-templates';
 import { loadLocationTemplate } from './character-loader';
 import { createOpenClawProviderPlugin, type OpenClawGatewayConfig } from './plugins/openclaw-provider';
-import { createGeminiEmbeddingPlugin } from './plugins/gemini-embedding-provider';
-// NOTE: createGeminiTextPlugin is intentionally no longer imported here — text
-// generation moved to OpenAI (Gemini billing died). The Gemini text provider
-// file + its index.ts exports are kept for any legacy importer, but the runtime
-// registers OpenAI for TEXT below. Gemini EMBEDDINGS stay (above).
+import { createOpenAIEmbeddingPlugin } from './plugins/openai-embedding-provider';
+// NOTE: createGeminiTextPlugin / createGeminiEmbeddingPlugin are intentionally
+// no longer imported here — the full Gemini→OpenAI migration moved BOTH text
+// generation (Gemini billing died) AND embeddings (text-embedding-004 768-dim →
+// text-embedding-3-small 1536-dim) to OpenAI. The Gemini provider files + their
+// index.ts exports are kept for any legacy importer / easy revert, but the
+// runtime registers OpenAI for TEXT + EMBEDDING below.
 import { createOpenAITextPlugin } from './plugins/openai-text-provider';
 import { clawvillePlugin } from './plugins/clawville-plugin';
 import type { Provider, ProviderResult } from './providers/types';
@@ -92,7 +94,11 @@ export interface ElizaRuntimeConfig {
   openclawGateway?: OpenClawGatewayConfig;
   databaseUrl?: string;
   apiKeys?: {
-    /** Gemini API key for TEXT_EMBEDDING (embeddings only — text moved to OpenAI). */
+    /**
+     * GEMINI_API_KEY is now UNUSED by the runtime: both text generation and
+     * embeddings moved to OpenAI (openai-text-provider + openai-embedding-provider).
+     * Retained only for legacy / easy-revert; nothing in the runtime reads it.
+     */
     gemini?: string;
     /** OpenAI API key for TEXT_SMALL/TEXT_LARGE generation. */
     openai?: string;
@@ -144,11 +150,11 @@ function convertToElizaCharacter(
   );
 
   // v2: @elizaos/plugin-bootstrap is built into @elizaos/core — do NOT add it here.
-  // Embeddings are provided by our custom gemini-embedding-provider (prepended
+  // Embeddings are provided by our custom openai-embedding-provider (prepended
   // in loadPlugins), so plugin-openai is no longer needed. Text generation is
   // handled by the OpenAI text provider (priority 95). plugin-anthropic and
   // the ultrathink-provider have both been removed — OpenAI is the single
-  // text-gen backend for all non-OpenClaw agents (Gemini handles embeddings only).
+  // backend for all non-OpenClaw agents (both text-gen and embeddings).
   const plugins: string[] = [
     '@elizaos/plugin-sql',
   ];
@@ -354,10 +360,10 @@ export class ElizaRuntime {
   private async loadPlugins(): Promise<void> {
     this.loadedPlugins = [];
     // v2: plugin-bootstrap is built into @elizaos/core.
-    // plugin-openai replaced by gemini-embedding-provider below (embeddings).
+    // plugin-openai replaced by openai-embedding-provider below (embeddings).
     // plugin-solana is a legacy dep that was never installed — removed.
-    // plugin-anthropic + ultrathink-provider removed. Text generation now goes
-    // through the OpenAI text provider (Gemini billing died); embeddings stay Gemini.
+    // plugin-anthropic + ultrathink-provider removed. Both text generation AND
+    // embeddings now go through OpenAI (full Gemini→OpenAI migration).
     // Text generation priority chain: OpenClaw(100) > OpenAI(95).
     const pluginMap: Record<string, string> = {
       '@elizaos/plugin-sql': 'sqlPlugin',
@@ -378,12 +384,14 @@ export class ElizaRuntime {
       }
     }
 
-    // Prepend Gemini embedding provider (priority 100 — replaces plugin-openai's TEXT_EMBEDDING)
-    const geminiEmbeddingPlugin = createGeminiEmbeddingPlugin({
-      apiKey: this.config.apiKeys?.gemini,
+    // Prepend OpenAI embedding provider (priority 100 — replaces plugin-openai's TEXT_EMBEDDING)
+    // Emits 1536-dim vectors (text-embedding-3-small); the openai key is already
+    // in config.apiKeys from the text swap. Must match embed-text.ts's 1536 dim.
+    const openaiEmbeddingPlugin = createOpenAIEmbeddingPlugin({
+      apiKey: this.config.apiKeys?.openai,
     });
-    this.loadedPlugins.unshift(geminiEmbeddingPlugin as Plugin);
-    console.log(`[ElizaRuntime] Loaded Gemini embedding provider (text-embedding-004)`);
+    this.loadedPlugins.unshift(openaiEmbeddingPlugin as Plugin);
+    console.log(`[ElizaRuntime] Loaded OpenAI embedding provider (text-embedding-3-small, 1536-dim)`);
 
     // Prepend OpenAI text provider (priority 95 — global default for TEXT_SMALL/TEXT_LARGE)
     // Sits immediately below OpenClaw gateway (100) in the priority chain.
