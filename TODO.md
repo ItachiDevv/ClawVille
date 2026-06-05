@@ -10,17 +10,90 @@
 > enforced in `CLAUDE.md` "CANONICAL DOCS" and lives in the four manifest
 > docs, not here.
 
-**Last edit:** 2026-05-12 — tight rewrite (524 → ~280 lines). Archived ~300 lines of "FIXED" / "DONE" items + duplicated GPU rules + stale "Current State" snapshots that are already covered in the four canonical docs.
+**Last edit:** 2026-06-01 — refreshed against a grounded repo scan (feature gates, open PRs/branches, doc + plan pending items, Cove economy). Fixed the stale deploy rules (staging-first, two-host). Added the Feature-Gate graduate-or-delete board, Phase 6 (the Cove), in-flight threads, git hygiene, and grounded backlog. The detailed long-horizon workstreams (ElizaOS v2, Phase 5.1, cross-chain, Milady sideload) below are unchanged.
 
 ---
 
 ## Critical rules
 
-- **NEVER `bun run dev` locally** — Three.js / WebGPU scene crashes Intel Iris Xe and requires a PC restart.
-- **Always:** push to `master` → Coolify auto-deploys → test on the production URL.
-- Production: `https://clawville.world/game` · API: `https://api.clawville.world`
-- Server: Hetzner CCX13 + Coolify v4. Full playbook: `DEPLOY-HETZNER.md`. Deploy mechanics summary in `ARCHITECTURE.md §12`.
-- Iris Xe / GPU rules: canonical reference is `3dStructure.md §5a`. **Do not duplicate here.**
+- **NEVER `bun run dev` locally** — Three.js / WebGPU scene crashes Intel Iris Xe → PC restart. Local test = `bun run build && bun run start`.
+- **Staging-first deploy:** push to `staging` → GitHub Actions ships the staging box → verify on the staging URLs → PR `staging → master` → merge → prod. **Never push directly to `master`** except hotfixes (override phrase `direct to master`).
+- **Two Hetzner hosts** (Coolify + Traefik + Let's Encrypt, **shared Supabase Postgres** — staging writes mutate prod data):
+  - Production → `https://clawville.world` + `https://api.clawville.world`
+  - Staging → `https://staging.clawville.world` + `https://api-staging.clawville.world`
+- Full playbook: `docs/DEPLOY-HETZNER.md`. Iris Xe / GPU rules: canonical in `3dStructure.md §5a` — **do not duplicate here.**
+
+---
+
+## 🔴 Now — in-flight + prod-reproduced (clear these first)
+
+- [ ] **Promote `staging` → `master` (prod).** `origin/staging` is 3 commits ahead of prod — `6b561af8` (repo `.md` drift purge + gitignore guard), `df630522` (accurate root README), `0054ad58` (NPC run-on-sprint + faithful demo wander + Hermes hosted-gate fix). `gh pr create --base master --head staging` → merge → prod deploys. *(blue-screen fix `3c4e7d1a` already on prod.)*
+- [ ] **NPC overlap-deadlock "moonwalk"** (prod-reproduced 2026-05-31) — pairs lock at the 75wu push-out min-separation walking in place; clusters run ~¼ speed. `resolveNpcNpcOverlaps` resets `stuckTicks` every tick so the breaker never fires. Fix specced (~40 LOC + test). `.claude/plans/npc-overlap-deadlock-fix.md`; `npc-simulation.ts:629-670,1225-1234`.
+- [ ] **Cove → prod is gated on the §3 verification gate (still open).** All 3 economy fixes are implemented + staging-verified. Before ANY cove game promotes: §3.3 re-run `scripts/casino/edge-sim-{baccarat,blackjack,holdem}.ts` + paste post-fix numbers; §3.4 phone + iPad UI audit of all 3 modals (rake field). `.claude/plans/cove-casino-economy.md §3`.
+- [ ] **Tutorial quests humans can never claim** — door-knocker / town-tour / cartographer / building-champion / open-house 400 forever: `building.visited` + chat events fire ONLY from `agent-gateway.ts:1882`, never from human actions (client-only `enterBuilding`). `.claude/plans/tutorial-human-engagement.md`.
+- [ ] **Purge hosted-Hermes E2E test data** (shared Supabase; left by the 2026-06-01 live test — API blocks deleting a user's last agent). user `1837a497-4b2b-45e7-a94f-d3c8d4e8db22`, avatar `f3436e0d-9062-4b06-8c8d-2b23ea5a962e` + its agent. Targeted DB delete.
+- [ ] **`.md` sync-drift source — optional (already neutralized).** The gitignore guard blocks re-commits. The generator ("sync-hook drift from hoodie-prometh") is NOT a local hook/task or the brain-API syncs — likely a WSL clone or a personal `git add -A` wrapper. Hunt `wsl --list` + cron, or leave it (impact solved).
+
+## 🚦 Feature gates — graduate-or-delete board
+
+> Policy (`CLAUDE.md`): a gate whose review deadline lapses **without its metric met is DELETED, not extended.** Renewal must cite a fresh metric reading.
+
+**🔴 LAPSED — decide now:**
+- [ ] `reef_race_spline_sim` (2026-05-12) — `NEXT_PUBLIC_REEF_RACE_USE_SPLINE` never enabled in prod. `reef-race-spline-sim.ts:12`.
+- [ ] `reef_race_v2_spline_hud` (2026-05-15) — same un-shipped v2 sim. `reef-race-hud.tsx:63`.
+- [ ] `reef_race_build_summary` (2026-05-23) — metric never measurable (no telemetry hook). `reef-race-build-summary.tsx:3`.
+- [ ] `sea_creature_animator` ×2 (2026-05-26) — 0 species rigged (`hasRig=false`); delete animator path, keep procedural. `ReefRacePlayer.tsx:620`, `BumperShellsPlayer.tsx:256`.
+- [ ] `reef_pb_ghost_toggle` (2026-06-01) — PB-ghost flag respected but toggle UI never surfaced. `ReefRaceGhost.tsx:24`.
+- [ ] `skill_marketplace` (bazaar/auctions/marketplace, deadline "deferred") — **no dated deadline = policy violation.** Writes 503 since 2026-04-21; 3D pedestals render empty. Set a real metric+deadline or delete. `improvements.md §7`.
+
+**🟡 ACTIVE — need a `/dash` reading before the date:**
+- [ ] `dev_quick_queue_button` (06-15) — dev-only; delete at deadline. `sidebar-menu.tsx:550`.
+- [ ] `party_invite_search` (06-15) — UI shell only, endpoints not built; delete popover. `InviteSearchPopover.tsx:23`.
+- [ ] `multi_agent_roster` (06-21) — `MAX_AGENTS=1` while N-agent plumbing built; raise to 6 if median session >15min AND return-day >20%, else delete loadout plumbing. `agent-setup.ts:31`.
+- [ ] `cove_ct_economy_monitor` (07-01) — houseNet ≥0/gameType over 7d ×2wk once cove ships. `cove-economy.ts:28`.
+- [ ] `track-rake-snapshot` (07-01) — wager rake hardcoded 500bps; mirror `rake_bps_snapshot` per-lobby. `wager-program-client.ts:550`.
+- [ ] `admin_identity_recovery` (07-01) — 501 stub, blocked on support-chat infra. `admin-identity.ts:22`.
+- [ ] `wager-spl-lobbies` (07-01) — SPL write path schema-ready, routes refuse; ship or delete column. `wager.ts:26`.
+- [ ] `holdem`/`blackjack`/`baccarat` `autonomous_agent_mode` (07-15) — Autonomous toggle + advisor are UI seams; the connected-agent WS protocol doesn't exist. Delete radio+panel per modal if WS not shipped.
+- [ ] `x402_payment_middleware` (07-21) — scaffold live, flag OFF; rip `@x402/*` + `agent-v2.ts` if no metered feature proposed. `x402-config.ts`. *(detail in cross-chain §3 below.)*
+- [ ] `wager-mainnet-paid` (09-01) — devnet-only; needs legal + custodial signoff. `wager.ts:35`.
+
+## 🎰 Phase 6 — the Cove (current active phase)
+
+Slots (live, ClawTokens) · Blackjack · Hold'em · Baccarat — engines staging-verified, provably-fair commit-reveal + per-event verifier + cross-game history. **Not on prod** (gated on the §3 verification gate in 🔴 Now).
+
+- [ ] **Global connection SKILL.md endpoint + content-hash manifest — MISSING (BLOCKER for Priority #2).** `/api/skills/connect` is token-gated onboarding only — no in-world WS event/action schemas, table rules, disconnect/timer, advisor contract, or version hash. Until shipped, connected external agents play a different game than hosted agents (three-surface fairness invariant is best-effort only). `agent-gateway.ts:2774`; `CLAUDE.md` three-surface rule.
+- [ ] **Hosted-agent protocol-knowledge (3rd surface)** — `createMemory()` injection of the connection manual into hosted ElizaOS runtimes (`subtype:'protocol-knowledge'`) + `stopAgent()` reload. Pairs with the SKILL.md endpoint.
+- [ ] **Hosted-agent autonomous in-world (avatar-simulation-bridge)** — chat verified live 2026-06-01 (hosted Hermes responds via ElizaOS+Gemini); the autonomous bridge driving the avatar was NOT separately verified.
+- [ ] **Cove guest history (Phase 6.7.5)** — plan drafted, awaiting team dispatch; blackjack/hold'em/baccarat are still mock display shells for guests. `.claude/plans/cove-guest-history.md`.
+
+## 🌿 Git hygiene — branches + PRs
+
+- [ ] **PR #87 (multiplayer Phase 1)** — `feat/multiplayer-phase1` → master, 4 ahead / 38 behind; rebase + retarget `staging`, then review/merge or close.
+- [ ] **`perf/meshlet-integration`** — 40 ahead / 102 behind, no PR (Nanite/meshlet rasterizer experiment). Resurrect into a PR or formally retire — biggest unintegrated chunk, going stale. (Rule E3: Codex-first for meshlet/WebGPU.)
+- [ ] **Prune stale branches** — `perf/iris-xe-80fps`, `origin/perf/world-labels-overlay`, `origin/worktree-gambling-contracts` (0 ahead → safe delete); `origin/perf/disable-reef-shadows`, `revert/c6-broken-assets`, `origin/memory-audits` (1 ahead → cherry-pick decision first).
+
+## 🧹 Backlog — grounded code/infra debt (from scan)
+
+- [ ] **`building.visited` anti-farm gap** — proximity arm radius is 25× too loose (`agent-gateway.ts:1799`); `building.visited` is leaderboard-scored (weight 3, cap 10/day) so agents can farm visit points off-site. Scoring-integrity, not cosmetic.
+- [ ] **Guest-avatar cleanup cron** — `scripts/prune-guest-avatars.ts` never built; expired guest rows accumulate unbounded. `users.ts:116`.
+- [ ] **Activity-replay 14-day retention cron** — `prune-activity-replays.ts` missing; `activity_replays.frames` grows unbounded. `activity-replay-log.ts:22`.
+- [ ] **Per-user concurrent-match cap (3) unenforced** — `activity-queue.enqueue` only checks the enqueueing avatar. `activity-queue.ts:134`.
+- [ ] **`match.found` poll-only (~1s)** — add a control-WS push channel. `activities.ts:412`.
+- [ ] **E-key bank-proximity hardcoded centroids** — reads module-scope constants, not discovered GLB centroids; breaks if casino GLB shifts. `3dStructure.md:742`.
+- [ ] **reef-race-v2 Phase 2 stubs** — `REEF_RACE_RAMP_ZONES` empty, obstacle-jump unimplemented, `boxCount` hardcoded; drift-sparks UI flagged for deletion once spline graduates. Blocked on the lapsed reef-race gates.
+- [ ] **Placeholder GLBs** — quest-giver `crayfish.glb`, deployment-ops `lobster_plush` (pending `larry.glb`). Art-debt.
+- [ ] **Client-side rarity fallback** — remove once endpoints ship server-side rarity. `rpg/rarity.ts:161`.
+- [ ] **Server-side NPC↔player collision deferred** — unblocked by Multiplayer Phase 1's `POST /api/world/position`. `3dStructure.md:283`.
+- [ ] **`agent.memory.persisted` event (Tier 2)** — deferred; until shipped the "ElizaOS is the memory substrate" claim is unmeasured. `improvements.md §7.3`.
+
+## 🗺️ Bigger plans (planning / not started)
+
+- [ ] **crashcat NPC physics** — plan-only (Phase 0 flagged single-NPC server spike → Phase 1 all NPCs + collider unification → Phase 2 player + cove). Aims to replace the AABB clamp / `resolveNpcNpcOverlaps` behind the moonwalk deadlock. `.claude/plans/crashcat-physics-eval.md`.
+- [ ] **Multiplayer Phase 1 / 1.5** — 20-player rooms + NPC swap-out + distance LOD (plan-only); 1.5 = wanderer VRM→GLB (deferred, ~30-40% anim-CPU saving, FULL_CAP 14→25).
+- [ ] **Meshlet rasterizer Phase B** — wire the proven 167-FPS WebGPU compute rasterizer into `/game` via stacked canvases. Plan v1. (Rule E3.)
+- [ ] **Coral Plot builder world (Q3)** — DRAFT awaiting founder review.
+- [ ] **Gamification/Economy/Shop Q3** — cosmetic shop, multi-rail CT top-up (fiat/SOL/USDC/$CLAWVILLE), agent-payment surfaces, deferred CT→$CLAWVILLE redemption. Leaderboard weights already live.
 
 ---
 
