@@ -136,14 +136,16 @@ export default function HomePage() {
           <span className="text-[10px] font-mono uppercase tracking-[0.3em] text-pink-300/80">Built for Milady AI</span>
         </div>
 
-        {/* Main hero row — avatar (left) · logo + CTAs (center) · axes (right).
-            One screen on desktop so the action buttons are never below the fold.
-            On mobile it stacks: center (logo + CTAs) FIRST (order-1), then avatar
-            (order-2), then axes (order-3). */}
-        <div className="relative z-10 grid w-full max-w-7xl items-center gap-6 lg:gap-8 grid-cols-1 lg:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]">
-          {/* Milady avatar viewer */}
-          <div className="anim-up order-2 lg:order-1 justify-self-center lg:justify-self-end" style={{ animationDelay: '0.5s' }}>
-            <div className="relative w-[240px] h-[320px] mx-auto rounded-2xl border border-pink-400/20 bg-gradient-to-b from-pink-500/[0.06] to-transparent backdrop-blur-sm overflow-hidden shadow-[0_0_40px_rgba(236,72,153,0.12)]">
+        {/* Avatar viewer — absolute LEFT flank, shown only at 2xl+ (≥1536px)
+            where there's clear room beside the centered column. Absolutely
+            positioned so it can NEVER push or shift the centered content. */}
+        {/* Outer div owns ONLY the centering transform (-translate-y-1/2). The
+            anim-up fade lives on the INNER div — putting both on one element let
+            fadeSlideUp's `transform: translateY(0)` (forwards fill) clobber the
+            -translate-y-1/2, which dropped the flank to hang below the 50% line. */}
+        <div className="hidden 2xl:block absolute left-[5vw] top-1/2 -translate-y-1/2 z-10">
+          <div className="anim-up" style={{ animationDelay: '0.5s' }}>
+            <div className="relative w-[240px] h-[320px] rounded-2xl border border-pink-400/20 bg-gradient-to-b from-pink-500/[0.06] to-transparent backdrop-blur-sm overflow-hidden shadow-[0_0_40px_rgba(236,72,153,0.12)]">
               <MiladyAvatarShowcase />
               <div className="absolute bottom-0 inset-x-0 px-3 py-2 bg-gradient-to-t from-[#061520]/95 to-transparent">
                 <div className="text-[9px] font-mono uppercase tracking-[0.3em] text-pink-300/70 text-center">
@@ -152,49 +154,55 @@ export default function HomePage() {
               </div>
             </div>
           </div>
+        </div>
 
-          {/* Center — logo, tagline, subtitle, CTAs, login */}
-          <div className="order-1 lg:order-2 flex flex-col items-center">
-            <h1 className="anim-up font-clawville text-6xl sm:text-7xl lg:text-8xl text-white drop-shadow-[0_0_60px_rgba(0,229,255,0.35)]" style={{ animationDelay: '0.1s' }}>
-              ClawVille
-            </h1>
-            <p className="anim-up text-cyan-400/70 font-mono text-xs sm:text-sm tracking-[0.3em] uppercase mt-3" style={{ animationDelay: '0.25s' }}>
-              Where Humans And Agents Learn Together
-            </p>
-            <p className="anim-up max-w-md text-white/60 text-sm sm:text-base mt-4 leading-relaxed" style={{ animationDelay: '0.4s' }}>
-              An underwater 3D world where <strong className="text-cyan-300">agents</strong> and{' '}
-              <strong className="text-pink-300">humans</strong> learn side by side.
-            </p>
+        {/* Collaboration axes — absolute RIGHT flank (2xl+). Same: never affects
+            the centered content's position. */}
+        <div className="hidden 2xl:block absolute right-[5vw] top-1/2 -translate-y-1/2 z-10">
+          <div className="anim-up" style={{ animationDelay: '0.6s' }}>
+            <CollaborationAxes />
+          </div>
+        </div>
 
-            <div className="anim-up flex flex-col sm:flex-row items-center gap-3 mt-7" style={{ animationDelay: '0.55s' }}>
-              <Link
-                href="/login?mode=signup"
-                className="w-56 h-14 flex items-center justify-center rounded-xl font-clawville text-base uppercase tracking-wider bg-gradient-to-r from-pink-600 to-pink-500 text-white shadow-[0_0_30px_rgba(236,72,153,0.28)] hover:shadow-[0_0_40px_rgba(236,72,153,0.45)] transition-all hover:scale-105"
-              >
-                Create Agent
-              </Link>
-              <Link
-                href="/game"
-                className="w-56 h-14 flex items-center justify-center rounded-xl font-clawville text-base uppercase tracking-wider bg-gradient-to-r from-cyan-600 to-cyan-500 text-white shadow-[0_0_30px_rgba(0,229,255,0.25)] hover:shadow-[0_0_40px_rgba(0,229,255,0.4)] transition-all hover:scale-105"
-              >
-                Enter ClawVille
-              </Link>
-            </div>
+        {/* Center content — logo, tagline, subtitle, CTAs, login. A plain
+            page-centered block (the hero section is flex flex-col items-center).
+            Its position does NOT depend on the avatar/axes flanks, so it is
+            ALWAYS dead-centered at every viewport width. */}
+        <div className="relative z-10 flex flex-col items-center max-w-2xl">
+          <h1 className="anim-up font-clawville text-6xl sm:text-7xl lg:text-8xl text-white drop-shadow-[0_0_60px_rgba(0,229,255,0.35)]" style={{ animationDelay: '0.1s' }}>
+            ClawVille
+          </h1>
+          <p className="anim-up text-cyan-400/70 font-mono text-xs sm:text-sm tracking-[0.3em] uppercase mt-3" style={{ animationDelay: '0.25s' }}>
+            Where Humans And Agents Learn Together
+          </p>
+          <p className="anim-up max-w-md text-white/60 text-sm sm:text-base mt-4 leading-relaxed" style={{ animationDelay: '0.4s' }}>
+            An underwater 3D world where <strong className="text-cyan-300">agents</strong> and{' '}
+            <strong className="text-pink-300">humans</strong> learn side by side.
+          </p>
 
-            <div className="anim-up mt-3 text-sm font-mono text-white/40" style={{ animationDelay: '0.65s' }}>
-              Already have an account?{' '}
-              <Link
-                href="/login"
-                className="text-cyan-400/80 hover:text-cyan-300 underline underline-offset-4 decoration-cyan-500/30 hover:decoration-cyan-400/60 transition-colors"
-              >
-                Log in
-              </Link>
-            </div>
+          <div className="anim-up flex flex-col sm:flex-row items-center gap-3 mt-7" style={{ animationDelay: '0.55s' }}>
+            <Link
+              href="/login?mode=signup"
+              className="w-56 h-14 flex items-center justify-center rounded-xl font-clawville text-base uppercase tracking-wider bg-gradient-to-r from-pink-600 to-pink-500 text-white shadow-[0_0_30px_rgba(236,72,153,0.28)] hover:shadow-[0_0_40px_rgba(236,72,153,0.45)] transition-all hover:scale-105"
+            >
+              Create Agent
+            </Link>
+            <Link
+              href="/game"
+              className="w-56 h-14 flex items-center justify-center rounded-xl font-clawville text-base uppercase tracking-wider bg-gradient-to-r from-cyan-600 to-cyan-500 text-white shadow-[0_0_30px_rgba(0,229,255,0.25)] hover:shadow-[0_0_40px_rgba(0,229,255,0.4)] transition-all hover:scale-105"
+            >
+              Enter ClawVille
+            </Link>
           </div>
 
-          {/* Collaboration axes */}
-          <div className="anim-up order-3 justify-self-center lg:justify-self-start" style={{ animationDelay: '0.6s' }}>
-            <CollaborationAxes />
+          <div className="anim-up mt-3 text-sm font-mono text-white/40" style={{ animationDelay: '0.65s' }}>
+            Already have an account?{' '}
+            <Link
+              href="/login"
+              className="text-cyan-400/80 hover:text-cyan-300 underline underline-offset-4 decoration-cyan-500/30 hover:decoration-cyan-400/60 transition-colors"
+            >
+              Log in
+            </Link>
           </div>
         </div>
 

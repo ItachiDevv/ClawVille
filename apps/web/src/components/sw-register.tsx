@@ -14,6 +14,26 @@ export function SWRegister() {
   useEffect(() => {
     if (!('serviceWorker' in navigator)) return;
 
+    // LOCAL DEV/TESTING: do NOT run the service worker. Its stale-while-revalidate
+    // strategy for JS chunks serves stale/mixed bundles across rapid rebuilds,
+    // producing broken/off-centre/overflowing layouts that don't match the current
+    // build (the #1 source of "it looks broken" reports during local iteration).
+    // Unregister any existing SW + drop its caches so localhost is ALWAYS fresh.
+    const host = window.location.hostname;
+    if (host === 'localhost' || host === '127.0.0.1' || host.endsWith('.local')) {
+      navigator.serviceWorker
+        .getRegistrations()
+        .then((regs) => regs.forEach((r) => r.unregister()))
+        .catch(() => {});
+      if ('caches' in window) {
+        caches
+          .keys()
+          .then((keys) => keys.forEach((k) => { if (k.startsWith('clawville-')) caches.delete(k); }))
+          .catch(() => {});
+      }
+      return;
+    }
+
     const register = async () => {
       try {
         const reg = await navigator.serviceWorker.register('/sw.js', {
