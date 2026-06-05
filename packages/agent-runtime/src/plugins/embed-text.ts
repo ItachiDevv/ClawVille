@@ -1,47 +1,61 @@
 /**
  * Standalone text embedding utility.
  *
- * Wraps the same Gemini text-embedding-004 endpoint used by
- * gemini-embedding-provider.ts but callable directly without going
+ * Wraps the same OpenAI text-embedding-3-small endpoint used by
+ * openai-embedding-provider.ts but callable directly without going
  * through an ElizaOS runtime. Used by:
  *
  * - items.ts POST /learn → embed knowledge entries before storing
  * - KnowledgeProvider → embed user message for similarity search
  * - marketplace.ts POST /install → embed skill knowledge on install
  *
- * The API key falls back to process.env.GEMINI_API_KEY if not passed.
+ * DIMENSION INVARIANT: this MUST emit the SAME 1536-dim vectors as
+ * openai-embedding-provider.ts. KnowledgeProvider embeds the user query
+ * here and compares it against vectors the provider stored — a dimension
+ * mismatch silently breaks similarity search. The model and dimension are
+ * therefore HARD-PINNED in code as literals (text-embedding-3-small / 1536),
+ * NOT env- or options-overridable. Changing the dimension routes embeddings
+ * to a different pgvector column and requires a re-embed migration, so it is
+ * a deliberate code edit, never a stray env value.
+ *
+ * The API key falls back to process.env.OPENAI_API_KEY if not passed — it is
+ * the only overridable input.
  */
 
-const GEMINI_API_BASE =
-  'https://generativelanguage.googleapis.com/v1beta/models';
-const DEFAULT_MODEL = 'text-embedding-004';
+const OPENAI_EMBEDDINGS_URL = 'https://api.openai.com/v1/embeddings';
+// HARD-PINNED — see DIMENSION INVARIANT above. Never read from env/options.
+const MODEL = 'text-embedding-3-small';
+const DIMS = 1536;
 
 export interface EmbedTextOptions {
   apiKey?: string;
-  model?: string;
 }
 
 /**
- * Embed a single text string into a 768-dimensional float vector.
+ * Embed a single text string into a 1536-dimensional float vector.
  * Throws on API errors — callers should handle gracefully.
  */
 export async function embedText(
   text: string,
   options: EmbedTextOptions = {},
 ): Promise<number[]> {
-  const apiKey = options.apiKey ?? process.env.GEMINI_API_KEY;
+  const apiKey = options.apiKey ?? process.env.OPENAI_API_KEY;
   if (!apiKey) {
-    throw new Error('[embedText] Missing GEMINI_API_KEY');
+    throw new Error('[embedText] Missing OPENAI_API_KEY');
   }
 
-  const model = options.model ?? DEFAULT_MODEL;
-  const url = `${GEMINI_API_BASE}/${model}:embedContent?key=${apiKey}`;
-
-  const res = await fetch(url, {
+  const res = await fetch(OPENAI_EMBEDDINGS_URL, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${apiKey}`,
+    },
     body: JSON.stringify({
-      content: { parts: [{ text }] },
+      // Model + dimension are PINNED literals — never read from env/options —
+      // so query vectors always match the stored dim_1536 vectors.
+      model: MODEL,
+      input: text,
+      dimensions: DIMS,
     }),
     signal: AbortSignal.timeout(30_000),
   });
@@ -54,11 +68,11 @@ export async function embedText(
   }
 
   const data = (await res.json()) as {
-    embedding?: { values?: number[] };
+    data?: Array<{ embedding?: number[] }>;
   };
-  const values = data.embedding?.values;
+  const values = data.data?.[0]?.embedding;
   if (!values || !Array.isArray(values)) {
-    throw new Error('[embedText] Invalid response: missing embedding.values');
+    throw new Error('[embedText] Invalid response: missing data[0].embedding');
   }
   return values;
 }

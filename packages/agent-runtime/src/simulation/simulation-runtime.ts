@@ -93,8 +93,8 @@ export interface SimulationServices {
  *
  * Only includes plugins we actually need. plugin-openai / plugin-solana /
  * plugin-anthropic are deliberately omitted — the OpenAI text provider (priority
- * 95, prepended by ElizaRuntime) handles all text generation. Embeddings still
- * go through Gemini.
+ * 95, prepended by ElizaRuntime) handles all text generation. Embeddings go
+ * through the OpenAI embedding provider (1536-dim) prepended by ElizaRuntime.
  */
 function buildSimulationCharacter(): Character {
   const input: CharacterInput & { name: string } = {

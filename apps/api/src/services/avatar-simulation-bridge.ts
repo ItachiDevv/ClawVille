@@ -94,9 +94,11 @@ export class AvatarSimulationBridge {
       },
       databaseUrl: process.env.DATABASE_URL,
       apiKeys: {
-        // OpenAI is the primary text-generation backend (openai-text-provider).
+        // OpenAI backs BOTH text generation (openai-text-provider) and
+        // embeddings (openai-embedding-provider, text-embedding-3-small, 1536-dim).
         openai: process.env.OPENAI_API_KEY,
-        // Gemini is retained for EMBEDDINGS only (gemini-embedding-provider).
+        // GEMINI_API_KEY is now dead — both text and embeddings run on OpenAI.
+        // Passed only for legacy / easy-revert; the runtime no longer reads it.
         gemini: process.env.GEMINI_API_KEY,
       },
       // Phase 3: inject services so economic actions (BUY_ITEM, LEARN_SKILL) can execute.
