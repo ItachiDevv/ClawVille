@@ -38,6 +38,7 @@ import {
 } from '@/lib/three/agent-model-registry';
 import { useVRMInstance, disposeVRMInstance, preloadVRMBytes } from '@/lib/three/vrm-loader';
 import { VRMCharacterAnimator, preloadMixamoClips } from '@/lib/three/vrm-character-animator';
+import { computeVRMAvatarFit } from '@/lib/three/vrm-avatar-sizing';
 
 // Module-scope scene background color — avoids a new THREE.Color allocation on
 // every render. R3F only reads the scene.background prop at Canvas creation time.
@@ -254,27 +255,43 @@ const PlatformModelVRM = memo(function PlatformModelVRM({
     vrmAnimatorRef.current?.update(dt, false);
   });
 
-  // Auto-fit scale by bounding box — replaces the hard-coded `reg.scale ×
-  // multiplier` 2026-05-12 because Hermes VRMs are exported at a wildly
-  // different unit scale than Milady (the same `reg.scale=13` value made
-  // Milady head-clip and made Hermes fill the entire frame as a single
-  // skin patch). Bounding box is taken at T-pose, before the animator
-  // displaces any bones, so the height is the rig's natural rest height.
+  // PICKER_TARGET_HEIGHT_WU = 22 → at camera distance 45 + FOV 45° the vertical
+  // frustum at the avatar plane is ~37wu; 22wu feet-on-disc leaves ~6-7wu of
+  // headroom AND footroom even on the tallest portrait viewport.
   //
-  // TARGET_HEIGHT_WU = 22 → at camera distance 45 + FOV 45° the vertical
-  // frustum at the avatar plane is ~37wu; 22wu + 1.5wu feet offset leaves
-  // ~6-7wu of headroom AND footroom even on the tallest portrait viewport.
-  const TARGET_HEIGHT_WU = 22;
-  const computedScale = React.useMemo(() => {
-    if (!vrm) return reg.scale;
-    const box = new THREE.Box3().setFromObject(vrm.scene as unknown as THREE.Object3D);
-    const h = box.max.y - box.min.y;
-    if (!isFinite(h) || h < 0.001) return reg.scale;
-    return TARGET_HEIGHT_WU / h;
-  }, [vrm, reg.scale]);
+  // computeVRMAvatarFit resets vrm.scene.scale to 1 before measuring bbox (no
+  // contamination from prior state), then returns { scale, offsetY } where
+  // offsetY = -box.min.y * scale so feet land at PLATFORM_TOP_Y regardless of
+  // whether the rig uses VRoid feet-at-origin (Milady) or Mixamo hips-at-origin
+  // (Hermes/Tekk/chibi). Memoised on [vrm, reg.animatorId] — fires once per VRM
+  // load, never per frame.
+  const PICKER_TARGET_HEIGHT_WU = 22;
+  const PLATFORM_TOP_Y = 0;
+
+  const { scale: computedScale, offsetY } = React.useMemo(
+    () => computeVRMAvatarFit(vrm, reg.animatorId, PICKER_TARGET_HEIGHT_WU),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [vrm, reg.animatorId],
+  );
+
+  // VRM facing correction — side effect, must be useEffect not useMemo.
+  // VRM 0.x (Milady): vrm-loader.ts applies rotateVRM0 which sets scene.rotation.y = pi,
+  //   facing -Z toward camera at +Z. faceYaw is absent → defaults 0 → no-op here.
+  // VRM 1.x (Hermes/Tekk/chibi): rotateVRM0 is a no-op (metaVersion !== "0"), rig
+  //   natively faces +Z (back to camera). Registry carries faceYaw: Math.PI; adding pi
+  //   flips the facing to -Z toward camera.
+  // useEffect (not useMemo) because: (a) it is a side effect on a mutable object,
+  // (b) React StrictMode double-invokes useMemo bodies which would accumulate += pi twice.
+  React.useEffect(() => {
+    if (!vrm) return;
+    vrm.scene.rotation.y += reg.faceYaw ?? 0;
+  // faceYaw is a registry constant (changes only when modelKey changes, triggering
+  // a new vrm load which remounts this component anyway).
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [vrm]);
 
   return (
-    <group position={[0, 1.5, 0]} scale={[computedScale, computedScale, computedScale]}>
+    <group position={[0, PLATFORM_TOP_Y + offsetY, 0]} scale={[computedScale, computedScale, computedScale]}>
       <primitive object={vrm.scene} />
     </group>
   );

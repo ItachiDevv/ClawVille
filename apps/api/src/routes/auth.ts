@@ -858,6 +858,29 @@ authRoutes.post('/milady-session-exchange', async (c) => {
   }
   const { config: botConfig, bot } = live;
 
+  // Provenance gate (Codex auth-lens fix #3, 2026-06-03). Liveness alone is NOT
+  // enough: this endpoint mints a full Lucia browser cookie for a guest user
+  // keyed on the agent id, so it must only be reachable by a session that was
+  // minted through the GENUINE milady identity path on `/connect`
+  // (`config.miladyTrusted`, set when identityType==='milady' + miladyAgentId +
+  // a `milady:`-namespaced agentId). Without this, ANY live agent session — an
+  // openclaw-gateway agent, an anonymous test agent, a custom-framework agent —
+  // could exchange into a milady guest cookie. Reject non-milady sessions here.
+  //
+  // RESIDUAL GAP (flagged): this does NOT close the SAME-identity spoof — an
+  // attacker who learns a victim's milady agentId can replay it through the
+  // milady identity path. Milady is runtime-trust (no per-agent signing key
+  // exists server-side), so a true signed-challenge (server nonce signed by the
+  // milady agent's key) requires a milady-plugin change. The bounded
+  // 5/min/IP rate-limit above + the short session TTL cap the replay window
+  // until that ships. See `OpenClawBotConfig.miladyTrusted` for full detail.
+  if (botConfig.miladyTrusted !== true) {
+    throw new HTTPException(403, {
+      message:
+        'This agent session is not eligible for a Milady session exchange. Only sessions connected via the Milady plugin may exchange.',
+    });
+  }
+
   // Find or create a guest user for this Milady agent
   const guestEmail = `milady-${botConfig.agentId}@clawville.guest`;
   let user = await db.query.users.findFirst({

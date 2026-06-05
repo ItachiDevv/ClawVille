@@ -13,12 +13,20 @@ Plan must include: (1) the PRODUCTION reference (screenshot or curl evidence), (
 
 Violation → `git stash` whatever was written and restart from the plan step.
 
-### Rule E3 — Codex-first for 3D / shader / WebGPU / meshlet work
-Categories: Three.js / R3F / WebGPU / WGSL / TSL shaders · meshlet rasterizer (`apps/web/src/lib/three/experimental/nanite-rasterizer.ts` + `meshlet/`) · atlas packing, UV remapping, texture-array indexing · any GLB pipeline branching into shaders.
+### Rule E3 — Implementation is user-routed; review is DUAL (Claude audit + Codex adversarial review)
+_Reworked 2026-06-03: the old "Codex MUST author all 3D/shader work" gate was too strict and blocked work when the Codex plugin was flaky. Codex's value is a SECOND independent perspective, not a mandatory author._
 
-First edit on those files MUST be authored by `codex:codex-rescue` via Agent. Claude decomposes the prompt (prod reference, constraints, file paths, known bugs, verify loop, success criterion), spawns Codex, does browser verification, commits + pushes. Claude does NOT hand-write the shader, UV remap, atlas builder, or merge pipeline.
+**No mechanical Codex-first authoring gate.** Codex does NOT have to author 3D / R3F / WebGPU / WGSL / TSL / shader / meshlet-rasterizer / atlas-UV-remap work. Claude implements directly by default. Whether a given task's *authoring* is handed to `codex:codex-rescue` is the **user's runtime decision** — strong candidates are novel WGSL/TSL shaders, the meshlet rasterizer (`apps/web/src/lib/three/experimental/nanite-rasterizer.ts` + `meshlet/`), and atlas/UV-remap/texture-array pipelines where Codex is strong. Offer it; don't force it; never block on it; never hand the user a "claude implement" override (it's now the default).
 
-Override: user types **"claude implement"** → rule lifts for the session.
+**What IS mandatory — TWO independent perspectives on new substantive work before it is called done:**
+1. **Claude audit** — the collaborative agent team (spec + regression + adversarial), per the agent-teams rule.
+2. **Codex review** — the SAME diff ALSO goes to Codex (`codex:codex-rescue` via Agent, or `codex exec`) prompted to **adversarially break it**: hunt edge cases, race conditions, bad/boundary inputs, unhandled states, security/economy exploits, concurrency — NOT to rubber-stamp.
+
+Reconcile both review sets; a BLOCKING finding from **either** perspective must be fixed or explicitly waived with a written reason. Rationale: Claude is biased toward its own output and long sessions accumulate blind spots — the external Codex perspective exists to catch exactly what a single author/reviewer misses. The more perspectives trying to break the code, the fewer bugs ship.
+
+**Scope of "substantive":** same bar as the agent-team rule (> 100 LOC, > 3 files, money/auth/3D/shader/economy paths, or a user quality verb). Trivial edits skip both reviews.
+
+**Mechanical enforcement option:** `/codex:setup --enable-review-gate` forces a fresh Codex review before the session can stop — enable it to make the dual-review automatic instead of discipline-dependent. If the Codex plugin/CLI is genuinely unavailable, run the Claude audit, note that the Codex perspective is pending, and surface it — don't silently skip it.
 
 ### Rule E4 — no "shipped" / "done" / "complete" / "milestone" / "working" / "ready" / "fixed" without same-turn user sign-off
 "Sign-off" = a screenshot the user posted, or "looks good" / "ship it" / "yes that works" in this conversation. Green build, passing test, clean console — NONE substitute.
@@ -352,6 +360,8 @@ Commands: `/recall <query>`, `/recent [limit]`, `/itachi-init` (install/upgrade)
 ## Audit + Bug Fix Policy
 
 After implementing a plan: use a collaborative team to audit against the plan, find + fix bugs, then re-audit with a new team. Bug found = bug fixed. Never skip or ignore.
+
+**Dual-perspective review (per Rule E3):** new substantive work gets BOTH the Claude audit team AND an independent Codex adversarial review of the same diff (`codex:codex-rescue` / `codex exec`, prompted to break it — edge cases, races, bad inputs, exploits). Two perspectives because a single author/reviewer is biased and long sessions accumulate blind spots. A blocking finding from either side is fixed or waived with a written reason.
 
 ## Documentation Update Policy
 

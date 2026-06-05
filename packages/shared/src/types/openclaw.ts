@@ -134,6 +134,32 @@ export interface OpenClawBotConfig {
    * In-memory only; never persisted.
    */
   boundUserId?: string | null;
+  /**
+   * Security (Codex auth-lens fix #3, 2026-06-03): may THIS session be exchanged
+   * for a full Lucia browser cookie via `POST /api/auth/milady-session-exchange`?
+   *
+   * TRUE only when the session was minted through the genuine MILADY identity
+   * path on `/connect` — `identityType === 'milady'` with a `miladyAgentId`,
+   * resolving to a `milady:`-namespaced agentId. The exchange mints a guest
+   * browser session keyed on that agentId, so it must be reachable ONLY by a
+   * milady-provenance session — never by an openclaw-gateway / anonymous / custom
+   * session that merely guessed a `milady:`-shaped id (that cross-identity vector
+   * is now closed: those sessions carry this flag FALSE).
+   *
+   * RESIDUAL GAP (flagged, requires a milady-plugin change): this flag does NOT
+   * close the SAME-identity spoof — an attacker who learns a victim's milady
+   * agentId can replay it through the milady identity path and still mint a
+   * session that carries this flag. Milady is runtime-trust (no per-agent signing
+   * key exists server-side), so a true signed-challenge — server issues a nonce,
+   * the milady agent signs it with a key only it holds — needs the milady plugin
+   * to expose that key. Until then this flag is the strongest FEASIBLE provenance
+   * (it is strictly stronger than the prior "any live session can exchange") and
+   * the bounded exchange rate-limit + short session TTL cap the replay window.
+   *
+   * In-memory only; never persisted. Defaults to FALSE (omitted) so any
+   * non-milady path fails CLOSED at the exchange gate.
+   */
+  miladyTrusted?: boolean;
   /** Override model name sent to the gateway (default: "openclaw:<agentId>") */
   modelName?: string;
   /** Request timeout in ms (default: 10000) */
