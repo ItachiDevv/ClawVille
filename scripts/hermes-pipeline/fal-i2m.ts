@@ -94,9 +94,9 @@ async function main() {
 
   console.log("Uploading 3 views to fal storage...");
   const [frontUrl, sideUrl, backUrl] = await Promise.all([
-    uploadImage(`${turnaroundDir}/${character}-front.png`),
-    uploadImage(`${turnaroundDir}/${character}-side.png`),
-    uploadImage(`${turnaroundDir}/${character}-back.png`),
+    uploadImage(`${turnaroundDir}/${filePrefix}front.png`),
+    uploadImage(`${turnaroundDir}/${filePrefix}side.png`),
+    uploadImage(`${turnaroundDir}/${filePrefix}back.png`),
   ]);
   console.log(`  front: ${frontUrl.slice(-60)}`);
   console.log(`  side:  ${sideUrl.slice(-60)}`);
