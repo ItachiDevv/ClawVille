@@ -33,8 +33,16 @@
 //   - Removed sandy-treedome-v3-opt1.glb from install-time precache. /game now
 //     renders Sandy's Treedome procedurally because the GLB contributed ~1.13M
 //     live triangles after material merge.
+//
+// 2026-06-02 v7 (landing hero overhaul):
+//   - Bump to bust v6 stale-while-revalidate chunks after the landing hero
+//     rebuild (page.tsx layout + LandingScene). v6 clients were served the
+//     pre-symmetric-grid (off-centre) bundle from the static cache on first
+//     load, with the centred build only fetched in the background — making the
+//     hero look "not centred" until a second reload. Bumping forces the new
+//     bundle on activate.
 
-const CACHE_VERSION = 'v6';
+const CACHE_VERSION = 'v8'; // 2026-06-02: hero layout -> absolute-flank centered content (bust v7)
 const GLB_CACHE = `clawville-assets-${CACHE_VERSION}`;
 const STATIC_CACHE = `clawville-static-${CACHE_VERSION}`;
 
