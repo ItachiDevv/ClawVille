@@ -777,23 +777,68 @@ export default function BlackjackModal() {
   }, [phase, agentMode, ensureShoe, dealHand, blackjackBet, showToast, applySettled, handViewFromDeal, resyncAfterStaleDecision, pushAdvisor]);
 
   // ── INSURANCE (before any main-hand action; dealer-Ace only) ───────────────
-  const handleInsure = useCallback(async (agentDriven = false) => {
-    if (busyRef.current || !hand || hand.tookInsurance || !hand.insuranceOffered) return;
+  // Parity with runAction: the agent driver passes the relay's server-authoritative
+  // target hand (`handIdOverride`) + the `expectedHandVersion` it decided at, so a
+  // stale agent insure that races a human takeover (or an already-settled hand) is
+  // rejected/replayed server-side instead of being mis-applied to a stale local
+  // view. Human manual insure passes neither → /action stays unconditional and
+  // targets the modal's own hand exactly as before.
+  const handleInsure = useCallback(async (
+    agentDriven = false,
+    expectedHandVersion?: number,
+    handIdOverride?: string | null,
+  ) => {
+    if (busyRef.current || !hand) return;
+    // Human manual insure keeps the local-flag guard (no point firing a request the
+    // local view already knows is invalid). The AGENT-DRIVEN path must NOT early-return
+    // on stale local flags: the server is authoritative, so a genuinely-stale decision
+    // has to reach takeInsurance.mutateAsync to get a 409 stale_agent_decision back —
+    // the catch below then resyncs + re-asks. Dropping it silently here would strand the
+    // agent on a stale view (the round-4 stale-decision contract, parity with runAction).
+    if (!agentDriven && (hand.tookInsurance || !hand.insuranceOffered)) return;
     if (agentMode === 'autonomous' && !agentDriven) {
       agentRunRef.current += 1;
       setAgentPending(null);
     }
+    const targetHandId = handIdOverride ?? hand.handId;
     busyRef.current = true;
     try {
-      const res = await takeInsurance.mutateAsync({ handId: hand.handId });
-      setHand((prev) => (prev ? { ...prev, tookInsurance: res.tookInsurance } : prev));
-      showToast('Insurance taken.', 'info');
+      const res = await takeInsurance.mutateAsync({
+        handId: targetHandId,
+        // Only the agent-driven apply carries the stale-decision precondition;
+        // human manual taps omit it so /action stays unconditional for them.
+        ...(agentDriven && expectedHandVersion !== undefined
+          ? { expectedHandVersion }
+          : {}),
+      });
+      // A stale agent insure decision that raced an already-settled hand comes back
+      // as a full settled-hand replay (status:'settled') — land it the same way the
+      // main action path does, never as a phantom { tookInsurance } ack on a dead
+      // hand. A live in-progress ack just flips the tookInsurance flag.
+      if (isSettled(res)) {
+        applySettled(res);
+      } else {
+        setHand((prev) => (prev ? { ...prev, tookInsurance: res.tookInsurance } : prev));
+        showToast('Insurance taken.', 'info');
+      }
     } catch (err) {
-      showToast(describeBlackjackError(err), 'warn');
+      // Stale agent decision (409): the human advanced the hand since the agent
+      // decided to insure, so the server rejected this in-flight apply. DISCARD it
+      // silently — same as the runAction path — re-derive the authoritative state,
+      // and stay in Autonomous so the next decision point re-asks. Never crash.
+      if (
+        agentDriven && err instanceof CoveApiError &&
+        err.status === 409 && err.code === 'stale_agent_decision'
+      ) {
+        void resyncAfterStaleDecision();
+        pushAdvisor('You took over this hand — the agent stood down. Still in Autonomous.');
+      } else {
+        showToast(describeBlackjackError(err), 'warn');
+      }
     } finally {
       busyRef.current = false;
     }
-  }, [hand, agentMode, takeInsurance, showToast]);
+  }, [hand, agentMode, takeInsurance, showToast, applySettled, resyncAfterStaleDecision, pushAdvisor]);
 
   // ── ACTION (hit / stand / double / split / surrender) ──────────────────────
   const runAction = useCallback(async (
@@ -970,7 +1015,16 @@ export default function BlackjackModal() {
         break;
       }
       case 'insure':
-        await handleInsure(true);
+        // Thread the relay's server-authoritative target hand + the handVersion it
+        // decided at, so a stale agent insure that races a human takeover (or an
+        // already-settled hand) is rejected/replayed server-side — same contract as
+        // the hit/stand/... apply below. Previously insure dropped both, so it could
+        // mis-apply to the modal's stale local hand.
+        await handleInsure(
+          true,
+          decision.handVersion ?? undefined,
+          decision.handId ?? undefined,
+        );
         break;
       case 'hit':
       case 'stand':
