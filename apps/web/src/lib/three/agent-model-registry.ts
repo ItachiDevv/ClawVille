@@ -53,6 +53,13 @@ export interface ModelRegistryEntry {
    * them to face -Z toward the picker camera.
    */
   faceYaw?: number;
+  /**
+   * Reserved models: hidden from the /create-agent picker grid (filtered in
+   * create-agent/page.tsx). Used for agent-only defaults that are assigned
+   * server-side but never user-selectable — e.g. `phanes`, the default Hatcher
+   * avatar. The 3D world still renders them normally; only the picker hides them.
+   */
+  pickerHidden?: boolean;
 }
 
 export const MODEL_REGISTRY = {
@@ -159,6 +166,16 @@ export const MODEL_REGISTRY = {
   hatcher_6: { path: '/avatars/milady-official-6.vrm', scale: 13, label: 'Hatcher 6', category: 'hatcher', avatar_type: 'vrm', animatorId: 'vrm-milady', preview: '/avatars/previews/milady-official-6.png' }, // PLACEHOLDER (Phase 4 swap)
   hatcher_7: { path: '/avatars/milady-official-7.vrm', scale: 13, label: 'Hatcher 7', category: 'hatcher', avatar_type: 'vrm', animatorId: 'vrm-milady', preview: '/avatars/previews/milady-official-7.png' }, // PLACEHOLDER (Phase 4 swap)
   hatcher_8: { path: '/avatars/milady-official-8.vrm', scale: 13, label: 'Hatcher 8', category: 'hatcher', avatar_type: 'vrm', animatorId: 'vrm-milady', preview: '/avatars/previews/milady-official-8.png' }, // PLACEHOLDER (Phase 4 swap)
+
+  // ── Phanes — DEFAULT Hatcher avatar (2026-06-05), reserved (NOT in picker) ──
+  // Bespoke Greek primordial-deity VRM 1.0 from the Tripo->Mixamo->VRM pipeline
+  // (faces -Y, 22/22 humanoid bones, 2048 diffuse). animatorId 'hermes-male' so
+  // it shares the Hermes male animation set (animations are retargeted at
+  // runtime). faceYaw Math.PI matches the other VRM 1.x rigs (picker-only; moot
+  // here since pickerHidden). pickerHidden keeps it out of /create-agent — it is
+  // assigned server-side as the default for every new Hatcher agent
+  // (DEFAULT_HATCHER_MODEL_KEY in @clawville/shared) and is never user-selectable.
+  phanes: { path: '/avatars/phanes.vrm', scale: 13, label: 'Phanes', category: 'hatcher', avatar_type: 'vrm', animatorId: 'hermes-male', faceYaw: Math.PI, pickerHidden: true, preview: '/models/phanes-turnaround/front.png' },
 
   // NOTE: `crayfish` removed from the picker 2026-04-16 — the mesh renders
   // noticeably larger than lobster at the same scale (different pivot) and
@@ -297,4 +314,6 @@ export const MODEL_KEY_TO_LEGACY_SPECIES: Record<ModelKey, LegacySpecies> = {
   hatcher_6:          'fox',
   hatcher_7:          'fox',
   hatcher_8:          'fox',
+  // Phanes (default Hatcher avatar) — humanoid → 'fox' 2D fallback like the rest.
+  phanes:             'fox',
 };

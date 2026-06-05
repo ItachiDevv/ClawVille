@@ -26,14 +26,20 @@ import sys
 # ---------------- args ----------------
 argv = sys.argv
 user_argv = argv[argv.index("--") + 1:] if "--" in argv else []
-if len(user_argv) != 4:
+if len(user_argv) not in (4, 5):
     print(
         "usage: blender --background --python blender-vrm-finalize-with-textures.py -- "
-        "<name> <rigged.fbx> <texture-source.glb> <output.vrm>"
+        "<name> <rigged.fbx> <texture-source.glb> <output.vrm> [rotateZdeg]"
     )
     sys.exit(1)
 
-CHARACTER, FBX_PATH, TEX_GLB, VRM_PATH = user_argv
+CHARACTER, FBX_PATH, TEX_GLB, VRM_PATH = user_argv[:4]
+# Optional yaw correction (degrees about Z) baked into the rest pose so the
+# character faces -Y in Blender (the VRM/glTF front convention). Tripo & Rodin
+# image-to-3d meshes frequently come out facing +X -> pass -90. A source that
+# already faces -Y (e.g. the Meshy Hermes mesh) needs none -> omit or pass 0.
+# Default 0 keeps every existing caller's behaviour identical.
+ROTATE_Z = float(user_argv[4]) if len(user_argv) == 5 else 0.0
 FBX_PATH = os.path.abspath(FBX_PATH)
 TEX_GLB  = os.path.abspath(TEX_GLB)
 VRM_PATH = os.path.abspath(VRM_PATH)
@@ -134,6 +140,21 @@ armature.select_set(True)
 mesh.select_set(True)
 bpy.context.view_layer.objects.active = armature
 bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
+
+# ---------------- 3b. facing correction: rest pose must face -Y ----------------
+# rotation_mode MUST be set to XYZ first — VRM/FBX armatures often import as
+# QUATERNION, in which case assigning rotation_euler is silently ignored.
+if ROTATE_Z != 0.0:
+    import math as _math
+    armature.rotation_mode = "XYZ"
+    armature.rotation_euler = (0.0, 0.0, _math.radians(ROTATE_Z))
+    bpy.context.view_layer.update()
+    bpy.ops.object.select_all(action="DESELECT")
+    armature.select_set(True)
+    mesh.select_set(True)
+    bpy.context.view_layer.objects.active = armature
+    bpy.ops.object.transform_apply(location=False, rotation=True, scale=False)
+    print(f"[vrm-finalize-tex] facing-corrected {ROTATE_Z:+.1f} deg about Z (rest pose now faces -Y)")
 
 # ---------------- 4. patch the mesh material with the preserved texture ----------------
 if diffuse_img is not None and mesh.material_slots:
