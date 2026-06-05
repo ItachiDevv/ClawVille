@@ -42,6 +42,7 @@ import { drainKnowledgeEvents, clearSessionQueue } from '../services/skill-event
 import { runTool } from '../services/skill-tools-dispatcher';
 import { coveBlackjackRouter } from './cove-blackjack';
 import { validateLiveAgentSession } from '../middleware/require-auth-or-agent';
+import { sessionDigest } from '../services/session-digest';
 import { getBlackjackSkillContext } from '../services/game-skill-memory';
 import {
   getBooksForBuilding,
@@ -513,6 +514,22 @@ agentGatewayRoutes.post('/connect', async (c) => {
   // stale session.
   const boundUserId: string | null = tokenUserId ?? existingBoundUserId;
 
+  // Milady-exchange provenance (Codex auth-lens fix #3, 2026-06-03). Only a
+  // session minted through the GENUINE milady identity path may later be
+  // exchanged for a full Lucia browser cookie at
+  // `POST /api/auth/milady-session-exchange`. We mark that here: the connect must
+  // be `identityType === 'milady'` AND carry a `miladyAgentId` AND have resolved
+  // to the canonical `milady:`-namespaced agentId. Stamping the in-memory session
+  // config (never persisted) lets the exchange gate reject any non-milady session
+  // — an openclaw-gateway / anonymous / custom session that guessed a milady-shaped
+  // id is now refused, closing the cross-identity vector. See the type-doc on
+  // `OpenClawBotConfig.miladyTrusted` for the flagged SAME-identity residual gap
+  // (needs a milady-plugin signed-challenge to fully close).
+  const miladyTrusted =
+    identityType === 'milady' &&
+    !!data.miladyAgentId &&
+    resolvedAgentId === `milady:${data.miladyAgentId}`;
+
   // Eviction on ownership rebind (Codex auth-lens hardening round 2 — Option B,
   // the primary close). If this connect CHANGES the row's bound userId (an
   // agentId that was unbound or owned by user A is now bound to user B via an
@@ -569,6 +586,8 @@ agentGatewayRoutes.post('/connect', async (c) => {
         // The user this session proved ownership of — re-validated against the
         // live row at spend time (rebind backstop, hardening round 2).
         boundUserId,
+        // Milady-exchange provenance (fix #3) — gates the Lucia-cookie exchange.
+        miladyTrusted,
       } as OpenClawRegistration;
       const client = new OpenClawClient(config);
       npcSimulation.registerOpenClaw(config, client);
@@ -617,6 +636,8 @@ agentGatewayRoutes.post('/connect', async (c) => {
         // The user this session proved ownership of — re-validated against the
         // live row at spend time (rebind backstop, hardening round 2).
         boundUserId,
+        // Milady-exchange provenance (fix #3) — gates the Lucia-cookie exchange.
+        miladyTrusted,
       } as OpenClawRegistration;
 
       // Stub client — nanoclaw/anonymous agents don't use outbound chat routing
@@ -1195,15 +1216,19 @@ agentGatewayRoutes.get('/wallet', async (c) => {
     return c.json({ error: 'Missing sessionId query parameter' }, 400);
   }
 
-  const botCfg = npcSimulation.getOpenClawBotConfig(sessionId);
-  if (!botCfg) {
+  // Fail-closed liveness gate (Codex auth-lens fix #5, 2026-06-03). This route
+  // exposes the bound avatar's authoritative ClawToken balance, so it must NOT
+  // trust bare Map membership (`getOpenClawBotConfig`): an EXPIRED-but-in-map
+  // session would otherwise keep reading a victim's live CT balance after the DB
+  // TTL reaped it. Route through the SAME shared validator every other bearer
+  // path uses (Map membership AND DB `session_expires_at > now`, NULL = expired,
+  // unregisters a stale body). The validator returns the in-memory config + live
+  // row, so we reuse them instead of a second lookup.
+  const live = await validateLiveAgentSession(sessionId);
+  if (!live) {
     return c.json({ error: 'Unknown or expired session' }, 404);
   }
-
-  const bot = await db.query.openclawBots.findFirst({
-    where: eq(openclawBots.agentId, botCfg.agentId),
-    columns: { id: true, userId: true, walletAddress: true },
-  });
+  const { bot } = live;
   if (!bot || !bot.userId) {
     return c.json({ error: 'Session is not bound to a user account' }, 404);
   }
@@ -2105,7 +2130,11 @@ agentGatewayRoutes.post('/:sessionId/visit-building', async (c) => {
             amount: 1,
             reason: 'building_visit',
             source: 'api',
-            metadata: { buildingId, sessionId, agentId: bot.agentId },
+            // sessionDigest, NOT the raw sessionId (Codex auth-lens fix #4):
+            // `claw_token_transactions.metadata` is a persisted JSON column, and
+            // the raw sessionId is the real-CT bearer credential — never store a
+            // recoverable bearer in a money-ledger row. Digest is correlation-only.
+            metadata: { buildingId, sessionDigest: sessionDigest(sessionId), agentId: bot.agentId },
           });
           tokenAwarded = 1;
         }
@@ -2308,7 +2337,10 @@ agentGatewayRoutes.post('/:sessionId/building/:buildingId/chat', async (c) => {
             amount: 1,
             reason: 'building_chat_teaching',
             source: 'api',
-            metadata: { buildingId, sessionId, agentId: bot.agentId, characterName: system.locationAgent.agentName },
+            // sessionDigest, NOT the raw sessionId (Codex auth-lens fix #4) - see
+            // the building-visit credit above. Money-ledger metadata is persisted;
+            // never store the recoverable real-CT bearer in it.
+            metadata: { buildingId, sessionDigest: sessionDigest(sessionId), agentId: bot.agentId, characterName: system.locationAgent.agentName },
           });
           tokenAwarded = 1;
         }

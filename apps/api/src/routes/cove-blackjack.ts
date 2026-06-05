@@ -393,6 +393,19 @@ const insureActionSchema = z
   .object({
     handId: z.string().uuid(),
     action: z.literal('insure'),
+    /**
+     * OPTIONAL stale-agent-decision guard for the human-supervised Autonomous
+     * relay — parity with `actionSchema.expectedHandVersion`. The relay returns
+     * `insure` with a live-hand `handVersion`; the driver threads it here, and
+     * under the hand lock /action rejects (409 `stale_agent_decision`) if the
+     * freshly-locked hand's `handDecisionVersion` no longer matches (a human
+     * already acted). Without this, a stale agent insure decision could land on a
+     * hand the human already advanced — or one that already settled — and the
+     * settled-replay path would mis-handle it as an `{ tookInsurance }` ack.
+     * OMITTED on every human manual insure tap, which keeps the unconditional
+     * legacy behavior. MUST use the same version definition /action enforces.
+     */
+    expectedHandVersion: z.number().int().optional(),
   })
   .strict();
 
@@ -1242,6 +1255,10 @@ coveBlackjackRouter.post('/action', async (c) => {
   //      player must not be able to HIT, see a weak board, then back-fill
   //      insurance and collect 2:1 they were never entitled to mid-hand.
   if (insureParsed.success) {
+    // Optional stale-agent-decision precondition (relay-supplied; see
+    // insureActionSchema). Threaded into the locked transaction below; OMITTED on
+    // human manual insure so the legacy unconditional path is unchanged.
+    const insureExpectedVersion = insureParsed.data.expectedHandVersion;
     const result = await db.transaction(async (tx) => {
       // Lock the hand row so the read-check-write is atomic vs other /action.
       const lockRows = await tx.execute<{ status: string }>(
@@ -1262,6 +1279,22 @@ coveBlackjackRouter.post('/action', async (c) => {
       const locked = await tx.query.blackjackHands.findFirst({ where: eq(blackjackHands.id, hand.id) });
       if (!locked) throw new HTTPException(404, { message: 'hand_not_found' });
       const lockedScript = loadScript(locked);
+
+      // Stale-agent-decision guard (parity with the main /action path). When the
+      // Autonomous driver supplies `expectedHandVersion`, the agent decided
+      // `insure` against a SNAPSHOT of this hand; if the freshly-locked hand has
+      // advanced since (a human tapped, or insurance was already taken — both
+      // bump handDecisionVersion), reject so the human's tap beats the stale
+      // in-flight agent insure. Computed UNDER the lock against the authoritative
+      // (not pre-lock) script so it is race-safe. OMITTED on human manual insure
+      // taps, preserving the unconditional legacy behavior exactly. The version
+      // definition MUST match the one stamped by /agent/decide.
+      if (insureExpectedVersion !== undefined &&
+          handDecisionVersion(lockedScript) !== insureExpectedVersion) {
+        throw new HTTPException(409, {
+          message: 'stale_agent_decision: hand changed since the agent decided',
+        });
+      }
 
       // Guard 2 — insurance is a before-first-action decision only.
       if (lockedScript.didSplit || lockedScript.hands.some((sub) => sub.length > 0)) {
@@ -2421,5 +2454,17 @@ coveBlackjackRouter.post('/agent/decide', requireAuth, async (c) => {
     200,
   );
 });
+
+/**
+ * @internal TEST-ONLY seam. `settleHand` is the money-settling fn whose
+ * defense-in-depth `hand_shoe_mismatch` guard (load the hand by BOTH (id,
+ * shoeId), never handId alone) is unreachable through the public routes — every
+ * live call site passes a matching (hand.shoeId, hand.id) pair. Exporting it lets
+ * the regression suite drive a caller-owned shoeId + a foreign handId and assert
+ * the 409, locking the Codex money-lens BLOCKING #1 fix. NOT a public API; the
+ * router default export is the only runtime surface. Mirrors the existing
+ * `__resetBlackjackRateLimits` test-only export convention.
+ */
+export const __settleHandForTest = settleHand;
 
 export default coveBlackjackRouter;
