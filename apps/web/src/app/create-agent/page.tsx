@@ -62,17 +62,16 @@ const TABS: TabMeta[] = [
 // they pick a harness, not a character.
 const MODELS_BY_TAB: Record<TabId, ModelKey[]> = (() => {
   const allKeys = Object.keys(MODEL_REGISTRY) as ModelKey[];
-  const miladyKeys = allKeys.filter((k) => MODEL_REGISTRY[k].category === 'milady');
-  const hermesKeys = allKeys.filter((k) => MODEL_REGISTRY[k].category === 'hermes');
-  const seaCreatureKeys = allKeys.filter((k) => {
-    const e = MODEL_REGISTRY[k];
-    // Reserved models (e.g. `phanes`, the default Hatcher avatar) are assigned
-    // server-side only and must never appear in the selectable grid. `as const`
-    // on MODEL_REGISTRY means only entries that declare `pickerHidden` expose it,
-    // so guard the access with an `in` check before reading it.
-    const hidden = 'pickerHidden' in e && e.pickerHidden;
-    return e.category !== 'milady' && e.category !== 'hermes' && !hidden;
-  });
+  // Explicit per-tab category allowlists. Any category NOT listed below is
+  // reserved and never appears in the picker. In particular the ENTIRE `hatcher`
+  // category (hatcher_1..8 + phanes) is assigned EXCLUSIVELY through Hatcher's
+  // own UI/API on register and is never user-selectable here. Chibis live under
+  // the Milady tab (they are stylized Milady avatars), not OpenClaw.
+  const inTab = (k: ModelKey, cats: AgentCategory[]) =>
+    cats.includes(MODEL_REGISTRY[k].category);
+  const miladyKeys = allKeys.filter((k) => inTab(k, ['milady', 'chibi']));
+  const hermesKeys = allKeys.filter((k) => inTab(k, ['hermes']));
+  const seaCreatureKeys = allKeys.filter((k) => inTab(k, ['openclaw', 'other']));
   return {
     milady:   miladyKeys,
     hermes:   hermesKeys,
@@ -82,7 +81,8 @@ const MODELS_BY_TAB: Record<TabId, ModelKey[]> = (() => {
 })();
 
 function mapCategoryToTab(category: AgentCategory | undefined): TabId | null {
-  if (category === 'milady') return 'milady';
+  // Chibis live under the Milady tab, so a returning chibi user lands there.
+  if (category === 'milady' || category === 'chibi') return 'milady';
   if (category === 'hermes') return 'hermes';
   return null;
 }
@@ -388,12 +388,6 @@ export default function CreateAgentPage() {
             {tag}
           </div>
         )}
-        {isVRM && (
-          <div className="absolute top-1.5 left-2 font-mono text-[8px] tracking-[0.15em] text-pink-200/90 uppercase bg-pink-500/20 backdrop-blur-sm px-1.5 py-0.5 rounded-full border border-pink-300/30">
-            Milady
-          </div>
-        )}
-
         <div className="absolute inset-x-0 bottom-0 px-2 py-1.5 bg-gradient-to-t from-black/85 via-black/70 to-transparent">
           <div className={`font-clawville text-[10px] leading-tight uppercase tracking-wide text-center ${
             isSelected ? (isVRM ? 'text-pink-200' : 'text-cyan-200') : 'text-white/85'
