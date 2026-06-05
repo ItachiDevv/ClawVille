@@ -64,9 +64,15 @@ const MODELS_BY_TAB: Record<TabId, ModelKey[]> = (() => {
   const allKeys = Object.keys(MODEL_REGISTRY) as ModelKey[];
   const miladyKeys = allKeys.filter((k) => MODEL_REGISTRY[k].category === 'milady');
   const hermesKeys = allKeys.filter((k) => MODEL_REGISTRY[k].category === 'hermes');
-  const seaCreatureKeys = allKeys.filter(
-    (k) => MODEL_REGISTRY[k].category !== 'milady' && MODEL_REGISTRY[k].category !== 'hermes',
-  );
+  const seaCreatureKeys = allKeys.filter((k) => {
+    const e = MODEL_REGISTRY[k];
+    // Reserved models (e.g. `phanes`, the default Hatcher avatar) are assigned
+    // server-side only and must never appear in the selectable grid. `as const`
+    // on MODEL_REGISTRY means only entries that declare `pickerHidden` expose it,
+    // so guard the access with an `in` check before reading it.
+    const hidden = 'pickerHidden' in e && e.pickerHidden;
+    return e.category !== 'milady' && e.category !== 'hermes' && !hidden;
+  });
   return {
     milady:   miladyKeys,
     hermes:   hermesKeys,
