@@ -305,10 +305,15 @@ export const CAMERA_FAR = 5000;
  * Chase-cam offset in player-local space (behind and above).
  * Y raised 200→280→320 (2026-04-29 QA: 280 still clipped Milady's hair tip ~5-10px;
  * 320 gives ~12° headroom above lookAt, well clear of 30° FOV half-angle top edge).
- * Math: lookAt at Y=130 from camera Y=320 at chase 350wu = 32° down pitch;
- * head_top at world Y≈175 → relative pitch atan2(45,350)=7.3° above lookAt = -25° from top edge.
+ *
+ * Z pushed -350 → -530 (2026-06-01 playtest: avatar filled ~40% frame height — too
+ * close for a racing game). At 530wu arm: atan2(VRM_height≈112wu, 530) ≈ 12° vert
+ * subtension = ~20% of 60° vertical FOV — standard racing-game framing.
+ * Math: lookAt at Y=130 from camera Y=320 at chase 530wu = atan2(190,530) ≈ 20° down
+ * pitch; head_top at world Y≈230 → atan2(100,530) ≈ 11° above lookAt = -9° from top
+ * edge — comfortable headroom at full height Milady VRM.
  */
-export const CAMERA_OFFSET = new THREE.Vector3(0, 320, -350);
+export const CAMERA_OFFSET = new THREE.Vector3(0, 320, -530);
 
 /**
  * Chase-cam look-at offset from player position (slightly above kart).

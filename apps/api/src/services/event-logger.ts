@@ -22,6 +22,7 @@
 
 import { db, events, eventWriteFailures } from '@clawville/database';
 import { alertError } from './alert-error';
+import { sessionDigest } from './session-digest';
 
 /**
  * Duck-typed Hono context — any object with a string-keyed `.get()` method
@@ -310,13 +311,27 @@ export async function logEvent(input: EventInput): Promise<void> {
     }
   }
 
+  // SECURITY (Codex auth-lens fix #4, 2026-06-03): the `events.session_id`
+  // column previously stored the RAW agent-session id — which is the
+  // REAL-ClawToken bearer credential the cove trusts (cove-blackjack.ts
+  // getSubject reads it from the `X-Clawville-Agent-Session` header). Persisting
+  // the raw bearer in a DB column means anyone with read access (an internal
+  // dashboard query, a leaked log, a DB dump) recovers a spendable credential.
+  // We now store ONLY a one-way sha256 prefix (`sessionDigest`). This is a pure
+  // CORRELATION id: it is non-reversible, and it preserves the leaderboard's
+  // per-day anti-farm `COUNT(DISTINCT session_id)` because the digest is a
+  // deterministic 1:1 function of the raw id (distinct ids → distinct digests).
+  // Lucia session ids passed by the auth routes are also digested here — they
+  // are equally bearer-grade, and no consumer reads `events.session_id` back as
+  // a live credential (verified: only `COUNT(DISTINCT session_id)` in
+  // leaderboard.ts uses it).
   const row = {
     eventType: input.eventType,
     userId: input.userId ?? null,
     agentId: input.agentId ?? null,
     avatarId: input.avatarId ?? null,
     buildingId: input.buildingId ?? null,
-    sessionId: input.sessionId ?? null,
+    sessionId: input.sessionId ? sessionDigest(input.sessionId) : null,
     payload: sanitize(input.payload),
     fpHash: input.fpHash ?? null,
     ipPrefixHash: input.ipPrefixHash ?? null,

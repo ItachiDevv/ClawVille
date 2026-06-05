@@ -4,6 +4,10 @@
 - [Three-Doc Standing Rule](standing-rules/three-doc-standing-rule.md) — Abide by `3dStructure.md` for all visual/3D decisions; `GameFeatures.md` for gameplay; `ARCHITECTURE.md` for tech stack. Unless the main session tells you to change behavior, do NOT deviate from what these docs specify. Every 3D code change requires a same-diff update to `3dStructure.md` (and a "Last Audited" bump). Live code > doc > CLAUDE.md > memory; memory is advisory only. Set 2026-04-17.
 - [Collaborative ultrathink team mandatory for 3D / Blender / long tasks](standing-rules/parallel-ultrathink-team-mandatory.md) — A "team" is multiple agents working SEQUENTIALLY on the SAME concern (Implementer → Auditor → Fix loop), NOT N agents working on N different concerns in parallel. The audit step is the point. Every agent prompt must include "use ultrathink reasoning before writing code". Set + corrected 2026-04-29.
 
+## Landing Scene
+
+- [Hero overview — building-ring establishing shot pattern](patterns/landing-hero-building-ring.md) — Elevated orbit cam (y=290, arm=480, 0.09 rad/s), 10 in-game GLBs at HERO_TARGET_MAX_DIM=80wu, ring radius=300wu. Same strip + max-dim bbox pipeline as arena-buildings. Water ShaderMaterial + gradient sky singletons re-used. Rebuilt 2026-06-01.
+
 ## Casino Slot Drums
 - [Per-cell-plane drum wheel — cherry-charm 3D slot drums](solutions/slot-drum-per-cell-plane.md) — 12 PlaneGeometry quads orbiting X-axis at DRUM_RADIUS=1.5wu. One 128×128 symbol texture per face. Back-crossing swap for zero-rebuild animation. Ortho camera left=-8.5/right=8.5. Verified prod df53dd3 2026-05-19.
 

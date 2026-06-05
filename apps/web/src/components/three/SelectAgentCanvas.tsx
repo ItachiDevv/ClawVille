@@ -38,6 +38,7 @@ import {
 } from '@/lib/three/agent-model-registry';
 import { useVRMInstance, disposeVRMInstance, preloadVRMBytes } from '@/lib/three/vrm-loader';
 import { VRMCharacterAnimator, preloadMixamoClips } from '@/lib/three/vrm-character-animator';
+import { computeVRMAvatarFit } from '@/lib/three/vrm-avatar-sizing';
 
 // Module-scope scene background color — avoids a new THREE.Color allocation on
 // every render. R3F only reads the scene.background prop at Canvas creation time.
@@ -211,9 +212,36 @@ function RotatingPlatform({ children }: { children?: React.ReactNode }) {
 // ---------------------------------------------------------------------------
 // VRM Model on Platform
 // Separate component so Suspense handles VRM load independently.
-// VRM feet at Y=0 — no pivot offset / yOffset needed.
 // Color tinting is NOT applied to VRM (MToon pipeline breaks under std lerp).
+//
+// Grounding: uses computeVRMAvatarFit(vrm, animatorId, PICKER_TARGET_HEIGHT_WU)
+// which resets vrm.scene.scale to 1 during measurement (prevents contamination
+// from prior state), derives scale and offsetY = -box.min.y * scale so feet
+// land on the disc regardless of rig convention:
+//   - Milady (VRoid/VRM 0.x): feet at local Y=0, offsetY approx 0.
+//   - Hermes/Tekk/chibi (Mixamo/VRM 1.x): HIPS at local Y=0, feet at
+//     Y approx -95cm; offsetY lifts the group so feet sit on PLATFORM_TOP_Y.
+//
+// Facing: VRM 0.x models have rotateVRM0() applied by vrm-loader (adds pi
+// on scene root), making them face -Z toward the picker camera. VRM 1.x
+// models (Hermes/Tekk/chibi) skip rotateVRM0 (no-op unless metaVersion=="0")
+// and face +Z (backwards). The registry faceYaw field carries the correcting
+// rotation — pi for VRM 1.x, 0 for VRM 0.x.
 // ---------------------------------------------------------------------------
+
+// Picker target height (world units). Camera at [0,13,45], FOV 45 deg:
+// vertical frustum at z=0 plane approx 37wu; 22wu body + 1.5wu platform top
+// leaves approx 7wu headroom and footroom. KEEP at 22 to stay aligned with
+// the SpotlightConeSelect tip at y=30 (65 - 70/2).
+const PICKER_TARGET_HEIGHT_WU = 22;
+
+// Y of the platform disc top face. The main platform disc is at y=-1 with
+// height 1.5, so its top face is at y=-1+0.75=-0.25. But the RuneCircle is
+// at y=0.2 and the inner glow ring at y=-0.2 — avatar feet land cleanly at
+// y=0 which is above the torus rings and below the RuneCircle. Use 0.
+// (The prior "y=1.5" overcame a different assumption — offsetY now handles
+// the per-rig foot offset, so the group base can sit at the disc surface.)
+const PLATFORM_TOP_Y = 0;
 
 const PlatformModelVRM = memo(function PlatformModelVRM({
   modelKey,
@@ -254,27 +282,40 @@ const PlatformModelVRM = memo(function PlatformModelVRM({
     vrmAnimatorRef.current?.update(dt, false);
   });
 
-  // Auto-fit scale by bounding box — replaces the hard-coded `reg.scale ×
-  // multiplier` 2026-05-12 because Hermes VRMs are exported at a wildly
-  // different unit scale than Milady (the same `reg.scale=13` value made
-  // Milady head-clip and made Hermes fill the entire frame as a single
-  // skin patch). Bounding box is taken at T-pose, before the animator
-  // displaces any bones, so the height is the rig's natural rest height.
-  //
-  // TARGET_HEIGHT_WU = 22 → at camera distance 45 + FOV 45° the vertical
-  // frustum at the avatar plane is ~37wu; 22wu + 1.5wu feet offset leaves
-  // ~6-7wu of headroom AND footroom even on the tallest portrait viewport.
-  const TARGET_HEIGHT_WU = 22;
-  const computedScale = React.useMemo(() => {
-    if (!vrm) return reg.scale;
-    const box = new THREE.Box3().setFromObject(vrm.scene as unknown as THREE.Object3D);
-    const h = box.max.y - box.min.y;
-    if (!isFinite(h) || h < 0.001) return reg.scale;
-    return TARGET_HEIGHT_WU / h;
-  }, [vrm, reg.scale]);
+  // Use the canonical fit helper — it resets vrm.scene.scale to 1 before
+  // measuring so any prior state on the scene object can't contaminate the
+  // bbox, and it computes offsetY = -box.min.y * scale so feet land at Y=0.
+  // Pass PICKER_TARGET_HEIGHT_WU as the explicit override so the world-scale
+  // default (270wu) is not used here.
+  const { scale: computedScale, offsetY } = React.useMemo(
+    () => computeVRMAvatarFit(vrm, reg.animatorId, PICKER_TARGET_HEIGHT_WU),
+    [vrm, reg.animatorId],
+  );
+
+  // Apply the facing correction: VRM 1.x models (Hermes/Tekk/chibi) are not
+  // rotated by rotateVRM0 and face +Z (away from camera). reg.faceYaw=pi
+  // corrects them. Do this in useMemo tied to vrm so it runs once per load,
+  // not every frame. Milady VRMs have reg.faceYaw=undefined (defaults 0) and
+  // already face the camera via rotateVRM0's pi rotation.
+  React.useMemo(() => {
+    if (!vrm) return;
+    const yaw = reg.faceYaw ?? 0;
+    // rotateVRM0 sets scene.rotation.y = pi for VRM 0.x. For VRM 1.x models
+    // that need faceYaw=pi, we add on top of any existing rotation so we
+    // don't accidentally undo the rotateVRM0 correction that may have fired.
+    // In practice for VRM 1.x rotateVRM0 is a no-op (rotation.y stays 0),
+    // so this simply sets rotation.y = pi. Using += is safe for both cases.
+    vrm.scene.rotation.y += yaw;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [vrm]);
 
   return (
-    <group position={[0, 1.5, 0]} scale={[computedScale, computedScale, computedScale]}>
+    // PLATFORM_TOP_Y + offsetY positions feet exactly on the platform disc top
+    // regardless of rig convention (Milady offsetY approx 0; Hermes offsetY > 0).
+    <group
+      position={[0, PLATFORM_TOP_Y + offsetY, 0]}
+      scale={[computedScale, computedScale, computedScale]}
+    >
       <primitive object={vrm.scene} />
     </group>
   );
