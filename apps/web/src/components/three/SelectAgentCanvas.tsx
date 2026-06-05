@@ -38,10 +38,15 @@ import {
 } from '@/lib/three/agent-model-registry';
 import { useVRMInstance, disposeVRMInstance, preloadVRMBytes } from '@/lib/three/vrm-loader';
 import { VRMCharacterAnimator, preloadMixamoClips } from '@/lib/three/vrm-character-animator';
+import { computeVRMAvatarFit } from '@/lib/three/vrm-avatar-sizing';
 
 // Module-scope scene background color — avoids a new THREE.Color allocation on
 // every render. R3F only reads the scene.background prop at Canvas creation time.
 const SCENE_BG = new THREE.Color(0x030d1a);
+
+// Reused scratch vector for per-frame foot-grounding sampling in PlatformModelVRM.
+// Module scope so useFrame never allocates a Vector3 (Iris Xe GC rule).
+const _groundTmp = new THREE.Vector3();
 
 // Color tint presets — exactly the 4 entries reachable via the picker UI.
 // Import PickerColorId for strict key typing.
@@ -232,9 +237,17 @@ const PlatformModelVRM = memo(function PlatformModelVRM({
   }, [reg.path]);
 
   const vrmAnimatorRef = React.useRef<VRMCharacterAnimator | null>(null);
+  const groupRef = React.useRef<THREE.Group>(null!);
+  // Monotonic foot-grounding lift (world units) and settle-window start time.
+  const liftRef = React.useRef(0);
+  const groundStartRef = React.useRef<number | null>(null);
 
   React.useEffect(() => {
     if (!vrm) return;
+    // Reset grounding state for the newly loaded VRM (this component re-renders
+    // rather than remounts when modelKey changes, so the refs must be cleared).
+    liftRef.current = 0;
+    groundStartRef.current = null;
     // animatorId from the registry so the picker preview plays the same
     // per-character Mixamo bakes the live game does.
     const animator = new VRMCharacterAnimator(vrm, reg.animatorId);
@@ -248,33 +261,84 @@ const PlatformModelVRM = memo(function PlatformModelVRM({
     };
   }, [vrm]);
 
-  useFrame((_, delta) => {
+  // PICKER_TARGET_HEIGHT_WU = 22: at camera distance 45 + FOV 45 the vertical
+  // frustum at the avatar plane is ~37wu; 22wu feet-on-disc leaves ~6-7wu of
+  // headroom AND footroom even on the tallest portrait viewport.
+  //
+  // computeVRMAvatarFit resets vrm.scene.scale to 1 before measuring bbox (no
+  // contamination from prior state), then returns { scale, offsetY } where
+  // offsetY = -box.min.y * scale so the BIND-pose feet land at PLATFORM_TOP_Y.
+  // Memoised on [vrm, reg.animatorId]: fires once per VRM load, never per frame.
+  const PICKER_TARGET_HEIGHT_WU = 22;
+  const PLATFORM_TOP_Y = 0;
+  // Target world Y for the lowest foot bone after grounding. Milady's clip keeps
+  // its feet at ~+0.06 and reads as grounded, so a small positive target lands
+  // every rig cleanly on the disc surface.
+  const FOOT_GROUND_TARGET = 0.05;
+  // Window over which the monotonic foot-grounding samples the walk cycle's
+  // lowest planted foot. Converges within the first frame; the window only
+  // captures a deeper dip later in the cycle if one exists.
+  const GROUND_SETTLE_SECONDS = 1.5;
+
+  const { scale: computedScale, offsetY } = React.useMemo(
+    () => computeVRMAvatarFit(vrm, reg.animatorId, PICKER_TARGET_HEIGHT_WU),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [vrm, reg.animatorId],
+  );
+
+  // Facing: vrm-loader's rotateVRM0 leaves VRM 0.x rigs (Milady) at
+  // scene.rotation.y = pi and VRM 1.x rigs (Hermes/Tekk/chibi) at 0. Measured
+  // live, scene.rotation.y = pi renders BACKWARDS to the picker camera (at +Z)
+  // and 0 renders forwards, so countering the baked rotation on the parent group
+  // (net yaw 0 at spin start) faces every rig at the camera on load. Declarative
+  // on the group (no scene mutation) so it cannot accumulate under StrictMode
+  // double-invokes the way the old "vrm.scene.rotation.y += faceYaw" effect could.
+  const facingY = vrm ? -vrm.scene.rotation.y : 0;
+
+  useFrame((state, delta) => {
     const dt = Math.min(delta, 0.1);
-    // idle=false so the walk anim plays — gives a livelier preview on the pedestal
+    // idle=false so the walk anim plays: gives a livelier preview on the pedestal
     vrmAnimatorRef.current?.update(dt, false);
+
+    if (!vrm || !groupRef.current) return;
+
+    // Foot-grounding. computeVRMAvatarFit grounds the BIND-pose bbox, but
+    // Box3.setFromObject cannot see GPU skinning, so a clip whose stance sits
+    // lower than bind (the Hermes walk bake sinks the planted foot ~1.2wu;
+    // Milady's clip does not) leaves the rendered feet below the disc. Sample
+    // the lowest foot/toe bone (which DOES follow the pose) over a short settle
+    // window and monotonically lift the group so that foot rests at
+    // FOOT_GROUND_TARGET. Lift-only and monotonic: Milady (already grounded) is
+    // untouched and there is no per-frame chase/jitter. _groundTmp is reused so
+    // no Vector3 is allocated per frame.
+    if (groundStartRef.current === null) groundStartRef.current = state.clock.elapsedTime;
+    if (state.clock.elapsedTime - groundStartRef.current < GROUND_SETTLE_SECONDS) {
+      let lowestFootY = Infinity;
+      vrm.scene.traverse((o) => {
+        if ((o as unknown as THREE.Bone).isBone && /(foot|toe)/i.test(o.name)) {
+          o.getWorldPosition(_groundTmp);
+          if (_groundTmp.y < lowestFootY) lowestFootY = _groundTmp.y;
+        }
+      });
+      if (isFinite(lowestFootY)) {
+        // lowestFootY already includes the current lift, so the additional lift
+        // needed is (target - measured) and the new total is that plus current.
+        const newLift = FOOT_GROUND_TARGET - lowestFootY + liftRef.current;
+        if (newLift > liftRef.current) liftRef.current = newLift;
+      }
+    }
+    // Authoritative every frame so a re-render setting the position prop cannot
+    // wipe the grounding lift.
+    groupRef.current.position.y = PLATFORM_TOP_Y + offsetY + liftRef.current;
   });
 
-  // Auto-fit scale by bounding box — replaces the hard-coded `reg.scale ×
-  // multiplier` 2026-05-12 because Hermes VRMs are exported at a wildly
-  // different unit scale than Milady (the same `reg.scale=13` value made
-  // Milady head-clip and made Hermes fill the entire frame as a single
-  // skin patch). Bounding box is taken at T-pose, before the animator
-  // displaces any bones, so the height is the rig's natural rest height.
-  //
-  // TARGET_HEIGHT_WU = 22 → at camera distance 45 + FOV 45° the vertical
-  // frustum at the avatar plane is ~37wu; 22wu + 1.5wu feet offset leaves
-  // ~6-7wu of headroom AND footroom even on the tallest portrait viewport.
-  const TARGET_HEIGHT_WU = 22;
-  const computedScale = React.useMemo(() => {
-    if (!vrm) return reg.scale;
-    const box = new THREE.Box3().setFromObject(vrm.scene as unknown as THREE.Object3D);
-    const h = box.max.y - box.min.y;
-    if (!isFinite(h) || h < 0.001) return reg.scale;
-    return TARGET_HEIGHT_WU / h;
-  }, [vrm, reg.scale]);
-
   return (
-    <group position={[0, 1.5, 0]} scale={[computedScale, computedScale, computedScale]}>
+    <group
+      ref={groupRef}
+      position={[0, PLATFORM_TOP_Y + offsetY, 0]}
+      rotation={[0, facingY, 0]}
+      scale={[computedScale, computedScale, computedScale]}
+    >
       <primitive object={vrm.scene} />
     </group>
   );
