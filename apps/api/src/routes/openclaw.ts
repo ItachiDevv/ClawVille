@@ -7,6 +7,7 @@ import { OpenClawClient } from '../services/openclaw-client';
 import { npcSimulation } from '../services/npc-simulation';
 import { db, avatars, users, npcMemories, activityLog, openclawBots, agents, eq, and, desc, sql } from '@clawville/database';
 import { sessionMiddleware, requireAuth } from '../middleware/auth';
+import { validateLiveAgentSession } from '../middleware/require-auth-or-agent';
 import type { AppContext } from '../types';
 import { agentOrchestrator } from '../services/agent-orchestrator';
 import { setSessionAgent, getSessionAgent, deleteSessionAgent } from '../services/session-agent-map';
@@ -448,6 +449,19 @@ openclawRoutes.post('/chat', async (c) => {
   }
 
   const { sessionId, content, avatarContext } = parsed.data;
+
+  // Fail-closed liveness gate BEFORE the map-only client lookup or any TTL
+  // slide (Codex auth-lens fix #2, 2026-06-03). The previous code trusted bare
+  // Map membership (`getOpenClawClientBySession`) and then refreshed
+  // `openclaw_bots.session_expires_at` at the end of the handler — so an
+  // EXPIRED-but-still-in-memory session could call /chat to RESURRECT its 24h
+  // TTL and then pass the cove's `session_expires_at > now` validation. Route
+  // through the SAME shared validator every other bearer path uses (Map
+  // membership AND DB `session_expires_at > now`, NULL = expired, unregisters a
+  // stale body) so an expired session is rejected here and never slid forward.
+  if (!(await validateLiveAgentSession(sessionId))) {
+    return c.json({ error: 'OpenClaw session not found or expired. Reconnect your agent.' }, 404);
+  }
   const client = npcSimulation.getOpenClawClientBySession(sessionId);
   if (!client) {
     return c.json({ error: 'OpenClaw session not found. Bot may have disconnected.' }, 404);
@@ -564,6 +578,14 @@ openclawRoutes.post('/location-chat', sessionMiddleware, async (c) => {
   }
 
   const { sessionId, locationId, content, avatarContext } = parsed.data;
+
+  // Fail-closed liveness gate BEFORE the map-only client lookup or any TTL
+  // slide (Codex auth-lens fix #2, 2026-06-03 — same vector as /chat). An
+  // expired-but-in-map session must not be able to call /location-chat to
+  // refresh `session_expires_at` and then pass cove validation.
+  if (!(await validateLiveAgentSession(sessionId))) {
+    return c.json({ error: 'OpenClaw session not found or expired. Reconnect your agent.' }, 404);
+  }
   const client = npcSimulation.getOpenClawClientBySession(sessionId);
   if (!client) {
     return c.json({ error: 'OpenClaw session not found. Bot may have disconnected.' }, 404);
