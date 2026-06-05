@@ -130,6 +130,15 @@ export const AGENT_MODELS = [
   { key: 'hatcher_7', label: 'Hatcher 7', category: 'hatcher' },
   { key: 'hatcher_8', label: 'Hatcher 8', category: 'hatcher' },
 
+  // ── Phanes — the DEFAULT Hatcher avatar (2026-06-05) ──
+  // Bespoke Greek primordial-deity VRM (NOT a Milady placeholder). Every NEW
+  // Hatcher agent is assigned `phanes` (DEFAULT_HATCHER_MODEL_KEY) instead of a
+  // random hatcher_N. Reserved: hidden from the /create-agent picker
+  // (web-side `pickerHidden:true`) and excluded from the random placeholder pool
+  // (HATCHER_MODEL_KEYS below). Web asset: /avatars/phanes.vrm, animatorId
+  // 'hermes-male' (same male build -> shares the Hermes male animation set).
+  { key: 'phanes', label: 'Phanes', category: 'hatcher' },
+
   // NOTE: `crayfish` entry removed 2026-04-16 — the GLB renders visually
   // close to `lobster` but with a larger silhouette that clipped the
   // modal card. The file still ships and `arena-npcs.tsx` retains its
@@ -170,6 +179,13 @@ export const AGENT_MODEL_KEYS: readonly AgentModelKey[] = AGENT_MODELS.map(
 export const DEFAULT_AGENT_MODEL_KEY: AgentModelKey = 'milady_official_1';
 export const DEFAULT_AGENT_CATEGORY: AgentCategory = 'openclaw';
 export const DEFAULT_AGENT_HARNESS: AgentHarness = 'milady';
+
+// Default render model for every NEW Hatcher agent (2026-06-05). Replaces the
+// old random hatcher_N placeholder pick — all Hatcher agents now spawn as
+// Phanes, the bespoke Greek-deity VRM. Existing Hatcher avatars keep their
+// persisted modelKey. Reserved (not selectable in the picker; see web-side
+// `pickerHidden`). TS guarantees the key exists in AGENT_MODELS via AgentModelKey.
+export const DEFAULT_HATCHER_MODEL_KEY: AgentModelKey = 'phanes';
 
 const _defaultModel = AGENT_MODELS.find((m) => m.key === DEFAULT_AGENT_MODEL_KEY);
 if (!_defaultModel) {
@@ -215,8 +231,11 @@ export function getAgentCategoryForModel(modelKey: string): AgentCategory | unde
 // (agent-gateway `/connect`) gets the real `crypto.randomInt`.
 
 /** All hatcher_* model keys, derived from the registry (stays in sync). */
+// The RANDOM placeholder pool (hatcher_1..8). Excludes DEFAULT_HATCHER_MODEL_KEY
+// (phanes): phanes is the deterministic default, not a random placeholder, so it
+// must never be drawn by pickRandomHatcherModelKey().
 export const HATCHER_MODEL_KEYS: readonly AgentModelKey[] = AGENT_MODELS.filter(
-  (m) => m.category === 'hatcher',
+  (m) => m.category === 'hatcher' && m.key !== DEFAULT_HATCHER_MODEL_KEY,
 ).map((m) => m.key) as readonly AgentModelKey[];
 
 /**
