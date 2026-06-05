@@ -245,7 +245,7 @@ bun run build            # Build all
 Required in `.env.local`:
 
 - `DATABASE_URL` — Supabase pooler Postgres.
-- `GEMINI_API_KEY` — **single LLM backend** for text + embeddings (`gemini-text-provider` priority 95, `gemini-embedding-provider` 100, `npc-conversation-engine.ts`). Anthropic removed 2026-04-10.
+- `GEMINI_API_KEY`: **EMBEDDINGS backend only** (`gemini-embedding-provider` priority 100, 768-dim `TEXT_EMBEDDING`). Text generation moved to OpenAI 2026-06-05 (Gemini billing dunning-blocked / 403); embeddings stay on Gemini because OpenAI's `text-embedding-3-small` is 1536-dim, a mismatch needing a re-embed migration. Anthropic removed 2026-04-10.
 - `VANITY_ENCRYPTION_KEY` — 64-char hex. AES-256-GCM master key for `treasury_wallets` + `vanity_keypairs`. Must match on every decrypting machine.
 - `FINGERPRINT_SECRET` — 64-char hex (32+ bytes). **Hard-required** — `apps/api/src/middleware/fingerprint.ts` throws at module load if missing or short, crashing API boot. `openssl rand -hex 32`. Salts the sha256 hash of `X-CV-Fingerprint` + IP /24 prefix on every event row. Server-only. Rotating invalidates every existing fp_hash.
 - `CLAWVILLE_MERCHANT_WALLET_PUBKEY` — base58 pubkey of Phase 4 x402 merchant wallet.
@@ -260,7 +260,9 @@ Required in `.env.local`:
 - **Phase 5.1 env vars** (`CLOUDFLARE_WORKER_URL/_BEARER`, `CLAWVILLE_SERVICE_ISSUER_SK/_PUBKEY`, `SCAPE_HOSTED_SESSION_URL`, `SCAPE_WEB_ORIGIN`, `PARTNER_PUBKEYS`) — see `ARCHITECTURE.md §7`. Crash-loud rule: `FINGERPRINT_SECRET` + `CLOUDFLARE_WORKER_*` are hard-required on boot; missing ⇒ API refuses to start.
 - **Wager program env vars** (`SOLANA_RPC_URL`, `WAGER_SETTLEMENT_AUTHORITY_PUBKEY`, `WAGER_SETTLEMENT_AUTHORITY_KEYPAIR_PATH`, `WAGER_PROGRAM_CLUSTER`) — see `ARCHITECTURE.md §13` (2026-05-13 entry). Devnet-only; mainnet requires a code change, not just `WAGER_PROGRAM_CLUSTER=mainnet`.
 
-**Optional:** `OPENAI_API_KEY` — fallback ONLY for `npc-conversation-engine.ts` on Gemini `GEMINI_MAX_FAILURES` backoff. **Removed:** `ANTHROPIC_API_KEY` (ultrathink decommission).
+- `OPENAI_API_KEY`: **PRIMARY text-generation backend** (`openai-text-provider` priority 95 for `TEXT_SMALL`/`TEXT_LARGE`; `npc-conversation-engine.ts`; chat-transient). Swapped in from Gemini 2026-06-05 (Gemini text billing dunning-blocked / 403). Models via `OPENAI_SMALL_MODEL` (default `gpt-4o-mini`) / `OPENAI_LARGE_MODEL` (default `gpt-4o`).
+
+**Removed:** `ANTHROPIC_API_KEY` (ultrathink decommission).
 
 ## Deployment — Hetzner + Coolify (Railway decommissioned)
 

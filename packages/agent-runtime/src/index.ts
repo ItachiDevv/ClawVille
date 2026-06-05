@@ -50,9 +50,15 @@ export type { Provider, ProviderResult } from './providers/types';
 export { embedText, embedTexts } from './plugins/embed-text';
 export type { EmbedTextOptions } from './plugins/embed-text';
 
-// Gemini text generation provider (Phase 3 — global default for text gen)
+// Gemini text generation provider (Phase 3 — DEAD-but-present; Gemini billing
+// killed 2026-06, kept exported so legacy importers don't break)
 export { createGeminiTextPlugin, createGeminiProTextPlugin } from './plugins/gemini-text-provider';
 export type { GeminiTextConfig } from './plugins/gemini-text-provider';
+
+// OpenAI text generation provider (global default for text gen — replaced
+// Gemini after its billing died. Embeddings still go through Gemini.)
+export { createOpenAITextPlugin, createOpenAIProTextPlugin } from './plugins/openai-text-provider';
+export type { OpenAITextConfig } from './plugins/openai-text-provider';
 
 // Collaboration (Phase 3 — cross-building consultation)
 export {
