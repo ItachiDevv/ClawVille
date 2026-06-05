@@ -543,7 +543,13 @@ export default function CreateAgentPage() {
 
                   <div className="pointer-events-none absolute bottom-6 left-0 right-0 text-center px-6">
                     <div className={`font-mono text-[9px] uppercase tracking-[0.35em] mb-1 ${selectedIsVRM ? 'text-pink-300/70' : 'text-cyan-300/70'}`}>
-                      — {selectedIsVRM ? 'Milady Avatar' : 'Sea Creature Avatar'} · {harness} —
+                      — {
+                        selectedCategory === 'milady'  ? 'Milady Avatar'
+                        : selectedCategory === 'chibi'   ? 'Chibi Avatar'
+                        : selectedCategory === 'hermes'  ? 'Hermes Avatar'
+                        : selectedCategory === 'hatcher' ? 'Hatcher Avatar'
+                        : 'Sea Creature Avatar'
+                      } · {harness} —
                     </div>
                     <div className="font-clawville text-xl md:text-2xl tracking-[0.2em] text-cyan-100" style={{ textShadow: '0 0 12px rgba(0,229,255,0.4)' }}>
                       {selectedEntry?.label ?? selectedModelInPool}
