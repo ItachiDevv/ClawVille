@@ -34,18 +34,27 @@ import { sessionDigest } from './session-digest';
 // the value: every raw bearer that reaches the `events` table is digested before
 // it lands.
 //
-// IDEMPOTENT BY CONSTRUCTION: `redactBearer` ONLY transforms a value that matches
-// the RAW-bearer shape (`^(ag|oc|hat|claw)-<16+ url-safe chars>`). An already-
-// digested 16-hex value (`a1b2c3d4e5f60718`) does NOT start with one of those
-// prefixes, so it passes through UNCHANGED. Consequences:
-//   (a) call sites that already pass `sessionDigest(sessionId)` are untouched
-//       here (no double-digest),
-//   (b) call sites / headers that pass a RAW bearer get digested here,
-//   (c) `COUNT(DISTINCT session_id)` for `agent.connected` stays correct because
-//       `sessionDigest` is a deterministic 1:1 map — the same raw session always
-//       digests to the same value whether the digest happened at the call site or
-//       here.
-const RAW_BEARER_RE = /^(ag|oc|hat|claw)-[A-Za-z0-9_-]{16,}$/;
+// EXACT-SHAPE MATCH (so it is safe to redact the agent_id column too — see below).
+// Every real-CT bearer is `<prefix>-` + `randomBytes(24).toString('base64url')`,
+// which is ALWAYS exactly 32 url-safe chars (24 bytes * 8 / 6 = 32, no padding):
+//   agent-gateway `ag-…`, openclaw `oc-…`, hatcher `hat-…`. So the bearer is
+// `^(ag|oc|hat|claw)-[A-Za-z0-9_-]{32}$` and nothing else. Matching the EXACT
+// length (not `{16,}`) is what lets us redact agent_id without corrupting it:
+//   - a legit agent HANDLE the leaderboard groups by (`oc-mybot`, `milady:x`,
+//     `agent-<ts>-<rand>`, a UUID, a `hatcher:<id>`) is NEVER exactly
+//     `<prefix>-`+32-url-safe-chars, so it passes through UNCHANGED — the
+//     `COUNT(DISTINCT agent_id)` / `GROUP BY agent_id` scoring stays intact;
+//   - a CALLER-INJECTED raw bearer (e.g. a client putting an `ag-…`/`oc-…` into
+//     the spoofable `X-Clawville-Agent-Id` header that skills.ts logs into
+//     events.agent_id) DOES match and gets digested here. Closes that injection
+//     path centrally regardless of which call site or header supplied the value.
+//
+// IDEMPOTENT BY CONSTRUCTION: an already-digested 16-hex value (`a1b2c3d4e5f60718`)
+// has no `(ag|oc|hat|claw)-` prefix and is only 16 chars, so it never matches —
+// call sites that already pass `sessionDigest(...)` are untouched (no double-digest),
+// and `sessionDigest` is a deterministic 1:1 map so `COUNT(DISTINCT session_id)` for
+// `agent.connected` is invariant whether the digest happened at the call site or here.
+const RAW_BEARER_RE = /^(ag|oc|hat|claw)-[A-Za-z0-9_-]{32}$/;
 
 function redactBearer(v: unknown): unknown {
   return typeof v === 'string' && RAW_BEARER_RE.test(v) ? sessionDigest(v) : v;
@@ -363,23 +372,21 @@ export async function logEvent(input: EventInput): Promise<void> {
   }
 
   // Central raw-bearer redaction (see RAW_BEARER_RE block above). Applied to the
-  // `session_id` column and run over the (already secret-key-sanitized) payload so
-  // a RAW agent-session bearer can never land in the events table from ANY call
-  // site or caller-supplied header. Idempotent: an already-digested value is left
-  // unchanged.
+  // `session_id` AND `agent_id` columns and run over the (already secret-key-
+  // sanitized) payload so a RAW agent-session bearer can never land in the events
+  // table from ANY call site or caller-supplied header. Idempotent: an already-
+  // digested value is left unchanged.
   //
-  // NOT applied to `agent_id`: that column is the STABLE agent handle the
-  // leaderboard groups by (GROUP BY / COUNT(DISTINCT) agent_id). A handle can
-  // legitimately share a bearer prefix (an openclaw `data.agentId` may be
-  // `oc-…`, identical in shape to an `oc-` SESSION bearer), so redacting it would
-  // false-positive and split that agent's score across the raw handle (old rows)
-  // and its digest (new rows). The bearer never legitimately lands in agent_id:
-  // every call site that used a `?? sessionId` fallback already digests it
-  // (`?? sessionDigest(sessionId)`), so there is nothing to redact here anyway.
+  // `agent_id` IS redacted here, safely: the EXACT-shape regex only matches a real
+  // bearer (`<prefix>-`+32 url-safe chars), never a legit grouping handle
+  // (`oc-mybot`, `milady:x`, `agent-<ts>-<rand>`, a UUID), so leaderboard
+  // `GROUP BY agent_id` is preserved. This closes the spoofable-header injection
+  // path: skills.ts logs the caller-supplied `X-Clawville-Agent-Id` into
+  // events.agent_id, and a client could put a raw `ag-/oc-/hat-` bearer there.
   const row = {
     eventType: input.eventType,
     userId: input.userId ?? null,
-    agentId: input.agentId ?? null,
+    agentId: redactBearer(input.agentId ?? null) as string | null,
     avatarId: input.avatarId ?? null,
     buildingId: input.buildingId ?? null,
     sessionId: redactBearer(input.sessionId ?? null) as string | null,
