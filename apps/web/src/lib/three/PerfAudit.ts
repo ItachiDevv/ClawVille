@@ -12,6 +12,7 @@ export interface WorldPerfFlags {
   groundCover: boolean;
   activityFx: boolean;
   residentDetail: boolean;
+  buildingDetail: boolean;
   staticWorldOnly: boolean;
   uiOverlay: boolean;
 }
@@ -25,6 +26,7 @@ export const DEFAULT_WORLD_PERF_FLAGS: WorldPerfFlags = {
   groundCover: true,
   activityFx: true,
   residentDetail: true,
+  buildingDetail: true,
   staticWorldOnly: false,
   uiOverlay: true,
 };
