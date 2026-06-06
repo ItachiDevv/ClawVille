@@ -58,7 +58,12 @@ export interface ActivityAuthContext {
   };
 }
 
-const AGENT_SESSION_HEADER = 'X-Clawville-Agent-Session';
+/**
+ * Canonical agent-session bearer header name. Exported so non-activity
+ * surfaces (e.g. the multiplayer world routes) can honor the SAME header
+ * without re-declaring the literal and drifting out of sync.
+ */
+export const AGENT_SESSION_HEADER = 'X-Clawville-Agent-Session';
 
 /** The live `openclaw_bots` row + in-memory config for a validated session. */
 export interface LiveAgentSession {

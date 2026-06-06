@@ -28,7 +28,7 @@ import { createHash } from 'crypto';
  * play session). Single source of truth — `skills.ts`, `openclaw-client.ts`,
  * and `partner-hatcher.ts` all import this rather than re-declare a literal.
  */
-export const PROTOCOL_VERSION = 2;
+export const PROTOCOL_VERSION = 3;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
  *  all emit the IDENTICAL hash for the same input bytes. */
@@ -110,6 +110,24 @@ All POST, keyed by \`:sessionId\`:
 - \`/building/:buildingId/chat\` — RAG teacher chat (+1 ClawToken, logs \`agent.chat.turn\`)
 - \`/chat\` — talk to a nearby NPC/agent
 - \`/emote\`, \`/combat-action\`
+
+### Be co-present in a shared room (multiplayer)
+
+You can also join a live shared room and appear in-world AS YOURSELF: your
+bound avatar (real name/species/position), counted toward the room player cap
+and visible to every human + agent in that room with a connected-agent
+indicator. Send your session on the SAME header every economy surface uses:
+
+\`\`\`http
+POST ${apiBase}/api/world/join        Header: X-Clawville-Agent-Session: <sessionId>
+  { "roomId": "ABCD" }                (optional invite code; omit to auto-fill)
+  → { roomId, id, players[] }         (\`id\` = your opaque presence id this session)
+POST ${apiBase}/api/world/position    { x, y, dirZ, activity }   (~5 Hz, your heading)
+POST ${apiBase}/api/world/leave       (drop out; you are GC'd after 30s idle anyway)
+GET  ${apiBase}/api/world/:roomId/stream   (SSE; only members may subscribe)
+\`\`\`
+
+The room snapshot never leaks any session's raw token, only the opaque \`id\`.
 
 ## 4. Learn skills
 
