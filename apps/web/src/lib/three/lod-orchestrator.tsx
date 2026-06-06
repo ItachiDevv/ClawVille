@@ -7,6 +7,7 @@ import { useNpcStore, PLAYER_NPC_ID } from '@/stores/npc';
 import { usePlayerStore } from '@/stores/players';
 import { useLodStore } from '@/stores/lod';
 import { MAP_WIDTH, MAP_HEIGHT } from '@/lib/pixi/tilemap-data';
+import { detectLowEndGpuClass } from '@/lib/three/gpu-tier';
 
 const HALF_W = MAP_WIDTH / 2;
 const HALF_H = MAP_HEIGHT / 2;
@@ -17,6 +18,8 @@ const HALF_H = MAP_HEIGHT / 2;
  * beyond this count flips to the proxy mesh. 14 is the proven baseline cast.
  */
 const FULL_CAP = 14;
+const LOW_END_FULL_CAP = 8;
+const ACTIVE_FULL_CAP = detectLowEndGpuClass() ? LOW_END_FULL_CAP : FULL_CAP;
 
 /**
  * Maximum game-pixel distance from the camera target at which an entity is
@@ -228,7 +231,7 @@ export default function LodOrchestrator() {
 
     for (let i = 0; i < _candidateCount; i++) {
       const c = _candidatePool[i];
-      const provisional: 'full' | 'proxy' = i < FULL_CAP ? 'full' : 'proxy';
+      const provisional: 'full' | 'proxy' = i < ACTIVE_FULL_CAP ? 'full' : 'proxy';
       const prev = history.get(c.id);
       let effective: 'full' | 'proxy';
       if (!prev) {
