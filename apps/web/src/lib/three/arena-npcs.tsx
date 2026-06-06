@@ -624,13 +624,19 @@ export const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteStat
     // Track walkable surface Y for stair/ramp zones. Used below in group.position.y.
     const npcGroundY = npcClamped.groundY;
 
-    // Entity-vs-player push-out (Phase 4 — client-side visual correction).
+    // Entity-vs-player push-out (Phase 4 -- client-side visual correction).
     // Only active when a real player avatar is present ('player'/'npc' mode).
     // In 'explore'/'autonomous' mode avatarPositionRef sits at the default
     // game-px origin (5760,6300) = world center, causing spurious push-outs.
+    //
+    // SKIP for remote players (d.isRemotePlayer === true): each client would
+    // compute a different push vector based on its own avatar position, producing
+    // per-client visual divergence that breaks the authoritative-shared-world
+    // premise. The AABB building clamp above is still applied (static colliders
+    // are identical across all clients, so that clamp is benign).
     {
       const _cm = useGameStore.getState().controlMode;
-      if (_cm === 'player' || _cm === 'npc') {
+      if (!d.isRemotePlayer && (_cm === 'player' || _cm === 'npc')) {
       const playerWX = avatarPositionRef.x - HALF_W;
       const playerWZ = avatarPositionRef.y - HALF_H;
       const npcHalf = (npc.id.startsWith('milady-') || npc.id.startsWith('chibi-')) ? ENTITY_HALF_CHIBI : ENTITY_HALF_HUMANOID;
@@ -1047,11 +1053,17 @@ export const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteStat
     // Track walkable surface Y for stair/ramp zones. Used below in group.position.y.
     const vrmNpcGroundY = vrmClamped.groundY;
 
-    // Entity-vs-player push-out (Phase 4) — mirrors GLBNpcMesh inline push-out.
+    // Entity-vs-player push-out (Phase 4) -- mirrors GLBNpcMesh inline push-out.
     // Guard: only active when a real player avatar is present ('player'/'npc').
+    //
+    // SKIP for remote players (d.isRemotePlayer === true): each client would
+    // compute a different push vector based on its own avatar position, producing
+    // per-client visual divergence that breaks the authoritative-shared-world
+    // premise. The AABB building clamp above is still applied (static colliders
+    // are identical across all clients, so that clamp is benign).
     {
       const _cm = useGameStore.getState().controlMode;
-      if (_cm === 'player' || _cm === 'npc') {
+      if (!d.isRemotePlayer && (_cm === 'player' || _cm === 'npc')) {
         const playerWX = avatarPositionRef.x - HALF_W;
         const playerWZ = avatarPositionRef.y - HALF_H;
         const npcHalf = (npc.id.startsWith('milady-') || npc.id.startsWith('chibi-')) ? ENTITY_HALF_CHIBI : ENTITY_HALF_HUMANOID;
@@ -1110,18 +1122,31 @@ export const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteStat
     const vrmNpcEffectiveFloorY = Math.max(currentTerrainY.current, vrmNpcGroundY);
     group.position.y = vrmNpcEffectiveFloorY + bob + jumpY;
 
-    // VRM facing — LOCKED 2026-04-25 (re-locked 2026-04-26 after PR #65 regression).
+    // VRM facing -- LOCKED 2026-04-25 (re-locked 2026-04-26 after PR #65 regression).
     // The Milady VRMs in this project are rigged with Mixamo bones facing -Z natively
-    // — opposite of the VRM 0.x spec (+Z forward). rotateVRM0() then over-rotates them,
-    // so body world-forward at outer.rotation.y=θ ends up at (sin θ, cos θ).
-    // Solving for body forward = (vx, vz): θ = atan2(vx, vz). NO NEGATIONS.
+    // -- opposite of the VRM 0.x spec (+Z forward). rotateVRM0() then over-rotates them,
+    // so body world-forward at outer.rotation.y=theta ends up at (sin theta, cos theta).
+    // Solving for body forward = (vx, vz): theta = atan2(vx, vz). NO NEGATIONS.
     // User confirmed live 2026-04-25; PR #65 "resolve to master version" reverted to
     // atan2(vx, -vz) which makes Miladys walk backwards. DO NOT change this without
-    // a screenshot proving otherwise — see .claude/memory/feedback_vrm_facing_formula.md.
+    // a screenshot proving otherwise -- see .claude/memory/feedback_vrm_facing_formula.md.
+    //
+    // Server-authoritative override (FIX #6): for remote players, `d.facingAngle` is
+    // set to the server-provided dirZ heading (atan2(dx,dy) convention, same space as
+    // the velocity-derived atan2(vx,vz) used below). When non-null we use it directly
+    // so that stopped or turning remote players show the server's facing instead of
+    // freezing at the last velocity angle. The same pattern is used in GLBNpcMesh.
     const vx = simPos.current.x - prevX;
     const vz = simPos.current.z - prevZ;
     const velMagSq = vx * vx + vz * vz;
-    if (velMagSq > 0.1 && d.direction !== 'idle') {
+    if (d.facingAngle != null) {
+      // Server-authoritative heading -- prefer this for remote players (and any NPC
+      // whose controller sets facingAngle). Same shortest-path slerp as GLBNpcMesh.
+      let diff = d.facingAngle - currentRotY.current;
+      while (diff > Math.PI) diff -= Math.PI * 2;
+      while (diff < -Math.PI) diff += Math.PI * 2;
+      currentRotY.current += diff * Math.min(1, 12 * dt);
+    } else if (velMagSq > 0.1 && d.direction !== 'idle') {
       const targetRot = Math.atan2(vx, vz);
       let diff = targetRot - currentRotY.current;
       while (diff > Math.PI) diff -= Math.PI * 2;

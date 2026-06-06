@@ -17,7 +17,14 @@ import type { PlayerSnapshot } from '@clawville/shared';
  * filters this entry out so we don't double-render the player.
  */
 export interface RemotePlayerState {
-  sessionId: string;
+  /**
+   * Opaque per-session presence id from the wire (PlayerSnapshot.id). Used as
+   * the render/VRM-instance cache key and the LOD-set membership key. NOT a
+   * raw session token (the server only ever emits the hashed publicId).
+   */
+  id: string;
+  /** Presence kind. Drives the connected-agent indicator dot in the 3D layer. */
+  kind: 'human' | 'guest' | 'agent';
   userId: string | null;
   name: string;
   x: number;
@@ -52,7 +59,8 @@ interface PlayerStoreState {
 
 function fieldsEqual(a: RemotePlayerState, b: PlayerSnapshot): boolean {
   return (
-    a.sessionId === b.sessionId &&
+    a.id === b.id &&
+    a.kind === b.kind &&
     a.userId === b.userId &&
     a.name === b.name &&
     a.species === b.species &&
@@ -68,12 +76,12 @@ export const usePlayerStore = create<PlayerStoreState>((set, get) => ({
   setLocalSessionId: (sessionId) => {
     if (get().localSessionId === sessionId) return;
     set({ localSessionId: sessionId });
-    // Re-stamp isLocal on existing players when the local sessionId changes.
+    // Re-stamp isLocal on existing players when the local presence id changes.
     const players = get().players;
     if (players.length === 0) return;
     let dirty = false;
     for (const p of players) {
-      const next = p.sessionId === sessionId;
+      const next = p.id === sessionId;
       if (p.isLocal !== next) {
         p.isLocal = next;
         dirty = true;
@@ -91,15 +99,15 @@ export const usePlayerStore = create<PlayerStoreState>((set, get) => ({
     const state = get();
     const now = Date.now();
     const localSessionId = state.localSessionId;
-    const prevMap = new Map(state.players.map((p) => [p.sessionId, p]));
+    const prevMap = new Map(state.players.map((p) => [p.id, p]));
 
     const next: RemotePlayerState[] = [];
     for (const snap of incoming) {
-      const prev = prevMap.get(snap.sessionId);
+      const prev = prevMap.get(snap.id);
       // tsDelta measured from arrival times; floor at 16 ms to avoid
       // divide-by-near-zero if two snapshots land in the same wall-clock tick.
       const tsDelta = prev ? Math.max(16, now - prev.ts) : 200;
-      const isLocal = localSessionId != null && snap.sessionId === localSessionId;
+      const isLocal = localSessionId != null && snap.id === localSessionId;
 
       // Mutation pattern (same as NPC store): when identity-relevant fields
       // are unchanged, mutate position/ts on the previous object so React.memo
@@ -120,7 +128,8 @@ export const usePlayerStore = create<PlayerStoreState>((set, get) => ({
       }
 
       next.push({
-        sessionId: snap.sessionId,
+        id: snap.id,
+        kind: snap.kind,
         userId: snap.userId,
         name: snap.name,
         x: snap.x,
