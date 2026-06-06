@@ -16,8 +16,21 @@ import { config } from 'dotenv';
 import { resolve } from 'path';
 config({ path: resolve(__dirname, '../.env.local') });
 
+import { createHash } from 'crypto';
 import { db, researchArticles, buildingSkills } from '@clawville/database';
 import { BUILDING_OPENCLAW_THEMES } from '@clawville/shared';
+
+/**
+ * sha256 → 64-char lowercase hex (Hatcher Phase C — 2026-06-01). Backfills
+ * `building_skills.content_hash` so a partner can diff the manifest's per-skill
+ * hash and re-embed ONLY what changed. The serving manifest computes the hash
+ * LIVE from the served body too, so this column is an optimization, not a
+ * correctness dependency. MUST match `contentHashOf` in `routes/skills.ts`
+ * (which prefixes `sha256:` for the manifest field — we store the bare hex).
+ */
+function contentHashHex(content: string): string {
+  return createHash('sha256').update(content).digest('hex');
+}
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GEMINI_MODEL = process.env.GEMINI_MODEL ?? 'gemini-flash-latest';
@@ -227,6 +240,8 @@ async function generateForBuilding(buildingId: string): Promise<void> {
   const name = `clawville-${buildingId}`;
   const sourceArticleIds = sections.map((s) => s.article.id);
 
+  const contentHash = contentHashHex(content);
+
   await db
     .insert(buildingSkills)
     .values({
@@ -234,6 +249,7 @@ async function generateForBuilding(buildingId: string): Promise<void> {
       name,
       description,
       content,
+      contentHash,
       sourceArticleIds,
       generatorVersion: GENERATOR_VERSION,
       generatedAt: new Date(),
@@ -244,6 +260,7 @@ async function generateForBuilding(buildingId: string): Promise<void> {
         name,
         description,
         content,
+        contentHash,
         sourceArticleIds,
         generatorVersion: GENERATOR_VERSION,
         generatedAt: new Date(),
@@ -513,13 +530,25 @@ rewrites of unchanged files.
 
 ### Manual install (fallback)
 
-The unauthed public URL still works for the \`clawville-play\` meta-skill
-(this file). The 10 building skills require ownership — fetch them after
-buying and reading a book at the matching building:
+The unauthed public URL works for the \`clawville-play\` meta-skill (this file):
 
 \`\`\`http
-GET /api/skills/mcp-tool-use/skill.md
+GET /api/skills/clawville-play/skill.md
 \`\`\`
+
+The 10 building skills reach your agent through the **session-authed** mirror
+once your avatar owns the curriculum (read a book at that building):
+
+\`\`\`http
+GET /api/agent/<sessionId>/skills/<buildingId>/skill.md
+Authorization: Bearer <sessionId>
+\`\`\`
+
+The public per-building URL (\`GET /api/skills/<buildingId>/skill.md\`) is now a
+**partner-key-gated** read surface (for platform integrations that bulk-import
+the curriculum) and returns 401 without an \`Authorization: Bearer <partner-key>\`.
+Use the session-authed path above for normal play, or the connect-time /
+SSE-push install paths described earlier.
 
 Drop the returned markdown into your skills folder and reload. The agent now
 has the full knowledge base for that building's domain.
@@ -530,6 +559,7 @@ has the full knowledge base for that building's domain.
 
 async function seedClawvillePlay(): Promise<void> {
   const { name, description, content } = buildClawvillePlaySkill();
+  const contentHash = contentHashHex(content);
   await db
     .insert(buildingSkills)
     .values({
@@ -537,6 +567,7 @@ async function seedClawvillePlay(): Promise<void> {
       name,
       description,
       content,
+      contentHash,
       sourceArticleIds: [],
       generatorVersion: GENERATOR_VERSION,
       generatedAt: new Date(),
@@ -547,6 +578,7 @@ async function seedClawvillePlay(): Promise<void> {
         name,
         description,
         content,
+        contentHash,
         generatorVersion: GENERATOR_VERSION,
         generatedAt: new Date(),
         updatedAt: new Date(),

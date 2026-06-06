@@ -110,6 +110,30 @@ export const users = pgTable(
     linkedScapeAt: timestamp('linked_scape_at', { withTimezone: true }),
 
     // -----------------------------------------------------------------
+    // Hatcher portal identity derivatives (partner #2, 2026-06-01)
+    //
+    // Direct mirror of the scape_* / linked_scape_* block above. The
+    // portal generalized `verifyScapeSignature` → `verifyPartnerSignature`
+    // and added 4 Hatcher endpoints (portal.ts); these columns are the
+    // Hatcher twins of the scape columns.
+    //
+    // Auto-provision cache: on first ClawVille → Hatcher crossing we
+    // backfill hatcher_principal_id / hatcher_world_character_id so later
+    // crossings skip the recompute. Both UNIQUE.
+    // -----------------------------------------------------------------
+    hatcherPrincipalId: varchar('hatcher_principal_id', { length: 128 }).unique(),
+    hatcherWorldCharacterId: varchar('hatcher_world_character_id', { length: 64 }).unique(),
+
+    // Account linking (existing Hatcher account ↔ ClawVille) — set by the
+    // link-code redemption flow (POST /api/portal/accept-hatcher-link).
+    // Once set, the portal minter prefers these over the auto-provisioned
+    // hatcher_* columns above. Mirror of linked_scape_*.
+    linkedHatcherPrincipalId: varchar('linked_hatcher_principal_id', { length: 128 }).unique(),
+    linkedHatcherWorldCharacterId: varchar('linked_hatcher_world_character_id', { length: 64 }).unique(),
+    linkedHatcherDisplayName: varchar('linked_hatcher_display_name', { length: 64 }),
+    linkedHatcherAt: timestamp('linked_hatcher_at', { withTimezone: true }),
+
+    // -----------------------------------------------------------------
     // Guest-avatar auto-create (2026-04-23) — un-authenticated visitors get
     // a throwaway user + avatar so they can play the Q2 activity games and
     // chat with NPCs without signing up. Cleanup cron deletes rows where
