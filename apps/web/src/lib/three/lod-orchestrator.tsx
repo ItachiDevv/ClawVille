@@ -19,7 +19,7 @@ const HALF_H = MAP_HEIGHT / 2;
  */
 const FULL_CAP = 14;
 const LOW_END_FULL_CAP = 8;
-const ADAPTIVE_TIER4_FULL_CAP = 4;
+const ADAPTIVE_TIER4_FULL_CAP = 2;
 const ACTIVE_FULL_CAP = detectLowEndGpuClass() ? LOW_END_FULL_CAP : FULL_CAP;
 
 /**
