@@ -175,7 +175,7 @@ export const MODEL_REGISTRY = {
   // here since pickerHidden). pickerHidden keeps it out of /create-agent — it is
   // assigned server-side as the default for every new Hatcher agent
   // (DEFAULT_HATCHER_MODEL_KEY in @clawville/shared) and is never user-selectable.
-  phanes: { path: '/avatars/phanes.vrm', scale: 13, label: 'Phanes', category: 'hatcher', avatar_type: 'vrm', animatorId: 'hermes-male', faceYaw: Math.PI, pickerHidden: true, preview: '/models/phanes-turnaround/front.png' },
+  phanes: { path: '/avatars/phanes.vrm?v=1', scale: 13, label: 'Phanes', category: 'hatcher', avatar_type: 'vrm', animatorId: 'hermes-male', faceYaw: Math.PI, pickerHidden: true, preview: '/models/phanes-turnaround/front.png?v=1' },
 
   // NOTE: `crayfish` removed from the picker 2026-04-16 — the mesh renders
   // noticeably larger than lobster at the same scale (different pivot) and
