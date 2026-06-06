@@ -253,13 +253,14 @@ export const RemotePlayerProxy = memo(function RemotePlayerProxy({
 }: {
   player: RemotePlayerState;
 }) {
-  // RemotePlayerState includes id-equivalent (sessionId). Forward via the
-  // shared shape — no allocation needed beyond the props object since
-  // EntityProxyMesh reads everything off entity.{x,y,...} the same way.
+  // RemotePlayerState.id is the opaque presence id (same key the full mesh +
+  // LOD set use). Forward via the shared shape (no allocation needed beyond
+  // the props object since EntityProxyMesh reads everything off
+  // entity.{x,y,...} the same way).
   return (
     <EntityProxyMesh
       entity={{
-        id: player.sessionId,
+        id: player.id,
         name: player.name,
         x: player.x,
         y: player.y,

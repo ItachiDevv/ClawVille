@@ -482,26 +482,22 @@ class NpcSimulation {
       browserClaws: this.getBrowserClawSnapshots(),
       arenaRound: this.arenaRound ? { ...this.arenaRound } : null,
       arenaSettings: { ...this.arenaSettings },
-      // Per-room snapshots don't drain the broker queue (the global
-      // broadcast does that). See broadcast() for the rationale.
+      // Hardcoded []. The collaboration-broker drain happens ONCE per tick in
+      // broadcast(), which overwrites this with the shared drained array
+      // before serialize. Callers that are NOT the broadcast loop (e.g. the
+      // world.ts initial-connect snapshot) intentionally keep [] so they
+      // don't steal entries destined for the room broadcast.
       collaborationEvents: [],
       timestamp: Date.now(),
     };
   }
 
-  /**
-   * Snapshot + drain the broker queue. Call ONLY from SSE broadcast —
-   * drained entries are consumed and won't appear in any subsequent
-   * snapshot. If no SSE listeners are connected, entries are preserved
-   * so late-connecting clients can still see recent collaboration.
-   */
-  private buildBroadcastSnapshot(): SimulationSnapshot {
-    const snapshot = this.getSnapshot();
-    if (this.listeners.size > 0) {
-      snapshot.collaborationEvents = getCollaborationBroker().drainLogEntries();
-    }
-    return snapshot;
-  }
+  // NOTE: the former `buildBroadcastSnapshot()` was removed (2026-06-06). The
+  // collaboration-broker drain now happens EXACTLY ONCE per tick inside
+  // `broadcast()` and the drained array is shared across the per-room AND the
+  // global snapshots. A second drain site would return [] (queue already
+  // emptied) and silently starve whichever stream drained second, which is
+  // exactly the bug that left the /game COLLAB tab dead after the SSE swap.
 
   private resolveSafeSpawn(rawX: number, rawY: number): { x: number; y: number } {
     const snapped = findNearestWalkable(rawX, rawY, NPC_COLLISION_HALF);
@@ -1346,12 +1342,12 @@ class NpcSimulation {
     this.cleanup();
     this.broadcast();
 
-    // Clean up stale browser claws every ~15s (30 ticks * 500ms)
+    // Clean up stale browser claws every ~6s (30 ticks * 200ms)
     if (this.tickCount % 30 === 0) {
       this.cleanupStaleClaws();
     }
 
-    // Periodic memory cleanup (~every 30 min: 3600 ticks * 500ms = 1800s)
+    // Periodic memory cleanup (~every 12 min: 3600 ticks * 200ms = 720s)
     if (this.tickCount % 3600 === 0) {
       memoryService.cleanup().catch(console.error);
     }
@@ -2412,18 +2408,31 @@ class NpcSimulation {
   }
 
   private broadcast() {
-    // Use the broadcast-specific snapshot that drains the collaboration
-    // broker queue. Non-broadcast callers (avatar chat, agent gateway, REST)
-    // must NOT call this method to avoid losing collab events.
-    //
     // Phase 1 multiplayer — we run the registry's GC pass here so empty
     // rooms / stale players are reaped at the same 5 Hz cadence as the
-    // snapshot publish, then broadcast per-room first (the new path) and
-    // the legacy global bucket (the npc-sse shim) afterwards. The
-    // collaboration-broker drain happens in the global path; per-room
-    // snapshots see `collaborationEvents: []` so two SSE consumers can't
-    // race for the same drained entries.
+    // snapshot publish, then broadcast per-room (the /game path) AND the
+    // legacy global bucket (the npc-sse shim).
     roomRegistry.tick();
+
+    // Are there ANY connected SSE consumers (room OR legacy global)?
+    let hasRoomListeners = false;
+    for (const bucket of this.roomListeners.values()) {
+      if (bucket.size > 0) { hasRoomListeners = true; break; }
+    }
+    const hasGlobalListeners = this.listeners.size > 0;
+    if (!hasRoomListeners && !hasGlobalListeners) return;
+
+    // COLLAB FIX: drain the broker queue EXACTLY ONCE per tick, here, then
+    // share the SAME array across every per-room snapshot AND the global
+    // snapshot. Previously the drain lived only in buildBroadcastSnapshot()
+    // (the legacy global path), which no /game client consumes after the SSE
+    // room swap, so the COLLAB tab + the agent.collaboration.turn signal
+    // were invisible. Draining once and sharing is safe: the client store
+    // dedupes collab entries by id, and we drain only when at least one
+    // listener exists so entries are preserved for a late-connecting client.
+    // The per-tick initial-connect snapshot in world.ts intentionally does
+    // NOT drain (it would steal entries destined for the room broadcast).
+    const collab: CollaborationLogEntry[] = getCollaborationBroker().drainLogEntries();
 
     // Per-room broadcast — pre-serialize ONCE per room (B6 punch list).
     // SSE consumers in the same room share the same string; we don't
@@ -2431,6 +2440,9 @@ class NpcSimulation {
     for (const [roomId, bucket] of this.roomListeners) {
       if (bucket.size === 0) continue;
       const snapshot = this.getRoomSnapshot(roomId);
+      // getRoomSnapshot hardcodes `collaborationEvents: []`; attach the
+      // shared drained array before serializing so room consumers see collab.
+      snapshot.collaborationEvents = collab;
       const json = JSON.stringify(snapshot);
       for (const listener of bucket) {
         try {
@@ -2441,9 +2453,14 @@ class NpcSimulation {
       }
     }
 
-    if (this.listeners.size === 0) return;
-    // Same pattern for the legacy global bucket.
-    const globalSnapshot = this.buildBroadcastSnapshot();
+    if (!hasGlobalListeners) return;
+    // Legacy global bucket (npc-sse shim): getSnapshot() + the SAME shared
+    // collab array. We deliberately do NOT call buildBroadcastSnapshot() here
+    // anymore: it would drain the broker a SECOND time and the second drain
+    // returns [] (queue already emptied above), so the global stream would
+    // never see collab. One drain site per tick is the invariant.
+    const globalSnapshot = this.getSnapshot();
+    globalSnapshot.collaborationEvents = collab;
     const globalJson = JSON.stringify(globalSnapshot);
     for (const listener of this.listeners) {
       try {

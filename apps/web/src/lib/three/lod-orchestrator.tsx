@@ -195,7 +195,7 @@ export default function LodOrchestrator() {
       if (!_frustum.intersectsSphere(_entitySphere)) continue;
       if (_candidateCount >= POOL_SIZE) break;
       const slot = _candidatePool[_candidateCount++];
-      slot.id = p.sessionId;
+      slot.id = p.id;
       slot.distSq = distSq;
     }
 
