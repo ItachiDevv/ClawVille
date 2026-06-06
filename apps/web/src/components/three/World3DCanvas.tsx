@@ -104,7 +104,7 @@ const QUALITY_SAMPLE_MS = 2500;
 const QUALITY_WARMUP_MS = 5000;
 const QUALITY_FPS_DOWN = 58;
 const QUALITY_FPS_UP = 72;
-const QUALITY_MAX_TIER = 3;
+const QUALITY_MAX_TIER = 4;
 
 export type WorldMode = 'game' | 'arena';
 
@@ -120,6 +120,7 @@ function applyQualityTier(flags: WorldPerfFlags, tier: number): WorldPerfFlags {
     groundCover: tier < 1 ? flags.groundCover : false,
     activityFx: tier < 2 ? flags.activityFx : false,
     labels: tier < 3 ? flags.labels : false,
+    residentDetail: tier < 4 ? flags.residentDetail : false,
   };
 }
 
@@ -944,6 +945,7 @@ const SceneContents = memo(function SceneContents({
   const showWaterFogParticles = flags.waterFogParticles && !staticOnly;
   const showGroundCover = flags.groundCover && !staticOnly;
   const showActivityFx = flags.activityFx && !staticOnly;
+  const showResidentDetail = flags.residentDetail && !staticOnly;
   // Read controlMode once at mount for camera routing; camera routing uses
   // getState() inside useFrame so it always has the latest value at zero cost.
   // We only need a reactive read here if we conditionally render JSX based on
@@ -1072,7 +1074,7 @@ const SceneContents = memo(function SceneContents({
       )}
       {showNpcs && (
         <group name="perf:location-npcs" userData={{ perfChunk: 'location-npcs' }}>
-          <ArenaLocationNpcs />
+          <ArenaLocationNpcs fullDetail={showResidentDetail} />
         </group>
       )}
       {/* Multiplayer Phase 1: remote players in the same room. Local viewer is

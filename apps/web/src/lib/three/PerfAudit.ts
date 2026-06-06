@@ -11,6 +11,7 @@ export interface WorldPerfFlags {
   waterFogParticles: boolean;
   groundCover: boolean;
   activityFx: boolean;
+  residentDetail: boolean;
   staticWorldOnly: boolean;
   uiOverlay: boolean;
 }
@@ -23,6 +24,7 @@ export const DEFAULT_WORLD_PERF_FLAGS: WorldPerfFlags = {
   waterFogParticles: true,
   groundCover: true,
   activityFx: true,
+  residentDetail: true,
   staticWorldOnly: false,
   uiOverlay: true,
 };
