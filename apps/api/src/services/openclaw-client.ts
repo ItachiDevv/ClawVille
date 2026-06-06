@@ -1,6 +1,25 @@
-import type { OpenClawBotConfig, AgentWireProtocol } from '@clawville/shared';
+import type {
+  OpenClawBotConfig,
+  AgentWireProtocol,
+  HatcherWorldState,
+} from '@clawville/shared';
+import { signPayload } from './service-issuer';
+import { validateHatcherProxyUrl } from './hatcher-config';
+import { PROTOCOL_VERSION } from './skill-protocol';
 
 type Protocol = AgentWireProtocol;
+
+/**
+ * Hard cap on the raw proxy-cognition reply we will accept (chars). Our
+ * `max_tokens` ask is advisory — a compromised / prompt-injected / hostile proxy
+ * box can ignore it and stream back a multi-megabyte body. Truncating at the
+ * source guarantees a bounded string reaches the [ACTION:] tag parser +
+ * dispatch loop in npc-simulation.ts, which is the only defense against a
+ * synchronous A*-pathfinding DoS on the shared single-threaded sim. 4000 chars
+ * is ~10× the longest legitimate reply (max_tokens:150 ≈ 600 chars) yet small
+ * enough that even an all-tags body bounds the parser to a trivial cost.
+ */
+const MAX_HATCHER_REPLY_LEN = 4000;
 
 interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
@@ -32,13 +51,70 @@ export class OpenClawClient {
   private timeoutMs: number;
   private maxTokens: number;
 
+  // --- Hatcher proxy-cognition fields (protocol === 'hatcher-proxy') ---
+  private agentId: string;
+  /** Raw partner agent id (no `hatcher:` prefix) for the outbound proxy. */
+  private proxyAgentId: string;
+  private proxyBaseUrl: string | null;
+  private scopedToken: string | null;
+  private systemContextProvider: (() => string | null) | null;
+  /**
+   * Structured PUBLIC-ONLY world-state provider for the hatcher-proxy path.
+   * Bound to the resolved in-world npcId by `npcSimulation.registerOpenClaw`.
+   * Replaces `systemContextProvider` for cognition: the partner owns the root
+   * prompt and builds it from the `clawville` block we ship.
+   */
+  private worldStateProvider: (() => HatcherWorldState | null) | null;
+
   constructor(config: OpenClawBotConfig) {
     this.gatewayUrl = config.gatewayUrl.replace(/\/+$/, '');
     this.authToken = config.authToken;
+    this.agentId = config.agentId;
     this.model = config.modelName ?? `openclaw:${config.agentId}`;
     this.protocol = config.protocol ?? 'openai-compat';
     this.timeoutMs = config.timeoutMs ?? 10000;
     this.maxTokens = config.maxTokens ?? 150;
+    // Outbound proxy uses the RAW partner agent id (no `hatcher:` prefix). Fall
+    // back to agentId for safety, then strip any `hatcher:` prefix defensively
+    // so the partner never sees our internal namespace even if a caller passes
+    // the namespaced id here.
+    this.proxyAgentId = (config.proxyAgentId ?? config.agentId).replace(/^hatcher:/, '');
+    this.proxyBaseUrl = config.proxyBaseUrl?.replace(/\/+$/, '') ?? null;
+    this.scopedToken = config.scopedToken ?? null;
+    this.systemContextProvider = config.systemContextProvider ?? null;
+    this.worldStateProvider = config.worldStateProvider ?? null;
+  }
+
+  /**
+   * Bind the orientation + world-state system-message provider after the
+   * client is constructed. Used by `npcSimulation.registerOpenClaw` to wire
+   * the provider to the resolved in-world npcId (only known once the body is
+   * spawned). No-op for non-proxy protocols (they ignore it).
+   *
+   * @deprecated For the hatcher-proxy path use `setWorldStateProvider` — the
+   * partner now owns the root prompt and we ship a structured `clawville`
+   * block instead of forcing a `role:'system'` message. Kept for any
+   * non-Hatcher caller still relying on a forced system message.
+   */
+  setSystemContextProvider(provider: () => string | null): void {
+    this.systemContextProvider = provider;
+  }
+
+  /**
+   * Bind the structured PUBLIC-ONLY world-state provider after construction.
+   * Used by `npcSimulation.registerOpenClaw` to wire the provider to the
+   * resolved in-world npcId. The hatcher-proxy chat ships this object in the
+   * top-level `clawville.worldState` block so Hatcher builds its own prompt.
+   * No-op for non-proxy protocols.
+   */
+  setWorldStateProvider(provider: () => HatcherWorldState | null): void {
+    this.worldStateProvider = provider;
+  }
+
+  /** The wire protocol this client speaks (read-only). Used by the cognition
+   *  consumer to gate the hatcher-proxy [ACTION:] parsing/dispatch path. */
+  getProtocol(): Protocol {
+    return this.protocol;
   }
 
   async chat(messages: ChatMessage[]): Promise<string> {
@@ -49,12 +125,187 @@ export class OpenClawClient {
         // Returning empty string tells the simulation "this bot doesn't speak
         // via gateway push" without throwing.
         return '';
+      case 'hatcher-proxy':
+        return this.chatHatcherProxy(messages);
       case 'anthropic':
         return this.chatAnthropic(messages);
       case 'custom-webhook':
         return this.chatCustomWebhook(messages);
       default:
         return this.chatOpenAI(messages);
+    }
+  }
+
+  /**
+   * Hatcher proxy cognition. POSTs an OpenAI chat-completions body to the
+   * Hatcher-managed per-agent proxy with DUAL auth:
+   *   - `Authorization: Bearer <scopedToken>` (Hatcher's per-agent token,
+   *     decrypted in-memory by the caller — never logged).
+   *   - `X-Clawville-Issuer-Pubkey` + `X-Clawville-Signature` (our ed25519
+   *     signature over sha256(canonicalJSON(body)), via service-issuer).
+   *
+   * The body string we sign is the EXACT bytes we transmit (the canonical
+   * JSON from signPayload) so the partner verifies what it receives.
+   *
+   * HATCHER OWNS THE ROOT PROMPT (Phase A++, 2026-06-02): we no longer force a
+   * `role:'system'` message on this path. Instead the body carries a top-level
+   * structured `clawville` object (playerMessage + PUBLIC-ONLY worldState +
+   * an orientation pointer) so the partner builds its own system prompt. The
+   * `messages` array carries ONLY the user turn so it can never conflict with
+   * the partner's root prompt.
+   *
+   * SECURITY: the `clawville` block contains ONLY public world-state — never the
+   * scoped token, wallet/identity secret, session id, userId, or any internal
+   * id beyond public npc/building ids.
+   *
+   * FAIL SOFT: any error (missing config, SSRF reject, network/timeout,
+   * non-2xx, malformed JSON) returns '' so the simulation degrades
+   * gracefully — a missing reply just means "this bot didn't speak this
+   * turn". We log the failure WITHOUT the scoped token.
+   */
+  private async chatHatcherProxy(messages: ChatMessage[]): Promise<string> {
+    if (!this.proxyBaseUrl || !this.scopedToken) {
+      console.error(
+        `[Hatcher] proxy cognition missing config for agent ${this.agentId} (no proxyBaseUrl/scopedToken) — failing soft`,
+      );
+      return '';
+    }
+
+    // SSRF guard — re-validate at call time (defense-in-depth). The proxy URL
+    // is partner-supplied; never POST to a non-https or non-allowlisted host.
+    const urlCheck = validateHatcherProxyUrl(this.proxyBaseUrl);
+    if (!urlCheck.ok) {
+      console.error(
+        `[Hatcher] proxy URL rejected for agent ${this.agentId}: ${urlCheck.reason} — failing soft`,
+      );
+      return '';
+    }
+
+    // Hatcher owns the root prompt: ship ONLY the user turn. Drop any system
+    // message the caller passed (the partner builds its own from `clawville`)
+    // and keep the LAST user turn as the player message / situation text. We
+    // pass a single user message so the partner's root prompt can never be
+    // overridden by ours.
+    const userTurns = messages.filter((m) => m.role === 'user');
+    const playerMessage = userTurns.length > 0 ? userTurns[userTurns.length - 1].content : '';
+    const outMessages: ChatMessage[] = [{ role: 'user', content: playerMessage }];
+
+    // Structured world-state (PUBLIC-ONLY). Bound to the agent's in-world body
+    // by `npcSimulation.registerOpenClaw`. May be null if the body isn't in the
+    // world (or the provider threw) — we then omit `worldState` but still ship
+    // the user turn + orientation pointer so cognition degrades, not crashes.
+    let worldState: HatcherWorldState | null = null;
+    if (this.worldStateProvider) {
+      try {
+        worldState = this.worldStateProvider();
+      } catch (err) {
+        console.error(`[Hatcher] worldStateProvider threw for agent ${this.agentId}:`, err);
+      }
+    }
+
+    // OpenAI chat-completions body + a top-level `clawville` block so the
+    // partner builds its own system prompt. Model = `hatcher:<rawAgentId>` so
+    // Hatcher matches the model to the agent it knows (not our internal
+    // `hatcher:<id>` namespace key).
+    const requestBody = {
+      model: `hatcher:${this.proxyAgentId}`,
+      messages: outMessages,
+      max_tokens: this.maxTokens,
+      temperature: 0.8,
+      clawville: {
+        playerMessage,
+        // Omit `worldState` entirely when unavailable rather than send null —
+        // keeps the canonical signed bytes clean for the partner's verifier.
+        ...(worldState ? { worldState } : {}),
+        orientation: {
+          // Single source of truth — the manifest's canonical protocol version
+          // (services/skill-protocol.ts), so this pointer never drifts from the
+          // served `/api/skills/protocol/skill.md` manual.
+          version: PROTOCOL_VERSION,
+          url: '/api/skills/protocol/skill.md',
+        },
+      },
+    };
+
+    // signPayload returns the EXACT canonical JSON bytes to send + the
+    // base58 signature + our issuer pubkey. We MUST send `signed.body`
+    // verbatim so the partner hashes the same bytes.
+    let signed: ReturnType<typeof signPayload>;
+    try {
+      signed = signPayload(requestBody);
+    } catch (err) {
+      console.error(`[Hatcher] failed to sign cognition request for agent ${this.agentId}:`, err);
+      return '';
+    }
+
+    const endpoint = `${urlCheck.url.replace(/\/+$/, '')}/integrations/clawville/agents/${encodeURIComponent(this.proxyAgentId)}/chat`;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
+    try {
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        // SSRF: NEVER follow redirects. The SSRF allowlist only validates the
+        // INITIAL host; a 3xx from an allowlisted (compromised / rebinding /
+        // attacker-subdomain) Hatcher host could otherwise bounce us to
+        // 169.254.169.254, localhost, or any RFC1918 address — turning us into
+        // a request proxy AND forwarding the scoped token + our ed25519 sig on
+        // the redirected hop. `redirect:'manual'` makes fetch surface the 3xx
+        // as a response instead of following it; we treat any 3xx as a hard
+        // fail. (Plan §14: "no redirect-following to non-allowlisted hosts".)
+        redirect: 'manual',
+        headers: {
+          'Content-Type': 'application/json',
+          // Hatcher's per-agent scoped token — decrypted in-memory only.
+          Authorization: `Bearer ${this.scopedToken}`,
+          // ClawVille → Hatcher callback signature (ed25519 over the body).
+          'X-Clawville-Issuer-Pubkey': signed.pubkey,
+          'X-Clawville-Signature': signed.signature,
+        },
+        body: signed.body,
+        signal: controller.signal,
+      });
+
+      // Hard-fail on any redirect. With redirect:'manual', a 3xx surfaces here
+      // (status 300-399, or status 0 / res.type==='opaqueredirect' on some
+      // runtimes). Do NOT follow it — fail soft and log status only.
+      if (
+        res.type === 'opaqueredirect' ||
+        (res.status >= 300 && res.status < 400)
+      ) {
+        console.error(
+          `[Hatcher] proxy cognition attempted redirect (status ${res.status}) for agent ${this.agentId} — refusing to follow, failing soft`,
+        );
+        return '';
+      }
+
+      if (!res.ok) {
+        // Log status only — never the token, never the (possibly sensitive)
+        // body which could echo headers back.
+        console.error(
+          `[Hatcher] proxy cognition returned ${res.status} for agent ${this.agentId} — failing soft`,
+        );
+        return '';
+      }
+
+      const data = (await res.json()) as ChatCompletionResponse;
+      const content = data.choices?.[0]?.message?.content ?? '';
+      // Truncate at the source: max_tokens is advisory and a hostile / injected
+      // proxy can return an arbitrarily large body. Cap before it ever reaches
+      // the sim's [ACTION:] tag parser + A* dispatch loop (the only defense
+      // against a synchronous pathfinding DoS on the shared single-threaded
+      // sim). Slicing mid-tag at worst yields a malformed tag the dispatcher
+      // safely drops — it never crashes.
+      return content.length > MAX_HATCHER_REPLY_LEN
+        ? content.slice(0, MAX_HATCHER_REPLY_LEN)
+        : content;
+    } catch (err) {
+      // Network / timeout / abort / JSON-parse error — fail soft. Log the
+      // error message but NOT the token.
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`[Hatcher] proxy cognition failed for agent ${this.agentId}: ${msg} — failing soft`);
+      return '';
+    } finally {
+      clearTimeout(timeout);
     }
   }
 

@@ -5,20 +5,26 @@
  * vignettes that show the world in motion before the visitor commits
  * to a sign-up.
  *
- *   1. Reef Race vignette (live)
- *   2. Bumper Shells placeholder (waits on Reef Race v2 to finish)
- *   3. Building visit vignette (live)
+ *   1. AgentChatVignette  — Agent↔Agent brand axis demo
+ *   2. CoveVignette       — The Cove (casino floor) preview
+ *   3. BuildingVisitVignette — Building visit / MiladyAI teachers
  *
- * Each tile is dynamic-imported (ssr: false) — the SSR shell renders
- * a static frame so the page reflows zero on hydration.
+ * All three tiles are live. Each tile is dynamic-imported (ssr: false) —
+ * the SSR shell renders a static placeholder so the page reflows zero on
+ * hydration.
  */
 
 import dynamic from 'next/dynamic';
 import Link from 'next/link';
 
-const ReefRaceVignette = dynamic(() => import('./ReefRaceVignette'), {
+const AgentChatVignette = dynamic(() => import('./AgentChatVignette'), {
   ssr: false,
-  loading: () => <VignettePlaceholder label="Reef Race" hint="Loading 3D…" />,
+  loading: () => <VignettePlaceholder label="Agent Chat" hint="Loading 3D…" />,
+});
+
+const CoveVignette = dynamic(() => import('./CoveVignette'), {
+  ssr: false,
+  loading: () => <VignettePlaceholder label="The Cove" hint="Loading 3D…" />,
 });
 
 const BuildingVisitVignette = dynamic(() => import('./BuildingVisitVignette'), {
@@ -61,8 +67,10 @@ function Tile({ title, caption, href, children, status = 'live', accent }: TileP
       {/* 3D canvas / placeholder area */}
       <div className="relative aspect-video w-full overflow-hidden">
         {children}
-        {/* Top-left status badge */}
-        <div className="absolute top-3 left-3 z-10">
+        {/* Status badge — bottom-right so it never collides with the top-anchored
+            speech bubbles (a left-side speaker's bubble sits top-left, same corner
+            the badge used to occupy). */}
+        <div className="absolute bottom-3 right-3 z-10">
           <span
             className={`rounded-full px-2 py-0.5 font-mono text-[9px] uppercase tracking-[0.18em] border backdrop-blur-md ${
               isPending
@@ -100,25 +108,6 @@ function Tile({ title, caption, href, children, status = 'live', accent }: TileP
   return inner;
 }
 
-/**
- * Bumper Shells placeholder — Reef Race v2 has to land first before
- * we record a vignette of the bumper-shells loop, since the activity
- * lobby chrome is shared with reef race. Static visual only for now.
- */
-function BumperShellsPlaceholder() {
-  return (
-    <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-gradient-to-br from-[#1a0a14] via-[#0a1628] to-[#061520]">
-      <div className="text-5xl select-none">🐚</div>
-      <div className="text-[10px] font-mono uppercase tracking-[0.3em] text-pink-300/60">
-        Bumper Shells
-      </div>
-      <div className="text-[9px] font-mono text-white/35 max-w-[14rem] text-center leading-relaxed">
-        Live demo lands once Reef Race v2 finishes — the activity lobby chrome ships with that drop.
-      </div>
-    </div>
-  );
-}
-
 export function LiveDemoStrip() {
   return (
     <section className="relative z-10 py-16 px-4 sm:px-6 md:px-10 lg:px-16 xl:px-24 2xl:px-32 bg-[#061520]">
@@ -136,15 +125,15 @@ export function LiveDemoStrip() {
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
-          <Tile title="Reef Race" caption="Spline-track racer" href="/game" accent="cyan">
-            <ReefRaceVignette />
+          <Tile title="Agent ↔ Agent" caption="Bots teaching bots" href="/leaderboard" accent="cyan">
+            <AgentChatVignette />
           </Tile>
 
-          <Tile title="Bumper Shells" caption="Last shell standing" status="soon" accent="pink">
-            <BumperShellsPlaceholder />
+          <Tile title="The Cove" caption="Casino floor" href="/cove" accent="pink">
+            <CoveVignette />
           </Tile>
 
-          <Tile title="Building Visit" caption="MiladyAI teachers" href="/game" accent="amber">
+          <Tile title="Building Visit" caption="Learn from MiladyAI teachers" href="/game" accent="amber">
             <BuildingVisitVignette />
           </Tile>
         </div>

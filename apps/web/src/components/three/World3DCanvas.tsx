@@ -448,6 +448,105 @@ function markWorldReadyIfUploadsDone(): void {
   }
 }
 
+function measureCanvasHost(canvas: HTMLCanvasElement | undefined): { width: number; height: number; top: number; left: number } | null {
+  const host = canvas?.parentElement;
+  const rect = host?.getBoundingClientRect() ?? canvas?.getBoundingClientRect();
+  if (!rect) return null;
+
+  const width = Math.round(rect.width);
+  const height = Math.round(rect.height);
+  if (width <= 0 || height <= 0) return null;
+
+  return {
+    width,
+    height,
+    top: rect.top,
+    left: rect.left,
+  };
+}
+
+/**
+ * Async-WebGPU first-paint kick.
+ *
+ * This does not render. It runs once after the first normal R3F frame has had
+ * a chance to call WebGPUBackend.context.getCurrentTexture(), then forces the
+ * same state path as R3F's ResizeObserver and explicitly refreshes three's
+ * WebGPU canvas context.
+ */
+function forceWebGpuFirstPaint(state: any): void {
+  const gl = state?.gl;
+  const backend = gl?.backend;
+  const canvas: HTMLCanvasElement | undefined = gl?.domElement;
+
+  // WebGPURenderer can be backed by WebGLBackend when forceWebGL/fallback is
+  // active. Only the real WebGPU backend owns a GPUCanvasContext swapchain.
+  if (!canvas || !backend?.isWebGPUBackend || typeof gl.setSize !== 'function') return;
+
+  let cancelled = false;
+
+  const reconfigure = () => {
+    if (cancelled) return;
+
+    const measured = measureCanvasHost(canvas);
+    if (!measured) return;
+
+    if (
+      state.size?.width !== measured.width ||
+      state.size?.height !== measured.height ||
+      state.size?.top !== measured.top ||
+      state.size?.left !== measured.left
+    ) {
+      state.setSize?.(measured.width, measured.height, measured.top, measured.left);
+    }
+
+    // gl.setSize() → WebGPUBackend.updateSize() nulls the cached render-pass
+    // descriptor + color buffer, but in the BUILT three r170 it does NOT
+    // re-call GPUCanvasContext.configure() — that runs exactly once in init().
+    // (backend.context is a plain property, not a reconfiguring getter, in the
+    // shipped build — verified against three.webgpu.js.) So if the swapchain was
+    // configured while the canvas was a transient/wrong size, nothing re-syncs
+    // it and the canvas presents only the clear color (blue) until a real
+    // dimension change. Fix: after the canvas has its final backing size,
+    // EXPLICITLY re-call context.configure() with three's own params. configure()
+    // sizes the swapchain to the canvas's CURRENT backing store, so the next
+    // getCurrentTexture() returns a correctly-sized texture and the world paints.
+    gl.setSize(measured.width, measured.height, false);
+    try {
+      const ctx = backend.context as GPUCanvasContext | undefined;
+      const device = backend.device as GPUDevice | undefined;
+      const format: GPUTextureFormat | undefined = backend.utils?.getPreferredCanvasFormat?.();
+      if (ctx && device && format) {
+        // Mirror WebGPUBackend.init()'s configure exactly.
+        ctx.configure({
+          device,
+          format,
+          usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
+          alphaMode: backend.parameters?.alpha ? 'premultiplied' : 'opaque',
+        });
+      }
+    } catch (err) {
+      console.warn('[World3D] WebGPU context reconfigure skipped:', err);
+    }
+
+    state.invalidate?.();
+  };
+
+  // onCreated fires before the first frame. Two RAFs place this after the first
+  // ordinary frame in frameloop="always", so the reconfigure replaces an actual
+  // first swapchain texture instead of racing initial context creation.
+  requestAnimationFrame(() => {
+    requestAnimationFrame(reconfigure);
+  });
+
+  // Late one-shot guard for async layout/font/texture pressure during initial
+  // load. It is idempotent and still only touches size/context state.
+  const lateTimer = window.setTimeout(reconfigure, 750);
+  window.setTimeout(() => {
+    cancelled = true;
+    window.clearTimeout(lateTimer);
+  }, 1500);
+}
+
 function kickRenderLoop(state: any): void {
   if (typeof state.invalidate === 'function') {
     state.invalidate();
@@ -467,6 +566,9 @@ function kickRenderLoop(state: any): void {
       // hidden and RAF is throttled to 0 Hz.
       (window as any).__W3D_step = () =>
         state.advance(performance.now() / 1000, true);
+      // Force the WebGPU swapchain to reconfigure so the world paints on
+      // first load instead of staying blue until a manual resize.
+      forceWebGpuFirstPaint(state);
     });
   }
 }
@@ -578,26 +680,18 @@ function PerfCameraPreset({
   return null;
 }
 
-function OpaqueCanvasClearGuard() {
-  const { camera, gl, scene } = useThree();
-  useEffect(() => {
-    let raf = 0;
-    let disposed = false;
-    const present = () => {
-      if (disposed) return;
-      gl.setClearColor(SKY_COLOR, 1);
-      gl.setClearAlpha?.(1);
-      gl.render(scene, camera);
-      raf = requestAnimationFrame(present);
-    };
-    raf = requestAnimationFrame(present);
-    return () => {
-      disposed = true;
-      cancelAnimationFrame(raf);
-    };
-  }, [camera, gl, scene]);
-  return null;
-}
+// REMOVED 2026-05-31 — OpaqueCanvasClearGuard caused the permanent blue screen.
+// It ran an INDEPENDENT requestAnimationFrame loop calling gl.render(scene, camera)
+// on top of R3F's own frameloop='always' render loop — measured live at exactly
+// 2.00 gl.render() calls per frame. On WebGPU the swapchain texture can only be
+// acquired once per frame (context.getCurrentTexture()); the guard's second
+// render presented only the SKY_COLOR clear and clobbered R3F's real frame, so
+// the whole world showed as uniform blue. Opaque presentation is already
+// guaranteed by: alpha:false on the renderer + renderer.setClearColor(SKY_COLOR,1)
+// in createWebGPURenderer/onCreated + scene.background=SKY_COLOR. R3F's
+// frameloop='always' renders the populated scene every frame on its own — the
+// guard added nothing but the fatal double-render. Introduced in commit 11034881
+// ("stabilize world canvas presentation"); that "stabilization" was the regression.
 
 // ---------------------------------------------------------------------------
 // StaggeredTextureUpload — spread GPU texture uploads across idle time
@@ -648,6 +742,8 @@ function StaggeredTextureUpload() {
     // Verify initTexture is available (guard for unusual renderer builds)
     if (typeof (gl as any).initTexture !== 'function') {
       console.warn('[World3D] StaggeredTextureUpload: renderer.initTexture() not available, skipping');
+      (window as any).__W3D_TEXTURE_UPLOAD_TOTAL = 0;
+      (window as any).__W3D_TEXTURE_UPLOAD_DONE = 0;
       markTextureUploadReady();
       return;
     }
@@ -682,12 +778,25 @@ function StaggeredTextureUpload() {
 
         const unique = Array.from(seen);
         if (unique.length === 0) {
+          // No-textures path — still publish the counters so the loader bar
+          // doesn't get stuck waiting for an update that never arrives.
+          (window as any).__W3D_TEXTURE_UPLOAD_TOTAL = 0;
+          (window as any).__W3D_TEXTURE_UPLOAD_DONE = 0;
           markTextureUploadReady();
           return;
         }
 
         const hasIdle = typeof (window as any).requestIdleCallback === 'function';
         console.log(`[World3D] StaggeredTextureUpload: uploading ${unique.length} textures via ${hasIdle ? 'rIC' : 'rAF'} budget`);
+
+        // 2026-05-31: publish upload progress so the SeaLoadingScreen bar can
+        // track the GPU-upload phase honestly. Without this the bar hit 99%
+        // once asset downloads finished and then stalled for the entire
+        // texture-upload window — the user's "loads another 2-3× the wait"
+        // complaint. Window flags are cheap (no React state, no allocs in
+        // the slice loop).
+        (window as any).__W3D_TEXTURE_UPLOAD_TOTAL = unique.length;
+        (window as any).__W3D_TEXTURE_UPLOAD_DONE = 0;
 
         let i = 0;
 
@@ -704,6 +813,7 @@ function StaggeredTextureUpload() {
             }
             i++;
           }
+          (window as any).__W3D_TEXTURE_UPLOAD_DONE = i;
           if (i < unique.length) {
             idleHandle = (window as any).requestIdleCallback(uploadIdle, { timeout: 200 });
           } else {
@@ -723,6 +833,7 @@ function StaggeredTextureUpload() {
               console.warn('[World3D] initTexture error (non-fatal):', err);
             }
           }
+          (window as any).__W3D_TEXTURE_UPLOAD_DONE = i;
           const elapsed = performance.now() - t0;
           if (elapsed > 20) {
             console.warn(`[World3D] StaggeredTextureUpload: batch took ${elapsed.toFixed(1)}ms`);
@@ -795,8 +906,6 @@ const SceneContents = memo(function SceneContents({
 
   return (
     <>
-      <OpaqueCanvasClearGuard />
-
       {/* Pre-compile WebGPU render pipelines once after the first frame commit.
           Eliminates the 274ms post-mount main-thread hitch. No-ops on WebGL. */}
       <PreCompilePipelines />

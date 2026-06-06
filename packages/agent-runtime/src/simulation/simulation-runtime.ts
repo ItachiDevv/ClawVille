@@ -59,7 +59,7 @@ export interface SimulationRuntimeDeps {
   pathfind: PathfindFn;
   dbHooks: AvatarDbHooks;
   databaseUrl?: string;
-  apiKeys?: { gemini?: string };
+  apiKeys?: { gemini?: string; openai?: string };
   /** Optional home spawn coordinates (defaults to center of 5120x5120) */
   homeX?: number;
   homeY?: number;
@@ -92,8 +92,9 @@ export interface SimulationServices {
  * system prompt so the LLM understands its role as "the world puppeteer".
  *
  * Only includes plugins we actually need. plugin-openai / plugin-solana /
- * plugin-anthropic are deliberately omitted — Gemini text provider (priority
- * 95, prepended by ElizaRuntime) handles all text generation.
+ * plugin-anthropic are deliberately omitted — the OpenAI text provider (priority
+ * 95, prepended by ElizaRuntime) handles all text generation. Embeddings go
+ * through the OpenAI embedding provider (1536-dim) prepended by ElizaRuntime.
  */
 function buildSimulationCharacter(): Character {
   const input: CharacterInput & { name: string } = {
@@ -107,7 +108,9 @@ function buildSimulationCharacter(): Character {
       '@elizaos/plugin-sql',
     ],
     settings: {
-      model: 'gemini-2.5-flash',
+      // Informational only — actual text routing is via the OpenAI text provider
+      // (priority 95) prepended by ElizaRuntime; this string is not consumed by it.
+      model: 'gpt-4o-mini',
     } as any,
     style: {
       all: ['Respond only with structured JSON — no prose, no explanation'],

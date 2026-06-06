@@ -17,6 +17,7 @@
 import { randomBytes } from 'crypto';
 import { and, eq, isNull, gt } from 'drizzle-orm';
 import { db, agentSessionTickets, sql } from '@clawville/database';
+import { sessionDigest } from './session-digest';
 
 /**
  * Default TTL matches the spec (10 min). Overridable via env for load
@@ -122,7 +123,10 @@ export async function mintSessionTicket(params: {
     ticket,
     userId,
     avatarId: avatarId ?? null,
-    issuedToAgentSession: issuedToAgentSession ?? null,
+    // Write-only provenance digest, NOT the raw real-CT bearer (Codex auth-lens
+    // fix #4): consumeTicket never re-reads this as a live bearer, so digesting
+    // cannot break redemption. Never persist a recoverable session bearer.
+    issuedToAgentSession: issuedToAgentSession ? sessionDigest(issuedToAgentSession) : null,
     expiresAt,
     identityType,
     identityKey,

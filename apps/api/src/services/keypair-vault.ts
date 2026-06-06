@@ -51,6 +51,49 @@ export function decryptSecretKey(
   return Keypair.fromSecretKey(new Uint8Array(decrypted));
 }
 
+/**
+ * Encrypt an arbitrary UTF-8 secret string (e.g. a partner-issued scoped
+ * bearer token) under VANITY_ENCRYPTION_KEY with AES-256-GCM. Mirrors the
+ * `encryptSecretKey` envelope shape used for identity/treasury secrets —
+ * three base64 fields (ciphertext + iv + auth tag) the caller persists on
+ * its row. Used for the Hatcher proxy token (openclaw_bots.proxy_token_*).
+ *
+ * NEVER store the plaintext token; NEVER log the return of decryptToken().
+ */
+export function encryptToken(plaintext: string): {
+  enc: string;
+  iv: string;
+  tag: string;
+} {
+  const key = getEncryptionKey();
+  const iv = randomBytes(12);
+  const cipher = createCipheriv(ALGORITHM, key, iv);
+  const encrypted = Buffer.concat([
+    cipher.update(Buffer.from(plaintext, 'utf8')),
+    cipher.final(),
+  ]);
+  const tag = cipher.getAuthTag();
+  return {
+    enc: encrypted.toString('base64'),
+    iv: iv.toString('base64'),
+    tag: tag.toString('base64'),
+  };
+}
+
+/** Decrypt a token encrypted by `encryptToken` back to its UTF-8 string. */
+export function decryptToken(enc: string, iv: string, tag: string): string {
+  const key = getEncryptionKey();
+  const ivBuf = Buffer.from(iv, 'base64');
+  const tagBuf = Buffer.from(tag, 'base64');
+  const decipher = createDecipheriv(ALGORITHM, key, ivBuf);
+  decipher.setAuthTag(tagBuf);
+  const decrypted = Buffer.concat([
+    decipher.update(Buffer.from(enc, 'base64')),
+    decipher.final(),
+  ]);
+  return decrypted.toString('utf8');
+}
+
 type VanitySuffix = (typeof vanitySuffixEnum.enumValues)[number];
 
 /** Import a vanity keypair from raw JSON bytes or base58 private key */

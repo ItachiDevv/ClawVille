@@ -101,7 +101,14 @@ export function getPublishedIssuerInfo(): {
   return {
     publicKey: loadIssuerPubkey(),
     algorithm: 'ed25519',
-    purposes: ['partner-portal-issue', 'partner-portal-accept-link'],
+    purposes: [
+      'partner-portal-issue',
+      'partner-portal-accept-link',
+      // Hatcher partner #2 (Phase A — 2026-06-01): we sign outbound cognition
+      // callbacks to the Hatcher per-agent proxy with this same key. Published
+      // so Hatcher can verify the X-Clawville-Signature on our callbacks.
+      'partner-cognition-callback',
+    ],
   };
 }
 

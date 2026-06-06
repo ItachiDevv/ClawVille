@@ -1,69 +1,112 @@
 'use client';
 
 /**
- * BlackjackModal — Phase 6.4.0 interactive shell.
+ * BlackjackModal — Phase 6.4.1 AUTHORITATIVE engine client.
  *
- * State machine phases (useReducer):
- *   idle        → bet selector + DEAL button visible.
- *   dealing     → animated card deal (~800ms total). No player actions.
- *   player-turn → HIT + STAND active. DOUBLE/SPLIT/SURRENDER rendered-but-disabled.
- *   dealer-turn → dealer reveals hole card, draws to hard 17. No player actions.
- *   resolved    → outcome banner + NEXT HAND + WALK AWAY.
+ * Replaces the 6.4.0 client-side mock (mulberry32 deck + local payouts). Every
+ * card, total, outcome, and balance now comes from the server
+ * (`/api/cove/blackjack/*`) — the client sends ONLY its decision + bet and
+ * renders the response verbatim. There is NO client-side deck, NO client-side
+ * payout math, NO local outcome resolution. Mirrors how SlotScreenModal drives
+ * the cove-slots route.
  *
- * Mock deck: client-side 52-card shuffle per hand via mulberry32 seeded RNG.
- * No API calls in 6.4.0. Bankroll display is local-only (no ledger writes).
+ * Flow:
+ *   open  → GET /session/current (restore an open shoe) else lazy POST
+ *           /session/open on first Deal.
+ *   deal  → POST /hand/deal {shoeId, bet, insurance}. Natural settles inline
+ *           (dealtImmediately). 409 {reshuffled} → open a fresh shoe + retry.
+ *   act   → POST /action {handId, action, handSlot} per HIT/STAND/DOUBLE/
+ *           SPLIT/SURRENDER; insurance via POST /action {action:'insure'}
+ *           BEFORE any main-hand action (offered only on a dealer-Ace upcard).
+ *   close → POST /session/close (Lucia auth) reveals serverSeed for replay.
  *
- * Phase 6.4.0 constraints:
- *   - NO ledger writes (no transferClawTokens / no real CT debit).
- *   - DOUBLE/SPLIT/SURRENDER rendered-but-disabled per plan §4.0.
- *   - Particle celebration deferred to 6.4.1.
+ * Idempotency: a fresh UUID is minted per Deal press and per terminal action
+ * press, reused on retry within that press (mirrors slots). A synchronous
+ * `busyRef` lock blocks double-fire before the first await.
  *
- * Iris Xe safe: no drei Text/Billboard, no InstancedMesh+ShaderMaterial,
- * no per-frame new Vector3. Pure React/CSS, zero Three.js import.
+ * Agent modes (Phase 6.4.1 UI seam only):
+ *   - Control     — the human taps the action buttons. A connected agent acts
+ *                   as an ADVISOR: it posts advice text into the advisor panel
+ *                   and NEVER submits a decision. (Advisor wiring is a clean
+ *                   seam for Phase 6.4.2 — see SEAM markers.)
+ *   - Autonomous  — a connected agent makes the decisions. Disabled until the
+ *                   connected-agent WebSocket protocol ships (FEATURE_GATE).
+ *
+ * Iris Xe safe: pure React/CSS DOM, zero Three.js. No drei Text/Billboard,
+ * no InstancedMesh. No-dark-text-on-dark-panel: light tokens only on the dark
+ * felt/velvet (cream / amber / explicit hex; never gray/slate-700+).
  */
 
-import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useCoveStore } from '@/stores/cove';
+import { useGameStore } from '@/stores/game';
 import { useAvatar } from '@/hooks/use-avatar';
 import BlackjackCard from './BlackjackCard';
 import '@/styles/cove-tokens.css';
+import {
+  COVE_BLACKJACK_MIN_BET,
+  COVE_BLACKJACK_MAX_BET,
+} from '@/lib/cove/blackjack-types';
 import type {
   BlackjackCard as BJCard,
-  BlackjackSuit,
-  BlackjackRank,
   BlackjackOutcome,
+  SerializedBlackjackHandResult,
+  SerializedPlayerHand,
 } from '@/lib/cove/blackjack-types';
+import {
+  AgentDriverUnavailableError,
+  AgentUndecidedError,
+  CoveApiError,
+  describeBlackjackError,
+  fetchAgentBlackjackDecision,
+  fetchCurrentBlackjackShoe,
+  fetchCurrentBlackjackHand,
+  isActionInProgress,
+  isCurrentHandLive,
+  isSettled,
+  reshuffledBody,
+  useBlackjackAction,
+  useCloseBlackjackShoe,
+  useDealHand,
+  useOpenBlackjackShoe,
+  useTakeInsurance,
+  type ActionResponse,
+  type AgentDecisionAction,
+  type BlackjackShoeWire,
+  type CurrentHandLive,
+  type DealResponse,
+  type SettledHandResponse,
+} from '@/lib/cove/blackjack-api-client';
 
 // ---------------------------------------------------------------------------
-// Bet chips
+// Bet chips — must stay within engine bounds (5–500 CT).
 // ---------------------------------------------------------------------------
-const BET_STEPS = [10, 25, 50, 100, 250, 500] as const;
+const BET_STEPS = [5, 25, 50, 100, 250, 500] as const;
 type BetStep = (typeof BET_STEPS)[number];
 
-function BetChip({ value, selected, onClick }: {
+function BetChip({ value, selected, disabled, onClick }: {
   value: BetStep;
   selected: boolean;
+  disabled: boolean;
   onClick: () => void;
 }) {
   return (
     <button
       type="button"
       onClick={onClick}
+      disabled={disabled}
       aria-pressed={selected}
       style={{
         padding: '5px 12px',
         borderRadius: 6,
-        border: selected
-          ? '1.5px solid var(--pt-amber)'
-          : '1.5px solid rgba(160,140,100,0.35)',
-        background: selected
-          ? 'rgba(200,150,50,0.18)'
-          : 'rgba(10,30,20,0.6)',
+        border: selected ? '1.5px solid var(--pt-amber)' : '1.5px solid rgba(160,140,100,0.35)',
+        background: selected ? 'rgba(200,150,50,0.18)' : 'rgba(10,30,20,0.6)',
         color: selected ? 'var(--pt-amber)' : 'var(--pt-cream-soft)',
         fontFamily: 'var(--pt-data)',
         fontWeight: selected ? 700 : 400,
         fontSize: 12,
-        cursor: 'pointer',
+        cursor: disabled ? 'not-allowed' : 'pointer',
+        opacity: disabled ? 0.45 : 1,
         transition: 'border-color 0.15s, background 0.15s',
         letterSpacing: '0.04em',
         flexShrink: 0,
@@ -75,26 +118,26 @@ function BetChip({ value, selected, onClick }: {
 }
 
 // ---------------------------------------------------------------------------
-// Outcome banner
+// Outcome banner — driven entirely by the server-settled result.
 // ---------------------------------------------------------------------------
-function OutcomeBanner({ outcome, payout, label, isBust }: {
-  outcome: BlackjackOutcome;
-  payout: number;
-  label: string;
-  isBust?: boolean;
-}) {
-  const isWin  = outcome === 'win' || outcome === 'blackjack';
+function OutcomeBanner({ outcome, net }: { outcome: BlackjackOutcome; net: bigint }) {
+  const isWin = outcome === 'blackjack' || outcome === 'win';
   const isPush = outcome === 'push';
+  const isSurrender = outcome === 'surrender';
   const accent =
-    isWin  ? 'var(--pt-amber-glow)' :
+    isWin ? 'var(--pt-amber-glow)' :
     isPush ? 'var(--pt-cream-soft)' :
-             '#e85555';
-  const bannerLabel =
+    isSurrender ? '#d6a14a' :
+    '#e85555';
+  const label =
     outcome === 'blackjack' ? 'BLACKJACK!' :
-    isWin                   ? 'YOU WIN'    :
-    isPush                  ? 'PUSH'       :
-    isBust                  ? 'BUST'       :
-                              'YOU LOSE';
+    outcome === 'win' ? 'YOU WIN' :
+    outcome === 'push' ? 'PUSH' :
+    outcome === 'surrender' ? 'SURRENDER' :
+    'YOU LOSE';
+
+  const netNum = Number(net);
+  const showNet = netNum !== 0;
 
   return (
     <div
@@ -130,49 +173,41 @@ function OutcomeBanner({ outcome, payout, label, isBust }: {
           fontFamily: 'var(--pt-data)',
           letterSpacing: '0.2em',
           fontWeight: 700,
-          marginBottom: 4,
+          marginBottom: showNet ? 4 : 0,
         }}>
-          {bannerLabel}
+          {label}
         </div>
-        {payout !== 0 && (
+        {showNet && (
           <div style={{
-            color: isWin ? 'var(--pt-cream)' : '#e85555',
+            color: netNum > 0 ? 'var(--pt-cream)' : '#e85555',
             fontSize: 28,
             fontWeight: 700,
             fontFamily: 'var(--pt-display)',
             lineHeight: 1,
           }}>
-            {isWin ? `+${payout}` : `-${Math.abs(payout)}`} CT
+            {netNum > 0 ? `+${netNum}` : `${netNum}`} CT
           </div>
         )}
-        <div style={{
-          color: 'var(--pt-mute)',
-          fontSize: 10,
-          fontFamily: 'var(--pt-data)',
-          marginTop: 4,
-          letterSpacing: '0.06em',
-        }}>
-          {label}
-        </div>
       </div>
     </div>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Hand display
+// Hand display — renders cards + a server-or-display total.
 // ---------------------------------------------------------------------------
-function HandRow({ label, cards, totalLabel }: {
+function HandRow({ label, cards, totalLabel, highlight }: {
   label: string;
   cards: BJCard[];
   totalLabel?: string;
+  highlight?: boolean;
 }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
       <div style={{
         fontSize: 10,
         fontFamily: 'var(--pt-data)',
-        color: 'var(--pt-mute)',
+        color: highlight ? 'var(--pt-amber)' : 'var(--pt-mute)',
         letterSpacing: '0.14em',
         textTransform: 'uppercase',
         display: 'flex',
@@ -188,15 +223,12 @@ function HandRow({ label, cards, totalLabel }: {
       </div>
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
         {cards.map((card, i) => (
-          <BlackjackCard key={i} card={card} slideIn delay={i * 80} />
+          <BlackjackCard key={i} card={card} slideIn delay={i * 70} />
         ))}
         {cards.length === 0 && (
           <div style={{
-            width: 52,
-            height: 76,
-            borderRadius: 6,
-            border: '1.5px dashed rgba(120,200,180,0.2)',
-            opacity: 0.4,
+            width: 52, height: 76, borderRadius: 6,
+            border: '1.5px dashed rgba(120,200,180,0.2)', opacity: 0.4,
           }} />
         )}
       </div>
@@ -205,183 +237,92 @@ function HandRow({ label, cards, totalLabel }: {
 }
 
 // ---------------------------------------------------------------------------
-// Deck + RNG utilities
+// Display-only running total of visible cards (UX hint while mid-hand).
+// The AUTHORITATIVE total/outcome always comes from the server response —
+// this is purely a "what am I looking at" helper, never used for money.
 // ---------------------------------------------------------------------------
-const SUITS: BlackjackSuit[] = ['clubs', 'diamonds', 'hearts', 'spades'];
-const RANKS: BlackjackRank[] = [
-  '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A',
-];
-
-/** mulberry32 — fast seedable 32-bit RNG. Returns [0, 1). */
-function mulberry32(seed: number): () => number {
-  let s = seed;
-  return () => {
-    s |= 0; s = s + 0x6D2B79F5 | 0;
-    let z = Math.imul(s ^ (s >>> 15), 1 | s);
-    z = z ^ z + Math.imul(z ^ (z >>> 7), 61 | z);
-    return ((z ^ (z >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
-function buildShuffledDeck(rand: () => number): BJCard[] {
-  const deck: BJCard[] = [];
-  for (const suit of SUITS) {
-    for (const rank of RANKS) {
-      deck.push({ suit, rank });
-    }
-  }
-  // Fisher-Yates
-  for (let i = deck.length - 1; i > 0; i--) {
-    const j = Math.floor(rand() * (i + 1));
-    // non-null assertion safe — i and j are always in bounds
-    const tmp = deck[i]!;
-    deck[i] = deck[j]!;
-    deck[j] = tmp;
-  }
-  return deck;
-}
-
-function cardValue(rank: BlackjackRank): number {
-  if (rank === 'A') return 11;
-  if (['J', 'Q', 'K'].includes(rank)) return 10;
-  return parseInt(rank, 10);
-}
-
-function handTotal(cards: BJCard[]): number {
+function displayTotal(cards: BJCard[]): { total: number; isSoft: boolean } {
   let total = 0;
-  let aces  = 0;
-  for (const card of cards) {
-    if (card.hidden) continue;
-    if (card.rank === 'A') { aces++; total += 11; }
-    else total += cardValue(card.rank);
+  let aces = 0;
+  for (const c of cards) {
+    if (c.hidden) continue;
+    if (c.rank === 'A') { aces++; total += 1; }
+    else if (c.rank === 'K' || c.rank === 'Q' || c.rank === 'J' || c.rank === '10') total += 10;
+    else total += parseInt(c.rank, 10);
   }
-  while (total > 21 && aces > 0) { total -= 10; aces--; }
-  return total;
-}
-
-function isSoft17(cards: BJCard[]): boolean {
-  let total = 0;
-  let aces  = 0;
-  for (const card of cards) {
-    if (card.hidden) continue;
-    if (card.rank === 'A') { aces++; total += 11; }
-    else total += cardValue(card.rank);
-  }
-  while (total > 21 && aces > 0) { total -= 10; aces--; }
-  return total === 17 && aces > 0;
-}
-
-function isNaturalBlackjack(cards: BJCard[]): boolean {
-  return cards.length === 2 && handTotal(cards) === 21;
+  let isSoft = false;
+  if (aces > 0 && total + 10 <= 21) { total += 10; isSoft = true; }
+  return { total, isSoft };
 }
 
 // ---------------------------------------------------------------------------
-// State machine
+// Toast (modal-local)
 // ---------------------------------------------------------------------------
-type Phase = 'idle' | 'dealing' | 'player-turn' | 'dealer-turn' | 'resolved';
+type ToastTone = 'info' | 'warn' | 'error';
+interface ToastState { message: string; tone: ToastTone; id: number; }
 
-type BJOutcomeExtended = BlackjackOutcome | 'bust';
+// ---------------------------------------------------------------------------
+// Agent mode
+//   - control     — the human taps; a connected agent advises read-only.
+//   - autonomous  — a connected agent decides; the human keeps a veto window.
+// ---------------------------------------------------------------------------
+type AgentMode = 'control' | 'autonomous';
+interface AdvisorMessage { id: number; text: string; }
 
-interface GameState {
-  phase:       Phase;
-  deck:        BJCard[];
-  playerHand:  BJCard[];
-  dealerHand:  BJCard[];   // dealerHand[1] has hidden:true until dealer-turn
-  outcome:     BJOutcomeExtended | null;
-  payout:      number;
-  outcomeLabel: string;
+// ── Autonomous-mode human-input window ([cards] spec msg 8) ────────────────
+// The agent WAITS this long after a decision point before it auto-applies its
+// decision, so a human can always step in. The base wait is 8s; if the human
+// is actively steering with the keyboard the wait extends to 15s. Any human
+// action (a button tap that changes phase, or closing the modal) cancels the
+// pending auto-apply outright.
+const AGENT_DECISION_WAIT_BASE_MS = 8000;
+const AGENT_DECISION_WAIT_KEYBOARD_MS = 15000;
+// How recent a keypress must be to count as "actively steering".
+const KEYBOARD_ACTIVE_WINDOW_MS = 5000;
+// Keys that count as movement steering (WASD + arrows). Matches the open-world
+// keyboard movement set so "moving on the keyboard" means the same thing here.
+const MOVEMENT_KEYS = new Set([
+  'w', 'a', 's', 'd', 'W', 'A', 'S', 'D',
+  'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
+]);
+// Pause between a settled hand and the agent auto-dealing the next one.
+const AGENT_NEXT_HAND_PAUSE_MS = 2200;
+
+// ── In-modal Autonomous availability ───────────────────────────────────────
+// The in-modal, human-supervised Autonomous driver below is LIVE: it asks the
+// human's connected agent for a decision via the
+// `POST /api/cove/blackjack/agent/decide` relay (shipped on the cove router —
+// resolves the human's bound connected agent and queries its runtime), then
+// applies the returned verb through the same server-authoritative deal/action
+// endpoints after the 8s/15s human-veto window. Enabled only when an agent is
+// connected (autonomousEnabled also gates on agentConnected). Honest boundary:
+// self-managed nanoclaw agents decide client-side and cannot be push-asked, so
+// the relay returns 503 agent_unavailable for them and the driver degrades to
+// Control with a clear notice (NOT a crash). The separate, also-live autonomous
+// path is the agent playing entirely from its OWN runtime via the session-bound
+// cove tools (cove_blackjack_*), which needs no browser driver.
+const AUTONOMOUS_RELAY_LIVE = true;
+
+// ---------------------------------------------------------------------------
+// Local in-progress hand view (built from server responses only)
+// ---------------------------------------------------------------------------
+interface SubHandView {
+  cards: BJCard[];
+  total: number;
+  isSoft: boolean;
+  isBust: boolean;
 }
-
-type GameAction =
-  | { type: 'DEAL'; deck: BJCard[]; playerHand: BJCard[]; dealerHand: BJCard[] }
-  | { type: 'DEALING_DONE' }
-  | { type: 'HIT'; card: BJCard }
-  | { type: 'BUST' }
-  | { type: 'STAND' }
-  | { type: 'DEALER_DRAW'; card: BJCard }
-  | { type: 'DEALER_REVEAL_HOLE' }
-  | { type: 'RESOLVE'; outcome: BJOutcomeExtended; payout: number; label: string }
-  | { type: 'RESET' };
-
-function gameReducer(state: GameState, action: GameAction): GameState {
-  switch (action.type) {
-    case 'DEAL':
-      return {
-        ...state,
-        phase:       'dealing',
-        deck:        action.deck,
-        playerHand:  action.playerHand,
-        dealerHand:  action.dealerHand,
-        outcome:     null,
-        payout:      0,
-        outcomeLabel: '',
-      };
-
-    case 'DEALING_DONE':
-      return { ...state, phase: 'player-turn' };
-
-    case 'HIT':
-      return {
-        ...state,
-        playerHand: [...state.playerHand, action.card],
-        deck:       state.deck.slice(1),
-      };
-
-    case 'BUST':
-      return { ...state, phase: 'dealer-turn' };
-
-    case 'STAND':
-      return { ...state, phase: 'dealer-turn' };
-
-    case 'DEALER_REVEAL_HOLE':
-      return {
-        ...state,
-        dealerHand: state.dealerHand.map((c, i) =>
-          i === 1 ? { ...c, hidden: false } : c
-        ),
-      };
-
-    case 'DEALER_DRAW':
-      return {
-        ...state,
-        dealerHand: [...state.dealerHand, action.card],
-        deck:       state.deck.slice(1),
-      };
-
-    case 'RESOLVE':
-      return {
-        ...state,
-        phase:        'resolved',
-        outcome:      action.outcome,
-        payout:       action.payout,
-        outcomeLabel: action.label,
-      };
-
-    case 'RESET':
-      return {
-        phase:        'idle',
-        deck:         [],
-        playerHand:   [],
-        dealerHand:   [],
-        outcome:      null,
-        payout:       0,
-        outcomeLabel: '',
-      };
-
-    default:
-      return state;
-  }
+interface HandView {
+  handId: string;
+  shoeId: string;
+  /** Player sub-hands (1 normally, 2 after split). */
+  playerHands: SubHandView[];
+  dealerUpcard: BJCard | null;
+  insuranceOffered: boolean;
+  tookInsurance: boolean;
+  didSplit: boolean;
+  bet: number;
 }
-
-const INITIAL_STATE: GameState = {
-  phase:        'idle',
-  deck:         [],
-  playerHand:   [],
-  dealerHand:   [],
-  outcome:      null,
-  payout:       0,
-  outcomeLabel: '',
-};
 
 // ---------------------------------------------------------------------------
 // Main modal
@@ -390,214 +331,898 @@ export default function BlackjackModal() {
   const {
     blackjackOpen,
     blackjackBet,
-    blackjackDisplayBalance,
     closeBlackjackTable,
     setBlackjackBet,
-    openBlackjackTable,
   } = useCoveStore();
 
   const { data: avatar } = useAvatar();
-  const [localBalance, setLocalBalance] = useState(0);
-  const [gs, dispatch] = useReducer(gameReducer, INITIAL_STATE);
 
-  // Current deckRef so async timer callbacks can pop from live state
-  const deckRef = useRef<BJCard[]>([]);
-  deckRef.current = gs.deck;
+  // ── Server-mirrored state ────────────────────────────────────────────────
+  const [shoe, setShoe] = useState<BlackjackShoeWire | null>(null);
+  const [balance, setBalance] = useState(0);
+  const [hand, setHand] = useState<HandView | null>(null);
+  const [settled, setSettled] = useState<SettledHandResponse | null>(null);
+  const [activeSlot, setActiveSlot] = useState<0 | 1>(0);
+  const [revealedSeed, setRevealedSeed] = useState<string | null>(null);
+  const [toast, setToast] = useState<ToastState | null>(null);
+  const [fairnessOpen, setFairnessOpen] = useState(false);
 
+  // ── Connected-agent presence (drives Autonomous availability) ────────────
+  // A connected agent is what makes Autonomous mode real — without one, the
+  // browser has no agent to ask for a decision, so the radio stays disabled.
+  const agentConnected = useGameStore((s) => s.agentConnected);
+
+  // ── Agent mode + advisor surface ─────────────────────────────────────────
+  const [agentMode, setAgentMode] = useState<AgentMode>('control');
+  const [advisorMessages, setAdvisorMessages] = useState<AdvisorMessage[]>([]);
+  const advisorSeqRef = useRef(0);
+
+  // ── Autonomous-driver state ──────────────────────────────────────────────
+  // `agentPending` is the human-veto countdown: the agent has chosen, and we
+  // are waiting AGENT_DECISION_WAIT_* before applying so a human can step in.
+  const [agentPending, setAgentPending] = useState<{
+    action: AgentDecisionAction;
+    amount?: number;
+    /** Server-authoritative target hand/slot for the apply (relay-derived). */
+    handId?: string | null;
+    handSlot?: 0 | 1;
+    /**
+     * Stale-decision guard: the hand version the agent decided at (relay-derived,
+     * null for `deal`/no live hand). Threaded to /action as expectedHandVersion so
+     * a human tap that advanced the hand mid-window rejects this stale apply.
+     */
+    handVersion?: number | null;
+    /**
+     * Stale-DEAL guard: the shoe epoch (handCounter) the agent decided at
+     * (relay-derived, set only for `deal`). Threaded to /hand/deal as
+     * expectedHandsPlayed so a deal that lands after an intervening human deal
+     * rejects this stale apply (409 stale_agent_deal).
+     */
+    expectedHandsPlayed?: number | null;
+    deadline: number;
+  } | null>(null);
+  // True while a decision is being applied (so we don't double-fire).
+  const agentBusyRef = useRef(false);
+  // Last movement keypress timestamp — extends the wait window to 15s.
+  const lastKeyMoveRef = useRef(0);
+  // If the relay 404/501s once, stop trying for the rest of this sit-down.
+  const [agentDriverUnavailable, setAgentDriverUnavailable] = useState(false);
+  // Monotonic token so a stale in-flight decision can't apply after the phase
+  // moved on or the human took over.
+  const agentRunRef = useRef(0);
+
+  // ── API hooks ─────────────────────────────────────────────────────────────
+  const openShoe = useOpenBlackjackShoe();
+  const dealHand = useDealHand();
+  const action = useBlackjackAction();
+  const takeInsurance = useTakeInsurance();
+  const closeShoe = useCloseBlackjackShoe();
+
+  // ── Refs ──────────────────────────────────────────────────────────────────
+  const busyRef = useRef(false);                  // synchronous double-fire lock
+  const dealKeyRef = useRef<string | null>(null); // per-deal idempotency key
+  const actionKeyRef = useRef<string | null>(null); // per-terminal-action key
+  const toastSeqRef = useRef(0);
+  const shoeRef = useRef<BlackjackShoeWire | null>(null);
+  shoeRef.current = shoe;
+
+  const isAuthed = Boolean(avatar);
+  const phase: 'idle' | 'player-turn' | 'settled' =
+    settled ? 'settled' : hand ? 'player-turn' : 'idle';
+
+  // ── Toast helpers ──────────────────────────────────────────────────────────
+  const showToast = useCallback((message: string, tone: ToastTone = 'info') => {
+    toastSeqRef.current += 1;
+    setToast({ message, tone, id: toastSeqRef.current });
+  }, []);
   useEffect(() => {
-    if (blackjackOpen) {
-      setLocalBalance(blackjackDisplayBalance || avatar?.clawTokens || 0);
-      dispatch({ type: 'RESET' });
-    }
-  }, [blackjackOpen, blackjackDisplayBalance, avatar?.clawTokens]);
+    if (!toast) return;
+    const t = setTimeout(() => setToast((p) => (p?.id === toast.id ? null : p)), 4200);
+    return () => clearTimeout(t);
+  }, [toast]);
 
-  // ── Keyboard ─────────────────────────────────────────────────────────────
-  const handleClose = useCallback(() => { closeBlackjackTable(); }, [closeBlackjackTable]);
-
-  useEffect(() => {
-    if (!blackjackOpen) return;
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') handleClose(); };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [blackjackOpen, handleClose]);
-
-  // ── Resolve outcome ───────────────────────────────────────────────────────
-  const resolveOutcome = useCallback((
-    playerHand: BJCard[],
-    dealerHandFull: BJCard[],
-    bet: number,
-  ) => {
-    const pTotal = handTotal(playerHand);
-    const dTotal = handTotal(dealerHandFull);
-    const playerBJ = isNaturalBlackjack(playerHand);
-    const dealerBJ = isNaturalBlackjack(dealerHandFull);
-
-    let outcome: BJOutcomeExtended;
-    let payout: number;
-    let label: string;
-
-    if (pTotal > 21) {
-      outcome = 'bust';
-      payout  = bet;
-      label   = `You busted with ${pTotal}`;
-    } else if (playerBJ && dealerBJ) {
-      outcome = 'push';
-      payout  = 0;
-      label   = 'Both have Blackjack — push';
-    } else if (playerBJ) {
-      outcome  = 'blackjack';
-      payout   = Math.floor(bet * 1.5);
-      label    = `Blackjack! +${Math.floor(bet * 1.5)} CT`;
-    } else if (dTotal > 21) {
-      outcome = 'win';
-      payout  = bet;
-      label   = `Dealer busted with ${dTotal}`;
-    } else if (pTotal > dTotal) {
-      outcome = 'win';
-      payout  = bet;
-      label   = `${pTotal} beats ${dTotal}`;
-    } else if (pTotal === dTotal) {
-      outcome = 'push';
-      payout  = 0;
-      label   = `Push — both ${pTotal}`;
-    } else {
-      outcome = 'loss';
-      payout  = bet;
-      label   = `${dTotal} beats ${pTotal}`;
-    }
-
-    dispatch({ type: 'RESOLVE', outcome, payout, label });
-
-    // Adjust local display balance (no ledger write)
-    setLocalBalance(prev => {
-      if (outcome === 'bust' || outcome === 'loss') return Math.max(0, prev - bet);
-      if (outcome === 'win') return prev + bet;
-      if (outcome === 'blackjack') return prev + Math.floor(bet * 1.5);
-      return prev; // push
-    });
+  const pushAdvisor = useCallback((text: string) => {
+    advisorSeqRef.current += 1;
+    setAdvisorMessages((prev) => [...prev.slice(-19), { id: advisorSeqRef.current, text }]);
   }, []);
 
-  // ── Dealer turn: sequential async draws ──────────────────────────────────
-  const runDealerTurn = useCallback(async (
-    playerHand: BJCard[],
-    dealerHandAfterReveal: BJCard[],
-    deck: BJCard[],
-    bet: number,
-  ) => {
-    const playerBust = handTotal(playerHand) > 21;
-    let dHand = [...dealerHandAfterReveal];
-    let dDeck = [...deck];
+  // ── Reset transient state ──────────────────────────────────────────────────
+  const resetHand = useCallback(() => {
+    setHand(null);
+    setSettled(null);
+    setActiveSlot(0);
+    dealKeyRef.current = null;
+    actionKeyRef.current = null;
+  }, []);
 
-    // Draw until hard 17+ (also hit soft 17)
-    while (!playerBust && (handTotal(dHand) < 17 || isSoft17(dHand))) {
-      await new Promise(r => setTimeout(r, 420));
-      const card = dDeck[0];
-      if (!card) break;
-      dDeck = dDeck.slice(1);
-      dHand = [...dHand, card];
-      dispatch({ type: 'DEALER_DRAW', card });
-    }
-
-    resolveOutcome(playerHand, dHand, bet);
-  }, [resolveOutcome]);
-
-  // ── When phase enters dealer-turn, reveal hole card then run draws ────────
-  const dealerTurnStarted = useRef(false);
+  // ── Eager restore on open ──────────────────────────────────────────────────
   useEffect(() => {
-    if (gs.phase !== 'dealer-turn') {
-      dealerTurnStarted.current = false;
-      return;
+    if (!blackjackOpen) return;
+    setBalance(avatar?.clawTokens ?? 0);
+    setRevealedSeed(null);
+    resetHand();
+    let cancelled = false;
+    void (async () => {
+      try {
+        const current = await fetchCurrentBlackjackShoe();
+        if (cancelled || !current) return;
+        if (current.shoe.status !== 'open') return;
+        setShoe(current.shoe);
+        setBalance(current.walletBalance);
+        showToast('Resumed your open shoe.', 'info');
+      } catch {
+        // Network blip — lazy-open on first Deal handles it.
+      }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [blackjackOpen]);
+
+  // ── Reset everything on close ──────────────────────────────────────────────
+  useEffect(() => {
+    if (!blackjackOpen) {
+      setShoe(null);
+      resetHand();
+      setRevealedSeed(null);
+      setAdvisorMessages([]);
+      busyRef.current = false;
+      // Autonomous-driver teardown — cancel any pending auto-apply + reset the
+      // run token so a stale in-flight decision can't fire after re-open.
+      setAgentPending(null);
+      setAgentMode('control');
+      setAgentDriverUnavailable(false);
+      agentBusyRef.current = false;
+      agentRunRef.current += 1;
     }
-    if (dealerTurnStarted.current) return;
-    dealerTurnStarted.current = true;
+  }, [blackjackOpen, resetHand]);
 
-    // Capture hand + deck snapshots at this moment
-    const playerSnap = gs.playerHand;
-    const dealerSnap = gs.dealerHand;
-    const deckSnap   = gs.deck;
-    const betSnap    = blackjackBet;
-
-    // Reveal hole card first
-    dispatch({ type: 'DEALER_REVEAL_HOLE' });
-    const revealed = dealerSnap.map((c, i) => i === 1 ? { ...c, hidden: false } : c);
-
-    setTimeout(() => {
-      void runDealerTurn(playerSnap, revealed, deckSnap, betSnap);
-    }, 420);
-  }, [gs.phase, gs.playerHand, gs.dealerHand, gs.deck, blackjackBet, runDealerTurn]);
-
-  // ── DEAL ──────────────────────────────────────────────────────────────────
-  const handleDeal = useCallback(async () => {
-    if (gs.phase !== 'idle') return;
-
-    const seed = (blackjackBet * 31 + Date.now()) | 0;
-    const rand = mulberry32(seed);
-    const deck = buildShuffledDeck(rand);
-
-    // Initial deal: player c0, dealer c1, player c2, dealer c3 (hidden)
-    const p0 = deck[0]!;
-    const d0 = deck[1]!;
-    const p1 = deck[2]!;
-    const d1 = { ...deck[3]!, hidden: true };
-    const remainingDeck = deck.slice(4);
-
-    const playerHand: BJCard[] = [p0, p1];
-    const dealerHand: BJCard[] = [d0, d1];
-
-    dispatch({ type: 'DEAL', deck: remainingDeck, playerHand, dealerHand });
-
-    // After ~800ms dealing animation, transition to player-turn
-    // (unless natural blackjack — auto-resolve)
-    await new Promise(r => setTimeout(r, 820));
-
-    if (isNaturalBlackjack(playerHand)) {
-      // Still reveal dealer hole + check for push
-      dispatch({ type: 'DEALER_REVEAL_HOLE' });
-      const dealerFull: BJCard[] = [d0, { ...deck[3]!, hidden: false }];
-      await new Promise(r => setTimeout(r, 300));
-      resolveOutcome(playerHand, dealerFull, blackjackBet);
-    } else {
-      dispatch({ type: 'DEALING_DONE' });
+  // ── Force back to Control if the agent disconnects mid-session ──────────────
+  // Autonomous has no decision source without a connected agent, so drop the
+  // human back into Control rather than stranding a dead table.
+  useEffect(() => {
+    if (!agentConnected && agentMode === 'autonomous') {
+      setAgentMode('control');
+      setAgentPending(null);
+      agentRunRef.current += 1;
+      showToast('Agent disconnected — back to Control mode.', 'warn');
     }
-  }, [gs.phase, blackjackBet, resolveOutcome]);
+  }, [agentConnected, agentMode, showToast]);
 
-  // ── HIT ───────────────────────────────────────────────────────────────────
-  const handleHit = useCallback(() => {
-    if (gs.phase !== 'player-turn') return;
-    const card = deckRef.current[0];
-    if (!card) return;
-    dispatch({ type: 'HIT', card });
+  // ── Keyboard-movement detector (extends the auto-decide window 8s→15s) ─────
+  // Only while the modal is open + autonomous. A movement keypress marks the
+  // human as "actively steering" so the agent waits the longer window.
+  useEffect(() => {
+    if (!blackjackOpen || agentMode !== 'autonomous') return;
+    const onMoveKey = (e: KeyboardEvent) => {
+      if (MOVEMENT_KEYS.has(e.key)) lastKeyMoveRef.current = Date.now();
+    };
+    window.addEventListener('keydown', onMoveKey);
+    return () => window.removeEventListener('keydown', onMoveKey);
+  }, [blackjackOpen, agentMode]);
 
-    // Check bust after adding card
-    const newHand = [...gs.playerHand, card];
-    if (handTotal(newHand) > 21) {
-      dispatch({ type: 'BUST' });
+  // ── Close handler ───────────────────────────────────────────────────────────
+  const handleClose = useCallback(() => {
+    // Fire-and-forget close any open shoe (authed only — guests have no close
+    // endpoint). Skip if a hand is in progress (server would 409) or a request
+    // is in flight (avoid racing the settle lock).
+    const s = shoeRef.current;
+    if (s && s.status === 'open' && isAuthed && !hand && !busyRef.current && !revealedSeed) {
+      closeShoe.mutate({ shoeId: s.id });
     }
-  }, [gs.phase, gs.playerHand]);
+    closeBlackjackTable();
+  }, [isAuthed, hand, revealedSeed, closeShoe, closeBlackjackTable]);
 
-  // ── STAND ─────────────────────────────────────────────────────────────────
-  const handleStand = useCallback(() => {
-    if (gs.phase !== 'player-turn') return;
-    dispatch({ type: 'STAND' });
-  }, [gs.phase]);
+  // ── Keyboard ────────────────────────────────────────────────────────────────
+  useEffect(() => {
+    if (!blackjackOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        if (fairnessOpen) { setFairnessOpen(false); return; }
+        handleClose();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [blackjackOpen, fairnessOpen, handleClose]);
 
-  // ── NEXT HAND ─────────────────────────────────────────────────────────────
+  // ── Open (or reuse) a shoe; returns the shoe or null on failure ────────────
+  const ensureShoe = useCallback(async (): Promise<BlackjackShoeWire | null> => {
+    if (shoeRef.current && shoeRef.current.status === 'open') return shoeRef.current;
+    try {
+      const opened = await openShoe.mutateAsync({ currency: 'clawtoken' });
+      setShoe(opened.shoe);
+      setBalance(opened.walletBalance);
+      return opened.shoe;
+    } catch (err) {
+      showToast(describeBlackjackError(err), err instanceof CoveApiError && err.status >= 500 ? 'error' : 'warn');
+      return null;
+    }
+  }, [openShoe, showToast]);
+
+  // ── Apply a settled response (single place balance/outcome land) ───────────
+  const applySettled = useCallback((res: SettledHandResponse) => {
+    setSettled(res);
+    setBalance(res.balance);
+    setHand(null);
+    // Reflect the shoe's new dealtCount locally so the next deal's penetration
+    // gate + fairness HUD are accurate without a refetch.
+    setShoe((prev) => (prev ? { ...prev, dealtCount: res.dealtCount } : prev));
+    if (res.reshuffleSuggested) {
+      showToast('Shoe nearly spent — next deal opens a fresh shoe.', 'info');
+    }
+    // SEAM: in Control mode an advisor could comment on the result here.
+  }, [showToast]);
+
+  // ── Build a HandView from a deal in-progress response ──────────────────────
+  const handViewFromDeal = useCallback((res: Extract<DealResponse, { status: 'in_progress' }>): HandView => {
+    const opening = res.playerHand;
+    const t = displayTotal(opening);
+    return {
+      handId: res.handId,
+      shoeId: res.shoeId,
+      playerHands: [{ cards: opening, total: t.total, isSoft: t.isSoft, isBust: false }],
+      dealerUpcard: res.dealerUpcard,
+      insuranceOffered: res.insuranceOffered,
+      tookInsurance: res.tookInsurance,
+      didSplit: false,
+      bet: Number(res.bet),
+    };
+  }, []);
+
+  // ── Merge an in-progress action response into the HandView ─────────────────
+  const mergeActionInProgress = useCallback((
+    res: Extract<ActionResponse, { status: 'in_progress'; playerHands: unknown }>,
+  ) => {
+    setHand((prev) => {
+      if (!prev) return prev;
+      const merged: SubHandView[] = res.playerHands.map((h) => ({
+        cards: h.cards,
+        total: h.total,
+        isSoft: h.isSoft,
+        isBust: h.isBust,
+      }));
+      return {
+        ...prev,
+        // Reflect the SERVER-AUTHORITATIVE hand id the action actually targeted
+        // (concurrency minor #2). After an agent action applied to the relay's
+        // decision.handId (which may differ from the modal's prev.handId when the
+        // local view was stale), the merged view must carry res.handId so the next
+        // human/agent action targets the same server hand, not the stale local one.
+        handId: res.handId,
+        playerHands: merged,
+        dealerUpcard: res.dealerUpcard ?? prev.dealerUpcard,
+        didSplit: res.didSplit,
+      };
+    });
+    // After a split, focus the first non-resolved sub-hand.
+    if (res.didSplit) {
+      const firstLive = res.playerHands.findIndex((h) => !h.isBust);
+      setActiveSlot((firstLive === 1 ? 1 : 0) as 0 | 1);
+    }
+  }, []);
+
+  // ── Re-sync live state after a stale agent 409 (concurrency BLOCKING fix) ──
+  // When /action (stale_agent_decision) or /hand/deal (stale_agent_deal) 409s
+  // because the hand/shoe advanced since the agent decided, the agent's apply is
+  // discarded. Before the NEXT autonomous loop we re-derive the AUTHORITATIVE
+  // state from the server, never guess from the stale local view:
+  //   1. refetch the shoe (dealtCount, balance) so the penetration gate + HUD are
+  //      fresh;
+  //   2. fetch the server's in-progress hand via GET /hand/current and RESTORE it
+  //      if one exists, or CLEAR the local hand only when the server confirms NO
+  //      live hand (the prior hand truly settled).
+  // The earlier version cleared the local hand on a handId match but only
+  // refetched the shoe — so when the server still had an in_progress hand the
+  // modal stranded in idle and the autonomous loop spun (runAction no-ops on
+  // !hand; a deal 409s hand_in_progress). Restoring from /hand/current is correct
+  // for ALL staleness sources (same-tab human takeover, deal-epoch race, external
+  // races), not just same-tab takeover. Best-effort + non-fatal: a refetch blip
+  // leaves the local hand as-is and the next /agent/decide re-derives server-side.
+  // Authed-only (guests never run the autonomous relay).
+  const resyncAfterStaleDecision = useCallback(async () => {
+    try {
+      const [shoeRes, handRes] = await Promise.all([
+        fetchCurrentBlackjackShoe(),
+        fetchCurrentBlackjackHand(),
+      ]);
+      if (shoeRes && shoeRes.shoe.status === 'open') {
+        setShoe(shoeRes.shoe);
+        setBalance(shoeRes.walletBalance);
+      }
+      // Authoritative hand reconciliation. A null result (no open shoe / network
+      // blip) leaves the local hand untouched so we never strand on a transient
+      // miss; the next /agent/decide corrects it server-side.
+      if (handRes) {
+        if (isCurrentHandLive(handRes)) {
+          // Server has a live hand — rebuild the local view from it (this is the
+          // hand the next decision must target; never leave a stale/cleared one).
+          const live: CurrentHandLive = handRes;
+          const subHands: SubHandView[] = live.playerHands.map((h) => ({
+            cards: h.cards,
+            total: h.total,
+            isSoft: h.isSoft,
+            isBust: h.isBust,
+          }));
+          setHand({
+            handId: live.handId,
+            shoeId: live.shoeId,
+            playerHands: subHands.length > 0 ? subHands : [{ cards: [], total: 0, isSoft: false, isBust: false }],
+            dealerUpcard: live.dealerUpcard,
+            insuranceOffered: live.insuranceOffered,
+            tookInsurance: live.tookInsurance,
+            didSplit: live.didSplit,
+            bet: Number(live.bet),
+          });
+          // Focus the first non-resolved sub-hand for a split (mirrors merge).
+          if (live.didSplit) {
+            const firstLive = live.playerHands.findIndex((h) => !h.isBust);
+            setActiveSlot((firstLive === 1 ? 1 : 0) as 0 | 1);
+          } else {
+            setActiveSlot(0);
+          }
+          setSettled(null);
+        } else {
+          // Server confirms NO in-progress hand (the prior hand settled) → clear.
+          setHand(null);
+        }
+      }
+    } catch {
+      // Network blip — leave local state as-is; the next /agent/decide re-derives
+      // authoritative state server-side regardless.
+    }
+  }, []);
+
+  // ── DEAL ────────────────────────────────────────────────────────────────────
+  // `agentDriven` is set ONLY by the autonomous driver after the human-input
+  // window elapses; a human tap leaves it false and is blocked in autonomous
+  // mode (the agent owns the decision channel then).
+  // `betOverride` lets the autonomous driver deal at the agent's chosen bet
+  // WITHOUT depending on a `setBlackjackBet()` store round-trip landing first
+  // (React state updates are async, so reading `blackjackBet` right after
+  // setting it would use the stale value). Human deals omit it and use the
+  // selected chip.
+  // `expectedHandsPlayed` is the stale-agent-deal precondition (relay-supplied
+  // shoe epoch); set ONLY by the autonomous driver. /hand/deal 409s
+  // `stale_agent_deal` if a hand was opened since the agent decided, so a stale
+  // agent deal can't open an extra hand after an intervening human deal. Human
+  // taps omit it (unconditional). Discarded on a reshuffle-retry (the fresh shoe
+  // has its own epoch the agent never decided against).
+  const handleDeal = useCallback(async (
+    agentDriven = false,
+    betOverride?: number,
+    expectedHandsPlayed?: number,
+  ) => {
+    if (busyRef.current || phase !== 'idle') return;
+    // Human tap in autonomous mode = take over THIS decision: void the agent's
+    // queued decision (bump the run token so a late timer can't fire) and play
+    // the human's choice instead.
+    if (agentMode === 'autonomous' && !agentDriven) {
+      agentRunRef.current += 1;
+      setAgentPending(null);
+    }
+    busyRef.current = true;
+    try {
+      const s = await ensureShoe();
+      if (!s) return;
+      if (!dealKeyRef.current) dealKeyRef.current = crypto.randomUUID();
+
+      // The agent's bet (clamped) wins when driven; otherwise the chip value.
+      const betForHand = typeof betOverride === 'number'
+        ? Math.max(COVE_BLACKJACK_MIN_BET, Math.min(COVE_BLACKJACK_MAX_BET, Math.round(betOverride)))
+        : blackjackBet;
+      const wantInsurance = false; // insurance is taken AFTER the upcard shows
+      let res: DealResponse;
+      try {
+        res = await dealHand.mutateAsync({
+          shoeId: s.id,
+          bet: betForHand,
+          insurance: wantInsurance,
+          idempotencyKey: dealKeyRef.current,
+          // Only the agent-driven deal carries the stale-deal precondition; human
+          // taps omit it so /hand/deal stays unconditional for them.
+          ...(agentDriven && expectedHandsPlayed !== undefined
+            ? { expectedHandsPlayed }
+            : {}),
+        });
+      } catch (err) {
+        // 75% penetration → open a fresh shoe (new seed pair) + retry once. The
+        // fresh shoe has its OWN epoch the agent never decided against, so the
+        // retry deal MUST omit expectedHandsPlayed (the original epoch is stale).
+        if (reshuffledBody(err)) {
+          showToast('Shoe reshuffled — dealing from a fresh shoe.', 'info');
+          setShoe(null);
+          const fresh = await ensureShoe();
+          if (!fresh) return;
+          dealKeyRef.current = crypto.randomUUID();
+          res = await dealHand.mutateAsync({
+            shoeId: fresh.id,
+            bet: betForHand,
+            insurance: wantInsurance,
+            idempotencyKey: dealKeyRef.current,
+          });
+        } else {
+          throw err;
+        }
+      }
+
+      setSettled(null);
+      if (isSettled(res)) {
+        applySettled(res); // natural settled inline
+      } else {
+        setHand(handViewFromDeal(res));
+        setActiveSlot(0);
+        // Stake is committed at deal (finding #3) — reflect the debited balance
+        // in the HUD immediately if the server returned it.
+        if (typeof res.balance === 'number') setBalance(res.balance);
+      }
+    } catch (err) {
+      // Stale agent DEAL (409): an intervening human deal opened a hand since the
+      // agent decided (possibly natural-settled inline), so the server rejected
+      // this stale in-flight agent deal. Discard silently — same as a skipped
+      // turn — refetch the live shoe, and stay in Autonomous so the next decision
+      // point re-asks against fresh state. Never crash, never blind-retry.
+      if (
+        agentDriven && err instanceof CoveApiError &&
+        err.status === 409 && err.code === 'stale_agent_deal'
+      ) {
+        void resyncAfterStaleDecision();
+        pushAdvisor('You dealt this hand — the agent stood down. Still in Autonomous.');
+      } else {
+        showToast(describeBlackjackError(err), err instanceof CoveApiError && err.status >= 500 ? 'error' : 'warn');
+      }
+    } finally {
+      dealKeyRef.current = null;
+      busyRef.current = false;
+    }
+  }, [phase, agentMode, ensureShoe, dealHand, blackjackBet, showToast, applySettled, handViewFromDeal, resyncAfterStaleDecision, pushAdvisor]);
+
+  // ── INSURANCE (before any main-hand action; dealer-Ace only) ───────────────
+  // Parity with runAction: the agent driver passes the relay's server-authoritative
+  // target hand (`handIdOverride`) + the `expectedHandVersion` it decided at, so a
+  // stale agent insure that races a human takeover (or an already-settled hand) is
+  // rejected/replayed server-side instead of being mis-applied to a stale local
+  // view. Human manual insure passes neither → /action stays unconditional and
+  // targets the modal's own hand exactly as before.
+  const handleInsure = useCallback(async (
+    agentDriven = false,
+    expectedHandVersion?: number,
+    handIdOverride?: string | null,
+  ) => {
+    if (busyRef.current || !hand) return;
+    // Human manual insure keeps the local-flag guard (no point firing a request the
+    // local view already knows is invalid). The AGENT-DRIVEN path must NOT early-return
+    // on stale local flags: the server is authoritative, so a genuinely-stale decision
+    // has to reach takeInsurance.mutateAsync to get a 409 stale_agent_decision back —
+    // the catch below then resyncs + re-asks. Dropping it silently here would strand the
+    // agent on a stale view (the round-4 stale-decision contract, parity with runAction).
+    if (!agentDriven && (hand.tookInsurance || !hand.insuranceOffered)) return;
+    if (agentMode === 'autonomous' && !agentDriven) {
+      agentRunRef.current += 1;
+      setAgentPending(null);
+    }
+    const targetHandId = handIdOverride ?? hand.handId;
+    busyRef.current = true;
+    try {
+      const res = await takeInsurance.mutateAsync({
+        handId: targetHandId,
+        // Only the agent-driven apply carries the stale-decision precondition;
+        // human manual taps omit it so /action stays unconditional for them.
+        ...(agentDriven && expectedHandVersion !== undefined
+          ? { expectedHandVersion }
+          : {}),
+      });
+      // A stale agent insure decision that raced an already-settled hand comes back
+      // as a full settled-hand replay (status:'settled') — land it the same way the
+      // main action path does, never as a phantom { tookInsurance } ack on a dead
+      // hand. A live in-progress ack just flips the tookInsurance flag.
+      if (isSettled(res)) {
+        applySettled(res);
+      } else {
+        setHand((prev) => (prev ? { ...prev, tookInsurance: res.tookInsurance } : prev));
+        showToast('Insurance taken.', 'info');
+      }
+    } catch (err) {
+      // Stale agent decision (409): the human advanced the hand since the agent
+      // decided to insure, so the server rejected this in-flight apply. DISCARD it
+      // silently — same as the runAction path — re-derive the authoritative state,
+      // and stay in Autonomous so the next decision point re-asks. Never crash.
+      if (
+        agentDriven && err instanceof CoveApiError &&
+        err.status === 409 && err.code === 'stale_agent_decision'
+      ) {
+        void resyncAfterStaleDecision();
+        pushAdvisor('You took over this hand — the agent stood down. Still in Autonomous.');
+      } else {
+        showToast(describeBlackjackError(err), 'warn');
+      }
+    } finally {
+      busyRef.current = false;
+    }
+  }, [hand, agentMode, takeInsurance, showToast, applySettled, resyncAfterStaleDecision, pushAdvisor]);
+
+  // ── ACTION (hit / stand / double / split / surrender) ──────────────────────
+  const runAction = useCallback(async (
+    act: 'hit' | 'stand' | 'double' | 'split' | 'surrender',
+    agentDriven = false,
+    slotOverride?: 0 | 1,
+    expectedHandVersion?: number,
+    handIdOverride?: string | null,
+  ) => {
+    if (busyRef.current || !hand) return;
+    if (agentMode === 'autonomous' && !agentDriven) {
+      agentRunRef.current += 1;
+      setAgentPending(null);
+    }
+    // The agent driver passes the relay's server-authoritative slot; humans use
+    // the focused slot. Avoids a stale-closure read of activeSlot in the driver.
+    const slot = slotOverride ?? activeSlot;
+    // Target the relay's SERVER-AUTHORITATIVE hand (concurrency minor a), not the
+    // modal's possibly-stale local view. /agent/decide derives the in-progress
+    // hand from the shoe and returns its id; applying to that id (with the
+    // matching handVersion precondition) means the action lands on the hand the
+    // agent actually decided for. Human taps pass no override → modal's hand.
+    const targetHandId = handIdOverride ?? hand.handId;
+    busyRef.current = true;
+    // Terminal actions need a stable idempotency key reused across retries.
+    const terminal = act === 'stand' || act === 'double' || act === 'surrender';
+    if (terminal && !actionKeyRef.current) actionKeyRef.current = crypto.randomUUID();
+    // A 'hit' that busts is terminal server-side, and 'split' creates two hands
+    // that may each terminate — mint a key for any action so a settle that
+    // arrives unexpectedly is still idempotent on retry.
+    if (!actionKeyRef.current) actionKeyRef.current = crypto.randomUUID();
+    try {
+      const res = await action.mutateAsync({
+        handId: targetHandId,
+        action: act,
+        handSlot: slot,
+        idempotencyKey: actionKeyRef.current,
+        // Only the agent-driven apply carries the stale-decision precondition;
+        // human manual taps omit it so /action stays unconditional for them.
+        ...(agentDriven && expectedHandVersion !== undefined
+          ? { expectedHandVersion }
+          : {}),
+      });
+      if (isSettled(res)) {
+        applySettled(res);
+        actionKeyRef.current = null;
+      } else if (isActionInProgress(res)) {
+        mergeActionInProgress(res);
+        // A non-terminal continuation: clear the key so the NEXT terminal
+        // action mints a fresh one (the key is per terminal settle, not per
+        // hand). Hits/non-terminal continuations are naturally idempotent
+        // server-side (script append), so dropping the key here is safe.
+        actionKeyRef.current = null;
+      } else {
+        // insure ack shouldn't arrive here, but tolerate it.
+        actionKeyRef.current = null;
+      }
+    } catch (err) {
+      // Stale agent decision (409): the human (or a prior apply) already advanced
+      // the hand, so the server rejected this in-flight agent apply. DISCARD it
+      // silently — same as a skipped turn — and stay in Autonomous; the next
+      // decision point re-asks the agent against the fresh state. Never crash,
+      // never blind-retry. Mint a fresh idempotency key so the discarded key is
+      // not reused on the next (different) decision.
+      if (
+        agentDriven && err instanceof CoveApiError &&
+        err.status === 409 && err.code === 'stale_agent_decision'
+      ) {
+        actionKeyRef.current = null;
+        // Refetch the live shoe/balance before the next loop (concurrency minor
+        // b) so the agent's next decision is made against fresh state, not the
+        // stale local view the human already advanced past.
+        void resyncAfterStaleDecision();
+        pushAdvisor('You took over this hand — the agent stood down. Still in Autonomous.');
+      } else {
+        showToast(describeBlackjackError(err), err instanceof CoveApiError && err.status >= 500 ? 'error' : 'warn');
+      }
+    } finally {
+      busyRef.current = false;
+    }
+  }, [hand, agentMode, action, activeSlot, applySettled, mergeActionInProgress, showToast, pushAdvisor, resyncAfterStaleDecision]);
+
+  // ── NEXT HAND ───────────────────────────────────────────────────────────────
   const handleNextHand = useCallback(() => {
-    openBlackjackTable(localBalance);
-  }, [localBalance, openBlackjackTable]);
+    resetHand();
+  }, [resetHand]);
+
+  // ── WALK AWAY (close shoe → reveal seed, authed) ───────────────────────────
+  const handleWalkAway = useCallback(async () => {
+    const s = shoeRef.current;
+    if (!s || !isAuthed) { handleClose(); return; }
+    if (hand) { showToast('Finish the current hand first.', 'warn'); return; }
+    busyRef.current = true;
+    try {
+      const res = await closeShoe.mutateAsync({ shoeId: s.id });
+      setRevealedSeed(res.serverSeed);
+      setShoe((prev) => (prev ? { ...prev, status: 'closed', serverSeed: res.serverSeed } : prev));
+      showToast(`Cashed out — seed ${res.serverSeed.slice(0, 10)}…${res.serverSeed.slice(-6)} revealed.`, 'info');
+      setTimeout(() => handleClose(), 1400);
+    } catch (err) {
+      showToast(describeBlackjackError(err), 'warn');
+    } finally {
+      busyRef.current = false;
+    }
+  }, [isAuthed, hand, closeShoe, showToast, handleClose]);
+
+  // ── Derived button legality (server is final validator; this gates UI) ─────
+  const activeHand = hand?.playerHands[activeSlot] ?? hand?.playerHands[0] ?? null;
+  // Double is legal as the FIRST decision on a 2-card hand (the server is the
+  // final validator; this only gates the button's enabled state).
+  const canDouble = Boolean(
+    activeHand && activeHand.cards.length === 2 && !activeHand.isBust,
+  );
+  const canSurrender = Boolean(
+    hand && !hand.didSplit && activeHand && activeHand.cards.length === 2 && !activeHand.isBust,
+  );
+  const canSplit = Boolean(
+    hand && !hand.didSplit && activeHand && activeHand.cards.length === 2 &&
+    cardValuePair(activeHand.cards),
+  );
+
+  const inFlight = openShoe.isPending || dealHand.isPending || action.isPending ||
+    takeInsurance.isPending || closeShoe.isPending;
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // AUTONOMOUS DRIVER (FEATURE_GATE: blackjack_autonomous_agent_mode)
+  //
+  // When a connected agent is present and the human flips the table to
+  // Autonomous, the browser asks the agent (server-side, bound to this live
+  // session) for its decision at each decision point, surfaces it in the
+  // advisor panel, then waits the human-input window ([cards] spec msg 8 —
+  // 8s base, 15s if the human is steering with the keyboard) before APPLYING
+  // it through the SAME server-authoritative deal/action endpoints. A human
+  // tap during the window pre-empts the agent (handleDeal/runAction return
+  // early for agent-driven calls once the phase has moved on). The server is
+  // still the only authority — the browser never receives undealt cards, the
+  // dealer hole, or the seed; it only relays the agent's chosen verb.
+  // ─────────────────────────────────────────────────────────────────────────
+
+  // Apply a relayed agent decision through the existing handlers (driven=true
+  // bypasses the human-yields-to-agent guard). Split-aware: the relay returns
+  // the verb for the active slot; activeSlot is already focused by the merge.
+  const applyAgentDecision = useCallback(async (
+    decision: {
+      action: AgentDecisionAction;
+      amount?: number;
+      handId?: string | null;
+      handSlot?: 0 | 1;
+      handVersion?: number | null;
+      expectedHandsPlayed?: number | null;
+    },
+  ) => {
+    switch (decision.action) {
+      case 'deal': {
+        let betOverride: number | undefined;
+        if (typeof decision.amount === 'number') {
+          // Clamp to engine bounds defensively; the server re-validates.
+          const clamped = Math.max(
+            COVE_BLACKJACK_MIN_BET,
+            Math.min(COVE_BLACKJACK_MAX_BET, Math.round(decision.amount)),
+          );
+          betOverride = clamped;
+          setBlackjackBet(clamped); // reflect the agent's bet on the HUD chip
+        }
+        // Pass the bet explicitly so the deal does not depend on the async
+        // setBlackjackBet landing first (stale-closure-safe). Thread the relay's
+        // shoe epoch as the stale-agent-deal precondition (concurrency BLOCKING
+        // #2) so a deal that lands after an intervening human deal is rejected.
+        await handleDeal(
+          true,
+          betOverride,
+          decision.expectedHandsPlayed ?? undefined,
+        );
+        break;
+      }
+      case 'insure':
+        // Thread the relay's server-authoritative target hand + the handVersion it
+        // decided at, so a stale agent insure that races a human takeover (or an
+        // already-settled hand) is rejected/replayed server-side — same contract as
+        // the hit/stand/... apply below. Previously insure dropped both, so it could
+        // mis-apply to the modal's stale local hand.
+        await handleInsure(
+          true,
+          decision.handVersion ?? undefined,
+          decision.handId ?? undefined,
+        );
+        break;
+      case 'hit':
+      case 'stand':
+      case 'double':
+      case 'split':
+      case 'surrender':
+        // Honor the relay's server-authoritative target hand + slot for split
+        // hands (concurrency minor a — apply to the server's hand, not the modal's
+        // local view), and thread the relay's handVersion as the stale-decision
+        // precondition (a human tap that advanced the hand mid-window 409s this).
+        await runAction(
+          decision.action,
+          true,
+          decision.handSlot,
+          decision.handVersion ?? undefined,
+          decision.handId ?? undefined,
+        );
+        break;
+    }
+  }, [handleDeal, handleInsure, runAction, setBlackjackBet]);
+
+  // Clear any pending auto-apply the instant the decision context changes
+  // (new hand, phase change, mode switch, modal close) so a stale decision can
+  // never apply to the wrong state.
+  const decisionContextKey = `${phase}:${hand?.handId ?? 'none'}:${activeSlot}:${settled?.handId ?? 'none'}`;
+  useEffect(() => {
+    setAgentPending(null);
+  }, [decisionContextKey, agentMode]);
+
+  // Driver step 1 — REQUEST a decision at a fresh decision point.
+  useEffect(() => {
+    if (agentMode !== 'autonomous' || !agentConnected || agentDriverUnavailable) return;
+    if (inFlight || busyRef.current || agentBusyRef.current) return;
+    if (agentPending) return; // already waiting to apply
+    if (revealedSeed) return; // shoe closed — nothing to decide
+
+    // Decide only at points where an action is legal: idle (→ deal), settled
+    // (→ next hand then deal), or player-turn (→ hit/stand/etc). We let the
+    // settled→next-hand advance happen below without a relay call.
+    const s = shoeRef.current;
+    const shoeId = s?.id ?? null;
+
+    if (phase === 'settled') {
+      // Auto-advance to the next hand after a short pause so the human can read
+      // the result; the next idle tick then requests a deal decision.
+      const t = setTimeout(() => {
+        if (agentMode === 'autonomous') handleNextHand();
+      }, AGENT_NEXT_HAND_PAUSE_MS);
+      return () => clearTimeout(t);
+    }
+
+    if (phase !== 'idle' && phase !== 'player-turn') return;
+    // The relay requires a valid shoeId (uuid). During a hand we always have
+    // one; at idle we may need to open one first so the agent has a table to
+    // decide on.
+    if (phase === 'player-turn' && !shoeId) return;
+
+    const myRun = ++agentRunRef.current;
+    let cancelled = false;
+    void (async () => {
+      try {
+        // Ensure an open shoe exists before asking the relay (it needs the
+        // shoeId; at idle this lazy-opens one, matching the human deal path).
+        let activeShoeId = shoeId;
+        if (!activeShoeId) {
+          const opened = await ensureShoe();
+          if (cancelled || myRun !== agentRunRef.current) return;
+          if (!opened) return; // ensureShoe surfaced its own toast
+          activeShoeId = opened.id;
+        }
+        // Request carries ONLY the shoeId — the server derives the authoritative
+        // in-progress hand + slot from the shoe (a client can't aim the agent at
+        // a stale/foreign hand).
+        const decision = await fetchAgentBlackjackDecision({ shoeId: activeShoeId });
+        if (cancelled || myRun !== agentRunRef.current) return;
+        if (decision.rationale) pushAdvisor(decision.rationale);
+        // Open the human-veto window. The keyboard-active check uses the most
+        // recent movement keypress.
+        const keyboardActive =
+          Date.now() - lastKeyMoveRef.current < KEYBOARD_ACTIVE_WINDOW_MS;
+        const waitMs = keyboardActive
+          ? AGENT_DECISION_WAIT_KEYBOARD_MS
+          : AGENT_DECISION_WAIT_BASE_MS;
+        pushAdvisor(
+          `Agent will ${decision.action}${decision.amount ? ` ${decision.amount} CT` : ''} in ${Math.round(waitMs / 1000)}s — tap any action to take over.`,
+        );
+        setAgentPending({
+          action: decision.action,
+          amount: decision.amount,
+          handId: decision.handId ?? null,
+          handSlot: decision.handSlot,
+          handVersion: decision.handVersion ?? null,
+          expectedHandsPlayed: decision.expectedHandsPlayed ?? null,
+          deadline: Date.now() + waitMs,
+        });
+      } catch (err) {
+        if (cancelled || myRun !== agentRunRef.current) return;
+        if (err instanceof AgentUndecidedError) {
+          // Transient: the agent replied but produced no parseable move for this
+          // spot. Skip THIS decision (the human can act) and stay in Autonomous
+          // so the next decision point asks the agent again.
+          pushAdvisor('Agent could not decide this hand — your call. Still in Autonomous.');
+          showToast('Agent did not return a decision — tap an action; autonomous resumes next hand.', 'info');
+        } else if (err instanceof AgentDriverUnavailableError) {
+          // Sticky: cannot ask the agent for this table at all → Control. Only a
+          // nanoclaw self-managed agent gets the "plays itself" message; other
+          // sticky failures (no agent, transient cognition error) get a generic
+          // notice.
+          setAgentDriverUnavailable(true);
+          setAgentMode('control');
+          showToast(
+            err.isSelfManaged
+              ? 'This agent plays itself from its own runtime and cannot be co-piloted here. Switched to Control.'
+              : 'Could not reach your agent for this table. Switched to Control.',
+            'warn',
+          );
+        } else {
+          showToast(describeBlackjackError(err), 'warn');
+        }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [
+    agentMode, agentConnected, agentDriverUnavailable, phase, inFlight,
+    agentPending, revealedSeed, hand?.handId, activeSlot, ensureShoe,
+    handleNextHand, pushAdvisor, showToast,
+  ]);
+
+  // Driver step 2 — APPLY the pending decision when the veto window elapses.
+  useEffect(() => {
+    if (!agentPending || agentMode !== 'autonomous') return;
+    const remaining = agentPending.deadline - Date.now();
+    const myRun = agentRunRef.current;
+    const t = setTimeout(() => {
+      // Re-check guards at fire time — the human may have acted, or the phase
+      // moved on, in which case the context-change effect already cleared
+      // agentPending and bumped agentRunRef.
+      if (myRun !== agentRunRef.current) return;
+      if (busyRef.current || agentBusyRef.current) return;
+      agentBusyRef.current = true;
+      void applyAgentDecision({
+        action: agentPending.action,
+        amount: agentPending.amount,
+        // Thread the relay's server-authoritative target hand (minor a) + the
+        // shoe epoch (BLOCKING #2) so the apply lands on the agent's decided hand
+        // and a stale deal is rejected. Previously handId/expectedHandsPlayed were
+        // dropped here, so the action applied to the modal's local handId.
+        handId: agentPending.handId,
+        handSlot: agentPending.handSlot,
+        handVersion: agentPending.handVersion,
+        expectedHandsPlayed: agentPending.expectedHandsPlayed,
+      })
+        .finally(() => {
+          agentBusyRef.current = false;
+          setAgentPending(null);
+        });
+    }, Math.max(0, remaining));
+    return () => clearTimeout(t);
+  }, [agentPending, agentMode, applyAgentDecision]);
+
+  // ── Settled outcome view helpers ───────────────────────────────────────────
+  const settledOutcome: SerializedBlackjackHandResult | null = settled?.outcome ?? null;
+  const settledPrimary: SerializedPlayerHand | null =
+    settledOutcome?.playerHands[0] ?? null;
+
+  // ── Fairness summary ───────────────────────────────────────────────────────
+  const fairnessSummary = useMemo(() => {
+    if (!shoe) return 'Open a hand to commit the shoe seed';
+    const short = `${shoe.serverSeedHash.slice(0, 8)}…${shoe.serverSeedHash.slice(-6)}`;
+    return revealedSeed
+      ? `Seed revealed: ${revealedSeed.slice(0, 6)}…${revealedSeed.slice(-4)}`
+      : `Committed: ${short}`;
+  }, [shoe, revealedSeed]);
 
   if (!blackjackOpen) return null;
 
-  const playerTotal = handTotal(gs.playerHand);
-  const dealerTotal = handTotal(gs.dealerHand);
-  const inProgress  = gs.phase === 'dealing' || gs.phase === 'dealer-turn';
-  const isIdle      = gs.phase === 'idle';
-  const isPlayerTurn = gs.phase === 'player-turn';
-  const isResolved  = gs.phase === 'resolved';
+  // Dealer cards to render: during play only the upcard + a hidden hole card;
+  // after settle the full dealer hand from the server outcome.
+  const dealerRenderCards: BJCard[] = settledOutcome
+    ? settledOutcome.dealer.cards
+    : hand?.dealerUpcard
+      ? [hand.dealerUpcard, { suit: 'spades', rank: 'A', hidden: true }]
+      : [];
+  const dealerTotalLabel = settledOutcome
+    ? `${settledOutcome.dealer.total}${settledOutcome.dealer.isBust ? ' BUST' : ''}`
+    : hand?.dealerUpcard
+      ? `${displayTotal([hand.dealerUpcard]).total}+?`
+      : undefined;
 
-  // Dealer total label: hide hole card contribution when it's hidden
-  const dealerVisibleCards = gs.dealerHand.filter(c => !c.hidden);
-  const dealerDisplayTotal = handTotal(dealerVisibleCards);
+  const playerRenderHands: SubHandView[] = settledOutcome
+    ? settledOutcome.playerHands.map((h) => ({
+        cards: h.cards, total: h.total, isSoft: h.isSoft, isBust: h.isBust,
+      }))
+    : hand?.playerHands ?? [];
+
+  const toastClass = toast
+    ? `pt-toast${toast.tone === 'warn' ? ' pt-toast-warn' : toast.tone === 'error' ? ' pt-toast-error' : ''}`
+    : '';
 
   return (
     <div
@@ -605,12 +1230,8 @@ export default function BlackjackModal() {
       aria-modal="true"
       aria-label="Blackjack table"
       style={{
-        position: 'fixed',
-        inset: 0,
-        zIndex: 9990,
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
+        position: 'fixed', inset: 0, zIndex: 9990,
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
         padding: 20,
         background: 'rgba(2, 16, 24, 0.82)',
         backdropFilter: 'blur(6px)',
@@ -619,301 +1240,501 @@ export default function BlackjackModal() {
     >
       <div
         style={{
-          position: 'relative',
-          width: '100%',
-          maxWidth: 600,
-          maxHeight: 'min(92vh, 700px)',
-          borderRadius: 14,
-          overflow: 'hidden',
+          position: 'relative', width: '100%', maxWidth: 620,
+          maxHeight: 'min(94vh, 760px)', borderRadius: 14, overflow: 'hidden',
           boxShadow: '0 24px 64px rgba(0,0,0,0.6), 0 0 0 1px rgba(60,180,120,0.4)',
           background: 'var(--pt-velvet)',
           animation: 'cv-modal-in var(--cv-motion-base) var(--cv-ease-bounce)',
-          display: 'flex',
-          flexDirection: 'column',
+          display: 'flex', flexDirection: 'column',
         }}
       >
-        {/* ── Header ─────────────────────────────────────────────────── */}
+        {/* ── Header ───────────────────────────────────────────────────── */}
         <header style={{
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          padding: '12px 16px',
-          background: 'rgba(0,0,0,0.3)',
-          borderBottom: '1px solid rgba(60,180,120,0.25)',
-          flexShrink: 0,
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          padding: '12px 16px', background: 'rgba(0,0,0,0.3)',
+          borderBottom: '1px solid rgba(60,180,120,0.25)', flexShrink: 0,
         }}>
-          <div style={{ fontSize: 12, fontFamily: 'var(--pt-data)', color: 'var(--pt-mute)', letterSpacing: '0.12em' }}>
-            BLACKJACK · FUN MONEY
-          </div>
-          <div style={{
-            fontSize: 13,
-            fontFamily: 'var(--pt-data)',
-            fontWeight: 700,
-            color: 'var(--pt-amber)',
-            letterSpacing: '0.06em',
-            background: 'rgba(150,110,30,0.15)',
-            border: '1px solid rgba(150,110,30,0.3)',
-            borderRadius: 6,
-            padding: '3px 10px',
-          }}>
-            {localBalance.toLocaleString()} CT
-          </div>
           <button
             type="button"
-            onClick={handleClose}
-            aria-label="Close blackjack table"
+            onClick={() => setFairnessOpen(true)}
+            aria-label={`Provably fair: ${fairnessSummary}`}
+            title={fairnessSummary}
             style={{
-              background: 'none',
-              border: 'none',
-              color: 'var(--pt-mute)',
-              cursor: 'pointer',
-              padding: 4,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
+              background: 'none', border: 'none', color: 'var(--pt-cream-soft)',
+              cursor: 'pointer', padding: 4, display: 'flex', alignItems: 'center',
             }}
           >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden>
-              <line x1="6" y1="6" x2="18" y2="18" />
-              <line x1="18" y1="6" x2="6" y2="18" />
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+              <rect x="3" y="11" width="18" height="11" rx="1" />
+              <path d="M7 11V7a5 5 0 0 1 10 0v4" />
             </svg>
           </button>
+          <div style={{
+            fontSize: 12, fontFamily: 'var(--pt-data)', color: 'var(--pt-mute)',
+            letterSpacing: '0.12em',
+          }}>
+            BLACKJACK · 6-DECK · S17 · 3:2
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <div style={{
+              fontSize: 13, fontFamily: 'var(--pt-data)', fontWeight: 700,
+              color: 'var(--pt-amber)', letterSpacing: '0.06em',
+              background: 'rgba(150,110,30,0.15)', border: '1px solid rgba(150,110,30,0.3)',
+              borderRadius: 6, padding: '3px 10px',
+            }}>
+              {balance.toLocaleString()} CT{!isAuthed ? ' demo' : ''}
+            </div>
+            <button
+              type="button" onClick={handleClose} aria-label="Close blackjack table"
+              style={{
+                background: 'none', border: 'none', color: 'var(--pt-mute)',
+                cursor: 'pointer', padding: 4, display: 'flex', alignItems: 'center',
+              }}
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden>
+                <line x1="6" y1="6" x2="18" y2="18" />
+                <line x1="18" y1="6" x2="6" y2="18" />
+              </svg>
+            </button>
+          </div>
         </header>
 
-        {/* ── Felt ───────────────────────────────────────────────────── */}
+        {/* ── Agent mode toggle + advisor surface ──────────────────────── */}
+        <AgentModeBar
+          mode={agentMode}
+          onMode={setAgentMode}
+          advisorMessages={advisorMessages}
+          agentConnected={agentConnected}
+          driverUnavailable={agentDriverUnavailable}
+          pendingAction={agentPending?.action ?? null}
+        />
+
+        {/* ── Felt ─────────────────────────────────────────────────────── */}
         <div style={{
-          flex: 1,
-          position: 'relative',
+          flex: 1, position: 'relative',
           background: 'linear-gradient(180deg, #0d3a1e 0%, #0a2e18 50%, #0d3a1e 100%)',
-          padding: '20px 24px',
-          display: 'flex',
-          flexDirection: 'column',
-          gap: 20,
-          minHeight: 0,
-          overflowY: 'auto',
+          padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: 18,
+          minHeight: 0, overflowY: 'auto',
         }}>
-          {/* Felt texture lines */}
           <div aria-hidden style={{
-            position: 'absolute',
-            inset: 0,
+            position: 'absolute', inset: 0,
             backgroundImage: 'repeating-linear-gradient(0deg, transparent, transparent 19px, rgba(60,160,80,0.06) 20px)',
             pointerEvents: 'none',
           }} />
 
-          {/* Dealer area */}
+          {/* Dealer */}
           <div style={{
-            background: 'rgba(0,0,0,0.25)',
-            border: '1px solid rgba(60,180,100,0.18)',
-            borderRadius: 10,
-            padding: '14px 16px',
-            position: 'relative',
-            zIndex: 1,
+            background: 'rgba(0,0,0,0.25)', border: '1px solid rgba(60,180,100,0.18)',
+            borderRadius: 10, padding: '14px 16px', position: 'relative', zIndex: 1,
           }}>
             <div style={{
-              fontSize: 9,
-              fontFamily: 'var(--pt-data)',
-              color: 'rgba(60,180,100,0.55)',
-              letterSpacing: '0.18em',
-              textTransform: 'uppercase',
-              marginBottom: 10,
+              fontSize: 9, fontFamily: 'var(--pt-data)', color: 'rgba(90,200,120,0.7)',
+              letterSpacing: '0.18em', textTransform: 'uppercase', marginBottom: 10,
             }}>
-              DEALER MUST STAND ON 17 · HITS SOFT 17
+              DEALER STANDS ON ALL 17 (S17)
             </div>
-            <HandRow
-              label="Dealer"
-              cards={gs.dealerHand}
-              totalLabel={
-                gs.dealerHand.length > 0
-                  ? `${dealerDisplayTotal}${gs.dealerHand.some(c => c.hidden) ? '+?' : ''}`
-                  : undefined
-              }
-            />
+            <HandRow label="Dealer" cards={dealerRenderCards} totalLabel={dealerTotalLabel} />
           </div>
 
-          {/* Divider */}
-          <div aria-hidden style={{
-            borderTop: '1px dashed rgba(60,180,100,0.2)',
-            position: 'relative',
-            zIndex: 1,
-          }} />
+          <div aria-hidden style={{ borderTop: '1px dashed rgba(60,180,100,0.2)', position: 'relative', zIndex: 1 }} />
 
-          {/* Player area */}
-          <div style={{ position: 'relative', zIndex: 1 }}>
-            <HandRow
-              label="You"
-              cards={gs.playerHand}
-              totalLabel={gs.playerHand.length > 0 ? `${playerTotal}` : undefined}
-            />
+          {/* Player (one or two sub-hands) */}
+          <div style={{ position: 'relative', zIndex: 1, display: 'flex', flexDirection: 'column', gap: 14 }}>
+            {playerRenderHands.length === 0 ? (
+              <HandRow label="You" cards={[]} />
+            ) : (
+              playerRenderHands.map((h, i) => {
+                const isActive = phase === 'player-turn' && hand?.didSplit && i === activeSlot;
+                const labelSuffix = hand?.didSplit ? ` · Hand ${i + 1}` : '';
+                const total = `${h.total}${h.isSoft ? ' (soft)' : ''}${h.isBust ? ' BUST' : ''}`;
+                return (
+                  <div
+                    key={i}
+                    onClick={() => { if (phase === 'player-turn' && hand?.didSplit) setActiveSlot((i === 1 ? 1 : 0) as 0 | 1); }}
+                    style={{
+                      borderRadius: 8,
+                      padding: hand?.didSplit ? '8px 10px' : 0,
+                      border: hand?.didSplit
+                        ? `1.5px solid ${isActive ? 'var(--pt-amber)' : 'rgba(160,140,100,0.25)'}`
+                        : 'none',
+                      cursor: phase === 'player-turn' && hand?.didSplit ? 'pointer' : 'default',
+                      transition: 'border-color 0.15s',
+                    }}
+                  >
+                    <HandRow label={`You${labelSuffix}`} cards={h.cards} totalLabel={total} highlight={isActive} />
+                  </div>
+                );
+              })
+            )}
           </div>
 
-          {/* Outcome banner */}
-          {isResolved && gs.outcome && (
+          {/* Insurance prompt (dealer-Ace, before main action) */}
+          {phase === 'player-turn' && hand?.insuranceOffered && !hand.tookInsurance && (
+            <div style={{
+              position: 'relative', zIndex: 1,
+              background: 'rgba(40,30,10,0.6)', border: '1px solid rgba(214,161,74,0.4)',
+              borderRadius: 8, padding: '8px 12px', display: 'flex',
+              alignItems: 'center', justifyContent: 'space-between', gap: 10,
+            }}>
+              <span style={{ color: 'var(--pt-cream-soft)', fontSize: 11, fontFamily: 'var(--pt-data)' }}>
+                Dealer shows an Ace. Insurance? (pays 2:1 if dealer has blackjack)
+              </span>
+              <button
+                type="button" onClick={() => { void handleInsure(); }} disabled={inFlight}
+                className="pt-btn pt-btn-ghost"
+                style={{ height: 30, fontSize: 11, minWidth: 80, color: 'var(--pt-amber)', flexShrink: 0 }}
+              >
+                Insure ({Math.floor(blackjackBet / 2)} CT)
+              </button>
+            </div>
+          )}
+
+          {/* Settled banner */}
+          {phase === 'settled' && settledPrimary && (
             <OutcomeBanner
-              outcome={gs.outcome === 'bust' ? 'loss' : gs.outcome}
-              payout={gs.payout}
-              label={gs.outcomeLabel}
-              isBust={gs.outcome === 'bust'}
+              outcome={settledPrimary.outcome}
+              net={settled ? BigInt(settled.net) : 0n}
             />
           )}
         </div>
 
-        {/* ── Action strip ───────────────────────────────────────────── */}
+        {/* ── Action strip ─────────────────────────────────────────────── */}
         <div style={{
-          flexShrink: 0,
-          background: 'rgba(0,0,0,0.35)',
-          borderTop: '1px solid rgba(60,180,120,0.2)',
-          padding: '12px 16px',
-          display: 'flex',
-          flexDirection: 'column',
-          gap: 10,
+          flexShrink: 0, background: 'rgba(0,0,0,0.35)',
+          borderTop: '1px solid rgba(60,180,120,0.2)', padding: '12px 16px',
+          display: 'flex', flexDirection: 'column', gap: 10,
         }}>
-          {/* Bet selector — only shown in idle */}
-          {isIdle && (
+          {/* Bet selector — idle only */}
+          {phase === 'idle' && (
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
               <span style={{
-                fontSize: 10,
-                fontFamily: 'var(--pt-data)',
-                color: 'var(--pt-mute)',
-                letterSpacing: '0.12em',
-                textTransform: 'uppercase',
-                flexShrink: 0,
+                fontSize: 10, fontFamily: 'var(--pt-data)', color: 'var(--pt-mute)',
+                letterSpacing: '0.12em', textTransform: 'uppercase', flexShrink: 0,
               }}>
-                BET
+                BET ({COVE_BLACKJACK_MIN_BET}–{COVE_BLACKJACK_MAX_BET})
               </span>
               {BET_STEPS.map((step) => (
                 <BetChip
                   key={step}
                   value={step}
                   selected={blackjackBet === step}
+                  disabled={inFlight}
                   onClick={() => setBlackjackBet(step)}
                 />
               ))}
             </div>
           )}
 
-          {/* Phase-driven action buttons */}
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-
-            {/* ── idle: DEAL ────────────────────────────────────────── */}
-            {isIdle && (
+            {/* idle: DEAL */}
+            {phase === 'idle' && (
               <button
                 type="button"
                 onClick={() => { void handleDeal(); }}
+                disabled={inFlight}
                 className="pt-btn pt-btn-primary"
-                style={{ minWidth: 90, height: 40, fontSize: 13, fontWeight: 700 }}
+                style={{ minWidth: 110, height: 40, fontSize: 13, fontWeight: 700 }}
               >
-                Deal ({blackjackBet} CT)
+                {inFlight ? 'Dealing…' : agentMode === 'autonomous' ? `Deal now (${blackjackBet} CT)` : `Deal (${blackjackBet} CT)`}
               </button>
             )}
 
-            {/* ── dealing: spinner ──────────────────────────────────── */}
-            {gs.phase === 'dealing' && (
-              <button
-                type="button"
-                disabled
-                className="pt-btn pt-btn-primary"
-                style={{ minWidth: 90, height: 40, fontSize: 13, fontWeight: 700, opacity: 0.7 }}
-              >
-                Dealing…
-              </button>
-            )}
-
-            {/* ── player-turn: HIT / STAND / disabled extras ────────── */}
-            {isPlayerTurn && (
+            {/* player-turn: live actions */}
+            {phase === 'player-turn' && (
               <>
-                <button
-                  type="button"
-                  onClick={handleHit}
+                <button type="button" onClick={() => { void runAction('hit'); }}
+                  disabled={inFlight}
                   className="pt-btn pt-btn-primary"
-                  style={{ height: 40, fontSize: 13, fontWeight: 700, minWidth: 70 }}
-                >
+                  style={{ height: 40, fontSize: 13, fontWeight: 700, minWidth: 70 }}>
                   Hit
                 </button>
-                <button
-                  type="button"
-                  onClick={handleStand}
+                <button type="button" onClick={() => { void runAction('stand'); }}
+                  disabled={inFlight}
                   className="pt-btn pt-btn-ghost"
-                  style={{ height: 40, fontSize: 12, minWidth: 70 }}
-                >
+                  style={{ height: 40, fontSize: 12, minWidth: 70 }}>
                   Stand
                 </button>
-                <button type="button" disabled className="pt-btn pt-btn-ghost"
-                  title="Available in Phase 6.4.1"
-                  style={{ height: 40, fontSize: 12, opacity: 0.35 }}>
+                <button type="button" onClick={() => { void runAction('double'); }}
+                  disabled={inFlight || !canDouble}
+                  className="pt-btn pt-btn-ghost"
+                  title={canDouble ? 'Double down (one card, doubled stake)' : 'Double only on your first two cards'}
+                  style={{ height: 40, fontSize: 12, minWidth: 70, opacity: canDouble ? 1 : 0.4 }}>
                   Double
                 </button>
-                <button type="button" disabled className="pt-btn pt-btn-ghost"
-                  title="Available in Phase 6.4.1"
-                  style={{ height: 40, fontSize: 12, opacity: 0.35 }}>
+                <button type="button" onClick={() => { void runAction('split'); }}
+                  disabled={inFlight || !canSplit}
+                  className="pt-btn pt-btn-ghost"
+                  title={canSplit ? 'Split your pair into two hands' : 'Split only on a matching pair'}
+                  style={{ height: 40, fontSize: 12, minWidth: 70, opacity: canSplit ? 1 : 0.4 }}>
                   Split
                 </button>
-                <button type="button" disabled className="pt-btn pt-btn-ghost"
-                  title="Available in Phase 6.4.1"
-                  style={{ height: 40, fontSize: 12, opacity: 0.35 }}>
+                <button type="button" onClick={() => { void runAction('surrender'); }}
+                  disabled={inFlight || !canSurrender}
+                  className="pt-btn pt-btn-ghost"
+                  title={canSurrender ? 'Surrender — forfeit half your bet' : 'Surrender only on your first two cards (no split)'}
+                  style={{ height: 40, fontSize: 12, minWidth: 90, opacity: canSurrender ? 1 : 0.4 }}>
                   Surrender
                 </button>
               </>
             )}
 
-            {/* ── dealer-turn: waiting label ────────────────────────── */}
-            {gs.phase === 'dealer-turn' && (
-              <button type="button" disabled className="pt-btn pt-btn-ghost"
-                style={{ height: 40, fontSize: 12, opacity: 0.6, minWidth: 120 }}>
-                Dealer drawing…
-              </button>
-            )}
-
-            {/* ── resolved: NEXT HAND + WALK AWAY ──────────────────── */}
-            {isResolved && (
+            {/* settled: NEXT HAND + WALK AWAY */}
+            {phase === 'settled' && (
               <>
-                <button
-                  type="button"
-                  onClick={handleNextHand}
+                <button type="button" onClick={handleNextHand}
+                  disabled={inFlight}
                   className="pt-btn pt-btn-primary"
-                  style={{ minWidth: 110, height: 40, fontSize: 13 }}
-                >
+                  style={{ minWidth: 110, height: 40, fontSize: 13 }}>
                   Next Hand
                 </button>
-                {/* Walk Away — filled crimson bg with white text for clear contrast on dark navy */}
-                <button
-                  type="button"
-                  onClick={handleClose}
+                {/* Crimson WALK AWAY — explicit bg+fg (No-Dark-Text-On-Dark-Panel). */}
+                <button type="button" onClick={() => { void handleWalkAway(); }}
+                  disabled={inFlight}
                   style={{
-                    height: 40,
-                    fontSize: 12,
-                    fontWeight: 600,
-                    fontFamily: 'var(--pt-data)',
-                    letterSpacing: '0.06em',
-                    paddingLeft: 16,
-                    paddingRight: 16,
-                    borderRadius: 6,
-                    border: 'none',
-                    background: '#dc2626',
-                    color: '#ffffff',
-                    cursor: 'pointer',
-                    transition: 'background 0.15s',
+                    height: 40, fontSize: 12, fontWeight: 600, fontFamily: 'var(--pt-data)',
+                    letterSpacing: '0.06em', paddingLeft: 16, paddingRight: 16, borderRadius: 6,
+                    border: 'none', background: '#dc2626', color: '#ffffff',
+                    cursor: inFlight ? 'not-allowed' : 'pointer', transition: 'background 0.15s',
+                    opacity: inFlight ? 0.6 : 1,
                   }}
-                  onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.background = '#b91c1c'; }}
-                  onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.background = '#dc2626'; }}
-                >
-                  Walk Away
+                  onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = '#b91c1c'; }}
+                  onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.background = '#dc2626'; }}>
+                  {isAuthed ? 'Walk Away' : 'Close'}
                 </button>
               </>
             )}
           </div>
 
-          {/* Phase label */}
+          {/* Footer line */}
           <div style={{
-            fontSize: 9,
-            color: 'rgba(100,180,130,0.4)',
-            fontFamily: 'var(--pt-data)',
-            letterSpacing: '0.12em',
-            textAlign: 'right',
+            fontSize: 9, color: 'rgba(100,180,130,0.45)', fontFamily: 'var(--pt-data)',
+            letterSpacing: '0.12em', textAlign: 'right',
           }}>
-            INTERACTIVE SHELL · PHASE 6.4.0 · DOUBLE/SPLIT/SURRENDER IN 6.4.1
+            PHASE 6.4.1 · SERVER-AUTHORITATIVE · PROVABLY FAIR · {agentMode.toUpperCase()} MODE
           </div>
         </div>
       </div>
+
+      {/* Toast */}
+      {toast && (
+        <div role="status" aria-live="polite" className={toastClass}>
+          {toast.message}
+        </div>
+      )}
+
+      {/* Fairness tooltip */}
+      {fairnessOpen && (
+        <div
+          role="dialog" aria-modal="true" aria-label="Provably fair commitment"
+          onClick={() => setFairnessOpen(false)}
+          style={{
+            position: 'fixed', inset: 0, zIndex: 10001,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            background: 'rgba(6, 46, 59, 0.78)', padding: 20,
+          }}
+        >
+          <div onClick={(e) => e.stopPropagation()} className="pt-fairness-modal">
+            <div className="pt-fairness-eyebrow">Provably Fair</div>
+            <div className="pt-fairness-title">Commitment &amp; Reveal</div>
+            <p style={{ margin: '0 0 14px 0', color: 'var(--pt-cream-soft)' }}>
+              Before any card is dealt, the server publishes <code>sha256(serverSeed)</code> as a
+              commitment. Every card in the shoe is derived from
+              <code> (serverSeed, clientSeed, handIndex, cursor)</code> — the server cannot change
+              the cards after seeing your decisions. The seed is revealed when you walk away so you
+              can replay every hand.
+            </p>
+            <div style={{ display: 'grid', gap: 8, fontSize: 12, fontFamily: 'var(--pt-data)' }}>
+              <div>
+                <span style={{ color: 'var(--pt-brass)' }}>Server seed hash: </span>
+                <span style={{ wordBreak: 'break-all', color: 'var(--pt-cream)' }}>
+                  {shoe?.serverSeedHash ?? '— (no shoe open yet)'}
+                </span>
+              </div>
+              <div>
+                <span style={{ color: 'var(--pt-brass)' }}>Client seed: </span>
+                <span style={{ wordBreak: 'break-all', color: 'var(--pt-cream)' }}>
+                  {shoe?.clientSeed ?? '—'}
+                </span>
+              </div>
+              {revealedSeed ? (
+                <div>
+                  <span style={{ color: 'var(--pt-amber)' }}>Revealed server seed: </span>
+                  <span style={{ wordBreak: 'break-all', color: 'var(--pt-cream)' }}>{revealedSeed}</span>
+                </div>
+              ) : (
+                <div style={{ color: 'var(--pt-cream-soft)' }}>
+                  Server seed reveals when you walk away — then replay any hand at /cove/history.
+                </div>
+              )}
+            </div>
+            <div style={{ marginTop: 18, display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+              <a
+                href="/cove/history" target="_blank" rel="noopener noreferrer"
+                className="pt-btn pt-btn-ghost"
+                style={{ padding: '0 14px', height: 36, fontSize: 11, textDecoration: 'none', display: 'inline-flex', alignItems: 'center' }}
+              >
+                Game history &amp; verifier →
+              </a>
+              <button type="button" onClick={() => setFairnessOpen(false)}
+                className="pt-btn pt-btn-ghost"
+                style={{ padding: '0 14px', height: 36, fontSize: 11 }}>
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
+}
+
+// ---------------------------------------------------------------------------
+// AgentModeBar — Control vs Autonomous toggle + advisor surface.
+//
+// FEATURE_GATE: blackjack_autonomous_agent_mode
+// Status: WIRED (2026-06-03, gateway-cognition agents). The in-modal,
+//   human-supervised Autonomous DRIVER is LIVE: with a connected agent it asks
+//   the relay (POST /api/cove/blackjack/agent/decide, shipped) for a decision,
+//   shows it in the read-only advisor panel, and applies it via the
+//   server-authoritative deal/action endpoints after the 8s/15s human-veto
+//   window. `AUTONOMOUS_RELAY_LIVE = true`; the radio enables only when an agent
+//   is connected. HONEST BOUNDARY: self-managed nanoclaw agents decide
+//   client-side and cannot be push-asked, so the relay returns 503 and the
+//   driver degrades to Control with a clear notice (a documented capability
+//   boundary, NOT a disabled feature). The separate also-live autonomous path is
+//   the agent playing entirely from its OWN runtime via the cove tools.
+// Metric to graduate: ≥ 1 connected agent completing a blackjack hand in
+//   Autonomous mode in a 7-day window (event: cove.blackjack.agent.hand.settled).
+// Current reading: 0 (newly shipped — to fill from /dash).
+// Review deadline: 2026-07-15
+// On deadline: if the metric is unmet, keep it gated on connected-agent presence
+//   (already done) and revisit; do NOT delete — it is the human-supervised
+//   parity path (CLAUDE.md TOP DIRECTIVE + Rule E5).
+// Known LATENT follow-up (FOLLOW-UP task #6): server-side rate-limit on
+//   /agent/decide (today the 8s/15s client window is the only throttle) — a
+//   hardening item, not a functional gap.
+// Reference: GameFeatures.md §18a.f (agent modes) + CLAUDE.md three-surface rule
+//   + .claude/plans/cove-blackjack.md.
+//
+// Advisor surface stays a read-only display channel — it NEVER submits a
+// decision. In Control mode it shows the agent's hints; in Autonomous mode it
+// shows the agent's chosen action + the veto countdown.
+// ---------------------------------------------------------------------------
+function AgentModeBar({
+  mode, onMode, advisorMessages, agentConnected, driverUnavailable, pendingAction,
+}: {
+  mode: AgentMode;
+  onMode: (m: AgentMode) => void;
+  advisorMessages: AdvisorMessage[];
+  agentConnected: boolean;
+  driverUnavailable: boolean;
+  pendingAction: AgentDecisionAction | null;
+}) {
+  // The in-modal driver is LIVE (AUTONOMOUS_RELAY_LIVE) and enables only when an
+  // agent is connected. driverUnavailable flips true after a sticky relay
+  // failure (e.g. a self-managed nanoclaw agent that returns 503), dropping the
+  // table back to Control with a clear notice.
+  const autonomousEnabled = AUTONOMOUS_RELAY_LIVE && agentConnected && !driverUnavailable;
+  const autonomousTitle = !AUTONOMOUS_RELAY_LIVE
+    ? 'In-modal autonomous play arrives with the agent-decision relay. Today a connected agent plays on its own from its runtime via the cove tools.'
+    : !agentConnected
+      ? 'Connect an agent to let it play your open table on its own'
+      : driverUnavailable
+        ? 'This agent plays itself from its own runtime and cannot be co-piloted here — switch to Control'
+        : 'Let your connected agent decide — you keep an 8s (15s if steering) window to take over';
+  return (
+    <div style={{
+      flexShrink: 0, background: 'rgba(0,0,0,0.28)',
+      borderBottom: '1px solid rgba(60,180,120,0.18)', padding: '8px 16px',
+      display: 'flex', flexDirection: 'column', gap: 6,
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <span style={{
+          fontSize: 9, fontFamily: 'var(--pt-data)', color: 'var(--pt-mute)',
+          letterSpacing: '0.16em', textTransform: 'uppercase',
+        }}>
+          Mode
+        </span>
+        <div role="radiogroup" aria-label="Agent mode" style={{ display: 'flex', gap: 6 }}>
+          <button
+            type="button" role="radio" aria-checked={mode === 'control'}
+            onClick={() => onMode('control')}
+            style={{
+              padding: '4px 12px', borderRadius: 6, fontSize: 11, fontFamily: 'var(--pt-data)',
+              fontWeight: mode === 'control' ? 700 : 400, cursor: 'pointer',
+              border: mode === 'control' ? '1.5px solid var(--pt-amber)' : '1.5px solid rgba(160,140,100,0.3)',
+              background: mode === 'control' ? 'rgba(200,150,50,0.18)' : 'rgba(10,30,20,0.5)',
+              color: mode === 'control' ? 'var(--pt-amber)' : 'var(--pt-cream-soft)',
+            }}
+          >
+            Control
+          </button>
+          <button
+            type="button" role="radio" aria-checked={mode === 'autonomous'}
+            onClick={() => { if (autonomousEnabled) onMode('autonomous'); }}
+            disabled={!autonomousEnabled}
+            title={autonomousTitle}
+            style={{
+              padding: '4px 12px', borderRadius: 6, fontSize: 11, fontFamily: 'var(--pt-data)',
+              fontWeight: mode === 'autonomous' ? 700 : 400,
+              cursor: autonomousEnabled ? 'pointer' : 'not-allowed',
+              opacity: autonomousEnabled ? 1 : 0.5,
+              border: mode === 'autonomous' ? '1.5px solid var(--pt-amber)' : '1.5px solid rgba(160,140,100,0.3)',
+              background: mode === 'autonomous' ? 'rgba(200,150,50,0.18)' : 'rgba(10,30,20,0.5)',
+              color: mode === 'autonomous' ? 'var(--pt-amber)' : 'var(--pt-cream-soft)',
+            }}
+          >
+            {autonomousEnabled
+              ? 'Autonomous'
+              : !AUTONOMOUS_RELAY_LIVE
+                ? 'Autonomous (agent plays from its runtime)'
+                : 'Autonomous (connect agent)'}
+          </button>
+        </div>
+        <span style={{
+          marginLeft: 'auto', fontSize: 9, fontFamily: 'var(--pt-data)',
+          color: 'var(--pt-mute)', letterSpacing: '0.06em',
+        }}>
+          {mode === 'control' ? 'You decide · agent advises' : 'Agent decides · tap to take over'}
+        </span>
+      </div>
+
+      {/* Advisor surface — read-only display channel, NEVER a decision input. */}
+      <div style={{
+        background: 'rgba(10,22,40,0.55)', border: '1px solid rgba(60,180,180,0.18)',
+        borderRadius: 6, padding: '6px 10px', minHeight: 26, maxHeight: 64,
+        overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 3,
+      }}>
+        {mode === 'autonomous' && pendingAction && (
+          <span style={{ fontSize: 10, color: 'var(--pt-amber)', fontFamily: 'var(--pt-data)', fontWeight: 700 }}>
+            Agent is about to {pendingAction} — tap any action to take over.
+          </span>
+        )}
+        {advisorMessages.length === 0 ? (
+          <span style={{ fontSize: 10, color: 'var(--pt-cream-soft)', fontFamily: 'var(--pt-data)', fontStyle: 'italic' }}>
+            {!AUTONOMOUS_RELAY_LIVE
+              ? 'Advisor: a connected agent plays blackjack on its own from its runtime (via the cove tools). In-modal supervised Autonomous, where it plays your open table and you keep an 8s/15s window to take over, arrives with the agent-decision relay.'
+              : agentConnected
+                ? 'Advisor: your connected agent posts hints here (read-only — your taps stay the decision in Control mode). Switch to Autonomous to let it play.'
+                : 'Advisor: connect an agent to get basic-strategy hints here (read-only — your taps stay the decision).'}
+          </span>
+        ) : (
+          advisorMessages.map((m) => (
+            <span key={m.id} style={{ fontSize: 10, color: 'var(--pt-cream)', fontFamily: 'var(--pt-data)' }}>
+              <span style={{ color: 'var(--pt-cyan, #6fe6ff)' }}>Advisor:</span> {m.text}
+            </span>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Helper: is this a value-pair (split-eligible opening)?
+// ---------------------------------------------------------------------------
+function cardValuePair(cards: BJCard[]): boolean {
+  if (cards.length !== 2) return false;
+  const v = (r: string) => (r === 'K' || r === 'Q' || r === 'J' || r === '10' ? 10 : r === 'A' ? 11 : parseInt(r, 10));
+  return v(cards[0]!.rank) === v(cards[1]!.rank);
 }

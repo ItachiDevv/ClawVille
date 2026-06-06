@@ -33,6 +33,21 @@ function LoginForm() {
     try {
       if (isSignup) {
         await api.signup({ email, password, name: name || undefined });
+        // Phase 6.7.5 — migrate any guest-mode Cove history rows from this
+        // browser's fingerprint to the new user. Silent on failure (claim
+        // is not load-bearing for signup completion).
+        try {
+          const claim = await api.claimCoveHistory();
+          if (claim.claimed > 0) {
+            const plural = claim.claimed === 1 ? '' : 's';
+            sessionStorage.setItem(
+              'cv-cove-claim-toast',
+              `Claimed ${claim.claimed} guest play${plural} from your previous session.`,
+            );
+          }
+        } catch {
+          // ignore — non-blocking
+        }
         router.push('/create-agent');
       } else {
         await api.login({ email, password });

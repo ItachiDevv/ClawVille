@@ -22,6 +22,67 @@
 
 import { db, events, eventWriteFailures } from '@clawville/database';
 import { alertError } from './alert-error';
+import { sessionDigest } from './session-digest';
+
+// ─── Central raw-bearer redaction chokepoint (Codex auth-lens fix #4 — 2026-06-03) ──
+//
+// The raw agent-session id (`ag-…` / `oc-…` / `hat-…` / `claw-…`) is the REAL-CT
+// bearer the Cove reads from the `X-Clawville-Agent-Session` header. Scattered
+// call-site `sessionDigest(...)` edits proved INCOMPLETE — e.g. skills.ts logs a
+// caller-supplied `X-Clawville-Session-Id` header RAW. This is the single insert
+// chokepoint, so redact here regardless of which call site (or header) supplied
+// the value: every raw bearer that reaches the `events` table is digested before
+// it lands.
+//
+// EXACT-SHAPE MATCH (so it is safe to redact the agent_id column too — see below).
+// Every real-CT bearer is `<prefix>-` + `randomBytes(24).toString('base64url')`,
+// which is ALWAYS exactly 32 url-safe chars (24 bytes * 8 / 6 = 32, no padding):
+//   agent-gateway `ag-…`, openclaw `oc-…`, hatcher `hat-…`. So the bearer is
+// `^(ag|oc|hat|claw)-[A-Za-z0-9_-]{32}$` and nothing else. Matching the EXACT
+// length (not `{16,}`) is what lets us redact agent_id without corrupting it:
+//   - a legit agent HANDLE the leaderboard groups by (`oc-mybot`, `milady:x`,
+//     `agent-<ts>-<rand>`, a UUID, a `hatcher:<id>`) is NEVER exactly
+//     `<prefix>-`+32-url-safe-chars, so it passes through UNCHANGED — the
+//     `COUNT(DISTINCT agent_id)` / `GROUP BY agent_id` scoring stays intact;
+//   - a CALLER-INJECTED raw bearer (e.g. a client putting an `ag-…`/`oc-…` into
+//     the spoofable `X-Clawville-Agent-Id` header that skills.ts logs into
+//     events.agent_id) DOES match and gets digested here. Closes that injection
+//     path centrally regardless of which call site or header supplied the value.
+//
+// IDEMPOTENT BY CONSTRUCTION: an already-digested 16-hex value (`a1b2c3d4e5f60718`)
+// has no `(ag|oc|hat|claw)-` prefix and is only 16 chars, so it never matches —
+// call sites that already pass `sessionDigest(...)` are untouched (no double-digest),
+// and `sessionDigest` is a deterministic 1:1 map so `COUNT(DISTINCT session_id)` for
+// `agent.connected` is invariant whether the digest happened at the call site or here.
+const RAW_BEARER_RE = /^(ag|oc|hat|claw)-[A-Za-z0-9_-]{32}$/;
+
+function redactBearer(v: unknown): unknown {
+  return typeof v === 'string' && RAW_BEARER_RE.test(v) ? sessionDigest(v) : v;
+}
+
+// Recursively walk objects/arrays and redact any RAW-bearer string leaf. Depth-
+// capped (~6) so a pathologically nested payload can't blow the stack; below the
+// cap we stop recursing and return the value as-is (a deep object can't hide a
+// bearer behind 6 levels of nesting in practice, and `sanitize()` upstream
+// already strips secret-keyed fields).
+function redactBearersDeep(v: unknown, depth = 0): unknown {
+  if (depth > 6) return v;
+  if (typeof v === 'string') return redactBearer(v);
+  if (v === null || typeof v !== 'object') return v;
+  if (Array.isArray(v)) return v.map((el) => redactBearersDeep(el, depth + 1));
+  // Only walk plain objects; Date/Buffer/Map/RegExp/etc. pass through untouched
+  // (same carve-out as sanitizeValue, so jsonb serialization stays intact).
+  const proto = Object.getPrototypeOf(v as object);
+  if (proto === Object.prototype || proto === null) {
+    return Object.fromEntries(
+      Object.entries(v as Record<string, unknown>).map(([k, val]) => [
+        k,
+        redactBearersDeep(val, depth + 1),
+      ]),
+    );
+  }
+  return v;
+}
 
 /**
  * Duck-typed Hono context — any object with a string-keyed `.get()` method
@@ -249,15 +310,87 @@ export interface ActivityPodPressurePayload {
   level: 'warn' | 'reduce_tick' | 'refuse_new_rooms';
 }
 
+// ─── agent.connected rapid-reconnect coalescing (Fix B, 2026-06-03) ─────────
+//
+// Defense-in-depth backstop for the uncapped agent.connected session farm.
+// The authoritative fix is the leaderboard-side per-day distinct-session cap
+// (DAILY_CAPS.session in leaderboard.ts); this emission-side gate additionally
+// DROPS duplicate `agent.connected` rows for the same (subject, fingerprint)
+// within a short window so a replayed / rapid re-register doesn't even write an
+// extra session row in the first place. It is fingerprint-scoped (a real new
+// browser/session legitimately earns a new row); the DB daily cap remains the
+// fp-independent authority.
+const AGENT_CONNECTED_COALESCE_MS = 60_000;
+const AGENT_CONNECTED_MAP_MAX = 10_000;
+const lastAgentConnectedAt = new Map<string, number>();
+
+/**
+ * Pure-ish coalescing gate for `agent.connected` emission.
+ *
+ * Returns `true` (EMIT) on the first call for `subjectKey`, or once
+ * AGENT_CONNECTED_COALESCE_MS has elapsed since the last recorded emit for that
+ * key; returns `false` (SKIP) when a prior emit is still within the window. On
+ * an EMIT decision it records `nowMs` as the new last-emit time. Exported so the
+ * leaderboard self-tests can drive it directly with an injected clock.
+ *
+ * Includes an opportunistic, size-bounded cleanup: when the map grows past
+ * AGENT_CONNECTED_MAP_MAX entries, stale entries (older than the window) are
+ * evicted so a long-lived process with many distinct subjects can't leak memory.
+ */
+export function shouldEmitAgentConnected(subjectKey: string, nowMs: number): boolean {
+  const last = lastAgentConnectedAt.get(subjectKey);
+  if (last !== undefined && nowMs - last < AGENT_CONNECTED_COALESCE_MS) {
+    // Within the coalescing window — duplicate connect, drop it.
+    return false;
+  }
+
+  // Opportunistic eviction BEFORE recording the new key so the size guard also
+  // bounds the set we're about to grow.
+  if (lastAgentConnectedAt.size >= AGENT_CONNECTED_MAP_MAX) {
+    for (const [k, t] of lastAgentConnectedAt) {
+      if (nowMs - t >= AGENT_CONNECTED_COALESCE_MS) lastAgentConnectedAt.delete(k);
+    }
+  }
+
+  lastAgentConnectedAt.set(subjectKey, nowMs);
+  return true;
+}
+
 export async function logEvent(input: EventInput): Promise<void> {
+  // Fix B — coalesce rapid-reconnect agent.connected duplicates BEFORE any
+  // insert. Subject precedence agentId → avatarId → userId; key includes the
+  // fingerprint so distinct browsers stay independent. When no subject can be
+  // resolved we do NOT coalesce (always emit) — a null subject can't be farmed.
+  if (input.eventType === 'agent.connected') {
+    const subj = input.agentId ?? input.avatarId ?? input.userId ?? null;
+    if (subj !== null) {
+      const key = `${subj}:${input.fpHash ?? 'nofp'}`;
+      if (!shouldEmitAgentConnected(key, Date.now())) {
+        return;
+      }
+    }
+  }
+
+  // Central raw-bearer redaction (see RAW_BEARER_RE block above). Applied to the
+  // `session_id` AND `agent_id` columns and run over the (already secret-key-
+  // sanitized) payload so a RAW agent-session bearer can never land in the events
+  // table from ANY call site or caller-supplied header. Idempotent: an already-
+  // digested value is left unchanged.
+  //
+  // `agent_id` IS redacted here, safely: the EXACT-shape regex only matches a real
+  // bearer (`<prefix>-`+32 url-safe chars), never a legit grouping handle
+  // (`oc-mybot`, `milady:x`, `agent-<ts>-<rand>`, a UUID), so leaderboard
+  // `GROUP BY agent_id` is preserved. This closes the spoofable-header injection
+  // path: skills.ts logs the caller-supplied `X-Clawville-Agent-Id` into
+  // events.agent_id, and a client could put a raw `ag-/oc-/hat-` bearer there.
   const row = {
     eventType: input.eventType,
     userId: input.userId ?? null,
-    agentId: input.agentId ?? null,
+    agentId: redactBearer(input.agentId ?? null) as string | null,
     avatarId: input.avatarId ?? null,
     buildingId: input.buildingId ?? null,
-    sessionId: input.sessionId ?? null,
-    payload: sanitize(input.payload),
+    sessionId: redactBearer(input.sessionId ?? null) as string | null,
+    payload: redactBearersDeep(sanitize(input.payload)) as Record<string, unknown> | undefined,
     fpHash: input.fpHash ?? null,
     ipPrefixHash: input.ipPrefixHash ?? null,
   };
