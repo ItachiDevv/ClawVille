@@ -9,6 +9,8 @@ export interface WorldPerfFlags {
   shadows: boolean;
   postprocessing: boolean;
   waterFogParticles: boolean;
+  groundCover: boolean;
+  activityFx: boolean;
   staticWorldOnly: boolean;
   uiOverlay: boolean;
 }
@@ -19,6 +21,8 @@ export const DEFAULT_WORLD_PERF_FLAGS: WorldPerfFlags = {
   shadows: true,
   postprocessing: true,
   waterFogParticles: true,
+  groundCover: true,
+  activityFx: true,
   staticWorldOnly: false,
   uiOverlay: true,
 };
