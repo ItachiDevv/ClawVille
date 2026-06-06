@@ -196,6 +196,27 @@ export default function GamePage() {
   // loading screen paints; acceptable vs an error spamming every load.
   const [mounted, setMounted] = useState(false);
   useEffect(() => { setMounted(true); }, []);
+  const [hudPerfMode, setHudPerfMode] = useState(false);
+
+  useEffect(() => {
+    const fastMode =
+      typeof window !== 'undefined' &&
+      new URLSearchParams(window.location.search).get('fast') === '1';
+    if (fastMode) {
+      setHudPerfMode(true);
+      return;
+    }
+
+    const interval = window.setInterval(() => {
+      const tier = Number((window as any).__W3D_QUALITY_TIER ?? 0);
+      setHudPerfMode((prev) => {
+        if (!prev && tier >= 4) return true;
+        if (prev && tier <= 2) return false;
+        return prev;
+      });
+    }, 1000);
+    return () => window.clearInterval(interval);
+  }, []);
 
   // Kick off ALL heavy world assets the moment the page mounts, in parallel
   // with the dynamic() World3DCanvas chunk download. Without this, no asset
@@ -395,11 +416,13 @@ export default function GamePage() {
       <SeaLoadingScreen />
       <World3DCanvas mode="game" />
       <BuildingTooltip />
-      <NanoClawBanner hasAvatar={hasAvatar} isAuthenticated={isAuthenticated} isGuest={isGuest} />
+      {!hudPerfMode && (
+        <NanoClawBanner hasAvatar={hasAvatar} isAuthenticated={isAuthenticated} isGuest={isGuest} />
+      )}
       {/* Soft email-verification nudge — renders only when the user is
           authenticated, not a guest, and hasn't dismissed within the
           last 7d. Positioned at top-14 to clear NanoClawBanner. */}
-      {isAuthenticated && authData?.user && (
+      {!hudPerfMode && isAuthenticated && authData?.user && (
         <EmailVerifyBanner
           userId={authData.user.id}
           verified={authData.user.emailVerified}
@@ -426,18 +449,22 @@ export default function GamePage() {
       <ExchangeModal />
       <LeaderboardModal />
 
-      {/* Always visible — sidebar menu, minimap, controls for all visitors */}
-      <SidebarMenu />
-      <Minimap />
-      <ControlModeToggle />
-      <MobileControls />
+      {/* Always visible unless adaptive tier-4 performance mode collapses heavy HUD chrome. */}
+      {!hudPerfMode && (
+        <>
+          <SidebarMenu />
+          <Minimap />
+          <ControlModeToggle />
+          <MobileControls />
+        </>
+      )}
       <PerfHud />
       <ToastNotifications />
       {/* Ask Nori HUD shortcut — opens the Town Guide chat from anywhere
           on the world surface so new players don't have to find her 3D
           model first. Hides itself when a chat is already open or
           inside an activity room. */}
-      <NoriButton />
+      {!hudPerfMode && <NoriButton />}
       {/* Listens for `clawville:ensure-guest-avatar` window events from the
           game store and bootstraps a guest avatar for un-authenticated
           visitors. No UI of its own. */}
@@ -453,9 +480,9 @@ export default function GamePage() {
           guest avatars (isGuest carve-out in chat.ts). */}
       {hasAvatar && (
         <>
-          <LocationHUD />
+          {!hudPerfMode && <LocationHUD />}
           <TutorialOverlay />
-          <ActivityFeed />
+          {!hudPerfMode && <ActivityFeed />}
           <ChatPanel />
           {/* Phase 6.2 (2026-04-27) — AvatarChatBar moved BACK out of the
               hasAvatar block; lives only under the agent-connected branch
@@ -482,8 +509,8 @@ export default function GamePage() {
           agent-only UI. (Chat moved up into the hasAvatar block.) */}
       {agentConnected && controlMode !== 'npc' && controlMode !== 'explore' && (
         <>
-          <AvatarStatusBar />
-          <QuestTracker />
+          {!hudPerfMode && <AvatarStatusBar />}
+          {!hudPerfMode && <QuestTracker />}
           <AvatarSettingsModal />
           <LocationConfigModal />
           {/* AvatarChatBar — restored to agent-connected-only gate (Phase 6.2).
@@ -492,23 +519,23 @@ export default function GamePage() {
               both wrong. Mode 2 (NPC) chat lives in a separate
               TalkToCharacterBar component (non-Eliza, transient). */}
           <AvatarChatBar />
-          <ChargeBar />
-          <ShopOverlay />
+          {!hudPerfMode && <ChargeBar />}
+          {!hudPerfMode && <ShopOverlay />}
           <InventoryModal />
-          <DailyLoginModal />
-          <CosmeticDrawerMount />
+          {!hudPerfMode && <DailyLoginModal />}
+          {!hudPerfMode && <CosmeticDrawerMount />}
           {/* Emote hotbar — only renders when the player has equipped at
               least one emote cosmetic. Hotkeys 1-4 fire the slots; the
               bus-driven trigger plays one-shot animations on the player VRM. */}
-          <EmoteHotbar />
+          {!hudPerfMode && <EmoteHotbar />}
         </>
       )}
 
       {/* Autonomy HUD — visible when agent is in autonomous mode */}
-      <AutonomyHUD />
+      {!hudPerfMode && <AutonomyHUD />}
 
       {/* Research thought log — visible for all users */}
-      <ThoughtLog />
+      {!hudPerfMode && <ThoughtLog />}
 
       {/* SceneTransition overlay — handles fade-to-black for cove walk-in
           (and future building entries). Sits at z-index 9999 above all HUD
