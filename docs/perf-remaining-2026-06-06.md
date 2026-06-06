@@ -13,6 +13,8 @@ then reconciled and executed by the orchestrator. Evidence = file:line in each r
 | **CPU frame-budget — drop redundant spring matrixWorld flush** | `2b9f497e` | `vrm-character-animator.ts updateSpringOnly()` — removed the full-scene `scene.updateMatrixWorld(true)` after `springBoneManager.update()`. Verified vs `@pixiv/three-vrm-springbone@3.5.2` source: the manager flushes its own joint+descendant world matrices, and `updateMixerOnly` already did the full flush this frame. Saves a full-tree recompose across ~13 close VRMs/frame. |
 | **SW precache — drop dead 1MB fetch** | (this session) | `sw.js` v6→v7: removed `underwater-decorations.glb` (~1MB) from install-time precache — its only consumer (`arena-terrain.tsx UnderwaterDecorationsGlb`) is un-rendered dead code (removed from the tree 2026-04-16). The SW fetched ~1MB on every install for nothing. Version bump evicts v6 caches on activate. |
 | **W12b — bazaar-merchant-stand.glb recompress** | (this session) | `scripts/compress-glb-targeted.ts` (meshopt + WebP, backup + size-guard) → **2.34MB → 421K (-82%)** on a preloaded town prop (single 1.49MB baseColor PNG → 146K WebP). `?v=2` on all 3 refs (manifest + preload + useGLTF). Structurally re-validated (meshopt-decodes, 18,596 verts intact, only loader-supported extensions). Pixel-verify on staging pending. |
+| **B1 — raw-PNG building recompress (6 live buildings)** | (this session) | Slot-aware compression (color → lossy WebP q92, normal/MR → **lossless** WebP; meshopt geometry). **arcade 4.20MB→734K (-83%), chum 1.83→1.48, krusty 1.50→0.98, squidward 1.24→1.04, patricks 1.22→0.95, cove 0.38→0.12** = **~5MB saved**. `?v=` bumped on all 3 ref surfaces (arena-buildings + manifest + sw.js); SW v7→v8. Each structurally re-validated (decode + mesh/tex counts intact; meshopt skips UV>1 tiling coords). Pixel-verify on staging pending. |
+| **B2 — quest-bounty-pavilion.glb geometry meshopt** | (this session) | meshopt geometry + dedup/prune (textures already WebP → untouched via `formats:/png\|jpeg/` filter). **4.68MB → 2.11MB (-55%)**. `?v=2→?v=3` on all 4 refs. Validated: 26 meshes / 49,144 verts intact, 92→72 textures (dedup removed 20 dup refs). Pixel-verify on staging pending. |
 
 ## Already done before this session (verified in live code — no work)
 
@@ -33,18 +35,13 @@ then reconciled and executed by the orchestrator. Evidence = file:line in each r
 | W6 NPC count cap on low-end | **Reverted by user** as "a bad fix" (`e3a45652`) — naive head-slice pops arbitrary NPCs (roster sorted by identity, not distance). This branch's design answers NPC cost via **per-frame reduction** (the shared cache + spring throttle + far-NPC mixer gate), NOT capping count. A distance-aware stable-key cap is the only acceptable form and is out of scope. |
 | W10 gate camera controllers | The worthwhile gating already exists (WASD↔FPS ternary on `controlMode`, `World3DCanvas.tsx:963-967`). The 2 ungated controllers (ArrowKey, OrbitControls) are ungated for correctness (all-mode input) and already early-return on no-input. Audit rated impact "Minor" (sub-1-FPS). Net ROI ~0. |
 
-## Scoped backlog (real wins, but risk/effort warrants a dedicated, verified pass)
+## Scoped backlog
 
-### B1 — Texture-compress the raw-PNG/JPG buildings (extends W12b)
-- **What:** the live `-opt1` buildings still serve RAW PNG/JPG (the dedup pass did NOT compress textures). Biggest: `claw-arcade-exterior-opt1.glb` (1.54MB + 900K PNGs), `squidward-house-opt1` / `patricks-rock-v2-opt1` (~700K normal maps), `chum-bucket-v2-opt1`, `krusty-krab-v2-opt1`, `cove-exterior-opt1`.
-- **Win:** several MB across the live building roster.
-- **Risk (why deferred):** (1) **normal maps** — lossy WebP on normal maps causes lighting/shading artifacts; needs `--lossless` or per-texture-type handling, not the blanket pipeline. (2) **Live-roster blast radius** — a regression breaks core buildings. (3) Must browser-QC every building on Iris Xe.
-- **Command (per file, after handling normal maps):** `bun run scripts/compress-glb-targeted.ts apps/web/public/models/<file>-opt1.glb` then bump `?v=` on every ref in `arena-buildings.tsx` + `asset-preload-manifest.ts` + `sw.js` precache.
+### B1 — Texture-compress the raw-PNG/JPG buildings — ✅ DONE this session
+Implemented via slot-aware compression (color → lossy WebP q92, normal/MR → lossless WebP, meshopt geometry). 6 live buildings: arcade 4.20MB→734K, chum/krusty/squidward/patricks/cove. ~5MB saved. `?v=` bumped on all 3 ref surfaces; SW v7→v8. Each structurally re-validated. The normal-map artifact risk was handled by routing data maps to a lossless pass. **Pixel-verify on staging still required before this reaches users.**
 
-### B2 — quest-bounty-pavilion.glb geometry meshopt (W4 remainder)
-- **What:** already 8.7MB→4.68MB via texture-resize (`9ebbad6b`), 92 WebP images, but geometry is **uncompressed** (no meshopt/Draco).
-- **Win:** ~10–25% of 4.68MB (geometry meshopt) and/or KTX2 for GPU-memory (not wire) savings.
-- **Risk:** medium; run `compress-glb-targeted.ts` (skip-if-larger guards), bump `?v=2`→`?v=3`, browser-verify pavilion on Iris Xe.
+### B2 — quest-bounty-pavilion.glb geometry meshopt — ✅ DONE this session
+meshopt geometry + dedup/prune (textures left as-is via `formats:/png|jpeg/` filter). 4.68MB→2.11MB (-55%). `?v=3`. Validated 49,144 verts intact. **Pixel-verify on staging still required.**
 
 ### B3 — NPC intra-clone material merge / cross-instance instancing (W12a)
 - **What:** 11 location NPCs + 18 wandering NPCs each `SkeletonUtils.clone()` with NO merge/instancing (`arena-npcs.tsx:510`, `arena-location-npcs.tsx:454`). `mergeStaticMeshesByMaterial` is buildings-only.

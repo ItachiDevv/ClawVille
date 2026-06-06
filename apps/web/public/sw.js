@@ -41,8 +41,14 @@
 //     scene draws decorations procedurally via <UnderwaterDecorations/>. The
 //     SW was fetching ~1 MB on every install for an asset nothing loads.
 //   - Version bump evicts the v6 asset+static caches on activate.
+//
+// 2026-06-06 v8 (perf asset wave — building texture compression):
+//   - 6 live buildings recompressed (slot-aware WebP + meshopt): arcade
+//     4.2MB→734K, chum/krusty/squidward/patricks/cove. PRECACHE_GLBS ?v=
+//     bumped to match (arcade/chum/krusty/cove →v3, patricks/squidward →v4).
+//     Version bump re-precaches the new building versions + evicts v7.
 
-const CACHE_VERSION = 'v7';
+const CACHE_VERSION = 'v8';
 const GLB_CACHE = `clawville-assets-${CACHE_VERSION}`;
 const STATIC_CACHE = `clawville-static-${CACHE_VERSION}`;
 
@@ -66,16 +72,16 @@ const PRECACHE_GLBS = [
   // Building models (Phase 2 opt1 variants, ?v= queries busted). Sandy's
   // Treedome is procedural and intentionally not pre-cached.
   '/models/pineapple-house-opt1.glb?v=2',
-  '/models/chum-bucket-v2-opt1.glb?v=2',
-  '/models/krusty-krab-v2-opt1.glb?v=2',
+  '/models/chum-bucket-v2-opt1.glb?v=3',
+  '/models/krusty-krab-v2-opt1.glb?v=3',
   '/models/salty-spitoon-opt1.glb?v=2',
   '/models/boating-school-opt1.glb?v=2',
   '/models/patty-building-opt1.glb?v=2',
   '/models/building-lighthouse-opt1.glb?v=2',
-  '/models/arcade/claw-arcade-exterior-opt1.glb?v=2',
-  '/models/cove/cove-exterior-opt1.glb?v=2',
-  '/models/patricks-rock-v2-opt1.glb?v=3',
-  '/models/squidward-house-opt1.glb?v=3',
+  '/models/arcade/claw-arcade-exterior-opt1.glb?v=3',
+  '/models/cove/cove-exterior-opt1.glb?v=3',
+  '/models/patricks-rock-v2-opt1.glb?v=4',
+  '/models/squidward-house-opt1.glb?v=4',
   // The 3 locomotion clips every VRM avatar needs to render without a T-pose
   // flash. Loaded eagerly on /game mount by preloadLocomotionClips() —
   // pre-caching them here means the SECOND-visit network panel has 0 anim GLB
