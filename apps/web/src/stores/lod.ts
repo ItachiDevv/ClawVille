@@ -6,11 +6,11 @@ import { create } from 'zustand';
  * render as FULL VRM/GLB this frame; everything else falls back to a cheap
  * proxy mesh.
  *
- * Building residents (rendered by `ArenaLocationNpcs`) are NEVER governed by
- * this set — they sit at idle, use the cheapest spring-bone tier, and always
- * render full because they're the load-bearing knowledge surface.
+ * Building residents (rendered by `ArenaLocationNpcs`) are not governed by
+ * this moving-entity set. They have their own adaptive-only far proxy tier so
+ * nearby/interactable teachers still render as full GLBs.
  *
- * The 14-entity cap is the Iris Xe budget. Local player + 10 residents +
+ * The 14-entity cap is the Iris Xe budget. Local player + visible residents +
  * up-to-14 (NPCs + remote players in range) = ≤ 25 full-skeleton VRMs on
  * screen. The proxy mesh path serves the 15th+ at ~3 draws each.
  *
