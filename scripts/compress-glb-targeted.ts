@@ -113,7 +113,34 @@ async function main(): Promise<void> {
         dedup(),
         weld({ tolerance: 0.0001 }),
         prune({ keepAttributes: false, keepLeaves: false }),
-        textureCompress({ encoder: sharp, targetFormat: 'webp', resize: [1024, 1024] }),
+        // Slot-aware texture compression. COLOR maps (baseColor/emissive) take
+        // high-quality lossy WebP — perceptually lossless at q92, big savings on
+        // raw PNG/JPG. DATA maps (normal/metallicRoughness/occlusion) take
+        // LOSSLESS WebP — lossy compression of a normal map corrupts the encoded
+        // surface vectors and produces visible lighting/shading artifacts. The
+        // gltf-transform docs explicitly call out excluding normal maps from
+        // lossy passes; we route them to a lossless pass instead.
+        // `formats: /png|jpeg/` so we only convert RAW PNG/JPG sources — textures
+        // that are ALREADY WebP (e.g. the pavilion's 92 images) are left
+        // untouched, so on an already-texture-optimized asset this pass is a
+        // no-op and only the meshopt geometry win applies (no needless re-encode
+        // of already-lossy data).
+        textureCompress({
+          encoder: sharp,
+          targetFormat: 'webp',
+          formats: /png|jpe?g/i,
+          slots: /^(baseColorTexture|emissiveTexture)$/,
+          quality: 92,
+          resize: [1024, 1024],
+        }),
+        textureCompress({
+          encoder: sharp,
+          targetFormat: 'webp',
+          formats: /png|jpe?g/i,
+          slots: /(normalTexture|metallicRoughnessTexture|occlusionTexture)/,
+          lossless: true,
+          resize: [1024, 1024],
+        }),
         meshopt({ encoder: MeshoptEncoder, level: 'medium' }),
       );
       const glbBytes = await io.writeBinary(doc);
