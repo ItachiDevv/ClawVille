@@ -109,22 +109,28 @@ async function main(): Promise<void> {
 
     try {
       const doc = await io.read(file);
-      await doc.transform(
-        dedup(),
-        weld({ tolerance: 0.0001 }),
-        prune({ keepAttributes: false, keepLeaves: false }),
-        // Slot-aware texture compression. COLOR maps (baseColor/emissive) take
-        // high-quality lossy WebP — perceptually lossless at q92, big savings on
-        // raw PNG/JPG. DATA maps (normal/metallicRoughness/occlusion) take
-        // LOSSLESS WebP — lossy compression of a normal map corrupts the encoded
-        // surface vectors and produces visible lighting/shading artifacts. The
-        // gltf-transform docs explicitly call out excluding normal maps from
-        // lossy passes; we route them to a lossless pass instead.
-        // `formats: /png|jpeg/` so we only convert RAW PNG/JPG sources — textures
-        // that are ALREADY WebP (e.g. the pavilion's 92 images) are left
-        // untouched, so on an already-texture-optimized asset this pass is a
-        // no-op and only the meshopt geometry win applies (no needless re-encode
-        // of already-lossy data).
+      // COMPRESS_NO_MESHOPT=1 → texture-only mode: skip dedup/weld/prune/meshopt
+      // and touch ONLY the textures, leaving geometry byte-identical. REQUIRED
+      // for GLBs that pass through `mergeStaticMeshesByMaterial` at runtime
+      // (arena-buildings.tsx): meshopt's vertex quantization converts SOME UV
+      // attributes to Int16 while SKIPPING the UV>1 tiling coords (left Float32),
+      // so same-material submeshes end up with mixed UV array types and
+      // mergeGeometries() throws "consistent array types" — silently dropping
+      // the draw-call merge. Texture-only keeps geometry (and the merge) intact.
+      const noMeshopt = process.env.COMPRESS_NO_MESHOPT === '1';
+      const geomTransforms = noMeshopt
+        ? []
+        : [dedup(), weld({ tolerance: 0.0001 }), prune({ keepAttributes: false, keepLeaves: false })];
+      // Slot-aware texture compression. COLOR maps (baseColor/emissive) take
+      // high-quality lossy WebP — perceptually lossless at q92, big savings on
+      // raw PNG/JPG. DATA maps (normal/metallicRoughness/occlusion) take
+      // LOSSLESS WebP — lossy compression of a normal map corrupts the encoded
+      // surface vectors and produces visible lighting/shading artifacts. The
+      // gltf-transform docs explicitly call out excluding normal maps from
+      // lossy passes; we route them to a lossless pass instead.
+      // `formats: /png|jpeg/` so we only convert RAW PNG/JPG sources — textures
+      // that are ALREADY WebP (e.g. the pavilion's 92 images) are left untouched.
+      const textureTransforms = [
         textureCompress({
           encoder: sharp,
           targetFormat: 'webp',
@@ -141,7 +147,11 @@ async function main(): Promise<void> {
           lossless: true,
           resize: [1024, 1024],
         }),
-        meshopt({ encoder: MeshoptEncoder, level: 'medium' }),
+      ];
+      await doc.transform(
+        ...geomTransforms,
+        ...textureTransforms,
+        ...(noMeshopt ? [] : [meshopt({ encoder: MeshoptEncoder, level: 'medium' })]),
       );
       const glbBytes = await io.writeBinary(doc);
       const tempPath = file + '.tgt.tmp.glb';
