@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef, useMemo, memo, Suspense, useEffect, type ReactElement } from 'react';
+import { useRef, useMemo, memo, Suspense, useEffect, useState, type ReactElement } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
 import { useGLTF } from '@react-three/drei';
 import { useWorldLabel, WorldLabel } from '@/lib/three/world-labels-overlay';
@@ -245,6 +245,20 @@ const _npcMeshBox = new THREE.Box3();
 // Allocated once — never inside useFrame to avoid GC pressure.
 const _locRenderedBbox = new THREE.Box3();
 
+const RESIDENT_PROXY_PROMOTE_DIST_SQ = 2_600 * 2_600;
+const RESIDENT_PROXY_DEMOTE_DIST_SQ = 3_200 * 3_200;
+const _residentProxyGeometry = new THREE.CapsuleGeometry(26, 125, 4, 8);
+
+function residentColor(name: string): number {
+  let h = 0;
+  for (let i = 0; i < name.length; i++) {
+    h = ((h << 5) - h) + name.charCodeAt(i);
+    h |= 0;
+  }
+  const palette = [0xf5d34f, 0x7bdcff, 0x8df58d, 0xff8bb6, 0xbda0ff, 0xff9b60];
+  return palette[Math.abs(h) % palette.length] ?? 0x7bdcff;
+}
+
 /** Measure bounding box and return scale so the model's Y-height matches targetHeight,
  *  plus the local-space min.y of the geometry (pivot offset).
  *
@@ -368,6 +382,120 @@ function getTerrainY(x: number, z: number, scene: THREE.Scene): number {
   const hits = _locRaycaster.intersectObject(terrain, false);
   return hits.length > 0 ? hits[0].point.y : -2;
 }
+
+const LocationNpcProxy = memo(function LocationNpcProxy({
+  modelCfg,
+  worldX,
+  worldZ,
+  seedBase,
+  showLabel,
+}: {
+  modelCfg: NpcModelConfig;
+  worldX: number;
+  worldZ: number;
+  seedBase: number;
+  showLabel: boolean;
+}) {
+  const groupRef = useRef<THREE.Group>(null);
+  const { scene: threeScene } = useThree();
+  const terrainY = useRef(-2);
+  const placed = useRef(false);
+  const material = useMemo(
+    () => new THREE.MeshBasicMaterial({
+      color: new THREE.Color(residentColor(modelCfg.name)),
+      toneMapped: false,
+    }),
+    [modelCfg.name],
+  );
+
+  const { divRef: locationLabelRef } = useWorldLabel({
+    id: `location-npc-proxy-label-${modelCfg.name}-${worldX}-${worldZ}`,
+    anchorRef: groupRef,
+    offset: [0, 210, 0],
+    initialVisible: showLabel,
+    fadeNear: 15000,
+    fadeFar: 25000,
+    fadeBaseOpacity: 0.75,
+    occlude: true,
+  });
+
+  useEffect(() => () => material.dispose(), [material]);
+
+  useFrame(({ clock }) => {
+    const group = groupRef.current;
+    if (!group) return;
+    const frame = Math.floor(clock.elapsedTime * 60);
+    if (!placed.current || (frame + seedBase) % 20 === 0) {
+      const y = getTerrainY(worldX, worldZ, threeScene);
+      if (y > -100) {
+        terrainY.current = y;
+        placed.current = true;
+      }
+    }
+    group.position.set(worldX, terrainY.current, worldZ);
+  });
+
+  return (
+    <group ref={groupRef}>
+      <mesh
+        geometry={_residentProxyGeometry}
+        material={material}
+        position={[0, 86, 0]}
+        frustumCulled
+      />
+      {showLabel && (
+        <WorldLabel divRef={locationLabelRef}>
+          <div
+            style={{
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              transform: 'translateY(-50%)',
+            }}
+          >
+            <div
+              style={{
+                fontFamily: 'var(--font-fraunces, "Cormorant Garamond", "Spectral", Georgia, serif)',
+                fontVariationSettings: '"opsz" 9',
+                fontWeight: 480,
+                fontSize: 12,
+                color: '#effeff',
+                padding: '4px 9px 5px',
+                borderRadius: 999,
+                background: 'rgba(8, 18, 32, 0.72)',
+                border: '1px solid rgba(120, 220, 255, 0.35)',
+                boxShadow: '0 0 10px rgba(100,230,255,0.35)',
+                whiteSpace: 'nowrap',
+                lineHeight: 1,
+                userSelect: 'none',
+              }}
+            >
+              {modelCfg.name}
+            </div>
+            <div
+              style={{
+                width: 1,
+                height: 28,
+                backgroundImage: 'linear-gradient(rgba(140,240,255,0.62) 50%, transparent 50%)',
+                backgroundSize: '1px 6px',
+                backgroundRepeat: 'repeat-y',
+                marginBottom: 2,
+              }}
+            />
+            <div
+              style={{
+                width: 5,
+                height: 5,
+                borderRadius: '50%',
+                background: 'rgba(160,234,255,0.85)',
+              }}
+            />
+          </div>
+        </WorldLabel>
+      )}
+    </group>
+  );
+});
 
 /** NpcMesh — renders a single GLB (primary or companion) at the given world position.
  *  Handles: GLB load, bbox-aware scale normalization (SkinnedMesh excluded), optional
@@ -722,46 +850,83 @@ const LocationNpc = memo(function LocationNpc({
   worldX,
   worldZ,
   facingRotY,
+  fullDetail,
 }: {
   zoneId: string;
   worldX: number;
   worldZ: number;
   facingRotY: number;
+  fullDetail: boolean;
 }) {
-  const config = LOCATION_NPCS[zoneId];
-  if (!config) return null;
+  const [nearCamera, setNearCamera] = useState(false);
 
   // idToSeed returns a float (0..10). Convert to integer so (frame + seed) % N
   // uses integer arithmetic — float modulo with strict === 0 never fires.
   const seed = useMemo(() => Math.round(idToSeed(zoneId)), [zoneId]);
+  const config = LOCATION_NPCS[zoneId];
+
+  useFrame(({ camera }) => {
+    if (fullDetail) return;
+    const dx = worldX - camera.position.x;
+    const dz = worldZ - camera.position.z;
+    const distSq = dx * dx + dz * dz;
+    if (!nearCamera && distSq < RESIDENT_PROXY_PROMOTE_DIST_SQ) {
+      setNearCamera(true);
+    } else if (nearCamera && distSq > RESIDENT_PROXY_DEMOTE_DIST_SQ) {
+      setNearCamera(false);
+    }
+  });
+
+  if (!config) return null;
 
   const companion = config.companion;
   const companionX = companion ? worldX + (companion.offsetX ?? 80) : 0;
   const companionZ = companion ? worldZ + (companion.offsetZ ?? 0) : 0;
   // Companion seed offset (+17) separates its raycast stagger from the primary
   const companionSeed = seed + 17;
+  const showFullDetail = fullDetail || nearCamera;
 
   return (
     <>
       {/* Primary NPC — interactive chat target */}
-      <NpcMesh
-        modelCfg={config}
-        worldX={worldX}
-        worldZ={worldZ}
-        facingRotY={facingRotY}
-        seedBase={seed}
-        showLabel={true}
-      />
+      {showFullDetail ? (
+        <NpcMesh
+          modelCfg={config}
+          worldX={worldX}
+          worldZ={worldZ}
+          facingRotY={facingRotY}
+          seedBase={seed}
+          showLabel={true}
+        />
+      ) : (
+        <LocationNpcProxy
+          modelCfg={config}
+          worldX={worldX}
+          worldZ={worldZ}
+          seedBase={seed}
+          showLabel={true}
+        />
+      )}
       {/* Companion NPC (if any) — passive presence, no chat, no label */}
       {companion && (
-        <NpcMesh
-          modelCfg={companion}
-          worldX={companionX}
-          worldZ={companionZ}
-          facingRotY={facingRotY}
-          seedBase={companionSeed}
-          showLabel={false}
-        />
+        showFullDetail ? (
+          <NpcMesh
+            modelCfg={companion}
+            worldX={companionX}
+            worldZ={companionZ}
+            facingRotY={facingRotY}
+            seedBase={companionSeed}
+            showLabel={false}
+          />
+        ) : (
+          <LocationNpcProxy
+            modelCfg={companion}
+            worldX={companionX}
+            worldZ={companionZ}
+            seedBase={companionSeed}
+            showLabel={false}
+          />
+        )
       )}
     </>
   );
@@ -798,7 +963,7 @@ export function DeferredNpcPreloads(): ReactElement | null {
   return null;
 }
 
-export default function ArenaLocationNpcs() {
+export default function ArenaLocationNpcs({ fullDetail = true }: { fullDetail?: boolean }) {
   const npcs = useMemo(() => {
     return buildingZones.map((zone) => {
       const config = LOCATION_NPCS[zone.id];
@@ -817,7 +982,7 @@ export default function ArenaLocationNpcs() {
     <Suspense fallback={null}>
       <group>
         {npcs.map((npc) => (
-          <LocationNpc key={npc.zoneId} {...npc} />
+          <LocationNpc key={npc.zoneId} {...npc} fullDetail={fullDetail} />
         ))}
       </group>
     </Suspense>
