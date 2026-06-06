@@ -103,7 +103,7 @@ const STANDARD_DPR_RANGE: [number, number] = [0.75, 1];
 const QUALITY_SAMPLE_MS = 2500;
 const QUALITY_WARMUP_MS = 5000;
 const QUALITY_FPS_DOWN = 58;
-const QUALITY_FPS_UP = 72;
+const QUALITY_FPS_UP = 90;
 const QUALITY_MAX_TIER = 4;
 
 export type WorldMode = 'game' | 'arena';
@@ -127,13 +127,14 @@ function applyQualityTier(flags: WorldPerfFlags, tier: number): WorldPerfFlags {
 
 function useAdaptiveWorldPerfFlags(perfFlags?: Partial<WorldPerfFlags>): WorldPerfFlags {
   const base = { ...DEFAULT_WORLD_PERF_FLAGS, ...perfFlags };
-  const adaptiveEnabled = perfFlags === undefined;
-  const initialTier =
-    typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('fast') === '1'
-      ? QUALITY_MAX_TIER
-      : LOW_END_GPU_DETECTED
-        ? 1
-        : 0;
+  const forceMaxTier =
+    typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('fast') === '1';
+  const adaptiveEnabled = perfFlags === undefined && !forceMaxTier;
+  const initialTier = forceMaxTier
+    ? QUALITY_MAX_TIER
+    : LOW_END_GPU_DETECTED
+      ? 1
+      : 0;
   const [qualityTier, setQualityTier] = useState(initialTier);
 
   useEffect(() => {
