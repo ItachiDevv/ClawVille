@@ -33,8 +33,16 @@
 //   - Removed sandy-treedome-v3-opt1.glb from install-time precache. /game now
 //     renders Sandy's Treedome procedurally because the GLB contributed ~1.13M
 //     live triangles after material merge.
+//
+// 2026-06-06 v7 (CPU frame-budget perf wave):
+//   - Removed underwater-decorations.glb (~1 MB) from install-time precache.
+//     Its only consumer, UnderwaterDecorationsGlb in arena-terrain.tsx, was
+//     un-rendered dead code (removed from the render tree 2026-04-16) — the
+//     scene draws decorations procedurally via <UnderwaterDecorations/>. The
+//     SW was fetching ~1 MB on every install for an asset nothing loads.
+//   - Version bump evicts the v6 asset+static caches on activate.
 
-const CACHE_VERSION = 'v6';
+const CACHE_VERSION = 'v7';
 const GLB_CACHE = `clawville-assets-${CACHE_VERSION}`;
 const STATIC_CACHE = `clawville-static-${CACHE_VERSION}`;
 
@@ -50,7 +58,6 @@ const MAX_GLB_CACHE_BYTES = 60 * 1024 * 1024; // 60 MB
 // arena-buildings.tsx BUILDING_MODELS. Old roster removed.
 const PRECACHE_GLBS = [
   '/models/lobster.glb',               // 196 KB — player character
-  '/models/underwater-decorations.glb', // 1.0 MB — terrain decoration layer
   '/models/coral-reef1.glb',            // 388 KB
   '/models/coral-reef2.glb',            // 192 KB
   '/models/coral-reef3.glb',            // 260 KB
