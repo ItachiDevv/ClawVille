@@ -12,9 +12,13 @@
  *  GET  /api/world/rooms            — admin-only roster of live rooms.
  *
  * Auth model — every endpoint goes through sessionMiddleware, then derives
- * a stable sessionId. Logged-in users use their Lucia session ID; guests
- * fall back to the fingerprint hash so a browser without an account still
- * has a stable identity across reconnects.
+ * a stable sessionId with precedence: Lucia user > connected/hosted agent
+ * session (X-Clawville-Agent-Session) > guest fingerprint. Agents join AS
+ * THEMSELVES (bound avatar, counted toward the room cap, swap-eligible) so
+ * Rule E5 human/agent parity holds on the multiplayer surface. The raw
+ * sessionId NEVER leaves the server (only a non-reversible publicId is
+ * broadcast; see room-registry derivePublicId). The SSE stream is gated on
+ * room membership so a third party can't subscribe to a room they are not in.
  */
 
 import { Hono } from 'hono';
@@ -25,11 +29,19 @@ import { eq } from 'drizzle-orm';
 import { db, avatars } from '@clawville/database';
 import { sessionMiddleware } from '../middleware/auth';
 import { adminOnly } from '../middleware/admin-only';
+import {
+  AGENT_SESSION_HEADER,
+  validateLiveAgentSession,
+} from '../middleware/require-auth-or-agent';
 import { npcSimulation } from '../services/npc-simulation';
 import { roomRegistry, ROOM_MAX_PLAYERS } from '../services/room-registry';
 import { createRateLimiter, getClientIp } from '../middleware/rate-limit';
 import type { Context } from 'hono';
 import type { AppContext } from '../types';
+
+/** Town-center default (matches avatars.position_x/y defaults of 2560,2560). */
+const TOWN_CENTER_X = 2560;
+const TOWN_CENTER_Y = 2560;
 
 export const worldRoutes = new Hono<AppContext>();
 
@@ -39,31 +51,79 @@ worldRoutes.use('*', sessionMiddleware);
 // Helpers
 // ---------------------------------------------------------------------------
 
+type PresenceKind = 'human' | 'guest' | 'agent';
+
+interface ResolvedPresence {
+  /** Raw internal session key. NEVER returned to the client. */
+  sessionId: string;
+  kind: PresenceKind;
+  /**
+   * The userId whose avatar this presence plays AS. Non-null for humans and
+   * for agents bound to an avatar; null for guests and for agents not yet
+   * bound to an avatar (they still get a guest-style presence so they can
+   * walk around, but earn nothing persistent until they have an avatar).
+   */
+  userId: string | null;
+}
+
 /**
- * Resolve a stable per-browser sessionId. Logged-in callers use their Lucia
- * session id. Guests use the global fingerprint hash (already computed by
- * fingerprintMiddleware in index.ts) prefixed `g:` so the two namespaces
- * never collide.
+ * Resolve a stable per-session presence with precedence:
+ *   1. Lucia user      → sessionId = Lucia session id, kind 'human'.
+ *   2. Agent session   → X-Clawville-Agent-Session header validated via the
+ *                        single fail-closed liveness gate. sessionId is an
+ *                        `a:<agentId>` handle (the raw agentId is NOT leaked;
+ *                        derivePublicId hashes it like everyone else), kind
+ *                        'agent', userId = the bound human's userId so the
+ *                        agent joins AS its avatar (Rule E5 parity).
+ *   3. Guest           → fingerprint hash prefixed `g:`, kind 'guest'.
+ *
+ * Async because the agent path hits the DB (validateLiveAgentSession).
  */
-function resolveSessionId(c: Context<AppContext>): string {
+async function resolvePresence(c: Context<AppContext>): Promise<ResolvedPresence> {
   const session = c.get('session');
-  if (session?.id) return session.id;
+  if (session?.id) {
+    const user = c.get('user');
+    return { sessionId: session.id, kind: 'human', userId: user?.id ?? null };
+  }
+
+  // Agent-session path: honor the SAME header every other economy/activity
+  // surface uses. An EXPIRED / unknown session fails closed (returns null)
+  // and falls through to the guest path rather than throwing.
+  const agentSessionId = c.req.header(AGENT_SESSION_HEADER);
+  if (agentSessionId) {
+    const live = await validateLiveAgentSession(agentSessionId);
+    if (live) {
+      return {
+        sessionId: `a:${live.config.agentId}`,
+        kind: 'agent',
+        userId: live.bot.userId ?? null,
+      };
+    }
+  }
+
   const fp = c.get('fpHash');
-  if (fp) return `g:${fp}`;
+  if (fp) return { sessionId: `g:${fp}`, kind: 'guest', userId: null };
   throw new HTTPException(500, { message: 'No session or fingerprint available' });
 }
 
 /**
- * Build a JoinAvatarMeta payload from the calling user. Falls back to a
- * guest archetype when no avatar exists.
+ * Build a JoinAvatarMeta payload from the resolved presence. Humans AND
+ * avatar-bound agents load their real avatar row (name/species/modelKey/
+ * position) so they join AS THEMSELVES. Guests (and avatar-less agents) get
+ * a Visitor archetype spawned at town center so they don't pop in at the
+ * world origin (0,0) for ~200ms before their first position update.
  */
-async function resolveAvatarMeta(userId: string | null) {
+async function resolveAvatarMeta(presence: ResolvedPresence) {
+  const { userId, kind } = presence;
   if (!userId) {
     return {
       userId: null,
       name: 'Visitor',
       species: 'milady_chibi',
       color: 0xcccccc,
+      x: TOWN_CENTER_X,
+      y: TOWN_CENTER_Y,
+      kind,
     };
   }
   const row = await db
@@ -84,6 +144,9 @@ async function resolveAvatarMeta(userId: string | null) {
       name: 'Visitor',
       species: 'milady_chibi',
       color: 0xcccccc,
+      x: TOWN_CENTER_X,
+      y: TOWN_CENTER_Y,
+      kind,
     };
   }
   return {
@@ -95,6 +158,7 @@ async function resolveAvatarMeta(userId: string | null) {
     color: 0xcccccc,
     x: a.positionX,
     y: a.positionY,
+    kind,
   };
 }
 
@@ -155,8 +219,7 @@ worldRoutes.post('/join', async (c) => {
   if (!joinRateLimiter.check(ip)) {
     throw new HTTPException(429, { message: 'Too many join attempts — try again in a minute' });
   }
-  const sessionId = resolveSessionId(c);
-  const user = c.get('user');
+  const presence = await resolvePresence(c);
   const body = (await c.req.json().catch(() => ({}))) as unknown;
   const parsed = joinSchema.safeParse(body);
   if (!parsed.success) {
@@ -164,18 +227,21 @@ worldRoutes.post('/join', async (c) => {
   }
   const requestedRoomId = parsed.data.roomId;
 
-  const avatarMeta = await resolveAvatarMeta(user?.id ?? null);
-  const { room, swappedOutNpcId } = roomRegistry.joinPlayer(sessionId, avatarMeta, {
+  const avatarMeta = await resolveAvatarMeta(presence);
+  const { room, player, swappedOutNpcId } = roomRegistry.joinPlayer(presence.sessionId, avatarMeta, {
     requestedRoomId,
-    // B2 — only auth'd callers can mint never-before-seen invite codes.
-    // Guests with an unknown code fall through to auto-fill inside the
-    // registry.
-    isAuthenticated: !!user,
+    // B2: only accountable callers (Lucia user OR validated agent session)
+    // can mint never-before-seen invite codes. Guests with an unknown code
+    // fall through to auto-fill inside the registry.
+    isAuthenticated: presence.kind !== 'guest',
   });
 
   return c.json({
     roomId: room.id,
-    sessionId,
+    // Echo the SAME non-reversible publicId the client will see for itself in
+    // every snapshot so it can resolve `isLocal`. The raw sessionId is never
+    // returned (it is the Lucia bearer token for logged-in users).
+    id: player.publicId,
     capacity: ROOM_MAX_PLAYERS,
     playerCount: room.players.size,
     swappedOutNpcId,
@@ -184,7 +250,7 @@ worldRoutes.post('/join', async (c) => {
 });
 
 worldRoutes.post('/leave', async (c) => {
-  const sessionId = resolveSessionId(c);
+  const { sessionId } = await resolvePresence(c);
   const result = roomRegistry.leavePlayer(sessionId);
   positionLastSeen.delete(sessionId);
   return c.json({
@@ -195,7 +261,7 @@ worldRoutes.post('/leave', async (c) => {
 });
 
 worldRoutes.post('/position', async (c) => {
-  const sessionId = resolveSessionId(c);
+  const { sessionId } = await resolvePresence(c);
   const now = Date.now();
   const last = positionLastSeen.get(sessionId) ?? 0;
   if (now - last < POSITION_MIN_INTERVAL_MS) {
@@ -220,11 +286,28 @@ worldRoutes.post('/position', async (c) => {
   return c.json({ ok: true });
 });
 
-worldRoutes.get('/:roomId/stream', (c) => {
+worldRoutes.get('/:roomId/stream', async (c) => {
   const roomId = c.req.param('roomId');
+  const isSolo = roomId.startsWith('solo-');
   // B5 — same safe-alphabet regex as the /join schema.
-  if (!ROOM_ID_REGEX.test(roomId) && !roomId.startsWith('solo-')) {
+  if (!ROOM_ID_REGEX.test(roomId) && !isSolo) {
     throw new HTTPException(400, { message: 'Invalid room id' });
+  }
+
+  // SECURITY (membership gate): a multiplayer room snapshot carries every
+  // member's live position. Without this check ANY caller could subscribe to
+  // an arbitrary active room and harvest its roster. We require the caller to
+  // actually be IN the room they ask to stream. The `solo-` alias has no
+  // membership (it is a private single-viewer NPC stream from the npc-sse
+  // shim) so it is exempt: there is no other session's data to leak.
+  if (!isSolo) {
+    const presence = await resolvePresence(c);
+    const callerRoom = roomRegistry.getRoomForSession(presence.sessionId);
+    if (!callerRoom || callerRoom.id !== roomId) {
+      throw new HTTPException(403, {
+        message: 'Not a member of this room (call /api/world/join first)',
+      });
+    }
   }
 
   return streamSSE(c, async (stream) => {
@@ -272,7 +355,10 @@ worldRoutes.get('/rooms', adminOnly, (c) => {
     removedNpcCount: r.removedNpcs.size,
     lastActivityAt: r.lastActivityAt,
     sessions: Array.from(r.players.values()).map((p) => ({
-      sessionId: p.sessionId,
+      // SECURITY: never emit the raw sessionId (Lucia bearer token). The
+      // non-reversible publicId is a stable handle for admin debugging.
+      id: p.publicId,
+      kind: p.kind,
       userId: p.userId,
       name: p.name,
       species: p.species,
