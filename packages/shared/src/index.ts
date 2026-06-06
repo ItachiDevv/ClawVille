@@ -70,6 +70,8 @@ export {
   // Hatcher partner #2 (2026-06-01) — random render-model pick + fleet keys.
   HATCHER_MODEL_KEYS,
   pickRandomHatcherModelKey,
+  // Phanes default Hatcher avatar (2026-06-05).
+  DEFAULT_HATCHER_MODEL_KEY,
 } from './constants/agent-models';
 export type {
   AgentCategory,
