@@ -18,7 +18,13 @@ const ACTIVITY_MOTION_EPSILON_PX = 0.5;
 
 interface JoinResponse {
   roomId: string;
-  sessionId: string;
+  /**
+   * Opaque non-reversible presence id for THIS session (server-derived). The
+   * raw session token is never returned. We store it as localSessionId so the
+   * player store can resolve `isLocal` against the `id` field on each
+   * snapshot's players[].
+   */
+  id: string;
 }
 
 /**
@@ -115,9 +121,9 @@ export function useWorldStream() {
         const rejoined = await join();
         if (cancelled) return;
         if (rejoined) {
-          sessionIdRef.current = rejoined.sessionId;
+          sessionIdRef.current = rejoined.id;
           roomIdRef.current = rejoined.roomId;
-          setLocalSessionId(rejoined.sessionId);
+          setLocalSessionId(rejoined.id);
           setRoomId(rejoined.roomId);
           startPositionUpload();
         }
@@ -267,9 +273,9 @@ export function useWorldStream() {
         }
         return;
       }
-      sessionIdRef.current = joined.sessionId;
+      sessionIdRef.current = joined.id;
       roomIdRef.current = joined.roomId;
-      setLocalSessionId(joined.sessionId);
+      setLocalSessionId(joined.id);
       setRoomId(joined.roomId);
       openStream(joined.roomId);
       startPositionUpload();

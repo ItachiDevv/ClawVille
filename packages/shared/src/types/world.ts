@@ -12,13 +12,28 @@
 /**
  * One player projected into the room snapshot. `isLocal` is set by the
  * client during snapshot ingestion (the server doesn't know which session
- * is "the local one" — it broadcasts every session in the room).
+ * is "the local one"; it broadcasts every session in the room, keyed only
+ * by the opaque `id` below, never the raw session token).
  */
 export interface PlayerSnapshot {
-  /** Stable per-browser-session ID (Lucia session ID or guest fp hash). */
-  sessionId: string;
+  /**
+   * Opaque per-session presence id. NON-reversible, derived server-side via
+   * sha256(sessionId + FINGERPRINT_SECRET) sliced to 16 hex chars, so the raw
+   * Lucia session token / guest fp hash / agent id NEVER goes over the wire.
+   * Stable across reconnects for the same session. Used by the client purely
+   * as a render/cache key and to resolve `isLocal` (compared against the
+   * /join-returned id).
+   */
+  id: string;
   /** Authoritative user UUID if signed in, else null for guests. */
   userId: string | null;
+  /**
+   * Presence kind, set authoritatively at join time. 'human' = Lucia-authed
+   * account, 'guest' = fingerprint-only visitor, 'agent' = connected/hosted
+   * agent playing AS ITSELF (bound avatar, real CT + leaderboard credit). The
+   * 3D layer reads this to show the connected-agent indicator dot.
+   */
+  kind: 'human' | 'guest' | 'agent';
   /** Display name (avatar.name or guest placeholder). */
   name: string;
   /** Game-pixel coordinates (same coord system as NpcRuntimeState.x/y). */

@@ -24,8 +24,32 @@
  * concurrent `joinPlayer` calls cannot interleave NPC-swap decisions.
  */
 
+import { createHash } from 'crypto';
 import { NPC_DEFINITIONS } from '@clawville/shared';
 import type { PlayerSnapshot } from '@clawville/shared';
+
+/**
+ * Salt for the non-reversible presence id. FINGERPRINT_SECRET is hard-required
+ * at boot (apps/api/src/middleware/fingerprint.ts throws at module load if it
+ * is missing or shorter than 32 chars), so by the time any room is joined the
+ * value is guaranteed present and validated. We read it once at module load.
+ * The fallback string is only ever exercised in unit tests that import this
+ * module without the env wired up (the derived ids stay internally
+ * consistent there, which is all the tests need).
+ */
+const PRESENCE_ID_SALT = process.env.FINGERPRINT_SECRET || 'test-only-presence-salt';
+
+/**
+ * Derive the opaque per-session presence id broadcast on the wire. The raw
+ * `sessionId` (a Lucia session-cookie bearer token for logged-in users, a
+ * guest fp hash for visitors, or an `a:<agentId>` handle for agents) is NEVER
+ * emitted; only this sha256(sessionId + SALT) hex sliced to 16 chars is. 16 hex
+ * chars = 64 bits of address space; collision risk across a room of <=20
+ * players is negligible while remaining stable across reconnects.
+ */
+function derivePublicId(sessionId: string): string {
+  return createHash('sha256').update(sessionId + PRESENCE_ID_SALT).digest('hex').slice(0, 16);
+}
 
 // Default NPC roster eligible for player swap-out.
 // Building residents (def.buildingId !== '') stay in every room — they are
@@ -45,7 +69,12 @@ const ROOM_ID_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
 const ROOM_ID_LENGTH = 4;
 
 export interface PlayerState {
+  /** Raw internal session key (Lucia token / guest fp / agent handle). NEVER emitted. */
   sessionId: string;
+  /** Non-reversible wire id derived from sessionId. The ONLY presence id that leaves the server. */
+  publicId: string;
+  /** Presence kind set at join: human (Lucia) / guest (fp) / agent (bound avatar). */
+  kind: 'human' | 'guest' | 'agent';
   userId: string | null;
   name: string;
   species: string;
@@ -80,6 +109,12 @@ export interface JoinAvatarMeta {
   color: number;
   x?: number;
   y?: number;
+  /**
+   * Presence kind. Defaults to 'guest' when omitted (legacy callers / tests).
+   * Set to 'human' for a Lucia-authed user and 'agent' for a connected/hosted
+   * agent joining as its bound avatar.
+   */
+  kind?: 'human' | 'guest' | 'agent';
 }
 
 export interface JoinOptions {
@@ -177,8 +212,13 @@ export class RoomRegistry {
     if (!room) return [];
     const out: PlayerSnapshot[] = [];
     for (const p of room.players.values()) {
+      // SECURITY: emit the NON-reversible publicId only. The raw sessionId
+      // (Lucia bearer token for logged-in users) must NEVER reach the wire
+      // (it broadcasts to every SSE subscriber in the room). Likewise the
+      // guest fp hash / agent id stay internal.
       out.push({
-        sessionId: p.sessionId,
+        id: p.publicId,
+        kind: p.kind,
         userId: p.userId,
         name: p.name,
         species: p.species,
@@ -251,6 +291,8 @@ export class RoomRegistry {
 
     const player: PlayerState = {
       sessionId,
+      publicId: derivePublicId(sessionId),
+      kind: avatar.kind ?? 'guest',
       userId: avatar.userId,
       name: avatar.name,
       species: avatar.species,
@@ -482,6 +524,7 @@ export class RoomRegistry {
 
   private applyAvatarMeta(player: PlayerState, avatar: JoinAvatarMeta, now: number): void {
     player.userId = avatar.userId;
+    if (avatar.kind) player.kind = avatar.kind;
     player.name = avatar.name;
     player.species = avatar.species;
     player.color = avatar.color;

@@ -56,6 +56,16 @@ export interface NpcSpriteState {
   isRunning?: boolean;
   /** Override the default idle clip for VRM NPCs. Undefined = use 'idle'. */
   defaultIdleClip?: string;
+  /**
+   * True for remote-player entries adapted from `RemotePlayerState`. The
+   * entity-vs-local-player push-out in `arena-npcs.tsx` must be skipped for
+   * these: each client computes a DIFFERENT push vector (based on its own
+   * avatar position), so applying it produces per-client visual divergence and
+   * breaks the authoritative-shared-world premise. The AABB building clamp
+   * (`clampMovement2D`) is still applied -- static colliders are per-client
+   * identical, so the clamp is benign.
+   */
+  isRemotePlayer?: boolean;
 }
 
 export interface NpcChatBubble {
