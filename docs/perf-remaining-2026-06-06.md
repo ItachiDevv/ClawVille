@@ -43,10 +43,14 @@ Implemented via slot-aware compression (color → lossy WebP q92, normal/MR → 
 ### B2 — quest-bounty-pavilion.glb geometry meshopt — ✅ DONE this session
 meshopt geometry + dedup/prune (textures left as-is via `formats:/png|jpeg/` filter). 4.68MB→2.11MB (-55%). `?v=3`. Validated 49,144 verts intact. **Pixel-verify on staging still required.**
 
-### B3 — NPC intra-clone material merge / cross-instance instancing (W12a)
-- **What:** 11 location NPCs + 18 wandering NPCs each `SkeletonUtils.clone()` with NO merge/instancing (`arena-npcs.tsx:510`, `arena-location-npcs.tsx:454`). `mergeStaticMeshesByMaterial` is buildings-only.
-- **Win:** large draw-call reduction (the dominant GPU cost after CPU).
-- **Risk (why deferred — multi-day 3da team):** `mergeStaticMeshesByMaterial` is STATIC-mesh-only; running it on SkinnedMesh can break skeleton bindings (the exact bug class `arena-npcs.tsx:503-509` warns about). True cross-instance skinned instancing needs `InstancedSkinnedMesh`/texture-baked skinning. Per-character T-pose/deform QC required. Iris Xe: `InstancedMesh+ShaderMaterial` banned.
+### B3 — NPC intra-clone material merge — ❌ INVESTIGATED + RULED OUT (3da, 2026-06-06)
+A `3da` specialist empirically inspected all 19 NPC GLBs. **Intra-clone same-material merge yields ZERO safe payoff for this roster:**
+- **Wandering NPCs (`arena-npcs.tsx`):** all 0. lobster/crayfish/sweet_crab/lobster_plush/octopus = 1 primitive each (nothing to merge); hermitcrab = 5 prims but 5 DISTINCT skeletons (can't merge to one skinned mesh); jellyfish/seahorse = all-distinct materials.
+- **Location NPCs (`arena-location-npcs.tsx`):** 9/11 = 0. The only two with same-material buckets — **squidward** (save 10) + **mr-krabs** (save 11) — have `skins:0` and animate via clip `"Take 001"` driving **12–15 non-mesh PARENT nodes** (Head/Neck/arms/legs/Body). Merging bakes bind-pose world matrices into vertices and removes the animated mesh nodes → freezes them into rigid statues = guaranteed visual regression. A partial "co-parented only" merge yields 0 groups on both.
+
+`mergeStaticMeshesByMaterial` already correctly skips SkinnedMesh, but it's a static collapse with no concept of parent-node-TRS animation — applying it to squidward/mr-krabs is animation-destruction, not a skin-math risk.
+
+**The only viable B3 win is cross-instance instancing of the STATIC single-mesh species** (lobster, crayfish, octopus, lobster_plush, plankton, mrs-puff, flying-dutchman) via `InstancedMesh`/`BatchedMesh` keyed by species GLB, with per-instance tint via `instanceColor` and bypassing `SkeletonUtils.clone` for them. Articulated GLBs need `InstancedSkinnedMesh`/texture-baked skinning (genuinely multi-day). Both require **staging pixel-verification** and are out of scope for a no-pixel-access session. Net FPS benefit is also uncertain on the CPU-bound Iris Xe target (this branch already addressed the CPU bottleneck via the hot-path commit).
 
 ### B4 — Pure hygiene (zero runtime perf — not a perf task)
 - `git rm` 4 orphan GLBs the runtime never loads: `sandy-treedome-v2.glb` (zero refs), `chum-bucket.glb`/`krusty-krab.glb`/`patricks-rock.glb` (v1 — refs only in `scripts/compress-*.ts` + `inspect-broken-buildings.mjs` + ATTRIBUTION.md; superseded by `-v2-opt1`). Deleting also requires cleaning those dev-script entries. ~4.9MB build-artifact reclaim, no user-facing perf. Keep `guide-rigged.glb` + `shisha-oasis.glb` (both LIVE — the audit was wrong).
