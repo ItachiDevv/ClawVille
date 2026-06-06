@@ -121,6 +121,7 @@ function applyQualityTier(flags: WorldPerfFlags, tier: number): WorldPerfFlags {
     activityFx: tier < 2 ? flags.activityFx : false,
     labels: tier < 3 ? flags.labels : false,
     residentDetail: tier < 4 ? flags.residentDetail : false,
+    buildingDetail: tier < 4 ? flags.buildingDetail : false,
   };
 }
 
@@ -972,6 +973,7 @@ const SceneContents = memo(function SceneContents({
   const showGroundCover = flags.groundCover && !staticOnly;
   const showActivityFx = flags.activityFx && !staticOnly;
   const showResidentDetail = flags.residentDetail && !staticOnly;
+  const showBuildingDetail = flags.buildingDetail && !staticOnly;
   // Read controlMode once at mount for camera routing; camera routing uses
   // getState() inside useFrame so it always has the latest value at zero cost.
   // We only need a reactive read here if we conditionally render JSX based on
@@ -1092,7 +1094,7 @@ const SceneContents = memo(function SceneContents({
           from tilemap data not meshes, so dropping ArenaBuildings does NOT
           let players walk through buildings (world-colliders.ts line 248). */}
       <group name="perf:buildings" userData={{ perfChunk: 'buildings' }}>
-        {USE_MESHLET_BUILDINGS ? <MeshletBuildingsR3F /> : <ArenaBuildings />}
+        {USE_MESHLET_BUILDINGS ? <MeshletBuildingsR3F /> : <ArenaBuildings fullDetail={showBuildingDetail} />}
       </group>
       {showNpcs && (
         <group name="perf:wandering-npcs" userData={{ perfChunk: 'wandering-npcs' }}>

@@ -649,6 +649,53 @@ const ENTERTAINMENT_LABELS: Record<string, { label: string; category: string }> 
   'claw-arcade': { label: 'Arcade City',    category: 'Arcade' },
 };
 
+const _buildingProxyGeometry = new THREE.BoxGeometry(360, 520, 360);
+const BUILDING_PROXY_COLORS = [
+  0xf5c84c,
+  0x8bd3ff,
+  0xff8a5c,
+  0x8fe388,
+  0xd7a8ff,
+  0xffabc8,
+  0x72e0d1,
+  0xffdf7a,
+  0x8fa4ff,
+  0x7dd3fc,
+  0xff9f6e,
+  0xb5e48c,
+] as const;
+
+function BuildingProxy({ zone, index }: { zone: BuildingZone; index: number }) {
+  const [cx, , cz] = zoneCenter(zone);
+  const config = BUILDING_MODELS[zone.id];
+  const material = useMemo(
+    () => new THREE.MeshBasicMaterial({
+      color: new THREE.Color(BUILDING_PROXY_COLORS[index % BUILDING_PROXY_COLORS.length] ?? 0x7dd3fc),
+      toneMapped: false,
+    }),
+    [index],
+  );
+
+  useEffect(() => () => material.dispose(), [material]);
+
+  return (
+    <group position={[cx, -2, cz]} rotation={[0, config?.rotY ?? 0, 0]}>
+      <mesh
+        geometry={_buildingProxyGeometry}
+        material={material}
+        position={[0, 260, 0]}
+        onClick={config?.onClick}
+        userData={{ isOccluder: true, buildingId: zone.id }}
+        frustumCulled
+      />
+      <mesh position={[0, 548, 0]} frustumCulled>
+        <coneGeometry args={[255, 180, 4]} />
+        <meshBasicMaterial color="#e8f7ff" toneMapped={false} />
+      </mesh>
+    </group>
+  );
+}
+
 function ProceduralSandyTreedome({ zone }: { zone: BuildingZone }) {
   const [cx, , cz] = zoneCenter(zone);
   const groupRef = useRef<THREE.Group>(null);
@@ -1442,12 +1489,22 @@ function EditMode() {
 // ---------------------------------------------------------------------------
 // Main export — switches between normal and edit mode
 // ---------------------------------------------------------------------------
-export default function ArenaBuildings() {
+export default function ArenaBuildings({ fullDetail = true }: { fullDetail?: boolean }) {
   const [editMode] = useState(
     () => typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('edit'),
   );
 
   if (editMode) return <EditMode />;
+
+  if (!fullDetail) {
+    return (
+      <group>
+        {buildingZones.map((zone, index) => (
+          <BuildingProxy key={zone.id} zone={zone} index={index} />
+        ))}
+      </group>
+    );
+  }
 
   return (
     <Suspense fallback={null}>
