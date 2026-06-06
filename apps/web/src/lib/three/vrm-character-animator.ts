@@ -911,8 +911,13 @@ export class VRMCharacterAnimator {
   }
 
   /**
-   * PERF split: run VRM system updates (humanoid, lookAt, expressions, spring bones).
-   * Call this at a lower rate (30Hz / every 2nd frame) for idle NPCs to halve
+   * PERF split: run ONLY the spring-bone physics (the one expensive part of
+   * vrm.update()). humanoid/lookAt/expressions are NOT run here — humanoid runs
+   * every frame in updateMixerOnly; lookAt/expressionManager are never ticked
+   * for NPCs (only humanoid + spring run), so they hold their load-time pose.
+   * (Docstring corrected 2026-06-03; the body has only called
+   * springBoneManager.update() since the 2026-05-18 split.)
+   * Call this at a lower rate (15Hz / every Nth frame) for idle NPCs to cut
    * the spring-bone physics cost without visible visual degradation.
    *
    * The spring-bone verlet integrator is time-step independent (uses delta internally),
@@ -934,9 +939,33 @@ export class VRMCharacterAnimator {
     // matches the public API @pixiv/three-vrm exposes (3.5.x). If a
     // future VRM version moves the manager, fall back to vrm.update().
     this.vrm.springBoneManager?.update(accumulatedDelta);
-    // Refresh bone matrixWorld + skeleton flush so the spring-driven raw-bone
-    // movements upload to the GPU. Same ordering invariant as update().
-    this.vrm.scene.updateMatrixWorld(true);
+
+    // 2026-06-03 PERF — removed the redundant full-scene
+    // `this.vrm.scene.updateMatrixWorld(true)` that previously ran here.
+    //
+    // WHY IT'S SAFE (verified against @pixiv/three-vrm 3.5.2 source —
+    // @pixiv/three-vrm-springbone three-vrm-springbone.module.js):
+    // VRMSpringBoneManager.update() flushes its OWN joints' world matrices.
+    // For every sorted joint it calls bone.updateMatrix() +
+    // bone.matrixWorld.multiplyMatrices(parentMatrixWorld, bone.matrix)
+    // (VRMSpringBoneJoint.update), then traverses each joint's descendants
+    // calling child.updateWorldMatrix() (VRMSpringBoneManager's
+    // _relevantChildrenUpdated). So after this call EVERY bone whose
+    // local transform the spring tick mutated already has a correct
+    // matrixWorld — the only bones that changed since updateMixerOnly's
+    // full recompute this frame.
+    //
+    // updateSpringOnly is ALWAYS called in a frame where updateMixerOnly
+    // already ran (the sole call sites — arena-npcs.tsx VRMNpcMesh — gate
+    // both on `!isFarNpc`, and spring runs on a `% springMod` SUBSET of
+    // mixer frames). updateMixerOnly already did vrm.scene.updateMatrixWorld(
+    // true) THIS frame for every non-spring bone, so re-running a full
+    // subtree recompose here only duplicated the spring-joint flush the
+    // manager already performed — pure waste across ~13 VRMs/frame.
+    //
+    // The skeleton flush below only READS bone.matrixWorld (Skeleton.update
+    // builds boneMatrices = matrixWorld * boneInverse), so the
+    // manager-written matrices upload correctly without a second recompute.
     for (const fn of this._skeletonUpdateFns.values()) fn();
   }
 

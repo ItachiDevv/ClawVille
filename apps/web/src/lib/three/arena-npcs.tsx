@@ -96,12 +96,42 @@ const HALF_H = MAP_HEIGHT / 2;
 const TARGET_NPC_HEIGHT = 45;
 
 // ---------------------------------------------------------------------------
-// WIN B — Spring-bone distance LOD scratch vector (perf-audit-2026-05-22)
-// Shared across all VRMNpcMesh useFrame calls in a single frame. Each NPC
-// writes camera world-pos here once; subsequent reads within the same frame
-// see the same value (correct — camera doesn't move mid-frame).
-// ZERO per-frame allocations — module-scope, never inside useFrame.
-const _springLodCamPos = new THREE.Vector3();
+// PERF — per-frame shared cache for values identical across every NPC in a
+// frame (controlMode + camera world-pos). Subsumes the old WIN B
+// `_springLodCamPos` scratch (perf-audit-2026-05-22): instead of each NPC
+// writing camera world-pos itself, ONE writer (the first NPC of the frame)
+// populates it and the rest read. Without this, each of the ~18 NPC useFrame
+// bodies independently did 2× useGameStore.getState() (push-out block +
+// isPossessedPlayerNpc) and 1× camera.position read → ~36 store reads + 18
+// camera reads/frame for the SAME values. The store snapshot and camera don't
+// change mid-frame, so we compute them once when the frame-epoch
+// (clock.elapsedTime) changes and reuse for every NPC in that frame.
+//
+// Keyed on clock.elapsedTime: all NPC useFrames in one R3F render tick share
+// the identical elapsed value, so the first NPC to run populates the cache and
+// the rest hit it. ZERO per-frame allocations — _frameCamPos is written in
+// place, controlMode is a plain string ref.
+const _frameCamPos = new THREE.Vector3();
+const _npcFrameCache = {
+  epoch: -1,
+  controlMode: '' as string,
+};
+/**
+ * Refresh the per-frame NPC cache if the frame-epoch advanced, then return it.
+ * Call at the top of each NPC useFrame with that frame's clock + camera. The
+ * first caller in a frame does the store + camera read; every subsequent NPC
+ * in the same frame reuses the cached snapshot. `_frameCamPos` holds the same
+ * value the old per-NPC `camera.position` read produced (no getWorldPosition —
+ * preserves the exact prior behavior; camera is a scene-root child).
+ */
+function getNpcFrameShared(elapsed: number, camera: THREE.Camera) {
+  if (_npcFrameCache.epoch !== elapsed) {
+    _npcFrameCache.epoch = elapsed;
+    _npcFrameCache.controlMode = useGameStore.getState().controlMode;
+    _frameCamPos.set(camera.position.x, camera.position.y, camera.position.z);
+  }
+  return _npcFrameCache;
+}
 
 // Sanity clamp for per-species computed scale (mirrors arena-location-npcs logic).
 // MAX = TARGET_NPC_HEIGHT/0.5 = 90 — any computed scale > 90 implies native above-pivot
@@ -624,12 +654,18 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
     // Track walkable surface Y for stair/ramp zones. Used below in group.position.y.
     const npcGroundY = npcClamped.groundY;
 
+    // PERF: read controlMode + camera world-pos ONCE per frame, shared across
+    // every NPC (see getNpcFrameShared). Collapses the two per-NPC getState()
+    // calls (push-out + isPossessedPlayerNpc) and the per-NPC camera read into
+    // a single frame-epoch-cached snapshot.
+    const shared = getNpcFrameShared(clock.elapsedTime, camera);
+
     // Entity-vs-player push-out (Phase 4 — client-side visual correction).
     // Only active when a real player avatar is present ('player'/'npc' mode).
     // In 'explore'/'autonomous' mode avatarPositionRef sits at the default
     // game-px origin (5760,6300) = world center, causing spurious push-outs.
     {
-      const _cm = useGameStore.getState().controlMode;
+      const _cm = shared.controlMode;
       if (_cm === 'player' || _cm === 'npc') {
       const playerWX = avatarPositionRef.x - HALF_W;
       const playerWZ = avatarPositionRef.y - HALF_H;
@@ -651,13 +687,14 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
     group.position.z = simPos.current.z;
 
     const frame = Math.floor(clock.elapsedTime * 60);
-    _springLodCamPos.set(camera.position.x, camera.position.y, camera.position.z);
-    const glbCamDx = group.position.x - _springLodCamPos.x;
-    const glbCamDz = group.position.z - _springLodCamPos.z;
+    // Camera world-pos from the per-frame shared cache (_frameCamPos), not a
+    // per-NPC read — same value for every NPC this frame.
+    const glbCamDx = group.position.x - _frameCamPos.x;
+    const glbCamDz = group.position.z - _frameCamPos.z;
     const glbDistSq = glbCamDx * glbCamDx + glbCamDz * glbCamDz;
     const isPossessedPlayerNpc =
       d.id === PLAYER_NPC_ID &&
-      useGameStore.getState().controlMode === 'npc';
+      shared.controlMode === 'npc';
     // Raycast to find terrain surface Y. Close NPCs retain the historical 20Hz
     // cadence; mid/far NPCs throttle progressively because terrain height changes
     // are visually imperceptible at distance, but the raycast still costs CPU.
@@ -1022,6 +1059,12 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
 
     const dt = Math.min(delta, 0.1);
 
+    // PERF: read controlMode + camera world-pos ONCE per frame, shared across
+    // every NPC (see getNpcFrameShared). Collapses the two per-NPC getState()
+    // calls (push-out + isPossessedPlayerNpc) and the per-NPC camera read into
+    // a single frame-epoch-cached snapshot.
+    const shared = getNpcFrameShared(clock.elapsedTime, camera);
+
     // Entity interpolation — see GLBNpcMesh useFrame for the full
     // rationale. Render 1 tick behind real-time, lerp between the two
     // most recent server snapshots. Perfectly smooth visible motion,
@@ -1050,7 +1093,7 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
     // Entity-vs-player push-out (Phase 4) — mirrors GLBNpcMesh inline push-out.
     // Guard: only active when a real player avatar is present ('player'/'npc').
     {
-      const _cm = useGameStore.getState().controlMode;
+      const _cm = shared.controlMode;
       if (_cm === 'player' || _cm === 'npc') {
         const playerWX = avatarPositionRef.x - HALF_W;
         const playerWZ = avatarPositionRef.y - HALF_H;
@@ -1074,13 +1117,15 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
     const isMoving = d.direction !== 'idle' && !d.isDead;
     const frame = Math.floor(clock.elapsedTime * 60);
 
-    _springLodCamPos.set(camera.position.x, camera.position.y, camera.position.z);
-    const vrmTerrainDx = group.position.x - _springLodCamPos.x;
-    const vrmTerrainDz = group.position.z - _springLodCamPos.z;
+    // Camera world-pos from the per-frame shared cache (_frameCamPos), not a
+    // per-NPC read — same value for every NPC this frame. Replaces the old
+    // per-NPC _springLodCamPos write (now a single frame-epoch writer).
+    const vrmTerrainDx = group.position.x - _frameCamPos.x;
+    const vrmTerrainDz = group.position.z - _frameCamPos.z;
     const vrmTerrainDistSq = vrmTerrainDx * vrmTerrainDx + vrmTerrainDz * vrmTerrainDz;
     const isPossessedPlayerNpc =
       d.id === PLAYER_NPC_ID &&
-      useGameStore.getState().controlMode === 'npc';
+      shared.controlMode === 'npc';
     // Raycast terrain at distance-based cadence. Position still updates every
     // frame; only the floor-height sample is throttled for far NPCs.
     const terrainMod =
@@ -1198,7 +1243,7 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
 
       // Compute distance² to camera ONCE — drives both Phase 1.5 far-gate
       // and the existing Win B spring-bone distance LOD. Zero per-frame
-      // allocations via the module-scope _springLodCamPos scratch.
+      // allocations via the module-scope _frameCamPos shared-cache scratch.
       const _springDistSq = vrmTerrainDistSq;
 
       // PHASE 1.5 — Far-NPC mixer + spring-bone gate (2026-05-22).
