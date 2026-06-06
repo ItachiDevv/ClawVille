@@ -184,6 +184,32 @@ function useAdaptiveWorldPerfFlags(perfFlags?: Partial<WorldPerfFlags>): WorldPe
   return adaptiveEnabled ? applyQualityTier(base, qualityTier) : base;
 }
 
+function AdaptiveRendererDpr() {
+  const { gl } = useThree();
+  const lastDprRef = useRef<number | null>(null);
+
+  useFrame(({ clock }) => {
+    const frame = Math.floor(clock.elapsedTime * 60);
+    if (frame % 30 !== 0) return;
+    const tier =
+      typeof window !== 'undefined'
+        ? Number((window as any).__W3D_QUALITY_TIER ?? 0)
+        : 0;
+    const targetDpr =
+      tier >= 4
+        ? 0.4
+        : LOW_END_GPU_DETECTED || isTouchDevice
+          ? LOW_END_DPR_RANGE[1]
+          : STANDARD_DPR_RANGE[1];
+    if (lastDprRef.current !== targetDpr) {
+      gl.setPixelRatio(targetDpr);
+      lastDprRef.current = targetDpr;
+    }
+  });
+
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // WASD Camera Controller (arena/spectator mode only)
 // ---------------------------------------------------------------------------
@@ -986,6 +1012,7 @@ const SceneContents = memo(function SceneContents({
           R3F runs useFrame hooks in mount order; hoisting here ensures every
           consumer reads current-frame heightOffset, not the prior frame's stale value. */}
       <JumpTicker />
+      <AdaptiveRendererDpr />
 
       {/* Single DOM overlay for all world-space labels (NPC names, building labels,
           speech bubbles). Replaces 30+ per-instance drei <Html> portals.
