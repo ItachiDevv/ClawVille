@@ -1,7 +1,7 @@
 /**
  * Transient character chat — POST /api/chat/transient
  *
- * Stateless one-shot Gemini chat with a wandering world NPC. Used by
+ * Stateless one-shot OpenAI chat with a wandering world NPC. Used by
  * the TalkToCharacterBar in NPC mode (controlMode === 'npc'). The user
  * is possessing a transient PLAYER_NPC, talking to a nearby wanderer
  * (Mira, Vivi, Driftwood, Marlin, etc.). Per the architecture rule
@@ -57,7 +57,7 @@ const bodySchema = z.object({
     .optional(),
 });
 
-const GEMINI_MODEL = 'gemini-2.5-flash';
+const OPENAI_MODEL = process.env.OPENAI_SMALL_MODEL ?? 'gpt-4o-mini';
 const TEMPERATURE = 0.85;
 const MAX_OUTPUT_TOKENS = 220;
 
@@ -83,12 +83,12 @@ transientChatRoutes.post('/', async (c) => {
     return c.json({ error: `Unknown character: ${characterName}` }, 404);
   }
 
-  const apiKey = process.env.GEMINI_API_KEY;
+  const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
     return c.json({ error: 'LLM not configured' }, 503);
   }
 
-  // Persona system prompt. Short — Gemini 2.5 Flash handles concise persona
+  // Persona system prompt. Short — gpt-4o-mini handles concise persona
   // direction well. ClawVille world flavor + character's authored
   // personality string + reply length cap.
   const systemPrompt =
@@ -99,43 +99,40 @@ transientChatRoutes.post('/', async (c) => {
     `no meta-talk about being an AI. If the user says something off-topic, deflect ` +
     `playfully back to ClawVille.`;
 
-  // Translate history + new message to Gemini's contents[] format.
-  // Gemini uses 'model' instead of 'assistant' for assistant turns.
-  const contents: Array<{ role: 'user' | 'model'; parts: Array<{ text: string }> }> = [];
+  // Translate persona + history + new message to OpenAI's messages[] format.
+  // OpenAI uses 'system' for the persona and keeps 'user'/'assistant' roles
+  // verbatim for the transcript.
+  const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
+    { role: 'system', content: systemPrompt },
+  ];
   for (const turn of history) {
-    contents.push({
-      role: turn.role === 'assistant' ? 'model' : 'user',
-      parts: [{ text: turn.content }],
-    });
+    messages.push({ role: turn.role, content: turn.content });
   }
-  contents.push({ role: 'user', parts: [{ text: message }] });
+  messages.push({ role: 'user', content: message });
 
   try {
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
-    const res = await fetch(url, {
+    const res = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-goog-api-key': apiKey,
+        'Authorization': `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
-        contents,
-        systemInstruction: { parts: [{ text: systemPrompt }] },
-        generationConfig: {
-          temperature: TEMPERATURE,
-          maxOutputTokens: MAX_OUTPUT_TOKENS,
-        },
+        model: OPENAI_MODEL,
+        messages,
+        temperature: TEMPERATURE,
+        max_completion_tokens: MAX_OUTPUT_TOKENS,
       }),
     });
 
     if (!res.ok) {
       const errText = await res.text();
-      console.error(`[chat-transient] Gemini ${res.status}: ${errText.slice(0, 200)}`);
+      console.error(`[chat-transient] OpenAI ${res.status}: ${errText.slice(0, 200)}`);
       return c.json({ error: 'LLM upstream error' }, 502);
     }
 
     const data = (await res.json()) as any;
-    const text: string | undefined = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+    const text: string | undefined = data?.choices?.[0]?.message?.content;
     if (!text || !text.trim()) {
       return c.json({ error: 'LLM returned empty response' }, 502);
     }
