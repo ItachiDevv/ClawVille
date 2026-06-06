@@ -203,7 +203,7 @@ export const DECORATION_GLBS: readonly string[] = [
  */
 export const TOWN_PROP_GLBS: readonly string[] = [
   '/models/quest-bounty-pavilion.glb?v=2',
-  '/models/bazaar-merchant-stand.glb',
+  '/models/bazaar-merchant-stand.glb?v=2', // ?v=2 — meshopt+WebP recompress 2.34MB→421K (2026-06-06)
   '/models/shisha-oasis.glb',
   '/models/auction-dome.glb',
   // town-directory-sign.tsx uses Three.js primitives only (no GLB) — nothing to preload here.
