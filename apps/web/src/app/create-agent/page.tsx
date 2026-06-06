@@ -62,11 +62,16 @@ const TABS: TabMeta[] = [
 // they pick a harness, not a character.
 const MODELS_BY_TAB: Record<TabId, ModelKey[]> = (() => {
   const allKeys = Object.keys(MODEL_REGISTRY) as ModelKey[];
-  const miladyKeys = allKeys.filter((k) => MODEL_REGISTRY[k].category === 'milady');
-  const hermesKeys = allKeys.filter((k) => MODEL_REGISTRY[k].category === 'hermes');
-  const seaCreatureKeys = allKeys.filter(
-    (k) => MODEL_REGISTRY[k].category !== 'milady' && MODEL_REGISTRY[k].category !== 'hermes',
-  );
+  // Explicit per-tab category allowlists. Any category NOT listed below is
+  // reserved and never appears in the picker. In particular the ENTIRE `hatcher`
+  // category (hatcher_1..8 + phanes) is assigned EXCLUSIVELY through Hatcher's
+  // own UI/API on register and is never user-selectable here. Chibis live under
+  // the Milady tab (they are stylized Milady avatars), not OpenClaw.
+  const inTab = (k: ModelKey, cats: AgentCategory[]) =>
+    cats.includes(MODEL_REGISTRY[k].category);
+  const miladyKeys = allKeys.filter((k) => inTab(k, ['milady', 'chibi']));
+  const hermesKeys = allKeys.filter((k) => inTab(k, ['hermes']));
+  const seaCreatureKeys = allKeys.filter((k) => inTab(k, ['openclaw', 'other']));
   return {
     milady:   miladyKeys,
     hermes:   hermesKeys,
@@ -76,7 +81,8 @@ const MODELS_BY_TAB: Record<TabId, ModelKey[]> = (() => {
 })();
 
 function mapCategoryToTab(category: AgentCategory | undefined): TabId | null {
-  if (category === 'milady') return 'milady';
+  // Chibis live under the Milady tab, so a returning chibi user lands there.
+  if (category === 'milady' || category === 'chibi') return 'milady';
   if (category === 'hermes') return 'hermes';
   return null;
 }
@@ -382,12 +388,6 @@ export default function CreateAgentPage() {
             {tag}
           </div>
         )}
-        {isVRM && (
-          <div className="absolute top-1.5 left-2 font-mono text-[8px] tracking-[0.15em] text-pink-200/90 uppercase bg-pink-500/20 backdrop-blur-sm px-1.5 py-0.5 rounded-full border border-pink-300/30">
-            Milady
-          </div>
-        )}
-
         <div className="absolute inset-x-0 bottom-0 px-2 py-1.5 bg-gradient-to-t from-black/85 via-black/70 to-transparent">
           <div className={`font-clawville text-[10px] leading-tight uppercase tracking-wide text-center ${
             isSelected ? (isVRM ? 'text-pink-200' : 'text-cyan-200') : 'text-white/85'
@@ -543,7 +543,13 @@ export default function CreateAgentPage() {
 
                   <div className="pointer-events-none absolute bottom-6 left-0 right-0 text-center px-6">
                     <div className={`font-mono text-[9px] uppercase tracking-[0.35em] mb-1 ${selectedIsVRM ? 'text-pink-300/70' : 'text-cyan-300/70'}`}>
-                      — {selectedIsVRM ? 'Milady Avatar' : 'Sea Creature Avatar'} · {harness} —
+                      — {
+                        selectedCategory === 'milady'  ? 'Milady Avatar'
+                        : selectedCategory === 'chibi'   ? 'Chibi Avatar'
+                        : selectedCategory === 'hermes'  ? 'Hermes Avatar'
+                        : selectedCategory === 'hatcher' ? 'Hatcher Avatar'
+                        : 'Sea Creature Avatar'
+                      } · {harness} —
                     </div>
                     <div className="font-clawville text-xl md:text-2xl tracking-[0.2em] text-cyan-100" style={{ textShadow: '0 0 12px rgba(0,229,255,0.4)' }}>
                       {selectedEntry?.label ?? selectedModelInPool}

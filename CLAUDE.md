@@ -245,7 +245,9 @@ bun run build            # Build all
 Required in `.env.local`:
 
 - `DATABASE_URL` — Supabase pooler Postgres.
-- `GEMINI_API_KEY` — **single LLM backend** for text + embeddings (`gemini-text-provider` priority 95, `gemini-embedding-provider` 100, `npc-conversation-engine.ts`). Anthropic removed 2026-04-10.
+- `GEMINI_API_KEY`: **now fully UNUSED** (2026-06-05). Both text generation and embeddings moved to OpenAI. Text first (Gemini billing dunning-blocked / 403), then embeddings: `openai-embedding-provider` (`text-embedding-3-small`, 1536-dim `TEXT_EMBEDDING`, priority 100) replaced `gemini-embedding-provider`. The embeddings table was EMPTY (0 rows) so no re-embed migration was needed. `GEMINI_API_KEY` is retained only for legacy / easy-revert; nothing in the runtime reads it. Anthropic removed 2026-04-10.
+- `OPENAI_API_KEY`: backs **BOTH** text generation (`openai-text-provider`, priority 95) **AND** embeddings (`openai-embedding-provider`, priority 100) since 2026-06-05. Required for every non-OpenClaw runtime.
+- **Embedding model + dimension are PINNED in code, NOT env-overridable** (2026-06-05). `openai-embedding-provider.ts` and `embed-text.ts` hard-code `text-embedding-3-small` / 1536-dim as literal constants in the request body AND the boot dimension-probe, so stored vectors and query vectors can never diverge and pgvector always uses the `dim_1536` column. `OPENAI_EMBEDDING_MODEL` / `OPENAI_EMBEDDING_DIMENSIONS` are no longer read. Changing the dimension routes embeddings to a different column and requires a re-embed migration, so it is a deliberate code edit, not an env tweak.
 - `VANITY_ENCRYPTION_KEY` — 64-char hex. AES-256-GCM master key for `treasury_wallets` + `vanity_keypairs`. Must match on every decrypting machine.
 - `FINGERPRINT_SECRET` — 64-char hex (32+ bytes). **Hard-required** — `apps/api/src/middleware/fingerprint.ts` throws at module load if missing or short, crashing API boot. `openssl rand -hex 32`. Salts the sha256 hash of `X-CV-Fingerprint` + IP /24 prefix on every event row. Server-only. Rotating invalidates every existing fp_hash.
 - `CLAWVILLE_MERCHANT_WALLET_PUBKEY` — base58 pubkey of Phase 4 x402 merchant wallet.
@@ -260,7 +262,9 @@ Required in `.env.local`:
 - **Phase 5.1 env vars** (`CLOUDFLARE_WORKER_URL/_BEARER`, `CLAWVILLE_SERVICE_ISSUER_SK/_PUBKEY`, `SCAPE_HOSTED_SESSION_URL`, `SCAPE_WEB_ORIGIN`, `PARTNER_PUBKEYS`) — see `ARCHITECTURE.md §7`. Crash-loud rule: `FINGERPRINT_SECRET` + `CLOUDFLARE_WORKER_*` are hard-required on boot; missing ⇒ API refuses to start.
 - **Wager program env vars** (`SOLANA_RPC_URL`, `WAGER_SETTLEMENT_AUTHORITY_PUBKEY`, `WAGER_SETTLEMENT_AUTHORITY_KEYPAIR_PATH`, `WAGER_PROGRAM_CLUSTER`) — see `ARCHITECTURE.md §13` (2026-05-13 entry). Devnet-only; mainnet requires a code change, not just `WAGER_PROGRAM_CLUSTER=mainnet`.
 
-**Optional:** `OPENAI_API_KEY` — fallback ONLY for `npc-conversation-engine.ts` on Gemini `GEMINI_MAX_FAILURES` backoff. **Removed:** `ANTHROPIC_API_KEY` (ultrathink decommission).
+- `OPENAI_API_KEY`: **PRIMARY text-generation backend** (`openai-text-provider` priority 95 for `TEXT_SMALL`/`TEXT_LARGE`; `npc-conversation-engine.ts`; chat-transient). Swapped in from Gemini 2026-06-05 (Gemini text billing dunning-blocked / 403). Models via `OPENAI_SMALL_MODEL` (default `gpt-4o-mini`) / `OPENAI_LARGE_MODEL` (default `gpt-4o`).
+
+**Removed:** `ANTHROPIC_API_KEY` (ultrathink decommission).
 
 ## Deployment — Hetzner + Coolify (Railway decommissioned)
 
