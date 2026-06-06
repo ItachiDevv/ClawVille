@@ -650,6 +650,9 @@ const ENTERTAINMENT_LABELS: Record<string, { label: string; category: string }> 
 };
 
 const _buildingProxyGeometry = new THREE.BoxGeometry(360, 520, 360);
+_buildingProxyGeometry.clearGroups();
+const _buildingProxyRoofGeometry = new THREE.ConeGeometry(255, 180, 4);
+_buildingProxyRoofGeometry.clearGroups();
 const BUILDING_PROXY_COLORS = [
   0xf5c84c,
   0x8bd3ff,
@@ -664,19 +667,18 @@ const BUILDING_PROXY_COLORS = [
   0xff9f6e,
   0xb5e48c,
 ] as const;
+const BUILDING_PROXY_MATERIALS = BUILDING_PROXY_COLORS.map(
+  (color) => new THREE.MeshBasicMaterial({ color, toneMapped: false }),
+);
+const _buildingProxyRoofMaterial = new THREE.MeshBasicMaterial({
+  color: 0xe8f7ff,
+  toneMapped: false,
+});
 
 function BuildingProxy({ zone, index }: { zone: BuildingZone; index: number }) {
   const [cx, , cz] = zoneCenter(zone);
   const config = BUILDING_MODELS[zone.id];
-  const material = useMemo(
-    () => new THREE.MeshBasicMaterial({
-      color: new THREE.Color(BUILDING_PROXY_COLORS[index % BUILDING_PROXY_COLORS.length] ?? 0x7dd3fc),
-      toneMapped: false,
-    }),
-    [index],
-  );
-
-  useEffect(() => () => material.dispose(), [material]);
+  const material = BUILDING_PROXY_MATERIALS[index % BUILDING_PROXY_MATERIALS.length] ?? BUILDING_PROXY_MATERIALS[0];
 
   return (
     <group position={[cx, -2, cz]} rotation={[0, config?.rotY ?? 0, 0]}>
@@ -688,10 +690,12 @@ function BuildingProxy({ zone, index }: { zone: BuildingZone; index: number }) {
         userData={{ isOccluder: true, buildingId: zone.id }}
         frustumCulled
       />
-      <mesh position={[0, 548, 0]} frustumCulled>
-        <coneGeometry args={[255, 180, 4]} />
-        <meshBasicMaterial color="#e8f7ff" toneMapped={false} />
-      </mesh>
+      <mesh
+        geometry={_buildingProxyRoofGeometry}
+        material={_buildingProxyRoofMaterial}
+        position={[0, 548, 0]}
+        frustumCulled
+      />
     </group>
   );
 }
