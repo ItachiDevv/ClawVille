@@ -20,7 +20,7 @@ function NpcStreamBridge() {
   return null;
 }
 
-type TestId = 'baseline' | 'labels-off' | 'npcs-off' | 'shadows-off' | 'post-off' | 'static-only';
+type TestId = 'baseline' | 'labels-off' | 'npcs-off' | 'shadows-off' | 'fx-off' | 'post-off' | 'static-only';
 
 interface TestResult {
   id: TestId;
@@ -35,15 +35,22 @@ const TESTS: Array<{ id: TestId; label: string; flags: WorldPerfFlags }> = [
   { id: 'labels-off', label: 'Test A: labels off', flags: { ...DEFAULT_WORLD_PERF_FLAGS, labels: false } },
   { id: 'npcs-off', label: 'Test B: NPCs off', flags: { ...DEFAULT_WORLD_PERF_FLAGS, npcs: false } },
   { id: 'shadows-off', label: 'Test C: shadows off', flags: { ...DEFAULT_WORLD_PERF_FLAGS, shadows: false } },
-  { id: 'post-off', label: 'Test D: postprocessing off', flags: { ...DEFAULT_WORLD_PERF_FLAGS, postprocessing: false } },
+  {
+    id: 'fx-off',
+    label: 'Test D: decorative FX off',
+    flags: { ...DEFAULT_WORLD_PERF_FLAGS, groundCover: false, activityFx: false },
+  },
+  { id: 'post-off', label: 'Test E: postprocessing off', flags: { ...DEFAULT_WORLD_PERF_FLAGS, postprocessing: false } },
   {
     id: 'static-only',
-    label: 'Test E: static world only',
+    label: 'Test F: static world only',
     flags: {
       ...DEFAULT_WORLD_PERF_FLAGS,
       labels: false,
       npcs: false,
       waterFogParticles: false,
+      groundCover: false,
+      activityFx: false,
       staticWorldOnly: true,
       uiOverlay: false,
     },
@@ -233,9 +240,11 @@ export default function PerfPage() {
             <FlagToggle label="2. NPCs" checked={flags.npcs} onChange={(v) => setFlag('npcs', v)} />
             <FlagToggle label="3. shadows" checked={flags.shadows} onChange={(v) => setFlag('shadows', v)} />
             <FlagToggle label="4. postprocessing" checked={flags.postprocessing} onChange={(v) => setFlag('postprocessing', v)} />
-            <FlagToggle label="5. water/fog/particles" checked={flags.waterFogParticles} onChange={(v) => setFlag('waterFogParticles', v)} />
-            <FlagToggle label="6. static world only" checked={flags.staticWorldOnly} onChange={(v) => setFlag('staticWorldOnly', v)} />
-            <FlagToggle label="7. UI overlay" checked={flags.uiOverlay} onChange={(v) => setFlag('uiOverlay', v)} />
+            <FlagToggle label="5. fog" checked={flags.waterFogParticles} onChange={(v) => setFlag('waterFogParticles', v)} />
+            <FlagToggle label="6. ground cover" checked={flags.groundCover} onChange={(v) => setFlag('groundCover', v)} />
+            <FlagToggle label="7. activity FX" checked={flags.activityFx} onChange={(v) => setFlag('activityFx', v)} />
+            <FlagToggle label="8. static world only" checked={flags.staticWorldOnly} onChange={(v) => setFlag('staticWorldOnly', v)} />
+            <FlagToggle label="9. UI overlay" checked={flags.uiOverlay} onChange={(v) => setFlag('uiOverlay', v)} />
           </div>
 
           <div className="grid grid-cols-2 gap-2 md:grid-cols-5">
