@@ -129,7 +129,8 @@ function useAdaptiveWorldPerfFlags(perfFlags?: Partial<WorldPerfFlags>): WorldPe
   const base = { ...DEFAULT_WORLD_PERF_FLAGS, ...perfFlags };
   const forceMaxTier =
     typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('fast') === '1';
-  const adaptiveEnabled = perfFlags === undefined && !forceMaxTier;
+  const tieredFlagsEnabled = perfFlags === undefined;
+  const adaptiveEnabled = tieredFlagsEnabled && !forceMaxTier;
   const initialTier = forceMaxTier
     ? QUALITY_MAX_TIER
     : LOW_END_GPU_DETECTED
@@ -183,7 +184,7 @@ function useAdaptiveWorldPerfFlags(perfFlags?: Partial<WorldPerfFlags>): WorldPe
     }
   }, [qualityTier]);
 
-  return adaptiveEnabled ? applyQualityTier(base, qualityTier) : base;
+  return tieredFlagsEnabled ? applyQualityTier(base, qualityTier) : base;
 }
 
 function AdaptiveRendererDpr() {
