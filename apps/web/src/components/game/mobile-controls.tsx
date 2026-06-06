@@ -15,14 +15,24 @@ export default function MobileControls() {
   const movementFrozen = useGameStore((s) => s.movementFrozen);
   const nearLocation = useGameStore((s) => s.nearLocation);
   const controlMode = useGameStore((s) => s.controlMode);
+  // When a chat panel is open (building chat or the Nori system-agent
+  // overlay) the chat input sits at the bottom of the screen. With the
+  // joystick lift (2026-05-28) the nipples now occupy the same band and
+  // float over the text input. Suppress BOTH joysticks while any chat is
+  // open — you're talking, not walking.
+  const buildingChatOpen = useGameStore((s) => s.chatOpen);
+  const systemAgentChatOpen = useGameStore((s) => s.guideChatOpen);
+  const chatActive = buildingChatOpen || systemAgentChatOpen;
 
   // Explore mode = pure spectator with no character — no movement joystick, no building entry
   const isExplore = controlMode === 'explore';
+  // Joysticks hidden entirely while a chat panel is open.
+  const hideControls = chatActive;
 
   // Left joystick — movement/pan. In explore mode it drives the free-roam spectator
   // camera via WASDCameraController (World3DCanvas.tsx) reading joystickVelocity.
   useEffect(() => {
-    if (!isMobile || movementFrozen || !leftContainerRef.current) {
+    if (!isMobile || movementFrozen || hideControls || !leftContainerRef.current) {
       if (leftJoystickRef.current) {
         leftJoystickRef.current.destroy();
         leftJoystickRef.current = null;
@@ -70,7 +80,7 @@ export default function MobileControls() {
         useGameStore.getState().setJoystickVelocity(0, 0);
       }
     };
-  }, [isMobile, movementFrozen]);
+  }, [isMobile, movementFrozen, hideControls]);
 
   // Right joystick — camera orbit (arrow key equivalent)
   useEffect(() => {
@@ -122,9 +132,12 @@ export default function MobileControls() {
         useGameStore.getState().setCameraJoystickVelocity(0, 0);
       }
     };
-  }, [isMobile]);
+  }, [isMobile, hideControls]);
 
   if (!isMobile) return null;
+  // Chat open → suppress the whole control layer (joysticks would float over
+  // the chat input at the bottom of the screen).
+  if (hideControls) return null;
 
   const handleEnterBuilding = () => {
     const store = useGameStore.getState();
@@ -135,8 +148,16 @@ export default function MobileControls() {
 
   return (
     <div
-      className="fixed bottom-0 left-0 z-40 pointer-events-none"
-      style={{ width: '100vw', height: '220px' }}
+      className="fixed left-0 z-40 pointer-events-none"
+      style={{
+        // Lift above iOS Safari bottom toolbar + home-indicator safe area.
+        // Without this the nipples render INSIDE the viewport but UNDER
+        // Safari's chrome on a real iPad — invisible/untappable.
+        // Min 32px so it stays clear even without safe-area (devtools/etc).
+        bottom: 'max(calc(env(safe-area-inset-bottom, 0px) + 60px), 80px)',
+        width: '100vw',
+        height: '220px',
+      }}
     >
       {/* Left joystick zone — movement / explore-mode camera pan */}
       {!movementFrozen && (
@@ -166,32 +187,8 @@ export default function MobileControls() {
         }}
       />
 
-      {/* Enter building button — centered between joysticks (hidden in explore mode) */}
-      {!movementFrozen && !isExplore && nearLocation && (
-        <button
-          onClick={handleEnterBuilding}
-          className="pointer-events-auto absolute"
-          style={{
-            left: '50%',
-            bottom: '70px',
-            transform: 'translateX(-50%)',
-            width: '56px',
-            height: '56px',
-            borderRadius: '50%',
-            background: 'rgba(255,255,255,0.3)',
-            backdropFilter: 'blur(4px)',
-            border: '2px solid rgba(255,255,255,0.5)',
-            color: 'white',
-            fontWeight: 'bold',
-            fontSize: '18px',
-            touchAction: 'manipulation',
-            boxShadow: '0 2px 12px rgba(0,0,0,0.3)',
-          }}
-          aria-label="Enter building"
-        >
-          E
-        </button>
-      )}
+      {/* Building enter is now owned by the bottom-center floating prompt
+          in `location-hud.tsx` (single source of truth, bigger tap target). */}
     </div>
   );
 }

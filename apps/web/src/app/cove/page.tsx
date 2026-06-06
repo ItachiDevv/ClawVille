@@ -31,8 +31,12 @@ import Link from 'next/link';
 import SceneTransition, { useSceneTransition } from '@/components/transitions/SceneTransition';
 import SlotScreenModal from '@/components/cove/SlotScreenModal';
 import BlackjackModal from '@/components/cove/blackjack/BlackjackModal';
+import HoldemModal from '@/components/cove/holdem/HoldemModal';
+import BaccaratModal from '@/components/cove/baccarat/BaccaratModal';
+import CoveMobileControls from '@/components/cove/CoveMobileControls';
 import { useAvatar } from '@/hooks/use-avatar';
 import { useGameStore } from '@/stores/game';
+import { useIsMobile } from '@/hooks/use-is-mobile';
 
 /**
  * CoveCanvas — dynamically imported with ssr:false so Three.js /
@@ -86,6 +90,7 @@ const COVE_EXIT_PX = { x: 2000, y: 5760 };
 // ---------------------------------------------------------------------------
 export default function CovePage() {
   const { triggerTransition } = useSceneTransition();
+  const isMobile = useIsMobile();
 
   // Phase 6.1.20 — sync the user's authenticated avatar into the gameStore
   // every time this page mounts. Mirrors the same effect on /game (line 346)
@@ -190,35 +195,45 @@ export default function CovePage() {
         Back to World
       </button>
 
-      {/* Provably-fair verifier link — top-right, mirrors the Back button style. */}
-      <Link
-        href="/cove/verify"
-        target="_blank"
-        rel="noopener noreferrer"
-        style={{
-          position: 'absolute',
-          top: 16,
-          right: 16,
-          zIndex: 50,
+      {/* Top-right actions — betting history + provably-fair verifier. */}
+      {(() => {
+        const pill = {
           display: 'flex',
           alignItems: 'center',
-          gap: 8,
-          padding: '10px 18px',
+          gap: 6,
+          padding: '10px 16px',
           background: 'rgba(10, 0, 21, 0.82)',
           backdropFilter: 'blur(6px)',
           border: '1px solid rgba(0, 255, 224, 0.35)',
           borderRadius: 10,
           color: '#00ffe0',
           fontWeight: 700,
-          fontSize: 14,
+          fontSize: 13,
           fontFamily: 'monospace',
           textDecoration: 'none',
           letterSpacing: '0.04em',
-          transition: 'border-color 0.2s, background 0.2s',
-        }}
-      >
-        🔐 Verify
-      </Link>
+          whiteSpace: 'nowrap' as const,
+        };
+        return (
+          <div
+            style={{
+              position: 'absolute',
+              top: 16,
+              right: 16,
+              zIndex: 50,
+              display: 'flex',
+              gap: 8,
+            }}
+          >
+            <Link href="/cove/history" target="_blank" rel="noopener noreferrer" style={pill}>
+              📜 History
+            </Link>
+            <Link href="/cove/verify" target="_blank" rel="noopener noreferrer" style={pill}>
+              🔐 Verify
+            </Link>
+          </div>
+        );
+      })()}
 
       {/* 2D Slot Screen Modal — DOM overlay, renders on top of 3D canvas.
           z-index 9990 ensures it layers above the Canvas (z-index ~0) but below
@@ -230,35 +245,58 @@ export default function CovePage() {
           Real engine + per-card decisions land in Phase 6.4.1. */}
       <BlackjackModal />
 
-      {/* Interior branding — bottom-center */}
-      <div
-        style={{
-          position: 'absolute',
-          bottom: 24,
-          left: '50%',
-          transform: 'translateX(-50%)',
-          zIndex: 30,
-          pointerEvents: 'none',
-          textAlign: 'center',
-        }}
-      >
+      {/* Phase 6.5.1 — Texas Hold'em table modal (REAL No-Limit engine,
+          server-authoritative, ClawToken stack custody, 5 deterministic bots).
+          Same z-index policy as the other game modals. Connected-agent
+          WebSocket protocol + real-money SOL/USDC land in Phase 6.5.2 / 6.5.4. */}
+      <HoldemModal />
+
+      {/* Phase 6.6.1 — Baccarat (Punto Banco) table modal (REAL engine,
+          server-authoritative, ClawToken fun-money tier, 8-deck commit-reveal
+          shoe). Same z-index policy as the other game modals so only one game
+          modal is open at a time. SOL/USDC + connected-agent protocol land in
+          a later phase (currency seam returns 501 today). */}
+      <BaccaratModal />
+
+      {/* iPad / phone touch controls — auto-hidden on desktop via useIsMobile.
+          Critical fix 2026-05-27: cove had zero touch input; iPad users
+          could see the scene but not move. */}
+      <CoveMobileControls />
+
+      {/* Interior branding — bottom-center. Hidden on mobile so it doesn't
+          sit visually over the CoveMobileControls joystick zones (each zone
+          is 50vw × 240px from bottom, meeting at center where this banner
+          lives). Desktop only — decoration, not load-bearing. */}
+      {!isMobile && (
         <div
           style={{
-            background: 'rgba(10, 0, 21, 0.75)',
-            backdropFilter: 'blur(4px)',
-            border: '1px solid rgba(255, 0, 204, 0.25)',
-            borderRadius: 8,
-            padding: '6px 20px',
+            position: 'absolute',
+            bottom: 24,
+            left: '50%',
+            transform: 'translateX(-50%)',
+            zIndex: 30,
+            pointerEvents: 'none',
+            textAlign: 'center',
           }}
         >
-          <span style={{ color: '#ff00cc', fontWeight: 700, fontSize: 13, fontFamily: 'monospace' }}>
-            Predictive Gaming Cove
-          </span>
-          <span style={{ color: 'rgba(255,255,255,0.35)', fontSize: 11, marginLeft: 8 }}>
-            Slots · Blackjack
-          </span>
+          <div
+            style={{
+              background: 'rgba(10, 0, 21, 0.75)',
+              backdropFilter: 'blur(4px)',
+              border: '1px solid rgba(255, 0, 204, 0.25)',
+              borderRadius: 8,
+              padding: '6px 20px',
+            }}
+          >
+            <span style={{ color: '#ff00cc', fontWeight: 700, fontSize: 13, fontFamily: 'monospace' }}>
+              Predictive Gaming Cove
+            </span>
+            <span style={{ color: 'rgba(255,255,255,0.35)', fontSize: 11, marginLeft: 8 }}>
+              Slots · Blackjack · Hold&apos;em · Baccarat
+            </span>
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }

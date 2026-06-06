@@ -35,7 +35,7 @@
  *   - gliderRef carries the bank tilt (rotation.z). riderMountRef.rotation.z = 0 always.
  *   - riderMountRef positioned at RIDER_MOUNT_OFFSET_DEFAULT = [0, 0.6, -0.5] local.
  *   - Gentle bob on riderMountRef.position.y (±2 local units at 1.2Hz).
- *   - KART_Y_ABOVE_TRACK elevation moves from group.position.y (world) to
+ *   - KART_Y_ABOVE_TRACK elevation moves from group.position.y (race-layer local) to
  *     gliderRef.position.y (local = KART_Y_ABOVE_TRACK / KART_SCALE = 0.25).
  *
  * Iris Xe invariants:
@@ -60,7 +60,20 @@ import {
   GLIDER_HEIGHT,
   GLIDER_LENGTH,
   RIDER_MOUNT_OFFSET_DEFAULT,
+  CLIENT_SURF_PARAMS,
+  CLIENT_SURF_MAX_DT,
+  CLIENT_SURF_TICK_DT,
+  CLIENT_SURF_MAX_ACCUM,
+  CLIENT_REBASE_POS,
+  CLIENT_REBASE_VEL,
+  CLIENT_REBASE_ROT,
+  CLIENT_REBASE_SNAP_DIST,
 } from './reef-race-config';
+import {
+  integrateSurfStep,
+  type SurfBodyState,
+} from '@clawville/shared';
+import { selfInputBus, selfPoseBus, resetSelfPoseBus } from './reef-race-self-bus';
 
 // ─── v2 feature flag ──────────────────────────────────────────────────────────
 const USE_SPLINE_PLAYER = process.env.NEXT_PUBLIC_REEF_RACE_USE_SPLINE === 'true';
@@ -462,6 +475,22 @@ function ReefRacePlayerInner({ entity, isSelf = false, triggerScreenShake }: Ree
   // Last interpolated rotation — fallback when rot=0 + no velocity (initial spawn).
   const lastRotRef = useRef(0);
 
+  // ─── v2 self-kart client prediction state ─────────────────────────────────
+  // Only used when (USE_SPLINE_PLAYER && isSelf). predictedRef holds the locally
+  // integrated surf state ({x,z,vx,vz,rot}); it is initialised from the first
+  // server snapshot, advanced each frame by integrateSurfStep against the
+  // self-input bus, and re-baselined toward authority on every new snapshot.
+  const predictedRef = useRef<SurfBodyState>({ x: 0, z: 0, vx: 0, vz: 0, rot: 0 });
+  const predictInitRef = useRef(false);
+  // Fixed-timestep accumulator (s). Render frames are ~60 fps with variable dt,
+  // but integrateSurfStep's drag/grip multipliers assume the server's fixed
+  // 30 Hz tick — so we accumulate frame time and drain it in CLIENT_SURF_TICK_DT
+  // steps, advancing prediction at exactly the server rate.
+  const predictAccumRef = useRef(0);
+  // True for THIS instance for the lifetime of the component when it's the self
+  // kart on the spline path — gates all prediction work + pose-bus writes.
+  const predictsSelf = USE_SPLINE_PLAYER && isSelf;
+
   const clonedScene = useMemo(() => {
     // When isVRM=true, effectiveSrcScene=null — return null so the GLB mount
     // useEffect no-ops and the VRM rider branch handles the scene graph instead.
@@ -574,6 +603,19 @@ function ReefRacePlayerInner({ entity, isSelf = false, triggerScreenShake }: Ree
       delete _lastXZ[entity.avatarId];
     };
   }, [entity.avatarId]);
+
+  // v2 self prediction — invalidate the pose bus on self-player teardown so the
+  // chase camera reverts to its own server-interp behaviour (room exit, WS
+  // reconnect remount). Also resets the per-instance prediction-init flag so a
+  // remount re-seeds predicted state from the first fresh snapshot.
+  useEffect(() => {
+    if (!predictsSelf) return;
+    return () => {
+      predictInitRef.current = false;
+      predictAccumRef.current = 0;
+      resetSelfPoseBus();
+    };
+  }, [predictsSelf]);
 
   // ─── Sea-creature animator (hot-swap when manifest enables this species) ───
   // Manifest defaults to all-empty so this hook is a no-op until rigged GLBs
@@ -737,6 +779,57 @@ function ReefRacePlayerInner({ entity, isSelf = false, triggerScreenShake }: Ree
         h.splice(0, h.length - INTERP_HISTORY_SIZE);
       }
 
+      // ─── v2 self prediction — re-baseline toward authority ──────────────────
+      // Runs once per NEW server snapshot. Pulls the locally-predicted state
+      // toward the server pose so wall-clamp on the tight corridor, kart
+      // collisions, and any boost the client couldn't predict are corrected
+      // within a few snapshots. Big errors (respawn / teleport) hard-snap.
+      if (predictsSelf) {
+        const pred = predictedRef.current;
+        // Server pose in prediction space (sim x → x, sim y → z).
+        const sx = entity.x;
+        const sz = entity.y;
+        const svx = entity.vx;
+        const svz = entity.vy;
+        // Server rot, with the same spawn-frame fallback the snapshot used.
+        const srot = isNaN(snap.rot) ? pred.rot : snap.rot;
+
+        if (!predictInitRef.current) {
+          // First snapshot — initialise predicted state directly from authority.
+          pred.x = sx;
+          pred.z = sz;
+          pred.vx = svx;
+          pred.vz = svz;
+          pred.rot = srot;
+          predictInitRef.current = true;
+          // Fresh seed — drop any accumulated fixed-step time.
+          predictAccumRef.current = 0;
+        } else {
+          const dx = sx - pred.x;
+          const dz = sz - pred.z;
+          const errDist = Math.hypot(dx, dz);
+          if (errDist > CLIENT_REBASE_SNAP_DIST) {
+            // Respawn / teleport / catastrophic desync — snap, don't slide.
+            pred.x = sx;
+            pred.z = sz;
+            pred.vx = svx;
+            pred.vz = svz;
+            pred.rot = srot;
+            // Teleport — discard stale accumulated time so we don't replay
+            // pre-snap motion against the new pose.
+            predictAccumRef.current = 0;
+          } else {
+            // Blend predicted toward authority. Position slower (smoothness),
+            // velocity + heading faster (responsiveness to server corrections).
+            pred.x += dx * CLIENT_REBASE_POS;
+            pred.z += dz * CLIENT_REBASE_POS;
+            pred.vx += (svx - pred.vx) * CLIENT_REBASE_VEL;
+            pred.vz += (svz - pred.vz) * CLIENT_REBASE_VEL;
+            pred.rot = lerpAngle(pred.rot, srot, CLIENT_REBASE_ROT);
+          }
+        }
+      }
+
       // SPEC 2 — Wipeout detection (VRM only).
       // Server doesn't surface respawnAt to the client yet (see §C.2 in the plan).
       // Heuristic: detect XZ teleport > 500wu in one snapshot interval — this is
@@ -808,14 +901,72 @@ function ReefRacePlayerInner({ entity, isSelf = false, triggerScreenShake }: Ree
     // Persist the interpolated rotation for the next zero-velocity spawn frame.
     lastRotRef.current = interpRot;
 
-    // ─── Apply interpolated XZ transform to groupRef ──────────────────────────
-    // BUG FIX (Bug 1): position now comes from interpolated history, not raw entity.
-    // BUG FIX (Bug 2): rotation now comes from entity.rot, not atan2(vx,vy).
-    // Y elevation: v2 spline path reads entity.height (world-space jump height,
-    // default 0 = ground level). v1 ellipse path stays at y=0.
+    // Y elevation: v2 spline path reads entity.height (race-layer local jump
+    // height, default 0 = track surface). v1 ellipse path stays at y=0.
+    const entityHeight = (entity as ReefRaceEntity & { height?: number }).height ?? 0;
+
+    // ─── v2 self prediction — fixed-timestep integrate + override interp pose ─
+    // Only the self kart on the spline path. Reads the smoothed dir/thrust the
+    // input loop just published (same intent the server integrates) and advances
+    // the PURE shared surf model with a FIXED-TIMESTEP accumulator at the server
+    // tick rate (CLIENT_SURF_TICK_DT = 1/30) — NOT once per variable render
+    // frame. integrateSurfStep bakes drag/grip into per-call multipliers that
+    // assume that tick, so each step MUST pass CLIENT_SURF_TICK_DT (never the
+    // frame dt) or carving fidelity is corrupted. The sub-tick remainder (≤33ms)
+    // is left in the accumulator for next frame — no extrapolation (avoids
+    // jitter). Renders from the latest predicted state; the bank-tilt velocity
+    // also comes from prediction so the lean matches the rendered heading.
+    // Remote karts + v1 path are untouched.
+    if (predictsSelf && predictInitRef.current) {
+      const pred = predictedRef.current;
+      const dirInput = selfInputBus.valid ? selfInputBus.dir : null;
+      const thrustInput = selfInputBus.valid ? selfInputBus.thrust : 0;
+      const airborne = entityHeight > 0;
+
+      // Clamp the FRAME dt first (spiral-of-death guard after a tab-out), then
+      // accumulate, then cap the accumulator so a long stall can't run dozens
+      // of steps in one frame.
+      const frameDt = dt > CLIENT_SURF_MAX_DT ? CLIENT_SURF_MAX_DT : dt;
+      predictAccumRef.current += frameDt;
+      if (predictAccumRef.current > CLIENT_SURF_MAX_ACCUM) {
+        predictAccumRef.current = CLIENT_SURF_MAX_ACCUM;
+      }
+
+      while (predictAccumRef.current >= CLIENT_SURF_TICK_DT) {
+        const next = integrateSurfStep(
+          pred,
+          { dir: dirInput, thrust: thrustInput, airborne },
+          CLIENT_SURF_PARAMS,
+          CLIENT_SURF_TICK_DT, // fixed step — NOT the frame dt
+        );
+        pred.x = next.x;
+        pred.z = next.z;
+        pred.vx = next.vx;
+        pred.vz = next.vz;
+        pred.rot = next.rot;
+        predictAccumRef.current -= CLIENT_SURF_TICK_DT;
+      }
+
+      interpX = pred.x;
+      interpZ = pred.z;
+      interpRot = pred.rot;
+      interpVx = pred.vx;
+      interpVz = pred.vz;
+      lastRotRef.current = interpRot;
+
+      // Publish the rendered predicted pose for the chase camera (one timebase).
+      selfPoseBus.x = pred.x;
+      selfPoseBus.z = pred.z;
+      selfPoseBus.rot = pred.rot;
+      selfPoseBus.valid = true;
+      selfPoseBus.updatedAt = performance.now();
+    }
+
+    // ─── Apply interpolated/predicted XZ transform to groupRef ────────────────
+    // BUG FIX (Bug 1): position from interpolated history (or prediction for self).
+    // BUG FIX (Bug 2): rotation from entity.rot (or prediction for self), not atan2.
     // Glider local-Y elevation (KART_Y_ABOVE_TRACK / KART_SCALE) is additive on
     // top of group.position.y via gliderRef.position.y.
-    const entityHeight = (entity as ReefRaceEntity & { height?: number }).height ?? 0;
     group.position.x = interpX;
     group.position.y = USE_SPLINE_PLAYER ? entityHeight : 0;
     group.position.z = interpZ;
@@ -975,4 +1126,3 @@ function ReefRacePlayerInner({ entity, isSelf = false, triggerScreenShake }: Ree
 export default function ReefRacePlayer(props: ReefRacePlayerProps) {
   return <ReefRacePlayerInner {...props} />;
 }
-

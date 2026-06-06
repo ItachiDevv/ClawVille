@@ -1214,7 +1214,10 @@ export const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteStat
       const isFarNpc = _springDistSq > NPC_LOD_FAR_DIST_SQ;
 
       if (!isFarNpc) {
-        animator.updateMixerOnly(dt, npcLockIdle ? false : isMoving);
+        // isRunning: only the possessed player NPC sets d.isRunning (via moveNpc
+        // when sprinting). Wandering NPCs leave it undefined → walk. Gated to
+        // false while charging/airborne so a held sprint mid-leap doesn't run.
+        animator.updateMixerOnly(dt, npcLockIdle ? false : isMoving, npcLockIdle ? false : (d.isRunning ?? false));
 
         // WIN B — Spring-bone distance LOD (perf-audit-2026-05-22 Q4)
         // Close NPCs (<2500wu) run at 30Hz — better perceived quality for

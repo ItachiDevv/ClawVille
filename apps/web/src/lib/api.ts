@@ -180,6 +180,15 @@ export const api = {
       reason?: 'no_bot' | 'expired';
     }>('/api/auth/me/agent-session'),
 
+  // Phase 6.7.5 — claim guest cove history rows for the current Lucia
+  // session. Called from the signup success path. Idempotent — repeat
+  // calls for the same fp_hash return claimed=0.
+  claimCoveHistory: () =>
+    honoRequest<{ claimed: number; eventIds: string[]; sessionsClaimed: number }>(
+      '/api/cove/history/claim',
+      { method: 'POST' },
+    ),
+
   // Avatars
   createAvatar: (data: {
     name: string;
@@ -471,9 +480,12 @@ export const api = {
       expiresIn: number;
     }>(`/api/agent/connect-status/${token}`),
 
+  // Public world-view roster. Carries NO session id (auth-lens fix #1,
+  // 2026-06-03 — the session id is a real-CT bearer credential and this is a
+  // public endpoint); bodies are addressed by their stable public `agentId`.
   getActiveOpenClawBots: () =>
     honoRequest<{
-      bots: Array<{ sessionId: string; mode: string; npcId?: string; name?: string }>;
+      bots: Array<{ agentId: string; mode: string; npcId?: string; name?: string }>;
     }>('/api/openclaw/active'),
 
   getOpenClawBotProfile: (agentId: string) =>

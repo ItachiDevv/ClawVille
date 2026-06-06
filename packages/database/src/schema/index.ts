@@ -18,6 +18,9 @@ export * from './quests';
 export * from './agent-configs';
 export * from './bounties';
 export * from './building-skills';
+// Partner #2 (Hatcher) Phase C — scoped, revocable read-token table for partner
+// integrations. Hash-not-plaintext, show-once mint. See `partner-api-keys.ts`.
+export * from './partner-api-keys';
 export * from './wallets';
 export * from './agent-session-tickets';
 // Email-driven auth (password reset + soft email verification). One row per
@@ -55,6 +58,29 @@ export * from './wager';
 // Phase 6.1 slice 3 — cove slot sessions + spin audit trail. ClawTokens
 // fun-money tier today; SOL/USDC route paths return 501 until 6.2 custody.
 export * from './cove';
+// Phase 6.7.0 — unified cross-game history table for Cove casino. Parallel
+// write to per-game tables (slot_spins etc.); one row per atomic gameplay
+// unit. Verifier replay surface for slots / blackjack / Hold'em / baccarat.
+export * from './cove-events';
+// Phase 6.4.1 — cove blackjack shoes + hands. Two-table commit-reveal
+// pattern mirroring cove (slot_sessions/slot_spins). One shoe = one
+// commit-reveal seed pair (75% penetration reshuffle = new shoe row);
+// one hand = one cove_game_events row. ClawTokens tier today; currency
+// seam reserved for the SOL/USDC tier.
+export * from './blackjack';
+// Phase 6.5.1 — cove No-Limit Texas Hold'em tables + hands. Two-table
+// commit-reveal pattern mirroring blackjack. Each hand shuffles a FRESH
+// 52-card deck from the HMAC stream (nonce=handIndex), so there is no shared
+// shoe / cursor drift. One hand = one cove_game_events row (gameType='holdem').
+// ClawTokens tier today; currency seam reserved for the SOL/USDC tier.
+export * from './holdem';
+// Phase 6.6.1 — cove Baccarat (Punto Banco) shoes + coups. Two-table
+// commit-reveal pattern mirroring blackjack (8-deck shared no-replacement shoe;
+// ~75% penetration reshuffle = new shoe row). Punto Banco has NO player
+// decisions, so each coup is dealt + resolved atomically — one coup = one
+// cove_game_events row (gameType='baccarat'). ClawTokens tier today; currency
+// seam reserved for the SOL/USDC tier.
+export * from './baccarat';
 
 import { users, sessions } from './users';
 import { npcMemories, activityLog } from './memories';
