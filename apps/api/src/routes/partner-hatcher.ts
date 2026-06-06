@@ -55,8 +55,8 @@ import {
 import {
   NPC_IDS,
   DEFAULT_AGENT_MODEL_KEY,
+  DEFAULT_HATCHER_MODEL_KEY,
   KNOWLEDGE_BOOKS,
-  pickRandomHatcherModelKey,
   AVATAR_ARCHETYPES,
   getAgentModel,
   type OpenClawRegistration,
@@ -73,6 +73,7 @@ import { ensureWallet } from '../services/wallet-service';
 import { resolveOrCreateUserByIdentity } from '../services/identity-service';
 import { computeSessionExpiresAt } from '../services/openclaw-session-sweeper';
 import { logEvent } from '../services/event-logger';
+import { sessionDigest } from '../services/session-digest';
 import { protocolPointer, resolveApiBase } from '../services/skill-protocol';
 import { getAgentLeaderboardEntry } from './leaderboard';
 
@@ -374,13 +375,14 @@ export function buildHatcherAvatarValues(
   modelKey: string | null | undefined,
   name: string | null | undefined,
 ): typeof avatars.$inferInsert {
-  // Resolve the render model: prefer the persisted hatcher_N; validate against
-  // the registry and fall back to a random hatcher_N placeholder if absent or
-  // not a known hatcher key (mirrors the register handler's species resolution).
+  // Resolve the render model: prefer the persisted hatcher modelKey; validate
+  // against the registry and fall back to the default Phanes avatar
+  // (DEFAULT_HATCHER_MODEL_KEY) if absent or not a known hatcher key (mirrors
+  // the register handler's species resolution).
   const resolvedModel =
     modelKey && getAgentModel(modelKey)?.category === 'hatcher'
       ? modelKey
-      : pickRandomHatcherModelKey();
+      : DEFAULT_HATCHER_MODEL_KEY;
   const modelLabel = getAgentModel(resolvedModel)?.label ?? 'Hatcher';
 
   const archetype = AVATAR_ARCHETYPES.find((a) => a.id === DEFAULT_HATCHER_ARCHETYPE);
@@ -585,10 +587,11 @@ partnerHatcherRoutes.post('/agents', async (c) => {
   // the in-memory client.
   const encToken = encryptToken(data.cognition.scopedToken);
 
-  // Resolve the render model. A Hatcher agent with no explicit species gets a
-  // random `hatcher_N` placeholder (persisted so reconnects keep the same).
+  // Resolve the render model. A Hatcher agent with no explicit species gets the
+  // default Phanes avatar (persisted so reconnects keep the same). Existing
+  // agents that previously persisted a hatcher_N placeholder keep it.
   const resolvedSpecies =
-    data.species ?? (data.mode === 'avatar' ? pickRandomHatcherModelKey() : null);
+    data.species ?? (data.mode === 'avatar' ? DEFAULT_HATCHER_MODEL_KEY : null);
 
   // Upsert the openclaw_bots row.
   let row: typeof openclawBots.$inferSelect;
@@ -800,7 +803,10 @@ partnerHatcherRoutes.post('/agents', async (c) => {
     eventType: 'agent.connected',
     userId,
     agentId: namespacedAgentId,
-    sessionId,
+    // Digest, NOT the raw `hat-` bearer (Codex auth-lens fix #4): the raw
+    // session id is the real-CT bearer credential the cove trusts via the
+    // X-Clawville-Agent-Session header — never write it into events.session_id.
+    sessionId: sessionDigest(sessionId),
     payload: {
       identityType: 'hatcher',
       via: 'partner-register',

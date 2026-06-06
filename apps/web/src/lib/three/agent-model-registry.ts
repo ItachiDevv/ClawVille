@@ -39,6 +39,27 @@ export interface ModelRegistryEntry {
    * GLB crustaceans omit this (no Mixamo path).
    */
   animatorId?: string;
+  /**
+   * Extra Y rotation (radians) applied once per VRM load in the picker
+   * (SelectAgentCanvas.tsx PlatformModelVRM) to make the model face the camera.
+   *
+   * VRM 0.x (Milady / Hatcher placeholders): `vrm-loader.ts` calls
+   * `VRMUtils.rotateVRM0(vrm)` which sets scene.rotation.y = pi, pointing the
+   * model toward -Z (camera at +Z). No additional correction needed → omit
+   * faceYaw (defaults 0 → no-op).
+   *
+   * VRM 1.x (Hermes / Tekk / chibi): `rotateVRM0` is a no-op (metaVersion !==
+   * "0"). These rigs natively face +Z (back to camera). Adding Math.PI flips
+   * them to face -Z toward the picker camera.
+   */
+  faceYaw?: number;
+  /**
+   * Reserved models: hidden from the /create-agent picker grid (filtered in
+   * create-agent/page.tsx). Used for agent-only defaults that are assigned
+   * server-side but never user-selectable — e.g. `phanes`, the default Hatcher
+   * avatar. The 3D world still renders them normally; only the picker hides them.
+   */
+  pickerHidden?: boolean;
 }
 
 export const MODEL_REGISTRY = {
@@ -100,10 +121,12 @@ export const MODEL_REGISTRY = {
   // normalizes screen-space height regardless of native VRM units.
   // Animation clips: hermes-female/ → female rig, hermes-male/ → male rig,
   // tekk-male/ → Tekk rig.
-  hermes_female: { path: '/avatars/hermes-female.vrm', scale: 13, label: 'Hermes',      category: 'hermes', avatar_type: 'vrm', animatorId: 'hermes-female', preview: '/models/hermes-turnaround/female-front.png' },
-  hermes_male:   { path: '/avatars/hermes-male.vrm',   scale: 13, label: 'Hermes Male', category: 'hermes', avatar_type: 'vrm', animatorId: 'hermes-male',   preview: '/models/hermes-turnaround/male-front.png' },
+  // faceYaw: Math.PI — VRM 1.x rigs face +Z natively (back to camera). rotateVRM0 is a
+  // no-op for these. Adding pi flips them to face -Z toward the picker camera at +Z.
+  hermes_female: { path: '/avatars/hermes-female.vrm', scale: 13, label: 'Hermes',      category: 'hermes', avatar_type: 'vrm', animatorId: 'hermes-female', faceYaw: Math.PI, preview: '/models/hermes-turnaround/female-front.png' },
+  hermes_male:   { path: '/avatars/hermes-male.vrm',   scale: 13, label: 'Hermes Male', category: 'hermes', avatar_type: 'vrm', animatorId: 'hermes-male',   faceYaw: Math.PI, preview: '/models/hermes-turnaround/male-front.png' },
   // ?v=2 bust 2026-05-22 — Cloudflare cached a 404 for this URL from the window before the PNG was committed; CF edge TTL is 7d and our deploy token lacks cache_purge scope, so the URL query is the only invalidator. See "Asset cache-bust" kill-the-build rule in CLAUDE.md.
-  tekk:          { path: '/avatars/tekk.vrm',          scale: 13, label: 'Tekk',        category: 'hermes', avatar_type: 'vrm', animatorId: 'tekk',          preview: '/models/tekk-turnaround/with-wings-front.png?v=2' },
+  tekk:          { path: '/avatars/tekk.vrm',          scale: 13, label: 'Tekk',        category: 'hermes', avatar_type: 'vrm', animatorId: 'tekk',          faceYaw: Math.PI, preview: '/models/tekk-turnaround/with-wings-front.png?v=2' },
 
   // ── Chibi VRM avatars (added 2026-05-21) ──────────────────────────────────
   // Mini-Nori-style stylized humanoids — large head, short stubby limbs.
@@ -118,8 +141,9 @@ export const MODEL_REGISTRY = {
   // URL including query; bumping invalidates the edge cache without needing
   // the cache_purge token scope we don't have. Matches the existing pattern
   // used for the emote bundle (EMOTE_BUNDLE_VERSION in vrm-character-animator.ts).
-  eliza_chibi:   { path: '/avatars/eliza-chibi.vrm?v=2',   scale: 13, label: 'Eliza Chibi',  category: 'chibi',  avatar_type: 'vrm', animatorId: 'chibi', preview: '/models/eliza-chibi-turnaround/front.png' },
-  milady_chibi:  { path: '/avatars/milady-chibi.vrm?v=2',  scale: 13, label: 'Milady Chibi', category: 'chibi',  avatar_type: 'vrm', animatorId: 'chibi', preview: '/models/milady-chibi-turnaround/front.png' },
+  // faceYaw: Math.PI — chibi VRMs are Mixamo-rigged VRM 1.x (same as Hermes/Tekk).
+  eliza_chibi:   { path: '/avatars/eliza-chibi.vrm?v=2',   scale: 13, label: 'Eliza Chibi',  category: 'chibi',  avatar_type: 'vrm', animatorId: 'chibi', faceYaw: Math.PI, preview: '/models/eliza-chibi-turnaround/front.png' },
+  milady_chibi:  { path: '/avatars/milady-chibi.vrm?v=2',  scale: 13, label: 'Milady Chibi', category: 'chibi',  avatar_type: 'vrm', animatorId: 'chibi', faceYaw: Math.PI, preview: '/models/milady-chibi-turnaround/front.png' },
 
   // ── Hatcher (placeholder — Phase 4 swap) ─────────────────────────────────
   // PLACEHOLDER (Phase 4 swap): these 8 keys point at existing Milady VRMs
@@ -142,6 +166,16 @@ export const MODEL_REGISTRY = {
   hatcher_6: { path: '/avatars/milady-official-6.vrm', scale: 13, label: 'Hatcher 6', category: 'hatcher', avatar_type: 'vrm', animatorId: 'vrm-milady', preview: '/avatars/previews/milady-official-6.png' }, // PLACEHOLDER (Phase 4 swap)
   hatcher_7: { path: '/avatars/milady-official-7.vrm', scale: 13, label: 'Hatcher 7', category: 'hatcher', avatar_type: 'vrm', animatorId: 'vrm-milady', preview: '/avatars/previews/milady-official-7.png' }, // PLACEHOLDER (Phase 4 swap)
   hatcher_8: { path: '/avatars/milady-official-8.vrm', scale: 13, label: 'Hatcher 8', category: 'hatcher', avatar_type: 'vrm', animatorId: 'vrm-milady', preview: '/avatars/previews/milady-official-8.png' }, // PLACEHOLDER (Phase 4 swap)
+
+  // ── Phanes — DEFAULT Hatcher avatar (2026-06-05), reserved (NOT in picker) ──
+  // Bespoke Greek primordial-deity VRM 1.0 from the Tripo->Mixamo->VRM pipeline
+  // (faces -Y, 22/22 humanoid bones, 2048 diffuse). animatorId 'hermes-male' so
+  // it shares the Hermes male animation set (animations are retargeted at
+  // runtime). faceYaw Math.PI matches the other VRM 1.x rigs (picker-only; moot
+  // here since pickerHidden). pickerHidden keeps it out of /create-agent — it is
+  // assigned server-side as the default for every new Hatcher agent
+  // (DEFAULT_HATCHER_MODEL_KEY in @clawville/shared) and is never user-selectable.
+  phanes: { path: '/avatars/phanes.vrm', scale: 13, label: 'Phanes', category: 'hatcher', avatar_type: 'vrm', animatorId: 'hermes-male', faceYaw: Math.PI, pickerHidden: true, preview: '/models/phanes-turnaround/front.png' },
 
   // NOTE: `crayfish` removed from the picker 2026-04-16 — the mesh renders
   // noticeably larger than lobster at the same scale (different pivot) and
@@ -280,4 +314,6 @@ export const MODEL_KEY_TO_LEGACY_SPECIES: Record<ModelKey, LegacySpecies> = {
   hatcher_6:          'fox',
   hatcher_7:          'fox',
   hatcher_8:          'fox',
+  // Phanes (default Hatcher avatar) — humanoid → 'fox' 2D fallback like the rest.
+  phanes:             'fox',
 };

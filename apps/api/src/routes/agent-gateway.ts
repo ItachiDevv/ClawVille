@@ -42,6 +42,7 @@ import { drainKnowledgeEvents, clearSessionQueue } from '../services/skill-event
 import { runTool } from '../services/skill-tools-dispatcher';
 import { coveBlackjackRouter } from './cove-blackjack';
 import { validateLiveAgentSession } from '../middleware/require-auth-or-agent';
+import { sessionDigest } from '../services/session-digest';
 import { getBlackjackSkillContext } from '../services/game-skill-memory';
 import {
   getBooksForBuilding,
@@ -738,7 +739,7 @@ agentGatewayRoutes.post('/connect', async (c) => {
           userId: resolved.userId,
           avatarId: resolved.avatarId,
           agentId: resolvedAgentId,
-          sessionId,
+          sessionId: sessionDigest(sessionId),
           payload: {
             identityType,
             identityPubkey: ident.publicKey,
@@ -805,7 +806,12 @@ agentGatewayRoutes.post('/connect', async (c) => {
     userId: pendingForEvent?.userId ?? resolved.userId ?? null,
     avatarId: pendingForEvent?.avatarId ?? resolved.avatarId ?? null,
     agentId: resolvedAgentId,
-    sessionId,
+    // sessionDigest (deterministic per session), NOT raw bearer (Codex auth-lens
+    // fix #4) and NOT null: leaderboard.ts does COUNT(DISTINCT session_id) FILTER
+    // (event_type='agent.connected'), so the digest must be stable per session to
+    // preserve DISTINCT counting + the per-day session cap. agentId stays raw
+    // (resolvedAgentId is a stable handle, not a bearer).
+    sessionId: sessionDigest(sessionId),
     payload: {
       identityType,
       protocol: data.protocol ?? null,
@@ -1195,15 +1201,19 @@ agentGatewayRoutes.get('/wallet', async (c) => {
     return c.json({ error: 'Missing sessionId query parameter' }, 400);
   }
 
-  const botCfg = npcSimulation.getOpenClawBotConfig(sessionId);
-  if (!botCfg) {
+  // Fail-closed liveness gate (Codex auth-lens fix #5, 2026-06-03). This route
+  // exposes the bound avatar's authoritative ClawToken balance, so it must NOT
+  // trust bare Map membership (`getOpenClawBotConfig`): an EXPIRED-but-in-map
+  // session would otherwise keep reading a victim's live CT balance after the DB
+  // TTL reaped it. Route through the SAME shared validator every other bearer
+  // path uses (Map membership AND DB `session_expires_at > now`, NULL = expired,
+  // unregisters a stale body). The validator returns the in-memory config + live
+  // row, so we reuse them instead of a second lookup.
+  const live = await validateLiveAgentSession(sessionId);
+  if (!live) {
     return c.json({ error: 'Unknown or expired session' }, 404);
   }
-
-  const bot = await db.query.openclawBots.findFirst({
-    where: eq(openclawBots.agentId, botCfg.agentId),
-    columns: { id: true, userId: true, walletAddress: true },
-  });
+  const { bot } = live;
   if (!bot || !bot.userId) {
     return c.json({ error: 'Session is not bound to a user account' }, 404);
   }
@@ -1991,7 +2001,10 @@ agentGatewayRoutes.post('/:sessionId/chat', async (c) => {
 
         const state: Record<string, any> = {
           avatarId: bot?.id ?? npcId,
-          userId: sessionId,
+          // Raw sessionId is folded into ElizaOS room derivation (not stored as a
+          // recoverable bearer column), so keying it raw re-opens no recoverable
+          // leak while preserving chat-memory continuity across deploys.
+          userId: npcSimulation.getOpenClawBotConfig(sessionId)?.agentId ?? sessionId,
           services,
           avatarData: bot ? {
             id: bot.id,
@@ -2007,7 +2020,10 @@ agentGatewayRoutes.post('/:sessionId/chat', async (c) => {
         };
 
         const result = await runtime.processMessage(parsed.data.message, {
-          userId: sessionId,
+          // Raw sessionId is folded into ElizaOS room derivation (not stored as a
+          // recoverable bearer column), so keying it raw re-opens no recoverable
+          // leak while preserving chat-memory continuity across deploys.
+          userId: npcSimulation.getOpenClawBotConfig(sessionId)?.agentId ?? sessionId,
           roomId: `agent-gateway-${npcId}`,
           platform: 'clawville-gateway',
           dynamicContext: `You are ${npc.name} in the ClawVille world. Respond in character.`,
@@ -2022,8 +2038,8 @@ agentGatewayRoutes.post('/:sessionId/chat', async (c) => {
 
   void logEventFromContext(c, {
     eventType: 'agent.chat.turn',
-    agentId: npcSimulation.getOpenClawBotConfig(sessionId)?.agentId ?? sessionId,
-    sessionId,
+    agentId: npcSimulation.getOpenClawBotConfig(sessionId)?.agentId ?? sessionDigest(sessionId),
+    sessionId: sessionDigest(sessionId),
     payload: {
       chatType: 'character',
       targetNpcId: parsed.data.targetNpcId ?? npcId,
@@ -2105,7 +2121,11 @@ agentGatewayRoutes.post('/:sessionId/visit-building', async (c) => {
             amount: 1,
             reason: 'building_visit',
             source: 'api',
-            metadata: { buildingId, sessionId, agentId: bot.agentId },
+            // sessionDigest, NOT the raw sessionId (Codex auth-lens fix #4):
+            // `claw_token_transactions.metadata` is a persisted JSON column, and
+            // the raw sessionId is the real-CT bearer credential — never store a
+            // recoverable bearer in a money-ledger row. Digest is correlation-only.
+            metadata: { buildingId, sessionDigest: sessionDigest(sessionId), agentId: bot.agentId },
           });
           tokenAwarded = 1;
         }
@@ -2157,8 +2177,8 @@ agentGatewayRoutes.post('/:sessionId/visit-building', async (c) => {
     // agent visits. Was missing pre-fix; quest was effectively unclaimable
     // for users whose agents did all the visiting.
     userId: visitUserId,
-    agentId: botConfig?.agentId ?? sessionId,
-    sessionId,
+    agentId: botConfig?.agentId ?? sessionDigest(sessionId),
+    sessionId: sessionDigest(sessionId),
     buildingId,
     payload: {
       tokenAwarded,
@@ -2261,7 +2281,10 @@ agentGatewayRoutes.post('/:sessionId/building/:buildingId/chat', async (c) => {
   let responseContent: string;
   try {
     const response = await runtime.processMessage(parsed.data.message, {
-      userId: sessionId,
+      // Raw sessionId is folded into ElizaOS room derivation (not stored as a
+      // recoverable bearer column), so keying it raw re-opens no recoverable
+      // leak while preserving chat-memory continuity across deploys.
+      userId: npcSimulation.getOpenClawBotConfig(sessionId)?.agentId ?? sessionId,
       roomId,
       platform: 'clawville-agent-gateway',
       dynamicContext,
@@ -2308,7 +2331,10 @@ agentGatewayRoutes.post('/:sessionId/building/:buildingId/chat', async (c) => {
             amount: 1,
             reason: 'building_chat_teaching',
             source: 'api',
-            metadata: { buildingId, sessionId, agentId: bot.agentId, characterName: system.locationAgent.agentName },
+            // sessionDigest, NOT the raw sessionId (Codex auth-lens fix #4) - see
+            // the building-visit credit above. Money-ledger metadata is persisted;
+            // never store the recoverable real-CT bearer in it.
+            metadata: { buildingId, sessionDigest: sessionDigest(sessionId), agentId: bot.agentId, characterName: system.locationAgent.agentName },
           });
           tokenAwarded = 1;
         }
@@ -2320,8 +2346,8 @@ agentGatewayRoutes.post('/:sessionId/building/:buildingId/chat', async (c) => {
 
   void logEventFromContext(c, {
     eventType: 'agent.chat.turn',
-    agentId: botConfig?.agentId ?? sessionId,
-    sessionId,
+    agentId: botConfig?.agentId ?? sessionDigest(sessionId),
+    sessionId: sessionDigest(sessionId),
     buildingId,
     payload: {
       chatType: 'building',
@@ -2699,7 +2725,7 @@ agentGatewayRoutes.post('/:sessionId/skills/:buildingId/tools/:toolName', async 
   void logEventFromContext(c, {
     eventType: 'agent.tool.invoked',
     agentId: botConfig.agentId,
-    sessionId,
+    sessionId: sessionDigest(sessionId),
     buildingId,
     payload: {
       toolName,
@@ -2785,7 +2811,7 @@ agentGatewayRoutes.get('/:sessionId/skills/:buildingId/skill.md', async (c) => {
   void logEventFromContext(c, {
     eventType: 'skill_md.fetched',
     agentId: botConfig.agentId,
-    sessionId,
+    sessionId: sessionDigest(sessionId),
     buildingId,
     payload: {
       skillName: row.name,
@@ -3701,8 +3727,8 @@ agentGatewayRoutes.post('/:sessionId/cove/blackjack/:tool', async (c) => {
 
   void logEventFromContext(c, {
     eventType: 'agent.tool.invoked',
-    agentId: npcSimulation.getOpenClawBotConfig(sessionId)?.agentId ?? sessionId,
-    sessionId,
+    agentId: npcSimulation.getOpenClawBotConfig(sessionId)?.agentId ?? sessionDigest(sessionId),
+    sessionId: sessionDigest(sessionId),
     payload: { toolName: tool, ok: res.ok, status: res.status, via: 'cove-blackjack' },
   });
 
