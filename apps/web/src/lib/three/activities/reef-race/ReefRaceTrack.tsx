@@ -400,6 +400,7 @@ const _v2FinishMat = new THREE.MeshStandardMaterial({
 // ─── v2 geometry builders ─────────────────────────────────────────────────────
 
 const V2_RIBBON_SAMPLES = 64;
+const V2_RIVER_BED_Y = -2; // Local to TRACK_SURFACE_Y group; world Y renders at -202.
 const V2_BANK_HEIGHT = 80; // wu — river wall height
 const V2_BANK_THICKNESS = 10; // wu
 
@@ -610,10 +611,10 @@ function SplineTrack() {
   return (
     <group>
       {/* River bed — sandy flat ribbon, normals +Y, DoubleSide */}
-      <mesh ref={riverMeshRef} geometry={riverGeo} material={_v2RiverMat} receiveShadow matrixAutoUpdate={false} />
+      <mesh ref={riverMeshRef} geometry={riverGeo} material={_v2RiverMat} position-y={V2_RIVER_BED_Y} receiveShadow matrixAutoUpdate={false} />
 
       {/* Bank walls — vertical quads merged left + right */}
-      <group ref={bankGroupRef}>
+      <group ref={bankGroupRef} visible={false}>
         <mesh geometry={bankGeos.left}  material={_v2BankMat} castShadow receiveShadow matrixAutoUpdate={false} />
         <mesh geometry={bankGeos.right} material={_v2BankMat} castShadow receiveShadow matrixAutoUpdate={false} />
       </group>

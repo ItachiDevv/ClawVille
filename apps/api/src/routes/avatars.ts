@@ -543,6 +543,11 @@ avatarRoutes.get('/me', requireAuth, async (c) => {
     columns: {
       linkedScapePrincipalId: true,
       linkedScapeDisplayName: true,
+      // Hatcher (partner #2, 2026-06-01) — same surface as scape so the
+      // avatar-settings modal can render the Hatcher linked/unlinked
+      // branch without a second round-trip.
+      linkedHatcherPrincipalId: true,
+      linkedHatcherDisplayName: true,
     },
   });
 
@@ -551,6 +556,8 @@ avatarRoutes.get('/me', requireAuth, async (c) => {
       ...avatar,
       linkedScapePrincipalId: userScape?.linkedScapePrincipalId ?? null,
       linkedScapeDisplayName: userScape?.linkedScapeDisplayName ?? null,
+      linkedHatcherPrincipalId: userScape?.linkedHatcherPrincipalId ?? null,
+      linkedHatcherDisplayName: userScape?.linkedHatcherDisplayName ?? null,
     },
   });
 });

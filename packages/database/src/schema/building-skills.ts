@@ -36,6 +36,17 @@ export const buildingSkills = pgTable('building_skills', {
   sourceArticleIds: jsonb('source_article_ids').$type<string[]>().notNull().default([]),
   /** Schema/generator version so we can regenerate when the prompt changes. */
   generatorVersion: integer('generator_version').notNull().default(1),
+  /**
+   * sha256 of `content` as 64-char lowercase hex (Hatcher Phase C — 2026-06-01).
+   * Lets a partner poll `GET /api/skills/manifest.json`, diff the hash, and only
+   * re-fetch + re-embed a skill whose body actually changed (vs the coarse
+   * integer `generatorVersion`). Backfilled by `scripts/generate-building-skills.ts`;
+   * nullable so existing rows don't need the migration applied before the
+   * manifest works — the manifest endpoint computes the hash LIVE from the
+   * served markdown at request time (cached), so a null column is non-blocking.
+   * See `.claude/plans/hatcher-integration.md` §4.
+   */
+  contentHash: varchar('content_hash', { length: 64 }),
   /** When this skill was last (re)generated. */
   generatedAt: timestamp('generated_at').defaultNow().notNull(),
   createdAt: timestamp('created_at').defaultNow().notNull(),
