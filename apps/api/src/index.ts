@@ -55,6 +55,8 @@ import { skillsRoutes } from './routes/skills';
 import { agentV2Routes } from './routes/agent-v2';
 import { dashboardRoutes } from './routes/dashboard';
 import { portalRoutes } from './routes/portal';
+import { partnerHatcherRoutes } from './routes/partner-hatcher';
+import { agentRegistrationRoutes } from './routes/agent-registration';
 import { adminIdentityRoutes } from './routes/admin-identity';
 import { startSimulation } from './services/npc-simulation';
 import { alertError } from './services/alert-error';
@@ -66,8 +68,19 @@ import { wagerRoutes } from './routes/wager';
 // Phase 6.1 slice 3 — cove slots fun-money backend wire (ClawTokens live;
 // SOL/USDC return 501 until Phase 6.2 custody).
 import { coveSlotsRouter } from './routes/cove-slots';
-// Phase 6.4.0 — cove blackjack mock route (display shell, no engine yet).
+// Phase 6.4.1 — cove blackjack AUTHORITATIVE route (6-deck shoe, S17, BJ 3:2,
+// commit-reveal provably-fair engine, ClawToken ledger; SOL/USDC seam returns 501).
 import { coveBlackjackRouter } from './routes/cove-blackjack';
+// Phase 6.5.0 — cove Texas Hold'em mock route (visual shell, no engine yet).
+import { coveHoldemRouter } from './routes/cove-holdem';
+// Phase 6.6.1 — cove Baccarat (Punto Banco) AUTHORITATIVE route (8-deck shoe,
+// fixed tableau, commit-reveal provably-fair engine, ClawToken ledger; SOL/USDC seam 501).
+import { coveBaccaratRouter } from './routes/cove-baccarat';
+// Phase 6.7.0 — cove cross-game history + per-event provable-fair verifier.
+import { coveHistoryRouter } from './routes/cove-history';
+// Economy fix 2026-05-29 — admin-only CT-economy monitor (minted/burned/houseNet
+// per gameType; faucet detector). FEATURE_GATE: cove_ct_economy_monitor.
+import { coveEconomyRouter } from './routes/cove-economy';
 import type { AppContext } from './types';
 
 const app = new Hono<AppContext>();
@@ -145,6 +158,19 @@ app.get('/.well-known/clawville-issuer.json', (c) => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// ERC-8004-ready agent registration files (off-chain tier)
+// ---------------------------------------------------------------------------
+// Public, per-agent ERC-8004 registration-file FORMAT served at
+//   GET /.well-known/agents/:fingerprint/agent-registration.json
+// keyed on users.identity_fingerprint. Self-signed with the service-issuer
+// key; `registrations:[]` always (NOT on-chain-anchored — BSC upgrade
+// deferred per .claude/plans/hatcher-integration.md §12). Mounted beside
+// the issuer well-known route above; both are Hono-served (not Next.js) so
+// `.well-known/*` isn't special-cased. The sub-app holds only the
+// `:fingerprint/...` path so the full mount path is the canonical URL.
+app.route('/.well-known/agents', agentRegistrationRoutes);
+
 // API routes
 app.route('/api/auth', authRoutes);
 app.route('/api/avatars', avatarRoutes);
@@ -200,6 +226,9 @@ app.route('/api/v2/agent', agentV2Routes);
 app.route('/api/dashboard', dashboardRoutes);
 // Phase 5.1 — cross-world portal + account linking (see plan §6.2 + §15).
 app.route('/api/portal', portalRoutes);
+// Hatcher partner #2 — partner-signed agent registration API (proxy
+// cognition). See routes/partner-hatcher.ts + plan §13/§14 (Phase A).
+app.route('/api/partner/hatcher', partnerHatcherRoutes);
 // Wager lobbies + escrow (gambling-contracts vertical slice).
 // See routes/wager.ts header for the full surface + feature gates.
 app.route('/api/wager', wagerRoutes);
@@ -207,8 +236,21 @@ app.route('/api/wager', wagerRoutes);
 // ClawTokens path is fully wired; SOL/USDC routes return 501 with a
 // friendly message until Phase 6.2 lands real-money custody.
 app.route('/api/cove/slots', coveSlotsRouter);
-// Phase 6.4.0 — cove blackjack mock (display shell; real engine in 6.4.1).
+// Phase 6.4.1 — cove blackjack authoritative engine (replaces the 6.4.0 mock).
 app.route('/api/cove/blackjack', coveBlackjackRouter);
+// Phase 6.5.0 — cove Texas Hold'em mock (visual shell; pokerpocket engine in 6.5.1).
+app.route('/api/cove/holdem', coveHoldemRouter);
+// Phase 6.6.1 — cove Baccarat (Punto Banco) authoritative engine (8-deck shoe,
+// fixed third-card tableau, commit-reveal provably-fair; ClawToken ledger;
+// SOL/USDC seam returns 501).
+app.route('/api/cove/baccarat', coveBaccaratRouter);
+// Phase 6.7.0 — cross-game history (owner-only list + owner|admin verify).
+// Slots integration ships in-line with this mount (see cove-slots.ts spin txn).
+app.route('/api/cove/history', coveHistoryRouter);
+// Economy fix 2026-05-29 — admin-only CT-economy monitor: GET /api/cove/economy/
+// summary aggregates cove_game_events minted/burned/houseNet by gameType to
+// detect any game that has gone net-positive to players (a faucet).
+app.route('/api/cove/economy', coveEconomyRouter);
 // Phase 5.1 — admin identity recovery stub. Returns 501 behind a
 // FEATURE_GATE until the support-chat verification workflow lights up.
 app.route('/api/admin', adminIdentityRoutes);

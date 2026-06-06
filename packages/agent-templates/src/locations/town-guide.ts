@@ -55,11 +55,33 @@ export const townGuide: LocationTemplate = {
     'The HUD stays minimal in Explore and NPC mode — no avatar status bar, no quest tracker, no chat-with-avatar pill. Those are player-mode (Controlled/Autonomous) surfaces that only render after a real agent is connected via the Moltbook handshake. The control-mode toggle reads "Explore / NPC" until then, even if a guest avatar has been auto-minted in the background. The intent is that NPC mode is exactly what it says — control your own NPC to explore the world — not a player-mode preview.',
     'Nori\'s rule: if the question is about a SPECIFIC skill (cron, APIs, RAG, agent security, MCP, deployment, visual creation, app publishing, code, communication channels), send the visitor to the relevant building teacher. Nori teaches the MAP. The building teachers teach the CRAFT.',
 
+    // 2026-06-01 Hatcher portal (partner #2) — same-diff knowledge sync.
+    // The canonical world-fact rides the CLAWVILLE_ORIENTATION_KNOWLEDGE
+    // spread above; this inline Nori-voice copy guarantees a grep against
+    // this file alone finds the new connected world, matching the pattern
+    // used for Reef Race / cove games above.
+    'ClawVille now bridges to two connected agent worlds: \'scape and Hatcher (a managed AI-agent hosting platform). Agents and users can portal in both directions via a signed cross-world portal, and link a Hatcher account to a ClawVille account with a one-time link code — no credentials pasted. If a visitor asks how to cross to Hatcher or link their Hatcher account, point them at the cross-world portal; the handshake is ed25519-signed end to end.',
+
+    // 2026-06-01 Hatcher agents enter + play (Phase 2). Same-diff knowledge
+    // sync — an agent connecting from Hatcher renders as a placeholder Milady
+    // avatar (the new "hatcher" category) and plays exactly like any other
+    // connected agent.
+    'Hatcher agents can now connect and play inside ClawVille like any other agent — they enter through the same /api/agent/connect flow, get the world orientation embedded at connect, and play the full world (visit buildings, chat with teachers, queue activities). A connecting Hatcher agent is rendered as a Milady-style avatar drawn at random from a dedicated Hatcher avatar set (bespoke Hatcher looks land in a later update). If a visitor says they came from Hatcher, welcome them and point them at the nearest building teacher just like anyone else.',
+
+    // 2026-06-01 Hatcher proxy-cognition (Phase A). Same-diff knowledge sync —
+    // the primary Hatcher path: Hatcher registers the agent + keeps its brain,
+    // ClawVille calls Hatcher back for what the agent says.
+    'Some Hatcher agents play in "proxy" mode: Hatcher registers them into ClawVille and keeps the agent\'s brain on Hatcher\'s side. ClawVille spawns the agent in the world and calls back to Hatcher whenever the agent needs to say or decide something — so the agent plays here while thinking over there. To a visitor in the world they look and act like any other agent: they get a Hatcher avatar, walk around, visit buildings, and chat with teachers. Connected agents tied to a ClawVille account also earn ClawTokens for visiting buildings and chatting with teachers, just like players.',
+
     // Phase 3 — Reef Race stat connection (load-bearing CLAUDE.md rule:
     // gameplay change → same-diff Town Guide knowledge update).
     'Your avatar\'s level affects how fast it recovers from collisions in Reef Race (max +25% at level 50).',
     'Your avatar\'s archetype matters in Reef Race: Agility = tighter turns + longer slipstream window. Strength = faster drift charge + 40% knockback resistance. Intelligence = +20% power-up duration + 30% wider ribbon detection.',
     'Bots in Reef Race always race with neutral stats. So your investment in your avatar\'s archetype actually shows up against them.',
+
+    // 2026-06-01 surf rebuild — same-diff knowledge sync: the control feel +
+    // course identity changed (carve a tight river, not float open water).
+    'Reef Race is a surfing race down a winding river canyon — you ride ON the flowing water, not a flat track. Hold thrust to build speed and it CARRIES; ease off and you coast rather than stop. Lean left/right to carve the board through the bends. The river is a tight slalom, so the fast line is a clean carve through the meander — drive dead-straight and you slam the canyon walls. Reading the line, keeping momentum, and smooth carving are the skill; top speed is the same for everyone, so a careful racer beats a button-masher.',
 
     // Phase 4 — PB ghost + streak + Lobster of the Day + match-end summary.
     // Same-diff rule (CLAUDE.md "Town Guide Knowledge Sync") — anything new
@@ -86,12 +108,65 @@ export const townGuide: LocationTemplate = {
     'Bonus-paytable wild multipliers: every landed Wild draws a multiplier from a 60% / 30% / 10% distribution (2× / 3× / 5×). RTP-shape lock (team-lead decision 2026-05-19): the multiplier amplifies line wins only when the spin is in free-spin mode. In base mode the chip is shown on the cell as a "potential" multiplier so the player can see what the wild would have contributed in FS. Free spins consume no predict but credit any wins; the session row tracks `mode` and `freeSpinsRemaining` so the next /spin knows whether to debit. `FS_LINE_WIN_MULTIPLIER=1`, `FS_WILD_MULTIPLIER_DOUBLE=false` — combined RTP 96–98%.',
     'Cove fairness: every spin is provably fair via the commit-reveal scheme. Verify any spin at /cove/verify with `(serverSeed, clientSeed, nonce, cursor, predict)` — the verifier replays the engine byte-for-byte in the browser and matches `wildMultipliers[]` + `scatterPayout` on the response. The session `serverSeed` is revealed at /session/close so the whole sit-down is auditable end-to-end.',
 
-    // Phase 6.4.0 — blackjack table shell. Same-diff rule (CLAUDE.md "Town
-    // Guide Knowledge Sync"): new game in cove must be announced to Nori
-    // in the same diff. Connection SKILL.md endpoint and hosted-agent skill
-    // memory injection for blackjack are intentionally deferred to Phase
-    // 6.4.2 per the cove-blackjack.md plan — Nori's note below reflects that.
-    'Inside the cove you can play interactive blackjack against the dealer — currently a deterministic client-side mock with display-only ClawToken bets. The real engine and on-chain wager program arrive in later phases.',
+    // Phase 6.4.1 — REAL blackjack engine. Same-diff rule (CLAUDE.md "Town
+    // Guide Knowledge Sync"): new game in cove must be announced to Nori in
+    // the same diff. The full world-facts (rules, agent modes, money tier)
+    // ride the CLAWVILLE_ORIENTATION_KNOWLEDGE spread above; this inline note
+    // is the Nori-voice "point at the game" entry. AGENT PARITY (2026-06-03):
+    // connected/hosted agents now play blackjack AS THEMSELVES, autonomously,
+    // from their own runtime via the two-step cove flow (in-world enter_cove()
+    // action tag, then session-bound blackjack tools; protocol_version 2)
+    // settling in real ClawTokens, plus the bidirectional game-skill memory
+    // loop. The in-modal, human-supervised Autonomous driver (8s/15s takeover
+    // window) is LIVE via the shipped relay POST /api/cove/blackjack/agent/decide
+    // for gateway-cognition agents; self-managed nanoclaw agents return 503 and
+    // the modal falls back to Control (documented boundary). The full contract
+    // is in the connection protocol manual (skill-protocol.ts §7).
+    // LOCKED RULE echoed for grep-safety: dealer STANDS on soft 17 (S17).
+    // ECONOMY FIX 2026-05-29: house rake = 5% of NET WINNINGS (winners only).
+    'Inside the cove you can play real blackjack against the dealer — a server-authoritative, provably-fair engine (6-deck shoe, dealer stands on soft 17, blackjack pays 3:2, hit/stand/double/split/surrender/insurance). Standard split rules: split aces get exactly one card each (no hit, double, or re-split) and a 21 on a split hand is an ordinary 21, not a 3:2 blackjack. It is fun-money: bets are 5–500 ClawTokens per hand and settle through the real ClawToken ledger (the stake is committed the moment the cards are dealt, so abandoning a hand still costs the bet), with a 100 demo-token shoe for guests. The house takes a small rake of 5% of your NET WINNINGS on a winning hand only (`floor((payout − bet) × 5%)`) — pushes and losses pay no rake and your returned stake is never raked, so a net-100 win credits you 95. Every hand is replayable at /cove/history. Connected and hosted agents can play blackjack themselves, autonomously, from their own runtime: they walk to the cove with the in-world enter_cove() action and then deal and decide hit/stand/double/split/surrender/insurance through their session-bound blackjack tools, settling in real ClawTokens against their own avatar (the full contract is in the connection protocol manual). In the human cove modal there are two human-side modes: Control, where you tap the actions and a connected agent only advises you from the chat bar while your taps stay the decision; and a human-supervised Autonomous mode (live), where your connected agent plays your open table while you keep a takeover window (at least 8 seconds from each decision, 15 if you are moving on the keyboard). In-modal Autonomous works for gateway-cognition agents (Hatcher-proxy, OpenAI-compatible, Anthropic, custom-webhook); self-managed nanoclaw agents play on their own from their runtime instead, so for them the modal Autonomous toggle falls back to Control with a notice.',
+
+    // Phase 6.5.1 — REAL No-Limit Texas Hold'em engine. Same-diff rule
+    // (CLAUDE.md "Three-Surface Game-Flow Knowledge Sync"): new game in cove
+    // must be announced to Nori in the same diff. The 6.5.1 drop ships the
+    // server-authoritative commit-reveal engine (in-house 7-card evaluator +
+    // HMAC deck shuffle), the five deterministic bot personalities, the real
+    // ClawToken stack custody (buy-in debit / cash-out credit), and the
+    // Control/Autonomous agent-mode UI seam. The global connection SKILL.md
+    // protocol endpoint now EXISTS (Hatcher Phase C, 2026-06-01 —
+    // `GET /api/skills/protocol/skill.md` + `/manifest.json`); the connected-agent
+    // WebSocket + hosted-agent per-hand memory writes still ship in Phase 6.5.2
+    // (the game-skill-memory service is still TODO).
+    // LOCKED RULES echoed for grep-safety: blinds SB=1/BB=2, 6-max, buy-in 20–500 CT.
+    // ECONOMY FIX 2026-05-29: pot rake = min(floor(pot*5/100), 5) CT, once before distribution.
+    "The cove has a real No-Limit Texas Hold'em table — server-authoritative and provably fair. It's 6-max: your seat plus five house bots with distinct deterministic personalities (tight-aggressive, loose-aggressive, tight-passive, calling-station, and nit). Blinds are 1/2 ClawTokens; you buy in for 20–500 CT (default 100), the chips become your table stack, and you cash out whatever's left when you walk away. Streets play out normally — preflop, flop, turn, river, showdown — with fold/check/call/bet/raise, min-raises, all-ins, and correct side-pot splits. It's fun-money: buy-in debits and cash-out credit through the real ClawToken ledger (SOL/USDC is a later tier); guests get a 100 demo-CT stack with no ledger writes. The house rakes the pot at showdown — 5% of the total pot capped at 5 CT (`min(floor(pot × 5%), 5)`), taken once before winners are paid (split/side pots are raked once then distributed) — so a won pot credits slightly less than the raw pot. The button rotates each hand and every hand is replayable at /cove/history.",
+    "Hold'em is server-authoritative end to end: each hand shuffles its own fresh 52-card deck from the commit-reveal stream (serverSeed, clientSeed, handIndex), and the bots decide deterministically from that same stream — so you only ever send your decision, never the cards. The table commits a server-seed hash before any hand is dealt and reveals the server seed when you walk away (close the table), so you can replay every hand and its bot play byte-for-byte at /cove/history and confirm nothing was changed after you acted. Same commit-reveal guarantee as the slots and blackjack.",
+    "Hold'em has two agent modes via the cove chat bar: Control (you tap the actions; a connected agent acts as an ADVISOR, posting pot-odds and range hints to the advisor panel but NEVER making the decision) and Autonomous (a connected agent plays on its own). Autonomous + the connected-agent advisor wiring ship with the WebSocket connection protocol in Phase 6.5.2; the Control-mode human game is live today.",
+
+    // Phase 6.6.1 — REAL baccarat (Punto Banco) engine. Same-diff rule
+    // (CLAUDE.md "Three-Surface Game-Flow Knowledge Sync"): new game in cove
+    // must be announced to Nori in the same diff. The 6.6.1 drop ships the
+    // server-authoritative commit-reveal engine (8-deck no-replacement HMAC
+    // shoe + the fixed standard third-card tableau), the real ClawToken ledger
+    // (one-shot stake+settle per coup), and the Control/Autonomous agent-mode
+    // UI seam. The global connection SKILL.md protocol endpoint now EXISTS
+    // (Hatcher Phase C, 2026-06-01 — `GET /api/skills/protocol/skill.md` +
+    // `/manifest.json`); the connected-agent WebSocket + hosted-agent per-coup
+    // memory writes still ship with the connected-agent protocol drop (the
+    // game-skill-memory service is still TODO).
+    // LOCKED RULES echoed for grep-safety: 8-deck, reshuffle at 75%, bets
+    // PLAYER/BANKER/TIE 5–500 CT, Player 1:1, Banker 0.95:1 (5% comm.), Tie 8:1.
+    // ECONOMY FIX 2026-05-29: banker commission realized by flooring the player's
+    // winnings to floor(stake*95/100) → house-positive at EVERY stake.
+    'The cove has a real baccarat (Punto Banco) table — server-authoritative and provably fair. It is the standard casino game with NO player decisions: you place one bet per coup — PLAYER, BANKER, or TIE (stake 5–500 ClawTokens) — and the server deals both two-card hands, applies the fixed standard drawing rules (naturals, the player stand-on-6/7 rule, and the full banker tableau), and settles. A PLAYER win pays 1:1, a BANKER win pays 0.95:1, and a TIE pays 8:1; on a tie your PLAYER/BANKER bet pushes (stake returned). The 5% banker commission is taken by flooring your winnings to `floor(stake × 95%)` (2026-05-29 fix), so the house keeps the commission at EVERY stake — a banker win on a 10-CT stake pays 19, not the old 20. It is fun-money — ClawTokens only, settling through the real ClawToken ledger, with a 100 demo-token shoe for guests. The 8-deck shoe reshuffles into a fresh provably-fair seed pair at 75% penetration, and every coup is replayable at /cove/history. Connected agents can advise you (Control mode) or play on their own (Autonomous) once the connection protocol lands.',
+
+    // Phase 6.7.0 — unified cove game-history surface. Same-diff rule
+    // (CLAUDE.md "Three-Surface Game-Flow Knowledge Sync"): the unified
+    // history table + UI surface MUST be announced to Nori in the same
+    // diff that ships the schema. Slots is the first game wired;
+    // blackjack / Hold'em / baccarat join in 6.7.1 / 6.7.2 / 6.7.3 once
+    // their server-authoritative engines ship.
+    "Every cove game writes a row to a unified game-history store on completion (one row per slot spin, per blackjack hand, per Hold'em hand, per baccarat coup). Visit /cove/history to see your most recent 50 events across all four games — filter by game, win/loss, date. Each row carries the commit-reveal pair (`serverSeedHash` always; `revealedServerSeed` once the parent session closes), so clicking 'Verify' on any post-reveal row deeplinks to /cove/verify/:eventId where the engine replays the event in your browser and shows a green check (or red flag with the divergence) — same provably-fair guarantee as the per-session slots verifier, just cross-game. Pre-reveal rows show only the locked hash badge per standard provably-fair UX.",
   ],
   topics: [
     'ClawVille world overview',

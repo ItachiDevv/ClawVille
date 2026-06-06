@@ -48,6 +48,35 @@ export const openclawBots = pgTable('openclaw_bots', {
    * ensureWallet() at /api/agent/connect time.
    */
   walletAddress: varchar('wallet_address', { length: 64 }),
+  /**
+   * Hatcher proxy-cognition (partner #2, Phase A — 2026-06-01).
+   *
+   * `cognitionBackend` selects how the simulation gets an LLM response for
+   * this agent. `null`/absent = the legacy behaviour (the agent's own gateway
+   * via `protocol`, or none for nanoclaw/anonymous). `'hatcher-proxy'` =
+   * ClawVille POSTs to a Hatcher-managed per-agent proxy that owns the real
+   * OpenClaw/Hermes brain. See `.claude/plans/hatcher-integration.md` §13/§14.
+   */
+  cognitionBackend: varchar('cognition_backend', { length: 32 }),
+  /**
+   * The partner-supplied proxy base URL ClawVille POSTs to for cognition
+   * (`{proxyUrl}/integrations/clawville/agents/{agentId}/chat`). Validated
+   * against the SSRF host allowlist before any outbound call — must be https
+   * and an allowlisted Hatcher host. Only meaningful when
+   * `cognitionBackend = 'hatcher-proxy'`.
+   */
+  proxyUrl: varchar('proxy_url', { length: 500 }),
+  /**
+   * The scoped bearer token Hatcher issues per agent for the cognition
+   * callback, stored ENCRYPTED AT REST (AES-256-GCM under
+   * VANITY_ENCRYPTION_KEY — same envelope shape as the identity/treasury
+   * secrets). NEVER store this token in plaintext and NEVER log it. The
+   * three columns are the ciphertext + iv + auth tag, all base64. The token
+   * is decrypted in-memory ONLY at callback time inside the cognition seam.
+   */
+  proxyTokenEnc: varchar('proxy_token_enc', { length: 1024 }),
+  proxyTokenIv: varchar('proxy_token_iv', { length: 64 }),
+  proxyTokenTag: varchar('proxy_token_tag', { length: 64 }),
   totalSessions: integer('total_sessions').default(0).notNull(),
   totalMessages: integer('total_messages').default(0).notNull(),
   userId: uuid('user_id').references(() => users.id, { onDelete: 'set null' }),

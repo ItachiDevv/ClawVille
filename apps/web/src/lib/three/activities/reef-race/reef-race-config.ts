@@ -260,6 +260,8 @@ export const PICKUP_SPIN_SPEED = 0.8;
 
 /** Pickup Y hover height above track surface. */
 export const PICKUP_Y_ABOVE_TRACK = 50;
+// Keep in sync with WATER_Y in water-surf.tsx:49 so race content sits on the flowing river surface.
+export const TRACK_SURFACE_Y = -200;
 
 /** Canvas texture size for '?' face. */
 export const PICKUP_TEXTURE_SIZE = 64;
@@ -552,6 +554,87 @@ export interface SplineRampClient {
   /** Half-width of the visual wedge perpendicular to the tangent (wu). */
   halfWidth: number;
 }
+
+// ─── Reef Race v2 — client-side surf prediction params ───────────────────────
+//
+// keep in sync with apps/api/src/services/activity/sim/reef-race-config.ts
+//
+// These feed `integrateSurfStep` (from @clawville/shared) for CLIENT-SIDE
+// prediction of the SELF kart only. The server runs the identical pure step per
+// tick with the same constants, so prediction + authority converge: the client
+// re-baselines toward each server snapshot (see ReefRacePlayer) and the only
+// per-input job here is to make steering feel instant.
+//
+// speedMod / accelMult are pinned to 1: the client can't know server-side boost
+// stacks (turbo, drift, slipstream, ramp, Phase-3 stat mults). Prediction runs
+// the baseline kinematics and the snapshot re-baseline pulls the predicted body
+// back onto the boosted authority within a few snapshots — never overshooting
+// because re-baseline only ever blends toward the (boost-correct) server pose.
+export const CLIENT_SURF_PARAMS = {
+  /** REEF_MAX_SPEED = 500 */
+  maxSpeed: 500,
+  /** REEF_MAX_ACCEL = REEF_MAX_SPEED * 4 = 2000 */
+  maxAccel: 2000,
+  /** REEF_TURN_RATE = 2.6 */
+  turnRate: 2.6,
+  /** REEF_TURN_SPEED_FALLOFF = 0.45 */
+  turnSpeedFalloff: 0.45,
+  /** REEF_AIRBORNE_STEER_MULT = 0.30 */
+  airborneSteerMult: 0.3,
+  /** REEF_FORWARD_DRAG = 0.992 */
+  forwardDrag: 0.992,
+  /** REEF_LATERAL_GRIP = 0.90 */
+  lateralGrip: 0.9,
+  /** Client can't know boosts — baseline. Re-baseline corrects. */
+  speedMod: 1,
+  /** Client can't know Phase-3 accel stat — baseline. Re-baseline corrects. */
+  accelMult: 1,
+} as const;
+
+/** Max dt (s) fed to integrateSurfStep — clamps huge steps after a tab-out. */
+export const CLIENT_SURF_MAX_DT = 0.05;
+
+/**
+ * Fixed prediction timestep (s) = 1 / REEF_TICK_HZ.
+ *
+ * keep in sync with REEF_TICK_HZ (30) in
+ * apps/api/src/services/activity/sim/reef-race-config.ts
+ *
+ * integrateSurfStep applies forwardDrag (0.992) and lateralGrip (0.90) as
+ * PER-CALL multipliers that assume the server's fixed 30 Hz tick. The client
+ * MUST therefore advance prediction with a fixed-timestep accumulator at this
+ * exact rate — NOT once per (variable, ~60 fps) render frame — or drag/grip
+ * compound ~2× as often (e.g. forwardDrag 0.992^60=0.62/s instead of
+ * 0.992^30=0.785/s), bleeding forward speed on coast and over-gripping the
+ * carve. Every fixed step passes THIS dt, never the frame dt.
+ */
+export const CLIENT_SURF_TICK_DT = 1 / 30;
+
+/**
+ * Max accumulated prediction time (s) carried into the fixed-step loop in a
+ * single frame. Caps the catch-up after a tab-out / long stall so we never run
+ * dozens of steps in one frame (spiral-of-death guard). 0.1 s = at most ~3
+ * fixed steps per frame.
+ */
+export const CLIENT_SURF_MAX_ACCUM = 0.1;
+
+/**
+ * Re-baseline blend factors applied per NEW server snapshot for the self kart.
+ * Predicted state is pulled toward authority so server wall-clamp / collision
+ * corrections land within a few snapshots while input stays instant between
+ * them. Position blends slower (visual smoothness) than velocity/rotation.
+ */
+export const CLIENT_REBASE_POS = 0.4; // 40% of the position error per snapshot
+export const CLIENT_REBASE_VEL = 0.5; // 50% of the velocity error per snapshot
+export const CLIENT_REBASE_ROT = 0.5; // 50% of the (shortest-arc) heading error
+
+/**
+ * Hard-snap threshold (wu). When predicted vs server XZ error exceeds this, the
+ * gap is a respawn / teleport / catastrophic desync — snap predicted straight
+ * to the server pose instead of blending (which would visibly slide across the
+ * track). Matches the wipeout teleport heuristic order of magnitude.
+ */
+export const CLIENT_REBASE_SNAP_DIST = 250;
 
 // MUST match RAMP_HALF_LENGTH / RAMP_HALF_WIDTH in API reef-race-config.ts.
 const RAMP_HALF_LENGTH_CLIENT = 150;

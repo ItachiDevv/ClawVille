@@ -952,7 +952,7 @@ export default function SlotScreenModal() {
               <div style={{ marginTop: 18, display: 'flex', gap: 10, flexWrap: 'wrap' }}>
                 {sessionId ? (
                   <Link
-                    href={`/cove/verify/${sessionId}`}
+                    href={`/cove/verify/session/${sessionId}`}
                     target="_blank"
                     className="pt-btn pt-btn-ghost"
                     style={{ padding: '0 14px', height: 36, fontSize: 11, textDecoration: 'none' }}

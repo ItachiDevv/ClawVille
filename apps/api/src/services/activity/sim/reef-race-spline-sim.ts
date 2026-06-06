@@ -60,7 +60,9 @@ import {
   REEF_TICK_HZ,
   REEF_MAX_SPEED,
   REEF_MAX_ACCEL,
-  REEF_DRAG,
+  // REEF_DRAG retired in the v2 surf model — replaced by directional
+  // forwardDrag + lateralGrip in integrateSurfStep (still used by the ellipse
+  // sim via reef-race-sim.ts).
   REEF_BODY_RADIUS,
   REEF_SOFT_TIMEOUT_MS,
   REEF_HARD_TIMEOUT_MS,
@@ -104,7 +106,13 @@ import {
   REEF_AIRBORNE_STEER_MULT,
   ACTION_BIT_POWERUP_0,
   ACTION_BIT_POWERUP_1,
+  // v2 surf-carving kinematics (2026-06-01)
+  REEF_TURN_RATE,
+  REEF_TURN_SPEED_FALLOFF,
+  REEF_FORWARD_DRAG,
+  REEF_LATERAL_GRIP,
 } from './reef-race-config';
+import { integrateSurfStep, type SurfParams } from '@clawville/shared';
 import { ReefSpline, type Vec2 } from './reef-race-spline';
 import {
   REEF_RACE_DEFAULT_TRACK,
@@ -134,6 +142,39 @@ const REEF_FINISH_WAIT_MS = 30_000;
 
 /** Wall tangential friction after clamp. */
 const WALL_TANGENT_FRICTION = 0.98;
+
+/**
+ * v2 surf model (2026-06-01) — spread wall corrections over a few ticks
+ * instead of one hard snap-back. Each tick the body is pushed inward by at
+ * most this fraction of the overshoot (a spring), so brushing a wall while
+ * carving feels like a scrub, not a yank. With ~1/3 per tick at 30Hz a deep
+ * overshoot resolves in ~3-5 ticks (~0.1-0.17s).
+ */
+const WALL_CORRECTION_PER_TICK = 0.34;
+
+/**
+ * Hard cap on a single tick's inward positional correction (wu). Prevents a
+ * teleport-grade overshoot (e.g. a cheat packet placing the body 5000wu out)
+ * from snapping back in one frame; the body walks back in over several ticks.
+ * Sized above one tick of travel at top speed (≈ 925/30 ≈ 31wu boosted) so a
+ * legitimately fast body is corrected in one tick but a pathological overshoot
+ * is spread.
+ */
+const WALL_MAX_CORRECTION_WU = 60;
+
+/**
+ * Fraction of the OUTWARD velocity component scrubbed per tick at a wall
+ * (1.0 = fully killed in one tick = the old yank). 0.55 bleeds outward
+ * momentum over ~2-3 ticks so the kart slides along the wall instead of
+ * stopping dead — paired with WALL_TANGENT_FRICTION on the tangential part.
+ */
+const WALL_OUTWARD_SCRUB = 0.55;
+
+/**
+ * Cap on a single body's per-tick kart-vs-kart positional push (wu). Spreads a
+ * deep overlap (e.g. two karts sharing a spawn cell) over several ticks.
+ */
+const PROXIMITY_MAX_PUSH_WU = 30;
 
 /** Quantisation factors for snapshot encoding. */
 const POS_QUANT = 10;
@@ -882,7 +923,8 @@ export class ReefRaceSplineSim {
       }
     }
 
-    // 4. Heading update + jump-trigger.
+    // 4. Jump-trigger (heading + velocity integrate happen below via the
+    //    shared surf-carving step).
     const dir = intent.dir;  // Vec2 {x,z} or null
 
     // v2: jump trigger replaces drift charge. Bit 2 = ACTION_BIT_JUMP.
@@ -892,81 +934,67 @@ export class ReefRaceSplineSim {
       body.airborneTicks = 1;
     }
 
-    // Airborne reduces steering authority.
+    // 5+6+8. Surf-carving integrate — heading-rate + lateral-grip + carried
+    // momentum, all in the PURE shared `integrateSurfStep` so the web client
+    // can mirror it for prediction. Airborne reduces the heading TURN RATE
+    // ONLY (no forward-speed penalty — jumps no longer slow the kart). The
+    // Phase 3 agility "tighter turning" stat (turnRadiusMult < 1) maps to a
+    // FASTER heading rate; accelMult scales forward acceleration as before.
     const airborne = body.airborneTicks > 0;
-    const steerMult = airborne ? REEF_AIRBORNE_STEER_MULT : 1.0;
+    const turnRadiusMult =
+      Number.isFinite(body.mults.turnRadiusMult) && body.mults.turnRadiusMult > 0
+        ? body.mults.turnRadiusMult
+        : 1.0;
+    const surfParams: SurfParams = {
+      maxSpeed: REEF_MAX_SPEED,
+      maxAccel: REEF_MAX_ACCEL,
+      // Agility (turnRadiusMult < 1) → faster heading rate (= old "tighter
+      // turning" buff). Bounded by /turnRadiusMult so 0.85 → +17.6% rate.
+      turnRate: REEF_TURN_RATE / turnRadiusMult,
+      turnSpeedFalloff: REEF_TURN_SPEED_FALLOFF,
+      airborneSteerMult: REEF_AIRBORNE_STEER_MULT,
+      forwardDrag: REEF_FORWARD_DRAG,
+      lateralGrip: REEF_LATERAL_GRIP,
+      speedMod,
+      accelMult: body.mults.accelMult,
+    };
 
-    // Face the direction of travel (atan2(vx, vz) = Three.js Y-rotation in XZ).
-    if (dir) {
-      body.rot = Math.atan2(dir.x, dir.z);
-    } else {
-      const speed = Math.hypot(body.vx, body.vz);
-      if (speed > REEF_MAX_SPEED * 0.05) {
-        body.rot = Math.atan2(body.vx, body.vz);
-      }
-    }
+    const prevX = body.x;
+    const prevZ = body.z;
 
-    // 5. Target velocity from heading + speedMod.
-    const targetSpeed = REEF_MAX_SPEED * effectiveThrust * speedMod;
-    let targetVx: number;
-    let targetVz: number;
+    const next = integrateSurfStep(
+      { x: body.x, z: body.z, vx: body.vx, vz: body.vz, rot: body.rot },
+      { dir: dir ?? null, thrust: effectiveThrust, airborne },
+      surfParams,
+      dt,
+    );
+    body.rot = next.rot;
+    body.vx = next.vx;
+    body.vz = next.vz;
+    body.x = next.x;
+    body.z = next.z;
 
-    if (dir) {
-      targetVx = dir.x * targetSpeed * steerMult;
-      targetVz = dir.z * targetSpeed * steerMult;
-    } else if (effectiveThrust > 0.05) {
-      // No dir but has thrust — continue in current rotation direction.
-      targetVx = Math.sin(body.rot) * targetSpeed * steerMult;
-      targetVz = Math.cos(body.rot) * targetSpeed * steerMult;
-    } else {
-      targetVx = 0;
-      targetVz = 0;
-    }
-
-    // 6. Acceleration integration (clamp per-tick delta to REEF_MAX_ACCEL).
-    const dvx = targetVx - body.vx;
-    const dvz = targetVz - body.vz;
-    const dv = Math.hypot(dvx, dvz);
-
-    let maxStep = REEF_MAX_ACCEL * dt * body.mults.accelMult;
-    // Turn-radius bonus — same logic as ellipse sim.
-    if (dir && body.mults.turnRadiusMult < 1.0) {
-      const speed = Math.hypot(body.vx, body.vz);
-      if (speed > REEF_MAX_SPEED * 0.10) {
-        const dirMag = Math.hypot(dir.x, dir.z) || 1;
-        const cosTheta =
-          (body.vx * dir.x + body.vz * dir.z) / (speed * dirMag);
-        if (cosTheta < 0.97) {
-          const turnBonus = 1 / body.mults.turnRadiusMult;
-          maxStep = REEF_MAX_ACCEL * dt * Math.max(body.mults.accelMult, turnBonus);
-        }
-      }
-    }
-
-    const scale = dv === 0 ? 0 : Math.min(1, maxStep / dv);
-    body.vx += dvx * scale;
-    body.vz += dvz * scale;
-
-    // 7. Velocity delta validator (Phase 3 anti-cheat backstop).
+    // 7. Velocity delta validator (Phase 3 anti-cheat backstop). Carving
+    //    redirects momentum but never raises speed above the thrust+boost cap,
+    //    so a legitimate hard turn at top speed (~43 wu/s vector change) plus
+    //    one tick of lateral bleed (≤ ~50 wu/s) stays well under this ceiling.
     const deltaMag = Math.hypot(body.vx - prevVx, body.vz - prevVz);
     const maxLegitDelta =
       REEF_MAX_ACCEL * dt * REEF_KINEMATIC_TOLERANCE;
     if (deltaMag > maxLegitDelta) {
-      // Clamp to the legitimate ceiling.
+      // Clamp to the legitimate ceiling (preserve direction of the change).
       const excess = deltaMag - maxLegitDelta;
       const normX = (body.vx - prevVx) / deltaMag;
       const normZ = (body.vz - prevVz) / deltaMag;
       body.vx -= normX * excess;
       body.vz -= normZ * excess;
+      // Re-integrate position from the clamped velocity so the position
+      // validator below sees the corrected step.
+      body.x = prevX + body.vx * dt;
+      body.z = prevZ + body.vz * dt;
       this.flag(state, body.avatarId, 'overaccel',
         `delta=${deltaMag.toFixed(1)} max=${maxLegitDelta.toFixed(1)}`);
     }
-
-    // 8. XZ position integration.
-    const prevX = body.x;
-    const prevZ = body.z;
-    body.x += body.vx * dt;
-    body.z += body.vz * dt;
 
     // Position delta validator.
     const posDelta = Math.hypot(body.x - prevX, body.z - prevZ);
@@ -980,11 +1008,9 @@ export class ReefRaceSplineSim {
         `pos_delta=${posDelta.toFixed(1)} max=${maxPosDelta.toFixed(1)}`);
     }
 
-    // Drag.
-    body.vx *= REEF_DRAG;
-    body.vz *= REEF_DRAG;
-
-    // Hard velocity cap when positive boost is active (1.85× ceiling).
+    // Hard velocity cap when positive boost is active (1.85× ceiling). The
+    // surf model's forward drag keeps cruise near MAX_SPEED*speedMod; this is
+    // the hard backstop on the boost stack.
     const isPositiveBoostActive =
       body.activeBoosts.has('launch-boost') ||
       body.activeBoosts.has('slipstream-boost');
@@ -1038,32 +1064,49 @@ export class ReefRaceSplineSim {
     const inwardX = closest.side === 'L' ? -n.x : n.x;
     const inwardZ = closest.side === 'L' ? -n.z : n.z;
 
-    // Recovery inset: push 1% extra inside to avoid single-tick re-clamp.
+    // Positional correction — spread over ticks (spring), capped per tick so a
+    // teleport-grade overshoot can't snap back in one frame (no hard yank).
+    //   - targetCorrection: distance to fully re-enter (1.2% inset to avoid an
+    //     immediate re-clamp next tick).
+    //   - springCorrection: gentle per-tick step, capped at WALL_MAX_CORRECTION_WU.
+    //   - correction = min(target, spring): small brush walks back over a few
+    //     ticks; a pathological overshoot is spread (never teleports back).
+    // The body MAY still be slightly outside after a tick — the next tick's
+    // clamp continues the spring. Progress isn't inflated by being lateral
+    // (closestPointOnSpline maps to the same centerline t).
     const overshoot = closest.distance - halfW;
-    const insetFactor = 1.012;
-    body.x += inwardX * overshoot * insetFactor;
-    body.z += inwardZ * overshoot * insetFactor;
+    const targetCorrection = overshoot * 1.012;
+    const springCorrection = Math.min(
+      overshoot * WALL_CORRECTION_PER_TICK + 0.5,
+      WALL_MAX_CORRECTION_WU,
+    );
+    const correction = Math.min(targetCorrection, springCorrection);
+    body.x += inwardX * correction;
+    body.z += inwardZ * correction;
 
     if (!reflectVelocity) {
-      // Safety pass — zero outward velocity only.
+      // Safety pass — scrub outward velocity only (no tangential change).
       const vN = body.vx * (-inwardX) + body.vz * (-inwardZ);
       if (vN > 0) {
-        body.vx += inwardX * vN;
-        body.vz += inwardZ * vN;
+        body.vx += inwardX * vN * WALL_OUTWARD_SCRUB;
+        body.vz += inwardZ * vN * WALL_OUTWARD_SCRUB;
       }
       return;
     }
 
-    // Primary clamp: kill outward velocity, keep tangential speed.
+    // Primary clamp: scrub the OUTWARD velocity component over a few ticks
+    // (WALL_OUTWARD_SCRUB) + scuff the tangential speed (WALL_TANGENT_FRICTION)
+    // so the kart slides along the wall instead of stopping dead.
     const outwardX = -inwardX;
     const outwardZ = -inwardZ;
     const vN = body.vx * outwardX + body.vz * outwardZ;
     if (vN > 0) {
-      // Tangential component only, with friction.
-      const vTx = (body.vx - vN * outwardX) * WALL_TANGENT_FRICTION;
-      const vTz = (body.vz - vN * outwardZ) * WALL_TANGENT_FRICTION;
-      body.vx = vTx;
-      body.vz = vTz;
+      // Decompose into outward + tangential, scrub each independently.
+      const vTx = body.vx - vN * outwardX;
+      const vTz = body.vz - vN * outwardZ;
+      const remainingOutward = vN * (1 - WALL_OUTWARD_SCRUB);
+      body.vx = vTx * WALL_TANGENT_FRICTION + remainingOutward * outwardX;
+      body.vz = vTz * WALL_TANGENT_FRICTION + remainingOutward * outwardZ;
     }
   }
 
@@ -1234,7 +1277,10 @@ export class ReefRaceSplineSim {
         const overlap = minDist - dist;
         const nx = dx / dist;
         const nz = dz / dist;
-        const push = overlap * 0.42;
+        // Spring push spread over ticks (0.42 each side), capped per body per
+        // tick so a deep overlap (e.g. two karts on the same spawn cell)
+        // resolves over a few frames instead of one hard pop-apart.
+        const push = Math.min(overlap * 0.42, PROXIMITY_MAX_PUSH_WU);
         a.x -= nx * push;
         a.z -= nz * push;
         b.x += nx * push;
@@ -1243,6 +1289,8 @@ export class ReefRaceSplineSim {
         const relVz = b.vz - a.vz;
         const closing = relVx * nx + relVz * nz;
         if (closing < 0) {
+          // Remove only 35% of the closing component per tick — bodies scrub
+          // momentum against each other over a few ticks, never a one-tick zero.
           const remove = closing * 0.35;
           a.vx += nx * remove;
           a.vz += nz * remove;

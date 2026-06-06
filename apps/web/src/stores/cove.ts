@@ -19,7 +19,7 @@
 
 import { create } from 'zustand';
 import type { MachineSlug, SpinResult } from '@/lib/cove/types';
-import type { BlackjackOutcome, BlackjackCard } from '@/lib/cove/blackjack-types';
+import { COVE_HOLDEM_DEFAULT_BUYIN } from '@clawville/shared';
 
 // ---------------------------------------------------------------------------
 // Store state
@@ -87,28 +87,53 @@ export interface CoveStore {
   /** Update session balance directly (for win credit, loss debit). */
   adjustBalance: (delta: number) => void;
 
-  // ── Blackjack modal state (Phase 6.4.0 display shell) ────────────────────
+  // ── Hold'em modal state (Phase 6.5.0 visual shell) ───────────────────────
+  // The modal state machine + bot opponents + bankroll display are owned
+  // entirely inside `HoldemModal` (impl-modal). The store only tracks
+  // open/closed + the initial buy-in so the 3D hotspot can launch the
+  // modal with a sensible default (capped to current bankroll). Real
+  // ledger integration arrives in Phase 6.5.1.
+  holdemModalOpen: boolean;
+  /** Buy-in offered when the modal opens, in display ClawTokens. */
+  holdemBuyIn: number;
+  /**
+   * Open the Hold'em table modal.
+   *
+   * @param balance — current display bankroll (avatar.clawTokens). Used to
+   *   cap the offered buy-in at `min(balance, COVE_HOLDEM_DEFAULT_BUYIN)`
+   *   so a low-balance player isn't auto-bet over their stack.
+   */
+  openHoldemTable: (balance: number) => void;
+  closeHoldemTable: () => void;
+
+  // ── Blackjack modal state (Phase 6.4.1 — real authoritative engine) ──────
+  // The store only owns modal open/close + the selected bet. All gameplay
+  // state (shoe, hand, cards, outcome, balance) is server-authoritative and
+  // lives inside BlackjackModal, mirrored from the /api/cove/blackjack
+  // responses — never recomputed locally. `displayBalance` passed to
+  // openBlackjackTable seeds the header until the first server response.
   blackjackOpen: boolean;
   blackjackBet: number;
-  blackjackOutcome: BlackjackOutcome | null;
-  blackjackPayout: number;
-  blackjackPlayerHand: BlackjackCard[];
-  blackjackDealerHand: BlackjackCard[];
-  blackjackOutcomeLabel: string | null;
-  blackjackIsDealing: boolean;
-  /** Stub balance shown in modal — not from ledger in 6.4.0. */
+  /** Snapshot of avatar.clawTokens at open-time (header seed only). */
   blackjackDisplayBalance: number;
   openBlackjackTable: (displayBalance: number) => void;
   closeBlackjackTable: () => void;
   setBlackjackBet: (bet: number) => void;
-  setBlackjackResult: (
-    outcome: BlackjackOutcome,
-    payout: number,
-    playerHand: BlackjackCard[],
-    dealerHand: BlackjackCard[],
-    outcomeLabel: string,
-  ) => void;
-  setBlackjackIsDealing: (dealing: boolean) => void;
+
+  // ── Baccarat modal state (Phase 6.6.1 — real authoritative engine) ───────
+  // Same contract as the blackjack slice: the store owns only modal open/close
+  // + the selected stake. All gameplay state (shoe, coup, cards, winner,
+  // balance) is server-authoritative and lives inside BaccaratModal, mirrored
+  // from the /api/cove/baccarat responses — never recomputed locally.
+  // `displayBalance` passed to openBaccaratTable seeds the header until the
+  // first server response.
+  baccaratOpen: boolean;
+  baccaratBet: number;
+  /** Snapshot of avatar.clawTokens at open-time (header seed only). */
+  baccaratDisplayBalance: number;
+  openBaccaratTable: (displayBalance: number) => void;
+  closeBaccaratTable: () => void;
+  setBaccaratBet: (bet: number) => void;
 }
 
 export const useCoveStore = create<CoveStore>((set, get) => ({
@@ -202,48 +227,59 @@ export const useCoveStore = create<CoveStore>((set, get) => ({
     set({ sessionBalance: sessionBalance + delta });
   },
 
-  // Blackjack state (Phase 6.4.0)
+  // Hold'em state (Phase 6.5.0 visual shell)
+  holdemModalOpen: false,
+  holdemBuyIn: COVE_HOLDEM_DEFAULT_BUYIN,
+
+  openHoldemTable: (balance) => {
+    // Cap suggested buy-in at the caller's bankroll so low-balance players
+    // don't get auto-bet over their stack. Floor at 0 so a negative value
+    // (shouldn't happen but defensive) doesn't pass through to the modal.
+    const buyIn = Math.max(0, Math.min(balance, COVE_HOLDEM_DEFAULT_BUYIN));
+    set({ holdemModalOpen: true, holdemBuyIn: buyIn });
+  },
+
+  closeHoldemTable: () => {
+    set({ holdemModalOpen: false });
+  },
+
+  // Blackjack state (Phase 6.4.1 — real authoritative engine).
+  // Bet default 50 is a valid 5–500 chip. Modal owns the rest.
   blackjackOpen: false,
   blackjackBet: 50,
-  blackjackOutcome: null,
-  blackjackPayout: 0,
-  blackjackPlayerHand: [],
-  blackjackDealerHand: [],
-  blackjackOutcomeLabel: null,
-  blackjackIsDealing: false,
   blackjackDisplayBalance: 0,
 
   openBlackjackTable: (displayBalance) => {
     set({
       blackjackOpen: true,
       blackjackBet: 50,
-      blackjackOutcome: null,
-      blackjackPayout: 0,
-      blackjackPlayerHand: [],
-      blackjackDealerHand: [],
-      blackjackOutcomeLabel: null,
-      blackjackIsDealing: false,
       blackjackDisplayBalance: displayBalance,
     });
   },
 
   closeBlackjackTable: () => {
-    set({
-      blackjackOpen: false,
-      blackjackOutcome: null,
-      blackjackPayout: 0,
-      blackjackPlayerHand: [],
-      blackjackDealerHand: [],
-      blackjackOutcomeLabel: null,
-      blackjackIsDealing: false,
-    });
+    set({ blackjackOpen: false });
   },
 
   setBlackjackBet: (bet) => set({ blackjackBet: bet }),
 
-  setBlackjackResult: (outcome, payout, playerHand, dealerHand, outcomeLabel) => {
-    set({ blackjackOutcome: outcome, blackjackPayout: payout, blackjackPlayerHand: playerHand, blackjackDealerHand: dealerHand, blackjackOutcomeLabel: outcomeLabel });
+  // Baccarat state (Phase 6.6.1 — real authoritative engine).
+  // Bet default 25 is a valid 5–500 chip. Modal owns the rest.
+  baccaratOpen: false,
+  baccaratBet: 25,
+  baccaratDisplayBalance: 0,
+
+  openBaccaratTable: (displayBalance) => {
+    set({
+      baccaratOpen: true,
+      baccaratBet: 25,
+      baccaratDisplayBalance: displayBalance,
+    });
   },
 
-  setBlackjackIsDealing: (dealing) => set({ blackjackIsDealing: dealing }),
+  closeBaccaratTable: () => {
+    set({ baccaratOpen: false });
+  },
+
+  setBaccaratBet: (bet) => set({ baccaratBet: bet }),
 }));
