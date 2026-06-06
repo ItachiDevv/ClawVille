@@ -37,8 +37,11 @@ then reconciled and executed by the orchestrator. Evidence = file:line in each r
 
 ## Scoped backlog
 
-### B1 — Texture-compress the raw-PNG/JPG buildings — ✅ DONE this session
-Implemented via slot-aware compression (color → lossy WebP q92, normal/MR → lossless WebP, meshopt geometry). 6 live buildings: arcade 4.20MB→734K, chum/krusty/squidward/patricks/cove. ~5MB saved. `?v=` bumped on all 3 ref surfaces; SW v7→v8. Each structurally re-validated. The normal-map artifact risk was handled by routing data maps to a lossless pass. **Pixel-verify on staging still required before this reaches users.**
+### B1 — Texture-compress the raw-PNG/JPG buildings — ✅ DONE + LIVE-VERIFIED (texture-only)
+6 live buildings recompressed, ~4.1MB saved: **arcade 4.0MB→785K (-81%)**, chum 1.74→1.52, krusty 1.43→1.14, squidward 1.18→1.06, patricks 1.16→1012K, cove 375K→269K. `?v=` on all 3 surfaces (v3/v4); SW v7→v8.
+- **REGRESSION + FIX (97cede45):** the first pass (bb4f7301) used **meshopt geometry** too. meshopt quantization converts some UVs to Int16 but SKIPS UV>1 tiling coords (Float32) → mixed UV array types → `mergeStaticMeshesByMaterial` (arena-buildings.tsx, runtime) throws "consistent array types" and silently drops the draw-call merge. Caught on live `/game` (the meshlet-spike preview bypasses the merge → missed it). Fixed by re-compressing **texture-only** (`COMPRESS_NO_MESHOPT=1`) from backups — geometry byte-identical to `-opt1` (UV componentType uniform 5126/Float32, verified), merge restored. Traded ~0.9MB geometry for a working merge.
+- **LIVE-VERIFIED** on `/game` (local prod server): SW+caches cleared, hard-reload, console shows **zero** mergeGeometries errors (was 2), all buildings + props load, world + NPCs render. Building geometry+colors also confirmed rendering via `/preview/meshlet-spike-all-12` (11/11 loaded, screenshot).
+- **Rule:** any GLB that flows through `mergeStaticMeshesByMaterial` must NOT be meshopt-quantized (mixed UV types break the merge). Use texture-only compression for buildings.
 
 ### B2 — quest-bounty-pavilion.glb geometry meshopt — ✅ DONE this session
 meshopt geometry + dedup/prune (textures left as-is via `formats:/png|jpeg/` filter). 4.68MB→2.11MB (-55%). `?v=3`. Validated 49,144 verts intact. **Pixel-verify on staging still required.**
