@@ -194,16 +194,12 @@ function AdaptiveRendererDpr() {
   useFrame(({ clock }) => {
     const frame = Math.floor(clock.elapsedTime * 60);
     if (frame % 30 !== 0) return;
-    const tier =
-      typeof window !== 'undefined'
-        ? Number((window as any).__W3D_QUALITY_TIER ?? 0)
-        : 0;
+    // Keep adaptive quality tiers from lowering render resolution. The tier-4
+    // 0.4 DPR clamp recovered FPS, but normal play became visibly soft.
     const targetDpr =
-      tier >= 4
-        ? 0.4
-        : LOW_END_GPU_DETECTED || isTouchDevice
-          ? LOW_END_DPR_RANGE[1]
-          : STANDARD_DPR_RANGE[1];
+      LOW_END_GPU_DETECTED || isTouchDevice
+        ? LOW_END_DPR_RANGE[1]
+        : STANDARD_DPR_RANGE[1];
     if (lastDprRef.current !== targetDpr) {
       gl.setPixelRatio(targetDpr);
       lastDprRef.current = targetDpr;
