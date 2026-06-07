@@ -81,6 +81,16 @@ chatRoutes.post('/system/:slug', requireAuth, async (c) => {
     : undefined;
   const state: Record<string, any> = {
     avatarId: avatar?.id,
+    // KnowledgeProvider RAG key — MUST match the agent_id the runtime keys
+    // its `knowledge` memories on. The runtime processing this message is the
+    // system agent's own runtime (`agent.platformAgent.id`), and the
+    // ElizaOS adapter hard-filters searchMemories by `this.agentId`
+    // (plugin-sql index.node.js:10440). The provider additionally scopes
+    // roomId=entityId=state.platformAgentId, so set it to the same agent id
+    // to keep all three filters (agent_id/room_id/entity_id) self-consistent
+    // with whatever this runtime wrote. Without this the provider falls back
+    // to avatarId (the avatars-table id) and every retrieval misses.
+    platformAgentId: agent.platformAgent.id,
     userId: user.id,
     services,
     avatarData: avatar ?? null,
@@ -207,6 +217,17 @@ chatRoutes.post('/:id/chat', requireAuth, async (c) => {
     : undefined;
   const state: Record<string, any> = {
     avatarId: avatar?.id,
+    // KnowledgeProvider RAG key — see the system-agent block above for the
+    // full rationale. The runtime processing this message is the LOCATION
+    // agent's runtime (`locationAgent.platformAgentId`), and the ElizaOS
+    // adapter hard-filters searchMemories by that runtime's `this.agentId`.
+    // Set platformAgentId to the same id so the provider's
+    // roomId=entityId=platformAgentId scope matches the runtime's implicit
+    // agent_id filter, making the location agent's own `knowledge` memories
+    // retrievable. (The avatar's personally-learned skills live under
+    // avatar.platformAgentId and are reachable only in the avatar's own
+    // runtime, not here — this keeps the scope correct for THIS runtime.)
+    platformAgentId: locationAgent.platformAgentId ?? undefined,
     userId: user.id,
     services,
     // Provider data
