@@ -29,7 +29,7 @@ import { groundedYOffset } from '@/lib/three/utils/ground-prop';
 // ---------------------------------------------------------------------------
 // Preload at module scope so Suspense has the data ready before first render.
 // ---------------------------------------------------------------------------
-useGLTF.preload('/models/bazaar-merchant-stand.glb');
+useGLTF.preload('/models/bazaar-merchant-stand.glb?v=2');
 
 // ---------------------------------------------------------------------------
 // World position (Y computed at runtime via groundedYOffset — see below).
@@ -66,7 +66,7 @@ function computeScale(root: THREE.Group): number {
 // Inner component (wrapped in memo — position never changes)
 // ---------------------------------------------------------------------------
 const BazaarStallInner = memo(function BazaarStallInner() {
-  const { scene } = useGLTF('/models/bazaar-merchant-stand.glb');
+  const { scene } = useGLTF('/models/bazaar-merchant-stand.glb?v=2');
 
   // Clone so multiple mounts don't share mutable scene state.
   const cloned = useMemo(() => scene.clone(true), [scene]);
