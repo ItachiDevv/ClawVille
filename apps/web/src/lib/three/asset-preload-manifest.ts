@@ -25,12 +25,12 @@
  * (update this comment + the arrays below whenever an asset is added/removed)
  *
  * BUILDINGS (11 GLBs + 1 procedural treedome, arena-buildings.tsx BUILDING_MODELS):
- *   pineapple-house-opt1.glb?v=2, chum-bucket-v2-opt1.glb?v=2,
- *   krusty-krab-v2-opt1.glb?v=2, salty-spitoon-opt1.glb?v=2,
+ *   pineapple-house-opt1.glb?v=2, chum-bucket-v2-opt1.glb?v=3,
+ *   krusty-krab-v2-opt1.glb?v=3, salty-spitoon-opt1.glb?v=2,
  *   boating-school-opt1.glb?v=2,
  *   patty-building-opt1.glb?v=2, building-lighthouse-opt1.glb?v=2,
- *   arcade/claw-arcade-exterior-opt1.glb?v=2, cove/cove-exterior-opt1.glb?v=2,
- *   patricks-rock-v2-opt1.glb?v=3, squidward-house-opt1.glb?v=3
+ *   arcade/claw-arcade-exterior-opt1.glb?v=3, cove/cove-exterior-opt1.glb?v=3,
+ *   patricks-rock-v2-opt1.glb?v=4, squidward-house-opt1.glb?v=4
  *   Sandy's Treedome is procedural in /game after 2026-05-25 perf pass; the
  *   old GLB contributed ~1.13M live tris after material merge.
  *
@@ -87,16 +87,16 @@ import { preloadMixamoClips } from '@/lib/three/vrm-character-animator';
 /** Building GLBs from arena-buildings.tsx BUILDING_MODELS. Sandy's Treedome is procedural. */
 export const BUILDING_GLBS: readonly string[] = [
   '/models/pineapple-house-opt1.glb?v=2',
-  '/models/chum-bucket-v2-opt1.glb?v=2',
-  '/models/krusty-krab-v2-opt1.glb?v=2',
+  '/models/chum-bucket-v2-opt1.glb?v=3',
+  '/models/krusty-krab-v2-opt1.glb?v=3',
   '/models/salty-spitoon-opt1.glb?v=2',
   '/models/boating-school-opt1.glb?v=2',
   '/models/patty-building-opt1.glb?v=2',
   '/models/building-lighthouse-opt1.glb?v=2',
-  '/models/arcade/claw-arcade-exterior-opt1.glb?v=2',
-  '/models/cove/cove-exterior-opt1.glb?v=2',
-  '/models/patricks-rock-v2-opt1.glb?v=3',
-  '/models/squidward-house-opt1.glb?v=3',
+  '/models/arcade/claw-arcade-exterior-opt1.glb?v=3',
+  '/models/cove/cove-exterior-opt1.glb?v=3',
+  '/models/patricks-rock-v2-opt1.glb?v=4',
+  '/models/squidward-house-opt1.glb?v=4',
 ] as const;
 
 // ---------------------------------------------------------------------------
@@ -202,8 +202,8 @@ export const DECORATION_GLBS: readonly string[] = [
  * 7-day edge cache would keep serving the old 8.7 MB version.
  */
 export const TOWN_PROP_GLBS: readonly string[] = [
-  '/models/quest-bounty-pavilion.glb?v=2',
-  '/models/bazaar-merchant-stand.glb',
+  '/models/quest-bounty-pavilion.glb?v=3',
+  '/models/bazaar-merchant-stand.glb?v=2', // ?v=2 — meshopt+WebP recompress 2.34MB→421K (2026-06-06)
   '/models/shisha-oasis.glb',
   '/models/auction-dome.glb',
   // town-directory-sign.tsx uses Three.js primitives only (no GLB) — nothing to preload here.
