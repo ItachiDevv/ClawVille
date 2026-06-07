@@ -4,10 +4,8 @@ import { Suspense, memo, useMemo, useRef } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import type { NpcSpriteState } from '@/stores/npc';
 import { usePlayerStore, type RemotePlayerState } from '@/stores/players';
-import { useLodStore } from '@/stores/lod';
 import { GLBNpcMesh, VRMNpcMesh } from '@/lib/three/arena-npcs';
 import { MODEL_REGISTRY } from '@/lib/three/agent-model-registry';
-import { RemotePlayerProxy } from '@/lib/three/remote-player-proxy';
 
 /**
  * Adapt a `RemotePlayerState` to the `NpcSpriteState` shape consumed by
@@ -89,28 +87,18 @@ interface RemotePlayerEntryProps {
 }
 
 /**
- * Per-player wrapper. Reads its own `fullSet` membership from the LOD store
- * so a single player switching tiers does NOT re-render any sibling entry.
+ * Per-player wrapper. Remote players render as their real GLB/VRM model;
+ * visible capsule stand-ins were rejected for player-facing world quality.
  *
- * When `isFull` is true → mount a full VRM (or GLB) mesh routed through the
- * existing arena-npcs renderers. When false → mount the cheap capsule proxy.
- *
- * `memo` on the entry component plus stable `npcLike` ref (rebuilt only when
- * identity-relevant fields shift) preserves the React.memo bailout inside
- * VRMNpcMesh / GLBNpcMesh, so a full-tier player only re-renders when its
- * own snapshot mutates — sibling players never trigger re-renders.
+ * `memo` on the entry component plus stable `npcLike` ref preserves the
+ * React.memo bailout inside VRMNpcMesh / GLBNpcMesh, so a player only
+ * re-renders when its own snapshot mutates.
  */
 const RemotePlayerEntry = memo(function RemotePlayerEntry({ player }: RemotePlayerEntryProps) {
-  const isFull = useLodStore((s) => s.fullSet.has(player.id));
   // npcLike is rebuilt on every render of this entry — but the entry only
-  // re-renders when player or isFull changes (memo on player ref equality
-  // from the store + zustand shallow on isFull). Cheap allocation; we trade
-  // the alloc for keeping VRMNpcMesh / GLBNpcMesh untouched.
+  // re-renders when the player ref changes. Cheap allocation; we trade the
+  // alloc for keeping VRMNpcMesh / GLBNpcMesh untouched.
   const npcLike = useMemo(() => adaptPlayer(player), [player]);
-
-  if (!isFull) {
-    return <RemotePlayerProxy player={player} />;
-  }
 
   const regEntry = MODEL_REGISTRY[player.species as keyof typeof MODEL_REGISTRY];
   if (regEntry?.avatar_type === 'vrm') {

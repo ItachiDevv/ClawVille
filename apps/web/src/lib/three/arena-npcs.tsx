@@ -1398,25 +1398,9 @@ export const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteStat
 // Main export
 // ---------------------------------------------------------------------------
 
-import { useLodStore } from '@/stores/lod';
-import { NpcProxy } from '@/lib/three/remote-player-proxy';
-
-// Per-NPC entry — subscribes to its own LOD tier so a single NPC flipping
-// full↔proxy doesn't re-render any sibling. Mirrors the player-side
-// `RemotePlayerEntry` in `remote-players.tsx`.
+// Per-NPC entry. All visible NPCs render as their real GLB/VRM model; visible
+// capsule/cylinder stand-ins were rejected for player-facing world quality.
 const NpcEntry = memo(function NpcEntry({ npc }: { npc: NpcSpriteState }) {
-  const isFull = useLodStore((s) => s.fullSet.has(npc.id));
-  // The possessed player NPC (NPC mode) always renders full — the LOD
-  // orchestrator excludes it from the candidate pool, so isFull will be
-  // false unless we force-allow here. Player input drives that mesh, so
-  // demoting it to a capsule mid-play is unacceptable.
-  const forceFull = npc.id === PLAYER_NPC_ID;
-  const showFull = forceFull || isFull;
-
-  if (!showFull) {
-    return <NpcProxy npc={npc} />;
-  }
-
   const regEntry = MODEL_REGISTRY[npc.species as keyof typeof MODEL_REGISTRY];
   if (regEntry?.avatar_type === 'vrm') {
     return (
