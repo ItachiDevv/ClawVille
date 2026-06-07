@@ -126,6 +126,88 @@ const VRM_INSTANCES = new Map<string, InstanceEntry>();
 // Reused across all parses; the parser hooks into per-parse state internally.
 let _loader: GLTFLoader | null = null;
 
+type VRMSceneCounts = {
+  objects: number;
+  meshes: number;
+  skinnedMeshes: number;
+  geometries: number;
+  materials: number;
+  textures: number;
+};
+
+type VRMNormaliseTimings = {
+  removeUnnecessaryVerticesMs: number;
+  rotateVRM0Ms: number;
+  outlineDisableMs: number;
+  frustumCullingMs: number;
+  springBoneScaleMs: number;
+};
+
+type VRMLoadMetric = {
+  path: string;
+  instanceId: string;
+  bytes: number;
+  fetchWaitMs: number;
+  sliceMs: number;
+  parseMs: number;
+  normaliseMs: number;
+  totalMs: number;
+  sceneBefore: VRMSceneCounts;
+  sceneAfter: VRMSceneCounts;
+  normalise: VRMNormaliseTimings;
+};
+
+function nowMs(): number {
+  return typeof performance !== 'undefined' ? performance.now() : Date.now();
+}
+
+function roundMs(n: number): number {
+  return Math.round(n * 10) / 10;
+}
+
+function collectVRMSceneCounts(root: THREE.Object3D): VRMSceneCounts {
+  const geometries = new Set<THREE.BufferGeometry>();
+  const materials = new Set<THREE.Material>();
+  const textures = new Set<THREE.Texture>();
+  let objects = 0;
+  let meshes = 0;
+  let skinnedMeshes = 0;
+
+  root.traverse((obj) => {
+    objects++;
+    const mesh = obj as THREE.Mesh;
+    if (!mesh.isMesh && !(obj as THREE.SkinnedMesh).isSkinnedMesh) return;
+    meshes++;
+    if ((obj as THREE.SkinnedMesh).isSkinnedMesh) skinnedMeshes++;
+    if (mesh.geometry) geometries.add(mesh.geometry);
+    const matList = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+    for (const mat of matList) {
+      if (!mat) continue;
+      materials.add(mat);
+      for (const value of Object.values(mat as unknown as Record<string, unknown>)) {
+        if (value instanceof THREE.Texture) textures.add(value);
+      }
+    }
+  });
+
+  return {
+    objects,
+    meshes,
+    skinnedMeshes,
+    geometries: geometries.size,
+    materials: materials.size,
+    textures: textures.size,
+  };
+}
+
+function pushVRMLoadMetric(metric: VRMLoadMetric): void {
+  if (typeof window === 'undefined') return;
+  const bridge = window as unknown as { __CV_VRM_LOAD_METRICS?: VRMLoadMetric[] };
+  const metrics = bridge.__CV_VRM_LOAD_METRICS ?? [];
+  metrics.push(metric);
+  bridge.__CV_VRM_LOAD_METRICS = metrics.slice(-200);
+}
+
 function getLoader(): GLTFLoader {
   if (_loader) return _loader;
   _loader = new GLTFLoader();
@@ -164,24 +246,37 @@ function fetchBytes(path: string): Promise<ArrayBuffer> {
 // Per-instance VRM normalisation
 // ---------------------------------------------------------------------------
 
-function normaliseVRM(vrm: VRM): void {
+function normaliseVRM(vrm: VRM): VRMNormaliseTimings {
+  const timings: VRMNormaliseTimings = {
+    removeUnnecessaryVerticesMs: 0,
+    rotateVRM0Ms: 0,
+    outlineDisableMs: 0,
+    frustumCullingMs: 0,
+    springBoneScaleMs: 0,
+  };
+
   // Do NOT call VRMUtils.combineSkeletons — it merges SkinnedMesh skeletons
   // and leaves the raw humanoid bones orphaned (parent === null). The Mixamo
   // retargeter animates `humanoid.getNormalizedBoneNode(...)` whose updates
   // are then copied to the raw humanoid bones — but those raw bones would no
   // longer be in the SkinnedMesh's active skeleton, producing a frozen T-pose.
   // removeUnnecessaryVertices is safe (only culls unused verts).
+  let t = nowMs();
   VRMUtils.removeUnnecessaryVertices(vrm.scene);
+  timings.removeUnnecessaryVerticesMs = roundMs(nowMs() - t);
 
   // VRM 0.x faces +Z at rest; rotateVRM0 adds π on the scene root so it
   // matches VRM 1.0's -Z convention.
+  t = nowMs();
   VRMUtils.rotateVRM0(vrm);
+  timings.rotateVRM0Ms = roundMs(nowMs() - t);
 
   // MToon outline pass — disable to halve VRM draw calls (each MToon mesh
   // would otherwise render twice: fill + offset silhouette). For ClawVille's
   // wandering Milady VRMs the ink-line aesthetic isn't a core requirement;
   // the cel-shaded look is preserved by the fill pass alone. three-vrm 3.5.x
   // uses STRING literals for outlineWidthMode, not numeric enums.
+  t = nowMs();
   vrm.scene.traverse((obj) => {
     const mat = (obj as THREE.Mesh).material as unknown;
     if (!mat) return;
@@ -190,6 +285,7 @@ function normaliseVRM(vrm: VRM): void {
       if (m?.isMToonMaterial) m.outlineWidthMode = 'none';
     }
   });
+  timings.outlineDisableMs = roundMs(nowMs() - t);
 
   // Fattened-bounding-sphere frustum culling (2026-05-22 perf wave 3).
   //
@@ -201,7 +297,9 @@ function normaliseVRM(vrm: VRM): void {
   // The idempotent geometry tag (_fattenedBy) prevents compounding when
   // consumer call sites (VRMNpcMesh useEffect, cosmetic-loader) call this
   // helper again on the same VRM scene as a defensive re-apply.
+  t = nowMs();
   applyFattenedFrustumCulling(vrm.scene);
+  timings.frustumCullingMs = roundMs(nowMs() - t);
 
   // Spring-bone scale compensation. NOTE (CDP probe 2026-04-25): Milady VRMs
   // have springBoneManager.joints.size === 0 — the loop below is a no-op.
@@ -209,6 +307,7 @@ function normaliseVRM(vrm: VRM): void {
   // secondary animation (hair / cloth physics). If spring bones ARE present
   // at VRM_NPC_SCALE=112, they need stiffness multipliers + drag force on
   // hair joints to compensate for the scaling factor.
+  t = nowMs();
   if (vrm.springBoneManager) {
     const HAIR_STIFFNESS_SCALE  = 30;
     const OTHER_STIFFNESS_SCALE = 20;
@@ -220,6 +319,8 @@ function normaliseVRM(vrm: VRM): void {
       if (isHair) joint.settings.dragForce = HAIR_DRAG_FORCE;
     }
   }
+  timings.springBoneScaleMs = roundMs(nowMs() - t);
+  return timings;
 }
 
 // ---------------------------------------------------------------------------
@@ -227,15 +328,35 @@ function normaliseVRM(vrm: VRM): void {
 // ---------------------------------------------------------------------------
 
 async function loadInstance(cacheKey: string, path: string): Promise<VRM> {
+  const totalStart = nowMs();
   const buffer = await fetchBytes(path);
+  const fetchDone = nowMs();
   // .slice(0) gives the parser its own copy of the bytes. GLTFLoader doesn't
   // mutate the input, but the defensive copy guards against any future change
   // in three's parser semantics that could corrupt subsequent parses.
   const ownBuffer = buffer.slice(0);
+  const sliceDone = nowMs();
   const gltf = await getLoader().parseAsync(ownBuffer, '');
+  const parseDone = nowMs();
   const vrm: VRM | undefined = (gltf as unknown as { userData: { vrm?: VRM } }).userData.vrm;
   if (!vrm) throw new Error(`[vrm-loader] No VRM data in ${path}`);
-  normaliseVRM(vrm);
+  const sceneBefore = collectVRMSceneCounts(vrm.scene);
+  const normalise = normaliseVRM(vrm);
+  const normaliseDone = nowMs();
+  const sceneAfter = collectVRMSceneCounts(vrm.scene);
+  pushVRMLoadMetric({
+    path,
+    instanceId: cacheKey.slice(path.length + 1),
+    bytes: buffer.byteLength,
+    fetchWaitMs: roundMs(fetchDone - totalStart),
+    sliceMs: roundMs(sliceDone - fetchDone),
+    parseMs: roundMs(parseDone - sliceDone),
+    normaliseMs: roundMs(normaliseDone - parseDone),
+    totalMs: roundMs(normaliseDone - totalStart),
+    sceneBefore,
+    sceneAfter,
+    normalise,
+  });
   VRM_INSTANCES.set(cacheKey, { status: 'resolved', vrm });
   return vrm;
 }
