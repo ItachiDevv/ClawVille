@@ -22,8 +22,9 @@ The two perf branches solve different problems:
   rollback switches because several of them reduce play quality.
 
 User preference noted 2026-06-07: DPR reduction is especially suspect because
-it makes the scene look pixelated/soft. Treat DPR clamp as a likely removal or
-retune candidate.
+it makes the scene look pixelated/soft. Live staging verification confirmed
+normal `/game` hit tier 4 and renderer DPR `0.4`, producing a visibly soft
+scene. The automatic tier-4 DPR clamp was removed in the follow-up retune.
 
 ## Combined Changes
 
@@ -37,7 +38,7 @@ retune candidate.
 | C6 | CPU branch | `sw.js` | Removed unused `underwater-decorations.glb` from service-worker precache and bumped cache version. | Avoid dead install-time fetch. | Low. Only risky if dead asset becomes live without adding it back. | Keep. |
 | P1 | perf2 | `World3DCanvas.tsx`, `PerfAudit.ts`, `/perf` | Added `WorldPerfFlags` split: `groundCover`, `activityFx`, `residentDetail`, `buildingDetail`, `uiOverlay`; `/perf` can toggle/audit them. | Measurement and granular degradation. | Low by itself. | Keep instrumentation. |
 | P2 | perf2 | `World3DCanvas.tsx`, `gpu-tier.ts` | Added adaptive quality governor. Tiers step down after low RAF FPS and recover only after sustained high FPS. | Runtime FPS recovery on low-end devices. | Medium. If thresholds are too aggressive, quality drops during normal play. | Keep only if defaults feel good. |
-| P3 | perf2 | `World3DCanvas.tsx` | Low-end DPR range changed to `[0.5, 0.65]`; tier 4 forces renderer DPR to `0.4`. | Fragment/pixel workload. | High. User dislikes DPR softness/pixelation. | Strong rollback/retune candidate. |
+| P3 | perf2 + retune | `World3DCanvas.tsx` | Low-end DPR range remains `[0.5, 0.65]`, but the automatic tier-4 renderer DPR clamp to `0.4` was removed after staging showed normal `/game` entering tier 4 and looking soft. | Fragment/pixel workload. | Medium-high. Low-end/touch DPR cap can still soften rendering; automatic tier-4 clamp is no longer active. | Keep retuned; revisit low-end DPR separately if it still hurts play quality. |
 | P4 | perf2 | `game/page.tsx` | Tier 4 or `?fast=1` collapses heavy HUD chrome while preserving core canvas/modals/chat. | DOM/layout/compositing overhead. | High. Reduces game UI and perceived completeness. | Rollback candidate unless only kept for diagnostic `?fast=1`. |
 | P5 | perf2 | `arena-buildings.tsx`, `World3DCanvas.tsx` | Tier 4 renders shared primitive building proxies instead of full building GLBs. | Draw calls, triangles, GLB load/runtime. | High. Reduces landmark fidelity and inspection quality. | Rollback candidate for normal play; acceptable for emergency mode only. |
 | P6 | perf2 | `arena-location-npcs.tsx` | Tier 4 proxies far resident NPCs, remounting full detail near camera. | Resident draw calls/triangles. | Medium-high. Can pop detail near threshold. | Keep only if transition is visually acceptable. |
@@ -49,10 +50,11 @@ retune candidate.
 
 ## Recommended Removal Order If Quality Feels Worse
 
-1. **Disable tier-4 DPR clamp first.**
+1. **Tier-4 DPR clamp is already disabled.**
    File: `World3DCanvas.tsx`, component `AdaptiveRendererDpr`.
-   Remove or raise `tier >= 4 ? 0.4 : ...`.
-   Lower visual damage than reverting the full governor.
+   The next DPR rollback candidate is the remaining low-end/touch cap
+   `[0.5, 0.65]`, which should be tested on real integrated-GPU hardware
+   before removal.
 
 2. **Keep `?fast=1` diagnostic but stop automatic HUD collapse.**
    File: `game/page.tsx`, `hudPerfMode`.
