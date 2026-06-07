@@ -17,7 +17,6 @@ import ArenaBuildings from '@/lib/three/arena-buildings';
 import MeshletBuildingsR3F from '@/lib/three/meshlet/meshlet-buildings-r3f';
 import ArenaNpcs from '@/lib/three/arena-npcs';
 import RemotePlayers from '@/lib/three/remote-players';
-import LodOrchestrator from '@/lib/three/lod-orchestrator';
 import ArenaLocationNpcs from '@/lib/three/arena-location-npcs';
 import PlayerAvatar from '@/lib/three/player-avatar';
 import NpcController from '@/lib/three/npc-controller';
@@ -120,8 +119,8 @@ function applyQualityTier(flags: WorldPerfFlags, tier: number): WorldPerfFlags {
     groundCover: tier < 1 ? flags.groundCover : false,
     activityFx: tier < 2 ? flags.activityFx : false,
     labels: tier < 3 ? flags.labels : false,
-    residentDetail: tier < 4 ? flags.residentDetail : false,
-    buildingDetail: tier < 4 ? flags.buildingDetail : false,
+    residentDetail: flags.residentDetail,
+    buildingDetail: flags.buildingDetail,
   };
 }
 
@@ -1105,16 +1104,12 @@ const SceneContents = memo(function SceneContents({
         </group>
       )}
       {/* Multiplayer Phase 1: remote players in the same room. Local viewer is
-          filtered out by isLocal so we never double-render the player avatar.
-          LOD orchestrator caps full-VRM count at 14 across (wanderers + remote
-          players); 15th-furthest+ render as cheap capsule proxies. Building
-          residents are excluded from the cap (always full). */}
+          filtered out by isLocal so we never double-render the player avatar. */}
       {showNpcs && (
         <group name="perf:remote-players" userData={{ perfChunk: 'remote-players' }}>
           <RemotePlayers />
         </group>
       )}
-      <LodOrchestrator />
 
       {/* Seaweed ground cover — merged geometry + TSL GPU animation (no InstancedMesh).
           Skipped on iOS/forceWebGL: 4500 blades with per-vertex TSL positionNode wind
