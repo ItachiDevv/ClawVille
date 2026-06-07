@@ -802,6 +802,57 @@ const TEXTURE_SLOTS = [
   'transmissionMap', 'thicknessMap', 'specularMap', 'specularColorMap',
 ] as const;
 
+type TextureUploadSliceMetric = {
+  mode: 'idle' | 'raf';
+  startMs: number;
+  durationMs: number;
+  count: number;
+  done: number;
+};
+
+type TextureUploadMetrics = {
+  mode: 'idle' | 'raf';
+  totalTextures: number;
+  startedAt: number;
+  completedAt?: number;
+  durationMs?: number;
+  slices: TextureUploadSliceMetric[];
+};
+
+function createTextureUploadMetrics(mode: 'idle' | 'raf', totalTextures: number): TextureUploadMetrics {
+  const metrics: TextureUploadMetrics = {
+    mode,
+    totalTextures,
+    startedAt: performance.now(),
+    slices: [],
+  };
+  if (typeof window !== 'undefined') {
+    (window as any).__CV_TEXTURE_UPLOAD_METRICS = metrics;
+  }
+  return metrics;
+}
+
+function pushTextureUploadSlice(
+  metrics: TextureUploadMetrics,
+  mode: 'idle' | 'raf',
+  start: number,
+  count: number,
+  done: number,
+): void {
+  metrics.slices.push({
+    mode,
+    startMs: Math.round(start),
+    durationMs: Math.round((performance.now() - start) * 10) / 10,
+    count,
+    done,
+  });
+}
+
+function completeTextureUploadMetrics(metrics: TextureUploadMetrics): void {
+  metrics.completedAt = performance.now();
+  metrics.durationMs = Math.round((metrics.completedAt - metrics.startedAt) * 10) / 10;
+}
+
 function StaggeredTextureUpload() {
   const { camera, gl, scene } = useThree();
 
@@ -875,9 +926,11 @@ function StaggeredTextureUpload() {
         (window as any).__W3D_TEXTURE_UPLOAD_DONE = 0;
 
         let i = 0;
+        const uploadMetrics = createTextureUploadMetrics(hasIdle ? 'idle' : 'raf', unique.length);
 
         function uploadIdle(deadline: IdleDeadline) {
           const t0 = performance.now();
+          const before = i;
           while (
             i < unique.length &&
             (deadline.timeRemaining() > 1 || performance.now() - t0 < IDLE_SLICE_BUDGET_MS)
@@ -890,10 +943,12 @@ function StaggeredTextureUpload() {
             i++;
           }
           (window as any).__W3D_TEXTURE_UPLOAD_DONE = i;
+          pushTextureUploadSlice(uploadMetrics, 'idle', t0, i - before, i);
           if (i < unique.length) {
             idleHandle = (window as any).requestIdleCallback(uploadIdle, { timeout: 200 });
           } else {
             idleHandle = undefined;
+            completeTextureUploadMetrics(uploadMetrics);
             console.log('[World3D] StaggeredTextureUpload: all textures uploaded');
             markTextureUploadReady();
           }
@@ -901,6 +956,7 @@ function StaggeredTextureUpload() {
 
         function uploadRafFallback() {
           const t0 = performance.now();
+          const before = i;
           const end = Math.min(i + RAF_FALLBACK_BATCH, unique.length);
           for (; i < end; i++) {
             try {
@@ -911,6 +967,7 @@ function StaggeredTextureUpload() {
           }
           (window as any).__W3D_TEXTURE_UPLOAD_DONE = i;
           const elapsed = performance.now() - t0;
+          pushTextureUploadSlice(uploadMetrics, 'raf', t0, i - before, i);
           if (elapsed > 20) {
             console.warn(`[World3D] StaggeredTextureUpload: batch took ${elapsed.toFixed(1)}ms`);
           }
@@ -918,6 +975,7 @@ function StaggeredTextureUpload() {
             uploadRaf = requestAnimationFrame(uploadRafFallback);
           } else {
             uploadRaf = undefined;
+            completeTextureUploadMetrics(uploadMetrics);
             console.log('[World3D] StaggeredTextureUpload: all textures uploaded');
             markTextureUploadReady();
           }
