@@ -56,6 +56,7 @@ Commands:
 ```bash
 bun run perf:fidelity:assets
 bun run perf:fidelity:browser --label=staging-cfdc1197-baseline "--url=https://staging.clawville.world/game?perf=1&cb=fidelity-baseline" --durationMs=30000
+bun run perf:fidelity:variants
 ```
 
 New browser-run reports capture:
@@ -68,6 +69,17 @@ New browser-run reports capture:
 - Screenshot.
 - Runtime VRM load metrics from `window.__CV_VRM_LOAD_METRICS`.
 - Runtime texture upload slice metrics from `window.__CV_TEXTURE_UPLOAD_METRICS`.
+- Candidate experiment queues in `variant-plan.md` / `variant-plan.json`.
+
+## Variant Matrix
+
+Generated matrix: `docs/perf-fidelity-spike/variant-plan.md`
+
+- Candidates ranked: 24.
+- `toktx` available on this machine: no.
+- KTX2 is therefore documented as blocked locally until KTX-Software/toktx is installed or the experiment runs on a machine that has it.
+- Runtime assets overwritten: no.
+- Sandy Treedome and other merge-risk building geometry stay lab-only until `mergeStaticMeshesByMaterial` compatibility is proven.
 
 ## Prototype Order
 
