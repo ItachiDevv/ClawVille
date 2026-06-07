@@ -19,7 +19,6 @@ const HALF_H = MAP_HEIGHT / 2;
  */
 const FULL_CAP = 14;
 const LOW_END_FULL_CAP = 8;
-const ADAPTIVE_TIER4_FULL_CAP = 2;
 const ACTIVE_FULL_CAP = detectLowEndGpuClass() ? LOW_END_FULL_CAP : FULL_CAP;
 
 /**
@@ -107,9 +106,7 @@ const _fullSetB = new Set<string>();
 let _useSetB = false;
 
 function getAdaptiveFullCap(): number {
-  if (typeof window === 'undefined') return ACTIVE_FULL_CAP;
-  const tier = Number((window as any).__W3D_QUALITY_TIER ?? 0);
-  return tier >= 4 ? Math.min(ACTIVE_FULL_CAP, ADAPTIVE_TIER4_FULL_CAP) : ACTIVE_FULL_CAP;
+  return ACTIVE_FULL_CAP;
 }
 
 /**
