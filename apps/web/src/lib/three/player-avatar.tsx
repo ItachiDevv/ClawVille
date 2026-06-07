@@ -677,17 +677,22 @@ function PlayerAvatarVRMInner({ reg }: { reg: ModelRegistryEntry }) {
         position={[0, vrmFootOffsetY, 0]}
       />
       {/*
-        Equipped cosmetics (hats / glasses / aura / particles) for the
-        player's Milady VRM. The loader subscribes to /api/cosmetics/owned
-        and attaches GLBs to the head bone or other anchors. avatarId='self'
-        because the API resolves the caller avatar from the session cookie —
-        the prop is forward-compat for future per-NPC cosmetic rendering.
+        Equipped cosmetics (hats / glasses / aura / particles) for the player VRM.
+        rigType='universal' — the loader prefers 'universal' variants, then falls
+        back to an exact rig match. This works for all humanoid VRMs (Milady,
+        Hermes, Tekk, Phanes, chibi) without needing per-rig variant rows in the DB.
+        vrm + vrmRenderScale enable computeCosmeticHeadFit for proportion-aware,
+        axis-sign-safe hat/glasses placement (Phase B). avatarId='self' because the
+        API resolves the caller avatar from the session cookie — prop is
+        forward-compat for future per-NPC cosmetic rendering.
       */}
       <CosmeticLoader
         avatarId="self"
-        rigType="milady-vrm"
+        rigType="universal"
         context="world"
         parentObject={vrm.scene}
+        vrm={vrm}
+        vrmRenderScale={vrmRenderScale}
       />
     </group>
   );
