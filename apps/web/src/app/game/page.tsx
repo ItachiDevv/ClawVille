@@ -196,27 +196,7 @@ export default function GamePage() {
   // loading screen paints; acceptable vs an error spamming every load.
   const [mounted, setMounted] = useState(false);
   useEffect(() => { setMounted(true); }, []);
-  const [hudPerfMode, setHudPerfMode] = useState(false);
-
-  useEffect(() => {
-    const fastMode =
-      typeof window !== 'undefined' &&
-      new URLSearchParams(window.location.search).get('fast') === '1';
-    if (fastMode) {
-      setHudPerfMode(true);
-      return;
-    }
-
-    const interval = window.setInterval(() => {
-      const tier = Number((window as any).__W3D_QUALITY_TIER ?? 0);
-      setHudPerfMode((prev) => {
-        if (!prev && tier >= 4) return true;
-        if (prev && tier <= 2) return false;
-        return prev;
-      });
-    }, 1000);
-    return () => window.clearInterval(interval);
-  }, []);
+  const hudPerfMode = false;
 
   // Kick off ALL heavy world assets the moment the page mounts, in parallel
   // with the dynamic() World3DCanvas chunk download. Without this, no asset
