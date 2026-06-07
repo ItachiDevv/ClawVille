@@ -905,6 +905,13 @@ avatarRoutes.post('/me/chat', requireAuth, async (c) => {
 
   const state: Record<string, any> = {
     avatarId: avatar.id,
+    // MUST be set: the KnowledgeProvider keys learned-skill retrieval on the
+    // avatar-agent id (agent_id=room_id=entity_id), exactly as the /learn writer
+    // (items.ts) + the backfill store it. Without platformAgentId the provider
+    // falls back to avatarId (the avatars-table PK, a different id) and every
+    // learned-skill retrieval misses. This is the avatar's OWN runtime — the one
+    // path that actually consumes the backfilled vectors.
+    platformAgentId: avatar.platformAgentId,
     userId: user.id,
     services,
     avatarData: avatar,
