@@ -21,7 +21,8 @@
     "deploy:cf-secrets": "cd infra/cf-secrets-worker && bunx wrangler deploy",
     "assets:optimize": "bun run scripts/assets-optimize.ts",
     "perf:fidelity:assets": "bun run scripts/perf-fidelity-asset-audit.ts",
-    "perf:fidelity:browser": "bun run scripts/perf-fidelity-browser.ts"
+    "perf:fidelity:browser": "bun run scripts/perf-fidelity-browser.ts",
+    "perf:fidelity:variants": "bun run scripts/perf-fidelity-variant-plan.ts"
   },
   "devDependencies": {
     "@gltf-transform/core": "^4.3.0",
