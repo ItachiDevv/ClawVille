@@ -8,6 +8,7 @@ import { HowItWorksModal } from '@/components/landing/how-it-works-modal';
 import { CollaborationAxes } from '@/components/landing/collaboration-axes';
 import { LiveDemoStrip } from '@/components/landing/live-demo-strip';
 import { GameplayShowcase } from '@/components/landing/gameplay-showcase';
+import { PressRelease } from '@/components/landing/press-release';
 
 const LandingScene = dynamic(() => import('@/components/three/LandingScene'), {
   ssr: false,
@@ -125,6 +126,34 @@ export default function HomePage() {
         <div className="pointer-events-none absolute top-0 inset-x-0 h-56 z-[5] bg-gradient-to-b from-[#061520] via-[#061520]/85 to-transparent" />
         {/* Bottom scrim — blends the hero seamlessly into the dark sections below. */}
         <div className="pointer-events-none absolute bottom-0 inset-x-0 h-40 z-[5] bg-gradient-to-t from-[#061520] to-transparent" />
+
+        {/* BREAKING NEWS — PayAI × ClawVille press release.
+            Smooth-scrolls down to the full article (#press-release). */}
+        <button
+          type="button"
+          onClick={() =>
+            document
+              .getElementById('press-release')
+              ?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+          }
+          className="anim-up group relative z-10 mb-5 inline-flex items-center gap-3 rounded-full border border-rose-500/40 bg-rose-500/10 backdrop-blur-sm pl-3 pr-4 py-1.5 transition-all hover:border-rose-400/70 hover:bg-rose-500/20 hover:scale-[1.03] shadow-[0_0_24px_rgba(244,63,94,0.18)]"
+          style={{ animationDelay: '0.02s' }}
+          aria-label="Read the PayAI × ClawVille press release"
+        >
+          <span className="inline-flex items-center gap-2 rounded-full bg-rose-500/90 px-2 py-0.5">
+            <span className="relative flex h-1.5 w-1.5">
+              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-white opacity-75" />
+              <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-white" />
+            </span>
+            <span className="text-[9px] font-mono uppercase tracking-[0.25em] text-white font-bold">Breaking</span>
+          </span>
+          <span className="text-[11px] sm:text-xs font-mono uppercase tracking-[0.2em] text-rose-50">
+            PayAI&nbsp;×&nbsp;ClawVille — Payments arrive
+          </span>
+          <svg className="w-3 h-3 text-rose-200/70 group-hover:translate-y-0.5 transition-transform" viewBox="0 0 12 12" fill="none">
+            <path d="M6 2v8m0 0l-3-3m3 3l3-3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        </button>
 
         {/* Powered-by badge */}
         <div
@@ -253,6 +282,9 @@ export default function HomePage() {
           }
         ` }} />
       </section>
+
+      {/* ───── BREAKING — PayAI × ClawVille press release (full article) ───── */}
+      <PressRelease />
 
       {/* ───── LIVE DEMOS — three looping vignettes pulled from the game ───── */}
       <LiveDemoStrip />
