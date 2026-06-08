@@ -504,6 +504,8 @@ Full Phase 5.1 architecture (keypair roles, envelope encryption, signed-challeng
 
 ## 15. Landing page (`apps/web/src/app/page.tsx`)
 
+**Updated 2026-06-08** — added the PayAI × ClawVille **press release**: a "🔴 BREAKING" banner at the top of the hero (`page.tsx`, smooth-scrolls to `#press-release`) + a full long-form `<PressRelease>` article section rendered directly below the hero (`components/landing/press-release.tsx`). Lead key-art (`announce.webp`) sits under an enlarged ClawVille × PayAI lockup; 8 co-branded section banners + the lead live at `/public/press/payai/*.webp` (WebP ~200–280KB each, down from ~3MB PNG; all `loading="lazy"` so they never touch the hero's initial paint — priority #1). Forward-looking marketing content (the PayAI integration is announced, not yet built) → intentionally NOT propagated to Nori/SKILL.md (not a live game mechanic).
+
 **Updated 2026-06-01** — hero fold fix + collaboration band + three live demo tiles.
 
 ### 15a. Page structure (scroll order)
@@ -512,7 +514,8 @@ Full Phase 5.1 architecture (keypair roles, envelope encryption, signed-challeng
 |---|---|---|
 | `<LandingScene>` (z-0) | Cinematic reef-canyon 3D backdrop — mounts behind hero via `position:fixed` equivalent | `components/three/LandingScene.tsx` (dynamic, SSR disabled) |
 | `<SiteHeader>` (sticky) | Top-bar: CA copy-pill + How-It-Works + Leaderboard + X/Telegram/Web/Discord icons | `page.tsx` (bottom of file) |
-| **Hero `<section>`** — `h-[100svh]` | Exactly one viewport tall (svh = handles mobile browser chrome). Contains ONLY: powered-by badge, h1 ClawVille, tagline, one-line subtitle, Create Agent + Enter ClawVille CTAs, "Already have an account? Log in" link, scroll cue. Legibility overlay at `z-[5]` (radial + vertical dark gradient) between scene and content. | `page.tsx` |
+| **Hero `<section>`** — `h-[100svh]` | Exactly one viewport tall (svh = handles mobile browser chrome). Contains: **🔴 BREAKING news banner** (top, scrolls to `#press-release`), powered-by badge, h1 ClawVille, tagline, one-line subtitle, Create Agent + Enter ClawVille CTAs, "Already have an account? Log in" link, scroll cue. Legibility overlay at `z-[5]` (radial + vertical dark gradient) between scene and content. | `page.tsx` |
+| **`<PressRelease id="press-release">`** | PayAI × ClawVille press-release article — enlarged co-branded lockup + `announce.webp` lead banner, 8 numbered sections each with a lazy WebP banner, ClawVille/PayAI community-links footer. Renders directly below the hero. | `components/landing/press-release.tsx` |
 | **Collaboration `<section id="collaboration">`** | Relocated from hero. Eyebrow "Three Ways To Collaborate" + `<MiladyAvatarShowcase>` + `<CollaborationAxes>` grid + stats strip (1B / 10 / 3 / Any) + quick-jump nav pills (Gameplay / Tokenomics / Roadmap). | `page.tsx` |
 | `<LiveDemoStrip>` | Three live 3D vignette tiles (see §15b). | `components/landing/live-demo-strip.tsx` |
 | `<GameplayShowcase>` | Six feature cards. | `components/landing/gameplay-showcase.tsx` |
