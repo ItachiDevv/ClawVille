@@ -374,6 +374,7 @@ export default function GamePage() {
   // hasAvatar is safe to derive even while loading — avatar is undefined during
   // the fetch so this is false, which correctly hides avatar-gated UI until resolved.
   const hasAvatar = !!avatar;
+  const showDemoProgressHud = !agentConnected && !isLoading;
 
   // NOTE: do NOT conditionally return early here based on isLoading/authLoading.
   // An early-return swaps the whole React tree, which unmounts the first
@@ -469,6 +470,12 @@ export default function GamePage() {
               below. NPC-mode chat is now handled by TalkToCharacterBar
               against /api/chat/transient (no Eliza, no DB, no rooms).
               See talk-to-character-bar.tsx + chat-transient.ts. */}
+        </>
+      )}
+      {!hudPerfMode && showDemoProgressHud && (
+        <>
+          <AvatarStatusBar />
+          <QuestTracker forceVisible />
         </>
       )}
 

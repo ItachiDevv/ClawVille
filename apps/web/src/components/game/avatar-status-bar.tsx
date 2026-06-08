@@ -27,12 +27,57 @@ export default function AvatarStatusBar() {
   const { data: avatar, isLoading } = useAvatar();
   const openInventory = useGameStore((s) => s.openInventory);
   const visitedBuildings = useGameStore((s) => s.visitedBuildings);
+  const controlMode = useGameStore((s) => s.controlMode);
   const isMobile = useIsMobile();
 
-  if (isLoading || !avatar) return null;
+  if (isLoading) return null;
   // Hide on ALL touch devices (incl. iPad Air/Pro which exceed Tailwind's
   // md: breakpoint) so it never covers the mobile-controls left joystick.
   if (isMobile) return null;
+
+  if (!avatar) {
+    const validIds = new Set(buildingZones.map((z) => z.id));
+    const validVisitedCount = [...visitedBuildings].filter((id) => validIds.has(id)).length;
+    const totalBuildings = buildingZones.length;
+    const modeLabel = controlMode === 'npc' ? 'NPC Mode' : 'Explore';
+
+    return (
+      <div className="claw-panel fixed bottom-4 left-4 z-40 w-56">
+        <div className="flex items-center gap-2 md:mb-3">
+          <span className="text-xl">&#x1F9ED;</span>
+          <div className="flex-1 min-w-0">
+            <span className="text-white font-bold text-sm truncate block">Demo Player</span>
+            <span className="text-cyan-400/60 text-[10px] font-mono">{modeLabel}</span>
+          </div>
+          <span className="flex items-center gap-1 text-[11px] font-bold text-amber-300 bg-amber-500/15 border border-amber-500/20 rounded-full px-2.5 py-0.5">
+            <span className="text-xs">&#x1FA99;</span>
+            100 demo
+          </span>
+        </div>
+
+        <div className="hidden md:block space-y-1.5">
+          <StatBar label="STR" value={8} color="bg-red-400" />
+          <StatBar label="DEF" value={8} color="bg-blue-400" />
+          <StatBar label="SPD" value={10} color="bg-amber-400" />
+
+          <div className="flex items-center gap-1.5 pt-2 border-t border-white/5 mt-2">
+            <span className="text-white/40 text-[10px] font-bold w-7">MAP</span>
+            <div className="flex-1 h-1.5 bg-white/10 rounded-full overflow-hidden">
+              <div
+                className="h-full bg-cyan-400 rounded-full transition-all"
+                style={{ width: `${Math.min(100, Math.round((validVisitedCount / totalBuildings) * 100))}%` }}
+              />
+            </div>
+            <span className="text-white/40 text-[10px] font-mono">{validVisitedCount}/{totalBuildings}</span>
+          </div>
+
+          <div className="pt-2 text-[10px] text-cyan-300/60 border-t border-white/5">
+            Create or connect an agent to save progression.
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   const species = AVATAR_SPECIES.find((s) => s.id === avatar.species);
   const emoji = species?.emoji ?? '?';
