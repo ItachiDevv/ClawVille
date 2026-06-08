@@ -38,6 +38,20 @@ the browser harness reaches `ready=true`, `texturesReady=true`, 19 visible
 buttons, 0 primitive building proxies, and 0 proxy-like named nodes. This fix is
 not pushed to staging until explicitly approved.
 
+2026-06-08 fidelity cleanup: the leftover resident capsule proxy implementation
+in `arena-location-npcs.tsx` was deleted. Location residents and companions now
+either render as real GLB models or are not mounted yet; `residentDetail` no
+longer has a primitive/capsule runtime downgrade branch in `/game`.
+
+2026-06-08 local texture/resident recovery: local production report
+`browser-local-texture-batch-resident-stream-3010` reaches `ready=true`,
+`texturesReady=true`, 21 visible buttons, 0 primitive building proxies, and 0
+proxy-like nodes. Texture upload completed 179/179 textures in 47 idle slices
+over 20.6s with max slice 9ms. Remaining risk is VRM parse long tasks
+(max long task 5.1s; several Milady VRMs still parse slowly), so the next pass
+should target avatar/VRM asset pipeline and parse scheduling, not DPR or fake
+geometry.
+
 ## Combined Changes
 
 | ID | Source | Files | What changed | Perf target | Quality risk | Keep? |
@@ -53,13 +67,15 @@ not pushed to staging until explicitly approved.
 | P3 | perf2 + retune | `World3DCanvas.tsx` | Low-end DPR range remains `[0.5, 0.65]`, but the automatic tier-4 renderer DPR clamp to `0.4` was removed after staging showed normal `/game` entering tier 4 and looking soft. | Fragment/pixel workload. | Medium-high. Low-end/touch DPR cap can still soften rendering; automatic tier-4 clamp is no longer active. | Keep retuned; revisit low-end DPR separately if it still hurts play quality. |
 | P4 | perf2 + rollback | `game/page.tsx` | Tier 4 or `?fast=1` collapsed heavy HUD chrome while preserving core canvas/modals/chat; rollback now forces `hudPerfMode=false`. | DOM/layout/compositing overhead. | High. Removed visible controls and made the game unplayable. | Removed from `/game`; do not restore without an explicit diagnostics-only route. |
 | P5 | perf2 + rollback | `arena-buildings.tsx`, `World3DCanvas.tsx` | Tier 4 rendered shared primitive building proxies instead of full building GLBs; rollback keeps `buildingDetail` unchanged at every adaptive tier. | Draw calls, triangles, GLB load/runtime. | High. Replaced recognizable landmarks with random block/triangle stand-ins. | Rejected for normal play. |
-| P6 | perf2 + rollback | `arena-location-npcs.tsx`, `World3DCanvas.tsx` | Tier 4 proxied far resident NPCs; rollback keeps `residentDetail` unchanged at every adaptive tier. | Resident draw calls/triangles. | Medium-high. Visible character downgrade/popping. | Rejected for normal play. |
+| P6 | perf2 + rollback + cleanup | `arena-location-npcs.tsx`, `World3DCanvas.tsx` | Tier 4 proxied far resident NPCs; rollback kept `residentDetail` unchanged at every adaptive tier, and the 2026-06-08 cleanup deleted the resident capsule proxy component entirely. | Resident draw calls/triangles. | Medium-high. Visible character downgrade/popping. | Removed from normal play code; future resident LOD must preserve character identity. |
 | P7 | perf2 + rollback | `lod-orchestrator.tsx`, `arena-npcs.tsx`, `remote-players.tsx`, `World3DCanvas.tsx` | Tier 4 reduced moving full-detail NPC/remote-player budget to 2 and demoted the rest to capsule/cylinder proxies; rollback unmounts the orchestrator from `/game` and renders visible NPC/remote players as real GLB/VRM models. | VRM/GLB animation and draw cost. | High. Made a 3D world game show far characters as cylinders. | Removed from `/game`; future LOD must preserve silhouettes/identity. |
 | P8 | perf2 | `World3DCanvas.tsx` | Tier 1 disables `MergedSeaweed`; tier 2 disables activity/reward FX; tier 3 disables world labels. | Progressive visual/UI workload cuts. | Medium-high. Labels and FX are gameplay affordances. | Tune carefully; labels likely should stay longer. |
 | P9 | perf2 | `World3DCanvas.tsx` | `?fast=1` locks tier 4 for deterministic perf measurement. | Repeatable benchmark path. | Low if query-only. | Keep as diagnostic. |
 | R1 | integration | `arena-npcs.tsx` | Conflict resolution keeps CPU cache and keeps `!d.isRemotePlayer` push-out guard. | Preserve both CPU perf and multiplayer correctness. | Low. Needs syntax/runtime verification. | Keep. |
 | R2 | integration | `3dStructure.md`, this file | Conflict resolution keeps both load-bearing doc histories and adds rollback ledger. | Maintain traceability. | Low. | Keep. |
 | F1 | fidelity spike + recovery | `vrm-loader.ts` | Fetches can still start concurrently, but GLTFLoader VRM parses now run through a concurrency-1 queue. Metrics separate `queueWaitMs` from real `parseMs`. | Restore `/game` readiness by letting RAF/requestIdleCallback and staggered texture upload keep running during first mount. | Low-medium. Avatars stream in progressively instead of all parsing at once; no fake proxies or DPR loss. | Keep locally; deploy to staging only after review. |
+| F2 | fidelity spike + recovery | `arena-location-npcs.tsx` | Deleted resident capsule proxy code. Real resident GLBs stream in at camera distance <=2600wu and unmount again past 3200wu; `DeferredNpcPreloads` waits for `window.__W3D_READY` and then warms resident GLBs one-at-a-time via idle callbacks. | Avoid initial resident GLB load/render work without replacing characters with cylinders. | Medium. No fake stand-ins, but distant residents can pop in/out; thresholds may need tuning if the world feels sparse. | Keep only if local/staging playtest feels natural. |
+| F3 | fidelity spike + recovery | `World3DCanvas.tsx` | `StaggeredTextureUpload` idle loop now uses one-texture minimum, max 4 textures per callback, and 6ms elapsed budget. Previous strict loop uploaded one texture per callback and failed readiness in 60s; previous OR loop could produce 100ms+ slices. | Finish GPU texture readiness while keeping upload slices bounded. | Low-medium. More textures can upload in one idle callback; monitor max slice and FPS during loading. | Keep if max slices remain under ~10-15ms locally/staging. |
 
 ## Recommended Removal Order If Quality Feels Worse
 
@@ -84,17 +100,31 @@ not pushed to staging until explicitly approved.
 4. **Resident/building proxies are already removed from adaptive `/game`.**
    Files: `World3DCanvas.tsx`, `arena-buildings.tsx`,
    `arena-location-npcs.tsx`.
-   Primitive blocks are rejected for normal play. If a benchmark path needs
-   them, it should be an explicit diagnostic route with no ambiguity.
+   Primitive blocks are rejected for normal play. The resident capsule proxy
+   component is deleted, not just hidden by a flag. If a benchmark path needs
+   primitive proxies, it should be an explicit diagnostic route with no ambiguity.
 
-5. **Retune tier order.**
+5. **Resident real-asset streaming is now the first quality-feel rollback candidate.**
+   File: `arena-location-npcs.tsx`.
+   This does not show fake shapes, but it can make the world feel less populated
+   if the 2600/3200wu thresholds are too tight. Retune thresholds before
+   removing it; if removed, keep `DeferredNpcPreloads` post-ready so first paint
+   is not blocked by all resident GLBs.
+
+6. **Retune texture upload pacing.**
+   File: `World3DCanvas.tsx`, `StaggeredTextureUpload`.
+   Current local pass: 179 textures, 47 slices, max 9ms, ready true. If staging
+   shows stutter, lower `IDLE_MAX_TEXTURES_PER_SLICE`; if readiness regresses,
+   raise it cautiously.
+
+7. **Retune tier order.**
    File: `World3DCanvas.tsx`, `applyQualityTier()`.
    Suggested quality-preserving order:
    seaweed -> activity FX -> optional label density -> animation tick rate ->
    asset streaming/compression. Avoid DPR and visible identity loss unless the
    player explicitly chooses a low-quality mode.
 
-6. **Keep CPU/assets work unless it visually breaks.**
+8. **Keep CPU/assets work unless it visually breaks.**
    CPU cache, redundant spring-matrix removal, SW dead-precache removal, and
    texture-only compression should be lower risk than runtime visual
    degradation.
@@ -115,7 +145,7 @@ Before promoting beyond staging:
 - Compare the paired reports:
   `docs/perf-fidelity-spike/browser-staging-recheck-20260608/summary.md`
   versus
-  `docs/perf-fidelity-spike/browser-local-vrm-queue-3010/summary.md`.
+  `docs/perf-fidelity-spike/browser-local-texture-batch-resident-stream-3010/summary.md`.
 
 ## Known Constraints
 

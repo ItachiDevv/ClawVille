@@ -1,6 +1,6 @@
 # Fidelity Performance Asset Audit
 
-Generated: 2026-06-07T11:49:40.910Z
+Generated: 2026-06-08T07:05:22.664Z
 
 This is a read-only audit. It ranks GLB/VRM assets for fidelity-preserving performance work. It intentionally does **not** recommend primitive building blocks, cylinder characters, or DPR-first degradation.
 
