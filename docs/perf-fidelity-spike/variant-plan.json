@@ -1,6 +1,12 @@
 {
-  "generatedAt": "2026-06-08T07:05:46.574Z",
-  "hasToktx": false,
+  "generatedAt": "2026-06-08T09:19:49.713Z",
+  "toktx": {
+    "available": true,
+    "mode": "wsl-local",
+    "version": "toktx v4.4.2 (WSL local)",
+    "commandPrefix": "wsl --cd /mnt/c/Users/newma/Documents/Crypto/ClawVille-perf-fidelity-spike env PATH=\"$PWD/.tools/ktx-linux/bin:$PATH\""
+  },
+  "hasToktx": true,
   "candidates": [
     {
       "asset": "/avatars/milady-chibi.vrm",
@@ -11,11 +17,11 @@
       "textureBytes": "2.25 MB",
       "experiments": [
         "runtime-vrm-metrics",
-        "texture-basis-lab",
+        "ktx2-blocked-vrm-extension-preservation",
         "no-combineSkeletons-without-animation-proof"
       ],
       "command": "bun run perf:fidelity:browser --label=vrm-milady-chibi.vrm \"--url=https://staging.clawville.world/game?perf=1\" --durationMs=30000",
-      "safetyGate": "Do not run combineSkeletons. Any VRM binary variant must preserve VRM/VRMC extensions and pass idle/walk/run/emote screenshot or video QA."
+      "safetyGate": "Do not run stock gltf-transform uastc on VRM shipping files: local milady-chibi.uastc.glb lab stripped VRMC_vrm. Any VRM binary variant must preserve VRM/VRMC extensions and pass idle/walk/run/emote screenshot or video QA before a runtime swap."
     },
     {
       "asset": "/avatars/eliza-chibi.vrm",
@@ -26,11 +32,11 @@
       "textureBytes": "2.07 MB",
       "experiments": [
         "runtime-vrm-metrics",
-        "texture-basis-lab",
+        "ktx2-blocked-vrm-extension-preservation",
         "no-combineSkeletons-without-animation-proof"
       ],
       "command": "bun run perf:fidelity:browser --label=vrm-eliza-chibi.vrm \"--url=https://staging.clawville.world/game?perf=1\" --durationMs=30000",
-      "safetyGate": "Do not run combineSkeletons. Any VRM binary variant must preserve VRM/VRMC extensions and pass idle/walk/run/emote screenshot or video QA."
+      "safetyGate": "Do not run stock gltf-transform uastc on VRM shipping files: local milady-chibi.uastc.glb lab stripped VRMC_vrm. Any VRM binary variant must preserve VRM/VRMC extensions and pass idle/walk/run/emote screenshot or video QA before a runtime swap."
     },
     {
       "asset": "/models/cove/cove-interior-cleaned-v1.glb",
@@ -40,11 +46,11 @@
       "textures": 11,
       "textureBytes": "2.47 MB",
       "experiments": [
-        "ktx2-blocked-missing-toktx",
-        "texture-only-webp-regression-check"
+        "ktx2-blocked-webp-source-needed",
+        "source-backup-uastc-lab"
       ],
-      "command": "COMPRESS_NO_MESHOPT=1 bun run scripts/compress-glb-targeted.ts apps/web/public/models/cove/cove-interior-cleaned-v1.glb",
-      "safetyGate": "toktx is not installed, so KTX2 cannot run here. Texture-only WebP command is safe for merge-risk buildings because it leaves geometry byte-identical."
+      "command": "# Use PNG/JPEG source GLB from apps/web/public/models/.webp-backup or another pre-WebP source; do not run uastc directly on apps/web/public/models/cove/cove-interior-cleaned-v1.glb.",
+      "safetyGate": "Current GLB already uses EXT_texture_webp. Local quest-bounty lab skipped all WebP textures, removed meshopt compression, and produced a larger no-KTX output. KTX2 tests must start from PNG/JPEG source GLBs and then validate KHR_texture_basisu plus retained geometry compression policy before any runtime swap."
     },
     {
       "asset": "/models/cove/cove-interior.glb",
@@ -54,11 +60,11 @@
       "textures": 11,
       "textureBytes": "1.21 MB",
       "experiments": [
-        "ktx2-blocked-missing-toktx",
-        "texture-only-webp-regression-check"
+        "ktx2-blocked-webp-source-needed",
+        "source-backup-uastc-lab"
       ],
-      "command": "COMPRESS_NO_MESHOPT=1 bun run scripts/compress-glb-targeted.ts apps/web/public/models/cove/cove-interior.glb",
-      "safetyGate": "toktx is not installed, so KTX2 cannot run here. Texture-only WebP command is safe for merge-risk buildings because it leaves geometry byte-identical."
+      "command": "# Use PNG/JPEG source GLB from apps/web/public/models/.webp-backup or another pre-WebP source; do not run uastc directly on apps/web/public/models/cove/cove-interior.glb.",
+      "safetyGate": "Current GLB already uses EXT_texture_webp. Local quest-bounty lab skipped all WebP textures, removed meshopt compression, and produced a larger no-KTX output. KTX2 tests must start from PNG/JPEG source GLBs and then validate KHR_texture_basisu plus retained geometry compression policy before any runtime swap."
     },
     {
       "asset": "/models/sandy-treedome-v3-opt1.glb",
@@ -82,11 +88,11 @@
       "textures": 72,
       "textureBytes": "1.48 MB",
       "experiments": [
-        "ktx2-blocked-missing-toktx",
-        "texture-only-webp-regression-check"
+        "ktx2-blocked-webp-source-needed",
+        "source-backup-uastc-lab"
       ],
-      "command": "COMPRESS_NO_MESHOPT=1 bun run scripts/compress-glb-targeted.ts apps/web/public/models/quest-bounty-pavilion.glb",
-      "safetyGate": "toktx is not installed, so KTX2 cannot run here. Texture-only WebP command is safe for merge-risk buildings because it leaves geometry byte-identical."
+      "command": "# Use PNG/JPEG source GLB from apps/web/public/models/.webp-backup or another pre-WebP source; do not run uastc directly on apps/web/public/models/quest-bounty-pavilion.glb.",
+      "safetyGate": "Current GLB already uses EXT_texture_webp. Local quest-bounty lab skipped all WebP textures, removed meshopt compression, and produced a larger no-KTX output. KTX2 tests must start from PNG/JPEG source GLBs and then validate KHR_texture_basisu plus retained geometry compression policy before any runtime swap."
     },
     {
       "asset": "/avatars/tekk.vrm",
@@ -97,11 +103,11 @@
       "textureBytes": "537.9 KB",
       "experiments": [
         "runtime-vrm-metrics",
-        "texture-basis-lab",
+        "ktx2-blocked-vrm-extension-preservation",
         "no-combineSkeletons-without-animation-proof"
       ],
       "command": "bun run perf:fidelity:browser --label=vrm-tekk.vrm \"--url=https://staging.clawville.world/game?perf=1\" --durationMs=30000",
-      "safetyGate": "Do not run combineSkeletons. Any VRM binary variant must preserve VRM/VRMC extensions and pass idle/walk/run/emote screenshot or video QA."
+      "safetyGate": "Do not run stock gltf-transform uastc on VRM shipping files: local milady-chibi.uastc.glb lab stripped VRMC_vrm. Any VRM binary variant must preserve VRM/VRMC extensions and pass idle/walk/run/emote screenshot or video QA before a runtime swap."
     },
     {
       "asset": "/avatars/phanes.vrm",
@@ -112,11 +118,11 @@
       "textureBytes": "365.0 KB",
       "experiments": [
         "runtime-vrm-metrics",
-        "texture-basis-lab",
+        "ktx2-blocked-vrm-extension-preservation",
         "no-combineSkeletons-without-animation-proof"
       ],
       "command": "bun run perf:fidelity:browser --label=vrm-phanes.vrm \"--url=https://staging.clawville.world/game?perf=1\" --durationMs=30000",
-      "safetyGate": "Do not run combineSkeletons. Any VRM binary variant must preserve VRM/VRMC extensions and pass idle/walk/run/emote screenshot or video QA."
+      "safetyGate": "Do not run stock gltf-transform uastc on VRM shipping files: local milady-chibi.uastc.glb lab stripped VRMC_vrm. Any VRM binary variant must preserve VRM/VRMC extensions and pass idle/walk/run/emote screenshot or video QA before a runtime swap."
     },
     {
       "asset": "/models/chum-bucket-v2-opt1.glb",
@@ -126,11 +132,11 @@
       "textures": 11,
       "textureBytes": "1.34 MB",
       "experiments": [
-        "ktx2-blocked-missing-toktx",
-        "texture-only-webp-regression-check"
+        "ktx2-blocked-webp-source-needed",
+        "source-backup-uastc-lab"
       ],
-      "command": "COMPRESS_NO_MESHOPT=1 bun run scripts/compress-glb-targeted.ts apps/web/public/models/chum-bucket-v2-opt1.glb",
-      "safetyGate": "toktx is not installed, so KTX2 cannot run here. Texture-only WebP command is safe for merge-risk buildings because it leaves geometry byte-identical."
+      "command": "# Use PNG/JPEG source GLB from apps/web/public/models/.webp-backup or another pre-WebP source; do not run uastc directly on apps/web/public/models/chum-bucket-v2-opt1.glb.",
+      "safetyGate": "Current GLB already uses EXT_texture_webp. Local quest-bounty lab skipped all WebP textures, removed meshopt compression, and produced a larger no-KTX output. KTX2 tests must start from PNG/JPEG source GLBs and then validate KHR_texture_basisu plus retained geometry compression policy before any runtime swap."
     },
     {
       "asset": "/avatars/hermes-female.vrm",
@@ -141,11 +147,11 @@
       "textureBytes": "406.3 KB",
       "experiments": [
         "runtime-vrm-metrics",
-        "texture-basis-lab",
+        "ktx2-blocked-vrm-extension-preservation",
         "no-combineSkeletons-without-animation-proof"
       ],
       "command": "bun run perf:fidelity:browser --label=vrm-hermes-female.vrm \"--url=https://staging.clawville.world/game?perf=1\" --durationMs=30000",
-      "safetyGate": "Do not run combineSkeletons. Any VRM binary variant must preserve VRM/VRMC extensions and pass idle/walk/run/emote screenshot or video QA."
+      "safetyGate": "Do not run stock gltf-transform uastc on VRM shipping files: local milady-chibi.uastc.glb lab stripped VRMC_vrm. Any VRM binary variant must preserve VRM/VRMC extensions and pass idle/walk/run/emote screenshot or video QA before a runtime swap."
     },
     {
       "asset": "/avatars/animations/_emotes.glb",
@@ -169,11 +175,11 @@
       "textures": 8,
       "textureBytes": "960.9 KB",
       "experiments": [
-        "ktx2-blocked-missing-toktx",
-        "texture-only-webp-regression-check"
+        "ktx2-blocked-webp-source-needed",
+        "source-backup-uastc-lab"
       ],
-      "command": "COMPRESS_NO_MESHOPT=1 bun run scripts/compress-glb-targeted.ts apps/web/public/models/squidward-house-opt1.glb",
-      "safetyGate": "toktx is not installed, so KTX2 cannot run here. Texture-only WebP command is safe for merge-risk buildings because it leaves geometry byte-identical."
+      "command": "# Use PNG/JPEG source GLB from apps/web/public/models/.webp-backup or another pre-WebP source; do not run uastc directly on apps/web/public/models/squidward-house-opt1.glb.",
+      "safetyGate": "Current GLB already uses EXT_texture_webp. Local quest-bounty lab skipped all WebP textures, removed meshopt compression, and produced a larger no-KTX output. KTX2 tests must start from PNG/JPEG source GLBs and then validate KHR_texture_basisu plus retained geometry compression policy before any runtime swap."
     },
     {
       "asset": "/avatars/hermes-male.vrm",
@@ -184,11 +190,11 @@
       "textureBytes": "172.9 KB",
       "experiments": [
         "runtime-vrm-metrics",
-        "texture-basis-lab",
+        "ktx2-blocked-vrm-extension-preservation",
         "no-combineSkeletons-without-animation-proof"
       ],
       "command": "bun run perf:fidelity:browser --label=vrm-hermes-male.vrm \"--url=https://staging.clawville.world/game?perf=1\" --durationMs=30000",
-      "safetyGate": "Do not run combineSkeletons. Any VRM binary variant must preserve VRM/VRMC extensions and pass idle/walk/run/emote screenshot or video QA."
+      "safetyGate": "Do not run stock gltf-transform uastc on VRM shipping files: local milady-chibi.uastc.glb lab stripped VRMC_vrm. Any VRM binary variant must preserve VRM/VRMC extensions and pass idle/walk/run/emote screenshot or video QA before a runtime swap."
     },
     {
       "asset": "/models/krusty-krab-v2-opt1.glb",
@@ -198,11 +204,11 @@
       "textures": 20,
       "textureBytes": "807.3 KB",
       "experiments": [
-        "ktx2-blocked-missing-toktx",
-        "texture-only-webp-regression-check"
+        "ktx2-blocked-webp-source-needed",
+        "source-backup-uastc-lab"
       ],
-      "command": "COMPRESS_NO_MESHOPT=1 bun run scripts/compress-glb-targeted.ts apps/web/public/models/krusty-krab-v2-opt1.glb",
-      "safetyGate": "toktx is not installed, so KTX2 cannot run here. Texture-only WebP command is safe for merge-risk buildings because it leaves geometry byte-identical."
+      "command": "# Use PNG/JPEG source GLB from apps/web/public/models/.webp-backup or another pre-WebP source; do not run uastc directly on apps/web/public/models/krusty-krab-v2-opt1.glb.",
+      "safetyGate": "Current GLB already uses EXT_texture_webp. Local quest-bounty lab skipped all WebP textures, removed meshopt compression, and produced a larger no-KTX output. KTX2 tests must start from PNG/JPEG source GLBs and then validate KHR_texture_basisu plus retained geometry compression policy before any runtime swap."
     },
     {
       "asset": "/models/underwater-decorations.glb",
@@ -212,11 +218,11 @@
       "textures": 8,
       "textureBytes": "930.1 KB",
       "experiments": [
-        "ktx2-blocked-missing-toktx",
-        "texture-only-webp-regression-check"
+        "ktx2-blocked-webp-source-needed",
+        "source-backup-uastc-lab"
       ],
-      "command": "COMPRESS_NO_MESHOPT=1 bun run scripts/compress-glb-targeted.ts apps/web/public/models/underwater-decorations.glb",
-      "safetyGate": "toktx is not installed, so KTX2 cannot run here. Texture-only WebP command is safe for merge-risk buildings because it leaves geometry byte-identical."
+      "command": "# Use PNG/JPEG source GLB from apps/web/public/models/.webp-backup or another pre-WebP source; do not run uastc directly on apps/web/public/models/underwater-decorations.glb.",
+      "safetyGate": "Current GLB already uses EXT_texture_webp. Local quest-bounty lab skipped all WebP textures, removed meshopt compression, and produced a larger no-KTX output. KTX2 tests must start from PNG/JPEG source GLBs and then validate KHR_texture_basisu plus retained geometry compression policy before any runtime swap."
     },
     {
       "asset": "/models/patricks-rock-v2-opt1.glb",
@@ -226,11 +232,11 @@
       "textures": 7,
       "textureBytes": "858.3 KB",
       "experiments": [
-        "ktx2-blocked-missing-toktx",
-        "texture-only-webp-regression-check"
+        "ktx2-blocked-webp-source-needed",
+        "source-backup-uastc-lab"
       ],
-      "command": "COMPRESS_NO_MESHOPT=1 bun run scripts/compress-glb-targeted.ts apps/web/public/models/patricks-rock-v2-opt1.glb",
-      "safetyGate": "toktx is not installed, so KTX2 cannot run here. Texture-only WebP command is safe for merge-risk buildings because it leaves geometry byte-identical."
+      "command": "# Use PNG/JPEG source GLB from apps/web/public/models/.webp-backup or another pre-WebP source; do not run uastc directly on apps/web/public/models/patricks-rock-v2-opt1.glb.",
+      "safetyGate": "Current GLB already uses EXT_texture_webp. Local quest-bounty lab skipped all WebP textures, removed meshopt compression, and produced a larger no-KTX output. KTX2 tests must start from PNG/JPEG source GLBs and then validate KHR_texture_basisu plus retained geometry compression policy before any runtime swap."
     },
     {
       "asset": "/avatars/milady-official-5.vrm",
@@ -241,11 +247,11 @@
       "textureBytes": "450.0 KB",
       "experiments": [
         "runtime-vrm-metrics",
-        "texture-basis-lab",
+        "ktx2-blocked-vrm-extension-preservation",
         "no-combineSkeletons-without-animation-proof"
       ],
       "command": "bun run perf:fidelity:browser --label=vrm-milady-official-5.vrm \"--url=https://staging.clawville.world/game?perf=1\" --durationMs=30000",
-      "safetyGate": "Do not run combineSkeletons. Any VRM binary variant must preserve VRM/VRMC extensions and pass idle/walk/run/emote screenshot or video QA."
+      "safetyGate": "Do not run stock gltf-transform uastc on VRM shipping files: local milady-chibi.uastc.glb lab stripped VRMC_vrm. Any VRM binary variant must preserve VRM/VRMC extensions and pass idle/walk/run/emote screenshot or video QA before a runtime swap."
     },
     {
       "asset": "/models/shisha-oasis.glb",
@@ -255,11 +261,11 @@
       "textures": 3,
       "textureBytes": "131.4 KB",
       "experiments": [
-        "ktx2-blocked-missing-toktx",
-        "texture-only-webp-regression-check"
+        "ktx2-blocked-webp-source-needed",
+        "source-backup-uastc-lab"
       ],
-      "command": "COMPRESS_NO_MESHOPT=1 bun run scripts/compress-glb-targeted.ts apps/web/public/models/shisha-oasis.glb",
-      "safetyGate": "toktx is not installed, so KTX2 cannot run here. Texture-only WebP command is safe for merge-risk buildings because it leaves geometry byte-identical."
+      "command": "# Use PNG/JPEG source GLB from apps/web/public/models/.webp-backup or another pre-WebP source; do not run uastc directly on apps/web/public/models/shisha-oasis.glb.",
+      "safetyGate": "Current GLB already uses EXT_texture_webp. Local quest-bounty lab skipped all WebP textures, removed meshopt compression, and produced a larger no-KTX output. KTX2 tests must start from PNG/JPEG source GLBs and then validate KHR_texture_basisu plus retained geometry compression policy before any runtime swap."
     },
     {
       "asset": "/models/arcade/claw-arcade-exterior-opt1.glb",
@@ -269,11 +275,11 @@
       "textures": 11,
       "textureBytes": "634.8 KB",
       "experiments": [
-        "ktx2-blocked-missing-toktx",
-        "texture-only-webp-regression-check"
+        "ktx2-blocked-webp-source-needed",
+        "source-backup-uastc-lab"
       ],
-      "command": "COMPRESS_NO_MESHOPT=1 bun run scripts/compress-glb-targeted.ts apps/web/public/models/arcade/claw-arcade-exterior-opt1.glb",
-      "safetyGate": "toktx is not installed, so KTX2 cannot run here. Texture-only WebP command is safe for merge-risk buildings because it leaves geometry byte-identical."
+      "command": "# Use PNG/JPEG source GLB from apps/web/public/models/.webp-backup or another pre-WebP source; do not run uastc directly on apps/web/public/models/arcade/claw-arcade-exterior-opt1.glb.",
+      "safetyGate": "Current GLB already uses EXT_texture_webp. Local quest-bounty lab skipped all WebP textures, removed meshopt compression, and produced a larger no-KTX output. KTX2 tests must start from PNG/JPEG source GLBs and then validate KHR_texture_basisu plus retained geometry compression policy before any runtime swap."
     },
     {
       "asset": "/models/lobster_plush.glb",
@@ -283,11 +289,11 @@
       "textures": 3,
       "textureBytes": "540.5 KB",
       "experiments": [
-        "ktx2-blocked-missing-toktx",
-        "texture-only-webp-regression-check"
+        "ktx2-blocked-webp-source-needed",
+        "source-backup-uastc-lab"
       ],
-      "command": "COMPRESS_NO_MESHOPT=1 bun run scripts/compress-glb-targeted.ts apps/web/public/models/lobster_plush.glb",
-      "safetyGate": "toktx is not installed, so KTX2 cannot run here. Texture-only WebP command is safe for merge-risk buildings because it leaves geometry byte-identical."
+      "command": "# Use PNG/JPEG source GLB from apps/web/public/models/.webp-backup or another pre-WebP source; do not run uastc directly on apps/web/public/models/lobster_plush.glb.",
+      "safetyGate": "Current GLB already uses EXT_texture_webp. Local quest-bounty lab skipped all WebP textures, removed meshopt compression, and produced a larger no-KTX output. KTX2 tests must start from PNG/JPEG source GLBs and then validate KHR_texture_basisu plus retained geometry compression policy before any runtime swap."
     },
     {
       "asset": "/models/pineapple-house-opt1.glb",
@@ -297,11 +303,11 @@
       "textures": 8,
       "textureBytes": "470.8 KB",
       "experiments": [
-        "ktx2-blocked-missing-toktx",
-        "texture-only-webp-regression-check"
+        "ktx2-blocked-webp-source-needed",
+        "source-backup-uastc-lab"
       ],
-      "command": "COMPRESS_NO_MESHOPT=1 bun run scripts/compress-glb-targeted.ts apps/web/public/models/pineapple-house-opt1.glb",
-      "safetyGate": "toktx is not installed, so KTX2 cannot run here. Texture-only WebP command is safe for merge-risk buildings because it leaves geometry byte-identical."
+      "command": "# Use PNG/JPEG source GLB from apps/web/public/models/.webp-backup or another pre-WebP source; do not run uastc directly on apps/web/public/models/pineapple-house-opt1.glb.",
+      "safetyGate": "Current GLB already uses EXT_texture_webp. Local quest-bounty lab skipped all WebP textures, removed meshopt compression, and produced a larger no-KTX output. KTX2 tests must start from PNG/JPEG source GLBs and then validate KHR_texture_basisu plus retained geometry compression policy before any runtime swap."
     },
     {
       "asset": "/models/guide.glb",
@@ -311,11 +317,11 @@
       "textures": 2,
       "textureBytes": "39.1 KB",
       "experiments": [
-        "ktx2-blocked-missing-toktx",
-        "texture-only-webp-regression-check"
+        "ktx2-blocked-webp-source-needed",
+        "source-backup-uastc-lab"
       ],
-      "command": "COMPRESS_NO_MESHOPT=1 bun run scripts/compress-glb-targeted.ts apps/web/public/models/guide.glb",
-      "safetyGate": "toktx is not installed, so KTX2 cannot run here. Texture-only WebP command is safe for merge-risk buildings because it leaves geometry byte-identical."
+      "command": "# Use PNG/JPEG source GLB from apps/web/public/models/.webp-backup or another pre-WebP source; do not run uastc directly on apps/web/public/models/guide.glb.",
+      "safetyGate": "Current GLB already uses EXT_texture_webp. Local quest-bounty lab skipped all WebP textures, removed meshopt compression, and produced a larger no-KTX output. KTX2 tests must start from PNG/JPEG source GLBs and then validate KHR_texture_basisu plus retained geometry compression policy before any runtime swap."
     },
     {
       "asset": "/models/guide-rigged.glb",
@@ -325,11 +331,11 @@
       "textures": 3,
       "textureBytes": "49.3 KB",
       "experiments": [
-        "ktx2-blocked-missing-toktx",
-        "texture-only-webp-regression-check"
+        "ktx2-blocked-webp-source-needed",
+        "source-backup-uastc-lab"
       ],
-      "command": "COMPRESS_NO_MESHOPT=1 bun run scripts/compress-glb-targeted.ts apps/web/public/models/guide-rigged.glb",
-      "safetyGate": "toktx is not installed, so KTX2 cannot run here. Texture-only WebP command is safe for merge-risk buildings because it leaves geometry byte-identical."
+      "command": "# Use PNG/JPEG source GLB from apps/web/public/models/.webp-backup or another pre-WebP source; do not run uastc directly on apps/web/public/models/guide-rigged.glb.",
+      "safetyGate": "Current GLB already uses EXT_texture_webp. Local quest-bounty lab skipped all WebP textures, removed meshopt compression, and produced a larger no-KTX output. KTX2 tests must start from PNG/JPEG source GLBs and then validate KHR_texture_basisu plus retained geometry compression policy before any runtime swap."
     },
     {
       "asset": "/models/reef-race/scenery/ramp-jump.glb",
@@ -339,11 +345,11 @@
       "textures": 7,
       "textureBytes": "429.2 KB",
       "experiments": [
-        "ktx2-blocked-missing-toktx",
-        "texture-only-webp-regression-check"
+        "ktx2-blocked-webp-source-needed",
+        "source-backup-uastc-lab"
       ],
-      "command": "COMPRESS_NO_MESHOPT=1 bun run scripts/compress-glb-targeted.ts apps/web/public/models/reef-race/scenery/ramp-jump.glb",
-      "safetyGate": "toktx is not installed, so KTX2 cannot run here. Texture-only WebP command is safe for merge-risk buildings because it leaves geometry byte-identical."
+      "command": "# Use PNG/JPEG source GLB from apps/web/public/models/.webp-backup or another pre-WebP source; do not run uastc directly on apps/web/public/models/reef-race/scenery/ramp-jump.glb.",
+      "safetyGate": "Current GLB already uses EXT_texture_webp. Local quest-bounty lab skipped all WebP textures, removed meshopt compression, and produced a larger no-KTX output. KTX2 tests must start from PNG/JPEG source GLBs and then validate KHR_texture_basisu plus retained geometry compression policy before any runtime swap."
     }
   ]
 }
