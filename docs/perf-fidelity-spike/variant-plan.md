@@ -1,6 +1,6 @@
 # Fidelity Variant Plan
 
-Generated: 2026-06-07T11:58:38.409Z
+Generated: 2026-06-08T07:05:46.575Z
 
 - Source audit: `docs/perf-fidelity-spike/asset-audit.json`
 - `toktx` available: no
