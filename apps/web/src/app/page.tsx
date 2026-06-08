@@ -115,7 +115,7 @@ export default function HomePage() {
         that — the hero has h-[100svh] overflow-hidden so the Canvas only
         occupies the visible hero area.
       */}
-      <section className="relative z-10 flex flex-col items-center justify-center px-4 sm:px-6 md:px-10 pt-12 pb-8 sm:pt-14 text-center overflow-hidden">
+      <section className="relative z-10 flex flex-col items-center justify-center px-4 sm:px-6 md:px-10 pt-4 pb-8 sm:pt-12 text-center overflow-hidden">
         {/* 3D town building-ring overview — absolute fill of the hero section only */}
         {mounted && <LandingScene />}
         {/* Legibility overlay — dark gradient between the 3D scene (z-0) and the
@@ -136,18 +136,18 @@ export default function HomePage() {
               .getElementById('press-release')
               ?.scrollIntoView({ behavior: 'smooth', block: 'start' })
           }
-          className="anim-up group relative z-10 mb-5 inline-flex items-center gap-3 rounded-full border border-rose-500/40 bg-rose-500/10 backdrop-blur-sm pl-3 pr-4 py-1.5 transition-all hover:border-rose-400/70 hover:bg-rose-500/20 hover:scale-[1.03] shadow-[0_0_24px_rgba(244,63,94,0.18)]"
+          className="anim-up group relative z-10 mb-5 inline-flex items-center gap-3 rounded-full border border-rose-500/40 bg-rose-500/10 backdrop-blur-sm pl-3 pr-4 py-2 transition-all hover:border-rose-400/70 hover:bg-rose-500/20 hover:scale-[1.03] shadow-[0_0_24px_rgba(244,63,94,0.18)]"
           style={{ animationDelay: '0.02s' }}
           aria-label="Read the PayAI × ClawVille press release"
         >
-          <span className="inline-flex items-center gap-2 rounded-full bg-rose-500/90 px-2 py-0.5">
+          <span className="inline-flex items-center gap-2 rounded-full bg-rose-500/90 px-2.5 py-1">
             <span className="relative flex h-1.5 w-1.5">
               <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-white opacity-75" />
               <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-white" />
             </span>
-            <span className="text-[9px] font-mono uppercase tracking-[0.25em] text-white font-bold">Breaking</span>
+            <span className="text-[11px] font-mono uppercase tracking-[0.25em] text-white font-bold">Breaking</span>
           </span>
-          <span className="text-[11px] sm:text-xs font-mono uppercase tracking-[0.2em] text-rose-50">
+          <span className="text-[13px] sm:text-sm font-mono uppercase tracking-[0.2em] text-rose-50">
             <span className="whitespace-nowrap">PayAI&nbsp;×&nbsp;ClawVille —</span>{' '}
             <span className="whitespace-nowrap">Payments arrive</span>
           </span>
