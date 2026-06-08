@@ -1,7 +1,6 @@
 import type { AgentCategory, AgentHarness } from '@clawville/shared';
 import { getFingerprint } from './fingerprint';
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || '';
 const HONO_API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000';
 
 /**
@@ -40,7 +39,10 @@ async function honoRequest<T>(path: string, options?: RequestInit): Promise<T> {
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const headers = await withFingerprint(options?.headers);
-  const res = await fetch(`${API_URL}${path}`, {
+  // Same-origin Next routes own web auth, avatar, and UI proxy state. Do not
+  // prefix these with NEXT_PUBLIC_API_URL; local builds often point Hono calls
+  // at staging and must not inherit staging cookies/auth state.
+  const res = await fetch(path, {
     ...options,
     credentials: 'include',
     headers,
