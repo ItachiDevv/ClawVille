@@ -55,6 +55,7 @@
 
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
+import { useQuery } from '@tanstack/react-query';
 import { MAP_LOCATIONS, AVATAR_SPECIES, KNOWLEDGE_BOOKS } from '@clawville/shared';
 import { RuneFrame, RpgButton, RpgModal, RpgTooltip, getRarity, type RarityId } from '@/components/rpg';
 import { useGameStore, type GameState } from '@/stores/game';
@@ -632,6 +633,12 @@ function SidebarContent({ closeMenu }: SidebarContentProps) {
   // or unprovisioned users.
   const { data: avatar } = useAvatar();
   const hasAvatar = !!avatar;
+  const { data: authData, isLoading: authLoading } = useQuery({
+    queryKey: ['auth-me'],
+    queryFn: () => api.me(),
+    retry: false,
+  });
+  const showLogout = !!authData?.user && !authData.user.isGuest;
 
   const [helpOpen, setHelpOpen] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
@@ -981,12 +988,28 @@ function SidebarContent({ closeMenu }: SidebarContentProps) {
             expandedIndicator={helpOpen}
           />
           {helpOpen && <HelpSubmenu />}
-          <SidebarRow
-            icon="🚪"
-            label={loggingOut ? 'Logging out…' : 'Logout'}
-            onClick={handleLogout}
-            danger
-          />
+          {showLogout ? (
+            <SidebarRow
+              icon="🚪"
+              label={loggingOut ? 'Logging out…' : 'Logout'}
+              onClick={handleLogout}
+              danger
+            />
+          ) : !authLoading ? (
+            <>
+              <SidebarRow
+                icon="🔑"
+                label="Log In"
+                onClick={runAction(() => router.push('/login'))}
+              />
+              <SidebarRow
+                icon="✨"
+                label="Sign Up"
+                onClick={runAction(() => router.push('/login?mode=signup'))}
+                rarity="rare"
+              />
+            </>
+          ) : null}
         </div>
       </div>
     </div>
