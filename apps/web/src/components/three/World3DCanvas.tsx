@@ -791,6 +791,7 @@ function PerfCameraPreset({
 // Fallback for Safari (no rIC): rAF with BATCH=4 (still 2× the old rate).
 // ---------------------------------------------------------------------------
 const IDLE_SLICE_BUDGET_MS = 6;
+const IDLE_MAX_TEXTURES_PER_SLICE = 4;
 const RAF_FALLBACK_BATCH = 4;
 
 // All standard texture slot names on MeshStandardMaterial and related.
@@ -928,12 +929,18 @@ function StaggeredTextureUpload() {
         let i = 0;
         const uploadMetrics = createTextureUploadMetrics(hasIdle ? 'idle' : 'raf', unique.length);
 
-        function uploadIdle(deadline: IdleDeadline) {
+        function uploadIdle() {
           const t0 = performance.now();
           const before = i;
           while (
             i < unique.length &&
-            (deadline.timeRemaining() > 1 || performance.now() - t0 < IDLE_SLICE_BUDGET_MS)
+            (
+              i === before ||
+              (
+                i - before < IDLE_MAX_TEXTURES_PER_SLICE &&
+                performance.now() - t0 < IDLE_SLICE_BUDGET_MS
+              )
+            )
           ) {
             try {
               (gl as any).initTexture(unique[i]);
@@ -1027,7 +1034,6 @@ const SceneContents = memo(function SceneContents({
   const showWaterFogParticles = flags.waterFogParticles && !staticOnly;
   const showGroundCover = flags.groundCover && !staticOnly;
   const showActivityFx = flags.activityFx && !staticOnly;
-  const showResidentDetail = flags.residentDetail && !staticOnly;
   const showBuildingDetail = flags.buildingDetail && !staticOnly;
   // Read controlMode once at mount for camera routing; camera routing uses
   // getState() inside useFrame so it always has the latest value at zero cost.
@@ -1158,7 +1164,7 @@ const SceneContents = memo(function SceneContents({
       )}
       {showNpcs && (
         <group name="perf:location-npcs" userData={{ perfChunk: 'location-npcs' }}>
-          <ArenaLocationNpcs fullDetail={showResidentDetail} />
+          <ArenaLocationNpcs />
         </group>
       )}
       {/* Multiplayer Phase 1: remote players in the same room. Local viewer is
