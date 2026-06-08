@@ -6,6 +6,8 @@ features later without guessing.
 
 Integration branch: `perf/combined-cpu-adaptive`
 
+Current recovery branch: `perf/fidelity-spike`
+
 Base at integration start: `origin/staging` = `892880d1`
 
 Merged branch: `feat/perf-cpu-framebudget` = `8014f9a6`
@@ -29,6 +31,13 @@ Follow-up playable rollback removed the unacceptable player-facing degradations:
 HUD collapse, building primitive proxies, resident detail shutdown, and moving
 NPC/remote-player capsule/cylinder proxies are no longer active in `/game`.
 
+2026-06-08 recovery update: staging still shows the blue-screen/readiness
+failure after the proxy rollback (`ready=false`, `texturesReady=false`). Local
+production testing on port 3010 is fixed by queueing VRM parses one-at-a-time:
+the browser harness reaches `ready=true`, `texturesReady=true`, 19 visible
+buttons, 0 primitive building proxies, and 0 proxy-like named nodes. This fix is
+not pushed to staging until explicitly approved.
+
 ## Combined Changes
 
 | ID | Source | Files | What changed | Perf target | Quality risk | Keep? |
@@ -50,6 +59,7 @@ NPC/remote-player capsule/cylinder proxies are no longer active in `/game`.
 | P9 | perf2 | `World3DCanvas.tsx` | `?fast=1` locks tier 4 for deterministic perf measurement. | Repeatable benchmark path. | Low if query-only. | Keep as diagnostic. |
 | R1 | integration | `arena-npcs.tsx` | Conflict resolution keeps CPU cache and keeps `!d.isRemotePlayer` push-out guard. | Preserve both CPU perf and multiplayer correctness. | Low. Needs syntax/runtime verification. | Keep. |
 | R2 | integration | `3dStructure.md`, this file | Conflict resolution keeps both load-bearing doc histories and adds rollback ledger. | Maintain traceability. | Low. | Keep. |
+| F1 | fidelity spike + recovery | `vrm-loader.ts` | Fetches can still start concurrently, but GLTFLoader VRM parses now run through a concurrency-1 queue. Metrics separate `queueWaitMs` from real `parseMs`. | Restore `/game` readiness by letting RAF/requestIdleCallback and staggered texture upload keep running during first mount. | Low-medium. Avatars stream in progressively instead of all parsing at once; no fake proxies or DPR loss. | Keep locally; deploy to staging only after review. |
 
 ## Recommended Removal Order If Quality Feels Worse
 
@@ -102,6 +112,10 @@ Before promoting beyond staging:
   client. The integration intentionally kept `!d.isRemotePlayer`.
 - Record renderer counters for each run: RAF FPS, DPR, draw calls, triangles,
   top chunks, and body text/HUD presence.
+- Compare the paired reports:
+  `docs/perf-fidelity-spike/browser-staging-recheck-20260608/summary.md`
+  versus
+  `docs/perf-fidelity-spike/browser-local-vrm-queue-3010/summary.md`.
 
 ## Known Constraints
 
