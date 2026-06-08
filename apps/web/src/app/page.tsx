@@ -167,12 +167,13 @@ export default function HomePage() {
 
         {/* Main hero row — avatar (left) · logo + CTAs (center) · axes (right).
             One screen on desktop so the action buttons are never below the fold.
-            On mobile it stacks: center (logo + CTAs) FIRST (order-1), then avatar
-            (order-2), then axes (order-3). */}
-        <div className="relative z-10 grid w-full max-w-7xl items-center gap-6 lg:gap-8 grid-cols-1 lg:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]">
+            On mobile it's a 2-col grid: center (logo + CTAs) spans BOTH cols on
+            top (order-1), then avatar (order-2) and axes (order-3) sit side by
+            side in one row below, scaled down to fit. */}
+        <div className="relative z-10 grid w-full max-w-7xl items-center gap-4 sm:gap-6 lg:gap-8 grid-cols-2 lg:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]">
           {/* Milady avatar viewer */}
           <div className="anim-up order-2 lg:order-1 justify-self-center lg:justify-self-end" style={{ animationDelay: '0.5s' }}>
-            <div className="relative w-[240px] h-[320px] mx-auto rounded-2xl border border-pink-400/20 bg-gradient-to-b from-pink-500/[0.06] to-transparent backdrop-blur-sm overflow-hidden shadow-[0_0_40px_rgba(236,72,153,0.12)]">
+            <div className="relative w-[140px] h-[188px] sm:w-[200px] sm:h-[266px] lg:w-[240px] lg:h-[320px] mx-auto rounded-2xl border border-pink-400/20 bg-gradient-to-b from-pink-500/[0.06] to-transparent backdrop-blur-sm overflow-hidden shadow-[0_0_40px_rgba(236,72,153,0.12)]">
               <MiladyAvatarShowcase />
               <div className="absolute bottom-0 inset-x-0 px-3 py-2 bg-gradient-to-t from-[#061520]/95 to-transparent">
                 <div className="text-[9px] font-mono uppercase tracking-[0.3em] text-pink-300/70 text-center">
@@ -183,7 +184,7 @@ export default function HomePage() {
           </div>
 
           {/* Center — logo, tagline, subtitle, CTAs, login */}
-          <div className="order-1 lg:order-2 flex flex-col items-center">
+          <div className="order-1 lg:order-2 col-span-2 lg:col-span-1 flex flex-col items-center">
             <h1 className="anim-up font-clawville text-6xl sm:text-7xl lg:text-8xl text-white drop-shadow-[0_0_60px_rgba(0,229,255,0.35)]" style={{ animationDelay: '0.1s' }}>
               ClawVille
             </h1>
@@ -809,17 +810,6 @@ const SOCIAL_LINKS = [
     ),
   },
   {
-    label: 'Website',
-    href: 'https://clawville.world/',
-    icon: (
-      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-        <circle cx="12" cy="12" r="10" />
-        <line x1="2" y1="12" x2="22" y2="12" />
-        <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
-      </svg>
-    ),
-  },
-  {
     label: 'Discord',
     href: 'https://discord.gg/KJfvM4VqQZ',
     icon: (
@@ -874,6 +864,10 @@ function SiteHeader({ onOpenHowItWorks }: { onOpenHowItWorks: () => void }) {
           </span>
         </button>
 
+        {/* Icon cluster — kept as ONE flex child so on mobile it wraps to its
+            own centered row beneath the CA pill (clean 2-row stack) instead of
+            orphaning a single icon onto a second line. */}
+        <div className="flex flex-wrap items-center justify-center gap-2">
         {/* How-it-works — icon-only 40×40 button to match social icons.
             Opens the onboarding explainer modal. */}
         <button
@@ -921,6 +915,7 @@ function SiteHeader({ onOpenHowItWorks }: { onOpenHowItWorks: () => void }) {
             {link.icon}
           </a>
         ))}
+        </div>
       </div>
     </div>
   );
