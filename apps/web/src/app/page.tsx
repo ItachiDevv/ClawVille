@@ -115,7 +115,7 @@ export default function HomePage() {
         that — the hero has h-[100svh] overflow-hidden so the Canvas only
         occupies the visible hero area.
       */}
-      <section className="relative z-10 min-h-[100svh] flex flex-col items-center justify-center px-4 sm:px-6 md:px-10 py-16 text-center overflow-hidden">
+      <section className="relative z-10 flex flex-col items-center justify-center px-4 sm:px-6 md:px-10 pt-12 pb-8 sm:pt-14 text-center overflow-hidden">
         {/* 3D town building-ring overview — absolute fill of the hero section only */}
         {mounted && <LandingScene />}
         {/* Legibility overlay — dark gradient between the 3D scene (z-0) and the
@@ -148,7 +148,8 @@ export default function HomePage() {
             <span className="text-[9px] font-mono uppercase tracking-[0.25em] text-white font-bold">Breaking</span>
           </span>
           <span className="text-[11px] sm:text-xs font-mono uppercase tracking-[0.2em] text-rose-50">
-            PayAI&nbsp;×&nbsp;ClawVille — Payments arrive
+            <span className="whitespace-nowrap">PayAI&nbsp;×&nbsp;ClawVille —</span>{' '}
+            <span className="whitespace-nowrap">Payments arrive</span>
           </span>
           <svg className="w-3 h-3 text-rose-200/70 group-hover:translate-y-0.5 transition-transform" viewBox="0 0 12 12" fill="none">
             <path d="M6 2v8m0 0l-3-3m3 3l3-3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
@@ -223,7 +224,7 @@ export default function HomePage() {
           </div>
 
           {/* Collaboration axes */}
-          <div className="anim-up order-3 justify-self-center lg:justify-self-start" style={{ animationDelay: '0.6s' }}>
+          <div className="anim-up order-3 justify-self-stretch lg:justify-self-start" style={{ animationDelay: '0.6s' }}>
             <CollaborationAxes />
           </div>
         </div>
