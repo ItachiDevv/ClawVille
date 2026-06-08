@@ -9,6 +9,7 @@
  */
 
 import * as fs from 'node:fs/promises';
+import * as fsSync from 'node:fs';
 import * as path from 'node:path';
 import { spawnSync } from 'node:child_process';
 
@@ -43,9 +44,14 @@ type Candidate = {
   safetyGate: string;
 };
 
+type ToktxAvailability =
+  | { available: false; mode: 'missing'; version?: undefined; commandPrefix?: undefined }
+  | { available: true; mode: 'path' | 'wsl-local'; version: string; commandPrefix: string };
+
 const REPO_ROOT = process.cwd();
 const OUT_DIR = path.join(REPO_ROOT, 'docs/perf-fidelity-spike');
 const AUDIT_JSON = path.join(OUT_DIR, 'asset-audit.json');
+const LOCAL_WSL_TOKTX = path.join(REPO_ROOT, '.tools/ktx-linux/bin/toktx');
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -53,9 +59,41 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
 }
 
-function commandExists(command: string): boolean {
-  const probe = spawnSync(command, ['--version'], { stdio: 'ignore', shell: true });
-  return probe.status === 0;
+function commandOutput(command: string, args: string[]): string | null {
+  const probe = spawnSync(command, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], shell: false });
+  if (probe.status !== 0) return null;
+  return (probe.stdout ?? '').trim();
+}
+
+function toWslPath(absPath: string): string {
+  const normalized = path.resolve(absPath).replace(/\\/g, '/');
+  const drive = normalized[0]?.toLowerCase();
+  return `/mnt/${drive}${normalized.slice(2)}`;
+}
+
+function detectToktx(): ToktxAvailability {
+  const debug = process.env.PERF_DEBUG_TOKTX === '1';
+  const pathVersion = commandOutput('toktx', ['--version']);
+  if (debug) console.log('[toktx-detect]', { cwd: REPO_ROOT, local: LOCAL_WSL_TOKTX, localExists: fsSync.existsSync(LOCAL_WSL_TOKTX), pathVersion });
+  if (pathVersion) {
+    return { available: true, mode: 'path', version: pathVersion, commandPrefix: '' };
+  }
+
+  if (fsSync.existsSync(LOCAL_WSL_TOKTX)) {
+    const wslRepo = toWslPath(REPO_ROOT);
+    const version = commandOutput('wsl', ['--cd', wslRepo, './.tools/ktx-linux/bin/toktx', '--version']);
+    if (debug) console.log('[toktx-detect:wsl]', { wslRepo, version });
+    if (version !== null) {
+      return {
+        available: true,
+        mode: 'wsl-local',
+        version: version || 'toktx v4.4.2 (WSL local)',
+        commandPrefix: `wsl --cd ${wslRepo} env PATH="$PWD/.tools/ktx-linux/bin:$PATH"`,
+      };
+    }
+  }
+
+  return { available: false, mode: 'missing' };
 }
 
 function assetKind(asset: AuditAsset): Candidate['kind'] {
@@ -73,20 +111,24 @@ function isBuildingMergeRisk(asset: AuditAsset): boolean {
     !asset.publicPath.startsWith('/models/reef-race/');
 }
 
-function experimentsFor(asset: AuditAsset, hasToktx: boolean): { experiments: string[]; command: string; safetyGate: string } {
+function hasWebpTextures(asset: AuditAsset): boolean {
+  return asset.extensionsUsed.includes('EXT_texture_webp') || asset.extensionsRequired.includes('EXT_texture_webp');
+}
+
+function experimentsFor(asset: AuditAsset, toktx: ToktxAvailability): { experiments: string[]; command: string; safetyGate: string } {
   if (assetKind(asset) === 'vrm') {
     return {
       experiments: [
         'runtime-vrm-metrics',
-        'texture-basis-lab',
+        toktx.available ? 'ktx2-blocked-vrm-extension-preservation' : 'texture-basis-lab-blocked-missing-toktx',
         'no-combineSkeletons-without-animation-proof',
       ],
       command: `bun run perf:fidelity:browser --label=vrm-${path.basename(asset.publicPath)} "--url=https://staging.clawville.world/game?perf=1" --durationMs=30000`,
-      safetyGate: 'Do not run combineSkeletons. Any VRM binary variant must preserve VRM/VRMC extensions and pass idle/walk/run/emote screenshot or video QA.',
+      safetyGate: 'Do not run stock gltf-transform uastc on VRM shipping files: local milady-chibi.uastc.glb lab stripped VRMC_vrm. Any VRM binary variant must preserve VRM/VRMC extensions and pass idle/walk/run/emote screenshot or video QA before a runtime swap.',
     };
   }
 
-  if (asset.textures > 0 && !hasToktx) {
+  if (asset.textures > 0 && !toktx.available) {
     return {
       experiments: ['ktx2-blocked-missing-toktx', 'texture-only-webp-regression-check'],
       command: `COMPRESS_NO_MESHOPT=1 bun run scripts/compress-glb-targeted.ts ${publicPathToRepoPath(asset)}`,
@@ -94,11 +136,20 @@ function experimentsFor(asset: AuditAsset, hasToktx: boolean): { experiments: st
     };
   }
 
-  if (asset.textures > 0 && hasToktx) {
+  if (asset.textures > 0 && toktx.available) {
+    if (hasWebpTextures(asset)) {
+      return {
+        experiments: ['ktx2-blocked-webp-source-needed', 'source-backup-uastc-lab'],
+        command: `# Use PNG/JPEG source GLB from apps/web/public/models/.webp-backup or another pre-WebP source; do not run uastc directly on ${publicPathToRepoPath(asset)}.`,
+        safetyGate: 'Current GLB already uses EXT_texture_webp. Local quest-bounty lab skipped all WebP textures, removed meshopt compression, and produced a larger no-KTX output. KTX2 tests must start from PNG/JPEG source GLBs and then validate KHR_texture_basisu plus retained geometry compression policy before any runtime swap.',
+      };
+    }
+
+    const runner = `${toktx.commandPrefix} npx --yes @gltf-transform/cli uastc`.trim();
     return {
       experiments: ['ktx2-uastc-lab', 'texture-upload-compare'],
-      command: `# Install/update a targeted KTX2 script before overwriting runtime assets; existing scripts/compress-ktx2.ts is hard-coded to older model names.`,
-      safetyGate: 'Compare wire bytes, GPU upload duration, screenshot quality, and KTX2Loader coverage before any runtime swap.',
+      command: `${runner} ${publicPathToRepoPath(asset)} docs/perf-fidelity-spike/variants/${path.basename(asset.publicPath, '.glb')}.uastc.glb --level 2 --zstd 18`,
+      safetyGate: 'Lab copy only. Compare wire bytes, GPU upload duration, screenshot quality, and KTX2Loader coverage before any runtime swap.',
     };
   }
 
@@ -128,7 +179,7 @@ function score(asset: AuditAsset): number {
 
 async function main(): Promise<void> {
   const audit = JSON.parse(await fs.readFile(AUDIT_JSON, 'utf8')) as AuditJson;
-  const hasToktx = commandExists('toktx');
+  const toktx = detectToktx();
 
   const candidates: Candidate[] = audit.assets
     .filter((a) => a.referenced)
@@ -136,7 +187,7 @@ async function main(): Promise<void> {
     .sort((a, b) => score(b) - score(a))
     .slice(0, 24)
     .map((asset) => {
-      const plan = experimentsFor(asset, hasToktx);
+      const plan = experimentsFor(asset, toktx);
       return {
         asset: asset.publicPath,
         kind: assetKind(asset),
@@ -150,14 +201,14 @@ async function main(): Promise<void> {
 
   const jsonPath = path.join(OUT_DIR, 'variant-plan.json');
   const mdPath = path.join(OUT_DIR, 'variant-plan.md');
-  await fs.writeFile(jsonPath, JSON.stringify({ generatedAt: new Date().toISOString(), hasToktx, candidates }, null, 2));
+  await fs.writeFile(jsonPath, JSON.stringify({ generatedAt: new Date().toISOString(), toktx, hasToktx: toktx.available, candidates }, null, 2));
 
   const md = `# Fidelity Variant Plan
 
 Generated: ${new Date().toISOString()}
 
 - Source audit: \`docs/perf-fidelity-spike/asset-audit.json\`
-- \`toktx\` available: ${hasToktx ? 'yes' : 'no'}
+- \`toktx\` available: ${toktx.available ? `yes (${toktx.mode}, ${toktx.version})` : 'no'}
 - Runtime assets overwritten: no
 
 This is an experiment queue, not a shipping list. Generate variants only after the browser harness identifies whether VRM parse, VRM normalization, texture upload, or geometry decode is the active bottleneck.
@@ -173,7 +224,8 @@ Do not start PlayCanvas/Babylon migration work from this matrix alone. The trigg
   await fs.writeFile(mdPath, md);
 
   console.log(JSON.stringify({
-    hasToktx,
+    toktx,
+    hasToktx: toktx.available,
     candidates: candidates.length,
     json: path.relative(REPO_ROOT, jsonPath).replace(/\\/g, '/'),
     markdown: path.relative(REPO_ROOT, mdPath).replace(/\\/g, '/'),
