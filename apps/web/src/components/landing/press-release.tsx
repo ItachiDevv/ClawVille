@@ -129,7 +129,7 @@ export function PressRelease() {
     <section
       id="press-release"
       aria-labelledby="press-release-title"
-      className="relative z-10 scroll-mt-6 bg-[#061520] px-4 sm:px-6 md:px-10 lg:px-16 py-16 md:py-24 overflow-hidden"
+      className="relative z-10 scroll-mt-6 bg-[#061520] px-4 sm:px-6 md:px-10 lg:px-16 pt-4 pb-16 md:pt-6 md:pb-24 overflow-hidden"
     >
       {/* Atmosphere — a PayAI-blue wash on the left, ClawVille cyan on the
           right, signalling the two brands meeting. */}
@@ -162,8 +162,9 @@ export function PressRelease() {
             </span>
           </div>
 
-          {/* Announcement key art — the lead banner. */}
-          <figure className="mt-8 overflow-hidden rounded-2xl border border-white/10 bg-black/30 shadow-[0_0_50px_rgba(0,30,60,0.55)]">
+          {/* Announcement key art — the lead banner. Capped narrower than the
+              article column on desktop so it doesn't overpower the masthead. */}
+          <figure className="mt-8 mx-auto w-full lg:max-w-lg overflow-hidden rounded-2xl border border-white/10 bg-black/30 shadow-[0_0_50px_rgba(0,30,60,0.55)]">
             <img
               src="/press/payai/announce.webp"
               alt="PayAI × ClawVille: Powering the Future of Human-Agent Economies — human and agent commerce thrives together, built on trust."
