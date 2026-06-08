@@ -126,6 +126,15 @@ const VRM_INSTANCES = new Map<string, InstanceEntry>();
 // Reused across all parses; the parser hooks into per-parse state internally.
 let _loader: GLTFLoader | null = null;
 
+// GLTFLoader.parseAsync does heavy synchronous work before yielding. Parsing
+// every visible VRM at once starves RAF/requestIdleCallback and can keep /game
+// in the texture-upload blue-screen state. Queue parses one-at-a-time; Suspense
+// fallbacks remain null, so real VRMs stream in progressively without fake
+// cylinder/capsule stand-ins.
+const VRM_PARSE_CONCURRENCY = 1;
+const VRM_PARSE_QUEUE: Array<() => void> = [];
+let vrmParseActive = 0;
+
 type VRMSceneCounts = {
   objects: number;
   meshes: number;
@@ -148,6 +157,7 @@ type VRMLoadMetric = {
   instanceId: string;
   bytes: number;
   fetchWaitMs: number;
+  queueWaitMs: number;
   sliceMs: number;
   parseMs: number;
   normaliseMs: number;
@@ -206,6 +216,35 @@ function pushVRMLoadMetric(metric: VRMLoadMetric): void {
   const metrics = bridge.__CV_VRM_LOAD_METRICS ?? [];
   metrics.push(metric);
   bridge.__CV_VRM_LOAD_METRICS = metrics.slice(-200);
+}
+
+function scheduleNextVRMParse(): void {
+  const run = () => pumpVRMParseQueue();
+  if (typeof window !== 'undefined' && typeof window.requestIdleCallback === 'function') {
+    window.requestIdleCallback(run, { timeout: 100 });
+  } else {
+    setTimeout(run, 0);
+  }
+}
+
+function pumpVRMParseQueue(): void {
+  while (vrmParseActive < VRM_PARSE_CONCURRENCY && VRM_PARSE_QUEUE.length > 0) {
+    const next = VRM_PARSE_QUEUE.shift();
+    if (next) next();
+  }
+}
+
+function enqueueVRMParse<T>(task: () => Promise<T>): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    VRM_PARSE_QUEUE.push(() => {
+      vrmParseActive++;
+      task().then(resolve, reject).finally(() => {
+        vrmParseActive--;
+        scheduleNextVRMParse();
+      });
+    });
+    pumpVRMParseQueue();
+  });
 }
 
 function getLoader(): GLTFLoader {
@@ -331,34 +370,40 @@ async function loadInstance(cacheKey: string, path: string): Promise<VRM> {
   const totalStart = nowMs();
   const buffer = await fetchBytes(path);
   const fetchDone = nowMs();
-  // .slice(0) gives the parser its own copy of the bytes. GLTFLoader doesn't
-  // mutate the input, but the defensive copy guards against any future change
-  // in three's parser semantics that could corrupt subsequent parses.
-  const ownBuffer = buffer.slice(0);
-  const sliceDone = nowMs();
-  const gltf = await getLoader().parseAsync(ownBuffer, '');
-  const parseDone = nowMs();
-  const vrm: VRM | undefined = (gltf as unknown as { userData: { vrm?: VRM } }).userData.vrm;
-  if (!vrm) throw new Error(`[vrm-loader] No VRM data in ${path}`);
-  const sceneBefore = collectVRMSceneCounts(vrm.scene);
-  const normalise = normaliseVRM(vrm);
-  const normaliseDone = nowMs();
-  const sceneAfter = collectVRMSceneCounts(vrm.scene);
+  const queuedAt = nowMs();
+  const parsed = await enqueueVRMParse(async () => {
+    const queueStart = nowMs();
+    // .slice(0) gives the parser its own copy of the bytes. GLTFLoader doesn't
+    // mutate the input, but the defensive copy guards against any future change
+    // in three's parser semantics that could corrupt subsequent parses.
+    const ownBuffer = buffer.slice(0);
+    const sliceDone = nowMs();
+    const gltf = await getLoader().parseAsync(ownBuffer, '');
+    const parseDone = nowMs();
+    const vrm: VRM | undefined = (gltf as unknown as { userData: { vrm?: VRM } }).userData.vrm;
+    if (!vrm) throw new Error(`[vrm-loader] No VRM data in ${path}`);
+    const sceneBefore = collectVRMSceneCounts(vrm.scene);
+    const normalise = normaliseVRM(vrm);
+    const normaliseDone = nowMs();
+    const sceneAfter = collectVRMSceneCounts(vrm.scene);
+    return { vrm, queueStart, sliceDone, parseDone, normaliseDone, sceneBefore, sceneAfter, normalise };
+  });
   pushVRMLoadMetric({
     path,
     instanceId: cacheKey.slice(path.length + 1),
     bytes: buffer.byteLength,
     fetchWaitMs: roundMs(fetchDone - totalStart),
-    sliceMs: roundMs(sliceDone - fetchDone),
-    parseMs: roundMs(parseDone - sliceDone),
-    normaliseMs: roundMs(normaliseDone - parseDone),
-    totalMs: roundMs(normaliseDone - totalStart),
-    sceneBefore,
-    sceneAfter,
-    normalise,
+    queueWaitMs: roundMs(parsed.queueStart - queuedAt),
+    sliceMs: roundMs(parsed.sliceDone - parsed.queueStart),
+    parseMs: roundMs(parsed.parseDone - parsed.sliceDone),
+    normaliseMs: roundMs(parsed.normaliseDone - parsed.parseDone),
+    totalMs: roundMs(parsed.normaliseDone - totalStart),
+    sceneBefore: parsed.sceneBefore,
+    sceneAfter: parsed.sceneAfter,
+    normalise: parsed.normalise,
   });
-  VRM_INSTANCES.set(cacheKey, { status: 'resolved', vrm });
-  return vrm;
+  VRM_INSTANCES.set(cacheKey, { status: 'resolved', vrm: parsed.vrm });
+  return parsed.vrm;
 }
 
 // ---------------------------------------------------------------------------
