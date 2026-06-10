@@ -181,6 +181,16 @@ export interface NpcRuntimeState {
    * plays the walk cycle in place → "moonwalk".
    */
   overlapTicks: number;
+  /**
+   * World-space heading of the last applied movement step, radians,
+   * atan2(dy, dx) in gamePx space (2026-06-10). Persists through idle so
+   * `planCenterWander` can bias the next wander leg into a forward cone —
+   * without it every replan picked a uniformly random annulus point, which
+   * is on average sideways-or-backward from the current position and read
+   * as "the NPC sensed something and turned around" (~9 reversals/min/NPC
+   * measured live on staging before the fix).
+   */
+  headingAngle: number;
   // Arena-only fields
   hp: number;
   maxHp: number;
@@ -539,6 +549,7 @@ class NpcSimulation {
         intentDescription: '',
         stuckTicks: 0,
         overlapTicks: 0,
+        headingAngle: Math.random() * Math.PI * 2,
         hp: def.stats.hp, maxHp: def.stats.hp,
         attack: def.stats.attack, defense: def.stats.defense, speed: def.stats.speed,
         inCombat: false, inventory: [], isDead: false, respawnAt: 0,
@@ -599,6 +610,7 @@ class NpcSimulation {
         path: [], pathIndex: 0, activityEndsAt: 0, behaviorCooldown: 30, intentDescription: '',
         stuckTicks: 0,
         overlapTicks: 0,
+        headingAngle: Math.random() * Math.PI * 2,
         hp: avatarConfig.stats.hp, maxHp: avatarConfig.stats.hp,
         attack: avatarConfig.stats.attack, defense: avatarConfig.stats.defense, speed: avatarConfig.stats.speed,
         inCombat: false, inventory: [], isDead: false, respawnAt: 0,
@@ -1607,8 +1619,19 @@ class NpcSimulation {
     // preserves equal area density at every radius — without the sqrt
     // more points would cluster near the inner edge.
     //
+    // Heading continuity (2026-06-10): the first 8 attempts only accept
+    // targets inside a ±60° forward cone around `headingAngle` AND at
+    // least WANDER_MIN_LEG away, so consecutive legs read as one
+    // continuous stroll instead of "stop, sense something, turn around"
+    // (uniform sampling reversed direction on most replans — measured 90
+    // reversals/min across 10 NPCs on staging). The last 4 attempts fall
+    // back to the old unconstrained sample so an NPC heading into the
+    // annulus boundary or a blocked corridor can still turn and escape.
+    //
     // Retry up to 12 times per plan call so a single blocked sample near a
     // town-center prop doesn't freeze movement for a full planning cycle.
+    const WANDER_MIN_LEG_SQ = 800 * 800;
+    const FORWARD_CONE = Math.PI / 3; // ±60°
     for (let attempt = 0; attempt < 12; attempt++) {
       const angle = Math.random() * Math.PI * 2;
       const radius = Math.sqrt(
@@ -1616,6 +1639,15 @@ class NpcSimulation {
       );
       const tx = TOWN_CENTER_X + Math.cos(angle) * radius;
       const ty = TOWN_CENTER_Y + Math.sin(angle) * radius;
+      if (attempt < 8) {
+        const legDx = tx - npc.x;
+        const legDy = ty - npc.y;
+        if (legDx * legDx + legDy * legDy < WANDER_MIN_LEG_SQ) continue;
+        let turn = Math.atan2(legDy, legDx) - npc.headingAngle;
+        while (turn > Math.PI) turn -= Math.PI * 2;
+        while (turn < -Math.PI) turn += Math.PI * 2;
+        if (Math.abs(turn) > FORWARD_CONE) continue;
+      }
       // Reject targets with < 3 tiles of clearance from any blocked tile —
       // prevents NPCs pathfinding to the edge of a building exclusion zone
       // where they then stop pressed against the visible wall.
@@ -1736,7 +1768,20 @@ class NpcSimulation {
         } else {
           npc.activity = 'idle'; npc.activityEmoji = '';
           npc.path = []; npc.pathIndex = 0;
-          npc.behaviorCooldown = 20 + Math.floor(Math.random() * 20);
+          // 2026-06-10: wander arrivals used to ALWAYS stand 4–8s
+          // (20+rand(20) ticks @5Hz) before replanning — combined with the
+          // uniform-random next target this produced the constant
+          // stop-stand-turn-around rhythm the user flagged. Now 60% of
+          // arrivals chain into the next leg after a natural beat
+          // (0.4–0.8s); 40% keep a shorter believable pause (2–5s).
+          // 60% of wander arrivals chain IMMEDIATELY into the next leg
+          // (cooldown 1 = replan this same tick after the decrement) — with
+          // heading-cone continuity the stroll flows through the turn with no
+          // visible stop. The 0.4–0.8s "beat" variant read as constant
+          // stop-start stutter (user 2026-06-10). 40% keep a real 2–5s pause.
+          npc.behaviorCooldown = Math.random() < 0.6
+            ? 1
+            : 11 + Math.floor(Math.random() * 15);
         }
       }
 
@@ -1755,6 +1800,15 @@ class NpcSimulation {
     // 2026-04-25: tick rate moved 2Hz → 5Hz, baseStep scaled 110 → 44 to keep
     // speed at 220 wu/s (44 / 0.2s = 220). Smaller per-tick deltas = smoother
     // client lerp = motion reads closer to Nori (who has zero net translation).
+    // 2026-06-10: briefly raised to 110 (550 wu/s) chasing a perceived
+    // stride/speed mismatch — REVERTED same day. 110-unit ticks overwhelmed
+    // the client entity-interp (visible stepping/glitch), and the perceived
+    // mismatch was actually the world-stream client interp stalling (rendered
+    // speed << server speed), NOT this constant. 44 @ 5Hz = 220 wu/s is the
+    // tuned value: small per-tick deltas the client lerp absorbs smoothly,
+    // and the walk clip at timeScale 1 visually matches ~220 (user-confirmed
+    // perfect in client-side demo-wander mode). Do NOT re-raise this to fix
+    // "NPCs look slow/sliding" — fix the client interp instead.
     const baseStep = this.arenaMode ? (14 + Math.random() * 4) * this.arenaSettings.moveSpeed : 44;
 
     for (const npc of this.npcs.values()) {
@@ -1806,18 +1860,47 @@ class NpcSimulation {
 
       // World mode: follow A* path
       if (npc.path.length > 0 && npc.pathIndex < npc.path.length) {
-        const wp = npc.path[npc.pathIndex];
-        const dx = wp.x - npc.x; const dy = wp.y - npc.y;
+        // Consume the FULL per-tick step across waypoint boundaries
+        // (2026-06-10 — the server-cadence root cause). The old code burned
+        // an entire 200ms tick on every `dist < 4` waypoint arrival (index
+        // advance, ZERO movement that tick). A* waypoints arrive every 3–5
+        // ticks of travel, so ~1/3 of walking ticks emitted no position —
+        // measured live as ~2.5–3.3Hz effective cadence / a walking NPC
+        // frozen 38% of its screen time ("NPCs move in spurts"). Walk the
+        // tick's distance along the path polyline through as many waypoints
+        // as it covers, then run the SAME collision pipeline as before on
+        // the single final desired point.
+        let walkRemaining = baseStep;
+        let walkX = npc.x;
+        let walkY = npc.y;
+        let walkIdx = npc.pathIndex;
+        let guard = 0;
+        while (walkIdx < npc.path.length && walkRemaining > 0.001 && guard++ < 64) {
+          const wpt = npc.path[walkIdx];
+          const sdx = wpt.x - walkX; const sdy = wpt.y - walkY;
+          const segDist = Math.sqrt(sdx * sdx + sdy * sdy);
+          if (segDist <= walkRemaining || segDist < 4) {
+            walkX = wpt.x; walkY = wpt.y;
+            walkRemaining -= segDist;
+            walkIdx++;
+          } else {
+            walkX += (sdx / segDist) * walkRemaining;
+            walkY += (sdy / segDist) * walkRemaining;
+            walkRemaining = 0;
+          }
+        }
+        const dx = walkX - npc.x; const dy = walkY - npc.y;
         const dist = Math.sqrt(dx * dx + dy * dy);
 
-        if (dist < 4) {
-          npc.pathIndex++;
+        if (dist < 0.5) {
+          // Degenerate path remainder (all waypoints within rounding) —
+          // treat as arrival, same as the old dist<4 terminal branch.
+          npc.pathIndex = walkIdx;
           if (npc.pathIndex >= npc.path.length) npc.direction = 'idle';
           npc.stuckTicks = 0;
         } else {
-          const step = Math.min(baseStep, dist);
-          const desiredX = npc.x + (dx / dist) * step;
-          const desiredY = npc.y + (dy / dist) * step;
+          const desiredX = walkX;
+          const desiredY = walkY;
 
           // AABB world-collider clamp — convert game-px to world-space, clamp,
           // then convert back. entityHalf=30 (NPC capsule half-width in wu).
@@ -1849,6 +1932,8 @@ class NpcSimulation {
             npc.stuckTicks++;
           } else {
             npc.stuckTicks = 0;
+            // Applied-step heading for wander continuity (see headingAngle doc).
+            npc.headingAngle = Math.atan2(npc.y - prevY, npc.x - prevX);
           }
 
           // If collider blocked this step, abandon current path and pick a new
@@ -1862,7 +1947,21 @@ class NpcSimulation {
             npc.behaviorCooldown = 5 + Math.floor(Math.random() * 10);
             npc.stuckTicks = 0;
           } else {
-            npc.direction = Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'right' : 'left') : (dy > 0 ? 'down' : 'up');
+            // Commit the waypoints consumed by this tick's polyline walk —
+            // but ONLY if the clamp applied the full move. A shaved move means
+            // the NPC is short of the consumed waypoints; advancing the index
+            // anyway would straight-line toward a later waypoint next tick and
+            // cut the corner the path was routing around. Keep the old index
+            // (retry the same waypoint) in that case — old-code semantics.
+            const shavedDx = npc.x - desiredX; const shavedDy = npc.y - desiredY;
+            if (shavedDx * shavedDx + shavedDy * shavedDy < 1) {
+              npc.pathIndex = walkIdx;
+            }
+            if (npc.pathIndex >= npc.path.length) {
+              npc.direction = 'idle';
+            } else {
+              npc.direction = Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'right' : 'left') : (dy > 0 ? 'down' : 'up');
+            }
           }
         }
       } else if (npc.activity === 'idle' && npc.path.length === 0) {
@@ -1914,6 +2013,8 @@ class NpcSimulation {
           npc.stuckTicks++;
         } else {
           npc.stuckTicks = 0;
+          // Applied-step heading for wander continuity (see headingAngle doc).
+          npc.headingAngle = Math.atan2(npc.y - prevY, npc.x - prevX);
         }
         if (clamped.hit || npc.stuckTicks >= 4) {
           npc.path = [];

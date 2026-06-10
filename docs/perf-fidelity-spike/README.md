@@ -100,3 +100,72 @@ A candidate optimization is not acceptable unless a browser report shows:
 - Screenshot confirms no blue-screen hold after initial load.
 - Long tasks, load duration, or frame stability improve versus baseline.
 - Any asset variant has a side-by-side screenshot or visual QA note.
+
+## Steady-State Benchmark
+
+The `--steady` flag adds a second measurement mode that waits for the scene to fully warm up, then measures sustained runtime performance — FPS distribution, frame-time percentiles, per-VRM animator cost, and renderer draw-call/triangle counts — rather than load-phase long tasks.
+
+### Prerequisites
+
+- Deploy or run the build with `?perf=1` in the URL **or** the harness injects `window.__CV_PERF_HARNESS__ = true` automatically via `evaluateOnNewDocument`. Both paths set `VRM_METRICS_ENABLED = true` inside the page, which arms the `__CV_VRM_FRAME_METRICS` and `__CV_GL_INFO` window bridges.
+- Chrome must be at the path specified by `--chrome` (default `C:/Program Files/Google/Chrome/Application/chrome.exe`). Adjust on Linux/Mac.
+
+### Run against staging (30 s sample, 120 s ready timeout)
+
+```bash
+bun run perf:fidelity:browser \
+  --steady \
+  --label=staging-$(git rev-parse --short HEAD) \
+  "--url=https://staging.clawville.world/game?perf=1" \
+  --sample-seconds=30 \
+  --ready-timeout-s=120
+```
+
+Output lands in `docs/perf-fidelity-spike/steady-staging-<label>/`:
+- `metrics.json` — full machine-readable report including `git.sha`, `git.dirty`, and the `steadyState` section.
+- `summary.md` — human table with FPS avg/p10/p1, frame-time avg/p95/p99, dropped-frame count, per-VRM mixer/spring/full-update avg ms per call, and renderer draw-call/triangle min/avg/max.
+- `game.png` — screenshot taken at end of sample window.
+
+### Run against local prod bundle (`:3000`)
+
+```bash
+# Build first (never bun run dev — Iris Xe crash)
+bun run build && bun run start &
+
+bun run perf:fidelity:browser \
+  --steady \
+  --label=local-$(git rev-parse --short HEAD) \
+  "--url=http://localhost:3000/game?perf=1" \
+  --sample-seconds=30 \
+  --ready-timeout-s=120
+```
+
+### Extended sample for p1 FPS accuracy
+
+```bash
+bun run perf:fidelity:browser \
+  --steady \
+  --label=staging-extended \
+  "--url=https://staging.clawville.world/game?perf=1" \
+  --sample-seconds=120
+```
+
+### Key metrics in the report
+
+| Field | What it measures |
+|---|---|
+| `fpsAvg` | Mean frames-per-second over the sample window |
+| `fpsP10` | 10th-percentile FPS (derived from 90th-percentile frame time) |
+| `fpsP1` | 1st-percentile FPS — worst 1% of frames |
+| `ftP95Ms` | 95th-percentile frame time in ms |
+| `droppedFrames` | Frames taking > 33.3 ms (missed 30 fps budget) |
+| `vrmFrameMetrics.mixerAvgMs` | Mean `AnimationMixer.update()` + humanoid ms **per NPC update call** (per-VRM regression; multiply by calls÷frameCount for frame-budget impact) |
+| `vrmFrameMetrics.springAvgMs` | Mean spring-bone pass ms **per NPC update call** |
+| `vrmFrameMetrics.fullAvgMs` | Mean full VRM update ms **per player-avatar call** |
+| `vrmPerFrame.mixerMsPerFrame` | Total mixer cost **per frame** (= mixerAvgMs × mixerCalls ÷ frameCount) — use this for frame-budget accounting |
+| `vrmPerFrame.springMsPerFrame` | Total spring cost **per frame** |
+| `vrmPerFrame.fullUpdateMsPerFrame` | Total full-update cost **per frame** |
+| `glInfo.callsAvg` | Mean per-frame draw calls sampled from `gl.info.render.drawCalls` (WebGPU) / `gl.info.render.calls` (WebGL) |
+| `glInfo.triAvg` | Mean triangle count per frame sampled from `gl.info.render.triangles` |
+
+The `git.sha` + `git.dirty` fields in `metrics.json` tie each report to an exact tree so before/after comparisons are reproducible.

@@ -38,6 +38,63 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { MeshoptDecoder } from 'meshoptimizer';
 import type { VRM } from '@pixiv/three-vrm';
 import { retargetMixamoClip, type MixamoGltf } from './mixamo-retarget';
+import { VRM_METRICS_ENABLED } from './vrm-loader';
+
+// ---------------------------------------------------------------------------
+// Per-frame VRM cost instrumentation (PART A — steady-state metrics)
+//
+// All state is module-scope numeric accumulators. Zero objects or arrays are
+// allocated per frame. When VRM_METRICS_ENABLED is false the entire cost is a
+// single boolean branch (the `if (VRM_METRICS_ENABLED)` check); no
+// performance.now() calls, no writes.
+//
+// window.__CV_VRM_FRAME_METRICS is created ONCE at module init (SSR-safe).
+// The per-frame path accumulates into these numbers. read() and reset() are
+// the only paths that allocate an object — both are called by the harness,
+// never on the hot path.
+// ---------------------------------------------------------------------------
+
+// Numeric accumulators — module scope, plain numbers, zero allocations.
+let _fmMixerTotalMs  = 0;   // total ms spent in updateMixerOnly bodies
+let _fmSpringTotalMs = 0;   // total ms spent in updateSpringOnly bodies
+let _fmFullTotalMs   = 0;   // total ms spent in update() (full/player path)
+let _fmMixerCalls    = 0;   // number of updateMixerOnly calls
+let _fmSpringCalls   = 0;   // number of updateSpringOnly calls
+let _fmFullCalls     = 0;   // number of update() calls
+let _fmEpoch         = 0;   // frame-epoch counter (incremented in updateMixerOnly)
+
+// Expose on window once at module init so the harness can read/reset without
+// any per-frame overhead. SSR-safe: skip when window is undefined.
+if (VRM_METRICS_ENABLED && typeof window !== 'undefined') {
+  (window as unknown as Record<string, unknown>).__CV_VRM_FRAME_METRICS = {
+    /** Return a snapshot of current accumulator state. Allocates once per call. */
+    read(): {
+      mixerAvgMs: number; springAvgMs: number; fullAvgMs: number;
+      mixerCalls: number; springCalls: number; fullCalls: number;
+      epoch: number;
+    } {
+      return {
+        mixerAvgMs:  _fmMixerCalls  > 0 ? _fmMixerTotalMs  / _fmMixerCalls  : 0,
+        springAvgMs: _fmSpringCalls > 0 ? _fmSpringTotalMs / _fmSpringCalls : 0,
+        fullAvgMs:   _fmFullCalls   > 0 ? _fmFullTotalMs   / _fmFullCalls   : 0,
+        mixerCalls:  _fmMixerCalls,
+        springCalls: _fmSpringCalls,
+        fullCalls:   _fmFullCalls,
+        epoch:       _fmEpoch,
+      };
+    },
+    /** Reset all accumulators to zero. */
+    reset(): void {
+      _fmMixerTotalMs  = 0;
+      _fmSpringTotalMs = 0;
+      _fmFullTotalMs   = 0;
+      _fmMixerCalls    = 0;
+      _fmSpringCalls   = 0;
+      _fmFullCalls     = 0;
+      _fmEpoch         = 0;
+    },
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Mixamo animation asset paths
@@ -764,10 +821,22 @@ export class VRMCharacterAnimator {
       this.wasMotion = motion;
     }
 
-    this.mixer.update(delta);
-    this.vrm.update(delta);
-    this.vrm.scene.updateMatrixWorld(true);
-    for (const fn of this._skeletonUpdateFns.values()) fn();
+    // Instrumentation: single boolean check when disabled; performance.now()
+    // pair only when VRM_METRICS_ENABLED. No objects allocated in either path.
+    if (VRM_METRICS_ENABLED) {
+      const t0 = performance.now();
+      this.mixer.update(delta);
+      this.vrm.update(delta);
+      this.vrm.scene.updateMatrixWorld(true);
+      for (const fn of this._skeletonUpdateFns.values()) fn();
+      _fmFullTotalMs += performance.now() - t0;
+      _fmFullCalls++;
+    } else {
+      this.mixer.update(delta);
+      this.vrm.update(delta);
+      this.vrm.scene.updateMatrixWorld(true);
+      for (const fn of this._skeletonUpdateFns.values()) fn();
+    }
   }
 
   /**
@@ -844,6 +913,12 @@ export class VRMCharacterAnimator {
     const next = this.actions[clipName] ?? (motion === 'run' ? this.actions.walk : undefined);
     if (!next || next === this.currentAction) return;
     next.reset().fadeIn(CROSSFADE_DURATION).play();
+    // NOTE (2026-06-10, corrected later same day): a crossfade-internal
+    // velocity timeScale briefly lived HERE and was removed — scaling at the
+    // crossfade site pops. The CORRECT mechanism (original fix 9e3bc63a,
+    // restored 2026-06-10) is the `walkTimeScale` param on updateMixerOnly():
+    // callers pass a low-pass-smoothed speed ratio so the walk action alone
+    // tracks rendered ground speed; idle/run/one-shots keep real time.
     if (this.currentAction) {
       this.currentAction.fadeOut(CROSSFADE_DURATION);
     }
@@ -860,14 +935,19 @@ export class VRMCharacterAnimator {
    *
    * @param delta    Clamped frame delta
    * @param isMoving true when walking/running
+   * @param walkTimeScale speed-matched timeScale for the walk action only
    */
-  updateMixerOnly(delta: number, isMoving: boolean, isRunning = false): void {
+  updateMixerOnly(delta: number, isMoving: boolean, isRunning = false, walkTimeScale = 1): void {
     if (!this.ready) return;
 
     // Same one-shot guard as update() — see that method for rationale.
     const motion: 'idle' | 'walk' | 'run' = !isMoving
       ? 'idle'
       : isRunning ? 'run' : 'walk';
+    const walkAction = this.actions.walk;
+    if (walkAction) {
+      walkAction.timeScale = walkTimeScale;
+    }
     if (this.oneShotActive) {
       this.wasMoving = isMoving;
       this.wasMotion = motion;
@@ -877,37 +957,53 @@ export class VRMCharacterAnimator {
       this.wasMotion = motion;
     }
 
-    this.mixer.update(delta);
+    // Instrumentation: single boolean check when disabled; performance.now()
+    // pair only when VRM_METRICS_ENABLED. _fmEpoch is the frame-epoch counter
+    // for correlating mixer and spring samples.
+    if (VRM_METRICS_ENABLED) {
+      const t0 = performance.now();
+      this.mixer.update(delta);
+      // 2026-05-18 — body-tracks-group fix (see full comment in the
+      // non-instrumented path below).
+      this.vrm.humanoid?.update();
+      this.vrm.scene.updateMatrixWorld(true);
+      for (const fn of this._skeletonUpdateFns.values()) fn();
+      _fmMixerTotalMs += performance.now() - t0;
+      _fmMixerCalls++;
+      _fmEpoch++;
+    } else {
+      this.mixer.update(delta);
 
-    // 2026-05-18 — body-tracks-group fix.
-    //
-    // Historically this method skipped vrm.update() + scene.updateMatrixWorld
-    // + skeleton flush entirely; updateSpringOnly handled all of them at
-    // 15 Hz. That was correct when the only source of bone movement was
-    // animation pose (which the spring-bone throttle is what we're saving
-    // cycles on). But it ALSO meant the SkinnedMesh's boneMatrices uniform
-    // only refreshed every 4th frame — so when arena-npcs.tsx moves
-    // group.position every frame via the entity-interpolation smoother,
-    // the body drew at 15 Hz while the group moved at 60 Hz. Visible
-    // stutter ("body chunks forward every 4 frames"), reported by the
-    // user 2026-05-18 with the diagnostic clue that GLB crustaceans
-    // (no animator override of skeleton.update) moved smoothly while
-    // VRMs stuttered.
-    //
-    // Fix: split vrm.update into its CHEAP parts (humanoid norm→raw copy,
-    // ~1µs per VRM) which run every frame, and the EXPENSIVE part
-    // (spring-bone physics) which stays on the 15 Hz schedule in
-    // updateSpringOnly. scene.updateMatrixWorld + skeleton.update also
-    // run every frame here — both cheap (a few µs per VRM) and required
-    // for the boneMatrices upload to reflect the new group.position.
-    //
-    // Tradeoff: spring bones lag one frame behind animation pose (since
-    // skeleton flush in MixerOnly captures bones BEFORE the next
-    // updateSpringOnly mutates them). Imperceptible on hair/skirt at
-    // typical viewing distance.
-    this.vrm.humanoid?.update();
-    this.vrm.scene.updateMatrixWorld(true);
-    for (const fn of this._skeletonUpdateFns.values()) fn();
+      // 2026-05-18 — body-tracks-group fix.
+      //
+      // Historically this method skipped vrm.update() + scene.updateMatrixWorld
+      // + skeleton flush entirely; updateSpringOnly handled all of them at
+      // 15 Hz. That was correct when the only source of bone movement was
+      // animation pose (which the spring-bone throttle is what we're saving
+      // cycles on). But it ALSO meant the SkinnedMesh's boneMatrices uniform
+      // only refreshed every 4th frame — so when arena-npcs.tsx moves
+      // group.position every frame via the entity-interpolation smoother,
+      // the body drew at 15 Hz while the group moved at 60 Hz. Visible
+      // stutter ("body chunks forward every 4 frames"), reported by the
+      // user 2026-05-18 with the diagnostic clue that GLB crustaceans
+      // (no animator override of skeleton.update) moved smoothly while
+      // VRMs stuttered.
+      //
+      // Fix: split vrm.update into its CHEAP parts (humanoid norm→raw copy,
+      // ~1µs per VRM) which run every frame, and the EXPENSIVE part
+      // (spring-bone physics) which stays on the 15 Hz schedule in
+      // updateSpringOnly. scene.updateMatrixWorld + skeleton.update also
+      // run every frame here — both cheap (a few µs per VRM) and required
+      // for the boneMatrices upload to reflect the new group.position.
+      //
+      // Tradeoff: spring bones lag one frame behind animation pose (since
+      // skeleton flush in MixerOnly captures bones BEFORE the next
+      // updateSpringOnly mutates them). Imperceptible on hair/skirt at
+      // typical viewing distance.
+      this.vrm.humanoid?.update();
+      this.vrm.scene.updateMatrixWorld(true);
+      for (const fn of this._skeletonUpdateFns.values()) fn();
+    }
   }
 
   /**
@@ -938,35 +1034,45 @@ export class VRMCharacterAnimator {
     // Calling springBoneManager.update directly bypasses the wrapper but
     // matches the public API @pixiv/three-vrm exposes (3.5.x). If a
     // future VRM version moves the manager, fall back to vrm.update().
-    this.vrm.springBoneManager?.update(accumulatedDelta);
+    // Instrumentation: single boolean check when disabled.
+    if (VRM_METRICS_ENABLED) {
+      const t0 = performance.now();
+      this.vrm.springBoneManager?.update(accumulatedDelta);
+      // 2026-06-03 PERF — see full comment in the non-instrumented path below.
+      for (const fn of this._skeletonUpdateFns.values()) fn();
+      _fmSpringTotalMs += performance.now() - t0;
+      _fmSpringCalls++;
+    } else {
+      this.vrm.springBoneManager?.update(accumulatedDelta);
 
-    // 2026-06-03 PERF — removed the redundant full-scene
-    // `this.vrm.scene.updateMatrixWorld(true)` that previously ran here.
-    //
-    // WHY IT'S SAFE (verified against @pixiv/three-vrm 3.5.2 source —
-    // @pixiv/three-vrm-springbone three-vrm-springbone.module.js):
-    // VRMSpringBoneManager.update() flushes its OWN joints' world matrices.
-    // For every sorted joint it calls bone.updateMatrix() +
-    // bone.matrixWorld.multiplyMatrices(parentMatrixWorld, bone.matrix)
-    // (VRMSpringBoneJoint.update), then traverses each joint's descendants
-    // calling child.updateWorldMatrix() (VRMSpringBoneManager's
-    // _relevantChildrenUpdated). So after this call EVERY bone whose
-    // local transform the spring tick mutated already has a correct
-    // matrixWorld — the only bones that changed since updateMixerOnly's
-    // full recompute this frame.
-    //
-    // updateSpringOnly is ALWAYS called in a frame where updateMixerOnly
-    // already ran (the sole call sites — arena-npcs.tsx VRMNpcMesh — gate
-    // both on `!isFarNpc`, and spring runs on a `% springMod` SUBSET of
-    // mixer frames). updateMixerOnly already did vrm.scene.updateMatrixWorld(
-    // true) THIS frame for every non-spring bone, so re-running a full
-    // subtree recompose here only duplicated the spring-joint flush the
-    // manager already performed — pure waste across ~13 VRMs/frame.
-    //
-    // The skeleton flush below only READS bone.matrixWorld (Skeleton.update
-    // builds boneMatrices = matrixWorld * boneInverse), so the
-    // manager-written matrices upload correctly without a second recompute.
-    for (const fn of this._skeletonUpdateFns.values()) fn();
+      // 2026-06-03 PERF — removed the redundant full-scene
+      // `this.vrm.scene.updateMatrixWorld(true)` that previously ran here.
+      //
+      // WHY IT'S SAFE (verified against @pixiv/three-vrm 3.5.2 source —
+      // @pixiv/three-vrm-springbone three-vrm-springbone.module.js):
+      // VRMSpringBoneManager.update() flushes its OWN joints' world matrices.
+      // For every sorted joint it calls bone.updateMatrix() +
+      // bone.matrixWorld.multiplyMatrices(parentMatrixWorld, bone.matrix)
+      // (VRMSpringBoneJoint.update), then traverses each joint's descendants
+      // calling child.updateWorldMatrix() (VRMSpringBoneManager's
+      // _relevantChildrenUpdated). So after this call EVERY bone whose
+      // local transform the spring tick mutated already has a correct
+      // matrixWorld — the only bones that changed since updateMixerOnly's
+      // full recompute this frame.
+      //
+      // updateSpringOnly is ALWAYS called in a frame where updateMixerOnly
+      // already ran (the sole call sites — arena-npcs.tsx VRMNpcMesh — gate
+      // both on `!isFarNpc`, and spring runs on a `% springMod` SUBSET of
+      // mixer frames). updateMixerOnly already did vrm.scene.updateMatrixWorld(
+      // true) THIS frame for every non-spring bone, so re-running a full
+      // subtree recompose here only duplicated the spring-joint flush the
+      // manager already performed — pure waste across ~13 VRMs/frame.
+      //
+      // The skeleton flush below only READS bone.matrixWorld (Skeleton.update
+      // builds boneMatrices = matrixWorld * boneInverse), so the
+      // manager-written matrices upload correctly without a second recompute.
+      for (const fn of this._skeletonUpdateFns.values()) fn();
+    }
   }
 
   /**

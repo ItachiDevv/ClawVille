@@ -29,6 +29,7 @@ import EmoteHotbar from '@/components/game/emote-hotbar';
 import ActivityFeed from '@/components/game/activity-feed';
 import AgentConnectModal from '@/components/game/agent-connect-modal';
 import EmailVerifyBanner from '@/components/game/email-verify-banner';
+import GameLanguageControl from '@/components/game/game-language-control';
 
 const BuildingPortalModal = dynamic(
   () => import('@/components/game/building-portal-modal'),
@@ -351,13 +352,27 @@ export default function GamePage() {
     if (isLoading || authLoading) return;
     const store = useGameStore.getState();
     store.setIsSpectator(!avatar);
-    if (avatar && store.controlMode === 'explore') {
+    // GUESTS ARE EXEMPT from the explore→player promotion (2026-06-10).
+    // Entering NPC mode auto-mints a guest avatar; when that creation (or ANY
+    // useAvatar refetch — tab focus, query invalidation) resolved, this effect
+    // saw `avatar && controlMode === 'explore'` and force-promoted the guest
+    // into 'player' mode — hijacking the toggle (user flips to Explore, the
+    // next refetch silently puts them back in character control; reproduced
+    // live: an Explore click 2s after entering NPC mode never stuck). The
+    // promotion exists for the "logged in with avatar = my agent is in the
+    // world" mental model, which only applies to REAL accounts — guests stay
+    // on the Explore ↔ NPC Mode pair.
+    // Belt-and-braces (Codex finding): require a RESOLVED authenticated
+    // non-guest user, not just "isGuest is falsy" — a stale auth-me cache of
+    // null would otherwise read as not-a-guest while the freshly-minted guest
+    // avatar resolves, re-opening the hijack.
+    if (avatar && isAuthenticated && !isGuest && store.controlMode === 'explore') {
       store.setControlMode('player');
     }
     if (!avatar && store.controlMode !== 'explore' && store.controlMode !== 'npc') {
       store.setControlMode('explore');
     }
-  }, [avatar, isLoading, authLoading]);
+  }, [avatar, isLoading, authLoading, isGuest, isAuthenticated]);
 
   // Sync avatar appearance to game store for 3D rendering
   useEffect(() => {
@@ -431,6 +446,8 @@ export default function GamePage() {
       <ControlModeToggle />
       <MobileControls />
       <PerfHud />
+      <TutorialOverlay />
+      <GameLanguageControl />
       <ToastNotifications />
       {/* Ask Nori HUD shortcut — opens the Town Guide chat from anywhere
           on the world surface so new players don't have to find her 3D
@@ -453,7 +470,6 @@ export default function GamePage() {
       {hasAvatar && (
         <>
           <LocationHUD />
-          <TutorialOverlay />
           <ActivityFeed />
           <ChatPanel />
           {/* Phase 6.2 (2026-04-27) — AvatarChatBar moved BACK out of the
@@ -471,7 +487,7 @@ export default function GamePage() {
       )}
 
       {/* NPC-mode chat: talk to nearest wandering world character.
-          Stateless one-shot Gemini — no Eliza store. Component
+          Stateless one-shot OpenAI — no Eliza store. Component
           self-gates on `controlMode === 'npc'`. */}
       <TalkToCharacterBar />
 

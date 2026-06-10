@@ -5,9 +5,26 @@
  * Launches an isolated Chrome instance, opens /game, waits for the Three scene,
  * samples frame timing, captures resource/long-task data, and writes a JSON
  * report + screenshot + Markdown summary. Works against staging or any URL.
+ *
+ * Modes
+ * -----
+ * (default / load-phase)
+ *   Navigate → wait for canvas → wait durationMs → snapshot and report.
+ *   Measures load-phase long tasks, resource timing, and VRM load metrics.
+ *   outDir prefix: browser-<label>
+ *
+ * --steady
+ *   Navigate → wait for __W3D_READY && __W3D_TEXTURES_READY (up to
+ *   --ready-timeout-s=120s, default 120) → settle 5 s → reset VRM frame
+ *   metrics → inject pre-allocated RAF sampler → sample --sample-seconds
+ *   (default 30) → report steady-state fps/frame-time/VRM-cost/gl-info.
+ *   The RAF sampler writes into a pre-allocated Float64Array (no per-frame
+ *   array growth). gl.info is sampled once/s (multi-frame average/min/max).
+ *   outDir prefix: steady-<label>
  */
 
 import puppeteer from 'puppeteer-core';
+import { execSync } from 'node:child_process';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 
@@ -19,6 +36,9 @@ interface Args {
   width: number;
   height: number;
   chromePath: string;
+  steady: boolean;
+  readyTimeoutS: number;
+  sampleSeconds: number;
 }
 
 const REPO_ROOT = process.cwd();
@@ -27,17 +47,22 @@ function parseArgs(): Args {
   const args = new Map<string, string>();
   for (const raw of Bun.argv.slice(2)) {
     const [k, ...rest] = raw.replace(/^--/, '').split('=');
-    args.set(k, rest.join('=') || '1');
+    args.set(k!, rest.join('=') || '1');
   }
+  const steady = args.get('steady') === '1' || args.has('steady');
   const label = args.get('label') ?? new Date().toISOString().replace(/[:.]/g, '-');
+  const defaultPrefix = steady ? `steady-${label}` : `browser-${label}`;
   return {
     url: args.get('url') ?? 'https://staging.clawville.world/game?perf=1',
     label,
-    outDir: path.resolve(args.get('out') ?? `docs/perf-fidelity-spike/browser-${label}`),
+    outDir: path.resolve(args.get('out') ?? `docs/perf-fidelity-spike/${defaultPrefix}`),
     durationMs: Number(args.get('durationMs') ?? '30000'),
     width: Number(args.get('width') ?? '1920'),
     height: Number(args.get('height') ?? '1080'),
     chromePath: args.get('chrome') ?? 'C:/Program Files/Google/Chrome/Application/chrome.exe',
+    steady,
+    readyTimeoutS: Number(args.get('ready-timeout-s') ?? '120'),
+    sampleSeconds: Number(args.get('sample-seconds') ?? '30'),
   };
 }
 
@@ -52,8 +77,30 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
 }
 
+/** Read git SHA + dirty flag. Returns 'unknown' on error (no git, bare repo, etc.). */
+function readGitState(): { sha: string; dirty: boolean } {
+  try {
+    const sha = execSync('git rev-parse HEAD', { encoding: 'utf8' }).trim();
+    const dirty = execSync('git status --porcelain', { encoding: 'utf8' }).trim().length > 0;
+    return { sha, dirty };
+  } catch {
+    return { sha: 'unknown', dirty: false };
+  }
+}
+
+/**
+ * Percentile of a sorted Float64Array slice [0, length).
+ * p is 0–100. Returns 0 for empty arrays.
+ */
+function pct(sorted: Float64Array, length: number, p: number): number {
+  if (length === 0) return 0;
+  const idx = Math.min(length - 1, Math.floor((p / 100) * length));
+  return sorted[idx]!;
+}
+
 async function main() {
   const cfg = parseArgs();
+  const git = readGitState();
   await fs.mkdir(cfg.outDir, { recursive: true });
   const profileDir = path.join(cfg.outDir, '.chrome-profile');
 
@@ -127,6 +174,329 @@ async function main() {
 
   const startedAt = Date.now();
   await page.goto(cfg.url, { waitUntil: 'domcontentloaded', timeout: 60_000 });
+
+  // -------------------------------------------------------------------------
+  // STEADY-STATE MODE
+  // -------------------------------------------------------------------------
+  if (cfg.steady) {
+    // Step 1: wait for __W3D_READY && __W3D_TEXTURES_READY.
+    const readyTimeoutMs = cfg.readyTimeoutS * 1000;
+    const readyStart = Date.now();
+    let timedOut = false;
+
+    try {
+      await page.waitForFunction(
+        () => Boolean((window as any).__W3D_READY) && Boolean((window as any).__W3D_TEXTURES_READY),
+        { timeout: readyTimeoutMs },
+      );
+    } catch {
+      timedOut = true;
+    }
+
+    const timeToReadyMs = Date.now() - readyStart;
+
+    if (timedOut) {
+      // Write partial report and exit cleanly — do not throw.
+      const screenshotPath = path.join(cfg.outDir, 'game.png');
+      const jsonPath = path.join(cfg.outDir, 'metrics.json');
+      const mdPath = path.join(cfg.outDir, 'summary.md');
+      await page.screenshot({ path: screenshotPath, fullPage: false });
+      const report = {
+        generatedAt: new Date().toISOString(),
+        wallMs: Date.now() - startedAt,
+        config: cfg,
+        git,
+        steadyState: null,
+        steadyStateNote: `Timed out after ${timeToReadyMs}ms waiting for __W3D_READY && __W3D_TEXTURES_READY`,
+      };
+      await fs.writeFile(jsonPath, JSON.stringify(report, null, 2));
+      await fs.writeFile(
+        mdPath,
+        `# Steady-State Run: ${cfg.label}\n\n` +
+        `Generated: ${new Date().toISOString()}\n\n` +
+        `Git: \`${git.sha}\`${git.dirty ? ' (dirty)' : ''}\n\n` +
+        `**TIMEOUT**: Scene did not reach ready state within ${cfg.readyTimeoutS}s.\n\n` +
+        `timeToReadyMs: ${timeToReadyMs}ms\n\n` +
+        `Screenshot: \`game.png\`\n`,
+      );
+      await browser.close();
+      await fs.rm(profileDir, { recursive: true, force: true });
+      console.log(JSON.stringify({ label: cfg.label, outDir: path.relative(REPO_ROOT, cfg.outDir).replace(/\\/g, '/'), steadyState: null, note: 'timed out' }, null, 2));
+      return;
+    }
+
+    // Step 2: settle 5s.
+    await new Promise((r) => setTimeout(r, 5000));
+
+    // Step 3: reset VRM frame metrics accumulator.
+    await page.evaluate(() => {
+      const m = (window as any).__CV_VRM_FRAME_METRICS;
+      if (m && typeof m.reset === 'function') m.reset();
+    });
+
+    // Step 4+5: inject pre-allocated RAF sampler and wait sampleSeconds.
+    // The sampler writes frame deltas into a pre-allocated Float64Array.
+    // NO per-frame array.push calls — just index-based writes.
+    // We also sample gl.info once per second into a separate array.
+    const sampleSeconds = cfg.sampleSeconds;
+    const maxSamples = sampleSeconds * 150; // 150 = generous over 60fps ceiling
+
+    const steadyResult = await page.evaluate(
+      ({ sampleSec, maxSamples: maxS }: { sampleSec: number; maxSamples: number }) => {
+        return new Promise<{
+          frameDeltasMs: number[];
+          glSnapshots: Array<{ calls: number; triangles: number; programs: number }>;
+          sampleDurationMs: number;
+        }>((resolve) => {
+          // Pre-allocate fixed-size Float64Array — no growth during sampling.
+          const deltas = new Float64Array(maxS);
+          let deltaCount = 0;
+          const glSnaps: Array<{ calls: number; triangles: number; programs: number }> = [];
+          let lastFrameTs = -1;
+          let lastGlSampleTs = -1;
+          const endAt = performance.now() + sampleSec * 1000;
+          const samplerStart = performance.now();
+
+          function sampleGl() {
+            const glInfo = (window as any).__CV_GL_INFO?.();
+            if (glInfo) {
+              glSnaps.push({ calls: glInfo.calls, triangles: glInfo.triangles, programs: glInfo.programs });
+            } else {
+              // Fall back to __W3D state.gl.info if __CV_GL_INFO not available.
+              // Use drawCalls (per-frame on WebGPU) with fallback to calls (per-frame on WebGL).
+              const state = (window as any).__W3D;
+              if (state?.gl?.info) {
+                const info = state.gl.info;
+                glSnaps.push({
+                  calls: (info.render?.drawCalls ?? info.render?.calls) ?? 0,
+                  triangles: info.render?.triangles ?? 0,
+                  programs: info.programs?.length ?? 0,
+                });
+              }
+            }
+          }
+
+          function rafTick(now: number) {
+            if (now >= endAt) {
+              resolve({
+                frameDeltasMs: Array.from(deltas.subarray(0, deltaCount)),
+                glSnapshots: glSnaps,
+                sampleDurationMs: performance.now() - samplerStart,
+              });
+              return;
+            }
+
+            // Record frame delta — no allocation.
+            if (lastFrameTs >= 0 && deltaCount < maxS) {
+              deltas[deltaCount++] = now - lastFrameTs;
+            }
+            lastFrameTs = now;
+
+            // Sample gl.info once per second.
+            if (lastGlSampleTs < 0 || now - lastGlSampleTs >= 1000) {
+              sampleGl();
+              lastGlSampleTs = now;
+            }
+
+            requestAnimationFrame(rafTick);
+          }
+
+          requestAnimationFrame(rafTick);
+        });
+      },
+      { sampleSec: sampleSeconds, maxSamples },
+    );
+
+    // Step 6: read VRM frame metrics.
+    const vrmFrameMetrics = await page.evaluate(() => {
+      const m = (window as any).__CV_VRM_FRAME_METRICS;
+      if (!m || typeof m.read !== 'function') return null;
+      return m.read() as {
+        mixerAvgMs: number; springAvgMs: number; fullAvgMs: number;
+        mixerCalls: number; springCalls: number; fullCalls: number; epoch: number;
+      };
+    });
+
+    // Compute FPS / frame-time stats. Sort a copy AFTER sampling ends.
+    const deltas = steadyResult.frameDeltasMs;
+    const frameCount = deltas.length;
+    const sorted = new Float64Array(deltas).sort();
+    const fpsAvg  = frameCount > 0 ? frameCount / (steadyResult.sampleDurationMs / 1000) : 0;
+    const ftAvg   = frameCount > 0 ? deltas.reduce((s, d) => s + d, 0) / frameCount : 0;
+    const ftP95   = pct(sorted, frameCount, 95);
+    const ftP99   = pct(sorted, frameCount, 99);
+    // p10 and p1 of FPS — derived from frame-time (lower frame-time = higher FPS).
+    // We want the WORST (slowest) FPS bucket = highest frame-time percentile.
+    const ftP90   = pct(sorted, frameCount, 90);  // p10 fps ↔ p90 frame-time
+    const ftP99ft = pct(sorted, frameCount, 99);  // already computed above
+    const fpsP10  = ftP90   > 0 ? 1000 / ftP90   : 0;
+    const fpsP1   = ftP99ft > 0 ? 1000 / ftP99ft : 0;
+    const droppedFrames = deltas.filter((d) => d > 33.33).length;
+
+    // gl.info multi-frame stats.
+    const glSnaps = steadyResult.glSnapshots;
+    let glCallsMin = Infinity, glCallsMax = -Infinity, glCallsSum = 0;
+    let glTriMin = Infinity, glTriMax = -Infinity, glTriSum = 0;
+    for (const s of glSnaps) {
+      glCallsMin = Math.min(glCallsMin, s.calls);
+      glCallsMax = Math.max(glCallsMax, s.calls);
+      glCallsSum += s.calls;
+      glTriMin = Math.min(glTriMin, s.triangles);
+      glTriMax = Math.max(glTriMax, s.triangles);
+      glTriSum += s.triangles;
+    }
+    const glN = glSnaps.length;
+    const glInfo = glN > 0 ? {
+      callsMin:  glCallsMin,
+      callsAvg:  Math.round(glCallsSum / glN),
+      callsMax:  glCallsMax,
+      triMin:    glTriMin,
+      triAvg:    Math.round(glTriSum / glN),
+      triMax:    glTriMax,
+      snapshots: glN,
+    } : null;
+
+    // Per-frame VRM costs (spec step 6).
+    // vrmFrameMetrics.mixerAvgMs etc. are per-CALL averages (total/calls).
+    // updateMixerOnly runs once per near-NPC per frame (~13 VRMs in a full
+    // world), so per-call cost understates the frame budget by ~calls/frameCount.
+    // Multiply back: msPerFrame = avgMs * calls / frameCount.
+    // Both the per-call and per-frame rows are kept in the report — per-call is
+    // useful for per-VRM regression, per-frame is needed for frame-budget accounting.
+    const vrmPerFrame = vrmFrameMetrics && frameCount > 0 ? {
+      mixerMsPerFrame:      Math.round((vrmFrameMetrics.mixerAvgMs  * vrmFrameMetrics.mixerCalls  / frameCount) * 1000) / 1000,
+      springMsPerFrame:     Math.round((vrmFrameMetrics.springAvgMs * vrmFrameMetrics.springCalls / frameCount) * 1000) / 1000,
+      fullUpdateMsPerFrame: Math.round((vrmFrameMetrics.fullAvgMs   * vrmFrameMetrics.fullCalls   / frameCount) * 1000) / 1000,
+    } : null;
+
+    // Collect any remaining page state for the report.
+    const pageState = await page.evaluate(() => {
+      const state = (window as any).__W3D;
+      return {
+        ready: Boolean((window as any).__W3D_READY),
+        texturesReady: Boolean((window as any).__W3D_TEXTURES_READY),
+        qualityTier: (window as any).__W3D_QUALITY_TIER ?? null,
+        dpr: state?.gl?.getPixelRatio?.() ?? null,
+        vrmLoadMetrics: (window as any).__CV_VRM_LOAD_METRICS ?? [],
+      };
+    });
+
+    const steadyState = {
+      timeToReadyMs,
+      settleMs: 5000,
+      sampleSeconds,
+      frameCount,
+      fpsAvg:  Math.round(fpsAvg  * 10) / 10,
+      fpsP10:  Math.round(fpsP10  * 10) / 10,
+      fpsP1:   Math.round(fpsP1   * 10) / 10,
+      ftAvgMs: Math.round(ftAvg   * 100) / 100,
+      ftP95Ms: Math.round(ftP95   * 100) / 100,
+      ftP99Ms: Math.round(ftP99   * 100) / 100,
+      droppedFrames,
+      vrmFrameMetrics,
+      vrmPerFrame,
+      glInfo,
+      ready: pageState.ready,
+      texturesReady: pageState.texturesReady,
+      qualityTier: pageState.qualityTier,
+      dpr: pageState.dpr,
+    };
+
+    const screenshotPath = path.join(cfg.outDir, 'game.png');
+    const jsonPath = path.join(cfg.outDir, 'metrics.json');
+    const mdPath = path.join(cfg.outDir, 'summary.md');
+    await page.screenshot({ path: screenshotPath, fullPage: false });
+
+    const fullReport = {
+      generatedAt: new Date().toISOString(),
+      wallMs: Date.now() - startedAt,
+      config: cfg,
+      git,
+      consoleMessages,
+      steadyState,
+      vrmLoadMetrics: pageState.vrmLoadMetrics,
+    };
+    await fs.writeFile(jsonPath, JSON.stringify(fullReport, null, 2));
+
+    const vfm = steadyState.vrmFrameMetrics;
+    const vfp = steadyState.vrmPerFrame;
+    const gi  = steadyState.glInfo;
+    const md = `# Steady-State Performance Run: ${cfg.label}
+
+Generated: ${new Date().toISOString()}
+Git: \`${git.sha}\`${git.dirty ? ' (dirty)' : ''}
+
+- URL: ${cfg.url}
+- Ready: ${steadyState.ready ? 'yes' : 'no'}; textures ready: ${steadyState.texturesReady ? 'yes' : 'no'}
+- Time to ready: ${formatMs(steadyState.timeToReadyMs)}
+- Quality tier: ${steadyState.qualityTier ?? '-'}
+- DPR: ${steadyState.dpr ?? '-'}
+- Sample window: ${steadyState.sampleSeconds}s (${steadyState.frameCount} frames)
+- Screenshot: \`game.png\`
+
+## RAF FPS
+
+| Metric | Value |
+|---|---:|
+| avg FPS | ${steadyState.fpsAvg} |
+| p10 FPS | ${steadyState.fpsP10} |
+| p1 FPS | ${steadyState.fpsP1} |
+| avg frame time | ${steadyState.ftAvgMs}ms |
+| p95 frame time | ${steadyState.ftP95Ms}ms |
+| p99 frame time | ${steadyState.ftP99Ms}ms |
+| dropped frames (>33ms) | ${steadyState.droppedFrames} |
+
+## VRM Frame Cost (from \`__CV_VRM_FRAME_METRICS\`)
+
+Per-call columns measure cost per individual VRM update invocation (useful for per-VRM regression).
+Per-frame columns multiply call count back by frame count and reflect actual frame-budget impact
+(e.g. mixer runs once per near-NPC per frame, so per-call cost understates total by ~nearVrmCount).
+
+${vfm ? `| Metric | per-call avg | per-frame total |
+|---|---:|---:|
+| mixer ms | ${(vfm.mixerAvgMs).toFixed(3)}ms | ${vfp ? vfp.mixerMsPerFrame.toFixed(3) + 'ms' : '-'} |
+| spring ms | ${(vfm.springAvgMs).toFixed(3)}ms | ${vfp ? vfp.springMsPerFrame.toFixed(3) + 'ms' : '-'} |
+| full update ms | ${(vfm.fullAvgMs).toFixed(3)}ms | ${vfp ? vfp.fullUpdateMsPerFrame.toFixed(3) + 'ms' : '-'} |
+| mixer calls | ${vfm.mixerCalls} | — |
+| spring calls | ${vfm.springCalls} | — |
+| full update calls | ${vfm.fullCalls} | — |
+| frame epoch | ${vfm.epoch} | — |` : '_VRM frame metrics not captured (VRM_METRICS_ENABLED=false or no VRMs updated during window)_'}
+
+## Renderer Info (gl.info multi-frame, ${gi?.snapshots ?? 0} snapshots)
+
+${gi ? `| Metric | min | avg | max |
+|---|---:|---:|---:|
+| draw calls | ${gi.callsMin} | ${gi.callsAvg} | ${gi.callsMax} |
+| triangles | ${gi.triMin.toLocaleString()} | ${gi.triAvg.toLocaleString()} | ${gi.triMax.toLocaleString()} |` : '_gl.info not captured (__CV_GL_INFO not available — ensure VRM_METRICS_ENABLED and World3DCanvas.tsx patch applied)_'}
+
+## Acceptance Gates
+
+- Ready: ${steadyState.ready ? 'PASS' : 'FAIL'}
+- Textures ready: ${steadyState.texturesReady ? 'PASS' : 'FAIL'}
+- avg FPS ≥ 60: ${steadyState.fpsAvg >= 60 ? 'PASS' : `FAIL (${steadyState.fpsAvg})`}
+- p1 FPS ≥ 30: ${steadyState.fpsP1 >= 30 ? 'PASS' : `FAIL (${steadyState.fpsP1})`}
+`;
+
+    await fs.writeFile(mdPath, md);
+    await browser.close();
+    await fs.rm(profileDir, { recursive: true, force: true });
+
+    console.log(JSON.stringify({
+      label: cfg.label,
+      mode: 'steady',
+      outDir: path.relative(REPO_ROOT, cfg.outDir).replace(/\\/g, '/'),
+      screenshot: path.relative(REPO_ROOT, screenshotPath).replace(/\\/g, '/'),
+      json: path.relative(REPO_ROOT, jsonPath).replace(/\\/g, '/'),
+      markdown: path.relative(REPO_ROOT, mdPath).replace(/\\/g, '/'),
+      git,
+      summary: steadyState,
+    }, null, 2));
+    return;
+  }
+
+  // -------------------------------------------------------------------------
+  // LOAD-PHASE MODE (original behaviour, unchanged)
+  // -------------------------------------------------------------------------
   await page.waitForFunction(() => Boolean((window as any).__W3D || document.querySelector('canvas')), { timeout: 60_000 }).catch(() => {});
   await new Promise((resolve) => setTimeout(resolve, cfg.durationMs));
 
@@ -170,7 +540,6 @@ async function main() {
       });
     }
 
-    const frameSamples = (window as any).__FIDELITY_FRAME_SAMPLES__ ?? [];
     const vrmMetrics = (window as any).__CV_VRM_LOAD_METRICS ?? [];
     const textureUploadMetrics = (window as any).__CV_TEXTURE_UPLOAD_METRICS ?? null;
     const resourceSummary = {
@@ -207,7 +576,7 @@ async function main() {
       } : null,
       buttonCount: buttons.length,
       buttons: buttons.slice(0, 40),
-      bodyText: document.body.innerText.split('\n').map((s) => s.trim()).filter(Boolean).slice(0, 100),
+      bodyText: document.body.innerText.split('\n').map((s: string) => s.trim()).filter(Boolean).slice(0, 100),
       canvasCount: document.querySelectorAll('canvas').length,
       chunks,
       primitiveBuildingMeshCount: primitiveBuildingMeshes.length,
@@ -241,7 +610,17 @@ async function main() {
   const jsonPath = path.join(cfg.outDir, 'metrics.json');
   const mdPath = path.join(cfg.outDir, 'summary.md');
   await page.screenshot({ path: screenshotPath, fullPage: false });
-  await fs.writeFile(jsonPath, JSON.stringify({ generatedAt: new Date().toISOString(), wallMs: Date.now() - startedAt, config: cfg, consoleMessages, report }, null, 2));
+  await fs.writeFile(
+    jsonPath,
+    JSON.stringify({
+      generatedAt: new Date().toISOString(),
+      wallMs: Date.now() - startedAt,
+      config: cfg,
+      git,
+      consoleMessages,
+      report,
+    }, null, 2),
+  );
 
   const vrmMetrics = report.vrmMetrics ?? [];
   const textureUpload = report.textureUploadMetrics;
@@ -255,6 +634,7 @@ async function main() {
   const md = `# Browser Performance Run: ${cfg.label}
 
 Generated: ${new Date().toISOString()}
+Git: \`${git.sha}\`${git.dirty ? ' (dirty)' : ''}
 
 - URL: ${report.url}
 - Ready: ${report.ready ? 'yes' : 'no'}; textures ready: ${report.texturesReady ? 'yes' : 'no'}
@@ -324,10 +704,12 @@ ${report.resources.glb
 
   console.log(JSON.stringify({
     label: cfg.label,
+    mode: 'load-phase',
     outDir: path.relative(REPO_ROOT, cfg.outDir).replace(/\\/g, '/'),
     screenshot: path.relative(REPO_ROOT, screenshotPath).replace(/\\/g, '/'),
     json: path.relative(REPO_ROOT, jsonPath).replace(/\\/g, '/'),
     markdown: path.relative(REPO_ROOT, mdPath).replace(/\\/g, '/'),
+    git,
     summary: {
       ready: report.ready,
       buttons: report.buttonCount,
