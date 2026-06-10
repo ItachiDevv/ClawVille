@@ -182,13 +182,27 @@ function moveTowardServerTarget(
   const distSq = dx * dx + dz * dz;
   if (distSq < 0.01) return;
   if (distSq > 800 * 800) { pos.x = targetX; pos.z = targetZ; return; } // teleport snap
-  // Exponential pursuit of the advancing target — frame-rate independent,
-  // continuous velocity ≈ server velocity, steady-state lag ≈ v/10 (~22wu at
-  // walk speed). Snapshot-arrival corrections are absorbed smoothly instead
-  // of stepping. This is the controlled-NPC feel for a networked entity.
-  const k = 1 - Math.exp(-10 * dt);
-  pos.x += dx * k;
-  pos.z += dz * k;
+  // Exponential pursuit of the advancing target, VELOCITY-CAPPED at 1.5× the
+  // entity's server speed. Pure pursuit at high stiffness transmitted
+  // snapshot corrections as visible speed surges (measured: sd 16 on mean 19
+  // per 100ms, one 87wu snap); the cap turns corrections into brief, gentle
+  // ≤1.5× acceleration while still converging. Frame-rate independent,
+  // continuous velocity ≈ server velocity, no stops, no snaps.
+  const k = 1 - Math.exp(-6 * dt);
+  let stepX = dx * k;
+  let stepZ = dz * k;
+  const stepLen = Math.sqrt(stepX * stepX + stepZ * stepZ);
+  const segX = d.x - d.prevX;
+  const segY = d.y - d.prevY;
+  const serverV = Math.sqrt(segX * segX + segY * segY) / (tsDelta / 1000);
+  const maxStep = Math.max(80, serverV * 1.5) * dt;
+  if (stepLen > maxStep) {
+    const s = maxStep / stepLen;
+    stepX *= s;
+    stepZ *= s;
+  }
+  pos.x += stepX;
+  pos.z += stepZ;
 }
 const NPC_LOD_VERY_FAR_DIST_SQ = 6_000 * 6_000;
 
