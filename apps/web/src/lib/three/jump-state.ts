@@ -6,7 +6,8 @@
  * mirrors the existing `keyState` object in player-avatar.tsx:74-78.
  *
  * The SPACE keyboard listener lives here, co-located with the state it writes.
- * updateJump() is called once per frame by <JumpTicker /> — nobody else calls it.
+ * Mobile controls call setJumpPressed() so touch input uses the same state
+ * machine as SPACE. updateJump() is called once per frame by <JumpTicker />.
  * Consumers (player-avatar, arena-npcs, FPSFollowCamera) read jumpState.heightOffset
  * and jumpState.phase directly.
  */
@@ -115,6 +116,10 @@ export function attachJumpListeners(): void {
 
   window.addEventListener('keydown', onKeyDown);
   window.addEventListener('keyup', onKeyUp);
+}
+
+export function setJumpPressed(pressed: boolean): void {
+  jumpState.spaceDown = pressed;
 }
 
 // ---------------------------------------------------------------------------
