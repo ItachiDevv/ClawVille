@@ -143,8 +143,16 @@ const NPC_SCALE_CLAMP_MAX = TARGET_NPC_HEIGHT / 0.5; // 90
 const NPC_LOD_NEAR_DIST_SQ = 2_500 * 2_500;
 const NPC_LOD_FAR_DIST_SQ = 5_000 * 5_000;
 const NPC_LOD_VERY_FAR_DIST_SQ = 6_000 * 6_000;
-// Authored walk-cycle reference speed for matching leg cadence to rendered translation.
-const REF_WALK_SPEED = 130;
+// Authored walk-cycle reference speed for matching leg cadence to rendered
+// translation: the rendered ground speed (wu/s) at which the walk clip plays
+// at timeScale 1. The tuned pairing is "220 wu/s server + timeScale-1 legs"
+// (af6a550e). The original 9e3bc63a value (130) was calibrated against the
+// pre-2026-06-10 broken server cadence (waypoint-burned ticks → effective
+// ~130 wu/s); after the cadence fix the true 220 arrives, and 130 pegged the
+// legs at the 1.6× clamp — "they run a little bit fast" (user). At 220 the
+// steady-state scale is ~1.0 and the speed-match only slows/freezes legs
+// during genuine stalls and decels.
+const REF_WALK_SPEED = 220;
 // Render-speed threshold below which wandering NPC locomotion visually idles.
 const MOVE_DEADBAND = 14;
 // Upper clamp for walk-cycle playback when interpolation briefly spikes.
