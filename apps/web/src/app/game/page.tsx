@@ -29,6 +29,7 @@ import EmoteHotbar from '@/components/game/emote-hotbar';
 import ActivityFeed from '@/components/game/activity-feed';
 import AgentConnectModal from '@/components/game/agent-connect-modal';
 import EmailVerifyBanner from '@/components/game/email-verify-banner';
+import GameLanguageControl from '@/components/game/game-language-control';
 
 const BuildingPortalModal = dynamic(
   () => import('@/components/game/building-portal-modal'),
@@ -432,6 +433,7 @@ export default function GamePage() {
       <MobileControls />
       <PerfHud />
       <TutorialOverlay />
+      <GameLanguageControl />
       <ToastNotifications />
       {/* Ask Nori HUD shortcut — opens the Town Guide chat from anywhere
           on the world surface so new players don't have to find her 3D
@@ -471,7 +473,7 @@ export default function GamePage() {
       )}
 
       {/* NPC-mode chat: talk to nearest wandering world character.
-          Stateless one-shot Gemini — no Eliza store. Component
+          Stateless one-shot OpenAI — no Eliza store. Component
           self-gates on `controlMode === 'npc'`. */}
       <TalkToCharacterBar />
 
