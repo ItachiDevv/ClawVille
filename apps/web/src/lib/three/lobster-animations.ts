@@ -108,7 +108,7 @@ export class LobsterAnimator {
   }
 
   /** Main update — call every frame */
-  update(dt: number, elapsed: number, suggestedState: AnimState, direction: string) {
+  update(dt: number, elapsed: number, suggestedState: AnimState, direction: string, walkPhase = elapsed) {
     const cdt = Math.min(dt, 0.1);
 
     // If a timed action is playing, check if it's done
@@ -130,7 +130,7 @@ export class LobsterAnimator {
         this.animIdle(cdt, elapsed);
         break;
       case 'walk':
-        this.animWalk(cdt, elapsed, direction);
+        this.animWalk(cdt, elapsed, direction, walkPhase);
         break;
       case 'attack':
         this.animAttack(cdt, elapsed, progress);
@@ -222,7 +222,7 @@ export class LobsterAnimator {
   // -----------------------------------------------------------------------
   // Walk: leg cycling + body bob + claw swing
   // -----------------------------------------------------------------------
-  private animWalk(dt: number, elapsed: number, direction: string) {
+  private animWalk(dt: number, elapsed: number, direction: string, walkPhase: number) {
     const { body, leftClaw, rightClaw, tailSegments, tailFan, legs, eyeStalks, antennae } = this.refs;
     const bf = this.blendFactor * 1.5; // faster blending for walk
 
@@ -232,7 +232,7 @@ export class LobsterAnimator {
       const side = i < 3 ? 1 : -1;
       const pair = i % 3;
       const phase = pair * (Math.PI * 2 / 3); // 120° offset
-      const cycle = Math.sin(elapsed * 12 + phase) * 0.4;
+      const cycle = Math.sin(walkPhase * 12 + phase) * 0.4;
       const target = side * 0.5 + cycle;
       leg.rotation.z = lerp(leg.rotation.z, target, bf);
     });

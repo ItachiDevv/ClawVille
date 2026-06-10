@@ -12,6 +12,8 @@ export interface AnimationState {
   isMoving: boolean;
   /** Elapsed time from clock */
   elapsed: number;
+  /** Continuous speed-matched phase for walk cycles */
+  walkPhase?: number;
   /** Frame delta */
   delta: number;
   /** Movement direction string */
@@ -25,8 +27,8 @@ export interface AnimationState {
  * Call this every frame when the character is moving.
  */
 export function applyWalkAnimation(state: AnimationState): void {
-  const { group, elapsed, seed } = state;
-  const t = elapsed + seed;
+  const { group, elapsed, walkPhase, seed } = state;
+  const t = (walkPhase ?? elapsed) + seed;
   const walkSpeed = 8;
 
   // Bouncy walk cycle — exaggerated squash/stretch for cartoon feel
