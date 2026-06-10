@@ -9,7 +9,7 @@
  *
  * - When no nearCharacter: disabled pill "Walk closer to a character to talk"
  * - When near: pill "Talk to {name}", expandable into a chat panel
- * - Submits to /api/chat/transient — stateless Gemini one-shot, no Eliza,
+ * - Submits to /api/chat/transient — stateless OpenAI one-shot, no Eliza,
  *   no DB writes, no persistent memory. Conversation history is held
  *   in-component memory only and resets when the user walks away (and
  *   nearCharacter changes) or when control mode flips out of 'npc'.
