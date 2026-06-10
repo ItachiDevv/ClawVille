@@ -218,12 +218,12 @@ function useAdaptiveWorldPerfFlags(perfFlags?: Partial<WorldPerfFlags>): WorldPe
 // unconditionally calls setSize → WebGPUBackend.updateSize(), reconfiguring
 // the swapchain OUTSIDE R3F's resize path — blanking the canvas until a
 // manual window resize re-syncs it (the "blue until resize" bug; the
-// forceWebGpuFirstPaint nudge had already fired by then and could not help).
+// first-paint nudge had already fired by then and could not help).
 // Nothing lowers DPR at runtime anymore (governor is groundCover-only), so
 // the guard had no remaining purpose. NEVER call gl.setPixelRatio or
 // gl.setSize directly on the WebGPU backend after first paint — go through
 // R3F's state.setSize/setDpr, or don't resize at all. (Sole exemption:
-// forceWebGpuFirstPaint below, which syncs state.setSize FIRST and then
+// forceFirstPaintSizeSync below, which syncs state.setSize FIRST and then
 // refreshes the swapchain — that ordering is what makes it safe.)
 
 // ---------------------------------------------------------------------------
@@ -560,29 +560,46 @@ function measureCanvasHost(canvas: HTMLCanvasElement | undefined): { width: numb
 }
 
 /**
- * Async-WebGPU first-paint kick.
+ * First-paint size/camera sync — BOTH backends (2026-06-10 rewrite).
  *
- * This does not render. It runs once after the first normal R3F frame has had
- * a chance to call WebGPUBackend.context.getCurrentTexture(), then forces the
- * same state path as R3F's ResizeObserver and explicitly refreshes three's
- * WebGPU canvas context.
+ * Two distinct boot races leave `/game` showing only the clear color ("blue
+ * until resize"); this heals both:
+ *
+ * 1. WebGPU backend: the swapchain is configured once in init() and never
+ *    re-configured, so a transient/wrong canvas size at init presents only
+ *    the clear color until a real dimension change (original fix, kept).
+ * 2. WebGL2 backend (ALWAYS the path on Iris Xe — FORCE_WEBGL includes
+ *    LOW_END_GPU_DETECTED): under slow loads, R3F's size→camera layout
+ *    effect can fail to run, leaving `camera.aspect = 0` → a NaN projection
+ *    matrix → every frustum test fails → ~2 draw calls of background while
+ *    the render loop runs "healthily". Reproduced deterministically with 6×
+ *    CPU throttle (2026-06-10); confirmed healed by exactly the imperative
+ *    sync below via live CDP on the broken state. The old gate
+ *    (`!backend?.isWebGPUBackend → return`) meant this path had NO
+ *    protection — which is why staging blue-screened on Iris Xe while the
+ *    nudge existed all along.
+ *
+ * Retry policy: cheap property compares every ~500ms until the state is
+ * healthy twice in a row AND the world is ready, capped at 30s. On a normal
+ * boot the checks are already healthy, so the loop exits after the second
+ * 500ms check (or whenever __W3D_READY flips). Bails immediately if the
+ * canvas leaves the DOM (SPA route change) so it never retains the renderer.
  */
-function forceWebGpuFirstPaint(state: any): void {
+function forceFirstPaintSizeSync(state: any): void {
   const gl = state?.gl;
   const backend = gl?.backend;
   const canvas: HTMLCanvasElement | undefined = gl?.domElement;
 
-  // WebGPURenderer can be backed by WebGLBackend when forceWebGL/fallback is
-  // active. Only the real WebGPU backend owns a GPUCanvasContext swapchain.
-  if (!canvas || !backend?.isWebGPUBackend || typeof gl.setSize !== 'function') return;
+  if (!canvas || typeof gl.setSize !== 'function') return;
 
   let cancelled = false;
+  let healthyStreak = 0;
 
-  const reconfigure = () => {
-    if (cancelled) return;
+  const reconfigure = (): boolean => {
+    if (cancelled) return false;
 
     const measured = measureCanvasHost(canvas);
-    if (!measured) return;
+    if (!measured || measured.width <= 0 || measured.height <= 0) return false;
 
     if (
       state.size?.width !== measured.width ||
@@ -593,52 +610,82 @@ function forceWebGpuFirstPaint(state: any): void {
       state.setSize?.(measured.width, measured.height, measured.top, measured.left);
     }
 
-    // gl.setSize() → WebGPUBackend.updateSize() nulls the cached render-pass
-    // descriptor + color buffer, but in the BUILT three r170 it does NOT
-    // re-call GPUCanvasContext.configure() — that runs exactly once in init().
-    // (backend.context is a plain property, not a reconfiguring getter, in the
-    // shipped build — verified against three.webgpu.js.) So if the swapchain was
-    // configured while the canvas was a transient/wrong size, nothing re-syncs
-    // it and the canvas presents only the clear color (blue) until a real
-    // dimension change. Fix: after the canvas has its final backing size,
-    // EXPLICITLY re-call context.configure() with three's own params. configure()
-    // sizes the swapchain to the canvas's CURRENT backing store, so the next
-    // getCurrentTexture() returns a correctly-sized texture and the world paints.
-    gl.setSize(measured.width, measured.height, false);
-    try {
-      const ctx = backend.context as GPUCanvasContext | undefined;
-      const device = backend.device as GPUDevice | undefined;
-      const format: GPUTextureFormat | undefined = backend.utils?.getPreferredCanvasFormat?.();
-      if (ctx && device && format) {
-        // Mirror WebGPUBackend.init()'s configure exactly.
-        ctx.configure({
-          device,
-          format,
-          usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
-          alphaMode: backend.parameters?.alpha ? 'premultiplied' : 'opaque',
-        });
+    // Camera projection heal — the WebGL2-path fix. R3F should do this in its
+    // size layout effect; when that never ran, aspect stays 0 and the whole
+    // scene frustum-culls. Idempotent: skipped when aspect already matches.
+    const cam = state.camera;
+    const wantAspect = measured.width / measured.height;
+    let cameraHealthy = true;
+    if (cam?.isPerspectiveCamera && Number.isFinite(wantAspect) && wantAspect > 0) {
+      if (!Number.isFinite(cam.aspect) || Math.abs(cam.aspect - wantAspect) > 1e-3) {
+        cam.aspect = wantAspect;
+        cam.updateProjectionMatrix();
+        cameraHealthy = false; // was broken this check — require another clean pass
       }
-    } catch (err) {
-      console.warn('[World3D] WebGPU context reconfigure skipped:', err);
+    }
+
+    // Renderer buffer + viewport sync — both backends, idempotent.
+    gl.setSize(measured.width, measured.height, false);
+
+    // WebGPU-only swapchain refresh. gl.setSize() → WebGPUBackend.updateSize()
+    // nulls the cached render-pass descriptor + color buffer, but the shipped
+    // three build does NOT re-call GPUCanvasContext.configure() — that runs
+    // exactly once in init(). If the swapchain was configured while the canvas
+    // was a transient/wrong size, nothing re-syncs it and the canvas presents
+    // only the clear color until a real dimension change. configure() sizes
+    // the swapchain to the canvas's CURRENT backing store.
+    if (backend?.isWebGPUBackend) {
+      try {
+        const ctx = backend.context as GPUCanvasContext | undefined;
+        const device = backend.device as GPUDevice | undefined;
+        const format: GPUTextureFormat | undefined = backend.utils?.getPreferredCanvasFormat?.();
+        if (ctx && device && format) {
+          // Mirror WebGPUBackend.init()'s configure exactly.
+          ctx.configure({
+            device,
+            format,
+            usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
+            alphaMode: backend.parameters?.alpha ? 'premultiplied' : 'opaque',
+          });
+        }
+      } catch (err) {
+        console.warn('[World3D] WebGPU context reconfigure skipped:', err);
+      }
     }
 
     state.invalidate?.();
+    return cameraHealthy;
   };
 
-  // onCreated fires before the first frame. Two RAFs place this after the first
-  // ordinary frame in frameloop="always", so the reconfigure replaces an actual
-  // first swapchain texture instead of racing initial context creation.
-  requestAnimationFrame(() => {
-    requestAnimationFrame(reconfigure);
-  });
+  const STOP_AFTER_MS = 30_000;
+  const CHECK_INTERVAL_MS = 500;
+  const startedAt = performance.now();
 
-  // Late one-shot guard for async layout/font/texture pressure during initial
-  // load. It is idempotent and still only touches size/context state.
-  const lateTimer = window.setTimeout(reconfigure, 750);
-  window.setTimeout(() => {
-    cancelled = true;
-    window.clearTimeout(lateTimer);
-  }, 1500);
+  const checkLoop = () => {
+    if (cancelled) return;
+    // SPA route change unmounts the canvas but window timers survive — bail
+    // so the closure doesn't retain the R3F state/renderer for up to 30s.
+    if (!canvas.isConnected) {
+      cancelled = true;
+      return;
+    }
+    const healthy = reconfigure();
+    healthyStreak = healthy ? healthyStreak + 1 : 0;
+    const worldReady = (window as any).__W3D_READY === true;
+    if ((healthyStreak >= 2 && worldReady) || performance.now() - startedAt > STOP_AFTER_MS) {
+      cancelled = true;
+      return;
+    }
+    window.setTimeout(checkLoop, CHECK_INTERVAL_MS);
+  };
+
+  // onCreated fires before the first frame. Two RAFs place the first check
+  // after the first ordinary frame in frameloop="always", so the reconfigure
+  // replaces an actual first swapchain texture instead of racing initial
+  // context creation.
+  requestAnimationFrame(() => {
+    requestAnimationFrame(checkLoop);
+  });
 }
 
 function kickRenderLoop(state: any): void {
@@ -684,9 +731,10 @@ function kickRenderLoop(state: any): void {
           } as { calls: number; triangles: number; lines: number; points: number; programs: number };
         };
       }
-      // Force the WebGPU swapchain to reconfigure so the world paints on
-      // first load instead of staying blue until a manual resize.
-      forceWebGpuFirstPaint(state);
+      // Heal both blue-until-resize boot races (WebGPU swapchain config +
+      // WebGL2 camera.aspect=0 NaN projection) so the world paints on first
+      // load instead of staying blue until a manual resize.
+      forceFirstPaintSizeSync(state);
     });
   }
 }
