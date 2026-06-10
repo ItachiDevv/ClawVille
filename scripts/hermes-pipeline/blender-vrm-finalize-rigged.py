@@ -93,6 +93,10 @@ for slot in mesh.material_slots:
 if diffuse_img is None:
     print("[fin] WARN: no base color texture found on any material")
 
+# NOTE (2026-06-10): do NOT kill the Emission wiring. Meshy bakes its lighting
+# into an emissive duplicate of the base color — removing it sinks the eyes
+# into shadow and turns the skin waxy. The emissive copy is load-bearing.
+
 # ---- 5. optional MToon1 ----
 if ENABLE_MTOON and diffuse_img is not None:
     for slot in mesh.material_slots:

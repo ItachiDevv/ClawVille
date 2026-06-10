@@ -102,12 +102,30 @@ for _ in range(3):
     rmax = [(rmax[(i-1)%N] + 2*rmax[i] + rmax[(i+1)%N])/4 for i in range(N)]
 print(f"[circlet] band_z={band_z:.3f} center=({cx:.3f},{cy:.3f}) r_front={rmax[int(0.75*N)]:.3f} r_back={rmax[int(0.25*N)]:.3f}")
 
-# front of the head is -Y => theta = 270deg = bin 0.75*N
+# FACE MIDLINE — the slab centroid (cx) is pulled sideways by asymmetric hair
+# mass, which off-centered the pendant. Anchor it to the actual face centerline:
+# the front-most forehead verts (the face is convex, so front-most = center).
+_f = [v.co for v in mesh.data.vertices
+      if abs(v.co.z - band_z) < 0.02 and (v.co.y - cy) < -0.04 and abs(v.co.x - cx) < 0.09]
+_f.sort(key=lambda p: p.y)
+_front = _f[:max(60, len(_f)//10)]
+face_mid_x = sum(p.x for p in _front) / len(_front)
+print(f"[circlet] face_mid_x={face_mid_x:.4f} (slab cx was {cx:.4f})")
+
+def _bx(i):
+    th = (i/N)*2*math.pi
+    return cx + (rmax[i] + SURF_OFFSET)*math.cos(th)
+# pendant bin = the front-hemisphere band point that crosses the face midline
+front_bins = [i for i in range(N) if math.sin((i/N)*2*math.pi) < -0.5]
+pend_bin = min(front_bins, key=lambda i: abs(_bx(i) - face_mid_x))
+pend_th = (pend_bin/N)*360.0
+print(f"[circlet] pendant bin={pend_bin} theta={pend_th:.1f}deg (270 would be slab-front)")
+
 def band_point(i):
     th = (i/N)*2*math.pi
     r = rmax[i] + SURF_OFFSET
-    # angular distance from front center (270 deg)
-    dfront = abs(((math.degrees(th) - 270) + 180) % 360 - 180)
+    # angular distance from the pendant anchor (face midline), not the slab front
+    dfront = abs(((math.degrees(th) - pend_th) + 180) % 360 - 180)
     dip = BAND_DIP * math.exp(-(dfront/DIP_HALF)**2)
     return Vector((cx + r*math.cos(th), cy + r*math.sin(th), band_z - dip))
 
@@ -128,8 +146,8 @@ band_obj.select_set(True); bpy.context.view_layer.objects.active = band_obj
 bpy.ops.object.convert(target='MESH')
 band_obj = bpy.context.view_layer.objects.active
 
-# pendant at front center: bead on the band + teardrop below
-front = band_point(int(0.75*N))
+# pendant at the face midline: bead on the band + teardrop below
+front = band_point(pend_bin)
 bpy.ops.mesh.primitive_uv_sphere_add(segments=16, ring_count=10, radius=PEND_BEAD_R,
                                      location=(front.x, front.y, front.z))
 bead = bpy.context.view_layer.objects.active
@@ -144,6 +162,82 @@ bpy.context.view_layer.objects.active = band_obj
 bpy.ops.object.join()
 circlet = bpy.context.view_layer.objects.active
 bpy.ops.object.shade_smooth()
+
+# ---- hair roll (braided crown) over the melted upper-forehead zone ----
+ROLL_RAISE   = 0.011   # roll center this far above the band
+ROLL_R       = 0.017   # tube radius (thick hair roll)
+ROLL_SPAN    = 105.0   # degrees each side of the pendant anchor (ear to ear)
+roll_curve = bpy.data.curves.new("HairRollCurve", 'CURVE')
+roll_curve.dimensions = '3D'
+rsp = roll_curve.splines.new('POLY')
+roll_pts = []
+for i in range(N):
+    th_deg = (i/N)*360.0
+    dfront = abs(((th_deg - pend_th) + 180) % 360 - 180)
+    if dfront <= ROLL_SPAN:
+        roll_pts.append((i, dfront))
+roll_pts.sort(key=lambda t: ((((t[0]/N)*360.0 - pend_th) + 180) % 360 - 180))
+rsp.points.add(len(roll_pts)-1)
+for k, (i, dfront) in enumerate(roll_pts):
+    th = (i/N)*2*math.pi
+    r = rmax[i] + 0.004
+    z = band_z + ROLL_RAISE + 0.006*math.exp(-(dfront/70.0)**2)  # slight arc up at center
+    rsp.points[k].co = (cx + r*math.cos(th), cy + r*math.sin(th), z, 1.0)
+    # pinch the ends so the roll tucks into the side hair
+    edge = max(0.0, (dfront - (ROLL_SPAN-28.0)) / 28.0)
+    rsp.points[k].radius = max(0.18, 1.0 - edge)
+roll_curve.bevel_depth = ROLL_R
+roll_curve.bevel_resolution = 6
+roll_curve.use_fill_caps = True
+roll_obj = bpy.data.objects.new("HairRoll", roll_curve)
+bpy.context.collection.objects.link(roll_obj)
+bpy.ops.object.select_all(action="DESELECT")
+roll_obj.select_set(True); bpy.context.view_layer.objects.active = roll_obj
+bpy.ops.object.convert(target='MESH')
+roll_obj = bpy.context.view_layer.objects.active
+bpy.ops.object.shade_smooth()
+
+# streaky blonde hair texture so the roll doesn't read as plastic
+import numpy as _np
+TS = 256
+rng = _np.random.default_rng(7)
+base = _np.array((0.500, 0.390, 0.215), dtype=_np.float32)
+vv = _np.linspace(0, 1, TS, endpoint=False)
+phase = rng.uniform(0, 6.28, 8)
+stripes = _np.zeros(TS, dtype=_np.float32)
+for k_ in range(8):
+    stripes += _np.sin(vv * 6.283 * (10 + 7*k_) + phase[k_]) / (k_ + 2)
+stripes = (stripes - stripes.min()) / (_np.ptp(stripes) + 1e-6)   # 0..1 strand pattern
+tex = _np.empty((TS, TS, 4), dtype=_np.float32)
+shade = (0.72 + 0.55 * stripes)[:, None].repeat(TS, 1)
+jitter = rng.normal(0, 0.03, (TS, TS)).astype(_np.float32)
+for c_ in range(3):
+    tex[:, :, c_] = _np.clip(base[c_] * (shade + jitter), 0, 1)
+tex[:, :, 3] = 1.0
+hair_img = bpy.data.images.new("HairRollTex", TS, TS, alpha=True)
+hair_img.pixels.foreach_set(tex.reshape(-1))
+hair_img.pack()
+hair_mat = bpy.data.materials.new("HairRoll")
+hair_mat.use_nodes = True
+hb_ = next(n for n in hair_mat.node_tree.nodes if n.type == "BSDF_PRINCIPLED")
+ht_ = hair_mat.node_tree.nodes.new(type="ShaderNodeTexImage")
+ht_.image = hair_img
+hair_mat.node_tree.links.new(ht_.outputs["Color"], hb_.inputs["Base Color"])
+hb_.inputs["Roughness"].default_value = 0.65
+hb_.inputs["Metallic"].default_value = 0.0
+# body materials carry Meshy's baked-light emissive — match the roll so it doesn't sit dark
+if hb_.inputs.get("Emission Strength"):
+    hb_.inputs["Emission Strength"].default_value = 0.35
+es_ = hb_.inputs.get("Emission Color")
+if es_ is not None:
+    hair_mat.node_tree.links.new(ht_.outputs["Color"], es_)
+roll_obj.data.materials.append(hair_mat)
+roll_obj.parent = arm
+rvg = roll_obj.vertex_groups.new(name="mixamorig:Head")
+rvg.add(range(len(roll_obj.data.vertices)), 1.0, 'REPLACE')
+rmod = roll_obj.modifiers.new("Armature", 'ARMATURE')
+rmod.object = arm
+print(f"[circlet] hair roll verts={len(roll_obj.data.vertices)}")
 
 # gold material
 gold = bpy.data.materials.new("CircletGold")
@@ -161,6 +255,182 @@ vg.add(range(len(circlet.data.vertices)), 1.0, 'REPLACE')
 mod = circlet.modifiers.new("Armature", 'ARMATURE')
 mod.object = arm
 print(f"[circlet] circlet verts={len(circlet.data.vertices)}")
+
+# ---- 4b. FOREHEAD REPAIR: the melted diadem is BOTH raised geometry AND paint ----
+# Meshy modeled the source circlet as raised relief on the forehead and painted
+# gold over it. Two-part fix: (1) Laplacian-smooth the relief flat, (2) replace
+# the painted patch with the median skin tone modulated by LOW-FREQUENCY
+# luminance only (keeps soft shading, kills the painted pattern).
+import numpy as np
+
+# (1) flatten the raised relief
+sm = 0
+for v in mesh.data.vertices:
+    p = v.co
+    dz = p.z - band_z
+    hw = 0.058 - max(dz, 0.0) * (0.058 - 0.030) / 0.095   # trapezoid: wide at band, narrower at the parting
+    v.select = (-0.004 < dz < 0.095 and p.y < cy and abs(p.x - face_mid_x) < hw)
+    sm += v.select
+bpy.ops.object.select_all(action="DESELECT")
+mesh.select_set(True); bpy.context.view_layer.objects.active = mesh
+bpy.ops.object.mode_set(mode="EDIT")
+bpy.ops.mesh.select_mode(type="VERT")
+bpy.ops.object.mode_set(mode="OBJECT")   # sync selection set in object mode
+bpy.ops.object.mode_set(mode="EDIT")
+bpy.ops.mesh.vertices_smooth(factor=0.5, repeat=24)
+bpy.ops.object.mode_set(mode="OBJECT")
+print(f"[circlet] smoothed forehead relief: {sm} verts")
+
+# (2) repaint the patch
+diffuse_img = None
+for slot in mesh.material_slots:
+    m_ = slot.material
+    if not m_ or not m_.use_nodes: continue
+    b_ = next((x for x in m_.node_tree.nodes if x.type == "BSDF_PRINCIPLED"), None)
+    if b_ and b_.inputs["Base Color"].is_linked:
+        src_ = b_.inputs["Base Color"].links[0].from_node
+        if src_.type == "TEX_IMAGE" and src_.image and src_.image.size[0] >= 512:
+            diffuse_img = src_.image; break
+assert diffuse_img is not None, "no diffuse image found for retouch"
+W, Himg = diffuse_img.size
+buf = np.empty(W*Himg*4, dtype=np.float32)
+diffuse_img.pixels.foreach_get(buf)
+px = buf.reshape(Himg, W, 4)
+
+me = mesh.data
+me.calc_loop_triangles()
+uvl = me.uv_layers.active.data
+co = np.array([v.co[:] for v in me.vertices], dtype=np.float64)
+
+# patch region: band line up to the hairline, front half, centered on face midline
+_dz = co[:,2] - band_z
+_hw = 0.050 - np.clip(_dz, 0.0, None) * (0.050 - 0.030) / 0.030
+in_patch = ((_dz > -0.012) & (_dz < 0.030)
+            & (co[:,1] < cy) & (np.abs(co[:,0] - face_mid_x) < _hw))
+# clean-skin sample region: just below the band (above the brows)
+_ax = np.abs(co[:,0] - face_mid_x)
+in_skin  = ((_dz > 0.000) & (_dz < 0.030) & (co[:,1] < cy - 0.05)
+            & (_ax > 0.052) & (_ax < 0.072))
+
+mask = np.zeros((Himg, W), dtype=np.float32)
+skin_uv = []
+for tri in me.loop_triangles:
+    vs = tri.vertices
+    hit_patch = in_patch[vs[0]] or in_patch[vs[1]] or in_patch[vs[2]]
+    hit_skin  = in_skin[vs[0]]  or in_skin[vs[1]]  or in_skin[vs[2]]
+    if not (hit_patch or hit_skin): continue
+    p = np.array([uvl[l].uv[:] for l in tri.loops]) * (W, Himg)
+    if hit_skin:
+        skin_uv.append(p.mean(0))
+    if not hit_patch: continue
+    x0, y0 = np.maximum(np.floor(p.min(0)).astype(int) - 1, 0)
+    x1, y1 = np.minimum(np.ceil(p.max(0)).astype(int) + 1, (W-1, Himg-1))
+    if x1 <= x0 or y1 <= y0: continue
+    xs, ys = np.meshgrid(np.arange(x0, x1+1), np.arange(y0, y1+1))
+    d = (p[1,1]-p[2,1])*(p[0,0]-p[2,0]) + (p[2,0]-p[1,0])*(p[0,1]-p[2,1])
+    if abs(d) < 1e-9: continue
+    a = ((p[1,1]-p[2,1])*(xs-p[2,0]) + (p[2,0]-p[1,0])*(ys-p[2,1])) / d
+    bq = ((p[2,1]-p[0,1])*(xs-p[2,0]) + (p[0,0]-p[2,0])*(ys-p[2,1])) / d
+    cq = 1 - a - bq
+    inside = (a >= -0.03) & (bq >= -0.03) & (cq >= -0.03)
+    mask[ys[inside], xs[inside]] = 1.0
+
+skin_px = np.array([px[min(int(v), Himg-1), min(int(u), W-1), :3] for (u, v) in skin_uv])
+skin_med = np.median(skin_px, axis=0)
+skin_lum = float(skin_med @ (0.299, 0.587, 0.114))
+print(f"[circlet] retouch mask={int((mask>0).sum())}px skin_med={np.round(skin_med,3)} from {len(skin_uv)} samples")
+
+def boxblur(arr, r):
+    # O(1) box blur via integral image, edge-clamped
+    ii = np.pad(arr, ((1,0),(1,0))).cumsum(0).cumsum(1)
+    Hh, Ww = arr.shape
+    y0 = np.clip(np.arange(Hh) - r, 0, Hh); y1 = np.clip(np.arange(Hh) + r + 1, 0, Hh)
+    x0 = np.clip(np.arange(Ww) - r, 0, Ww); x1 = np.clip(np.arange(Ww) + r + 1, 0, Ww)
+    out = (ii[y1][:, x1] - ii[y0][:, x1] - ii[y1][:, x0] + ii[y0][:, x0])
+    area = (y1 - y0)[:, None] * (x1 - x0)[None, :]
+    return out / area
+
+# feathered strength: blur the binary mask so the repaint fades at the borders
+feather = boxblur(boxblur(mask, 8), 8)
+feather = np.clip((feather - 0.15) / 0.7, 0.0, 1.0) * (mask > 0)
+
+# low-frequency luminance inside the patch (kills the painted pattern, keeps shading)
+lum_img = px[:, :, :3] @ np.array((0.299, 0.587, 0.114), dtype=np.float32)
+lum_filled = np.where(mask > 0, lum_img, skin_lum)
+lum_low = boxblur(lum_filled, 32)
+# damp the kept shading toward flat skin — the painted pattern's baked shadows
+# otherwise leak through as "low-frequency" structure
+lum_low = skin_lum + (lum_low - skin_lum) * 0.45
+
+ys_, xs_ = np.nonzero(feather > 0.02)
+f = feather[ys_, xs_][:, None]
+target = np.clip(skin_med[None, :] * (lum_low[ys_, xs_] / max(skin_lum, 1e-5))[:, None], 0.0, 1.0)
+px[ys_, xs_, :3] = px[ys_, xs_, :3] * (1 - f) + target * f
+print(f"[circlet] repainted {len(ys_)}px (feathered)")
+
+diffuse_img.pixels.foreach_set(px.reshape(-1))
+diffuse_img.update()
+try: diffuse_img.pack()
+except Exception as e: print(f"[circlet] repack warn: {e}")
+
+# (3) REPAINT THE EMISSIVE COPY TOO. Meshy bakes its lighting into an emissive
+# duplicate of the base color — it is LOAD-BEARING (killing it sinks the eyes
+# and turns the face waxy; learned the hard way). So emission stays, and the
+# same patch repaint is applied to the emissive image so the gold doesn't
+# shine back through.
+emis_img = None
+for slot in mesh.material_slots:
+    m_ = slot.material
+    if not m_ or not m_.use_nodes: continue
+    b_ = next((x for x in m_.node_tree.nodes if x.type == "BSDF_PRINCIPLED"), None)
+    if not b_: continue
+    sock = b_.inputs.get("Emission Color")
+    if sock and sock.is_linked:
+        src_ = sock.links[0].from_node
+        if src_.type == "TEX_IMAGE" and src_.image and src_.image.size[0] == W:
+            emis_img = src_.image
+if emis_img is not None:
+    ebuf = np.empty(W*Himg*4, dtype=np.float32)
+    emis_img.pixels.foreach_get(ebuf)
+    epx = ebuf.reshape(Himg, W, 4)
+    elum_img = epx[:, :, :3] @ np.array((0.299, 0.587, 0.114), dtype=np.float32)
+    elum_filled = np.where(mask > 0, elum_img, skin_lum)
+    elum_low = boxblur(elum_filled, 32)
+    elum_low = skin_lum + (elum_low - skin_lum) * 0.45
+    etarget = np.clip(skin_med[None, :] * (elum_low[ys_, xs_] / max(skin_lum, 1e-5))[:, None], 0.0, 1.0)
+    epx[ys_, xs_, :3] = epx[ys_, xs_, :3] * (1 - f) + etarget * f
+    emis_img.pixels.foreach_set(epx.reshape(-1))
+    emis_img.update()
+    try: emis_img.pack()
+    except Exception as e: print(f"[circlet] emissive repack warn: {e}")
+    print(f"[circlet] emissive copy repainted ({emis_img.name})")
+else:
+    print("[circlet] WARN: no emissive texture found (skipping emissive repaint)")
+
+# (4) FLATTEN THE NORMAL MAP in the patch — the melted diadem relief is baked
+# into the normals; geometry smoothing alone can't remove that shading.
+normal_img = None
+for slot in mesh.material_slots:
+    m_ = slot.material
+    if not m_ or not m_.use_nodes: continue
+    for n_ in m_.node_tree.nodes:
+        if n_.type == "NORMAL_MAP" and n_.inputs["Color"].is_linked:
+            src_ = n_.inputs["Color"].links[0].from_node
+            if src_.type == "TEX_IMAGE" and src_.image:
+                normal_img = src_.image; break
+if normal_img is not None and normal_img.size[0] == W and normal_img.size[1] == Himg:
+    nbuf = np.empty(W*Himg*4, dtype=np.float32)
+    normal_img.pixels.foreach_get(nbuf)
+    npx = nbuf.reshape(Himg, W, 4)
+    flat = np.array((0.5, 0.5, 1.0), dtype=np.float32)
+    npx[ys_, xs_, :3] = npx[ys_, xs_, :3] * (1 - f) + flat[None, :] * f
+    normal_img.pixels.foreach_set(npx.reshape(-1))
+    normal_img.update()
+    try: normal_img.pack()
+    except Exception as e: print(f"[circlet] normal repack warn: {e}")
+    print(f"[circlet] flattened normal map in patch ({len(ys_)}px)")
+else:
+    print(f"[circlet] WARN: normal map not found or size mismatch — relief shading will remain")
 
 # ---- 5. preview renders ----
 for mt in bpy.data.materials:
@@ -191,9 +461,10 @@ def shot(name, frm, to, ortho):
     scn.render.filepath = os.path.join(PREVIEW, name)
     bpy.ops.render.render(write_still=True)
     print(f"[circlet] render {name}")
-head_t = Vector((cx, cy, band_z + 0.01))
+head_t = Vector((face_mid_x, cy, band_z + 0.01))
 shot("face.png",  head_t + Vector((0, -0.6, 0)), head_t, H*0.24)
 shot("face-three-quarter.png", head_t + Vector((-0.42, -0.42, 0.06)), head_t, H*0.24)
+shot("forehead.png", head_t + Vector((0, -0.5, 0.01)), head_t + Vector((0, 0, 0.015)), H*0.10)
 shot("front.png", Vector((cx, cy - 1.2, H*0.5)), Vector((cx, cy, H*0.5)), H*1.1)
 
 if RENDER_ONLY:
