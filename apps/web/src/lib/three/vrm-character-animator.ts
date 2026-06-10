@@ -913,10 +913,41 @@ export class VRMCharacterAnimator {
     const next = this.actions[clipName] ?? (motion === 'run' ? this.actions.walk : undefined);
     if (!next || next === this.currentAction) return;
     next.reset().fadeIn(CROSSFADE_DURATION).play();
+    // reset() clears timeScale back to 1 — re-apply the velocity-synced
+    // locomotion rate so a crossfade doesn't snap legs back to full stride.
+    if (motion === 'walk' || motion === 'run') {
+      next.timeScale = this.locomotionTimeScale;
+    }
     if (this.currentAction) {
       this.currentAction.fadeOut(CROSSFADE_DURATION);
     }
     this.currentAction = next;
+  }
+
+  /**
+   * Velocity-synced locomotion playback (2026-06-10 "reverse moonwalk" fix).
+   *
+   * The walk/run clips' natural ground speed is tuned to the local player
+   * (550 wu/s walk — player-avatar.tsx SPEED). Entities that translate
+   * slower while playing the same clip at timeScale 1 visibly foot-slide:
+   * server-driven wandering NPCs move at 220 wu/s, so their legs strode for
+   * 550 while covering 220 — "walking forward while being held back".
+   *
+   * Callers pass (rendered speed / clip natural speed) each frame, smoothed
+   * on their side. Clamped to [0.3, 1.8]; writes are deduped so the steady
+   * state is a single compare per frame. Idle and surface clips (squat/
+   * swim/fly) are never scaled — only walk/run ground locomotion.
+   */
+  private locomotionTimeScale = 1;
+
+  setLocomotionTimeScale(scale: number): void {
+    const s = Math.min(1.8, Math.max(0.3, scale));
+    if (Math.abs(s - this.locomotionTimeScale) < 0.02) return;
+    this.locomotionTimeScale = s;
+    const cur = this.currentAction;
+    if (cur && (cur === this.actions.walk || cur === this.actions.run)) {
+      cur.timeScale = s;
+    }
   }
 
   /**
@@ -1141,6 +1172,13 @@ export class VRMCharacterAnimator {
         this.actions[this.surfaceClip];
       if (back) {
         back.reset().fadeIn(CROSSFADE_DURATION).play();
+        // reset() cleared timeScale — re-apply the velocity-synced rate when
+        // resuming ground locomotion, mirroring applyCrossfade (Codex finding:
+        // without this, post-emote walk stayed at timeScale 1 until velocity
+        // changed enough to beat the setter's dedupe).
+        if (back === this.actions.walk || back === this.actions.run) {
+          back.timeScale = this.locomotionTimeScale;
+        }
         oneShot.fadeOut(CROSSFADE_DURATION);
         this.currentAction = back;
       }

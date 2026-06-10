@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import { ArrowLeft, ArrowRight, CircleHelp, X } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Gamepad2, X } from 'lucide-react';
 import { useIsMobile } from '@/hooks/use-is-mobile';
 
 const STORAGE_KEY = 'clawville-tutorial-seen';
@@ -172,16 +172,16 @@ export default function TutorialOverlay() {
               right: 'calc(env(safe-area-inset-right, 0px) + 12px)',
             }
           : {
-              bottom: 'calc(env(safe-area-inset-bottom, 0px) + 16px)',
-              right: 260,
+              // Desktop: icon-only, bottom of the right sidebar column
+              // (sidebar shortened to free this row); the Language icon sits
+              // directly to the LEFT at right:68. Was right:260 mid-screen.
+              bottom: 'calc(env(safe-area-inset-bottom, 0px) + 12px)',
+              right: 16,
             }}
         aria-label="Open controls help"
         title="Controls"
       >
-        <CircleHelp className="h-5 w-5" aria-hidden />
-        <span className="hidden text-xs font-black uppercase tracking-[0.16em] sm:inline">
-          Controls
-        </span>
+        <Gamepad2 className="h-5 w-5" aria-hidden />
       </button>
 
       {/* Tutorial overlay */}
