@@ -1,0 +1,998 @@
+{
+  "generatedAt": "2026-06-07T11:42:16.405Z",
+  "wallMs": 32710,
+  "config": {
+    "url": "https://staging.clawville.world/game?perf=1&cb=fidelity-baseline",
+    "label": "staging-cfdc1197-baseline",
+    "outDir": "C:\\Users\\newma\\Documents\\Crypto\\ClawVille-perf-fidelity-spike\\docs\\perf-fidelity-spike\\browser-staging-cfdc1197-baseline",
+    "durationMs": 30000,
+    "width": 1920,
+    "height": 1080,
+    "chromePath": "C:/Program Files/Google/Chrome/Application/chrome.exe"
+  },
+  "consoleMessages": [
+    {
+      "type": "log",
+      "text": "[World3D] Low-end GPU detected: true"
+    },
+    {
+      "type": "log",
+      "text": "[World3D] GPU path: forceWebGL (WebGL2+TSL) — iOS:false noGPU:false lowEnd:true webgpuOverride:false"
+    },
+    {
+      "type": "error",
+      "text": "Failed to load resource: the server responded with a status of 401 ()"
+    },
+    {
+      "type": "error",
+      "text": "Failed to load resource: the server responded with a status of 401 ()"
+    },
+    {
+      "type": "log",
+      "text": "[building-merge] visual-creation: 6 → 6 meshes (0 buckets merged, 0 skipped)"
+    },
+    {
+      "type": "log",
+      "text": "[building-merge] code-development: 8 → 8 meshes (0 buckets merged, 0 skipped)"
+    },
+    {
+      "type": "log",
+      "text": "[body-anchor] mcp-tool-use: fullCenter=(-0.1,0.7) bodyCenter=(0.1,0.4) delta=(0.2,-0.3) worldDelta=(361,-484)wu"
+    },
+    {
+      "type": "log",
+      "text": "[building-merge] mcp-tool-use: 20 → 18 meshes (2 buckets merged, 0 skipped)"
+    },
+    {
+      "type": "log",
+      "text": "[building-merge] api-integrations: 3 → 3 meshes (0 buckets merged, 0 skipped)"
+    },
+    {
+      "type": "log",
+      "text": "[building-merge] app-publishing: 25 → 25 meshes (0 buckets merged, 0 skipped)"
+    },
+    {
+      "type": "log",
+      "text": "[building-merge] cron-automation: 5 → 5 meshes (0 buckets merged, 0 skipped)"
+    },
+    {
+      "type": "log",
+      "text": "[building-merge] deployment-ops: 1 → 1 meshes (0 buckets merged, 0 skipped)"
+    },
+    {
+      "type": "log",
+      "text": "[building-merge] claw-arcade: 34 → 30 meshes (4 buckets merged, 0 skipped)"
+    },
+    {
+      "type": "log",
+      "text": "[building-merge] cove: 5 → 4 meshes (1 buckets merged, 0 skipped)"
+    },
+    {
+      "type": "log",
+      "text": "[building-merge] agent-security: 4 → 4 meshes (0 buckets merged, 0 skipped)"
+    },
+    {
+      "type": "log",
+      "text": "[body-anchor] memory-rag: fullCenter=(0.0,0.6) bodyCenter=(0.0,0.0) delta=(0.0,-0.6) worldDelta=(0,-608)wu"
+    },
+    {
+      "type": "log",
+      "text": "[building-merge] memory-rag: 7 → 7 meshes (0 buckets merged, 0 skipped)"
+    },
+    {
+      "type": "log",
+      "text": "[World3D] Using WebGPURenderer (backend: yy)"
+    },
+    {
+      "type": "log",
+      "text": "[World3D] StaggeredTextureUpload: uploading 215 textures via rIC budget"
+    },
+    {
+      "type": "log",
+      "text": "[World3D] StaggeredTextureUpload: all textures uploaded"
+    }
+  ],
+  "report": {
+    "url": "https://staging.clawville.world/game?perf=1&cb=fidelity-baseline",
+    "title": "ClawVille — Where Agents Learn Skills",
+    "ready": true,
+    "canvasReady": true,
+    "texturesReady": true,
+    "qualityTier": 4,
+    "dpr": 0.65,
+    "renderInfo": {
+      "calls": 356,
+      "triangles": 700488,
+      "lines": 512,
+      "points": 0,
+      "programs": null
+    },
+    "buttonCount": 19,
+    "buttons": [
+      {
+        "text": "›",
+        "aria": "Collapse sidebar",
+        "visible": true,
+        "rect": {
+          "x": 1868,
+          "y": 72,
+          "w": 22,
+          "h": 22
+        }
+      },
+      {
+        "text": "CREATE AGENT",
+        "aria": null,
+        "visible": true,
+        "rect": {
+          "x": 1694,
+          "y": 187,
+          "w": 196,
+          "h": 27
+        }
+      },
+      {
+        "text": "🔌\nAgent",
+        "aria": "Agent",
+        "visible": true,
+        "rect": {
+          "x": 1688,
+          "y": 280,
+          "w": 208,
+          "h": 41
+        }
+      },
+      {
+        "text": "🐾\nMy Agent",
+        "aria": "My Agent",
+        "visible": true,
+        "rect": {
+          "x": 1688,
+          "y": 375,
+          "w": 208,
+          "h": 41
+        }
+      },
+      {
+        "text": "🔧\nSkill Forge",
+        "aria": "Skill Forge",
+        "visible": true,
+        "rect": {
+          "x": 1688,
+          "y": 416,
+          "w": 208,
+          "h": 41
+        }
+      },
+      {
+        "text": "🛒\nMarketplace",
+        "aria": "Marketplace",
+        "visible": true,
+        "rect": {
+          "x": 1688,
+          "y": 511,
+          "w": 208,
+          "h": 41
+        }
+      },
+      {
+        "text": "⚖\nBazaar",
+        "aria": "Bazaar",
+        "visible": true,
+        "rect": {
+          "x": 1688,
+          "y": 553,
+          "w": 208,
+          "h": 41
+        }
+      },
+      {
+        "text": "🔨\nAuction House",
+        "aria": "Auction House",
+        "visible": true,
+        "rect": {
+          "x": 1688,
+          "y": 594,
+          "w": 208,
+          "h": 41
+        }
+      },
+      {
+        "text": "✨\nCosmetics",
+        "aria": "Cosmetics",
+        "visible": true,
+        "rect": {
+          "x": 1688,
+          "y": 636,
+          "w": 208,
+          "h": 41
+        }
+      },
+      {
+        "text": "📜\nQuest Board",
+        "aria": "Quest Board",
+        "visible": true,
+        "rect": {
+          "x": 1688,
+          "y": 731,
+          "w": 208,
+          "h": 41
+        }
+      },
+      {
+        "text": "📌\nBounty Board",
+        "aria": "Bounty Board",
+        "visible": true,
+        "rect": {
+          "x": 1688,
+          "y": 772,
+          "w": 208,
+          "h": 41
+        }
+      },
+      {
+        "text": "🏆\nLeaderboard",
+        "aria": "Leaderboard",
+        "visible": true,
+        "rect": {
+          "x": 1688,
+          "y": 814,
+          "w": 208,
+          "h": 41
+        }
+      },
+      {
+        "text": "🌐\nPublic Leaderboard",
+        "aria": "Open the public agent leaderboard in a new tab",
+        "visible": true,
+        "rect": {
+          "x": 1688,
+          "y": 855,
+          "w": 208,
+          "h": 41
+        }
+      },
+      {
+        "text": "📋\nActivity Log",
+        "aria": "Activity Log",
+        "visible": true,
+        "rect": {
+          "x": 1688,
+          "y": 897,
+          "w": 208,
+          "h": 41
+        }
+      },
+      {
+        "text": "❓\nHow to Play\n▸",
+        "aria": "How to Play",
+        "visible": true,
+        "rect": {
+          "x": 1688,
+          "y": 992,
+          "w": 208,
+          "h": 41
+        }
+      },
+      {
+        "text": "🚪\nLogout",
+        "aria": "Logout",
+        "visible": true,
+        "rect": {
+          "x": 1688,
+          "y": 1033,
+          "w": 208,
+          "h": 41
+        }
+      },
+      {
+        "text": "Explore",
+        "aria": null,
+        "visible": true,
+        "rect": {
+          "x": 877,
+          "y": 155,
+          "w": 75,
+          "h": 28
+        }
+      },
+      {
+        "text": "NPC Mode",
+        "aria": null,
+        "visible": true,
+        "rect": {
+          "x": 952,
+          "y": 155,
+          "w": 90,
+          "h": 28
+        }
+      },
+      {
+        "text": "💗\nASK NORI",
+        "aria": "Ask Nori the Town Guide",
+        "visible": true,
+        "rect": {
+          "x": 1780,
+          "y": 16,
+          "w": 124,
+          "h": 36
+        }
+      }
+    ],
+    "bodyText": [
+      "Log In",
+      "Sign Up",
+      "ClawVille",
+      "THE DEPTHS",
+      "⚓",
+      "›",
+      "NO AGENT BOUND",
+      "Enter the world by selecting or creating an agent.",
+      "CREATE AGENT",
+      "WORLD",
+      "ENTER · CONNECT",
+      "🔌",
+      "Agent",
+      "AGENT",
+      "CONFIGURE · FORGE",
+      "🐾",
+      "My Agent",
+      "🔧",
+      "Skill Forge",
+      "ECONOMY",
+      "TRADE · BUY · SELL",
+      "🛒",
+      "Marketplace",
+      "⚖",
+      "Bazaar",
+      "🔨",
+      "Auction House",
+      "✨",
+      "Cosmetics",
+      "QUESTS",
+      "EARN · COMPETE",
+      "📜",
+      "Quest Board",
+      "📌",
+      "Bounty Board",
+      "🏆",
+      "Leaderboard",
+      "🌐",
+      "Public Leaderboard",
+      "📋",
+      "Activity Log",
+      "SYSTEM",
+      "HELP · ACCOUNT",
+      "❓",
+      "How to Play",
+      "▸",
+      "🚪",
+      "Logout",
+      "SONAR",
+      "5760,7060",
+      "N",
+      "S",
+      "W",
+      "E",
+      "CLICK TO MOVE",
+      "0/12 visited",
+      "Explore",
+      "NPC Mode",
+      "32 FPS",
+      "·",
+      "31.3/46.2 ms",
+      "·",
+      "2 lt/s",
+      "·",
+      "197 MB",
+      "·",
+      "161 draws",
+      "·",
+      "700k tris",
+      "·",
+      "316 objs",
+      "·",
+      "65 pipes",
+      "·",
+      "WebGPU",
+      "·",
+      "0.4 ms sse:parse",
+      "💗",
+      "ASK NORI"
+    ],
+    "canvasCount": 1,
+    "chunks": {
+      "terrain": 1,
+      "buildings": 1,
+      "wandering-npcs": 1,
+      "location-npcs": 1,
+      "remote-players": 1,
+      "quest-npc": 1,
+      "town-guide": 1,
+      "bazaar-stall": 1,
+      "marketplace-stall": 1,
+      "auction-podium": 1,
+      "quest-bounty-pavilion": 1,
+      "town-directory-sign": 1
+    },
+    "primitiveBuildingMeshCount": 0,
+    "primitiveBuildingMeshes": [],
+    "proxyLikeCount": 0,
+    "proxyLike": [],
+    "geometryTypes": {
+      "PlaneGeometry": 1,
+      "BufferGeometry": 300,
+      "CylinderGeometry": 2,
+      "SphereGeometry": 1,
+      "TorusGeometry": 2,
+      "IcosahedronGeometry": 3,
+      "BoxGeometry": 6,
+      "OctahedronGeometry": 1
+    },
+    "profile": {
+      "errors": [],
+      "paints": [
+        {
+          "name": "first-paint",
+          "startTime": 440
+        },
+        {
+          "name": "first-contentful-paint",
+          "startTime": 788
+        }
+      ],
+      "lcp": {
+        "startTime": 1572,
+        "size": 39900
+      },
+      "longTaskCount": 37,
+      "longTaskTotalMs": 23130,
+      "longTaskMaxMs": 9958,
+      "longTaskTop": [
+        {
+          "startTime": 13538,
+          "duration": 9958,
+          "name": "self"
+        },
+        {
+          "startTime": 4015,
+          "duration": 6130,
+          "name": "self"
+        },
+        {
+          "startTime": 10471,
+          "duration": 2469,
+          "name": "self"
+        },
+        {
+          "startTime": 24109,
+          "duration": 1196,
+          "name": "self"
+        },
+        {
+          "startTime": 2897,
+          "duration": 426,
+          "name": "self"
+        },
+        {
+          "startTime": 23599,
+          "duration": 342,
+          "name": "self"
+        },
+        {
+          "startTime": 3677,
+          "duration": 336,
+          "name": "self"
+        },
+        {
+          "startTime": 10231,
+          "duration": 204,
+          "name": "self"
+        },
+        {
+          "startTime": 1015,
+          "duration": 170,
+          "name": "self"
+        },
+        {
+          "startTime": 624,
+          "duration": 167,
+          "name": "self"
+        }
+      ]
+    },
+    "navigation": {
+      "ttfb": 58,
+      "domInteractive": 183,
+      "dcl": 184,
+      "load": 459,
+      "transferSize": 3991
+    },
+    "resources": {
+      "count": 136,
+      "transferBytes": 2676020,
+      "decodedBytes": 41433786,
+      "glb": [
+        {
+          "name": "https://staging.clawville.world/models/pineapple-house-opt1.glb?v=2",
+          "startTime": 467,
+          "duration": 16,
+          "transferSize": 0,
+          "decodedBodySize": 554308
+        },
+        {
+          "name": "https://staging.clawville.world/models/chum-bucket-v2-opt1.glb?v=3",
+          "startTime": 468,
+          "duration": 42,
+          "transferSize": 0,
+          "decodedBodySize": 1594964
+        },
+        {
+          "name": "https://staging.clawville.world/models/krusty-krab-v2-opt1.glb?v=3",
+          "startTime": 469,
+          "duration": 28,
+          "transferSize": 0,
+          "decodedBodySize": 1194708
+        },
+        {
+          "name": "https://staging.clawville.world/models/salty-spitoon-opt1.glb?v=2",
+          "startTime": 471,
+          "duration": 14,
+          "transferSize": 0,
+          "decodedBodySize": 390736
+        },
+        {
+          "name": "https://staging.clawville.world/models/boating-school-opt1.glb?v=2",
+          "startTime": 471,
+          "duration": 10,
+          "transferSize": 0,
+          "decodedBodySize": 195280
+        },
+        {
+          "name": "https://staging.clawville.world/models/patty-building-opt1.glb?v=2",
+          "startTime": 472,
+          "duration": 21,
+          "transferSize": 0,
+          "decodedBodySize": 506364
+        },
+        {
+          "name": "https://staging.clawville.world/models/building-lighthouse-opt1.glb?v=2",
+          "startTime": 472,
+          "duration": 14,
+          "transferSize": 0,
+          "decodedBodySize": 59148
+        },
+        {
+          "name": "https://staging.clawville.world/models/arcade/claw-arcade-exterior-opt1.glb?v=3",
+          "startTime": 473,
+          "duration": 43,
+          "transferSize": 0,
+          "decodedBodySize": 804340
+        },
+        {
+          "name": "https://staging.clawville.world/models/cove/cove-exterior-opt1.glb?v=3",
+          "startTime": 474,
+          "duration": 25,
+          "transferSize": 0,
+          "decodedBodySize": 275128
+        },
+        {
+          "name": "https://staging.clawville.world/models/patricks-rock-v2-opt1.glb?v=4",
+          "startTime": 476,
+          "duration": 51,
+          "transferSize": 0,
+          "decodedBodySize": 1036376
+        },
+        {
+          "name": "https://staging.clawville.world/models/squidward-house-opt1.glb?v=4",
+          "startTime": 477,
+          "duration": 57,
+          "transferSize": 0,
+          "decodedBodySize": 1110020
+        },
+        {
+          "name": "https://staging.clawville.world/avatars/animations/idle.glb",
+          "startTime": 478,
+          "duration": 66,
+          "transferSize": 300,
+          "decodedBodySize": 88600
+        },
+        {
+          "name": "https://staging.clawville.world/avatars/animations/walk.glb",
+          "startTime": 479,
+          "duration": 67,
+          "transferSize": 300,
+          "decodedBodySize": 63268
+        },
+        {
+          "name": "https://staging.clawville.world/avatars/animations/run.glb",
+          "startTime": 480,
+          "duration": 69,
+          "transferSize": 300,
+          "decodedBodySize": 92192
+        },
+        {
+          "name": "https://staging.clawville.world/models/lobster.glb",
+          "startTime": 481,
+          "duration": 32,
+          "transferSize": 0,
+          "decodedBodySize": 199708
+        },
+        {
+          "name": "https://staging.clawville.world/models/quest-bounty-pavilion.glb?v=3",
+          "startTime": 482,
+          "duration": 432,
+          "transferSize": 0,
+          "decodedBodySize": 2213956
+        },
+        {
+          "name": "https://staging.clawville.world/models/bazaar-merchant-stand.glb?v=2",
+          "startTime": 482,
+          "duration": 43,
+          "transferSize": 0,
+          "decodedBodySize": 430628
+        },
+        {
+          "name": "https://staging.clawville.world/models/shisha-oasis.glb",
+          "startTime": 483,
+          "duration": 60,
+          "transferSize": 0,
+          "decodedBodySize": 1609128
+        },
+        {
+          "name": "https://staging.clawville.world/models/auction-dome.glb",
+          "startTime": 484,
+          "duration": 35,
+          "transferSize": 0,
+          "decodedBodySize": 99844
+        },
+        {
+          "name": "https://staging.clawville.world/avatars/milady-official-1.vrm",
+          "startTime": 484,
+          "duration": 84,
+          "transferSize": 300,
+          "decodedBodySize": 242228
+        },
+        {
+          "name": "https://staging.clawville.world/avatars/milady-official-2.vrm",
+          "startTime": 484,
+          "duration": 94,
+          "transferSize": 300,
+          "decodedBodySize": 170344
+        },
+        {
+          "name": "https://staging.clawville.world/avatars/milady-official-3.vrm",
+          "startTime": 485,
+          "duration": 98,
+          "transferSize": 300,
+          "decodedBodySize": 239636
+        },
+        {
+          "name": "https://staging.clawville.world/avatars/milady-official-4.vrm",
+          "startTime": 485,
+          "duration": 101,
+          "transferSize": 300,
+          "decodedBodySize": 291964
+        },
+        {
+          "name": "https://staging.clawville.world/avatars/milady-official-5.vrm",
+          "startTime": 485,
+          "duration": 121,
+          "transferSize": 300,
+          "decodedBodySize": 658476
+        },
+        {
+          "name": "https://staging.clawville.world/avatars/milady-official-6.vrm",
+          "startTime": 485,
+          "duration": 103,
+          "transferSize": 300,
+          "decodedBodySize": 222104
+        },
+        {
+          "name": "https://staging.clawville.world/avatars/milady-official-7.vrm",
+          "startTime": 486,
+          "duration": 108,
+          "transferSize": 300,
+          "decodedBodySize": 288688
+        },
+        {
+          "name": "https://staging.clawville.world/avatars/milady-official-8.vrm",
+          "startTime": 486,
+          "duration": 115,
+          "transferSize": 300,
+          "decodedBodySize": 335104
+        },
+        {
+          "name": "https://staging.clawville.world/avatars/hermes-female.vrm",
+          "startTime": 486,
+          "duration": 146,
+          "transferSize": 300,
+          "decodedBodySize": 1701640
+        },
+        {
+          "name": "https://staging.clawville.world/avatars/hermes-male.vrm",
+          "startTime": 487,
+          "duration": 140,
+          "transferSize": 300,
+          "decodedBodySize": 1346296
+        },
+        {
+          "name": "https://staging.clawville.world/avatars/tekk.vrm",
+          "startTime": 487,
+          "duration": 162,
+          "transferSize": 300,
+          "decodedBodySize": 2045416
+        },
+        {
+          "name": "https://staging.clawville.world/avatars/eliza-chibi.vrm?v=2",
+          "startTime": 488,
+          "duration": 963,
+          "transferSize": 300,
+          "decodedBodySize": 5547172
+        },
+        {
+          "name": "https://staging.clawville.world/avatars/milady-chibi.vrm?v=2",
+          "startTime": 488,
+          "duration": 971,
+          "transferSize": 300,
+          "decodedBodySize": 5843140
+        },
+        {
+          "name": "https://staging.clawville.world/models/guide-rigged.glb",
+          "startTime": 1104,
+          "duration": 12,
+          "transferSize": 0,
+          "decodedBodySize": 948792
+        },
+        {
+          "name": "https://staging.clawville.world/models/crayfish.glb",
+          "startTime": 1105,
+          "duration": 4,
+          "transferSize": 0,
+          "decodedBodySize": 7696
+        },
+        {
+          "name": "https://staging.clawville.world/models/jellyfish.glb",
+          "startTime": 1106,
+          "duration": 4,
+          "transferSize": 0,
+          "decodedBodySize": 88952
+        },
+        {
+          "name": "https://staging.clawville.world/models/coral-reef1.glb",
+          "startTime": 2209,
+          "duration": 176,
+          "transferSize": 40229,
+          "decodedBodySize": 97708
+        },
+        {
+          "name": "https://staging.clawville.world/models/coral-reef2.glb",
+          "startTime": 2210,
+          "duration": 176,
+          "transferSize": 25388,
+          "decodedBodySize": 41440
+        },
+        {
+          "name": "https://staging.clawville.world/models/coral-reef3.glb",
+          "startTime": 2210,
+          "duration": 202,
+          "transferSize": 36029,
+          "decodedBodySize": 59616
+        },
+        {
+          "name": "https://staging.clawville.world/models/kelp.glb",
+          "startTime": 2211,
+          "duration": 239,
+          "transferSize": 8130,
+          "decodedBodySize": 9672
+        },
+        {
+          "name": "https://staging.clawville.world/models/building-shell.glb",
+          "startTime": 2211,
+          "duration": 176,
+          "transferSize": 27929,
+          "decodedBodySize": 30796
+        },
+        {
+          "name": "https://staging.clawville.world/models/building-seashell.glb",
+          "startTime": 2211,
+          "duration": 176,
+          "transferSize": 42227,
+          "decodedBodySize": 46664
+        },
+        {
+          "name": "https://staging.clawville.world/models/building-anchor.glb",
+          "startTime": 2211,
+          "duration": 238,
+          "transferSize": 3132,
+          "decodedBodySize": 3984
+        },
+        {
+          "name": "https://staging.clawville.world/models/building-barrel.glb",
+          "startTime": 2212,
+          "duration": 352,
+          "transferSize": 20023,
+          "decodedBodySize": 28312
+        },
+        {
+          "name": "https://staging.clawville.world/models/building-chest.glb",
+          "startTime": 2212,
+          "duration": 347,
+          "transferSize": 99381,
+          "decodedBodySize": 139308
+        },
+        {
+          "name": "https://staging.clawville.world/models/building-lantern.glb",
+          "startTime": 2212,
+          "duration": 272,
+          "transferSize": 12453,
+          "decodedBodySize": 14576
+        },
+        {
+          "name": "https://staging.clawville.world/models/building-tower2.glb",
+          "startTime": 2212,
+          "duration": 311,
+          "transferSize": 29024,
+          "decodedBodySize": 47628
+        },
+        {
+          "name": "https://staging.clawville.world/models/characters/spongebob.glb",
+          "startTime": 2213,
+          "duration": 400,
+          "transferSize": 386924,
+          "decodedBodySize": 474752
+        },
+        {
+          "name": "https://staging.clawville.world/models/characters/squidward.glb",
+          "startTime": 2213,
+          "duration": 311,
+          "transferSize": 34809,
+          "decodedBodySize": 77172
+        },
+        {
+          "name": "https://staging.clawville.world/models/characters/gary.glb",
+          "startTime": 2213,
+          "duration": 347,
+          "transferSize": 86564,
+          "decodedBodySize": 100264
+        },
+        {
+          "name": "https://staging.clawville.world/models/characters/flying-dutchman.glb",
+          "startTime": 2213,
+          "duration": 375,
+          "transferSize": 211570,
+          "decodedBodySize": 248956
+        },
+        {
+          "name": "https://staging.clawville.world/models/characters/pearl.glb",
+          "startTime": 2213,
+          "duration": 370,
+          "transferSize": 176378,
+          "decodedBodySize": 231412
+        },
+        {
+          "name": "https://staging.clawville.world/models/characters/mrs-puff.glb",
+          "startTime": 2213,
+          "duration": 367,
+          "transferSize": 84833,
+          "decodedBodySize": 93240
+        },
+        {
+          "name": "https://staging.clawville.world/models/lobster_plush.glb",
+          "startTime": 2213,
+          "duration": 406,
+          "transferSize": 566626,
+          "decodedBodySize": 570200
+        },
+        {
+          "name": "https://staging.clawville.world/models/characters/mr-krabs.glb",
+          "startTime": 2213,
+          "duration": 346,
+          "transferSize": 44146,
+          "decodedBodySize": 95044
+        },
+        {
+          "name": "https://staging.clawville.world/models/characters/plankton.glb",
+          "startTime": 2214,
+          "duration": 349,
+          "transferSize": 36467,
+          "decodedBodySize": 39704
+        },
+        {
+          "name": "https://staging.clawville.world/models/characters/karen.glb",
+          "startTime": 2214,
+          "duration": 349,
+          "transferSize": 40880,
+          "decodedBodySize": 60712
+        },
+        {
+          "name": "https://staging.clawville.world/models/characters/sandy.glb",
+          "startTime": 2214,
+          "duration": 372,
+          "transferSize": 156539,
+          "decodedBodySize": 214352
+        },
+        {
+          "name": "https://staging.clawville.world/models/characters/patrick.glb",
+          "startTime": 2214,
+          "duration": 367,
+          "transferSize": 71735,
+          "decodedBodySize": 101588
+        },
+        {
+          "name": "https://staging.clawville.world/avatars/animations/hermes-female/idle.glb",
+          "startTime": 23499,
+          "duration": 205,
+          "transferSize": 79880,
+          "decodedBodySize": 111744
+        },
+        {
+          "name": "https://staging.clawville.world/avatars/animations/hermes-female/run.glb",
+          "startTime": 23500,
+          "duration": 171,
+          "transferSize": 17568,
+          "decodedBodySize": 45220
+        },
+        {
+          "name": "https://staging.clawville.world/avatars/animations/hermes-male/idle.glb",
+          "startTime": 23501,
+          "duration": 174,
+          "transferSize": 55724,
+          "decodedBodySize": 84800
+        },
+        {
+          "name": "https://staging.clawville.world/avatars/animations/hermes-male/run.glb",
+          "startTime": 23502,
+          "duration": 132,
+          "transferSize": 16435,
+          "decodedBodySize": 44320
+        },
+        {
+          "name": "https://staging.clawville.world/avatars/animations/tekk-male/idle.glb",
+          "startTime": 23502,
+          "duration": 169,
+          "transferSize": 25955,
+          "decodedBodySize": 54412
+        },
+        {
+          "name": "https://staging.clawville.world/avatars/animations/tekk-male/walk.glb",
+          "startTime": 23503,
+          "duration": 170,
+          "transferSize": 19693,
+          "decodedBodySize": 47700
+        },
+        {
+          "name": "https://staging.clawville.world/avatars/animations/tekk-male/run.glb",
+          "startTime": 23503,
+          "duration": 171,
+          "transferSize": 14362,
+          "decodedBodySize": 42100
+        },
+        {
+          "name": "https://staging.clawville.world/avatars/animations/chibi/idle.glb",
+          "startTime": 23955,
+          "duration": 79,
+          "transferSize": 160286,
+          "decodedBodySize": 194292
+        },
+        {
+          "name": "https://staging.clawville.world/avatars/animations/chibi/walk.glb",
+          "startTime": 23955,
+          "duration": 43,
+          "transferSize": 16754,
+          "decodedBodySize": 36188
+        },
+        {
+          "name": "https://staging.clawville.world/avatars/animations/chibi/run.glb",
+          "startTime": 23956,
+          "duration": 43,
+          "transferSize": 14095,
+          "decodedBodySize": 33504
+        }
+      ],
+      "scripts": 46,
+      "images": 1,
+      "fetch": 79
+    }
+  }
+}

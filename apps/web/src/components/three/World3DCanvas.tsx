@@ -16,7 +16,9 @@ import ArenaTerrain from '@/lib/three/arena-terrain';
 import ArenaBuildings from '@/lib/three/arena-buildings';
 import MeshletBuildingsR3F from '@/lib/three/meshlet/meshlet-buildings-r3f';
 import ArenaNpcs from '@/lib/three/arena-npcs';
+import RemotePlayers from '@/lib/three/remote-players';
 import ArenaLocationNpcs from '@/lib/three/arena-location-npcs';
+import { VRM_METRICS_ENABLED } from '@/lib/three/vrm-loader';
 import PlayerAvatar from '@/lib/three/player-avatar';
 import NpcController from '@/lib/three/npc-controller';
 import MergedSeaweed from '@/lib/three/merged-seaweed';
@@ -40,6 +42,7 @@ import { useGameStore, avatarPositionRef } from '@/stores/game';
 import { useNpcStore } from '@/stores/npc';
 import { MAP_WIDTH, MAP_HEIGHT } from '@/lib/pixi/tilemap-data';
 import { DEFAULT_WORLD_PERF_FLAGS, type WorldPerfFlags } from '@/lib/three/PerfAudit';
+import { detectLowEndGpuClass } from '@/lib/three/gpu-tier';
 
 // ---------------------------------------------------------------------------
 // SeaLoadingScreen progress bridge — wire THREE.DefaultLoadingManager.onProgress
@@ -72,34 +75,7 @@ const CAM_PAN_SPEED = 500;
 // to the GPU class. False positives (lower DPR on a capable GPU) are mostly
 // harmless — slightly softer rendering; false negatives (full DPR on Iris Xe)
 // are the laggy baseline we want to avoid.
-const LOW_END_GPU_DETECTED: boolean = (() => {
-  if (typeof window === 'undefined') return false;
-  try {
-    const canvas = document.createElement('canvas');
-    const gl = (canvas.getContext('webgl2') ||
-      canvas.getContext('webgl') ||
-      canvas.getContext('experimental-webgl')) as WebGLRenderingContext | null;
-    if (!gl) return true; // no webgl at all → almost certainly low-end
-    const ext = gl.getExtension('WEBGL_debug_renderer_info');
-    const renderer = ext
-      ? String(gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) ?? '')
-      : '';
-    const lowEnd =
-      /\bintel\b|\biris\b|\buhd graphics\b|\bhd graphics\b|\bgma\b|adreno|mali|powervr|apple gpu/i.test(
-        renderer,
-      );
-    // Touch / coarse-pointer devices are almost universally low-end mobile.
-    const isTouch =
-      typeof window.matchMedia === 'function' &&
-      window.matchMedia('(pointer: coarse)').matches;
-    // Release the probe context so Firefox (strict context-count limit) doesn't
-    // waste one of its ~16 WebGL2 slots on this throwaway canvas.
-    gl.getExtension('WEBGL_lose_context')?.loseContext();
-    return lowEnd || isTouch;
-  } catch {
-    return false;
-  }
-})();
+const LOW_END_GPU_DETECTED = detectLowEndGpuClass();
 if (typeof window !== 'undefined') {
   console.log('[World3D] Low-end GPU detected:', LOW_END_GPU_DETECTED);
 }
@@ -122,12 +98,140 @@ const USE_MESHLET_BUILDINGS: boolean =
   typeof window !== 'undefined' &&
   new URLSearchParams(window.location.search).get('meshlets') === '1';
 const FOG_COLOR = new THREE.Color(0x0e3458); // Underwater haze — matches sky
+const LOW_END_DPR_RANGE: [number, number] = [0.55, 0.7];
+const STANDARD_DPR_RANGE: [number, number] = [0.75, 1];
+const QUALITY_SAMPLE_MS = 2500;
+const QUALITY_WARMUP_MS = 5000;
+const QUALITY_FPS_DOWN = 58;
+// Recovery threshold: 59 FPS is reachable on a 60 Hz display (vsync permits it).
+// The old 90 threshold was unreachable at vsync, creating a one-way ratchet.
+const QUALITY_FPS_UP = 59;
+// Only one degradation tier: hide groundCover (seaweed / decorations).
+// activityFx and labels are gameplay-functional and must never be auto-degraded.
+const QUALITY_MAX_TIER = 1;
 
 export type WorldMode = 'game' | 'arena';
 
 interface World3DCanvasProps {
   mode: WorldMode;
   perfFlags?: Partial<WorldPerfFlags>;
+}
+
+// The governor may ONLY auto-hide groundCover (seaweed + decorations).
+// activityFx and labels are gameplay-functional signals — never auto-degraded.
+// Tier 0 = full quality; tier 1 = groundCover hidden.
+function applyQualityTier(flags: WorldPerfFlags, tier: number): WorldPerfFlags {
+  if (tier <= 0) return flags;
+  return {
+    ...flags,
+    groundCover: false,
+  };
+}
+
+function useAdaptiveWorldPerfFlags(perfFlags?: Partial<WorldPerfFlags>): WorldPerfFlags {
+  const base = { ...DEFAULT_WORLD_PERF_FLAGS, ...perfFlags };
+
+  // ?fast=1 is an explicit opt-in DEBUG flag — allowed to hide groundCover, activityFx,
+  // and labels because the user consciously opted in. It is NOT a default auto-degradation
+  // path. It also pins the governor off so no further automatic changes occur this session.
+  const fastMode =
+    typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('fast') === '1';
+
+  const tieredFlagsEnabled = perfFlags === undefined;
+  // Adaptive governor is active only when no explicit perfFlags override is passed in
+  // AND the user has not opted into ?fast=1 debug mode.
+  const adaptiveEnabled = tieredFlagsEnabled && !fastMode;
+
+  const initialTier = fastMode
+    ? QUALITY_MAX_TIER
+    : LOW_END_GPU_DETECTED
+      ? 1
+      : 0;
+  const [qualityTier, setQualityTier] = useState(initialTier);
+
+  useEffect(() => {
+    if (!adaptiveEnabled || typeof window === 'undefined') return;
+
+    let raf = 0;
+    let frames = 0;
+    let sampleStart = performance.now();
+    const startedAt = sampleStart;
+    let stableHighSamples = 0;
+    let tierRef = initialTier;
+    // Anti-flap latch: if the governor degrades a second time in one session,
+    // hold tier 1 for the rest of the session (degradeCount tracks triggers).
+    let degradeCount = 0;
+    let latched = false;
+
+    const tick = (now: number) => {
+      frames++;
+      const elapsed = now - sampleStart;
+      if (elapsed >= QUALITY_SAMPLE_MS) {
+        const fps = (frames * 1000) / elapsed;
+        const warmed = now - startedAt >= QUALITY_WARMUP_MS;
+
+        if (!latched && warmed && fps < QUALITY_FPS_DOWN && tierRef < QUALITY_MAX_TIER) {
+          tierRef = QUALITY_MAX_TIER;
+          stableHighSamples = 0;
+          degradeCount += 1;
+          // Second degrade in the same session: lock tier for the rest of the session.
+          if (degradeCount >= 2) latched = true;
+          setQualityTier(tierRef);
+        } else if (!latched && warmed && fps >= QUALITY_FPS_UP && tierRef > 0) {
+          stableHighSamples += 1;
+          // Require 3 consecutive stable-high samples (~7.5s sustained) before recovering.
+          if (stableHighSamples >= 3) {
+            tierRef -= 1;
+            stableHighSamples = 0;
+            setQualityTier(tierRef);
+          }
+        } else if (fps < QUALITY_FPS_UP) {
+          stableHighSamples = 0;
+        }
+        frames = 0;
+        sampleStart = now;
+      }
+      raf = requestAnimationFrame(tick);
+    };
+
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [adaptiveEnabled, initialTier]);
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      (window as any).__W3D_QUALITY_TIER = qualityTier;
+    }
+  }, [qualityTier]);
+
+  if (fastMode) {
+    // ?fast=1 explicitly disables groundCover, activityFx, labels — governor is frozen.
+    return { ...base, groundCover: false, activityFx: false, labels: false };
+  }
+
+  return tieredFlagsEnabled ? applyQualityTier(base, qualityTier) : base;
+}
+
+function AdaptiveRendererDpr() {
+  const { gl } = useThree();
+  const lastDprRef = useRef<number | null>(null);
+
+  useFrame(({ clock }) => {
+    const frame = Math.floor(clock.elapsedTime * 60);
+    if (frame % 30 !== 0) return;
+    // Keep adaptive quality tiers from lowering render resolution. The tier-4
+    // 0.4 DPR clamp recovered FPS, but normal play became visibly soft.
+    const targetDpr =
+      LOW_END_GPU_DETECTED || isTouchDevice
+        ? LOW_END_DPR_RANGE[1]
+        : STANDARD_DPR_RANGE[1];
+    if (lastDprRef.current !== targetDpr) {
+      gl.setPixelRatio(targetDpr);
+      lastDprRef.current = targetDpr;
+    }
+  });
+
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -713,6 +817,7 @@ function PerfCameraPreset({
 // Fallback for Safari (no rIC): rAF with BATCH=4 (still 2× the old rate).
 // ---------------------------------------------------------------------------
 const IDLE_SLICE_BUDGET_MS = 6;
+const IDLE_MAX_TEXTURES_PER_SLICE = 4;
 const RAF_FALLBACK_BATCH = 4;
 
 // All standard texture slot names on MeshStandardMaterial and related.
@@ -723,6 +828,57 @@ const TEXTURE_SLOTS = [
   'clearcoatRoughnessMap', 'sheenColorMap', 'sheenRoughnessMap',
   'transmissionMap', 'thicknessMap', 'specularMap', 'specularColorMap',
 ] as const;
+
+type TextureUploadSliceMetric = {
+  mode: 'idle' | 'raf';
+  startMs: number;
+  durationMs: number;
+  count: number;
+  done: number;
+};
+
+type TextureUploadMetrics = {
+  mode: 'idle' | 'raf';
+  totalTextures: number;
+  startedAt: number;
+  completedAt?: number;
+  durationMs?: number;
+  slices: TextureUploadSliceMetric[];
+};
+
+function createTextureUploadMetrics(mode: 'idle' | 'raf', totalTextures: number): TextureUploadMetrics {
+  const metrics: TextureUploadMetrics = {
+    mode,
+    totalTextures,
+    startedAt: performance.now(),
+    slices: [],
+  };
+  if (VRM_METRICS_ENABLED && typeof window !== 'undefined') {
+    (window as any).__CV_TEXTURE_UPLOAD_METRICS = metrics;
+  }
+  return metrics;
+}
+
+function pushTextureUploadSlice(
+  metrics: TextureUploadMetrics,
+  mode: 'idle' | 'raf',
+  start: number,
+  count: number,
+  done: number,
+): void {
+  metrics.slices.push({
+    mode,
+    startMs: Math.round(start),
+    durationMs: Math.round((performance.now() - start) * 10) / 10,
+    count,
+    done,
+  });
+}
+
+function completeTextureUploadMetrics(metrics: TextureUploadMetrics): void {
+  metrics.completedAt = performance.now();
+  metrics.durationMs = Math.round((metrics.completedAt - metrics.startedAt) * 10) / 10;
+}
 
 function StaggeredTextureUpload() {
   const { camera, gl, scene } = useThree();
@@ -797,13 +953,29 @@ function StaggeredTextureUpload() {
         (window as any).__W3D_TEXTURE_UPLOAD_DONE = 0;
 
         let i = 0;
+        const uploadMetrics = createTextureUploadMetrics(hasIdle ? 'idle' : 'raf', unique.length);
 
         function uploadIdle(deadline: IdleDeadline) {
           const t0 = performance.now();
-          while (
-            i < unique.length &&
-            (deadline.timeRemaining() > 1 || performance.now() - t0 < IDLE_SLICE_BUDGET_MS)
-          ) {
+          const before = i;
+          // Deadline-aware path: when rIC provides a real idle window
+          // (timeRemaining() > 0 and not timed-out), upload as many textures
+          // as fit until <2ms remains — no fixed cap. This is the fast path
+          // that resolved the 10.8s→20.5s regression caused by IDLE_MAX_TEXTURES_PER_SLICE=4.
+          // On fast hardware a single 50ms idle window can drain the entire queue.
+          // Fallback when rIC timed out or no remaining time: upload max 4 per slice
+          // guarded by IDLE_SLICE_BUDGET_MS, same as the old hard cap.
+          const useDeadline = !deadline.didTimeout && deadline.timeRemaining() > 0;
+          while (i < unique.length) {
+            if (i > before) {
+              // Not the first texture of this slice — check budget.
+              if (useDeadline) {
+                if (deadline.timeRemaining() < 2) break;
+              } else {
+                if (i - before >= IDLE_MAX_TEXTURES_PER_SLICE) break;
+                if (performance.now() - t0 >= IDLE_SLICE_BUDGET_MS) break;
+              }
+            }
             try {
               (gl as any).initTexture(unique[i]);
             } catch (err) {
@@ -812,10 +984,12 @@ function StaggeredTextureUpload() {
             i++;
           }
           (window as any).__W3D_TEXTURE_UPLOAD_DONE = i;
+          pushTextureUploadSlice(uploadMetrics, 'idle', t0, i - before, i);
           if (i < unique.length) {
             idleHandle = (window as any).requestIdleCallback(uploadIdle, { timeout: 200 });
           } else {
             idleHandle = undefined;
+            completeTextureUploadMetrics(uploadMetrics);
             console.log('[World3D] StaggeredTextureUpload: all textures uploaded');
             markTextureUploadReady();
           }
@@ -823,6 +997,7 @@ function StaggeredTextureUpload() {
 
         function uploadRafFallback() {
           const t0 = performance.now();
+          const before = i;
           const end = Math.min(i + RAF_FALLBACK_BATCH, unique.length);
           for (; i < end; i++) {
             try {
@@ -833,6 +1008,7 @@ function StaggeredTextureUpload() {
           }
           (window as any).__W3D_TEXTURE_UPLOAD_DONE = i;
           const elapsed = performance.now() - t0;
+          pushTextureUploadSlice(uploadMetrics, 'raf', t0, i - before, i);
           if (elapsed > 20) {
             console.warn(`[World3D] StaggeredTextureUpload: batch took ${elapsed.toFixed(1)}ms`);
           }
@@ -840,6 +1016,7 @@ function StaggeredTextureUpload() {
             uploadRaf = requestAnimationFrame(uploadRafFallback);
           } else {
             uploadRaf = undefined;
+            completeTextureUploadMetrics(uploadMetrics);
             console.log('[World3D] StaggeredTextureUpload: all textures uploaded');
             markTextureUploadReady();
           }
@@ -889,6 +1066,9 @@ const SceneContents = memo(function SceneContents({
   const showLabels = flags.labels && !staticOnly;
   const showNpcs = flags.npcs && !staticOnly;
   const showWaterFogParticles = flags.waterFogParticles && !staticOnly;
+  const showGroundCover = flags.groundCover && !staticOnly;
+  const showActivityFx = flags.activityFx && !staticOnly;
+  const showBuildingDetail = flags.buildingDetail && !staticOnly;
   // Read controlMode once at mount for camera routing; camera routing uses
   // getState() inside useFrame so it always has the latest value at zero cost.
   // We only need a reactive read here if we conditionally render JSX based on
@@ -929,6 +1109,7 @@ const SceneContents = memo(function SceneContents({
           R3F runs useFrame hooks in mount order; hoisting here ensures every
           consumer reads current-frame heightOffset, not the prior frame's stale value. */}
       <JumpTicker />
+      <AdaptiveRendererDpr />
 
       {/* Single DOM overlay for all world-space labels (NPC names, building labels,
           speech bubbles). Replaces 30+ per-instance drei <Html> portals.
@@ -1008,7 +1189,7 @@ const SceneContents = memo(function SceneContents({
           from tilemap data not meshes, so dropping ArenaBuildings does NOT
           let players walk through buildings (world-colliders.ts line 248). */}
       <group name="perf:buildings" userData={{ perfChunk: 'buildings' }}>
-        {USE_MESHLET_BUILDINGS ? <MeshletBuildingsR3F /> : <ArenaBuildings />}
+        {USE_MESHLET_BUILDINGS ? <MeshletBuildingsR3F /> : <ArenaBuildings fullDetail={showBuildingDetail} />}
       </group>
       {showNpcs && (
         <group name="perf:wandering-npcs" userData={{ perfChunk: 'wandering-npcs' }}>
@@ -1020,13 +1201,20 @@ const SceneContents = memo(function SceneContents({
           <ArenaLocationNpcs />
         </group>
       )}
+      {/* Multiplayer Phase 1: remote players in the same room. Local viewer is
+          filtered out by isLocal so we never double-render the player avatar. */}
+      {showNpcs && (
+        <group name="perf:remote-players" userData={{ perfChunk: 'remote-players' }}>
+          <RemotePlayers />
+        </group>
+      )}
 
       {/* Seaweed ground cover — merged geometry + TSL GPU animation (no InstancedMesh).
           Skipped on iOS/forceWebGL: 4500 blades with per-vertex TSL positionNode wind
           animation compile to GLSL loops on WebGL2 backend and spike frame time past
           the A-series GPU budget on first draw. Plain WebGL path has no equivalent
           GPU-side procedural animation so the cost isn't recoverable. */}
-      {showWaterFogParticles && !FORCE_WEBGL && (
+      {showGroundCover && !FORCE_WEBGL && (
         <group name="perf:seaweed" userData={{ perfChunk: 'seaweed' }}>
           <MergedSeaweed />
         </group>
@@ -1078,14 +1266,14 @@ const SceneContents = memo(function SceneContents({
       {showLabels && showNpcs && <NpcSpeechBubbles />}
 
       {/* NPC activity indicators — pulsing spheres + typing dots above NPCs */}
-      {showWaterFogParticles && showNpcs && (
+      {showActivityFx && showNpcs && (
         <group name="perf:activity-indicators" userData={{ perfChunk: 'activity-indicators' }}>
           <ActivityIndicators />
         </group>
       )}
 
       {/* Floating reward texts — spheres that float upward on token earn */}
-      {showWaterFogParticles && (
+      {showActivityFx && (
         <group name="perf:floating-texts" userData={{ perfChunk: 'floating-texts' }}>
           <FloatingTexts3D />
         </group>
@@ -1243,7 +1431,7 @@ async function createWebGPURenderer(canvas: HTMLCanvasElement): Promise<any> {
   //
   // KEEP THIS IN SYNC with the <Canvas dpr={...}> prop below.
   // -------------------------------------------------------------------------
-  const dprRange: readonly [number, number] = LOW_END_GPU_DETECTED ? [0.55, 0.7] : [0.75, 1];
+  const dprRange = LOW_END_GPU_DETECTED ? LOW_END_DPR_RANGE : STANDARD_DPR_RANGE;
   const rawDpr = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1;
   const dpr = Math.max(dprRange[0], Math.min(rawDpr, dprRange[1]));
   canvas.width = Math.round(cssW * dpr);
@@ -1320,6 +1508,7 @@ function ContextLostFallback() {
 }
 
 function World3DCanvas({ mode, perfFlags }: World3DCanvasProps) {
+  const resolvedPerfFlags = useAdaptiveWorldPerfFlags(perfFlags);
   // Stable async gl factory — R3F v9 awaits this before rendering.
   // Returns a WebGPURenderer (with automatic WebGL2 fallback built in).
   // Falls back to standard WebGLRenderer if the dynamic import or init fails.
@@ -1364,7 +1553,7 @@ function World3DCanvas({ mode, perfFlags }: World3DCanvasProps) {
     >
       <Canvas
         gl={glFactory as any}
-        // 2026-05-22 — DPR floor dropped to [0.5, 0.65] on Iris Xe (was [0.55, 0.7]).
+        // 2026-06-06 — DPR floor dropped to [0.5, 0.65] on Iris Xe/mobile.
         //   Integrated/mobile GPU (Iris Xe, Adreno, Mali, Apple integrated):
         //     [0.5, 0.65] → 18% fewer fragments than [0.55, 0.7], 65% fewer than [1, 1].
         //   Discrete desktop GPU: [0.75, 1] (unchanged from prior).
@@ -1372,7 +1561,7 @@ function World3DCanvas({ mode, perfFlags }: World3DCanvasProps) {
         // After Wave 1 NPC cap + spring-bone LOD + pavilion VRAM relief landed,
         // the scene is much less fragment-bound, so dropping the cap to 0.5 floor
         // is now visually acceptable on the device classes that need it.
-        dpr={LOW_END_GPU_DETECTED ? [0.55, 0.7] : [0.75, 1]}
+        dpr={LOW_END_GPU_DETECTED ? LOW_END_DPR_RANGE : STANDARD_DPR_RANGE}
         // MUST be "always" — R3F v9 with an async gl factory appears to skip
         // calling the factory entirely when frameloop="never" is set, so the
         // Canvas never initializes. "always" drives the normal RAF loop.
@@ -1393,7 +1582,7 @@ function World3DCanvas({ mode, perfFlags }: World3DCanvasProps) {
           scene.background = SKY_COLOR;
           gl.setClearColor(SKY_COLOR, 1);
           gl.setClearAlpha?.(1);
-          gl.shadowMap.enabled = perfFlags?.shadows ?? DEFAULT_WORLD_PERF_FLAGS.shadows;
+          gl.shadowMap.enabled = resolvedPerfFlags.shadows;
           // PERF: do NOT call gl.setPixelRatio() here — it overrides the Canvas
           // dpr={[0.75, 1]} prop cap. R3F resolves the DPR from the prop before
           // onCreated fires; a manual setPixelRatio resets it and can raise DPR
@@ -1409,7 +1598,7 @@ function World3DCanvas({ mode, perfFlags }: World3DCanvasProps) {
           kickRenderLoop(state);
         }}
       >
-        <SceneContents mode={mode} perfFlags={perfFlags} />
+        <SceneContents mode={mode} perfFlags={resolvedPerfFlags} />
       </Canvas>
     </div>
   );

@@ -12,7 +12,15 @@
 > - **`ARCHITECTURE.md`** — backend routes / services / schema / events / leaderboard rubric.
 > - **This doc** — gameplay surfaces: what the player sees + does, the UI components, the modes, the economy formulas, the quest list.
 
-**Last Audited:** 2026-06-05 (create-agent picker grouping + card fix): (1) chibis (`eliza_chibi`, `milady_chibi`) now appear under the **MILADY** tab, not OpenClaw (they are stylized Milady avatars). (2) The **entire `hatcher` category** (hatcher_1..8 + phanes) is excluded from the picker via explicit per-tab category allowlists in `MODELS_BY_TAB` (milady = `milady`+`chibi`, hermes = `hermes`, openclaw/custom = `openclaw`+`other`); Hatcher avatars are assigned EXCLUSIVELY through Hatcher's own UI/API on register and are never user-selectable. (3) Removed the hardcoded per-card "Milady" pill in `renderCard` (it rendered on EVERY VRM card including Hermes/Tekk, was factually wrong, and covered the face); the tab already states the category. `mapCategoryToTab` now maps `chibi`->milady so returning chibi users land on the right tab.
+**Last Audited:** 2026-06-10 (spike cleanup — transport restore + governor + HUD status): (1) **Nine user flows un-404'd:** guest signup (`/api/auth/guest`), forgot/reset-password, send-verification, NPC transient chat (TalkToCharacterBar), shop item purchase/learn, username check/update, avatar fetch/position/appearance, and location agent chat were broken by the 2026-06-08 same-origin fetch change in `lib/api.ts` (no Next routes exist for them) and are restored to routing via `NEXT_PUBLIC_API_URL`. Transport-only — no gameplay-rule change. (2) **World labels / speech bubbles / activity FX can no longer be auto-hidden:** the adaptive governor is capped to ground-cover (seaweed) only; `?fast=1` is the sole, explicit opt-in that hides labels (debug/measurement). (3) **`hudPerfMode` dead constant stripped** from `game/page.tsx` — all 14 HUD surfaces it wrapped render unconditionally again (master structure). (4) **Demo HUD status:** the 2026-06-08 "demo HUD recovery" below is NEW feature work, not a restoration (the Demo Player panel / forced QuestTracker never existed pre-spike) — it remains functionally intact but is **PENDING user sign-off + the mandatory mobile/iPad viewport sweep** (`docs/mobile-ipad-verification.md`) before staging→master promotion. PARITY: all restored flows serve humans (browser+Lucia/guest) and agents (honoRequest/server surfaces) identically to master.
+
+**Prior Last Audited:** 2026-06-08 (demo HUD recovery + auth-state cleanup): `/game` keeps progression HUD surfaces visible before an agent is connected. In no-avatar Explore/NPC mode, `AvatarStatusBar` renders a demo/NPC fallback instead of returning null; `QuestTracker` can be forced visible for the demo/pre-connect surface. The sidebar account row follows `auth-me`: real non-guest auth shows Logout; unauthenticated/guest demo state shows Log In / Sign Up and must not render email-confirmation or logout state. Agent-only Eliza chat, inventory, shop, emote, daily-login, cosmetic, and autonomy controls remain under the connected-agent gate.
+
+**Prior Last Audited:** 2026-06-07 (playable perf rollback): `/game` always keeps the core HUD and screen controls mounted. The 2026-06-06 adaptive fallback that collapsed `NanoClawBanner`, email banner, `SidebarMenu`, `Minimap`, `ControlModeToggle`, `MobileControls`, `NoriButton`, location/activity/status/autonomy/thought-log chrome under tier 4 or `?fast=1` was removed after staging verification showed the game became effectively unplayable. Performance modes are not allowed to hide core game controls in normal play.
+
+**Prior Last Audited:** 2026-06-06 (adaptive world performance mode): when `/game` is launched with `?fast=1` or the world governor reaches tier 4, heavy always-on HUD chrome collapsed (`NanoClawBanner`, email banner, `SidebarMenu`, `Minimap`, `ControlModeToggle`, `MobileControls`, `NoriButton`, location/activity/status/autonomy/thought-log chrome) while modals, toasts, chat surfaces, guest bootstrap, and the 3D canvas remained mounted. This was a performance fallback, not a new gameplay mode; superseded by the 2026-06-07 playable rollback.
+
+**Last Audited:** 2026-06-06 (multiplayer rooms: human/agent co-presence parity + token-leak fix, new §1d): shared rooms (up to 20) now support a connected/hosted agent walking around AS ITSELF (bound avatar, real CT + leaderboard, counted toward the room cap, `kind:'agent'` indicator dot) alongside humans, for full Rule E5 parity on the world surface. Human joins via Lucia cookie, agent via `X-Clawville-Agent-Session` on the same `POST /api/world/join`. Security: the room SSE snapshot now emits only a non-reversible opaque presence `id` (never the raw Lucia bearer/guest fp/agent id), and the stream is gated on room membership. Guests/avatar-less agents now spawn at town center. See ARCHITECTURE.md §6 (world routes) + §13. Prior **Last Audited:** 2026-06-05 (create-agent picker grouping + card fix): (1) chibis (`eliza_chibi`, `milady_chibi`) now appear under the **MILADY** tab, not OpenClaw (they are stylized Milady avatars). (2) The **entire `hatcher` category** (hatcher_1..8 + phanes) is excluded from the picker via explicit per-tab category allowlists in `MODELS_BY_TAB` (milady = `milady`+`chibi`, hermes = `hermes`, openclaw/custom = `openclaw`+`other`); Hatcher avatars are assigned EXCLUSIVELY through Hatcher's own UI/API on register and are never user-selectable. (3) Removed the hardcoded per-card "Milady" pill in `renderCard` (it rendered on EVERY VRM card including Hermes/Tekk, was factually wrong, and covered the face); the tab already states the category. `mapCategoryToTab` now maps `chibi`->milady so returning chibi users land on the right tab.
 
 **Last Audited:** 2026-06-05: **Phanes is the default Hatcher avatar (reserved, not in the picker).** New Hatcher agents now spawn as `phanes`, a bespoke Greek-deity VRM (`DEFAULT_HATCHER_MODEL_KEY` in `@clawville/shared`), instead of a random `hatcher_N` Milady placeholder. Set in `partner-hatcher.ts` (register `resolvedSpecies` + `buildHatcherAvatarValues` `resolvedModel`). Reserved: `pickerHidden:true` on the web registry entry hides it from `/create-agent` (filtered in `create-agent/page.tsx`), and it is excluded from the `pickRandomHatcherModelKey` placeholder pool. Asset `/avatars/phanes.vrm` (Tripo to Mixamo to VRM 1.0, animatorId `hermes-male`; built via the fixed `blender-glb-to-fbx-mixamo.py`). PARITY: agent-only feature (Hatcher avatars are agent-bound; humans unaffected); REAL-CT settlement still binds to the agent's avatar (unchanged).
 
@@ -66,6 +74,10 @@ Un-authed visitors can play activities + chat with NPCs as a throwaway "Guest Av
 2. The activity lobby's `handleQueue` retries once after a 401 by calling `ensureGuestAvatar()` directly.
 
 Guests are excluded from the agent leaderboard, per-activity leaderboards, and the `/dash` teacher-chat metric — see `ARCHITECTURE.md §5b` for the SQL carve-outs.
+
+### 1d. Multiplayer rooms: human/agent co-presence (Phase 1; agent parity 2026-06-06)
+
+The open world runs as shared rooms (up to `ROOM_MAX_PLAYERS = 20` each, auto-fill or a 4-char invite code). Everyone in a room sees everyone else move in real time over the `/api/world/:roomId/stream` SSE feed; a wandering NPC is swapped out to make space when a player joins and restored 5s after they leave. **Full human/agent parity (Rule E5):** a connected or hosted agent can be co-present in the SAME room as a human, walking around AS ITSELF (its own bound avatar with real name/species/position), counted toward the room cap, swap-eligible, and earning real ClawTokens + leaderboard credit, NOT an anonymous guest. A human joins via the site (Lucia cookie); an agent joins the same `POST /api/world/join` route with its `X-Clawville-Agent-Session` header (validated by `validateLiveAgentSession`). Each presence carries a `kind: 'human' | 'guest' | 'agent'`; `kind === 'agent'` shows the connected-agent indicator dot in the 3D layer. **Security:** the room snapshot never carries any session's raw token, only a non-reversible opaque presence `id` (server-derived `publicId`), and the SSE stream is gated on room membership (a non-member gets 403). Full wire shape + auth model: `ARCHITECTURE.md §6` (world routes).
 
 ---
 
@@ -384,6 +396,67 @@ Gated on `agentConnected` after the **2026-04-24 fix** that re-gated from `hasAv
 ### 11d. Removed legacy
 
 - `<SpectatorBanner>` and the original `<OpenClawConnectModal>` component files were deleted (orphaned post-`<AgentConnectModal>` rename). The `// SpectatorBanner removed — /game is always game mode` sentinel comment lives in `game/page.tsx` so a future reader doesn't try to re-add it on the assumption that spectator state needs a separate banner — it doesn't, the toggle and `<NanoClawBanner>` already cover those states.
+
+---
+
+## 11z. Multiplayer (Phase 1 — 2026-05-27)
+
+Player rooms are server-authoritative buckets of ≤20 players each. The
+20-player ceiling is set by the Iris Xe full-VRM budget (14 simultaneous
+wanderer VRMs + 10 building residents). Every player that joins a room
+**swaps out** one wanderer NPC (preferring the same species so the visual
+cast stays balanced) so the total drawn VRM count never exceeds the
+budget. The NPC reappears 5 s after the player leaves.
+
+### 11z.a Room model
+
+- **ID format:** 4 chars from `ABCDEFGHJKMNPQRSTUVWXYZ23456789` (no 0/O/1/I/L).
+- **Capacity:** 20 players. The 21st joiner spills into a new room.
+- **Auto-fill:** `POST /api/world/join` lands the caller in the lowest-id
+  room with capacity, or mints a fresh one.
+- **Invite code:** `POST /api/world/join { roomId: "ABCD" }` honors a
+  4-char code. If the room exists with capacity → join. If it doesn't
+  exist → mint with that ID. If it's full → fall back to auto-fill.
+- **GC:** rooms with zero players for 5 min are deleted; players idle
+  for 30 s with no `POST /api/world/position` get kicked.
+
+### 11z.b NPC swap-out
+
+When a player joins a room, the registry picks one NPC from the room's
+swap-eligible roster (every `NPC_DEFINITIONS` entry where `buildingId === ''`
+— the 14 wanderers). Priority order:
+
+1. NPC whose species matches the joiner's avatar species (lex-first).
+2. Any other wanderer (lex-first by ID).
+3. No swap — the room is already at the 14-VRM floor.
+
+Building residents (Patrick, Gary, Karen, …) are **never** swap-eligible.
+They hold load-bearing knowledge and stay in every room.
+
+### 11z.c Leave + restore
+
+When the player leaves, the registry restamps the swap's `removedAt` to
+"now". The room's next tick (≥5 s later) re-adds the NPC to
+`room.npcs` — the snapshot filter promptly stops hiding it and the
+client renders it again.
+
+### 11z.d Wire surface
+
+- `POST /api/world/join` → `{ roomId, sessionId, capacity, playerCount, swappedOutNpcId, players }`.
+- `POST /api/world/leave` → fire-and-forget; idempotent if the session isn't in a room.
+- `POST /api/world/position` → 5 Hz position update. Server enforces a 10 Hz
+  per-session ceiling and silently drops excess.
+- `GET /api/world/:roomId/stream` → SSE snapshot every 200 ms. Payload
+  shape is the existing `SimulationSnapshot` with `roomId` stamped and
+  `players: PlayerSnapshot[]` populated; the `npcs` array is filtered to
+  the room's current roster.
+- `GET /api/world/rooms` → admin-only roster of live rooms.
+
+### 11z.e Backwards compat
+
+`/api/npc/stream` keeps emitting the legacy world-wide snapshot (no
+players, full NPC roster) so any dashboard or stale client still works
+for one release.
 
 ---
 
@@ -1018,6 +1091,7 @@ See **`3dStructure.md §1`** for the full coordinate system + axis conventions, 
 
 Compact log. The audit-history wall at the top of the prior version of this doc has been replaced with this. Entries are gameplay-facing — backend/service changes belong in `ARCHITECTURE.md §13`, 3D-render changes in `3dStructure.md §13`.
 
+- 2026-06-07 — Playable perf rollback: `/game` HUD controls stay mounted under adaptive tiers and `?fast=1`. The prior tier-4 HUD collapse was rejected because it removed screen buttons and made staging unplayable. 3D-side proxy removals are documented in `3dStructure.md`; the full rollback ledger is `docs/perf-integration-change-ledger-2026-06-07.md`.
 - 2026-05-29 — **Cove casino economy fixes + CT-economy monitor (new §18a.k).** Baccarat banker commission now floors the player's WINNINGS (`floor(stake×95/100)`) so the house keeps the fraction at EVERY stake (closed the sub-20-stake faucet — banker was −1.13% house edge at stake 10). Hold'em settle takes a `min(floor(pot×5/100), 5)` CT pot rake (net burn). Blackjack settle takes a `floor(max(0, payout−bet)×5/100)` rake on net winnings (winners only). All three idempotent (computed once under the FOR UPDATE lock, stored in `outcomeJson`, never re-applied on replay); the `cove_game_events.payout` carries the post-rake figure so the new admin-only `GET /api/cove/economy/summary` (minted/burned/houseNet per gameType + `faucets[]` alarm; FEATURE_GATE `cove_ct_economy_monitor`) detects any game going net-positive to players. tsc clean (api+database), 146 engine tests green. See `.claude/plans/cove-casino-economy.md`.
 - 2026-05-29 — Phase 6.6.1 REAL baccarat (Punto Banco) at the cove baccarat station — first playable UI (was a sign-only placeholder, no route/modal/engine). Server-authoritative provably-fair engine (`baccarat-engine.ts`, `bac-v1`): 8-deck no-replacement HMAC shoe, the EXACT fixed standard third-card tableau, integer payouts (Player 1:1, Banker 0.95:1 with floored 5% commission, Tie 8:1, P/B push on tie), pure replay for the verifier; 55/55 unit tests. One-shot route `/api/cove/baccarat` (open/coup/close/current/:id) — Punto Banco has no decisions, so a coup deals+resolves+settles in ONE txn under the shoe `FOR UPDATE` lock; idempotent via `(shoeId, idempotencyKey)`; guest 100 demo CT; currency seam 501 for sol/usdc. New `baccarat_shoes`/`baccarat_coups` tables + migration; one `cove_game_events` row per coup; `/cove/history` verifier `baccarat` branch (`replayShoeUpToCoup`). NEW from-scratch `BaccaratModal` + `BaccaratCard` (copied from BlackjackModal) — P/B/T selector + stake chips + Deal + result reveal (natural badges, winner highlight, commission note); server-authoritative rendering. NEW `baccarat-api-client.ts` + shared `cove-baccarat.ts` wire types. NEW `BaccaratTableHotspot` at [285,100,584] (mirror of the blackjack/holdem invisible hit-box). `useCoveStore` baccarat slice. Cove subtitle → "Slots · Blackjack · Hold'em · Baccarat". Three-surface knowledge sync (Nori + orientation + Connection-SKILL protocol content). New §18a.j. Connected-agent protocol + Connection-SKILL endpoint + hosted-agent memory + real-money SOL/USDC are later phases.
 - 2026-05-28 — Phase 6.5.1 REAL No-Limit Texas Hold'em at the cove's second poker table — replaces the 6.5.0 display-only mock. Server-authoritative provably-fair engine (in-house 7-card evaluator + HMAC per-hand deck, 5 deterministic bot personalities, side-pots), real ClawToken stack custody (buy-in 20–500 CT default 100, blinds 1/2, cash-out at walk-away; guests 100 demo CT, no ledger), idempotent settle under a table row lock. New `holdem_tables`/`holdem_hands` tables + migration; one `cove_game_events` row per hand; `/cove/history` verifier `holdem` branch. `HoldemModal` rewired to the real `/api/cove/holdem/*` flow (new `holdem-api-client.ts`, deleted `holdem-mock-engine.ts`); Control(advise)/Autonomous(gated) agent modes with FEATURE_GATE. Three-surface knowledge sync (Nori + orientation + Connection-SKILL protocol content). §18a.g rewritten. WebSocket connected-agent protocol + Connection-SKILL endpoint + hosted-agent memory still 6.5.2; real-money SOL/USDC 6.5.4. See `.claude/plans/cove-texas-holdem.md`.
