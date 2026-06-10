@@ -78,7 +78,8 @@ bpy.ops.import_scene.fbx(
     automatic_bone_orientation=True,
     ignore_leaf_bones=False,
     use_anim=False,
-)
+    global_scale=100.0,  # Mixamo FBX is cm → import cm->m so verts land ~1m tall.
+)                        # hermes dfabf725: do NOT rely on transform_apply(scale) — it bakes the 0.01 and shrinks the mesh 100x.
 
 armature = next((o for o in bpy.context.scene.objects if o.type == "ARMATURE"), None)
 mesh     = next((o for o in bpy.context.scene.objects if o.type == "MESH"), None)
@@ -86,13 +87,30 @@ assert armature is not None, "No armature in imported FBX"
 assert mesh is not None,     "No mesh in imported FBX"
 print(f"[vrm-finalize] Armature='{armature.name}'  Mesh='{mesh.name}'  bones={len(armature.data.bones)}")
 
-# Mixamo's import scale: armature is often 0.01 (FBX cm vs Blender m).
-# Apply transforms so vert positions are clean.
+# global_scale=100 at import already did the cm->m conversion (armature scale ~1.0),
+# so this apply is now just cleaning loc/rot, NOT baking a 0.01 shrink.
 bpy.ops.object.select_all(action="DESELECT")
 armature.select_set(True)
 mesh.select_set(True)
 bpy.context.view_layer.objects.active = armature
 bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
+
+# WELD split-vertex islands + recalc normals (hermes c565445a). Meshy/Tripo ship
+# the mesh UNWELDED — sub-mm duplicate verts → tens of thousands of non-manifold
+# islands → bad shading in realtime AND dress/cloth "shredding" when rigged (each
+# island follows its own bone after the 4-influence export cap). Merge-by-distance
+# fixes both. Weights of merged verts are averaged correctly by Blender.
+_v0 = len(mesh.data.vertices)
+bpy.ops.object.select_all(action="DESELECT")
+mesh.select_set(True)
+bpy.context.view_layer.objects.active = mesh
+bpy.ops.object.mode_set(mode="EDIT")
+bpy.ops.mesh.select_all(action="SELECT")
+bpy.ops.mesh.remove_doubles(threshold=0.001)
+bpy.ops.mesh.delete_loose()
+bpy.ops.mesh.normals_make_consistent(inside=False)
+bpy.ops.object.mode_set(mode="OBJECT")
+print(f"[vrm-finalize] welded + recalc normals: {_v0} -> {len(mesh.data.vertices)} verts")
 
 # ---------------- 3. canonical Mixamo -> VRM 1.0 humanoid map ----------------
 # Source: .claude/memory/threejs/patterns/vrm-mixamo-retarget.md

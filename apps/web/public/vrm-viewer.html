@@ -1,0 +1,222 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Hatcher VRM Viewer</title>
+<style>
+  :root { --bg:#11141b; --panel:rgba(16,22,34,0.92); --line:rgba(120,160,220,0.18);
+          --text:#e8eefb; --muted:#9fb2d0; --accent:#5fd0ff; --accent2:#ffd479; }
+  * { box-sizing:border-box; }
+  html,body { margin:0; height:100%; background:var(--bg); color:var(--text);
+              font:14px/1.4 ui-sans-serif,system-ui,"Segoe UI",sans-serif; overflow:hidden; }
+  #c { position:fixed; inset:0; display:block; touch-action:none; }
+  .panel { position:fixed; z-index:10; background:var(--panel); border:1px solid var(--line);
+           border-radius:14px; backdrop-filter:blur(8px); box-shadow:0 8px 40px rgba(0,0,0,.45); }
+  #ui { top:16px; left:16px; padding:14px 14px 12px; width:248px; }
+  #ui h1 { margin:0 0 2px; font-size:15px; letter-spacing:.3px; }
+  #ui .sub { color:var(--muted); font-size:11.5px; margin-bottom:12px; }
+  .models { display:flex; flex-direction:column; gap:7px; margin-bottom:12px; }
+  .mbtn { display:flex; align-items:center; gap:10px; padding:9px 11px; border-radius:10px; cursor:pointer;
+          background:rgba(255,255,255,.04); border:1px solid var(--line); color:var(--text); text-align:left; transition:.12s; }
+  .mbtn:hover { background:rgba(95,208,255,.10); border-color:rgba(95,208,255,.4); }
+  .mbtn.active { background:rgba(95,208,255,.16); border-color:var(--accent); }
+  .mbtn .dot { width:9px; height:9px; border-radius:50%; flex:0 0 auto; }
+  .mbtn .nm { font-weight:600; font-size:13px; }
+  .mbtn .ds { color:var(--muted); font-size:10.5px; }
+  .row { display:flex; gap:7px; flex-wrap:wrap; }
+  .tbtn { flex:1; min-width:0; padding:7px 8px; border-radius:9px; cursor:pointer; font-size:11.5px;
+          background:rgba(255,255,255,.04); border:1px solid var(--line); color:var(--muted); transition:.12s; white-space:nowrap; }
+  .tbtn:hover { color:var(--text); border-color:rgba(95,208,255,.4); }
+  .tbtn.on { color:#08121f; background:var(--accent); border-color:var(--accent); font-weight:600; }
+  #status { margin-top:11px; font-size:11px; color:var(--muted); min-height:14px; }
+  #status.err { color:#ff8b8b; }
+  #hint { bottom:14px; left:50%; transform:translateX(-50%); padding:7px 14px; font-size:11.5px; color:var(--muted);
+          border-radius:999px; }
+  #spin { display:inline-block; width:11px; height:11px; border:2px solid rgba(159,178,208,.3);
+          border-top-color:var(--accent); border-radius:50%; animation:sp .7s linear infinite; vertical-align:-1px; margin-right:6px; }
+  @keyframes sp { to { transform:rotate(360deg); } }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="ui" class="panel">
+  <h1>Hatcher VRM Viewer</h1>
+  <div class="sub">drag&nbsp;rotate · scroll&nbsp;zoom · right-drag&nbsp;pan</div>
+  <div class="models" id="models"></div>
+  <div class="row">
+    <button class="tbtn" id="t-rot">Auto-rotate</button>
+    <button class="tbtn" id="t-wire">Wireframe</button>
+    <button class="tbtn" id="t-reset">Reset view</button>
+  </div>
+  <div id="status"></div>
+</div>
+<div id="hint" class="panel">VRM 1.0 · rigged (Mixamo) · finalized via blender-vrm-finalize-cli</div>
+
+<script type="importmap">
+{ "imports": {
+  "three": "https://esm.sh/three@0.182.0",
+  "three/addons/": "https://esm.sh/three@0.182.0/examples/jsm/",
+  "@pixiv/three-vrm": "https://esm.sh/@pixiv/three-vrm@3.5.2?external=three",
+  "@pixiv/three-vrm-materials-mtoon": "https://esm.sh/@pixiv/three-vrm-materials-mtoon@3.5.2?external=three"
+}}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
+import { VRMLoaderPlugin, VRMUtils } from '@pixiv/three-vrm';
+import { MToonMaterialLoaderPlugin } from '@pixiv/three-vrm-materials-mtoon';
+
+// REFERENCE = first-round Hermes ONLY (hermes-female / hermes-male). Everything
+// below marked REDO is defective per the user (Phanes eyes are bad too — NOT a ref).
+const MODELS = [
+  { slug:'hermes-female',name:'Hermes-Female', ds:'★ THE REFERENCE (Meshy HQ + cleanup)', color:'#c9a8ff' },
+  { slug:'hermes-male',  name:'Hermes-Male',   ds:'★ THE REFERENCE (Meshy HQ + cleanup)', color:'#a8c0ff' },
+  { slug:'helen',        name:'Helen',        ds:'REDO — current build defective', color:'#cfe0ff' },
+  { slug:'clytemnestra', name:'Clytemnestra', ds:'REDO — current build defective', color:'#d8a0a0' },
+  { slug:'cronus',       name:'Cronus',       ds:'REDO — current build defective', color:'#caa86a' },
+  { slug:'phanes',       name:'Phanes',       ds:'REDO — eyes defective, NOT a reference', color:'#e7c66a' },
+];
+
+const statusEl = document.getElementById('status');
+const setStatus = (html, err=false) => { statusEl.innerHTML = html; statusEl.classList.toggle('err', err); };
+
+const canvas = document.getElementById('c');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias:true, alpha:false });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.NeutralToneMapping;
+renderer.toneMappingExposure = 1.0;
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x11141b);
+
+// image-based lighting — reveals surface relief, kills the waxy flat look
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+
+// gradient-ish ground grid
+const grid = new THREE.GridHelper(20, 40, 0x2b3550, 0x1b2233);
+grid.position.y = 0; scene.add(grid);
+const floor = new THREE.Mesh(new THREE.CircleGeometry(8, 64),
+  new THREE.MeshStandardMaterial({ color:0x141925, roughness:1, metalness:0 }));
+floor.rotation.x = -Math.PI/2; floor.position.y = -0.001; scene.add(floor);
+
+// lighting — 3-point
+// gentle fill on top of the IBL (IBL does most of the work now)
+scene.add(new THREE.HemisphereLight(0xdfe9ff, 0x2a2f3a, 0.45));
+const key = new THREE.DirectionalLight(0xffffff, 1.1); key.position.set(2.5, 4, 3.5); scene.add(key);
+const fill = new THREE.DirectionalLight(0xbcd2ff, 0.35); fill.position.set(-3, 2, 1.5); scene.add(fill);
+const rim = new THREE.DirectionalLight(0xffe7bd, 0.5); rim.position.set(0, 3, -4); scene.add(rim);
+
+const camera = new THREE.PerspectiveCamera(35, innerWidth/innerHeight, 0.01, 100);
+const controls = new OrbitControls(camera, canvas);
+controls.enableDamping = true; controls.dampingFactor = 0.08;
+
+let current = null;           // current vrm
+let homeCam = null, homeTarget = null;
+let autoRotate = false, wire = false;
+
+const loader = new GLTFLoader();
+loader.setMeshoptDecoder(MeshoptDecoder);   // old/milady VRMs are meshopt-compressed
+loader.register((parser) => new VRMLoaderPlugin(parser, {
+  mtoonMaterialPlugin: new MToonMaterialLoaderPlugin(parser),   // else MToon VRMs go invisible/black
+}));
+
+function disposeCurrent() {
+  if (!current) return;
+  scene.remove(current.scene);
+  VRMUtils.deepDispose(current.scene);
+  current = null;
+}
+
+function frame(vrm) {
+  const box = new THREE.Box3().setFromObject(vrm.scene);
+  const size = box.getSize(new THREE.Vector3());
+  const center = box.getCenter(new THREE.Vector3());
+  const maxDim = Math.max(size.x, size.y, size.z);
+  const dist = maxDim / (2 * Math.tan((camera.fov * Math.PI/180) / 2)) * 1.45;
+  homeTarget = new THREE.Vector3(center.x, center.y + size.y*0.04, center.z);
+  // 3/4 front view; +Z is toward camera in three-vrm convention
+  homeCam = new THREE.Vector3(center.x + maxDim*0.55, center.y + size.y*0.10, center.z + dist);
+  resetView();
+}
+function resetView() {
+  if (!homeCam) return;
+  camera.position.copy(homeCam);
+  controls.target.copy(homeTarget);
+  controls.update();
+}
+
+function applyWire(vrm) {
+  vrm.scene.traverse((o) => { if (o.isMesh) {
+    const mats = Array.isArray(o.material) ? o.material : [o.material];
+    mats.forEach(m => { if (m) m.wireframe = wire; });
+  }});
+}
+
+async function load(slug) {
+  setStatus(`<span id="spin"></span>loading ${slug}.vrm …`);
+  document.querySelectorAll('.mbtn').forEach(b => b.classList.toggle('active', b.dataset.slug === slug));
+  try {
+    const gltf = await loader.loadAsync(`avatars/${slug}.vrm`);
+    const vrm = gltf.userData.vrm;
+    VRMUtils.removeUnnecessaryVertices(gltf.scene);
+    VRMUtils.rotateVRM0(vrm);   // VRM 0.x faces +Z; π rotation. No-op for 1.0. NEVER combineSkeletons (orphans bones → frozen/broken — see vrm-loader.ts)
+    vrm.scene.traverse((o) => { if (o.isMesh) o.frustumCulled = false; });
+    if (vrm.lookAt) vrm.lookAt.autoUpdate = false;
+    disposeCurrent();
+    current = vrm;
+    scene.add(vrm.scene);
+    applyWire(vrm);
+    frame(vrm);
+    const tris = renderer.info.render.triangles;
+    setStatus(`${slug}.vrm ✓ &nbsp;<span style="color:var(--muted)">VRM ${vrm.meta?.metaVersion || '?'} · drag to inspect</span>`);
+  } catch (e) {
+    console.error(e);
+    setStatus(`failed to load ${slug}.vrm — ${e.message || e}`, true);
+  }
+}
+
+// build model buttons
+const mwrap = document.getElementById('models');
+MODELS.forEach((m) => {
+  const b = document.createElement('button');
+  b.className = 'mbtn'; b.dataset.slug = m.slug;
+  b.innerHTML = `<span class="dot" style="background:${m.color}"></span>
+                 <span><span class="nm">${m.name}</span><br><span class="ds">${m.ds}</span></span>`;
+  b.onclick = () => load(m.slug);
+  mwrap.appendChild(b);
+});
+
+// toggles
+const tRot = document.getElementById('t-rot');
+const tWire = document.getElementById('t-wire');
+tRot.onclick = () => { autoRotate = !autoRotate; tRot.classList.toggle('on', autoRotate); };
+tWire.onclick = () => { wire = !wire; tWire.classList.toggle('on', wire); if (current) applyWire(current); };
+document.getElementById('t-reset').onclick = resetView;
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth/innerHeight; camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+renderer.setSize(innerWidth, innerHeight);
+
+const clock = new THREE.Clock();
+renderer.setAnimationLoop(() => {
+  const dt = clock.getDelta();
+  if (autoRotate && current) current.scene.rotation.y += dt * 0.5;
+  if (current) current.update(dt);
+  controls.update();
+  renderer.render(scene, camera);
+});
+
+load('helen');
+window.__VIEWER_READY = true;
+</script>
+</body>
+</html>
