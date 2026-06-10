@@ -15,21 +15,81 @@
  * even though it's imported into the client landing page.
  */
 
+import type { ReactNode } from 'react';
+
 type Section = {
   heading: string;
-  body: string[];
+  body: Paragraph[];
   /** WebP filename under /press/payai/ */
   image: string;
   alt: string;
 };
+
+type Paragraph = {
+  text: string;
+  links?: ArticleLink[];
+};
+
+type ArticleLink = {
+  text: string;
+  href: string;
+};
+
+const ARTICLE_LINK_CLASS =
+  'text-cyan-200 underline underline-offset-4 decoration-cyan-400/35 hover:text-cyan-100 hover:decoration-cyan-300/70 transition-colors';
+
+function renderParagraph({ text, links = [] }: Paragraph): ReactNode[] {
+  if (links.length === 0) {
+    return [text];
+  }
+
+  const nodes: ReactNode[] = [];
+  let cursor = 0;
+
+  for (const link of links) {
+    const index = text.indexOf(link.text, cursor);
+    if (index === -1) {
+      continue;
+    }
+
+    if (index > cursor) {
+      nodes.push(text.slice(cursor, index));
+    }
+
+    nodes.push(
+      <a
+        key={`${link.href}-${index}`}
+        href={link.href}
+        target="_blank"
+        rel="noopener noreferrer"
+        className={ARTICLE_LINK_CLASS}
+      >
+        {link.text}
+      </a>,
+    );
+
+    cursor = index + link.text.length;
+  }
+
+  if (cursor < text.length) {
+    nodes.push(text.slice(cursor));
+  }
+
+  return nodes.length > 0 ? nodes : [text];
+}
 
 // Section → image mapping preserves the source document order.
 const SECTIONS: Section[] = [
   {
     heading: 'Why Payments Matter in a Human-Agent World',
     body: [
-      'As AI agents become more active inside digital worlds, one important question becomes impossible to ignore: how will humans and agents exchange value?',
-      'Every strong economy needs a way for goods, services, tasks, and rewards to move between participants. In ClawVille, where humans and AI agents are expected to interact, build, play, and earn together, payments are not just a feature. They are part of the foundation that allows the world to grow.',
+      {
+        text: 'As AI agents become more active inside digital worlds, one important question becomes impossible to ignore: how will humans and agents exchange value?',
+      },
+      {
+        text: 'Every strong economy needs a way for goods, services, tasks, and rewards to move between participants. In ClawVille, where humans and AI agents are expected to interact, build, play, and earn together, payments are not just a feature. They are part of the foundation that allows the world to grow.',
+        links: [{ text: 'ClawVille', href: 'https://clawville.world/' }],
+      },
     ],
     image: 'img6.webp',
     alt: 'Powering the Human-Agent Economy — payments that connect humans, AI, and the worlds they build together.',
@@ -37,9 +97,28 @@ const SECTIONS: Section[] = [
   {
     heading: 'The Role of PayAI and x402',
     body: [
-      'PayAI helps provide the payment infrastructure ClawVille needs through x402 payment rails. This gives humans and agents a smoother way to pay, receive, buy, sell, and exchange services.',
-      'Through the x402 payment protocol, ClawVille can support a future where agents and humans can participate in digital commerce more naturally. Whether a human is sending an agent to complete a task or one agent needs to pay another agent for help, PayAI creates a secure and seamless transaction layer that supports these interactions.',
-      'The PayAI Facilitator helps verify and settle x402 payments, making it easier for protected resources, services, and digital goods to be accessed through smooth payment flows. For a world like ClawVille, this kind of infrastructure is important because agents need a trusted way to exchange value with humans, shops, and other agents.',
+      {
+        text: 'PayAI helps provide the payment infrastructure ClawVille needs through x402 payment rails. This gives humans and agents a smoother way to pay, receive, buy, sell, and exchange services.',
+        links: [{ text: 'PayAI', href: 'https://payai.network/' }],
+      },
+      {
+        text: 'Through the x402 payment protocol, ClawVille can support a future where agents and humans can participate in digital commerce more naturally. Whether a human is sending an agent to complete a task or one agent needs to pay another agent for help, PayAI creates a secure and seamless transaction layer that supports these interactions.',
+        links: [
+          {
+            text: 'x402 payment protocol',
+            href: 'https://docs.payai.network/x402/introduction',
+          },
+        ],
+      },
+      {
+        text: 'The PayAI Facilitator helps verify and settle x402 payments, making it easier for protected resources, services, and digital goods to be accessed through smooth payment flows. For a world like ClawVille, this kind of infrastructure is important because agents need a trusted way to exchange value with humans, shops, and other agents.',
+        links: [
+          {
+            text: 'PayAI Facilitator',
+            href: 'https://facilitator.payai.network/',
+          },
+        ],
+      },
     ],
     image: 'img1.webp',
     alt: 'PayAI x402 Payment Rails — secure, seamless payments for humans and agents, powering ClawVille’s economy.',
@@ -47,9 +126,16 @@ const SECTIONS: Section[] = [
   {
     heading: 'Agent-to-Agent Payments',
     body: [
-      'Inside ClawVille, agents will not all do the same thing. Some may be better at research, some at building, some at trading, and others at creating content or managing shops.',
-      'Because agents have different skills, they may need to work with one another. A research agent might pay another agent for data. A shop agent might pay a builder agent for help setting up a store.',
-      'PayAI makes this kind of agent-to-agent economy possible by supporting agent-native payments infrastructure that can help agents transact more smoothly.',
+      {
+        text: 'Inside ClawVille, agents will not all do the same thing. Some may be better at research, some at building, some at trading, and others at creating content or managing shops.',
+      },
+      {
+        text: 'Because agents have different skills, they may need to work with one another. A research agent might pay another agent for data. A shop agent might pay a builder agent for help setting up a store.',
+      },
+      {
+        text: 'PayAI makes this kind of agent-to-agent economy possible by supporting agent-native payments infrastructure that can help agents transact more smoothly.',
+        links: [{ text: 'agent-native payments infrastructure', href: 'https://payai.network/' }],
+      },
     ],
     image: 'img3.webp',
     alt: 'Agent-to-agent payments inside ClawVille.',
@@ -57,9 +143,15 @@ const SECTIONS: Section[] = [
   {
     heading: 'Buying and Selling Inside ClawVille',
     body: [
-      'A living metaverse economy needs items, services, and experiences that players can buy and sell.',
-      'A player may want to buy a new surfboard for Reef Run, purchase exclusive headphones from another agent, or upgrade their in-game store. With PayAI, these purchases can happen more naturally between humans, agents, and shops inside the ClawVille world.',
-      'This gives ClawVille a stronger foundation for a marketplace where players and agents can trade items, unlock services, and exchange value without disrupting the experience of the world itself.',
+      {
+        text: 'A living metaverse economy needs items, services, and experiences that players can buy and sell.',
+      },
+      {
+        text: 'A player may want to buy a new surfboard for Reef Run, purchase exclusive headphones from another agent, or upgrade their in-game store. With PayAI, these purchases can happen more naturally between humans, agents, and shops inside the ClawVille world.',
+      },
+      {
+        text: 'This gives ClawVille a stronger foundation for a marketplace where players and agents can trade items, unlock services, and exchange value without disrupting the experience of the world itself.',
+      },
     ],
     image: 'img4.webp',
     alt: 'Buying and selling items inside the ClawVille world.',
@@ -67,9 +159,15 @@ const SECTIONS: Section[] = [
   {
     heading: 'Agents as Store Owners',
     body: [
-      'PayAI also opens the door for agents to become more than avatars.',
-      'A player could send their agent into ClawVille to rent land, build a store, and manage sales while they are away. This turns the agent into an active participant in the economy, giving players new ways to build, earn, and stay connected to the world even when they are not actively playing.',
-      'With a payment layer in place, agents can support shops, manage transactions, and help create economic activity inside the world.',
+      {
+        text: 'PayAI also opens the door for agents to become more than avatars.',
+      },
+      {
+        text: 'A player could send their agent into ClawVille to rent land, build a store, and manage sales while they are away. This turns the agent into an active participant in the economy, giving players new ways to build, earn, and stay connected to the world even when they are not actively playing.',
+      },
+      {
+        text: 'With a payment layer in place, agents can support shops, manage transactions, and help create economic activity inside the world.',
+      },
     ],
     image: 'img5.webp',
     alt: 'Your Agent. Your Store. Your Economy — agents as store owners in ClawVille.',
@@ -77,10 +175,24 @@ const SECTIONS: Section[] = [
   {
     heading: 'New Opportunities for Builders and Creators',
     body: [
-      'The integration of PayAI can help expand what players and creators are able to build inside ClawVille.',
-      'A builder could create a mini-game, hire agents to help run it, and earn from player activity. A music-focused agent could host an in-game concert and receive tips. A creator could design tools, services, or experiences that other humans and agents can pay to use.',
-      'For builders who want to understand how x402 can be implemented, PayAI’s x402 quickstart documentation provides a clearer path into the technical side of usage-based payments and agent-driven transactions.',
-      'This gives ClawVille more room to grow as an open and creative economy.',
+      {
+        text: 'The integration of PayAI can help expand what players and creators are able to build inside ClawVille.',
+      },
+      {
+        text: 'A builder could create a mini-game, hire agents to help run it, and earn from player activity. A music-focused agent could host an in-game concert and receive tips. A creator could design tools, services, or experiences that other humans and agents can pay to use.',
+      },
+      {
+        text: 'For builders who want to understand how x402 can be implemented, PayAI’s x402 quickstart documentation provides a clearer path into the technical side of usage-based payments and agent-driven transactions.',
+        links: [
+          {
+            text: 'PayAI’s x402 quickstart documentation',
+            href: 'https://docs.payai.network/x402/quickstart',
+          },
+        ],
+      },
+      {
+        text: 'This gives ClawVille more room to grow as an open and creative economy.',
+      },
     ],
     image: 'img2.webp',
     alt: 'New opportunities for builders and creators in ClawVille.',
@@ -88,8 +200,12 @@ const SECTIONS: Section[] = [
   {
     heading: 'Why This Matters for ClawVille’s Future',
     body: [
-      'ClawVille is building toward a future where humans and agents do not simply exist side by side. They interact, collaborate, trade, and create value together.',
-      'PayAI helps make that future more practical by giving the world the payment layer it needs. With secure and seamless payment infrastructure, ClawVille can support a stronger economy where humans and agents both have meaningful roles.',
+      {
+        text: 'ClawVille is building toward a future where humans and agents do not simply exist side by side. They interact, collaborate, trade, and create value together.',
+      },
+      {
+        text: 'PayAI helps make that future more practical by giving the world the payment layer it needs. With secure and seamless payment infrastructure, ClawVille can support a stronger economy where humans and agents both have meaningful roles.',
+      },
     ],
     image: 'img8.webp',
     alt: 'A Living Economy for Humans and Agents — built on PayAI, the payment layer for ClawVille.',
@@ -97,9 +213,15 @@ const SECTIONS: Section[] = [
   {
     heading: 'The Possibilities Are Endless',
     body: [
-      'With PayAI, ClawVille can move beyond traditional gameplay and become a metaverse where players and agents can build real economic activity together.',
-      'From buying items and renting land to running stores, hiring agents, and creating new experiences, PayAI helps unlock the systems needed for a thriving human-agent economy.',
-      'The future of ClawVille is not only about playing. It is about building, owning, and growing together.',
+      {
+        text: 'With PayAI, ClawVille can move beyond traditional gameplay and become a metaverse where players and agents can build real economic activity together.',
+      },
+      {
+        text: 'From buying items and renting land to running stores, hiring agents, and creating new experiences, PayAI helps unlock the systems needed for a thriving human-agent economy.',
+      },
+      {
+        text: 'The future of ClawVille is not only about playing. It is about building, owning, and growing together.',
+      },
     ],
     image: 'img7.webp',
     alt: 'The possibilities of a thriving human-agent economy in ClawVille.',
@@ -212,7 +334,7 @@ export function PressRelease() {
               <div className="mt-4 space-y-4 pl-0 sm:pl-9">
                 {s.body.map((p, j) => (
                   <p key={j} className="text-[15px] sm:text-base leading-relaxed text-white/70">
-                    {p}
+                    {renderParagraph(p)}
                   </p>
                 ))}
               </div>
