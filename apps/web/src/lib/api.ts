@@ -1,6 +1,19 @@
 import type { AgentCategory, AgentHarness } from '@clawville/shared';
 import { getFingerprint } from './fingerprint';
 
+// request() targets the Hono API exactly like honoRequest() — its paths
+// (/api/auth/guest, forgot/reset-password, send-verification, /api/chat/transient,
+// /api/items/*, /api/avatars/me, location chat, username flows) have NO
+// Next.js app-route implementation (apps/web/src/app/api/** is empty), so
+// same-origin fetches 404 on prod AND localhost. Master (3cf8a860) semantics
+// restored 2026-06-10. Local-dev cookie isolation is an EXPLICIT opt-in:
+// set NEXT_PUBLIC_API_SAME_ORIGIN=1 in .env.local (build-time env, local
+// builds ONLY — never prod/staging) to force same-origin fetches so a local
+// build pointed at staging does not inherit staging cookies/auth state.
+const API_URL =
+  process.env.NEXT_PUBLIC_API_SAME_ORIGIN === '1'
+    ? ''
+    : process.env.NEXT_PUBLIC_API_URL || '';
 const HONO_API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000';
 
 /**
@@ -39,10 +52,7 @@ async function honoRequest<T>(path: string, options?: RequestInit): Promise<T> {
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const headers = await withFingerprint(options?.headers);
-  // Same-origin Next routes own web auth, avatar, and UI proxy state. Do not
-  // prefix these with NEXT_PUBLIC_API_URL; local builds often point Hono calls
-  // at staging and must not inherit staging cookies/auth state.
-  const res = await fetch(path, {
+  const res = await fetch(`${API_URL}${path}`, {
     ...options,
     credentials: 'include',
     headers,

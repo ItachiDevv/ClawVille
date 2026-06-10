@@ -18,6 +18,7 @@ import MeshletBuildingsR3F from '@/lib/three/meshlet/meshlet-buildings-r3f';
 import ArenaNpcs from '@/lib/three/arena-npcs';
 import RemotePlayers from '@/lib/three/remote-players';
 import ArenaLocationNpcs from '@/lib/three/arena-location-npcs';
+import { VRM_METRICS_ENABLED } from '@/lib/three/vrm-loader';
 import PlayerAvatar from '@/lib/three/player-avatar';
 import NpcController from '@/lib/three/npc-controller';
 import MergedSeaweed from '@/lib/three/merged-seaweed';
@@ -97,13 +98,17 @@ const USE_MESHLET_BUILDINGS: boolean =
   typeof window !== 'undefined' &&
   new URLSearchParams(window.location.search).get('meshlets') === '1';
 const FOG_COLOR = new THREE.Color(0x0e3458); // Underwater haze — matches sky
-const LOW_END_DPR_RANGE: [number, number] = [0.5, 0.65];
+const LOW_END_DPR_RANGE: [number, number] = [0.55, 0.7];
 const STANDARD_DPR_RANGE: [number, number] = [0.75, 1];
 const QUALITY_SAMPLE_MS = 2500;
 const QUALITY_WARMUP_MS = 5000;
 const QUALITY_FPS_DOWN = 58;
-const QUALITY_FPS_UP = 90;
-const QUALITY_MAX_TIER = 4;
+// Recovery threshold: 59 FPS is reachable on a 60 Hz display (vsync permits it).
+// The old 90 threshold was unreachable at vsync, creating a one-way ratchet.
+const QUALITY_FPS_UP = 59;
+// Only one degradation tier: hide groundCover (seaweed / decorations).
+// activityFx and labels are gameplay-functional and must never be auto-degraded.
+const QUALITY_MAX_TIER = 1;
 
 export type WorldMode = 'game' | 'arena';
 
@@ -112,25 +117,32 @@ interface World3DCanvasProps {
   perfFlags?: Partial<WorldPerfFlags>;
 }
 
+// The governor may ONLY auto-hide groundCover (seaweed + decorations).
+// activityFx and labels are gameplay-functional signals — never auto-degraded.
+// Tier 0 = full quality; tier 1 = groundCover hidden.
 function applyQualityTier(flags: WorldPerfFlags, tier: number): WorldPerfFlags {
   if (tier <= 0) return flags;
   return {
     ...flags,
-    groundCover: tier < 1 ? flags.groundCover : false,
-    activityFx: tier < 2 ? flags.activityFx : false,
-    labels: tier < 3 ? flags.labels : false,
-    residentDetail: flags.residentDetail,
-    buildingDetail: flags.buildingDetail,
+    groundCover: false,
   };
 }
 
 function useAdaptiveWorldPerfFlags(perfFlags?: Partial<WorldPerfFlags>): WorldPerfFlags {
   const base = { ...DEFAULT_WORLD_PERF_FLAGS, ...perfFlags };
-  const forceMaxTier =
+
+  // ?fast=1 is an explicit opt-in DEBUG flag — allowed to hide groundCover, activityFx,
+  // and labels because the user consciously opted in. It is NOT a default auto-degradation
+  // path. It also pins the governor off so no further automatic changes occur this session.
+  const fastMode =
     typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('fast') === '1';
+
   const tieredFlagsEnabled = perfFlags === undefined;
-  const adaptiveEnabled = tieredFlagsEnabled && !forceMaxTier;
-  const initialTier = forceMaxTier
+  // Adaptive governor is active only when no explicit perfFlags override is passed in
+  // AND the user has not opted into ?fast=1 debug mode.
+  const adaptiveEnabled = tieredFlagsEnabled && !fastMode;
+
+  const initialTier = fastMode
     ? QUALITY_MAX_TIER
     : LOW_END_GPU_DETECTED
       ? 1
@@ -146,6 +158,10 @@ function useAdaptiveWorldPerfFlags(perfFlags?: Partial<WorldPerfFlags>): WorldPe
     const startedAt = sampleStart;
     let stableHighSamples = 0;
     let tierRef = initialTier;
+    // Anti-flap latch: if the governor degrades a second time in one session,
+    // hold tier 1 for the rest of the session (degradeCount tracks triggers).
+    let degradeCount = 0;
+    let latched = false;
 
     const tick = (now: number) => {
       frames++;
@@ -153,18 +169,23 @@ function useAdaptiveWorldPerfFlags(perfFlags?: Partial<WorldPerfFlags>): WorldPe
       if (elapsed >= QUALITY_SAMPLE_MS) {
         const fps = (frames * 1000) / elapsed;
         const warmed = now - startedAt >= QUALITY_WARMUP_MS;
-        if (warmed && fps < QUALITY_FPS_DOWN && tierRef < QUALITY_MAX_TIER) {
-          tierRef += 1;
+
+        if (!latched && warmed && fps < QUALITY_FPS_DOWN && tierRef < QUALITY_MAX_TIER) {
+          tierRef = QUALITY_MAX_TIER;
           stableHighSamples = 0;
+          degradeCount += 1;
+          // Second degrade in the same session: lock tier for the rest of the session.
+          if (degradeCount >= 2) latched = true;
           setQualityTier(tierRef);
-        } else if (warmed && fps > QUALITY_FPS_UP && tierRef > 0) {
+        } else if (!latched && warmed && fps >= QUALITY_FPS_UP && tierRef > 0) {
           stableHighSamples += 1;
+          // Require 3 consecutive stable-high samples (~7.5s sustained) before recovering.
           if (stableHighSamples >= 3) {
             tierRef -= 1;
             stableHighSamples = 0;
             setQualityTier(tierRef);
           }
-        } else if (fps <= QUALITY_FPS_UP) {
+        } else if (fps < QUALITY_FPS_UP) {
           stableHighSamples = 0;
         }
         frames = 0;
@@ -182,6 +203,11 @@ function useAdaptiveWorldPerfFlags(perfFlags?: Partial<WorldPerfFlags>): WorldPe
       (window as any).__W3D_QUALITY_TIER = qualityTier;
     }
   }, [qualityTier]);
+
+  if (fastMode) {
+    // ?fast=1 explicitly disables groundCover, activityFx, labels — governor is frozen.
+    return { ...base, groundCover: false, activityFx: false, labels: false };
+  }
 
   return tieredFlagsEnabled ? applyQualityTier(base, qualityTier) : base;
 }
@@ -827,7 +853,7 @@ function createTextureUploadMetrics(mode: 'idle' | 'raf', totalTextures: number)
     startedAt: performance.now(),
     slices: [],
   };
-  if (typeof window !== 'undefined') {
+  if (VRM_METRICS_ENABLED && typeof window !== 'undefined') {
     (window as any).__CV_TEXTURE_UPLOAD_METRICS = metrics;
   }
   return metrics;
@@ -929,19 +955,27 @@ function StaggeredTextureUpload() {
         let i = 0;
         const uploadMetrics = createTextureUploadMetrics(hasIdle ? 'idle' : 'raf', unique.length);
 
-        function uploadIdle() {
+        function uploadIdle(deadline: IdleDeadline) {
           const t0 = performance.now();
           const before = i;
-          while (
-            i < unique.length &&
-            (
-              i === before ||
-              (
-                i - before < IDLE_MAX_TEXTURES_PER_SLICE &&
-                performance.now() - t0 < IDLE_SLICE_BUDGET_MS
-              )
-            )
-          ) {
+          // Deadline-aware path: when rIC provides a real idle window
+          // (timeRemaining() > 0 and not timed-out), upload as many textures
+          // as fit until <2ms remains — no fixed cap. This is the fast path
+          // that resolved the 10.8s→20.5s regression caused by IDLE_MAX_TEXTURES_PER_SLICE=4.
+          // On fast hardware a single 50ms idle window can drain the entire queue.
+          // Fallback when rIC timed out or no remaining time: upload max 4 per slice
+          // guarded by IDLE_SLICE_BUDGET_MS, same as the old hard cap.
+          const useDeadline = !deadline.didTimeout && deadline.timeRemaining() > 0;
+          while (i < unique.length) {
+            if (i > before) {
+              // Not the first texture of this slice — check budget.
+              if (useDeadline) {
+                if (deadline.timeRemaining() < 2) break;
+              } else {
+                if (i - before >= IDLE_MAX_TEXTURES_PER_SLICE) break;
+                if (performance.now() - t0 >= IDLE_SLICE_BUDGET_MS) break;
+              }
+            }
             try {
               (gl as any).initTexture(unique[i]);
             } catch (err) {

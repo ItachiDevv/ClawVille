@@ -79,6 +79,12 @@ async function main() {
   page.on('pageerror', (err) => consoleMessages.push({ type: 'pageerror', text: String(err).slice(0, 1000) }));
 
   await page.evaluateOnNewDocument(() => {
+    // Enable VRM load metrics collection. This flag is read at vrm-loader.ts
+    // module-init time (before any parse runs) via the IIFE that sets
+    // VRM_METRICS_ENABLED. evaluateOnNewDocument runs BEFORE page scripts so
+    // the flag is visible when the module initialises.
+    (window as any).__CV_PERF_HARNESS__ = true;
+
     const data = {
       longTasks: [] as Array<{ startTime: number; duration: number; name: string }>,
       paints: [] as Array<{ name: string; startTime: number }>,
