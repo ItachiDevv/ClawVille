@@ -154,10 +154,15 @@ const NPC_LOD_FAR_DIST_SQ = 5_000 * 5_000;
  * (ts === 0, client-authored every frame) render their position directly.
  * Zero allocations — mutates the caller's scratch vector.
  */
+/** Per-entity scratch for the dead-reckoned pursuit (held in a useRef by
+ *  each mesh component — never allocated per frame). */
+interface LocoScratch { lastTs: number; vx: number; vz: number }
+
 function moveTowardServerTarget(
   pos: { x: number; z: number },
   d: NpcSpriteState,
   dt: number,
+  s: LocoScratch,
 ): void {
   if (d.ts === 0) {
     // Demo-wander NPCs are client-authored every frame — render directly.
@@ -165,41 +170,43 @@ function moveTowardServerTarget(
     pos.z = d.y - HALF_H;
     return;
   }
-  // DEAD-RECKONED target (the design the npc.ts docstring documents — it had
-  // regressed to a plain snapshot lerp, which is what exposed the 5Hz tick):
-  // project the latest snapshot forward along the server segment velocity by
-  // the time elapsed since it arrived, so the TARGET advances continuously
-  // between snapshots instead of sitting still while the renderer catches up
-  // and waits ("move 44wu, stop, wait" pumping — measured 17/50 dead 100ms
-  // intervals on the move-toward-latest variant). Capped at 1.25 ticks so a
-  // stalled stream doesn't extrapolate into walls.
-  const tsDelta = d.tsDelta > 0 ? d.tsDelta : 200;
-  const aheadMs = Math.min(Date.now() - d.ts, tsDelta * 1.25);
-  const targetX = d.x + ((d.x - d.prevX) / tsDelta) * aheadMs - HALF_W;
-  const targetZ = d.y + ((d.y - d.prevY) / tsDelta) * aheadMs - HALF_H;
+  // VELOCITY EMA across snapshots (per-ms vector). The stream arrives at 5Hz
+  // but the sim moves entities on a coarser cadence (measured: ~27 distinct
+  // positions per 61 snapshots), so single-segment velocity reads 0/440/0/440
+  // — extrapolating or capping on that produced the surge/stall pattern
+  // (pairs of ~24wu intervals then ~3wu, cv 0.53). The EMA settles at the
+  // entity's true average speed (~220), advances the target steadily, and
+  // decays gracefully over ~3 ticks when the entity genuinely stops.
+  if (d.ts !== s.lastTs) {
+    const tsDelta = Math.max(d.tsDelta > 0 ? d.tsDelta : 200, 16);
+    const a = 0.35;
+    s.vx += ((d.x - d.prevX) / tsDelta - s.vx) * a;
+    s.vz += ((d.y - d.prevY) / tsDelta - s.vz) * a;
+    s.lastTs = d.ts;
+  }
+  // Dead-reckoned target: latest snapshot projected along the EMA velocity by
+  // time-since-arrival (capped 500ms so a stalled stream doesn't run away).
+  const aheadMs = Math.min(Date.now() - d.ts, 500);
+  const targetX = d.x + s.vx * aheadMs - HALF_W;
+  const targetZ = d.y + s.vz * aheadMs - HALF_H;
   const dx = targetX - pos.x;
   const dz = targetZ - pos.z;
   const distSq = dx * dx + dz * dz;
   if (distSq < 0.01) return;
   if (distSq > 800 * 800) { pos.x = targetX; pos.z = targetZ; return; } // teleport snap
-  // Exponential pursuit of the advancing target, VELOCITY-CAPPED at 1.5× the
-  // entity's server speed. Pure pursuit at high stiffness transmitted
-  // snapshot corrections as visible speed surges (measured: sd 16 on mean 19
-  // per 100ms, one 87wu snap); the cap turns corrections into brief, gentle
-  // ≤1.5× acceleration while still converging. Frame-rate independent,
-  // continuous velocity ≈ server velocity, no stops, no snaps.
+  // Exponential pursuit of the advancing target, velocity-capped at 1.5× the
+  // EMA speed (80 wu/s convergence floor) — corrections render as brief
+  // gentle acceleration, never lurches; frame-rate independent; zero allocs.
   const k = 1 - Math.exp(-6 * dt);
   let stepX = dx * k;
   let stepZ = dz * k;
   const stepLen = Math.sqrt(stepX * stepX + stepZ * stepZ);
-  const segX = d.x - d.prevX;
-  const segY = d.y - d.prevY;
-  const serverV = Math.sqrt(segX * segX + segY * segY) / (tsDelta / 1000);
-  const maxStep = Math.max(80, serverV * 1.5) * dt;
+  const emaV = Math.sqrt(s.vx * s.vx + s.vz * s.vz) * 1000; // wu/s
+  const maxStep = Math.max(80, emaV * 1.5) * dt;
   if (stepLen > maxStep) {
-    const s = maxStep / stepLen;
-    stepX *= s;
-    stepZ *= s;
+    const f = maxStep / stepLen;
+    stepX *= f;
+    stepZ *= f;
   }
   pos.x += stepX;
   pos.z += stepZ;
@@ -551,6 +558,7 @@ export const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteStat
   // glbPrev`. simPos holds RENDER coordinates (post-HALF_W shift),
   // matching what's written to group.position.
   const simPos = useRef(new THREE.Vector3(...mapToWorld(npc.x, npc.y)));
+  const locoScratch = useRef<LocoScratch>({ lastTs: 0, vx: 0, vz: 0 });
   const currentRotY = useRef(0);
   const currentTerrainY = useRef(0);
 
@@ -725,7 +733,7 @@ export const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteStat
     } else {
       // Controlled-NPC-style constant-speed integration — see
       // moveTowardServerTarget + the VRMNpcMesh mirror site.
-      moveTowardServerTarget(simPos.current, d, dt);
+      moveTowardServerTarget(simPos.current, d, dt, locoScratch.current);
     }
     // Track walkable surface Y for stair/ramp zones. Used below in group.position.y.
     const npcGroundY = npcClamped.groundY;
@@ -1040,6 +1048,7 @@ export const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteStat
   // GLBNpcMesh useFrame for full rationale. simPos mirrors the rendered
   // position each frame so the facing math can read previous-frame state.
   const simPos = useRef(new THREE.Vector3(...mapToWorld(npc.x, npc.y)));
+  const locoScratch = useRef<LocoScratch>({ lastTs: 0, vx: 0, vz: 0 });
   const currentRotY = useRef(VRM_DIR_ROTATION.idle);
   // Pitch ref for the swim-upward lean — see player-avatar.tsx for full
   // rationale. Only meaningful for the possessed-player NPC; wandering
@@ -1184,7 +1193,7 @@ export const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteStat
       // Speed = the entity's own server velocity (segment length / snapshot
       // gap) + 15% catch-up so the render never lags unboundedly. Demo-wander
       // NPCs (ts === 0, client-side) keep direct assignment as before.
-      moveTowardServerTarget(simPos.current, d, dt);
+      moveTowardServerTarget(simPos.current, d, dt, locoScratch.current);
     }
     // Track walkable surface Y for stair/ramp zones. Used below in group.position.y.
     const vrmNpcGroundY = vrmClamped.groundY;
