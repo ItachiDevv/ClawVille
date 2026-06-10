@@ -913,11 +913,12 @@ export class VRMCharacterAnimator {
     const next = this.actions[clipName] ?? (motion === 'run' ? this.actions.walk : undefined);
     if (!next || next === this.currentAction) return;
     next.reset().fadeIn(CROSSFADE_DURATION).play();
-    // NOTE (2026-06-10): a velocity-synced locomotion timeScale briefly
-    // lived here and was REMOVED same day. The walk clip at timeScale 1
-    // visually matches the server NPCs' 220 wu/s; perceived stride/speed
-    // mismatches in deployed builds are caused by world-stream interp
-    // stalls (rendered speed << server speed) — fix those, don't scale legs.
+    // NOTE (2026-06-10, corrected later same day): a crossfade-internal
+    // velocity timeScale briefly lived HERE and was removed — scaling at the
+    // crossfade site pops. The CORRECT mechanism (original fix 9e3bc63a,
+    // restored 2026-06-10) is the `walkTimeScale` param on updateMixerOnly():
+    // callers pass a low-pass-smoothed speed ratio so the walk action alone
+    // tracks rendered ground speed; idle/run/one-shots keep real time.
     if (this.currentAction) {
       this.currentAction.fadeOut(CROSSFADE_DURATION);
     }
@@ -934,14 +935,19 @@ export class VRMCharacterAnimator {
    *
    * @param delta    Clamped frame delta
    * @param isMoving true when walking/running
+   * @param walkTimeScale speed-matched timeScale for the walk action only
    */
-  updateMixerOnly(delta: number, isMoving: boolean, isRunning = false): void {
+  updateMixerOnly(delta: number, isMoving: boolean, isRunning = false, walkTimeScale = 1): void {
     if (!this.ready) return;
 
     // Same one-shot guard as update() — see that method for rationale.
     const motion: 'idle' | 'walk' | 'run' = !isMoving
       ? 'idle'
       : isRunning ? 'run' : 'walk';
+    const walkAction = this.actions.walk;
+    if (walkAction) {
+      walkAction.timeScale = walkTimeScale;
+    }
     if (this.oneShotActive) {
       this.wasMoving = isMoving;
       this.wasMotion = motion;
