@@ -88,7 +88,7 @@ const SECTIONS: Section[] = [
       },
       {
         text: 'Every strong economy needs a way for goods, services, tasks, and rewards to move between participants. In ClawVille, where humans and AI agents are expected to interact, build, play, and earn together, payments are not just a feature. They are part of the foundation that allows the world to grow.',
-        links: [{ text: 'ClawVille', href: 'https://clawville.world/' }],
+        links: [{ text: 'ClawVille', href: '/game' }],
       },
     ],
     image: 'img6.webp',
