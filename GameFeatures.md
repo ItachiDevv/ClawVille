@@ -504,6 +504,8 @@ Full Phase 5.1 architecture (keypair roles, envelope encryption, signed-challeng
 
 ## 15. Landing page (`apps/web/src/app/page.tsx`)
 
+**Updated 2026-06-10** — restored PayAI press-release hyperlink parity with the Google Docs source: inline article links now wrap the source phrases for ClawVille, PayAI, x402 protocol docs, PayAI Facilitator, agent-native payment infrastructure, and the x402 quickstart; footer/community links were already present.
+
 **Updated 2026-06-08** — added the PayAI × ClawVille **press release**: a "🔴 BREAKING" banner at the top of the hero (`page.tsx`, smooth-scrolls to `#press-release`) + a full long-form `<PressRelease>` article section rendered directly below the hero (`components/landing/press-release.tsx`). Lead key-art (`announce.webp`) sits under an enlarged ClawVille × PayAI lockup; 8 co-branded section banners + the lead live at `/public/press/payai/*.webp` (WebP ~200–280KB each, down from ~3MB PNG; all `loading="lazy"` so they never touch the hero's initial paint — priority #1). Forward-looking marketing content (the PayAI integration is announced, not yet built) → intentionally NOT propagated to Nori/SKILL.md (not a live game mechanic).
 
 **Updated 2026-06-01** — hero fold fix + collaboration band + three live demo tiles.
