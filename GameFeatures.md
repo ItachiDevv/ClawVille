@@ -12,6 +12,8 @@
 > - **`ARCHITECTURE.md`** — backend routes / services / schema / events / leaderboard rubric.
 > - **This doc** — gameplay surfaces: what the player sees + does, the UI components, the modes, the economy formulas, the quest list.
 
+**Last Audited:** 2026-06-10 (`/game` controls discoverability + mobile jump): `<TutorialOverlay>` now mounts for every `/game` visitor, and its persistent Controls button opens directly to the movement/run/jump step. Desktop renders the help surface as a compact controls drawer positioned left of the right sidebar so it does not cover the agent/menu panel; mobile keeps a dismissable modal sheet. The intro documents WASD, touch joysticks, Shift run, full-tilt joystick run, Space charged jump, Space quick-sink, and the mobile Jump button. `<MobileControls>` exposes a touch Jump button for `player` and `npc` modes that feeds the existing jump state machine. PARITY: human and connected-agent manual-control paths see the same control reference; autonomous agents remain governed by their action surface.
+
 **Last Audited:** 2026-06-10 (spike cleanup — transport restore + governor + HUD status): (1) **Nine user flows un-404'd:** guest signup (`/api/auth/guest`), forgot/reset-password, send-verification, NPC transient chat (TalkToCharacterBar), shop item purchase/learn, username check/update, avatar fetch/position/appearance, and location agent chat were broken by the 2026-06-08 same-origin fetch change in `lib/api.ts` (no Next routes exist for them) and are restored to routing via `NEXT_PUBLIC_API_URL`. Transport-only — no gameplay-rule change. (2) **World labels / speech bubbles / activity FX can no longer be auto-hidden:** the adaptive governor is capped to ground-cover (seaweed) only; `?fast=1` is the sole, explicit opt-in that hides labels (debug/measurement). (3) **`hudPerfMode` dead constant stripped** from `game/page.tsx` — all 14 HUD surfaces it wrapped render unconditionally again (master structure). (4) **Demo HUD status:** the 2026-06-08 "demo HUD recovery" below is NEW feature work, not a restoration (the Demo Player panel / forced QuestTracker never existed pre-spike) — it remains functionally intact but is **PENDING user sign-off + the mandatory mobile/iPad viewport sweep** (`docs/mobile-ipad-verification.md`) before staging→master promotion. PARITY: all restored flows serve humans (browser+Lucia/guest) and agents (honoRequest/server surfaces) identically to master.
 
 **Prior Last Audited:** 2026-06-08 (demo HUD recovery + auth-state cleanup): `/game` keeps progression HUD surfaces visible before an agent is connected. In no-avatar Explore/NPC mode, `AvatarStatusBar` renders a demo/NPC fallback instead of returning null; `QuestTracker` can be forced visible for the demo/pre-connect surface. The sidebar account row follows `auth-me`: real non-guest auth shows Logout; unauthenticated/guest demo state shows Log In / Sign Up and must not render email-confirmation or logout state. Agent-only Eliza chat, inventory, shop, emote, daily-login, cosmetic, and autonomy controls remain under the connected-agent gate.
@@ -374,7 +376,7 @@ Rendered for any avatar-bearing visitor — guest auto-create included. None of 
 | Component | Purpose |
 |---|---|
 | `<LocationHUD>` | "Press E to enter {buildingName}" proximity tooltip |
-| `<TutorialOverlay>` | 6-step welcome tutorial + `?` button. On mobile, lifted above the joystick zone with `bottom-[14.5rem] md:bottom-4`. |
+| `<TutorialOverlay>` | 7-step welcome tutorial + persistent Controls button. Desktop opens a compact drawer left of the right sidebar; mobile opens a dismissable modal sheet. The Controls step documents WASD, touch joysticks, Shift/full-tilt run, Space charged jump/quick-sink, and the mobile Jump button. |
 | `<ActivityFeed>` | Live world signals (chat events, building visits, etc.) |
 
 ### 11c. Player UI (visible when `agentConnected === true`)
@@ -496,7 +498,7 @@ Every user gets an isolated memory partition with each building character. One E
 
 ### 13a. Welcome overlay
 
-`<TutorialOverlay>` — 6-step welcome modal that gates first-time players. Triggered by `localStorage` key `clawville-tutorial-seen`. Can be re-opened from the `?` button.
+`<TutorialOverlay>` — 7-step welcome modal/drawer triggered by `localStorage` key `clawville-tutorial-seen`. Mounted for all `/game` visitors. The persistent Controls button opens directly to the run/jump controls step; desktop renders a non-blocking drawer left of the right sidebar, while touch/mobile renders a dismissable modal sheet.
 
 ### 13b. Tutorial quest tracker — **30 quests, not 8**
 
@@ -618,6 +620,8 @@ The full state machine, physics constants, and per-frame integration math live i
 Gameplay-facing summary:
 - **SPACE** triggers `charging` (avatar stays on ground while holding); release < 200 ms → quick tap (small hop), release ≥ 200 ms → scaled launch (peak altitude linear in charge); `holdMs ≥ 1500 ms` auto-launches at max.
 - **Mid-air SPACE** triggers quicksink (fast controlled descent at −600 wu/s).
+- **Touch Jump button** in `<MobileControls>` mirrors SPACE: press/hold to charge, release to launch, tap mid-air to quicksink.
+- **Speed/run** uses Shift while moving on desktop; touch users push the movement joystick to the outer ring to engage the same run multiplier.
 - Active in `controlMode === 'player'` and `controlMode === 'npc'`. Ignored in `explore` and `autonomous`.
 - Hard reset on `enterBuilding()` (movement freeze) and all four control-mode mutation paths.
 - Charge bar at the bottom-center reads `chargeProgress` (0–1) directly from `jumpState`.
