@@ -163,82 +163,6 @@ bpy.ops.object.join()
 circlet = bpy.context.view_layer.objects.active
 bpy.ops.object.shade_smooth()
 
-# ---- hair roll (braided crown) over the melted upper-forehead zone ----
-ROLL_RAISE   = 0.011   # roll center this far above the band
-ROLL_R       = 0.017   # tube radius (thick hair roll)
-ROLL_SPAN    = 105.0   # degrees each side of the pendant anchor (ear to ear)
-roll_curve = bpy.data.curves.new("HairRollCurve", 'CURVE')
-roll_curve.dimensions = '3D'
-rsp = roll_curve.splines.new('POLY')
-roll_pts = []
-for i in range(N):
-    th_deg = (i/N)*360.0
-    dfront = abs(((th_deg - pend_th) + 180) % 360 - 180)
-    if dfront <= ROLL_SPAN:
-        roll_pts.append((i, dfront))
-roll_pts.sort(key=lambda t: ((((t[0]/N)*360.0 - pend_th) + 180) % 360 - 180))
-rsp.points.add(len(roll_pts)-1)
-for k, (i, dfront) in enumerate(roll_pts):
-    th = (i/N)*2*math.pi
-    r = rmax[i] + 0.004
-    z = band_z + ROLL_RAISE + 0.006*math.exp(-(dfront/70.0)**2)  # slight arc up at center
-    rsp.points[k].co = (cx + r*math.cos(th), cy + r*math.sin(th), z, 1.0)
-    # pinch the ends so the roll tucks into the side hair
-    edge = max(0.0, (dfront - (ROLL_SPAN-28.0)) / 28.0)
-    rsp.points[k].radius = max(0.18, 1.0 - edge)
-roll_curve.bevel_depth = ROLL_R
-roll_curve.bevel_resolution = 6
-roll_curve.use_fill_caps = True
-roll_obj = bpy.data.objects.new("HairRoll", roll_curve)
-bpy.context.collection.objects.link(roll_obj)
-bpy.ops.object.select_all(action="DESELECT")
-roll_obj.select_set(True); bpy.context.view_layer.objects.active = roll_obj
-bpy.ops.object.convert(target='MESH')
-roll_obj = bpy.context.view_layer.objects.active
-bpy.ops.object.shade_smooth()
-
-# streaky blonde hair texture so the roll doesn't read as plastic
-import numpy as _np
-TS = 256
-rng = _np.random.default_rng(7)
-base = _np.array((0.500, 0.390, 0.215), dtype=_np.float32)
-vv = _np.linspace(0, 1, TS, endpoint=False)
-phase = rng.uniform(0, 6.28, 8)
-stripes = _np.zeros(TS, dtype=_np.float32)
-for k_ in range(8):
-    stripes += _np.sin(vv * 6.283 * (10 + 7*k_) + phase[k_]) / (k_ + 2)
-stripes = (stripes - stripes.min()) / (_np.ptp(stripes) + 1e-6)   # 0..1 strand pattern
-tex = _np.empty((TS, TS, 4), dtype=_np.float32)
-shade = (0.72 + 0.55 * stripes)[:, None].repeat(TS, 1)
-jitter = rng.normal(0, 0.03, (TS, TS)).astype(_np.float32)
-for c_ in range(3):
-    tex[:, :, c_] = _np.clip(base[c_] * (shade + jitter), 0, 1)
-tex[:, :, 3] = 1.0
-hair_img = bpy.data.images.new("HairRollTex", TS, TS, alpha=True)
-hair_img.pixels.foreach_set(tex.reshape(-1))
-hair_img.pack()
-hair_mat = bpy.data.materials.new("HairRoll")
-hair_mat.use_nodes = True
-hb_ = next(n for n in hair_mat.node_tree.nodes if n.type == "BSDF_PRINCIPLED")
-ht_ = hair_mat.node_tree.nodes.new(type="ShaderNodeTexImage")
-ht_.image = hair_img
-hair_mat.node_tree.links.new(ht_.outputs["Color"], hb_.inputs["Base Color"])
-hb_.inputs["Roughness"].default_value = 0.65
-hb_.inputs["Metallic"].default_value = 0.0
-# body materials carry Meshy's baked-light emissive — match the roll so it doesn't sit dark
-if hb_.inputs.get("Emission Strength"):
-    hb_.inputs["Emission Strength"].default_value = 0.35
-es_ = hb_.inputs.get("Emission Color")
-if es_ is not None:
-    hair_mat.node_tree.links.new(ht_.outputs["Color"], es_)
-roll_obj.data.materials.append(hair_mat)
-roll_obj.parent = arm
-rvg = roll_obj.vertex_groups.new(name="mixamorig:Head")
-rvg.add(range(len(roll_obj.data.vertices)), 1.0, 'REPLACE')
-rmod = roll_obj.modifiers.new("Armature", 'ARMATURE')
-rmod.object = arm
-print(f"[circlet] hair roll verts={len(roll_obj.data.vertices)}")
-
 # gold material
 gold = bpy.data.materials.new("CircletGold")
 gold.use_nodes = True
@@ -370,6 +294,7 @@ print(f"[circlet] repainted {len(ys_)}px (feathered)")
 
 diffuse_img.pixels.foreach_set(px.reshape(-1))
 diffuse_img.update()
+diffuse_img.file_format = 'PNG'   # source is JPEG; re-packing as JPEG zigzags every chroma edge on the face
 try: diffuse_img.pack()
 except Exception as e: print(f"[circlet] repack warn: {e}")
 
@@ -401,6 +326,7 @@ if emis_img is not None:
     epx[ys_, xs_, :3] = epx[ys_, xs_, :3] * (1 - f) + etarget * f
     emis_img.pixels.foreach_set(epx.reshape(-1))
     emis_img.update()
+    emis_img.file_format = 'PNG'   # same JPEG trap as the diffuse
     try: emis_img.pack()
     except Exception as e: print(f"[circlet] emissive repack warn: {e}")
     print(f"[circlet] emissive copy repainted ({emis_img.name})")
@@ -426,6 +352,7 @@ if normal_img is not None and normal_img.size[0] == W and normal_img.size[1] == 
     npx[ys_, xs_, :3] = npx[ys_, xs_, :3] * (1 - f) + flat[None, :] * f
     normal_img.pixels.foreach_set(npx.reshape(-1))
     normal_img.update()
+    normal_img.file_format = 'PNG'
     try: normal_img.pack()
     except Exception as e: print(f"[circlet] normal repack warn: {e}")
     print(f"[circlet] flattened normal map in patch ({len(ys_)}px)")
