@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Original Tripo GLB — Browser Preview</title>
+<style>
+  html,body{margin:0;height:100%;background:#11141b;color:#e8eefb;font:14px/1.4 system-ui,sans-serif;overflow:hidden}
+  #c{position:fixed;inset:0;display:block;touch-action:none}
+  #ui{position:fixed;top:14px;left:14px;z-index:10;background:rgba(16,22,34,.92);border:1px solid rgba(120,160,220,.18);
+      border-radius:12px;padding:12px;backdrop-filter:blur(8px);width:220px}
+  #ui h1{margin:0 0 2px;font-size:14px}#ui .s{color:#9fb2d0;font-size:11px;margin-bottom:10px}
+  .b{display:block;width:100%;text-align:left;margin:5px 0;padding:8px 10px;border-radius:9px;cursor:pointer;
+     background:rgba(255,255,255,.04);border:1px solid rgba(120,160,220,.18);color:#e8eefb;font-size:13px}
+  .b:hover{background:rgba(95,208,255,.10)}.b.on{background:rgba(95,208,255,.16);border-color:#5fd0ff}
+  #st{margin-top:8px;font-size:11px;color:#9fb2d0}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="ui">
+  <h1>Original Tripo GLB</h1>
+  <div class="s">raw image-to-3D output · drag rotate · scroll zoom</div>
+  <div id="models"></div>
+  <div id="st"></div>
+</div>
+<script type="importmap">
+{ "imports": {
+  "three": "https://esm.sh/three@0.182.0",
+  "three/addons/": "https://esm.sh/three@0.182.0/examples/jsm/"
+}}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+const MODELS = ['helen','clytemnestra','cronus','phanes'];
+const st = document.getElementById('st');
+
+const canvas = document.getElementById('c');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias:true });
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.NeutralToneMapping;
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x11141b);
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+scene.add(new THREE.HemisphereLight(0xffffff, 0x333344, 0.6));
+const key = new THREE.DirectionalLight(0xffffff, 1.2); key.position.set(2,4,3); scene.add(key);
+
+const camera = new THREE.PerspectiveCamera(35, innerWidth/innerHeight, 0.01, 100);
+const controls = new OrbitControls(camera, canvas);
+controls.enableDamping = true;
+
+const loader = new GLTFLoader();
+let current = null;
+
+function frame(obj){
+  const box = new THREE.Box3().setFromObject(obj);
+  const size = box.getSize(new THREE.Vector3());
+  const c = box.getCenter(new THREE.Vector3());
+  const maxd = Math.max(size.x,size.y,size.z);
+  const dist = maxd/(2*Math.tan((35*Math.PI/180)/2))*1.4;
+  controls.target.set(c.x, c.y, c.z);
+  camera.position.set(c.x + maxd*0.4, c.y + size.y*0.05, c.z + dist);
+  controls.update();
+}
+function load(slug){
+  st.textContent = 'loading '+slug+'/raw.glb …';
+  document.querySelectorAll('.b').forEach(b=>b.classList.toggle('on', b.dataset.s===slug));
+  loader.load(`/models/${slug}-mesh/raw.glb`, (gltf)=>{
+    if (current){ scene.remove(current); }
+    current = gltf.scene;
+    scene.add(current);
+    frame(current);
+    st.textContent = slug+'/raw.glb ✓';
+  }, undefined, (e)=>{ st.textContent = 'error: '+(e.message||e); });
+}
+const mw = document.getElementById('models');
+MODELS.forEach(s=>{ const b=document.createElement('button'); b.className='b'; b.dataset.s=s; b.textContent=s; b.onclick=()=>load(s); mw.appendChild(b); });
+
+addEventListener('resize', ()=>{ camera.aspect=innerWidth/innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth,innerHeight); });
+renderer.setAnimationLoop(()=>{ controls.update(); renderer.render(scene,camera); });
+load('helen');
+</script>
+</body>
+</html>

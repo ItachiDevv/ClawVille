@@ -102,14 +102,39 @@ async function main() {
   console.log(`  side:  ${sideUrl.slice(-60)}`);
   console.log(`  back:  ${backUrl.slice(-60)}`);
 
-  const submitBody = {
+  // ───────────────────────────────────────────────────────────────────────
+  // QUALITY SETTINGS — fixed 2026-06-08.
+  // The old hardcoded values (texture:"standard", pbr:false,
+  // style:"person:person2cartoon") were tuned for the CHIBI/stylised characters
+  // (eliza-chibi, milady-chibi). On REALISTIC Hatcher figures they produced
+  // demented faces / mushy eyes / messed-up toes — that combo is Tripo's LOWEST
+  // tier + a cartoonify pass on a realistic input. Defaults are now realistic-HD.
+  //
+  //   Realistic (Helen/Clytemnestra/Cronus/Phanes): HD + pbr + NO style ← default
+  //   Chibi/stylised: --texture=standard --pbr=false --style=person:person2cartoon
+  //
+  // Tripo v2.5 params (verified from fal API schema):
+  //   texture: "no"|"standard"|"HD"   pbr: bool (default true; overrides texture)
+  //   style: omit for faithful realism; "person:person2cartoon" to cartoonify
+  //   quad: bool (cleaner topology, +$0.05, forces FBX) — not enabled here
+  const flags = Object.fromEntries(
+    process.argv.slice(3).filter((a) => a.startsWith("--")).map((a) => {
+      const [k, v] = a.slice(2).split("=");
+      return [k, v ?? "true"];
+    }),
+  );
+  const texture = flags.texture || "HD";
+  const pbr = flags.pbr !== undefined ? flags.pbr === "true" : true;
+  const style = flags.style && flags.style !== "none" ? flags.style : undefined;
+  const submitBody: Record<string, unknown> = {
     front_image_url: frontUrl,
     left_image_url: sideUrl,
     back_image_url: backUrl,
-    texture: "standard",
-    pbr: false,
-    style: "person:person2cartoon",
+    texture,
+    pbr,
+    ...(style ? { style } : {}),
   };
+  console.log(`  quality: texture=${texture} pbr=${pbr} style=${style ?? "(none / realistic)"}`);
 
   console.log("Submitting to tripo3d/tripo/v2.5/multiview-to-3d...");
   const submitRes = await fetch("https://queue.fal.run/tripo3d/tripo/v2.5/multiview-to-3d", {
