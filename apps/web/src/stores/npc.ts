@@ -406,10 +406,15 @@ export const useNpcStore = create<NpcStoreState>((set, get) => ({
       // Dead-reckoning bookkeeping. tsDelta is the wall-clock gap between
       // this snapshot and the previous one for this NPC. Default ~200 ms
       // (server tick) but we measure rather than assume so a skipped SSE
-      // frame doesn't double the inferred velocity. Clamp the floor to
-      // avoid divide-by-near-zero if two snapshots somehow land in the
-      // same ms (test fixtures, replay tools).
-      const tsDelta = prev ? Math.max(16, now - prev.ts) : 200;
+      // frame doesn't double the inferred velocity.
+      // Clamped to [120, 320] (2026-06-10): the renderer plays each position
+      // segment over tsDelta, so RAW receipt gaps modulate rendered speed —
+      // SSE flush coalescing produced near-zero gaps (instant 44px jumps) and
+      // stretched gaps produced half-speed crawls; measured live as rendered
+      // speed cv 1.07 ("spurts") even with the server emitting every 200ms
+      // tick. The clamp bounds per-segment speed to ±~40% of nominal while
+      // still absorbing honest jitter.
+      const tsDelta = prev ? Math.min(320, Math.max(120, now - prev.ts)) : 200;
       const candidate: NpcSpriteState = {
         id: n.id,
         name: n.name,
@@ -633,8 +638,13 @@ export const useNpcStore = create<NpcStoreState>((set, get) => ({
     const playerNpc: NpcSpriteState = {
       id: PLAYER_NPC_ID,
       name: 'You',
-      x: 3840, y: 3840, // World center (tile 120,120)
-      prevX: 3840, prevY: 3840,
+      // 2026-06-10: was (3840, 3840) — the OLD world center from the 7680px
+      // map era, stranding NPC-mode players in an empty southwest field. The
+      // world is 11520×11520 now; spawn at the canonical avatar spawn
+      // (5760, 6300) — town center, 140wu south of Nori (game.ts
+      // avatarPositionRef uses the same point).
+      x: 5760, y: 6300,
+      prevX: 5760, prevY: 6300,
       ts: 0, tsDelta: 200,
       direction: 'idle',
       // 2026-04-25: NPC-mode default flipped from 'lobster' to 'milady_official_1'
