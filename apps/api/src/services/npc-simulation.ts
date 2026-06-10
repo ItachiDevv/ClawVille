@@ -1774,12 +1774,13 @@ class NpcSimulation {
           // stop-stand-turn-around rhythm the user flagged. Now 60% of
           // arrivals chain into the next leg after a natural beat
           // (0.4–0.8s); 40% keep a shorter believable pause (2–5s).
-          // +1 on both bands: handleActivityDurations runs BEFORE
-          // planNpcBehaviors in the same tick, so the cooldown set here is
-          // decremented once immediately (Codex finding) — these values give
-          // an ACTUAL beat of 2–4 ticks (0.4–0.8s) / pause of 2–5s.
+          // 60% of wander arrivals chain IMMEDIATELY into the next leg
+          // (cooldown 1 = replan this same tick after the decrement) — with
+          // heading-cone continuity the stroll flows through the turn with no
+          // visible stop. The 0.4–0.8s "beat" variant read as constant
+          // stop-start stutter (user 2026-06-10). 40% keep a real 2–5s pause.
           npc.behaviorCooldown = Math.random() < 0.6
-            ? 3 + Math.floor(Math.random() * 3)
+            ? 1
             : 11 + Math.floor(Math.random() * 15);
         }
       }
@@ -1859,18 +1860,47 @@ class NpcSimulation {
 
       // World mode: follow A* path
       if (npc.path.length > 0 && npc.pathIndex < npc.path.length) {
-        const wp = npc.path[npc.pathIndex];
-        const dx = wp.x - npc.x; const dy = wp.y - npc.y;
+        // Consume the FULL per-tick step across waypoint boundaries
+        // (2026-06-10 — the server-cadence root cause). The old code burned
+        // an entire 200ms tick on every `dist < 4` waypoint arrival (index
+        // advance, ZERO movement that tick). A* waypoints arrive every 3–5
+        // ticks of travel, so ~1/3 of walking ticks emitted no position —
+        // measured live as ~2.5–3.3Hz effective cadence / a walking NPC
+        // frozen 38% of its screen time ("NPCs move in spurts"). Walk the
+        // tick's distance along the path polyline through as many waypoints
+        // as it covers, then run the SAME collision pipeline as before on
+        // the single final desired point.
+        let walkRemaining = baseStep;
+        let walkX = npc.x;
+        let walkY = npc.y;
+        let walkIdx = npc.pathIndex;
+        let guard = 0;
+        while (walkIdx < npc.path.length && walkRemaining > 0.001 && guard++ < 64) {
+          const wpt = npc.path[walkIdx];
+          const sdx = wpt.x - walkX; const sdy = wpt.y - walkY;
+          const segDist = Math.sqrt(sdx * sdx + sdy * sdy);
+          if (segDist <= walkRemaining || segDist < 4) {
+            walkX = wpt.x; walkY = wpt.y;
+            walkRemaining -= segDist;
+            walkIdx++;
+          } else {
+            walkX += (sdx / segDist) * walkRemaining;
+            walkY += (sdy / segDist) * walkRemaining;
+            walkRemaining = 0;
+          }
+        }
+        const dx = walkX - npc.x; const dy = walkY - npc.y;
         const dist = Math.sqrt(dx * dx + dy * dy);
 
-        if (dist < 4) {
-          npc.pathIndex++;
+        if (dist < 0.5) {
+          // Degenerate path remainder (all waypoints within rounding) —
+          // treat as arrival, same as the old dist<4 terminal branch.
+          npc.pathIndex = walkIdx;
           if (npc.pathIndex >= npc.path.length) npc.direction = 'idle';
           npc.stuckTicks = 0;
         } else {
-          const step = Math.min(baseStep, dist);
-          const desiredX = npc.x + (dx / dist) * step;
-          const desiredY = npc.y + (dy / dist) * step;
+          const desiredX = walkX;
+          const desiredY = walkY;
 
           // AABB world-collider clamp — convert game-px to world-space, clamp,
           // then convert back. entityHalf=30 (NPC capsule half-width in wu).
@@ -1917,7 +1947,21 @@ class NpcSimulation {
             npc.behaviorCooldown = 5 + Math.floor(Math.random() * 10);
             npc.stuckTicks = 0;
           } else {
-            npc.direction = Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'right' : 'left') : (dy > 0 ? 'down' : 'up');
+            // Commit the waypoints consumed by this tick's polyline walk —
+            // but ONLY if the clamp applied the full move. A shaved move means
+            // the NPC is short of the consumed waypoints; advancing the index
+            // anyway would straight-line toward a later waypoint next tick and
+            // cut the corner the path was routing around. Keep the old index
+            // (retry the same waypoint) in that case — old-code semantics.
+            const shavedDx = npc.x - desiredX; const shavedDy = npc.y - desiredY;
+            if (shavedDx * shavedDx + shavedDy * shavedDy < 1) {
+              npc.pathIndex = walkIdx;
+            }
+            if (npc.pathIndex >= npc.path.length) {
+              npc.direction = 'idle';
+            } else {
+              npc.direction = Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'right' : 'left') : (dy > 0 ? 'down' : 'up');
+            }
           }
         }
       } else if (npc.activity === 'idle' && npc.path.length === 0) {
