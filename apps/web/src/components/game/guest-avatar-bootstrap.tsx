@@ -43,7 +43,15 @@ export function GuestAvatarBootstrap() {
       const result = await ensureGuestAvatar();
       if (!result) return; // 429 or network error — silent
       // Force a refetch so the player-avatar 3D component picks up the new avatar.
-      await queryClient.invalidateQueries({ queryKey: ['avatar'] });
+      // ALSO refetch auth-me (2026-06-10, Codex finding): the guest mint creates
+      // a guest user server-side, but a previously-cached `null` auth-me left
+      // `isGuest` reading false on /game — so the explore→player promotion
+      // gate (`!isGuest`) didn't see the guest and still hijacked the mode.
+      // Both caches must agree before the avatar-sync effect runs.
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['avatar'] }),
+        queryClient.invalidateQueries({ queryKey: ['auth-me'] }),
+      ]);
       // Welcome toast — only show when we ACTUALLY minted a guest (not when
       // the server reused an existing session).
       if (!result.reused && result.user.isGuest) {
