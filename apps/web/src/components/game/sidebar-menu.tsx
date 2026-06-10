@@ -1160,7 +1160,11 @@ export default function SidebarMenu() {
         style={{
           display: 'flex',
           flexDirection: 'column',
-          maxHeight: 'calc(100vh - 72px)',
+          // 2026-06-10: shortened from calc(100vh - 72px) to free a slot
+          // UNDER the sidebar for the icon-only Controls + Language row
+          // (44px + gaps), which previously floated over the inventory
+          // (language, bottom-left) and in dead space (controls, right:260).
+          maxHeight: 'calc(100vh - 140px)',
           overflow: 'hidden',
         }}
       >

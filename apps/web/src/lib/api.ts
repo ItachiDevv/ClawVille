@@ -192,6 +192,18 @@ export const api = {
       reason?: 'no_bot' | 'expired';
     }>('/api/auth/me/agent-session'),
 
+  translateGameText: (
+    targetLocale: string,
+    entries: Array<{ id?: string; text: string }>,
+  ) =>
+    honoRequest<{
+      targetLocale: string;
+      translations: Array<{ id?: string; text: string }>;
+    }>('/api/i18n/translate', {
+      method: 'POST',
+      body: JSON.stringify({ targetLocale, entries }),
+    }),
+
   // Phase 6.7.5 — claim guest cove history rows for the current Lucia
   // session. Called from the signup success path. Idempotent — repeat
   // calls for the same fp_hash return claimed=0.
@@ -261,7 +273,7 @@ export const api = {
     ),
 
   // Transient world-NPC chat — used by TalkToCharacterBar in NPC mode.
-  // Stateless one-shot Gemini; no Eliza, no DB writes. Client owns history.
+  // Stateless one-shot OpenAI; no Eliza, no DB writes. Client owns history.
   sendTransientChat: (
     characterName: string,
     message: string,

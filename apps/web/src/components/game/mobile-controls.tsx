@@ -1,9 +1,10 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef, type PointerEvent as ReactPointerEvent } from 'react';
 import type { JoystickManager } from 'nipplejs';
 import { useIsMobile } from '@/hooks/use-is-mobile';
 import { useGameStore } from '@/stores/game';
+import { setJumpPressed } from '@/lib/three/jump-state';
 
 export default function MobileControls() {
   const isMobile = useIsMobile();
@@ -26,8 +27,29 @@ export default function MobileControls() {
 
   // Explore mode = pure spectator with no character — no movement joystick, no building entry
   const isExplore = controlMode === 'explore';
+  const canJump = controlMode === 'player' || controlMode === 'npc';
   // Joysticks hidden entirely while a chat panel is open.
   const hideControls = chatActive;
+
+  useEffect(() => {
+    if (!isMobile || movementFrozen || hideControls || !canJump) {
+      setJumpPressed(false);
+    }
+  }, [canJump, hideControls, isMobile, movementFrozen]);
+
+  const handleJumpPress = useCallback((event: ReactPointerEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setJumpPressed(true);
+  }, []);
+
+  const handleJumpRelease = useCallback((event: ReactPointerEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    setJumpPressed(false);
+  }, []);
 
   // Left joystick — movement/pan. In explore mode it drives the free-roam spectator
   // camera via WASDCameraController (World3DCanvas.tsx) reading joystickVelocity.
@@ -189,6 +211,29 @@ export default function MobileControls() {
 
       {/* Building enter is now owned by the bottom-center floating prompt
           in `location-hud.tsx` (single source of truth, bigger tap target). */}
+      {!movementFrozen && canJump && (
+        <button
+          type="button"
+          aria-label="Jump. Hold to charge, release to launch."
+          onPointerDown={handleJumpPress}
+          onPointerUp={handleJumpRelease}
+          onPointerCancel={handleJumpRelease}
+          onLostPointerCapture={() => setJumpPressed(false)}
+          onContextMenu={(event) => event.preventDefault()}
+          className="absolute right-5 z-10 flex h-16 w-16 select-none flex-col items-center justify-center rounded-full border border-cyan-200/60 bg-cyan-500/90 text-white shadow-[0_0_24px_rgba(34,211,238,0.45)] backdrop-blur-md active:translate-y-0.5 active:bg-cyan-400"
+          style={{
+            bottom: 'clamp(7rem, 38vw, 10.5rem)',
+            right: 'max(calc(env(safe-area-inset-right, 0px) + 18px), 18px)',
+            touchAction: 'none',
+            WebkitUserSelect: 'none',
+          }}
+        >
+          <span className="text-[10px] font-black uppercase tracking-[0.18em] text-cyan-950/70">
+            Hold
+          </span>
+          <span className="text-sm font-black leading-none">Jump</span>
+        </button>
+      )}
     </div>
   );
 }

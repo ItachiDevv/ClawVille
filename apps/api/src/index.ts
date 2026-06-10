@@ -9,6 +9,7 @@ import { userRoutes } from './routes/users';
 import { locationRoutes } from './routes/locations';
 import { chatRoutes } from './routes/chat';
 import { transientChatRoutes } from './routes/chat-transient';
+import { i18nRoutes } from './routes/i18n';
 import { itemRoutes } from './routes/items';
 import { npcRoutes } from './routes/npc-sse';
 import { worldRoutes } from './routes/world';
@@ -184,9 +185,13 @@ app.route('/api/locations', chatRoutes);
 // first mount above; nothing moves. Both mounts share the same handler map.
 app.route('/api/chat', chatRoutes);
 // Transient world-NPC chat — POST /api/chat/transient. Stateless one-shot
-// Gemini for NPC mode (controlMode === 'npc') talking to nearby wanderers.
+// OpenAI for NPC mode (controlMode === 'npc') talking to nearby wanderers.
 // No Eliza, no rooms, no DB writes. See routes/chat-transient.ts for why.
 app.route('/api/chat/transient', transientChatRoutes);
+// Game-wide UI translation — POST /api/i18n/translate. Batch translates visible
+// /game DOM strings through OpenAI so language support is a page-level surface,
+// not a one-off NPC-response hook.
+app.route('/api/i18n', i18nRoutes);
 app.route('/api/items', itemRoutes);
 app.route('/api/cosmetics', cosmeticsRoutes);
 app.route('/api/dash-auth', dashAuthRoutes);
