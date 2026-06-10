@@ -212,27 +212,19 @@ function useAdaptiveWorldPerfFlags(perfFlags?: Partial<WorldPerfFlags>): WorldPe
   return tieredFlagsEnabled ? applyQualityTier(base, qualityTier) : base;
 }
 
-function AdaptiveRendererDpr() {
-  const { gl } = useThree();
-  const lastDprRef = useRef<number | null>(null);
-
-  useFrame(({ clock }) => {
-    const frame = Math.floor(clock.elapsedTime * 60);
-    if (frame % 30 !== 0) return;
-    // Keep adaptive quality tiers from lowering render resolution. The tier-4
-    // 0.4 DPR clamp recovered FPS, but normal play became visibly soft.
-    const targetDpr =
-      LOW_END_GPU_DETECTED || isTouchDevice
-        ? LOW_END_DPR_RANGE[1]
-        : STANDARD_DPR_RANGE[1];
-    if (lastDprRef.current !== targetDpr) {
-      gl.setPixelRatio(targetDpr);
-      lastDprRef.current = targetDpr;
-    }
-  });
-
-  return null;
-}
+// AdaptiveRendererDpr was DELETED 2026-06-10. It pinned DPR via a direct
+// gl.setPixelRatio() call ~0.5s after first paint to counteract the (now
+// removed) tier-4 DPR clamp. On the real WebGPU backend, setPixelRatio
+// unconditionally calls setSize → WebGPUBackend.updateSize(), reconfiguring
+// the swapchain OUTSIDE R3F's resize path — blanking the canvas until a
+// manual window resize re-syncs it (the "blue until resize" bug; the
+// forceWebGpuFirstPaint nudge had already fired by then and could not help).
+// Nothing lowers DPR at runtime anymore (governor is groundCover-only), so
+// the guard had no remaining purpose. NEVER call gl.setPixelRatio or
+// gl.setSize directly on the WebGPU backend after first paint — go through
+// R3F's state.setSize/setDpr, or don't resize at all. (Sole exemption:
+// forceWebGpuFirstPaint below, which syncs state.setSize FIRST and then
+// refreshes the swapchain — that ordering is what makes it safe.)
 
 // ---------------------------------------------------------------------------
 // WASD Camera Controller (arena/spectator mode only)
@@ -1133,7 +1125,6 @@ const SceneContents = memo(function SceneContents({
           R3F runs useFrame hooks in mount order; hoisting here ensures every
           consumer reads current-frame heightOffset, not the prior frame's stale value. */}
       <JumpTicker />
-      <AdaptiveRendererDpr />
 
       {/* Single DOM overlay for all world-space labels (NPC names, building labels,
           speech bubbles). Replaces 30+ per-instance drei <Html> portals.
