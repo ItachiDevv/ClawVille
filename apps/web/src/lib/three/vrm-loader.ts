@@ -135,6 +135,68 @@ const VRM_PARSE_CONCURRENCY = 1;
 const VRM_PARSE_QUEUE: Array<() => void> = [];
 let vrmParseActive = 0;
 
+// ---------------------------------------------------------------------------
+// Generation counters — dispose-while-pending race fix (punch list items 1–4)
+// ---------------------------------------------------------------------------
+//
+// Each (path, instanceId) pair has a monotonically-increasing generation number.
+// Cancellation is bound to the TASK (its generation), not the key string.
+//
+// Protocol:
+//   - When a new load starts: gen = (VRM_LOAD_GEN.get(cacheKey) ?? 0) + 1;
+//     VRM_LOAD_GEN.set(cacheKey, gen); pass gen into loadInstance/enqueueVRMParse.
+//   - When disposeVRMInstance is called on a pending entry: increment the
+//     generation counter — this "invalidates" all in-flight and queued tasks for
+//     this cacheKey without touching any future tasks. No token to delete.
+//   - Runner cancellation check: compares gen against VRM_LOAD_GEN.get(cacheKey).
+//     If they diverge the task is stale; reject without parse. No CANCELLED set
+//     to mis-route (items 1/4 fix: priority-remount and parse-error can no
+//     longer consume a token that belongs to a different task).
+//   - Post-parse guard: same generation check, then the existing
+//     currentEntry.status !== 'pending' defensive check.
+//   - catch handlers in useVRMInstance/loadVRMInstance: identity-guarded so a
+//     stale load's rejection can NEVER re-insert or clobber a newer entry
+//     (items 1/2/3 fix). A cancellation rejection writes nothing; a genuine
+//     parse error writes 'rejected' only when the entry still belongs to THIS
+//     load's promise.
+const VRM_LOAD_GEN = new Map<string, number>();
+
+// ---------------------------------------------------------------------------
+// Priority lane — player-avatar parse always jumps the queue (punch list 2)
+// ---------------------------------------------------------------------------
+//
+// The player avatar uses the stable instanceId 'player-avatar' (confirmed in
+// player-avatar.tsx line ~297: useVRMInstance(reg.path, 'player-avatar')).
+// Any cacheKey ending with '#player-avatar' is given priority=true so its
+// parse task is unshifted to the FRONT of VRM_PARSE_QUEUE instead of pushed
+// to the back. This prevents the player from waiting behind all 12+ wandering
+// NPC parses (measured 19s worst case on Iris Xe).
+const PLAYER_INSTANCE_ID = 'player-avatar';
+
+// ---------------------------------------------------------------------------
+// Metrics gating — evaluate once at module init (punch list 3)
+// ---------------------------------------------------------------------------
+//
+// Collecting VRMSceneCounts runs two full traversals (before + after
+// normalise) and Object.values over every material — non-trivial work on
+// Iris Xe for a 13-VRM scene. Gate the traversals AND the window array writes
+// behind a module-level flag evaluated once. Active when:
+//   (a) location.search contains 'perf=1'  — prod URL flag
+//   (b) window.__CV_PERF_HARNESS__ === true — set by the browser harness
+//       via evaluateOnNewDocument BEFORE page scripts run
+// In all other cases (normal /game session) the timing bookkeeping still runs
+// (cheap performance.now() deltas) but the scene-count traversals are skipped
+// and window.__CV_VRM_LOAD_METRICS is not written.
+export const VRM_METRICS_ENABLED: boolean = (() => {
+  if (typeof window === 'undefined') return false;
+  if ((window as unknown as Record<string, unknown>).__CV_PERF_HARNESS__ === true) return true;
+  try {
+    return new URLSearchParams(location.search).get('perf') === '1';
+  } catch {
+    return false;
+  }
+})();
+
 type VRMSceneCounts = {
   objects: number;
   meshes: number;
@@ -234,15 +296,37 @@ function pumpVRMParseQueue(): void {
   }
 }
 
-function enqueueVRMParse<T>(task: () => Promise<T>): Promise<T> {
+type EnqueueOptions = { priority?: boolean; cacheKey?: string; gen?: number };
+
+function enqueueVRMParse<T>(task: () => Promise<T>, opts?: EnqueueOptions): Promise<T> {
   return new Promise<T>((resolve, reject) => {
-    VRM_PARSE_QUEUE.push(() => {
+    const cacheKey = opts?.cacheKey;
+    const gen = opts?.gen;
+    const runner = () => {
+      // Generation-based cancellation check: if the generation recorded at
+      // enqueue time no longer matches the current generation for this cacheKey,
+      // this task is stale (disposeVRMInstance incremented the counter while
+      // this task was queued). Reject without parsing — the identity-guarded
+      // catch in useVRMInstance/loadVRMInstance will skip the 'rejected' write
+      // because the entry was deleted (or replaced) by disposeVRMInstance.
+      // Do NOT increment vrmParseActive — we skipped the actual parse work.
+      if (cacheKey !== undefined && gen !== undefined && VRM_LOAD_GEN.get(cacheKey) !== gen) {
+        reject(new Error(`[vrm-loader] parse cancelled (stale gen) for ${cacheKey}`));
+        // Pump the queue so the next task starts without waiting for an idle cb.
+        scheduleNextVRMParse();
+        return;
+      }
       vrmParseActive++;
       task().then(resolve, reject).finally(() => {
         vrmParseActive--;
         scheduleNextVRMParse();
       });
-    });
+    };
+    if (opts?.priority) {
+      VRM_PARSE_QUEUE.unshift(runner);
+    } else {
+      VRM_PARSE_QUEUE.push(runner);
+    }
     pumpVRMParseQueue();
   });
 }
@@ -366,11 +450,18 @@ function normaliseVRM(vrm: VRM): VRMNormaliseTimings {
 // Per-instance parse
 // ---------------------------------------------------------------------------
 
-async function loadInstance(cacheKey: string, path: string): Promise<VRM> {
+const _EMPTY_SCENE_COUNTS: VRMSceneCounts = { objects: 0, meshes: 0, skinnedMeshes: 0, geometries: 0, materials: 0, textures: 0 };
+
+async function loadInstance(cacheKey: string, path: string, gen: number): Promise<VRM> {
   const totalStart = nowMs();
   const buffer = await fetchBytes(path);
   const fetchDone = nowMs();
   const queuedAt = nowMs();
+
+  // Determine if this is the player avatar for priority scheduling.
+  const instanceId = cacheKey.slice(path.length + 1);
+  const isPlayer = instanceId === PLAYER_INSTANCE_ID;
+
   const parsed = await enqueueVRMParse(async () => {
     const queueStart = nowMs();
     // .slice(0) gives the parser its own copy of the bytes. GLTFLoader doesn't
@@ -382,26 +473,69 @@ async function loadInstance(cacheKey: string, path: string): Promise<VRM> {
     const parseDone = nowMs();
     const vrm: VRM | undefined = (gltf as unknown as { userData: { vrm?: VRM } }).userData.vrm;
     if (!vrm) throw new Error(`[vrm-loader] No VRM data in ${path}`);
-    const sceneBefore = collectVRMSceneCounts(vrm.scene);
+    // Gate scene-count traversals behind the metrics flag to avoid double
+    // full-tree traversal on every production VRM load.
+    const sceneBefore = VRM_METRICS_ENABLED ? collectVRMSceneCounts(vrm.scene) : _EMPTY_SCENE_COUNTS;
     const normalise = normaliseVRM(vrm);
     const normaliseDone = nowMs();
-    const sceneAfter = collectVRMSceneCounts(vrm.scene);
+    const sceneAfter = VRM_METRICS_ENABLED ? collectVRMSceneCounts(vrm.scene) : _EMPTY_SCENE_COUNTS;
     return { vrm, queueStart, sliceDone, parseDone, normaliseDone, sceneBefore, sceneAfter, normalise };
-  });
-  pushVRMLoadMetric({
-    path,
-    instanceId: cacheKey.slice(path.length + 1),
-    bytes: buffer.byteLength,
-    fetchWaitMs: roundMs(fetchDone - totalStart),
-    queueWaitMs: roundMs(parsed.queueStart - queuedAt),
-    sliceMs: roundMs(parsed.sliceDone - parsed.queueStart),
-    parseMs: roundMs(parsed.parseDone - parsed.sliceDone),
-    normaliseMs: roundMs(parsed.normaliseDone - parsed.parseDone),
-    totalMs: roundMs(parsed.normaliseDone - totalStart),
-    sceneBefore: parsed.sceneBefore,
-    sceneAfter: parsed.sceneAfter,
-    normalise: parsed.normalise,
-  });
+  }, { priority: isPlayer, cacheKey, gen });
+
+  // Post-parse generation / stale-entry guard.
+  //
+  // Two cases require deep-disposing the parsed VRM without writing 'resolved':
+  //
+  //   (A) Generation mismatch: disposeVRMInstance was called while parseAsync
+  //       was in flight (race window up to ~19s on Iris Xe), incrementing the
+  //       generation counter for this cacheKey. Our `gen` no longer matches
+  //       VRM_LOAD_GEN.get(cacheKey). The entry was deleted from VRM_INSTANCES
+  //       by disposeVRMInstance; writing 'resolved' here would resurrect an
+  //       orphaned VRM that will never be disposed.
+  //
+  //   (B) Entry mismatch (re-mount during parse): disposeVRMInstance was called
+  //       AND useVRMInstance re-mounted the same (path, instanceId) before this
+  //       parse finished. The new load incremented the generation again and
+  //       created a fresh pending entry. The generation check already catches
+  //       this; the currentEntry.status !== 'pending' check below is a further
+  //       defensive guard for any edge case where generation matches but the
+  //       entry was settled by another path.
+  //
+  // Only write 'resolved' when our generation still matches AND the entry is
+  // still 'pending'. The identity-guarded catch in callers (useVRMInstance and
+  // loadVRMInstance) ensures that the throw below does NOT clobber the new
+  // pending entry — the catch only writes 'rejected' when cur.promise === promise.
+  if (VRM_LOAD_GEN.get(cacheKey) !== gen) {
+    try { VRMUtils.deepDispose(parsed.vrm.scene); } catch { /* ignore */ }
+    // Throw so the caller's catch fires. The identity-guarded catch skips the
+    // 'rejected' write because the entry was deleted or replaced; this is safe.
+    throw new Error(`[vrm-loader] parse completed after dispose (stale gen) for ${cacheKey}`);
+  }
+
+  // Defensive: entry must still be pending (not already settled by another path).
+  const currentEntry = VRM_INSTANCES.get(cacheKey);
+  if (!currentEntry || currentEntry.status !== 'pending') {
+    try { VRMUtils.deepDispose(parsed.vrm.scene); } catch { /* ignore */ }
+    throw new Error(`[vrm-loader] entry gone or already settled for ${cacheKey}`);
+  }
+
+  if (VRM_METRICS_ENABLED) {
+    pushVRMLoadMetric({
+      path,
+      instanceId,
+      bytes: buffer.byteLength,
+      fetchWaitMs: roundMs(fetchDone - totalStart),
+      queueWaitMs: roundMs(parsed.queueStart - queuedAt),
+      sliceMs: roundMs(parsed.sliceDone - parsed.queueStart),
+      parseMs: roundMs(parsed.parseDone - parsed.sliceDone),
+      normaliseMs: roundMs(parsed.normaliseDone - parsed.parseDone),
+      totalMs: roundMs(parsed.normaliseDone - totalStart),
+      sceneBefore: parsed.sceneBefore,
+      sceneAfter: parsed.sceneAfter,
+      normalise: parsed.normalise,
+    });
+  }
+
   VRM_INSTANCES.set(cacheKey, { status: 'resolved', vrm: parsed.vrm });
   return parsed.vrm;
 }
@@ -428,11 +562,27 @@ export function useVRMInstance(path: string, instanceId: string): VRM {
   const entry = VRM_INSTANCES.get(cacheKey);
 
   if (!entry) {
-    const promise = loadInstance(cacheKey, path).catch((err) => {
-      VRM_INSTANCES.set(cacheKey, { status: 'rejected', error: err });
+    // Assign and record the generation BEFORE creating the pending entry so
+    // that the entry identity check in the catch can reference `pendingEntry`.
+    const gen = (VRM_LOAD_GEN.get(cacheKey) ?? 0) + 1;
+    VRM_LOAD_GEN.set(cacheKey, gen);
+    // Create the pending entry first so we can use its identity in the catch.
+    const pendingEntry: Extract<InstanceEntry, { status: 'pending' }> = {
+      status: 'pending',
+      // promise is assigned below; TypeScript needs the field to exist.
+      promise: null as unknown as Promise<VRM>,
+    };
+    const promise = loadInstance(cacheKey, path, gen).catch((err) => {
+      // Identity guard: only write 'rejected' if this load still owns the
+      // entry. A stale catch (cancelled or clobbered by re-mount) must NOT
+      // re-insert or overwrite the new pending entry.
+      if (VRM_INSTANCES.get(cacheKey) === pendingEntry) {
+        VRM_INSTANCES.set(cacheKey, { status: 'rejected', error: err });
+      }
       throw err;
     });
-    VRM_INSTANCES.set(cacheKey, { status: 'pending', promise });
+    pendingEntry.promise = promise;
+    VRM_INSTANCES.set(cacheKey, pendingEntry);
     throw promise;
   }
 
@@ -454,11 +604,27 @@ export function loadVRMInstance(instanceId: string, path: string): Promise<VRM> 
     if (entry.status === 'rejected') return Promise.reject(entry.error);
     return entry.promise;
   }
-  const promise = loadInstance(cacheKey, path).catch((err) => {
-    VRM_INSTANCES.set(cacheKey, { status: 'rejected', error: err });
+  // Assign and record the generation BEFORE creating the pending entry so
+  // that the entry identity check in the catch can reference `pendingEntry`.
+  const gen = (VRM_LOAD_GEN.get(cacheKey) ?? 0) + 1;
+  VRM_LOAD_GEN.set(cacheKey, gen);
+  // Create the pending entry first so we can use its identity in the catch.
+  const pendingEntry: Extract<InstanceEntry, { status: 'pending' }> = {
+    status: 'pending',
+    // promise is assigned below; TypeScript needs the field to exist.
+    promise: null as unknown as Promise<VRM>,
+  };
+  const promise = loadInstance(cacheKey, path, gen).catch((err) => {
+    // Identity guard: only write 'rejected' if this load still owns the
+    // entry. A stale catch (cancelled or clobbered by re-mount) must NOT
+    // re-insert or overwrite the new pending entry.
+    if (VRM_INSTANCES.get(cacheKey) === pendingEntry) {
+      VRM_INSTANCES.set(cacheKey, { status: 'rejected', error: err });
+    }
     throw err;
   });
-  VRM_INSTANCES.set(cacheKey, { status: 'pending', promise });
+  pendingEntry.promise = promise;
+  VRM_INSTANCES.set(cacheKey, pendingEntry);
   return promise;
 }
 
@@ -483,6 +649,21 @@ export function disposeVRMInstance(path: string, instanceId: string): void {
       // deepDispose can throw on partially-loaded scenes; swallow so the
       // cache entry is always evicted (preventing leaks even on dispose error).
     }
+  } else if (entry.status === 'pending') {
+    // Increment the generation counter for this cacheKey. This "invalidates"
+    // the in-flight or queued parse task — the runner's generation check
+    // (VRM_LOAD_GEN.get(cacheKey) !== gen) will reject it without parsing,
+    // and loadInstance's post-parse guard will deepDispose any result that
+    // slipped through. The increment is idempotent under double-dispose.
+    //
+    // A re-mount of the same (path, instanceId) BEFORE the queued parse runs
+    // will record a NEW generation, and the new task's gen will again match
+    // the current counter — the stale task's gen will still be lower.
+    VRM_LOAD_GEN.set(cacheKey, (VRM_LOAD_GEN.get(cacheKey) ?? 0) + 1);
+    // Entry is evicted now. The pending promise will reject (stale-gen error),
+    // which is harmless — the consumer component has already unmounted, and
+    // the identity-guarded catch in useVRMInstance/loadVRMInstance will NOT
+    // write 'rejected' because the entry no longer exists.
   }
   VRM_INSTANCES.delete(cacheKey);
 }

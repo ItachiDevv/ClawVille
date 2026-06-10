@@ -53,8 +53,12 @@ const _locCamPos = new THREE.Vector3();
 // Fidelity-preserving resident streaming: do not replace far characters with
 // capsules/cylinders. Far residents simply do not mount their real GLB until
 // the camera is close enough for them to matter.
-const RESIDENT_STREAM_IN_DIST_SQ = 2_600 * 2_600;
-const RESIDENT_STREAM_OUT_DIST_SQ = 3_200 * 3_200;
+//
+// Thresholds raised from 2600/3200 wu to 4600/5200 wu so the entire building ring
+// (~4160 wu radius) mounts from spawn at town center. The old values were smaller
+// than the ring radius, so zero resident teachers mounted on load.
+const RESIDENT_STREAM_IN_DIST_SQ = 4_600 * 4_600;
+const RESIDENT_STREAM_OUT_DIST_SQ = 5_200 * 5_200;
 const RESIDENT_STREAM_CHECK_FRAMES = 12;
 
 // Sanity bounds for computeNormalizedScale. Some GLBs have broken bounding boxes
@@ -406,6 +410,9 @@ const NpcMesh = memo(function NpcMesh({
   // (Pearl Krabs has 5: Walk / Breathing Idle / Standard Run / Jump / Breakdance).
   // Null for un-rigged GLBs (most of the canonical SpongeBob cast + Flying Dutchman).
   const mixerRef = useRef<THREE.AnimationMixer | null>(null);
+  // Real incrementing frame counter — avoids Math.floor(clock.elapsedTime * 60) which
+  // drifts when the tab is backgrounded or the refresh rate varies.
+  const npcFrameCountRef = useRef(0);
   const { scene: threeScene } = useThree();
 
   // WorldLabelsOverlay label — distance-faded wordmark for primary NPCs.
@@ -578,7 +585,8 @@ const NpcMesh = memo(function NpcMesh({
 
     // Re-raycast terrain Y periodically (not just once) to handle late terrain loading.
     // Stagger by seedBase so NPCs don't all spike CPU on the same frame.
-    const frame = Math.floor(clock.elapsedTime * 60);
+    npcFrameCountRef.current += 1;
+    const frame = npcFrameCountRef.current;
     if (!placed.current || (frame + seedBase) % 20 === 0) {
       const y = getTerrainY(worldX, worldZ, threeScene);
       if (y > -100) {
@@ -741,6 +749,9 @@ const LocationNpc = memo(function LocationNpc({
   const config = LOCATION_NPCS[zoneId];
   const { camera } = useThree();
   const [mounted, setMounted] = useState(false);
+  // Real incrementing frame counter — replaces Math.floor(clock.elapsedTime * 60)
+  // which drifted when the tab was backgrounded or the frame rate varied.
+  const frameCountRef = useRef(0);
 
   useEffect(() => {
     const dx = worldX - camera.position.x;
@@ -748,8 +759,9 @@ const LocationNpc = memo(function LocationNpc({
     setMounted(dx * dx + dz * dz <= RESIDENT_STREAM_IN_DIST_SQ);
   }, [camera, worldX, worldZ]);
 
-  useFrame(({ camera: frameCamera, clock }) => {
-    const frame = Math.floor(clock.elapsedTime * 60);
+  useFrame(({ camera: frameCamera }) => {
+    frameCountRef.current += 1;
+    const frame = frameCountRef.current;
     if ((frame + seed) % RESIDENT_STREAM_CHECK_FRAMES !== 0) return;
 
     const dx = worldX - frameCamera.position.x;
