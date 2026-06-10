@@ -142,6 +142,42 @@ const NPC_SCALE_CLAMP_MIN = TARGET_NPC_HEIGHT / 200; // ~0.225
 const NPC_SCALE_CLAMP_MAX = TARGET_NPC_HEIGHT / 0.5; // 90
 const NPC_LOD_NEAR_DIST_SQ = 2_500 * 2_500;
 const NPC_LOD_FAR_DIST_SQ = 5_000 * 5_000;
+
+/**
+ * Controlled-NPC-style movement for server-authoritative entities
+ * (2026-06-10). Constant-speed per-frame integration toward the latest
+ * server position — the exact model the possessed NPC / player avatar use,
+ * so motion is continuous at any frame rate and never exposes the 5Hz
+ * snapshot tick. Speed = the entity's own server velocity (latest segment ÷
+ * snapshot gap) with a 15% catch-up bound so render lag converges instead
+ * of accumulating. Snaps on teleport-scale jumps. Demo-wander NPCs
+ * (ts === 0, client-authored every frame) render their position directly.
+ * Zero allocations — mutates the caller's scratch vector.
+ */
+function moveTowardServerTarget(
+  pos: { x: number; z: number },
+  d: NpcSpriteState,
+  dt: number,
+): void {
+  const targetX = d.x - HALF_W;
+  const targetZ = d.y - HALF_H;
+  if (d.ts === 0) { pos.x = targetX; pos.z = targetZ; return; }
+  const dx = targetX - pos.x;
+  const dz = targetZ - pos.z;
+  const dist = Math.sqrt(dx * dx + dz * dz);
+  if (dist < 0.25) return;
+  if (dist > 800) { pos.x = targetX; pos.z = targetZ; return; }
+  const segX = d.x - d.prevX;
+  const segY = d.y - d.prevY;
+  const tsDelta = d.tsDelta > 0 ? d.tsDelta : 200;
+  const serverV = Math.sqrt(segX * segX + segY * segY) / (tsDelta / 1000);
+  // Floor keeps residual distance converging across stationary segments;
+  // 1.15 catch-up bounds steady-state lag below one snapshot of distance.
+  const speed = Math.max(80, serverV) * 1.15;
+  const step = Math.min(dist, speed * dt);
+  pos.x += (dx / dist) * step;
+  pos.z += (dz / dist) * step;
+}
 const NPC_LOD_VERY_FAR_DIST_SQ = 6_000 * 6_000;
 
 // Preload deferred to after SPECIES_MODEL declaration — see below.
@@ -657,8 +693,14 @@ export const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteStat
       ? ENTITY_HALF_CHIBI
       : ENTITY_HALF_HUMANOID;
     const npcClamped = clampMovement2D(simPos.current.x, simPos.current.z, renderX, renderZ, glbNpcHalf);
-    simPos.current.x = glbIsPossessed ? npcClamped.x : renderX;
-    simPos.current.z = glbIsPossessed ? npcClamped.z : renderZ;
+    if (glbIsPossessed) {
+      simPos.current.x = npcClamped.x;
+      simPos.current.z = npcClamped.z;
+    } else {
+      // Controlled-NPC-style constant-speed integration — see
+      // moveTowardServerTarget + the VRMNpcMesh mirror site.
+      moveTowardServerTarget(simPos.current, d, dt);
+    }
     // Track walkable surface Y for stair/ramp zones. Used below in group.position.y.
     const npcGroundY = npcClamped.groundY;
 
@@ -1105,8 +1147,19 @@ export const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteStat
     const vrmClamped = clampMovement2D(simPos.current.x, simPos.current.z, renderX, renderZ, vrmNpcHalf);
     const prevX = simPos.current.x;
     const prevZ = simPos.current.z;
-    simPos.current.x = vrmIsPossessed ? vrmClamped.x : renderX;
-    simPos.current.z = vrmIsPossessed ? vrmClamped.z : renderZ;
+    if (vrmIsPossessed) {
+      simPos.current.x = vrmClamped.x;
+      simPos.current.z = vrmClamped.z;
+    } else {
+      // CONTROLLED-NPC-STYLE MOVEMENT for server entities (2026-06-10).
+      // Constant-speed per-frame integration toward the latest server
+      // position — the exact movement model of the possessed/controlled NPC
+      // and the player avatar (continuous velocity, no snapshot ticking).
+      // Speed = the entity's own server velocity (segment length / snapshot
+      // gap) + 15% catch-up so the render never lags unboundedly. Demo-wander
+      // NPCs (ts === 0, client-side) keep direct assignment as before.
+      moveTowardServerTarget(simPos.current, d, dt);
+    }
     // Track walkable surface Y for stair/ramp zones. Used below in group.position.y.
     const vrmNpcGroundY = vrmClamped.groundY;
 
