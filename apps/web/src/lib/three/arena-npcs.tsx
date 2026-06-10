@@ -639,26 +639,28 @@ export const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteStat
     const glbPrevX = simPos.current.x;
     const glbPrevZ = simPos.current.z;
 
-    // XZ AABB collision clamp — prevents NPCs from walking inside buildings
-    // and props. Clamping AFTER entity-interpolation so visible NPC position
-    // never enters a building even if the server-side sim doesn't have walls.
-    // Wandering NPCs use simPos.current as the "from" position (previous
-    // render-frame position). clampMovement2D is zero-alloc (module-scope scratch).
-    // entityHalf: chibi-type NPCs use a smaller radius than adult humanoids.
+    // PERF: read controlMode + camera world-pos ONCE per frame, shared across
+    // every NPC (see getNpcFrameShared). Hoisted above the collision block
+    // (2026-06-10) because the clamp decision needs controlMode.
+    const shared = getNpcFrameShared(clock.elapsedTime, camera);
+    const glbIsPossessed = d.id === PLAYER_NPC_ID && shared.controlMode === 'npc';
+
+    // XZ AABB collision — POSSESSED PLAYER NPC ONLY (2026-06-10 frozen-NPC
+    // root-cause fix — full rationale at the VRMNpcMesh mirror site). The
+    // server is the collision authority for its own NPCs; client-side
+    // ejection out of the independently-authored AABB table pinned rendered
+    // NPCs at building faces while the server legally roamed inside the
+    // disputed zone (per-entity permanent-looking freezes). Only the
+    // possessed player NPC (client-authored movement) keeps the clamp.
+    // groundY (stair/ramp surface) is still read for every NPC.
     const glbNpcHalf = (npc.id.startsWith('milady-') || npc.id.startsWith('chibi-'))
       ? ENTITY_HALF_CHIBI
       : ENTITY_HALF_HUMANOID;
     const npcClamped = clampMovement2D(simPos.current.x, simPos.current.z, renderX, renderZ, glbNpcHalf);
-    simPos.current.x = npcClamped.x;
-    simPos.current.z = npcClamped.z;
+    simPos.current.x = glbIsPossessed ? npcClamped.x : renderX;
+    simPos.current.z = glbIsPossessed ? npcClamped.z : renderZ;
     // Track walkable surface Y for stair/ramp zones. Used below in group.position.y.
     const npcGroundY = npcClamped.groundY;
-
-    // PERF: read controlMode + camera world-pos ONCE per frame, shared across
-    // every NPC (see getNpcFrameShared). Collapses the two per-NPC getState()
-    // calls (push-out + isPossessedPlayerNpc) and the per-NPC camera read into
-    // a single frame-epoch-cached snapshot.
-    const shared = getNpcFrameShared(clock.elapsedTime, camera);
 
     // Entity-vs-player push-out (Phase 4 -- client-side visual correction).
     // Only active when a real player avatar is present ('player'/'npc' mode).
@@ -698,9 +700,7 @@ export const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteStat
     const glbCamDx = group.position.x - _frameCamPos.x;
     const glbCamDz = group.position.z - _frameCamPos.z;
     const glbDistSq = glbCamDx * glbCamDx + glbCamDz * glbCamDz;
-    const isPossessedPlayerNpc =
-      d.id === PLAYER_NPC_ID &&
-      shared.controlMode === 'npc';
+    const isPossessedPlayerNpc = glbIsPossessed;
     // Raycast to find terrain surface Y. Close NPCs retain the historical 20Hz
     // cadence; mid/far NPCs throttle progressively because terrain height changes
     // are visually imperceptible at distance, but the raycast still costs CPU.
@@ -1082,17 +1082,31 @@ export const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteStat
     const renderX = (d.prevX + (d.x - d.prevX) * alpha) - HALF_W;
     const renderZ = (d.prevY + (d.y - d.prevY) * alpha) - HALF_H;
 
-    // XZ AABB collision clamp for VRM NPC — mirrors GLBNpcMesh pattern.
-    // Clamp AFTER entity-interpolation so visible position never enters a building.
-    // entityHalf: chibi-type VRM NPCs use smaller radius than adult humanoids.
+    // Hoisted above the collision block (2026-06-10): the clamp decision
+    // depends on who authors this entity's movement.
+    const vrmIsPossessed = d.id === PLAYER_NPC_ID && shared.controlMode === 'npc';
+
+    // XZ AABB collision — POSSESSED PLAYER NPC ONLY (2026-06-10 frozen-NPC
+    // root-cause fix). clampMovement2D point-ejects the target out of client
+    // AABBs. For SERVER-driven NPCs that ejection is the freeze bug: the
+    // server's tile-based pathfinding is the collision authority and can
+    // legally route through spots the client's independently-authored AABB
+    // table (BUILDING_SCALE_FACTOR boxes) considers solid — while the server
+    // roams such a zone, the client pinned the rendered NPC at the AABB face
+    // every frame (label frozen, "NPCs run into buildings", per-entity
+    // permanent-looking freezes measured live on prod 2026-06-10 with the
+    // server 200–440wu away). Render server entities WHERE THE SERVER SAYS;
+    // only the possessed player NPC (client-authored input via NpcController)
+    // still needs client collision. groundY (walkable stair/ramp surface) is
+    // still read from the zero-ejection call for every NPC.
     const vrmNpcHalf = (npc.id.startsWith('milady-') || npc.id.startsWith('chibi-'))
       ? ENTITY_HALF_CHIBI
       : ENTITY_HALF_HUMANOID;
     const vrmClamped = clampMovement2D(simPos.current.x, simPos.current.z, renderX, renderZ, vrmNpcHalf);
     const prevX = simPos.current.x;
     const prevZ = simPos.current.z;
-    simPos.current.x = vrmClamped.x;
-    simPos.current.z = vrmClamped.z;
+    simPos.current.x = vrmIsPossessed ? vrmClamped.x : renderX;
+    simPos.current.z = vrmIsPossessed ? vrmClamped.z : renderZ;
     // Track walkable surface Y for stair/ramp zones. Used below in group.position.y.
     const vrmNpcGroundY = vrmClamped.groundY;
 
@@ -1135,9 +1149,7 @@ export const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteStat
     const vrmTerrainDx = group.position.x - _frameCamPos.x;
     const vrmTerrainDz = group.position.z - _frameCamPos.z;
     const vrmTerrainDistSq = vrmTerrainDx * vrmTerrainDx + vrmTerrainDz * vrmTerrainDz;
-    const isPossessedPlayerNpc =
-      d.id === PLAYER_NPC_ID &&
-      shared.controlMode === 'npc';
+    const isPossessedPlayerNpc = vrmIsPossessed;
     // Raycast terrain at distance-based cadence. Position still updates every
     // frame; only the floor-height sample is throttled for far NPCs.
     const terrainMod =
