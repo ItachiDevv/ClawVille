@@ -49,6 +49,9 @@
     <button class="tbtn" id="t-wire">Wireframe</button>
     <button class="tbtn" id="t-reset">Reset view</button>
   </div>
+  <div class="row" style="margin-top:7px">
+    <button class="tbtn" id="t-face" style="border-color:var(--accent2); color:var(--accent2)">★ Focus face — orbit/zoom pivots on the forehead</button>
+  </div>
   <div id="status"></div>
 </div>
 <div id="hint" class="panel">VRM 1.0 · rigged (Mixamo) · finalized via blender-vrm-finalize-cli</div>
@@ -152,6 +155,28 @@ function resetView() {
   controls.update();
 }
 
+// Re-target the orbit pivot onto the FACE (forehead) so scroll-zoom and drag-
+// orbit revolve around the jewelry instead of the torso. Head bone origin is at
+// the skull base, so lift the pivot ~9 cm to land on the forehead.
+function focusFace() {
+  if (!current) return;
+  current.scene.updateMatrixWorld(true);
+  const headNode = current.humanoid?.getNormalizedBoneNode?.('head')
+                || current.humanoid?.getRawBoneNode?.('head');
+  const p = new THREE.Vector3();
+  if (headNode) {
+    headNode.getWorldPosition(p);
+    p.y += 0.09;                       // skull base -> forehead
+  } else {                             // fallback: just below the bbox top
+    const box = new THREE.Box3().setFromObject(current.scene);
+    box.getCenter(p);
+    p.y = box.max.y - 0.11;
+  }
+  controls.target.copy(p);
+  camera.position.set(p.x, p.y + 0.01, p.z + 0.42);   // straight-on, ~42 cm out (+Z = front)
+  controls.update();
+}
+
 function applyWire(vrm) {
   vrm.scene.traverse((o) => { if (o.isMesh) {
     const mats = Array.isArray(o.material) ? o.material : [o.material];
@@ -199,6 +224,8 @@ const tWire = document.getElementById('t-wire');
 tRot.onclick = () => { autoRotate = !autoRotate; tRot.classList.toggle('on', autoRotate); };
 tWire.onclick = () => { wire = !wire; tWire.classList.toggle('on', wire); if (current) applyWire(current); };
 document.getElementById('t-reset').onclick = resetView;
+document.getElementById('t-face').onclick = focusFace;
+controls.minDistance = 0.05;   // allow zooming all the way into the forehead
 
 addEventListener('resize', () => {
   camera.aspect = innerWidth/innerHeight; camera.updateProjectionMatrix();
