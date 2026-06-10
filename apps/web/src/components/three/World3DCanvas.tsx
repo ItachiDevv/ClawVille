@@ -668,6 +668,30 @@ function kickRenderLoop(state: any): void {
       // hidden and RAF is throttled to 0 Hz.
       (window as any).__W3D_step = () =>
         state.advance(performance.now() / 1000, true);
+      // Minimal renderer-info accessor for the steady-state harness.
+      // Gated on VRM_METRICS_ENABLED (same flag as VRM/texture metrics).
+      // Returns a plain object snapshot — zero cost when not called.
+      // The harness samples this once per second during the steady window,
+      // not per-frame, so the function call overhead is negligible.
+      // Pattern: `window.__CV_GL_INFO?.()?.calls` — safe even if the export
+      // is absent (fallback to undefined → null).
+      if (VRM_METRICS_ENABLED) {
+        (window as any).__CV_GL_INFO = () => {
+          const info = (state.gl as any)?.info;
+          if (!info) return null;
+          return {
+            // WebGPURenderer resets render.drawCalls each frame; WebGLRenderer
+            // uses render.calls for the same per-frame counter. render.calls on
+            // WebGPU is a cumulative lifetime counter (never reset) so we must
+            // prefer drawCalls there and fall back to calls for WebGL.
+            calls:     (info.render?.drawCalls ?? info.render?.calls) ?? 0,
+            triangles: info.render?.triangles ?? 0,
+            lines:     info.render?.lines     ?? 0,
+            points:    info.render?.points    ?? 0,
+            programs:  info.programs?.length  ?? 0,
+          } as { calls: number; triangles: number; lines: number; points: number; programs: number };
+        };
+      }
       // Force the WebGPU swapchain to reconfigure so the world paints on
       // first load instead of staying blue until a manual resize.
       forceWebGpuFirstPaint(state);
