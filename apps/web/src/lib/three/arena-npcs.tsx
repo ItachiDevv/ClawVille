@@ -159,24 +159,36 @@ function moveTowardServerTarget(
   d: NpcSpriteState,
   dt: number,
 ): void {
-  const targetX = d.x - HALF_W;
-  const targetZ = d.y - HALF_H;
-  if (d.ts === 0) { pos.x = targetX; pos.z = targetZ; return; }
+  if (d.ts === 0) {
+    // Demo-wander NPCs are client-authored every frame — render directly.
+    pos.x = d.x - HALF_W;
+    pos.z = d.y - HALF_H;
+    return;
+  }
+  // DEAD-RECKONED target (the design the npc.ts docstring documents — it had
+  // regressed to a plain snapshot lerp, which is what exposed the 5Hz tick):
+  // project the latest snapshot forward along the server segment velocity by
+  // the time elapsed since it arrived, so the TARGET advances continuously
+  // between snapshots instead of sitting still while the renderer catches up
+  // and waits ("move 44wu, stop, wait" pumping — measured 17/50 dead 100ms
+  // intervals on the move-toward-latest variant). Capped at 1.25 ticks so a
+  // stalled stream doesn't extrapolate into walls.
+  const tsDelta = d.tsDelta > 0 ? d.tsDelta : 200;
+  const aheadMs = Math.min(Date.now() - d.ts, tsDelta * 1.25);
+  const targetX = d.x + ((d.x - d.prevX) / tsDelta) * aheadMs - HALF_W;
+  const targetZ = d.y + ((d.y - d.prevY) / tsDelta) * aheadMs - HALF_H;
   const dx = targetX - pos.x;
   const dz = targetZ - pos.z;
-  const dist = Math.sqrt(dx * dx + dz * dz);
-  if (dist < 0.25) return;
-  if (dist > 800) { pos.x = targetX; pos.z = targetZ; return; }
-  const segX = d.x - d.prevX;
-  const segY = d.y - d.prevY;
-  const tsDelta = d.tsDelta > 0 ? d.tsDelta : 200;
-  const serverV = Math.sqrt(segX * segX + segY * segY) / (tsDelta / 1000);
-  // Floor keeps residual distance converging across stationary segments;
-  // 1.15 catch-up bounds steady-state lag below one snapshot of distance.
-  const speed = Math.max(80, serverV) * 1.15;
-  const step = Math.min(dist, speed * dt);
-  pos.x += (dx / dist) * step;
-  pos.z += (dz / dist) * step;
+  const distSq = dx * dx + dz * dz;
+  if (distSq < 0.01) return;
+  if (distSq > 800 * 800) { pos.x = targetX; pos.z = targetZ; return; } // teleport snap
+  // Exponential pursuit of the advancing target — frame-rate independent,
+  // continuous velocity ≈ server velocity, steady-state lag ≈ v/10 (~22wu at
+  // walk speed). Snapshot-arrival corrections are absorbed smoothly instead
+  // of stepping. This is the controlled-NPC feel for a networked entity.
+  const k = 1 - Math.exp(-10 * dt);
+  pos.x += dx * k;
+  pos.z += dz * k;
 }
 const NPC_LOD_VERY_FAR_DIST_SQ = 6_000 * 6_000;
 
