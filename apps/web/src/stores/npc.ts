@@ -633,8 +633,13 @@ export const useNpcStore = create<NpcStoreState>((set, get) => ({
     const playerNpc: NpcSpriteState = {
       id: PLAYER_NPC_ID,
       name: 'You',
-      x: 3840, y: 3840, // World center (tile 120,120)
-      prevX: 3840, prevY: 3840,
+      // 2026-06-10: was (3840, 3840) — the OLD world center from the 7680px
+      // map era, stranding NPC-mode players in an empty southwest field. The
+      // world is 11520×11520 now; spawn at the canonical avatar spawn
+      // (5760, 6300) — town center, 140wu south of Nori (game.ts
+      // avatarPositionRef uses the same point).
+      x: 5760, y: 6300,
+      prevX: 5760, prevY: 6300,
       ts: 0, tsDelta: 200,
       direction: 'idle',
       // 2026-04-25: NPC-mode default flipped from 'lobster' to 'milady_official_1'
