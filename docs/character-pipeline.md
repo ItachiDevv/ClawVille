@@ -17,6 +17,10 @@
 | 8 | Manual cleanup | per-character Blender scripts (e.g. circlet/jewelry modeling) | free | See "Jewelry rule" below. Hermes needed several of these passes (weld islands, dress re-weight, skirt rig, MToon). |
 | 9 | Optimize | `assets:optimize` | free | 18.5 MB → ~2 MB (hermes-female is 1.7 MB). Bump `?v=N` on any mutated asset URL (CF edge TTL 7 days, no purge scope). |
 
+## Meshy emissive is LOAD-BEARING (learned 2026-06-10, the hard way)
+
+Meshy wires a duplicate of the base color into **Emission** — that's its baked-lighting trick. **Never remove it**: without the emissive boost the eyes sink into shadow pits and skin goes waxy (looked "horribly mangled"). Corollary: any texture retouch must be applied to **BOTH** the base-color image AND the emissive copy (`Image_3`), or the defect shines back through the emissive. New geometry added next to the body (hair pieces etc.) needs its own modest emissive (~0.35 of its base) or it reads dark beside the emissive-boosted body.
+
 ## Jewelry / fine-accessory rule
 
 Thin ornate metal (forehead circlets, diadem filigree, fine chains) does **not** survive image-to-3D — every tool melts it into a soft raised band. Re-rolling the generation does NOT fix it (fundamental limitation, not settings — don't spend credits on it). Fix: **model the accessory as real geometry in Blender** (band + pendant, gold material), weight it 100% to `mixamorig:Head`, export with the body. Never texture-repaint it — flat painted-on accessories were already rejected ("shoes are just a texture on the leg").
