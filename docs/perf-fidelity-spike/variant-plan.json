@@ -1,0 +1,355 @@
+{
+  "generatedAt": "2026-06-08T09:19:49.713Z",
+  "toktx": {
+    "available": true,
+    "mode": "wsl-local",
+    "version": "toktx v4.4.2 (WSL local)",
+    "commandPrefix": "wsl --cd /mnt/c/Users/newma/Documents/Crypto/ClawVille-perf-fidelity-spike env PATH=\"$PWD/.tools/ktx-linux/bin:$PATH\""
+  },
+  "hasToktx": true,
+  "candidates": [
+    {
+      "asset": "/avatars/milady-chibi.vrm",
+      "kind": "vrm",
+      "size": "5.57 MB",
+      "triangles": 97186,
+      "textures": 1,
+      "textureBytes": "2.25 MB",
+      "experiments": [
+        "runtime-vrm-metrics",
+        "ktx2-blocked-vrm-extension-preservation",
+        "no-combineSkeletons-without-animation-proof"
+      ],
+      "command": "bun run perf:fidelity:browser --label=vrm-milady-chibi.vrm \"--url=https://staging.clawville.world/game?perf=1\" --durationMs=30000",
+      "safetyGate": "Do not run stock gltf-transform uastc on VRM shipping files: local milady-chibi.uastc.glb lab stripped VRMC_vrm. Any VRM binary variant must preserve VRM/VRMC extensions and pass idle/walk/run/emote screenshot or video QA before a runtime swap."
+    },
+    {
+      "asset": "/avatars/eliza-chibi.vrm",
+      "kind": "vrm",
+      "size": "5.29 MB",
+      "triangles": 95712,
+      "textures": 1,
+      "textureBytes": "2.07 MB",
+      "experiments": [
+        "runtime-vrm-metrics",
+        "ktx2-blocked-vrm-extension-preservation",
+        "no-combineSkeletons-without-animation-proof"
+      ],
+      "command": "bun run perf:fidelity:browser --label=vrm-eliza-chibi.vrm \"--url=https://staging.clawville.world/game?perf=1\" --durationMs=30000",
+      "safetyGate": "Do not run stock gltf-transform uastc on VRM shipping files: local milady-chibi.uastc.glb lab stripped VRMC_vrm. Any VRM binary variant must preserve VRM/VRMC extensions and pass idle/walk/run/emote screenshot or video QA before a runtime swap."
+    },
+    {
+      "asset": "/models/cove/cove-interior-cleaned-v1.glb",
+      "kind": "glb",
+      "size": "4.81 MB",
+      "triangles": 196650,
+      "textures": 11,
+      "textureBytes": "2.47 MB",
+      "experiments": [
+        "ktx2-blocked-webp-source-needed",
+        "source-backup-uastc-lab"
+      ],
+      "command": "# Use PNG/JPEG source GLB from apps/web/public/models/.webp-backup or another pre-WebP source; do not run uastc directly on apps/web/public/models/cove/cove-interior-cleaned-v1.glb.",
+      "safetyGate": "Current GLB already uses EXT_texture_webp. Local quest-bounty lab skipped all WebP textures, removed meshopt compression, and produced a larger no-KTX output. KTX2 tests must start from PNG/JPEG source GLBs and then validate KHR_texture_basisu plus retained geometry compression policy before any runtime swap."
+    },
+    {
+      "asset": "/models/cove/cove-interior.glb",
+      "kind": "glb",
+      "size": "4.63 MB",
+      "triangles": 310422,
+      "textures": 11,
+      "textureBytes": "1.21 MB",
+      "experiments": [
+        "ktx2-blocked-webp-source-needed",
+        "source-backup-uastc-lab"
+      ],
+      "command": "# Use PNG/JPEG source GLB from apps/web/public/models/.webp-backup or another pre-WebP source; do not run uastc directly on apps/web/public/models/cove/cove-interior.glb.",
+      "safetyGate": "Current GLB already uses EXT_texture_webp. Local quest-bounty lab skipped all WebP textures, removed meshopt compression, and produced a larger no-KTX output. KTX2 tests must start from PNG/JPEG source GLBs and then validate KHR_texture_basisu plus retained geometry compression policy before any runtime swap."
+    },
+    {
+      "asset": "/models/sandy-treedome-v3-opt1.glb",
+      "kind": "glb",
+      "size": "3.52 MB",
+      "triangles": 1129041,
+      "textures": 0,
+      "textureBytes": "0 B",
+      "experiments": [
+        "meshopt-lab-only",
+        "mergeStaticMeshesByMaterial-compat-check"
+      ],
+      "command": "# Lab copy only: do not overwrite apps/web/public/models/sandy-treedome-v3-opt1.glb until mergeStaticMeshesByMaterial accepts the output accessor types.",
+      "safetyGate": "Building GLBs that enter mergeStaticMeshesByMaterial must not ship meshopt-quantized geometry until mixed accessor types are proven safe."
+    },
+    {
+      "asset": "/models/quest-bounty-pavilion.glb",
+      "kind": "glb",
+      "size": "2.11 MB",
+      "triangles": 78660,
+      "textures": 72,
+      "textureBytes": "1.48 MB",
+      "experiments": [
+        "ktx2-blocked-webp-source-needed",
+        "source-backup-uastc-lab"
+      ],
+      "command": "# Use PNG/JPEG source GLB from apps/web/public/models/.webp-backup or another pre-WebP source; do not run uastc directly on apps/web/public/models/quest-bounty-pavilion.glb.",
+      "safetyGate": "Current GLB already uses EXT_texture_webp. Local quest-bounty lab skipped all WebP textures, removed meshopt compression, and produced a larger no-KTX output. KTX2 tests must start from PNG/JPEG source GLBs and then validate KHR_texture_basisu plus retained geometry compression policy before any runtime swap."
+    },
+    {
+      "asset": "/avatars/tekk.vrm",
+      "kind": "vrm",
+      "size": "1.95 MB",
+      "triangles": 117861,
+      "textures": 3,
+      "textureBytes": "537.9 KB",
+      "experiments": [
+        "runtime-vrm-metrics",
+        "ktx2-blocked-vrm-extension-preservation",
+        "no-combineSkeletons-without-animation-proof"
+      ],
+      "command": "bun run perf:fidelity:browser --label=vrm-tekk.vrm \"--url=https://staging.clawville.world/game?perf=1\" --durationMs=30000",
+      "safetyGate": "Do not run stock gltf-transform uastc on VRM shipping files: local milady-chibi.uastc.glb lab stripped VRMC_vrm. Any VRM binary variant must preserve VRM/VRMC extensions and pass idle/walk/run/emote screenshot or video QA before a runtime swap."
+    },
+    {
+      "asset": "/avatars/phanes.vrm",
+      "kind": "vrm",
+      "size": "1.94 MB",
+      "triangles": 39999,
+      "textures": 1,
+      "textureBytes": "365.0 KB",
+      "experiments": [
+        "runtime-vrm-metrics",
+        "ktx2-blocked-vrm-extension-preservation",
+        "no-combineSkeletons-without-animation-proof"
+      ],
+      "command": "bun run perf:fidelity:browser --label=vrm-phanes.vrm \"--url=https://staging.clawville.world/game?perf=1\" --durationMs=30000",
+      "safetyGate": "Do not run stock gltf-transform uastc on VRM shipping files: local milady-chibi.uastc.glb lab stripped VRMC_vrm. Any VRM binary variant must preserve VRM/VRMC extensions and pass idle/walk/run/emote screenshot or video QA before a runtime swap."
+    },
+    {
+      "asset": "/models/chum-bucket-v2-opt1.glb",
+      "kind": "glb",
+      "size": "1.52 MB",
+      "triangles": 3936,
+      "textures": 11,
+      "textureBytes": "1.34 MB",
+      "experiments": [
+        "ktx2-blocked-webp-source-needed",
+        "source-backup-uastc-lab"
+      ],
+      "command": "# Use PNG/JPEG source GLB from apps/web/public/models/.webp-backup or another pre-WebP source; do not run uastc directly on apps/web/public/models/chum-bucket-v2-opt1.glb.",
+      "safetyGate": "Current GLB already uses EXT_texture_webp. Local quest-bounty lab skipped all WebP textures, removed meshopt compression, and produced a larger no-KTX output. KTX2 tests must start from PNG/JPEG source GLBs and then validate KHR_texture_basisu plus retained geometry compression policy before any runtime swap."
+    },
+    {
+      "asset": "/avatars/hermes-female.vrm",
+      "kind": "vrm",
+      "size": "1.62 MB",
+      "triangles": 118304,
+      "textures": 3,
+      "textureBytes": "406.3 KB",
+      "experiments": [
+        "runtime-vrm-metrics",
+        "ktx2-blocked-vrm-extension-preservation",
+        "no-combineSkeletons-without-animation-proof"
+      ],
+      "command": "bun run perf:fidelity:browser --label=vrm-hermes-female.vrm \"--url=https://staging.clawville.world/game?perf=1\" --durationMs=30000",
+      "safetyGate": "Do not run stock gltf-transform uastc on VRM shipping files: local milady-chibi.uastc.glb lab stripped VRMC_vrm. Any VRM binary variant must preserve VRM/VRMC extensions and pass idle/walk/run/emote screenshot or video QA before a runtime swap."
+    },
+    {
+      "asset": "/avatars/animations/_emotes.glb",
+      "kind": "glb",
+      "size": "2.21 MB",
+      "triangles": 0,
+      "textures": 0,
+      "textureBytes": "0 B",
+      "experiments": [
+        "meshopt-lab",
+        "runtime-render-compare"
+      ],
+      "command": "bun run scripts/compress-glb-targeted.ts apps/web/public/avatars/animations/_emotes.glb",
+      "safetyGate": "Only accept if output is smaller, renders identically, and browser metrics improve."
+    },
+    {
+      "asset": "/models/squidward-house-opt1.glb",
+      "kind": "glb",
+      "size": "1.06 MB",
+      "triangles": 2238,
+      "textures": 8,
+      "textureBytes": "960.9 KB",
+      "experiments": [
+        "ktx2-blocked-webp-source-needed",
+        "source-backup-uastc-lab"
+      ],
+      "command": "# Use PNG/JPEG source GLB from apps/web/public/models/.webp-backup or another pre-WebP source; do not run uastc directly on apps/web/public/models/squidward-house-opt1.glb.",
+      "safetyGate": "Current GLB already uses EXT_texture_webp. Local quest-bounty lab skipped all WebP textures, removed meshopt compression, and produced a larger no-KTX output. KTX2 tests must start from PNG/JPEG source GLBs and then validate KHR_texture_basisu plus retained geometry compression policy before any runtime swap."
+    },
+    {
+      "asset": "/avatars/hermes-male.vrm",
+      "kind": "vrm",
+      "size": "1.28 MB",
+      "triangles": 118782,
+      "textures": 3,
+      "textureBytes": "172.9 KB",
+      "experiments": [
+        "runtime-vrm-metrics",
+        "ktx2-blocked-vrm-extension-preservation",
+        "no-combineSkeletons-without-animation-proof"
+      ],
+      "command": "bun run perf:fidelity:browser --label=vrm-hermes-male.vrm \"--url=https://staging.clawville.world/game?perf=1\" --durationMs=30000",
+      "safetyGate": "Do not run stock gltf-transform uastc on VRM shipping files: local milady-chibi.uastc.glb lab stripped VRMC_vrm. Any VRM binary variant must preserve VRM/VRMC extensions and pass idle/walk/run/emote screenshot or video QA before a runtime swap."
+    },
+    {
+      "asset": "/models/krusty-krab-v2-opt1.glb",
+      "kind": "glb",
+      "size": "1.14 MB",
+      "triangles": 7558,
+      "textures": 20,
+      "textureBytes": "807.3 KB",
+      "experiments": [
+        "ktx2-blocked-webp-source-needed",
+        "source-backup-uastc-lab"
+      ],
+      "command": "# Use PNG/JPEG source GLB from apps/web/public/models/.webp-backup or another pre-WebP source; do not run uastc directly on apps/web/public/models/krusty-krab-v2-opt1.glb.",
+      "safetyGate": "Current GLB already uses EXT_texture_webp. Local quest-bounty lab skipped all WebP textures, removed meshopt compression, and produced a larger no-KTX output. KTX2 tests must start from PNG/JPEG source GLBs and then validate KHR_texture_basisu plus retained geometry compression policy before any runtime swap."
+    },
+    {
+      "asset": "/models/underwater-decorations.glb",
+      "kind": "glb",
+      "size": "961.9 KB",
+      "triangles": 2684,
+      "textures": 8,
+      "textureBytes": "930.1 KB",
+      "experiments": [
+        "ktx2-blocked-webp-source-needed",
+        "source-backup-uastc-lab"
+      ],
+      "command": "# Use PNG/JPEG source GLB from apps/web/public/models/.webp-backup or another pre-WebP source; do not run uastc directly on apps/web/public/models/underwater-decorations.glb.",
+      "safetyGate": "Current GLB already uses EXT_texture_webp. Local quest-bounty lab skipped all WebP textures, removed meshopt compression, and produced a larger no-KTX output. KTX2 tests must start from PNG/JPEG source GLBs and then validate KHR_texture_basisu plus retained geometry compression policy before any runtime swap."
+    },
+    {
+      "asset": "/models/patricks-rock-v2-opt1.glb",
+      "kind": "glb",
+      "size": "1012.1 KB",
+      "triangles": 3466,
+      "textures": 7,
+      "textureBytes": "858.3 KB",
+      "experiments": [
+        "ktx2-blocked-webp-source-needed",
+        "source-backup-uastc-lab"
+      ],
+      "command": "# Use PNG/JPEG source GLB from apps/web/public/models/.webp-backup or another pre-WebP source; do not run uastc directly on apps/web/public/models/patricks-rock-v2-opt1.glb.",
+      "safetyGate": "Current GLB already uses EXT_texture_webp. Local quest-bounty lab skipped all WebP textures, removed meshopt compression, and produced a larger no-KTX output. KTX2 tests must start from PNG/JPEG source GLBs and then validate KHR_texture_basisu plus retained geometry compression policy before any runtime swap."
+    },
+    {
+      "asset": "/avatars/milady-official-5.vrm",
+      "kind": "vrm",
+      "size": "643.0 KB",
+      "triangles": 13604,
+      "textures": 5,
+      "textureBytes": "450.0 KB",
+      "experiments": [
+        "runtime-vrm-metrics",
+        "ktx2-blocked-vrm-extension-preservation",
+        "no-combineSkeletons-without-animation-proof"
+      ],
+      "command": "bun run perf:fidelity:browser --label=vrm-milady-official-5.vrm \"--url=https://staging.clawville.world/game?perf=1\" --durationMs=30000",
+      "safetyGate": "Do not run stock gltf-transform uastc on VRM shipping files: local milady-chibi.uastc.glb lab stripped VRMC_vrm. Any VRM binary variant must preserve VRM/VRMC extensions and pass idle/walk/run/emote screenshot or video QA before a runtime swap."
+    },
+    {
+      "asset": "/models/shisha-oasis.glb",
+      "kind": "glb",
+      "size": "1.53 MB",
+      "triangles": 26556,
+      "textures": 3,
+      "textureBytes": "131.4 KB",
+      "experiments": [
+        "ktx2-blocked-webp-source-needed",
+        "source-backup-uastc-lab"
+      ],
+      "command": "# Use PNG/JPEG source GLB from apps/web/public/models/.webp-backup or another pre-WebP source; do not run uastc directly on apps/web/public/models/shisha-oasis.glb.",
+      "safetyGate": "Current GLB already uses EXT_texture_webp. Local quest-bounty lab skipped all WebP textures, removed meshopt compression, and produced a larger no-KTX output. KTX2 tests must start from PNG/JPEG source GLBs and then validate KHR_texture_basisu plus retained geometry compression policy before any runtime swap."
+    },
+    {
+      "asset": "/models/arcade/claw-arcade-exterior-opt1.glb",
+      "kind": "glb",
+      "size": "785.5 KB",
+      "triangles": 2473,
+      "textures": 11,
+      "textureBytes": "634.8 KB",
+      "experiments": [
+        "ktx2-blocked-webp-source-needed",
+        "source-backup-uastc-lab"
+      ],
+      "command": "# Use PNG/JPEG source GLB from apps/web/public/models/.webp-backup or another pre-WebP source; do not run uastc directly on apps/web/public/models/arcade/claw-arcade-exterior-opt1.glb.",
+      "safetyGate": "Current GLB already uses EXT_texture_webp. Local quest-bounty lab skipped all WebP textures, removed meshopt compression, and produced a larger no-KTX output. KTX2 tests must start from PNG/JPEG source GLBs and then validate KHR_texture_basisu plus retained geometry compression policy before any runtime swap."
+    },
+    {
+      "asset": "/models/lobster_plush.glb",
+      "kind": "glb",
+      "size": "556.8 KB",
+      "triangles": 1304,
+      "textures": 3,
+      "textureBytes": "540.5 KB",
+      "experiments": [
+        "ktx2-blocked-webp-source-needed",
+        "source-backup-uastc-lab"
+      ],
+      "command": "# Use PNG/JPEG source GLB from apps/web/public/models/.webp-backup or another pre-WebP source; do not run uastc directly on apps/web/public/models/lobster_plush.glb.",
+      "safetyGate": "Current GLB already uses EXT_texture_webp. Local quest-bounty lab skipped all WebP textures, removed meshopt compression, and produced a larger no-KTX output. KTX2 tests must start from PNG/JPEG source GLBs and then validate KHR_texture_basisu plus retained geometry compression policy before any runtime swap."
+    },
+    {
+      "asset": "/models/pineapple-house-opt1.glb",
+      "kind": "glb",
+      "size": "541.3 KB",
+      "triangles": 17900,
+      "textures": 8,
+      "textureBytes": "470.8 KB",
+      "experiments": [
+        "ktx2-blocked-webp-source-needed",
+        "source-backup-uastc-lab"
+      ],
+      "command": "# Use PNG/JPEG source GLB from apps/web/public/models/.webp-backup or another pre-WebP source; do not run uastc directly on apps/web/public/models/pineapple-house-opt1.glb.",
+      "safetyGate": "Current GLB already uses EXT_texture_webp. Local quest-bounty lab skipped all WebP textures, removed meshopt compression, and produced a larger no-KTX output. KTX2 tests must start from PNG/JPEG source GLBs and then validate KHR_texture_basisu plus retained geometry compression policy before any runtime swap."
+    },
+    {
+      "asset": "/models/guide.glb",
+      "kind": "glb",
+      "size": "984.4 KB",
+      "triangles": 49101,
+      "textures": 2,
+      "textureBytes": "39.1 KB",
+      "experiments": [
+        "ktx2-blocked-webp-source-needed",
+        "source-backup-uastc-lab"
+      ],
+      "command": "# Use PNG/JPEG source GLB from apps/web/public/models/.webp-backup or another pre-WebP source; do not run uastc directly on apps/web/public/models/guide.glb.",
+      "safetyGate": "Current GLB already uses EXT_texture_webp. Local quest-bounty lab skipped all WebP textures, removed meshopt compression, and produced a larger no-KTX output. KTX2 tests must start from PNG/JPEG source GLBs and then validate KHR_texture_basisu plus retained geometry compression policy before any runtime swap."
+    },
+    {
+      "asset": "/models/guide-rigged.glb",
+      "kind": "glb",
+      "size": "926.6 KB",
+      "triangles": 51373,
+      "textures": 3,
+      "textureBytes": "49.3 KB",
+      "experiments": [
+        "ktx2-blocked-webp-source-needed",
+        "source-backup-uastc-lab"
+      ],
+      "command": "# Use PNG/JPEG source GLB from apps/web/public/models/.webp-backup or another pre-WebP source; do not run uastc directly on apps/web/public/models/guide-rigged.glb.",
+      "safetyGate": "Current GLB already uses EXT_texture_webp. Local quest-bounty lab skipped all WebP textures, removed meshopt compression, and produced a larger no-KTX output. KTX2 tests must start from PNG/JPEG source GLBs and then validate KHR_texture_basisu plus retained geometry compression policy before any runtime swap."
+    },
+    {
+      "asset": "/models/reef-race/scenery/ramp-jump.glb",
+      "kind": "glb",
+      "size": "442.8 KB",
+      "triangles": 496,
+      "textures": 7,
+      "textureBytes": "429.2 KB",
+      "experiments": [
+        "ktx2-blocked-webp-source-needed",
+        "source-backup-uastc-lab"
+      ],
+      "command": "# Use PNG/JPEG source GLB from apps/web/public/models/.webp-backup or another pre-WebP source; do not run uastc directly on apps/web/public/models/reef-race/scenery/ramp-jump.glb.",
+      "safetyGate": "Current GLB already uses EXT_texture_webp. Local quest-bounty lab skipped all WebP textures, removed meshopt compression, and produced a larger no-KTX output. KTX2 tests must start from PNG/JPEG source GLBs and then validate KHR_texture_basisu plus retained geometry compression policy before any runtime swap."
+    }
+  ]
+}

@@ -1,7 +1,19 @@
 import type { AgentCategory, AgentHarness } from '@clawville/shared';
 import { getFingerprint } from './fingerprint';
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || '';
+// request() targets the Hono API exactly like honoRequest() — its paths
+// (/api/auth/guest, forgot/reset-password, send-verification, /api/chat/transient,
+// /api/items/*, /api/avatars/me, location chat, username flows) have NO
+// Next.js app-route implementation (apps/web/src/app/api/** is empty), so
+// same-origin fetches 404 on prod AND localhost. Master (3cf8a860) semantics
+// restored 2026-06-10. Local-dev cookie isolation is an EXPLICIT opt-in:
+// set NEXT_PUBLIC_API_SAME_ORIGIN=1 in .env.local (build-time env, local
+// builds ONLY — never prod/staging) to force same-origin fetches so a local
+// build pointed at staging does not inherit staging cookies/auth state.
+const API_URL =
+  process.env.NEXT_PUBLIC_API_SAME_ORIGIN === '1'
+    ? ''
+    : process.env.NEXT_PUBLIC_API_URL || '';
 const HONO_API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000';
 
 /**

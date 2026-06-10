@@ -8,7 +8,7 @@ import { useGameStore } from '@/stores/game';
 const TUTORIAL_KEY = 'clawville-tutorial-seen';
 const QUEST_INTRO_KEY = 'clawville-quest-intro-seen';
 
-export default function QuestTracker() {
+export default function QuestTracker({ forceVisible = false }: { forceVisible?: boolean } = {}) {
   const [visible, setVisible] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const [isNew, setIsNew] = useState(false);
@@ -26,6 +26,10 @@ export default function QuestTracker() {
 
   // Only show after tutorial dismissed
   useEffect(() => {
+    if (forceVisible) {
+      setVisible(true);
+      return;
+    }
     const check = () => {
       const tutorialSeen = localStorage.getItem(TUTORIAL_KEY) === 'true';
       if (tutorialSeen && !visible) {
@@ -46,7 +50,7 @@ export default function QuestTracker() {
     check();
     const interval = setInterval(check, 1500);
     return () => clearInterval(interval);
-  }, [visible]);
+  }, [forceVisible, visible]);
 
   if (!visible) return null;
 

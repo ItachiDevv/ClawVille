@@ -1,0 +1,1444 @@
+{
+  "generatedAt": "2026-06-08T02:16:40.011Z",
+  "wallMs": 35112,
+  "config": {
+    "url": "http://localhost:3010/game?perf=1&cb=local-start-3010-recheck",
+    "label": "local-start-3010-recheck",
+    "outDir": "C:\\Users\\newma\\Documents\\Crypto\\ClawVille-perf-fidelity-spike\\docs\\perf-fidelity-spike\\browser-local-start-3010-recheck",
+    "durationMs": 30000,
+    "width": 1920,
+    "height": 1080,
+    "chromePath": "C:/Program Files/Google/Chrome/Application/chrome.exe"
+  },
+  "consoleMessages": [
+    {
+      "type": "log",
+      "text": "[World3D] Low-end GPU detected: true"
+    },
+    {
+      "type": "log",
+      "text": "[World3D] GPU path: forceWebGL (WebGL2+TSL) — iOS:false noGPU:false lowEnd:true webgpuOverride:false"
+    },
+    {
+      "type": "error",
+      "text": "Failed to load resource: the server responded with a status of 401 ()"
+    },
+    {
+      "type": "error",
+      "text": "Failed to load resource: the server responded with a status of 401 ()"
+    },
+    {
+      "type": "log",
+      "text": "[building-merge] visual-creation: 6 → 6 meshes (0 buckets merged, 0 skipped)"
+    },
+    {
+      "type": "log",
+      "text": "[building-merge] code-development: 8 → 8 meshes (0 buckets merged, 0 skipped)"
+    },
+    {
+      "type": "log",
+      "text": "[body-anchor] mcp-tool-use: fullCenter=(-0.1,0.7) bodyCenter=(0.1,0.4) delta=(0.2,-0.3) worldDelta=(361,-484)wu"
+    },
+    {
+      "type": "log",
+      "text": "[building-merge] mcp-tool-use: 20 → 18 meshes (2 buckets merged, 0 skipped)"
+    },
+    {
+      "type": "log",
+      "text": "[building-merge] api-integrations: 3 → 3 meshes (0 buckets merged, 0 skipped)"
+    },
+    {
+      "type": "log",
+      "text": "[building-merge] app-publishing: 25 → 25 meshes (0 buckets merged, 0 skipped)"
+    },
+    {
+      "type": "log",
+      "text": "[building-merge] cron-automation: 5 → 5 meshes (0 buckets merged, 0 skipped)"
+    },
+    {
+      "type": "log",
+      "text": "[building-merge] deployment-ops: 1 → 1 meshes (0 buckets merged, 0 skipped)"
+    },
+    {
+      "type": "log",
+      "text": "[building-merge] claw-arcade: 34 → 30 meshes (4 buckets merged, 0 skipped)"
+    },
+    {
+      "type": "log",
+      "text": "[building-merge] cove: 5 → 4 meshes (1 buckets merged, 0 skipped)"
+    },
+    {
+      "type": "log",
+      "text": "[building-merge] agent-security: 4 → 4 meshes (0 buckets merged, 0 skipped)"
+    },
+    {
+      "type": "log",
+      "text": "[body-anchor] memory-rag: fullCenter=(0.0,0.6) bodyCenter=(0.0,0.0) delta=(0.0,-0.6) worldDelta=(0,-608)wu"
+    },
+    {
+      "type": "log",
+      "text": "[building-merge] memory-rag: 7 → 7 meshes (0 buckets merged, 0 skipped)"
+    },
+    {
+      "type": "log",
+      "text": "[World3D] Using WebGPURenderer (backend: yy)"
+    },
+    {
+      "type": "log",
+      "text": "[World3D] StaggeredTextureUpload: uploading 215 textures via rIC budget"
+    }
+  ],
+  "report": {
+    "url": "http://localhost:3010/game?perf=1&cb=local-start-3010-recheck",
+    "title": "ClawVille — Where Agents Learn Skills",
+    "ready": false,
+    "canvasReady": true,
+    "texturesReady": false,
+    "qualityTier": 4,
+    "dpr": 0.65,
+    "renderInfo": {
+      "calls": 26,
+      "triangles": 622331,
+      "lines": 512,
+      "points": 0,
+      "programs": null
+    },
+    "buttonCount": 19,
+    "buttons": [
+      {
+        "text": "›",
+        "aria": "Collapse sidebar",
+        "visible": true,
+        "rect": {
+          "x": 1868,
+          "y": 72,
+          "w": 22,
+          "h": 22
+        }
+      },
+      {
+        "text": "CREATE AGENT",
+        "aria": null,
+        "visible": true,
+        "rect": {
+          "x": 1694,
+          "y": 187,
+          "w": 196,
+          "h": 27
+        }
+      },
+      {
+        "text": "🔌\nAgent",
+        "aria": "Agent",
+        "visible": true,
+        "rect": {
+          "x": 1688,
+          "y": 280,
+          "w": 208,
+          "h": 41
+        }
+      },
+      {
+        "text": "🐾\nMy Agent",
+        "aria": "My Agent",
+        "visible": true,
+        "rect": {
+          "x": 1688,
+          "y": 375,
+          "w": 208,
+          "h": 41
+        }
+      },
+      {
+        "text": "🔧\nSkill Forge",
+        "aria": "Skill Forge",
+        "visible": true,
+        "rect": {
+          "x": 1688,
+          "y": 416,
+          "w": 208,
+          "h": 41
+        }
+      },
+      {
+        "text": "🛒\nMarketplace",
+        "aria": "Marketplace",
+        "visible": true,
+        "rect": {
+          "x": 1688,
+          "y": 511,
+          "w": 208,
+          "h": 41
+        }
+      },
+      {
+        "text": "⚖\nBazaar",
+        "aria": "Bazaar",
+        "visible": true,
+        "rect": {
+          "x": 1688,
+          "y": 553,
+          "w": 208,
+          "h": 41
+        }
+      },
+      {
+        "text": "🔨\nAuction House",
+        "aria": "Auction House",
+        "visible": true,
+        "rect": {
+          "x": 1688,
+          "y": 594,
+          "w": 208,
+          "h": 41
+        }
+      },
+      {
+        "text": "✨\nCosmetics",
+        "aria": "Cosmetics",
+        "visible": true,
+        "rect": {
+          "x": 1688,
+          "y": 636,
+          "w": 208,
+          "h": 41
+        }
+      },
+      {
+        "text": "📜\nQuest Board",
+        "aria": "Quest Board",
+        "visible": true,
+        "rect": {
+          "x": 1688,
+          "y": 731,
+          "w": 208,
+          "h": 41
+        }
+      },
+      {
+        "text": "📌\nBounty Board",
+        "aria": "Bounty Board",
+        "visible": true,
+        "rect": {
+          "x": 1688,
+          "y": 772,
+          "w": 208,
+          "h": 41
+        }
+      },
+      {
+        "text": "🏆\nLeaderboard",
+        "aria": "Leaderboard",
+        "visible": true,
+        "rect": {
+          "x": 1688,
+          "y": 814,
+          "w": 208,
+          "h": 41
+        }
+      },
+      {
+        "text": "🌐\nPublic Leaderboard",
+        "aria": "Open the public agent leaderboard in a new tab",
+        "visible": true,
+        "rect": {
+          "x": 1688,
+          "y": 855,
+          "w": 208,
+          "h": 41
+        }
+      },
+      {
+        "text": "📋\nActivity Log",
+        "aria": "Activity Log",
+        "visible": true,
+        "rect": {
+          "x": 1688,
+          "y": 897,
+          "w": 208,
+          "h": 41
+        }
+      },
+      {
+        "text": "❓\nHow to Play\n▸",
+        "aria": "How to Play",
+        "visible": true,
+        "rect": {
+          "x": 1688,
+          "y": 992,
+          "w": 208,
+          "h": 41
+        }
+      },
+      {
+        "text": "🚪\nLogout",
+        "aria": "Logout",
+        "visible": true,
+        "rect": {
+          "x": 1688,
+          "y": 1033,
+          "w": 208,
+          "h": 41
+        }
+      },
+      {
+        "text": "Explore",
+        "aria": null,
+        "visible": true,
+        "rect": {
+          "x": 877,
+          "y": 155,
+          "w": 75,
+          "h": 28
+        }
+      },
+      {
+        "text": "NPC Mode",
+        "aria": null,
+        "visible": true,
+        "rect": {
+          "x": 952,
+          "y": 155,
+          "w": 90,
+          "h": 28
+        }
+      },
+      {
+        "text": "💗\nASK NORI",
+        "aria": "Ask Nori the Town Guide",
+        "visible": true,
+        "rect": {
+          "x": 1780,
+          "y": 16,
+          "w": 124,
+          "h": 36
+        }
+      }
+    ],
+    "bodyText": [
+      "ClawVille",
+      "DROPPING IN...",
+      "100%",
+      "Uploading to GPU…",
+      "Taking longer than expected...",
+      "Log In",
+      "Sign Up",
+      "ClawVille",
+      "THE DEPTHS",
+      "⚓",
+      "›",
+      "NO AGENT BOUND",
+      "Enter the world by selecting or creating an agent.",
+      "CREATE AGENT",
+      "WORLD",
+      "ENTER · CONNECT",
+      "🔌",
+      "Agent",
+      "AGENT",
+      "CONFIGURE · FORGE",
+      "🐾",
+      "My Agent",
+      "🔧",
+      "Skill Forge",
+      "ECONOMY",
+      "TRADE · BUY · SELL",
+      "🛒",
+      "Marketplace",
+      "⚖",
+      "Bazaar",
+      "🔨",
+      "Auction House",
+      "✨",
+      "Cosmetics",
+      "QUESTS",
+      "EARN · COMPETE",
+      "📜",
+      "Quest Board",
+      "📌",
+      "Bounty Board",
+      "🏆",
+      "Leaderboard",
+      "🌐",
+      "Public Leaderboard",
+      "📋",
+      "Activity Log",
+      "SYSTEM",
+      "HELP · ACCOUNT",
+      "❓",
+      "How to Play",
+      "▸",
+      "🚪",
+      "Logout",
+      "SONAR",
+      "5760,7060",
+      "N",
+      "S",
+      "W",
+      "E",
+      "CLICK TO MOVE",
+      "0/12 visited",
+      "Explore",
+      "NPC Mode",
+      "0 FPS",
+      "·",
+      "2063.5/6057.4 ms",
+      "·",
+      "2 lt/s",
+      "·",
+      "172 MB",
+      "·",
+      "174 draws",
+      "·",
+      "496k tris",
+      "·",
+      "316 objs",
+      "·",
+      "65 pipes",
+      "·",
+      "WebGPU",
+      "💗",
+      "ASK NORI"
+    ],
+    "canvasCount": 1,
+    "chunks": {
+      "terrain": 1,
+      "buildings": 1,
+      "wandering-npcs": 1,
+      "location-npcs": 1,
+      "remote-players": 1,
+      "quest-npc": 1,
+      "town-guide": 1,
+      "bazaar-stall": 1,
+      "marketplace-stall": 1,
+      "auction-podium": 1,
+      "quest-bounty-pavilion": 1,
+      "town-directory-sign": 1
+    },
+    "primitiveBuildingMeshCount": 0,
+    "primitiveBuildingMeshes": [],
+    "proxyLikeCount": 0,
+    "proxyLike": [],
+    "geometryTypes": {
+      "PlaneGeometry": 1,
+      "BufferGeometry": 300,
+      "CylinderGeometry": 2,
+      "SphereGeometry": 1,
+      "TorusGeometry": 2,
+      "IcosahedronGeometry": 3,
+      "BoxGeometry": 6,
+      "OctahedronGeometry": 1
+    },
+    "vrmMetrics": [
+      {
+        "path": "/avatars/milady-official-7.vrm",
+        "instanceId": "milady-miu",
+        "bytes": 288688,
+        "fetchWaitMs": 99.3,
+        "sliceMs": 0.2,
+        "parseMs": 12965.1,
+        "normaliseMs": 3.5,
+        "totalMs": 13068.1,
+        "sceneBefore": {
+          "objects": 75,
+          "meshes": 6,
+          "skinnedMeshes": 6,
+          "geometries": 6,
+          "materials": 5,
+          "textures": 2
+        },
+        "sceneAfter": {
+          "objects": 75,
+          "meshes": 6,
+          "skinnedMeshes": 6,
+          "geometries": 6,
+          "materials": 5,
+          "textures": 2
+        },
+        "normalise": {
+          "removeUnnecessaryVerticesMs": 2.2,
+          "rotateVRM0Ms": 0.1,
+          "outlineDisableMs": 0.3,
+          "frustumCullingMs": 0,
+          "springBoneScaleMs": 0.1
+        }
+      },
+      {
+        "path": "/avatars/milady-official-2.vrm",
+        "instanceId": "milady-vivi",
+        "bytes": 170344,
+        "fetchWaitMs": 102.9,
+        "sliceMs": 0.3,
+        "parseMs": 12971.6,
+        "normaliseMs": 0.6,
+        "totalMs": 13075.4,
+        "sceneBefore": {
+          "objects": 72,
+          "meshes": 4,
+          "skinnedMeshes": 4,
+          "geometries": 4,
+          "materials": 3,
+          "textures": 2
+        },
+        "sceneAfter": {
+          "objects": 72,
+          "meshes": 4,
+          "skinnedMeshes": 4,
+          "geometries": 4,
+          "materials": 3,
+          "textures": 2
+        },
+        "normalise": {
+          "removeUnnecessaryVerticesMs": 0.4,
+          "rotateVRM0Ms": 0,
+          "outlineDisableMs": 0.1,
+          "frustumCullingMs": 0,
+          "springBoneScaleMs": 0
+        }
+      },
+      {
+        "path": "/avatars/hermes-male.vrm",
+        "instanceId": "hermes-cyrus",
+        "bytes": 1346296,
+        "fetchWaitMs": 109.9,
+        "sliceMs": 0.8,
+        "parseMs": 12994.4,
+        "normaliseMs": 21.8,
+        "totalMs": 13126.9,
+        "sceneBefore": {
+          "objects": 84,
+          "meshes": 1,
+          "skinnedMeshes": 1,
+          "geometries": 1,
+          "materials": 1,
+          "textures": 3
+        },
+        "sceneAfter": {
+          "objects": 84,
+          "meshes": 1,
+          "skinnedMeshes": 1,
+          "geometries": 1,
+          "materials": 1,
+          "textures": 3
+        },
+        "normalise": {
+          "removeUnnecessaryVerticesMs": 21.6,
+          "rotateVRM0Ms": 0,
+          "outlineDisableMs": 0,
+          "frustumCullingMs": 0.1,
+          "springBoneScaleMs": 0
+        }
+      },
+      {
+        "path": "/avatars/milady-official-3.vrm",
+        "instanceId": "milady-suki",
+        "bytes": 239636,
+        "fetchWaitMs": 104.3,
+        "sliceMs": 0,
+        "parseMs": 13069.5,
+        "normaliseMs": 0.5,
+        "totalMs": 13174.3,
+        "sceneBefore": {
+          "objects": 76,
+          "meshes": 7,
+          "skinnedMeshes": 7,
+          "geometries": 7,
+          "materials": 6,
+          "textures": 3
+        },
+        "sceneAfter": {
+          "objects": 76,
+          "meshes": 7,
+          "skinnedMeshes": 7,
+          "geometries": 7,
+          "materials": 6,
+          "textures": 3
+        },
+        "normalise": {
+          "removeUnnecessaryVerticesMs": 0.4,
+          "rotateVRM0Ms": 0,
+          "outlineDisableMs": 0,
+          "frustumCullingMs": 0,
+          "springBoneScaleMs": 0
+        }
+      },
+      {
+        "path": "/avatars/milady-official-8.vrm",
+        "instanceId": "milady-kyoko",
+        "bytes": 335104,
+        "fetchWaitMs": 101.5,
+        "sliceMs": 0.3,
+        "parseMs": 13126.5,
+        "normaliseMs": 1.1,
+        "totalMs": 13229.4,
+        "sceneBefore": {
+          "objects": 79,
+          "meshes": 9,
+          "skinnedMeshes": 9,
+          "geometries": 9,
+          "materials": 8,
+          "textures": 3
+        },
+        "sceneAfter": {
+          "objects": 79,
+          "meshes": 9,
+          "skinnedMeshes": 9,
+          "geometries": 9,
+          "materials": 8,
+          "textures": 3
+        },
+        "normalise": {
+          "removeUnnecessaryVerticesMs": 1,
+          "rotateVRM0Ms": 0,
+          "outlineDisableMs": 0.1,
+          "frustumCullingMs": 0,
+          "springBoneScaleMs": 0
+        }
+      },
+      {
+        "path": "/avatars/milady-official-6.vrm",
+        "instanceId": "milady-ren",
+        "bytes": 222104,
+        "fetchWaitMs": 106.4,
+        "sliceMs": 0.3,
+        "parseMs": 13135.2,
+        "normaliseMs": 0.9,
+        "totalMs": 13242.8,
+        "sceneBefore": {
+          "objects": 76,
+          "meshes": 7,
+          "skinnedMeshes": 7,
+          "geometries": 7,
+          "materials": 6,
+          "textures": 3
+        },
+        "sceneAfter": {
+          "objects": 76,
+          "meshes": 7,
+          "skinnedMeshes": 7,
+          "geometries": 7,
+          "materials": 6,
+          "textures": 3
+        },
+        "normalise": {
+          "removeUnnecessaryVerticesMs": 0.6,
+          "rotateVRM0Ms": 0,
+          "outlineDisableMs": 0.1,
+          "frustumCullingMs": 0,
+          "springBoneScaleMs": 0.1
+        }
+      },
+      {
+        "path": "/avatars/milady-official-4.vrm",
+        "instanceId": "milady-hana",
+        "bytes": 291964,
+        "fetchWaitMs": 104.8,
+        "sliceMs": 0.2,
+        "parseMs": 13145.2,
+        "normaliseMs": 1,
+        "totalMs": 13251.2,
+        "sceneBefore": {
+          "objects": 77,
+          "meshes": 8,
+          "skinnedMeshes": 8,
+          "geometries": 8,
+          "materials": 7,
+          "textures": 2
+        },
+        "sceneAfter": {
+          "objects": 77,
+          "meshes": 8,
+          "skinnedMeshes": 8,
+          "geometries": 8,
+          "materials": 7,
+          "textures": 2
+        },
+        "normalise": {
+          "removeUnnecessaryVerticesMs": 0.9,
+          "rotateVRM0Ms": 0,
+          "outlineDisableMs": 0,
+          "frustumCullingMs": 0,
+          "springBoneScaleMs": 0
+        }
+      },
+      {
+        "path": "/avatars/hermes-female.vrm",
+        "instanceId": "hermes-mira",
+        "bytes": 1701640,
+        "fetchWaitMs": 107.6,
+        "sliceMs": 0.9,
+        "parseMs": 13158.5,
+        "normaliseMs": 4.1,
+        "totalMs": 13271.1,
+        "sceneBefore": {
+          "objects": 84,
+          "meshes": 1,
+          "skinnedMeshes": 1,
+          "geometries": 1,
+          "materials": 1,
+          "textures": 3
+        },
+        "sceneAfter": {
+          "objects": 84,
+          "meshes": 1,
+          "skinnedMeshes": 1,
+          "geometries": 1,
+          "materials": 1,
+          "textures": 3
+        },
+        "normalise": {
+          "removeUnnecessaryVerticesMs": 4,
+          "rotateVRM0Ms": 0.1,
+          "outlineDisableMs": 0,
+          "frustumCullingMs": 0,
+          "springBoneScaleMs": 0
+        }
+      },
+      {
+        "path": "/avatars/milady-official-1.vrm",
+        "instanceId": "milady-aria",
+        "bytes": 242228,
+        "fetchWaitMs": 103.5,
+        "sliceMs": 0.2,
+        "parseMs": 13191.7,
+        "normaliseMs": 0.5,
+        "totalMs": 13295.9,
+        "sceneBefore": {
+          "objects": 81,
+          "meshes": 12,
+          "skinnedMeshes": 12,
+          "geometries": 12,
+          "materials": 11,
+          "textures": 2
+        },
+        "sceneAfter": {
+          "objects": 81,
+          "meshes": 12,
+          "skinnedMeshes": 12,
+          "geometries": 12,
+          "materials": 11,
+          "textures": 2
+        },
+        "normalise": {
+          "removeUnnecessaryVerticesMs": 0.3,
+          "rotateVRM0Ms": 0,
+          "outlineDisableMs": 0,
+          "frustumCullingMs": 0,
+          "springBoneScaleMs": 0
+        }
+      },
+      {
+        "path": "/avatars/tekk.vrm",
+        "instanceId": "hermes-tekk",
+        "bytes": 2045416,
+        "fetchWaitMs": 111.8,
+        "sliceMs": 0.6,
+        "parseMs": 13210.8,
+        "normaliseMs": 4,
+        "totalMs": 13327.2,
+        "sceneBefore": {
+          "objects": 84,
+          "meshes": 1,
+          "skinnedMeshes": 1,
+          "geometries": 1,
+          "materials": 1,
+          "textures": 3
+        },
+        "sceneAfter": {
+          "objects": 84,
+          "meshes": 1,
+          "skinnedMeshes": 1,
+          "geometries": 1,
+          "materials": 1,
+          "textures": 3
+        },
+        "normalise": {
+          "removeUnnecessaryVerticesMs": 3.8,
+          "rotateVRM0Ms": 0.1,
+          "outlineDisableMs": 0,
+          "frustumCullingMs": 0,
+          "springBoneScaleMs": 0
+        }
+      },
+      {
+        "path": "/avatars/milady-official-5.vrm",
+        "instanceId": "milady-yumi",
+        "bytes": 658476,
+        "fetchWaitMs": 105.6,
+        "sliceMs": 0.2,
+        "parseMs": 13228.7,
+        "normaliseMs": 0.6,
+        "totalMs": 13335.1,
+        "sceneBefore": {
+          "objects": 78,
+          "meshes": 8,
+          "skinnedMeshes": 8,
+          "geometries": 8,
+          "materials": 7,
+          "textures": 5
+        },
+        "sceneAfter": {
+          "objects": 78,
+          "meshes": 8,
+          "skinnedMeshes": 8,
+          "geometries": 8,
+          "materials": 7,
+          "textures": 5
+        },
+        "normalise": {
+          "removeUnnecessaryVerticesMs": 0.4,
+          "rotateVRM0Ms": 0,
+          "outlineDisableMs": 0.1,
+          "frustumCullingMs": 0,
+          "springBoneScaleMs": 0
+        }
+      },
+      {
+        "path": "/avatars/eliza-chibi.vrm?v=2",
+        "instanceId": "chibi-eliza",
+        "bytes": 5547172,
+        "fetchWaitMs": 113.8,
+        "sliceMs": 3,
+        "parseMs": 13241.1,
+        "normaliseMs": 3,
+        "totalMs": 13360.9,
+        "sceneBefore": {
+          "objects": 68,
+          "meshes": 1,
+          "skinnedMeshes": 1,
+          "geometries": 1,
+          "materials": 1,
+          "textures": 1
+        },
+        "sceneAfter": {
+          "objects": 68,
+          "meshes": 1,
+          "skinnedMeshes": 1,
+          "geometries": 1,
+          "materials": 1,
+          "textures": 1
+        },
+        "normalise": {
+          "removeUnnecessaryVerticesMs": 3,
+          "rotateVRM0Ms": 0,
+          "outlineDisableMs": 0,
+          "frustumCullingMs": 0,
+          "springBoneScaleMs": 0
+        }
+      }
+    ],
+    "textureUploadMetrics": {
+      "mode": "idle",
+      "totalTextures": 215,
+      "startedAt": 16996.700000047684,
+      "slices": [
+        {
+          "mode": "idle",
+          "startMs": 17217,
+          "durationMs": 10.1,
+          "count": 19,
+          "done": 19
+        },
+        {
+          "mode": "idle",
+          "startMs": 17552,
+          "durationMs": 11.1,
+          "count": 2,
+          "done": 21
+        },
+        {
+          "mode": "idle",
+          "startMs": 22793,
+          "durationMs": 6.9,
+          "count": 9,
+          "done": 30
+        },
+        {
+          "mode": "idle",
+          "startMs": 26423,
+          "durationMs": 7.4,
+          "count": 3,
+          "done": 33
+        },
+        {
+          "mode": "idle",
+          "startMs": 26644,
+          "durationMs": 6.9,
+          "count": 26,
+          "done": 59
+        },
+        {
+          "mode": "idle",
+          "startMs": 32894,
+          "durationMs": 6.9,
+          "count": 4,
+          "done": 63
+        }
+      ]
+    },
+    "profile": {
+      "errors": [],
+      "paints": [
+        {
+          "name": "first-paint",
+          "startTime": 652
+        },
+        {
+          "name": "first-contentful-paint",
+          "startTime": 1688
+        }
+      ],
+      "lcp": {
+        "startTime": 2152,
+        "size": 39900
+      },
+      "longTaskCount": 24,
+      "longTaskTotalMs": 30505,
+      "longTaskMaxMs": 8171,
+      "longTaskTop": [
+        {
+          "startTime": 4506,
+          "duration": 8171,
+          "name": "self"
+        },
+        {
+          "startTime": 26852,
+          "duration": 6041,
+          "name": "self"
+        },
+        {
+          "startTime": 17618,
+          "duration": 5097,
+          "name": "self"
+        },
+        {
+          "startTime": 13174,
+          "duration": 3827,
+          "name": "self"
+        },
+        {
+          "startTime": 22800,
+          "duration": 3583,
+          "name": "self"
+        },
+        {
+          "startTime": 32936,
+          "duration": 1275,
+          "name": "self"
+        },
+        {
+          "startTime": 4122,
+          "duration": 383,
+          "name": "self"
+        },
+        {
+          "startTime": 12778,
+          "duration": 336,
+          "name": "self"
+        },
+        {
+          "startTime": 2745,
+          "duration": 294,
+          "name": "self"
+        },
+        {
+          "startTime": 1563,
+          "duration": 210,
+          "name": "self"
+        }
+      ]
+    },
+    "navigation": {
+      "ttfb": 543,
+      "domInteractive": 644,
+      "dcl": 644,
+      "load": 919,
+      "transferSize": 3981
+    },
+    "resources": {
+      "count": 136,
+      "transferBytes": 34121080,
+      "decodedBytes": 41435122,
+      "glb": [
+        {
+          "name": "http://localhost:3010/models/pineapple-house-opt1.glb?v=2",
+          "startTime": 934,
+          "duration": 115,
+          "transferSize": 540754,
+          "decodedBodySize": 554308
+        },
+        {
+          "name": "http://localhost:3010/models/chum-bucket-v2-opt1.glb?v=3",
+          "startTime": 936,
+          "duration": 301,
+          "transferSize": 1483927,
+          "decodedBodySize": 1594964
+        },
+        {
+          "name": "http://localhost:3010/models/krusty-krab-v2-opt1.glb?v=3",
+          "startTime": 937,
+          "duration": 210,
+          "transferSize": 985924,
+          "decodedBodySize": 1194708
+        },
+        {
+          "name": "http://localhost:3010/models/salty-spitoon-opt1.glb?v=2",
+          "startTime": 938,
+          "duration": 89,
+          "transferSize": 373582,
+          "decodedBodySize": 390736
+        },
+        {
+          "name": "http://localhost:3010/models/boating-school-opt1.glb?v=2",
+          "startTime": 939,
+          "duration": 44,
+          "transferSize": 128826,
+          "decodedBodySize": 195280
+        },
+        {
+          "name": "http://localhost:3010/models/patty-building-opt1.glb?v=2",
+          "startTime": 940,
+          "duration": 94,
+          "transferSize": 335103,
+          "decodedBodySize": 506364
+        },
+        {
+          "name": "http://localhost:3010/models/building-lighthouse-opt1.glb?v=2",
+          "startTime": 940,
+          "duration": 66,
+          "transferSize": 34035,
+          "decodedBodySize": 59148
+        },
+        {
+          "name": "http://localhost:3010/models/arcade/claw-arcade-exterior-opt1.glb?v=3",
+          "startTime": 941,
+          "duration": 219,
+          "transferSize": 705545,
+          "decodedBodySize": 804340
+        },
+        {
+          "name": "http://localhost:3010/models/cove/cove-exterior-opt1.glb?v=3",
+          "startTime": 941,
+          "duration": 135,
+          "transferSize": 182944,
+          "decodedBodySize": 275128
+        },
+        {
+          "name": "http://localhost:3010/models/patricks-rock-v2-opt1.glb?v=4",
+          "startTime": 941,
+          "duration": 285,
+          "transferSize": 950179,
+          "decodedBodySize": 1036376
+        },
+        {
+          "name": "http://localhost:3010/models/squidward-house-opt1.glb?v=4",
+          "startTime": 943,
+          "duration": 323,
+          "transferSize": 1039743,
+          "decodedBodySize": 1110020
+        },
+        {
+          "name": "http://localhost:3010/avatars/animations/idle.glb",
+          "startTime": 944,
+          "duration": 152,
+          "transferSize": 42881,
+          "decodedBodySize": 88600
+        },
+        {
+          "name": "http://localhost:3010/avatars/animations/walk.glb",
+          "startTime": 944,
+          "duration": 169,
+          "transferSize": 19482,
+          "decodedBodySize": 63268
+        },
+        {
+          "name": "http://localhost:3010/avatars/animations/run.glb",
+          "startTime": 945,
+          "duration": 188,
+          "transferSize": 37370,
+          "decodedBodySize": 92192
+        },
+        {
+          "name": "http://localhost:3010/models/lobster.glb",
+          "startTime": 945,
+          "duration": 224,
+          "transferSize": 133624,
+          "decodedBodySize": 199708
+        },
+        {
+          "name": "http://localhost:3010/models/quest-bounty-pavilion.glb?v=3",
+          "startTime": 945,
+          "duration": 719,
+          "transferSize": 1805116,
+          "decodedBodySize": 2213956
+        },
+        {
+          "name": "http://localhost:3010/models/bazaar-merchant-stand.glb?v=2",
+          "startTime": 945,
+          "duration": 317,
+          "transferSize": 392073,
+          "decodedBodySize": 430628
+        },
+        {
+          "name": "http://localhost:3010/models/shisha-oasis.glb",
+          "startTime": 946,
+          "duration": 579,
+          "transferSize": 900901,
+          "decodedBodySize": 1609128
+        },
+        {
+          "name": "http://localhost:3010/models/auction-dome.glb",
+          "startTime": 946,
+          "duration": 305,
+          "transferSize": 80119,
+          "decodedBodySize": 99844
+        },
+        {
+          "name": "http://localhost:3010/avatars/milady-official-1.vrm",
+          "startTime": 947,
+          "duration": 309,
+          "transferSize": 242528,
+          "decodedBodySize": 242228
+        },
+        {
+          "name": "http://localhost:3010/avatars/milady-official-2.vrm",
+          "startTime": 947,
+          "duration": 325,
+          "transferSize": 170644,
+          "decodedBodySize": 170344
+        },
+        {
+          "name": "http://localhost:3010/avatars/milady-official-3.vrm",
+          "startTime": 948,
+          "duration": 331,
+          "transferSize": 239936,
+          "decodedBodySize": 239636
+        },
+        {
+          "name": "http://localhost:3010/avatars/milady-official-4.vrm",
+          "startTime": 948,
+          "duration": 341,
+          "transferSize": 292264,
+          "decodedBodySize": 291964
+        },
+        {
+          "name": "http://localhost:3010/avatars/milady-official-5.vrm",
+          "startTime": 948,
+          "duration": 368,
+          "transferSize": 658776,
+          "decodedBodySize": 658476
+        },
+        {
+          "name": "http://localhost:3010/avatars/milady-official-6.vrm",
+          "startTime": 949,
+          "duration": 351,
+          "transferSize": 222404,
+          "decodedBodySize": 222104
+        },
+        {
+          "name": "http://localhost:3010/avatars/milady-official-7.vrm",
+          "startTime": 949,
+          "duration": 358,
+          "transferSize": 288988,
+          "decodedBodySize": 288688
+        },
+        {
+          "name": "http://localhost:3010/avatars/milady-official-8.vrm",
+          "startTime": 949,
+          "duration": 373,
+          "transferSize": 335404,
+          "decodedBodySize": 335104
+        },
+        {
+          "name": "http://localhost:3010/avatars/hermes-female.vrm",
+          "startTime": 949,
+          "duration": 471,
+          "transferSize": 1701940,
+          "decodedBodySize": 1701640
+        },
+        {
+          "name": "http://localhost:3010/avatars/hermes-male.vrm",
+          "startTime": 949,
+          "duration": 455,
+          "transferSize": 1346596,
+          "decodedBodySize": 1346296
+        },
+        {
+          "name": "http://localhost:3010/avatars/tekk.vrm",
+          "startTime": 950,
+          "duration": 548,
+          "transferSize": 2045716,
+          "decodedBodySize": 2045416
+        },
+        {
+          "name": "http://localhost:3010/avatars/eliza-chibi.vrm?v=2",
+          "startTime": 950,
+          "duration": 943,
+          "transferSize": 5547472,
+          "decodedBodySize": 5547172
+        },
+        {
+          "name": "http://localhost:3010/avatars/milady-chibi.vrm?v=2",
+          "startTime": 950,
+          "duration": 1212,
+          "transferSize": 5843440,
+          "decodedBodySize": 5843140
+        },
+        {
+          "name": "http://localhost:3010/models/guide-rigged.glb",
+          "startTime": 1991,
+          "duration": 92,
+          "transferSize": 552470,
+          "decodedBodySize": 948792
+        },
+        {
+          "name": "http://localhost:3010/models/crayfish.glb",
+          "startTime": 1991,
+          "duration": 8,
+          "transferSize": 5924,
+          "decodedBodySize": 7696
+        },
+        {
+          "name": "http://localhost:3010/models/jellyfish.glb",
+          "startTime": 1992,
+          "duration": 11,
+          "transferSize": 84277,
+          "decodedBodySize": 88952
+        },
+        {
+          "name": "http://localhost:3010/models/coral-reef1.glb",
+          "startTime": 3187,
+          "duration": 43,
+          "transferSize": 40229,
+          "decodedBodySize": 97708
+        },
+        {
+          "name": "http://localhost:3010/models/coral-reef2.glb",
+          "startTime": 3187,
+          "duration": 43,
+          "transferSize": 25388,
+          "decodedBodySize": 41440
+        },
+        {
+          "name": "http://localhost:3010/models/coral-reef3.glb",
+          "startTime": 3188,
+          "duration": 45,
+          "transferSize": 36029,
+          "decodedBodySize": 59616
+        },
+        {
+          "name": "http://localhost:3010/models/kelp.glb",
+          "startTime": 3188,
+          "duration": 40,
+          "transferSize": 8130,
+          "decodedBodySize": 9672
+        },
+        {
+          "name": "http://localhost:3010/models/building-shell.glb",
+          "startTime": 3188,
+          "duration": 43,
+          "transferSize": 27929,
+          "decodedBodySize": 30796
+        },
+        {
+          "name": "http://localhost:3010/models/building-seashell.glb",
+          "startTime": 3189,
+          "duration": 69,
+          "transferSize": 42227,
+          "decodedBodySize": 46664
+        },
+        {
+          "name": "http://localhost:3010/models/building-anchor.glb",
+          "startTime": 3189,
+          "duration": 81,
+          "transferSize": 3132,
+          "decodedBodySize": 3984
+        },
+        {
+          "name": "http://localhost:3010/models/building-barrel.glb",
+          "startTime": 3189,
+          "duration": 83,
+          "transferSize": 20023,
+          "decodedBodySize": 28312
+        },
+        {
+          "name": "http://localhost:3010/models/building-chest.glb",
+          "startTime": 3189,
+          "duration": 95,
+          "transferSize": 99381,
+          "decodedBodySize": 139308
+        },
+        {
+          "name": "http://localhost:3010/models/building-lantern.glb",
+          "startTime": 3190,
+          "duration": 81,
+          "transferSize": 12453,
+          "decodedBodySize": 14576
+        },
+        {
+          "name": "http://localhost:3010/models/building-tower2.glb",
+          "startTime": 3190,
+          "duration": 83,
+          "transferSize": 29024,
+          "decodedBodySize": 47628
+        },
+        {
+          "name": "http://localhost:3010/models/characters/spongebob.glb",
+          "startTime": 3191,
+          "duration": 328,
+          "transferSize": 386924,
+          "decodedBodySize": 474752
+        },
+        {
+          "name": "http://localhost:3010/models/characters/gary.glb",
+          "startTime": 3191,
+          "duration": 180,
+          "transferSize": 86564,
+          "decodedBodySize": 100264
+        },
+        {
+          "name": "http://localhost:3010/models/characters/squidward.glb",
+          "startTime": 3192,
+          "duration": 168,
+          "transferSize": 34809,
+          "decodedBodySize": 77172
+        },
+        {
+          "name": "http://localhost:3010/models/characters/flying-dutchman.glb",
+          "startTime": 3193,
+          "duration": 307,
+          "transferSize": 211570,
+          "decodedBodySize": 248956
+        },
+        {
+          "name": "http://localhost:3010/models/characters/pearl.glb",
+          "startTime": 3194,
+          "duration": 292,
+          "transferSize": 176378,
+          "decodedBodySize": 231412
+        },
+        {
+          "name": "http://localhost:3010/models/characters/mrs-puff.glb",
+          "startTime": 3195,
+          "duration": 218,
+          "transferSize": 84833,
+          "decodedBodySize": 93240
+        },
+        {
+          "name": "http://localhost:3010/models/lobster_plush.glb",
+          "startTime": 3195,
+          "duration": 426,
+          "transferSize": 566626,
+          "decodedBodySize": 570200
+        },
+        {
+          "name": "http://localhost:3010/models/characters/mr-krabs.glb",
+          "startTime": 3196,
+          "duration": 303,
+          "transferSize": 44146,
+          "decodedBodySize": 95044
+        },
+        {
+          "name": "http://localhost:3010/models/characters/plankton.glb",
+          "startTime": 3196,
+          "duration": 322,
+          "transferSize": 36467,
+          "decodedBodySize": 39704
+        },
+        {
+          "name": "http://localhost:3010/models/characters/karen.glb",
+          "startTime": 3196,
+          "duration": 370,
+          "transferSize": 40880,
+          "decodedBodySize": 60712
+        },
+        {
+          "name": "http://localhost:3010/models/characters/sandy.glb",
+          "startTime": 3197,
+          "duration": 405,
+          "transferSize": 156539,
+          "decodedBodySize": 214352
+        },
+        {
+          "name": "http://localhost:3010/models/characters/patrick.glb",
+          "startTime": 3197,
+          "duration": 397,
+          "transferSize": 71735,
+          "decodedBodySize": 101588
+        },
+        {
+          "name": "http://localhost:3010/avatars/animations/hermes-male/idle.glb",
+          "startTime": 22756,
+          "duration": 24,
+          "transferSize": 55724,
+          "decodedBodySize": 84800
+        },
+        {
+          "name": "http://localhost:3010/avatars/animations/hermes-male/run.glb",
+          "startTime": 22757,
+          "duration": 23,
+          "transferSize": 16435,
+          "decodedBodySize": 44320
+        },
+        {
+          "name": "http://localhost:3010/avatars/animations/hermes-female/idle.glb",
+          "startTime": 26822,
+          "duration": 49,
+          "transferSize": 79880,
+          "decodedBodySize": 111744
+        },
+        {
+          "name": "http://localhost:3010/avatars/animations/hermes-female/run.glb",
+          "startTime": 26823,
+          "duration": 40,
+          "transferSize": 17568,
+          "decodedBodySize": 45220
+        },
+        {
+          "name": "http://localhost:3010/avatars/animations/tekk-male/idle.glb",
+          "startTime": 26824,
+          "duration": 56,
+          "transferSize": 25955,
+          "decodedBodySize": 54412
+        },
+        {
+          "name": "http://localhost:3010/avatars/animations/tekk-male/walk.glb",
+          "startTime": 26824,
+          "duration": 57,
+          "transferSize": 19693,
+          "decodedBodySize": 47700
+        },
+        {
+          "name": "http://localhost:3010/avatars/animations/tekk-male/run.glb",
+          "startTime": 26825,
+          "duration": 55,
+          "transferSize": 14362,
+          "decodedBodySize": 42100
+        },
+        {
+          "name": "http://localhost:3010/avatars/animations/chibi/idle.glb",
+          "startTime": 26826,
+          "duration": 74,
+          "transferSize": 160286,
+          "decodedBodySize": 194292
+        },
+        {
+          "name": "http://localhost:3010/avatars/animations/chibi/walk.glb",
+          "startTime": 26827,
+          "duration": 69,
+          "transferSize": 16754,
+          "decodedBodySize": 36188
+        },
+        {
+          "name": "http://localhost:3010/avatars/animations/chibi/run.glb",
+          "startTime": 26828,
+          "duration": 69,
+          "transferSize": 14095,
+          "decodedBodySize": 33504
+        }
+      ],
+      "scripts": 46,
+      "images": 1,
+      "fetch": 79
+    }
+  }
+}
