@@ -181,6 +181,16 @@ export interface NpcRuntimeState {
    * plays the walk cycle in place → "moonwalk".
    */
   overlapTicks: number;
+  /**
+   * World-space heading of the last applied movement step, radians,
+   * atan2(dy, dx) in gamePx space (2026-06-10). Persists through idle so
+   * `planCenterWander` can bias the next wander leg into a forward cone —
+   * without it every replan picked a uniformly random annulus point, which
+   * is on average sideways-or-backward from the current position and read
+   * as "the NPC sensed something and turned around" (~9 reversals/min/NPC
+   * measured live on staging before the fix).
+   */
+  headingAngle: number;
   // Arena-only fields
   hp: number;
   maxHp: number;
@@ -539,6 +549,7 @@ class NpcSimulation {
         intentDescription: '',
         stuckTicks: 0,
         overlapTicks: 0,
+        headingAngle: Math.random() * Math.PI * 2,
         hp: def.stats.hp, maxHp: def.stats.hp,
         attack: def.stats.attack, defense: def.stats.defense, speed: def.stats.speed,
         inCombat: false, inventory: [], isDead: false, respawnAt: 0,
@@ -599,6 +610,7 @@ class NpcSimulation {
         path: [], pathIndex: 0, activityEndsAt: 0, behaviorCooldown: 30, intentDescription: '',
         stuckTicks: 0,
         overlapTicks: 0,
+        headingAngle: Math.random() * Math.PI * 2,
         hp: avatarConfig.stats.hp, maxHp: avatarConfig.stats.hp,
         attack: avatarConfig.stats.attack, defense: avatarConfig.stats.defense, speed: avatarConfig.stats.speed,
         inCombat: false, inventory: [], isDead: false, respawnAt: 0,
@@ -1607,8 +1619,19 @@ class NpcSimulation {
     // preserves equal area density at every radius — without the sqrt
     // more points would cluster near the inner edge.
     //
+    // Heading continuity (2026-06-10): the first 8 attempts only accept
+    // targets inside a ±60° forward cone around `headingAngle` AND at
+    // least WANDER_MIN_LEG away, so consecutive legs read as one
+    // continuous stroll instead of "stop, sense something, turn around"
+    // (uniform sampling reversed direction on most replans — measured 90
+    // reversals/min across 10 NPCs on staging). The last 4 attempts fall
+    // back to the old unconstrained sample so an NPC heading into the
+    // annulus boundary or a blocked corridor can still turn and escape.
+    //
     // Retry up to 12 times per plan call so a single blocked sample near a
     // town-center prop doesn't freeze movement for a full planning cycle.
+    const WANDER_MIN_LEG_SQ = 800 * 800;
+    const FORWARD_CONE = Math.PI / 3; // ±60°
     for (let attempt = 0; attempt < 12; attempt++) {
       const angle = Math.random() * Math.PI * 2;
       const radius = Math.sqrt(
@@ -1616,6 +1639,15 @@ class NpcSimulation {
       );
       const tx = TOWN_CENTER_X + Math.cos(angle) * radius;
       const ty = TOWN_CENTER_Y + Math.sin(angle) * radius;
+      if (attempt < 8) {
+        const legDx = tx - npc.x;
+        const legDy = ty - npc.y;
+        if (legDx * legDx + legDy * legDy < WANDER_MIN_LEG_SQ) continue;
+        let turn = Math.atan2(legDy, legDx) - npc.headingAngle;
+        while (turn > Math.PI) turn -= Math.PI * 2;
+        while (turn < -Math.PI) turn += Math.PI * 2;
+        if (Math.abs(turn) > FORWARD_CONE) continue;
+      }
       // Reject targets with < 3 tiles of clearance from any blocked tile —
       // prevents NPCs pathfinding to the edge of a building exclusion zone
       // where they then stop pressed against the visible wall.
@@ -1736,7 +1768,19 @@ class NpcSimulation {
         } else {
           npc.activity = 'idle'; npc.activityEmoji = '';
           npc.path = []; npc.pathIndex = 0;
-          npc.behaviorCooldown = 20 + Math.floor(Math.random() * 20);
+          // 2026-06-10: wander arrivals used to ALWAYS stand 4–8s
+          // (20+rand(20) ticks @5Hz) before replanning — combined with the
+          // uniform-random next target this produced the constant
+          // stop-stand-turn-around rhythm the user flagged. Now 60% of
+          // arrivals chain into the next leg after a natural beat
+          // (0.4–0.8s); 40% keep a shorter believable pause (2–5s).
+          // +1 on both bands: handleActivityDurations runs BEFORE
+          // planNpcBehaviors in the same tick, so the cooldown set here is
+          // decremented once immediately (Codex finding) — these values give
+          // an ACTUAL beat of 2–4 ticks (0.4–0.8s) / pause of 2–5s.
+          npc.behaviorCooldown = Math.random() < 0.6
+            ? 3 + Math.floor(Math.random() * 3)
+            : 11 + Math.floor(Math.random() * 15);
         }
       }
 
@@ -1858,6 +1902,8 @@ class NpcSimulation {
             npc.stuckTicks++;
           } else {
             npc.stuckTicks = 0;
+            // Applied-step heading for wander continuity (see headingAngle doc).
+            npc.headingAngle = Math.atan2(npc.y - prevY, npc.x - prevX);
           }
 
           // If collider blocked this step, abandon current path and pick a new
@@ -1923,6 +1969,8 @@ class NpcSimulation {
           npc.stuckTicks++;
         } else {
           npc.stuckTicks = 0;
+          // Applied-step heading for wander continuity (see headingAngle doc).
+          npc.headingAngle = Math.atan2(npc.y - prevY, npc.x - prevX);
         }
         if (clamped.hit || npc.stuckTicks >= 4) {
           npc.path = [];
