@@ -17,9 +17,11 @@
 | 8 | Manual cleanup | per-character Blender scripts (e.g. circlet/jewelry modeling) | free | See "Jewelry rule" below. Hermes needed several of these passes (weld islands, dress re-weight, skirt rig, MToon). |
 | 9 | Optimize | `assets:optimize` | free | 18.5 MB → ~2 MB (hermes-female is 1.7 MB). Bump `?v=N` on any mutated asset URL (CF edge TTL 7 days, no purge scope). |
 
-## Meshy emissive is LOAD-BEARING (learned 2026-06-10, the hard way)
+## THE JPEG RE-PACK TRAP (learned 2026-06-10 — mangled Helen's whole face for 3 builds)
 
-Meshy wires a duplicate of the base color into **Emission** — that's its baked-lighting trick. **Never remove it**: without the emissive boost the eyes sink into shadow pits and skin goes waxy (looked "horribly mangled"). Corollary: any texture retouch must be applied to **BOTH** the base-color image AND the emissive copy (`Image_3`), or the defect shines back through the emissive. New geometry added next to the body (hair pieces etc.) needs its own modest emissive (~0.35 of its base) or it reads dark beside the emissive-boosted body.
+Mixamo embeds the FBX textures as **JPEG** (`Image_0` base color, `Image_3` emissive). Blender's `Image.pack()` re-encodes the pixel buffer **in the image's source format** — so after ANY pixel edit, `pack()` re-JPEGs the texture and the 4:2:0 chroma subsampling puts **zigzag sawteeth on every sharp red edge across the WHOLE face** (lips, eye rims, nostrils), not just the edited region. The face looks "structurally demented" while the mesh is untouched. **Fix: set `img.file_format = 'PNG'` BEFORE `pack()`** on every modified image. Verify with a pixel-diff against the pristine FBX buffer: fraction-of-texels-changed must equal the edit mask only (~0.09% for the forehead patch).
+
+Misdiagnosis warning from the same incident: the mangle was FIRST blamed on removing the Emission wiring ("baked-light emissive"). WRONG — Meshy's `Image_3` emissive is ~black with sparse glow accents; it contributes almost nothing, and the doc briefly claimed otherwise. Keep emission as-is (it's original + tiny), but don't expect it to explain shading changes. When comparing before/after damage, compare AT THE SAME ZOOM — the "fix" looked real only because the verification screenshot was framed wider than the user's.
 
 ## Jewelry / fine-accessory rule
 
