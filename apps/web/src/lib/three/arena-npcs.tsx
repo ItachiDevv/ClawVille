@@ -142,6 +142,14 @@ const NPC_SCALE_CLAMP_MIN = TARGET_NPC_HEIGHT / 200; // ~0.225
 const NPC_SCALE_CLAMP_MAX = TARGET_NPC_HEIGHT / 0.5; // 90
 const NPC_LOD_NEAR_DIST_SQ = 2_500 * 2_500;
 const NPC_LOD_FAR_DIST_SQ = 5_000 * 5_000;
+
+// Natural ground speed of the shared walk clip at timeScale 1, tuned to the
+// local player (player-avatar.tsx SPEED = 550 wu/s; run = 550 × 1.5). Used
+// by the velocity-synced locomotion playback so entities translating slower
+// (server NPCs: 220 wu/s in npc-simulation.ts moveNpcs) take honest steps
+// instead of foot-sliding. Change player SPEED → update this in the same diff.
+const NPC_CLIP_GROUND_SPEED_WU_S = 550;
+const NPC_CLIP_RUN_MULT = 1.5;
 const NPC_LOD_VERY_FAR_DIST_SQ = 6_000 * 6_000;
 
 // Preload deferred to after SPECIES_MODEL declaration — see below.
@@ -984,6 +992,17 @@ export const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteStat
   // The verlet integrator is time-step independent so passing 2× dt is physically correct.
   const springDeltaAccRef = useRef(0);
   /**
+   * Velocity-synced locomotion playback ("reverse moonwalk" fix 2026-06-10).
+   * Windowed measurement: accumulate rendered distance + time over ~0.4s and
+   * derive speed from the bucket. Per-frame sampling was too noisy — demo-
+   * wander NPCs (local, no API) move in discrete steps, so frame deltas
+   * alternate spike/zero and an exponential smoother biased the scale low
+   * ("animations too slow for their movement", user report). The window
+   * averages across the discontinuities for honest gait in every mode.
+   */
+  const locoDistAccRef = useRef(0);
+  const locoTimeAccRef = useRef(0);
+  /**
    * Most recently applied surfaceClip for the possessed-player NPC.
    * useFrame computes desiredClip every frame (idle / jump / swim /
    * fly) and only calls setSurfaceClip when it changes — avoids
@@ -1287,7 +1306,32 @@ export const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteStat
         // isRunning: only the possessed player NPC sets d.isRunning (via moveNpc
         // when sprinting). Wandering NPCs leave it undefined → walk. Gated to
         // false while charging/airborne so a held sprint mid-leap doesn't run.
-        animator.updateMixerOnly(dt, npcLockIdle ? false : isMoving, npcLockIdle ? false : (d.isRunning ?? false));
+        const npcIsRunning = npcLockIdle ? false : (d.isRunning ?? false);
+
+        // Velocity-synced locomotion playback ("reverse moonwalk" fix,
+        // 2026-06-10). The walk clip's natural ground speed is the local
+        // player's 550 wu/s; server NPCs translate at 220 wu/s, so legs at
+        // timeScale 1 strode for 2.5× the ground actually covered. Measure
+        // rendered speed over a ~0.4s window (robust to discrete demo-wander
+        // steps AND 5Hz-interp jitter — per-frame sampling biased low on
+        // bursty motion) and scale playback by speed / clip natural speed.
+        // Idle frames flush the bucket without writing (idle never scaled).
+        if (isMoving && !npcLockIdle && dt > 0) {
+          locoDistAccRef.current += Math.sqrt(velMagSq);
+          locoTimeAccRef.current += dt;
+          if (locoTimeAccRef.current >= 0.4) {
+            const speedWuS = locoDistAccRef.current / locoTimeAccRef.current;
+            const refSpeed = NPC_CLIP_GROUND_SPEED_WU_S * (npcIsRunning ? NPC_CLIP_RUN_MULT : 1);
+            animator.setLocomotionTimeScale(speedWuS / refSpeed);
+            locoDistAccRef.current = 0;
+            locoTimeAccRef.current = 0;
+          }
+        } else if (locoTimeAccRef.current > 0) {
+          locoDistAccRef.current = 0;
+          locoTimeAccRef.current = 0;
+        }
+
+        animator.updateMixerOnly(dt, npcLockIdle ? false : isMoving, npcIsRunning);
 
         // WIN B — Spring-bone distance LOD (perf-audit-2026-05-22 Q4)
         // Close NPCs (<2500wu) run at 30Hz — better perceived quality for
