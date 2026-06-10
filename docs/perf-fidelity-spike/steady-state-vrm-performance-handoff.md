@@ -2,6 +2,18 @@
 
 Date: 2026-06-10
 
+> ## ⚠️ CURRENT IMPLEMENTATION STATE (verified against code 2026-06-10 — READ BEFORE ACTING)
+>
+> A code-level re-review found most of this doc's workstream items are ALREADY shipped or were tried-and-reverted on this exact codebase. Do not burn lab cycles re-proving them:
+>
+> 1. **`VRMUtils.combineSkeletons` — previously SHIPPED and REVERTED** (commit `314bd1ca`): it orphans raw humanoid bones (`parent === null`) and the Mixamo retargeter (`getNormalizedBoneNode`) produces a frozen T-pose. Rationale comment lives in `vrm-loader.ts` (`normaliseVRM`). Expected payoff is LOW anyway — Verse-Engine skeleton.update batching (3dStructure.md §6d) already captures the main win. If ever re-tested: apply inside `normaliseVRM` BEFORE animator construction (the animator caches Skeleton objects), and run the equip-on-load cosmetic fit regression. Cosmetic bone anchors WOULD survive (verified vs three-vrm 3.5.2 source — it rebinds meshes to new Skeletons but never detaches Bone nodes).
+> 2. **`VRMUtils.removeUnnecessaryVertices` — ALREADY SHIPPED**: runs on every VRM load in `normaliseVRM`. `removeUnnecessaryJoints` was also shipped then dropped (`a7d4bf60`, deprecated upstream). Measure only; nothing to implement.
+> 3. **Spring/expression/mixer budgets — ~80% SHIPPED**: distance-tiered spring throttle 30/15/7.5Hz (Win B), full mixer+spring skip past 5000wu (Phase 1.5), lookAt/expressionManager never ticked for NPCs (only the local player runs `vrm.update()`). The genuinely-new levers: (a) steady-state per-frame instrumentation (mixer vs spring vs matrixWorld vs skeleton-flush split — NONE exists; all current metrics are load-time), (b) narrowing the per-VRM `scene.updateMatrixWorld(true)` to the humanoid subtree.
+> 4. **MToon/WebGPU (`MToonNodeMaterial`)** — versions support it (three-vrm 3.5.2 + three 0.182) but the `@pixiv/three-vrm/nodes` import is REJECTED by Turbopack (`THREE_WEBGPU.tslFn`) — recorded in `vrm-loader.ts` imports. Also: world avatars are mostly standard glTF-PBR (not MToon) and Iris Xe runs the WebGL2 backend. Last priority stands; the gate is bundler compatibility, not package versions.
+> 5. **Instance/cache** — two-tier bytes+instance cache already built; parse queue + generation-counter cancellation + player priority lane shipped 2026-06-10 (3dStructure.md §9f). The remaining shared-immutable-parse idea conflicts with the palette cosmetic's material mutation — share geometry/textures only, clone materials, and regression-test palette equip on two same-path avatars.
+> 6. **Static-scene items** — MToon outline-off and `mergeStaticMeshesByMaterial` building merging are already live; remaining: cross-building material dedup, prop instancing (InstancedMesh with standard node materials is allowed — only InstancedMesh+ShaderMaterial is banned).
+> 7. **Measurement reality check**: the 8 committed browser runs contain ZERO steady-state numbers — `__FIDELITY_FRAME_SAMPLES__` is read by the harness but never written by anything. Build the ready-gated RAF sampler FIRST (wait `__W3D_READY && __W3D_TEXTURES_READY`, settle, then sample) before claiming any steady-state result.
+
 This is a handoff brief for a 3D-focused performance pass. The goal is not to optimize the loading screen or produce a lower-fidelity mode. The goal is to improve in-game performance after the world has loaded while preserving ClawVille's play quality, UI, labels, buildings, avatars, cosmetics, and pixel-art/low-res aesthetic.
 
 ## Primary Goal

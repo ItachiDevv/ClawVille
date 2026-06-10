@@ -7,7 +7,7 @@ import type { PlayerSnapshot } from '@clawville/shared';
  * session in the same room as the local viewer.
  *
  * Entity-interpolation fields (`prevX/prevY/ts/tsDelta`) mirror the NPC store
- * pattern so the same lerp math in remote-players.tsx / remote-player-proxy.tsx
+ * pattern so the same lerp math in remote-players.tsx
  * smooths network jitter into perfectly visible motion. Render 1 server tick
  * BEHIND real-time — alpha = clamp((Date.now() - ts) / tsDelta, 0, 1).
  *
@@ -19,7 +19,7 @@ import type { PlayerSnapshot } from '@clawville/shared';
 export interface RemotePlayerState {
   /**
    * Opaque per-session presence id from the wire (PlayerSnapshot.id). Used as
-   * the render/VRM-instance cache key and the LOD-set membership key. NOT a
+   * the render/VRM-instance cache key. NOT a
    * raw session token (the server only ever emits the hashed publicId).
    */
   id: string;
