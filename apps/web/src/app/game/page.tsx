@@ -6,7 +6,7 @@ import Link from 'next/link';
 import { useQuery } from '@tanstack/react-query';
 import { useAvatar } from '@/hooks/use-avatar';
 import { useMiladyEmbed } from '@/hooks/use-milady-embed';
-import { useNpcStream } from '@/hooks/use-npc-stream';
+import { useWorldStream } from '@/hooks/use-world-stream';
 import { useGameStore, type GameState } from '@/stores/game';
 import { useQuestStore } from '@/stores/quest';
 import { api } from '@/lib/api';
@@ -196,7 +196,6 @@ export default function GamePage() {
   // loading screen paints; acceptable vs an error spamming every load.
   const [mounted, setMounted] = useState(false);
   useEffect(() => { setMounted(true); }, []);
-
   // Kick off ALL heavy world assets the moment the page mounts, in parallel
   // with the dynamic() World3DCanvas chunk download. Without this, no asset
   // fetch starts until the canvas chunk resolves and React renders it — which
@@ -320,8 +319,11 @@ export default function GamePage() {
     }
   }, [agentSession]);
 
-  // NPC SSE stream — populates npc store for NPC mode possession + rendering
-  useNpcStream();
+  // Multiplayer world stream — REPLACES the legacy useNpcStream. Drives
+  // BOTH the NPC store (room-filtered roster + conversations + combats + events)
+  // AND the player store (remote viewers in the same room). Uploads the local
+  // avatar position at 5 Hz so other clients can render us.
+  useWorldStream();
 
   // Connect to research thought stream
   useResearchStream();
@@ -370,6 +372,7 @@ export default function GamePage() {
   // hasAvatar is safe to derive even while loading — avatar is undefined during
   // the fetch so this is false, which correctly hides avatar-gated UI until resolved.
   const hasAvatar = !!avatar;
+  const showDemoProgressHud = !agentConnected && !isLoading;
 
   // NOTE: do NOT conditionally return early here based on isLoading/authLoading.
   // An early-return swaps the whole React tree, which unmounts the first
@@ -423,7 +426,6 @@ export default function GamePage() {
       <ExchangeModal />
       <LeaderboardModal />
 
-      {/* Always visible — sidebar menu, minimap, controls for all visitors */}
       <SidebarMenu />
       <Minimap />
       <ControlModeToggle />
@@ -459,6 +461,12 @@ export default function GamePage() {
               below. NPC-mode chat is now handled by TalkToCharacterBar
               against /api/chat/transient (no Eliza, no DB, no rooms).
               See talk-to-character-bar.tsx + chat-transient.ts. */}
+        </>
+      )}
+      {showDemoProgressHud && (
+        <>
+          <AvatarStatusBar />
+          <QuestTracker forceVisible />
         </>
       )}
 

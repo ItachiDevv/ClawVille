@@ -1,0 +1,2599 @@
+{
+  "generatedAt": "2026-06-08T07:23:14.989Z",
+  "wallMs": 64438,
+  "config": {
+    "url": "http://localhost:3010/game?perf=1&cb=local-resident-streaming-3010",
+    "label": "local-resident-streaming-3010",
+    "outDir": "C:\\Users\\newma\\Documents\\Crypto\\ClawVille-perf-fidelity-spike\\docs\\perf-fidelity-spike\\browser-local-resident-streaming-3010",
+    "durationMs": 60000,
+    "width": 1920,
+    "height": 1080,
+    "chromePath": "C:/Program Files/Google/Chrome/Application/chrome.exe"
+  },
+  "consoleMessages": [
+    {
+      "type": "log",
+      "text": "[World3D] Low-end GPU detected: true"
+    },
+    {
+      "type": "log",
+      "text": "[World3D] GPU path: forceWebGL (WebGL2+TSL) — iOS:false noGPU:false lowEnd:true webgpuOverride:false"
+    },
+    {
+      "type": "error",
+      "text": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+    },
+    {
+      "type": "error",
+      "text": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+    },
+    {
+      "type": "error",
+      "text": "Failed to load resource: the server responded with a status of 401 ()"
+    },
+    {
+      "type": "warn",
+      "text": "[quest] claim network failure for on-the-board Error: Authentication required"
+    },
+    {
+      "type": "error",
+      "text": "Failed to load resource: the server responded with a status of 401 ()"
+    },
+    {
+      "type": "warn",
+      "text": "[quest] claim network failure for crossover Error: Authentication required"
+    },
+    {
+      "type": "log",
+      "text": "[building-merge] visual-creation: 6 → 6 meshes (0 buckets merged, 0 skipped)"
+    },
+    {
+      "type": "log",
+      "text": "[building-merge] code-development: 8 → 8 meshes (0 buckets merged, 0 skipped)"
+    },
+    {
+      "type": "log",
+      "text": "[body-anchor] mcp-tool-use: fullCenter=(-0.1,0.7) bodyCenter=(0.1,0.4) delta=(0.2,-0.3) worldDelta=(361,-484)wu"
+    },
+    {
+      "type": "log",
+      "text": "[building-merge] mcp-tool-use: 20 → 18 meshes (2 buckets merged, 0 skipped)"
+    },
+    {
+      "type": "log",
+      "text": "[building-merge] api-integrations: 3 → 3 meshes (0 buckets merged, 0 skipped)"
+    },
+    {
+      "type": "log",
+      "text": "[building-merge] app-publishing: 25 → 25 meshes (0 buckets merged, 0 skipped)"
+    },
+    {
+      "type": "log",
+      "text": "[building-merge] cron-automation: 5 → 5 meshes (0 buckets merged, 0 skipped)"
+    },
+    {
+      "type": "log",
+      "text": "[building-merge] deployment-ops: 1 → 1 meshes (0 buckets merged, 0 skipped)"
+    },
+    {
+      "type": "log",
+      "text": "[building-merge] claw-arcade: 34 → 30 meshes (4 buckets merged, 0 skipped)"
+    },
+    {
+      "type": "log",
+      "text": "[building-merge] cove: 5 → 4 meshes (1 buckets merged, 0 skipped)"
+    },
+    {
+      "type": "log",
+      "text": "[building-merge] agent-security: 4 → 4 meshes (0 buckets merged, 0 skipped)"
+    },
+    {
+      "type": "log",
+      "text": "[body-anchor] memory-rag: fullCenter=(0.0,0.6) bodyCenter=(0.0,0.0) delta=(0.0,-0.6) worldDelta=(0,-608)wu"
+    },
+    {
+      "type": "log",
+      "text": "[building-merge] memory-rag: 7 → 7 meshes (0 buckets merged, 0 skipped)"
+    },
+    {
+      "type": "log",
+      "text": "[World3D] Using WebGPURenderer (backend: yy)"
+    },
+    {
+      "type": "log",
+      "text": "[World3D] StaggeredTextureUpload: uploading 179 textures via rIC budget"
+    },
+    {
+      "type": "warn",
+      "text": "[VRMNpcMesh] animator ref null at update time hermes-cyrus hermes_male"
+    }
+  ],
+  "report": {
+    "url": "http://localhost:3010/game?perf=1&cb=local-resident-streaming-3010",
+    "title": "ClawVille — Where Agents Learn Skills",
+    "ready": false,
+    "canvasReady": true,
+    "texturesReady": false,
+    "qualityTier": 4,
+    "dpr": 0.65,
+    "renderInfo": {
+      "calls": 1920,
+      "triangles": 679667,
+      "lines": 512,
+      "points": 0,
+      "programs": null
+    },
+    "buttonCount": 21,
+    "buttons": [
+      {
+        "text": "›",
+        "aria": "Collapse sidebar",
+        "visible": true,
+        "rect": {
+          "x": 1868,
+          "y": 72,
+          "w": 22,
+          "h": 22
+        }
+      },
+      {
+        "text": "CREATE AGENT",
+        "aria": null,
+        "visible": true,
+        "rect": {
+          "x": 1694,
+          "y": 187,
+          "w": 196,
+          "h": 27
+        }
+      },
+      {
+        "text": "🔌\nAgent",
+        "aria": "Agent",
+        "visible": true,
+        "rect": {
+          "x": 1688,
+          "y": 280,
+          "w": 208,
+          "h": 41
+        }
+      },
+      {
+        "text": "🐾\nMy Agent",
+        "aria": "My Agent",
+        "visible": true,
+        "rect": {
+          "x": 1688,
+          "y": 375,
+          "w": 208,
+          "h": 41
+        }
+      },
+      {
+        "text": "🔧\nSkill Forge",
+        "aria": "Skill Forge",
+        "visible": true,
+        "rect": {
+          "x": 1688,
+          "y": 416,
+          "w": 208,
+          "h": 41
+        }
+      },
+      {
+        "text": "🛒\nMarketplace",
+        "aria": "Marketplace",
+        "visible": true,
+        "rect": {
+          "x": 1688,
+          "y": 511,
+          "w": 208,
+          "h": 41
+        }
+      },
+      {
+        "text": "⚖\nBazaar",
+        "aria": "Bazaar",
+        "visible": true,
+        "rect": {
+          "x": 1688,
+          "y": 553,
+          "w": 208,
+          "h": 41
+        }
+      },
+      {
+        "text": "🔨\nAuction House",
+        "aria": "Auction House",
+        "visible": true,
+        "rect": {
+          "x": 1688,
+          "y": 594,
+          "w": 208,
+          "h": 41
+        }
+      },
+      {
+        "text": "✨\nCosmetics",
+        "aria": "Cosmetics",
+        "visible": true,
+        "rect": {
+          "x": 1688,
+          "y": 636,
+          "w": 208,
+          "h": 41
+        }
+      },
+      {
+        "text": "📜\nQuest Board",
+        "aria": "Quest Board",
+        "visible": true,
+        "rect": {
+          "x": 1688,
+          "y": 731,
+          "w": 208,
+          "h": 41
+        }
+      },
+      {
+        "text": "📌\nBounty Board",
+        "aria": "Bounty Board",
+        "visible": true,
+        "rect": {
+          "x": 1688,
+          "y": 772,
+          "w": 208,
+          "h": 41
+        }
+      },
+      {
+        "text": "🏆\nLeaderboard",
+        "aria": "Leaderboard",
+        "visible": true,
+        "rect": {
+          "x": 1688,
+          "y": 814,
+          "w": 208,
+          "h": 41
+        }
+      },
+      {
+        "text": "🌐\nPublic Leaderboard",
+        "aria": "Open the public agent leaderboard in a new tab",
+        "visible": true,
+        "rect": {
+          "x": 1688,
+          "y": 855,
+          "w": 208,
+          "h": 41
+        }
+      },
+      {
+        "text": "📋\nActivity Log",
+        "aria": "Activity Log",
+        "visible": true,
+        "rect": {
+          "x": 1688,
+          "y": 897,
+          "w": 208,
+          "h": 41
+        }
+      },
+      {
+        "text": "❓\nHow to Play\n▸",
+        "aria": "How to Play",
+        "visible": true,
+        "rect": {
+          "x": 1688,
+          "y": 992,
+          "w": 208,
+          "h": 41
+        }
+      },
+      {
+        "text": "🔑\nLog In",
+        "aria": "Log In",
+        "visible": true,
+        "rect": {
+          "x": 1688,
+          "y": 1033,
+          "w": 208,
+          "h": 41
+        }
+      },
+      {
+        "text": "✨\nSign Up",
+        "aria": "Sign Up",
+        "visible": true,
+        "rect": {
+          "x": 1688,
+          "y": 1075,
+          "w": 208,
+          "h": 41
+        }
+      },
+      {
+        "text": "Explore",
+        "aria": null,
+        "visible": true,
+        "rect": {
+          "x": 877,
+          "y": 155,
+          "w": 75,
+          "h": 28
+        }
+      },
+      {
+        "text": "NPC Mode",
+        "aria": null,
+        "visible": true,
+        "rect": {
+          "x": 952,
+          "y": 155,
+          "w": 90,
+          "h": 28
+        }
+      },
+      {
+        "text": "💗\nASK NORI",
+        "aria": "Ask Nori the Town Guide",
+        "visible": true,
+        "rect": {
+          "x": 1780,
+          "y": 16,
+          "w": 124,
+          "h": 36
+        }
+      },
+      {
+        "text": "👋\nSay Hi to Nori\nClick on Nori the Town Guide near the town center and say hi.\n0/30",
+        "aria": null,
+        "visible": true,
+        "rect": {
+          "x": 16,
+          "y": 256,
+          "w": 240,
+          "h": 100
+        }
+      }
+    ],
+    "bodyText": [
+      "Log In",
+      "Sign Up",
+      "ClawVille",
+      "THE DEPTHS",
+      "⚓",
+      "›",
+      "NO AGENT BOUND",
+      "Enter the world by selecting or creating an agent.",
+      "CREATE AGENT",
+      "WORLD",
+      "ENTER · CONNECT",
+      "🔌",
+      "Agent",
+      "AGENT",
+      "CONFIGURE · FORGE",
+      "🐾",
+      "My Agent",
+      "🔧",
+      "Skill Forge",
+      "ECONOMY",
+      "TRADE · BUY · SELL",
+      "🛒",
+      "Marketplace",
+      "⚖",
+      "Bazaar",
+      "🔨",
+      "Auction House",
+      "✨",
+      "Cosmetics",
+      "QUESTS",
+      "EARN · COMPETE",
+      "📜",
+      "Quest Board",
+      "📌",
+      "Bounty Board",
+      "🏆",
+      "Leaderboard",
+      "🌐",
+      "Public Leaderboard",
+      "📋",
+      "Activity Log",
+      "SYSTEM",
+      "HELP · ACCOUNT",
+      "❓",
+      "How to Play",
+      "▸",
+      "🔑",
+      "Log In",
+      "✨",
+      "Sign Up",
+      "SONAR",
+      "5760,7060",
+      "N",
+      "S",
+      "W",
+      "E",
+      "CLICK TO MOVE",
+      "0/12 visited",
+      "Explore",
+      "NPC Mode",
+      "32 FPS",
+      "·",
+      "31.5/45.9 ms",
+      "·",
+      "0 lt/s",
+      "·",
+      "197 MB",
+      "·",
+      "149 draws",
+      "·",
+      "680k tris",
+      "·",
+      "250 objs",
+      "·",
+      "70 pipes",
+      "·",
+      "WebGPU",
+      "·",
+      "0.3 ms sse:parse",
+      "💗",
+      "ASK NORI",
+      "🧭",
+      "Demo Player",
+      "Explore",
+      "🪙",
+      "100 demo",
+      "STR",
+      "8",
+      "DEF",
+      "8",
+      "SPD",
+      "10",
+      "MAP",
+      "0/12",
+      "Create or connect an agent to save progression.",
+      "👋",
+      "Say Hi to Nori",
+      "Click on Nori the Town Guide near the town center and say hi.",
+      "0/30"
+    ],
+    "canvasCount": 1,
+    "chunks": {
+      "terrain": 1,
+      "buildings": 1,
+      "wandering-npcs": 1,
+      "location-npcs": 1,
+      "remote-players": 1,
+      "quest-npc": 1,
+      "town-guide": 1,
+      "bazaar-stall": 1,
+      "marketplace-stall": 1,
+      "auction-podium": 1,
+      "quest-bounty-pavilion": 1,
+      "town-directory-sign": 1
+    },
+    "primitiveBuildingMeshCount": 0,
+    "primitiveBuildingMeshes": [],
+    "proxyLikeCount": 0,
+    "proxyLike": [],
+    "geometryTypes": {
+      "PlaneGeometry": 1,
+      "BufferGeometry": 234,
+      "CylinderGeometry": 2,
+      "SphereGeometry": 1,
+      "TorusGeometry": 2,
+      "IcosahedronGeometry": 3,
+      "BoxGeometry": 6,
+      "OctahedronGeometry": 1
+    },
+    "vrmMetrics": [
+      {
+        "path": "/avatars/milady-official-7.vrm",
+        "instanceId": "milady-miu",
+        "bytes": 288688,
+        "fetchWaitMs": 52.2,
+        "queueWaitMs": 0.4,
+        "sliceMs": 0.2,
+        "parseMs": 8393.9,
+        "normaliseMs": 4,
+        "totalMs": 8450.7,
+        "sceneBefore": {
+          "objects": 75,
+          "meshes": 6,
+          "skinnedMeshes": 6,
+          "geometries": 6,
+          "materials": 5,
+          "textures": 2
+        },
+        "sceneAfter": {
+          "objects": 75,
+          "meshes": 6,
+          "skinnedMeshes": 6,
+          "geometries": 6,
+          "materials": 5,
+          "textures": 2
+        },
+        "normalise": {
+          "removeUnnecessaryVerticesMs": 2.1,
+          "rotateVRM0Ms": 0.2,
+          "outlineDisableMs": 0.8,
+          "frustumCullingMs": 0.1,
+          "springBoneScaleMs": 0.1
+        }
+      },
+      {
+        "path": "/avatars/milady-official-8.vrm",
+        "instanceId": "milady-kyoko",
+        "bytes": 335104,
+        "fetchWaitMs": 53.5,
+        "queueWaitMs": 11889.4,
+        "sliceMs": 0.2,
+        "parseMs": 303.8,
+        "normaliseMs": 2.8,
+        "totalMs": 12249.7,
+        "sceneBefore": {
+          "objects": 79,
+          "meshes": 9,
+          "skinnedMeshes": 9,
+          "geometries": 9,
+          "materials": 8,
+          "textures": 3
+        },
+        "sceneAfter": {
+          "objects": 79,
+          "meshes": 9,
+          "skinnedMeshes": 9,
+          "geometries": 9,
+          "materials": 8,
+          "textures": 3
+        },
+        "normalise": {
+          "removeUnnecessaryVerticesMs": 2.5,
+          "rotateVRM0Ms": 0.1,
+          "outlineDisableMs": 0,
+          "frustumCullingMs": 0,
+          "springBoneScaleMs": 0
+        }
+      },
+      {
+        "path": "/avatars/milady-official-2.vrm",
+        "instanceId": "milady-vivi",
+        "bytes": 170344,
+        "fetchWaitMs": 53.3,
+        "queueWaitMs": 12301.8,
+        "sliceMs": 0.2,
+        "parseMs": 31.5,
+        "normaliseMs": 0.4,
+        "totalMs": 12387.2,
+        "sceneBefore": {
+          "objects": 72,
+          "meshes": 4,
+          "skinnedMeshes": 4,
+          "geometries": 4,
+          "materials": 3,
+          "textures": 2
+        },
+        "sceneAfter": {
+          "objects": 72,
+          "meshes": 4,
+          "skinnedMeshes": 4,
+          "geometries": 4,
+          "materials": 3,
+          "textures": 2
+        },
+        "normalise": {
+          "removeUnnecessaryVerticesMs": 0.4,
+          "rotateVRM0Ms": 0,
+          "outlineDisableMs": 0,
+          "frustumCullingMs": 0,
+          "springBoneScaleMs": 0
+        }
+      },
+      {
+        "path": "/avatars/milady-official-1.vrm",
+        "instanceId": "milady-aria",
+        "bytes": 242228,
+        "fetchWaitMs": 53.2,
+        "queueWaitMs": 12445.6,
+        "sliceMs": 0.1,
+        "parseMs": 77.4,
+        "normaliseMs": 0.7,
+        "totalMs": 12577,
+        "sceneBefore": {
+          "objects": 81,
+          "meshes": 12,
+          "skinnedMeshes": 12,
+          "geometries": 12,
+          "materials": 11,
+          "textures": 2
+        },
+        "sceneAfter": {
+          "objects": 81,
+          "meshes": 12,
+          "skinnedMeshes": 12,
+          "geometries": 12,
+          "materials": 11,
+          "textures": 2
+        },
+        "normalise": {
+          "removeUnnecessaryVerticesMs": 0.7,
+          "rotateVRM0Ms": 0,
+          "outlineDisableMs": 0,
+          "frustumCullingMs": 0,
+          "springBoneScaleMs": 0
+        }
+      },
+      {
+        "path": "/avatars/milady-official-3.vrm",
+        "instanceId": "milady-suki",
+        "bytes": 239636,
+        "fetchWaitMs": 53,
+        "queueWaitMs": 12637.2,
+        "sliceMs": 0.2,
+        "parseMs": 55,
+        "normaliseMs": 0.3,
+        "totalMs": 12745.7,
+        "sceneBefore": {
+          "objects": 76,
+          "meshes": 7,
+          "skinnedMeshes": 7,
+          "geometries": 7,
+          "materials": 6,
+          "textures": 3
+        },
+        "sceneAfter": {
+          "objects": 76,
+          "meshes": 7,
+          "skinnedMeshes": 7,
+          "geometries": 7,
+          "materials": 6,
+          "textures": 3
+        },
+        "normalise": {
+          "removeUnnecessaryVerticesMs": 0.2,
+          "rotateVRM0Ms": 0,
+          "outlineDisableMs": 0,
+          "frustumCullingMs": 0,
+          "springBoneScaleMs": 0
+        }
+      },
+      {
+        "path": "/avatars/milady-official-4.vrm",
+        "instanceId": "milady-hana",
+        "bytes": 291964,
+        "fetchWaitMs": 52.9,
+        "queueWaitMs": 15052.6,
+        "sliceMs": 0,
+        "parseMs": 39.7,
+        "normaliseMs": 0.5,
+        "totalMs": 15145.7,
+        "sceneBefore": {
+          "objects": 77,
+          "meshes": 8,
+          "skinnedMeshes": 8,
+          "geometries": 8,
+          "materials": 7,
+          "textures": 2
+        },
+        "sceneAfter": {
+          "objects": 77,
+          "meshes": 8,
+          "skinnedMeshes": 8,
+          "geometries": 8,
+          "materials": 7,
+          "textures": 2
+        },
+        "normalise": {
+          "removeUnnecessaryVerticesMs": 0.4,
+          "rotateVRM0Ms": 0,
+          "outlineDisableMs": 0,
+          "frustumCullingMs": 0,
+          "springBoneScaleMs": 0
+        }
+      },
+      {
+        "path": "/avatars/milady-official-5.vrm",
+        "instanceId": "milady-yumi",
+        "bytes": 658476,
+        "fetchWaitMs": 52.9,
+        "queueWaitMs": 15195.6,
+        "sliceMs": 0.5,
+        "parseMs": 2049.9,
+        "normaliseMs": 0.3,
+        "totalMs": 17299.2,
+        "sceneBefore": {
+          "objects": 78,
+          "meshes": 8,
+          "skinnedMeshes": 8,
+          "geometries": 8,
+          "materials": 7,
+          "textures": 5
+        },
+        "sceneAfter": {
+          "objects": 78,
+          "meshes": 8,
+          "skinnedMeshes": 8,
+          "geometries": 8,
+          "materials": 7,
+          "textures": 5
+        },
+        "normalise": {
+          "removeUnnecessaryVerticesMs": 0.3,
+          "rotateVRM0Ms": 0,
+          "outlineDisableMs": 0,
+          "frustumCullingMs": 0,
+          "springBoneScaleMs": 0
+        }
+      },
+      {
+        "path": "/avatars/milady-official-6.vrm",
+        "instanceId": "milady-ren",
+        "bytes": 222104,
+        "fetchWaitMs": 52.9,
+        "queueWaitMs": 17349.5,
+        "sliceMs": 0.3,
+        "parseMs": 30.1,
+        "normaliseMs": 0.4,
+        "totalMs": 17433.2,
+        "sceneBefore": {
+          "objects": 76,
+          "meshes": 7,
+          "skinnedMeshes": 7,
+          "geometries": 7,
+          "materials": 6,
+          "textures": 3
+        },
+        "sceneAfter": {
+          "objects": 76,
+          "meshes": 7,
+          "skinnedMeshes": 7,
+          "geometries": 7,
+          "materials": 6,
+          "textures": 3
+        },
+        "normalise": {
+          "removeUnnecessaryVerticesMs": 0.2,
+          "rotateVRM0Ms": 0,
+          "outlineDisableMs": 0,
+          "frustumCullingMs": 0.2,
+          "springBoneScaleMs": 0
+        }
+      },
+      {
+        "path": "/avatars/hermes-female.vrm",
+        "instanceId": "hermes-mira",
+        "bytes": 1701640,
+        "fetchWaitMs": 52.9,
+        "queueWaitMs": 17735.1,
+        "sliceMs": 0.7,
+        "parseMs": 67,
+        "normaliseMs": 6.3,
+        "totalMs": 17862,
+        "sceneBefore": {
+          "objects": 84,
+          "meshes": 1,
+          "skinnedMeshes": 1,
+          "geometries": 1,
+          "materials": 1,
+          "textures": 3
+        },
+        "sceneAfter": {
+          "objects": 84,
+          "meshes": 1,
+          "skinnedMeshes": 1,
+          "geometries": 1,
+          "materials": 1,
+          "textures": 3
+        },
+        "normalise": {
+          "removeUnnecessaryVerticesMs": 6.2,
+          "rotateVRM0Ms": 0,
+          "outlineDisableMs": 0.1,
+          "frustumCullingMs": 0,
+          "springBoneScaleMs": 0
+        }
+      },
+      {
+        "path": "/avatars/hermes-male.vrm",
+        "instanceId": "hermes-cyrus",
+        "bytes": 1346296,
+        "fetchWaitMs": 52.8,
+        "queueWaitMs": 17917.4,
+        "sliceMs": 1,
+        "parseMs": 78.9,
+        "normaliseMs": 3.4,
+        "totalMs": 18053.5,
+        "sceneBefore": {
+          "objects": 84,
+          "meshes": 1,
+          "skinnedMeshes": 1,
+          "geometries": 1,
+          "materials": 1,
+          "textures": 3
+        },
+        "sceneAfter": {
+          "objects": 84,
+          "meshes": 1,
+          "skinnedMeshes": 1,
+          "geometries": 1,
+          "materials": 1,
+          "textures": 3
+        },
+        "normalise": {
+          "removeUnnecessaryVerticesMs": 3.4,
+          "rotateVRM0Ms": 0,
+          "outlineDisableMs": 0,
+          "frustumCullingMs": 0,
+          "springBoneScaleMs": 0
+        }
+      },
+      {
+        "path": "/avatars/tekk.vrm",
+        "instanceId": "hermes-tekk",
+        "bytes": 2045416,
+        "fetchWaitMs": 52.7,
+        "queueWaitMs": 18111.5,
+        "sliceMs": 1.4,
+        "parseMs": 488,
+        "normaliseMs": 5.6,
+        "totalMs": 18659.2,
+        "sceneBefore": {
+          "objects": 84,
+          "meshes": 1,
+          "skinnedMeshes": 1,
+          "geometries": 1,
+          "materials": 1,
+          "textures": 3
+        },
+        "sceneAfter": {
+          "objects": 84,
+          "meshes": 1,
+          "skinnedMeshes": 1,
+          "geometries": 1,
+          "materials": 1,
+          "textures": 3
+        },
+        "normalise": {
+          "removeUnnecessaryVerticesMs": 5.6,
+          "rotateVRM0Ms": 0,
+          "outlineDisableMs": 0,
+          "frustumCullingMs": 0,
+          "springBoneScaleMs": 0
+        }
+      },
+      {
+        "path": "/avatars/eliza-chibi.vrm?v=2",
+        "instanceId": "chibi-eliza",
+        "bytes": 5547172,
+        "fetchWaitMs": 52.6,
+        "queueWaitMs": 18715.3,
+        "sliceMs": 3.4,
+        "parseMs": 187.4,
+        "normaliseMs": 2.2,
+        "totalMs": 18960.9,
+        "sceneBefore": {
+          "objects": 68,
+          "meshes": 1,
+          "skinnedMeshes": 1,
+          "geometries": 1,
+          "materials": 1,
+          "textures": 1
+        },
+        "sceneAfter": {
+          "objects": 68,
+          "meshes": 1,
+          "skinnedMeshes": 1,
+          "geometries": 1,
+          "materials": 1,
+          "textures": 1
+        },
+        "normalise": {
+          "removeUnnecessaryVerticesMs": 2,
+          "rotateVRM0Ms": 0,
+          "outlineDisableMs": 0.1,
+          "frustumCullingMs": 0,
+          "springBoneScaleMs": 0
+        }
+      },
+      {
+        "path": "/avatars/milady-chibi.vrm?v=2",
+        "instanceId": "chibi-milady",
+        "bytes": 5843140,
+        "fetchWaitMs": 0.2,
+        "queueWaitMs": 0,
+        "sliceMs": 2.2,
+        "parseMs": 316,
+        "normaliseMs": 3.4,
+        "totalMs": 321.8,
+        "sceneBefore": {
+          "objects": 68,
+          "meshes": 1,
+          "skinnedMeshes": 1,
+          "geometries": 1,
+          "materials": 1,
+          "textures": 1
+        },
+        "sceneAfter": {
+          "objects": 68,
+          "meshes": 1,
+          "skinnedMeshes": 1,
+          "geometries": 1,
+          "materials": 1,
+          "textures": 1
+        },
+        "normalise": {
+          "removeUnnecessaryVerticesMs": 3.4,
+          "rotateVRM0Ms": 0,
+          "outlineDisableMs": 0,
+          "frustumCullingMs": 0,
+          "springBoneScaleMs": 0
+        }
+      }
+    ],
+    "textureUploadMetrics": {
+      "mode": "idle",
+      "totalTextures": 179,
+      "startedAt": 12905.600000023842,
+      "slices": [
+        {
+          "mode": "idle",
+          "startMs": 13126,
+          "durationMs": 0.1,
+          "count": 1,
+          "done": 1
+        },
+        {
+          "mode": "idle",
+          "startMs": 16776,
+          "durationMs": 0,
+          "count": 1,
+          "done": 2
+        },
+        {
+          "mode": "idle",
+          "startMs": 16984,
+          "durationMs": 0,
+          "count": 1,
+          "done": 3
+        },
+        {
+          "mode": "idle",
+          "startMs": 17188,
+          "durationMs": 0.1,
+          "count": 1,
+          "done": 4
+        },
+        {
+          "mode": "idle",
+          "startMs": 17408,
+          "durationMs": 0,
+          "count": 1,
+          "done": 5
+        },
+        {
+          "mode": "idle",
+          "startMs": 19712,
+          "durationMs": 0,
+          "count": 1,
+          "done": 6
+        },
+        {
+          "mode": "idle",
+          "startMs": 21910,
+          "durationMs": 0.2,
+          "count": 1,
+          "done": 7
+        },
+        {
+          "mode": "idle",
+          "startMs": 22112,
+          "durationMs": 0.1,
+          "count": 1,
+          "done": 8
+        },
+        {
+          "mode": "idle",
+          "startMs": 22399,
+          "durationMs": 0,
+          "count": 1,
+          "done": 9
+        },
+        {
+          "mode": "idle",
+          "startMs": 22651,
+          "durationMs": 0,
+          "count": 1,
+          "done": 10
+        },
+        {
+          "mode": "idle",
+          "startMs": 23162,
+          "durationMs": 0,
+          "count": 1,
+          "done": 11
+        },
+        {
+          "mode": "idle",
+          "startMs": 23452,
+          "durationMs": 0,
+          "count": 1,
+          "done": 12
+        },
+        {
+          "mode": "idle",
+          "startMs": 23656,
+          "durationMs": 0,
+          "count": 1,
+          "done": 13
+        },
+        {
+          "mode": "idle",
+          "startMs": 23994,
+          "durationMs": 0,
+          "count": 1,
+          "done": 14
+        },
+        {
+          "mode": "idle",
+          "startMs": 24475,
+          "durationMs": 0.1,
+          "count": 1,
+          "done": 15
+        },
+        {
+          "mode": "idle",
+          "startMs": 24688,
+          "durationMs": 0.4,
+          "count": 1,
+          "done": 16
+        },
+        {
+          "mode": "idle",
+          "startMs": 24911,
+          "durationMs": 0.9,
+          "count": 1,
+          "done": 17
+        },
+        {
+          "mode": "idle",
+          "startMs": 25163,
+          "durationMs": 4.4,
+          "count": 1,
+          "done": 18
+        },
+        {
+          "mode": "idle",
+          "startMs": 25377,
+          "durationMs": 4.8,
+          "count": 1,
+          "done": 19
+        },
+        {
+          "mode": "idle",
+          "startMs": 25757,
+          "durationMs": 4.1,
+          "count": 1,
+          "done": 20
+        },
+        {
+          "mode": "idle",
+          "startMs": 26918,
+          "durationMs": 4.6,
+          "count": 1,
+          "done": 21
+        },
+        {
+          "mode": "idle",
+          "startMs": 27176,
+          "durationMs": 4.3,
+          "count": 1,
+          "done": 22
+        },
+        {
+          "mode": "idle",
+          "startMs": 27414,
+          "durationMs": 0.4,
+          "count": 1,
+          "done": 23
+        },
+        {
+          "mode": "idle",
+          "startMs": 27702,
+          "durationMs": 0.3,
+          "count": 1,
+          "done": 24
+        },
+        {
+          "mode": "idle",
+          "startMs": 27907,
+          "durationMs": 0.2,
+          "count": 1,
+          "done": 25
+        },
+        {
+          "mode": "idle",
+          "startMs": 28112,
+          "durationMs": 0,
+          "count": 1,
+          "done": 26
+        },
+        {
+          "mode": "idle",
+          "startMs": 28352,
+          "durationMs": 0,
+          "count": 1,
+          "done": 27
+        },
+        {
+          "mode": "idle",
+          "startMs": 28564,
+          "durationMs": 0.1,
+          "count": 1,
+          "done": 28
+        },
+        {
+          "mode": "idle",
+          "startMs": 28801,
+          "durationMs": 0,
+          "count": 1,
+          "done": 29
+        },
+        {
+          "mode": "idle",
+          "startMs": 29002,
+          "durationMs": 4.1,
+          "count": 1,
+          "done": 30
+        },
+        {
+          "mode": "idle",
+          "startMs": 29252,
+          "durationMs": 3.9,
+          "count": 1,
+          "done": 31
+        },
+        {
+          "mode": "idle",
+          "startMs": 29500,
+          "durationMs": 2,
+          "count": 1,
+          "done": 32
+        },
+        {
+          "mode": "idle",
+          "startMs": 29719,
+          "durationMs": 2.7,
+          "count": 1,
+          "done": 33
+        },
+        {
+          "mode": "idle",
+          "startMs": 29945,
+          "durationMs": 3.4,
+          "count": 1,
+          "done": 34
+        },
+        {
+          "mode": "idle",
+          "startMs": 30169,
+          "durationMs": 0.3,
+          "count": 1,
+          "done": 35
+        },
+        {
+          "mode": "idle",
+          "startMs": 30414,
+          "durationMs": 0.5,
+          "count": 1,
+          "done": 36
+        },
+        {
+          "mode": "idle",
+          "startMs": 30647,
+          "durationMs": 0.2,
+          "count": 1,
+          "done": 37
+        },
+        {
+          "mode": "idle",
+          "startMs": 30873,
+          "durationMs": 0.4,
+          "count": 1,
+          "done": 38
+        },
+        {
+          "mode": "idle",
+          "startMs": 31107,
+          "durationMs": 0.2,
+          "count": 1,
+          "done": 39
+        },
+        {
+          "mode": "idle",
+          "startMs": 31316,
+          "durationMs": 0.4,
+          "count": 1,
+          "done": 40
+        },
+        {
+          "mode": "idle",
+          "startMs": 31615,
+          "durationMs": 0.3,
+          "count": 1,
+          "done": 41
+        },
+        {
+          "mode": "idle",
+          "startMs": 31852,
+          "durationMs": 0.7,
+          "count": 1,
+          "done": 42
+        },
+        {
+          "mode": "idle",
+          "startMs": 32061,
+          "durationMs": 0.4,
+          "count": 1,
+          "done": 43
+        },
+        {
+          "mode": "idle",
+          "startMs": 32306,
+          "durationMs": 0.3,
+          "count": 1,
+          "done": 44
+        },
+        {
+          "mode": "idle",
+          "startMs": 32571,
+          "durationMs": 0.5,
+          "count": 1,
+          "done": 45
+        },
+        {
+          "mode": "idle",
+          "startMs": 32823,
+          "durationMs": 0.4,
+          "count": 1,
+          "done": 46
+        },
+        {
+          "mode": "idle",
+          "startMs": 33101,
+          "durationMs": 0.1,
+          "count": 1,
+          "done": 47
+        },
+        {
+          "mode": "idle",
+          "startMs": 33305,
+          "durationMs": 0.5,
+          "count": 1,
+          "done": 48
+        },
+        {
+          "mode": "idle",
+          "startMs": 33580,
+          "durationMs": 0.3,
+          "count": 1,
+          "done": 49
+        },
+        {
+          "mode": "idle",
+          "startMs": 33799,
+          "durationMs": 0.4,
+          "count": 1,
+          "done": 50
+        },
+        {
+          "mode": "idle",
+          "startMs": 34047,
+          "durationMs": 0.2,
+          "count": 1,
+          "done": 51
+        },
+        {
+          "mode": "idle",
+          "startMs": 34297,
+          "durationMs": 0.4,
+          "count": 1,
+          "done": 52
+        },
+        {
+          "mode": "idle",
+          "startMs": 34547,
+          "durationMs": 0.3,
+          "count": 1,
+          "done": 53
+        },
+        {
+          "mode": "idle",
+          "startMs": 34808,
+          "durationMs": 0.2,
+          "count": 1,
+          "done": 54
+        },
+        {
+          "mode": "idle",
+          "startMs": 35032,
+          "durationMs": 0.3,
+          "count": 1,
+          "done": 55
+        },
+        {
+          "mode": "idle",
+          "startMs": 35269,
+          "durationMs": 0.3,
+          "count": 1,
+          "done": 56
+        },
+        {
+          "mode": "idle",
+          "startMs": 35507,
+          "durationMs": 0.3,
+          "count": 1,
+          "done": 57
+        },
+        {
+          "mode": "idle",
+          "startMs": 35735,
+          "durationMs": 0.3,
+          "count": 1,
+          "done": 58
+        },
+        {
+          "mode": "idle",
+          "startMs": 35938,
+          "durationMs": 1.3,
+          "count": 1,
+          "done": 59
+        },
+        {
+          "mode": "idle",
+          "startMs": 36195,
+          "durationMs": 1.4,
+          "count": 1,
+          "done": 60
+        },
+        {
+          "mode": "idle",
+          "startMs": 36417,
+          "durationMs": 1.1,
+          "count": 1,
+          "done": 61
+        },
+        {
+          "mode": "idle",
+          "startMs": 36663,
+          "durationMs": 2.3,
+          "count": 1,
+          "done": 62
+        },
+        {
+          "mode": "idle",
+          "startMs": 36912,
+          "durationMs": 4,
+          "count": 1,
+          "done": 63
+        },
+        {
+          "mode": "idle",
+          "startMs": 37162,
+          "durationMs": 0.3,
+          "count": 1,
+          "done": 64
+        },
+        {
+          "mode": "idle",
+          "startMs": 37442,
+          "durationMs": 4.6,
+          "count": 1,
+          "done": 65
+        },
+        {
+          "mode": "idle",
+          "startMs": 37710,
+          "durationMs": 1.2,
+          "count": 1,
+          "done": 66
+        },
+        {
+          "mode": "idle",
+          "startMs": 37951,
+          "durationMs": 5.1,
+          "count": 1,
+          "done": 67
+        },
+        {
+          "mode": "idle",
+          "startMs": 38205,
+          "durationMs": 0.9,
+          "count": 1,
+          "done": 68
+        },
+        {
+          "mode": "idle",
+          "startMs": 38654,
+          "durationMs": 2.3,
+          "count": 1,
+          "done": 69
+        },
+        {
+          "mode": "idle",
+          "startMs": 38901,
+          "durationMs": 0.7,
+          "count": 1,
+          "done": 70
+        },
+        {
+          "mode": "idle",
+          "startMs": 39157,
+          "durationMs": 0.4,
+          "count": 1,
+          "done": 71
+        },
+        {
+          "mode": "idle",
+          "startMs": 39418,
+          "durationMs": 2.4,
+          "count": 1,
+          "done": 72
+        },
+        {
+          "mode": "idle",
+          "startMs": 40320,
+          "durationMs": 0.4,
+          "count": 1,
+          "done": 73
+        },
+        {
+          "mode": "idle",
+          "startMs": 40533,
+          "durationMs": 1.5,
+          "count": 1,
+          "done": 74
+        },
+        {
+          "mode": "idle",
+          "startMs": 40755,
+          "durationMs": 5.3,
+          "count": 1,
+          "done": 75
+        },
+        {
+          "mode": "idle",
+          "startMs": 41043,
+          "durationMs": 0.1,
+          "count": 1,
+          "done": 76
+        },
+        {
+          "mode": "idle",
+          "startMs": 41305,
+          "durationMs": 0.3,
+          "count": 1,
+          "done": 77
+        },
+        {
+          "mode": "idle",
+          "startMs": 41553,
+          "durationMs": 0.7,
+          "count": 1,
+          "done": 78
+        },
+        {
+          "mode": "idle",
+          "startMs": 41827,
+          "durationMs": 1.2,
+          "count": 1,
+          "done": 79
+        },
+        {
+          "mode": "idle",
+          "startMs": 42105,
+          "durationMs": 0,
+          "count": 1,
+          "done": 80
+        },
+        {
+          "mode": "idle",
+          "startMs": 42363,
+          "durationMs": 0.1,
+          "count": 1,
+          "done": 81
+        },
+        {
+          "mode": "idle",
+          "startMs": 42605,
+          "durationMs": 0.7,
+          "count": 1,
+          "done": 82
+        },
+        {
+          "mode": "idle",
+          "startMs": 42846,
+          "durationMs": 0,
+          "count": 1,
+          "done": 83
+        },
+        {
+          "mode": "idle",
+          "startMs": 43063,
+          "durationMs": 0,
+          "count": 1,
+          "done": 84
+        },
+        {
+          "mode": "idle",
+          "startMs": 43349,
+          "durationMs": 0,
+          "count": 1,
+          "done": 85
+        },
+        {
+          "mode": "idle",
+          "startMs": 43598,
+          "durationMs": 0.1,
+          "count": 1,
+          "done": 86
+        },
+        {
+          "mode": "idle",
+          "startMs": 43808,
+          "durationMs": 0,
+          "count": 1,
+          "done": 87
+        },
+        {
+          "mode": "idle",
+          "startMs": 44053,
+          "durationMs": 0,
+          "count": 1,
+          "done": 88
+        },
+        {
+          "mode": "idle",
+          "startMs": 44258,
+          "durationMs": 0,
+          "count": 1,
+          "done": 89
+        },
+        {
+          "mode": "idle",
+          "startMs": 44509,
+          "durationMs": 0,
+          "count": 1,
+          "done": 90
+        },
+        {
+          "mode": "idle",
+          "startMs": 44741,
+          "durationMs": 0.1,
+          "count": 1,
+          "done": 91
+        },
+        {
+          "mode": "idle",
+          "startMs": 44952,
+          "durationMs": 0,
+          "count": 1,
+          "done": 92
+        },
+        {
+          "mode": "idle",
+          "startMs": 45193,
+          "durationMs": 0,
+          "count": 1,
+          "done": 93
+        },
+        {
+          "mode": "idle",
+          "startMs": 45438,
+          "durationMs": 0,
+          "count": 1,
+          "done": 94
+        },
+        {
+          "mode": "idle",
+          "startMs": 45709,
+          "durationMs": 0.1,
+          "count": 1,
+          "done": 95
+        },
+        {
+          "mode": "idle",
+          "startMs": 45973,
+          "durationMs": 0,
+          "count": 1,
+          "done": 96
+        },
+        {
+          "mode": "idle",
+          "startMs": 46207,
+          "durationMs": 0.1,
+          "count": 1,
+          "done": 97
+        },
+        {
+          "mode": "idle",
+          "startMs": 46445,
+          "durationMs": 0.1,
+          "count": 1,
+          "done": 98
+        },
+        {
+          "mode": "idle",
+          "startMs": 46712,
+          "durationMs": 0,
+          "count": 1,
+          "done": 99
+        },
+        {
+          "mode": "idle",
+          "startMs": 46952,
+          "durationMs": 0,
+          "count": 1,
+          "done": 100
+        },
+        {
+          "mode": "idle",
+          "startMs": 47203,
+          "durationMs": 0.1,
+          "count": 1,
+          "done": 101
+        },
+        {
+          "mode": "idle",
+          "startMs": 47445,
+          "durationMs": 0,
+          "count": 1,
+          "done": 102
+        },
+        {
+          "mode": "idle",
+          "startMs": 47703,
+          "durationMs": 0,
+          "count": 1,
+          "done": 103
+        },
+        {
+          "mode": "idle",
+          "startMs": 47911,
+          "durationMs": 0,
+          "count": 1,
+          "done": 104
+        },
+        {
+          "mode": "idle",
+          "startMs": 48145,
+          "durationMs": 0,
+          "count": 1,
+          "done": 105
+        },
+        {
+          "mode": "idle",
+          "startMs": 48365,
+          "durationMs": 0,
+          "count": 1,
+          "done": 106
+        },
+        {
+          "mode": "idle",
+          "startMs": 48566,
+          "durationMs": 0,
+          "count": 1,
+          "done": 107
+        },
+        {
+          "mode": "idle",
+          "startMs": 48848,
+          "durationMs": 0,
+          "count": 1,
+          "done": 108
+        },
+        {
+          "mode": "idle",
+          "startMs": 49055,
+          "durationMs": 0,
+          "count": 1,
+          "done": 109
+        },
+        {
+          "mode": "idle",
+          "startMs": 49340,
+          "durationMs": 0,
+          "count": 1,
+          "done": 110
+        },
+        {
+          "mode": "idle",
+          "startMs": 49599,
+          "durationMs": 0,
+          "count": 1,
+          "done": 111
+        },
+        {
+          "mode": "idle",
+          "startMs": 49859,
+          "durationMs": 0.1,
+          "count": 1,
+          "done": 112
+        },
+        {
+          "mode": "idle",
+          "startMs": 50109,
+          "durationMs": 0,
+          "count": 1,
+          "done": 113
+        },
+        {
+          "mode": "idle",
+          "startMs": 50365,
+          "durationMs": 0.1,
+          "count": 1,
+          "done": 114
+        },
+        {
+          "mode": "idle",
+          "startMs": 50597,
+          "durationMs": 0,
+          "count": 1,
+          "done": 115
+        },
+        {
+          "mode": "idle",
+          "startMs": 50811,
+          "durationMs": 0.1,
+          "count": 1,
+          "done": 116
+        },
+        {
+          "mode": "idle",
+          "startMs": 51060,
+          "durationMs": 0.2,
+          "count": 1,
+          "done": 117
+        },
+        {
+          "mode": "idle",
+          "startMs": 51273,
+          "durationMs": 0,
+          "count": 1,
+          "done": 118
+        },
+        {
+          "mode": "idle",
+          "startMs": 51545,
+          "durationMs": 0.2,
+          "count": 1,
+          "done": 119
+        },
+        {
+          "mode": "idle",
+          "startMs": 51767,
+          "durationMs": 0.1,
+          "count": 1,
+          "done": 120
+        },
+        {
+          "mode": "idle",
+          "startMs": 52032,
+          "durationMs": 0,
+          "count": 1,
+          "done": 121
+        },
+        {
+          "mode": "idle",
+          "startMs": 52248,
+          "durationMs": 0,
+          "count": 1,
+          "done": 122
+        },
+        {
+          "mode": "idle",
+          "startMs": 52500,
+          "durationMs": 0.1,
+          "count": 1,
+          "done": 123
+        },
+        {
+          "mode": "idle",
+          "startMs": 53005,
+          "durationMs": 0.1,
+          "count": 1,
+          "done": 124
+        },
+        {
+          "mode": "idle",
+          "startMs": 53254,
+          "durationMs": 0,
+          "count": 1,
+          "done": 125
+        },
+        {
+          "mode": "idle",
+          "startMs": 53502,
+          "durationMs": 0,
+          "count": 1,
+          "done": 126
+        },
+        {
+          "mode": "idle",
+          "startMs": 53707,
+          "durationMs": 0.1,
+          "count": 1,
+          "done": 127
+        },
+        {
+          "mode": "idle",
+          "startMs": 53910,
+          "durationMs": 0,
+          "count": 1,
+          "done": 128
+        },
+        {
+          "mode": "idle",
+          "startMs": 54706,
+          "durationMs": 0,
+          "count": 1,
+          "done": 129
+        },
+        {
+          "mode": "idle",
+          "startMs": 54938,
+          "durationMs": 0.1,
+          "count": 1,
+          "done": 130
+        },
+        {
+          "mode": "idle",
+          "startMs": 55189,
+          "durationMs": 0.1,
+          "count": 1,
+          "done": 131
+        },
+        {
+          "mode": "idle",
+          "startMs": 55402,
+          "durationMs": 0,
+          "count": 1,
+          "done": 132
+        },
+        {
+          "mode": "idle",
+          "startMs": 55603,
+          "durationMs": 0.1,
+          "count": 1,
+          "done": 133
+        },
+        {
+          "mode": "idle",
+          "startMs": 55810,
+          "durationMs": 0,
+          "count": 1,
+          "done": 134
+        },
+        {
+          "mode": "idle",
+          "startMs": 56052,
+          "durationMs": 0.1,
+          "count": 1,
+          "done": 135
+        },
+        {
+          "mode": "idle",
+          "startMs": 56272,
+          "durationMs": 0,
+          "count": 1,
+          "done": 136
+        },
+        {
+          "mode": "idle",
+          "startMs": 56525,
+          "durationMs": 0,
+          "count": 1,
+          "done": 137
+        },
+        {
+          "mode": "idle",
+          "startMs": 56794,
+          "durationMs": 0.1,
+          "count": 1,
+          "done": 138
+        },
+        {
+          "mode": "idle",
+          "startMs": 57019,
+          "durationMs": 0,
+          "count": 1,
+          "done": 139
+        },
+        {
+          "mode": "idle",
+          "startMs": 57406,
+          "durationMs": 0.1,
+          "count": 1,
+          "done": 140
+        },
+        {
+          "mode": "idle",
+          "startMs": 57643,
+          "durationMs": 0.1,
+          "count": 1,
+          "done": 141
+        },
+        {
+          "mode": "idle",
+          "startMs": 57864,
+          "durationMs": 0,
+          "count": 1,
+          "done": 142
+        },
+        {
+          "mode": "idle",
+          "startMs": 58135,
+          "durationMs": 0,
+          "count": 1,
+          "done": 143
+        },
+        {
+          "mode": "idle",
+          "startMs": 59114,
+          "durationMs": 0,
+          "count": 1,
+          "done": 144
+        },
+        {
+          "mode": "idle",
+          "startMs": 59319,
+          "durationMs": 0,
+          "count": 1,
+          "done": 145
+        },
+        {
+          "mode": "idle",
+          "startMs": 59523,
+          "durationMs": 0,
+          "count": 1,
+          "done": 146
+        },
+        {
+          "mode": "idle",
+          "startMs": 59743,
+          "durationMs": 0,
+          "count": 1,
+          "done": 147
+        },
+        {
+          "mode": "idle",
+          "startMs": 60005,
+          "durationMs": 0.1,
+          "count": 1,
+          "done": 148
+        },
+        {
+          "mode": "idle",
+          "startMs": 60207,
+          "durationMs": 0,
+          "count": 1,
+          "done": 149
+        },
+        {
+          "mode": "idle",
+          "startMs": 60439,
+          "durationMs": 0,
+          "count": 1,
+          "done": 150
+        },
+        {
+          "mode": "idle",
+          "startMs": 60712,
+          "durationMs": 0,
+          "count": 1,
+          "done": 151
+        },
+        {
+          "mode": "idle",
+          "startMs": 60938,
+          "durationMs": 0,
+          "count": 1,
+          "done": 152
+        },
+        {
+          "mode": "idle",
+          "startMs": 61143,
+          "durationMs": 0,
+          "count": 1,
+          "done": 153
+        },
+        {
+          "mode": "idle",
+          "startMs": 61379,
+          "durationMs": 0,
+          "count": 1,
+          "done": 154
+        },
+        {
+          "mode": "idle",
+          "startMs": 61643,
+          "durationMs": 0.1,
+          "count": 1,
+          "done": 155
+        },
+        {
+          "mode": "idle",
+          "startMs": 61866,
+          "durationMs": 0,
+          "count": 1,
+          "done": 156
+        },
+        {
+          "mode": "idle",
+          "startMs": 62113,
+          "durationMs": 0.1,
+          "count": 1,
+          "done": 157
+        },
+        {
+          "mode": "idle",
+          "startMs": 62347,
+          "durationMs": 0.1,
+          "count": 1,
+          "done": 158
+        },
+        {
+          "mode": "idle",
+          "startMs": 62551,
+          "durationMs": 0,
+          "count": 1,
+          "done": 159
+        },
+        {
+          "mode": "idle",
+          "startMs": 62803,
+          "durationMs": 0,
+          "count": 1,
+          "done": 160
+        },
+        {
+          "mode": "idle",
+          "startMs": 63017,
+          "durationMs": 0,
+          "count": 1,
+          "done": 161
+        },
+        {
+          "mode": "idle",
+          "startMs": 63263,
+          "durationMs": 0,
+          "count": 1,
+          "done": 162
+        },
+        {
+          "mode": "idle",
+          "startMs": 63469,
+          "durationMs": 0,
+          "count": 1,
+          "done": 163
+        },
+        {
+          "mode": "idle",
+          "startMs": 63676,
+          "durationMs": 0,
+          "count": 1,
+          "done": 164
+        }
+      ]
+    },
+    "profile": {
+      "errors": [],
+      "paints": [
+        {
+          "name": "first-paint",
+          "startTime": 756
+        },
+        {
+          "name": "first-contentful-paint",
+          "startTime": 2044
+        }
+      ],
+      "lcp": {
+        "startTime": 2248,
+        "size": 39900
+      },
+      "longTaskCount": 80,
+      "longTaskTotalMs": 25935,
+      "longTaskMaxMs": 5649,
+      "longTaskTop": [
+        {
+          "startTime": 4667,
+          "duration": 5649,
+          "name": "self"
+        },
+        {
+          "startTime": 13133,
+          "duration": 3376,
+          "name": "self"
+        },
+        {
+          "startTime": 10550,
+          "duration": 2361,
+          "name": "self"
+        },
+        {
+          "startTime": 17418,
+          "duration": 2225,
+          "name": "self"
+        },
+        {
+          "startTime": 19897,
+          "duration": 1993,
+          "name": "self"
+        },
+        {
+          "startTime": 25946,
+          "duration": 929,
+          "name": "self"
+        },
+        {
+          "startTime": 58211,
+          "duration": 861,
+          "name": "self"
+        },
+        {
+          "startTime": 39456,
+          "duration": 825,
+          "name": "self"
+        },
+        {
+          "startTime": 53943,
+          "duration": 730,
+          "name": "self"
+        },
+        {
+          "startTime": 22777,
+          "duration": 372,
+          "name": "self"
+        }
+      ]
+    },
+    "navigation": {
+      "ttfb": 615,
+      "domInteractive": 747,
+      "dcl": 748,
+      "load": 1079,
+      "transferSize": 3991
+    },
+    "resources": {
+      "count": 131,
+      "transferBytes": 33265795,
+      "decodedBytes": 40274955,
+      "glb": [
+        {
+          "name": "http://localhost:3010/models/pineapple-house-opt1.glb?v=2",
+          "startTime": 1105,
+          "duration": 103,
+          "transferSize": 540754,
+          "decodedBodySize": 554308
+        },
+        {
+          "name": "http://localhost:3010/models/chum-bucket-v2-opt1.glb?v=3",
+          "startTime": 1106,
+          "duration": 268,
+          "transferSize": 1483927,
+          "decodedBodySize": 1594964
+        },
+        {
+          "name": "http://localhost:3010/models/krusty-krab-v2-opt1.glb?v=3",
+          "startTime": 1107,
+          "duration": 210,
+          "transferSize": 985924,
+          "decodedBodySize": 1194708
+        },
+        {
+          "name": "http://localhost:3010/models/salty-spitoon-opt1.glb?v=2",
+          "startTime": 1108,
+          "duration": 72,
+          "transferSize": 373582,
+          "decodedBodySize": 390736
+        },
+        {
+          "name": "http://localhost:3010/models/boating-school-opt1.glb?v=2",
+          "startTime": 1109,
+          "duration": 34,
+          "transferSize": 128826,
+          "decodedBodySize": 195280
+        },
+        {
+          "name": "http://localhost:3010/models/patty-building-opt1.glb?v=2",
+          "startTime": 1110,
+          "duration": 78,
+          "transferSize": 335103,
+          "decodedBodySize": 506364
+        },
+        {
+          "name": "http://localhost:3010/models/building-lighthouse-opt1.glb?v=2",
+          "startTime": 1111,
+          "duration": 51,
+          "transferSize": 34035,
+          "decodedBodySize": 59148
+        },
+        {
+          "name": "http://localhost:3010/models/arcade/claw-arcade-exterior-opt1.glb?v=3",
+          "startTime": 1112,
+          "duration": 200,
+          "transferSize": 705545,
+          "decodedBodySize": 804340
+        },
+        {
+          "name": "http://localhost:3010/models/cove/cove-exterior-opt1.glb?v=3",
+          "startTime": 1113,
+          "duration": 130,
+          "transferSize": 182944,
+          "decodedBodySize": 275128
+        },
+        {
+          "name": "http://localhost:3010/models/patricks-rock-v2-opt1.glb?v=4",
+          "startTime": 1113,
+          "duration": 279,
+          "transferSize": 950179,
+          "decodedBodySize": 1036376
+        },
+        {
+          "name": "http://localhost:3010/models/squidward-house-opt1.glb?v=4",
+          "startTime": 1114,
+          "duration": 313,
+          "transferSize": 1039743,
+          "decodedBodySize": 1110020
+        },
+        {
+          "name": "http://localhost:3010/avatars/animations/idle.glb",
+          "startTime": 1116,
+          "duration": 145,
+          "transferSize": 42881,
+          "decodedBodySize": 88600
+        },
+        {
+          "name": "http://localhost:3010/avatars/animations/walk.glb",
+          "startTime": 1117,
+          "duration": 160,
+          "transferSize": 19482,
+          "decodedBodySize": 63268
+        },
+        {
+          "name": "http://localhost:3010/avatars/animations/run.glb",
+          "startTime": 1118,
+          "duration": 181,
+          "transferSize": 37370,
+          "decodedBodySize": 92192
+        },
+        {
+          "name": "http://localhost:3010/models/lobster.glb",
+          "startTime": 1118,
+          "duration": 225,
+          "transferSize": 133624,
+          "decodedBodySize": 199708
+        },
+        {
+          "name": "http://localhost:3010/models/quest-bounty-pavilion.glb?v=3",
+          "startTime": 1119,
+          "duration": 763,
+          "transferSize": 1805116,
+          "decodedBodySize": 2213956
+        },
+        {
+          "name": "http://localhost:3010/models/bazaar-merchant-stand.glb?v=2",
+          "startTime": 1119,
+          "duration": 293,
+          "transferSize": 392073,
+          "decodedBodySize": 430628
+        },
+        {
+          "name": "http://localhost:3010/models/shisha-oasis.glb",
+          "startTime": 1120,
+          "duration": 636,
+          "transferSize": 900901,
+          "decodedBodySize": 1609128
+        },
+        {
+          "name": "http://localhost:3010/models/auction-dome.glb",
+          "startTime": 1120,
+          "duration": 299,
+          "transferSize": 80119,
+          "decodedBodySize": 99844
+        },
+        {
+          "name": "http://localhost:3010/avatars/milady-official-1.vrm",
+          "startTime": 1121,
+          "duration": 297,
+          "transferSize": 242528,
+          "decodedBodySize": 242228
+        },
+        {
+          "name": "http://localhost:3010/avatars/milady-official-2.vrm",
+          "startTime": 1122,
+          "duration": 315,
+          "transferSize": 170644,
+          "decodedBodySize": 170344
+        },
+        {
+          "name": "http://localhost:3010/avatars/milady-official-3.vrm",
+          "startTime": 1122,
+          "duration": 325,
+          "transferSize": 239936,
+          "decodedBodySize": 239636
+        },
+        {
+          "name": "http://localhost:3010/avatars/milady-official-4.vrm",
+          "startTime": 1122,
+          "duration": 331,
+          "transferSize": 292264,
+          "decodedBodySize": 291964
+        },
+        {
+          "name": "http://localhost:3010/avatars/milady-official-5.vrm",
+          "startTime": 1123,
+          "duration": 365,
+          "transferSize": 658776,
+          "decodedBodySize": 658476
+        },
+        {
+          "name": "http://localhost:3010/avatars/milady-official-6.vrm",
+          "startTime": 1123,
+          "duration": 350,
+          "transferSize": 222404,
+          "decodedBodySize": 222104
+        },
+        {
+          "name": "http://localhost:3010/avatars/milady-official-7.vrm",
+          "startTime": 1124,
+          "duration": 360,
+          "transferSize": 288988,
+          "decodedBodySize": 288688
+        },
+        {
+          "name": "http://localhost:3010/avatars/milady-official-8.vrm",
+          "startTime": 1124,
+          "duration": 365,
+          "transferSize": 335404,
+          "decodedBodySize": 335104
+        },
+        {
+          "name": "http://localhost:3010/avatars/hermes-female.vrm",
+          "startTime": 1125,
+          "duration": 477,
+          "transferSize": 1701940,
+          "decodedBodySize": 1701640
+        },
+        {
+          "name": "http://localhost:3010/avatars/hermes-male.vrm",
+          "startTime": 1125,
+          "duration": 467,
+          "transferSize": 1346596,
+          "decodedBodySize": 1346296
+        },
+        {
+          "name": "http://localhost:3010/avatars/tekk.vrm",
+          "startTime": 1125,
+          "duration": 548,
+          "transferSize": 2045716,
+          "decodedBodySize": 2045416
+        },
+        {
+          "name": "http://localhost:3010/avatars/eliza-chibi.vrm?v=2",
+          "startTime": 1126,
+          "duration": 1079,
+          "transferSize": 5547472,
+          "decodedBodySize": 5547172
+        },
+        {
+          "name": "http://localhost:3010/avatars/milady-chibi.vrm?v=2",
+          "startTime": 1126,
+          "duration": 1171,
+          "transferSize": 5843440,
+          "decodedBodySize": 5843140
+        },
+        {
+          "name": "http://localhost:3010/models/guide-rigged.glb",
+          "startTime": 2396,
+          "duration": 58,
+          "transferSize": 552470,
+          "decodedBodySize": 948792
+        },
+        {
+          "name": "http://localhost:3010/models/crayfish.glb",
+          "startTime": 2397,
+          "duration": 8,
+          "transferSize": 5924,
+          "decodedBodySize": 7696
+        },
+        {
+          "name": "http://localhost:3010/models/jellyfish.glb",
+          "startTime": 2398,
+          "duration": 12,
+          "transferSize": 84277,
+          "decodedBodySize": 88952
+        },
+        {
+          "name": "http://localhost:3010/models/coral-reef1.glb",
+          "startTime": 3672,
+          "duration": 29,
+          "transferSize": 40229,
+          "decodedBodySize": 97708
+        },
+        {
+          "name": "http://localhost:3010/models/coral-reef2.glb",
+          "startTime": 3673,
+          "duration": 19,
+          "transferSize": 25388,
+          "decodedBodySize": 41440
+        },
+        {
+          "name": "http://localhost:3010/models/coral-reef3.glb",
+          "startTime": 3674,
+          "duration": 26,
+          "transferSize": 36029,
+          "decodedBodySize": 59616
+        },
+        {
+          "name": "http://localhost:3010/models/kelp.glb",
+          "startTime": 3674,
+          "duration": 12,
+          "transferSize": 8130,
+          "decodedBodySize": 9672
+        },
+        {
+          "name": "http://localhost:3010/models/building-shell.glb",
+          "startTime": 3675,
+          "duration": 21,
+          "transferSize": 27929,
+          "decodedBodySize": 30796
+        },
+        {
+          "name": "http://localhost:3010/models/building-seashell.glb",
+          "startTime": 3675,
+          "duration": 25,
+          "transferSize": 42227,
+          "decodedBodySize": 46664
+        },
+        {
+          "name": "http://localhost:3010/models/building-anchor.glb",
+          "startTime": 3676,
+          "duration": 39,
+          "transferSize": 3132,
+          "decodedBodySize": 3984
+        },
+        {
+          "name": "http://localhost:3010/models/building-barrel.glb",
+          "startTime": 3676,
+          "duration": 40,
+          "transferSize": 20023,
+          "decodedBodySize": 28312
+        },
+        {
+          "name": "http://localhost:3010/models/building-chest.glb",
+          "startTime": 3676,
+          "duration": 51,
+          "transferSize": 99381,
+          "decodedBodySize": 139308
+        },
+        {
+          "name": "http://localhost:3010/models/building-lantern.glb",
+          "startTime": 3676,
+          "duration": 41,
+          "transferSize": 12453,
+          "decodedBodySize": 14576
+        },
+        {
+          "name": "http://localhost:3010/models/building-tower2.glb",
+          "startTime": 3677,
+          "duration": 42,
+          "transferSize": 29024,
+          "decodedBodySize": 47628
+        },
+        {
+          "name": "http://localhost:3010/models/characters/flying-dutchman.glb",
+          "startTime": 10380,
+          "duration": 31,
+          "transferSize": 211570,
+          "decodedBodySize": 248956
+        },
+        {
+          "name": "http://localhost:3010/models/characters/mrs-puff.glb",
+          "startTime": 10381,
+          "duration": 22,
+          "transferSize": 84833,
+          "decodedBodySize": 93240
+        },
+        {
+          "name": "http://localhost:3010/models/characters/pearl.glb",
+          "startTime": 10383,
+          "duration": 33,
+          "transferSize": 176378,
+          "decodedBodySize": 231412
+        },
+        {
+          "name": "http://localhost:3010/models/lobster_plush.glb",
+          "startTime": 10384,
+          "duration": 50,
+          "transferSize": 566626,
+          "decodedBodySize": 570200
+        },
+        {
+          "name": "http://localhost:3010/avatars/animations/hermes-female/idle.glb",
+          "startTime": 23153,
+          "duration": 29,
+          "transferSize": 79880,
+          "decodedBodySize": 111744
+        },
+        {
+          "name": "http://localhost:3010/avatars/animations/hermes-female/run.glb",
+          "startTime": 23154,
+          "duration": 24,
+          "transferSize": 17568,
+          "decodedBodySize": 45220
+        },
+        {
+          "name": "http://localhost:3010/avatars/animations/hermes-male/idle.glb",
+          "startTime": 23156,
+          "duration": 27,
+          "transferSize": 55724,
+          "decodedBodySize": 84800
+        },
+        {
+          "name": "http://localhost:3010/avatars/animations/hermes-male/run.glb",
+          "startTime": 23156,
+          "duration": 22,
+          "transferSize": 16435,
+          "decodedBodySize": 44320
+        },
+        {
+          "name": "http://localhost:3010/avatars/animations/tekk-male/idle.glb",
+          "startTime": 23288,
+          "duration": 11,
+          "transferSize": 25955,
+          "decodedBodySize": 54412
+        },
+        {
+          "name": "http://localhost:3010/avatars/animations/tekk-male/walk.glb",
+          "startTime": 23288,
+          "duration": 13,
+          "transferSize": 19693,
+          "decodedBodySize": 47700
+        },
+        {
+          "name": "http://localhost:3010/avatars/animations/tekk-male/run.glb",
+          "startTime": 23289,
+          "duration": 10,
+          "transferSize": 14362,
+          "decodedBodySize": 42100
+        },
+        {
+          "name": "http://localhost:3010/avatars/animations/chibi/idle.glb",
+          "startTime": 23986,
+          "duration": 20,
+          "transferSize": 160286,
+          "decodedBodySize": 194292
+        },
+        {
+          "name": "http://localhost:3010/avatars/animations/chibi/walk.glb",
+          "startTime": 23986,
+          "duration": 10,
+          "transferSize": 16754,
+          "decodedBodySize": 36188
+        },
+        {
+          "name": "http://localhost:3010/avatars/animations/chibi/run.glb",
+          "startTime": 23987,
+          "duration": 10,
+          "transferSize": 14095,
+          "decodedBodySize": 33504
+        }
+      ],
+      "scripts": 47,
+      "images": 1,
+      "fetch": 73
+    }
+  }
+}
