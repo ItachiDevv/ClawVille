@@ -27,6 +27,10 @@ const INTEL_PATTERNS = [
   /\buhd graphics\b/i,
   /\bhd graphics\b/i,
   /\bgma\b/i, // very old Intel GMA
+  /adreno/i,
+  /mali/i,
+  /powervr/i,
+  /apple gpu/i,
 ];
 
 function looksIntel(s: string | null | undefined): boolean {
@@ -87,4 +91,33 @@ export function detectGpuTier(gl: THREE.WebGLRenderer | unknown): GpuTierInfo {
     isIntel: looksIntel(renderer),
     isWebGPU,
   };
+}
+
+/**
+ * Synchronous one-shot probe for choosing initial quality before the renderer
+ * exists. Keep this conservative: a false positive only softens visuals a bit,
+ * while a false negative can leave integrated/mobile GPUs below the FPS target.
+ */
+export function detectLowEndGpuClass(): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    const canvas = document.createElement('canvas');
+    const gl = (canvas.getContext('webgl2') ||
+      canvas.getContext('webgl') ||
+      canvas.getContext('experimental-webgl')) as WebGLRenderingContext | null;
+    if (!gl) return true;
+
+    const ext = gl.getExtension('WEBGL_debug_renderer_info');
+    const renderer = ext
+      ? String(gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) ?? '')
+      : '';
+    const isTouch =
+      typeof window.matchMedia === 'function' &&
+      window.matchMedia('(pointer: coarse)').matches;
+
+    gl.getExtension('WEBGL_lose_context')?.loseContext();
+    return looksIntel(renderer) || isTouch;
+  } catch {
+    return false;
+  }
 }

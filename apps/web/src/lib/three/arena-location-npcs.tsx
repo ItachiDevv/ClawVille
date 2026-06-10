@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef, useMemo, memo, Suspense, useEffect, type ReactElement } from 'react';
+import { useRef, useMemo, memo, Suspense, useEffect, useState, type ReactElement } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
 import { useGLTF } from '@react-three/drei';
 import { useWorldLabel, WorldLabel } from '@/lib/three/world-labels-overlay';
@@ -49,6 +49,17 @@ const _locRayDir = new THREE.Vector3(0, -1, 0);
 // PHASE 1.5 — module-scope camera-position scratch for far-NPC mixer gate.
 // Zero per-frame allocations across all 11 location-NPC useFrame calls per frame.
 const _locCamPos = new THREE.Vector3();
+
+// Fidelity-preserving resident streaming: do not replace far characters with
+// capsules/cylinders. Far residents simply do not mount their real GLB until
+// the camera is close enough for them to matter.
+//
+// Thresholds raised from 2600/3200 wu to 4600/5200 wu so the entire building ring
+// (~4160 wu radius) mounts from spawn at town center. The old values were smaller
+// than the ring radius, so zero resident teachers mounted on load.
+const RESIDENT_STREAM_IN_DIST_SQ = 4_600 * 4_600;
+const RESIDENT_STREAM_OUT_DIST_SQ = 5_200 * 5_200;
+const RESIDENT_STREAM_CHECK_FRAMES = 12;
 
 // Sanity bounds for computeNormalizedScale. Some GLBs have broken bounding boxes
 // (e.g. tiny non-skinned accessories inflate the scale because their bbox height
@@ -399,6 +410,9 @@ const NpcMesh = memo(function NpcMesh({
   // (Pearl Krabs has 5: Walk / Breathing Idle / Standard Run / Jump / Breakdance).
   // Null for un-rigged GLBs (most of the canonical SpongeBob cast + Flying Dutchman).
   const mixerRef = useRef<THREE.AnimationMixer | null>(null);
+  // Real incrementing frame counter — avoids Math.floor(clock.elapsedTime * 60) which
+  // drifts when the tab is backgrounded or the refresh rate varies.
+  const npcFrameCountRef = useRef(0);
   const { scene: threeScene } = useThree();
 
   // WorldLabelsOverlay label — distance-faded wordmark for primary NPCs.
@@ -571,7 +585,8 @@ const NpcMesh = memo(function NpcMesh({
 
     // Re-raycast terrain Y periodically (not just once) to handle late terrain loading.
     // Stagger by seedBase so NPCs don't all spike CPU on the same frame.
-    const frame = Math.floor(clock.elapsedTime * 60);
+    npcFrameCountRef.current += 1;
+    const frame = npcFrameCountRef.current;
     if (!placed.current || (frame + seedBase) % 20 === 0) {
       const y = getTerrainY(worldX, worldZ, threeScene);
       if (y > -100) {
@@ -728,12 +743,38 @@ const LocationNpc = memo(function LocationNpc({
   worldZ: number;
   facingRotY: number;
 }) {
-  const config = LOCATION_NPCS[zoneId];
-  if (!config) return null;
-
   // idToSeed returns a float (0..10). Convert to integer so (frame + seed) % N
   // uses integer arithmetic — float modulo with strict === 0 never fires.
   const seed = useMemo(() => Math.round(idToSeed(zoneId)), [zoneId]);
+  const config = LOCATION_NPCS[zoneId];
+  const { camera } = useThree();
+  const [mounted, setMounted] = useState(false);
+  // Real incrementing frame counter — replaces Math.floor(clock.elapsedTime * 60)
+  // which drifted when the tab was backgrounded or the frame rate varied.
+  const frameCountRef = useRef(0);
+
+  useEffect(() => {
+    const dx = worldX - camera.position.x;
+    const dz = worldZ - camera.position.z;
+    setMounted(dx * dx + dz * dz <= RESIDENT_STREAM_IN_DIST_SQ);
+  }, [camera, worldX, worldZ]);
+
+  useFrame(({ camera: frameCamera }) => {
+    frameCountRef.current += 1;
+    const frame = frameCountRef.current;
+    if ((frame + seed) % RESIDENT_STREAM_CHECK_FRAMES !== 0) return;
+
+    const dx = worldX - frameCamera.position.x;
+    const dz = worldZ - frameCamera.position.z;
+    const distSq = dx * dx + dz * dz;
+    setMounted((current) => {
+      if (current) return distSq <= RESIDENT_STREAM_OUT_DIST_SQ;
+      return distSq <= RESIDENT_STREAM_IN_DIST_SQ;
+    });
+  });
+
+  if (!config) return null;
+  if (!mounted) return null;
 
   const companion = config.companion;
   const companionX = companion ? worldX + (companion.offsetX ?? 80) : 0;
@@ -742,7 +783,7 @@ const LocationNpc = memo(function LocationNpc({
   const companionSeed = seed + 17;
 
   return (
-    <>
+    <Suspense fallback={null}>
       {/* Primary NPC — interactive chat target */}
       <NpcMesh
         modelCfg={config}
@@ -763,7 +804,7 @@ const LocationNpc = memo(function LocationNpc({
           showLabel={false}
         />
       )}
-    </>
+    </Suspense>
   );
 });
 
@@ -777,23 +818,58 @@ const LocationNpc = memo(function LocationNpc({
 // ---------------------------------------------------------------------------
 export function DeferredNpcPreloads(): ReactElement | null {
   useEffect(() => {
-    const raf = requestAnimationFrame(() => {
+    let cancelled = false;
+    let timer = 0;
+    let idleHandle = 0;
+
+    const preloadNext = (models: string[], index: number) => {
+      if (cancelled || index >= models.length) return;
+
+      const run = () => {
+        if (cancelled) return;
+        useGLTF.preload(models[index], undefined, undefined, extendLoaderWithMeshopt);
+        preloadNext(models, index + 1);
+      };
+
+      if ('requestIdleCallback' in window) {
+        idleHandle = window.requestIdleCallback(run, { timeout: 2500 });
+      } else {
+        timer = window.setTimeout(run, 250);
+      }
+    };
+
+    const waitForReady = () => {
+      if (cancelled) return;
+      if (!(window as any).__W3D_READY) {
+        timer = window.setTimeout(waitForReady, 500);
+        return;
+      }
+
       const seen = new Set<string>();
+      const models: string[] = [];
       Object.values(LOCATION_NPCS).forEach((cfg) => {
-        // Primary model — use extendLoaderWithMeshopt for belt-and-suspenders
-        // on any location NPC GLB that may be meshopt-compressed (e.g. sandy.glb).
         if (!seen.has(cfg.model)) {
-          useGLTF.preload(cfg.model, undefined, undefined, extendLoaderWithMeshopt);
           seen.add(cfg.model);
+          models.push(cfg.model);
         }
-        // Companion model (if any)
         if (cfg.companion && !seen.has(cfg.companion.model)) {
-          useGLTF.preload(cfg.companion.model, undefined, undefined, extendLoaderWithMeshopt);
           seen.add(cfg.companion.model);
+          models.push(cfg.companion.model);
         }
       });
-    });
-    return () => cancelAnimationFrame(raf);
+
+      preloadNext(models, 0);
+    };
+
+    timer = window.setTimeout(waitForReady, 500);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+      if (idleHandle && 'cancelIdleCallback' in window) {
+        window.cancelIdleCallback(idleHandle);
+      }
+    };
   }, []);
   return null;
 }
