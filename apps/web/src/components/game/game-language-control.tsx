@@ -333,8 +333,12 @@ export default function GameLanguageControl() {
             left: 'calc(env(safe-area-inset-left, 0px) + 12px)',
           }
         : {
-            bottom: 'calc(env(safe-area-inset-bottom, 0px) + 16px)',
-            left: 16,
+            // Desktop: icon-only, side by side with the Controls icon under
+            // the (shortened) right sidebar — Controls at right:16, this at
+            // right:68 (44px icon + 8px gap). Was bottom-left 16px, which
+            // covered the inventory/demo panel.
+            bottom: 'calc(env(safe-area-inset-bottom, 0px) + 12px)',
+            right: 68,
           }}
     >
       <button
@@ -342,21 +346,18 @@ export default function GameLanguageControl() {
         onClick={() => setPanelOpen((open) => !open)}
         className="flex h-11 min-w-11 items-center justify-center gap-2 rounded-full border border-emerald-300/45 bg-[#052f2d]/90 px-3 text-emerald-50 shadow-[0_0_24px_rgba(52,211,153,0.22)] backdrop-blur-md transition-all hover:border-emerald-200/80 hover:bg-[#06423f] active:translate-y-0.5"
         aria-label="Open language controls"
-        title="Language"
+        title={`Language — ${buttonLabel}`}
       >
         {loading ? (
           <Loader2 className="h-5 w-5 animate-spin" aria-hidden />
         ) : (
           <Languages className="h-5 w-5" aria-hidden />
         )}
-        <span className="hidden max-w-24 truncate text-xs font-black uppercase tracking-[0.16em] sm:inline">
-          {buttonLabel}
-        </span>
       </button>
 
       {panelOpen && (
         <div
-          className="absolute left-0 w-72 overflow-hidden rounded-lg border border-emerald-200/24 bg-[#071c23]/96 p-3 text-emerald-50 shadow-[0_18px_70px_rgba(0,0,0,0.42)] backdrop-blur-md"
+          className={`absolute ${isMobile ? 'left-0' : 'right-0'} w-72 overflow-hidden rounded-lg border border-emerald-200/24 bg-[#071c23]/96 p-3 text-emerald-50 shadow-[0_18px_70px_rgba(0,0,0,0.42)] backdrop-blur-md`}
           style={isMobile ? { top: 52 } : { bottom: 52 }}
         >
           <div className="mb-3 flex items-start gap-3">
