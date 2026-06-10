@@ -1755,15 +1755,16 @@ class NpcSimulation {
     // 2026-04-25: tick rate moved 2Hz → 5Hz, baseStep scaled 110 → 44 to keep
     // speed at 220 wu/s (44 / 0.2s = 220). Smaller per-tick deltas = smoother
     // client lerp = motion reads closer to Nori (who has zero net translation).
-    // 2026-06-10: 44 → 110 (550 wu/s = the player's walk speed and the walk
-    // clip's natural stride rate). 220 wu/s made NPCs foot-slide at clip
-    // timeScale 1 ("reverse moonwalk"), and the honest velocity-synced legs
-    // at 220 read as sluggish. Per user: "both at normal speed" — NPCs now
-    // translate at the same pace the player walks; the client's velocity-
-    // synced locomotion lands at timeScale ≈ 1.0 and only guards interp dips.
-    // Per-tick step of 110 is the pre-5Hz historical value, so the
-    // path-following code has always handled deltas this size.
-    const baseStep = this.arenaMode ? (14 + Math.random() * 4) * this.arenaSettings.moveSpeed : 110;
+    // 2026-06-10: briefly raised to 110 (550 wu/s) chasing a perceived
+    // stride/speed mismatch — REVERTED same day. 110-unit ticks overwhelmed
+    // the client entity-interp (visible stepping/glitch), and the perceived
+    // mismatch was actually the world-stream client interp stalling (rendered
+    // speed << server speed), NOT this constant. 44 @ 5Hz = 220 wu/s is the
+    // tuned value: small per-tick deltas the client lerp absorbs smoothly,
+    // and the walk clip at timeScale 1 visually matches ~220 (user-confirmed
+    // perfect in client-side demo-wander mode). Do NOT re-raise this to fix
+    // "NPCs look slow/sliding" — fix the client interp instead.
+    const baseStep = this.arenaMode ? (14 + Math.random() * 4) * this.arenaSettings.moveSpeed : 44;
 
     for (const npc of this.npcs.values()) {
       if (npc.isDead || npc.inConversation) continue;
