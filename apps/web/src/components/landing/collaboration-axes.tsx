@@ -61,7 +61,7 @@ export function CollaborationAxes() {
       {/* viewBox extended -50→290 in X to give the bottom-corner labels
           ("YOU ↔ AGENT" / "AGENT ↔ WORLD") room to render past the
           vertex coordinates without clipping at the SVG edge. */}
-      <svg viewBox="-50 0 340 220" className="w-[280px] sm:w-[320px] h-auto">
+      <svg viewBox="-30 0 300 212" className="w-full max-w-[210px] sm:w-[240px] sm:max-w-none lg:w-[300px] h-auto">
         <defs>
           {AXES.map((a) => (
             <radialGradient key={a.id} id={`glow-${a.id}`} cx="50%" cy="50%" r="50%">
@@ -145,8 +145,10 @@ export function CollaborationAxes() {
       </svg>
 
       {/* Detail panel — shows the active vertex's description, or a default
-          line. Fixed-height so the surrounding layout doesn't jump. */}
-      <div className="min-h-[44px] max-w-md text-center text-xs font-mono text-white/55 leading-relaxed transition-colors">
+          line. Fixed-height so the surrounding layout doesn't jump. Hidden on
+          phones where the axes sits in a narrow half-width column (the labelled
+          triangle already conveys the three axes); shown sm+ where there's room. */}
+      <div className="hidden sm:block min-h-[44px] max-w-md text-center text-xs font-mono text-white/55 leading-relaxed transition-colors">
         {current ? (
           <>
             <span className="text-white/85" style={{ color: `#${current.color}` }}>{current.short}</span>

@@ -53,9 +53,9 @@ import {
   AnchorProvider,
   BN,
   Program,
-  Wallet,
   AnchorError,
 } from '@coral-xyz/anchor';
+import NodeWallet from '@coral-xyz/anchor/dist/esm/nodewallet.js';
 import {
   IDL,
   PROGRAM_ID,
@@ -155,7 +155,7 @@ async function loadSettlementAuthority(): Promise<Keypair> {
 async function getProgram(): Promise<Program<ClawvilleWager>> {
   if (programCache) return programCache;
   const authority = await loadSettlementAuthority();
-  const provider = new AnchorProvider(connection, new Wallet(authority), {
+  const provider = new AnchorProvider(connection, new NodeWallet(authority), {
     commitment: COMMITMENT,
     preflightCommitment: COMMITMENT,
   });
