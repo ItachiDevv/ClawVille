@@ -390,6 +390,26 @@ function WASDCameraController({
     const controls = controlsRef.current;
     if (!controls) return;
 
+    // One-shot camera focus (e.g. Hatcher launch → spectate the launched
+    // agent's body). Drained here because WASDCameraController owns the
+    // explore-mode camera; snapping target + camera together preserves the
+    // OrbitControls orbit geometry the same way a programmatic target move
+    // must (see FPSFollowCamera). After this the user keeps free WASD/orbit
+    // control — the request is consumed so it fires exactly once. Game coords
+    // (0..MAP_WIDTH) → world XZ via the same HALF_W/HALF_H projection the
+    // follow camera uses. No per-frame allocation: consumeCameraFocus()
+    // returns null on every normal frame and short-circuits.
+    const focus = useGameStore.getState().consumeCameraFocus();
+    if (focus) {
+      const fx = Math.max(0, Math.min(MAP_WIDTH, focus.x)) - HALF_W;
+      const fz = Math.max(0, Math.min(MAP_HEIGHT, focus.y)) - HALF_H;
+      controls.target.set(fx, CHAR_TARGET_Y, fz);
+      // Overhead-behind vantage so the agent body sits centred in frame.
+      controls.object.position.set(fx, 420, fz + 720);
+      controls.update();
+      return;
+    }
+
     const keys = keysRef.current;
     let dx = 0;
     let dz = 0;

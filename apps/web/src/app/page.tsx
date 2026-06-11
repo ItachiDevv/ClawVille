@@ -8,6 +8,7 @@ import { HowItWorksModal } from '@/components/landing/how-it-works-modal';
 import { CollaborationAxes } from '@/components/landing/collaboration-axes';
 import { LiveDemoStrip } from '@/components/landing/live-demo-strip';
 import { GameplayShowcase } from '@/components/landing/gameplay-showcase';
+import { PressRelease } from '@/components/landing/press-release';
 
 const LandingScene = dynamic(() => import('@/components/three/LandingScene'), {
   ssr: false,
@@ -114,7 +115,7 @@ export default function HomePage() {
         that — the hero has h-[100svh] overflow-hidden so the Canvas only
         occupies the visible hero area.
       */}
-      <section className="relative z-10 min-h-[100svh] flex flex-col items-center justify-center px-4 sm:px-6 md:px-10 py-16 text-center overflow-hidden">
+      <section className="relative z-10 flex flex-col items-center justify-center px-4 sm:px-6 md:px-10 pt-4 pb-8 sm:pt-12 text-center overflow-hidden">
         {/* 3D town building-ring overview — absolute fill of the hero section only */}
         {mounted && <LandingScene />}
         {/* Legibility overlay — dark gradient between the 3D scene (z-0) and the
@@ -125,6 +126,35 @@ export default function HomePage() {
         <div className="pointer-events-none absolute top-0 inset-x-0 h-56 z-[5] bg-gradient-to-b from-[#061520] via-[#061520]/85 to-transparent" />
         {/* Bottom scrim — blends the hero seamlessly into the dark sections below. */}
         <div className="pointer-events-none absolute bottom-0 inset-x-0 h-40 z-[5] bg-gradient-to-t from-[#061520] to-transparent" />
+
+        {/* BREAKING NEWS — PayAI × ClawVille press release.
+            Smooth-scrolls down to the full article (#press-release). */}
+        <button
+          type="button"
+          onClick={() =>
+            document
+              .getElementById('press-release')
+              ?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+          }
+          className="anim-up group relative z-10 mb-5 inline-flex items-center gap-3 rounded-full border border-rose-500/40 bg-rose-500/10 backdrop-blur-sm pl-3 pr-4 py-2 transition-all hover:border-rose-400/70 hover:bg-rose-500/20 hover:scale-[1.03] shadow-[0_0_24px_rgba(244,63,94,0.18)]"
+          style={{ animationDelay: '0.02s' }}
+          aria-label="Read the PayAI × ClawVille press release"
+        >
+          <span className="inline-flex items-center gap-2 rounded-full bg-rose-500/90 px-2.5 py-1">
+            <span className="relative flex h-1.5 w-1.5">
+              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-white opacity-75" />
+              <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-white" />
+            </span>
+            <span className="text-[11px] font-mono uppercase tracking-[0.25em] text-white font-bold">Breaking</span>
+          </span>
+          <span className="text-[13px] sm:text-sm font-mono uppercase tracking-[0.2em] text-rose-50">
+            <span className="whitespace-nowrap">PayAI&nbsp;×&nbsp;ClawVille —</span>{' '}
+            <span className="whitespace-nowrap">Payments arrive</span>
+          </span>
+          <svg className="w-3 h-3 text-rose-200/70 group-hover:translate-y-0.5 transition-transform" viewBox="0 0 12 12" fill="none">
+            <path d="M6 2v8m0 0l-3-3m3 3l3-3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        </button>
 
         {/* Powered-by badge */}
         <div
@@ -138,12 +168,13 @@ export default function HomePage() {
 
         {/* Main hero row — avatar (left) · logo + CTAs (center) · axes (right).
             One screen on desktop so the action buttons are never below the fold.
-            On mobile it stacks: center (logo + CTAs) FIRST (order-1), then avatar
-            (order-2), then axes (order-3). */}
-        <div className="relative z-10 grid w-full max-w-7xl items-center gap-6 lg:gap-8 grid-cols-1 lg:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]">
+            On mobile it's a 2-col grid: center (logo + CTAs) spans BOTH cols on
+            top (order-1), then avatar (order-2) and axes (order-3) sit side by
+            side in one row below, scaled down to fit. */}
+        <div className="relative z-10 grid w-full max-w-7xl items-center gap-4 sm:gap-6 lg:gap-8 grid-cols-2 lg:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]">
           {/* Milady avatar viewer */}
           <div className="anim-up order-2 lg:order-1 justify-self-center lg:justify-self-end" style={{ animationDelay: '0.5s' }}>
-            <div className="relative w-[240px] h-[320px] mx-auto rounded-2xl border border-pink-400/20 bg-gradient-to-b from-pink-500/[0.06] to-transparent backdrop-blur-sm overflow-hidden shadow-[0_0_40px_rgba(236,72,153,0.12)]">
+            <div className="relative w-[140px] h-[188px] sm:w-[200px] sm:h-[266px] lg:w-[240px] lg:h-[320px] mx-auto rounded-2xl border border-pink-400/20 bg-gradient-to-b from-pink-500/[0.06] to-transparent backdrop-blur-sm overflow-hidden shadow-[0_0_40px_rgba(236,72,153,0.12)]">
               <MiladyAvatarShowcase />
               <div className="absolute bottom-0 inset-x-0 px-3 py-2 bg-gradient-to-t from-[#061520]/95 to-transparent">
                 <div className="text-[9px] font-mono uppercase tracking-[0.3em] text-pink-300/70 text-center">
@@ -154,7 +185,7 @@ export default function HomePage() {
           </div>
 
           {/* Center — logo, tagline, subtitle, CTAs, login */}
-          <div className="order-1 lg:order-2 flex flex-col items-center">
+          <div className="order-1 lg:order-2 col-span-2 lg:col-span-1 flex flex-col items-center">
             <h1 className="anim-up font-clawville text-6xl sm:text-7xl lg:text-8xl text-white drop-shadow-[0_0_60px_rgba(0,229,255,0.35)]" style={{ animationDelay: '0.1s' }}>
               ClawVille
             </h1>
@@ -193,7 +224,7 @@ export default function HomePage() {
           </div>
 
           {/* Collaboration axes */}
-          <div className="anim-up order-3 justify-self-center lg:justify-self-start" style={{ animationDelay: '0.6s' }}>
+          <div className="anim-up order-3 justify-self-stretch lg:justify-self-start" style={{ animationDelay: '0.6s' }}>
             <CollaborationAxes />
           </div>
         </div>
@@ -253,6 +284,9 @@ export default function HomePage() {
           }
         ` }} />
       </section>
+
+      {/* ───── BREAKING — PayAI × ClawVille press release (full article) ───── */}
+      <PressRelease />
 
       {/* ───── LIVE DEMOS — three looping vignettes pulled from the game ───── */}
       <LiveDemoStrip />
@@ -777,17 +811,6 @@ const SOCIAL_LINKS = [
     ),
   },
   {
-    label: 'Website',
-    href: 'https://clawville.world/',
-    icon: (
-      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-        <circle cx="12" cy="12" r="10" />
-        <line x1="2" y1="12" x2="22" y2="12" />
-        <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
-      </svg>
-    ),
-  },
-  {
     label: 'Discord',
     href: 'https://discord.gg/KJfvM4VqQZ',
     icon: (
@@ -842,6 +865,10 @@ function SiteHeader({ onOpenHowItWorks }: { onOpenHowItWorks: () => void }) {
           </span>
         </button>
 
+        {/* Icon cluster — kept as ONE flex child so on mobile it wraps to its
+            own centered row beneath the CA pill (clean 2-row stack) instead of
+            orphaning a single icon onto a second line. */}
+        <div className="flex flex-wrap items-center justify-center gap-2">
         {/* How-it-works — icon-only 40×40 button to match social icons.
             Opens the onboarding explainer modal. */}
         <button
@@ -889,6 +916,7 @@ function SiteHeader({ onOpenHowItWorks }: { onOpenHowItWorks: () => void }) {
             {link.icon}
           </a>
         ))}
+        </div>
       </div>
     </div>
   );
