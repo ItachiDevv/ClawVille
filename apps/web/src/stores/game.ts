@@ -306,6 +306,27 @@ export interface GameState {
   zoomLevel: number;
   setZoomLevel: (z: number) => void;
 
+  // One-shot camera focus request (game coords, 0..MAP_WIDTH). Set by callers
+  // that want the explore-mode camera to snap to a world point (e.g. the
+  // Hatcher launch handler focusing on the launched agent's in-world body).
+  // The three layer (WASDCameraController) drains it via consumeCameraFocus()
+  // on its next frame and re-aims OrbitControls; the request clears itself so
+  // the user keeps free control afterward. Null when no focus is pending.
+  cameraFocusRequest: { x: number; y: number } | null;
+  requestCameraFocus: (x: number, y: number) => void;
+  consumeCameraFocus: () => { x: number; y: number } | null;
+
+  // Hatcher launch spectate — true while the owner is watching their launched
+  // agent in 'explore' (set by HatcherLaunchHandler on exchange success). It
+  // EXEMPTS the user from the game-page explore→player auto-promotion so a
+  // useAvatar refetch (tab focus / query invalidation) can't yank the camera
+  // off the watched agent back onto the owner's own avatar — same hazard the
+  // guest exemption guards against. Cleared the moment the user manually
+  // changes control mode (setControlMode), so they're never locked out of
+  // controlling their own avatar.
+  hatcherSpectate: boolean;
+  setHatcherSpectate: (v: boolean) => void;
+
   // Click-to-move pathfinding
   clickPath: { x: number; y: number }[] | null;
   clickPathIndex: number;
@@ -406,6 +427,12 @@ export const useGameStore = create<GameState>((set, get) => ({
       controlMode: mode,
       isSpectator: mode === 'explore',
       possessedNpcId,
+      // Any explicit control-mode change ends Hatcher launch-spectate — the
+      // owner has taken the wheel, so the explore→player auto-promotion guard
+      // is no longer needed and must not strand them in spectate. The launch
+      // handler sets hatcherSpectate AFTER its own setControlMode('explore')
+      // call, so this never clears the flag during launch setup.
+      hatcherSpectate: false,
       // Clear stale nearLocation when switching to explore (no character = no proximity)
       ...(mode === 'explore' ? { nearLocation: null, nearCharacter: null } : {}),
     });
@@ -813,6 +840,17 @@ export const useGameStore = create<GameState>((set, get) => ({
   zoomLevel: 1.7,
   setZoomLevel: (z) => set({ zoomLevel: Math.max(0.6, Math.min(3.0, z)) }),
 
+  cameraFocusRequest: null,
+  requestCameraFocus: (x, y) => set({ cameraFocusRequest: { x, y } }),
+  consumeCameraFocus: () => {
+    const req = get().cameraFocusRequest;
+    if (req) set({ cameraFocusRequest: null });
+    return req;
+  },
+
+  hatcherSpectate: false,
+  setHatcherSpectate: (v) => set({ hatcherSpectate: v }),
+
   clickPath: null,
   clickPathIndex: 0,
   clickPathTarget: null,
@@ -943,6 +981,8 @@ export const useGameStore = create<GameState>((set, get) => ({
     clickPath: null,
     clickPathIndex: 0,
     clickPathTarget: null,
+    cameraFocusRequest: null,
+    hatcherSpectate: false,
     hoveredBuilding: null,
     pendingFloatingTexts: [],
   });

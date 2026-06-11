@@ -30,6 +30,7 @@ import ActivityFeed from '@/components/game/activity-feed';
 import AgentConnectModal from '@/components/game/agent-connect-modal';
 import EmailVerifyBanner from '@/components/game/email-verify-banner';
 import GameLanguageControl from '@/components/game/game-language-control';
+import HatcherLaunchHandler from '@/components/game/hatcher-launch-handler';
 
 const BuildingPortalModal = dynamic(
   () => import('@/components/game/building-portal-modal'),
@@ -366,7 +367,19 @@ export default function GamePage() {
     // non-guest user, not just "isGuest is falsy" — a stale auth-me cache of
     // null would otherwise read as not-a-guest while the freshly-minted guest
     // avatar resolves, re-opening the hijack.
-    if (avatar && isAuthenticated && !isGuest && store.controlMode === 'explore') {
+    // Hatcher launch-spectate is ALSO exempt (2026-06-11): the owner is
+    // watching their launched agent in 'explore'; without this guard a
+    // useAvatar refetch (tab focus / query invalidation) would force-promote
+    // them into 'player' and snap the camera off the watched agent onto their
+    // own avatar — same hijack class the guest exemption above prevents. The
+    // flag clears the moment they manually change mode (store.setControlMode).
+    if (
+      avatar &&
+      isAuthenticated &&
+      !isGuest &&
+      !store.hatcherSpectate &&
+      store.controlMode === 'explore'
+    ) {
       store.setControlMode('player');
     }
     if (!avatar && store.controlMode !== 'explore' && store.controlMode !== 'npc') {
@@ -458,6 +471,13 @@ export default function GamePage() {
           game store and bootstraps a guest avatar for un-authenticated
           visitors. No UI of its own. */}
       <GuestAvatarBootstrap />
+
+      {/* Hatcher launch-entry — consumes `?hatcher_agent=&hatcher_launch=` once
+          on mount, drops the owner into spectate focused on the agent's body
+          (autonomous-mode v1). Mounted unconditionally (no auth/avatar gate) so
+          it runs on the portal redirect landing; renders nothing unless the
+          params are present. See hatcher-launch-handler.tsx + GameFeatures §2f. */}
+      <HatcherLaunchHandler />
 
       {/* World UI that's useful for ALL avatar-bearing visitors — including
           guests minted by the auto-create flow. Shows building labels, the
