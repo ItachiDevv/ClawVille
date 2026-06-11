@@ -331,7 +331,7 @@ Three controllers, mutually exclusive except arrow rotation:
 
 | Controller | Active when | What it does |
 |---|---|---|
-| `WASDCameraController` | `controlMode === 'explore'` | WASD pans the camera target across the XZ plane (`CAM_PAN_SPEED = 500 wu/s`). |
+| `WASDCameraController` | `controlMode === 'explore'` | WASD pans the camera target across the XZ plane (`CAM_PAN_SPEED = 500 wu/s`). Also drains a one-shot `cameraFocusRequest` from the game store at the top of its `useFrame` (added 2026-06-11 for Hatcher launch spectate): when set, it snaps `controls.target` to the requested GAME-coord point (→ world XZ via `−HALF_W/−HALF_H`) + repositions the camera to an overhead-behind vantage (`y=420`, `z+720`), then clears the request. `consumeCameraFocus()` returns null on every normal frame so there is no per-frame allocation. |
 | `FPSFollowCamera` | `controlMode === 'player' \| 'autonomous'` | Tight 3rd-person follow on the avatar's position via `avatarPositionRef`. |
 | `<OrbitControls>` | always mounted | Mouse drag rotates orbit; scroll zooms. minDistance differs per mode. |
 | `ArrowKeyRotationController` | always mounted | ↑↓ adjust polar, ←→ adjust azimuth at constant speed. Works in every mode. |

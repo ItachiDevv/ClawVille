@@ -83,6 +83,58 @@ export interface HatcherWorldState {
   gameMode: string;
 }
 
+/**
+ * Response contract for `POST /api/partner/hatcher/launch/exchange` (the
+ * owner-side Hatcher launch entry). The web `/game` page consumes this to decide
+ * whether to focus the camera on the agent's in-world body or show an error
+ * banner. A discriminated union on `ok` so the consumer cannot read `agent`
+ * without first proving success.
+ *
+ * SECURITY: the success shape carries ONLY public values (the partner-supplied
+ * agentId echoed back, a display name, public world coordinates). It NEVER
+ * carries the launchToken, the Lucia session id (raw or hashed), the userId, or
+ * any Hatcher response body. The failure shape carries ONLY a small internal
+ * error enum + (for an upstream rejection) the upstream HTTP status — never
+ * Hatcher's raw body.
+ */
+export type HatcherLaunchExchangeResponse =
+  | {
+      ok: true;
+      agent: {
+        /** Raw partner agent id (no `hatcher:` namespace prefix). */
+        agentId: string;
+        /** Display name for the "Watching <name>" banner. */
+        name: string;
+        /** Public world coordinate the camera focuses on. */
+        x: number;
+        y: number;
+        /** v1 always 'autonomous' (spectate). 'controlled' is a follow-up. */
+        mode: 'autonomous';
+      };
+    }
+  | {
+      ok: false;
+      /**
+       * Internal error enum (never Hatcher's raw error). `launch_requires_session`
+       * = no Lucia session (relaunch from the Hatcher dashboard).
+       * `agent_not_registered` = unknown agent id (no outbound call was made).
+       * `exchange_rejected` = Hatcher returned a non-2xx / was unreachable.
+       * `launch_issuer_unconfigured` = OUR service-issuer signing key is missing
+       * or invalid (a server config error, NOT an upstream rejection — distinct
+       * so the web side can surface "try again later" vs "relaunch").
+       * `invalid_request` = malformed params. `rate_limited` = per-IP cap hit.
+       */
+      error:
+        | 'launch_requires_session'
+        | 'agent_not_registered'
+        | 'exchange_rejected'
+        | 'launch_issuer_unconfigured'
+        | 'invalid_request'
+        | 'rate_limited';
+      /** Present only for `exchange_rejected` — the upstream HTTP status. */
+      status?: number;
+    };
+
 export interface OpenClawBotConfig {
   sessionId: string;
   gatewayUrl: string; // e.g. "https://my-openclaw.example.com"
