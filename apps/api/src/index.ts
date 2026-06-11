@@ -57,6 +57,7 @@ import { agentV2Routes } from './routes/agent-v2';
 import { dashboardRoutes } from './routes/dashboard';
 import { portalRoutes } from './routes/portal';
 import { partnerHatcherRoutes } from './routes/partner-hatcher';
+import { partnerHatcherLaunchRoutes } from './routes/partner-hatcher-launch';
 import { agentRegistrationRoutes } from './routes/agent-registration';
 import { adminIdentityRoutes } from './routes/admin-identity';
 import { startSimulation } from './services/npc-simulation';
@@ -234,6 +235,11 @@ app.route('/api/portal', portalRoutes);
 // Hatcher partner #2 — partner-signed agent registration API (proxy
 // cognition). See routes/partner-hatcher.ts + plan §13/§14 (Phase A).
 app.route('/api/partner/hatcher', partnerHatcherRoutes);
+// Hatcher partner #2 — owner-side launch-exchange entry (redeems the
+// dashboard launch grant; Lucia-session-gated, signed server-to-server).
+// POST /api/partner/hatcher/launch/exchange. See routes/partner-hatcher-launch.ts
+// + plan .claude/plans/hatcher-launch-exchange.md (§A).
+app.route('/api/partner/hatcher', partnerHatcherLaunchRoutes);
 // Wager lobbies + escrow (gambling-contracts vertical slice).
 // See routes/wager.ts header for the full surface + feature gates.
 app.route('/api/wager', wagerRoutes);
