@@ -406,7 +406,9 @@ describe('Hatcher P5-1 + P5-2 — handler-driven (mocked db, real sim)', () => {
     spawnedSids.push(blockerSid);
 
     // 3) PATCH override to the occupied target. No live body → minted === true →
-    //    re-register throws → 409, prior fields compensated, minted hash NULLED.
+    //    re-register throws → 409, prior fields compensated, prior bearer hash RESTORED
+    //    (the failed PATCH is a full no-op on the session — the partner's pre-PATCH
+    //    restorable bearer must survive).
     const PATCH_PATH = `${REG_PATH}/p6-minted-override`;
     const patchBody = JSON.stringify({ mode: 'override', targetNpcId: occupied });
     const patchRes = await request(PATCH_PATH, { method: 'PATCH', headers: writeHeaders('PATCH', PATCH_PATH, patchBody), body: patchBody });
@@ -421,11 +423,12 @@ describe('Hatcher P5-1 + P5-2 — handler-driven (mocked db, real sim)', () => {
     // Row compensated back to the PRIOR override target (the free one), not the occupied.
     expect(finalRow.mode).toBe('override');
     expect(finalRow.targetNpcId).toBe(freeTarget);
-    // TERMINAL-TRANSITION INVARIANT: the minted bearer never entered the sim Map and
-    // its id was never surfaced (no sessionId in the 409 body), so its committed hash
-    // is nulled here, matching DELETE / expiry / sweep. No dangling hash for a
-    // session that never lived.
-    expect(finalRow.sessionKeyHash == null).toBe(true);
+    // BEARER-LIFECYCLE ROLLBACK (Codex pass-7): a failed override PATCH is a full
+    // no-op on the session. The mint step overwrote the prior hash with the minted
+    // one; the compensation RESTORES the pre-PATCH hash so the partner's original
+    // RESTORABLE bearer survives (nulling it would brick a session the partner still
+    // holds). Asserts the restored hash equals the register-era hash, NOT null.
+    expect(finalRow.sessionKeyHash).toBe(priorRow.sessionKeyHash);
     // No live body for this agent (the spawn failed, nothing to restore).
     expect(sim.npcSimulation.findActiveSessionsByAgentIds(['hatcher:p6-minted-override'])).toHaveLength(0);
   });
