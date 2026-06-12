@@ -128,3 +128,6 @@ apps/web/public/.assets-backup/
 
 # Playwright MCP session artifacts
 .playwright-mcp/
+
+# Itachi sync backup artifacts
+*.itachi-bak
