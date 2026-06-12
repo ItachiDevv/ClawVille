@@ -384,6 +384,139 @@ describe('RoomRegistry — rejoin cancels pending restore (B1 punch list)', () =
   });
 });
 
+describe('RoomRegistry — sticky-room recovery (2026-06-12)', () => {
+  it('recreates the named room after a restart and re-lands the session there', () => {
+    // Simulate a deploy/restart: the original registry placed s1 in a room,
+    // then a FRESH registry (in-memory state wiped) gets a recovery rejoin
+    // carrying that roomId. The room must be recreated with the SAME id.
+    const { registry: r1 } = makeRegistry();
+    const join1 = r1.joinPlayer('s1', makeAvatar({ species: 'no_such_species' }));
+    const originalRoomId = join1.room.id;
+
+    // Restart → brand-new registry, no rooms.
+    const { registry: r2 } = makeRegistry();
+    expect(r2.getRoom(originalRoomId)).toBeNull();
+    const rejoin = r2.joinPlayer('s1', makeAvatar({ species: 'no_such_species' }), {
+      recoveryRoomId: originalRoomId,
+    });
+    expect(rejoin.room.id).toBe(originalRoomId);
+    expect(r2.getRoom(originalRoomId)?.players.has('s1')).toBe(true);
+  });
+
+  it('re-converges a group of three into the same recreated room', () => {
+    // Three friends were together in room G before the restart; each recovers
+    // with the same recoveryRoomId and must land back together.
+    const { registry: r1 } = makeRegistry();
+    const seed = r1.joinPlayer('host', makeAvatar({ species: 'no_such_species' }), {
+      requestedRoomId: 'GRPA',
+      isAuthenticated: true,
+    });
+    const groupRoomId = seed.room.id;
+    expect(groupRoomId).toBe('GRPA');
+
+    const { registry: r2 } = makeRegistry();
+    for (const sid of ['host', 'pal1', 'pal2']) {
+      r2.joinPlayer(sid, makeAvatar({ species: 'no_such_species' }), {
+        recoveryRoomId: groupRoomId,
+      });
+    }
+    const room = r2.getRoom(groupRoomId);
+    expect(room?.players.size).toBe(3);
+    expect(r2.listRooms().length).toBe(1);
+  });
+
+  it('recovery works for GUESTS (no auth) — the ticket, not auth, is the proof', () => {
+    // A guest recovery rejoin into a non-existent room recreates it. This is
+    // the deliberate difference from requestedRoomId, which drops a guest's
+    // unknown code to auto-fill (B2). The route only sets recoveryRoomId after
+    // verifying a publicId-bound ticket, so this can't be abused.
+    const { registry } = makeRegistry();
+    const rejoin = registry.joinPlayer('guest1', makeAvatar({ species: 'no_such_species' }), {
+      recoveryRoomId: 'GST1',
+      isAuthenticated: false,
+    });
+    expect(rejoin.room.id).toBe('GST1');
+  });
+
+  it('recovery into an existing room with capacity lands there (re-converge survivors)', () => {
+    const { registry } = makeRegistry();
+    // Room AAAA survived with 3 players still in it.
+    for (let i = 0; i < 3; i++) {
+      registry.joinPlayer(`survivor${i}`, makeAvatar({ species: 'no_such_species' }), {
+        requestedRoomId: 'AAAA',
+        isAuthenticated: true,
+      });
+    }
+    const rejoin = registry.joinPlayer('reconnect', makeAvatar({ species: 'no_such_species' }), {
+      recoveryRoomId: 'AAAA',
+    });
+    expect(rejoin.room.id).toBe('AAAA');
+    expect(registry.getRoom('AAAA')?.players.size).toBe(4);
+  });
+
+  it('recovery may exceed the SOFT cap (the whole point — reconverge up to 20)', () => {
+    const { registry } = makeRegistry();
+    // Fill AAAA to the soft cap (12) with survivors.
+    for (let i = 0; i < ROOM_SOFT_CAP_PLAYERS; i++) {
+      registry.joinPlayer(`s${i}`, makeAvatar({ species: 'no_such_species' }), {
+        requestedRoomId: 'AAAA',
+        isAuthenticated: true,
+      });
+    }
+    expect(registry.getRoom('AAAA')?.players.size).toBe(ROOM_SOFT_CAP_PLAYERS);
+    // A 13th member recovers into AAAA — past the soft cap but within the hard
+    // cap. Recovery bypasses the soft cap (auto-fill would have minted a new
+    // room here).
+    const rejoin = registry.joinPlayer('late', makeAvatar({ species: 'no_such_species' }), {
+      recoveryRoomId: 'AAAA',
+    });
+    expect(rejoin.room.id).toBe('AAAA');
+    expect(registry.getRoom('AAAA')?.players.size).toBe(ROOM_SOFT_CAP_PLAYERS + 1);
+  });
+
+  it('recovery into a room at the HARD cap (20) spills to auto-fill, never breaching 20', () => {
+    const { registry } = makeRegistry();
+    for (let i = 0; i < ROOM_MAX_PLAYERS; i++) {
+      registry.joinPlayer(`s${i}`, makeAvatar({ species: 'no_such_species' }), {
+        requestedRoomId: 'AAAA',
+        isAuthenticated: true,
+      });
+    }
+    expect(registry.getRoom('AAAA')?.players.size).toBe(ROOM_MAX_PLAYERS);
+    const spill = registry.joinPlayer('overflow', makeAvatar({ species: 'no_such_species' }), {
+      recoveryRoomId: 'AAAA',
+    });
+    expect(spill.room.id).not.toBe('AAAA');
+    expect(registry.getRoom('AAAA')?.players.size).toBe(ROOM_MAX_PLAYERS);
+    expect(registry.listRooms().length).toBe(2);
+  });
+
+  it('recoveryRoomId takes precedence over requestedRoomId when both are present', () => {
+    const { registry } = makeRegistry();
+    const rejoin = registry.joinPlayer('s1', makeAvatar({ species: 'no_such_species' }), {
+      recoveryRoomId: 'RECV',
+      requestedRoomId: 'REQQ',
+      isAuthenticated: true,
+    });
+    expect(rejoin.room.id).toBe('RECV');
+    expect(registry.getRoom('REQQ')).toBeNull();
+  });
+
+  it('an already-seated session ignores recoveryRoomId (idempotent refresh wins)', () => {
+    // If the session is somehow still mapped to a room, a recovery rejoin must
+    // not yank it elsewhere — the in-place refresh path runs first.
+    const { registry } = makeRegistry();
+    const first = registry.joinPlayer('s1', makeAvatar({ species: 'no_such_species' }));
+    const seatedRoomId = first.room.id;
+    const rejoin = registry.joinPlayer('s1', makeAvatar({ species: 'no_such_species' }), {
+      recoveryRoomId: 'ELSE',
+    });
+    expect(rejoin.room.id).toBe(seatedRoomId);
+    expect(rejoin.swappedOutNpcId).toBeNull();
+    expect(registry.getRoom('ELSE')).toBeNull();
+  });
+});
+
 describe('RoomRegistry — guests cannot mint invite IDs (B2 punch list)', () => {
   it('an unauthenticated caller requesting an unknown 4-char ID falls through to auto-fill', () => {
     const { registry } = makeRegistry();
