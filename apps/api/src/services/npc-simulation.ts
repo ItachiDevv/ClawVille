@@ -298,6 +298,22 @@ const INTERMISSION_MS = 8_000;      // 8s between rounds
 
 // --- Simulation Singleton ---
 
+/**
+ * Thrown by `registerOpenClaw` in OVERRIDE mode when the target NPC is already
+ * overridden by a DIFFERENT session. Callers (partner-hatcher register/PATCH P5-2)
+ * map this to a client-actionable 409 `override_target_unavailable` vs a generic
+ * 503 — a TYPED sentinel instead of message-string matching, so the HTTP status
+ * never silently degrades if the error text is reworded (Codex pass-5 nit #1).
+ */
+export class OverrideTargetUnavailableError extends Error {
+  readonly targetNpcId: string;
+  constructor(targetNpcId: string) {
+    super(`NPC "${targetNpcId}" is already overridden`);
+    this.name = 'OverrideTargetUnavailableError';
+    this.targetNpcId = targetNpcId;
+  }
+}
+
 class NpcSimulation {
   private npcs: Map<string, NpcRuntimeState> = new Map();
   private conversations: Map<string, NpcConversation> = new Map();
@@ -570,7 +586,9 @@ class NpcSimulation {
   registerOpenClaw(config: OpenClawRegistration, client: OpenClawClient, restoredState?: { lastX?: number; lastY?: number; knowledge?: string[] }) {
     if (config.mode === 'override') {
       if (!this.npcs.has(config.targetNpcId)) throw new Error(`NPC "${config.targetNpcId}" not found`);
-      if (this.npcOverrides.has(config.targetNpcId)) throw new Error(`NPC "${config.targetNpcId}" is already overridden`);
+      // Typed sentinel (not a bare Error) so the partner-hatcher P5-2 path can map
+      // an occupied target to 409 via `instanceof`, never message-string matching.
+      if (this.npcOverrides.has(config.targetNpcId)) throw new OverrideTargetUnavailableError(config.targetNpcId);
       this.openClawBots.set(config.sessionId, { config, client });
       this.npcOverrides.set(config.targetNpcId, config.sessionId);
       const npc = this.npcs.get(config.targetNpcId)!;
