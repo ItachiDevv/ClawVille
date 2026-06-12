@@ -94,7 +94,13 @@ export async function expireSession(agentId: string): Promise<void> {
   // don't want a duplicate "expired" event firing at the next sweep.
   const rows = await db
     .update(openclawBots)
-    .set({ sessionExpiresAt: now, sessionSweptAt: now, updatedAt: now })
+    // Null the restorable session-bearer hash on this TERMINAL transition (#8,
+    // 2026-06-12). Restore already fails closed on the expired TTL, so this is
+    // defense-in-depth, not a live-bypass fix — a disconnected session must not
+    // retain a bearer commitment a future change could re-honor. A subsequent
+    // /connect/register mints a fresh sessionId and writes a new hash, so this
+    // does not break legitimate reconnect.
+    .set({ sessionExpiresAt: now, sessionSweptAt: now, sessionKeyHash: null, updatedAt: now })
     .where(eq(openclawBots.agentId, agentId))
     .returning({ userId: openclawBots.userId, identityType: openclawBots.identityType });
 
@@ -172,10 +178,14 @@ export async function sweepExpiredSessions(): Promise<number> {
 
   // Mark the picked-up rows as swept BEFORE we emit events / stop
   // runtimes. If the boot crashes mid-sweep, the next tick won't
-  // double-emit because session_swept_at is already advanced.
+  // double-emit because session_swept_at is already advanced. Also null the
+  // restorable session-bearer hash on this TERMINAL TTL-expiry (#8, 2026-06-12)
+  // — restore already fails closed on the past TTL, so this is defense-in-depth
+  // so an expired row retains no bearer commitment; a reconnect mints a fresh
+  // hash.
   await db
     .update(openclawBots)
-    .set({ sessionSweptAt: now, updatedAt: now })
+    .set({ sessionSweptAt: now, sessionKeyHash: null, updatedAt: now })
     .where(
       sql`${openclawBots.id} IN (${sql.join(expired.map((r) => sql`${r.id}`), sql`, `)})`,
     )

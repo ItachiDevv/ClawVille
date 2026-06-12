@@ -31,6 +31,7 @@ import {
   resolveAgentSpecies,
   resolveAutonomyMode,
   spawnRelevantProjection,
+  isRowRestorableFromIdentity,
   type AvatarConfigInputs,
   type OverrideConfigInputs,
 } from '../agent-session-config';
@@ -138,6 +139,39 @@ describe('resolveInWorldProtocol — derives from identity, not stored column', 
         expect(resolveInWorldProtocol(t, stored)).toBe('nanoclaw');
       }
     }
+  });
+});
+
+describe('isRowRestorableFromIdentity — #6 restore gate (identity, not gatewayUrl shape)', () => {
+  test('no-gateway types ARE restorable from the row alone', () => {
+    for (const t of ['anonymous', 'milady', 'nanoclaw']) {
+      expect(isRowRestorableFromIdentity(t)).toBe(true);
+    }
+  });
+
+  test('every real-gateway type is NOT restorable (auth_token never persisted)', () => {
+    for (const t of ['openclaw', 'ironclaw', 'custom']) {
+      expect(isRowRestorableFromIdentity(t)).toBe(false);
+    }
+  });
+
+  test('THE #6 regression: a malformed legacy real-gateway row (null/dummy gatewayUrl) is still REFUSED', () => {
+    // The bug: a legacy `openclaw`/`custom` row with protocol='openai-compat' and
+    // a NULL/dummy gateway_url fell through the old `!!gatewayUrl && gatewayUrl !==
+    // dummy` guard and restore built a mute body POSTing to http://localhost:0.
+    // The predicate gates on IDENTITY TYPE, so the gatewayUrl shape is irrelevant:
+    // these are refused regardless of what gateway_url holds.
+    expect(isRowRestorableFromIdentity('openclaw')).toBe(false);
+    expect(isRowRestorableFromIdentity('custom')).toBe(false);
+    // An unknown/future identity type also fails closed (not in the no-gateway set).
+    expect(isRowRestorableFromIdentity('some-future-framework')).toBe(false);
+  });
+
+  test('hatcher is NOT covered by this predicate (handled by a separate restore branch)', () => {
+    // restore.ts keys the hatcher rebuild on protocol==='hatcher-proxy', not the
+    // identityType enum (which excludes 'hatcher'); this predicate is consulted
+    // only for the non-hatcher path, so it intentionally returns false here.
+    expect(isRowRestorableFromIdentity('hatcher')).toBe(false);
   });
 });
 

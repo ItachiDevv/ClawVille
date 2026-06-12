@@ -42,7 +42,7 @@
 import { Hono } from 'hono';
 import type { Context } from 'hono';
 import { z } from 'zod';
-import { randomBytes } from 'crypto';
+import { randomBytes, createHash } from 'crypto';
 import { eq, and, desc, count, gte } from 'drizzle-orm';
 import {
   db,
@@ -51,6 +51,7 @@ import {
   events,
   questRewards,
   tutorialQuestClaims,
+  sql,
 } from '@clawville/database';
 import {
   NPC_IDS,
@@ -156,6 +157,32 @@ function resolvePartnerDailyRegistrationCap(): number {
 /** Start-of-day (UTC midnight) for "today" — the daily cap window boundary. */
 function utcMidnight(now: Date = new Date()): Date {
   return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+}
+
+/**
+ * Deterministic 63-bit advisory-lock key for the per-(partner, UTC-day)
+ * registration cap (#7, 2026-06-12). The daily NEW-registration cap was
+ * count-then-insert with NO lock, so N concurrent registers all read below the
+ * cap and all inserted, blowing past it. We serialize the count+insert under a
+ * Postgres TRANSACTION-scoped advisory lock (`pg_advisory_xact_lock`) keyed on
+ * this value, so concurrent registers for the same partner+day queue instead of
+ * racing — the (k+1)th sees the k already-committed rows and is rejected.
+ *
+ * The key is `sha256(partnerId + ':' + utcMidnightEpochMs)` folded to a signed
+ * 63-bit BigInt (Postgres advisory-lock keys are `bigint`). A new day or a new
+ * partner derives a different key, so different (partner, day) buckets never
+ * contend with each other. There is exactly one partner (`hatcher`) today, but
+ * keying on partnerId keeps this correct if more are added. No new table, no
+ * migration — the existing count-from-DB rule is unchanged, only made atomic.
+ */
+function dailyRegistrationLockKey(partnerId: string, day: Date): bigint {
+  const digest = createHash('sha256')
+    .update(`${partnerId}:${day.getTime()}`)
+    .digest();
+  // Take the low 8 bytes as an unsigned 64-bit, then clear the top bit so it
+  // fits a signed bigint (pg advisory-lock keys are signed int8).
+  const u64 = digest.readBigUInt64BE(0);
+  return u64 & 0x7fff_ffff_ffff_ffffn;
 }
 
 // ---------------------------------------------------------------------------
@@ -681,57 +708,79 @@ partnerHatcherRoutes.post('/agents', async (c) => {
     } else {
       // Per-partner daily NEW-registration cap (2026-06-12). Only the insert
       // branch counts — a re-register/PATCH of an existing agentId took the
-      // `existing` branch above and is never rate-limited by this cap. Count
-      // the partner's `hatcher` rows created since UTC midnight; reject the
+      // `existing` branch above and is never rate-limited by this cap. Reject the
       // NEW row over the cap with a 429 so the partner can retry tomorrow (or
       // after we raise the cap) without losing the request shape. Counting from
       // the DB needs no extra table and survives an API restart.
+      //
+      // ATOMICITY (#7, 2026-06-12): the count + insert run in ONE transaction
+      // under a per-(partner, UTC-day) `pg_advisory_xact_lock`, so concurrent
+      // registers for the same bucket serialize instead of all reading below the
+      // cap and all inserting (the prior read-then-insert race). The lock is
+      // transaction-scoped (auto-released at COMMIT/ROLLBACK), keyed on a stable
+      // hash of (partnerId, utc-midnight) so different days/partners never
+      // contend. Over-cap is signalled out via `capExceeded` (we can't `c.json`
+      // from inside the tx callback) and the 429 is returned after the tx.
       const cap = resolvePartnerDailyRegistrationCap();
-      const [todayCount] = await db
-        .select({ n: count() })
-        .from(openclawBots)
-        .where(
-          and(
-            eq(openclawBots.identityType, 'hatcher'),
-            gte(openclawBots.createdAt, utcMidnight()),
-          ),
-        );
-      if (Number(todayCount?.n ?? 0) >= cap) {
+      const lockKey = dailyRegistrationLockKey('hatcher', utcMidnight());
+      let capExceeded = false;
+      const insertedRow = await db.transaction(async (tx) => {
+        // Serialize this (partner, day) bucket. Concurrent callers block here
+        // until the holder commits, so the count below sees their committed rows.
+        await tx.execute(sql`SELECT pg_advisory_xact_lock(${lockKey})`);
+
+        const [todayCount] = await tx
+          .select({ n: count() })
+          .from(openclawBots)
+          .where(
+            and(
+              eq(openclawBots.identityType, 'hatcher'),
+              gte(openclawBots.createdAt, utcMidnight()),
+            ),
+          );
+        if (Number(todayCount?.n ?? 0) >= cap) {
+          capExceeded = true;
+          return null;
+        }
+
+        const [inserted] = await tx
+          .insert(openclawBots)
+          .values({
+            agentId: namespacedAgentId,
+            identityType: 'hatcher',
+            protocol: 'hatcher-proxy',
+            cognitionBackend: 'hatcher-proxy',
+            proxyUrl: urlCheck.url,
+            proxyTokenEnc: encToken.enc,
+            proxyTokenIv: encToken.iv,
+            proxyTokenTag: encToken.tag,
+            mode: data.mode,
+            targetNpcId: data.mode === 'override' ? data.targetNpcId ?? null : null,
+            name: data.name ?? null,
+            species: resolvedSpecies,
+            color: data.color ?? null,
+            userId,
+            metadata: {
+              personality: data.personality,
+              homeX: data.homeX ?? 2560,
+              homeY: data.homeY ?? 2560,
+              patrolRadius: data.patrolRadius ?? 100,
+              stats: data.stats ?? { hp: 100, attack: 10, defense: 8, speed: 6 },
+            },
+            totalSessions: 1,
+            sessionExpiresAt: computeSessionExpiresAt(),
+          })
+          .returning();
+        return inserted;
+      });
+
+      if (capExceeded || !insertedRow) {
         return c.json(
           { error: 'daily_registration_cap', code: 'daily_registration_cap', cap },
           429,
         );
       }
-
-      const [inserted] = await db
-        .insert(openclawBots)
-        .values({
-          agentId: namespacedAgentId,
-          identityType: 'hatcher',
-          protocol: 'hatcher-proxy',
-          cognitionBackend: 'hatcher-proxy',
-          proxyUrl: urlCheck.url,
-          proxyTokenEnc: encToken.enc,
-          proxyTokenIv: encToken.iv,
-          proxyTokenTag: encToken.tag,
-          mode: data.mode,
-          targetNpcId: data.mode === 'override' ? data.targetNpcId ?? null : null,
-          name: data.name ?? null,
-          species: resolvedSpecies,
-          color: data.color ?? null,
-          userId,
-          metadata: {
-            personality: data.personality,
-            homeX: data.homeX ?? 2560,
-            homeY: data.homeY ?? 2560,
-            patrolRadius: data.patrolRadius ?? 100,
-            stats: data.stats ?? { hp: 100, attack: 10, defense: 8, speed: 6 },
-          },
-          totalSessions: 1,
-          sessionExpiresAt: computeSessionExpiresAt(),
-        })
-        .returning();
-      row = inserted;
+      row = insertedRow;
     }
   } catch (err) {
     console.error('[Hatcher/register] DB upsert error:', err);
@@ -996,6 +1045,20 @@ partnerHatcherRoutes.patch('/agents/:agentId', async (c) => {
   // handles it. We need the DECRYPTED token to rebuild the client — use the
   // freshly-supplied plaintext, else decrypt the stored row.
   let propagated = false;
+  // Session-id PRESERVATION (#4, 2026-06-12). The PATCH re-register used to ALWAYS
+  // mint a fresh sessionId + evict the prior in-memory session, silently orphaning
+  // the partner who was still holding the connect-era bearer (and the response
+  // never returned the new id). We now PREFER to reuse the existing live
+  // sessionId, so the partner's bearer keeps working across a PATCH and nothing
+  // is orphaned — the less-disruptive option the reviewer asked us to take when
+  // available. We only MINT a new id when there is NO live session to reuse
+  // (e.g. the Map was wiped by a restart, so the partner's bearer can no longer
+  // be honored from memory anyway); in that single case the new id is RETURNED in
+  // the response (+ sessionExpiresAt) so the partner can adopt it. `rotated` is
+  // true ONLY when a new id was minted — when we preserve, the row's
+  // session_key_hash already matches the live bearer and must NOT be rewritten.
+  let rotatedSessionId: string | null = null;
+  let rotatedSessionExpiresAt: Date | null = null;
   try {
     let plaintextToken: string | null = data.cognition?.scopedToken ?? null;
     if (!plaintextToken) {
@@ -1007,14 +1070,20 @@ partnerHatcherRoutes.patch('/agents/:agentId', async (c) => {
     if (plaintextToken && proxyUrl) {
       const urlCheck = validateHatcherProxyUrl(proxyUrl);
       if (urlCheck.ok) {
-        // Tear down any live session, then re-register with the new fields.
-        for (const stale of npcSimulation.findActiveSessionsByAgentIds([namespacedAgentId])) {
+        // Capture any live session(s) for this agent BEFORE tearing them down so
+        // we can reuse the existing bearer rather than orphan it. A single agent
+        // has at most one live body in practice; if there were several we reuse
+        // the first and evict the rest (they were duplicates anyway).
+        const liveSessions = npcSimulation.findActiveSessionsByAgentIds([namespacedAgentId]);
+        const preservedSessionId = liveSessions[0] ?? null;
+        for (const stale of liveSessions) {
           npcSimulation.unregisterOpenClaw(stale);
         }
-        // Hardening (Codex dual-review, 2026-06-03): crypto-strong session id,
-        // same rationale as the /register mint above — this is the real-CT
-        // bearer credential, not a display handle.
-        const sessionId = `hat-${randomBytes(24).toString('base64url')}`;
+        // Preserve the live bearer when one exists; otherwise mint a fresh
+        // crypto-strong id (Codex dual-review, 2026-06-03: this is the real-CT
+        // bearer credential, not a display handle).
+        const sessionId = preservedSessionId ?? `hat-${randomBytes(24).toString('base64url')}`;
+        const minted = preservedSessionId === null;
         const stats = row.metadata?.stats ?? { hp: 100, attack: 10, defense: 8, speed: 6 };
         // Ledger-capable: partner-signed path (proven ownership), same as the
         // /register mint above (auth-lens fix #2/#3, 2026-06-03).
@@ -1060,18 +1129,30 @@ partnerHatcherRoutes.patch('/agents/:agentId', async (c) => {
         const client = buildHatcherClient(config, urlCheck.url, plaintextToken, rawAgentId);
         npcSimulation.registerOpenClaw(config, client);
         propagated = true;
-        // Restart survival (2026-06-11) — the patch re-register mints a FRESH
-        // sessionId and evicts the prior in-memory session (above), so update
-        // the row's restorable hash to THIS new bearer. The register-era bearer
-        // is intentionally orphaned (it was just evicted from the Map; its old
-        // hash no longer matches), matching the in-memory teardown. Non-fatal.
-        try {
-          await db
-            .update(openclawBots)
-            .set({ sessionKeyHash: sha256Hex(sessionId), updatedAt: new Date() })
-            .where(eq(openclawBots.id, row.id));
-        } catch (err) {
-          console.error('[Hatcher/patch] session_key_hash persist failed (non-fatal):', err);
+        // Restart survival (2026-06-11) — only when we MINTED a new bearer do we
+        // rewrite the row's restorable hash to it (the previous in-memory session
+        // was evicted above, so its old hash no longer matches a live session).
+        // When we PRESERVED the live bearer (#4), the row's session_key_hash
+        // already commits to that same id — rewriting it would be a no-op at best
+        // and a needless write; we leave it untouched. We surface a minted id (+
+        // its sliding expiry) to the partner so they can adopt the new bearer;
+        // a preserved id is unchanged for them, so nothing is returned. Non-fatal.
+        if (minted) {
+          rotatedSessionId = sessionId;
+          rotatedSessionExpiresAt = computeSessionExpiresAt();
+          try {
+            await db
+              .update(openclawBots)
+              .set({
+                sessionKeyHash: sha256Hex(sessionId),
+                sessionExpiresAt: rotatedSessionExpiresAt,
+                sessionSweptAt: null,
+                updatedAt: new Date(),
+              })
+              .where(eq(openclawBots.id, row.id));
+          } catch (err) {
+            console.error('[Hatcher/patch] session_key_hash persist failed (non-fatal):', err);
+          }
         }
       }
     }
@@ -1079,7 +1160,22 @@ partnerHatcherRoutes.patch('/agents/:agentId', async (c) => {
     console.error('[Hatcher/patch] live-entity propagation failed (non-fatal):', err);
   }
 
-  return c.json({ ok: true, propagated, agent: publicAgentRecord(row) });
+  // When a NEW bearer was minted (no live session to preserve), return it (+ its
+  // expiry) so the partner adopts it instead of being silently orphaned holding
+  // the old id. When the live bearer was preserved, these are omitted — the
+  // partner's existing sessionId still works (#4, 2026-06-12). Mirrors the
+  // connect/register response shape (top-level `sessionId`).
+  return c.json({
+    ok: true,
+    propagated,
+    ...(rotatedSessionId
+      ? {
+          sessionId: rotatedSessionId,
+          sessionExpiresAt: rotatedSessionExpiresAt,
+        }
+      : {}),
+    agent: publicAgentRecord(row),
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1137,6 +1233,13 @@ partnerHatcherRoutes.delete('/agents/:agentId', async (c) => {
       .set({
         sessionExpiresAt: tombstonedAt,
         sessionSweptAt: tombstonedAt,
+        // Scrub the restorable session-bearer hash on this TERMINAL lifecycle
+        // transition (#8, 2026-06-12). Restore already fails closed on the
+        // expired TTL + the sweptAt>=expiresAt guard, so a stale hash is not a
+        // live bypass — but a deleted row must not retain a bearer commitment a
+        // future change could re-honor. Null it here, the same as the
+        // disconnect/TTL-expiry paths in openclaw-session-sweeper.ts.
+        sessionKeyHash: null,
         cognitionBackend: null,
         proxyUrl: null,
         proxyTokenEnc: null,
