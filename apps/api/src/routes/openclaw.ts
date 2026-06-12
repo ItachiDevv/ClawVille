@@ -132,6 +132,10 @@ openclawRoutes.post('/register', async (c) => {
   // for log readability; validation is Map membership so the change is
   // transparent and old in-memory ids age out with no migration.
   const sessionId = `oc-${randomBytes(24).toString('base64url')}`;
+  // Compute the session expiry ONCE so the DB write (both branches) and the
+  // identity response surface the SAME timestamp (2026-06-12 — pull-side
+  // expiry visibility).
+  const sessionExpiresAt = computeSessionExpiresAt();
 
   // Ledger-capability (Codex auth-lens fix #2/#3, 2026-06-03): the legacy
   // /openclaw/register path is UNAUTHENTICATED and upserts by caller-supplied
@@ -189,7 +193,7 @@ openclawRoutes.post('/register', async (c) => {
         totalSessions: (existing.totalSessions ?? 0) + 1,
         lastSeenAt: new Date(),
         // Phase 6 — fresh 24h TTL on every legacy /openclaw/register too.
-        sessionExpiresAt: computeSessionExpiresAt(),
+        sessionExpiresAt,
         // Restart survival (2026-06-11) — one-way hash of this register's
         // bearer so the session restores from the row after an API restart.
         sessionKeyHash: sha256Hex(sessionId),
@@ -212,6 +216,7 @@ openclawRoutes.post('/register', async (c) => {
         isReturning: true,
         totalSessions: (existing.totalSessions ?? 0) + 1,
         knowledge: existing.knowledge ?? [],
+        sessionExpiresAt: sessionExpiresAt.toISOString(),
       };
     } else {
       // New bot
@@ -235,7 +240,7 @@ openclawRoutes.post('/register', async (c) => {
         metadata: avatarMeta,
         totalSessions: 1,
         // Phase 6 — initial 24h TTL so the sweeper reaps dormant rows.
-        sessionExpiresAt: computeSessionExpiresAt(),
+        sessionExpiresAt,
         // Restart survival (2026-06-11) — one-way hash of this register's
         // bearer so the session restores from the row after an API restart.
         sessionKeyHash: sha256Hex(sessionId),
@@ -249,6 +254,7 @@ openclawRoutes.post('/register', async (c) => {
         isReturning: false,
         totalSessions: 1,
         knowledge: [],
+        sessionExpiresAt: sessionExpiresAt.toISOString(),
       };
     }
   } catch (err: any) {
