@@ -28,9 +28,17 @@ import { api } from '@/lib/api';
  * - On success we strip BOTH params via history.replaceState immediately, so a
  *   refresh can't replay the (now-consumed) launch token.
  * - Renders nothing on the happy path beyond a small auto-dismissing toast
- *   (existing store toast surface). The 401 / error banner is bottom-4 centred
- *   per the game top-stack rule (new banners dock bottom-centre, never top-14)
- *   and uses light tokens only on the dark .claw-panel.
+ *   (existing store toast surface). The 401 / error banner docks bottom-centre
+ *   per the game top-stack rule (new banners dock bottom-centre, never top-14),
+ *   lifted to `bottom-20` so it clears the `<AvatarChatBar>` chat pill
+ *   (`bottom-0`, band ~12–54px) instead of overlapping it, and uses light
+ *   tokens only on the dark .claw-panel.
+ * - While the banner is showing it sets `hatcherLaunchBannerActive` in the game
+ *   store; the soft `<EmailVerifyBanner>` reads that flag and suppresses itself
+ *   so the two bottom-centre surfaces never stack/occlude (the Hatcher panel
+ *   wraps to ~1/3 of the screen at mobile width, which no positional lift can
+ *   clear). The Hatcher banner is the higher-priority transient and wins the
+ *   slot; the email nudge returns once the banner is dismissed.
  */
 
 type LaunchBanner = { kind: 'auth' } | { kind: 'error' } | null;
@@ -38,6 +46,18 @@ type LaunchBanner = { kind: 'auth' } | { kind: 'error' } | null;
 export default function HatcherLaunchHandler() {
   const firedRef = useRef(false);
   const [banner, setBanner] = useState<LaunchBanner>(null);
+  const setHatcherLaunchBannerActive = useGameStore(
+    (s) => s.setHatcherLaunchBannerActive,
+  );
+
+  // Mirror banner visibility into the store so <EmailVerifyBanner> can suppress
+  // itself while this banner occupies the bottom-center slot (mutual exclusion).
+  // Cleanup clears the flag on unmount so a navigation away can't strand the
+  // email nudge hidden.
+  useEffect(() => {
+    setHatcherLaunchBannerActive(banner !== null);
+    return () => setHatcherLaunchBannerActive(false);
+  }, [banner, setHatcherLaunchBannerActive]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -107,7 +127,7 @@ export default function HatcherLaunchHandler() {
   if (!banner) return null;
 
   return (
-    <div className="fixed left-1/2 -translate-x-1/2 bottom-4 z-50 max-w-[90vw] px-2">
+    <div className="fixed left-1/2 -translate-x-1/2 bottom-20 z-50 max-w-[90vw] px-2">
       <div className="claw-panel pointer-events-auto flex items-start gap-3 px-4 py-3 animate-in fade-in slide-in-from-bottom-2 duration-300">
         <span className="text-xl leading-none mt-0.5">
           {banner.kind === 'auth' ? '🔑' : '⚠️'}

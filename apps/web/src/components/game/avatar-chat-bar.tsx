@@ -1,10 +1,10 @@
 'use client';
 
-import { useState, useRef, useMemo } from 'react';
+import { useState, useRef, useMemo, useEffect } from 'react';
 import { useAvatar } from '@/hooks/use-avatar';
 import { useGameStore } from '@/stores/game';
 import { useQuestStore, triggerQuestCheck } from '@/stores/quest';
-import { api } from '@/lib/api';
+import { api, ApiError } from '@/lib/api';
 import { KNOWLEDGE_BOOKS, type AgentCategory } from '@clawville/shared';
 import { MODEL_REGISTRY } from '@/lib/three/agent-model-registry';
 
@@ -54,11 +54,18 @@ export default function AvatarChatBar() {
   const chatOpen = useGameStore((s) => s.chatOpen); // location chat open
   const agentConnected = useGameStore((s) => s.agentConnected);
   const agentSessionId = useGameStore((s) => s.agentSessionId);
+  const setAgentConnection = useGameStore((s) => s.setAgentConnection);
+  const setAgentConnectModalOpen = useGameStore((s) => s.setAgentConnectModalOpen);
   const [expanded, setExpanded] = useState(false);
   const [messages, setMessages] = useState<AvatarMessage[]>([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [hasUnread, setHasUnread] = useState(false);
+  // Set when a chat send hits a dead agent session (404 + code
+  // 'agent_session_not_found'). Surfaces a non-blocking "session ended —
+  // reconnect" prompt in the expanded panel. We do NOT auto-reconnect: there
+  // are no stored credentials to replay the agent handshake with.
+  const [sessionEnded, setSessionEnded] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -73,6 +80,13 @@ export default function AvatarChatBar() {
     }
     return topicNames;
   }, [avatar?.characterConfig]);
+
+  // Once the agent reconnects (agentConnected flips back true), drop the
+  // stale "session ended" banner so it can't linger after a successful
+  // reconnect. Runs before the early returns to keep hook order stable.
+  useEffect(() => {
+    if (agentConnected && sessionEnded) setSessionEnded(false);
+  }, [agentConnected, sessionEnded]);
 
   // Don't render when location chat is open or no avatar
   if (chatOpen || !avatar) return null;
@@ -130,10 +144,14 @@ export default function AvatarChatBar() {
     triggerQuestCheck();
 
     setLoading(true);
+    // Whether this send went through the connected-agent gateway — only then
+    // does a 404 mean a dead agent session worth clearing. A 404 on the local
+    // avatar-chat path must NOT trip the reconnect flow.
+    const routedThroughAgent = !!(agentConnected && agentSessionId);
     try {
       let res: { message: { role: string; content: string; timestamp: string } };
 
-      if (agentConnected && agentSessionId) {
+      if (routedThroughAgent) {
         // Route through connected agent gateway
         res = await api.openclawChat({
           sessionId: agentSessionId,
@@ -159,6 +177,40 @@ export default function AvatarChatBar() {
       if (!expanded) setHasUnread(true);
       scrollToBottom();
     } catch (err: any) {
+      // Dead agent session — the server lost the in-memory session (API
+      // restart/deploy) or it expired. Detect via the stable machine code
+      // (`agent_session_not_found`), never by matching the de-branded copy.
+      // Clear the stale connected-state so the "Bot Training Active" pill +
+      // connection routing stop, and surface a reconnect prompt. No
+      // auto-retry: we hold no credentials to redo the agent handshake.
+      //
+      // The `status === 404` arm is a DELIBERATE fail-safe, not redundancy:
+      // the code is the precise primary signal (POST /api/openclaw/chat emits
+      // it on BOTH its 404s today — openclaw.ts), and the fallback keeps the
+      // stale-clear working if the API ever ships a session-dead 404 without
+      // the code. It's safe to keep broad because (a) it's gated by
+      // `routedThroughAgent` so only the connected-agent send path can reach
+      // it, and (b) that endpoint has no non-session 404 — so the worst case
+      // even on a future change is a harmless false "session ended" the user
+      // clears by clicking Reconnect. (Adversary audit 2026-06-12: fail-safe,
+      // approved.)
+      const dead =
+        routedThroughAgent &&
+        err instanceof ApiError &&
+        (err.code === 'agent_session_not_found' || err.status === 404);
+      if (dead) {
+        setAgentConnection(null); // wipes agentConnected + agentSessionId + Bot-Training pill
+        setSessionEnded(true);
+        const endedMsg: AvatarMessage = {
+          id: crypto.randomUUID(),
+          role: 'assistant',
+          content: 'Your agent session ended. Reconnect your agent to keep training.',
+        };
+        setMessages((prev) => [...prev, endedMsg]);
+        if (!expanded) setHasUnread(true);
+        scrollToBottom();
+        return;
+      }
       const errorMsg: AvatarMessage = {
         id: crypto.randomUUID(),
         role: 'assistant',
@@ -203,6 +255,29 @@ export default function AvatarChatBar() {
                 : 'your agent'}
             </span>
           </div>
+
+          {/* Agent-session-ended banner — shown when a send hit a dead
+              session. Non-blocking: the user can still chat with the
+              local avatar (api.sendAvatarChat path) since agentConnected is
+              now false. The button opens the existing connect modal. */}
+          {sessionEnded && (
+            <div className="flex items-center gap-2 px-3 py-2 bg-amber-500/15 border-b border-amber-400/30">
+              <span className="text-amber-300 text-sm leading-none">⚠️</span>
+              <span className="text-amber-100/90 text-xs font-medium flex-1">
+                Agent session ended — reconnect your agent.
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  setSessionEnded(false);
+                  setAgentConnectModalOpen(true, 'connect');
+                }}
+                className="px-2.5 py-1 rounded-full text-[11px] font-mono bg-amber-500/25 hover:bg-amber-500/40 text-amber-50 border border-amber-300/40 transition-colors shrink-0"
+              >
+                Reconnect
+              </button>
+            </div>
+          )}
 
           {/* Messages */}
           <div className="max-h-64 overflow-y-auto px-3 py-2 space-y-2">

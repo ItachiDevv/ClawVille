@@ -14,6 +14,7 @@ import { setSessionAgent, getSessionAgent, deleteSessionAgent } from '../service
 import { buildRuntimeServices } from '../services/runtime-services-adapter';
 import { generateSkillMd } from '../services/skill-generator';
 import { computeSessionExpiresAt } from '../services/openclaw-session-sweeper';
+import { sha256Hex } from '../services/session-digest';
 
 /** Ensure a system user exists for OpenClaw bot agents (FK requirement) */
 let _systemUserId: string | null = null;
@@ -189,6 +190,9 @@ openclawRoutes.post('/register', async (c) => {
         lastSeenAt: new Date(),
         // Phase 6 — fresh 24h TTL on every legacy /openclaw/register too.
         sessionExpiresAt: computeSessionExpiresAt(),
+        // Restart survival (2026-06-11) — one-way hash of this register's
+        // bearer so the session restores from the row after an API restart.
+        sessionKeyHash: sha256Hex(sessionId),
         // Phase 6.1 — clear sweptAt so the next expiration emits exactly
         // one event. Same rationale as the /api/agent/connect path.
         sessionSweptAt: null,
@@ -232,6 +236,9 @@ openclawRoutes.post('/register', async (c) => {
         totalSessions: 1,
         // Phase 6 — initial 24h TTL so the sweeper reaps dormant rows.
         sessionExpiresAt: computeSessionExpiresAt(),
+        // Restart survival (2026-06-11) — one-way hash of this register's
+        // bearer so the session restores from the row after an API restart.
+        sessionKeyHash: sha256Hex(sessionId),
       }).returning();
 
       identity = {
@@ -460,11 +467,23 @@ openclawRoutes.post('/chat', async (c) => {
   // membership AND DB `session_expires_at > now`, NULL = expired, unregisters a
   // stale body) so an expired session is rejected here and never slid forward.
   if (!(await validateLiveAgentSession(sessionId))) {
-    return c.json({ error: 'OpenClaw session not found or expired. Reconnect your agent.' }, 404);
+    return c.json(
+      {
+        error: 'Agent session not found or expired. Reconnect your agent.',
+        code: 'agent_session_not_found',
+      },
+      404,
+    );
   }
   const client = npcSimulation.getOpenClawClientBySession(sessionId);
   if (!client) {
-    return c.json({ error: 'OpenClaw session not found. Bot may have disconnected.' }, 404);
+    return c.json(
+      {
+        error: 'Agent session not found. Your agent may have disconnected.',
+        code: 'agent_session_not_found',
+      },
+      404,
+    );
   }
 
   // Look up actual bot data from DB instead of trusting client avatarContext
@@ -532,7 +551,7 @@ openclawRoutes.post('/chat', async (c) => {
       ]);
     } catch (err: any) {
       console.error('[OpenClaw Chat] Error:', err);
-      return c.json({ error: 'OpenClaw gateway error: ' + (err.message || 'unknown') }, 502);
+      return c.json({ error: 'Agent gateway error: ' + (err.message || 'unknown'), code: 'agent_gateway_error' }, 502);
     }
   }
 
@@ -584,11 +603,23 @@ openclawRoutes.post('/location-chat', sessionMiddleware, async (c) => {
   // expired-but-in-map session must not be able to call /location-chat to
   // refresh `session_expires_at` and then pass cove validation.
   if (!(await validateLiveAgentSession(sessionId))) {
-    return c.json({ error: 'OpenClaw session not found or expired. Reconnect your agent.' }, 404);
+    return c.json(
+      {
+        error: 'Agent session not found or expired. Reconnect your agent.',
+        code: 'agent_session_not_found',
+      },
+      404,
+    );
   }
   const client = npcSimulation.getOpenClawClientBySession(sessionId);
   if (!client) {
-    return c.json({ error: 'OpenClaw session not found. Bot may have disconnected.' }, 404);
+    return c.json(
+      {
+        error: 'Agent session not found. Your agent may have disconnected.',
+        code: 'agent_session_not_found',
+      },
+      404,
+    );
   }
 
   const buildingTheme = BUILDING_OPENCLAW_THEMES[locationId];
@@ -664,7 +695,7 @@ openclawRoutes.post('/location-chat', sessionMiddleware, async (c) => {
       ]);
     } catch (err: any) {
       console.error('[OpenClaw Location Chat] Error:', err);
-      return c.json({ error: 'OpenClaw gateway error: ' + (err.message || 'unknown') }, 502);
+      return c.json({ error: 'Agent gateway error: ' + (err.message || 'unknown'), code: 'agent_gateway_error' }, 502);
     }
   }
 
@@ -739,7 +770,7 @@ openclawRoutes.post('/location-chat', sessionMiddleware, async (c) => {
     });
   } catch (err: any) {
     console.error('[OpenClaw Location Chat] Error:', err);
-    return c.json({ error: 'OpenClaw gateway error: ' + (err.message || 'unknown') }, 502);
+    return c.json({ error: 'Agent gateway error: ' + (err.message || 'unknown'), code: 'agent_gateway_error' }, 502);
   }
 });
 
