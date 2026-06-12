@@ -281,16 +281,16 @@ openclawRoutes.post('/register', async (c) => {
     }
   } catch (err: any) {
     console.error('[OpenClaw] DB upsert error:', err);
-    // Fall back to ephemeral-only if DB fails
-    identity = {
-      botId: '',
-      agentId: data.agentId,
-      sessionId,
-      mode: data.mode,
-      isReturning: false,
-      totalSessions: 0,
-      knowledge: [],
-    };
+    // FAIL CLOSED — do NOT fall back to an ephemeral-only registration (P4-3,
+    // 2026-06-12). Under the shared `validateLiveAgentSession` contract a live
+    // in-memory Map entry with NO `openclaw_bots` row + `session_key_hash` is
+    // UNUSABLE: every bearer-trusting path (chat/location-chat here, the cove
+    // resolver, the gateway routes) re-reads the row by agentId and fails closed
+    // when it is absent, so the ephemeral body could never authenticate — it
+    // would only spawn an un-addressable, un-restorable NPC in the sim. Return a
+    // retryable 500 BEFORE `registerOpenClaw` (below) ever runs, so no live
+    // session is created without its surviving DB row + bearer hash.
+    return c.json({ error: 'Registration failed — could not persist agent. Please retry.', code: 'registration_failed' }, 500);
   }
 
   // Create/update platformAgents record for ElizaOS runtime
