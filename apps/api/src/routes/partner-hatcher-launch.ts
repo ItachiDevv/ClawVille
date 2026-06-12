@@ -2,7 +2,9 @@
  * Hatcher launch-exchange — owner-side entry into ClawVille (2026-06-11).
  *
  * THE FLOW: Hatcher's dashboard sends an owner to
- * `https://<clawville>/game?hatcher_agent=<agentId>&hatcher_launch=<launchToken>`.
+ * `https://<clawville>/game#hatcher_agent=<agentId>&hatcher_launch=<launchToken>`
+ * (URL FRAGMENT, not query — Codex #3: a query-string token leaks to CDN/access
+ * logs + early-asset Referer headers; a fragment is never sent to the server).
  * The launch lands ALREADY authenticated (Hatcher calls our portal
  * `mint-for-hatcher` first, per our integration reply), so the owner arrives
  * with a live Lucia session. The web `/game` page reads the two params and POSTs
