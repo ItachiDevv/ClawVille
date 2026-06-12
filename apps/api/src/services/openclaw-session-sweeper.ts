@@ -23,6 +23,7 @@ import { and, eq, lt, or, isNull } from 'drizzle-orm';
 import { db, openclawBots, agents, sql } from '@clawville/database';
 import { agentOrchestrator } from './agent-orchestrator';
 import { logEvent } from './event-logger';
+import { notifyHatcherSessionEnded } from './hatcher-session-webhook';
 
 const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000; // 24h
 
@@ -95,7 +96,20 @@ export async function expireSession(agentId: string): Promise<void> {
     .update(openclawBots)
     .set({ sessionExpiresAt: now, sessionSweptAt: now, updatedAt: now })
     .where(eq(openclawBots.agentId, agentId))
-    .returning({ userId: openclawBots.userId });
+    .returning({ userId: openclawBots.userId, identityType: openclawBots.identityType });
+
+  // Notify the partner (Hatcher-only, env-gated, fail-open) that this session
+  // ended. Fire-and-forget — never block the disconnect on a webhook. The
+  // reason is `disconnected` because the only caller is the explicit /disconnect
+  // path (the periodic sweep notifies with `ttl_expired` separately below).
+  for (const row of rows) {
+    void notifyHatcherSessionEnded({
+      identityType: row.identityType,
+      agentId,
+      reason: 'disconnected',
+      expiredAt: now,
+    });
+  }
 
   // Stop any in-process Eliza runtime. Match on `agents.userId` =
   // openclaw_bots.userId AND agents.type='openclaw-bot'; we don't
@@ -136,7 +150,12 @@ export async function sweepExpiredSessions(): Promise<number> {
   //      the upsert path, so the next expiration after a reconnect
   //      processes correctly.
   const expired = await db
-    .select({ id: openclawBots.id, agentId: openclawBots.agentId, userId: openclawBots.userId })
+    .select({
+      id: openclawBots.id,
+      agentId: openclawBots.agentId,
+      userId: openclawBots.userId,
+      identityType: openclawBots.identityType,
+    })
     .from(openclawBots)
     .where(
       and(
@@ -176,6 +195,16 @@ export async function sweepExpiredSessions(): Promise<number> {
       userId: row.userId ?? null,
       agentId: row.agentId,
       payload: { sweptAt: now.toISOString() },
+    });
+
+    // Notify the partner this session expired (Hatcher-only, env-gated,
+    // fail-open). Fire-and-forget so a slow/unreachable webhook can never
+    // stall the sweep — the lifecycle is already authoritative in our DB.
+    void notifyHatcherSessionEnded({
+      identityType: row.identityType,
+      agentId: row.agentId,
+      reason: 'ttl_expired',
+      expiredAt: now,
     });
   }
 
