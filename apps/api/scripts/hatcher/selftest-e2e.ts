@@ -1205,6 +1205,115 @@ async function main() {
     check('H-REPLAY POST /agents with a correctly-signed but EXPIRED timestamp -> 401 (replay window enforced at the route)', ok, `status=${res.status} body=${JSON.stringify(j)} (expect 401 unauthorized: stale_timestamp rejected inside readSignedBody before any DB write); window=${PARTNER_WRITE_SIGNATURE_WINDOW_MS}ms`);
   });
 
+  // NEW (H9, Codex pass-4 P4-2): a fully-signed POST register whose upsert+hash
+  // TRANSACTION FAILS must return a retryable 503 `session_persist_failed` and
+  // MUST NOT return a sessionId/ok:true, and MUST NOT leave a live in-memory body
+  // (a bearer whose hash never committed is neither live nor restorable — handing
+  // it back in a success response is a dead credential). Against the dummy DB the
+  // upsert+hash tx throws (auth-fail), so this exercises the exact persist-failure
+  // branch. `api.hatcher.host` passes the SSRF allowlist + resolves (verified), so
+  // the handler reaches the DB tx rather than short-circuiting at SSRF.
+  await safe('H9 POST /agents signed, DB-tx FAILS -> 503 session_persist_failed, NO sessionId, NO live body (P4-2)', async () => {
+    const agentRaw = 'p4-persist-fail-' + Date.now();
+    const body = JSON.stringify({ agentId: agentRaw, cognition: { backend: 'hatcher-proxy', proxyBaseUrl: 'https://api.hatcher.host', scopedToken: 'tok-persist-1' } });
+    const ts = String(Date.now());
+    const sig = signWriteChallenge('POST', '/api/partner/hatcher/agents', ts, body, partnerKp.secretKey);
+    const res = await app.request('/api/partner/hatcher/agents', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Hatcher-Issuer-Pubkey': partnerPubB58, 'X-Hatcher-Signature': sig, 'X-Hatcher-Timestamp': ts }, body });
+    const j = (await res.json()) as { error?: string; ok?: boolean; sessionId?: string };
+    const namespaced = 'hatcher:' + agentRaw;
+    const liveBody = npcSimulation.getActiveOpenClawBots().some((b) => b.agentId === namespaced);
+    const is503 = res.status === 503 && j.error === 'session_persist_failed';
+    const noBearer = j.sessionId === undefined && j.ok !== true;
+    const ok = is503 && noBearer && !liveBody;
+    if (!ok) bugs.push('P4-2: a register whose hash-persist tx failed returned a usable success/sessionId or left a live body — dead credential leak');
+    check('H9 POST /agents signed, DB-tx FAILS -> 503 session_persist_failed, NO sessionId, NO live body (P4-2)', ok, `status=${res.status} body=${JSON.stringify(j)} liveBody=${liveBody} (expect 503 session_persist_failed, no sessionId, no in-memory body)`);
+  });
+
+  // NEW (H10, Codex pass-4 P4-3): the LEGACY /api/openclaw/register must FAIL
+  // CLOSED on a DB error — return 500 and register NO in-memory session. The old
+  // code fell back to an ephemeral-only identity (botId:'') then still called
+  // registerOpenClaw, leaving a live Map body with no surviving row/hash that the
+  // shared validateLiveAgentSession contract treats as unusable (chat/cove re-read
+  // the row → fail closed). We mount the legacy routes and drive a valid avatar
+  // register with `skipPing=1` (no gateway round-trip); the DB upsert throws on the
+  // dummy DB, and we assert 500 + NO live body for this agentId.
+  const ocMod2 = await import('../../src/routes/openclaw.ts');
+  const ocApp = new Hono();
+  ocApp.route('/api/openclaw', ocMod2.openclawRoutes);
+  await safe('H10 legacy /api/openclaw/register DB-FAIL -> 500, NO in-memory session (P4-3)', async () => {
+    const agentRaw = 'p4-legacy-fail-' + Date.now();
+    const body = JSON.stringify({
+      mode: 'avatar', gatewayUrl: 'https://api.hatcher.host', agentId: agentRaw, sessionKey: 'sk-' + agentRaw,
+      name: 'LegacyFail', species: 'cat', color: 0x3366cc,
+      stats: { hp: 100, attack: 10, defense: 8, speed: 6 },
+      personality: 'curious', homeX: 2560, homeY: 2560, patrolRadius: 100,
+    });
+    const res = await ocApp.request('/api/openclaw/register?skipPing=1', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body });
+    const j = (await res.json()) as { error?: string; code?: string; sessionId?: string };
+    const liveBody = npcSimulation.getActiveOpenClawBots().some((b) => b.agentId === agentRaw);
+    const is500 = res.status === 500 && j.code === 'registration_failed';
+    const ok = is500 && j.sessionId === undefined && !liveBody;
+    if (!ok) bugs.push('P4-3: legacy /openclaw/register DB-fail did NOT fail closed — returned a session or left a live body with no DB row');
+    check('H10 legacy /api/openclaw/register DB-FAIL -> 500, NO in-memory session (P4-3)', ok, `status=${res.status} body=${JSON.stringify(j)} liveBody=${liveBody} (expect 500 registration_failed, no sessionId, no in-memory body)`);
+  });
+
+  // NEW (H11, Codex pass-4 P4-1): per-agent SERIALIZATION yields ONE live body +
+  // ONE bearer for two concurrent registers of the SAME agent. The register
+  // critical section is `findActiveSessionsByAgentIds → unregister stale → mint
+  // sessionId → registerOpenClaw`; the in-memory Map is keyed by sessionId, so two
+  // raw-concurrent registers (each minting a DISTINCT sessionId) leave TWO avatar
+  // bodies. The fix wraps that section in `withKeyedMutex(namespacedAgentId)`, so
+  // the second register sees + evicts the first's body before spawning its own —
+  // net ONE body, ONE live bearer. We exercise the REAL `withKeyedMutex` + REAL
+  // npcSimulation here (the DB tx isn't reachable on the dummy DB, but the
+  // duplicate-body race is purely in-memory, so this proves the exact invariant).
+  const { withKeyedMutex } = await import('../../src/services/keyed-mutex.ts');
+  await safe('H11 two concurrent same-agent registers -> ONE body + ONE bearer (P4-1 serialization)', async () => {
+    const namespaced = 'hatcher:p4-concurrent-' + Date.now();
+    const avatarHomeX = 2560, avatarHomeY = 2560;
+    // Mirror the handler's in-memory critical section (mint + stale-cleanup +
+    // spawn) for an avatar-mode register.
+    const criticalSection = async () => {
+      // Tiny await so the two sections genuinely interleave at the event loop if
+      // the lock did NOT hold.
+      await new Promise<void>((r) => setTimeout(r, 1));
+      for (const stale of npcSimulation.findActiveSessionsByAgentIds([namespaced])) {
+        npcSimulation.unregisterOpenClaw(stale);
+      }
+      const sessionId = 'p4c-' + Math.random().toString(36).slice(2);
+      const cfg = {
+        agentId: namespaced, sessionId, sessionKey: sessionId, gatewayUrl: 'http://localhost:0',
+        authToken: '', protocol: 'hatcher-proxy', mode: 'avatar', autonomyMode: 'server-managed',
+        name: 'P4C', species: 'cat', color: 0x3366cc,
+        stats: { hp: 100, attack: 10, defense: 8, speed: 6 },
+        homeX: avatarHomeX, homeY: avatarHomeY, patrolRadius: 100, personality: 'x',
+        ledgerCapable: true, boundUserId: SELFTEST_USER_ID,
+      } as unknown as Parameters<typeof npcSimulation.registerOpenClaw>[0];
+      npcSimulation.registerOpenClaw(cfg, new MockOpenClawClient() as never);
+      return sessionId;
+    };
+
+    // Fire two concurrent registers for the SAME agent, both serialized by the
+    // per-agent mutex (what the real handler now does).
+    const [s1, s2] = await Promise.all([
+      withKeyedMutex(namespaced, criticalSection),
+      withKeyedMutex(namespaced, criticalSection),
+    ]);
+
+    // Exactly ONE live body for this agent, and only the LAST-minted bearer is
+    // live (the first was evicted by the second's cleanup — no orphan body).
+    const liveSessions = npcSimulation.findActiveSessionsByAgentIds([namespaced]);
+    const bodyCount = npcSimulation.getActiveOpenClawBots().filter((b) => b.agentId === namespaced).length;
+    const oneBody = bodyCount === 1 && liveSessions.length === 1;
+    // The surviving session is one of the two minted ids (the second to run).
+    const survivingIsKnown = liveSessions[0] === s1 || liveSessions[0] === s2;
+    const ok = oneBody && survivingIsKnown;
+    if (!ok) bugs.push('P4-1: two concurrent same-agent registers left ' + bodyCount + ' bodies / ' + liveSessions.length + ' live sessions (expected exactly 1 each)');
+    // Cleanup the fixture body so it doesn't pollute later cases.
+    for (const sid of liveSessions) npcSimulation.unregisterOpenClaw(sid);
+    check('H11 two concurrent same-agent registers -> ONE body + ONE bearer (P4-1 serialization)', ok, `bodies=${bodyCount} liveSessions=${liveSessions.length} surviving=${liveSessions[0]} minted=[${s1},${s2}] (expect exactly 1 body + 1 live bearer; serialized cleanup evicts the first)`);
+  });
+
   // ===================================================================
   // CASE I — Cove agent-tool money path (parity), NO DB writes
   // ===================================================================
