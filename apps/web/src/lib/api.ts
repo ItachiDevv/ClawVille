@@ -38,6 +38,25 @@ async function withFingerprint(
   return headers;
 }
 
+/**
+ * API error that preserves the HTTP status and the server's machine-readable
+ * `code` field. Callers branch on `code` / `status` instead of matching the
+ * human-readable `error` copy (which the API de-brands over time — e.g.
+ * "OpenClaw session not found" → "Agent session ended"). The chat-bar uses
+ * `code === 'agent_session_not_found'` (with `status === 404` as a fallback)
+ * to clear stale connected-state without ever string-matching the message.
+ */
+export class ApiError extends Error {
+  status: number;
+  code?: string;
+  constructor(message: string, status: number, code?: string) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+    this.code = code;
+  }
+}
+
 async function honoRequest<T>(path: string, options?: RequestInit): Promise<T> {
   const headers = await withFingerprint(options?.headers);
   const res = await fetch(`${HONO_API_URL}${path}`, {
@@ -48,7 +67,7 @@ async function honoRequest<T>(path: string, options?: RequestInit): Promise<T> {
 
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: 'Request failed' }));
-    throw new Error(err.error || `HTTP ${res.status}`);
+    throw new ApiError(err.error || `HTTP ${res.status}`, res.status, err.code);
   }
 
   return res.json();
@@ -64,7 +83,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: 'Request failed' }));
-    throw new Error(err.error || `HTTP ${res.status}`);
+    throw new ApiError(err.error || `HTTP ${res.status}`, res.status, err.code);
   }
 
   return res.json();
@@ -121,7 +140,13 @@ export const api = {
     request<{
       user: {
         id: string;
-        email: string;
+        /**
+         * `null` for agent-identity users (auto-created via
+         * resolveOrCreateUserByIdentity with `email: null`) — they have no
+         * email to confirm, so the soft-verify banner must NOT render for
+         * them. The email-verify gate checks for a non-empty string.
+         */
+        email: string | null;
         name: string;
         /** Public handle — added 2026-05-19, null for legacy un-backfilled rows */
         username: string | null;

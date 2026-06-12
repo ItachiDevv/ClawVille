@@ -92,11 +92,31 @@ export interface LiveAgentSession {
  * in-memory body is unregistered so the next call short-circuits at step 1, and
  * we return null. The DB row is the source of truth for liveness; Map membership
  * alone is NEVER sufficient for a bearer-trusting path.
+ *
+ * Restart survival (2026-06-11): the in-memory Map is rebuilt empty on every API
+ * deploy, so a still-live bearer map-misses at step 1 right after a restart. On
+ * that miss we attempt a restore FROM THE SURVIVING ROW (hash the incoming
+ * bearer → find by `session_key_hash` → re-validate the SAME fail-closed TTL →
+ * rebuild the in-memory session/client). The restore obeys the identical
+ * TTL/ledger rules below, so it can never resurrect an expired row or grant
+ * liveness this gate would refuse — see `openclaw-session-restore.ts`. The
+ * restore re-registers under the incoming id, so the re-fetch below sees it as a
+ * normal live session.
  */
 export async function validateLiveAgentSession(
   sessionId: string,
 ): Promise<LiveAgentSession | null> {
-  if (!npcSimulation.isValidAgentSession(sessionId)) return null;
+  if (!npcSimulation.isValidAgentSession(sessionId)) {
+    // Map-miss — maybe the API restarted and dropped the in-memory session.
+    // Try to rebuild it from the surviving DB row (fail-closed: returns null on
+    // missing/expired row or an identity type that can't be rebuilt from the
+    // row). Dynamic import to avoid a static import cycle
+    // (restore → npc-simulation → ... → this middleware).
+    const { restoreAgentSessionFromRow } = await import(
+      '../services/openclaw-session-restore'
+    );
+    return restoreAgentSessionFromRow(sessionId);
+  }
 
   const config = npcSimulation.getOpenClawBotConfig(sessionId);
   if (!config) return null;
