@@ -64,10 +64,22 @@ export default function AvatarChatBar() {
     retry: false,
   });
   const chatOpen = useGameStore((s) => s.chatOpen); // location chat open
+  const agentPaired = useGameStore((s) => s.agentPaired);
   const agentConnected = useGameStore((s) => s.agentConnected);
   const agentSessionId = useGameStore((s) => s.agentSessionId);
   const setAgentConnection = useGameStore((s) => s.setAgentConnection);
   const setAgentConnectModalOpen = useGameStore((s) => s.setAgentConnectModalOpen);
+
+  // Paired (the server says this user has a connected agent) but NO live bearer
+  // in memory — the canonical post-reload state. The server emits the agent
+  // bearer exactly once at connect and never again, so a reload cannot hold one
+  // (Codex finding #2). In this state `routedThroughAgent` below is false and we
+  // chat with the user's OWN avatar via the authed path; we surface a quiet
+  // "reconnect to chat as your agent" affordance so the distinction is legible
+  // (chatting WITH your avatar vs AS your connected agent). Never a fabricated
+  // bearer — the only way to chat as the agent again is the in-session connect
+  // flow that actually receives a bearer.
+  const pairedNoBearer = agentPaired && !agentSessionId;
   const [expanded, setExpanded] = useState(false);
   const [messages, setMessages] = useState<AvatarMessage[]>([]);
   const [input, setInput] = useState('');
@@ -295,6 +307,28 @@ export default function AvatarChatBar() {
                   setAgentConnectModalOpen(true, 'connect');
                 }}
                 className="px-2.5 py-1 rounded-full text-[11px] font-mono bg-amber-500/25 hover:bg-amber-500/40 text-amber-50 border border-amber-300/40 transition-colors shrink-0"
+              >
+                Reconnect
+              </button>
+            </div>
+          )}
+
+          {/* Paired-but-no-live-bearer notice (post-reload). Non-blocking: the
+              user is chatting with their OWN avatar via the authed path; the
+              agent-bearer chat requires re-running the in-session connect flow
+              (the server never re-emits the bearer). Hidden when the
+              session-ended banner is already showing the same reconnect CTA.
+              Light tokens only on the dark .claw-panel. */}
+          {pairedNoBearer && !sessionEnded && (
+            <div className="flex items-center gap-2 px-3 py-2 bg-cyan-500/10 border-b border-cyan-400/20">
+              <span className="text-cyan-200 text-sm leading-none">💬</span>
+              <span className="text-cyan-100/90 text-xs font-medium flex-1">
+                Chatting with {avatar.name}. Reconnect your agent to chat as it.
+              </span>
+              <button
+                type="button"
+                onClick={() => setAgentConnectModalOpen(true, 'connect')}
+                className="px-2.5 py-1 rounded-full text-[11px] font-mono bg-cyan-500/20 hover:bg-cyan-500/35 text-cyan-50 border border-cyan-300/30 transition-colors shrink-0"
               >
                 Reconnect
               </button>

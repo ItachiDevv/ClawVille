@@ -77,17 +77,19 @@ export const usePlayerStore = create<PlayerStoreState>((set, get) => ({
     if (get().localSessionId === sessionId) return;
     set({ localSessionId: sessionId });
     // Re-stamp isLocal on existing players when the local presence id changes.
+    // Immutable: replace only the entries whose isLocal flips (new object), keep
+    // the rest by reference — consistent with updateFromSnapshot's identity
+    // contract so the renderer's memo bails for untouched players.
     const players = get().players;
     if (players.length === 0) return;
     let dirty = false;
-    for (const p of players) {
+    const restamped = players.map((p) => {
       const next = p.id === sessionId;
-      if (p.isLocal !== next) {
-        p.isLocal = next;
-        dirty = true;
-      }
-    }
-    if (dirty) set({ players: [...players] });
+      if (p.isLocal === next) return p;
+      dirty = true;
+      return { ...p, isLocal: next };
+    });
+    if (dirty) set({ players: restamped });
   },
 
   setRoomId: (roomId) => {
@@ -101,6 +103,24 @@ export const usePlayerStore = create<PlayerStoreState>((set, get) => ({
     const localSessionId = state.localSessionId;
     const prevMap = new Map(state.players.map((p) => [p.id, p]));
 
+    // IMMUTABLE update (2026-06-12, Codex finding #5). Unlike the NPC store —
+    // which MUTATES position on the previous object so its 18-NPC subtree never
+    // re-renders — remote players go through an adapter copy in
+    // remote-players.tsx (`adaptPlayer` is memoized by `player` identity). If we
+    // mutate the player object in place its identity never changes, so the
+    // adapter's `useMemo([player])` never recomputes and the entry's
+    // `npcRef.current` keeps the snapshot position taken at MOUNT — the remote
+    // mesh mounts once then FREEZES (the D3a Suspense-outside-memo fix cured the
+    // load deadlock but not this steady-state freeze). Replacing each MOVED
+    // player with a fresh object flips its identity, so:
+    //   - useShallow(s => s.players) sees changed contents → parent re-renders
+    //   - the memo'd RemotePlayerEntry sees a new `player` ref → recomputes the
+    //     adapter → refreshes npcRef.current with the latest prevX/x/ts/tsDelta
+    //   - the mesh's entity-interp lerps prevX→x over tsDelta exactly as designed
+    // Unchanged players keep their reference, so memo still bails for them — only
+    // the players who actually moved pay reconciliation, at the 5 Hz snapshot
+    // rate over the small co-present-session set. This is the correct React
+    // pattern and the freeze cannot recur.
     const next: RemotePlayerState[] = [];
     for (const snap of incoming) {
       const prev = prevMap.get(snap.id);
@@ -109,24 +129,26 @@ export const usePlayerStore = create<PlayerStoreState>((set, get) => ({
       const tsDelta = prev ? Math.max(16, now - prev.ts) : 200;
       const isLocal = localSessionId != null && snap.id === localSessionId;
 
-      // Mutation pattern (same as NPC store): when identity-relevant fields
-      // are unchanged, mutate position/ts on the previous object so React.memo
-      // bailouts in the renderer hold across snapshots and only Reconciliation
-      // is paid when a player joins, leaves, swaps species, or rename.
-      if (prev && fieldsEqual(prev, snap)) {
-        prev.prevX = prev.x;
-        prev.prevY = prev.y;
-        prev.x = snap.x;
-        prev.y = snap.y;
-        prev.ts = now;
-        prev.tsDelta = tsDelta;
-        prev.dirZ = snap.dirZ;
-        prev.activity = snap.activity;
-        prev.isLocal = isLocal;
+      // Skip allocation when NOTHING changed for this player (no movement, no
+      // identity change, same local flag) — keep the previous reference so memo
+      // bails and a perfectly still remote player costs zero reconciliation.
+      if (
+        prev &&
+        fieldsEqual(prev, snap) &&
+        prev.x === snap.x &&
+        prev.y === snap.y &&
+        prev.dirZ === snap.dirZ &&
+        prev.activity === snap.activity &&
+        prev.isLocal === isLocal
+      ) {
         next.push(prev);
         continue;
       }
 
+      // Anything changed (position, heading, activity, identity, or local flag)
+      // → emit a NEW object so the renderer re-derives and the mesh sees fresh
+      // interpolation endpoints. prevX/prevY carry the prior CURRENT position so
+      // the entity-interp lerps from where the player was to where they are.
       next.push({
         id: snap.id,
         kind: snap.kind,
