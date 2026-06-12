@@ -128,10 +128,19 @@ let _loader: GLTFLoader | null = null;
 
 // GLTFLoader.parseAsync does heavy synchronous work before yielding. Parsing
 // every visible VRM at once starves RAF/requestIdleCallback and can keep /game
-// in the texture-upload blue-screen state. Queue parses one-at-a-time; Suspense
-// fallbacks remain null, so real VRMs stream in progressively without fake
+// in the texture-upload blue-screen state. Queue parses with limited concurrency;
+// Suspense fallbacks remain null, so real VRMs stream in progressively without fake
 // cylinder/capsule stand-ins.
-const VRM_PARSE_CONCURRENCY = 1;
+//
+// Why 2 instead of 1: with concurrency=1 the FIFO queue behind 11 module-scope
+// wandering-NPC preloads means a remote player's parse waits 330-880ms on Iris Xe
+// (11 × 30-80ms/parse). Concurrency=2 halves worst-case wait without saturating
+// the single-threaded JS engine — two overlapping parses only pipeline on the
+// async fetch-buffer/decode steps; the synchronous normalise+frustumCulling pass
+// still yields once between slots. The player-avatar priority lane (PLAYER_INSTANCE_ID)
+// still unshifts ahead of both regular slots so the local player is never blocked
+// by a remote player or wandering NPC parse.
+const VRM_PARSE_CONCURRENCY = 2;
 const VRM_PARSE_QUEUE: Array<() => void> = [];
 let vrmParseActive = 0;
 

@@ -118,6 +118,26 @@ export function computeVRMAvatarFit(
   const prev = vrm.scene.scale.clone();
   vrm.scene.scale.setScalar(1);
   vrm.scene.updateMatrixWorld(true);
+  // Settle skeleton bone matrices before measuring the bbox.
+  //
+  // Box3.setFromObject on a SkinnedMesh calls applyBoneTransform per vertex,
+  // which reads skeleton.boneMatrices. Those matrices are only correct after
+  // skeleton.update() runs — updateMatrixWorld alone does NOT compute them.
+  // A freshly-parsed VRM whose animator has never ticked (the common case at
+  // useMemo time, before the animator useEffect runs) has zero boneMatrices,
+  // so every vertex maps to near-origin → size.y ≈ 0 → scale falls back to
+  // VRM_AVATAR_FALLBACK_SCALE (169). For a Mixamo cm-rig with native bbox
+  // ~194 units tall that's 169 × 194 = 32,786wu — the documented giant.
+  //
+  // Calling skeleton.update() here forces bind-pose matrices so the bbox
+  // reflects the actual rest-pose silhouette. This is an idempotent read —
+  // we restore vrm.scene.scale and updateMatrixWorld before returning.
+  vrm.scene.traverse((obj) => {
+    if ((obj as THREE.SkinnedMesh).isSkinnedMesh) {
+      const sm = obj as THREE.SkinnedMesh;
+      if (sm.skeleton) sm.skeleton.update();
+    }
+  });
   const box = new THREE.Box3().setFromObject(vrm.scene as unknown as THREE.Object3D);
   const size = new THREE.Vector3();
   box.getSize(size);

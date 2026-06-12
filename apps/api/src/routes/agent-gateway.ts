@@ -23,6 +23,10 @@ import { db, openclawBots, avatars, users, buildingSkills, eq, and, sql } from '
 import { agentOrchestrator } from '../services/agent-orchestrator';
 import { getSessionAgent } from '../services/session-agent-map';
 import { OpenClawClient } from '../services/openclaw-client';
+import {
+  buildAvatarSessionConfig,
+  buildOverrideSessionConfig,
+} from '../services/agent-session-config';
 import { ensureWallet, ensureWalletWithFirstTimeSecret } from '../services/wallet-service';
 import { creditClawTokens } from '../services/claw-token-ledger';
 import { buildRuntimeServices } from '../services/runtime-services-adapter';
@@ -567,14 +571,19 @@ agentGatewayRoutes.post('/connect', async (c) => {
   // through to avatar mode. Avatar mode spawns a new bot (name + species).
   if (data.mode === 'override' && data.targetNpcId) {
     try {
-      const config: OpenClawRegistration = {
+      // Built via the SHARED config-builder (agent-session-config.ts) so the
+      // protocol/autonomy resolution is byte-identical to what restore rebuilds
+      // from the row — the structural prevention against mint↔restore drift
+      // (diagnostic-2026-06-12 D1). `storedProtocol: wireProtocol` is exactly
+      // what gets PERSISTED on the row, so restore reads the same input.
+      const config: OpenClawRegistration = buildOverrideSessionConfig({
+        mode: 'override',
         agentId: resolvedAgentId,
         sessionId,
-        sessionKey: sessionId,
-        gatewayUrl: data.gatewayUrl ?? 'http://localhost:0',
-        authToken: data.authToken ?? '',
-        protocol: wireProtocol,
-        mode: 'override',
+        identityType,
+        storedProtocol: wireProtocol,
+        gatewayUrl: data.gatewayUrl,
+        authToken: data.authToken,
         autonomyMode,
         targetNpcId: data.targetNpcId,
         // Carries the proven-ownership decision into the in-memory session so
@@ -583,7 +592,7 @@ agentGatewayRoutes.post('/connect', async (c) => {
         // The user this session proved ownership of — re-validated against the
         // live row at spend time (rebind backstop, hardening round 2).
         boundUserId,
-      } as OpenClawRegistration;
+      });
       const client = new OpenClawClient(config);
       npcSimulation.registerOpenClaw(config, client);
     } catch (err: unknown) {
@@ -606,20 +615,28 @@ agentGatewayRoutes.post('/connect', async (c) => {
     // agent with no species). This keeps the persisted row, the spawn config,
     // and the in-world render in lockstep.
     const spawnName = data.name ?? data.miladyCharacterName ?? resolvedAgentId.slice(0, 24);
-    const spawnSpecies = resolvedSpecies ?? DEFAULT_AGENT_MODEL_KEY;
     try {
-      const config: OpenClawRegistration = {
+      // Built via the SHARED config-builder (agent-session-config.ts) so the
+      // protocol/species/autonomy resolution is byte-identical to what restore
+      // rebuilds from the row — the structural prevention against mint↔restore
+      // drift (diagnostic-2026-06-12 D1). The builder also routes no-gateway
+      // identity types (anonymous/milady/nanoclaw) to the fail-soft 'nanoclaw'
+      // wire protocol so an autonomous NPC conversation never POSTs to the dummy
+      // `http://localhost:0` gateway and 502s. `species: resolvedSpecies` was
+      // already defaulted to the Milady key above (connect has no hatcher
+      // branch), so the builder passes it through unchanged.
+      const config: OpenClawRegistration = buildAvatarSessionConfig({
+        mode: 'avatar',
         agentId: resolvedAgentId,
         sessionId,
-        sessionKey: sessionId,
-        gatewayUrl: data.gatewayUrl ?? 'http://localhost:0', // dummy for nanoclaw/anonymous
-        authToken: data.authToken ?? '',
-        protocol: wireProtocol,
-        mode: 'avatar',
+        identityType,
+        storedProtocol: wireProtocol,
+        gatewayUrl: data.gatewayUrl,
+        authToken: data.authToken,
         autonomyMode,
         name: spawnName,
-        species: spawnSpecies,
-        color: data.color ?? 0x888888,
+        species: resolvedSpecies ?? DEFAULT_AGENT_MODEL_KEY,
+        color: data.color,
         stats: agentStats,
         homeX: data.homeX ?? 2560,
         homeY: data.homeY ?? 2560,
@@ -631,7 +648,7 @@ agentGatewayRoutes.post('/connect', async (c) => {
         // The user this session proved ownership of — re-validated against the
         // live row at spend time (rebind backstop, hardening round 2).
         boundUserId,
-      } as OpenClawRegistration;
+      });
 
       // Stub client — nanoclaw/anonymous agents don't use outbound chat routing
       // but the simulation still needs a client instance for its bot map.
