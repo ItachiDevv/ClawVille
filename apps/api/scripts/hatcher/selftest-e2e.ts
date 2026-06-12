@@ -5,10 +5,12 @@
  * ed25519 keypair, with hard per-case evidence, BEFORE Hatcher sends real keys.
  *
  * RUN AGAINST: the SHIPPING working-tree HEAD of feat/hatcher-portal
- * (PROTOCOL_VERSION = 2, 5-verb whitelist INCLUDING enter_cove, full Cove-play
- * protocol manual). The previous revision of this harness mistakenly ran against
- * origin/staging @ e2982469 (4-verb, v1) and codified the ABSENCE of the Cove
- * agent-parity feature — this version tests the code that actually ships.
+ * (5-verb whitelist INCLUDING enter_cove, full Cove-play protocol manual). All
+ * version assertions track the imported single-source PROTOCOL_VERSION constant
+ * (currently 5) rather than a hardcoded literal, so a bump needs no harness edit.
+ * The previous revision of this harness mistakenly ran against origin/staging @
+ * e2982469 (4-verb) and codified the ABSENCE of the Cove agent-parity feature;
+ * this version tests the code that actually ships.
  *
  * This harness imports the REAL ClawVille functions (never reimplements the
  * contract) and exercises:
@@ -21,7 +23,7 @@
  *   D. Hatcher [ACTION:] whitelist executor incl. enter_cove HAPPY PATH (NO DB)
  *   E. buildHatcherWorldState public-only (NO secrets)
  *   F. Outbound cognition signing (signPayload) + chatHatcherProxy fail-soft
- *   G. Protocol single-source content-hash invariant @ v2 + EXECUTOR↔MANUAL parity
+ *   G. Protocol single-source content-hash invariant (live PROTOCOL_VERSION) + EXECUTOR↔MANUAL parity
  *   H. HTTP gates via Hono app.request — negatives AND body-signed accept (NO DB writes)
  *   I. Cove agent-tool money path: tools.json + POST :tool + getSubject parity (NO DB writes)
  *
@@ -1005,7 +1007,7 @@ async function main() {
   });
 
   // ===================================================================
-  // CASE G — Protocol single-source content-hash invariant @ v2
+  // CASE G — Protocol single-source content-hash invariant (live PROTOCOL_VERSION)
   // ===================================================================
   await safe('G1 protocolPointer().contentHash === contentHashOf(buildProtocolManual()) ; version === PROTOCOL_VERSION (single source)', () => {
     const apiBase = resolveApiBase();
