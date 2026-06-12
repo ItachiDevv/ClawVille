@@ -849,6 +849,28 @@ partnerHatcherRoutes.post('/agents', async (c) => {
   // validation is Map membership so the format change is transparent.
   const sessionId = `hat-${randomBytes(24).toString('base64url')}`;
   const stats = row.metadata?.stats ?? { hp: 100, attack: 10, defense: 8, speed: 6 };
+
+  // Restart survival (2026-06-11) + atomic-hash ordering (2026-06-12, Codex R2
+  // follow-up): persist the bearer's one-way hash to the row BEFORE registering
+  // the live in-memory session. On a RE-register the row already holds a non-null
+  // OLD hash; registering the body first and writing the hash after (non-fatally)
+  // meant a write failure left a LIVE session whose id mismatched the row's stale
+  // hash, which validateLiveAgentSession (R2-2 present-and-mismatch) then rejected
+  // permanently — bricking the agent until the next register. Writing first means
+  // the row hash always commits to the live session's id; on persist failure we
+  // skip the live spawn (the partner reconnects; restore stays fail-closed). The
+  // hash is committed regardless of spawn so the returned bearer is restorable.
+  let sessionHashPersisted = false;
+  try {
+    await db
+      .update(openclawBots)
+      .set({ sessionKeyHash: sha256Hex(sessionId), updatedAt: new Date() })
+      .where(eq(openclawBots.id, row.id));
+    sessionHashPersisted = true;
+  } catch (err) {
+    console.error('[Hatcher/register] session_key_hash persist failed — skipping in-world spawn:', err);
+  }
+
   let spawned = false;
   try {
     let config: OpenClawRegistration;
@@ -907,28 +929,17 @@ partnerHatcherRoutes.post('/agents', async (c) => {
       });
     }
     const client = buildHatcherClient(config, urlCheck.url, data.cognition.scopedToken, rawAgentId);
-    npcSimulation.registerOpenClaw(config, client);
-    spawned = true;
+    // Only put a live body in the Map when the row hash commits to this bearer
+    // (persisted above). On hash-persist failure we skip the spawn entirely — a
+    // live session whose id mismatches the row hash would be rejected by R2-2 and
+    // brick the agent; the partner reconnects instead (restore is fail-closed).
+    if (sessionHashPersisted) {
+      npcSimulation.registerOpenClaw(config, client);
+      spawned = true;
+    }
   } catch (err) {
     console.error('[Hatcher/register] in-world spawn failed:', err);
     // Non-fatal — the row is persisted; the body can be re-registered.
-  }
-
-  // Restart survival (2026-06-11) — persist the one-way hash of THIS register's
-  // bearer so the live Hatcher session can be rebuilt from the row after an API
-  // restart (hatcher rows carry proxy_url + encrypted proxy_token_*, so the
-  // cognition client is fully reconstructable — see openclaw-session-restore.ts).
-  // Written even when the in-world spawn failed: the returned sessionId is still
-  // a valid bearer the partner holds, and restore re-spawns the body lazily on
-  // its first use. Non-fatal — a failure just means this session won't survive a
-  // restart (the partner can re-register).
-  try {
-    await db
-      .update(openclawBots)
-      .set({ sessionKeyHash: sha256Hex(sessionId), updatedAt: new Date() })
-      .where(eq(openclawBots.id, row.id));
-  } catch (err) {
-    console.error('[Hatcher/register] session_key_hash persist failed (non-fatal):', err);
   }
 
   void logEvent({
