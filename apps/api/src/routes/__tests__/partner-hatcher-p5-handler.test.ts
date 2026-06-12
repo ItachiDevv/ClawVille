@@ -212,7 +212,7 @@ describe('Hatcher P5-1 + P5-2 — handler-driven (mocked db, real sim)', () => {
   afterEach(() => {
     // Clean up any bodies WE spawned + any the handler spawned for our test agents.
     for (const sid of spawnedSids.splice(0)) sim.npcSimulation.unregisterOpenClaw(sid);
-    for (const agentId of ['hatcher:p5-held-tx', 'hatcher:p5-override-fail', 'hatcher:p6-patch-override']) {
+    for (const agentId of ['hatcher:p5-held-tx', 'hatcher:p5-override-fail', 'hatcher:p6-patch-override', 'hatcher:p6-minted-override']) {
       for (const sid of sim.npcSimulation.findActiveSessionsByAgentIds([agentId])) {
         sim.npcSimulation.unregisterOpenClaw(sid);
       }
@@ -313,6 +313,11 @@ describe('Hatcher P5-1 + P5-2 — handler-driven (mocked db, real sim)', () => {
     expect(priorRow.targetNpcId == null).toBe(true);
     const priorProxyEnc = priorRow.proxyTokenEnc;
     expect(typeof priorProxyEnc).toBe('string');
+    // The register committed a bearer hash for the live body. This PATCH PRESERVES
+    // that live bearer (a live session exists, so minted === false), so the
+    // compensation must LEAVE the hash intact (it still commits to the live body).
+    const priorSessionKeyHash = priorRow.sessionKeyHash;
+    expect(typeof priorSessionKeyHash).toBe('string');
 
     // 2) Occupy an NPC with a DIFFERENT agent so the PATCH's override re-register
     //    throws OverrideTargetUnavailableError (the real P6-2 trigger).
@@ -351,8 +356,77 @@ describe('Hatcher P5-1 + P5-2 — handler-driven (mocked db, real sim)', () => {
     expect(finalRow.mode).toBe('avatar');
     expect(finalRow.targetNpcId == null).toBe(true);
     expect(finalRow.proxyTokenEnc).toBe(priorProxyEnc);
+    // PRESERVED-bearer case: the live bearer's hash MUST survive the compensation;
+    // the restored prior body is live under it. Nulling it would brick a working
+    // bearer (that is exactly why the hash-null is gated on `minted`).
+    expect(finalRow.sessionKeyHash).toBe(priorSessionKeyHash);
 
     // And the prior live body was restored (no orphan): the agent still has a body.
     expect(sim.npcSimulation.findActiveSessionsByAgentIds(['hatcher:p6-patch-override']).length).toBeGreaterThan(0);
+  });
+
+  it('P6-2 (minted sub-case): PATCH override fail when NO live body exists -> 409 AND the minted-but-never-lived bearer hash is NULLED (terminal-transition invariant), row compensated to prior body', async () => {
+    // 1) Register an OVERRIDE agent on a free NPC so a row + bearer exist, then
+    //    DESPAWN its live body so the next PATCH finds NO live session to preserve
+    //    (minted === true path). It re-registers cleanly on a free target first.
+    const freeTarget = NPC_IDS[6];
+    resetState({});
+    const regBody = JSON.stringify({
+      agentId: 'p6-minted-override',
+      mode: 'override',
+      targetNpcId: freeTarget,
+      cognition: { backend: 'hatcher-proxy', proxyBaseUrl: PROXY_URL, scopedToken: 'tok-minted123' },
+    });
+    const regRes = await request(REG_PATH, { method: 'POST', headers: writeHeaders('POST', REG_PATH, regBody), body: regBody });
+    if (regRes.status !== 200) console.error('P6-2 minted register unexpected body:', await regRes.clone().text());
+    expect(regRes.status).toBe(200);
+    const priorRow = { ...(state.existingRow as Row) };
+    expect(priorRow.mode).toBe('override');
+    expect(priorRow.targetNpcId).toBe(freeTarget);
+    expect(typeof priorRow.sessionKeyHash).toBe('string');
+
+    // Despawn the live body so the PATCH has NO session to preserve → it MINTS a new
+    // bearer. (Free the override seat too so re-register would normally succeed.)
+    for (const sid of sim.npcSimulation.findActiveSessionsByAgentIds(['hatcher:p6-minted-override'])) {
+      sim.npcSimulation.unregisterOpenClaw(sid);
+    }
+    expect(sim.npcSimulation.findActiveSessionsByAgentIds(['hatcher:p6-minted-override'])).toHaveLength(0);
+
+    // 2) Occupy a DIFFERENT target so the minted re-register throws.
+    const occupied = NPC_IDS[7];
+    const blockerSid = 'p6-minted-blocker';
+    sim.npcSimulation.registerOpenClaw(
+      {
+        agentId: 'hatcher:p6-minted-blocker', sessionId: blockerSid, sessionKey: blockerSid,
+        gatewayUrl: 'http://localhost:0', authToken: '', protocol: 'hatcher-proxy', mode: 'override',
+        autonomyMode: 'server-managed', targetNpcId: occupied, ledgerCapable: true, boundUserId: null,
+      } as unknown as Parameters<typeof sim.npcSimulation.registerOpenClaw>[0],
+      { getProtocol: () => 'hatcher-proxy', setWorldStateProvider() {}, setSystemContextProvider() {} } as never,
+    );
+    spawnedSids.push(blockerSid);
+
+    // 3) PATCH override to the occupied target. No live body → minted === true →
+    //    re-register throws → 409, prior fields compensated, minted hash NULLED.
+    const PATCH_PATH = `${REG_PATH}/p6-minted-override`;
+    const patchBody = JSON.stringify({ mode: 'override', targetNpcId: occupied });
+    const patchRes = await request(PATCH_PATH, { method: 'PATCH', headers: writeHeaders('PATCH', PATCH_PATH, patchBody), body: patchBody });
+    if (patchRes.status !== 409) console.error('P6-2 minted patch unexpected body:', await patchRes.clone().text());
+    expect(patchRes.status).toBe(409);
+    const pj = (await patchRes.json()) as { error?: string; sessionId?: string; ok?: boolean };
+    expect(pj.error).toBe('override_target_unavailable');
+    expect(pj.sessionId).toBeUndefined();
+    expect(pj.ok).not.toBe(true);
+
+    const finalRow = state.existingRow as Row;
+    // Row compensated back to the PRIOR override target (the free one), not the occupied.
+    expect(finalRow.mode).toBe('override');
+    expect(finalRow.targetNpcId).toBe(freeTarget);
+    // TERMINAL-TRANSITION INVARIANT: the minted bearer never entered the sim Map and
+    // its id was never surfaced (no sessionId in the 409 body), so its committed hash
+    // is nulled here, matching DELETE / expiry / sweep. No dangling hash for a
+    // session that never lived.
+    expect(finalRow.sessionKeyHash == null).toBe(true);
+    // No live body for this agent (the spawn failed, nothing to restore).
+    expect(sim.npcSimulation.findActiveSessionsByAgentIds(['hatcher:p6-minted-override'])).toHaveLength(0);
   });
 });
