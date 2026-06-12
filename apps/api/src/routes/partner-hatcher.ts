@@ -310,6 +310,11 @@ async function readSignedBody(
     rawBody: raw,
   });
   if (!verify.ok) return { ok: false };
+  // An EMPTY body is valid for DELETE (the write challenge binds the
+  // sha256 of the empty string; see the DELETE handler comment). Only a
+  // present-but-malformed body is rejected. POST/PATCH handlers still get
+  // schema enforcement via Zod on the parsed value (null fails Zod).
+  if (raw === '') return { ok: true, raw, json: null };
   let json: unknown;
   try {
     json = JSON.parse(raw);
