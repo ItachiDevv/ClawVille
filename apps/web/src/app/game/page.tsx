@@ -425,15 +425,26 @@ export default function GamePage() {
       <BuildingTooltip />
       <NanoClawBanner hasAvatar={hasAvatar} isAuthenticated={isAuthenticated} isGuest={isGuest} />
       {/* Soft email-verification nudge — renders only when the user is
-          authenticated, not a guest, and hasn't dismissed within the
-          last 7d. Positioned at top-14 to clear NanoClawBanner. */}
-      {isAuthenticated && authData?.user && (
-        <EmailVerifyBanner
-          userId={authData.user.id}
-          verified={authData.user.emailVerified}
-          isGuest={authData.user.isGuest}
-        />
-      )}
+          authenticated, NOT a guest, HAS a real email to confirm, and that
+          email is still unverified (plus the 7d dismissal window inside the
+          component). Agent-identity users (auto-created with email: null) and
+          guests have nothing to confirm, so they're excluded here. The
+          component re-checks the same gates internally (defense in depth).
+          Docked at `bottom-4` and lifted above the chat pill to avoid the
+          bottom-center collision. */}
+      {isAuthenticated &&
+        authData?.user &&
+        !authData.user.isGuest &&
+        typeof authData.user.email === 'string' &&
+        authData.user.email.trim() !== '' &&
+        !authData.user.emailVerified && (
+          <EmailVerifyBanner
+            userId={authData.user.id}
+            verified={authData.user.emailVerified}
+            isGuest={authData.user.isGuest}
+            email={authData.user.email}
+          />
+        )}
       <AgentConnectModal />
       <BuildingPortalModal />
       {/* Lobby modal mounts whenever activityLobbyId is set; reads
