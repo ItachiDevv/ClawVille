@@ -365,7 +365,7 @@ describe('Hatcher P5-1 + P5-2 — handler-driven (mocked db, real sim)', () => {
     expect(sim.npcSimulation.findActiveSessionsByAgentIds(['hatcher:p6-patch-override']).length).toBeGreaterThan(0);
   });
 
-  it('P6-2 (minted sub-case): PATCH override fail when NO live body exists -> 409 AND the minted-but-never-lived bearer hash is NULLED (terminal-transition invariant), row compensated to prior body', async () => {
+  it('P6-2 (minted sub-case): PATCH override fail when NO live body exists -> 409 AND the prior bearer hash is RESTORED (failed PATCH is a full session no-op), row compensated to prior body', async () => {
     // 1) Register an OVERRIDE agent on a free NPC so a row + bearer exist, then
     //    DESPAWN its live body so the next PATCH finds NO live session to preserve
     //    (minted === true path). It re-registers cleanly on a free target first.
