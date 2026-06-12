@@ -533,8 +533,9 @@ export const api = {
       expiresIn: number;
     }>(`/api/agent/connect-status/${token}`),
 
-  // Hatcher launch-exchange — consumes the `?hatcher_agent=&hatcher_launch=`
-  // grant that Hatcher's dashboard appends to the /game launch URL. The
+  // Hatcher launch-exchange — consumes the `#hatcher_agent=&hatcher_launch=`
+  // grant (URL fragment, not query — never logged/Referer-leaked) that
+  // Hatcher's dashboard appends to the /game launch URL. The
   // endpoint REQUIRES a Lucia session (the portal-composed launch logs the
   // owner in first), so a guest hit returns 401 `launch_requires_session`.
   // Unlike the other helpers this does NOT throw on non-2xx — the handler
