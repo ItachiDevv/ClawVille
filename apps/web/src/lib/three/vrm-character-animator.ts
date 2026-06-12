@@ -537,10 +537,31 @@ const IN_PLACE_CLIPS: ReadonlySet<AnimName> = new Set([
  * positions at runtime for this character class only — Hermes/Milady at full
  * scale still benefit from their idle hip bob.
  *
+ * Hermes / Tekk locomotion case (2026-06-11): the per-character Mixamo bakes
+ * for these three animatorIds were fetched BEFORE the In-Place flag was
+ * forced on in fetch-animations.ts.  gltf-transform track inspection showed
+ * non-cyclic hips Y drift in their run/walk overrides:
+ *   hermes-male run:   first -0.022 → last 3.378  (net +3.40 / loop)
+ *   hermes-female run: net +2.91 / loop
+ *   tekk run:          net +2.34 / loop
+ *   tekk walk:         net +1.60 / loop
+ * The global IN_PLACE_CLIPS set already strips the global run clip, but
+ * shouldStripPosition() only applies the global set when no per-character
+ * entry exists — it does NOT union with PER_CHARACTER_IN_PLACE_CLIPS.
+ * These four clips are loaded via resolveAnimPath → character-specific
+ * override paths, NOT the global run.glb, so the global IN_PLACE entry
+ * is NOT consulted for them.  Adding per-character entries here is the
+ * minimal runtime fix — no asset mutation required.
+ *
  * Key by animatorId (the second arg to `new VRMCharacterAnimator(vrm, animatorId)`).
  */
 const PER_CHARACTER_IN_PLACE_CLIPS: Record<string, ReadonlySet<AnimName>> = {
-  chibi: new Set(['idle', 'walk']),
+  chibi:         new Set(['idle', 'walk']),
+  // Per-character Mixamo bakes with non-cyclic hips Y drift (net > 1 wu/loop).
+  // Global IN_PLACE_CLIPS covers the global run.glb but NOT these override paths.
+  'hermes-male':   new Set(['run']),
+  'hermes-female': new Set(['run']),
+  tekk:            new Set(['run', 'walk']),
 };
 
 function shouldStripPosition(name: AnimName, animatorId?: string): boolean {

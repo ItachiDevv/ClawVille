@@ -327,6 +327,17 @@ export interface GameState {
   hatcherSpectate: boolean;
   setHatcherSpectate: (v: boolean) => void;
 
+  // Hatcher launch banner active — true while HatcherLaunchHandler is showing
+  // its bottom-center failure/relaunch banner. Drives mutual exclusion with the
+  // soft email-verify nudge: the email banner suppresses itself while this is
+  // set so the two bottom-center surfaces never stack/occlude (worst at mobile
+  // width where the Hatcher panel wraps to ~1/3 of the screen). The Hatcher
+  // banner is the higher-priority transient — the user just initiated that
+  // launch — so it wins the bottom-center slot. Cleared when the banner is
+  // dismissed or the handler unmounts.
+  hatcherLaunchBannerActive: boolean;
+  setHatcherLaunchBannerActive: (v: boolean) => void;
+
   // Click-to-move pathfinding
   clickPath: { x: number; y: number }[] | null;
   clickPathIndex: number;
@@ -851,6 +862,15 @@ export const useGameStore = create<GameState>((set, get) => ({
   hatcherSpectate: false,
   setHatcherSpectate: (v) => set({ hatcherSpectate: v }),
 
+  hatcherLaunchBannerActive: false,
+  setHatcherLaunchBannerActive: (v) => {
+    // Guard the no-op set so the HatcherLaunchHandler's unmount-cleanup (which
+    // always calls setHatcherLaunchBannerActive(false)) doesn't fan out a
+    // pointless store notification when the flag is already false.
+    if (v === get().hatcherLaunchBannerActive) return;
+    set({ hatcherLaunchBannerActive: v });
+  },
+
   clickPath: null,
   clickPathIndex: 0,
   clickPathTarget: null,
@@ -983,6 +1003,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     clickPathTarget: null,
     cameraFocusRequest: null,
     hatcherSpectate: false,
+    hatcherLaunchBannerActive: false,
     hoveredBuilding: null,
     pendingFloatingTexts: [],
   });

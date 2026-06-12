@@ -42,7 +42,7 @@ import { drainKnowledgeEvents, clearSessionQueue } from '../services/skill-event
 import { runTool } from '../services/skill-tools-dispatcher';
 import { coveBlackjackRouter } from './cove-blackjack';
 import { validateLiveAgentSession } from '../middleware/require-auth-or-agent';
-import { sessionDigest } from '../services/session-digest';
+import { sessionDigest, sha256Hex } from '../services/session-digest';
 import { getBlackjackSkillContext } from '../services/game-skill-memory';
 import {
   getBooksForBuilding,
@@ -429,6 +429,11 @@ agentGatewayRoutes.post('/connect', async (c) => {
         // liveness contract. Without this, returning bots kept whatever
         // stale expiry was on the row from their last connect.
         sessionExpiresAt: computeSessionExpiresAt(),
+        // Restart survival (2026-06-11) — persist the one-way hash of THIS
+        // connect's bearer so the live session can be rebuilt from the row
+        // after an API restart. New sessionId per connect ⇒ new hash, which
+        // also invalidates any prior connect's restorable handle.
+        sessionKeyHash: sha256Hex(sessionId),
         // Phase 6.1 — clear the sweeper's "already-processed" stamp so
         // the next genuine expiration fires `agent.session.expired`
         // exactly once. Without this clear, a bot that expired, got
@@ -471,6 +476,9 @@ agentGatewayRoutes.post('/connect', async (c) => {
         // sweeper in openclaw-session-sweeper.ts reaps anything past
         // expiry.
         sessionExpiresAt: computeSessionExpiresAt(),
+        // Restart survival (2026-06-11) — one-way hash of this connect's
+        // bearer so the session is restorable from the row after a restart.
+        sessionKeyHash: sha256Hex(sessionId),
       }).returning();
       uuid = inserted.id;
     }
