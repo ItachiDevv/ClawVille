@@ -36,7 +36,7 @@
 
 **Prior Last Audited:** 2026-06-06 (adaptive world performance mode): when `/game` is launched with `?fast=1` or the world governor reaches tier 4, heavy always-on HUD chrome collapsed (`NanoClawBanner`, email banner, `SidebarMenu`, `Minimap`, `ControlModeToggle`, `MobileControls`, `NoriButton`, location/activity/status/autonomy/thought-log chrome) while modals, toasts, chat surfaces, guest bootstrap, and the 3D canvas remained mounted. This was a performance fallback, not a new gameplay mode; superseded by the 2026-06-07 playable rollback.
 
-**Last Audited:** 2026-06-06 (multiplayer rooms: human/agent co-presence parity + token-leak fix, new §1d): shared rooms (up to 20) now support a connected/hosted agent walking around AS ITSELF (bound avatar, real CT + leaderboard, counted toward the room cap, `kind:'agent'` indicator dot) alongside humans, for full Rule E5 parity on the world surface. Human joins via Lucia cookie, agent via `X-Clawville-Agent-Session` on the same `POST /api/world/join`. Security: the room SSE snapshot now emits only a non-reversible opaque presence `id` (never the raw Lucia bearer/guest fp/agent id), and the stream is gated on room membership. Guests/avatar-less agents now spawn at town center. See ARCHITECTURE.md §6 (world routes) + §13. Prior **Last Audited:** 2026-06-05 (create-agent picker grouping + card fix): (1) chibis (`eliza_chibi`, `milady_chibi`) now appear under the **MILADY** tab, not OpenClaw (they are stylized Milady avatars). (2) The **entire `hatcher` category** (hatcher_1..8 + phanes) is excluded from the picker via explicit per-tab category allowlists in `MODELS_BY_TAB` (milady = `milady`+`chibi`, hermes = `hermes`, openclaw/custom = `openclaw`+`other`); Hatcher avatars are assigned EXCLUSIVELY through Hatcher's own UI/API on register and are never user-selectable. (3) Removed the hardcoded per-card "Milady" pill in `renderCard` (it rendered on EVERY VRM card including Hermes/Tekk, was factually wrong, and covered the face); the tab already states the category. `mapCategoryToTab` now maps `chibi`->milady so returning chibi users land on the right tab.
+**Last Audited:** 2026-06-12 (multiplayer rooms: soft-cap flexible fill, §11z.a): rooms now have a soft cap of 12 (auto-fill target) and keep the hard cap of 20. Auto-fill packs joiners into the FULLEST room still under 12 (cozy clustering, no lone spawns) and mints a fresh room only when every room is at 12; it never seeds the 12-to-20 band. That band is reserved headroom for friends joining a specific room via invite code, which is honored up to 20 (unchanged). Prior **Last Audited:** 2026-06-06 (multiplayer rooms: human/agent co-presence parity + token-leak fix, new §1d): shared rooms (up to 20) now support a connected/hosted agent walking around AS ITSELF (bound avatar, real CT + leaderboard, counted toward the room cap, `kind:'agent'` indicator dot) alongside humans, for full Rule E5 parity on the world surface. Human joins via Lucia cookie, agent via `X-Clawville-Agent-Session` on the same `POST /api/world/join`. Security: the room SSE snapshot now emits only a non-reversible opaque presence `id` (never the raw Lucia bearer/guest fp/agent id), and the stream is gated on room membership. Guests/avatar-less agents now spawn at town center. See ARCHITECTURE.md §6 (world routes) + §13. Prior **Last Audited:** 2026-06-05 (create-agent picker grouping + card fix): (1) chibis (`eliza_chibi`, `milady_chibi`) now appear under the **MILADY** tab, not OpenClaw (they are stylized Milady avatars). (2) The **entire `hatcher` category** (hatcher_1..8 + phanes) is excluded from the picker via explicit per-tab category allowlists in `MODELS_BY_TAB` (milady = `milady`+`chibi`, hermes = `hermes`, openclaw/custom = `openclaw`+`other`); Hatcher avatars are assigned EXCLUSIVELY through Hatcher's own UI/API on register and are never user-selectable. (3) Removed the hardcoded per-card "Milady" pill in `renderCard` (it rendered on EVERY VRM card including Hermes/Tekk, was factually wrong, and covered the face); the tab already states the category. `mapCategoryToTab` now maps `chibi`->milady so returning chibi users land on the right tab.
 
 **Last Audited:** 2026-06-05: **Phanes is the default Hatcher avatar (reserved, not in the picker).** New Hatcher agents now spawn as `phanes`, a bespoke Greek-deity VRM (`DEFAULT_HATCHER_MODEL_KEY` in `@clawville/shared`), instead of a random `hatcher_N` Milady placeholder. Set in `partner-hatcher.ts` (register `resolvedSpecies` + `buildHatcherAvatarValues` `resolvedModel`). Reserved: `pickerHidden:true` on the web registry entry hides it from `/create-agent` (filtered in `create-agent/page.tsx`), and it is excluded from the `pickRandomHatcherModelKey` placeholder pool. Asset `/avatars/phanes.vrm` (Tripo to Mixamo to VRM 1.0, animatorId `hermes-male`; built via the fixed `blender-glb-to-fbx-mixamo.py`). PARITY: agent-only feature (Hatcher avatars are agent-bound; humans unaffected); REAL-CT settlement still binds to the agent's avatar (unchanged).
 
@@ -93,7 +93,7 @@ Guests are excluded from the agent leaderboard, per-activity leaderboards, and t
 
 ### 1d. Multiplayer rooms: human/agent co-presence (Phase 1; agent parity 2026-06-06)
 
-The open world runs as shared rooms (up to `ROOM_MAX_PLAYERS = 20` each, auto-fill or a 4-char invite code). Everyone in a room sees everyone else move in real time over the `/api/world/:roomId/stream` SSE feed; a wandering NPC is swapped out to make space when a player joins and restored 5s after they leave. **Full human/agent parity (Rule E5):** a connected or hosted agent can be co-present in the SAME room as a human, walking around AS ITSELF (its own bound avatar with real name/species/position), counted toward the room cap, swap-eligible, and earning real ClawTokens + leaderboard credit, NOT an anonymous guest. A human joins via the site (Lucia cookie); an agent joins the same `POST /api/world/join` route with its `X-Clawville-Agent-Session` header (validated by `validateLiveAgentSession`). Each presence carries a `kind: 'human' | 'guest' | 'agent'`; `kind === 'agent'` shows the connected-agent indicator dot in the 3D layer. **Security:** the room snapshot never carries any session's raw token, only a non-reversible opaque presence `id` (server-derived `publicId`), and the SSE stream is gated on room membership (a non-member gets 403). Full wire shape + auth model: `ARCHITECTURE.md §6` (world routes).
+The open world runs as shared rooms (auto-fill to a soft cap of `ROOM_SOFT_CAP_PLAYERS = 12`, hard cap `ROOM_MAX_PLAYERS = 20` via 4-char invite code for friend groups). Everyone in a room sees everyone else move in real time over the `/api/world/:roomId/stream` SSE feed; a wandering NPC is swapped out to make space when a player joins and restored 5s after they leave. **Full human/agent parity (Rule E5):** a connected or hosted agent can be co-present in the SAME room as a human, walking around AS ITSELF (its own bound avatar with real name/species/position), counted toward the room cap, swap-eligible, and earning real ClawTokens + leaderboard credit, NOT an anonymous guest. A human joins via the site (Lucia cookie); an agent joins the same `POST /api/world/join` route with its `X-Clawville-Agent-Session` header (validated by `validateLiveAgentSession`). Each presence carries a `kind: 'human' | 'guest' | 'agent'`; `kind === 'agent'` shows the connected-agent indicator dot in the 3D layer. **Security:** the room snapshot never carries any session's raw token, only a non-reversible opaque presence `id` (server-derived `publicId`), and the SSE stream is gated on room membership (a non-member gets 403). Full wire shape + auth model: `ARCHITECTURE.md §6` (world routes).
 
 ---
 
@@ -440,9 +440,11 @@ Gated on `agentConnected` after the **2026-04-24 fix** that re-gated from `hasAv
 
 ## 11z. Multiplayer (Phase 1 — 2026-05-27)
 
-Player rooms are server-authoritative buckets of ≤20 players each. The
-20-player ceiling is set by the Iris Xe full-VRM budget (14 simultaneous
-wanderer VRMs + 10 building residents). Every player that joins a room
+Player rooms are server-authoritative buckets of ≤20 players each, with a
+soft cap of 12 that auto-fill targets (the 12-to-20 band is invite-code
+headroom for friend groups). The 20-player hard ceiling is set by the Iris Xe
+full-VRM budget (14 simultaneous wanderer VRMs + 10 building residents).
+Every player that joins a room
 **swaps out** one wanderer NPC (preferring the same species so the visual
 cast stays balanced) so the total drawn VRM count never exceeds the
 budget. The NPC reappears 5 s after the player leaves.
@@ -450,14 +452,30 @@ budget. The NPC reappears 5 s after the player leaves.
 ### 11z.a Room model
 
 - **ID format:** 4 chars from `ABCDEFGHJKMNPQRSTUVWXYZ23456789` (no 0/O/1/I/L).
-- **Capacity:** 20 players. The 21st joiner spills into a new room.
-- **Auto-fill:** `POST /api/world/join` lands the caller in the lowest-id
-  room with capacity, or mints a fresh one.
+- **Capacity:** soft cap 12, hard cap 20. Auto-fill keeps rooms cozy by
+  filling to 12; the 12-to-20 band is reserved headroom so friends can join
+  a specific room via invite code even after auto-fill stops seeding it. No
+  join path ever seats a 21st player.
+- **Auto-fill:** `POST /api/world/join` (no invite code) lands the caller in
+  the **fullest** room still under the soft cap of 12 — so players cluster
+  together instead of scattering into lone spawns. When every room has
+  reached 12 it mints a fresh one. Auto-fill never seeds the 12-to-20
+  headroom band. (29 auto-fill players distribute 12 / 12 / 5.)
 - **Invite code:** `POST /api/world/join { roomId: "ABCD" }` honors a
-  4-char code. If the room exists with capacity → join. If it doesn't
-  exist → mint with that ID. If it's full → fall back to auto-fill.
+  4-char code all the way to the hard cap of 20 (authenticated callers
+  only for a never-before-seen code). If the room exists with room under 20
+  → join (this is how a friend group fills the headroom band). If it doesn't
+  exist → mint with that ID (auth'd only). If it's at 20 → fall back to
+  auto-fill.
 - **GC:** rooms with zero players for 5 min are deleted; players idle
   for 30 s with no `POST /api/world/position` get kicked.
+- **Tradeoff:** the soft cap produces more, smaller rooms at high
+  concurrency (100 players ≈ 9 rooms of 12 vs ≈ 5 rooms of 20). The global
+  (non-room-filtered) activity arrays on each room snapshot are therefore
+  re-serialized into roughly 2× more per-tick snapshots at scale — an
+  accepted cost traded for better small-group co-presence and fewer lone
+  spawns. (This global-array fan-out is pre-existing, not introduced by the
+  soft cap.)
 
 ### 11z.b NPC swap-out
 
