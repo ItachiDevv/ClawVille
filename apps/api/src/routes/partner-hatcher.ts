@@ -54,7 +54,6 @@ import {
 } from '@clawville/database';
 import {
   NPC_IDS,
-  DEFAULT_AGENT_MODEL_KEY,
   DEFAULT_HATCHER_MODEL_KEY,
   KNOWLEDGE_BOOKS,
   AVATAR_ARCHETYPES,
@@ -67,6 +66,10 @@ import { createRateLimiter, getClientIp } from '../middleware/rate-limit';
 import { verifyPartnerWriteSignature, verifyPartnerGetSignature } from '../services/partner-signature';
 import { encryptToken, decryptToken } from '../services/keypair-vault';
 import { validateHatcherProxyUrl, validateHatcherProxyUrlResolved } from '../services/hatcher-config';
+import {
+  buildAvatarSessionConfig,
+  buildOverrideSessionConfig,
+} from '../services/agent-session-config';
 import { npcSimulation } from '../services/npc-simulation';
 import { OpenClawClient } from '../services/openclaw-client';
 import { ensureWallet } from '../services/wallet-service';
@@ -800,17 +803,23 @@ partnerHatcherRoutes.post('/agents', async (c) => {
     // this route, so the caller's ownership of the agent is cryptographically
     // proven. These sessions ARE real-CT-trusted — set `ledgerCapable: true` so
     // the cove gate honors them (parity with the owned-token /connect flow).
+    //
+    // Built via the SHARED config-builder (agent-session-config.ts) so the
+    // spawn-relevant config is byte-identical to what restore rebuilds from the
+    // row (diagnostic-2026-06-12 D1). `identityType: 'hatcher'` makes
+    // `resolveAgentSpecies` apply DEFAULT_HATCHER_MODEL_KEY (NOT the Milady
+    // default — the prior `row.species ?? DEFAULT_AGENT_MODEL_KEY` mis-rendered a
+    // null-species hatcher avatar as a Milady). `protocolOverride: 'hatcher-proxy'`
+    // is explicit since the public connect identity enum excludes 'hatcher'.
     if (data.mode === 'override' && data.targetNpcId) {
-      config = {
+      config = buildOverrideSessionConfig({
+        mode: 'override',
         // In-world/session tracking uses the namespaced id (matches the row);
         // the proxy callback uses the raw id via buildHatcherClient below.
         agentId: namespacedAgentId,
         sessionId,
-        sessionKey: sessionId,
-        gatewayUrl: 'http://localhost:0',
-        authToken: '',
-        protocol: 'hatcher-proxy',
-        mode: 'override',
+        identityType: 'hatcher',
+        storedProtocol: 'hatcher-proxy',
         autonomyMode: 'server-managed',
         targetNpcId: data.targetNpcId,
         ledgerCapable: true,
@@ -820,20 +829,19 @@ partnerHatcherRoutes.post('/agents', async (c) => {
         // `userId ?? existing.userId`, so a request that resolved no identity still
         // leaves a prior bound user on the row, and boundUserId must match THAT.
         boundUserId: row.userId ?? null,
-      } as OpenClawRegistration;
+        protocolOverride: 'hatcher-proxy',
+      });
     } else {
-      config = {
+      config = buildAvatarSessionConfig({
+        mode: 'avatar',
         agentId: namespacedAgentId,
         sessionId,
-        sessionKey: sessionId,
-        gatewayUrl: 'http://localhost:0',
-        authToken: '',
-        protocol: 'hatcher-proxy',
-        mode: 'avatar',
+        identityType: 'hatcher',
+        storedProtocol: 'hatcher-proxy',
         autonomyMode: 'server-managed',
         name: data.name ?? rawAgentId.slice(0, 24),
-        species: row.species ?? DEFAULT_AGENT_MODEL_KEY,
-        color: data.color ?? 0x888888,
+        species: row.species,
+        color: data.color,
         stats,
         homeX: row.metadata?.homeX ?? 2560,
         homeY: row.metadata?.homeY ?? 2560,
@@ -841,7 +849,8 @@ partnerHatcherRoutes.post('/agents', async (c) => {
         personality: data.personality ?? '',
         ledgerCapable: true,
         boundUserId: row.userId ?? null,
-      } as OpenClawRegistration;
+        protocolOverride: 'hatcher-proxy',
+      });
     }
     const client = buildHatcherClient(config, urlCheck.url, data.cognition.scopedToken, rawAgentId);
     npcSimulation.registerOpenClaw(config, client);
@@ -1007,24 +1016,32 @@ partnerHatcherRoutes.patch('/agents/:agentId', async (c) => {
         let config: OpenClawRegistration;
         // boundUserId = the partner-bound owner on the row — re-validated against
         // the live row at spend time (rebind backstop, hardening round 2).
+        // Built via the SHARED config-builder (agent-session-config.ts) for
+        // byte-identical parity with the /register mint + restore (D1).
         if (nextMode === 'override' && nextTargetNpcId) {
-          config = {
-            agentId: namespacedAgentId, sessionId, sessionKey: sessionId,
-            gatewayUrl: 'http://localhost:0', authToken: '',
-            protocol: 'hatcher-proxy', mode: 'override',
-            autonomyMode: 'server-managed', targetNpcId: nextTargetNpcId,
+          config = buildOverrideSessionConfig({
+            mode: 'override',
+            agentId: namespacedAgentId,
+            sessionId,
+            identityType: 'hatcher',
+            storedProtocol: 'hatcher-proxy',
+            autonomyMode: 'server-managed',
+            targetNpcId: nextTargetNpcId,
             ledgerCapable: true,
             boundUserId: row.userId ?? null,
-          } as OpenClawRegistration;
+            protocolOverride: 'hatcher-proxy',
+          });
         } else {
-          config = {
-            agentId: namespacedAgentId, sessionId, sessionKey: sessionId,
-            gatewayUrl: 'http://localhost:0', authToken: '',
-            protocol: 'hatcher-proxy', mode: 'avatar',
+          config = buildAvatarSessionConfig({
+            mode: 'avatar',
+            agentId: namespacedAgentId,
+            sessionId,
+            identityType: 'hatcher',
+            storedProtocol: 'hatcher-proxy',
             autonomyMode: 'server-managed',
             name: row.name ?? rawAgentId.slice(0, 24),
-            species: row.species ?? DEFAULT_AGENT_MODEL_KEY,
-            color: row.color ?? 0x888888,
+            species: row.species,
+            color: row.color,
             stats,
             homeX: row.metadata?.homeX ?? 2560,
             homeY: row.metadata?.homeY ?? 2560,
@@ -1032,7 +1049,8 @@ partnerHatcherRoutes.patch('/agents/:agentId', async (c) => {
             personality: row.metadata?.personality ?? '',
             ledgerCapable: true,
             boundUserId: row.userId ?? null,
-          } as OpenClawRegistration;
+            protocolOverride: 'hatcher-proxy',
+          });
         }
         const client = buildHatcherClient(config, urlCheck.url, plaintextToken, rawAgentId);
         npcSimulation.registerOpenClaw(config, client);
