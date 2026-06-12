@@ -47,6 +47,10 @@ import { runTool } from '../services/skill-tools-dispatcher';
 import { coveBlackjackRouter } from './cove-blackjack';
 import { validateLiveAgentSession } from '../middleware/require-auth-or-agent';
 import { sessionDigest, sha256Hex } from '../services/session-digest';
+import {
+  isReservedPartnerAgentId,
+  isReservedPartnerIdentityType,
+} from '../services/reserved-agent-namespaces';
 import { getBlackjackSkillContext } from '../services/game-skill-memory';
 import {
   getBooksForBuilding,
@@ -264,6 +268,18 @@ agentGatewayRoutes.post('/connect', async (c) => {
     return c.json({ error: `Unknown targetNpcId: ${data.targetNpcId}` }, 400);
   }
 
+  // Reserved partner namespace guard (Codex round-2 R2-1, 2026-06-12). This is a
+  // PUBLIC, unsigned endpoint; a caller-supplied `agentId` in a reserved partner
+  // namespace (e.g. `hatcher:<id>`) must be refused up front so it can never
+  // collide with — and the existing-row upsert below can never MUTATE — a row
+  // owned by a partner-signed router. We check the RAW caller-supplied id only:
+  // server-generated ids (`milady:`, anonymous, token-derived) are minted below
+  // and are not in a reserved space. Deterministic + body-only, so it runs
+  // BEFORE the single-use token reservation (a reject must not burn the token).
+  if (data.agentId && isReservedPartnerAgentId(data.agentId)) {
+    return c.json({ error: 'Invalid request' }, 400);
+  }
+
   // Step 0: If connectionToken is present, validate it and auto-generate agentId if missing
   if (data.connectionToken) {
     const pending = pendingConnections.get(data.connectionToken);
@@ -398,6 +414,18 @@ agentGatewayRoutes.post('/connect', async (c) => {
     });
 
     if (existing) {
+      // Reserved partner-row mutation guard (Codex round-2 R2-1, 2026-06-12 —
+      // defense in depth behind the prefix reject above). Even if a caller-
+      // supplied agentId slipped past the prefix check (a legacy/manually-edited
+      // row whose agentId lacks the prefix but whose identity_type is a reserved
+      // partner type), the public path must NEVER mutate a partner-owned row —
+      // only the signed partner router (partner-hatcher.ts) may write that row.
+      // Opaque response: do not leak whether the row exists (matches the partner
+      // router's 404/409 opacity), so this is indistinguishable from the generic
+      // bad-request above.
+      if (isReservedPartnerIdentityType(existing.identityType)) {
+        return c.json({ error: 'Invalid request' }, 400);
+      }
       existingBoundUserId = existing.userId ?? null;
       isReturning = true;
       totalSessions = (existing.totalSessions ?? 0) + 1;

@@ -217,3 +217,68 @@ export async function validateHatcherProxyUrlResolved(
   }
   return syncCheck;
 }
+
+/**
+ * Generic DNS-aware SSRF guard for an arbitrary OUTBOUND gateway URL (Codex
+ * round-2 R2-6, 2026-06-12). UNLIKE `validateHatcherProxyUrl*` there is NO host
+ * allowlist (and http is permitted): a connected agent's own gateway is an
+ * arbitrary caller-supplied URL declared at /connect (only `z.string().url()`),
+ * so we cannot constrain the host — but we MUST still refuse to POST the agent's
+ * own token to a private/loopback/link-local/reserved address. The blind-SSRF
+ * surface is `OpenClawClient.chatOpenAI` / `chatAnthropic` / `chatCustomWebhook`,
+ * which fire on every NPC-conversation tick to `this.gatewayUrl`.
+ *
+ * Rules (all fail-CLOSED):
+ *   - must parse as a URL; http OR https allowed (legitimate self-hosted gateways
+ *     may be plain http on a public IP — only the IP range matters for SSRF).
+ *   - reject embedded credentials (`https://user:pass@host`) — an obfuscation
+ *     trick, never legitimate here.
+ *   - reject an IP-literal host in a private/loopback/link-local/reserved range
+ *     (169.254.169.254 cloud metadata, 127.0.0.1, ::1, RFC1918, CGNAT, …).
+ *   - resolve the hostname and reject if ANY A/AAAA record is private (DNS-rebind
+ *     defense). A DNS error / no-records fails closed.
+ *
+ * Returns the normalized URL on success. Callers treat any failure as a hard
+ * reject and fail soft (return '' for the cognition tick) — never fall through to
+ * the outbound fetch. Mirrors `validateHatcherProxyUrlResolved` minus the
+ * allowlist, reusing the SAME IP-classification (single source of truth) so the
+ * private-range coverage can never drift between the two SSRF surfaces.
+ */
+export async function validateOutboundUrlResolved(
+  rawUrl: string,
+): Promise<HatcherProxyUrlCheck> {
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    return { ok: false, reason: 'invalid_url' };
+  }
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+    return { ok: false, reason: 'unsupported_protocol' };
+  }
+  if (parsed.username || parsed.password) {
+    return { ok: false, reason: 'credentials_in_url' };
+  }
+  const hostnameNoBrackets = parsed.hostname.replace(/^\[|\]$/g, '');
+  if (isIP(hostnameNoBrackets)) {
+    if (isPrivateIP(hostnameNoBrackets)) {
+      return { ok: false, reason: 'private_ip' };
+    }
+    // A public IP literal needs no DNS resolution.
+    return { ok: true, url: parsed.toString() };
+  }
+
+  let addresses: { address: string }[];
+  try {
+    addresses = await lookup(hostnameNoBrackets, { all: true, verbatim: true });
+  } catch {
+    return { ok: false, reason: 'dns_resolution_failed' };
+  }
+  if (addresses.length === 0) return { ok: false, reason: 'dns_no_records' };
+  for (const { address } of addresses) {
+    if (isPrivateIP(address)) {
+      return { ok: false, reason: 'resolves_to_private_ip' };
+    }
+  }
+  return { ok: true, url: parsed.toString() };
+}
