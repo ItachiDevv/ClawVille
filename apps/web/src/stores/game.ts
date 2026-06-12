@@ -226,7 +226,28 @@ export interface GameState {
    */
   agentConnectModalIntent: 'create' | 'connect';
   setAgentConnectModalOpen: (open: boolean, intent?: 'create' | 'connect') => void;
-  setAgentConnection: (sessionId: string | null) => void;
+  /**
+   * Set or clear the connected-agent session.
+   *
+   * `opts.keepEmbodied` (clear path only): when an agent session is cleared
+   * for a user who still OWNS their avatar (logged-in, non-guest, has an
+   * avatar row), keep them driving their own body — controlMode stays
+   * `'player'`, `isSpectator` stays false. Only the agent-specific state
+   * (agentConnected / agentSessionId / Bot-Training pill / autonomous mode)
+   * clears. The avatar belongs to the USER, not the agent session, so a dead
+   * session must not unmount the live `<PlayerAvatar>` mid-game (regression
+   * D2, 2026-06-12 — partner's avatar vanished ~1s after sending a chat that
+   * 404'd on a server-dropped session). Ignored on the connect path
+   * (sessionId truthy always embodies in 'player'). Guests / avatar-less
+   * users still fall back to 'explore' as before.
+   *
+   * `keepEmbodied` is the gate, and the caller MUST derive it from the real
+   * avatar object + auth state (the chat-bar does: `!!avatar && (!authFetched
+   * || (user && !user.isGuest))`). The store can't re-derive embodiment
+   * itself — it doesn't hold the avatar object, and its `avatarName` field is
+   * left '' by every call site — so the caller owns this decision.
+   */
+  setAgentConnection: (sessionId: string | null, opts?: { keepEmbodied?: boolean }) => void;
 
   // Toast notifications
   toasts: Toast[];
@@ -748,7 +769,7 @@ export const useGameStore = create<GameState>((set, get) => ({
         ? (intent ?? 'connect')
         : s.agentConnectModalIntent,
     })),
-  setAgentConnection: (sessionId) => {
+  setAgentConnection: (sessionId, opts) => {
     // A connected claw IS an agent driving the user's own avatar (Option A
     // architecture — the external claw takes over the user's avatar rather
     // than spawning a parallel NPC). Flipping hasAgent here swaps the
@@ -779,13 +800,32 @@ export const useGameStore = create<GameState>((set, get) => ({
     const { resetJump } = require('@/lib/three/jump-state') as typeof import('@/lib/three/jump-state');
     resetJump();
 
+    // Clear path for a still-embodied owner: the dead/cleared AGENT session is
+    // not a reason to evict the user from their OWN avatar. Keep them driving
+    // it in 'player' mode (camera-follow, body mounted) and only strip the
+    // agent-specific state below. Connect path (connected===true) always
+    // embodies in 'player' regardless of this flag.
+    //
+    // The gate is the caller's `opts.keepEmbodied`, which the chat-bar derives
+    // from the REAL avatar object + auth state: `!!avatar && (!authFetched ||
+    // (user && !user.isGuest))`. The store has NO better signal — it does not
+    // hold the avatar object (React Query `['avatar']` is the source of truth),
+    // and the only avatar-shaped store field, `avatarName`, is left '' by BOTH
+    // setAvatarAppearance call sites (they pass name=undefined), so an AND-gate
+    // on it would be a silent no-op that NEVER keeps anyone embodied (caught in
+    // audit 2026-06-12 — the build was green but the fix did nothing). So we
+    // trust the caller's avatar-derived hint rather than re-deriving from a
+    // store field that isn't populated. Connect path (connected===true) always
+    // embodies in 'player' regardless of this flag.
+    const keepEmbodied = !connected && !!opts?.keepEmbodied;
+
     set((s) => ({
       agentConnected: connected,
       agentSessionId: sessionId,
       agentConnectModalOpen: false,
       hasAgent: connected,
-      controlMode: connected ? 'player' : 'explore',
-      isSpectator: !connected,
+      controlMode: connected || keepEmbodied ? 'player' : 'explore',
+      isSpectator: connected || keepEmbodied ? false : true,
       possessedNpcId: connected ? null : s.possessedNpcId,
     }));
   },

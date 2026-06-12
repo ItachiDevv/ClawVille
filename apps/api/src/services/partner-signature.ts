@@ -45,6 +45,128 @@ export type PartnerSignatureResult =
   | { ok: true; partnerId: string }
   | { ok: false; reason: string };
 
+// ---------------------------------------------------------------------------
+// STAGING-ONLY test partner pubkey (mock-Hatcher pre-ship harness)
+// ---------------------------------------------------------------------------
+//
+// `ALLOW_TEST_PARTNER_PUBKEY` lets the mock-Hatcher client (a generated ed25519
+// keypair, NOT Hatcher's real key) drive the LIVE `/api/partner/hatcher/*`
+// surface on staging so the full register → spawn → stats path is exercised
+// before any real partner traffic. When set to a base58 pubkey it is accepted
+// as an ADDITIONAL valid signer FOR THE `hatcher` PARTNER ONLY — it never
+// replaces or shadows the real `PARTNER_PUBKEYS.hatcher` entry, and it is inert
+// for every other partnerId (e.g. `scape`).
+//
+// HARD GATE: this is a pre-ship test affordance, NOT a production knob. The env
+// name screams TEST; ARCHITECTURE.md documents that it MUST NEVER be set on
+// prod; and `warnIfTestPartnerPubkeyEnabled()` (called once at API boot from
+// index.ts) logs a loud one-line warning whenever it is present so an
+// accidental prod set is impossible to miss in the logs. We gate by ENV
+// PRESENCE, not NODE_ENV: staging builds run with NODE_ENV='production', so a
+// NODE_ENV check would wrongly disable the harness on the very box it must run
+// on. The real defense is "never set this var on the prod host".
+const TEST_PARTNER_ID = 'hatcher';
+
+/**
+ * Read + validate the `ALLOW_TEST_PARTNER_PUBKEY` override. Returns the trimmed
+ * base58 pubkey only when (a) we are NOT on prod (the CORS_ORIGIN kill-switch
+ * below) AND (b) it is a syntactically valid 32-byte ed25519 key. A missing /
+ * blank / malformed value — OR being on prod — yields null (the override is
+ * simply absent and the real allowlist is untouched). Validating here means a
+ * typo'd override can never be silently treated as "some opaque allowed value",
+ * and the prod kill-switch makes "never set this on prod" a code invariant, not
+ * just ops discipline.
+ */
+function loadTestPartnerPubkey(): string | null {
+  const raw = process.env.ALLOW_TEST_PARTNER_PUBKEY;
+  if (!raw || !raw.trim()) return null;
+
+  // CODE-ENFORCED PROD KILL-SWITCH (auditor hardening, 2026-06-12). Even if the
+  // var is somehow set on the PROD api box (a Coolify misconfig), the test
+  // signer is refused there — converting "never set this on prod" from ops
+  // discipline into an invariant the code enforces. `NODE_ENV` can't be the
+  // discriminator (it is 'production' on BOTH Coolify boxes), so we reuse the
+  // established prod-signal already trusted in this codebase: `CORS_ORIGIN`.
+  // Prod's CORS_ORIGIN is `https://clawville.world` (contains `clawville.world`,
+  // NOT `staging`); staging's contains `staging.clawville.world` (BOTH tokens).
+  // So "includes clawville.world AND NOT staging" uniquely identifies prod.
+  // Same discriminator as `agent-gateway.ts` (the `apiBase` resolver). When
+  // CORS_ORIGIN is unset (local/test) this is false, so the harness still works
+  // locally; the boot warning remains as defense-in-depth.
+  const corsOrigin = process.env.CORS_ORIGIN ?? '';
+  const isProd = corsOrigin.includes('clawville.world') && !corsOrigin.includes('staging');
+  if (isProd) return null;
+
+  const candidate = raw.trim();
+  try {
+    const decoded = bs58.decode(candidate);
+    if (decoded.length !== 32) return null;
+  } catch {
+    return null;
+  }
+  return candidate;
+}
+
+/**
+ * BOOT-TIME alarm for the staging-only test partner pubkey. Called once from
+ * `index.ts` at startup. Two distinct cases:
+ *   - ACTIVE (non-prod, valid key): a one-line warning that the additive test
+ *     signer is live — expected on staging during a harness run.
+ *   - SET-BUT-SUPPRESSED (the var is present but the CORS_ORIGIN prod
+ *     kill-switch refused it): a LOUDER alarm, because this means someone set a
+ *     prod-forbidden var on the prod box. The kill-switch already made it inert,
+ *     but the misconfig must be SEEN and removed — failing silently would hide
+ *     exactly the mistake we most need to catch.
+ */
+export function warnIfTestPartnerPubkeyEnabled(): void {
+  const testKey = loadTestPartnerPubkey();
+  if (testKey) {
+    console.warn(
+      `[partner-signature] ⚠️  ALLOW_TEST_PARTNER_PUBKEY is SET — accepting an ADDITIONAL test signer for partner '${TEST_PARTNER_ID}' (${testKey}). This is a STAGING-ONLY pre-ship harness affordance and MUST NEVER be set on production.`,
+    );
+    return;
+  }
+  // The var is present but loadTestPartnerPubkey() returned null. Distinguish
+  // "suppressed by the prod kill-switch" (a real prod misconfig to alarm on)
+  // from "absent/blank" (nothing to say).
+  const raw = process.env.ALLOW_TEST_PARTNER_PUBKEY;
+  if (raw && raw.trim()) {
+    const corsOrigin = process.env.CORS_ORIGIN ?? '';
+    const isProd = corsOrigin.includes('clawville.world') && !corsOrigin.includes('staging');
+    if (isProd) {
+      console.error(
+        `[partner-signature] 🚨 ALLOW_TEST_PARTNER_PUBKEY is SET ON PRODUCTION — REFUSED by the CORS_ORIGIN kill-switch (the test signer is INERT here), but this var MUST NOT be set on prod. UNSET it now: it is a staging-only pre-ship harness affordance.`,
+      );
+    }
+    // Set but malformed on non-prod: it's already inert + the validation path
+    // covers it; no extra alarm needed.
+  }
+}
+
+/**
+ * Is `presentedPubkey` an accepted signer for `partnerId`? True when it equals
+ * the real `PARTNER_PUBKEYS[partnerId]` allowlist entry, OR — for the `hatcher`
+ * partner ONLY — the `ALLOW_TEST_PARTNER_PUBKEY` staging override. The real
+ * allowlist value always remains valid; the test key is purely additive and
+ * scoped to one partner. `allowlist` is passed in so callers that already
+ * loaded it (and need to distinguish "no allowlist at all" → a distinct reason)
+ * don't re-parse the env.
+ */
+function isAllowedPartnerPubkey(
+  partnerId: string,
+  presentedPubkey: string,
+  allowlist: Record<string, string>,
+): boolean {
+  if (allowlist[partnerId] && presentedPubkey === allowlist[partnerId]) {
+    return true;
+  }
+  if (partnerId === TEST_PARTNER_ID) {
+    const testKey = loadTestPartnerPubkey();
+    if (testKey && presentedPubkey === testKey) return true;
+  }
+  return false;
+}
+
 /**
  * Verify a partner-signed inbound request. `partnerId` selects the allowlist
  * entry (`PARTNER_PUBKEYS[partnerId]`); the request's
@@ -66,9 +188,9 @@ export function verifyPartnerSignature(
   const allowlist = loadPartnerPubkeys();
   if (!allowlist) return { ok: false, reason: 'no_partner_allowlist' };
 
-  // The presented pubkey must match the allowlist entry for THIS partner.
-  const expectedPubkey = allowlist[partnerId];
-  if (!expectedPubkey || args.pubkeyHeader !== expectedPubkey) {
+  // The presented pubkey must match the allowlist entry for THIS partner (or,
+  // for hatcher on staging, the additive ALLOW_TEST_PARTNER_PUBKEY override).
+  if (!isAllowedPartnerPubkey(partnerId, args.pubkeyHeader, allowlist)) {
     return { ok: false, reason: 'unknown_partner' };
   }
 
@@ -193,8 +315,7 @@ export function verifyPartnerWriteSignature(
 
   const allowlist = loadPartnerPubkeys();
   if (!allowlist) return { ok: false, reason: 'no_partner_allowlist' };
-  const expectedPubkey = allowlist[partnerId];
-  if (!expectedPubkey || args.pubkeyHeader !== expectedPubkey) {
+  if (!isAllowedPartnerPubkey(partnerId, args.pubkeyHeader, allowlist)) {
     return { ok: false, reason: 'unknown_partner' };
   }
 
@@ -298,8 +419,7 @@ export function verifyPartnerGetSignature(
 
   const allowlist = loadPartnerPubkeys();
   if (!allowlist) return { ok: false, reason: 'no_partner_allowlist' };
-  const expectedPubkey = allowlist[partnerId];
-  if (!expectedPubkey || args.pubkeyHeader !== expectedPubkey) {
+  if (!isAllowedPartnerPubkey(partnerId, args.pubkeyHeader, allowlist)) {
     return { ok: false, reason: 'unknown_partner' };
   }
 

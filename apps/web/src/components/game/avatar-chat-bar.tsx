@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useRef, useMemo, useEffect } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { useAvatar } from '@/hooks/use-avatar';
 import { useGameStore } from '@/stores/game';
 import { useQuestStore, triggerQuestCheck } from '@/stores/quest';
@@ -51,6 +52,17 @@ interface AvatarMessage {
 
 export default function AvatarChatBar() {
   const { data: avatar } = useAvatar();
+  // Read the SHARED auth-me cache (same queryKey game/page.tsx populates — no
+  // extra fetch). Used to decide whether a dead-agent-session clear should keep
+  // the user embodied. `isFetched` lets us distinguish "loaded, not a guest"
+  // from "still loading" so we never evict on a race (default to keeping the
+  // body when auth state is unresolved — D2 guidance 2026-06-12).
+  const { data: authData, isFetched: authFetched } = useQuery({
+    queryKey: ['auth-me'],
+    queryFn: api.me,
+    staleTime: 30_000,
+    retry: false,
+  });
   const chatOpen = useGameStore((s) => s.chatOpen); // location chat open
   const agentConnected = useGameStore((s) => s.agentConnected);
   const agentSessionId = useGameStore((s) => s.agentSessionId);
@@ -199,7 +211,17 @@ export default function AvatarChatBar() {
         err instanceof ApiError &&
         (err.code === 'agent_session_not_found' || err.status === 404);
       if (dead) {
-        setAgentConnection(null); // wipes agentConnected + agentSessionId + Bot-Training pill
+        // The dead AGENT session must NOT evict the user from their OWN
+        // avatar. Keep a still-authenticated, non-guest owner embodied in
+        // 'player' mode (avatar stays mounted, camera keeps following) — only
+        // the agent-specific state clears. A guest or avatar-less user falls
+        // back to 'explore' as before. Race-safe: if auth-me hasn't resolved
+        // yet we DEFAULT to keeping the body (the user is mid-game with an
+        // avatar), reconciled by game/page.tsx's auth-sync effect once auth
+        // loads. See setAgentConnection's keepEmbodied doc + regression D2.
+        const user = authData?.user;
+        const ownsAvatar = !!avatar && (!authFetched || (!!user && !user.isGuest));
+        setAgentConnection(null, { keepEmbodied: ownsAvatar }); // wipes agentConnected + agentSessionId + Bot-Training pill
         setSessionEnded(true);
         const endedMsg: AvatarMessage = {
           id: crypto.randomUUID(),

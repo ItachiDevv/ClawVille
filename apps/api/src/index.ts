@@ -63,6 +63,7 @@ import { adminIdentityRoutes } from './routes/admin-identity';
 import { startSimulation } from './services/npc-simulation';
 import { alertError } from './services/alert-error';
 import { getPublishedIssuerInfo } from './services/service-issuer';
+import { warnIfTestPartnerPubkeyEnabled } from './services/partner-signature';
 import { fingerprintMiddleware } from './middleware/fingerprint';
 import { cosmeticsRoutes } from './routes/cosmetics';
 import { dashAuthRoutes } from './routes/dash-auth';
@@ -300,6 +301,10 @@ app.notFound((c) => {
 
 const port = parseInt(process.env.PORT || '4000', 10);
 console.log(`Starting ClawVille API on port ${port}...`);
+
+// Loud one-line warning if the staging-only mock-Hatcher test partner pubkey is
+// enabled — this MUST NEVER appear in prod logs (see ARCHITECTURE.md).
+warnIfTestPartnerPubkeyEnabled();
 
 // Start NPC simulation (arena mode runs combat, world mode is peaceful)
 const arenaMode = process.env.NPC_ARENA_MODE === 'true';
