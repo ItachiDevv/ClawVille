@@ -147,6 +147,22 @@ export interface JoinOptions {
   requestedRoomId?: string;
   /** True when the caller has a Lucia session; false for fingerprint guests. */
   isAuthenticated?: boolean;
+  /**
+   * Sticky-room recovery (2026-06-12). Set ONLY by the route after it has
+   * VERIFIED a recovery ticket (room-ticket.ts) whose publicId matches the
+   * live session. Carries the roomId the session was previously placed in.
+   *
+   * Unlike `requestedRoomId`, a recovery room is honored EVEN FOR GUESTS and
+   * EVEN WHEN THE ROOM NO LONGER EXISTS: a restart wipes the in-memory rooms,
+   * and the whole point is to recreate the named room so a dispersed group
+   * re-converges. The signed-ticket verification IS the proof of prior
+   * membership, so this can't be used to pin arbitrary ID-space (the route
+   * never sets it without a valid, publicId-bound ticket). Capacity is still
+   * hard-capped at ROOM_MAX_PLAYERS — a recovery rejoin into a full room
+   * spills to auto-fill. Takes precedence over `requestedRoomId` when both
+   * are present.
+   */
+  recoveryRoomId?: string;
 }
 
 export interface JoinResult {
@@ -281,7 +297,7 @@ export class RoomRegistry {
       typeof optionsOrRoomId === 'string'
         ? { requestedRoomId: optionsOrRoomId, isAuthenticated: false }
         : optionsOrRoomId ?? {};
-    const { requestedRoomId, isAuthenticated = false } = options;
+    const { requestedRoomId, isAuthenticated = false, recoveryRoomId } = options;
 
     const now = this.now();
 
@@ -301,7 +317,7 @@ export class RoomRegistry {
       this.sessionToRoom.delete(sessionId);
     }
 
-    const room = this.pickOrCreateRoom(requestedRoomId, isAuthenticated);
+    const room = this.pickOrCreateRoom(requestedRoomId, isAuthenticated, recoveryRoomId);
 
     // B1 — cancel any pending NPC restore queued by this session's prior
     // leave. Without this, a player who rage-quits then rejoins within
@@ -494,7 +510,32 @@ export class RoomRegistry {
   private pickOrCreateRoom(
     requestedRoomId: string | undefined,
     isAuthenticated: boolean,
+    recoveryRoomId?: string,
   ): Room {
+    // Sticky-room recovery (2026-06-12) — highest precedence. The route only
+    // passes a recoveryRoomId after verifying a signed ticket bound to this
+    // session's publicId, so reaching here IS proof of prior membership.
+    //   - Room still exists with capacity → re-land there (re-converges a group
+    //     that survived the restart, or whose members are reconnecting).
+    //   - Room was wiped by the restart → RECREATE it with the same id so the
+    //     dispersed group lands back together. Guests included: the ticket, not
+    //     an auth check, is the anti-spam proof (B2 stays intact for the
+    //     non-recovery requestedRoomId path below).
+    //   - Room exists but is at the hard cap → fall through to auto-fill (a
+    //     friend group larger than ROOM_MAX_PLAYERS can't all reconverge; the
+    //     hard cap is the VRM/draw-call ceiling and is never breached). Note we
+    //     deliberately bypass the soft cap here — reconverging a group of up to
+    //     20 is the entire purpose, so the 12-to-20 headroom band is fair game.
+    if (recoveryRoomId) {
+      const existing = this.rooms.get(recoveryRoomId);
+      if (existing) {
+        if (existing.players.size < ROOM_MAX_PLAYERS) return existing;
+        // Full — fall through to auto-fill (do NOT honor requestedRoomId after
+        // a failed recovery; the session's group has overflowed its room).
+      } else {
+        return this.createRoomWithId(recoveryRoomId);
+      }
+    }
     if (requestedRoomId) {
       const room = this.rooms.get(requestedRoomId);
       if (room && room.players.size < ROOM_MAX_PLAYERS) return room;

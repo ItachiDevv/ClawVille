@@ -25,6 +25,14 @@ interface JoinResponse {
    * snapshot's players[].
    */
   id: string;
+  /**
+   * Sticky-room recovery ticket (2026-06-12). A signed, self-expiring token
+   * naming the room this session landed in, bound to its publicId. The client
+   * holds it and replays it on the NEXT recovery rejoin (a 409 or SSE
+   * reconnect) so a server deploy/restart re-converges a group of friends into
+   * the SAME room instead of auto-filling them apart. Opaque to the client.
+   */
+  roomTicket?: string;
 }
 
 /**
@@ -61,6 +69,10 @@ export function useWorldStream() {
   const retriesRef = useRef(0);
   const sessionIdRef = useRef<string | null>(null);
   const roomIdRef = useRef<string | null>(null);
+  // Sticky-room recovery ticket from the last successful join. Replayed on a
+  // recovery rejoin (409 or SSE reconnect) so a server restart re-lands us in
+  // the same room as our group. null until the first join completes.
+  const roomTicketRef = useRef<string | null>(null);
   // Velocity tracker for dirZ — set by the upload interval, read on the
   // next tick to compute atan2(vx, vy). Module-scope via ref so the
   // interval callback doesn't reallocate.
@@ -73,17 +85,38 @@ export function useWorldStream() {
     let positionInterval: ReturnType<typeof setInterval> | null = null;
     let cancelled = false;
 
-    async function join(): Promise<JoinResponse | null> {
+    /**
+     * @param recovery When true, this is a rejoin AFTER an initial successful
+     *   join was lost (a 409 from /position, or an SSE reconnect). We replay
+     *   the prior roomId + recovery ticket so a server deploy/restart re-lands
+     *   us in the SAME room as our group instead of auto-filling us apart.
+     *   On the FIRST join (recovery=false) we send only the optional `?room=`
+     *   deeplink invite code — no ticket exists yet, and sending a stale
+     *   roomId on a fresh join would wrongly pin a room the user didn't intend.
+     */
+    async function join(recovery = false): Promise<JoinResponse | null> {
       const requestedRoom =
         typeof window !== 'undefined'
           ? new URLSearchParams(window.location.search).get('room')
           : null;
+      const body: { roomId?: string; roomTicket?: string } = {};
+      if (recovery) {
+        // Recovery rejoin: prefer the room we were actually in. The ticket is
+        // the server-side proof; roomId is a hint the ticket already encodes,
+        // but we send it too so the server has it even if ticket verification
+        // is disabled in some future config. The deeplink code is irrelevant
+        // here — we're recovering a known room, not following a fresh invite.
+        if (roomIdRef.current) body.roomId = roomIdRef.current;
+        if (roomTicketRef.current) body.roomTicket = roomTicketRef.current;
+      } else if (requestedRoom) {
+        body.roomId = requestedRoom;
+      }
       try {
         const res = await fetch(`${WORLD_API_URL}/api/world/join`, {
           method: 'POST',
           credentials: 'include',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(requestedRoom ? { roomId: requestedRoom } : {}),
+          body: JSON.stringify(body),
         });
         if (!res.ok) return null;
         const data = (await res.json()) as JoinResponse;
@@ -106,25 +139,48 @@ export function useWorldStream() {
     /**
      * Detects HTTP 409 from `/api/world/position` (server: "Session is not in
      * a room — call /api/world/join first") and recovers by tearing down the
-     * stale 5 Hz interval, re-running the join flow, and re-arming the
-     * interval if join succeeds. The SSE downlink may still be alive (Coolify
-     * keepalive separate from server-side room TTL), so we don't recreate it
-     * — just rejoin and continue. Guarded by `recoveryInFlightRef` so concurrent
+     * stale 5 Hz interval, re-running the join flow (as a RECOVERY rejoin so the
+     * sticky-room ticket re-converges our group post-restart), and re-arming the
+     * interval if join succeeds. Guarded by `recoveryInFlight` so concurrent
      * 409s don't trigger multiple parallel rejoins.
+     *
+     * Sticky-room nuance (2026-06-12): a recovery rejoin can land us in a
+     * DIFFERENT roomId than before — the server recreates the wiped room from
+     * the ticket, but if that room had filled past the hard cap it spills us to
+     * auto-fill. The SSE downlink is keyed on roomId AND gated on room
+     * membership, so if the room changed we MUST re-point the stream (the old
+     * room's stream would 403 / serve a stale room). When the room is unchanged
+     * the existing SSE keeps flowing untouched.
      */
     let recoveryInFlight = false;
     async function recoverFrom409() {
       if (cancelled || recoveryInFlight) return;
       recoveryInFlight = true;
       stopPositionUpload();
+      const prevRoomId = roomIdRef.current;
       try {
-        const rejoined = await join();
+        const rejoined = await join(true);
         if (cancelled) return;
         if (rejoined) {
           sessionIdRef.current = rejoined.id;
           roomIdRef.current = rejoined.roomId;
+          roomTicketRef.current = rejoined.roomTicket ?? roomTicketRef.current;
           setLocalSessionId(rejoined.id);
           setRoomId(rejoined.roomId);
+          // Re-point the SSE if recovery placed us in a different room (the old
+          // stream is now pointed at a room we're no longer a member of).
+          if (rejoined.roomId !== prevRoomId) {
+            es?.close();
+            es = null;
+            // Cancel any pending reconnect the old stream's onerror queued, so
+            // we don't end up with two EventSources racing.
+            if (retryTimeout) {
+              clearTimeout(retryTimeout);
+              retryTimeout = null;
+            }
+            retriesRef.current = 0;
+            openStream(rejoined.roomId);
+          }
           startPositionUpload();
         }
         // If rejoin failed, the next position upload won't fire (interval
@@ -275,6 +331,7 @@ export function useWorldStream() {
       }
       sessionIdRef.current = joined.id;
       roomIdRef.current = joined.roomId;
+      roomTicketRef.current = joined.roomTicket ?? null;
       setLocalSessionId(joined.id);
       setRoomId(joined.roomId);
       openStream(joined.roomId);
