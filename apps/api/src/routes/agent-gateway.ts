@@ -342,6 +342,11 @@ agentGatewayRoutes.post('/connect', async (c) => {
   // transparent to validation; sessions are ephemeral/in-memory, so old weak
   // ids simply age out with no migration.
   const sessionId = `ag-${randomBytes(24).toString('base64url')}`;
+  // Compute the session expiry ONCE so the DB write (both branches) and the
+  // response surface the SAME timestamp (2026-06-12 — pull-side expiry
+  // visibility). Additive `sessionExpiresAt` field on the response; existing
+  // consumers ignore unknown keys.
+  const sessionExpiresAt = computeSessionExpiresAt();
   let isReturning = false;
   let totalSessions = 1;
   let knowledge: string[] = [];
@@ -428,7 +433,7 @@ agentGatewayRoutes.post('/connect', async (c) => {
         // Fresh 24h TTL on every reconnect — matches the Phase 6 session
         // liveness contract. Without this, returning bots kept whatever
         // stale expiry was on the row from their last connect.
-        sessionExpiresAt: computeSessionExpiresAt(),
+        sessionExpiresAt,
         // Restart survival (2026-06-11) — persist the one-way hash of THIS
         // connect's bearer so the live session can be rebuilt from the row
         // after an API restart. New sessionId per connect ⇒ new hash, which
@@ -475,7 +480,7 @@ agentGatewayRoutes.post('/connect', async (c) => {
         // heartbeat, building visit) slides this forward; the 5-min
         // sweeper in openclaw-session-sweeper.ts reaps anything past
         // expiry.
-        sessionExpiresAt: computeSessionExpiresAt(),
+        sessionExpiresAt,
         // Restart survival (2026-06-11) — one-way hash of this connect's
         // bearer so the session is restorable from the row after a restart.
         sessionKeyHash: sha256Hex(sessionId),
@@ -905,6 +910,11 @@ agentGatewayRoutes.post('/connect', async (c) => {
     identityType,
     autonomyMode,
     walletAddress,
+    // Pull-side expiry visibility (2026-06-12) — the ISO timestamp this
+    // session's sliding 24h TTL currently expires at. Slides forward on every
+    // activity; poll GET /api/agent/session-status (or re-read this on connect)
+    // to track it. Additive — existing consumers ignore it.
+    sessionExpiresAt: sessionExpiresAt.toISOString(),
     // Additive (2026-06-01) — canonical "you are inside ClawVille" orientation
     // for external agents to embed in their own system prompt. Returned for
     // every connecting agent (not just Hatcher) so any framework that brings
@@ -1035,12 +1045,17 @@ agentGatewayRoutes.post('/reconnect', async (c) => {
   // human but leaving openclaw_bots.session_expires_at frozen at the
   // last /connect time, so /api/agent/session-status would still
   // report 410 Gone after a successful /reconnect.
+  // Capture the refreshed expiry so the response can surface it (2026-06-12 —
+  // pull-side expiry visibility, parity with /connect). Null when the user has
+  // no existing bot row to refresh (nothing to expire yet).
+  let reconnectExpiresAt: Date | null = null;
   if (existingBot) {
+    reconnectExpiresAt = computeSessionExpiresAt();
     try {
       await db
         .update(openclawBots)
         .set({
-          sessionExpiresAt: computeSessionExpiresAt(),
+          sessionExpiresAt: reconnectExpiresAt,
           sessionSweptAt: null,
           lastSeenAt: new Date(),
           updatedAt: new Date(),
@@ -1082,6 +1097,9 @@ agentGatewayRoutes.post('/reconnect', async (c) => {
     sessionTicket,
     avatarId: userAvatar?.id ?? null,
     uuid: existingBot?.id ?? null,
+    // Pull-side expiry visibility (2026-06-12) — the refreshed TTL deadline,
+    // parity with /connect. Null when the user had no bot row to refresh.
+    sessionExpiresAt: reconnectExpiresAt ? reconnectExpiresAt.toISOString() : null,
     // `walletAddress` here is the AVATAR wallet (the human-facing economic
     // identity). The agent's internal bot wallet isn't relevant on
     // reconnect — the agent already has its config and doesn't need

@@ -720,6 +720,21 @@ class NpcSimulation {
     return found;
   }
 
+  /**
+   * Snapshot of every live agent body as `{ sessionId, agentId }` pairs. Used by
+   * the body-idle-despawn sweeper (agent-body-idle-sweeper.ts) to map live bodies
+   * back to their DB rows (keyed by agentId) so it can check each one's
+   * `lastSeenAt` and despawn the dormant ones WITHOUT touching the session TTL.
+   * Returns a fresh array (safe to iterate while the caller despawns entries).
+   */
+  getActiveAgentSessionPairs(): Array<{ sessionId: string; agentId: string }> {
+    const pairs: Array<{ sessionId: string; agentId: string }> = [];
+    for (const [sid, { config }] of this.openClawBots) {
+      pairs.push({ sessionId: sid, agentId: config.agentId });
+    }
+    return pairs;
+  }
+
   /** Get avatar's current position for persistence on disconnect */
   getOpenClawAvatarPosition(sessionId: string): { x: number; y: number } | null {
     const npcId = `oc-${sessionId}`;

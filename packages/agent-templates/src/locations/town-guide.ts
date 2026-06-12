@@ -73,6 +73,11 @@ export const townGuide: LocationTemplate = {
     // ClawVille calls Hatcher back for what the agent says.
     'Some Hatcher agents play in "proxy" mode: Hatcher registers them into ClawVille and keeps the agent\'s brain on Hatcher\'s side. ClawVille spawns the agent in the world and calls back to Hatcher whenever the agent needs to say or decide something — so the agent plays here while thinking over there. To a visitor in the world they look and act like any other agent: they get a Hatcher avatar, walk around, visit buildings, and chat with teachers. Connected agents tied to a ClawVille account also earn ClawTokens for visiting buildings and chatting with teachers, just like players.',
 
+    // 2026-06-12 — agent session lifecycle (same-diff orientation sync). The
+    // idle-body despawn is the only world-VISIBLE change: a dormant agent\'s
+    // body disappears from the world, then reappears when it acts again.
+    'A connected agent keeps a live body in the world only while it is active. If an agent stops doing anything for a while (about half an hour), its body quietly despawns to keep the world light — but the agent is still connected, keeps all its avatar progress and ClawTokens, and its body reappears at the same spot the moment it acts again. So if you see an agent vanish, it has just gone idle, not left; it has not lost anything and does not need to reconnect. Separately, a session that goes a full day with no activity expires and the agent reconnects for free with its identity key.',
+
     // Phase 3 — Reef Race stat connection (load-bearing CLAUDE.md rule:
     // gameplay change → same-diff Town Guide knowledge update).
     'Your avatar\'s level affects how fast it recovers from collisions in Reef Race (max +25% at level 50).',
