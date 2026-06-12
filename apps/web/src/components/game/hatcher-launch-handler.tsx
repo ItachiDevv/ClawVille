@@ -8,25 +8,36 @@ import { api } from '@/lib/api';
  * Hatcher launch-entry handler (plan §B — `.claude/plans/hatcher-launch-exchange.md`).
  *
  * Hatcher's dashboard launches an owner into ClawVille to *watch* their hosted
- * agent by appending `?hatcher_agent=<agentId>&hatcher_launch=<launchToken>` to
- * the /game URL. The portal flow logs the owner in BEFORE the redirect, so by
- * the time this mounts the Lucia session already exists — we just consume the
- * grant via the signed exchange endpoint and drop the viewer into spectate with
- * the camera focused on the agent's in-world body.
+ * agent by appending the grant to the /game URL FRAGMENT:
+ * `#hatcher_agent=<agentId>&hatcher_launch=<launchToken>`. The portal flow logs
+ * the owner in BEFORE the redirect, so by the time this mounts the Lucia session
+ * already exists — we just consume the grant via the signed exchange endpoint
+ * and drop the viewer into spectate with the camera focused on the agent's
+ * in-world body.
  *
  * Phasing: v1 is `autonomous` only — exchange + spectate. The `controlled`
  * possession path is a separate follow-up; this handler always lands the owner
  * in 'explore' (free spectate camera) regardless of the agent's mode.
  *
  * Design notes:
- * - Params are read off `window.location.search` (NOT useSearchParams) to match
- *   the sibling `quickQueue` deep-link guard in game/page.tsx and avoid the
- *   Next 16 prerender Suspense bailout on the already-'use client' /game route.
+ * - The grant is read from the URL FRAGMENT (`location.hash`), NOT the query
+ *   string (2026-06-12, Codex finding #3). A bearer-style `hatcher_launch` token
+ *   in `?query=` is captured by CDN/web-server access logs and leaks into the
+ *   `Referer` header of every early sub-resource request BEFORE the post-mount
+ *   strip runs — so it is already exfiltrated by the time we clear it. The
+ *   fragment is NEVER sent to the server, never logged, and never appears in a
+ *   Referer, so it is the correct carrier for a short-lived bearer. (We still
+ *   use plain string parsing rather than useSearchParams to match the sibling
+ *   `quickQueue` deep-link guard and avoid the Next 16 prerender Suspense
+ *   bailout on the already-'use client' /game route.)
+ *   NOTE FOR HATCHER: the dashboard MUST emit the grant in the fragment
+ *   (`/game#hatcher_agent=…&hatcher_launch=…`), not the query — a query-string
+ *   launch silently no-ops now (and would re-introduce the log leak).
  * - The exchange fires AT MOST ONCE per mount (firedRef re-entry guard) — even
  *   though api.hatcherLaunchExchange never throws, a StrictMode double-effect or
  *   a re-render must not double-POST.
- * - On success we strip BOTH params via history.replaceState immediately, so a
- *   refresh can't replay the (now-consumed) launch token.
+ * - On success we strip the WHOLE fragment via history.replaceState immediately,
+ *   so a refresh can't replay the (now-consumed) launch token.
  * - Renders nothing on the happy path beyond a small auto-dismissing toast
  *   (existing store toast surface). The 401 / error banner docks bottom-centre
  *   per the game top-stack rule (new banners dock bottom-centre, never top-14),
@@ -63,7 +74,12 @@ export default function HatcherLaunchHandler() {
     if (typeof window === 'undefined') return;
     if (firedRef.current) return;
 
-    const params = new URLSearchParams(window.location.search);
+    // Read the grant from the URL FRAGMENT, not the query string (finding #3 —
+    // a fragment is never sent to the server, so the bearer-style launchToken
+    // can't land in access logs or a Referer header). `location.hash` includes
+    // the leading '#'; strip it before parsing as form-encoded pairs.
+    const rawHash = window.location.hash.replace(/^#/, '');
+    const params = new URLSearchParams(rawHash);
     const agentId = params.get('hatcher_agent');
     const launchToken = params.get('hatcher_launch');
 
@@ -72,13 +88,16 @@ export default function HatcherLaunchHandler() {
 
     firedRef.current = true;
 
-    // Strip BOTH launch params immediately (before the network round-trip
-    // resolves) so a refresh mid-flight can't replay the token, and so the
-    // sensitive launchToken never lingers in the address bar / history. The
-    // rest of the query string (e.g. ?fast=1, ?meshlets=1) is preserved.
+    // Strip BOTH launch params from the fragment immediately (before the network
+    // round-trip resolves) so a refresh mid-flight can't replay the token, and
+    // so the sensitive launchToken never lingers in the address bar / history.
+    // Any unrelated fragment keys are preserved; if nothing else remains we drop
+    // the '#' entirely so the URL is clean.
+    params.delete('hatcher_agent');
+    params.delete('hatcher_launch');
+    const survivingHash = params.toString();
     const url = new URL(window.location.href);
-    url.searchParams.delete('hatcher_agent');
-    url.searchParams.delete('hatcher_launch');
+    url.hash = survivingHash ? `#${survivingHash}` : '';
     window.history.replaceState({}, '', url.toString());
 
     let cancelled = false;

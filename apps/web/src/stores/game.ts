@@ -213,7 +213,37 @@ export interface GameState {
   activityFeedOpen: boolean;
   toggleActivityFeed: () => void;
 
-  // Agent connection (World mode) — supports any agent type, not just OpenClaw
+  // Agent connection (World mode) — supports any agent type, not just OpenClaw.
+  //
+  // Two DISTINCT states (split 2026-06-12, Codex finding #2). They are NOT
+  // interchangeable and conflating them is the partner's reload-breakage bug:
+  //
+  //  • agentPaired — "this user has a connected agent" for UI purposes. Derived
+  //    from the server's /me/agent-session liveness probe, so it SURVIVES A
+  //    RELOAD. Drives every paired INDICATOR (Bot-Training pill, Controlled/
+  //    Autonomous toggle labels, sidebar Trainer tier, cove autonomous
+  //    availability). Carries NO bearer.
+  //
+  //  • agentSessionId — the LIVE agent-session bearer. The server returns it
+  //    EXACTLY ONCE, at first connect (a hard security invariant — never
+  //    re-emitted), so it can only be held in memory by the SAME browser session
+  //    that performed the connect. It is null after any reload. /me/agent-session
+  //    canNOT reconstruct it. The agent-bearer chat send path
+  //    (avatar-chat-bar `routedThroughAgent`, use-location-chat) gates on a
+  //    NON-NULL agentSessionId — so after a reload those paths correctly fall
+  //    back to the normal authed avatar chat instead of replaying a fake bearer.
+  //
+  //  • agentConnected — kept as the convenience union "paired (UI) AND/OR holds a
+  //    live bearer". Set true whenever agentPaired is true, with or without a
+  //    bearer. UI consumers may read it as "is paired"; bearer paths must AND it
+  //    with agentSessionId (they already do).
+  //
+  // THE BUG THIS SPLIT FIXES: the reload hydration used to pass the server's
+  // `agentId` into setAgentConnection() as if it were the bearer, so the next
+  // avatar chat sent agentId as sessionId → 404 → the connection cleared ~1s in.
+  // Reload now calls setAgentPaired() (no bearer) — agentSessionId stays null,
+  // the chat bar uses the authed avatar path, nothing 404s, the avatar stays.
+  agentPaired: boolean;
   agentConnected: boolean;
   agentSessionId: string | null;
   agentConnectModalOpen: boolean;
@@ -248,6 +278,32 @@ export interface GameState {
    * left '' by every call site — so the caller owns this decision.
    */
   setAgentConnection: (sessionId: string | null, opts?: { keepEmbodied?: boolean }) => void;
+  /**
+   * Reload-survivable PAIRED state — set from the server's /me/agent-session
+   * liveness probe on game-page mount. Marks the user as paired with an agent
+   * for UI purposes (Bot-Training pill, Controlled/Autonomous toggle, cove
+   * autonomous availability) WITHOUT ever holding a bearer.
+   *
+   * `setAgentPaired(true, agentId?)`:
+   *   agentPaired = true, agentConnected = true, hasAgent = true,
+   *   agentSessionId = null (CRITICAL — the bearer is never reconstructed; the
+   *   server only emits it once at connect and can't re-emit it), embodies the
+   *   owner in 'player' mode. The optional agentId is for diagnostics/display
+   *   only and is NEVER used as a bearer.
+   *
+   * `setAgentPaired(false, _, opts?)`:
+   *   clears agentPaired + agentConnected + agentSessionId. Honors
+   *   `opts.keepEmbodied` exactly like setAgentConnection's clear path so a
+   *   server "no longer connected" answer doesn't evict a still-authenticated
+   *   owner from their own avatar (regression D2 consistency).
+   *
+   * The agent-bearer chat path (`agentConnected && agentSessionId`) stays OFF
+   * after this because agentSessionId is null — by construction, never by
+   * accident. To chat AS the agent again the user must re-run the in-session
+   * connect flow (the only path that receives a real bearer), which is a
+   * separate scoped feature, not this fix.
+   */
+  setAgentPaired: (paired: boolean, agentId?: string | null, opts?: { keepEmbodied?: boolean }) => void;
 
   // Toast notifications
   toasts: Toast[];
@@ -756,6 +812,7 @@ export const useGameStore = create<GameState>((set, get) => ({
   activityFeedOpen: false,
   toggleActivityFeed: () => set((s) => ({ activityFeedOpen: !s.activityFeedOpen })),
 
+  agentPaired: false,
   agentConnected: false,
   agentSessionId: null,
   agentConnectModalOpen: false,
@@ -820,6 +877,8 @@ export const useGameStore = create<GameState>((set, get) => ({
     const keepEmbodied = !connected && !!opts?.keepEmbodied;
 
     set((s) => ({
+      // A live bearer implies paired; clearing the bearer also clears paired.
+      agentPaired: connected,
       agentConnected: connected,
       agentSessionId: sessionId,
       agentConnectModalOpen: false,
@@ -827,6 +886,61 @@ export const useGameStore = create<GameState>((set, get) => ({
       controlMode: connected || keepEmbodied ? 'player' : 'explore',
       isSpectator: connected || keepEmbodied ? false : true,
       possessedNpcId: connected ? null : s.possessedNpcId,
+    }));
+  },
+
+  setAgentPaired: (paired, _agentId, opts) => {
+    // Reload-survivable paired hydration. CRITICAL: this never sets a bearer.
+    // The server (/me/agent-session) only tells us WHETHER an agent is connected
+    // (+ its agentId for display) — it cannot return the session bearer, which
+    // is emitted exactly once at connect. So agentSessionId is forced null here:
+    // the agent-bearer chat path (agentConnected && agentSessionId) stays off by
+    // construction, and the avatar chat bar falls back to the normal authed
+    // path — the partner's "connection clears ~1s after reload" bug (a fabricated
+    // agentId-as-bearer 404ing on first chat) cannot recur.
+
+    // Reset jump state on the paired transition for parity with the connect/
+    // disconnect paths (avoids a stranded-airborne avatar across the flip).
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { resetJump } = require('@/lib/three/jump-state') as typeof import('@/lib/three/jump-state');
+    resetJump();
+
+    if (paired) {
+      // Mirror the connect path's embodiment (player mode, body mounted) but
+      // WITHOUT a bearer. No-op guard: if already paired with no bearer, don't
+      // churn control mode (a useAvatar refetch re-runs the hydration effect).
+      const prev = get();
+      if (prev.agentPaired && prev.agentConnected && prev.agentSessionId === null) return;
+      set({
+        agentPaired: true,
+        agentConnected: true,
+        agentSessionId: null,
+        hasAgent: true,
+        controlMode: 'player',
+        isSpectator: false,
+        possessedNpcId: null,
+      });
+      return;
+    }
+
+    // Clear path — server says no longer connected. Honor keepEmbodied so a
+    // still-authenticated owner with their own avatar is not evicted from their
+    // body (same D2 invariant as setAgentConnection's clear path). Stop autonomy
+    // if it was running against the now-unpaired agent.
+    const prev = get();
+    if (prev.controlMode === 'autonomous') {
+      const { useAutonomyStore } = require('@/stores/autonomy') as typeof import('@/stores/autonomy');
+      useAutonomyStore.getState().stopAutonomy();
+    }
+    const keepEmbodied = !!opts?.keepEmbodied;
+    set((s) => ({
+      agentPaired: false,
+      agentConnected: false,
+      agentSessionId: null,
+      hasAgent: false,
+      controlMode: keepEmbodied ? 'player' : 'explore',
+      isSpectator: keepEmbodied ? false : true,
+      possessedNpcId: s.possessedNpcId,
     }));
   },
 
@@ -1022,6 +1136,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     cameraJoystickVelocity: { x: 0, y: 0 },
     avatarIsAutonomous: false,
     activityFeedOpen: false,
+    agentPaired: false,
     agentConnected: false,
     agentSessionId: null,
     agentConnectModalOpen: false,

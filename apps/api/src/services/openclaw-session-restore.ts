@@ -55,12 +55,20 @@
  *   MINT paths, so the rebuilt config is byte-identical to the original per
  *   identity type and cannot drift again (enforced by a deep-equality
  *   regression test).
- *   - openclaw / ironclaw / custom WITH a real gatewayUrl: the row stores
- *     `gateway_url` but NOT `auth_token` (the bearer to the agent's own gateway
- *     is never persisted). We CANNOT rebuild a working outbound chat client, so
- *     restoring would give a body whose replies silently 401. We therefore
- *     return null for this case (graceful degradation — the agent reconnects,
- *     exactly the pre-fix behaviour), rather than spawn a half-dead body.
+ *   - openclaw / ironclaw / custom (EVERY real-gateway identity type): the row
+ *     never persists `auth_token` (the bearer to the agent's own gateway), so we
+ *     CANNOT rebuild a working outbound chat client — a restored body would
+ *     silently 401 (a real gateway) or 502 against the dummy `http://localhost:0`
+ *     (a legacy/malformed row with a null/dummy gatewayUrl). We therefore return
+ *     null for ALL of these identity types UNCONDITIONALLY (graceful degradation
+ *     — the agent reconnects, exactly the pre-fix behaviour), rather than spawn a
+ *     half-dead body.
+ *
+ *   D2 FIX (#6, 2026-06-12): we gate on the IDENTITY TYPE, not on the gatewayUrl
+ *     shape. The prior guard only refused real-gateway rows whose `gateway_url`
+ *     was present + non-dummy, so a malformed legacy `openclaw`/`custom` row with
+ *     a NULL/dummy gatewayUrl fell through and built a mute body pointing at
+ *     `http://localhost:0` (the restored-mute-body class, the D1 bug's cousin).
  *
  * CONCURRENCY: two simultaneous post-restart chat calls for the same agent both
  * Map-miss and both reach restore. registerOpenClaw is effectively idempotent by
@@ -80,7 +88,7 @@ import { sha256Hex, sessionDigest } from './session-digest';
 import {
   buildAvatarSessionConfig,
   buildOverrideSessionConfig,
-  resolveInWorldProtocol,
+  isRowRestorableFromIdentity,
 } from './agent-session-config';
 import type { LiveAgentSession } from '../middleware/require-auth-or-agent';
 
@@ -223,16 +231,18 @@ function rebuildAndRegister(
   // this is the D1 FIX: the old code passed the row's stored 'openai-compat'
   // straight through, so a restored anonymous/milady body POSTed to the dummy
   // `http://localhost:0` gateway and 502'd on every autonomous NPC conversation.
-  const inWorldProtocol = resolveInWorldProtocol(bot.identityType, bot.protocol);
-  const isNoGateway = inWorldProtocol === 'nanoclaw';
-
-  // ── openclaw / ironclaw / custom WITH a real gateway: auth_token not on the
-  // row → outbound chat would 401. Un-restorable; degrade to reconnect. ──
-  const usesOutboundGateway =
-    !isNoGateway &&
-    !!bot.gatewayUrl &&
-    bot.gatewayUrl !== 'http://localhost:0';
-  if (usesOutboundGateway) {
+  //
+  // ── openclaw / ironclaw / custom (every REAL-GATEWAY identity type): the row
+  // never persists `auth_token`, so a rebuilt body would 401/502 (mute). The
+  // restorability decision is delegated to the SHARED pure predicate
+  // `isRowRestorableFromIdentity` (agent-session-config.ts) so the literal rule
+  // is unit-tested, NOT a mirror. It gates on the IDENTITY TYPE, not the
+  // `gatewayUrl` column shape — closing the #6 fall-through where a malformed
+  // legacy `openclaw`/`custom` row with a null/dummy `gatewayUrl` slipped past
+  // the old `!!gatewayUrl && gatewayUrl !== 'http://localhost:0'` guard and built
+  // a mute body. (The hatcher branch already returned above; this reaches only
+  // the non-hatcher identity types.)
+  if (!isRowRestorableFromIdentity(bot.identityType)) {
     return null;
   }
 
