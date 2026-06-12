@@ -1,11 +1,12 @@
 'use client';
 
-import { Suspense, memo, useMemo, useRef } from 'react';
+import { Suspense, memo, useMemo } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import type { NpcSpriteState } from '@/stores/npc';
 import { usePlayerStore, type RemotePlayerState } from '@/stores/players';
 import { GLBNpcMesh, VRMNpcMesh } from '@/lib/three/arena-npcs';
 import { MODEL_REGISTRY } from '@/lib/three/agent-model-registry';
+import { preloadVRMBytes } from '@/lib/three/vrm-loader';
 
 /**
  * Adapt a `RemotePlayerState` to the `NpcSpriteState` shape consumed by
@@ -90,9 +91,20 @@ interface RemotePlayerEntryProps {
  * Per-player wrapper. Remote players render as their real GLB/VRM model;
  * visible capsule stand-ins were rejected for player-facing world quality.
  *
- * `memo` on the entry component plus stable `npcLike` ref preserves the
- * React.memo bailout inside VRMNpcMesh / GLBNpcMesh, so a player only
- * re-renders when its own snapshot mutates.
+ * IMPORTANT: `memo` is applied here but the `<Suspense>` boundary is
+ * intentionally kept OUTSIDE this component (at the RemotePlayers map
+ * level). Placing Suspense inside a memo wrapper creates a permanent
+ * deadlock: the players store's identity-mutation pattern
+ * (`updateFromSnapshot` mutates the existing object in-place and pushes
+ * the same reference) means `player` prop identity never changes once
+ * steady-state snapshots begin, so `React.memo` bails out on every
+ * re-render. React's Suspense retry mechanism needs to re-render through
+ * the memo component to reach the Suspense boundary and schedule a
+ * retry — but memo bailout returns the previous (suspended) render
+ * output unchanged forever, causing permanent zero-mesh for any species
+ * including preloaded ones (milady_official_1, hermes-male, etc.).
+ *
+ * Fix: every player's Suspense boundary lives one level up, outside memo.
  */
 const RemotePlayerEntry = memo(function RemotePlayerEntry({ player }: RemotePlayerEntryProps) {
   // npcLike is rebuilt on every render of this entry — but the entry only
@@ -102,11 +114,19 @@ const RemotePlayerEntry = memo(function RemotePlayerEntry({ player }: RemotePlay
 
   const regEntry = MODEL_REGISTRY[player.species as keyof typeof MODEL_REGISTRY];
   if (regEntry?.avatar_type === 'vrm') {
-    return (
-      <Suspense fallback={null}>
-        <VRMNpcMesh npc={npcLike} />
-      </Suspense>
-    );
+    // Eagerly warm the VRM byte cache (HTTP fetch only; no parse) so the
+    // VRMNpcMesh Suspense boundary (in the parent) can start parsing as
+    // soon as possible. Remote player VRMs like `phanes` and `eliza-chibi`
+    // are NOT in the module-scope preload list in arena-npcs.tsx (which
+    // only covers the 11 wandering NPC VRMs). Without this, the bytes
+    // fetch starts only AFTER useVRMInstance throws its first Suspense
+    // promise — adding one full HTTP round-trip to an already-queued
+    // parse. `preloadVRMBytes` is a no-op if the bytes are already cached.
+    preloadVRMBytes(regEntry.path);
+    // VRMNpcMesh calls useVRMInstance which throws a Suspense promise while
+    // loading. The promise is caught by the <Suspense> boundary in
+    // RemotePlayers (one level up, outside this memo wrapper).
+    return <VRMNpcMesh npc={npcLike} />;
   }
   return <GLBNpcMesh npc={npcLike} />;
 });
@@ -119,18 +139,27 @@ const RemotePlayerEntry = memo(function RemotePlayerEntry({ player }: RemotePlay
  * Subscription pattern: `useShallow((s) => s.players)` so the parent
  * re-renders only when the player array reference changes; sibling entries
  * are isolated by memo + per-entry LOD subscription.
+ *
+ * Each remote player gets its OWN <Suspense> boundary keyed to the player
+ * id. This is required because the Suspense boundary must be OUTSIDE the
+ * React.memo wrapper on RemotePlayerEntry — see the comment on that
+ * component for the full deadlock explanation. One boundary per player also
+ * ensures that a stalled VRM load for player A does not hold back player B's
+ * render (no shared fallback state between entries).
  */
 export default function RemotePlayers() {
   const players = usePlayerStore(useShallow((s) => s.players));
 
   return (
-    <Suspense fallback={null}>
-      <group>
-        {players.map((p) => {
-          if (p.isLocal) return null;
-          return <RemotePlayerEntry key={p.id} player={p} />;
-        })}
-      </group>
-    </Suspense>
+    <group>
+      {players.map((p) => {
+        if (p.isLocal) return null;
+        return (
+          <Suspense key={p.id} fallback={null}>
+            <RemotePlayerEntry player={p} />
+          </Suspense>
+        );
+      })}
+    </group>
   );
 }

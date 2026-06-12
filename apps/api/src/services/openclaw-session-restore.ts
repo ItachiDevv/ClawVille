@@ -37,11 +37,24 @@
  *     proxy_token_* → decrypt in-memory → buildHatcherClient. FULLY RESTORABLE
  *     including cognition. This is the live partner path, so it is the one that
  *     most needs to survive a restart.
- *   - nanoclaw: self-managed pull agent, no outbound gateway (stub client). The
- *     body + cove binding are all that matter. RESTORABLE.
+ *   - nanoclaw: self-managed pull agent, no outbound gateway. The body + cove
+ *     binding are all that matter. RESTORABLE.
  *   - milady / anonymous: no outbound gateway (chat routes via the server-side
  *     Eliza runtime for milady, or is a no-op stub). RESTORABLE as a body — its
  *     cove/leaderboard binding (the thing the human cares about) is intact.
+ *
+ *   D1 FIX (2026-06-12): the IN-WORLD wire protocol for these no-gateway types
+ *   is derived from the AUTHORITATIVE `identity_type` via
+ *   `resolveInWorldProtocol` (agent-session-config.ts), NOT the stored
+ *   `protocol` column. nanoclaw/milady/anonymous resolve to the fail-soft
+ *   'nanoclaw' protocol (`.chat()` returns '' with NO network call). The old
+ *   code passed the row's stored 'openai-compat' straight through, so a
+ *   restored anonymous/milady body POSTed to the dummy `http://localhost:0`
+ *   gateway and 502'd ("Agent gateway error") on every autonomous NPC
+ *   conversation tick. The same shared builder is used by the /connect + Hatcher
+ *   MINT paths, so the rebuilt config is byte-identical to the original per
+ *   identity type and cannot drift again (enforced by a deep-equality
+ *   regression test).
  *   - openclaw / ironclaw / custom WITH a real gatewayUrl: the row stores
  *     `gateway_url` but NOT `auth_token` (the bearer to the agent's own gateway
  *     is never persisted). We CANNOT rebuild a working outbound chat client, so
@@ -59,12 +72,16 @@
 import { eq } from 'drizzle-orm';
 import { db, openclawBots } from '@clawville/database';
 import type { OpenClawRegistration } from '@clawville/shared';
-import { DEFAULT_AGENT_MODEL_KEY } from '@clawville/shared';
 import { npcSimulation } from './npc-simulation';
 import { OpenClawClient } from './openclaw-client';
 import { decryptToken } from './keypair-vault';
 import { validateHatcherProxyUrl } from './hatcher-config';
 import { sha256Hex, sessionDigest } from './session-digest';
+import {
+  buildAvatarSessionConfig,
+  buildOverrideSessionConfig,
+  resolveInWorldProtocol,
+} from './agent-session-config';
 import type { LiveAgentSession } from '../middleware/require-auth-or-agent';
 
 const HATCHER_AGENT_PREFIX = 'hatcher:';
@@ -138,44 +155,49 @@ function rebuildAndRegister(
     const boundUserId = bot.userId ?? null;
     const rawId = rawHatcherAgentId(bot.agentId);
 
-    let config: OpenClawRegistration;
-    if (mode === 'override') {
-      if (!bot.targetNpcId) return null;
-      config = {
-        agentId: bot.agentId,
-        sessionId,
-        sessionKey: sessionId,
-        gatewayUrl: 'http://localhost:0',
-        authToken: '',
-        protocol: 'hatcher-proxy',
-        mode: 'override',
-        autonomyMode: 'server-managed',
-        targetNpcId: bot.targetNpcId,
-        ledgerCapable: boundUserId !== null,
-        boundUserId,
-      } as OpenClawRegistration;
-    } else {
-      config = {
-        agentId: bot.agentId,
-        sessionId,
-        sessionKey: sessionId,
-        gatewayUrl: 'http://localhost:0',
-        authToken: '',
-        protocol: 'hatcher-proxy',
-        mode: 'avatar',
-        autonomyMode: 'server-managed',
-        name: bot.name ?? rawId.slice(0, 24),
-        species: bot.species ?? DEFAULT_AGENT_MODEL_KEY,
-        color: bot.color ?? 0x888888,
-        stats,
-        homeX: meta.homeX ?? 2560,
-        homeY: meta.homeY ?? 2560,
-        patrolRadius: meta.patrolRadius ?? 100,
-        personality: meta.personality ?? '',
-        ledgerCapable: boundUserId !== null,
-        boundUserId,
-      } as OpenClawRegistration;
-    }
+    // An override row with no target NPC can't be re-seated — degrade to
+    // reconnect (same as the original).
+    if (mode === 'override' && !bot.targetNpcId) return null;
+
+    // Build via the SHARED config-builder (agent-session-config.ts) so the
+    // restored config is byte-identical to the partner-hatcher MINT config for
+    // the spawn-relevant fields. `protocolOverride: 'hatcher-proxy'` matches the
+    // mint path (which knows it is hatcher-proxy regardless of the row's
+    // identityType column); `resolveAgentSpecies` inside the builder applies the
+    // hatcher species fallback (DEFAULT_HATCHER_MODEL_KEY) for a null species.
+    const config: OpenClawRegistration =
+      mode === 'override'
+        ? buildOverrideSessionConfig({
+            mode: 'override',
+            agentId: bot.agentId,
+            sessionId,
+            identityType: bot.identityType,
+            storedProtocol: bot.protocol,
+            autonomyMode: 'server-managed',
+            targetNpcId: bot.targetNpcId!,
+            ledgerCapable: boundUserId !== null,
+            boundUserId,
+            protocolOverride: 'hatcher-proxy',
+          })
+        : buildAvatarSessionConfig({
+            mode: 'avatar',
+            agentId: bot.agentId,
+            sessionId,
+            identityType: bot.identityType,
+            storedProtocol: bot.protocol,
+            autonomyMode: 'server-managed',
+            name: bot.name ?? rawId.slice(0, 24),
+            species: bot.species,
+            color: bot.color,
+            stats,
+            homeX: meta.homeX ?? 2560,
+            homeY: meta.homeY ?? 2560,
+            patrolRadius: meta.patrolRadius ?? 100,
+            personality: meta.personality ?? '',
+            ledgerCapable: boundUserId !== null,
+            boundUserId,
+            protocolOverride: 'hatcher-proxy',
+          });
 
     const client = new OpenClawClient({
       ...config,
@@ -194,12 +216,15 @@ function rebuildAndRegister(
     return { config, bot };
   }
 
-  // ── nanoclaw / milady / anonymous: no outbound gateway needed (stub client) ──
-  // These never use authToken — chat is either the server-side Eliza runtime
-  // (milady) or a pull/no-op (nanoclaw/anonymous), so the row has everything.
-  const noGatewayTypes = new Set(['nanoclaw', 'milady', 'anonymous']);
-  const isNoGateway =
-    protocol === 'nanoclaw' || noGatewayTypes.has(bot.identityType);
+  // ── nanoclaw / milady / anonymous: no outbound gateway (fail-soft client) ──
+  // The IN-WORLD wire protocol is decided by `resolveInWorldProtocol` from the
+  // AUTHORITATIVE identityType, NOT the stored `protocol` column. For these types
+  // it resolves to 'nanoclaw' whose `.chat()` returns '' with NO network call —
+  // this is the D1 FIX: the old code passed the row's stored 'openai-compat'
+  // straight through, so a restored anonymous/milady body POSTed to the dummy
+  // `http://localhost:0` gateway and 502'd on every autonomous NPC conversation.
+  const inWorldProtocol = resolveInWorldProtocol(bot.identityType, bot.protocol);
+  const isNoGateway = inWorldProtocol === 'nanoclaw';
 
   // ── openclaw / ironclaw / custom WITH a real gateway: auth_token not on the
   // row → outbound chat would 401. Un-restorable; degrade to reconnect. ──
@@ -211,54 +236,51 @@ function rebuildAndRegister(
     return null;
   }
 
-  // Rebuild a stub-client body (autonomyMode preserved best-effort; the row
-  // doesn't persist it, so default to server-managed which is the connect
-  // default for non-nanoclaw, and self-managed for nanoclaw).
-  const autonomyMode = protocol === 'nanoclaw' ? 'self-managed' : 'server-managed';
+  // An override row with no target NPC can't be re-seated — degrade to
+  // reconnect (matches the hatcher branch + the original).
+  if (mode === 'override' && !bot.targetNpcId) return null;
+
   const boundUserId = bot.userId ?? null;
   // These paths were never ledger-capable on a bare reconnect (the /connect
   // ledger rule requires a proven owned-token or first-contact; a restart-
   // restore is neither), so we restore them NON-ledger. They keep perceiving/
   // chatting; real-CT play requires a fresh owned reconnect. boundUserId is
   // still carried so resolveAgentSession's rebind backstop stays consistent.
-  let config: OpenClawRegistration;
-  if (mode === 'override') {
-    if (!bot.targetNpcId) return null;
-    config = {
-      agentId: bot.agentId,
-      sessionId,
-      sessionKey: sessionId,
-      gatewayUrl: bot.gatewayUrl ?? 'http://localhost:0',
-      authToken: '',
-      protocol: (protocol as OpenClawRegistration['protocol']) ?? 'openai-compat',
-      mode: 'override',
-      autonomyMode,
-      targetNpcId: bot.targetNpcId,
-      ledgerCapable: false,
-      boundUserId,
-    } as OpenClawRegistration;
-  } else {
-    config = {
-      agentId: bot.agentId,
-      sessionId,
-      sessionKey: sessionId,
-      gatewayUrl: bot.gatewayUrl ?? 'http://localhost:0',
-      authToken: '',
-      protocol: (protocol as OpenClawRegistration['protocol']) ?? 'openai-compat',
-      mode: 'avatar',
-      autonomyMode,
-      name: bot.name ?? bot.agentId.slice(0, 24),
-      species: bot.species ?? DEFAULT_AGENT_MODEL_KEY,
-      color: bot.color ?? 0x888888,
-      stats,
-      homeX: meta.homeX ?? 2560,
-      homeY: meta.homeY ?? 2560,
-      patrolRadius: meta.patrolRadius ?? 100,
-      personality: meta.personality ?? '',
-      ledgerCapable: false,
-      boundUserId,
-    } as OpenClawRegistration;
-  }
+  //
+  // Built via the SHARED config-builder so the protocol/species/autonomy
+  // resolution is byte-identical to the /connect MINT path for this identity
+  // type — the structural prevention against mint↔restore drift.
+  const config: OpenClawRegistration =
+    mode === 'override'
+      ? buildOverrideSessionConfig({
+          mode: 'override',
+          agentId: bot.agentId,
+          sessionId,
+          identityType: bot.identityType,
+          storedProtocol: bot.protocol,
+          gatewayUrl: bot.gatewayUrl,
+          targetNpcId: bot.targetNpcId!,
+          ledgerCapable: false,
+          boundUserId,
+        })
+      : buildAvatarSessionConfig({
+          mode: 'avatar',
+          agentId: bot.agentId,
+          sessionId,
+          identityType: bot.identityType,
+          storedProtocol: bot.protocol,
+          gatewayUrl: bot.gatewayUrl,
+          name: bot.name ?? bot.agentId.slice(0, 24),
+          species: bot.species,
+          color: bot.color,
+          stats,
+          homeX: meta.homeX ?? 2560,
+          homeY: meta.homeY ?? 2560,
+          patrolRadius: meta.patrolRadius ?? 100,
+          personality: meta.personality ?? '',
+          ledgerCapable: false,
+          boundUserId,
+        });
 
   const client = new OpenClawClient(config);
   try {

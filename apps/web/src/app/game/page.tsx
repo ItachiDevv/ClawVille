@@ -532,18 +532,26 @@ export default function GamePage() {
           (setAgentConnection enforces it), but if any code path leaves
           controlMode='npc' while an agent is connected, we still hide the
           agent-only UI. (Chat moved up into the hasAvatar block.) */}
+      {/* AvatarChatBar — mounts for any EMBODIED avatar-owner in player/
+          autonomous mode, NOT only while an agent is connected (2026-06-12,
+          regression D2). When a chat send hits a dead agent session the store
+          clears agentConnected but keeps the still-authenticated owner in
+          'player' mode (setAgentConnection keepEmbodied) — the bar must stay
+          mounted so its in-panel "Agent session ended — reconnect" banner
+          survives and the user can keep chatting with their own avatar via the
+          non-agent api.sendAvatarChat path. Gated OUT of NPC/Explore so it
+          can't leak into guest NPC mode or create Eliza state during Explore
+          (the Phase 6.2 reason it left the hasAvatar block). The agent-only
+          progression/shop surfaces below stay gated on agentConnected. */}
+      {hasAvatar && controlMode !== 'npc' && controlMode !== 'explore' && (
+        <AvatarChatBar />
+      )}
       {agentConnected && controlMode !== 'npc' && controlMode !== 'explore' && (
         <>
           <AvatarStatusBar />
           <QuestTracker />
           <AvatarSettingsModal />
           <LocationConfigModal />
-          {/* AvatarChatBar — restored to agent-connected-only gate (Phase 6.2).
-              The Phase 6.1 move into hasAvatar leaked it into Explore mode
-              and created Eliza state for the user's avatar during NPC mode,
-              both wrong. Mode 2 (NPC) chat lives in a separate
-              TalkToCharacterBar component (non-Eliza, transient). */}
-          <AvatarChatBar />
           <ChargeBar />
           <ShopOverlay />
           <InventoryModal />
