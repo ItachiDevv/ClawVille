@@ -248,6 +248,10 @@ export interface OpenClawBotIdentity {
   isReturning: boolean;
   totalSessions: number;
   knowledge: string[];
+  /** ISO timestamp the session's sliding 24h TTL expires at. Additive
+   *  (2026-06-12) — pull-side expiry visibility. Omitted if the DB upsert
+   *  failed (ephemeral-only fallback). */
+  sessionExpiresAt?: string;
 }
 
 export interface OpenClawOverrideConfig extends OpenClawBotConfig {

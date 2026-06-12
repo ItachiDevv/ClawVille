@@ -503,15 +503,16 @@ async function main() {
     check('C1 publicAgentRecord() strips hatcher: prefix + carries protocol pointer + OMITS all token fields', presentOk && !tokenKeyPresent && !ciphertextLeaked, `keys=${JSON.stringify(keys)}\nagentId=${out.agentId} protocol=${JSON.stringify(proto)}\ntokenKeyPresent=${tokenKeyPresent} ciphertextLeaked=${ciphertextLeaked}`);
   });
 
-  await safe('C2 publicAgentRecord() protocol.contentHash matches the served v2 manual hash (single source)', () => {
+  await safe('C2 publicAgentRecord() protocol.contentHash matches the served manual hash (single source)', () => {
     const future = new Date(Date.now() + 3600_000);
     const row = { agentId: 'hatcher:abc', id: 'u', identityType: 'hatcher', mode: 'avatar', targetNpcId: null, name: null, species: null, color: null, cognitionBackend: 'hatcher-proxy', proxyUrl: 'https://api.hatcher.host', proxyTokenEnc: 'x', proxyTokenIv: 'x', proxyTokenTag: 'x', walletAddress: null, userId: null, sessionExpiresAt: future } as unknown as Parameters<typeof ph.publicAgentRecord>[0];
     const out = ph.publicAgentRecord(row) as { protocol: { contentHash: string; version: number } };
     const liveHash = contentHashOf(buildProtocolManual(resolveApiBase()));
-    // Assert against the LIVE v2 hash (whatever the shipping manual produces) +
-    // that PROTOCOL_VERSION is the shipping 2, NOT a hardcoded stale v1 hash.
-    const versionIs2 = PROTOCOL_VERSION === 2 && out.protocol.version === 2;
-    check('C2 publicAgentRecord() protocol.contentHash matches the served v2 manual hash (single source)', out.protocol.contentHash === liveHash && versionIs2, `record.protocol.contentHash=${out.protocol.contentHash}\nlive contentHashOf(buildProtocolManual)=${liveHash}\nversion=${out.protocol.version} (PROTOCOL_VERSION=${PROTOCOL_VERSION}) — expect 2`);
+    // Assert against the LIVE manual hash (whatever the shipping manual produces)
+    // + that the record's version equals the SINGLE-SOURCE PROTOCOL_VERSION,
+    // NOT a hardcoded stale literal (tracks the live version across bumps).
+    const versionMatchesSource = out.protocol.version === PROTOCOL_VERSION;
+    check('C2 publicAgentRecord() protocol.contentHash matches the served manual hash (single source)', out.protocol.contentHash === liveHash && versionMatchesSource, `record.protocol.contentHash=${out.protocol.contentHash}\nlive contentHashOf(buildProtocolManual)=${liveHash}\nversion=${out.protocol.version} (PROTOCOL_VERSION=${PROTOCOL_VERSION})`);
   });
 
   // NEW — C3: the Rule-E5 "agent plays AS ITSELF" binding, asserted on the
@@ -884,16 +885,16 @@ async function main() {
   // ===================================================================
   // CASE G — Protocol single-source content-hash invariant @ v2
   // ===================================================================
-  await safe('G1 protocolPointer().contentHash === contentHashOf(buildProtocolManual()) ; version === 2 (shipping)', () => {
+  await safe('G1 protocolPointer().contentHash === contentHashOf(buildProtocolManual()) ; version === PROTOCOL_VERSION (single source)', () => {
     const apiBase = resolveApiBase();
     const manual = buildProtocolManual(apiBase);
     const hash1 = contentHashOf(manual);
     const ptr = protocolPointer(apiBase);
     const hashMatch = ptr.contentHash === hash1 && ptr.contentHash === protocolContentHash(apiBase);
-    const versionIs2 = PROTOCOL_VERSION === 2 && ptr.version === 2;
+    const versionMatchesSource = ptr.version === PROTOCOL_VERSION;
     const urlOk = ptr.url === '/api/skills/protocol/skill.md';
     if (!hashMatch) bugs.push('protocol contentHash mismatch across single-source surfaces');
-    check('G1 protocolPointer().contentHash === contentHashOf(buildProtocolManual()) ; version === 2 (shipping)', hashMatch && versionIs2 && urlOk, `pointer.contentHash=${ptr.contentHash}\ncontentHashOf(manual)=${hash1}\nprotocolContentHash()=${protocolContentHash(apiBase)}\nversion=${ptr.version} (PROTOCOL_VERSION=${PROTOCOL_VERSION}) — expect 2 url=${ptr.url}`);
+    check('G1 protocolPointer().contentHash === contentHashOf(buildProtocolManual()) ; version === PROTOCOL_VERSION (single source)', hashMatch && versionMatchesSource && urlOk, `pointer.contentHash=${ptr.contentHash}\ncontentHashOf(manual)=${hash1}\nprotocolContentHash()=${protocolContentHash(apiBase)}\nversion=${ptr.version} (PROTOCOL_VERSION=${PROTOCOL_VERSION}) url=${ptr.url}`);
   });
 
   await safe('G2 buildProtocolManual is deterministic for a fixed apiBase', () => {
@@ -903,17 +904,17 @@ async function main() {
     check('G2 buildProtocolManual is deterministic for a fixed apiBase', h1 === h2, `hash run1=${h1}\nhash run2=${h2} (must be byte-identical — no randomness/LLM in builder)`);
   });
 
-  // NEW — G3: the v2 manual must DOCUMENT the enter_cove gateway verb + the Cove
-  // play flow. The whitelist-parity rule (CLAUDE.md MANDATORY) says the manual a
-  // connected agent is TOLD it can do must match what the server enforces. We
-  // hash/inspect the ACTUAL served v2 body (not a stale v1 hash).
-  await safe('G3 served v2 manual DOCUMENTS [ACTION: enter_cove()] + the Cove blackjack play flow', () => {
+  // NEW — G3: the served manual must DOCUMENT the enter_cove gateway verb + the
+  // Cove play flow. The whitelist-parity rule (CLAUDE.md MANDATORY) says the
+  // manual a connected agent is TOLD it can do must match what the server
+  // enforces. We hash/inspect the ACTUAL served body (tracking the live version).
+  await safe('G3 served manual DOCUMENTS [ACTION: enter_cove()] + the Cove blackjack play flow', () => {
     const manual = buildProtocolManual(resolveApiBase());
     const documentsEnterCove = manual.includes('[ACTION: enter_cove()]');
     const documentsCovePlay = /cove_blackjack_open_session|cove\/blackjack\/tools\.json/.test(manual);
     const versionLine = manual.includes(`version: ${PROTOCOL_VERSION}`) || manual.includes(`protocol_version: ${PROTOCOL_VERSION}`);
-    if (!documentsEnterCove) bugs.push('v2 manual does NOT document [ACTION: enter_cove()] — whitelist/manual parity broken (agent never learns the shipping verb)');
-    check('G3 served v2 manual DOCUMENTS [ACTION: enter_cove()] + the Cove blackjack play flow', documentsEnterCove && documentsCovePlay && versionIs2v2(PROTOCOL_VERSION) && versionLine, `documents enter_cove=${documentsEnterCove} documents cove-play tools=${documentsCovePlay} version-line(v${PROTOCOL_VERSION})=${versionLine}`);
+    if (!documentsEnterCove) bugs.push('manual does NOT document [ACTION: enter_cove()] — whitelist/manual parity broken (agent never learns the shipping verb)');
+    check('G3 served manual DOCUMENTS [ACTION: enter_cove()] + the Cove blackjack play flow', documentsEnterCove && documentsCovePlay && versionLine, `documents enter_cove=${documentsEnterCove} documents cove-play tools=${documentsCovePlay} version-line(v${PROTOCOL_VERSION})=${versionLine}`);
   });
 
   // NEW — G4: EXECUTOR ↔ MANUAL whitelist-parity. The set of verbs the server
@@ -1161,30 +1162,91 @@ async function main() {
       avatars: { findFirst: (args?: unknown) => Promise<unknown> };
     };
   };
+  // The fixture row now carries a real `sessionKeyHash = sha256Hex(SELFTEST_SESSION)`
+  // so the b453fb18 restart-survival RESTORE path (restoreAgentSessionFromRow, which
+  // looks up `eq(openclawBots.sessionKeyHash, sha256Hex(incoming bearer))` on a
+  // Map-MISS) resolves the fixture session — and ONLY the fixture session — exactly
+  // as a real persisted Hatcher row would.
+  const SELFTEST_SESSION_KEY_HASH = createHash('sha256').update(SELFTEST_SESSION).digest('hex');
   const SELFTEST_BOT_ROW = {
     id: 'uuid-selftest-bot',
     agentId: overrideConfig.agentId, // 'hatcher:selftest-d' — must match the registered config
     identityType: 'hatcher',
     userId: SELFTEST_USER_ID,
     sessionExpiresAt: new Date(Date.now() + 3600_000), // future TTL — liveness gate passes
+    sessionKeyHash: SELFTEST_SESSION_KEY_HASH,
+    sessionSweptAt: null, // not swept — restore's swept-gate (restore.ts:326) passes
+    // hatcher-restore needs a rebuildable proxy client; a non-hatcher-proxy restore
+    // (override mode here) rebuilds from these. The override path only needs targetNpcId.
+    mode: 'override',
+    protocol: 'hatcher-proxy',
+    proxyUrl: 'https://api.hatcher.host',
+    targetNpcId: overrideConfig.targetNpcId,
+    metadata: {},
   };
   const SELFTEST_AVATAR_ROW = { id: SELFTEST_AVATAR_ID, userId: SELFTEST_USER_ID, isActive: true };
-  // openclaw_bots stub: return the synthetic row ONLY for the fixture's agentId,
-  // `undefined` (row-missing) for any other where-clause so unknown sessions still
-  // 404/resolve-null. The shipped lookup is `eq(openclawBots.agentId, config.agentId)`;
-  // for an unregistered session config is null and validateLiveAgentSession returns at
-  // step 1 (isValidAgentSession), so this stub is reached ONLY for live registered
-  // sessions — but we still scope by a marker on the SQL to be defensive.
-  stubDb.query.openclawBots.findFirst = async () => {
-    // The only live registered session in this harness is SELFTEST_SESSION, whose
-    // config.agentId is overrideConfig.agentId; validateLiveAgentSession only calls
-    // this after isValidAgentSession passed, so returning the fixture row is correct.
-    return SELFTEST_BOT_ROW as unknown;
+
+  // ── WHERE-CLAUSE-AWARE openclaw_bots stub (fix 2026-06-12) ──
+  // Why the previous UNCONDITIONAL stub broke I2/I3/I5/I6: it returned the fixture
+  // row for EVERY query. Its comment assumed this stub is reached ONLY for a live
+  // registered session, because an unknown session returns at validateLiveAgentSession
+  // step 1 (isValidAgentSession Map-miss). That assumption was TRUE before b453fb18
+  // but FALSE after: the restart-survival fix made the Map-MISS path call
+  // restoreAgentSessionFromRow → `findFirst({ where: eq(sessionKeyHash, sha256(id)) })`.
+  // So an UNKNOWN session now hits this stub via the restore lookup, and the
+  // unconditional stub "restored" it from the fixture row — making I2/I3/I5/I6 see a
+  // live session instead of a miss. (b453fb18 broke the harness mock, not prod.)
+  //
+  // The faithful model: introspect the Drizzle where-clause (a known-stable shape:
+  // queryChunks = [..., <Column>, " = ", <Param>, ...]) to read the queried COLUMN
+  // and VALUE, and return the fixture row ONLY when the query matches the fixture's
+  // identity (agent_id == the registered agentId, OR session_key_hash == the fixture
+  // session's hash). Any other key → `undefined` (row-missing), so unknown sessions
+  // fail closed exactly as against a real DB.
+  // Recursively collect (column names, Param literal values) from a Drizzle
+  // where-clause. Handles `eq()` (flat queryChunks: [..., <Column>, " = ", <Param>])
+  // AND `and()`/`or()` (which nest each comparison inside a child SQL chunk). A
+  // `Column` chunk has a `columnType` + a `name`; a `Param` chunk has
+  // `constructor.name === 'Param'` and carries the real literal on `.value`
+  // (StringChunks also have a `.value`, but it's an array of SQL fragments — we use
+  // the Param-constructor check to read ONLY real bound literals).
+  function collectWhere(node: unknown, columns: Set<string>, values: unknown[]): void {
+    const n = node as { queryChunks?: unknown[]; name?: string; columnType?: string; value?: unknown; constructor?: { name?: string } } | null;
+    if (!n || typeof n !== 'object') return;
+    if (Array.isArray(n.queryChunks)) {
+      for (const chunk of n.queryChunks) collectWhere(chunk, columns, values);
+      return;
+    }
+    if (n.columnType && typeof n.name === 'string') columns.add(n.name);
+    if (n.constructor?.name === 'Param' && 'value' in n) values.push(n.value);
+  }
+  function introspectWhere(args: unknown): { columns: Set<string>; values: unknown[] } {
+    const where = (args as { where?: unknown } | undefined)?.where;
+    const columns = new Set<string>();
+    const values: unknown[] = [];
+    collectWhere(where, columns, values);
+    return { columns, values };
+  }
+  stubDb.query.openclawBots.findFirst = async (args?: unknown) => {
+    const { columns, values } = introspectWhere(args);
+    // Live path: validateLiveAgentSession → eq(agent_id, config.agentId).
+    if (columns.has('agent_id') && values.includes(overrideConfig.agentId)) {
+      return SELFTEST_BOT_ROW as unknown;
+    }
+    // Restore path (b453fb18): restoreAgentSessionFromRow → eq(session_key_hash,
+    // sha256(incoming bearer)). Only the fixture session's OWN hash matches; an
+    // unknown session's hash finds no row → undefined (fail closed) → restore null.
+    if (columns.has('session_key_hash') && values.includes(SELFTEST_SESSION_KEY_HASH)) {
+      return SELFTEST_BOT_ROW as unknown;
+    }
+    return undefined;
   };
-  // avatars stub: active avatar for the bound test user; `undefined` otherwise so a
-  // user with no active avatar still surfaces the 403-no-avatar path elsewhere.
-  stubDb.query.avatars.findFirst = async () => {
-    return SELFTEST_AVATAR_ROW as unknown;
+  // avatars stub: active avatar for the bound test user ONLY (the avatars lookup is
+  // `and(eq(user_id, ...), eq(is_active, true))`), so a query for any other user
+  // surfaces the 403-no-avatar path. Match when the bound test user id is a Param.
+  stubDb.query.avatars.findFirst = async (args?: unknown) => {
+    const { values } = introspectWhere(args);
+    return values.includes(SELFTEST_USER_ID) ? (SELFTEST_AVATAR_ROW as unknown) : undefined;
   };
 
   const agentGw = await import('../../src/routes/agent-gateway.ts');
@@ -1265,11 +1327,6 @@ async function main() {
   console.log(`HARNESS EXIT: ${failed > 0 ? 1 : 0}`);
 
   process.exit(failed > 0 ? 1 : 0);
-}
-
-/** tiny guard used in G3 to keep the expression readable */
-function versionIs2v2(v: number): boolean {
-  return v === 2;
 }
 
 main().catch((err) => { console.error('HARNESS CRASHED:', err); process.exit(2); });
