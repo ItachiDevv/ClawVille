@@ -1167,6 +1167,9 @@ partnerHatcherRoutes.patch('/agents/:agentId', async (c) => {
       | 'proxyTokenEnc'
       | 'proxyTokenIv'
       | 'proxyTokenTag'
+      | 'sessionKeyHash'
+      | 'sessionExpiresAt'
+      | 'sessionSweptAt'
     >;
     try {
       const txResult = await db.transaction(async (tx) => {
@@ -1204,8 +1207,10 @@ partnerHatcherRoutes.patch('/agents/:agentId', async (c) => {
         // "succeed" into a PATCH the partner was told 409-failed). We capture every
         // field this .set() can mutate so a compensating write can make the persisted
         // row match the restored prior body. (Bearer-lifecycle fields,
-        // sessionKeyHash / sessionExpiresAt, are NOT snapshotted here; they are
-        // handled separately and only written on a successful mint.)
+        // sessionKeyHash / sessionExpiresAt / sessionSweptAt, ARE snapshotted too
+        // (Codex pass-7): a failed override PATCH must leave the session EXACTLY as
+        // it was pre-PATCH, and the mint step below OVERWRITES the prior hash, so the
+        // compensating write must be able to roll the bearer lifecycle back as well.)
         const priorSnapshot = {
           name: existing.name,
           species: existing.species,
@@ -1217,6 +1222,9 @@ partnerHatcherRoutes.patch('/agents/:agentId', async (c) => {
           proxyTokenEnc: existing.proxyTokenEnc,
           proxyTokenIv: existing.proxyTokenIv,
           proxyTokenTag: existing.proxyTokenTag,
+          sessionKeyHash: existing.sessionKeyHash,
+          sessionExpiresAt: existing.sessionExpiresAt,
+          sessionSweptAt: existing.sessionSweptAt,
         } satisfies Partial<typeof openclawBots.$inferSelect>;
 
         const [updated] = await tx
@@ -1431,19 +1439,19 @@ partnerHatcherRoutes.patch('/agents/:agentId', async (c) => {
                 // throws we keep that failure and log loudly, never upgrading to a
                 // success on a compensation failure.
                 //
-                // Terminal-transition invariant (team-lead + auditor, 2026-06-12):
-                // when this PATCH MINTED a new bearer (no live session existed to
-                // preserve, so restoreSnapshots is empty and the failed spawn left NO
-                // live body), the minted id's hash was committed to the row at the
-                // mint step above but its body never spawned and the id is never
-                // surfaced to the partner. That is a terminal state for that bearer,
-                // so null its hash here to match DELETE / expiry / sweep (which all
-                // null sessionKeyHash on a terminal/failed transition). This is for
-                // CONSISTENCY/honesty, not security (the dangling hash is inert — the
-                // id never entered the sim Map and nobody holds it). We do NOT null it
-                // in the PRESERVED-bearer case (minted === false): there the prior body
-                // was restored and is LIVE, the row hash was never rewritten in this
-                // PATCH, and it correctly still commits to that live preserved bearer.
+                // Bearer-lifecycle rollback (Codex pass-7, 2026-06-12 — supersedes the
+                // earlier "null the minted hash for terminal consistency" call, which
+                // was WRONG): a failed override PATCH must leave the session EXACTLY as
+                // it was pre-PATCH. When this PATCH MINTED a new bearer, the mint step
+                // OVERWROTE the row's prior sessionKeyHash (+ expiry/swept) with the new
+                // minted one. Nulling the hash here was tempting (the minted body never
+                // spawned, its id is never surfaced — inert), BUT nulling also destroys
+                // the partner's PRIOR RESTORABLE bearer (the one they were holding
+                // before this PATCH), bricking a still-valid session. So we RESTORE the
+                // prior hash/expiry/swept from the snapshot, making the failed mint a
+                // true no-op. In the PRESERVED-bearer case (minted === false) the row
+                // hash was never rewritten, so the snapshot equals the current value and
+                // restoring it is a harmless no-op — one code path, correct for both.
                 try {
                   await db
                     .update(openclawBots)
@@ -1458,9 +1466,9 @@ partnerHatcherRoutes.patch('/agents/:agentId', async (c) => {
                       proxyTokenEnc: priorSnapshot.proxyTokenEnc,
                       proxyTokenIv: priorSnapshot.proxyTokenIv,
                       proxyTokenTag: priorSnapshot.proxyTokenTag,
-                      // Only the minted-and-never-lived bearer is terminal here; the
-                      // preserved-bearer case keeps its still-valid hash.
-                      ...(minted ? { sessionKeyHash: null } : {}),
+                      sessionKeyHash: priorSnapshot.sessionKeyHash,
+                      sessionExpiresAt: priorSnapshot.sessionExpiresAt,
+                      sessionSweptAt: priorSnapshot.sessionSweptAt,
                       updatedAt: new Date(),
                     })
                     .where(eq(openclawBots.id, row.id));
