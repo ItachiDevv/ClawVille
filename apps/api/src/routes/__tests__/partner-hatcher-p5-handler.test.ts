@@ -212,7 +212,7 @@ describe('Hatcher P5-1 + P5-2 — handler-driven (mocked db, real sim)', () => {
   afterEach(() => {
     // Clean up any bodies WE spawned + any the handler spawned for our test agents.
     for (const sid of spawnedSids.splice(0)) sim.npcSimulation.unregisterOpenClaw(sid);
-    for (const agentId of ['hatcher:p5-held-tx', 'hatcher:p5-override-fail']) {
+    for (const agentId of ['hatcher:p5-held-tx', 'hatcher:p5-override-fail', 'hatcher:p6-patch-override']) {
       for (const sid of sim.npcSimulation.findActiveSessionsByAgentIds([agentId])) {
         sim.npcSimulation.unregisterOpenClaw(sid);
       }
@@ -292,5 +292,67 @@ describe('Hatcher P5-1 + P5-2 — handler-driven (mocked db, real sim)', () => {
     // committed (honest, body-less — a later PATCH/restore heals it), but the spawn
     // threw so no body exists and the prior body (none here) was restored.
     expect(sim.npcSimulation.findActiveSessionsByAgentIds(['hatcher:p5-override-fail'])).toHaveLength(0);
+  });
+
+  it('P6-2: PATCH override to an occupied target -> 409 AND the committed row is compensated back to the PRIOR body (mode/target/token), not the failed target', async () => {
+    // 1) Register the agent in AVATAR mode so it has a live body + a stored,
+    //    decryptable cognition token the PATCH re-register can reuse.
+    resetState({});
+    const regBody = JSON.stringify({
+      agentId: 'p6-patch-override',
+      mode: 'avatar',
+      cognition: { backend: 'hatcher-proxy', proxyBaseUrl: PROXY_URL, scopedToken: 'tok-prior123' },
+    });
+    const regRes = await request(REG_PATH, { method: 'POST', headers: writeHeaders('POST', REG_PATH, regBody), body: regBody });
+    if (regRes.status !== 200) console.error('P6-2 register unexpected body:', await regRes.clone().text());
+    expect(regRes.status).toBe(200);
+    // The agent now has a live AVATAR body, and state.existingRow describes it.
+    expect(sim.npcSimulation.findActiveSessionsByAgentIds(['hatcher:p6-patch-override']).length).toBeGreaterThan(0);
+    const priorRow = { ...(state.existingRow as Row) };
+    expect(priorRow.mode).toBe('avatar');
+    expect(priorRow.targetNpcId == null).toBe(true);
+    const priorProxyEnc = priorRow.proxyTokenEnc;
+    expect(typeof priorProxyEnc).toBe('string');
+
+    // 2) Occupy an NPC with a DIFFERENT agent so the PATCH's override re-register
+    //    throws OverrideTargetUnavailableError (the real P6-2 trigger).
+    const target = NPC_IDS[5];
+    const blockerSid = 'p6-blocker-handler';
+    sim.npcSimulation.registerOpenClaw(
+      {
+        agentId: 'hatcher:p6-blocker', sessionId: blockerSid, sessionKey: blockerSid,
+        gatewayUrl: 'http://localhost:0', authToken: '', protocol: 'hatcher-proxy', mode: 'override',
+        autonomyMode: 'server-managed', targetNpcId: target, ledgerCapable: true, boundUserId: null,
+      } as unknown as Parameters<typeof sim.npcSimulation.registerOpenClaw>[0],
+      { getProtocol: () => 'hatcher-proxy', setWorldStateProvider() {}, setSystemContextProvider() {} } as never,
+    );
+    spawnedSids.push(blockerSid);
+
+    // 3) PATCH the agent to OVERRIDE the occupied target. No new cognition → the
+    //    tx .set() only changes mode/targetNpcId; proxy fields stay, so the
+    //    compensation must restore mode/target (and leave the token intact).
+    const PATCH_PATH = `${REG_PATH}/p6-patch-override`;
+    const patchBody = JSON.stringify({ mode: 'override', targetNpcId: target });
+    const patchRes = await request(PATCH_PATH, { method: 'PATCH', headers: writeHeaders('PATCH', PATCH_PATH, patchBody), body: patchBody });
+    if (patchRes.status !== 409) console.error('P6-2 patch unexpected body:', await patchRes.clone().text());
+
+    // Occupied target → 409 override_target_unavailable, NO sessionId, not ok:true.
+    expect(patchRes.status).toBe(409);
+    const pj = (await patchRes.json()) as { error?: string; sessionId?: string; ok?: boolean };
+    expect(pj.error).toBe('override_target_unavailable');
+    expect(pj.sessionId).toBeUndefined();
+    expect(pj.ok).not.toBe(true);
+
+    // CORE P6-2 ASSERTION: the persisted row was COMPENSATED back to the PRIOR body,
+    // NOT left describing the failed override target. A restart/idle-despawn restore
+    // would otherwise re-attempt the occupied target (or "succeed" into the 409-failed
+    // PATCH). The row must read avatar/null-target again, with the prior token intact.
+    const finalRow = state.existingRow as Row;
+    expect(finalRow.mode).toBe('avatar');
+    expect(finalRow.targetNpcId == null).toBe(true);
+    expect(finalRow.proxyTokenEnc).toBe(priorProxyEnc);
+
+    // And the prior live body was restored (no orphan): the agent still has a body.
+    expect(sim.npcSimulation.findActiveSessionsByAgentIds(['hatcher:p6-patch-override']).length).toBeGreaterThan(0);
   });
 });

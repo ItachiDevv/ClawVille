@@ -120,8 +120,9 @@ export const townGuide: LocationTemplate = {
     // is the Nori-voice "point at the game" entry. AGENT PARITY (2026-06-03):
     // connected/hosted agents now play blackjack AS THEMSELVES, autonomously,
     // from their own runtime via the two-step cove flow (in-world enter_cove()
-    // action tag, then session-bound blackjack tools; protocol_version 2)
-    // settling in real ClawTokens, plus the bidirectional game-skill memory
+    // action tag, then session-bound blackjack tools; see skill-protocol.ts §7,
+    // single-source PROTOCOL_VERSION) settling in real ClawTokens, plus the
+    // bidirectional game-skill memory
     // loop. The in-modal, human-supervised Autonomous driver (8s/15s takeover
     // window) is LIVE via the shipped relay POST /api/cove/blackjack/agent/decide
     // for gateway-cognition agents; self-managed nanoclaw agents return 503 and
