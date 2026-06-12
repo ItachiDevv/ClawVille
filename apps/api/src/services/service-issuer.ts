@@ -108,6 +108,10 @@ export function getPublishedIssuerInfo(): {
       // callbacks to the Hatcher per-agent proxy with this same key. Published
       // so Hatcher can verify the X-Clawville-Signature on our callbacks.
       'partner-cognition-callback',
+      // Session-lifecycle webhook (2026-06-12): we sign the outbound
+      // session.ended notification (TTL expiry / disconnect) with this same
+      // key so the partner can verify it against this published pubkey.
+      'partner-session-webhook',
     ],
   };
 }

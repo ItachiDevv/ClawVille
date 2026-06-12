@@ -43,7 +43,7 @@ import { Hono } from 'hono';
 import type { Context } from 'hono';
 import { z } from 'zod';
 import { randomBytes } from 'crypto';
-import { eq, and, desc, count } from 'drizzle-orm';
+import { eq, and, desc, count, gte } from 'drizzle-orm';
 import {
   db,
   openclawBots,
@@ -72,6 +72,7 @@ import { OpenClawClient } from '../services/openclaw-client';
 import { ensureWallet } from '../services/wallet-service';
 import { resolveOrCreateUserByIdentity } from '../services/identity-service';
 import { computeSessionExpiresAt } from '../services/openclaw-session-sweeper';
+import { notifyHatcherSessionEnded } from '../services/hatcher-session-webhook';
 import { logEvent } from '../services/event-logger';
 import { sessionDigest, sha256Hex } from '../services/session-digest';
 import { protocolPointer, resolveApiBase } from '../services/skill-protocol';
@@ -126,6 +127,33 @@ const partnerStatsRateLimiter = createRateLimiter({
   maxPerWindow: 60,
   windowMs: 60_000,
 });
+
+// ---------------------------------------------------------------------------
+// Per-partner daily NEW-registration cap (2026-06-12)
+// ---------------------------------------------------------------------------
+// Caps how many NEW agents (fresh `hatcher:`-namespaced rows) the Hatcher
+// partner can register per UTC day. Re-register / PATCH of an EXISTING agentId
+// never counts — the cap is checked ONLY on the insert branch, so a partner can
+// keep updating their existing fleet without limit. The count is read straight
+// from the DB (createdAt of `hatcher` rows since UTC midnight), so it survives
+// an API restart with no extra table. Single partner today, so "per-partner" ==
+// "all hatcher rows"; when a real `partner_api_keys` table lands (Phase C) this
+// becomes a per-key count.
+const DEFAULT_PARTNER_DAILY_REGISTRATION_CAP = 50;
+
+/** Resolve the daily registration cap from env (default 50, floor 1). */
+function resolvePartnerDailyRegistrationCap(): number {
+  const raw = process.env.PARTNER_DAILY_REGISTRATION_CAP;
+  if (!raw) return DEFAULT_PARTNER_DAILY_REGISTRATION_CAP;
+  const n = Number.parseInt(raw, 10);
+  if (!Number.isFinite(n) || n < 1) return DEFAULT_PARTNER_DAILY_REGISTRATION_CAP;
+  return n;
+}
+
+/** Start-of-day (UTC midnight) for "today" — the daily cap window boundary. */
+function utcMidnight(now: Date = new Date()): Date {
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+}
 
 // ---------------------------------------------------------------------------
 // Stats endpoint — config + helpers
@@ -643,6 +671,30 @@ partnerHatcherRoutes.post('/agents', async (c) => {
         .returning();
       row = updated;
     } else {
+      // Per-partner daily NEW-registration cap (2026-06-12). Only the insert
+      // branch counts — a re-register/PATCH of an existing agentId took the
+      // `existing` branch above and is never rate-limited by this cap. Count
+      // the partner's `hatcher` rows created since UTC midnight; reject the
+      // NEW row over the cap with a 429 so the partner can retry tomorrow (or
+      // after we raise the cap) without losing the request shape. Counting from
+      // the DB needs no extra table and survives an API restart.
+      const cap = resolvePartnerDailyRegistrationCap();
+      const [todayCount] = await db
+        .select({ n: count() })
+        .from(openclawBots)
+        .where(
+          and(
+            eq(openclawBots.identityType, 'hatcher'),
+            gte(openclawBots.createdAt, utcMidnight()),
+          ),
+        );
+      if (Number(todayCount?.n ?? 0) >= cap) {
+        return c.json(
+          { error: 'daily_registration_cap', code: 'daily_registration_cap', cap },
+          429,
+        );
+      }
+
       const [inserted] = await db
         .insert(openclawBots)
         .values({
@@ -1048,16 +1100,26 @@ partnerHatcherRoutes.delete('/agents/:agentId', async (c) => {
 
   // Tombstone the row: expire the session immediately and scrub the cognition
   // route + encrypted token so no further callbacks can fire for this agent.
+  // Set BOTH sessionExpiresAt AND sessionSweptAt to the SAME `now` (matching
+  // expireSession in openclaw-session-sweeper.ts) so the 5-min sweep's pickup
+  // query (sessionSweptAt IS NULL OR sessionSweptAt < sessionExpiresAt) SKIPS
+  // this row. Without sessionSweptAt, the sweeper would re-pick this just-deleted
+  // row minutes later and fire a DUPLICATE `ttl_expired` session-webhook (+ a
+  // duplicate agent.session.expired event) for an agent the partner already
+  // explicitly deleted (we already fire one `disconnected` webhook below). Also
+  // hardens restore: restore.ts refuses any row where sweptAt >= expiresAt.
+  const tombstonedAt = new Date();
   try {
     await db.update(openclawBots)
       .set({
-        sessionExpiresAt: new Date(),
+        sessionExpiresAt: tombstonedAt,
+        sessionSweptAt: tombstonedAt,
         cognitionBackend: null,
         proxyUrl: null,
         proxyTokenEnc: null,
         proxyTokenIv: null,
         proxyTokenTag: null,
-        updatedAt: new Date(),
+        updatedAt: tombstonedAt,
       })
       .where(eq(openclawBots.id, existing.id));
   } catch (err) {
@@ -1070,6 +1132,15 @@ partnerHatcherRoutes.delete('/agents/:agentId', async (c) => {
     userId: existing.userId,
     agentId: namespacedAgentId,
     payload: { via: 'partner-delete', removedBodies },
+  });
+
+  // Notify the partner this session ended (env-gated, fail-open). The DELETE
+  // already proved a hatcher row (identityType guard above), so notify
+  // unconditionally with the de-namespaced id resolved inside the helper.
+  void notifyHatcherSessionEnded({
+    identityType: existing.identityType,
+    agentId: namespacedAgentId,
+    reason: 'disconnected',
   });
 
   return c.json({ ok: true, removedBodies });
@@ -1302,6 +1373,10 @@ partnerHatcherRoutes.get('/agents/:agentId/stats', async (c) => {
       walletAddress: row.walletAddress ?? null,
       active,
       lastSeenAt: row.lastSeenAt ? row.lastSeenAt.toISOString() : null,
+      // Pull-side expiry visibility (2026-06-12) — the ISO timestamp the
+      // session's sliding 24h TTL expires at (null for a never-connected /
+      // pre-column row). `active` above is just `sessionExpiresAt > now`.
+      sessionExpiresAt: row.sessionExpiresAt ? row.sessionExpiresAt.toISOString() : null,
       totalSessions: row.totalSessions ?? 0,
     },
     leaderboard,

@@ -414,6 +414,20 @@ startSimulation(arenaMode);
     console.error('[API] Session sweeper failed to start:', err);
   }
 
+  // 2026-06-12 — start the agent BODY idle-despawn sweeper. Runs every 1 min,
+  // removes the in-world body (NOT the session) of any agent idle past
+  // AGENT_BODY_IDLE_DESPAWN_MS so dormant agents stop costing sim CPU. The
+  // session stays valid + restorable; the body re-spawns on the agent's next
+  // authenticated activity. See `services/agent-body-idle-sweeper.ts`.
+  try {
+    const { startBodyIdleSweeper } = await import(
+      './services/agent-body-idle-sweeper'
+    );
+    startBodyIdleSweeper();
+  } catch (err) {
+    console.error('[API] Body idle sweeper failed to start:', err);
+  }
+
   // Q2 Activity Portals — recover orphaned LIVE/COUNTDOWN rooms (pod
   // crash recovery per backend §12.1), hydrate persisted queue entries,
   // then start the room sweeper + matchmaker intervals. Order matters:
