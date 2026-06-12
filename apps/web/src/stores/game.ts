@@ -911,13 +911,19 @@ export const useGameStore = create<GameState>((set, get) => ({
       // churn control mode (a useAvatar refetch re-runs the hydration effect).
       const prev = get();
       if (prev.agentPaired && prev.agentConnected && prev.agentSessionId === null) return;
+      // Hatcher-launch spectate preservation (Codex pass-8): a successful launch
+      // lands the owner in 'explore' + hatcherSpectate to watch the agent. If
+      // /api/auth/me/agent-session resolves AFTER the exchange, this paired
+      // hydration must NOT yank them into 'player' and out of spectate. Keep the
+      // explore/spectate view while still recording the paired/connected agent.
+      const keepSpectate = prev.hatcherSpectate && prev.controlMode === 'explore';
       set({
         agentPaired: true,
         agentConnected: true,
         agentSessionId: null,
         hasAgent: true,
-        controlMode: 'player',
-        isSpectator: false,
+        controlMode: keepSpectate ? 'explore' : 'player',
+        isSpectator: keepSpectate ? true : false,
         possessedNpcId: null,
       });
       return;
