@@ -136,59 +136,86 @@ export function useWorldStream() {
       }
     }
 
-    /**
-     * Detects HTTP 409 from `/api/world/position` (server: "Session is not in
-     * a room — call /api/world/join first") and recovers by tearing down the
-     * stale 5 Hz interval, re-running the join flow (as a RECOVERY rejoin so the
-     * sticky-room ticket re-converges our group post-restart), and re-arming the
-     * interval if join succeeds. Guarded by `recoveryInFlight` so concurrent
-     * 409s don't trigger multiple parallel rejoins.
-     *
-     * Sticky-room nuance (2026-06-12): a recovery rejoin can land us in a
-     * DIFFERENT roomId than before — the server recreates the wiped room from
-     * the ticket, but if that room had filled past the hard cap it spills us to
-     * auto-fill. The SSE downlink is keyed on roomId AND gated on room
-     * membership, so if the room changed we MUST re-point the stream (the old
-     * room's stream would 403 / serve a stale room). When the room is unchanged
-     * the existing SSE keeps flowing untouched.
-     */
+    // Single in-flight latch shared by BOTH recovery triggers (the /position
+    // 409 in player mode AND the SSE onerror in explore/spectate mode) so a
+    // 409 and a stream error can't fire two concurrent ticketed rejoins.
+    //
+    // Sticky-room nuance (2026-06-12): a recovery rejoin can land us in a
+    // DIFFERENT roomId than before — the server recreates the wiped room from
+    // the ticket, but if that room had filled past the hard cap it spills us to
+    // auto-fill. rejoinWithTicket always re-points the SSE at whatever room the
+    // rejoin returns, so a changed roomId is handled transparently.
     let recoveryInFlight = false;
-    async function recoverFrom409() {
-      if (cancelled || recoveryInFlight) return;
+    // Set when the onerror handler schedules a BARE same-url reopen (the cheap
+    // transient-blip path). Cleared by the stream's `open` handler (blip healed,
+    // zero /join cost) OR when we escalate to a ticketed rejoin. If onerror
+    // fires AGAIN while this is still set, the bare reopen itself failed — that
+    // is the membership-loss signal (a restart wiped our room → the stream 403s
+    // on every reopen), so the next attempt escalates to the ticketed /join.
+    // This protects the scarce /join budget (server: 3 per 60s per IP) — a
+    // transient network blip costs zero /join, only a confirmed membership loss
+    // spends one. See es.onerror below.
+    let lastAttemptWasBareReopen = false;
+
+    /**
+     * Replay the join flow as a RECOVERY rejoin (ticketed), then refresh the
+     * session/room/ticket refs + store and RE-POINT the SSE at the room the
+     * rejoin landed us in. Returns the rejoined room id on success, or null if
+     * the rejoin failed (caller decides how to back off).
+     *
+     * This is the single authoritative recovery primitive. `recoverFrom409`
+     * (player mode) and the SSE onerror handler (explore/spectate mode, where
+     * no /position upload ever runs to surface a 409) both delegate here so the
+     * ref/store/stream-repoint logic can never drift between the two paths.
+     *
+     * Always tears down + reopens the SSE against the rejoined room. Both
+     * recovery triggers reach here only when membership was (or is about to be)
+     * lost — a /position 409 means the server GC'd/restarted our session, and
+     * an SSE onerror after a restart means the membership gate is now 403ing —
+     * so unconditionally re-pointing the stream is correct and removes any race
+     * between the two triggers over who owns reopening the (now stale) stream.
+     */
+    async function rejoinWithTicket(): Promise<string | null> {
+      if (cancelled || recoveryInFlight) return null;
       recoveryInFlight = true;
-      stopPositionUpload();
-      const prevRoomId = roomIdRef.current;
       try {
         const rejoined = await join(true);
-        if (cancelled) return;
-        if (rejoined) {
-          sessionIdRef.current = rejoined.id;
-          roomIdRef.current = rejoined.roomId;
-          roomTicketRef.current = rejoined.roomTicket ?? roomTicketRef.current;
-          setLocalSessionId(rejoined.id);
-          setRoomId(rejoined.roomId);
-          // Re-point the SSE if recovery placed us in a different room (the old
-          // stream is now pointed at a room we're no longer a member of).
-          if (rejoined.roomId !== prevRoomId) {
-            es?.close();
-            es = null;
-            // Cancel any pending reconnect the old stream's onerror queued, so
-            // we don't end up with two EventSources racing.
-            if (retryTimeout) {
-              clearTimeout(retryTimeout);
-              retryTimeout = null;
-            }
-            retriesRef.current = 0;
-            openStream(rejoined.roomId);
-          }
-          startPositionUpload();
+        if (cancelled || !rejoined) return null;
+        sessionIdRef.current = rejoined.id;
+        roomIdRef.current = rejoined.roomId;
+        roomTicketRef.current = rejoined.roomTicket ?? roomTicketRef.current;
+        setLocalSessionId(rejoined.id);
+        setRoomId(rejoined.roomId);
+        // Re-point the SSE at the room the rejoin landed us in. After a restart
+        // the prior stream is dead (onerror) or about to 403 (membership wiped),
+        // so we always close + reopen — idempotent if the room is unchanged.
+        es?.close();
+        es = null;
+        // Cancel any pending reconnect a prior onerror queued, so we don't end
+        // up with two EventSources racing.
+        if (retryTimeout) {
+          clearTimeout(retryTimeout);
+          retryTimeout = null;
         }
-        // If rejoin failed, the next position upload won't fire (interval
-        // stays stopped). The SSE downlink's onerror handler will eventually
-        // tear down + bootstrap() retry the whole flow, restoring uploads.
+        retriesRef.current = 0;
+        openStream(rejoined.roomId);
+        return rejoined.roomId;
       } finally {
         recoveryInFlight = false;
       }
+    }
+
+    async function recoverFrom409() {
+      if (cancelled || recoveryInFlight) return;
+      stopPositionUpload();
+      const roomId = await rejoinWithTicket();
+      if (cancelled) return;
+      if (roomId) {
+        startPositionUpload();
+      }
+      // If rejoin failed, the next position upload won't fire (interval stays
+      // stopped). The SSE downlink's onerror handler will eventually tear down
+      // + ticketed-rejoin the whole flow, restoring uploads.
     }
 
     function startPositionUpload() {
@@ -259,6 +286,10 @@ export function useWorldStream() {
 
       es.addEventListener('open', () => {
         retriesRef.current = 0;
+        // Stream is live again — whatever the prior failure was (a transient
+        // blip that a bare reopen healed, or a ticketed rejoin), it's resolved.
+        // Clear the bare-reopen escalation flag so a future error starts fresh.
+        lastAttemptWasBareReopen = false;
         setNpcConnected(true);
       });
 
@@ -303,14 +334,58 @@ export function useWorldStream() {
         setNpcConnected(false);
         es?.close();
         es = null;
+        // A concurrent ticketed rejoin (e.g. a /position 409 in player mode)
+        // is already re-establishing the stream — don't queue a second path.
+        if (recoveryInFlight) return;
         retriesRef.current++;
-        if (!cancelled && retriesRef.current < MAX_RETRIES) {
-          const delay = Math.min(
-            RETRY_DELAY_BASE * Math.pow(2, retriesRef.current - 1),
-            RETRY_DELAY_MAX,
-          );
-          retryTimeout = setTimeout(() => openStream(roomId), delay);
-        }
+        if (cancelled || retriesRef.current >= MAX_RETRIES) return;
+        const delay = Math.min(
+          RETRY_DELAY_BASE * Math.pow(2, retriesRef.current - 1),
+          RETRY_DELAY_MAX,
+        );
+        // Membership-loss recovery (2026-06-12, finding R2-4). After an API
+        // restart the room registry is wiped, so the stream's membership gate
+        // returns 403 and reopening the SAME url just 403s forever. In
+        // explore/spectate mode (Hatcher launch) no /position upload ever runs,
+        // so the 409 recovery path can never fire — this onerror handler is the
+        // ONLY recovery trigger.
+        //
+        // Two-step escalation to protect the scarce /join budget (server: 3 per
+        // 60s per IP — see joinRateLimiter in world.ts):
+        //   1. First error → BARE same-url reopen. A transient network blip
+        //      (room still valid server-side) heals here for zero /join cost;
+        //      the `open` handler clears lastAttemptWasBareReopen.
+        //   2. If the bare reopen ALSO errors (flag still set) → membership was
+        //      really lost (a restart 403s every reopen). Now escalate: replay
+        //      the ticketed /join FIRST (re-acquiring room membership + a fresh
+        //      ticket) via rejoinWithTicket, which re-points the stream at the
+        //      room the rejoin returns. If the rejoin fails (API still down) we
+        //      fall back to a bare reopen so the exp-backoff loop stays alive
+        //      and re-escalates on the next error.
+        // This spends a /join only on a CONFIRMED membership loss, never on a
+        // transient blip — so a flapping stream can't exhaust the 3/min budget.
+        const canRejoin = sessionIdRef.current !== null && roomTicketRef.current !== null;
+        const shouldEscalate = canRejoin && lastAttemptWasBareReopen;
+        retryTimeout = setTimeout(() => {
+          if (cancelled) return;
+          if (shouldEscalate) {
+            lastAttemptWasBareReopen = false;
+            void rejoinWithTicket().then((rejoinedRoomId) => {
+              // Rejoin failed (null) — API likely still restarting. Reopen the
+              // last-known room (a bare reopen) to keep the exp-backoff loop
+              // alive; the next onerror re-escalates to the ticketed rejoin.
+              if (!cancelled && rejoinedRoomId === null) {
+                lastAttemptWasBareReopen = true;
+                openStream(roomId);
+              }
+            });
+          } else {
+            // Step 1 (or no ticket yet): cheap same-url reopen. Mark it so a
+            // follow-on error escalates to the ticketed rejoin.
+            lastAttemptWasBareReopen = true;
+            openStream(roomId);
+          }
+        }, delay);
       };
     }
 

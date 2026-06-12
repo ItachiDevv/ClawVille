@@ -4,7 +4,7 @@ import type {
   HatcherWorldState,
 } from '@clawville/shared';
 import { signPayload } from './service-issuer';
-import { validateHatcherProxyUrl } from './hatcher-config';
+import { validateHatcherProxyUrlResolved, validateOutboundUrlResolved } from './hatcher-config';
 import { PROTOCOL_VERSION } from './skill-protocol';
 
 type Protocol = AgentWireProtocol;
@@ -171,9 +171,27 @@ export class OpenClawClient {
       return '';
     }
 
-    // SSRF guard — re-validate at call time (defense-in-depth). The proxy URL
-    // is partner-supplied; never POST to a non-https or non-allowlisted host.
-    const urlCheck = validateHatcherProxyUrl(this.proxyBaseUrl);
+    // SSRF guard — DNS-AWARE re-validation at call time (Codex round-2 R2-3,
+    // 2026-06-12). The proxy URL is partner-supplied. Registration runs the
+    // DNS-aware validator (resolve + reject private/loopback/link-local IPs), but
+    // the per-call cognition path previously re-ran only the SYNCHRONOUS hostname
+    // allowlist. An allowlisted Hatcher subdomain can DNS-REBIND to a private IP
+    // AFTER registration, so the sync string check would still pass and we would
+    // POST the scoped bearer + our ed25519 signature to an internal address
+    // (169.254.169.254 metadata, RFC1918, localhost). `redirect:'manual'` below
+    // stops a redirect-hop rebind but NOT a resolve-time rebind. We therefore
+    // resolve-and-check the host's CURRENT A/AAAA records here, immediately before
+    // building + sending the request, and reject if any resolves to a private IP.
+    //
+    // RESIDUAL (documented, narrowed not eliminated): a classic DNS TOCTOU
+    // remains between this resolve and fetch's own resolve — the gap is only the
+    // synchronous body-build + sign below (no further awaits/DNS), so the window
+    // is small. Fully closing it needs a pinned-IP fetch (resolve once, connect to
+    // the literal with SNI/Host preserved), which the platform fetch does not
+    // expose; the resolve-and-check here is the call-time mitigation the round-2
+    // finding asks for. Fail-SOFT preserved: a blocked/failed check returns ''
+    // (this bot just doesn't speak this turn), never throws.
+    const urlCheck = await validateHatcherProxyUrlResolved(this.proxyBaseUrl);
     if (!urlCheck.ok) {
       console.error(
         `[Hatcher] proxy URL rejected for agent ${this.agentId}: ${urlCheck.reason} — failing soft`,
@@ -310,12 +328,36 @@ export class OpenClawClient {
   }
 
   private async chatOpenAI(messages: ChatMessage[]): Promise<string> {
+    // SSRF guard (Codex round-2 R2-6, 2026-06-12). gatewayUrl is an arbitrary
+    // agent-supplied URL validated only by `z.string().url()` at /connect — never
+    // for SSRF. Resolve-and-reject private/loopback/link-local IPs at call time
+    // (no host allowlist; http allowed) so a connected agent can't aim its own
+    // cognition POST at 169.254.169.254 / RFC1918 / localhost. Fail SOFT (return
+    // '') on reject — the bot just doesn't speak this turn.
+    const urlCheck = await validateOutboundUrlResolved(this.gatewayUrl);
+    if (!urlCheck.ok) {
+      console.error(
+        `[OpenClaw] gatewayUrl rejected for agent ${this.agentId}: ${urlCheck.reason} — failing soft`,
+      );
+      return '';
+    }
+
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
 
     try {
-      const res = await fetch(`${this.gatewayUrl}/v1/chat/completions`, {
+      const res = await fetch(`${urlCheck.url.replace(/\/+$/, '')}/v1/chat/completions`, {
         method: 'POST',
+        // SSRF redirect guard (Codex round-2 R2-6, 2026-06-12). The resolve-check
+        // above validates only the INITIAL gatewayUrl host. The agent CONTROLS
+        // its own gateway, so it can point gatewayUrl at a benign public IP that
+        // passes the resolve check, then return `302 Location: http://169.254.
+        // 169.254/...` (or any RFC1918 / localhost). Default fetch FOLLOWS that
+        // redirect → we'd POST the authToken to the internal address, reopening
+        // the exact SSRF this fix closes. `redirect:'manual'` surfaces the 3xx as
+        // a response instead of following it; we treat any 3xx as a hard fail
+        // (mirrors the Hatcher cognition path).
+        redirect: 'manual',
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${this.authToken}`,
@@ -328,6 +370,16 @@ export class OpenClawClient {
         }),
         signal: controller.signal,
       });
+
+      // Hard-fail on any redirect (status 300-399, or opaqueredirect on some
+      // runtimes). Treated the SAME as !res.ok so a redirect never looks like a
+      // healthy gateway — throws, ping() reads it as unreachable, fail-soft.
+      if (res.type === 'opaqueredirect' || (res.status >= 300 && res.status < 400)) {
+        console.error(
+          `[OpenClaw] gatewayUrl attempted redirect (status ${res.status}) for agent ${this.agentId} — refusing to follow`,
+        );
+        throw new Error(`OpenClaw API attempted redirect (status ${res.status}) — refusing to follow`);
+      }
 
       if (!res.ok) {
         const body = await res.text().catch(() => '');
@@ -342,6 +394,15 @@ export class OpenClawClient {
   }
 
   private async chatAnthropic(messages: ChatMessage[]): Promise<string> {
+    // SSRF guard (Codex round-2 R2-6, 2026-06-12) — see chatOpenAI. Fail soft.
+    const urlCheck = await validateOutboundUrlResolved(this.gatewayUrl);
+    if (!urlCheck.ok) {
+      console.error(
+        `[OpenClaw] gatewayUrl rejected for agent ${this.agentId}: ${urlCheck.reason} — failing soft`,
+      );
+      return '';
+    }
+
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
 
@@ -349,8 +410,12 @@ export class OpenClawClient {
     const nonSystemMsgs = messages.filter((m) => m.role !== 'system');
 
     try {
-      const res = await fetch(`${this.gatewayUrl}/v1/messages`, {
+      const res = await fetch(`${urlCheck.url.replace(/\/+$/, '')}/v1/messages`, {
         method: 'POST',
+        // SSRF redirect guard (Codex round-2 R2-6, 2026-06-12) — see chatOpenAI.
+        // The resolve-check validates only the initial host; the agent owns its
+        // gateway and can 302 us to an internal address, so never follow.
+        redirect: 'manual',
         headers: {
           'Content-Type': 'application/json',
           'x-api-key': this.authToken,
@@ -368,6 +433,14 @@ export class OpenClawClient {
         signal: controller.signal,
       });
 
+      // Hard-fail on any redirect — same handling as !res.ok (throw → fail-soft).
+      if (res.type === 'opaqueredirect' || (res.status >= 300 && res.status < 400)) {
+        console.error(
+          `[OpenClaw] gatewayUrl attempted redirect (status ${res.status}) for agent ${this.agentId} — refusing to follow`,
+        );
+        throw new Error(`Anthropic API attempted redirect (status ${res.status}) — refusing to follow`);
+      }
+
       if (!res.ok) {
         const body = await res.text().catch(() => '');
         throw new Error(`Anthropic API returned ${res.status}: ${body}`);
@@ -381,12 +454,30 @@ export class OpenClawClient {
   }
 
   private async chatCustomWebhook(messages: ChatMessage[]): Promise<string> {
+    // SSRF guard (Codex round-2 R2-6, 2026-06-12) — see chatOpenAI. The webhook
+    // POSTs to gatewayUrl VERBATIM (no path suffix), so the normalized url is the
+    // exact endpoint. Fail soft on reject.
+    const urlCheck = await validateOutboundUrlResolved(this.gatewayUrl);
+    if (!urlCheck.ok) {
+      console.error(
+        `[OpenClaw] gatewayUrl rejected for agent ${this.agentId}: ${urlCheck.reason} — failing soft`,
+      );
+      return '';
+    }
+
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
 
     try {
-      const res = await fetch(this.gatewayUrl, {
+      const res = await fetch(urlCheck.url, {
         method: 'POST',
+        // SSRF redirect guard (Codex round-2 R2-6, 2026-06-12) — see chatOpenAI.
+        // HIGHEST-risk path: this method returns `data.response` from the response
+        // BODY, so a followed redirect to 169.254.169.254 / RFC1918 would let the
+        // agent EXFIL the internal/metadata response back through its own reply.
+        // The resolve-check validates only the initial host; the agent owns its
+        // gateway, so never follow a redirect.
+        redirect: 'manual',
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${this.authToken}`,
@@ -397,6 +488,16 @@ export class OpenClawClient {
         }),
         signal: controller.signal,
       });
+
+      // Hard-fail on any redirect BEFORE reading the body — never read/return a
+      // redirected response. This method fails soft by returning '' on error, so
+      // a 3xx returns '' (no exfil, the bot just doesn't speak this turn).
+      if (res.type === 'opaqueredirect' || (res.status >= 300 && res.status < 400)) {
+        console.error(
+          `[OpenClaw] gatewayUrl (custom webhook) attempted redirect (status ${res.status}) for agent ${this.agentId} — refusing to follow, failing soft`,
+        );
+        return '';
+      }
 
       if (!res.ok) {
         const body = await res.text().catch(() => '');
