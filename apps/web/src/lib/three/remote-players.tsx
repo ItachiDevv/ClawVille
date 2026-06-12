@@ -93,23 +93,30 @@ interface RemotePlayerEntryProps {
  *
  * IMPORTANT: `memo` is applied here but the `<Suspense>` boundary is
  * intentionally kept OUTSIDE this component (at the RemotePlayers map
- * level). Placing Suspense inside a memo wrapper creates a permanent
- * deadlock: the players store's identity-mutation pattern
- * (`updateFromSnapshot` mutates the existing object in-place and pushes
- * the same reference) means `player` prop identity never changes once
- * steady-state snapshots begin, so `React.memo` bails out on every
- * re-render. React's Suspense retry mechanism needs to re-render through
- * the memo component to reach the Suspense boundary and schedule a
- * retry — but memo bailout returns the previous (suspended) render
- * output unchanged forever, causing permanent zero-mesh for any species
- * including preloaded ones (milady_official_1, hermes-male, etc.).
+ * level). Placing Suspense inside a memo wrapper deadlocks the first VRM
+ * load: React's Suspense retry needs to re-render through the memo to reach
+ * the boundary, but a memo bailout (same `player` ref while the load is
+ * in flight) returns the previous (suspended) output unchanged forever,
+ * leaving permanent zero-mesh. So every player's Suspense boundary lives
+ * one level up, outside memo (the D3a fix).
  *
- * Fix: every player's Suspense boundary lives one level up, outside memo.
+ * MOVEMENT (2026-06-12, Codex finding #5): the players store does IMMUTABLE
+ * updates — `updateFromSnapshot` emits a NEW object for any player whose
+ * position / heading / activity changed and keeps the previous reference only
+ * for players that are perfectly still. So when a remote player moves, `player`
+ * identity flips: memo re-renders this entry, `useMemo([player])` recomputes the
+ * adapter with the fresh interpolation endpoints, and `VRMNpcMesh`/`GLBNpcMesh`
+ * pick up the new `npcRef.current` — the mesh's entity-interp then lerps
+ * prevX→x over tsDelta and the remote player VISIBLY moves. A still player keeps
+ * its reference, so memo bails and costs zero reconciliation. (Before this, the
+ * store mutated in place; identity never changed; the adapter froze at mount and
+ * remote players mounted once then never moved.)
  */
 const RemotePlayerEntry = memo(function RemotePlayerEntry({ player }: RemotePlayerEntryProps) {
-  // npcLike is rebuilt on every render of this entry — but the entry only
-  // re-renders when the player ref changes. Cheap allocation; we trade the
-  // alloc for keeping VRMNpcMesh / GLBNpcMesh untouched.
+  // Rebuilt whenever `player` identity changes — i.e. every snapshot in which
+  // this player moved (immutable store update, see header). Still players keep
+  // their ref so this memo bails and nothing recomputes. Cheap allocation; we
+  // trade the alloc for keeping VRMNpcMesh / GLBNpcMesh untouched.
   const npcLike = useMemo(() => adaptPlayer(player), [player]);
 
   const regEntry = MODEL_REGISTRY[player.species as keyof typeof MODEL_REGISTRY];

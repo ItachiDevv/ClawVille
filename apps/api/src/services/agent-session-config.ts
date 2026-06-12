@@ -116,6 +116,39 @@ export function resolveInWorldProtocol(
 }
 
 /**
+ * Whether an agent's in-world body can be REBUILT purely from its persisted
+ * openclaw_bots row after an API restart (the restore path), or must instead
+ * degrade to "reconnect" (return null).
+ *
+ * RESTORABLE: only the NO-OUTBOUND-GATEWAY identity types (anonymous / milady /
+ * nanoclaw). They speak the fail-soft 'nanoclaw' protocol in-world (no network
+ * call), so the row carries everything needed to rebuild them faithfully.
+ *
+ * NOT RESTORABLE: every REAL-GATEWAY identity type (openclaw / ironclaw /
+ * custom). The row never persists `auth_token` (the outbound bearer to the
+ * agent's own gateway), so a rebuilt body would silently 401 (a real gateway is
+ * configured) or 502 against the dummy `http://localhost:0` (a legacy/malformed
+ * row whose `gateway_url` is null/dummy). EITHER way the body is mute, so restore
+ * returns null and the agent reconnects.
+ *
+ * NOTE: `hatcher` is handled by a SEPARATE branch in restore (keyed on the
+ * `protocol === 'hatcher-proxy'` column + the namespaced `hatcher:` agentId, not
+ * the identityType enum), because its cognition IS restorable from the encrypted
+ * proxy token on the row. This predicate is consulted only for the NON-hatcher
+ * identity types, so it deliberately does not special-case 'hatcher'.
+ *
+ * AUDITOR FIX (#6, 2026-06-12): the decision gates on the IDENTITY TYPE, not on
+ * the `gateway_url` column shape. The prior restore guard refused real-gateway
+ * rows ONLY when `gateway_url` was present + non-dummy, so a malformed legacy
+ * `openclaw`/`custom` row with a null/dummy `gateway_url` fell through and built
+ * a mute body (the restored-mute-body class). Keying on identity type closes
+ * that fall-through.
+ */
+export function isRowRestorableFromIdentity(identityType: string): boolean {
+  return NO_GATEWAY_IDENTITY_TYPES.has(identityType);
+}
+
+/**
  * The autonomy mode an agent's body runs in, derived from identity + the
  * declared protocol. nanoclaw agents are always self-managed (they pull); every
  * other type is server-managed. Mirrors the mint-path resolution so restore (and

@@ -58,44 +58,69 @@ export type PartnerSignatureResult =
 // for every other partnerId (e.g. `scape`).
 //
 // HARD GATE: this is a pre-ship test affordance, NOT a production knob. The env
-// name screams TEST; ARCHITECTURE.md documents that it MUST NEVER be set on
-// prod; and `warnIfTestPartnerPubkeyEnabled()` (called once at API boot from
-// index.ts) logs a loud one-line warning whenever it is present so an
-// accidental prod set is impossible to miss in the logs. We gate by ENV
-// PRESENCE, not NODE_ENV: staging builds run with NODE_ENV='production', so a
-// NODE_ENV check would wrongly disable the harness on the very box it must run
-// on. The real defense is "never set this var on the prod host".
+// name screams TEST; ARCHITECTURE.md documents that it MUST NEVER be set off
+// staging. The gate is an EXPLICIT, IMMUTABLE deploy signal — `CLAWVILLE_ENV` —
+// NOT a fragile inference off `CORS_ORIGIN` (a comma-list, an unset value, or a
+// mis-set value could re-open the test signer on prod). We accept the test key
+// ONLY when `CLAWVILLE_ENV === 'staging'`, and if the var is set on ANY other
+// env we FAIL BOOT (throw at module load, like `FINGERPRINT_SECRET`) so a
+// prod-forbidden var can never run silently inert — it crashes loudly until
+// removed. `NODE_ENV` can't be the discriminator (it is 'production' on BOTH
+// Coolify boxes), which is exactly why we introduced a dedicated env.
 const TEST_PARTNER_ID = 'hatcher';
 
 /**
+ * The single explicit-environment gate for the staging-only test signer. Reads
+ * the immutable `CLAWVILLE_ENV` deploy signal (set per-box in Coolify) and
+ * returns whether the box is allowed to honor `ALLOW_TEST_PARTNER_PUBKEY`. ONLY
+ * `'staging'` qualifies — production, an unset value, or any other value does
+ * not. This is deliberately a single literal equality (no substring matching, no
+ * comma-list parsing) so it cannot be widened by a malformed value the way the
+ * old `CORS_ORIGIN` inference could.
+ */
+function isStagingEnv(): boolean {
+  return process.env.CLAWVILLE_ENV === 'staging';
+}
+
+/**
+ * FAIL-BOOT INVARIANT (auditor hardening, 2026-06-12). Throws at module load if
+ * `ALLOW_TEST_PARTNER_PUBKEY` is set while `CLAWVILLE_ENV !== 'staging'`. This
+ * converts "never set the test signer off staging" from ops discipline into an
+ * invariant the code enforces: a prod box that somehow carries the test-signer
+ * var refuses to start at all (mirrors the `FINGERPRINT_SECRET` crash-loud
+ * pattern in middleware/fingerprint.ts) instead of running with a silently inert
+ * — or, under the old fragile CORS_ORIGIN check, a silently ACTIVE — test
+ * signer. A missing/blank var is fine on every env (the override is simply
+ * absent). Runs once, at import time, before any request is served.
+ */
+const RAW_TEST_PARTNER_PUBKEY = process.env.ALLOW_TEST_PARTNER_PUBKEY;
+if (RAW_TEST_PARTNER_PUBKEY && RAW_TEST_PARTNER_PUBKEY.trim() && !isStagingEnv()) {
+  throw new Error(
+    `[partner-signature] ALLOW_TEST_PARTNER_PUBKEY is set but CLAWVILLE_ENV is '${process.env.CLAWVILLE_ENV ?? '(unset)'}', not 'staging'. ` +
+      'This var is a STAGING-ONLY pre-ship harness affordance and MUST NEVER be set on production. ' +
+      'Unset ALLOW_TEST_PARTNER_PUBKEY on this box (or set CLAWVILLE_ENV=staging if this genuinely IS the staging box).',
+  );
+}
+
+/**
  * Read + validate the `ALLOW_TEST_PARTNER_PUBKEY` override. Returns the trimmed
- * base58 pubkey only when (a) we are NOT on prod (the CORS_ORIGIN kill-switch
- * below) AND (b) it is a syntactically valid 32-byte ed25519 key. A missing /
- * blank / malformed value — OR being on prod — yields null (the override is
- * simply absent and the real allowlist is untouched). Validating here means a
- * typo'd override can never be silently treated as "some opaque allowed value",
- * and the prod kill-switch makes "never set this on prod" a code invariant, not
- * just ops discipline.
+ * base58 pubkey only when (a) we are on STAGING (`CLAWVILLE_ENV === 'staging'`)
+ * AND (b) it is a syntactically valid 32-byte ed25519 key. A missing / blank /
+ * malformed value — OR not being on staging — yields null (the override is
+ * simply absent and the real allowlist is untouched). The off-staging case can
+ * only be reached if the var is BLANK (a non-blank value off staging fails boot
+ * above), so this is a defense-in-depth re-check, not the primary gate.
+ * Validating the key here means a typo'd override can never be silently treated
+ * as "some opaque allowed value".
  */
 function loadTestPartnerPubkey(): string | null {
   const raw = process.env.ALLOW_TEST_PARTNER_PUBKEY;
   if (!raw || !raw.trim()) return null;
-
-  // CODE-ENFORCED PROD KILL-SWITCH (auditor hardening, 2026-06-12). Even if the
-  // var is somehow set on the PROD api box (a Coolify misconfig), the test
-  // signer is refused there — converting "never set this on prod" from ops
-  // discipline into an invariant the code enforces. `NODE_ENV` can't be the
-  // discriminator (it is 'production' on BOTH Coolify boxes), so we reuse the
-  // established prod-signal already trusted in this codebase: `CORS_ORIGIN`.
-  // Prod's CORS_ORIGIN is `https://clawville.world` (contains `clawville.world`,
-  // NOT `staging`); staging's contains `staging.clawville.world` (BOTH tokens).
-  // So "includes clawville.world AND NOT staging" uniquely identifies prod.
-  // Same discriminator as `agent-gateway.ts` (the `apiBase` resolver). When
-  // CORS_ORIGIN is unset (local/test) this is false, so the harness still works
-  // locally; the boot warning remains as defense-in-depth.
-  const corsOrigin = process.env.CORS_ORIGIN ?? '';
-  const isProd = corsOrigin.includes('clawville.world') && !corsOrigin.includes('staging');
-  if (isProd) return null;
+  // Belt-and-suspenders: the module-load invariant already crashed boot if the
+  // var is set off staging, so this can only be staging here — but re-check so a
+  // future refactor that drops the boot throw can never silently honor the key
+  // off staging.
+  if (!isStagingEnv()) return null;
 
   const candidate = raw.trim();
   try {
@@ -109,37 +134,20 @@ function loadTestPartnerPubkey(): string | null {
 
 /**
  * BOOT-TIME alarm for the staging-only test partner pubkey. Called once from
- * `index.ts` at startup. Two distinct cases:
- *   - ACTIVE (non-prod, valid key): a one-line warning that the additive test
- *     signer is live — expected on staging during a harness run.
- *   - SET-BUT-SUPPRESSED (the var is present but the CORS_ORIGIN prod
- *     kill-switch refused it): a LOUDER alarm, because this means someone set a
- *     prod-forbidden var on the prod box. The kill-switch already made it inert,
- *     but the misconfig must be SEEN and removed — failing silently would hide
- *     exactly the mistake we most need to catch.
+ * `index.ts` at startup (AFTER the module-load fail-boot invariant above, which
+ * already crashes a prod box that carries the var). On staging with a valid key
+ * this logs a loud one-line warning that the additive test signer is live —
+ * expected during a harness run, and impossible to miss in the logs. A
+ * set-but-off-staging box never reaches here (it threw at import); a
+ * set-but-malformed key on staging is already inert via the validation path, so
+ * no extra alarm is needed.
  */
 export function warnIfTestPartnerPubkeyEnabled(): void {
   const testKey = loadTestPartnerPubkey();
   if (testKey) {
     console.warn(
-      `[partner-signature] ⚠️  ALLOW_TEST_PARTNER_PUBKEY is SET — accepting an ADDITIONAL test signer for partner '${TEST_PARTNER_ID}' (${testKey}). This is a STAGING-ONLY pre-ship harness affordance and MUST NEVER be set on production.`,
+      `[partner-signature] ⚠️  ALLOW_TEST_PARTNER_PUBKEY is SET on staging (CLAWVILLE_ENV=staging) — accepting an ADDITIONAL test signer for partner '${TEST_PARTNER_ID}' (${testKey}). This is a STAGING-ONLY pre-ship harness affordance and MUST NEVER be set on production.`,
     );
-    return;
-  }
-  // The var is present but loadTestPartnerPubkey() returned null. Distinguish
-  // "suppressed by the prod kill-switch" (a real prod misconfig to alarm on)
-  // from "absent/blank" (nothing to say).
-  const raw = process.env.ALLOW_TEST_PARTNER_PUBKEY;
-  if (raw && raw.trim()) {
-    const corsOrigin = process.env.CORS_ORIGIN ?? '';
-    const isProd = corsOrigin.includes('clawville.world') && !corsOrigin.includes('staging');
-    if (isProd) {
-      console.error(
-        `[partner-signature] 🚨 ALLOW_TEST_PARTNER_PUBKEY is SET ON PRODUCTION — REFUSED by the CORS_ORIGIN kill-switch (the test signer is INERT here), but this var MUST NOT be set on prod. UNSET it now: it is a staging-only pre-ship harness affordance.`,
-      );
-    }
-    // Set but malformed on non-prod: it's already inert + the validation path
-    // covers it; no extra alarm needed.
   }
 }
 
