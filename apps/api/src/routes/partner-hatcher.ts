@@ -73,7 +73,7 @@ import { ensureWallet } from '../services/wallet-service';
 import { resolveOrCreateUserByIdentity } from '../services/identity-service';
 import { computeSessionExpiresAt } from '../services/openclaw-session-sweeper';
 import { logEvent } from '../services/event-logger';
-import { sessionDigest } from '../services/session-digest';
+import { sessionDigest, sha256Hex } from '../services/session-digest';
 import { protocolPointer, resolveApiBase } from '../services/skill-protocol';
 import { getAgentLeaderboardEntry } from './leaderboard';
 
@@ -799,6 +799,23 @@ partnerHatcherRoutes.post('/agents', async (c) => {
     // Non-fatal — the row is persisted; the body can be re-registered.
   }
 
+  // Restart survival (2026-06-11) — persist the one-way hash of THIS register's
+  // bearer so the live Hatcher session can be rebuilt from the row after an API
+  // restart (hatcher rows carry proxy_url + encrypted proxy_token_*, so the
+  // cognition client is fully reconstructable — see openclaw-session-restore.ts).
+  // Written even when the in-world spawn failed: the returned sessionId is still
+  // a valid bearer the partner holds, and restore re-spawns the body lazily on
+  // its first use. Non-fatal — a failure just means this session won't survive a
+  // restart (the partner can re-register).
+  try {
+    await db
+      .update(openclawBots)
+      .set({ sessionKeyHash: sha256Hex(sessionId), updatedAt: new Date() })
+      .where(eq(openclawBots.id, row.id));
+  } catch (err) {
+    console.error('[Hatcher/register] session_key_hash persist failed (non-fatal):', err);
+  }
+
   void logEvent({
     eventType: 'agent.connected',
     userId,
@@ -968,6 +985,19 @@ partnerHatcherRoutes.patch('/agents/:agentId', async (c) => {
         const client = buildHatcherClient(config, urlCheck.url, plaintextToken, rawAgentId);
         npcSimulation.registerOpenClaw(config, client);
         propagated = true;
+        // Restart survival (2026-06-11) — the patch re-register mints a FRESH
+        // sessionId and evicts the prior in-memory session (above), so update
+        // the row's restorable hash to THIS new bearer. The register-era bearer
+        // is intentionally orphaned (it was just evicted from the Map; its old
+        // hash no longer matches), matching the in-memory teardown. Non-fatal.
+        try {
+          await db
+            .update(openclawBots)
+            .set({ sessionKeyHash: sha256Hex(sessionId), updatedAt: new Date() })
+            .where(eq(openclawBots.id, row.id));
+        } catch (err) {
+          console.error('[Hatcher/patch] session_key_hash persist failed (non-fatal):', err);
+        }
       }
     }
   } catch (err) {
