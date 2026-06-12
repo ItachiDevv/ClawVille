@@ -15,6 +15,10 @@ import { buildRuntimeServices } from '../services/runtime-services-adapter';
 import { generateSkillMd } from '../services/skill-generator';
 import { computeSessionExpiresAt } from '../services/openclaw-session-sweeper';
 import { sha256Hex } from '../services/session-digest';
+import {
+  isReservedPartnerAgentId,
+  isReservedPartnerIdentityType,
+} from '../services/reserved-agent-namespaces';
 
 /** Ensure a system user exists for OpenClaw bot agents (FK requirement) */
 let _systemUserId: string | null = null;
@@ -124,6 +128,17 @@ openclawRoutes.post('/register', async (c) => {
   }
 
   const data = parsed.data;
+
+  // Reserved partner namespace guard (Codex round-2 R2-1, 2026-06-12). Same
+  // protection as /api/agent/connect: this UNAUTHENTICATED legacy path upserts
+  // by caller-supplied agentId, so a caller must NEVER address a row in a
+  // reserved partner namespace (`hatcher:<id>`). Refusing here stops the
+  // existing-row branch below from mutating a partner-owned row. Opaque 400 —
+  // does not leak whether the row exists.
+  if (isReservedPartnerAgentId(data.agentId)) {
+    return c.json({ error: 'Invalid request' }, 400);
+  }
+
   // Hardening (Codex dual-review, 2026-06-03): this legacy /openclaw/register
   // path registers into the SAME npc-simulation map as /connect and returns the
   // session id as the X-Clawville-Agent-Session bearer credential the cove
@@ -181,6 +196,13 @@ openclawRoutes.post('/register', async (c) => {
     });
 
     if (existing) {
+      // Reserved partner-row mutation guard (Codex round-2 R2-1, 2026-06-12 —
+      // defense in depth behind the prefix reject above). A public caller must
+      // never mutate a row whose identity_type is a reserved partner type, even
+      // if its agentId somehow lacks the prefix. Opaque 400 — no existence leak.
+      if (isReservedPartnerIdentityType(existing.identityType)) {
+        return c.json({ error: 'Invalid request' }, 400);
+      }
       // Returning bot — increment sessions, update gateway
       await db.update(openclawBots).set({
         gatewayUrl: data.gatewayUrl,
@@ -379,6 +401,13 @@ openclawRoutes.delete('/unregister/:sessionId', async (c) => {
             // explicitly disconnected (the unregister handler is the
             // canonical "gone" signal here).
             sessionSweptAt: new Date(),
+            // Codex round-2 R2-5 (2026-06-12) — null the restorable bearer hash
+            // on this terminal transition, matching expireSession() + the partner
+            // DELETE path. The TTL flip above already fails restore closed, but a
+            // terminal "gone" state must not retain a stale bearer hash (the
+            // terminal-transition invariant: no live-bearer handle survives an
+            // explicit disconnect).
+            sessionKeyHash: null,
             updatedAt: new Date(),
           }).where(eq(openclawBots.id, existing.id));
         }

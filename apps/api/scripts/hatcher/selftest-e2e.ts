@@ -858,6 +858,125 @@ async function main() {
     check('F8 chatHatcherProxy FAILS SOFT on SSRF-rejected proxy URL (non-https)', reply === '' && fetchCalled === false, `reply=${JSON.stringify(reply)} fetchCalled=${fetchCalled} (http:// proxy -> SSRF reject, no outbound fetch)`);
   });
 
+  await safe('F8b chatHatcherProxy DNS-aware reject at call time — allowlisted host resolving to private IP -> no outbound fetch (R2-3)', async () => {
+    // R2-3: an allowlisted Hatcher subdomain can DNS-REBIND to a private IP after
+    // registration. The per-call cognition path must now run the DNS-AWARE
+    // validator (validateHatcherProxyUrlResolved) immediately before fetch, not
+    // just the sync hostname allowlist. We force the scenario deterministically:
+    // allowlist `localhost` (so the SYNC string check passes) but `localhost`
+    // resolves to 127.0.0.1 (loopback), which the DNS-aware check rejects — so
+    // chatHatcherProxy must fail soft with NO outbound fetch (the bearer + our
+    // ed25519 signature never reach the internal address).
+    const saved = process.env.HATCHER_PROXY_ALLOWED_HOSTS;
+    process.env.HATCHER_PROXY_ALLOWED_HOSTS = 'localhost';
+    const client = new OpenClawClient({ sessionId: 's-f8b', sessionKey: 's-f8b', gatewayUrl: 'http://localhost:0', authToken: '', agentId: 'hatcher:f8b', proxyAgentId: 'f8b', protocol: 'hatcher-proxy', proxyBaseUrl: 'https://localhost', scopedToken: 'tok' } as never);
+    client.setWorldStateProvider(() => null);
+    let fetchCalled = false; const origFetch = globalThis.fetch;
+    // @ts-expect-error override for test
+    globalThis.fetch = async () => { fetchCalled = true; return new Response('{}', { status: 200 }); };
+    let reply = ''; let threw = false;
+    try {
+      reply = await client.chat([{ role: 'user', content: 'hi' }]);
+    } catch {
+      threw = true;
+    } finally {
+      globalThis.fetch = origFetch;
+      // Restore exactly — assigning `undefined` to a process.env key coerces to
+      // the STRING "undefined" (it does not delete), which would poison every
+      // later test that reads the allowlist (e.g. F9). Delete when it was unset.
+      if (saved === undefined) delete process.env.HATCHER_PROXY_ALLOWED_HOSTS;
+      else process.env.HATCHER_PROXY_ALLOWED_HOSTS = saved;
+    }
+    if (fetchCalled) bugs.push('chatHatcherProxy POSTed to an allowlisted host that resolves to a PRIVATE IP — DNS-aware call-time SSRF check missing (R2-3)');
+    check('F8b chatHatcherProxy DNS-aware reject at call time — allowlisted host resolving to private IP -> no outbound fetch (R2-3)', reply === '' && fetchCalled === false && threw === false, `reply=${JSON.stringify(reply)} fetchCalled=${fetchCalled} threw=${threw} (allowlisted localhost -> resolves 127.0.0.1 -> DNS-aware reject, no outbound fetch)`);
+  });
+
+  await safe('F8c chatOpenAI/chatCustomWebhook SSRF — gatewayUrl pointing at a private IP -> no outbound fetch, fail soft (R2-6)', async () => {
+    // R2-6: the agent-supplied gatewayUrl is SSRF-unchecked (only z.string().url()
+    // at /connect). chatOpenAI/chatAnthropic/chatCustomWebhook must resolve-and-
+    // reject a private/loopback/link-local target at call time. We point the
+    // gateway at the cloud-metadata IP literal (169.254.169.254) and a loopback
+    // host, with a fetch stub that flips a flag — the SSRF guard must short-circuit
+    // BEFORE fetch (no token ever leaves), and the method must fail soft (return '').
+    let fetchCalled = false; const origFetch = globalThis.fetch;
+    // @ts-expect-error override for test
+    globalThis.fetch = async () => { fetchCalled = true; return new Response('{}', { status: 200 }); };
+    let ok = true; const detail: string[] = [];
+    try {
+      // openai-compat protocol -> chatOpenAI, gateway = metadata IP literal.
+      const c1 = new OpenClawClient({ sessionId: 's-f8c1', sessionKey: 's-f8c1', gatewayUrl: 'http://169.254.169.254', authToken: 'agent-tok-1', agentId: 'oc-f8c1', protocol: 'openai-compat', mode: 'avatar' } as never);
+      const r1 = await c1.chat([{ role: 'user', content: 'hi' }]);
+      if (r1 !== '' || fetchCalled) { ok = false; detail.push(`chatOpenAI(metadata-ip) reply=${JSON.stringify(r1)} fetchCalled=${fetchCalled}`); }
+      // custom-webhook protocol -> chatCustomWebhook, gateway = loopback host.
+      fetchCalled = false;
+      const c2 = new OpenClawClient({ sessionId: 's-f8c2', sessionKey: 's-f8c2', gatewayUrl: 'http://localhost/webhook', authToken: 'agent-tok-2', agentId: 'oc-f8c2', protocol: 'custom-webhook', mode: 'avatar' } as never);
+      const r2 = await c2.chat([{ role: 'user', content: 'hi' }]);
+      if (r2 !== '' || fetchCalled) { ok = false; detail.push(`chatCustomWebhook(loopback) reply=${JSON.stringify(r2)} fetchCalled=${fetchCalled}`); }
+    } catch (e) {
+      ok = false; detail.push(`threw: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+    if (!ok) bugs.push('chatOpenAI/chatCustomWebhook POSTed the agent token to a PRIVATE gatewayUrl — blind SSRF, R2-6 guard missing');
+    check('F8c chatOpenAI/chatCustomWebhook SSRF — gatewayUrl pointing at a private IP -> no outbound fetch, fail soft (R2-6)', ok, detail.length ? detail.join(' ; ') : 'both private-gateway cognition calls failed soft with no outbound fetch (R2-6)');
+  });
+
+  await safe('F8d chatOpenAI/chatCustomWebhook SSRF — gatewayUrl on a PUBLIC host that 302s to a private IP -> redirect NOT followed, fail soft (R2-6 redirect hop)', async () => {
+    // R2-6 redirect-hop bypass: the resolve-check validates only the INITIAL
+    // gatewayUrl host. The agent CONTROLS its own gateway, so it can point it at a
+    // PUBLIC IP that passes the resolve check, then return `302 Location:
+    // http://169.254.169.254/...`. With default redirect:'follow' fetch would
+    // follow it and POST the token to the internal address (and, for the webhook
+    // path, EXFIL the metadata body back as the reply). The fix sets
+    // redirect:'manual' on all three gatewayUrl fetches + hard-fails any 3xx
+    // BEFORE reading the body. We use a PUBLIC IP literal (1.1.1.1) so the
+    // resolve-check passes deterministically (no DNS), then stub fetch to return a
+    // 302 toward the metadata IP and assert the reply is '' with NO body read.
+    const origFetch = globalThis.fetch;
+    let redirectBodyRead = false;
+    // A 302 whose body, if ever read, would be a non-empty "secret" — proves the
+    // method never reads/returns a redirected response.
+    const make302 = () => {
+      const r = new Response('SECRET-METADATA-BODY', { status: 302, headers: { location: 'http://169.254.169.254/latest/meta-data/' } });
+      // Spy: if any code path reads the body, flip the flag.
+      const origText = r.text.bind(r); const origJson = r.json.bind(r);
+      (r as unknown as { text: () => Promise<string> }).text = async () => { redirectBodyRead = true; return origText(); };
+      (r as unknown as { json: () => Promise<unknown> }).json = async () => { redirectBodyRead = true; return origJson(); };
+      return r;
+    };
+    // @ts-expect-error override for test
+    globalThis.fetch = async () => make302();
+    let ok = true; const detail: string[] = [];
+    // Security invariant for BOTH methods: the redirect is NOT followed and yields
+    // NO usable reply. chatOpenAI/chatAnthropic fail soft by THROWING on a 3xx
+    // (same as !res.ok — the cognition consumer + ping() treat a throw as
+    // unreachable); chatCustomWebhook fails soft by returning ''. Either outcome
+    // is acceptable — what must NEVER happen is a followed redirect or a read
+    // redirected body. We assert per-method on its own contract.
+    try {
+      // openai-compat -> chatOpenAI. Public IP literal passes resolve; 302 must
+      // hard-fail by throwing (NOT returning a reply, NOT following the redirect).
+      const c1 = new OpenClawClient({ sessionId: 's-f8d1', sessionKey: 's-f8d1', gatewayUrl: 'http://1.1.1.1', authToken: 'agent-tok-1', agentId: 'oc-f8d1', protocol: 'openai-compat', mode: 'avatar' } as never);
+      let r1: string | null = null; let threw1 = false;
+      try { r1 = await c1.chat([{ role: 'user', content: 'hi' }]); } catch { threw1 = true; }
+      // Acceptable: threw, OR returned '' — both are "no usable reply". A non-empty
+      // reply would mean the redirect was followed and its body surfaced.
+      if (!threw1 && r1 !== '') { ok = false; detail.push(`chatOpenAI(302) reply=${JSON.stringify(r1)} threw=${threw1} (expect throw or '' — redirect not followed)`); }
+      // custom-webhook -> chatCustomWebhook (the EXFIL path). 302 must return ''
+      // BEFORE any body read (its own contract returns '' on the redirect branch).
+      const c2 = new OpenClawClient({ sessionId: 's-f8d2', sessionKey: 's-f8d2', gatewayUrl: 'http://1.1.1.1/webhook', authToken: 'agent-tok-2', agentId: 'oc-f8d2', protocol: 'custom-webhook', mode: 'avatar' } as never);
+      let r2: string | null = null; let threw2 = false;
+      try { r2 = await c2.chat([{ role: 'user', content: 'hi' }]); } catch { threw2 = true; }
+      if (threw2 || r2 !== '') { ok = false; detail.push(`chatCustomWebhook(302) reply=${JSON.stringify(r2)} threw=${threw2} (expect '' — redirect not followed, no exfil)`); }
+      // The decisive exfil check: NO redirected response body was ever read.
+      if (redirectBodyRead) { ok = false; detail.push('a redirected 302 response BODY was read — possible metadata exfil'); }
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+    if (!ok) bugs.push('gatewayUrl cognition fetch FOLLOWED a 302 to a private IP (or read its body) — redirect-hop SSRF bypass, R2-6 redirect:manual missing');
+    check('F8d chatOpenAI/chatCustomWebhook SSRF — gatewayUrl on a PUBLIC host that 302s to a private IP -> redirect NOT followed, fail soft (R2-6 redirect hop)', ok, detail.length ? detail.join(' ; ') : 'both cognition calls hard-failed the 302 and returned no usable reply, no redirected body read (R2-6 redirect hop)');
+  });
+
   const hc = await import('../../src/services/hatcher-config.ts');
   const { validateHatcherProxyUrl, validateHatcherProxyUrlResolved } = hc;
 
@@ -878,7 +997,10 @@ async function main() {
     const saved = process.env.HATCHER_PROXY_ALLOWED_HOSTS;
     process.env.HATCHER_PROXY_ALLOWED_HOSTS = 'localhost';
     const r = await validateHatcherProxyUrlResolved('https://localhost');
-    process.env.HATCHER_PROXY_ALLOWED_HOSTS = saved;
+    // Restore exactly — `= undefined` coerces to the string "undefined" (env-key
+    // poisoning), so delete when it was unset.
+    if (saved === undefined) delete process.env.HATCHER_PROXY_ALLOWED_HOSTS;
+    else process.env.HATCHER_PROXY_ALLOWED_HOSTS = saved;
     check('F10 DNS-aware SSRF rejects an allowlisted host that resolves to a private IP (localhost)', r.ok === false && (r as { reason: string }).reason === 'resolves_to_private_ip', `validateHatcherProxyUrlResolved('https://localhost', allow=localhost) => ${JSON.stringify(r)} (expect resolves_to_private_ip)`);
   });
 
@@ -1310,6 +1432,97 @@ async function main() {
     const ra = await import('../../src/middleware/require-auth-or-agent.ts');
     const r = await ra.resolveAgentSession('definitely-not-a-real-session-000');
     check('I6 resolveAgentSession(unknown) === null (the parity gate that blocks unbound play)', r === null, `resolveAgentSession(unknown) => ${JSON.stringify(r)} (expect null — an unknown session can never bind to an avatar/CT)`);
+  });
+
+  // ── J. R2-2 — live-rotation invalidation (Codex round-2, 2026-06-12) ──
+  // A still-Map-registered bearer must STOP validating the moment the row's
+  // session_key_hash is rotated to a different bearer (what /connect or partner
+  // register/patch does on a re-mint). Before the fix, validateLiveAgentSession
+  // checked only Map membership + TTL, so the rotated-away in-memory bearer kept
+  // passing real-CT gates until the next restart. The fixture session is BOTH
+  // Map-registered AND row-hash-matched right now (I1 proved it resolves), so it
+  // is the exact precondition for a rotation: flip the row hash, assert the OLD
+  // bearer now fails closed, then re-align + re-register and assert it passes.
+  await safe('J1 validateLiveAgentSession — rotated-away bearer (row hash changed) -> null (R2-2 fail-closed)', async () => {
+    const ra = await import('../../src/middleware/require-auth-or-agent.ts');
+    // Simulate a rotation: the row now commits to a DIFFERENT bearer's hash. The
+    // OLD bearer (SELFTEST_SESSION) is still in the in-memory Map (Map hit), TTL
+    // is still in the future — only the hash diverges.
+    SELFTEST_BOT_ROW.sessionKeyHash = createHash('sha256').update('rotated-to-a-new-bearer').digest('hex');
+    const r = await ra.validateLiveAgentSession(SELFTEST_SESSION);
+    check('J1 validateLiveAgentSession — rotated-away bearer (row hash changed) -> null (R2-2 fail-closed)', r === null, `validateLiveAgentSession(old bearer after rotation) => ${r === null ? 'null' : 'LIVE'} (expect null — a rotated-away in-memory bearer must not keep passing real-CT gates)`);
+  });
+
+  await safe('J2 validateLiveAgentSession — re-aligned + re-registered bearer -> LIVE (legit single-session still passes)', async () => {
+    const ra = await import('../../src/middleware/require-auth-or-agent.ts');
+    // J1 evicted the stale Map entry (fail-closed shape). Re-align the row hash to
+    // the fixture bearer and re-register the in-memory body, exactly as a fresh
+    // connect/restore would, and assert the SAME gate now resolves it LIVE — the
+    // hash check passes for the session that minted the current row hash, so the
+    // fix does NOT break the legitimate single-live-session flow.
+    SELFTEST_BOT_ROW.sessionKeyHash = SELFTEST_SESSION_KEY_HASH;
+    npcSimulation.registerOpenClaw(overrideConfig, new MockOpenClawClient() as never);
+    const r = await ra.validateLiveAgentSession(SELFTEST_SESSION);
+    check('J2 validateLiveAgentSession — re-aligned + re-registered bearer -> LIVE (legit single-session still passes)', r !== null && r.bot.agentId === overrideConfig.agentId, `validateLiveAgentSession(aligned bearer) => ${r === null ? 'null' : 'LIVE ' + r.bot.agentId} (expect LIVE — the session that minted the current row hash must still validate)`);
+  });
+
+  await safe('J3 validateLiveAgentSession — NULL row hash + live Map entry -> LIVE (R2-2 fixer carve-out: partner-mint null-window must not lock out)', async () => {
+    const ra = await import('../../src/middleware/require-auth-or-agent.ts');
+    // The partner register/patch path calls registerOpenClaw (Map-live) BEFORE it
+    // persists session_key_hash, and that persist is EXPLICITLY non-fatal. So a
+    // freshly-minted partner session is legitimately Map-registered with a NULL
+    // row hash — in the 910→928 window, or permanently if the non-fatal persist
+    // threw. A strict `!==` check would reject that (null !== anyHash) and KILL
+    // the partner's agent on its first real-CT call (a documented-non-fatal
+    // failure made fatal). The fixer softens the check to `present && mismatch`.
+    // Precondition: J2 already re-registered the fixture session (Map-live) and
+    // aligned the row hash. The body stays overridden, so do NOT re-register here
+    // (registerOpenClaw would throw "already overridden"). Flip ONLY the row hash
+    // to null and assert the SAME live Map entry still resolves LIVE.
+    SELFTEST_BOT_ROW.sessionKeyHash = null;
+    const r = await ra.validateLiveAgentSession(SELFTEST_SESSION);
+    // Restore the aligned hash so later cases that reuse the fixture see a
+    // realistic non-null row (matches the post-persist steady state).
+    SELFTEST_BOT_ROW.sessionKeyHash = SELFTEST_SESSION_KEY_HASH;
+    check('J3 validateLiveAgentSession — NULL row hash + live Map entry -> LIVE (R2-2 fixer carve-out: partner-mint null-window must not lock out)', r !== null && r.bot.agentId === overrideConfig.agentId, `validateLiveAgentSession(null-hash live session) => ${r === null ? 'null' : 'LIVE ' + r.bot.agentId} (expect LIVE — a not-yet-persisted / non-fatal-persist-failed freshly-minted partner session must fall through to the TTL gate, never be locked out)`);
+  });
+
+  // ── K. R2-1 — public registration paths reserve the `hatcher:` namespace ──
+  // A PUBLIC, unsigned caller must NOT be able to address the partner-owned
+  // `hatcher:` agentId namespace. The reject is a synchronous early-return BEFORE
+  // any DB read (so a bad agentId can't even burn a connection token), which is
+  // why it surfaces here against the live Hono app with no DB stub dependency.
+  await safe('K1 POST /api/agent/connect with agentId "hatcher:hijack" -> 400 (reserved namespace, no row mutation)', async () => {
+    const res = await gwApp.request('/api/agent/connect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agentId: 'hatcher:hijack', name: 'Evil', species: 'crab' }),
+    });
+    // Opaque 400 — does not leak whether the partner row exists.
+    const ok = res.status === 400;
+    if (!ok) bugs.push(`/api/agent/connect accepted a reserved hatcher: agentId (status=${res.status}) — public path can address partner-owned rows (R2-1)`);
+    check('K1 POST /api/agent/connect with agentId "hatcher:hijack" -> 400 (reserved namespace, no row mutation)', ok, `status=${res.status} (expect 400 — reserved partner namespace refused before any DB write)`);
+  });
+
+  await safe('K2 POST /api/agent/connect with an ORDINARY agentId is NOT blocked by the reserved guard (regression: legit connect still reaches its normal path)', async () => {
+    // An ordinary agentId must pass the reserved-namespace gate. We assert ONLY
+    // that the response is NOT the reserved-namespace 400 — the request still
+    // exercises the downstream connect logic (which, under the I-case DB stubs,
+    // resolves the fixture row), so any non-"reserved-reject" outcome proves the
+    // guard did not over-block. (A 200/4xx-other are both acceptable here; the
+    // guard must simply not be the thing that stopped it.)
+    const res = await gwApp.request('/api/agent/connect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agentId: 'ordinary-public-agent', name: 'Friendly', species: 'crab' }),
+    });
+    // The reserved guard returns EXACTLY `{ error: 'Invalid request' }` at 400; a
+    // legit ordinary id must not hit that specific reject. Read the body to
+    // distinguish a zod-400 (different shape) from the reserved-400.
+    let body: { error?: string; details?: unknown } = {};
+    try { body = (await res.json()) as typeof body; } catch { /* non-json ok */ }
+    const blockedByReservedGuard = res.status === 400 && body.error === 'Invalid request' && body.details === undefined;
+    check('K2 POST /api/agent/connect with an ORDINARY agentId is NOT blocked by the reserved guard (regression: legit connect still reaches its normal path)', !blockedByReservedGuard, `status=${res.status} body=${JSON.stringify(body).slice(0, 160)} (expect NOT the reserved-namespace 400 — an ordinary id must pass the gate)`);
   });
 
   // CLEANUP — stop the sim tick interval (so the process can exit).

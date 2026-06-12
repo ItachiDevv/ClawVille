@@ -20,6 +20,7 @@ import { describe, it, expect, afterEach } from 'bun:test';
 import {
   validateHatcherProxyUrl,
   validateHatcherProxyUrlResolved,
+  validateOutboundUrlResolved,
   getHatcherAllowedHosts,
 } from '../hatcher-config';
 
@@ -147,5 +148,75 @@ describe('validateHatcherProxyUrlResolved — DNS-aware (SSRF #2)', () => {
     process.env.HATCHER_PROXY_ALLOWED_HOSTS = '8.8.8.8';
     const res = await validateHatcherProxyUrlResolved('https://8.8.8.8/cb');
     expect(res.ok).toBe(true);
+  });
+});
+
+/**
+ * Generic outbound-gateway SSRF guard (Codex round-2 R2-6, 2026-06-12). NO host
+ * allowlist (the agent's gatewayUrl is arbitrary), http allowed, but the same
+ * private/loopback/link-local/reserved IP rejection — at the literal AND the
+ * resolved layer. Backs the chatOpenAI/chatAnthropic/chatCustomWebhook fetches.
+ */
+describe('validateOutboundUrlResolved — generic gateway SSRF (no allowlist)', () => {
+  it('rejects private/loopback/link-local IP literals (no allowlist needed)', async () => {
+    for (const url of [
+      'https://169.254.169.254/v1/chat/completions', // cloud metadata
+      'http://127.0.0.1/hook',
+      'https://10.0.0.5/v1/messages',
+      'http://192.168.1.1/x',
+      'https://[::1]/x',
+      'http://172.16.4.4/x',
+    ]) {
+      const r = await validateOutboundUrlResolved(url);
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.reason).toBe('private_ip');
+    }
+  });
+
+  it('allows a PUBLIC IP literal over http OR https (no allowlist, scheme not restricted)', async () => {
+    const https = await validateOutboundUrlResolved('https://8.8.8.8/v1/chat/completions');
+    expect(https.ok).toBe(true);
+    const http = await validateOutboundUrlResolved('http://8.8.8.8/v1/chat/completions');
+    expect(http.ok).toBe(true);
+  });
+
+  it('rejects a host that RESOLVES to a private IP (DNS-rebind) without any allowlist', async () => {
+    // localhost resolves to 127.0.0.1 / ::1 — there is no allowlist gate, so this
+    // proves the resolve-and-reject layer alone catches an internal target.
+    const r = await validateOutboundUrlResolved('https://localhost/v1/chat/completions');
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe('resolves_to_private_ip');
+  });
+
+  it('rejects embedded credentials', async () => {
+    const r = await validateOutboundUrlResolved('https://user:pass@8.8.8.8/x');
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe('credentials_in_url');
+  });
+
+  it('rejects a non-http(s) scheme', async () => {
+    const r = await validateOutboundUrlResolved('ftp://8.8.8.8/x');
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe('unsupported_protocol');
+  });
+
+  it('rejects a malformed URL', async () => {
+    const r = await validateOutboundUrlResolved('not a url');
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe('invalid_url');
+  });
+
+  it('fails closed when DNS cannot resolve (never silently allowed)', async () => {
+    const r = await validateOutboundUrlResolved('https://this-host-does-not-exist.invalid/x');
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(['dns_resolution_failed', 'dns_no_records']).toContain(r.reason);
+  });
+
+  it('allows an ordinary public host (no allowlist constraint) — the legit gateway case', async () => {
+    // A real public DNS name must NOT be blocked just because it is not on any
+    // list — the whole point of the generic guard is "any public host, no private
+    // IP". example.com resolves to public addresses.
+    const r = await validateOutboundUrlResolved('https://example.com/v1/chat/completions');
+    expect(r.ok).toBe(true);
   });
 });
