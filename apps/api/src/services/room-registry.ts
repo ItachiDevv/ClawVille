@@ -58,7 +58,26 @@ export const FREE_ROAMER_NPC_IDS: ReadonlySet<string> = new Set(
   NPC_DEFINITIONS.filter((def) => def.buildingId === '').map((def) => def.id),
 );
 
+/**
+ * Hard cap — the absolute ceiling on a room's player count. No join path
+ * (auto-fill or invite code) ever seats player number 21. This is the VRM /
+ * draw-call safety limit for the shared world scene.
+ */
 export const ROOM_MAX_PLAYERS = 20;
+
+/**
+ * Soft cap — the loose target auto-fill aims for. Auto-fill (a player with no
+ * invite code) only ever lands in a room with fewer than this many players, and
+ * mints a fresh room once every existing room has reached it. The 12-to-20 band
+ * (soft cap up to hard cap) is RESERVED HEADROOM for friends joining a specific
+ * room via an invite code (`requestedRoomId`): invite joins are honored all the
+ * way up to ROOM_MAX_PLAYERS, so a full friend group can pile into one room even
+ * after auto-fill has stopped seeding it. Keeping auto-fill under the soft cap
+ * keeps rooms cozy (no lone spawns scattered across many half-empty rooms) while
+ * still guaranteeing invited friends a seat next to the people who invited them.
+ */
+export const ROOM_SOFT_CAP_PLAYERS = 12;
+
 export const RESTORE_GRACE_MS = 5_000;       // NPC reappears 5 s after player leaves
 export const STALE_PLAYER_MS = 30_000;       // no position update for 30 s → kick
 export const EMPTY_ROOM_MS = 5 * 60_000;     // empty room dies after 5 min
@@ -239,9 +258,12 @@ export class RoomRegistry {
 
   /**
    * Join a player to a room. If `requestedRoomId` is provided AND the room
-   * exists AND has capacity, the player lands there. Otherwise we either
-   * reuse the lowest-id room with room.players.size < ROOM_MAX_PLAYERS or
-   * mint a new room.
+   * exists AND has capacity (< ROOM_MAX_PLAYERS), the player lands there —
+   * invite joins fill the room all the way to the hard cap. Otherwise we
+   * auto-fill: land the player in the FULLEST room still under the soft cap
+   * (ROOM_SOFT_CAP_PLAYERS), or mint a fresh room when every room has reached
+   * the soft cap. Auto-fill never seeds the 12-to-20 headroom band — that is
+   * reserved for invite-code joins.
    *
    * Re-joining a session that already holds a room slot is idempotent: the
    * existing PlayerState is updated in place, and no NPC swap is performed
@@ -485,12 +507,25 @@ export class RoomRegistry {
         return this.createRoomWithId(requestedRoomId);
       }
     }
-    // Auto-fill: first room with capacity. Sort by id so the algorithm is
-    // deterministic — needed both for predictable load and for the tests.
-    const sorted = Array.from(this.rooms.values()).sort((a, b) => (a.id < b.id ? -1 : 1));
-    for (const room of sorted) {
-      if (room.players.size < ROOM_MAX_PLAYERS) return room;
+    // Auto-fill: pack into the FULLEST room still under the soft cap so rooms
+    // stay cozy and players are not scattered into lone spawns across many
+    // half-empty rooms. Among all rooms with players.size < ROOM_SOFT_CAP_PLAYERS
+    // we pick the largest; ties break on lowest id for determinism (needed for
+    // predictable load and for the tests). Rooms already in the 12-to-20
+    // headroom band are skipped here — that band is invite-code-only. If no room
+    // is under the soft cap, mint a fresh one.
+    let best: Room | null = null;
+    for (const room of this.rooms.values()) {
+      if (room.players.size >= ROOM_SOFT_CAP_PLAYERS) continue;
+      if (
+        best === null ||
+        room.players.size > best.players.size ||
+        (room.players.size === best.players.size && room.id < best.id)
+      ) {
+        best = room;
+      }
     }
+    if (best) return best;
     return this.createRoomWithId(this.mintRoomId());
   }
 
