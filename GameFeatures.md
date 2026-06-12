@@ -12,7 +12,7 @@
 > - **`ARCHITECTURE.md`** — backend routes / services / schema / events / leaderboard rubric.
 > - **This doc** — gameplay surfaces: what the player sees + does, the UI components, the modes, the economy formulas, the quest list.
 
-**Last Audited:** 2026-06-12 (regression D2 — dead-session stale-clear must not unmount a logged-in owner's avatar): the 2026-06-11 reconnect-recovery (prior entry #3) shipped a `setAgentConnection(null)` that cascaded `controlMode → 'explore'`, hard-unmounting `<PlayerAvatar>` ~1s after a connected user sent a chat that 404'd on a server-dropped session (partner: "avatar vanished mid-game"). Fix: `setAgentConnection(sessionId, { keepEmbodied })` — a still-authenticated **non-guest owner with an avatar** stays in `'player'` (body mounted, camera following); only the agent-specific state clears. Guest/avatar-less users still fall to `'explore'`. `<AvatarChatBar>` mount gate widened from `agentConnected`-only to `hasAvatar && controlMode∈{player,autonomous}` so its in-panel reconnect banner survives the clear and the owner can keep chatting via the non-agent `api.sendAvatarChat` path; agent-only progression/shop surfaces still gate on `agentConnected`. Race-safe (defaults to keeping the body when the shared `['auth-me']` cache is unresolved, reconciled by the auth-sync effect). Full detail in §2a reconnect-UX note. Does NOT touch `hatcherSpectate`/launch-banner flows (those land in `'explore'`, where the chat bar correctly stays unmounted). PARITY: UI/embodiment-only, no economy writes; the reconnect path is the agent's own re-handshake. `next build` exit 0. Files: `stores/game.ts`, `avatar-chat-bar.tsx`, `app/game/page.tsx`.
+**Last Audited:** 2026-06-12 (sticky-room recovery — a deploy/restart no longer splits a grouped party; the server hands each session a signed, self-expiring recovery ticket it replays on rejoin to re-converge the room — see §11z.e). Prior audit: (regression D2 — dead-session stale-clear must not unmount a logged-in owner's avatar): the 2026-06-11 reconnect-recovery (prior entry #3) shipped a `setAgentConnection(null)` that cascaded `controlMode → 'explore'`, hard-unmounting `<PlayerAvatar>` ~1s after a connected user sent a chat that 404'd on a server-dropped session (partner: "avatar vanished mid-game"). Fix: `setAgentConnection(sessionId, { keepEmbodied })` — a still-authenticated **non-guest owner with an avatar** stays in `'player'` (body mounted, camera following); only the agent-specific state clears. Guest/avatar-less users still fall to `'explore'`. `<AvatarChatBar>` mount gate widened from `agentConnected`-only to `hasAvatar && controlMode∈{player,autonomous}` so its in-panel reconnect banner survives the clear and the owner can keep chatting via the non-agent `api.sendAvatarChat` path; agent-only progression/shop surfaces still gate on `agentConnected`. Race-safe (defaults to keeping the body when the shared `['auth-me']` cache is unresolved, reconciled by the auth-sync effect). Full detail in §2a reconnect-UX note. Does NOT touch `hatcherSpectate`/launch-banner flows (those land in `'explore'`, where the chat bar correctly stays unmounted). PARITY: UI/embodiment-only, no economy writes; the reconnect path is the agent's own re-handshake. `next build` exit 0. Files: `stores/game.ts`, `avatar-chat-bar.tsx`, `app/game/page.tsx`.
 
 **Prior Last Audited:** 2026-06-12 (bottom-center banner stack — Hatcher lift + mutual exclusion; task #2 extension): resolved the residual collisions the trio entry below flagged as out-of-scope. (1) **Hatcher launch banner lifted** (`hatcher-launch-handler.tsx`): the launch failure/relaunch banner moved from `bottom-4` (band ~16–87px, overlapping the chat pill) to `bottom-20` (band 80–151px desktop, 80–399px at 390px mobile where it wraps to ~319px tall). Now clears the `<AvatarChatBar>` chat pill (`bottom-0`, ~12–54px) with a 26px gap at every viewport, stays in-viewport on mobile, and remains transient + dismissable. (2) **Email ⇄ Hatcher mutual exclusion** (new `hatcherLaunchBannerActive` store flag in `stores/game.ts` + setter): `HatcherLaunchHandler` mirrors its banner visibility into the flag (effect on `banner`, cleared on unmount); `<EmailVerifyBanner>` reads it and suppresses itself while a Hatcher banner is active. This eliminates the email-vs-Hatcher stack entirely (no positional lift can clear the ~319px mobile Hatcher panel), so the email nudge yields the slot to the higher-priority transient and returns on dismiss. Email banner stays at `bottom-24` (clears the chat pill on its own when shown). Verified in-browser desktop + mobile 390×844 (no overlaps; flag + setter present in the built bundle). PARITY: UI-only, no economy writes; both banners remain reachable by any visitor regardless of human/agent path.
 
@@ -503,7 +503,7 @@ client renders it again.
 
 ### 11z.d Wire surface
 
-- `POST /api/world/join` → `{ roomId, sessionId, capacity, playerCount, swappedOutNpcId, players }`.
+- `POST /api/world/join` → `{ roomId, id, roomTicket, capacity, playerCount, swappedOutNpcId, players }`. `roomTicket` is the signed sticky-room recovery token (see §11z.e); the client stores it and replays it only on a recovery rejoin.
 - `POST /api/world/leave` → fire-and-forget; idempotent if the session isn't in a room.
 - `POST /api/world/position` → 5 Hz position update. Server enforces a 10 Hz
   per-session ceiling and silently drops excess.
@@ -513,7 +513,29 @@ client renders it again.
   the room's current roster.
 - `GET /api/world/rooms` → admin-only roster of live rooms.
 
-### 11z.e Backwards compat
+### 11z.e Sticky-room recovery — deploys no longer split groups (2026-06-12)
+
+The room registry is in-memory, so an API deploy/restart wipes every room.
+Clients auto-recover (a `POST /api/world/position` 409 re-runs join), but a
+bare rejoin was AUTO-FILLED — so a deploy could scatter a group of friends who
+were together in one room across freshly-minted rooms. Fix: on join the server
+hands the client a signed **recovery ticket** (HMAC-SHA256 over
+`{roomId, sub, exp}`, signed with a key DERIVED from the env-stable
+`FINGERPRINT_SECRET`, self-expiring after 15 min). The client holds it and
+replays it on its next recovery rejoin; the server verifies the signature and
+confirms the ticket is bound to the caller's OWN session — via a secret-derived
+subject (`sha256` of the raw sessionId, NOT the wire-broadcast presence id), so
+a captured ticket can't be replayed by anyone who can't also present the
+matching cookie/agent-session/fingerprint — then **recreates the named room** so
+the dispersed group re-converges. Guests included — the ticket, not an auth
+check, is the proof. Recovery bypasses the soft cap (12) to reconverge a group
+but never the hard cap (20); a group larger than 20 can't all reconverge (the
+hard cap is the VRM ceiling). PARITY: a connected/hosted agent recovers
+identically through the same join path — its ticket subject derives from its
+agent-session id. No DB writes (the ticket is the durable anchor, held
+client-side — mirrors the openclaw session-restore pattern).
+
+### 11z.f Backwards compat
 
 `/api/npc/stream` keeps emitting the legacy world-wide snapshot (no
 players, full NPC roster) so any dashboard or stale client still works
