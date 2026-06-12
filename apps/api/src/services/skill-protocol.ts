@@ -28,13 +28,18 @@ import { createHash } from 'crypto';
  * play session). Single source of truth — `skills.ts`, `openclaw-client.ts`,
  * and `partner-hatcher.ts` all import this rather than re-declare a literal.
  */
-// NOTE (2026-06-12): the override-mode target-availability error contract (409
-// override_target_unavailable / 503 spawn_failed|propagation_failed) was added to
-// the manual below WITHOUT a version bump — it is an error-response doc, not a verb
-// or whitelist change, so the executor↔manual verb-parity (G4) is unaffected and
-// the content-hash already changed (partners that diff on hash re-embed). A version
-// bump would needlessly pull in the three-surface-sync rule for no real gain.
-export const PROTOCOL_VERSION = 4;
+// NOTE (2026-06-12, pass-6): bumped 4 -> 5. Across this session the protocol
+// manual below gained MULTIPLE material contract additions: sessionExpiresAt
+// surfacing (§5), the idle-body despawn / two-clock model (§5), the Hatcher
+// session.ended expiry webhook (§5), the per-partner daily registration cap (§5),
+// AND the override-mode target-availability error contract (§5). Cumulatively the
+// manual a partner is TOLD it can rely on changed, so partners keying on
+// orientation.version (not just the content-hash) must get an eager re-embed
+// signal. The earlier "stays at 4 / error-response doc only" judgment was correct
+// for that single error-contract change in isolation but is wrong for the
+// cumulative session-lifecycle surface, so the version moves. (Verb/whitelist
+// parity G4 is still unaffected: these are lifecycle/error docs, not new verbs.)
+export const PROTOCOL_VERSION = 5;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
  *  all emit the IDENTICAL hash for the same input bytes. */
