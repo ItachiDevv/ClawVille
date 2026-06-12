@@ -1326,80 +1326,105 @@ partnerHatcherRoutes.delete('/agents/:agentId', async (c) => {
   const signed = await readSignedBody(c);
   if (!signed.ok) return c.json({ error: 'unauthorized' }, 401);
 
-  const existing = await db.query.openclawBots.findFirst({
-    where: eq(openclawBots.agentId, namespacedAgentId),
-    columns: { id: true, userId: true, identityType: true },
-  });
-  // 404 on missing OR non-hatcher row — a Hatcher key cannot tombstone/scrub
-  // another framework's agent (cross-namespace impossible; this guards manual
-  // DB edits / future prefix reuse).
-  if (!existing || existing.identityType !== 'hatcher') {
-    return c.json({ error: 'not_found' }, 404);
-  }
+  // Serialize the lookup -> body-removal -> tombstone span per agentId under the
+  // SAME in-process withKeyedMutex used by register/PATCH (Codex pass-4 follow-up:
+  // DELETE was the one mutating handler still outside the lock, so a concurrent
+  // register/PATCH could re-create the body/row while we tombstoned it, leaving a
+  // live body with a tombstoned row or vice-versa — the same race class P4-1
+  // closed for register/PATCH). Sig-verify + rate-limit stay OUTSIDE the lock (no
+  // crypto held under the mutex); the fire-and-forget logEvent + partner webhook
+  // run AFTER release on the returned outcome.
+  type DeleteOutcome =
+    | { status: 'not_found' }
+    | { status: 'delete_failed' }
+    | { status: 'ok'; removedBodies: number; userId: string | null; identityType: string };
 
-  // Remove the in-world body for every live session bound to this agent.
-  let removedBodies = 0;
-  try {
-    for (const sid of npcSimulation.findActiveSessionsByAgentIds([namespacedAgentId])) {
-      if (npcSimulation.unregisterOpenClaw(sid)) removedBodies++;
+  const outcome = await withKeyedMutex<DeleteOutcome>(namespacedAgentId, async () => {
+    const existing = await db.query.openclawBots.findFirst({
+      where: eq(openclawBots.agentId, namespacedAgentId),
+      columns: { id: true, userId: true, identityType: true },
+    });
+    // 404 on missing OR non-hatcher row — a Hatcher key cannot tombstone/scrub
+    // another framework's agent (cross-namespace impossible; this guards manual
+    // DB edits / future prefix reuse).
+    if (!existing || existing.identityType !== 'hatcher') {
+      return { status: 'not_found' };
     }
-  } catch (err) {
-    console.error('[Hatcher/delete] body removal failed (non-fatal):', err);
-  }
 
-  // Tombstone the row: expire the session immediately and scrub the cognition
-  // route + encrypted token so no further callbacks can fire for this agent.
-  // Set BOTH sessionExpiresAt AND sessionSweptAt to the SAME `now` (matching
-  // expireSession in openclaw-session-sweeper.ts) so the 5-min sweep's pickup
-  // query (sessionSweptAt IS NULL OR sessionSweptAt < sessionExpiresAt) SKIPS
-  // this row. Without sessionSweptAt, the sweeper would re-pick this just-deleted
-  // row minutes later and fire a DUPLICATE `ttl_expired` session-webhook (+ a
-  // duplicate agent.session.expired event) for an agent the partner already
-  // explicitly deleted (we already fire one `disconnected` webhook below). Also
-  // hardens restore: restore.ts refuses any row where sweptAt >= expiresAt.
-  const tombstonedAt = new Date();
-  try {
-    await db.update(openclawBots)
-      .set({
-        sessionExpiresAt: tombstonedAt,
-        sessionSweptAt: tombstonedAt,
-        // Scrub the restorable session-bearer hash on this TERMINAL lifecycle
-        // transition (#8, 2026-06-12). Restore already fails closed on the
-        // expired TTL + the sweptAt>=expiresAt guard, so a stale hash is not a
-        // live bypass — but a deleted row must not retain a bearer commitment a
-        // future change could re-honor. Null it here, the same as the
-        // disconnect/TTL-expiry paths in openclaw-session-sweeper.ts.
-        sessionKeyHash: null,
-        cognitionBackend: null,
-        proxyUrl: null,
-        proxyTokenEnc: null,
-        proxyTokenIv: null,
-        proxyTokenTag: null,
-        updatedAt: tombstonedAt,
-      })
-      .where(eq(openclawBots.id, existing.id));
-  } catch (err) {
-    console.error('[Hatcher/delete] tombstone failed:', err);
-    return c.json({ error: 'delete_failed' }, 500);
-  }
+    // Remove the in-world body for every live session bound to this agent.
+    let removedBodies = 0;
+    try {
+      for (const sid of npcSimulation.findActiveSessionsByAgentIds([namespacedAgentId])) {
+        if (npcSimulation.unregisterOpenClaw(sid)) removedBodies++;
+      }
+    } catch (err) {
+      console.error('[Hatcher/delete] body removal failed (non-fatal):', err);
+    }
+
+    // Tombstone the row: expire the session immediately and scrub the cognition
+    // route + encrypted token so no further callbacks can fire for this agent.
+    // Set BOTH sessionExpiresAt AND sessionSweptAt to the SAME `now` (matching
+    // expireSession in openclaw-session-sweeper.ts) so the 5-min sweep's pickup
+    // query (sessionSweptAt IS NULL OR sessionSweptAt < sessionExpiresAt) SKIPS
+    // this row. Without sessionSweptAt, the sweeper would re-pick this just-deleted
+    // row minutes later and fire a DUPLICATE `ttl_expired` session-webhook (+ a
+    // duplicate agent.session.expired event) for an agent the partner already
+    // explicitly deleted (we already fire one `disconnected` webhook below). Also
+    // hardens restore: restore.ts refuses any row where sweptAt >= expiresAt.
+    const tombstonedAt = new Date();
+    try {
+      await db.update(openclawBots)
+        .set({
+          sessionExpiresAt: tombstonedAt,
+          sessionSweptAt: tombstonedAt,
+          // Scrub the restorable session-bearer hash on this TERMINAL lifecycle
+          // transition (#8, 2026-06-12). Restore already fails closed on the
+          // expired TTL + the sweptAt>=expiresAt guard, so a stale hash is not a
+          // live bypass — but a deleted row must not retain a bearer commitment a
+          // future change could re-honor. Null it here, the same as the
+          // disconnect/TTL-expiry paths in openclaw-session-sweeper.ts.
+          sessionKeyHash: null,
+          cognitionBackend: null,
+          proxyUrl: null,
+          proxyTokenEnc: null,
+          proxyTokenIv: null,
+          proxyTokenTag: null,
+          updatedAt: tombstonedAt,
+        })
+        .where(eq(openclawBots.id, existing.id));
+    } catch (err) {
+      console.error('[Hatcher/delete] tombstone failed:', err);
+      return { status: 'delete_failed' };
+    }
+
+    return {
+      status: 'ok',
+      removedBodies,
+      userId: existing.userId,
+      identityType: existing.identityType,
+    };
+  });
+
+  if (outcome.status === 'not_found') return c.json({ error: 'not_found' }, 404);
+  if (outcome.status === 'delete_failed') return c.json({ error: 'delete_failed' }, 500);
 
   void logEvent({
     eventType: 'agent.session.disconnected',
-    userId: existing.userId,
+    userId: outcome.userId,
     agentId: namespacedAgentId,
-    payload: { via: 'partner-delete', removedBodies },
+    payload: { via: 'partner-delete', removedBodies: outcome.removedBodies },
   });
 
   // Notify the partner this session ended (env-gated, fail-open). The DELETE
   // already proved a hatcher row (identityType guard above), so notify
   // unconditionally with the de-namespaced id resolved inside the helper.
   void notifyHatcherSessionEnded({
-    identityType: existing.identityType,
+    identityType: outcome.identityType,
     agentId: namespacedAgentId,
     reason: 'disconnected',
   });
 
-  return c.json({ ok: true, removedBodies });
+  return c.json({ ok: true, removedBodies: outcome.removedBodies });
 });
 
 // ---------------------------------------------------------------------------
