@@ -71,7 +71,7 @@ import {
   buildAvatarSessionConfig,
   buildOverrideSessionConfig,
 } from '../services/agent-session-config';
-import { npcSimulation } from '../services/npc-simulation';
+import { npcSimulation, OverrideTargetUnavailableError } from '../services/npc-simulation';
 import { OpenClawClient } from '../services/openclaw-client';
 import { ensureWallet } from '../services/wallet-service';
 import { resolveOrCreateUserByIdentity } from '../services/identity-service';
@@ -709,6 +709,22 @@ partnerHatcherRoutes.post('/agents', async (c) => {
   // row AFTER acquiring). DEADLOCK SAFETY: the agent lock is acquired FIRST and the
   // cap lock only inside it on the insert branch, so the order is always
   // agent → cap and the two can never be taken in opposite orders.
+  //
+  // COMMIT-FIRST-SPAWN-AFTER — NOT a bug (Codex pass-5 flagged the xact lock
+  // releasing at commit BEFORE the post-commit spawn; reverted the held-tx detour
+  // after the auditor proved it regresses safety). The xact-scoped advisory lock
+  // guards ONLY the DB write; the spawn runs AFTER commit, still inside the
+  // in-process `withKeyedMutex`. This is deliberately SAFER than holding the tx
+  // open across the spawn: a held-tx (spawn-then-commit) can leave a PHANTOM live
+  // `ledgerCapable` body if the commit fails after the Map mutation. Commit-first
+  // is fail-closed — a failed commit means NO body spawned (spawn is post-commit),
+  // and a failed post-commit spawn leaves a committed-but-body-less row that
+  // `restoreAgentSessionFromRow` / a later PATCH re-spawns. The cross-process Map
+  // race a held tx would target does NOT exist: ClawVille runs a SINGLE API replica
+  // and `npcSimulation`'s Map is PROCESS-LOCAL (in-memory, never shared
+  // cross-process — same single-process assumption as activity-room-manager.ts:6
+  // and cove-slots.ts:197), so ONLY the DB write needs cross-process serialization
+  // and the xact lock already gives it.
   const agentLockKey = agentCriticalSectionLockKey(namespacedAgentId);
 
   // Discriminated outcome surfaced OUT of the mutex so the response (and its HTTP
@@ -717,6 +733,13 @@ partnerHatcherRoutes.post('/agents', async (c) => {
     | { kind: 'ok'; row: typeof openclawBots.$inferSelect; avatarProvisioned: boolean; spawned: boolean }
     | { kind: 'conflict' }
     | { kind: 'cap'; cap: number }
+    // P5-2: an OVERRIDE register whose body could not spawn (target NPC taken). The
+    // row+hash are already committed (commit-first — the row is honest, just
+    // body-less, and a later PATCH/restore heals it); we do NOT roll back. But the
+    // RESPONSE must be a non-2xx with NO sessionId so the partner never holds a
+    // bearer for a body that never took over the NPC. `targetTaken` → 409
+    // override_target_unavailable (occupied, pick another NPC) else 503 spawn_failed.
+    | { kind: 'override_spawn_failed'; targetTaken: boolean }
     // The upsert + atomic hash are ONE transaction, so a DB error and a
     // hash-persist failure are the SAME failure — both surface as persist_failed
     // (503, retryable, NO sessionId). There is no separate db_error kind.
@@ -919,6 +942,12 @@ partnerHatcherRoutes.post('/agents', async (c) => {
 
     const stats = row.metadata?.stats ?? { hp: 100, attack: 10, defense: 8, speed: 6 };
     let spawned = false;
+    // P5-2: an OVERRIDE spawn failure must surface a non-2xx (the partner must not
+    // get a bearer for a body that never took over the NPC). `overrideTargetTaken`
+    // distinguishes the occupied case (409) from a transient (503). Avatar spawn
+    // failure stays best-effort (the row+bearer are committed + restorable).
+    let overrideSpawnFailed = false;
+    let overrideTargetTaken = false;
     try {
       let config: OpenClawRegistration;
       // Ledger-capability (Codex auth-lens fix #2/#3, 2026-06-03): the Hatcher
@@ -979,9 +1008,31 @@ partnerHatcherRoutes.post('/agents', async (c) => {
       spawned = true;
     } catch (err) {
       console.error('[Hatcher/register] in-world spawn failed:', err);
-      // Non-fatal — the row is persisted; the body can be re-registered.
+      // P5-2: AVATAR mode is best-effort — a fresh `oc-<sessionId>` body never
+      // collides, so a throw is an unexpected transient; the row + bearer are
+      // committed + restore-healable, so we keep ok:true with spawned:false (the
+      // avatar body re-registers lazily on the next register/restore — that bearer
+      // is honest). OVERRIDE mode is NOT best-effort: the targetNpcId was validated
+      // against NPC_IDS before the tx (L663), so the only reachable throw is the
+      // "already overridden" case (npc-simulation.ts:573) — the NPC is taken by
+      // ANOTHER agent. restore re-attempts registerOpenClaw for an override row and
+      // throws → null while the NPC stays held, so a 200+sessionId here would be a
+      // PERMANENTLY DEAD bearer (Codex pass-5 auditor). We do NOT roll the committed
+      // row back (commit-first keeps it honest — a body-less row a later
+      // DELETE-incumbent + re-register/PATCH re-seats; the idempotent re-register,
+      // totalSessions++, and wallet/avatar provisioning all want the row kept);
+      // instead the OUTER handler returns 409 with NO sessionId.
+      if (data.mode === 'override') {
+        overrideSpawnFailed = true;
+        // Typed sentinel (not message-string matching) so the 409-vs-503 split never
+        // silently degrades if the sim's error text is reworded (Codex pass-5 nit #1).
+        overrideTargetTaken = err instanceof OverrideTargetUnavailableError;
+      }
     }
 
+    if (overrideSpawnFailed) {
+      return { kind: 'override_spawn_failed', targetTaken: overrideTargetTaken };
+    }
     return { kind: 'ok', row, avatarProvisioned, spawned };
   });
 
@@ -998,6 +1049,16 @@ partnerHatcherRoutes.post('/agents', async (c) => {
   // partner a credential that is neither live nor restorable in a success body.
   if (outcome.kind === 'persist_failed') {
     return c.json({ error: 'session_persist_failed' }, 503);
+  }
+  // P5-2: OVERRIDE register whose body could not spawn. The row is committed +
+  // honest (body-less, restorable) but we return a non-2xx with NO sessionId — an
+  // OCCUPIED target is a client-actionable 409 (retry against another/freed NPC);
+  // any other transient is a retryable 503. Never ok:true+spawned:false handing the
+  // partner a bearer for a body that never took over the NPC.
+  if (outcome.kind === 'override_spawn_failed') {
+    return outcome.targetTaken
+      ? c.json({ error: 'override_target_unavailable', code: 'override_target_unavailable' }, 409)
+      : c.json({ error: 'spawn_failed', code: 'spawn_failed' }, 503);
   }
 
   const { row, avatarProvisioned, spawned } = outcome;
@@ -1080,6 +1141,12 @@ partnerHatcherRoutes.patch('/agents/:agentId', async (c) => {
       }
     | { kind: 'not_found' }
     | { kind: 'bad_target' }
+    // P5-2: an OVERRIDE PATCH whose re-register failed (target NPC taken). The DB
+    // update is already committed (commit-first); we do NOT roll it back, but we
+    // RESTORED the prior live body (no orphan) and return a non-2xx so the partner
+    // knows the override did not take. `targetTaken` → 409 override_target_unavailable
+    // (occupied) else 503 propagation_failed.
+    | { kind: 'override_spawn_failed'; targetTaken: boolean }
     | { kind: 'update_failed' };
 
   const outcome = await withKeyedMutex<PatchOutcome>(namespacedAgentId, async () => {
@@ -1171,6 +1238,10 @@ partnerHatcherRoutes.patch('/agents/:agentId', async (c) => {
     // session_key_hash already matches the live bearer and must NOT be rewritten.
     let rotatedSessionId: string | null = null;
     let rotatedSessionExpiresAt: Date | null = null;
+    // P5-2: an OVERRIDE re-register failure (target NPC taken) must surface a
+    // non-2xx + restore the prior body (no orphan). These flag it out of the try.
+    let overrideSpawnFailed = false;
+    let overrideTargetTaken = false;
     try {
       let plaintextToken: string | null = data.cognition?.scopedToken ?? null;
       if (!plaintextToken) {
@@ -1183,11 +1254,19 @@ partnerHatcherRoutes.patch('/agents/:agentId', async (c) => {
         const urlCheck = validateHatcherProxyUrl(proxyUrl);
         if (urlCheck.ok) {
           // Capture any live session(s) for this agent BEFORE tearing them down so
-          // we can reuse the existing bearer rather than orphan it. A single agent
-          // has at most one live body in practice; if there were several we reuse
-          // the first and evict the rest (they were duplicates anyway).
+          // we can reuse the existing bearer rather than orphan it AND, on an
+          // override re-register failure, RESTORE the prior body (P5-2 no-orphan).
+          // A single agent has at most one live body in practice; if there were
+          // several we reuse the first and evict the rest (they were duplicates).
           const liveSessions = npcSimulation.findActiveSessionsByAgentIds([namespacedAgentId]);
           const preservedSessionId = liveSessions[0] ?? null;
+          const restoreSnapshots = liveSessions
+            .map((sid) => {
+              const cfg = npcSimulation.getOpenClawBotConfig(sid);
+              const cl = npcSimulation.getOpenClawClientBySession(sid);
+              return cfg && cl ? { config: cfg, client: cl } : null;
+            })
+            .filter((s): s is { config: OpenClawRegistration; client: OpenClawClient } => s !== null);
           for (const stale of liveSessions) {
             npcSimulation.unregisterOpenClaw(stale);
           }
@@ -1272,8 +1351,38 @@ partnerHatcherRoutes.patch('/agents/:agentId', async (c) => {
             }
           }
           if (hashConsistent) {
-            npcSimulation.registerOpenClaw(config, client);
-            propagated = true;
+            try {
+              npcSimulation.registerOpenClaw(config, client);
+              propagated = true;
+            } catch (spawnErr) {
+              // P5-2: re-register failed (override target occupied, or transient).
+              // RESTORE the prior body so the agent's old working session is intact
+              // (no orphan). For OVERRIDE this is a hard failure → non-2xx (the
+              // committed row now says override+target but the body didn't take it;
+              // a later PATCH/restore reconciles). AVATAR mode stays best-effort: a
+              // fresh `oc-<sessionId>` body never collides, so a throw is an
+              // unexpected transient; we keep ok with propagated:false and the avatar
+              // re-registers lazily on the next PATCH/restore.
+              console.error('[Hatcher/patch] re-register failed:', spawnErr);
+              for (const snap of restoreSnapshots) {
+                try {
+                  npcSimulation.registerOpenClaw(snap.config, snap.client);
+                } catch (restoreErr) {
+                  console.error('[Hatcher/patch] prior-body restore failed:', restoreErr);
+                }
+              }
+              if (nextMode === 'override') {
+                overrideSpawnFailed = true;
+                // Typed sentinel (not message-string matching) — see register path.
+                overrideTargetTaken = spawnErr instanceof OverrideTargetUnavailableError;
+              } else {
+                // Avatar: discard the minted id (its body did not spawn) so we never
+                // advertise a sessionId whose body is absent. The hash committed (if
+                // minted) — the partner restores lazily — but we don't surface it.
+                rotatedSessionId = null;
+                rotatedSessionExpiresAt = null;
+              }
+            }
           }
         }
       }
@@ -1281,6 +1390,9 @@ partnerHatcherRoutes.patch('/agents/:agentId', async (c) => {
       console.error('[Hatcher/patch] live-entity propagation failed (non-fatal):', err);
     }
 
+    if (overrideSpawnFailed) {
+      return { kind: 'override_spawn_failed', targetTaken: overrideTargetTaken };
+    }
     return { kind: 'ok', row, propagated, rotatedSessionId, rotatedSessionExpiresAt };
   });
 
@@ -1289,6 +1401,14 @@ partnerHatcherRoutes.patch('/agents/:agentId', async (c) => {
     return c.json({ error: 'Unknown or missing targetNpcId for override mode' }, 400);
   }
   if (outcome.kind === 'update_failed') return c.json({ error: 'update_failed' }, 500);
+  // P5-2: override re-register failed; prior body restored (no orphan). An OCCUPIED
+  // target is a client-actionable 409 (retry against another/freed NPC); anything
+  // else is a retryable 503.
+  if (outcome.kind === 'override_spawn_failed') {
+    return outcome.targetTaken
+      ? c.json({ error: 'override_target_unavailable', code: 'override_target_unavailable' }, 409)
+      : c.json({ error: 'propagation_failed', code: 'propagation_failed' }, 503);
+  }
 
   // When a NEW bearer was minted (no live session to preserve), return it (+ its
   // expiry) so the partner adopts it instead of being silently orphaned holding

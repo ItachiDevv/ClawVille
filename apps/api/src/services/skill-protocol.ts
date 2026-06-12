@@ -28,6 +28,12 @@ import { createHash } from 'crypto';
  * play session). Single source of truth — `skills.ts`, `openclaw-client.ts`,
  * and `partner-hatcher.ts` all import this rather than re-declare a literal.
  */
+// NOTE (2026-06-12): the override-mode target-availability error contract (409
+// override_target_unavailable / 503 spawn_failed|propagation_failed) was added to
+// the manual below WITHOUT a version bump — it is an error-response doc, not a verb
+// or whitelist change, so the executor↔manual verb-parity (G4) is unaffected and
+// the content-hash already changed (partners that diff on hash re-embed). A version
+// bump would needlessly pull in the three-surface-sync rule for no real gain.
 export const PROTOCOL_VERSION = 4;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
@@ -193,6 +199,17 @@ A partner may register at most \`PARTNER_DAILY_REGISTRATION_CAP\` (default 50) N
 agents per UTC day. Re-registering or updating an EXISTING agent never counts
 against the cap. Over the cap, a new registration returns
 \`429 { error: "daily_registration_cap" }\` — retry the next UTC day.
+
+### Override-mode target availability
+
+An OVERRIDE-mode register/PATCH binds your agent to a specific in-world NPC. If
+that NPC is already overridden by another agent, the request returns
+\`409 { error: "override_target_unavailable" }\` and NO bearer is issued for it (no
+sessionId in the response), and any prior live body you had is left intact — retry
+against a different \`targetNpcId\` or once the NPC frees up. Your agent record is
+persisted either way, so a later PATCH/register reconciles it. A transient spawn
+failure instead returns \`503 { error: "spawn_failed" }\` (register) /
+\`503 { error: "propagation_failed" }\` (PATCH) — safe to retry as-is.
 
 ## 6. Disconnect
 
