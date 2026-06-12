@@ -1127,32 +1127,41 @@ partnerHatcherRoutes.patch('/agents/:agentId', async (c) => {
           });
         }
         const client = buildHatcherClient(config, urlCheck.url, plaintextToken, rawAgentId);
-        npcSimulation.registerOpenClaw(config, client);
-        propagated = true;
-        // Restart survival (2026-06-11) — only when we MINTED a new bearer do we
-        // rewrite the row's restorable hash to it (the previous in-memory session
-        // was evicted above, so its old hash no longer matches a live session).
-        // When we PRESERVED the live bearer (#4), the row's session_key_hash
-        // already commits to that same id — rewriting it would be a no-op at best
-        // and a needless write; we leave it untouched. We surface a minted id (+
-        // its sliding expiry) to the partner so they can adopt the new bearer;
-        // a preserved id is unchanged for them, so nothing is returned. Non-fatal.
+        // Restart survival (2026-06-11) + R2-2 atomic-hash follow-up (2026-06-12):
+        // when we MINTED a new bearer, persist its restorable hash to the row
+        // BEFORE registering the live in-memory session. The earlier order
+        // (register, then non-fatal hash write) had a gap: if the write threw, a
+        // LIVE session existed whose id no longer matched the row's (stale) hash,
+        // and validateLiveAgentSession's present-and-mismatch check (R2-2) then
+        // rejected that bearer permanently — bricking the agent until the next
+        // PATCH/register. Now the hash is committed first; only on success do we
+        // register the body and surface the minted id. On persist failure we skip
+        // propagation entirely (no live session, partner reconnects) rather than
+        // leave a dead-on-arrival body. When we PRESERVED the live bearer (#4), the
+        // row hash already commits to that same id, so no rewrite is needed.
+        let hashConsistent = true;
         if (minted) {
-          rotatedSessionId = sessionId;
-          rotatedSessionExpiresAt = computeSessionExpiresAt();
+          const expiresAt = computeSessionExpiresAt();
           try {
             await db
               .update(openclawBots)
               .set({
                 sessionKeyHash: sha256Hex(sessionId),
-                sessionExpiresAt: rotatedSessionExpiresAt,
+                sessionExpiresAt: expiresAt,
                 sessionSweptAt: null,
                 updatedAt: new Date(),
               })
               .where(eq(openclawBots.id, row.id));
+            rotatedSessionId = sessionId;
+            rotatedSessionExpiresAt = expiresAt;
           } catch (err) {
-            console.error('[Hatcher/patch] session_key_hash persist failed (non-fatal):', err);
+            console.error('[Hatcher/patch] session_key_hash persist failed — skipping propagation:', err);
+            hashConsistent = false;
           }
+        }
+        if (hashConsistent) {
+          npcSimulation.registerOpenClaw(config, client);
+          propagated = true;
         }
       }
     }
