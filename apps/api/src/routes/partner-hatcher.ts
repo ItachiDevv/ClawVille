@@ -1153,6 +1153,21 @@ partnerHatcherRoutes.patch('/agents/:agentId', async (c) => {
     let row: typeof openclawBots.$inferSelect;
     let nextMode: typeof openclawBots.$inferSelect['mode'];
     let nextTargetNpcId: string | null;
+    // P6-2: prior body-defining fields captured in the tx, used to compensate the
+    // committed row back to the prior body on an override re-register failure.
+    let priorSnapshot: Pick<
+      typeof openclawBots.$inferSelect,
+      | 'name'
+      | 'species'
+      | 'color'
+      | 'mode'
+      | 'targetNpcId'
+      | 'metadata'
+      | 'proxyUrl'
+      | 'proxyTokenEnc'
+      | 'proxyTokenIv'
+      | 'proxyTokenTag'
+    >;
     try {
       const txResult = await db.transaction(async (tx) => {
         await tx.execute(sql`SELECT pg_advisory_xact_lock(${agentLockKey})`);
@@ -1181,6 +1196,29 @@ partnerHatcherRoutes.patch('/agents/:agentId', async (c) => {
           computedTarget = null;
         }
 
+        // P6-2 (2026-06-12): snapshot the PRIOR body-defining row fields BEFORE the
+        // update commits. On an OVERRIDE re-register failure below we restore the
+        // prior LIVE body from in-memory snapshots, but the committed row would still
+        // describe the FAILED new override target, so restore-after-restart / idle-
+        // despawn would re-attempt the failed target (or a later restore would
+        // "succeed" into a PATCH the partner was told 409-failed). We capture every
+        // field this .set() can mutate so a compensating write can make the persisted
+        // row match the restored prior body. (Bearer-lifecycle fields,
+        // sessionKeyHash / sessionExpiresAt, are NOT snapshotted here; they are
+        // handled separately and only written on a successful mint.)
+        const priorSnapshot = {
+          name: existing.name,
+          species: existing.species,
+          color: existing.color,
+          mode: existing.mode,
+          targetNpcId: existing.targetNpcId,
+          metadata: existing.metadata,
+          proxyUrl: existing.proxyUrl,
+          proxyTokenEnc: existing.proxyTokenEnc,
+          proxyTokenIv: existing.proxyTokenIv,
+          proxyTokenTag: existing.proxyTokenTag,
+        } satisfies Partial<typeof openclawBots.$inferSelect>;
+
         const [updated] = await tx
           .update(openclawBots)
           .set({
@@ -1204,7 +1242,13 @@ partnerHatcherRoutes.patch('/agents/:agentId', async (c) => {
           })
           .where(eq(openclawBots.id, existing.id))
           .returning();
-        return { status: 'row' as const, row: updated, mode: computedMode, target: computedTarget };
+        return {
+          status: 'row' as const,
+          row: updated,
+          mode: computedMode,
+          target: computedTarget,
+          priorSnapshot,
+        };
       });
 
       if (txResult.status === 'not_found') return { kind: 'not_found' };
@@ -1212,6 +1256,7 @@ partnerHatcherRoutes.patch('/agents/:agentId', async (c) => {
       row = txResult.row;
       nextMode = txResult.mode;
       nextTargetNpcId = txResult.target;
+      priorSnapshot = txResult.priorSnapshot;
     } catch (err) {
       console.error('[Hatcher/patch] DB update transaction failed:', err);
       return { kind: 'update_failed' };
@@ -1375,6 +1420,56 @@ partnerHatcherRoutes.patch('/agents/:agentId', async (c) => {
                 overrideSpawnFailed = true;
                 // Typed sentinel (not message-string matching) — see register path.
                 overrideTargetTaken = spawnErr instanceof OverrideTargetUnavailableError;
+                // P6-2 (2026-06-12): the in-memory prior body was just restored above
+                // (restoreSnapshots), but the committed row still describes the FAILED
+                // new override target. Compensate: write the PRIOR body-defining fields
+                // back so the persisted row matches the restored live body. Without
+                // this, a restart/idle-despawn restore re-attempts the failed target
+                // (throws then null, NPC stays held), or a later restore "succeeds" into
+                // a PATCH the partner was told 409-failed: stats + restore both lie.
+                // Fail-closed-ISH: the response is already a 409/503; if THIS write
+                // throws we keep that failure and log loudly, never upgrading to a
+                // success on a compensation failure.
+                //
+                // Terminal-transition invariant (team-lead + auditor, 2026-06-12):
+                // when this PATCH MINTED a new bearer (no live session existed to
+                // preserve, so restoreSnapshots is empty and the failed spawn left NO
+                // live body), the minted id's hash was committed to the row at the
+                // mint step above but its body never spawned and the id is never
+                // surfaced to the partner. That is a terminal state for that bearer,
+                // so null its hash here to match DELETE / expiry / sweep (which all
+                // null sessionKeyHash on a terminal/failed transition). This is for
+                // CONSISTENCY/honesty, not security (the dangling hash is inert — the
+                // id never entered the sim Map and nobody holds it). We do NOT null it
+                // in the PRESERVED-bearer case (minted === false): there the prior body
+                // was restored and is LIVE, the row hash was never rewritten in this
+                // PATCH, and it correctly still commits to that live preserved bearer.
+                try {
+                  await db
+                    .update(openclawBots)
+                    .set({
+                      name: priorSnapshot.name,
+                      species: priorSnapshot.species,
+                      color: priorSnapshot.color,
+                      mode: priorSnapshot.mode,
+                      targetNpcId: priorSnapshot.targetNpcId,
+                      metadata: priorSnapshot.metadata,
+                      proxyUrl: priorSnapshot.proxyUrl,
+                      proxyTokenEnc: priorSnapshot.proxyTokenEnc,
+                      proxyTokenIv: priorSnapshot.proxyTokenIv,
+                      proxyTokenTag: priorSnapshot.proxyTokenTag,
+                      // Only the minted-and-never-lived bearer is terminal here; the
+                      // preserved-bearer case keeps its still-valid hash.
+                      ...(minted ? { sessionKeyHash: null } : {}),
+                      updatedAt: new Date(),
+                    })
+                    .where(eq(openclawBots.id, row.id));
+                } catch (compensateErr) {
+                  console.error(
+                    '[Hatcher/patch] P6-2 row compensation after override spawn failure FAILED; persisted row may describe the failed target until the next successful PATCH/restore:',
+                    compensateErr,
+                  );
+                }
               } else {
                 // Avatar: discard the minted id (its body did not spawn) so we never
                 // advertise a sessionId whose body is absent. The hash committed (if
