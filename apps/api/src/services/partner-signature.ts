@@ -229,6 +229,22 @@ export function verifyPartnerSignature(
  * independently of the read window later (e.g. a tighter write window once we
  * have live traffic) without touching the read path. See
  * `verifyPartnerWriteSignature` below for the full scheme rationale.
+ *
+ * REPLAY RESIDUAL (SEC-2, tracked — NOT a seen-signature cache). Within this
+ * window the SAME signed bytes verify more than once (ed25519 over identical
+ * bytes verifies forever). This is an ACCEPTED residual, not a hole, because
+ * every partner write is idempotent-by-agentId (register/PATCH upsert the same
+ * row, DELETE is a no-op once gone) so a replay produces no NEW effect, and the
+ * window matches Hatcher's agreed `authNonceExpirySecs:300` skew ceiling.
+ * We deliberately do NOT keep a consumed-signature cache: a cache that rejects
+ * an exact re-presentation would falsely 401 a LEGITIMATE client retry after a
+ * 400/5xx/dropped-response (the original request never durably succeeded), which
+ * is a worse failure than the benign replay it would block (Codex review
+ * 2026-06-13). If a FUTURE non-idempotent partner verb is added, it MUST carry
+ * proper replay protection AT THAT TIME — a partner-supplied nonce bound into
+ * the signed challenge and consumed delete-on-read (mirror `consumeNonce` in
+ * auth-challenge.ts), with consumption gated on the route's DURABLE SUCCESS so a
+ * retry of a failed request is never mistaken for a replay.
  */
 export const PARTNER_WRITE_SIGNATURE_WINDOW_MS = 5 * 60_000;
 

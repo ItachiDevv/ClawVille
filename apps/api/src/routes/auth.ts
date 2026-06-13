@@ -824,10 +824,11 @@ authRoutes.get('/enter', async (c) => {
 });
 
 authRoutes.post('/milady-session-exchange', async (c) => {
-  // Rate limit: 5 attempts per minute per IP
-  const ip = c.req.header('x-forwarded-for')?.split(',')[0]?.trim()
-    || c.req.header('x-real-ip')
-    || 'unknown';
+  // Rate limit: 5 attempts per minute per IP.
+  // FIX-18: route through getClientIp (cf-connecting-ip → last-XFF-entry) instead
+  // of a hand-rolled resolver that trusted the spoofable FIRST XFF entry / x-real-ip
+  // and let a caller rotate the rate-limit key to defeat this 5/min cap off-CF.
+  const ip = getClientIp(c.req.raw.headers);
 
   if (!checkMiladyRateLimit(ip)) {
     throw new HTTPException(429, {

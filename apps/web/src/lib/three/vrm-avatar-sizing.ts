@@ -65,6 +65,22 @@ export const SPECIES_TARGET_HEIGHT_WU: Record<string, number> = {
   'hermes-male': 297,
   hermes_male:   297,
 
+  // Phanes — the DEFAULT Hatcher partner avatar (agent-model-registry.ts:
+  // `phanes` → animatorId 'hermes-male', pickerHidden, reserved). It shares
+  // the hermes-male VRM rig, so it MUST read at the same 297 height.
+  //
+  // Owner-view (player-avatar.tsx) calls computeVRMAvatarFit(vrm,
+  // reg.animatorId) → key 'hermes-male' → 297. Peer/autonomous-view
+  // (arena-npcs.tsx computeVRMNpcScale) calls with `npc.species` → key
+  // 'phanes', which had NO entry here and fell through to the 270 base —
+  // so the SAME Hatcher agent rendered ~10 % taller to its owner than to
+  // everyone else (Hatcher review FIX-11 / 3D-3; breaks Rule E5 three-axis
+  // parity: one entity, one size whether human-piloted, autonomous, or
+  // peer-viewed). 297 here matches the hermes-male value above so both
+  // resolution paths agree. Safe because `phanes` is exclusively the
+  // Hatcher default avatar — no other species maps to it.
+  phanes: 297,
+
   // Tekk — design intent is "taller than everyone else" + wing-bbox
   // overhead. Iteration 2026-05-18:
   //   - 230 (original): body ~Milady height, wings fan above (base 179.2)
