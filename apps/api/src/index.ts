@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { logger } from 'hono/logger';
 import { secureHeaders } from 'hono/secure-headers';
+import { bodyLimit } from 'hono/body-limit';
 import { HTTPException } from 'hono/http-exception';
 import { authRoutes } from './routes/auth';
 import { avatarRoutes } from './routes/avatars';
@@ -233,6 +234,24 @@ app.route('/api/v2/agent', agentV2Routes);
 app.route('/api/dashboard', dashboardRoutes);
 // Phase 5.1 — cross-world portal + account linking (see plan §6.2 + §15).
 app.route('/api/portal', portalRoutes);
+// SEC-1 / FIX-6 — bound the request body on EVERY partner-hatcher route BEFORE
+// the handlers run. `readSignedBody` does `await c.req.text()` (buffering the
+// WHOLE body into memory) and verifies the ed25519 signature AFTER the read, so
+// without this an UNAUTHENTICATED caller could stream a multi-hundred-MB body
+// and exhaust memory/GC on the single API replica before the 401 ever fires.
+// 64 KB is comfortably above any legitimate Hatcher payload — their client only
+// sends compact JSON (register/PATCH bodies, an empty `{}` launch body), so a
+// 64 KB cap never rejects a real partner request (CONTRACT.md / hatcher-methods.ts).
+// Mounted BEFORE both `/api/partner/hatcher` route groups so it gates register/
+// PATCH/DELETE/stats AND the launch-exchange callback. `*` covers the nested
+// `/agents/:id`, `/agents/:id/stats`, and `/launch/exchange` paths.
+app.use(
+  '/api/partner/hatcher/*',
+  bodyLimit({
+    maxSize: 64 * 1024,
+    onError: (c) => c.json({ error: 'payload_too_large', code: 'payload_too_large' }, 413),
+  }),
+);
 // Hatcher partner #2 — partner-signed agent registration API (proxy
 // cognition). See routes/partner-hatcher.ts + plan §13/§14 (Phase A).
 app.route('/api/partner/hatcher', partnerHatcherRoutes);

@@ -2,10 +2,12 @@
  * Phase 6 — openclaw_bots session liveness sweeper.
  *
  * Every external agent session carries a 24h sliding TTL on
- * `openclaw_bots.session_expires_at`. Each activity-bearing request
- * (location chat, heartbeat, building visit, activity match)
- * `extendSessionTtl()` pushes the expiry forward another 24h. An agent
- * that stops acting for 24h gets swept:
+ * `openclaw_bots.session_expires_at`. Each activity-bearing request calls
+ * `extendSessionTtl()` to push the expiry forward another 24h: location chat
+ * (openclaw.ts), heartbeat, building visit/activity match, AND — since FIX-4
+ * (2026-06-13) — every mutating connected-agent gateway action, which all
+ * route through `agent-gateway.ts resolveSession()`. An agent that stops
+ * acting for 24h gets swept:
  *
  *   1. Any in-process Eliza runtime tied to the bot's `agents.id` is
  *      stopped (frees RAM).

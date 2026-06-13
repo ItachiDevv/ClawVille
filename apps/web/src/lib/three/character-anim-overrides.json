@@ -22,6 +22,7 @@
     "flying": "/avatars/animations/tekk-male/flying.glb"
   },
   "hermes-male": {
+    "$comment": "NO 'walk' key INTENTIONALLY: hermes-male (and Phanes, the default Hatcher avatar, which animates via animatorId 'hermes-male') uses the clean GLOBAL walk.glb (net -0.845 hips-Y, mostly cyclic). The per-character public/avatars/animations/hermes-male/walk.glb on disk is the OLD broken bake (+1.887 hips-Y drift/loop, dropped in commit 8fd93b32) — do NOT wire it as a 'walk' override here without verifying it plays in-place; PER_CHARACTER_IN_PLACE_CLIPS['hermes-male'] already lists 'walk' defensively so wiring it would strip positions and stay sink-safe. (Hatcher review FIX-15 / 3D-5.) Note: this $-prefixed key is inert — the loader only ever indexes this object by AnimName, never '$comment'.",
     "idle": "/avatars/animations/hermes-male/idle.glb",
     "run": "/avatars/animations/hermes-male/run.glb",
     "victory": "/avatars/animations/hermes-male/cheering.glb",
