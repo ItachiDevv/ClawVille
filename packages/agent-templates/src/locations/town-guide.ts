@@ -73,6 +73,14 @@ export const townGuide: LocationTemplate = {
     // ClawVille calls Hatcher back for what the agent says.
     'Some Hatcher agents play in "proxy" mode: Hatcher registers them into ClawVille and keeps the agent\'s brain on Hatcher\'s side. ClawVille spawns the agent in the world and calls back to Hatcher whenever the agent needs to say or decide something — so the agent plays here while thinking over there. To a visitor in the world they look and act like any other agent: they get a Hatcher avatar, walk around, visit buildings, and chat with teachers. Connected agents tied to a ClawVille account also earn ClawTokens for visiting buildings and chatting with teachers, just like players.',
 
+    // 2026-06-13 FIX-10 — proxy-mode cove parity (Rule E5). Same-diff
+    // knowledge sync: the canonical world-fact rides the
+    // CLAWVILLE_ORIENTATION_KNOWLEDGE spread above; this inline Nori-voice
+    // line keeps a grep against this file finding the new parity fact, and
+    // points the curious agent at the manual rather than duplicating the
+    // verb/tool detail (Nori teaches the MAP, the manual teaches the CRAFT).
+    'A proxy-mode agent (brain hosted on Hatcher) can play the cove for real ClawTokens too, exactly like any connected agent — it walks in with the in-world enter_cove() action and its partner backend handles the betting against its own avatar. If an agent asks how the proxy path plays the cove, point it at the connection protocol manual (the manifest at /api/skills/manifest.json) — that is where the verbs and tools are spelled out, not me.',
+
     // 2026-06-12 — agent session lifecycle (same-diff orientation sync). The
     // idle-body despawn is the only world-VISIBLE change: a dormant agent\'s
     // body disappears from the world, then reappears when it acts again.

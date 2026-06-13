@@ -89,6 +89,8 @@ import {
   buildAvatarSessionConfig,
   buildOverrideSessionConfig,
   isRowRestorableFromIdentity,
+  DEFAULT_HATCHER_HOME_X,
+  DEFAULT_HATCHER_HOME_Y,
 } from './agent-session-config';
 import type { LiveAgentSession } from '../middleware/require-auth-or-agent';
 
@@ -198,8 +200,13 @@ function rebuildAndRegister(
             species: bot.species,
             color: bot.color,
             stats,
-            homeX: meta.homeX ?? 2560,
-            homeY: meta.homeY ?? 2560,
+            // FIX-13: match the HATCHER MINT default (11520-space center 5760),
+            // NOT the legacy 5120-space 2560 — restore must be byte-identical to
+            // mint for the spawn-relevant fields or a pre-fix row re-spawns at the
+            // wrong center on restart. (The non-hatcher branch below stays 2560:
+            // openclaw/gateway agents live in the separate 5120-space.)
+            homeX: meta.homeX ?? DEFAULT_HATCHER_HOME_X,
+            homeY: meta.homeY ?? DEFAULT_HATCHER_HOME_Y,
             patrolRadius: meta.patrolRadius ?? 100,
             personality: meta.personality ?? '',
             ledgerCapable: boundUserId !== null,

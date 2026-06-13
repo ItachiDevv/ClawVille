@@ -70,6 +70,8 @@ import { validateHatcherProxyUrl, validateHatcherProxyUrlResolved } from '../ser
 import {
   buildAvatarSessionConfig,
   buildOverrideSessionConfig,
+  DEFAULT_HATCHER_HOME_X,
+  DEFAULT_HATCHER_HOME_Y,
 } from '../services/agent-session-config';
 import { npcSimulation, OverrideTargetUnavailableError } from '../services/npc-simulation';
 import { OpenClawClient } from '../services/openclaw-client';
@@ -316,12 +318,58 @@ const cognitionSchema = z.object({
   scopedToken: z.string().min(8).max(2048),
 });
 
+// FIX-3 (PHATCH-2 / HATCHER-STATS-BOUNDS-MISMATCH): the bounds MUST match the
+// Hatcher wallet-panel form ranges (ClawVilleWalletPanel.tsx:341-342 / CONTRACT.md:46):
+// hp 1-500, attack/defense/speed 1-100. The earlier narrow band (hp 50-150,
+// atk/def/spd 5-25) hard-400'd any in-range owner value their UI presents as
+// valid — an opaque "Invalid request" indistinguishable from a real outage.
+// These stats feed `metadata.stats` + display ONLY (combat numbers / dashboard) —
+// NOT CT settlement — so widening to the partner's published range is safe.
+// The SAME band applies to the register path AND the PATCH stats path (FIX-2).
 const statsSchema = z.object({
-  hp: z.number().int().min(50).max(150),
-  attack: z.number().int().min(5).max(25),
-  defense: z.number().int().min(5).max(25),
-  speed: z.number().int().min(5).max(25),
+  hp: z.number().int().min(1).max(500),
+  attack: z.number().int().min(1).max(100),
+  defense: z.number().int().min(1).max(100),
+  speed: z.number().int().min(1).max(100),
 });
+
+// ---------------------------------------------------------------------------
+// FIX-13 (PHATCH-5) — `homeX`/`homeY` coordinate space, PINNED.
+// ---------------------------------------------------------------------------
+// The AUTHORITATIVE sim coordinate space is the 11520×11520 px world
+// (`npc-simulation.ts`: MAP_WIDTH = MAP_HEIGHT = 11520, TOWN_CENTER = MAP/2 =
+// 5760, HATCHER_MOVE bounds 32..MAP_WIDTH-32 = 11488). The spawned BODY uses
+// `resolveSafeSpawn(homeX, homeY)` in THAT space (npc-simulation.ts:551/614), so
+// the schema bound (32..11488) and the default home MUST be expressed in it.
+// The old default of 2560 was the CENTER of the legacy 5120-px space
+// (`building-tools.ts` still tells agents "town center (2560,2560)") — a DIFFERENT
+// space than the body uses, so a partner-supplied 11520-space coordinate and our
+// 5120-space default lived side by side and a home could land far from center.
+// We pin the single space to the 11520-px sim and default to its TRUE center 5760
+// (verified against npc-simulation.ts MAP_WIDTH/TOWN_CENTER_X). The protocol
+// SKILL.md / CONTRACT.md must document this space + bounds + center (relay R5).
+// DEFAULT_HATCHER_HOME_X/Y live in agent-session-config.ts (the shared mint/
+// restore module) so the restore path defaults to the SAME center — see FIX-13.
+const DEFAULT_HATCHER_PATROL_RADIUS = 100;
+
+/**
+ * FIX-16 (COMP-4): normalize a partner-supplied `species` into a VALID body
+ * render key before it is persisted/spawned. Hatcher's wallet panel renders
+ * Species as a free-text input (ClawVilleWalletPanel.tsx:316-324) and
+ * `hatcher-types.ts:613` types it unconstrained, so an owner can submit an
+ * arbitrary string (e.g. "dragon"). The persisted `species` flows verbatim into
+ * the in-world body's `modelKey` (`buildAvatarSessionConfig` + restore), so an
+ * un-validated string yields a mismatched/empty body. This applies the SAME
+ * registry check `buildHatcherAvatarValues` uses for the cove avatar
+ * (`getAgentModel(key)?.category === 'hatcher'`), falling back to
+ * `DEFAULT_HATCHER_MODEL_KEY` (Phanes), so body + cove avatar render one validated
+ * `hatcher_N` key. Returns `null` for absent input (the caller decides whether to
+ * default — an avatar register does, an override register leaves it null).
+ */
+function normalizeHatcherSpecies(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  return getAgentModel(raw)?.category === 'hatcher' ? raw : DEFAULT_HATCHER_MODEL_KEY;
+}
 
 const registerSchema = z.object({
   agentId: z.string().min(1).max(200),
@@ -336,12 +384,33 @@ const registerSchema = z.object({
   homeY: z.number().min(32).max(11488).optional(),
   patrolRadius: z.number().min(32).max(256).optional(),
   cognition: cognitionSchema,
+  // FIX-8 (PHATCH-3 / HATCHER-ROTATESCOPEDTOKEN-UNREAD): Hatcher's
+  // ClawVilleRegisterBody declares `rotateScopedToken?: boolean`
+  // (hatcher-types.ts:619). We ACCEPT-AND-IGNORE it (currently a documented
+  // no-op) so plain Zod does not SILENTLY STRIP it — stripping made a partner
+  // "rotate" intent vanish with no signal. ClawVille rotates the scoped
+  // cognition bearer by RE-SUPPLYING `cognition.scopedToken` (re-encrypted at
+  // rest on register/PATCH), so this flag is not wired to a force-reissue. See
+  // relay item R3 — if Hatcher intends a force-reissue WITHOUT a new token, wire
+  // this to re-mint the session bearer. Until then it is parsed but unused.
+  rotateScopedToken: z.boolean().optional(),
   // Optional identity binding: when present we resolve-or-create the user so
   // the agent's in-world economic activity (CT credits) attributes to a
   // ClawVille account. Hatcher controls this key (e.g. their principal id).
   identityKey: z.string().min(1).max(256).optional(),
 });
 
+// FIX-2 (PHATCH-1 / HATCHER-PATCH-DROPS-STATS-HOME): Hatcher's
+// `ClawVillePatchBody = Partial<ClawVilleRegisterBody>` (hatcher-types.ts:622)
+// can send `stats`, `homeX`, `homeY`, `patrolRadius` (their wallet panel sends
+// the FULL payload incl. `stats` on EVERY "Update avatar" click —
+// ClawVilleWalletPanel.tsx:117-135). Plain `z.object()` SILENTLY STRIPS unknown
+// keys, so these were discarded before the handler ran and every restat/reposition
+// returned 200 but changed nothing. We declare them here (same bounds as
+// `registerSchema`: `homeX`/`homeY` 32..11488 in the 11520 sim space — FIX-13;
+// `patrolRadius` 32..256; `stats` the FIX-3 widened band) and the handler merges
+// them into ONE `metadata` object (PHATCH-4 — a second `metadata` spread would
+// last-writer-wins clobber the personality write).
 const patchSchema = z.object({
   name: z.string().min(1).max(100).optional(),
   species: z.string().min(1).max(50).optional(),
@@ -349,7 +418,14 @@ const patchSchema = z.object({
   personality: z.string().max(400).optional(),
   mode: z.enum(['avatar', 'override']).optional(),
   targetNpcId: z.string().min(1).max(100).optional(),
+  stats: statsSchema.optional(),
+  homeX: z.number().min(32).max(11488).optional(),
+  homeY: z.number().min(32).max(11488).optional(),
+  patrolRadius: z.number().min(32).max(256).optional(),
   cognition: cognitionSchema.optional(),
+  // FIX-8: accept-and-ignore (no-op) — see registerSchema for the full rationale.
+  // Declared here so a PATCH-supplied `rotateScopedToken` is not silently stripped.
+  rotateScopedToken: z.boolean().optional(),
 }).refine((d) => Object.keys(d).length > 0, { message: 'No mutable fields provided' });
 
 // ---------------------------------------------------------------------------
@@ -613,8 +689,23 @@ export function publicAgentRecord(row: typeof openclawBots.$inferSelect) {
     // proxyUrl is the partner's own URL — safe to echo back; the TOKEN is not.
     proxyUrl: row.proxyUrl,
     walletAddress: row.walletAddress,
+    // FIX-19 (HATCHER-WALLETADDRESS-NONFATAL-NULL): wallet provisioning is
+    // try/catch + non-fatal (`ensureWallet` throw leaves `walletAddress` null on a
+    // fresh INSERT), and it self-heals on a later register/stats poll. Surface an
+    // explicit `walletPending` flag so Hatcher knows a null `walletAddress` means
+    // "re-poll", not "no wallet ever". `hatcher-types.ts:591` already types
+    // `walletAddress: string|null`, so this is purely additive.
+    walletPending: row.walletAddress == null,
     userId: row.userId,
     sessionExpiresAt: row.sessionExpiresAt,
+    // FIX-17 (HATCHER-REGISTEREDAT-UPDATEDAT-ABSENT): Hatcher's
+    // ClawVilleRegistrationStatus reads `registeredAt`/`updatedAt`
+    // (hatcher-types.ts:586-597) to render its date tiles
+    // (ClawVilleWalletPanel.tsx:259). Both columns exist and are NOT NULL
+    // (claws.ts:132-133, `defaultNow()`), so emit them as ISO strings — without
+    // this the partner's "Registered"/"Updated" tiles render as a dash.
+    registeredAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
     // PUBLIC protocol pointer so a partner knows ON ENTRY exactly which protocol
     // SKILL.md version to pull (and the contentHash to diff against). All three
     // fields are public — version, contentHash, relative url — never a secret.
@@ -684,8 +775,17 @@ partnerHatcherRoutes.post('/agents', async (c) => {
   // Resolve the render model. A Hatcher agent with no explicit species gets the
   // default Phanes avatar (persisted so reconnects keep the same). Existing
   // agents that previously persisted a hatcher_N placeholder keep it.
+  //
+  // FIX-16 (COMP-4): the persisted `species` flows VERBATIM into the in-world body
+  // render key (`buildAvatarSessionConfig` below + restore), so an arbitrary owner
+  // string (their wallet panel renders Species as a free-text <input>, e.g. "dragon")
+  // would become a mismatched/empty body modelKey. `normalizeHatcherSpecies` (module
+  // scope) reuses the SAME registry check `buildHatcherAvatarValues` uses for the
+  // cove avatar, so the rendered body and the cove avatar always share one validated
+  // `hatcher_N` key. An override-mode register with no species stays null (no body).
   const resolvedSpecies =
-    data.species ?? (data.mode === 'avatar' ? DEFAULT_HATCHER_MODEL_KEY : null);
+    normalizeHatcherSpecies(data.species) ??
+    (data.mode === 'avatar' ? DEFAULT_HATCHER_MODEL_KEY : null);
 
   // Mint the bearer up front so the row's `session_key_hash` can be written in
   // the SAME transaction as the upsert (atomic — the row + its bearer commitment
@@ -770,7 +870,12 @@ partnerHatcherRoutes.post('/agents', async (c) => {
           if (existing.identityType !== 'hatcher') {
             return { status: 'conflict' as const };
           }
-          const persistedSpecies = data.species ?? existing.species ?? resolvedSpecies;
+          // FIX-16: normalize a newly-supplied species through the registry before
+          // persisting (existing.species was normalized by a prior register;
+          // resolvedSpecies is already normalized). Never let a free-text owner
+          // string become the body modelKey.
+          const persistedSpecies =
+            normalizeHatcherSpecies(data.species) ?? existing.species ?? resolvedSpecies;
           const [updated] = await tx
             .update(openclawBots)
             .set({
@@ -791,9 +896,12 @@ partnerHatcherRoutes.post('/agents', async (c) => {
               metadata: {
                 ...(existing.metadata ?? {}),
                 personality: data.personality ?? existing.metadata?.personality,
-                homeX: data.homeX ?? existing.metadata?.homeX ?? 2560,
-                homeY: data.homeY ?? existing.metadata?.homeY ?? 2560,
-                patrolRadius: data.patrolRadius ?? existing.metadata?.patrolRadius ?? 100,
+                // FIX-13: default home is the TRUE 11520-sim center (5760), not the
+                // legacy 5120-space 2560.
+                homeX: data.homeX ?? existing.metadata?.homeX ?? DEFAULT_HATCHER_HOME_X,
+                homeY: data.homeY ?? existing.metadata?.homeY ?? DEFAULT_HATCHER_HOME_Y,
+                patrolRadius:
+                  data.patrolRadius ?? existing.metadata?.patrolRadius ?? DEFAULT_HATCHER_PATROL_RADIUS,
                 stats: data.stats ?? existing.metadata?.stats ?? { hp: 100, attack: 10, defense: 8, speed: 6 },
               },
               totalSessions: (existing.totalSessions ?? 0) + 1,
@@ -854,9 +962,10 @@ partnerHatcherRoutes.post('/agents', async (c) => {
             userId,
             metadata: {
               personality: data.personality,
-              homeX: data.homeX ?? 2560,
-              homeY: data.homeY ?? 2560,
-              patrolRadius: data.patrolRadius ?? 100,
+              // FIX-13: default home is the TRUE 11520-sim center (5760).
+              homeX: data.homeX ?? DEFAULT_HATCHER_HOME_X,
+              homeY: data.homeY ?? DEFAULT_HATCHER_HOME_Y,
+              patrolRadius: data.patrolRadius ?? DEFAULT_HATCHER_PATROL_RADIUS,
               stats: data.stats ?? { hp: 100, attack: 10, defense: 8, speed: 6 },
             },
             totalSessions: 1,
@@ -992,9 +1101,10 @@ partnerHatcherRoutes.post('/agents', async (c) => {
           species: row.species,
           color: data.color,
           stats,
-          homeX: row.metadata?.homeX ?? 2560,
-          homeY: row.metadata?.homeY ?? 2560,
-          patrolRadius: row.metadata?.patrolRadius ?? 100,
+          // FIX-13: 11520-sim-space defaults (5760 center) match the persisted row.
+          homeX: row.metadata?.homeX ?? DEFAULT_HATCHER_HOME_X,
+          homeY: row.metadata?.homeY ?? DEFAULT_HATCHER_HOME_Y,
+          patrolRadius: row.metadata?.patrolRadius ?? DEFAULT_HATCHER_PATROL_RADIUS,
           personality: data.personality ?? '',
           ledgerCapable: true,
           boundUserId: row.userId ?? null,
@@ -1227,17 +1337,49 @@ partnerHatcherRoutes.patch('/agents/:agentId', async (c) => {
           sessionSweptAt: existing.sessionSweptAt,
         } satisfies Partial<typeof openclawBots.$inferSelect>;
 
+        // FIX-2 (PHATCH-1 + PHATCH-4): merge EVERY provided metadata field into ONE
+        // `nextMeta` object and set `metadata` exactly once. The prior code wrote
+        // `metadata` ONLY for `personality` and dropped stats/home/patrol entirely;
+        // worse, two `metadata` spreads would last-writer-wins clobber each other.
+        // This mirrors the register upsert (~:803-810): spread the existing metadata
+        // first, then overlay only the keys the partner actually supplied
+        // (`!== undefined`), so an absent field is PRESERVED, not nulled. The live
+        // re-spawn below reads `row.metadata?.stats`/`homeX`/`homeY`/`patrolRadius`,
+        // so the restat/reposition now takes effect on the in-world body too.
+        const metadataChanged =
+          data.personality !== undefined ||
+          data.stats !== undefined ||
+          data.homeX !== undefined ||
+          data.homeY !== undefined ||
+          data.patrolRadius !== undefined;
+        const nextMeta = metadataChanged
+          ? {
+              ...(existing.metadata ?? {}),
+              ...(data.personality !== undefined ? { personality: data.personality } : {}),
+              ...(data.stats !== undefined ? { stats: data.stats } : {}),
+              ...(data.homeX !== undefined ? { homeX: data.homeX } : {}),
+              ...(data.homeY !== undefined ? { homeY: data.homeY } : {}),
+              ...(data.patrolRadius !== undefined ? { patrolRadius: data.patrolRadius } : {}),
+            }
+          : undefined;
+        // FIX-16: normalize a PATCH-supplied species through the registry before
+        // persisting (same guard as register) — never let a free-text owner string
+        // become the re-spawned body's modelKey. `existing.species` was already
+        // normalized by a prior register/PATCH, so leave it untouched when no new
+        // species is supplied.
+        const nextSpecies =
+          data.species !== undefined
+            ? normalizeHatcherSpecies(data.species)
+            : existing.species;
         const [updated] = await tx
           .update(openclawBots)
           .set({
             name: data.name ?? existing.name,
-            species: data.species ?? existing.species,
+            species: nextSpecies,
             color: data.color ?? existing.color,
             mode: computedMode,
             targetNpcId: computedTarget,
-            ...(data.personality !== undefined
-              ? { metadata: { ...(existing.metadata ?? {}), personality: data.personality } }
-              : {}),
+            ...(nextMeta !== undefined ? { metadata: nextMeta } : {}),
             ...(encToken && newProxyUrl
               ? {
                   proxyUrl: newProxyUrl,
@@ -1361,9 +1503,12 @@ partnerHatcherRoutes.patch('/agents/:agentId', async (c) => {
               species: row.species,
               color: row.color,
               stats,
-              homeX: row.metadata?.homeX ?? 2560,
-              homeY: row.metadata?.homeY ?? 2560,
-              patrolRadius: row.metadata?.patrolRadius ?? 100,
+              // FIX-13: 11520-sim-space defaults (5760 center). After FIX-2 the row's
+              // metadata now carries the partner-PATCHed home, so a reposition takes
+              // effect on the re-spawned body here.
+              homeX: row.metadata?.homeX ?? DEFAULT_HATCHER_HOME_X,
+              homeY: row.metadata?.homeY ?? DEFAULT_HATCHER_HOME_Y,
+              patrolRadius: row.metadata?.patrolRadius ?? DEFAULT_HATCHER_PATROL_RADIUS,
               personality: row.metadata?.personality ?? '',
               ledgerCapable: true,
               boundUserId: row.userId ?? null,
@@ -1723,6 +1868,10 @@ partnerHatcherRoutes.get('/agents/:agentId/stats', async (c) => {
       totalSessions: true,
       lastSeenAt: true,
       sessionExpiresAt: true,
+      // FIX-17: select the registration timestamps so the stats registration
+      // block can emit `registeredAt`/`updatedAt` (parity with publicAgentRecord).
+      createdAt: true,
+      updatedAt: true,
     },
   });
   // 404 (opaque) on missing OR non-hatcher row — same cross-namespace guard as
@@ -1875,12 +2024,20 @@ partnerHatcherRoutes.get('/agents/:agentId/stats', async (c) => {
       avatarModel: row.species ?? null,
       cognitionBackend: row.cognitionBackend ?? null,
       walletAddress: row.walletAddress ?? null,
+      // FIX-19: explicit re-poll signal when the non-fatal wallet provision left
+      // `walletAddress` null (parity with publicAgentRecord).
+      walletPending: row.walletAddress == null,
       active,
       lastSeenAt: row.lastSeenAt ? row.lastSeenAt.toISOString() : null,
       // Pull-side expiry visibility (2026-06-12) — the ISO timestamp the
       // session's sliding 24h TTL expires at (null for a never-connected /
       // pre-column row). `active` above is just `sessionExpiresAt > now`.
       sessionExpiresAt: row.sessionExpiresAt ? row.sessionExpiresAt.toISOString() : null,
+      // FIX-17 (HATCHER-REGISTEREDAT-UPDATEDAT-ABSENT): emit the registration
+      // timestamps the partner dashboard reads (hatcher-types.ts:586-597). Both
+      // columns are NOT NULL (claws.ts:132-133), so ISO-format unconditionally.
+      registeredAt: row.createdAt.toISOString(),
+      updatedAt: row.updatedAt.toISOString(),
       totalSessions: row.totalSessions ?? 0,
     },
     leaderboard,
