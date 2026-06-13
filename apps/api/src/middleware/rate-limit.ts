@@ -86,35 +86,47 @@ export function createRateLimiter(options: RateLimiterOptions = {}): RateLimiter
  * Best-effort IP resolver — checks trusted proxy headers before falling
  * back to `'unknown'`.
  *
- * Preference order (Phase 3 audit C3 — defeats X-Forwarded-For spoofing):
+ * Preference order (Phase 3 audit C3 — defeats X-Forwarded-For spoofing;
+ * FIX-18/SEC-6 — drop spoofable `x-real-ip`):
  *
  *   1. `cf-connecting-ip` — authoritative inside a Cloudflare-proxied
  *      deployment. Cloudflare strips any client-set value at the edge
  *      and injects its own, so this header is not user-controllable
  *      inside the proxy chain. ClawVille's prod traffic goes through
- *      Cloudflare → Traefik → Hono, so this is the correct primary.
+ *      Cloudflare → Traefik → Hono, so this is the correct primary and
+ *      is ALWAYS present on the documented prod/staging paths.
  *
- *   2. `x-real-ip` — typically set by Traefik / nginx to the upstream
- *      IP. Safe when the app is behind a single trusted reverse proxy.
- *
- *   3. `x-forwarded-for` — take the LAST entry (the one the trusted
+ *   2. `x-forwarded-for` — take the LAST entry (the one the trusted
  *      proxy appended), not the first. Trusting the first comma-
  *      separated value lets any caller forge the IP by simply setting
  *      `X-Forwarded-For: 1.2.3.4` on the outbound request; the trusted
  *      proxy then appends the real client IP AFTER the forged value,
  *      making the tail authoritative on a direct-to-proxy deployment.
  *
- *   4. Fallback to `'unknown'` — every request without any of the above
+ *   3. Fallback to `'unknown'` — every request without any of the above
  *      shares the same rate-limit bucket, which is the correct safe
  *      default (collectively limited rather than individually
  *      unlimited).
  *
- * Assumes a Cloudflare-fronted deployment in prod. On a direct-to-
- * Traefik deployment (e.g. local `bun run dev` against a tunneled
- * public URL), CF header will be absent, so the last-XFF-entry rule
- * still applies. Anyone fronting ClawVille with a different edge must
- * audit which header their edge sets and extend this function if
- * neither CF nor Traefik conventions fit.
+ * FIX-18 (SEC-6) NOTE — `x-real-ip` was REMOVED from the trust order.
+ * It used to sit ABOVE `x-forwarded-for`, but unlike `cf-connecting-ip`
+ * (which Cloudflare overwrites at the edge) and unlike the LAST XFF entry
+ * (which the trusted proxy appends), a client-set `X-Real-IP` is NOT
+ * stripped/overwritten by Traefik's defaults — so on ANY path that
+ * reaches the API without Cloudflare in front (direct-to-Traefik, a
+ * misconfigured route, a staging hostname without the CF proxy), a caller
+ * could forge `X-Real-IP` and trivially rotate the rate-limit key to
+ * defeat the per-IP limiters (e.g. the partner register/stats caps). On
+ * the documented prod path `cf-connecting-ip` is always present, so this
+ * header was unreachable there anyway — dropping it costs nothing on prod
+ * and closes the spoofable gap on any non-CF path. If a future edge
+ * legitimately sets `x-real-ip` and overwrites any client value, re-add
+ * it ONLY behind a documented single-trusted-edge assumption (the edge
+ * must guarantee it overwrites, never passes through, a client value).
+ *
+ * Anyone fronting ClawVille with a different edge must audit which header
+ * their edge sets and extend this function if neither CF nor Traefik
+ * conventions fit.
  */
 export function getClientIp(headers: {
   get(name: string): string | null | undefined;
@@ -123,13 +135,10 @@ export function getClientIp(headers: {
   const cf = headers.get('cf-connecting-ip');
   if (cf) return cf.trim();
 
-  // 2. Reverse-proxy-set, not user-settable inside the chain.
-  const real = headers.get('x-real-ip');
-  if (real) return real.trim();
-
-  // 3. XFF — LAST entry is the one the trusted proxy appended. The
+  // 2. XFF — LAST entry is the one the trusted proxy appended. The
   //    leading entries are whatever the client sent; they're attacker-
-  //    controlled in the general case.
+  //    controlled in the general case. (FIX-18: `x-real-ip` deliberately
+  //    NOT consulted here — it is client-spoofable on any non-CF path.)
   const xff = headers.get('x-forwarded-for');
   if (xff) {
     const parts = xff.split(',').map((p) => p.trim()).filter(Boolean);

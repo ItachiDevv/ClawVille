@@ -41,6 +41,7 @@ import { issueChallenge, consumeNonce } from '../services/auth-challenge';
 import {
   computeSessionExpiresAt,
   expireSession,
+  extendSessionTtl,
 } from '../services/openclaw-session-sweeper';
 import { drainKnowledgeEvents, clearSessionQueue } from '../services/skill-event-bus';
 import { runTool } from '../services/skill-tools-dispatcher';
@@ -508,10 +509,12 @@ agentGatewayRoutes.post('/connect', async (c) => {
           stats: agentStats,
         },
         totalSessions: 1,
-        // Initial 24h TTL. Every subsequent activity (location chat,
-        // heartbeat, building visit) slides this forward; the 5-min
-        // sweeper in openclaw-session-sweeper.ts reaps anything past
-        // expiry.
+        // Initial 24h TTL. Every subsequent activity slides this forward
+        // via `extendSessionTtl` — location chat (openclaw.ts), heartbeat,
+        // building visit, AND every mutating gateway action (move / chat /
+        // visit-building / building-chat / combat-action / emote, all routed
+        // through `resolveSession` below, FIX-4 2026-06-13). The 5-min sweeper
+        // in openclaw-session-sweeper.ts reaps anything past expiry.
         sessionExpiresAt,
         // Restart survival (2026-06-11) — one-way hash of this connect's
         // bearer so the session is restorable from the row after a restart.
@@ -1838,6 +1841,29 @@ async function resolveSession(sessionId: string) {
   if (!npcId) return null;
   const npc = npcSimulation.getNpcById(npcId);
   if (!npc) return null;
+
+  // FIX-4 (SL-1/SL-2, 2026-06-13) — slide the 24h session TTL + `last_seen_at`
+  // forward on EVERY mutating gateway action. `resolveSession` is the single
+  // chokepoint for the entire connected-agent action surface (perception, move,
+  // chat, visit-building, building-chat, combat-action, emote), and before this
+  // NONE of those paths advanced the TTL. A Hatcher partner agent registers via
+  // `POST /api/partner/hatcher/agents` (which sets `sessionExpiresAt` ONCE) then
+  // plays purely through `/:sessionId/*` here — so without this slide a
+  // continuously-active agent was idle-despawned after 30min and swept after 24h.
+  //
+  // Fire-and-forget (NOT awaited) so the TTL write never blocks the action; the
+  // shared `extendSessionTtl` helper carries its own `.catch()`. It is the single
+  // source of truth for the slide (writes `sessionExpiresAt`, `lastSeenAt`, and
+  // crucially `sessionSweptAt: null`), mirroring the location-chat path in
+  // `openclaw.ts`. `getOpenClawBotConfig` is a synchronous in-process Map lookup,
+  // so resolving `agentId` here adds no DB round-trip. No double-slide risk: the
+  // action handlers below only write knowledge/combat/`updatedAt`, never the TTL
+  // columns. Anonymous/legacy sessions with no bot config simply skip the slide.
+  const config = npcSimulation.getOpenClawBotConfig(sessionId);
+  if (config) {
+    void extendSessionTtl(config.agentId);
+  }
+
   return { npcId, npc };
 }
 

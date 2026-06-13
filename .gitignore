@@ -131,3 +131,4 @@ apps/web/public/.assets-backup/
 
 # Itachi sync backup artifacts
 *.itachi-bak
+.hatcher-ref/

@@ -112,6 +112,13 @@ export function getPublishedIssuerInfo(): {
       // session.ended notification (TTL expiry / disconnect) with this same
       // key so the partner can verify it against this published pubkey.
       'partner-session-webhook',
+      // Launch-exchange (FIX-14, 2026-06-13): the owner-launch redemption in
+      // partner-hatcher-launch.ts signs the server-to-server exchange body with
+      // this same key (signPayload). Published so the partner can verify the
+      // exchange signature if they ever enforce purpose-scoped verification —
+      // previously omitted, an unlisted purpose could be rejected by a
+      // purpose-scoping verifier (verification succeeds today: same pubkey).
+      'partner-launch-exchange',
     ],
   };
 }
