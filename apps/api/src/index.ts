@@ -872,6 +872,15 @@ startSimulation(arenaMode);
     }
     activityRoomManager.startSweeper();
     activityQueueService.startMatchmaker();
+    // Poker MTT (P4) — idempotently seed the DEFAULT rising-blind ladder so the
+    // create path (and any tournament referencing the default) always has a row to
+    // point at. Fixed-uuid + ON CONFLICT DO NOTHING → safe on every boot. Non-fatal:
+    // a create with an explicit blindScheduleId doesn't need it.
+    try {
+      await tournamentManager.ensureDefaultBlindSchedule();
+    } catch (err) {
+      console.error('[API] poker-MTT default blind schedule seed failed:', err);
+    }
     // Poker MTT (P3) — the LIVE start-trigger sweep. THE path that seats a
     // window-closed field (or cancels+refunds a short field). Without it (and the
     // cap-hit auto-trigger in the register route) a registered tournament could
