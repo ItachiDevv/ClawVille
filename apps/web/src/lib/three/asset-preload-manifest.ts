@@ -48,7 +48,7 @@
  *
  * PLAYER VRMs (8 Milady + 3 Hermes/Tekk + 2 Chibi, agent-model-registry.ts):
  *   milady-official-1..8.vrm, hermes-female.vrm, hermes-male.vrm, tekk.vrm,
- *   eliza-chibi.vrm?v=2, milady-chibi.vrm?v=2 (all preloaded in tier-2 —
+ *   eliza-chibi.vrm?v=3, milady-chibi.vrm?v=3 (all preloaded in tier-2 —
  *   lazy chibi gating reverted 2026-05-22 because it hid chibi NPC species
  *   for non-chibi players when the wandering roster included them).
  *
@@ -125,11 +125,15 @@ export const WANDERING_VRM_PATHS: readonly string[] = [
   '/avatars/milady-official-6.vrm',
   '/avatars/milady-official-7.vrm',
   '/avatars/milady-official-8.vrm',
-  '/avatars/hermes-female.vrm',
-  '/avatars/hermes-male.vrm',
-  '/avatars/tekk.vrm',
-  '/avatars/eliza-chibi.vrm?v=2',
-  '/avatars/milady-chibi.vrm?v=2',
+  // ?v=2 (hermes/tekk) + ?v=3 (chibis) — perf round 2 decimation bust 2026-06-13.
+  // MUST match agent-model-registry.ts MODEL_REGISTRY paths EXACTLY: a preload
+  // url that differs from the registry url by even the ?v double-fetches + misses
+  // the cache. hermes/tekk = ?v=2 (geom decimate); chibis = ?v=2→?v=3 (geom + tex).
+  '/avatars/hermes-female.vrm?v=2',
+  '/avatars/hermes-male.vrm?v=2',
+  '/avatars/tekk.vrm?v=2',
+  '/avatars/eliza-chibi.vrm?v=3',
+  '/avatars/milady-chibi.vrm?v=3',
 ] as const;
 
 /** All selectable player VRM paths (agent-model-registry.ts MODEL_REGISTRY).
@@ -145,11 +149,13 @@ export const PLAYER_VRM_PATHS: readonly string[] = [
   '/avatars/milady-official-6.vrm',
   '/avatars/milady-official-7.vrm',
   '/avatars/milady-official-8.vrm',
-  '/avatars/hermes-female.vrm',
-  '/avatars/hermes-male.vrm',
-  '/avatars/tekk.vrm',
-  '/avatars/eliza-chibi.vrm?v=2',
-  '/avatars/milady-chibi.vrm?v=2',
+  // ?v=2 (hermes/tekk) + ?v=3 (chibis) — perf round 2 decimation bust 2026-06-13.
+  // Identical ?v scheme as WANDERING_VRM_PATHS above; MUST match the registry.
+  '/avatars/hermes-female.vrm?v=2',
+  '/avatars/hermes-male.vrm?v=2',
+  '/avatars/tekk.vrm?v=2',
+  '/avatars/eliza-chibi.vrm?v=3',
+  '/avatars/milady-chibi.vrm?v=3',
 ] as const;
 
 // ---------------------------------------------------------------------------

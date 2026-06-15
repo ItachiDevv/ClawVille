@@ -6,6 +6,7 @@ import * as THREE from 'three/webgpu';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { MAP_WIDTH, MAP_HEIGHT, TILE_SIZE, buildingZones } from '@/lib/pixi/tilemap-data';
 import { makeGeometryWebGPUSafe, makeObject3DWebGPUSafe } from '@/lib/three/webgpu-geometry';
+import { initTerrainHeightfield } from '@/lib/three/terrain-heightfield';
 
 // ---------------------------------------------------------------------------
 // Terrain: Bikini Bottom GLB + sand floor + coral/kelp decorations
@@ -99,6 +100,12 @@ function createSandGeometry(): THREE.PlaneGeometry {
 
   geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
   geo.computeVertexNormals();
+
+  // Build the O(1) heightfield for NPC / avatar terrain-Y queries.
+  // Must be called AFTER pos.setZ() loop above so displaced positions are baked.
+  // segsX=120, segsY=120 must match the PlaneGeometry constructor above.
+  initTerrainHeightfield(geo, 120, 120);
+
   return geo;
 }
 
