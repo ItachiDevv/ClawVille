@@ -319,8 +319,10 @@ partnerHatcherLaunchRoutes.post('/launch/exchange', async (c) => {
   // Controlled mode: the owner is about to drive the agent's avatar in 'player'
   // mode. Prime the server-side suppression of the agent's autonomous proxy NPC
   // immediately (keyed on the namespaced agentId) so it can't auto-walk in the
-  // window before the browser's first /api/world/position upload starts the
-  // 5 Hz TTL refresh. Suppression expires on its own once driving stops.
+  // window before the browser's first /api/world/position upload starts the 5 Hz
+  // TTL refresh. The binding lets later uploads re-prime this same agent after
+  // a transient stall, without hiding other Hatcher proxies bound to the owner.
+  npcSimulation.bindHumanControlledOpenClawLaunch(user.id, namespacedAgentId);
   npcSimulation.markHumanControlledOpenClaw(namespacedAgentId);
   const body: HatcherLaunchExchangeResponse = {
     ok: true,
