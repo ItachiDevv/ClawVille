@@ -46,6 +46,7 @@ import {
   shuffleDeck,
   buildSidePots,
   awardPots,
+  estimateStrength,
   sha256Hex,
   type Card,
   type PlaySeat,
@@ -54,6 +55,8 @@ import {
 import type {
   Action,
   ActionKind,
+  AgentActionAdvice,
+  AgentSeatView,
   ApplyActionResult,
   BroadcastFn,
   HandCompleteFn,
@@ -410,6 +413,125 @@ export class PokerTableSim {
     const t = this.tables.get(tableId);
     if (!t) return null;
     return this.buildPublicSnapshot(t);
+  }
+
+  /**
+   * The poll-friendly view for ONE seat (the socket-less agent REST path). Returns
+   * the public table snapshot + the requesting seat's OWN private view (hole cards,
+   * legal actions, raise bounds) + an `isYourTurn` flag. Returns null when the
+   * table is gone OR the avatar is not seated at it.
+   *
+   * HIDDEN-STATE: the ONLY card-bearing field is `holeCards`, read from THIS seat's
+   * own `SimSeat.hole`. No other seat's cards are reachable from here — the public
+   * `table` snapshot is the same redacted type a broadcast uses (a hole-card leak
+   * into it is a compile error). When it is not the seat's turn, `legalActions` is
+   * `[]` (no action is legal off-turn) and the raise bounds collapse to the seat's
+   * static stack, so a polling agent can't be misled into acting out of turn.
+   */
+  getSeatViewForAgent(tableId: string, avatarId: string): AgentSeatView | null {
+    const t = this.tables.get(tableId);
+    if (!t) return null;
+    const seatIndex = t.byAvatarId.get(avatarId);
+    if (seatIndex === undefined) return null;
+    const seat = t.bySeatIndex.get(seatIndex)!;
+
+    const isYourTurn = !t.ended && t.toActSeatIndex === seatIndex;
+    const toCall = isYourTurn ? t.currentBet - seat.streetCommitted : 0;
+    const legalActions = isYourTurn ? this.legalActionsFor(t, seat) : [];
+    const minRaiseTo = isYourTurn ? this.minRaiseTo(t, seat) : seat.streetCommitted + seat.stack;
+    const maxRaiseTo = seat.streetCommitted + seat.stack;
+
+    return {
+      table: this.buildPublicSnapshot(t),
+      seatIndex,
+      isYourTurn,
+      holeCards: seat.hole,
+      legalActions,
+      toCall,
+      minRaiseTo,
+      maxRaiseTo,
+      chipStack: seat.stack,
+      deadlineMs: isYourTurn ? t.deadlineMs : null,
+      handNumber: t.handNumber,
+    };
+  }
+
+  /**
+   * ADVISOR MODE (non-staking): recommend an action for `avatarId` WITHOUT moving
+   * any chips or mutating any table state. Pure read: it estimates the seat's hand
+   * strength from its OWN hole cards + the public board (`estimateStrength`), then
+   * maps strength + the legal-action set + pot odds to one recommended action.
+   * Returns null when the table is gone / the avatar isn't seated. When it is not
+   * the seat's turn, `recommended` is null (nothing to advise on).
+   *
+   * This NEVER reveals another seat's cards (it reasons only from the requesting
+   * seat's hole + the shared board) and NEVER stakes CT — it is a hint a human (in
+   * controlled mode) or an agent can choose to follow or ignore.
+   */
+  getActionAdvice(tableId: string, avatarId: string): AgentActionAdvice | null {
+    const t = this.tables.get(tableId);
+    if (!t) return null;
+    const seatIndex = t.byAvatarId.get(avatarId);
+    if (seatIndex === undefined) return null;
+    const seat = t.bySeatIndex.get(seatIndex)!;
+
+    const isYourTurn = !t.ended && t.toActSeatIndex === seatIndex;
+    const legalActions = isYourTurn ? this.legalActionsFor(t, seat) : [];
+    // Strength is well-defined even off-turn (it's a property of the cards), so we
+    // always compute it; the recommendation is gated on isYourTurn.
+    const board = this.boardForStreet(t);
+    const street: 'preflop' | 'flop' | 'turn' | 'river' =
+      t.street === 'showdown' ? 'river' : t.street;
+    const strength = estimateStrength(seat.hole, board, street);
+
+    if (!isYourTurn) {
+      return { strength, legalActions, recommended: null, rationale: 'not your turn — observe only' };
+    }
+
+    const toCall = t.currentBet - seat.streetCommitted;
+    const canRaise = legalActions.includes('raise') || legalActions.includes('bet');
+    const raiseKind: 'bet' | 'raise' = legalActions.includes('bet') ? 'bet' : 'raise';
+    const minRaiseTo = this.minRaiseTo(t, seat);
+    const maxRaiseTo = seat.streetCommitted + seat.stack;
+    // Pot for pot-odds: total committed across the table this hand.
+    let pot = 0;
+    for (const s of t.seats) pot += s.committedTotal;
+    const potOdds = toCall > 0 ? toCall / (pot + toCall) : 0;
+
+    let recommended: AgentActionAdvice['recommended'];
+    let rationale: string;
+
+    if (strength >= 0.72 && canRaise) {
+      // Value-raise: ~⅔-pot sizing, clamped into the legal band.
+      const target = Math.round(seat.streetCommitted + toCall + (pot + toCall) * 0.66);
+      const amount = Math.max(minRaiseTo, Math.min(maxRaiseTo, target));
+      recommended = { kind: raiseKind, amount };
+      rationale = 'strong hand — value bet/raise';
+    } else if (strength >= 0.45) {
+      // Medium hand: continue cheaply. Check if free, else call if the price is
+      // not worse than the hand's equity (pot-odds), else fold.
+      if (toCall === 0 && legalActions.includes('check')) {
+        recommended = { kind: 'check' };
+        rationale = 'medium hand — see the next card for free';
+      } else if (legalActions.includes('call') && strength >= potOdds) {
+        recommended = { kind: 'call' };
+        rationale = 'medium hand — pot odds justify the call';
+      } else {
+        recommended = { kind: 'fold' };
+        rationale = 'medium hand — price too high, fold';
+      }
+    } else {
+      // Weak hand: check if free, else fold (no bluff in the baseline advisor).
+      if (toCall === 0 && legalActions.includes('check')) {
+        recommended = { kind: 'check' };
+        rationale = 'weak hand — check, no reason to fold a free card';
+      } else {
+        recommended = { kind: 'fold' };
+        rationale = 'weak hand — fold to the bet';
+      }
+    }
+
+    return { strength, legalActions, recommended, rationale };
   }
 
   // ── Apply one action ──────────────────────────────────────────────────────
