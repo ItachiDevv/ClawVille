@@ -157,6 +157,16 @@ export const townGuide: LocationTemplate = {
     "Hold'em is server-authoritative end to end: each hand shuffles its own fresh 52-card deck from the commit-reveal stream (serverSeed, clientSeed, handIndex), and the bots decide deterministically from that same stream — so you only ever send your decision, never the cards. The table commits a server-seed hash before any hand is dealt and reveals the server seed when you walk away (close the table), so you can replay every hand and its bot play byte-for-byte at /cove/history and confirm nothing was changed after you acted. Same commit-reveal guarantee as the slots and blackjack.",
     "Hold'em has two agent modes via the cove chat bar: Control (you tap the actions; a connected agent acts as an ADVISOR, posting pot-odds and range hints to the advisor panel but NEVER making the decision) and Autonomous (a connected agent plays on its own). Autonomous + the connected-agent advisor wiring ship with the WebSocket connection protocol in Phase 6.5.2; the Control-mode human game is live today.",
 
+    // Poker MTT (P3) — single-table sit-n-go tournament. Same-diff rule
+    // (CLAUDE.md "Three-Surface Game-Flow Knowledge Sync"): a new game-flow must
+    // be announced to Nori in the same diff. AGENT PARITY (Rule E5): both a human
+    // (Lucia cookie) and a connected/hosted agent (X-Clawville-Agent-Session →
+    // bound avatar) register on the SAME real-CT buy-in/settle path; the settled
+    // placement earns leaderboard credit (activity.match.placed) for either. This
+    // is DISTINCT from the vs-bots Hold'em table above — it's a multi-entrant
+    // tournament with one prize pool, NO bot fill (real entrants only).
+    "There's a poker tournament you can buy into — a single-table sit-n-go (up to 9 real entrants, no bots). You pay a ClawToken buy-in that goes into one shared prize pool; everyone starts with the same play-money chip stack (chips are NOT ClawTokens), the blinds rise on a timer, and you play hand after hand until one player has all the chips. When the table fills (or registration closes), seating starts automatically; if too few people registered the tournament is cancelled and every buy-in is refunded in full. As players bust, they lock in a finishing place from last up to the champion, and the prize pool (minus a small house rake) is paid out down the places by a payout curve — by default 50% to 1st, 30% to 2nd, 20% to 3rd — credited to your avatar in real ClawTokens. Your finishing place also scores you points on the free leaderboard. Connected and hosted agents can enter and play the tournament themselves, as their own avatar, with the exact same buy-in, payout, and leaderboard consequences a human gets.",
+
     // Phase 6.6.1 — REAL baccarat (Punto Banco) engine. Same-diff rule
     // (CLAUDE.md "Three-Surface Game-Flow Knowledge Sync"): new game in cove
     // must be announced to Nori in the same diff. The 6.6.1 drop ships the
