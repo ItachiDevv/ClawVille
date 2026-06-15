@@ -14,14 +14,26 @@
  *   POST /action          (auth optional) — one human decision (fold|check|call|
  *                                           bet|raise); server runs bots to the
  *                                           next human turn or settles at showdown
- *   POST /session/close   (Lucia auth)    — close the session, reveal serverSeed,
- *                                           cash out the human's remaining stack
- *   GET  /session/current (Lucia auth)    — restore the user's open table
- *   GET  /session/:id     (Lucia auth)    — owner-only table detail (seed redacted)
+ *   POST /session/close   (user or agent)  — close the session, reveal serverSeed,
+ *                                           cash out the player's remaining stack
+ *   GET  /session/current (user or agent)  — restore the open table
+ *   GET  /session/:id     (user or agent)  — owner-only table detail (seed redacted)
  *
- * Model mirrors cove-blackjack.ts (the audited template):
- *   - getSubject(c): authed user OR guest (100 demo CT). XOR enforced by the DB
- *     check constraint. Guests never touch the ClawTokens ledger.
+ * Model mirrors cove-blackjack.ts (the audited template), EXTENDED for agent parity
+ * (Rule E5 — human↔agent parity on a money path, 2026-06-15):
+ *   - getSubject(c): authed human (Lucia) OR a connected/hosted AGENT playing AS
+ *     ITSELF (X-Clawville-Agent-Session header → its bound avatar's userId) OR a
+ *     guest (100 demo CT). Human + agent are BOTH real-CT "ledger subjects" — an
+ *     agent table is just a `userId` table, so the DB `userId XOR guestFpHash`
+ *     check constraint still holds and the audited buy-in/settle/cash-out path is
+ *     reused verbatim (the agent kind adds NO new money branch — see
+ *     `isLedgerSubject`). Agents are NEVER routed to the guest/demo tier. Guests
+ *     never touch the ClawTokens ledger.
+ *   - SETTLEMENT vs LEADERBOARD (parity scope): for a ledger subject (human OR
+ *     agent) this route does REAL CT buy-in + cash-out + per-hand stack settlement
+ *     with full parity. It emits NO leaderboard-scoring event for ANY subject (the
+ *     Cove writes no `activity.match.placed`); that is a SEPARATE pre-existing gap,
+ *     not an agent-only one.
  *   - claw-token-ledger debit/credit is the ONLY balance write path, composed
  *     into the transaction via the passed `tx`.
  *   - STACK MODEL (poker, distinct from blackjack's per-hand stake): the human
@@ -80,7 +92,8 @@ import {
   type HoldemTable,
   type HoldemHand,
 } from '@clawville/database';
-import { sessionMiddleware, requireAuth } from '../middleware/auth';
+import { sessionMiddleware } from '../middleware/auth';
+import { resolveAgentSession } from '../middleware/require-auth-or-agent';
 import { createServerSeed } from '../services/provable-rng';
 import {
   playHand,
@@ -187,31 +200,121 @@ export function __resetHoldemRateLimits(): void {
   guestTableOpenBuckets.clear();
 }
 
-// ─── Subject resolution (user OR guest, never both) — mirrors cove-blackjack ──
+// ─── Subject resolution (user OR agent OR guest, never combined) ─────────────
+//
+// THREE subject kinds (Rule E5 — human↔agent parity), VERBATIM in semantics with
+// cove-blackjack.ts's BjSubject / getSubject:
+//   - 'user'  — Lucia-authed human. Settles in REAL CT on `avatars.clawTokens`.
+//   - 'agent' — a connected/hosted agent playing AS ITSELF via the agent gateway
+//     session header. Resolves through `resolveAgentSession` → its BOUND avatar's
+//     `userId`/`avatarId`, and buys in / settles / cashes out in the SAME real-CT
+//     ledger path as a human. An agent is NEVER routed to the guest demo tier —
+//     that XOR-with-guest gap was the E5 violation this fixes.
+//   - 'guest' - anonymous fingerprint, demo-CT only (no ledger).
+//
+// Money parity rule: 'user' and 'agent' are both LEDGER subjects (they carry a
+// real `userId`/`avatarId` and write the ClawToken ledger). `isLedgerSubject()`
+// collapses the two for every balance/owner branch so the audited buy-in/settle/
+// cash-out path is reused verbatim — the agent kind adds NO new money code path.
+//
+// The agent-session header name matches the existing activity-portal convention
+// (`require-auth-or-agent.ts`); Hono lower-cases header reads so case-insensitive.
+
+const AGENT_SESSION_HEADER = 'X-Clawville-Agent-Session';
 
 type ThSubject =
-  | { kind: 'user'; userId: string; guestFpHash: null }
-  | { kind: 'guest'; userId: null; guestFpHash: string };
+  | { kind: 'user'; userId: string; avatarId: null; agentId: null; sessionId: null; guestFpHash: null }
+  | { kind: 'agent'; userId: string; avatarId: string; agentId: string; sessionId: string; guestFpHash: null }
+  | { kind: 'guest'; userId: null; avatarId: null; agentId: null; sessionId: null; guestFpHash: string };
 
-function getSubject(c: {
+/**
+ * Resolve the request subject. Precedence: Lucia human → agent session → guest.
+ *
+ * Async (was sync) because the agent branch does a DB lookup to map the opaque
+ * session id → bound avatar/user. An agent session that resolves to a bot WITHOUT
+ * a ledger-capable, avatar-bound state is a 401/403 (it can perceive/chat but
+ * cannot stake real CT) — it does NOT fall through to the guest tier (silently
+ * demoting a connected agent to demo play is the exact E5 violation). A logged-in
+ * human cookie ALWAYS wins over an agent header on the same request.
+ */
+async function getSubject(c: {
   get(key: 'user'): { id: string } | null;
   get(key: 'fpHash'): string;
-}): ThSubject {
+  req: { header(name: string): string | undefined };
+}): Promise<ThSubject> {
   const user = c.get('user');
-  if (user) return { kind: 'user', userId: user.id, guestFpHash: null };
+  if (user) {
+    return { kind: 'user', userId: user.id, avatarId: null, agentId: null, sessionId: null, guestFpHash: null };
+  }
+
+  const agentSessionId = c.req.header(AGENT_SESSION_HEADER);
+  if (agentSessionId) {
+    const resolved = await resolveAgentSession(agentSessionId);
+    if (!resolved) {
+      throw new HTTPException(401, { message: 'invalid_or_expired_agent_session' });
+    }
+    // Ledger-capability gate (mirrors cove-blackjack). A session that did NOT
+    // prove ownership of its bound avatar is `ledgerCapable === false`: it may
+    // perceive/chat in-world but must NOT spend the avatar's REAL CT here. Reject
+    // 403 BEFORE the avatar-binding check — NOT a guest fall-through.
+    if (!resolved.ledgerCapable) {
+      throw new HTTPException(403, { message: 'agent_session_not_ledger_authorized' });
+    }
+    if (!resolved.userId || !resolved.avatarId) {
+      throw new HTTPException(403, {
+        message:
+          'agent_session_has_no_active_avatar: connect an avatar before playing the Cove for real ClawTokens',
+      });
+    }
+    return {
+      kind: 'agent',
+      userId: resolved.userId,
+      avatarId: resolved.avatarId,
+      agentId: resolved.agentId,
+      sessionId: agentSessionId,
+      guestFpHash: null,
+    };
+  }
+
   const fpHash = c.get('fpHash');
   if (!fpHash) {
     throw new HTTPException(500, { message: 'fpHash_missing_for_guest_request' });
   }
-  return { kind: 'guest', userId: null, guestFpHash: fpHash };
+  return { kind: 'guest', userId: null, avatarId: null, agentId: null, sessionId: null, guestFpHash: fpHash };
+}
+
+/**
+ * The real-CT ledger userId for a subject, or null for a guest. 'user' and
+ * 'agent' are BOTH ledger subjects — this collapses them so the money path /
+ * event userId is written once.
+ */
+function ledgerUserId(subject: ThSubject): string | null {
+  return subject.kind === 'guest' ? null : subject.userId;
+}
+
+/** True iff the subject settles in real CT (human or agent). */
+function isLedgerSubject(
+  subject: ThSubject,
+): subject is Extract<ThSubject, { kind: 'user' | 'agent' }> {
+  return subject.kind !== 'guest';
 }
 
 function subjectKey(subject: ThSubject): string {
-  return subject.kind === 'user' ? `u:${subject.userId}` : `g:${subject.guestFpHash}`;
+  if (subject.kind === 'guest') return `g:${subject.guestFpHash}`;
+  // 'user' and 'agent' rate-limit on userId — an agent and its bound human share
+  // one avatar/wallet, so they SHOULD share one action-rate bucket (you can't
+  // dodge the limit by toggling between cookie + agent header on one avatar).
+  return `u:${subject.userId}`;
 }
 
+/**
+ * A real-CT table is keyed on `userId` (NOT on agent/guest). Both human and agent
+ * subjects for the same bound avatar therefore see + own the SAME table — an agent
+ * playing AS its avatar continues the human's session, never forks a parallel one.
+ * Guests own by fingerprint.
+ */
 function ownerMatch(table: { userId: string | null; guestFpHash: string | null }, subject: ThSubject): boolean {
-  return subject.kind === 'user'
+  return isLedgerSubject(subject)
     ? table.userId === subject.userId
     : table.guestFpHash === subject.guestFpHash;
 }
@@ -494,7 +597,7 @@ coveHoldemRouter.post('/session/open', async (c) => {
     throw new HTTPException(400, { message: 'invalid_input: ' + parsed.error.message });
   }
   const input = parsed.data;
-  const subject = getSubject(c);
+  const subject = await getSubject(c);
 
   // Currency seam — SOL/USDC custody is a later tier. Same 501 shape as blackjack.
   if (input.currency !== 'clawtoken') {
@@ -512,7 +615,7 @@ coveHoldemRouter.post('/session/open', async (c) => {
   // Resume an existing open table (idempotent open) — lock the row first.
   const resumed = await db.transaction(async (tx) => {
     const lockWhere =
-      subject.kind === 'user'
+      isLedgerSubject(subject)
         ? sql`user_id = ${subject.userId} AND status = 'open'`
         : sql`guest_fp_hash = ${subject.guestFpHash} AND status = 'open'`;
     const rows = await tx.execute<{ id: string }>(
@@ -525,17 +628,18 @@ coveHoldemRouter.post('/session/open', async (c) => {
 
   if (resumed) {
     const walletBalance =
-      subject.kind === 'user'
+      isLedgerSubject(subject)
         ? (await loadAvatarForUser(subject.userId)).clawTokens
         : Number(GUEST_STARTING_BALANCE) - Number(BigInt(resumed.buyInStack));
     return c.json({ table: publicTable(resumed), walletBalance }, 200);
   }
 
-  // Pre-flight + buy-in debit (authed). The buy-in is debited NOW into the
-  // table's playerStack; cash-out at close credits the remainder back.
+  // Pre-flight + buy-in debit (ledger subject = human or agent). The buy-in is
+  // debited NOW into the table's playerStack; cash-out at close credits the
+  // remainder back.
   let avatar: { id: string; clawTokens: number } | null = null;
   let startingBalanceStr: string;
-  if (subject.kind === 'user') {
+  if (isLedgerSubject(subject)) {
     avatar = await loadAvatarForUser(subject.userId);
     if (avatar.clawTokens < input.buyIn) {
       throw new HTTPException(400, {
@@ -559,8 +663,8 @@ coveHoldemRouter.post('/session/open', async (c) => {
   let inserted: HoldemTable;
   try {
     inserted = await db.transaction(async (tx) => {
-      // Debit the buy-in from the authed avatar into the table stack.
-      if (subject.kind === 'user' && avatar) {
+      // Debit the buy-in from the ledger subject's avatar into the table stack.
+      if (isLedgerSubject(subject) && avatar) {
         try {
           await debitClawTokens(
             {
@@ -606,13 +710,13 @@ coveHoldemRouter.post('/session/open', async (c) => {
       // because the partial unique index rejected the second insert; the first
       // open's buy-in is the only one that landed).
       const raceWhere =
-        subject.kind === 'user'
+        isLedgerSubject(subject)
           ? and(eq(holdemTables.userId, subject.userId), eq(holdemTables.status, 'open'))
           : and(eq(holdemTables.guestFpHash, subject.guestFpHash), eq(holdemTables.status, 'open'));
       const raceRow = (await db.select().from(holdemTables).where(raceWhere).limit(1))[0];
       if (raceRow) {
         const walletBalance =
-          subject.kind === 'user'
+          isLedgerSubject(subject)
             ? (await loadAvatarForUser(subject.userId)).clawTokens
             : Number(GUEST_STARTING_BALANCE) - Number(BigInt(raceRow.buyInStack));
         return c.json({ table: publicTable(raceRow), walletBalance }, 200);
@@ -624,13 +728,20 @@ coveHoldemRouter.post('/session/open', async (c) => {
 
   void logEventFromContext(c, {
     eventType: 'cove.holdem.table.opened',
-    userId: subject.kind === 'user' ? subject.userId : null,
+    userId: ledgerUserId(subject),
     avatarId: avatar?.id ?? null,
-    payload: { tableId: inserted.id, currency: 'clawtoken', buyIn: input.buyIn, isGuest: subject.kind === 'guest' },
+    agentId: subject.kind === 'agent' ? subject.agentId : null,
+    payload: {
+      tableId: inserted.id,
+      currency: 'clawtoken',
+      buyIn: input.buyIn,
+      isGuest: subject.kind === 'guest',
+      isAgent: subject.kind === 'agent',
+    },
   });
 
   const walletBalance =
-    subject.kind === 'user'
+    isLedgerSubject(subject)
       ? (avatar!.clawTokens - input.buyIn)
       : Number(GUEST_STARTING_BALANCE) - input.buyIn;
 
@@ -658,7 +769,7 @@ coveHoldemRouter.post('/hand/deal', async (c) => {
     throw new HTTPException(400, { message: 'invalid_input: ' + parsed.error.message });
   }
   const input = parsed.data;
-  const subject = getSubject(c);
+  const subject = await getSubject(c);
   checkActionRate(subjectKey(subject));
 
   const table = await db.query.holdemTables.findFirst({ where: eq(holdemTables.id, input.tableId) });
@@ -799,7 +910,7 @@ coveHoldemRouter.post('/action', async (c) => {
   if ((input.action === 'bet' || input.action === 'raise') && input.amount === undefined) {
     throw new HTTPException(400, { message: `${input.action}_requires_amount` });
   }
-  const subject = getSubject(c);
+  const subject = await getSubject(c);
   checkActionRate(subjectKey(subject));
 
   const hand = await db.query.holdemHands.findFirst({ where: eq(holdemHands.id, input.handId) });
@@ -1197,16 +1308,18 @@ async function settleHand(
   const table = txResult.table;
   const outcome = hand.outcomeJson as SerializedHoldemHand;
 
-  // Wallet balance: authed = live avatar.clawTokens (chips are in playerStack,
-  // not yet cashed out); guest = demo grant minus chips currently in the stack.
+  // Wallet balance: ledger subject (human/agent) = live avatar.clawTokens (chips
+  // are in playerStack, not yet cashed out); guest = demo grant minus chips
+  // currently in the stack.
   const walletBalance =
-    subject.kind === 'user'
+    isLedgerSubject(subject)
       ? (await loadAvatarForUser(subject.userId)).clawTokens
       : Number(GUEST_STARTING_BALANCE) - Number(BigInt(table.playerStack));
 
   void logEventFromContext(c, {
     eventType: 'cove.holdem.hand.settled',
-    userId: subject.kind === 'user' ? subject.userId : null,
+    userId: ledgerUserId(subject),
+    agentId: subject.kind === 'agent' ? subject.agentId : null,
     payload: {
       tableId,
       handId: hand.id,
@@ -1215,6 +1328,7 @@ async function settleHand(
       payout: hand.payout,
       net: hand.net,
       isGuest: subject.kind === 'guest',
+      isAgent: subject.kind === 'agent',
       replay: txResult.replay,
     },
   });
@@ -1243,7 +1357,7 @@ async function buildSettledResponse(
 ): Promise<SettledResponse> {
   const outcome = hand.outcomeJson as SerializedHoldemHand;
   const walletBalance =
-    subject.kind === 'user'
+    isLedgerSubject(subject)
       ? (await loadAvatarForUser(subject.userId)).clawTokens
       : Number(GUEST_STARTING_BALANCE) - Number(BigInt(table.playerStack));
   return {
@@ -1265,27 +1379,38 @@ async function buildSettledResponse(
 // ─── POST /session/close ──────────────────────────────────────────────────────
 //
 // Close the table + reveal serverSeed on every cove_game_events row for the
-// session, AND cash out the human's remaining playerStack (authed: credit the
-// avatar; guest: discard). Lucia-authed (the cash-out touches the ledger).
+// session, AND cash out the player's remaining playerStack (ledger subject:
+// credit the bound avatar; guest: discard).
+//
+// Subject-resolved (NOT requireAuth) so a connected AGENT can close its own table
+// and cash its remaining stack back to its bound avatar — without this an agent's
+// buy-in could never be recovered and its table would wedge open. Ledger subjects
+// only (human or agent): a guest demo table has no real stack to cash out and the
+// prior Lucia-only gate already excluded guests, so we keep that exclusion (403).
+// ownerMatch binds the table to the resolved userId, so an agent can never close
+// another user's table.
 
-coveHoldemRouter.post('/session/close', requireAuth, async (c) => {
+coveHoldemRouter.post('/session/close', async (c) => {
   const body = await c.req.json().catch(() => null);
   const parsed = closeSchema.safeParse(body);
   if (!parsed.success) {
     throw new HTTPException(400, { message: 'invalid_input: ' + parsed.error.message });
   }
-  const user = c.get('user')!;
+  const subject = await getSubject(c);
+  if (!isLedgerSubject(subject)) {
+    throw new HTTPException(403, { message: 'guest_cannot_close_table: sign in or connect an agent' });
+  }
 
   const table = await db.query.holdemTables.findFirst({
     where: eq(holdemTables.id, parsed.data.tableId),
   });
   if (!table) throw new HTTPException(404, { message: 'table_not_found' });
-  if (table.userId !== user.id) throw new HTTPException(403, { message: 'table_not_owned' });
+  if (!ownerMatch(table, subject)) throw new HTTPException(403, { message: 'table_not_owned' });
   if (table.status !== 'open') {
     throw new HTTPException(409, { message: `table_not_open: status=${table.status}` });
   }
 
-  const avatar = await loadAvatarForUser(user.id);
+  const avatar = await loadAvatarForUser(subject.userId);
 
   const closed = await db.transaction(async (tx) => {
     const lockRows = await tx.execute<{ status: string; player_stack: string }>(
@@ -1308,7 +1433,8 @@ coveHoldemRouter.post('/session/close', requireAuth, async (c) => {
       });
     }
 
-    // Cash out the remaining stack back to the avatar (authed always here).
+    // Cash out the remaining stack back to the avatar (ledger subject — human
+    // or agent, resolved + owner-checked above).
     const cashOut = BigInt(lock.player_stack);
     let cashOutBalance = avatar.clawTokens;
     if (cashOut > 0n) {
@@ -1346,14 +1472,16 @@ coveHoldemRouter.post('/session/close', requireAuth, async (c) => {
 
   void logEventFromContext(c, {
     eventType: 'cove.holdem.table.closed',
-    userId: user.id,
+    userId: subject.userId,
     avatarId: avatar.id,
+    agentId: subject.kind === 'agent' ? subject.agentId : null,
     payload: {
       tableId: closed.closedTable.id,
       handsPlayed: closed.closedTable.handsPlayed,
       totalBet: closed.closedTable.totalBet,
       totalPayout: closed.closedTable.totalPayout,
       cashOut: closed.cashOut,
+      isAgent: subject.kind === 'agent',
     },
   });
 
@@ -1376,28 +1504,42 @@ coveHoldemRouter.post('/session/close', requireAuth, async (c) => {
 });
 
 // ─── GET /session/current ─────────────────────────────────────────────────────
+//
+// Subject-resolved (ledger subjects only) so a connected agent can restore its
+// open table after a reconnect, exactly like a human after a page refresh. An
+// agent + its bound human share one userId-keyed table, so both see the same row.
 
-coveHoldemRouter.get('/session/current', requireAuth, async (c) => {
-  const user = c.get('user')!;
+coveHoldemRouter.get('/session/current', async (c) => {
+  const subject = await getSubject(c);
+  if (!isLedgerSubject(subject)) {
+    throw new HTTPException(403, { message: 'guest_has_no_persistent_table: sign in or connect an agent' });
+  }
   const row = await db.query.holdemTables.findFirst({
-    where: and(eq(holdemTables.userId, user.id), eq(holdemTables.status, 'open')),
+    where: and(eq(holdemTables.userId, subject.userId), eq(holdemTables.status, 'open')),
   });
   if (!row) throw new HTTPException(404, { message: 'no_open_table' });
-  const avatar = await loadAvatarForUser(user.id);
+  const avatar = await loadAvatarForUser(subject.userId);
   return c.json({ table: publicTable(row), walletBalance: avatar.clawTokens }, 200);
 });
 
 // ─── GET /session/:id ─────────────────────────────────────────────────────────
+//
+// Owner-only table detail (serverSeed redacted while open). Subject-resolved so an
+// agent can inspect its own table; ownerMatch binds to the resolved userId, so an
+// agent can never read another user's table by id.
 
-coveHoldemRouter.get('/session/:id', requireAuth, async (c) => {
+coveHoldemRouter.get('/session/:id', async (c) => {
   const tableId = c.req.param('id');
   if (!/^[0-9a-f-]{36}$/i.test(tableId)) {
     throw new HTTPException(400, { message: 'invalid_table_id' });
   }
-  const user = c.get('user')!;
+  const subject = await getSubject(c);
+  if (!isLedgerSubject(subject)) {
+    throw new HTTPException(403, { message: 'guest_cannot_inspect_table: sign in or connect an agent' });
+  }
   const row = await db.query.holdemTables.findFirst({ where: eq(holdemTables.id, tableId) });
   if (!row) throw new HTTPException(404, { message: 'table_not_found' });
-  if (row.userId !== user.id) throw new HTTPException(403, { message: 'table_not_owned' });
+  if (!ownerMatch(row, subject)) throw new HTTPException(403, { message: 'table_not_owned' });
   return c.json({ table: publicTable(row) }, 200);
 });
 
