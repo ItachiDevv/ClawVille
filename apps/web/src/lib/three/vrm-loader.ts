@@ -132,17 +132,93 @@ let _loader: GLTFLoader | null = null;
 // Suspense fallbacks remain null, so real VRMs stream in progressively without fake
 // cylinder/capsule stand-ins.
 //
-// Why 2 instead of 1: with concurrency=1 the FIFO queue behind 11 module-scope
-// wandering-NPC preloads means a remote player's parse waits 330-880ms on Iris Xe
-// (11 × 30-80ms/parse). Concurrency=2 halves worst-case wait without saturating
-// the single-threaded JS engine — two overlapping parses only pipeline on the
-// async fetch-buffer/decode steps; the synchronous normalise+frustumCulling pass
-// still yields once between slots. The player-avatar priority lane (PLAYER_INSTANCE_ID)
-// still unshifts ahead of both regular slots so the local player is never blocked
-// by a remote player or wandering NPC parse.
-const VRM_PARSE_CONCURRENCY = 2;
+// Concurrency is now DYNAMIC (perf round-3):
+//   - BULK phase (before __W3D_READY):   VRM_PARSE_CONCURRENCY_BULK = 6
+//     During the initial load the loading overlay is visible and there is no
+//     frame budget to protect. Running 6 parses concurrently pipelines the
+//     async fetch-buffer/decode steps, cutting the 9.6s queue-wait measured
+//     in the baseline to ~2-3s. The synchronous normalise+frustumCulling pass
+//     still runs single-threaded between yielded microtasks.
+//   - STEADY-STATE (after __W3D_READY):  VRM_PARSE_CONCURRENCY_STEADY = 2
+//     Remote-player join parses run at 2 to avoid starving the render loop.
+//
+// The player-avatar priority lane (PLAYER_INSTANCE_ID) still unshifts ahead of
+// all slots regardless of concurrency mode.
+const VRM_PARSE_CONCURRENCY_BULK   = 6;  // while loading overlay is up
+const VRM_PARSE_CONCURRENCY_STEADY = 2;  // after __W3D_READY
 const VRM_PARSE_QUEUE: Array<() => void> = [];
 let vrmParseActive = 0;
+
+/** Returns the current effective parse-queue concurrency limit. */
+function getVRMParseConcurrency(): number {
+  if (typeof window === 'undefined') return VRM_PARSE_CONCURRENCY_BULK;
+  return (window as any).__W3D_READY === true
+    ? VRM_PARSE_CONCURRENCY_STEADY
+    : VRM_PARSE_CONCURRENCY_BULK;
+}
+
+// ---------------------------------------------------------------------------
+// Bulk-VRM-idle callback (perf round-3, change A)
+// ---------------------------------------------------------------------------
+//
+// PreCompilePipelines fires compileAsync once at mount, before any VRM is in
+// the scene. A second compileAsync call after the parse queue drains ensures
+// the skinned-MeshStandardMaterial pipeline variants are compiled under the
+// loading spinner rather than lazily at first reveal.
+//
+// Usage (from World3DCanvas.tsx PreCompilePipelines):
+//   registerBulkVRMIdleCallback(() => gl.compileAsync(scene, camera));
+//
+// The callback fires ONCE (guarded by _bulkIdleFired) but ONLY after
+// _bulkBatchStarted is true (i.e. at least one VRM parse has been enqueued).
+// This prevents the common race where registerBulkVRMIdleCallback is called at
+// mount-rAF (~16ms after mount) while the parse queue is still empty because
+// no VRM fetch has resolved yet — without _bulkBatchStarted the callback would
+// fire immediately, scheduling a second compileAsync before any VRM is in the
+// scene, defeating Change A entirely on cold cache.
+//
+// Fire paths (both gated on _bulkBatchStarted):
+//   1. pumpVRMParseQueue() drain detection — fires when queue goes idle after
+//      the first enqueue.
+//   2. registerBulkVRMIdleCallback() registration path — fires if the batch
+//      already started AND is already drained by registration time (warm-cache
+//      re-visit where all 14 VRMs parsed before the rAF fires).
+//
+// Zero-VRM edge case: if no VRMs ever load, _bulkBatchStarted stays false and
+// the callback never fires. The mount compileAsync already covered the static
+// scene, so the second call is correctly skipped.
+let _bulkIdleFired   = false;
+let _bulkBatchStarted = false;          // set true when first parse is enqueued
+let _bulkIdleCb: (() => void) | null = null;
+
+export function registerBulkVRMIdleCallback(cb: () => void): void {
+  if (_bulkIdleFired) {
+    // Batch already completed before we were called — fire on next microtask.
+    Promise.resolve().then(cb);
+    return;
+  }
+  _bulkIdleCb = cb;
+  // Handle warm-cache re-visit: batch started AND queue already drained by the
+  // time we register. Without this check the pumpVRMParseQueue drain path would
+  // have already fired (and set _bulkIdleFired), so we'd be in the branch above.
+  // But to be safe and symmetric with the pump check, mirror the exact condition.
+  if (_bulkBatchStarted && VRM_PARSE_QUEUE.length === 0 && vrmParseActive === 0) {
+    _fireBulkIdleCb();
+  }
+}
+
+function _fireBulkIdleCb(): void {
+  if (_bulkIdleFired || !_bulkIdleCb) return;
+  _bulkIdleFired = true;
+  const cb = _bulkIdleCb;
+  _bulkIdleCb = null;
+  // Schedule via idle or microtask so we don't run inside the queue pump.
+  if (typeof window !== 'undefined' && typeof window.requestIdleCallback === 'function') {
+    window.requestIdleCallback(() => cb(), { timeout: 200 });
+  } else {
+    Promise.resolve().then(cb);
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Generation counters — dispose-while-pending race fix (punch list items 1–4)
@@ -299,9 +375,16 @@ function scheduleNextVRMParse(): void {
 }
 
 function pumpVRMParseQueue(): void {
-  while (vrmParseActive < VRM_PARSE_CONCURRENCY && VRM_PARSE_QUEUE.length > 0) {
+  while (vrmParseActive < getVRMParseConcurrency() && VRM_PARSE_QUEUE.length > 0) {
     const next = VRM_PARSE_QUEUE.shift();
     if (next) next();
+  }
+  // Fire the bulk-idle callback once the queue fully drains (perf round-3 change A).
+  // _bulkBatchStarted guard: only fire after at least one parse task has been
+  // enqueued. This prevents a false drain-fire on the first pump() call when the
+  // queue is still empty because no VRM fetch has resolved yet.
+  if (_bulkBatchStarted && vrmParseActive === 0 && VRM_PARSE_QUEUE.length === 0) {
+    _fireBulkIdleCb();
   }
 }
 
@@ -331,6 +414,11 @@ function enqueueVRMParse<T>(task: () => Promise<T>, opts?: EnqueueOptions): Prom
         scheduleNextVRMParse();
       });
     };
+    // Mark that the bulk batch has started (perf round-3 change A).
+    // Flip the flag before the push so _fireBulkIdleCb drain checks can
+    // distinguish "queue empty because nothing ever loaded" from "queue empty
+    // because the batch finished".
+    _bulkBatchStarted = true;
     if (opts?.priority) {
       VRM_PARSE_QUEUE.unshift(runner);
     } else {
