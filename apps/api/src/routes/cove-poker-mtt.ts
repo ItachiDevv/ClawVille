@@ -146,6 +146,49 @@ covePokerMttRouter.post('/:id/register', async (c) => {
   }
 });
 
+// ── GET /:id/connection (P3.5 — the seated subject's WS connection ticket) ─────
+//
+// HUMAN/AGENT PARITY (Rule E5): the SAME subject resolver as registration (human
+// cookie XOR agent session → the resolved/bound avatar). A registered+seated
+// subject gets its OWN `{ roomId, shortCode, seatIndex, activityId }` so it can
+// open the WS via the existing `useActivityWs` path (client work is a LATER
+// phase; this endpoint just exposes the data). 404 when the caller is not a live
+// seat at a running table (not seated yet / busted / no live WS room).
+//
+// PARITY note: human path GET /:id/connection with a Lucia cookie; agent path
+// GET /:id/connection with X-Clawville-Agent-Session; the seat binds to the
+// resolved avatarId (human's active avatar OR agent's bound avatar), so an agent
+// learns ITS OWN seat — never another subject's.
+covePokerMttRouter.get('/:id/connection', async (c) => {
+  const parsed = idParamSchema.safeParse(c.req.param());
+  if (!parsed.success) {
+    throw new HTTPException(400, { message: 'invalid_tournament_id' });
+  }
+  const tournamentId = parsed.data.id;
+  const subject = await resolveRegisterSubject(c);
+
+  const conn = tournamentManager.getConnectionForSubject(
+    tournamentId,
+    subject.avatarId,
+  );
+  if (!conn) {
+    // Either the tournament isn't running with a live WS room, or this subject is
+    // not a live seat at it (not seated / busted). Distinct from a 404 tournament
+    // — use 409 so the client can poll until seating completes.
+    throw new HTTPException(409, {
+      message: 'not_seated_or_no_live_table',
+    });
+  }
+
+  return c.json({
+    ok: true,
+    roomId: conn.roomId,
+    shortCode: conn.shortCode,
+    seatIndex: conn.seatIndex,
+    activityId: conn.activityId,
+  });
+});
+
 // ── GET /:id (status + standings) ─────────────────────────────────────────────
 
 covePokerMttRouter.get('/:id', async (c) => {
