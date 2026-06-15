@@ -39,11 +39,13 @@ import { z } from 'zod';
 import { and, eq, sql } from 'drizzle-orm';
 import { db, avatars } from '@clawville/database';
 import { sessionMiddleware } from '../middleware/auth';
+import { adminOnly } from '../middleware/admin-only';
 import { resolveAgentSession } from '../middleware/require-auth-or-agent';
 import {
   tournamentManager,
   TournamentError,
   type RegisterSubject,
+  type CreateTournamentConfig,
 } from '../services/poker/tournament-manager';
 import { InsufficientTokensError } from '../services/claw-token-ledger';
 import type { AppContext } from '../types';
@@ -128,6 +130,121 @@ const pokerActionSchema = z.object({
 
 const stateForAgentQuerySchema = z.object({
   tournamentId: z.string().uuid(),
+});
+
+// ── Admin create-tournament schema (money config — every bound validated) ─────
+//
+// This is the CREATION path for a CT-buy-in tournament. Zod enforces the structural
+// bounds here (positive buy-in, sane seat/entrant/stack ranges, well-formed payout
+// curve); the TournamentManager re-validates defensively (the route is not the only
+// caller). `payoutCurve` is OPTIONAL — omitting it uses DEFAULT_PAYOUT_CURVE (top-3
+// 50/30/20). `blindScheduleId` is OPTIONAL — omitting it seeds/uses the idempotent
+// default ladder.
+const payoutCurveEntrySchema = z.object({
+  placement: z.number().int().min(1),
+  share: z.number().positive().finite(),
+});
+
+const createTournamentSchema = z.object({
+  name: z.string().trim().min(1).max(120),
+  buyInCt: z.number().int().positive(),
+  rakeBps: z.number().int().min(0).max(10000).default(0),
+  minEntrants: z.number().int().min(2),
+  maxEntrants: z.number().int().min(2).max(200),
+  seatsPerTable: z.number().int().min(2).max(9).default(9),
+  startingStack: z.number().int().positive(),
+  payoutCurve: z.array(payoutCurveEntrySchema).min(1).optional(),
+  registrationClosesAt: z.string().datetime().optional(),
+  blindScheduleId: z.string().uuid().optional(),
+})
+  .refine((b) => b.maxEntrants >= b.minEntrants, {
+    message: 'maxEntrants_must_be_gte_minEntrants',
+    path: ['maxEntrants'],
+  });
+
+const listTournamentsQuerySchema = z.object({
+  includeRunning: z
+    .enum(['true', 'false', '1', '0'])
+    .optional()
+    .transform((v) => v === 'true' || v === '1'),
+  limit: z.coerce.number().int().min(1).max(200).optional(),
+});
+
+// ── POST /create (ADMIN-ONLY — the tournament creation path) ──────────────────
+//
+// ADMIN GATE: a tournament is a money config (CT buy-in → real prize pool). Only an
+// operator may stand one up. The `adminOnly` middleware (ADMIN_USER_IDS allowlist OR
+// the shared dash cookie) runs AFTER the router-wide `sessionMiddleware`, so
+// `c.get('user')` is populated for the allowlist check. A non-admin Lucia user → 403;
+// an unauthenticated caller with no dash cookie → 401. Body is FULLY Zod-validated
+// (positive buy-in, sane seat/entrant/stack bounds, well-formed payout curve); the TM
+// re-validates defensively. NOT a parity surface — creation is an operator action, not
+// a gameplay action, so no agent path (agents PLAY tournaments, they don't create them).
+covePokerMttRouter.post('/create', adminOnly, async (c) => {
+  let body: z.infer<typeof createTournamentSchema>;
+  try {
+    body = createTournamentSchema.parse(await c.req.json());
+  } catch (err) {
+    throw new HTTPException(400, {
+      message:
+        err instanceof z.ZodError
+          ? `invalid_create_body: ${err.issues.map((i) => i.path.join('.') + ' ' + i.message).join('; ')}`
+          : 'invalid_create_body',
+    });
+  }
+
+  const config: CreateTournamentConfig = {
+    name: body.name,
+    buyInCt: body.buyInCt,
+    rakeBps: body.rakeBps,
+    minEntrants: body.minEntrants,
+    maxEntrants: body.maxEntrants,
+    seatsPerTable: body.seatsPerTable,
+    startingStack: body.startingStack,
+    payoutCurve: body.payoutCurve,
+    registrationClosesAt: body.registrationClosesAt
+      ? new Date(body.registrationClosesAt)
+      : null,
+    blindScheduleId: body.blindScheduleId,
+  };
+
+  // The creator's avatar (if the admin has one) — audit only, no parity implication.
+  const user = c.get('user');
+  let createdByAvatarId: string | null = null;
+  if (user) {
+    const avatar = await db.query.avatars.findFirst({
+      where: and(eq(avatars.userId, user.id), eq(avatars.isActive, true)),
+    });
+    createdByAvatarId = avatar?.id ?? null;
+  }
+
+  try {
+    const tournament = await tournamentManager.createTournament(config, createdByAvatarId);
+    return c.json({ ok: true, tournament }, 201);
+  } catch (err) {
+    if (err instanceof TournamentError) {
+      throw new HTTPException(err.httpStatus as 400, { message: err.message });
+    }
+    throw err;
+  }
+});
+
+// ── GET / (PUBLIC — discovery list for the cove lobby/list UI) ────────────────
+//
+// No auth: a public list of joinable tournaments (registering, + running when
+// `?includeRunning=true`). Returns each tournament's config + the CURRENT non-refunded
+// entrant count, live table count, and a compact blind summary so a list UI can render
+// the lobby. Read-only.
+covePokerMttRouter.get('/', async (c) => {
+  const parsed = listTournamentsQuerySchema.safeParse(c.req.query());
+  if (!parsed.success) {
+    throw new HTTPException(400, { message: 'invalid_list_query' });
+  }
+  const tournaments = await tournamentManager.listTournaments({
+    includeRunning: parsed.data.includeRunning ?? false,
+    limit: parsed.data.limit,
+  });
+  return c.json({ ok: true, tournaments });
 });
 
 // ── POST /:id/register ────────────────────────────────────────────────────────
