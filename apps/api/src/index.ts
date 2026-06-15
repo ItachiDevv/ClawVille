@@ -78,6 +78,13 @@ import { coveSlotsRouter } from './routes/cove-slots';
 import { coveBlackjackRouter } from './routes/cove-blackjack';
 // Phase 6.5.0 — cove Texas Hold'em mock route (visual shell, no engine yet).
 import { coveHoldemRouter } from './routes/cove-holdem';
+// Poker MTT (P3) — single-table tournament registration + status route.
+// Agent-capable (Rule E5): human cookie OR X-Clawville-Agent-Session both reach
+// the same real-CT buy-in/settle path. Full lobby UI is a later phase.
+import { covePokerMttRouter } from './routes/cove-poker-mtt';
+// The process-wide TournamentManager singleton — boot starts its start-trigger
+// sweeper (the LIVE seat/cancel path) + graceful shutdown stops it.
+import { tournamentManager } from './services/poker/tournament-manager';
 // Phase 6.6.1 — cove Baccarat (Punto Banco) AUTHORITATIVE route (8-deck shoe,
 // fixed tableau, commit-reveal provably-fair engine, ClawToken ledger; SOL/USDC seam 501).
 import { coveBaccaratRouter } from './routes/cove-baccarat';
@@ -243,6 +250,9 @@ app.route('/api/cove/slots', coveSlotsRouter);
 app.route('/api/cove/blackjack', coveBlackjackRouter);
 // Phase 6.5.0 — cove Texas Hold'em mock (visual shell; pokerpocket engine in 6.5.1).
 app.route('/api/cove/holdem', coveHoldemRouter);
+// Poker MTT (P3) — single-table tournament: POST /:id/register (user|agent),
+// GET /:id (status+standings). Real-CT buy-in/prize via claw-token-ledger.
+app.route('/api/cove/poker/mtt', covePokerMttRouter);
 // Phase 6.6.1 — cove Baccarat (Punto Banco) authoritative engine (8-deck shoe,
 // fixed third-card tableau, commit-reveal provably-fair; ClawToken ledger;
 // SOL/USDC seam returns 501).
@@ -773,7 +783,12 @@ startSimulation(arenaMode);
     }
     activityRoomManager.startSweeper();
     activityQueueService.startMatchmaker();
-    console.log('[API] Activity room manager + queue ready');
+    // Poker MTT (P3) — the LIVE start-trigger sweep. THE path that seats a
+    // window-closed field (or cancels+refunds a short field). Without it (and the
+    // cap-hit auto-trigger in the register route) a registered tournament could
+    // never seat/play/settle/refund and buy-ins would stay escrowed forever.
+    tournamentManager.startStartTriggerSweeper();
+    console.log('[API] Activity room manager + queue + poker-MTT sweeper ready');
   } catch (err) {
     console.error('[API] Activity portal init failed:', err);
   }
@@ -798,6 +813,7 @@ async function gracefulShutdown(signal: string) {
     stopSimulation();
     activityRoomManager.stopSweeper();
     activityQueueService.stopMatchmaker();
+    tournamentManager.stopStartTriggerSweeper();
     try {
       const { stopSessionSweeper } = await import(
         './services/openclaw-session-sweeper'
