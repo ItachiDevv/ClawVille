@@ -1215,7 +1215,10 @@ export const useActivityStore = create<ActivityState>()(
         case 'poker.showdown':
         case 'poker.hand_ended':
         case 'poker.hole_cards':
-        case 'poker.your_turn': {
+        case 'poker.your_turn':
+        // Multi-table MTT (P4) rebalance frames — also poker-store-owned.
+        case 'poker.moved':
+        case 'poker.table_rebalanced': {
           usePokerStore.getState().applyServerFrame(frame);
           break;
         }

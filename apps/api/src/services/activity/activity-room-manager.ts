@@ -67,6 +67,22 @@ const PENDING_EMPTY_TTL_MS = 90_000;
 /** LIVE rooms with no live WS for > this duration are killed (backend §1.6) */
 const LIVE_NO_WS_TTL_MS = 30_000;
 
+/**
+ * Activities whose LIVE rooms LEGITIMATELY have 0 connected WS sockets for long
+ * stretches and must NOT be crash-swept on the 30s `LIVE_NO_WS_TTL_MS`. A poker
+ * tournament table is the canonical case: between hands (and during the window
+ * after seating but before a human/agent opens its socket) the room can sit with
+ * zero live connections for minutes while the TournamentManager's per-table hand
+ * loop keeps running server-side. Crash-aborting such a room would strand the
+ * tournament's CT escrow. The TournamentManager owns these rooms' lifecycle
+ * (it transitions them → results on table-break / completion), so the sweeper
+ * leaves them alone entirely; they are NOT abandoned because their owner drives
+ * them to a terminal state. (Poker MTT P4.)
+ */
+const LIVE_NO_WS_SWEEP_EXEMPT_ACTIVITIES: ReadonlySet<string> = new Set<string>([
+  'texas-holdem-mtt',
+]);
+
 /** RESULTS rooms older than this are GC'd regardless of viewers (backend §1.6) */
 const RESULTS_RETENTION_MS = 120_000;
 
@@ -200,6 +216,17 @@ class ActivityRoomManager {
    * RESULTS→GC, ABORTED, ABORTED_CRASH). Chunk #10.
    */
   private evictionFn: ((room: Room) => void) | null = null;
+
+  /**
+   * Abort-notification hook (Poker MTT P4). Fired with `(roomId, activityId)`
+   * whenever a room transitions to `aborted` / `aborted_crash` — so an owner that
+   * holds money/state behind the room (the TournamentManager, which escrows CT
+   * for a tournament table) can recover (settle/refund) instead of stranding it.
+   * Best-effort: the receiver's errors are swallowed (must never break a sweep).
+   * Most activities don't register one (it stays a no-op).
+   */
+  private abortNotifyFn: ((roomId: string, activityId: string) => void) | null =
+    null;
 
   /**
    * Per-activity sim → placement-list resolver. Registered at boot from
@@ -519,6 +546,13 @@ class ActivityRoomManager {
           break;
         }
         case 'live': {
+          // Long-lived poker tables legitimately have 0 sockets between hands /
+          // before players connect — their owner (the TournamentManager) drives
+          // them to a terminal state, so the sweeper must NOT crash-abort them
+          // (would strand the tournament's CT escrow). See the exempt set above.
+          if (LIVE_NO_WS_SWEEP_EXEMPT_ACTIVITIES.has(room.activityId)) {
+            break;
+          }
           if (
             this.connectedCount(room) === 0 &&
             now - room.lastTouchedAt > LIVE_NO_WS_TTL_MS
@@ -706,6 +740,15 @@ class ActivityRoomManager {
    */
   setEvictionFn(fn: (room: Room) => void): void {
     this.evictionFn = fn;
+  }
+
+  /**
+   * Register the abort-notification hook (Poker MTT P4). Called when any room
+   * aborts so an owner holding escrow behind the room (the TournamentManager) can
+   * recover. Idempotent registration (last writer wins). See `abortNotifyFn`.
+   */
+  setAbortNotifyFn(fn: (roomId: string, activityId: string) => void): void {
+    this.abortNotifyFn = fn;
   }
 
   /**
@@ -1010,6 +1053,20 @@ class ActivityRoomManager {
           participantCount: room.participants.size,
         },
       });
+    }
+
+    // Notify any owner holding escrow/state behind this room (Poker MTT P4) so it
+    // can recover (settle/refund) — covers BOTH abort paths. Best-effort: a
+    // throwing receiver must NEVER break the abort persistence / sweep.
+    if (this.abortNotifyFn) {
+      try {
+        this.abortNotifyFn(room.id, room.activityId);
+      } catch (err) {
+        console.error(
+          '[activity-room-manager] abortNotifyFn threw (swallowed):',
+          err,
+        );
+      }
     }
   }
 
