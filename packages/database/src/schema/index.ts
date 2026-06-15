@@ -74,12 +74,6 @@ export * from './blackjack';
 // shoe / cursor drift. One hand = one cove_game_events row (gameType='holdem').
 // ClawTokens tier today; currency seam reserved for the SOL/USDC tier.
 export * from './holdem';
-// Poker MTT (P3) — single-table tournament engine: tournaments + entrants +
-// tables + blind schedules + per-hand audit + per-placement prize results.
-// ADDITIVE ONLY (new tables, clean CREATE on db:push). Tournament CHIPS are NOT
-// CT — only the buy-in debit + prize credit cross the ClawToken ledger; the
-// prize pool conserves (sum(prizeCt) + rakeTakenCt == prizePoolCt). See `poker.ts`.
-export * from './poker';
 // Phase 6.6.1 — cove Baccarat (Punto Banco) shoes + coups. Two-table
 // commit-reveal pattern mirroring blackjack (8-deck shared no-replacement shoe;
 // ~75% penetration reshuffle = new shoe row). Punto Banco has NO player
