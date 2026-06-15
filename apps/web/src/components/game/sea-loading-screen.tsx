@@ -58,7 +58,11 @@ const SPLASH_RINGS = [
   { delay: '0.26s', size: 90 },
 ] as const;
 
-const SLOW_MS = 15_000;
+// Perf round-3 change D: reduced from 15_000 to 8_000. With faster texture
+// upload (change B) and higher VRM concurrency (change C), the expected warm
+// load is ~5-7s on a real Iris Xe machine. 8s gives a comfortable margin
+// before "taking longer than expected" fires.
+const SLOW_MS = 8_000;
 const TIMEOUT_MS = 30_000;
 
 export default function SeaLoadingScreen({ forceReady }: Props) {
