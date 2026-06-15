@@ -346,6 +346,11 @@ class NpcSimulation {
   // OpenClaw bot registry
   private openClawBots: Map<string, { config: OpenClawRegistration; client: OpenClawClient }> = new Map();
   private npcOverrides: Map<string, string> = new Map(); // npcId → sessionId
+  // Controlled-launch suppression: agentId → epoch-ms until which a Hatcher
+  // proxy NPC is "human-driven" and must be hidden + frozen (its owner is
+  // driving the bound avatar in 'player' mode). Refreshed at 5 Hz by
+  // /api/world/position; entries auto-expire when the owner stops driving.
+  private humanControlledOpenClawUntil: Map<string, number> = new Map();
 
   // Browser-connected claws (no gateway — controlled by browser client)
   private browserClaws: Map<string, {
@@ -442,11 +447,70 @@ class NpcSimulation {
    * agent gateway perception, REST /api/npc/state, etc.). Does NOT drain
    * the collaboration broker queue; collaborationEvents is always empty.
    */
+  /**
+   * True when `npcId` is a Hatcher proxy avatar body whose owner is actively
+   * driving the bound avatar in 'player' mode (controlled launch). Such a body
+   * must be hidden from snapshots and skipped by all autonomy planning so it
+   * doesn't appear as a second, auto-walking copy of the player. Expired
+   * entries are pruned lazily on read. Maps npcId → sessionId → config.agentId.
+   */
+  private isHumanControlledOpenClawNpc(npcId: string, now = Date.now()): boolean {
+    const sessionId = this.npcOverrides.get(npcId);
+    if (!sessionId) return false;
+    const agentId = this.openClawBots.get(sessionId)?.config.agentId;
+    if (!agentId) return false;
+    const until = this.humanControlledOpenClawUntil.get(agentId) ?? 0;
+    if (until <= now) {
+      this.humanControlledOpenClawUntil.delete(agentId);
+      return false;
+    }
+    return true;
+  }
+
+  /** Prime/extend the human-driving suppression window for a specific agent. */
+  markHumanControlledOpenClaw(agentId: string, ttlMs = 3000): void {
+    this.humanControlledOpenClawUntil.set(agentId, Date.now() + ttlMs);
+    // Freeze the proxy body NOW: clearing the in-flight A* path stops it drifting
+    // for the rest of the current tick (moveNpcs also skips suppressed bodies,
+    // but a path may have been assigned earlier in the same tick), and dropping
+    // any walking activity prevents a stale "walking" pose lingering on the
+    // hidden body when suppression later lapses.
+    for (const [sessionId, { config }] of this.openClawBots) {
+      if (config.agentId !== agentId) continue;
+      const npcId = config.mode === 'override' ? config.targetNpcId : `oc-${sessionId}`;
+      const npc = this.npcs.get(npcId);
+      if (!npc) continue;
+      npc.path = [];
+      npc.pathIndex = 0;
+      npc.destinationBuildingId = null;
+      if (npc.activity === 'walking') {
+        npc.activity = 'idle';
+        npc.activityEmoji = '';
+      }
+    }
+  }
+
+  /**
+   * Refresh suppression for every Hatcher proxy bound to `userId`. Called on the
+   * owner's 5 Hz /api/world/position uploads. No-op for users with no bound
+   * Hatcher agent (the scan finds no matching config.boundUserId).
+   */
+  refreshHumanControlledOpenClawForUser(userId: string, ttlMs = 3000): void {
+    for (const { config } of this.openClawBots.values()) {
+      if (config.boundUserId === userId) {
+        this.markHumanControlledOpenClaw(config.agentId, ttlMs);
+      }
+    }
+  }
+
   getSnapshot(): SimulationSnapshot {
+    const now = Date.now();
     return {
       roomId: '',
       players: [],
-      npcs: Array.from(this.npcs.values()).map((n) => ({ ...n })),
+      npcs: Array.from(this.npcs.values())
+        .filter((n) => !this.isHumanControlledOpenClawNpc(n.id, now))
+        .map((n) => ({ ...n })),
       conversations: Array.from(this.conversations.values()).filter((c) => c.state === 'active').map((c) => ({ ...c, messages: [...c.messages] })),
       combats: Array.from(this.combats.values()).filter((c) => c.state === 'active').map((c) => ({ ...c, rounds: [...c.rounds] })),
       events: [...this.pendingEvents],
@@ -480,8 +544,11 @@ class NpcSimulation {
     // (buildingId !== '') are never swap-eligible so they're always
     // present; wanderers are looked up by ID from `room.npcs`.
     const npcs: NpcRuntimeState[] = [];
+    const now = Date.now();
     if (room) {
       for (const npc of this.npcs.values()) {
+        // Hide a Hatcher proxy body whose owner is driving the bound avatar.
+        if (this.isHumanControlledOpenClawNpc(npc.id, now)) continue;
         if (!FREE_ROAMER_NPC_IDS.has(npc.id)) {
           npcs.push({ ...npc });
         } else if (room.npcs.has(npc.id)) {
@@ -490,7 +557,10 @@ class NpcSimulation {
       }
     } else {
       // Unknown room (e.g. solo- alias from npc-sse shim) → full roster.
-      for (const npc of this.npcs.values()) npcs.push({ ...npc });
+      for (const npc of this.npcs.values()) {
+        if (this.isHumanControlledOpenClawNpc(npc.id, now)) continue;
+        npcs.push({ ...npc });
+      }
     }
 
     return {
@@ -661,6 +731,9 @@ class NpcSimulation {
   unregisterOpenClaw(sessionId: string): boolean {
     const bot = this.openClawBots.get(sessionId);
     if (!bot) return false;
+    // Drop any human-control suppression entry for this agent so a stale TTL
+    // can't outlive the session (a re-registered agent gets a fresh window).
+    this.humanControlledOpenClawUntil.delete(bot.config.agentId);
     if (bot.config.mode === 'override') {
       const npcId = bot.config.targetNpcId;
       this.cleanupNpcFromCombats(npcId);
@@ -1007,6 +1080,12 @@ class NpcSimulation {
    */
   dispatchHatcherActions(npcId: string, replyText: string): string {
     if (!replyText) return replyText;
+    // Owner is driving this proxy — a cognition reply must not move or act in the
+    // world. Strip the action tags from speech (mirrors the post-loop cleanup
+    // below) and execute none of them.
+    if (this.isHumanControlledOpenClawNpc(npcId)) {
+      return replyText.replace(HATCHER_ACTION_REGEX, '').replace(/\s{2,}/g, ' ').trim();
+    }
     const npc = this.npcs.get(npcId);
 
     let match: RegExpExecArray | null;
@@ -1465,6 +1544,8 @@ class NpcSimulation {
       if (npc.isDead || npc.inConversation || npc.inCombat) continue;
       if (npc.activity !== 'idle') continue;
       if (npc.isOpenClaw && npc.autonomyMode === 'self-managed') continue;
+      // Owner is driving this proxy in 'player' mode — don't plan autonomy for it.
+      if (this.isHumanControlledOpenClawNpc(npc.id)) continue;
 
       npc.behaviorCooldown--;
       if (npc.behaviorCooldown > 0) continue;
@@ -1846,6 +1927,9 @@ class NpcSimulation {
 
     for (const npc of this.npcs.values()) {
       if (npc.isDead || npc.inConversation) continue;
+      // Owner is driving this proxy in 'player' mode — freeze its server body so
+      // the hidden NPC can't keep walking an already-assigned path.
+      if (this.isHumanControlledOpenClawNpc(npc.id)) continue;
 
       // In-combat NPCs in approach phase move toward their target at 1.5x speed
       if (npc.inCombat && npc.combatTargetId) {
@@ -2084,7 +2168,9 @@ class NpcSimulation {
   private getIdleAliveNpcs(): NpcRuntimeState[] {
     const now = Date.now();
     return Array.from(this.npcs.values()).filter(
-      (n) => !n.isDead && !n.inConversation && !n.inCombat && now >= n.conversationCooldownUntil
+      (n) =>
+        !this.isHumanControlledOpenClawNpc(n.id, now) &&
+        !n.isDead && !n.inConversation && !n.inCombat && now >= n.conversationCooldownUntil
     );
   }
 
@@ -2093,6 +2179,7 @@ class NpcSimulation {
     let nearestDist = maxDist;
     const now = Date.now();
     for (const other of this.npcs.values()) {
+      if (this.isHumanControlledOpenClawNpc(other.id, now)) continue;
       if (other.id === npc.id || other.isDead || other.inConversation || other.inCombat || now < other.invulnerableUntil || now < other.conversationCooldownUntil) continue;
       const dx = other.x - npc.x;
       const dy = other.y - npc.y;

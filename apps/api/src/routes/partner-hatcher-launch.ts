@@ -189,6 +189,22 @@ partnerHatcherLaunchRoutes.post('/launch/exchange', async (c) => {
     const body: HatcherLaunchExchangeResponse = { ok: false, error: 'agent_not_registered' };
     return c.json(body, 404);
   }
+  // Controlled launch lands the owner IN CONTROL of the agent's bound avatar and
+  // suppresses the autonomous proxy keyed on `boundUserId === session user`. That
+  // suppression only fires if the launching Lucia session IS the agent's bound
+  // user, so enforce it here rather than trusting the partner-supplied principal:
+  //   - no bound user  → there is no avatar to drive (agent registered without an
+  //     identityKey) → `agent_not_bound`.
+  //   - bound to a DIFFERENT user → driving would leave the proxy as a second,
+  //     auto-walking body → `agent_not_owned`. Fail loud, never silently dupe.
+  if (!row.userId) {
+    const body: HatcherLaunchExchangeResponse = { ok: false, error: 'agent_not_bound' };
+    return c.json(body, 409);
+  }
+  if (row.userId !== user.id) {
+    const body: HatcherLaunchExchangeResponse = { ok: false, error: 'agent_not_owned' };
+    return c.json(body, 403);
+  }
 
   // Build the exchange body. clawvilleSessionId is the NON-REVERSIBLE sha256 of
   // the Lucia session id — stable per session for correlation on Hatcher's side,
@@ -199,7 +215,7 @@ partnerHatcherLaunchRoutes.post('/launch/exchange', async (c) => {
     launchToken,
     clawvillePlayerId: user.id,
     clawvilleSessionId: sha256Hex(session.id),
-    mode: 'autonomous' as const,
+    mode: 'controlled' as const,
   };
 
   // (5) Sign the canonical body. signPayload returns the EXACT bytes to transmit
@@ -297,9 +313,15 @@ partnerHatcherLaunchRoutes.post('/launch/exchange', async (c) => {
     return c.json(body, 502);
   }
 
-  // Success — return the agent's public identity + in-world position for camera
-  // focus. Echo the RAW partner id (strip the `hatcher:` storage namespace).
+  // Success — return the agent's public identity + in-world position. Echo the
+  // RAW partner id (strip the `hatcher:` storage namespace).
   const position = resolveAgentPosition(namespacedAgentId, row);
+  // Controlled mode: the owner is about to drive the agent's avatar in 'player'
+  // mode. Prime the server-side suppression of the agent's autonomous proxy NPC
+  // immediately (keyed on the namespaced agentId) so it can't auto-walk in the
+  // window before the browser's first /api/world/position upload starts the
+  // 5 Hz TTL refresh. Suppression expires on its own once driving stops.
+  npcSimulation.markHumanControlledOpenClaw(namespacedAgentId);
   const body: HatcherLaunchExchangeResponse = {
     ok: true,
     agent: {
@@ -307,7 +329,7 @@ partnerHatcherLaunchRoutes.post('/launch/exchange', async (c) => {
       name: row.name ?? rawAgentId.slice(0, 24),
       x: position.x,
       y: position.y,
-      mode: 'autonomous',
+      mode: 'controlled',
     },
   };
   return c.json(body, 200);
