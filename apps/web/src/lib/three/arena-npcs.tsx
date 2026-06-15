@@ -21,6 +21,7 @@ import { MAP_WIDTH, MAP_HEIGHT } from '@/lib/pixi/tilemap-data';
 import { useGameStore } from '@/stores/game';
 import { PLAYER_NPC_ID } from '@/stores/npc';
 import { makeObject3DWebGPUSafe } from '@/lib/three/webgpu-geometry';
+import { getTerrainHeightAt, isTerrainHeightfieldReady } from '@/lib/three/terrain-heightfield';
 import { jumpState } from '@/lib/three/jump-state';
 import { clampMovement2D, ENTITY_HALF_HUMANOID, ENTITY_HALF_CHIBI } from '@/lib/three/collision/world-colliders';
 import { avatarPositionRef } from '@/stores/game';
@@ -273,53 +274,25 @@ function computeLocalMinY(scene: THREE.Object3D): number {
 // Allocated once — never inside useFrame to avoid GC pressure.
 const _renderedBbox = new THREE.Box3();
 
-// Shared raycaster — set to only hit layer 1 (terrain)
-const _raycaster = new THREE.Raycaster();
-_raycaster.layers.set(TERRAIN_LAYER);
-const _rayOrigin = new THREE.Vector3();
-const _rayDir = new THREE.Vector3(0, -1, 0);
-
-// Cached terrain mesh ref. PERF FIX (2026-04-22): the previous implementation
-// called intersectObjects(scene.children, true) which recurses through ALL
-// 4549 scene Object3Ds for EACH NPC's terrain check, even though only the
-// terrain mesh has TERRAIN_LAYER set. The layer filter happens AFTER recursion
-// so the traversal cost was paid in full. DevTools profile showed raycast
-// eating 31.5% of frame time across 18 NPCs.
+// PERF FIX (2026-06-15, prod-trace-confirmed ~57% JS CPU):
+// Previous implementations used either:
+//   - intersectObjects(scene.children, true)  — O(NPCs × 4549 objects)
+//   - intersectObject(cachedMesh, false)       — O(NPCs × 28,800 triangles)
+// Both still dominate the JS profile when called every 3-12 frames per NPC.
+// Replaced by O(1) bilinear heightfield lookup in terrain-heightfield.ts.
+// The heightfield is built once from the displaced PlaneGeometry vertex positions
+// (same data the raycaster would hit) and returns identical results within
+// floating-point precision.
 //
-// Fix: cache the terrain mesh on first call (one scene traversal total) then
-// intersect against ONLY that single mesh — no recursion, no scene-wide walk.
-// Reduced raycast cost from O(NPCs × 4549 objects) → O(NPCs × 1 mesh).
-let _cachedTerrainMesh: THREE.Object3D | null = null;
-function findTerrainMesh(scene: THREE.Scene): THREE.Object3D | null {
-  if (_cachedTerrainMesh && _cachedTerrainMesh.parent) return _cachedTerrainMesh;
-  _cachedTerrainMesh = null;
-  scene.traverse((obj) => {
-    if (_cachedTerrainMesh) return;
-    // Test layer membership — terrain is the only object with TERRAIN_LAYER enabled
-    if ((obj as THREE.Mesh).isMesh && obj.layers.test(_raycaster.layers)) {
-      _cachedTerrainMesh = obj;
-    }
-  });
-  return _cachedTerrainMesh;
-}
+// NOTE: The scene parameter is kept in the signature so callers are unchanged.
+// It is ignored — the heightfield is a module singleton seeded by arena-terrain.tsx.
 
-/** Raycast down from (x, z) to find terrain surface Y */
-function getTerrainY(x: number, z: number, scene: THREE.Scene): number {
-  const terrain = findTerrainMesh(scene);
-  if (!terrain) return -2; // terrain not loaded yet, flat sand floor
-
-  _rayOrigin.set(x, 200, z);
-  _raycaster.set(_rayOrigin, _rayDir);
-  _raycaster.layers.set(TERRAIN_LAYER);
-  _raycaster.far = 400;
-
-  // intersectObject(mesh, false) = NO recursion, just this one mesh.
-  // 99.98% cheaper than intersectObjects(scene.children, true).
-  const intersects = _raycaster.intersectObject(terrain, false);
-  if (intersects.length > 0) {
-    return intersects[0].point.y;
-  }
-  return -2;
+/** O(1) terrain height lookup — bilinear interpolation into pre-built heightfield.
+ *  Falls back to -2 (flat floor) if the heightfield is not yet initialised
+ *  (i.e. createSandGeometry() has not run yet — should not happen in practice). */
+function getTerrainY(x: number, z: number, _scene: THREE.Scene): number {
+  if (!isTerrainHeightfieldReady()) return -2;
+  return getTerrainHeightAt(x, z);
 }
 
 // Map species strings to GLB paths + model keys for the new character system
@@ -458,9 +431,11 @@ preloadVRMBytes('/avatars/milady-official-8.vrm');
 // Hermes wanderers (Mira / Cyrus / Tekk) — re-added 2026-05-12 PM after the
 // per-VRM auto-fit in VRMNpcMesh let cm-authored VRMs render at the same
 // world height as Milady (computeVRMNpcScale below).
-preloadVRMBytes('/avatars/hermes-female.vrm');
-preloadVRMBytes('/avatars/hermes-male.vrm');
-preloadVRMBytes('/avatars/tekk.vrm');
+// ?v=2 — perf round 2 decimation bust 2026-06-13. MUST match the registry +
+// asset-preload-manifest urls exactly (a ?v mismatch double-fetches the VRM).
+preloadVRMBytes('/avatars/hermes-female.vrm?v=2');
+preloadVRMBytes('/avatars/hermes-male.vrm?v=2');
+preloadVRMBytes('/avatars/tekk.vrm?v=2');
 preloadMixamoClips();
 
 // ---------------------------------------------------------------------------

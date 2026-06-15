@@ -213,6 +213,8 @@ Source: `apps/web/src/lib/three/collision/world-colliders.ts` (AABB cutover 2026
 >
 > Both files in the SAME diff. A structure without a collider entry is a walk-through ghost. A stale collider at a removed structure creates an invisible wall.
 
+**Texture-overhang buffer (2026-06-15):** every BUILDING collider's half-extents get `+BUILDING_COLLISION_BUFFER` (28 wu) on top of the GLB-measured `BUILDING_EXTENTS`. The extents are sized to building GEOMETRY, but each building's visible texture/silhouette bleeds slightly past the geometry box — without the buffer the player could walk into the outer texture before collision blocked them. Buildings only (props in `PROPS[]` stay individually tuned). Defined identically in BOTH `world-colliders.ts` (client/player) and `world-colliders-data.ts` (server/NPC) — keep equal per the §6g same-diff rule. User-tunable.
+
 Pure XZ-plane AABB (axis-aligned bounding box) collision — no physics engine, no draw calls, zero per-frame allocations. Blocks players AND NPCs from walking into buildings and town-center props. AABB chosen over disc: buildings are 14×14 tile squares; disc over-covers diagonals or leaves corners enterable. AABB gives geometrically correct wall feel at every edge. Minimum-translation-vector (MTV) push-out gives natural wall-sliding.
 
 **Walkable colliders (added 2026-05-22):**
@@ -632,7 +634,7 @@ TSL fragment shader (`createSandMaterial()`):
 - Grain detail (`fract(sin(px·3.7 + py·7.3) · 43.758)`)
 - Smoothstep height blend (`smoothstep(-28, 28, h)`) between `warmSand(1.0, 0.91, 0.78)` and `coolDeep(0.25, 0.19, 0.12)`
 
-**Terrain raycast (NPC grounding):** the terrain mesh sets `layers = TERRAIN_LAYER (=1)`. Raycasters subscribed only to layer 1 — saves traversing the rest of the scene.
+**Terrain grounding — O(1) heightfield (2026-06-15, prod-trace-confirmed):** NPCs + player ground-snap via `getTerrainHeightAt(x,z)` (`terrain-heightfield.ts`), a bilinear lookup into a 121×121 height grid built once from the displaced `PlaneGeometry` vertices in `createSandGeometry()`. This REPLACED per-frame terrain raycasting (`intersectObject` against the 28,800-tri terrain): a prod CPU trace showed `intersectTriangle` + BufferAttribute vertex reads = ~57% of JS CPU (the recurring ~60ms frame hitches / "intermittent freeze"). Heightfield reads the same displaced vertices the raycast hit → identical heights (diff=0 at 11 sample points). The `_raycaster`/`findTerrainMesh` helpers were removed from `arena-npcs`/`arena-location-npcs`/`player-avatar`. The `TERRAIN_LAYER` constant remains for any residual layer use. (Historical: raycasters were layer-1-only to skip scene traversal — still O(28,800 tris)/call, the cost the heightfield eliminates.)
 
 ---
 

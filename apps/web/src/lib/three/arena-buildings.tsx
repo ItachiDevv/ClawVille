@@ -1247,6 +1247,12 @@ function EditableBuilding({
   const { scene: threeScene } = useThree();
   const groupRef = useRef<THREE.Group>(null);
   const terrainY = useRef(-15);
+  // Settle-once guard: buildings are static, so their terrain-snap Y never
+  // changes after the first valid hit. Running intersectObjects(scene.children,true)
+  // against the 28,800-tri terrain every frame for 10-12 buildings costs ~345k
+  // triangle-ray tests/frame with zero benefit after settle. Mirror of the
+  // NPC single-mesh cache optimization in arena-npcs.tsx / arena-location-npcs.tsx.
+  const settled = useRef(false);
 
   const { cloned, buildingScale, pivotOffsetX, pivotOffsetY, pivotOffsetZ } = useMemo(() => {
     const c = scene.clone(true);
@@ -1289,9 +1295,21 @@ function EditableBuilding({
     return { cloned: c, buildingScale: s, pivotOffsetX: finalPX, pivotOffsetY: py, pivotOffsetZ: finalPZ };
   }, [scene, config.targetMaxDim, config.childScaleOverrides, config.bodyAnchorChild]);
 
-  // Re-raycast terrain Y whenever position changes
+  // Re-raycast terrain Y until the first valid hit, then cache and stop.
+  // Buildings are static: their terrain-snap Y never changes after settle.
+  // Before this fix: intersectObjects(scene.children, true) ran every frame for
+  // every building in edit mode (~10-12 buildings × 28,800-tri terrain =
+  // ~345k triangle-ray tests/frame at zero benefit post-settle).
   useFrame(() => {
     if (!groupRef.current) return;
+    // Settle-once: after the first valid terrain hit, the Y is cached and we
+    // only update the group position (no raycast). The useFrame stays subscribed
+    // so position stays in sync if zone.worldX/Z changes during drag, but the
+    // expensive intersect path is skipped entirely once terrain is loaded.
+    if (settled.current) {
+      groupRef.current.position.set(zone.worldX, terrainY.current + config.yOffset, zone.worldZ);
+      return;
+    }
     _buildRayOrigin.set(zone.worldX, 200, zone.worldZ);
     _buildRaycaster.set(_buildRayOrigin, _buildRayDir);
     _buildRaycaster.layers.set(TERRAIN_LAYER);
@@ -1300,6 +1318,7 @@ function EditableBuilding({
     const intersects = _buildRaycaster.intersectObjects(threeScene.children, true);
     if (intersects.length > 0) {
       terrainY.current = intersects[0].point.y;
+      settled.current = true;
     }
     groupRef.current.position.set(zone.worldX, terrainY.current + config.yOffset, zone.worldZ);
   });
