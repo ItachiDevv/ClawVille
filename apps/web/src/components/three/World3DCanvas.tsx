@@ -992,11 +992,11 @@ const SceneContents = memo(function SceneContents({
           i don't care about it much".
           Old: near=6000 far=16000 (camera.far=16000). Geometry past the world
           half-width (5760 wu) still rendered fully even when fog-faded.
-          New: near=5000 far=10000 (camera.far=10000 matched below). Far-ring
-          buildings at 5493wu start fogging at ~10%, fully fogged by 10000wu,
-          depth-clipped at 10000wu. Real distance culling for the half of the
-          world the player isn't looking at. */}
-      {showWaterFogParticles && <fog attach="fog" args={[FOG_COLOR, 5000, 10000]} />}
+          New (2026-05-22): near=5000 far=10000 (camera.far=10000). Far-ring
+          buildings at 5493wu start fogging at ~10%, fully fogged by 10000wu.
+          Updated 2026-06-15 (Phase 0 land, 576x576 world, half=9216wu):
+          near=6500 far=13500 (camera.far=14000). fog.far<=camera.far invariant. */}
+      {showWaterFogParticles && <fog attach="fog" args={[FOG_COLOR, 6500, 13500]} />}
 
       {/* Shared world geometry */}
       <group name="perf:terrain" userData={{ perfChunk: 'terrain' }}>
@@ -1380,10 +1380,10 @@ function World3DCanvas({ mode, perfFlags }: World3DCanvasProps) {
         camera={{
           fov: 50,
           near: 1,
-          // far: 10000 (tightened 2026-05-22 from 16000) matches fog.far for
-          // real distance culling. World half-width is 5760 wu, so 10000 still
-          // covers any visible neighbor while clipping the far half of the map.
-          far: 10000,
+          // far: 14000 (raised 2026-06-15 for 576x576 / 18432wu world -- Phase 0 land).
+          // fog.far=13500 <= camera.far=14000 (invariant maintained).
+          // World half-width is now 9216 wu; buildings at ~4160wu stay well within view.
+          far: 14000,
           // Game mode: tighter starting position reinforces the bigger buildings/characters.
           // Pulled in from [0,700,1600] after proportions pass (2026-04-16).
           position: mode === 'game' ? [0, 600, 1300] : [0, 560, 1000],

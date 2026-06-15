@@ -22,8 +22,8 @@ import {
 // Each building sits on the actual terrain surface
 // ---------------------------------------------------------------------------
 
-const OFFSET_X = -MAP_WIDTH / 2;  // -5760 (Phase 6.2: 11520-world)
-const OFFSET_Z = -MAP_HEIGHT / 2; // -5760
+const OFFSET_X = -MAP_WIDTH / 2;  // -9216 (Phase 0 land: 18432-world)
+const OFFSET_Z = -MAP_HEIGHT / 2; // -9216
 const HALF_W = MAP_WIDTH / 2;
 const HALF_H = MAP_HEIGHT / 2;
 
@@ -60,16 +60,18 @@ const BUILDING_TARGET_HEIGHT = 1000;
 // 1. Avatar pathfinds toward the cove door position (game-px coords).
 //    Door target: ~300 game-px east of cove building center so the avatar
 //    approaches from the plaza rather than teleporting inside the building.
-//    Cove zone: cx=20 tiles → game-px x=640, cy=180 tiles → game-px y=5760.
-//    Door target = (940, 5760) — 300px east, on the side facing town center.
+//    The door sits at WORLD (−4820, 0) — invariant across world grows.
+//    Derived from the map center so a future grow re-centers automatically:
+//      game-px x = MAP_WIDTH/2 − 4820,  game-px y = MAP_HEIGHT/2 (center row).
+//    Phase 0 land (2026-06-15): center 5760→9216 ⇒ door (940,5760)→(4396,9216).
 // 2. When within DOOR_ARRIVE_DIST (200 game-px) of door target OR after
 //    MAX_WAIT_MS (1500ms) — whichever comes first — trigger the SceneTransition.
 // 3. SceneTransition fades to black (500ms), mid-fade pushes to /cove,
 //    cove page fades in (500ms). Total flow ≤ 3s per plan acceptance criteria.
 // ---------------------------------------------------------------------------
 
-/** Cove door position in game-px (world tilemap space). */
-const COVE_DOOR_PX = { x: 940, y: 5760 };
+/** Cove door position in game-px (world tilemap space). Derived from map center. */
+const COVE_DOOR_PX = { x: MAP_WIDTH / 2 - 4820, y: MAP_HEIGHT / 2 };
 /** Avatar must be within this distance (game-px) to trigger the fade. */
 const DOOR_ARRIVE_DIST = 200;
 /** Hard timeout before triggering fade even if avatar hasn't arrived. */
@@ -267,8 +269,8 @@ const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: n
   // box3Recenter=true: geometry authored at ~(-1800, 166, 4540) Blender origin — centering handled by pivotOffset.
   // targetMaxDim: 1300 — cove is the entertainment-district landmark, deserves more visual mass.
   // onClick: Phase 6.0.3 walk-in flow — avatar walks toward door, then SceneTransition fades to /cove.
-  // Door target in game-px: cove zone cx=50 tiles → x=1600, cy=180 tiles → y=5760; door is ~300 game-px
-  // east of building center (toward town center at 5760,5760).
+  // Door target in game-px derived from map center (COVE_DOOR_PX above): cove zone
+  // slot 9 W; door is ~east of building center, toward town center (origin).
   'cove':              { model: '/models/cove/cove-exterior-opt1.glb?v=2', yOffset: 0, rotY:  1.571, targetMaxDim: 1300, box3Recenter: true,
                            onClick: () => { triggerCoveWalkIn(); } },
   // Slot 10 — WNW (cx=67, cy=115): dx=113, dz=65 → atan2(113,65)≈1.049 (π/3)
