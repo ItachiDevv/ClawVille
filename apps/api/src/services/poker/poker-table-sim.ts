@@ -64,6 +64,7 @@ import type {
   PublicTableSnapshot,
   SeatPublicState,
   SendToSeatFn,
+  ShowdownBroadcastFn,
   SimClock,
   StartHandArgs,
   Street,
@@ -141,6 +142,7 @@ export class PokerTableSim {
   private broadcastFn: BroadcastFn | null = null;
   private sendToSeatFn: SendToSeatFn | null = null;
   private handCompleteFn: HandCompleteFn | null = null;
+  private showdownBroadcastFn: ShowdownBroadcastFn | null = null;
 
   constructor(clock: SimClock = REAL_CLOCK) {
     this.clock = clock;
@@ -156,6 +158,16 @@ export class PokerTableSim {
   }
   setHandCompleteFn(fn: HandCompleteFn): void {
     this.handCompleteFn = fn;
+  }
+  /**
+   * Register the public showdown/hand-end BROADCAST callback. Distinct slot from
+   * `setHandCompleteFn` so a state-advancing owner (the MTT TournamentManager's
+   * multi-hand loop) and a frame-fan-out owner (the WS bridge) can BOTH observe
+   * the same resolveHand boundary without clobbering each other. Fires AFTER
+   * `handCompleteFn`.
+   */
+  setShowdownBroadcastFn(fn: ShowdownBroadcastFn): void {
+    this.showdownBroadcastFn = fn;
   }
 
   // ── Lifecycle ─────────────────────────────────────────────────────────────
@@ -848,8 +860,13 @@ export class PokerTableSim {
     };
 
     // Broadcast the final (showdown) public snapshot, then fire completion.
+    // Order: (1) public snapshot, (2) hand-complete (the OWNER — e.g. the MTT TM's
+    // multi-hand loop advances/settles; or the demo's RESULTS transition), then
+    // (3) the SEPARATE showdown/hand-end BROADCAST hook (frame fan-out only). The
+    // two callbacks are distinct slots so neither clobbers the other.
     this.broadcast(t);
     if (this.handCompleteFn) this.handCompleteFn(t.tableId, result);
+    if (this.showdownBroadcastFn) this.showdownBroadcastFn(t.tableId, result);
   }
 
   // ── Frame builders ────────────────────────────────────────────────────────
@@ -955,6 +972,7 @@ export class PokerTableSim {
     const toCall = t.currentBet - seat.streetCommitted;
     const view: PrivateSeatView = {
       seatIndex: seat.seatIndex,
+      handNumber: t.handNumber,
       holeCards: seat.hole,
       legalActions: this.legalActionsFor(t, seat),
       toCall,
