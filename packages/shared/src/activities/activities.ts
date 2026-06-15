@@ -194,6 +194,31 @@ export const ACTIVITY_REGISTRY: readonly ActivityDefinition[] = [
     rewardConfig: TEXAS_HOLDEM_REWARD_CONFIG,
   },
   {
+    // ── Poker MTT (P3.5) — tournament TABLES, NOT a portal-queued activity ─────
+    // A tournament table is a SEPARATE activityId from the single-table cove demo
+    // (`texas-holdem`) so its WS dispatch + LIVE transition target the DEDICATED
+    // `pokerMttSim` (driven by the TournamentManager), never the demo
+    // `pokerTableSim`. The two sims + activityIds stay fully isolated.
+    //
+    // It is `coming-soon` (NOT portal-queueable) ON PURPOSE: a tournament table is
+    // SEATED by the TournamentManager when a registered field starts — it is never
+    // created via the matchmaker/portal queue, so it must not surface as a second
+    // queueable cove activity (which would collide with the `texas-holdem` demo in
+    // `getLiveActivitiesForBuilding('cove')`). The registry entry exists only so
+    // the activityId is type-safe + recognized by the WS hub's MTT dispatch.
+    id: 'texas-holdem-mtt',
+    buildingId: 'cove', // The Cove (entertainment venue — tournament poker table)
+    title: "Texas Hold'em — Tournament",
+    tagline: 'Multi-table tournament poker. Survive the field, climb the prize ladder.',
+    minPlayers: 2,
+    maxPlayers: 9,
+    queueMinPlayers: 2,
+    roundSeconds: 600,
+    openclawSkill: 'Tournament survival + variable-stack decision-making',
+    skillBuildingMatches: ['cove'],
+    status: 'coming-soon',
+  },
+  {
     id: 'bumper-shells',
     buildingId: 'api-integrations', // Salty Spitoon
     title: 'Bumper Shells',
