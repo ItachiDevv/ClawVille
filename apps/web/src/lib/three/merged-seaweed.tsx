@@ -5,6 +5,7 @@ import * as THREE from 'three/webgpu';
 import { attribute, positionLocal, float, sin, cos, vec3, time } from 'three/tsl';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { MAP_WIDTH, MAP_HEIGHT, TILE_SIZE, buildingZones } from '@/lib/pixi/tilemap-data';
+import { LAND_PARCELS } from '@clawville/shared';
 
 // ---------------------------------------------------------------------------
 // Merged Seaweed / Kelp Ground Cover
@@ -13,8 +14,8 @@ import { MAP_WIDTH, MAP_HEIGHT, TILE_SIZE, buildingZones } from '@/lib/pixi/tile
 // NO InstancedMesh — avoids Intel Iris Xe WebGPU crash
 // ---------------------------------------------------------------------------
 
-// Increased from 3000→4500 for the expanded 160x160 map (5120x5120 vs old 2048x1280).
-const BLADE_COUNT = 4500;
+// 2026-06-15 (Phase 0 land): 4500→6500 for the expanded 576x576 world (18432x18432wu).
+const BLADE_COUNT = 6500;
 const HALF_MW = MAP_WIDTH / 2;
 const HALF_MH = MAP_HEIGHT / 2;
 const SPREAD_X = MAP_WIDTH * 2.2;
@@ -32,11 +33,30 @@ const BUILDING_ZONES = buildingZones.map((z) => ({
   radius: Math.max(z.width, z.height) * TILE_SIZE * 2.0,
 }));
 
+// Land parcel exclusion zones — blades don't grow where parcels will be placed.
+// Radius = half the parcel footprint + a small buffer (0.8 tiles) so seaweed
+// doesn't poke through parcel borders at the edge of the cleared circle.
+const PARCEL_ZONES = LAND_PARCELS.map((p) => ({
+  cx: p.cx,
+  cz: p.cz,
+  // half-diagonal of the square footprint + buffer (conservative circle over square)
+  radius: (p.size / 2) * Math.SQRT2 + 0.8 * TILE_SIZE,
+}));
+
 function isNearBuilding(x: number, z: number): boolean {
   for (const b of BUILDING_ZONES) {
     const dx = x - b.cx;
     const dz = z - b.cz;
     if (dx * dx + dz * dz < b.radius * b.radius) return true;
+  }
+  return false;
+}
+
+function isNearParcel(x: number, z: number): boolean {
+  for (const p of PARCEL_ZONES) {
+    const dx = x - p.cx;
+    const dz = z - p.cz;
+    if (dx * dx + dz * dz < p.radius * p.radius) return true;
   }
   return false;
 }
@@ -221,11 +241,11 @@ function generateBlades(): BladeData[] {
     clusters.push({ x: cx, z: cz, radius });
   }
 
-  // Village center world coords — symmetric square map (240×240 grid, center tile 120,120, Phase 6.1)
+  // Village center world coords -- 576x576 grid, center tile (288,288) = world origin (0,0).
   const VILLAGE_CX        = 0;
-  const VILLAGE_CZ        = 0;  // was -16 (old non-symmetric 64x40 grid offset), now 0
-  const SEAWEED_INNER_R   = 280; // Increased from 220 — bigger town center on 5120x5120 map
-  const SEAWEED_SPARSE_R  = 800; // Increased from 620 — wider building ring on 160x160 grid
+  const VILLAGE_CZ        = 0;
+  const SEAWEED_INNER_R   = 280; // Hard town-center exclusion radius (wu); fits inside building ring
+  const SEAWEED_SPARSE_R  = 800; // Sparse-density transition band around the town center (wu)
   const SEAWEED_INNER_R_SQ  = SEAWEED_INNER_R  * SEAWEED_INNER_R;
   const SEAWEED_SPARSE_R_SQ = SEAWEED_SPARSE_R * SEAWEED_SPARSE_R;
 
@@ -255,6 +275,7 @@ function generateBlades(): BladeData[] {
 
     if (distSq < SEAWEED_INNER_R_SQ) continue;
     if (isNearBuilding(x, z)) continue;
+    if (isNearParcel(x, z)) continue;
     // 2026-05-13: sparse-band acceptance bumped 0.25 → 0.5 so the seaweed
     // ring around the town reads as a forest, not a few stray blades. Still
     // sparser than the fully-dense outer area (no rejection past sparse R).

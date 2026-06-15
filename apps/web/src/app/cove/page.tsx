@@ -37,6 +37,7 @@ import CoveMobileControls from '@/components/cove/CoveMobileControls';
 import { useAvatar } from '@/hooks/use-avatar';
 import { useGameStore } from '@/stores/game';
 import { useIsMobile } from '@/hooks/use-is-mobile';
+import { MAP_WIDTH, MAP_HEIGHT } from '@/lib/pixi/tilemap-data';
 
 /**
  * CoveCanvas — dynamically imported with ssr:false so Three.js /
@@ -78,12 +79,13 @@ const CoveCanvas = dynamic(
 // Cove door position in game-px — avatar spawns here on exit so it feels
 // like stepping back out through the same door they entered.
 //
-// Cove zone: slot 9 W → cx=50 tiles, cy=180 tiles.
-// World formula: worldX = cx×32 − 5760 = 50×32 − 5760 = −4160 wu.
-// Exit = 400 wu east (toward town-center at origin) → −3760 wu.
-// game-px x = −3760 + 5760 = 2000.   game-px y = 5760 (center row, unchanged).
+// The cove exit sits at WORLD (−3760, 0) — invariant across world grows.
+// Derived from the map center so a future grow re-centers automatically:
+//   game-px x = MAP_WIDTH/2 − 3760,  game-px y = MAP_HEIGHT/2 (center row).
+// Phase 0 land (2026-06-15): center 5760→9216 ⇒ exit (2000,5760)→(5456,9216).
+//   Cove zone (slot 9 W) world center = −4160 wu; exit = 400 wu east → −3760 wu.
 // ---------------------------------------------------------------------------
-const COVE_EXIT_PX = { x: 2000, y: 5760 };
+const COVE_EXIT_PX = { x: MAP_WIDTH / 2 - 3760, y: MAP_HEIGHT / 2 };
 
 // ---------------------------------------------------------------------------
 // Page component
