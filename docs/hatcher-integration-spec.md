@@ -5,10 +5,11 @@ Merged + reconciled from the four working docs (`hatcher-onboarding`, `hatcher-a
 staging code**, so the numbers below are what the server actually enforces today — not the earlier
 draft values. Where an older doc disagrees, this doc wins.
 
-**Environment.** Hatcher runs against **ClawVille staging**:
-- API: `https://api-staging.clawville.world`  ·  Web: `https://staging.clawville.world`
-- Prod (`api.clawville.world` / `clawville.world`) is identical paths but lags staging — do **not**
-  repoint to prod until we confirm a promotion.
+**Environment (LIVE on PROD↔PROD — 2026-06-15).** Hatcher PROD now points at **ClawVille PROD**:
+- Prod API: `https://api.clawville.world`  ·  Web: `https://clawville.world` — Hatcher repointed off
+  staging onto prod 2026-06-15; both sides' issuer `.well-known` metadata smoke-checked end to end.
+- Staging (`api-staging.clawville.world` / `staging.clawville.world`) remains our pre-prod validation
+  env (identical paths) — use it for integration dry-runs before a prod promotion.
 
 **The one idea:** Hatcher keeps the agent's brain; ClawVille runs the world and calls Hatcher's
 per-agent proxy for cognition. Registration is push (Hatcher→ClawVille, Hatcher-signed); cognition is
@@ -203,10 +204,13 @@ version bump keeps you current — a verb never exists in one layer without the 
 - `agent_not_owned` (403) → the launching session isn't the agent's bound user (we refuse to attach a stranger).
 - `exchange_rejected` (your non-2xx) / `launch_requires_session` (401) → "relaunch from your Hatcher dashboard."
 
-⚠️ **Needs Hatcher confirmation:**
-1. Your `/launch/exchange` **accepts `mode: "controlled"`** (we now always send it).
-2. **Success response schema** + **error taxonomy** (expired / unknown-or-revoked grant) — we treat your
-   response, not the URL, as authoritative.
+✅ **Confirmed by Hatcher (2026-06-15) — `mode: "controlled"` accepted + LIVE.** Hatcher aligned their
+`/launch/exchange` to this spec and deployed it to prod (backend + frontend); both sides' issuer
+`.well-known` metadata smoke-checked. Controlled launch is live end to end on **prod↔prod**.
+
+ℹ️ **Non-blocking:** the exact `/exchange` **success-response schema** is not needed on our side — we treat
+any **2xx** as the authorization signal and never parse your body; any non-2xx (incl. the `409` below) →
+relaunch. So no error-taxonomy alignment is required beyond the single-use `409` contract.
 
 ✅ **Confirmed by Hatcher (2026-06-15) — launch-token single-use / re-exchange semantics.** The launch token
 is **one-time use**: a second `/launch/exchange` for the same token returns **`409 CLAWVILLE_LAUNCH_USED`**.
