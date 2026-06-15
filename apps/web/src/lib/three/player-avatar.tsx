@@ -32,6 +32,7 @@ import {
   type AnimName,
 } from '@/lib/three/vrm-character-animator';
 import { makeObject3DWebGPUSafe } from '@/lib/three/webgpu-geometry';
+import { getTerrainHeightAt, isTerrainHeightfieldReady } from '@/lib/three/terrain-heightfield';
 import { CosmeticLoader } from '@/lib/three/cosmetic-loader';
 import { subscribeEmote } from '@/lib/three/emote-bus';
 import { computeVRMAvatarFit } from '@/lib/three/vrm-avatar-sizing';
@@ -190,8 +191,6 @@ function mapToWorld(px: number, py: number): [number, number, number] {
 // Preload
 useGLTF.preload('/models/lobster.glb');
 
-import { TERRAIN_LAYER } from '@/lib/three/arena-terrain';
-
 // Scratch objects for computeLocalMinY — module-scope to avoid GC in useMemo.
 const _avatarBbox = new THREE.Box3();
 const _avatarMeshBbox = new THREE.Box3();
@@ -228,39 +227,17 @@ const _playerCamForward = new THREE.Vector3();
 const _playerCamRight = new THREE.Vector3();
 const _playerWorldUp = new THREE.Vector3(0, 1, 0);
 
-// Shared raycaster — only hits layer 1 (terrain)
-const _avatarRaycaster = new THREE.Raycaster();
-_avatarRaycaster.layers.set(TERRAIN_LAYER);
-const _avatarRayOrigin = new THREE.Vector3();
-const _avatarRayDir = new THREE.Vector3(0, -1, 0);
+// PERF FIX (2026-06-15, prod-trace-confirmed ~57% JS CPU):
+// The old raycast (intersectObject(cachedMesh, false)) still ran O(28,800
+// triangles) per call. Replaced by O(1) bilinear heightfield lookup.
+// The heightfield is built once in createSandGeometry() in arena-terrain.tsx
+// from the actual displaced vertex positions — same data the raycast hit.
 
-// PERF: cache the terrain mesh — see arena-npcs.tsx for the full rationale.
-// intersectObjects(scene.children, true) recurses through 4549 objects per call
-// when only one mesh has TERRAIN_LAYER. Cache + intersectObject(mesh, false) is
-// O(1 mesh) instead of O(scene-graph).
-let _cachedAvatarTerrainMesh: THREE.Object3D | null = null;
-function findAvatarTerrainMesh(scene: THREE.Scene): THREE.Object3D | null {
-  if (_cachedAvatarTerrainMesh && _cachedAvatarTerrainMesh.parent) return _cachedAvatarTerrainMesh;
-  _cachedAvatarTerrainMesh = null;
-  scene.traverse((obj) => {
-    if (_cachedAvatarTerrainMesh) return;
-    if ((obj as THREE.Mesh).isMesh && obj.layers.test(_avatarRaycaster.layers)) {
-      _cachedAvatarTerrainMesh = obj;
-    }
-  });
-  return _cachedAvatarTerrainMesh;
-}
-
-function getTerrainY(x: number, z: number, scene: THREE.Scene): number {
-  const terrain = findAvatarTerrainMesh(scene);
-  if (!terrain) return -2;
-  _avatarRayOrigin.set(x, 200, z);
-  _avatarRaycaster.set(_avatarRayOrigin, _avatarRayDir);
-  _avatarRaycaster.layers.set(TERRAIN_LAYER);
-  _avatarRaycaster.far = 400;
-  const intersects = _avatarRaycaster.intersectObject(terrain, false);
-  if (intersects.length > 0) return intersects[0].point.y;
-  return -2; // fallback — matches sand floor Y position
+/** O(1) terrain height lookup — bilinear interpolation into pre-built heightfield.
+ *  Falls back to -2 (flat floor) if the heightfield is not yet initialised. */
+function getTerrainY(x: number, z: number, _scene: THREE.Scene): number {
+  if (!isTerrainHeightfieldReady()) return -2;
+  return getTerrainHeightAt(x, z);
 }
 
 // ---------------------------------------------------------------------------

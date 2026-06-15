@@ -537,10 +537,43 @@ const IN_PLACE_CLIPS: ReadonlySet<AnimName> = new Set([
  * positions at runtime for this character class only — Hermes/Milady at full
  * scale still benefit from their idle hip bob.
  *
+ * Hermes / Tekk locomotion case (2026-06-11): the per-character Mixamo bakes
+ * for these three animatorIds were fetched BEFORE the In-Place flag was
+ * forced on in fetch-animations.ts.  gltf-transform track inspection showed
+ * non-cyclic hips Y drift in their run/walk overrides:
+ *   hermes-male run:   first -0.022 → last 3.378  (net +3.40 / loop)
+ *   hermes-female run: net +2.91 / loop
+ *   tekk run:          net +2.34 / loop
+ *   tekk walk:         net +1.60 / loop
+ * The global IN_PLACE_CLIPS set already strips the global run clip, but
+ * shouldStripPosition() only applies the global set when no per-character
+ * entry exists — it does NOT union with PER_CHARACTER_IN_PLACE_CLIPS.
+ * These four clips are loaded via resolveAnimPath → character-specific
+ * override paths, NOT the global run.glb, so the global IN_PLACE entry
+ * is NOT consulted for them.  Adding per-character entries here is the
+ * minimal runtime fix — no asset mutation required.
+ *
  * Key by animatorId (the second arg to `new VRMCharacterAnimator(vrm, animatorId)`).
  */
 const PER_CHARACTER_IN_PLACE_CLIPS: Record<string, ReadonlySet<AnimName>> = {
-  chibi: new Set(['idle', 'walk']),
+  chibi:         new Set(['idle', 'walk']),
+  // Per-character Mixamo bakes with non-cyclic hips Y drift (net > 1 wu/loop).
+  // Global IN_PLACE_CLIPS covers the global run.glb but NOT these override paths.
+  //
+  // 'walk' is listed here for hermes-male DEFENSIVELY even though there is no
+  // `hermes-male.walk` override wired in character-anim-overrides.json today
+  // (so resolveAnimPath('walk','hermes-male') currently falls through to the
+  // clean global walk.glb — net -0.845, mostly cyclic). The unused asset
+  // public/avatars/animations/hermes-male/walk.glb DOES exist on disk and
+  // decodes to +1.887 hips-Y drift per loop; if a future change wires it as
+  // a `walk` override, the body would sink mid-stride exactly like the
+  // hermes-male run case. Pre-arming the strip set here means that wiring is
+  // safe by construction — no second regression hunt. (Hatcher review FIX-15
+  // / 3D-5.) Phanes, the default Hatcher avatar, animates via animatorId
+  // 'hermes-male', so it inherits this guard too.
+  'hermes-male':   new Set(['run', 'walk']),
+  'hermes-female': new Set(['run']),
+  tekk:            new Set(['run', 'walk']),
 };
 
 function shouldStripPosition(name: AnimName, animatorId?: string): boolean {

@@ -27,6 +27,7 @@ import { HTTPException } from 'hono/http-exception';
 import { eq, and } from 'drizzle-orm';
 import { db, avatars, openclawBots } from '@clawville/database';
 import { npcSimulation } from '../services/npc-simulation';
+import { sha256Hex } from '../services/session-digest';
 import type { AppContext } from '../types';
 
 /**
@@ -92,11 +93,31 @@ export interface LiveAgentSession {
  * in-memory body is unregistered so the next call short-circuits at step 1, and
  * we return null. The DB row is the source of truth for liveness; Map membership
  * alone is NEVER sufficient for a bearer-trusting path.
+ *
+ * Restart survival (2026-06-11): the in-memory Map is rebuilt empty on every API
+ * deploy, so a still-live bearer map-misses at step 1 right after a restart. On
+ * that miss we attempt a restore FROM THE SURVIVING ROW (hash the incoming
+ * bearer → find by `session_key_hash` → re-validate the SAME fail-closed TTL →
+ * rebuild the in-memory session/client). The restore obeys the identical
+ * TTL/ledger rules below, so it can never resurrect an expired row or grant
+ * liveness this gate would refuse — see `openclaw-session-restore.ts`. The
+ * restore re-registers under the incoming id, so the re-fetch below sees it as a
+ * normal live session.
  */
 export async function validateLiveAgentSession(
   sessionId: string,
 ): Promise<LiveAgentSession | null> {
-  if (!npcSimulation.isValidAgentSession(sessionId)) return null;
+  if (!npcSimulation.isValidAgentSession(sessionId)) {
+    // Map-miss — maybe the API restarted and dropped the in-memory session.
+    // Try to rebuild it from the surviving DB row (fail-closed: returns null on
+    // missing/expired row or an identity type that can't be rebuilt from the
+    // row). Dynamic import to avoid a static import cycle
+    // (restore → npc-simulation → ... → this middleware).
+    const { restoreAgentSessionFromRow } = await import(
+      '../services/openclaw-session-restore'
+    );
+    return restoreAgentSessionFromRow(sessionId);
+  }
 
   const config = npcSimulation.getOpenClawBotConfig(sessionId);
   if (!config) return null;
@@ -108,6 +129,41 @@ export async function validateLiveAgentSession(
 
   const expiresAt = bot.sessionExpiresAt;
   if (!expiresAt || expiresAt.getTime() <= Date.now()) {
+    npcSimulation.unregisterOpenClaw(sessionId);
+    return null;
+  }
+
+  // Live-rotation invalidation (Codex round-2 R2-2, 2026-06-12). The in-memory
+  // Map proves only that THIS process once registered this bearer — it does NOT
+  // prove the bearer is still the CURRENT live session for the row. When /connect
+  // or the partner register/patch ROTATES the session it writes a NEW
+  // `session_key_hash` (the hash of the new bearer) onto the SAME agentId row, but
+  // the OLD bearer stays in this Map until the next restart, so it kept passing
+  // the TTL gate (the row's sliding expiry is refreshed by the rotation) and kept
+  // spending real CT against `boundUserId`. The restore-design (b453fb18) hashed
+  // the bearer to gate RESTORE but never re-checked it on a live Map hit. We now
+  // require a PRESENT Map-hit bearer hash to match the row's CURRENT hash: a
+  // rotated-away bearer has `sha256Hex(sessionId) !== bot.sessionKeyHash` (the
+  // rotation ALWAYS wrote a non-null new hash), so we tear down the stale
+  // in-memory body (same fail-closed shape as expiry) and return null.
+  //
+  // Null-hash carve-out (Codex round-2 fixer pass, 2026-06-12): we reject ONLY
+  // when the stored hash is PRESENT and mismatches — NOT when it is null. The
+  // partner register/patch path (partner-hatcher.ts) calls `registerOpenClaw`
+  // (Map-live) BEFORE persisting `session_key_hash`, and that persist is
+  // EXPLICITLY non-fatal (try/catch, comment "won't survive a restart"). A strict
+  // `!== ` would turn that documented-non-fatal failure FATAL — a freshly-minted
+  // partner session whose hash hasn't landed yet (the 910→928 window) or whose
+  // non-fatal persist threw would be killed on its first real-CT call, and the
+  // register→persist window could tear down a just-spawned body mid-sim. A null
+  // hash is NEVER a rotation-stale bearer: a null-hash Map entry can only have
+  // been registered by THIS process (the Map empties on restart, and every
+  // restart-restore matches the row by `sessionKeyHash === sha256Hex(incoming)`,
+  // so a restored entry always has a non-null hash). So null = a not-yet-
+  // persisted / non-fatal-persist-failed freshly-minted session — fall through to
+  // the TTL gate rather than lock it out. The rotation attack is fully covered by
+  // `present && mismatch` because rotation always writes the new bearer's hash.
+  if (bot.sessionKeyHash && bot.sessionKeyHash !== sha256Hex(sessionId)) {
     npcSimulation.unregisterOpenClaw(sessionId);
     return null;
   }

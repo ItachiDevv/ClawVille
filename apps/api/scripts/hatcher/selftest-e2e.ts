@@ -5,10 +5,12 @@
  * ed25519 keypair, with hard per-case evidence, BEFORE Hatcher sends real keys.
  *
  * RUN AGAINST: the SHIPPING working-tree HEAD of feat/hatcher-portal
- * (PROTOCOL_VERSION = 2, 5-verb whitelist INCLUDING enter_cove, full Cove-play
- * protocol manual). The previous revision of this harness mistakenly ran against
- * origin/staging @ e2982469 (4-verb, v1) and codified the ABSENCE of the Cove
- * agent-parity feature — this version tests the code that actually ships.
+ * (5-verb whitelist INCLUDING enter_cove, full Cove-play protocol manual). All
+ * version assertions track the imported single-source PROTOCOL_VERSION constant
+ * (currently 5) rather than a hardcoded literal, so a bump needs no harness edit.
+ * The previous revision of this harness mistakenly ran against origin/staging @
+ * e2982469 (4-verb) and codified the ABSENCE of the Cove agent-parity feature;
+ * this version tests the code that actually ships.
  *
  * This harness imports the REAL ClawVille functions (never reimplements the
  * contract) and exercises:
@@ -21,7 +23,7 @@
  *   D. Hatcher [ACTION:] whitelist executor incl. enter_cove HAPPY PATH (NO DB)
  *   E. buildHatcherWorldState public-only (NO secrets)
  *   F. Outbound cognition signing (signPayload) + chatHatcherProxy fail-soft
- *   G. Protocol single-source content-hash invariant @ v2 + EXECUTOR↔MANUAL parity
+ *   G. Protocol single-source content-hash invariant (live PROTOCOL_VERSION) + EXECUTOR↔MANUAL parity
  *   H. HTTP gates via Hono app.request — negatives AND body-signed accept (NO DB writes)
  *   I. Cove agent-tool money path: tools.json + POST :tool + getSubject parity (NO DB writes)
  *
@@ -503,15 +505,16 @@ async function main() {
     check('C1 publicAgentRecord() strips hatcher: prefix + carries protocol pointer + OMITS all token fields', presentOk && !tokenKeyPresent && !ciphertextLeaked, `keys=${JSON.stringify(keys)}\nagentId=${out.agentId} protocol=${JSON.stringify(proto)}\ntokenKeyPresent=${tokenKeyPresent} ciphertextLeaked=${ciphertextLeaked}`);
   });
 
-  await safe('C2 publicAgentRecord() protocol.contentHash matches the served v2 manual hash (single source)', () => {
+  await safe('C2 publicAgentRecord() protocol.contentHash matches the served manual hash (single source)', () => {
     const future = new Date(Date.now() + 3600_000);
     const row = { agentId: 'hatcher:abc', id: 'u', identityType: 'hatcher', mode: 'avatar', targetNpcId: null, name: null, species: null, color: null, cognitionBackend: 'hatcher-proxy', proxyUrl: 'https://api.hatcher.host', proxyTokenEnc: 'x', proxyTokenIv: 'x', proxyTokenTag: 'x', walletAddress: null, userId: null, sessionExpiresAt: future } as unknown as Parameters<typeof ph.publicAgentRecord>[0];
     const out = ph.publicAgentRecord(row) as { protocol: { contentHash: string; version: number } };
     const liveHash = contentHashOf(buildProtocolManual(resolveApiBase()));
-    // Assert against the LIVE v2 hash (whatever the shipping manual produces) +
-    // that PROTOCOL_VERSION is the shipping 2, NOT a hardcoded stale v1 hash.
-    const versionIs2 = PROTOCOL_VERSION === 2 && out.protocol.version === 2;
-    check('C2 publicAgentRecord() protocol.contentHash matches the served v2 manual hash (single source)', out.protocol.contentHash === liveHash && versionIs2, `record.protocol.contentHash=${out.protocol.contentHash}\nlive contentHashOf(buildProtocolManual)=${liveHash}\nversion=${out.protocol.version} (PROTOCOL_VERSION=${PROTOCOL_VERSION}) — expect 2`);
+    // Assert against the LIVE manual hash (whatever the shipping manual produces)
+    // + that the record's version equals the SINGLE-SOURCE PROTOCOL_VERSION,
+    // NOT a hardcoded stale literal (tracks the live version across bumps).
+    const versionMatchesSource = out.protocol.version === PROTOCOL_VERSION;
+    check('C2 publicAgentRecord() protocol.contentHash matches the served manual hash (single source)', out.protocol.contentHash === liveHash && versionMatchesSource, `record.protocol.contentHash=${out.protocol.contentHash}\nlive contentHashOf(buildProtocolManual)=${liveHash}\nversion=${out.protocol.version} (PROTOCOL_VERSION=${PROTOCOL_VERSION})`);
   });
 
   // NEW — C3: the Rule-E5 "agent plays AS ITSELF" binding, asserted on the
@@ -857,6 +860,125 @@ async function main() {
     check('F8 chatHatcherProxy FAILS SOFT on SSRF-rejected proxy URL (non-https)', reply === '' && fetchCalled === false, `reply=${JSON.stringify(reply)} fetchCalled=${fetchCalled} (http:// proxy -> SSRF reject, no outbound fetch)`);
   });
 
+  await safe('F8b chatHatcherProxy DNS-aware reject at call time — allowlisted host resolving to private IP -> no outbound fetch (R2-3)', async () => {
+    // R2-3: an allowlisted Hatcher subdomain can DNS-REBIND to a private IP after
+    // registration. The per-call cognition path must now run the DNS-AWARE
+    // validator (validateHatcherProxyUrlResolved) immediately before fetch, not
+    // just the sync hostname allowlist. We force the scenario deterministically:
+    // allowlist `localhost` (so the SYNC string check passes) but `localhost`
+    // resolves to 127.0.0.1 (loopback), which the DNS-aware check rejects — so
+    // chatHatcherProxy must fail soft with NO outbound fetch (the bearer + our
+    // ed25519 signature never reach the internal address).
+    const saved = process.env.HATCHER_PROXY_ALLOWED_HOSTS;
+    process.env.HATCHER_PROXY_ALLOWED_HOSTS = 'localhost';
+    const client = new OpenClawClient({ sessionId: 's-f8b', sessionKey: 's-f8b', gatewayUrl: 'http://localhost:0', authToken: '', agentId: 'hatcher:f8b', proxyAgentId: 'f8b', protocol: 'hatcher-proxy', proxyBaseUrl: 'https://localhost', scopedToken: 'tok' } as never);
+    client.setWorldStateProvider(() => null);
+    let fetchCalled = false; const origFetch = globalThis.fetch;
+    // @ts-expect-error override for test
+    globalThis.fetch = async () => { fetchCalled = true; return new Response('{}', { status: 200 }); };
+    let reply = ''; let threw = false;
+    try {
+      reply = await client.chat([{ role: 'user', content: 'hi' }]);
+    } catch {
+      threw = true;
+    } finally {
+      globalThis.fetch = origFetch;
+      // Restore exactly — assigning `undefined` to a process.env key coerces to
+      // the STRING "undefined" (it does not delete), which would poison every
+      // later test that reads the allowlist (e.g. F9). Delete when it was unset.
+      if (saved === undefined) delete process.env.HATCHER_PROXY_ALLOWED_HOSTS;
+      else process.env.HATCHER_PROXY_ALLOWED_HOSTS = saved;
+    }
+    if (fetchCalled) bugs.push('chatHatcherProxy POSTed to an allowlisted host that resolves to a PRIVATE IP — DNS-aware call-time SSRF check missing (R2-3)');
+    check('F8b chatHatcherProxy DNS-aware reject at call time — allowlisted host resolving to private IP -> no outbound fetch (R2-3)', reply === '' && fetchCalled === false && threw === false, `reply=${JSON.stringify(reply)} fetchCalled=${fetchCalled} threw=${threw} (allowlisted localhost -> resolves 127.0.0.1 -> DNS-aware reject, no outbound fetch)`);
+  });
+
+  await safe('F8c chatOpenAI/chatCustomWebhook SSRF — gatewayUrl pointing at a private IP -> no outbound fetch, fail soft (R2-6)', async () => {
+    // R2-6: the agent-supplied gatewayUrl is SSRF-unchecked (only z.string().url()
+    // at /connect). chatOpenAI/chatAnthropic/chatCustomWebhook must resolve-and-
+    // reject a private/loopback/link-local target at call time. We point the
+    // gateway at the cloud-metadata IP literal (169.254.169.254) and a loopback
+    // host, with a fetch stub that flips a flag — the SSRF guard must short-circuit
+    // BEFORE fetch (no token ever leaves), and the method must fail soft (return '').
+    let fetchCalled = false; const origFetch = globalThis.fetch;
+    // @ts-expect-error override for test
+    globalThis.fetch = async () => { fetchCalled = true; return new Response('{}', { status: 200 }); };
+    let ok = true; const detail: string[] = [];
+    try {
+      // openai-compat protocol -> chatOpenAI, gateway = metadata IP literal.
+      const c1 = new OpenClawClient({ sessionId: 's-f8c1', sessionKey: 's-f8c1', gatewayUrl: 'http://169.254.169.254', authToken: 'agent-tok-1', agentId: 'oc-f8c1', protocol: 'openai-compat', mode: 'avatar' } as never);
+      const r1 = await c1.chat([{ role: 'user', content: 'hi' }]);
+      if (r1 !== '' || fetchCalled) { ok = false; detail.push(`chatOpenAI(metadata-ip) reply=${JSON.stringify(r1)} fetchCalled=${fetchCalled}`); }
+      // custom-webhook protocol -> chatCustomWebhook, gateway = loopback host.
+      fetchCalled = false;
+      const c2 = new OpenClawClient({ sessionId: 's-f8c2', sessionKey: 's-f8c2', gatewayUrl: 'http://localhost/webhook', authToken: 'agent-tok-2', agentId: 'oc-f8c2', protocol: 'custom-webhook', mode: 'avatar' } as never);
+      const r2 = await c2.chat([{ role: 'user', content: 'hi' }]);
+      if (r2 !== '' || fetchCalled) { ok = false; detail.push(`chatCustomWebhook(loopback) reply=${JSON.stringify(r2)} fetchCalled=${fetchCalled}`); }
+    } catch (e) {
+      ok = false; detail.push(`threw: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+    if (!ok) bugs.push('chatOpenAI/chatCustomWebhook POSTed the agent token to a PRIVATE gatewayUrl — blind SSRF, R2-6 guard missing');
+    check('F8c chatOpenAI/chatCustomWebhook SSRF — gatewayUrl pointing at a private IP -> no outbound fetch, fail soft (R2-6)', ok, detail.length ? detail.join(' ; ') : 'both private-gateway cognition calls failed soft with no outbound fetch (R2-6)');
+  });
+
+  await safe('F8d chatOpenAI/chatCustomWebhook SSRF — gatewayUrl on a PUBLIC host that 302s to a private IP -> redirect NOT followed, fail soft (R2-6 redirect hop)', async () => {
+    // R2-6 redirect-hop bypass: the resolve-check validates only the INITIAL
+    // gatewayUrl host. The agent CONTROLS its own gateway, so it can point it at a
+    // PUBLIC IP that passes the resolve check, then return `302 Location:
+    // http://169.254.169.254/...`. With default redirect:'follow' fetch would
+    // follow it and POST the token to the internal address (and, for the webhook
+    // path, EXFIL the metadata body back as the reply). The fix sets
+    // redirect:'manual' on all three gatewayUrl fetches + hard-fails any 3xx
+    // BEFORE reading the body. We use a PUBLIC IP literal (1.1.1.1) so the
+    // resolve-check passes deterministically (no DNS), then stub fetch to return a
+    // 302 toward the metadata IP and assert the reply is '' with NO body read.
+    const origFetch = globalThis.fetch;
+    let redirectBodyRead = false;
+    // A 302 whose body, if ever read, would be a non-empty "secret" — proves the
+    // method never reads/returns a redirected response.
+    const make302 = () => {
+      const r = new Response('SECRET-METADATA-BODY', { status: 302, headers: { location: 'http://169.254.169.254/latest/meta-data/' } });
+      // Spy: if any code path reads the body, flip the flag.
+      const origText = r.text.bind(r); const origJson = r.json.bind(r);
+      (r as unknown as { text: () => Promise<string> }).text = async () => { redirectBodyRead = true; return origText(); };
+      (r as unknown as { json: () => Promise<unknown> }).json = async () => { redirectBodyRead = true; return origJson(); };
+      return r;
+    };
+    // @ts-expect-error override for test
+    globalThis.fetch = async () => make302();
+    let ok = true; const detail: string[] = [];
+    // Security invariant for BOTH methods: the redirect is NOT followed and yields
+    // NO usable reply. chatOpenAI/chatAnthropic fail soft by THROWING on a 3xx
+    // (same as !res.ok — the cognition consumer + ping() treat a throw as
+    // unreachable); chatCustomWebhook fails soft by returning ''. Either outcome
+    // is acceptable — what must NEVER happen is a followed redirect or a read
+    // redirected body. We assert per-method on its own contract.
+    try {
+      // openai-compat -> chatOpenAI. Public IP literal passes resolve; 302 must
+      // hard-fail by throwing (NOT returning a reply, NOT following the redirect).
+      const c1 = new OpenClawClient({ sessionId: 's-f8d1', sessionKey: 's-f8d1', gatewayUrl: 'http://1.1.1.1', authToken: 'agent-tok-1', agentId: 'oc-f8d1', protocol: 'openai-compat', mode: 'avatar' } as never);
+      let r1: string | null = null; let threw1 = false;
+      try { r1 = await c1.chat([{ role: 'user', content: 'hi' }]); } catch { threw1 = true; }
+      // Acceptable: threw, OR returned '' — both are "no usable reply". A non-empty
+      // reply would mean the redirect was followed and its body surfaced.
+      if (!threw1 && r1 !== '') { ok = false; detail.push(`chatOpenAI(302) reply=${JSON.stringify(r1)} threw=${threw1} (expect throw or '' — redirect not followed)`); }
+      // custom-webhook -> chatCustomWebhook (the EXFIL path). 302 must return ''
+      // BEFORE any body read (its own contract returns '' on the redirect branch).
+      const c2 = new OpenClawClient({ sessionId: 's-f8d2', sessionKey: 's-f8d2', gatewayUrl: 'http://1.1.1.1/webhook', authToken: 'agent-tok-2', agentId: 'oc-f8d2', protocol: 'custom-webhook', mode: 'avatar' } as never);
+      let r2: string | null = null; let threw2 = false;
+      try { r2 = await c2.chat([{ role: 'user', content: 'hi' }]); } catch { threw2 = true; }
+      if (threw2 || r2 !== '') { ok = false; detail.push(`chatCustomWebhook(302) reply=${JSON.stringify(r2)} threw=${threw2} (expect '' — redirect not followed, no exfil)`); }
+      // The decisive exfil check: NO redirected response body was ever read.
+      if (redirectBodyRead) { ok = false; detail.push('a redirected 302 response BODY was read — possible metadata exfil'); }
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+    if (!ok) bugs.push('gatewayUrl cognition fetch FOLLOWED a 302 to a private IP (or read its body) — redirect-hop SSRF bypass, R2-6 redirect:manual missing');
+    check('F8d chatOpenAI/chatCustomWebhook SSRF — gatewayUrl on a PUBLIC host that 302s to a private IP -> redirect NOT followed, fail soft (R2-6 redirect hop)', ok, detail.length ? detail.join(' ; ') : 'both cognition calls hard-failed the 302 and returned no usable reply, no redirected body read (R2-6 redirect hop)');
+  });
+
   const hc = await import('../../src/services/hatcher-config.ts');
   const { validateHatcherProxyUrl, validateHatcherProxyUrlResolved } = hc;
 
@@ -877,23 +999,26 @@ async function main() {
     const saved = process.env.HATCHER_PROXY_ALLOWED_HOSTS;
     process.env.HATCHER_PROXY_ALLOWED_HOSTS = 'localhost';
     const r = await validateHatcherProxyUrlResolved('https://localhost');
-    process.env.HATCHER_PROXY_ALLOWED_HOSTS = saved;
+    // Restore exactly — `= undefined` coerces to the string "undefined" (env-key
+    // poisoning), so delete when it was unset.
+    if (saved === undefined) delete process.env.HATCHER_PROXY_ALLOWED_HOSTS;
+    else process.env.HATCHER_PROXY_ALLOWED_HOSTS = saved;
     check('F10 DNS-aware SSRF rejects an allowlisted host that resolves to a private IP (localhost)', r.ok === false && (r as { reason: string }).reason === 'resolves_to_private_ip', `validateHatcherProxyUrlResolved('https://localhost', allow=localhost) => ${JSON.stringify(r)} (expect resolves_to_private_ip)`);
   });
 
   // ===================================================================
-  // CASE G — Protocol single-source content-hash invariant @ v2
+  // CASE G — Protocol single-source content-hash invariant (live PROTOCOL_VERSION)
   // ===================================================================
-  await safe('G1 protocolPointer().contentHash === contentHashOf(buildProtocolManual()) ; version === 2 (shipping)', () => {
+  await safe('G1 protocolPointer().contentHash === contentHashOf(buildProtocolManual()) ; version === PROTOCOL_VERSION (single source)', () => {
     const apiBase = resolveApiBase();
     const manual = buildProtocolManual(apiBase);
     const hash1 = contentHashOf(manual);
     const ptr = protocolPointer(apiBase);
     const hashMatch = ptr.contentHash === hash1 && ptr.contentHash === protocolContentHash(apiBase);
-    const versionIs2 = PROTOCOL_VERSION === 2 && ptr.version === 2;
+    const versionMatchesSource = ptr.version === PROTOCOL_VERSION;
     const urlOk = ptr.url === '/api/skills/protocol/skill.md';
     if (!hashMatch) bugs.push('protocol contentHash mismatch across single-source surfaces');
-    check('G1 protocolPointer().contentHash === contentHashOf(buildProtocolManual()) ; version === 2 (shipping)', hashMatch && versionIs2 && urlOk, `pointer.contentHash=${ptr.contentHash}\ncontentHashOf(manual)=${hash1}\nprotocolContentHash()=${protocolContentHash(apiBase)}\nversion=${ptr.version} (PROTOCOL_VERSION=${PROTOCOL_VERSION}) — expect 2 url=${ptr.url}`);
+    check('G1 protocolPointer().contentHash === contentHashOf(buildProtocolManual()) ; version === PROTOCOL_VERSION (single source)', hashMatch && versionMatchesSource && urlOk, `pointer.contentHash=${ptr.contentHash}\ncontentHashOf(manual)=${hash1}\nprotocolContentHash()=${protocolContentHash(apiBase)}\nversion=${ptr.version} (PROTOCOL_VERSION=${PROTOCOL_VERSION}) url=${ptr.url}`);
   });
 
   await safe('G2 buildProtocolManual is deterministic for a fixed apiBase', () => {
@@ -903,17 +1028,17 @@ async function main() {
     check('G2 buildProtocolManual is deterministic for a fixed apiBase', h1 === h2, `hash run1=${h1}\nhash run2=${h2} (must be byte-identical — no randomness/LLM in builder)`);
   });
 
-  // NEW — G3: the v2 manual must DOCUMENT the enter_cove gateway verb + the Cove
-  // play flow. The whitelist-parity rule (CLAUDE.md MANDATORY) says the manual a
-  // connected agent is TOLD it can do must match what the server enforces. We
-  // hash/inspect the ACTUAL served v2 body (not a stale v1 hash).
-  await safe('G3 served v2 manual DOCUMENTS [ACTION: enter_cove()] + the Cove blackjack play flow', () => {
+  // NEW — G3: the served manual must DOCUMENT the enter_cove gateway verb + the
+  // Cove play flow. The whitelist-parity rule (CLAUDE.md MANDATORY) says the
+  // manual a connected agent is TOLD it can do must match what the server
+  // enforces. We hash/inspect the ACTUAL served body (tracking the live version).
+  await safe('G3 served manual DOCUMENTS [ACTION: enter_cove()] + the Cove blackjack play flow', () => {
     const manual = buildProtocolManual(resolveApiBase());
     const documentsEnterCove = manual.includes('[ACTION: enter_cove()]');
     const documentsCovePlay = /cove_blackjack_open_session|cove\/blackjack\/tools\.json/.test(manual);
     const versionLine = manual.includes(`version: ${PROTOCOL_VERSION}`) || manual.includes(`protocol_version: ${PROTOCOL_VERSION}`);
-    if (!documentsEnterCove) bugs.push('v2 manual does NOT document [ACTION: enter_cove()] — whitelist/manual parity broken (agent never learns the shipping verb)');
-    check('G3 served v2 manual DOCUMENTS [ACTION: enter_cove()] + the Cove blackjack play flow', documentsEnterCove && documentsCovePlay && versionIs2v2(PROTOCOL_VERSION) && versionLine, `documents enter_cove=${documentsEnterCove} documents cove-play tools=${documentsCovePlay} version-line(v${PROTOCOL_VERSION})=${versionLine}`);
+    if (!documentsEnterCove) bugs.push('manual does NOT document [ACTION: enter_cove()] — whitelist/manual parity broken (agent never learns the shipping verb)');
+    check('G3 served manual DOCUMENTS [ACTION: enter_cove()] + the Cove blackjack play flow', documentsEnterCove && documentsCovePlay && versionLine, `documents enter_cove=${documentsEnterCove} documents cove-play tools=${documentsCovePlay} version-line(v${PROTOCOL_VERSION})=${versionLine}`);
   });
 
   // NEW — G4: EXECUTOR ↔ MANUAL whitelist-parity. The set of verbs the server
@@ -1082,6 +1207,115 @@ async function main() {
     check('H-REPLAY POST /agents with a correctly-signed but EXPIRED timestamp -> 401 (replay window enforced at the route)', ok, `status=${res.status} body=${JSON.stringify(j)} (expect 401 unauthorized: stale_timestamp rejected inside readSignedBody before any DB write); window=${PARTNER_WRITE_SIGNATURE_WINDOW_MS}ms`);
   });
 
+  // NEW (H9, Codex pass-4 P4-2): a fully-signed POST register whose upsert+hash
+  // TRANSACTION FAILS must return a retryable 503 `session_persist_failed` and
+  // MUST NOT return a sessionId/ok:true, and MUST NOT leave a live in-memory body
+  // (a bearer whose hash never committed is neither live nor restorable — handing
+  // it back in a success response is a dead credential). Against the dummy DB the
+  // upsert+hash tx throws (auth-fail), so this exercises the exact persist-failure
+  // branch. `api.hatcher.host` passes the SSRF allowlist + resolves (verified), so
+  // the handler reaches the DB tx rather than short-circuiting at SSRF.
+  await safe('H9 POST /agents signed, DB-tx FAILS -> 503 session_persist_failed, NO sessionId, NO live body (P4-2)', async () => {
+    const agentRaw = 'p4-persist-fail-' + Date.now();
+    const body = JSON.stringify({ agentId: agentRaw, cognition: { backend: 'hatcher-proxy', proxyBaseUrl: 'https://api.hatcher.host', scopedToken: 'tok-persist-1' } });
+    const ts = String(Date.now());
+    const sig = signWriteChallenge('POST', '/api/partner/hatcher/agents', ts, body, partnerKp.secretKey);
+    const res = await app.request('/api/partner/hatcher/agents', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Hatcher-Issuer-Pubkey': partnerPubB58, 'X-Hatcher-Signature': sig, 'X-Hatcher-Timestamp': ts }, body });
+    const j = (await res.json()) as { error?: string; ok?: boolean; sessionId?: string };
+    const namespaced = 'hatcher:' + agentRaw;
+    const liveBody = npcSimulation.getActiveOpenClawBots().some((b) => b.agentId === namespaced);
+    const is503 = res.status === 503 && j.error === 'session_persist_failed';
+    const noBearer = j.sessionId === undefined && j.ok !== true;
+    const ok = is503 && noBearer && !liveBody;
+    if (!ok) bugs.push('P4-2: a register whose hash-persist tx failed returned a usable success/sessionId or left a live body — dead credential leak');
+    check('H9 POST /agents signed, DB-tx FAILS -> 503 session_persist_failed, NO sessionId, NO live body (P4-2)', ok, `status=${res.status} body=${JSON.stringify(j)} liveBody=${liveBody} (expect 503 session_persist_failed, no sessionId, no in-memory body)`);
+  });
+
+  // NEW (H10, Codex pass-4 P4-3): the LEGACY /api/openclaw/register must FAIL
+  // CLOSED on a DB error — return 500 and register NO in-memory session. The old
+  // code fell back to an ephemeral-only identity (botId:'') then still called
+  // registerOpenClaw, leaving a live Map body with no surviving row/hash that the
+  // shared validateLiveAgentSession contract treats as unusable (chat/cove re-read
+  // the row → fail closed). We mount the legacy routes and drive a valid avatar
+  // register with `skipPing=1` (no gateway round-trip); the DB upsert throws on the
+  // dummy DB, and we assert 500 + NO live body for this agentId.
+  const ocMod2 = await import('../../src/routes/openclaw.ts');
+  const ocApp = new Hono();
+  ocApp.route('/api/openclaw', ocMod2.openclawRoutes);
+  await safe('H10 legacy /api/openclaw/register DB-FAIL -> 500, NO in-memory session (P4-3)', async () => {
+    const agentRaw = 'p4-legacy-fail-' + Date.now();
+    const body = JSON.stringify({
+      mode: 'avatar', gatewayUrl: 'https://api.hatcher.host', agentId: agentRaw, sessionKey: 'sk-' + agentRaw,
+      name: 'LegacyFail', species: 'cat', color: 0x3366cc,
+      stats: { hp: 100, attack: 10, defense: 8, speed: 6 },
+      personality: 'curious', homeX: 2560, homeY: 2560, patrolRadius: 100,
+    });
+    const res = await ocApp.request('/api/openclaw/register?skipPing=1', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body });
+    const j = (await res.json()) as { error?: string; code?: string; sessionId?: string };
+    const liveBody = npcSimulation.getActiveOpenClawBots().some((b) => b.agentId === agentRaw);
+    const is500 = res.status === 500 && j.code === 'registration_failed';
+    const ok = is500 && j.sessionId === undefined && !liveBody;
+    if (!ok) bugs.push('P4-3: legacy /openclaw/register DB-fail did NOT fail closed — returned a session or left a live body with no DB row');
+    check('H10 legacy /api/openclaw/register DB-FAIL -> 500, NO in-memory session (P4-3)', ok, `status=${res.status} body=${JSON.stringify(j)} liveBody=${liveBody} (expect 500 registration_failed, no sessionId, no in-memory body)`);
+  });
+
+  // NEW (H11, Codex pass-4 P4-1): per-agent SERIALIZATION yields ONE live body +
+  // ONE bearer for two concurrent registers of the SAME agent. The register
+  // critical section is `findActiveSessionsByAgentIds → unregister stale → mint
+  // sessionId → registerOpenClaw`; the in-memory Map is keyed by sessionId, so two
+  // raw-concurrent registers (each minting a DISTINCT sessionId) leave TWO avatar
+  // bodies. The fix wraps that section in `withKeyedMutex(namespacedAgentId)`, so
+  // the second register sees + evicts the first's body before spawning its own —
+  // net ONE body, ONE live bearer. We exercise the REAL `withKeyedMutex` + REAL
+  // npcSimulation here (the DB tx isn't reachable on the dummy DB, but the
+  // duplicate-body race is purely in-memory, so this proves the exact invariant).
+  const { withKeyedMutex } = await import('../../src/services/keyed-mutex.ts');
+  await safe('H11 two concurrent same-agent registers -> ONE body + ONE bearer (P4-1 serialization)', async () => {
+    const namespaced = 'hatcher:p4-concurrent-' + Date.now();
+    const avatarHomeX = 2560, avatarHomeY = 2560;
+    // Mirror the handler's in-memory critical section (mint + stale-cleanup +
+    // spawn) for an avatar-mode register.
+    const criticalSection = async () => {
+      // Tiny await so the two sections genuinely interleave at the event loop if
+      // the lock did NOT hold.
+      await new Promise<void>((r) => setTimeout(r, 1));
+      for (const stale of npcSimulation.findActiveSessionsByAgentIds([namespaced])) {
+        npcSimulation.unregisterOpenClaw(stale);
+      }
+      const sessionId = 'p4c-' + Math.random().toString(36).slice(2);
+      const cfg = {
+        agentId: namespaced, sessionId, sessionKey: sessionId, gatewayUrl: 'http://localhost:0',
+        authToken: '', protocol: 'hatcher-proxy', mode: 'avatar', autonomyMode: 'server-managed',
+        name: 'P4C', species: 'cat', color: 0x3366cc,
+        stats: { hp: 100, attack: 10, defense: 8, speed: 6 },
+        homeX: avatarHomeX, homeY: avatarHomeY, patrolRadius: 100, personality: 'x',
+        ledgerCapable: true, boundUserId: SELFTEST_USER_ID,
+      } as unknown as Parameters<typeof npcSimulation.registerOpenClaw>[0];
+      npcSimulation.registerOpenClaw(cfg, new MockOpenClawClient() as never);
+      return sessionId;
+    };
+
+    // Fire two concurrent registers for the SAME agent, both serialized by the
+    // per-agent mutex (what the real handler now does).
+    const [s1, s2] = await Promise.all([
+      withKeyedMutex(namespaced, criticalSection),
+      withKeyedMutex(namespaced, criticalSection),
+    ]);
+
+    // Exactly ONE live body for this agent, and only the LAST-minted bearer is
+    // live (the first was evicted by the second's cleanup — no orphan body).
+    const liveSessions = npcSimulation.findActiveSessionsByAgentIds([namespaced]);
+    const bodyCount = npcSimulation.getActiveOpenClawBots().filter((b) => b.agentId === namespaced).length;
+    const oneBody = bodyCount === 1 && liveSessions.length === 1;
+    // The surviving session is one of the two minted ids (the second to run).
+    const survivingIsKnown = liveSessions[0] === s1 || liveSessions[0] === s2;
+    const ok = oneBody && survivingIsKnown;
+    if (!ok) bugs.push('P4-1: two concurrent same-agent registers left ' + bodyCount + ' bodies / ' + liveSessions.length + ' live sessions (expected exactly 1 each)');
+    // Cleanup the fixture body so it doesn't pollute later cases.
+    for (const sid of liveSessions) npcSimulation.unregisterOpenClaw(sid);
+    check('H11 two concurrent same-agent registers -> ONE body + ONE bearer (P4-1 serialization)', ok, `bodies=${bodyCount} liveSessions=${liveSessions.length} surviving=${liveSessions[0]} minted=[${s1},${s2}] (expect exactly 1 body + 1 live bearer; serialized cleanup evicts the first)`);
+  });
+
   // ===================================================================
   // CASE I — Cove agent-tool money path (parity), NO DB writes
   // ===================================================================
@@ -1161,30 +1395,91 @@ async function main() {
       avatars: { findFirst: (args?: unknown) => Promise<unknown> };
     };
   };
+  // The fixture row now carries a real `sessionKeyHash = sha256Hex(SELFTEST_SESSION)`
+  // so the b453fb18 restart-survival RESTORE path (restoreAgentSessionFromRow, which
+  // looks up `eq(openclawBots.sessionKeyHash, sha256Hex(incoming bearer))` on a
+  // Map-MISS) resolves the fixture session — and ONLY the fixture session — exactly
+  // as a real persisted Hatcher row would.
+  const SELFTEST_SESSION_KEY_HASH = createHash('sha256').update(SELFTEST_SESSION).digest('hex');
   const SELFTEST_BOT_ROW = {
     id: 'uuid-selftest-bot',
     agentId: overrideConfig.agentId, // 'hatcher:selftest-d' — must match the registered config
     identityType: 'hatcher',
     userId: SELFTEST_USER_ID,
     sessionExpiresAt: new Date(Date.now() + 3600_000), // future TTL — liveness gate passes
+    sessionKeyHash: SELFTEST_SESSION_KEY_HASH,
+    sessionSweptAt: null, // not swept — restore's swept-gate (restore.ts:326) passes
+    // hatcher-restore needs a rebuildable proxy client; a non-hatcher-proxy restore
+    // (override mode here) rebuilds from these. The override path only needs targetNpcId.
+    mode: 'override',
+    protocol: 'hatcher-proxy',
+    proxyUrl: 'https://api.hatcher.host',
+    targetNpcId: overrideConfig.targetNpcId,
+    metadata: {},
   };
   const SELFTEST_AVATAR_ROW = { id: SELFTEST_AVATAR_ID, userId: SELFTEST_USER_ID, isActive: true };
-  // openclaw_bots stub: return the synthetic row ONLY for the fixture's agentId,
-  // `undefined` (row-missing) for any other where-clause so unknown sessions still
-  // 404/resolve-null. The shipped lookup is `eq(openclawBots.agentId, config.agentId)`;
-  // for an unregistered session config is null and validateLiveAgentSession returns at
-  // step 1 (isValidAgentSession), so this stub is reached ONLY for live registered
-  // sessions — but we still scope by a marker on the SQL to be defensive.
-  stubDb.query.openclawBots.findFirst = async () => {
-    // The only live registered session in this harness is SELFTEST_SESSION, whose
-    // config.agentId is overrideConfig.agentId; validateLiveAgentSession only calls
-    // this after isValidAgentSession passed, so returning the fixture row is correct.
-    return SELFTEST_BOT_ROW as unknown;
+
+  // ── WHERE-CLAUSE-AWARE openclaw_bots stub (fix 2026-06-12) ──
+  // Why the previous UNCONDITIONAL stub broke I2/I3/I5/I6: it returned the fixture
+  // row for EVERY query. Its comment assumed this stub is reached ONLY for a live
+  // registered session, because an unknown session returns at validateLiveAgentSession
+  // step 1 (isValidAgentSession Map-miss). That assumption was TRUE before b453fb18
+  // but FALSE after: the restart-survival fix made the Map-MISS path call
+  // restoreAgentSessionFromRow → `findFirst({ where: eq(sessionKeyHash, sha256(id)) })`.
+  // So an UNKNOWN session now hits this stub via the restore lookup, and the
+  // unconditional stub "restored" it from the fixture row — making I2/I3/I5/I6 see a
+  // live session instead of a miss. (b453fb18 broke the harness mock, not prod.)
+  //
+  // The faithful model: introspect the Drizzle where-clause (a known-stable shape:
+  // queryChunks = [..., <Column>, " = ", <Param>, ...]) to read the queried COLUMN
+  // and VALUE, and return the fixture row ONLY when the query matches the fixture's
+  // identity (agent_id == the registered agentId, OR session_key_hash == the fixture
+  // session's hash). Any other key → `undefined` (row-missing), so unknown sessions
+  // fail closed exactly as against a real DB.
+  // Recursively collect (column names, Param literal values) from a Drizzle
+  // where-clause. Handles `eq()` (flat queryChunks: [..., <Column>, " = ", <Param>])
+  // AND `and()`/`or()` (which nest each comparison inside a child SQL chunk). A
+  // `Column` chunk has a `columnType` + a `name`; a `Param` chunk has
+  // `constructor.name === 'Param'` and carries the real literal on `.value`
+  // (StringChunks also have a `.value`, but it's an array of SQL fragments — we use
+  // the Param-constructor check to read ONLY real bound literals).
+  function collectWhere(node: unknown, columns: Set<string>, values: unknown[]): void {
+    const n = node as { queryChunks?: unknown[]; name?: string; columnType?: string; value?: unknown; constructor?: { name?: string } } | null;
+    if (!n || typeof n !== 'object') return;
+    if (Array.isArray(n.queryChunks)) {
+      for (const chunk of n.queryChunks) collectWhere(chunk, columns, values);
+      return;
+    }
+    if (n.columnType && typeof n.name === 'string') columns.add(n.name);
+    if (n.constructor?.name === 'Param' && 'value' in n) values.push(n.value);
+  }
+  function introspectWhere(args: unknown): { columns: Set<string>; values: unknown[] } {
+    const where = (args as { where?: unknown } | undefined)?.where;
+    const columns = new Set<string>();
+    const values: unknown[] = [];
+    collectWhere(where, columns, values);
+    return { columns, values };
+  }
+  stubDb.query.openclawBots.findFirst = async (args?: unknown) => {
+    const { columns, values } = introspectWhere(args);
+    // Live path: validateLiveAgentSession → eq(agent_id, config.agentId).
+    if (columns.has('agent_id') && values.includes(overrideConfig.agentId)) {
+      return SELFTEST_BOT_ROW as unknown;
+    }
+    // Restore path (b453fb18): restoreAgentSessionFromRow → eq(session_key_hash,
+    // sha256(incoming bearer)). Only the fixture session's OWN hash matches; an
+    // unknown session's hash finds no row → undefined (fail closed) → restore null.
+    if (columns.has('session_key_hash') && values.includes(SELFTEST_SESSION_KEY_HASH)) {
+      return SELFTEST_BOT_ROW as unknown;
+    }
+    return undefined;
   };
-  // avatars stub: active avatar for the bound test user; `undefined` otherwise so a
-  // user with no active avatar still surfaces the 403-no-avatar path elsewhere.
-  stubDb.query.avatars.findFirst = async () => {
-    return SELFTEST_AVATAR_ROW as unknown;
+  // avatars stub: active avatar for the bound test user ONLY (the avatars lookup is
+  // `and(eq(user_id, ...), eq(is_active, true))`), so a query for any other user
+  // surfaces the 403-no-avatar path. Match when the bound test user id is a Param.
+  stubDb.query.avatars.findFirst = async (args?: unknown) => {
+    const { values } = introspectWhere(args);
+    return values.includes(SELFTEST_USER_ID) ? (SELFTEST_AVATAR_ROW as unknown) : undefined;
   };
 
   const agentGw = await import('../../src/routes/agent-gateway.ts');
@@ -1250,6 +1545,97 @@ async function main() {
     check('I6 resolveAgentSession(unknown) === null (the parity gate that blocks unbound play)', r === null, `resolveAgentSession(unknown) => ${JSON.stringify(r)} (expect null — an unknown session can never bind to an avatar/CT)`);
   });
 
+  // ── J. R2-2 — live-rotation invalidation (Codex round-2, 2026-06-12) ──
+  // A still-Map-registered bearer must STOP validating the moment the row's
+  // session_key_hash is rotated to a different bearer (what /connect or partner
+  // register/patch does on a re-mint). Before the fix, validateLiveAgentSession
+  // checked only Map membership + TTL, so the rotated-away in-memory bearer kept
+  // passing real-CT gates until the next restart. The fixture session is BOTH
+  // Map-registered AND row-hash-matched right now (I1 proved it resolves), so it
+  // is the exact precondition for a rotation: flip the row hash, assert the OLD
+  // bearer now fails closed, then re-align + re-register and assert it passes.
+  await safe('J1 validateLiveAgentSession — rotated-away bearer (row hash changed) -> null (R2-2 fail-closed)', async () => {
+    const ra = await import('../../src/middleware/require-auth-or-agent.ts');
+    // Simulate a rotation: the row now commits to a DIFFERENT bearer's hash. The
+    // OLD bearer (SELFTEST_SESSION) is still in the in-memory Map (Map hit), TTL
+    // is still in the future — only the hash diverges.
+    SELFTEST_BOT_ROW.sessionKeyHash = createHash('sha256').update('rotated-to-a-new-bearer').digest('hex');
+    const r = await ra.validateLiveAgentSession(SELFTEST_SESSION);
+    check('J1 validateLiveAgentSession — rotated-away bearer (row hash changed) -> null (R2-2 fail-closed)', r === null, `validateLiveAgentSession(old bearer after rotation) => ${r === null ? 'null' : 'LIVE'} (expect null — a rotated-away in-memory bearer must not keep passing real-CT gates)`);
+  });
+
+  await safe('J2 validateLiveAgentSession — re-aligned + re-registered bearer -> LIVE (legit single-session still passes)', async () => {
+    const ra = await import('../../src/middleware/require-auth-or-agent.ts');
+    // J1 evicted the stale Map entry (fail-closed shape). Re-align the row hash to
+    // the fixture bearer and re-register the in-memory body, exactly as a fresh
+    // connect/restore would, and assert the SAME gate now resolves it LIVE — the
+    // hash check passes for the session that minted the current row hash, so the
+    // fix does NOT break the legitimate single-live-session flow.
+    SELFTEST_BOT_ROW.sessionKeyHash = SELFTEST_SESSION_KEY_HASH;
+    npcSimulation.registerOpenClaw(overrideConfig, new MockOpenClawClient() as never);
+    const r = await ra.validateLiveAgentSession(SELFTEST_SESSION);
+    check('J2 validateLiveAgentSession — re-aligned + re-registered bearer -> LIVE (legit single-session still passes)', r !== null && r.bot.agentId === overrideConfig.agentId, `validateLiveAgentSession(aligned bearer) => ${r === null ? 'null' : 'LIVE ' + r.bot.agentId} (expect LIVE — the session that minted the current row hash must still validate)`);
+  });
+
+  await safe('J3 validateLiveAgentSession — NULL row hash + live Map entry -> LIVE (R2-2 fixer carve-out: partner-mint null-window must not lock out)', async () => {
+    const ra = await import('../../src/middleware/require-auth-or-agent.ts');
+    // The partner register/patch path calls registerOpenClaw (Map-live) BEFORE it
+    // persists session_key_hash, and that persist is EXPLICITLY non-fatal. So a
+    // freshly-minted partner session is legitimately Map-registered with a NULL
+    // row hash — in the 910→928 window, or permanently if the non-fatal persist
+    // threw. A strict `!==` check would reject that (null !== anyHash) and KILL
+    // the partner's agent on its first real-CT call (a documented-non-fatal
+    // failure made fatal). The fixer softens the check to `present && mismatch`.
+    // Precondition: J2 already re-registered the fixture session (Map-live) and
+    // aligned the row hash. The body stays overridden, so do NOT re-register here
+    // (registerOpenClaw would throw "already overridden"). Flip ONLY the row hash
+    // to null and assert the SAME live Map entry still resolves LIVE.
+    SELFTEST_BOT_ROW.sessionKeyHash = null;
+    const r = await ra.validateLiveAgentSession(SELFTEST_SESSION);
+    // Restore the aligned hash so later cases that reuse the fixture see a
+    // realistic non-null row (matches the post-persist steady state).
+    SELFTEST_BOT_ROW.sessionKeyHash = SELFTEST_SESSION_KEY_HASH;
+    check('J3 validateLiveAgentSession — NULL row hash + live Map entry -> LIVE (R2-2 fixer carve-out: partner-mint null-window must not lock out)', r !== null && r.bot.agentId === overrideConfig.agentId, `validateLiveAgentSession(null-hash live session) => ${r === null ? 'null' : 'LIVE ' + r.bot.agentId} (expect LIVE — a not-yet-persisted / non-fatal-persist-failed freshly-minted partner session must fall through to the TTL gate, never be locked out)`);
+  });
+
+  // ── K. R2-1 — public registration paths reserve the `hatcher:` namespace ──
+  // A PUBLIC, unsigned caller must NOT be able to address the partner-owned
+  // `hatcher:` agentId namespace. The reject is a synchronous early-return BEFORE
+  // any DB read (so a bad agentId can't even burn a connection token), which is
+  // why it surfaces here against the live Hono app with no DB stub dependency.
+  await safe('K1 POST /api/agent/connect with agentId "hatcher:hijack" -> 400 (reserved namespace, no row mutation)', async () => {
+    const res = await gwApp.request('/api/agent/connect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agentId: 'hatcher:hijack', name: 'Evil', species: 'crab' }),
+    });
+    // Opaque 400 — does not leak whether the partner row exists.
+    const ok = res.status === 400;
+    if (!ok) bugs.push(`/api/agent/connect accepted a reserved hatcher: agentId (status=${res.status}) — public path can address partner-owned rows (R2-1)`);
+    check('K1 POST /api/agent/connect with agentId "hatcher:hijack" -> 400 (reserved namespace, no row mutation)', ok, `status=${res.status} (expect 400 — reserved partner namespace refused before any DB write)`);
+  });
+
+  await safe('K2 POST /api/agent/connect with an ORDINARY agentId is NOT blocked by the reserved guard (regression: legit connect still reaches its normal path)', async () => {
+    // An ordinary agentId must pass the reserved-namespace gate. We assert ONLY
+    // that the response is NOT the reserved-namespace 400 — the request still
+    // exercises the downstream connect logic (which, under the I-case DB stubs,
+    // resolves the fixture row), so any non-"reserved-reject" outcome proves the
+    // guard did not over-block. (A 200/4xx-other are both acceptable here; the
+    // guard must simply not be the thing that stopped it.)
+    const res = await gwApp.request('/api/agent/connect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agentId: 'ordinary-public-agent', name: 'Friendly', species: 'crab' }),
+    });
+    // The reserved guard returns EXACTLY `{ error: 'Invalid request' }` at 400; a
+    // legit ordinary id must not hit that specific reject. Read the body to
+    // distinguish a zod-400 (different shape) from the reserved-400.
+    let body: { error?: string; details?: unknown } = {};
+    try { body = (await res.json()) as typeof body; } catch { /* non-json ok */ }
+    const blockedByReservedGuard = res.status === 400 && body.error === 'Invalid request' && body.details === undefined;
+    check('K2 POST /api/agent/connect with an ORDINARY agentId is NOT blocked by the reserved guard (regression: legit connect still reaches its normal path)', !blockedByReservedGuard, `status=${res.status} body=${JSON.stringify(body).slice(0, 160)} (expect NOT the reserved-namespace 400 — an ordinary id must pass the gate)`);
+  });
+
   // CLEANUP — stop the sim tick interval (so the process can exit).
   stopSimulation();
 
@@ -1265,11 +1651,6 @@ async function main() {
   console.log(`HARNESS EXIT: ${failed > 0 ? 1 : 0}`);
 
   process.exit(failed > 0 ? 1 : 0);
-}
-
-/** tiny guard used in G3 to keep the expression readable */
-function versionIs2v2(v: number): boolean {
-  return v === 2;
 }
 
 main().catch((err) => { console.error('HARNESS CRASHED:', err); process.exit(2); });
