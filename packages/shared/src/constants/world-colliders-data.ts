@@ -59,6 +59,12 @@ const BUILDING_EXTENTS: Readonly<Record<string, { halfX: number; halfZ: number }
 const BUILDING_HALF_TILE_EXTENT = (14 * TILE_SIZE) / 2; // 224
 const BUILDING_HALF = BUILDING_HALF_TILE_EXTENT * 0.92;  // ≈ 206 wu fallback
 
+// Small uniform buffer added to every building collider's half-extents so the
+// collision boundary covers the building's visual texture overhang (the extents
+// are sized to geometry; the texture bleeds slightly past it). MUST match
+// BUILDING_COLLISION_BUFFER in world-colliders.ts (client) — §2h same-diff rule.
+const BUILDING_COLLISION_BUFFER = 28; // wu
+
 // ---------------------------------------------------------------------------
 // Collider type
 // ---------------------------------------------------------------------------
@@ -109,8 +115,8 @@ function buildServerColliders(): ServerCollider2D[] {
       id,
       centerX: gamePxX - MAP_HALF,
       centerZ: gamePxY - MAP_HALF,
-      halfX: extents?.halfX ?? BUILDING_HALF,
-      halfZ: extents?.halfZ ?? BUILDING_HALF,
+      halfX: (extents?.halfX ?? BUILDING_HALF) + BUILDING_COLLISION_BUFFER,
+      halfZ: (extents?.halfZ ?? BUILDING_HALF) + BUILDING_COLLISION_BUFFER,
     });
   }
 
