@@ -18,7 +18,7 @@ import MeshletBuildingsR3F from '@/lib/three/meshlet/meshlet-buildings-r3f';
 import ArenaNpcs from '@/lib/three/arena-npcs';
 import RemotePlayers from '@/lib/three/remote-players';
 import ArenaLocationNpcs from '@/lib/three/arena-location-npcs';
-import { VRM_METRICS_ENABLED } from '@/lib/three/vrm-loader';
+import { VRM_METRICS_ENABLED, registerBulkVRMIdleCallback } from '@/lib/three/vrm-loader';
 import PlayerAvatar from '@/lib/three/player-avatar';
 import NpcController from '@/lib/three/npc-controller';
 import MergedSeaweed from '@/lib/three/merged-seaweed';
@@ -837,6 +837,35 @@ function PreCompilePipelines() {
           console.warn('[World3D] compileAsync failed:', err);
         });
       }
+
+      // Perf round-3 change A — second compileAsync after VRM batch settles.
+      //
+      // The initial compileAsync above fires at mount, but the 14 VRMs load
+      // asynchronously over the following ~10s. Their skinned-MeshStandardMaterial
+      // pipeline variants are NOT in the scene at that point, so they fall back to
+      // lazy compilation at first reveal (7.5s main-thread self-time, confirmed in
+      // baseline trace). registerBulkVRMIdleCallback fires once the parse queue
+      // drains for the first time (bulk load complete), at which point all VRM
+      // meshes ARE in the scene. We kick a second compileAsync then so the skinned
+      // variants compile under the loading spinner via KHR_parallel_shader_compile
+      // instead of smearing across the reveal frames.
+      //
+      // Safety: guard with typeof check (same as first call). Does NOT call
+      // gl.render() — no blue-screen risk. The loading overlay is still up when
+      // this fires, so there is no second render path here.
+      registerBulkVRMIdleCallback(() => {
+        if (typeof (gl as any).compileAsync === 'function') {
+          (gl as any).compileAsync(scene, camera)
+            .then(() => {
+              if (typeof window !== 'undefined') {
+                (window as any).__W3D_VRM_COMPILE_DONE = performance.now();
+              }
+            })
+            .catch((err: unknown) => {
+              console.warn('[World3D] post-VRM compileAsync failed:', err);
+            });
+        }
+      });
     });
     return () => cancelAnimationFrame(raf);
     // gl/scene/camera are stable R3F refs — intentionally omitted from deps
@@ -900,9 +929,25 @@ function PerfCameraPreset({
 //
 // Fallback for Safari (no rIC): rAF with BATCH=4 (still 2× the old rate).
 // ---------------------------------------------------------------------------
+// Gentle pacing — used once __W3D_READY (world is interactive, frame budget matters)
 const IDLE_SLICE_BUDGET_MS = 6;
 const IDLE_MAX_TEXTURES_PER_SLICE = 4;
 const RAF_FALLBACK_BATCH = 4;
+
+// Fast-blast pacing — used while !__W3D_READY (loading overlay hides the scene;
+// there is no visible frame budget to protect). Perf round-3 change B.
+// 30ms / 32-tex cap per idle slice; 24-tex per rAF tick.
+// Still bounded: on Iris Xe 30ms ≈ 8-12 textures before timeRemaining drops,
+// so the practical rate is limited by the GPU, not the cap.
+const FAST_SLICE_BUDGET_MS = 30;
+const FAST_MAX_TEXTURES_PER_SLICE = 32;
+const RAF_FAST_BATCH = 24;
+
+/** Returns true when the loading overlay is still up (world not yet interactive). */
+function isLoadingOverlayUp(): boolean {
+  if (typeof window === 'undefined') return false;
+  return (window as any).__W3D_READY !== true;
+}
 
 // All standard texture slot names on MeshStandardMaterial and related.
 const TEXTURE_SLOTS = [
@@ -1042,13 +1087,20 @@ function StaggeredTextureUpload() {
         function uploadIdle(deadline: IdleDeadline) {
           const t0 = performance.now();
           const before = i;
+          // Perf round-3 change B: while the loading overlay is up (__W3D_READY is
+          // not set), use fast constants (30ms / 32-tex cap) so the 179 textures
+          // drain in as few idle slices as possible. Once the world is interactive,
+          // switch to gentle constants (6ms / 4-tex) so we don't steal frame budget.
+          const fastMode = isLoadingOverlayUp();
+          const budgetMs = fastMode ? FAST_SLICE_BUDGET_MS : IDLE_SLICE_BUDGET_MS;
+          const maxPerSlice = fastMode ? FAST_MAX_TEXTURES_PER_SLICE : IDLE_MAX_TEXTURES_PER_SLICE;
           // Deadline-aware path: when rIC provides a real idle window
           // (timeRemaining() > 0 and not timed-out), upload as many textures
           // as fit until <2ms remains — no fixed cap. This is the fast path
           // that resolved the 10.8s→20.5s regression caused by IDLE_MAX_TEXTURES_PER_SLICE=4.
           // On fast hardware a single 50ms idle window can drain the entire queue.
-          // Fallback when rIC timed out or no remaining time: upload max 4 per slice
-          // guarded by IDLE_SLICE_BUDGET_MS, same as the old hard cap.
+          // Fallback when rIC timed out or no remaining time: upload max N per slice
+          // guarded by budgetMs (N and budget depend on fast vs gentle mode).
           const useDeadline = !deadline.didTimeout && deadline.timeRemaining() > 0;
           while (i < unique.length) {
             if (i > before) {
@@ -1056,8 +1108,8 @@ function StaggeredTextureUpload() {
               if (useDeadline) {
                 if (deadline.timeRemaining() < 2) break;
               } else {
-                if (i - before >= IDLE_MAX_TEXTURES_PER_SLICE) break;
-                if (performance.now() - t0 >= IDLE_SLICE_BUDGET_MS) break;
+                if (i - before >= maxPerSlice) break;
+                if (performance.now() - t0 >= budgetMs) break;
               }
             }
             try {
@@ -1082,7 +1134,9 @@ function StaggeredTextureUpload() {
         function uploadRafFallback() {
           const t0 = performance.now();
           const before = i;
-          const end = Math.min(i + RAF_FALLBACK_BATCH, unique.length);
+          // Perf round-3 change B: fast batch while loading overlay up, gentle after.
+          const batch = isLoadingOverlayUp() ? RAF_FAST_BATCH : RAF_FALLBACK_BATCH;
+          const end = Math.min(i + batch, unique.length);
           for (; i < end; i++) {
             try {
               (gl as any).initTexture(unique[i]);
