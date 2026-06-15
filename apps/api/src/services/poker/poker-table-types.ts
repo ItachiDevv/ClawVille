@@ -149,6 +149,75 @@ export interface PrivateSeatView {
   deadlineMs: number;
 }
 
+/**
+ * The poll-friendly view a SOCKET-LESS agent fetches on demand (REST
+ * `state-for-agent`). It bundles the FULL public table snapshot (no hole cards —
+ * same redaction guarantees as a broadcast frame) with the requesting seat's OWN
+ * private view (hole cards + legal actions + raise bounds) and a derived
+ * `isYourTurn` flag + `deadlineMs`. The `private` block is present ONLY for the
+ * one seat the request resolves to (the agent's bound avatar) — there is no path
+ * here that returns another seat's hole cards, because the only card-bearing
+ * source is the requesting seat's own `SimSeat.hole`.
+ *
+ * `isYourTurn === false` ⇒ `legalActions` is `[]` and `toCall`/`minRaiseTo`/
+ * `maxRaiseTo` reflect the seat's static stack (no action is legal off-turn, so
+ * a polling agent must wait for `isYourTurn === true` before calling `poker_act`).
+ */
+export interface AgentSeatView {
+  /** The full public table state (broadcast-equivalent; NEVER any hole cards). */
+  table: PublicTableSnapshot;
+  /** The requesting seat's index at this table. */
+  seatIndex: number;
+  /** True iff it is currently THIS seat's turn to act. */
+  isYourTurn: boolean;
+  /** The seat's own two hole cards (the ONLY card-bearing field; one seat only). */
+  holeCards: [Card, Card];
+  /** Legal action kinds right now — `[]` when it is not the seat's turn. */
+  legalActions: ActionKind[];
+  /** Chips owed to match the current bet (0 when nothing owed / off-turn). */
+  toCall: number;
+  /** Smallest legal TOTAL "bet/raise to" target (only meaningful on-turn). */
+  minRaiseTo: number;
+  /** Largest legal TOTAL "bet/raise to" target = streetBet + chipStack. */
+  maxRaiseTo: number;
+  /** Chips behind. */
+  chipStack: number;
+  /** Wall-clock ms deadline by which the seat must act, or null when off-turn. */
+  deadlineMs: number | null;
+  /** The hand this view describes (so a stale poll can be discarded). */
+  handNumber: number;
+}
+
+/**
+ * The advisor recommendation returned by `getActionAdvice` — a NON-STAKING hint
+ * (advisor mode). It estimates the seat's hand strength with the engine's pure
+ * `estimateStrength` heuristic and maps that + the legal-action set + pot odds to
+ * a single recommended action. It NEVER mutates table state, NEVER moves chips,
+ * and NEVER reveals any other seat's cards (it reasons only from the requesting
+ * seat's own hole cards + the public board). When it is not the seat's turn the
+ * recommendation is `null` (nothing to advise on).
+ */
+export interface AgentActionAdvice {
+  /** Hand-strength estimate in [0,1] (engine heuristic; deterministic). */
+  strength: number;
+  /** The legal action kinds for the seat right now (mirrors the view). */
+  legalActions: ActionKind[];
+  /**
+   * The recommended action, or null when it is not the seat's turn (no decision
+   * to make). `amount` is a TOTAL "bet/raise to" target (same convention as
+   * `Action`), clamped into [minRaiseTo, maxRaiseTo].
+   */
+  recommended:
+    | { kind: 'fold' }
+    | { kind: 'check' }
+    | { kind: 'call' }
+    | { kind: 'bet'; amount: number }
+    | { kind: 'raise'; amount: number }
+    | null;
+  /** One-line human-readable rationale (e.g. "strong hand, value-raise"). */
+  rationale: string;
+}
+
 /** One seat's final accounting in a resolved hand. */
 export interface HandResultSeat {
   seatIndex: number;
