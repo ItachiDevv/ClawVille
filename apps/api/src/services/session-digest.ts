@@ -29,3 +29,31 @@ import { createHash } from 'crypto';
 export function sessionDigest(sessionId: string): string {
   return createHash('sha256').update(sessionId).digest('hex').slice(0, 16);
 }
+
+/**
+ * Full sha256(sessionId) as 64 hex chars. One-way, non-reversible.
+ *
+ * Persisted to `openclaw_bots.session_key_hash` so a live session can be
+ * RESTORED after an API restart (the in-memory session Map is rebuilt empty on
+ * every deploy, but the DB row survives with its sliding TTL). We store the
+ * HASH, never the raw bearer: the raw agent-session id is the real-CT bearer
+ * credential, so a DB dump must not yield a spendable token. The restore path
+ * (`openclaw-session-restore.ts`) hashes the INCOMING bearer and looks the row
+ * up by this column — a match proves the caller holds the live id without that
+ * id ever touching disk. Full 256-bit width (vs the 64-bit `sessionDigest`
+ * correlation prefix) because this column is an equality key on a UNIQUE
+ * lookup, where a 64-bit prefix collision would let one agent's bearer resolve
+ * a DIFFERENT agent's row (the column carries a UNIQUE partial index so a
+ * collision is a write error, never a silent mis-resolve).
+ *
+ * NOTE: `services/provable-rng.ts` exports a byte-identical `sha256Hex` (plain
+ * sha256 of the input's UTF-8 bytes -> full lowercase hex, no salt). The two are
+ * intentionally separate: that one is the casino provably-fair RNG primitive
+ * (documented around hashing hex-string server seeds), this one is the
+ * session-bearer hash. Kept apart so neither domain's semantics drift onto the
+ * other; both produce identical output for identical input, so a future
+ * consolidation is safe but not required.
+ */
+export function sha256Hex(sessionId: string): string {
+  return createHash('sha256').update(sessionId).digest('hex');
+}

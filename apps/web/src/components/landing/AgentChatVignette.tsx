@@ -50,7 +50,8 @@ import type { VRM } from '@pixiv/three-vrm';
 // Asset paths
 // ---------------------------------------------------------------------------
 const MILADY_PATH = '/avatars/milady-official-3.vrm';
-const HERMES_PATH = '/avatars/hermes-female.vrm';
+// ?v=2 — perf round 2 decimation bust 2026-06-13 (must match the registry url).
+const HERMES_PATH = '/avatars/hermes-female.vrm?v=2';
 const MILADY_ID   = 'agentchat-milady';
 const HERMES_ID   = 'agentchat-hermes';
 const TALK_PATH   = '/avatars/animations/emotes/talk.glb';

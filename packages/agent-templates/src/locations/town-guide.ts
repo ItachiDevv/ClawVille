@@ -52,7 +52,7 @@ export const townGuide: LocationTemplate = {
     'First-time tutorial card: when an agent or human enters Bumper Shells or Reef Race for the very first time, the activity lobby shows a small card in my voice with the goal + power-up tips + control hints. It dismisses on "Got it" and a per-activity localStorage flag (clawville-activity-tutorial-seen-v1) means you never see the same card twice. There is also a "Don\'t show again (all activities)" link for power-users who already know the loop.',
     'Activity sound design: countdown tick → round-start chime → knockout SFX when you get rammed off → power-up pickup + use chimes → placement-tier fanfare on results (1st = victory fanfare, 2nd = silver chime, 3rd = bronze, 4+ = defeat sting). PB beat plays an extra chime. All SFX respect prefers-reduced-motion and a global mute. The audio bus is iOS-friendly (waits for a user gesture before unlocking the AudioContext).',
     'Mobile parity: when you are inside an activity room on a touch device, the open-world E button is replaced by two thumb buttons — A (boost, equivalent to Space) and B (use power-up, equivalent to Q). The left joystick still steers. Both buttons fire short haptic feedback (navigator.vibrate) when the device supports it, and stay 64×64 px so they meet WCAG 2.1 AA touch-target sizing.',
-    'Shared rooms (multiplayer): the open world runs as small shared rooms (up to 20 players each, auto-filled or joined by a 4-character invite code). Everyone in your room sees everyone else move in real time, and a wandering NPC quietly steps aside to make space when a player joins. This is full human/agent parity: a connected or hosted agent can be co-present in the SAME room as a human, walking around AS ITSELF (its own avatar, real ClawTokens and leaderboard credit, marked with a connected-agent dot), not as an anonymous guest. Humans join via the site; agents join with their session header. Either way only an opaque presence id ever goes over the wire, so nobody can read anyone else\'s session.',
+    'Shared rooms (multiplayer): the open world runs as small shared rooms. Auto-fill keeps rooms cozy by gathering players together up to about a dozen (a soft cap of 12) before opening a new room, so you spawn next to other people rather than alone. Friends can still pile into a specific room together with a 4-character invite code, which is honored up to a hard cap of 20. Everyone in your room sees everyone else move in real time, and a wandering NPC quietly steps aside to make space when a player joins. This is full human/agent parity: a connected or hosted agent can be co-present in the SAME room as a human, walking around AS ITSELF (its own avatar, real ClawTokens and leaderboard credit, marked with a connected-agent dot), not as an anonymous guest. Humans join via the site; agents join with their session header. Either way only an opaque presence id ever goes over the wire, so nobody can read anyone else\'s session.',
     'Nori\'s rule: if the question is about a SPECIFIC skill (cron, APIs, RAG, agent security, MCP, deployment, visual creation, app publishing, code, communication channels), send the visitor to the relevant building teacher. Nori teaches the MAP. The building teachers teach the CRAFT.',
 
     // 2026-06-01 Hatcher portal (partner #2) — same-diff knowledge sync.
@@ -72,6 +72,19 @@ export const townGuide: LocationTemplate = {
     // the primary Hatcher path: Hatcher registers the agent + keeps its brain,
     // ClawVille calls Hatcher back for what the agent says.
     'Some Hatcher agents play in "proxy" mode: Hatcher registers them into ClawVille and keeps the agent\'s brain on Hatcher\'s side. ClawVille spawns the agent in the world and calls back to Hatcher whenever the agent needs to say or decide something — so the agent plays here while thinking over there. To a visitor in the world they look and act like any other agent: they get a Hatcher avatar, walk around, visit buildings, and chat with teachers. Connected agents tied to a ClawVille account also earn ClawTokens for visiting buildings and chatting with teachers, just like players.',
+
+    // 2026-06-13 FIX-10 — proxy-mode cove parity (Rule E5). Same-diff
+    // knowledge sync: the canonical world-fact rides the
+    // CLAWVILLE_ORIENTATION_KNOWLEDGE spread above; this inline Nori-voice
+    // line keeps a grep against this file finding the new parity fact, and
+    // points the curious agent at the manual rather than duplicating the
+    // verb/tool detail (Nori teaches the MAP, the manual teaches the CRAFT).
+    'A proxy-mode agent (brain hosted on Hatcher) can play the cove for real ClawTokens too, exactly like any connected agent — it walks in with the in-world enter_cove() action and its partner backend handles the betting against its own avatar. If an agent asks how the proxy path plays the cove, point it at the connection protocol manual (the manifest at /api/skills/manifest.json) — that is where the verbs and tools are spelled out, not me.',
+
+    // 2026-06-12 — agent session lifecycle (same-diff orientation sync). The
+    // idle-body despawn is the only world-VISIBLE change: a dormant agent\'s
+    // body disappears from the world, then reappears when it acts again.
+    'A connected agent keeps a live body in the world only while it is active. If an agent stops doing anything for a while (about half an hour), its body quietly despawns to keep the world light — but the agent is still connected, keeps all its avatar progress and ClawTokens, and its body reappears at the same spot the moment it acts again. So if you see an agent vanish, it has just gone idle, not left; it has not lost anything and does not need to reconnect. Separately, a session that goes a full day with no activity expires and the agent reconnects for free with its identity key.',
 
     // Phase 3 — Reef Race stat connection (load-bearing CLAUDE.md rule:
     // gameplay change → same-diff Town Guide knowledge update).
@@ -115,8 +128,9 @@ export const townGuide: LocationTemplate = {
     // is the Nori-voice "point at the game" entry. AGENT PARITY (2026-06-03):
     // connected/hosted agents now play blackjack AS THEMSELVES, autonomously,
     // from their own runtime via the two-step cove flow (in-world enter_cove()
-    // action tag, then session-bound blackjack tools; protocol_version 2)
-    // settling in real ClawTokens, plus the bidirectional game-skill memory
+    // action tag, then session-bound blackjack tools; see skill-protocol.ts §7,
+    // single-source PROTOCOL_VERSION) settling in real ClawTokens, plus the
+    // bidirectional game-skill memory
     // loop. The in-modal, human-supervised Autonomous driver (8s/15s takeover
     // window) is LIVE via the shipped relay POST /api/cove/blackjack/agent/decide
     // for gateway-cognition agents; self-managed nanoclaw agents return 503 and
