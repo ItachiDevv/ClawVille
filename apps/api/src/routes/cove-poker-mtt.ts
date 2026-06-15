@@ -4,8 +4,15 @@
  * Mount: `app.route('/api/cove/poker/mtt', covePokerMttRouter)` from index.ts.
  *
  * Surfaces (full lobby UI is a later phase — this is the backend seam):
- *   POST /:id/register   (user OR agent) — buy in (real CT debit), idempotent
- *   GET  /:id            (public)        — tournament status + standings
+ *   POST /:id/register        (user OR agent) — buy in (real CT debit), idempotent
+ *   GET  /:id/connection      (user OR agent) — the seated subject's WS ticket
+ *   GET  /:id                 (public)        — tournament status + standings
+ *   POST /action              (user OR agent) — submit ONE betting action (P5;
+ *     SOCKET-LESS path, SAME settlement as the WS hub; controlled-mode suppressed)
+ *   GET  /:id/state-for-agent (user OR agent) — the subject's OWN poll view (P5;
+ *     public table + own hole cards + legalActions + isYourTurn; no leak)
+ *   GET  /:id/advice          (user OR agent) — ADVISOR MODE (P5; non-staking
+ *     recommended action; allowed even when the avatar is human-controlled)
  *
  * ── HUMAN/AGENT PARITY (Rule E5 — built in from the START) ───────────────────
  * Registration is an ECONOMY WRITE (it debits real CT). The subject resolver
@@ -98,6 +105,31 @@ async function resolveRegisterSubject(c: {
 
 const idParamSchema = z.object({ id: z.string().uuid() });
 
+// ── Socket-less agent action schema (P5) ──────────────────────────────────────
+//
+// A connected/hosted agent that never opened a WS plays its tournament hand over
+// REST: it polls GET /:id/state-for-agent until `isYourTurn`, then POSTs ONE
+// action here. The body is structurally identical to the WS `poker.action` frame
+// (handNumber + actionSeq + a discriminated action) so the idempotency key and the
+// sim contract match the socket path EXACTLY. Betting NEVER flows through the
+// free-text [ACTION:] parser — only this authenticated, session-bound endpoint.
+const pokerActionSchema = z.object({
+  tournamentId: z.string().uuid(),
+  handNumber: z.number().int().nonnegative(),
+  actionSeq: z.number().int().nonnegative(),
+  action: z.discriminatedUnion('kind', [
+    z.object({ kind: z.literal('fold') }),
+    z.object({ kind: z.literal('check') }),
+    z.object({ kind: z.literal('call') }),
+    z.object({ kind: z.literal('bet'), amount: z.number().int().positive() }),
+    z.object({ kind: z.literal('raise'), amount: z.number().int().positive() }),
+  ]),
+});
+
+const stateForAgentQuerySchema = z.object({
+  tournamentId: z.string().uuid(),
+});
+
 // ── POST /:id/register ────────────────────────────────────────────────────────
 
 covePokerMttRouter.post('/:id/register', async (c) => {
@@ -187,6 +219,120 @@ covePokerMttRouter.get('/:id/connection', async (c) => {
     seatIndex: conn.seatIndex,
     activityId: conn.activityId,
   });
+});
+
+// ── POST /action (P5 — socket-less agent/human betting action) ────────────────
+//
+// HUMAN/AGENT PARITY (Rule E5): the SAME subject resolver as registration (human
+// cookie XOR agent session → the resolved/bound avatar). A connected/hosted agent
+// playing AS ITSELF, or a human, submits ONE action for its OWN seat. The actor's
+// avatarId comes from the AUTHED identity — the caller never names a seat, so it
+// can only ever act AS ITSELF (no cross-seat action). Routes to
+// `tournamentManager.applyAgentAction` → `pokerMttSim.applyAction`, the EXACT
+// settlement path the WS hub uses (idempotencyKey `<handNumber>:<actionSeq>:<avatarId>`).
+//
+// CONTROLLED MODE: when the avatar is human-CONTROLLED, an `actor:'agent'`
+// (autonomous) bet is suppressed (`409 human_controlled`) — the human at the
+// wheel owns the decision; the agent should use POST-less advisor reads instead.
+// We derive `actor` from the resolved subject kind: a Lucia human is the driver
+// ('human', never suppressed); an agent session is autonomous ('agent', suppressed
+// when its avatar is controlled).
+//
+// PARITY note: human path POST /action with a Lucia cookie; agent path POST
+// /action with X-Clawville-Agent-Session; the bet binds to the resolved avatarId
+// (human's active avatar OR agent's bound avatar) → real chips → real CT at settle.
+covePokerMttRouter.post('/action', async (c) => {
+  let parsed: z.infer<typeof pokerActionSchema>;
+  try {
+    parsed = pokerActionSchema.parse(await c.req.json());
+  } catch {
+    throw new HTTPException(400, { message: 'invalid_action_body' });
+  }
+  const subject = await resolveRegisterSubject(c);
+
+  const idempotencyKey = `${parsed.handNumber}:${parsed.actionSeq}:${subject.avatarId}`;
+  const result = tournamentManager.applyAgentAction({
+    tournamentId: parsed.tournamentId,
+    avatarId: subject.avatarId,
+    action: parsed.action,
+    idempotencyKey,
+    actor: subject.kind === 'user' ? 'human' : 'agent',
+  });
+
+  if (!result.ok) {
+    const reason = result.reason ?? 'illegal_action';
+    // Map sim rejection reasons to faithful HTTP statuses. 409 for state conflicts
+    // (not your turn / no live table / hand over / suppressed); 422 for an illegal
+    // bet shape the sim refused.
+    const status409 = new Set([
+      'no_live_table',
+      'human_controlled',
+      'not_your_turn',
+      'hand_over',
+      'not_seated',
+      'no_such_table',
+    ]);
+    throw new HTTPException((status409.has(reason) ? 409 : 422) as 409, { message: reason });
+  }
+
+  return c.json({
+    ok: true,
+    advancedStreet: result.advancedStreet ?? false,
+    handComplete: result.handComplete ?? false,
+    nextToActAvatarId: result.nextToActAvatarId ?? null,
+  });
+});
+
+// ── GET /:id/state-for-agent (P5 — the socket-less agent poll view) ───────────
+//
+// HUMAN/AGENT PARITY (Rule E5): the SAME subject resolver. Returns the requesting
+// subject's OWN view — the public table snapshot (NEVER any other seat's cards),
+// its own hole cards, legal actions, whether it is its turn, and the action
+// deadline — so a socket-less agent can poll until `isYourTurn` then act. The sim
+// enforces the hidden-state redaction (a hole-card leak into the public snapshot
+// is a compile error); this endpoint adds NO new disclosure.
+//
+// 409 (not 404) when the subject is not a live seat at a running hand, so a client
+// can poll through seating without distinguishing it from a missing tournament.
+covePokerMttRouter.get('/:id/state-for-agent', async (c) => {
+  const parsed = idParamSchema.safeParse(c.req.param());
+  if (!parsed.success) {
+    throw new HTTPException(400, { message: 'invalid_tournament_id' });
+  }
+  const tournamentId = parsed.data.id;
+  const subject = await resolveRegisterSubject(c);
+
+  const view = tournamentManager.getSeatViewForAgent(tournamentId, subject.avatarId);
+  if (!view) {
+    throw new HTTPException(409, { message: 'not_seated_or_no_live_hand' });
+  }
+  return c.json({ ok: true, view });
+});
+
+// ── GET /:id/advice (P5 — ADVISOR MODE; non-staking recommendation) ───────────
+//
+// HUMAN/AGENT PARITY (Rule E5 — advisor vs controlled split): the SAME subject
+// resolver. Returns a RECOMMENDED action (engine `estimateStrength` heuristic)
+// WITHOUT staking any CT or mutating any state — the caller chooses to follow or
+// ignore it. This is the advisor-mode surface: a human driving a connected agent's
+// avatar (controlled mode) can ask the agent for advice without the agent betting,
+// and an autonomous agent can sanity-check its own decision. NEVER reveals another
+// seat's cards (it reasons only from the requesting seat's own hole + the board).
+//
+// Allowed even when the avatar is human-controlled (advice never stakes).
+covePokerMttRouter.get('/:id/advice', async (c) => {
+  const parsed = idParamSchema.safeParse(c.req.param());
+  if (!parsed.success) {
+    throw new HTTPException(400, { message: 'invalid_tournament_id' });
+  }
+  const tournamentId = parsed.data.id;
+  const subject = await resolveRegisterSubject(c);
+
+  const advice = tournamentManager.getActionAdvice(tournamentId, subject.avatarId);
+  if (!advice) {
+    throw new HTTPException(409, { message: 'not_seated_or_no_live_hand' });
+  }
+  return c.json({ ok: true, advice });
 });
 
 // ── GET /:id (status + standings) ─────────────────────────────────────────────

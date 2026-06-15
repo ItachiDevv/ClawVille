@@ -41,6 +41,7 @@ import {
 import { drainKnowledgeEvents, clearSessionQueue } from '../services/skill-event-bus';
 import { runTool } from '../services/skill-tools-dispatcher';
 import { coveBlackjackRouter } from './cove-blackjack';
+import { covePokerMttRouter } from './cove-poker-mtt';
 import { validateLiveAgentSession } from '../middleware/require-auth-or-agent';
 import { sessionDigest } from '../services/session-digest';
 import { getBlackjackSkillContext } from '../services/game-skill-memory';
@@ -2001,6 +2002,12 @@ agentGatewayRoutes.post('/:sessionId/chat', async (c) => {
 
         const state: Record<string, any> = {
           avatarId: bot?.id ?? npcId,
+          // MUST be set: the KnowledgeProvider keys learned-skill retrieval on the
+          // hosted bot's platform_agents id (agent_id=room_id=entity_id). elizaAgentId
+          // IS that id (the runtime was started with it and its knowledge memories live
+          // under it); without it the provider falls back to avatarId (openclaw_bots.id
+          // or npcId) and every learned-skill retrieval misses.
+          platformAgentId: elizaAgentId,
           // Raw sessionId is folded into ElizaOS room derivation (not stored as a
           // recoverable bearer column), so keying it raw re-opens no recoverable
           // leak while preserving chat-memory continuity across deploys.
@@ -3733,6 +3740,306 @@ agentGatewayRoutes.post('/:sessionId/cove/blackjack/:tool', async (c) => {
   });
 
   // Mirror the cove route's status so the agent sees 4xx/5xx faithfully.
+  return c.json(payload as Record<string, unknown>, res.status as 200);
+});
+
+// ---------------------------------------------------------------------------
+// Cove POKER (MTT) — agent-callable play surface (Rule E5 — human↔agent parity).
+// ---------------------------------------------------------------------------
+// A connected/hosted agent plays REAL-CT multi-table tournament poker AS ITSELF
+// through these tools (the HYBRID model: `[ACTION: enter_poker_room()]` walks the
+// body to the Cove poker area, then the agent drives play via these tool calls —
+// betting NEVER flows through the free-text [ACTION:] parser, only these
+// authenticated, session-bound tool endpoints).
+//
+// REUSE, NOT REIMPLEMENTATION: every tool forwards to the audited
+// `covePokerMttRouter` via an in-process sub-request carrying the agent-session
+// header. That router's `resolveRegisterSubject` resolves the header → the agent's
+// bound avatar → its REAL CT (buy-in debit, prize credit) — the SAME path a human
+// uses. There is ZERO duplicated money/engine logic here: the TournamentManager +
+// pokerMttSim own escrow, settlement, the turn clock, hidden-state redaction and
+// idempotency exactly once. This surface is a thin, parity-preserving adapter.
+//
+// The tool JSON is Anthropic/OpenAI-compatible (input_schema + parameters) so a
+// harness can install it straight from /cove/poker/tools.json.
+
+const COVE_POKER_TOOLS = [
+  {
+    name: 'poker_register',
+    description:
+      'Buy in to a Cove Texas Hold\'em tournament with your real ClawTokens. The buy-in is debited now into the prize pool; this is idempotent (re-registering the same tournament does not double-charge). You must be a connected agent with a bound avatar. Returns your entrant id + the current prize pool.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        tournamentId: { type: 'string', description: 'The tournament UUID to register for (from the lobby / poker_connection).' },
+      },
+      required: ['tournamentId'],
+      additionalProperties: false,
+    },
+    parameters: {
+      type: 'object',
+      properties: { tournamentId: { type: 'string' } },
+      required: ['tournamentId'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'poker_get_state',
+    description:
+      'Poll your OWN view of your live tournament hand: the public table (board, pot, blinds, every seat\'s chips + who is to act) plus YOUR two hole cards, your legal actions, whether it is your turn, and your action deadline. Other seats\' hole cards are NEVER returned. Poll this until `view.isYourTurn` is true, then call poker_act.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        tournamentId: { type: 'string', description: 'The tournament UUID you are seated in.' },
+      },
+      required: ['tournamentId'],
+      additionalProperties: false,
+    },
+    parameters: {
+      type: 'object',
+      properties: { tournamentId: { type: 'string' } },
+      required: ['tournamentId'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'poker_act',
+    description:
+      'Submit ONE betting decision on your live hand when it is your turn (check poker_get_state.view.isYourTurn first). `handNumber` + `actionSeq` come from your current view and make the action idempotent (a retransmit is a stable no-op). `amount` on a bet/raise is the TOTAL chips-in-front target ("raise to X"), clamped to your legal min/max. If it is not your turn the server rejects it (409 not_your_turn).',
+    input_schema: {
+      type: 'object',
+      properties: {
+        tournamentId: { type: 'string', description: 'The tournament UUID you are seated in.' },
+        handNumber: { type: 'integer', minimum: 0, description: 'The current hand number (from poker_get_state).' },
+        actionSeq: { type: 'integer', minimum: 0, description: 'A monotonic per-hand sequence you choose (0,1,2…); makes the action idempotent.' },
+        action: {
+          type: 'object',
+          description: 'fold|check|call take no amount; bet|raise take a TOTAL "to" amount.',
+          properties: {
+            kind: { type: 'string', enum: ['fold', 'check', 'call', 'bet', 'raise'] },
+            amount: { type: 'integer', minimum: 1, description: 'TOTAL "raise/bet to" target — required ONLY for bet/raise.' },
+          },
+          required: ['kind'],
+          additionalProperties: false,
+        },
+      },
+      required: ['tournamentId', 'handNumber', 'actionSeq', 'action'],
+      additionalProperties: false,
+    },
+    parameters: {
+      type: 'object',
+      properties: {
+        tournamentId: { type: 'string' },
+        handNumber: { type: 'integer', minimum: 0 },
+        actionSeq: { type: 'integer', minimum: 0 },
+        action: {
+          type: 'object',
+          properties: {
+            kind: { type: 'string', enum: ['fold', 'check', 'call', 'bet', 'raise'] },
+            amount: { type: 'integer', minimum: 1 },
+          },
+          required: ['kind'],
+          additionalProperties: false,
+        },
+      },
+      required: ['tournamentId', 'handNumber', 'actionSeq', 'action'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'poker_advise',
+    description:
+      'ADVISOR MODE — get a RECOMMENDED action for your current spot WITHOUT staking any ClawTokens or changing the table. Returns a hand-strength estimate, your legal actions, and one suggested action with a short rationale. Use it to sanity-check your own decision, or (when a human is driving your avatar) to advise the human. It never bets — you still call poker_act to actually commit.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        tournamentId: { type: 'string', description: 'The tournament UUID you are seated in.' },
+      },
+      required: ['tournamentId'],
+      additionalProperties: false,
+    },
+    parameters: {
+      type: 'object',
+      properties: { tournamentId: { type: 'string' } },
+      required: ['tournamentId'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'poker_connection',
+    description:
+      'Get your seated WS connection ticket (roomId, shortCode, seatIndex) for a running tournament — useful if you want to open a live socket instead of polling. Socket-less play works entirely through poker_get_state + poker_act; this is optional.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        tournamentId: { type: 'string', description: 'The tournament UUID you are seated in.' },
+      },
+      required: ['tournamentId'],
+      additionalProperties: false,
+    },
+    parameters: {
+      type: 'object',
+      properties: { tournamentId: { type: 'string' } },
+      required: ['tournamentId'],
+      additionalProperties: false,
+    },
+  },
+] as const;
+
+// Forwarding spec per poker tool. Unlike blackjack (all POST to fixed paths), the
+// poker surface mixes GET (path-param) reads with POST writes, so each entry
+// declares its method + how to derive the router-relative path + body from the
+// agent's tool args. `tournamentId` is a uuid path segment for the GET reads and
+// the /:id/register write; /action carries everything in the body. Every path is
+// built from a VALIDATED uuid (see the handler) so no arg can inject a path.
+type PokerToolForward =
+  | { method: 'GET'; build: (args: Record<string, unknown>) => string }
+  | { method: 'POST'; build: (args: Record<string, unknown>) => string; body: (args: Record<string, unknown>) => unknown };
+
+const COVE_POKER_TOOL_ROUTES: Record<string, PokerToolForward | undefined> = {
+  poker_register: {
+    method: 'POST',
+    build: (a) => `/${String(a.tournamentId)}/register`,
+    body: () => ({}),
+  },
+  poker_get_state: {
+    method: 'GET',
+    build: (a) => `/${String(a.tournamentId)}/state-for-agent`,
+  },
+  poker_act: {
+    method: 'POST',
+    build: () => '/action',
+    body: (a) => ({
+      tournamentId: a.tournamentId,
+      handNumber: a.handNumber,
+      actionSeq: a.actionSeq,
+      action: a.action,
+    }),
+  },
+  poker_advise: {
+    method: 'GET',
+    build: (a) => `/${String(a.tournamentId)}/advice`,
+  },
+  poker_connection: {
+    method: 'GET',
+    build: (a) => `/${String(a.tournamentId)}/connection`,
+  },
+};
+
+const UUID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+
+// ---------------------------------------------------------------------------
+// GET /api/agent/:sessionId/cove/poker/tools.json
+// ---------------------------------------------------------------------------
+// The installable agent-tool bundle for cove poker. Session-gated (same as the
+// blackjack tools.json) so only a live agent can fetch it.
+// ---------------------------------------------------------------------------
+agentGatewayRoutes.get('/:sessionId/cove/poker/tools.json', async (c) => {
+  const sessionId = c.req.param('sessionId');
+  const resolved = await resolveSession(sessionId);
+  if (!resolved) return c.json({ error: 'Invalid or expired agent session' }, 404);
+
+  return new Response(JSON.stringify(COVE_POKER_TOOLS, null, 2), {
+    status: 200,
+    headers: {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Content-Disposition': 'attachment; filename="clawville-cove-poker.tools.json"',
+      'Cache-Control': 'private, max-age=300',
+      'X-Skill-Filename': 'clawville-cove-poker.tools.json',
+      'Access-Control-Expose-Headers': 'Content-Disposition, X-Skill-Filename',
+    },
+  });
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/agent/:sessionId/cove/poker/:tool
+// ---------------------------------------------------------------------------
+// Server-side execution endpoint for the cove-poker agent tools. Forwards to the
+// audited covePokerMttRouter via an in-process sub-request carrying the
+// agent-session header — so the poker route's resolveRegisterSubject binds the
+// agent to its avatar's REAL CT (buy-in/settlement). The agent NEVER touches a
+// guest tier (there is none for a CT tournament). Hidden-state safety lives in the
+// poker route + sim (unchanged): state-for-agent returns only the agent's own hole
+// cards; this adapter adds NO new disclosure.
+//
+// All tools are invoked via POST (the uniform agent-tool transport), but a tool
+// may forward to a GET or POST on the underlying router per COVE_POKER_TOOL_ROUTES.
+// ---------------------------------------------------------------------------
+agentGatewayRoutes.post('/:sessionId/cove/poker/:tool', async (c) => {
+  const sessionId = c.req.param('sessionId');
+  const tool = c.req.param('tool');
+
+  // Fail-closed liveness gate (shared validator). The forwarded poker router also
+  // re-resolves the agent session in resolveRegisterSubject before any real-CT move.
+  if (!(await validateLiveAgentSession(sessionId))) {
+    return c.json({ error: 'Invalid or expired agent session' }, 404);
+  }
+
+  // Object.hasOwn guard so an inherited prototype key can NEVER resolve to a route.
+  if (!Object.hasOwn(COVE_POKER_TOOL_ROUTES, tool)) {
+    return c.json(
+      { error: 'unknown_tool', tool, knownTools: Object.keys(COVE_POKER_TOOL_ROUTES) },
+      404,
+    );
+  }
+  const forward = COVE_POKER_TOOL_ROUTES[tool]!;
+
+  // Read the agent's tool args.
+  let args: Record<string, unknown> = {};
+  try {
+    const raw = await c.req.text();
+    args = raw && raw.length > 0 ? (JSON.parse(raw) as Record<string, unknown>) : {};
+  } catch {
+    return c.json({ error: 'invalid_json_body' }, 400);
+  }
+
+  // Validate the tournamentId path arg as a strict uuid BEFORE it touches a path —
+  // a malformed/injected value can never reach the router (and /action carries it
+  // in the body where the route's Zod schema validates it anyway).
+  if (tool !== 'poker_act') {
+    const tid = args.tournamentId;
+    if (typeof tid !== 'string' || !UUID_RE.test(tid)) {
+      return c.json({ error: 'invalid_tournament_id' }, 400);
+    }
+  }
+
+  const fwdHeaders: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'X-Clawville-Agent-Session': sessionId,
+  };
+  const fp = c.req.header('X-CV-Fingerprint');
+  if (fp) fwdHeaders['X-CV-Fingerprint'] = fp;
+  const ua = c.req.header('User-Agent');
+  if (ua) fwdHeaders['User-Agent'] = ua;
+
+  const path = forward.build(args);
+  const init: { method: string; headers: Record<string, string>; body?: string } = {
+    method: forward.method,
+    headers: fwdHeaders,
+  };
+  if (forward.method === 'POST') {
+    init.body = JSON.stringify(forward.body(args) ?? {});
+  }
+
+  // In-process sub-request to the poker router — same code path a human hits.
+  const res = await covePokerMttRouter.request(path, init);
+
+  const text = await res.text();
+  let payload: unknown;
+  try {
+    payload = text.length > 0 ? JSON.parse(text) : {};
+  } catch {
+    // HTTPException bodies are plain text; surface as a structured { error }.
+    payload = { error: text };
+  }
+
+  void logEventFromContext(c, {
+    eventType: 'agent.tool.invoked',
+    agentId: npcSimulation.getOpenClawBotConfig(sessionId)?.agentId ?? sessionDigest(sessionId),
+    sessionId: sessionDigest(sessionId),
+    payload: { toolName: tool, ok: res.ok, status: res.status, via: 'cove-poker' },
+  });
+
   return c.json(payload as Record<string, unknown>, res.status as 200);
 });
 
