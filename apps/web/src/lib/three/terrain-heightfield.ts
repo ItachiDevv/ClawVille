@@ -60,10 +60,6 @@ let _rows = 0; // segsY + 1
 let _halfW = 0; // half of plane width  (world X range)
 let _halfH = 0; // half of plane height (world Z range = -localY range)
 
-/** Cell size in world units. */
-let _cellW = 0;
-let _cellH = 0;
-
 /** Flat Float32Array of displaced heights in LOCAL Z (before -2 world offset).
  *  Indexed as heights[row * _cols + col].
  *  Row 0 = most-negative localY (= most-positive worldZ).
@@ -107,8 +103,6 @@ export function initTerrainHeightfield(
   _rows  = rows;
   _halfW = (maxLocalX - minLocalX) / 2; // = w/2 in world X
   _halfH = (maxLocalY - minLocalY) / 2; // = h/2 in world Z (via -localY)
-  _cellW = (maxLocalX - minLocalX) / segsX;
-  _cellH = (maxLocalY - minLocalY) / segsY;
 
   // Copy displaced heights into a flat Float32Array.
   _heights = new Float32Array(cols * rows);
@@ -137,9 +131,10 @@ export function initTerrainHeightfield(
  *   displaced = bilinear(localX, localY)
  *   worldY = displaced + (-2)   (from position={[0,-2,0]})
  *
- * Returns -2 (flat floor fallback) if:
- *   - heightfield not yet initialised (terrain not mounted)
- *   - query point outside plane extents
+ * Returns -2 (flat floor fallback) only if the heightfield is not yet
+ * initialised (terrain not mounted). Queries outside the plane extents CLAMP to
+ * the nearest edge cell (NOT -2) — the terrain plane is far larger than the
+ * playable map, so in practice every entity query lands well inside the grid.
  *
  * Zero per-call allocations — only arithmetic on stack values.
  */

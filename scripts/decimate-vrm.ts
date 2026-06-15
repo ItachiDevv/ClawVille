@@ -495,10 +495,18 @@ async function main(): Promise<void> {
   await doc.transform(...transforms);
 
   const glbBytes = await io.writeBinary(doc);
-  fs.writeFileSync(outFile, Buffer.from(glbBytes));
+  // Atomic write (review B2): write the bytes + re-inject VRMC_vrm on a TEMP
+  // file, then rename it over the target as the LAST step. In ship mode `outFile`
+  // is a canonical /avatars/<name>.vrm — if `reinjectVrmExtensions` threw mid-run
+  // a direct write would leave the original decimated-but-VRMC-stripped (an
+  // irrecoverably corrupt VRM with no backup). Temp+rename guarantees the target
+  // is only ever the fully-finished file OR the untouched original.
+  const tmpFile = outFile + '.tmp';
+  fs.writeFileSync(tmpFile, Buffer.from(glbBytes));
   // re-inject VRMC_vrm (+ siblings) — index-stable because simplify never
   // touched the node graph.
-  reinjectVrmExtensions(outFile, vrmExtensions);
+  reinjectVrmExtensions(tmpFile, vrmExtensions);
+  fs.renameSync(tmpFile, outFile);
 
   const outBytes = fs.statSync(outFile).size;
   const outFp = await fingerprint(outFile, io);
