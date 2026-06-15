@@ -116,6 +116,20 @@ export interface PokerState {
    */
   lastStreetDealt: { handNumber: number; street: PokerStreet; board: PokerCard[] } | null;
 
+  /**
+   * Pending multi-table MTT move (`poker.moved`) — the tournament engine moved
+   * us to another table between hands (rebalance / table-break / final-table).
+   * A later-phase reconnect effect reads this, closes the current WS, and opens
+   * a new one to `toRoomId`/`toShortCode`. null when no move is pending.
+   */
+  pendingMove: {
+    toRoomId: string;
+    toShortCode: string;
+    seatIndex: number;
+    chipStack: number;
+    reason: 'rebalance' | 'table_break' | 'final_table';
+  } | null;
+
   // ── Writer API (mirrors the activity store) ─────────────────────────────
   /** Single switchboard for the poker.* ServerFrame subset. */
   applyServerFrame: (frame: PokerServerFrame) => void;
@@ -137,6 +151,7 @@ function emptyTableState(): Pick<
   | 'lastShowdown'
   | 'lastHandResult'
   | 'lastStreetDealt'
+  | 'pendingMove'
 > {
   return {
     table: null,
@@ -148,6 +163,7 @@ function emptyTableState(): Pick<
     lastShowdown: null,
     lastHandResult: null,
     lastStreetDealt: null,
+    pendingMove: null,
   };
 }
 
@@ -250,6 +266,34 @@ export const usePokerStore = create<PokerState>()(
             holeCards: frame.view.holeCards,
             holeCardsHandNumber: frame.handNumber,
           });
+          break;
+        }
+
+        // ── PRIVATE: the MTT engine moved us to another table (P4) ──────
+        // Stash the destination + clear stale per-hand state so the (now
+        // wrong-table) hole cards / seat view don't render. A later-phase
+        // reconnect effect reads `pendingMove` and re-opens the WS.
+        case 'poker.moved': {
+          set({
+            pendingMove: {
+              toRoomId: frame.toRoomId,
+              toShortCode: frame.toShortCode,
+              seatIndex: frame.seatIndex,
+              chipStack: frame.chipStack,
+              reason: frame.reason,
+            },
+            holeCards: null,
+            holeCardsHandNumber: null,
+            seatView: null,
+            seatViewHandNumber: null,
+          });
+          break;
+        }
+
+        // ── PUBLIC: a table's roster changed (rebalance/break) (P4) ─────
+        // Pure refresh signal; the authoritative seat list still rides the
+        // next `poker.table_state`. No durable state to write here.
+        case 'poker.table_rebalanced': {
           break;
         }
 
