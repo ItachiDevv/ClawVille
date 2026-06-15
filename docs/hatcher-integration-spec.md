@@ -205,10 +205,26 @@ version bump keeps you current — a verb never exists in one layer without the 
 
 ⚠️ **Needs Hatcher confirmation:**
 1. Your `/launch/exchange` **accepts `mode: "controlled"`** (we now always send it).
-2. **Success response schema** + **error taxonomy** (expired / already-exchanged / unknown-or-revoked grant) —
-   we treat your response, not the URL, as authoritative.
-3. **Re-exchange semantics** — is the same `launchToken` exchanged twice (refresh/retry) an idempotent success or
-   an error? We strip the params after first success, but need to know how to treat the race.
+2. **Success response schema** + **error taxonomy** (expired / unknown-or-revoked grant) — we treat your
+   response, not the URL, as authoritative.
+
+✅ **Confirmed by Hatcher (2026-06-15) — launch-token single-use / re-exchange semantics.** The launch token
+is **one-time use**: a second `/launch/exchange` for the same token returns **`409 CLAWVILLE_LAUNCH_USED`**.
+ClawVille already complies end to end:
+- **First successful exchange is authoritative** — the owner lands in control and the launch state is cleared.
+- **Single-use on our side too** — the token is stripped from the URL the moment it's consumed (before the
+  round-trip resolves) plus a re-entry guard, so a refresh / remount can't replay it.
+- **We never re-POST the same token after it has reached you** — our only auto-retries (a Lucia cookie-race
+  `401`, our own issuer-misconfig, or a browser↔our-API network blip) are **local pre-flight failures** where
+  the token never left us, so the retry is the *first* real exchange.
+- **Any response from your endpoint is terminal** — including `409 CLAWVILLE_LAUNCH_USED`: we **drop the token**
+  and prompt the owner to **relaunch from Hatcher** for a fresh one (never loop on a used token).
+- We key on the HTTP **status class** (`409`), not the `CLAWVILLE_LAUNCH_USED` body string, since we never parse
+  partner response bodies (security). A `409` routes to the relaunch path correctly regardless.
+
+Handler: `apps/web/src/components/game/hatcher-launch-handler.tsx` (success ~ll.121–141, retry/terminal
+classification ~ll.156–189, token strip ~l.235); route maps any non-2xx → `exchange_rejected` + upstream status
+in `apps/api/src/routes/partner-hatcher-launch.ts`.
 
 ---
 
