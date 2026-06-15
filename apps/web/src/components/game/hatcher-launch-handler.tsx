@@ -119,21 +119,24 @@ export default function HatcherLaunchHandler() {
       if (cancelledRef.current) return;
 
       if (result.ok) {
-        const { name, x, y } = result.agent;
+        const { name } = result.agent;
         const store = useGameStore.getState();
-        // Land in spectate (free camera). v1 is observe-only regardless of the
-        // agent's own mode; do NOT possess. setControlMode('explore') also sets
-        // isSpectator and clears any stale near-location state.
-        store.setControlMode('explore');
-        // Mark launch-spectate AFTER setControlMode (which itself clears the
-        // flag) so the game-page explore→player auto-promotion can't yank the
-        // camera off the watched agent on the next useAvatar refetch. Cleared
-        // when the owner manually changes mode.
-        store.setHatcherSpectate(true);
-        // Focus the explore camera on the agent's in-world body. The three
-        // layer (WASDCameraController) drains this on its next frame.
-        store.requestCameraFocus(x, y);
-        store.addToast('🛰️', `Watching ${name} · launched from Hatcher`, 6000);
+        // Controlled launch (the shipped deliverable): land the owner IN CONTROL
+        // of the agent's avatar, not spectating it. 'player' mode mounts the
+        // PlayerAvatar follow-camera path; the magic-link session already logged
+        // the owner into the agent's bound user, so the player body IS the
+        // agent's avatar. We deliberately do NOT set explore / hatcherSpectate /
+        // requestCameraFocus — those are spectate-only and would suppress the
+        // explore→player promotion. The server hides the duplicate autonomous
+        // proxy NPC for as long as we keep uploading position (markHuman... was
+        // primed by the exchange; /api/world/position refreshes the TTL).
+        store.setControlMode('player');
+        // Defensively clear any stale spectate flag from a prior launch in this
+        // browser session so neither the explore→player promotion guard
+        // (game/page.tsx) nor setAgentPaired's keepSpectate branch (game.ts) can
+        // read a leftover `true` and pull us back out of player control.
+        store.setHatcherSpectate(false);
+        store.addToast('🎮', `Controlling ${name} · launched from Hatcher`, 6000);
         setBanner(null);
         return;
       }
