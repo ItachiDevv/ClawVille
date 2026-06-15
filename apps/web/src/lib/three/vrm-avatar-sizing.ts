@@ -65,6 +65,22 @@ export const SPECIES_TARGET_HEIGHT_WU: Record<string, number> = {
   'hermes-male': 297,
   hermes_male:   297,
 
+  // Phanes — the DEFAULT Hatcher partner avatar (agent-model-registry.ts:
+  // `phanes` → animatorId 'hermes-male', pickerHidden, reserved). It shares
+  // the hermes-male VRM rig, so it MUST read at the same 297 height.
+  //
+  // Owner-view (player-avatar.tsx) calls computeVRMAvatarFit(vrm,
+  // reg.animatorId) → key 'hermes-male' → 297. Peer/autonomous-view
+  // (arena-npcs.tsx computeVRMNpcScale) calls with `npc.species` → key
+  // 'phanes', which had NO entry here and fell through to the 270 base —
+  // so the SAME Hatcher agent rendered ~10 % taller to its owner than to
+  // everyone else (Hatcher review FIX-11 / 3D-3; breaks Rule E5 three-axis
+  // parity: one entity, one size whether human-piloted, autonomous, or
+  // peer-viewed). 297 here matches the hermes-male value above so both
+  // resolution paths agree. Safe because `phanes` is exclusively the
+  // Hatcher default avatar — no other species maps to it.
+  phanes: 297,
+
   // Tekk — design intent is "taller than everyone else" + wing-bbox
   // overhead. Iteration 2026-05-18:
   //   - 230 (original): body ~Milady height, wings fan above (base 179.2)
@@ -118,6 +134,26 @@ export function computeVRMAvatarFit(
   const prev = vrm.scene.scale.clone();
   vrm.scene.scale.setScalar(1);
   vrm.scene.updateMatrixWorld(true);
+  // Settle skeleton bone matrices before measuring the bbox.
+  //
+  // Box3.setFromObject on a SkinnedMesh calls applyBoneTransform per vertex,
+  // which reads skeleton.boneMatrices. Those matrices are only correct after
+  // skeleton.update() runs — updateMatrixWorld alone does NOT compute them.
+  // A freshly-parsed VRM whose animator has never ticked (the common case at
+  // useMemo time, before the animator useEffect runs) has zero boneMatrices,
+  // so every vertex maps to near-origin → size.y ≈ 0 → scale falls back to
+  // VRM_AVATAR_FALLBACK_SCALE (169). For a Mixamo cm-rig with native bbox
+  // ~194 units tall that's 169 × 194 = 32,786wu — the documented giant.
+  //
+  // Calling skeleton.update() here forces bind-pose matrices so the bbox
+  // reflects the actual rest-pose silhouette. This is an idempotent read —
+  // we restore vrm.scene.scale and updateMatrixWorld before returning.
+  vrm.scene.traverse((obj) => {
+    if ((obj as THREE.SkinnedMesh).isSkinnedMesh) {
+      const sm = obj as THREE.SkinnedMesh;
+      if (sm.skeleton) sm.skeleton.update();
+    }
+  });
   const box = new THREE.Box3().setFromObject(vrm.scene as unknown as THREE.Object3D);
   const size = new THREE.Vector3();
   box.getSize(size);

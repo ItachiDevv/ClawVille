@@ -283,9 +283,9 @@ describe('evaluateReels — wild substitution', () => {
     const { winningLines } = evaluateReels(reels, 'classic-3x5', 20n);
     const middleLineWin = winningLines.find((w) => w.lineIndex === 0);
     expect(middleLineWin).toBeDefined();
-    expect(middleLineWin!.multiplier).toBe(findSymbol(WILD_ID).payouts[3]); // 5-of-kind Wild = 200
-    // winAmount = perLinePredict * multiplier = 1 * 200 = 200n
-    expect(middleLineWin!.winAmount).toBe(200n);
+    expect(middleLineWin!.multiplier).toBe(findSymbol(WILD_ID).payouts[3]); // 5-of-kind Wild = 170
+    // winAmount = perLinePredict * multiplier = 1 * 170 = 170n
+    expect(middleLineWin!.winAmount).toBe(170n);
   });
 
   it('Wild,Wild,Cherry,Cherry,Cherry on middle line pays 5-of-kind Cherry', () => {
@@ -293,8 +293,8 @@ describe('evaluateReels — wild substitution', () => {
     const { winningLines } = evaluateReels(reels, 'classic-3x5', 20n);
     const middleLineWin = winningLines.find((w) => w.lineIndex === 0);
     expect(middleLineWin).toBeDefined();
-    expect(middleLineWin!.multiplier).toBe(findSymbol(CHERRY).payouts[3]); // 5-of-kind Cherry = 20
-    expect(middleLineWin!.winAmount).toBe(20n);
+    expect(middleLineWin!.multiplier).toBe(findSymbol(CHERRY).payouts[3]); // 5-of-kind Cherry = 18
+    expect(middleLineWin!.winAmount).toBe(18n);
   });
 
   it('Cherry,Cherry,Wild,Cherry,Cherry on middle line pays 5-of-kind Cherry', () => {
@@ -303,7 +303,7 @@ describe('evaluateReels — wild substitution', () => {
     const middleLineWin = winningLines.find((w) => w.lineIndex === 0);
     expect(middleLineWin).toBeDefined();
     expect(middleLineWin!.multiplier).toBe(findSymbol(CHERRY).payouts[3]);
-    expect(middleLineWin!.winAmount).toBe(20n);
+    expect(middleLineWin!.winAmount).toBe(18n);
   });
 
   it('Cherry,Cherry,Cherry,Wild,Wild on middle line pays 5-of-kind Cherry', () => {
@@ -312,7 +312,7 @@ describe('evaluateReels — wild substitution', () => {
     const middleLineWin = winningLines.find((w) => w.lineIndex === 0);
     expect(middleLineWin).toBeDefined();
     expect(middleLineWin!.multiplier).toBe(findSymbol(CHERRY).payouts[3]);
-    expect(middleLineWin!.winAmount).toBe(20n);
+    expect(middleLineWin!.winAmount).toBe(18n);
   });
 
   it('Lemon,Lemon,Wild,Cherry,Cherry on middle line pays 3-of-kind Lemon (wild extends)', () => {
@@ -345,8 +345,8 @@ describe('evaluateReels — wild substitution', () => {
     const { winningLines } = evaluateReels(reels, 'classic-3x5', 20n);
     const middleLineWin = winningLines.find((w) => w.lineIndex === 0);
     expect(middleLineWin).toBeDefined();
-    expect(middleLineWin!.multiplier).toBe(findSymbol(SEVEN).payouts[3]); // 5-of-kind Seven = 800
-    expect(middleLineWin!.winAmount).toBe(800n);
+    expect(middleLineWin!.multiplier).toBe(findSymbol(SEVEN).payouts[3]); // 5-of-kind Seven = 700
+    expect(middleLineWin!.winAmount).toBe(700n);
   });
 
   it('symbols array on the winning line matches the visible symbols left-to-right', () => {
@@ -381,12 +381,12 @@ describe('evaluateReels — loss + predict math', () => {
   });
 
   it('perLinePredict math: predict=20n, 5-of-kind Cherry on middle line ⇒ 20n win on that line', () => {
-    // perLinePredict = 20n / 20n = 1n; multiplier = 20 → 20n total on that line.
+    // perLinePredict = 20n / 20n = 1n; multiplier = 18 → 18n total on that line.
     const reels = gridFromMiddle([CHERRY, CHERRY, CHERRY, CHERRY, CHERRY], LEMON);
     const { winningLines } = evaluateReels(reels, 'classic-3x5', 20n);
     const w = winningLines.find((x) => x.lineIndex === 0)!;
-    expect(w.multiplier).toBe(20);
-    expect(w.winAmount).toBe(20n);
+    expect(w.multiplier).toBe(18);
+    expect(w.winAmount).toBe(18n);
   });
 
   it('perLinePredict math: predict=400n, 2-of-kind Cherry ⇒ 40n win on that line', () => {
@@ -399,12 +399,12 @@ describe('evaluateReels — loss + predict math', () => {
   });
 
   it('perLinePredict math: predict=2000n, 5-of-kind Seven ⇒ 80_000n win on that line', () => {
-    // perLinePredict = 2000n / 20n = 100n; multiplier = 800 → 80_000n.
+    // perLinePredict = 2000n / 20n = 100n; multiplier = 700 → 70_000n.
     const reels = gridFromMiddle([SEVEN, SEVEN, SEVEN, SEVEN, SEVEN], CHERRY);
     const { winningLines } = evaluateReels(reels, 'classic-3x5', 2000n);
     const w = winningLines.find((x) => x.lineIndex === 0)!;
-    expect(w.multiplier).toBe(800);
-    expect(w.winAmount).toBe(80_000n);
+    expect(w.multiplier).toBe(700);
+    expect(w.winAmount).toBe(70_000n);
   });
 
   it('rejects predict of 0n', () => {
@@ -464,7 +464,7 @@ describe('evaluateReels — payline scan', () => {
     // Line 0 must be a winner (5-of-kind Cherry, middle row).
     const line0 = winningLines.find((w) => w.lineIndex === 0);
     expect(line0).toBeDefined();
-    expect(line0!.multiplier).toBe(20);
+    expect(line0!.multiplier).toBe(18);
 
     // For every winning line, verify the symbol math is internally
     // consistent (winAmount = perLinePredict × multiplier, perLinePredict=1n).
@@ -479,14 +479,14 @@ describe('evaluateReels — payline scan', () => {
 
   it('full Cherry grid wins on every line with the right multiplier and total', () => {
     // Trivially: if every cell is Cherry, every line is 5-of-kind
-    // Cherry. 20 lines × multiplier 20 × perLinePredict 1 = 400n.
+    // Cherry. 20 lines × multiplier 18 × perLinePredict 1 = 360n.
     const reels: SymbolId[][] = Array.from({ length: 5 }, () => [CHERRY, CHERRY, CHERRY]);
     const { winningLines, winAmount } = evaluateReels(reels, 'classic-3x5', 20n);
     expect(winningLines.length).toBe(LINE_COUNT);
-    expect(winAmount).toBe(BigInt(LINE_COUNT) * 20n);
+    expect(winAmount).toBe(BigInt(LINE_COUNT) * 18n);
     for (const w of winningLines) {
-      expect(w.multiplier).toBe(20);
-      expect(w.winAmount).toBe(20n);
+      expect(w.multiplier).toBe(18);
+      expect(w.winAmount).toBe(18n);
     }
   });
 
@@ -923,15 +923,15 @@ describe('evaluateReels classic-3x5-bonus — wild multiplier products', () => {
 
   it('Wild on the middle line with mult=3 triples a 5-of-kind Cherry line', () => {
     // Cherry,Cherry,Wild(×3),Cherry,Cherry → 5-of-kind Cherry, baseline
-    // payout 20, with the wild contributing ×3 → line win 60n
+    // payout 18, with the wild contributing ×3 → line win 54n
     // (perLinePredict=1n × 20 × 3).
     const reels = gridBonus([CHERRY, CHERRY, WILD_ID, CHERRY, CHERRY], LEMON);
     const { winningLines } = evaluateReels(reels, 'classic-3x5-bonus', 20n, {
       wildMultipliers: [{ reelIndex: 2, rowIndex: 1, multiplier: 3 }],
     });
     const mid = winningLines.find((w) => w.lineIndex === 0)!;
-    expect(mid.multiplier).toBe(20); // raw kind multiplier
-    expect(mid.winAmount).toBe(60n); // 20 × 3
+    expect(mid.multiplier).toBe(18); // raw kind multiplier
+    expect(mid.winAmount).toBe(54n); // 18 × 3
   });
 
   it('Two wilds on one line multiply their multipliers together (×2 × ×5 = ×10)', () => {
@@ -943,8 +943,8 @@ describe('evaluateReels classic-3x5-bonus — wild multiplier products', () => {
       ],
     });
     const mid = winningLines.find((w) => w.lineIndex === 0)!;
-    expect(mid.multiplier).toBe(20); // 5-of-kind Cherry
-    expect(mid.winAmount).toBe(200n); // 20 × 2 × 5
+    expect(mid.multiplier).toBe(18); // 5-of-kind Cherry
+    expect(mid.winAmount).toBe(180n); // 18 × 2 × 5
   });
 
   it('Wild OUTSIDE the matchLen prefix does NOT apply its multiplier', () => {

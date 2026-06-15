@@ -1,4 +1,8 @@
-import type { AgentCategory, AgentHarness } from '@clawville/shared';
+import type {
+  AgentCategory,
+  AgentHarness,
+  HatcherLaunchExchangeResponse,
+} from '@clawville/shared';
 import { getFingerprint } from './fingerprint';
 
 // request() targets the Hono API exactly like honoRequest() — its paths
@@ -34,6 +38,25 @@ async function withFingerprint(
   return headers;
 }
 
+/**
+ * API error that preserves the HTTP status and the server's machine-readable
+ * `code` field. Callers branch on `code` / `status` instead of matching the
+ * human-readable `error` copy (which the API de-brands over time — e.g.
+ * "OpenClaw session not found" → "Agent session ended"). The chat-bar uses
+ * `code === 'agent_session_not_found'` (with `status === 404` as a fallback)
+ * to clear stale connected-state without ever string-matching the message.
+ */
+export class ApiError extends Error {
+  status: number;
+  code?: string;
+  constructor(message: string, status: number, code?: string) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+    this.code = code;
+  }
+}
+
 async function honoRequest<T>(path: string, options?: RequestInit): Promise<T> {
   const headers = await withFingerprint(options?.headers);
   const res = await fetch(`${HONO_API_URL}${path}`, {
@@ -44,7 +67,7 @@ async function honoRequest<T>(path: string, options?: RequestInit): Promise<T> {
 
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: 'Request failed' }));
-    throw new Error(err.error || `HTTP ${res.status}`);
+    throw new ApiError(err.error || `HTTP ${res.status}`, res.status, err.code);
   }
 
   return res.json();
@@ -60,7 +83,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: 'Request failed' }));
-    throw new Error(err.error || `HTTP ${res.status}`);
+    throw new ApiError(err.error || `HTTP ${res.status}`, res.status, err.code);
   }
 
   return res.json();
@@ -117,7 +140,13 @@ export const api = {
     request<{
       user: {
         id: string;
-        email: string;
+        /**
+         * `null` for agent-identity users (auto-created via
+         * resolveOrCreateUserByIdentity with `email: null`) — they have no
+         * email to confirm, so the soft-verify banner must NOT render for
+         * them. The email-verify gate checks for a non-empty string.
+         */
+        email: string | null;
         name: string;
         /** Public handle — added 2026-05-19, null for legacy un-backfilled rows */
         username: string | null;
@@ -503,6 +532,50 @@ export const api = {
       agentId: string | null;
       expiresIn: number;
     }>(`/api/agent/connect-status/${token}`),
+
+  // Hatcher launch-exchange — consumes the `hatcher_agent=&hatcher_launch=`
+  // grant that Hatcher's dashboard appends to the /game launch URL. FIX-1: the
+  // handler accepts BOTH the query string (Hatcher PROD's current form) AND the
+  // fragment (the log-hygiene form we ask them to migrate to, relay R1),
+  // preferring query and stripping from whichever carrier it arrived on. The
+  // endpoint REQUIRES a Lucia session (the portal-composed launch logs the
+  // owner in first), so a guest hit returns 401 `launch_requires_session`.
+  // Unlike the other helpers this does NOT throw on non-2xx — the handler
+  // branches on the body (`ok`, `error`, `status`) to render the right banner,
+  // so we resolve the parsed body for ALL responses and only normalise a true
+  // network/parse failure into a synthetic `{ ok:false, error:'network_error' }`.
+  // Returns the canonical `HatcherLaunchExchangeResponse` (discriminated on
+  // `ok`, shared with the API) for every server response, plus an additive
+  // `{ ok:false, error:'network_error' }` for a true fetch/parse failure (no
+  // server body to branch on). The handler keys on `ok` first, then routes
+  // 401 / `launch_requires_session` to the relaunch banner and every other
+  // failure to the generic error banner.
+  hatcherLaunchExchange: async (data: {
+    agentId: string;
+    launchToken: string;
+  }): Promise<HatcherLaunchExchangeResponse | { ok: false; error: 'network_error' }> => {
+    try {
+      const headers = await withFingerprint({ 'Content-Type': 'application/json' });
+      const res = await fetch(`${HONO_API_URL}/api/partner/hatcher/launch/exchange`, {
+        method: 'POST',
+        credentials: 'include',
+        headers,
+        body: JSON.stringify(data),
+      });
+      const body = (await res.json().catch(() => null)) as HatcherLaunchExchangeResponse | null;
+      if (body && typeof body === 'object' && 'ok' in body) {
+        // Surface the HTTP status on the failure shape so the handler can
+        // distinguish 401 (relaunch from dashboard) from a 5xx exchange reject,
+        // even when the server omitted `status` on the body.
+        if (!body.ok && body.status == null) return { ...body, status: res.status };
+        return body;
+      }
+      // Unparseable / non-union body — treat as an upstream rejection.
+      return { ok: false, error: 'exchange_rejected', status: res.status };
+    } catch {
+      return { ok: false, error: 'network_error' };
+    }
+  },
 
   // Public world-view roster. Carries NO session id (auth-lens fix #1,
   // 2026-06-03 — the session id is a real-CT bearer credential and this is a

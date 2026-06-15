@@ -45,6 +45,136 @@ export type PartnerSignatureResult =
   | { ok: true; partnerId: string }
   | { ok: false; reason: string };
 
+// ---------------------------------------------------------------------------
+// STAGING-ONLY test partner pubkey (mock-Hatcher pre-ship harness)
+// ---------------------------------------------------------------------------
+//
+// `ALLOW_TEST_PARTNER_PUBKEY` lets the mock-Hatcher client (a generated ed25519
+// keypair, NOT Hatcher's real key) drive the LIVE `/api/partner/hatcher/*`
+// surface on staging so the full register → spawn → stats path is exercised
+// before any real partner traffic. When set to a base58 pubkey it is accepted
+// as an ADDITIONAL valid signer FOR THE `hatcher` PARTNER ONLY — it never
+// replaces or shadows the real `PARTNER_PUBKEYS.hatcher` entry, and it is inert
+// for every other partnerId (e.g. `scape`).
+//
+// HARD GATE: this is a pre-ship test affordance, NOT a production knob. The env
+// name screams TEST; ARCHITECTURE.md documents that it MUST NEVER be set off
+// staging. The gate is an EXPLICIT, IMMUTABLE deploy signal — `CLAWVILLE_ENV` —
+// NOT a fragile inference off `CORS_ORIGIN` (a comma-list, an unset value, or a
+// mis-set value could re-open the test signer on prod). We accept the test key
+// ONLY when `CLAWVILLE_ENV === 'staging'`, and if the var is set on ANY other
+// env we FAIL BOOT (throw at module load, like `FINGERPRINT_SECRET`) so a
+// prod-forbidden var can never run silently inert — it crashes loudly until
+// removed. `NODE_ENV` can't be the discriminator (it is 'production' on BOTH
+// Coolify boxes), which is exactly why we introduced a dedicated env.
+const TEST_PARTNER_ID = 'hatcher';
+
+/**
+ * The single explicit-environment gate for the staging-only test signer. Reads
+ * the immutable `CLAWVILLE_ENV` deploy signal (set per-box in Coolify) and
+ * returns whether the box is allowed to honor `ALLOW_TEST_PARTNER_PUBKEY`. ONLY
+ * `'staging'` qualifies — production, an unset value, or any other value does
+ * not. This is deliberately a single literal equality (no substring matching, no
+ * comma-list parsing) so it cannot be widened by a malformed value the way the
+ * old `CORS_ORIGIN` inference could.
+ */
+function isStagingEnv(): boolean {
+  return process.env.CLAWVILLE_ENV === 'staging';
+}
+
+/**
+ * FAIL-BOOT INVARIANT (auditor hardening, 2026-06-12). Throws at module load if
+ * `ALLOW_TEST_PARTNER_PUBKEY` is set while `CLAWVILLE_ENV !== 'staging'`. This
+ * converts "never set the test signer off staging" from ops discipline into an
+ * invariant the code enforces: a prod box that somehow carries the test-signer
+ * var refuses to start at all (mirrors the `FINGERPRINT_SECRET` crash-loud
+ * pattern in middleware/fingerprint.ts) instead of running with a silently inert
+ * — or, under the old fragile CORS_ORIGIN check, a silently ACTIVE — test
+ * signer. A missing/blank var is fine on every env (the override is simply
+ * absent). Runs once, at import time, before any request is served.
+ */
+const RAW_TEST_PARTNER_PUBKEY = process.env.ALLOW_TEST_PARTNER_PUBKEY;
+if (RAW_TEST_PARTNER_PUBKEY && RAW_TEST_PARTNER_PUBKEY.trim() && !isStagingEnv()) {
+  throw new Error(
+    `[partner-signature] ALLOW_TEST_PARTNER_PUBKEY is set but CLAWVILLE_ENV is '${process.env.CLAWVILLE_ENV ?? '(unset)'}', not 'staging'. ` +
+      'This var is a STAGING-ONLY pre-ship harness affordance and MUST NEVER be set on production. ' +
+      'Unset ALLOW_TEST_PARTNER_PUBKEY on this box (or set CLAWVILLE_ENV=staging if this genuinely IS the staging box).',
+  );
+}
+
+/**
+ * Read + validate the `ALLOW_TEST_PARTNER_PUBKEY` override. Returns the trimmed
+ * base58 pubkey only when (a) we are on STAGING (`CLAWVILLE_ENV === 'staging'`)
+ * AND (b) it is a syntactically valid 32-byte ed25519 key. A missing / blank /
+ * malformed value — OR not being on staging — yields null (the override is
+ * simply absent and the real allowlist is untouched). The off-staging case can
+ * only be reached if the var is BLANK (a non-blank value off staging fails boot
+ * above), so this is a defense-in-depth re-check, not the primary gate.
+ * Validating the key here means a typo'd override can never be silently treated
+ * as "some opaque allowed value".
+ */
+function loadTestPartnerPubkey(): string | null {
+  const raw = process.env.ALLOW_TEST_PARTNER_PUBKEY;
+  if (!raw || !raw.trim()) return null;
+  // Belt-and-suspenders: the module-load invariant already crashed boot if the
+  // var is set off staging, so this can only be staging here — but re-check so a
+  // future refactor that drops the boot throw can never silently honor the key
+  // off staging.
+  if (!isStagingEnv()) return null;
+
+  const candidate = raw.trim();
+  try {
+    const decoded = bs58.decode(candidate);
+    if (decoded.length !== 32) return null;
+  } catch {
+    return null;
+  }
+  return candidate;
+}
+
+/**
+ * BOOT-TIME alarm for the staging-only test partner pubkey. Called once from
+ * `index.ts` at startup (AFTER the module-load fail-boot invariant above, which
+ * already crashes a prod box that carries the var). On staging with a valid key
+ * this logs a loud one-line warning that the additive test signer is live —
+ * expected during a harness run, and impossible to miss in the logs. A
+ * set-but-off-staging box never reaches here (it threw at import); a
+ * set-but-malformed key on staging is already inert via the validation path, so
+ * no extra alarm is needed.
+ */
+export function warnIfTestPartnerPubkeyEnabled(): void {
+  const testKey = loadTestPartnerPubkey();
+  if (testKey) {
+    console.warn(
+      `[partner-signature] ⚠️  ALLOW_TEST_PARTNER_PUBKEY is SET on staging (CLAWVILLE_ENV=staging) — accepting an ADDITIONAL test signer for partner '${TEST_PARTNER_ID}' (${testKey}). This is a STAGING-ONLY pre-ship harness affordance and MUST NEVER be set on production.`,
+    );
+  }
+}
+
+/**
+ * Is `presentedPubkey` an accepted signer for `partnerId`? True when it equals
+ * the real `PARTNER_PUBKEYS[partnerId]` allowlist entry, OR — for the `hatcher`
+ * partner ONLY — the `ALLOW_TEST_PARTNER_PUBKEY` staging override. The real
+ * allowlist value always remains valid; the test key is purely additive and
+ * scoped to one partner. `allowlist` is passed in so callers that already
+ * loaded it (and need to distinguish "no allowlist at all" → a distinct reason)
+ * don't re-parse the env.
+ */
+function isAllowedPartnerPubkey(
+  partnerId: string,
+  presentedPubkey: string,
+  allowlist: Record<string, string>,
+): boolean {
+  if (allowlist[partnerId] && presentedPubkey === allowlist[partnerId]) {
+    return true;
+  }
+  if (partnerId === TEST_PARTNER_ID) {
+    const testKey = loadTestPartnerPubkey();
+    if (testKey && presentedPubkey === testKey) return true;
+  }
+  return false;
+}
+
 /**
  * Verify a partner-signed inbound request. `partnerId` selects the allowlist
  * entry (`PARTNER_PUBKEYS[partnerId]`); the request's
@@ -66,9 +196,9 @@ export function verifyPartnerSignature(
   const allowlist = loadPartnerPubkeys();
   if (!allowlist) return { ok: false, reason: 'no_partner_allowlist' };
 
-  // The presented pubkey must match the allowlist entry for THIS partner.
-  const expectedPubkey = allowlist[partnerId];
-  if (!expectedPubkey || args.pubkeyHeader !== expectedPubkey) {
+  // The presented pubkey must match the allowlist entry for THIS partner (or,
+  // for hatcher on staging, the additive ALLOW_TEST_PARTNER_PUBKEY override).
+  if (!isAllowedPartnerPubkey(partnerId, args.pubkeyHeader, allowlist)) {
     return { ok: false, reason: 'unknown_partner' };
   }
 
@@ -99,6 +229,22 @@ export function verifyPartnerSignature(
  * independently of the read window later (e.g. a tighter write window once we
  * have live traffic) without touching the read path. See
  * `verifyPartnerWriteSignature` below for the full scheme rationale.
+ *
+ * REPLAY RESIDUAL (SEC-2, tracked — NOT a seen-signature cache). Within this
+ * window the SAME signed bytes verify more than once (ed25519 over identical
+ * bytes verifies forever). This is an ACCEPTED residual, not a hole, because
+ * every partner write is idempotent-by-agentId (register/PATCH upsert the same
+ * row, DELETE is a no-op once gone) so a replay produces no NEW effect, and the
+ * window matches Hatcher's agreed `authNonceExpirySecs:300` skew ceiling.
+ * We deliberately do NOT keep a consumed-signature cache: a cache that rejects
+ * an exact re-presentation would falsely 401 a LEGITIMATE client retry after a
+ * 400/5xx/dropped-response (the original request never durably succeeded), which
+ * is a worse failure than the benign replay it would block (Codex review
+ * 2026-06-13). If a FUTURE non-idempotent partner verb is added, it MUST carry
+ * proper replay protection AT THAT TIME — a partner-supplied nonce bound into
+ * the signed challenge and consumed delete-on-read (mirror `consumeNonce` in
+ * auth-challenge.ts), with consumption gated on the route's DURABLE SUCCESS so a
+ * retry of a failed request is never mistaken for a replay.
  */
 export const PARTNER_WRITE_SIGNATURE_WINDOW_MS = 5 * 60_000;
 
@@ -193,8 +339,7 @@ export function verifyPartnerWriteSignature(
 
   const allowlist = loadPartnerPubkeys();
   if (!allowlist) return { ok: false, reason: 'no_partner_allowlist' };
-  const expectedPubkey = allowlist[partnerId];
-  if (!expectedPubkey || args.pubkeyHeader !== expectedPubkey) {
+  if (!isAllowedPartnerPubkey(partnerId, args.pubkeyHeader, allowlist)) {
     return { ok: false, reason: 'unknown_partner' };
   }
 
@@ -298,8 +443,7 @@ export function verifyPartnerGetSignature(
 
   const allowlist = loadPartnerPubkeys();
   if (!allowlist) return { ok: false, reason: 'no_partner_allowlist' };
-  const expectedPubkey = allowlist[partnerId];
-  if (!expectedPubkey || args.pubkeyHeader !== expectedPubkey) {
+  if (!isAllowedPartnerPubkey(partnerId, args.pubkeyHeader, allowlist)) {
     return { ok: false, reason: 'unknown_partner' };
   }
 

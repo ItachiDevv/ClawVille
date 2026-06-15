@@ -213,7 +213,37 @@ export interface GameState {
   activityFeedOpen: boolean;
   toggleActivityFeed: () => void;
 
-  // Agent connection (World mode) — supports any agent type, not just OpenClaw
+  // Agent connection (World mode) — supports any agent type, not just OpenClaw.
+  //
+  // Two DISTINCT states (split 2026-06-12, Codex finding #2). They are NOT
+  // interchangeable and conflating them is the partner's reload-breakage bug:
+  //
+  //  • agentPaired — "this user has a connected agent" for UI purposes. Derived
+  //    from the server's /me/agent-session liveness probe, so it SURVIVES A
+  //    RELOAD. Drives every paired INDICATOR (Bot-Training pill, Controlled/
+  //    Autonomous toggle labels, sidebar Trainer tier, cove autonomous
+  //    availability). Carries NO bearer.
+  //
+  //  • agentSessionId — the LIVE agent-session bearer. The server returns it
+  //    EXACTLY ONCE, at first connect (a hard security invariant — never
+  //    re-emitted), so it can only be held in memory by the SAME browser session
+  //    that performed the connect. It is null after any reload. /me/agent-session
+  //    canNOT reconstruct it. The agent-bearer chat send path
+  //    (avatar-chat-bar `routedThroughAgent`, use-location-chat) gates on a
+  //    NON-NULL agentSessionId — so after a reload those paths correctly fall
+  //    back to the normal authed avatar chat instead of replaying a fake bearer.
+  //
+  //  • agentConnected — kept as the convenience union "paired (UI) AND/OR holds a
+  //    live bearer". Set true whenever agentPaired is true, with or without a
+  //    bearer. UI consumers may read it as "is paired"; bearer paths must AND it
+  //    with agentSessionId (they already do).
+  //
+  // THE BUG THIS SPLIT FIXES: the reload hydration used to pass the server's
+  // `agentId` into setAgentConnection() as if it were the bearer, so the next
+  // avatar chat sent agentId as sessionId → 404 → the connection cleared ~1s in.
+  // Reload now calls setAgentPaired() (no bearer) — agentSessionId stays null,
+  // the chat bar uses the authed avatar path, nothing 404s, the avatar stays.
+  agentPaired: boolean;
   agentConnected: boolean;
   agentSessionId: string | null;
   agentConnectModalOpen: boolean;
@@ -226,7 +256,54 @@ export interface GameState {
    */
   agentConnectModalIntent: 'create' | 'connect';
   setAgentConnectModalOpen: (open: boolean, intent?: 'create' | 'connect') => void;
-  setAgentConnection: (sessionId: string | null) => void;
+  /**
+   * Set or clear the connected-agent session.
+   *
+   * `opts.keepEmbodied` (clear path only): when an agent session is cleared
+   * for a user who still OWNS their avatar (logged-in, non-guest, has an
+   * avatar row), keep them driving their own body — controlMode stays
+   * `'player'`, `isSpectator` stays false. Only the agent-specific state
+   * (agentConnected / agentSessionId / Bot-Training pill / autonomous mode)
+   * clears. The avatar belongs to the USER, not the agent session, so a dead
+   * session must not unmount the live `<PlayerAvatar>` mid-game (regression
+   * D2, 2026-06-12 — partner's avatar vanished ~1s after sending a chat that
+   * 404'd on a server-dropped session). Ignored on the connect path
+   * (sessionId truthy always embodies in 'player'). Guests / avatar-less
+   * users still fall back to 'explore' as before.
+   *
+   * `keepEmbodied` is the gate, and the caller MUST derive it from the real
+   * avatar object + auth state (the chat-bar does: `!!avatar && (!authFetched
+   * || (user && !user.isGuest))`). The store can't re-derive embodiment
+   * itself — it doesn't hold the avatar object, and its `avatarName` field is
+   * left '' by every call site — so the caller owns this decision.
+   */
+  setAgentConnection: (sessionId: string | null, opts?: { keepEmbodied?: boolean }) => void;
+  /**
+   * Reload-survivable PAIRED state — set from the server's /me/agent-session
+   * liveness probe on game-page mount. Marks the user as paired with an agent
+   * for UI purposes (Bot-Training pill, Controlled/Autonomous toggle, cove
+   * autonomous availability) WITHOUT ever holding a bearer.
+   *
+   * `setAgentPaired(true, agentId?)`:
+   *   agentPaired = true, agentConnected = true, hasAgent = true,
+   *   agentSessionId = null (CRITICAL — the bearer is never reconstructed; the
+   *   server only emits it once at connect and can't re-emit it), embodies the
+   *   owner in 'player' mode. The optional agentId is for diagnostics/display
+   *   only and is NEVER used as a bearer.
+   *
+   * `setAgentPaired(false, _, opts?)`:
+   *   clears agentPaired + agentConnected + agentSessionId. Honors
+   *   `opts.keepEmbodied` exactly like setAgentConnection's clear path so a
+   *   server "no longer connected" answer doesn't evict a still-authenticated
+   *   owner from their own avatar (regression D2 consistency).
+   *
+   * The agent-bearer chat path (`agentConnected && agentSessionId`) stays OFF
+   * after this because agentSessionId is null — by construction, never by
+   * accident. To chat AS the agent again the user must re-run the in-session
+   * connect flow (the only path that receives a real bearer), which is a
+   * separate scoped feature, not this fix.
+   */
+  setAgentPaired: (paired: boolean, agentId?: string | null, opts?: { keepEmbodied?: boolean }) => void;
 
   // Toast notifications
   toasts: Toast[];
@@ -305,6 +382,38 @@ export interface GameState {
   // Zoom
   zoomLevel: number;
   setZoomLevel: (z: number) => void;
+
+  // One-shot camera focus request (game coords, 0..MAP_WIDTH). Set by callers
+  // that want the explore-mode camera to snap to a world point (e.g. the
+  // Hatcher launch handler focusing on the launched agent's in-world body).
+  // The three layer (WASDCameraController) drains it via consumeCameraFocus()
+  // on its next frame and re-aims OrbitControls; the request clears itself so
+  // the user keeps free control afterward. Null when no focus is pending.
+  cameraFocusRequest: { x: number; y: number } | null;
+  requestCameraFocus: (x: number, y: number) => void;
+  consumeCameraFocus: () => { x: number; y: number } | null;
+
+  // Hatcher launch spectate — true while the owner is watching their launched
+  // agent in 'explore' (set by HatcherLaunchHandler on exchange success). It
+  // EXEMPTS the user from the game-page explore→player auto-promotion so a
+  // useAvatar refetch (tab focus / query invalidation) can't yank the camera
+  // off the watched agent back onto the owner's own avatar — same hazard the
+  // guest exemption guards against. Cleared the moment the user manually
+  // changes control mode (setControlMode), so they're never locked out of
+  // controlling their own avatar.
+  hatcherSpectate: boolean;
+  setHatcherSpectate: (v: boolean) => void;
+
+  // Hatcher launch banner active — true while HatcherLaunchHandler is showing
+  // its bottom-center failure/relaunch banner. Drives mutual exclusion with the
+  // soft email-verify nudge: the email banner suppresses itself while this is
+  // set so the two bottom-center surfaces never stack/occlude (worst at mobile
+  // width where the Hatcher panel wraps to ~1/3 of the screen). The Hatcher
+  // banner is the higher-priority transient — the user just initiated that
+  // launch — so it wins the bottom-center slot. Cleared when the banner is
+  // dismissed or the handler unmounts.
+  hatcherLaunchBannerActive: boolean;
+  setHatcherLaunchBannerActive: (v: boolean) => void;
 
   // Click-to-move pathfinding
   clickPath: { x: number; y: number }[] | null;
@@ -406,6 +515,12 @@ export const useGameStore = create<GameState>((set, get) => ({
       controlMode: mode,
       isSpectator: mode === 'explore',
       possessedNpcId,
+      // Any explicit control-mode change ends Hatcher launch-spectate — the
+      // owner has taken the wheel, so the explore→player auto-promotion guard
+      // is no longer needed and must not strand them in spectate. The launch
+      // handler sets hatcherSpectate AFTER its own setControlMode('explore')
+      // call, so this never clears the flag during launch setup.
+      hatcherSpectate: false,
       // Clear stale nearLocation when switching to explore (no character = no proximity)
       ...(mode === 'explore' ? { nearLocation: null, nearCharacter: null } : {}),
     });
@@ -697,6 +812,7 @@ export const useGameStore = create<GameState>((set, get) => ({
   activityFeedOpen: false,
   toggleActivityFeed: () => set((s) => ({ activityFeedOpen: !s.activityFeedOpen })),
 
+  agentPaired: false,
   agentConnected: false,
   agentSessionId: null,
   agentConnectModalOpen: false,
@@ -710,7 +826,7 @@ export const useGameStore = create<GameState>((set, get) => ({
         ? (intent ?? 'connect')
         : s.agentConnectModalIntent,
     })),
-  setAgentConnection: (sessionId) => {
+  setAgentConnection: (sessionId, opts) => {
     // A connected claw IS an agent driving the user's own avatar (Option A
     // architecture — the external claw takes over the user's avatar rather
     // than spawning a parallel NPC). Flipping hasAgent here swaps the
@@ -741,14 +857,96 @@ export const useGameStore = create<GameState>((set, get) => ({
     const { resetJump } = require('@/lib/three/jump-state') as typeof import('@/lib/three/jump-state');
     resetJump();
 
+    // Clear path for a still-embodied owner: the dead/cleared AGENT session is
+    // not a reason to evict the user from their OWN avatar. Keep them driving
+    // it in 'player' mode (camera-follow, body mounted) and only strip the
+    // agent-specific state below. Connect path (connected===true) always
+    // embodies in 'player' regardless of this flag.
+    //
+    // The gate is the caller's `opts.keepEmbodied`, which the chat-bar derives
+    // from the REAL avatar object + auth state: `!!avatar && (!authFetched ||
+    // (user && !user.isGuest))`. The store has NO better signal — it does not
+    // hold the avatar object (React Query `['avatar']` is the source of truth),
+    // and the only avatar-shaped store field, `avatarName`, is left '' by BOTH
+    // setAvatarAppearance call sites (they pass name=undefined), so an AND-gate
+    // on it would be a silent no-op that NEVER keeps anyone embodied (caught in
+    // audit 2026-06-12 — the build was green but the fix did nothing). So we
+    // trust the caller's avatar-derived hint rather than re-deriving from a
+    // store field that isn't populated. Connect path (connected===true) always
+    // embodies in 'player' regardless of this flag.
+    const keepEmbodied = !connected && !!opts?.keepEmbodied;
+
     set((s) => ({
+      // A live bearer implies paired; clearing the bearer also clears paired.
+      agentPaired: connected,
       agentConnected: connected,
       agentSessionId: sessionId,
       agentConnectModalOpen: false,
       hasAgent: connected,
-      controlMode: connected ? 'player' : 'explore',
-      isSpectator: !connected,
+      controlMode: connected || keepEmbodied ? 'player' : 'explore',
+      isSpectator: connected || keepEmbodied ? false : true,
       possessedNpcId: connected ? null : s.possessedNpcId,
+    }));
+  },
+
+  setAgentPaired: (paired, _agentId, opts) => {
+    // Reload-survivable paired hydration. CRITICAL: this never sets a bearer.
+    // The server (/me/agent-session) only tells us WHETHER an agent is connected
+    // (+ its agentId for display) — it cannot return the session bearer, which
+    // is emitted exactly once at connect. So agentSessionId is forced null here:
+    // the agent-bearer chat path (agentConnected && agentSessionId) stays off by
+    // construction, and the avatar chat bar falls back to the normal authed
+    // path — the partner's "connection clears ~1s after reload" bug (a fabricated
+    // agentId-as-bearer 404ing on first chat) cannot recur.
+
+    // Reset jump state on the paired transition for parity with the connect/
+    // disconnect paths (avoids a stranded-airborne avatar across the flip).
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { resetJump } = require('@/lib/three/jump-state') as typeof import('@/lib/three/jump-state');
+    resetJump();
+
+    if (paired) {
+      // Mirror the connect path's embodiment (player mode, body mounted) but
+      // WITHOUT a bearer. No-op guard: if already paired with no bearer, don't
+      // churn control mode (a useAvatar refetch re-runs the hydration effect).
+      const prev = get();
+      if (prev.agentPaired && prev.agentConnected && prev.agentSessionId === null) return;
+      // Hatcher-launch spectate preservation (Codex pass-8): a successful launch
+      // lands the owner in 'explore' + hatcherSpectate to watch the agent. If
+      // /api/auth/me/agent-session resolves AFTER the exchange, this paired
+      // hydration must NOT yank them into 'player' and out of spectate. Keep the
+      // explore/spectate view while still recording the paired/connected agent.
+      const keepSpectate = prev.hatcherSpectate && prev.controlMode === 'explore';
+      set({
+        agentPaired: true,
+        agentConnected: true,
+        agentSessionId: null,
+        hasAgent: true,
+        controlMode: keepSpectate ? 'explore' : 'player',
+        isSpectator: keepSpectate ? true : false,
+        possessedNpcId: null,
+      });
+      return;
+    }
+
+    // Clear path — server says no longer connected. Honor keepEmbodied so a
+    // still-authenticated owner with their own avatar is not evicted from their
+    // body (same D2 invariant as setAgentConnection's clear path). Stop autonomy
+    // if it was running against the now-unpaired agent.
+    const prev = get();
+    if (prev.controlMode === 'autonomous') {
+      const { useAutonomyStore } = require('@/stores/autonomy') as typeof import('@/stores/autonomy');
+      useAutonomyStore.getState().stopAutonomy();
+    }
+    const keepEmbodied = !!opts?.keepEmbodied;
+    set((s) => ({
+      agentPaired: false,
+      agentConnected: false,
+      agentSessionId: null,
+      hasAgent: false,
+      controlMode: keepEmbodied ? 'player' : 'explore',
+      isSpectator: keepEmbodied ? false : true,
+      possessedNpcId: s.possessedNpcId,
     }));
   },
 
@@ -812,6 +1010,26 @@ export const useGameStore = create<GameState>((set, get) => ({
 
   zoomLevel: 1.7,
   setZoomLevel: (z) => set({ zoomLevel: Math.max(0.6, Math.min(3.0, z)) }),
+
+  cameraFocusRequest: null,
+  requestCameraFocus: (x, y) => set({ cameraFocusRequest: { x, y } }),
+  consumeCameraFocus: () => {
+    const req = get().cameraFocusRequest;
+    if (req) set({ cameraFocusRequest: null });
+    return req;
+  },
+
+  hatcherSpectate: false,
+  setHatcherSpectate: (v) => set({ hatcherSpectate: v }),
+
+  hatcherLaunchBannerActive: false,
+  setHatcherLaunchBannerActive: (v) => {
+    // Guard the no-op set so the HatcherLaunchHandler's unmount-cleanup (which
+    // always calls setHatcherLaunchBannerActive(false)) doesn't fan out a
+    // pointless store notification when the flag is already false.
+    if (v === get().hatcherLaunchBannerActive) return;
+    set({ hatcherLaunchBannerActive: v });
+  },
 
   clickPath: null,
   clickPathIndex: 0,
@@ -924,6 +1142,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     cameraJoystickVelocity: { x: 0, y: 0 },
     avatarIsAutonomous: false,
     activityFeedOpen: false,
+    agentPaired: false,
     agentConnected: false,
     agentSessionId: null,
     agentConnectModalOpen: false,
@@ -943,6 +1162,9 @@ export const useGameStore = create<GameState>((set, get) => ({
     clickPath: null,
     clickPathIndex: 0,
     clickPathTarget: null,
+    cameraFocusRequest: null,
+    hatcherSpectate: false,
+    hatcherLaunchBannerActive: false,
     hoveredBuilding: null,
     pendingFloatingTexts: [],
   });

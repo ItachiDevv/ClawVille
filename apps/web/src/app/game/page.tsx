@@ -30,6 +30,7 @@ import ActivityFeed from '@/components/game/activity-feed';
 import AgentConnectModal from '@/components/game/agent-connect-modal';
 import EmailVerifyBanner from '@/components/game/email-verify-banner';
 import GameLanguageControl from '@/components/game/game-language-control';
+import HatcherLaunchHandler from '@/components/game/hatcher-launch-handler';
 
 const BuildingPortalModal = dynamic(
   () => import('@/components/game/building-portal-modal'),
@@ -112,23 +113,31 @@ function NanoClawBanner({
   isAuthenticated: boolean;
   isGuest: boolean;
 }) {
+  // Paired = reload-survivable "this user has a connected agent" (drives the
+  // green pill). agentConnected is the union (paired and/or live bearer); the
+  // pill shows for either. The bearer slice is appended ONLY when a live
+  // in-session bearer is actually held — after a reload agentSessionId is null
+  // (the server never re-emits it), so the pill reads "Bot Training Active"
+  // without the session-id suffix rather than an empty span. (Codex finding #2.)
+  const agentPaired = useGameStore((s: GameState) => s.agentPaired);
   const agentConnected = useGameStore((s: GameState) => s.agentConnected);
   const agentSessionId = useGameStore((s: GameState) => s.agentSessionId);
   const setAgentConnectModalOpen = useGameStore((s: GameState) => s.setAgentConnectModalOpen);
+  const showPaired = agentPaired || agentConnected;
 
-  // Banner has four states keyed on (isAuthenticated, agentConnected, hasAvatar):
-  //   agentConnected=true                       → green "Bot Training Active" pill
+  // Banner has four states keyed on (isAuthenticated, showPaired, hasAvatar):
+  //   showPaired=true                           → green "Bot Training Active" pill
   //   !isAuthenticated || guest user            → "Log In" + "Sign Up" (agent CTAs hidden:
   //                                                connecting an agent requires an account,
   //                                                so showing them to a logged-out visitor
   //                                                just routes them through the connect
   //                                                modal which then bounces them to /login)
-  //   isAuthenticated && !agentConnected &&
+  //   isAuthenticated && !showPaired &&
   //     !hasAvatar                              → "Create Agent" + "Connect Your Agent"
-  //   isAuthenticated && !agentConnected &&
+  //   isAuthenticated && !showPaired &&
   //      hasAvatar                              → "Connect Your Agent" alone
 
-  if (agentConnected) {
+  if (showPaired) {
     return (
       <div className="fixed left-1/2 -translate-x-1/2 z-50 top-3">
         <button
@@ -137,7 +146,9 @@ function NanoClawBanner({
         >
           <span className="w-2.5 h-2.5 rounded-full bg-green-300 shadow-[0_0_6px_rgba(74,222,128,0.6)] animate-pulse" />
           <span className="text-white font-bold text-sm">Bot Training Active</span>
-          <span className="text-green-200/70 text-xs font-mono hidden md:inline">{agentSessionId?.slice(0, 12)}</span>
+          {agentSessionId && (
+            <span className="text-green-200/70 text-xs font-mono hidden md:inline">{agentSessionId.slice(0, 12)}</span>
+          )}
         </button>
       </div>
     );
@@ -306,19 +317,51 @@ export default function GamePage() {
 
   useEffect(() => {
     if (!agentSession) return;
-    const { agentConnected: clientSideConnected, setAgentConnection } =
-      useGameStore.getState();
+    const {
+      agentPaired: clientSidePaired,
+      agentConnected: clientSideConnected,
+      agentSessionId: clientSideBearer,
+      setAgentPaired,
+    } = useGameStore.getState();
+
     if (agentSession.connected && agentSession.agentId) {
-      if (!clientSideConnected) {
-        setAgentConnection(agentSession.agentId);
+      // RELOAD-SURVIVABLE PAIRED HYDRATION (Codex finding #2, 2026-06-12).
+      //
+      // We mark the user PAIRED (UI: Bot-Training pill, Controlled/Autonomous
+      // toggle, cove autonomous availability) but we DO NOT fabricate a session
+      // bearer. The previous code passed `agentSession.agentId` into
+      // setAgentConnection() as if it were the bearer; the next avatar chat then
+      // sent that agentId as the sessionId → 404 (`agent_session_not_found`) →
+      // the connection cleared ~1s after load. That was the partner's recurring
+      // symptom. The server NEVER re-emits the real bearer after first connect
+      // (a hard security invariant), so /me/agent-session genuinely cannot hand
+      // us one — the only honest reload state is "paired, no live bearer".
+      //
+      // setAgentPaired sets agentSessionId=null, so the agent-bearer chat path
+      // (`agentConnected && agentSessionId`) stays OFF and avatar-chat-bar falls
+      // back to the normal authed avatar send (no 404, avatar stays mounted).
+      //
+      // Guard: only (re)apply when not already in the paired-no-bearer state, so
+      // a useAvatar/auth refetch re-running this effect doesn't churn the store.
+      // CRITICALLY we must NOT downgrade a LIVE in-session bearer: if a real
+      // connect happened this session (agentSessionId is non-null), leave it
+      // alone — re-pairing would null the bearer and break live agent chat.
+      if (clientSideBearer) return; // live bearer held — already fully connected
+      if (!(clientSidePaired && clientSideConnected)) {
+        setAgentPaired(true, agentSession.agentId);
       }
-    } else if (clientSideConnected) {
-      // Server says no — clear the stale optimistic flag. Covers the
-      // "Hermes exited a week ago but UI still says Connected" case
-      // the user reported this session.
-      setAgentConnection(null);
+    } else if (clientSidePaired || clientSideConnected) {
+      // Server says no — clear the stale paired/connected flag. Covers the
+      // "Hermes exited a week ago but UI still says Connected" case. Keep a
+      // still-authenticated, non-guest owner embodied in their own avatar (D2
+      // invariant): a server "no longer connected" answer must not evict the
+      // user from their own body. Race-safe default: while auth-me is
+      // unresolved, keep the body if an avatar exists.
+      const user = authData?.user;
+      const ownsAvatar = !!avatar && (authLoading || (!!user && !user.isGuest));
+      setAgentPaired(false, null, { keepEmbodied: ownsAvatar });
     }
-  }, [agentSession]);
+  }, [agentSession, avatar, authData, authLoading]);
 
   // Multiplayer world stream — REPLACES the legacy useNpcStream. Drives
   // BOTH the NPC store (room-filtered roster + conversations + combats + events)
@@ -366,7 +409,19 @@ export default function GamePage() {
     // non-guest user, not just "isGuest is falsy" — a stale auth-me cache of
     // null would otherwise read as not-a-guest while the freshly-minted guest
     // avatar resolves, re-opening the hijack.
-    if (avatar && isAuthenticated && !isGuest && store.controlMode === 'explore') {
+    // Hatcher launch-spectate is ALSO exempt (2026-06-11): the owner is
+    // watching their launched agent in 'explore'; without this guard a
+    // useAvatar refetch (tab focus / query invalidation) would force-promote
+    // them into 'player' and snap the camera off the watched agent onto their
+    // own avatar — same hijack class the guest exemption above prevents. The
+    // flag clears the moment they manually change mode (store.setControlMode).
+    if (
+      avatar &&
+      isAuthenticated &&
+      !isGuest &&
+      !store.hatcherSpectate &&
+      store.controlMode === 'explore'
+    ) {
       store.setControlMode('player');
     }
     if (!avatar && store.controlMode !== 'explore' && store.controlMode !== 'npc') {
@@ -412,15 +467,26 @@ export default function GamePage() {
       <BuildingTooltip />
       <NanoClawBanner hasAvatar={hasAvatar} isAuthenticated={isAuthenticated} isGuest={isGuest} />
       {/* Soft email-verification nudge — renders only when the user is
-          authenticated, not a guest, and hasn't dismissed within the
-          last 7d. Positioned at top-14 to clear NanoClawBanner. */}
-      {isAuthenticated && authData?.user && (
-        <EmailVerifyBanner
-          userId={authData.user.id}
-          verified={authData.user.emailVerified}
-          isGuest={authData.user.isGuest}
-        />
-      )}
+          authenticated, NOT a guest, HAS a real email to confirm, and that
+          email is still unverified (plus the 7d dismissal window inside the
+          component). Agent-identity users (auto-created with email: null) and
+          guests have nothing to confirm, so they're excluded here. The
+          component re-checks the same gates internally (defense in depth).
+          Docked at `bottom-4` and lifted above the chat pill to avoid the
+          bottom-center collision. */}
+      {isAuthenticated &&
+        authData?.user &&
+        !authData.user.isGuest &&
+        typeof authData.user.email === 'string' &&
+        authData.user.email.trim() !== '' &&
+        !authData.user.emailVerified && (
+          <EmailVerifyBanner
+            userId={authData.user.id}
+            verified={authData.user.emailVerified}
+            isGuest={authData.user.isGuest}
+            email={authData.user.email}
+          />
+        )}
       <AgentConnectModal />
       <BuildingPortalModal />
       {/* Lobby modal mounts whenever activityLobbyId is set; reads
@@ -458,6 +524,16 @@ export default function GamePage() {
           game store and bootstraps a guest avatar for un-authenticated
           visitors. No UI of its own. */}
       <GuestAvatarBootstrap />
+
+      {/* Hatcher launch-entry — consumes the grant from the URL FRAGMENT
+          (`#hatcher_agent=&hatcher_launch=`) once on mount, drops the owner into
+          spectate focused on the agent's body (autonomous-mode v1). The grant
+          lives in the fragment, not the query, so the bearer-style launch token
+          never reaches access logs / Referer headers (Codex finding #3, 2026-06-12).
+          Mounted unconditionally (no auth/avatar gate) so it runs on the portal
+          redirect landing; renders nothing unless the params are present. See
+          hatcher-launch-handler.tsx + GameFeatures §2f. */}
+      <HatcherLaunchHandler />
 
       {/* World UI that's useful for ALL avatar-bearing visitors — including
           guests minted by the auto-create flow. Shows building labels, the
@@ -501,18 +577,26 @@ export default function GamePage() {
           (setAgentConnection enforces it), but if any code path leaves
           controlMode='npc' while an agent is connected, we still hide the
           agent-only UI. (Chat moved up into the hasAvatar block.) */}
+      {/* AvatarChatBar — mounts for any EMBODIED avatar-owner in player/
+          autonomous mode, NOT only while an agent is connected (2026-06-12,
+          regression D2). When a chat send hits a dead agent session the store
+          clears agentConnected but keeps the still-authenticated owner in
+          'player' mode (setAgentConnection keepEmbodied) — the bar must stay
+          mounted so its in-panel "Agent session ended — reconnect" banner
+          survives and the user can keep chatting with their own avatar via the
+          non-agent api.sendAvatarChat path. Gated OUT of NPC/Explore so it
+          can't leak into guest NPC mode or create Eliza state during Explore
+          (the Phase 6.2 reason it left the hasAvatar block). The agent-only
+          progression/shop surfaces below stay gated on agentConnected. */}
+      {hasAvatar && controlMode !== 'npc' && controlMode !== 'explore' && (
+        <AvatarChatBar />
+      )}
       {agentConnected && controlMode !== 'npc' && controlMode !== 'explore' && (
         <>
           <AvatarStatusBar />
           <QuestTracker />
           <AvatarSettingsModal />
           <LocationConfigModal />
-          {/* AvatarChatBar — restored to agent-connected-only gate (Phase 6.2).
-              The Phase 6.1 move into hasAvatar leaked it into Explore mode
-              and created Eliza state for the user's avatar during NPC mode,
-              both wrong. Mode 2 (NPC) chat lives in a separate
-              TalkToCharacterBar component (non-Eliza, transient). */}
-          <AvatarChatBar />
           <ChargeBar />
           <ShopOverlay />
           <InventoryModal />

@@ -21,6 +21,7 @@ import {
 import { TERRAIN_LAYER } from '@/lib/three/arena-terrain';
 import { applyStationaryIdleAnimation, idToSeed } from '@/lib/three/procedural-animation';
 import { makeObject3DWebGPUSafe } from '@/lib/three/webgpu-geometry';
+import { getTerrainHeightAt, isTerrainHeightfieldReady } from '@/lib/three/terrain-heightfield';
 import { applyColorTint } from '@/lib/three/character-animations';
 import { clampMovement2D } from '@/lib/three/collision/world-colliders';
 import { applyFattenedFrustumCulling } from '@/lib/three/vrm-loader';
@@ -42,10 +43,12 @@ const OFFSET_Z = -MAP_HEIGHT / 2;
 // so SpongeBob cast reads as the heroes of each building.
 const CHARACTER_HEIGHT = 96;
 
-const _locRaycaster = new THREE.Raycaster();
-_locRaycaster.layers.set(TERRAIN_LAYER);
-const _locRayOrigin = new THREE.Vector3();
-const _locRayDir = new THREE.Vector3(0, -1, 0);
+// PERF (2026-06-15): _locRaycaster, _locRayOrigin, _locRayDir and the
+// findLocTerrainMesh / getTerrainY raycast path have been replaced by the O(1)
+// bilinear heightfield lookup (terrain-heightfield.ts).  The old raycast was
+// confirmed at ~57% of JS CPU in a prod trace (intersectTriangle +
+// _computeIntersections + attribute reads).  These module-scope objects are
+// retained as no-ops so any future reference resolves without compile errors.
 // PHASE 1.5 — module-scope camera-position scratch for far-NPC mixer gate.
 // Zero per-frame allocations across all 11 location-NPC useFrame calls per frame.
 const _locCamPos = new THREE.Vector3();
@@ -350,34 +353,12 @@ function computeNormalizedScale(scene: THREE.Object3D, targetHeight: number): { 
   return { scale, localMinY };
 }
 
-// PERF: cache the terrain mesh — see arena-npcs.tsx for the full rationale.
-// intersectObjects(scene.children, true) was the original call here, which
-// recurses through ~4549 objects for EVERY location NPC raycast (8 NPCs ×
-// every 20th frame). The layer filter runs AFTER the full traversal, so the
-// cost was fully paid. Cache + intersectObject(mesh, false) is O(1 mesh).
-let _locCachedTerrainMesh: THREE.Object3D | null = null;
-function findLocTerrainMesh(scene: THREE.Scene): THREE.Object3D | null {
-  if (_locCachedTerrainMesh && _locCachedTerrainMesh.parent) return _locCachedTerrainMesh;
-  _locCachedTerrainMesh = null;
-  scene.traverse((obj) => {
-    if (_locCachedTerrainMesh) return;
-    if ((obj as THREE.Mesh).isMesh && obj.layers.test(_locRaycaster.layers)) {
-      _locCachedTerrainMesh = obj;
-    }
-  });
-  return _locCachedTerrainMesh;
-}
-
-function getTerrainY(x: number, z: number, scene: THREE.Scene): number {
-  const terrain = findLocTerrainMesh(scene);
-  if (!terrain) return -2;
-  _locRayOrigin.set(x, 200, z);
-  _locRaycaster.set(_locRayOrigin, _locRayDir);
-  _locRaycaster.layers.set(TERRAIN_LAYER);
-  _locRaycaster.far = 400;
-  // intersectObject(mesh, false) = NO recursion, just this one mesh.
-  const hits = _locRaycaster.intersectObject(terrain, false);
-  return hits.length > 0 ? hits[0].point.y : -2;
+/** O(1) terrain height lookup — bilinear interpolation into pre-built heightfield.
+ *  Falls back to -2 (flat floor) if the heightfield is not yet initialised.
+ *  The scene parameter is kept so callers do not need to change. */
+function getTerrainY(x: number, z: number, _scene: THREE.Scene): number {
+  if (!isTerrainHeightfieldReady()) return -2;
+  return getTerrainHeightAt(x, z);
 }
 
 /** NpcMesh — renders a single GLB (primary or companion) at the given world position.

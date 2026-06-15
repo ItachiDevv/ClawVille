@@ -23,6 +23,10 @@ import { db, openclawBots, avatars, users, buildingSkills, eq, and, sql } from '
 import { agentOrchestrator } from '../services/agent-orchestrator';
 import { getSessionAgent } from '../services/session-agent-map';
 import { OpenClawClient } from '../services/openclaw-client';
+import {
+  buildAvatarSessionConfig,
+  buildOverrideSessionConfig,
+} from '../services/agent-session-config';
 import { ensureWallet, ensureWalletWithFirstTimeSecret } from '../services/wallet-service';
 import { creditClawTokens } from '../services/claw-token-ledger';
 import { buildRuntimeServices } from '../services/runtime-services-adapter';
@@ -37,12 +41,17 @@ import { issueChallenge, consumeNonce } from '../services/auth-challenge';
 import {
   computeSessionExpiresAt,
   expireSession,
+  extendSessionTtl,
 } from '../services/openclaw-session-sweeper';
 import { drainKnowledgeEvents, clearSessionQueue } from '../services/skill-event-bus';
 import { runTool } from '../services/skill-tools-dispatcher';
 import { coveBlackjackRouter } from './cove-blackjack';
 import { validateLiveAgentSession } from '../middleware/require-auth-or-agent';
-import { sessionDigest } from '../services/session-digest';
+import { sessionDigest, sha256Hex } from '../services/session-digest';
+import {
+  isReservedPartnerAgentId,
+  isReservedPartnerIdentityType,
+} from '../services/reserved-agent-namespaces';
 import { getBlackjackSkillContext } from '../services/game-skill-memory';
 import {
   getBooksForBuilding,
@@ -260,6 +269,18 @@ agentGatewayRoutes.post('/connect', async (c) => {
     return c.json({ error: `Unknown targetNpcId: ${data.targetNpcId}` }, 400);
   }
 
+  // Reserved partner namespace guard (Codex round-2 R2-1, 2026-06-12). This is a
+  // PUBLIC, unsigned endpoint; a caller-supplied `agentId` in a reserved partner
+  // namespace (e.g. `hatcher:<id>`) must be refused up front so it can never
+  // collide with — and the existing-row upsert below can never MUTATE — a row
+  // owned by a partner-signed router. We check the RAW caller-supplied id only:
+  // server-generated ids (`milady:`, anonymous, token-derived) are minted below
+  // and are not in a reserved space. Deterministic + body-only, so it runs
+  // BEFORE the single-use token reservation (a reject must not burn the token).
+  if (data.agentId && isReservedPartnerAgentId(data.agentId)) {
+    return c.json({ error: 'Invalid request' }, 400);
+  }
+
   // Step 0: If connectionToken is present, validate it and auto-generate agentId if missing
   if (data.connectionToken) {
     const pending = pendingConnections.get(data.connectionToken);
@@ -342,6 +363,11 @@ agentGatewayRoutes.post('/connect', async (c) => {
   // transparent to validation; sessions are ephemeral/in-memory, so old weak
   // ids simply age out with no migration.
   const sessionId = `ag-${randomBytes(24).toString('base64url')}`;
+  // Compute the session expiry ONCE so the DB write (both branches) and the
+  // response surface the SAME timestamp (2026-06-12 — pull-side expiry
+  // visibility). Additive `sessionExpiresAt` field on the response; existing
+  // consumers ignore unknown keys.
+  const sessionExpiresAt = computeSessionExpiresAt();
   let isReturning = false;
   let totalSessions = 1;
   let knowledge: string[] = [];
@@ -389,6 +415,18 @@ agentGatewayRoutes.post('/connect', async (c) => {
     });
 
     if (existing) {
+      // Reserved partner-row mutation guard (Codex round-2 R2-1, 2026-06-12 —
+      // defense in depth behind the prefix reject above). Even if a caller-
+      // supplied agentId slipped past the prefix check (a legacy/manually-edited
+      // row whose agentId lacks the prefix but whose identity_type is a reserved
+      // partner type), the public path must NEVER mutate a partner-owned row —
+      // only the signed partner router (partner-hatcher.ts) may write that row.
+      // Opaque response: do not leak whether the row exists (matches the partner
+      // router's 404/409 opacity), so this is indistinguishable from the generic
+      // bad-request above.
+      if (isReservedPartnerIdentityType(existing.identityType)) {
+        return c.json({ error: 'Invalid request' }, 400);
+      }
       existingBoundUserId = existing.userId ?? null;
       isReturning = true;
       totalSessions = (existing.totalSessions ?? 0) + 1;
@@ -428,7 +466,12 @@ agentGatewayRoutes.post('/connect', async (c) => {
         // Fresh 24h TTL on every reconnect — matches the Phase 6 session
         // liveness contract. Without this, returning bots kept whatever
         // stale expiry was on the row from their last connect.
-        sessionExpiresAt: computeSessionExpiresAt(),
+        sessionExpiresAt,
+        // Restart survival (2026-06-11) — persist the one-way hash of THIS
+        // connect's bearer so the live session can be rebuilt from the row
+        // after an API restart. New sessionId per connect ⇒ new hash, which
+        // also invalidates any prior connect's restorable handle.
+        sessionKeyHash: sha256Hex(sessionId),
         // Phase 6.1 — clear the sweeper's "already-processed" stamp so
         // the next genuine expiration fires `agent.session.expired`
         // exactly once. Without this clear, a bot that expired, got
@@ -466,11 +509,16 @@ agentGatewayRoutes.post('/connect', async (c) => {
           stats: agentStats,
         },
         totalSessions: 1,
-        // Initial 24h TTL. Every subsequent activity (location chat,
-        // heartbeat, building visit) slides this forward; the 5-min
-        // sweeper in openclaw-session-sweeper.ts reaps anything past
-        // expiry.
-        sessionExpiresAt: computeSessionExpiresAt(),
+        // Initial 24h TTL. Every subsequent activity slides this forward
+        // via `extendSessionTtl` — location chat (openclaw.ts), heartbeat,
+        // building visit, AND every mutating gateway action (move / chat /
+        // visit-building / building-chat / combat-action / emote, all routed
+        // through `resolveSession` below, FIX-4 2026-06-13). The 5-min sweeper
+        // in openclaw-session-sweeper.ts reaps anything past expiry.
+        sessionExpiresAt,
+        // Restart survival (2026-06-11) — one-way hash of this connect's
+        // bearer so the session is restorable from the row after a restart.
+        sessionKeyHash: sha256Hex(sessionId),
       }).returning();
       uuid = inserted.id;
     }
@@ -554,14 +602,19 @@ agentGatewayRoutes.post('/connect', async (c) => {
   // through to avatar mode. Avatar mode spawns a new bot (name + species).
   if (data.mode === 'override' && data.targetNpcId) {
     try {
-      const config: OpenClawRegistration = {
+      // Built via the SHARED config-builder (agent-session-config.ts) so the
+      // protocol/autonomy resolution is byte-identical to what restore rebuilds
+      // from the row — the structural prevention against mint↔restore drift
+      // (diagnostic-2026-06-12 D1). `storedProtocol: wireProtocol` is exactly
+      // what gets PERSISTED on the row, so restore reads the same input.
+      const config: OpenClawRegistration = buildOverrideSessionConfig({
+        mode: 'override',
         agentId: resolvedAgentId,
         sessionId,
-        sessionKey: sessionId,
-        gatewayUrl: data.gatewayUrl ?? 'http://localhost:0',
-        authToken: data.authToken ?? '',
-        protocol: wireProtocol,
-        mode: 'override',
+        identityType,
+        storedProtocol: wireProtocol,
+        gatewayUrl: data.gatewayUrl,
+        authToken: data.authToken,
         autonomyMode,
         targetNpcId: data.targetNpcId,
         // Carries the proven-ownership decision into the in-memory session so
@@ -570,7 +623,7 @@ agentGatewayRoutes.post('/connect', async (c) => {
         // The user this session proved ownership of — re-validated against the
         // live row at spend time (rebind backstop, hardening round 2).
         boundUserId,
-      } as OpenClawRegistration;
+      });
       const client = new OpenClawClient(config);
       npcSimulation.registerOpenClaw(config, client);
     } catch (err: unknown) {
@@ -593,20 +646,28 @@ agentGatewayRoutes.post('/connect', async (c) => {
     // agent with no species). This keeps the persisted row, the spawn config,
     // and the in-world render in lockstep.
     const spawnName = data.name ?? data.miladyCharacterName ?? resolvedAgentId.slice(0, 24);
-    const spawnSpecies = resolvedSpecies ?? DEFAULT_AGENT_MODEL_KEY;
     try {
-      const config: OpenClawRegistration = {
+      // Built via the SHARED config-builder (agent-session-config.ts) so the
+      // protocol/species/autonomy resolution is byte-identical to what restore
+      // rebuilds from the row — the structural prevention against mint↔restore
+      // drift (diagnostic-2026-06-12 D1). The builder also routes no-gateway
+      // identity types (anonymous/milady/nanoclaw) to the fail-soft 'nanoclaw'
+      // wire protocol so an autonomous NPC conversation never POSTs to the dummy
+      // `http://localhost:0` gateway and 502s. `species: resolvedSpecies` was
+      // already defaulted to the Milady key above (connect has no hatcher
+      // branch), so the builder passes it through unchanged.
+      const config: OpenClawRegistration = buildAvatarSessionConfig({
+        mode: 'avatar',
         agentId: resolvedAgentId,
         sessionId,
-        sessionKey: sessionId,
-        gatewayUrl: data.gatewayUrl ?? 'http://localhost:0', // dummy for nanoclaw/anonymous
-        authToken: data.authToken ?? '',
-        protocol: wireProtocol,
-        mode: 'avatar',
+        identityType,
+        storedProtocol: wireProtocol,
+        gatewayUrl: data.gatewayUrl,
+        authToken: data.authToken,
         autonomyMode,
         name: spawnName,
-        species: spawnSpecies,
-        color: data.color ?? 0x888888,
+        species: resolvedSpecies ?? DEFAULT_AGENT_MODEL_KEY,
+        color: data.color,
         stats: agentStats,
         homeX: data.homeX ?? 2560,
         homeY: data.homeY ?? 2560,
@@ -618,7 +679,7 @@ agentGatewayRoutes.post('/connect', async (c) => {
         // The user this session proved ownership of — re-validated against the
         // live row at spend time (rebind backstop, hardening round 2).
         boundUserId,
-      } as OpenClawRegistration;
+      });
 
       // Stub client — nanoclaw/anonymous agents don't use outbound chat routing
       // but the simulation still needs a client instance for its bot map.
@@ -897,6 +958,11 @@ agentGatewayRoutes.post('/connect', async (c) => {
     identityType,
     autonomyMode,
     walletAddress,
+    // Pull-side expiry visibility (2026-06-12) — the ISO timestamp this
+    // session's sliding 24h TTL currently expires at. Slides forward on every
+    // activity; poll GET /api/agent/session-status (or re-read this on connect)
+    // to track it. Additive — existing consumers ignore it.
+    sessionExpiresAt: sessionExpiresAt.toISOString(),
     // Additive (2026-06-01) — canonical "you are inside ClawVille" orientation
     // for external agents to embed in their own system prompt. Returned for
     // every connecting agent (not just Hatcher) so any framework that brings
@@ -1027,12 +1093,17 @@ agentGatewayRoutes.post('/reconnect', async (c) => {
   // human but leaving openclaw_bots.session_expires_at frozen at the
   // last /connect time, so /api/agent/session-status would still
   // report 410 Gone after a successful /reconnect.
+  // Capture the refreshed expiry so the response can surface it (2026-06-12 —
+  // pull-side expiry visibility, parity with /connect). Null when the user has
+  // no existing bot row to refresh (nothing to expire yet).
+  let reconnectExpiresAt: Date | null = null;
   if (existingBot) {
+    reconnectExpiresAt = computeSessionExpiresAt();
     try {
       await db
         .update(openclawBots)
         .set({
-          sessionExpiresAt: computeSessionExpiresAt(),
+          sessionExpiresAt: reconnectExpiresAt,
           sessionSweptAt: null,
           lastSeenAt: new Date(),
           updatedAt: new Date(),
@@ -1074,6 +1145,9 @@ agentGatewayRoutes.post('/reconnect', async (c) => {
     sessionTicket,
     avatarId: userAvatar?.id ?? null,
     uuid: existingBot?.id ?? null,
+    // Pull-side expiry visibility (2026-06-12) — the refreshed TTL deadline,
+    // parity with /connect. Null when the user had no bot row to refresh.
+    sessionExpiresAt: reconnectExpiresAt ? reconnectExpiresAt.toISOString() : null,
     // `walletAddress` here is the AVATAR wallet (the human-facing economic
     // identity). The agent's internal bot wallet isn't relevant on
     // reconnect — the agent already has its config and doesn't need
@@ -1767,6 +1841,29 @@ async function resolveSession(sessionId: string) {
   if (!npcId) return null;
   const npc = npcSimulation.getNpcById(npcId);
   if (!npc) return null;
+
+  // FIX-4 (SL-1/SL-2, 2026-06-13) — slide the 24h session TTL + `last_seen_at`
+  // forward on EVERY mutating gateway action. `resolveSession` is the single
+  // chokepoint for the entire connected-agent action surface (perception, move,
+  // chat, visit-building, building-chat, combat-action, emote), and before this
+  // NONE of those paths advanced the TTL. A Hatcher partner agent registers via
+  // `POST /api/partner/hatcher/agents` (which sets `sessionExpiresAt` ONCE) then
+  // plays purely through `/:sessionId/*` here — so without this slide a
+  // continuously-active agent was idle-despawned after 30min and swept after 24h.
+  //
+  // Fire-and-forget (NOT awaited) so the TTL write never blocks the action; the
+  // shared `extendSessionTtl` helper carries its own `.catch()`. It is the single
+  // source of truth for the slide (writes `sessionExpiresAt`, `lastSeenAt`, and
+  // crucially `sessionSweptAt: null`), mirroring the location-chat path in
+  // `openclaw.ts`. `getOpenClawBotConfig` is a synchronous in-process Map lookup,
+  // so resolving `agentId` here adds no DB round-trip. No double-slide risk: the
+  // action handlers below only write knowledge/combat/`updatedAt`, never the TTL
+  // columns. Anonymous/legacy sessions with no bot config simply skip the slide.
+  const config = npcSimulation.getOpenClawBotConfig(sessionId);
+  if (config) {
+    void extendSessionTtl(config.agentId);
+  }
+
   return { npcId, npc };
 }
 
