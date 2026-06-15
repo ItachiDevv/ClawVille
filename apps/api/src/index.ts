@@ -35,6 +35,12 @@ const reefRaceImpl = REEF_RACE_USE_SPLINE
 import { loadRacingProfiles } from './services/activity/avatar-profile-loader';
 import { botPool } from './services/activity/bots/bot-pool';
 import { getBotControllerFactory } from './services/activity/bots/bot-controller';
+// Texas Hold'em (P1.2b) — live poker table sim singleton + the demo config the
+// `texas-holdem` LIVE transition starts each hand with (in-memory chips only;
+// CT settlement + persistence are out of scope this phase).
+import { pokerTableSim } from './services/poker/poker-table-sim-singleton';
+import { logEvent } from './services/event-logger';
+import { randomBytes } from 'node:crypto';
 import { getBunWebSocketHelper } from './lib/bun-ws-adapter';
 import { researchSseRoutes } from './routes/research-sse';
 import { researchApiRoutes } from './routes/research';
@@ -476,6 +482,57 @@ startSimulation(arenaMode);
           );
           break;
         }
+        case 'texas-holdem': {
+          // P1.2b — start one demo hand with in-memory chips (NO CT
+          // settlement / persistence this phase). Seat participants in
+          // insertion order (matchmaker fill = seat order); each gets a flat
+          // 1000-chip demo stack. Commit-reveal seeds are freshly generated
+          // per hand (the seed is revealed in HandResult at showdown).
+          const seatAssignments = Array.from(
+            room.participants.values(),
+          ).map((p, seatIndex) => ({
+            seatIndex,
+            avatarId: p.avatarId,
+            name: p.avatarId, // demo: no display-name lookup this phase
+            // The sim's seat subjectType is 'human' | 'agent' only — map the
+            // room's 'bot' fill onto 'agent' so they get the agent turn grace.
+            subjectType: (p.subjectType === 'human' ? 'human' : 'agent') as
+              | 'human'
+              | 'agent',
+            agentId: p.agentId ?? undefined,
+            chipStack: 1000,
+          }));
+          if (seatAssignments.length < 2) {
+            console.warn(
+              `[API] texas-holdem room ${room.id} has <2 seats — not starting a hand`,
+            );
+            break;
+          }
+          try {
+            // The provable-RNG requires serverSeed == EXACTLY 64 hex chars
+            // (32 bytes) and a non-empty hex clientSeed. A UUID-minus-dashes is
+            // only 32 hex chars and would throw — use 32 random bytes hex.
+            const serverSeed = randomBytes(32).toString('hex');
+            const clientSeed = randomBytes(16).toString('hex');
+            pokerTableSim.startHand({
+              tableId: room.id,
+              handNumber: 1,
+              seatAssignments,
+              blinds: { sb: 10, bb: 20, ante: 0 },
+              buttonSeatIndex: 0,
+              serverSeed,
+              clientSeed,
+              turnClockMs: 30_000,
+              agentTurnGraceMs: 5_000,
+            });
+          } catch (err) {
+            console.error(
+              `[API] texas-holdem startHand failed for room ${room.id}:`,
+              err,
+            );
+          }
+          break;
+        }
         default:
           console.warn(
             `[API] No sim registered for activityId='${room.activityId}' — room ${room.id} will sit LIVE without a sim`,
@@ -613,6 +670,94 @@ startSimulation(arenaMode);
         code: 'integrity',
         message: 'anti-cheat forfeit (5 flags)',
       });
+    });
+
+    // ─── Texas Hold'em (P1.2b) — poker table sim wiring ─────────────────────
+    //
+    // The sim's PUBLIC snapshot rides `broadcastEvent` (NEVER broadcastSnapshot
+    // — poker is turn-based and a dropped turn-state frame desyncs the betting
+    // UI). The PRIVATE per-seat view rides `sendToAvatar` (carries hole cards —
+    // must never broadcast). On hand-complete we emit the public showdown +
+    // hand-ended frames, then transition the room toward RESULTS. NO CT
+    // settlement / reward issuance this phase (no setComputeResultsFn case for
+    // texas-holdem — the room manager logs "no sim results" and credits
+    // nothing, which is the intended demo behavior).
+    //
+    // The sim's own types (PublicTableSnapshot / PrivateSeatView / HandResult
+    // from poker-table-types.ts) are structural mirrors of the shared wire
+    // types (PokerPublicTableSnapshot / PokerPrivateSeatView / PokerHandResult),
+    // so they assign directly into the frame payloads below.
+    pokerTableSim.setBroadcastFn((tableId, snapshot) => {
+      // tableId === roomId (one live hand per room).
+      activityWsHub.broadcastEvent(tableId, {
+        type: 'poker.table_state',
+        snapshot,
+      });
+    });
+    pokerTableSim.setSendToSeatFn((tableId, avatarId, view) => {
+      // Deliver BOTH the dedicated private hole-card frame AND the your-turn
+      // view (the sim only invokes this for the seat that is on the clock, so
+      // both ride the per-seat channel to exactly that one seat).
+      activityWsHub.sendToAvatar(tableId, avatarId, {
+        type: 'poker.hole_cards',
+        handNumber: 1,
+        seatIndex: view.seatIndex,
+        holeCards: view.holeCards,
+      });
+      activityWsHub.sendToAvatar(tableId, avatarId, {
+        type: 'poker.your_turn',
+        handNumber: 1,
+        view,
+      });
+    });
+    pokerTableSim.setHandCompleteFn((tableId, result) => {
+      // Public showdown reveal — ONLY on a genuine showdown. On a fold-around
+      // (endedAt !== 'showdown') no one shows, so we skip the showdown frame
+      // entirely; the hand_ended payload below still settles the pot. The sim
+      // already nulls every seat's holeCards on a non-showdown end.
+      if (result.endedAt === 'showdown') {
+        activityWsHub.broadcastEvent(tableId, {
+          type: 'poker.showdown',
+          handNumber: result.handNumber,
+          board: result.board,
+          seats: result.perSeat,
+        });
+      }
+      activityWsHub.broadcastEvent(tableId, {
+        type: 'poker.hand_ended',
+        result,
+      });
+      void logEvent({
+        eventType: 'activity.poker.hand_ended',
+        payload: {
+          roomId: tableId,
+          handNumber: result.handNumber,
+          endedAt: result.endedAt,
+          winners: result.perSeat
+            .filter((s) => s.isWinner)
+            .map((s) => s.avatarId),
+        },
+      });
+      // Transition the room toward results (demo: one hand per room, no CT).
+      // The sim already broadcast the final state; tear it down + flip the FSM.
+      // Best-effort — a missing room (already torn down) is a silent no-op.
+      const room = activityRoomManager.getRoom(tableId);
+      if (room && room.state === 'live') {
+        void activityRoomManager
+          .transitionRoom(tableId, 'results')
+          .then(() => {
+            pokerTableSim.stopTable(tableId);
+          })
+          .catch((err) => {
+            console.error(
+              '[API] poker hand end → RESULTS transition failed:',
+              err,
+            );
+            pokerTableSim.stopTable(tableId);
+          });
+      } else {
+        pokerTableSim.stopTable(tableId);
+      }
     });
 
     await activityRoomManager.recoverOrphanedRooms();
