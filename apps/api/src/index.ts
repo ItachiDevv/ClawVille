@@ -85,6 +85,11 @@ import { covePokerMttRouter } from './routes/cove-poker-mtt';
 // The process-wide TournamentManager singleton — boot starts its start-trigger
 // sweeper (the LIVE seat/cancel path) + graceful shutdown stops it.
 import { tournamentManager } from './services/poker/tournament-manager';
+// Poker MTT (P3.5) — the DEDICATED tournament-table sim + the WS bridge that
+// makes tournament tables PLAYABLE over WebSocket (long-lived `texas-holdem-mtt`
+// room, sim-frame fan-out, room↔table mapping). Wired at boot alongside the demo.
+import { pokerMttSim } from './services/poker/poker-mtt-sim-singleton';
+import { wirePokerMttToHub } from './services/poker/poker-mtt-ws-bridge';
 // Phase 6.6.1 — cove Baccarat (Punto Banco) AUTHORITATIVE route (8-deck shoe,
 // fixed tableau, commit-reveal provably-fair engine, ClawToken ledger; SOL/USDC seam 501).
 import { coveBaccaratRouter } from './routes/cove-baccarat';
@@ -543,6 +548,14 @@ startSimulation(arenaMode);
           }
           break;
         }
+        case 'texas-holdem-mtt':
+          // P3.5 — a tournament TABLE's room goes LIVE here, but the
+          // TournamentManager (NOT this dispatcher) owns hand-starting: the TM's
+          // multi-hand loop already called `pokerMttSim.startHand` for hand 1
+          // before flipping the room live (see poker-mtt-ws-bridge.ts onSeatFn).
+          // So this case is a DELIBERATE no-op — starting a hand here would race /
+          // double-start the TM's loop. The room just hosts the WS transport.
+          break;
         default:
           console.warn(
             `[API] No sim registered for activityId='${room.activityId}' — room ${room.id} will sit LIVE without a sim`,
@@ -769,6 +782,17 @@ startSimulation(arenaMode);
         pokerTableSim.stopTable(tableId);
       }
     });
+
+    // ─── Poker MTT (P3.5) — tournament-table WS bridge ──────────────────────
+    // Wire the DEDICATED `pokerMttSim` + the TournamentManager to the WS hub so
+    // tournament tables are PLAYABLE over WebSocket (long-lived `texas-holdem-mtt`
+    // room, public table_state + private hole-cards/your-turn fan-out, showdown /
+    // hand-ended broadcast, room↔table mapping for inbound action dispatch). This
+    // is fully isolated from the demo `texas-holdem` wiring above — separate sim,
+    // separate activityId, separate room namespace. The TM's hand-complete handler
+    // (its multi-hand loop) is UNTOUCHED; the bridge only registers the SEPARATE
+    // showdown-broadcast slot + the broadcast/per-seat slots on the MTT sim.
+    wirePokerMttToHub(pokerMttSim, tournamentManager);
 
     await activityRoomManager.recoverOrphanedRooms();
     await activityQueueService.hydrateFromDb();
