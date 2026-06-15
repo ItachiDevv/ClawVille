@@ -351,6 +351,35 @@ app.notFound((c) => {
 const port = parseInt(process.env.PORT || '4000', 10);
 console.log(`Starting ClawVille API on port ${port}...`);
 
+// ---------------------------------------------------------------------------
+// Boot preflight — CLOUDFLARE_WORKER_* are HARD-REQUIRED on boot
+// ---------------------------------------------------------------------------
+// CLAUDE.md ("Crash-loud rule") declares FINGERPRINT_SECRET + CLOUDFLARE_WORKER_*
+// hard-required on boot: missing ⇒ API refuses to start. FINGERPRINT_SECRET is
+// already enforced by middleware/fingerprint.ts throwing at module load. The CF
+// Worker vars, however, were only validated LAZILY inside keypair-vault.ts
+// (requireWorkerEnv, first envelope-encryption use), so a misconfigured box
+// would boot fine and only fail on the first wallet op — making the documented
+// boot guarantee false. Assert them here at startup so the doc is true and a
+// missing var is caught immediately (the lazy check in keypair-vault.ts stays
+// as defense-in-depth). Mirrors the FINGERPRINT_SECRET crash-loud pattern.
+{
+  const missingWorkerEnv = (['CLOUDFLARE_WORKER_URL', 'CLOUDFLARE_WORKER_BEARER'] as const).filter(
+    // `?.trim()` so a whitespace-only value ("  ") is treated as missing — else
+    // it passes the boot gate and fails lazily on the first wallet op.
+    (k) => !process.env[k]?.trim(),
+  );
+  if (missingWorkerEnv.length > 0) {
+    console.error(
+      `[API] FATAL: ${missingWorkerEnv.join(' + ')} ${missingWorkerEnv.length > 1 ? 'are' : 'is'} required at boot ` +
+        'for envelope encryption (Phase 5.1 custodial wallets). Deploy the CF secrets ' +
+        'Worker (infra/cf-secrets-worker/README.md) and set both env vars on this box. ' +
+        'Refusing to boot.',
+    );
+    process.exit(1);
+  }
+}
+
 // Loud one-line warning if the staging-only mock-Hatcher test partner pubkey is
 // enabled — this MUST NEVER appear in prod logs (see ARCHITECTURE.md).
 warnIfTestPartnerPubkeyEnabled();
