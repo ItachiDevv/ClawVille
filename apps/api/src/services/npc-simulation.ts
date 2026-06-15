@@ -846,6 +846,7 @@ class NpcSimulation {
    *   emote(name in {wave,dance,think,scan,work,celebrate,alert}) -> setNpcActivity
    *   enter_building(buildingId in the 10 MAP_LOCATIONS ids)      -> walk to building
    *   enter_cove()                                        -> walk to the Cove (casino gateway)
+   *   enter_poker_room()                                  -> walk to the Cove poker tables
    *   talk_to_npc(npcId|buildingId, message<=500)         -> injectAgentChat bubble
    *
    * Unknown names / bad params are DROPPED (never executed, never throw). Only
@@ -994,6 +995,33 @@ class NpcSimulation {
         // 'trading' is the closest valid NpcActivity for casino play; override
         // the emoji to the slot 🎰 so the bubble reads as "at the Cove".
         this.setNpcActivity(npcId, 'trading', '🎰');
+        return;
+      }
+      case 'enter_poker_room': {
+        // enter_poker_room() — the HYBRID gateway verb for tournament poker (Rule
+        // E5). Walks the agent body to the Cove poker area (the poker tables live
+        // INSIDE the Cove, so the destination is the same Cove center as
+        // enter_cove) and tags it. This is the VISIBLE in-world effect of "I am
+        // going to the poker tables"; the agent then registers + plays REAL-CT MTT
+        // poker via the agent-callable poker tools (GET/POST
+        // /api/agent/:sid/cove/poker/*), which bind to its avatar's ClawToken
+        // ledger. BETTING NEVER flows through this action parser — only the
+        // authenticated, session-bound tool endpoints. No params.
+        if (!COVE_CENTER) {
+          console.warn('[Hatcher] enter_poker_room dropped — cove location missing from MAP_LOCATIONS');
+          return;
+        }
+        const destX = COVE_CENTER.x + (Math.random() - 0.5) * 40;
+        const destY = COVE_CENTER.y + 20 + Math.random() * 20;
+        const path = findPath(npc.x, npc.y, destX, destY);
+        if (path.length === 0) {
+          console.warn('[Hatcher] enter_poker_room dropped — no path to the cove poker area');
+          return;
+        }
+        this.setNpcPath(npcId, path, 'cove');
+        // 'trading' is the closest valid NpcActivity for casino play; ♠ reads as
+        // "at the poker tables".
+        this.setNpcActivity(npcId, 'trading', '♠️');
         return;
       }
       case 'talk_to_npc': {
