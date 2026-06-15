@@ -158,9 +158,17 @@ export const pokerTournaments = pgTable(
       sql`status in ('registering','seating','running','completed','cancelled')`,
     ),
     rakeBpsCheck: check('poker_tournaments_rake_bps_check', sql`rake_bps >= 0 AND rake_bps <= 10000`),
+    // P4 (multi-table) RELAXED this from the original P3 single-table form, which
+    // also required `max_entrants <= seats_per_table`. That clause was a single-table
+    // assumption: the MTT engine seats `ceil(maxEntrants / seatsPerTable)` BALANCED
+    // tables, so max_entrants legitimately exceeds seats_per_table. The bounds now
+    // enforce only what's universally true: a ≥2 floor, max ≥ min, and a sane
+    // 2..9-seat table. (A live DB pushed under the P3 form must run
+    // migrations-manual/2026-06-…_poker_relax_entrant_bounds.sql to drop+recreate
+    // this constraint — drizzle push does NOT auto-replace a renamed CHECK body.)
     entrantBoundsCheck: check(
       'poker_tournaments_entrant_bounds_check',
-      sql`min_entrants >= 2 AND max_entrants >= min_entrants AND seats_per_table >= 2 AND max_entrants <= seats_per_table`,
+      sql`min_entrants >= 2 AND max_entrants >= min_entrants AND seats_per_table >= 2 AND seats_per_table <= 9`,
     ),
     startingStackCheck: check('poker_tournaments_starting_stack_check', sql`starting_stack > 0`),
   }),

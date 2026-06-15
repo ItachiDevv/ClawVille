@@ -220,6 +220,16 @@ const DEFAULT_CLIENT_SEED = 'c1a4111e';
 const START_TRIGGER_SWEEP_INTERVAL_MS = 15_000;
 /** The `activityId` tag on `activity.match.placed` events the TM emits at settle. */
 const POKER_MTT_ACTIVITY_ID = 'poker-mtt';
+/**
+ * FIXED uuid for the seeded DEFAULT blind schedule row. A constant id makes the
+ * seed `INSERT ... ON CONFLICT (id) DO NOTHING` idempotent across boots/creates —
+ * repeated `ensureDefaultBlindSchedule()` calls collapse to one row, never N.
+ */
+export const DEFAULT_BLIND_SCHEDULE_ID = '00000000-0000-4000-8000-000000000001';
+/** Human-readable label for the seeded default ladder. */
+export const DEFAULT_BLIND_SCHEDULE_NAME = 'default-8';
+/** Sane upper bound on entrants for a created tournament (anti-fat-finger). */
+const MAX_ENTRANTS_CAP = 200;
 
 export interface RegisterResult {
   entrantId: string;
@@ -241,6 +251,83 @@ export interface SettleResult {
   alreadySettled: boolean;
   rakeTakenCt: string;
   results: Array<{ avatarId: string; agentId: string | null; placement: number; prizeCt: string }>;
+}
+
+/**
+ * Config for a NEW tournament (the creation gap this fills). All bounds are
+ * VALIDATED in `createTournament` before any DB write — a CT-buy-in money config
+ * with a bad payout curve / stack / seat count would mis-settle, so the validation
+ * is strict and crash-loud (a TournamentError 400, never a silent clamp).
+ */
+export interface CreateTournamentConfig {
+  /** Display name. */
+  name: string;
+  /** Buy-in per entrant (atomic CT). MUST be > 0 (no free tournaments — a 0 pool can't pay). */
+  buyInCt: number | bigint | string;
+  /** House rake in basis points (0..10000). Default 0. */
+  rakeBps?: number;
+  /** Minimum entrants to start (≥ 2). Below floor at the trigger → cancel + refund. */
+  minEntrants: number;
+  /** Hard cap on entrants. MUST be ≥ minEntrants. */
+  maxEntrants: number;
+  /** Seats per table (2..9). Default 9. */
+  seatsPerTable?: number;
+  /** Starting chip stack (play chips, NOT CT). MUST be > 0. */
+  startingStack: number;
+  /** Payout curve (PayoutCurveEntry[]). Defaults to DEFAULT_PAYOUT_CURVE when omitted. */
+  payoutCurve?: PayoutCurveEntry[];
+  /** Registration auto-closes (+ start trigger fires) at this time. Null/omitted = manual. */
+  registrationClosesAt?: Date | null;
+  /**
+   * The blind schedule this tournament uses. Omitted ⇒ the idempotently-seeded
+   * DEFAULT schedule. When provided, the row MUST already exist (FK + existence check).
+   */
+  blindScheduleId?: string;
+}
+
+export interface CreateTournamentResult {
+  id: string;
+  name: string;
+  status: string;
+  buyInCt: string;
+  rakeBps: number;
+  minEntrants: number;
+  maxEntrants: number;
+  seatsPerTable: number;
+  startingStack: number;
+  prizePoolCt: string;
+  payoutCurve: PayoutCurveEntry[];
+  blindScheduleId: string;
+  registrationClosesAt: Date | string | null;
+  createdAt: Date | string | null;
+}
+
+/** One row in the discovery list (open/registering, + running when requested). */
+export interface TournamentListItem {
+  id: string;
+  name: string;
+  status: string;
+  buyInCt: string;
+  rakeBps: number;
+  minEntrants: number;
+  maxEntrants: number;
+  seatsPerTable: number;
+  startingStack: number;
+  prizePoolCt: string;
+  registrationClosesAt: Date | string | null;
+  /** Non-refunded entrant count (registered/seated/busted). */
+  registeredCount: number;
+  /** Live (non-broken) table count — only meaningful for a running tournament; else 0. */
+  tableCount: number;
+  /** Compact blind summary: level count + the opening level's sb/bb. */
+  blindSummary: { levels: number; openingSb: number | null; openingBb: number | null };
+}
+
+export interface ListTournamentsFilter {
+  /** Include 'running' tournaments in addition to open/registering. Default false. */
+  includeRunning?: boolean;
+  /** Max rows (1..200). Default 50. */
+  limit?: number;
 }
 
 /** A live in-memory per-TABLE driver: tracks live seats + per-table button/hand. */
@@ -383,6 +470,221 @@ export class TournamentManager {
     // sim fires it with the sim tableId; we route to the owning tournament+table.
     this.sim.setHandCompleteFn((tableId, result) => {
       void this.onHandComplete(tableId, result);
+    });
+  }
+
+  // ── Creation + discovery ─────────────────────────────────────────────────────
+
+  /**
+   * Idempotently seed the DEFAULT rising-blind ladder (DEFAULT_BLIND_SCHEDULE) at a
+   * FIXED uuid. `ON CONFLICT (id) DO NOTHING` makes repeated boots/creates collapse
+   * to ONE row — never duplicates. Returns the default schedule id (always the
+   * constant). Safe to call at every API boot and inside `createTournament`.
+   */
+  async ensureDefaultBlindSchedule(): Promise<string> {
+    await this.db.execute(
+      sql`INSERT INTO poker_blind_schedules (id, name, levels_json)
+          VALUES (${DEFAULT_BLIND_SCHEDULE_ID}, ${DEFAULT_BLIND_SCHEDULE_NAME},
+                  ${JSON.stringify(DEFAULT_BLIND_SCHEDULE)}::jsonb)
+          ON CONFLICT (id) DO NOTHING`,
+    );
+    return DEFAULT_BLIND_SCHEDULE_ID;
+  }
+
+  /**
+   * Create a NEW tournament (status 'registering', prizePoolCt 0). VALIDATES the
+   * money config strictly (a bad curve/stack/seat-count mis-settles a CT pool), then
+   * ensures the referenced blind schedule row exists (seeding the idempotent default
+   * when `blindScheduleId` is omitted), then inserts the row. Returns the created row.
+   *
+   * @param config validated config (see CreateTournamentConfig).
+   * @param createdByAvatarId the admin/creator's avatar id, or null. Stored for audit.
+   *   NOTE: the schema has no `created_by` column yet, so this is currently accepted
+   *   for forward-compat + audit logging only — it does NOT write a column (adding one
+   *   would be a schema migration). Kept in the signature so callers don't change when
+   *   the column lands.
+   */
+  async createTournament(
+    config: CreateTournamentConfig,
+    createdByAvatarId: string | null,
+  ): Promise<CreateTournamentResult> {
+    // ── Validate (crash-loud — never a silent clamp on a money config) ──────────
+    const name = (config.name ?? '').trim();
+    if (!name) throw new TournamentError('invalid_name', 400);
+
+    const buyIn = toBigIntStrict(config.buyInCt, 'buyInCt');
+    if (buyIn <= 0n) throw new TournamentError('invalid_buy_in_must_be_positive', 400);
+
+    const rakeBps = config.rakeBps ?? 0;
+    if (!Number.isInteger(rakeBps) || rakeBps < 0 || rakeBps > 10000) {
+      throw new TournamentError('invalid_rake_bps', 400);
+    }
+
+    const minEntrants = config.minEntrants;
+    const maxEntrants = config.maxEntrants;
+    if (!Number.isInteger(minEntrants) || minEntrants < 2) {
+      throw new TournamentError('invalid_min_entrants', 400);
+    }
+    if (!Number.isInteger(maxEntrants) || maxEntrants < minEntrants) {
+      throw new TournamentError('invalid_max_entrants', 400);
+    }
+    if (maxEntrants > MAX_ENTRANTS_CAP) {
+      throw new TournamentError('max_entrants_exceeds_cap', 400);
+    }
+
+    const seatsPerTable = config.seatsPerTable ?? 9;
+    if (!Number.isInteger(seatsPerTable) || seatsPerTable < 2 || seatsPerTable > 9) {
+      throw new TournamentError('invalid_seats_per_table', 400);
+    }
+
+    const startingStack = config.startingStack;
+    if (!Number.isInteger(startingStack) || startingStack <= 0) {
+      throw new TournamentError('invalid_starting_stack', 400);
+    }
+
+    const payoutCurve = config.payoutCurve ?? DEFAULT_PAYOUT_CURVE;
+    validatePayoutCurve(payoutCurve);
+
+    const registrationClosesAt = config.registrationClosesAt ?? null;
+    if (registrationClosesAt != null && Number.isNaN(new Date(registrationClosesAt).getTime())) {
+      throw new TournamentError('invalid_registration_closes_at', 400);
+    }
+
+    // ── Resolve the blind schedule (seed default OR verify the referenced row) ──
+    let blindScheduleId = config.blindScheduleId;
+    if (!blindScheduleId) {
+      blindScheduleId = await this.ensureDefaultBlindSchedule();
+    } else {
+      const exists = await this.db.execute<{ id: string }>(
+        sql`SELECT id FROM poker_blind_schedules WHERE id = ${blindScheduleId}`,
+      );
+      if (!exists[0]) throw new TournamentError('blind_schedule_not_found', 404);
+    }
+
+    // ── Insert (status 'registering', prizePoolCt 0) ────────────────────────────
+    const inserted = await this.db.execute<{
+      id: string;
+      name: string;
+      status: string;
+      buy_in_ct: string;
+      rake_bps: number;
+      min_entrants: number;
+      max_entrants: number;
+      seats_per_table: number;
+      starting_stack: number;
+      prize_pool_ct: string;
+      payout_curve_json: unknown;
+      blind_schedule_id: string;
+      registration_closes_at: Date | string | null;
+      created_at: Date | string | null;
+    }>(
+      sql`INSERT INTO poker_tournaments
+            (name, status, buy_in_ct, rake_bps, min_entrants, max_entrants,
+             seats_per_table, starting_stack, prize_pool_ct, payout_curve_json,
+             blind_schedule_id, registration_closes_at)
+          VALUES (${name}, 'registering', ${buyIn.toString()}, ${rakeBps}, ${minEntrants},
+                  ${maxEntrants}, ${seatsPerTable}, ${startingStack}, '0',
+                  ${JSON.stringify(payoutCurve)}::jsonb, ${blindScheduleId},
+                  ${registrationClosesAt})
+          RETURNING id, name, status, buy_in_ct, rake_bps, min_entrants, max_entrants,
+                    seats_per_table, starting_stack, prize_pool_ct, payout_curve_json,
+                    blind_schedule_id, registration_closes_at, created_at`,
+    );
+    const row = inserted[0];
+    if (!row) throw new TournamentError('create_failed', 500);
+
+    if (createdByAvatarId) {
+      console.log(
+        `[poker-mtt] tournament ${row.id} (${name}) created by avatar ${createdByAvatarId}`,
+      );
+    }
+
+    return {
+      id: row.id,
+      name: row.name,
+      status: row.status,
+      buyInCt: row.buy_in_ct,
+      rakeBps: row.rake_bps,
+      minEntrants: row.min_entrants,
+      maxEntrants: row.max_entrants,
+      seatsPerTable: row.seats_per_table,
+      startingStack: row.starting_stack,
+      prizePoolCt: row.prize_pool_ct,
+      payoutCurve: (row.payout_curve_json as PayoutCurveEntry[] | null) ?? payoutCurve,
+      blindScheduleId: row.blind_schedule_id,
+      registrationClosesAt: row.registration_closes_at,
+      createdAt: row.created_at,
+    };
+  }
+
+  /**
+   * List discoverable tournaments — 'registering' always, '+running' when requested —
+   * with their config + the CURRENT non-refunded entrant count and (for running) the
+   * live table count + a compact blind summary. Powers the cove lobby/list UI. Pure
+   * read, no mutation. Newest-first, capped.
+   */
+  async listTournaments(filter: ListTournamentsFilter = {}): Promise<TournamentListItem[]> {
+    const includeRunning = filter.includeRunning ?? false;
+    const limit = Math.min(Math.max(Math.floor(filter.limit ?? 50), 1), 200);
+    const statuses = includeRunning
+      ? sql`('registering','running')`
+      : sql`('registering')`;
+
+    const rows = await this.db.execute<{
+      id: string;
+      name: string;
+      status: string;
+      buy_in_ct: string;
+      rake_bps: number;
+      min_entrants: number;
+      max_entrants: number;
+      seats_per_table: number;
+      starting_stack: number;
+      prize_pool_ct: string;
+      registration_closes_at: Date | string | null;
+      blind_schedule_id: string;
+      registered_count: number;
+      table_count: number;
+      levels_json: unknown;
+    }>(
+      sql`SELECT t.id, t.name, t.status, t.buy_in_ct, t.rake_bps, t.min_entrants,
+                 t.max_entrants, t.seats_per_table, t.starting_stack, t.prize_pool_ct,
+                 t.registration_closes_at, t.blind_schedule_id,
+                 (SELECT count(*)::int FROM poker_tournament_entrants e
+                    WHERE e.tournament_id = t.id AND e.status <> 'refunded') AS registered_count,
+                 (SELECT count(*)::int FROM poker_tables pt
+                    WHERE pt.tournament_id = t.id AND pt.status = 'live') AS table_count,
+                 (SELECT bs.levels_json FROM poker_blind_schedules bs
+                    WHERE bs.id = t.blind_schedule_id) AS levels_json
+          FROM poker_tournaments t
+          WHERE t.status IN ${statuses}
+          ORDER BY t.created_at DESC
+          LIMIT ${limit}`,
+    );
+
+    return rows.map((r) => {
+      const levels = (r.levels_json as BlindLevel[] | null) ?? [];
+      const opening = levels[0];
+      return {
+        id: r.id,
+        name: r.name,
+        status: r.status,
+        buyInCt: r.buy_in_ct,
+        rakeBps: r.rake_bps,
+        minEntrants: r.min_entrants,
+        maxEntrants: r.max_entrants,
+        seatsPerTable: r.seats_per_table,
+        startingStack: r.starting_stack,
+        prizePoolCt: r.prize_pool_ct,
+        registrationClosesAt: r.registration_closes_at,
+        registeredCount: Number(r.registered_count ?? 0),
+        tableCount: Number(r.table_count ?? 0),
+        blindSummary: {
+          levels: levels.length,
+          openingSb: opening ? opening.sb : null,
+          openingBb: opening ? opening.bb : null,
+        },
+      };
     });
   }
 
@@ -1989,6 +2291,62 @@ export function computePrizes(
     out.set(c.placement, (out.get(c.placement) ?? 0n) + scaled);
   }
   return out;
+}
+
+/**
+ * Strictly coerce a CT amount (number | bigint | decimal string) to a non-negative
+ * bigint. Rejects fractions, NaN, Infinity, negatives, and non-integer strings — a
+ * money field must be an exact atomic integer. Throws TournamentError 400 on bad input.
+ */
+export function toBigIntStrict(value: number | bigint | string, field: string): bigint {
+  if (typeof value === 'bigint') {
+    if (value < 0n) throw new TournamentError(`invalid_${field}`, 400);
+    return value;
+  }
+  if (typeof value === 'number') {
+    if (!Number.isInteger(value) || value < 0) throw new TournamentError(`invalid_${field}`, 400);
+    return BigInt(value);
+  }
+  const s = value.trim();
+  if (!/^\d+$/.test(s)) throw new TournamentError(`invalid_${field}`, 400);
+  return BigInt(s);
+}
+
+/**
+ * Validate a payout curve for a CREATED tournament. Each entry must have an integer
+ * placement ≥ 1 and a finite share > 0; placements must be unique; the curve must be
+ * non-empty and have at least a 1st-place entry; total share must be sane (> 0). The
+ * settle path normalizes shares to sum-to-1 + folds the rounding remainder into 1st,
+ * so the shares need NOT pre-sum to 1 — but a curve with no positive share, a missing
+ * 1st place, a duplicate, or a non-positive/garbage entry would mis-pay, so reject it.
+ */
+export function validatePayoutCurve(curve: PayoutCurveEntry[]): void {
+  if (!Array.isArray(curve) || curve.length === 0) {
+    throw new TournamentError('invalid_payout_curve_empty', 400);
+  }
+  const seen = new Set<number>();
+  let total = 0;
+  let hasFirst = false;
+  for (const c of curve) {
+    if (
+      !c ||
+      !Number.isInteger(c.placement) ||
+      c.placement < 1 ||
+      typeof c.share !== 'number' ||
+      !Number.isFinite(c.share) ||
+      c.share <= 0
+    ) {
+      throw new TournamentError('invalid_payout_curve_entry', 400);
+    }
+    if (seen.has(c.placement)) {
+      throw new TournamentError('invalid_payout_curve_duplicate_placement', 400);
+    }
+    seen.add(c.placement);
+    if (c.placement === 1) hasFirst = true;
+    total += c.share;
+  }
+  if (!hasFirst) throw new TournamentError('invalid_payout_curve_missing_first', 400);
+  if (total <= 0) throw new TournamentError('invalid_payout_curve_zero_total', 400);
 }
 
 /** Placeholder commit-hash: the sim already revealed the seed; we store its hash. */
