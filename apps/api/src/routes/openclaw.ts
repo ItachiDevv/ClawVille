@@ -14,6 +14,11 @@ import { setSessionAgent, getSessionAgent, deleteSessionAgent } from '../service
 import { buildRuntimeServices } from '../services/runtime-services-adapter';
 import { generateSkillMd } from '../services/skill-generator';
 import { computeSessionExpiresAt } from '../services/openclaw-session-sweeper';
+import { sha256Hex } from '../services/session-digest';
+import {
+  isReservedPartnerAgentId,
+  isReservedPartnerIdentityType,
+} from '../services/reserved-agent-namespaces';
 
 /** Ensure a system user exists for OpenClaw bot agents (FK requirement) */
 let _systemUserId: string | null = null;
@@ -123,6 +128,17 @@ openclawRoutes.post('/register', async (c) => {
   }
 
   const data = parsed.data;
+
+  // Reserved partner namespace guard (Codex round-2 R2-1, 2026-06-12). Same
+  // protection as /api/agent/connect: this UNAUTHENTICATED legacy path upserts
+  // by caller-supplied agentId, so a caller must NEVER address a row in a
+  // reserved partner namespace (`hatcher:<id>`). Refusing here stops the
+  // existing-row branch below from mutating a partner-owned row. Opaque 400 —
+  // does not leak whether the row exists.
+  if (isReservedPartnerAgentId(data.agentId)) {
+    return c.json({ error: 'Invalid request' }, 400);
+  }
+
   // Hardening (Codex dual-review, 2026-06-03): this legacy /openclaw/register
   // path registers into the SAME npc-simulation map as /connect and returns the
   // session id as the X-Clawville-Agent-Session bearer credential the cove
@@ -131,6 +147,10 @@ openclawRoutes.post('/register', async (c) => {
   // for log readability; validation is Map membership so the change is
   // transparent and old in-memory ids age out with no migration.
   const sessionId = `oc-${randomBytes(24).toString('base64url')}`;
+  // Compute the session expiry ONCE so the DB write (both branches) and the
+  // identity response surface the SAME timestamp (2026-06-12 — pull-side
+  // expiry visibility).
+  const sessionExpiresAt = computeSessionExpiresAt();
 
   // Ledger-capability (Codex auth-lens fix #2/#3, 2026-06-03): the legacy
   // /openclaw/register path is UNAUTHENTICATED and upserts by caller-supplied
@@ -176,6 +196,13 @@ openclawRoutes.post('/register', async (c) => {
     });
 
     if (existing) {
+      // Reserved partner-row mutation guard (Codex round-2 R2-1, 2026-06-12 —
+      // defense in depth behind the prefix reject above). A public caller must
+      // never mutate a row whose identity_type is a reserved partner type, even
+      // if its agentId somehow lacks the prefix. Opaque 400 — no existence leak.
+      if (isReservedPartnerIdentityType(existing.identityType)) {
+        return c.json({ error: 'Invalid request' }, 400);
+      }
       // Returning bot — increment sessions, update gateway
       await db.update(openclawBots).set({
         gatewayUrl: data.gatewayUrl,
@@ -188,7 +215,10 @@ openclawRoutes.post('/register', async (c) => {
         totalSessions: (existing.totalSessions ?? 0) + 1,
         lastSeenAt: new Date(),
         // Phase 6 — fresh 24h TTL on every legacy /openclaw/register too.
-        sessionExpiresAt: computeSessionExpiresAt(),
+        sessionExpiresAt,
+        // Restart survival (2026-06-11) — one-way hash of this register's
+        // bearer so the session restores from the row after an API restart.
+        sessionKeyHash: sha256Hex(sessionId),
         // Phase 6.1 — clear sweptAt so the next expiration emits exactly
         // one event. Same rationale as the /api/agent/connect path.
         sessionSweptAt: null,
@@ -208,6 +238,7 @@ openclawRoutes.post('/register', async (c) => {
         isReturning: true,
         totalSessions: (existing.totalSessions ?? 0) + 1,
         knowledge: existing.knowledge ?? [],
+        sessionExpiresAt: sessionExpiresAt.toISOString(),
       };
     } else {
       // New bot
@@ -231,7 +262,10 @@ openclawRoutes.post('/register', async (c) => {
         metadata: avatarMeta,
         totalSessions: 1,
         // Phase 6 — initial 24h TTL so the sweeper reaps dormant rows.
-        sessionExpiresAt: computeSessionExpiresAt(),
+        sessionExpiresAt,
+        // Restart survival (2026-06-11) — one-way hash of this register's
+        // bearer so the session restores from the row after an API restart.
+        sessionKeyHash: sha256Hex(sessionId),
       }).returning();
 
       identity = {
@@ -242,20 +276,21 @@ openclawRoutes.post('/register', async (c) => {
         isReturning: false,
         totalSessions: 1,
         knowledge: [],
+        sessionExpiresAt: sessionExpiresAt.toISOString(),
       };
     }
   } catch (err: any) {
     console.error('[OpenClaw] DB upsert error:', err);
-    // Fall back to ephemeral-only if DB fails
-    identity = {
-      botId: '',
-      agentId: data.agentId,
-      sessionId,
-      mode: data.mode,
-      isReturning: false,
-      totalSessions: 0,
-      knowledge: [],
-    };
+    // FAIL CLOSED — do NOT fall back to an ephemeral-only registration (P4-3,
+    // 2026-06-12). Under the shared `validateLiveAgentSession` contract a live
+    // in-memory Map entry with NO `openclaw_bots` row + `session_key_hash` is
+    // UNUSABLE: every bearer-trusting path (chat/location-chat here, the cove
+    // resolver, the gateway routes) re-reads the row by agentId and fails closed
+    // when it is absent, so the ephemeral body could never authenticate — it
+    // would only spawn an un-addressable, un-restorable NPC in the sim. Return a
+    // retryable 500 BEFORE `registerOpenClaw` (below) ever runs, so no live
+    // session is created without its surviving DB row + bearer hash.
+    return c.json({ error: 'Registration failed — could not persist agent. Please retry.', code: 'registration_failed' }, 500);
   }
 
   // Create/update platformAgents record for ElizaOS runtime
@@ -366,6 +401,13 @@ openclawRoutes.delete('/unregister/:sessionId', async (c) => {
             // explicitly disconnected (the unregister handler is the
             // canonical "gone" signal here).
             sessionSweptAt: new Date(),
+            // Codex round-2 R2-5 (2026-06-12) — null the restorable bearer hash
+            // on this terminal transition, matching expireSession() + the partner
+            // DELETE path. The TTL flip above already fails restore closed, but a
+            // terminal "gone" state must not retain a stale bearer hash (the
+            // terminal-transition invariant: no live-bearer handle survives an
+            // explicit disconnect).
+            sessionKeyHash: null,
             updatedAt: new Date(),
           }).where(eq(openclawBots.id, existing.id));
         }
@@ -460,11 +502,23 @@ openclawRoutes.post('/chat', async (c) => {
   // membership AND DB `session_expires_at > now`, NULL = expired, unregisters a
   // stale body) so an expired session is rejected here and never slid forward.
   if (!(await validateLiveAgentSession(sessionId))) {
-    return c.json({ error: 'OpenClaw session not found or expired. Reconnect your agent.' }, 404);
+    return c.json(
+      {
+        error: 'Agent session not found or expired. Reconnect your agent.',
+        code: 'agent_session_not_found',
+      },
+      404,
+    );
   }
   const client = npcSimulation.getOpenClawClientBySession(sessionId);
   if (!client) {
-    return c.json({ error: 'OpenClaw session not found. Bot may have disconnected.' }, 404);
+    return c.json(
+      {
+        error: 'Agent session not found. Your agent may have disconnected.',
+        code: 'agent_session_not_found',
+      },
+      404,
+    );
   }
 
   // Look up actual bot data from DB instead of trusting client avatarContext
@@ -532,7 +586,7 @@ openclawRoutes.post('/chat', async (c) => {
       ]);
     } catch (err: any) {
       console.error('[OpenClaw Chat] Error:', err);
-      return c.json({ error: 'OpenClaw gateway error: ' + (err.message || 'unknown') }, 502);
+      return c.json({ error: 'Agent gateway error: ' + (err.message || 'unknown'), code: 'agent_gateway_error' }, 502);
     }
   }
 
@@ -584,11 +638,23 @@ openclawRoutes.post('/location-chat', sessionMiddleware, async (c) => {
   // expired-but-in-map session must not be able to call /location-chat to
   // refresh `session_expires_at` and then pass cove validation.
   if (!(await validateLiveAgentSession(sessionId))) {
-    return c.json({ error: 'OpenClaw session not found or expired. Reconnect your agent.' }, 404);
+    return c.json(
+      {
+        error: 'Agent session not found or expired. Reconnect your agent.',
+        code: 'agent_session_not_found',
+      },
+      404,
+    );
   }
   const client = npcSimulation.getOpenClawClientBySession(sessionId);
   if (!client) {
-    return c.json({ error: 'OpenClaw session not found. Bot may have disconnected.' }, 404);
+    return c.json(
+      {
+        error: 'Agent session not found. Your agent may have disconnected.',
+        code: 'agent_session_not_found',
+      },
+      404,
+    );
   }
 
   const buildingTheme = BUILDING_OPENCLAW_THEMES[locationId];
@@ -664,7 +730,7 @@ openclawRoutes.post('/location-chat', sessionMiddleware, async (c) => {
       ]);
     } catch (err: any) {
       console.error('[OpenClaw Location Chat] Error:', err);
-      return c.json({ error: 'OpenClaw gateway error: ' + (err.message || 'unknown') }, 502);
+      return c.json({ error: 'Agent gateway error: ' + (err.message || 'unknown'), code: 'agent_gateway_error' }, 502);
     }
   }
 
@@ -739,7 +805,7 @@ openclawRoutes.post('/location-chat', sessionMiddleware, async (c) => {
     });
   } catch (err: any) {
     console.error('[OpenClaw Location Chat] Error:', err);
-    return c.json({ error: 'OpenClaw gateway error: ' + (err.message || 'unknown') }, 502);
+    return c.json({ error: 'Agent gateway error: ' + (err.message || 'unknown'), code: 'agent_gateway_error' }, 502);
   }
 });
 

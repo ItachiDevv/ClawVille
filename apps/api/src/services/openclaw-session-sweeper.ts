@@ -2,10 +2,12 @@
  * Phase 6 — openclaw_bots session liveness sweeper.
  *
  * Every external agent session carries a 24h sliding TTL on
- * `openclaw_bots.session_expires_at`. Each activity-bearing request
- * (location chat, heartbeat, building visit, activity match)
- * `extendSessionTtl()` pushes the expiry forward another 24h. An agent
- * that stops acting for 24h gets swept:
+ * `openclaw_bots.session_expires_at`. Each activity-bearing request calls
+ * `extendSessionTtl()` to push the expiry forward another 24h: location chat
+ * (openclaw.ts), heartbeat, building visit/activity match, AND — since FIX-4
+ * (2026-06-13) — every mutating connected-agent gateway action, which all
+ * route through `agent-gateway.ts resolveSession()`. An agent that stops
+ * acting for 24h gets swept:
  *
  *   1. Any in-process Eliza runtime tied to the bot's `agents.id` is
  *      stopped (frees RAM).
@@ -23,6 +25,7 @@ import { and, eq, lt, or, isNull } from 'drizzle-orm';
 import { db, openclawBots, agents, sql } from '@clawville/database';
 import { agentOrchestrator } from './agent-orchestrator';
 import { logEvent } from './event-logger';
+import { notifyHatcherSessionEnded } from './hatcher-session-webhook';
 
 const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000; // 24h
 
@@ -93,9 +96,28 @@ export async function expireSession(agentId: string): Promise<void> {
   // don't want a duplicate "expired" event firing at the next sweep.
   const rows = await db
     .update(openclawBots)
-    .set({ sessionExpiresAt: now, sessionSweptAt: now, updatedAt: now })
+    // Null the restorable session-bearer hash on this TERMINAL transition (#8,
+    // 2026-06-12). Restore already fails closed on the expired TTL, so this is
+    // defense-in-depth, not a live-bypass fix — a disconnected session must not
+    // retain a bearer commitment a future change could re-honor. A subsequent
+    // /connect/register mints a fresh sessionId and writes a new hash, so this
+    // does not break legitimate reconnect.
+    .set({ sessionExpiresAt: now, sessionSweptAt: now, sessionKeyHash: null, updatedAt: now })
     .where(eq(openclawBots.agentId, agentId))
-    .returning({ userId: openclawBots.userId });
+    .returning({ userId: openclawBots.userId, identityType: openclawBots.identityType });
+
+  // Notify the partner (Hatcher-only, env-gated, fail-open) that this session
+  // ended. Fire-and-forget — never block the disconnect on a webhook. The
+  // reason is `disconnected` because the only caller is the explicit /disconnect
+  // path (the periodic sweep notifies with `ttl_expired` separately below).
+  for (const row of rows) {
+    void notifyHatcherSessionEnded({
+      identityType: row.identityType,
+      agentId,
+      reason: 'disconnected',
+      expiredAt: now,
+    });
+  }
 
   // Stop any in-process Eliza runtime. Match on `agents.userId` =
   // openclaw_bots.userId AND agents.type='openclaw-bot'; we don't
@@ -136,7 +158,12 @@ export async function sweepExpiredSessions(): Promise<number> {
   //      the upsert path, so the next expiration after a reconnect
   //      processes correctly.
   const expired = await db
-    .select({ id: openclawBots.id, agentId: openclawBots.agentId, userId: openclawBots.userId })
+    .select({
+      id: openclawBots.id,
+      agentId: openclawBots.agentId,
+      userId: openclawBots.userId,
+      identityType: openclawBots.identityType,
+    })
     .from(openclawBots)
     .where(
       and(
@@ -153,10 +180,14 @@ export async function sweepExpiredSessions(): Promise<number> {
 
   // Mark the picked-up rows as swept BEFORE we emit events / stop
   // runtimes. If the boot crashes mid-sweep, the next tick won't
-  // double-emit because session_swept_at is already advanced.
+  // double-emit because session_swept_at is already advanced. Also null the
+  // restorable session-bearer hash on this TERMINAL TTL-expiry (#8, 2026-06-12)
+  // — restore already fails closed on the past TTL, so this is defense-in-depth
+  // so an expired row retains no bearer commitment; a reconnect mints a fresh
+  // hash.
   await db
     .update(openclawBots)
-    .set({ sessionSweptAt: now, updatedAt: now })
+    .set({ sessionSweptAt: now, sessionKeyHash: null, updatedAt: now })
     .where(
       sql`${openclawBots.id} IN (${sql.join(expired.map((r) => sql`${r.id}`), sql`, `)})`,
     )
@@ -176,6 +207,16 @@ export async function sweepExpiredSessions(): Promise<number> {
       userId: row.userId ?? null,
       agentId: row.agentId,
       payload: { sweptAt: now.toISOString() },
+    });
+
+    // Notify the partner this session expired (Hatcher-only, env-gated,
+    // fail-open). Fire-and-forget so a slow/unreachable webhook can never
+    // stall the sweep — the lifecycle is already authoritative in our DB.
+    void notifyHatcherSessionEnded({
+      identityType: row.identityType,
+      agentId: row.agentId,
+      reason: 'ttl_expired',
+      expiredAt: now,
     });
   }
 

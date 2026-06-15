@@ -42,8 +42,8 @@
 import { Hono } from 'hono';
 import type { Context } from 'hono';
 import { z } from 'zod';
-import { randomBytes } from 'crypto';
-import { eq, and, desc, count } from 'drizzle-orm';
+import { randomBytes, createHash } from 'crypto';
+import { eq, and, desc, count, gte } from 'drizzle-orm';
 import {
   db,
   openclawBots,
@@ -51,10 +51,10 @@ import {
   events,
   questRewards,
   tutorialQuestClaims,
+  sql,
 } from '@clawville/database';
 import {
   NPC_IDS,
-  DEFAULT_AGENT_MODEL_KEY,
   DEFAULT_HATCHER_MODEL_KEY,
   KNOWLEDGE_BOOKS,
   AVATAR_ARCHETYPES,
@@ -67,13 +67,21 @@ import { createRateLimiter, getClientIp } from '../middleware/rate-limit';
 import { verifyPartnerWriteSignature, verifyPartnerGetSignature } from '../services/partner-signature';
 import { encryptToken, decryptToken } from '../services/keypair-vault';
 import { validateHatcherProxyUrl, validateHatcherProxyUrlResolved } from '../services/hatcher-config';
-import { npcSimulation } from '../services/npc-simulation';
+import {
+  buildAvatarSessionConfig,
+  buildOverrideSessionConfig,
+  DEFAULT_HATCHER_HOME_X,
+  DEFAULT_HATCHER_HOME_Y,
+} from '../services/agent-session-config';
+import { npcSimulation, OverrideTargetUnavailableError } from '../services/npc-simulation';
 import { OpenClawClient } from '../services/openclaw-client';
 import { ensureWallet } from '../services/wallet-service';
 import { resolveOrCreateUserByIdentity } from '../services/identity-service';
 import { computeSessionExpiresAt } from '../services/openclaw-session-sweeper';
+import { notifyHatcherSessionEnded } from '../services/hatcher-session-webhook';
 import { logEvent } from '../services/event-logger';
-import { sessionDigest } from '../services/session-digest';
+import { sessionDigest, sha256Hex } from '../services/session-digest';
+import { withKeyedMutex } from '../services/keyed-mutex';
 import { protocolPointer, resolveApiBase } from '../services/skill-protocol';
 import { getAgentLeaderboardEntry } from './leaderboard';
 
@@ -126,6 +134,89 @@ const partnerStatsRateLimiter = createRateLimiter({
   maxPerWindow: 60,
   windowMs: 60_000,
 });
+
+// ---------------------------------------------------------------------------
+// Per-partner daily NEW-registration cap (2026-06-12)
+// ---------------------------------------------------------------------------
+// Caps how many NEW agents (fresh `hatcher:`-namespaced rows) the Hatcher
+// partner can register per UTC day. Re-register / PATCH of an EXISTING agentId
+// never counts — the cap is checked ONLY on the insert branch, so a partner can
+// keep updating their existing fleet without limit. The count is read straight
+// from the DB (createdAt of `hatcher` rows since UTC midnight), so it survives
+// an API restart with no extra table. Single partner today, so "per-partner" ==
+// "all hatcher rows"; when a real `partner_api_keys` table lands (Phase C) this
+// becomes a per-key count.
+const DEFAULT_PARTNER_DAILY_REGISTRATION_CAP = 50;
+
+/** Resolve the daily registration cap from env (default 50, floor 1). */
+function resolvePartnerDailyRegistrationCap(): number {
+  const raw = process.env.PARTNER_DAILY_REGISTRATION_CAP;
+  if (!raw) return DEFAULT_PARTNER_DAILY_REGISTRATION_CAP;
+  const n = Number.parseInt(raw, 10);
+  if (!Number.isFinite(n) || n < 1) return DEFAULT_PARTNER_DAILY_REGISTRATION_CAP;
+  return n;
+}
+
+/** Start-of-day (UTC midnight) for "today" — the daily cap window boundary. */
+function utcMidnight(now: Date = new Date()): Date {
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+}
+
+/**
+ * Deterministic 63-bit advisory-lock key for the per-(partner, UTC-day)
+ * registration cap (#7, 2026-06-12). The daily NEW-registration cap was
+ * count-then-insert with NO lock, so N concurrent registers all read below the
+ * cap and all inserted, blowing past it. We serialize the count+insert under a
+ * Postgres TRANSACTION-scoped advisory lock (`pg_advisory_xact_lock`) keyed on
+ * this value, so concurrent registers for the same partner+day queue instead of
+ * racing — the (k+1)th sees the k already-committed rows and is rejected.
+ *
+ * The key is `sha256(partnerId + ':' + utcMidnightEpochMs)` folded to a signed
+ * 63-bit BigInt (Postgres advisory-lock keys are `bigint`). A new day or a new
+ * partner derives a different key, so different (partner, day) buckets never
+ * contend with each other. There is exactly one partner (`hatcher`) today, but
+ * keying on partnerId keeps this correct if more are added. No new table, no
+ * migration — the existing count-from-DB rule is unchanged, only made atomic.
+ */
+function dailyRegistrationLockKey(partnerId: string, day: Date): bigint {
+  const digest = createHash('sha256')
+    .update(`${partnerId}:${day.getTime()}`)
+    .digest();
+  // Take the low 8 bytes as an unsigned 64-bit, then clear the top bit so it
+  // fits a signed bigint (pg advisory-lock keys are signed int8).
+  const u64 = digest.readBigUInt64BE(0);
+  return u64 & 0x7fff_ffff_ffff_ffffn;
+}
+
+/**
+ * Deterministic 63-bit advisory-lock key for the per-AGENT register/PATCH
+ * critical section (P4-1, 2026-06-12). Two concurrent registers (or PATCHes) for
+ * the SAME `hatcher:<id>` row used to race: both cleaned stale sessions, both
+ * minted a different bearer, both wrote a different `session_key_hash`, both
+ * `registerOpenClaw`d — the later DB write won the hash, so the earlier (still
+ * 200-OK) bearer immediately failed `validateLiveAgentSession` (present-and-
+ * mismatch), and avatar mode spawned DUPLICATE bodies (the in-memory Map is keyed
+ * by sessionId, not agentId). We serialize the WHOLE read/upsert + hash-write
+ * under `pg_advisory_xact_lock(agentLockKey)` (cross-process) PLUS an in-process
+ * `withKeyedMutex(namespacedAgentId)` (same-process, covers the post-commit
+ * in-memory spawn the DB lock can't), so only one register/PATCH for a given
+ * agentId is ever in its critical section at a time.
+ *
+ * The key namespace string is `hatcher-agent:<namespacedAgentId>` so it can NEVER
+ * collide with the daily-cap key (`hatcher:<epochMs>` shape) — distinct prefixes,
+ * distinct hash inputs. DEADLOCK SAFETY: every path acquires the AGENT lock FIRST
+ * (it wraps the entire critical section), and only the insert branch then acquires
+ * the cap lock INSIDE that agent-locked transaction. The acquire order is always
+ * agent → cap; no path takes cap before agent, so the two locks can never be
+ * acquired in opposite orders. Folded to a signed 63-bit BigInt like the cap key.
+ */
+function agentCriticalSectionLockKey(namespacedAgentId: string): bigint {
+  const digest = createHash('sha256')
+    .update(`hatcher-agent:${namespacedAgentId}`)
+    .digest();
+  const u64 = digest.readBigUInt64BE(0);
+  return u64 & 0x7fff_ffff_ffff_ffffn;
+}
 
 // ---------------------------------------------------------------------------
 // Stats endpoint — config + helpers
@@ -227,12 +318,58 @@ const cognitionSchema = z.object({
   scopedToken: z.string().min(8).max(2048),
 });
 
+// FIX-3 (PHATCH-2 / HATCHER-STATS-BOUNDS-MISMATCH): the bounds MUST match the
+// Hatcher wallet-panel form ranges (ClawVilleWalletPanel.tsx:341-342 / CONTRACT.md:46):
+// hp 1-500, attack/defense/speed 1-100. The earlier narrow band (hp 50-150,
+// atk/def/spd 5-25) hard-400'd any in-range owner value their UI presents as
+// valid — an opaque "Invalid request" indistinguishable from a real outage.
+// These stats feed `metadata.stats` + display ONLY (combat numbers / dashboard) —
+// NOT CT settlement — so widening to the partner's published range is safe.
+// The SAME band applies to the register path AND the PATCH stats path (FIX-2).
 const statsSchema = z.object({
-  hp: z.number().int().min(50).max(150),
-  attack: z.number().int().min(5).max(25),
-  defense: z.number().int().min(5).max(25),
-  speed: z.number().int().min(5).max(25),
+  hp: z.number().int().min(1).max(500),
+  attack: z.number().int().min(1).max(100),
+  defense: z.number().int().min(1).max(100),
+  speed: z.number().int().min(1).max(100),
 });
+
+// ---------------------------------------------------------------------------
+// FIX-13 (PHATCH-5) — `homeX`/`homeY` coordinate space, PINNED.
+// ---------------------------------------------------------------------------
+// The AUTHORITATIVE sim coordinate space is the 11520×11520 px world
+// (`npc-simulation.ts`: MAP_WIDTH = MAP_HEIGHT = 11520, TOWN_CENTER = MAP/2 =
+// 5760, HATCHER_MOVE bounds 32..MAP_WIDTH-32 = 11488). The spawned BODY uses
+// `resolveSafeSpawn(homeX, homeY)` in THAT space (npc-simulation.ts:551/614), so
+// the schema bound (32..11488) and the default home MUST be expressed in it.
+// The old default of 2560 was the CENTER of the legacy 5120-px space
+// (`building-tools.ts` still tells agents "town center (2560,2560)") — a DIFFERENT
+// space than the body uses, so a partner-supplied 11520-space coordinate and our
+// 5120-space default lived side by side and a home could land far from center.
+// We pin the single space to the 11520-px sim and default to its TRUE center 5760
+// (verified against npc-simulation.ts MAP_WIDTH/TOWN_CENTER_X). The protocol
+// SKILL.md / CONTRACT.md must document this space + bounds + center (relay R5).
+// DEFAULT_HATCHER_HOME_X/Y live in agent-session-config.ts (the shared mint/
+// restore module) so the restore path defaults to the SAME center — see FIX-13.
+const DEFAULT_HATCHER_PATROL_RADIUS = 100;
+
+/**
+ * FIX-16 (COMP-4): normalize a partner-supplied `species` into a VALID body
+ * render key before it is persisted/spawned. Hatcher's wallet panel renders
+ * Species as a free-text input (ClawVilleWalletPanel.tsx:316-324) and
+ * `hatcher-types.ts:613` types it unconstrained, so an owner can submit an
+ * arbitrary string (e.g. "dragon"). The persisted `species` flows verbatim into
+ * the in-world body's `modelKey` (`buildAvatarSessionConfig` + restore), so an
+ * un-validated string yields a mismatched/empty body. This applies the SAME
+ * registry check `buildHatcherAvatarValues` uses for the cove avatar
+ * (`getAgentModel(key)?.category === 'hatcher'`), falling back to
+ * `DEFAULT_HATCHER_MODEL_KEY` (Phanes), so body + cove avatar render one validated
+ * `hatcher_N` key. Returns `null` for absent input (the caller decides whether to
+ * default — an avatar register does, an override register leaves it null).
+ */
+function normalizeHatcherSpecies(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  return getAgentModel(raw)?.category === 'hatcher' ? raw : DEFAULT_HATCHER_MODEL_KEY;
+}
 
 const registerSchema = z.object({
   agentId: z.string().min(1).max(200),
@@ -247,12 +384,33 @@ const registerSchema = z.object({
   homeY: z.number().min(32).max(11488).optional(),
   patrolRadius: z.number().min(32).max(256).optional(),
   cognition: cognitionSchema,
+  // FIX-8 (PHATCH-3 / HATCHER-ROTATESCOPEDTOKEN-UNREAD): Hatcher's
+  // ClawVilleRegisterBody declares `rotateScopedToken?: boolean`
+  // (hatcher-types.ts:619). We ACCEPT-AND-IGNORE it (currently a documented
+  // no-op) so plain Zod does not SILENTLY STRIP it — stripping made a partner
+  // "rotate" intent vanish with no signal. ClawVille rotates the scoped
+  // cognition bearer by RE-SUPPLYING `cognition.scopedToken` (re-encrypted at
+  // rest on register/PATCH), so this flag is not wired to a force-reissue. See
+  // relay item R3 — if Hatcher intends a force-reissue WITHOUT a new token, wire
+  // this to re-mint the session bearer. Until then it is parsed but unused.
+  rotateScopedToken: z.boolean().optional(),
   // Optional identity binding: when present we resolve-or-create the user so
   // the agent's in-world economic activity (CT credits) attributes to a
   // ClawVille account. Hatcher controls this key (e.g. their principal id).
   identityKey: z.string().min(1).max(256).optional(),
 });
 
+// FIX-2 (PHATCH-1 / HATCHER-PATCH-DROPS-STATS-HOME): Hatcher's
+// `ClawVillePatchBody = Partial<ClawVilleRegisterBody>` (hatcher-types.ts:622)
+// can send `stats`, `homeX`, `homeY`, `patrolRadius` (their wallet panel sends
+// the FULL payload incl. `stats` on EVERY "Update avatar" click —
+// ClawVilleWalletPanel.tsx:117-135). Plain `z.object()` SILENTLY STRIPS unknown
+// keys, so these were discarded before the handler ran and every restat/reposition
+// returned 200 but changed nothing. We declare them here (same bounds as
+// `registerSchema`: `homeX`/`homeY` 32..11488 in the 11520 sim space — FIX-13;
+// `patrolRadius` 32..256; `stats` the FIX-3 widened band) and the handler merges
+// them into ONE `metadata` object (PHATCH-4 — a second `metadata` spread would
+// last-writer-wins clobber the personality write).
 const patchSchema = z.object({
   name: z.string().min(1).max(100).optional(),
   species: z.string().min(1).max(50).optional(),
@@ -260,7 +418,14 @@ const patchSchema = z.object({
   personality: z.string().max(400).optional(),
   mode: z.enum(['avatar', 'override']).optional(),
   targetNpcId: z.string().min(1).max(100).optional(),
+  stats: statsSchema.optional(),
+  homeX: z.number().min(32).max(11488).optional(),
+  homeY: z.number().min(32).max(11488).optional(),
+  patrolRadius: z.number().min(32).max(256).optional(),
   cognition: cognitionSchema.optional(),
+  // FIX-8: accept-and-ignore (no-op) — see registerSchema for the full rationale.
+  // Declared here so a PATCH-supplied `rotateScopedToken` is not silently stripped.
+  rotateScopedToken: z.boolean().optional(),
 }).refine((d) => Object.keys(d).length > 0, { message: 'No mutable fields provided' });
 
 // ---------------------------------------------------------------------------
@@ -279,6 +444,11 @@ async function readSignedBody(
     rawBody: raw,
   });
   if (!verify.ok) return { ok: false };
+  // An EMPTY body is valid for DELETE (the write challenge binds the
+  // sha256 of the empty string; see the DELETE handler comment). Only a
+  // present-but-malformed body is rejected. POST/PATCH handlers still get
+  // schema enforcement via Zod on the parsed value (null fails Zod).
+  if (raw === '') return { ok: true, raw, json: null };
   let json: unknown;
   try {
     json = JSON.parse(raw);
@@ -519,8 +689,23 @@ export function publicAgentRecord(row: typeof openclawBots.$inferSelect) {
     // proxyUrl is the partner's own URL — safe to echo back; the TOKEN is not.
     proxyUrl: row.proxyUrl,
     walletAddress: row.walletAddress,
+    // FIX-19 (HATCHER-WALLETADDRESS-NONFATAL-NULL): wallet provisioning is
+    // try/catch + non-fatal (`ensureWallet` throw leaves `walletAddress` null on a
+    // fresh INSERT), and it self-heals on a later register/stats poll. Surface an
+    // explicit `walletPending` flag so Hatcher knows a null `walletAddress` means
+    // "re-poll", not "no wallet ever". `hatcher-types.ts:591` already types
+    // `walletAddress: string|null`, so this is purely additive.
+    walletPending: row.walletAddress == null,
     userId: row.userId,
     sessionExpiresAt: row.sessionExpiresAt,
+    // FIX-17 (HATCHER-REGISTEREDAT-UPDATEDAT-ABSENT): Hatcher's
+    // ClawVilleRegistrationStatus reads `registeredAt`/`updatedAt`
+    // (hatcher-types.ts:586-597) to render its date tiles
+    // (ClawVilleWalletPanel.tsx:259). Both columns exist and are NOT NULL
+    // (claws.ts:132-133, `defaultNow()`), so emit them as ISO strings — without
+    // this the partner's "Registered"/"Updated" tiles render as a dash.
+    registeredAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
     // PUBLIC protocol pointer so a partner knows ON ENTRY exactly which protocol
     // SKILL.md version to pull (and the contentHash to diff against). All three
     // fields are public — version, contentHash, relative url — never a secret.
@@ -590,214 +775,403 @@ partnerHatcherRoutes.post('/agents', async (c) => {
   // Resolve the render model. A Hatcher agent with no explicit species gets the
   // default Phanes avatar (persisted so reconnects keep the same). Existing
   // agents that previously persisted a hatcher_N placeholder keep it.
+  //
+  // FIX-16 (COMP-4): the persisted `species` flows VERBATIM into the in-world body
+  // render key (`buildAvatarSessionConfig` below + restore), so an arbitrary owner
+  // string (their wallet panel renders Species as a free-text <input>, e.g. "dragon")
+  // would become a mismatched/empty body modelKey. `normalizeHatcherSpecies` (module
+  // scope) reuses the SAME registry check `buildHatcherAvatarValues` uses for the
+  // cove avatar, so the rendered body and the cove avatar always share one validated
+  // `hatcher_N` key. An override-mode register with no species stays null (no body).
   const resolvedSpecies =
-    data.species ?? (data.mode === 'avatar' ? DEFAULT_HATCHER_MODEL_KEY : null);
+    normalizeHatcherSpecies(data.species) ??
+    (data.mode === 'avatar' ? DEFAULT_HATCHER_MODEL_KEY : null);
 
-  // Upsert the openclaw_bots row.
-  let row: typeof openclawBots.$inferSelect;
-  try {
-    const existing = await db.query.openclawBots.findFirst({
-      where: eq(openclawBots.agentId, namespacedAgentId),
-    });
-    if (existing) {
-      // OWNERSHIP GUARD: never mutate a row that isn't a Hatcher row. (With
-      // namespacing this should be impossible, but defend in depth — a future
-      // identityType that legitimately uses a `hatcher:` prefix, or a manual
-      // DB edit, must not become a hijack vector.)
-      if (existing.identityType !== 'hatcher') {
-        return c.json({ error: 'agent_id_conflict' }, 409);
-      }
-      const persistedSpecies = data.species ?? existing.species ?? resolvedSpecies;
-      const [updated] = await db
-        .update(openclawBots)
-        .set({
-          identityType: 'hatcher',
-          protocol: 'hatcher-proxy',
-          cognitionBackend: 'hatcher-proxy',
-          proxyUrl: urlCheck.url,
-          proxyTokenEnc: encToken.enc,
-          proxyTokenIv: encToken.iv,
-          proxyTokenTag: encToken.tag,
-          mode: data.mode,
-          targetNpcId: data.mode === 'override' ? data.targetNpcId ?? null : null,
-          name: data.name ?? existing.name,
-          species: persistedSpecies,
-          color: data.color ?? existing.color,
-          // Only overwrite userId when we resolved one — never NULL out a prior bind.
-          userId: userId ?? existing.userId,
-          metadata: {
-            ...(existing.metadata ?? {}),
-            personality: data.personality ?? existing.metadata?.personality,
-            homeX: data.homeX ?? existing.metadata?.homeX ?? 2560,
-            homeY: data.homeY ?? existing.metadata?.homeY ?? 2560,
-            patrolRadius: data.patrolRadius ?? existing.metadata?.patrolRadius ?? 100,
-            stats: data.stats ?? existing.metadata?.stats ?? { hp: 100, attack: 10, defense: 8, speed: 6 },
-          },
-          totalSessions: (existing.totalSessions ?? 0) + 1,
-          lastSeenAt: new Date(),
-          sessionExpiresAt: computeSessionExpiresAt(),
-          sessionSweptAt: null,
-          updatedAt: new Date(),
-        })
-        .where(eq(openclawBots.id, existing.id))
-        .returning();
-      row = updated;
-    } else {
-      const [inserted] = await db
-        .insert(openclawBots)
-        .values({
-          agentId: namespacedAgentId,
-          identityType: 'hatcher',
-          protocol: 'hatcher-proxy',
-          cognitionBackend: 'hatcher-proxy',
-          proxyUrl: urlCheck.url,
-          proxyTokenEnc: encToken.enc,
-          proxyTokenIv: encToken.iv,
-          proxyTokenTag: encToken.tag,
-          mode: data.mode,
-          targetNpcId: data.mode === 'override' ? data.targetNpcId ?? null : null,
-          name: data.name ?? null,
-          species: resolvedSpecies,
-          color: data.color ?? null,
-          userId,
-          metadata: {
-            personality: data.personality,
-            homeX: data.homeX ?? 2560,
-            homeY: data.homeY ?? 2560,
-            patrolRadius: data.patrolRadius ?? 100,
-            stats: data.stats ?? { hp: 100, attack: 10, defense: 8, speed: 6 },
-          },
-          totalSessions: 1,
-          sessionExpiresAt: computeSessionExpiresAt(),
-        })
-        .returning();
-      row = inserted;
-    }
-  } catch (err) {
-    console.error('[Hatcher/register] DB upsert error:', err);
-    return c.json({ error: 'registration_failed' }, 500);
-  }
+  // Mint the bearer up front so the row's `session_key_hash` can be written in
+  // the SAME transaction as the upsert (atomic — the row + its bearer commitment
+  // land together, no separate non-atomic write window). It is the X-Clawville-
+  // Agent-Session credential the cove trusts for real CT; draw 24 bytes (~192
+  // bits) from crypto.randomBytes (Codex dual-review 2026-06-03). `hat-` prefix
+  // is log-readable; validation is Map membership + the row hash.
+  const sessionId = `hat-${randomBytes(24).toString('base64url')}`;
+  const sessionHash = sha256Hex(sessionId);
 
-  // Ensure a custodial wallet (idempotent, non-fatal).
-  try {
-    const wallet = await ensureWallet('agent', row.id);
-    if (wallet.publicKey !== row.walletAddress) {
-      await db.update(openclawBots)
-        .set({ walletAddress: wallet.publicKey, updatedAt: new Date() })
-        .where(eq(openclawBots.id, row.id));
-      row = { ...row, walletAddress: wallet.publicKey };
-    }
-  } catch (err) {
-    console.error('[Hatcher/register] wallet provisioning failed (non-fatal):', err);
-  }
+  // ── PER-AGENT SERIALIZATION (P4-1, 2026-06-12) ──────────────────────────────
+  // Two concurrent registers for the SAME `hatcher:<id>` used to race: both
+  // cleaned stale sessions, both minted a bearer, both wrote a hash, both spawned
+  // — later DB write won the hash so the earlier 200-OK bearer was dead-on-arrival
+  // (validateLiveAgentSession present-and-mismatch) and avatar mode left DUPLICATE
+  // bodies (the sim Map is keyed by sessionId, not agentId). We serialize the
+  // WHOLE critical section (upsert + hash-write + the post-commit in-memory
+  // stale-cleanup + spawn) per agentId with an in-process `withKeyedMutex`
+  // (same-process; covers the Map mutation a DB lock can't) wrapping a single
+  // `pg_advisory_xact_lock(agentLockKey)` transaction (cross-process; re-reads the
+  // row AFTER acquiring). DEADLOCK SAFETY: the agent lock is acquired FIRST and the
+  // cap lock only inside it on the insert branch, so the order is always
+  // agent → cap and the two can never be taken in opposite orders.
+  //
+  // COMMIT-FIRST-SPAWN-AFTER — NOT a bug (Codex pass-5 flagged the xact lock
+  // releasing at commit BEFORE the post-commit spawn; reverted the held-tx detour
+  // after the auditor proved it regresses safety). The xact-scoped advisory lock
+  // guards ONLY the DB write; the spawn runs AFTER commit, still inside the
+  // in-process `withKeyedMutex`. This is deliberately SAFER than holding the tx
+  // open across the spawn: a held-tx (spawn-then-commit) can leave a PHANTOM live
+  // `ledgerCapable` body if the commit fails after the Map mutation. Commit-first
+  // is fail-closed — a failed commit means NO body spawned (spawn is post-commit),
+  // and a failed post-commit spawn leaves a committed-but-body-less row that
+  // `restoreAgentSessionFromRow` / a later PATCH re-spawns. The cross-process Map
+  // race a held tx would target does NOT exist: ClawVille runs a SINGLE API replica
+  // and `npcSimulation`'s Map is PROCESS-LOCAL (in-memory, never shared
+  // cross-process — same single-process assumption as activity-room-manager.ts:6
+  // and cove-slots.ts:197), so ONLY the DB write needs cross-process serialization
+  // and the xact lock already gives it.
+  const agentLockKey = agentCriticalSectionLockKey(namespacedAgentId);
 
-  // Rule E5 — auto-provision a default avatar so the bound user is immediately
-  // ledger-capable + can play the Cove for REAL CT (closes the prior
-  // `agent_session_has_no_active_avatar` 403). Keyed on `row.userId` (what was
-  // actually PERSISTED — the upsert keeps `userId ?? existing.userId`, so a
-  // re-register that resolved no identity still finds the prior bound user) so
-  // it is idempotent across re-registers AND respects the one-avatar-per-user
-  // UNIQUE constraint. Only runs when the agent is identity-bound; an anonymous
-  // register (no identityKey, row.userId null) stays intentionally non-ledger
-  // and creates no avatar. Non-fatal: a transient failure leaves the row
-  // persisted (the agent can still perceive/chat), and the next register
-  // retries; the cove gate fails CLOSED (403, never a silent guest demotion).
-  let avatarProvisioned = false;
-  if (row.userId) {
+  // Discriminated outcome surfaced OUT of the mutex so the response (and its HTTP
+  // status) is decided by the outer handler, not from inside the tx callback.
+  type RegisterOutcome =
+    | { kind: 'ok'; row: typeof openclawBots.$inferSelect; avatarProvisioned: boolean; spawned: boolean }
+    | { kind: 'conflict' }
+    | { kind: 'cap'; cap: number }
+    // P5-2: an OVERRIDE register whose body could not spawn (target NPC taken). The
+    // row+hash are already committed (commit-first — the row is honest, just
+    // body-less, and a later PATCH/restore heals it); we do NOT roll back. But the
+    // RESPONSE must be a non-2xx with NO sessionId so the partner never holds a
+    // bearer for a body that never took over the NPC. `targetTaken` → 409
+    // override_target_unavailable (occupied, pick another NPC) else 503 spawn_failed.
+    | { kind: 'override_spawn_failed'; targetTaken: boolean }
+    // The upsert + atomic hash are ONE transaction, so a DB error and a
+    // hash-persist failure are the SAME failure — both surface as persist_failed
+    // (503, retryable, NO sessionId). There is no separate db_error kind.
+    | { kind: 'persist_failed' };
+
+  const outcome = await withKeyedMutex<RegisterOutcome>(namespacedAgentId, async () => {
+    // Upsert + bearer-hash in ONE advisory-locked transaction. The lock is
+    // transaction-scoped (auto-released at COMMIT/ROLLBACK). We RE-READ the row
+    // after acquiring (it may have been inserted/mutated by a register that just
+    // released the lock), so the existing/insert branch decision is made on the
+    // post-lock state.
+    let row: typeof openclawBots.$inferSelect;
+    let capValue = 0;
     try {
-      const { created } = await ensureHatcherAvatar(row.userId, row.species, data.name);
-      avatarProvisioned = true;
-      if (created) {
-        void logEvent({
-          eventType: 'avatar.created',
-          userId: row.userId,
-          agentId: namespacedAgentId,
-          payload: { via: 'partner-register', identityType: 'hatcher' },
+      const txResult = await db.transaction(async (tx) => {
+        await tx.execute(sql`SELECT pg_advisory_xact_lock(${agentLockKey})`);
+
+        // Re-read UNDER the lock — the row state is now stable for this section.
+        const existing = await tx.query.openclawBots.findFirst({
+          where: eq(openclawBots.agentId, namespacedAgentId),
         });
+
+        if (existing) {
+          // OWNERSHIP GUARD: never mutate a row that isn't a Hatcher row. (With
+          // namespacing this should be impossible, but defend in depth — a future
+          // identityType that legitimately uses a `hatcher:` prefix, or a manual
+          // DB edit, must not become a hijack vector.)
+          if (existing.identityType !== 'hatcher') {
+            return { status: 'conflict' as const };
+          }
+          // FIX-16: normalize a newly-supplied species through the registry before
+          // persisting (existing.species was normalized by a prior register;
+          // resolvedSpecies is already normalized). Never let a free-text owner
+          // string become the body modelKey.
+          const persistedSpecies =
+            normalizeHatcherSpecies(data.species) ?? existing.species ?? resolvedSpecies;
+          const [updated] = await tx
+            .update(openclawBots)
+            .set({
+              identityType: 'hatcher',
+              protocol: 'hatcher-proxy',
+              cognitionBackend: 'hatcher-proxy',
+              proxyUrl: urlCheck.url,
+              proxyTokenEnc: encToken.enc,
+              proxyTokenIv: encToken.iv,
+              proxyTokenTag: encToken.tag,
+              mode: data.mode,
+              targetNpcId: data.mode === 'override' ? data.targetNpcId ?? null : null,
+              name: data.name ?? existing.name,
+              species: persistedSpecies,
+              color: data.color ?? existing.color,
+              // Only overwrite userId when we resolved one — never NULL out a prior bind.
+              userId: userId ?? existing.userId,
+              metadata: {
+                ...(existing.metadata ?? {}),
+                personality: data.personality ?? existing.metadata?.personality,
+                // FIX-13: default home is the TRUE 11520-sim center (5760), not the
+                // legacy 5120-space 2560.
+                homeX: data.homeX ?? existing.metadata?.homeX ?? DEFAULT_HATCHER_HOME_X,
+                homeY: data.homeY ?? existing.metadata?.homeY ?? DEFAULT_HATCHER_HOME_Y,
+                patrolRadius:
+                  data.patrolRadius ?? existing.metadata?.patrolRadius ?? DEFAULT_HATCHER_PATROL_RADIUS,
+                stats: data.stats ?? existing.metadata?.stats ?? { hp: 100, attack: 10, defense: 8, speed: 6 },
+              },
+              totalSessions: (existing.totalSessions ?? 0) + 1,
+              lastSeenAt: new Date(),
+              // ATOMIC bearer-hash (P4-1/P4-2): commit the NEW bearer's hash in the
+              // SAME write that upserts the row, so the row hash ALWAYS matches the
+              // returned sessionId — no separate non-atomic post-write window where
+              // a failure could leave a live body whose id mismatches a stale hash.
+              sessionKeyHash: sessionHash,
+              sessionExpiresAt: computeSessionExpiresAt(),
+              sessionSweptAt: null,
+              updatedAt: new Date(),
+            })
+            .where(eq(openclawBots.id, existing.id))
+            .returning();
+          return { status: 'row' as const, row: updated };
+        }
+
+        // ── insert branch ── per-partner daily NEW-registration cap (#7). Only a
+        // fresh row counts. We are ALREADY holding the per-agent lock; acquire the
+        // per-(partner, day) cap lock NESTED INSIDE it (consistent agent → cap
+        // order, no deadlock) so concurrent NEW registers across DIFFERENT agentIds
+        // still serialize the count+insert and can't blow past the cap.
+        const cap = resolvePartnerDailyRegistrationCap();
+        capValue = cap;
+        const capLockKey = dailyRegistrationLockKey('hatcher', utcMidnight());
+        await tx.execute(sql`SELECT pg_advisory_xact_lock(${capLockKey})`);
+
+        const [todayCount] = await tx
+          .select({ n: count() })
+          .from(openclawBots)
+          .where(
+            and(
+              eq(openclawBots.identityType, 'hatcher'),
+              gte(openclawBots.createdAt, utcMidnight()),
+            ),
+          );
+        if (Number(todayCount?.n ?? 0) >= cap) {
+          return { status: 'cap' as const };
+        }
+
+        const [inserted] = await tx
+          .insert(openclawBots)
+          .values({
+            agentId: namespacedAgentId,
+            identityType: 'hatcher',
+            protocol: 'hatcher-proxy',
+            cognitionBackend: 'hatcher-proxy',
+            proxyUrl: urlCheck.url,
+            proxyTokenEnc: encToken.enc,
+            proxyTokenIv: encToken.iv,
+            proxyTokenTag: encToken.tag,
+            mode: data.mode,
+            targetNpcId: data.mode === 'override' ? data.targetNpcId ?? null : null,
+            name: data.name ?? null,
+            species: resolvedSpecies,
+            color: data.color ?? null,
+            userId,
+            metadata: {
+              personality: data.personality,
+              // FIX-13: default home is the TRUE 11520-sim center (5760).
+              homeX: data.homeX ?? DEFAULT_HATCHER_HOME_X,
+              homeY: data.homeY ?? DEFAULT_HATCHER_HOME_Y,
+              patrolRadius: data.patrolRadius ?? DEFAULT_HATCHER_PATROL_RADIUS,
+              stats: data.stats ?? { hp: 100, attack: 10, defense: 8, speed: 6 },
+            },
+            totalSessions: 1,
+            // ATOMIC bearer-hash on INSERT too — the new row commits already
+            // bound to this register's bearer.
+            sessionKeyHash: sessionHash,
+            sessionExpiresAt: computeSessionExpiresAt(),
+          })
+          .returning();
+        return { status: 'row' as const, row: inserted };
+      });
+
+      if (txResult.status === 'conflict') return { kind: 'conflict' };
+      if (txResult.status === 'cap') return { kind: 'cap', cap: capValue };
+      row = txResult.row;
+    } catch (err) {
+      // The upsert + atomic hash write are one transaction — a throw rolled BOTH
+      // back, so there is no committed row whose hash diverges from the bearer.
+      // We return a retryable error and NEVER surface a sessionId (P4-2): a bearer
+      // whose hash didn't commit is neither live nor restorable, so it must not
+      // ride out on a success response.
+      console.error('[Hatcher/register] upsert+hash transaction failed:', err);
+      return { kind: 'persist_failed' };
+    }
+
+    // ── post-commit (still inside the per-agent in-process mutex) ──────────────
+    // The row + its bearer hash are committed atomically. Everything below is
+    // best-effort side-effect work; the bearer is already valid + restorable.
+
+    // Ensure a custodial wallet (idempotent, non-fatal).
+    try {
+      const wallet = await ensureWallet('agent', row.id);
+      if (wallet.publicKey !== row.walletAddress) {
+        await db.update(openclawBots)
+          .set({ walletAddress: wallet.publicKey, updatedAt: new Date() })
+          .where(eq(openclawBots.id, row.id));
+        row = { ...row, walletAddress: wallet.publicKey };
       }
     } catch (err) {
-      console.error('[Hatcher/register] avatar auto-provision failed (non-fatal):', err);
+      console.error('[Hatcher/register] wallet provisioning failed (non-fatal):', err);
     }
+
+    // Rule E5 — auto-provision a default avatar so the bound user is immediately
+    // ledger-capable + can play the Cove for REAL CT (closes the prior
+    // `agent_session_has_no_active_avatar` 403). Keyed on `row.userId` (what was
+    // actually PERSISTED — the upsert keeps `userId ?? existing.userId`, so a
+    // re-register that resolved no identity still finds the prior bound user) so
+    // it is idempotent across re-registers AND respects the one-avatar-per-user
+    // UNIQUE constraint. Only runs when the agent is identity-bound; an anonymous
+    // register (no identityKey, row.userId null) stays intentionally non-ledger
+    // and creates no avatar. Non-fatal: a transient failure leaves the row
+    // persisted (the agent can still perceive/chat), and the next register
+    // retries; the cove gate fails CLOSED (403, never a silent guest demotion).
+    let avatarProvisioned = false;
+    if (row.userId) {
+      try {
+        const { created } = await ensureHatcherAvatar(row.userId, row.species, data.name);
+        avatarProvisioned = true;
+        if (created) {
+          void logEvent({
+            eventType: 'avatar.created',
+            userId: row.userId,
+            agentId: namespacedAgentId,
+            payload: { via: 'partner-register', identityType: 'hatcher' },
+          });
+        }
+      } catch (err) {
+        console.error('[Hatcher/register] avatar auto-provision failed (non-fatal):', err);
+      }
+    }
+
+    // Spawn / take over the in-world body. Remove any stale live session for this
+    // agent first so a re-register doesn't leave an orphaned body. This runs
+    // INSIDE the per-agent mutex, so a concurrent register for the same agentId
+    // cannot interleave its cleanup+spawn with ours — no duplicate bodies.
+    try {
+      for (const stale of npcSimulation.findActiveSessionsByAgentIds([namespacedAgentId])) {
+        npcSimulation.unregisterOpenClaw(stale);
+      }
+    } catch (err) {
+      console.error('[Hatcher/register] stale session cleanup failed (non-fatal):', err);
+    }
+
+    const stats = row.metadata?.stats ?? { hp: 100, attack: 10, defense: 8, speed: 6 };
+    let spawned = false;
+    // P5-2: an OVERRIDE spawn failure must surface a non-2xx (the partner must not
+    // get a bearer for a body that never took over the NPC). `overrideTargetTaken`
+    // distinguishes the occupied case (409) from a transient (503). Avatar spawn
+    // failure stays best-effort (the row+bearer are committed + restorable).
+    let overrideSpawnFailed = false;
+    let overrideTargetTaken = false;
+    try {
+      let config: OpenClawRegistration;
+      // Ledger-capability (Codex auth-lens fix #2/#3, 2026-06-03): the Hatcher
+      // partner path is reached only through the ed25519 partner-SIGNED guard on
+      // this route, so the caller's ownership of the agent is cryptographically
+      // proven. These sessions ARE real-CT-trusted — set `ledgerCapable: true` so
+      // the cove gate honors them (parity with the owned-token /connect flow).
+      //
+      // Built via the SHARED config-builder (agent-session-config.ts) so the
+      // spawn-relevant config is byte-identical to what restore rebuilds from the
+      // row (diagnostic-2026-06-12 D1). `identityType: 'hatcher'` makes
+      // `resolveAgentSpecies` apply DEFAULT_HATCHER_MODEL_KEY (NOT the Milady
+      // default). `protocolOverride: 'hatcher-proxy'` is explicit since the public
+      // connect identity enum excludes 'hatcher'.
+      if (data.mode === 'override' && data.targetNpcId) {
+        config = buildOverrideSessionConfig({
+          mode: 'override',
+          // In-world/session tracking uses the namespaced id (matches the row);
+          // the proxy callback uses the raw id via buildHatcherClient below.
+          agentId: namespacedAgentId,
+          sessionId,
+          identityType: 'hatcher',
+          storedProtocol: 'hatcher-proxy',
+          autonomyMode: 'server-managed',
+          targetNpcId: data.targetNpcId,
+          ledgerCapable: true,
+          // Proven owner (partner-signed) — re-validated against the live row at
+          // spend time (rebind backstop, hardening round 2). Use `row.userId` (what
+          // was actually PERSISTED) not the request-local `userId`.
+          boundUserId: row.userId ?? null,
+          protocolOverride: 'hatcher-proxy',
+        });
+      } else {
+        config = buildAvatarSessionConfig({
+          mode: 'avatar',
+          agentId: namespacedAgentId,
+          sessionId,
+          identityType: 'hatcher',
+          storedProtocol: 'hatcher-proxy',
+          autonomyMode: 'server-managed',
+          name: data.name ?? rawAgentId.slice(0, 24),
+          species: row.species,
+          color: data.color,
+          stats,
+          // FIX-13: 11520-sim-space defaults (5760 center) match the persisted row.
+          homeX: row.metadata?.homeX ?? DEFAULT_HATCHER_HOME_X,
+          homeY: row.metadata?.homeY ?? DEFAULT_HATCHER_HOME_Y,
+          patrolRadius: row.metadata?.patrolRadius ?? DEFAULT_HATCHER_PATROL_RADIUS,
+          personality: data.personality ?? '',
+          ledgerCapable: true,
+          boundUserId: row.userId ?? null,
+          protocolOverride: 'hatcher-proxy',
+        });
+      }
+      const client = buildHatcherClient(config, urlCheck.url, data.cognition.scopedToken, rawAgentId);
+      // The row hash already commits to this exact bearer (written atomically in
+      // the tx above), so the body is always consistent with the row — spawn it.
+      npcSimulation.registerOpenClaw(config, client);
+      spawned = true;
+    } catch (err) {
+      console.error('[Hatcher/register] in-world spawn failed:', err);
+      // P5-2: AVATAR mode is best-effort — a fresh `oc-<sessionId>` body never
+      // collides, so a throw is an unexpected transient; the row + bearer are
+      // committed + restore-healable, so we keep ok:true with spawned:false (the
+      // avatar body re-registers lazily on the next register/restore — that bearer
+      // is honest). OVERRIDE mode is NOT best-effort: the targetNpcId was validated
+      // against NPC_IDS before the tx (L663), so the only reachable throw is the
+      // "already overridden" case (npc-simulation.ts:573) — the NPC is taken by
+      // ANOTHER agent. restore re-attempts registerOpenClaw for an override row and
+      // throws → null while the NPC stays held, so a 200+sessionId here would be a
+      // PERMANENTLY DEAD bearer (Codex pass-5 auditor). We do NOT roll the committed
+      // row back (commit-first keeps it honest — a body-less row a later
+      // DELETE-incumbent + re-register/PATCH re-seats; the idempotent re-register,
+      // totalSessions++, and wallet/avatar provisioning all want the row kept);
+      // instead the OUTER handler returns 409 with NO sessionId.
+      if (data.mode === 'override') {
+        overrideSpawnFailed = true;
+        // Typed sentinel (not message-string matching) so the 409-vs-503 split never
+        // silently degrades if the sim's error text is reworded (Codex pass-5 nit #1).
+        overrideTargetTaken = err instanceof OverrideTargetUnavailableError;
+      }
+    }
+
+    if (overrideSpawnFailed) {
+      return { kind: 'override_spawn_failed', targetTaken: overrideTargetTaken };
+    }
+    return { kind: 'ok', row, avatarProvisioned, spawned };
+  });
+
+  // Map the serialized outcome to a response (decided OUTSIDE the mutex).
+  if (outcome.kind === 'conflict') return c.json({ error: 'agent_id_conflict' }, 409);
+  if (outcome.kind === 'cap') {
+    return c.json(
+      { error: 'daily_registration_cap', code: 'daily_registration_cap', cap: outcome.cap },
+      429,
+    );
+  }
+  // P4-2: the upsert+hash transaction rolled back, so no committed row's hash
+  // matches the bearer. Return a retryable 503 and NO sessionId — never hand the
+  // partner a credential that is neither live nor restorable in a success body.
+  if (outcome.kind === 'persist_failed') {
+    return c.json({ error: 'session_persist_failed' }, 503);
+  }
+  // P5-2: OVERRIDE register whose body could not spawn. The row is committed +
+  // honest (body-less, restorable) but we return a non-2xx with NO sessionId — an
+  // OCCUPIED target is a client-actionable 409 (retry against another/freed NPC);
+  // any other transient is a retryable 503. Never ok:true+spawned:false handing the
+  // partner a bearer for a body that never took over the NPC.
+  if (outcome.kind === 'override_spawn_failed') {
+    return outcome.targetTaken
+      ? c.json({ error: 'override_target_unavailable', code: 'override_target_unavailable' }, 409)
+      : c.json({ error: 'spawn_failed', code: 'spawn_failed' }, 503);
   }
 
-  // Spawn / take over the in-world body. Use a fresh session id per
-  // registration. Remove any stale live session for this agent first so a
-  // re-register doesn't leave an orphaned body (idempotent).
-  try {
-    for (const stale of npcSimulation.findActiveSessionsByAgentIds([namespacedAgentId])) {
-      npcSimulation.unregisterOpenClaw(stale);
-    }
-  } catch (err) {
-    console.error('[Hatcher/register] stale session cleanup failed (non-fatal):', err);
-  }
-
-  // Hardening (Codex dual-review, 2026-06-03): this session id is registered
-  // into the SAME npc-simulation map as /connect and returned to the partner as
-  // the X-Clawville-Agent-Session bearer credential — a Hatcher agent is bound
-  // to a real user/avatar, so a guessed session id spends real CT in the cove.
-  // Draw 24 bytes (~192 bits) from crypto.randomBytes (was Date.now() +
-  // Math.random, both predictable). `hat-` prefix kept for log readability;
-  // validation is Map membership so the format change is transparent.
-  const sessionId = `hat-${randomBytes(24).toString('base64url')}`;
-  const stats = row.metadata?.stats ?? { hp: 100, attack: 10, defense: 8, speed: 6 };
-  let spawned = false;
-  try {
-    let config: OpenClawRegistration;
-    // Ledger-capability (Codex auth-lens fix #2/#3, 2026-06-03): the Hatcher
-    // partner path is reached only through the ed25519 partner-SIGNED guard on
-    // this route, so the caller's ownership of the agent is cryptographically
-    // proven. These sessions ARE real-CT-trusted — set `ledgerCapable: true` so
-    // the cove gate honors them (parity with the owned-token /connect flow).
-    if (data.mode === 'override' && data.targetNpcId) {
-      config = {
-        // In-world/session tracking uses the namespaced id (matches the row);
-        // the proxy callback uses the raw id via buildHatcherClient below.
-        agentId: namespacedAgentId,
-        sessionId,
-        sessionKey: sessionId,
-        gatewayUrl: 'http://localhost:0',
-        authToken: '',
-        protocol: 'hatcher-proxy',
-        mode: 'override',
-        autonomyMode: 'server-managed',
-        targetNpcId: data.targetNpcId,
-        ledgerCapable: true,
-        // Proven owner (partner-signed) — re-validated against the live row at
-        // spend time (rebind backstop, hardening round 2). Use `row.userId` (what
-        // was actually PERSISTED) not the request-local `userId`: the upsert keeps
-        // `userId ?? existing.userId`, so a request that resolved no identity still
-        // leaves a prior bound user on the row, and boundUserId must match THAT.
-        boundUserId: row.userId ?? null,
-      } as OpenClawRegistration;
-    } else {
-      config = {
-        agentId: namespacedAgentId,
-        sessionId,
-        sessionKey: sessionId,
-        gatewayUrl: 'http://localhost:0',
-        authToken: '',
-        protocol: 'hatcher-proxy',
-        mode: 'avatar',
-        autonomyMode: 'server-managed',
-        name: data.name ?? rawAgentId.slice(0, 24),
-        species: row.species ?? DEFAULT_AGENT_MODEL_KEY,
-        color: data.color ?? 0x888888,
-        stats,
-        homeX: row.metadata?.homeX ?? 2560,
-        homeY: row.metadata?.homeY ?? 2560,
-        patrolRadius: row.metadata?.patrolRadius ?? 100,
-        personality: data.personality ?? '',
-        ledgerCapable: true,
-        boundUserId: row.userId ?? null,
-      } as OpenClawRegistration;
-    }
-    const client = buildHatcherClient(config, urlCheck.url, data.cognition.scopedToken, rawAgentId);
-    npcSimulation.registerOpenClaw(config, client);
-    spawned = true;
-  } catch (err) {
-    console.error('[Hatcher/register] in-world spawn failed:', err);
-    // Non-fatal — the row is persisted; the body can be re-registered.
-  }
+  const { row, avatarProvisioned, spawned } = outcome;
 
   void logEvent({
     eventType: 'agent.connected',
@@ -840,19 +1214,10 @@ partnerHatcherRoutes.patch('/agents/:agentId', async (c) => {
   }
   const data = parsed.data;
 
-  const existing = await db.query.openclawBots.findFirst({
-    where: eq(openclawBots.agentId, namespacedAgentId),
-  });
-  // 404 on both "no row" AND "row is not a Hatcher row" — a Hatcher key must
-  // never read/mutate (or even confirm the existence of) another framework's
-  // agent. (Namespacing already makes a cross-framework hit impossible; this is
-  // defense-in-depth against a manual DB edit or future prefix reuse.)
-  if (!existing || existing.identityType !== 'hatcher') {
-    return c.json({ error: 'not_found' }, 404);
-  }
-
   // Validate + encrypt a rotated cognition token if provided. Use the
-  // DNS-resolving SSRF guard (one-time round-trip acceptable on patch).
+  // DNS-resolving SSRF guard (one-time round-trip acceptable on patch). Done
+  // OUTSIDE the per-agent mutex (no shared agent state) so a slow DNS resolve
+  // does not hold the lock.
   let encToken: { enc: string; iv: string; tag: string } | null = null;
   let newProxyUrl: string | null = null;
   if (data.cognition) {
@@ -864,117 +1229,451 @@ partnerHatcherRoutes.patch('/agents/:agentId', async (c) => {
     encToken = encryptToken(data.cognition.scopedToken);
   }
 
-  // Validate override target if mode flips to override.
-  const nextMode = data.mode ?? existing.mode;
-  let nextTargetNpcId = data.targetNpcId ?? existing.targetNpcId;
-  if (nextMode === 'override') {
-    if (!nextTargetNpcId || !NPC_IDS.includes(nextTargetNpcId)) {
-      return c.json({ error: 'Unknown or missing targetNpcId for override mode' }, 400);
-    }
-  } else {
-    nextTargetNpcId = null;
-  }
+  // ── PER-AGENT SERIALIZATION (P4-1, 2026-06-12) ──────────────────────────────
+  // A PATCH races the same way a register does: two concurrent PATCHes for one
+  // agentId could both read the row, both update, both mint/preserve a session,
+  // both registerOpenClaw (duplicate bodies + a later hash overwriting the one the
+  // other just returned). Serialize the WHOLE critical section (re-read + update +
+  // mint/preserve + spawn) under the SAME in-process withKeyedMutex (keyed by
+  // namespacedAgentId) + pg_advisory_xact_lock(agentLockKey) the register path
+  // uses, so a register and a PATCH for one agent also mutually exclude. The
+  // existing-row read + override-target validation move INSIDE the lock because
+  // nextMode / nextTargetNpcId derive from the row read under the lock.
+  const agentLockKey = agentCriticalSectionLockKey(namespacedAgentId);
 
-  let row: typeof openclawBots.$inferSelect;
-  try {
-    const [updated] = await db
-      .update(openclawBots)
-      .set({
-        name: data.name ?? existing.name,
-        species: data.species ?? existing.species,
-        color: data.color ?? existing.color,
-        mode: nextMode,
-        targetNpcId: nextTargetNpcId,
-        ...(data.personality !== undefined
-          ? { metadata: { ...(existing.metadata ?? {}), personality: data.personality } }
-          : {}),
-        ...(encToken && newProxyUrl
-          ? {
-              proxyUrl: newProxyUrl,
-              proxyTokenEnc: encToken.enc,
-              proxyTokenIv: encToken.iv,
-              proxyTokenTag: encToken.tag,
-            }
-          : {}),
-        updatedAt: new Date(),
-      })
-      .where(eq(openclawBots.id, existing.id))
-      .returning();
-    row = updated;
-  } catch (err) {
-    console.error('[Hatcher/patch] DB update error:', err);
-    return c.json({ error: 'update_failed' }, 500);
-  }
-
-  // Propagate to the LIVE in-world entity. Re-connect previously only mutated
-  // the DB row; for PATCH we re-register so name/species/personality/mode +
-  // a rotated cognition token take effect on the spawned body. If a mode flip
-  // requires a different body shape (avatar<->override), the re-register
-  // handles it. We need the DECRYPTED token to rebuild the client — use the
-  // freshly-supplied plaintext, else decrypt the stored row.
-  let propagated = false;
-  try {
-    let plaintextToken: string | null = data.cognition?.scopedToken ?? null;
-    if (!plaintextToken) {
-      if (row.proxyTokenEnc && row.proxyTokenIv && row.proxyTokenTag) {
-        plaintextToken = decryptToken(row.proxyTokenEnc, row.proxyTokenIv, row.proxyTokenTag);
+  type PatchOutcome =
+    | {
+        kind: 'ok';
+        row: typeof openclawBots.$inferSelect;
+        propagated: boolean;
+        rotatedSessionId: string | null;
+        rotatedSessionExpiresAt: Date | null;
       }
-    }
-    const proxyUrl = row.proxyUrl ?? newProxyUrl;
-    if (plaintextToken && proxyUrl) {
-      const urlCheck = validateHatcherProxyUrl(proxyUrl);
-      if (urlCheck.ok) {
-        // Tear down any live session, then re-register with the new fields.
-        for (const stale of npcSimulation.findActiveSessionsByAgentIds([namespacedAgentId])) {
-          npcSimulation.unregisterOpenClaw(stale);
+    | { kind: 'not_found' }
+    | { kind: 'bad_target' }
+    // P5-2: an OVERRIDE PATCH whose re-register failed (target NPC taken). The DB
+    // update is already committed (commit-first); we do NOT roll it back, but we
+    // RESTORED the prior live body (no orphan) and return a non-2xx so the partner
+    // knows the override did not take. `targetTaken` → 409 override_target_unavailable
+    // (occupied) else 503 propagation_failed.
+    | { kind: 'override_spawn_failed'; targetTaken: boolean }
+    | { kind: 'update_failed' };
+
+  const outcome = await withKeyedMutex<PatchOutcome>(namespacedAgentId, async () => {
+    let row: typeof openclawBots.$inferSelect;
+    let nextMode: typeof openclawBots.$inferSelect['mode'];
+    let nextTargetNpcId: string | null;
+    // P6-2: prior body-defining fields captured in the tx, used to compensate the
+    // committed row back to the prior body on an override re-register failure.
+    let priorSnapshot: Pick<
+      typeof openclawBots.$inferSelect,
+      | 'name'
+      | 'species'
+      | 'color'
+      | 'mode'
+      | 'targetNpcId'
+      | 'metadata'
+      | 'proxyUrl'
+      | 'proxyTokenEnc'
+      | 'proxyTokenIv'
+      | 'proxyTokenTag'
+      | 'sessionKeyHash'
+      | 'sessionExpiresAt'
+      | 'sessionSweptAt'
+    >;
+    try {
+      const txResult = await db.transaction(async (tx) => {
+        await tx.execute(sql`SELECT pg_advisory_xact_lock(${agentLockKey})`);
+
+        // Re-read UNDER the lock so the update is computed from the post-lock row.
+        // 404 on both "no row" AND "row is not a Hatcher row" — a Hatcher key must
+        // never read/mutate (or even confirm the existence of) another framework's
+        // agent. (Namespacing already makes a cross-framework hit impossible; this
+        // is defense-in-depth against a manual DB edit or future prefix reuse.)
+        const existing = await tx.query.openclawBots.findFirst({
+          where: eq(openclawBots.agentId, namespacedAgentId),
+        });
+        if (!existing || existing.identityType !== 'hatcher') {
+          return { status: 'not_found' as const };
         }
-        // Hardening (Codex dual-review, 2026-06-03): crypto-strong session id,
-        // same rationale as the /register mint above — this is the real-CT
-        // bearer credential, not a display handle.
-        const sessionId = `hat-${randomBytes(24).toString('base64url')}`;
-        const stats = row.metadata?.stats ?? { hp: 100, attack: 10, defense: 8, speed: 6 };
-        // Ledger-capable: partner-signed path (proven ownership), same as the
-        // /register mint above (auth-lens fix #2/#3, 2026-06-03).
-        let config: OpenClawRegistration;
-        // boundUserId = the partner-bound owner on the row — re-validated against
-        // the live row at spend time (rebind backstop, hardening round 2).
-        if (nextMode === 'override' && nextTargetNpcId) {
-          config = {
-            agentId: namespacedAgentId, sessionId, sessionKey: sessionId,
-            gatewayUrl: 'http://localhost:0', authToken: '',
-            protocol: 'hatcher-proxy', mode: 'override',
-            autonomyMode: 'server-managed', targetNpcId: nextTargetNpcId,
-            ledgerCapable: true,
-            boundUserId: row.userId ?? null,
-          } as OpenClawRegistration;
+
+        // Override target validation (mode may flip to override). Derived from the
+        // locked row read.
+        const computedMode = data.mode ?? existing.mode;
+        let computedTarget: string | null = data.targetNpcId ?? existing.targetNpcId;
+        if (computedMode === 'override') {
+          if (!computedTarget || !NPC_IDS.includes(computedTarget)) {
+            return { status: 'bad_target' as const };
+          }
         } else {
-          config = {
-            agentId: namespacedAgentId, sessionId, sessionKey: sessionId,
-            gatewayUrl: 'http://localhost:0', authToken: '',
-            protocol: 'hatcher-proxy', mode: 'avatar',
-            autonomyMode: 'server-managed',
-            name: row.name ?? rawAgentId.slice(0, 24),
-            species: row.species ?? DEFAULT_AGENT_MODEL_KEY,
-            color: row.color ?? 0x888888,
-            stats,
-            homeX: row.metadata?.homeX ?? 2560,
-            homeY: row.metadata?.homeY ?? 2560,
-            patrolRadius: row.metadata?.patrolRadius ?? 100,
-            personality: row.metadata?.personality ?? '',
-            ledgerCapable: true,
-            boundUserId: row.userId ?? null,
-          } as OpenClawRegistration;
+          computedTarget = null;
         }
-        const client = buildHatcherClient(config, urlCheck.url, plaintextToken, rawAgentId);
-        npcSimulation.registerOpenClaw(config, client);
-        propagated = true;
-      }
+
+        // P6-2 (2026-06-12): snapshot the PRIOR body-defining row fields BEFORE the
+        // update commits. On an OVERRIDE re-register failure below we restore the
+        // prior LIVE body from in-memory snapshots, but the committed row would still
+        // describe the FAILED new override target, so restore-after-restart / idle-
+        // despawn would re-attempt the failed target (or a later restore would
+        // "succeed" into a PATCH the partner was told 409-failed). We capture every
+        // field this .set() can mutate so a compensating write can make the persisted
+        // row match the restored prior body. (Bearer-lifecycle fields,
+        // sessionKeyHash / sessionExpiresAt / sessionSweptAt, ARE snapshotted too
+        // (Codex pass-7): a failed override PATCH must leave the session EXACTLY as
+        // it was pre-PATCH, and the mint step below OVERWRITES the prior hash, so the
+        // compensating write must be able to roll the bearer lifecycle back as well.)
+        const priorSnapshot = {
+          name: existing.name,
+          species: existing.species,
+          color: existing.color,
+          mode: existing.mode,
+          targetNpcId: existing.targetNpcId,
+          metadata: existing.metadata,
+          proxyUrl: existing.proxyUrl,
+          proxyTokenEnc: existing.proxyTokenEnc,
+          proxyTokenIv: existing.proxyTokenIv,
+          proxyTokenTag: existing.proxyTokenTag,
+          sessionKeyHash: existing.sessionKeyHash,
+          sessionExpiresAt: existing.sessionExpiresAt,
+          sessionSweptAt: existing.sessionSweptAt,
+        } satisfies Partial<typeof openclawBots.$inferSelect>;
+
+        // FIX-2 (PHATCH-1 + PHATCH-4): merge EVERY provided metadata field into ONE
+        // `nextMeta` object and set `metadata` exactly once. The prior code wrote
+        // `metadata` ONLY for `personality` and dropped stats/home/patrol entirely;
+        // worse, two `metadata` spreads would last-writer-wins clobber each other.
+        // This mirrors the register upsert (~:803-810): spread the existing metadata
+        // first, then overlay only the keys the partner actually supplied
+        // (`!== undefined`), so an absent field is PRESERVED, not nulled. The live
+        // re-spawn below reads `row.metadata?.stats`/`homeX`/`homeY`/`patrolRadius`,
+        // so the restat/reposition now takes effect on the in-world body too.
+        const metadataChanged =
+          data.personality !== undefined ||
+          data.stats !== undefined ||
+          data.homeX !== undefined ||
+          data.homeY !== undefined ||
+          data.patrolRadius !== undefined;
+        const nextMeta = metadataChanged
+          ? {
+              ...(existing.metadata ?? {}),
+              ...(data.personality !== undefined ? { personality: data.personality } : {}),
+              ...(data.stats !== undefined ? { stats: data.stats } : {}),
+              ...(data.homeX !== undefined ? { homeX: data.homeX } : {}),
+              ...(data.homeY !== undefined ? { homeY: data.homeY } : {}),
+              ...(data.patrolRadius !== undefined ? { patrolRadius: data.patrolRadius } : {}),
+            }
+          : undefined;
+        // FIX-16: normalize a PATCH-supplied species through the registry before
+        // persisting (same guard as register) — never let a free-text owner string
+        // become the re-spawned body's modelKey. `existing.species` was already
+        // normalized by a prior register/PATCH, so leave it untouched when no new
+        // species is supplied.
+        const nextSpecies =
+          data.species !== undefined
+            ? normalizeHatcherSpecies(data.species)
+            : existing.species;
+        const [updated] = await tx
+          .update(openclawBots)
+          .set({
+            name: data.name ?? existing.name,
+            species: nextSpecies,
+            color: data.color ?? existing.color,
+            mode: computedMode,
+            targetNpcId: computedTarget,
+            ...(nextMeta !== undefined ? { metadata: nextMeta } : {}),
+            ...(encToken && newProxyUrl
+              ? {
+                  proxyUrl: newProxyUrl,
+                  proxyTokenEnc: encToken.enc,
+                  proxyTokenIv: encToken.iv,
+                  proxyTokenTag: encToken.tag,
+                }
+              : {}),
+            updatedAt: new Date(),
+          })
+          .where(eq(openclawBots.id, existing.id))
+          .returning();
+        return {
+          status: 'row' as const,
+          row: updated,
+          mode: computedMode,
+          target: computedTarget,
+          priorSnapshot,
+        };
+      });
+
+      if (txResult.status === 'not_found') return { kind: 'not_found' };
+      if (txResult.status === 'bad_target') return { kind: 'bad_target' };
+      row = txResult.row;
+      nextMode = txResult.mode;
+      nextTargetNpcId = txResult.target;
+      priorSnapshot = txResult.priorSnapshot;
+    } catch (err) {
+      console.error('[Hatcher/patch] DB update transaction failed:', err);
+      return { kind: 'update_failed' };
     }
-  } catch (err) {
-    console.error('[Hatcher/patch] live-entity propagation failed (non-fatal):', err);
+
+    // Propagate to the LIVE in-world entity. We re-register so name/species/
+    // personality/mode + a rotated cognition token take effect on the spawned
+    // body. We need the DECRYPTED token to rebuild the client — use the freshly-
+    // supplied plaintext, else decrypt the stored row. All in-memory Map mutation
+    // here is inside the per-agent mutex, so no concurrent PATCH/register can
+    // interleave its cleanup+spawn — no duplicate bodies.
+    let propagated = false;
+    // Session-id PRESERVATION (#4, 2026-06-12). The PATCH re-register used to ALWAYS
+    // mint a fresh sessionId + evict the prior in-memory session, silently orphaning
+    // the partner who was still holding the connect-era bearer (and the response
+    // never returned the new id). We now PREFER to reuse the existing live
+    // sessionId, so the partner's bearer keeps working across a PATCH and nothing
+    // is orphaned — the less-disruptive option the reviewer asked us to take when
+    // available. We only MINT a new id when there is NO live session to reuse
+    // (e.g. the Map was wiped by a restart, so the partner's bearer can no longer
+    // be honored from memory anyway); in that single case the new id is RETURNED in
+    // the response (+ sessionExpiresAt) so the partner can adopt it. `rotated` is
+    // true ONLY when a new id was minted — when we preserve, the row's
+    // session_key_hash already matches the live bearer and must NOT be rewritten.
+    let rotatedSessionId: string | null = null;
+    let rotatedSessionExpiresAt: Date | null = null;
+    // P5-2: an OVERRIDE re-register failure (target NPC taken) must surface a
+    // non-2xx + restore the prior body (no orphan). These flag it out of the try.
+    let overrideSpawnFailed = false;
+    let overrideTargetTaken = false;
+    try {
+      let plaintextToken: string | null = data.cognition?.scopedToken ?? null;
+      if (!plaintextToken) {
+        if (row.proxyTokenEnc && row.proxyTokenIv && row.proxyTokenTag) {
+          plaintextToken = decryptToken(row.proxyTokenEnc, row.proxyTokenIv, row.proxyTokenTag);
+        }
+      }
+      const proxyUrl = row.proxyUrl ?? newProxyUrl;
+      if (plaintextToken && proxyUrl) {
+        const urlCheck = validateHatcherProxyUrl(proxyUrl);
+        if (urlCheck.ok) {
+          // Capture any live session(s) for this agent BEFORE tearing them down so
+          // we can reuse the existing bearer rather than orphan it AND, on an
+          // override re-register failure, RESTORE the prior body (P5-2 no-orphan).
+          // A single agent has at most one live body in practice; if there were
+          // several we reuse the first and evict the rest (they were duplicates).
+          const liveSessions = npcSimulation.findActiveSessionsByAgentIds([namespacedAgentId]);
+          const preservedSessionId = liveSessions[0] ?? null;
+          const restoreSnapshots = liveSessions
+            .map((sid) => {
+              const cfg = npcSimulation.getOpenClawBotConfig(sid);
+              const cl = npcSimulation.getOpenClawClientBySession(sid);
+              return cfg && cl ? { config: cfg, client: cl } : null;
+            })
+            .filter((s): s is { config: OpenClawRegistration; client: OpenClawClient } => s !== null);
+          for (const stale of liveSessions) {
+            npcSimulation.unregisterOpenClaw(stale);
+          }
+          // Preserve the live bearer when one exists; otherwise mint a fresh
+          // crypto-strong id (Codex dual-review, 2026-06-03: this is the real-CT
+          // bearer credential, not a display handle).
+          const sessionId = preservedSessionId ?? `hat-${randomBytes(24).toString('base64url')}`;
+          const minted = preservedSessionId === null;
+          const stats = row.metadata?.stats ?? { hp: 100, attack: 10, defense: 8, speed: 6 };
+          // Ledger-capable: partner-signed path (proven ownership), same as the
+          // /register mint above (auth-lens fix #2/#3, 2026-06-03).
+          let config: OpenClawRegistration;
+          // boundUserId = the partner-bound owner on the row — re-validated against
+          // the live row at spend time (rebind backstop, hardening round 2).
+          // Built via the SHARED config-builder (agent-session-config.ts) for
+          // byte-identical parity with the /register mint + restore (D1).
+          if (nextMode === 'override' && nextTargetNpcId) {
+            config = buildOverrideSessionConfig({
+              mode: 'override',
+              agentId: namespacedAgentId,
+              sessionId,
+              identityType: 'hatcher',
+              storedProtocol: 'hatcher-proxy',
+              autonomyMode: 'server-managed',
+              targetNpcId: nextTargetNpcId,
+              ledgerCapable: true,
+              boundUserId: row.userId ?? null,
+              protocolOverride: 'hatcher-proxy',
+            });
+          } else {
+            config = buildAvatarSessionConfig({
+              mode: 'avatar',
+              agentId: namespacedAgentId,
+              sessionId,
+              identityType: 'hatcher',
+              storedProtocol: 'hatcher-proxy',
+              autonomyMode: 'server-managed',
+              name: row.name ?? rawAgentId.slice(0, 24),
+              species: row.species,
+              color: row.color,
+              stats,
+              // FIX-13: 11520-sim-space defaults (5760 center). After FIX-2 the row's
+              // metadata now carries the partner-PATCHed home, so a reposition takes
+              // effect on the re-spawned body here.
+              homeX: row.metadata?.homeX ?? DEFAULT_HATCHER_HOME_X,
+              homeY: row.metadata?.homeY ?? DEFAULT_HATCHER_HOME_Y,
+              patrolRadius: row.metadata?.patrolRadius ?? DEFAULT_HATCHER_PATROL_RADIUS,
+              personality: row.metadata?.personality ?? '',
+              ledgerCapable: true,
+              boundUserId: row.userId ?? null,
+              protocolOverride: 'hatcher-proxy',
+            });
+          }
+          const client = buildHatcherClient(config, urlCheck.url, plaintextToken, rawAgentId);
+          // Restart survival (2026-06-11) + R2-2 atomic-hash follow-up (2026-06-12):
+          // when we MINTED a new bearer, persist its restorable hash to the row
+          // BEFORE registering the live in-memory session. The earlier order
+          // (register, then non-fatal hash write) had a gap: if the write threw, a
+          // LIVE session existed whose id no longer matched the row's (stale) hash,
+          // and validateLiveAgentSession's present-and-mismatch check (R2-2) then
+          // rejected that bearer permanently — bricking the agent until the next
+          // PATCH/register. Now the hash is committed first; only on success do we
+          // register the body and surface the minted id. On persist failure we skip
+          // propagation entirely (no live session, partner reconnects) rather than
+          // leave a dead-on-arrival body. When we PRESERVED the live bearer (#4), the
+          // row hash already commits to that same id, so no rewrite is needed.
+          let hashConsistent = true;
+          if (minted) {
+            const expiresAt = computeSessionExpiresAt();
+            try {
+              await db
+                .update(openclawBots)
+                .set({
+                  sessionKeyHash: sha256Hex(sessionId),
+                  sessionExpiresAt: expiresAt,
+                  sessionSweptAt: null,
+                  updatedAt: new Date(),
+                })
+                .where(eq(openclawBots.id, row.id));
+              rotatedSessionId = sessionId;
+              rotatedSessionExpiresAt = expiresAt;
+            } catch (err) {
+              console.error('[Hatcher/patch] session_key_hash persist failed — skipping propagation:', err);
+              hashConsistent = false;
+            }
+          }
+          if (hashConsistent) {
+            try {
+              npcSimulation.registerOpenClaw(config, client);
+              propagated = true;
+            } catch (spawnErr) {
+              // P5-2: re-register failed (override target occupied, or transient).
+              // RESTORE the prior body so the agent's old working session is intact
+              // (no orphan). For OVERRIDE this is a hard failure → non-2xx (the
+              // committed row now says override+target but the body didn't take it;
+              // a later PATCH/restore reconciles). AVATAR mode stays best-effort: a
+              // fresh `oc-<sessionId>` body never collides, so a throw is an
+              // unexpected transient; we keep ok with propagated:false and the avatar
+              // re-registers lazily on the next PATCH/restore.
+              console.error('[Hatcher/patch] re-register failed:', spawnErr);
+              for (const snap of restoreSnapshots) {
+                try {
+                  npcSimulation.registerOpenClaw(snap.config, snap.client);
+                } catch (restoreErr) {
+                  console.error('[Hatcher/patch] prior-body restore failed:', restoreErr);
+                }
+              }
+              if (nextMode === 'override') {
+                overrideSpawnFailed = true;
+                // Typed sentinel (not message-string matching) — see register path.
+                overrideTargetTaken = spawnErr instanceof OverrideTargetUnavailableError;
+                // P6-2 (2026-06-12): the in-memory prior body was just restored above
+                // (restoreSnapshots), but the committed row still describes the FAILED
+                // new override target. Compensate: write the PRIOR body-defining fields
+                // back so the persisted row matches the restored live body. Without
+                // this, a restart/idle-despawn restore re-attempts the failed target
+                // (throws then null, NPC stays held), or a later restore "succeeds" into
+                // a PATCH the partner was told 409-failed: stats + restore both lie.
+                // Fail-closed-ISH: the response is already a 409/503; if THIS write
+                // throws we keep that failure and log loudly, never upgrading to a
+                // success on a compensation failure.
+                //
+                // Bearer-lifecycle rollback (Codex pass-7, 2026-06-12 — supersedes the
+                // earlier "null the minted hash for terminal consistency" call, which
+                // was WRONG): a failed override PATCH must leave the session EXACTLY as
+                // it was pre-PATCH. When this PATCH MINTED a new bearer, the mint step
+                // OVERWROTE the row's prior sessionKeyHash (+ expiry/swept) with the new
+                // minted one. Nulling the hash here was tempting (the minted body never
+                // spawned, its id is never surfaced — inert), BUT nulling also destroys
+                // the partner's PRIOR RESTORABLE bearer (the one they were holding
+                // before this PATCH), bricking a still-valid session. So we RESTORE the
+                // prior hash/expiry/swept from the snapshot, making the failed mint a
+                // true no-op. In the PRESERVED-bearer case (minted === false) the row
+                // hash was never rewritten, so the snapshot equals the current value and
+                // restoring it is a harmless no-op — one code path, correct for both.
+                try {
+                  await db
+                    .update(openclawBots)
+                    .set({
+                      name: priorSnapshot.name,
+                      species: priorSnapshot.species,
+                      color: priorSnapshot.color,
+                      mode: priorSnapshot.mode,
+                      targetNpcId: priorSnapshot.targetNpcId,
+                      metadata: priorSnapshot.metadata,
+                      proxyUrl: priorSnapshot.proxyUrl,
+                      proxyTokenEnc: priorSnapshot.proxyTokenEnc,
+                      proxyTokenIv: priorSnapshot.proxyTokenIv,
+                      proxyTokenTag: priorSnapshot.proxyTokenTag,
+                      sessionKeyHash: priorSnapshot.sessionKeyHash,
+                      sessionExpiresAt: priorSnapshot.sessionExpiresAt,
+                      sessionSweptAt: priorSnapshot.sessionSweptAt,
+                      updatedAt: new Date(),
+                    })
+                    .where(eq(openclawBots.id, row.id));
+                } catch (compensateErr) {
+                  console.error(
+                    '[Hatcher/patch] P6-2 row compensation after override spawn failure FAILED; persisted row may describe the failed target until the next successful PATCH/restore:',
+                    compensateErr,
+                  );
+                }
+              } else {
+                // Avatar: discard the minted id (its body did not spawn) so we never
+                // advertise a sessionId whose body is absent. The hash committed (if
+                // minted) — the partner restores lazily — but we don't surface it.
+                rotatedSessionId = null;
+                rotatedSessionExpiresAt = null;
+              }
+            }
+          }
+        }
+      }
+    } catch (err) {
+      console.error('[Hatcher/patch] live-entity propagation failed (non-fatal):', err);
+    }
+
+    if (overrideSpawnFailed) {
+      return { kind: 'override_spawn_failed', targetTaken: overrideTargetTaken };
+    }
+    return { kind: 'ok', row, propagated, rotatedSessionId, rotatedSessionExpiresAt };
+  });
+
+  if (outcome.kind === 'not_found') return c.json({ error: 'not_found' }, 404);
+  if (outcome.kind === 'bad_target') {
+    return c.json({ error: 'Unknown or missing targetNpcId for override mode' }, 400);
+  }
+  if (outcome.kind === 'update_failed') return c.json({ error: 'update_failed' }, 500);
+  // P5-2: override re-register failed; prior body restored (no orphan). An OCCUPIED
+  // target is a client-actionable 409 (retry against another/freed NPC); anything
+  // else is a retryable 503.
+  if (outcome.kind === 'override_spawn_failed') {
+    return outcome.targetTaken
+      ? c.json({ error: 'override_target_unavailable', code: 'override_target_unavailable' }, 409)
+      : c.json({ error: 'propagation_failed', code: 'propagation_failed' }, 503);
   }
 
-  return c.json({ ok: true, propagated, agent: publicAgentRecord(row) });
+  // When a NEW bearer was minted (no live session to preserve), return it (+ its
+  // expiry) so the partner adopts it instead of being silently orphaned holding
+  // the old id. When the live bearer was preserved (or the mint-hash persist
+  // failed), these are omitted — never surface a bearer whose hash didn't commit
+  // (#4 + P4-2, 2026-06-12). Mirrors the connect/register response shape.
+  return c.json({
+    ok: true,
+    propagated: outcome.propagated,
+    ...(outcome.rotatedSessionId
+      ? {
+          sessionId: outcome.rotatedSessionId,
+          sessionExpiresAt: outcome.rotatedSessionExpiresAt,
+        }
+      : {}),
+    agent: publicAgentRecord(outcome.row),
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -995,54 +1694,105 @@ partnerHatcherRoutes.delete('/agents/:agentId', async (c) => {
   const signed = await readSignedBody(c);
   if (!signed.ok) return c.json({ error: 'unauthorized' }, 401);
 
-  const existing = await db.query.openclawBots.findFirst({
-    where: eq(openclawBots.agentId, namespacedAgentId),
-    columns: { id: true, userId: true, identityType: true },
-  });
-  // 404 on missing OR non-hatcher row — a Hatcher key cannot tombstone/scrub
-  // another framework's agent (cross-namespace impossible; this guards manual
-  // DB edits / future prefix reuse).
-  if (!existing || existing.identityType !== 'hatcher') {
-    return c.json({ error: 'not_found' }, 404);
-  }
+  // Serialize the lookup -> body-removal -> tombstone span per agentId under the
+  // SAME in-process withKeyedMutex used by register/PATCH (Codex pass-4 follow-up:
+  // DELETE was the one mutating handler still outside the lock, so a concurrent
+  // register/PATCH could re-create the body/row while we tombstoned it, leaving a
+  // live body with a tombstoned row or vice-versa — the same race class P4-1
+  // closed for register/PATCH). Sig-verify + rate-limit stay OUTSIDE the lock (no
+  // crypto held under the mutex); the fire-and-forget logEvent + partner webhook
+  // run AFTER release on the returned outcome.
+  type DeleteOutcome =
+    | { status: 'not_found' }
+    | { status: 'delete_failed' }
+    | { status: 'ok'; removedBodies: number; userId: string | null; identityType: string };
 
-  // Remove the in-world body for every live session bound to this agent.
-  let removedBodies = 0;
-  try {
-    for (const sid of npcSimulation.findActiveSessionsByAgentIds([namespacedAgentId])) {
-      if (npcSimulation.unregisterOpenClaw(sid)) removedBodies++;
+  const outcome = await withKeyedMutex<DeleteOutcome>(namespacedAgentId, async () => {
+    const existing = await db.query.openclawBots.findFirst({
+      where: eq(openclawBots.agentId, namespacedAgentId),
+      columns: { id: true, userId: true, identityType: true },
+    });
+    // 404 on missing OR non-hatcher row — a Hatcher key cannot tombstone/scrub
+    // another framework's agent (cross-namespace impossible; this guards manual
+    // DB edits / future prefix reuse).
+    if (!existing || existing.identityType !== 'hatcher') {
+      return { status: 'not_found' };
     }
-  } catch (err) {
-    console.error('[Hatcher/delete] body removal failed (non-fatal):', err);
-  }
 
-  // Tombstone the row: expire the session immediately and scrub the cognition
-  // route + encrypted token so no further callbacks can fire for this agent.
-  try {
-    await db.update(openclawBots)
-      .set({
-        sessionExpiresAt: new Date(),
-        cognitionBackend: null,
-        proxyUrl: null,
-        proxyTokenEnc: null,
-        proxyTokenIv: null,
-        proxyTokenTag: null,
-        updatedAt: new Date(),
-      })
-      .where(eq(openclawBots.id, existing.id));
-  } catch (err) {
-    console.error('[Hatcher/delete] tombstone failed:', err);
-    return c.json({ error: 'delete_failed' }, 500);
-  }
+    // Remove the in-world body for every live session bound to this agent.
+    let removedBodies = 0;
+    try {
+      for (const sid of npcSimulation.findActiveSessionsByAgentIds([namespacedAgentId])) {
+        if (npcSimulation.unregisterOpenClaw(sid)) removedBodies++;
+      }
+    } catch (err) {
+      console.error('[Hatcher/delete] body removal failed (non-fatal):', err);
+    }
+
+    // Tombstone the row: expire the session immediately and scrub the cognition
+    // route + encrypted token so no further callbacks can fire for this agent.
+    // Set BOTH sessionExpiresAt AND sessionSweptAt to the SAME `now` (matching
+    // expireSession in openclaw-session-sweeper.ts) so the 5-min sweep's pickup
+    // query (sessionSweptAt IS NULL OR sessionSweptAt < sessionExpiresAt) SKIPS
+    // this row. Without sessionSweptAt, the sweeper would re-pick this just-deleted
+    // row minutes later and fire a DUPLICATE `ttl_expired` session-webhook (+ a
+    // duplicate agent.session.expired event) for an agent the partner already
+    // explicitly deleted (we already fire one `disconnected` webhook below). Also
+    // hardens restore: restore.ts refuses any row where sweptAt >= expiresAt.
+    const tombstonedAt = new Date();
+    try {
+      await db.update(openclawBots)
+        .set({
+          sessionExpiresAt: tombstonedAt,
+          sessionSweptAt: tombstonedAt,
+          // Scrub the restorable session-bearer hash on this TERMINAL lifecycle
+          // transition (#8, 2026-06-12). Restore already fails closed on the
+          // expired TTL + the sweptAt>=expiresAt guard, so a stale hash is not a
+          // live bypass — but a deleted row must not retain a bearer commitment a
+          // future change could re-honor. Null it here, the same as the
+          // disconnect/TTL-expiry paths in openclaw-session-sweeper.ts.
+          sessionKeyHash: null,
+          cognitionBackend: null,
+          proxyUrl: null,
+          proxyTokenEnc: null,
+          proxyTokenIv: null,
+          proxyTokenTag: null,
+          updatedAt: tombstonedAt,
+        })
+        .where(eq(openclawBots.id, existing.id));
+    } catch (err) {
+      console.error('[Hatcher/delete] tombstone failed:', err);
+      return { status: 'delete_failed' };
+    }
+
+    return {
+      status: 'ok',
+      removedBodies,
+      userId: existing.userId,
+      identityType: existing.identityType,
+    };
+  });
+
+  if (outcome.status === 'not_found') return c.json({ error: 'not_found' }, 404);
+  if (outcome.status === 'delete_failed') return c.json({ error: 'delete_failed' }, 500);
 
   void logEvent({
     eventType: 'agent.session.disconnected',
-    userId: existing.userId,
+    userId: outcome.userId,
     agentId: namespacedAgentId,
-    payload: { via: 'partner-delete', removedBodies },
+    payload: { via: 'partner-delete', removedBodies: outcome.removedBodies },
   });
 
-  return c.json({ ok: true, removedBodies });
+  // Notify the partner this session ended (env-gated, fail-open). The DELETE
+  // already proved a hatcher row (identityType guard above), so notify
+  // unconditionally with the de-namespaced id resolved inside the helper.
+  void notifyHatcherSessionEnded({
+    identityType: outcome.identityType,
+    agentId: namespacedAgentId,
+    reason: 'disconnected',
+  });
+
+  return c.json({ ok: true, removedBodies: outcome.removedBodies });
 });
 
 // ---------------------------------------------------------------------------
@@ -1118,6 +1868,10 @@ partnerHatcherRoutes.get('/agents/:agentId/stats', async (c) => {
       totalSessions: true,
       lastSeenAt: true,
       sessionExpiresAt: true,
+      // FIX-17: select the registration timestamps so the stats registration
+      // block can emit `registeredAt`/`updatedAt` (parity with publicAgentRecord).
+      createdAt: true,
+      updatedAt: true,
     },
   });
   // 404 (opaque) on missing OR non-hatcher row — same cross-namespace guard as
@@ -1270,8 +2024,20 @@ partnerHatcherRoutes.get('/agents/:agentId/stats', async (c) => {
       avatarModel: row.species ?? null,
       cognitionBackend: row.cognitionBackend ?? null,
       walletAddress: row.walletAddress ?? null,
+      // FIX-19: explicit re-poll signal when the non-fatal wallet provision left
+      // `walletAddress` null (parity with publicAgentRecord).
+      walletPending: row.walletAddress == null,
       active,
       lastSeenAt: row.lastSeenAt ? row.lastSeenAt.toISOString() : null,
+      // Pull-side expiry visibility (2026-06-12) — the ISO timestamp the
+      // session's sliding 24h TTL expires at (null for a never-connected /
+      // pre-column row). `active` above is just `sessionExpiresAt > now`.
+      sessionExpiresAt: row.sessionExpiresAt ? row.sessionExpiresAt.toISOString() : null,
+      // FIX-17 (HATCHER-REGISTEREDAT-UPDATEDAT-ABSENT): emit the registration
+      // timestamps the partner dashboard reads (hatcher-types.ts:586-597). Both
+      // columns are NOT NULL (claws.ts:132-133), so ISO-format unconditionally.
+      registeredAt: row.createdAt.toISOString(),
+      updatedAt: row.updatedAt.toISOString(),
       totalSessions: row.totalSessions ?? 0,
     },
     leaderboard,

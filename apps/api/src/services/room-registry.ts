@@ -58,7 +58,26 @@ export const FREE_ROAMER_NPC_IDS: ReadonlySet<string> = new Set(
   NPC_DEFINITIONS.filter((def) => def.buildingId === '').map((def) => def.id),
 );
 
+/**
+ * Hard cap — the absolute ceiling on a room's player count. No join path
+ * (auto-fill or invite code) ever seats player number 21. This is the VRM /
+ * draw-call safety limit for the shared world scene.
+ */
 export const ROOM_MAX_PLAYERS = 20;
+
+/**
+ * Soft cap — the loose target auto-fill aims for. Auto-fill (a player with no
+ * invite code) only ever lands in a room with fewer than this many players, and
+ * mints a fresh room once every existing room has reached it. The 12-to-20 band
+ * (soft cap up to hard cap) is RESERVED HEADROOM for friends joining a specific
+ * room via an invite code (`requestedRoomId`): invite joins are honored all the
+ * way up to ROOM_MAX_PLAYERS, so a full friend group can pile into one room even
+ * after auto-fill has stopped seeding it. Keeping auto-fill under the soft cap
+ * keeps rooms cozy (no lone spawns scattered across many half-empty rooms) while
+ * still guaranteeing invited friends a seat next to the people who invited them.
+ */
+export const ROOM_SOFT_CAP_PLAYERS = 12;
+
 export const RESTORE_GRACE_MS = 5_000;       // NPC reappears 5 s after player leaves
 export const STALE_PLAYER_MS = 30_000;       // no position update for 30 s → kick
 export const EMPTY_ROOM_MS = 5 * 60_000;     // empty room dies after 5 min
@@ -128,6 +147,22 @@ export interface JoinOptions {
   requestedRoomId?: string;
   /** True when the caller has a Lucia session; false for fingerprint guests. */
   isAuthenticated?: boolean;
+  /**
+   * Sticky-room recovery (2026-06-12). Set ONLY by the route after it has
+   * VERIFIED a recovery ticket (room-ticket.ts) whose publicId matches the
+   * live session. Carries the roomId the session was previously placed in.
+   *
+   * Unlike `requestedRoomId`, a recovery room is honored EVEN FOR GUESTS and
+   * EVEN WHEN THE ROOM NO LONGER EXISTS: a restart wipes the in-memory rooms,
+   * and the whole point is to recreate the named room so a dispersed group
+   * re-converges. The signed-ticket verification IS the proof of prior
+   * membership, so this can't be used to pin arbitrary ID-space (the route
+   * never sets it without a valid, publicId-bound ticket). Capacity is still
+   * hard-capped at ROOM_MAX_PLAYERS — a recovery rejoin into a full room
+   * spills to auto-fill. Takes precedence over `requestedRoomId` when both
+   * are present.
+   */
+  recoveryRoomId?: string;
 }
 
 export interface JoinResult {
@@ -239,9 +274,12 @@ export class RoomRegistry {
 
   /**
    * Join a player to a room. If `requestedRoomId` is provided AND the room
-   * exists AND has capacity, the player lands there. Otherwise we either
-   * reuse the lowest-id room with room.players.size < ROOM_MAX_PLAYERS or
-   * mint a new room.
+   * exists AND has capacity (< ROOM_MAX_PLAYERS), the player lands there —
+   * invite joins fill the room all the way to the hard cap. Otherwise we
+   * auto-fill: land the player in the FULLEST room still under the soft cap
+   * (ROOM_SOFT_CAP_PLAYERS), or mint a fresh room when every room has reached
+   * the soft cap. Auto-fill never seeds the 12-to-20 headroom band — that is
+   * reserved for invite-code joins.
    *
    * Re-joining a session that already holds a room slot is idempotent: the
    * existing PlayerState is updated in place, and no NPC swap is performed
@@ -259,7 +297,7 @@ export class RoomRegistry {
       typeof optionsOrRoomId === 'string'
         ? { requestedRoomId: optionsOrRoomId, isAuthenticated: false }
         : optionsOrRoomId ?? {};
-    const { requestedRoomId, isAuthenticated = false } = options;
+    const { requestedRoomId, isAuthenticated = false, recoveryRoomId } = options;
 
     const now = this.now();
 
@@ -279,7 +317,7 @@ export class RoomRegistry {
       this.sessionToRoom.delete(sessionId);
     }
 
-    const room = this.pickOrCreateRoom(requestedRoomId, isAuthenticated);
+    const room = this.pickOrCreateRoom(requestedRoomId, isAuthenticated, recoveryRoomId);
 
     // B1 — cancel any pending NPC restore queued by this session's prior
     // leave. Without this, a player who rage-quits then rejoins within
@@ -472,7 +510,32 @@ export class RoomRegistry {
   private pickOrCreateRoom(
     requestedRoomId: string | undefined,
     isAuthenticated: boolean,
+    recoveryRoomId?: string,
   ): Room {
+    // Sticky-room recovery (2026-06-12) — highest precedence. The route only
+    // passes a recoveryRoomId after verifying a signed ticket bound to this
+    // session's publicId, so reaching here IS proof of prior membership.
+    //   - Room still exists with capacity → re-land there (re-converges a group
+    //     that survived the restart, or whose members are reconnecting).
+    //   - Room was wiped by the restart → RECREATE it with the same id so the
+    //     dispersed group lands back together. Guests included: the ticket, not
+    //     an auth check, is the anti-spam proof (B2 stays intact for the
+    //     non-recovery requestedRoomId path below).
+    //   - Room exists but is at the hard cap → fall through to auto-fill (a
+    //     friend group larger than ROOM_MAX_PLAYERS can't all reconverge; the
+    //     hard cap is the VRM/draw-call ceiling and is never breached). Note we
+    //     deliberately bypass the soft cap here — reconverging a group of up to
+    //     20 is the entire purpose, so the 12-to-20 headroom band is fair game.
+    if (recoveryRoomId) {
+      const existing = this.rooms.get(recoveryRoomId);
+      if (existing) {
+        if (existing.players.size < ROOM_MAX_PLAYERS) return existing;
+        // Full — fall through to auto-fill (do NOT honor requestedRoomId after
+        // a failed recovery; the session's group has overflowed its room).
+      } else {
+        return this.createRoomWithId(recoveryRoomId);
+      }
+    }
     if (requestedRoomId) {
       const room = this.rooms.get(requestedRoomId);
       if (room && room.players.size < ROOM_MAX_PLAYERS) return room;
@@ -485,12 +548,25 @@ export class RoomRegistry {
         return this.createRoomWithId(requestedRoomId);
       }
     }
-    // Auto-fill: first room with capacity. Sort by id so the algorithm is
-    // deterministic — needed both for predictable load and for the tests.
-    const sorted = Array.from(this.rooms.values()).sort((a, b) => (a.id < b.id ? -1 : 1));
-    for (const room of sorted) {
-      if (room.players.size < ROOM_MAX_PLAYERS) return room;
+    // Auto-fill: pack into the FULLEST room still under the soft cap so rooms
+    // stay cozy and players are not scattered into lone spawns across many
+    // half-empty rooms. Among all rooms with players.size < ROOM_SOFT_CAP_PLAYERS
+    // we pick the largest; ties break on lowest id for determinism (needed for
+    // predictable load and for the tests). Rooms already in the 12-to-20
+    // headroom band are skipped here — that band is invite-code-only. If no room
+    // is under the soft cap, mint a fresh one.
+    let best: Room | null = null;
+    for (const room of this.rooms.values()) {
+      if (room.players.size >= ROOM_SOFT_CAP_PLAYERS) continue;
+      if (
+        best === null ||
+        room.players.size > best.players.size ||
+        (room.players.size === best.players.size && room.id < best.id)
+      ) {
+        best = room;
+      }
     }
+    if (best) return best;
     return this.createRoomWithId(this.mintRoomId());
   }
 
