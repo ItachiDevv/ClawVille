@@ -293,7 +293,8 @@ worldRoutes.post('/leave', async (c) => {
 });
 
 worldRoutes.post('/position', async (c) => {
-  const { sessionId } = await resolvePresence(c);
+  const presence = await resolvePresence(c);
+  const { sessionId } = presence;
   const now = Date.now();
   const last = positionLastSeen.get(sessionId) ?? 0;
   if (now - last < POSITION_MIN_INTERVAL_MS) {
@@ -314,6 +315,15 @@ worldRoutes.post('/position', async (c) => {
     // Session has no room yet — client must call /join first. 409 makes
     // the client error path explicit so it can re-join automatically.
     throw new HTTPException(409, { message: 'Session is not in a room — call /api/world/join first' });
+  }
+  // Controlled Hatcher launch: a logged-in human actively uploading position is
+  // the live "owner is driving" signal. Refresh the suppression TTL for any
+  // Hatcher proxy NPC bound to this user so its autonomous body stays hidden +
+  // frozen while the owner drives their avatar. No-op for users with no bound
+  // Hatcher agent (the openClawBots scan finds no match). Suppression lapses on
+  // its own once these uploads stop (e.g. the owner switches to explore mode).
+  if (presence.kind === 'human' && presence.userId) {
+    npcSimulation.refreshHumanControlledOpenClawForUser(presence.userId);
   }
   return c.json({ ok: true });
 });

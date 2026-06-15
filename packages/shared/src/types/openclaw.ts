@@ -105,11 +105,14 @@ export type HatcherLaunchExchangeResponse =
         agentId: string;
         /** Display name for the "Watching <name>" banner. */
         name: string;
-        /** Public world coordinate the camera focuses on. */
+        /** Public world coordinate (agent's body) — retained for compatibility;
+         * controlled launch lands in player follow-camera, not explore focus. */
         x: number;
         y: number;
-        /** v1 always 'autonomous' (spectate). 'controlled' is a follow-up. */
-        mode: 'autonomous';
+        /** Launch mode handed to the owner. Controlled = owner drives the
+         * agent's avatar via the magic-link session (the shipped deliverable).
+         * Hatcher's `/launch/exchange` accepts `controlled`. */
+        mode: 'controlled';
       };
     }
   | {
@@ -123,10 +126,17 @@ export type HatcherLaunchExchangeResponse =
        * or invalid (a server config error, NOT an upstream rejection — distinct
        * so the web side can surface "try again later" vs "relaunch").
        * `invalid_request` = malformed params. `rate_limited` = per-IP cap hit.
+       * `agent_not_bound` = the agent row has no bound ClawVille user, so there
+       * is no avatar for the owner to drive (controlled launch is impossible).
+       * `agent_not_owned` = the logged-in session is not the agent's bound user;
+       * driving it would leave the autonomous proxy as a second body. Both fail
+       * loud rather than silently produce a duplicate body.
        */
       error:
         | 'launch_requires_session'
         | 'agent_not_registered'
+        | 'agent_not_bound'
+        | 'agent_not_owned'
         | 'exchange_rejected'
         | 'launch_issuer_unconfigured'
         | 'invalid_request'
