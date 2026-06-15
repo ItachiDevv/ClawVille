@@ -76,6 +76,7 @@ import type {
   BumperMatchPhase,
 } from '@/lib/three/activities/bumper-shells/bumper-shells-types';
 import type { GhostFrame, RaceEntityLap } from '@/lib/three/activities/reef-race/reef-race-types';
+import { usePokerStore } from './poker';
 
 // ─── Reef Race lap/ghost slice ────────────────────────────────────────────────
 
@@ -1197,6 +1198,25 @@ export const useActivityStore = create<ActivityState>()(
           set({
             finishWaitDeadlineAt: Date.now() + Math.max(0, frame.msRemaining),
           });
+          break;
+        }
+
+        // ── Texas Hold'em (`poker.*`) — delegate to the poker store ───────
+        //
+        // P1.2b: the poker table lives in a SEPARATE lightweight store
+        // (`./poker.ts`) so this store's bumper/reef scene-contract surface
+        // stays narrow. We route every namespaced poker frame there. The
+        // explicit case list (rather than a `frame.type.startsWith('poker.')`
+        // guard) keeps the exhaustiveness sentinel below honest — a new
+        // poker.* variant fails typecheck in BOTH stores until handled.
+        case 'poker.table_state':
+        case 'poker.street_dealt':
+        case 'poker.action_applied':
+        case 'poker.showdown':
+        case 'poker.hand_ended':
+        case 'poker.hole_cards':
+        case 'poker.your_turn': {
+          usePokerStore.getState().applyServerFrame(frame);
           break;
         }
 

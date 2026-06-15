@@ -289,6 +289,48 @@ describe('poker-table-sim — heads-up full hand', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// 1b. Fold-win: NO showdown, winner's hole cards stay HIDDEN (fairness)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('poker-table-sim — fold-around does not reveal the winner', () => {
+  it('uncontested fold-win conceals every seat\'s hole cards (no showdown)', () => {
+    const h = makeHarness();
+    const handNumber = 11;
+    // Heads-up: seat 0 = button/SB, seat 1 = BB.
+    h.sim.startHand({
+      tableId: 'fw',
+      handNumber,
+      seatAssignments: [seatAssign(0, 100), seatAssign(1, 100)],
+      blinds: { sb: 1, bb: 2, ante: 0 },
+      buttonSeatIndex: 0,
+      serverSeed: SERVER,
+      clientSeed: CLIENT,
+      turnClockMs: 30_000,
+      agentTurnGraceMs: 0,
+    });
+
+    // SB (seat 0) folds preflop → BB (seat 1) wins uncontested.
+    const r = h.sim.applyAction('fw', av(0), { kind: 'fold' }, { idempotencyKey: nextKey() });
+    expect(r.handComplete).toBe(true);
+
+    const result = h.completed[0]!;
+    // No showdown happened — the hand ended preflop on the fold.
+    expect(result.endedAt).not.toBe('showdown');
+    // CRITICAL: NO seat reveals hole cards on a fold-win — not the folder, and
+    // crucially NOT the winner (real poker: you never show on a fold-around).
+    for (const s of result.perSeat) {
+      expect(s.holeCards).toBeNull();
+    }
+    // The winner (seat 1, BB) still takes the pot; chips conserve.
+    const seat1 = result.perSeat.find((s) => s.seatIndex === 1)!;
+    expect(seat1.isWinner).toBe(true);
+    expect(seat1.net).toBe(1); // won the SB's dead 1 chip
+    expect(netSum(result)).toBe(0);
+    expect(totalCommitted(result)).toBe(3); // SB 1 + BB 2
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // 2. 6-seat multi-way all-in side pots
 // ─────────────────────────────────────────────────────────────────────────────
 

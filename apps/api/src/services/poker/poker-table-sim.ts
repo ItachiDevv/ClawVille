@@ -817,7 +817,11 @@ export class PokerTableSim {
       return {
         seatIndex: s.seatIndex,
         avatarId: s.avatarId,
-        holeCards: s.status === 'folded' ? null : s.hole,
+        // Reveal hole cards ONLY at a genuine showdown, and only for seats that
+        // did not fold. On a fold-around (endedAt !== 'showdown', exactly one live
+        // seat) NOBODY shows — the lone winner takes the pot without revealing.
+        // Revealing the winner's cards on a fold-win is a real-poker fairness leak.
+        holeCards: endedAt === 'showdown' && s.status !== 'folded' ? s.hole : null,
         totalCommitted: s.committedTotal,
         won,
         net: won - s.committedTotal,
