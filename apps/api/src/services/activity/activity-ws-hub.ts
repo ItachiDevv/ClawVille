@@ -55,6 +55,11 @@ function getReefSim(): typeof reefRaceSim | typeof reefRaceSplineSim {
 import { InputRateTracker, validateChatBounds } from './anti-cheat/shared';
 import { logEvent } from '../event-logger';
 import type { Room, RoomParticipant } from './types';
+// Texas Hold'em (P1.2b) — the live poker table sim singleton. Inbound
+// `poker.action` frames route to `applyAction`; the sim's own broadcast /
+// per-seat / hand-complete callbacks are registered in `index.ts` at boot.
+import { pokerTableSim } from '../poker/poker-table-sim-singleton';
+import type { Action as PokerSimAction } from '../poker/poker-table-types';
 // Phase 4 — self avatar's PB ghost frames (sent once per snapshot.init,
 // per-recipient — the WS hub is the only server-side surface that
 // resolves the connecting identity, so the gating lives here).
@@ -350,6 +355,78 @@ class ActivityWsHub {
         ws.data.internalCloseCode = 1000;
         this.safeClose(ws, 1000, 'voluntary leave');
         return;
+      case 'poker.action':
+        this.handlePokerAction(ws, frame);
+        return;
+      case 'poker.sit_out':
+      case 'poker.sit_in':
+        // Sit-out / sit-in are accepted at the protocol level but are a no-op
+        // in P1.2b (the demo sim re-seats every participant each hand). The
+        // server-side seat-state mutation lands with persistence in a later
+        // phase. Silently accepted so a forward-looking client doesn't error.
+        return;
+    }
+  }
+
+  /**
+   * Route an inbound `poker.action` frame to the poker table sim.
+   *
+   * The table id is the room id (one live hand per room). The actor's avatarId
+   * comes from the AUTHED identity on the connection — the client never names
+   * the seat, so an actor can only ever act AS ITSELF. The idempotency key is
+   * `<handNumber>:<actionSeq>:<avatarId>` so a retransmit (same hand, same seq,
+   * same actor) is a stable no-op inside the sim. On an illegal / rejected
+   * action the actor gets a private `error` frame (never broadcast — an
+   * opponent must not learn that a seat fat-fingered an illegal raise).
+   *
+   * NOTE: poker is NOT routed through `handleInput` (that's continuous motion
+   * for the racing/bumper sims and is rate-limited as such). Turn-based betting
+   * actions are infrequent and gate on the sim's own "is it your turn" check.
+   */
+  private handlePokerAction(
+    ws: HubWs,
+    frame: Extract<ClientFrame, { type: 'poker.action' }>,
+  ): void {
+    const identity = ws.data.identity!;
+    const room = activityRoomManager.getRoom(ws.data.roomId);
+    if (!room) {
+      this.safeSend(ws, {
+        type: 'error',
+        code: 'no_room',
+        message: 'room not found',
+      });
+      return;
+    }
+    if (room.activityId !== 'texas-holdem') {
+      this.safeSend(ws, {
+        type: 'error',
+        code: 'wrong_activity',
+        message: 'poker action sent to a non-poker room',
+      });
+      return;
+    }
+
+    // The shared `PokerActionPayload` is structurally identical to the sim's
+    // `Action` (discriminated on `kind`); the cast documents that boundary.
+    const action = frame.action as PokerSimAction;
+    const idempotencyKey = `${frame.handNumber}:${frame.actionSeq}:${identity.avatarId}`;
+
+    const result = pokerTableSim.applyAction(
+      ws.data.roomId,
+      identity.avatarId,
+      action,
+      { idempotencyKey },
+    );
+
+    if (!result.ok) {
+      // Private rejection — the sim's broadcast/per-seat callbacks (registered
+      // in index.ts) already emitted any state change on a SUCCESSFUL action;
+      // a rejected action mutates nothing, so we only owe the actor an error.
+      this.safeSend(ws, {
+        type: 'error',
+        code: result.reason ?? 'illegal_action',
+        message: result.reason ?? 'illegal action',
+      });
     }
   }
 

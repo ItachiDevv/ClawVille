@@ -1,4 +1,13 @@
 import { z } from 'zod';
+import type {
+  PokerPublicTableSnapshot,
+  PokerPrivateSeatView,
+  PokerHandResultSeat,
+  PokerHandResult,
+  PokerCard,
+  PokerActionKind,
+  PokerStreet,
+} from './poker-protocol';
 
 /**
  * Q2 Activity Portals — WebSocket protocol shapes.
@@ -105,6 +114,46 @@ export const clientLeaveFrameSchema = z.object({
   type: z.literal('leave'),
 });
 
+// ─── Texas Hold'em (`poker.*`) client frames — ADDITIVE ─────────────────────
+//
+// Namespaced sub-union layered onto the activity-portal client protocol. These
+// are validated by the SAME `clientFrameSchema.safeParse` ingress as every
+// other client frame, then routed by the WS hub's `handlePokerAction` (NOT the
+// motion `input` path). `handNumber` + `actionSeq` together form the
+// server-side idempotency key (`<handNumber>:<actionSeq>:<avatarId>`), so a
+// retransmitted action is a stable no-op.
+
+/**
+ * The betting-action payload — "bet/raise to X" TOTAL street-commitment
+ * semantics (NOT an increment). `amount` is a non-negative integer chip count.
+ * Discriminated by `kind`; `bet`/`raise` require `amount`, the rest omit it.
+ */
+export const pokerActionPayloadSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('fold') }),
+  z.object({ kind: z.literal('check') }),
+  z.object({ kind: z.literal('call') }),
+  z.object({ kind: z.literal('bet'), amount: z.number().int().nonnegative() }),
+  z.object({ kind: z.literal('raise'), amount: z.number().int().nonnegative() }),
+]);
+export type PokerActionPayload = z.infer<typeof pokerActionPayloadSchema>;
+
+export const clientPokerActionFrameSchema = z.object({
+  type: z.literal('poker.action'),
+  /** The hand this action targets — part of the idempotency key + a stale-hand guard. */
+  handNumber: z.number().int().nonnegative(),
+  /** Monotonic per-seat action counter — part of the idempotency key. */
+  actionSeq: z.number().int().nonnegative(),
+  action: pokerActionPayloadSchema,
+});
+
+export const clientPokerSitOutFrameSchema = z.object({
+  type: z.literal('poker.sit_out'),
+});
+
+export const clientPokerSitInFrameSchema = z.object({
+  type: z.literal('poker.sit_in'),
+});
+
 export const clientFrameSchema = z.discriminatedUnion('type', [
   clientAuthFrameSchema,
   clientInputFrameSchema,
@@ -112,6 +161,10 @@ export const clientFrameSchema = z.discriminatedUnion('type', [
   clientChatFrameSchema,
   clientEmoteFrameSchema,
   clientLeaveFrameSchema,
+  // Texas Hold'em — additive namespaced frames.
+  clientPokerActionFrameSchema,
+  clientPokerSitOutFrameSchema,
+  clientPokerSitInFrameSchema,
 ]);
 
 export type ClientAuthFrame = z.infer<typeof clientAuthFrameSchema>;
@@ -120,6 +173,9 @@ export type ClientPingFrame = z.infer<typeof clientPingFrameSchema>;
 export type ClientChatFrame = z.infer<typeof clientChatFrameSchema>;
 export type ClientEmoteFrame = z.infer<typeof clientEmoteFrameSchema>;
 export type ClientLeaveFrame = z.infer<typeof clientLeaveFrameSchema>;
+export type ClientPokerActionFrame = z.infer<typeof clientPokerActionFrameSchema>;
+export type ClientPokerSitOutFrame = z.infer<typeof clientPokerSitOutFrameSchema>;
+export type ClientPokerSitInFrame = z.infer<typeof clientPokerSitInFrameSchema>;
 export type ClientFrame = z.infer<typeof clientFrameSchema>;
 
 // ─── Server → Client — metadata shapes ──────────────────────────────────────
@@ -562,6 +618,90 @@ export type ServerFrame =
       avatarId: string;
       rampId: string;
       launchVel: number;
+    }
+  // ─── Texas Hold'em (`poker.*`) server frames — ADDITIVE ───────────────────
+  //
+  // PUBLIC frames (delivered via `broadcastEvent` — keyframe-safe, NEVER via
+  // `broadcastSnapshot` which drops under backpressure). None of these carry a
+  // hole card: `PokerPublicTableSnapshot` has no such field, and the showdown /
+  // hand-ended reveals only post-resolution public results.
+  | {
+      /**
+       * Full public table state — the poker counterpart to `snapshot.keyframe`,
+       * but for turn-based play it rides `broadcastEvent` (every seat must get
+       * every turn transition; a dropped frame desyncs the betting UI). Carries
+       * NO hole cards by type.
+       */
+      type: 'poker.table_state';
+      snapshot: PokerPublicTableSnapshot;
+    }
+  | {
+      /**
+       * A new community street was dealt (flop/turn/river). `board` is the
+       * cumulative public board for the new street (length === street count).
+       * Lets the client animate the deal without diffing two `table_state`
+       * frames. `table_state` is ALSO broadcast for the new actor.
+       */
+      type: 'poker.street_dealt';
+      handNumber: number;
+      street: PokerStreet;
+      board: PokerCard[];
+    }
+  | {
+      /**
+       * One seat's action was accepted + applied. Pure UI/animation signal —
+       * the authoritative state still rides `poker.table_state`. `amount` is the
+       * resulting TOTAL street commitment for bet/raise, else omitted.
+       */
+      type: 'poker.action_applied';
+      handNumber: number;
+      seatIndex: number;
+      avatarId: string;
+      action: PokerActionKind;
+      amount?: number;
+    }
+  | {
+      /**
+       * Showdown reveal — fired when a hand reaches showdown (≥2 live seats to
+       * the river) OR ends early. Carries the final public board + per-seat
+       * results. Folded seats muck (`holeCards: null`); only seats that reached
+       * showdown reveal cards. This is the ONLY public frame that reveals any
+       * hole cards, and ONLY after the hand is resolved.
+       */
+      type: 'poker.showdown';
+      handNumber: number;
+      board: PokerCard[];
+      seats: PokerHandResultSeat[];
+    }
+  | {
+      /**
+       * The hand is fully resolved + the table is idle. Carries the complete
+       * `PokerHandResult` including `serverSeedRevealed` (the commit-reveal seed,
+       * present ONLY here — never mid-hand) so the deal can be verified.
+       */
+      type: 'poker.hand_ended';
+      result: PokerHandResult;
+    }
+  // PRIVATE frames (delivered via `sendToAvatar` ONLY — one seat). These DO
+  // carry hole cards and MUST NEVER be broadcast.
+  | {
+      /**
+       * The seat's own two hole cards, delivered once on deal (and re-sendable
+       * on reconnect). PRIVATE — `sendToAvatar` only.
+       */
+      type: 'poker.hole_cards';
+      handNumber: number;
+      seatIndex: number;
+      holeCards: [PokerCard, PokerCard];
+    }
+  | {
+      /**
+       * It is this seat's turn — carries its private view (hole cards + legal
+       * actions + bet bounds + deadline). PRIVATE — `sendToAvatar` only.
+       */
+      type: 'poker.your_turn';
+      handNumber: number;
+      view: PokerPrivateSeatView;
     };
 
 // ─── Close codes ────────────────────────────────────────────────────────────
