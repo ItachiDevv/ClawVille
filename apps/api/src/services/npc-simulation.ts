@@ -351,6 +351,11 @@ class NpcSimulation {
   // driving the bound avatar in 'player' mode). Refreshed at 5 Hz by
   // /api/world/position; entries auto-expire when the owner stops driving.
   private humanControlledOpenClawUntil: Map<string, number> = new Map();
+  // Controlled-launch binding: userId -> launched agentId(s). This is the
+  // durable server-side memory that lets /api/world/position re-create a lapsed
+  // 3s suppression window after a transient upload stall, without suppressing
+  // every other Hatcher proxy bound to the same user.
+  private humanControlledOpenClawLaunchesByUser: Map<string, Set<string>> = new Map();
 
   // Browser-connected claws (no gateway — controlled by browser client)
   private browserClaws: Map<string, {
@@ -491,15 +496,45 @@ class NpcSimulation {
   }
 
   /**
-   * Refresh suppression for every Hatcher proxy bound to `userId`. Called on the
-   * owner's 5 Hz /api/world/position uploads. No-op for users with no bound
-   * Hatcher agent (the scan finds no matching config.boundUserId).
+   * Remember that `userId` launched and is driving `agentId`. The launch route
+   * knows the exact agent; /api/world/position only knows the human user.
+   */
+  bindHumanControlledOpenClawLaunch(userId: string, agentId: string): void {
+    let agentIds = this.humanControlledOpenClawLaunchesByUser.get(userId);
+    if (!agentIds) {
+      agentIds = new Set<string>();
+      this.humanControlledOpenClawLaunchesByUser.set(userId, agentIds);
+    }
+    agentIds.add(agentId);
+  }
+
+  private forgetHumanControlledOpenClawLaunch(agentId: string, userId?: string | null): void {
+    if (userId) {
+      const agentIds = this.humanControlledOpenClawLaunchesByUser.get(userId);
+      if (!agentIds) return;
+      agentIds.delete(agentId);
+      if (agentIds.size === 0) this.humanControlledOpenClawLaunchesByUser.delete(userId);
+      return;
+    }
+
+    for (const [boundUserId, agentIds] of this.humanControlledOpenClawLaunchesByUser) {
+      agentIds.delete(agentId);
+      if (agentIds.size === 0) this.humanControlledOpenClawLaunchesByUser.delete(boundUserId);
+    }
+  }
+
+  /**
+   * Refresh suppression only for Hatcher proxies this user actually launched.
+   * Called on the owner's 5 Hz /api/world/position uploads. Because the binding
+   * outlives the short TTL, a resumed upload after a >3s stall re-primes the
+   * specific driven agent instead of letting its autonomous proxy stay visible.
    */
   refreshHumanControlledOpenClawForUser(userId: string, ttlMs = 3000): void {
-    for (const { config } of this.openClawBots.values()) {
-      if (config.boundUserId === userId) {
-        this.markHumanControlledOpenClaw(config.agentId, ttlMs);
-      }
+    const agentIds = this.humanControlledOpenClawLaunchesByUser.get(userId);
+    if (!agentIds) return;
+
+    for (const agentId of agentIds) {
+      this.markHumanControlledOpenClaw(agentId, ttlMs);
     }
   }
 
@@ -511,7 +546,10 @@ class NpcSimulation {
       npcs: Array.from(this.npcs.values())
         .filter((n) => !this.isHumanControlledOpenClawNpc(n.id, now))
         .map((n) => ({ ...n })),
-      conversations: Array.from(this.conversations.values()).filter((c) => c.state === 'active').map((c) => ({ ...c, messages: [...c.messages] })),
+      conversations: Array.from(this.conversations.values())
+        .filter((c) => c.state === 'active')
+        .filter((c) => !this.isHumanControlledOpenClawNpc(c.npc1Id, now) && !this.isHumanControlledOpenClawNpc(c.npc2Id, now))
+        .map((c) => ({ ...c, messages: [...c.messages] })),
       combats: Array.from(this.combats.values()).filter((c) => c.state === 'active').map((c) => ({ ...c, rounds: [...c.rounds] })),
       events: [...this.pendingEvents],
       autonomousAvatars: this.avatarAutonomyManager.getAutonomousAvatars(),
@@ -569,6 +607,7 @@ class NpcSimulation {
       npcs,
       conversations: Array.from(this.conversations.values())
         .filter((c) => c.state === 'active')
+        .filter((c) => !this.isHumanControlledOpenClawNpc(c.npc1Id, now) && !this.isHumanControlledOpenClawNpc(c.npc2Id, now))
         .map((c) => ({ ...c, messages: [...c.messages] })),
       combats: Array.from(this.combats.values())
         .filter((c) => c.state === 'active')
@@ -734,6 +773,7 @@ class NpcSimulation {
     // Drop any human-control suppression entry for this agent so a stale TTL
     // can't outlive the session (a re-registered agent gets a fresh window).
     this.humanControlledOpenClawUntil.delete(bot.config.agentId);
+    this.forgetHumanControlledOpenClawLaunch(bot.config.agentId, bot.config.boundUserId);
     if (bot.config.mode === 'override') {
       const npcId = bot.config.targetNpcId;
       this.cleanupNpcFromCombats(npcId);
