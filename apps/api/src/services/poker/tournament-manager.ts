@@ -70,6 +70,10 @@ import { createServerSeed } from '../provable-rng';
 import { PokerTableSim } from './poker-table-sim';
 import { pokerMttSim } from './poker-mtt-sim-singleton';
 import type {
+  Action,
+  AgentActionAdvice,
+  AgentSeatView,
+  ApplyActionResult,
   HandResult,
   SeatAssignment,
   SimClock,
@@ -324,6 +328,18 @@ export class TournamentManager {
   private readonly roomToTable = new Map<string, string>();
   /** sim tableId → WS room id (reverse of `roomToTable`). */
   private readonly tableToRoom = new Map<string, string>();
+  /**
+   * CONTROLLED-MODE control owners. Key = `<avatarId>` of a connected/hosted
+   * agent whose in-world avatar is currently being DRIVEN BY A HUMAN (controlled
+   * mode — the human's WS/REST input is authoritative). While an avatar is in this
+   * set, the AUTONOMOUS REST action path (`applyAgentAction` with `actor:'agent'`)
+   * is SUPPRESSED: the agent may still READ state + ASK for advice (advisor mode),
+   * but it cannot stake a betting decision — the human owns the seat. A human
+   * (`actor:'human'`) or an advisor read is never suppressed. Set/cleared by the
+   * controlled-launch suppression seam (mirrors `humanControlled*` in
+   * npc-simulation). Empty by default ⇒ pure autonomous agent play.
+   */
+  private readonly controlledAvatars = new Set<string>();
   /** The start-trigger sweeper interval handle (null when not running). */
   private sweeperHandle: ReturnType<typeof setInterval> | null = null;
   /** Re-entrancy guard so overlapping sweeps don't double-fire a startTrigger. */
@@ -1757,6 +1773,105 @@ export class TournamentManager {
       .filter((tb) => !tb.broken)
       .sort((a, b) => a.tableNumber - b.tableNumber)[0];
     return table?.roomBinding ?? null;
+  }
+
+  /**
+   * SOCKET-LESS AGENT PATH (P5) — resolve the sim `tableId` an avatar is CURRENTLY
+   * seated at in this tournament. Works WITHOUT a WS room (unlike
+   * `getConnectionForSubject`, which needs a `roomBinding`), so a hosted agent that
+   * never opened a socket can still address its live hand. Returns null when the
+   * tournament isn't running, the avatar isn't a live seat, or its table is broken.
+   * Follows rebalances/table-breaks automatically (it reads the CURRENT liveSeats).
+   */
+  getActiveTableForAvatar(tournamentId: string, avatarId: string): string | null {
+    const r = this.running.get(tournamentId);
+    if (!r || r.done) return null;
+    for (const table of r.tables.values()) {
+      if (table.broken) continue;
+      for (const seat of table.liveSeats.values()) {
+        if (seat.avatarId === avatarId) return table.tableId;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * SOCKET-LESS AGENT READ — the poll view for `avatarId` in `tournamentId`
+   * (public table + its OWN hole cards + legal actions + isYourTurn + deadline).
+   * Pure read; never mutates state, never leaks another seat's cards (the sim
+   * enforces the redaction). Returns null when the avatar isn't seated at a live
+   * hand. The agent polls this until `isYourTurn === true`, then calls
+   * `applyAgentAction`.
+   */
+  getSeatViewForAgent(tournamentId: string, avatarId: string): AgentSeatView | null {
+    const tableId = this.getActiveTableForAvatar(tournamentId, avatarId);
+    if (!tableId) return null;
+    return this.sim.getSeatViewForAgent(tableId, avatarId);
+  }
+
+  /**
+   * ADVISOR MODE (non-staking) — a recommended action for `avatarId` WITHOUT
+   * moving chips. Forwards to the sim's pure `getActionAdvice`. Returns null when
+   * the avatar isn't seated at a live hand. Allowed even when the avatar is
+   * human-CONTROLLED (advice never stakes — the human chooses to follow or ignore).
+   */
+  getActionAdvice(tournamentId: string, avatarId: string): AgentActionAdvice | null {
+    const tableId = this.getActiveTableForAvatar(tournamentId, avatarId);
+    if (!tableId) return null;
+    return this.sim.getActionAdvice(tableId, avatarId);
+  }
+
+  /**
+   * SOCKET-LESS BETTING ACTION (P5) — submit ONE action for `avatarId` over REST.
+   * This is the SAME settlement path the WS hub uses: it resolves the avatar's live
+   * sim table and calls `sim.applyAction(tableId, avatarId, action, { idempotencyKey })`.
+   * The TM already registered `setHandCompleteFn` on this sim at construction, so an
+   * action that ends a hand drives the exact same chip-apply / bust / placement /
+   * settle loop a WS action would — settlement binds to the bound avatar (real CT),
+   * NEVER a guest. Idempotent on `idempotencyKey` (the route builds
+   * `<handNumber>:<actionSeq>:<avatarId>`), so a retransmit is a stable no-op.
+   *
+   * CONTROLLED-MODE SUPPRESSION (Rule E5 advisor/controlled split): when the
+   * avatar is human-CONTROLLED (`actor === 'agent'` AND in `controlledAvatars`),
+   * the autonomous bet is REJECTED — the human at the wheel owns the betting
+   * decision. The agent should use `getActionAdvice` (advisor mode) instead. A
+   * `actor === 'human'` action (the human driving the seat) is NEVER suppressed.
+   *
+   * Returns a discriminated result: `{ ok:false, reason:'no_live_table' }` when the
+   * avatar isn't seated; `{ ok:false, reason:'human_controlled' }` when suppressed;
+   * otherwise the sim's `ApplyActionResult` (which itself carries ok/reason for
+   * not_your_turn / illegal_action / hand_over etc.).
+   */
+  applyAgentAction(input: {
+    tournamentId: string;
+    avatarId: string;
+    action: Action;
+    idempotencyKey: string;
+    /** 'agent' = autonomous (suppressed when controlled); 'human' = the driver. */
+    actor: 'agent' | 'human';
+  }): ApplyActionResult {
+    const { tournamentId, avatarId, action, idempotencyKey, actor } = input;
+    if (actor === 'agent' && this.controlledAvatars.has(avatarId)) {
+      return { ok: false, reason: 'human_controlled' };
+    }
+    const tableId = this.getActiveTableForAvatar(tournamentId, avatarId);
+    if (!tableId) return { ok: false, reason: 'no_live_table' };
+    return this.sim.applyAction(tableId, avatarId, action, { idempotencyKey });
+  }
+
+  /**
+   * CONTROLLED-MODE seam — mark/unmark an avatar as human-DRIVEN so its autonomous
+   * poker betting is suppressed (the human's input is authoritative). Mirrors the
+   * `humanControlled*` flag in npc-simulation, scoped here to poker seats. Idempotent.
+   */
+  setAvatarControlled(avatarId: string, controlled: boolean): void {
+    if (controlled) this.controlledAvatars.add(avatarId);
+    else this.controlledAvatars.delete(avatarId);
+  }
+
+  /** True iff the avatar's poker seat is currently human-controlled. */
+  isAvatarControlled(avatarId: string): boolean {
+    return this.controlledAvatars.has(avatarId);
   }
 
   /** Translate a WS `roomId` to its sim `tableId`. */
