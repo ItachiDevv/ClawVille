@@ -59,7 +59,26 @@ import type { Room, RoomParticipant } from './types';
 // `poker.action` frames route to `applyAction`; the sim's own broadcast /
 // per-seat / hand-complete callbacks are registered in `index.ts` at boot.
 import { pokerTableSim } from '../poker/poker-table-sim-singleton';
+import type { PokerTableSim } from '../poker/poker-table-sim';
 import type { Action as PokerSimAction } from '../poker/poker-table-types';
+
+/**
+ * Poker MTT (P3.5) — the dispatch seam for tournament tables. The hub does NOT
+ * hard-import the MTT sim + TournamentManager singletons (that would force the
+ * `poker/tournament-manager` → `claw-token-ledger` → DB import chain into every
+ * hub test, and pin the dispatch to the singletons so a test can't inject its
+ * own instances). Instead the MTT bridge registers `{ sim, resolveRoomToTable }`
+ * here at boot via `setMttDispatch`. Both production (`pokerMttSim` +
+ * `tournamentManager`) and the integration test (a fake-clock sim + a fake-db TM)
+ * register through the SAME path, so the hub's `texas-holdem-mtt` dispatch always
+ * hits the SAME sim+TM that seated the room. Null until the bridge wires it.
+ */
+export interface MttDispatch {
+  /** The MTT sim to apply tournament-table actions to. */
+  sim: PokerTableSim;
+  /** Translate a WS roomId → the sim tableId (`mtt:<tournamentId>`). */
+  resolveRoomToTable: (roomId: string) => string | undefined;
+}
 // Phase 4 — self avatar's PB ghost frames (sent once per snapshot.init,
 // per-recipient — the WS hub is the only server-side surface that
 // resolves the connecting identity, so the gating lives here).
@@ -146,6 +165,13 @@ class ActivityWsHub {
 
   /** Rate tracker shared across all rooms (stateless per-avatar) */
   private rateTracker = new InputRateTracker();
+
+  /**
+   * P3.5 — the tournament-table dispatch seam, registered by the MTT WS bridge at
+   * boot. Null until wired (no MTT tables can be played before then). See
+   * `MttDispatch` above for why this is a registration, not a hard import.
+   */
+  private mttDispatch: MttDispatch | null = null;
 
   // ─── Registration ────────────────────────────────────────────────────
 
@@ -369,19 +395,26 @@ class ActivityWsHub {
   }
 
   /**
-   * Route an inbound `poker.action` frame to the poker table sim.
+   * Route an inbound `poker.action` frame to the correct poker sim — dispatching
+   * by `room.activityId` (P3.5):
+   *   - `texas-holdem`     → the DEMO `pokerTableSim`, addressed by `roomId`
+   *     (tableId === roomId, one live hand per room).
+   *   - `texas-holdem-mtt` → the tournament `pokerMttSim`, addressed by the sim
+   *     `tableId` (`mtt:<tournamentId>`) translated from the roomId via the
+   *     TournamentManager's `resolveRoomToTable`. The two sims + activityIds are
+   *     fully isolated — a demo action can never reach the MTT sim and vice-versa.
    *
-   * The table id is the room id (one live hand per room). The actor's avatarId
-   * comes from the AUTHED identity on the connection — the client never names
-   * the seat, so an actor can only ever act AS ITSELF. The idempotency key is
+   * The actor's avatarId comes from the AUTHED identity on the connection — the
+   * client never names the seat, so an actor can only ever act AS ITSELF
+   * (human-XOR-agent parity, resolved on the auth frame). The idempotency key is
    * `<handNumber>:<actionSeq>:<avatarId>` so a retransmit (same hand, same seq,
-   * same actor) is a stable no-op inside the sim. On an illegal / rejected
-   * action the actor gets a private `error` frame (never broadcast — an
-   * opponent must not learn that a seat fat-fingered an illegal raise).
+   * same actor) is a stable no-op inside the sim. On an illegal / rejected action
+   * the actor gets a PRIVATE `error` frame (never broadcast — an opponent must not
+   * learn that a seat fat-fingered an illegal raise).
    *
-   * NOTE: poker is NOT routed through `handleInput` (that's continuous motion
-   * for the racing/bumper sims and is rate-limited as such). Turn-based betting
-   * actions are infrequent and gate on the sim's own "is it your turn" check.
+   * NOTE: poker is NOT routed through `handleInput` (that's continuous motion for
+   * the racing/bumper sims and is rate-limited as such). Turn-based betting actions
+   * are infrequent and gate on the sim's own "is it your turn" check.
    */
   private handlePokerAction(
     ws: HubWs,
@@ -397,7 +430,38 @@ class ActivityWsHub {
       });
       return;
     }
-    if (room.activityId !== 'texas-holdem') {
+
+    // Resolve which sim + which table id this action targets, by activityId.
+    let sim: PokerTableSim;
+    let tableId: string;
+    if (room.activityId === 'texas-holdem') {
+      sim = pokerTableSim;
+      tableId = ws.data.roomId; // demo: tableId === roomId
+    } else if (room.activityId === 'texas-holdem-mtt') {
+      if (!this.mttDispatch) {
+        // The MTT bridge hasn't registered the dispatch seam — no tournament
+        // tables can be played. Private rejection (no broadcast).
+        this.safeSend(ws, {
+          type: 'error',
+          code: 'mtt_unavailable',
+          message: 'tournament dispatch not wired',
+        });
+        return;
+      }
+      const mttTableId = this.mttDispatch.resolveRoomToTable(ws.data.roomId);
+      if (!mttTableId) {
+        // The tournament ended / the room↔table binding was torn down — the table
+        // is gone. Treat as a private rejection (no broadcast).
+        this.safeSend(ws, {
+          type: 'error',
+          code: 'no_table',
+          message: 'tournament table not found for room',
+        });
+        return;
+      }
+      sim = this.mttDispatch.sim;
+      tableId = mttTableId;
+    } else {
       this.safeSend(ws, {
         type: 'error',
         code: 'wrong_activity',
@@ -411,17 +475,14 @@ class ActivityWsHub {
     const action = frame.action as PokerSimAction;
     const idempotencyKey = `${frame.handNumber}:${frame.actionSeq}:${identity.avatarId}`;
 
-    const result = pokerTableSim.applyAction(
-      ws.data.roomId,
-      identity.avatarId,
-      action,
-      { idempotencyKey },
-    );
+    const result = sim.applyAction(tableId, identity.avatarId, action, {
+      idempotencyKey,
+    });
 
     if (!result.ok) {
-      // Private rejection — the sim's broadcast/per-seat callbacks (registered
-      // in index.ts) already emitted any state change on a SUCCESSFUL action;
-      // a rejected action mutates nothing, so we only owe the actor an error.
+      // Private rejection — the sim's broadcast/per-seat callbacks (registered in
+      // index.ts / the MTT bridge) already emitted any state change on a SUCCESSFUL
+      // action; a rejected action mutates nothing, so we only owe the actor an error.
       this.safeSend(ws, {
         type: 'error',
         code: result.reason ?? 'illegal_action',
@@ -483,12 +544,24 @@ class ActivityWsHub {
     return this.rooms.get(roomId)?.size ?? 0;
   }
 
+  /**
+   * P3.5 — register the tournament-table dispatch seam. Called once by the MTT WS
+   * bridge at boot (production) / per-test (integration). Idempotent overwrite.
+   */
+  setMttDispatch(dispatch: MttDispatch): void {
+    this.mttDispatch = dispatch;
+  }
+
   /** Test hook — wipe all in-memory state */
   __resetForTest(): void {
     for (const timer of this.graceTimers.values()) clearTimeout(timer);
     this.graceTimers.clear();
     this.rooms.clear();
     this.rateTracker.__resetForTest();
+    // Leave `mttDispatch` intact across resets: the integration test wires it once
+    // (via the bridge) in beforeEach AFTER __resetForTest, and production wires it
+    // once at boot — clearing it here would strand MTT dispatch. A re-wire simply
+    // overwrites it.
   }
 
   // ─── Internals ────────────────────────────────────────────────────────
