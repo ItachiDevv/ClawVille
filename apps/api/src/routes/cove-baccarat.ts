@@ -7,14 +7,26 @@
  *
  *   POST /session/open    (auth optional) — open a commit-reveal SHOE, commit serverSeedHash
  *   POST /coup            (auth optional) — place a PLAYER/BANKER/TIE bet, deal, resolve, settle
- *   POST /session/close   (Lucia auth)    — close the shoe + reveal serverSeed
- *   GET  /session/current (Lucia auth)    — restore the user's open shoe after refresh
- *   GET  /session/:id      (Lucia auth)   — owner-only shoe detail (serverSeed redacted while open)
+ *   POST /session/close   (user or agent) — close the shoe + reveal serverSeed
+ *   GET  /session/current (user or agent) — restore the open shoe after refresh/reconnect
+ *   GET  /session/:id      (user or agent) — owner-only shoe detail (serverSeed redacted while open)
  *
- * Model mirrors cove-blackjack.ts (the audited template):
- *   - getSubject(c): authed user OR guest (100 demo CT). XOR enforced by the DB
- *     check constraint. Guests never touch the ClawTokens ledger; demo balance
- *     lives on the shoe row (startingBalance + totalPayout - totalBet).
+ * Model mirrors cove-blackjack.ts (the audited template), EXTENDED for agent parity
+ * (Rule E5 — human↔agent parity on a money path, 2026-06-15):
+ *   - getSubject(c): authed human (Lucia) OR a connected/hosted AGENT playing AS
+ *     ITSELF (X-Clawville-Agent-Session header → its bound avatar's userId) OR a
+ *     guest (100 demo CT). Human + agent are BOTH real-CT "ledger subjects" — an
+ *     agent shoe is just a `userId` shoe, so the DB `userId XOR guestFpHash`
+ *     check constraint still holds and the audited settle path is reused verbatim
+ *     (the agent kind adds NO new money branch — see `isLedgerSubject`). Agents are
+ *     NEVER routed to the guest/demo tier. Guests never touch the ClawTokens
+ *     ledger; demo balance lives on the shoe row (startingBalance + totalPayout -
+ *     totalBet).
+ *   - SETTLEMENT vs LEADERBOARD (parity scope): for a ledger subject (human OR
+ *     agent) this route does REAL CT ledger settlement with full parity. It emits
+ *     NO leaderboard-scoring event for ANY subject (the Cove writes no
+ *     `activity.match.placed`); that is a SEPARATE pre-existing gap, not an
+ *     agent-only one, and must be added for both paths together if at all.
  *   - claw-token-ledger.debit/creditClawTokens is the ONLY balance write path,
  *     composed into the coup transaction via the passed `tx`.
  *   - One commit-reveal SHOE = one slot-session analogue. Reshuffle at ~75%
@@ -73,7 +85,8 @@ import {
   type BaccaratShoe,
   type BaccaratCoup,
 } from '@clawville/database';
-import { sessionMiddleware, requireAuth } from '../middleware/auth';
+import { sessionMiddleware } from '../middleware/auth';
+import { resolveAgentSession } from '../middleware/require-auth-or-agent';
 import { createServerSeed } from '../services/provable-rng';
 import {
   playCoup,
@@ -176,34 +189,124 @@ export function __resetBaccaratRateLimits(): void {
   guestShoeOpenBuckets.clear();
 }
 
-// ─── Subject resolution (user OR guest, never both) — mirrors cove-blackjack ──
+// ─── Subject resolution (user OR agent OR guest, never combined) ─────────────
+//
+// THREE subject kinds (Rule E5 — human↔agent parity), VERBATIM in semantics with
+// cove-blackjack.ts's BjSubject / getSubject:
+//   - 'user'  — Lucia-authed human. Settles in REAL CT on `avatars.clawTokens`.
+//   - 'agent' — a connected/hosted agent playing AS ITSELF via the agent gateway
+//     session header. Resolves through `resolveAgentSession` → its BOUND avatar's
+//     `userId`/`avatarId`, and settles in the SAME real-CT ledger path as a human.
+//     An agent is NEVER routed to the guest demo tier — that XOR-with-guest gap
+//     was the E5 violation this fixes.
+//   - 'guest' - anonymous fingerprint, demo-CT only (no ledger).
+//
+// Money parity rule: 'user' and 'agent' are both LEDGER subjects (they carry a
+// real `userId`/`avatarId` and write the ClawToken ledger). `isLedgerSubject()`
+// collapses the two for every balance/owner branch so the audited settle path is
+// reused verbatim — the agent kind adds NO new money code path.
+//
+// The agent-session header name matches the existing activity-portal convention
+// (`require-auth-or-agent.ts`); Hono lower-cases header reads so case-insensitive.
+
+const AGENT_SESSION_HEADER = 'X-Clawville-Agent-Session';
 
 type BacSubject =
-  | { kind: 'user'; userId: string; guestFpHash: null }
-  | { kind: 'guest'; userId: null; guestFpHash: string };
+  | { kind: 'user'; userId: string; avatarId: null; agentId: null; sessionId: null; guestFpHash: null }
+  | { kind: 'agent'; userId: string; avatarId: string; agentId: string; sessionId: string; guestFpHash: null }
+  | { kind: 'guest'; userId: null; avatarId: null; agentId: null; sessionId: null; guestFpHash: string };
 
-function getSubject(c: {
+/**
+ * Resolve the request subject. Precedence: Lucia human → agent session → guest.
+ *
+ * Async (was sync) because the agent branch does a DB lookup to map the opaque
+ * session id → bound avatar/user. An agent session that resolves to a bot WITHOUT
+ * a ledger-capable, avatar-bound state is a 401/403 (it can perceive/chat but
+ * cannot stake real CT) — it does NOT fall through to the guest tier (silently
+ * demoting a connected agent to demo play is the exact E5 violation). A logged-in
+ * human cookie ALWAYS wins over an agent header on the same request.
+ */
+async function getSubject(c: {
   get(key: 'user'): { id: string } | null;
   get(key: 'fpHash'): string;
-}): BacSubject {
+  req: { header(name: string): string | undefined };
+}): Promise<BacSubject> {
   const user = c.get('user');
-  if (user) return { kind: 'user', userId: user.id, guestFpHash: null };
+  if (user) {
+    return { kind: 'user', userId: user.id, avatarId: null, agentId: null, sessionId: null, guestFpHash: null };
+  }
+
+  const agentSessionId = c.req.header(AGENT_SESSION_HEADER);
+  if (agentSessionId) {
+    const resolved = await resolveAgentSession(agentSessionId);
+    if (!resolved) {
+      throw new HTTPException(401, { message: 'invalid_or_expired_agent_session' });
+    }
+    // Ledger-capability gate (mirrors cove-blackjack). A session that did NOT
+    // prove ownership of its bound avatar is `ledgerCapable === false`: it may
+    // perceive/chat in-world but must NOT spend the avatar's REAL CT here. Reject
+    // 403 BEFORE the avatar-binding check — NOT a guest fall-through.
+    if (!resolved.ledgerCapable) {
+      throw new HTTPException(403, { message: 'agent_session_not_ledger_authorized' });
+    }
+    if (!resolved.userId || !resolved.avatarId) {
+      throw new HTTPException(403, {
+        message:
+          'agent_session_has_no_active_avatar: connect an avatar before playing the Cove for real ClawTokens',
+      });
+    }
+    return {
+      kind: 'agent',
+      userId: resolved.userId,
+      avatarId: resolved.avatarId,
+      agentId: resolved.agentId,
+      sessionId: agentSessionId,
+      guestFpHash: null,
+    };
+  }
+
   const fpHash = c.get('fpHash');
   if (!fpHash) {
     throw new HTTPException(500, { message: 'fpHash_missing_for_guest_request' });
   }
-  return { kind: 'guest', userId: null, guestFpHash: fpHash };
+  return { kind: 'guest', userId: null, avatarId: null, agentId: null, sessionId: null, guestFpHash: fpHash };
+}
+
+/**
+ * The real-CT ledger userId for a subject, or null for a guest. 'user' and
+ * 'agent' are BOTH ledger subjects — this collapses them so the money path /
+ * event userId is written once.
+ */
+function ledgerUserId(subject: BacSubject): string | null {
+  return subject.kind === 'guest' ? null : subject.userId;
+}
+
+/** True iff the subject settles in real CT (human or agent). */
+function isLedgerSubject(
+  subject: BacSubject,
+): subject is Extract<BacSubject, { kind: 'user' | 'agent' }> {
+  return subject.kind !== 'guest';
 }
 
 function subjectKey(subject: BacSubject): string {
-  return subject.kind === 'user' ? `u:${subject.userId}` : `g:${subject.guestFpHash}`;
+  if (subject.kind === 'guest') return `g:${subject.guestFpHash}`;
+  // 'user' and 'agent' rate-limit on userId — an agent and its bound human share
+  // one avatar/wallet, so they SHOULD share one coup-rate bucket (you can't dodge
+  // the limit by toggling between cookie + agent header on one avatar).
+  return `u:${subject.userId}`;
 }
 
+/**
+ * A real-CT shoe is keyed on `userId` (NOT on agent/guest). Both human and agent
+ * subjects for the same bound avatar therefore see + own the SAME shoe — an agent
+ * playing AS its avatar continues the human's session, never forks a parallel one.
+ * Guests own by fingerprint.
+ */
 function ownerMatch(
   shoe: { userId: string | null; guestFpHash: string | null },
   subject: BacSubject,
 ): boolean {
-  return subject.kind === 'user'
+  return isLedgerSubject(subject)
     ? shoe.userId === subject.userId
     : shoe.guestFpHash === subject.guestFpHash;
 }
@@ -343,7 +446,7 @@ coveBaccaratRouter.post('/session/open', async (c) => {
     throw new HTTPException(400, { message: 'invalid_input: ' + parsed.error.message });
   }
   const input = parsed.data;
-  const subject = getSubject(c);
+  const subject = await getSubject(c);
 
   // Currency seam — SOL/USDC custody is a later tier. Same 501 shape as blackjack.
   if (input.currency !== 'clawtoken') {
@@ -359,7 +462,7 @@ coveBaccaratRouter.post('/session/open', async (c) => {
   // Pre-flight balance gate (UX only; coup re-checks under the lock).
   let avatar: { id: string; clawTokens: number } | null = null;
   let guestStartingBalance = 0n;
-  if (subject.kind === 'user') {
+  if (isLedgerSubject(subject)) {
     avatar = await loadAvatarForUser(subject.userId);
     if (avatar.clawTokens < BACCARAT_MIN_BET) {
       throw new HTTPException(400, {
@@ -375,7 +478,7 @@ coveBaccaratRouter.post('/session/open', async (c) => {
   // never return data another request is mid-mutating (mirrors blackjack).
   const resumed = await db.transaction(async (tx) => {
     const lockWhere =
-      subject.kind === 'user'
+      isLedgerSubject(subject)
         ? sql`user_id = ${subject.userId} AND status = 'open'`
         : sql`guest_fp_hash = ${subject.guestFpHash} AND status = 'open'`;
     const rows = await tx.execute<{ id: string }>(
@@ -411,7 +514,7 @@ coveBaccaratRouter.post('/session/open', async (c) => {
           serverSeed,
           serverSeedHash,
           clientSeed,
-          startingBalance: subject.kind === 'user' ? '0' : guestStartingBalance.toString(),
+          startingBalance: isLedgerSubject(subject) ? '0' : guestStartingBalance.toString(),
           engineVersion: BACCARAT_ENGINE_VERSION,
         })
         .returning();
@@ -423,7 +526,7 @@ coveBaccaratRouter.post('/session/open', async (c) => {
     const pgCode = (err as { code?: string } | undefined)?.code;
     if (pgCode === '23505') {
       const raceWhere =
-        subject.kind === 'user'
+        isLedgerSubject(subject)
           ? and(eq(baccaratShoes.userId, subject.userId), eq(baccaratShoes.status, 'open'))
           : and(eq(baccaratShoes.guestFpHash, subject.guestFpHash), eq(baccaratShoes.status, 'open'));
       const raceRow = (await db.select().from(baccaratShoes).where(raceWhere).limit(1))[0];
@@ -443,9 +546,15 @@ coveBaccaratRouter.post('/session/open', async (c) => {
 
   void logEventFromContext(c, {
     eventType: 'cove.baccarat.shoe.opened',
-    userId: subject.kind === 'user' ? subject.userId : null,
+    userId: ledgerUserId(subject),
     avatarId: avatar?.id ?? null,
-    payload: { shoeId: inserted.id, currency: 'clawtoken', isGuest: subject.kind === 'guest' },
+    agentId: subject.kind === 'agent' ? subject.agentId : null,
+    payload: {
+      shoeId: inserted.id,
+      currency: 'clawtoken',
+      isGuest: subject.kind === 'guest',
+      isAgent: subject.kind === 'agent',
+    },
   });
 
   return c.json(
@@ -509,7 +618,7 @@ coveBaccaratRouter.post('/coup', async (c) => {
     throw new HTTPException(400, { message: 'invalid_input: ' + parsed.error.message });
   }
   const input = parsed.data;
-  const subject = getSubject(c);
+  const subject = await getSubject(c);
   checkCoupRate(subjectKey(subject));
 
   const shoe = await db.query.baccaratShoes.findFirst({
@@ -541,7 +650,7 @@ coveBaccaratRouter.post('/coup', async (c) => {
 
   // Pre-flight affordability (UX). Authoritative re-check happens under the lock.
   let avatar: { id: string; clawTokens: number } | null = null;
-  if (subject.kind === 'user') {
+  if (isLedgerSubject(subject)) {
     avatar = await loadAvatarForUser(subject.userId);
     if (avatar.clawTokens < input.stake) {
       throw new HTTPException(400, {
@@ -695,7 +804,7 @@ coveBaccaratRouter.post('/coup', async (c) => {
       // (tie + P/B bet) returns the stake as payout, net 0. A win credits
       // stake+winnings. A loss credits 0 (stake stays debited).
       let balanceAfter: number;
-      if (subject.kind === 'user' && avatar) {
+      if (isLedgerSubject(subject) && avatar) {
         const stakeNumber = Number(r.stake);
         try {
           const debit = await debitClawTokens(
@@ -833,7 +942,7 @@ coveBaccaratRouter.post('/coup', async (c) => {
   // Compute the response balance.
   let balance: number;
   if (txResult.replay || txResult.balanceAfter === undefined) {
-    if (subject.kind === 'user') {
+    if (isLedgerSubject(subject)) {
       balance = (await loadAvatarForUser(subject.userId)).clawTokens;
     } else {
       const fresh = await db.query.baccaratShoes.findFirst({
@@ -847,8 +956,9 @@ coveBaccaratRouter.post('/coup', async (c) => {
 
   void logEventFromContext(c, {
     eventType: 'cove.baccarat.coup.settled',
-    userId: subject.kind === 'user' ? subject.userId : null,
+    userId: ledgerUserId(subject),
     avatarId: avatar?.id ?? null,
+    agentId: subject.kind === 'agent' ? subject.agentId : null,
     payload: {
       shoeId: input.shoeId,
       coupId: coup.id,
@@ -859,6 +969,7 @@ coveBaccaratRouter.post('/coup', async (c) => {
       net: coup.net,
       winner: outcome.winner,
       isGuest: subject.kind === 'guest',
+      isAgent: subject.kind === 'agent',
       replay: txResult.replay,
     },
   });
@@ -891,7 +1002,7 @@ async function buildCoupResponse(
   const outcome = coup.outcomeJson as SerializedCoupResult;
   const dealtCount = coup.dealtAfter ?? shoe.dealtCount;
   const balance =
-    subject.kind === 'user'
+    isLedgerSubject(subject)
       ? (await loadAvatarForUser(subject.userId)).clawTokens
       : Number(guestDemoBalance(shoe));
   return {
@@ -913,21 +1024,32 @@ async function buildCoupResponse(
 // ─── POST /session/close ──────────────────────────────────────────────────────
 //
 // Close the shoe + reveal serverSeed on every cove_game_events row for the shoe
-// (commit-reveal contract — mirrors blackjack /session/close). Lucia-authed.
+// (commit-reveal contract — mirrors blackjack /session/close).
+//
+// Subject-resolved (NOT requireAuth) so a connected AGENT can close its own shoe
+// and reveal the seed — without this the agent could never satisfy the fairness
+// promise and its shoe would wedge open forever at 75% penetration. Ledger
+// subjects only (human or agent): a guest demo shoe has no persistent fairness
+// contract to honor and the prior Lucia-only gate already excluded guests, so we
+// keep that exclusion (403) rather than widening it. ownerMatch binds to the
+// resolved userId, so an agent can never close another user's shoe.
 
-coveBaccaratRouter.post('/session/close', requireAuth, async (c) => {
+coveBaccaratRouter.post('/session/close', async (c) => {
   const body = await c.req.json().catch(() => null);
   const parsed = closeSchema.safeParse(body);
   if (!parsed.success) {
     throw new HTTPException(400, { message: 'invalid_input: ' + parsed.error.message });
   }
-  const user = c.get('user')!;
+  const subject = await getSubject(c);
+  if (!isLedgerSubject(subject)) {
+    throw new HTTPException(403, { message: 'guest_cannot_close_shoe: sign in or connect an agent' });
+  }
 
   const shoe = await db.query.baccaratShoes.findFirst({
     where: eq(baccaratShoes.id, parsed.data.shoeId),
   });
   if (!shoe) throw new HTTPException(404, { message: 'shoe_not_found' });
-  if (shoe.userId !== user.id) throw new HTTPException(403, { message: 'shoe_not_owned' });
+  if (!ownerMatch(shoe, subject)) throw new HTTPException(403, { message: 'shoe_not_owned' });
   if (shoe.status !== 'open') {
     throw new HTTPException(409, { message: `shoe_not_open: status=${shoe.status}` });
   }
@@ -960,12 +1082,14 @@ coveBaccaratRouter.post('/session/close', requireAuth, async (c) => {
 
   void logEventFromContext(c, {
     eventType: 'cove.baccarat.shoe.closed',
-    userId: user.id,
+    userId: subject.userId,
+    agentId: subject.kind === 'agent' ? subject.agentId : null,
     payload: {
       shoeId: closed.id,
       coupsPlayed: closed.coupsPlayed,
       totalBet: closed.totalBet,
       totalPayout: closed.totalPayout,
+      isAgent: subject.kind === 'agent',
     },
   });
 
@@ -986,28 +1110,42 @@ coveBaccaratRouter.post('/session/close', requireAuth, async (c) => {
 });
 
 // ─── GET /session/current ─────────────────────────────────────────────────────
+//
+// Subject-resolved (ledger subjects only) so a connected agent can restore its
+// open shoe after a reconnect, exactly like a human after a page refresh. An
+// agent + its bound human share one userId-keyed shoe, so both see the same row.
 
-coveBaccaratRouter.get('/session/current', requireAuth, async (c) => {
-  const user = c.get('user')!;
+coveBaccaratRouter.get('/session/current', async (c) => {
+  const subject = await getSubject(c);
+  if (!isLedgerSubject(subject)) {
+    throw new HTTPException(403, { message: 'guest_has_no_persistent_shoe: sign in or connect an agent' });
+  }
   const row = await db.query.baccaratShoes.findFirst({
-    where: and(eq(baccaratShoes.userId, user.id), eq(baccaratShoes.status, 'open')),
+    where: and(eq(baccaratShoes.userId, subject.userId), eq(baccaratShoes.status, 'open')),
   });
   if (!row) throw new HTTPException(404, { message: 'no_open_shoe' });
-  const avatar = await loadAvatarForUser(user.id);
+  const avatar = await loadAvatarForUser(subject.userId);
   return c.json({ shoe: publicShoe(row), walletBalance: avatar.clawTokens }, 200);
 });
 
 // ─── GET /session/:id ─────────────────────────────────────────────────────────
+//
+// Owner-only shoe detail (serverSeed redacted while open). Subject-resolved so an
+// agent can inspect its own shoe; ownerMatch binds to the resolved userId, so an
+// agent can never read another user's shoe by id.
 
-coveBaccaratRouter.get('/session/:id', requireAuth, async (c) => {
+coveBaccaratRouter.get('/session/:id', async (c) => {
   const shoeId = c.req.param('id');
   if (!/^[0-9a-f-]{36}$/i.test(shoeId)) {
     throw new HTTPException(400, { message: 'invalid_shoe_id' });
   }
-  const user = c.get('user')!;
+  const subject = await getSubject(c);
+  if (!isLedgerSubject(subject)) {
+    throw new HTTPException(403, { message: 'guest_cannot_inspect_shoe: sign in or connect an agent' });
+  }
   const row = await db.query.baccaratShoes.findFirst({ where: eq(baccaratShoes.id, shoeId) });
   if (!row) throw new HTTPException(404, { message: 'shoe_not_found' });
-  if (row.userId !== user.id) throw new HTTPException(403, { message: 'shoe_not_owned' });
+  if (!ownerMatch(row, subject)) throw new HTTPException(403, { message: 'shoe_not_owned' });
   return c.json({ shoe: publicShoe(row) }, 200);
 });
 

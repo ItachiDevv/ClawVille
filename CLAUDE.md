@@ -41,7 +41,7 @@ ClawVille's reason to exist is the three bidirectional axes (Human↔Agent, Huma
 3. Carry a one-line **PARITY note** in the PR/commit body: "human path: <endpoint/UI>; agent path: <endpoint/action>; settlement binds to <avatar resolution>." No PARITY note ⇒ not mergeable.
 4. Be audited against the LIVE game by the Adversarial auditor specifically for the agent path (not just the human path) before "done."
 
-**Retroactive debt:** the Cove (`cove-blackjack/baccarat/holdem/slots`) is the known violation — `getSubject()` resolves user-XOR-guest only, no agent session. It is being patched to agent parity. Any other pre-existing human-only economy feature discovered later is a bug to FIX, not to document and walk past (see Memory RULE 6).
+**Retroactive debt — RESOLVED 2026-06-15:** the Cove was the known violation (`getSubject()` resolved user-XOR-guest only, no agent session). All four games now have agent parity: `cove-blackjack.ts` shipped it first (2026-06-03), and `cove-baccarat.ts`, `cove-holdem.ts`, and `cove-slots.ts` now resolve a connected/hosted agent session (`X-Clawville-Agent-Session` → `resolveAgentSession`) to the bound avatar for REAL-CT settlement, matching blackjack (`user` + `agent` are both ledger subjects; guests stay demo; non-ledger/unbound agents get 403, never a guest demotion). No `PROTOCOL_VERSION` bump — only the settlement resolver changed; the agent ACTION whitelist is unchanged. Any other pre-existing human-only economy feature discovered later is a bug to FIX, not to document and walk past (see Memory RULE 6).
 
 ---
 
