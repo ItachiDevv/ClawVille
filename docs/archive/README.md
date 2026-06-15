@@ -32,6 +32,20 @@ landed; these are the design docs that drove them.
 - `eliza-integration-architecture.md` — ElizaOS integration design;
   superseded by the relevant sections in `ARCHITECTURE.md`.
 
+### `hatcher/`
+Partner-integration working drafts (Hatcher), superseded 2026-06-15 by the
+single merged spec at **`docs/hatcher-integration-spec.md`** — which is
+cross-validated against live code and corrects the drift these carried
+(`PROTOCOL_VERSION` 2→5, stats bounds, home default 5760, default species
+`phanes`, and the launch flow from "autonomous-first" to **controlled mode**).
+Kept for history; do NOT send these to the partner — send the merged spec.
+
+- `hatcher-onboarding.md` — one-page "what you need to get started" index.
+- `hatcher-agent-entry-flow.md` — step-by-step entry/play flow + ASCII/Mermaid
+  sequence diagrams (the diagrams are the bit not yet folded into the merged spec).
+- `hatcher-followup-answers.md` — the old authoritative answer doc (signing,
+  worldState, action whitelist + cove tools, example payloads).
+
 ### `design-notes/`
 Single-topic notes that captured a specific decision or discovery. The
 decision has been made / the discovery applied; the note is here for
