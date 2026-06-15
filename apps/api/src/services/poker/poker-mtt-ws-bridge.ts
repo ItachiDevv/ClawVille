@@ -122,7 +122,19 @@ export function wirePokerMttToHub(sim: PokerTableSim, tm: TournamentManager): vo
     });
   });
 
-  // ── (1) Seat seam: create the long-lived MTT room + go live ─────────────────
+  // ── (6) Abort-notify: an mtt room aborting → recover the tournament escrow ───
+  // A poker table is exempt from the LIVE_NO_WS_TTL crash sweep (the room manager
+  // owns that exemption), so this fires only when a room genuinely aborts (manual
+  // abort, pod-orphan boot recovery, an aborted countdown). The TM resolves the
+  // owning tournament + cancels/refunds the escrow idempotently so CT is never
+  // stranded. Registered ONCE for the whole pod (last writer wins) — it filters
+  // to mtt rooms internally (a non-mtt room id resolves to nothing → no-op).
+  activityRoomManager.setAbortNotifyFn((roomId, activityId) => {
+    if (activityId !== MTT_ACTIVITY_ID) return;
+    void tm.onRoomAborted(roomId);
+  });
+
+  // ── (1) Seat seam: create ONE long-lived MTT room PER TABLE + go live ───────
   tm.setSeatHandlers({
     onSeatFn: async ({ seats }) => {
       const def = getActivityDefinition(MTT_ACTIVITY_ID);
@@ -154,6 +166,52 @@ export function wirePokerMttToHub(sim: PokerTableSim, tm: TournamentManager): vo
       // GC'd (or never created) is a silent no-op.
       if (room && room.state === 'live') {
         await activityRoomManager.transitionRoom(roomId, 'results');
+      }
+    },
+    // ── (7) Rebalance move: tell the moved player its NEW room/seat + notify ──
+    // both tables. The moved player's client re-opens its WS to the destination
+    // room (later phase); for now we deliver `poker.moved` on the OLD room's
+    // connection (the player is still authed there until it reconnects) and
+    // `poker.table_rebalanced` to both tables so spectators/clients refresh.
+    onMoveFn: ({
+      avatarId,
+      fromRoomId,
+      toRoomId,
+      toShortCode,
+      toSeatIndex,
+      chipStack,
+      reason,
+    }) => {
+      // poker.moved → the moved player (PRIVATE). Sent on the OLD room while it
+      // still holds the player's authed connection (the client re-opens to the
+      // new room on receipt). If the old room is gone, this is a silent no-op.
+      if (fromRoomId) {
+        activityWsHub.sendToAvatar(fromRoomId, avatarId, {
+          type: 'poker.moved',
+          toRoomId: toRoomId ?? '',
+          toShortCode: toShortCode ?? '',
+          seatIndex: toSeatIndex,
+          chipStack,
+          reason,
+        });
+      }
+      // poker.table_rebalanced → both affected tables (PUBLIC) so connected
+      // clients refresh their seat list.
+      if (fromRoomId) {
+        activityWsHub.broadcastEvent(fromRoomId, {
+          type: 'poker.table_rebalanced',
+          avatarId,
+          direction: 'left',
+          reason,
+        });
+      }
+      if (toRoomId) {
+        activityWsHub.broadcastEvent(toRoomId, {
+          type: 'poker.table_rebalanced',
+          avatarId,
+          direction: 'joined',
+          reason,
+        });
       }
     },
   });
