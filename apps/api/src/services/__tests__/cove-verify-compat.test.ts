@@ -122,11 +122,11 @@ describe('blackjackOutcomesMatch — new-rake-field back-compat', () => {
 describe('holdemOutcomesMatch — new-rake-field back-compat', () => {
   // A fold-preflop hand (rake almost certainly 0) and a played hand both must
   // verify true when the stored row predates the rake fields.
-  function serializedHand(actions: HoldemActionRecord[]): Json {
+  function serializedHand(actions: HoldemActionRecord[], nonce = 0): Json {
     const r = playHoldem({
       serverSeed: SERVER,
       clientSeed: CLIENT,
-      nonce: 0,
+      nonce,
       buttonSeat: 0,
       humanStartingStack: 100n,
       botStartingStack: 100n,
@@ -143,12 +143,25 @@ describe('holdemOutcomesMatch — new-rake-field back-compat', () => {
 
   it('a PRE-RAKE stored row with a NON-ZERO rake (played hand) verifies TRUE', () => {
     // Call down to showdown so the pot is large enough to incur a rake.
-    const expected = serializedHand([
-      { type: 'call' },
-      { type: 'check' },
-      { type: 'check' },
-      { type: 'check' },
-    ]);
+    // NOTE (botRoll cursor fix, BUG 3): the prior fixed [call,check,check,check]
+    // script coupled to the OLD bot-roll byte stream — once the per-(seat,street)
+    // decision counter changed which bytes each bot decision reads, a bot now
+    // bets on a later street and the scripted `check` became illegal ("owes 3").
+    // A pure call-down script is robust to ANY legal bot line (a `call` acts as a
+    // check when nothing is owed, a call when facing a bet, capped at stack), so
+    // it reliably reaches showdown — matching this test's stated intent without
+    // re-coupling to the bot byte stream. The test asserts verifier back-compat,
+    // not a specific bot line; the change is a fragility fix, not a behavior change.
+    // nonce 9 deterministically builds a 67-chip showdown pot (rake 3 > 0) under
+    // the call-down, so the NON-ZERO-rake path this test names is genuinely hit.
+    const expected = serializedHand(
+      Array.from({ length: 40 }, () => ({ type: 'call' as const })),
+      9,
+    );
+    // Guard the test's own premise: assert the rake is genuinely > 0, so a future
+    // byte-stream change can't silently degrade this into a rake-0 hand (which
+    // would make the "NON-ZERO rake" claim vacuous, the exact fragility above).
+    expect(BigInt((expected.rake as string) ?? '0')).toBeGreaterThan(0n);
     const storedPreFix = withoutKeys(expected, ['rake', 'humanRakedPayout', 'humanRakedNet']);
     expect(holdemOutcomesMatch(expected, storedPreFix)).toBe(true);
   });

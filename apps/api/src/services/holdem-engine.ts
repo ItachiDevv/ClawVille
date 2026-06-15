@@ -732,6 +732,177 @@ export function replayHand(args: PlayHoldemHandArgs): HoldemHandResult {
 }
 
 // ---------------------------------------------------------------------------
+// TEST-ONLY scripted betting-round driver
+// ---------------------------------------------------------------------------
+//
+// Pure, deterministic helper that drives the REAL `runBettingRound` /
+// `applyDecision` state machine through an EXPLICIT per-seat action script —
+// including seat 0. This lets the scripted-bet regression harness assert exact
+// betting-machine behavior (the BUG 1 reopen / short-all-in / canReopen gate)
+// without depending on which deterministic decisions the bots happen to make.
+//
+// It is NOT used by any route or by playHand — it exists purely so tests can
+// construct a precise table state and observe the machine. The `__` prefix +
+// this comment mark it test-only.
+
+/** One seat's starting config for the scripted driver. */
+export interface ScriptedSeatConfig {
+  seat: number;
+  /** Starting stack BEHIND (chips not yet committed this street), atomic CT. */
+  stack: bigint;
+  /** Chips already committed THIS street before the round starts (e.g. blinds). */
+  streetCommitted?: bigint;
+  /** Status at round start. Defaults to 'active'. */
+  status?: SeatStatus;
+  /** Whether this seat already acted since the last full raise. Defaults false. */
+  hasActed?: boolean;
+  /** Ordered actions this seat will take. seat 0 is treated as the human path. */
+  actions: HoldemActionRecord[];
+}
+
+/** Observable result of a scripted betting round (post-round state). */
+export interface ScriptedBettingResult {
+  /** Per-seat final state, keyed by seat index. */
+  seats: Array<{
+    seat: number;
+    stack: bigint;
+    streetCommitted: bigint;
+    committedTotal: bigint;
+    status: SeatStatus;
+    hasActed: boolean;
+  }>;
+  actionLog: ActionLogEntry[];
+  /** Final betting level reached this street. */
+  finalCurrentBet: bigint;
+  /** Final min-raise size this street (the table lastRaiseSize after the round). */
+  finalLastRaiseSize: bigint;
+}
+
+/**
+ * Drive `runBettingRound` through an explicit per-seat action script. Seat 0 is
+ * the human (its actions feed `humanActions`); every other configured seat feeds
+ * the test-only `scriptedNonHuman` source. Both paths go through the SAME
+ * `applyDecision` legality gate as live play — so an illegal scripted bet/raise
+ * (e.g. an already-acted seat re-raising over a short all-in) THROWS exactly as
+ * it would in production. Pure + deterministic.
+ *
+ * NOTE: `runBettingRound` mutates the per-street `finalLastRaiseSize` it returns
+ * but the *table* min-raise is read back from the seats' commits + the returned
+ * value; the harness asserts both directly.
+ */
+export function __runScriptedBettingRound(input: {
+  seats: ScriptedSeatConfig[];
+  street: 'preflop' | 'flop' | 'turn' | 'river';
+  firstToAct: number;
+  currentBet: bigint;
+  lastRaiseSize: bigint;
+  board?: Card[];
+}): ScriptedBettingResult {
+  const playSeats: PlaySeat[] = [];
+  const scriptedNonHuman = new Map<number, { actions: HoldemActionRecord[]; idx: number }>();
+  let humanActions: HoldemActionRecord[] = [];
+
+  // Build a dense seat array of length SEATS (the round pointer steps
+  // `(pointer + 1) % SEATS` over a full 0..SEATS-1 array, so EVERY slot must
+  // exist). Configured seats fill their index; the rest are inert 'folded'
+  // placeholders that never act. Reject out-of-range seat indices loudly.
+  const byIndex = new Map<number, ScriptedSeatConfig>();
+  for (const cfg of input.seats) {
+    if (!Number.isInteger(cfg.seat) || cfg.seat < 0 || cfg.seat >= SEATS) {
+      throw new Error(`__runScriptedBettingRound: seat ${cfg.seat} out of range 0..${SEATS - 1}`);
+    }
+    byIndex.set(cfg.seat, cfg);
+  }
+
+  for (let i = 0; i < SEATS; i++) {
+    const cfg = byIndex.get(i);
+    if (!cfg) {
+      // Inert placeholder seat (folded, no chips) — never acts.
+      playSeats.push({
+        seat: i, isHuman: false, personality: 'tag', hole: [],
+        stack: 0n, committedTotal: 0n, streetCommitted: 0n,
+        status: 'folded', hasActed: true,
+      });
+      continue;
+    }
+    const isHuman = cfg.seat === HUMAN_SEAT;
+    const streetCommitted = cfg.streetCommitted ?? 0n;
+    playSeats.push({
+      seat: cfg.seat,
+      isHuman,
+      personality: isHuman ? null : BOT_PERSONALITIES[cfg.seat] ?? 'tag',
+      hole: [],
+      stack: cfg.stack,
+      committedTotal: streetCommitted, // prior-street commits irrelevant to the round logic
+      streetCommitted,
+      status: cfg.status ?? 'active',
+      hasActed: cfg.hasActed ?? false,
+    });
+    if (isHuman) {
+      humanActions = cfg.actions;
+    } else {
+      scriptedNonHuman.set(cfg.seat, { actions: cfg.actions, idx: 0 });
+    }
+  }
+
+  const actionLog: ActionLogEntry[] = [];
+  // A throwaway args object — only serverSeed/clientSeed/nonce are read, and only
+  // by decideBot, which the scripted source bypasses entirely.
+  const args: PlayHoldemHandArgs = {
+    serverSeed: 'f'.repeat(64),
+    clientSeed: 'ab',
+    nonce: 0,
+    buttonSeat: 0,
+    humanStartingStack: 1n,
+    humanActions,
+  };
+
+  // runBettingRound reads currentBet/lastRaiseSize from ctx but tracks them
+  // locally; we recover the final values by re-deriving from the seats + a
+  // Run the REAL betting machine. A LOCAL out-holder (not a module global)
+  // captures the final table min-raise — `runBettingRound` accepts an optional
+  // out-param so production `playHand` stays instrumentation-free and the two
+  // callers can never drift in betting LOGIC (only this readback differs).
+  const lastRaiseOut = { value: input.lastRaiseSize };
+  runBettingRound(
+    {
+      seats: playSeats,
+      board: input.board ?? [],
+      street: input.street,
+      firstToAct: input.firstToAct,
+      currentBet: input.currentBet,
+      lastRaiseSize: input.lastRaiseSize,
+      actionLog,
+      args,
+      humanActions,
+      humanCursor: { idx: 0 },
+      scriptedNonHuman,
+    },
+    lastRaiseOut,
+  );
+
+  const finalCurrentBet = playSeats
+    .filter((s) => s.status !== 'folded')
+    .reduce((m, s) => (s.streetCommitted > m ? s.streetCommitted : m), input.currentBet);
+
+  return {
+    seats: playSeats
+      .filter((s) => byIndex.has(s.seat))
+      .map((s) => ({
+        seat: s.seat,
+        stack: s.stack,
+        streetCommitted: s.streetCommitted,
+        committedTotal: s.committedTotal,
+        status: s.status,
+        hasActed: s.hasActed,
+      })),
+    actionLog,
+    finalCurrentBet,
+    finalLastRaiseSize: lastRaiseOut.value,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Betting round
 // ---------------------------------------------------------------------------
 
@@ -746,12 +917,29 @@ interface BettingRoundCtx {
   args: PlayHoldemHandArgs;
   humanActions: HoldemActionRecord[];
   humanCursor: { idx: number };
+  /**
+   * TEST-ONLY: explicit per-seat action scripts for non-human seats, replacing
+   * `decideBot` so the betting state machine can be driven deterministically by
+   * the scripted-bet regression harness. Keyed by seat index → ordered actions.
+   * When a non-human seat is to act and a script exists for it, the next action
+   * is pulled (and validated through the SAME `applyDecision` gate as live play,
+   * so an illegal scripted raise THROWS just like a human one). Undefined in
+   * production — bots decide via `decideBot`. Never wired by any route.
+   */
+  scriptedNonHuman?: Map<number, { actions: HoldemActionRecord[]; idx: number }>;
 }
 
-function runBettingRound(ctx: BettingRoundCtx): void {
+function runBettingRound(ctx: BettingRoundCtx, lastRaiseOut?: { value: bigint }): void {
   const { seats } = ctx;
   let currentBet = ctx.currentBet;
   let lastRaiseSize = ctx.lastRaiseSize;
+
+  // Per-(seat,street) MONOTONIC decision counter for the bot-roll cursor (BUG 3
+  // fix). Resets each street because runBettingRound is called fresh per street;
+  // every distinct decision a seat makes this street gets a distinct, dense,
+  // non-overlapping cursor window → distinct roll bytes. Deterministic +
+  // replay-stable: the decision SEQUENCE is fully determined by the engine.
+  const botDecisionCount = new Map<number, number>();
 
   // Count seats that can still make a decision (active, with chips behind).
   // If ≤1 can act AND all matched, the round is over immediately.
@@ -778,6 +966,13 @@ function runBettingRound(ctx: BettingRoundCtx): void {
 
     const toCall = currentBet - seat.streetCommitted;
 
+    // ── Raise-rights gate (BUG 1) ────────────────────────────────────────────
+    // A seat may RAISE only if it has NOT yet acted since the last FULL bet/raise
+    // — i.e. exactly when its `hasActed` is false at the moment it acts. A seat
+    // that already acted and is only acting again because a SHORT all-in lifted
+    // currentBet may ONLY call or fold. Captured BEFORE we mark hasActed=true.
+    const canReopen = !seat.hasActed;
+
     if (seat.isHuman) {
       const rec = ctx.humanActions[ctx.humanCursor.idx];
       if (!rec) {
@@ -793,17 +988,35 @@ function runBettingRound(ctx: BettingRoundCtx): void {
         actionLog: ctx.actionLog,
         street: ctx.street,
         seats,
+        canReopen,
       });
     } else {
-      const decision = decideBot(seat, {
-        board: ctx.board,
-        street: ctx.street,
-        currentBet,
-        lastRaiseSize,
-        toCall,
-        seats,
-        args: ctx.args,
-      });
+      const scripted = ctx.scriptedNonHuman?.get(seat.seat);
+      let decision: HoldemActionRecord;
+      if (scripted) {
+        const rec = scripted.actions[scripted.idx];
+        if (!rec) {
+          throw new Error(
+            `holdem-engine: ran out of scripted actions for seat ${seat.seat} on ${ctx.street} (toCall=${toCall})`,
+          );
+        }
+        scripted.idx++;
+        decision = rec;
+      } else {
+        const n = botDecisionCount.get(seat.seat) ?? 0;
+        botDecisionCount.set(seat.seat, n + 1);
+        decision = decideBot(seat, {
+          board: ctx.board,
+          street: ctx.street,
+          currentBet,
+          lastRaiseSize,
+          toCall,
+          seats,
+          args: ctx.args,
+          canReopen,
+          decisionIndex: n,
+        });
+      }
       applyDecision(seat, decision, {
         currentBet,
         lastRaiseSize,
@@ -811,19 +1024,34 @@ function runBettingRound(ctx: BettingRoundCtx): void {
         actionLog: ctx.actionLog,
         street: ctx.street,
         seats,
+        canReopen,
       });
     }
 
     // Update the round's bet level if this seat raised/bet.
     if (seat.streetCommitted > currentBet) {
-      lastRaiseSize = seat.streetCommitted - currentBet;
+      const increment = seat.streetCommitted - currentBet; // raise-over amount
+      // ── FULL raise vs SHORT all-in (BUG 1) ────────────────────────────────
+      // A FULL raise (increment >= lastRaiseSize) sets the new min-raise size
+      // and REOPENS action (everyone else regains full call/raise rights). A
+      // SHORT all-in (increment < lastRaiseSize — only reachable via the all-in
+      // legality bypass in applyDecision) RAISES currentBet (so everyone still
+      // owes up to the new level and must act on it) but does NOT reopen action
+      // and does NOT shrink lastRaiseSize.
+      const isFullRaise = increment >= lastRaiseSize;
       currentBet = seat.streetCommitted;
-      // A bet/raise reopens action: everyone else must act again.
-      for (const s of seats) {
-        if (s.seat !== seat.seat && s.status === 'active' && s.stack > 0n) {
-          s.hasActed = false;
+      if (isFullRaise) {
+        lastRaiseSize = increment;
+        for (const s of seats) {
+          if (s.seat !== seat.seat && s.status === 'active' && s.stack > 0n) {
+            s.hasActed = false;
+          }
         }
       }
+      // SHORT all-in: leave lastRaiseSize unchanged + do NOT reset hasActed.
+      // Already-acted seats are NOT forced to re-decide with raise rights; they
+      // re-enter the loop only because streetCommitted < currentBet now (owing
+      // the difference), and the canReopen gate restricts them to call/fold.
     }
     seat.hasActed = true;
   }
@@ -831,6 +1059,10 @@ function runBettingRound(ctx: BettingRoundCtx): void {
   if (safety >= maxIterations) {
     throw new Error(`holdem-engine: betting round did not terminate on ${ctx.street}`);
   }
+
+  // TEST-ONLY readback: surface the final table min-raise to the scripted driver.
+  // Production callers (playHand) pass no out-param, so this is a no-op for them.
+  if (lastRaiseOut) lastRaiseOut.value = lastRaiseSize;
 }
 
 /**
@@ -861,10 +1093,20 @@ interface ApplyCtx {
   actionLog: ActionLogEntry[];
   street: 'preflop' | 'flop' | 'turn' | 'river';
   seats: PlaySeat[];
+  /**
+   * Raise-rights flag (BUG 1). True iff this seat had NOT yet acted since the
+   * last FULL bet/raise at the moment it acts — i.e. it keeps full raise rights.
+   * When false the seat may only call or fold: a bet/raise attempt is ILLEGAL
+   * (it already acted and is re-acting solely because a short all-in lifted the
+   * bet). Defaults to permissive (true) when the caller omits it so existing
+   * legal-raise behavior is unchanged.
+   */
+  canReopen?: boolean;
 }
 
 function applyDecision(seat: PlaySeat, rec: HoldemActionRecord, ctx: ApplyCtx): void {
   const { toCall, currentBet, lastRaiseSize } = ctx;
+  const canReopen = ctx.canReopen ?? true;
 
   switch (rec.type) {
     case 'fold': {
@@ -889,6 +1131,16 @@ function applyDecision(seat: PlaySeat, rec: HoldemActionRecord, ctx: ApplyCtx): 
     }
     case 'bet':
     case 'raise': {
+      // BUG 1 gate: an already-acted seat re-acting only because a SHORT all-in
+      // lifted the bet has NO raise rights — it may only call or fold. Reject a
+      // bet/raise BEFORE any amount/min-raise checks so the illegal re-raise is
+      // unambiguous (and so it fires even on an all-in re-shove for less).
+      if (!canReopen) {
+        throw new Error(
+          `holdem-engine: illegal ${rec.type} — action not reopened to seat ${seat.seat} ` +
+            `(may only call/fold over a short all-in)`,
+        );
+      }
       if (rec.amount === undefined) {
         throw new Error(`holdem-engine: ${rec.type} requires an amount (seat ${seat.seat})`);
       }
@@ -995,6 +1247,20 @@ interface BotCtx {
   toCall: bigint;
   seats: PlaySeat[];
   args: PlayHoldemHandArgs;
+  /**
+   * Raise-rights flag (BUG 1). When false the bot has already acted since the
+   * last full bet/raise and is re-acting only because a short all-in lifted the
+   * bet — it MUST clamp to call/fold and never emit a raise it cannot legally
+   * make (the server gate in applyDecision would otherwise throw).
+   */
+  canReopen: boolean;
+  /**
+   * MONOTONIC per-(seat,street) decision index (BUG 3). 0 for the seat's first
+   * decision this street, 1 for the second, … Threaded into the bot-roll cursor
+   * so distinct same-seat same-street decisions consume distinct, non-colliding
+   * stream bytes. Deterministic + replay-stable.
+   */
+  decisionIndex: number;
 }
 
 /**
@@ -1019,9 +1285,13 @@ function decideBot(seat: PlaySeat, ctx: BotCtx): HoldemActionRecord {
   // RAISE (the big-blind option), not a bet. Postflop with currentBet===0 it is
   // a true opening bet. Pick the verb off currentBet to keep the script legal.
   if (ctx.toCall === 0n) {
+    // BUG 1: an aggressive verb here is a bet (currentBet===0) or a BB-option
+    // RAISE (currentBet>0). A raise requires reopened rights — clamp to check
+    // when the action is not reopened to this seat. (A true opening bet when
+    // currentBet===0 always has reopened rights, but gate defensively anyway.)
     const wantsAggression =
       strength >= p.betThreshold || (strength >= p.semiBluffThreshold && roll < p.bluffFreq);
-    if (wantsAggression) {
+    if (wantsAggression && ctx.canReopen) {
       if (ctx.currentBet === 0n) {
         const betSize = sizeBet(seat, ctx, potBefore, p.betSizing);
         if (betSize !== null) return { type: 'bet', amount: betSize.toString() };
@@ -1041,10 +1311,13 @@ function decideBot(seat: PlaySeat, ctx: BotCtx): HoldemActionRecord {
   const callCost = ctx.toCall < seat.stack ? ctx.toCall : seat.stack;
   const potOdds = Number(callCost) / Number(potBefore + callCost);
 
-  // Raise with very strong hands (or a profile-driven bluff-raise).
+  // Raise with very strong hands (or a profile-driven bluff-raise) — but ONLY
+  // when the action is reopened to this seat (BUG 1). An already-acted seat
+  // facing a short all-in clamps to call/fold here; it can NEVER re-raise.
   if (
-    strength >= p.raiseThreshold ||
-    (strength >= p.semiBluffThreshold && roll < p.bluffRaiseFreq)
+    ctx.canReopen &&
+    (strength >= p.raiseThreshold ||
+      (strength >= p.semiBluffThreshold && roll < p.bluffRaiseFreq))
   ) {
     const raiseTo = sizeRaise(seat, ctx, potBefore, p.betSizing);
     if (raiseTo !== null && raiseTo > ctx.currentBet) {
@@ -1112,25 +1385,45 @@ const PROFILES: Record<BotPersonality, Profile> = {
 };
 
 /**
- * Deterministic roll in [0,1) for a bot decision, from the HMAC stream. The
- * cursor is derived from a per-(seat, street, decisionsSoFar) offset within the
- * dedicated bot-decision region so distinct decisions get distinct bytes and it
- * never overlaps card-deal bytes. Replayable.
+ * Per-decision cursor window width, in bytes. `sampleIntFromBytes` consumes 4
+ * bytes per rejection attempt and bounds itself at 64 attempts, so 64*4 = 256
+ * bytes is the absolute max a single decision can consume. Giving each decision
+ * a 256-byte window guarantees NO two decisions ever overlap stream bytes, even
+ * in the (astronomically unlikely) worst-case rejection run.
+ */
+const BOT_DECISION_WINDOW = 256; // 64 attempts × SAMPLE_WIDTH(4)
+/** Per-(seat,street) span: room for 64 distinct decisions × the window. */
+const BOT_DECISION_STREET_SPAN = 64 * BOT_DECISION_WINDOW; // 16384
+/** Per-seat span: 4 streets × the per-(seat,street) span. */
+const BOT_DECISION_SEAT_SPAN = 4 * BOT_DECISION_STREET_SPAN; // 65536
+
+/**
+ * Deterministic roll in [0,1) for a bot decision, from the HMAC stream (BUG 3
+ * fix). The cursor is a dense, NON-OVERLAPPING per-(seat, street, decisionIndex)
+ * window within the dedicated bot-decision region (≥ 2^20, far above any
+ * card-deal byte). `decisionIndex` is a MONOTONIC counter threaded from the
+ * betting loop — so two distinct decisions by the same bot on the same street
+ * (e.g. open then re-decide after a reopen) get DISTINCT bytes and can no longer
+ * collide. Stable per replay because the decision sequence is fully
+ * deterministic. The old `committedTotal%1000 + currentBet%1000` discriminator
+ * could collapse two distinct decisions onto one window (reusing roll bytes and
+ * correlating bluffs); the monotonic index cannot.
  */
 function botRoll(seat: PlaySeat, ctx: BotCtx): number {
   const streetIndex = { preflop: 0, flop: 1, turn: 2, river: 3 }[ctx.street];
-  // A monotonic decision counter: count of this seat's prior log entries this
-  // street would require scanning; instead derive a stable offset from
-  // streetCommitted + committedTotal + currentBet so re-entry is deterministic.
-  // We use committedTotal (chips already in) as a coarse decision discriminator;
-  // combined with seat + street it is stable per replay.
-  const decisionDiscriminator =
-    Number(seat.committedTotal % 1000n) + Number(ctx.currentBet % 1000n);
+  // Clamp the index into its street span (64 decisions/street is far beyond any
+  // real betting round; the clamp only guards against a pathological input and
+  // keeps every cursor inside the dedicated bot region).
+  const safeIndex = ctx.decisionIndex < 0
+    ? 0
+    : ctx.decisionIndex >= 64
+      ? 63
+      : ctx.decisionIndex;
   const cursor =
     BOT_DECISION_CURSOR_BASE +
-    (seat.seat * 4096) +
-    (streetIndex * 1024) +
-    (decisionDiscriminator * 4);
+    (seat.seat * BOT_DECISION_SEAT_SPAN) +
+    (streetIndex * BOT_DECISION_STREET_SPAN) +
+    (safeIndex * BOT_DECISION_WINDOW);
   const { value } = sampleIntFromBytes({
     serverSeed: ctx.args.serverSeed,
     clientSeed: ctx.args.clientSeed,
@@ -1405,6 +1698,12 @@ function awardPots(
  * Split `amount` among `winners` (sorted by seat order). Each gets
  * floor(amount/n); the odd-chip remainder goes one chip at a time to the
  * earliest seats (deterministic, conserves total chips exactly).
+ *
+ * TODO(P3): odd-chip remainder is assigned by ascending SEAT INDEX, not
+ * button-relative order (first seat left of the button gets the odd chip per
+ * standard NLHE). Button-relative ordering is deferred to the button-rotation
+ * work phase; it needs the button seat threaded down here. Do NOT change this
+ * seat-index ordering now — it is intentionally pinned for the current phase.
  */
 function distributeWithRemainder(
   amount: bigint,
@@ -1484,38 +1783,55 @@ export function computeHoldemRake(result: HoldemHandResult): HoldemRakeResult {
     for (const w of winners) rakedWonBySeat.set(w.seat, w.won);
   } else {
     const totalWon = winners.reduce((acc, w) => acc + w.won, 0n); // == pot
-    // Proportional rake share per winner = floor(rake * won / totalWon).
+    // TODO(P3): the remainder-chip rule below assigns leftover rake chips by
+    // ascending SEAT INDEX, not button-relative order. Button-relative ordering
+    // (rake the odd chip off the seat first-left-of-button) is deferred to the
+    // button-rotation work phase, which threads the button seat down here. Do
+    // NOT change this seat-index ordering now.
+    //
+    // Proportional rake share per winner = floor(rake * won / totalWon), CAPPED
+    // at the winner's own `won` so the seeded award can never go negative (the
+    // cap only bites in the degenerate case rake > totalWon, e.g. a synthetic
+    // result; for a real hand rake <= pot === totalWon so the floor never
+    // exceeds won). Capping here means the leftover-reassignment loop below sees
+    // the true under-allocation and distributes it correctly.
     let allocated = 0n;
     const shares = winners.map((w) => {
-      const share = (rake * w.won) / totalWon; // floored
+      const raw = (rake * w.won) / totalWon; // floored
+      const share = raw > w.won ? w.won : raw; // never rake more than the seat holds
       allocated += share;
       return { seat: w.seat, won: w.won, rakeShare: share };
     });
-    // Remainder chips (rake - sum of floored shares) come off the EARLIEST
-    // winning seats, one chip each — same deterministic remainder rule as
-    // distributeWithRemainder, so the total raked equals exactly `rake`.
-    let remainder = rake - allocated;
+    // Seed each winner's raked award at won - share (always >= 0 by the cap).
     for (const sh of shares) {
-      let take = sh.rakeShare;
-      if (remainder > 0n) {
-        // Never rake a seat below 0 — cap the extra chip at the seat's won.
-        if (take < sh.won) {
-          take += 1n;
+      rakedWonBySeat.set(sh.seat, sh.won - sh.rakeShare);
+    }
+    // Distribute the leftover rake chips (rake - sum of floored shares) ONE AT A
+    // TIME across winners that can still absorb a chip (raked award > 0), in
+    // ascending seat order, looping until either the remainder is exhausted or
+    // no winner can give another chip. BUG 5 fix: the previous code did a single
+    // pass and, if a chip could not be placed on its target seat, FLOORED that
+    // seat's award to 0 — which DROPPED a chip and broke chip conservation
+    // (sum(rakedWon) + rake != pot) on a tiny pot where the rake exceeds a
+    // single winner's whole award. We instead REASSIGN the leftover to another
+    // winner. Because sum(won) === totalWon >= rake, the winners can always
+    // collectively absorb exactly `rake` chips, so the remainder always reaches
+    // 0 without flooring any seat below 0 and exactly `rake` total is removed.
+    let remainder = rake - allocated;
+    let guard = 0;
+    const maxGuard = remainder * 2n + BigInt(shares.length) + 1n;
+    while (remainder > 0n && BigInt(guard++) < maxGuard) {
+      let placedThisPass = false;
+      for (const sh of shares) {
+        if (remainder === 0n) break;
+        const cur = rakedWonBySeat.get(sh.seat) ?? 0n;
+        if (cur > 0n) {
+          rakedWonBySeat.set(sh.seat, cur - 1n);
           remainder -= 1n;
+          placedThisPass = true;
         }
       }
-      const raked = sh.won - take;
-      rakedWonBySeat.set(sh.seat, raked < 0n ? 0n : raked);
-    }
-    // Defensive: if rounding left remainder unassigned (only possible when every
-    // winner was already at its cap — impossible since sum(won)=pot>=rake), drop
-    // it from the largest winner. Keeps sum + rake == pot exactly.
-    if (remainder > 0n) {
-      const largest = [...shares].sort((a, b) => (b.won > a.won ? 1 : b.won < a.won ? -1 : a.seat - b.seat))[0]!;
-      const cur = rakedWonBySeat.get(largest.seat) ?? 0n;
-      const adj = cur - remainder;
-      rakedWonBySeat.set(largest.seat, adj < 0n ? 0n : adj);
-      remainder = 0n;
+      if (!placedThisPass) break; // no winner can absorb more (defensive; unreachable when rake <= totalWon)
     }
   }
 
