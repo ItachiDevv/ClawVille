@@ -45,9 +45,11 @@ type Mode = 'idle' | 'walk' | 'run' | 'swim' | 'fly' | 'pray';
 // stand-alone character (not hermes-*) so his override map key + file path
 // differ from the hermes-female / hermes-male pattern.
 const CHARACTER_META: Record<Character, { path: string; animatorId: string }> = {
-  female: { path: '/avatars/hermes-female.vrm', animatorId: 'hermes-female' },
-  male:   { path: '/avatars/hermes-male.vrm',   animatorId: 'hermes-male' },
-  tekk:   { path: '/avatars/tekk.vrm',          animatorId: 'tekk' },
+  // ?v=2 — perf round 2 decimation bust 2026-06-13 (match the registry url so
+  // the dev page shares the same cache entry as /game instead of fetching a 2nd).
+  female: { path: '/avatars/hermes-female.vrm?v=2', animatorId: 'hermes-female' },
+  male:   { path: '/avatars/hermes-male.vrm?v=2',   animatorId: 'hermes-male' },
+  tekk:   { path: '/avatars/tekk.vrm?v=2',          animatorId: 'tekk' },
 };
 
 function HermesAvatar({ character, mode }: { character: Character; mode: Mode }) {
