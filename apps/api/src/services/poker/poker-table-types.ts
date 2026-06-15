@@ -126,6 +126,14 @@ export interface PublicTableSnapshot {
  */
 export interface PrivateSeatView {
   seatIndex: number;
+  /**
+   * The hand this private view belongs to. Lets the per-seat frame builder stamp
+   * the correct `handNumber` on `poker.hole_cards` / `poker.your_turn` for a
+   * LONG-LIVED table that plays many hands (MTT). The single-hand demo path used
+   * a hardcoded `1`; carrying it on the view makes the frame self-describing so a
+   * client can discard a stale-hand private frame.
+   */
+  handNumber: number;
   holeCards: [Card, Card];
   /** Legal action kinds for this seat right now. */
   legalActions: ActionKind[];
@@ -222,6 +230,15 @@ export type BroadcastFn = (tableId: string, snapshot: PublicTableSnapshot) => vo
 export type SendToSeatFn = (tableId: string, avatarId: string, frame: PrivateSeatView) => void;
 /** Hand-complete callback: the resolved result for persistence/settlement. */
 export type HandCompleteFn = (tableId: string, result: HandResult) => void;
+/**
+ * Showdown/hand-end BROADCAST callback — fired at the SAME resolveHand boundary
+ * as `HandCompleteFn`, but a SEPARATE single-field slot so a table owner that
+ * already claimed `setHandCompleteFn` (the MTT TournamentManager's multi-hand
+ * loop) can ALSO fan out public `poker.showdown` / `poker.hand_ended` frames
+ * WITHOUT the two single-field setters clobbering each other. The hand-complete
+ * fn ADVANCES state (settle/next-hand); this one only BROADCASTS.
+ */
+export type ShowdownBroadcastFn = (tableId: string, result: HandResult) => void;
 
 /**
  * Injectable clock so tests drive timeouts deterministically WITHOUT real time.

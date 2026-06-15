@@ -105,6 +105,34 @@ export interface TournamentManagerDeps {
    * `logEvent` writes to the real `db`, not the injected mock).
    */
   emitPlacementFn?: (emit: PlacementEmit) => void | Promise<void>;
+  /**
+   * P3.5 WS-ROOM SEAM (optional). Called ONCE per tournament at seating, BEFORE
+   * the first hand starts, with the seat plan. The production bridge
+   * (`poker-mtt-ws-bridge.ts`) creates ONE LONG-LIVED `texas-holdem-mtt` activity
+   * room (NOT one room per hand) and returns its `{ roomId, shortCode }` so seated
+   * subjects can connect over WS and the bridge can fan sim frames out to the
+   * room. The TM stores the binding and exposes it via `getConnectionForSubject`.
+   *
+   * Unset (the unit-test path) ⇒ no WS room; the TM drives the sim directly and
+   * the multi-hand loop still runs to a champion. Returning `null` is equivalent.
+   * A throw here MUST NOT strand the seated field — the TM logs + proceeds without
+   * the room (hands still play; only the live transport is missing).
+   */
+  onSeatFn?: (info: {
+    tournamentId: string;
+    tableId: string;
+    seats: MttSeatPlan[];
+  }) => Promise<MttRoomBinding | null> | MttRoomBinding | null;
+  /**
+   * P3.5 WS-ROOM teardown seam (optional). Called ONCE when a tournament
+   * completes (champion crowned) so the bridge can transition the long-lived
+   * room → `results`. Best-effort: a throw is logged and never blocks settlement.
+   */
+  onTournamentEndFn?: (info: {
+    tournamentId: string;
+    tableId: string;
+    roomId: string;
+  }) => Promise<void> | void;
 }
 
 /** One leaderboard placement emission (one per placed entrant at settle). */
@@ -115,6 +143,42 @@ export interface PlacementEmit {
   placement: number;
   prizeCt: string;
   subjectType: 'human' | 'agent';
+}
+
+/**
+ * One seat in the live tournament table, as handed to the WS-room seam at
+ * seating. Carries everything the room/hub need to bind a connection to a seat
+ * (avatarId + agent parity) WITHOUT the TM importing the room manager.
+ */
+export interface MttSeatPlan {
+  seatIndex: number;
+  avatarId: string;
+  agentId: string | null;
+  subjectType: 'human' | 'agent';
+}
+
+/**
+ * The WS-room binding returned by `onSeatFn` (the production bridge). The TM is
+ * agnostic to HOW the room is made — it only stores the binding so a seated
+ * subject can later learn `{ roomId, shortCode, seatIndex }` to open its WS, and
+ * so the bridge can translate the sim `tableId` ↔ `roomId` for frame fan-out.
+ *
+ * `null` = no WS room was created (the unit-test path, which drives the sim
+ * directly and never opens a socket). Hand play still proceeds; only the live
+ * transport is absent.
+ */
+export interface MttRoomBinding {
+  roomId: string;
+  shortCode: string;
+  activityId: string;
+}
+
+/** Per-seat connection ticket a registered+seated subject opens its WS with. */
+export interface MttConnectionInfo {
+  roomId: string;
+  shortCode: string;
+  seatIndex: number;
+  activityId: string;
 }
 
 const DEFAULT_TURN_CLOCK_MS = 25_000;
@@ -166,6 +230,13 @@ interface RunningTournament {
   tournamentId: string;
   tableId: string;
   serverDbTableId: string;
+  /**
+   * P3.5 — the long-lived `texas-holdem-mtt` WS room bound to this table, or null
+   * when no room seam is wired (unit-test path). Set once at seating from
+   * `onSeatFn`; used to expose connection info + drive the room → `results`
+   * teardown at completion.
+   */
+  roomBinding: MttRoomBinding | null;
   blindLevels: BlindLevel[];
   /** index into blindLevels for the level applied to the NEXT hand. */
   currentLevelIndex: number;
@@ -202,11 +273,41 @@ export class TournamentManager {
   private readonly clock: SimClock;
   private readonly seedFn: () => string;
   private readonly emitPlacementFn: (emit: PlacementEmit) => void | Promise<void>;
+  // Mutable so the production singleton (constructed at module load with no deps)
+  // can have its WS-room seam wired LATER by the bridge via `setSeatHandlers`.
+  // Tests inject them at construction via deps.
+  private onSeatFn:
+    | ((info: {
+        tournamentId: string;
+        tableId: string;
+        seats: MttSeatPlan[];
+      }) => Promise<MttRoomBinding | null> | MttRoomBinding | null)
+    | null;
+  private onTournamentEndFn:
+    | ((info: {
+        tournamentId: string;
+        tableId: string;
+        roomId: string;
+      }) => Promise<void> | void)
+    | null;
 
   /** tableId → running tournament driver (single table this phase). */
   private readonly running = new Map<string, RunningTournament>();
   /** tournamentId → tableId (so completion lookups are O(1)). */
   private readonly tableByTournament = new Map<string, string>();
+  /**
+   * P3.5 — WS room id → sim tableId. The hub addresses connections by `roomId`
+   * (a UUID) but the MTT sim is keyed by `mtt:<tournamentId>`; the bridge reads
+   * this to translate an inbound `poker.action` on a room into the sim table. Set
+   * at seating, cleared at completion teardown.
+   */
+  private readonly roomToTable = new Map<string, string>();
+  /**
+   * P3.5 — sim tableId → WS room id (reverse of `roomToTable`). The bridge's
+   * sim-callback fan-out (`setBroadcastFn`/`setSendToSeatFn`/`setShowdownBroadcastFn`)
+   * is invoked with the sim `tableId` and must address the hub by `roomId`.
+   */
+  private readonly tableToRoom = new Map<string, string>();
   /** The start-trigger sweeper interval handle (null when not running). */
   private sweeperHandle: ReturnType<typeof setInterval> | null = null;
   /** Re-entrancy guard so overlapping sweeps don't double-fire a startTrigger. */
@@ -253,6 +354,8 @@ export class TournamentManager {
           } satisfies ActivityMatchPlacedPayload,
         });
       });
+    this.onSeatFn = deps.onSeatFn ?? null;
+    this.onTournamentEndFn = deps.onTournamentEndFn ?? null;
 
     // The TM EXCLUSIVELY owns the hand-complete handler on ITS sim instance.
     // In production that instance is the DEDICATED `pokerMttSim` (NOT the WS-demo
@@ -527,10 +630,39 @@ export class TournamentManager {
 
     // Phase 2 (outside the tx): build the in-memory driver + start the first hand.
     const tableId = `mtt:${tournamentId}`;
+
+    // P3.5 — create the LONG-LIVED WS room for this table BEFORE hand 1 so a
+    // connected seat can already be authed when the first frames fly. The seam is
+    // optional (unit tests pass no `onSeatFn` → null binding → no WS). A throw
+    // MUST NOT strand the seated field: hands still play; only live transport is
+    // lost — so we swallow + proceed with a null binding.
+    let roomBinding: MttRoomBinding | null = null;
+    if (this.onSeatFn) {
+      try {
+        const seatPlan: MttSeatPlan[] = decision.seats
+          .slice()
+          .sort((a, b) => a.seatIndex - b.seatIndex)
+          .map((s) => ({
+            seatIndex: s.seatIndex,
+            avatarId: s.avatarId,
+            agentId: s.agentId,
+            subjectType: s.subjectType,
+          }));
+        roomBinding = await this.onSeatFn({ tournamentId, tableId, seats: seatPlan });
+      } catch (err) {
+        console.error(
+          `[poker-mtt] onSeatFn (WS room creation) failed for tournament ${tournamentId} — playing WITHOUT a live WS room:`,
+          err,
+        );
+        roomBinding = null;
+      }
+    }
+
     const running: RunningTournament = {
       tournamentId,
       tableId,
       serverDbTableId: decision.dbTableId,
+      roomBinding,
       blindLevels: decision.blindLevels,
       currentLevelIndex: 0,
       levelStartedMs: this.clock.now(),
@@ -545,6 +677,10 @@ export class TournamentManager {
     };
     this.running.set(tableId, running);
     this.tableByTournament.set(tournamentId, tableId);
+    if (roomBinding) {
+      this.roomToTable.set(roomBinding.roomId, tableId);
+      this.tableToRoom.set(tableId, roomBinding.roomId);
+    }
 
     this.startNextHand(running);
 
@@ -867,6 +1003,31 @@ export class TournamentManager {
       });
     }
     await this.settleTournament(r.tournamentId);
+
+    // P3.5 — break the long-lived WS room (→ `results`) AFTER settlement. The sim
+    // already fired its final showdown/hand-ended frames for the last hand via the
+    // bridge; this flips the room FSM so the client shows the results screen + the
+    // room is GC'd by the room sweeper. Best-effort: a teardown throw must never
+    // surface from a settled tournament. Clear the room↔table map either way.
+    if (r.roomBinding) {
+      const { roomId } = r.roomBinding;
+      this.roomToTable.delete(roomId);
+      this.tableToRoom.delete(r.tableId);
+      if (this.onTournamentEndFn) {
+        try {
+          await this.onTournamentEndFn({
+            tournamentId: r.tournamentId,
+            tableId: r.tableId,
+            roomId,
+          });
+        } catch (err) {
+          console.error(
+            `[poker-mtt] onTournamentEndFn (room teardown) failed for tournament ${r.tournamentId}:`,
+            err,
+          );
+        }
+      }
+    }
   }
 
   /**
@@ -1076,6 +1237,81 @@ export class TournamentManager {
   /** The sim table id for an in-flight tournament (for driving actions in tests). */
   getTableId(tournamentId: string): string | undefined {
     return this.tableByTournament.get(tournamentId);
+  }
+
+  /**
+   * P3.5 — the WS room binding for an in-flight tournament (or null if no room
+   * seam ran). Lets the bridge + connect route translate roomId ↔ tableId.
+   */
+  getRoomBinding(tournamentId: string): MttRoomBinding | null {
+    const tableId = this.tableByTournament.get(tournamentId);
+    const r = tableId ? this.running.get(tableId) : undefined;
+    return r?.roomBinding ?? null;
+  }
+
+  /**
+   * P3.5 — translate a WS `roomId` to its sim `tableId`. The hub bridge calls this
+   * to route an inbound `poker.action` (addressed by room) onto the MTT sim
+   * (keyed by `mtt:<tournamentId>`). Returns undefined for an unknown / ended room.
+   */
+  resolveRoomToTable(roomId: string): string | undefined {
+    return this.roomToTable.get(roomId);
+  }
+
+  /**
+   * P3.5 — translate a sim `tableId` (`mtt:<tournamentId>`) to its WS `roomId`.
+   * The bridge's sim-callback fan-out is invoked with the tableId and addresses
+   * the hub by roomId. Returns undefined for an unbound / ended table.
+   */
+  resolveTableToRoom(tableId: string): string | undefined {
+    return this.tableToRoom.get(tableId);
+  }
+
+  /**
+   * P3.5 — wire the WS-room seam onto the PRODUCTION singleton (which was
+   * constructed at module load with no deps). The bridge calls this once at boot
+   * with the room-create / room-break handlers. Tests inject the same handlers via
+   * the constructor deps instead. Constructor-injected handlers take precedence:
+   * this setter only fills a slot left null at construction, so a test that wired
+   * its own can't be silently overridden by an accidental boot call.
+   */
+  setSeatHandlers(handlers: {
+    onSeatFn?: TournamentManagerDeps['onSeatFn'];
+    onTournamentEndFn?: TournamentManagerDeps['onTournamentEndFn'];
+  }): void {
+    if (this.onSeatFn === null && handlers.onSeatFn) {
+      this.onSeatFn = handlers.onSeatFn;
+    }
+    if (this.onTournamentEndFn === null && handlers.onTournamentEndFn) {
+      this.onTournamentEndFn = handlers.onTournamentEndFn;
+    }
+  }
+
+  /**
+   * P3.5 CONNECT PATH — the connection ticket a registered+seated subject opens
+   * its WS with. Returns `{ roomId, shortCode, seatIndex, activityId }` ONLY when:
+   *   1. the tournament is running with a live WS room (a room seam ran), AND
+   *   2. `avatarId` is a SEATED live seat at this table (agent-capable: the avatar
+   *      is the resolved bound avatar for an agent session OR a human's avatar).
+   * Returns null otherwise (not seated / no room / busted). The route resolves the
+   * caller's avatarId via the same human-XOR-agent resolver as registration, so
+   * an agent learns its OWN seat — never another subject's.
+   */
+  getConnectionForSubject(
+    tournamentId: string,
+    avatarId: string,
+  ): MttConnectionInfo | null {
+    const tableId = this.tableByTournament.get(tournamentId);
+    const r = tableId ? this.running.get(tableId) : undefined;
+    if (!r || r.done || !r.roomBinding) return null;
+    const seat = [...r.liveSeats.values()].find((s) => s.avatarId === avatarId);
+    if (!seat) return null;
+    return {
+      roomId: r.roomBinding.roomId,
+      shortCode: r.roomBinding.shortCode,
+      seatIndex: seat.seatIndex,
+      activityId: r.roomBinding.activityId,
+    };
   }
 }
 
