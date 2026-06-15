@@ -1,11 +1,12 @@
 'use client';
 
-import { Suspense, memo, useMemo, useRef } from 'react';
+import { Suspense, memo, useMemo } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import type { NpcSpriteState } from '@/stores/npc';
 import { usePlayerStore, type RemotePlayerState } from '@/stores/players';
 import { GLBNpcMesh, VRMNpcMesh } from '@/lib/three/arena-npcs';
 import { MODEL_REGISTRY } from '@/lib/three/agent-model-registry';
+import { preloadVRMBytes } from '@/lib/three/vrm-loader';
 
 /**
  * Adapt a `RemotePlayerState` to the `NpcSpriteState` shape consumed by
@@ -90,23 +91,49 @@ interface RemotePlayerEntryProps {
  * Per-player wrapper. Remote players render as their real GLB/VRM model;
  * visible capsule stand-ins were rejected for player-facing world quality.
  *
- * `memo` on the entry component plus stable `npcLike` ref preserves the
- * React.memo bailout inside VRMNpcMesh / GLBNpcMesh, so a player only
- * re-renders when its own snapshot mutates.
+ * IMPORTANT: `memo` is applied here but the `<Suspense>` boundary is
+ * intentionally kept OUTSIDE this component (at the RemotePlayers map
+ * level). Placing Suspense inside a memo wrapper deadlocks the first VRM
+ * load: React's Suspense retry needs to re-render through the memo to reach
+ * the boundary, but a memo bailout (same `player` ref while the load is
+ * in flight) returns the previous (suspended) output unchanged forever,
+ * leaving permanent zero-mesh. So every player's Suspense boundary lives
+ * one level up, outside memo (the D3a fix).
+ *
+ * MOVEMENT (2026-06-12, Codex finding #5): the players store does IMMUTABLE
+ * updates — `updateFromSnapshot` emits a NEW object for any player whose
+ * position / heading / activity changed and keeps the previous reference only
+ * for players that are perfectly still. So when a remote player moves, `player`
+ * identity flips: memo re-renders this entry, `useMemo([player])` recomputes the
+ * adapter with the fresh interpolation endpoints, and `VRMNpcMesh`/`GLBNpcMesh`
+ * pick up the new `npcRef.current` — the mesh's entity-interp then lerps
+ * prevX→x over tsDelta and the remote player VISIBLY moves. A still player keeps
+ * its reference, so memo bails and costs zero reconciliation. (Before this, the
+ * store mutated in place; identity never changed; the adapter froze at mount and
+ * remote players mounted once then never moved.)
  */
 const RemotePlayerEntry = memo(function RemotePlayerEntry({ player }: RemotePlayerEntryProps) {
-  // npcLike is rebuilt on every render of this entry — but the entry only
-  // re-renders when the player ref changes. Cheap allocation; we trade the
-  // alloc for keeping VRMNpcMesh / GLBNpcMesh untouched.
+  // Rebuilt whenever `player` identity changes — i.e. every snapshot in which
+  // this player moved (immutable store update, see header). Still players keep
+  // their ref so this memo bails and nothing recomputes. Cheap allocation; we
+  // trade the alloc for keeping VRMNpcMesh / GLBNpcMesh untouched.
   const npcLike = useMemo(() => adaptPlayer(player), [player]);
 
   const regEntry = MODEL_REGISTRY[player.species as keyof typeof MODEL_REGISTRY];
   if (regEntry?.avatar_type === 'vrm') {
-    return (
-      <Suspense fallback={null}>
-        <VRMNpcMesh npc={npcLike} />
-      </Suspense>
-    );
+    // Eagerly warm the VRM byte cache (HTTP fetch only; no parse) so the
+    // VRMNpcMesh Suspense boundary (in the parent) can start parsing as
+    // soon as possible. Remote player VRMs like `phanes` and `eliza-chibi`
+    // are NOT in the module-scope preload list in arena-npcs.tsx (which
+    // only covers the 11 wandering NPC VRMs). Without this, the bytes
+    // fetch starts only AFTER useVRMInstance throws its first Suspense
+    // promise — adding one full HTTP round-trip to an already-queued
+    // parse. `preloadVRMBytes` is a no-op if the bytes are already cached.
+    preloadVRMBytes(regEntry.path);
+    // VRMNpcMesh calls useVRMInstance which throws a Suspense promise while
+    // loading. The promise is caught by the <Suspense> boundary in
+    // RemotePlayers (one level up, outside this memo wrapper).
+    return <VRMNpcMesh npc={npcLike} />;
   }
   return <GLBNpcMesh npc={npcLike} />;
 });
@@ -119,18 +146,27 @@ const RemotePlayerEntry = memo(function RemotePlayerEntry({ player }: RemotePlay
  * Subscription pattern: `useShallow((s) => s.players)` so the parent
  * re-renders only when the player array reference changes; sibling entries
  * are isolated by memo + per-entry LOD subscription.
+ *
+ * Each remote player gets its OWN <Suspense> boundary keyed to the player
+ * id. This is required because the Suspense boundary must be OUTSIDE the
+ * React.memo wrapper on RemotePlayerEntry — see the comment on that
+ * component for the full deadlock explanation. One boundary per player also
+ * ensures that a stalled VRM load for player A does not hold back player B's
+ * render (no shared fallback state between entries).
  */
 export default function RemotePlayers() {
   const players = usePlayerStore(useShallow((s) => s.players));
 
   return (
-    <Suspense fallback={null}>
-      <group>
-        {players.map((p) => {
-          if (p.isLocal) return null;
-          return <RemotePlayerEntry key={p.id} player={p} />;
-        })}
-      </group>
-    </Suspense>
+    <group>
+      {players.map((p) => {
+        if (p.isLocal) return null;
+        return (
+          <Suspense key={p.id} fallback={null}>
+            <RemotePlayerEntry player={p} />
+          </Suspense>
+        );
+      })}
+    </group>
   );
 }

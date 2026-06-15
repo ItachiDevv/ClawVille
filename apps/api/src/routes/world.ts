@@ -35,6 +35,7 @@ import {
 } from '../middleware/require-auth-or-agent';
 import { npcSimulation } from '../services/npc-simulation';
 import { roomRegistry, ROOM_MAX_PLAYERS } from '../services/room-registry';
+import { signRoomTicket, resolveRecoveryRoomId } from '../services/room-ticket';
 import { createRateLimiter, getClientIp } from '../middleware/rate-limit';
 import type { Context } from 'hono';
 import type { AppContext } from '../types';
@@ -201,6 +202,14 @@ const joinSchema = z.object({
     .string()
     .regex(ROOM_ID_REGEX, 'roomId must be 4 chars from the safe alphabet')
     .optional(),
+  // Sticky-room recovery (2026-06-12). An opaque signed ticket the client
+  // received from a PRIOR /join. Replayed ONLY on a recovery rejoin (after a
+  // 409 or an SSE reconnect) to re-land the session in the same room across a
+  // deploy/restart. Bounded length so a malformed value can't bloat the body;
+  // the real validation is the HMAC check in verifyRoomTicket. An
+  // invalid/expired/mismatched ticket is silently ignored (fail-closed → normal
+  // auto-fill), never an error.
+  roomTicket: z.string().max(512).optional(),
 });
 
 const positionSchema = z.object({
@@ -227,6 +236,19 @@ worldRoutes.post('/join', async (c) => {
   }
   const requestedRoomId = parsed.data.roomId;
 
+  // Sticky-room recovery (2026-06-12). If the caller replayed a ticket from a
+  // prior /join, `resolveRecoveryRoomId` is the single authoritative gate: it
+  // verifies the ticket (authentic MAC + unexpired, fail-closed) AND requires
+  // its SECRET-bound subject to equal the subject re-derived from THIS live
+  // session's sessionId (deriveTicketSubject — bound to the raw sessionId, a
+  // secret only the real session can present, NOT the wire-public publicId). A
+  // ticket is thus bound to the exact session it was minted for, so a captured
+  // ticket can't be replayed by a different session to pin an arbitrary room (B2
+  // anti-spam holds on the recovery path too). Any failure → undefined and we
+  // fall through to the normal requestedRoomId / auto-fill flow. The gate lives
+  // in room-ticket.ts so it is unit-tested as the literal code, not a mirror.
+  const recoveryRoomId = resolveRecoveryRoomId(parsed.data.roomTicket, presence.sessionId);
+
   const avatarMeta = await resolveAvatarMeta(presence);
   const { room, player, swappedOutNpcId } = roomRegistry.joinPlayer(presence.sessionId, avatarMeta, {
     requestedRoomId,
@@ -234,7 +256,16 @@ worldRoutes.post('/join', async (c) => {
     // can mint never-before-seen invite codes. Guests with an unknown code
     // fall through to auto-fill inside the registry.
     isAuthenticated: presence.kind !== 'guest',
+    recoveryRoomId,
   });
+
+  // Mint a fresh recovery ticket for the room the session actually landed in,
+  // bound to a SECRET commitment to this sessionId (deriveTicketSubject — never
+  // the raw bearer, never the wire-public publicId). The client stores this and
+  // replays it on its next recovery rejoin so a deploy/restart re-converges the
+  // group. Re-issued every join so the 15-min TTL slides forward while the
+  // session stays active.
+  const roomTicket = signRoomTicket({ roomId: room.id, sessionId: presence.sessionId });
 
   return c.json({
     roomId: room.id,
@@ -242,6 +273,7 @@ worldRoutes.post('/join', async (c) => {
     // every snapshot so it can resolve `isLocal`. The raw sessionId is never
     // returned (it is the Lucia bearer token for logged-in users).
     id: player.publicId,
+    roomTicket,
     capacity: ROOM_MAX_PLAYERS,
     playerCount: room.players.size,
     swappedOutNpcId,
@@ -261,7 +293,8 @@ worldRoutes.post('/leave', async (c) => {
 });
 
 worldRoutes.post('/position', async (c) => {
-  const { sessionId } = await resolvePresence(c);
+  const presence = await resolvePresence(c);
+  const { sessionId } = presence;
   const now = Date.now();
   const last = positionLastSeen.get(sessionId) ?? 0;
   if (now - last < POSITION_MIN_INTERVAL_MS) {
@@ -282,6 +315,15 @@ worldRoutes.post('/position', async (c) => {
     // Session has no room yet — client must call /join first. 409 makes
     // the client error path explicit so it can re-join automatically.
     throw new HTTPException(409, { message: 'Session is not in a room — call /api/world/join first' });
+  }
+  // Controlled Hatcher launch: a logged-in human actively uploading position is
+  // the live "owner is driving" signal. Refresh the suppression TTL for any
+  // launched Hatcher proxy NPC recorded for this user so its autonomous body
+  // stays hidden + frozen while the owner drives their avatar. No-op for users
+  // with no controlled launch binding. Suppression lapses on its own once these
+  // uploads stop (e.g. the owner switches to explore mode).
+  if (presence.kind === 'human' && presence.userId) {
+    npcSimulation.refreshHumanControlledOpenClawForUser(presence.userId);
   }
   return c.json({ ok: true });
 });

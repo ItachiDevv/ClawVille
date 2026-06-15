@@ -177,6 +177,14 @@ const BUILDING_EXTENTS: Readonly<Record<string, { halfX: number; halfZ: number }
 const BUILDING_HALF_TILE_EXTENT = (14 * TILE_SIZE) / 2; // 224
 const BUILDING_HALF = BUILDING_HALF_TILE_EXTENT * 0.92;  // ≈206wu fallback
 
+// Small uniform buffer added to every BUILDING collider's half-extents. The
+// BUILDING_EXTENTS above are sized to the building GEOMETRY, but each building's
+// visible TEXTURE/silhouette bleeds a little past the geometry box — without a
+// buffer the player can walk into that outer texture before collision blocks them.
+// This pads the collision boundary outward so it covers the texture overhang.
+// Buildings only (props in PROPS[] are individually tuned). User-tunable.
+const BUILDING_COLLISION_BUFFER = 28; // wu
+
 // ---------------------------------------------------------------------------
 // Shisha-oasis collider constants (verified from GLB inspection 2026-05-22)
 // ---------------------------------------------------------------------------
@@ -259,8 +267,8 @@ function buildColliders(): Collider2D[] {
       id: zone.id,
       centerX: centerTileX * TILE_SIZE - HALF_W,
       centerZ: centerTileY * TILE_SIZE - HALF_H,
-      halfX: extents?.halfX ?? BUILDING_HALF,
-      halfZ: extents?.halfZ ?? BUILDING_HALF,
+      halfX: (extents?.halfX ?? BUILDING_HALF) + BUILDING_COLLISION_BUFFER,
+      halfZ: (extents?.halfZ ?? BUILDING_HALF) + BUILDING_COLLISION_BUFFER,
       kind: 'building',
     });
   }

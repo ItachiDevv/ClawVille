@@ -83,6 +83,68 @@ export interface HatcherWorldState {
   gameMode: string;
 }
 
+/**
+ * Response contract for `POST /api/partner/hatcher/launch/exchange` (the
+ * owner-side Hatcher launch entry). The web `/game` page consumes this to decide
+ * whether to focus the camera on the agent's in-world body or show an error
+ * banner. A discriminated union on `ok` so the consumer cannot read `agent`
+ * without first proving success.
+ *
+ * SECURITY: the success shape carries ONLY public values (the partner-supplied
+ * agentId echoed back, a display name, public world coordinates). It NEVER
+ * carries the launchToken, the Lucia session id (raw or hashed), the userId, or
+ * any Hatcher response body. The failure shape carries ONLY a small internal
+ * error enum + (for an upstream rejection) the upstream HTTP status — never
+ * Hatcher's raw body.
+ */
+export type HatcherLaunchExchangeResponse =
+  | {
+      ok: true;
+      agent: {
+        /** Raw partner agent id (no `hatcher:` namespace prefix). */
+        agentId: string;
+        /** Display name for the "Watching <name>" banner. */
+        name: string;
+        /** Public world coordinate (agent's body) — retained for compatibility;
+         * controlled launch lands in player follow-camera, not explore focus. */
+        x: number;
+        y: number;
+        /** Launch mode handed to the owner. Controlled = owner drives the
+         * agent's avatar via the magic-link session (the shipped deliverable).
+         * Hatcher's `/launch/exchange` accepts `controlled`. */
+        mode: 'controlled';
+      };
+    }
+  | {
+      ok: false;
+      /**
+       * Internal error enum (never Hatcher's raw error). `launch_requires_session`
+       * = no Lucia session (relaunch from the Hatcher dashboard).
+       * `agent_not_registered` = unknown agent id (no outbound call was made).
+       * `exchange_rejected` = Hatcher returned a non-2xx / was unreachable.
+       * `launch_issuer_unconfigured` = OUR service-issuer signing key is missing
+       * or invalid (a server config error, NOT an upstream rejection — distinct
+       * so the web side can surface "try again later" vs "relaunch").
+       * `invalid_request` = malformed params. `rate_limited` = per-IP cap hit.
+       * `agent_not_bound` = the agent row has no bound ClawVille user, so there
+       * is no avatar for the owner to drive (controlled launch is impossible).
+       * `agent_not_owned` = the logged-in session is not the agent's bound user;
+       * driving it would leave the autonomous proxy as a second body. Both fail
+       * loud rather than silently produce a duplicate body.
+       */
+      error:
+        | 'launch_requires_session'
+        | 'agent_not_registered'
+        | 'agent_not_bound'
+        | 'agent_not_owned'
+        | 'exchange_rejected'
+        | 'launch_issuer_unconfigured'
+        | 'invalid_request'
+        | 'rate_limited';
+      /** Present only for `exchange_rejected` — the upstream HTTP status. */
+      status?: number;
+    };
+
 export interface OpenClawBotConfig {
   sessionId: string;
   gatewayUrl: string; // e.g. "https://my-openclaw.example.com"
@@ -196,6 +258,10 @@ export interface OpenClawBotIdentity {
   isReturning: boolean;
   totalSessions: number;
   knowledge: string[];
+  /** ISO timestamp the session's sliding 24h TTL expires at. Additive
+   *  (2026-06-12) — pull-side expiry visibility. Omitted if the DB upsert
+   *  failed (ephemeral-only fallback). */
+  sessionExpiresAt?: string;
 }
 
 export interface OpenClawOverrideConfig extends OpenClawBotConfig {
