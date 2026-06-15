@@ -702,6 +702,36 @@ export type ServerFrame =
       type: 'poker.your_turn';
       handNumber: number;
       view: PokerPrivateSeatView;
+    }
+  // ─── Multi-table MTT (P4) — ADDITIVE rebalance frames ─────────────────────
+  | {
+      /**
+       * The MTT engine MOVED this player to another tournament table between
+       * hands (rebalance / table-break / final-table consolidation). Carries the
+       * NEW room id + short code + the player's seat index + chip stack at the
+       * destination (chips are conserved across the move). The client re-opens
+       * its WS to `toRoomId` on receipt. PRIVATE — `sendToAvatar` only (delivered
+       * on the OLD room's connection while it is still authed there). `chipStack`
+       * is the stack carried across; `reason` documents the trigger.
+       */
+      type: 'poker.moved';
+      toRoomId: string;
+      toShortCode: string;
+      seatIndex: number;
+      chipStack: number;
+      reason: 'rebalance' | 'table_break' | 'final_table';
+    }
+  | {
+      /**
+       * A tournament table's seat roster changed because a player was moved
+       * to/from it (rebalance / table-break / final-table). PUBLIC signal so
+       * connected clients refresh their seat list. `direction` is from THIS
+       * room's perspective: the player `left` this table or `joined` it.
+       */
+      type: 'poker.table_rebalanced';
+      avatarId: string;
+      direction: 'left' | 'joined';
+      reason: 'rebalance' | 'table_break' | 'final_table';
     };
 
 // ─── Close codes ────────────────────────────────────────────────────────────
