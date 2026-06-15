@@ -556,7 +556,17 @@ export interface HoldemHandResult {
 // Internal mutable seat state during play
 // ---------------------------------------------------------------------------
 
-interface PlaySeat {
+/**
+ * Per-seat mutable state during a hand. Exported (behavior unchanged) so the
+ * NET-NEW live multi-human `PokerTableSim` (apps/api/src/services/poker/) can
+ * construct chip-conserving showdown inputs for the SHARED pure showdown math
+ * (`buildSidePots` + `awardPots`) without reimplementing side-pot / award logic
+ * and risking divergence. The sim only ever fills the fields the showdown math
+ * reads (`seat`, `hole`, `committedTotal`, `status`, `isHuman`, `personality`);
+ * the betting-loop fields (`stack`, `streetCommitted`, `hasActed`) are set to
+ * inert values it does not depend on.
+ */
+export interface PlaySeat {
   seat: number;
   isHuman: boolean;
   personality: BotPersonality | null;
@@ -1617,8 +1627,14 @@ function sameSeatSet(a: number[], b: number[]): boolean {
  * Award each pot to the best eligible hand(s), split on ties. Builds the final
  * SeatResult[] including won amounts and hand ranks. The odd-chip remainder on a
  * split goes to the eligible winner in the EARLIEST seat order (deterministic).
+ *
+ * Exported (behavior unchanged) so the NET-NEW live multi-human `PokerTableSim`
+ * reuses the SAME showdown award/eligibility/tie-split/remainder logic as
+ * `playHand`, rather than reimplementing it (a parity test asserts no
+ * divergence). The sim builds `PlaySeat[]` from its own seat state, calls
+ * `buildSidePots(seats)` then `awardPots(seats, pots, board, endedAt)`.
  */
-function awardPots(
+export function awardPots(
   seats: PlaySeat[],
   pots: PotResult[],
   board: Card[],
