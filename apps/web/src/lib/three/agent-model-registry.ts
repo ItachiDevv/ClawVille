@@ -123,10 +123,15 @@ export const MODEL_REGISTRY = {
   // tekk-male/ → Tekk rig.
   // faceYaw: Math.PI — VRM 1.x rigs face +Z natively (back to camera). rotateVRM0 is a
   // no-op for these. Adding pi flips them to face -Z toward the picker camera at +Z.
-  hermes_female: { path: '/avatars/hermes-female.vrm', scale: 13, label: 'Hermes',      category: 'hermes', avatar_type: 'vrm', animatorId: 'hermes-female', faceYaw: Math.PI, preview: '/models/hermes-turnaround/female-front.png' },
-  hermes_male:   { path: '/avatars/hermes-male.vrm',   scale: 13, label: 'Hermes Male', category: 'hermes', avatar_type: 'vrm', animatorId: 'hermes-male',   faceYaw: Math.PI, preview: '/models/hermes-turnaround/male-front.png' },
-  // ?v=2 bust 2026-05-22 — Cloudflare cached a 404 for this URL from the window before the PNG was committed; CF edge TTL is 7d and our deploy token lacks cache_purge scope, so the URL query is the only invalidator. See "Asset cache-bust" kill-the-build rule in CLAUDE.md.
-  tekk:          { path: '/avatars/tekk.vrm',          scale: 13, label: 'Tekk',        category: 'hermes', avatar_type: 'vrm', animatorId: 'tekk',          faceYaw: Math.PI, preview: '/models/tekk-turnaround/with-wings-front.png?v=2' },
+  // ?v=2 cache-bust 2026-06-13 — VRM file decimated to ~40k tris (perf round 2,
+  // Track C). Stable URL content changed, so the ?v bump is REQUIRED to evict
+  // Cloudflare's 7d edge cache (deploy token lacks cache_purge scope). The
+  // PRELOAD url in asset-preload-manifest.ts MUST carry the identical ?v=2 or it
+  // double-fetches + cache-misses.
+  hermes_female: { path: '/avatars/hermes-female.vrm?v=2', scale: 13, label: 'Hermes',      category: 'hermes', avatar_type: 'vrm', animatorId: 'hermes-female', faceYaw: Math.PI, preview: '/models/hermes-turnaround/female-front.png' },
+  hermes_male:   { path: '/avatars/hermes-male.vrm?v=2',   scale: 13, label: 'Hermes Male', category: 'hermes', avatar_type: 'vrm', animatorId: 'hermes-male',   faceYaw: Math.PI, preview: '/models/hermes-turnaround/male-front.png' },
+  // ?v=2 bust 2026-05-22 — Cloudflare cached a 404 for this URL from the window before the PNG was committed; CF edge TTL is 7d and our deploy token lacks cache_purge scope, so the URL query is the only invalidator. See "Asset cache-bust" kill-the-build rule in CLAUDE.md. The VRM ?v=2 (2026-06-13) is the decimation bust (separate from the preview PNG bust).
+  tekk:          { path: '/avatars/tekk.vrm?v=2',          scale: 13, label: 'Tekk',        category: 'hermes', avatar_type: 'vrm', animatorId: 'tekk',          faceYaw: Math.PI, preview: '/models/tekk-turnaround/with-wings-front.png?v=2' },
 
   // ── Chibi VRM avatars (added 2026-05-21) ──────────────────────────────────
   // Mini-Nori-style stylized humanoids — large head, short stubby limbs.
@@ -142,8 +147,12 @@ export const MODEL_REGISTRY = {
   // the cache_purge token scope we don't have. Matches the existing pattern
   // used for the emote bundle (EMOTE_BUNDLE_VERSION in vrm-character-animator.ts).
   // faceYaw: Math.PI — chibi VRMs are Mixamo-rigged VRM 1.x (same as Hermes/Tekk).
-  eliza_chibi:   { path: '/avatars/eliza-chibi.vrm?v=2',   scale: 13, label: 'Eliza Chibi',  category: 'chibi',  avatar_type: 'vrm', animatorId: 'chibi', faceYaw: Math.PI, preview: '/models/eliza-chibi-turnaround/front.png' },
-  milady_chibi:  { path: '/avatars/milady-chibi.vrm?v=2',  scale: 13, label: 'Milady Chibi', category: 'chibi',  avatar_type: 'vrm', animatorId: 'chibi', faceYaw: Math.PI, preview: '/models/milady-chibi-turnaround/front.png' },
+  // ?v=2→?v=3 bump 2026-06-13 — VRM decimated to ~40k tris + 2048² PNG texture
+  // downscaled to 1024² WebP (perf round 2, Track C+E). Stable URL content
+  // changed → ?v bump REQUIRED (see chibi cache-bust note above). Preload url in
+  // asset-preload-manifest.ts MUST match this ?v=3 exactly.
+  eliza_chibi:   { path: '/avatars/eliza-chibi.vrm?v=3',   scale: 13, label: 'Eliza Chibi',  category: 'chibi',  avatar_type: 'vrm', animatorId: 'chibi', faceYaw: Math.PI, preview: '/models/eliza-chibi-turnaround/front.png' },
+  milady_chibi:  { path: '/avatars/milady-chibi.vrm?v=3',  scale: 13, label: 'Milady Chibi', category: 'chibi',  avatar_type: 'vrm', animatorId: 'chibi', faceYaw: Math.PI, preview: '/models/milady-chibi-turnaround/front.png' },
 
   // ── Hatcher (placeholder — Phase 4 swap) ─────────────────────────────────
   // PLACEHOLDER (Phase 4 swap): these 8 keys point at existing Milady VRMs
