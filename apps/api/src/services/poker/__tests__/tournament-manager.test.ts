@@ -33,7 +33,10 @@ import {
   TournamentManager,
   computePrizes,
   computeBustPlacements,
+  validatePayoutCurve,
+  toBigIntStrict,
   DEFAULT_BLIND_SCHEDULE,
+  DEFAULT_BLIND_SCHEDULE_ID,
   type RegisterSubject,
   type PlacementEmit,
 } from '../tournament-manager';
@@ -127,6 +130,20 @@ interface Row {
   [k: string]: unknown;
 }
 
+/**
+ * A jsonb column param arrives as a JSON STRING (the TM does `${JSON.stringify(x)}::jsonb`).
+ * A real jsonb column round-trips to the parsed value; mirror that. Pass non-strings
+ * (already-parsed seed data) through unchanged.
+ */
+function parseJsonParam(v: unknown): unknown {
+  if (typeof v !== 'string') return v;
+  try {
+    return JSON.parse(v);
+  } catch {
+    return v;
+  }
+}
+
 /** Render a drizzle SQL object into normalized text + ordered params. */
 function renderSql(q: SQL): { text: string; params: unknown[] } {
   const chunks = (q as unknown as { queryChunks: unknown[] }).queryChunks ?? [];
@@ -214,6 +231,74 @@ class FakeDb {
       t.settled_at = new Date();
       t.rake_taken_ct = p[0];
       return [];
+    }
+    // createTournament INSERT ... RETURNING (P4 creation path).
+    if (
+      text.startsWith('INSERT INTO poker_tournaments (name, status, buy_in_ct, rake_bps, min_entrants, max_entrants, seats_per_table, starting_stack, prize_pool_ct, payout_curve_json, blind_schedule_id, registration_closes_at) VALUES')
+    ) {
+      const id = randomUUID();
+      const row: Row = {
+        id,
+        name: p[0],
+        status: 'registering',
+        buy_in_ct: p[1],
+        rake_bps: p[2],
+        min_entrants: p[3],
+        max_entrants: p[4],
+        seats_per_table: p[5],
+        starting_stack: p[6],
+        prize_pool_ct: '0',
+        payout_curve_json: parseJsonParam(p[7]),
+        blind_schedule_id: p[8],
+        registration_closes_at: p[9] ?? null,
+        rake_taken_ct: null,
+        started_at: null,
+        settled_at: null,
+        cancelled_at: null,
+        created_at: new Date(this.tournaments.size + 1), // monotonic for ORDER BY created_at DESC
+      };
+      this.tournaments.set(id, row);
+      return [row];
+    }
+    // listTournaments — the discovery SELECT with correlated subqueries.
+    if (text.startsWith('SELECT t.id, t.name, t.status, t.buy_in_ct, t.rake_bps, t.min_entrants, t.max_entrants, t.seats_per_table, t.starting_stack, t.prize_pool_ct, t.registration_closes_at, t.blind_schedule_id,')) {
+      // The status filter is interpolated as a nested SQL StringChunk, so it shows
+      // in `text` (NOT params) as either ('registering') or ('registering','running').
+      const includeRunning = text.includes("('registering','running')");
+      const limit = Number(p[p.length - 1]); // last param is LIMIT
+      const allowed = includeRunning
+        ? new Set(['registering', 'running'])
+        : new Set(['registering']);
+      return [...this.tournaments.values()]
+        .filter((t) => allowed.has(String(t.status)))
+        .sort((a, b) => Number(b.created_at ?? 0) - Number(a.created_at ?? 0))
+        .slice(0, limit)
+        .map((t) => {
+          const registeredCount = [...this.entrants.values()].filter(
+            (e) => e.tournament_id === t.id && e.status !== 'refunded',
+          ).length;
+          const tableCount = [...this.tables.values()].filter(
+            (tb) => tb.tournament_id === t.id && tb.status === 'live',
+          ).length;
+          const sched = this.blindSchedules.get(String(t.blind_schedule_id));
+          return {
+            id: t.id,
+            name: t.name,
+            status: t.status,
+            buy_in_ct: t.buy_in_ct,
+            rake_bps: t.rake_bps,
+            min_entrants: t.min_entrants,
+            max_entrants: t.max_entrants,
+            seats_per_table: t.seats_per_table,
+            starting_stack: t.starting_stack,
+            prize_pool_ct: t.prize_pool_ct,
+            registration_closes_at: t.registration_closes_at ?? null,
+            blind_schedule_id: t.blind_schedule_id,
+            registered_count: registeredCount,
+            table_count: tableCount,
+            levels_json: sched?.levels_json ?? null,
+          };
+        });
     }
 
     // ── poker_tournament_entrants ─────────────────────────────────────────────
@@ -318,6 +403,23 @@ class FakeDb {
     if (text.startsWith('SELECT levels_json FROM poker_blind_schedules WHERE id = ?')) {
       const s = this.blindSchedules.get(String(p[0]));
       return s ? [{ levels_json: s.levels_json }] : [];
+    }
+    if (text.startsWith('SELECT id FROM poker_blind_schedules WHERE id = ?')) {
+      const s = this.blindSchedules.get(String(p[0]));
+      return s ? [{ id: s.id }] : [];
+    }
+    if (
+      text.startsWith('INSERT INTO poker_blind_schedules (id, name, levels_json) VALUES') &&
+      text.includes('ON CONFLICT (id) DO NOTHING')
+    ) {
+      const id = String(p[0]);
+      // ON CONFLICT (id) DO NOTHING — idempotent: a second seed is a no-op.
+      if (!this.blindSchedules.has(id)) {
+        // `levels_json` arrives as a JSON STRING (the TM does `${JSON.stringify(...)}::jsonb`);
+        // a real jsonb column round-trips to an array, so parse it to mirror that.
+        this.blindSchedules.set(id, { id, name: p[1], levels_json: parseJsonParam(p[2]) });
+      }
+      return [];
     }
 
     // ── poker_tables ──────────────────────────────────────────────────────────
@@ -964,5 +1066,245 @@ describe('TournamentManager — registration parity + settle guards', () => {
     expect(db.tournaments.get(tid)!.status).toBe('cancelled'); // NOT 'completed'
     expect(db.tournaments.get(tid)!.settled_at).toBeNull(); // never flipped
     expect(['av-1', 'av-2'].map((a) => ledger.get(a))).toEqual(balAfterCancel); // no CT moved
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// P4 — createTournament + ensureDefaultBlindSchedule + listTournaments (mocked DB).
+// The CREATION gap (poker_tournaments had no creation path) + the discovery list.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('TournamentManager — create + default-schedule seed + list (mocked DB)', () => {
+  let db: FakeDb;
+  let ledger: FakeLedger;
+  let clock: FakeClock;
+
+  beforeEach(() => {
+    db = new FakeDb();
+    ledger = new FakeLedger();
+    clock = new FakeClock();
+    // NOTE: deliberately do NOT pre-seed a blind schedule — createTournament must
+    // seed the default itself.
+  });
+
+  const validConfig = () => ({
+    name: 'Friday Night MTT',
+    buyInCt: 100,
+    rakeBps: 500,
+    minEntrants: 2,
+    maxEntrants: 18,
+    seatsPerTable: 9,
+    startingStack: 1500,
+  });
+
+  it('admin create: inserts a registering row at prizePool 0, seeds the default blind schedule ONCE (idempotent on 2nd create)', async () => {
+    const { tm } = buildManager(db, ledger, clock);
+
+    expect(db.blindSchedules.size).toBe(0); // nothing seeded yet
+
+    const t1 = await tm.createTournament(validConfig(), 'admin-avatar-1');
+    expect(t1.status).toBe('registering');
+    expect(t1.prizePoolCt).toBe('0');
+    expect(t1.buyInCt).toBe('100');
+    expect(t1.rakeBps).toBe(500);
+    expect(t1.minEntrants).toBe(2);
+    expect(t1.maxEntrants).toBe(18);
+    expect(t1.seatsPerTable).toBe(9);
+    expect(t1.startingStack).toBe(1500);
+    expect(t1.blindScheduleId).toBe(DEFAULT_BLIND_SCHEDULE_ID);
+    // The default ladder was seeded exactly once.
+    expect(db.blindSchedules.size).toBe(1);
+    expect(db.blindSchedules.has(DEFAULT_BLIND_SCHEDULE_ID)).toBe(true);
+    // Row actually persisted as 'registering' at pool 0.
+    expect(db.tournaments.get(t1.id)!.status).toBe('registering');
+    expect(db.tournaments.get(t1.id)!.prize_pool_ct).toBe('0');
+
+    // Second create → the default seed is idempotent (NO duplicate schedule row).
+    const t2 = await tm.createTournament(validConfig(), 'admin-avatar-1');
+    expect(t2.id).not.toBe(t1.id);
+    expect(db.blindSchedules.size).toBe(1); // STILL one — no duplicate
+    expect(db.tournaments.size).toBe(2);
+  });
+
+  it('ensureDefaultBlindSchedule is idempotent across repeated calls (boot path)', async () => {
+    const { tm } = buildManager(db, ledger, clock);
+    const a = await tm.ensureDefaultBlindSchedule();
+    const b = await tm.ensureDefaultBlindSchedule();
+    const c = await tm.ensureDefaultBlindSchedule();
+    expect(a).toBe(DEFAULT_BLIND_SCHEDULE_ID);
+    expect(b).toBe(DEFAULT_BLIND_SCHEDULE_ID);
+    expect(c).toBe(DEFAULT_BLIND_SCHEDULE_ID);
+    expect(db.blindSchedules.size).toBe(1);
+  });
+
+  it('uses an explicit blindScheduleId when the row exists', async () => {
+    const { tm } = buildManager(db, ledger, clock);
+    const customId = randomUUID();
+    db.seedBlindSchedule(customId, DEFAULT_BLIND_SCHEDULE);
+    const t = await tm.createTournament(
+      { ...validConfig(), blindScheduleId: customId },
+      'admin-avatar-1',
+    );
+    expect(t.blindScheduleId).toBe(customId);
+    // Did NOT seed the default (the explicit one already existed).
+    expect(db.blindSchedules.has(DEFAULT_BLIND_SCHEDULE_ID)).toBe(false);
+  });
+
+  it('rejects an explicit blindScheduleId whose row does not exist (404)', async () => {
+    const { tm } = buildManager(db, ledger, clock);
+    await expect(
+      tm.createTournament({ ...validConfig(), blindScheduleId: randomUUID() }, null),
+    ).rejects.toThrow(/blind_schedule_not_found/);
+    expect(db.tournaments.size).toBe(0); // no row inserted on a rejected config
+  });
+
+  it('invalid config → 400 (buyInCt 0, seatsPerTable 12, minEntrants > maxEntrants)', async () => {
+    const { tm } = buildManager(db, ledger, clock);
+
+    await expect(
+      tm.createTournament({ ...validConfig(), buyInCt: 0 }, null),
+    ).rejects.toThrow(/invalid_buy_in_must_be_positive/);
+
+    await expect(
+      tm.createTournament({ ...validConfig(), seatsPerTable: 12 }, null),
+    ).rejects.toThrow(/invalid_seats_per_table/);
+
+    await expect(
+      tm.createTournament({ ...validConfig(), minEntrants: 10, maxEntrants: 4 }, null),
+    ).rejects.toThrow(/invalid_max_entrants/);
+
+    await expect(
+      tm.createTournament({ ...validConfig(), startingStack: 0 }, null),
+    ).rejects.toThrow(/invalid_starting_stack/);
+
+    await expect(
+      tm.createTournament({ ...validConfig(), maxEntrants: 10_000 }, null),
+    ).rejects.toThrow(/max_entrants_exceeds_cap/);
+
+    await expect(
+      tm.createTournament({ ...validConfig(), rakeBps: 20000 }, null),
+    ).rejects.toThrow(/invalid_rake_bps/);
+
+    // A payout curve with no 1st place is rejected.
+    await expect(
+      tm.createTournament(
+        { ...validConfig(), payoutCurve: [{ placement: 2, share: 1 }] },
+        null,
+      ),
+    ).rejects.toThrow(/invalid_payout_curve_missing_first/);
+
+    // Nothing was inserted on any rejected create.
+    expect(db.tournaments.size).toBe(0);
+  });
+
+  it('listTournaments lists the created tournament with registeredCount 0; count increments after a registration', async () => {
+    const { tm } = buildManager(db, ledger, clock);
+    const created = await tm.createTournament(
+      { ...validConfig(), buyInCt: 100, maxEntrants: 9 },
+      'admin-avatar-1',
+    );
+
+    // Discovery list shows it (registering) with registeredCount 0 + blind summary.
+    let list = await tm.listTournaments();
+    expect(list.length).toBe(1);
+    const item = list[0]!;
+    expect(item.id).toBe(created.id);
+    expect(item.status).toBe('registering');
+    expect(item.registeredCount).toBe(0);
+    expect(item.tableCount).toBe(0); // not running yet
+    expect(item.buyInCt).toBe('100');
+    expect(item.seatsPerTable).toBe(9);
+    expect(item.startingStack).toBe(1500);
+    expect(item.blindSummary.levels).toBe(DEFAULT_BLIND_SCHEDULE.length);
+    expect(item.blindSummary.openingSb).toBe(DEFAULT_BLIND_SCHEDULE[0]!.sb);
+    expect(item.blindSummary.openingBb).toBe(DEFAULT_BLIND_SCHEDULE[0]!.bb);
+
+    // Register one entrant → the list count increments.
+    ledger.setBalance('av-1', 500);
+    await tm.registerEntrant(
+      { kind: 'user', userId: 'u-1', avatarId: 'av-1', agentId: null },
+      created.id,
+    );
+    list = await tm.listTournaments();
+    expect(list[0]!.registeredCount).toBe(1);
+  });
+
+  it('listTournaments excludes running tournaments unless includeRunning is set', async () => {
+    const { tm } = buildManager(db, ledger, clock);
+    const created = await tm.createTournament(validConfig(), null);
+    // Flip the row to 'running' directly (simulating a seated tournament).
+    db.tournaments.get(created.id)!.status = 'running';
+
+    const defaultList = await tm.listTournaments();
+    expect(defaultList.find((t) => t.id === created.id)).toBeUndefined();
+
+    const withRunning = await tm.listTournaments({ includeRunning: true });
+    expect(withRunning.find((t) => t.id === created.id)).toBeDefined();
+  });
+
+  it('listTournaments honors the limit (1..200) newest-first', async () => {
+    const { tm } = buildManager(db, ledger, clock);
+    const ids: string[] = [];
+    for (let i = 0; i < 5; i++) {
+      const t = await tm.createTournament({ ...validConfig(), name: `T${i}` }, null);
+      ids.push(t.id);
+    }
+    const limited = await tm.listTournaments({ limit: 2 });
+    expect(limited.length).toBe(2);
+    // Newest-first: the last two created come back first.
+    expect(limited[0]!.id).toBe(ids[4]);
+    expect(limited[1]!.id).toBe(ids[3]);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Pure validators (validatePayoutCurve + toBigIntStrict) — exercised directly.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('validatePayoutCurve + toBigIntStrict (pure)', () => {
+  it('accepts a well-formed descending curve', () => {
+    expect(() =>
+      validatePayoutCurve([
+        { placement: 1, share: 0.5 },
+        { placement: 2, share: 0.3 },
+        { placement: 3, share: 0.2 },
+      ]),
+    ).not.toThrow();
+  });
+
+  it('rejects empty / missing-first / duplicate / non-positive / non-integer-placement curves', () => {
+    expect(() => validatePayoutCurve([])).toThrow(/invalid_payout_curve_empty/);
+    expect(() => validatePayoutCurve([{ placement: 2, share: 1 }])).toThrow(
+      /invalid_payout_curve_missing_first/,
+    );
+    expect(() =>
+      validatePayoutCurve([
+        { placement: 1, share: 0.5 },
+        { placement: 1, share: 0.5 },
+      ]),
+    ).toThrow(/duplicate_placement/);
+    expect(() => validatePayoutCurve([{ placement: 1, share: 0 }])).toThrow(
+      /invalid_payout_curve_entry/,
+    );
+    expect(() => validatePayoutCurve([{ placement: 1, share: -1 }])).toThrow(
+      /invalid_payout_curve_entry/,
+    );
+    expect(() => validatePayoutCurve([{ placement: 1.5, share: 1 }])).toThrow(
+      /invalid_payout_curve_entry/,
+    );
+    expect(() =>
+      validatePayoutCurve([{ placement: 1, share: Number.NaN }]),
+    ).toThrow(/invalid_payout_curve_entry/);
+  });
+
+  it('toBigIntStrict coerces number/bigint/decimal-string, rejects fractions / negatives / garbage', () => {
+    expect(toBigIntStrict(100, 'buyInCt')).toBe(100n);
+    expect(toBigIntStrict(100n, 'buyInCt')).toBe(100n);
+    expect(toBigIntStrict('250', 'buyInCt')).toBe(250n);
+    expect(() => toBigIntStrict(1.5, 'buyInCt')).toThrow(/invalid_buyInCt/);
+    expect(() => toBigIntStrict(-5, 'buyInCt')).toThrow(/invalid_buyInCt/);
+    expect(() => toBigIntStrict(-5n, 'buyInCt')).toThrow(/invalid_buyInCt/);
+    expect(() => toBigIntStrict('1.5', 'buyInCt')).toThrow(/invalid_buyInCt/);
+    expect(() => toBigIntStrict('abc', 'buyInCt')).toThrow(/invalid_buyInCt/);
   });
 });
