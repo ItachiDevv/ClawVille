@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { SPAWN_PX } from '@clawville/shared';
 import { MAP_WIDTH, MAP_HEIGHT } from '@/lib/pixi/tilemap-data';
 import { clampMovement2D, ENTITY_HALF_HUMANOID } from '@/lib/three/collision/world-colliders';
 
@@ -638,13 +639,15 @@ export const useNpcStore = create<NpcStoreState>((set, get) => ({
     const playerNpc: NpcSpriteState = {
       id: PLAYER_NPC_ID,
       name: 'You',
-      // 2026-06-10: was (3840, 3840) — the OLD world center from the 7680px
-      // map era, stranding NPC-mode players in an empty southwest field. The
-      // world is 11520×11520 now; spawn at the canonical avatar spawn
-      // (5760, 6300) — town center, 140wu south of Nori (game.ts
-      // avatarPositionRef uses the same point).
-      x: 5760, y: 6300,
-      prevX: 5760, prevY: 6300,
+      // S3 (2026-06-16): spawn at the canonical town-center spawn from the
+      // @clawville/shared SSOT (SPAWN_PX = 9216,9756 — world center X, 140wu
+      // south of Nori). PREVIOUSLY hardcoded (5760,6300) — the 11520px-era
+      // center — which Land Phase 0's grow to 18432px left as a corner-ward
+      // diagonal, the exact NPC-mode "diagonal spawn" bug. Now drift-proof:
+      // game.ts asserts MAP_WIDTH/2 == WORLD_PX_WIDTH/2 and the computed spawn
+      // equals SPAWN_PX, so this and the player-mode body stay co-located.
+      x: SPAWN_PX.x, y: SPAWN_PX.y,
+      prevX: SPAWN_PX.x, prevY: SPAWN_PX.y,
       ts: 0, tsDelta: 200,
       direction: 'idle',
       // 2026-04-25: NPC-mode default flipped from 'lobster' to 'milady_official_1'
