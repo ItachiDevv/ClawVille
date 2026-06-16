@@ -39,6 +39,7 @@ import { z } from 'zod';
 import { and, eq, sql } from 'drizzle-orm';
 import { db, avatars } from '@clawville/database';
 import { sessionMiddleware } from '../middleware/auth';
+import { fingerprintMiddleware } from '../middleware/fingerprint';
 import { adminOnly } from '../middleware/admin-only';
 import { resolveAgentSession } from '../middleware/require-auth-or-agent';
 import {
@@ -51,20 +52,47 @@ import { InsufficientTokensError } from '../services/claw-token-ledger';
 import type { AppContext } from '../types';
 
 export const covePokerMttRouter = new Hono<AppContext>();
+// fingerprintMiddleware runs here (not only app-wide) so the AGENT-GATEWAY
+// in-process sub-request path — which forwards `X-CV-Fingerprint` but bypasses the
+// app-level middleware chain — still resolves a real (fpHash, ipPrefixHash). For a
+// HUMAN hitting the mounted route the app-level fingerprintMiddleware already ran;
+// re-running here is idempotent (it just recomputes + re-sets the same two context
+// values). Capturing fp at REGISTRATION is required because the placement
+// leaderboard event is emitted at SETTLE time, which has no request context.
+covePokerMttRouter.use('*', fingerprintMiddleware);
 covePokerMttRouter.use('*', sessionMiddleware);
 
 const AGENT_SESSION_HEADER = 'X-Clawville-Agent-Session';
+
+/** Pull the salted anti-farm provenance fingerprintMiddleware set on context. */
+function readProvenance(c: {
+  get(key: string): unknown;
+}): { fpHash: string | null; ipPrefixHash: string | null } {
+  const fpHash = c.get('fpHash');
+  const ipPrefixHash = c.get('ipPrefixHash');
+  return {
+    fpHash: typeof fpHash === 'string' ? fpHash : null,
+    ipPrefixHash: typeof ipPrefixHash === 'string' ? ipPrefixHash : null,
+  };
+}
 
 /**
  * Resolve the request subject for an economy write. Precedence: Lucia human →
  * agent session. NO guest tier (a CT tournament has no demo mode). Mirrors
  * cove-blackjack's agent-capable resolver minus the guest branch.
+ *
+ * Attaches the request's (fpHash, ipPrefixHash) — set by `fingerprintMiddleware`
+ * from the browser-supplied OR agent-forwarded `X-CV-Fingerprint` — so the
+ * registration persists anti-farm provenance that the TM later threads into the
+ * placement leaderboard event (settle is request-decoupled, so it MUST be captured
+ * here). Both human and agent get a real fp this way (Rule E5 parity).
  */
 async function resolveRegisterSubject(c: {
-  get(key: 'user'): { id: string } | null;
+  get(key: string): unknown;
   req: { header(name: string): string | undefined };
 }): Promise<RegisterSubject> {
-  const user = c.get('user');
+  const provenance = readProvenance(c);
+  const user = c.get('user') as { id: string } | null;
   if (user) {
     const avatar = await db.query.avatars.findFirst({
       where: and(eq(avatars.userId, user.id), eq(avatars.isActive, true)),
@@ -74,7 +102,7 @@ async function resolveRegisterSubject(c: {
         message: 'active_avatar_required: create an avatar before entering a tournament',
       });
     }
-    return { kind: 'user', userId: user.id, avatarId: avatar.id, agentId: null };
+    return { kind: 'user', userId: user.id, avatarId: avatar.id, agentId: null, ...provenance };
   }
 
   const agentSessionId = c.req.header(AGENT_SESSION_HEADER);
@@ -97,6 +125,7 @@ async function resolveRegisterSubject(c: {
       userId: resolved.userId,
       avatarId: resolved.avatarId,
       agentId: resolved.agentId,
+      ...provenance,
     };
   }
 

@@ -90,10 +90,26 @@ type LedgerLike = {
   transferClawTokens: typeof TransferFn;
 };
 
+/**
+ * ANTI-FARM provenance captured from the request at registration (Phase 1 parity).
+ * The cove-poker-mtt router runs `fingerprintMiddleware`, so a human request and an
+ * agent's forwarded `X-CV-Fingerprint` both resolve a real (fpHash, ipPrefixHash)
+ * here. Persisted on the entrant row and threaded into the placement leaderboard
+ * event the TM emits at settle (settlement is request-decoupled, so the fp must be
+ * captured earlier and carried). Both null for a legacy/system register with no
+ * request context. Optional so non-HTTP callers (tests, boot) need not supply it.
+ */
+export interface RegisterProvenance {
+  fpHash?: string | null;
+  ipPrefixHash?: string | null;
+}
+
 /** A connected/hosted-agent-capable registration subject (Rule E5 parity). */
-export type RegisterSubject =
+export type RegisterSubject = (
   | { kind: 'user'; userId: string; avatarId: string; agentId: null }
-  | { kind: 'agent'; userId: string; avatarId: string; agentId: string };
+  | { kind: 'agent'; userId: string; avatarId: string; agentId: string }
+) &
+  RegisterProvenance;
 
 export interface TournamentManagerDeps {
   db?: DbLike;
@@ -157,6 +173,15 @@ export interface PlacementEmit {
   placement: number;
   prizeCt: string;
   subjectType: 'human' | 'agent';
+  /**
+   * ANTI-FARM provenance carried from the entrant's REGISTRATION (the only point
+   * a request context exists — settle is request-decoupled). Threaded into the
+   * `activity.match.placed` event so poker placements carry the SAME (fp_hash,
+   * ip_prefix_hash) anti-farm shape every other event-emitting route gets. Null
+   * only when the entrant registered without a request (legacy/system).
+   */
+  fpHash: string | null;
+  ipPrefixHash: string | null;
 }
 
 /**
@@ -250,7 +275,15 @@ export interface StartResult {
 export interface SettleResult {
   alreadySettled: boolean;
   rakeTakenCt: string;
-  results: Array<{ avatarId: string; agentId: string | null; placement: number; prizeCt: string }>;
+  results: Array<{
+    avatarId: string;
+    agentId: string | null;
+    placement: number;
+    prizeCt: string;
+    /** Registration-time anti-farm provenance, carried to the leaderboard emit. */
+    fpHash: string | null;
+    ipPrefixHash: string | null;
+  }>;
 }
 
 /**
@@ -299,6 +332,8 @@ export interface CreateTournamentResult {
   payoutCurve: PayoutCurveEntry[];
   blindScheduleId: string;
   registrationClosesAt: Date | string | null;
+  /** The creator's avatar id (audit), or null. */
+  createdBy: string | null;
   createdAt: Date | string | null;
 }
 
@@ -451,6 +486,11 @@ export class TournamentManager {
           eventType: ACTIVITY_EVENT_TYPES.MATCH_PLACED,
           avatarId: emit.avatarId,
           agentId: emit.agentId,
+          // Carry the registration-time anti-farm provenance so a poker placement
+          // event lands with a real (fp_hash, ip_prefix_hash), matching every other
+          // event-emitting route (the settle path has no request context of its own).
+          fpHash: emit.fpHash,
+          ipPrefixHash: emit.ipPrefixHash,
           payload: {
             activityId: POKER_MTT_ACTIVITY_ID,
             roomId: `mtt:${emit.tournamentId}`,
@@ -498,11 +538,10 @@ export class TournamentManager {
    * when `blindScheduleId` is omitted), then inserts the row. Returns the created row.
    *
    * @param config validated config (see CreateTournamentConfig).
-   * @param createdByAvatarId the admin/creator's avatar id, or null. Stored for audit.
-   *   NOTE: the schema has no `created_by` column yet, so this is currently accepted
-   *   for forward-compat + audit logging only — it does NOT write a column (adding one
-   *   would be a schema migration). Kept in the signature so callers don't change when
-   *   the column lands.
+   * @param createdByAvatarId the admin/creator's avatar id, or null. PERSISTED into
+   *   the `created_by` audit column (FK to avatars, `set null` on delete) so there is
+   *   a durable record of who stood up a money-config tournament. Null when the
+   *   creator has no avatar (dash-cookie admin path) or for a system/boot create.
    */
   async createTournament(
     config: CreateTournamentConfig,
@@ -576,19 +615,20 @@ export class TournamentManager {
       payout_curve_json: unknown;
       blind_schedule_id: string;
       registration_closes_at: Date | string | null;
+      created_by: string | null;
       created_at: Date | string | null;
     }>(
       sql`INSERT INTO poker_tournaments
             (name, status, buy_in_ct, rake_bps, min_entrants, max_entrants,
              seats_per_table, starting_stack, prize_pool_ct, payout_curve_json,
-             blind_schedule_id, registration_closes_at)
+             blind_schedule_id, registration_closes_at, created_by)
           VALUES (${name}, 'registering', ${buyIn.toString()}, ${rakeBps}, ${minEntrants},
                   ${maxEntrants}, ${seatsPerTable}, ${startingStack}, '0',
                   ${JSON.stringify(payoutCurve)}::jsonb, ${blindScheduleId},
-                  ${registrationClosesAt})
+                  ${registrationClosesAt}, ${createdByAvatarId})
           RETURNING id, name, status, buy_in_ct, rake_bps, min_entrants, max_entrants,
                     seats_per_table, starting_stack, prize_pool_ct, payout_curve_json,
-                    blind_schedule_id, registration_closes_at, created_at`,
+                    blind_schedule_id, registration_closes_at, created_by, created_at`,
     );
     const row = inserted[0];
     if (!row) throw new TournamentError('create_failed', 500);
@@ -613,6 +653,7 @@ export class TournamentManager {
       payoutCurve: (row.payout_curve_json as PayoutCurveEntry[] | null) ?? payoutCurve,
       blindScheduleId: row.blind_schedule_id,
       registrationClosesAt: row.registration_closes_at,
+      createdBy: row.created_by,
       createdAt: row.created_at,
     };
   }
@@ -770,9 +811,11 @@ export class TournamentManager {
       const subjectType = subject.kind === 'agent' ? 'agent' : 'human';
       const insRows = await tx.execute<{ id: string }>(
         sql`INSERT INTO poker_tournament_entrants
-              (tournament_id, avatar_id, agent_id, subject_type, buy_in_paid_ct, status)
+              (tournament_id, avatar_id, agent_id, subject_type, buy_in_paid_ct, status,
+               fp_hash, ip_prefix_hash)
             VALUES (${tournamentId}, ${subject.avatarId}, ${subject.agentId},
-                    ${subjectType}, ${buyIn.toString()}, 'registered')
+                    ${subjectType}, ${buyIn.toString()}, 'registered',
+                    ${subject.fpHash ?? null}, ${subject.ipPrefixHash ?? null})
             RETURNING id`,
       );
 
@@ -1725,11 +1768,16 @@ export class TournamentManager {
         return {
           alreadySettled: true,
           rakeTakenCt: t.rake_taken_ct ?? '0',
+          // Replay path — never re-emitted (emitLeaderboard runs only on a FRESH
+          // settle), so fp provenance is not needed here; the results table carries
+          // no fp columns. Set null to satisfy the SettleResult shape.
           results: rows.map((row) => ({
             avatarId: row.avatar_id,
             agentId: row.agent_id,
             placement: row.placement,
             prizeCt: row.prize_ct,
+            fpHash: null,
+            ipPrefixHash: null,
           })),
         };
       }
@@ -1738,8 +1786,10 @@ export class TournamentManager {
         avatar_id: string;
         agent_id: string | null;
         placement: number | null;
+        fp_hash: string | null;
+        ip_prefix_hash: string | null;
       }>(
-        sql`SELECT avatar_id, agent_id, placement
+        sql`SELECT avatar_id, agent_id, placement, fp_hash, ip_prefix_hash
             FROM poker_tournament_entrants
             WHERE tournament_id = ${tournamentId} AND status <> 'refunded'
             ORDER BY placement ASC NULLS LAST`,
@@ -1793,6 +1843,8 @@ export class TournamentManager {
           agentId: e.agent_id,
           placement,
           prizeCt: prize.toString(),
+          fpHash: e.fp_hash,
+          ipPrefixHash: e.ip_prefix_hash,
         });
       }
 
@@ -1827,6 +1879,8 @@ export class TournamentManager {
           placement: r.placement,
           prizeCt: r.prizeCt,
           subjectType: r.agentId ? 'agent' : 'human',
+          fpHash: r.fpHash,
+          ipPrefixHash: r.ipPrefixHash,
         }),
       ).catch((err) => {
         console.error(

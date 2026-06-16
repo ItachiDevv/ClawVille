@@ -149,6 +149,15 @@ export const pokerTournaments = pgTable(
     settledAt: timestamp('settled_at', { withTimezone: true }),
     /** When refunds completed (status → cancelled). Idempotency anchor for refund. */
     cancelledAt: timestamp('cancelled_at', { withTimezone: true }),
+    /**
+     * AUDIT — the avatar of the admin/operator who created this money-config
+     * tournament (CT buy-in → real prize pool). Nullable: a tournament can be
+     * stood up by a non-avatar caller (the dash cookie path) or by a system/boot
+     * seeder, and the creator's avatar may later be deleted (FK `set null` keeps
+     * the tournament row intact). NOT a parity surface — creation is an operator
+     * action, never a gameplay action; this column only records "who".
+     */
+    createdBy: uuid('created_by').references(() => avatars.id, { onDelete: 'set null' }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
@@ -213,6 +222,20 @@ export const pokerTournamentEntrants = pgTable(
      * 'refunded'   → tournament cancelled, buy-in returned
      */
     status: text('status').notNull().default('registered'),
+    /**
+     * ANTI-FARM provenance (Phase 1 parity). The salted browser-fingerprint hash
+     * + IP /24 prefix hash captured AT REGISTRATION from the request context (the
+     * cove-poker-mtt router runs `fingerprintMiddleware`, so a human's request and
+     * an agent's forwarded `X-CV-Fingerprint` both resolve here). Carried forward
+     * to the `activity.match.placed` leaderboard event the TM emits at settle —
+     * settlement is request-decoupled (it fires inside the hand loop), so without
+     * persisting these at registration the placement event would land with a NULL
+     * fp_hash, weakening anti-farm relative to other event-emitting routes. Both
+     * human AND agent entrants get a real (fp_hash, ip_prefix_hash) this way
+     * (Rule E5 parity). Null only for a legacy/system register with no request.
+     */
+    fpHash: text('fp_hash'),
+    ipPrefixHash: text('ip_prefix_hash'),
     registeredAt: timestamp('registered_at', { withTimezone: true }).notNull().defaultNow(),
     bustedAt: timestamp('busted_at', { withTimezone: true }),
   },
