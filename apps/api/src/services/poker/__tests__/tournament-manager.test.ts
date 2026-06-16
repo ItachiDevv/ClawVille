@@ -232,9 +232,9 @@ class FakeDb {
       t.rake_taken_ct = p[0];
       return [];
     }
-    // createTournament INSERT ... RETURNING (P4 creation path).
+    // createTournament INSERT ... RETURNING (P4 creation path; created_by audit col).
     if (
-      text.startsWith('INSERT INTO poker_tournaments (name, status, buy_in_ct, rake_bps, min_entrants, max_entrants, seats_per_table, starting_stack, prize_pool_ct, payout_curve_json, blind_schedule_id, registration_closes_at) VALUES')
+      text.startsWith('INSERT INTO poker_tournaments (name, status, buy_in_ct, rake_bps, min_entrants, max_entrants, seats_per_table, starting_stack, prize_pool_ct, payout_curve_json, blind_schedule_id, registration_closes_at, created_by) VALUES')
     ) {
       const id = randomUUID();
       const row: Row = {
@@ -251,6 +251,7 @@ class FakeDb {
         payout_curve_json: parseJsonParam(p[7]),
         blind_schedule_id: p[8],
         registration_closes_at: p[9] ?? null,
+        created_by: p[10] ?? null,
         rake_taken_ct: null,
         started_at: null,
         settled_at: null,
@@ -327,13 +328,19 @@ class FakeDb {
           status: e.status,
         }));
     }
-    if (text.startsWith('SELECT avatar_id, agent_id, placement FROM poker_tournament_entrants WHERE tournament_id = ? AND status <> \'refunded\' ORDER BY placement ASC NULLS LAST')) {
+    if (text.startsWith('SELECT avatar_id, agent_id, placement, fp_hash, ip_prefix_hash FROM poker_tournament_entrants WHERE tournament_id = ? AND status <> \'refunded\' ORDER BY placement ASC NULLS LAST')) {
       return [...this.entrants.values()]
         .filter((e) => e.tournament_id === p[0] && e.status !== 'refunded')
         .sort((a, b) => (Number(a.placement ?? 1e9) - Number(b.placement ?? 1e9)))
-        .map((e) => ({ avatar_id: e.avatar_id, agent_id: e.agent_id, placement: e.placement }));
+        .map((e) => ({
+          avatar_id: e.avatar_id,
+          agent_id: e.agent_id,
+          placement: e.placement,
+          fp_hash: e.fp_hash ?? null,
+          ip_prefix_hash: e.ip_prefix_hash ?? null,
+        }));
     }
-    if (text.startsWith('INSERT INTO poker_tournament_entrants') && text.includes('buy_in_paid_ct, status) VALUES')) {
+    if (text.startsWith('INSERT INTO poker_tournament_entrants') && text.includes('fp_hash, ip_prefix_hash) VALUES')) {
       const id = randomUUID();
       this.entrants.set(id, {
         id,
@@ -343,6 +350,8 @@ class FakeDb {
         subject_type: p[3],
         buy_in_paid_ct: p[4],
         status: 'registered',
+        fp_hash: p[5] ?? null,
+        ip_prefix_hash: p[6] ?? null,
         refunded_ct: '0',
         placement: null,
         chip_stack: 0,
@@ -500,6 +509,7 @@ class FakeDb {
       ],
       blind_schedule_id: 'sched-1',
       registration_closes_at: null,
+      created_by: null,
       started_at: null,
       settled_at: null,
       cancelled_at: null,
@@ -843,6 +853,77 @@ describe('TournamentManager — single-table sit-n-go end-to-end (mocked DB + le
     // double-credit the board for the same placement on a re-settle).
     expect(placementEmits.length).toBe(emitsBefore);
   });
+
+  it('(fp-parity) registration-time fp_hash/ip_prefix is persisted on the entrant AND threaded into the placement emit', async () => {
+    const { tm, sim, placementEmits } = buildManager(db, ledger, clock);
+    const tid = randomUUID();
+    db.seedTournament({
+      id: tid,
+      buy_in_ct: '100',
+      min_entrants: 2,
+      max_entrants: 2,
+      seats_per_table: 2,
+      starting_stack: 1000,
+      registration_closes_at: new Date(clock.now() + 1000),
+      payout_curve_json: PAYOUT_3,
+    });
+
+    // Two entrants register WITH a request fingerprint (a human + an agent), each a
+    // distinct (fpHash, ipPrefixHash) — exactly what fingerprintMiddleware sets on
+    // the cove-poker-mtt route for both the human and the agent-forwarded path.
+    const human: RegisterSubject = {
+      kind: 'user',
+      userId: 'u-h',
+      avatarId: 'av-h',
+      agentId: null,
+      fpHash: 'fp-human',
+      ipPrefixHash: 'ip-human',
+    };
+    const agent: RegisterSubject = {
+      kind: 'agent',
+      userId: 'u-a',
+      avatarId: 'av-a',
+      agentId: 'oc-bot-1',
+      fpHash: 'fp-agent',
+      ipPrefixHash: 'ip-agent',
+    };
+    ledger.setBalance('av-h', 1000);
+    ledger.setBalance('av-a', 1000);
+    await tm.registerEntrant(human, tid);
+    await tm.registerEntrant(agent, tid);
+
+    // Persisted on the entrant rows (the anchor for the request-decoupled settle).
+    const hRow = [...db.entrants.values()].find((e) => e.avatar_id === 'av-h')!;
+    const aRow = [...db.entrants.values()].find((e) => e.avatar_id === 'av-a')!;
+    expect(hRow.fp_hash).toBe('fp-human');
+    expect(hRow.ip_prefix_hash).toBe('ip-human');
+    expect(aRow.fp_hash).toBe('fp-agent');
+    expect(aRow.ip_prefix_hash).toBe('ip-agent');
+
+    // Play the heads-up tournament to completion → settle emits placements.
+    clock.advance(2000);
+    const start = await tm.startTrigger(tid);
+    expect(start.status).toBe('running');
+    const tableId = tm.getTableId(tid)!;
+    await drivePokerToCompletion(tm, sim, tableId, tid, clock);
+    expect(db.tournaments.get(tid)!.status).toBe('completed');
+
+    // BOTH placement emits carry a NON-NULL (fp_hash, ip_prefix_hash) — the exact
+    // anti-farm shape every other event-emitting route gets. Critically the AGENT's
+    // emit is non-null (the gap this fix closes), not just the human's.
+    expect(placementEmits.length).toBe(2);
+    for (const e of placementEmits) {
+      expect(e.fpHash).not.toBeNull();
+      expect(e.ipPrefixHash).not.toBeNull();
+    }
+    const hEmit = placementEmits.find((e) => e.avatarId === 'av-h')!;
+    const aEmit = placementEmits.find((e) => e.avatarId === 'av-a')!;
+    expect(hEmit.fpHash).toBe('fp-human');
+    expect(hEmit.ipPrefixHash).toBe('ip-human');
+    expect(aEmit.fpHash).toBe('fp-agent'); // agent-driven event tagged with a real fp
+    expect(aEmit.ipPrefixHash).toBe('ip-agent');
+    expect(aEmit.subjectType).toBe('agent');
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1124,6 +1205,20 @@ describe('TournamentManager — create + default-schedule seed + list (mocked DB
     expect(t2.id).not.toBe(t1.id);
     expect(db.blindSchedules.size).toBe(1); // STILL one — no duplicate
     expect(db.tournaments.size).toBe(2);
+  });
+
+  it('created_by audit column: persists the creator avatar id (and null when none)', async () => {
+    const { tm } = buildManager(db, ledger, clock);
+
+    // Creator avatar supplied → persisted on the row AND returned.
+    const created = await tm.createTournament(validConfig(), 'admin-avatar-42');
+    expect(created.createdBy).toBe('admin-avatar-42');
+    expect(db.tournaments.get(created.id)!.created_by).toBe('admin-avatar-42');
+
+    // No creator avatar (dash-cookie/system path) → null, not a crash.
+    const anon = await tm.createTournament(validConfig(), null);
+    expect(anon.createdBy).toBeNull();
+    expect(db.tournaments.get(anon.id)!.created_by).toBeNull();
   });
 
   it('ensureDefaultBlindSchedule is idempotent across repeated calls (boot path)', async () => {
