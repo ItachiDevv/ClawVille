@@ -658,7 +658,7 @@ export const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteStat
     // Entity-vs-player push-out (Phase 4 -- client-side visual correction).
     // Only active when a real player avatar is present ('player'/'npc' mode).
     // In 'explore'/'autonomous' mode avatarPositionRef sits at the default
-    // game-px origin (5760,6300) = world center, causing spurious push-outs.
+    // game-px spawn (≈ map-center, world Z=+540), causing spurious push-outs.
     //
     // SKIP for remote players (d.isRemotePlayer === true): each client would
     // compute a different push vector based on its own avatar position, producing

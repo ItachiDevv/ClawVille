@@ -4,8 +4,10 @@
 > Ashburn box (now `<STAGING_VPS_IP>`, Coolify 4.0) to a new Hillsboro box
 > (`<PROD_VPS_IP>`, Coolify 4.1) on 2026-05-23. The old box now serves `staging.clawville.world`
 > + `api-staging.clawville.world` as a hot rollback target (DNS swap = 30s
-> rollback). Both share the same Supabase DB — any staging write touches prod
-> data. Authoritative IPs/keys/app-IDs live in `scripts/deploy/.env.deploy`
+> rollback). **Each box has its OWN Supabase DB since 2026-06-16** (staging
+> `mtpixvtclsjqjguouxes`, prod `wheuidgiyyccqyoppxoa`) — staging writes no longer
+> touch prod; schema converges to prod via the CI migration gate
+> (`migrate`→`deploy`) on `staging → master`. Authoritative IPs/keys/app-IDs live in `scripts/deploy/.env.deploy`
 > (gitignored). See `CLAUDE.md` / `AGENTS.md` "Deployment — Hetzner + Coolify"
 > for the live two-env table.
 >

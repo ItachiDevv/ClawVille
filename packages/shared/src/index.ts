@@ -87,3 +87,12 @@ export * from './activities';
 export * from './types/world';
 // Server-usable AABB collision data (buildings + town-center props).
 export * from './constants/world-colliders-data';
+// Land Economy Phase 0 (2026-06-15) — frozen tier contract (enum, supply counts, parcel-code
+// format). The geometry (`land-parcels`) + economic (`land-economy`) constants both import it.
+export * from './constants/land-tiers';
+// Land Economy Phase 0 (2026-06-15) — deterministic parcel geometry (176 parcels, concentric rings).
+// Consumed by merged-seaweed.tsx (exclusion zones) and future 3D parcel-render pass.
+export * from './constants/land-parcels';
+// Land Economy Phase 0 (2026-06-15) — economic constants (tier ladder, upgrade costs, structure
+// catalog, leaderboard event weights, founder-gated rest-bonus cap). Backend + frontend pricing.
+export * from './constants/land-economy';
