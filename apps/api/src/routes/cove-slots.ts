@@ -14,9 +14,9 @@
  *
  *   POST /session/open              (auth optional) — open commit-reveal session
  *   POST /spin                      (auth optional) — execute one spin (idempotent)
- *   POST /session/close             (Lucia auth) — close + reveal serverSeed
- *   GET  /session/:id               (Lucia auth) — owner-only session detail
- *   GET  /session/:id/spins         (Lucia auth) — owner-only paginated spins
+ *   POST /session/close             (user or agent) — close + reveal serverSeed
+ *   GET  /session/:id               (user or agent) — owner-only session detail
+ *   GET  /session/:id/spins         (user or agent) — owner-only paginated spins
  *   GET  /paytables/:id             (public)     — paytable + reel strips for verifier
  *   POST /verify                    (public)     — pure-compute replay endpoint
  *
@@ -106,7 +106,8 @@ import {
   CLASSIC_BONUS_PAYTABLE,
   FREE_SPIN_RULES,
 } from '@clawville/shared';
-import { requireAuth, sessionMiddleware } from '../middleware/auth';
+import { sessionMiddleware } from '../middleware/auth';
+import { resolveAgentSession } from '../middleware/require-auth-or-agent';
 import {
   CLIENT_SEED_MAX_LENGTH,
   createServerSeed,
@@ -149,11 +150,13 @@ const IDEMPOTENCY_KEY_MAX_LEN = 64;
 const SPIN_HISTORY_DEFAULT_LIMIT = 50;
 const SPIN_HISTORY_MAX_LIMIT = 200;
 
-// ─── User-scoped spin rate limiter (60/min/user) ──────────────────────────
+// ─── Subject-scoped spin rate limiter (60/min/subject) ────────────────────
 //
-// Auth-bound scoping defeats the shared-NAT collateral damage of IP
-// limiters. Bounded growth: at most one entry per logged-in user, swept
-// lazily on insert.
+// Keyed by subjectKey (`u:${userId}` for a human OR the agent bound to its
+// avatar, `g:${fpHash}` for a guest) — so an agent and the human it plays as
+// share one bucket and can't dodge the limit by toggling cookie vs agent
+// header. Subject-bound scoping also defeats the shared-NAT collateral damage
+// of IP limiters. Bounded growth: one entry per active subject, swept lazily.
 
 interface SpinRateBucket {
   count: number;
@@ -163,7 +166,7 @@ const SPIN_RATE_LIMIT = 60;
 const SPIN_RATE_WINDOW_MS = 60_000;
 const spinRateBuckets = new Map<string, SpinRateBucket>();
 
-function checkSpinRate(userId: string): void {
+function checkSpinRate(key: string): void {
   const now = Date.now();
   // Cheap periodic GC: every ~500 misses sweep expired entries.
   if (spinRateBuckets.size > 5_000) {
@@ -171,9 +174,9 @@ function checkSpinRate(userId: string): void {
       if (now > v.resetAt) spinRateBuckets.delete(k);
     }
   }
-  const entry = spinRateBuckets.get(userId);
+  const entry = spinRateBuckets.get(key);
   if (!entry || now > entry.resetAt) {
-    spinRateBuckets.set(userId, { count: 1, resetAt: now + SPIN_RATE_WINDOW_MS });
+    spinRateBuckets.set(key, { count: 1, resetAt: now + SPIN_RATE_WINDOW_MS });
     return;
   }
   entry.count++;
@@ -234,27 +237,99 @@ export function __resetGuestSessionOpenRate(): void {
   guestSessionOpenBuckets.clear();
 }
 
-// ─── Subject resolution (user OR guest, never both) ───────────────────────
+// ─── Subject resolution (user OR agent OR guest, never combined) ───────────
 //
-// Phase 6.7.5 — every write path consumes this. If the caller is
-// authenticated, the row is stamped with `userId`; otherwise the fp_hash
-// from the global fingerprintMiddleware (always non-empty per its fallback
-// chain) becomes the subject. The DB check constraint
-// (`cove_game_events_subject_check` / `slot_sessions_subject_check`)
-// enforces XOR — passing both is a server bug.
+// THREE subject kinds (Rule E5 — human↔agent parity, 2026-06-15). Faithfully
+// mirrors the AUDITED `cove-blackjack.ts` getSubject pattern so slots inherits
+// the same real-CT settlement path for connected/hosted agents:
+//   - 'user'  — Lucia-authed human. Settles in REAL CT on `avatars.clawTokens`.
+//   - 'agent' — a connected/hosted agent playing AS ITSELF via the agent gateway
+//     session header (`X-Clawville-Agent-Session`). It resolves through
+//     `resolveAgentSession` → its BOUND avatar's `userId`/`avatarId`, and settles
+//     in the SAME real-CT ledger path as a human (debit/creditClawTokens). An
+//     agent is NEVER routed to the guest demo tier — that user-XOR-guest gap was
+//     the E5 violation this fixes (slots previously resolved user|guest ONLY, so
+//     a connected agent could not stake/settle real CT).
+//   - 'guest' — anonymous fingerprint, demo-CT only (no ledger). The DB check
+//     constraint (`cove_game_events_subject_check` / `slot_sessions_subject_check`)
+//     enforces `userId XOR guestFpHash`. An agent subject carries the bound
+//     avatar's `userId` (guestFpHash null), so the XOR still holds and the
+//     audited money path is reused verbatim — the agent kind adds NO new money
+//     branch (see `isLedgerSubject`).
+//
+// Money parity rule: 'user' and 'agent' are both LEDGER subjects (they carry a
+// real `userId` and write the ClawToken ledger). `isLedgerSubject()` collapses
+// the two for every balance/owner branch so no slots settle code is duplicated.
+//
+// The agent-session header name matches the existing activity-portal /
+// require-auth-or-agent convention; Hono lower-cases header reads (case-insensitive).
+
+const AGENT_SESSION_HEADER = 'X-Clawville-Agent-Session';
 
 type SlotSubject =
-  | { kind: 'user'; userId: string; guestFpHash: null }
-  | { kind: 'guest'; userId: null; guestFpHash: string };
+  | { kind: 'user'; userId: string; avatarId: null; agentId: null; sessionId: null; guestFpHash: null }
+  | { kind: 'agent'; userId: string; avatarId: string; agentId: string; sessionId: string; guestFpHash: null }
+  | { kind: 'guest'; userId: null; avatarId: null; agentId: null; sessionId: null; guestFpHash: string };
 
-function getSubject(c: {
+/**
+ * Resolve the request subject. Precedence: Lucia human → agent session → guest
+ * (verbatim semantics from `cove-blackjack.ts` getSubject).
+ *
+ * Async (was sync) because the agent branch does a DB lookup to map the opaque
+ * session id → bound avatar/user. The human + guest branches stay synchronous in
+ * effect (no await on those paths) so existing latency is unchanged.
+ *
+ * An agent session that is unknown/expired → 401; one that is not ledger-capable
+ * → 403; one bound to a user WITHOUT an active avatar → 403. An agent NEVER falls
+ * through to the guest tier (silently demoting a connected agent to demo play is
+ * the exact E5 violation). A logged-in human cookie ALWAYS wins over an agent
+ * header on the same request.
+ */
+async function getSubject(c: {
   get(key: 'user'): { id: string } | null;
   get(key: 'fpHash'): string;
-}): SlotSubject {
+  req: { header(name: string): string | undefined };
+}): Promise<SlotSubject> {
   const user = c.get('user');
   if (user) {
-    return { kind: 'user', userId: user.id, guestFpHash: null };
+    return { kind: 'user', userId: user.id, avatarId: null, agentId: null, sessionId: null, guestFpHash: null };
   }
+
+  const agentSessionId = c.req.header(AGENT_SESSION_HEADER);
+  if (agentSessionId) {
+    const resolved = await resolveAgentSession(agentSessionId);
+    if (!resolved) {
+      throw new HTTPException(401, { message: 'invalid_or_expired_agent_session' });
+    }
+    // Ledger-capability gate (mirrors cove-blackjack). A session that did NOT
+    // prove ownership of its bound avatar (an agentId-only reconnect, a legacy
+    // /openclaw/register session) is `ledgerCapable === false`. It may
+    // perceive/chat/move, but it must NOT spend the avatar's REAL ClawTokens here.
+    // Reject 403 BEFORE the avatar-binding check — NOT a guest fall-through.
+    if (!resolved.ledgerCapable) {
+      throw new HTTPException(403, {
+        message: 'agent_session_not_ledger_authorized',
+      });
+    }
+    if (!resolved.userId || !resolved.avatarId) {
+      // Known agent, but not bound to an active avatar — cannot stake real CT.
+      // Surfaced as 403 (not a fall-through to guest) so a connected agent is
+      // never silently demoted to demo play.
+      throw new HTTPException(403, {
+        message:
+          'agent_session_has_no_active_avatar: connect an avatar before playing the Cove for real ClawTokens',
+      });
+    }
+    return {
+      kind: 'agent',
+      userId: resolved.userId,
+      avatarId: resolved.avatarId,
+      agentId: resolved.agentId,
+      sessionId: agentSessionId,
+      guestFpHash: null,
+    };
+  }
+
   const fpHash = c.get('fpHash');
   // fingerprintMiddleware crashes API boot if FINGERPRINT_SECRET is unset,
   // and its three-tier fallback (X-CV-Fingerprint → UA+IP → no-fp:<prefix>)
@@ -264,7 +339,48 @@ function getSubject(c: {
       message: 'fpHash_missing_for_guest_request',
     });
   }
-  return { kind: 'guest', userId: null, guestFpHash: fpHash };
+  return { kind: 'guest', userId: null, avatarId: null, agentId: null, sessionId: null, guestFpHash: fpHash };
+}
+
+/**
+ * The real-CT ledger userId for a subject, or null for a guest. 'user' and
+ * 'agent' are BOTH ledger subjects — this collapses them so the money path is
+ * written once.
+ */
+function ledgerUserId(subject: SlotSubject): string | null {
+  return subject.kind === 'guest' ? null : subject.userId;
+}
+
+/** True iff the subject settles in real CT (human or agent). */
+function isLedgerSubject(
+  subject: SlotSubject,
+): subject is Extract<SlotSubject, { kind: 'user' | 'agent' }> {
+  return subject.kind !== 'guest';
+}
+
+/**
+ * Rate-limit / spin-bucket key. 'user' and 'agent' rate-limit on userId — an
+ * agent and its bound human share one avatar/wallet, so they SHOULD share one
+ * spin-rate bucket (you can't dodge the limit by toggling between cookie + agent
+ * header on one avatar). Guests key on fp_hash.
+ */
+function subjectKey(subject: SlotSubject): string {
+  return subject.kind === 'guest' ? `g:${subject.guestFpHash}` : `u:${subject.userId}`;
+}
+
+/**
+ * A real-CT session is keyed on `userId` (NOT on agent/guest). Both human and
+ * agent subjects for the same bound avatar therefore see + own the SAME session —
+ * an agent playing AS its avatar continues the human's session, never forks a
+ * parallel one. Guests own by fingerprint.
+ */
+function ownerMatches(
+  session: { userId: string | null; guestFpHash: string | null },
+  subject: SlotSubject,
+): boolean {
+  return isLedgerSubject(subject)
+    ? session.userId === subject.userId
+    : session.guestFpHash === subject.guestFpHash;
 }
 
 // ─── Schemas ──────────────────────────────────────────────────────────────
@@ -415,7 +531,7 @@ coveSlotsRouter.post('/session/open', async (c) => {
     });
   }
   const input = parsed.data;
-  const subject = getSubject(c);
+  const subject = await getSubject(c);
 
   // 501 stub for SOL/USDC — Phase 6.2 custody not wired. Guests are also
   // gated to ClawTokens (no real-money guest play per plan §0).
@@ -449,7 +565,7 @@ coveSlotsRouter.post('/session/open', async (c) => {
   // farm RNG seeds or DoS the DB.
   let avatar: { id: string; clawTokens: number } | null = null;
   let guestStartingBalance = 0n;
-  if (subject.kind === 'user') {
+  if (isLedgerSubject(subject)) {
     avatar = await loadAvatarForUser(subject.userId);
     if (avatar.clawTokens < predictNumber) {
       throw new HTTPException(400, {
@@ -457,6 +573,7 @@ coveSlotsRouter.post('/session/open', async (c) => {
       });
     }
   } else {
+    // Guest-only rate limit — never throttle a ledger (human/agent) subject here.
     checkGuestSessionOpenRate(subject.guestFpHash);
     guestStartingBalance = 100n;
     if (predictBig > guestStartingBalance) {
@@ -482,7 +599,7 @@ coveSlotsRouter.post('/session/open', async (c) => {
       // Phase 6.7.5 — subject-conditioned lookup. The partial unique indexes
       // `slot_sessions_user_open_unique` / `slot_sessions_guest_open_unique`
       // guarantee at most one open row matches.
-      const lockWhere = subject.kind === 'user'
+      const lockWhere = isLedgerSubject(subject)
         ? sql`user_id = ${subject.userId} AND status = 'open'`
         : sql`guest_fp_hash = ${subject.guestFpHash} AND status = 'open'`;
       const lockRows = await tx.execute<{
@@ -566,8 +683,9 @@ coveSlotsRouter.post('/session/open', async (c) => {
   if (resumed) {
     void logEventFromContext(c, {
       eventType: 'cove.slots.session.resumed',
-      userId: subject.kind === 'user' ? subject.userId : null,
+      userId: ledgerUserId(subject),
       avatarId: avatar?.id ?? null,
+      agentId: subject.kind === 'agent' ? subject.agentId : null,
       payload: {
         sessionId: resumed.id,
         paytableId: resumed.paytableId,
@@ -575,6 +693,7 @@ coveSlotsRouter.post('/session/open', async (c) => {
         nonceCounter: resumed.nonceCounter,
         spinCount: resumed.spinCount,
         isGuest: subject.kind === 'guest',
+        isAgent: subject.kind === 'agent',
       },
     });
     const response: OpenSessionResponse = {
@@ -640,9 +759,9 @@ coveSlotsRouter.post('/session/open', async (c) => {
           serverSeed,
           serverSeedHash,
           clientSeed,
-          // Authed: per-spin predict snapshot (existing semantics — the
-          // /spin handler pins against this). Guest: demo wallet seed.
-          startingBalance: subject.kind === 'user'
+          // Ledger subject (human OR agent): per-spin predict snapshot (existing
+          // semantics — the /spin handler pins against this). Guest: demo wallet seed.
+          startingBalance: isLedgerSubject(subject)
             ? predictBig.toString()
             : guestStartingBalance.toString(),
           // currentBalance: net session P&L (negative = down, positive = up).
@@ -670,7 +789,7 @@ coveSlotsRouter.post('/session/open', async (c) => {
     if (pgCode === '23505') {
       // Same subject-conditioned WHERE as the FOR UPDATE block above; one
       // of the partial unique indexes tripped.
-      const raceWhere = subject.kind === 'user'
+      const raceWhere = isLedgerSubject(subject)
         ? and(eq(slotSessions.userId, subject.userId), eq(slotSessions.status, 'open'))
         : and(eq(slotSessions.guestFpHash, subject.guestFpHash), eq(slotSessions.status, 'open'));
       const raceRows = await db
@@ -718,14 +837,16 @@ coveSlotsRouter.post('/session/open', async (c) => {
 
   void logEventFromContext(c, {
     eventType: 'cove.slots.session.opened',
-    userId: subject.kind === 'user' ? subject.userId : null,
+    userId: ledgerUserId(subject),
     avatarId: avatar?.id ?? null,
+    agentId: subject.kind === 'agent' ? subject.agentId : null,
     payload: {
       sessionId: inserted.id,
       paytableId: input.paytableId,
       currency: input.currency,
       predict: predictBig.toString(),
       isGuest: subject.kind === 'guest',
+      isAgent: subject.kind === 'agent',
     },
   });
 
@@ -770,15 +891,12 @@ coveSlotsRouter.post('/spin', async (c) => {
     });
   }
   const input = parsed.data;
-  const subject = getSubject(c);
+  const subject = await getSubject(c);
 
-  // Phase 6.7.5 — rate limit keyed on user OR fp_hash; we want guests
-  // bounded too (a guest fp shouldn't be able to spin > 60/min). Same
-  // 60/min ceiling either way; the spin-rate bucket map keys on any
-  // string so we just use the subject identity.
-  checkSpinRate(
-    subject.kind === 'user' ? `u:${subject.userId}` : `g:${subject.guestFpHash}`,
-  );
+  // Rate limit keyed on user/agent (by userId) OR fp_hash (guest); we want guests
+  // bounded too (a guest fp shouldn't be able to spin > 60/min). Same 60/min
+  // ceiling either way. An agent and its bound human share the userId bucket.
+  checkSpinRate(subjectKey(subject));
 
   const session = await db.query.slotSessions.findFirst({
     where: eq(slotSessions.id, input.sessionId),
@@ -786,12 +904,10 @@ coveSlotsRouter.post('/spin', async (c) => {
   if (!session) {
     throw new HTTPException(404, { message: 'session_not_found' });
   }
-  // Subject-conditioned owner check — authed users can't read guest
-  // sessions, guests can't read authed sessions.
-  const ownerMatch = subject.kind === 'user'
-    ? session.userId === subject.userId
-    : session.guestFpHash === subject.guestFpHash;
-  if (!ownerMatch) {
+  // Subject-conditioned owner check — a ledger subject (human/agent) owns by
+  // userId, a guest by fp_hash. A real-CT session is keyed on userId so an agent
+  // and its bound human see + own the SAME session (never a parallel fork).
+  if (!ownerMatches(session, subject)) {
     throw new HTTPException(403, { message: 'session_not_owned' });
   }
 
@@ -827,9 +943,9 @@ coveSlotsRouter.post('/spin', async (c) => {
     const fresh = await db.query.slotSessions.findFirst({
       where: eq(slotSessions.id, session.id),
     });
-    // Authed: real avatar balance. Guest: demo balance derived from
-    // session counters (starting + totalWon - totalStaked).
-    const balanceForResponse = subject.kind === 'user'
+    // Ledger subject (human/agent): real avatar balance. Guest: demo balance
+    // derived from session counters (starting + totalWon - totalStaked).
+    const balanceForResponse = isLedgerSubject(subject)
       ? (await loadAvatarForUser(subject.userId)).clawTokens
       : Number(
           BigInt(fresh?.startingBalance ?? session.startingBalance) +
@@ -880,14 +996,15 @@ coveSlotsRouter.post('/spin', async (c) => {
       message: `session_not_open: status=${session.status}`,
     });
   }
-  // Phase 6.7.5 — predict-pin policy differs by subject:
-  //   • Authed sessions store the per-spin predict in `startingBalance` at
-  //     open time (existing semantics); every spin must match it exactly.
+  // Predict-pin policy differs by subject:
+  //   • Ledger sessions (human OR agent) store the per-spin predict in
+  //     `startingBalance` at open time (existing semantics); every spin must
+  //     match it exactly.
   //   • Guest sessions store a 100-fun-CT demo wallet in `startingBalance`;
   //     each spin's predict can be any positive bigint that fits in the
   //     remaining demo balance (UX gate; the spin-time balance check
   //     inside the txn is authoritative).
-  if (subject.kind === 'user' && input.predict !== session.startingBalance) {
+  if (isLedgerSubject(subject) && input.predict !== session.startingBalance) {
     throw new HTTPException(400, {
       message: `predict_must_equal_session_reserved_predict (expected ${session.startingBalance}, got ${input.predict})`,
     });
@@ -901,9 +1018,9 @@ coveSlotsRouter.post('/spin', async (c) => {
   }
   const predictNumber = Number(predictBig);
 
-  // Authed: load avatar for the ClawTokens ledger. Guest: avatar=null,
-  // demo wallet accounting lives entirely in slot_sessions row.
-  const avatar = subject.kind === 'user'
+  // Ledger subject (human/agent): load avatar for the ClawTokens ledger.
+  // Guest: avatar=null, demo wallet accounting lives entirely in slot_sessions row.
+  const avatar = isLedgerSubject(subject)
     ? await loadAvatarForUser(subject.userId)
     : null;
 
@@ -1040,7 +1157,7 @@ coveSlotsRouter.post('/spin', async (c) => {
       // ClawTokens ledger; the demo balance lives entirely on the
       // slot_sessions row (startingBalance + totalWon - totalStaked).
       let debitBalance: number;
-      if (subject.kind === 'guest' || !avatar) {
+      if (!isLedgerSubject(subject) || !avatar) {
         // Guest demo balance check under the row lock. Refuse if this
         // spin's predict would push the demo wallet negative. Free spins
         // bypass the check (no debit).
@@ -1265,7 +1382,7 @@ coveSlotsRouter.post('/spin', async (c) => {
             message: 'win_amount_exceeds_int4_range',
           });
         }
-        if (subject.kind === 'user' && avatar) {
+        if (isLedgerSubject(subject) && avatar) {
           const credit = await creditClawTokens(
             {
               avatarId: avatar.id,
@@ -1320,7 +1437,7 @@ coveSlotsRouter.post('/spin', async (c) => {
         const fresh = await db.query.slotSessions.findFirst({
           where: eq(slotSessions.id, session.id),
         });
-        const balanceAfter = subject.kind === 'user'
+        const balanceAfter = isLedgerSubject(subject)
           ? (await loadAvatarForUser(subject.userId)).clawTokens
           : Number(
               BigInt(fresh?.startingBalance ?? session.startingBalance) +
@@ -1360,8 +1477,9 @@ coveSlotsRouter.post('/spin', async (c) => {
 
   void logEventFromContext(c, {
     eventType: 'cove.slots.spin.executed',
-    userId: subject.kind === 'user' ? subject.userId : null,
+    userId: ledgerUserId(subject),
     avatarId: avatar?.id ?? null,
+    agentId: subject.kind === 'agent' ? subject.agentId : null,
     payload: {
       sessionId: session.id,
       spinId: spinRowId,
@@ -1369,6 +1487,7 @@ coveSlotsRouter.post('/spin', async (c) => {
       winAmount: winAmountBig.toString(),
       nonce: session.nonceCounter,
       isGuest: subject.kind === 'guest',
+      isAgent: subject.kind === 'agent',
     },
   });
 
@@ -1390,8 +1509,17 @@ coveSlotsRouter.post('/spin', async (c) => {
 });
 
 // ─── POST /session/close ──────────────────────────────────────────────────
+//
+// Subject-resolved (NOT requireAuth) so a connected AGENT can close its own
+// session and reveal the seed — without this the agent could never satisfy the
+// commit-reveal fairness promise and its session would wedge open forever.
+// Ledger subjects only (human or agent): a guest demo session has no persistent
+// fairness contract to honor and the prior Lucia-only gate already excluded
+// guests here, so we keep that exclusion (403) rather than widening it.
+// Ownership is enforced via ownerMatches (userId for a ledger subject), so an
+// agent can only ever close its own bound avatar's session.
 
-coveSlotsRouter.post('/session/close', requireAuth, async (c) => {
+coveSlotsRouter.post('/session/close', async (c) => {
   const body = await c.req.json().catch(() => null);
   const parsed = closeSchema.safeParse(body);
   if (!parsed.success) {
@@ -1399,7 +1527,10 @@ coveSlotsRouter.post('/session/close', requireAuth, async (c) => {
       message: 'invalid_input: ' + parsed.error.message,
     });
   }
-  const user = c.get('user')!;
+  const subject = await getSubject(c);
+  if (!isLedgerSubject(subject)) {
+    throw new HTTPException(403, { message: 'guest_cannot_close_session: sign in or connect an agent' });
+  }
 
   const session = await db.query.slotSessions.findFirst({
     where: eq(slotSessions.id, parsed.data.sessionId),
@@ -1407,7 +1538,7 @@ coveSlotsRouter.post('/session/close', requireAuth, async (c) => {
   if (!session) {
     throw new HTTPException(404, { message: 'session_not_found' });
   }
-  if (session.userId !== user.id) {
+  if (!ownerMatches(session, subject)) {
     throw new HTTPException(403, { message: 'session_not_owned' });
   }
   if (session.status !== 'open') {
@@ -1416,7 +1547,7 @@ coveSlotsRouter.post('/session/close', requireAuth, async (c) => {
     });
   }
 
-  const avatar = await loadAvatarForUser(user.id);
+  const avatar = await loadAvatarForUser(subject.userId);
 
   const { closedSession, finalBalance } = await db.transaction(async (tx) => {
     // Lock the session row so we don't race another /close (or a
@@ -1488,14 +1619,16 @@ coveSlotsRouter.post('/session/close', requireAuth, async (c) => {
 
   void logEventFromContext(c, {
     eventType: 'cove.slots.session.closed',
-    userId: user.id,
+    userId: subject.userId,
     avatarId: avatar.id,
+    agentId: subject.kind === 'agent' ? subject.agentId : null,
     payload: {
       sessionId: closedSession.id,
       paytableId: closedSession.paytableId,
       spinCount: closedSession.spinCount,
       totalStaked: closedSession.totalStaked,
       totalWon: closedSession.totalWon,
+      isAgent: subject.kind === 'agent',
     },
   });
 
@@ -1523,11 +1656,17 @@ coveSlotsRouter.post('/session/close', requireAuth, async (c) => {
 // orphan the session and the next /open would race the idempotent path on
 // the first SPIN click (cleaner UX to discover the open session eagerly).
 
-coveSlotsRouter.get('/session/current', requireAuth, async (c) => {
-  const user = c.get('user')!;
+// Subject-resolved (ledger subjects only) so a connected agent can restore its
+// open session after a reconnect, exactly like a human after a page refresh. An
+// agent + its bound human share one userId-keyed session, so both see the same row.
+coveSlotsRouter.get('/session/current', async (c) => {
+  const subject = await getSubject(c);
+  if (!isLedgerSubject(subject)) {
+    throw new HTTPException(403, { message: 'guest_has_no_persistent_session: sign in or connect an agent' });
+  }
   const row = await db.query.slotSessions.findFirst({
     where: and(
-      eq(slotSessions.userId, user.id),
+      eq(slotSessions.userId, subject.userId),
       eq(slotSessions.status, 'open'),
     ),
   });
@@ -1537,7 +1676,7 @@ coveSlotsRouter.get('/session/current', requireAuth, async (c) => {
   // Include the authoritative wallet balance so the client can snapshot
   // it as the PnL baseline without a second round-trip (mirrors the
   // `walletBalance` field on /session/open's response).
-  const avatar = await loadAvatarForUser(user.id);
+  const avatar = await loadAvatarForUser(subject.userId);
   return c.json({
     session: publicSession(row),
     walletBalance: avatar.clawTokens,
@@ -1546,19 +1685,25 @@ coveSlotsRouter.get('/session/current', requireAuth, async (c) => {
 
 // ─── GET /session/:id ─────────────────────────────────────────────────────
 
-coveSlotsRouter.get('/session/:id', requireAuth, async (c) => {
+// Subject-resolved (ledger subjects only) so an agent can inspect its own
+// session; ownerMatches binds to the resolved userId, so an agent can never read
+// another user's session by id.
+coveSlotsRouter.get('/session/:id', async (c) => {
   const sessionId = c.req.param('id');
   if (!/^[0-9a-f-]{36}$/i.test(sessionId)) {
     throw new HTTPException(400, { message: 'invalid_session_id' });
   }
-  const user = c.get('user')!;
+  const subject = await getSubject(c);
+  if (!isLedgerSubject(subject)) {
+    throw new HTTPException(403, { message: 'guest_cannot_inspect_session: sign in or connect an agent' });
+  }
   const row = await db.query.slotSessions.findFirst({
     where: eq(slotSessions.id, sessionId),
   });
   if (!row) {
     throw new HTTPException(404, { message: 'session_not_found' });
   }
-  if (row.userId !== user.id) {
+  if (!ownerMatches(row, subject)) {
     throw new HTTPException(403, { message: 'session_not_owned' });
   }
   return c.json({ session: publicSession(row) }, 200);
@@ -1566,7 +1711,10 @@ coveSlotsRouter.get('/session/:id', requireAuth, async (c) => {
 
 // ─── GET /session/:id/spins ───────────────────────────────────────────────
 
-coveSlotsRouter.get('/session/:id/spins', requireAuth, async (c) => {
+// Subject-resolved (ledger subjects only), owner-only — an agent can page its own
+// session's spin history (read-only, no money). ownerMatches binds to the resolved
+// userId so an agent can never read another user's spins.
+coveSlotsRouter.get('/session/:id/spins', async (c) => {
   const sessionId = c.req.param('id');
   if (!/^[0-9a-f-]{36}$/i.test(sessionId)) {
     throw new HTTPException(400, { message: 'invalid_session_id' });
@@ -1579,15 +1727,18 @@ coveSlotsRouter.get('/session/:id/spins', requireAuth, async (c) => {
       message: 'invalid_query: ' + queryParsed.error.message,
     });
   }
-  const user = c.get('user')!;
+  const subject = await getSubject(c);
+  if (!isLedgerSubject(subject)) {
+    throw new HTTPException(403, { message: 'guest_cannot_inspect_session: sign in or connect an agent' });
+  }
   const session = await db.query.slotSessions.findFirst({
     where: eq(slotSessions.id, sessionId),
-    columns: { id: true, userId: true },
+    columns: { id: true, userId: true, guestFpHash: true },
   });
   if (!session) {
     throw new HTTPException(404, { message: 'session_not_found' });
   }
-  if (session.userId !== user.id) {
+  if (!ownerMatches(session, subject)) {
     throw new HTTPException(403, { message: 'session_not_owned' });
   }
   const rows = await db
