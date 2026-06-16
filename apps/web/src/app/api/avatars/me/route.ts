@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { db, avatars, eq, and } from '@clawville/database';
+import { WORLD_PX_WIDTH, WORLD_PX_HEIGHT } from '@clawville/shared';
 import { json, error, requireAuth } from '@/lib/api-utils';
 
 export async function GET() {
@@ -20,9 +21,13 @@ export async function GET() {
   }
 }
 
+// Bounds track the shared world dimensions (S3, 2026-06-16). Land Phase 0 grew
+// the world to 18432 px; the old .max(5120) rejected the correct new spawn
+// (9216 > 5120), so the avatar row could never persist a valid position. Bound
+// to @clawville/shared so this can never drift from the client world size.
 const updatePositionSchema = z.object({
-  positionX: z.number().int().min(0).max(5120),
-  positionY: z.number().int().min(0).max(5120),
+  positionX: z.number().int().min(0).max(WORLD_PX_WIDTH),
+  positionY: z.number().int().min(0).max(WORLD_PX_HEIGHT),
 });
 
 export async function PATCH(request: NextRequest) {
