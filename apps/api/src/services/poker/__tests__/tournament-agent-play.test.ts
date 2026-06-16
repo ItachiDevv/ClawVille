@@ -197,13 +197,19 @@ class FakeDb {
         .sort((a, b) => Number(a.registered_at) - Number(b.registered_at))
         .map((e) => ({ id: e.id, avatar_id: e.avatar_id, agent_id: e.agent_id, subject_type: e.subject_type, buy_in_paid_ct: e.buy_in_paid_ct, status: e.status }));
     }
-    if (text.startsWith('SELECT avatar_id, agent_id, placement FROM poker_tournament_entrants WHERE tournament_id = ? AND status <> \'refunded\' ORDER BY placement ASC NULLS LAST')) {
+    if (text.startsWith('SELECT avatar_id, agent_id, placement, fp_hash, ip_prefix_hash FROM poker_tournament_entrants WHERE tournament_id = ? AND status <> \'refunded\' ORDER BY placement ASC NULLS LAST')) {
       return [...this.entrants.values()]
         .filter((e) => e.tournament_id === p[0] && e.status !== 'refunded')
         .sort((a, b) => Number(a.placement ?? 1e9) - Number(b.placement ?? 1e9))
-        .map((e) => ({ avatar_id: e.avatar_id, agent_id: e.agent_id, placement: e.placement }));
+        .map((e) => ({
+          avatar_id: e.avatar_id,
+          agent_id: e.agent_id,
+          placement: e.placement,
+          fp_hash: e.fp_hash ?? null,
+          ip_prefix_hash: e.ip_prefix_hash ?? null,
+        }));
     }
-    if (text.startsWith('INSERT INTO poker_tournament_entrants') && text.includes('buy_in_paid_ct, status) VALUES')) {
+    if (text.startsWith('INSERT INTO poker_tournament_entrants') && text.includes('fp_hash, ip_prefix_hash) VALUES')) {
       const id = randomUUID();
       this.entrants.set(id, {
         id,
@@ -213,6 +219,8 @@ class FakeDb {
         subject_type: p[3],
         buy_in_paid_ct: p[4],
         status: 'registered',
+        fp_hash: p[5] ?? null,
+        ip_prefix_hash: p[6] ?? null,
         refunded_ct: '0',
         placement: null,
         chip_stack: 0,
