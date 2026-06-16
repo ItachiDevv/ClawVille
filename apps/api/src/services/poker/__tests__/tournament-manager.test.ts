@@ -234,9 +234,16 @@ class FakeDb {
     }
     // createTournament INSERT ... RETURNING (P4 creation path; created_by audit col).
     if (
-      text.startsWith('INSERT INTO poker_tournaments (name, status, buy_in_ct, rake_bps, min_entrants, max_entrants, seats_per_table, starting_stack, prize_pool_ct, payout_curve_json, blind_schedule_id, registration_closes_at, created_by) VALUES')
+      text.startsWith('INSERT INTO poker_tournaments (name, status, buy_in_ct, rake_bps, min_entrants, max_entrants, seats_per_table, starting_stack, prize_pool_ct, payout_curve_json, blind_schedule_id, registration_closes_at, created_by, special_event_id) VALUES')
     ) {
       const id = randomUUID();
+      // NOTE (2026-06-16): `prize_pool_ct` is a BOUND PARAM (p[7]) — the
+      // special-event prepaid seam made the TM seed the pool with
+      // `${seedPool.toString()}` instead of the literal '0', so every subsequent
+      // param index shifted by one (payout_curve→p[8], blind_sched→p[9],
+      // reg_closes→p[10], created_by→p[11]). The dependency FK
+      // `special_event_id` (p[12]) is the NEW trailing column added the same day:
+      // poker_tournaments.special_event_id → special_events.id (FK points UP).
       const row: Row = {
         id,
         name: p[0],
@@ -247,11 +254,12 @@ class FakeDb {
         max_entrants: p[4],
         seats_per_table: p[5],
         starting_stack: p[6],
-        prize_pool_ct: '0',
-        payout_curve_json: parseJsonParam(p[7]),
-        blind_schedule_id: p[8],
-        registration_closes_at: p[9] ?? null,
-        created_by: p[10] ?? null,
+        prize_pool_ct: p[7],
+        payout_curve_json: parseJsonParam(p[8]),
+        blind_schedule_id: p[9],
+        registration_closes_at: p[10] ?? null,
+        created_by: p[11] ?? null,
+        special_event_id: p[12] ?? null,
         rake_taken_ct: null,
         started_at: null,
         settled_at: null,
