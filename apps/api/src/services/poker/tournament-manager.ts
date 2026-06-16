@@ -316,6 +316,33 @@ export interface CreateTournamentConfig {
    * DEFAULT schedule. When provided, the row MUST already exist (FK + existence check).
    */
   blindScheduleId?: string;
+  /**
+   * PREPAID-ENTRANT mode (the special-event seam, 2026-06-16). When set, this
+   * tournament's entrants are PRE-PAID at a HIGHER layer (the special-event gate
+   * already settled SOL/CT/free entry), so:
+   *   - `buyInCt` MAY be 0 (the per-entrant debit is skipped — `registerEntrant`
+   *     already no-ops the debit when buyInCt is 0), bypassing the normal "no free
+   *     tournament" guard. This is the ONLY way `buyInCt === 0` is accepted.
+   *   - `seedPrizePoolCt` (atomic CT) funds the prize pool DIRECTLY at creation
+   *     instead of accumulating from buy-ins, so settle still pays out + conserves
+   *     (sum(prizes) + rakeTaken == prizePoolCt). The event manager funds this from
+   *     its `prize_config_json`. Omitted/0 ⇒ a 0 pool (a pure-glory event).
+   * Default (omitted) ⇒ the normal CT-buy-in tournament (buyInCt MUST be > 0).
+   */
+  prepaid?: {
+    /** Seed the prize pool directly (atomic CT) instead of from buy-ins. */
+    seedPrizePoolCt?: number | bigint | string;
+  };
+  /**
+   * DEPENDENCY LINK (the special-event seam, 2026-06-16). When set, the created
+   * tournament's `special_event_id` column is populated atomically at insert so
+   * the tournament is a DEPENDENT of that special_events parent (the FK points
+   * UP — special_events never references the tournament). `settleEvent` finds
+   * the tournament via `WHERE special_event_id = <this>`. Omitted ⇒ a standalone
+   * tournament (null special_event_id). MUST reference an existing special_events
+   * row (DB FK enforces it; a bad id surfaces as a 23503 at insert).
+   */
+  specialEventId?: string | null;
 }
 
 export interface CreateTournamentResult {
@@ -334,6 +361,8 @@ export interface CreateTournamentResult {
   registrationClosesAt: Date | string | null;
   /** The creator's avatar id (audit), or null. */
   createdBy: string | null;
+  /** The special_events parent this tournament depends on, or null (standalone). */
+  specialEventId: string | null;
   createdAt: Date | string | null;
 }
 
@@ -551,8 +580,19 @@ export class TournamentManager {
     const name = (config.name ?? '').trim();
     if (!name) throw new TournamentError('invalid_name', 400);
 
+    const prepaid = config.prepaid;
     const buyIn = toBigIntStrict(config.buyInCt, 'buyInCt');
-    if (buyIn <= 0n) throw new TournamentError('invalid_buy_in_must_be_positive', 400);
+    // PREPAID mode is the ONLY way a 0 buy-in is accepted: a higher layer (the
+    // special-event gate) already collected entry, so the per-entrant CT debit is
+    // skipped and the pool is seeded directly. A normal tournament still demands a
+    // positive buy-in (a 0 pool that accumulates from buy-ins can't pay anyone).
+    if (!prepaid && buyIn <= 0n) {
+      throw new TournamentError('invalid_buy_in_must_be_positive', 400);
+    }
+    if (buyIn < 0n) throw new TournamentError('invalid_buy_in_must_be_positive', 400);
+    const seedPool = prepaid?.seedPrizePoolCt != null
+      ? toBigIntStrict(prepaid.seedPrizePoolCt, 'seedPrizePoolCt')
+      : 0n;
 
     const rakeBps = config.rakeBps ?? 0;
     if (!Number.isInteger(rakeBps) || rakeBps < 0 || rakeBps > 10000) {
@@ -589,6 +629,8 @@ export class TournamentManager {
       throw new TournamentError('invalid_registration_closes_at', 400);
     }
 
+    const specialEventId = config.specialEventId ?? null;
+
     // ── Resolve the blind schedule (seed default OR verify the referenced row) ──
     let blindScheduleId = config.blindScheduleId;
     if (!blindScheduleId) {
@@ -616,19 +658,20 @@ export class TournamentManager {
       blind_schedule_id: string;
       registration_closes_at: Date | string | null;
       created_by: string | null;
+      special_event_id: string | null;
       created_at: Date | string | null;
     }>(
       sql`INSERT INTO poker_tournaments
             (name, status, buy_in_ct, rake_bps, min_entrants, max_entrants,
              seats_per_table, starting_stack, prize_pool_ct, payout_curve_json,
-             blind_schedule_id, registration_closes_at, created_by)
+             blind_schedule_id, registration_closes_at, created_by, special_event_id)
           VALUES (${name}, 'registering', ${buyIn.toString()}, ${rakeBps}, ${minEntrants},
-                  ${maxEntrants}, ${seatsPerTable}, ${startingStack}, '0',
+                  ${maxEntrants}, ${seatsPerTable}, ${startingStack}, ${seedPool.toString()},
                   ${JSON.stringify(payoutCurve)}::jsonb, ${blindScheduleId},
-                  ${registrationClosesAt}, ${createdByAvatarId})
+                  ${registrationClosesAt}, ${createdByAvatarId}, ${specialEventId})
           RETURNING id, name, status, buy_in_ct, rake_bps, min_entrants, max_entrants,
                     seats_per_table, starting_stack, prize_pool_ct, payout_curve_json,
-                    blind_schedule_id, registration_closes_at, created_by, created_at`,
+                    blind_schedule_id, registration_closes_at, created_by, special_event_id, created_at`,
     );
     const row = inserted[0];
     if (!row) throw new TournamentError('create_failed', 500);
@@ -654,6 +697,7 @@ export class TournamentManager {
       blindScheduleId: row.blind_schedule_id,
       registrationClosesAt: row.registration_closes_at,
       createdBy: row.created_by,
+      specialEventId: row.special_event_id,
       createdAt: row.created_at,
     };
   }
