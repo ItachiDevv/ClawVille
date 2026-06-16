@@ -12,7 +12,7 @@ import { embedText } from '../plugins/embed-text';
  * Falls back to the old characterConfig.knowledge[] read if:
  * - No vector memories exist yet (avatar learned skills before Phase 2)
  * - The runtime doesn't expose searchMemories (shouldn't happen but safe)
- * - The Gemini embedding call fails (API outage, missing key, etc.)
+ * - The OpenAI embedding call fails (API outage, missing key, etc.)
  *
  * Expects:
  *   state.characterConfig — { knowledge?: string[] }   (fallback)

@@ -14,7 +14,12 @@
 > **This playbook below is the one-time Railway→Hetzner migration history,
 > kept as reference for the NEXT migration or rebuild.** When provisioning a
 > third box (e.g. EU region), the same scripts (`provision-hetzner.sh`,
-> `bootstrap-server.sh`, `setup-cloudflare-dns.sh`) apply. Lessons learned
+> `bootstrap-server.sh`, `setup-cloudflare-dns.sh`) apply — but NOTE (2026-06-16)
+> those provisioning scripts and `scripts/deploy/.env.deploy` are NOT currently
+> committed to the repo (the boxes are already provisioned); restore them from
+> git history or re-author from the steps below if you re-provision. The only
+> committed deploy scripts are `clawville-deploy.sh` / `clawville-staging-deploy.sh`
+> / `apply-rename-migration.sh`. Lessons learned
 > 2026-05-23 (CRLF on bootstrap, Coolify 4.0→4.1 schema drift on
 > `environment_variables`, Crypt::encryptString-via-raw-SQL breakage, stale
 > `custom_labels` requiring `null + re-save`) live in:
@@ -25,6 +30,8 @@
 > (gitignored). Reuse them as templates for the next migration: `create-apps.php`,
 > `cutover-prod-fix.php` (must use Eloquent model for env writes), `reconfig-staging.php`,
 > `init-new-coolify.php` (admin user + instance fqdn + deploy key import in one tinker call).
+
+**Last edit:** 2026-06-16 — D3 drift fix: flagged that the one-time provisioning scripts (`provision-hetzner.sh`, `setup-cloudflare-dns.sh`, `bootstrap-server.sh`, `add-zone-to-cloudflare.sh`) + `.env.deploy[.example]` are NOT committed; the live deploy path is `scripts/deploy/clawville-deploy.sh` (+ staging variant). Steps 0–4 are historical reference, not a runnable path today.
 
 Migrate ClawVille from Railway Pro (~$55/mo) to a single Hetzner CCX13 VPS
 running Coolify, with Cloudflare in front. Actual cost: **~$19.99/mo gross**
@@ -81,6 +88,8 @@ running Coolify, with Cloudflare in front. Actual cost: **~$19.99/mo gross**
    ssh-keygen -t ed25519 -C "clawville-deploy"
    # Accept the default path ~/.ssh/id_ed25519
    ```
+
+> **⚠️ Provisioning scripts are NOT in the repo (verified 2026-06-16).** Steps 0–4 below reference one-time bootstrap scripts (`add-zone-to-cloudflare.sh`, `provision-hetzner.sh`, `setup-cloudflare-dns.sh`, `bootstrap-server.sh`) and `scripts/deploy/.env.deploy[.example]` that are **not currently committed** — both Hetzner boxes are already provisioned, so these are historical reference for how the infra was first stood up, not a runnable path today. The ONLY scripts actually in `scripts/deploy/` are `clawville-deploy.sh` (prod redeploy), `clawville-staging-deploy.sh` (staging redeploy), and `apply-rename-migration.sh`. **For normal operation use the "Deploy / redeploy" path (`bash scripts/deploy/clawville-deploy.sh` or push to `staging`/`master`)** — you do NOT run Steps 0–4. To re-provision a third box, restore the bootstrap scripts from git history or re-author them from the steps below.
 
 ## Step 0 — Add clawville.world to Cloudflare (automated)
 
