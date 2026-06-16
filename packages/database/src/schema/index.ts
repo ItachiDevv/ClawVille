@@ -81,6 +81,11 @@ export * from './holdem';
 // cove_game_events row (gameType='baccarat'). ClawTokens tier today; currency
 // seam reserved for the SOL/USDC tier.
 export * from './baccarat';
+// Poker MTT (multi-table Texas Hold'em tournament) — poker_tournaments / _entrants
+// / _tables / _blind_schedules / _hands / _tournament_results. Tournament chips are
+// NOT CT (only buy-in debit + prize credit cross the ledger). Distinct from the
+// vs-bots `holdem` tables above. Registered here so drizzle-kit sees the schema.
+export * from './poker';
 // Land Economy Phase 0 (2026-06-15) — converged land/property + services +
 // CT-on-ramp tables (land_parcels/structures/upgrades/transactions +
 // service_listings/service_purchases + partner_storefronts + ct_topups).
