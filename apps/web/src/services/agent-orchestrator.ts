@@ -105,7 +105,9 @@ class AgentOrchestrator {
         agentConfig: (agent.config as Record<string, unknown>) ?? {},
         databaseUrl: process.env.DATABASE_URL,
         apiKeys: {
-          gemini: process.env.GEMINI_API_KEY,
+          // OpenAI backs BOTH text generation (openai-text-provider) and
+          // embeddings (openai-embedding-provider, text-embedding-3-small, 1536-dim).
+          openai: process.env.OPENAI_API_KEY,
         },
       });
 
