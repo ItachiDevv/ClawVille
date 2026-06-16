@@ -13,12 +13,14 @@ Plan must include: (1) the PRODUCTION reference (screenshot or curl evidence), (
 
 Violation → `git stash` whatever was written and restart from the plan step.
 
-### Rule E3 — Codex-first for 3D / shader / WebGPU / meshlet work
-Categories: Three.js / R3F / WebGPU / WGSL / TSL shaders · meshlet rasterizer (`apps/web/src/lib/three/experimental/nanite-rasterizer.ts` + `meshlet/`) · atlas packing, UV remapping, texture-array indexing · any GLB pipeline branching into shaders.
+### Rule E3 — 3D / shader / WebGPU / meshlet work is a CLAUDE↔CODEX COLLABORATION (not Codex-gated)
+Categories: Three.js / R3F / WebGPU / WGSL / TSL shaders · meshlet rasterizer (`apps/web/src/lib/three/experimental/nanite-rasterizer.ts` + `meshlet/`) · atlas packing, UV remapping, texture-array indexing · any GLB pipeline branching into shaders · character/avatar mesh + rig + decimation pipelines.
 
-First edit on those files MUST be authored by `codex:codex-rescue` via Agent. Claude decomposes the prompt (prod reference, constraints, file paths, known bugs, verify loop, success criterion), spawns Codex, does browser verification, commits + pushes. Claude does NOT hand-write the shader, UV remap, atlas builder, or merge pipeline.
+This work is genuinely hard for a single LLM to get right, so it is done as a CONTINUOUS COLLABORATION between Claude and Codex who REVIEW EACH OTHER'S WORK THE WHOLE TIME — NOT a strict hand-off where Codex authors and Claude only verifies, and NOT Claude solo. Either may author a given change; whoever authors it, the OTHER independently reviews it before it ships, and they iterate together (author → review → fix → re-review) until it is right. Two sets of eyes on every shader / UV / atlas / rig / decimation change, continuously.
 
-Override: user types **"claude implement"** → rule lifts for the session.
+Claude still owns: decomposition (prod reference, constraints, file paths, known bugs, verify loop, success criterion), dispatching the `3da` / `blend007` specialist where it fits, browser/visual verification on every iteration (screenshots, not "should look right"), and commit/push. Codex is engaged as a co-author AND reviewer throughout — pulled in repeatedly, not invoked once at the start.
+
+Two failure modes this rule forbids: (1) Claude (or any single agent) going solo on this work — one LLM is not enough here; (2) "Codex writes, Claude rubber-stamps" OR "Claude writes, Codex never sees it" — review must be real and mutual. (Supersedes the old "first edit MUST be authored by Codex / `claude implement` to override" framing — collaboration is the default; there is no gate to override.)
 
 ### Rule E4 — no "shipped" / "done" / "complete" / "milestone" / "working" / "ready" / "fixed" without same-turn user sign-off
 "Sign-off" = a screenshot the user posted, or "looks good" / "ship it" / "yes that works" in this conversation. Green build, passing test, clean console — NONE substitute.
