@@ -13,6 +13,12 @@ import {
   DEFAULT_AGENT_HARNESS,
   getAgentModel,
   CLAWVILLE_ORIENTATION_KNOWLEDGE,
+  // S3 (2026-06-16) — world dimensions SSOT. The position validators below must
+  // accept the re-centered spawn (9216, 9756); pinning to the shared world dims
+  // keeps these LIVE Hono validators in lockstep with the client + DB so the
+  // Land Phase 0 re-center can never strand a persisted position again.
+  WORLD_PX_WIDTH,
+  WORLD_PX_HEIGHT,
 } from '@clawville/shared';
 import type {
   AvatarArchetypeId,
@@ -563,9 +569,11 @@ avatarRoutes.get('/me', requireAuth, async (c) => {
 });
 
 // Update avatar position
+// S3: bounded to the shared world dims (WORLD_PX_WIDTH/HEIGHT = 18432) so the
+// re-centered spawn (9216, 9756) persists instead of being rejected as > 5120.
 const updatePositionSchema = z.object({
-  positionX: z.number().int().min(0).max(5120),
-  positionY: z.number().int().min(0).max(5120),
+  positionX: z.number().int().min(0).max(WORLD_PX_WIDTH),
+  positionY: z.number().int().min(0).max(WORLD_PX_HEIGHT),
 });
 
 avatarRoutes.patch('/me', requireAuth, async (c) => {
@@ -945,9 +953,11 @@ avatarRoutes.post('/me/chat', requireAuth, async (c) => {
 });
 
 // Heartbeat — reports user activity + position
+// S3: bounded to the shared world dims (WORLD_PX_WIDTH/HEIGHT = 18432) so the
+// re-centered spawn (9216, 9756) is accepted; previously > 5120 → HTTP 400.
 const heartbeatSchema = z.object({
-  positionX: z.number().min(0).max(5120),
-  positionY: z.number().min(0).max(5120),
+  positionX: z.number().min(0).max(WORLD_PX_WIDTH),
+  positionY: z.number().min(0).max(WORLD_PX_HEIGHT),
 });
 
 // POST /api/avatars/me/dismiss-agent-banner
