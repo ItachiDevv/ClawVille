@@ -38,6 +38,12 @@ const reefRaceImpl = REEF_RACE_USE_SPLINE
 import { loadRacingProfiles } from './services/activity/avatar-profile-loader';
 import { botPool } from './services/activity/bots/bot-pool';
 import { getBotControllerFactory } from './services/activity/bots/bot-controller';
+// Texas Hold'em (P1.2b) — live poker table sim singleton + the demo config the
+// `texas-holdem` LIVE transition starts each hand with (in-memory chips only;
+// CT settlement + persistence are out of scope this phase).
+import { pokerTableSim } from './services/poker/poker-table-sim-singleton';
+import { logEvent } from './services/event-logger';
+import { randomBytes } from 'node:crypto';
 import { getBunWebSocketHelper } from './lib/bun-ws-adapter';
 import { researchSseRoutes } from './routes/research-sse';
 import { researchApiRoutes } from './routes/research';
@@ -77,6 +83,18 @@ import { coveSlotsRouter } from './routes/cove-slots';
 import { coveBlackjackRouter } from './routes/cove-blackjack';
 // Phase 6.5.0 — cove Texas Hold'em mock route (visual shell, no engine yet).
 import { coveHoldemRouter } from './routes/cove-holdem';
+// Poker MTT (P3) — single-table tournament registration + status route.
+// Agent-capable (Rule E5): human cookie OR X-Clawville-Agent-Session both reach
+// the same real-CT buy-in/settle path. Full lobby UI is a later phase.
+import { covePokerMttRouter } from './routes/cove-poker-mtt';
+// The process-wide TournamentManager singleton — boot starts its start-trigger
+// sweeper (the LIVE seat/cancel path) + graceful shutdown stops it.
+import { tournamentManager } from './services/poker/tournament-manager';
+// Poker MTT (P3.5) — the DEDICATED tournament-table sim + the WS bridge that
+// makes tournament tables PLAYABLE over WebSocket (long-lived `texas-holdem-mtt`
+// room, sim-frame fan-out, room↔table mapping). Wired at boot alongside the demo.
+import { pokerMttSim } from './services/poker/poker-mtt-sim-singleton';
+import { wirePokerMttToHub } from './services/poker/poker-mtt-ws-bridge';
 // Phase 6.6.1 — cove Baccarat (Punto Banco) AUTHORITATIVE route (8-deck shoe,
 // fixed tableau, commit-reveal provably-fair engine, ClawToken ledger; SOL/USDC seam 501).
 import { coveBaccaratRouter } from './routes/cove-baccarat';
@@ -271,6 +289,9 @@ app.route('/api/cove/slots', coveSlotsRouter);
 app.route('/api/cove/blackjack', coveBlackjackRouter);
 // Phase 6.5.0 — cove Texas Hold'em mock (visual shell; pokerpocket engine in 6.5.1).
 app.route('/api/cove/holdem', coveHoldemRouter);
+// Poker MTT (P3) — single-table tournament: POST /:id/register (user|agent),
+// GET /:id (status+standings). Real-CT buy-in/prize via claw-token-ledger.
+app.route('/api/cove/poker/mtt', covePokerMttRouter);
 // Phase 6.6.1 — cove Baccarat (Punto Banco) authoritative engine (8-deck shoe,
 // fixed third-card tableau, commit-reveal provably-fair; ClawToken ledger;
 // SOL/USDC seam returns 501).
@@ -528,6 +549,65 @@ startSimulation(arenaMode);
           );
           break;
         }
+        case 'texas-holdem': {
+          // P1.2b — start one demo hand with in-memory chips (NO CT
+          // settlement / persistence this phase). Seat participants in
+          // insertion order (matchmaker fill = seat order); each gets a flat
+          // 1000-chip demo stack. Commit-reveal seeds are freshly generated
+          // per hand (the seed is revealed in HandResult at showdown).
+          const seatAssignments = Array.from(
+            room.participants.values(),
+          ).map((p, seatIndex) => ({
+            seatIndex,
+            avatarId: p.avatarId,
+            name: p.avatarId, // demo: no display-name lookup this phase
+            // The sim's seat subjectType is 'human' | 'agent' only — map the
+            // room's 'bot' fill onto 'agent' so they get the agent turn grace.
+            subjectType: (p.subjectType === 'human' ? 'human' : 'agent') as
+              | 'human'
+              | 'agent',
+            agentId: p.agentId ?? undefined,
+            chipStack: 1000,
+          }));
+          if (seatAssignments.length < 2) {
+            console.warn(
+              `[API] texas-holdem room ${room.id} has <2 seats — not starting a hand`,
+            );
+            break;
+          }
+          try {
+            // The provable-RNG requires serverSeed == EXACTLY 64 hex chars
+            // (32 bytes) and a non-empty hex clientSeed. A UUID-minus-dashes is
+            // only 32 hex chars and would throw — use 32 random bytes hex.
+            const serverSeed = randomBytes(32).toString('hex');
+            const clientSeed = randomBytes(16).toString('hex');
+            pokerTableSim.startHand({
+              tableId: room.id,
+              handNumber: 1,
+              seatAssignments,
+              blinds: { sb: 10, bb: 20, ante: 0 },
+              buttonSeatIndex: 0,
+              serverSeed,
+              clientSeed,
+              turnClockMs: 30_000,
+              agentTurnGraceMs: 5_000,
+            });
+          } catch (err) {
+            console.error(
+              `[API] texas-holdem startHand failed for room ${room.id}:`,
+              err,
+            );
+          }
+          break;
+        }
+        case 'texas-holdem-mtt':
+          // P3.5 — a tournament TABLE's room goes LIVE here, but the
+          // TournamentManager (NOT this dispatcher) owns hand-starting: the TM's
+          // multi-hand loop already called `pokerMttSim.startHand` for hand 1
+          // before flipping the room live (see poker-mtt-ws-bridge.ts onSeatFn).
+          // So this case is a DELIBERATE no-op — starting a hand here would race /
+          // double-start the TM's loop. The room just hosts the WS transport.
+          break;
         default:
           console.warn(
             `[API] No sim registered for activityId='${room.activityId}' — room ${room.id} will sit LIVE without a sim`,
@@ -667,7 +747,119 @@ startSimulation(arenaMode);
       });
     });
 
+    // ─── Texas Hold'em (P1.2b) — poker table sim wiring ─────────────────────
+    //
+    // The sim's PUBLIC snapshot rides `broadcastEvent` (NEVER broadcastSnapshot
+    // — poker is turn-based and a dropped turn-state frame desyncs the betting
+    // UI). The PRIVATE per-seat view rides `sendToAvatar` (carries hole cards —
+    // must never broadcast). On hand-complete we emit the public showdown +
+    // hand-ended frames, then transition the room toward RESULTS. NO CT
+    // settlement / reward issuance this phase (no setComputeResultsFn case for
+    // texas-holdem — the room manager logs "no sim results" and credits
+    // nothing, which is the intended demo behavior).
+    //
+    // The sim's own types (PublicTableSnapshot / PrivateSeatView / HandResult
+    // from poker-table-types.ts) are structural mirrors of the shared wire
+    // types (PokerPublicTableSnapshot / PokerPrivateSeatView / PokerHandResult),
+    // so they assign directly into the frame payloads below.
+    pokerTableSim.setBroadcastFn((tableId, snapshot) => {
+      // tableId === roomId (one live hand per room).
+      activityWsHub.broadcastEvent(tableId, {
+        type: 'poker.table_state',
+        snapshot,
+      });
+    });
+    pokerTableSim.setSendToSeatFn((tableId, avatarId, view) => {
+      // Deliver BOTH the dedicated private hole-card frame AND the your-turn
+      // view (the sim only invokes this for the seat that is on the clock, so
+      // both ride the per-seat channel to exactly that one seat).
+      activityWsHub.sendToAvatar(tableId, avatarId, {
+        type: 'poker.hole_cards',
+        handNumber: 1,
+        seatIndex: view.seatIndex,
+        holeCards: view.holeCards,
+      });
+      activityWsHub.sendToAvatar(tableId, avatarId, {
+        type: 'poker.your_turn',
+        handNumber: 1,
+        view,
+      });
+    });
+    pokerTableSim.setHandCompleteFn((tableId, result) => {
+      // Public showdown reveal — ONLY on a genuine showdown. On a fold-around
+      // (endedAt !== 'showdown') no one shows, so we skip the showdown frame
+      // entirely; the hand_ended payload below still settles the pot. The sim
+      // already nulls every seat's holeCards on a non-showdown end.
+      if (result.endedAt === 'showdown') {
+        activityWsHub.broadcastEvent(tableId, {
+          type: 'poker.showdown',
+          handNumber: result.handNumber,
+          board: result.board,
+          seats: result.perSeat,
+        });
+      }
+      activityWsHub.broadcastEvent(tableId, {
+        type: 'poker.hand_ended',
+        result,
+      });
+      void logEvent({
+        eventType: 'activity.poker.hand_ended',
+        payload: {
+          roomId: tableId,
+          handNumber: result.handNumber,
+          endedAt: result.endedAt,
+          winners: result.perSeat
+            .filter((s) => s.isWinner)
+            .map((s) => s.avatarId),
+        },
+      });
+      // Transition the room toward results (demo: one hand per room, no CT).
+      // The sim already broadcast the final state; tear it down + flip the FSM.
+      // Best-effort — a missing room (already torn down) is a silent no-op.
+      const room = activityRoomManager.getRoom(tableId);
+      if (room && room.state === 'live') {
+        void activityRoomManager
+          .transitionRoom(tableId, 'results')
+          .then(() => {
+            pokerTableSim.stopTable(tableId);
+          })
+          .catch((err) => {
+            console.error(
+              '[API] poker hand end → RESULTS transition failed:',
+              err,
+            );
+            pokerTableSim.stopTable(tableId);
+          });
+      } else {
+        pokerTableSim.stopTable(tableId);
+      }
+    });
+
+    // ─── Poker MTT (P3.5) — tournament-table WS bridge ──────────────────────
+    // Wire the DEDICATED `pokerMttSim` + the TournamentManager to the WS hub so
+    // tournament tables are PLAYABLE over WebSocket (long-lived `texas-holdem-mtt`
+    // room, public table_state + private hole-cards/your-turn fan-out, showdown /
+    // hand-ended broadcast, room↔table mapping for inbound action dispatch). This
+    // is fully isolated from the demo `texas-holdem` wiring above — separate sim,
+    // separate activityId, separate room namespace. The TM's hand-complete handler
+    // (its multi-hand loop) is UNTOUCHED; the bridge only registers the SEPARATE
+    // showdown-broadcast slot + the broadcast/per-seat slots on the MTT sim.
+    wirePokerMttToHub(pokerMttSim, tournamentManager);
+
     await activityRoomManager.recoverOrphanedRooms();
+    // Poker MTT (P4) — MONEY-side crash recovery. `recoverOrphanedRooms()` above
+    // only flips the `texas-holdem-mtt` ROOMS to `aborted_crash` via a direct bulk
+    // UPDATE that BYPASSES `persistAbortedTransition`, so the `abortNotifyFn` →
+    // `onRoomAborted` → `cancelAndRefundOrphan` chain never fires for boot-orphaned
+    // rooms. And the start-trigger sweeper below only scans status IN
+    // ('registering','seating') — a crashed `running` tournament is invisible to it.
+    // This driver is the ONLY code that scans status IN ('running','seating') AND
+    // settled_at IS NULL AND cancelled_at IS NULL to CANCEL + REFUND the escrowed
+    // buy-ins. Without this call a pod crash mid-tournament strands every entrant's
+    // buy-in in `prize_pool_ct` PERMANENTLY (no sweeper path, no abort-notify path,
+    // no boot path would ever refund it). Idempotent (FOR UPDATE + per-entrant
+    // `status <> 'refunded'` guard) so re-boot never double-refunds.
+    await tournamentManager.recoverOrphanedTournaments();
     await activityQueueService.hydrateFromDb();
     // Chunk #10 — hydrate the bot avatarId pool BEFORE the matcher starts
     // sweeping so the first solo-Bumper queuer at 45s gets bots, not a
@@ -680,7 +872,21 @@ startSimulation(arenaMode);
     }
     activityRoomManager.startSweeper();
     activityQueueService.startMatchmaker();
-    console.log('[API] Activity room manager + queue ready');
+    // Poker MTT (P4) — idempotently seed the DEFAULT rising-blind ladder so the
+    // create path (and any tournament referencing the default) always has a row to
+    // point at. Fixed-uuid + ON CONFLICT DO NOTHING → safe on every boot. Non-fatal:
+    // a create with an explicit blindScheduleId doesn't need it.
+    try {
+      await tournamentManager.ensureDefaultBlindSchedule();
+    } catch (err) {
+      console.error('[API] poker-MTT default blind schedule seed failed:', err);
+    }
+    // Poker MTT (P3) — the LIVE start-trigger sweep. THE path that seats a
+    // window-closed field (or cancels+refunds a short field). Without it (and the
+    // cap-hit auto-trigger in the register route) a registered tournament could
+    // never seat/play/settle/refund and buy-ins would stay escrowed forever.
+    tournamentManager.startStartTriggerSweeper();
+    console.log('[API] Activity room manager + queue + poker-MTT sweeper ready');
   } catch (err) {
     console.error('[API] Activity portal init failed:', err);
   }
@@ -705,6 +911,7 @@ async function gracefulShutdown(signal: string) {
     stopSimulation();
     activityRoomManager.stopSweeper();
     activityQueueService.stopMatchmaker();
+    tournamentManager.stopStartTriggerSweeper();
     try {
       const { stopSessionSweeper } = await import(
         './services/openclaw-session-sweeper'
