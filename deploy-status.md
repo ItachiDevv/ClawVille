@@ -14,10 +14,10 @@
 
 ## CURRENT STAGING / PROD STATE
 
-- **Branch / commit:** PROD = `master` @ `802c5f2a` (PR #116 merge — S3 spawn fix PROMOTED + verified live). `staging` = `e53c5a63` (same content; doc-only deltas after this push).
-- **Updated:** 2026-06-16 — S3 spawn-recenter session (PROD PROMOTION).
-- **Health:** 🟢 prod verified live — both prod containers on `802c5f2a`; prod CI `migrate` applied `0002` (BLOCKING step green vs `PROD_DATABASE_URL`) → deploy; in-browser fresh-guest NPC-mode "You" spawns in front of Town Center, SONAR `9216,9756` (was `5760,6300` diagonal); world centered, no regression. Staging 🟢 (same code).
-- **SCHEMA:** `0002_avatar_spawn_recenter.sql` — **APPLIED ON BOTH** staging (2026-06-16 staging push) and prod (2026-06-16 PR #116 promotion; CI prod `migrate` job). Re-centers all `avatars` rows to spawn `9216,9756` + new column defaults; fixed prod's existing off-center stale-row bug (prod ran the 18432 client from PR #114 but its `avatars` table still defaulted to the old `2560` center). `0001` remains applied on both. No pending migrations.
+- **Branch / commit:** PROD = `master` @ `802c5f2a` (PR #116 merge — S3 spawn fix; unchanged). `staging` = S1 loading-bar fix (this push, branch `fix/staging-s1-loading-bar`).
+- **Updated:** 2026-06-16 — S1 loading-screen session (STAGING push, awaiting cold-reload sign-off).
+- **Health:** 🟡 staging — S1 fix pushed; verified locally (`@clawville/web build` exit 0 + a deterministic isolated in-browser band trace: bar starts at 0, download/preparing band ceilings at 30% (was the spurious 60% snap), upload climbs 30→85 incrementally, compile→97, dismiss on `__W3D_READY`). AWAITING founder cold-reload sign-off on real Iris Xe — the only true test of the "Taking longer" threshold + bar feel (software-render localhost can't replicate Iris Xe load timing). PROD 🟢 unchanged on `802c5f2a`.
+- **SCHEMA:** no change this push — S1 is pure frontend (`sea-loading-screen.tsx` only). `0001` + `0002` remain applied on BOTH staging + prod. No pending migrations.
 - **DB isolation:** staging = Supabase `mtpixvtclsjqjguouxes`; prod = `wheuidgiyyccqyoppxoa`. **Separate DBs since 2026-06-16** — staging writes no longer touch prod.
 - **Both GH secrets set:** `STAGING_DATABASE_URL` + `PROD_DATABASE_URL` (session pooler :5432).
 - **Security follow-up (non-urgent, founder-acked):** prod DB password leaked into agent transcripts during this session (see log) + was in `packages/database/.env.local`. Rotate when convenient (Supabase + prod Coolify env + `PROD_DATABASE_URL` secret together).
@@ -25,6 +25,13 @@
 ---
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
+
+### 2026-06-16 — S1 loading-screen session — bar bands rebalanced + slow-hint self-calibrated (staging push)
+- **Changed:** Fixed staging-issue **S1** (loading screen inaccurate) in `apps/web/src/components/game/sea-loading-screen.tsx` ONLY — pure frontend, no schema/API. Two complaints: (1) "Taking longer than expected" fired on EVERY cold load — perf round-3 "Change D" had hard-coded `SLOW_MS=8_000`, *below* the real ~10s warm / ~22s cold load, so it was noise. Replaced with a self-calibrating threshold: each successful mount→`__W3D_READY` is recorded to `localStorage['cv_last_load_ms']`, hint fires only at `max(12s, lastLoad × 1.8)` (first-load default 22s); `TIMEOUT_MS` 30s→45s. (2) Bar jumped to ~60% instantly — `__W3D_PROGRESS` (`loaded/total`) only tracks GLBs (VRMs use raw fetch, invisible), so the GLB batch draining spiked it to 1.0 and the old 0.60 download band credited 60% via the ratchet. Bands rebalanced download `[0,0.30]` · upload `[0.30,0.85]` (dominant, incrementally-tracked) · compile `[0.85,0.97]`; download band time-eased (`min(downloadFrac, elapsed/4s)`) so the spike climbs from 0; new `preparing` ("Preparing scene…") phase for the GLB-done-but-upload-not-started gap.
+- **Verified before push:** `@clawville/web build` exit 0; `tsc -p apps/web` shows 0 errors in the edited file. Deterministic in-browser test (local prod bundle :3210, chrome-devtools, bridge values pinned behind getters to isolate from the real canvas): bar starts at 0 on a `prog=1` spike (NOT 60), download/preparing ceilings at 30%, upload climbs 30→58→85 with the counter, texReady/canvasReady→97, `ready`→overlay dismissed; phase labels correct; `cv_last_load_ms` recorded from a real prior load (26843 on the software renderer). Screenshot of the upload-phase overlay (bar 56% @ upT=179/upD=84, "Uploading to GPU…") captured in-session.
+- **NOT yet validated (needs founder, Rule E4):** the actual *feel* on real Iris Xe + whether "Taking longer" stops firing on a genuine cold reload — software-render localhost inflates load timing and can't reproduce it. Do a cold reload (hard-refresh / clear cache) on `staging.clawville.world/game`.
+- **Same-diff docs:** `docs/perf-round3/baseline-2026-06-15.md` "Loading bar" section updated to the new bands + slow-hint scheme.
+- **For:** next session — on sign-off, promote `staging → master` (no migration, pure frontend). Then S2 (jump anim) is next in the backlog.
 
 ### 2026-06-16 — S3 spawn-recenter session — PROD PROMOTION (PR #116) + verified live
 - **Changed:** Promoted the S3 spawn fix `staging → master` (PR #116, merge `802c5f2a`). Prod CI ran: `migrate` job applied `0002_avatar_spawn_recenter.sql` to the **prod** DB (BLOCKING step, 37s, vs `PROD_DATABASE_URL` GH secret) → `deploy` queued Coolify. This fixed prod's *existing* S3 bug: prod already ran the 18432 client (from PR #114) but its `avatars` table still defaulted to the old `2560` center, so logged-in players on stale rows seated off-center.
