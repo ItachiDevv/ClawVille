@@ -14,10 +14,10 @@
 
 ## CURRENT STAGING / PROD STATE
 
-- **Branch / commit:** `master` ← `staging` promoted via PR #114 (merge `95b9f1e7`); migration gate live on BOTH boxes.
-- **Updated:** 2026-06-16 — land-economy / migration-gate session.
-- **Health:** 🟢 green — staging + prod api `/health` ok, `/game` 200; CI migration gate live + verified on both.
-- **SCHEMA:** `synced` — `0001_land_economy.sql` applied to staging AND prod; prod land schema verified to match drizzle exactly (20 named FK/unique constraints, 0 unnamed, 0 stray checks). `_clawville_migrations` records `0001` on both.
+- **Branch / commit:** `staging` ← S3 avatar-spawn re-center fix (this push). PROD = `master` @ `95b9f1e7` (PR #114), unchanged.
+- **Updated:** 2026-06-16 — S3 spawn-recenter session.
+- **Health:** 🟡 staging deploying — S3 spawn fix pushed; CI `migrate` (applies `0002`) → deploy in progress; browser verify pending. Prod 🟢 unchanged.
+- **SCHEMA:** `prod-migration-pending: 0002_avatar_spawn_recenter.sql` — `0002` applies to STAGING on this push (resets all avatars to the re-centered spawn `9216,9756` + new column defaults), validated execute-and-rollback against the live staging DB first. It reaches PROD at the next `staging → master` promotion, where it FIXES a bug prod already has: prod runs the 18432 client (from PR #114) but its `avatars` table still defaults to the old `2560` center, so logged-in prod players on stale rows already seat at a corner-ward diagonal. `0001` remains applied on both.
 - **DB isolation:** staging = Supabase `mtpixvtclsjqjguouxes`; prod = `wheuidgiyyccqyoppxoa`. **Separate DBs since 2026-06-16** — staging writes no longer touch prod.
 - **Both GH secrets set:** `STAGING_DATABASE_URL` + `PROD_DATABASE_URL` (session pooler :5432).
 - **Security follow-up (non-urgent, founder-acked):** prod DB password leaked into agent transcripts during this session (see log) + was in `packages/database/.env.local`. Rotate when convenient (Supabase + prod Coolify env + `PROD_DATABASE_URL` secret together).
@@ -25,6 +25,13 @@
 ---
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
+
+### 2026-06-16 — S3 spawn-recenter session — avatar spawn re-center single-source-of-truth (staging push; schema `0002`)
+- **Changed:** Fixed staging-issue **S3** (player/NPC spawn at a corner-ward diagonal). Land Phase 0 grew the CLIENT world 5120→18432 (center 2560→9216) but never migrated the SERVER/DB: `avatars.position_x/y` defaulted `2560`, the live Hono validators (`avatars.ts` `updatePositionSchema` PATCH `/me` + `heartbeatSchema` `/me/heartbeat`) capped at `max(5120)` (rejecting the correct `9216` spawn), `world.ts` `TOWN_CENTER` was `2560`, and `npc.ts` `spawnPlayerNpc` hardcoded the **11520-era** center `(5760,6300)` (the user-visible NPC-mode diagonal). FIX: one shared SSOT `packages/shared/src/constants/world-dimensions.ts` (`WORLD_PX_WIDTH/HEIGHT=18432`, `WORLD_CENTER_PX={9216,9216}`, `SPAWN_PX={9216,9756}`) read by client (game.ts dev-assert + npc.ts spawn), API (world.ts TOWN_CENTER + PATCH/heartbeat bounds + `resolveAvatarMeta` out-of-bounds clamp), DB defaults (`9216,9756`). Migration **`0002_avatar_spawn_recenter.sql`** resets all avatars + column defaults.
+- **Drift audit (S3 part 2):** the prior session's "lost direct-to-master changes" = a PayAI press release (6 `(direct to master)` commits) — already reconciled onto staging (press-release.tsx/page.tsx/press images byte-identical staging==master). No actionable prod-only code drift remains.
+- **Verified before push:** `0002` dry-run = recognized as the single pending migration; execute-and-rollback against the live staging DB = all **4 staging avatars were at `2560,2560`** (bug confirmed), reset cleanly to `9216,9756`, rolled back (no premature mutation). Gates: `bunx tsc --noEmit` shared/database/api exit 0; web `bunx next build` ✓ compiled (per-package web `tsc` = the known 372-error dual-`@types/three` baseline, 0 new). (`avatars.test.ts` is an env-gated integration test — fails at signup without `DATABASE_URL`, unrelated.)
+- **Watch on push:** CI `migrate` job applies `0002` to the staging DB (resets staging avatars to spawn) BEFORE the Coolify deploy. If `migrate` fails it blocks the deploy — but `0002` is pre-validated. Workflow team `staging-s3-spawn-2026-06-16` (impl + 3 auditors; regression auditor caught that the implementer had fixed only the DEAD BFF route, not the live Hono validators — fixed). Adversary caught that the original "land Phase 0 unpromoted" premise was FALSE (it's on prod via PR #114) — docs corrected.
+- **For:** the promotion session — `0002` must reach prod to fix prod's existing S3 bug; it ships at the next `staging → master` PR (the CI prod `migrate` job applies it, realigning prod rows to the 18432 client already live there). Needs founder sign-off on the staging playtest first (Rule E4).
 
 ### 2026-06-16 — migration-gate session — PROD PROMOTION (PR #114) + agent-stray-write incident + fix
 - **Changed:** Promoted `staging → master` (PR #114, merge `95b9f1e7`) — shipped the migration gate + land Phase 0 (world re-grow 360→576 + schema) + perf-round3 + cove agent-parity + hatcher docs to prod. Prod `migrate` job ran, prod deploy succeeded.
