@@ -90,6 +90,11 @@ import { covePokerMttRouter } from './routes/cove-poker-mtt';
 // The process-wide TournamentManager singleton — boot starts its start-trigger
 // sweeper (the LIVE seat/cancel path) + graceful shutdown stops it.
 import { tournamentManager } from './services/poker/tournament-manager';
+// Special Events (2026-06-16) — the GENERIC PARENT layer for one-time events.
+// The poker tournament is a DEPENDENT subtable (FK points UP). Agent-capable
+// (Rule E5): human cookie OR X-Clawville-Agent-Session both reach the same
+// gate-evaluated signup → real-CT/SOL/hold settlement → tournament entry.
+import { specialEventsRouter } from './routes/special-events';
 // Poker MTT (P3.5) — the DEDICATED tournament-table sim + the WS bridge that
 // makes tournament tables PLAYABLE over WebSocket (long-lived `texas-holdem-mtt`
 // room, sim-frame fan-out, room↔table mapping). Wired at boot alongside the demo.
@@ -292,6 +297,10 @@ app.route('/api/cove/holdem', coveHoldemRouter);
 // Poker MTT (P3) — single-table tournament: POST /:id/register (user|agent),
 // GET /:id (status+standings). Real-CT buy-in/prize via claw-token-ledger.
 app.route('/api/cove/poker/mtt', covePokerMttRouter);
+// Special Events (2026-06-16) — generic PARENT layer: POST /create|/:slug/open|
+// /:slug/start (admin), GET / + /:slug (public), POST /:slug/signup (user|agent,
+// gate-evaluated). The dependent poker tournament links UP via special_event_id.
+app.route('/api/events', specialEventsRouter);
 // Phase 6.6.1 — cove Baccarat (Punto Banco) authoritative engine (8-deck shoe,
 // fixed third-card tableau, commit-reveal provably-fair; ClawToken ledger;
 // SOL/USDC seam returns 501).
