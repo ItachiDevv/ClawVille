@@ -33,6 +33,7 @@ import ActivityIndicators from '@/lib/three/activity-indicators';
 import FloatingTexts3D from '@/lib/three/floating-text-3d';
 import NpcSpeechBubbles from '@/lib/three/npc-speech-bubbles';
 import ClickToMove from '@/lib/three/click-to-move';
+import LandParcels from '@/lib/three/land-parcels';
 import { KTX2LoaderSetup } from '@/lib/three/ktx2-loader-setup';
 import { MeshoptLoaderSetup } from '@/lib/three/meshopt-loader-setup';
 import { WorldLabelsOverlayMount } from '@/lib/three/world-labels-overlay';
@@ -1320,6 +1321,18 @@ const SceneContents = memo(function SceneContents({
       <group name="perf:terrain" userData={{ perfChunk: 'terrain' }}>
         <ArenaTerrain />
       </group>
+      {/* Land parcels — 176 for-sale lots (Phase 1 / Slice A).
+          Merged BufferGeometry fences + signs, ≤ 7 draw calls total.
+          No ownership/buy logic this slice — all parcels render as available.
+          See lib/three/land-parcels.tsx for draw-call budget and tier scheme.
+          Wrapped in Suspense so a useMemo failure during canvas texture build
+          doesn't crash the whole world. */}
+      <Suspense fallback={null}>
+        <group name="perf:land-parcels" userData={{ perfChunk: 'land-parcels' }}>
+          <LandParcels />
+        </group>
+      </Suspense>
+
       {/* Phase B: when ?meshlets=1, ArenaBuildings is replaced by
           <MeshletBuildingsR3F /> which runs the rasterizer as a high-priority
           useFrame hook inside R3F's frame loop. Collision colliders are built
