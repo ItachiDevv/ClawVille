@@ -13,12 +13,14 @@ Plan must include: (1) the PRODUCTION reference (screenshot or curl evidence), (
 
 Violation → `git stash` whatever was written and restart from the plan step.
 
-### Rule E3 — Codex-first for 3D / shader / WebGPU / meshlet work
-Categories: Three.js / R3F / WebGPU / WGSL / TSL shaders · meshlet rasterizer (`apps/web/src/lib/three/experimental/nanite-rasterizer.ts` + `meshlet/`) · atlas packing, UV remapping, texture-array indexing · any GLB pipeline branching into shaders.
+### Rule E3 — 3D / shader / WebGPU / meshlet work is a CLAUDE↔CODEX COLLABORATION (not Codex-gated)
+Categories: Three.js / R3F / WebGPU / WGSL / TSL shaders · meshlet rasterizer (`apps/web/src/lib/three/experimental/nanite-rasterizer.ts` + `meshlet/`) · atlas packing, UV remapping, texture-array indexing · any GLB pipeline branching into shaders · character/avatar mesh + rig + decimation pipelines.
 
-First edit on those files MUST be authored by `codex:codex-rescue` via Agent. Claude decomposes the prompt (prod reference, constraints, file paths, known bugs, verify loop, success criterion), spawns Codex, does browser verification, commits + pushes. Claude does NOT hand-write the shader, UV remap, atlas builder, or merge pipeline.
+This work is genuinely hard for a single LLM to get right, so it is done as a CONTINUOUS COLLABORATION between Claude and Codex who REVIEW EACH OTHER'S WORK THE WHOLE TIME — NOT a strict hand-off where Codex authors and Claude only verifies, and NOT Claude solo. Either may author a given change; whoever authors it, the OTHER independently reviews it before it ships, and they iterate together (author → review → fix → re-review) until it is right. Two sets of eyes on every shader / UV / atlas / rig / decimation change, continuously.
 
-Override: user types **"claude implement"** → rule lifts for the session.
+Claude still owns: decomposition (prod reference, constraints, file paths, known bugs, verify loop, success criterion), dispatching the `3da` / `blend007` specialist where it fits, browser/visual verification on every iteration (screenshots, not "should look right"), and commit/push. Codex is engaged as a co-author AND reviewer throughout — pulled in repeatedly, not invoked once at the start.
+
+Two failure modes this rule forbids: (1) Claude (or any single agent) going solo on this work — one LLM is not enough here; (2) "Codex writes, Claude rubber-stamps" OR "Claude writes, Codex never sees it" — review must be real and mutual. (Supersedes the old "first edit MUST be authored by Codex / `claude implement` to override" framing — collaboration is the default; there is no gate to override.)
 
 ### Rule E4 — no "shipped" / "done" / "complete" / "milestone" / "working" / "ready" / "fixed" without same-turn user sign-off
 "Sign-off" = a screenshot the user posted, or "looks good" / "ship it" / "yes that works" in this conversation. Green build, passing test, clean console — NONE substitute.
@@ -41,7 +43,7 @@ ClawVille's reason to exist is the three bidirectional axes (Human↔Agent, Huma
 3. Carry a one-line **PARITY note** in the PR/commit body: "human path: <endpoint/UI>; agent path: <endpoint/action>; settlement binds to <avatar resolution>." No PARITY note ⇒ not mergeable.
 4. Be audited against the LIVE game by the Adversarial auditor specifically for the agent path (not just the human path) before "done."
 
-**Retroactive debt:** the Cove (`cove-blackjack/baccarat/holdem/slots`) is the known violation — `getSubject()` resolves user-XOR-guest only, no agent session. It is being patched to agent parity. Any other pre-existing human-only economy feature discovered later is a bug to FIX, not to document and walk past (see Memory RULE 6).
+**Retroactive debt — RESOLVED 2026-06-15:** the Cove was the known violation (`getSubject()` resolved user-XOR-guest only, no agent session). All four games now have agent parity: `cove-blackjack.ts` shipped it first (2026-06-03), and `cove-baccarat.ts`, `cove-holdem.ts`, and `cove-slots.ts` now resolve a connected/hosted agent session (`X-Clawville-Agent-Session` → `resolveAgentSession`) to the bound avatar for REAL-CT settlement, matching blackjack (`user` + `agent` are both ledger subjects; guests stay demo; non-ledger/unbound agents get 403, never a guest demotion). No `PROTOCOL_VERSION` bump — only the settlement resolver changed; the agent ACTION whitelist is unchanged. Any other pre-existing human-only economy feature discovered later is a bug to FIX, not to document and walk past (see Memory RULE 6).
 
 ---
 
@@ -124,7 +126,7 @@ Complex AI integrations: multi-phase plan in `.claude/plans/` + research deep-di
 
 These cost real money / crash the GPU / leak secrets. They stay inline regardless of scope.
 
-- **PUSH FLOW — staging-first (set 2026-05-24):** ALL new work goes to the `staging` branch first. `git push origin staging` → `.github/workflows/deploy-staging.yml` ships to the staging box → verify on `https://staging.clawville.world` + `https://api-staging.clawville.world` → open PR `staging → master` via `gh pr create --base master --head staging` → merge the PR → `.github/workflows/deploy.yml` ships to prod. **NEVER push directly to `master`** unless the user's message contains the literal phrase **`direct to master`** (case-insensitive) — that's the only override, logged as a CI warning. Hotfix is the only legitimate use. Both Coolify boxes share the same Supabase DB, so a staging deploy that mutates state mutates prod data too — treat staging deploys with the same care as prod for anything that writes.
+- **PUSH FLOW — staging-first (set 2026-05-24):** ALL new work goes to the `staging` branch first. `git push origin staging` → `.github/workflows/deploy-staging.yml` ships to the staging box → verify on `https://staging.clawville.world` + `https://api-staging.clawville.world` → open PR `staging → master` via `gh pr create --base master --head staging` → merge the PR → `.github/workflows/deploy.yml` ships to prod. **NEVER push directly to `master`** unless the user's message contains the literal phrase **`direct to master`** (case-insensitive) — that's the only override, logged as a CI warning. Hotfix is the only legitimate use. **Staging now has its OWN Supabase DB (isolated 2026-06-16)** — staging writes no longer touch prod data. Schema changes reach prod via the **CI migration gate** (a `migrate` job that applies pending `packages/database/migrations/*.sql` via `scripts/migrate-ci.ts` and gates `deploy` with `needs: migrate`, in both deploy workflows) on the `staging → master` promotion. **After any push to `staging` (and every `staging → master` promotion), update `deploy-status.md` SAME-DIFF:** set CURRENT STATE (only if you pushed last — last-writer-wins, tiebreak `git log -1 origin/staging`) + add an honest DEPLOY LOG entry (what changed · what broke + root cause + fix · who it's for) + set the `SCHEMA:` field (`synced` | `prod-migration-pending: <file>`) if the schema changed.
 - **Iris Xe GPU:** NO drei `<Text>` / `<Billboard>` in game/world scenes — hard crash. NO `InstancedMesh + ShaderMaterial` — silent WebGPU crash. NO per-frame `new Vector3()` in `useFrame` — GC thrash.
 - **Local testing FIRST (DEFAULT, set 2026-06-01):** iterate with `bun run build && bun run start` (prod bundle on :3000 — Iris-Xe-SAFE; ONLY `bun run dev`/HMR crashes the WebGPU scene). Test in-browser on `localhost`. NEVER run `bun run dev`. Do **NOT** push unfinished / mid-iteration features to `staging` — it clogs the Coolify build cache and is slow for work we know isn't done. Push to `staging` only when a feature is ready for the user's sign-off, or when a bug genuinely can't reproduce locally. [[feedback_local_testing_bun_run_start]]
 - **Phase 5.1 wallet:** `wallet.secretKey` is returned **EXACTLY ONCE** on first-connect. Subsequent reads MUST omit it. SKILL.md instructs agent to display once + store only pubkey. Server never re-emits — no recovery path. Full spec: `ARCHITECTURE.md §7`.
@@ -202,7 +204,7 @@ When you add, remove, or change a verb or its params in the executor, you MUST u
 
 ## MANDATORY: Partner / integration surface is PROTECTED — contract-locked, harness-gated, never silently broken (set 2026-06-15)
 
-Hatcher is our ONLY partner and runs **LIVE against our staging** (their prod points at our staging; their dev is local). The integration is **security- and money-load-bearing** (ed25519 partner signing, custodial Solana wallets, real-CT Cove settlement, SSRF-guarded outbound cognition) and has proven **brittle** — independent reviews found holes across many rounds. A change to this surface — OR an unrelated change that touches something the partner depends on — that ships without contract + harness verification can silently break a live partner. This rule is mechanical, not judgment-based.
+Hatcher is our ONLY partner and runs **LIVE on our PROD** (Hatcher PROD → ClawVille PROD, repointed 2026-06-15; their dev is local; our staging is the pre-prod validation env). **A prod break now directly breaks the live partner integration** — treat prod deploys touching the partner surface with the highest care, dry-run on staging first. The integration is **security- and money-load-bearing** (ed25519 partner signing, custodial Solana wallets, real-CT Cove settlement, SSRF-guarded outbound cognition) and has proven **brittle** — independent reviews found holes across many rounds. A change to this surface — OR an unrelated change that touches something the partner depends on — that ships without contract + harness verification can silently break a live partner. This rule is mechanical, not judgment-based.
 
 **PROTECTED SURFACE (file-path trigger — editing ANY of these binds this rule):**
 - Routes: `apps/api/src/routes/{partner-hatcher,partner-hatcher-launch,portal}.ts` (incl. `mint-for-hatcher` / `accept-hatcher-link`), `routes/skills.ts` (manifest / protocol / per-building `skill.md` emitters).
@@ -300,7 +302,7 @@ Required in `.env.local`:
 - **Production:** `$PROD_VPS_IP` (in gitignored `scripts/deploy/.env.deploy`), Hillsboro, Coolify 4.1, key `~/.ssh/clawville_hillsboro` (passphrase — `ssh-add` once into Windows ssh-agent). Serves `clawville.world` + `api.clawville.world`. Admin UI `https://coolify-new.clawville.world`.
 - **Staging:** `$STAGING_VPS_IP`, Ashburn, Coolify 4.0, key `~/.ssh/clawville_deploy`. Serves `staging.clawville.world` + `api-staging.clawville.world`. Admin UI `https://coolify-staging.clawville.world`.
 
-Both Traefik + Let's Encrypt, Cloudflare-proxied DNS, **shared Supabase Postgres** — staging writes mutate prod data. Both pull from `github.com/ItachiDevv/ClawVille` via the same shared deploy key, auto-deploy on push. Web ~3–5 min, api ~2–3 min.
+Both Traefik + Let's Encrypt, Cloudflare-proxied DNS, **separate Supabase Postgres per box (isolated 2026-06-16; staging `mtpixvtclsjqjguouxes`, prod `wheuidgiyyccqyoppxoa`)** — staging writes no longer touch prod; schema converges to prod via the CI migration gate (`migrate`→`deploy`) on the `staging → master` promotion (see `deploy-status.md`). Both pull from `github.com/ItachiDevv/ClawVille` via the same shared deploy key, auto-deploy on push. Web ~3–5 min, api ~2–3 min.
 
 **Coolify app IDs:** prod api=2, prod web=3, staging api=3, staging web=4. UUIDs in `.env.deploy` as `API_APP_UUID`, `WEB_APP_UUID`, `STAGING_API_APP_UUID`, `STAGING_WEB_APP_UUID`.
 
@@ -402,6 +404,7 @@ Every session loads `~/.claude/projects/C--Users-newma-documents-crypto-clawvill
 | Tech — new routes, DB tables, services, data flow, deployment | `ARCHITECTURE.md` |
 | Project invariants, workflow rules, env vars, commands | `CLAUDE.md` |
 | User-facing overview, quick start, feature summary | `README.md` |
+| Deploy — every push to `staging` / `staging → master` promotion (live state + what broke) | `deploy-status.md` |
 
 **Rules:** 3D → `3dStructure.md` (enforced by 3da). Gameplay → `GameFeatures.md`. Architecture (routes, tables, flow) → `ARCHITECTURE.md`. "Update later" is unacceptable. `3dStructure.md` + `GameFeatures.md` are gitignored drafts but must stay accurate. Bump "Last Audited" on every touch.
 
