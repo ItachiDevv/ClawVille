@@ -16,43 +16,41 @@ function loadEnvLocal(): Record<string, string> {
   return out;
 }
 const envLocal = loadEnvLocal();
-const apiKey = envLocal.GEMINI_API_KEY || process.env.GEMINI_API_KEY;
+const apiKey = envLocal.OPENAI_API_KEY || process.env.OPENAI_API_KEY;
 if (!apiKey) {
-  console.error("GEMINI_API_KEY missing. Set in .env.local.");
+  console.error("OPENAI_API_KEY missing. Set in .env.local.");
   process.exit(1);
 }
 
-const [refPath, promptPath, outPath, modelArg] = process.argv.slice(2);
+const [refPath, promptPath, outPath, modelArg, sizeArg] = process.argv.slice(2);
 if (!refPath || !promptPath || !outPath) {
-  console.error("Usage: bun scripts/hermes-pipeline/gemini-turnaround.ts <ref.png> <prompt.txt> <out.png> [model]");
-  console.error("       default model = gemini-3-pro-image-preview");
+  console.error("Usage: bun scripts/hermes-pipeline/openai-turnaround.ts <ref.png> <prompt.txt> <out.png> [model] [size]");
+  console.error("       default model = gpt-image-1, default size = auto (1024x1024 | 1536x1024 | 1024x1536 | auto)");
   process.exit(1);
 }
 
-const model = modelArg || "gemini-3-pro-image-preview";
+const model = modelArg || "gpt-image-1";
+const size = sizeArg || "auto";
 const refImage = readFileSync(resolve(refPath));
 const prompt = readFileSync(resolve(promptPath), "utf-8");
 
-const body = {
-  contents: [
-    {
-      parts: [
-        { inline_data: { mime_type: "image/png", data: refImage.toString("base64") } },
-        { text: prompt },
-      ],
-    },
-  ],
-  generationConfig: { responseModalities: ["IMAGE"] },
-};
+// OpenAI gpt-image-1 image EDIT: reference image + prompt -> new image (identity-
+// preserving turnaround). Multipart form; gpt-image-1 always returns b64_json
+// (no `url` option). Ported to OpenAI in the 2026-06-16 image-backend scrub.
+const form = new FormData();
+form.set("model", model);
+form.set("prompt", prompt);
+form.set("size", size);
+form.set("image", new Blob([refImage], { type: "image/png" }), "ref.png");
 
-const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
-console.log(`POST ${model} (ref=${refPath}, prompt=${promptPath})`);
+const url = "https://api.openai.com/v1/images/edits";
+console.log(`POST ${model} (ref=${refPath}, prompt=${promptPath}, size=${size})`);
 
 const t0 = Date.now();
 const res = await fetch(url, {
   method: "POST",
-  headers: { "Content-Type": "application/json" },
-  body: JSON.stringify(body),
+  headers: { Authorization: `Bearer ${apiKey}` },
+  body: form,
 });
 
 if (!res.ok) {
@@ -61,16 +59,9 @@ if (!res.ok) {
   process.exit(1);
 }
 
-const json = await res.json() as any;
-const parts = json?.candidates?.[0]?.content?.parts ?? [];
-let imageB64: string | null = null;
-let textOut = "";
-for (const p of parts) {
-  if (p?.inline_data?.data || p?.inlineData?.data) imageB64 = p.inline_data?.data ?? p.inlineData?.data;
-  else if (p?.text) textOut += p.text;
-}
+const json = (await res.json()) as any;
+const imageB64: string | null = json?.data?.[0]?.b64_json ?? null;
 
-if (textOut) console.log(`[model text]: ${textOut.slice(0, 300)}`);
 if (!imageB64) {
   console.error("No image in response. Full payload:");
   console.error(JSON.stringify(json, null, 2).slice(0, 4000));
