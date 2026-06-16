@@ -4,6 +4,19 @@ name: Auto-deploy PROD on push to master
 # for both api (app 2) and web (app 3) on every push to `master`.
 # Staging deploys are handled by .github/workflows/deploy-staging.yml.
 #
+# PROD HAS ITS OWN SUPABASE DB (separate from staging, isolated 2026-06-16). A
+# schema change merged from staging does NOT reach prod on its own, and Coolify
+# never runs migrations — so prod would crash querying a table that only exists
+# on staging. The `migrate` job below closes that gap: it APPLIES pending DB
+# migrations against the PROD database and BLOCKS the deploy if any migration
+# fails (forward-only, idempotent, tracking-table based —
+# packages/database/scripts/migrate-ci.ts). `deploy` runs only after `migrate`
+# succeeds (needs: migrate). THIS GATES PROD — a failed migration must stop the
+# deploy rather than ship app code against a schema that lacks its tables.
+#
+# DOCS-ONLY pushes (only *.md / docs/ / .claude/ / *.itachi-bak changed) skip
+# this workflow entirely via paths-ignore — no migrate, no deploy.
+#
 # Push flow guardrail (see CLAUDE.md "PUSH FLOW"):
 #   - New work goes to `staging` branch first → deploy-staging.yml fires →
 #     verify on staging.clawville.world / api-staging.clawville.world.
@@ -18,8 +31,18 @@ name: Auto-deploy PROD on push to master
 #   COOLIFY_SSH_KEY    — contents of ~/.ssh/clawville_hillsboro (private key,
 #                        the passphrase-free build; if your local key has a
 #                        passphrase, export a copy without one for CI use)
-# Until BOTH secrets exist, this workflow will fail and prod deploys must run
+#   PROD_DATABASE_URL  — Supabase SESSION-pooler URL (:5432, DDL-safe) for the
+#                        PROD database. Consumed by the migrate job as
+#                        MIGRATION_DATABASE_URL. Secret — never logged.
+# Until ALL THREE secrets exist, this workflow will fail and prod deploys must run
 # manually via `ssh root@$PROD_VPS_IP 'bash /root/clawville-deploy.sh'`.
+#
+# EMERGENCY OVERRIDE: the FIRST LINE (subject) of the commit message containing
+# the literal phrase "[skip migration]" (case-insensitive) skips the actual
+# migration step while still letting the migrate job SUCCEED, so deploy proceeds.
+# Matched on the subject line only (not the body). On the PROD path this is
+# strictly emergency-only — it ships app code against the CURRENT prod schema, so
+# only use it when the pending migration was already applied to prod out-of-band.
 #
 # clawville-deploy.sh lives on the VPS at /root/ and is the authoritative copy
 # of scripts/deploy/clawville-deploy.sh in this repo. After editing the repo
@@ -31,13 +54,62 @@ on:
   push:
     branches:
       - master
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - '.claude/**'
+      - '**.itachi-bak'
 
 concurrency:
   group: coolify-deploy-prod
   cancel-in-progress: false
 
 jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Skip-migration guard (emergency override — subject line only)
+        id: guard
+        env:
+          COMMIT_MSG: ${{ github.event.head_commit.message }}
+        run: |
+          # Match ONLY the first line (subject), so a token buried in a multi-line
+          # commit body / PR description cannot silently bypass the PROD migration gate.
+          SUBJECT=$(printf '%s' "$COMMIT_MSG" | head -1)
+          if printf '%s' "$SUBJECT" | grep -iqF '[skip migration]'; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::Commit subject contains '[skip migration]' — DB migration step skipped for this PROD deploy. Emergency-only; the migration MUST already be applied to prod out-of-band."
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout
+        if: steps.guard.outputs.skip != 'true'
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        if: steps.guard.outputs.skip != 'true'
+        uses: oven-sh/setup-bun@v2
+        with:
+          # Pinned to the version the runner was authored + verified against, so a
+          # future Bun release can't silently change migration execution semantics.
+          bun-version: 1.3.11
+
+      - name: Install dependencies
+        if: steps.guard.outputs.skip != 'true'
+        # Plain install (uses the committed bun.lock; NOT --frozen-lockfile, so a
+        # lockfile-vs-package.json drift can't add a non-migration brick vector to
+        # the prod gate — the gate must block on migration failures only).
+        run: bun install
+
+      - name: Apply pending DB migrations (BLOCKING — gates the PROD deploy)
+        if: steps.guard.outputs.skip != 'true'
+        env:
+          MIGRATION_DATABASE_URL: ${{ secrets.PROD_DATABASE_URL }}
+        run: bun packages/database/scripts/migrate-ci.ts
+
   deploy:
+    needs: migrate
     runs-on: ubuntu-latest
     steps:
       - name: Flag direct-to-master deploys (audit log)
