@@ -81,6 +81,12 @@ export * from './holdem';
 // cove_game_events row (gameType='baccarat'). ClawTokens tier today; currency
 // seam reserved for the SOL/USDC tier.
 export * from './baccarat';
+// Land Economy Phase 0 (2026-06-15) — converged land/property + services +
+// CT-on-ramp tables (land_parcels/structures/upgrades/transactions +
+// service_listings/service_purchases + partner_storefronts + ct_topups).
+// PURELY ADDITIVE — new tables only, db:push is a clean CREATE. Ownership binds
+// to avatars.id (the human+agent parity seam). See `.claude/plans/land-economy/`.
+export * from './land';
 
 import { users, sessions } from './users';
 import { npcMemories, activityLog } from './memories';
@@ -97,6 +103,16 @@ import { auctions, auctionBids, auctionAgentConfigs } from './auctions';
 import { quests, questSubmissions, questRewards } from './quests';
 import { agentConfigs } from './agent-configs';
 import { bounties, bountyRewards, bountyAttempts, bountyReputation } from './bounties';
+import {
+  landParcels,
+  landStructures,
+  landUpgrades,
+  landTransactions,
+  serviceListings,
+  servicePurchases,
+  partnerStorefronts,
+  ctTopups,
+} from './land';
 
 export const usersRelations = relations(users, ({ many, one }) => ({
   sessions: many(sessions),
@@ -380,4 +396,104 @@ export const bountyReputationRelations = relations(bountyReputation, ({ one }) =
 
 export const clawTokenTransactionsRelations = relations(clawTokenTransactions, ({ one }) => ({
   avatar: one(avatars, { fields: [clawTokenTransactions.avatarId], references: [avatars.id] }),
+}));
+
+// ── Land Economy (Phase 0) ──────────────────────────────────────────────────
+
+export const landParcelsRelations = relations(landParcels, ({ one, many }) => ({
+  owner: one(avatars, {
+    fields: [landParcels.ownerAvatarId],
+    references: [avatars.id],
+  }),
+  structure: one(landStructures, {
+    fields: [landParcels.id],
+    references: [landStructures.parcelId],
+  }),
+  transactions: many(landTransactions),
+}));
+
+export const landStructuresRelations = relations(landStructures, ({ one, many }) => ({
+  parcel: one(landParcels, {
+    fields: [landStructures.parcelId],
+    references: [landParcels.id],
+  }),
+  owner: one(avatars, {
+    fields: [landStructures.ownerAvatarId],
+    references: [avatars.id],
+  }),
+  upgrades: many(landUpgrades),
+  serviceListings: many(serviceListings),
+}));
+
+export const landUpgradesRelations = relations(landUpgrades, ({ one }) => ({
+  structure: one(landStructures, {
+    fields: [landUpgrades.structureId],
+    references: [landStructures.id],
+  }),
+  byAvatar: one(avatars, {
+    fields: [landUpgrades.byAvatarId],
+    references: [avatars.id],
+  }),
+}));
+
+export const landTransactionsRelations = relations(landTransactions, ({ one }) => ({
+  parcel: one(landParcels, {
+    fields: [landTransactions.parcelId],
+    references: [landParcels.id],
+  }),
+  structure: one(landStructures, {
+    fields: [landTransactions.structureId],
+    references: [landStructures.id],
+  }),
+  avatar: one(avatars, {
+    fields: [landTransactions.avatarId],
+    references: [avatars.id],
+  }),
+}));
+
+export const serviceListingsRelations = relations(serviceListings, ({ one, many }) => ({
+  structure: one(landStructures, {
+    fields: [serviceListings.structureId],
+    references: [landStructures.id],
+  }),
+  owner: one(avatars, {
+    fields: [serviceListings.ownerAvatarId],
+    references: [avatars.id],
+  }),
+  purchases: many(servicePurchases),
+}));
+
+export const servicePurchasesRelations = relations(servicePurchases, ({ one }) => ({
+  listing: one(serviceListings, {
+    fields: [servicePurchases.listingId],
+    references: [serviceListings.id],
+  }),
+  buyer: one(avatars, {
+    fields: [servicePurchases.buyerAvatarId],
+    references: [avatars.id],
+    relationName: 'servicePurchaseBuyer',
+  }),
+  seller: one(avatars, {
+    fields: [servicePurchases.sellerAvatarId],
+    references: [avatars.id],
+    relationName: 'servicePurchaseSeller',
+  }),
+  landTransaction: one(landTransactions, {
+    fields: [servicePurchases.landTransactionId],
+    references: [landTransactions.id],
+  }),
+}));
+
+export const partnerStorefrontsRelations = relations(partnerStorefronts, ({ one }) => ({
+  parcel: one(landParcels, {
+    fields: [partnerStorefronts.parcelId],
+    references: [landParcels.id],
+  }),
+}));
+
+export const ctTopupsRelations = relations(ctTopups, ({ one }) => ({
+  avatar: one(avatars, {
+    fields: [ctTopups.avatarId],
+    references: [avatars.id],
+  }),
 }));
