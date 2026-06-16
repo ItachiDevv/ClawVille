@@ -1,6 +1,16 @@
 import { create } from 'zustand';
 import { ACTIVITY_REGISTRY, DEFAULT_AGENT_MODEL_KEY } from '@clawville/shared';
-import { buildingZones } from '@/lib/pixi/tilemap-data';
+import { buildingZones, MAP_WIDTH, MAP_HEIGHT } from '@/lib/pixi/tilemap-data';
+
+// ---------------------------------------------------------------------------
+// Player spawn (game-px). Derived from the map center so a future world grow
+// re-centers automatically. +540 keeps the avatar 540 wu SOUTH of origin
+// (world Z = +540) — ~140 wu south of Nori (world Z = +400) and clear of the
+// town-directory sign (world Z = −120).
+// Phase 0 land (2026-06-15): center px 5760 → 9216 (world grew 360→576 tiles).
+//   x = MAP_WIDTH/2 = 9216,  y = MAP_HEIGHT/2 + 540 = 9756.
+// ---------------------------------------------------------------------------
+const SPAWN_PX = { x: MAP_WIDTH / 2, y: MAP_HEIGHT / 2 + 540 };
 
 // ---------------------------------------------------------------------------
 // B6 — module-scope mutable position ref
@@ -10,11 +20,10 @@ import { buildingZones } from '@/lib/pixi/tilemap-data';
 // via setAvatarPosition so that subscribers like Minimap rebuild at most 10×/sec
 // instead of 60×/sec during movement.
 // ---------------------------------------------------------------------------
-// Phase 6.2 (2026-05-18): world is 11520×11520 px. Center = (5760, 5760).
-// 2026-05-21: bumped from y=6140 → y=6300 to keep the avatar 160 wu further
-// from the now-larger town-directory sign (sign at world Z = −120, Nori at
-// world Z = 400, avatar spawn at world Z = 6300 − 5760 = 540).
-export const avatarPositionRef: { x: number; y: number } = { x: 5760, y: 6300 };
+// Phase 0 land (2026-06-15): world is 18432×18432 px. Center = (9216, 9216).
+// Spawn 540 wu south of center: sign at world Z = −120, Nori at world Z = +400,
+// avatar spawn at world Z = SPAWN_PX.y − MAP_HEIGHT/2 = +540. See SPAWN_PX above.
+export const avatarPositionRef: { x: number; y: number } = { x: SPAWN_PX.x, y: SPAWN_PX.y };
 // Module-scope timestamp of the last reactive (zustand set) write.
 let lastReactiveWriteAt = 0;
 
@@ -573,10 +582,10 @@ export const useGameStore = create<GameState>((set, get) => ({
     avatarModelKey: modelKey ?? DEFAULT_AGENT_MODEL_KEY,
   }),
 
-  // Spawn 540 world units south of center (game-y = 6300 ⇒ world Z = +540) so
-  // the player stands ~140wu south of Nori (Nori at world Z = +400 as of 2026-05-21).
+  // Spawn 540 world units south of center (world Z = +540) so the player stands
+  // ~140wu south of Nori (Nori at world Z = +400 as of 2026-05-21).
   // Sign moved south by sign-size growth + Nori moved 240→400 to keep them in scale.
-  avatarPosition: { x: 5760, y: 6300 },
+  avatarPosition: { x: SPAWN_PX.x, y: SPAWN_PX.y },
   setAvatarPosition: (x, y) => {
     // Always update the module-scope ref — zero React overhead, safe to call
     // at 60 Hz from useFrame / rAF loops. Per-frame readers (player-avatar.tsx,
@@ -1120,7 +1129,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     // GLB until setAvatarAppearance fired, which for an unauthenticated
     // session may never happen.
     avatarModelKey: 'lobster',
-    avatarPosition: { x: 5760, y: 6300 }, // 2026-05-21: bumped 6140→6300 to keep avatar 160 wu further from the now-larger town-directory sign (world Z=+540)
+    avatarPosition: { x: SPAWN_PX.x, y: SPAWN_PX.y }, // world Z=+540 — see SPAWN_PX (Phase 0 land: center 5760→9216)
     movementDirection: 'idle',
     avatarSpeed: 0,
     nearLocation: null,
