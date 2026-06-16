@@ -147,7 +147,26 @@ const REEF_RACE_REWARD_CONFIG: ActivityRewardConfig = {
 };
 
 /**
- * Canonical activity list — 2 live + 8 coming-soon.
+ * Texas Hold'em (Phase P1) reward schedule — PLACEHOLDER. Money/CT settlement
+ * + leaderboard crediting for poker are OUT OF SCOPE for the P1.2b phase (demo
+ * in-memory chip stacks only). This config exists so the registry entry is a
+ * well-formed `live` row; it is NOT yet wired into the reward pipeline (poker
+ * has no `computeResults`/`setEndedFn` registration this phase). The numbers
+ * mirror the Reef Race tier shape and will be re-derived from the cove economy
+ * model when settlement lands.
+ */
+const TEXAS_HOLDEM_REWARD_CONFIG: ActivityRewardConfig = {
+  placements: [
+    { rank: 1, tokens: 50 },
+    { rank: 2, tokens: 25 },
+    { rank: 3, tokens: 10 },
+  ],
+  participationTokens: 5,
+  leaderboardPoints: { '1': 30, '2': 15, '3': 8, default: 2 },
+};
+
+/**
+ * Canonical activity list — 3 live + 8 coming-soon.
  *
  * IMPORTANT: order matters for the portal grid rendering; live entries
  * surface first, coming-soon follow in neighborhood order (mirrors
@@ -156,6 +175,49 @@ const REEF_RACE_REWARD_CONFIG: ActivityRewardConfig = {
  */
 export const ACTIVITY_REGISTRY: readonly ActivityDefinition[] = [
   // ─── Live at Q2 launch ────────────────────────────────────────────────────
+  {
+    id: 'texas-holdem',
+    buildingId: 'cove', // The Cove (entertainment venue — poker table)
+    title: "Texas Hold'em",
+    tagline: 'Live No-Limit Hold’em. Read the table, size your bets, take the pot.',
+    minPlayers: 2,
+    maxPlayers: 9,
+    queueMinPlayers: 2,
+    // Hold'em is turn-based (no fixed round timer) — `roundSeconds` is the
+    // soft lobby-fill / display hint only. Per-turn action clock lives in the
+    // sim's `turnClockMs`, not here.
+    roundSeconds: 600,
+    // thumbnailUrl omitted until art ships — gradient fallback covers it.
+    openclawSkill: 'Incomplete-information decision-making under uncertainty',
+    skillBuildingMatches: ['cove'],
+    status: 'live',
+    rewardConfig: TEXAS_HOLDEM_REWARD_CONFIG,
+  },
+  {
+    // ── Poker MTT (P3.5) — tournament TABLES, NOT a portal-queued activity ─────
+    // A tournament table is a SEPARATE activityId from the single-table cove demo
+    // (`texas-holdem`) so its WS dispatch + LIVE transition target the DEDICATED
+    // `pokerMttSim` (driven by the TournamentManager), never the demo
+    // `pokerTableSim`. The two sims + activityIds stay fully isolated.
+    //
+    // It is `coming-soon` (NOT portal-queueable) ON PURPOSE: a tournament table is
+    // SEATED by the TournamentManager when a registered field starts — it is never
+    // created via the matchmaker/portal queue, so it must not surface as a second
+    // queueable cove activity (which would collide with the `texas-holdem` demo in
+    // `getLiveActivitiesForBuilding('cove')`). The registry entry exists only so
+    // the activityId is type-safe + recognized by the WS hub's MTT dispatch.
+    id: 'texas-holdem-mtt',
+    buildingId: 'cove', // The Cove (entertainment venue — tournament poker table)
+    title: "Texas Hold'em — Tournament",
+    tagline: 'Multi-table tournament poker. Survive the field, climb the prize ladder.',
+    minPlayers: 2,
+    maxPlayers: 9,
+    queueMinPlayers: 2,
+    roundSeconds: 600,
+    openclawSkill: 'Tournament survival + variable-stack decision-making',
+    skillBuildingMatches: ['cove'],
+    status: 'coming-soon',
+  },
   {
     id: 'bumper-shells',
     buildingId: 'api-integrations', // Salty Spitoon
