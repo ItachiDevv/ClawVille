@@ -74,6 +74,14 @@ export * from './blackjack';
 // shoe / cursor drift. One hand = one cove_game_events row (gameType='holdem').
 // ClawTokens tier today; currency seam reserved for the SOL/USDC tier.
 export * from './holdem';
+// Special Events (2026-06-16) — the GENERIC, REUSABLE PARENT table for any
+// one-time event (special_events + special_event_signups). The poker tournament
+// is a DEPENDENCY SUBTABLE that hangs off it: the FK points UP
+// (poker_tournaments.special_event_id → special_events.id), so special_events
+// stays reusable across future event types. MUST be exported BEFORE './poker'
+// so poker.ts can import specialEvents. See `special-events.ts`. (The single
+// `export * from './poker'` lives below, after baccarat.)
+export * from './special-events';
 // Phase 6.6.1 — cove Baccarat (Punto Banco) shoes + coups. Two-table
 // commit-reveal pattern mirroring blackjack (8-deck shared no-replacement shoe;
 // ~75% penetration reshuffle = new shoe row). Punto Banco has NO player
