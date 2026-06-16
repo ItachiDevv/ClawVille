@@ -2,10 +2,9 @@
  * OpenAI Embedding Provider Plugin for ElizaOS v2
  *
  * Provides TEXT_EMBEDDING via OpenAI's text-embedding-3-small endpoint
- * directly over fetch — no extra dependency needed. Replaced the Gemini
- * text-embedding-004 provider (768-dim) as part of the Gemini→OpenAI
- * migration: this emits a deterministic 1536-dim vector. Priority is set
- * high so it wins over any other embedding provider if multiple are loaded.
+ * directly over fetch — no extra dependency needed. The sole embedding
+ * backend: emits a deterministic 1536-dim vector. Priority is set high so
+ * it wins over any other embedding provider if multiple are loaded.
  *
  * DIMENSION INVARIANT: the model and dimension are HARD-PINNED in code at
  * text-embedding-3-small / 1536 (NOT env- or config-overridable). The request
