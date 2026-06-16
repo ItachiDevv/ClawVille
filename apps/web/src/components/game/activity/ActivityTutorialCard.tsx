@@ -26,8 +26,14 @@
  * Copy decisions:
  *  - Bumper Shells = "ram opponents off the edge" (accurate to chunk #4 sim).
  *  - Reef Race = "three laps around the reef" (matches chunk #5 sim).
- *  - Both stay in Nori's voice (welcoming, concise — see CLAUDE.md
- *    Town Guide rules + town-guide.ts style).
+ *  - Cove games (blackjack / baccarat / slots / holdem / texas-holdem-mtt) added
+ *    P-player-facing — Nori-voiced, kept in sync with town-guide.ts knowledge[]
+ *    (CLAUDE.md "Three-Surface Game-Flow Knowledge Sync"). The MTT deck
+ *    specifically calls out: buy-in pool, rising blinds, table rebalancing
+ *    ("you may be moved"), the action bar + turn clock, and flat CT payout +
+ *    placement → leaderboard.
+ *  - All stay in Nori's voice (welcoming, concise — see CLAUDE.md Town Guide
+ *    rules + town-guide.ts style).
  */
 
 import { useCallback } from 'react';
@@ -39,7 +45,15 @@ const SKIP_ALL_KEY = 'clawville-activity-tutorial-skip-all';
 
 // ─── Activity copy (canonical — keep in sync with Nori knowledge[]) ────────
 
-export type ActivityTutorialActivityId = 'bumper-shells' | 'reef-race';
+export type ActivityTutorialActivityId =
+  | 'bumper-shells'
+  | 'reef-race'
+  // Cove games — Nori-voiced decks kept in sync with town-guide.ts knowledge[].
+  | 'holdem'
+  | 'blackjack'
+  | 'baccarat'
+  | 'slots'
+  | 'texas-holdem-mtt';
 
 interface TutorialCopy {
   title: string;
@@ -59,6 +73,46 @@ const COPY: Record<ActivityTutorialActivityId, TutorialCopy> = {
     voice:
       "Three laps around the reef. Hit the boost pads, use Turbo Bubbles to overtake, and don't let the Tide Wave catch you near the front.",
     controlsHint: 'WASD steer · SPACE boost · Q (or B on mobile) use Turbo',
+  },
+  // ── Cove: Texas Hold'em (cash table, 6-max vs house bots) ────────────────
+  holdem: {
+    title: "Nori's Quick Tour: Hold'em",
+    voice:
+      "It's 6-max No-Limit — your seat plus five house bots. Buy in for 20–500 CT (those become your chips), play preflop to river, and fold, check, call, bet or raise your way to the pot. Walk away anytime and cash out whatever's in front of you.",
+    controlsHint: 'Tap an action when the ring lights up · slide to size a bet/raise',
+  },
+  // ── Cove: Blackjack (vs dealer, 6-deck shoe) ─────────────────────────────
+  blackjack: {
+    title: "Nori's Quick Tour: Blackjack",
+    voice:
+      'Beat the dealer without busting past 21. Bet 5–500 CT, then hit, stand, double, split or surrender — blackjack pays 3:2, dealer stands on soft 17. Count the shoe if you can; the deck is provably fair and every hand is replayable.',
+    controlsHint: 'Tap Hit / Stand / Double / Split when it’s your turn',
+  },
+  // ── Cove: Baccarat (Punto Banco, no decisions) ───────────────────────────
+  baccarat: {
+    title: "Nori's Quick Tour: Baccarat",
+    voice:
+      'One bet per coup — PLAYER, BANKER or TIE (5–500 CT) — then the dealer plays both hands by the fixed rules. PLAYER pays 1:1, BANKER pays 0.95:1 (the 5% commission), TIE pays 8:1. No decisions to make; just pick a side.',
+    controlsHint: 'Pick PLAYER / BANKER / TIE, set your stake, deal',
+  },
+  // ── Cove: Slots (provably-fair reels) ────────────────────────────────────
+  slots: {
+    title: "Nori's Quick Tour: Slots",
+    voice:
+      'Spin the reels for a payline win — wild multipliers stack and three scatters trigger a bonus. Every spin is provably fair: verify any result at /cove/verify. Bet in ClawTokens; guests get a demo shoe.',
+    controlsHint: 'Set your bet, hit Spin · hold for turbo spins',
+  },
+  // ── Cove: Texas Hold'em MTT (single-table sit-n-go tournament) ──────────
+  // KEEP IN SYNC with town-guide.ts knowledge[] (the MTT entry) — same-diff
+  // rule. Covers: buy-in pool, rising blinds, rebalancing ("you may be
+  // moved"), the action bar + turn clock, flat-CT payout + placement →
+  // leaderboard.
+  'texas-holdem-mtt': {
+    title: "Nori's Quick Tour: Poker Tournament",
+    voice:
+      "It's a sit-n-go: pay one ClawToken buy-in into a shared prize pool, get an equal chip stack (chips aren't CT), and play hands as the blinds rise on a timer. With more entrants the engine balances tables — you may be MOVED to a new table mid-tournament, that's normal. Bust and you lock a finishing place; the pool pays down the top spots (50/30/20 by default) in real CT, and your placement scores the free leaderboard.",
+    controlsHint:
+      'Act before the turn clock empties (it auto-folds/checks) · slide to size a raise',
   },
 };
 
