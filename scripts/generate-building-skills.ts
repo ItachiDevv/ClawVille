@@ -1,6 +1,6 @@
 /**
  * One-time generator: builds a SKILL.md document for each of the 10 ClawVille
- * buildings by summarizing the scraped `research_articles` via Gemini, and
+ * buildings by summarizing the scraped `research_articles` via OpenAI, and
  * stores the result in the `building_skills` table.
  *
  * Also hand-writes the `clawville-play` meta-skill describing how to connect
@@ -32,12 +32,12 @@ function contentHashHex(content: string): string {
   return createHash('sha256').update(content).digest('hex');
 }
 
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-const GEMINI_MODEL = process.env.GEMINI_MODEL ?? 'gemini-flash-latest';
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const OPENAI_MODEL = process.env.OPENAI_SMALL_MODEL ?? 'gpt-4o-mini';
 const GENERATOR_VERSION = 1;
 
-if (!GEMINI_API_KEY) {
-  console.error('GEMINI_API_KEY is required in .env.local');
+if (!OPENAI_API_KEY) {
+  console.error('OPENAI_API_KEY is required in .env.local');
   process.exit(1);
 }
 
@@ -54,28 +54,29 @@ interface ArticleRow {
   content: string;
 }
 
-async function callGemini(prompt: string): Promise<string> {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`;
-  const res = await fetch(url, {
+async function callOpenAI(prompt: string): Promise<string> {
+  const res = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${OPENAI_API_KEY}`,
+    },
     body: JSON.stringify({
-      contents: [{ parts: [{ text: prompt }] }],
-      generationConfig: {
-        temperature: 0.3,
-        maxOutputTokens: 2048,
-      },
+      model: OPENAI_MODEL,
+      messages: [{ role: 'user', content: prompt }],
+      temperature: 0.3,
+      max_tokens: 2048,
     }),
   });
 
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(`Gemini API ${res.status}: ${text.slice(0, 500)}`);
+    throw new Error(`OpenAI API ${res.status}: ${text.slice(0, 500)}`);
   }
 
   const data = (await res.json()) as any;
-  const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-  if (!text) throw new Error(`Gemini returned no text: ${JSON.stringify(data).slice(0, 500)}`);
+  const text = data?.choices?.[0]?.message?.content;
+  if (!text) throw new Error(`OpenAI returned no text: ${JSON.stringify(data).slice(0, 500)}`);
   return text.trim();
 }
 
@@ -100,7 +101,7 @@ ${capped}
 
 Begin the section now:`;
 
-  return await callGemini(prompt);
+  return await callOpenAI(prompt);
 }
 
 function assembleSkillMd(opts: {
@@ -170,7 +171,7 @@ function assembleSkillMd(opts: {
     '',
     ...sections.map((s) => `- [${s.article.title}](${s.article.url}) — ${s.article.source}`),
     '',
-    `_Generated from scraped research_articles via Gemini. Version ${GENERATOR_VERSION}._`,
+    `_Generated from scraped research_articles via OpenAI. Version ${GENERATOR_VERSION}._`,
     '',
   ].join('\n');
 
@@ -589,7 +590,7 @@ async function seedClawvillePlay(): Promise<void> {
 
 async function main() {
   console.log('=== ClawVille building-skills generator ===\n');
-  console.log(`  model: ${GEMINI_MODEL}`);
+  console.log(`  model: ${OPENAI_MODEL}`);
   console.log(`  version: ${GENERATOR_VERSION}`);
   console.log(`  force: ${force}`);
   if (onlyFlag) console.log(`  only: ${onlyFlag}`);
