@@ -27,6 +27,7 @@ import { streamSSE } from 'hono/streaming';
 import { z } from 'zod';
 import { eq } from 'drizzle-orm';
 import { db, avatars } from '@clawville/database';
+import { SPAWN_PX, WORLD_PX_WIDTH, WORLD_PX_HEIGHT } from '@clawville/shared';
 import { sessionMiddleware } from '../middleware/auth';
 import { adminOnly } from '../middleware/admin-only';
 import {
@@ -40,9 +41,14 @@ import { createRateLimiter, getClientIp } from '../middleware/rate-limit';
 import type { Context } from 'hono';
 import type { AppContext } from '../types';
 
-/** Town-center default (matches avatars.position_x/y defaults of 2560,2560). */
-const TOWN_CENTER_X = 2560;
-const TOWN_CENTER_Y = 2560;
+// Town-center spawn for guests / avatar-less agents / avatar rows missing a
+// position. Mirrors the client spawn (south of Nori) and the avatars.position_x/y
+// defaults (9216, 9756) — all three pinned to @clawville/shared SPAWN_PX so the
+// Land Phase 0 re-center (5120→18432) can never drift between layers (S3,
+// 2026-06-16). Was 2560,2560 (old 5120 world center), which placed every
+// fallback body at a corner-ward diagonal on the new 18432 world.
+const TOWN_CENTER_X = SPAWN_PX.x;
+const TOWN_CENTER_Y = SPAWN_PX.y;
 
 export const worldRoutes = new Hono<AppContext>();
 
@@ -150,6 +156,19 @@ async function resolveAvatarMeta(presence: ResolvedPresence) {
       kind,
     };
   }
+  // Belt-and-suspenders restore guard (S3, 2026-06-16): if a stored position is
+  // OUTSIDE the world bounds (e.g. a pre-re-center row that escaped migration
+  // 0002, or any FUTURE re-center that strands old coords), fall back to spawn
+  // so this presence's broadcast body can never seat at a corner/off-map. Only
+  // out-of-bounds rows are reset — an in-bounds saved position is honored as-is
+  // (no coordinate heuristics). The local client's own body always starts at
+  // the in-bounds client SPAWN_PX (avatarPositionRef); this guard protects the
+  // SERVER-seeded room broadcast that other players see until the first upload.
+  const inBounds =
+    a.positionX >= 0 &&
+    a.positionX <= WORLD_PX_WIDTH &&
+    a.positionY >= 0 &&
+    a.positionY <= WORLD_PX_HEIGHT;
   return {
     userId,
     name: a.name,
@@ -157,8 +176,8 @@ async function resolveAvatarMeta(presence: ResolvedPresence) {
     // falls back when modelKey is unset (legacy rows).
     species: a.modelKey || a.species,
     color: 0xcccccc,
-    x: a.positionX,
-    y: a.positionY,
+    x: inBounds ? a.positionX : SPAWN_PX.x,
+    y: inBounds ? a.positionY : SPAWN_PX.y,
     kind,
   };
 }

@@ -1,5 +1,11 @@
 import { create } from 'zustand';
-import { ACTIVITY_REGISTRY, DEFAULT_AGENT_MODEL_KEY } from '@clawville/shared';
+import {
+  ACTIVITY_REGISTRY,
+  DEFAULT_AGENT_MODEL_KEY,
+  WORLD_PX_WIDTH,
+  WORLD_PX_HEIGHT,
+  SPAWN_PX as SHARED_SPAWN_PX,
+} from '@clawville/shared';
 import { buildingZones, MAP_WIDTH, MAP_HEIGHT } from '@/lib/pixi/tilemap-data';
 
 // ---------------------------------------------------------------------------
@@ -11,6 +17,31 @@ import { buildingZones, MAP_WIDTH, MAP_HEIGHT } from '@/lib/pixi/tilemap-data';
 //   x = MAP_WIDTH/2 = 9216,  y = MAP_HEIGHT/2 + 540 = 9756.
 // ---------------------------------------------------------------------------
 const SPAWN_PX = { x: MAP_WIDTH / 2, y: MAP_HEIGHT / 2 + 540 };
+
+// Drift guard (S3, 2026-06-16): the SERVER + DB derive spawn/center from
+// @clawville/shared world-dimensions; the client computes them from the pixi
+// tilemap. Both MUST agree or a logged-in player's broadcast body (server) and
+// own body (client) diverge — exactly the Land Phase 0 re-center bug. This
+// dev-only assertion fails loudly if MAP_WIDTH/MAP_HEIGHT or the computed spawn
+// ever drift from the shared constants (e.g. a future world grow updates the
+// tilemap but not world-dimensions.ts, or vice versa). Stripped from prod
+// builds; non-breaking (no behavior change, just a fail-fast in dev).
+if (process.env.NODE_ENV !== 'production') {
+  if (
+    MAP_WIDTH !== WORLD_PX_WIDTH ||
+    MAP_HEIGHT !== WORLD_PX_HEIGHT ||
+    SPAWN_PX.x !== SHARED_SPAWN_PX.x ||
+    SPAWN_PX.y !== SHARED_SPAWN_PX.y
+  ) {
+    console.error(
+      '[game.ts] SPAWN/WORLD DRIFT: client tilemap disagrees with @clawville/shared world-dimensions. ' +
+        `client {MAP_WIDTH:${MAP_WIDTH}, MAP_HEIGHT:${MAP_HEIGHT}, spawn:(${SPAWN_PX.x},${SPAWN_PX.y})} ` +
+        `vs shared {WORLD_PX_WIDTH:${WORLD_PX_WIDTH}, WORLD_PX_HEIGHT:${WORLD_PX_HEIGHT}, ` +
+        `SPAWN_PX:(${SHARED_SPAWN_PX.x},${SHARED_SPAWN_PX.y})}. ` +
+        'Update both layers (tilemap-data.ts + world-dimensions.ts) in the same diff.',
+    );
+  }
+}
 
 // ---------------------------------------------------------------------------
 // B6 — module-scope mutable position ref

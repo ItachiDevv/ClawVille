@@ -87,6 +87,10 @@ export * from './activities';
 export * from './types/world';
 // Server-usable AABB collision data (buildings + town-center props).
 export * from './constants/world-colliders-data';
+// World dimensions + canonical spawn/center coords (S3, 2026-06-16) — the
+// single source of truth the web client, API, and DB schema all align on so the
+// Land Phase 0 re-center (5120→18432) can never drift between layers again.
+export * from './constants/world-dimensions';
 // Land Economy Phase 0 (2026-06-15) — frozen tier contract (enum, supply counts, parcel-code
 // format). The geometry (`land-parcels`) + economic (`land-economy`) constants both import it.
 export * from './constants/land-tiers';
