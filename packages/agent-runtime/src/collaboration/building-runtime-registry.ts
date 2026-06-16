@@ -14,7 +14,7 @@
  *
  * Each building runtime loads its location template, builds a character
  * via createCharacter(), and uses the default OpenAI text provider
- * (priority 95) for all consultations (embeddings still via Gemini).
+ * (priority 95) for all consultations (embeddings also via OpenAI).
  *
  * Memory budget: 10 shared runtimes at ~30-50MB each = ~500MB worst case.
  * Typical runtime activity will only warm 3-4 buildings per session.
@@ -46,9 +46,7 @@ const INACTIVITY_CHECK_INTERVAL_MS = 60 * 1000; // check every minute
 export interface BuildingRuntimeRegistryConfig {
   databaseUrl?: string;
   apiKeys?: {
-    /** Gemini API key for embeddings (text generation moved to OpenAI). */
-    gemini?: string;
-    /** OpenAI API key for TEXT_SMALL/TEXT_LARGE generation. */
+    /** OpenAI API key — the sole backend for TEXT_SMALL/TEXT_LARGE generation and embeddings. */
     openai?: string;
   };
 }
