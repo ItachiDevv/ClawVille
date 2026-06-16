@@ -2,9 +2,8 @@ import { templates } from '@clawville/agent-templates';
 import { NPC_DEFINITIONS, type NpcDefinition } from '@clawville/shared';
 import type { OpenClawClient } from './openclaw-client';
 
-// LLM config — OpenAI is the SOLE text backend for NPC banter (Gemini text is
-// billing-dead / 403; GEMINI_API_KEY is now embeddings-only, so calling Gemini
-// here would just log 403 noise). NPC banter is casual chat, so no extended
+// LLM config — OpenAI is the SOLE backend for both text generation and
+// embeddings across ClawVille. NPC banter is casual chat, so no extended
 // thinking — just a plain chat completion at high temperature.
 const OPENAI_MODEL = process.env.OPENAI_SMALL_MODEL ?? 'gpt-4o-mini';
 const LLM_TEMPERATURE = 0.9;
@@ -17,11 +16,10 @@ interface ConversationMessage {
 }
 
 /**
- * Call the LLM for NPC banter. OpenAI is the SOLE backend — there is no Gemini
- * fallback (Gemini text is billing-dead / 403; GEMINI_API_KEY is embeddings-only
- * now, so a fallback would only emit 403 noise). Returns the trimmed text on
- * success, or an empty string on any failure. Never throws — callers use the
- * empty string to fall back to canned lines.
+ * Call the LLM for NPC banter. OpenAI is the SOLE backend — there is no
+ * secondary provider. Returns the trimmed text on success, or an empty string
+ * on any failure. Never throws — callers use the empty string to fall back to
+ * canned lines.
  */
 async function callLlmForNpc(
   systemPrompt: string | null,

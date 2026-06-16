@@ -550,11 +550,11 @@ skillsRoutes.get('/:buildingId', async (c) => {
 // users capture "I learned how to do X with Gary" as a permanent,
 // portable skill artifact.
 //
-// STUB SHAPE — wired but does NOT yet run a Gemini distill pass. The
+// STUB SHAPE — wired but does NOT yet run an OpenAI distill pass. The
 // route returns 501 with a structured payload describing the eventual
 // response so the install pipeline at the harness side can be coded
 // against the contract today. Implementation lands when the
-// custom_skills table + Gemini distill prompt ship.
+// custom_skills table + OpenAI distill prompt ship.
 // ---------------------------------------------------------------------------
 skillsRoutes.post('/forge', async (c) => {
   let body: any = {};
