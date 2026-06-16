@@ -157,7 +157,15 @@ export default function PokerTournamentLobby({
       if (res.status === 409) return false; // not seated yet — keep polling
       if (!res.ok) return false;
       const conn = (await res.json()) as { ok: boolean } & PokerConnectionTicket;
-      if (conn.roomId && conn.shortCode && typeof conn.seatIndex === 'number') {
+      // Guard on the server's explicit ok:true (it sends ok:true on a 200 success)
+      // before trusting the ticket fields — a defensive belt-and-suspenders check so
+      // a 200 body that somehow lacked ok (or carried an error shape) never seats.
+      if (
+        conn.ok === true &&
+        conn.roomId &&
+        conn.shortCode &&
+        typeof conn.seatIndex === 'number'
+      ) {
         if (!seatedRef.current) {
           seatedRef.current = true;
           onSeated({
