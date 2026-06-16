@@ -429,6 +429,7 @@ export default function GamePage() {
       <ControlModeToggle />
       <MobileControls />
       <PerfHud />
+      <TutorialOverlay />
       <ToastNotifications />
       {/* Ask Nori HUD shortcut — opens the Town Guide chat from anywhere
           on the world surface so new players don't have to find her 3D
@@ -451,7 +452,6 @@ export default function GamePage() {
       {hasAvatar && (
         <>
           <LocationHUD />
-          <TutorialOverlay />
           <ActivityFeed />
           <ChatPanel />
           {/* Phase 6.2 (2026-04-27) — AvatarChatBar moved BACK out of the

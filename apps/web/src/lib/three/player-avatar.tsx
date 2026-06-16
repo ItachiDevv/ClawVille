@@ -270,6 +270,17 @@ function getTerrainY(x: number, z: number, scene: THREE.Scene): number {
 // VRM feet are at Y=0 per spec — no pivot offset needed.
 // ---------------------------------------------------------------------------
 
+/**
+ * Maps the avatar's animatorId (rig identity) → cosmetic per-rig fit override
+ * key (RIG_HEAD_OVERRIDE in vrm-avatar-sizing). Only rigs whose skin weights
+ * corrupt the automatic head-fit need an entry; well-rigged VRMs (vrm-milady,
+ * tekk, hermes-male/Phanes) use pure auto-fit and are intentionally absent.
+ */
+const COSMETIC_RIG_KEY: Record<string, string> = {
+  'hermes-female': 'hermes', // skull-only head weights → bone-anchored override
+  chibi: 'chibi',            // broken rig: head bone displaced from head mesh → needs Blender re-rig
+};
+
 function PlayerAvatarVRMInner({ reg }: { reg: ModelRegistryEntry }) {
   const groupRef = useRef<THREE.Group>(null);
   const rotRef = useRef(VRM_DIR_ROTATION.idle);
@@ -693,6 +704,7 @@ function PlayerAvatarVRMInner({ reg }: { reg: ModelRegistryEntry }) {
         parentObject={vrm.scene}
         vrm={vrm}
         vrmRenderScale={vrmRenderScale}
+        avatarRigKey={COSMETIC_RIG_KEY[reg.animatorId]}
       />
     </group>
   );

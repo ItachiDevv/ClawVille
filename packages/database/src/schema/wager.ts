@@ -74,7 +74,10 @@ export const lobbies = pgTable(
     /** 0 ⇒ free lobby. Mirrors lobby.wager_amount on chain (lamports for SOL). */
     wagerAmountLamports: bigint('wager_amount_lamports', { mode: 'bigint' })
       .notNull()
-      .default(0n),
+      // `sql`0`` (not the `0n` BigInt literal) — identical `DEFAULT 0` DDL, but
+      // drizzle-kit 0.24.2 can't JSON.stringify a BigInt into its diff snapshot,
+      // which broke `db:push`/`generate` repo-wide. See 2026-06-16 fix.
+      .default(sql`0`),
     /**
      * `null` ⇒ SOL lobby. Future: base58 SPL mint pubkey.
      * The SPL write path is gated by a `FEATURE_GATE` in routes/wager.ts.

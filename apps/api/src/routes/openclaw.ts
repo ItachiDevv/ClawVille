@@ -495,6 +495,13 @@ openclawRoutes.post('/chat', async (c) => {
         const services = buildRuntimeServices(db);
         const state: Record<string, any> = {
           avatarId: bot?.id ?? sessionId,
+          // MUST be set: the KnowledgeProvider keys learned-skill retrieval on the
+          // hosted bot's platform_agents id (agent_id=room_id=entity_id), exactly as
+          // the backfill stores it. elizaAgentId IS that id (the runtime was started
+          // with it and its knowledge memories live under it). Without platformAgentId
+          // the provider falls back to avatarId (openclaw_bots.id or sessionId, a
+          // different id) and every learned-skill retrieval misses.
+          platformAgentId: elizaAgentId,
           userId: botName,
           services,
           avatarData: bot ? {
@@ -630,6 +637,11 @@ openclawRoutes.post('/location-chat', sessionMiddleware, async (c) => {
         const locServices = buildRuntimeServices(db);
         const locState: Record<string, any> = {
           avatarId: locBot?.id ?? sessionId,
+          // MUST be set: the KnowledgeProvider keys learned-skill retrieval on the
+          // hosted bot's platform_agents id (agent_id=room_id=entity_id). elizaAgentId
+          // IS that id; without platformAgentId the provider falls back to avatarId and
+          // every learned-skill retrieval misses (same bug class as the /chat path).
+          platformAgentId: elizaAgentId,
           userId: locBotName,
           services: locServices,
           avatarData: locBot ? {
