@@ -117,8 +117,13 @@ export const avatars = pgTable('avatars', {
   platformAgentId: uuid('platform_agent_id')
     .references(() => platformAgents.id, { onDelete: 'set null' }),
   clawTokens: integer('claw_tokens').default(100).notNull(),
-  positionX: integer('position_x').default(2560).notNull(),
-  positionY: integer('position_y').default(2560).notNull(),
+  // town-center spawn (land Phase 0 re-center); mirrors @clawville/shared
+  // SPAWN_PX (9216, 9756). Migration 0002 resets existing rows. NOTE: drizzle
+  // column defaults MUST be numeric literals (importing @clawville/shared here
+  // would create a database→shared dependency cycle), so these are pinned by
+  // the comment, not by an import — keep them equal to SPAWN_PX.
+  positionX: integer('position_x').default(9216).notNull(),
+  positionY: integer('position_y').default(9756).notNull(),
   lastActiveAt: timestamp('last_active_at'),
   loginStreak: integer('login_streak').default(0).notNull(),
   lastLoginDate: varchar('last_login_date', { length: 10 }),
