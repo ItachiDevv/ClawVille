@@ -17,6 +17,7 @@ import { worldRoutes } from './routes/world';
 import { openclawRoutes } from './routes/openclaw';
 import { activityRoutes } from './routes/activity';
 import { activitiesV2Routes } from './routes/activities';
+import { landRoutes } from './routes/land';
 import { activityRoomManager } from './services/activity/activity-room-manager';
 import { activityQueueService } from './services/activity/activity-queue';
 import { activityWsHub } from './services/activity/activity-ws-hub';
@@ -229,6 +230,10 @@ app.route('/api/avatars', activityRoutes);
 // Q2 Activity Portals — chunk #2 backend skeleton (REST routes; WS hub
 // + sim land in chunk #3). Mount path mirrors the Q2 plan §"API routes".
 app.route('/api/activities', activitiesV2Routes);
+// Land Economy — Phase 1 / Slice A: free starter-parcel claim + read seams.
+// PARITY (Rule E5): writes bind to identity.avatarId (human cookie OR agent
+// session → bound avatar). No ledger touch this slice (free claim).
+app.route('/api/land', landRoutes);
 app.route('/api/research', researchSseRoutes);
 app.route('/api/research', researchApiRoutes);
 app.route('/api/marketplace', marketplaceRoutes);
