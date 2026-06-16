@@ -62,6 +62,7 @@ import {
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import { avatars } from './avatars';
+import { specialEvents } from './special-events';
 
 /**
  * One rising-blind ladder. `levelsJson` is an ordered array of levels; the TM
@@ -158,10 +159,23 @@ export const pokerTournaments = pgTable(
      * action, never a gameplay action; this column only records "who".
      */
     createdBy: uuid('created_by').references(() => avatars.id, { onDelete: 'set null' }),
+    /**
+     * DEPENDENCY FK (2026-06-16): the special_events PARENT this tournament
+     * belongs to, or NULL for a standalone tournament. The FK points UP — a
+     * poker tournament is a DEPENDENT of an event, never the reverse
+     * (special_events carries no poker_tournament_id). `set null` on delete so
+     * removing a parent event leaves the tournament row intact (orphaned but
+     * valid). An event has 0..N tournaments; this column is how settleEvent
+     * finds them (WHERE special_event_id = event.id).
+     */
+    specialEventId: uuid('special_event_id').references(() => specialEvents.id, {
+      onDelete: 'set null',
+    }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
     statusIdx: index('poker_tournaments_status_idx').on(table.status),
+    specialEventIdx: index('poker_tournaments_special_event_idx').on(table.specialEventId),
     statusCheck: check(
       'poker_tournaments_status_check',
       sql`status in ('registering','seating','running','completed','cancelled')`,
