@@ -34,6 +34,7 @@ import FloatingTexts3D from '@/lib/three/floating-text-3d';
 import NpcSpeechBubbles from '@/lib/three/npc-speech-bubbles';
 import ClickToMove from '@/lib/three/click-to-move';
 import LandParcels from '@/lib/three/land-parcels';
+import LandStructures from '@/lib/three/land-structures';
 import { KTX2LoaderSetup } from '@/lib/three/ktx2-loader-setup';
 import { MeshoptLoaderSetup } from '@/lib/three/meshopt-loader-setup';
 import { WorldLabelsOverlayMount } from '@/lib/three/world-labels-overlay';
@@ -1330,6 +1331,17 @@ const SceneContents = memo(function SceneContents({
       <Suspense fallback={null}>
         <group name="perf:land-parcels" userData={{ perfChunk: 'land-parcels' }}>
           <LandParcels />
+        </group>
+      </Suspense>
+
+      {/* Land structures — placed homes/shops rendered on owned parcels (Phase 1
+          Stage 2). Clean low-poly primitive fallback today; real GLBs swap in
+          after the founder picks a Stage-1 style. Self-hydrates the signed-in
+          owner's structures via api.getMyLand(). Distance-culled (14000wu); ≤5
+          visible per owner. See lib/three/land-structures.tsx. */}
+      <Suspense fallback={null}>
+        <group name="perf:land-structures" userData={{ perfChunk: 'land-structures' }}>
+          <LandStructures />
         </group>
       </Suspense>
 

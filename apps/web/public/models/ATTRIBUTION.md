@@ -87,3 +87,28 @@ The following 3D models are used under CC-BY license. Full credit to their creat
   - `s9.svg` — BAR×3 (new third-pass art; tier 3): three BAR plaques stacked at 0.62 scale,
     deepest red (#a01828) bevel, identical text/rivet pattern
   No external license; covered by the ClawVille repo license.
+
+## Phase 1 — Land Structures (added 2026-06-17)
+
+Stage-1 building-style candidate GLBs for the Land Economy feature. Each candidate
+direction = ONE home + ONE shop. Founder picks one before all 12 SKUs are produced.
+Sourced from Poly Pizza (https://poly.pizza). Files live under
+`apps/web/public/models/land-structures/<style>/{home,shop}.glb`.
+
+### Candidate A — `fantasy-cottage` (CC0)
+- **Fantasy House** by Quaternius (CC0 / Public Domain) — `land-structures/fantasy-cottage/home.glb`
+  https://poly.pizza/m/BH2XHWUNmF · 5,758 tris
+- **Market Stalls** by Quaternius (CC0 / Public Domain) — `land-structures/fantasy-cottage/shop.glb`
+  https://poly.pizza/m/jSqGy8V0MQ · 3,896 tris
+
+### Candidate B — `coastal-cottage` (CC0)
+- **Cottage** by CreativeTrio (CC0 / Public Domain) — `land-structures/coastal-cottage/home.glb`
+  https://poly.pizza/m/YDGLLT0emC · 2,094 tris
+- **Cart** by Quaternius (CC0 / Public Domain) — `land-structures/coastal-cottage/shop.glb`
+  https://poly.pizza/m/l7bDe7ak6j · 2,659 tris
+
+### Candidate C — `driftwood-cabin` (CC0 home / CC-BY shop)
+- **Cabin Shed** by CreativeTrio (CC0 / Public Domain) — `land-structures/driftwood-cabin/home.glb`
+  https://poly.pizza/m/HTx7PZt6Zm · 2,745 tris
+- **Black Smith Shop** by Zsky (CC-BY) — `land-structures/driftwood-cabin/shop.glb`
+  https://poly.pizza/m/PrOdJaBrOu · 5,216 tris
