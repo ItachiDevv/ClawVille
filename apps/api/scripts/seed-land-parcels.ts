@@ -52,6 +52,7 @@ import {
   LAND_PARCELS,
   LAND_TIER_LADDER,
   PARCEL_TIER_COUNTS,
+  TOTAL_PARCEL_SUPPLY,
   type LandTier,
 } from '@clawville/shared';
 
@@ -183,7 +184,7 @@ function perTierPriceRanges(rows: SeedRow[]): Record<string, string> {
 
 function printDryRun(rows: SeedRow[]): void {
   console.log(`${LOG} DRY RUN — no env read, no DB connection, no write.`);
-  console.log(`${LOG} total rows: ${rows.length} (expected 176)`);
+  console.log(`${LOG} total rows: ${rows.length} (expected ${TOTAL_PARCEL_SUPPLY})`);
 
   // 3 sample rows: one founder, one a, one starter.
   const sampleFounder = rows.find((r) => r.tier === 'founder');
@@ -261,8 +262,8 @@ async function main(): Promise<void> {
   // throws here, before any DB is touched.
   const rows = buildSeedRows();
 
-  if (rows.length !== 176) {
-    throw new Error(`${LOG} expected 176 parcels, built ${rows.length} — geometry drift. Aborting.`);
+  if (rows.length !== TOTAL_PARCEL_SUPPLY) {
+    throw new Error(`${LOG} expected ${TOTAL_PARCEL_SUPPLY} parcels, built ${rows.length} — geometry drift. Aborting.`);
   }
 
   if (dryRun) {
