@@ -1321,8 +1321,8 @@ const SceneContents = memo(function SceneContents({
       <group name="perf:terrain" userData={{ perfChunk: 'terrain' }}>
         <ArenaTerrain />
       </group>
-      {/* Land parcels — 176 for-sale lots (Phase 1 / Slice A).
-          Merged BufferGeometry fences + signs, ≤ 7 draw calls total.
+      {/* Land parcels — 180 for-sale lots (Phase 1, square block-frames).
+          Merged BufferGeometry pads + posts/rails + signs, 7 draw calls total.
           No ownership/buy logic this slice — all parcels render as available.
           See lib/three/land-parcels.tsx for draw-call budget and tier scheme.
           Wrapped in Suspense so a useMemo failure during canvas texture build

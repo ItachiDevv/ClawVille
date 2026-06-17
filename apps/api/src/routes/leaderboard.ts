@@ -49,6 +49,7 @@ import {
   bountyReputation,
   openclawBots,
 } from '@clawville/database';
+import { LAND_EVENT_TYPES, LAND_EVENT_WEIGHTS, LAND_EVENT_DAILY_CAPS } from '@clawville/shared';
 import { sessionMiddleware } from '../middleware/auth';
 import { createRateLimiter, getClientIp } from '../middleware/rate-limit';
 import type { AppContext } from '../types';
@@ -325,6 +326,13 @@ interface AgentScoreBreakdown {
   activity_silver: number;
   activity_bronze: number;
   activity_other: number;
+  // Land economy (Phase 1) — capped daily counts of land-acquisition events.
+  // Scored at LAND_W weights (parcel 5 / placed 3 / upgraded 5). Surfaced so a
+  // dashboard can explain land contribution to score. Additive: older clients
+  // (web leaderboard page keeps its own breakdown map) ignore these.
+  land_parcels: number;
+  land_structures_placed: number;
+  land_structures_upgraded: number;
 }
 
 interface AgentLeaderboardEntry {
@@ -412,6 +420,39 @@ const DAILY_CAPS = {
   skillFetch: 11,       // 11 SKILL.md files exist; one fetch each
   activity: 10,         // ~3-min races × 10 = 30min, reasonable ceiling
   session: 10,          // distinct agent.connected/day; lazy-start+30min auto-stop → honest reconnects, but caps connect-spam at the min weight (1). Tunable.
+} as const;
+
+/**
+ * Land-economy leaderboard weights + per-(subject, day) caps. SOURCED from the
+ * shared constants (`@clawville/shared` → `land-economy.ts`) so the canonical
+ * scheme can't drift between the buy/place/upgrade routes (which read the same
+ * constants to gate events) and the scoring CTE here. We mirror them into local
+ * `LAND_W` / `LAND_C` objects for the SAME bound-param ergonomics as `W`/`C`
+ * above (`${LAND_W.parcelPurchased}` in the SQL template).
+ *
+ * Land events are SIMPLE point/count events — no bot carve-out, no activity
+ * proportional-cap math — so they wire in exactly like `building.visited`:
+ * `LEAST(COUNT(*) FILTER (...), cap)` per (subject, day), summed × weight.
+ *
+ * NOTE — `land.parcel.purchased` is emitted by BOTH the priced buy route AND
+ * the Slice-A free starter-claim (payload.amountCt=0). We score ALL parcel
+ * acquisitions equally (a parcel acquired = weight 5, capped at 5/day). This is
+ * consistent + simple, and the cap (5/day == MAX_PARCELS_PER_AVATAR) bounds it.
+ *
+ * `land.service.sold` (weight 40, cap 50) is intentionally NOT wired here —
+ * Phase 1 ships no service routes, so no such events exist yet. It wires in
+ * when service routes ship (mirror the three columns below for the 4th event).
+ */
+const LAND_W = {
+  parcelPurchased: LAND_EVENT_WEIGHTS[LAND_EVENT_TYPES.PARCEL_PURCHASED],
+  structurePlaced: LAND_EVENT_WEIGHTS[LAND_EVENT_TYPES.STRUCTURE_PLACED],
+  structureUpgraded: LAND_EVENT_WEIGHTS[LAND_EVENT_TYPES.STRUCTURE_UPGRADED],
+} as const;
+
+const LAND_C = {
+  parcelPurchased: LAND_EVENT_DAILY_CAPS[LAND_EVENT_TYPES.PARCEL_PURCHASED],
+  structurePlaced: LAND_EVENT_DAILY_CAPS[LAND_EVENT_TYPES.STRUCTURE_PLACED],
+  structureUpgraded: LAND_EVENT_DAILY_CAPS[LAND_EVENT_TYPES.STRUCTURE_UPGRADED],
 } as const;
 
 const AGENT_CACHE_TTL_MS = 60_000;
@@ -537,6 +578,9 @@ export async function buildAgentSnapshot(
     activity_silver: number;
     activity_bronze: number;
     activity_other: number;
+    land_parcels: number;
+    land_structures_placed: number;
+    land_structures_upgraded: number;
     score: number;
   }>(sql`
     WITH
@@ -600,7 +644,14 @@ export async function buildAgentSnapshot(
           WHERE event_type = 'activity.match.placed'
             AND payload->>'placement' IS NOT NULL
             AND coalesce(payload->>'subjectType','') <> 'bot'
-        )::int AS act_total
+        )::int AS act_total,
+        -- Land economy (Phase 1) — simple per-day capped counts, identical shape
+        -- to building.visited above. parcel.purchased scores free starter +
+        -- priced buy equally (a parcel acquired); PHASE: land.service.sold weight
+        -- 40 wires here as a 4th column when service routes ship.
+        LEAST(COUNT(*) FILTER (WHERE event_type = 'land.parcel.purchased'), ${LAND_C.parcelPurchased})::int AS land_parcels_c,
+        LEAST(COUNT(*) FILTER (WHERE event_type = 'land.structure.placed'), ${LAND_C.structurePlaced})::int AS land_struct_placed_c,
+        LEAST(COUNT(*) FILTER (WHERE event_type = 'land.structure.upgraded'), ${LAND_C.structureUpgraded})::int AS land_struct_upgraded_c
       FROM events
       WHERE agent_id IS NOT NULL
         AND ts > now() - ${sql.raw(`interval '${interval}'`)}
@@ -649,7 +700,12 @@ export async function buildAgentSnapshot(
           WHERE event_type = 'activity.match.placed'
             AND payload->>'placement' IS NOT NULL
             AND coalesce(payload->>'subjectType','') <> 'bot'
-        )::int AS act_total
+        )::int AS act_total,
+        -- Land economy (Phase 1) — same per-day capped counts as agent_daily.
+        -- KEEP IN LOCKSTEP with agent_daily (same three events, same caps).
+        LEAST(COUNT(*) FILTER (WHERE event_type = 'land.parcel.purchased'), ${LAND_C.parcelPurchased})::int AS land_parcels_c,
+        LEAST(COUNT(*) FILTER (WHERE event_type = 'land.structure.placed'), ${LAND_C.structurePlaced})::int AS land_struct_placed_c,
+        LEAST(COUNT(*) FILTER (WHERE event_type = 'land.structure.upgraded'), ${LAND_C.structureUpgraded})::int AS land_struct_upgraded_c
       FROM events
       WHERE agent_id IS NULL
         AND avatar_id IS NOT NULL
@@ -674,6 +730,9 @@ export async function buildAgentSnapshot(
         SUM(ad.act_silver)::int AS activity_silver,
         SUM(ad.act_bronze)::int AS activity_bronze,
         SUM(ad.act_other)::int AS activity_other,
+        SUM(ad.land_parcels_c)::int AS land_parcels,
+        SUM(ad.land_struct_placed_c)::int AS land_structures_placed,
+        SUM(ad.land_struct_upgraded_c)::int AS land_structures_upgraded,
         (
           SUM(ad.visits_c) * ${W.buildingVisit}
           + SUM(ad.chats_c) * ${W.teacherChat}
@@ -681,6 +740,9 @@ export async function buildAgentSnapshot(
           + SUM(ad.skills_c) * ${W.skillFetch}
           + SUM(ad.sessions_c) * ${W.session}
           + MAX(ad.onboarded) * ${W.identityIssued}
+          + SUM(ad.land_parcels_c) * ${LAND_W.parcelPurchased}
+          + SUM(ad.land_struct_placed_c) * ${LAND_W.structurePlaced}
+          + SUM(ad.land_struct_upgraded_c) * ${LAND_W.structureUpgraded}
           + ROUND(SUM(
               CASE WHEN ad.act_total = 0 THEN 0
                    ELSE (ad.act_wins * ${A[1]} + ad.act_silver * ${A[2]} + ad.act_bronze * ${A[3]} + ad.act_other * ${A.default})
@@ -705,6 +767,9 @@ export async function buildAgentSnapshot(
         SUM(pd.act_silver)::int AS activity_silver,
         SUM(pd.act_bronze)::int AS activity_bronze,
         SUM(pd.act_other)::int AS activity_other,
+        SUM(pd.land_parcels_c)::int AS land_parcels,
+        SUM(pd.land_struct_placed_c)::int AS land_structures_placed,
+        SUM(pd.land_struct_upgraded_c)::int AS land_structures_upgraded,
         (
           SUM(pd.visits_c) * ${W.buildingVisit}
           + SUM(pd.chats_c) * ${W.teacherChat}
@@ -712,6 +777,9 @@ export async function buildAgentSnapshot(
           + SUM(pd.skills_c) * ${W.skillFetch}
           + SUM(pd.sessions_c) * ${W.session}
           + MAX(pd.onboarded) * ${W.identityIssued}
+          + SUM(pd.land_parcels_c) * ${LAND_W.parcelPurchased}
+          + SUM(pd.land_struct_placed_c) * ${LAND_W.structurePlaced}
+          + SUM(pd.land_struct_upgraded_c) * ${LAND_W.structureUpgraded}
           + ROUND(SUM(
               CASE WHEN pd.act_total = 0 THEN 0
                    ELSE (pd.act_wins * ${A[1]} + pd.act_silver * ${A[2]} + pd.act_bronze * ${A[3]} + pd.act_other * ${A.default})
@@ -844,6 +912,9 @@ export async function buildAgentSnapshot(
         activity_silver: Number(r.activity_silver) || 0,
         activity_bronze: Number(r.activity_bronze) || 0,
         activity_other: Number(r.activity_other) || 0,
+        land_parcels: Number(r.land_parcels) || 0,
+        land_structures_placed: Number(r.land_structures_placed) || 0,
+        land_structures_upgraded: Number(r.land_structures_upgraded) || 0,
       },
       subjectType: r.subject_type,
     };
