@@ -58,12 +58,34 @@ const SPLASH_RINGS = [
   { delay: '0.26s', size: 90 },
 ] as const;
 
-// Perf round-3 change D: reduced from 15_000 to 8_000. With faster texture
-// upload (change B) and higher VRM concurrency (change C), the expected warm
-// load is ~5-7s on a real Iris Xe machine. 8s gives a comfortable margin
-// before "taking longer than expected" fires.
-const SLOW_MS = 8_000;
-const TIMEOUT_MS = 30_000;
+// Adaptive slow-hint threshold (S1, 2026-06-16). Perf round-3 "Change D" hard-coded
+// SLOW_MS=8_000 on the assumption that changes B+C would bring the warm load to
+// ~5-7s. The real baseline is ~10s warm / ~22s cold to ready (docs/perf-round3/
+// baseline-2026-06-15.md), so 8s fired on EVERY cold refresh — noise, not an
+// outlier signal. We now self-calibrate to THIS machine: record mount→__W3D_READY
+// on each successful load in localStorage and only warn when the current load runs
+// 1.8× past the machine's own recent norm (a genuine outlier), with a generous
+// floor + a first-load default. No magic fixed constant guessed against unknown
+// real-GPU timings.
+const LOAD_TIME_KEY = 'cv_last_load_ms';
+const SLOW_FLOOR_MS = 12_000;    // never warn before 12s regardless of history
+const SLOW_DEFAULT_MS = 22_000;  // first-ever load (no history): cold-load ballpark
+const SLOW_MULTIPLIER = 1.8;     // warn at 1.8× the machine's last successful load
+const TIMEOUT_MS = 45_000;       // force-dismiss ceiling (was 30s — too low for cold Iris Xe)
+
+function computeSlowThresholdMs(): number {
+  if (typeof window === 'undefined') return SLOW_DEFAULT_MS;
+  try {
+    const raw = window.localStorage.getItem(LOAD_TIME_KEY);
+    const last = raw ? parseFloat(raw) : NaN;
+    if (Number.isFinite(last) && last > 0) {
+      return Math.max(SLOW_FLOOR_MS, Math.round(last * SLOW_MULTIPLIER));
+    }
+  } catch {
+    /* localStorage blocked (private mode / disabled) — fall through to default */
+  }
+  return SLOW_DEFAULT_MS;
+}
 
 export default function SeaLoadingScreen({ forceReady }: Props) {
   const [visible, setVisible]       = useState(true);
@@ -71,17 +93,24 @@ export default function SeaLoadingScreen({ forceReady }: Props) {
   const [slow, setSlow]             = useState(false);
   /**
    * Progress in [0, 1]. Composite signal so the bar tracks the user's
-   * actual wait, not just network downloads. Rewritten 2026-05-31 after
-   * the previous bar (driven only by `__W3D_PROGRESS`) reached 99% the
-   * moment asset downloads finished and then stalled for the entire
-   * GPU texture-upload window — typically 2-3× the download time on
-   * Iris Xe. Phases:
-   *   0    – 0.60   `__W3D_PROGRESS` (network download via
-   *                  THREE.DefaultLoadingManager — fast, often cached)
-   *   0.60 – 0.92   `__W3D_TEXTURE_UPLOAD_DONE / __W3D_TEXTURE_UPLOAD_TOTAL`
+   * actual wait, not just network downloads. Rewritten 2026-05-31, bands
+   * rebalanced 2026-06-16 (S1). `__W3D_PROGRESS` is `loaded/total` from
+   * THREE.DefaultLoadingManager, which ONLY tracks GLBs (VRMs use raw
+   * fetch — invisible to it). When the GLB batch drains, loaded/total
+   * spikes to ~1.0 and the old 0.60 download band credited instantly via
+   * the ratchet → the bar snapped to 60% while VRM-parse + the dominant
+   * 10-17s texture-upload + compile still lay ahead. Fix: shrink the
+   * download band, give the incrementally-tracked upload phase the biggest
+   * slice, and time-ease the download band so a total-drain spike can't
+   * snap it to the ceiling. Phases:
+   *   0    – 0.30   `__W3D_PROGRESS` (GLB download via
+   *                  THREE.DefaultLoadingManager — fast, often cached),
+   *                  capped by a time-ease so it climbs from 0 instead of
+   *                  jumping when the LoadingManager total drains.
+   *   0.30 – 0.85   `__W3D_TEXTURE_UPLOAD_DONE / __W3D_TEXTURE_UPLOAD_TOTAL`
    *                  (GPU texture upload via StaggeredTextureUpload —
-   *                   slow on Iris Xe)
-   *   0.92 – 0.99   `__W3D_CANVAS_READY` (first frame compile + paint;
+   *                   slow on Iris Xe; the band the user spends most time in)
+   *   0.85 – 0.97   `__W3D_CANVAS_READY` (first frame compile + paint;
    *                  pipeline compile hitch lives here)
    *   1.00          `__W3D_READY` (canvas + textures both done — bar
    *                  snaps + fade)
@@ -91,9 +120,11 @@ export default function SeaLoadingScreen({ forceReady }: Props) {
   /**
    * Current phase shown under the bar. Communicates WHY the user is
    * waiting at each step — "Downloading assets…" vs "Uploading to GPU…"
-   * — instead of a single misleading percentage.
+   * — instead of a single misleading percentage. `preparing` covers the
+   * gap after GLBs finish but before the GPU texture-upload counter starts
+   * ticking (VRM parse + scene assembly + compileAsync kick).
    */
-  const [phase, setPhase] = useState<'downloading' | 'uploading' | 'compiling' | 'ready'>('downloading');
+  const [phase, setPhase] = useState<'downloading' | 'preparing' | 'uploading' | 'compiling' | 'ready'>('downloading');
   const rafRef     = useRef<number | null>(null);
   const mountedRef = useRef(true);
   const startedAtRef = useRef<number>(0);
@@ -135,10 +166,12 @@ export default function SeaLoadingScreen({ forceReady }: Props) {
       bridge.__W3D_TEXTURE_UPLOAD_DONE = 0;
     }
 
-    // Show "taking longer" hint after 15s
+    // Show "taking longer" hint only when this load runs past the machine's
+    // self-calibrated outlier threshold (see computeSlowThresholdMs).
+    const slowMs = computeSlowThresholdMs();
     const slowTimer = setTimeout(() => {
       if (mountedRef.current) setSlow(true);
-    }, SLOW_MS);
+    }, slowMs);
 
     // Force-dismiss after 30s so user isn't stuck forever
     const forceTimer = setTimeout(() => {
@@ -159,9 +192,16 @@ export default function SeaLoadingScreen({ forceReady }: Props) {
     // then sat there for the full StaggeredTextureUpload window. New
     // bar: maps each phase to a band and shows a phase label so the
     // user can SEE which step is running.
-    const DOWNLOAD_BAND_END = 0.60;
-    const UPLOAD_BAND_END = 0.92;
-    const COMPILE_BAND_END = 0.99;
+    const DOWNLOAD_BAND_END = 0.30;
+    const UPLOAD_BAND_END = 0.85;
+    const COMPILE_BAND_END = 0.97;
+    // Time-ease for the download band: the GLB-only LoadingManager ratio spikes
+    // to ~1.0 the instant the registered GLB batch drains, which would snap the
+    // bar to the band ceiling. Capping the displayed download fill by an
+    // elapsed-time ramp makes it climb from 0 over ~DOWNLOAD_EASE_MS instead.
+    // Real progress still wins: when downloadFrac is the slower of the two,
+    // it's the limiter, so a genuinely slow download is shown honestly.
+    const DOWNLOAD_EASE_MS = 4_000;
     let highWaterMark = 0;
     function tick() {
       if (!mountedRef.current) return;
@@ -169,6 +209,20 @@ export default function SeaLoadingScreen({ forceReady }: Props) {
       // blue-flash fix from 2026-05-26).
       const ready = forceReady || !!(window as any).__W3D_READY;
       if (ready) {
+        // Record this machine's real mount→ready time so the slow-hint
+        // threshold self-calibrates on the next load. Only on a genuine
+        // __W3D_READY (not the forceReady test override, not the force-dismiss
+        // timeout) so a failure/timeout never poisons the baseline upward.
+        if (!forceReady && typeof window !== 'undefined') {
+          try {
+            const dur = performance.now() - startedAtRef.current;
+            if (dur > 0 && dur < TIMEOUT_MS) {
+              window.localStorage.setItem(LOAD_TIME_KEY, String(Math.round(dur)));
+            }
+          } catch {
+            /* localStorage blocked — skip recording */
+          }
+        }
         readyRef.current = true;
         setPhase('ready');
         setProgress(1);
@@ -189,6 +243,12 @@ export default function SeaLoadingScreen({ forceReady }: Props) {
 
       // Phase 1 — asset download (THREE.DefaultLoadingManager loaded/total).
       const downloadFrac = Math.max(0, Math.min(1, bridge.__W3D_PROGRESS ?? 0));
+      const elapsed = performance.now() - startedAtRef.current;
+      const downloadEase = Math.min(1, elapsed / DOWNLOAD_EASE_MS);
+      // Displayed download fill = the slower of real progress vs the time-ease
+      // cap. Caps the LoadingManager spike without ever inflating a genuinely
+      // slow download.
+      const downloadShown = Math.min(downloadFrac, downloadEase);
 
       // Phase 2 — GPU texture upload (StaggeredTextureUpload counter).
       // Only counts once asset downloads are essentially complete AND
@@ -203,23 +263,25 @@ export default function SeaLoadingScreen({ forceReady }: Props) {
       const canvasReady = !!bridge.__W3D_CANVAS_READY;
       const texturesReady = !!bridge.__W3D_TEXTURES_READY;
 
-      // Determine the current phase + composite value. Each phase fills
-      // its allocated band; the next phase carries over from there.
-      let composite = downloadFrac * DOWNLOAD_BAND_END;
-      let currentPhase: typeof phase = 'downloading';
-
-      if (downloadFrac >= 0.999 || uploadTotal > 0) {
-        // Downloads done — credit the full band and start tracking upload.
+      // Determine the current phase + composite value. Each real signal owns a
+      // band; we pick the furthest-along signal present. Ordered latest→earliest.
+      let composite: number;
+      let currentPhase: typeof phase;
+      if (texturesReady) {
+        // GPU uploads done — sit at COMPILE_BAND_END once the canvas first frame
+        // paints, else hold at the top of the upload band.
+        composite = canvasReady ? COMPILE_BAND_END : UPLOAD_BAND_END;
+        currentPhase = 'compiling';
+      } else if (uploadTotal > 0) {
+        // Real GPU-upload signal — fill the (dominant) upload band incrementally.
         composite = DOWNLOAD_BAND_END + uploadFrac * (UPLOAD_BAND_END - DOWNLOAD_BAND_END);
         currentPhase = 'uploading';
-      }
-
-      if (texturesReady) {
-        // GPU uploads done — credit the full upload band. The bar now
-        // sits at COMPILE_BAND_END waiting for the canvas-first-frame
-        // signal (pipeline compile + paint).
-        composite = canvasReady ? COMPILE_BAND_END : UPLOAD_BAND_END;
-        currentPhase = canvasReady ? 'compiling' : 'compiling';
+      } else {
+        // Still downloading, OR GLBs drained but the GPU-upload counter hasn't
+        // started yet. Use the time-eased download fill so a LoadingManager
+        // total-drain spike can't snap the bar to the band ceiling.
+        composite = downloadShown * DOWNLOAD_BAND_END;
+        currentPhase = downloadFrac >= 0.999 ? 'preparing' : 'downloading';
       }
 
       // Ratchet — never move backward (asset retries / late re-registers
@@ -612,6 +674,7 @@ export default function SeaLoadingScreen({ forceReady }: Props) {
             {Math.round(progress * 100)}%
             <div style={{ fontSize: '9px', opacity: 0.7, marginTop: 2 }}>
               {phase === 'downloading' && 'Downloading assets…'}
+              {phase === 'preparing' && 'Preparing scene…'}
               {phase === 'uploading' && 'Uploading to GPU…'}
               {phase === 'compiling' && 'Compiling shaders…'}
               {phase === 'ready' && 'Ready'}
