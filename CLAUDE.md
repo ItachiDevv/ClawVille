@@ -103,7 +103,7 @@ Complex AI integrations: multi-phase plan in `.claude/plans/` + research deep-di
 |---|---|
 | **`GameFeatures.md`** | Gameplay: modes, agent connect, marketplace, economy, quests, daily login, avatar system, tutorial, UI, control toggle, NPC sim, talk-to-character, Phase 5/6, landing |
 | **`3dStructure.md`** | Visual/3D: world dimensions, building ring, NPC scales/positions, town center, decorations, seaweed, terrain, camera, lighting, fog, atmosphere, perf, GPU constraints |
-| **`ARCHITECTURE.md`** | Tech: route modules, DB tables, service catalog, data flow, frontend/backend, Hetzner+Coolify deploy, agent identity, Gemini LLM, Phase 5/6 plumbing |
+| **`ARCHITECTURE.md`** | Tech: route modules, DB tables, service catalog, data flow, frontend/backend, Hetzner+Coolify deploy, agent identity, OpenAI LLM, Phase 5/6 plumbing |
 
 **Standing rule:** abide by these unless user says otherwise. Code vs doc → **live code wins**, update doc same turn.
 
@@ -239,7 +239,7 @@ Any new game flow, world addition, or edit to a current mechanic (modes, buildin
 - Contains: auth handshake, WebSocket protocol, event/action schemas, current table rules, disconnect/timer behavior, advisor-mode contract, content-hash version.
 - **CRITICAL:** fetched fresh on every connect with version tracking. Stale manual = connected agent playing a different game than hosted agents = playing field broken.
 - **Distinct from** existing per-building `/api/agent/:sid/skills/:bid/skill.md` endpoints — those serve in-world earned teacher knowledge, NOT the protocol manual.
-- **Infra gap:** the global connection SKILL.md endpoint + content-hash manifest does NOT exist today. Until shipped, content updates are required (rule binds), but eager-on-connect enforcement is TODO/best-effort.
+- **Endpoint EXISTS (corrected 2026-06-16):** the global connection SKILL.md endpoint + content-hash manifest ARE live in `apps/api/src/routes/skills.ts` (built by `skill-protocol.ts buildProtocolManual`) — `GET /api/skills/protocol/skill.md` serves the stable, token-free protocol manual carrying `PROTOCOL_VERSION` (currently **6**), and `GET /api/skills/manifest.json` is the single poll target exposing live per-skill content hashes (`contentHashOf`) so a connected agent can detect drift and re-pull. Both are partner-key gated (`requirePartnerKey('skills:read')` + 60/min). **Still TODO/best-effort:** EAGER-on-connect enforcement is pull-based — agents poll the manifest, there is no server push — and the hosted-agent runtime injection of #2 (surface #3 below, the `createMemory()` `subtype:'protocol-knowledge'` path) is not yet wired. Content updates are still required same-diff (rule binds).
 
 **3. Hosted-agent runtime knowledge of #2** — server-side equivalent for hosted Milady/Hermes runtimes on our boxes.
 - Same content as #2, different delivery: `createMemory()` injection via extension of `ensureSystemAgents()` (or sibling) into each hosted agent's ElizaOS runtime on restart. Metadata namespace `subtype: 'protocol-knowledge'` (distinct from `subtype: 'world-knowledge'`). After write, `agentOrchestrator.stopAgent()` so next chat reload picks up the new manual.
@@ -270,7 +270,7 @@ bun run build            # Build all
 Required in `.env.local`:
 
 - `DATABASE_URL` — Supabase pooler Postgres.
-- `GEMINI_API_KEY`: **now fully UNUSED** (2026-06-05). Both text generation and embeddings moved to OpenAI. Text first (Gemini billing dunning-blocked / 403), then embeddings: `openai-embedding-provider` (`text-embedding-3-small`, 1536-dim `TEXT_EMBEDDING`, priority 100) replaced `gemini-embedding-provider`. The embeddings table was EMPTY (0 rows) so no re-embed migration was needed. `GEMINI_API_KEY` is retained only for legacy / easy-revert; nothing in the runtime reads it. Anthropic removed 2026-04-10.
+- `GEMINI_API_KEY`: **REMOVED from the runtime entirely** (2026-06-16; the 2026-06-05 "fully UNUSED but retained for easy-revert" state is superseded — the dead reads + provider files are now scrubbed). No code reads it. Both text generation and embeddings run on OpenAI: text via `openai-text-provider` (`gpt-4o-mini` / `gpt-4o`, priority 95) and embeddings via `openai-embedding-provider` (`text-embedding-3-small`, 1536-dim `TEXT_EMBEDDING`, priority 100). The embeddings table was EMPTY (0 rows) at the swap, so no re-embed migration was ever needed. Do NOT set `GEMINI_API_KEY` on any box — it is a no-op. Anthropic removed 2026-04-10.
 - `OPENAI_API_KEY`: backs **BOTH** text generation (`openai-text-provider`, priority 95) **AND** embeddings (`openai-embedding-provider`, priority 100) since 2026-06-05. Required for every non-OpenClaw runtime.
 - **Embedding model + dimension are PINNED in code, NOT env-overridable** (2026-06-05). `openai-embedding-provider.ts` and `embed-text.ts` hard-code `text-embedding-3-small` / 1536-dim as literal constants in the request body AND the boot dimension-probe, so stored vectors and query vectors can never diverge and pgvector always uses the `dim_1536` column. `OPENAI_EMBEDDING_MODEL` / `OPENAI_EMBEDDING_DIMENSIONS` are no longer read. Changing the dimension routes embeddings to a different column and requires a re-embed migration, so it is a deliberate code edit, not an env tweak.
 - `VANITY_ENCRYPTION_KEY` — 64-char hex. AES-256-GCM master key for `treasury_wallets` + `vanity_keypairs`. Must match on every decrypting machine.
@@ -292,7 +292,7 @@ Required in `.env.local`:
 - `CLAWVILLE_ENV` — explicit immutable deploy-environment signal (`'staging'` | `'production'` | unset). Set per-box in Coolify. The ONLY thing that unlocks the staging-only `ALLOW_TEST_PARTNER_PUBKEY` mock-Hatcher signer: `apps/api/src/services/partner-signature.ts` accepts the test key ONLY when `CLAWVILLE_ENV==='staging'` and THROWS AT MODULE LOAD (crash-loud, like `FINGERPRINT_SECRET`) if `ALLOW_TEST_PARTNER_PUBKEY` is set while `CLAWVILLE_ENV!=='staging'`, so a prod box carrying the test signer refuses to boot. `NODE_ENV` can't be the discriminator (it is `'production'` on BOTH Coolify boxes). **Staging box (app 3) MUST have `CLAWVILLE_ENV=staging` set alongside `ALLOW_TEST_PARTNER_PUBKEY` or staging boot fails.** Set 2026-06-12 (Codex review #1). See `ARCHITECTURE.md §13` (2026-06-12 Codex-fixes entry).
 - `ALLOW_TEST_PARTNER_PUBKEY` — STAGING-ONLY base58 ed25519 pubkey; additive mock-Hatcher test signer for the `hatcher` partner only. Gated by `CLAWVILLE_ENV==='staging'` (above); MUST NEVER be set on prod (the module-load throw enforces it). See `ARCHITECTURE.md §13`.
 
-- `OPENAI_API_KEY`: **PRIMARY text-generation backend** (`openai-text-provider` priority 95 for `TEXT_SMALL`/`TEXT_LARGE`; `npc-conversation-engine.ts`; chat-transient). Swapped in from Gemini 2026-06-05 (Gemini text billing dunning-blocked / 403). Models via `OPENAI_SMALL_MODEL` (default `gpt-4o-mini`) / `OPENAI_LARGE_MODEL` (default `gpt-4o`).
+- `OPENAI_API_KEY`: **SOLE text-generation backend** (`openai-text-provider` priority 95 for `TEXT_SMALL`/`TEXT_LARGE`; `npc-conversation-engine.ts`; chat-transient). There is no fallback provider — Gemini text was decommissioned (billing dunning-blocked / 403) and the provider is removed. Models via `OPENAI_SMALL_MODEL` (default `gpt-4o-mini`) / `OPENAI_LARGE_MODEL` (default `gpt-4o`).
 
 **Removed:** `ANTHROPIC_API_KEY` (ultrathink decommission).
 
@@ -319,7 +319,7 @@ Both Traefik + Let's Encrypt, Cloudflare-proxied DNS, **separate Supabase Postgr
 
 ### Provisioning + emergency
 
-Scripts in `scripts/deploy/`: `provision-hetzner.sh`, `setup-cloudflare-dns.sh`, `bootstrap-server.sh`, `add-zone-to-cloudflare.sh`. `.env.deploy` gitignored.
+Scripts actually in `scripts/deploy/` (verified 2026-06-16): `clawville-deploy.sh` (prod redeploy wrapper — api+web tinker), `clawville-staging-deploy.sh` (staging redeploy wrapper), `apply-rename-migration.sh`. The day-to-day deploy path is `bash scripts/deploy/clawville-deploy.sh` (see "Deploy paths" above). **NOTE:** the one-time provisioning scripts (`provision-hetzner.sh`, `setup-cloudflare-dns.sh`, `bootstrap-server.sh`, `add-zone-to-cloudflare.sh`) and `.env.deploy` are NOT in the repo — both Hetzner boxes are already provisioned, so those bootstrap scripts are not needed for normal operation. The historical bootstrap walkthrough in `docs/DEPLOY-HETZNER.md` documents what they did.
 
 Emergency SSH: PROD `ssh root@$PROD_VPS_IP` (key in ssh-agent), STAGING `ssh -i ~/.ssh/clawville_deploy root@$STAGING_VPS_IP`. Container restart `docker restart <name>` · logs `docker logs --tail 200 <name>` · Coolify DB `docker exec coolify-db psql -U coolify -d coolify -c "<sql>"` (NOT the ClawVille app DB — that's Supabase) · full playbook `docs/DEPLOY-HETZNER.md`.
 
