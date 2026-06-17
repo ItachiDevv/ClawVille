@@ -1,7 +1,7 @@
 /**
  * land.ts — Zustand store for land parcel ownership state.
  *
- * Phase 1 / Slice A: placeholder store. All 176 parcels default to 'available'.
+ * Phase 1 / Slice A: placeholder store. All 180 parcels default to 'available'.
  * The gameplay turn (GET /api/land/owned) will hydrate this with real ownership.
  * The render reads this store so the wiring exists end-to-end from day 1.
  *

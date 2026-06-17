@@ -94,7 +94,7 @@ export * from './constants/world-dimensions';
 // Land Economy Phase 0 (2026-06-15) — frozen tier contract (enum, supply counts, parcel-code
 // format). The geometry (`land-parcels`) + economic (`land-economy`) constants both import it.
 export * from './constants/land-tiers';
-// Land Economy Phase 0 (2026-06-15) — deterministic parcel geometry (176 parcels, concentric rings).
+// Land Economy Phase 0 (2026-06-15) — deterministic parcel geometry (180 parcels (8/8/16/40/108), SQUARE concentric block-frames).
 // Consumed by merged-seaweed.tsx (exclusion zones) and future 3D parcel-render pass.
 export * from './constants/land-parcels';
 // Land Economy Phase 0 (2026-06-15) — economic constants (tier ladder, upgrade costs, structure
