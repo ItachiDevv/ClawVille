@@ -2,7 +2,21 @@ import type {
   AgentCategory,
   AgentHarness,
   HatcherLaunchExchangeResponse,
+  LandTier,
 } from '@clawville/shared';
+import type {
+  LandParcelDTO,
+  LandParcelStatus,
+  LandCatalogTierResponse,
+  LandCatalogAllResponse,
+  OwnedLandResponse,
+  MyLandResponse,
+  ClaimStarterResponse,
+  BuyParcelResponse,
+  PlaceStructureResponse,
+  UpgradeStructureResponse,
+  ParcelStructureResponse,
+} from '@/components/game/land/types';
 import { getFingerprint } from './fingerprint';
 
 // request() targets the Hono API exactly like honoRequest() — its paths
@@ -1104,4 +1118,82 @@ export const api = {
 
   getPublicConfigs: () =>
     honoRequest<{ configs: any[] }>('/api/agent-setup/configs/public'),
+
+  // ── Land Economy (Phase 1) ─────────────────────────────────────────────
+  // FROZEN contract — apps/api/src/routes/land.ts. honoRequest throws
+  // ApiError{status,code}; callers branch on err.code (never the message).
+
+  /** Browse parcels. Public; default status filter is 'available' server-side. */
+  getLandParcels: (filters?: { tier?: LandTier; status?: LandParcelStatus }) => {
+    const qs = new URLSearchParams();
+    if (filters?.tier) qs.set('tier', filters.tier);
+    if (filters?.status) qs.set('status', filters.status);
+    const q = qs.toString();
+    return honoRequest<LandParcelDTO[]>(`/api/land/parcels${q ? `?${q}` : ''}`);
+  },
+
+  /**
+   * Catalog. With a tier → single-tier shape; without → all-tiers shape.
+   * Two overloads so callers get the narrowed return type without a runtime
+   * `'tier' in res` check.
+   */
+  getLandCatalog: ((tier?: LandTier) =>
+    tier
+      ? honoRequest<LandCatalogTierResponse>(
+          `/api/land/catalog?tier=${encodeURIComponent(tier)}`,
+        )
+      : honoRequest<LandCatalogAllResponse>('/api/land/catalog')) as {
+    (tier: LandTier): Promise<LandCatalogTierResponse>;
+    (): Promise<LandCatalogAllResponse>;
+  },
+
+  /** Claim the free starter home (auth). Idempotent — `alreadyOwned` on repeat. */
+  claimStarterPlot: () =>
+    honoRequest<ClaimStarterResponse>('/api/land/claim-starter', {
+      method: 'POST',
+    }),
+
+  /** Buy a priced parcel with CT (auth). */
+  buyParcel: (parcelId: string) =>
+    honoRequest<BuyParcelResponse>(
+      `/api/land/parcels/${encodeURIComponent(parcelId)}/buy`,
+      { method: 'POST' },
+    ),
+
+  /** The signed-in player's owned parcels + structures (auth). */
+  getMyLand: () => honoRequest<MyLandResponse>('/api/land/me'),
+
+  /** Place a free Lv1 structure on an owned parcel (auth). */
+  placeStructure: (
+    parcelId: string,
+    body: { structureType: 'home' | 'shop'; catalogKey: string },
+  ) =>
+    honoRequest<PlaceStructureResponse>(
+      `/api/land/parcels/${encodeURIComponent(parcelId)}/structure`,
+      { method: 'POST', body: JSON.stringify(body) },
+    ),
+
+  /**
+   * Upgrade a structure to the next level (auth). The backend REQUIRES an
+   * idempotencyKey (Codex money-safety fix — keyless replay double-charges),
+   * so callers MUST pass a fresh UUID per upgrade click. Defaulted here so a
+   * missing key can never silently become a keyless (rejected) request.
+   */
+  upgradeStructure: (structureId: string, idempotencyKey: string) =>
+    honoRequest<UpgradeStructureResponse>(
+      `/api/land/structures/${encodeURIComponent(structureId)}/upgrade`,
+      { method: 'POST', body: JSON.stringify({ idempotencyKey }) },
+    ),
+
+  /** Get the structure on a parcel (or null). Public. */
+  getParcelStructure: (parcelId: string) =>
+    honoRequest<ParcelStructureResponse>(
+      `/api/land/parcels/${encodeURIComponent(parcelId)}/structure`,
+    ),
+
+  /** Public ownership lookup for an avatar — used to hydrate the 3D overlay. */
+  getOwnedLand: (avatarId: string) =>
+    honoRequest<OwnedLandResponse>(
+      `/api/land/owned/${encodeURIComponent(avatarId)}`,
+    ),
 };
