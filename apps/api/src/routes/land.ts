@@ -106,21 +106,34 @@
  *      409 → { error: 'structure_exists' }      (one structure per parcel, UNIQUE)
  *
  * 9. POST /api/land/structures/:structureId/upgrade  (AUTH, PARITY-BOUND, priced)
- *      body: { idempotencyKey?: string (1..64) }  (.strict())
+ *      body: { idempotencyKey: string (1..64) }  (.strict(), REQUIRED)
+ *            REQUIRED (Codex BLOCK HIGH): a keyless retry would be charged AGAIN
+ *            as a fresh Lv+1 upgrade — a paid double-charge. The client MUST send
+ *            the same key to make a retry a no-op replay. (Frontend already does.)
  *      200 → { structure: LandStructureDTO, costCt: number, idempotencyReplay?: true }
  *            costCt = SERVER-derived STRUCTURE_UPGRADE_COSTS[target]; target=level+1.
  *            idempotencyReplay=true → a prior upgrade with the same key was served
  *            (no new debit, structure already at to_level).
- *      400 → { error: 'invalid_body' | 'invalid_structure_id' | 'insufficient_clawtokens' }
+ *      400 → { error: 'invalid_body' | 'idempotency_key_required' |
+ *                       'invalid_structure_id' | 'insufficient_clawtokens' }
+ *            invalid_body = unparseable JSON OR a stray/wrong-typed field;
+ *            idempotency_key_required = the body parsed but the key was absent/empty
+ *              (rejected BEFORE any advisory lock / debit / mutation).
  *      401/403 as above   ·   403 → { error: 'not_structure_owner' }
  *      404 → { error: 'structure_not_found' }
- *      409 → { error: 'tier_max_level' | 'max_level_reached' | 'idempotency_key_conflict' }
+ *      409 → { error: 'tier_max_level' | 'max_level_reached' |
+ *                       'idempotency_key_conflict' | 'ownership_desync' }
  *            tier_max_level = the TIER GATE (target > getTierMaxLevel(parcel.tier));
  *            max_level_reached = target > MAX_STRUCTURE_LEVEL (global Lv5 ceiling);
  *            idempotency_key_conflict = the idempotencyKey was already spent on a
  *              DIFFERENT structure (the index is global on idempotency_key) — reuse
  *              a fresh key per upgrade. Ownership is asserted BEFORE any replay, so
- *              a key cannot be used to read/replay another avatar's structure.
+ *              a key cannot be used to read/replay another avatar's structure;
+ *            ownership_desync = the structure's denorm owner disagrees with the
+ *              AUTHORITATIVE land_parcels.owner_avatar_id (data drift) — the money
+ *              op is refused rather than charged against a stale denorm. Ownership
+ *              is checked against the LOCKED parcel row (FOR UPDATE OF s, p), never
+ *              the denorm alone.
  * ─────────────────────────────────────────────────────────────────────────────
  *
  * PHASE3: expose buy / structure / upgrade via the agent tools.json surface +
@@ -225,11 +238,16 @@ const placeStructureBodySchema = z
   })
   .strict();
 
-// upgrade: the only client input is an OPTIONAL idempotency key. The target
-// level + cost are server-derived (current level + 1 → STRUCTURE_UPGRADE_COSTS).
+// upgrade: the only client input is a REQUIRED idempotency key (Codex BLOCK
+// HIGH — keyless-replay double-charge). A retry MUST carry the same key or the
+// server would treat the 2nd call as a fresh Lv+1 upgrade and debit AGAIN. The
+// target level + cost are still server-derived (current level + 1 →
+// STRUCTURE_UPGRADE_COSTS) — never client-trusted. The frontend already sends
+// `upgradeStructure(structureId, idempotencyKey)`, so requiring it is
+// contract-compatible.
 const upgradeBodySchema = z
   .object({
-    idempotencyKey: z.string().min(1).max(64).optional(),
+    idempotencyKey: z.string().min(1).max(64),
   })
   .strict();
 
@@ -1092,12 +1110,32 @@ landRoutes.post('/structures/:structureId/upgrade', requireAuthOrAgentSession, a
   }
   const structureId = idParsed.data;
 
-  const rawBody = await c.req.json().catch(() => ({}));
-  const bodyParsed = upgradeBodySchema.safeParse(rawBody);
-  if (!bodyParsed.success) {
+  // Parse the body EXPLICITLY (Codex BLOCK HIGH — keyless-replay double-charge).
+  // A malformed / missing JSON body must return `invalid_body` and can NEVER
+  // silently become a keyless upgrade: we use a sentinel rather than
+  // `.catch(() => ({}))` so an unparseable body is a hard 400, not an empty
+  // object that slips toward a debit. The schema then REQUIRES idempotencyKey,
+  // so an absent/empty key is `idempotency_key_required` — both rejected BEFORE
+  // the advisory lock / FOR UPDATE / debit / mutation below.
+  const PARSE_FAILED = Symbol('parse_failed');
+  const rawBody: unknown = await c.req.json().catch(() => PARSE_FAILED);
+  if (rawBody === PARSE_FAILED) {
     return c.json({ error: 'invalid_body' }, 400);
   }
-  const idempotencyKey = bodyParsed.data.idempotencyKey ?? null;
+  const bodyParsed = upgradeBodySchema.safeParse(rawBody);
+  if (!bodyParsed.success) {
+    // Distinguish the missing/empty key (the money-safety invariant) from a
+    // stray-field / wrong-type body so a retrying client gets an actionable code.
+    const missingKey = bodyParsed.error.issues.some(
+      (i) => i.path.length === 1 && i.path[0] === 'idempotencyKey',
+    );
+    return c.json(
+      { error: missingKey ? 'idempotency_key_required' : 'invalid_body' },
+      400,
+    );
+  }
+  // REQUIRED + non-empty (schema-enforced) — never null on the debit path.
+  const idempotencyKey = bodyParsed.data.idempotencyKey;
 
   type UpgradeResult =
     | { kind: 'upgraded'; structure: LandStructureDTO; costCt: number; tier: LandTier; fromLevel: number }
@@ -1111,33 +1149,54 @@ landRoutes.post('/structures/:structureId/upgrade', requireAuthOrAgentSession, a
         sql`SELECT pg_advisory_xact_lock(hashtextextended(${avatarId}, 0))`,
       );
 
-      // (1) OWNERSHIP FIRST (audit-1 BLOCKING #1): lock the structure + JOIN the
-      // parcel for its tier, and assert the caller owns it BEFORE any idempotency
-      // replay can return. Doing the replay before this would let avatar B replay
-      // avatar A's upgrade by guessing A's client-supplied key — an ownership
-      // bypass on a money route. Proving ownership up front gates EVERY return.
+      // (1) OWNERSHIP FIRST (audit-1 BLOCKING #1 + Codex BLOCK MED): lock the
+      // structure AND its parent parcel (`FOR UPDATE OF s, p`), and assert the
+      // caller owns it BEFORE any idempotency replay can return. Doing the replay
+      // before this would let avatar B replay avatar A's upgrade by guessing A's
+      // client-supplied key — an ownership bypass on a money route. Proving
+      // ownership up front gates EVERY return.
+      //
+      // Ownership is checked against the AUTHORITATIVE `land_parcels.owner_avatar_id`
+      // (Codex BLOCK MED — never trust the denormalized `land_structures.owner_avatar_id`
+      // alone on a money path). We require BOTH: the parcel is owned by the caller,
+      // AND the structure's denorm owner agrees with the parcel owner. If the two
+      // ever drift (transfer bug / migration gap / direct SQL), a stale structure
+      // owner can NOT pay to upgrade a parcel they no longer hold — the parcel row,
+      // not the denorm, is the source of truth. Locking the parcel too closes the
+      // TOCTOU (a concurrent transfer can't slip between our read and the debit).
+      // The TIER is read from the locked parcel row (it always was).
       const rows = await tx.execute<{
         id: string;
         parcel_id: string;
         owner_avatar_id: string;
+        parcel_owner_avatar_id: string | null;
         structure_type: 'home' | 'shop';
         catalog_key: string;
         level: number | string;
         tier: LandTier;
       }>(
-        sql`SELECT s.id, s.parcel_id, s.owner_avatar_id, s.structure_type,
-                   s.catalog_key, s.level, p.tier
+        sql`SELECT s.id, s.parcel_id, s.owner_avatar_id,
+                   p.owner_avatar_id AS parcel_owner_avatar_id,
+                   s.structure_type, s.catalog_key, s.level, p.tier
             FROM land_structures s
             JOIN land_parcels p ON p.id = s.parcel_id
             WHERE s.id = ${structureId}
-            FOR UPDATE OF s`,
+            FOR UPDATE OF s, p`,
       );
       const s = rows[0];
       if (!s) {
         throw new HTTPException(404, { message: 'structure_not_found' });
       }
-      if (s.owner_avatar_id !== avatarId) {
+      // Authoritative parcel ownership — the caller must own the PARCEL the
+      // structure sits on. (A null parcel owner = unowned/for-sale → not yours.)
+      if (s.parcel_owner_avatar_id !== avatarId) {
         throw new HTTPException(403, { message: 'not_structure_owner' });
+      }
+      // Defense-in-depth: the denorm must agree with the authoritative owner. A
+      // mismatch signals data drift — refuse the money op rather than charge
+      // against a stale denorm.
+      if (s.owner_avatar_id !== s.parcel_owner_avatar_id) {
+        throw new HTTPException(409, { message: 'ownership_desync' });
       }
 
       // (2) IDEMPOTENCY — owner-verified replay, index-aligned (audit-1 BLOCKING
