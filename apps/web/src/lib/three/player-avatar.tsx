@@ -23,7 +23,7 @@ import {
   applyColorTint,
   type CharacterAnimator,
 } from '@/lib/three/character-animations';
-import { jumpState, isEditable } from '@/lib/three/jump-state';
+import { jumpState, isEditable, type ChargeMode } from '@/lib/three/jump-state';
 import { useVRMInstance, disposeVRMInstance, applyFattenedFrustumCulling } from '@/lib/three/vrm-loader';
 import {
   VRMCharacterAnimator,
@@ -299,6 +299,13 @@ function PlayerAvatarVRMInner({ reg }: { reg: ModelRegistryEntry }) {
    */
   const lastSurfaceClipRef = useRef<AnimName>('idle');
 
+  /**
+   * Tracks whether we were in 'charging' last frame — used to detect the
+   * rising edge of charging so chargeMode is set exactly once per charge press
+   * (at the frame charging begins, when isRunning reflects the real speed class).
+   */
+  const wasChargingRef = useRef<boolean>(false);
+
   useEffect(() => {
     if (!vrm) return;
     // animatorId routes per-character Mixamo overrides. Sourced from the
@@ -483,6 +490,39 @@ function PlayerAvatarVRMInner({ reg }: { reg: ModelRegistryEntry }) {
       (keyState.shift || _joyMag > RUN_JOYSTICK_THRESHOLD);
     const speedMult = isRunning ? RUN_SPEED_MULT : 1;
 
+    // Charge-mode discrimination (BUG 2 fix, 2026-06-17).
+    //
+    // On the rising edge of 'charging' (first frame SPACE goes down while grounded),
+    // record whether the avatar was running or walking/idle. This single decision
+    // governs the entire charge duration:
+    //
+    //   'squat' — walking/idle speed class: halt horizontal movement, play squat
+    //             surfaceClip (pelvis lowers, feet stay planted via getSquatGroundLift).
+    //   'run'   — running speed class: keep running, skip squat surfaceClip.
+    //
+    // Mobile parity is automatic: mobile jump button writes jumpState.spaceDown
+    // via setJumpPressed() → the same 'charging' rising edge fires → isRunning
+    // reflects joystick deflection > RUN_JOYSTICK_THRESHOLD at press time.
+    const phaseNow = jumpState.phase;
+    const nowCharging = phaseNow === 'charging';
+    const wasCharging = wasChargingRef.current;
+    wasChargingRef.current = nowCharging;
+
+    if (nowCharging && !wasCharging) {
+      // Rising edge of charging this frame — lock in speed class.
+      jumpState.chargeMode = isRunning ? 'run' : 'squat';
+    } else if (!nowCharging && wasCharging) {
+      // Charging just ended (released or auto-launched) — clear chargeMode.
+      jumpState.chargeMode = 'none';
+    }
+
+    // BUG 2 fix: halt horizontal movement when squatting to wind up.
+    // Run-charge keeps full locomotion (chargeMode 'run' → no zeroing).
+    if (nowCharging && jumpState.chargeMode === 'squat') {
+      vx = 0;
+      vy = 0;
+    }
+
     if (vx !== 0 || vy !== 0) {
       // Read from ref (zero React overhead) for current position, write via
       // setAvatarPosition which updates both ref + throttled reactive store.
@@ -544,29 +584,18 @@ function PlayerAvatarVRMInner({ reg }: { reg: ModelRegistryEntry }) {
     group.position.y = effectiveFloorY + bob
                      + jumpState.heightOffset + jumpState.playerAltitude;
 
-    // Runtime foot-anchor REMOVED 2026-05-22.
+    // NOTE (2026-06-17): The 2026-05-22 foot-anchor was removed because it
+    // read stale matrixWorld (before animator.update()). The 2026-05-22
+    // workaround that replaced it (adding 'squat' to IN_PLACE_CLIPS) stripped
+    // the hip-Y descent track, leaving a rotation-only squat that pulled feet
+    // UPWARD toward the pinned pelvis — the "midair squat" BUG 1.
     //
-    // History: a 2026-05-18 patch added a per-frame foot-Y compensator
-    // to fight the Mixamo squat clip's hip-translation track, which was
-    // dropping the hip in world space and lifting the feet above the
-    // floor. The compensator measured `footNode.matrixWorld.elements[13]`
-    // BEFORE the same-frame `animator.update()` call (~85 lines below),
-    // so it always read the PREVIOUS frame's pose — turning the
-    // correction into a one-frame-lagged feedback loop that diverged on
-    // every loop boundary of the squat clip.
-    //
-    // User-reported 2026-05-22: "avatars glitch up and down rapidly,
-    // like lightning speed, above and below ground level before actually
-    // jumping" — screenshots showed the head barely above the sand on
-    // one frame and a normal crouch above ground on the next.
-    //
-    // Root cause was the squat clip's hip-Y track being preserved by
-    // the retargeter. Fix: add 'squat' to IN_PLACE_CLIPS in
-    // vrm-character-animator.ts so position tracks are stripped at
-    // retarget time. With positions stripped, the squat is rotation-
-    // only — knees bend, feet stay flush at VRM-local Y=0 = world
-    // group.position.y — so this compensator is no longer needed AND
-    // its stale-matrixWorld read was harmful. Delete-not-disable.
+    // The 2026-06-17 fix: 'squat' removed from IN_PLACE_CLIPS (hip-Y descent
+    // preserved). group.position.y is corrected AFTER animator.update() below
+    // via VRMCharacterAnimator.getSquatGroundLift(), which reads the hip-Y
+    // descent directly from the clip keyframe data (no bone read, no matrixWorld,
+    // no per-frame allocation). The group lift exactly cancels the hip descent
+    // so the net visual result is: pelvis descends toward planted feet.
 
     // Rotation: see atan2(-vx, -vy) derivation above (VRM faces -Z, need sign negation).
     if (continuousRot !== null) {
@@ -595,50 +624,70 @@ function PlayerAvatarVRMInner({ reg }: { reg: ModelRegistryEntry }) {
 
     const dt = Math.min(delta, 0.1);
 
-    // Squat / swim / fly animation pipeline (2026-05-18 revised).
+    // Squat / swim / fly animation pipeline (revised 2026-06-17).
     //
-    //   CHARGING (jumpState.phase === 'charging'): surfaceClip = 'squat'.
-    //     Mixamo squat plays from the moment SPACE goes down so the
-    //     avatar visibly preps while the player holds-to-charge.
+    //   CHARGING + chargeMode 'squat' (idle/walk entry): surfaceClip = 'squat'.
+    //     Mixamo squat plays from the moment SPACE goes down so the avatar
+    //     visibly preps while the player holds-to-charge. group.position.y is
+    //     corrected by getSquatGroundLift() (see below) so feet stay planted.
+    //
+    //   CHARGING + chargeMode 'run' (run entry): no surfaceClip change.
+    //     Avatar keeps running through the charge — no squat wind-up. On
+    //     release the swim-up arc fires immediately.
     //
     //   AIRBORNE (any phase ascending/descending/free-swim): surfaceClip
-    //     = 'flying' for Tekk, else 'swimming'. The previous revision
-    //     used 'jump' during ascent then crossfaded to swim at apex;
-    //     user-reported 2026-05-18 the jump loop looked weird while
-    //     they were flying upward. Now the swim/fly clip plays for the
-    //     entire airborne arc and the body pitch (computed above) tilts
-    //     the avatar BACK while ascending so the pose reads as
-    //     "swimming upward". Descending leaves pitch=0 → the same swim
-    //     pose reads as horizontal/forward swim.
+    //     = 'flying' for Tekk, else 'swimming'. Body pitch (computed above)
+    //     leans back while ascending so the pose reads as upward motion.
     //
     //   GROUNDED idle/walk: surfaceClip = 'idle'. Normal walk↔idle
     //     crossfade resumes.
     //
-    // While charging OR airborne we pass isMoving=false to update() so
-    // the animator's walk↔surfaceClip crossfade always picks
-    // surfaceClip — no "walking while charging" or "walking through
-    // the air" with WASD held.
+    // While squatting (chargeMode 'squat') OR airborne we pass isMoving=false
+    // so the animator's walk↔surfaceClip crossfade always picks surfaceClip.
+    // While run-charging we pass the real isMoving/isRunning so the run clip
+    // continues uninterrupted.
     const animator = vrmAnimatorRef.current;
     if (animator) {
       const phase = jumpState.phase;
       const phaseCharging = phase === 'charging';
+      const chargeMode = jumpState.chargeMode;
+      const isSquatCharge = phaseCharging && chargeMode === 'squat';
+      const isRunCharge   = phaseCharging && chargeMode === 'run';
       const swimClip: AnimName = reg.animatorId === 'tekk' ? 'flying' : 'swimming';
-      // Charging clip is 'squat'. The clip itself is correct — the
-      // pose is a Mixamo squat-down anticipation. The "floating mid-
-      // air, feet tucked up" appearance the user reported 2026-05-18
-      // is fixed by the runtime foot-anchor block above (search for
-      // "foot-anchor"), which measures the foot bone's actual world Y
-      // every frame during charging and lifts/lowers the avatar group
-      // to keep that foot at terrainYRef.current.
+
       const desiredClip: AnimName =
-        phaseCharging ? 'squat'
+        isSquatCharge ? 'squat'
+        : isRunCharge ? 'idle'   // run-charge keeps locomotion via isMoving=true below
         : airborne    ? swimClip
         :               'idle';
       if (desiredClip !== lastSurfaceClipRef.current) {
         animator.setSurfaceClip(desiredClip);
         lastSurfaceClipRef.current = desiredClip;
       }
-      const lockIdle = phaseCharging || airborne;
+      // BUG 1 fix (2026-06-17): compensate the hip-Y descent from the squat
+      // clip so feet stay planted at effectiveFloorY.
+      //
+      // BUG 1 fix (2026-06-17): keep avatar feet on the floor during squat charge.
+      //
+      // The retargeted squat clip hip-Y starts at restHipY (~0.89 VRM-meters for
+      // Milady) and descends as the character crouches (~0.63 at deepest). The
+      // correct world-unit lift = (restHipY − currentHipY) × vrmRenderScale.
+      //   Standing frame:  (0.89 − 0.89) × 168.75 = 0 wu  (no lift)
+      //   Deepest squat:   (0.89 − 0.63) × 168.75 ≈ 44 wu (feet stay on floor)
+      //
+      // Applying the lift BEFORE animator.update() means the skeleton.update()
+      // call inside animator.update() uploads boneMatrices with the group at
+      // the corrected Y. The 1-frame lag (last frame's clip time) is imperceptible
+      // on a ~1 Hz squat.
+      if (isSquatCharge) {
+        const lift = animator.getSquatGroundLift(animator.getSquatClipTime(), vrmRenderScale);
+        if (lift > 0) {
+          group.position.y += lift;
+        }
+      }
+
+      // lockIdle = squat-charge or airborne. Run-charge passes real isMoving/isRunning.
+      const lockIdle = isSquatCharge || airborne;
       animator.update(dt, lockIdle ? false : isMoving, lockIdle ? false : isRunning);
     }
   }, -100);

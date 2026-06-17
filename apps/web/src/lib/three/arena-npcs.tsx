@@ -1001,6 +1001,12 @@ export const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteStat
    * 60×/s. Wandering NPCs never touch this; defaults to 'idle'.
    */
   const lastSurfaceClipRef = useRef<AnimName>('idle');
+  /**
+   * Rising-edge detector for 'charging' phase — mirrors the same ref in
+   * player-avatar.tsx. Only relevant for the possessed-player NPC (controlMode='npc').
+   * Wandering NPCs never enter charging, so this stays false for them.
+   */
+  const npcWasChargingRef = useRef<boolean>(false);
 
   // Resolve VRM path from the model registry (or use the species key directly as path suffix)
   const regEntry = MODEL_REGISTRY[npc.species as keyof typeof MODEL_REGISTRY];
@@ -1282,24 +1288,50 @@ export const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteStat
       if (isPossessedPlayerNpc) {
         const phase = jumpState.phase;
         const phaseCharging = phase === 'charging';
+        const nowChargingNpc = phaseCharging;
+        const wasChargingNpc = npcWasChargingRef.current;
+        npcWasChargingRef.current = nowChargingNpc;
+
+        // Set chargeMode on the rising edge of charging (mirrors player-avatar.tsx).
+        // d.isRunning is set by the NPC controller when sprinting.
+        if (nowChargingNpc && !wasChargingNpc) {
+          jumpState.chargeMode = (d.isRunning ?? false) ? 'run' : 'squat';
+        } else if (!nowChargingNpc && wasChargingNpc) {
+          jumpState.chargeMode = 'none';
+        }
+
+        const chargeMode = jumpState.chargeMode;
+        const isSquatChargeNpc = phaseCharging && chargeMode === 'squat';
         const swimClip: AnimName = d.species === 'tekk' ? 'flying' : 'swimming';
         const desiredClip: AnimName =
-          phaseCharging ? 'squat'
-          : airborne    ? swimClip
-          :               'idle';
+          isSquatChargeNpc        ? 'squat'
+          : (phaseCharging && chargeMode === 'run') ? 'idle'
+          : airborne              ? swimClip
+          :                         'idle';
         if (desiredClip !== lastSurfaceClipRef.current) {
           animator.setSurfaceClip(desiredClip);
           lastSurfaceClipRef.current = desiredClip;
         }
+
+        // BUG 1 fix (2026-06-17): apply squat ground lift before updateMixerOnly
+        // so skeleton.update() uploads boneMatrices with the corrected group Y.
+        // Uses the NPC's own vrmRenderScale (from computeVRMNpcScale) to convert
+        // VRM-meter descent to world-unit lift — NOT the player's scale.
+        if (isSquatChargeNpc) {
+          const lift = animator.getSquatGroundLift(animator.getSquatClipTime(), vrmRenderScale);
+          if (lift > 0) {
+            group.position.y += lift;
+          }
+        }
       }
       springDeltaAccRef.current += dt;
-      // While charging OR airborne, gate the locomotion crossfade to
+      // While squat-charging OR airborne, gate the locomotion crossfade to
       // surfaceClip (squat/jump/swim/fly) by reporting isMoving=false.
-      // Walk on the ground when neither is true; never "walking while
-      // charging" or "walking through the air" if movement input is
-      // held mid-leap.
+      // Run-charge keeps full locomotion (isMoving=true, isRunning=true).
+      const npcIsSquatCharge = isPossessedPlayerNpc &&
+        jumpState.phase === 'charging' && jumpState.chargeMode === 'squat';
       const npcLockIdle = isPossessedPlayerNpc &&
-        (airborne || jumpState.phase === 'charging');
+        (airborne || npcIsSquatCharge);
 
       // Compute distance² to camera ONCE — drives both Phase 1.5 far-gate
       // and the existing Win B spring-bone distance LOD. Zero per-frame
