@@ -1312,17 +1312,6 @@ export const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteStat
           animator.setSurfaceClip(desiredClip);
           lastSurfaceClipRef.current = desiredClip;
         }
-
-        // BUG 1 fix (2026-06-17): apply squat ground lift before updateMixerOnly
-        // so skeleton.update() uploads boneMatrices with the corrected group Y.
-        // Uses the NPC's own vrmRenderScale (from computeVRMNpcScale) to convert
-        // VRM-meter descent to world-unit lift — NOT the player's scale.
-        if (isSquatChargeNpc) {
-          const lift = animator.getSquatGroundLift(animator.getSquatClipTime(), vrmRenderScale);
-          if (lift > 0) {
-            group.position.y += lift;
-          }
-        }
       }
       springDeltaAccRef.current += dt;
       // While squat-charging OR airborne, gate the locomotion crossfade to
@@ -1364,6 +1353,22 @@ export const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteStat
           npcLockIdle ? false : (d.isRunning ?? false),
           isPossessedPlayerNpc ? 1 : speedScale
         );
+
+        // BUG 1 fix (2026-06-17, v3 — foot grounding; mirrors player-avatar.tsx).
+        // The 'squat' clip is rotation-only (hips never descend), so the knee-
+        // bend lifts the feet toward the pinned pelvis (the "midair squat").
+        // After updateMixerOnly() poses the bones, PLANT the lowest foot back on
+        // the floor: group.y -= (lowestFootY - floor) LOWERS the body when the
+        // squat lifts the foot above the floor → the body settles toward the
+        // planted feet = squat DOWN. Read AFTER updateMatrixWorld (stale-matrix trap).
+        if (npcIsSquatCharge && isPossessedPlayerNpc) {
+          group.updateMatrixWorld(true);
+          const lowestFootY = animator.getFootWorldYMin();
+          if (lowestFootY !== Infinity) {
+            group.position.y -= (lowestFootY - vrmNpcEffectiveFloorY);
+            group.updateMatrixWorld(true);
+          }
+        }
 
         // WIN B — Spring-bone distance LOD (perf-audit-2026-05-22 Q4)
         // Close NPCs (<2500wu) run at 30Hz — better perceived quality for
