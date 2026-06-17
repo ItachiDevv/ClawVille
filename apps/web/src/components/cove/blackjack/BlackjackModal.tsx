@@ -74,6 +74,7 @@ import {
   type AgentDecisionAction,
   type BlackjackShoeWire,
   type CurrentHandLive,
+  type CurrentHandResponse,
   type DealResponse,
   type SettledHandResponse,
 } from '@/lib/cove/blackjack-api-client';
@@ -435,6 +436,46 @@ export default function BlackjackModal() {
     actionKeyRef.current = null;
   }, []);
 
+  // ── Rebuild the local hand view from the server's authoritative /hand/current ──
+  // Shared by the eager-restore-on-open path (below) and the autonomous stale-409
+  // resync. A live hand → show it so the player can FINISH it (server blocks a new
+  // deal while a hand is in_progress, and the shoe can't be closed either — without
+  // restoring the hand the player is soft-locked on the betting UI). A null result
+  // (the prior hand settled) → clear. Read-only; no money, no ledger.
+  const restoreHandFromServer = useCallback((handRes: CurrentHandResponse | null) => {
+    if (!handRes) return;
+    if (isCurrentHandLive(handRes)) {
+      const live: CurrentHandLive = handRes;
+      const subHands: SubHandView[] = live.playerHands.map((h) => ({
+        cards: h.cards,
+        total: h.total,
+        isSoft: h.isSoft,
+        isBust: h.isBust,
+      }));
+      setHand({
+        handId: live.handId,
+        shoeId: live.shoeId,
+        playerHands: subHands.length > 0 ? subHands : [{ cards: [], total: 0, isSoft: false, isBust: false }],
+        dealerUpcard: live.dealerUpcard,
+        insuranceOffered: live.insuranceOffered,
+        tookInsurance: live.tookInsurance,
+        didSplit: live.didSplit,
+        bet: Number(live.bet),
+      });
+      // Focus the first non-resolved sub-hand for a split (mirrors merge).
+      if (live.didSplit) {
+        const firstLive = live.playerHands.findIndex((h) => !h.isBust);
+        setActiveSlot((firstLive === 1 ? 1 : 0) as 0 | 1);
+      } else {
+        setActiveSlot(0);
+      }
+      setSettled(null);
+    } else {
+      // Server confirms NO in-progress hand (the prior hand settled) → clear.
+      setHand(null);
+    }
+  }, []);
+
   // ── Eager restore on open ──────────────────────────────────────────────────
   useEffect(() => {
     if (!blackjackOpen) return;
@@ -449,7 +490,23 @@ export default function BlackjackModal() {
         if (current.shoe.status !== 'open') return;
         setShoe(current.shoe);
         setBalance(current.walletBalance);
-        showToast('Resumed your open shoe.', 'info');
+        // ALSO restore an in-progress HAND, not just the shoe. Without this, a
+        // player who dealt then closed/refreshed/reopened the modal lands on the
+        // betting UI while the server still holds an in_progress hand — DEAL then
+        // 409s `hand_in_progress` and the shoe can't be closed, a permanent
+        // soft-lock. Restoring lets them play the hand out (Hit/Stand → settle →
+        // shoe freed). Best-effort + read-only: a blip just leaves the shoe view.
+        let resumedHand = false;
+        try {
+          const handRes = await fetchCurrentBlackjackHand();
+          if (cancelled) return;
+          restoreHandFromServer(handRes);
+          resumedHand = !!handRes && isCurrentHandLive(handRes);
+        } catch {
+          // /hand/current blip — leave the betting UI; the player can still play.
+        }
+        if (cancelled) return;
+        showToast(resumedHand ? 'Resumed your hand in progress.' : 'Resumed your open shoe.', 'info');
       } catch {
         // Network blip — lazy-open on first Deal handles it.
       }
@@ -629,48 +686,16 @@ export default function BlackjackModal() {
         setShoe(shoeRes.shoe);
         setBalance(shoeRes.walletBalance);
       }
-      // Authoritative hand reconciliation. A null result (no open shoe / network
-      // blip) leaves the local hand untouched so we never strand on a transient
-      // miss; the next /agent/decide corrects it server-side.
-      if (handRes) {
-        if (isCurrentHandLive(handRes)) {
-          // Server has a live hand — rebuild the local view from it (this is the
-          // hand the next decision must target; never leave a stale/cleared one).
-          const live: CurrentHandLive = handRes;
-          const subHands: SubHandView[] = live.playerHands.map((h) => ({
-            cards: h.cards,
-            total: h.total,
-            isSoft: h.isSoft,
-            isBust: h.isBust,
-          }));
-          setHand({
-            handId: live.handId,
-            shoeId: live.shoeId,
-            playerHands: subHands.length > 0 ? subHands : [{ cards: [], total: 0, isSoft: false, isBust: false }],
-            dealerUpcard: live.dealerUpcard,
-            insuranceOffered: live.insuranceOffered,
-            tookInsurance: live.tookInsurance,
-            didSplit: live.didSplit,
-            bet: Number(live.bet),
-          });
-          // Focus the first non-resolved sub-hand for a split (mirrors merge).
-          if (live.didSplit) {
-            const firstLive = live.playerHands.findIndex((h) => !h.isBust);
-            setActiveSlot((firstLive === 1 ? 1 : 0) as 0 | 1);
-          } else {
-            setActiveSlot(0);
-          }
-          setSettled(null);
-        } else {
-          // Server confirms NO in-progress hand (the prior hand settled) → clear.
-          setHand(null);
-        }
-      }
+      // Authoritative hand reconciliation — restore a live server hand, or clear
+      // when the server confirms none. A null result (no open shoe / network blip)
+      // leaves the local hand untouched so we never strand on a transient miss; the
+      // next /agent/decide corrects it server-side. Shared with eager-restore-on-open.
+      restoreHandFromServer(handRes);
     } catch {
       // Network blip — leave local state as-is; the next /agent/decide re-derives
       // authoritative state server-side regardless.
     }
-  }, []);
+  }, [restoreHandFromServer]);
 
   // ── DEAL ────────────────────────────────────────────────────────────────────
   // `agentDriven` is set ONLY by the autonomous driver after the human-input

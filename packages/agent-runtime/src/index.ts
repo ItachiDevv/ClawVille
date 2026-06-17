@@ -47,24 +47,17 @@ export type { Action, ActionResult, ClawvilleActionState, ClawvilleServices } fr
 export type { Provider, ProviderResult } from './providers/types';
 
 // Embedding utility (Phase 2 — standalone embedText for knowledge RAG).
-// Now backed by OpenAI text-embedding-3-small (1536-dim) after the
-// Gemini→OpenAI migration — same names, OpenAI internally.
+// Backed by OpenAI text-embedding-3-small (1536-dim).
 export { embedText, embedTexts } from './plugins/embed-text';
 export type { EmbedTextOptions } from './plugins/embed-text';
 
-// OpenAI embedding provider (ElizaOS TEXT_EMBEDDING, 1536-dim — replaced the
-// Gemini text-embedding-004 768-dim provider). The Gemini embedding provider
-// file is kept (dead-but-present) for easy revert but was never index-exported.
+// OpenAI embedding provider (ElizaOS TEXT_EMBEDDING, 1536-dim — the sole
+// embedding backend).
 export { createOpenAIEmbeddingPlugin } from './plugins/openai-embedding-provider';
 export type { OpenAIEmbeddingConfig } from './plugins/openai-embedding-provider';
 
-// Gemini text generation provider (Phase 3 — DEAD-but-present; Gemini billing
-// killed 2026-06, kept exported so legacy importers don't break)
-export { createGeminiTextPlugin, createGeminiProTextPlugin } from './plugins/gemini-text-provider';
-export type { GeminiTextConfig } from './plugins/gemini-text-provider';
-
-// OpenAI text generation provider (global default for text gen — replaced
-// Gemini after its billing died. Embeddings still go through Gemini.)
+// OpenAI text generation provider (global default for text gen — the sole
+// text backend below the OpenClaw gateway override).
 export { createOpenAITextPlugin, createOpenAIProTextPlugin } from './plugins/openai-text-provider';
 export type { OpenAITextConfig } from './plugins/openai-text-provider';
 

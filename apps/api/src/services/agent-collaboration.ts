@@ -9,7 +9,7 @@
  * The broker handles:
  *   - Per-building runtime lazy startup via BuildingRuntimeRegistry
  *   - 10-minute idle cleanup
- *   - Gemini text-gen routing via the priority chain
+ *   - OpenAI text-gen routing via the priority chain
  *   - v2 event emission (CLAWVILLE_CONSULT_*)
  *   - SSE log queue drainage
  *
