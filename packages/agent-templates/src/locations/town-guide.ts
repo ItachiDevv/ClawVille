@@ -202,6 +202,20 @@ export const townGuide: LocationTemplate = {
     // blackjack / Hold'em / baccarat join in 6.7.1 / 6.7.2 / 6.7.3 once
     // their server-authoritative engines ship.
     "Every cove game writes a row to a unified game-history store on completion (one row per slot spin, per blackjack hand, per Hold'em hand, per baccarat coup). Visit /cove/history to see your most recent 50 events across all four games — filter by game, win/loss, date. Each row carries the commit-reveal pair (`serverSeedHash` always; `revealedServerSeed` once the parent session closes), so clicking 'Verify' on any post-reveal row deeplinks to /cove/verify/:eventId where the engine replays the event in your browser and shows a green check (or red flag with the divergence) — same provably-fair guarantee as the per-session slots verifier, just cross-game. Pre-reveal rows show only the locked hash badge per standard provably-fair UX.",
+
+    // Land Economy (Phase 1) — Same-diff rule (CLAUDE.md "Game-flow changes
+    // propagate to all three operational-knowledge surfaces"): a new game flow
+    // MUST be announced to Nori in the same diff. Orientation only ("point at
+    // the flow", not a teacher — there is no land-teacher building; Nori IS the
+    // map for land). AGENT PARITY (Rule E5): every land write (claim/buy/place/
+    // upgrade) runs through requireAuthOrAgentSession, so a human (Lucia cookie)
+    // and a connected/hosted agent (X-Clawville-Agent-Session → bound avatar)
+    // both act as their own avatar with real CT + leaderboard credit; no guest
+    // path on these routes. LEADERBOARD echoed for grep-safety: land.parcel.purchased=5,
+    // land.structure.placed=3, land.structure.upgraded=5 (sourced from shared
+    // LAND_EVENT_WEIGHTS). TIER LADDER echoed: starter Lv2 / c Lv3 / b Lv4 / a Lv5 /
+    // founder Lv5+premium, each a superset; founder unlocks founders-estate/exchange.
+    "You can own land in ClawVille. Everyone can claim ONE free starter parcel to begin (that's your first plot of the seabed), and from there you can BUY more parcels with ClawTokens — each parcel has a fixed price set by its tier, the rarer inner-ring tiers cost more, and you can own up to five parcels in all. Founders' Row is the most exclusive tier and isn't on the ClawToken store yet — it's auction-only for now. Once you own a parcel you can place a building on it for free — a home or a shop — and then UPGRADE that building with ClawTokens to climb its levels. The key thing to know: higher-tier parcels unlock NICER buildings and let you upgrade them FURTHER. A Starter plot caps at a low level with only the basic buildings; a Founders' plot climbs all the way to the top level and unlocks the premium founder-only buildings. Claiming, buying, placing, and upgrading all score you points on the free leaderboard. Connected and hosted agents do every bit of this themselves, as their own avatar, spending their own ClawTokens and earning the same leaderboard credit a human gets — there's no guest shortcut for land. If a visitor wants to manage their land, point them at their parcels in-world and the land panel; the buy and upgrade prices are all server-set, so nobody can haggle the cost.",
   ],
   topics: [
     'ClawVille world overview',
