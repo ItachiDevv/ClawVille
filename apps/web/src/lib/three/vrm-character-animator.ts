@@ -506,20 +506,21 @@ const IN_PLACE_CLIPS: ReadonlySet<AnimName> = new Set([
   // 'kip_up' added 2026-05-21. Knocked-Out-and-recover one-shot pair; user
   // wants character to spring up in place, not drift across the floor.
   'kip_up',
-  // 'squat' added 2026-05-22. The Mixamo squat bake animates the hip Y
-  // track downward to crouch then snaps back at loop boundary. When set
-  // as surfaceClip during jump-charging (player-avatar.tsx VRM branch +
-  // arena-npcs.tsx VRMNpcMesh branch), the retargeter kept Y per the
-  // walk/idle rule, and the bone's animated Y translation made the
-  // rendered body drop INTO the sand floor for half the loop then snap
-  // back up. User-reported 2026-05-22: "avatars glitch up and down
-  // rapidly, like lightning speed, above and below ground level before
-  // actually jumping" — the screenshot showed the head barely visible
-  // above the floor (squat pose at deepest hip Y). Stripping positions
-  // anchors the hip in place so the visible squat is rotation-only —
-  // knees bend, feet stay flush at terrainY. The visible "squatting
-  // before launch" intent still reads via the leg-bend rotations.
-  'squat',
+  // NOTE (2026-06-17): 'squat' was removed from this set.
+  // The 2026-05-22 position-strip was a stop-gap: stripping the Y track kept
+  // the hip at standing height while only applying knee-bend rotations. With
+  // the hip pinned at standing height the feet were pulled UPWARD toward the
+  // fixed pelvis — an inverted squat (BUG 1: "midair squat").
+  //
+  // The retargeter (mixamo-retarget.ts) already keeps only the Y component of
+  // the position track (X and Z are zeroed). We now let the hip-Y descent
+  // survive retarget, and callers compensate at the group.position.y level
+  // via VRMCharacterAnimator.getSquatGroundLift() — querying the clip
+  // keyframes directly (no bone read, no 1-frame lag).
+  //
+  // Old (broken): strip all positions → rotation-only squat → inverted feet
+  // New (correct): keep hip-Y descent → pelvis lowers → group lifted by same
+  //                amount so feet stay flush at terrainY
 ]);
 
 /**
@@ -592,6 +593,76 @@ function stripPositionTracks(clip: THREE.AnimationClip): THREE.AnimationClip {
   return clip;
 }
 
+/**
+ * Extract the VectorKeyframeTrack that drives hips.position from a retargeted
+ * clip. Used once after the squat clip is retargeted to capture the hip-Y
+ * descent data for getSquatGroundLift() (zero per-frame allocation path).
+ *
+ * Returns the first `.position` track that contains more than one keyframe
+ * (the hips bone — it's the only bone with a position track after retarget).
+ * Returns null if the clip has no position track (shouldn't happen for squat
+ * after removing 'squat' from IN_PLACE_CLIPS, but guard for safety).
+ */
+function extractSquatHipYTrack(
+  clip: THREE.AnimationClip,
+): THREE.VectorKeyframeTrack | null {
+  for (const track of clip.tracks) {
+    if (track.name.endsWith('.position') && track instanceof THREE.VectorKeyframeTrack) {
+      // Verify it has actual Y data (not all zeros — which would indicate a
+      // stripped clip or a degenerate squat with no hip descent).
+      const vals = track.values as Float32Array;
+      let hasNonZeroY = false;
+      for (let i = 1; i < vals.length; i += 3) {
+        if (Math.abs(vals[i]) > 1e-4) { hasNonZeroY = true; break; }
+      }
+      if (hasNonZeroY) return track;
+    }
+  }
+  return null;
+}
+
+/**
+ * Sample the Y value from a VectorKeyframeTrack at a given time using linear
+ * interpolation between the two nearest keyframes. Returns 0 if the track
+ * has fewer than one keyframe or time is out of range.
+ *
+ * @param track  The hips position track (X and Z are always 0 after retarget).
+ * @param times  The track's times array (track.times — passed separately to
+ *               avoid a property lookup inside the hot path, but this is only
+ *               called once per frame max while squatting so it's not critical).
+ * @param t      Clip playback time in seconds (clamped to [0, duration]).
+ */
+function sampleHipYAtTime(
+  track: THREE.VectorKeyframeTrack,
+  times: ArrayLike<number>,
+  t: number,
+): number {
+  const n = times.length;
+  if (n === 0) return 0;
+  const vals = track.values as Float32Array;
+  if (n === 1) return vals[1] ?? 0;
+
+  // Clamp to clip duration.
+  const tClamped = Math.max(times[0]!, Math.min(times[n - 1]!, t));
+
+  // Binary search for the bracketing keyframe pair.
+  let lo = 0, hi = n - 1;
+  while (lo < hi - 1) {
+    const mid = (lo + hi) >> 1;
+    if (times[mid]! <= tClamped) lo = mid; else hi = mid;
+  }
+
+  const t0 = times[lo]!;
+  const t1 = times[hi]!;
+  const dt = t1 - t0;
+  const alpha = dt > 1e-8 ? (tClamped - t0) / dt : 0;
+
+  // Y is at index [i*3 + 1] in the interleaved [x, y, z] values array.
+  const y0 = vals[lo * 3 + 1] ?? 0;
+  const y1 = vals[hi * 3 + 1] ?? 0;
+  return y0 + (y1 - y0) * alpha;
+}
+
 export class VRMCharacterAnimator {
   private vrm: VRM;
   private mixer: THREE.AnimationMixer;
@@ -649,6 +720,32 @@ export class VRMCharacterAnimator {
    * for every clip — current behavior for Milady/legacy avatars.
    */
   private characterId: string | undefined;
+
+  /**
+   * The squat clip's hip-Y VectorKeyframeTrack, captured once at retarget time
+   * and used by getSquatGroundLift() to compute the hip descent at any given
+   * clip time without reading bones at all (zero per-frame allocation).
+   *
+   * Populated by the lazy-load path in setSurfaceClip('squat') and by init()
+   * if startClip==='squat'. Null until the squat clip has been retargeted.
+   *
+   * Layout: Float32Array of [x, y, z] interleaved per keyframe (VectorKeyframeTrack).
+   * After retarget, X and Z are always 0 (zeroed by mixamo-retarget.ts); only Y varies.
+   * We read Y by sampling at index [i*3 + 1] for keyframe i.
+   */
+  private _squatHipYTrack: THREE.VectorKeyframeTrack | null = null;
+  /** Times array (seconds) corresponding to _squatHipYTrack keyframes. */
+  private _squatHipYTimes: ArrayLike<number> | null = null;
+  /**
+   * Hip-Y value at the first keyframe of the squat clip (the standing rest pose
+   * before any crouch begins). The retargeter keeps ABSOLUTE hip height —
+   * e.g. ~0.89 VRM-meters for a Milady — so the standing frame is NOT 0.
+   *
+   * The correct descent is (restHipY - currentHipY), not -currentHipY.
+   * Captured alongside _squatHipYTrack so getSquatGroundLift() can compute
+   * relative descent without re-reading the track at t=0 every frame.
+   */
+  private _squatRestHipY: number = 0;
 
   /**
    * Set by dispose(). Guards the async init() path: if the owning component
@@ -894,6 +991,27 @@ export class VRMCharacterAnimator {
           if (this.disposed) return; // disposed mid-load — vrm/mixer nulled
           const retargeted = retargetMixamoClip(gltf, this.vrm, name);
           if (shouldStripPosition(name, this.characterId)) stripPositionTracks(retargeted);
+          // Capture the squat clip's hip-Y track for getSquatGroundLift().
+          // Must happen AFTER shouldStripPosition (squat is no longer in
+          // IN_PLACE_CLIPS as of 2026-06-17, so stripPositionTracks is NOT
+          // called for 'squat' — the Y track survives). Guard anyway so a
+          // future accidental re-add to IN_PLACE_CLIPS doesn't silently
+          // produce a null track with no debug signal.
+          if (name === 'squat' && this._squatHipYTrack === null) {
+            const hipTrack = extractSquatHipYTrack(retargeted);
+            if (hipTrack) {
+              this._squatHipYTrack = hipTrack;
+              this._squatHipYTimes = hipTrack.times;
+              // Capture the standing-frame (t=0) hip Y as the REST reference.
+              // The retargeter preserves ABSOLUTE hip height (not zeroed at rest),
+              // so standing-frame Y ≈ vrmHipsHeight (e.g. ~0.89 for Milady).
+              // Correct descent = (restHipY - currentHipY), not -currentHipY.
+              this._squatRestHipY = sampleHipYAtTime(hipTrack, hipTrack.times, 0);
+            } else if (typeof process !== 'undefined' && process.env?.NODE_ENV !== 'production') {
+              console.warn('[VRMCharacterAnimator] squat clip has no hip-Y position track — ' +
+                'foot grounding lift will be 0. Was squat accidentally added back to IN_PLACE_CLIPS?');
+            }
+          }
           const action = this.mixer.clipAction(retargeted);
           action.setLoop(THREE.LoopRepeat, Infinity);
           action.clampWhenFinished = false;
@@ -913,6 +1031,73 @@ export class VRMCharacterAnimator {
     if (!this.oneShotActive && !this.wasMoving) {
       this.applyCrossfade('idle');
     }
+  }
+
+  /**
+   * Returns the squat AnimationAction's current playback time (seconds), or 0
+   * if the squat clip hasn't been loaded yet. Used by callers that need to query
+   * the squat pose before calling animator.update() (which advances the time).
+   *
+   * Exported so callers can avoid the `(animator as any).actions.squat.time`
+   * pattern and keep the `actions` map private.
+   */
+  getSquatClipTime(): number {
+    const action = this.actions.squat;
+    return action ? action.time : 0;
+  }
+
+  /**
+   * Returns the world-space Y lift (wu) that the caller should ADD to
+   * `group.position.y` while the squat clip is active to keep the avatar's
+   * feet planted at the terrain surface.
+   *
+   * How it works:
+   *   The retargeted squat clip contains a `Normalized_…Hips.position` track
+   *   with ABSOLUTE Y values (the retargeter keeps hip height relative to the
+   *   VRM's own normalized-rest-pose, ~0.89 for a standard Milady). At the
+   *   standing frame the value is ≈ restHipY (e.g. 0.89). As the character
+   *   crouches the value descends (e.g. 0.63 at deepest crouch).
+   *
+   *   The lift is (restHipY − currentHipY) × fitScale, where:
+   *     - (restHipY − currentHipY) = relative descent in VRM-normalized meters
+   *     - fitScale = vrmRenderScale (wu per VRM-meter) converts to world units
+   *
+   *   At standing frame: (0.89 − 0.89) × 168.75 = 0 wu  (no lift needed)
+   *   At deepest squat:  (0.89 − 0.63) × 168.75 ≈ 44 wu (feet stay on floor)
+   *
+   * Returns 0 when:
+   *   - The squat clip hasn't been loaded yet (first frame of charge, before
+   *     the lazy-load completes). The avatar sits flat on the floor that frame;
+   *     the transition is imperceptible because the squat's descent is gradual.
+   *   - The squat clip has no hip-Y track (shouldn't happen, but defensive).
+   *   - chargeMode !== 'squat' (caller should also gate this, but safe to call
+   *     unconditionally).
+   *
+   * @param clipTime  The squat action's current time in seconds. Pass
+   *   `animator.getSquatClipTime()` from the caller.
+   * @param fitScale  The avatar's render scale (wu per VRM-meter) — i.e.
+   *   `vrmRenderScale` from `computeVRMAvatarFit`. Converts the VRM-meter
+   *   descent into world-unit lift. The primitive is scaled by fitScale, so
+   *   the hip's VRM-meter descent maps to `descent × fitScale` wu of visible
+   *   body movement. Passing 1 is correct ONLY if the caller is already
+   *   working in VRM-normalized space (never the case in player-avatar.tsx or
+   *   arena-npcs.tsx where group is in world units).
+   */
+  getSquatGroundLift(clipTime: number, fitScale: number): number {
+    if (!this._squatHipYTrack || !this._squatHipYTimes) return 0;
+    // Sample the hip Y at clipTime. Values are in VRM-normalized units
+    // (meters for a 1m-scale VRoid, cm-native for Mixamo rigs scaled by
+    // hipsPositionScale in mixamo-retarget.ts so they match this VRM's
+    // normalizedRestPose hips height).
+    const hipY = sampleHipYAtTime(this._squatHipYTrack, this._squatHipYTimes, clipTime);
+    // Descent relative to rest pose (positive when hip is lower than rest).
+    // _squatRestHipY ≈ vrmHipsHeight (e.g. 0.89 for Milady); hipY descends
+    // from there. At standing frame descent = 0; at deepest squat descent > 0.
+    const descent = this._squatRestHipY - hipY;
+    // Convert VRM-meter descent to world-unit lift. The <primitive> is scaled
+    // by fitScale (e.g. ~168.75 for Milady), so the hip's VRM-meter descent
+    // visible on screen is descent × fitScale world units.
+    return Math.max(0, descent * fitScale);
   }
 
   /**
