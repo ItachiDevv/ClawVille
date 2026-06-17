@@ -312,6 +312,15 @@ interface SubHandView {
   total: number;
   isSoft: boolean;
   isBust: boolean;
+  /**
+   * Server-authoritative per-sub-hand terminal flag (FROZEN WIRE CONTRACT). True
+   * for stood-21 / doubled-no-bust / surrendered / split-ace as well as bust —
+   * the client CANNOT derive these from cards/total/isBust (a stood-21 and a live
+   * 21 are byte-identical on the wire). Used to focus a LIVE split sub-hand and to
+   * gate the action buttons so a stale focus can't fire a doomed `400
+   * sub_hand_already_terminal`. A fresh deal's single sub-hand is `false`.
+   */
+  isResolved: boolean;
 }
 interface HandView {
   handId: string;
@@ -442,7 +451,20 @@ export default function BlackjackModal() {
   // deal while a hand is in_progress, and the shoe can't be closed either — without
   // restoring the hand the player is soft-locked on the betting UI). A null result
   // (the prior hand settled) → clear. Read-only; no money, no ledger.
-  const restoreHandFromServer = useCallback((handRes: CurrentHandResponse | null) => {
+  //
+  // `allowClear` (default true): the autonomous resync intends to CLEAR a settled
+  // hand, so it keeps the default. The eager-restore-on-open path passes FALSE —
+  // FINDING #1: the Deal button is tappable while the open effect awaits
+  // /hand/current, and if a deal commits the in_progress row AFTER this GET hit
+  // the server (returning {hand:null}) but BEFORE this resolves, an unconditional
+  // setHand(null) would WIPE the just-dealt hand → server holds a hand the UI
+  // doesn't show → next Deal 409s `hand_in_progress` (the exact soft-lock recurs).
+  // On open there is nothing legitimate to clear (the hand was just reset to null),
+  // so a null result must NOT wipe a hand the user dealt during the await.
+  const restoreHandFromServer = useCallback((
+    handRes: CurrentHandResponse | null,
+    allowClear = true,
+  ) => {
     if (!handRes) return;
     if (isCurrentHandLive(handRes)) {
       const live: CurrentHandLive = handRes;
@@ -451,27 +473,33 @@ export default function BlackjackModal() {
         total: h.total,
         isSoft: h.isSoft,
         isBust: h.isBust,
+        isResolved: h.isResolved,
       }));
       setHand({
         handId: live.handId,
         shoeId: live.shoeId,
-        playerHands: subHands.length > 0 ? subHands : [{ cards: [], total: 0, isSoft: false, isBust: false }],
+        playerHands: subHands.length > 0 ? subHands : [{ cards: [], total: 0, isSoft: false, isBust: false, isResolved: false }],
         dealerUpcard: live.dealerUpcard,
         insuranceOffered: live.insuranceOffered,
         tookInsurance: live.tookInsurance,
         didSplit: live.didSplit,
         bet: Number(live.bet),
       });
-      // Focus the first non-resolved sub-hand for a split (mirrors merge).
+      // Focus the first non-RESOLVED sub-hand for a split (mirrors merge). isBust
+      // alone is wrong — a stood-21/doubled/split-ace slot is resolved yet not
+      // bust, and focusing it routes actions to a terminal slot (400
+      // sub_hand_already_terminal). Fall back to slot 1 when slot 0 is resolved.
       if (live.didSplit) {
-        const firstLive = live.playerHands.findIndex((h) => !h.isBust);
+        const firstLive = live.playerHands.findIndex((h) => !h.isResolved);
         setActiveSlot((firstLive === 1 ? 1 : 0) as 0 | 1);
       } else {
         setActiveSlot(0);
       }
       setSettled(null);
-    } else {
+    } else if (allowClear) {
       // Server confirms NO in-progress hand (the prior hand settled) → clear.
+      // Gated by allowClear so the eager-restore-on-open path can't wipe a hand
+      // the user dealt during the await (FINDING #1).
       setHand(null);
     }
   }, []);
@@ -500,10 +528,21 @@ export default function BlackjackModal() {
         try {
           const handRes = await fetchCurrentBlackjackHand();
           if (cancelled) return;
-          restoreHandFromServer(handRes);
+          // allowClear=false (FINDING #1): a {hand:null} result here must NOT wipe
+          // a hand the user dealt while this GET was in flight — that re-creates
+          // the soft-lock (server holds the dealt hand, UI shows none, next Deal
+          // 409s hand_in_progress). On open the hand was just reset to null, so
+          // there is nothing legitimate to clear.
+          restoreHandFromServer(handRes, false);
           resumedHand = !!handRes && isCurrentHandLive(handRes);
-        } catch {
+        } catch (err) {
           // /hand/current blip — leave the betting UI; the player can still play.
+          // NIT #2: a deterministic 5xx (e.g. hand_peek_failed) means the server
+          // holds a hidden in_progress hand we couldn't restore — surface a real
+          // error instead of the misleading "Resumed your open shoe." toast below.
+          if (err instanceof CoveApiError && err.status >= 500) {
+            showToast('Could not restore your hand — refresh to retry.', 'warn');
+          }
         }
         if (cancelled) return;
         showToast(resumedHand ? 'Resumed your hand in progress.' : 'Resumed your open shoe.', 'info');
@@ -617,7 +656,9 @@ export default function BlackjackModal() {
     return {
       handId: res.handId,
       shoeId: res.shoeId,
-      playerHands: [{ cards: opening, total: t.total, isSoft: t.isSoft, isBust: false }],
+      // A fresh deal's single sub-hand is always live (the player hasn't acted yet,
+      // and a dealt natural settles inline via isSettled, never reaching here).
+      playerHands: [{ cards: opening, total: t.total, isSoft: t.isSoft, isBust: false, isResolved: false }],
       dealerUpcard: res.dealerUpcard,
       insuranceOffered: res.insuranceOffered,
       tookInsurance: res.tookInsurance,
@@ -637,6 +678,7 @@ export default function BlackjackModal() {
         total: h.total,
         isSoft: h.isSoft,
         isBust: h.isBust,
+        isResolved: h.isResolved,
       }));
       return {
         ...prev,
@@ -651,9 +693,12 @@ export default function BlackjackModal() {
         didSplit: res.didSplit,
       };
     });
-    // After a split, focus the first non-resolved sub-hand.
+    // After a split, focus the first non-RESOLVED sub-hand. isBust alone is the
+    // pre-existing live-split bug — a stood-21/doubled/split-ace slot is resolved
+    // yet not bust, so focusing it routes the next action to a terminal slot (400
+    // sub_hand_already_terminal). Fall back to slot 1 when slot 0 is resolved.
     if (res.didSplit) {
-      const firstLive = res.playerHands.findIndex((h) => !h.isBust);
+      const firstLive = res.playerHands.findIndex((h) => !h.isResolved);
       setActiveSlot((firstLive === 1 ? 1 : 0) as 0 | 1);
     }
   }, []);
@@ -972,17 +1017,24 @@ export default function BlackjackModal() {
 
   // ── Derived button legality (server is final validator; this gates UI) ─────
   const activeHand = hand?.playerHands[activeSlot] ?? hand?.playerHands[0] ?? null;
+  // The focused sub-hand is RESOLVED (stood-21 / doubled-no-bust / surrendered /
+  // split-ace / bust). Hit/Stand/Double/Surrender against it would 400
+  // `sub_hand_already_terminal` and re-lock the player (FINDING #3). Gate ALL
+  // action buttons on it; the player overrides by click-to-focus on the other
+  // sub-hand. (On a non-split hand a resolved active hand only happens transiently
+  // between settle and the merge clearing it, so gating is harmless there.)
+  const activeResolved = Boolean(activeHand && activeHand.isResolved);
   // Double is legal as the FIRST decision on a 2-card hand (the server is the
   // final validator; this only gates the button's enabled state).
   const canDouble = Boolean(
-    activeHand && activeHand.cards.length === 2 && !activeHand.isBust,
+    activeHand && activeHand.cards.length === 2 && !activeResolved,
   );
   const canSurrender = Boolean(
-    hand && !hand.didSplit && activeHand && activeHand.cards.length === 2 && !activeHand.isBust,
+    hand && !hand.didSplit && activeHand && activeHand.cards.length === 2 && !activeResolved,
   );
   const canSplit = Boolean(
     hand && !hand.didSplit && activeHand && activeHand.cards.length === 2 &&
-    cardValuePair(activeHand.cards),
+    !activeResolved && cardValuePair(activeHand.cards),
   );
 
   const inFlight = openShoe.isPending || dealHand.isPending || action.isPending ||
@@ -1241,7 +1293,9 @@ export default function BlackjackModal() {
 
   const playerRenderHands: SubHandView[] = settledOutcome
     ? settledOutcome.playerHands.map((h) => ({
-        cards: h.cards, total: h.total, isSoft: h.isSoft, isBust: h.isBust,
+        // Settled view is display-only (the action strip is hidden in `settled`
+        // phase) — every sub-hand is terminal, so isResolved is trivially true.
+        cards: h.cards, total: h.total, isSoft: h.isSoft, isBust: h.isBust, isResolved: true,
       }))
     : hand?.playerHands ?? [];
 
@@ -1468,15 +1522,17 @@ export default function BlackjackModal() {
             {phase === 'player-turn' && (
               <>
                 <button type="button" onClick={() => { void runAction('hit'); }}
-                  disabled={inFlight}
+                  disabled={inFlight || activeResolved}
+                  title={activeResolved ? 'This hand is finished — tap your other hand' : undefined}
                   className="pt-btn pt-btn-primary"
-                  style={{ height: 40, fontSize: 13, fontWeight: 700, minWidth: 70 }}>
+                  style={{ height: 40, fontSize: 13, fontWeight: 700, minWidth: 70, opacity: activeResolved ? 0.4 : 1 }}>
                   Hit
                 </button>
                 <button type="button" onClick={() => { void runAction('stand'); }}
-                  disabled={inFlight}
+                  disabled={inFlight || activeResolved}
+                  title={activeResolved ? 'This hand is finished — tap your other hand' : undefined}
                   className="pt-btn pt-btn-ghost"
-                  style={{ height: 40, fontSize: 12, minWidth: 70 }}>
+                  style={{ height: 40, fontSize: 12, minWidth: 70, opacity: activeResolved ? 0.4 : 1 }}>
                   Stand
                 </button>
                 <button type="button" onClick={() => { void runAction('double'); }}

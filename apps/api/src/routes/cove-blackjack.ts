@@ -737,11 +737,39 @@ async function dryRunHand(
 }
 
 /**
+ * Single source of truth for "is THIS sub-hand done?" — the server-authoritative
+ * per-sub-hand terminal rule. A sub-hand is RESOLVED when:
+ *   • it is a split ace (auto-stand on its single dealt card; no legal action), OR
+ *   • its last accumulated action is stand / double / surrender (terminal), OR
+ *   • it has busted (peek.playerHands[slot].isBust).
+ * A still-live trailing 'hit' (not bust) or an empty not-yet-acted sub-hand is NOT
+ * resolved. This is what `isHandTerminal` aggregates over sub-hands AND what the
+ * in-progress projections serialize as `isResolved` per sub-hand, so the client
+ * can tell a stood-21 / doubled-no-bust / surrendered / split-ace sub-hand apart
+ * from a still-actionable one (those are byte-identical on cards/total/isBust).
+ *
+ * `peek` is the SAME bust-aware dry-run already computed by the caller — no new
+ * engine run, no hidden-state reveal (only the already-visible bust flag + the
+ * accumulated script are read).
+ */
+function subHandResolved(script: HandScript, peek: HandResult, slot: number): boolean {
+  // Split aces are auto-terminal once they hold their single dealt card —
+  // no decision is required (or legal) on them. Empty set for non-split.
+  if (splitAceSlotsFromPeek(script, peek).has(slot)) return true;
+  const actions = script.hands[slot] ?? [];
+  const last = actions[actions.length - 1];
+  if (last === 'stand' || last === 'double' || last === 'surrender') return true;
+  return peek.playerHands[slot]?.isBust ?? false;
+}
+
+/**
  * Decide whether the accumulated script terminates the hand:
  *   • surrender / double on a sub-hand → terminal for that sub-hand;
  *   • stand on the last sub-hand → terminal;
  *   • a hit is terminal only if it BUSTS the last live sub-hand.
  * For split hands, BOTH sub-hands must be resolved before the hand settles.
+ * Sub-hand resolution is delegated to `subHandResolved` (single source of truth,
+ * shared with the in-progress `isResolved` projections).
  */
 async function isHandTerminal(
   shoe: ShoeSeedState,
@@ -752,28 +780,12 @@ async function isHandTerminal(
   // Single dry-run gives us bust state for every sub-hand at once.
   const peek = await dryRunHand(shoe, hand, script, reader);
 
-  // Split aces are auto-terminal once they hold their single dealt card —
-  // no decision is required (or legal) on them.
-  const aceSlots = splitAceSlotsFromPeek(script, peek);
-
-  const subTerminal = (slot: number, actions: BlackjackActionType[], busts: boolean): boolean => {
-    if (aceSlots.has(slot)) return true; // split ace = one card, auto-stand
-    const last = actions[actions.length - 1];
-    return last === 'stand' || last === 'double' || last === 'surrender' || busts;
-  };
-
   if (!script.didSplit) {
-    const actions = script.hands[0]!;
-    const last = actions[actions.length - 1];
-    if (last === 'stand' || last === 'double' || last === 'surrender') return true;
-    if (last === 'hit') return peek.playerHands[0]?.isBust ?? false;
-    return false;
+    return subHandResolved(script, peek, 0);
   }
 
   // Split: both sub-hands must be resolved.
-  const h0 = subTerminal(0, script.hands[0]!, peek.playerHands[0]?.isBust ?? false);
-  const h1 = subTerminal(1, script.hands[1]!, peek.playerHands[1]?.isBust ?? false);
-  return h0 && h1;
+  return subHandResolved(script, peek, 0) && subHandResolved(script, peek, 1);
 }
 
 // ─── POST /session/open ───────────────────────────────────────────────────────
@@ -815,6 +827,19 @@ coveBlackjackRouter.post('/session/open', async (c) => {
 
   // Idempotent open: resume the subject's existing open shoe. Lock the row so
   // we never return data another request is mid-mutating (mirrors cove-slots).
+  //
+  // GUEST ORPHAN AUTO-RECOVERY (finding #2): a guest's shoe is keyed by
+  // guest_fp_hash, but EVERY guest recovery endpoint (/session/current,
+  // /hand/current, /session/close) 403s a guest, and this resume path
+  // idempotently returns the SAME open shoe — so a guest whose in_progress hand
+  // was abandoned (page closed mid-hand) is locked out forever: /hand/deal 409s
+  // `hand_in_progress` on the stuck hand and they have no way to clear it.
+  // Recovery is GUEST-ONLY and runs UNDER the shoe lock: void the orphan hand
+  // (demo stake forfeit — the documented abandoned-hand outcome, guests are demo
+  // CT), close the orphan shoe (so the partial unique open-shoe index frees up),
+  // and fall through to open a FRESH shoe (closing + opening fresh, never
+  // reusing the orphan's counters, avoids shoe-counter drift). AUTHED users are
+  // NEVER auto-aborted — their client restores + finishes the live hand (#122).
   const resumed = await db.transaction(async (tx) => {
     const lockWhere =
       isLedgerSubject(subject)
@@ -824,15 +849,70 @@ coveBlackjackRouter.post('/session/open', async (c) => {
       sql`SELECT id FROM blackjack_shoes WHERE ${lockWhere} FOR UPDATE`,
     );
     const id = rows[0]?.id;
-    if (!id) return null;
-    return (await tx.query.blackjackShoes.findFirst({ where: eq(blackjackShoes.id, id) })) ?? null;
+    if (!id) return { kind: 'fresh' as const };
+
+    // GUEST ONLY: if the locked open shoe carries an in_progress hand, it is an
+    // orphan — void it + close the shoe under THIS lock, then signal fall-through
+    // to a fresh open. Gated strictly on guest (NOT isLedgerSubject); authed
+    // shoes are always resumed verbatim below.
+    if (!isLedgerSubject(subject)) {
+      const orphanHandRows = await tx.execute<{ id: string }>(
+        sql`SELECT id FROM blackjack_hands
+            WHERE shoe_id = ${id} AND status = 'in_progress' LIMIT 1`,
+      );
+      const orphanHandId = orphanHandRows[0]?.id;
+      if (orphanHandId) {
+        // Void the orphan hand (demo stake forfeit). status='in_progress' guard
+        // makes this idempotent vs a concurrent settle that won the race — if it
+        // already flipped, our update touches 0 rows and we still close the shoe.
+        await tx
+          .update(blackjackHands)
+          .set({
+            status: 'settled',
+            outcomeJson: { voided: true, reason: 'guest_orphan_auto_recover' },
+            payout: '0',
+            net: '0',
+            settledAt: new Date(),
+          })
+          .where(
+            and(eq(blackjackHands.id, orphanHandId), eq(blackjackHands.status, 'in_progress')),
+          );
+        // Close the orphan shoe so the guest's partial unique open-shoe index is
+        // freed for the fresh shoe inserted below (avoids a 23505 on re-open).
+        await tx
+          .update(blackjackShoes)
+          .set({ status: 'closed', closedAt: new Date() })
+          .where(eq(blackjackShoes.id, id));
+        return { kind: 'recovered' as const, orphanShoeId: id, orphanHandId };
+      }
+      // Guest open shoe with NO live hand → resumable as-is (not an orphan).
+    }
+
+    const shoe =
+      (await tx.query.blackjackShoes.findFirst({ where: eq(blackjackShoes.id, id) })) ?? null;
+    return shoe
+      ? { kind: 'resume' as const, shoe }
+      : { kind: 'fresh' as const };
   });
 
-  if (resumed) {
+  if (resumed.kind === 'recovered') {
+    void logEventFromContext(c, {
+      eventType: 'cove.blackjack.guest_orphan_recovered',
+      userId: null,
+      avatarId: null,
+      agentId: null,
+      payload: {
+        orphanShoeId: resumed.orphanShoeId,
+        orphanHandId: resumed.orphanHandId,
+        reason: 'guest_orphan_auto_recover',
+      },
+    });
+    // fall through to fresh-shoe open below
+  } else if (resumed.kind === 'resume') {
     return c.json(
       {
-        shoe: publicShoe(resumed),
-        walletBalance: avatar ? avatar.clawTokens : Number(guestDemoBalance(resumed)),
+        shoe: publicShoe(resumed.shoe),
+        walletBalance: avatar ? avatar.clawTokens : Number(guestDemoBalance(resumed.shoe)),
       },
       200,
     );
@@ -1473,13 +1553,21 @@ coveBlackjackRouter.post('/action', async (c) => {
       {
         handId: hand.id,
         status: 'in_progress',
-        playerHands: peek.playerHands.map((h) => ({
+        // `isResolved` = server-authoritative per-sub-hand terminal flag (same
+        // source of truth as /hand/current). The client routes its active focus
+        // off it (a stood/doubled/surrendered/split-ace sub-hand is resolved even
+        // with isBust=false) — it cannot be derived from cards/total/isBust.
+        // Derived from the SAME peek/newScript already computed; no hidden reveal.
+        playerHands: peek.playerHands.map((h, slot) => ({
           cards: h.cards,
           total: h.total,
           isSoft: h.isSoft,
           isBust: h.isBust,
+          isResolved: subHandResolved(newScript, peek, slot),
         })),
-        dealerUpcard: peek.dealer.cards[0],
+        // NIT #1: coalesce to null to match /hand/current's one-shape parity
+        // (peek.dealer.cards[0] can be undefined on a malformed peek).
+        dealerUpcard: peek.dealer.cards[0] ?? null,
         didSplit: newScript.didSplit,
       },
       200,
@@ -2150,11 +2238,16 @@ coveBlackjackRouter.get('/hand/current', async (c) => {
       handIndex: liveHand.handIndex,
       status: 'in_progress' as const,
       // Same visible shape /action's non-terminal response returns (upcard only).
-      playerHands: peek.playerHands.map((h) => ({
+      // `isResolved` is the server-authoritative per-sub-hand terminal flag — the
+      // client CANNOT derive it from cards/total/isBust (a stood-21 and a live-21
+      // are byte-identical on the wire), so the server MUST send it. Derived from
+      // the SAME peek/script already computed; reveals no hidden state.
+      playerHands: peek.playerHands.map((h, slot) => ({
         cards: h.cards,
         total: h.total,
         isSoft: h.isSoft,
         isBust: h.isBust,
+        isResolved: subHandResolved(script, peek, slot),
       })),
       dealerUpcard,
       didSplit: script.didSplit,

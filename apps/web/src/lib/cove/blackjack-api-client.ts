@@ -135,8 +135,22 @@ export interface ActionInProgressResponse {
     total: number;
     isSoft: boolean;
     isBust: boolean;
+    /**
+     * Server-authoritative per-sub-hand terminal flag (FROZEN WIRE CONTRACT).
+     * A stood-21, doubled-no-bust, surrendered, or split-ace sub-hand is RESOLVED
+     * even though `isBust=false` — the client cannot derive this from cards/total/
+     * isBust (a stood-21 and a live-21 are byte-identical on the wire), so the
+     * server MUST send it. The modal uses it to focus the right split sub-hand and
+     * to gate the action buttons. Derived from the SAME peek/script the server
+     * already computed — never reveals hidden state.
+     */
+    isResolved: boolean;
   }>;
-  dealerUpcard: BlackjackCard;
+  /**
+   * Dealer upcard, or null (one-shape parity with /hand/current which coalesces
+   * `?? null`). The hole card is NEVER serialized while the hand is in progress.
+   */
+  dealerUpcard: BlackjackCard | null;
   didSplit: boolean;
 }
 
@@ -156,6 +170,16 @@ export interface CurrentHandLive {
     total: number;
     isSoft: boolean;
     isBust: boolean;
+    /**
+     * Server-authoritative per-sub-hand terminal flag (FROZEN WIRE CONTRACT —
+     * same field as ActionInProgressResponse.playerHands[].isResolved). RESOLVED
+     * covers stood-21 / doubled-no-bust / surrendered / split-ace, none of which
+     * the client can derive from cards/total/isBust. Used to restore focus onto a
+     * LIVE split sub-hand (not a terminal one → otherwise the action 400s
+     * `sub_hand_already_terminal`). Derived from the existing peek/script; never
+     * reveals hidden cards/seed.
+     */
+    isResolved: boolean;
   }>;
   dealerUpcard: BlackjackCard | null;
   didSplit: boolean;
