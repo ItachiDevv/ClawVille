@@ -5,7 +5,7 @@
 - [Collaborative ultrathink team mandatory for 3D / Blender / long tasks](standing-rules/parallel-ultrathink-team-mandatory.md) — A "team" is multiple agents working SEQUENTIALLY on the SAME concern (Implementer → Auditor → Fix loop), NOT N agents working on N different concerns in parallel. The audit step is the point. Every agent prompt must include "use ultrathink reasoning before writing code". Set + corrected 2026-04-29.
 
 ## Land Economy
-- [Land parcel for-sale render — merged BufferGeometry per tier](patterns/land-parcel-merged-render.md) — 176 parcels in 7 draw calls: 5 tier fence meshes + 1 post + 1 sign-plank (CanvasTexture atlas). NO InstancedMesh. Iris Xe safe. 2026-06-16.
+- [Land parcel for-sale render — merged BufferGeometry per tier (PREMIUM rework)](patterns/land-parcel-merged-render.md) — 180 parcels in 7 draw calls: 5 tier body meshes (pad+corner-posts+top-rails, MeshStandardMaterial) + 1 sign-post + 1 sign-plank (MeshBasicMaterial + per-tier atlas, UV-remapped per-parcel at geometry build time). Key technique: `remapUVsToAtlasRow(geo, rowIndex)` before merge collapses all 180 sign planks to 1 draw. NO InstancedMesh, NO ShaderMaterial, NO drei Text/Billboard. Build verified exit 0. 2026-06-17.
 
 ## Casino Slot Drums
 - [Per-cell-plane drum wheel — cherry-charm 3D slot drums](solutions/slot-drum-per-cell-plane.md) — 12 PlaneGeometry quads orbiting X-axis at DRUM_RADIUS=1.5wu. One 128×128 symbol texture per face. Back-crossing swap for zero-rebuild animation. Ortho camera left=-8.5/right=8.5. Verified prod df53dd3 2026-05-19.
