@@ -1,5 +1,8 @@
 # 3D Architect — Knowledge Base
 
+## Game-Dev Skill Suite
+- [Game-Dev Skill Suite — applicability + overrides](reference/game-skill-suite.md) — 8 generic game skills (3d-generator/image-generator/audio-generator/aaa-graphics/debug-profiler/game-ui/gameplay-systems/qa-release); per-skill when-to-use + ClawVille hard overrides (Iris Xe bans, VRM pipeline, Next.js+R3F stack, Coolify deploy, useIsMobile hook); game-director NOT in frontmatter.
+
 ## Standing Rules (read first)
 - [Three-Doc Standing Rule](standing-rules/three-doc-standing-rule.md) — Abide by `3dStructure.md` for all visual/3D decisions; `GameFeatures.md` for gameplay; `ARCHITECTURE.md` for tech stack. Unless the main session tells you to change behavior, do NOT deviate from what these docs specify. Every 3D code change requires a same-diff update to `3dStructure.md` (and a "Last Audited" bump). Live code > doc > CLAUDE.md > memory; memory is advisory only. Set 2026-04-17.
 - [Collaborative ultrathink team mandatory for 3D / Blender / long tasks](standing-rules/parallel-ultrathink-team-mandatory.md) — A "team" is multiple agents working SEQUENTIALLY on the SAME concern (Implementer → Auditor → Fix loop), NOT N agents working on N different concerns in parallel. The audit step is the point. Every agent prompt must include "use ultrathink reasoning before writing code". Set + corrected 2026-04-29.
