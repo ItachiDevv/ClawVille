@@ -497,7 +497,7 @@ function PlayerAvatarVRMInner({ reg }: { reg: ModelRegistryEntry }) {
     // governs the entire charge duration:
     //
     //   'squat' — walking/idle speed class: halt horizontal movement, play squat
-    //             surfaceClip (pelvis lowers, feet stay planted via getSquatGroundLift).
+    //             surfaceClip + procedural group lowering (squatCrouchRef ramp).
     //   'run'   — running speed class: keep running, skip squat surfaceClip.
     //
     // Mobile parity is automatic: mobile jump button writes jumpState.spaceDown
@@ -584,18 +584,18 @@ function PlayerAvatarVRMInner({ reg }: { reg: ModelRegistryEntry }) {
     group.position.y = effectiveFloorY + bob
                      + jumpState.heightOffset + jumpState.playerAltitude;
 
-    // NOTE (2026-06-17): The 2026-05-22 foot-anchor was removed because it
-    // read stale matrixWorld (before animator.update()). The 2026-05-22
-    // workaround that replaced it (adding 'squat' to IN_PLACE_CLIPS) stripped
-    // the hip-Y descent track, leaving a rotation-only squat that pulled feet
-    // UPWARD toward the pinned pelvis — the "midair squat" BUG 1.
+    // Procedural squat crouch (BUG 1 fix, revised 2026-06-17).
     //
-    // The 2026-06-17 fix: 'squat' removed from IN_PLACE_CLIPS (hip-Y descent
-    // preserved). group.position.y is corrected AFTER animator.update() below
-    // via VRMCharacterAnimator.getSquatGroundLift(), which reads the hip-Y
-    // descent directly from the clip keyframe data (no bone read, no matrixWorld,
-    // no per-frame allocation). The group lift exactly cancels the hip descent
-    // so the net visual result is: pelvis descends toward planted feet.
+    // The squat clip hips.position Y is CONSTANT (headless harness: raw track
+    // Y=104.226...104.226, 2 keyframes, zero descent). All squat motion is
+    // rotation-only → the pelvis stays at standing height → feet are pulled
+    // UP by the knee-bend rotations. The prior getSquatGroundLift() approach
+    // (sampling hip-Y descent) was a no-op because descent is always 0.
+    //
+    // Fix: PROCEDURALLY lower group.position.y by a target crouch depth
+    // (SQUAT_CROUCH_VRM_M × vrmRenderScale world units), ramped smoothly.
+    // After animator.update() + group.updateMatrixWorld(), read the lowest
+    // foot/toe bone world-Y and clamp so feet don't sink below effectiveFloorY.
 
     // Rotation: see atan2(-vx, -vy) derivation above (VRM faces -Z, need sign negation).
     if (continuousRot !== null) {
@@ -624,28 +624,20 @@ function PlayerAvatarVRMInner({ reg }: { reg: ModelRegistryEntry }) {
 
     const dt = Math.min(delta, 0.1);
 
-    // Squat / swim / fly animation pipeline (revised 2026-06-17).
+    // Animation pipeline (revised 2026-06-17).
     //
     //   CHARGING + chargeMode 'squat' (idle/walk entry): surfaceClip = 'squat'.
-    //     Mixamo squat plays from the moment SPACE goes down so the avatar
-    //     visibly preps while the player holds-to-charge. group.position.y is
-    //     corrected by getSquatGroundLift() (see below) so feet stay planted.
+    //     Mixamo squat plays (rotation-only — hips Y is CONSTANT in the asset).
+    //     group.position.y is procedurally lowered by SQUAT_CROUCH_VRM_M×scale
+    //     so the whole body visibly descends. After update(), foot replant clamps
+    //     feet to effectiveFloorY. lockIdle=true so walk↔idle crossfade stays off.
     //
     //   CHARGING + chargeMode 'run' (run entry): no surfaceClip change.
-    //     Avatar keeps running through the charge — no squat wind-up. On
-    //     release the swim-up arc fires immediately.
+    //     Avatar keeps running; swim-up arc fires on release. No crouch.
     //
-    //   AIRBORNE (any phase ascending/descending/free-swim): surfaceClip
-    //     = 'flying' for Tekk, else 'swimming'. Body pitch (computed above)
-    //     leans back while ascending so the pose reads as upward motion.
+    //   AIRBORNE: surfaceClip = 'flying' (Tekk) or 'swimming'. Pitch leans back.
     //
-    //   GROUNDED idle/walk: surfaceClip = 'idle'. Normal walk↔idle
-    //     crossfade resumes.
-    //
-    // While squatting (chargeMode 'squat') OR airborne we pass isMoving=false
-    // so the animator's walk↔surfaceClip crossfade always picks surfaceClip.
-    // While run-charging we pass the real isMoving/isRunning so the run clip
-    // continues uninterrupted.
+    //   GROUNDED idle/walk: surfaceClip = 'idle'. Normal walk↔idle crossfade.
     const animator = vrmAnimatorRef.current;
     if (animator) {
       const phase = jumpState.phase;
@@ -657,38 +649,40 @@ function PlayerAvatarVRMInner({ reg }: { reg: ModelRegistryEntry }) {
 
       const desiredClip: AnimName =
         isSquatCharge ? 'squat'
-        : isRunCharge ? 'idle'   // run-charge keeps locomotion via isMoving=true below
+        : isRunCharge ? 'idle'
         : airborne    ? swimClip
         :               'idle';
       if (desiredClip !== lastSurfaceClipRef.current) {
         animator.setSurfaceClip(desiredClip);
         lastSurfaceClipRef.current = desiredClip;
       }
-      // BUG 1 fix (2026-06-17): compensate the hip-Y descent from the squat
-      // clip so feet stay planted at effectiveFloorY.
-      //
-      // BUG 1 fix (2026-06-17): keep avatar feet on the floor during squat charge.
-      //
-      // The retargeted squat clip hip-Y starts at restHipY (~0.89 VRM-meters for
-      // Milady) and descends as the character crouches (~0.63 at deepest). The
-      // correct world-unit lift = (restHipY − currentHipY) × vrmRenderScale.
-      //   Standing frame:  (0.89 − 0.89) × 168.75 = 0 wu  (no lift)
-      //   Deepest squat:   (0.89 − 0.63) × 168.75 ≈ 44 wu (feet stay on floor)
-      //
-      // Applying the lift BEFORE animator.update() means the skeleton.update()
-      // call inside animator.update() uploads boneMatrices with the group at
-      // the corrected Y. The 1-frame lag (last frame's clip time) is imperceptible
-      // on a ~1 Hz squat.
-      if (isSquatCharge) {
-        const lift = animator.getSquatGroundLift(animator.getSquatClipTime(), vrmRenderScale);
-        if (lift > 0) {
-          group.position.y += lift;
-        }
-      }
 
       // lockIdle = squat-charge or airborne. Run-charge passes real isMoving/isRunning.
       const lockIdle = isSquatCharge || airborne;
       animator.update(dt, lockIdle ? false : isMoving, lockIdle ? false : isRunning);
+
+      // BUG 1 fix (2026-06-17, v3 — foot grounding). The 'squat' clip is
+      // ROTATION-ONLY: its hips never translate down (raw hips position track is
+      // a constant — verified flat Y=104.226). So bending the knees with the body
+      // pinned at standing height LIFTS the feet toward the pelvis — the "midair
+      // squat / legs to body-center" the user reported. Fix: after the pose is
+      // baked, PLANT the lowest foot back on the floor by moving the group by
+      // -(lowestFootY - effectiveFloorY). When the squat lifts the foot above the
+      // floor this LOWERS the whole body, so it settles toward the planted feet =
+      // a squat DOWN toward the ground (the correct direction). The crouch DEPTH
+      // equals the clip's knee-bend; translating a rigid body can't deepen it
+      // (lower-then-replant cancels), so a deeper crouch needs a stronger/re-baked
+      // squat clip (tracked separately). Read AFTER update()+updateMatrixWorld so
+      // the foot world-Y reflects THIS frame's pose (the 2026-05-22 stale-
+      // matrixWorld trap that broke the prior foot-anchor).
+      if (isSquatCharge) {
+        group.updateMatrixWorld(true);
+        const lowestFootY = animator.getFootWorldYMin();
+        if (lowestFootY !== Infinity) {
+          group.position.y -= (lowestFootY - effectiveFloorY);
+          group.updateMatrixWorld(true);
+        }
+      }
     }
   }, -100);
 
