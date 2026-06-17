@@ -40,7 +40,7 @@ export function tierLabel(tier: LandTier): string {
  * expected launch concurrency before go-live (ROADMAP §7-Q2).
  */
 export const PARCEL_TIER_COUNTS: Record<LandTier, number> = {
-  founder: 4,
+  founder: 8, // 8 plots on Founders' Row (4 corners + 4 edge-mids of inner square frame)
   a: 8,
   b: 16,
   c: 40,
