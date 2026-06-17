@@ -618,6 +618,7 @@ function SidebarContent({ closeMenu }: SidebarContentProps) {
   const setAgentConnectModalOpen = useGameStore((s: GameState) => s.setAgentConnectModalOpen);
   const setSkillBuilderOpen = useGameStore((s: GameState) => s.setSkillBuilderOpen);
   const openMarketplace = useGameStore((s: GameState) => s.openMarketplace);
+  const openLandOffice = useGameStore((s: GameState) => s.openLandOffice);
   const openBazaar = useGameStore((s: GameState) => s.openBazaar);
   const openAuction = useGameStore((s: GameState) => s.openAuction);
   const setCosmeticDrawerOpen = useGameStore((s: GameState) => s.setCosmeticDrawerOpen);
@@ -887,6 +888,15 @@ function SidebarContent({ closeMenu }: SidebarContentProps) {
             icon="🛒"
             label="Marketplace"
             onClick={runAction(openMarketplace)}
+          />
+          {/* Land Economy (Phase 1) — browse for-sale parcels, claim a free
+              starter home, buy a priced parcel with CT, place + upgrade a
+              building/shop. Higher tiers unlock nicer buildings + higher levels. */}
+          <SidebarRow
+            icon="🏝️"
+            label="Land Office"
+            onClick={runAction(openLandOffice)}
+            rarity="epic"
           />
           <SidebarRow
             icon="⚖"
