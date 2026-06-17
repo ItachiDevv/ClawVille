@@ -12,7 +12,8 @@
 > - **`ARCHITECTURE.md`** — backend routes / services / schema / events / leaderboard rubric.
 > - **This doc** — gameplay surfaces: what the player sees + does, the UI components, the modes, the economy formulas, the quest list.
 
-**Last Audited:** 2026-06-15 (Cove agent-parity completed across ALL FOUR games — §18a.l. `cove-slots.ts` + `cove-baccarat.ts` + `cove-holdem.ts` now resolve a connected/hosted agent session to its bound avatar for real-CT settlement, matching `cove-blackjack.ts`; guests stay demo; non-ledger/unbound agents get 403. No leaderboard change; no `PROTOCOL_VERSION` bump — settlement resolver only, agent ACTION whitelist unchanged. Closes the Rule E5 retroactive cove debt. Prior audit follows.)
+**Last Audited:** 2026-06-17 (Land Economy Phase 1 — NEW §18b. Priced parcel buy (server-stamped `price_ct`, cap 5/avatar, Founder→501), tier-gated structure placement (free Lv1, `isSkuAllowedForTier`) + priced upgrades (`STRUCTURE_UPGRADE_COSTS`, tier ceiling `getTierMaxLevel`), `/owned`+`/me` now return `{parcels, structures}`. Leaderboard: 3 land events scored (`land.parcel.purchased` 5, `land.structure.placed` 3, `land.structure.upgraded` 5) from shared constants, mirrored in both agent/avatar CTEs. Rule E5 parity: human cookie OR agent session both buy/place/upgrade as the bound avatar with real CT + leaderboard. `ARCHITECTURE.md §2/§5a/§5b` + Nori `town-guide.ts` updated same-diff. Prior audit follows.)
+> **Prior Last Audited:** 2026-06-15 (Cove agent-parity completed across ALL FOUR games — §18a.l. `cove-slots.ts` + `cove-baccarat.ts` + `cove-holdem.ts` now resolve a connected/hosted agent session to its bound avatar for real-CT settlement, matching `cove-blackjack.ts`; guests stay demo; non-ledger/unbound agents get 403. No leaderboard change; no `PROTOCOL_VERSION` bump — settlement resolver only, agent ACTION whitelist unchanged. Closes the Rule E5 retroactive cove debt. Prior audit follows.)
 
 **Prior Last Audited:** 2026-06-15 (Hatcher owner-launch = CONTROLLED mode through the magic link, §2f — SUPERSEDES the 2026-06-13 spectate/observe-only framing below). The owner-launch handler now lands the owner in `controlMode:'player'` DRIVING the agent's bound avatar instead of spectating in 'explore': `setControlMode('player')` (no `hatcherSpectate`/`requestCameraFocus`; stale spectate flag defensively cleared), the exchange sends + returns `mode:'controlled'`, and the agent's separate autonomous `oc-${sessionId}` sim body is SUPPRESSED server-side (hidden from snapshots; skipped by planNpcBehaviors/getIdleAliveNpcs/findNearestIdleNpc/moveNpcs; frozen on prime; `[ACTION:]` tags stripped un-executed) while the owner drives — primed for 3s by the exchange (keyed on the namespaced agentId) and refreshed by the 5Hz `POST /api/world/position`, auto-expiring ~3s after driving stops (explore mode gates uploads off → autonomy resumes). The exchange ENFORCES the identity invariant suppression rests on: `409 agent_not_bound` if the agent row has no bound user, `403 agent_not_owned` if the launching Lucia session ≠ the agent's bound user (both new on `HatcherLaunchExchangeResponse.error`) — fail loud, never silently dupe a body. Multi-agent precision + bubble-leak FIXED (follow-up, same session): suppression is keyed to the LAUNCHED agent (server-side `humanControlledOpenClawLaunchesByUser` Map bound at exchange) so refresh re-ups ONLY the launched agent — a user's other Hatcher proxies keep running; the binding outlives the 3s TTL so a >3s upload stall is re-primed on resume (no permanent two-body); and both snapshots filter active conversations involving a suppressed proxy so no lingering bubble. Files: `packages/shared/src/types/openclaw.ts`, `apps/api/src/routes/{partner-hatcher-launch,world}.ts`, `apps/api/src/services/npc-simulation.ts`, web `components/game/hatcher-launch-handler.tsx`. Gates: `bunx tsc --noEmit` apps/api exit 0 (after `@clawville/shared` rebuild); `bunx next build` apps/web exit 0; Codex independent review SHIP-WITH-FIXES → both required fixes (ownership guard + complete freeze) applied. CONFIRMED + LIVE 2026-06-15: Hatcher aligned `/launch/exchange` to the spec + deployed to prod + repointed Hatcher PROD → ClawVille PROD (issuer `.well-known`s smoke-checked); controlled launch live prod↔prod. Detail: `ARCHITECTURE.md §13` 2026-06-15. PARITY: human path = magic-link → `'player'` of the bound avatar; agent path = the SAME avatar (its autonomous proxy is the suspended one); settlement binds to `row.userId`. Team `controlled-magic-link-2026-06-15` (Claude impl + Codex review). Prior audit follows.
 
@@ -1194,6 +1195,50 @@ Player avatar (VRM or GLB) mounts inside the casino interior scene. Fully self-c
 **Agent reach:** an agent walks to the cove via the in-world `[ACTION: enter_cove()]` verb (`npc-simulation.ts` executor) and drives play through the session-bearer'd cove endpoints (the four blackjack tools today; the slots/baccarat/hold'em session-bearer endpoints accept the same `X-Clawville-Agent-Session` header). The agent ACTION whitelist is **unchanged** — only the settlement resolver changed — so **no `PROTOCOL_VERSION` bump** (Hatcher whitelist/manual parity untouched).
 
 **PARITY:** human path = the cove modals (`/api/cove/{slots,blackjack,holdem,baccarat}/*` via Lucia cookie); agent path = the same endpoints with the agent-session bearer; settlement binds to the agent's bound-avatar `userId`. **No leaderboard change** — cove emits no `activity.match.placed` for any subject by design (parity = real-CT settlement only; adding scoring later must be done for both paths together to stay parity-clean). Slots converted endpoints: `POST /spin`, `POST /session/open`, `POST /session/close`, `GET /session/current`, `GET /session/:id`, `GET /session/:id/spins` are now subject-resolved (agent + human; guest demo where applicable). Files: `apps/api/src/routes/cove-{slots,baccarat,holdem}.ts`.
+
+---
+
+## 18b. Land Economy — parcels, structures, upgrades (Phase 1, 2026-06-17)
+
+Owned land on the shared world. Phase 0 seeded the parcel grid + tier schema; Phase 1 is the first user-facing economy: **claim a free starter parcel, BUY more with ClawTokens, place a home/shop on a parcel you own, and UPGRADE it to climb levels.** Backend: `apps/api/src/routes/land.ts` (`/api/land/*`). Constants (tiers, prices, catalog, upgrade costs, leaderboard weights): `packages/shared/src/constants/land-economy.ts` + `land-tiers.ts`. Full route/response contract: `ARCHITECTURE.md §2` (`land.ts` row) + the FROZEN CONTRACT block at the top of `land.ts`.
+
+### 18b.a. Parcels — claim free + buy with CT
+
+- **Free starter (Slice A):** `POST /api/land/claim-starter` grants one starter-tier parcel, once per avatar (idempotent; a second call returns the existing one, `alreadyOwned:true`). No CT cost. Atomic `FOR UPDATE SKIP LOCKED` grant so two concurrent claims never double-grant; empty pool ⇒ 409 `no_starter_available`.
+- **Priced buy (Slice B):** `POST /api/land/parcels/:parcelId/buy` debits the **server-stamped** `land_parcels.price_ct` (the client never sends a price) through the ClawToken ledger (`debitClawTokens` — never a raw `avatars.clawTokens` write). Price is **fixed per parcel by tier** (inner-ring parcels cost more). Insufficient balance ⇒ 400 `insufficient_clawtokens`. **Ownership cap:** one avatar can own at most `MAX_PARCELS_PER_AVATAR = 5` parcels (counted under the per-avatar advisory lock; over cap ⇒ 409 `parcel_cap_reached`). A buy on an already-owned parcel ⇒ 409 `parcel_not_available` (the `available`→`owned` status flip under `SELECT … FOR UPDATE` makes the charge single-shot — a replay sees `owned`). **Founders' Row is NOT buyable with CT in v1** — it is auction/USDC-only, so its `price_ct` is NULL and a buy returns 501 `founder_not_in_v1`.
+- **Reads:** `GET /api/land/parcels?tier=&status=` (public for-sale browse, default `status='available'`), `GET /api/land/owned/:avatarId` (public render seam → `{parcels, structures}`), `GET /api/land/me` (your own holdings → `{avatarId, parcels, structures}`, cache-bypassed so a just-completed buy/place/upgrade shows immediately).
+
+### 18b.b. Structures — place free, upgrade for CT, tier-gated
+
+- **Place (free, Lv1):** `POST /api/land/parcels/:parcelId/structure` puts a `home` or `shop` on a parcel you own, at level 1, **no CT charge**. Body `{structureType, catalogKey}`. The `catalogKey` must be on the allowlist for that type AND **allowed for the parcel's tier** (`isSkuAllowedForTier`) — a fancy SKU on a low tier ⇒ 400 `sku_not_allowed_for_tier`. One structure per parcel (UNIQUE) ⇒ second attempt 409 `structure_exists`.
+- **Upgrade (priced):** `POST /api/land/structures/:structureId/upgrade` climbs the structure one level for a **server-derived** CT cost `STRUCTURE_UPGRADE_COSTS[targetLevel]` = `[_, 0, 600, 1800, 4500, 11000]` (Lv1→2 costs 600, … Lv4→5 costs 11000). Optional `idempotencyKey` makes a retry of the SAME upgrade safe (returns `idempotencyReplay:true`, no second debit) — but the key is GLOBAL across all structures, so reusing a key on a DIFFERENT structure ⇒ 409 `idempotency_key_conflict` (use a fresh key per upgrade; ownership is checked before any replay so a key can't touch someone else's structure). Insufficient balance ⇒ 400 `insufficient_clawtokens`.
+- **THE KEY TIER RULE:** higher-tier parcels unlock **nicer buildings** AND let you **upgrade them further**. Each tier is a superset of the one below:
+
+  | Tier | Max upgrade level | Homes unlocked | Shops unlocked |
+  |---|---|---|---|
+  | **Starter** | 2 | shack, cottage | stall, shopfront |
+  | **C** | 3 | + house | + market |
+  | **B** | 4 | + villa | + emporium |
+  | **A** | 5 | + mansion | + grand bazaar |
+  | **Founder** | 5 + premium | ALL + `Founders' Estate` | ALL + `Founders' Exchange` |
+
+  An upgrade past the parcel's tier ceiling ⇒ 409 `tier_max_level`; past the global Lv5 cap ⇒ 409 `max_level_reached`. So a Starter plot caps low; a Founders' plot climbs to the top level and unlocks the premium founder-only buildings.
+
+### 18b.c. Leaderboard credit (same engine, same weights as everything else)
+
+Land actions feed the one unified leaderboard (`leaderboard.ts`, see §7 + `ARCHITECTURE.md §5b`), scored from `LAND_EVENT_WEIGHTS`/`LAND_EVENT_DAILY_CAPS` in `@clawville/shared`:
+
+| Action | Event | Weight | Daily cap |
+|---|---|---|---|
+| Acquire a parcel (free starter OR priced buy) | `land.parcel.purchased` | 5 | 5 |
+| Place a home/shop | `land.structure.placed` | 3 | 5 |
+| Upgrade a structure | `land.structure.upgraded` | 5 | 10 |
+
+(`land.service.sold` weight 40 — selling a shop service — is defined but not yet wired; shop services are a later phase.) Caps are per (subject, day). Players (avatar-only) and Trainers (agent) score land **identically** — the same FILTER columns sit in both the `agent_daily` and `avatar_daily` CTEs.
+
+### 18b.d. Human / agent PARITY (Rule E5)
+
+Every land write — claim, buy, place, upgrade — goes through `requireAuthOrAgentSession`, which resolves a REAL avatar for BOTH a logged-in **human** (Lucia cookie) AND a **connected/hosted agent** (`X-Clawville-Agent-Session` → its bound avatar). There is **no guest fallback** on these routes (guests get 401), so an agent buys/places/upgrades **as itself**, spending its own CT and earning the same leaderboard credit a human would. No client value reaches any debit (avatar server-resolved, price server-read, upgrade cost server-derived). **PARITY note —** human path: the `/api/land/*` endpoints via cookie; agent path: the same endpoints via `X-Clawville-Agent-Session`; settlement binds to `identity.avatarId`. Phase 3 adds the agent `tools.json` + `[ACTION:]` discovery surface so an agent can DRIVE the land economy through its action channel (settlement is already parity-bound; that phase is discovery-only).
 
 ---
 
