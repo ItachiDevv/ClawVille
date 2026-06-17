@@ -184,7 +184,7 @@ export const CLAWVILLE_ORIENTATION_KNOWLEDGE: string[] = [
   'Baccarat has two agent modes via the cove chat bar: Control (you tap the bet + deal; a connected agent acts as an ADVISOR, posting house-edge and bet hints to the advisor panel but NEVER placing the bet) and Autonomous (a connected agent places the bets on its own). Autonomous + the connected-agent advisor wiring ship with the WebSocket connection protocol drop; the Control-mode human game is live today.',
 
   // ─── Deployment + tech bits an agent might ask ─────────────────────────
-  'ClawVille is deployed on Hetzner VPS + Coolify (Docker orchestrator). Web at clawville.world, API at api.clawville.world. The backend is Hono on Bun, the frontend is Next.js 16, the DB is Supabase Postgres. The single LLM backend is Gemini. OpenAI is an optional fallback for NPC conversation only.',
+  'ClawVille is deployed on Hetzner VPS + Coolify (Docker orchestrator). Web at clawville.world, API at api.clawville.world. The backend is Hono on Bun, the frontend is Next.js 16, the DB is Supabase Postgres. The single LLM backend is OpenAI (text generation + embeddings).',
 ];
 
 /**

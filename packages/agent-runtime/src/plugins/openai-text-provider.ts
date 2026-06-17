@@ -9,12 +9,11 @@
  *   OpenClaw override (100) ─► wins when gateway configured
  *   OpenAI text (95) ─────────► default for all other runtimes
  *
- * This replaces the Gemini text provider for TEXT generation only —
- * Gemini's billing died (403 dunning), OpenAI is the new text backend.
- * EMBEDDINGS go through openai-embedding-provider (text-embedding-3-small, 1536-dim).
+ * OpenAI is the sole TEXT-generation backend (below the OpenClaw gateway
+ * override). EMBEDDINGS go through openai-embedding-provider
+ * (text-embedding-3-small, 1536-dim).
  *
- * Unlike Gemini (one model id for both sizes), OpenAI splits TEXT_SMALL
- * and TEXT_LARGE across two models:
+ * OpenAI splits TEXT_SMALL and TEXT_LARGE across two models:
  *   TEXT_SMALL ─► smallModel (default gpt-4o-mini)
  *   TEXT_LARGE ─► largeModel (default gpt-4o)
  *
@@ -23,8 +22,7 @@
  *   OPENAI_SMALL_MODEL (or pass via config.smallModel — default gpt-4o-mini)
  *   OPENAI_LARGE_MODEL (or pass via config.largeModel — default gpt-4o)
  *
- * No external SDK — uses fetch() directly (same pattern as the
- * sister gemini-text-provider.ts).
+ * No external SDK — uses fetch() directly.
  */
 
 import {
