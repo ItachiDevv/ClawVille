@@ -70,7 +70,7 @@ const ELIZA_ENV_SECTION: SetupSection = {
   code: {
     language: 'bash',
     value: `DATABASE_URL=postgresql://eliza:eliza@localhost:5432/eliza
-GEMINI_API_KEY=your-gemini-key-here`,
+OPENAI_API_KEY=your-openai-key-here`,
   },
 };
 
