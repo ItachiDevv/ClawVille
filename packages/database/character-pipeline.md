@@ -1,0 +1,42 @@
+# Hatcher / Realistic Character Pipeline (REBUILT 2026-06-18 — Meshy subscription + OpenAI, NO Blender, NO Mixamo)
+
+**Status:** validated end-to-end on **Cronus** (user sign-off on look 2026-06-18). The 3 remaining Hatcher avatars (Helen, Clytemnestra, Phanes) run the same recipe.
+**Supersedes:** the Tripo-via-fal + manual-Mixamo + Blender-finalize pipeline (the "SOLVED 2026-06-09" version). That whole path is DEAD — **Mixamo is removed from the pipeline** (user decision 2026-06-18: manual Mixamo rigging is unsustainable; it required me to do Blender work, which is banned). **No Blender step anywhere in the new pipeline.**
+
+## Why this exists
+We bought a **Meshy subscription** (MCP server `@meshy-ai/meshy-mcp-server`, key in `~/.itachi-api-keys` + `~/.mcp.json` as `MESHY_API_KEY`, ~3,100 credits). Meshy does mesh-gen AND auto-rig AND a 678-action animation library — the entire asset pipeline, no Blender, no Mixamo web upload. Animations are **Meshy-native clips** (baked on Meshy's own 24-bone rig), NOT Mixamo-retargeted.
+
+## The recipe (per avatar `<slug>`)
+
+| # | Step | Tool / command | Cost | Notes |
+|---|------|----------------|------|-------|
+| 1 | **Turnarounds (OpenAI)** | `node scripts/hermes-pipeline/openai-turnaround.mjs <slug> front,back,3q,face` | ~$0.60 (OpenAI billing) | `gpt-image-1` via `images/edits`, anchored to the existing `<slug>-turnaround/source-ref.png` + `front.png` for identity. **The 4 views are FRONT · BACK · 3/4 DIAGONAL · FACE** (user-specified). NOT front/side/back — a true side view of a T-pose foreshortens the arms into a stub and contradicts the front, which corrupts multi-view reconstruction (this was a hidden root of the old arm-malformation). 3/4 gives depth without the conflict; face gives facial fidelity. Output → `<slug>-turnaround/openai/{front,back,3q,face}.png`. Originals never overwritten. |
+| 2 | **APPROVAL GATE** | gallery HTML → `Start-Process` in the user's browser | — | MANDATORY before any paid step. Cheap insurance: bad images → bad mesh → wasted 20–30 cr. |
+| 3 | **Mesh (Meshy)** | MCP `meshy_multi_image_to_3d` — feed all 4 views | **PAID ~20–30 cr** | `ai_model:meshy-6, pose_mode:t-pose, symmetry_mode:on, should_remesh:true, topology:quad, target_polycount:60000, should_texture:true, enable_pbr:true, image_enhancement:true, remove_lighting:true, target_formats:["glb"]`. Poll `meshy_get_task_status` (task_type `multi-image-to-3d`). Download via `meshy_download_model` (writes GLB + PBR maps locally) → `<slug>-mesh/meshy-openai/mesh.glb`. |
+| 4 | **Mesh QC** | geometry sanity (node) + model-viewer | free | Parse GLB bbox: **armspan/height ≈ 0.95–1.25** (confirms T-pose arms extended; arms-down would be ~0.3–0.45) and **X-symmetry `|min+max|/width` < 0.08** (catches the asymmetric-arm malformation). Face count must be **≤ 300,000** for rigging. Visual: `_view.html` model-viewer via the local server (below). |
+| 5 | **Rig (Meshy)** | MCP `meshy_rig` `{ input_task_id:<mesh task>, height_meters:1.85 }` | **PAID 5 cr** | Includes FREE **walk + run** clips (GLB+FBX, `_withSkin` + `_armature` variants). Rig is a standard **24-bone humanoid, BARE names** (`Hips, Spine, Spine01, Spine02, neck, Head, LeftShoulder/Arm/ForeArm/Hand, Right…, LeftUpLeg/Leg/Foot/ToeBase, Right…`, + `head_end, headfront`). The `meshy_download_model` for a rigging task returns **URLs only (no local write)** — curl `rigged_character_glb_url` + `basic_animations.{walking,running}_glb_url` yourself (`--ssl-no-revoke`). |
+| 6 | **Animate the rest (Meshy)** | MCP `meshy_animate` `{ rig_task_id, action_id }` per clip, then `node scripts/hermes-pipeline/fetch-meshy-anims.mjs` (edit the task-id map) to poll + download | **PAID 3 cr each** | walk/run already free. Core set + action_ids: **idle 0, swimming 569, jump 86, cheering 59 (Victory_Cheer), wipeout 187 (Knock_Down), wave 28 (Big_Wave_Hello), talk 313 (Talk_with_Hands_Open), dance 64 (All_Night_Dance)** = 8 clips = 24 cr. Each is a full 72-channel skeletal clip on the same 24 bones. Output → `<slug>-mesh/meshy-openai/anim/<slot>.glb`. |
+| 7 | **VRM inject (pure Node)** | `node scripts/hermes-pipeline/inject-vrm-meshy.mjs <rigged.glb> <slug>.vrm --name <Name>` | free | Adds `VRMC_vrm` 1.0 humanoid metadata mapping the 22 bare Meshy bones → VRM humanoid bones. **NO rename, NO reparent, NO inverse-bind-matrix edit** (Codex-confirmed: three-vrm uses the humanoid map for `getNormalizedBoneNode`, not bone names). BIN chunk sha256-preserved (asserted in-script). |
+| 8 | **Runtime: native-Meshy animator mode** | `vrm-character-animator.ts` (NEW mode) + per-clip mapping | free | **TODO / Codex-spec'd, not yet built.** Meshy clips target RAW bones (`Hips.quaternion`), so do NOT feed them through `mixamo-retarget`. New mode: bind `AnimationMixer` to `vrm.scene`, play raw clips against raw node names, set `vrm.humanoid.autoUpdateHumanBones=false`, SKIP `vrm.humanoid.update()` (its normalized→raw copy would overwrite the animation), but still run `springBoneManager?.update()` + `scene.updateMatrixWorld(true)` + the skeleton flush. Don't mix native + retargeted clips in one animator. |
+
+## Animation library (Meshy)
+- 678 actions. There is **no list-endpoint** in the API — the catalog is the docs page `https://docs.meshy.ai/en/api/animation-library` (a `<table>`; parse `action_id`→name). A snapshot lives at `/tmp/meshy_actions.json` during a session; re-fetch if stale.
+- **Gaps Meshy does NOT have (and Mixamo is banned, so no fallback):** `skateboarding` / `surfing` (none — closest are `390 Stand_on_Pole_and_Balance` / `516 slide_light`, both rejected on Cronus 2026-06-18), `flying`/`hover` (none clean), `praying` (none). These are per-character *specials* the legacy avatars have for their themes; absent slots fall back gracefully. Revisit per-avatar only if one genuinely needs it (e.g. Reef Race surf — deferred, reef race isn't done).
+
+## Local QC viewers (Iris-Xe-safe WebGL, model-viewer)
+Static server: `cd apps/web/public && python -m http.server 8799` (run in background). Then:
+- `…/cronus-mesh/meshy-openai/_view.html` — static mesh
+- `…/cronus-mesh/meshy-openai/_walk.html` — rig walk/run/T-pose
+- `…/cronus-mesh/meshy-openai/_anims.html` — ALL clips, button per slot
+Open via `Start-Process "http://localhost:8799/…"`. model-viewer auto-plays the first clip; never trust it for final in-engine judgment (that's step 8 + `/preview/hermes`).
+
+## Jewelry / fine-accessory rule (still applies — i2m limitation, not tool-specific)
+Thin ornate metal (forehead circlets, diadem filigree, fine chains) does **not** survive image-to-3D — every tool melts it into a soft raised band. Re-rolling does NOT fix it. The old fix was modeling it in Blender + weighting to `Head` — but Blender is banned now, so for the Meshy pipeline: accept the melted band, or design the character so fine metal isn't load-bearing. Never texture-repaint a flat accessory ("shoes are just a texture on the leg" was rejected).
+
+## Asset layout per slug
+`apps/web/public/models/<slug>-turnaround/` (original turnarounds + `source-ref.png`) + `…/openai/` (the 4 OpenAI views) · `<slug>-mesh/meshy-openai/` (`mesh.glb` + PBR maps, `rigged.glb`, `walk.glb`, `run.glb`, `anim/<slot>.glb`, `<slug>.vrm`, `_*.html` viewers) · final published VRM → `apps/web/public/avatars/<slug>.vrm` (after step 8 wiring).
+
+## Scripts (committed, the pipeline)
+- `scripts/hermes-pipeline/openai-turnaround.mjs` — OpenAI 4-view turnaround gen.
+- `scripts/hermes-pipeline/inject-vrm-meshy.mjs` — bare-name → VRM 1.0 humanoid injector.
+- `scripts/hermes-pipeline/fetch-meshy-anims.mjs` — poll + download a batch of `meshy_animate` tasks.
