@@ -147,167 +147,195 @@ function QuestPanel({
 
   return (
     <div className={mobile ? 'w-[220px] max-w-[75vw]' : 'w-full'}>
-      {/* Collapsed header — always visible */}
-      <button
-        onClick={onToggle}
-        className={`w-full claw-panel ${isCompactMobile ? '!p-2 !rounded-lg' : '!p-4 !rounded-xl'} flex items-center gap-2 hover:brightness-105 transition-all group ${
+      {/* S6 — ONE claw-panel: unframed header on top, scroll body under a
+          divider. Was two stacked rounded panels that read as "duplicate boxes",
+          and the active quest rendered both in the header AND the list. Now the
+          header is SLIM while expanded (the active card in the body owns the
+          progress/hint) and rich only while collapsed. */}
+      <div
+        className={`claw-panel !p-0 overflow-hidden ${isCompactMobile ? '!rounded-lg' : '!rounded-xl'} ${
           isNew ? 'animate-pulse ring-4 ring-claw-green ring-offset-2' : ''
         }`}
       >
-        {allDone ? (
-          <span className={isCompactMobile ? 'text-lg' : 'text-2xl'}>🏆</span>
-        ) : activeQuest ? (
-          <span className={isCompactMobile ? 'text-lg' : 'text-2xl'}>{activeQuest.icon}</span>
-        ) : (
-          <span className={isCompactMobile ? 'text-lg' : 'text-2xl'}>📋</span>
-        )}
-
-        <div className="flex-1 min-w-0 text-left">
-          <div className={`text-white font-black truncate ${isCompactMobile ? 'text-xs' : 'text-base'}`}>
-            {allDone
-              ? 'Tutorial Complete!'
-              : activeQuest
-              ? activeQuest.title
-              : 'Tutorial'}
-          </div>
-          {!isCompactMobile && !allDone && activeQuest && !expanded && (
-            <div className="text-sm text-white/75 truncate mt-1 font-medium">
-              {activeQuest.hint}
-            </div>
-          )}
-          {!isCompactMobile && !allDone && activeQuest && (
-            <div className="h-2.5 w-full bg-black/15 rounded-full mt-2 overflow-hidden border border-black/5">
-              <div
-                className="h-full bg-claw-green rounded-full transition-all duration-500"
-                style={{ width: `${getProgress(activeQuest.id) * 100}%` }}
-              />
-            </div>
-          )}
-        </div>
-
-        <span className={`font-black text-white/60 whitespace-nowrap ${isCompactMobile ? 'text-[10px] ml-1' : 'text-sm ml-2'}`}>
-          {completedCount}/{totalCount}
-        </span>
-
-        <svg
-          xmlns="http://www.w3.org/2000/svg"
-          width="18"
-          height="18"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="3"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          className={`text-white/50 transition-transform ${expanded ? 'rotate-180' : ''}`}
+        {/* Header — unframed top section */}
+        <button
+          onClick={onToggle}
+          aria-expanded={expanded}
+          className={`w-full ${isCompactMobile ? 'p-2' : 'p-3'} flex items-center gap-2 hover:brightness-105 transition-all group text-left`}
         >
-          <path d="m6 9 6 6 6-6" />
-        </svg>
-      </button>
+          <span className={isCompactMobile ? 'text-lg' : 'text-xl'}>
+            {allDone ? '🏆' : activeQuest ? activeQuest.icon : '📋'}
+          </span>
 
-      {/* Expanded quest list */}
-      {expanded && (
-        <div className="mt-2 claw-panel !p-3 !rounded-xl space-y-2 max-h-[calc(100vh-640px)] min-h-[180px] overflow-y-auto animate-in fade-in slide-in-from-top-2 duration-150 shadow-xl">
-          {/* Active quest highlight */}
-          {activeQuest && (
-            <div className="bg-claw-green/15 rounded-lg px-3 py-3 mb-2 border-2 border-claw-green/50 shadow-sm">
-              <div className="flex items-center gap-3">
-                <span className="text-2xl">{activeQuest.icon}</span>
-                <div className="flex-1 min-w-0">
-                  <div className="text-base font-black text-white">
-                    {activeQuest.title}
-                  </div>
-                  <div className="text-sm text-white/85 font-medium mt-0.5 leading-snug">
-                    {activeQuest.hint}
-                  </div>
-                  <div className="h-3 w-full bg-black/30 rounded-full mt-2 overflow-hidden border border-white/10">
-                    <div
-                      className="h-full bg-claw-green rounded-full transition-all duration-500"
-                      style={{ width: `${getProgress(activeQuest.id) * 100}%` }}
-                    />
+          <div className="flex-1 min-w-0 text-left">
+            <div className={`text-white font-black truncate ${isCompactMobile ? 'text-xs' : 'text-sm'}`}>
+              {allDone ? 'Tutorial Complete!' : activeQuest ? activeQuest.title : 'Tutorial'}
+            </div>
+            {/* Rich details ONLY while collapsed — avoids duplicating the active
+                quest card that the expanded body shows. */}
+            {!isCompactMobile && !allDone && activeQuest && !expanded && (
+              <>
+                <div className="text-xs text-white/75 truncate mt-0.5 font-medium">
+                  {activeQuest.hint}
+                </div>
+                <div className="h-2 w-full bg-black/15 rounded-full mt-1.5 overflow-hidden border border-black/5">
+                  <div
+                    className="h-full bg-claw-green rounded-full transition-all duration-500"
+                    style={{ width: `${getProgress(activeQuest.id) * 100}%` }}
+                  />
+                </div>
+              </>
+            )}
+          </div>
+
+          <span className={`font-black text-white/60 whitespace-nowrap ${isCompactMobile ? 'text-[10px] ml-1' : 'text-xs ml-2'}`}>
+            {completedCount}/{totalCount}
+          </span>
+
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="3"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className={`text-white/50 transition-transform shrink-0 ${expanded ? 'rotate-180' : ''}`}
+          >
+            <path d="m6 9 6 6 6-6" />
+          </svg>
+        </button>
+
+        {/* Expanded body — same panel, divider + scroll region + bottom fade */}
+        {expanded && (
+          <div className="relative border-t border-white/10 animate-in fade-in slide-in-from-top-1 duration-150">
+            <div className="cv-quest-scroll space-y-1.5 p-2.5 overflow-y-auto max-h-[min(420px,calc(100vh-320px))]">
+              {/* Active quest highlight (its only render while expanded) */}
+              {activeQuest && (
+                <div className="bg-claw-green/15 rounded-lg px-2.5 py-2 border border-claw-green/50">
+                  <div className="flex items-center gap-2.5">
+                    <span className="text-xl">{activeQuest.icon}</span>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-black text-white truncate">{activeQuest.title}</div>
+                      <div className="text-xs text-white/85 font-medium mt-0.5 leading-snug">
+                        {activeQuest.hint}
+                      </div>
+                      <div className="h-2 w-full bg-black/30 rounded-full mt-1.5 overflow-hidden border border-white/10">
+                        <div
+                          className="h-full bg-claw-green rounded-full transition-all duration-500"
+                          style={{ width: `${getProgress(activeQuest.id) * 100}%` }}
+                        />
+                      </div>
+                    </div>
+                    <span className="font-mono text-[10px] text-amber-300/80">
+                      +{activeQuest.rewardTokens}
+                    </span>
                   </div>
                 </div>
-                <span className="font-mono text-[10px] text-amber-300/80">
-                  +{activeQuest.rewardTokens}
-                </span>
-              </div>
-            </div>
-          )}
+              )}
 
-          {/* Tier-grouped quests */}
-          {tieredList.map(({ tier, list }) => (
-            <div key={`tier-${tier}`} className="space-y-1">
-              <div className="px-2 pt-2 pb-1 font-mono text-[9px] uppercase tracking-[0.2em] text-white/40">
-                Tier {tier}
-              </div>
-              {list.map((quest) => {
-                const status = progress[quest.id]?.status ?? 'locked';
-                const prog = getProgress(quest.id);
-                const isCompleted = status === 'completed';
-                const isLocked = status === 'locked';
-                const isActive = status === 'active';
-                const isPending = quest.isPending;
-                return (
-                  <div
-                    key={quest.id}
-                    className={`flex items-center gap-3 px-3 py-2 rounded-lg transition-all ${
-                      isCompleted
-                        ? 'bg-claw-green/20'
-                        : isPending
-                        ? 'bg-amber-500/[0.05] border border-amber-500/15'
-                        : isLocked
-                        ? 'bg-white/[0.03]'
-                        : 'bg-white/[0.06]'
-                    }`}
-                  >
-                    <span className="text-xl flex-shrink-0">
-                      {isCompleted ? '✅' : isPending ? '🚧' : isLocked ? '🔒' : quest.icon}
-                    </span>
-
-                    <div className="flex-1 min-w-0">
+              {/* Tier-grouped quests */}
+              {tieredList.map(({ tier, list }) => (
+                <div key={`tier-${tier}`} className="space-y-1">
+                  <div className="px-1.5 pt-1.5 pb-0.5 font-mono text-[9px] uppercase tracking-[0.2em] text-white/40">
+                    Tier {tier}
+                  </div>
+                  {list.map((quest) => {
+                    const status = progress[quest.id]?.status ?? 'locked';
+                    const prog = getProgress(quest.id);
+                    const isCompleted = status === 'completed';
+                    const isLocked = status === 'locked';
+                    const isActive = status === 'active';
+                    const isPending = quest.isPending;
+                    return (
                       <div
-                        className={`text-sm font-bold truncate flex items-center gap-2 ${
+                        key={quest.id}
+                        className={`flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg transition-all ${
                           isCompleted
-                            ? 'text-white/50 line-through'
+                            ? 'bg-claw-green/20'
                             : isPending
-                            ? 'text-amber-200/80'
+                            ? 'bg-amber-500/[0.05] border border-amber-500/15'
                             : isLocked
-                            ? 'text-white/40'
-                            : 'text-white'
+                            ? 'bg-white/[0.03]'
+                            : 'bg-white/[0.06]'
                         }`}
                       >
-                        <span className="truncate">{quest.title}</span>
-                        {isPending && (
-                          <span className="font-mono text-[9px] uppercase tracking-[0.18em] text-amber-300/80 flex-shrink-0">
-                            soon
-                          </span>
-                        )}
-                      </div>
-                      {isActive && !isPending && (
-                        <div className="text-xs text-white/70 truncate font-medium">
-                          {quest.description}
-                        </div>
-                      )}
-                      {isActive && !isPending && (
-                        <div className="h-2 w-full bg-black/30 rounded-full mt-1 overflow-hidden">
-                          <div
-                            className="h-full bg-claw-green rounded-full transition-all duration-500"
-                            style={{ width: `${prog * 100}%` }}
-                          />
-                        </div>
-                      )}
-                    </div>
+                        <span className="text-lg flex-shrink-0">
+                          {isCompleted ? '✅' : isPending ? '🚧' : isLocked ? '🔒' : quest.icon}
+                        </span>
 
-                    <span className="ml-1 font-mono text-[10px] text-amber-300/80 whitespace-nowrap">
-                      +{quest.rewardTokens}
-                    </span>
-                  </div>
-                );
-              })}
+                        <div className="flex-1 min-w-0">
+                          <div
+                            className={`text-xs font-bold truncate flex items-center gap-2 ${
+                              isCompleted
+                                ? 'text-white/50 line-through'
+                                : isPending
+                                ? 'text-amber-200/80'
+                                : isLocked
+                                ? 'text-white/40'
+                                : 'text-white'
+                            }`}
+                          >
+                            <span className="truncate">{quest.title}</span>
+                            {isPending && (
+                              <span className="font-mono text-[9px] uppercase tracking-[0.18em] text-amber-300/80 flex-shrink-0">
+                                soon
+                              </span>
+                            )}
+                          </div>
+                          {isActive && !isPending && (
+                            <div className="text-[11px] text-white/70 truncate font-medium">
+                              {quest.description}
+                            </div>
+                          )}
+                          {isActive && !isPending && (
+                            <div className="h-1.5 w-full bg-black/30 rounded-full mt-1 overflow-hidden">
+                              <div
+                                className="h-full bg-claw-green rounded-full transition-all duration-500"
+                                style={{ width: `${prog * 100}%` }}
+                              />
+                            </div>
+                          )}
+                        </div>
+
+                        <span className="ml-1 font-mono text-[10px] text-amber-300/80 whitespace-nowrap">
+                          +{quest.rewardTokens}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              ))}
             </div>
-          ))}
-        </div>
-      )}
+            {/* Scroll affordance — bottom fade tells a new user there's more.
+                Matches the .claw-panel navy bg; pointer-events-none. */}
+            <div
+              className="pointer-events-none absolute inset-x-0 bottom-0 h-6"
+              style={{
+                background:
+                  'linear-gradient(to top, rgba(10,22,40,0.92) 0%, rgba(10,22,40,0) 100%)',
+              }}
+            />
+          </div>
+        )}
+      </div>
+
+      {/* Thin scrollbar so the scroll region reads as scrollable. */}
+      <style jsx>{`
+        :global(.cv-quest-scroll)::-webkit-scrollbar {
+          width: 6px;
+        }
+        :global(.cv-quest-scroll)::-webkit-scrollbar-thumb {
+          background: rgba(56, 189, 248, 0.35);
+          border-radius: 3px;
+        }
+        :global(.cv-quest-scroll) {
+          scrollbar-width: thin;
+          scrollbar-color: rgba(56, 189, 248, 0.35) transparent;
+        }
+      `}</style>
     </div>
   );
 }
