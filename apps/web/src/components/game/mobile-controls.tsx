@@ -5,6 +5,7 @@ import type { JoystickManager } from 'nipplejs';
 import { useIsMobile } from '@/hooks/use-is-mobile';
 import { useGameStore } from '@/stores/game';
 import { setJumpPressed } from '@/lib/three/jump-state';
+import { registerInputReset } from '@/lib/three/input-reset';
 
 export default function MobileControls() {
   const isMobile = useIsMobile();
@@ -36,6 +37,16 @@ export default function MobileControls() {
       setJumpPressed(false);
     }
   }, [canJump, hideControls, isMobile, movementFrozen]);
+
+  // S7 — release joystick + jump state on window focus loss/regain. A touch can
+  // be interrupted without a pointerup when a window steals focus, stranding the
+  // joystick velocity; centralized in input-reset.ts so all input vectors agree.
+  useEffect(() => registerInputReset(() => {
+    const s = useGameStore.getState();
+    s.setJoystickVelocity(0, 0);
+    s.setCameraJoystickVelocity(0, 0);
+    setJumpPressed(false);
+  }), []);
 
   const handleJumpPress = useCallback((event: ReactPointerEvent<HTMLButtonElement>) => {
     event.preventDefault();
