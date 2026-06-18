@@ -37,6 +37,7 @@ import { usePathname } from 'next/navigation';
 import type { ClientFrame } from '@clawville/shared';
 import { useGameStore } from '@/stores/game';
 import { useActivityStore } from '@/stores/activity';
+import { registerInputReset } from '@/lib/three/input-reset';
 import {
   selfInputBus,
   resetSelfInputBus,
@@ -414,13 +415,6 @@ export function useActivityInput({ send, enabled }: UseActivityInputOptions): vo
       actionBitsRef.current &= ~(ACTION_BIT_BOOST | ACTION_BIT_JUMP);
       targetDirRef.current = { x: 0, y: 0 };
     }
-    function onBlur() {
-      resetHeldInput();
-    }
-    function onVisibility() {
-      if (document.hidden) resetHeldInput();
-    }
-
     /** Power-up alt: left-click anywhere on the viewport → use. */
     function onPointerDown(e: MouseEvent) {
       if (!enabledRef.current) return;
@@ -450,8 +444,9 @@ export function useActivityInput({ send, enabled }: UseActivityInputOptions): vo
     window.addEventListener('keyup', onKeyUp);
     window.addEventListener('pointerdown', onPointerDown);
     window.addEventListener('clawville:activity-action', onCustomAction as EventListener);
-    window.addEventListener('blur', onBlur);
-    document.addEventListener('visibilitychange', onVisibility);
+    // S7 — release held input on focus loss/regain via the shared util (covers
+    // blur + visibilitychange + focus + pageshow). Replaces the local blur/visibility.
+    const unregisterReset = registerInputReset(resetHeldInput);
 
     return () => {
       window.removeEventListener('keydown', onKeyDown);
@@ -461,8 +456,7 @@ export function useActivityInput({ send, enabled }: UseActivityInputOptions): vo
         'clawville:activity-action',
         onCustomAction as EventListener,
       );
-      window.removeEventListener('blur', onBlur);
-      document.removeEventListener('visibilitychange', onVisibility);
+      unregisterReset();
       // Reset key state on teardown to prevent leak across remounts.
       keysRef.current = {
         w: false,
