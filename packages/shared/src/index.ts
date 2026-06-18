@@ -103,3 +103,6 @@ export * from './constants/land-economy';
 // Land Showroom (2026-06-18) — deterministic ~15 starter-lot showroom (FOR RENT model buildings).
 // Client-only decorative layer; no DB dependency.
 export * from './constants/land-showroom';
+// Land Signage (2026-06-18) — visual sign category model (regular/premium/premium-partner).
+// Purely visual; does NOT encode economic data. Consumed by land-parcels.tsx 3D render.
+export * from './constants/land-signage';

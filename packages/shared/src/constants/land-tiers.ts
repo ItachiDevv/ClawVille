@@ -39,12 +39,21 @@ export function tierLabel(tier: LandTier): string {
  * seed script and the leaderboard/pricing logic read these same counts. Re-confirm Starter vs
  * expected launch concurrency before go-live (ROADMAP §7-Q2).
  */
+// 2-RING "fewer big plots" layout (2026-06-18, founder review): collapsed from
+// 180 tiny plots (8/8/16/40/108) to 36 LARGE plots in TWO concentric square
+// rings, so a placed building reads at ~2.5-3x a character instead of ~1/2.
+//   - founder  = PREMIUM inner ring (10 plots, just outside the town circle).
+//   - starter  = REGULAR outer ring (26 plots, surrounding the premium ring).
+//   - a/b/c    = 0 (the middle tiers are unused in the 2-ring layout; the enum +
+//                economic Records stay intact so nothing else has to change).
+// Footprints jump to 34-38 tiles (land-parcels.ts TIER_CONFIG). The middle tiers
+// can be repopulated later if we grow the map (the "grow the world" option).
 export const PARCEL_TIER_COUNTS: Record<LandTier, number> = {
-  founder: 8, // 8 plots on Founders' Row (4 corners + 4 edge-mids of inner square frame)
-  a: 8,
-  b: 16,
-  c: 40,
-  starter: 108, // in the founder-approved 96-120 band; raise if launch concurrency demands
+  founder: 10, // PREMIUM inner ring — big plots on the square just outside town
+  a: 0,
+  b: 0,
+  c: 0,
+  starter: 26, // REGULAR outer ring — big plots on the larger surrounding square
 };
 
 /** Total fixed parcel supply across all tiers. */
