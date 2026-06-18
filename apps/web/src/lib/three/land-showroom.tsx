@@ -48,7 +48,7 @@ import { useFrame } from '@react-three/fiber';
 import { useGLTF } from '@react-three/drei';
 import { LAND_PARCELS, LAND_SHOWROOM } from '@clawville/shared';
 import type { ParcelSlot } from '@clawville/shared';
-import type { ShowroomEntry } from '@clawville/shared';
+import type { ShowroomEntry, ShowroomSignLabel } from '@clawville/shared';
 import { useLandStore, getParcelStatus } from '@/stores/land';
 import { makeObject3DWebGPUSafe } from '@/lib/three/webgpu-geometry';
 import { extendLoaderWithMeshopt } from '@/lib/three/meshopt-loader-setup';
@@ -107,97 +107,92 @@ const _m4 = new THREE.Matrix4();
 const _m4b = new THREE.Matrix4();
 
 // ---------------------------------------------------------------------------
-// "FOR RENT" CanvasTexture (one per LandShowroom mount, lazy-built)
-// Single 256×64 cell: "FOR RENT" + subtitle.
+// Sign CanvasTextures + shared materials (ref-counted module singletons; one
+// set per LandShowroom mount, disposed on unmount). Two 256×64 cells:
+//   - 'rent'    : amber "FOR RENT" / "CLAWVILLE ESTATES" (starter showcase)
+//   - 'premium' : gold  "PREMIUM"  / "FOUNDERS' ROW"     (founder showcase)
 // ---------------------------------------------------------------------------
 
-let _rentTexture: THREE.CanvasTexture | null = null;
-let _rentTexRefCount = 0;
-
-function acquireRentTexture(): THREE.CanvasTexture {
-  _rentTexRefCount++;
-  if (_rentTexture) return _rentTexture;
-
+function buildSignTexture(label: ShowroomSignLabel): THREE.CanvasTexture {
   const canvas = document.createElement('canvas');
   canvas.width = 256;
   canvas.height = 64;
   const ctx = canvas.getContext('2d')!;
 
+  const accent   = label === 'premium' ? '#ffd54a' : '#f5a623';
+  const title    = label === 'premium' ? 'PREMIUM' : 'FOR RENT';
+  const subtitle = label === 'premium' ? "FOUNDERS' ROW" : 'CLAWVILLE ESTATES';
+
   // Background
   ctx.fillStyle = '#0a1520';
   ctx.fillRect(0, 0, 256, 64);
 
-  // Amber accent borders top + bottom
-  ctx.fillStyle = '#f5a623';
+  // Accent borders
+  ctx.fillStyle = accent;
   ctx.fillRect(0, 0, 256, 5);   // top
   ctx.fillRect(0, 59, 256, 5);  // bottom
   ctx.fillRect(0, 5, 5, 54);    // left
   ctx.fillRect(251, 5, 5, 54);  // right
 
-  // "FOR RENT" main text
+  // Title
   ctx.fillStyle = '#ffffff';
   ctx.font = 'bold 20px monospace';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'alphabetic';
-  ctx.fillText('FOR RENT', 128, 34);
+  ctx.fillText(title, 128, 34);
 
   // Subtitle
-  ctx.fillStyle = '#f5a623';
+  ctx.fillStyle = accent;
   ctx.font = '11px sans-serif';
-  ctx.fillText('CLAWVILLE ESTATES', 128, 52);
+  ctx.fillText(subtitle, 128, 52);
 
   const tex = new THREE.CanvasTexture(canvas);
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.needsUpdate = true;
-  _rentTexture = tex;
   return tex;
 }
 
-function releaseRentTexture(): void {
-  _rentTexRefCount--;
-  if (_rentTexRefCount <= 0 && _rentTexture) {
-    _rentTexture.dispose();
-    _rentTexture = null;
-    _rentTexRefCount = 0;
-  }
+interface SignMaterials {
+  rentPlankMat: THREE.MeshBasicMaterial;
+  premiumPlankMat: THREE.MeshBasicMaterial;
+  postMat: THREE.MeshStandardMaterial;
 }
 
-// ---------------------------------------------------------------------------
-// Shared sign materials (module-scope, one per LandShowroom mount)
-// ---------------------------------------------------------------------------
-
-let _signPlankMat: THREE.MeshBasicMaterial | null = null;
-let _signPostMat: THREE.MeshStandardMaterial | null = null;
+let _signMats: SignMaterials | null = null;
+let _signTextures: THREE.CanvasTexture[] = [];
 let _signMatRefCount = 0;
 
-function acquireSignMaterials(): {
-  plankMat: THREE.MeshBasicMaterial;
-  postMat: THREE.MeshStandardMaterial;
-} {
+function acquireSignMaterials(): SignMaterials {
   _signMatRefCount++;
-  if (_signPlankMat && _signPostMat) {
-    return { plankMat: _signPlankMat, postMat: _signPostMat };
-  }
-  const tex = acquireRentTexture();
-  _signPlankMat = new THREE.MeshBasicMaterial({
-    map: tex,
-    side: THREE.DoubleSide,
-  });
-  _signPostMat = new THREE.MeshStandardMaterial({
-    color: 0x6b4c1e,  // warm dark wood — matches land-parcels.tsx sign posts
-    roughness: 0.92,
-    metalness: 0.0,
-  });
-  return { plankMat: _signPlankMat, postMat: _signPostMat };
+  if (_signMats) return _signMats;
+
+  const rentTex    = buildSignTexture('rent');
+  const premiumTex = buildSignTexture('premium');
+  _signTextures = [rentTex, premiumTex];
+  _signMats = {
+    rentPlankMat:    new THREE.MeshBasicMaterial({ map: rentTex,    side: THREE.DoubleSide }),
+    premiumPlankMat: new THREE.MeshBasicMaterial({ map: premiumTex, side: THREE.DoubleSide }),
+    postMat: new THREE.MeshStandardMaterial({
+      color: 0x6b4c1e,  // warm dark wood — matches land-parcels.tsx sign posts
+      roughness: 0.92,
+      metalness: 0.0,
+    }),
+  };
+  return _signMats;
 }
 
 function releaseSignMaterials(): void {
   _signMatRefCount--;
   if (_signMatRefCount <= 0) {
-    if (_signPlankMat) { _signPlankMat.dispose(); _signPlankMat = null; }
-    if (_signPostMat)  { _signPostMat.dispose();  _signPostMat = null;  }
+    if (_signMats) {
+      _signMats.rentPlankMat.dispose();
+      _signMats.premiumPlankMat.dispose();
+      _signMats.postMat.dispose();
+      _signMats = null;
+    }
+    for (const t of _signTextures) t.dispose();
+    _signTextures = [];
     _signMatRefCount = 0;
-    releaseRentTexture();
   }
 }
 
@@ -385,10 +380,10 @@ function GLBShowroomStructure({
 }
 
 // ---------------------------------------------------------------------------
-// ForRentSign — one sign per showroom slot
+// ShowroomSign — one sign per showroom slot (FOR RENT or PREMIUM plank material)
 // ---------------------------------------------------------------------------
 
-function ForRentSign({
+function ShowroomSign({
   parcel,
   plankMat,
   postMat,
@@ -462,16 +457,17 @@ function ForRentSign({
 function ShowroomSlot({
   parcel,
   entry,
-  plankMat,
-  postMat,
+  signMats,
 }: {
   parcel: ParcelSlot;
   entry: ShowroomEntry;
-  plankMat: THREE.MeshBasicMaterial;
-  postMat: THREE.MeshStandardMaterial;
+  signMats: SignMaterials;
 }) {
   const outerRef = useRef<THREE.Group>(null);
   const path = showroomGlbPath(entry.style, entry.structureType);
+  // Pick the sign plank by the entry's label: gold PREMIUM on Founders' Row,
+  // amber FOR RENT on the starter showcase (default).
+  const plankMat = entry.signLabel === 'premium' ? signMats.premiumPlankMat : signMats.rentPlankMat;
 
   // Read store once at render-level for the hide-when-owned initial state.
   // The actual per-frame update handles the toggle efficiently.
@@ -504,8 +500,8 @@ function ShowroomSlot({
         </Suspense>
       </GLBErrorBoundary>
 
-      {/* FOR RENT sign */}
-      <ForRentSign parcel={parcel} plankMat={plankMat} postMat={postMat} />
+      {/* FOR RENT / PREMIUM sign */}
+      <ShowroomSign parcel={parcel} plankMat={plankMat} postMat={signMats.postMat} />
     </group>
   );
 }
@@ -515,10 +511,10 @@ function ShowroomSlot({
 // ---------------------------------------------------------------------------
 
 export default function LandShowroom() {
-  // Acquire shared sign materials + FOR RENT texture for this mount.
+  // Acquire shared sign materials + FOR RENT / PREMIUM textures for this mount.
   // Released on unmount (ref-counted so multiple mounts are safe, though there
   // should only ever be one in World3DCanvas).
-  const { plankMat, postMat } = useMemo(() => acquireSignMaterials(), []);
+  const signMats = useMemo(() => acquireSignMaterials(), []);
   useEffect(() => {
     return () => { releaseSignMaterials(); };
   }, []);
@@ -544,8 +540,7 @@ export default function LandShowroom() {
           key={parcel.id}
           parcel={parcel}
           entry={entry}
-          plankMat={plankMat}
-          postMat={postMat}
+          signMats={signMats}
         />
       ))}
     </>
