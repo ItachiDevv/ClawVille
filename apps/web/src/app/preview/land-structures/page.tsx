@@ -46,8 +46,10 @@ import { extendLoaderWithMeshopt } from '@/lib/three/meshopt-loader-setup';
 const TARGET_MAX_DIM = 140;
 
 // Pad spacing along X. Each candidate occupies a 2-pad column-pair (home, shop).
-const PAD_GAP = 220; // gap between home and shop within a candidate
-const CANDIDATE_GAP = 520; // gap between candidate groups
+// Kept compact relative to TARGET_MAX_DIM (140) so the row stays on-screen and
+// no model ever sits so far off-axis that it crosses the camera far plane.
+const PAD_GAP = 180; // gap between home and shop within a candidate
+const CANDIDATE_GAP = 360; // gap between candidate groups
 
 type StructureKind = 'home' | 'shop';
 
@@ -223,7 +225,15 @@ export default function PreviewLandStructuresPage() {
   return (
     <div style={{ position: 'fixed', inset: 0, background: '#0a1626' }}>
       <Canvas
-        camera={{ position: [0, 260, 760], fov: 38 }}
+        // THE "moving wall" bug: R3F's default camera far plane is 1000. With a
+        // wide row + maxDistance orbit, any model on the far side of the row sat
+        // >1000 units from the camera and got clipped by the far plane — which,
+        // being perpendicular to the view, SWEEPS as you orbit, shows the scene
+        // background through the cut, and slices buildings in half (and the whole
+        // scene vanishes when you zoom past it). It is not an object; it is the
+        // clip plane. far:8000 puts it well beyond any orbit distance so nothing
+        // is ever clipped. near:1 keeps depth precision at these world scales.
+        camera={{ position: [0, 260, 760], fov: 38, near: 1, far: 8000 }}
         gl={{ antialias: true, powerPreference: 'high-performance' }}
         scene={{ background: new THREE.Color(0x0a1626) }}
       >
@@ -231,7 +241,7 @@ export default function PreviewLandStructuresPage() {
         <OrbitControls
           target={[0, 60, 0]}
           enablePan
-          maxDistance={2000}
+          maxDistance={1500}
           minDistance={120}
         />
       </Canvas>
