@@ -67,7 +67,7 @@ export async function ensureElizaMigrated(): Promise<{
     // Force=true respects ELIZA_ALLOW_DESTRUCTIVE_MIGRATIONS but also ensures
     // we don't silently skip when the meta-table state disagrees with reality.
     // Passing a single plugin (plugin-sql) is enough — it's the only one with
-    // a schema; Gemini providers are schema-less.
+    // a schema; our custom OpenAI providers are schema-less.
     const forceDestructive =
       process.env.ELIZA_ALLOW_DESTRUCTIVE_MIGRATIONS === 'true';
 

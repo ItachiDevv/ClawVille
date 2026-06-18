@@ -42,6 +42,7 @@ const ActivityLobbyModal = dynamic(
 );
 const SkillBuilderModal = dynamic(() => import('@/components/game/skill-builder-modal'), { ssr: false });
 const MarketplaceModal = dynamic(() => import('@/components/game/marketplace-modal'), { ssr: false });
+const LandOfficeModal = dynamic(() => import('@/components/game/land/land-office-modal'), { ssr: false });
 const BazaarModal = dynamic(() => import('@/components/game/bazaar-modal'), { ssr: false });
 const AuctionModal = dynamic(() => import('@/components/game/auction-modal'), { ssr: false });
 const QuestBoardModal = dynamic(() => import('@/components/game/quest-board-modal'), { ssr: false });
@@ -500,6 +501,7 @@ export default function GamePage() {
       <FirstTimeBackupModal />
       <SkillBuilderModal />
       <MarketplaceModal />
+      <LandOfficeModal />
       <BazaarModal />
       <AuctionModal />
       <QuestBoardModal />

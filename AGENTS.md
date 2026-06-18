@@ -75,7 +75,7 @@ Complex AI integrations: multi-phase plan in `.claude/plans/` + research deep-di
 |---|---|
 | **`GameFeatures.md`** | Gameplay: modes, agent connect, marketplace, economy, quests, daily login, avatar system, tutorial, UI, control toggle, NPC sim, talk-to-character, Phase 5/6, landing |
 | **`3dStructure.md`** | Visual/3D: world dimensions, building ring, NPC scales/positions, town center, decorations, seaweed, terrain, camera, lighting, fog, atmosphere, perf, GPU constraints |
-| **`ARCHITECTURE.md`** | Tech: route modules, DB tables, service catalog, data flow, frontend/backend, Hetzner+Coolify deploy, agent identity, Gemini LLM, Phase 5/6 plumbing |
+| **`ARCHITECTURE.md`** | Tech: route modules, DB tables, service catalog, data flow, frontend/backend, Hetzner+Coolify deploy, agent identity, OpenAI LLM, Phase 5/6 plumbing |
 
 **Standing rule:** abide by these unless user says otherwise. Code vs doc → **live code wins**, update doc same turn.
 
@@ -192,7 +192,7 @@ Commands: `bun install` · `bun run db:push` (schema) · `bun run db:seed` (10 l
 Required in `.env.local`:
 
 - `DATABASE_URL` — Supabase pooler Postgres.
-- `GEMINI_API_KEY` — **fully UNUSED since 2026-06-05** (text billing 403'd; embeddings table was empty → no re-embed). Retained for easy-revert; nothing reads it. Anthropic removed 2026-04-10.
+- `GEMINI_API_KEY` — **REMOVED from the runtime entirely** (2026-06-16; the 2026-06-05 "fully UNUSED but retained for easy-revert" state is superseded — the dead reads + provider files are now scrubbed). No code reads it. Both text generation and embeddings run on OpenAI (sole backend): text via `openai-text-provider` (`gpt-4o-mini`/`gpt-4o`, priority 95) and embeddings via `openai-embedding-provider` (`text-embedding-3-small`, 1536-dim, priority 100). The embeddings table was EMPTY (0 rows) at the swap, so no re-embed migration was needed. Do NOT set `GEMINI_API_KEY` on any box — it is a no-op. Anthropic removed 2026-04-10.
 - `OPENAI_API_KEY` — **PRIMARY backend for BOTH** since 2026-06-05: text (`openai-text-provider` pri 95, `TEXT_SMALL`/`TEXT_LARGE` via `OPENAI_SMALL_MODEL`=`gpt-4o-mini` / `OPENAI_LARGE_MODEL`=`gpt-4o`; `npc-conversation-engine.ts`; chat-transient) **and** embeddings (`openai-embedding-provider` pri 100). Required for every non-OpenClaw runtime.
 - **Embedding model + dim PINNED in code, NOT env** (2026-06-05): `openai-embedding-provider.ts` + `embed-text.ts` hard-code `text-embedding-3-small` / 1536-dim in the request body AND boot probe, so stored & query vectors can't diverge (pgvector always `dim_1536`). `OPENAI_EMBEDDING_MODEL`/`_DIMENSIONS` unread; changing the dim needs a re-embed migration (code edit, not env).
 - `VANITY_ENCRYPTION_KEY` — 64-char hex. AES-256-GCM master key for `treasury_wallets` + `vanity_keypairs`. Must match on every decrypting machine.

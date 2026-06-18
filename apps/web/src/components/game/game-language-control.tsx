@@ -11,6 +11,9 @@ const SKIP_SELECTOR =
 const TRANSLATABLE_ATTRS = ['placeholder', 'title', 'aria-label'] as const;
 const BATCH_SIZE = 80;
 const MAX_TEXT_CHARS = 600;
+// S9 — cap the per-session client translation cache so unique chat/toast strings
+// can't grow the Map unboundedly (oldest-evicted, FIFO).
+const CLIENT_CACHE_MAX = 3000;
 
 type TranslatableAttr = (typeof TRANSLATABLE_ATTRS)[number];
 
@@ -106,8 +109,38 @@ export default function GameLanguageControl() {
     return `${targetLocale.toLowerCase()}:${text}`;
   }, [targetLocale]);
 
+  // S9/S8 — drop disconnected nodes so the tracked Sets (which hold STRONG refs)
+  // stay bounded to LIVE nodes. Without this they grow forever during a
+  // translation-active session (chat/toasts/labels churning the DOM) → heap
+  // bloat + an ever-slower restoreOriginals/collect pass = a freeze vector.
+  // Deleting during for..of a Set is safe. WeakMap originals are left intact —
+  // GC reclaims them once the Set ref drops, and they're preserved if React
+  // reconnects the same node.
+  const pruneDisconnectedTracked = useCallback(() => {
+    for (const node of trackedTextNodes.current) {
+      if (!node.isConnected) trackedTextNodes.current.delete(node);
+    }
+    for (const element of trackedAttrElements.current) {
+      if (!element.isConnected) trackedAttrElements.current.delete(element);
+    }
+  }, []);
+
+  // S9 — bounded client cache writer (oldest-evicted) so unique chat/toast
+  // strings can't grow the Map without limit across a long session.
+  const setClientCache = useCallback((key: string, value: string) => {
+    const cache = clientCache.current;
+    if (cache.has(key)) cache.delete(key);
+    cache.set(key, value);
+    while (cache.size > CLIENT_CACHE_MAX) {
+      const oldest = cache.keys().next().value;
+      if (oldest === undefined) break;
+      cache.delete(oldest);
+    }
+  }, []);
+
   const restoreOriginals = useCallback(() => {
     suppressObserverUntil.current = Date.now() + 350;
+    pruneDisconnectedTracked();
     for (const node of trackedTextNodes.current) {
       const original = originalText.current.get(node);
       if (node.isConnected && original != null && node.textContent !== original) {
@@ -130,7 +163,7 @@ export default function GameLanguageControl() {
     }
 
     setTranslatedCount(0);
-  }, []);
+  }, [pruneDisconnectedTracked]);
 
   const getTextOriginal = useCallback((node: Text) => {
     const current = node.textContent ?? '';
@@ -142,6 +175,10 @@ export default function GameLanguageControl() {
       appliedText.current.delete(node);
       return current;
     }
+    // S9 — re-track even when the original is already known, so a node that was
+    // pruned while disconnected is re-registered when seen again and stays
+    // restorable. Set.add is idempotent.
+    trackedTextNodes.current.add(node);
     return original;
   }, []);
 
@@ -158,6 +195,8 @@ export default function GameLanguageControl() {
       appliedAttrs.current.set(element, appliedMap);
       return current;
     }
+    // S9 — re-track (see getTextOriginal) so a reconnected element stays restorable.
+    trackedAttrElements.current.add(element);
     return originals[attr] ?? current;
   }, []);
 
@@ -228,6 +267,7 @@ export default function GameLanguageControl() {
       return;
     }
 
+    pruneDisconnectedTracked();
     const records = collectRecords();
     if (records.length === 0) return;
 
@@ -253,10 +293,14 @@ export default function GameLanguageControl() {
             targetLocale,
             uncached.map((text, index) => ({ id: String(index), text })),
           );
+          // Audit fix — the response is async; if the user switched language or
+          // disabled translation while it was in flight, this seq is now stale →
+          // do NOT cache or apply it (would flash/persist the wrong locale).
+          if (seq !== requestSeq.current) return;
           res.translations.forEach((entry, index) => {
             const source = uncached[index];
             if (!source || !entry.text) return;
-            clientCache.current.set(cacheKeyFor(source), entry.text);
+            setClientCache(cacheKeyFor(source), entry.text);
           });
         }
 
@@ -277,7 +321,7 @@ export default function GameLanguageControl() {
     } finally {
       if (seq === requestSeq.current) setLoading(false);
     }
-  }, [cacheKeyFor, collectRecords, restoreOriginals, targetLocale, translationActive]);
+  }, [cacheKeyFor, collectRecords, restoreOriginals, targetLocale, translationActive, pruneDisconnectedTracked, setClientCache]);
 
   const scheduleTranslate = useCallback(() => {
     if (debounceTimer.current) clearTimeout(debounceTimer.current);

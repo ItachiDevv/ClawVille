@@ -26,6 +26,14 @@ skills:
   - webgpu-threejs-tsl
   - 3d-games
   - web-games
+  - threejs-3d-generator
+  - threejs-image-generator
+  - threejs-audio-generator
+  - threejs-aaa-graphics-builder
+  - threejs-debug-profiler
+  - threejs-game-ui-designer
+  - threejs-gameplay-systems
+  - threejs-qa-release
 ---
 
 # 3D Architect — Three.js & WebGPU Specialist (ClawVille)
@@ -193,6 +201,107 @@ After saving a memory file, update `.claude/memory/threejs/MEMORY.md`:
 6. **Minimal code** — don't over-abstract. A working scene beats a framework
 7. **TypeScript strict** — proper types for all Three.js objects
 8. **Dispose everything** — geometries, materials, textures, render targets on cleanup
+
+## Game-Dev Skill Suite — ClawVille applicability + overrides
+
+**Meta-rule (read first):** The 8 skills listed below are GENERIC game-dev skills designed for standalone Vite/TypeScript/Three.js projects. In ClawVille they are advisory only. **ClawVille's live code > four canonical docs (WorldContent/3dStructure/GameFeatures/ARCHITECTURE) > CLAUDE.md invariants > threejs memory > these generic skills. Never let a skill's default advice override a ClawVille invariant.** Full per-skill detail: `.claude/memory/threejs/reference/game-skill-suite.md`.
+
+### threejs-3d-generator — Tripo text/image→3D, rig, animate, GLB/FBX
+
+**Use in ClawVille for:** New PROPS, environment decorations, buildings. NEVER for character/avatar meshes.
+
+**Hard overrides:**
+- **Characters are VRM** via `fal Meshy v6 HQ` + `blend007` + `scripts/hermes-pipeline/`. Tripo produces incompatible skeletons for VRM.
+- Show Gemini turnaround images for user approval BEFORE any paid Tripo generation.
+- Generated GLBs must pass Iris-Xe draw-call budget AND go through the ClawVille GLB normalization pipeline (`max(X,Y,Z)` bbox, strip passes, pivot correction, `frustumCulled=false`).
+- Cache-bust: bump `?v=N` in every reference when mutating an asset at a stable URL.
+- Same-diff: `WorldContent.md` + `3dStructure.md` on every new/swapped visible object.
+
+### threejs-image-generator — Gemini concept/texture/decal/GUI art
+
+**Use in ClawVille for:** Concept references, texture/material references for terrain or buildings, UI decals, in-world signage, GUI art.
+
+**Hard overrides:**
+- `GEMINI_API_KEY` is unused in the ClawVille runtime (moved to OpenAI 2026-06-05); the image-generator's key is separate — verify availability before declaring blocked.
+- Show generated concepts to user for explicit approval before handing to 3D generator.
+- Cache-bust rule applies to image assets at stable URLs.
+- No API calls from browser code; outputs are committed static assets.
+
+### threejs-audio-generator — ElevenLabs SFX/ambience/voice
+
+**Use in ClawVille for:** SFX, ambient sea sounds, building-specific ambience, UI sounds, character voice lines.
+
+**Hard overrides:**
+- No `ELEVENLABS_API_KEY` in browser code. Audio gen is a tooling step.
+- Web Audio `AudioContext` MUST be created/resumed from a user gesture handler. Never on module load.
+- Audio files at stable URLs need `?v=N` cache-bust on change.
+- No same-diff doc update unless the audio introduces a new gameplay mechanic.
+
+### threejs-aaa-graphics-builder — art-direction upgrade + asset sourcing
+
+**Use in ClawVille for:** Visual polish passes, "looks basic" feedback, upgrading specific scenes.
+
+**Hard overrides — directly conflict with AAA ambitions:**
+- NO drei `<Text>`/`<Billboard>` in game/world scenes — Iris Xe hard crash.
+- NO `InstancedMesh + ShaderMaterial` — silent WebGPU crash.
+- NO per-frame `new Vector3()` etc. in `useFrame` — GC thrash.
+- NO more than hemisphere + 1 directional no-shadow light in world scene (7+ crashes Iris Xe).
+- Vegetation MUST use `MeshBasicMaterial`, never `ShaderMaterial`.
+- **Performance is #1 constraint** (target 80 FPS, floor 60 on Iris Xe). Any "AAA" upgrade that drops FPS below 60 is rejected regardless of visual improvement.
+- Same-diff: `3dStructure.md` for render/lighting changes; `WorldContent.md` for new visible objects.
+
+### threejs-debug-profiler — draw calls/tris/memory/shader cost/mobile DPR
+
+**Use in ClawVille for:** Blank/blue scene, GPU crash, NPC T-pose, missing building, FPS regression, mobile layout bug.
+
+**Hard overrides:**
+- For FPS/freeze profiling, use **chrome-devtools MCP `performance_*_trace`** against real Iris Xe — `claude-in-chrome` cannot profile the RAF game (hidden tabs throttle to 0Hz). If chrome-devtools MCP is disconnected, say so and ask to reconnect.
+- MCP screenshots cannot capture the WebGPU swapchain. Verify via `gl.render` count / `scene.traverse` / DOM labels / `__W3D_READY` flag; hand pixels to user.
+- Blue `/game` has three known root causes (see `feedback_webgpu_blue_screen_double_render_and_first_paint`); diagnose before applying generic fix.
+- Local repro: `bun run build && bun run start` (NEVER `bun run dev`).
+
+### threejs-game-ui-designer — HUD/menus/touch UI/safe-areas
+
+**Use in ClawVille for:** HUD elements, building-entry prompts, chat modals, mobile joysticks, tutorial overlays, in-world labels.
+
+**Hard overrides:**
+- **Use `useIsMobile()` hook** (maxTouchPoints>1 + coarse-pointer) for all mobile/desktop gating — NEVER a bare `md:` / `max-width` Tailwind query (misses iPad Air/Pro/landscape).
+- **MANDATORY viewport sweep before "done":** 390×844, 744×1133, 820×1180, 1024×1366, portrait + landscape.
+- **No dark text on dark panel:** inside `.claw-panel` or dark-bg modals, use light tokens only (cyan-50, slate-100/200, white). Text-gray-700/800/900 is invisible at <2:1 contrast.
+- **drei `<Text>`/`<Billboard>` banned for in-world labels.** Use `drei <Html>` or `WorldLabelsOverlay` module-scope overlay.
+- ClawVille UI is React/Tailwind, not canvas-drawn overlays.
+- Safe-area math cannot be verified in devtools; state that explicitly to user.
+- Same-diff: `GameFeatures.md` if player-facing flow changes.
+
+### threejs-gameplay-systems — Vite scaffold + game loop/entity/input/collision
+
+**Use in ClawVille for:** Architecture/design PATTERNS for game feel, entity system design, input handling, camera controllers, collision triggers, scoring/objective logic.
+
+**Hard overrides:**
+- **The `create_threejs_game.py` scaffold is INAPPLICABLE.** ClawVille is Next.js+R3F+Zustand, NOT a Vite project. Never run the scaffold creator inside ClawVille.
+- Game loop = R3F `useFrame` + `THREE.Clock.getDelta()`. Entity state = Zustand. Not standalone class instances.
+- No Rapier or cannon-es. Collision is custom arcade-style (terrain raycasting, waypoint pathfinding, building proximity).
+- Input: module-scope `keyState` map + `useEffect` cleanup; include `window.blur` + `visibilitychange` reset for stranded keys.
+- Hot paths must be allocation-free (module-scope scratch vectors). `useState` in hot-paths → re-render storm.
+- Same-diff: `GameFeatures.md` (player-facing mechanics) + `3dStructure.md §3/§6` (camera/animation changes).
+
+### threejs-qa-release — playtest QA, prod build, base paths, screenshots
+
+**Use in ClawVille for:** Pre-merge verification, post-deploy confirmation, mobile/iPad sweep, console error check.
+
+**Hard overrides:**
+- **Staging-first push flow:** `git push origin staging` → verify staging → PR `staging→master` → merge to prod. NEVER direct push to `master` without literal `direct to master` in the message.
+- **"Vite preview" advice is INAPPLICABLE.** Use `bun run build && bun run start` locally (prod bundle :3000). NEVER `bun run dev`.
+- **MANDATORY browser verification after every deploy.** Coolify ~3–5 min; `curl -sS --ssl-no-revoke https://api.clawville.world/health`; then open `/game` and verify buildings, FPS, no console errors.
+- **MANDATORY mobile + iPad sweep** after every UI/UX change (same viewports as UI Designer section above).
+- Coolify queue "finished" ≠ live — verify container sha.
+- curl on Git Bash: always `--ssl-no-revoke`.
+
+### threejs-game-director — whole-game orchestrator
+
+**Decision: NOT listed in frontmatter `skills:` and should NOT be run in ClawVille.**
+
+**Reasoning:** Designed for building a complete game from scratch (new Vite scaffold + full asset-sourcing ledger + visual scorecard from zero). ClawVille is a live, already-architected, deployed Next.js+R3F product. Running the game-director's full orchestration loop would attempt to scaffold a Vite project inside an existing Next.js monorepo (category error), and unconditionally load all sibling skills on every 3D task (burns context). **Consult as an INDEX only** — "which sibling skill covers this concern?" — then reach for the specific skill directly.
 
 ## MANDATORY: Same-diff doc updates on every 3D change
 

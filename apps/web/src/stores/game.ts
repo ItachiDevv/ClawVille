@@ -359,6 +359,11 @@ export interface GameState {
   openMarketplace: () => void;
   closeMarketplace: () => void;
 
+  // Land Office (Phase 1 land economy — browse / claim / buy / build)
+  landOfficeOpen: boolean;
+  openLandOffice: () => void;
+  closeLandOffice: () => void;
+
   // Bazaar
   bazaarOpen: boolean;
   bazaarTab: 'browse' | 'my-listings' | 'my-purchases';
@@ -1012,6 +1017,10 @@ export const useGameStore = create<GameState>((set, get) => ({
   openMarketplace: () => set({ marketplaceOpen: true }),
   closeMarketplace: () => set({ marketplaceOpen: false }),
 
+  landOfficeOpen: false,
+  openLandOffice: () => set({ landOfficeOpen: true }),
+  closeLandOffice: () => set({ landOfficeOpen: false }),
+
   bazaarOpen: false,
   bazaarTab: 'browse' as const,
   openBazaar: () => set({ bazaarOpen: true, bazaarTab: 'browse' }),
@@ -1189,6 +1198,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     toasts: [],
     skillBuilderOpen: false,
     marketplaceOpen: false,
+    landOfficeOpen: false,
     bazaarOpen: false,
     auctionOpen: false,
     questBoardOpen: false,
