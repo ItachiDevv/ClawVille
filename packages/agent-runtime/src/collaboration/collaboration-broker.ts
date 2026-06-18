@@ -419,8 +419,7 @@ export function getCollaborationBroker(
       config ?? {
         databaseUrl: process.env.DATABASE_URL,
         apiKeys: {
-          // Gemini = embeddings only; OpenAI = TEXT_SMALL/TEXT_LARGE generation.
-          gemini: process.env.GEMINI_API_KEY,
+          // OpenAI = TEXT_SMALL/TEXT_LARGE generation + embeddings (sole backend).
           openai: process.env.OPENAI_API_KEY,
         },
       },

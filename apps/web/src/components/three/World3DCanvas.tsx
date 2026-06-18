@@ -13,6 +13,7 @@ declare module '@react-three/fiber' {
 }
 extend(THREE as any);
 import ArenaTerrain from '@/lib/three/arena-terrain';
+import { registerInputReset } from '@/lib/three/input-reset';
 import ArenaBuildings from '@/lib/three/arena-buildings';
 import MeshletBuildingsR3F from '@/lib/three/meshlet/meshlet-buildings-r3f';
 import ArenaNpcs from '@/lib/three/arena-npcs';
@@ -33,6 +34,9 @@ import ActivityIndicators from '@/lib/three/activity-indicators';
 import FloatingTexts3D from '@/lib/three/floating-text-3d';
 import NpcSpeechBubbles from '@/lib/three/npc-speech-bubbles';
 import ClickToMove from '@/lib/three/click-to-move';
+import LandParcels from '@/lib/three/land-parcels';
+import LandStructures from '@/lib/three/land-structures';
+import LandShowroom from '@/lib/three/land-showroom';
 import { KTX2LoaderSetup } from '@/lib/three/ktx2-loader-setup';
 import { MeshoptLoaderSetup } from '@/lib/three/meshopt-loader-setup';
 import { WorldLabelsOverlayMount } from '@/lib/three/world-labels-overlay';
@@ -249,6 +253,15 @@ const _arrowKeys: Pick<KeyState, 'arrowup' | 'arrowdown' | 'arrowleft' | 'arrowr
   arrowright: false,
 };
 
+// S7 — release held arrow keys on window focus loss/regain so the camera doesn't
+// keep orbiting after a window steals focus mid-hold (browser skips keyup).
+function resetArrowKeys() {
+  _arrowKeys.arrowup = false;
+  _arrowKeys.arrowdown = false;
+  _arrowKeys.arrowleft = false;
+  _arrowKeys.arrowright = false;
+}
+
 const ARROW_ROT_SPEED = 1.5; // radians/second
 const PHI_MIN = 0.1;                 // nearly straight down (bird's eye)
 const PHI_MAX = Math.PI * 0.85;      // look steeply up toward surface (~153°)
@@ -305,9 +318,11 @@ function ArrowKeyRotationController({
     };
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);
+    const unregisterReset = registerInputReset(resetArrowKeys);
     return () => {
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
+      unregisterReset();
     };
   }, []);
 
@@ -380,9 +395,16 @@ function WASDCameraController({
 
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);
+    // S7 — clear held WASD pan keys on focus loss/regain so the explore-mode
+    // camera doesn't keep panning after a window steals focus mid-hold.
+    const unregisterReset = registerInputReset(() => {
+      const k = keysRef.current;
+      k.w = false; k.a = false; k.s = false; k.d = false;
+    });
     return () => {
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
+      unregisterReset();
     };
   }, []);
 
@@ -1320,6 +1342,39 @@ const SceneContents = memo(function SceneContents({
       <group name="perf:terrain" userData={{ perfChunk: 'terrain' }}>
         <ArenaTerrain />
       </group>
+      {/* Land parcels — 180 for-sale lots (Phase 1, square block-frames).
+          Merged BufferGeometry pads + posts/rails + signs, 7 draw calls total.
+          No ownership/buy logic this slice — all parcels render as available.
+          See lib/three/land-parcels.tsx for draw-call budget and tier scheme.
+          Wrapped in Suspense so a useMemo failure during canvas texture build
+          doesn't crash the whole world. */}
+      <Suspense fallback={null}>
+        <group name="perf:land-parcels" userData={{ perfChunk: 'land-parcels' }}>
+          <LandParcels />
+        </group>
+      </Suspense>
+
+      {/* Land structures — placed homes/shops rendered on owned parcels (Phase 1
+          Stage 2). Clean low-poly primitive fallback today; real GLBs swap in
+          after the founder picks a Stage-1 style. Self-hydrates the signed-in
+          owner's structures via api.getMyLand(). Distance-culled (14000wu); ≤5
+          visible per owner. See lib/three/land-structures.tsx. */}
+      <Suspense fallback={null}>
+        <group name="perf:land-structures" userData={{ perfChunk: 'land-structures' }}>
+          <LandStructures />
+        </group>
+      </Suspense>
+
+      {/* Land showroom — ~15 model buildings on outer starter lots with FOR RENT
+          signs. Decorative only (no backend). Hides when a lot is actually owned
+          so the buyer's real structure cleanly takes over. Distance-culled 14000wu.
+          See lib/three/land-showroom.tsx for draw budget and sign details. */}
+      <Suspense fallback={null}>
+        <group name="perf:land-showroom" userData={{ perfChunk: 'land-showroom' }}>
+          <LandShowroom />
+        </group>
+      </Suspense>
+
       {/* Phase B: when ?meshlets=1, ArenaBuildings is replaced by
           <MeshletBuildingsR3F /> which runs the rasterizer as a high-priority
           useFrame hook inside R3F's frame loop. Collision colliders are built

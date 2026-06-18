@@ -1,8 +1,9 @@
 # ElizaOS Integration Architecture
 
-**Last updated:** 2026-04-12
+**Last updated:** 2026-06-16
 **ElizaOS version:** `@elizaos/core@2.0.0-alpha.3`, `@elizaos/plugin-sql@2.0.0-alpha.7`
 **Status:** Phase 1 DONE, Phase 2 planned
+**Drift note:** Gemini removed 2026-06-16, OpenAI sole backend (`openai-text-provider`@95 `gpt-4o-mini`/`gpt-4o`, `openai-embedding-provider`@100 `text-embedding-3-small` 1536-dim).
 
 ---
 
@@ -24,13 +25,13 @@ Plugins are prepended to the `loadedPlugins` array in priority order. ElizaOS ro
 | Priority | Plugin | Scope | When Active |
 |---|---|---|---|
 | 100 | `openclaw-provider` | `TEXT_SMALL`, `TEXT_LARGE` | Only when `openclawGateway` config present (openclaw-bot agents) |
-| 95 | `gemini-text-provider` | `TEXT_SMALL`, `TEXT_LARGE` | Always — canonical text-gen backend for all non-OpenClaw runtimes |
-| 100 | `gemini-embedding-provider` | `TEXT_EMBEDDING` | Always — `text-embedding-004`, 768-dim embeddings |
+| 95 | `openai-text-provider` | `TEXT_SMALL`, `TEXT_LARGE` | Always — canonical text-gen backend for all non-OpenClaw runtimes (`gpt-4o-mini` / `gpt-4o`) |
+| 100 | `openai-embedding-provider` | `TEXT_EMBEDDING` | Always — `text-embedding-3-small`, 1536-dim embeddings |
 | (core) | `@elizaos/plugin-sql` | DB adapter | Always — Postgres memory persistence |
 
-All three custom providers live in `packages/agent-runtime/src/plugins/`. They call Google REST API directly via `fetch()` with no SDK dependency.
+All three custom providers live in `packages/agent-runtime/src/plugins/`. They call the OpenAI REST API directly via `fetch()` with no SDK dependency.
 
-**Resolution logic:** When `openclawGateway` is configured, the OpenClaw provider (100) wins for text generation, routing through the external agent's own LLM. Gemini text (95) loses and acts as fallback. When no gateway is configured, Gemini text (95) is the sole text-gen backend. Embeddings always go through the Gemini embedding provider regardless of gateway config.
+**Resolution logic:** When `openclawGateway` is configured, the OpenClaw provider (100) wins for text generation, routing through the external agent's own LLM. OpenAI text (95) loses and acts as fallback. When no gateway is configured, OpenAI text (95) is the sole text-gen backend. Embeddings always go through the OpenAI embedding provider regardless of gateway config.
 
 ### Three Call Sites for processMessage
 
@@ -54,7 +55,7 @@ Every chat interaction in ClawVille goes through `ElizaRuntime.processMessage()`
 |---|---|
 | Postgres-backed conversation memory | Room/entity model via plugin-sql; messages stored per `roomId` with deterministic UUID v5 IDs |
 | Character/personality type system | `bios`, `lore`, `topics`, `rules`, `adjectives`, `style`, `messageExamples` — converted from our templates + archetypes via `convertToElizaCharacter()` / `buildAvatarCharacter()` |
-| Plugin priority routing | OpenClaw(100) > Gemini(95) — external agents override the default LLM transparently |
+| Plugin priority routing | OpenClaw(100) > OpenAI(95) — external agents override the default LLM transparently |
 | Deterministic UUID v5 room IDs | One room per agent-user pair, stable across sessions: `uuidv5(agentId-userId, ROOM_NAMESPACE)` |
 | Runtime lifecycle | `start()` / `stop()` / `generateText()` — lazy-start on first chat, auto-stop after 30min inactivity |
 | `createDatabaseAdapter` | Shared Postgres pool singleton (global symbol) across all agent instances |
@@ -74,7 +75,7 @@ Every chat interaction in ClawVille goes through `ElizaRuntime.processMessage()`
 
 ### What Bypasses ElizaOS Entirely
 
-**NPC conversation engine** (`apps/api/src/services/npc-conversation-engine.ts`) calls Gemini REST directly for fire-and-forget NPC banter. No memory, no runtime, no plugin chain. Uses `gemini-flash-latest` at temperature 0.9, max 400 tokens. This is intentional — NPC ambient chatter does not need conversation history or personality persistence.
+**NPC conversation engine** (`apps/api/src/services/npc-conversation-engine.ts`) calls OpenAI REST directly for fire-and-forget NPC banter. No memory, no runtime, no plugin chain. Uses `OPENAI_SMALL_MODEL` (default `gpt-4o-mini`) at temperature 0.9, max 400 tokens. This is intentional — NPC ambient chatter does not need conversation history or personality persistence.
 
 ### processMessage Flow (Current)
 
@@ -238,7 +239,7 @@ Learned skills go into `characterConfig.knowledge[]` — a flat string array in 
 
 ### Solution
 
-Embed knowledge entries via the Gemini embedding provider (`text-embedding-004`, 768 dimensions) and store them in the ElizaOS `memories` table with `tableName: 'knowledge'`. At query time, retrieve only the top-K relevant entries via vector similarity.
+Embed knowledge entries via the OpenAI embedding provider (`text-embedding-3-small`, 1536 dimensions) and store them in the ElizaOS `memories` table with `tableName: 'knowledge'`. At query time, retrieve only the top-K relevant entries via vector similarity.
 
 ### Changes Required
 
@@ -334,8 +335,8 @@ Phase 1 Actions, Phase 2 Knowledge/RAG, Phase 3 Autonomy.
 | `packages/agent-runtime/src/eliza-runtime.ts` | Core wrapper: `ElizaRuntime` class, `processMessage`, character building, plugin loading, init mutex |
 | `packages/agent-runtime/src/index.ts` | Barrel exports for the package |
 | `packages/agent-runtime/src/character-loader.ts` | Loads location templates, merges customizations |
-| `packages/agent-runtime/src/plugins/gemini-text-provider.ts` | TEXT_SMALL/TEXT_LARGE via Gemini REST (priority 95) |
-| `packages/agent-runtime/src/plugins/gemini-embedding-provider.ts` | TEXT_EMBEDDING via Gemini REST (priority 100) |
+| `packages/agent-runtime/src/plugins/openai-text-provider.ts` | TEXT_SMALL/TEXT_LARGE via OpenAI REST — `gpt-4o-mini`/`gpt-4o` (priority 95) |
+| `packages/agent-runtime/src/plugins/openai-embedding-provider.ts` | TEXT_EMBEDDING via OpenAI REST — `text-embedding-3-small`, 1536-dim (priority 100) |
 | `packages/agent-runtime/src/plugins/openclaw-provider.ts` | TEXT_SMALL/TEXT_LARGE via external OpenClaw gateway (priority 100) |
 | `packages/agent-runtime/src/simulation/simulation-runtime.ts` | Autonomous avatar simulation wrapper with 4 actions + 1 provider |
 | `packages/agent-runtime/src/simulation/avatar-state-store.ts` | In-memory avatar state for simulation |
@@ -348,7 +349,7 @@ Phase 1 Actions, Phase 2 Knowledge/RAG, Phase 3 Autonomy.
 | `packages/agent-runtime/src/collaboration/collaboration-broker.ts` | Cross-building consultation broker |
 | `packages/agent-runtime/src/collaboration/building-runtime-registry.ts` | Maps building IDs to runtime instances |
 | `apps/api/src/services/agent-orchestrator.ts` | Singleton managing runtime lifecycle (lazy-start, 30min timeout) |
-| `apps/api/src/services/npc-conversation-engine.ts` | Direct Gemini REST for NPC banter (no ElizaOS) |
+| `apps/api/src/services/npc-conversation-engine.ts` | Direct OpenAI REST for NPC banter (no ElizaOS) |
 | `apps/api/src/services/memory-service.ts` | Keyword-based NPC memory (separate from ElizaOS memories) |
 | `apps/api/src/routes/chat.ts` | Location NPC chat (processMessage call site 1) |
 | `apps/api/src/routes/avatars.ts` | Avatar chat (processMessage call site 2) |
@@ -444,7 +445,7 @@ Actions in `packages/agent-runtime` cannot import from `apps/api` (monorepo depe
 
 ### D4: Why NPC banter bypasses ElizaOS entirely
 
-NPC ambient conversation (`npc-conversation-engine.ts`) is fire-and-forget chat with no memory, no personality persistence, and no action capability needed. Running it through ElizaOS would mean: creating a runtime per NPC pair (resource cost), storing memories that are never queried (storage cost), and accepting 2-3x latency from the plugin chain. Direct Gemini REST at temperature 0.9 with 400 max tokens is the right tool for throwaway banter.
+NPC ambient conversation (`npc-conversation-engine.ts`) is fire-and-forget chat with no memory, no personality persistence, and no action capability needed. Running it through ElizaOS would mean: creating a runtime per NPC pair (resource cost), storing memories that are never queried (storage cost), and accepting 2-3x latency from the plugin chain. Direct OpenAI REST at temperature 0.9 with 400 max tokens is the right tool for throwaway banter.
 
 ### D5: Why Phase 2 uses ElizaOS memories table instead of a separate vector store
 
@@ -458,7 +459,7 @@ ElizaOS v2 supports `actionPlanning: true` for multi-action-per-response workflo
 
 The LLM signals action invocation by embedding `[ACTION: VISIT_BUILDING(buildingId=code-development)]` in its natural-language response. We parse this with a single regex (`/\[ACTION:\s*(\w+)\(([^)]*)\)\]/`). Alternatives considered:
 
-- **Function calling / tool-use (Gemini or Anthropic native):** Would require a second LLM call to re-generate the conversational response after the tool result, doubling latency and cost. The text-tag approach generates conversation + action in one shot.
+- **Function calling / tool-use (OpenAI native):** Would require a second LLM call to re-generate the conversational response after the tool result, doubling latency and cost. The text-tag approach generates conversation + action in one shot.
 - **JSON response format:** Would force the entire response into structured JSON, losing natural conversational flow. Game agents need to sound like characters, not APIs.
 - **ElizaOS's built-in action selector:** Would require un-bypassing `message.ts` (see D1).
 

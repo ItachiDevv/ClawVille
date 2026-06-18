@@ -30,6 +30,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { JoystickManager } from 'nipplejs';
 import { useIsMobile } from '@/hooks/use-is-mobile';
 import { useGameStore } from '@/stores/game';
+import { registerInputReset } from '@/lib/three/input-reset';
 import {
   ACTION_BIT_BOOST,
   ACTION_BIT_USE_POWERUP,
@@ -82,6 +83,11 @@ export default function ActivityMobileControls({ active }: ActivityMobileControl
   const [boostFlash, setBoostFlash] = useState(0);
   const [powerupFlash, setPowerupFlash] = useState(0);
   const FEEDBACK_MS = 280;
+
+  // S7 — zero the joystick on window focus loss/regain. A touch can be
+  // interrupted without a nipplejs 'end' when a window steals focus, stranding
+  // the velocity (the avatar keeps driving). Shared with all input vectors.
+  useEffect(() => registerInputReset(() => useGameStore.getState().setJoystickVelocity(0, 0)), []);
 
   // Left joystick — same plumbing as `mobile-controls.tsx`. We write into
   // the same `joystickVelocity` slot so `useActivityInput` picks it up

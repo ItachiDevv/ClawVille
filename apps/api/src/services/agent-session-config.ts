@@ -36,6 +36,7 @@
 import {
   DEFAULT_AGENT_MODEL_KEY,
   DEFAULT_HATCHER_MODEL_KEY,
+  getAgentModel,
   type AgentWireProtocol,
   type AgentAutonomyMode,
   type OpenClawRegistration,
@@ -83,7 +84,20 @@ export function resolveAgentSpecies(
   identityType: string,
   species: string | null | undefined,
 ): string {
-  if (species) return species;
+  if (species) {
+    // Hatcher-category render models (phanes + the bespoke Greek avatars) are
+    // RESERVED for the Hatcher partner identity. /api/agent/connect and the legacy
+    // /api/openclaw/register accept `species` as a free string, so without this a
+    // generic agent could claim a reserved Hatcher VRM by passing species:'cronus'
+    // etc. Coerce any non-hatcher identity's reserved request to the default model
+    // — reserved avatars stay "selectable only through Hatcher" (the partner mint
+    // path sets identityType 'hatcher', which is exempt). Closes the leak Codex
+    // flagged across connect/register/mint/restore at the single chokepoint.
+    if (identityType !== 'hatcher' && getAgentModel(species)?.category === 'hatcher') {
+      return DEFAULT_AGENT_MODEL_KEY;
+    }
+    return species;
+  }
   return identityType === 'hatcher'
     ? DEFAULT_HATCHER_MODEL_KEY
     : DEFAULT_AGENT_MODEL_KEY;
