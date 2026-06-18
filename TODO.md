@@ -280,6 +280,9 @@ Coolify VPS hit 100% disk on 2026-04-16 from accumulated Docker images + build c
 
 ## 🟡 Small backlog
 
+### Land economy follow-ups (after the 2026-06-18 FOR-RENT showroom)
+- [ ] **Land parcel INTERIORS / interior designs** — when you own a home/shop, let it have a walk-in interior scene (enter the building → interior room you can decorate/lay out). Tiered interior design options (higher land tier / structure level unlocks nicer interior kits), mirroring the exterior tier-gate. This is the big one the showroom is a teaser for. (Relates to the §Small-backlog "enter building" interior item below — share the interior-scene infra.)
+- [ ] **"Claim a model home & inherit its level" transfer economy** — make the FOR-RENT showroom lots actually claimable as fixer-uppers: a buy/claim that transfers the showroom-styled parcel to the buyer WITH a pre-placed structure at its showroom level (vs the current path of buy-empty-then-place). Needs a system-owned "ClawVille Estates" avatar (or a `showroom`/`rentable` parcel flag) + a claim/transfer route; today the showroom is decorative-only and the buyer just buys the empty lot and places their own. Wire parcel-ownership hydration into the land store so `land-showroom.tsx`'s hide-when-owned actually fires in real time.
 - [ ] Remove the visible sand square on pineapple-house.glb (artifact in the source GLB).
 - [ ] Building proximity interactions — currently you walk up to a character; later: explicit "enter building" with an interior scene.
 - [ ] Minimap shows player position; add NPC positions (sonar blips with species color).
