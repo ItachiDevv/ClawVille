@@ -1301,27 +1301,18 @@ export const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteStat
         }
 
         const chargeMode = jumpState.chargeMode;
-        const isSquatChargeNpc = phaseCharging && chargeMode === 'squat';
         const swimClip: AnimName = d.species === 'tekk' ? 'flying' : 'swimming';
+        // BUG 1 squat TEMPORARILY DISABLED (2026-06-18) — see player-avatar.tsx:
+        // rotation-only clip = midair tuck; v3 runtime foot-grounding oscillated
+        // (stale normalized-bone read). squat-charge → 'idle' (stand, movement
+        // still halted) until a re-baked squat clip lands (Codex, Rule E3).
         const desiredClip: AnimName =
-          isSquatChargeNpc        ? 'squat'
-          : (phaseCharging && chargeMode === 'run') ? 'idle'
+          (phaseCharging && chargeMode === 'run') ? 'idle'
           : airborne              ? swimClip
           :                         'idle';
         if (desiredClip !== lastSurfaceClipRef.current) {
           animator.setSurfaceClip(desiredClip);
           lastSurfaceClipRef.current = desiredClip;
-        }
-
-        // BUG 1 fix (2026-06-17): apply squat ground lift before updateMixerOnly
-        // so skeleton.update() uploads boneMatrices with the corrected group Y.
-        // Uses the NPC's own vrmRenderScale (from computeVRMNpcScale) to convert
-        // VRM-meter descent to world-unit lift — NOT the player's scale.
-        if (isSquatChargeNpc) {
-          const lift = animator.getSquatGroundLift(animator.getSquatClipTime(), vrmRenderScale);
-          if (lift > 0) {
-            group.position.y += lift;
-          }
         }
       }
       springDeltaAccRef.current += dt;
@@ -1364,6 +1355,11 @@ export const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteStat
           npcLockIdle ? false : (d.isRunning ?? false),
           isPossessedPlayerNpc ? 1 : speedScale
         );
+
+        // BUG 1 squat foot-grounding REMOVED 2026-06-18 — oscillated (stale
+        // normalized-bone read fed a 1-frame-lag loop → violent flicker between
+        // standing and half-sunk). squat-charge now keeps 'idle' (above) until a
+        // re-baked squat clip lands. See player-avatar.tsx + the gotcha memo.
 
         // WIN B — Spring-bone distance LOD (perf-audit-2026-05-22 Q4)
         // Close NPCs (<2500wu) run at 30Hz — better perceived quality for
