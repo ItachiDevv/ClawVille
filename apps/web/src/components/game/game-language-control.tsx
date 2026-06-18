@@ -293,6 +293,10 @@ export default function GameLanguageControl() {
             targetLocale,
             uncached.map((text, index) => ({ id: String(index), text })),
           );
+          // Audit fix — the response is async; if the user switched language or
+          // disabled translation while it was in flight, this seq is now stale →
+          // do NOT cache or apply it (would flash/persist the wrong locale).
+          if (seq !== requestSeq.current) return;
           res.translations.forEach((entry, index) => {
             const source = uncached[index];
             if (!source || !entry.text) return;
