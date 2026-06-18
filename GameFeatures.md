@@ -679,6 +679,8 @@ Full Phase 5.1 architecture (keypair roles, envelope encryption, signed-challeng
 
 ## 15. Landing page (`apps/web/src/app/page.tsx`)
 
+**Updated 2026-06-16** — added the **Qwerti buy widget** (partner integration, step 1): a floating "buy/swap $CLAWVILLE" launcher (Qwerti's non-custodial DeFAI aggregator — card / Apple Pay / Google Pay / crypto on-ramp). `components/landing/qwerti-buy-widget.tsx` renders null and self-injects `https://widget.qwerti.ai/widget/v1/buy.js` (campaign `clawville-792703809-76951`) on `requestIdleCallback` so it never competes with the 3D hero's first paint (priority #1). **HOMEPAGE ONLY** — injected/torn down in `page.tsx`, never in the root layout, so the launcher never appears over the `/game` WebGPU scene; cleanup calls `Qwerti.destroy()` + removes the `<script>` and `#qwerti-widget-root`. `data-auto-open="false"` (dashboard snippet defaults `true` — overridden so it never auto-pops a buy modal on load). JS API for future buttons: `Qwerti.openWidget()` / `closeWidget()`. CSP note: `next.config.mjs` sets only `frame-ancestors` (no `script-src`/`default-src`), so the third-party script + its iframes load unblocked. Marketing/economy surface (buy $CLAWVILLE) — NOT a live in-world game mechanic, so intentionally NOT propagated to Nori/SKILL.md. See `Partnerships.md` → QwertiAI.
+
 **Updated 2026-06-10** — restored PayAI press-release hyperlink parity with the Google Docs source: inline article links now wrap the source phrases for ClawVille, PayAI, x402 protocol docs, PayAI Facilitator, agent-native payment infrastructure, and the x402 quickstart; the inline ClawVille link routes to `/game` on-site while footer/community links remain external.
 
 **Updated 2026-06-08** — added the PayAI × ClawVille **press release**: a "🔴 BREAKING" banner at the top of the hero (`page.tsx`, smooth-scrolls to `#press-release`) + a full long-form `<PressRelease>` article section rendered directly below the hero (`components/landing/press-release.tsx`). Lead key-art (`announce.webp`) sits under an enlarged ClawVille × PayAI lockup; 8 co-branded section banners + the lead live at `/public/press/payai/*.webp` (WebP ~200–280KB each, down from ~3MB PNG; all `loading="lazy"` so they never touch the hero's initial paint — priority #1). Forward-looking marketing content (the PayAI integration is announced, not yet built) → intentionally NOT propagated to Nori/SKILL.md (not a live game mechanic).
@@ -703,6 +705,7 @@ Full Phase 5.1 architecture (keypair roles, envelope encryption, signed-challeng
 | Footer CTA | "Ready to dive in?" + tech badges + ElizaOS attribution. | `page.tsx` |
 | `<ExpiredLinkBanner>` | Surfaces `?error=expired-link` from stale magic-links (fixed overlay). | `page.tsx` |
 | `<HowItWorksModal>` | Full-page explainer modal. | `components/landing/how-it-works-modal.tsx` |
+| `<QwertiBuyWidget>` | Qwerti floating "buy $CLAWVILLE" launcher (partner). Renders null; lazy self-injects on idle, homepage-only, `data-auto-open="false"`, full teardown on nav. | `components/landing/qwerti-buy-widget.tsx` |
 
 ### 15b. Live demo tiles (LiveDemoStrip)
 
