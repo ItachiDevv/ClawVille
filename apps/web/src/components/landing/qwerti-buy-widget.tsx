@@ -20,9 +20,16 @@ import { useEffect } from 'react';
  *    dashboard-generated snippet ships `data-auto-open="true"` — intentionally
  *    overridden here (auto-popping a buy modal on every visit is hostile UX).
  *
+ * THEMING (verified live on staging 2026-06-16): the widget renders in a shadow
+ * root but exposes `--wt-*` CSS custom properties on its host `#qwerti-widget-root`.
+ * Custom properties inherit THROUGH the shadow boundary, and our `#id` selector
+ * (specificity 1,0,0) beats the widget's own `:host` rule (0,1,0), so the rule in
+ * THEME_CSS recolors the launcher, modal border, glow, message box, and the
+ * "Buy Token" button to ClawVille cyan — no Qwerti-dashboard change needed.
+ *
  * Cleanup fully tears the widget down (`Qwerti.destroy()` + removes the injected
- * <script> and the `#qwerti-widget-root` node it appends) so a client-side
- * navigation away (e.g. to /game) leaves nothing behind.
+ * <script>, the theme <style>, and the `#qwerti-widget-root` node) so a
+ * client-side navigation away (e.g. to /game) leaves nothing behind.
  *
  * Integration ref: https://partner-demo.qwerti.ai/integration-guide?type=widget
  * Campaign id is the partner-scoped value generated in the Qwerti dashboard.
@@ -31,7 +38,27 @@ import { useEffect } from 'react';
 const WIDGET_SRC = 'https://widget.qwerti.ai/widget/v1/buy.js';
 const WIDGET_CAMPAIGN = 'clawville-792703809-76951';
 const SCRIPT_ID = 'qwerti-buy-widget';
+const STYLE_ID = 'qwerti-widget-theme';
 const ROOT_ID = 'qwerti-widget-root';
+
+/**
+ * Hosted buy page ("magic link") — the fallback when a user hits the branded
+ * button before the widget script has finished its lazy idle-load.
+ */
+export const QWERTI_MAGIC_LINK =
+  'https://app.qwerti.ai/buy/Epht7Fw4Sgh6fdcJj6afWXuNcAUmLLMc3MSthUqELiZA/792703809?campaign=clawville-792703809-76951';
+
+/** ClawVille cyan theme — see THEMING note above. Values verified live. */
+const THEME_CSS = `#${ROOT_ID}{
+  --wt-button-bg: linear-gradient(74deg, #00E5FF 5%, #06B6D4 48%, #0E7490 90%);
+  --wt-button-border: #22d3ee;
+  --wt-button-border-bg: linear-gradient(120deg, #67e8f9 0%, #0e7490 100%);
+  --wt-trigger-bg: linear-gradient(126deg, #00E5FF 40%, #0e7490 95%);
+  --wt-trigger-border-gradient: linear-gradient(120deg, #67e8f9 0%, #0e7490 100%);
+  --wt-glow-color: rgba(0, 229, 255, 0.55);
+  --wt-modal-border-gradient: linear-gradient(120deg, #00E5FF 0%, #0e7490 100%);
+  --wt-message-bg: linear-gradient(88.7deg, rgba(9, 30, 46, 0.66) 0%, rgba(6, 21, 32, 0.55) 100%);
+}`;
 
 declare global {
   interface Window {
@@ -43,6 +70,21 @@ declare global {
   }
 }
 
+/**
+ * Open the Qwerti buy flow. Call from a real user gesture (button onClick) — the
+ * widget gates its open on user activation. If the lazy widget script hasn't
+ * loaded yet, fall back to the hosted buy page so the control is never dead.
+ */
+export function openQwertiBuy() {
+  if (typeof window === 'undefined') return;
+  const q = window.Qwerti;
+  if (q?.openWidget) {
+    q.openWidget();
+    return;
+  }
+  window.open(QWERTI_MAGIC_LINK, '_blank', 'noopener,noreferrer');
+}
+
 export function QwertiBuyWidget() {
   useEffect(() => {
     // Never inject twice (React re-mount / strict-mode double-effect).
@@ -52,6 +94,15 @@ export function QwertiBuyWidget() {
     const inject = () => {
       if (injected || document.getElementById(SCRIPT_ID)) return;
       injected = true;
+
+      // Theme rule first (static CSS — applies whenever the root appears).
+      if (!document.getElementById(STYLE_ID)) {
+        const style = document.createElement('style');
+        style.id = STYLE_ID;
+        style.textContent = THEME_CSS;
+        document.head.appendChild(style);
+      }
+
       const s = document.createElement('script');
       s.id = SCRIPT_ID;
       s.src = WIDGET_SRC;
@@ -80,6 +131,7 @@ export function QwertiBuyWidget() {
         /* widget may not have finished loading — safe to ignore */
       }
       document.getElementById(SCRIPT_ID)?.remove();
+      document.getElementById(STYLE_ID)?.remove();
       document.getElementById(ROOT_ID)?.remove();
     };
   }, []);
