@@ -100,3 +100,6 @@ export * from './constants/land-parcels';
 // Land Economy Phase 0 (2026-06-15) — economic constants (tier ladder, upgrade costs, structure
 // catalog, leaderboard event weights, founder-gated rest-bonus cap). Backend + frontend pricing.
 export * from './constants/land-economy';
+// Land Showroom (2026-06-18) — deterministic ~15 starter-lot showroom (FOR RENT model buildings).
+// Client-only decorative layer; no DB dependency.
+export * from './constants/land-showroom';
