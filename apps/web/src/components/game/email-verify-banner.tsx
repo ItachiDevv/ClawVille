@@ -72,6 +72,18 @@ export default function EmailVerifyBanner({
     (s) => s.hatcherLaunchBannerActive,
   );
 
+  // S5 — yield to the in-world action prompt (LocationHUD). When near a building
+  // the "Press E · Enter / Talk" prompt owns the bottom-center slot; three
+  // centered bottom surfaces read as noise even when technically non-overlapping.
+  // Boolean selector → re-renders only when the visibility flips.
+  const locationHudVisible = useGameStore(
+    (s) =>
+      s.controlMode !== 'explore' &&
+      !!s.nearLocation &&
+      !s.chatOpen &&
+      !s.guideChatOpen,
+  );
+
   const storageKey = `cv:email-verify-dismissed-${userId}`;
   const TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -104,6 +116,8 @@ export default function EmailVerifyBanner({
   if (verified || isGuest || !hasRealEmail) return null;
   // Yield the bottom-center slot to the transient Hatcher launch banner.
   if (hatcherLaunchBannerActive) return null;
+  // Yield to the in-world building-action prompt (LocationHUD) — see S5.
+  if (locationHudVisible) return null;
   if (dismissedReady !== false) return null;
 
   function dismiss() {

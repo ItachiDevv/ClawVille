@@ -22,6 +22,7 @@ import { MAP_WIDTH, MAP_HEIGHT } from '@/lib/pixi/tilemap-data';
 import { findNearestCharacter } from '@/lib/three/character-positions';
 import { NORI_WORLD_X, NORI_WORLD_Z, NORI_TALK_RADIUS_SQ } from '@/lib/three/town-guide';
 import { isEditable, jumpState } from '@/lib/three/jump-state';
+import { registerInputReset } from '@/lib/three/input-reset';
 import { clampMovement2D, ENTITY_HALF_HUMANOID } from '@/lib/three/collision/world-colliders';
 
 const SPEED = 550; // pixels/sec — pass 2 2026-04-16: bumped 320→550 (user tested pass 1 at 320,
@@ -94,15 +95,11 @@ function attachNpcKeyListeners() {
     const k = rawKey as keyof NpcKeyState;
     if (k in _keys) _keys[k] = false;
   };
-  // When the window loses focus the browser stops firing keyup for held keys.
-  // Resetting all key state on blur/visibilitychange prevents phantom movement
-  // after the user alt-tabs or the OS steals focus mid-hold.
-  const onBlur = () => resetNpcKeys();
-  const onVisibility = () => { if (document.hidden) resetNpcKeys(); };
   window.addEventListener('keydown', onDown);
   window.addEventListener('keyup', onUp);
-  window.addEventListener('blur', onBlur);
-  document.addEventListener('visibilitychange', onVisibility);
+  // Release all held keys on focus loss/regain — centralized in input-reset.ts
+  // (browser skips keyup when focus leaves the window). See S7.
+  registerInputReset(resetNpcKeys);
 }
 
 function directionFromVelocity(vx: number, vy: number): NpcSpriteState['direction'] {
