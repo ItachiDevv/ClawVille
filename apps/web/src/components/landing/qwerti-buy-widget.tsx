@@ -48,16 +48,20 @@ const ROOT_ID = 'qwerti-widget-root';
 export const QWERTI_MAGIC_LINK =
   'https://app.qwerti.ai/buy/Epht7Fw4Sgh6fdcJj6afWXuNcAUmLLMc3MSthUqELiZA/792703809?campaign=clawville-792703809-76951';
 
-/** ClawVille cyan theme — see THEMING note above. Values verified live. */
+/**
+ * ClawVille cyan theme — see THEMING note above. Values verified live.
+ * NOTE: the widget sets these `--wt-*` vars INLINE on the host element, so every
+ * declaration needs `!important` for our external `#id` rule to win over inline.
+ */
 const THEME_CSS = `#${ROOT_ID}{
-  --wt-button-bg: linear-gradient(74deg, #00E5FF 5%, #06B6D4 48%, #0E7490 90%);
-  --wt-button-border: #22d3ee;
-  --wt-button-border-bg: linear-gradient(120deg, #67e8f9 0%, #0e7490 100%);
-  --wt-trigger-bg: linear-gradient(126deg, #00E5FF 40%, #0e7490 95%);
-  --wt-trigger-border-gradient: linear-gradient(120deg, #67e8f9 0%, #0e7490 100%);
-  --wt-glow-color: rgba(0, 229, 255, 0.55);
-  --wt-modal-border-gradient: linear-gradient(120deg, #00E5FF 0%, #0e7490 100%);
-  --wt-message-bg: linear-gradient(88.7deg, rgba(9, 30, 46, 0.66) 0%, rgba(6, 21, 32, 0.55) 100%);
+  --wt-button-bg: linear-gradient(74deg, #00E5FF 5%, #06B6D4 48%, #0E7490 90%) !important;
+  --wt-button-border: #22d3ee !important;
+  --wt-button-border-bg: linear-gradient(120deg, #67e8f9 0%, #0e7490 100%) !important;
+  --wt-trigger-bg: linear-gradient(126deg, #00E5FF 40%, #0e7490 95%) !important;
+  --wt-trigger-border-gradient: linear-gradient(120deg, #67e8f9 0%, #0e7490 100%) !important;
+  --wt-glow-color: rgba(0, 229, 255, 0.55) !important;
+  --wt-modal-border-gradient: linear-gradient(120deg, #00E5FF 0%, #0e7490 100%) !important;
+  --wt-message-bg: linear-gradient(88.7deg, rgba(9, 30, 46, 0.66) 0%, rgba(6, 21, 32, 0.55) 100%) !important;
 }`;
 
 declare global {
@@ -71,17 +75,18 @@ declare global {
 }
 
 /**
- * Open the Qwerti buy flow. Call from a real user gesture (button onClick) — the
- * widget gates its open on user activation. If the lazy widget script hasn't
- * loaded yet, fall back to the hosted buy page so the control is never dead.
+ * Open the Qwerti buy flow from the branded "Buy $CLAWVILLE" button.
+ *
+ * Opens the hosted buy page (magic link) in a new tab. We do NOT call the
+ * widget's `Qwerti.openWidget()` API here: it is a no-op in the current Qwerti
+ * build (verified live on staging 2026-06-16 — only the floating launcher's own
+ * real click opens the in-page panel; synthetic / programmatic opens are
+ * isTrusted-gated and silently do nothing). `window.open` from a user gesture is
+ * always reliable, so the button is never dead. The in-page (cyan-themed) widget
+ * remains available via its floating launcher for users who prefer to stay on-site.
  */
 export function openQwertiBuy() {
   if (typeof window === 'undefined') return;
-  const q = window.Qwerti;
-  if (q?.openWidget) {
-    q.openWidget();
-    return;
-  }
   window.open(QWERTI_MAGIC_LINK, '_blank', 'noopener,noreferrer');
 }
 
