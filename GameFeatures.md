@@ -1257,6 +1257,18 @@ So the land world reads as **populated** rather than 180 identical empty for-sal
 - **Render:** `apps/web/src/lib/three/land-showroom.tsx` (mounted in `World3DCanvas` beside `LandStructures`). Reuses the proven GLB clone/normalize/ground/cull pipeline from `land-structures.tsx`; the 6 cottage GLBs + the 2 premium GLBs (`premium-tower/home.glb`, `premium-mall/shop.glb`) back it (primitive fallback if a model is missing). Each lot's sign is a per-lot plank+post placed by the same edge-facing-origin math as the for-sale signs, using one of two shared `CanvasTexture`s picked by the entry's `signLabel`: amber **"FOR RENT" / "CLAWVILLE ESTATES"** for starter lots, gold **"PREMIUM" / "FOUNDERS' ROW"** for founder lots. Iris-Xe-safe (no drei Text, no ShaderMaterial, zero per-frame allocs). On every showroom lot, `land-parcels.tsx` **suppresses the FOR-SALE sign** (the lot frame stays) so they read FOR RENT / PREMIUM only.
 - **Hide-when-owned:** each showroom lot's group hides the instant its parcel status flips to `owned` in the land store, so a real buyer's placed structure (`LandStructures`) cleanly takes over with no overlap. (Today this fires only once parcel-ownership is hydrated into the store; until that wire lands the showroom is always-on decoration — see the TODO for the "claim a model home & inherit its level" transfer economy + interiors.)
 
+### 18b.f. FOR-SALE signage — 3 categories (regular / premium / premium-partner)
+
+Every one of the 180 plots carries a **FOR SALE sign**, styled by a **visual category** (separate from the economic tier — signage is purely cosmetic, `packages/shared/src/constants/land-signage.ts`, rendered by `land-parcels.tsx`). Three categories, escalating in size + fanciness:
+
+| Category | Plots | Sign | Look |
+|---|---|---|---|
+| **regular** | `b` / `c` / `starter` tiers (the larger outer square frames) | basic, 68×28wu plank | dark plank, thin tan border, "FOR SALE" |
+| **premium** | `founder` + `a` tiers (the inner square frames just outside the town circle) | ~1.35× bigger, 92×38wu | gold double-border + corner ticks, "FOR SALE" + "PREMIUM" |
+| **premium-partner** | a **game-owner-curated subset** of premium plots (`PREMIUM_PARTNER_PARCEL_IDS`) | ~1.7× bigger, 116×48wu | cyan/platinum ornate border + topper bar, "FOR SALE" + "PARTNER" |
+
+**Premium and premium-partner share the same land** (the inner premium ring) — partner plots are specific premium lots WE reserve for partners (default 6: 3 founder + 3 a-tier, spread around the ring; edit the set to re-designate). `getLandSignCategory(parcel)` resolves the category (partner-id → premium-partner; founder/a tier → premium; else regular). Draw budget: 5 tier-body meshes + 3 sign-post + 3 sign-plank = 11 (was 7). The signs are merged per category (one mesh each), Iris-Xe-safe (text baked into per-category `CanvasTexture`s, no drei Text), all disposed on unmount. **Most plots stay empty = "builder" plots** (buy + build your own); only ~22 carry the showroom example buildings. The land-showroom layer no longer draws its own sign (signage is unified here), so a showroom lot shows its example building **plus** its category FOR-SALE sign.
+
 ---
 
 ## 19. Map layout
