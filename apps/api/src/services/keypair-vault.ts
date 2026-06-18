@@ -226,8 +226,8 @@ const WORKER_MISSING_MSG =
   + 'encryption works; any new-row write path will reject.';
 
 function requireWorkerEnv(): { url: string; bearer: string } {
-  const url = process.env.CLOUDFLARE_WORKER_URL;
-  const bearer = process.env.CLOUDFLARE_WORKER_BEARER;
+  const url = process.env.CLOUDFLARE_WORKER_URL?.trim();
+  const bearer = process.env.CLOUDFLARE_WORKER_BEARER?.trim();
   if (!url || !bearer) throw new Error(WORKER_MISSING_MSG);
   // Strip trailing slash so `${url}/wrap` doesn't become `.../ /wrap`
   return { url: url.replace(/\/+$/, ''), bearer };

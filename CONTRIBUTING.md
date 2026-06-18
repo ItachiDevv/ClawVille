@@ -32,7 +32,7 @@ For common operations, follow the runbook in `.claude/workflows/` — each one l
 
 ```bash
 bun install
-cp .env.example .env.local   # fill in DATABASE_URL, GEMINI_API_KEY, etc.
+cp .env.example .env.local   # fill in DATABASE_URL, OPENAI_API_KEY, etc.
 bun run db:push
 bun run db:seed
 bun run dev
@@ -73,7 +73,7 @@ docs(architecture): document phase 5.1 wallet identity flow
 - Test coverage
 
 **Not in scope (yet):**
-- Replacing the LLM backend — Gemini is the only supported provider. Adding a second is a discussion, not a PR.
+- Replacing the LLM backend — OpenAI is the only supported provider. Adding a second is a discussion, not a PR.
 - Replacing ElizaOS — the runtime is load-bearing. See "ElizaOS is MANDATORY" in `CLAUDE.md`.
 - Changes to the Milady plugin (`@clawville/app-clawville` on npm) — that lives in a separate repo.
 

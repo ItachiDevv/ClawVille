@@ -59,7 +59,7 @@ export interface SimulationRuntimeDeps {
   pathfind: PathfindFn;
   dbHooks: AvatarDbHooks;
   databaseUrl?: string;
-  apiKeys?: { gemini?: string; openai?: string };
+  apiKeys?: { openai?: string };
   /** Optional home spawn coordinates (defaults to center of 5120x5120) */
   homeX?: number;
   homeY?: number;
@@ -390,7 +390,7 @@ export class SimulationRuntime {
 
   /**
    * Generate a short visit chat line via the runtime LLM.
-   * Per user decision: visit chat is routed through the ElizaOS runtime (Gemini backend).
+   * Per user decision: visit chat is routed through the ElizaOS runtime (OpenAI backend).
    */
   async generateAvatarChat(userId: string, buildingId: string): Promise<string | null> {
     if (!this.initialized) return null;

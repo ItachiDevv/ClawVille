@@ -1,0 +1,358 @@
+// @ts-nocheck — preview route crosses dual @types/three versions (0.170 from
+// VRM, 0.182 from main three). Every Three.js value hits the version
+// boundary, making per-line casts untractable. Runtime is unaffected; this
+// is a dev-only preview route (matches /preview/hermes).
+'use client';
+
+// Three.js requires a browser-only WebGL canvas. Force dynamic so the build
+// doesn't try to prerender this page.
+export const dynamic = 'force-dynamic';
+
+/**
+ * /preview/land-structures — Land Economy "building style" candidate gallery.
+ *
+ * STAGE 1 of the land-structures feature: the founder must PICK ONE building
+ * art-style direction before we mass-produce all 12 land SKUs. This route
+ * renders 2-3 distinct candidate styles side by side, each as a sample pair
+ * (ONE home GLB + ONE shop GLB), on labelled pads. The orchestrator
+ * screenshots this for the founder to choose.
+ *
+ * Candidate styles (all sourced low-poly GLBs under /models/land-structures/):
+ *   - fantasy-cottage : Quaternius Fantasy House (home) + Market Stalls (shop)  [CC0]
+ *   - coastal-cottage : CreativeTrio Cottage (home) + Quaternius Cart (shop)    [CC0]
+ *   - driftwood-cabin : CreativeTrio Cabin Shed (home) + Zsky Blacksmith (shop) [CC0 home / CC-BY shop]
+ *
+ * Iris Xe rules enforced:
+ *   - Plain WebGLRenderer (Canvas default), no three/webgpu
+ *   - No drei <Text> / <Billboard> — labels are plain DOM in a CSS overlay
+ *   - No InstancedMesh + ShaderMaterial
+ *   - 1 hemisphere + 1 directional light, no shadows
+ *   - Clone GLB scene before mutating (useGLTF cache is shared)
+ *   - Clone materials after clone (cross-renderer-context purple guard)
+ *   - frustumCulled=false on every cloned mesh
+ *   - Dispose cloned geometry/materials/textures on unmount
+ *   - No per-frame allocations (gallery is static — no useFrame)
+ */
+
+import React, { Suspense, useEffect, useMemo, useRef } from 'react';
+import { Canvas } from '@react-three/fiber';
+import { OrbitControls, useGLTF } from '@react-three/drei';
+import * as THREE from 'three';
+import { extendLoaderWithMeshopt } from '@/lib/three/meshopt-loader-setup';
+
+// Normalize each model so its largest dimension (X, Y, or Z) is this many world
+// units — keeps wide shops and tall homes at a consistent visual cube size on
+// the pads (memory: building-maxdim-normalization — max(X,Y,Z), NOT Y-only).
+const TARGET_MAX_DIM = 140;
+
+// Pad spacing along X. Each candidate occupies a 2-pad column-pair (home, shop).
+// Kept compact relative to TARGET_MAX_DIM (140) so the row stays on-screen and
+// no model ever sits so far off-axis that it crosses the camera far plane.
+const PAD_GAP = 180; // gap between home and shop within a candidate
+const CANDIDATE_GAP = 360; // gap between candidate groups
+
+type StructureKind = 'home' | 'shop';
+
+interface CandidateDef {
+  style: string; // kebab styleName == folder under /models/land-structures/
+  label: string;
+  blurb: string;
+  home: { path: string; source: string };
+  shop: { path: string; source: string };
+}
+
+const CANDIDATES: CandidateDef[] = [
+  {
+    style: 'fantasy-cottage',
+    label: 'Fantasy Cottage',
+    blurb: 'Storybook pointed roofs — whimsical, pairs with Pineapple/Patrick',
+    home: {
+      path: '/models/land-structures/fantasy-cottage/home.glb',
+      source: 'Quaternius (CC0) · 5,758 tris',
+    },
+    shop: {
+      path: '/models/land-structures/fantasy-cottage/shop.glb',
+      source: 'Quaternius Market Stalls (CC0) · 3,896 tris',
+    },
+  },
+  {
+    style: 'coastal-cottage',
+    label: 'Coastal Cottage',
+    blurb: 'Tidy compact cottage — lowest-poly, clean coastal hamlet read',
+    home: {
+      path: '/models/land-structures/coastal-cottage/home.glb',
+      source: 'CreativeTrio Cottage (CC0) · 2,094 tris',
+    },
+    shop: {
+      path: '/models/land-structures/coastal-cottage/shop.glb',
+      source: 'Quaternius Cart (CC0) · 2,659 tris',
+    },
+  },
+  {
+    style: 'driftwood-cabin',
+    label: 'Driftwood Cabin',
+    blurb: 'Rustic timber — weathered plank look, sea-salvage vibe',
+    home: {
+      path: '/models/land-structures/driftwood-cabin/home.glb',
+      source: 'CreativeTrio Cabin Shed (CC0) · 2,745 tris',
+    },
+    shop: {
+      path: '/models/land-structures/driftwood-cabin/shop.glb',
+      source: 'Zsky Blacksmith Shop (CC-BY) · 5,216 tris',
+    },
+  },
+  {
+    style: 'premium-showcase',
+    label: "Premium Showcase (Founders' Row)",
+    blurb: 'Skyscraper + mall — the premium-tier payoff',
+    home: {
+      path: '/models/land-structures/premium-tower/home.glb',
+      source: 'Kenney Skyscraper (CC0) · 986 tris',
+    },
+    shop: {
+      path: '/models/land-structures/premium-mall/shop.glb',
+      source: 'Kenney Large Building A (CC0) · 2,364 tris',
+    },
+  },
+  // ── Tower Candidates (skyscraper replacement options) ─────────────────────
+  // The original premium-tower/home.glb was rejected as a "glass pane".
+  // These 3 candidates have distinct window-grid geometry (named window, trim,
+  // border, door material slots across the full facade height). Pick one and the
+  // orchestrator promotes it into premium-tower/home.glb.
+  {
+    style: 'tower-cand-1',
+    label: 'Skyscraper Option A',
+    blurb: 'Wide windowed tower: 6 facade zones (roof+trim+window bands+border+door), stepped setback look',
+    home: {
+      path: '/models/land-structures/tower-cand-1/home.glb',
+      source: 'Kenney skyscraperE (CC0, poly.pizza/m/obYD8hWLTZ) · 1,578 tris',
+    },
+    shop: {
+      path: '/models/land-structures/premium-mall/shop.glb',
+      source: 'Kenney Large Building A (CC0) · 2,364 tris',
+    },
+  },
+  {
+    style: 'tower-cand-2',
+    label: 'Skyscraper Option B',
+    blurb: 'Classic tall slim glass tower: trim bands + window columns up a narrow high-rise profile (H/W 3.6)',
+    home: {
+      path: '/models/land-structures/tower-cand-2/home.glb',
+      source: 'Kenney skyscraperB (CC0, poly.pizza/m/JTsKOSB23Y) · 732 tris',
+    },
+    shop: {
+      path: '/models/land-structures/premium-mall/shop.glb',
+      source: 'Kenney Large Building A (CC0) · 2,364 tris',
+    },
+  },
+  {
+    style: 'tower-cand-3',
+    label: 'Skyscraper Option C',
+    blurb: 'Stepped office tower: brownish-red setback tiers + near-black window band — NYC-style silhouette',
+    home: {
+      path: '/models/land-structures/tower-cand-3/home.glb',
+      source: 'Poly by Google SM_Skyscraper_02 (CC-BY, poly.pizza/m/5mOW8KZSHtU) · 2,752 tris',
+    },
+    shop: {
+      path: '/models/land-structures/premium-mall/shop.glb',
+      source: 'Kenney Large Building A (CC0) · 2,364 tris',
+    },
+  },
+];
+
+/**
+ * Loads ONE GLB, clones it (shared cache safety), normalizes it to
+ * TARGET_MAX_DIM via max(X,Y,Z), grounds it on the pad (feet at pad top), and
+ * disposes the clone on unmount.
+ */
+function Structure({ path, x, z }: { path: string; x: number; z: number }) {
+  // extendLoaderWithMeshopt is a no-op for these uncompressed GLBs but keeps
+  // the preview aligned with the project loader stack (Stage 2 may add it).
+  const { scene } = useGLTF(path, undefined, undefined, extendLoaderWithMeshopt);
+
+  const prepared = useMemo(() => {
+    // Clone the cached scene before mutating — useGLTF caches and shares it.
+    const root = scene.clone(true);
+
+    // Clone every material so we never write through to the cached material
+    // (cross-Canvas / cross-renderer-context => purple fallback otherwise).
+    root.traverse((o) => {
+      const mesh = o as THREE.Mesh;
+      if (mesh.isMesh) {
+        mesh.frustumCulled = false;
+        if (Array.isArray(mesh.material)) {
+          mesh.material = mesh.material.map((m) => m.clone());
+        } else if (mesh.material) {
+          mesh.material = mesh.material.clone();
+        }
+      }
+    });
+
+    // Measure the natural bbox at scale=1 (Box3.setFromObject applies node
+    // matrices, so it works for both node-scaled and world-scaled GLBs).
+    root.scale.setScalar(1);
+    root.position.set(0, 0, 0);
+    root.updateMatrixWorld(true);
+    const box = new THREE.Box3().setFromObject(root);
+    const size = new THREE.Vector3();
+    box.getSize(size);
+    const maxDim = Math.max(size.x, size.y, size.z) || 1;
+    const scale = TARGET_MAX_DIM / maxDim;
+    // Ground: lift so the model's lowest point sits on the pad top (y=0 here;
+    // the group below is positioned at pad height).
+    const offsetY = -box.min.y * scale;
+
+    return { root, scale, offsetY };
+  }, [scene]);
+
+  // Dispose ONLY the cloned MATERIALS when this Structure unmounts.
+  //
+  // NEVER dispose geometry or textures here: `scene.clone(true)` does a REFERENCE
+  // copy of BufferGeometry (`Mesh.copy()`: `this.geometry = source.geometry`), and
+  // `material.clone()` shares texture references with the useGLTF cache. These same
+  // coastal/fantasy/driftwood GLBs are consumed by the in-world land-structures
+  // layer; disposing the shared geometry/textures would hand a disposed GPU buffer
+  // to that consumer (and to a re-mount of this gallery). Only the materials were
+  // explicitly `.clone()`d above, so only they are ours to dispose.
+  useEffect(() => {
+    const root = prepared.root;
+    return () => {
+      root.traverse((o) => {
+        const mesh = o as THREE.Mesh;
+        if (mesh.isMesh) {
+          const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+          for (const m of mats) {
+            if (!m) continue;
+            m.dispose?.();
+          }
+        }
+      });
+    };
+  }, [prepared]);
+
+  return (
+    <group position={[x, 0, z]}>
+      {/* No pad plane: a large flat MeshStandard plane seen at a grazing orbit
+          angle reads as a thin "wall" sweeping through the scene (same artifact
+          as the removed big ground plane). The models float on the dark scene
+          background instead — a clean asset-viewer look, nothing to sweep. */}
+      <primitive
+        object={prepared.root}
+        scale={prepared.scale}
+        position={[0, prepared.offsetY, 0]}
+      />
+    </group>
+  );
+}
+
+function GalleryScene() {
+  // Lay out 3 candidate groups along X, each with a home (left) + shop (right).
+  // Center the whole row on origin.
+  const layout = useMemo(() => {
+    const items: { path: string; x: number; z: number; key: string }[] = [];
+    const n = CANDIDATES.length;
+    const groupWidth = PAD_GAP; // home->shop within a group
+    const totalWidth = (n - 1) * CANDIDATE_GAP + groupWidth;
+    const startX = -totalWidth / 2;
+    CANDIDATES.forEach((c, i) => {
+      const groupX = startX + i * CANDIDATE_GAP;
+      items.push({ path: c.home.path, x: groupX, z: 0, key: `${c.style}-home` });
+      items.push({ path: c.shop.path, x: groupX + PAD_GAP, z: 0, key: `${c.style}-shop` });
+    });
+    return items;
+  }, []);
+
+  return (
+    <>
+      <hemisphereLight args={[0xffffff, 0xb0c4d4, 0.85]} />
+      <directionalLight position={[120, 260, 160]} intensity={1.05} castShadow={false} />
+      {/* No big ground plane — its finite 4000x2000 edge swept across the view as a
+          moving "wall" on orbit. Each model keeps its own small per-pad plane instead,
+          so the buildings read against the scene background with nothing to sweep. */}
+      <Suspense fallback={null}>
+        {layout.map((it) => (
+          <Structure key={it.key} path={it.path} x={it.x} z={it.z} />
+        ))}
+      </Suspense>
+    </>
+  );
+}
+
+export default function PreviewLandStructuresPage() {
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: '#0a1626' }}>
+      <Canvas
+        // THE "moving wall" bug: R3F's default camera far plane is 1000. With a
+        // wide row + maxDistance orbit, any model on the far side of the row sat
+        // >1000 units from the camera and got clipped by the far plane — which,
+        // being perpendicular to the view, SWEEPS as you orbit, shows the scene
+        // background through the cut, and slices buildings in half (and the whole
+        // scene vanishes when you zoom past it). It is not an object; it is the
+        // clip plane. far:8000 puts it well beyond any orbit distance so nothing
+        // is ever clipped. near:1 keeps depth precision at these world scales.
+        camera={{ position: [0, 260, 760], fov: 38, near: 1, far: 8000 }}
+        gl={{ antialias: true, powerPreference: 'high-performance' }}
+        scene={{ background: new THREE.Color(0x0a1626) }}
+      >
+        <GalleryScene />
+        <OrbitControls
+          target={[0, 60, 0]}
+          enablePan
+          maxDistance={1500}
+          minDistance={120}
+        />
+      </Canvas>
+
+      {/* DOM label overlay (Iris-Xe safe — no drei Text/Billboard) */}
+      <div
+        style={{
+          position: 'absolute',
+          top: 14,
+          left: 14,
+          padding: 14,
+          maxWidth: 360,
+          background: 'rgba(8,18,34,0.9)',
+          color: '#e6f1ff',
+          font: '13px system-ui',
+          borderRadius: 10,
+          border: '1px solid rgba(120,170,210,0.35)',
+          lineHeight: 1.45,
+        }}
+      >
+        <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 8 }}>
+          Land Structures — Style Candidates
+        </div>
+        <div style={{ opacity: 0.8, marginBottom: 10 }}>
+          Each candidate = ONE home (left) + ONE shop (right). Pick a direction
+          before all 12 SKUs are produced. Drag to orbit · scroll to zoom.
+        </div>
+        {CANDIDATES.map((c) => (
+          <div
+            key={c.style}
+            style={{
+              marginBottom: 10,
+              paddingBottom: 10,
+              borderBottom: '1px solid rgba(120,170,210,0.18)',
+            }}
+          >
+            <div style={{ fontWeight: 600, color: '#9fdcff' }}>{c.label}</div>
+            <div style={{ opacity: 0.85, fontSize: 12 }}>{c.blurb}</div>
+            <div style={{ opacity: 0.6, fontSize: 11, marginTop: 3 }}>
+              home: {c.home.source}
+            </div>
+            <div style={{ opacity: 0.6, fontSize: 11 }}>shop: {c.shop.source}</div>
+          </div>
+        ))}
+        <div style={{ opacity: 0.5, fontSize: 11 }}>
+          /models/land-structures/&lt;style&gt;/&#123;home,shop&#125;.glb
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Preload all 6 GLBs so the gallery paints in one go.
+for (const c of CANDIDATES) {
+  useGLTF.preload(c.home.path, undefined, undefined, extendLoaderWithMeshopt);
+  useGLTF.preload(c.shop.path, undefined, undefined, extendLoaderWithMeshopt);
+}

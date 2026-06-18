@@ -20,12 +20,6 @@ import type { LocationTemplate } from '@clawville/agent-templates';
 import { loadLocationTemplate } from './character-loader';
 import { createOpenClawProviderPlugin, type OpenClawGatewayConfig } from './plugins/openclaw-provider';
 import { createOpenAIEmbeddingPlugin } from './plugins/openai-embedding-provider';
-// NOTE: createGeminiTextPlugin / createGeminiEmbeddingPlugin are intentionally
-// no longer imported here — the full Gemini→OpenAI migration moved BOTH text
-// generation (Gemini billing died) AND embeddings (text-embedding-004 768-dim →
-// text-embedding-3-small 1536-dim) to OpenAI. The Gemini provider files + their
-// index.ts exports are kept for any legacy importer / easy revert, but the
-// runtime registers OpenAI for TEXT + EMBEDDING below.
 import { createOpenAITextPlugin } from './plugins/openai-text-provider';
 import { clawvillePlugin } from './plugins/clawville-plugin';
 import type { Provider, ProviderResult } from './providers/types';
@@ -94,13 +88,7 @@ export interface ElizaRuntimeConfig {
   openclawGateway?: OpenClawGatewayConfig;
   databaseUrl?: string;
   apiKeys?: {
-    /**
-     * GEMINI_API_KEY is now UNUSED by the runtime: both text generation and
-     * embeddings moved to OpenAI (openai-text-provider + openai-embedding-provider).
-     * Retained only for legacy / easy-revert; nothing in the runtime reads it.
-     */
-    gemini?: string;
-    /** OpenAI API key for TEXT_SMALL/TEXT_LARGE generation. */
+    /** OpenAI API key — the sole backend for TEXT_SMALL/TEXT_LARGE generation and embeddings. */
     openai?: string;
   };
   onMessage?: (message: ElizaMessage) => void | Promise<void>;
@@ -256,10 +244,11 @@ export class ElizaRuntime {
     );
 
     // v2: plugin-bootstrap is built into core. plugin-openai is replaced by
-    // the Gemini embedding provider (embeddings). plugin-solana is a legacy dep
+    // the OpenAI embedding provider (embeddings). plugin-solana is a legacy dep
     // that was never installed — omit to stop the silent import-error spam.
     // plugin-anthropic has been removed; the OpenAI text provider (priority 95)
-    // is now the default text-generation backend (Gemini = embeddings only).
+    // is the default text-generation backend, and the OpenAI embedding provider
+    // handles embeddings — OpenAI is the single backend for both.
     const plugins: string[] = [
       '@elizaos/plugin-sql',
     ];
@@ -287,7 +276,9 @@ export class ElizaRuntime {
       knowledge: customization?.knowledge || [],
       plugins,
       settings: {
-        model: 'claude-3-5-haiku-20241022',
+        // Inert: text-model selection is by plugin PRIORITY (OpenClaw 100 > openai-text 95),
+        // NOT this field. Kept accurate after the Anthropic + Gemini scrubs.
+        model: 'gpt-4o-mini',
       } as any,
       style,
     };
@@ -304,9 +295,6 @@ export class ElizaRuntime {
     console.log(`[ElizaRuntime] Agent ${this.config.agentId} acquired init mutex`);
 
     try {
-      if (this.config.apiKeys?.gemini && !process.env.GEMINI_API_KEY) {
-        process.env.GEMINI_API_KEY = this.config.apiKeys.gemini;
-      }
       if (this.config.apiKeys?.openai && !process.env.OPENAI_API_KEY) {
         process.env.OPENAI_API_KEY = this.config.apiKeys.openai;
       }
@@ -316,9 +304,9 @@ export class ElizaRuntime {
 
       await this.loadPlugins();
 
-      // The text (OpenAI) + embedding (Gemini) plugins read their API keys from
-      // their own config or process.env directly — not character.secrets — so we
-      // don't need to stamp anything onto the character. Anthropic is fully removed.
+      // The OpenAI text + embedding plugins read their API key from their own
+      // config or process.env directly — not character.secrets — so we don't
+      // need to stamp anything onto the character. Anthropic is fully removed.
 
       // v2: Caller owns DB adapter lifecycle. createDatabaseAdapter() handles
       // pool singletons internally (shared across all agents via global symbol),
@@ -363,7 +351,7 @@ export class ElizaRuntime {
     // plugin-openai replaced by openai-embedding-provider below (embeddings).
     // plugin-solana is a legacy dep that was never installed — removed.
     // plugin-anthropic + ultrathink-provider removed. Both text generation AND
-    // embeddings now go through OpenAI (full Gemini→OpenAI migration).
+    // embeddings go through OpenAI — the sole non-OpenClaw backend.
     // Text generation priority chain: OpenClaw(100) > OpenAI(95).
     const pluginMap: Record<string, string> = {
       '@elizaos/plugin-sql': 'sqlPlugin',
@@ -395,8 +383,7 @@ export class ElizaRuntime {
 
     // Prepend OpenAI text provider (priority 95 — global default for TEXT_SMALL/TEXT_LARGE)
     // Sits immediately below OpenClaw gateway (100) in the priority chain.
-    // Replaced the Gemini text provider after Gemini billing died (403 dunning).
-    // Embeddings (above) still go through Gemini.
+    // Embeddings (above) also go through OpenAI — it is the sole non-OpenClaw backend.
     const openaiTextPlugin = createOpenAITextPlugin({
       apiKey: this.config.apiKeys?.openai,
     });

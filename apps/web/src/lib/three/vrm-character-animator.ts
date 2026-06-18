@@ -506,20 +506,20 @@ const IN_PLACE_CLIPS: ReadonlySet<AnimName> = new Set([
   // 'kip_up' added 2026-05-21. Knocked-Out-and-recover one-shot pair; user
   // wants character to spring up in place, not drift across the floor.
   'kip_up',
-  // 'squat' added 2026-05-22. The Mixamo squat bake animates the hip Y
-  // track downward to crouch then snaps back at loop boundary. When set
-  // as surfaceClip during jump-charging (player-avatar.tsx VRM branch +
-  // arena-npcs.tsx VRMNpcMesh branch), the retargeter kept Y per the
-  // walk/idle rule, and the bone's animated Y translation made the
-  // rendered body drop INTO the sand floor for half the loop then snap
-  // back up. User-reported 2026-05-22: "avatars glitch up and down
-  // rapidly, like lightning speed, above and below ground level before
-  // actually jumping" — the screenshot showed the head barely visible
-  // above the floor (squat pose at deepest hip Y). Stripping positions
-  // anchors the hip in place so the visible squat is rotation-only —
-  // knees bend, feet stay flush at terrainY. The visible "squatting
-  // before launch" intent still reads via the leg-bend rotations.
-  'squat',
+  // NOTE (2026-06-17): 'squat' was removed from this set.
+  // The 2026-05-22 position-strip was a stop-gap that caused BUG 1 ("midair
+  // squat"): stripping the hip-Y track kept the pelvis at standing height
+  // while only applying knee-bend rotations → feet were pulled UPWARD toward
+  // the fixed pelvis.
+  //
+  // The 2026-06-17 rework: headless harness confirmed the squat clip's hips
+  // position Y is CONSTANT (raw track Y=104.226...104.226, 2 keyframes, zero
+  // descent). All crouch motion is rotation-only. The pelvis is lowered
+  // PROCEDURALLY in player-avatar.tsx / arena-npcs.tsx (squatCrouchRef ramp)
+  // and feet are replanted via VRMCharacterAnimator.getFootWorldYMin() after
+  // update(). Letting the position track survive is harmless (Y is constant
+  // after retarget), but we leave 'squat' out of IN_PLACE_CLIPS so any future
+  // re-baked squat clip WITH real root descent will work automatically.
 ]);
 
 /**
@@ -592,6 +592,12 @@ function stripPositionTracks(clip: THREE.AnimationClip): THREE.AnimationClip {
   return clip;
 }
 
+/**
+ * Module-scope scratch Vector3 for foot-bone world-position reads.
+ * Allocated once here; never inside useFrame. Zero per-frame GC pressure.
+ */
+const _squat_footScratch = new THREE.Vector3();
+
 export class VRMCharacterAnimator {
   private vrm: VRM;
   private mixer: THREE.AnimationMixer;
@@ -649,6 +655,7 @@ export class VRMCharacterAnimator {
    * for every clip — current behavior for Milady/legacy avatars.
    */
   private characterId: string | undefined;
+
 
   /**
    * Set by dispose(). Guards the async init() path: if the owning component
@@ -794,6 +801,9 @@ export class VRMCharacterAnimator {
           boundToReal:   withNode,
           trackNames:    idleAction ? idleAction.getClip().tracks.slice(0, 3).map((t) => t.name) : [],
         });
+        // Audit fix (S8) — bound this CDP debug log; it grew unbounded with VRM
+        // init churn over a long session (a minor heap-growth/freeze vector).
+        if (w.__VRM_INIT_LOG.length > 300) w.__VRM_INIT_LOG.shift();
       }
     } catch (err) {
       console.warn('[VRMCharacterAnimator] init failed:', err);
@@ -801,6 +811,7 @@ export class VRMCharacterAnimator {
         const w = window as any;
         w.__VRM_INIT_ERRORS = w.__VRM_INIT_ERRORS || [];
         w.__VRM_INIT_ERRORS.push(String(err));
+        if (w.__VRM_INIT_ERRORS.length > 100) w.__VRM_INIT_ERRORS.shift();
       }
       // ready stays false — update() will be a no-op
     }
@@ -913,6 +924,43 @@ export class VRMCharacterAnimator {
     if (!this.oneShotActive && !this.wasMoving) {
       this.applyCrossfade('idle');
     }
+  }
+
+  /**
+   * Returns the minimum world-space Y among the four foot/toe bones after
+   * the current frame's pose has been applied (call AFTER animator.update()
+   * AND group.updateMatrixWorld(true) so the bones' world matrices reflect
+   * the current group position).
+   *
+   * Used by the procedural squat-crouch to measure how far the rotation-only
+   * squat pose lifts the feet, then replant them at effectiveFloorY.
+   *
+   * The squat clip's hips.position Y is CONSTANT (headless harness confirmed:
+   * raw track Y=104.226...104.226, 2 keyframes, zero descent). All squat
+   * motion is rotation-only, which lifts the feet ~2.3 wu above the floor.
+   * Foot replanting is the secondary correction (after the primary procedural
+   * group lowering); it clamps the net result so feet never sink below terrain.
+   *
+   * Uses the module-scope _squat_footScratch Vector3 — no per-frame allocation.
+   *
+   * @returns World-Y of the lowest foot/toe bone, or Infinity if no bones found.
+   */
+  getFootWorldYMin(): number {
+    const humanoid = this.vrm.humanoid;
+    if (!humanoid) return Infinity;
+    let minY = Infinity;
+    const bones = ['leftFoot', 'rightFoot', 'leftToes', 'rightToes'] as const;
+    for (const boneName of bones) {
+      // VRMHumanBoneName is the string union; cast is correct since all four
+      // bone names are valid members of the union.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const node = humanoid.getNormalizedBoneNode(boneName as any);
+      if (node) {
+        node.getWorldPosition(_squat_footScratch);
+        if (_squat_footScratch.y < minY) minY = _squat_footScratch.y;
+      }
+    }
+    return minY;
   }
 
   /**

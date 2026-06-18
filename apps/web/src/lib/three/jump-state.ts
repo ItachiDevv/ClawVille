@@ -16,7 +16,16 @@
 // Type
 // ---------------------------------------------------------------------------
 
+import { registerInputReset } from './input-reset';
+
 export type JumpPhase = 'grounded' | 'charging' | 'quick' | 'launch' | 'sinking' | 'quicksink';
+
+/**
+ * ChargeMode discriminates walk/idle (squat wind-up) vs run (skip squat) paths.
+ * Set by player-avatar.tsx on the rising edge of 'charging' phase;
+ * reset to 'none' when charging ends. arena-npcs.tsx reads it too.
+ */
+export type ChargeMode = 'none' | 'squat' | 'run';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -66,6 +75,16 @@ export const jumpState = {
   chargeProgress:  0,          // 0..1, written each frame while charging — charge-bar.tsx reads this
   lastSpaceDown:   false,      // rising-edge detector
   spaceDown:       false,      // keydown/keyup listener writes this
+  /**
+   * Set by player-avatar.tsx on the rising edge of 'charging' to differentiate
+   * walk/idle (squat wind-up, feet stay planted) from run (skip squat, keep running).
+   * Reset to 'none' when charging ends or on resetJump().
+   *
+   * 'squat' → apply squat surfaceClip + halt horizontal movement
+   * 'run'   → skip squat surfaceClip + continue running through charge
+   * 'none'  → not in charging phase (or NPC mode which doesn't discriminate)
+   */
+  chargeMode:      'none' as ChargeMode,
 };
 
 // ---------------------------------------------------------------------------
@@ -116,6 +135,32 @@ export function attachJumpListeners(): void {
 
   window.addEventListener('keydown', onKeyDown);
   window.addEventListener('keyup', onKeyUp);
+  // Release a held SPACE on focus loss/regain so the charge/jump doesn't strand
+  // when a window steals focus mid-hold (browser skips keyup). See S7. Clears
+  // ONLY the input flags — never the airborne/altitude physics in resetJump().
+  registerInputReset(resetJumpInput);
+}
+
+/**
+ * S7 — release held-SPACE input on window focus loss/regain.
+ *
+ * If we ONLY cleared spaceDown, the next updateJump() 'charging' branch would see
+ * `!spaceDown` and fire the release path — an UNINTENDED quick/charged jump just
+ * from a popup stealing focus. So when mid-charge we cancel the charge back to
+ * grounded. AIRBORNE physics (phase launch/sinking/quick + heightOffset +
+ * playerAltitude) is intentionally left intact — a focus blip mid-arc must not
+ * teleport the avatar to the ground.
+ */
+export function resetJumpInput(): void {
+  jumpState.spaceDown = false;
+  jumpState.lastSpaceDown = false;
+  if (jumpState.phase === 'charging') {
+    jumpState.phase = 'grounded';
+    jumpState.vz = 0;
+    jumpState.holdMs = 0;
+    jumpState.chargeProgress = 0;
+    jumpState.chargeMode = 'none';
+  }
 }
 
 export function setJumpPressed(pressed: boolean): void {
@@ -248,6 +293,7 @@ export function resetJump(): void {
   jumpState.holdMs = 0;
   jumpState.chargeProgress = 0;
   jumpState.lastSpaceDown = false;
+  jumpState.chargeMode = 'none';
   // NOTE: spaceDown is intentionally NOT reset here.
   // If the user holds SPACE across a mode transition, the listener's next keyup
   // will clear it. Clearing it here would desync if SPACE is physically held.
