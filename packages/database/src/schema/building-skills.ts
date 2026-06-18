@@ -11,7 +11,7 @@ import {
 /**
  * Building skills — agentskills.io-compatible SKILL.md content per building,
  * generated once by a one-time script (`scripts/generate-building-skills.ts`)
- * that summarizes the scraped `research_articles` via Gemini.
+ * that summarizes the scraped `research_articles` via OpenAI.
  *
  * Served from cache by `GET /api/skills/:buildingId/skill.md` — no per-request
  * LLM calls, no webhooks. An external agent (OpenClaw, Hermes, etc.) fetches
