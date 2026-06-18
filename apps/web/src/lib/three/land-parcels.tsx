@@ -14,6 +14,10 @@
  *     Sign posts: single merged mesh, warm brown.
  *
  * Draw calls: 5 (pad+border per tier) + 1 (sign posts) + 1 (sign planks) = 7.
+ * Note: 16 starter showroom lots (SHOWROOM_PARCEL_IDS) skip the FOR-SALE sign
+ * post+plank — they receive a FOR RENT sign from land-showroom.tsx instead. So
+ * the merged sign post/plank meshes contain (180 − 16) = 164 entries each.
+ * Draw call count stays at 7 (sign meshes are still present, just smaller).
  *
  * Iris Xe / WebGPU constraints:
  *   - NO drei Text / Billboard (hard crash on Iris Xe)
@@ -29,7 +33,7 @@
 import { useMemo, useEffect, useRef } from 'react';
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
-import { LAND_PARCELS } from '@clawville/shared';
+import { LAND_PARCELS, SHOWROOM_PARCEL_IDS } from '@clawville/shared';
 import type { ParcelSlot } from '@clawville/shared';
 import type { LandTier } from '@clawville/shared';
 
@@ -406,6 +410,12 @@ export default function LandParcels() {
     const plankGeos: THREE.BufferGeometry[] = [];
 
     for (const parcel of LAND_PARCELS) {
+      // Showroom lots get a FOR RENT sign (land-showroom.tsx) instead of FOR SALE.
+      // Skip the FOR-SALE sign post+plank here so they don't stack visually.
+      // The lot FRAME (pad + corner posts + top rails) is intentionally left intact —
+      // the showroom building sits inside the frame, which still reads as a parcel border.
+      if (SHOWROOM_PARCEL_IDS.has(parcel.id)) continue;
+
       // Position sign at the parcel face toward world origin
       const angle   = Math.atan2(-parcel.cx, -parcel.cz);
       const offset  = (parcel.size * 0.5) * SIGN_RADIAL_OFFSET;
