@@ -471,6 +471,8 @@ export const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteStat
     fadeFar: 25000,
     fadeBaseOpacity: 0.95,
     occlude: true,
+    // S4 — the possessed-player "You" label must not be hidden by its own body.
+    skipLocalAvatarOcclusion: npc.id === PLAYER_NPC_ID,
   });
 
   // Per-frame rendered position. The entity-interpolation smoother
@@ -973,6 +975,8 @@ export const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteStat
     fadeFar: 25000,
     fadeBaseOpacity: 0.95,
     occlude: true,
+    // S4 — the possessed-player "You" label must not be hidden by its own body.
+    skipLocalAvatarOcclusion: npc.id === PLAYER_NPC_ID,
   });
 
   // Same entity-interpolation smoother as GLBNpcMesh — see the long
