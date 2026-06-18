@@ -801,6 +801,9 @@ export class VRMCharacterAnimator {
           boundToReal:   withNode,
           trackNames:    idleAction ? idleAction.getClip().tracks.slice(0, 3).map((t) => t.name) : [],
         });
+        // Audit fix (S8) — bound this CDP debug log; it grew unbounded with VRM
+        // init churn over a long session (a minor heap-growth/freeze vector).
+        if (w.__VRM_INIT_LOG.length > 300) w.__VRM_INIT_LOG.shift();
       }
     } catch (err) {
       console.warn('[VRMCharacterAnimator] init failed:', err);
@@ -808,6 +811,7 @@ export class VRMCharacterAnimator {
         const w = window as any;
         w.__VRM_INIT_ERRORS = w.__VRM_INIT_ERRORS || [];
         w.__VRM_INIT_ERRORS.push(String(err));
+        if (w.__VRM_INIT_ERRORS.length > 100) w.__VRM_INIT_ERRORS.shift();
       }
       // ready stays false — update() will be a no-op
     }

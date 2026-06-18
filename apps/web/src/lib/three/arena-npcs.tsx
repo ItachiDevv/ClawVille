@@ -1059,6 +1059,8 @@ export const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteStat
       const w = window as any;
       w.__VRM_NPC_EFFECT_LOG = w.__VRM_NPC_EFFECT_LOG || [];
       w.__VRM_NPC_EFFECT_LOG.push({ event: 'mount', id: npc.id, species: npc.species, t: Date.now() });
+      // Audit fix (S8) — bound this CDP debug log (grew unbounded with NPC churn).
+      if (w.__VRM_NPC_EFFECT_LOG.length > 500) w.__VRM_NPC_EFFECT_LOG.shift();
       // Expose each animator keyed by NPC id so CDP can inspect mixer/actions per NPC.
       w.__VRM_NPC_DEBUG = w.__VRM_NPC_DEBUG || {};
       w.__VRM_NPC_DEBUG[npc.id] = { animator, vrm, species: npc.species };
@@ -1072,6 +1074,7 @@ export const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteStat
         const w = window as any;
         w.__VRM_NPC_EFFECT_LOG = w.__VRM_NPC_EFFECT_LOG || [];
         w.__VRM_NPC_EFFECT_LOG.push({ event: 'cleanup', id: npc.id, species: npc.species, t: Date.now() });
+        if (w.__VRM_NPC_EFFECT_LOG.length > 500) w.__VRM_NPC_EFFECT_LOG.shift();
         if (w.__VRM_NPC_DEBUG) delete w.__VRM_NPC_DEBUG[npc.id];
       }
       animator.dispose();
