@@ -12,6 +12,12 @@
 > extended-reasoning support back later, start from §5 Option B
 > (port to Gemini 2.5 thinking mode).
 >
+> **SUPERSEDED note (2026-06-16):** this doc predates the OpenAI migration —
+> every "Gemini" reference below is historical. OpenAI (`openai-text-provider`
+> p95 + `openai-embedding-provider` p100) is now ClawVille's sole LLM backend;
+> both `gemini-*-provider` files were deleted. Future extended-reasoning work
+> should target OpenAI, not Gemini 2.5.
+>
 > **What was removed:**
 > - `packages/agent-runtime/src/plugins/ultrathink-provider.ts` (deleted)
 > - `ThinkingEffort`, `THINKING_BUDGET`, `AgentThinkingConfig`, `AGENT_THINKING_DEFAULTS` from `packages/shared/src/types/collaboration.ts`
