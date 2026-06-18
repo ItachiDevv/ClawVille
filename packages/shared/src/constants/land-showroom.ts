@@ -1,8 +1,8 @@
 // Land Showroom — deterministic selection of showcase lots for the "kinda set
-// up" display (2026-06-18, 2-ring big-plot layout): 6 outer REGULAR (starter)
-// lots with example cottages + 6 inner PREMIUM (founder) lots with the
-// skyscraper/mall showcase = 12 of 36 plots filled; the other 24 stay empty as
-// "builder" plots. Signs are drawn by land-parcels.tsx (3-category FOR SALE).
+// up" display (2026-06-18, 2-ring big-plot layout): ALL 36 plots filled (founder
+// asked to fill every plot) — 26 outer REGULAR (starter) cottages + 10 inner
+// PREMIUM (founder) skyscraper/mall lots. Signs drawn by land-parcels.tsx
+// (3-category FOR SALE).
 //
 // Invariants (load-bearing — same as land-parcels.ts header):
 //   - Pure math only. NO Math.random(), NO Date.now().
@@ -59,9 +59,9 @@ export interface ShowroomEntry {
 // ---------------------------------------------------------------------------
 
 /** Stride for picking REGULAR (starter) lots to fill with example cottages —
- *  every 3rd of the 26 starter lots = 9 cottages, leaving the rest as empty
- *  builder plots. (2-ring layout: starter is now the big-plot outer ring.) */
-const SHOWROOM_STRIDE = 3;
+ *  stride 1 = EVERY one of the 26 starter lots gets a building (founder asked to
+ *  fill all plots). (2-ring layout: starter is the big-plot outer ring.) */
+const SHOWROOM_STRIDE = 1;
 
 /** Style cycle — rotates across 3 styles for visual variety. */
 const SHOWROOM_STYLES: readonly ShowroomStyle[] = [
@@ -107,6 +107,8 @@ function generateShowroom(): ShowroomEntry[] {
     { style: 'premium-mall', type: 'shop' }, // approved mall
     { style: 'premium-mall', type: 'shop' }, // approved mall
     { style: 'tower-cand-1', type: 'home' }, // Option A
+    { style: 'premium-mall', type: 'shop' }, // approved mall
+    { style: 'tower-cand-3', type: 'home' }, // Option C
     { style: 'premium-mall', type: 'shop' }, // approved mall
   ];
   const founders = LAND_PARCELS.filter((p) => p.tier === 'founder');
