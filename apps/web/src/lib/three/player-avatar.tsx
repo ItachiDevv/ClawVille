@@ -647,11 +647,22 @@ function PlayerAvatarVRMInner({ reg }: { reg: ModelRegistryEntry }) {
       const isRunCharge   = phaseCharging && chargeMode === 'run';
       const swimClip: AnimName = reg.animatorId === 'tekk' ? 'flying' : 'swimming';
 
+      // BUG 1 (midair/sunk squat) — TEMPORARILY DISABLED pending a re-baked squat
+      // clip (2026-06-18). The 'squat' clip is rotation-only (raw hips Y is a flat
+      // constant, zero descent), so playing it pins the pelvis and lifts the feet
+      // toward the body (midair tuck). The v3 runtime "foot-grounding" fix that
+      // tried to compensate created a 1-frame-lagged feedback oscillation
+      // (getFootWorldYMin reads the NORMALIZED humanoid bones, which group.update-
+      // MatrixWorld does NOT refresh — same class as the 2026-05-22 stale-matrix
+      // trap) → the avatar flickered violently between standing and half-sunk.
+      // BOTH are removed here: during squat-charge we keep 'idle' (avatar stands,
+      // movement still halted by chargeMode) so nothing glitches. A real squat
+      // needs a re-baked clip with knee-bend + root descent — being done with
+      // Codex (Rule E3). See gotchas/squat-clip-rotation-only-no-runtime-crouch.md.
       const desiredClip: AnimName =
-        isSquatCharge ? 'squat'
-        : isRunCharge ? 'idle'
-        : airborne    ? swimClip
-        :               'idle';
+        isRunCharge ? 'idle'
+        : airborne  ? swimClip
+        :             'idle';   // isSquatCharge → 'idle' (no rotation-only tuck) until re-bake
       if (desiredClip !== lastSurfaceClipRef.current) {
         animator.setSurfaceClip(desiredClip);
         lastSurfaceClipRef.current = desiredClip;
@@ -660,29 +671,6 @@ function PlayerAvatarVRMInner({ reg }: { reg: ModelRegistryEntry }) {
       // lockIdle = squat-charge or airborne. Run-charge passes real isMoving/isRunning.
       const lockIdle = isSquatCharge || airborne;
       animator.update(dt, lockIdle ? false : isMoving, lockIdle ? false : isRunning);
-
-      // BUG 1 fix (2026-06-17, v3 — foot grounding). The 'squat' clip is
-      // ROTATION-ONLY: its hips never translate down (raw hips position track is
-      // a constant — verified flat Y=104.226). So bending the knees with the body
-      // pinned at standing height LIFTS the feet toward the pelvis — the "midair
-      // squat / legs to body-center" the user reported. Fix: after the pose is
-      // baked, PLANT the lowest foot back on the floor by moving the group by
-      // -(lowestFootY - effectiveFloorY). When the squat lifts the foot above the
-      // floor this LOWERS the whole body, so it settles toward the planted feet =
-      // a squat DOWN toward the ground (the correct direction). The crouch DEPTH
-      // equals the clip's knee-bend; translating a rigid body can't deepen it
-      // (lower-then-replant cancels), so a deeper crouch needs a stronger/re-baked
-      // squat clip (tracked separately). Read AFTER update()+updateMatrixWorld so
-      // the foot world-Y reflects THIS frame's pose (the 2026-05-22 stale-
-      // matrixWorld trap that broke the prior foot-anchor).
-      if (isSquatCharge) {
-        group.updateMatrixWorld(true);
-        const lowestFootY = animator.getFootWorldYMin();
-        if (lowestFootY !== Infinity) {
-          group.position.y -= (lowestFootY - effectiveFloorY);
-          group.updateMatrixWorld(true);
-        }
-      }
     }
   }, -100);
 
