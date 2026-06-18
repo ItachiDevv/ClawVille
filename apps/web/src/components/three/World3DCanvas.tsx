@@ -35,6 +35,7 @@ import NpcSpeechBubbles from '@/lib/three/npc-speech-bubbles';
 import ClickToMove from '@/lib/three/click-to-move';
 import LandParcels from '@/lib/three/land-parcels';
 import LandStructures from '@/lib/three/land-structures';
+import LandShowroom from '@/lib/three/land-showroom';
 import { KTX2LoaderSetup } from '@/lib/three/ktx2-loader-setup';
 import { MeshoptLoaderSetup } from '@/lib/three/meshopt-loader-setup';
 import { WorldLabelsOverlayMount } from '@/lib/three/world-labels-overlay';
@@ -1342,6 +1343,16 @@ const SceneContents = memo(function SceneContents({
       <Suspense fallback={null}>
         <group name="perf:land-structures" userData={{ perfChunk: 'land-structures' }}>
           <LandStructures />
+        </group>
+      </Suspense>
+
+      {/* Land showroom — ~15 model buildings on outer starter lots with FOR RENT
+          signs. Decorative only (no backend). Hides when a lot is actually owned
+          so the buyer's real structure cleanly takes over. Distance-culled 14000wu.
+          See lib/three/land-showroom.tsx for draw budget and sign details. */}
+      <Suspense fallback={null}>
+        <group name="perf:land-showroom" userData={{ perfChunk: 'land-showroom' }}>
+          <LandShowroom />
         </group>
       </Suspense>
 
