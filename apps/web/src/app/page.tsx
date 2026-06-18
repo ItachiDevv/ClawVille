@@ -9,6 +9,7 @@ import { CollaborationAxes } from '@/components/landing/collaboration-axes';
 import { LiveDemoStrip } from '@/components/landing/live-demo-strip';
 import { GameplayShowcase } from '@/components/landing/gameplay-showcase';
 import { PressRelease } from '@/components/landing/press-release';
+import { QwertiBuyWidget } from '@/components/landing/qwerti-buy-widget';
 
 const LandingScene = dynamic(() => import('@/components/three/LandingScene'), {
   ssr: false,
@@ -93,6 +94,11 @@ export default function HomePage() {
       {/* How-it-works explainer modal — rendered at the root so it
           overlays the full landing page when opened from any CTA. */}
       <HowItWorksModal open={howItWorksOpen} onClose={() => setHowItWorksOpen(false)} />
+
+      {/* Qwerti buy widget (partner integration) — floating "buy $CLAWVILLE"
+          launcher, HOMEPAGE ONLY + lazy-injected. Renders null; self-mounts a
+          floating launcher and tears down on navigation. See component header. */}
+      <QwertiBuyWidget />
 
       <style dangerouslySetInnerHTML={{ __html: `
         @keyframes fadeSlideUp {
