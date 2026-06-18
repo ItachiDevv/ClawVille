@@ -173,11 +173,10 @@ function Structure({ path, x, z }: { path: string; x: number; z: number }) {
 
   return (
     <group position={[x, 0, z]}>
-      {/* Pad under the structure */}
-      <mesh position={[0, -1, 0]} rotation={[-Math.PI / 2, 0, 0]}>
-        <planeGeometry args={[TARGET_MAX_DIM * 1.35, TARGET_MAX_DIM * 1.35]} />
-        <meshStandardMaterial color={0x9fb8c4} roughness={0.95} />
-      </mesh>
+      {/* No pad plane: a large flat MeshStandard plane seen at a grazing orbit
+          angle reads as a thin "wall" sweeping through the scene (same artifact
+          as the removed big ground plane). The models float on the dark scene
+          background instead — a clean asset-viewer look, nothing to sweep. */}
       <primitive
         object={prepared.root}
         scale={prepared.scale}
