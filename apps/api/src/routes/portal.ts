@@ -81,6 +81,17 @@ import { signPayload } from '../services/service-issuer';
 import { mintSessionTicket } from '../services/session-ticket-service';
 import { logEvent } from '../services/event-logger';
 import { verifyPartnerSignature } from '../services/partner-signature';
+// SSRF guards for the outbound partner session-issue fetches below. The
+// cognition path (openclaw-client.ts) already routes through these; the portal
+// crossings must too, so "all outbound cognition/webhook/launch SSRF-guarded"
+// (CLAUDE.md) holds for the portal session-issue surface as well.
+//   - validateHatcherProxyUrlResolved → hatcher: host allowlist + DNS SSRF.
+//   - validateOutboundUrlResolved     → DNS SSRF only (no host allowlist;
+//                                        'scape is not a Hatcher host).
+import {
+  validateHatcherProxyUrlResolved,
+  validateOutboundUrlResolved,
+} from '../services/hatcher-config';
 
 export const portalRoutes = new Hono<AppContext>();
 
@@ -245,10 +256,33 @@ portalRoutes.post('/scape', sessionMiddleware, requireAuth, async (c) => {
   }
 
   const scapeUrl = resolveScapeIssueUrl();
+  // SSRF defense-in-depth: SCAPE_HOSTED_SESSION_URL is server-configured, not
+  // attacker input, but it carries our signed issuer payload to a partner host,
+  // so we DNS-resolve + reject any private/loopback/link-local/reserved target
+  // (no host allowlist — 'scape is not a Hatcher host). Fail CLOSED: a rejected
+  // or unresolvable URL returns 503 and we NEVER fetch the un-validated URL.
+  const scapeUrlCheck = await validateOutboundUrlResolved(scapeUrl);
+  if (!scapeUrlCheck.ok) {
+    console.error(
+      `[Portal/Scape] outbound URL rejected: ${scapeUrlCheck.reason}`,
+    );
+    await logEvent({
+      eventType: 'portal.scape.cross_failed',
+      userId: user.id,
+      avatarId: userAvatar.id,
+      agentId,
+      payload: { reason: 'ssrf_blocked', detail: scapeUrlCheck.reason },
+    });
+    return c.json({ error: 'scape_url_unconfigured' }, 503);
+  }
   let scapeResponse: Response;
   try {
-    scapeResponse = await fetch(scapeUrl, {
+    scapeResponse = await fetch(scapeUrlCheck.url, {
       method: 'POST',
+      // SSRF: never follow redirects — the validated host could 3xx-bounce us
+      // (rebind / compromise) to an internal address, re-leaking the signed
+      // payload on the redirected hop. Surface any 3xx as a hard failure below.
+      redirect: 'error',
       headers: {
         'Content-Type': 'application/json',
         'X-Clawville-Issuer-Pubkey': signed.pubkey,
@@ -733,10 +767,34 @@ portalRoutes.post('/hatcher', sessionMiddleware, requireAuth, async (c) => {
   }
 
   const hatcherUrl = resolveHatcherIssueUrl();
+  // SSRF defense-in-depth: HATCHER_HOSTED_SESSION_URL is server-configured, but
+  // it carries our signed issuer payload to the Hatcher partner host, so we
+  // enforce the SAME guard the cognition path uses — hatcher: host allowlist +
+  // DNS resolution rejecting any private/loopback/link-local/reserved target.
+  // Fail CLOSED: a rejected or non-allowlisted URL returns 503 and we NEVER
+  // fetch the un-validated URL.
+  const hatcherUrlCheck = await validateHatcherProxyUrlResolved(hatcherUrl);
+  if (!hatcherUrlCheck.ok) {
+    console.error(
+      `[Portal/Hatcher] outbound URL rejected: ${hatcherUrlCheck.reason}`,
+    );
+    await logEvent({
+      eventType: 'portal.hatcher.cross_failed',
+      userId: user.id,
+      avatarId: userAvatar.id,
+      agentId,
+      payload: { reason: 'ssrf_blocked', detail: hatcherUrlCheck.reason },
+    });
+    return c.json({ error: 'hatcher_url_unconfigured' }, 503);
+  }
   let hatcherResponse: Response;
   try {
-    hatcherResponse = await fetch(hatcherUrl, {
+    hatcherResponse = await fetch(hatcherUrlCheck.url, {
       method: 'POST',
+      // SSRF: never follow redirects — an allowlisted (compromised / rebinding)
+      // Hatcher host could 3xx-bounce us to an internal address, re-leaking the
+      // signed payload. Surface any 3xx as a hard failure below.
+      redirect: 'error',
       headers: {
         'Content-Type': 'application/json',
         'X-Clawville-Issuer-Pubkey': signed.pubkey,

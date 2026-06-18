@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { randomBytes } from 'crypto';
-import { NPC_IDS, BUILDING_OPENCLAW_THEMES } from '@clawville/shared';
+import { NPC_IDS, BUILDING_OPENCLAW_THEMES, getAgentModel, DEFAULT_AGENT_MODEL_KEY } from '@clawville/shared';
 import type { OpenClawRegistration, OpenClawBotIdentity } from '@clawville/shared';
 import { OpenClawClient } from '../services/openclaw-client';
 import { npcSimulation } from '../services/npc-simulation';
@@ -128,6 +128,17 @@ openclawRoutes.post('/register', async (c) => {
   }
 
   const data = parsed.data;
+
+  // Reserved Hatcher avatars (phanes + bespoke Greek VRMs) are server-assigned
+  // ONLY via the ed25519 partner path. This legacy /register is UNAUTHENTICATED
+  // and builds the spawn config from RAW request data (line ~172), bypassing the
+  // resolveAgentSpecies chokepoint that covers /connect + mint + restore — so a
+  // caller could otherwise render a reserved Hatcher VRM by passing
+  // species:'cronus'/'helen'/'clytemnestra'/'phanes'. Coerce any hatcher-category
+  // species to the default model so reserved avatars stay Hatcher-partner-only.
+  if (data.mode === 'avatar' && getAgentModel(data.species)?.category === 'hatcher') {
+    data.species = DEFAULT_AGENT_MODEL_KEY;
+  }
 
   // Reserved partner namespace guard (Codex round-2 R2-1, 2026-06-12). Same
   // protection as /api/agent/connect: this UNAUTHENTICATED legacy path upserts

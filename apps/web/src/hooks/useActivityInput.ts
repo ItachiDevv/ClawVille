@@ -37,6 +37,7 @@ import { usePathname } from 'next/navigation';
 import type { ClientFrame } from '@clawville/shared';
 import { useGameStore } from '@/stores/game';
 import { useActivityStore } from '@/stores/activity';
+import { registerInputReset } from '@/lib/three/input-reset';
 import {
   selfInputBus,
   resetSelfInputBus,
@@ -398,7 +399,7 @@ export function useActivityInput({ send, enabled }: UseActivityInputOptions): vo
      * DevTools / Cmd+Tab to another app stays `true` forever, then later
      * releases produce a stranded "no input" → server zeroes thrust →
      * kart freezes mid-track. Same pattern as `npc-controller.tsx` and
-     * `player-avatar.tsx`. One-shot bits intentionally untouched.
+     * `player-avatar.tsx`.
      */
     function resetHeldInput() {
       keysRef.current.w = false;
@@ -409,18 +410,15 @@ export function useActivityInput({ send, enabled }: UseActivityInputOptions): vo
       keysRef.current.arrowLeft = false;
       keysRef.current.arrowDown = false;
       keysRef.current.arrowRight = false;
-      // Held bits only — boost / jump (Shift). One-shot use-powerup is consumed
-      // on send and harmless to leave alone here.
       actionBitsRef.current &= ~(ACTION_BIT_BOOST | ACTION_BIT_JUMP);
       targetDirRef.current = { x: 0, y: 0 };
+      // Audit fix (S7) — also zero the SMOOTHED dir and any PENDING one-shot.
+      // On a focus-loss reset the send loop would otherwise keep smoothing from
+      // the stale dirRef for several ticks (kart drifts after alt-tab), and a
+      // queued one-shot (boost / use-powerup) would fire on refocus.
+      dirRef.current = { x: 0, y: 0 };
+      oneShotBitsRef.current = 0;
     }
-    function onBlur() {
-      resetHeldInput();
-    }
-    function onVisibility() {
-      if (document.hidden) resetHeldInput();
-    }
-
     /** Power-up alt: left-click anywhere on the viewport → use. */
     function onPointerDown(e: MouseEvent) {
       if (!enabledRef.current) return;
@@ -450,8 +448,9 @@ export function useActivityInput({ send, enabled }: UseActivityInputOptions): vo
     window.addEventListener('keyup', onKeyUp);
     window.addEventListener('pointerdown', onPointerDown);
     window.addEventListener('clawville:activity-action', onCustomAction as EventListener);
-    window.addEventListener('blur', onBlur);
-    document.addEventListener('visibilitychange', onVisibility);
+    // S7 — release held input on focus loss/regain via the shared util (covers
+    // blur + visibilitychange + focus + pageshow). Replaces the local blur/visibility.
+    const unregisterReset = registerInputReset(resetHeldInput);
 
     return () => {
       window.removeEventListener('keydown', onKeyDown);
@@ -461,8 +460,7 @@ export function useActivityInput({ send, enabled }: UseActivityInputOptions): vo
         'clawville:activity-action',
         onCustomAction as EventListener,
       );
-      window.removeEventListener('blur', onBlur);
-      document.removeEventListener('visibilitychange', onVisibility);
+      unregisterReset();
       // Reset key state on teardown to prevent leak across remounts.
       keysRef.current = {
         w: false,

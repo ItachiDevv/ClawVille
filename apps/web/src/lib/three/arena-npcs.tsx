@@ -471,6 +471,8 @@ export const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteStat
     fadeFar: 25000,
     fadeBaseOpacity: 0.95,
     occlude: true,
+    // S4 — the possessed-player "You" label must not be hidden by its own body.
+    skipLocalAvatarOcclusion: npc.id === PLAYER_NPC_ID,
   });
 
   // Per-frame rendered position. The entity-interpolation smoother
@@ -973,6 +975,8 @@ export const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteStat
     fadeFar: 25000,
     fadeBaseOpacity: 0.95,
     occlude: true,
+    // S4 — the possessed-player "You" label must not be hidden by its own body.
+    skipLocalAvatarOcclusion: npc.id === PLAYER_NPC_ID,
   });
 
   // Same entity-interpolation smoother as GLBNpcMesh — see the long
@@ -1001,6 +1005,12 @@ export const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteStat
    * 60×/s. Wandering NPCs never touch this; defaults to 'idle'.
    */
   const lastSurfaceClipRef = useRef<AnimName>('idle');
+  /**
+   * Rising-edge detector for 'charging' phase — mirrors the same ref in
+   * player-avatar.tsx. Only relevant for the possessed-player NPC (controlMode='npc').
+   * Wandering NPCs never enter charging, so this stays false for them.
+   */
+  const npcWasChargingRef = useRef<boolean>(false);
 
   // Resolve VRM path from the model registry (or use the species key directly as path suffix)
   const regEntry = MODEL_REGISTRY[npc.species as keyof typeof MODEL_REGISTRY];
@@ -1049,6 +1059,8 @@ export const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteStat
       const w = window as any;
       w.__VRM_NPC_EFFECT_LOG = w.__VRM_NPC_EFFECT_LOG || [];
       w.__VRM_NPC_EFFECT_LOG.push({ event: 'mount', id: npc.id, species: npc.species, t: Date.now() });
+      // Audit fix (S8) — bound this CDP debug log (grew unbounded with NPC churn).
+      if (w.__VRM_NPC_EFFECT_LOG.length > 500) w.__VRM_NPC_EFFECT_LOG.shift();
       // Expose each animator keyed by NPC id so CDP can inspect mixer/actions per NPC.
       w.__VRM_NPC_DEBUG = w.__VRM_NPC_DEBUG || {};
       w.__VRM_NPC_DEBUG[npc.id] = { animator, vrm, species: npc.species };
@@ -1062,6 +1074,7 @@ export const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteStat
         const w = window as any;
         w.__VRM_NPC_EFFECT_LOG = w.__VRM_NPC_EFFECT_LOG || [];
         w.__VRM_NPC_EFFECT_LOG.push({ event: 'cleanup', id: npc.id, species: npc.species, t: Date.now() });
+        if (w.__VRM_NPC_EFFECT_LOG.length > 500) w.__VRM_NPC_EFFECT_LOG.shift();
         if (w.__VRM_NPC_DEBUG) delete w.__VRM_NPC_DEBUG[npc.id];
       }
       animator.dispose();
@@ -1282,24 +1295,41 @@ export const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteStat
       if (isPossessedPlayerNpc) {
         const phase = jumpState.phase;
         const phaseCharging = phase === 'charging';
+        const nowChargingNpc = phaseCharging;
+        const wasChargingNpc = npcWasChargingRef.current;
+        npcWasChargingRef.current = nowChargingNpc;
+
+        // Set chargeMode on the rising edge of charging (mirrors player-avatar.tsx).
+        // d.isRunning is set by the NPC controller when sprinting.
+        if (nowChargingNpc && !wasChargingNpc) {
+          jumpState.chargeMode = (d.isRunning ?? false) ? 'run' : 'squat';
+        } else if (!nowChargingNpc && wasChargingNpc) {
+          jumpState.chargeMode = 'none';
+        }
+
+        const chargeMode = jumpState.chargeMode;
         const swimClip: AnimName = d.species === 'tekk' ? 'flying' : 'swimming';
+        // BUG 1 squat TEMPORARILY DISABLED (2026-06-18) — see player-avatar.tsx:
+        // rotation-only clip = midair tuck; v3 runtime foot-grounding oscillated
+        // (stale normalized-bone read). squat-charge → 'idle' (stand, movement
+        // still halted) until a re-baked squat clip lands (Codex, Rule E3).
         const desiredClip: AnimName =
-          phaseCharging ? 'squat'
-          : airborne    ? swimClip
-          :               'idle';
+          (phaseCharging && chargeMode === 'run') ? 'idle'
+          : airborne              ? swimClip
+          :                         'idle';
         if (desiredClip !== lastSurfaceClipRef.current) {
           animator.setSurfaceClip(desiredClip);
           lastSurfaceClipRef.current = desiredClip;
         }
       }
       springDeltaAccRef.current += dt;
-      // While charging OR airborne, gate the locomotion crossfade to
+      // While squat-charging OR airborne, gate the locomotion crossfade to
       // surfaceClip (squat/jump/swim/fly) by reporting isMoving=false.
-      // Walk on the ground when neither is true; never "walking while
-      // charging" or "walking through the air" if movement input is
-      // held mid-leap.
+      // Run-charge keeps full locomotion (isMoving=true, isRunning=true).
+      const npcIsSquatCharge = isPossessedPlayerNpc &&
+        jumpState.phase === 'charging' && jumpState.chargeMode === 'squat';
       const npcLockIdle = isPossessedPlayerNpc &&
-        (airborne || jumpState.phase === 'charging');
+        (airborne || npcIsSquatCharge);
 
       // Compute distance² to camera ONCE — drives both Phase 1.5 far-gate
       // and the existing Win B spring-bone distance LOD. Zero per-frame
@@ -1332,6 +1362,11 @@ export const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteStat
           npcLockIdle ? false : (d.isRunning ?? false),
           isPossessedPlayerNpc ? 1 : speedScale
         );
+
+        // BUG 1 squat foot-grounding REMOVED 2026-06-18 — oscillated (stale
+        // normalized-bone read fed a 1-frame-lag loop → violent flicker between
+        // standing and half-sunk). squat-charge now keeps 'idle' (above) until a
+        // re-baked squat clip lands. See player-avatar.tsx + the gotcha memo.
 
         // WIN B — Spring-bone distance LOD (perf-audit-2026-05-22 Q4)
         // Close NPCs (<2500wu) run at 30Hz — better perceived quality for

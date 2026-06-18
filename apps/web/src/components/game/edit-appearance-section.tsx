@@ -74,7 +74,12 @@ export function EditAppearanceSection({ avatar }: EditAppearanceSectionProps) {
   const pool = useMemo(() => {
     const all = Object.entries(MODEL_REGISTRY) as [ModelKey, typeof MODEL_REGISTRY[ModelKey]][];
     return all.filter(([, e]) =>
-      currentIsMilady ? e.category === 'milady' : e.category !== 'milady',
+      // pickerHidden models (Hatcher-reserved avatars) are server-assigned only —
+      // never human-selectable. Mirrors the server guards in POST / and
+      // PATCH /me/appearance (avatars.ts). Without this, hatcher-category VRMs
+      // leaked into the non-Milady appearance grid.
+      !e.pickerHidden &&
+      (currentIsMilady ? e.category === 'milady' : e.category !== 'milady'),
     );
   }, [currentIsMilady]);
 

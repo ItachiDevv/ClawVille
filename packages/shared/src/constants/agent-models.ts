@@ -139,6 +139,19 @@ export const AGENT_MODELS = [
   // 'hermes-male' (same male build -> shares the Hermes male animation set).
   { key: 'phanes', label: 'Phanes', category: 'hatcher' },
 
+  // ── Bespoke Greek-mythology Hatcher avatars (Meshy pipeline, 2026-06-18) ──
+  // Rebuilt via OpenAI-images → Meshy-v6 → Meshy-rig → VRM (see
+  // packages/database/character-pipeline.md). Reserved like Phanes: web-side
+  // `pickerHidden:true` + create-agent category allowlist exclude them from the
+  // human picker, and avatars.ts (POST / + PATCH /me/appearance) rejects
+  // category 'hatcher' on human paths — so they are selectable ONLY through
+  // Hatcher (a connecting agent may request one by species key). Default Hatcher
+  // assignment is UNCHANGED (still DEFAULT_HATCHER_MODEL_KEY=phanes); these are
+  // additive valid species keys — no PROTOCOL_VERSION / wire-shape change.
+  { key: 'cronus',       label: 'Cronus',       category: 'hatcher' },
+  { key: 'helen',        label: 'Helen',        category: 'hatcher' },
+  { key: 'clytemnestra', label: 'Clytemnestra', category: 'hatcher' },
+
   // NOTE: `crayfish` entry removed 2026-04-16 — the GLB renders visually
   // close to `lobster` but with a larger silhouette that clipped the
   // modal card. The file still ships and `arena-npcs.tsx` retains its
