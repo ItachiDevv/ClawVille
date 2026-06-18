@@ -1028,7 +1028,7 @@ Compact log. Single line per change with commit reference where applicable.
 - 2026-04-21 — Perf sweep over all 14 `lib/three/*` files (`matrixAutoUpdate=false` on static meshes, vector pool recycling, scratch-object hoisting). Est. 4-6 ms/frame saved.
 - 2026-04-16 — Building ring expanded 56 → 68 tiles to eliminate overlap. Building target height switched from `max(w,h,d)` → Y-height normalization. `MAX_FOOTPRINT` 1400 → 1000.
 - 2026-05-13 — Building ring expanded 68 → 72 tiles (R=2176 → 2304 wu) for inner-band breathing room post decoration retune. All 10 zone coords recomputed in `tilemap-data.ts`.
-- 2026-04-10 — Ultrathink decommission: `plugin-anthropic` + `plugin-openai` removed. Gemini providers only.
+- 2026-04-10 — Ultrathink decommission: `plugin-anthropic` + `plugin-openai` removed. Gemini providers only. _[SUPERSEDED 2026-06-16: Gemini fully scrubbed — OpenAI (`openai-text-provider` p95 + `openai-embedding-provider` p100) is now the sole LLM backend.]_
 
 - 2026-05-23 — **Experimental: Nanite-style GPU rasterizer spike** (worktree `perf/meshlet-integration` only, NOT on master). Two new files: `apps/web/src/lib/three/experimental/nanite-rasterizer.ts` (exports `NaniteRasterizer`, `geometryToMeshletAsset`, `MeshletAsset`, `RasterizerOptions` — 5-pass compute pipeline: Clear→Frustum→Dispatch→Rasterize→HWArgs, visibility buffer, SW barycentric rasterizer, HW fallback scene) and `apps/web/src/app/preview/meshlet-spike/page.tsx` (loads `building-lighthouse.glb`, single instance, DOM FPS overlay, WebGPU-only — blank/error if `navigator.gpu` absent). Route: `/preview/meshlet-spike`. No production-rendering files touched; spike is fully isolated.
 

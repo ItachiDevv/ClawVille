@@ -276,7 +276,9 @@ export class ElizaRuntime {
       knowledge: customization?.knowledge || [],
       plugins,
       settings: {
-        model: 'claude-3-5-haiku-20241022',
+        // Inert: text-model selection is by plugin PRIORITY (OpenClaw 100 > openai-text 95),
+        // NOT this field. Kept accurate after the Anthropic + Gemini scrubs.
+        model: 'gpt-4o-mini',
       } as any,
       style,
     };
