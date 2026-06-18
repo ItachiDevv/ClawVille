@@ -252,13 +252,27 @@ async function main(): Promise<void> {
     });
 
   // Collect files
-  const allFiles = ASSET_ROOTS.flatMap((root) => walkGlbVrm(root));
-  const files = allFiles.filter((f) => {
-    if (shouldSkipDir(f)) return false;
-    const rel = relPath(f);
-    if (SKIP_FILES.has(rel)) return false;
-    return true;
-  });
+  // Targeted mode: `bun run scripts/assets-optimize.ts <file> [file...]` optimizes
+  // ONLY the given GLB/VRM files (abs or repo-relative). No args → walk ASSET_ROOTS.
+  const cliFiles = process.argv.slice(2).filter((a) => !a.startsWith('-'));
+  let files: string[];
+  if (cliFiles.length > 0) {
+    files = cliFiles
+      .map((a) => (path.isAbsolute(a) ? a : path.resolve(a)))
+      .filter((f) => {
+        if (!fs.existsSync(f)) { console.warn(`  (skip — not found) ${f}`); return false; }
+        return true;
+      });
+    console.log(`Targeted mode: ${files.length} file(s) from CLI args`);
+  } else {
+    const allFiles = ASSET_ROOTS.flatMap((root) => walkGlbVrm(root));
+    files = allFiles.filter((f) => {
+      if (shouldSkipDir(f)) return false;
+      const rel = relPath(f);
+      if (SKIP_FILES.has(rel)) return false;
+      return true;
+    });
+  }
 
   console.log(`Found ${files.length} GLB/VRM files to process`);
   console.log(`Backup dir: ${BACKUP_DIR}\n`);

@@ -17,6 +17,7 @@ import {
   KNOWLEDGE_BOOKS,
   getBooksForBuilding,
   BUILDING_OPENCLAW_THEMES,
+  getAgentModel,
 } from '@clawville/shared';
 import type { AvatarArchetypeId } from '@clawville/shared';
 import type { AgentConfigExport } from '@clawville/database';
@@ -800,7 +801,14 @@ agentSetupRoutes.post('/import', requireAuth, async (c) => {
       isActive: isFirstAgent,
       equippedSkills: configData.equippedSkills ?? [],
       totalXp: configData.totalXp ?? 0,
-      ...(configData.modelKey ? { modelKey: configData.modelKey } : {}),
+      // Drop a hatcher-category modelKey from an imported config — reserved
+      // Hatcher avatars are server-assigned only and must not be renderable by a
+      // human import (world/join emits `modelKey || species`, so an imported
+      // modelKey:'cronus' would render the reserved VRM). Falls back to the DB
+      // default. (species is already whitelisted to the 2D enum above.)
+      ...(configData.modelKey && getAgentModel(configData.modelKey)?.category !== 'hatcher'
+        ? { modelKey: configData.modelKey }
+        : {}),
       ...(configData.agentCategory ? { agentCategory: configData.agentCategory } : {}),
       ...(configData.harness ? { harness: configData.harness } : {}),
     })
