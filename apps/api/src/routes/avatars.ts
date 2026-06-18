@@ -309,6 +309,17 @@ avatarRoutes.post('/', async (c) => {
     throw new HTTPException(400, { message: `Unknown modelKey: ${modelKey}` });
   }
 
+  // Hatcher avatars are server-assigned ONLY — provisioned via partner-hatcher's
+  // buildHatcherAvatarValues, never this human/guest-facing create route. Reject
+  // any attempt to create a human avatar with a reserved Hatcher model so they
+  // stay "selectable only through Hatcher" (the create-agent picker already
+  // excludes the hatcher category; this is the server-side defense-in-depth).
+  if (modelMeta.category === 'hatcher') {
+    throw new HTTPException(400, {
+      message: 'Hatcher avatars are reserved and cannot be selected here',
+    });
+  }
+
   // Audit Fix C §3 — cross-validate the client's category claim against
   // the registry. A payload like `{ modelKey: 'priestess', agentCategory:
   // 'openclaw' }` is semantically broken (priestess is a milady model);
@@ -667,6 +678,13 @@ avatarRoutes.patch('/me/appearance', requireAuth, async (c) => {
     const newModel = getAgentModel(parsed.data.modelKey);
     if (!newModel) {
       throw new HTTPException(400, { message: `Unknown modelKey: ${parsed.data.modelKey}` });
+    }
+    // Hatcher avatars are reserved (server-assigned only) — a human cannot swap
+    // their appearance TO a Hatcher model, mirroring the create-route guard.
+    if (newModel.category === 'hatcher') {
+      throw new HTTPException(400, {
+        message: 'Hatcher avatars are reserved and cannot be selected',
+      });
     }
     const currentlyMilady = current.harness === 'milady';
     const newIsMilady = newModel.category === 'milady';
