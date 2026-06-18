@@ -1,4 +1,5 @@
 import { useEffect, useRef, useCallback } from 'react';
+import { registerInputReset } from '@/lib/three/input-reset';
 
 interface KeyboardState {
   pressed: Set<string>;
@@ -39,9 +40,16 @@ export function useKeyboard() {
 
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);
+    // S7 — clear held keys on window focus loss/regain (browser skips keyup when
+    // focus leaves the window). Shared with the 3D input vectors via input-reset.ts.
+    const unregisterReset = registerInputReset(() => {
+      state.current.pressed.clear();
+      state.current.justPressed.clear();
+    });
     return () => {
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
+      unregisterReset();
     };
   }, []);
 
