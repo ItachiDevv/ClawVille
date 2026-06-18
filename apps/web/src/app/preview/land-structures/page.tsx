@@ -208,11 +208,9 @@ function GalleryScene() {
     <>
       <hemisphereLight args={[0xffffff, 0xb0c4d4, 0.85]} />
       <directionalLight position={[120, 260, 160]} intensity={1.05} castShadow={false} />
-      {/* Neutral ground beneath all pads */}
-      <mesh position={[0, -2, 0]} rotation={[-Math.PI / 2, 0, 0]}>
-        <planeGeometry args={[4000, 2000]} />
-        <meshStandardMaterial color={0x76909c} roughness={1} />
-      </mesh>
+      {/* No big ground plane — its finite 4000x2000 edge swept across the view as a
+          moving "wall" on orbit. Each model keeps its own small per-pad plane instead,
+          so the buildings read against the scene background with nothing to sweep. */}
       <Suspense fallback={null}>
         {layout.map((it) => (
           <Structure key={it.key} path={it.path} x={it.x} z={it.z} />
