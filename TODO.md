@@ -39,7 +39,7 @@ Currently on `@elizaos/core@1.7.1`. Migrate to `2.0.0` in 4 bounded, independent
 - `Plugin.models` remains single-handler-per-key — `{ [ModelType.TEXT_LARGE]: handler }` pattern unchanged.
 - `createMemory(memory, tableName)` second arg retained.
 - `runtime.generateText(prompt, opts)` still on IAgentRuntime — no forced migration to `useModel`.
-- Our Gemini providers port unchanged (priority-based model selection preserved — `gemini-text-provider` priority 95, `gemini-embedding-provider` priority 100).
+- Our OpenAI providers port unchanged (priority-based model selection preserved — `openai-text-provider` priority 95, `openai-embedding-provider` priority 100). _(Gemini fully scrubbed 2026-06-16; both `gemini-*-provider` files deleted.)_
 
 #### Phase 1 — pure runtime port (CURRENT)
 
@@ -295,3 +295,9 @@ Coolify VPS hit 100% disk on 2026-04-16 from accumulated Docker images + build c
 
 - The `pets` → `avatars` rename pass landed 2026-05-08. If you see a leftover `pet` reference anywhere except `pet_session_*` schema columns and the deprecated `seed-bot-pets.ts` script name (kept for historical Git blame), fix it on sight and note the change in the relevant doc's "Recent material changes" log.
 - The four canonical docs (`CLAUDE.md` / `WorldContent.md` / `3dStructure.md` / `ARCHITECTURE.md` / `GameFeatures.md`) have a strict bidirectional sync contract with the code paths they reference. Same-diff updates only. Mismatch is a bug.
+
+---
+
+## 🔒 Security hardening backlog
+
+- [ ] **(LOW, gated) Hatcher launch-exchange SSRF parity** — `apps/api/src/routes/partner-hatcher-launch.ts:244` validates the outbound exchange URL with the *synchronous* `validateHatcherProxyUrl()` (host-allowlist only), whereas the portal session-issue fetches use the DNS-resolving `validateHatcherProxyUrlResolved()` (security #2, 2026-06-16). Risk is **LOW** — the exchange URL is a hard-coded literal (not partner-steerable), `redirect:'manual'` backstops a rebind hop, and a 10s `AbortController` bounds it. For parity / defense-in-depth, swap to `validateHatcherProxyUrlResolved()` to add a guard-time private-IP reject. **GATED: protected partner surface** — per `CLAUDE.md`, any change to `partner-hatcher-launch.ts` requires a Codex adversarial pass + the mock-Hatcher harness gate before ship; logic is comment-equivalent, **no `PROTOCOL_VERSION` bump** (no wire change). Surfaced by the 2026-06-18 staging audit (Codex review).
