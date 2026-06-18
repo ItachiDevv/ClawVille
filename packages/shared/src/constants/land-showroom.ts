@@ -1,6 +1,8 @@
 // Land Showroom — deterministic selection of showcase lots for the "kinda set
-// up" display (2026-06-18): 16 outer starter-tier lots (FOR RENT cottages) +
-// 6 inner Founders'-Row lots (PREMIUM skyscraper/mall) = 22 total.
+// up" display (2026-06-18, 2-ring big-plot layout): 6 outer REGULAR (starter)
+// lots with example cottages + 6 inner PREMIUM (founder) lots with the
+// skyscraper/mall showcase = 12 of 36 plots filled; the other 24 stay empty as
+// "builder" plots. Signs are drawn by land-parcels.tsx (3-category FOR SALE).
 //
 // Invariants (load-bearing — same as land-parcels.ts header):
 //   - Pure math only. NO Math.random(), NO Date.now().
@@ -28,10 +30,15 @@ export type ShowroomStyle =
   | 'fantasy-cottage'
   | 'driftwood-cabin'
   // Premium-tier showcase models (Founders' Row) — the "higher tier = nicer
-  // buildings" payoff. premium-tower = skyscraper (a `home`), premium-mall = mall
-  // (a `shop`). GLBs at /models/land-structures/<style>/<type>.glb.
+  // buildings" payoff. GLBs at /models/land-structures/<style>/<type>.glb.
+  // Skyscraper is under REVIEW: tower-cand-1 (Option A, Kenney windowed) +
+  // tower-cand-3 (Option C, NYC stepped) are placed for the founder to pick;
+  // the winner gets promoted to a stable `premium-tower` and the candidates
+  // removed. premium-mall = the approved mall (a `shop`).
   | 'premium-tower'
-  | 'premium-mall';
+  | 'premium-mall'
+  | 'tower-cand-1'
+  | 'tower-cand-3';
 export type ShowroomStructureType = 'home' | 'shop';
 
 /** Sign shown on a showroom lot. 'rent' = amber FOR RENT (starter showcase);
@@ -51,8 +58,10 @@ export interface ShowroomEntry {
 // Constants
 // ---------------------------------------------------------------------------
 
-/** Stride for picking starter lots — every 7th gives 16 lots from 108 starters. */
-const SHOWROOM_STRIDE = 7;
+/** Stride for picking REGULAR (starter) lots to fill with example cottages —
+ *  every 3rd of the 26 starter lots = 9 cottages, leaving the rest as empty
+ *  builder plots. (2-ring layout: starter is now the big-plot outer ring.) */
+const SHOWROOM_STRIDE = 3;
 
 /** Style cycle — rotates across 3 styles for visual variety. */
 const SHOWROOM_STYLES: readonly ShowroomStyle[] = [
@@ -64,10 +73,6 @@ const SHOWROOM_STYLES: readonly ShowroomStyle[] = [
 // ---------------------------------------------------------------------------
 // Deterministic showroom selection
 // ---------------------------------------------------------------------------
-
-/** Number of Founders'-Row lots to fill with the premium skyscraper/mall pair.
- *  Founder tier has 8 lots; filling 6 leaves 2 open for the real auction sale. */
-const PREMIUM_LOT_COUNT = 6;
 
 function generateShowroom(): ShowroomEntry[] {
   const entries: ShowroomEntry[] = [];
@@ -88,18 +93,29 @@ function generateShowroom(): ShowroomEntry[] {
   }
 
   // ── Premium showcase (Founders' Row inner ring, PREMIUM) ──
-  // Alternating skyscraper (premium-tower, a 'home') + mall (premium-mall, a
-  // 'shop') on the first PREMIUM_LOT_COUNT founder lots, at a high level so they
-  // scale up and tower over the starter cottages — the "nicer buildings on
-  // higher tiers" payoff made visible. Level only drives scale here (decorative).
+  // Placed for REVIEW: Option A (tower-cand-1, Kenney windowed) vs Option C
+  // (tower-cand-3, NYC stepped) skyscrapers, alternating, with the approved mall
+  // on the last 2 lots — so the founder can compare both towers in-world and
+  // pick. Level 5 → top of the scale ramp so premium reads biggest over the
+  // starter cottages. (Winner gets promoted to a stable `premium-tower` and the
+  // candidates removed; the glass-slab option was rejected.)
+  const PREMIUM_LAYOUT: Array<{ style: ShowroomStyle; type: ShowroomStructureType }> = [
+    { style: 'tower-cand-1', type: 'home' }, // Option A skyscraper
+    { style: 'tower-cand-3', type: 'home' }, // Option C skyscraper
+    { style: 'tower-cand-1', type: 'home' }, // Option A
+    { style: 'tower-cand-3', type: 'home' }, // Option C
+    { style: 'premium-mall', type: 'shop' }, // approved mall
+    { style: 'premium-mall', type: 'shop' }, // approved mall
+    { style: 'tower-cand-1', type: 'home' }, // Option A
+    { style: 'premium-mall', type: 'shop' }, // approved mall
+  ];
   const founders = LAND_PARCELS.filter((p) => p.tier === 'founder');
-  for (let i = 0; i < Math.min(PREMIUM_LOT_COUNT, founders.length); i++) {
-    const parcel = founders[i];
-    const isTower = i % 2 === 0;
+  for (let i = 0; i < Math.min(PREMIUM_LAYOUT.length, founders.length); i++) {
+    const slot = PREMIUM_LAYOUT[i];
     entries.push({
-      parcelId: parcel.id,
-      style: isTower ? 'premium-tower' : 'premium-mall',
-      structureType: isTower ? 'home' : 'shop',
+      parcelId: founders[i].id,
+      style: slot.style,
+      structureType: slot.type,
       level: 5, // top of the scale ramp — premium reads biggest
       signLabel: 'premium',
     });
