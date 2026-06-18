@@ -9,7 +9,7 @@ import { CollaborationAxes } from '@/components/landing/collaboration-axes';
 import { LiveDemoStrip } from '@/components/landing/live-demo-strip';
 import { GameplayShowcase } from '@/components/landing/gameplay-showcase';
 import { PressRelease } from '@/components/landing/press-release';
-import { QwertiBuyWidget } from '@/components/landing/qwerti-buy-widget';
+import { QwertiBuyWidget, openQwertiBuy } from '@/components/landing/qwerti-buy-widget';
 
 const LandingScene = dynamic(() => import('@/components/three/LandingScene'), {
   ssr: false,
@@ -869,6 +869,24 @@ function SiteHeader({ onOpenHowItWorks }: { onOpenHowItWorks: () => void }) {
           <span className={`font-mono text-[10px] uppercase tracking-[0.2em] transition-all ${copied ? 'text-emerald-400' : 'text-cyan-400/60 group-hover:text-cyan-300'}`}>
             {copied ? 'Copied' : 'Copy'}
           </span>
+        </button>
+
+        {/* Buy $CLAWVILLE — branded entry to the Qwerti buy widget (partner).
+            Opens the in-page widget if loaded, else the hosted buy page. */}
+        <button
+          type="button"
+          onClick={() => openQwertiBuy()}
+          className="group flex h-10 items-center gap-2 rounded-full bg-gradient-to-r from-cyan-500 to-cyan-600 px-4 font-clawville text-sm uppercase tracking-wider text-white shadow-[0_0_30px_rgba(0,229,255,0.3)] hover:from-cyan-400 hover:to-cyan-500 hover:shadow-[0_0_40px_rgba(0,229,255,0.5)] transition-all"
+          aria-label="Buy $CLAWVILLE"
+          title="Buy $CLAWVILLE"
+        >
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+            <circle cx="12" cy="12" r="9" />
+            <path d="M14.8 9.3A3 3 0 0 0 12 7.5c-1.7 0-3 1-3 2.4 0 3.3 6 1.6 6 4.8 0 1.4-1.3 2.4-3 2.4a3 3 0 0 1-2.8-1.7" />
+            <path d="M12 5.8v1.7M12 16.5v1.7" />
+          </svg>
+          <span className="sm:hidden">Buy</span>
+          <span className="hidden sm:inline">Buy $CLAWVILLE</span>
         </button>
 
         {/* Icon cluster — kept as ONE flex child so on mobile it wraps to its
