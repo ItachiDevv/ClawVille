@@ -50,6 +50,20 @@ import { createRoot, type Root } from 'react-dom/client';
 import { useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
 import { measureSpike } from '@/lib/perf-tracker';
+import { avatarPositionRef, useGameStore } from '@/stores/game';
+import { jumpState } from '@/lib/three/jump-state';
+import { MAP_WIDTH, MAP_HEIGHT } from '@/lib/pixi/tilemap-data';
+
+// S4 — the local player avatar acts as an analytic-sphere label occluder so an
+// NPC label BEHIND the player no longer draws over the player's body. Buildings
+// are mesh occluders (userData.isOccluder); avatars are not in that set, which is
+// the whole bug. Coarse 2 Hz boolean — fixed torso sphere, no skinned-mesh raycast.
+const HALF_W = MAP_WIDTH / 2;
+const HALF_H = MAP_HEIGHT / 2;
+/** Body silhouette radius (wu) — covers a humanoid (ENTITY_HALF=50) + margin. */
+const LOCAL_AVATAR_OCCLUDER_RADIUS = 80;
+/** Torso height above the sand floor (-2) — avatar height ~270, so ~half. */
+const LOCAL_AVATAR_OCCLUDER_TORSO_Y = 135;
 
 // ---------------------------------------------------------------------------
 // Registry — single source of truth for all labels
@@ -86,6 +100,10 @@ interface LabelEntry {
   // ---------------------------------------------------------------------------
   /** Whether to run low-rate occluder raycasts against building meshes. */
   occlude: boolean;
+  /** S4 — skip the local-player analytic-sphere occluder for this label (set
+   *  on the possessed-player "You" label + self speech bubble so the player's
+   *  own body never hides its own label). */
+  skipLocalAvatarOcclusion: boolean;
   /** Frame-stagger phase (0–29) so not all labels raycast in the same frame. */
   occludePhase: number;
   /** Cached occlude result — updated at 2Hz, read every frame. */
@@ -237,6 +255,10 @@ const _scratchOffset = new THREE.Vector3();
 // Holds the anchor world-position before .project(camera) destroys it — needed
 // for distance calculation and occlusion raycast direction.
 const _scratchAnchorWorld = new THREE.Vector3();
+// S4 — raw anchor (NPC body) world pos BEFORE the label offset. The local-player
+// occluder rays to the BODY, not the high label point (a torso sphere misses a
+// ray aimed above the head); buildings still occlude against the label point.
+const _scratchRawAnchor = new THREE.Vector3();
 
 // ---------------------------------------------------------------------------
 // Occlusion raycaster (module-scope — one allocation at module load)
@@ -245,6 +267,8 @@ const _scratchAnchorWorld = new THREE.Vector3();
 const _occRaycaster = new THREE.Raycaster();
 const _occDir = new THREE.Vector3();
 const _occHits: THREE.Intersection[] = [];
+/** S4 — module scratch for the local-player occluder sphere center (no per-call alloc). */
+const _avatarOccluderCenter = new THREE.Vector3();
 /** Lazily built from userData.isOccluder meshes; rebuilt every 2 s (wall-clock)
  *  so late-mounted buildings and hot-swaps in edit mode are picked up regardless
  *  of framerate. Frame-counter cadence (300 frames) caused a 10 s stale window
@@ -268,8 +292,17 @@ function _buildOccluderList(scene: THREE.Scene): THREE.Mesh[] {
   return meshes;
 }
 
-/** Returns true if the camera→anchor ray is blocked by a building mesh. */
-function _checkOcclusion(anchorWorld: THREE.Vector3, cameraPos: THREE.Vector3): boolean {
+/** Returns true if the camera→LABEL ray is blocked by a building mesh, OR (S4)
+ *  the camera→BODY ray is blocked by the local player avatar's coarse occluder
+ *  sphere. `labelWorld` = anchor+offset (above the head); `bodyWorld` = raw
+ *  anchor (the NPC body the player actually covers). `skipLocalAvatar` is set on
+ *  the player's OWN label so its own body never hides it. */
+function _checkOcclusion(
+  labelWorld: THREE.Vector3,
+  bodyWorld: THREE.Vector3,
+  cameraPos: THREE.Vector3,
+  skipLocalAvatar: boolean,
+): boolean {
   if (!_sceneRef) return false;
   // Rebuild every 2 s (wall-clock) so late-mounted buildings are picked up.
   // Initialised to 0 so the very first call always builds the list.
@@ -278,16 +311,49 @@ function _checkOcclusion(anchorWorld: THREE.Vector3, cameraPos: THREE.Vector3): 
     _occluderMeshes = _buildOccluderList(_sceneRef);
     _occluderRebuildTime = now;
   }
-  const anchorDist = cameraPos.distanceTo(anchorWorld);
-  if (anchorDist < 10) return false;
-  _occDir.subVectors(anchorWorld, cameraPos).normalize();
+  const labelDist = cameraPos.distanceTo(labelWorld);
+  if (labelDist < 10) return false;
+  _occDir.subVectors(labelWorld, cameraPos).normalize();
   _occRaycaster.set(cameraPos, _occDir);
   // Stop 80wu before anchor to avoid catching the building in front of which
   // an NPC is standing (teacher NPCs at building entrances).
-  _occRaycaster.far = Math.max(0, anchorDist - 80);
+  _occRaycaster.far = Math.max(0, labelDist - 80);
   _occHits.length = 0;
   _occRaycaster.intersectObjects(_occluderMeshes, false, _occHits);
-  return _occHits.length > 0;
+  if (_occHits.length > 0) return true;
+
+  // --- S4: local player avatar as an analytic-sphere occluder ---
+  // Tests the camera→BODY ray (NOT the high label point — a torso sphere misses
+  // a ray aimed above the head). Only when a controllable local avatar is
+  // actually rendered (explore mode has none, but avatarPositionRef carries a
+  // stale value). Pure scalar math — no alloc, no raycast.
+  if (skipLocalAvatar) return false;
+  const mode = useGameStore.getState().controlMode;
+  if (mode !== 'player' && mode !== 'autonomous' && mode !== 'npc') return false;
+
+  const bodyDx = bodyWorld.x - cameraPos.x;
+  const bodyDy = bodyWorld.y - cameraPos.y;
+  const bodyDz = bodyWorld.z - cameraPos.z;
+  const bodyDist = Math.sqrt(bodyDx * bodyDx + bodyDy * bodyDy + bodyDz * bodyDz);
+  if (bodyDist < 10) return false;
+  const inv = 1 / bodyDist;
+  const dirX = bodyDx * inv, dirY = bodyDy * inv, dirZ = bodyDz * inv;
+
+  _avatarOccluderCenter.set(
+    avatarPositionRef.x - HALF_W,
+    -2 + LOCAL_AVATAR_OCCLUDER_TORSO_Y + jumpState.heightOffset + jumpState.playerAltitude,
+    avatarPositionRef.y - HALF_H,
+  );
+  const cx = _avatarOccluderCenter.x - cameraPos.x;
+  const cy = _avatarOccluderCenter.y - cameraPos.y;
+  const cz = _avatarOccluderCenter.z - cameraPos.z;
+  // t = projection of (center - camera) onto the unit camera→body ray; clamp to
+  // the SEGMENT so a sphere behind the camera or behind the NPC can't occlude.
+  const t = cx * dirX + cy * dirY + cz * dirZ;
+  const R = LOCAL_AVATAR_OCCLUDER_RADIUS;
+  if (t <= R || t >= bodyDist - R) return false;
+  const perpSq = (cx * cx + cy * cy + cz * cz) - t * t;
+  return perpSq <= R * R;
 }
 
 // ---------------------------------------------------------------------------
@@ -447,6 +513,7 @@ export function WorldLabelsOverlayMount() {
       }
 
       anchor.getWorldPosition(_scratchPos);
+      _scratchRawAnchor.copy(_scratchPos); // NPC body point (pre-offset) for the S4 player occluder
       _scratchOffset.set(entry.offset[0], entry.offset[1], entry.offset[2]);
       _scratchPos.add(_scratchOffset);
 
@@ -489,7 +556,12 @@ export function WorldLabelsOverlayMount() {
       // Only runs for NPC labels (occlude: true). Skip building labels.
       if (entry.occlude) {
         if ((_occFrameCounter + entry.occludePhase) % 30 === 0) {
-          entry._occludeResult = _checkOcclusion(_scratchAnchorWorld, camera.position);
+          entry._occludeResult = _checkOcclusion(
+            _scratchAnchorWorld,
+            _scratchRawAnchor,
+            camera.position,
+            entry.skipLocalAvatarOcclusion,
+          );
         }
         if (entry._occludeResult) {
           targetOpacity = 0;
@@ -582,6 +654,12 @@ export interface UseWorldLabelOpts {
    * Use for NPC labels. Default: false.
    */
   occlude?: boolean;
+  /**
+   * S4 — if true, the local-player analytic-sphere occluder is NOT applied to
+   * this label. Set on the possessed-player "You" label + self speech bubble so
+   * the player's own body can't hide its own label. Default: false.
+   */
+  skipLocalAvatarOcclusion?: boolean;
 }
 
 export interface UseWorldLabelReturn {
@@ -599,6 +677,7 @@ export function useWorldLabel({
   fadeFar = Infinity,
   fadeBaseOpacity = 1.0,
   occlude = false,
+  skipLocalAvatarOcclusion = false,
 }: UseWorldLabelOpts): UseWorldLabelReturn {
   // Stable ref the consumer + LabelView share.
   const divRef = useRef<HTMLDivElement | null>(null);
@@ -631,6 +710,7 @@ export function useWorldLabel({
       fadeBaseOpacity,
       _prevOpacity: -1,
       occlude,
+      skipLocalAvatarOcclusion,
       // Stagger phase based on registry size at registration time (0–29).
       occludePhase: _registry.size % 30,
       _occludeResult: false,
