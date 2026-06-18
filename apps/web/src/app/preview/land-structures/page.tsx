@@ -101,6 +101,19 @@ const CANDIDATES: CandidateDef[] = [
       source: 'Zsky Blacksmith Shop (CC-BY) · 5,216 tris',
     },
   },
+  {
+    style: 'premium-showcase',
+    label: "Premium Showcase (Founders' Row)",
+    blurb: 'Skyscraper + mall — the premium-tier payoff',
+    home: {
+      path: '/models/land-structures/premium-tower/home.glb',
+      source: 'Kenney Skyscraper (CC0) · 986 tris',
+    },
+    shop: {
+      path: '/models/land-structures/premium-mall/shop.glb',
+      source: 'Kenney Large Building A (CC0) · 2,364 tris',
+    },
+  },
 ];
 
 /**
