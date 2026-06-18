@@ -4,7 +4,7 @@ import { memo, useMemo, useState, useEffect, useRef } from 'react';
 import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 import { useWorldLabel, WorldLabel } from '@/lib/three/world-labels-overlay';
-import { useNpcStore, type NpcChatBubble, type NpcSpriteState } from '@/stores/npc';
+import { useNpcStore, PLAYER_NPC_ID, type NpcChatBubble, type NpcSpriteState } from '@/stores/npc';
 import { useShallow } from 'zustand/react/shallow';
 import { MAP_WIDTH, MAP_HEIGHT } from '@/lib/pixi/tilemap-data';
 
@@ -87,6 +87,8 @@ const SpeechBubble = memo(function SpeechBubble({ npc, bubble }: SpeechBubblePro
     // town-directory sign, and Nori. Every structure with userData.isOccluder
     // blocks the camera→anchor ray; the 10Hz staggered raycast keeps cost low.
     occlude: true,
+    // S4 — a possessed-player self-bubble must not be hidden by its own body.
+    skipLocalAvatarOcclusion: npc.id === PLAYER_NPC_ID,
   });
 
   // Update group world position each frame to track NPC movement.

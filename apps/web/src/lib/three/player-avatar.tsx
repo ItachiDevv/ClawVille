@@ -24,6 +24,7 @@ import {
   type CharacterAnimator,
 } from '@/lib/three/character-animations';
 import { jumpState, isEditable, type ChargeMode } from '@/lib/three/jump-state';
+import { registerInputReset } from '@/lib/three/input-reset';
 import { useVRMInstance, disposeVRMInstance, applyFattenedFrustumCulling } from '@/lib/three/vrm-loader';
 import {
   VRMCharacterAnimator,
@@ -175,13 +176,12 @@ function attachKeyListeners() {
     const key = rawKey as keyof KeyState;
     if (key in keyState) keyState[key] = false;
   };
-  // Prevent phantom movement when the window loses focus mid-hold (browser skips keyup).
-  const onBlur = () => resetPlayerKeys();
-  const onVisibility = () => { if (document.hidden) resetPlayerKeys(); };
   window.addEventListener('keydown', onKeyDown);
   window.addEventListener('keyup', onKeyUp);
-  window.addEventListener('blur', onBlur);
-  document.addEventListener('visibilitychange', onVisibility);
+  // Release all held keys on focus loss/regain (browser skips keyup when focus
+  // leaves the window). Centralized in input-reset.ts so every input vector
+  // shares one listener set — see S7.
+  registerInputReset(resetPlayerKeys);
 }
 
 function mapToWorld(px: number, py: number): [number, number, number] {
