@@ -176,15 +176,20 @@ export const MODEL_REGISTRY = {
   hatcher_7: { path: '/avatars/milady-official-7.vrm', scale: 13, label: 'Hatcher 7', category: 'hatcher', avatar_type: 'vrm', animatorId: 'vrm-milady', preview: '/avatars/previews/milady-official-7.png' }, // PLACEHOLDER (Phase 4 swap)
   hatcher_8: { path: '/avatars/milady-official-8.vrm', scale: 13, label: 'Hatcher 8', category: 'hatcher', avatar_type: 'vrm', animatorId: 'vrm-milady', preview: '/avatars/previews/milady-official-8.png' }, // PLACEHOLDER (Phase 4 swap)
 
-  // ── Phanes — DEFAULT Hatcher avatar (2026-06-05), reserved (NOT in picker) ──
-  // Bespoke Greek primordial-deity VRM 1.0 from the Tripo->Mixamo->VRM pipeline
-  // (faces -Y, 22/22 humanoid bones, 2048 diffuse). animatorId 'hermes-male' so
-  // it shares the Hermes male animation set (animations are retargeted at
-  // runtime). faceYaw Math.PI matches the other VRM 1.x rigs (picker-only; moot
-  // here since pickerHidden). pickerHidden keeps it out of /create-agent — it is
-  // assigned server-side as the default for every new Hatcher agent
-  // (DEFAULT_HATCHER_MODEL_KEY in @clawville/shared) and is never user-selectable.
-  phanes: { path: '/avatars/phanes.vrm?v=1', scale: 13, label: 'Phanes', category: 'hatcher', avatar_type: 'vrm', animatorId: 'hermes-male', faceYaw: Math.PI, pickerHidden: true, preview: '/models/phanes-turnaround/front.png?v=1' },
+  // ── Hatcher bespoke avatars (Meshy pipeline, 2026-06-18) — reserved (NOT in picker) ──
+  // The 4 Greek-mythology Hatcher characters via OpenAI-images → Meshy-v6-mesh →
+  // Meshy-rig → VRM (see packages/database/character-pipeline.md). 22/22 humanoid
+  // bones, VRM 1.0, meshopt+WebP optimized to ~3 MB. pickerHidden → selectable
+  // ONLY through Hatcher (species key); excluded from the create-agent picker
+  // (category allowlist) AND the in-game appearance grid (pickerHidden filter) AND
+  // rejected on human avatars.ts POST/PATCH. Phanes stays DEFAULT_HATCHER_MODEL_KEY.
+  // animatorId by sex shares the existing retarget set for now — native Meshy-clip
+  // animation is the deferred "wire-in" step (clips at /models/<slug>-mesh/meshy-openai/anim/).
+  // ?v=2 cache-busts the prior VRMs at the same /avatars/ URLs.
+  phanes:       { path: '/avatars/phanes.vrm?v=2',       scale: 13, label: 'Phanes',       category: 'hatcher', avatar_type: 'vrm', animatorId: 'hermes-male',   faceYaw: Math.PI, pickerHidden: true, preview: '/models/phanes-turnaround/openai/front.png?v=2' },
+  cronus:       { path: '/avatars/cronus.vrm?v=2',       scale: 13, label: 'Cronus',       category: 'hatcher', avatar_type: 'vrm', animatorId: 'hermes-male',   faceYaw: Math.PI, pickerHidden: true, preview: '/models/cronus-turnaround/openai/front.png?v=2' },
+  helen:        { path: '/avatars/helen.vrm?v=2',        scale: 13, label: 'Helen',        category: 'hatcher', avatar_type: 'vrm', animatorId: 'hermes-female', faceYaw: Math.PI, pickerHidden: true, preview: '/models/helen-turnaround/openai-v2/front.png?v=2' },
+  clytemnestra: { path: '/avatars/clytemnestra.vrm?v=2', scale: 13, label: 'Clytemnestra', category: 'hatcher', avatar_type: 'vrm', animatorId: 'hermes-female', faceYaw: Math.PI, pickerHidden: true, preview: '/models/clytemnestra-turnaround/openai-v2/front.png?v=2' },
 
   // NOTE: `crayfish` removed from the picker 2026-04-16 — the mesh renders
   // noticeably larger than lobster at the same scale (different pivot) and
@@ -325,4 +330,8 @@ export const MODEL_KEY_TO_LEGACY_SPECIES: Record<ModelKey, LegacySpecies> = {
   hatcher_8:          'fox',
   // Phanes (default Hatcher avatar) — humanoid → 'fox' 2D fallback like the rest.
   phanes:             'fox',
+  // Bespoke Meshy Hatcher avatars (2026-06-18) — humanoid → 'fox' 2D fallback.
+  cronus:             'fox',
+  helen:              'fox',
+  clytemnestra:       'fox',
 };
