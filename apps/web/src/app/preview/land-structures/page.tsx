@@ -114,6 +114,50 @@ const CANDIDATES: CandidateDef[] = [
       source: 'Kenney Large Building A (CC0) · 2,364 tris',
     },
   },
+  // ── Tower Candidates (skyscraper replacement options) ─────────────────────
+  // The original premium-tower/home.glb was rejected as a "glass pane".
+  // These 3 candidates have distinct window-grid geometry (named window, trim,
+  // border, door material slots across the full facade height). Pick one and the
+  // orchestrator promotes it into premium-tower/home.glb.
+  {
+    style: 'tower-cand-1',
+    label: 'Skyscraper Option A',
+    blurb: 'Wide windowed tower: 6 facade zones (roof+trim+window bands+border+door), stepped setback look',
+    home: {
+      path: '/models/land-structures/tower-cand-1/home.glb',
+      source: 'Kenney skyscraperE (CC0, poly.pizza/m/obYD8hWLTZ) · 1,578 tris',
+    },
+    shop: {
+      path: '/models/land-structures/premium-mall/shop.glb',
+      source: 'Kenney Large Building A (CC0) · 2,364 tris',
+    },
+  },
+  {
+    style: 'tower-cand-2',
+    label: 'Skyscraper Option B',
+    blurb: 'Classic tall slim glass tower: trim bands + window columns up a narrow high-rise profile (H/W 3.6)',
+    home: {
+      path: '/models/land-structures/tower-cand-2/home.glb',
+      source: 'Kenney skyscraperB (CC0, poly.pizza/m/JTsKOSB23Y) · 732 tris',
+    },
+    shop: {
+      path: '/models/land-structures/premium-mall/shop.glb',
+      source: 'Kenney Large Building A (CC0) · 2,364 tris',
+    },
+  },
+  {
+    style: 'tower-cand-3',
+    label: 'Skyscraper Option C',
+    blurb: 'Stepped office tower: brownish-red setback tiers + near-black window band — NYC-style silhouette',
+    home: {
+      path: '/models/land-structures/tower-cand-3/home.glb',
+      source: 'Poly by Google SM_Skyscraper_02 (CC-BY, poly.pizza/m/5mOW8KZSHtU) · 2,752 tris',
+    },
+    shop: {
+      path: '/models/land-structures/premium-mall/shop.glb',
+      source: 'Kenney Large Building A (CC0) · 2,364 tris',
+    },
+  },
 ];
 
 /**

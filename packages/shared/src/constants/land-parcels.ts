@@ -16,13 +16,14 @@
 //
 // Layout (axis-aligned SQUARE concentric BLOCK-FRAMES, inner=premium, outer=abundant):
 //
-//   Tier     | half-side h (tiles) | count | footprint (tiles) | footprint (wu)
-//   ---------|---------------------|-------|-------------------|---------------
-//   founder  |        176          |   8   |         6         |      192
-//   a        |        200          |   8   |         7         |      224
-//   b        |        224          |  16   |         7         |      224
-//   c        |        248          |  40   |         7         |      224
-//   starter  |        272          | 108   |         7         |      224
+//   2-RING "fewer big plots" layout (2026-06-18 founder review — supersedes the
+//   old 5-tier 180-plot table). Only founder + starter are populated:
+//
+//   Tier     | role    | half-side h (tiles) | count | footprint (tiles) | footprint (wu)
+//   ---------|---------|---------------------|-------|-------------------|---------------
+//   founder  | PREMIUM |        190          |  10   |        38         |     1216
+//   a/b/c    | unused  |         —           |   0   |         —         |       —
+//   starter  | REGULAR |        258          |  26   |        34         |     1088
 //
 // Plots are placed at EVEN ARC-LENGTH steps around the square perimeter (P=8·h tiles)
 // so corners always receive plots. s_i = i × (P/N), i ∈ [0, N).
@@ -104,12 +105,21 @@ interface TierConfig {
   footprintTiles: number;
 }
 
+// 2-RING "fewer big plots" layout (2026-06-18). Only founder (PREMIUM inner) and
+// starter (REGULAR outer) are populated — PARCEL_TIER_COUNTS zeroes a/b/c.
+// Footprints are 34-38 tiles (1088-1216 wu) — ~5x the old 6-7t plots — so a
+// building (scaled to ~0.62-0.78x the footprint) reads at ~2.5-3x a character.
+//   founder (premium): h=190t (6080wu) inner edge 171t > building reach ~161t (10t clear).
+//   starter (regular): h=258t (8256wu) outer edge 275t < grid half 288t (13t margin).
+//   radial gap 68t - footprints(19+17) = 32t clear; within-ring spacing >> footprint.
+// a/b/c keep nominal configs (never generated at count 0). The middle tiers come
+// back if we grow the world.
 const TIER_CONFIG: Record<LandTier, TierConfig> = {
-  founder: { halfSideTiles: 176, footprintTiles: 6 },
-  a:       { halfSideTiles: 200, footprintTiles: 7 },
-  b:       { halfSideTiles: 224, footprintTiles: 7 },
-  c:       { halfSideTiles: 248, footprintTiles: 7 },
-  starter: { halfSideTiles: 272, footprintTiles: 7 },
+  founder: { halfSideTiles: 190, footprintTiles: 38 }, // PREMIUM inner ring (big)
+  a:       { halfSideTiles: 200, footprintTiles: 7 },  // unused (count 0)
+  b:       { halfSideTiles: 224, footprintTiles: 7 },  // unused (count 0)
+  c:       { halfSideTiles: 248, footprintTiles: 7 },  // unused (count 0)
+  starter: { halfSideTiles: 258, footprintTiles: 34 }, // REGULAR outer ring (big)
 };
 
 // ---------------------------------------------------------------------------
