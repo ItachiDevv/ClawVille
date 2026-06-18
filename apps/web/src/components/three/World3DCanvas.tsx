@@ -13,6 +13,7 @@ declare module '@react-three/fiber' {
 }
 extend(THREE as any);
 import ArenaTerrain from '@/lib/three/arena-terrain';
+import { registerInputReset } from '@/lib/three/input-reset';
 import ArenaBuildings from '@/lib/three/arena-buildings';
 import MeshletBuildingsR3F from '@/lib/three/meshlet/meshlet-buildings-r3f';
 import ArenaNpcs from '@/lib/three/arena-npcs';
@@ -252,6 +253,15 @@ const _arrowKeys: Pick<KeyState, 'arrowup' | 'arrowdown' | 'arrowleft' | 'arrowr
   arrowright: false,
 };
 
+// S7 — release held arrow keys on window focus loss/regain so the camera doesn't
+// keep orbiting after a window steals focus mid-hold (browser skips keyup).
+function resetArrowKeys() {
+  _arrowKeys.arrowup = false;
+  _arrowKeys.arrowdown = false;
+  _arrowKeys.arrowleft = false;
+  _arrowKeys.arrowright = false;
+}
+
 const ARROW_ROT_SPEED = 1.5; // radians/second
 const PHI_MIN = 0.1;                 // nearly straight down (bird's eye)
 const PHI_MAX = Math.PI * 0.85;      // look steeply up toward surface (~153°)
@@ -308,9 +318,11 @@ function ArrowKeyRotationController({
     };
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);
+    const unregisterReset = registerInputReset(resetArrowKeys);
     return () => {
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
+      unregisterReset();
     };
   }, []);
 
@@ -383,9 +395,16 @@ function WASDCameraController({
 
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);
+    // S7 — clear held WASD pan keys on focus loss/regain so the explore-mode
+    // camera doesn't keep panning after a window steals focus mid-hold.
+    const unregisterReset = registerInputReset(() => {
+      const k = keysRef.current;
+      k.w = false; k.a = false; k.s = false; k.d = false;
+    });
     return () => {
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
+      unregisterReset();
     };
   }, []);
 
