@@ -16,6 +16,8 @@
 // Type
 // ---------------------------------------------------------------------------
 
+import { registerInputReset } from './input-reset';
+
 export type JumpPhase = 'grounded' | 'charging' | 'quick' | 'launch' | 'sinking' | 'quicksink';
 
 /**
@@ -133,6 +135,32 @@ export function attachJumpListeners(): void {
 
   window.addEventListener('keydown', onKeyDown);
   window.addEventListener('keyup', onKeyUp);
+  // Release a held SPACE on focus loss/regain so the charge/jump doesn't strand
+  // when a window steals focus mid-hold (browser skips keyup). See S7. Clears
+  // ONLY the input flags — never the airborne/altitude physics in resetJump().
+  registerInputReset(resetJumpInput);
+}
+
+/**
+ * S7 — release held-SPACE input on window focus loss/regain.
+ *
+ * If we ONLY cleared spaceDown, the next updateJump() 'charging' branch would see
+ * `!spaceDown` and fire the release path — an UNINTENDED quick/charged jump just
+ * from a popup stealing focus. So when mid-charge we cancel the charge back to
+ * grounded. AIRBORNE physics (phase launch/sinking/quick + heightOffset +
+ * playerAltitude) is intentionally left intact — a focus blip mid-arc must not
+ * teleport the avatar to the ground.
+ */
+export function resetJumpInput(): void {
+  jumpState.spaceDown = false;
+  jumpState.lastSpaceDown = false;
+  if (jumpState.phase === 'charging') {
+    jumpState.phase = 'grounded';
+    jumpState.vz = 0;
+    jumpState.holdMs = 0;
+    jumpState.chargeProgress = 0;
+    jumpState.chargeMode = 'none';
+  }
 }
 
 export function setJumpPressed(pressed: boolean): void {
