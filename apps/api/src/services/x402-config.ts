@@ -24,9 +24,18 @@
  * Environment variables consumed:
  *   X402_ENABLED                       — "true" to register the middleware on
  *                                        /api/v2/* routes. Default: off.
- *   X402_FACILITATOR_URL               — Base URL of the x402 facilitator. For
- *                                        Solana mainnet use the Coinbase CDP
- *                                        facilitator. Default: Coinbase CDP v2.
+ *   X402_FACILITATOR_PRESET            — Named facilitator: "cdp" (Coinbase
+ *                                        CDP, default), "payai" (PayAI hosted
+ *                                        facilitator — standards-compliant,
+ *                                        no API key, live Solana mainnet+devnet),
+ *                                        or "mock" (the local mock facilitator
+ *                                        in x402-mock-facilitator.ts, for tests).
+ *   X402_FACILITATOR_URL               — Explicit facilitator base URL. When
+ *                                        set it OVERRIDES the preset. The
+ *                                        @x402/core HTTPFacilitatorClient appends
+ *                                        /verify, /settle, /supported to it.
+ *   X402_MOCK_FACILITATOR_URL          — Base URL used by the "mock" preset.
+ *                                        Default: http://localhost:4000/api/x402-mock.
  *   CLAWVILLE_MERCHANT_WALLET_PUBKEY   — Base58 Solana public key that receives
  *                                        USDC settlements. Pulled from
  *                                        treasury_wallets via
@@ -49,11 +58,59 @@ import { x402ResourceServer, HTTPFacilitatorClient } from '@x402/core/server';
 import { registerExactSvmScheme } from '@x402/svm/exact/server';
 import type { paymentMiddleware } from '@x402/hono';
 
+export type X402FacilitatorPreset = 'cdp' | 'payai' | 'mock';
+
 export interface X402Config {
   enabled: boolean;
+  /** Which named facilitator the URL resolved from (for logs). */
+  facilitatorPreset: X402FacilitatorPreset;
+  /** Whether facilitatorUrl came from an explicit X402_FACILITATOR_URL override. */
+  facilitatorUrlExplicit: boolean;
   facilitatorUrl: string;
   merchantWalletPubkey: string;
   network: string;
+}
+
+/** Coinbase CDP v2 x402 facilitator (Base/EVM first-party + Solana via CDP). */
+const CDP_FACILITATOR_URL = 'https://api.cdp.coinbase.com/platform/v2/x402';
+/** PayAI hosted facilitator — standards-compliant, no API key, Solana + 20 EVM chains. */
+const PAYAI_FACILITATOR_URL = 'https://facilitator.payai.network';
+/** Default base path the in-API mock facilitator is mounted at (see index.ts). */
+const DEFAULT_MOCK_FACILITATOR_URL = 'http://localhost:4000/api/x402-mock';
+
+/**
+ * Resolve the facilitator base URL. An explicit `X402_FACILITATOR_URL` always
+ * wins (and is reported as explicit); otherwise the `X402_FACILITATOR_PRESET`
+ * selects a known facilitator. Unknown presets fall back to CDP — the historical
+ * default — so this change is backward-compatible.
+ */
+function resolveFacilitator(): {
+  url: string;
+  preset: X402FacilitatorPreset;
+  explicit: boolean;
+} {
+  const explicitUrl = process.env.X402_FACILITATOR_URL?.trim();
+  const rawPreset = (process.env.X402_FACILITATOR_PRESET?.trim().toLowerCase() ?? 'cdp');
+  const preset: X402FacilitatorPreset =
+    rawPreset === 'payai' || rawPreset === 'mock' ? rawPreset : 'cdp';
+
+  if (explicitUrl) {
+    return { url: explicitUrl, preset, explicit: true };
+  }
+
+  switch (preset) {
+    case 'payai':
+      return { url: PAYAI_FACILITATOR_URL, preset, explicit: false };
+    case 'mock':
+      return {
+        url: process.env.X402_MOCK_FACILITATOR_URL?.trim() || DEFAULT_MOCK_FACILITATOR_URL,
+        preset,
+        explicit: false,
+      };
+    case 'cdp':
+    default:
+      return { url: CDP_FACILITATOR_URL, preset: 'cdp', explicit: false };
+  }
 }
 
 /**
@@ -63,8 +120,8 @@ export interface X402Config {
  */
 export function loadX402Config(): X402Config {
   const enabled = process.env.X402_ENABLED === 'true';
-  const facilitatorUrl =
-    process.env.X402_FACILITATOR_URL ?? 'https://api.cdp.coinbase.com/platform/v2/x402';
+  const { url: facilitatorUrl, preset: facilitatorPreset, explicit: facilitatorUrlExplicit } =
+    resolveFacilitator();
   const merchantWalletPubkey = process.env.CLAWVILLE_MERCHANT_WALLET_PUBKEY ?? '';
   const network = process.env.X402_NETWORK ?? 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp';
 
@@ -75,7 +132,14 @@ export function loadX402Config(): X402Config {
     );
   }
 
-  return { enabled, facilitatorUrl, merchantWalletPubkey, network };
+  return {
+    enabled,
+    facilitatorPreset,
+    facilitatorUrlExplicit,
+    facilitatorUrl,
+    merchantWalletPubkey,
+    network,
+  };
 }
 
 /**

@@ -47,6 +47,7 @@ import { drainKnowledgeEvents, clearSessionQueue } from '../services/skill-event
 import { runTool } from '../services/skill-tools-dispatcher';
 import { coveBlackjackRouter } from './cove-blackjack';
 import { covePokerMttRouter } from './cove-poker-mtt';
+import { ctTopupRoutes } from './ct-topup';
 import { validateLiveAgentSession } from '../middleware/require-auth-or-agent';
 import { sessionDigest, sha256Hex } from '../services/session-digest';
 import {
@@ -3837,6 +3838,167 @@ agentGatewayRoutes.post('/:sessionId/cove/blackjack/:tool', async (c) => {
   });
 
   // Mirror the cove route's status so the agent sees 4xx/5xx faithfully.
+  return c.json(payload as Record<string, unknown>, res.status as 200);
+});
+
+// ---------------------------------------------------------------------------
+// CT TOP-UP (USDC→CT on-ramp) — agent-callable money surface (Rule E5 parity).
+// ---------------------------------------------------------------------------
+// A connected/hosted agent buys ClawTokens for ITS OWN avatar with USDC via the
+// x402/PayAI facilitator, AS ITSELF (the X-Clawville-Agent-Session header → its
+// bound avatar's REAL CT). Same shape as the cove tool surface: a session-gated
+// tools.json + a POST :tool forwarder that injects the agent-session header onto
+// an in-process sub-request to the audited ct-topup router. Money NEVER flows
+// through the free-text [ACTION:] parser — only these authenticated tool calls.
+//
+// REUSE, NOT REIMPLEMENTATION: both tools forward to /api/ct/topup/{quote,settle}
+// (ctTopupRoutes) — the SAME route + the SAME requireAuthOrAgentSession resolver
+// + the SAME double-credit-guarded settle transaction a human hits. Zero
+// duplicated money logic. The minimal Phase A wiring is the two-tool bundle +
+// forwarder below; full PROTOCOL_VERSION manual propagation is a later phase
+// (no PROTOCOL bump here — only the agent ACTION whitelist would require one, and
+// money stays OFF the [ACTION:] path).
+const CT_TOPUP_TOOLS = [
+  {
+    name: 'ct_topup_quote',
+    description:
+      'Request an x402/PayAI USDC payment quote to buy ClawTokens (CT) for YOUR OWN avatar. Returns a 402 challenge with the payment requirements (payTo, amount, network, USDC asset) + a topupId + the CT you will receive (1 USDC = 100 CT). Pay the requirement off-chain with your wallet, then call ct_topup_settle with the payment header. Devnet-first.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        asset: { type: 'string', enum: ['usdc', 'sol'], description: 'Payment asset. usdc is the funded path.' },
+        usdCents: { type: 'integer', minimum: 1, maximum: 1000000, description: 'How much to buy, in USD cents (100 = $1 = 100 CT).' },
+      },
+      required: ['asset', 'usdCents'],
+      additionalProperties: false,
+    },
+    parameters: {
+      type: 'object',
+      properties: {
+        asset: { type: 'string', enum: ['usdc', 'sol'] },
+        usdCents: { type: 'integer', minimum: 1, maximum: 1000000 },
+      },
+      required: ['asset', 'usdCents'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'ct_topup_settle',
+    description:
+      'Settle a paid top-up: submit your signed payment to the facilitator (verify→settle) and credit the ClawTokens to YOUR avatar EXACTLY ONCE. You MUST send the payment header (PAYMENT-SIGNATURE) and an Idempotency-Key header (a fresh unique string per settle). Pass the topupId + the same asset/usdCents from the quote. Returns ctCredited + your new CT balance + the settled tx signature. Replays (same Idempotency-Key or same tx) return the cached credit — never double-credits.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        topupId: { type: 'string', description: 'The topupId from ct_topup_quote.' },
+        asset: { type: 'string', enum: ['usdc', 'sol'] },
+        usdCents: { type: 'integer', minimum: 1, maximum: 1000000 },
+      },
+      required: ['topupId', 'asset', 'usdCents'],
+      additionalProperties: false,
+    },
+    parameters: {
+      type: 'object',
+      properties: {
+        topupId: { type: 'string' },
+        asset: { type: 'string', enum: ['usdc', 'sol'] },
+        usdCents: { type: 'integer', minimum: 1, maximum: 1000000 },
+      },
+      required: ['topupId', 'asset', 'usdCents'],
+      additionalProperties: false,
+    },
+  },
+] as const;
+
+// Router-relative sub-paths on ctTopupRoutes (mount prefix /api/ct/topup is
+// stripped by Hono before .request()).
+const CT_TOPUP_TOOL_ROUTES: Record<string, { method: 'POST'; path: string } | undefined> = {
+  ct_topup_quote: { method: 'POST', path: '/quote' },
+  ct_topup_settle: { method: 'POST', path: '/settle' },
+};
+
+// GET /api/agent/:sessionId/ct/topup/tools.json — session-gated tool bundle.
+agentGatewayRoutes.get('/:sessionId/ct/topup/tools.json', async (c) => {
+  const sessionId = c.req.param('sessionId');
+  const resolved = await resolveSession(sessionId);
+  if (!resolved) return c.json({ error: 'Invalid or expired agent session' }, 404);
+
+  return new Response(JSON.stringify(CT_TOPUP_TOOLS, null, 2), {
+    status: 200,
+    headers: {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Content-Disposition': 'attachment; filename="clawville-ct-topup.tools.json"',
+      'Cache-Control': 'private, max-age=300',
+      'X-Skill-Filename': 'clawville-ct-topup.tools.json',
+      'Access-Control-Expose-Headers': 'Content-Disposition, X-Skill-Filename',
+    },
+  });
+});
+
+// POST /api/agent/:sessionId/ct/topup/:tool — forward to ct-topup AS the agent.
+// The agent-session header is what the ct-topup route's requireAuthOrAgentSession
+// resolves to bind the agent's OWN avatar for real-CT settlement. We pass through
+// the payment header + Idempotency-Key (required by settle) + fingerprint/UA.
+agentGatewayRoutes.post('/:sessionId/ct/topup/:tool', async (c) => {
+  const sessionId = c.req.param('sessionId');
+  const tool = c.req.param('tool');
+
+  // Fast fail-closed liveness pre-filter (the forwarded route re-resolves the
+  // same validator via requireAuthOrAgentSession before any credit).
+  if (!(await validateLiveAgentSession(sessionId))) {
+    return c.json({ error: 'Invalid or expired agent session' }, 404);
+  }
+
+  if (!Object.hasOwn(CT_TOPUP_TOOL_ROUTES, tool)) {
+    return c.json(
+      { error: 'unknown_tool', tool, knownTools: Object.keys(CT_TOPUP_TOOL_ROUTES) },
+      404,
+    );
+  }
+  const route = CT_TOPUP_TOOL_ROUTES[tool]!;
+
+  let body: unknown = {};
+  try {
+    const raw = await c.req.text();
+    body = raw && raw.length > 0 ? JSON.parse(raw) : {};
+  } catch {
+    return c.json({ error: 'invalid_json_body' }, 400);
+  }
+
+  const fwdHeaders: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'X-Clawville-Agent-Session': sessionId,
+  };
+  // Settle requires both of these; quote uses neither. Forward when present.
+  const pay = c.req.header('PAYMENT-SIGNATURE') ?? c.req.header('X-PAYMENT');
+  if (pay) fwdHeaders['PAYMENT-SIGNATURE'] = pay;
+  const idem = c.req.header('Idempotency-Key');
+  if (idem) fwdHeaders['Idempotency-Key'] = idem;
+  const fp = c.req.header('X-CV-Fingerprint');
+  if (fp) fwdHeaders['X-CV-Fingerprint'] = fp;
+  const ua = c.req.header('User-Agent');
+  if (ua) fwdHeaders['User-Agent'] = ua;
+
+  const res = await ctTopupRoutes.request(route.path, {
+    method: route.method,
+    headers: fwdHeaders,
+    body: JSON.stringify(body ?? {}),
+  });
+
+  const text = await res.text();
+  let payload: unknown;
+  try {
+    payload = text.length > 0 ? JSON.parse(text) : {};
+  } catch {
+    payload = { error: text };
+  }
+
+  void logEventFromContext(c, {
+    eventType: 'agent.tool.invoked',
+    agentId: npcSimulation.getOpenClawBotConfig(sessionId)?.agentId ?? sessionDigest(sessionId),
+    sessionId: sessionDigest(sessionId),
+    payload: { toolName: tool, ok: res.ok, status: res.status, via: 'ct-topup' },
+  });
+
   return c.json(payload as Record<string, unknown>, res.status as 200);
 });
 

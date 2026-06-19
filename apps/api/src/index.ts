@@ -82,6 +82,8 @@ import { coveSlotsRouter } from './routes/cove-slots';
 // Phase 6.4.1 — cove blackjack AUTHORITATIVE route (6-deck shoe, S17, BJ 3:2,
 // commit-reveal provably-fair engine, ClawToken ledger; SOL/USDC seam returns 501).
 import { coveBlackjackRouter } from './routes/cove-blackjack';
+import { ctTopupRoutes } from './routes/ct-topup';
+import { buildMockFacilitator } from './services/x402-mock-facilitator';
 // Phase 6.5.0 — cove Texas Hold'em mock route (visual shell, no engine yet).
 import { coveHoldemRouter } from './routes/cove-holdem';
 // Poker MTT (P3) — single-table tournament registration + status route.
@@ -259,6 +261,11 @@ app.route('/api/leaderboard', leaderboardRoutes);
 app.route('/api/agent-setup', agentSetupRoutes);
 app.route('/api/skills', skillsRoutes);
 app.route('/api/v2/agent', agentV2Routes);
+// USDC→CT on-ramp (Phase A) — x402/PayAI quote+settle → ClawToken credit.
+// Human (Lucia) + connected-agent (X-Clawville-Agent-Session) parity via
+// requireAuthOrAgentSession. Devnet-first; mainnet is a config flip after a
+// funded settled smoke. See routes/ct-topup.ts + services/x402-payai.ts.
+app.route('/api/ct/topup', ctTopupRoutes);
 app.route('/api/dashboard', dashboardRoutes);
 // Phase 5.1 — cross-world portal + account linking (see plan §6.2 + §15).
 app.route('/api/portal', portalRoutes);
@@ -320,6 +327,19 @@ app.route('/api/cove/economy', coveEconomyRouter);
 // Phase 5.1 — admin identity recovery stub. Returns 501 behind a
 // FEATURE_GATE until the support-chat verification workflow lights up.
 app.route('/api/admin', adminIdentityRoutes);
+
+// MOCK x402 facilitator — local stand-in for PayAI's hosted facilitator
+// (`https://facilitator.payai.network`) so the x402 payment handshake (and the
+// USDC→CT on-ramp) can be exercised end-to-end without real funds. It rubber-
+// stamps every settlement, so it is gated OFF by default and MUST NEVER be
+// enabled in production. Pair with X402_FACILITATOR_PRESET=mock (or
+// X402_FACILITATOR_URL pointing here).
+if (process.env.X402_MOCK_FACILITATOR === 'true') {
+  app.route('/api/x402-mock', buildMockFacilitator());
+  console.log(
+    '[x402-mock] Mock facilitator MOUNTED at /api/x402-mock — TEST ONLY, never enable in prod.',
+  );
+}
 
 // Error handler — expected errors (HTTPException, InsufficientTokens) return
 // typed responses without alerting; unexpected exceptions fire an immediate
