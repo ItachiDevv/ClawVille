@@ -94,7 +94,9 @@ export function useWorldStream() {
      *   deeplink invite code — no ticket exists yet, and sending a stale
      *   roomId on a fresh join would wrongly pin a room the user didn't intend.
      */
-    async function join(recovery = false): Promise<JoinResponse | null> {
+    async function join(
+      recovery = false,
+    ): Promise<JoinResponse | { superseded: true } | null> {
       const requestedRoom =
         typeof window !== 'undefined'
           ? new URLSearchParams(window.location.search).get('room')
@@ -118,7 +120,17 @@ export function useWorldStream() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body),
         });
-        if (!res.ok) return null;
+        if (!res.ok) {
+          // Identity-dedup ping-pong guard: a newer DELIBERATE login took over
+          // this account's body and THIS was an automatic recovery rejoin, so
+          // the server refuses with 409 `presence_superseded`. Surface a
+          // distinct sentinel so the caller STOPS (not endless backoff+retry).
+          if (res.status === 409) {
+            const err = (await res.json().catch(() => null)) as { code?: string } | null;
+            if (err?.code === 'presence_superseded') return { superseded: true };
+          }
+          return null;
+        }
         const data = (await res.json()) as JoinResponse;
         return data;
       } catch (err) {
@@ -133,6 +145,60 @@ export function useWorldStream() {
       if (positionInterval) {
         clearInterval(positionInterval);
         positionInterval = null;
+      }
+    }
+
+    /**
+     * Terminal stop when the server reports `presence_superseded`: a newer
+     * deliberate login (another tab/device) now owns this account's single
+     * authoritative body. We must NOT keep trying to reclaim it (that would
+     * ping-pong the two live sessions), so we cancel the whole stream, leave
+     * uploads/SSE down, and tell the user. Reconnecting requires a reload —
+     * which is correct, since they're intentionally active elsewhere.
+     */
+    function handleSuperseded() {
+      cancelled = true;
+      stopPositionUpload();
+      es?.close();
+      es = null;
+      if (retryTimeout) {
+        clearTimeout(retryTimeout);
+        retryTimeout = null;
+      }
+      setNpcConnected(false);
+      try {
+        useGameStore
+          .getState()
+          .addToast('↪️', 'Your session is now active in another tab or device.', 6000);
+      } catch {
+        /* toast is best-effort */
+      }
+    }
+
+    /**
+     * Drop our presence server-side. The React unmount cleanup covers SPA route
+     * changes, but a HARD nav / reload / tab-close / bfcache-enter may tear down
+     * the document before React unmount runs — `pagehide` fires there. Without
+     * this, the body lingers up to STALE_PLAYER_MS (30s) and other clients (or a
+     * fast reload of our own tab) see a stale duplicate. keepalive lets the POST
+     * outlive the page; credentials carry our identity so the server resolves the
+     * right presence to remove. A second /leave for an already-gone session no-ops.
+     */
+    function leaveBeacon() {
+      const sid = sessionIdRef.current;
+      if (!sid) return;
+      try {
+        fetch(`${WORLD_API_URL}/api/world/leave`, {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({}),
+          keepalive: true,
+        }).catch(() => {
+          /* fire-and-forget */
+        });
+      } catch {
+        /* ignore — best-effort, GC handles stale */
       }
     }
 
@@ -181,6 +247,10 @@ export function useWorldStream() {
       try {
         const rejoined = await join(true);
         if (cancelled || !rejoined) return null;
+        if ('superseded' in rejoined) {
+          handleSuperseded();
+          return null;
+        }
         sessionIdRef.current = rejoined.id;
         roomIdRef.current = rejoined.roomId;
         roomTicketRef.current = rejoined.roomTicket ?? roomTicketRef.current;
@@ -392,6 +462,14 @@ export function useWorldStream() {
     async function bootstrap() {
       const joined = await join();
       if (cancelled) return;
+      if (joined && 'superseded' in joined) {
+        // Fresh bootstrap joins never carry a recovery ticket, so the server
+        // won't normally supersede them — but handle it defensively so a race
+        // (e.g. a second tab opened a beat earlier) parks this tab cleanly
+        // instead of looping.
+        handleSuperseded();
+        return;
+      }
       if (!joined) {
         // Backoff + retry the whole join → stream flow.
         retriesRef.current++;
@@ -415,23 +493,25 @@ export function useWorldStream() {
 
     bootstrap();
 
+    // pagehide fires on reload / tab-close / hard nav / bfcache-enter — the
+    // cases where React unmount may not run before the page is gone. See
+    // leaveBeacon. (visibilitychange→hidden is intentionally NOT used: a plain
+    // tab-switch would leave+rejoin-churn and burn the 3/60s join budget.)
+    if (typeof window !== 'undefined') {
+      window.addEventListener('pagehide', leaveBeacon);
+    }
+
     return () => {
       cancelled = true;
+      if (typeof window !== 'undefined') {
+        window.removeEventListener('pagehide', leaveBeacon);
+      }
       es?.close();
       if (retryTimeout) clearTimeout(retryTimeout);
       if (positionInterval) clearInterval(positionInterval);
       setNpcConnected(false);
       // Best-effort leave — server GCs stale players via 30 s timeout.
-      const sid = sessionIdRef.current;
-      if (sid) {
-        fetch(`${WORLD_API_URL}/api/world/leave`, {
-          method: 'POST',
-          credentials: 'include',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({}),
-          keepalive: true,
-        }).catch(() => { /* fire-and-forget */ });
-      }
+      leaveBeacon();
       sessionIdRef.current = null;
       roomIdRef.current = null;
       setLocalSessionId(null);
