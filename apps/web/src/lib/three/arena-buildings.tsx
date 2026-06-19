@@ -87,7 +87,7 @@ const MAX_WALK_WAIT_MS = 1500;
  * Deliberately avoids React state so it can be called from the module-scope
  * BUILDING_MODELS onClick without needing a hook context.
  */
-function triggerCoveWalkIn(): void {
+export function triggerCoveWalkIn(): void {
   const store = useGameStore.getState();
 
   // Only walk in player/npc mode — in explore mode there is no avatar to walk.
@@ -104,6 +104,13 @@ function triggerCoveWalkIn(): void {
     { x: COVE_DOOR_PX.x,    y: COVE_DOOR_PX.y },
   ];
   store.setClickPath(path, null);
+
+  // Signal the camera controller to push toward the cove (task 2 entrance anim).
+  // The handler in World3DCanvas.tsx reads this event and initiates a smooth
+  // camera drift toward the cove for the duration of the walk-in (~1.2s).
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('cove-walkin-start'));
+  }
 
   const startMs = Date.now();
   let rafId = 0;
