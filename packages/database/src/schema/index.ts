@@ -42,6 +42,7 @@ export * from './activity-replays';
 export * from './activity-seasons';
 // Reef Race Phase 4 — per-avatar personal-best lap + ghost replay.
 export * from './reef-race-personal-bests';
+export * from './support-tickets';
 // Q3 plan §2.6 — idempotency for client-side tutorial quest token credits.
 export * from './tutorial-quest-claims';
 // Q3 plan §4 — cosmetic engine (cosmetic_skus + cosmetic_variants + avatar_skins).
