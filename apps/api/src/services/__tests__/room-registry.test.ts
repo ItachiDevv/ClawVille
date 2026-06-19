@@ -32,6 +32,7 @@ import {
   STALE_PLAYER_MS,
   EMPTY_ROOM_MS,
   FREE_ROAMER_NPC_IDS,
+  PresenceSupersededError,
   type JoinAvatarMeta,
 } from '../room-registry';
 import { NPC_DEFINITIONS } from '@clawville/shared';
@@ -690,5 +691,84 @@ describe('RoomRegistry — concurrency invariants', () => {
     for (const id of expected) {
       expect(FREE_ROAMER_NPC_IDS.has(id)).toBe(true);
     }
+  });
+});
+
+describe('RoomRegistry — identity dedup (one body per account, 2026-06-19)', () => {
+  const human = (userId: string, over: Partial<JoinAvatarMeta> = {}) =>
+    makeAvatar({ userId, kind: 'human', species: 'no_such_species', ...over });
+
+  it('a FRESH join for the same userId evicts the prior session and leaks no NPC slot', () => {
+    const { registry, clock } = makeRegistry();
+    const first = registry.joinPlayer('lucia-A', human('user-1'));
+    const roomId = first.room.id;
+    expect(first.swappedOutNpcId).not.toBeNull();
+
+    // A different Lucia session for the SAME user joins fresh (no roomTicket →
+    // not a recovery). Latest deliberate login wins: the old body is evicted.
+    clock.advance(1_000);
+    const second = registry.joinPlayer('lucia-B', human('user-1'));
+    expect(second.evictedSessionIds).toEqual(['lucia-A']);
+    expect(registry.getRoomForSession('lucia-A')).toBeNull();
+    expect(registry.getRoomForSession('lucia-B')?.id).toBe(second.room.id);
+    // Auto-fill packs B into the now-empty original room.
+    expect(second.room.id).toBe(roomId);
+    expect(second.room.players.size).toBe(1);
+
+    // The evicted session's NPC is queued for restore (byPlayer lucia-A); the
+    // new session holds its own swap. After the grace window, exactly the
+    // evicted player's NPC comes back — net one swap held, zero leaked slots.
+    clock.advance(RESTORE_GRACE_MS + 100);
+    const tick = registry.tick();
+    expect(tick.restoredNpcs.length).toBe(1);
+    expect(second.room.npcs.size).toBe(FREE_ROAMER_NPC_IDS.size - 1);
+    expect(second.room.removedNpcs.size).toBe(1);
+  });
+
+  it('a RECOVERY rejoin (roomTicket replayed) does NOT evict — it is refused as superseded', () => {
+    const { registry } = makeRegistry();
+    const owner = registry.joinPlayer('lucia-new', human('user-1'));
+
+    // The OLD device auto-rejoins via a recovery ticket while a newer session
+    // already owns the account body. It must be refused, NOT win the body.
+    expect(() =>
+      registry.joinPlayer('lucia-old', human('user-1'), { isRecovery: true }),
+    ).toThrow(PresenceSupersededError);
+
+    // The newer session is untouched; the stale session never seated.
+    expect(registry.getRoomForSession('lucia-new')?.id).toBe(owner.room.id);
+    expect(registry.getRoomForSession('lucia-old')).toBeNull();
+    expect(owner.room.players.size).toBe(1);
+  });
+
+  it('agents are NEVER evicted by userId — a human and their agent(s) co-exist', () => {
+    const { registry } = makeRegistry();
+    const agentMeta = (over: Partial<JoinAvatarMeta> = {}) =>
+      makeAvatar({ userId: 'user-1', kind: 'agent', species: 'no_such_species', ...over });
+
+    registry.joinPlayer('a:agent-1', agentMeta());
+    registry.joinPlayer('a:agent-2', agentMeta()); // agent join skips dedup entirely
+    registry.joinPlayer('lucia-human', human('user-1')); // human dedup excludes agents
+
+    expect(registry.getRoomForSession('a:agent-1')).not.toBeNull();
+    expect(registry.getRoomForSession('a:agent-2')).not.toBeNull();
+    expect(registry.getRoomForSession('lucia-human')).not.toBeNull();
+  });
+
+  it('guests (userId null) are NOT deduped — two guest sessions co-exist', () => {
+    const { registry } = makeRegistry();
+    registry.joinPlayer('g:fp-1', makeAvatar({ species: 'no_such_species' })); // userId null
+    registry.joinPlayer('g:fp-2', makeAvatar({ species: 'no_such_species' }));
+    expect(registry.getRoomForSession('g:fp-1')).not.toBeNull();
+    expect(registry.getRoomForSession('g:fp-2')).not.toBeNull();
+  });
+
+  it('an idempotent same-session rejoin never evicts itself', () => {
+    const { registry } = makeRegistry();
+    const first = registry.joinPlayer('lucia-A', human('user-1'));
+    const rejoin = registry.joinPlayer('lucia-A', human('user-1'));
+    expect(rejoin.swappedOutNpcId).toBeNull(); // idempotent path, no second swap
+    expect(rejoin.room.id).toBe(first.room.id);
+    expect(registry.getRoomForSession('lucia-A')?.players.size).toBe(1);
   });
 });
