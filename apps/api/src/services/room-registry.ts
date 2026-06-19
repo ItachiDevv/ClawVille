@@ -163,6 +163,17 @@ export interface JoinOptions {
    * are present.
    */
   recoveryRoomId?: string;
+  /**
+   * Identity-dedup ping-pong guard (2026-06-19). True when the caller replayed
+   * a recovery ticket (i.e. an AUTOMATIC rejoin after a 409/SSE-reconnect), as
+   * opposed to a fresh/deliberate join. A fresh join for a userId WINS — it
+   * evicts any other live presence of the same account ("latest login wins").
+   * A recovery rejoin LOSES — if a newer deliberate session has already taken
+   * over this account's body, the rejoin is refused (superseded) instead of
+   * evicting it, so two live sessions of one account can't endlessly kick each
+   * other back and forth. Set by the route from `roomTicket != null`.
+   */
+  isRecovery?: boolean;
 }
 
 export interface JoinResult {
@@ -170,6 +181,31 @@ export interface JoinResult {
   player: PlayerState;
   /** NPC removed from the room when this player joined (null if no swap). */
   swappedOutNpcId: string | null;
+  /**
+   * sessionIds evicted by identity dedup on THIS fresh join (same-account stale
+   * bodies — see JoinOptions.isRecovery). Empty on an idempotent rejoin or when
+   * nothing was deduped. The route uses these to purge the evicted sessions'
+   * `positionLastSeen` throttle entries (an evicted session is no longer in a
+   * room, so the tick GC never re-kicks it to clean them up).
+   */
+  evictedSessionIds: string[];
+}
+
+/**
+ * Thrown by joinPlayer when a RECOVERY rejoin is refused because a newer
+ * deliberate session already owns this account's body (the ping-pong guard —
+ * see JoinOptions.isRecovery). Modeled as a throw (not a widened return type)
+ * so the dozens of existing JoinResult-destructuring call sites + tests stay
+ * type-safe; the superseded path is genuinely exceptional and never hit by a
+ * fresh join or a guest (userId === null). The route catches it and returns a
+ * 409 `presence_superseded` so the evicted tab stops trying to reclaim.
+ */
+export class PresenceSupersededError extends Error {
+  readonly code = 'presence_superseded';
+  constructor() {
+    super('presence_superseded');
+    this.name = 'PresenceSupersededError';
+  }
 }
 
 export interface LeaveResult {
@@ -297,11 +333,17 @@ export class RoomRegistry {
       typeof optionsOrRoomId === 'string'
         ? { requestedRoomId: optionsOrRoomId, isAuthenticated: false }
         : optionsOrRoomId ?? {};
-    const { requestedRoomId, isAuthenticated = false, recoveryRoomId } = options;
+    const {
+      requestedRoomId,
+      isAuthenticated = false,
+      recoveryRoomId,
+      isRecovery = false,
+    } = options;
 
     const now = this.now();
 
-    // Already in a room → idempotent refresh.
+    // Already in a room → idempotent refresh. Checked BEFORE identity dedup so
+    // a re-join of the SAME session never evicts itself.
     const existingRoomId = this.sessionToRoom.get(sessionId);
     if (existingRoomId) {
       const room = this.rooms.get(existingRoomId);
@@ -310,11 +352,55 @@ export class RoomRegistry {
         if (player) {
           this.applyAvatarMeta(player, avatar, now);
           room.lastActivityAt = now;
-          return { room, player, swappedOutNpcId: null };
+          return { room, player, swappedOutNpcId: null, evictedSessionIds: [] };
         }
       }
       // Stale reverse-index → fall through and re-join properly.
       this.sessionToRoom.delete(sessionId);
+    }
+
+    // Identity dedup (2026-06-19) — one authoritative body per account. A real
+    // human/guest-Lucia user has a globally-unique `userId`; the SAME browser
+    // reconnecting under a NEW sessionId (e.g. a guest→authed bootstrap flip,
+    // or a re-login) would otherwise leave a stale duplicate body lingering up
+    // to STALE_PLAYER_MS. Find any OTHER live presence sharing this non-null
+    // userId and reconcile it.
+    //   - Agents are EXCLUDED: an agent presence resolves AS its owner's userId
+    //     (world.ts resolvePresence), so userId dedup would wrongly evict a
+    //     human and their co-present agent, or two agents of one owner. Agents
+    //     key on their stable `a:<agentId>` sessionId (idempotent above).
+    //   - Guests with no userId can't be deduped this way (the only cross-id
+    //     link is the /24-shared UA+IP fp hash → unsafe); their stale body is
+    //     GC'd in 30s and hidden from the local viewer by the client's
+    //     "former selves" filter (use-world-stream.ts).
+    const evictedSessionIds: string[] = [];
+    if (avatar.userId != null && avatar.kind !== 'agent') {
+      const conflicts: string[] = [];
+      for (const [otherSid, otherRoomId] of this.sessionToRoom) {
+        if (otherSid === sessionId) continue;
+        const otherRoom = this.rooms.get(otherRoomId);
+        const otherPlayer = otherRoom?.players.get(otherSid);
+        if (otherPlayer && otherPlayer.kind !== 'agent' && otherPlayer.userId === avatar.userId) {
+          conflicts.push(otherSid);
+        }
+      }
+      if (conflicts.length > 0) {
+        if (isRecovery) {
+          // Ping-pong guard: a newer DELIBERATE login already owns this
+          // account's body. An automatic recovery rejoin must NOT reclaim it —
+          // refuse so the evicted tab stops kicking back. Latest login wins.
+          throw new PresenceSupersededError();
+        }
+        // Fresh/deliberate join wins. Evict the stale same-account bodies.
+        // leavePlayer re-stamps the evicted session's swapped-out NPC for
+        // grace-restore so no NPC slot is leaked. Collected first so we don't
+        // mutate sessionToRoom while iterating it above. The evicted ids are
+        // returned so the route can purge their position-throttle entries.
+        for (const sid of conflicts) {
+          this.leavePlayer(sid);
+          evictedSessionIds.push(sid);
+        }
+      }
     }
 
     const room = this.pickOrCreateRoom(requestedRoomId, isAuthenticated, recoveryRoomId);
@@ -354,7 +440,7 @@ export class RoomRegistry {
     // behaviour (visual continuity). Either way, `restored` is informational
     // — the swap result is what callers act on.
     void restored;
-    return { room, player, swappedOutNpcId };
+    return { room, player, swappedOutNpcId, evictedSessionIds };
   }
 
   /**

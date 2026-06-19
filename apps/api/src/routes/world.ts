@@ -35,7 +35,7 @@ import {
   validateLiveAgentSession,
 } from '../middleware/require-auth-or-agent';
 import { npcSimulation } from '../services/npc-simulation';
-import { roomRegistry, ROOM_MAX_PLAYERS } from '../services/room-registry';
+import { roomRegistry, ROOM_MAX_PLAYERS, PresenceSupersededError } from '../services/room-registry';
 import { signRoomTicket, resolveRecoveryRoomId } from '../services/room-ticket';
 import { createRateLimiter, getClientIp } from '../middleware/rate-limit';
 import type { Context } from 'hono';
@@ -269,14 +269,47 @@ worldRoutes.post('/join', async (c) => {
   const recoveryRoomId = resolveRecoveryRoomId(parsed.data.roomTicket, presence.sessionId);
 
   const avatarMeta = await resolveAvatarMeta(presence);
-  const { room, player, swappedOutNpcId } = roomRegistry.joinPlayer(presence.sessionId, avatarMeta, {
-    requestedRoomId,
-    // B2: only accountable callers (Lucia user OR validated agent session)
-    // can mint never-before-seen invite codes. Guests with an unknown code
-    // fall through to auto-fill inside the registry.
-    isAuthenticated: presence.kind !== 'guest',
-    recoveryRoomId,
-  });
+  let joinResult: ReturnType<typeof roomRegistry.joinPlayer>;
+  try {
+    joinResult = roomRegistry.joinPlayer(presence.sessionId, avatarMeta, {
+      requestedRoomId,
+      // B2: only accountable callers (Lucia user OR validated agent session)
+      // can mint never-before-seen invite codes. Guests with an unknown code
+      // fall through to auto-fill inside the registry.
+      isAuthenticated: presence.kind !== 'guest',
+      recoveryRoomId,
+      // Identity-dedup ping-pong guard (2026-06-19). The client only sends a
+      // roomTicket on a RECOVERY rejoin (a 409/SSE-reconnect auto-retry); a
+      // fresh deliberate join never carries one. A fresh join wins (evicts a
+      // stale same-account body); a recovery rejoin that finds a newer session
+      // already owning the account's body is refused (superseded) rather than
+      // evicting it, so two live sessions of one account can't ping-pong.
+      isRecovery: parsed.data.roomTicket != null,
+    });
+  } catch (err) {
+    // A newer deliberate login already owns this account's body and THIS was an
+    // automatic recovery rejoin → tell the client to stop reclaiming. `code`
+    // lets the client branch without string-matching (lib/api.ts ApiError).
+    if (err instanceof PresenceSupersededError) {
+      return c.json(
+        {
+          error: 'Your session is now active in another tab or device',
+          code: 'presence_superseded',
+        },
+        409,
+      );
+    }
+    throw err;
+  }
+  const { room, player, swappedOutNpcId, evictedSessionIds } = joinResult;
+
+  // Purge the position-throttle entries of any same-account session this fresh
+  // join evicted (identity dedup). The evicted session is no longer in a room,
+  // so the tick GC never re-kicks it to clean these up — mirror the tick
+  // subscriber's positionLastSeen cleanup here. (NB-1, two-force review.)
+  for (const sid of evictedSessionIds) {
+    positionLastSeen.delete(sid);
+  }
 
   // Mint a fresh recovery ticket for the room the session actually landed in,
   // bound to a SECRET commitment to this sessionId (deriveTicketSubject — never

@@ -12,9 +12,11 @@
 > - **`ARCHITECTURE.md`** — backend routes / services / schema / events / leaderboard rubric.
 > - **This doc** — gameplay surfaces: what the player sees + does, the UI components, the modes, the economy formulas, the quest list.
 
-**Last Audited:** 2026-06-18 (Language/translation UX rework — lag · too-few-languages · randomly-switches-back). Founder follow-up to S9. `game-language-control.tsx`: (1) **incremental processing** — the MutationObserver now translates only changed/added subtrees (`collectRecordsFromNode`, debounced `flushPending` queue) instead of a FULL `.game-container` TreeWalker re-walk on every mutation (the lag source); full walk only on initial pass + language switch. (2) **fast-reapply** — when React reverts a translated node to English, the observer re-applies the cached translation SYNCHRONOUSLY (no debounce, no API) so it never flashes back; the crude global `suppressObserverUntil` is replaced by per-node/per-attr self-write detection. (3) **dynamic-string skip** (`isDynamicStatusText`) — high-churn counters/timers ("6 / 12 visited", "1,250", "LV 1 · 0 SKILLS") aren't translated, so they stop thrashing the cache + tripping the rate limit. (4) **~43-language menu** (was 10; server translates to any BCP-47 locale via the LLM). (5) **client 429 backoff** (~12s, cached-only) + a generation/seq model. **Server:** `/api/i18n/translate` rate limit 30→60/min/IP. Codex co-reviewed (Rule E3) — caught a recapture bug (a tracked-but-untranslated node React fills with new text now recaptures + translates). `next build` exit 0. NEEDS founder cold-test + mobile/iPad sweep (Rule E4). `ARCHITECTURE.md §i18n` same-diff. Prior audit follows.
+**Last Audited:** 2026-06-19 (Session/auth + presence bugs — delayed login · logout-leaves-NPC · trailing "Visitor" ghost). Three founder-reported staging/prod bugs fixed: **(1) login shows logged-OUT for ~3 min** — `login/page.tsx` now evicts `['auth-me']`/`['avatar']`/`['agent-session']` from the shared SPA QueryClient on login + signup (`purgeAuthCache`) so the post-auth page fetches clean instead of reading a stale pre-login `null` cached fresh for `staleTime` (60s); **(2) "login behavior follows as NPC after logout"** — `sidebar-menu.tsx handleLogout` now `queryClient.clear()` + clears the players/research stores (resetStore only touched the game slice, so stale auth/avatar bled into the next session); **(3) a "Visitor" chibi trailed the player ~1s** — identity dedup in `room-registry.joinPlayer`: a fresh join evicts any other live presence with the same non-null `userId` (agents excluded — they share owner userId), a recovery rejoin that finds a newer owner is refused 409 `presence_superseded` (ping-pong guard, Codex-required), plus a client "former selves" filter (`stores/players.ts`) so the viewer never renders its own orphaned body, plus a `pagehide` keepalive `/leave`. See §11z.g. Codex co-reviewed the plan + design (Rule E3-style). API tsc clean for changed files + 44 room-registry tests green (5 new dedup cases); `next build` exit 0. NEEDS founder cold-test (Rule E4). `ARCHITECTURE.md` same-diff. Prior audit follows.
 
-**Prior Last Audited:** 2026-06-18 (S9 — translation: fixed an unbounded memory leak). Investigating the "translation issues" (no specific founder repro) found `game-language-control.tsx` was sound (order-safe `/api/i18n` response + English fallback, correct `.game-container` root, skip-selectors) EXCEPT `trackedTextNodes`/`trackedAttrElements` are strong-ref `Set`s that accumulated every DOM node ever seen while translation was ACTIVE and never pruned → unbounded heap growth + an ever-slower `restoreOriginals`/collect pass = a long-session jank/freeze vector (also feeds S8). Fix (retention/bounding only, no translation-behaviour change): `pruneDisconnectedTracked()` deletes `!isConnected` nodes (run in `restoreOriginals` + each translate pass), re-track on re-observe so a pruned→reconnected node stays restorable, + a bounded FIFO client cache (3000, oldest-evicted). WeakMap originals left intact. Codex co-reviewed. Prior audit follows.)
+**Prior Last Audited:** 2026-06-18 (Language/translation UX rework — lag · too-few-languages · randomly-switches-back). Founder follow-up to S9. `game-language-control.tsx`: (1) **incremental processing** — the MutationObserver now translates only changed/added subtrees (`collectRecordsFromNode`, debounced `flushPending` queue) instead of a FULL `.game-container` TreeWalker re-walk on every mutation (the lag source); full walk only on initial pass + language switch. (2) **fast-reapply** — when React reverts a translated node to English, the observer re-applies the cached translation SYNCHRONOUSLY (no debounce, no API) so it never flashes back; the crude global `suppressObserverUntil` is replaced by per-node/per-attr self-write detection. (3) **dynamic-string skip** (`isDynamicStatusText`) — high-churn counters/timers ("6 / 12 visited", "1,250", "LV 1 · 0 SKILLS") aren't translated, so they stop thrashing the cache + tripping the rate limit. (4) **~43-language menu** (was 10; server translates to any BCP-47 locale via the LLM). (5) **client 429 backoff** (~12s, cached-only) + a generation/seq model. **Server:** `/api/i18n/translate` rate limit 30→60/min/IP. Codex co-reviewed (Rule E3) — caught a recapture bug (a tracked-but-untranslated node React fills with new text now recaptures + translates). `next build` exit 0. NEEDS founder cold-test + mobile/iPad sweep (Rule E4). `ARCHITECTURE.md §i18n` same-diff. Prior audit follows.
+
+**Earlier audit:** 2026-06-18 (S9 — translation: fixed an unbounded memory leak). Investigating the "translation issues" (no specific founder repro) found `game-language-control.tsx` was sound (order-safe `/api/i18n` response + English fallback, correct `.game-container` root, skip-selectors) EXCEPT `trackedTextNodes`/`trackedAttrElements` are strong-ref `Set`s that accumulated every DOM node ever seen while translation was ACTIVE and never pruned → unbounded heap growth + an ever-slower `restoreOriginals`/collect pass = a long-session jank/freeze vector (also feeds S8). Fix (retention/bounding only, no translation-behaviour change): `pruneDisconnectedTracked()` deletes `!isConnected` nodes (run in `restoreOriginals` + each translate pass), re-track on re-observe so a pruned→reconnected node stays restorable, + a bounded FIFO client cache (3000, oldest-evicted). WeakMap originals left intact. Codex co-reviewed. Prior audit follows.)
 
 **Prior Last Audited:** 2026-06-18 (S6 — left quest tracker decrowded). `quest-tracker.tsx` expanded view read as "two duplicate boxes": the collapsed-header `claw-panel` + the expanded-list `claw-panel` were two stacked rounded boxes, AND the active quest rendered TWICE (header title+progress block had no `!expanded` guard + the expanded active card). Refactor (pure JSX/CSS, no quest store/definitions change): ONE `claw-panel` (`!p-0`) wrapper = unframed header on top + a divider + a scroll body; the header is now SLIM while expanded (rich hint+progress shown only while COLLAPSED) so the active quest renders once; compact typography (base/sm → sm/xs, tighter padding); scroll affordance added (bottom fade-gradient overlay matching the navy panel + a thin cyan webkit/`scrollbar-width:thin` scrollbar) so a new user can tell it scrolls; robust `max-h-[min(420px,calc(100vh-320px))]` (was `calc(100vh-640px)` which collapsed to min-h on laptops). Single instance confirmed (the two `/game/page.tsx` mounts are mutually exclusive on `agentConnected`). The bigger left-vs-right quest PARITY rework stays deferred (backlog). Codex co-reviewed. NEEDS mobile/iPad sweep + founder sign-off (Rule E4). Prior audit follows.)
 
@@ -530,8 +532,8 @@ client renders it again.
 
 ### 11z.d Wire surface
 
-- `POST /api/world/join` → `{ roomId, id, roomTicket, capacity, playerCount, swappedOutNpcId, players }`. `roomTicket` is the signed sticky-room recovery token (see §11z.e); the client stores it and replays it only on a recovery rejoin.
-- `POST /api/world/leave` → fire-and-forget; idempotent if the session isn't in a room.
+- `POST /api/world/join` → `{ roomId, id, roomTicket, capacity, playerCount, swappedOutNpcId, players }`. `roomTicket` is the signed sticky-room recovery token (see §11z.e); the client stores it and replays it only on a recovery rejoin. **409 `{ code: 'presence_superseded' }`** when a recovery rejoin is refused because a newer deliberate session already owns this account's body (see §11z.g).
+- `POST /api/world/leave` → fire-and-forget; idempotent if the session isn't in a room. The client also fires this via a `keepalive` POST on `pagehide` (reload / tab-close / hard nav / bfcache) so a body doesn't linger the full 30 s GC window after a non-SPA exit.
 - `POST /api/world/position` → 5 Hz position update. Server enforces a 10 Hz
   per-session ceiling and silently drops excess.
 - `GET /api/world/:roomId/stream` → SSE snapshot every 200 ms. Payload
@@ -561,6 +563,42 @@ hard cap is the VRM ceiling). PARITY: a connected/hosted agent recovers
 identically through the same join path — its ticket subject derives from its
 agent-session id. No DB writes (the ticket is the durable anchor, held
 client-side — mirrors the openclaw session-restore pattern).
+
+### 11z.g Identity dedup — one authoritative body per account (2026-06-19)
+
+Fixes the "a past NPC session doubled over / a 'Visitor' chibi trailed me ~1s
+behind" report. The registry used to key presence purely by `sessionId`, so the
+SAME browser reconnecting under a NEW id (a guest→authed bootstrap flip, a
+re-login, or a transient credential change) left a stale duplicate body lingering
+up to the 30 s GC. Three layers fix it:
+
+- **Server dedup (`room-registry.joinPlayer`):** a real account has a globally
+  unique `userId`. On a **fresh** join the registry evicts any OTHER live
+  presence sharing that non-null `userId` ("latest deliberate login wins") and
+  re-queues the evicted session's swapped-out NPC for restore (no leaked slot).
+  **Agents are excluded** — an agent presence resolves AS its owner's `userId`,
+  so userId dedup would wrongly evict a human and their co-present agent (or two
+  agents of one owner); agents key on their stable `a:<agentId>` session and are
+  never evicted this way. Guests (no `userId`) are NOT deduped (the only
+  cross-id link is the /24-shared UA+IP fp hash → unsafe) — their stale body is
+  GC'd in 30 s and hidden client-side (below).
+- **Ping-pong guard:** a **recovery** rejoin (the client replays a `roomTicket`)
+  must NOT reclaim a body a newer session already took over — that would have
+  two live sessions of one account kick each other forever. So a recovery rejoin
+  that finds a same-account presence is **refused** with 409 `presence_superseded`;
+  the client stops reclaiming, parks the stream, and toasts "Your session is now
+  active in another tab or device." (Reload to reconnect — correct, since you're
+  intentionally active elsewhere.) Fresh joins never carry a ticket, so they win.
+- **Client "former selves" filter (`stores/players.ts`):** the viewer tracks
+  every presence id it's been assigned this session (capped 16). `isLocal` is
+  computed against that whole set, not just the latest id — so a still-lingering
+  PRIOR body of the same browser (different `publicId`) is filtered out of the
+  remote-render loop and never shows as a trailing ghost, even before the server
+  GC removes it.
+
+PARITY: connected/hosted agents are unaffected (never evicted). The browser
+client is the only `/api/world/*` consumer, so no protocol-manual / SKILL.md
+change is needed.
 
 ### 11z.f Backwards compat
 
