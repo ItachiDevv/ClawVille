@@ -2,8 +2,11 @@ import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { streamSSE } from 'hono/streaming';
 import { z } from 'zod';
-import type { AppContext } from '../types';
-import { sessionMiddleware, requireAuth } from '../middleware/auth';
+import { sessionMiddleware } from '../middleware/auth';
+import {
+  requireAuthOrAgentSession,
+  type ActivityAuthContext,
+} from '../middleware/require-auth-or-agent';
 import { creditClawTokens, debitClawTokens } from '../services/claw-token-ledger';
 import {
   db,
@@ -20,9 +23,19 @@ import { eq, and, desc, asc, lt, sql } from 'drizzle-orm';
 // Helpers
 // ---------------------------------------------------------------------------
 
-async function getUserAvatar(userId: string) {
+/**
+ * Resolve the acting avatar (full row) from the dual-identity middleware
+ * (Rule E5, Phase C — agent parity). `requireAuthOrAgentSession` already proved a
+ * live human/agent session and resolved a real, active `identity.avatarId` (it
+ * 403s an unbound/expired agent and a user with no active avatar). We re-load the
+ * row by THAT id (never a body-supplied id) so we have `clawTokens`/`name`/`id`
+ * for the escrow checks + settlement. Unspoofable — it comes from the middleware,
+ * not the request body.
+ */
+async function getActingAvatar(c: { get: (k: 'identity') => ActivityAuthContext['Variables']['identity'] }) {
+  const identity = c.get('identity');
   const avatar = await db.query.avatars.findFirst({
-    where: and(eq(avatars.userId, userId), eq(avatars.isActive, true)),
+    where: eq(avatars.id, identity.avatarId),
   });
   if (!avatar) throw new HTTPException(404, { message: 'No active agent found' });
   return avatar;
@@ -229,29 +242,23 @@ auctionResolver.start();
 // Routes
 // ---------------------------------------------------------------------------
 
-export const auctionRoutes = new Hono<AppContext>();
+// Agent parity (Rule E5, Phase C). Every WRITE binds to `identity.avatarId` from
+// `requireAuthOrAgentSession` (sessionMiddleware runs first for the human cookie
+// path; the agent path reads `X-Clawville-Agent-Session`). Self-bid / self-buy /
+// only-seller-cancels / snipe-extension / outbid-refund-exactly-once guards are
+// unchanged — they were already keyed on the acting avatar id, now the resolved
+// `identity.avatarId`. The resolver cron settles expired auctions on the seller +
+// winner avatar ids regardless of whether a participant is human or agent.
+export const auctionRoutes = new Hono<ActivityAuthContext>();
 auctionRoutes.use('*', sessionMiddleware);
 
-// FEATURE_GATE: skill_marketplace
-// Status: write handlers stubbed pending post-metrics-spine rework (pivoted
-//   to free agent leaderboard on 2026-04-21, see Brand Identity §3 + CLAUDE.md
-//   Priority #3 + improvements.md §7).
-// Metric to graduate: to be defined during rework.
-// Review deadline: after the architecture overhaul ships.
-auctionRoutes.use('*', async (c, next) => {
-  const writeMethods = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
-  if (writeMethods.has(c.req.method)) {
-    return c.json(
-      {
-        error:
-          'Skill marketplace paused pending rework. See brand identity §3 + improvements.md §7.',
-        code: 503,
-      },
-      503,
-    );
-  }
-  await next();
-});
+// FEATURE_GATE: skill_marketplace — GRADUATED / UN-PAUSED 2026-06-19.
+// The founder explicitly un-paused peer skill commerce (Bazaar / Marketplace /
+// Auctions) — an OVERRIDE of the 2026-04-21 pause. The 503 write-gate is REMOVED;
+// auction bid escrow + outbid-refund + buy-now + the expiry resolver cron all
+// settle in real CT through `claw-token-ledger` (escrow on bid, refund previous
+// bidder, 15% platform fee on settlement) with full human↔agent parity. See
+// PLAN.md §2 Phase C + GameFeatures.md. Retained as an audit marker, not a stub.
 
 // ---------------------------------------------------------------------------
 // SSE: GET /stream — Live auction updates (no auth, spectator-friendly)
@@ -287,9 +294,8 @@ auctionRoutes.get('/stream', (c) => {
 // GET /my-auctions — Seller's own auctions (auth required)
 // (Static route — must be before /:id)
 // ---------------------------------------------------------------------------
-auctionRoutes.get('/my-auctions', requireAuth, async (c) => {
-  const user = c.get('user') as { id: string };
-  const avatar = await getUserAvatar(user.id);
+auctionRoutes.get('/my-auctions', requireAuthOrAgentSession, async (c) => {
+  const avatar = await getActingAvatar(c);
 
   const rows = await db
     .select({
@@ -330,9 +336,8 @@ auctionRoutes.get('/my-auctions', requireAuth, async (c) => {
 // GET /my-bids — Auctions the user has bid on (auth required)
 // (Static route — must be before /:id)
 // ---------------------------------------------------------------------------
-auctionRoutes.get('/my-bids', requireAuth, async (c) => {
-  const user = c.get('user') as { id: string };
-  const avatar = await getUserAvatar(user.id);
+auctionRoutes.get('/my-bids', requireAuthOrAgentSession, async (c) => {
+  const avatar = await getActingAvatar(c);
 
   // Find distinct auctions this avatar has bid on
   const bidRows = await db
@@ -435,9 +440,8 @@ const createAuctionSchema = z.object({
   durationHours: z.number().int().min(1).max(168).default(24),
 });
 
-auctionRoutes.post('/create', requireAuth, async (c) => {
-  const user = c.get('user') as { id: string };
-  const body = await c.req.json();
+auctionRoutes.post('/create', requireAuthOrAgentSession, async (c) => {
+  const body = await c.req.json().catch(() => ({}));
   const parsed = createAuctionSchema.safeParse(body);
 
   if (!parsed.success) {
@@ -458,7 +462,7 @@ auctionRoutes.post('/create', requireAuth, async (c) => {
     });
   }
 
-  const avatar = await getUserAvatar(user.id);
+  const avatar = await getActingAvatar(c);
 
   let resolvedSkillId: string | null = null;
   let agentConfigSnapshot: unknown = null;
@@ -653,12 +657,11 @@ auctionRoutes.get('/:id', async (c) => {
 // ---------------------------------------------------------------------------
 // DELETE /:id — Cancel auction (only if no bids, only by seller)
 // ---------------------------------------------------------------------------
-auctionRoutes.delete('/:id', requireAuth, async (c) => {
-  const user = c.get('user') as { id: string };
+auctionRoutes.delete('/:id', requireAuthOrAgentSession, async (c) => {
   const id = c.req.param('id');
   validateUuid(id, 'Auction');
 
-  const avatar = await getUserAvatar(user.id);
+  const avatar = await getActingAvatar(c);
 
   const [auction] = await db
     .select()
@@ -703,12 +706,11 @@ const bidSchema = z.object({
   amount: z.number().int().min(1),
 });
 
-auctionRoutes.post('/:id/bid', requireAuth, async (c) => {
-  const user = c.get('user') as { id: string };
+auctionRoutes.post('/:id/bid', requireAuthOrAgentSession, async (c) => {
   const id = c.req.param('id');
   validateUuid(id, 'Auction');
 
-  const body = await c.req.json();
+  const body = await c.req.json().catch(() => ({}));
   const parsed = bidSchema.safeParse(body);
   if (!parsed.success) {
     throw new HTTPException(400, {
@@ -719,7 +721,7 @@ auctionRoutes.post('/:id/bid', requireAuth, async (c) => {
   }
 
   const { amount } = parsed.data;
-  const bidderAvatar = await getUserAvatar(user.id);
+  const bidderAvatar = await getActingAvatar(c);
 
   // Entire bid flow in a single transaction with row-level locking to
   // prevent two concurrent bids from racing on the same auction row.
@@ -866,12 +868,11 @@ auctionRoutes.post('/:id/bid', requireAuth, async (c) => {
 // ---------------------------------------------------------------------------
 // POST /:id/buy-now — Instant purchase at buyNowPrice (auth required)
 // ---------------------------------------------------------------------------
-auctionRoutes.post('/:id/buy-now', requireAuth, async (c) => {
-  const user = c.get('user') as { id: string };
+auctionRoutes.post('/:id/buy-now', requireAuthOrAgentSession, async (c) => {
   const id = c.req.param('id');
   validateUuid(id, 'Auction');
 
-  const buyerAvatar = await getUserAvatar(user.id);
+  const buyerAvatar = await getActingAvatar(c);
 
   // Entire buy-now flow in a single transaction with row-level locking to
   // prevent two concurrent buy-now requests from racing on the same auction.

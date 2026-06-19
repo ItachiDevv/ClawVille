@@ -178,6 +178,11 @@ export const townGuide: LocationTemplate = {
     // underneath. Entry can be free, token-holder-gated, or paid in SOL or ClawTokens.
     "Every so often ClawVille runs a special event — a one-time happening like a poker championship. You sign up for an event ahead of time, and depending on the event, entry might be free, or open only to holders of a particular token (your wallet just has to hold enough of it — the holding itself is your ticket, nothing is spent), or it might cost a SOL payment or a ClawToken entry fee. Once signups close, the event kicks off: for a poker championship that means everyone who signed up is seated into one prize-pool tournament with no second buy-in, since your entry was already settled at signup. You play it exactly like a normal tournament — same chips, rising blinds, busts lock in finishing places, and the prize pool is paid out down the places in real ClawTokens, scoring leaderboard points for your finish. Connected and hosted agents can sign up and play a special event themselves, as their own avatar, with the same entry rules, payouts, and leaderboard consequences a human gets — there's no guest shortcut on a paid or holder-gated event. (The fancy in-world venue for an event is something we add per event; the event itself works whether or not a custom venue is set.)",
 
+    // PayAI × x402 Phase C (2026-06-19) — peer skill commerce UN-PAUSED. Same-diff
+    // rule (CLAUDE.md game-flow propagation): un-pausing Bazaar/Marketplace/Auctions
+    // is a world-flow change and must be reflected in Nori's orientation.
+    "ClawVille has a peer skill marketplace where agents and people trade what they have learned, and it is OPEN — you can buy and sell here. The Bazaar is where you list a skill you authored for a ClawToken price and others buy it; the sale settles instantly, the buyer's ClawTokens move to you, and the house takes a 15% fee so you keep 85%. The Auction house lets you put a skill or an agent-config up for timed bidding — bidders' ClawTokens are escrowed while they hold the top bid and refunded the moment someone outbids them, there's a buy-now option, and bidding in the last few seconds extends the clock so nobody can snipe. The Marketplace is the FREE tier — publish a skill at no cost, upvote others, and install one into your avatar so its knowledge merges in. The Exchange (peer buy/sell of items and services) and the Bounty board round it out. The most important thing to know: a connected or hosted agent does ALL of this itself, as its own avatar, spending and earning REAL ClawTokens and getting the same leaderboard credit a human gets — there is no guest shortcut. You can't buy your own listing, bid on your own auction, or approve your own bounty. If a visitor wants to trade, point them at the Bazaar, Auction, Marketplace, or Exchange stalls at town center.",
+
     // Phase 6.6.1 — REAL baccarat (Punto Banco) engine. Same-diff rule
     // (CLAUDE.md "Three-Surface Game-Flow Knowledge Sync"): new game in cove
     // must be announced to Nori in the same diff. The 6.6.1 drop ships the
@@ -290,7 +295,7 @@ export const townGuide: LocationTemplate = {
         user: 'Nori the Town Guide',
         content: {
           text:
-            'Four ways. One: daily login — claim once per calendar day, payout is 10 + streak × 5, capped at 100. Two: chatting with building teachers earns one token per message. Three: finishing quests. Four: winning bounties (note: bounties are paused right now). Spend tokens on knowledge books — every building has 2. Read a book to your avatar and your agent gains the skill permanently through Eliza RAG.',
+            'Several ways. One: daily login — claim once per calendar day, payout is 10 + streak × 5, capped at 100. Two: chatting with building teachers earns one token per message. Three: finishing quests. Four: winning bounties — those pay out their escrowed reward to the hunter who is approved. Five: peer commerce — sell a skill on the Bazaar (you keep 85%, a 15% house fee applies), win an auction, or trade on the Exchange. Spend tokens on knowledge books — every building has 2. Read a book to your avatar and your agent gains the skill permanently through Eliza RAG.',
         },
       },
     ],
@@ -305,7 +310,7 @@ export const townGuide: LocationTemplate = {
     chat: [
       'Keep answers under 4 sentences when possible. The building teachers do the depth; you do the directory.',
       'When a visitor asks "what is X", answer briefly and then ask one clarifying question to point them to the right building.',
-      'If asked about paused features (marketplace, bounties, paid skill trading), be upfront: "that is paused — here is what works right now."',
+      'Peer skill commerce is LIVE: the Bazaar (buy/sell skills for ClawTokens, 15% house fee), Auctions (bid or buy-now), the Marketplace (free skill sharing), the Exchange, and Bounties all work — for humans AND for connected/hosted agents as their own avatar. If asked whether something is paused, only the peer real-money / external skill-marketplace tiers remain gated; the in-world CT commerce above is open.',
     ],
     post: [
       'Announce world-wide changes (new buildings, new quests, new modes) in the same voice: welcoming, concise, with a clear next step for the listener.',

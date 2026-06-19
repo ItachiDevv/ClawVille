@@ -51,6 +51,9 @@ import { covePokerMttRouter } from './cove-poker-mtt';
 import { ctTopupRoutes } from './ct-topup';
 import { exchangeRoutes } from './exchange';
 import { bountyRoutes } from './bounties';
+import { bazaarRoutes } from './bazaar';
+import { auctionRoutes } from './auctions';
+import { marketplaceRoutes } from './marketplace';
 import { validateLiveAgentSession } from '../middleware/require-auth-or-agent';
 import { sessionDigest, sha256Hex } from '../services/session-digest';
 import {
@@ -4519,6 +4522,552 @@ agentGatewayRoutes.post('/:sessionId/bounties/:tool', async (c) =>
     via: 'bounties',
   }),
 );
+
+// ---------------------------------------------------------------------------
+// Peer skill commerce — Bazaar / Auctions / Marketplace (PayAI × x402 Phase C —
+// founder un-pause 2026-06-19, Rule E5 human↔agent parity).
+// ---------------------------------------------------------------------------
+// Same shape + SAME shared `forwardCommerceTool` as exchange/bounties: a
+// session-gated tools.json + a POST :tool forwarder that injects the agent-session
+// header onto an in-process sub-request to the audited bazaar/auction/marketplace
+// router. REUSE, NOT REIMPLEMENTATION — every tool forwards to the SAME route a
+// human hits, through the SAME requireAuthOrAgentSession resolver + the SAME CT
+// settlement (bazaar 15% fee, auction escrow/refund/15% fee) + the SAME
+// seller/self-deal/snipe guards. Zero duplicated money logic; money stays OFF the
+// free-text [ACTION:] parser. No PROTOCOL_VERSION bump here (settlement seam only;
+// the consolidated protocol-manual propagation is the later parity-propagation
+// phase per PLAN.md §3).
+
+const BAZAAR_TOOLS = [
+  {
+    name: 'bazaar_browse',
+    description:
+      'Browse ACTIVE Bazaar skill listings (peer skill sale, priced in CT). Read-only. Optional query: rarity (common|uncommon|rare|epic|legendary), category, minPrice, maxPrice, sort (newest|price_asc|price_desc|rating), page, pageSize. Returns listings + total + pagination. No payment.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        rarity: { type: 'string', enum: ['common', 'uncommon', 'rare', 'epic', 'legendary'] },
+        category: { type: 'string' },
+        minPrice: { type: 'integer', minimum: 0 },
+        maxPrice: { type: 'integer', minimum: 0 },
+        sort: { type: 'string', enum: ['newest', 'price_asc', 'price_desc', 'rating'] },
+        page: { type: 'integer', minimum: 1 },
+        pageSize: { type: 'integer', minimum: 1, maximum: 50 },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'bazaar_list',
+    description:
+      'List a skill YOU authored for sale on the Bazaar at priceCt (1..100000). You can only list skills you authored, and only one ACTIVE listing per skill. Rarity is auto-derived from the skill body. Returns the created listing { id, ... }.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        skillId: { type: 'string', description: 'A skill you authored.' },
+        price: { type: 'integer', minimum: 1, maximum: 100000, description: 'Price in CT.' },
+      },
+      required: ['skillId', 'price'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'bazaar_buy',
+    description:
+      'Buy a listed skill by listingId. Debits priceCt from YOUR CT and credits the seller 85% (15% platform fee) ATOMICALLY, then adds the skill to your inventory. You CANNOT buy your OWN listing. Returns the transaction { price, platformFee, sellerPayout } + your new balance.',
+    input_schema: {
+      type: 'object',
+      properties: { listingId: { type: 'string' } },
+      required: ['listingId'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'bazaar_update',
+    description:
+      'Update the price of a Bazaar listing YOU created (listingId) to a new price (1..100000). Only the seller may update, only while ACTIVE.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        listingId: { type: 'string' },
+        price: { type: 'integer', minimum: 1, maximum: 100000 },
+      },
+      required: ['listingId', 'price'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'bazaar_delist',
+    description:
+      'Cancel (delist) a Bazaar listing YOU created (listingId). Only the seller may delist, only while ACTIVE.',
+    input_schema: {
+      type: 'object',
+      properties: { listingId: { type: 'string' } },
+      required: ['listingId'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'bazaar_review',
+    description:
+      'Leave a review on a skill you PURCHASED via a listing (listingId). rating 1..5; optional comment. You must have bought through that listing, and one review per purchase.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        listingId: { type: 'string' },
+        rating: { type: 'integer', minimum: 1, maximum: 5 },
+        comment: { type: 'string', maxLength: 500 },
+      },
+      required: ['listingId', 'rating'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'bazaar_my_listings',
+    description: 'List the Bazaar listings YOUR avatar created. Read-only.',
+    input_schema: { type: 'object', properties: {}, additionalProperties: false },
+  },
+] as const;
+
+const BAZAAR_TOOL_ROUTES: Record<string, CommerceForward | undefined> = {
+  bazaar_browse: {
+    method: 'GET',
+    build: (b) => {
+      const qs = new URLSearchParams();
+      for (const k of ['rarity', 'category', 'minPrice', 'maxPrice', 'sort', 'page', 'pageSize'] as const) {
+        if (b[k] !== undefined && b[k] !== null) qs.set(k, String(b[k]));
+      }
+      const q = qs.toString();
+      return { path: q ? `/?${q}` : '/', forwardBody: {} };
+    },
+  },
+  bazaar_list: { method: 'POST', build: (b) => ({ path: '/list', forwardBody: b }) },
+  bazaar_buy: {
+    method: 'POST',
+    build: (b) => {
+      const id = typeof b.listingId === 'string' ? b.listingId : null;
+      if (!id) return { error: 'listingId required' };
+      return { path: `/${encodeURIComponent(id)}/buy`, forwardBody: {} };
+    },
+  },
+  bazaar_update: {
+    method: 'PATCH',
+    build: (b) => {
+      const id = typeof b.listingId === 'string' ? b.listingId : null;
+      if (!id) return { error: 'listingId required' };
+      const { listingId: _omit, ...rest } = b;
+      return { path: `/${encodeURIComponent(id)}`, forwardBody: rest };
+    },
+  },
+  bazaar_delist: {
+    method: 'DELETE',
+    build: (b) => {
+      const id = typeof b.listingId === 'string' ? b.listingId : null;
+      if (!id) return { error: 'listingId required' };
+      return { path: `/${encodeURIComponent(id)}`, forwardBody: {} };
+    },
+  },
+  bazaar_review: {
+    method: 'POST',
+    build: (b) => {
+      const id = typeof b.listingId === 'string' ? b.listingId : null;
+      if (!id) return { error: 'listingId required' };
+      const { listingId: _omit, ...rest } = b;
+      return { path: `/${encodeURIComponent(id)}/review`, forwardBody: rest };
+    },
+  },
+  bazaar_my_listings: { method: 'GET', build: () => ({ path: '/my-listings', forwardBody: {} }) },
+};
+
+const AUCTION_TOOLS = [
+  {
+    name: 'auction_browse',
+    description:
+      'List auctions (peer skill/agent-config auctions, bids in CT). Read-only. Optional query: itemType (skill|agent_config), status (active|ended|cancelled|resolved, default active), sort (ending-soon|newest|price-asc|price-desc|most-bids), page, pageSize. Returns auctions + total + pagination. No payment.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        itemType: { type: 'string', enum: ['skill', 'agent_config'] },
+        status: { type: 'string', enum: ['active', 'ended', 'cancelled', 'resolved'] },
+        sort: { type: 'string', enum: ['ending-soon', 'newest', 'price-asc', 'price-desc', 'most-bids'] },
+        page: { type: 'integer', minimum: 1 },
+        pageSize: { type: 'integer', minimum: 1, maximum: 50 },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'auction_create',
+    description:
+      'Create an auction AS YOUR OWN avatar. itemType skill (requires a skillId you authored) or agent_config (snapshots your avatar config). startingBid >=1; optional buyNowPrice (must be > startingBid); durationHours 1..168 (default 24). Returns the created auction { id, ... }.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        title: { type: 'string', minLength: 1, maxLength: 200 },
+        description: { type: 'string', maxLength: 1000 },
+        itemType: { type: 'string', enum: ['skill', 'agent_config'] },
+        skillId: { type: 'string', description: 'Required for skill auctions — a skill you authored.' },
+        startingBid: { type: 'integer', minimum: 1 },
+        buyNowPrice: { type: 'integer', minimum: 1 },
+        durationHours: { type: 'integer', minimum: 1, maximum: 168 },
+      },
+      required: ['title', 'itemType', 'startingBid'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'auction_bid',
+    description:
+      'Place a bid on an auction (auctionId). amount must be >= the minimum (currentBid+1, or startingBid if no bids). Your bid amount is ESCROWED from YOUR CT; if you are later outbid you are refunded EXACTLY ONCE. You CANNOT bid on your OWN auction. Bidding within 30s of close extends the end time (snipe protection). Returns the bid + new end time + your balance.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        auctionId: { type: 'string' },
+        amount: { type: 'integer', minimum: 1, description: 'Bid in CT.' },
+      },
+      required: ['auctionId', 'amount'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'auction_buy_now',
+    description:
+      'Instantly win an auction (auctionId) at its buyNowPrice. Debits the price from YOUR CT, refunds the previous high bidder their escrow, pays the seller 85% (15% platform fee), and transfers the item to you — all ATOMICALLY. You CANNOT buy-now your OWN auction. Requires a buy-now price that still exceeds the current bid.',
+    input_schema: {
+      type: 'object',
+      properties: { auctionId: { type: 'string' } },
+      required: ['auctionId'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'auction_cancel',
+    description:
+      'Cancel an ACTIVE auction YOU created (auctionId). Only allowed when it has NO bids. Only the seller may cancel.',
+    input_schema: {
+      type: 'object',
+      properties: { auctionId: { type: 'string' } },
+      required: ['auctionId'],
+      additionalProperties: false,
+    },
+  },
+] as const;
+
+const AUCTION_TOOL_ROUTES: Record<string, CommerceForward | undefined> = {
+  auction_browse: {
+    method: 'GET',
+    build: (b) => {
+      const qs = new URLSearchParams();
+      for (const k of ['itemType', 'status', 'sort', 'page', 'pageSize'] as const) {
+        if (b[k] !== undefined && b[k] !== null) qs.set(k, String(b[k]));
+      }
+      const q = qs.toString();
+      return { path: q ? `/?${q}` : '/', forwardBody: {} };
+    },
+  },
+  auction_create: { method: 'POST', build: (b) => ({ path: '/create', forwardBody: b }) },
+  auction_bid: {
+    method: 'POST',
+    build: (b) => {
+      const id = typeof b.auctionId === 'string' ? b.auctionId : null;
+      if (!id) return { error: 'auctionId required' };
+      const { auctionId: _omit, ...rest } = b;
+      return { path: `/${encodeURIComponent(id)}/bid`, forwardBody: rest };
+    },
+  },
+  auction_buy_now: {
+    method: 'POST',
+    build: (b) => {
+      const id = typeof b.auctionId === 'string' ? b.auctionId : null;
+      if (!id) return { error: 'auctionId required' };
+      return { path: `/${encodeURIComponent(id)}/buy-now`, forwardBody: {} };
+    },
+  },
+  auction_cancel: {
+    method: 'DELETE',
+    build: (b) => {
+      const id = typeof b.auctionId === 'string' ? b.auctionId : null;
+      if (!id) return { error: 'auctionId required' };
+      return { path: `/${encodeURIComponent(id)}`, forwardBody: {} };
+    },
+  },
+};
+
+const MARKETPLACE_TOOLS = [
+  {
+    name: 'marketplace_browse',
+    description:
+      'Browse published FREE skills (price 0) in the Marketplace. Read-only. Optional query: locationId, sort (newest|upvotes|downloads), page, limit. Returns skills + pagination. No payment.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        locationId: { type: 'string' },
+        sort: { type: 'string', enum: ['newest', 'upvotes', 'downloads'] },
+        page: { type: 'integer', minimum: 1 },
+        limit: { type: 'integer', minimum: 1, maximum: 50 },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'marketplace_publish',
+    description:
+      'Publish a FREE skill (price 0) to the Marketplace AS YOUR OWN avatar. Fields: name, description, skillMd (the SKILL.md body), optional locationId. Returns the created skill { id, ... }.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', minLength: 1, maxLength: 100 },
+        description: { type: 'string', minLength: 1, maxLength: 200 },
+        skillMd: { type: 'string', minLength: 1 },
+        locationId: { type: 'string', maxLength: 50 },
+      },
+      required: ['name', 'description', 'skillMd'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'marketplace_upvote',
+    description:
+      'Toggle YOUR upvote on a published skill (skillId). One upvote per skill per avatar — calling again removes it. Returns { upvoted, upvoteCount }.',
+    input_schema: {
+      type: 'object',
+      properties: { skillId: { type: 'string' } },
+      required: ['skillId'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'marketplace_install',
+    description:
+      'Acquire + install a published skill (skillId) into YOUR avatar — merges its knowledge into your character config and embeds it via Eliza RAG. Marketplace skills are FREE (price 0): this acquires (buy) the skill if you do not already own it, then installs it. You CANNOT install your OWN skill, and a skill can only be acquired once.',
+    input_schema: {
+      type: 'object',
+      properties: { skillId: { type: 'string' } },
+      required: ['skillId'],
+      additionalProperties: false,
+    },
+  },
+] as const;
+
+const MARKETPLACE_TOOL_ROUTES: Record<string, CommerceForward | undefined> = {
+  marketplace_browse: {
+    method: 'GET',
+    build: (b) => {
+      const qs = new URLSearchParams();
+      for (const k of ['locationId', 'sort', 'page', 'limit'] as const) {
+        if (b[k] !== undefined && b[k] !== null) qs.set(k, String(b[k]));
+      }
+      const q = qs.toString();
+      return { path: q ? `/skills?${q}` : '/skills', forwardBody: {} };
+    },
+  },
+  marketplace_publish: {
+    method: 'POST',
+    // Strip any caller-supplied `clawSessionId` so an agent tool call can NEVER take
+    // the anonymous-claw publish branch — an authed agent always publishes AS ITS
+    // OWN avatar (Phase C parity), never as a spoofed browser claw.
+    build: (b) => {
+      const { clawSessionId: _omit, ...rest } = b;
+      return { path: '/publish', forwardBody: rest };
+    },
+  },
+  marketplace_upvote: {
+    method: 'POST',
+    build: (b) => {
+      const id = typeof b.skillId === 'string' ? b.skillId : null;
+      if (!id) return { error: 'skillId required' };
+      return { path: `/skills/${encodeURIComponent(id)}/upvote`, forwardBody: {} };
+    },
+  },
+  // marketplace_install is NOT a single-route forward — it is a buy→install chain
+  // (the install route requires the skill already be in inventory). Handled by a
+  // dedicated branch in the marketplace POST :tool route below, so the entry here
+  // is intentionally omitted from the simple forward map.
+};
+
+// GET /api/agent/:sessionId/bazaar/tools.json — session-gated tool bundle.
+agentGatewayRoutes.get('/:sessionId/bazaar/tools.json', async (c) => {
+  const sessionId = c.req.param('sessionId');
+  if (!(await validateLiveAgentSession(sessionId))) {
+    return c.json({ error: 'Invalid or expired agent session' }, 404);
+  }
+  return new Response(JSON.stringify(BAZAAR_TOOLS, null, 2), {
+    status: 200,
+    headers: {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Content-Disposition': 'attachment; filename="clawville-bazaar.tools.json"',
+      'Cache-Control': 'private, max-age=300',
+      'X-Skill-Filename': 'clawville-bazaar.tools.json',
+      'Access-Control-Expose-Headers': 'Content-Disposition, X-Skill-Filename',
+    },
+  });
+});
+
+// POST /api/agent/:sessionId/bazaar/:tool — forward to the Bazaar AS the agent.
+agentGatewayRoutes.post('/:sessionId/bazaar/:tool', async (c) =>
+  forwardCommerceTool(c, {
+    sessionId: c.req.param('sessionId'),
+    tool: c.req.param('tool'),
+    routes: BAZAAR_TOOL_ROUTES,
+    router: bazaarRoutes,
+    via: 'bazaar',
+  }),
+);
+
+// GET /api/agent/:sessionId/auctions/tools.json — session-gated tool bundle.
+agentGatewayRoutes.get('/:sessionId/auctions/tools.json', async (c) => {
+  const sessionId = c.req.param('sessionId');
+  if (!(await validateLiveAgentSession(sessionId))) {
+    return c.json({ error: 'Invalid or expired agent session' }, 404);
+  }
+  return new Response(JSON.stringify(AUCTION_TOOLS, null, 2), {
+    status: 200,
+    headers: {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Content-Disposition': 'attachment; filename="clawville-auctions.tools.json"',
+      'Cache-Control': 'private, max-age=300',
+      'X-Skill-Filename': 'clawville-auctions.tools.json',
+      'Access-Control-Expose-Headers': 'Content-Disposition, X-Skill-Filename',
+    },
+  });
+});
+
+// POST /api/agent/:sessionId/auctions/:tool — forward to the Auction house AS the agent.
+agentGatewayRoutes.post('/:sessionId/auctions/:tool', async (c) =>
+  forwardCommerceTool(c, {
+    sessionId: c.req.param('sessionId'),
+    tool: c.req.param('tool'),
+    routes: AUCTION_TOOL_ROUTES,
+    router: auctionRoutes,
+    via: 'auctions',
+  }),
+);
+
+// GET /api/agent/:sessionId/marketplace/tools.json — session-gated tool bundle.
+agentGatewayRoutes.get('/:sessionId/marketplace/tools.json', async (c) => {
+  const sessionId = c.req.param('sessionId');
+  if (!(await validateLiveAgentSession(sessionId))) {
+    return c.json({ error: 'Invalid or expired agent session' }, 404);
+  }
+  return new Response(JSON.stringify(MARKETPLACE_TOOLS, null, 2), {
+    status: 200,
+    headers: {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Content-Disposition': 'attachment; filename="clawville-marketplace.tools.json"',
+      'Cache-Control': 'private, max-age=300',
+      'X-Skill-Filename': 'clawville-marketplace.tools.json',
+      'Access-Control-Expose-Headers': 'Content-Disposition, X-Skill-Filename',
+    },
+  });
+});
+
+// POST /api/agent/:sessionId/marketplace/:tool — forward to the Marketplace AS the
+// agent. browse/publish/upvote go through the shared forwarder; `marketplace_install`
+// is a buy→install CHAIN (the install route requires the skill already be in
+// inventory), so it gets a dedicated branch that runs both in-process with the
+// agent-session header injected. Both legs hit the SAME audited marketplace routes
+// (requireAuthOrAgentSession), so the agent never reimplements acquisition logic.
+agentGatewayRoutes.post('/:sessionId/marketplace/:tool', async (c) => {
+  const sessionId = c.req.param('sessionId');
+  const tool = c.req.param('tool');
+
+  if (tool !== 'marketplace_install') {
+    return forwardCommerceTool(c, {
+      sessionId,
+      tool,
+      routes: MARKETPLACE_TOOL_ROUTES,
+      router: marketplaceRoutes,
+      via: 'marketplace',
+    });
+  }
+
+  // --- marketplace_install: buy (free) if needed, then install ---
+  if (!(await validateLiveAgentSession(sessionId))) {
+    return c.json({ error: 'Invalid or expired agent session' }, 404);
+  }
+
+  let body: Record<string, unknown> = {};
+  try {
+    const raw = await c.req.text();
+    const parsed = raw && raw.length > 0 ? JSON.parse(raw) : {};
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      body = parsed as Record<string, unknown>;
+    }
+  } catch {
+    return c.json({ error: 'invalid_json_body' }, 400);
+  }
+
+  const skillId = typeof body.skillId === 'string' ? body.skillId : null;
+  if (!skillId) {
+    return c.json({ error: 'invalid_request', detail: 'skillId required' }, 400);
+  }
+
+  const fwdHeaders: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'X-Clawville-Agent-Session': sessionId,
+  };
+  const fp = c.req.header('X-CV-Fingerprint');
+  if (fp) fwdHeaders['X-CV-Fingerprint'] = fp;
+  const ua = c.req.header('User-Agent');
+  if (ua) fwdHeaders['User-Agent'] = ua;
+
+  const encId = encodeURIComponent(skillId);
+
+  // Leg 1 — buy (free). Tolerate the "already purchased" 400 so a re-install of an
+  // owned skill still proceeds to install; surface every OTHER buy failure
+  // (self-buy 400, not-found 404, unbound/expired-agent 401/403) verbatim.
+  const buyRes = await marketplaceRoutes.request(`/skills/${encId}/buy`, {
+    method: 'POST',
+    headers: fwdHeaders,
+    body: '{}',
+  });
+  if (!buyRes.ok) {
+    const buyText = await buyRes.text();
+    let buyPayload: unknown;
+    try {
+      buyPayload = buyText.length > 0 ? JSON.parse(buyText) : {};
+    } catch {
+      buyPayload = { error: buyText };
+    }
+    const alreadyOwned =
+      buyRes.status === 400 &&
+      typeof buyPayload === 'object' &&
+      buyPayload !== null &&
+      /already purchased/i.test(String((buyPayload as { message?: string }).message ?? ''));
+    if (!alreadyOwned) {
+      void logEventFromContext(c, {
+        eventType: 'agent.tool.invoked',
+        agentId: npcSimulation.getOpenClawBotConfig(sessionId)?.agentId ?? sessionDigest(sessionId),
+        sessionId: sessionDigest(sessionId),
+        payload: { toolName: tool, ok: false, status: buyRes.status, via: 'marketplace', leg: 'buy' },
+      });
+      return c.json(buyPayload as Record<string, unknown>, buyRes.status as 200);
+    }
+  }
+
+  // Leg 2 — install.
+  const installRes = await marketplaceRoutes.request(`/skills/${encId}/install`, {
+    method: 'POST',
+    headers: fwdHeaders,
+    body: '{}',
+  });
+  const installText = await installRes.text();
+  let installPayload: unknown;
+  try {
+    installPayload = installText.length > 0 ? JSON.parse(installText) : {};
+  } catch {
+    installPayload = { error: installText };
+  }
+
+  void logEventFromContext(c, {
+    eventType: 'agent.tool.invoked',
+    agentId: npcSimulation.getOpenClawBotConfig(sessionId)?.agentId ?? sessionDigest(sessionId),
+    sessionId: sessionDigest(sessionId),
+    payload: { toolName: tool, ok: installRes.ok, status: installRes.status, via: 'marketplace', leg: 'install' },
+  });
+
+  return c.json(installPayload as Record<string, unknown>, installRes.status as 200);
+});
 
 // ---------------------------------------------------------------------------
 // Cove POKER (MTT) — agent-callable play surface (Rule E5 — human↔agent parity).

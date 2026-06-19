@@ -2,43 +2,80 @@ import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { eq, and, desc, inArray, isNull } from 'drizzle-orm';
 import { db, avatars, avatarInventory, publishedSkills, skillUpvotes, agents } from '@clawville/database';
-import { sessionMiddleware, requireAuth } from '../middleware/auth';
+import { sessionMiddleware } from '../middleware/auth';
+import {
+  requireAuthOrAgentSession,
+  resolveAgentSession,
+  AGENT_SESSION_HEADER,
+  type ActivityAuthContext,
+} from '../middleware/require-auth-or-agent';
 import { npcSimulation } from '../services/npc-simulation';
 import { agentOrchestrator } from '../services/agent-orchestrator';
 import { embedText } from '@clawville/agent-runtime';
-import type { AppContext, AuthenticatedContext } from '../types';
 import { z } from 'zod';
 
-export const marketplaceRoutes = new Hono<AppContext>();
+export const marketplaceRoutes = new Hono<ActivityAuthContext>();
 
-// FEATURE_GATE: skill_marketplace
-// Status: write handlers stubbed pending post-metrics-spine rework (pivoted
-//   to free agent leaderboard on 2026-04-21, see Brand Identity §3 + CLAUDE.md
-//   Priority #3 + improvements.md §7).
-// Metric to graduate: to be defined during rework.
-// Review deadline: after the architecture overhaul ships.
-marketplaceRoutes.use('*', async (c, next) => {
-  const writeMethods = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
-  if (writeMethods.has(c.req.method)) {
-    return c.json(
-      {
-        error:
-          'Skill marketplace paused pending rework. See brand identity §3 + improvements.md §7.',
-        code: 503,
-      },
-      503,
-    );
-  }
-  await next();
-});
+// Run `sessionMiddleware` group-wide so `c.get('user')` is populated for the
+// human-cookie path BEFORE `requireAuthOrAgentSession` (on buy/install) and before
+// `resolveAuthedAvatarId` (on publish/upvote) read it — `requireAuthOrAgentSession`
+// does NOT validate the cookie itself, it relies on this upstream pass (matches the
+// exchange/bounties group middleware). Reads that branch on an OPTIONAL `user` also
+// get it. Idempotent with any per-handler `sessionMiddleware`.
+marketplaceRoutes.use('*', sessionMiddleware);
 
-// Helper: get current user's avatar (throws if not found)
-async function getUserAvatar(userId: string) {
+// FEATURE_GATE: skill_marketplace — GRADUATED / UN-PAUSED 2026-06-19.
+// The founder explicitly un-paused peer skill commerce (Bazaar / Marketplace /
+// Auctions) — an OVERRIDE of the 2026-04-21 pause. The 503 write-gate is REMOVED.
+// The Marketplace is the FREE tier (price 0): publish + upvote + buy + install do
+// not move CT, so there is no settlement here — but the writes still gain agent
+// parity so a connected/hosted agent publishes/installs AS ITS OWN avatar (Rule
+// E5). Anonymous-claw publish/upvote (the `clawSessionId` path) is PRESERVED
+// unchanged. See PLAN.md §2 Phase C + GameFeatures.md. Retained as an audit marker.
+
+// Helper: get the acting avatar (full row) from the dual-identity middleware
+// (`requireAuthOrAgentSession` → `identity.avatarId`). Re-loads by THAT id, never
+// a body-supplied one — works for a Lucia human OR a connected/hosted agent.
+async function getActingAvatar(c: { get: (k: 'identity') => ActivityAuthContext['Variables']['identity'] }) {
+  const identity = c.get('identity');
   const avatar = await db.query.avatars.findFirst({
-    where: and(eq(avatars.userId, userId), eq(avatars.isActive, true)),
+    where: eq(avatars.id, identity.avatarId),
   });
   if (!avatar) throw new HTTPException(404, { message: 'No avatar found' });
   return avatar;
+}
+
+/**
+ * Resolve the acting AVATAR for the publish/upvote path, which must keep three
+ * mutually-exclusive identities working: (1) a Lucia human, (2) a connected/hosted
+ * AGENT via `X-Clawville-Agent-Session` (Phase C agent parity), and (3) an
+ * anonymous browser CLAW via `clawSessionId` (preserved). Returns the resolved
+ * `avatars.id` for (1)/(2), or `null` when neither a human cookie nor a live agent
+ * session is present (the caller then falls back to the anon-claw branch). Never
+ * trusts a body-supplied avatarId; the agent path re-validates the session through
+ * the SAME fail-closed `resolveAgentSession` gate the rest of the surface uses, so
+ * an expired/unbound agent resolves to null (→ anon-claw branch or 401), never a
+ * spoofed avatar.
+ */
+async function resolveAuthedAvatarId(c: {
+  get: (k: 'user') => { id: string } | null | undefined;
+  req: { header: (name: string) => string | undefined };
+}): Promise<string | null> {
+  const user = c.get('user');
+  if (user) {
+    const avatar = await db.query.avatars.findFirst({
+      where: and(eq(avatars.userId, user.id), eq(avatars.isActive, true)),
+    });
+    return avatar?.id ?? null;
+  }
+  const sessionId = c.req.header(AGENT_SESSION_HEADER);
+  if (sessionId) {
+    const resolved = await resolveAgentSession(sessionId);
+    // Only a session bound to an active avatar counts — an unbound/expired agent
+    // (resolved null avatarId) is NOT silently demoted to an anon claw.
+    if (resolved && resolved.avatarId) return resolved.avatarId;
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -54,16 +91,17 @@ const publishSchema = z.object({
 });
 
 marketplaceRoutes.post('/publish', sessionMiddleware, async (c) => {
-  const body = await c.req.json();
+  const body = await c.req.json().catch(() => ({}));
   const parsed = publishSchema.safeParse(body);
   if (!parsed.success) {
     throw new HTTPException(400, { message: 'Invalid request: ' + parsed.error.issues.map((i) => i.message).join(', ') });
   }
 
   const { name, description, skillMd, locationId, clawSessionId } = parsed.data;
-  const user = c.get('user');
 
-  // Anonymous claw publishing
+  // Anonymous claw publishing — PRESERVED unchanged (Phase C). A browser claw
+  // explicitly passes its `clawSessionId`; it has no persistent avatar, so it
+  // publishes under its claw name/species with `authorAvatarId = null`.
   if (clawSessionId) {
     const claw = npcSimulation.getBrowserClaw(clawSessionId);
     if (!claw) {
@@ -102,12 +140,18 @@ marketplaceRoutes.post('/publish', sessionMiddleware, async (c) => {
     });
   }
 
-  // Authenticated avatar publishing
-  if (!user) {
+  // Authenticated-avatar publishing — Lucia human OR connected/hosted agent
+  // (Phase C agent parity). The avatar binds to `identity.avatarId` via the dual
+  // resolver; an unbound/expired agent (and a no-cookie request) gets a clean 401,
+  // never a guest/anon demotion.
+  const authedAvatarId = await resolveAuthedAvatarId(c);
+  if (!authedAvatarId) {
     throw new HTTPException(401, { message: 'Authentication or claw session required' });
   }
-
-  const avatar = await getUserAvatar(user.id);
+  const avatar = await db.query.avatars.findFirst({ where: eq(avatars.id, authedAvatarId) });
+  if (!avatar) {
+    throw new HTTPException(404, { message: 'No avatar found' });
+  }
 
   const [skill] = await db
     .insert(publishedSkills)
@@ -307,7 +351,6 @@ marketplaceRoutes.get('/skills/:id', sessionMiddleware, async (c) => {
 marketplaceRoutes.post('/skills/:id/upvote', sessionMiddleware, async (c) => {
   const skillId = c.req.param('id');
   const body = await c.req.json().catch(() => ({}));
-  const user = c.get('user');
 
   const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   if (!uuidRegex.test(skillId)) {
@@ -324,14 +367,13 @@ marketplaceRoutes.post('/skills/:id/upvote', sessionMiddleware, async (c) => {
     throw new HTTPException(404, { message: 'Skill not found' });
   }
 
-  // Determine voter identity
-  let avatarId: string | null = null;
+  // Determine voter identity — Lucia human OR connected/hosted agent (Phase C
+  // parity), else anonymous claw (preserved). The dual resolver binds to the
+  // real `avatars.id`; a body-supplied `clawSessionId` only counts when no
+  // authed avatar resolves (so an agent can't masquerade as a claw and vice
+  // versa). One vote per (skill, avatarId) OR (skill, clawSessionId) still holds.
+  const avatarId: string | null = await resolveAuthedAvatarId(c);
   const clawSessionId: string | undefined = body.clawSessionId;
-
-  if (user) {
-    const avatar = await db.query.avatars.findFirst({ where: and(eq(avatars.userId, user.id), eq(avatars.isActive, true)) });
-    if (avatar) avatarId = avatar.id;
-  }
 
   if (!avatarId && !clawSessionId) {
     throw new HTTPException(401, { message: 'Authentication or claw session required to vote' });
@@ -385,9 +427,8 @@ marketplaceRoutes.post('/skills/:id/upvote', sessionMiddleware, async (c) => {
 // ---------------------------------------------------------------------------
 
 // POST /skills/:id/buy — purchase a skill (auth required)
-marketplaceRoutes.post('/skills/:id/buy', requireAuth, async (c) => {
-  const user = c.get('user') as { id: string };
-  const avatar = await getUserAvatar(user.id);
+marketplaceRoutes.post('/skills/:id/buy', requireAuthOrAgentSession, async (c) => {
+  const avatar = await getActingAvatar(c);
   const skillId = c.req.param('id');
 
   const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -441,9 +482,8 @@ marketplaceRoutes.post('/skills/:id/buy', requireAuth, async (c) => {
 });
 
 // POST /skills/:id/install — install a purchased skill (auth required)
-marketplaceRoutes.post('/skills/:id/install', requireAuth, async (c) => {
-  const user = c.get('user') as { id: string };
-  const avatar = await getUserAvatar(user.id);
+marketplaceRoutes.post('/skills/:id/install', requireAuthOrAgentSession, async (c) => {
+  const avatar = await getActingAvatar(c);
   const skillId = c.req.param('id');
 
   const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -535,7 +575,7 @@ marketplaceRoutes.post('/skills/:id/install', requireAuth, async (c) => {
       try {
         const runtime = await agentOrchestrator.ensureAgentRuntime(
           avatar.platformAgentId,
-          user.id,
+          avatar.userId,
         );
         if (runtime) {
           const { v5: uuidv5 } = await import('uuid');
@@ -595,9 +635,8 @@ marketplaceRoutes.post('/skills/:id/install', requireAuth, async (c) => {
 });
 
 // GET /my-skills — skills published by current user's avatar (auth required)
-marketplaceRoutes.get('/my-skills', requireAuth, async (c) => {
-  const user = c.get('user') as { id: string };
-  const avatar = await getUserAvatar(user.id);
+marketplaceRoutes.get('/my-skills', requireAuthOrAgentSession, async (c) => {
+  const avatar = await getActingAvatar(c);
 
   const skills = await db
     .select()

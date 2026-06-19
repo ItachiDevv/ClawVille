@@ -1,8 +1,11 @@
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { z } from 'zod';
-import type { AppContext } from '../types';
-import { sessionMiddleware, requireAuth } from '../middleware/auth';
+import { sessionMiddleware } from '../middleware/auth';
+import {
+  requireAuthOrAgentSession,
+  type ActivityAuthContext,
+} from '../middleware/require-auth-or-agent';
 import { creditClawTokens, debitClawTokens } from '../services/claw-token-ledger';
 import {
   db,
@@ -16,31 +19,25 @@ import {
 import { eq, and, desc, asc, sql, ne } from 'drizzle-orm';
 import { gte, lte, isNotNull, count, avg } from 'drizzle-orm';
 
-export const bazaarRoutes = new Hono<AppContext>();
+// Agent parity (Rule E5, Phase C). Every WRITE binds to `identity.avatarId` from
+// `requireAuthOrAgentSession` — the SAME avatar for a Lucia human AND a
+// connected/hosted agent (`X-Clawville-Agent-Session` → its bound avatar). The
+// route group runs `sessionMiddleware` FIRST so the middleware can read
+// `c.get('user')` for the human path; the agent path reads the session header.
+// Seller-only / self-buy / single-active-listing / purchased-before-review guards
+// are unchanged — they were already keyed on the acting avatar id, which is now
+// the resolved `identity.avatarId`.
+export const bazaarRoutes = new Hono<ActivityAuthContext>();
 bazaarRoutes.use('*', sessionMiddleware);
 
-// FEATURE_GATE: skill_marketplace
-// Status: write handlers stubbed pending post-metrics-spine rework (pivoted
-//   to free agent leaderboard on 2026-04-21, see Brand Identity §3 + CLAUDE.md
-//   Priority #3 + improvements.md §7).
-// Metric to graduate: to be defined during rework.
-// Review deadline: after the architecture overhaul ships.
-// Current behaviour: GET reads pass through (returns empty-ish listings);
-//   POST/PUT/PATCH/DELETE return 503 with a rework notice.
-bazaarRoutes.use('*', async (c, next) => {
-  const writeMethods = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
-  if (writeMethods.has(c.req.method)) {
-    return c.json(
-      {
-        error:
-          'Skill marketplace paused pending rework. See brand identity §3 + improvements.md §7.',
-        code: 503,
-      },
-      503,
-    );
-  }
-  await next();
-});
+// FEATURE_GATE: skill_marketplace — GRADUATED / UN-PAUSED 2026-06-19.
+// The founder explicitly un-paused peer skill commerce (Bazaar / Marketplace /
+// Auctions) — an OVERRIDE of the 2026-04-21 pause. The 503 write-gate that
+// returned `Skill marketplace paused pending rework` is REMOVED; the bazaar buy
+// path settles in real CT through `claw-token-ledger` (atomic debit-buyer /
+// credit-seller, 15% platform fee) with full human↔agent parity. See PLAN.md
+// §2 Phase C + the GameFeatures.md "peer skill commerce LIVE" section. The gate
+// block is retained as an audit marker of the graduation, not an active stub.
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -56,9 +53,18 @@ function calculateRarity(
   return 'common';
 }
 
-async function getUserAvatar(userId: string) {
+/**
+ * Resolve the acting avatar (full row) from the dual-identity middleware.
+ * `requireAuthOrAgentSession` already proved a live human/agent session and
+ * resolved a real, active `identity.avatarId` (it 403s an unbound/expired agent
+ * and a user with no active avatar). We re-load the row by THAT id (never a
+ * body-supplied id) so we have `clawTokens`/`name`/`id` for the balance checks +
+ * settlement. The id comes from the middleware, not the request body — unspoofable.
+ */
+async function getActingAvatar(c: { get: (k: 'identity') => ActivityAuthContext['Variables']['identity'] }) {
+  const identity = c.get('identity');
   const avatar = await db.query.avatars.findFirst({
-    where: and(eq(avatars.userId, userId), eq(avatars.isActive, true)),
+    where: eq(avatars.id, identity.avatarId),
   });
   if (!avatar) throw new HTTPException(404, { message: 'No active agent found' });
   return avatar;
@@ -246,9 +252,8 @@ bazaarRoutes.get('/featured', async (c) => {
 // ---------------------------------------------------------------------------
 // 7. GET /my-listings — Seller's own listings (auth required)
 // ---------------------------------------------------------------------------
-bazaarRoutes.get('/my-listings', requireAuth, async (c) => {
-  const user = c.get('user') as { id: string };
-  const avatar = await getUserAvatar(user.id);
+bazaarRoutes.get('/my-listings', requireAuthOrAgentSession, async (c) => {
+  const avatar = await getActingAvatar(c);
 
   const rows = await db
     .select({
@@ -291,9 +296,8 @@ bazaarRoutes.get('/my-listings', requireAuth, async (c) => {
 // ---------------------------------------------------------------------------
 // 9. GET /my-purchases — Buyer's purchase history (auth required)
 // ---------------------------------------------------------------------------
-bazaarRoutes.get('/my-purchases', requireAuth, async (c) => {
-  const user = c.get('user') as { id: string };
-  const avatar = await getUserAvatar(user.id);
+bazaarRoutes.get('/my-purchases', requireAuthOrAgentSession, async (c) => {
+  const avatar = await getActingAvatar(c);
 
   const rows = await db
     .select({
@@ -506,9 +510,8 @@ const listSchema = z.object({
   price: z.number().int().min(1).max(100000),
 });
 
-bazaarRoutes.post('/list', requireAuth, async (c) => {
-  const user = c.get('user') as { id: string };
-  const body = await c.req.json();
+bazaarRoutes.post('/list', requireAuthOrAgentSession, async (c) => {
+  const body = await c.req.json().catch(() => ({}));
   const parsed = listSchema.safeParse(body);
   if (!parsed.success) {
     throw new HTTPException(400, {
@@ -519,7 +522,7 @@ bazaarRoutes.post('/list', requireAuth, async (c) => {
   }
 
   const { skillId, price } = parsed.data;
-  const avatar = await getUserAvatar(user.id);
+  const avatar = await getActingAvatar(c);
 
   // Verify the seller owns this skill
   const [skill] = await db
@@ -605,12 +608,11 @@ const updatePriceSchema = z.object({
   price: z.number().int().min(1).max(100000),
 });
 
-bazaarRoutes.patch('/:id', requireAuth, async (c) => {
-  const user = c.get('user') as { id: string };
+bazaarRoutes.patch('/:id', requireAuthOrAgentSession, async (c) => {
   const id = c.req.param('id');
   validateUuid(id, 'Listing');
 
-  const body = await c.req.json();
+  const body = await c.req.json().catch(() => ({}));
   const parsed = updatePriceSchema.safeParse(body);
   if (!parsed.success) {
     throw new HTTPException(400, {
@@ -620,7 +622,7 @@ bazaarRoutes.patch('/:id', requireAuth, async (c) => {
     });
   }
 
-  const avatar = await getUserAvatar(user.id);
+  const avatar = await getActingAvatar(c);
 
   const [listing] = await db
     .select()
@@ -663,12 +665,11 @@ bazaarRoutes.patch('/:id', requireAuth, async (c) => {
 // ---------------------------------------------------------------------------
 // 6. DELETE /:id — Cancel listing (auth required, seller only, active only)
 // ---------------------------------------------------------------------------
-bazaarRoutes.delete('/:id', requireAuth, async (c) => {
-  const user = c.get('user') as { id: string };
+bazaarRoutes.delete('/:id', requireAuthOrAgentSession, async (c) => {
   const id = c.req.param('id');
   validateUuid(id, 'Listing');
 
-  const avatar = await getUserAvatar(user.id);
+  const avatar = await getActingAvatar(c);
 
   const [listing] = await db
     .select()
@@ -703,12 +704,11 @@ bazaarRoutes.delete('/:id', requireAuth, async (c) => {
 // ---------------------------------------------------------------------------
 // 8. POST /:id/buy — Purchase a listed skill (auth required)
 // ---------------------------------------------------------------------------
-bazaarRoutes.post('/:id/buy', requireAuth, async (c) => {
-  const user = c.get('user') as { id: string };
+bazaarRoutes.post('/:id/buy', requireAuthOrAgentSession, async (c) => {
   const id = c.req.param('id');
   validateUuid(id, 'Listing');
 
-  const buyerAvatar = await getUserAvatar(user.id);
+  const buyerAvatar = await getActingAvatar(c);
 
   // Entire buy flow runs in a single DB transaction to prevent double-buy
   // races and ensure debit/credit atomicity.
@@ -818,12 +818,11 @@ const reviewSchema = z.object({
   comment: z.string().max(500).optional(),
 });
 
-bazaarRoutes.post('/:id/review', requireAuth, async (c) => {
-  const user = c.get('user') as { id: string };
+bazaarRoutes.post('/:id/review', requireAuthOrAgentSession, async (c) => {
   const id = c.req.param('id'); // listing ID
   validateUuid(id, 'Listing');
 
-  const body = await c.req.json();
+  const body = await c.req.json().catch(() => ({}));
   const parsed = reviewSchema.safeParse(body);
   if (!parsed.success) {
     throw new HTTPException(400, {
@@ -833,7 +832,7 @@ bazaarRoutes.post('/:id/review', requireAuth, async (c) => {
     });
   }
 
-  const avatar = await getUserAvatar(user.id);
+  const avatar = await getActingAvatar(c);
 
   // Verify the user actually purchased via this listing
   const [transaction] = await db
