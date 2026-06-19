@@ -31,6 +31,8 @@ import AgentConnectModal from '@/components/game/agent-connect-modal';
 import EmailVerifyBanner from '@/components/game/email-verify-banner';
 import GameLanguageControl from '@/components/game/game-language-control';
 import HatcherLaunchHandler from '@/components/game/hatcher-launch-handler';
+import WarpOverlay from '@/components/game/warp-overlay';
+import SpawnOnLoad from '@/components/game/spawn-on-load';
 
 const BuildingPortalModal = dynamic(
   () => import('@/components/game/building-portal-modal'),
@@ -49,6 +51,7 @@ const QuestBoardModal = dynamic(() => import('@/components/game/quest-board-moda
 const BountyBoardModal = dynamic(() => import('@/components/game/bounty-board-modal'), { ssr: false });
 const ExchangeModal = dynamic(() => import('@/components/game/exchange-modal'), { ssr: false });
 const LeaderboardModal = dynamic(() => import('@/components/game/leaderboard-modal'), { ssr: false });
+const WorldMapModal = dynamic(() => import('@/components/game/world-map-modal'), { ssr: false });
 import BuildingTooltip from '@/components/game/building-tooltip';
 import DailyLoginModal from '@/components/game/daily-login-modal';
 import QuestTracker from '@/components/game/quest-tracker';
@@ -508,6 +511,9 @@ export default function GamePage() {
       <BountyBoardModal />
       <ExchangeModal />
       <LeaderboardModal />
+      {/* World Map (fast-travel WARP surface). Opened from the minimap "⤢ Map"
+          button via openWorldMap(); gates internally on worldMapOpen. */}
+      <WorldMapModal />
 
       <SidebarMenu />
       <Minimap />
@@ -616,6 +622,16 @@ export default function GamePage() {
 
       {/* Research thought log — visible for all users */}
       <ThoughtLog />
+
+      {/* Fast-travel warp flash — gates internally on warpTarget (set by the
+          World Map's Quick Travel / map click via warpTo, player-mode only).
+          DOM/CSS only (Iris-Xe-safe), performs the teleport at its midpoint. */}
+      <WarpOverlay />
+
+      {/* Home-vs-town spawn placement — renders nothing. Repositions a logged-in
+          player to their owned home parcel on load when spawnPreference==='home'
+          (one-shot, race-safe — never yanks a moving player). */}
+      <SpawnOnLoad />
 
       {/* SceneTransition overlay — handles fade-to-black for cove walk-in
           (and future building entries). Sits at z-index 9999 above all HUD
