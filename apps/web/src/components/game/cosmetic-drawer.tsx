@@ -1,28 +1,35 @@
 'use client';
 
 /**
- * Cosmetic drawer — Owned + Shop tabs.
+ * Cosmetic drawer — "The Wardrobe".
  *
- * Phase 1 (book shop) was per-building. Cosmetics are global, so they ship
- * inside this drawer instead of the per-building shop overlay.
+ * Aesthetic identity
+ * ------------------
+ * The cosmetics shop is a first-party CT wardrobe (skins, hats, auras,
+ * boards, emotes …). It now wears the same @/components/rpg toolkit chrome
+ * as the Exchange / Bazaar / Bounty board so the polish bar matches the rest
+ * of the Gameify surface — rune-framed modal, rarity-tiered cosmetic tiles
+ * (RuneFrame), CT token badge, themed empty states.
  *
- * Layout:
- *   ┌────────────────────────────────────────────────┐
- *   │  Cosmetics                              [×]    │
- *   │  ─────────────────────────────────────         │
- *   │  [ Owned ] [ Shop ]              CT: 240       │
- *   │  ─────────────────────────────────────         │
- *   │  [All] [Hats] [Glasses] [Auras] [Boards]       │
- *   │  ─────────────────────────────────────         │
- *   │  ┌──────┐  ┌──────┐  ┌──────┐                  │
- *   │  │ icon │  │ icon │  │ icon │   ...            │
- *   │  │ name │  │ name │  │ name │                  │
- *   │  │[buy] │  │[eqp] │  │[own] │                  │
- *   │  └──────┘  └──────┘  └──────┘                  │
- *   └────────────────────────────────────────────────┘
+ * Cyan/wardrobe palette: the modal sits on the `rare` (cyan) tier so the
+ * chrome reads "cosmetics / loadout" rather than "marketplace" (amber) or
+ * "quest" (purple).
+ *
+ * Two tabs:
+ *   - OWNED — the avatar's owned skins, each toggling Equip / Equipped.
+ *   - SHOP  — the purchasable catalog, each Buy / Owned.
+ *
+ * Category filter chips scope both tabs (all / hat / glasses / emote / aura /
+ * board / particle / palette / outfit). The drawer opens to SHOP when the
+ * player owns nothing (smart default), otherwise OWNED.
+ *
+ * All data flows through @/hooks/use-cosmetics — this file is presentation
+ * + tab/filter orchestration only. The public API
+ * (`<CosmeticDrawer open onClose />`) is unchanged so the page.tsx mount and
+ * the `setCosmeticDrawerOpen` store trigger keep working untouched.
  */
 
-import { useMemo, useState } from 'react';
+import { useMemo, useState, type ReactNode } from 'react';
 import {
   useOwnedCosmetics,
   useEquipCosmetic,
@@ -32,6 +39,17 @@ import {
   type CosmeticCatalogItem,
 } from '@/hooks/use-cosmetics';
 import { useAvatar } from '@/hooks/use-avatar';
+import {
+  RpgModal,
+  RpgButton,
+  RpgTooltip,
+  RuneSpinner,
+  RuneFrame,
+  StatusChip,
+  type RarityId,
+} from '@/components/rpg';
+
+// ─── Categories ─────────────────────────────────────────────────────────────
 
 const CATEGORY_FILTERS: { id: string; label: string; icon: string }[] = [
   { id: 'all', label: 'All', icon: '✨' },
@@ -49,123 +67,123 @@ const CATEGORY_ICONS: Record<string, string> = Object.fromEntries(
   CATEGORY_FILTERS.map((c) => [c.id, c.icon]),
 );
 
-const RARITY_BORDER: Record<string, string> = {
-  common: 'border-white/15',
-  rare: 'border-cyan-300/50',
-  epic: 'border-fuchsia-300/60',
-  limited: 'border-amber-300/70',
-};
-
-interface CosmeticDrawerProps {
-  open: boolean;
-  onClose: () => void;
+/**
+ * Cosmetic rarity strings → the RPG toolkit's RarityId tiers.
+ *   common  → common  (grey)
+ *   rare    → rare    (blue)
+ *   epic    → epic    (purple)
+ *   limited → legendary (amber, pulses)
+ * Anything unmapped falls back to common (getRarity already guards, but we
+ * normalise here so the chip label + frame stay consistent).
+ */
+function cosmeticRarity(raw: string): RarityId {
+  switch (raw) {
+    case 'rare':
+      return 'rare';
+    case 'epic':
+      return 'epic';
+    case 'limited':
+      return 'legendary';
+    case 'common':
+    default:
+      return 'common';
+  }
 }
 
-type Tab = 'owned' | 'shop';
+// ─── Header CT pill (mirrors Exchange CtPill, labelled for the CT wardrobe) ──
 
-export default function CosmeticDrawer({ open, onClose }: CosmeticDrawerProps) {
-  const { data: ownedData } = useOwnedCosmetics();
-  const ownedCount = ownedData?.owned.length ?? 0;
-  // Auto-default to the Shop tab when the player has nothing equipped /
-  // owned yet — the previous default of 'owned' surfaced an empty state
-  // ("no cosmetics — open the Shop tab") which led to user-reported
-  // confusion about where to actually buy items 2026-05-18. Once they
-  // own at least one cosmetic the Owned tab makes sense as the entry.
-  const [tab, setTab] = useState<Tab>(ownedCount > 0 ? 'owned' : 'shop');
-  const [filter, setFilter] = useState<string>('all');
-  const { data: avatar } = useAvatar();
-  const tokens = avatar?.clawTokens ?? 0;
-
-  if (!open) return null;
-
+function CtPill({ tokens }: { tokens: number }) {
   return (
-    <div
-      className="fixed inset-0 z-[200] flex items-end justify-center bg-black/50 backdrop-blur-sm md:items-center"
-      onClick={onClose}
-    >
-      <div
-        className="claw-panel relative w-full max-w-3xl rounded-t-2xl border border-cyan-400/25 bg-[#061520]/95 p-6 shadow-[0_-12px_40px_rgba(0,229,255,0.18)] md:rounded-2xl"
-        onClick={(e) => e.stopPropagation()}
+    <RpgTooltip content="Your ClawToken balance. Cosmetics are priced in CT — earn more by playing.">
+      <span
+        style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: 6,
+          padding: '6px 14px',
+          borderRadius: 999,
+          background:
+            'linear-gradient(180deg, rgba(56, 189, 248, 0.10) 0%, rgba(56, 189, 248, 0.04) 100%)',
+          border: '1px solid rgba(56, 189, 248, 0.4)',
+          color: '#7dd3fc',
+          fontFamily: 'var(--font-orbitron), sans-serif',
+          fontSize: 12,
+          fontWeight: 700,
+          letterSpacing: '0.05em',
+          textShadow: '0 0 8px rgba(56, 189, 248, 0.4)',
+        }}
       >
-        <header className="flex items-baseline justify-between">
-          <h2 className="font-clawville text-xl text-white">Cosmetics</h2>
-          <div className="flex items-center gap-3">
-            <span className="flex items-center gap-1 rounded-full border border-cyan-400/30 bg-cyan-500/20 px-2 py-0.5 font-mono text-xs font-bold text-cyan-200">
-              <span className="text-sm">&#x1FA99;</span>
-              {tokens}
-            </span>
-            <button
-              type="button"
-              onClick={onClose}
-              aria-label="Close cosmetics drawer"
-              className="rounded-full px-2 py-1 font-mono text-sm text-white/60 hover:text-white"
-            >
-              ×
-            </button>
-          </div>
-        </header>
-
-        {/* Tabs */}
-        <div className="mt-4 flex gap-2 border-b border-cyan-400/20 pb-3">
-          <TabButton active={tab === 'owned'} onClick={() => setTab('owned')} label="Owned" icon="🎒" />
-          <TabButton active={tab === 'shop'} onClick={() => setTab('shop')} label="Shop" icon="🛒" />
-        </div>
-
-        {/* Category chips */}
-        <div className="mt-4 flex flex-wrap gap-2">
-          {CATEGORY_FILTERS.map((f) => {
-            const active = f.id === filter;
-            return (
-              <button
-                key={f.id}
-                type="button"
-                onClick={() => setFilter(f.id)}
-                className={`inline-flex h-7 items-center gap-1.5 rounded-full border px-3 font-mono text-[10px] uppercase tracking-[0.18em] transition-all ${
-                  active
-                    ? 'border-cyan-300/60 bg-cyan-500/20 text-cyan-100'
-                    : 'border-cyan-400/15 bg-black/30 text-cyan-200/50 hover:text-cyan-100'
-                }`}
-              >
-                <span aria-hidden>{f.icon}</span>
-                {f.label}
-              </button>
-            );
-          })}
-        </div>
-
-        {/* Body */}
-        <div className="mt-5 max-h-[55vh] overflow-y-auto">
-          {tab === 'owned' ? (
-            <OwnedTab filter={filter} />
-          ) : (
-            <ShopTab filter={filter} tokens={tokens} />
-          )}
-        </div>
-      </div>
-    </div>
+        <span style={{ fontSize: 13 }} aria-hidden>
+          🪙
+        </span>
+        {tokens} CT
+      </span>
+    </RpgTooltip>
   );
 }
 
+// ─── Header sigil (wardrobe / loadout crest) ────────────────────────────────
+
+function WardrobeSigil() {
+  return (
+    <span
+      aria-hidden
+      style={{
+        fontFamily: 'var(--font-orbitron), sans-serif',
+        fontSize: 22,
+        background:
+          'linear-gradient(135deg, #a5f3fc 0%, #38bdf8 45%, #818cf8 100%)',
+        WebkitBackgroundClip: 'text',
+        WebkitTextFillColor: 'transparent',
+        backgroundClip: 'text',
+        filter: 'drop-shadow(0 0 6px rgba(125, 211, 252, 0.4))',
+      }}
+    >
+      ✦
+    </span>
+  );
+}
+
+// ─── Thumbnail (PNG with emoji fallback on 404) ─────────────────────────────
+
 /**
  * Square thumbnail slot used by both OwnedCard and ShopCard. Renders the
- * SKU's pre-baked PNG when one exists, falls back to the category emoji
- * if no thumbnail is set OR the image 404s at load time (handled via the
- * onError handler + state). Image is lazy-loaded and decoded async so
- * the drawer doesn't block its initial paint on N preview fetches.
+ * SKU's pre-baked PNG when one exists, falls back to the category emoji if
+ * no thumbnail is set OR the image 404s at load time (onError → state).
+ * Image is lazy-loaded + decoded async so the drawer doesn't block its
+ * initial paint on N preview fetches.
  */
 function CosmeticThumbnail({
   thumbnailUrl,
   fallbackIcon,
   displayName,
+  rarity,
 }: {
   thumbnailUrl: string | null;
   fallbackIcon: string;
   displayName: string;
+  rarity: RarityId;
 }) {
   const [errored, setErrored] = useState(false);
   const showImage = !!thumbnailUrl && !errored;
   return (
-    <div className="flex aspect-square items-center justify-center overflow-hidden rounded-lg bg-black/30 text-3xl">
+    <div
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        aspectRatio: '1 / 1',
+        width: '100%',
+        overflow: 'hidden',
+        borderRadius: 10,
+        fontSize: 36,
+        background:
+          'radial-gradient(circle at 50% 35%, rgba(56, 189, 248, 0.08) 0%, rgba(5, 16, 30, 0.85) 70%)',
+        border: '1px solid rgba(56, 189, 248, 0.12)',
+        boxShadow: 'inset 0 0 24px rgba(0, 0, 0, 0.45)',
+      }}
+      data-rarity={rarity}
+    >
       {showImage ? (
         // eslint-disable-next-line @next/next/no-img-element
         <img
@@ -174,7 +192,7 @@ function CosmeticThumbnail({
           loading="lazy"
           decoding="async"
           onError={() => setErrored(true)}
-          className="h-full w-full object-contain"
+          style={{ height: '100%', width: '100%', objectFit: 'contain' }}
         />
       ) : (
         <span aria-hidden>{fallbackIcon}</span>
@@ -183,38 +201,255 @@ function CosmeticThumbnail({
   );
 }
 
-function TabButton({
-  active,
-  onClick,
-  label,
-  icon,
+// ─── Tab strip (mirrors Exchange TabStrip) ──────────────────────────────────
+
+type Tab = 'owned' | 'shop';
+
+function TabStrip({
+  tab,
+  onChange,
+  ownedCount,
 }: {
-  active: boolean;
-  onClick: () => void;
-  label: string;
-  icon: string;
+  tab: Tab;
+  onChange: (t: Tab) => void;
+  ownedCount: number;
 }) {
+  const tabs: { key: Tab; label: string; icon: string }[] = [
+    { key: 'owned', label: ownedCount > 0 ? `Owned · ${ownedCount}` : 'Owned', icon: '🎒' },
+    { key: 'shop', label: 'Shop', icon: '🛒' },
+  ];
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 font-mono text-[11px] uppercase tracking-[0.18em] transition-all ${
-        active
-          ? 'bg-cyan-500/25 text-cyan-100'
-          : 'text-cyan-200/50 hover:text-cyan-100'
-      }`}
+    <div
+      style={{
+        display: 'flex',
+        gap: 4,
+        padding: '10px 22px 0',
+        borderBottom: '1px solid rgba(56, 189, 248, 0.15)',
+      }}
     >
-      <span aria-hidden>{icon}</span>
-      {label}
-    </button>
+      {tabs.map((t) => {
+        const isActive = tab === t.key;
+        return (
+          <button
+            key={t.key}
+            type="button"
+            onClick={() => onChange(t.key)}
+            style={{
+              position: 'relative',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 6,
+              padding: '10px 18px',
+              background: 'transparent',
+              border: 'none',
+              fontFamily: 'var(--font-orbitron), sans-serif',
+              fontSize: 11,
+              fontWeight: 700,
+              textTransform: 'uppercase',
+              letterSpacing: '0.12em',
+              color: isActive ? '#7dd3fc' : '#64748b',
+              cursor: 'pointer',
+              transition: 'color 180ms ease',
+            }}
+          >
+            <span aria-hidden style={{ fontSize: 13 }}>
+              {t.icon}
+            </span>
+            {t.label}
+            <span
+              aria-hidden
+              style={{
+                position: 'absolute',
+                left: 12,
+                right: 12,
+                bottom: -1,
+                height: 2,
+                background: isActive
+                  ? 'linear-gradient(90deg, transparent 0%, #38bdf8 50%, transparent 100%)'
+                  : 'transparent',
+                boxShadow: isActive ? '0 0 10px rgba(56, 189, 248, 0.55)' : 'none',
+                transition: 'background 200ms ease',
+              }}
+            />
+          </button>
+        );
+      })}
+    </div>
   );
 }
 
-// ---------------------------------------------------------------------------
-// Owned tab
-// ---------------------------------------------------------------------------
+// ─── Category chip strip (mirrors Exchange CategoryChips) ────────────────────
 
-function OwnedTab({ filter }: { filter: string }) {
+function CategoryChips({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  return (
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+      {CATEGORY_FILTERS.map((c) => {
+        const active = c.id === value;
+        return (
+          <button
+            key={c.id}
+            type="button"
+            onClick={() => onChange(c.id)}
+            style={{
+              padding: '5px 12px',
+              borderRadius: 999,
+              background: active
+                ? 'rgba(56, 189, 248, 0.15)'
+                : 'rgba(10, 22, 40, 0.55)',
+              border: `1px solid ${active ? 'rgba(56, 189, 248, 0.55)' : 'rgba(148, 163, 184, 0.2)'}`,
+              color: active ? '#7dd3fc' : '#94a3b8',
+              fontFamily:
+                'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+              fontSize: 10,
+              fontWeight: 700,
+              textTransform: 'uppercase',
+              letterSpacing: '0.14em',
+              cursor: 'pointer',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 6,
+              transition: 'all 180ms ease',
+            }}
+          >
+            <span style={{ fontSize: 11, opacity: active ? 1 : 0.6 }} aria-hidden>
+              {c.icon}
+            </span>
+            {c.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// ─── Empty / loading / error states (mirror Exchange EmptyState) ────────────
+
+function EmptyState({
+  glyph,
+  title,
+  body,
+  cta,
+}: {
+  glyph: string;
+  title: string;
+  body: string;
+  cta?: ReactNode;
+}) {
+  return (
+    <div
+      style={{
+        gridColumn: '1 / -1',
+        textAlign: 'center',
+        padding: '50px 24px 60px',
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        gap: 10,
+      }}
+    >
+      <div
+        aria-hidden
+        style={{
+          fontSize: 38,
+          opacity: 0.75,
+          filter: 'drop-shadow(0 0 10px rgba(125, 211, 252, 0.4))',
+          marginBottom: 4,
+        }}
+      >
+        {glyph}
+      </div>
+      <h3
+        style={{
+          fontFamily: 'var(--font-orbitron), sans-serif',
+          fontSize: 14,
+          color: '#e2e8f0',
+          margin: 0,
+          letterSpacing: '0.08em',
+        }}
+      >
+        {title}
+      </h3>
+      <p
+        style={{
+          maxWidth: 380,
+          margin: 0,
+          fontSize: 12,
+          color: '#94a3b8',
+          lineHeight: 1.6,
+        }}
+      >
+        {body}
+      </p>
+      {cta && <div style={{ marginTop: 12 }}>{cta}</div>}
+    </div>
+  );
+}
+
+function LoadingState({ label }: { label: string }) {
+  return (
+    <div
+      style={{
+        gridColumn: '1 / -1',
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 12,
+        padding: '70px 0',
+      }}
+    >
+      <RuneSpinner size={48} tier="rare" />
+      <span
+        style={{
+          fontSize: 10,
+          color: '#64748b',
+          textTransform: 'uppercase',
+          letterSpacing: '0.24em',
+        }}
+      >
+        {label}
+      </span>
+    </div>
+  );
+}
+
+function ErrorState({ message }: { message: string }) {
+  return (
+    <div style={{ gridColumn: '1 / -1' }}>
+      <EmptyState
+        glyph="⚠"
+        title="Couldn't load the wardrobe"
+        body={message || 'Something went wrong fetching cosmetics. Try reopening the drawer.'}
+      />
+    </div>
+  );
+}
+
+// ─── Grid wrapper — responsive 2/3/4 cols, reflows via auto-fill ────────────
+
+const GRID_STYLE: React.CSSProperties = {
+  display: 'grid',
+  gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))',
+  gap: 14,
+  padding: '18px 22px 24px',
+  minHeight: 260,
+};
+
+// ─── Owned tab ──────────────────────────────────────────────────────────────
+
+function OwnedTab({
+  filter,
+  onGoShop,
+}: {
+  filter: string;
+  onGoShop: () => void;
+}) {
   const { data, isLoading, isError, error } = useOwnedCosmetics();
   const equip = useEquipCosmetic();
 
@@ -225,21 +460,52 @@ function OwnedTab({ filter }: { filter: string }) {
   }, [data, filter]);
 
   if (isLoading) {
-    return <p className="py-12 text-center font-mono text-xs text-white/40">Loading cosmetics…</p>;
+    return (
+      <div style={GRID_STYLE}>
+        <LoadingState label="Opening the wardrobe" />
+      </div>
+    );
   }
   if (isError) {
     return (
-      <p className="py-12 text-center font-mono text-xs text-red-300/70">
-        Failed to load cosmetics: {(error as Error)?.message}
-      </p>
+      <div style={GRID_STYLE}>
+        <ErrorState message={(error as Error)?.message ?? ''} />
+      </div>
     );
   }
   if (filtered.length === 0) {
-    return <EmptyOwnedState filter={filter} hasAny={(data?.owned ?? []).length > 0} />;
+    const hasAny = (data?.owned ?? []).length > 0;
+    return (
+      <div style={GRID_STYLE}>
+        {hasAny ? (
+          <EmptyState
+            glyph="🧥"
+            title="Nothing in this drawer"
+            body={`You don't own any ${filter} cosmetics yet. Try another category, or hit the Shop.`}
+            cta={
+              <RpgButton variant="primary" size="md" rarity="rare" onClick={onGoShop}>
+                Browse Shop
+              </RpgButton>
+            }
+          />
+        ) : (
+          <EmptyState
+            glyph="✨"
+            title="Your wardrobe is empty"
+            body="You haven't collected any cosmetics yet. Open the Shop to claim your first skin, hat, or aura."
+            cta={
+              <RpgButton variant="primary" size="md" rarity="rare" onClick={onGoShop}>
+                Open the Shop
+              </RpgButton>
+            }
+          />
+        )}
+      </div>
+    );
   }
 
   return (
-    <div className="grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-4">
+    <div style={GRID_STYLE}>
       {filtered.map((o) => (
         <OwnedCard
           key={o.id}
@@ -249,6 +515,87 @@ function OwnedTab({ filter }: { filter: string }) {
         />
       ))}
     </div>
+  );
+}
+
+/**
+ * Shared rarity-framed cosmetic tile. Renders a full-width aspect-square
+ * thumbnail HERO block at the top (via RuneFrame so the rarity edge + rune
+ * corners are free), then name, badge row, optional description, and a
+ * footer action slot.
+ *
+ * NOTE: we deliberately do NOT use ItemCard here — ItemCard funnels its
+ * `icon` into a fixed 48×48 glyph slot (glow.css `.rpg-item-card__icon`),
+ * which would squash the cosmetic preview to a chip. RuneFrame + a custom
+ * body keeps the preview at hero size while still inheriting the toolkit's
+ * rarity chrome.
+ */
+function CosmeticCard({
+  rarity,
+  thumbnailUrl,
+  fallbackIcon,
+  displayName,
+  badges,
+  caption,
+  glow,
+  footer,
+}: {
+  rarity: RarityId;
+  thumbnailUrl: string | null;
+  fallbackIcon: string;
+  displayName: string;
+  badges: ReactNode;
+  caption?: ReactNode;
+  glow?: 'subtle' | false;
+  footer: ReactNode;
+}) {
+  return (
+    <RuneFrame tier={rarity} glow={glow ?? false} interactive={false}>
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 8,
+          padding: 12,
+        }}
+      >
+        <CosmeticThumbnail
+          thumbnailUrl={thumbnailUrl}
+          fallbackIcon={fallbackIcon}
+          displayName={displayName}
+          rarity={rarity}
+        />
+        <h3
+          style={{
+            margin: 0,
+            fontFamily: 'var(--font-orbitron), sans-serif',
+            fontSize: 12,
+            fontWeight: 700,
+            color: '#e2e8f0',
+            letterSpacing: '0.02em',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+          }}
+          title={displayName}
+        >
+          {displayName}
+        </h3>
+        <div
+          style={{
+            display: 'flex',
+            flexWrap: 'wrap',
+            gap: 4,
+            alignItems: 'center',
+            minHeight: 16,
+          }}
+        >
+          {badges}
+        </div>
+        {caption}
+        <div style={{ marginTop: 2 }}>{footer}</div>
+      </div>
+    </RuneFrame>
   );
 }
 
@@ -262,68 +609,67 @@ function OwnedCard({
   pending: boolean;
 }) {
   const icon = CATEGORY_ICONS[cosmetic.sku.category] ?? '✨';
-  const rarityBorder = RARITY_BORDER[cosmetic.sku.rarity] ?? 'border-cyan-400/15';
+  const rarity = cosmeticRarity(cosmetic.sku.rarity);
+
   return (
-    <div
-      className={`relative rounded-xl border bg-cyan-500/[0.04] p-3 transition-all ${
-        cosmetic.equipped
-          ? 'border-cyan-300/60 shadow-[0_0_18px_rgba(0,229,255,0.18)]'
-          : rarityBorder
-      }`}
-    >
-      <CosmeticThumbnail
-        thumbnailUrl={cosmetic.sku.thumbnailUrl}
-        fallbackIcon={icon}
-        displayName={cosmetic.sku.displayName}
-      />
-      <h3 className="mt-2 truncate font-mono text-[11px] uppercase tracking-[0.16em] text-cyan-100">
-        {cosmetic.sku.displayName}
-      </h3>
-      <p className="mt-0.5 font-mono text-[9px] uppercase tracking-[0.18em] text-cyan-300/40">
-        {cosmetic.sku.rarity}
-      </p>
-      <button
-        type="button"
-        onClick={onToggle}
-        disabled={pending}
-        className={`mt-2 w-full rounded-md py-1.5 font-mono text-[10px] uppercase tracking-[0.18em] transition-all disabled:opacity-50 ${
-          cosmetic.equipped
-            ? 'bg-cyan-500/30 text-cyan-100 hover:bg-cyan-500/40'
-            : 'bg-white/5 text-white/70 hover:bg-white/10'
-        }`}
-      >
-        {cosmetic.equipped ? 'Equipped' : 'Equip'}
-      </button>
-      {cosmetic.sku.attribution ? (
-        <p className="mt-1 truncate font-mono text-[8px] text-white/30" title={cosmetic.sku.attribution}>
-          {cosmetic.sku.attribution}
-        </p>
-      ) : null}
-    </div>
+    <CosmeticCard
+      rarity={rarity}
+      glow={cosmetic.equipped ? 'subtle' : false}
+      thumbnailUrl={cosmetic.sku.thumbnailUrl}
+      fallbackIcon={icon}
+      displayName={cosmetic.sku.displayName}
+      badges={
+        <>
+          <StatusChip label={cosmetic.sku.rarity} tone="info" size="sm" />
+          {cosmetic.equipped && (
+            <StatusChip label="Equipped" tone="positive" size="sm" />
+          )}
+        </>
+      }
+      caption={
+        cosmetic.sku.attribution ? (
+          <span
+            style={{
+              fontSize: 9,
+              color: '#64748b',
+              fontFamily:
+                'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+              display: 'block',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+            }}
+            title={cosmetic.sku.attribution}
+          >
+            {cosmetic.sku.attribution}
+          </span>
+        ) : undefined
+      }
+      footer={
+        <RpgButton
+          variant={cosmetic.equipped ? 'ghost' : 'primary'}
+          size="sm"
+          rarity={cosmetic.equipped ? undefined : rarity}
+          onClick={onToggle}
+          disabled={pending}
+          style={{ width: '100%' }}
+        >
+          {cosmetic.equipped ? 'Equipped ✓' : 'Equip'}
+        </RpgButton>
+      }
+    />
   );
 }
 
-function EmptyOwnedState({ filter, hasAny }: { filter: string; hasAny: boolean }) {
-  if (!hasAny) {
-    return (
-      <div className="py-12 text-center font-mono text-xs text-white/40">
-        <p>No cosmetics yet.</p>
-        <p className="mt-2">Open the Shop tab to browse what's available.</p>
-      </div>
-    );
-  }
-  return (
-    <p className="py-12 text-center font-mono text-xs text-white/40">
-      No {filter} owned. Try another category or open the Shop tab.
-    </p>
-  );
-}
+// ─── Shop tab ───────────────────────────────────────────────────────────────
 
-// ---------------------------------------------------------------------------
-// Shop tab
-// ---------------------------------------------------------------------------
-
-function ShopTab({ filter, tokens }: { filter: string; tokens: number }) {
+function ShopTab({
+  filter,
+  tokens,
+}: {
+  filter: string;
+  tokens: number;
+}) {
   const { data: catalog, isLoading, isError, error } = useCosmeticCatalog();
   const { data: ownedData } = useOwnedCosmetics();
   const buy = useBuyCosmetic();
@@ -342,25 +688,33 @@ function ShopTab({ filter, tokens }: { filter: string; tokens: number }) {
   }, [catalog, filter]);
 
   if (isLoading) {
-    return <p className="py-12 text-center font-mono text-xs text-white/40">Loading shop…</p>;
+    return (
+      <div style={GRID_STYLE}>
+        <LoadingState label="Stocking the shelves" />
+      </div>
+    );
   }
   if (isError) {
     return (
-      <p className="py-12 text-center font-mono text-xs text-red-300/70">
-        Shop failed to load: {(error as Error)?.message}
-      </p>
+      <div style={GRID_STYLE}>
+        <ErrorState message={(error as Error)?.message ?? ''} />
+      </div>
     );
   }
   if (filtered.length === 0) {
     return (
-      <p className="py-12 text-center font-mono text-xs text-white/40">
-        Nothing in this category yet.
-      </p>
+      <div style={GRID_STYLE}>
+        <EmptyState
+          glyph="🛒"
+          title="Shelf's empty"
+          body="No cosmetics in this category yet. Check back soon or try another filter."
+        />
+      </div>
     );
   }
 
   return (
-    <div className="grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-4">
+    <div style={GRID_STYLE}>
       {filtered.map((item) => (
         <ShopCard
           key={item.id}
@@ -389,52 +743,117 @@ function ShopCard({
   onBuy: () => void;
 }) {
   const icon = CATEGORY_ICONS[item.category] ?? '✨';
-  const rarityBorder = RARITY_BORDER[item.rarity] ?? 'border-cyan-400/15';
+  const rarity = cosmeticRarity(item.rarity);
   const canAfford = tokens >= item.priceCt;
+
   return (
-    <div className={`relative rounded-xl border bg-cyan-500/[0.04] p-3 ${rarityBorder}`}>
-      <CosmeticThumbnail
-        thumbnailUrl={item.thumbnailUrl}
-        fallbackIcon={icon}
-        displayName={item.displayName}
-      />
-      <h3 className="mt-2 truncate font-mono text-[11px] uppercase tracking-[0.16em] text-cyan-100">
-        {item.displayName}
-      </h3>
-      <p className="mt-0.5 font-mono text-[9px] uppercase tracking-[0.18em] text-cyan-300/40">
-        {item.rarity} · {item.category}
-      </p>
-      {owned ? (
-        <button
-          type="button"
-          disabled
-          className="mt-2 w-full rounded-md bg-cyan-500/20 py-1.5 font-mono text-[10px] uppercase tracking-[0.18em] text-cyan-100/80"
-        >
-          Owned
-        </button>
+    <CosmeticCard
+      rarity={rarity}
+      glow={false}
+      thumbnailUrl={item.thumbnailUrl}
+      fallbackIcon={icon}
+      displayName={item.displayName}
+      badges={
+        <>
+          <StatusChip label={item.rarity} tone="info" size="sm" />
+          {owned && <StatusChip label="Owned" tone="positive" size="sm" />}
+        </>
+      }
+      caption={
+        item.description ? (
+          <span
+            style={{
+              fontSize: 11,
+              color: '#cbd5e1',
+              lineHeight: 1.5,
+              display: '-webkit-box',
+              WebkitLineClamp: 2,
+              WebkitBoxOrient: 'vertical',
+              overflow: 'hidden',
+            }}
+            title={item.description}
+          >
+            {item.description}
+          </span>
+        ) : undefined
+      }
+      footer={
+        owned ? (
+          <RpgButton variant="ghost" size="sm" disabled style={{ width: '100%' }}>
+            Owned ✓
+          </RpgButton>
+        ) : (
+          <RpgButton
+            variant="primary"
+            size="sm"
+            rarity={rarity}
+            onClick={onBuy}
+            disabled={!canAfford || pending}
+            loading={pending}
+            title={
+              canAfford
+                ? `Buy ${item.displayName} for ${item.priceCt} CT`
+                : `You need ${item.priceCt} CT — you have ${tokens}. Earn more by playing.`
+            }
+            style={{ width: '100%' }}
+          >
+            {canAfford ? `Buy · ${item.priceCt} CT` : `${item.priceCt} CT`}
+          </RpgButton>
+        )
+      }
+    />
+  );
+}
+
+// ─── Main drawer ────────────────────────────────────────────────────────────
+
+interface CosmeticDrawerProps {
+  open: boolean;
+  onClose: () => void;
+}
+
+export default function CosmeticDrawer({ open, onClose }: CosmeticDrawerProps) {
+  const { data: ownedData } = useOwnedCosmetics();
+  const ownedCount = ownedData?.owned.length ?? 0;
+  // Auto-default to the Shop tab when the player owns nothing — the old
+  // default of 'owned' surfaced a confusing empty state ("no cosmetics —
+  // open the Shop tab") 2026-05-18. Once they own at least one cosmetic the
+  // Owned tab makes sense as the entry.
+  const [tab, setTab] = useState<Tab>(ownedCount > 0 ? 'owned' : 'shop');
+  const [filter, setFilter] = useState<string>('all');
+  const { data: avatar } = useAvatar();
+  const tokens = avatar?.clawTokens ?? 0;
+
+  return (
+    <RpgModal
+      open={open}
+      onClose={onClose}
+      title="Cosmetics"
+      subtitle="The Wardrobe · Skins · Hats · Auras · Boards"
+      tier="rare"
+      glow="subtle"
+      headerIcon={<WardrobeSigil />}
+      maxWidth={920}
+      tokenBadge={<CtPill tokens={tokens} />}
+    >
+      <TabStrip tab={tab} onChange={setTab} ownedCount={ownedCount} />
+
+      {/* Category filter strip */}
+      <div
+        style={{
+          padding: '14px 22px 12px',
+          borderBottom: '1px solid rgba(148, 163, 184, 0.10)',
+        }}
+      >
+        <CategoryChips value={filter} onChange={setFilter} />
+      </div>
+
+      {/* Body — scrolls inside RpgModal's own scroll container */}
+      {tab === 'owned' ? (
+        <OwnedTab filter={filter} onGoShop={() => setTab('shop')} />
       ) : (
-        <button
-          type="button"
-          onClick={onBuy}
-          disabled={!canAfford || pending}
-          className={`mt-2 w-full rounded-md py-1.5 font-mono text-[10px] uppercase tracking-[0.18em] transition-all disabled:opacity-50 ${
-            canAfford
-              ? 'bg-cyan-500/30 text-cyan-100 hover:bg-cyan-500/40'
-              : 'bg-white/5 text-white/40'
-          }`}
-          title={canAfford ? `Buy for ${item.priceCt} CT` : `Need ${item.priceCt} CT (you have ${tokens})`}
-        >
-          {pending ? 'Buying…' : `Buy · ${item.priceCt} 🪙`}
-        </button>
+        <ShopTab filter={filter} tokens={tokens} />
       )}
-      {item.description ? (
-        <p
-          className="mt-1 line-clamp-2 font-mono text-[9px] leading-snug text-white/40"
-          title={item.description}
-        >
-          {item.description}
-        </p>
-      ) : null}
-    </div>
+    </RpgModal>
   );
 }
