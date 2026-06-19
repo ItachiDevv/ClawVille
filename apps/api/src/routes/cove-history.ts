@@ -71,6 +71,7 @@ import {
   blackjackOutcomesMatch,
   holdemOutcomesMatch,
   baccaratOutcomesMatch,
+  canonicalJsonEq,
 } from '../services/cove-verify-compat';
 import { blackjackHands, holdemHands, baccaratCoups } from '@clawville/database';
 import type { AppContext, AuthenticatedContext } from '../types';
@@ -359,10 +360,14 @@ coveHistoryRouter.get('/:eventId/verify', async (c) => {
       winningLines: Array<{ winAmount: string }>;
       winAmount: string;
     };
-    const reelsMatch = JSON.stringify(expectedSerialized.reels) === JSON.stringify(stored.reels);
+    // Key-order-INSENSITIVE compare: `stored` is read back from a jsonb column,
+    // which reorders object keys, so a raw JSON.stringify would false-negative
+    // every winning spin (`winningLines` is an array of OBJECTS). reels is a
+    // nested array (positional) — canonicalJsonEq preserves array order, so it
+    // stays correct there too. See cove-verify-compat.ts canonicalize().
+    const reelsMatch = canonicalJsonEq(expectedSerialized.reels, stored.reels);
     const winAmountMatches = expectedSerialized.winAmount === stored.winAmount;
-    const linesMatch =
-      JSON.stringify(expectedSerialized.winningLines) === JSON.stringify(stored.winningLines);
+    const linesMatch = canonicalJsonEq(expectedSerialized.winningLines, stored.winningLines);
     const verified = hashMatches && reelsMatch && winAmountMatches && linesMatch;
 
     return c.json(
