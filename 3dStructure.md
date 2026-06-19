@@ -11,7 +11,9 @@
 > - **`GameFeatures.md`** — gameplay.
 > - **This doc** — *how* the 3D scene is wired: coordinates, camera, lights, GPU budget, animation, asset pipeline.
 
-**Last edit:** 2026-06-18 (Land sign rework — 3-category FOR-SALE sign system on ALL 180 plots; land-showroom.tsx sign code deleted). See §14 + §13 for detail.
+**Last edit:** 2026-06-19 (town-ux: cove discoverability beacon + proximity prompt, directional fingerpost, spawn scatter, cove entrance animation). See §15 below.
+
+**Prior Last edit:** 2026-06-18 (Land sign rework — 3-category FOR-SALE sign system on ALL 180 plots; land-showroom.tsx sign code deleted). See §14 + §13 for detail.
 
 **Prior Last edit:** 2026-06-18 (S4–S9 deep audit — fixes). Two independent audits of the S4–S9 batch: my agent team (3da + 2× general-purpose) + a SEPARATE Codex review team. Codex caught 2 real BLOCKING bugs the in-house team missed: **(S7)** `useActivityInput.resetHeldInput()` cleared the keys but NOT the smoothed `dirRef` / pending `oneShotBitsRef` → in Reef Race the kart drifted for several ticks after alt-tab + a queued boost/power-up fired on refocus → now zeroes both; **(S9)** `translateVisibleText` checked `requestSeq` BEFORE the `await` but not after → a mid-flight language switch cached+applied a stale-locale translation → now re-checks `seq` immediately post-await before cache/apply. Also capped 3 pre-existing uncapped CDP debug arrays (`__VRM_INIT_LOG`≤300, `__VRM_INIT_ERRORS`≤100, `__VRM_NPC_EFFECT_LOG`≤500) — a minor long-session heap-growth/freeze vector (S8). All re-confirmed APPROVED by the Codex team. Files: `useActivityInput.ts`, `game-language-control.tsx`, `vrm-character-animator.ts`, `arena-npcs.tsx`.
 
@@ -1075,3 +1077,54 @@ plankRotY = angle              // sign face toward origin
 **§13 change log entry (2026-06-18):** Land sign rework — deleted atlas system (`buildSignAtlas`, `remapUVsToAtlasRow`, `TIER_ROW_INDEX`, `TIER_GLYPHS`, `TIER_HEX`, single merged post/plank) and `SHOWROOM_PARCEL_IDS` import+guard from `land-parcels.tsx`. Added 3-category sign system (`regular`/`premium`/`premium-partner`) with per-category `CanvasTexture` + `mergeGeometries` batching. Signs now cover ALL 180 plots. `ShowroomSign` + sign singleton helpers deleted from `land-showroom.tsx`. New `packages/shared/src/constants/land-signage.ts` exports `LandSignCategory`, `PREMIUM_SIGN_TIERS`, `PREMIUM_PARTNER_PARCEL_IDS`, `getLandSignCategory`; re-exported from `@clawville/shared` index.
 
 Older history: `git log apps/web/src/lib/three/ apps/web/src/components/three/`.
+
+---
+
+## §15 — Town UX batch (town-ux-2026-06-19)
+
+### §15.1 — Cove discoverability: proximity prompt + world beacon
+
+**Problem:** the Cove casino (slot 9/W) was click-only. It has no NPC teacher, so `findNearestCharacter()` never returned it, `nearLocation` was never set to `'cove'`, and the `LocationHUD` entry pill never appeared. The building was functionally invisible to players who didn't already know to click it.
+
+**Fix — two-part:**
+
+**(a) Proximity detection.** `apps/web/src/lib/three/character-positions.ts` now exports `isCoveProximate(worldX, worldZ)` — a zero-alloc squared-distance check against the cove's tile-center (cx=158, cy=288 → world X=-4160, Z=0). Radius = **600 wu** (COVE_PROXIMITY_RADIUS export). Two identical proximity blocks in `apps/web/src/lib/three/player-avatar.tsx` (one per avatar VRM path) now fall through to `isCoveProximate` when `findNearestCharacter` returns null, setting `store.nearLocation = 'cove'`. Teacher buildings always take priority when both are in range.
+
+**(b) LocationHUD special-case.** `apps/web/src/components/game/location-hud.tsx` imports `triggerCoveWalkIn` from `arena-buildings.tsx` (now exported). When `nearLocation === 'cove'`, tapping the pill calls `triggerCoveWalkIn()` instead of the teacher-chat `enterBuilding()`. Label: "Enter the Cove" with the 🎰 icon; the "Learn about…" footer is suppressed (cove is not a teacher building). `'cove'` is already in `MAP_LOCATIONS` (Predictive Gaming Cove, icon 🎰) so the pill renders.
+
+**(c) World beacon.** New `apps/web/src/lib/three/cove-beacon.tsx`. Mounted in `World3DCanvas.tsx` as `perf:cove-beacon`. Components:
+- Animated neon "THE COVE" marquee board: 512×128 CanvasTexture (NO drei Text — Iris Xe crash), dark indigo background, gold border, cyan neon text, subtitle/tagline. Mounted at world (-4160, 870, 0) with a ±8 wu vertical float in useFrame.
+- Slow-rotating ring of 10 MeshBasicMaterial spoke planes at world (-4160, 620, 0). Radius=90 wu, pink/magenta tint, pulsing opacity.
+- Three soft PointLights (pink/cyan/gold, decay=2, distance 600–1200 wu) for casino-glow atmosphere.
+- All geometry/materials at module scope (zero per-render alloc). useFrame refs are hoisted — no per-frame allocations.
+
+**Iris Xe compliance:** NO drei Text/Billboard, NO InstancedMesh+ShaderMaterial, NO per-frame `new Vector3()`.
+
+### §15.2 — Cove entrance animation (Task 2)
+
+`apps/web/src/lib/three/arena-buildings.tsx` `triggerCoveWalkIn()` dispatches a `'cove-walkin-start'` DOM CustomEvent when the walk-in starts. `World3DCanvas.tsx` new `CoveEntranceCameraPush` component (mounted in SceneContents, after JumpTicker) listens for this event and for 1.2s smoothly lerps the camera slightly toward the cove (X=-4160, slight Y pull-down) using a cubic ease-out. All lerp values are module-scope scratch (`_covePushTarget`, `_covePushScratch`), zero per-frame allocations. Total entrance flow ≤3s (1.2s push + existing 500ms fade + /cove page-in 500ms).
+
+### §15.3 — Town directional fingerpost (Task 3)
+
+`apps/web/src/lib/three/town-directory-sign.tsx` fully rewritten. Old content: two-post wooden board with a static inaccurate PNG (`/town-directory-sign.png` — "Auction / Bazaar / Marketplace", all paused). New content: 3-arm directional fingerpost with CanvasTexture-baked labels.
+
+**Geometry:** central hex-prism post (CylinderGeometry, 6 segments, post+cap merged), 3 arm planks (BoxGeometry main + tip), 3 face planes (PlaneGeometry with CanvasTexture). All geometry at module scope, mergeGeometries-merged where possible.
+
+**Arm directions (verified against live collision data):**
+| Arm | rotY | World direction | Destination | World coords |
+|---|---|---|---|---|
+| BOUNTY BOARD (↑) | -π/2 | -Z (north) | quest-bounty-pavilion | (0, -1220) |
+| EXCHANGE (→) | 0 | +X (east) | marketplace-stall | (+1273, -120) |
+| COSMETICS (←) | +π | -X (west) | bazaar-stall | (-1273, -120) |
+
+**CanvasTexture design:** dark wood-grain plank, carved border, colored arrow glyph (cyan=bounty, gold=exchange, magenta=cosmetics), label in warm-white. Side DoubleSide so arms are readable from both directions.
+
+**No async loading.** Old PNG load race (img.onload) eliminated. Textures baked synchronously at module load (`bakeArmTexture()`). SSR-safe: guarded by `typeof document !== 'undefined'`, materials fall back to panel color for SSR.
+
+### §15.4 — Spawn scatter (Task 4)
+
+`apps/web/src/stores/game.ts` SPAWN_PX is now a per-client-load randomized value. At module load, `_scatterX` and `_scatterY` are generated once (`Math.random()`), clamped to a safe zone (±200 X, ±180 Y from base spawn), and added to the canonical base spawn `{MAP_WIDTH/2, MAP_HEIGHT/2 + 540}`. The `SPAWN_PX` constant and `avatarPositionRef` both use the scattered value. `resetStore` also resets to the SAME scatter for the session (same module-scope scatter constants are referenced). Prevents all players stacking on the exact same pixel in front of Nori.
+
+**Safe zone math:** scatter ±160 px (SPAWN_SCATTER_RADIUS), clamped ±200/±180 → town square center area (no overlap with sign at Z=-120, Nori at Z=+400, building ring at Z>2000).
+
+**§15 change log entry (2026-06-19):** town-ux batch — cove proximity (isCoveProximate, 600wu radius), LocationHUD cove CTA (triggerCoveWalkIn), cove-beacon.tsx (neon marquee + glow ring + 3 lights), CoveEntranceCameraPush (1.2s cubic camera drift), fingerpost sign rewrite (3 CanvasTexture arms, accurate directions), spawn scatter (±160px clamped, session-stable). Files: `character-positions.ts`, `player-avatar.tsx`, `location-hud.tsx`, `arena-buildings.tsx`, `cove-beacon.tsx` (new), `World3DCanvas.tsx`, `town-directory-sign.tsx`, `game.ts`.
