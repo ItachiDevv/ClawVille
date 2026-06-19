@@ -2,6 +2,7 @@
 
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
+import type { SpawnPreferenceMode, SpawnPreferenceResponse } from '@/components/game/land/types';
 
 export function useAvatar() {
   return useQuery({
@@ -74,6 +75,30 @@ export function useEditAvatarAppearance() {
     onSuccess: () => {
       // Server returns the authoritative avatar including the regenerated
       // characterConfig.system — invalidate so we pick it up.
+      queryClient.invalidateQueries({ queryKey: ['avatar'] });
+    },
+  });
+}
+
+/**
+ * Set the avatar's spawn preference — town center vs an owned home parcel
+ * (town-fast-travel, 2026-06-19). Wraps `api.setSpawnPreference` and invalidates
+ * the avatar query on success so `avatar.spawnPreference` / `avatar.homeParcelId`
+ * refresh (the Land Office reflects the new choice immediately, and SpawnOnLoad
+ * reads the fresh values on the next world load).
+ *
+ * Body contract (FROZEN — see land/types.ts):
+ *   { mode: 'town' }                         → clears the home spawn
+ *   { mode: 'home', parcelId: <owned uuid> } → server 403 code:'not_owned' if
+ *                                              the parcel isn't owned by the caller
+ * honoRequest throws ApiError{status,code}; callers branch on err.code.
+ */
+export function useSetSpawnPreference() {
+  const queryClient = useQueryClient();
+
+  return useMutation<SpawnPreferenceResponse, unknown, { mode: SpawnPreferenceMode; parcelId?: string }>({
+    mutationFn: (body) => api.setSpawnPreference(body),
+    onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['avatar'] });
     },
   });
