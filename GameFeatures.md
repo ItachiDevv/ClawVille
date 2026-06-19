@@ -287,6 +287,8 @@ Two books per building cover beginner + advanced takes on that building's domain
 
 **Skill export hand-off:** `POST /api/agent/export-character` emits the user's Eliza `Character` JSON + `SkillPack` + a Milady install payload + a curl one-liner so the user can take their trained agent home. Phase 4a UI consumes this via the "Take agent home to Milady" panel in `AvatarSettingsModal`.
 
+**Portable avatar manifest (CAM v1, 2026-06-19):** `GET /api/avatar/:id/manifest.json` (owner-authed) emits a single signed, content-addressed JSON — the keystone of three.ws-parity agent EXPORT. It bundles the avatar's 3D body (`mesh{uri, sha256, format, kBytes}` — the body bytes are fetched + SHA-256'd so any consumer can verify the exact file), equipped cosmetics, owner wallet + identity **public keys** (never a secret), and the embedded `character` + `skillPack`, all signed with the ClawVille service-issuer ed25519 key (verifiable against `/.well-known/clawville-issuer.json`). The "Download portable manifest (.json)" button in `AvatarSettingsModal` (next to "Take agent home") turns it into a download. This is the artifact a user/agent keeps when they leave and the file the planned re-import path will accept. Human-only today; agent-callable self-export is a gated follow-up (binds the protected-partner-surface rule). Full design + phasing: `.claude/plans/agent-export-portability.md`.
+
 ---
 
 ## 5. ClawToken economy
