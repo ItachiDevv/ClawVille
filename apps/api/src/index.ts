@@ -66,6 +66,7 @@ import { dashboardRoutes } from './routes/dashboard';
 import { portalRoutes } from './routes/portal';
 import { partnerHatcherRoutes } from './routes/partner-hatcher';
 import { partnerHatcherLaunchRoutes } from './routes/partner-hatcher-launch';
+import { partnerStorefrontRoutes } from './routes/partner-storefront';
 import { agentRegistrationRoutes } from './routes/agent-registration';
 import { adminIdentityRoutes } from './routes/admin-identity';
 import { startSimulation } from './services/npc-simulation';
@@ -295,6 +296,17 @@ app.route('/api/partner/hatcher', partnerHatcherRoutes);
 // POST /api/partner/hatcher/launch/exchange. See routes/partner-hatcher-launch.ts
 // + plan .claude/plans/hatcher-launch-exchange.md (§A).
 app.route('/api/partner/hatcher', partnerHatcherLaunchRoutes);
+// Partner DIRECT-USDC storefront (PayAI x402 Phase D — VISIBLE-BUT-GATED). NEW,
+// ADDITIVE router at `/api/partner/:partnerId/storefront/*` — STRICTLY separate
+// from the live `/api/partner/hatcher/*` registration/cognition/launch routes
+// above (Hono matches the more-specific `/api/partner/hatcher` mount FIRST, so
+// this router's middleware NEVER runs on a hatcher path). POST register
+// (ed25519 partner-signed, ±5 min), POST admin/fulfillment (adminOnly flip —
+// NEVER the partner key), POST purchase (503 `partner_fulfillment_gated` before
+// any settlement while fulfillment is off). Buyer→partner USDC direct, WE NEVER
+// CUSTODY. See routes/partner-storefront.ts + services/x402-payai.ts +
+// PLAN.md §2 Phase D. FEATURE_GATE partner_storefront_tier.
+app.route('/api/partner', partnerStorefrontRoutes);
 // Wager lobbies + escrow (gambling-contracts vertical slice).
 // See routes/wager.ts header for the full surface + feature gates.
 app.route('/api/wager', wagerRoutes);

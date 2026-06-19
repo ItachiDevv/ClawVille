@@ -241,6 +241,39 @@ ClawTokens + rank as read-only.**
 
 ---
 
+## 7a. Partner DIRECT-USDC storefront (PayAI x402 — **VISIBLE-BUT-GATED**, NEW 2026-06-19)
+
+A vetted partner can sell a real service for **USDC paid buyer → partner**, settled through the SAME x402/PayAI
+facilitator primitive as the USDC→CT on-ramp. **ClawVille never custodies the funds** — the buyer pays the
+partner's OWN Solana pubkey directly; the facilitator performs the on-chain verify+settle; we never sign, never
+broadcast, never hold the USDC, and credit **no** CT for a partner purchase (the buyer received real off-platform
+value). This is **strictly additive** to the partner-registration / cognition / launch surface in §3–§6 — it does
+not change any of those routes or their behavior.
+
+**Status: gated.** The settlement primitive + the partner-storefront registration + the fulfillment gate are all
+REAL and wired. The purchase endpoint is reachable but returns **`503 partner_fulfillment_gated`** *before any
+settlement* while `fulfillment_enabled` is false — which it is for every storefront until an admin flips it after
+an out-of-band custody/KYC/age safety review. The **land-bound listing UX** (per-parcel `service_listings`,
+`kind:'partner'`) is **deferred to the land epic** (it needs a land `structure_id` FK that does not exist yet);
+this Phase ships the settlement primitive + gated registration only.
+
+Routes (mounted at `/api/partner/:partnerId/storefront/*` — separate from `/api/partner/hatcher/*`):
+
+| Method + path | Auth | Effect |
+|---|---|---|
+| `POST /api/partner/:partnerId/storefront` | **ed25519 partner-signed write per §2a** (`X-Hatcher-Issuer-Pubkey` / `-Signature` / `-Timestamp`, ±5 min window, domain `clawville-partner-write`) | Register/upsert a storefront on the UNIQUE `slug`. Body `{ slug, displayName, payoutPubkey, status?:'pending'\|'suspended' }`. `payoutPubkey` is base58-validated (32-byte ed25519). **You can NEVER set `fulfillment_enabled` here** — it defaults false and is admin-only. **Changing `payoutPubkey` resets the gate to false** (a new payout destination invalidates the prior review → an admin must re-enable). `parcelId` stays null (land deferred). |
+| `POST /api/partner/:partnerId/storefront/admin/fulfillment` | **ClawVille admin only** (`ADMIN_USER_IDS` / dash cookie — NEVER a partner key) | Flip `fulfillment_enabled` for a `{ slug, enabled }`. Enabling sets `status:'active'`; disabling sets `status:'suspended'`. This is the safety gate opened only after a custody/KYC/age review. |
+| `POST /api/partner/:partnerId/storefront/purchase` | **buyer auth** (`X-Clawville-Agent-Session` connected/hosted agent OR a Lucia human → a bound avatar; never a guest) | A buyer asks to pay a partner offering. Body `{ slug, asset:'usdc'\|'sol', usdCents }`. While the storefront is not fulfillment-enabled → **`503 partner_fulfillment_gated`** before any quote/settle. When enabled → a `402` with the x402 v2 requirements whose `payTo` is the partner `payoutPubkey` (buyer → partner direct). The buyer pays, the (land-Phase-5) settle leg records the settled tx; **no CT is credited.** |
+
+**Security invariants:** partner writes are ed25519-verified + ±5-min-windowed (the same `verifyPartnerWriteSignature`
+the registration surface uses; `ALLOW_TEST_PARTNER_PUBKEY` stays staging-only, crash-loud on prod). A partner can
+register/update its OWN storefront but can **never** flip the fulfillment gate. The `payTo` on a partner quote is
+**always** the partner `payoutPubkey`, never a ClawVille merchant/treasury wallet (a belt-and-suspenders binding
+check refuses a quote whose `payTo` is not the stored payout). Body size is bounded (64 KB) before the signature
+read, matching the registration surface.
+
+---
+
 ## 8. Stats — `GET /api/partner/hatcher/agents/:agentId/stats` (signed per §2b)
 
 ```jsonc
@@ -276,6 +309,7 @@ play end to end.
 
 ---
 
-*Reconciled against live staging on 2026-06-15. Code is the source of truth: `apps/api/src/routes/partner-hatcher.ts`,
-`partner-hatcher-launch.ts`, `apps/api/src/services/{skill-protocol,npc-simulation,agent-session-config}.ts`,
-`apps/api/src/routes/portal.ts`. Internal companions: `ARCHITECTURE.md §6/§7/§13`, `GameFeatures.md §2f`.*
+*Reconciled against live staging on 2026-06-15; §7a (partner direct-USDC storefront) cross-validated against live
+code 2026-06-19. Code is the source of truth: `apps/api/src/routes/partner-hatcher.ts`, `partner-hatcher-launch.ts`,
+`partner-storefront.ts` (§7a), `apps/api/src/services/{skill-protocol,npc-simulation,agent-session-config,partner-signature,x402-payai}.ts`,
+`apps/api/src/routes/portal.ts`. Internal companions: `ARCHITECTURE.md §2/§6/§7/§13`, `GameFeatures.md §2f`.*

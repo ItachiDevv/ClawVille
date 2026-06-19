@@ -357,3 +357,78 @@ export async function verifyAndSettle(
     raw: { verify, settle },
   };
 }
+
+// ---------------------------------------------------------------------------
+// Partner DIRECT-USDC settlement (Phase D — buyer → partner, WE NEVER CUSTODY)
+// ---------------------------------------------------------------------------
+//
+// A vetted partner sells a real service for USDC. The buyer pays the partner's
+// OWN Solana pubkey (`payoutPubkey`) directly; ClawVille never holds the funds,
+// never signs, never broadcasts — the facilitator performs the on-chain
+// verify+settle exactly as for the on-ramp. The ONLY difference from the
+// USDC→CT on-ramp is the recipient: `payTo` is the partner payout pubkey
+// instead of OUR merchant wallet, and a settled tx credits NO CT (the buyer
+// already got real USDC value off-platform; we only RECORD the settled tx).
+//
+// These two helpers are a THIN clarity layer over the SAME `buildTopupQuote`
+// (which already takes `payTo` as a parameter) + `verifyAndSettle` primitives —
+// they do NOT reimplement verify→settle. Reusing the identical primitive is
+// deliberate: the on-ramp's safety contract (never-throw, settle-only-on-valid,
+// no-blank-signature) carries over for free, and a single audited code path
+// settles both flows.
+
+export interface BuildPartnerPurchaseQuoteInput {
+  /** The partner's OWN Solana pubkey — the buyer pays THIS directly. NEVER our
+   *  merchant/treasury wallet (the no-custody invariant lives in the caller too,
+   *  but the recipient is bound here). */
+  payoutPubkey: string;
+  /** Asset the buyer pays. `usdc` is the funded path. */
+  asset: X402Asset;
+  /** Price of the partner service in integer USD cents. */
+  usdCents: number;
+  /** Solana network — devnet-first. */
+  network: X402Network;
+  /** Resource URL/description echoed in the 402 (the partner offering). */
+  resource?: { url: string; description?: string };
+  /** Facilitator settle deadline. Default 120s. */
+  maxTimeoutSeconds?: number;
+}
+
+/**
+ * Build the x402 v2 402-challenge for a partner direct-USDC purchase. Identical
+ * shape to a top-up quote, but the recipient is the partner's `payoutPubkey`
+ * (the facilitator only settles a payment whose on-chain recipient matches it,
+ * so a forged/redirected payment cannot pay anyone else). This is the SAME
+ * `buildTopupQuote` under the hood — `payoutPubkey` simply flows into its
+ * already-parameterized `payTo`.
+ */
+export function buildPartnerPurchaseQuote(input: BuildPartnerPurchaseQuoteInput): TopupQuote {
+  return buildTopupQuote({
+    payTo: input.payoutPubkey,
+    asset: input.asset,
+    usdCents: input.usdCents,
+    network: input.network,
+    resource:
+      input.resource ?? {
+        url: '/api/partner/storefront/purchase',
+        description: `Partner service — $${(input.usdCents / 100).toFixed(2)} ${input.asset.toUpperCase()} (paid directly to the partner)`,
+      },
+    maxTimeoutSeconds: input.maxTimeoutSeconds,
+  });
+}
+
+/**
+ * Verify+settle a partner direct-USDC purchase. A direct passthrough to the
+ * shared `verifyAndSettle`, named distinctly so the partner buy-path reads
+ * clearly and so a future divergence (e.g. partner-specific settle metadata)
+ * has a seam without touching the on-ramp. Same safety contract: never throws,
+ * settle only on a valid verify, `settled:true` only with a non-empty tx
+ * signature. The caller (the gated purchase route) decides the recipient
+ * (`requirements.payTo` MUST be the partner payoutPubkey) and records — but
+ * never credits CT for — the settled tx.
+ */
+export function settlePartnerPurchase(
+  input: VerifyAndSettleInput,
+): Promise<VerifyAndSettleResult> {
+  return verifyAndSettle(input);
+}
