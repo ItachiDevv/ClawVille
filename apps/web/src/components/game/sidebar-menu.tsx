@@ -55,7 +55,7 @@
 
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { MAP_LOCATIONS, AVATAR_SPECIES, KNOWLEDGE_BOOKS } from '@clawville/shared';
 import { RuneFrame, RpgButton, RpgModal, RpgTooltip, getRarity, type RarityId } from '@/components/rpg';
 import { useGameStore, type GameState } from '@/stores/game';
@@ -628,6 +628,7 @@ function SidebarContent({ closeMenu }: SidebarContentProps) {
   const toggleActivityFeed = useGameStore((s: GameState) => s.toggleActivityFeed);
   const addToast = useGameStore((s: GameState) => s.addToast);
   const resetStore = useGameStore((s: GameState) => s.resetStore);
+  const queryClient = useQueryClient();
 
   // Phase 5.1 — WORLDS section gates on the same avatar presence signal the
   // CharacterFrame uses, so cross-world options never flash to logged-out
@@ -780,6 +781,23 @@ function SidebarContent({ closeMenu }: SidebarContentProps) {
 
       await api.logout();
       resetStore();
+      // Auth-state-reconciliation fix (2026-06-19). resetStore() only resets the
+      // GAME Zustand slice — the SHARED SPA QueryClient still holds the logged-out
+      // user's ['auth-me'] / ['avatar'] / ['agent-session'] (+ everything else),
+      // fresh for staleTime, so the next session (or a guest who switches to NPC
+      // mode after) inherits the prior identity ("login behavior follows as NPC
+      // after logout"). Nuke the whole cache so the next page load fetches clean.
+      queryClient.clear();
+      // Defensive: drop remote-player + research stream state too. The /game
+      // unmount also clears players via useWorldStream cleanup, but logging out
+      // from anywhere should leave no cross-user residue regardless of route.
+      try {
+        const { usePlayerStore } = require('@/stores/players') as typeof import('@/stores/players');
+        usePlayerStore.getState().clear();
+        const { useResearchStore } = require('@/stores/research') as typeof import('@/stores/research');
+        useResearchStore.getState().clearThoughts();
+        useResearchStore.getState().clearCollaborationEntries();
+      } catch { /* stores may not be loaded on this route */ }
       router.push('/login');
     } catch {
       setLoggingOut(false);
