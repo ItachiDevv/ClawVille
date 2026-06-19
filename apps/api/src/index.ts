@@ -106,6 +106,8 @@ import { wirePokerMttToHub } from './services/poker/poker-mtt-ws-bridge';
 import { coveBaccaratRouter } from './routes/cove-baccarat';
 // Phase 6.7.0 — cove cross-game history + per-event provable-fair verifier.
 import { coveHistoryRouter } from './routes/cove-history';
+// Lean in-product support tickets — POST /api/support/tickets (user/agent/guest).
+import { supportRouter } from './routes/support';
 // Economy fix 2026-05-29 — admin-only CT-economy monitor (minted/burned/houseNet
 // per gameType; faucet detector). FEATURE_GATE: cove_ct_economy_monitor.
 import { coveEconomyRouter } from './routes/cove-economy';
@@ -313,6 +315,8 @@ app.route('/api/cove/baccarat', coveBaccaratRouter);
 // Phase 6.7.0 — cross-game history (owner-only list + owner|admin verify).
 // Slots integration ships in-line with this mount (see cove-slots.ts spin txn).
 app.route('/api/cove/history', coveHistoryRouter);
+// Lean support tickets — filable by user / connected-agent / guest.
+app.route('/api/support', supportRouter);
 // Economy fix 2026-05-29 — admin-only CT-economy monitor: GET /api/cove/economy/
 // summary aggregates cove_game_events minted/burned/houseNet by gameType to
 // detect any game that has gone net-positive to players (a faucet).
