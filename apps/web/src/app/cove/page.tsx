@@ -34,6 +34,7 @@ import BlackjackModal from '@/components/cove/blackjack/BlackjackModal';
 import HoldemModal from '@/components/cove/holdem/HoldemModal';
 import BaccaratModal from '@/components/cove/baccarat/BaccaratModal';
 import CoveMobileControls from '@/components/cove/CoveMobileControls';
+import SupportLauncher from '@/components/support/SupportLauncher';
 import { useAvatar } from '@/hooks/use-avatar';
 import { useGameStore } from '@/stores/game';
 import { useIsMobile } from '@/hooks/use-is-mobile';
@@ -196,6 +197,10 @@ export default function CovePage() {
       >
         Back to World
       </button>
+
+      {/* Support — floating top-right (clear of Back-to-World top-left + the
+          bottom joystick zones). DOM overlay, never inside the WebGPU canvas. */}
+      <SupportLauncher variant="floating" context={{ page: 'cove' }} defaultCategory="gameplay" />
 
       {/* Top-right actions — betting history + provably-fair verifier. */}
       {(() => {
