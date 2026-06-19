@@ -148,9 +148,9 @@ const CANDIDATES: CandidateDef[] = [
   {
     style: 'tower-cand-3',
     label: 'Skyscraper Option C',
-    blurb: 'Stepped office tower: brownish-red setback tiers + near-black window band — NYC-style silhouette',
+    blurb: 'Stepped office tower: GREY limestone setback tiers + near-black window band — NYC-style silhouette',
     home: {
-      path: '/models/land-structures/tower-cand-3/home.glb',
+      path: '/models/land-structures/tower-cand-3/home.glb?v=2',
       source: 'Poly by Google SM_Skyscraper_02 (CC-BY, poly.pizza/m/5mOW8KZSHtU) · 2,752 tris',
     },
     shop: {
