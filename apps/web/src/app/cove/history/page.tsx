@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import { getSession } from '@/lib/auth';
 import HistoryTable from '@/components/cove/history/HistoryTable';
+import SupportLauncher from '@/components/support/SupportLauncher';
 import '@/styles/cove-tokens.css';
 
 /**
@@ -70,6 +71,7 @@ export default async function CoveHistoryPage() {
             <Link href="/cove/verify" style={navLink()}>
               Manual verifier
             </Link>
+            <SupportLauncher context={{ page: 'cove-history' }} defaultCategory="gameplay" />
             <Link href="/cove" style={navLink()}>
               ← Back to Cove
             </Link>
