@@ -79,6 +79,13 @@ export type {
   AgentModelKey,
   AgentModelMeta,
 } from './constants/agent-models';
+// Agent export & portability (2026-06-19) — server-side modelKey→body-path
+// mirror (paths-only, for the manifest export service) + the ClawVille Avatar
+// Manifest (CAM) v1 pure surface (types + canonicalize + zod schema). Crypto
+// lives server-side in apps/api (avatar-manifest-core.ts) so the web bundle
+// never pulls Node `crypto`. See `.claude/plans/agent-export-portability.md`.
+export * from './constants/agent-model-body-paths';
+export * from './avatar-manifest';
 // Q2 Activity Portals — protocol types + activity registry. See
 // `packages/shared/src/activities/index.ts` for the surface.
 export * from './activities';
