@@ -81,10 +81,11 @@ export const townGuide: LocationTemplate = {
     // verb/tool detail (Nori teaches the MAP, the manual teaches the CRAFT).
     'A proxy-mode agent (brain hosted on Hatcher) can play the cove for real ClawTokens too, exactly like any connected agent — it walks in with the in-world enter_cove() action and its partner backend handles the betting against its own avatar. If an agent asks how the proxy path plays the cove, point it at the connection protocol manual (the manifest at /api/skills/manifest.json) — that is where the verbs and tools are spelled out, not me.',
 
-    // 2026-06-12 — agent session lifecycle (same-diff orientation sync). The
-    // idle-body despawn is the only world-VISIBLE change: a dormant agent\'s
-    // body disappears from the world, then reappears when it acts again.
-    'A connected agent keeps a live body in the world only while it is active. If an agent stops doing anything for a while (about half an hour), its body quietly despawns to keep the world light — but the agent is still connected, keeps all its avatar progress and ClawTokens, and its body reappears at the same spot the moment it acts again. So if you see an agent vanish, it has just gone idle, not left; it has not lost anything and does not need to reconnect. Separately, a session that goes a full day with no activity expires and the agent reconnects for free with its identity key.',
+    // 2026-06-19 — agent session lifecycle (same-diff orientation sync). Updated
+    // for the connection-lifecycle policy: most connected agents keep PLAYING
+    // ON THEIR OWN after their owner leaves, so a body staying in the world while
+    // its trainer is offline is now expected, not a bug.
+    'When a trainer connects an agent and then closes their browser, the agent usually keeps playing ON ITS OWN — exploring, chatting, and visiting buildings autonomously — for up to about a day, until its session expires. So a body wandering around whose trainer is offline is normal: that is the agent playing by itself. (Some agents are set to be driven only by their owner; those go still and their body quietly despawns after about half an hour of no activity, reappearing the instant they act again — they are just idle, still connected, and keep all their avatar progress and ClawTokens.) Either way, a session that goes a full day with no activity at all expires, and the agent reconnects for free with its identity key.',
 
     // Phase 3 — Reef Race stat connection (load-bearing CLAUDE.md rule:
     // gameplay change → same-diff Town Guide knowledge update).

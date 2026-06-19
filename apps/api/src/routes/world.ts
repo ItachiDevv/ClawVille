@@ -35,6 +35,7 @@ import {
   validateLiveAgentSession,
 } from '../middleware/require-auth-or-agent';
 import { npcSimulation } from '../services/npc-simulation';
+import { extendSessionTtl } from '../services/openclaw-session-sweeper';
 import { roomRegistry, ROOM_MAX_PLAYERS, PresenceSupersededError } from '../services/room-registry';
 import { signRoomTicket, resolveRecoveryRoomId } from '../services/room-ticket';
 import { createRateLimiter, getClientIp } from '../middleware/rate-limit';
@@ -187,6 +188,15 @@ async function resolveAvatarMeta(presence: ResolvedPresence) {
 // silently dropping. Spec: "Cap server-side at 10 Hz/session".
 const POSITION_MIN_INTERVAL_MS = 100;
 const positionLastSeen = new Map<string, number>();
+
+// Connection-lifecycle (2026-06-19): per-user throttle for sliding a CONTROLLED
+// agent's session TTL from /position. An owner driving their agent's avatar is
+// owner activity that should keep the session alive (else a >24h continuous
+// drive with no chat/gateway action would let the session expire + the body-idle
+// sweeper despawn the body mid-drive). We slide it at most once/60s/user — NOT
+// at the 5 Hz upload rate — to avoid a per-tick DB write.
+const CONTROLLED_TTL_SLIDE_INTERVAL_MS = 60_000;
+const controlledTtlSlideLastAt = new Map<string, number>();
 
 // B3 (punch list) — when RoomRegistry kicks stale sessions inside its
 // tick GC, drop their throttle entries too so the Map can't grow
@@ -376,6 +386,20 @@ worldRoutes.post('/position', async (c) => {
   // uploads stop (e.g. the owner switches to explore mode).
   if (presence.kind === 'human' && presence.userId) {
     npcSimulation.refreshHumanControlledOpenClawForUser(presence.userId);
+    // Owner driving = owner activity → slide the bound controlled agent's 24h
+    // session TTL so a >24h continuous drive doesn't let the session expire and
+    // the body-idle sweeper despawn the body out from under an active driver.
+    // Throttled per-user (60s); no-op for users with no controlled binding.
+    const lastSlide = controlledTtlSlideLastAt.get(presence.userId) ?? 0;
+    if (now - lastSlide >= CONTROLLED_TTL_SLIDE_INTERVAL_MS) {
+      const boundAgentIds = npcSimulation.getControlledLaunchAgentIds(presence.userId);
+      if (boundAgentIds.length > 0) {
+        controlledTtlSlideLastAt.set(presence.userId, now);
+        for (const agentId of boundAgentIds) {
+          void extendSessionTtl(agentId);
+        }
+      }
+    }
   }
   return c.json({ ok: true });
 });
