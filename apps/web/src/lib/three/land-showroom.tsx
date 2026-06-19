@@ -89,11 +89,15 @@ const _center  = new THREE.Vector3();
 // GLB path resolver (same convention as land-structures.tsx)
 // ---------------------------------------------------------------------------
 
+// ?v=2 cache-bust (2026-06-18): tower-cand-3 was recolored brown→grey AFTER its
+// first prod deploy, and Cloudflare edge-caches /models/*.glb ~1 week with no
+// purge token (3dStructure.md §6f rule 9). The query forces a re-fetch of every
+// showroom model (harmless one-time re-download for the unchanged ones).
 function showroomGlbPath(
   style: ShowroomEntry['style'],
   structureType: ShowroomEntry['structureType'],
 ): string {
-  return `/models/land-structures/${style}/${structureType}.glb`;
+  return `/models/land-structures/${style}/${structureType}.glb?v=2`;
 }
 
 // ---------------------------------------------------------------------------
