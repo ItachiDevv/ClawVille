@@ -82,6 +82,36 @@ export async function extendSessionTtl(agentId: string): Promise<void> {
 }
 
 /**
+ * Body-keepalive on AUTONOMOUS server-side activity (2026-06-19, connection-
+ * lifecycle policy). Slides ONLY `last_seen_at` — NOT `session_expires_at`.
+ *
+ * Why split from extendSessionTtl: a server-managed agent whose owner has
+ * disconnected keeps PLAYING server-side (the sim drives it). We want that body
+ * to survive the 30-min body-idle despawn (`agent-body-idle-sweeper.ts`, keyed on
+ * `last_seen_at`) so autonomous play continues — BUT we must NOT slide the 24h
+ * `session_expires_at`, or autonomous activity would re-extend the session
+ * forever and the agent would never stop. The DECISION is "run until session
+ * expiry (~24h from the last HUMAN action)": the session clock stays frozen at
+ * whatever the owner's last authenticated request set it to; only the body
+ * keepalive moves. When the session finally expires, the body-idle-sweeper's
+ * expiry check despawns the body and autonomous play ends.
+ *
+ * Fire-and-forget + heavily throttled by the caller (npc-simulation runs it at
+ * most once/agent/~60s), so this is not a per-tick write storm.
+ */
+export async function touchBodyKeepalive(agentId: string): Promise<void> {
+  await db
+    .update(openclawBots)
+    .set({ lastSeenAt: new Date(), updatedAt: new Date() })
+    .where(eq(openclawBots.agentId, agentId))
+    .catch((err) => {
+      // Non-fatal: a missed keepalive just means the body MIGHT idle-despawn a
+      // little early; the session stays valid and it re-spawns on next activity.
+      console.warn(`[SessionSweeper] body keepalive failed for ${agentId}:`, err);
+    });
+}
+
+/**
  * Flip a single session to expired-now. Called by `/api/agent/disconnect`
  * and by the sweep loop. Safe to call on a row that's already expired —
  * the UPDATE is a no-op on the in-memory runtime side if no runtime is

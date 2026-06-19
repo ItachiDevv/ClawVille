@@ -31,6 +31,7 @@ import {
 import { AvatarSimulationBridge } from './avatar-simulation-bridge';
 import { memoryService } from './memory-service';
 import { sessionDigest } from './session-digest';
+import { touchBodyKeepalive } from './openclaw-session-sweeper';
 import {
   getCollaborationBroker,
   type CollaborationLogEntry,
@@ -46,6 +47,12 @@ import type { PlayerSnapshot } from '@clawville/shared';
 // necessity — if the client world dimension changes, change it here in the same diff.
 const MAP_WIDTH = 18432;
 const MAP_HEIGHT = 18432;
+
+// Connection-lifecycle (2026-06-19): how often we slide an autonomous
+// server-managed agent body's `last_seen_at` keepalive. Throttled so the
+// 5 Hz tick doesn't issue a DB write per agent per tick — once/agent/60s is
+// ample headroom under the 30-min (`AGENT_BODY_IDLE_DESPAWN_MS`) idle window.
+const BODY_KEEPALIVE_INTERVAL_MS = 60_000;
 
 // Hatcher proxy-cognition (partner #2, Phase A — 2026-06-01). The canonical
 // "you are inside ClawVille" orientation text, joined + frozen once at module
@@ -350,6 +357,12 @@ class NpcSimulation {
   // OpenClaw bot registry
   private openClawBots: Map<string, { config: OpenClawRegistration; client: OpenClawClient }> = new Map();
   private npcOverrides: Map<string, string> = new Map(); // npcId → sessionId
+  // Connection-lifecycle (2026-06-19): agentId → last epoch-ms we slid the body
+  // keepalive (`last_seen_at`) for an AUTONOMOUS server-managed body. Throttles
+  // the DB write to once/agent/BODY_KEEPALIVE_INTERVAL_MS so a disconnected-but-
+  // -playing agent's body survives the 30-min idle despawn (until its session
+  // expires ~24h after the owner's last action). See keepAutonomousBodiesAlive.
+  private lastBodyKeepaliveAt: Map<string, number> = new Map();
   // Controlled-launch suppression: agentId → epoch-ms until which a Hatcher
   // proxy NPC is "human-driven" and must be hidden + frozen (its owner is
   // driving the bound avatar in 'player' mode). Refreshed at 5 Hz by
@@ -778,6 +791,7 @@ class NpcSimulation {
     // can't outlive the session (a re-registered agent gets a fresh window).
     this.humanControlledOpenClawUntil.delete(bot.config.agentId);
     this.forgetHumanControlledOpenClawLaunch(bot.config.agentId, bot.config.boundUserId);
+    this.lastBodyKeepaliveAt.delete(bot.config.agentId);
     if (bot.config.mode === 'override') {
       const npcId = bot.config.targetNpcId;
       this.cleanupNpcFromCombats(npcId);
@@ -801,6 +815,43 @@ class NpcSimulation {
     const sessionId = this.npcOverrides.get(npcId);
     if (!sessionId) return null;
     return this.openClawBots.get(sessionId)?.client ?? null;
+  }
+
+  /**
+   * Connection-lifecycle (2026-06-19) — keep disconnected-but-playing
+   * SERVER-MANAGED agent bodies alive. Called every world-mode tick.
+   *
+   * The decision: a connected/hosted agent persists + plays autonomously
+   * server-side after its owner closes the browser, until the session expires
+   * (~24h after the owner's last authenticated action). The sim already DRIVES
+   * server-managed bodies regardless of the browser, but the body-idle sweeper
+   * (`agent-body-idle-sweeper.ts`) despawns any body whose `last_seen_at` is
+   * older than 30 min — and a server-driven body's autonomous actions never
+   * touch `last_seen_at`, so it would be reaped mid-play. We slide `last_seen_at`
+   * here (throttled, fire-and-forget) WITHOUT sliding `session_expires_at`
+   * (touchBodyKeepalive splits them) so the body survives but the session still
+   * expires on schedule — the hard cap on unattended autonomous runtime.
+   *
+   * Scope:
+   *   - SERVER-MANAGED only — self-managed agents drive themselves via their own
+   *     authenticated API calls (which slide the full TTL via extendSessionTtl);
+   *     if a self-managed agent stops calling, its body SHOULD idle-despawn.
+   *   - Only spawned bodies (skip ones already despawned/restoring).
+   *   - Covers both suppressed (owner actively driving in controlled mode) and
+   *     unsuppressed (autonomous) server-managed bodies — both are "in use" and
+   *     must outlive the 30-min idle window up to the session cap.
+   */
+  private keepAutonomousBodiesAlive(now: number): void {
+    for (const [sessionId, { config }] of this.openClawBots) {
+      if (config.autonomyMode !== 'server-managed') continue;
+      const npcId = config.mode === 'override' ? config.targetNpcId : `oc-${sessionId}`;
+      if (!this.npcs.has(npcId)) continue;
+      const agentId = config.agentId;
+      const last = this.lastBodyKeepaliveAt.get(agentId) ?? 0;
+      if (now - last < BODY_KEEPALIVE_INTERVAL_MS) continue;
+      this.lastBodyKeepaliveAt.set(agentId, now);
+      void touchBodyKeepalive(agentId);
+    }
   }
 
   /**
@@ -1533,6 +1584,11 @@ class NpcSimulation {
     // Autonomous avatar behavior (world mode only) — Phase 2: via SimulationRuntime
     if (!this.arenaMode) {
       this.avatarAutonomyManager.tick();
+      // Connection-lifecycle (2026-06-19): keep disconnected-but-playing
+      // server-managed agent bodies alive (slide last_seen_at, throttled) so
+      // they persist until their session expires instead of idle-despawning at
+      // 30 min mid-play. Self-throttled per-agent — cheap to call every tick.
+      this.keepAutonomousBodiesAlive(Date.now());
     }
 
     this.cleanup();

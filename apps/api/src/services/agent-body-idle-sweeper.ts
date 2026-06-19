@@ -4,9 +4,18 @@
  * A connected agent that stops acting keeps a live in-world body (an NPC the
  * shared single-threaded sim ticks every frame: pathfinding, neighbour scans,
  * combat checks). Dormant bodies cost sim CPU for nothing. This sweeper removes
- * the BODY of any agent that has not had a TTL-sliding activity (chat, heartbeat,
- * building visit — anything that writes `last_seen_at`) within
- * AGENT_BODY_IDLE_DESPAWN_MS, while leaving the SESSION fully valid.
+ * the BODY of any agent that EITHER:
+ *   (a) has not had a TTL-sliding activity (chat, heartbeat, building visit —
+ *       anything that writes `last_seen_at`) within AGENT_BODY_IDLE_DESPAWN_MS
+ *       (the original compute-fairness lever for an abandoned body), OR
+ *   (b) whose SESSION has EXPIRED (`session_expires_at <= now`) — added 2026-06-19
+ *       for the connection-lifecycle policy: a disconnected SERVER-MANAGED agent
+ *       plays autonomously and the sim keeps its `last_seen_at` fresh via
+ *       body-keepalive, so (a) never fires for it; (b) is the hard cap that ends
+ *       autonomous play ~24h after the owner's last action. The session-sweeper
+ *       (5-min) flips the DB row to expired; this (1-min) sweep reaps the body.
+ * Either way the SESSION columns are left untouched here (the session-sweeper
+ * owns `session_expires_at`/`session_swept_at`/`session_key_hash`).
  *
  * CRITICAL — DESPAWN IS NOT EXPIRY (read before editing):
  *   - We do NOT touch `session_expires_at`, `session_swept_at`, OR
@@ -67,16 +76,21 @@ export async function sweepIdleAgentBodies(): Promise<number> {
   if (pairs.length === 0) return 0;
 
   const idleMs = resolveIdleDespawnMs();
-  const cutoff = Date.now() - idleMs;
+  const now = Date.now();
+  const cutoff = now - idleMs;
 
   // Map agentId -> the live sessionIds for it (one agent can in theory hold more
   // than one live body across a re-register race; despawn ALL of its bodies when
-  // idle). Batch-read last_seen_at by agentId in ONE query.
+  // idle). Batch-read last_seen_at + session_expires_at by agentId in ONE query.
   const agentIds = [...new Set(pairs.map((p) => p.agentId))];
-  let rows: Array<{ agentId: string; lastSeenAt: Date }>;
+  let rows: Array<{ agentId: string; lastSeenAt: Date | null; sessionExpiresAt: Date | null }>;
   try {
     rows = await db
-      .select({ agentId: openclawBots.agentId, lastSeenAt: openclawBots.lastSeenAt })
+      .select({
+        agentId: openclawBots.agentId,
+        lastSeenAt: openclawBots.lastSeenAt,
+        sessionExpiresAt: openclawBots.sessionExpiresAt,
+      })
       .from(openclawBots)
       .where(inArray(openclawBots.agentId, agentIds));
   } catch (err) {
@@ -84,19 +98,33 @@ export async function sweepIdleAgentBodies(): Promise<number> {
     return 0;
   }
 
-  // agentId -> lastSeenAt ms. A live body with no surviving row (shouldn't
-  // happen — a live session always has a row) is treated as NOT idle (skip),
-  // because despawning a body we can't restore from would strand the agent.
-  const lastSeen = new Map<string, number>();
+  // agentId -> {lastSeen, expiresAt} ms. A live body with no surviving row
+  // (shouldn't happen — a live session always has a row) is skipped, because
+  // despawning a body we can't restore from would strand the agent.
+  const info = new Map<string, { lastSeen: number; expiresAt: number | null }>();
   for (const r of rows) {
-    if (r.lastSeenAt) lastSeen.set(r.agentId, r.lastSeenAt.getTime());
+    info.set(r.agentId, {
+      lastSeen: r.lastSeenAt ? r.lastSeenAt.getTime() : 0,
+      expiresAt: r.sessionExpiresAt ? r.sessionExpiresAt.getTime() : null,
+    });
   }
 
   let despawned = 0;
   for (const { sessionId, agentId } of pairs) {
-    const seen = lastSeen.get(agentId);
-    if (seen === undefined) continue; // no row read — don't strand the agent
-    if (seen >= cutoff) continue; // still active within the window
+    const rec = info.get(agentId);
+    if (!rec) continue; // no row read — don't strand the agent
+    // Despawn when EITHER:
+    //   (a) idle > 30 min (last_seen_at stale) — the original compute-fairness
+    //       lever for an abandoned non-autonomous body; OR
+    //   (b) the session has EXPIRED (connection-lifecycle, 2026-06-19) — the hard
+    //       cap on a disconnected SERVER-MANAGED agent's autonomous run. Its
+    //       last_seen_at is kept fresh by the sim's body-keepalive while it
+    //       plays, so (a) never fires for it; (b) is what ends autonomous play
+    //       ~24h after the owner's last action. The session-sweeper (5-min)
+    //       expires the DB row; this (1-min) sweep reaps the in-world body.
+    const sessionExpired = rec.expiresAt != null && rec.expiresAt <= now;
+    const idle = rec.lastSeen < cutoff;
+    if (!sessionExpired && !idle) continue; // still active + session live
 
     // Persist the live body's current position so restore re-spawns it where it
     // was (avatar bodies only — override bodies take over a fixed NPC, no
