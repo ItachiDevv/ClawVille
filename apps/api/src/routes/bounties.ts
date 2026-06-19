@@ -1,8 +1,11 @@
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { z } from 'zod';
-import type { AppContext } from '../types';
-import { sessionMiddleware, requireAuth } from '../middleware/auth';
+import { sessionMiddleware } from '../middleware/auth';
+import {
+  requireAuthOrAgentSession,
+  type ActivityAuthContext,
+} from '../middleware/require-auth-or-agent';
 import { creditClawTokens, debitClawTokens } from '../services/claw-token-ledger';
 import {
   db,
@@ -18,16 +21,33 @@ import {
 import { eq, and, desc, asc, sql, ne } from 'drizzle-orm';
 import { count } from 'drizzle-orm';
 
-export const bountyRoutes = new Hono<AppContext>();
+// Agent parity (Rule E5, Phase B). Every WRITE binds to `identity.avatarId` from
+// `requireAuthOrAgentSession` — the SAME avatar for a Lucia human AND a
+// connected/hosted agent (`X-Clawville-Agent-Session` → its bound avatar). The
+// route group runs `sessionMiddleware` FIRST so the middleware can read
+// `c.get('user')` for the human path; the agent path reads the session header.
+// Escrow + self-deal guards (creator≠claimant, only-creator-reviews,
+// only-creator-cancels) are unchanged — they were already keyed on the acting
+// avatar id, which is now the resolved `identity.avatarId`.
+export const bountyRoutes = new Hono<ActivityAuthContext>();
 bountyRoutes.use('*', sessionMiddleware);
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-async function getUserAvatar(userId: string) {
+/**
+ * Resolve the acting avatar (full row) from the dual-identity middleware.
+ * `requireAuthOrAgentSession` already proved a live human/agent session and
+ * resolved a real, active `identity.avatarId` (it 403s an unbound/expired agent
+ * and a user with no active avatar). We re-load the row by THAT id (never a
+ * body-supplied id) so we have `clawTokens`/`id`/`userId` for escrow checks +
+ * audit. The id comes from the middleware, not the request body — unspoofable.
+ */
+async function getActingAvatar(c: { get: (k: 'identity') => ActivityAuthContext['Variables']['identity'] }) {
+  const identity = c.get('identity');
   const avatar = await db.query.avatars.findFirst({
-    where: and(eq(avatars.userId, userId), eq(avatars.isActive, true)),
+    where: eq(avatars.id, identity.avatarId),
   });
   if (!avatar) throw new HTTPException(404, { message: 'No active agent found' });
   return avatar;
@@ -182,9 +202,8 @@ bountyRoutes.get('/featured', async (c) => {
 // ---------------------------------------------------------------------------
 // 7. GET /my-bounties — Get bounties I created (auth)
 // ---------------------------------------------------------------------------
-bountyRoutes.get('/my-bounties', requireAuth, async (c) => {
-  const user = c.get('user') as { id: string };
-  const avatar = await getUserAvatar(user.id);
+bountyRoutes.get('/my-bounties', requireAuthOrAgentSession, async (c) => {
+  const avatar = await getActingAvatar(c);
 
   const rows = await db
     .select()
@@ -249,9 +268,8 @@ bountyRoutes.get('/my-bounties', requireAuth, async (c) => {
 // ---------------------------------------------------------------------------
 // 11. GET /my-attempts — Get my bounty attempts (auth)
 // ---------------------------------------------------------------------------
-bountyRoutes.get('/my-attempts', requireAuth, async (c) => {
-  const user = c.get('user') as { id: string };
-  const avatar = await getUserAvatar(user.id);
+bountyRoutes.get('/my-attempts', requireAuthOrAgentSession, async (c) => {
+  const avatar = await getActingAvatar(c);
 
   const rows = await db
     .select({
@@ -293,10 +311,8 @@ bountyRoutes.get('/my-attempts', requireAuth, async (c) => {
 // ---------------------------------------------------------------------------
 // 4. POST /create — Create a bounty (auth + escrow)
 // ---------------------------------------------------------------------------
-bountyRoutes.post('/create', requireAuth, async (c) => {
-  const user = c.get('user') as { id: string };
-
-  const body = await c.req.json();
+bountyRoutes.post('/create', requireAuthOrAgentSession, async (c) => {
+  const body = await c.req.json().catch(() => ({}));
   const parsed = createBountySchema.safeParse(body);
   if (!parsed.success) {
     throw new HTTPException(400, {
@@ -307,7 +323,7 @@ bountyRoutes.post('/create', requireAuth, async (c) => {
   }
 
   const data = parsed.data;
-  const avatar = await getUserAvatar(user.id);
+  const avatar = await getActingAvatar(c);
 
   // ESCROW: Verify creator has enough tokens
   if (avatar.clawTokens < data.tokenReward) {
@@ -474,12 +490,11 @@ bountyRoutes.get('/reputation/:avatarId', async (c) => {
 // ---------------------------------------------------------------------------
 // 12. POST /attempts/:attemptId/review — Review a submission (bounty creator)
 // ---------------------------------------------------------------------------
-bountyRoutes.post('/attempts/:attemptId/review', requireAuth, async (c) => {
-  const user = c.get('user') as { id: string };
+bountyRoutes.post('/attempts/:attemptId/review', requireAuthOrAgentSession, async (c) => {
   const attemptId = c.req.param('attemptId');
   validateUuid(attemptId, 'Attempt');
 
-  const body = await c.req.json();
+  const body = await c.req.json().catch(() => ({}));
   const parsed = reviewSchema.safeParse(body);
   if (!parsed.success) {
     throw new HTTPException(400, {
@@ -490,7 +505,7 @@ bountyRoutes.post('/attempts/:attemptId/review', requireAuth, async (c) => {
   }
 
   const { decision, reviewNote } = parsed.data;
-  const reviewerAvatar = await getUserAvatar(user.id);
+  const reviewerAvatar = await getActingAvatar(c);
 
   // Fetch attempt with bounty details
   const [attemptRow] = await db
@@ -853,12 +868,11 @@ bountyRoutes.get('/:id', async (c) => {
 // ---------------------------------------------------------------------------
 // 8. POST /:id/claim — Claim a bounty (auth)
 // ---------------------------------------------------------------------------
-bountyRoutes.post('/:id/claim', requireAuth, async (c) => {
-  const user = c.get('user') as { id: string };
+bountyRoutes.post('/:id/claim', requireAuthOrAgentSession, async (c) => {
   const id = c.req.param('id');
   validateUuid(id, 'Bounty');
 
-  const avatar = await getUserAvatar(user.id);
+  const avatar = await getActingAvatar(c);
 
   // Verify bounty exists and is open
   const [bounty] = await db
@@ -949,12 +963,11 @@ bountyRoutes.post('/:id/claim', requireAuth, async (c) => {
 // ---------------------------------------------------------------------------
 // 9. POST /:id/submit — Submit completed work (auth)
 // ---------------------------------------------------------------------------
-bountyRoutes.post('/:id/submit', requireAuth, async (c) => {
-  const user = c.get('user') as { id: string };
+bountyRoutes.post('/:id/submit', requireAuthOrAgentSession, async (c) => {
   const id = c.req.param('id'); // bounty ID
   validateUuid(id, 'Bounty');
 
-  const body = await c.req.json();
+  const body = await c.req.json().catch(() => ({}));
   const parsed = submitSchema.safeParse(body);
   if (!parsed.success) {
     throw new HTTPException(400, {
@@ -964,7 +977,7 @@ bountyRoutes.post('/:id/submit', requireAuth, async (c) => {
     });
   }
 
-  const avatar = await getUserAvatar(user.id);
+  const avatar = await getActingAvatar(c);
 
   // Find the hunter's active attempt (claimed or in_progress) for this bounty
   const attempt = await db.query.bountyAttempts.findFirst({
@@ -1013,12 +1026,11 @@ bountyRoutes.post('/:id/submit', requireAuth, async (c) => {
 // ---------------------------------------------------------------------------
 // 10. POST /:id/abandon — Abandon an attempt (auth)
 // ---------------------------------------------------------------------------
-bountyRoutes.post('/:id/abandon', requireAuth, async (c) => {
-  const user = c.get('user') as { id: string };
+bountyRoutes.post('/:id/abandon', requireAuthOrAgentSession, async (c) => {
   const id = c.req.param('id'); // bounty ID
   validateUuid(id, 'Bounty');
 
-  const avatar = await getUserAvatar(user.id);
+  const avatar = await getActingAvatar(c);
 
   // Find the hunter's active attempt for this bounty
   const attempt = await db.query.bountyAttempts.findFirst({
@@ -1068,12 +1080,11 @@ bountyRoutes.post('/:id/abandon', requireAuth, async (c) => {
 // ---------------------------------------------------------------------------
 // 5. PATCH /:id — Update bounty (only if open, only by creator, can't change tokenReward)
 // ---------------------------------------------------------------------------
-bountyRoutes.patch('/:id', requireAuth, async (c) => {
-  const user = c.get('user') as { id: string };
+bountyRoutes.patch('/:id', requireAuthOrAgentSession, async (c) => {
   const id = c.req.param('id');
   validateUuid(id, 'Bounty');
 
-  const body = await c.req.json();
+  const body = await c.req.json().catch(() => ({}));
   const parsed = updateBountySchema.safeParse(body);
   if (!parsed.success) {
     throw new HTTPException(400, {
@@ -1083,7 +1094,7 @@ bountyRoutes.patch('/:id', requireAuth, async (c) => {
     });
   }
 
-  const avatar = await getUserAvatar(user.id);
+  const avatar = await getActingAvatar(c);
 
   const [bounty] = await db
     .select()
@@ -1156,12 +1167,11 @@ bountyRoutes.patch('/:id', requireAuth, async (c) => {
 // ---------------------------------------------------------------------------
 // 6. DELETE /:id — Cancel bounty (refund escrow if no active attempts)
 // ---------------------------------------------------------------------------
-bountyRoutes.delete('/:id', requireAuth, async (c) => {
-  const user = c.get('user') as { id: string };
+bountyRoutes.delete('/:id', requireAuthOrAgentSession, async (c) => {
   const id = c.req.param('id');
   validateUuid(id, 'Bounty');
 
-  const avatar = await getUserAvatar(user.id);
+  const avatar = await getActingAvatar(c);
 
   const [bounty] = await db
     .select()

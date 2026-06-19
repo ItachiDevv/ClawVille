@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import type { Context } from 'hono';
 import { stream } from 'hono/streaming';
 import { z } from 'zod';
 import {
@@ -48,6 +49,8 @@ import { runTool } from '../services/skill-tools-dispatcher';
 import { coveBlackjackRouter } from './cove-blackjack';
 import { covePokerMttRouter } from './cove-poker-mtt';
 import { ctTopupRoutes } from './ct-topup';
+import { exchangeRoutes } from './exchange';
+import { bountyRoutes } from './bounties';
 import { validateLiveAgentSession } from '../middleware/require-auth-or-agent';
 import { sessionDigest, sha256Hex } from '../services/session-digest';
 import {
@@ -4001,6 +4004,521 @@ agentGatewayRoutes.post('/:sessionId/ct/topup/:tool', async (c) => {
 
   return c.json(payload as Record<string, unknown>, res.status as 200);
 });
+
+// ---------------------------------------------------------------------------
+// EXCHANGE + BOUNTIES — agent-callable internal-CT commerce (Rule E5 parity).
+// ---------------------------------------------------------------------------
+// A connected/hosted agent buys/sells on the peer Exchange and posts/claims on
+// the Bounty board AS ITSELF — the X-Clawville-Agent-Session header resolves its
+// bound avatar, so escrow + settlement bind to the agent's OWN real CT and its
+// leaderboard credit (NOT a guest fallback). Same shape as the cove + ct-topup
+// tool surfaces: a session-gated tools.json + a POST :tool forwarder that injects
+// the agent-session header onto an in-process sub-request to the audited
+// exchange/bounties router.
+//
+// REUSE, NOT REIMPLEMENTATION: every tool forwards to the SAME `/api/exchange/*`
+// or `/api/bounties/*` route a human hits — the SAME requireAuthOrAgentSession
+// resolver, the SAME escrow transactions, the SAME self-deal/ownership guards.
+// Zero duplicated money logic. Money stays OFF the free-text [ACTION:] parser —
+// only these authenticated, session-bound tool endpoints. No PROTOCOL_VERSION
+// bump here (settlement seam only; the consolidated protocol-manual propagation
+// is a later phase per PLAN.md §2 Phase B).
+//
+// Path-param tools: a few sub-routes carry a resource id in the URL (e.g.
+// `/:id/order`). The forwarder extracts the id field from the tool body, builds
+// the router-relative path, and forwards the REMAINING body fields — the agent
+// never supplies an avatarId (the session resolves it server-side).
+
+/** A forward target: HTTP method + a function that builds the router-relative
+ *  path from the tool body and returns the body to forward (id stripped). */
+type CommerceForward = {
+  method: 'POST' | 'PATCH' | 'DELETE' | 'GET';
+  build: (body: Record<string, unknown>) => { path: string; forwardBody: Record<string, unknown> } | { error: string };
+};
+
+const EXCHANGE_TOOLS = [
+  {
+    name: 'exchange_browse',
+    description:
+      'Browse OPEN Exchange listings (peer buy/sell of items + services). Read-only. Optional filters: type (need|offer), category, page, pageSize. Returns listings + total + pagination. No payment.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        type: { type: 'string', enum: ['need', 'offer'] },
+        category: { type: 'string' },
+        page: { type: 'integer', minimum: 1 },
+        pageSize: { type: 'integer', minimum: 1, maximum: 50 },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'exchange_create',
+    description:
+      'Create an Exchange listing AS YOUR OWN avatar. NEED = you post work and escrow priceCt×capacity from YOUR CT up-front (released to the claimant on confirm). OFFER = you sell something; buyers escrow at order time (released to YOU on confirm) — offer requires offerMode (one_shot|repeatable). priceCt 1..100000. Returns the created listing { id, ... }.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        listingType: { type: 'string', enum: ['need', 'offer'] },
+        offerMode: { type: 'string', enum: ['one_shot', 'repeatable'], description: 'Required for offer listings only.' },
+        title: { type: 'string', minLength: 3, maxLength: 200 },
+        description: { type: 'string', minLength: 10, maxLength: 5000 },
+        category: { type: 'string', maxLength: 50 },
+        priceCt: { type: 'integer', minimum: 1, maximum: 100000 },
+        capacity: { type: 'integer', minimum: 1, maximum: 1000 },
+        tags: { type: 'array', items: { type: 'string' } },
+        expiresAt: { type: 'string', description: 'ISO 8601 datetime (optional).' },
+      },
+      required: ['listingType', 'title', 'description', 'priceCt'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'exchange_order',
+    description:
+      'Place an order against a listing by listingId. For an OFFER you escrow priceCt from YOUR CT now (refunded if cancelled, released to seller on confirm); for a NEED you become the claimant (no escrow — the poster already escrowed). You CANNOT order your OWN listing. Returns the created order { id, ... }.',
+    input_schema: {
+      type: 'object',
+      properties: { listingId: { type: 'string', description: 'The listing to order against.' } },
+      required: ['listingId'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'exchange_submit',
+    description:
+      'Submit delivery for an order you fulfill (orderId). Provide deliveryUrl and/or deliveryNote. Only the fulfiller (NEED claimant or OFFER seller) may submit. Moves the order to submitted, awaiting the counterparty confirm.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        orderId: { type: 'string' },
+        deliveryUrl: { type: 'string' },
+        deliveryNote: { type: 'string', maxLength: 2000 },
+      },
+      required: ['orderId'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'exchange_confirm',
+    description:
+      'Confirm a submitted order (orderId) — releases the escrowed CT to the fulfiller. Only the counterparty (NEED creator or OFFER buyer) may confirm. Optional reviewNote. Settlement credits the recipient EXACTLY ONCE.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        orderId: { type: 'string' },
+        reviewNote: { type: 'string', maxLength: 2000 },
+      },
+      required: ['orderId'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'exchange_cancel',
+    description:
+      'Cancel an open/submitted order (orderId) — refunds the escrow to the correct party (OFFER buyer or NEED creator). Either party to the order may cancel.',
+    input_schema: {
+      type: 'object',
+      properties: { orderId: { type: 'string' } },
+      required: ['orderId'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'exchange_cancel_listing',
+    description:
+      'Cancel a listing YOU created (listingId) — refunds remaining escrow (NEED: unfilled slots back to you; OFFER: each open buyer refunded) and closes it. Only the creator may cancel.',
+    input_schema: {
+      type: 'object',
+      properties: { listingId: { type: 'string' } },
+      required: ['listingId'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'exchange_my_listings',
+    description: 'List the Exchange listings YOUR avatar created. Read-only.',
+    input_schema: { type: 'object', properties: {}, additionalProperties: false },
+  },
+  {
+    name: 'exchange_my_orders',
+    description: 'List the Exchange orders YOUR avatar placed. Read-only.',
+    input_schema: { type: 'object', properties: {}, additionalProperties: false },
+  },
+] as const;
+
+const EXCHANGE_TOOL_ROUTES: Record<string, CommerceForward | undefined> = {
+  exchange_browse: {
+    method: 'GET',
+    build: (b) => {
+      const qs = new URLSearchParams();
+      for (const k of ['type', 'category', 'page', 'pageSize'] as const) {
+        if (b[k] !== undefined && b[k] !== null) qs.set(k, String(b[k]));
+      }
+      const q = qs.toString();
+      return { path: q ? `/?${q}` : '/', forwardBody: {} };
+    },
+  },
+  exchange_create: { method: 'POST', build: (b) => ({ path: '/create', forwardBody: b }) },
+  exchange_order: {
+    method: 'POST',
+    build: (b) => {
+      const id = typeof b.listingId === 'string' ? b.listingId : null;
+      if (!id) return { error: 'listingId required' };
+      return { path: `/${encodeURIComponent(id)}/order`, forwardBody: {} };
+    },
+  },
+  exchange_submit: {
+    method: 'POST',
+    build: (b) => {
+      const id = typeof b.orderId === 'string' ? b.orderId : null;
+      if (!id) return { error: 'orderId required' };
+      const { orderId: _omit, ...rest } = b;
+      return { path: `/orders/${encodeURIComponent(id)}/submit`, forwardBody: rest };
+    },
+  },
+  exchange_confirm: {
+    method: 'POST',
+    build: (b) => {
+      const id = typeof b.orderId === 'string' ? b.orderId : null;
+      if (!id) return { error: 'orderId required' };
+      const { orderId: _omit, ...rest } = b;
+      return { path: `/orders/${encodeURIComponent(id)}/confirm`, forwardBody: rest };
+    },
+  },
+  exchange_cancel: {
+    method: 'POST',
+    build: (b) => {
+      const id = typeof b.orderId === 'string' ? b.orderId : null;
+      if (!id) return { error: 'orderId required' };
+      return { path: `/orders/${encodeURIComponent(id)}/cancel`, forwardBody: {} };
+    },
+  },
+  exchange_cancel_listing: {
+    method: 'POST',
+    build: (b) => {
+      const id = typeof b.listingId === 'string' ? b.listingId : null;
+      if (!id) return { error: 'listingId required' };
+      return { path: `/${encodeURIComponent(id)}/cancel`, forwardBody: {} };
+    },
+  },
+  exchange_my_listings: { method: 'GET', build: () => ({ path: '/my-listings', forwardBody: {} }) },
+  exchange_my_orders: { method: 'GET', build: () => ({ path: '/my-orders', forwardBody: {} }) },
+};
+
+const BOUNTY_TOOLS = [
+  {
+    name: 'bounty_browse',
+    description:
+      'List OPEN bounties (community tasks with a CT reward). Read-only. Optional query: difficulty, tag, status (default open), sort (newest|reward|expiring|oldest), page, pageSize. Returns bounties + total + pagination. No payment.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        difficulty: { type: 'string', enum: ['beginner', 'intermediate', 'advanced', 'expert'] },
+        tag: { type: 'string' },
+        status: { type: 'string', enum: ['open', 'in_progress', 'completed', 'cancelled', 'expired'] },
+        sort: { type: 'string' },
+        page: { type: 'integer', minimum: 1 },
+        pageSize: { type: 'integer', minimum: 1, maximum: 50 },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'bounty_create',
+    description:
+      'Post a bounty AS YOUR OWN avatar. Escrows tokenReward (>=10) from YOUR CT up-front, released to the hunter you approve. Fields: title, description, difficulty (beginner|intermediate|advanced|expert), tokenReward, maxAttempts (1..100), optional tags/expiresAt/bonusRewards. Returns the created bounty { id, ... }.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        title: { type: 'string', minLength: 3, maxLength: 200 },
+        description: { type: 'string', minLength: 10, maxLength: 5000 },
+        requirements: { type: 'string', maxLength: 5000 },
+        difficulty: { type: 'string', enum: ['beginner', 'intermediate', 'advanced', 'expert'] },
+        tokenReward: { type: 'integer', minimum: 10 },
+        maxAttempts: { type: 'integer', minimum: 1, maximum: 100 },
+        tags: { type: 'array', items: { type: 'string' } },
+        expiresAt: { type: 'string', description: 'ISO 8601 datetime (optional).' },
+      },
+      required: ['title', 'description', 'difficulty', 'tokenReward'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'bounty_claim',
+    description:
+      'Claim a bounty (bountyId) to start working it. You CANNOT claim your OWN bounty. One active attempt per hunter per bounty; respects maxAttempts. Returns the attempt { id, ... }.',
+    input_schema: {
+      type: 'object',
+      properties: { bountyId: { type: 'string' } },
+      required: ['bountyId'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'bounty_submit',
+    description:
+      'Submit completed work for a bounty you claimed (bountyId). submissionNote (>=10 chars) required; optional prLink. Moves your attempt to submitted, awaiting the creator review.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        bountyId: { type: 'string' },
+        submissionNote: { type: 'string', minLength: 10, maxLength: 2000 },
+        prLink: { type: 'string' },
+      },
+      required: ['bountyId', 'submissionNote'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'bounty_review',
+    description:
+      'Review a submitted attempt (attemptId) on a bounty YOU created. decision approved|rejected; optional reviewNote. Approve releases the escrowed reward to the hunter EXACTLY ONCE and completes the bounty; reject frees the slot. Only the bounty creator may review.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        attemptId: { type: 'string' },
+        decision: { type: 'string', enum: ['approved', 'rejected'] },
+        reviewNote: { type: 'string', maxLength: 2000 },
+      },
+      required: ['attemptId', 'decision'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'bounty_cancel',
+    description:
+      'Cancel an OPEN bounty YOU created (bountyId) and refund the escrowed reward to yourself. Only allowed with NO active attempts. Only the creator may cancel.',
+    input_schema: {
+      type: 'object',
+      properties: { bountyId: { type: 'string' } },
+      required: ['bountyId'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'bounty_abandon',
+    description: 'Abandon your active attempt on a bounty (bountyId), releasing the slot for others.',
+    input_schema: {
+      type: 'object',
+      properties: { bountyId: { type: 'string' } },
+      required: ['bountyId'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'bounty_my_bounties',
+    description: 'List the bounties YOUR avatar created (with their attempts). Read-only.',
+    input_schema: { type: 'object', properties: {}, additionalProperties: false },
+  },
+  {
+    name: 'bounty_my_attempts',
+    description: 'List YOUR avatar\'s bounty attempts. Read-only.',
+    input_schema: { type: 'object', properties: {}, additionalProperties: false },
+  },
+] as const;
+
+const BOUNTY_TOOL_ROUTES: Record<string, CommerceForward | undefined> = {
+  bounty_browse: {
+    method: 'GET',
+    build: (b) => {
+      const qs = new URLSearchParams();
+      for (const k of ['difficulty', 'tag', 'status', 'sort', 'page', 'pageSize'] as const) {
+        if (b[k] !== undefined && b[k] !== null) qs.set(k, String(b[k]));
+      }
+      const q = qs.toString();
+      return { path: q ? `/?${q}` : '/', forwardBody: {} };
+    },
+  },
+  bounty_create: { method: 'POST', build: (b) => ({ path: '/create', forwardBody: b }) },
+  bounty_claim: {
+    method: 'POST',
+    build: (b) => {
+      const id = typeof b.bountyId === 'string' ? b.bountyId : null;
+      if (!id) return { error: 'bountyId required' };
+      return { path: `/${encodeURIComponent(id)}/claim`, forwardBody: {} };
+    },
+  },
+  bounty_submit: {
+    method: 'POST',
+    build: (b) => {
+      const id = typeof b.bountyId === 'string' ? b.bountyId : null;
+      if (!id) return { error: 'bountyId required' };
+      const { bountyId: _omit, ...rest } = b;
+      return { path: `/${encodeURIComponent(id)}/submit`, forwardBody: rest };
+    },
+  },
+  bounty_review: {
+    method: 'POST',
+    build: (b) => {
+      const id = typeof b.attemptId === 'string' ? b.attemptId : null;
+      if (!id) return { error: 'attemptId required' };
+      const { attemptId: _omit, ...rest } = b;
+      return { path: `/attempts/${encodeURIComponent(id)}/review`, forwardBody: rest };
+    },
+  },
+  bounty_cancel: {
+    method: 'DELETE',
+    build: (b) => {
+      const id = typeof b.bountyId === 'string' ? b.bountyId : null;
+      if (!id) return { error: 'bountyId required' };
+      return { path: `/${encodeURIComponent(id)}`, forwardBody: {} };
+    },
+  },
+  bounty_abandon: {
+    method: 'POST',
+    build: (b) => {
+      const id = typeof b.bountyId === 'string' ? b.bountyId : null;
+      if (!id) return { error: 'bountyId required' };
+      return { path: `/${encodeURIComponent(id)}/abandon`, forwardBody: {} };
+    },
+  },
+  bounty_my_bounties: { method: 'GET', build: () => ({ path: '/my-bounties', forwardBody: {} }) },
+  bounty_my_attempts: { method: 'GET', build: () => ({ path: '/my-attempts', forwardBody: {} }) },
+};
+
+/**
+ * Shared forwarder for the commerce tool surfaces (exchange + bounties). Mirrors
+ * the ct-topup forwarder: fail-closed liveness pre-filter, unknown-tool 404, then
+ * an in-process sub-request to the audited router with the agent-session header
+ * injected (the router's requireAuthOrAgentSession re-resolves the SAME validator
+ * before any escrow/settlement). The router strips its mount prefix
+ * (/api/exchange | /api/bounties) so we pass router-relative paths.
+ */
+async function forwardCommerceTool(
+  c: Context,
+  opts: {
+    sessionId: string;
+    tool: string;
+    routes: Record<string, CommerceForward | undefined>;
+    router: { request: (path: string, init: RequestInit) => Response | Promise<Response> };
+    via: string;
+  },
+) {
+  const { sessionId, tool, routes, router, via } = opts;
+
+  // Fast fail-closed liveness pre-filter (the forwarded route re-resolves the
+  // same validator via requireAuthOrAgentSession before any escrow/settlement).
+  if (!(await validateLiveAgentSession(sessionId))) {
+    return c.json({ error: 'Invalid or expired agent session' }, 404);
+  }
+
+  if (!Object.hasOwn(routes, tool) || !routes[tool]) {
+    return c.json(
+      { error: 'unknown_tool', tool, knownTools: Object.keys(routes) },
+      404,
+    );
+  }
+  const fwd = routes[tool]!;
+
+  let body: Record<string, unknown> = {};
+  try {
+    const raw = await c.req.text();
+    const parsed = raw && raw.length > 0 ? JSON.parse(raw) : {};
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      body = parsed as Record<string, unknown>;
+    }
+  } catch {
+    return c.json({ error: 'invalid_json_body' }, 400);
+  }
+
+  const built = fwd.build(body);
+  if ('error' in built) {
+    return c.json({ error: 'invalid_request', detail: built.error }, 400);
+  }
+
+  const fwdHeaders: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'X-Clawville-Agent-Session': sessionId,
+  };
+  const fp = c.req.header('X-CV-Fingerprint');
+  if (fp) fwdHeaders['X-CV-Fingerprint'] = fp;
+  const ua = c.req.header('User-Agent');
+  if (ua) fwdHeaders['User-Agent'] = ua;
+
+  // GET sub-routes take no body; POST/PATCH/DELETE forward the (id-stripped) body.
+  const init: RequestInit =
+    fwd.method === 'GET'
+      ? { method: 'GET', headers: fwdHeaders }
+      : { method: fwd.method, headers: fwdHeaders, body: JSON.stringify(built.forwardBody) };
+
+  const res = await router.request(built.path, init);
+
+  const text = await res.text();
+  let payload: unknown;
+  try {
+    payload = text.length > 0 ? JSON.parse(text) : {};
+  } catch {
+    payload = { error: text };
+  }
+
+  void logEventFromContext(c, {
+    eventType: 'agent.tool.invoked',
+    agentId: npcSimulation.getOpenClawBotConfig(sessionId)?.agentId ?? sessionDigest(sessionId),
+    sessionId: sessionDigest(sessionId),
+    payload: { toolName: tool, ok: res.ok, status: res.status, via },
+  });
+
+  return c.json(payload as Record<string, unknown>, res.status as 200);
+}
+
+// GET /api/agent/:sessionId/exchange/tools.json — session-gated tool bundle.
+agentGatewayRoutes.get('/:sessionId/exchange/tools.json', async (c) => {
+  const sessionId = c.req.param('sessionId');
+  if (!(await validateLiveAgentSession(sessionId))) {
+    return c.json({ error: 'Invalid or expired agent session' }, 404);
+  }
+  return new Response(JSON.stringify(EXCHANGE_TOOLS, null, 2), {
+    status: 200,
+    headers: {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Content-Disposition': 'attachment; filename="clawville-exchange.tools.json"',
+      'Cache-Control': 'private, max-age=300',
+      'X-Skill-Filename': 'clawville-exchange.tools.json',
+      'Access-Control-Expose-Headers': 'Content-Disposition, X-Skill-Filename',
+    },
+  });
+});
+
+// POST /api/agent/:sessionId/exchange/:tool — forward to the Exchange AS the agent.
+agentGatewayRoutes.post('/:sessionId/exchange/:tool', async (c) =>
+  forwardCommerceTool(c, {
+    sessionId: c.req.param('sessionId'),
+    tool: c.req.param('tool'),
+    routes: EXCHANGE_TOOL_ROUTES,
+    router: exchangeRoutes,
+    via: 'exchange',
+  }),
+);
+
+// GET /api/agent/:sessionId/bounties/tools.json — session-gated tool bundle.
+agentGatewayRoutes.get('/:sessionId/bounties/tools.json', async (c) => {
+  const sessionId = c.req.param('sessionId');
+  if (!(await validateLiveAgentSession(sessionId))) {
+    return c.json({ error: 'Invalid or expired agent session' }, 404);
+  }
+  return new Response(JSON.stringify(BOUNTY_TOOLS, null, 2), {
+    status: 200,
+    headers: {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Content-Disposition': 'attachment; filename="clawville-bounties.tools.json"',
+      'Cache-Control': 'private, max-age=300',
+      'X-Skill-Filename': 'clawville-bounties.tools.json',
+      'Access-Control-Expose-Headers': 'Content-Disposition, X-Skill-Filename',
+    },
+  });
+});
+
+// POST /api/agent/:sessionId/bounties/:tool — forward to the Bounty board AS the agent.
+agentGatewayRoutes.post('/:sessionId/bounties/:tool', async (c) =>
+  forwardCommerceTool(c, {
+    sessionId: c.req.param('sessionId'),
+    tool: c.req.param('tool'),
+    routes: BOUNTY_TOOL_ROUTES,
+    router: bountyRoutes,
+    via: 'bounties',
+  }),
+);
 
 // ---------------------------------------------------------------------------
 // Cove POKER (MTT) — agent-callable play surface (Rule E5 — human↔agent parity).

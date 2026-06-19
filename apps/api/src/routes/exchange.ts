@@ -15,8 +15,11 @@
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { z } from 'zod';
-import type { AppContext } from '../types';
-import { sessionMiddleware, requireAuth } from '../middleware/auth';
+import { sessionMiddleware } from '../middleware/auth';
+import {
+  requireAuthOrAgentSession,
+  type ActivityAuthContext,
+} from '../middleware/require-auth-or-agent';
 import { creditClawTokens, debitClawTokens } from '../services/claw-token-ledger';
 import { logEventFromContext } from '../services/event-logger';
 import {
@@ -27,7 +30,14 @@ import {
 } from '@clawville/database';
 import { eq, and, desc, sql, inArray } from 'drizzle-orm';
 
-export const exchangeRoutes = new Hono<AppContext>();
+// Agent parity (Rule E5, Phase B). Every WRITE binds to `identity.avatarId` from
+// `requireAuthOrAgentSession` — the SAME avatar for a Lucia human AND a
+// connected/hosted agent (`X-Clawville-Agent-Session` → its bound avatar). The
+// route group runs `sessionMiddleware` FIRST so the middleware can read
+// `c.get('user')` for the human path; the agent path reads the session header.
+// Escrow + ownership/self-deal guards are unchanged — they were already keyed on
+// the acting avatar id, which is now the resolved `identity.avatarId`.
+export const exchangeRoutes = new Hono<ActivityAuthContext>();
 exchangeRoutes.use('*', sessionMiddleware);
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -41,9 +51,19 @@ function validateUuid(id: string, label = 'Resource') {
   }
 }
 
-async function getCallerAvatar(userId: string) {
+/**
+ * Resolve the acting avatar (full row) from the dual-identity middleware.
+ * `requireAuthOrAgentSession` already proved a live human/agent session and
+ * resolved a real, active `identity.avatarId` (it 403s an unbound/expired agent
+ * and a user with no active avatar). We re-load the row by THAT id (never a
+ * body-supplied id) so we have `clawTokens`/`name`/`id` for the balance checks +
+ * audit emits. The id can never be spoofed — it comes from the middleware, not
+ * the request body.
+ */
+async function getActingAvatar(c: { get: (k: 'identity') => ActivityAuthContext['Variables']['identity'] }) {
+  const identity = c.get('identity');
   const a = await db.query.avatars.findFirst({
-    where: and(eq(avatars.userId, userId), eq(avatars.isActive, true)),
+    where: eq(avatars.id, identity.avatarId),
   });
   if (!a) throw new HTTPException(404, { message: 'No active avatar found' });
   return a;
@@ -151,9 +171,8 @@ exchangeRoutes.get('/', async (c) => {
 
 // ─── GET /my-listings ───────────────────────────────────────────────────────
 
-exchangeRoutes.get('/my-listings', requireAuth, async (c) => {
-  const user = c.get('user') as { id: string };
-  const me = await getCallerAvatar(user.id);
+exchangeRoutes.get('/my-listings', requireAuthOrAgentSession, async (c) => {
+  const me = await getActingAvatar(c);
   const rows = await db
     .select()
     .from(exchangeListings)
@@ -164,9 +183,8 @@ exchangeRoutes.get('/my-listings', requireAuth, async (c) => {
 
 // ─── GET /my-orders ─────────────────────────────────────────────────────────
 
-exchangeRoutes.get('/my-orders', requireAuth, async (c) => {
-  const user = c.get('user') as { id: string };
-  const me = await getCallerAvatar(user.id);
+exchangeRoutes.get('/my-orders', requireAuthOrAgentSession, async (c) => {
+  const me = await getActingAvatar(c);
   const rows = await db
     .select({ o: exchangeOrders, l: exchangeListings })
     .from(exchangeOrders)
@@ -180,9 +198,8 @@ exchangeRoutes.get('/my-orders', requireAuth, async (c) => {
 
 // ─── POST /create ───────────────────────────────────────────────────────────
 
-exchangeRoutes.post('/create', requireAuth, async (c) => {
-  const user = c.get('user') as { id: string };
-  const me = await getCallerAvatar(user.id);
+exchangeRoutes.post('/create', requireAuthOrAgentSession, async (c) => {
+  const me = await getActingAvatar(c);
   const body = await c.req.json().catch(() => ({}));
   const parsed = createSchema.safeParse(body);
   if (!parsed.success) {
@@ -243,7 +260,7 @@ exchangeRoutes.post('/create', requireAuth, async (c) => {
   // creator activity by (userId, route) without joining the ledger.
   void logEventFromContext(c, {
     eventType: 'exchange.listing.created',
-    userId: user.id,
+    userId: me.userId,
     avatarId: me.id,
     payload: {
       route: 'POST /api/exchange/create',
@@ -264,11 +281,10 @@ exchangeRoutes.post('/create', requireAuth, async (c) => {
 
 // ─── POST /:id/order — place an order against a listing ─────────────────────
 
-exchangeRoutes.post('/:id/order', requireAuth, async (c) => {
+exchangeRoutes.post('/:id/order', requireAuthOrAgentSession, async (c) => {
   const id = c.req.param('id');
   validateUuid(id, 'Listing');
-  const user = c.get('user') as { id: string };
-  const me = await getCallerAvatar(user.id);
+  const me = await getActingAvatar(c);
 
   const result = await db.transaction(async (tx) => {
     const listing = await tx.query.exchangeListings.findFirst({
@@ -335,7 +351,7 @@ exchangeRoutes.post('/:id/order', requireAuth, async (c) => {
 
   void logEventFromContext(c, {
     eventType: 'exchange.order.placed',
-    userId: user.id,
+    userId: me.userId,
     avatarId: me.id,
     payload: {
       route: 'POST /api/exchange/:id/order',
@@ -363,11 +379,10 @@ const submitSchema = z.object({
   deliveryNote: z.string().max(2000).optional(),
 });
 
-exchangeRoutes.post('/orders/:orderId/submit', requireAuth, async (c) => {
+exchangeRoutes.post('/orders/:orderId/submit', requireAuthOrAgentSession, async (c) => {
   const orderId = c.req.param('orderId');
   validateUuid(orderId, 'Order');
-  const user = c.get('user') as { id: string };
-  const me = await getCallerAvatar(user.id);
+  const me = await getActingAvatar(c);
   const body = await c.req.json().catch(() => ({}));
   const parsed = submitSchema.safeParse(body);
   if (!parsed.success) {
@@ -414,7 +429,7 @@ exchangeRoutes.post('/orders/:orderId/submit', requireAuth, async (c) => {
 
   void logEventFromContext(c, {
     eventType: 'exchange.order.submitted',
-    userId: user.id,
+    userId: me.userId,
     avatarId: me.id,
     payload: {
       route: 'POST /api/exchange/orders/:orderId/submit',
@@ -435,11 +450,10 @@ const confirmSchema = z.object({
   reviewNote: z.string().max(2000).optional(),
 });
 
-exchangeRoutes.post('/orders/:orderId/confirm', requireAuth, async (c) => {
+exchangeRoutes.post('/orders/:orderId/confirm', requireAuthOrAgentSession, async (c) => {
   const orderId = c.req.param('orderId');
   validateUuid(orderId, 'Order');
-  const user = c.get('user') as { id: string };
-  const me = await getCallerAvatar(user.id);
+  const me = await getActingAvatar(c);
   const body = await c.req.json().catch(() => ({}));
   const parsed = confirmSchema.safeParse(body);
   if (!parsed.success) throw new HTTPException(400, { message: 'Invalid payload' });
@@ -518,7 +532,7 @@ exchangeRoutes.post('/orders/:orderId/confirm', requireAuth, async (c) => {
 
   void logEventFromContext(c, {
     eventType: 'exchange.order.confirmed',
-    userId: user.id,
+    userId: me.userId,
     avatarId: me.id,
     payload: {
       route: 'POST /api/exchange/orders/:orderId/confirm',
@@ -536,11 +550,10 @@ exchangeRoutes.post('/orders/:orderId/confirm', requireAuth, async (c) => {
 
 // ─── POST /orders/:orderId/cancel — refund + cancel ─────────────────────────
 
-exchangeRoutes.post('/orders/:orderId/cancel', requireAuth, async (c) => {
+exchangeRoutes.post('/orders/:orderId/cancel', requireAuthOrAgentSession, async (c) => {
   const orderId = c.req.param('orderId');
   validateUuid(orderId, 'Order');
-  const user = c.get('user') as { id: string };
-  const me = await getCallerAvatar(user.id);
+  const me = await getActingAvatar(c);
 
   const result = await db.transaction(async (tx) => {
     const order = await tx.query.exchangeOrders.findFirst({
@@ -605,7 +618,7 @@ exchangeRoutes.post('/orders/:orderId/cancel', requireAuth, async (c) => {
 
   void logEventFromContext(c, {
     eventType: 'exchange.order.cancelled',
-    userId: user.id,
+    userId: me.userId,
     avatarId: me.id,
     payload: {
       route: 'POST /api/exchange/orders/:orderId/cancel',
@@ -624,11 +637,10 @@ exchangeRoutes.post('/orders/:orderId/cancel', requireAuth, async (c) => {
 
 // ─── POST /:id/cancel — author cancels listing (refund remaining escrow) ───
 
-exchangeRoutes.post('/:id/cancel', requireAuth, async (c) => {
+exchangeRoutes.post('/:id/cancel', requireAuthOrAgentSession, async (c) => {
   const id = c.req.param('id');
   validateUuid(id, 'Listing');
-  const user = c.get('user') as { id: string };
-  const me = await getCallerAvatar(user.id);
+  const me = await getActingAvatar(c);
 
   const result = await db.transaction(async (tx) => {
     const listing = await tx.query.exchangeListings.findFirst({
@@ -726,7 +738,7 @@ exchangeRoutes.post('/:id/cancel', requireAuth, async (c) => {
 
   void logEventFromContext(c, {
     eventType: 'exchange.listing.cancelled',
-    userId: user.id,
+    userId: me.userId,
     avatarId: me.id,
     payload: {
       route: 'POST /api/exchange/:id/cancel',
