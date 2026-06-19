@@ -34,7 +34,7 @@ import {
 } from '@clawville/shared';
 import { RpgModal, RpgButton } from '@/components/rpg';
 import { useGameStore } from '@/stores/game';
-import { useAvatar } from '@/hooks/use-avatar';
+import { useAvatar, useSetSpawnPreference } from '@/hooks/use-avatar';
 import { useIsMobile } from '@/hooks/use-is-mobile';
 import { api, ApiError } from '@/lib/api';
 import { useLandStore, type ParcelState } from '@/stores/land';
@@ -416,6 +416,10 @@ function MyLandTab({
   loading,
   hasAvatar,
   claiming,
+  spawnPreference,
+  homeParcelId,
+  settingSpawn,
+  onSetSpawn,
   onClaim,
   onBuild,
 }: {
@@ -424,6 +428,10 @@ function MyLandTab({
   loading: boolean;
   hasAvatar: boolean;
   claiming: boolean;
+  spawnPreference: 'home' | 'town';
+  homeParcelId: string | null;
+  settingSpawn: boolean;
+  onSetSpawn: (mode: 'home' | 'town', parcelId?: string) => void;
   onClaim: () => void;
   onBuild: (parcel: LandParcelDTO) => void;
 }) {
@@ -440,6 +448,11 @@ function MyLandTab({
       </p>
     );
   }
+
+  // Whether the home spawn is currently a parcel the player still owns. If the
+  // stored homeParcelId isn't in the owned set (sold / transferred), treat the
+  // spawn as effectively town so the "Spawn at Town Center" revert reads right.
+  const homeIsOwned = spawnPreference === 'home' && parcels.some((p) => p.id === homeParcelId);
 
   return (
     <div>
@@ -466,6 +479,41 @@ function MyLandTab({
         </RpgButton>
       </div>
 
+      {/* Spawn-point summary + town-center revert. Renders when the player owns
+          at least one parcel (otherwise there's nothing to home-spawn at). */}
+      {parcels.length > 0 && (
+        <div className="mb-4 flex flex-col gap-2 rounded-xl border border-cyan-400/20 bg-cyan-500/[0.05] p-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="min-w-0">
+            <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-cyan-200">
+              🧭 Spawn point
+            </span>
+            <div className="mt-0.5 text-[12px] text-slate-200">
+              {homeIsOwned ? (
+                <>
+                  You spawn at{' '}
+                  <span className="font-mono font-semibold text-cyan-100">
+                    {parcels.find((p) => p.id === homeParcelId)?.parcelCode ?? 'your home'}
+                  </span>
+                  .
+                </>
+              ) : (
+                <>You spawn at <span className="font-semibold text-cyan-100">Town Center</span>.</>
+              )}
+            </div>
+          </div>
+          {homeIsOwned && (
+            <RpgButton
+              size="sm"
+              variant="ghost"
+              onClick={() => onSetSpawn('town')}
+              loading={settingSpawn}
+            >
+              Spawn at Town Center
+            </RpgButton>
+          )}
+        </div>
+      )}
+
       {loading ? (
         <p className="py-8 text-center font-mono text-xs text-slate-300">Loading your land…</p>
       ) : parcels.length === 0 ? (
@@ -477,17 +525,23 @@ function MyLandTab({
         <div className="max-h-[44vh] space-y-2 overflow-y-auto pr-1">
           {parcels.map((p) => {
             const struct = structByParcel.get(p.id);
+            const isSpawnHere = homeIsOwned && homeParcelId === p.id;
             return (
               <div
                 key={p.id}
-                className="flex items-center justify-between gap-3 rounded-xl border border-cyan-400/15 bg-cyan-500/[0.04] p-3"
+                className="flex flex-col gap-2 rounded-xl border border-cyan-400/15 bg-cyan-500/[0.04] p-3 sm:flex-row sm:items-center sm:justify-between"
               >
                 <div className="min-w-0">
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
                     <span className="font-mono text-[11px] uppercase tracking-[0.14em] text-cyan-100">
                       {p.parcelCode}
                     </span>
                     <TierBadge tier={p.tier} />
+                    {isSpawnHere && (
+                      <span className="inline-flex items-center rounded-full border border-cyan-300/40 bg-cyan-400/15 px-2 py-0.5 font-mono text-[9px] font-bold uppercase tracking-[0.14em] text-cyan-100">
+                        🧭 Spawn here
+                      </span>
+                    )}
                   </div>
                   <div className="mt-1 font-mono text-[11px] text-slate-300">
                     {struct
@@ -495,9 +549,20 @@ function MyLandTab({
                       : 'Empty lot — nothing built yet'}
                   </div>
                 </div>
-                <RpgButton size="sm" variant="secondary" onClick={() => onBuild(p)}>
-                  {struct ? 'Manage' : 'Build'}
-                </RpgButton>
+                <div className="flex shrink-0 items-center gap-2">
+                  <RpgButton
+                    size="sm"
+                    variant={isSpawnHere ? 'ghost' : 'secondary'}
+                    onClick={() => onSetSpawn('home', p.id)}
+                    loading={settingSpawn}
+                    disabled={isSpawnHere}
+                  >
+                    {isSpawnHere ? 'Spawn point ✓' : 'Set as spawn point'}
+                  </RpgButton>
+                  <RpgButton size="sm" variant="secondary" onClick={() => onBuild(p)}>
+                    {struct ? 'Manage' : 'Build'}
+                  </RpgButton>
+                </div>
               </div>
             );
           })}
@@ -901,9 +966,14 @@ export default function LandOfficeModal() {
   const setStoreParcels = useLandStore((s) => s.setParcels);
   const isMobile = useIsMobile();
   const { data: avatar } = useAvatar();
+  const setSpawnPreference = useSetSpawnPreference();
   const hasAvatar = !!avatar;
   const avatarId: string | null = (avatar as { id?: string } | null | undefined)?.id ?? null;
   const clawTokens: number = (avatar as { clawTokens?: number } | null | undefined)?.clawTokens ?? 0;
+  const spawnPreference: 'home' | 'town' =
+    (avatar as { spawnPreference?: 'home' | 'town' } | null | undefined)?.spawnPreference ?? 'town';
+  const homeParcelId: string | null =
+    (avatar as { homeParcelId?: string | null } | null | undefined)?.homeParcelId ?? null;
 
   const [tab, setTab] = useState<Tab>('for-sale');
   const [myParcels, setMyParcels] = useState<LandParcelDTO[]>([]);
@@ -983,6 +1053,28 @@ export default function LandOfficeModal() {
     setTab('my-land');
   };
 
+  // Set / clear the spawn point. 'home' binds an owned parcel; 'town' reverts.
+  // The mutation invalidates ['avatar'] so spawnPreference/homeParcelId refresh
+  // here (the badge updates) and SpawnOnLoad reads the new value next load.
+  const handleSetSpawn = async (mode: 'home' | 'town', parcelId?: string) => {
+    try {
+      await setSpawnPreference.mutateAsync(mode === 'home' ? { mode, parcelId } : { mode });
+      addToast(
+        '🧭',
+        mode === 'home' ? 'Spawn point set to your home!' : 'Spawn point set to Town Center.',
+      );
+    } catch (err) {
+      const { code, status } = errCode(err);
+      const msg =
+        code === 'not_owned'
+          ? 'You don’t own that parcel — pick one you own.'
+          : status === 401
+            ? 'Log in to set a spawn point.'
+            : 'Could not update your spawn point — try again.';
+      addToast('⚠️', msg, 4500);
+    }
+  };
+
   const openBuild = (parcel: LandParcelDTO) => {
     setBuildParcel(parcel);
     setTab('build');
@@ -1015,6 +1107,10 @@ export default function LandOfficeModal() {
             loading={myLoading}
             hasAvatar={hasAvatar}
             claiming={claiming}
+            spawnPreference={spawnPreference}
+            homeParcelId={homeParcelId}
+            settingSpawn={setSpawnPreference.isPending}
+            onSetSpawn={handleSetSpawn}
             onClaim={handleClaim}
             onBuild={openBuild}
           />

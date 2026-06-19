@@ -2,6 +2,7 @@ import {
   pgTable,
   uuid,
   varchar,
+  text,
   timestamp,
   jsonb,
   pgEnum,
@@ -124,6 +125,28 @@ export const avatars = pgTable('avatars', {
   // the comment, not by an import — keep them equal to SPAWN_PX.
   positionX: integer('position_x').default(9216).notNull(),
   positionY: integer('position_y').default(9756).notNull(),
+  /**
+   * Town fast-travel — per-avatar spawn preference (town-fast-travel, 2026-06-19).
+   *
+   * - `spawnPreference` ∈ {'town','home'}: where this avatar re-spawns on world
+   *   entry. DEFAULT 'town' (the re-centered town square, SPAWN_PX). When 'home'
+   *   the client computes world coords from `homeParcelId`'s grid cell.
+   * - `homeParcelId`: the owned parcel that 'home' resolves to. Nullable; set
+   *   ONLY by `POST /api/land/spawn-preference` after asserting the caller owns
+   *   the parcel. FK → land_parcels(id) ON DELETE SET NULL.
+   *
+   * FK note (import-cycle avoidance): `land.ts` already imports `avatars` from
+   * this file, so a static `.references(() => landParcels.id)` here would create
+   * a circular module import. The column is therefore declared WITHOUT a Drizzle
+   * `.references()`; the actual Postgres FK constraint
+   * (`avatars_home_parcel_id_fkey`, ON DELETE SET NULL) is added by migration
+   * `0004_spawn_preference.sql`. Drizzle never DROPs/recreates it because the
+   * migrate-ci runner only executes the SQL we author (never drizzle-kit push).
+   * Keep the values 'town'/'home' in sync with the shared Avatar type
+   * (`spawnPreference`) and the `POST /api/land/spawn-preference` Zod enum.
+   */
+  spawnPreference: text('spawn_preference').notNull().default('town'),
+  homeParcelId: uuid('home_parcel_id'),
   lastActiveAt: timestamp('last_active_at'),
   loginStreak: integer('login_streak').default(0).notNull(),
   lastLoginDate: varchar('last_login_date', { length: 10 }),
@@ -241,5 +264,12 @@ export const avatars = pgTable('avatars', {
   harnessCheck: check(
     'avatars_harness_valid',
     sql`${t.harness} IN ('openclaw','hermes','milady','custom')`,
+  ),
+  // town-fast-travel (2026-06-19) — defense-in-depth against direct-SQL writers
+  // that bypass the API Zod enum. Mirrors the {'town','home'} domain. Added by
+  // migration 0004_spawn_preference.sql alongside the home_parcel_id FK.
+  spawnPreferenceCheck: check(
+    'avatars_spawn_preference_valid',
+    sql`${t.spawnPreference} IN ('town','home')`,
   ),
 }));
