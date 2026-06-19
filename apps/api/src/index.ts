@@ -53,6 +53,7 @@ import { clawRoutes } from './routes/claws';
 import { agentGatewayRoutes } from './routes/agent-gateway';
 // pendingConnections is exported but only used internally by agent-gateway routes
 import { agentExportRoutes } from './routes/agent-export';
+import { avatarManifestRoutes } from './routes/avatar-manifest';
 import { bazaarRoutes } from './routes/bazaar';
 import { auctionRoutes } from './routes/auctions';
 import { questRoutes } from './routes/quests';
@@ -204,6 +205,10 @@ app.route('/.well-known/agents', agentRegistrationRoutes);
 // API routes
 app.route('/api/auth', authRoutes);
 app.route('/api/avatars', avatarRoutes);
+// Agent export & portability (2026-06-19) — signed, content-addressed avatar
+// manifest. SINGULAR `/api/avatar` (distinct from plural `/api/avatars` above):
+//   GET /api/avatar/:id/manifest.json. See `.claude/plans/agent-export-portability.md`.
+app.route('/api/avatar', avatarManifestRoutes);
 app.route('/api/users', userRoutes);
 app.route('/api/locations', locationRoutes);
 app.route('/api/locations', chatRoutes);
