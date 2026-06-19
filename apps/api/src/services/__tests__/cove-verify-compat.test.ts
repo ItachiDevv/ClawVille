@@ -17,6 +17,7 @@ import {
   blackjackOutcomesMatch,
   holdemOutcomesMatch,
   baccaratOutcomesMatch,
+  canonicalJsonEq,
 } from '../cove-verify-compat';
 import {
   playHand as playBlackjack,
@@ -54,6 +55,26 @@ function withoutKeys(o: Json, keys: string[]): Json {
   const c = clone(o);
   for (const k of keys) delete c[k];
   return c;
+}
+
+/**
+ * Recursively REVERSE every object's key order (arrays keep their order) to
+ * simulate what Postgres `jsonb` does to a stored payload: it reorders object
+ * keys (by length, then bytewise), so the row read back NEVER matches the live
+ * serializer's insertion order. A reversed order is a cheap, deterministic
+ * not-equal-to-insertion-order stand-in. The original comparators used a raw
+ * `JSON.stringify` equality and false-negatived on exactly this — these tests
+ * lock in the canonical (key-order-insensitive) fix.
+ */
+function reorderKeys<T>(v: T): T {
+  if (Array.isArray(v)) return v.map(reorderKeys) as unknown as T;
+  if (v && typeof v === 'object') {
+    const o = v as Record<string, unknown>;
+    const out: Record<string, unknown> = {};
+    for (const k of Object.keys(o).reverse()) out[k] = reorderKeys(o[k]);
+    return out as unknown as T;
+  }
+  return v;
 }
 
 // ───────────────────────── Blackjack ─────────────────────────
@@ -300,5 +321,82 @@ describe('baccaratOutcomesMatch — banker-win changed-value back-compat', () =>
       }
     }
     throw new Error('no player-win coup found in scan');
+  });
+});
+
+// ─────────────── jsonb key-order regression (the live bug) ───────────────
+//
+// PROD BUG (found via live /verify on staging 2026-06-18): every honest
+// blackjack/hold'em/baccarat hand reported `verified:false` while
+// `hashMatches:true` and every value was identical — because `stored` is read
+// from a jsonb column (keys reordered) and the comparator used a raw,
+// order-SENSITIVE JSON.stringify. These tests rebuild the bug by reordering the
+// stored side's keys and asserting the comparators still report TRUE — and that
+// a genuine value change still reports FALSE despite the reordering.
+
+describe('verify comparators are key-order-insensitive (jsonb reorder)', () => {
+  it('blackjack: a reordered-key stored row (jsonb sim) verifies TRUE', () => {
+    const script: HandScript = { hands: [['stand']], didSplit: false, tookInsurance: false };
+    const r = playBlackjack({ serverSeed: SERVER, clientSeed: CLIENT, nonce: 0, cursor: 0, bet: 100n, script });
+    const expected = serializeHandResult(r, { cursorBefore: 0, dealtBefore: 0, nonce: 0 }) as unknown as Json;
+    const stored = reorderKeys(clone(expected));
+    // Non-vacuous: the reorder really did change the serialized byte order.
+    expect(JSON.stringify(stored)).not.toBe(JSON.stringify(expected));
+    expect(blackjackOutcomesMatch(expected, stored)).toBe(true);
+    // A real tamper still fails even after reordering.
+    const tampered = reorderKeys(clone(expected));
+    (tampered as Json).net = (BigInt((expected as Json).net as string) + 1n).toString();
+    expect(blackjackOutcomesMatch(expected, tampered)).toBe(false);
+  });
+
+  it('hold’em: a reordered-key stored row (jsonb sim) verifies TRUE', () => {
+    const r = playHoldem({
+      serverSeed: SERVER, clientSeed: CLIENT, nonce: 0, buttonSeat: 0,
+      humanStartingStack: 100n, botStartingStack: 100n, humanActions: [{ type: 'fold' }],
+    });
+    const expected = serializeHoldemHand(r) as unknown as Json;
+    const stored = reorderKeys(clone(expected));
+    expect(JSON.stringify(stored)).not.toBe(JSON.stringify(expected));
+    expect(holdemOutcomesMatch(expected, stored)).toBe(true);
+    const tampered = reorderKeys(clone(expected));
+    (tampered as Json).humanPayout = (BigInt((expected as Json).humanPayout as string) + 1n).toString();
+    expect(holdemOutcomesMatch(expected, tampered)).toBe(false);
+  });
+
+  it('baccarat: a reordered-key stored row (jsonb sim) verifies TRUE', () => {
+    let expected: Json | null = null;
+    for (let i = 0; i < 400; i++) {
+      const replayed = replayShoeUpToCoup({
+        serverSeed: SERVER, clientSeed: hexClient(i), targetNonce: 0,
+        coups: [{ bet: 'banker' as BaccaratBet, stake: 7n }],
+      });
+      if (replayed.winner === 'banker') {
+        expected = serializeCoupResult(replayed, { cursorBefore: 0, dealtBefore: 0, nonce: 0 }) as unknown as Json;
+        break;
+      }
+    }
+    expect(expected).not.toBeNull();
+    const stored = reorderKeys(clone(expected!));
+    expect(JSON.stringify(stored)).not.toBe(JSON.stringify(expected!));
+    expect(baccaratOutcomesMatch(expected!, stored)).toBe(true);
+    const tampered = reorderKeys(clone(expected!));
+    (tampered as Json).winner = 'player';
+    expect(baccaratOutcomesMatch(expected!, tampered)).toBe(false);
+  });
+
+  it('canonicalJsonEq (slots winningLines): reordered object keys are equal, array order matters', () => {
+    // winningLines is an array of OBJECTS — jsonb reorders each object's keys.
+    const expected = [
+      { line: 0, symbol: 'cherry', count: 3, winAmount: '20' },
+      { line: 4, symbol: 'bell', count: 5, winAmount: '100' },
+    ];
+    const reordered = reorderKeys(clone(expected as unknown as Json));
+    expect(canonicalJsonEq(expected, reordered)).toBe(true);
+    // Array ORDER is significant (positional lines) — swapping elements != equal.
+    expect(canonicalJsonEq(expected, [expected[1], expected[0]])).toBe(false);
+    // A changed value still fails.
+    const changed = clone(expected as unknown as Json) as unknown as typeof expected;
+    changed[0].winAmount = '21';
+    expect(canonicalJsonEq(expected, changed)).toBe(false);
   });
 });
