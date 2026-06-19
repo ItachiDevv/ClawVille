@@ -26,21 +26,20 @@ import { z } from 'zod';
 import { db, avatars } from '@clawville/database';
 import {
   AGENT_HARNESSES,
-  BUILDING_MILADY_SKILLS,
-  KNOWLEDGE_BOOKS,
   DEFAULT_AGENT_MODEL,
   DEFAULT_AGENT_HARNESS,
-  CLAWVILLE_ORIENTATION_SKILL,
   getAgentModel,
   type AgentCategory,
   type AgentHarness,
   type AgentModelMeta,
-  type KnowledgeBook,
-  type SkillPackEntry,
 } from '@clawville/shared';
 import { buildCharacterExport } from '@clawville/agent-runtime';
 import { requireAuth } from '../middleware/auth';
 import { createRateLimiter, getClientIp } from '../middleware/rate-limit';
+// SkillPack derivation lives in a shared service (2026-06-19) so this route
+// and the signed avatar-manifest export (`avatar-manifest-service.ts`) emit an
+// identical pack — see `services/skill-pack-builder.ts`.
+import { buildSkillPack } from '../services/skill-pack-builder';
 import type { AuthenticatedContext } from '../types';
 
 // Per-route `requireAuth` is the single auth gate; we deliberately do NOT
@@ -124,108 +123,8 @@ function buildInstallCommand(payload: unknown, miladyBaseUrl: string): string {
   return `curl -X POST ${urlQuoted} -H 'Content-Type: application/json' -d '${escaped}'`;
 }
 
-/**
- * Pre-compute the (buildingId → KnowledgeBook[]) map from the KNOWLEDGE_BOOKS
- * registry at module load. Every building maps to exactly 2 books in the
- * current spec; the fully-learned check below uses `.every(...)` so 3+
- * books per building would still work correctly (avatar would need ALL of them).
- */
-const BOOKS_BY_BUILDING: Readonly<Record<string, readonly KnowledgeBook[]>> = (() => {
-  const m: Record<string, KnowledgeBook[]> = {};
-  for (const book of KNOWLEDGE_BOOKS) {
-    (m[book.building] ??= []).push(book);
-  }
-  // Deep-freeze: the outer Record AND each inner array. `Object.freeze` is
-  // shallow, and `KNOWLEDGE_BOOKS` is typed as `KnowledgeBook[]` (mutable),
-  // so without this loop a test helper that does `BOOKS_BY_BUILDING['x']
-  // .push(fakeBook)` would succeed silently and corrupt skill-pack output.
-  for (const arr of Object.values(m)) Object.freeze(arr);
-  return Object.freeze(m);
-})();
-
-/**
- * Compose the SkillPack for an avatar.
- *
- * "Fully learned" check — a building is learned when the avatar's
- * `characterConfig.knowledge` contains at least one entry from EACH
- * book published at that building. This mirrors the existing gate in
- * `apps/api/src/routes/items.ts:303-305` (the `export-skill/:buildingId`
- * endpoint) verbatim so the Phase 3 bundle matches the in-game export
- * flow exactly.
- *
- * IMPORTANT: we intentionally DO NOT check `avatar_inventory` here. Books
- * are consumed on `POST /api/items/learn` (items.ts:258-266), so any avatar
- * that has actually learned books will have an empty inventory for those
- * book IDs — relying on inventory would silently emit zero skills for
- * every fully-trained avatar, which is the exact opposite of correct.
- *
- * Buildings that don't have a matching entry in `BUILDING_MILADY_SKILLS`
- * are skipped silently — the Milady catalog is the source of truth for
- * which buildings produce exportable skills.
- *
- * The `knowledge` field on each entry is sourced from the book's
- * `knowledgeEntries` array (the canonical markdown-per-chunk data) in
- * stable order: book-registry order, then entry order within each book.
- * This is deterministic so re-exporting the same avatar produces a
- * byte-identical payload (useful once we add hashing in Phase 5).
- */
-function buildSkillPack(
-  avatar: { id: string; name: string },
-  avatarKnowledge: string[],
-): SkillPackEntry[] {
-  const knowledgeSet = new Set(avatarKnowledge);
-
-  const entries: SkillPackEntry[] = [];
-
-  // Always ship the ClawVille orientation skill first. Gives the exported
-  // agent RAG access to modes, buildings, economy, connect/reconnect/
-  // disconnect flow, and session-liveness rules on its new host — so a
-  // Milady-installed agent never has to guess how to talk back to us.
-  // `exportedFrom` is filled here because the shared constant is avatar-
-  // agnostic (one definition, many exports).
-  entries.push({
-    ...CLAWVILLE_ORIENTATION_SKILL,
-    exportedFrom: { avatarId: avatar.id, avatarName: avatar.name },
-  });
-
-  for (const [buildingId, skill] of Object.entries(BUILDING_MILADY_SKILLS)) {
-    const buildingBooks = BOOKS_BY_BUILDING[buildingId] ?? [];
-    if (buildingBooks.length === 0) continue;
-
-    // Fully-learned check — every book assigned to this building must
-    // have at least one of its entries in the avatar's knowledge set.
-    const fullyLearned = buildingBooks.every((book) =>
-      book.knowledgeEntries.some((entry) => knowledgeSet.has(entry)),
-    );
-    if (!fullyLearned) continue;
-
-    // Flatten all knowledge chunks from this building's books in stable
-    // order (book-registry order, then entry order within each book).
-    // We emit every chunk from the canonical registry rather than just
-    // the ones the avatar currently carries — per spec §5, the pack ships
-    // the full building skill so Milady's RAG store sees the complete
-    // body of knowledge. This also matches `items.ts#export-skill`'s
-    // `const knowledge = characterConfig?.knowledge ?? []` approach but
-    // is more defensible: it's immune to users whose characterConfig
-    // somehow lost entries post-learn.
-    const knowledge: string[] = buildingBooks.flatMap(
-      (book) => book.knowledgeEntries,
-    );
-
-    entries.push({
-      skillId: skill.skillId,
-      name: skill.name,
-      description: skill.description,
-      category: skill.category,
-      buildingId,
-      knowledge,
-      source: 'clawville',
-      exportedFrom: { avatarId: avatar.id, avatarName: avatar.name },
-    });
-  }
-
-  return entries;
-}
+// `buildSkillPack` moved to `services/skill-pack-builder.ts` (2026-06-19) so the
+// signed avatar-manifest export reuses the exact same derivation. Imported above.
 
 // ─── Route ──────────────────────────────────────────────────────────────────
 
