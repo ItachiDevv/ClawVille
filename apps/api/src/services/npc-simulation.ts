@@ -54,6 +54,23 @@ const MAP_HEIGHT = 18432;
 // ample headroom under the 30-min (`AGENT_BODY_IDLE_DESPAWN_MS`) idle window.
 const BODY_KEEPALIVE_INTERVAL_MS = 60_000;
 
+// Connection-lifecycle cost ceiling (2026-06-19, Phase D). The decision is
+// "agents run autonomously up to the 24h session" — without a ceiling, a surge
+// of disconnected-but-session-live agents would all be kept alive (sim ticks +
+// conversation cognition) for hours on the single-threaded loop. This caps how
+// many server-managed bodies we keep alive PAST the 30-min idle window; bodies
+// over the cap revert to the normal 30-min idle-despawn (and re-spawn on their
+// next activity). A safety valve, not a product limit — env-tunable, logged
+// when hit (no silent truncation).
+const DEFAULT_AUTONOMOUS_BODY_CAP = 100;
+function resolveAutonomousBodyCap(): number {
+  const raw = process.env.AGENT_AUTONOMOUS_BODY_CAP;
+  if (!raw) return DEFAULT_AUTONOMOUS_BODY_CAP;
+  const n = Number.parseInt(raw, 10);
+  if (!Number.isFinite(n) || n < 1) return DEFAULT_AUTONOMOUS_BODY_CAP;
+  return n;
+}
+
 // Hatcher proxy-cognition (partner #2, Phase A — 2026-06-01). The canonical
 // "you are inside ClawVille" orientation text, joined + frozen once at module
 // load. Prepended (with a per-call serialized world-state block) as the
@@ -363,6 +380,8 @@ class NpcSimulation {
   // -playing agent's body survives the 30-min idle despawn (until its session
   // expires ~24h after the owner's last action). See keepAutonomousBodiesAlive.
   private lastBodyKeepaliveAt: Map<string, number> = new Map();
+  // Throttle for the autonomous-body-cap warning log (once/min when over cap).
+  private lastAutonomousCapLogAt = 0;
   // Controlled-launch suppression: agentId → epoch-ms until which a Hatcher
   // proxy NPC is "human-driven" and must be hidden + frozen (its owner is
   // driving the bound avatar in 'player' mode). Refreshed at 5 Hz by
@@ -842,16 +861,49 @@ class NpcSimulation {
    *     must outlive the 30-min idle window up to the session cap.
    */
   private keepAutonomousBodiesAlive(now: number): void {
+    const cap = resolveAutonomousBodyCap();
+    let kept = 0;     // bodies under the cap that we're keeping alive this pass
+    let eligible = 0; // total server-managed spawned bodies (for the cap-hit log)
     for (const [sessionId, { config }] of this.openClawBots) {
       if (config.autonomyMode !== 'server-managed') continue;
       const npcId = config.mode === 'override' ? config.targetNpcId : `oc-${sessionId}`;
       if (!this.npcs.has(npcId)) continue;
+      eligible++;
+      // Cost ceiling: only keep the first `cap` server-managed bodies alive past
+      // the idle window (Map iteration = connection order, so the oldest live
+      // sessions win). Excess bodies fall through to the normal 30-min idle
+      // despawn and re-spawn on their next activity.
+      if (kept >= cap) continue;
+      kept++;
       const agentId = config.agentId;
       const last = this.lastBodyKeepaliveAt.get(agentId) ?? 0;
       if (now - last < BODY_KEEPALIVE_INTERVAL_MS) continue;
       this.lastBodyKeepaliveAt.set(agentId, now);
       void touchBodyKeepalive(agentId);
     }
+    if (eligible > cap && now - this.lastAutonomousCapLogAt > 60_000) {
+      this.lastAutonomousCapLogAt = now;
+      console.warn(
+        `[NPC Simulation] autonomous-body cap hit: ${eligible} server-managed bodies eligible, keeping ${cap} alive past the idle window; ${eligible - cap} will idle-despawn at 30min. Tune AGENT_AUTONOMOUS_BODY_CAP.`,
+      );
+    }
+  }
+
+  /**
+   * Count of agent bodies CURRENTLY playing autonomously (server-managed,
+   * spawned, not human-controlled). For /dash + the FEATURE_GATE on the
+   * connection-lifecycle persist-autonomous behavior. Cheap O(bots) scan.
+   */
+  getAutonomousBodyCount(): number {
+    let n = 0;
+    for (const [sessionId, { config }] of this.openClawBots) {
+      if (config.autonomyMode !== 'server-managed') continue;
+      const npcId = config.mode === 'override' ? config.targetNpcId : `oc-${sessionId}`;
+      if (!this.npcs.has(npcId)) continue;
+      if (this.isHumanControlledOpenClawNpc(npcId)) continue; // owner is driving — not autonomous now
+      n++;
+    }
+    return n;
   }
 
   /**
