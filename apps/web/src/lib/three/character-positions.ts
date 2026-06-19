@@ -142,6 +142,33 @@ export const TALK_RADIUS_WORLD = 260;
 const TALK_RADIUS_SQ = TALK_RADIUS_WORLD * TALK_RADIUS_WORLD;
 
 // ---------------------------------------------------------------------------
+// COVE proximity (town-ux-2026-06-19)
+// The Cove casino has no NPC teacher, so it is NOT in CHARACTER_POSITIONS.
+// We expose a separate check so player-avatar.tsx can set nearLocation='cove'
+// when the player is close enough for the entry prompt to appear.
+//
+// Cove zone: id='cove', x=151, y=281, width=14, height=14.
+//   Tile center: cx=158, cy=288.
+//   World: worldX = -9216 + 158*32 = -4160, worldZ = -9216 + 288*32 = 0.
+// ---------------------------------------------------------------------------
+const COVE_WORLD_X = OFFSET_X + 158 * TILE_SIZE; // ≈ -4160 wu
+const COVE_WORLD_Z = OFFSET_Z + 288 * TILE_SIZE; // ≈ 0 wu
+/** Radius (wu) within which the cove entry prompt appears. 600 wu = comfortably
+ *  visible from the approach path without triggering across the ring. */
+export const COVE_PROXIMITY_RADIUS = 600;
+const COVE_PROXIMITY_SQ = COVE_PROXIMITY_RADIUS * COVE_PROXIMITY_RADIUS;
+
+/**
+ * isCoveProximate — returns true when the player is within COVE_PROXIMITY_RADIUS
+ * world units of the cove entrance. Zero-alloc, pure-primitive, safe in useFrame.
+ */
+export function isCoveProximate(playerWorldX: number, playerWorldZ: number): boolean {
+  const dx = playerWorldX - COVE_WORLD_X;
+  const dz = playerWorldZ - COVE_WORLD_Z;
+  return (dx * dx + dz * dz) < COVE_PROXIMITY_SQ;
+}
+
+// ---------------------------------------------------------------------------
 // findNearestCharacter — zero-alloc, pure-primitive proximity check.
 // Arguments are primitive numbers so the caller never needs to allocate a
 // scratch Vector3 before calling (safe in useFrame hot path).

@@ -30,6 +30,7 @@ import MarketplaceStall from '@/lib/three/marketplace-stall';
 import QuestBountyPavilion from '@/lib/three/quest-bounty-pavilion';
 import AuctionPodium from '@/lib/three/auction-podium';
 import TownDirectorySign from '@/lib/three/town-directory-sign';
+import CoveBeacon from '@/lib/three/cove-beacon';
 import ActivityIndicators from '@/lib/three/activity-indicators';
 import FloatingTexts3D from '@/lib/three/floating-text-3d';
 import NpcSpeechBubbles from '@/lib/three/npc-speech-bubbles';
@@ -917,6 +918,57 @@ function PerfCameraPreset({
   return null;
 }
 
+// ---------------------------------------------------------------------------
+// CoveEntranceCameraPush — smooth camera drift toward the cove on walk-in.
+// Listens for the 'cove-walkin-start' DOM event dispatched by triggerCoveWalkIn()
+// in arena-buildings.tsx, then for 1.2s pushes the camera slightly toward
+// world X=-4160 (cove direction). Zero per-frame allocations — uses module-scope
+// scratch Vector3 and purely primitive ref reads.
+// ---------------------------------------------------------------------------
+const _covePushTarget = new THREE.Vector3(-4160, 80, 0);
+const _covePushScratch = new THREE.Vector3();
+
+function CoveEntranceCameraPush() {
+  const { camera } = useThree();
+  const pushRef = useRef<{ startTime: number; startX: number; startY: number; startZ: number } | null>(null);
+
+  useEffect(() => {
+    function onCoveWalkIn() {
+      pushRef.current = {
+        startTime: performance.now(),
+        startX: camera.position.x,
+        startY: camera.position.y,
+        startZ: camera.position.z,
+      };
+    }
+    window.addEventListener('cove-walkin-start', onCoveWalkIn);
+    return () => window.removeEventListener('cove-walkin-start', onCoveWalkIn);
+  }, [camera]);
+
+  useFrame(() => {
+    const state = pushRef.current;
+    if (!state) return;
+    const elapsed = (performance.now() - state.startTime) / 1000;
+    const PUSH_DURATION = 1.2;
+    if (elapsed > PUSH_DURATION) {
+      pushRef.current = null;
+      return;
+    }
+    // Ease out cubic — starts fast, slows into the transition fade.
+    const t = elapsed / PUSH_DURATION;
+    const ease = 1 - Math.pow(1 - t, 3);
+    // Push camera 180 wu toward cove (X direction, slight pull-down in Y for drama).
+    _covePushScratch.set(
+      state.startX + (_covePushTarget.x - state.startX) * 0.08 * ease,
+      state.startY - 30 * ease,
+      state.startZ + (_covePushTarget.z - state.startZ) * 0.05 * ease,
+    );
+    camera.position.lerp(_covePushScratch, 0.12);
+  });
+
+  return null;
+}
+
 // REMOVED 2026-05-31 — OpaqueCanvasClearGuard caused the permanent blue screen.
 // It ran an INDEPENDENT requestAnimationFrame loop calling gl.render(scene, camera)
 // on top of R3F's own frameloop='always' render loop — measured live at exactly
@@ -1270,6 +1322,11 @@ const SceneContents = memo(function SceneContents({
           consumer reads current-frame heightOffset, not the prior frame's stale value. */}
       <JumpTicker />
 
+      {/* Cove entrance camera push — listens for 'cove-walkin-start' event
+          (dispatched by triggerCoveWalkIn in arena-buildings.tsx) and smoothly
+          pushes the camera toward the cove for 1.2s. Task 2 entrance anim. */}
+      <CoveEntranceCameraPush />
+
       {/* Single DOM overlay for all world-space labels (NPC names, building labels,
           speech bubbles). Replaces 30+ per-instance drei <Html> portals.
           Mount early so consumers (ArenaNpcs, ArenaBuildings, etc.) see the overlay
@@ -1452,6 +1509,13 @@ const SceneContents = memo(function SceneContents({
       {/* Wooden signboard directory — informational landmark at centre of stall row */}
       <group name="perf:town-directory-sign" userData={{ perfChunk: 'town-directory-sign' }}>
         <TownDirectorySign />
+      </group>
+
+      {/* Cove entertainment district beacon — neon marquee sign + glow ring
+          Floats above the Cove building (slot 9/W) at world (-4160, 870, 0).
+          Proximity prompt (isCoveProximate) drives the LocationHUD CTA. */}
+      <group name="perf:cove-beacon" userData={{ perfChunk: 'cove-beacon' }}>
+        <CoveBeacon />
       </group>
 
       {/* NPC speech bubbles — Dom overlay, renders chat from SSE stream */}

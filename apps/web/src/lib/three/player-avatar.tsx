@@ -9,7 +9,7 @@ import {
   MAP_WIDTH,
   MAP_HEIGHT,
 } from '@/lib/pixi/tilemap-data';
-import { findNearestCharacter } from '@/lib/three/character-positions';
+import { findNearestCharacter, isCoveProximate } from '@/lib/three/character-positions';
 import { NORI_WORLD_X, NORI_WORLD_Z, NORI_TALK_RADIUS_SQ } from '@/lib/three/town-guide';
 import { applyWalkAnimation, applyIdleAnimation } from '@/lib/three/procedural-animation';
 import { LobsterAnimator } from '@/lib/three/lobster-animations';
@@ -545,7 +545,14 @@ function PlayerAvatarVRMInner({ reg }: { reg: ModelRegistryEntry }) {
       const wx = avatarPositionRef.x - HALF_W;
       const wz = avatarPositionRef.y - HALF_H;
       const nearest = findNearestCharacter(wx, wz);
-      const nearId = nearest ? nearest.buildingId : null;
+      // Cove proximity (town-ux-2026-06-19): the cove has no NPC teacher, so
+      // isCoveProximate fires when within COVE_PROXIMITY_RADIUS wu and no
+      // teacher is nearer. Teacher takes priority if both are in range.
+      const nearId: string | null = nearest
+        ? nearest.buildingId
+        : isCoveProximate(wx, wz)
+          ? 'cove'
+          : null;
       const nearName = nearest ? nearest.characterName : null;
       if (nearId !== store.nearLocation) store.setNearLocation(nearId);
       if (nearName !== store.nearCharacter) store.setNearCharacter(nearName);
@@ -988,7 +995,14 @@ function PlayerAvatarGLBInner() {
       const wx = avatarPositionRef.x - HALF_W;
       const wz = avatarPositionRef.y - HALF_H;
       const nearest = findNearestCharacter(wx, wz);
-      const nearId = nearest ? nearest.buildingId : null;
+      // Cove proximity (town-ux-2026-06-19): the cove has no NPC teacher, so
+      // isCoveProximate fires when within COVE_PROXIMITY_RADIUS wu and no
+      // teacher is nearer. Teacher takes priority if both are in range.
+      const nearId: string | null = nearest
+        ? nearest.buildingId
+        : isCoveProximate(wx, wz)
+          ? 'cove'
+          : null;
       const nearName = nearest ? nearest.characterName : null;
       if (nearId !== store.nearLocation) store.setNearLocation(nearId);
       if (nearName !== store.nearCharacter) store.setNearCharacter(nearName);
