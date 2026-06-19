@@ -3,6 +3,7 @@
 import { useGameStore, type GameState } from '@/stores/game';
 import { useIsMobile } from '@/hooks/use-is-mobile';
 import { MAP_LOCATIONS, BUILDING_OPENCLAW_THEMES } from '@clawville/shared';
+import { triggerCoveWalkIn } from '@/lib/three/arena-buildings';
 
 /**
  * Building-entry prompt — replaces the prior tiny top-center hint
@@ -49,15 +50,31 @@ export default function LocationHUD() {
   // conflated/duplicated. In player/autonomous there is no TalkToCharacterBar,
   // so LocationHUD keeps the "Talk to {resident}" wording.
   const npcMode = controlMode === 'npc';
-  const showTalk = !npcMode && !!characterName;
-  const subjectLabel = showTalk ? characterName! : (theme?.label ?? location.name);
-  const ctaLine = showTalk
-    ? `Talk to ${characterName}`
-    : theme?.label
-      ? `Enter ${theme.label}`
-      : `Enter ${location.name}`;
+  const isCove = nearLocation === 'cove';
+  const showTalk = !npcMode && !isCove && !!characterName;
+  // Cove gets a distinct CTA — it's an entertainment venue, not a teacher building.
+  const subjectLabel = isCove
+    ? 'The Cove'
+    : showTalk
+      ? characterName!
+      : (theme?.label ?? location.name);
+  const ctaLine = isCove
+    ? 'Enter the Cove'
+    : showTalk
+      ? `Talk to ${characterName}`
+      : theme?.label
+        ? `Enter ${theme.label}`
+        : `Enter ${location.name}`;
 
-  const handleTap = () => enterBuilding(nearLocation, characterName ?? undefined);
+  // The cove has its own walk-in flow (avatar pathfinds to the door then a
+  // SceneTransition fires) — not the standard teacher-chat enterBuilding modal.
+  const handleTap = () => {
+    if (nearLocation === 'cove') {
+      triggerCoveWalkIn();
+    } else {
+      enterBuilding(nearLocation, characterName ?? undefined);
+    }
+  };
 
   // Lift above joystick zones (joysticks anchor at
   // max(env(safe-area-inset-bottom,0)+60px, 80px)); add another ~150px
@@ -146,11 +163,11 @@ export default function LocationHUD() {
         }}
       >
         <span aria-hidden style={{ fontSize: 22 }}>
-          {showTalk ? '💬' : location.icon}
+          {isCove ? '🎰' : showTalk ? '💬' : location.icon}
         </span>
         {ctaLine}
       </span>
-      {theme && (
+      {theme && !isCove && (
         <span
           style={{
             fontSize: 11,
