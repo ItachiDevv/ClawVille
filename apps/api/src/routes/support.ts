@@ -58,10 +58,18 @@ const ticketSchema = z
 
 const WINDOW_MS = 10 * 60_000; // 10 min
 const MAX_PER_WINDOW = 5;
+const MAX_KEYS = 10_000; // hard cap so fp/header rotation can't grow the Map unboundedly
 const hits = new Map<string, number[]>();
 
 function rateLimited(key: string): boolean {
   const now = Date.now();
+  // Opportunistic prune (Codex review): expired keys are otherwise never reclaimed,
+  // and a rotating guest fingerprint/header would leak an unbounded number of them.
+  if (hits.size > MAX_KEYS) {
+    for (const [k, arr] of hits) {
+      if (arr.every((t) => now - t >= WINDOW_MS)) hits.delete(k);
+    }
+  }
   const recent = (hits.get(key) ?? []).filter((t) => now - t < WINDOW_MS);
   if (recent.length >= MAX_PER_WINDOW) {
     hits.set(key, recent);
@@ -145,8 +153,14 @@ supportRouter.post('/tickets', async (c) => {
     if (resolved) {
       subjectType = 'agent';
       agentId = resolved.agentId;
-      userId = resolved.userId ?? null;
-      avatarId = resolved.avatarId ?? null;
+      // Only attribute (and rate-limit against) a bound user/avatar for a
+      // LEDGER-CAPABLE session. A non-ledger (unbound / not-fully-bound) session
+      // must NOT be trusted to own its `userId` — otherwise it could mis-attribute
+      // a ticket to, and burn the rate-limit bucket of, a victim user (Codex review).
+      if (resolved.ledgerCapable) {
+        userId = resolved.userId ?? null;
+        avatarId = resolved.avatarId ?? null;
+      }
     } else {
       subjectType = 'guest';
     }
