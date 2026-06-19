@@ -15,8 +15,25 @@ import { buildingZones, MAP_WIDTH, MAP_HEIGHT } from '@/lib/pixi/tilemap-data';
 // town-directory sign (world Z = −120).
 // Phase 0 land (2026-06-15): center px 5760 → 9216 (world grew 360→576 tiles).
 //   x = MAP_WIDTH/2 = 9216,  y = MAP_HEIGHT/2 + 540 = 9756.
+//
+// Spawn scatter (town-ux-2026-06-19): a small random offset per client load
+// prevents every player stacking on the exact same pixel in front of Nori.
+// Offset is ±SPAWN_SCATTER_RADIUS px (uniform random, seeded once at module
+// load so resetStore restores the SAME scattered position for this session).
+// Clamped to a town-square safe zone: X within ±200 of center, Y within
+// ±180 of base spawn — keeps players away from the sign (Z=-120), Nori
+// (Z=+400), and building ring (first slot > 2000 wu away).
 // ---------------------------------------------------------------------------
-const SPAWN_PX = { x: MAP_WIDTH / 2, y: MAP_HEIGHT / 2 + 540 };
+const SPAWN_SCATTER_RADIUS = 160; // game-px (≈ world units at 1px:1wu)
+const _scatterX = (Math.random() - 0.5) * 2 * SPAWN_SCATTER_RADIUS;
+const _scatterY = (Math.random() - 0.5) * 2 * SPAWN_SCATTER_RADIUS;
+// Clamp: keep within town square clear zone (no buildings/sign/Nori)
+const _safeScatterX = Math.max(-200, Math.min(200, _scatterX));
+const _safeScatterY = Math.max(-180, Math.min(180, _scatterY));
+const SPAWN_PX = {
+  x: MAP_WIDTH  / 2 + _safeScatterX,
+  y: MAP_HEIGHT / 2 + 540 + _safeScatterY,
+};
 
 // Drift guard (S3, 2026-06-16): the SERVER + DB derive spawn/center from
 // @clawville/shared world-dimensions; the client computes them from the pixi
@@ -26,16 +43,23 @@ const SPAWN_PX = { x: MAP_WIDTH / 2, y: MAP_HEIGHT / 2 + 540 };
 // ever drift from the shared constants (e.g. a future world grow updates the
 // tilemap but not world-dimensions.ts, or vice versa). Stripped from prod
 // builds; non-breaking (no behavior change, just a fail-fast in dev).
+// Drift guard: compare against the BASE spawn (before scatter) to keep
+// the assertion meaningful. SPAWN_PX includes a per-session ±scatter offset
+// (added 2026-06-19, town-ux) that is intentional client-only jitter — it
+// should NOT trigger the drift guard, which is checking world-dimension sync
+// between tilemap-data.ts and @clawville/shared world-dimensions.ts.
+const _BASE_SPAWN_X = MAP_WIDTH  / 2;
+const _BASE_SPAWN_Y = MAP_HEIGHT / 2 + 540;
 if (process.env.NODE_ENV !== 'production') {
   if (
     MAP_WIDTH !== WORLD_PX_WIDTH ||
     MAP_HEIGHT !== WORLD_PX_HEIGHT ||
-    SPAWN_PX.x !== SHARED_SPAWN_PX.x ||
-    SPAWN_PX.y !== SHARED_SPAWN_PX.y
+    _BASE_SPAWN_X !== SHARED_SPAWN_PX.x ||
+    _BASE_SPAWN_Y !== SHARED_SPAWN_PX.y
   ) {
     console.error(
       '[game.ts] SPAWN/WORLD DRIFT: client tilemap disagrees with @clawville/shared world-dimensions. ' +
-        `client {MAP_WIDTH:${MAP_WIDTH}, MAP_HEIGHT:${MAP_HEIGHT}, spawn:(${SPAWN_PX.x},${SPAWN_PX.y})} ` +
+        `client {MAP_WIDTH:${MAP_WIDTH}, MAP_HEIGHT:${MAP_HEIGHT}, baseSpawn:(${_BASE_SPAWN_X},${_BASE_SPAWN_Y})} ` +
         `vs shared {WORLD_PX_WIDTH:${WORLD_PX_WIDTH}, WORLD_PX_HEIGHT:${WORLD_PX_HEIGHT}, ` +
         `SPAWN_PX:(${SHARED_SPAWN_PX.x},${SHARED_SPAWN_PX.y})}. ` +
         'Update both layers (tilemap-data.ts + world-dimensions.ts) in the same diff.',
