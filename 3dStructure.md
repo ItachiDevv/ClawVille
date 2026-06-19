@@ -1104,22 +1104,22 @@ Older history: `git log apps/web/src/lib/three/ apps/web/src/components/three/`.
 
 `apps/web/src/lib/three/arena-buildings.tsx` `triggerCoveWalkIn()` dispatches a `'cove-walkin-start'` DOM CustomEvent when the walk-in starts. `World3DCanvas.tsx` new `CoveEntranceCameraPush` component (mounted in SceneContents, after JumpTicker) listens for this event and for 1.2s smoothly lerps the camera slightly toward the cove (X=-4160, slight Y pull-down) using a cubic ease-out. All lerp values are module-scope scratch (`_covePushTarget`, `_covePushScratch`), zero per-frame allocations. Total entrance flow ≤3s (1.2s push + existing 500ms fade + /cove page-in 500ms).
 
-### §15.3 — Town directional fingerpost (Task 3)
+### §15.3 — Town directory board (Task 3; REVISED 2026-06-19 — single readable board, replaces the 3-arm fingerpost)
 
-`apps/web/src/lib/three/town-directory-sign.tsx` fully rewritten. Old content: two-post wooden board with a static inaccurate PNG (`/town-directory-sign.png` — "Auction / Bazaar / Marketplace", all paused). New content: 3-arm directional fingerpost with CanvasTexture-baked labels.
+`apps/web/src/lib/three/town-directory-sign.tsx`. **Revision history:** old static inaccurate PNG → 3-arm fingerpost → **single front-facing triangle board (current).** The 3-arm fingerpost FAILED founder review: each arm pointed in its literal world direction, so the forward (Bounty) arm's flat text sat edge-on to the spawn camera (unreadable), and the baked labels were too small at spawn distance. The founder asked for the old flat-board readability with the words in a triangle showing directions.
 
-**Geometry:** central hex-prism post (CylinderGeometry, 6 segments, post+cap merged), 3 arm planks (BoxGeometry main + tip), 3 face planes (PlaneGeometry with CanvasTexture). All geometry at module scope, mergeGeometries-merged where possible.
+**Current design — one readable board facing the player:** a single wooden board mounted ON TOP of a hex-prism post (board centered at `y = POST_HEIGHT(260) + BOARD_H/2(150) = 410`, so the post never occludes the board face — the old fingerpost/FOR-SALE-sign post-occlusion trap). Board 400×300×16 wu + crossbar, all merged module-scope geometry. One player-facing (+Z) `PlaneGeometry(376×276)` carries a single CanvasTexture (1024×768, 4:3).
 
-**Arm directions (verified against live collision data):**
-| Arm | rotY | World direction | Destination | World coords |
+**CanvasTexture = triangle layout (player at spawn faces −Z / south; on the +Z face):**
+| Position on board | Glyph | Destination | World dir from player | World coords |
 |---|---|---|---|---|
-| BOUNTY BOARD (↑) | -π/2 | -Z (north) | quest-bounty-pavilion | (0, -1220) |
-| EXCHANGE (→) | 0 | +X (east) | marketplace-stall | (+1273, -120) |
-| COSMETICS (←) | +π | -X (west) | bazaar-stall | (-1273, -120) |
+| TOP centre | ↑ (cyan) | BOUNTY BOARD | straight ahead (south) | (0, −1220) |
+| BOTTOM-RIGHT | → (gold) | EXCHANGE | player's right (east) | (+1273, −120) |
+| BOTTOM-LEFT | ← (magenta) | COSMETICS | player's left (west) | (−1273, −120) |
 
-**CanvasTexture design:** dark wood-grain plank, carved border, colored arrow glyph (cyan=bounty, gold=exchange, magenta=cosmetics), label in warm-white. Side DoubleSide so arms are readable from both directions.
+Title "TOWN CENTER" + carved double border + wood grain. Big high-contrast text (arrows 92–116px, labels 58–70px, warm-white `#fbf3e2` with dark shadow, colored glowing arrows). `anisotropy=8` for crispness at distance. Direction correctness: camera looks −Z with up +Y → camera-right = +X (east), so the texture's right = east = Exchange ✓, left = west = Cosmetics ✓, top = "straight ahead" wayfinding convention = Bounty ✓.
 
-**No async loading.** Old PNG load race (img.onload) eliminated. Textures baked synchronously at module load (`bakeArmTexture()`). SSR-safe: guarded by `typeof document !== 'undefined'`, materials fall back to panel color for SSR.
+**Single-faced** (front +Z only; primary view is the spawn/north side). **No async loading** (no PNG; texture baked synchronously at module load, SSR-guarded by `typeof document`, falls back to wood material for SSR). No drei Text/Billboard, no ShaderMaterial, no per-frame allocs.
 
 ### §15.4 — Spawn scatter (Task 4)
 
