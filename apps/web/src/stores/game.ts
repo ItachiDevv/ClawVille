@@ -388,6 +388,27 @@ export interface GameState {
   openLandOffice: () => void;
   closeLandOffice: () => void;
 
+  // ── World Map + Fast Travel (town-fasttravel-2026-06-19) ──────────────
+  // Interactive World Map modal — the WARP surface (the minimap stays the
+  // WALK surface). Opened from the minimap "⤢ Map" button. Freezes movement
+  // while open (mirrors every other modal so WASD/joystick can't drive the
+  // avatar behind the map).
+  worldMapOpen: boolean;
+  openWorldMap: () => void;
+  closeWorldMap: () => void;
+
+  // Quick-travel warp. `warpTarget` is the in-flight teleport destination in
+  // game-px (+ optional label, e.g. the building name). The WarpOverlay DOM
+  // animation consumes it: a ~1.4s radial flash masks an INSTANT teleport at
+  // its midpoint. `warpTo` is GATED on controlMode==='player' (the only mode
+  // with a WASD-controllable avatar) — a no-op in explore/npc/autonomous so a
+  // spectator/agent-driven body is never yanked. It also closes the World Map
+  // so the modal dismisses the moment the warp fires. `clearWarp` is called by
+  // the overlay at the end of the animation to unmount itself.
+  warpTarget: { x: number; y: number; label?: string } | null;
+  warpTo: (x: number, y: number, label?: string) => void;
+  clearWarp: () => void;
+
   // Bazaar
   bazaarOpen: boolean;
   bazaarTab: 'browse' | 'my-listings' | 'my-purchases';
@@ -1045,6 +1066,43 @@ export const useGameStore = create<GameState>((set, get) => ({
   openLandOffice: () => set({ landOfficeOpen: true }),
   closeLandOffice: () => set({ landOfficeOpen: false }),
 
+  // ── World Map + Fast Travel (town-fasttravel-2026-06-19) ──────────────
+  worldMapOpen: false,
+  openWorldMap: () => {
+    // Freeze movement while the map is open so WASD/joystick can't drive the
+    // avatar behind the modal (mirrors enterBuilding / openBuildingPortal).
+    // Reset any in-flight jump so the avatar isn't stranded airborne under it.
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { resetJump } = require('@/lib/three/jump-state') as typeof import('@/lib/three/jump-state');
+    resetJump();
+    set({ worldMapOpen: true, movementFrozen: true });
+  },
+  closeWorldMap: () => set({ worldMapOpen: false, movementFrozen: false }),
+
+  warpTarget: null,
+  warpTo: (x, y, label) => {
+    // GATE: only a controllable player avatar may warp. In explore (camera
+    // spectator), npc (possessed NPC drives via NpcController), or autonomous
+    // (the agent navigates itself), there is no player body to teleport — a
+    // warp would either do nothing useful or yank a body the user isn't
+    // driving. Silent no-op outside 'player' (the World Map disables the
+    // button + shows a hint, so this is just defense-in-depth).
+    if (get().controlMode !== 'player') return;
+    // Close the World Map so it dismisses the instant the warp fires, and KEEP
+    // movement frozen for the whole ~1.4s warp animation. The teleport happens
+    // at the overlay midpoint; if movement were released here, an ALREADY-HELD
+    // W/joystick would keep driving player-avatar's movement (the overlay's
+    // capture-phase swallow only blocks NEW key presses, not held state) and
+    // drift the avatar off the freshly-set target after the teleport. Freezing
+    // through the warp makes player-avatar skip its movement integration the
+    // whole time; clearWarp() releases the freeze when the overlay unmounts.
+    set({ warpTarget: { x, y, label }, worldMapOpen: false, movementFrozen: true });
+  },
+  // Called by WarpOverlay at the animation END — unmount the overlay AND release
+  // the movement freeze warpTo() held through the warp (paired so the freeze can
+  // never leak past the animation).
+  clearWarp: () => set({ warpTarget: null, movementFrozen: false }),
+
   bazaarOpen: false,
   bazaarTab: 'browse' as const,
   openBazaar: () => set({ bazaarOpen: true, bazaarTab: 'browse' }),
@@ -1223,6 +1281,8 @@ export const useGameStore = create<GameState>((set, get) => ({
     skillBuilderOpen: false,
     marketplaceOpen: false,
     landOfficeOpen: false,
+    worldMapOpen: false,
+    warpTarget: null,
     bazaarOpen: false,
     auctionOpen: false,
     questBoardOpen: false,

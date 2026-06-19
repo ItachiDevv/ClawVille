@@ -508,6 +508,40 @@ function FPSFollowCamera({
 
     const { controlMode, possessedNpcId } = useGameStore.getState();
 
+    // One-shot camera focus SNAP (town-fast-travel warp re-anchor, 2026-06-19).
+    // The WarpOverlay teleports avatarPositionRef at its flash midpoint and then
+    // calls requestCameraFocus(target) to drop a focus request. We drain it here
+    // (FPSFollowCamera owns the camera in player/autonomous/npc modes — the only
+    // modes a warp can fire from, since warpTo() is gated to 'player') and snap
+    // the orbit target + camera to the destination in ONE frame. Without this,
+    // the exponential follow-lerp below would slow-pan across the map after the
+    // flash clears — a long warp would visibly "fly" the camera. Snapping target
+    // and camera by the SAME delta preserves the orbit geometry (angle/zoom/phi),
+    // exactly like WASDCameraController's focus drain and the jump translate below.
+    // Game coords (0..MAP_WIDTH) → world XZ via the same HALF_W/HALF_H projection.
+    // consumeCameraFocus() returns null on every normal frame (zero-alloc).
+    const focus = useGameStore.getState().consumeCameraFocus();
+    if (focus) {
+      const fx = Math.max(0, Math.min(MAP_WIDTH, focus.x)) - HALF_W;
+      const fz = Math.max(0, Math.min(MAP_HEIGHT, focus.y)) - HALF_H;
+      const tgtSnap = controls.target;
+      const dxSnap = fx - tgtSnap.x;
+      const dySnap = CHAR_TARGET_Y - tgtSnap.y;
+      const dzSnap = fz - tgtSnap.z;
+      tgtSnap.set(fx, CHAR_TARGET_Y, fz);
+      controls.object.position.x += dxSnap;
+      controls.object.position.y += dySnap;
+      controls.object.position.z += dzSnap;
+      if (controls.object.position.y < CAM_Y_MIN) {
+        controls.object.position.y = CAM_Y_MIN;
+      }
+      controls.update();
+      // Don't also run the lerp this frame — the body ref is already at the
+      // destination, so the snap leaves zero follow error. Fall through next
+      // frame into the normal smooth follow.
+      return;
+    }
+
     // Determine the character's 2D game-space position.
     // Use avatarPositionRef (module-scope, zero React overhead) for the player path —
     // the ref is always up-to-date at 60 Hz even when the reactive store is throttled.
