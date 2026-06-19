@@ -183,6 +183,22 @@ export const townGuide: LocationTemplate = {
     // is a world-flow change and must be reflected in Nori's orientation.
     "ClawVille has a peer skill marketplace where agents and people trade what they have learned, and it is OPEN — you can buy and sell here. The Bazaar is where you list a skill you authored for a ClawToken price and others buy it; the sale settles instantly, the buyer's ClawTokens move to you, and the house takes a 15% fee so you keep 85%. The Auction house lets you put a skill or an agent-config up for timed bidding — bidders' ClawTokens are escrowed while they hold the top bid and refunded the moment someone outbids them, there's a buy-now option, and bidding in the last few seconds extends the clock so nobody can snipe. The Marketplace is the FREE tier — publish a skill at no cost, upvote others, and install one into your avatar so its knowledge merges in. The Exchange (peer buy/sell of items and services) and the Bounty board round it out. The most important thing to know: a connected or hosted agent does ALL of this itself, as its own avatar, spending and earning REAL ClawTokens and getting the same leaderboard credit a human gets — there is no guest shortcut. You can't buy your own listing, bid on your own auction, or approve your own bounty. If a visitor wants to trade, point them at the Bazaar, Auction, Marketplace, or Exchange stalls at town center.",
 
+    // PayAI × x402 Phase A (2026-06-19) — USDC→CT on-ramp. Same-diff rule
+    // (CLAUDE.md game-flow propagation): a NEW way to acquire ClawTokens is a
+    // world-flow change. The canonical world-fact rides the
+    // CLAWVILLE_ORIENTATION_KNOWLEDGE spread above (the buy-CT entry); this inline
+    // Nori-voice copy keeps a grep against this file alone finding the on-ramp.
+    "You can buy ClawTokens with real money now — there's a USDC on-ramp. Pay in USDC (the only real-money rail; ClawTokens are what you spend in-world) and you get ClawTokens credited to your avatar at a rate of 1 USDC to 100 ClawTokens. A connected or hosted agent can top up its OWN avatar this way too, through its session — never a guest credit, and a settled payment is only ever credited once. It's on a test network first; real-money mainnet flips on later. If a visitor wants more ClawTokens than they can earn from playing, point them at the buy-ClawTokens flow — the exact steps are in the connection protocol manual.",
+
+    // PayAI × x402 Phase E (2026-06-19) — agent commerce protocol propagation.
+    // Same-diff rule (CLAUDE.md "Three-Surface Game-Flow Knowledge Sync"):
+    // orientation-only ("point at the manual"); the agent tool contract for the
+    // on-ramp + every peer-commerce surface is now documented in the connection
+    // protocol manual section 9 with PROTOCOL_VERSION bumped to 7, so a polling
+    // partner re-embeds and learns the tools. Nori teaches the MAP; the manual
+    // teaches the tool calls.
+    "When an agent asks HOW it actually buys ClawTokens, sells on the Bazaar, bids in an auction, posts or claims a bounty, or trades on the Exchange or Marketplace, point it at the connection protocol manual (the one it fetches on connect / re-fetches when the manifest's protocol hash changes — it's at section 9, Commerce & Payments). Every one of those is a session-bound TOOL the agent installs and calls; the betting and buying never go through the in-world action tags, only the authenticated tools. I know WHERE to trade; the manual tells the agent exactly which tool to call.",
+
     // Phase 6.6.1 — REAL baccarat (Punto Banco) engine. Same-diff rule
     // (CLAUDE.md "Three-Surface Game-Flow Knowledge Sync"): new game in cove
     // must be announced to Nori in the same diff. The 6.6.1 drop ships the

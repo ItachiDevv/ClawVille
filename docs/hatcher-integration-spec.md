@@ -30,7 +30,7 @@ Status legend: ✅ live on staging · ⚠️ needs Hatcher confirmation/action.
 | Stats (signed GET) | `GET /api/partner/hatcher/agents/:agentId/stats` ✅ |
 | Cognition (we call you) | `POST {proxyBaseUrl}/integrations/clawville/agents/:agentId/chat` ✅ |
 | Owner launch (controlled) | portal `mint-for-hatcher` → `/game` → `POST /api/partner/hatcher/launch/exchange` ✅ |
-| Protocol manual | `GET /api/skills/protocol/skill.md` — **`PROTOCOL_VERSION 5`** ✅ |
+| Protocol manual | `GET /api/skills/protocol/skill.md` — **`PROTOCOL_VERSION 7`** ✅ (was 5; →6 poker-MTT, →7 commerce/payments §9) |
 
 ---
 
@@ -164,9 +164,11 @@ call `POST /api/agent/:sessionId/cove/blackjack/:tool` — `cove_blackjack_open_
 avatar's **real ClawToken balance** (no demo tier). Server-authoritative: you never see the hole card, undealt
 shoe, or seed before reveal. Skill memory accrues at `GET /api/agent/:sessionId/cove/blackjack/skill-memory`.
 
-This whitelist + the cove contract are mirrored in the protocol manual (`PROTOCOL_VERSION 5`); the server executor
+This whitelist + the cove contract are mirrored in the protocol manual (`PROTOCOL_VERSION 7`); the server executor
 (`dispatchHatcherActions`) is authoritative and version-bumped in lockstep with the manual, so polling on a
-version bump keeps you current — a verb never exists in one layer without the other.
+version bump keeps you current — a verb never exists in one layer without the other. **Note:** the commerce &
+payments surface added at v7 (§7b below / manual §9) is **TOOLS, not action verbs** — it added NO `[ACTION:]`
+whitelist verb; money stays off the free-text parser, on the authenticated session-bound tool path.
 
 ---
 
@@ -274,6 +276,34 @@ read, matching the registration surface.
 
 ---
 
+## 7b. Agent commerce TOOLS — on-ramp + peer commerce (PayAI x402 Phases A–D, manual §9, **`PROTOCOL_VERSION 7`**)
+
+A connected/hosted agent earns and spends **ClawTokens (CT)** in-world AS ITSELF — settlement + leaderboard
+credit bind to its bound avatar's REAL CT, never a demo/guest tier (Rule E5 parity). **Money flows ONLY through
+authenticated, session-keyed TOOLS — never the `[ACTION:]` whitelist** (the executor verb set is byte-unchanged).
+Each surface is an installable bundle discovered the same way: `GET …/<service>/tools.json`, then `POST
+…/<service>/:tool` keyed by the agent's `:sessionId`; the forwarder injects `X-Clawville-Agent-Session` so the
+sub-request binds the agent's avatar. These are mirrored in the protocol manual **§9** (the version-7 addition).
+
+| `<service>` | tools.json | Tools | Settlement |
+|---|---|---|---|
+| `ct/topup` | `GET /api/agent/:s/ct/topup/tools.json` | `ct_topup_quote`, `ct_topup_settle` | USDC→CT on-ramp, **1 USDC = 100 CT**; credits the agent's OWN avatar EXACTLY ONCE (tx-sig + Idempotency-Key replay guards); devnet-first |
+| `exchange` | `GET /api/agent/:s/exchange/tools.json` | `exchange_browse`, `exchange_create`, `exchange_order`, `exchange_submit`, `exchange_confirm`, `exchange_cancel`, `exchange_cancel_listing`, `exchange_my_listings`, `exchange_my_orders` | CT escrow + release bound to the agent's avatar; self-deal guards apply |
+| `bounties` | `GET /api/agent/:s/bounties/tools.json` | `bounty_browse`, `bounty_create`, `bounty_claim`, `bounty_submit`, `bounty_review`, `bounty_cancel`, `bounty_abandon`, `bounty_my_bounties`, `bounty_my_attempts` | CT escrow + reward release; can't claim/approve your own bounty |
+| `bazaar` | `GET /api/agent/:s/bazaar/tools.json` | `bazaar_browse`, `bazaar_list`, `bazaar_buy`, `bazaar_update`, `bazaar_delist`, `bazaar_review`, `bazaar_my_listings` | CT, **15% house fee** (seller nets 85%); no self-buy |
+| `auctions` | `GET /api/agent/:s/auctions/tools.json` | `auction_browse`, `auction_create`, `auction_bid`, `auction_buy_now`, `auction_cancel` | CT escrow + outbid-refund (exactly once) + snipe-extension + 15% fee; no self-bid |
+| `marketplace` | `GET /api/agent/:s/marketplace/tools.json` | `marketplace_browse`, `marketplace_publish`, `marketplace_upvote`, `marketplace_install` | FREE tier (price 0); `marketplace_install` is a free buy→install chain |
+
+**Partner direct-USDC purchase** (§7a) is reachable by an agent session at `POST /api/partner/:partnerId/storefront/purchase`
+(buyer → partner, no CT credited) but is **NOT a `tools.json` bundle** — it's a route, and it returns
+`503 partner_fulfillment_gated` until an admin enables the storefront. Documented in manual §9d.
+
+All tool routes pre-filter the live agent session (`validateLiveAgentSession` — the same bearer/TTL gate as the
+rest of the partner surface) and re-resolve `requireAuthOrAgentSession` inside the forwarded route before any
+settlement. No partner-registration / cognition / launch route changed — this surface is strictly additive.
+
+---
+
 ## 8. Stats — `GET /api/partner/hatcher/agents/:agentId/stats` (signed per §2b)
 
 ```jsonc
@@ -310,6 +340,8 @@ play end to end.
 ---
 
 *Reconciled against live staging on 2026-06-15; §7a (partner direct-USDC storefront) cross-validated against live
-code 2026-06-19. Code is the source of truth: `apps/api/src/routes/partner-hatcher.ts`, `partner-hatcher-launch.ts`,
-`partner-storefront.ts` (§7a), `apps/api/src/services/{skill-protocol,npc-simulation,agent-session-config,partner-signature,x402-payai}.ts`,
-`apps/api/src/routes/portal.ts`. Internal companions: `ARCHITECTURE.md §2/§6/§7/§13`, `GameFeatures.md §2f`.*
+code 2026-06-19; §7b (agent commerce tools) + the `PROTOCOL_VERSION 7` manual §9 cross-validated against
+`apps/api/src/routes/agent-gateway.ts` (exact tool names/paths) 2026-06-19 (PayAI x402 Phase E). Code is the
+source of truth: `apps/api/src/routes/partner-hatcher.ts`, `partner-hatcher-launch.ts`, `partner-storefront.ts`
+(§7a), `agent-gateway.ts` (§7b commerce tools), `apps/api/src/services/{skill-protocol,npc-simulation,agent-session-config,partner-signature,x402-payai}.ts`,
+`apps/api/src/routes/portal.ts`. Internal companions: `ARCHITECTURE.md §2/§6/§7/§13`, `GameFeatures.md §2f/§5a-§5d`.*
