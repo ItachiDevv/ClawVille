@@ -32,6 +32,8 @@ mock.module('../../../middleware/require-auth-or-agent', () => ({
         avatarId: 'avatar-1',
         agentId: 'agent-xyz',
         sessionId: 'valid-agent',
+        // ledgerCapable is now part of the agent-kind ActivityIdentity (FIX-C).
+        ledgerCapable: true,
       };
     }
     return null;

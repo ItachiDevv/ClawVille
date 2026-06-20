@@ -77,6 +77,7 @@ import { fingerprintMiddleware } from './middleware/fingerprint';
 import { cosmeticsRoutes } from './routes/cosmetics';
 import { dashAuthRoutes } from './routes/dash-auth';
 import { wagerRoutes } from './routes/wager';
+import { sapRoutes } from './routes/sap';
 // Phase 6.1 slice 3 — cove slots fun-money backend wire (ClawTokens live;
 // SOL/USDC return 501 until Phase 6.2 custody).
 import { coveSlotsRouter } from './routes/cove-slots';
@@ -298,6 +299,12 @@ app.route('/api/partner/hatcher', partnerHatcherLaunchRoutes);
 // Wager lobbies + escrow (gambling-contracts vertical slice).
 // See routes/wager.ts header for the full surface + feature gates.
 app.route('/api/wager', wagerRoutes);
+// SAP (Synapse Agent Protocol) — on-chain agent identity / reputation / tool /
+// discovery (Phase 1) + escrow money rail (Phase 2). FULLY built but gated OFF
+// by default (SAP_ENABLED=false, SAP_ESCROW_ENABLED=false, SAP_DRY_RUN=true) +
+// devnet-first; mainnet is a code gate, not an env. The in-game economy stays
+// ClawTokens. See routes/sap.ts FEATURE_GATE + docs/sap-integration.md.
+app.route('/api/sap', sapRoutes);
 // Phase 6.1 slice 3 — Cove slots (commit-reveal RNG + session escrow).
 // ClawTokens path is fully wired; SOL/USDC routes return 501 with a
 // friendly message until Phase 6.2 lands real-money custody.
