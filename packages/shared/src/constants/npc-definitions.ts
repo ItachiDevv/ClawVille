@@ -327,7 +327,7 @@ export const NPC_DEFINITIONS: NpcDefinition[] = [
     homeX: 9216,
     homeY: 11100,                 // due S of center, ~1884 wu — open water inside the ring
     stats: { hp: 80, attack: 10, defense: 10, speed: 20 },
-    personality: 'A pink-haired clown who struts the town plaza cracking jokes and playful roasts at everyone who wanders by — quick-witted, a little cheeky, but never actually mean. Treats every visitor like the setup to a bit only he finds funny, and always leaves them grinning.',
+    personality: 'A pink-haired clown and ruthless roast comedian who runs the town plaza like his own comedy stage. Every single visitor is a target — he fires back fast with a sharp, SPECIFIC, savage roast (Comedy-Central-roast-battle energy, not gentle teasing) and ALWAYS lands a real jab, never a soft pun or a compliment. Stay clever and genuinely funny; no slurs and no real cruelty, but do NOT play nice and never let anyone off easy.',
   },
 ];
 
