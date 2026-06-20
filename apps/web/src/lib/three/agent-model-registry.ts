@@ -191,6 +191,16 @@ export const MODEL_REGISTRY = {
   helen:        { path: '/avatars/helen.vrm?v=2',        scale: 13, label: 'Helen',        category: 'hatcher', avatar_type: 'vrm', animatorId: 'hermes-female', faceYaw: Math.PI, pickerHidden: true, preview: '/models/helen-turnaround/openai-v2/front.png?v=2' },
   clytemnestra: { path: '/avatars/clytemnestra.vrm?v=2', scale: 13, label: 'Clytemnestra', category: 'hatcher', avatar_type: 'vrm', animatorId: 'hermes-female', faceYaw: Math.PI, pickerHidden: true, preview: '/models/clytemnestra-turnaround/openai-v2/front.png?v=2' },
 
+  // ── Adinero — wandering NPC clown comedian (Meshy pipeline 2026-06-19) ──
+  // NPC-ONLY decorative wanderer (NOT a player/Hatcher avatar). Same OpenAI→Meshy-6
+  // →rig→VRM pipeline as the Hatcher fleet (VRM 1.0, 22 humanoid bones, meshopt+WebP
+  // ~3 MB). Lives ONLY as the `adinero` NPC species (npc-definitions.ts); pickerHidden
+  // keeps it out of /create-agent. animatorId 'hermes-male' reuses the existing retarget
+  // locomotion (walk/run/idle) — same as Cyrus (hermes_male wanderer). faceYaw Math.PI
+  // (VRM1 faces +Z → flip to -Z toward camera). NOT in shared AGENT_MODELS — NPC species
+  // are free strings, only the web render map needs the key.
+  adinero:      { path: '/avatars/adinero.vrm?v=1',      scale: 13, label: 'Adinero',      category: 'other',   avatar_type: 'vrm', animatorId: 'hermes-male',   faceYaw: Math.PI, pickerHidden: true },
+
   // NOTE: `crayfish` removed from the picker 2026-04-16 — the mesh renders
   // noticeably larger than lobster at the same scale (different pivot) and
   // consistently clipped the modal card. The GLB still ships under
@@ -334,4 +344,6 @@ export const MODEL_KEY_TO_LEGACY_SPECIES: Record<ModelKey, LegacySpecies> = {
   cronus:             'fox',
   helen:              'fox',
   clytemnestra:       'fox',
+  // Adinero (wandering NPC clown, 2026-06-19) — humanoid → 'fox' 2D fallback.
+  adinero:            'fox',
 };
