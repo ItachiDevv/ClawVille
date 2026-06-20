@@ -199,7 +199,7 @@ export const MODEL_REGISTRY = {
   // locomotion (walk/run/idle) — same as Cyrus (hermes_male wanderer). faceYaw Math.PI
   // (VRM1 faces +Z → flip to -Z toward camera). NOT in shared AGENT_MODELS — NPC species
   // are free strings, only the web render map needs the key.
-  adinero:      { path: '/avatars/adinero.vrm?v=1',      scale: 13, label: 'Adinero',      category: 'other',   avatar_type: 'vrm', animatorId: 'hermes-male',   faceYaw: Math.PI, pickerHidden: true },
+  adinero:      { path: '/avatars/adinero.vrm?v=1',      scale: 13, label: 'Adinero',      category: 'other',   avatar_type: 'vrm', animatorId: 'adinero',       faceYaw: Math.PI, pickerHidden: true },
 
   // NOTE: `crayfish` removed from the picker 2026-04-16 — the mesh renders
   // noticeably larger than lobster at the same scale (different pivot) and
