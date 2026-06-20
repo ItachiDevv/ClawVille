@@ -44,6 +44,9 @@ export const townGuide: LocationTemplate = {
     // skillPack in one motion.
     ...CLAWVILLE_ORIENTATION_KNOWLEDGE,
 
+    // Adinero the wandering clown (2026-06-19) — new decorative NPC; same-diff
+    // Town Guide knowledge sync (CLAUDE.md "Three-Surface Game-Flow Knowledge Sync").
+    'Adinero is a pink-haired clown who roams the town-center ring — you will catch him sprinting up to people to crack a joke or a playful roast, then darting off to pester someone else. Walk up to him in NPC mode and click to chat; he roasts everyone equally, so it is all in good fun. Pure laughs — no tokens, no quests, no skills.',
     // Nori-voice-specific augmentations (her orientation-card framing, the
     // "send visitors to the right building" directive, and the activity
     // lobby / HUD detail that a generic orientation skill doesn't need).
