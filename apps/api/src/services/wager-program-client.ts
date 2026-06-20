@@ -87,6 +87,15 @@ const COMMITMENT: Commitment = 'confirmed';
 
 const connection = new Connection(RPC_URL, COMMITMENT);
 
+// Heuristic pre-check buffer for createLobbySol: the instruction rent-funds the
+// lobby + vault + creatorPlayer accounts (~2.16M lamports each observed on-chain)
+// plus the tx fee, with margin. NOT authoritative — the on-chain program is the
+// final word (any shortfall still surfaces via withChainErrors → on_chain_error);
+// this only lets an UNFUNDED custodial wallet fail fast with a clean 4xx +
+// helpful message instead of a raw simulation error that pages as critical.
+// ~0.0065 SOL.
+const LOBBY_CREATE_RENT_FEE_BUFFER_LAMPORTS = 6_500_000n;
+
 let settlementAuthorityCache: Keypair | null = null;
 let programCache: Program<ClawvilleWager> | null = null;
 
@@ -103,7 +112,8 @@ export class WagerClientError extends Error {
       | 'authority_missing'
       | 'avatar_wallet_missing'
       | 'pubkey_mismatch'
-      | 'on_chain_error',
+      | 'on_chain_error'
+      | 'insufficient_funds',
     public readonly cause?: unknown,
   ) {
     super(message);
@@ -268,6 +278,31 @@ async function withChainErrors<T>(label: string, fn: () => Promise<T>): Promise<
         err,
       );
     }
+    // On-chain transaction / simulation failures (web3.js SendTransactionError,
+    // program custom errors, insufficient lamports) are NOT AnchorErrors, so they
+    // previously escaped raw → uncaught 500 + critical page. Wrap them as
+    // 'on_chain_error' so the route maps them to a clean 400.
+    if (
+      msg.includes('Simulation failed') ||
+      msg.includes('Transaction simulation failed') ||
+      msg.includes('custom program error') ||
+      msg.includes('insufficient lamports') ||
+      msg.includes('SendTransactionError') ||
+      (err as { name?: string } | null)?.name === 'SendTransactionError'
+    ) {
+      // Observability: this no longer pages as an uncaught 500, but a non-Anchor
+      // on-chain failure on an ADMIN path (settle/lock) — e.g. the settlement
+      // authority running out of SOL — is a real operational incident. Log it so
+      // it stays visible in container logs even though the caller gets a clean 400.
+      // (User insufficient-funds on create is caught earlier by the balance gate,
+      // so this branch is NOT hit by that common case — no log spam.)
+      console.error(`[wager] on-chain ${label} failed (→ on_chain_error / 400): ${msg}`);
+      throw new WagerClientError(
+        `On-chain ${label} failed: ${msg}`,
+        'on_chain_error',
+        err,
+      );
+    }
     throw err;
   }
 }
@@ -302,6 +337,25 @@ export async function createSolLobby(
   const { keypair: creator, publicKey: creatorPubkey } = await loadAvatarWallet(
     input.creatorAvatarId,
   );
+
+  // GATE: pre-check the creator's on-chain SOL so an unfunded custodial wallet
+  // fails fast with a clean 4xx ('insufficient_funds') instead of a failed
+  // on-chain simulation that previously bubbled up as an uncaught 500 + critical
+  // page. The chain remains the final authority — any residual shortfall on a
+  // partially-funded wallet is now also caught gracefully in withChainErrors.
+  const balanceLamports = await withChainErrors('createSolLobby:getBalance', () =>
+    connection.getBalance(creatorPubkey, COMMITMENT),
+  );
+  const requiredLamports =
+    input.wagerAmountLamports + LOBBY_CREATE_RENT_FEE_BUFFER_LAMPORTS;
+  if (BigInt(balanceLamports) < requiredLamports) {
+    throw new WagerClientError(
+      `Insufficient SOL to create this lobby: wallet has ${balanceLamports} lamports, ` +
+        `need ~${requiredLamports.toString()} (stake + account rent + fee). ` +
+        `Fund your wallet or use a free / ClawToken lobby.`,
+      'insufficient_funds',
+    );
+  }
 
   const [configPda] = findConfigPda();
   const [lobbyPda] = findLobbyPda(input.lobbyIdBigint);
