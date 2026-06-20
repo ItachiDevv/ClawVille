@@ -13,10 +13,19 @@
  *     per render. useFrame uses only primitive refs, zero per-frame allocations.
  *
  * Positioning:
- *   Cove zone: id='cove', tile center cx=158, cy=288.
+ *   Cove zone: id='cove', tile center cx=158, cy=288 (576×576 tile grid).
  *   worldX = -9216 + 158*32 = -4160
  *   worldZ = -9216 + 288*32 = 0
- *   The sign floats at Y≈900 (above the 1300 wu building), ring at Y≈650.
+ *
+ *   The cove GLB (cove-exterior-opt1.glb) is a near-cube:
+ *     raw bbox ≈ 50.78 × 49.52 × 51.42 native units, max dim 51.42.
+ *     targetMaxDim=1300 → scale≈25.28 → rendered 1284(x) × 1252(y) × 1300(z) wu.
+ *     Building floor at world Y≈-2, APEX at world Y≈1250.
+ *   Therefore all beacon geometry MUST be above Y=1250 to avoid pyramid occlusion.
+ *
+ *   SIGN_Y = 1480: marquee board center 230 wu above apex (1480 - 1250 = 230). ✓
+ *   RING_Y = 1300: glow ring 50 wu above apex (1300 - 1250 = 50). ✓
+ *   Point lights follow RING_Y offsets so they also stay above the pyramid.
  *
  * Iris Xe invariants (kill-the-build):
  *   - NO drei <Text> / <Billboard> — both crash Iris Xe. Text is baked into a
@@ -25,7 +34,7 @@
  *   - NO per-frame `new Vector3()` — GC thrash. All scratch objects module-scope.
  *   - NO new allocations inside useFrame — only ref reads and primitive math.
  *
- * town-ux-2026-06-19
+ * town-ux-2026-06-20 (beacon raised above pyramid + portal entrance)
  */
 
 import { useRef, useMemo } from 'react';
@@ -39,8 +48,18 @@ import * as THREE from 'three';
 // ---------------------------------------------------------------------------
 const BEACON_WORLD_X = -9216 + 158 * 32; // -4160 wu
 const BEACON_WORLD_Z = -9216 + 288 * 32; // 0 wu
-const SIGN_Y       = 870;  // height above terrain — clear of building top
-const RING_Y       = 620;  // glow ring base
+
+// Cove pyramid dimensions (verified from GLB bbox + arena-buildings.tsx config):
+//   targetMaxDim=1300, raw bbox max dim 51.42 → scale≈25.28
+//   Rendered: ~1284(x) × 1252(y) × 1300(z) wu. Building floor Y≈-2, APEX Y≈1250.
+// All geometry below must sit ABOVE Y=1250 to avoid occlusion by the pyramid walls.
+//
+// SIGN_Y=1480: marquee board center 230 wu above apex → visibly floating above tip.
+// RING_Y=1330: glow ring 80 wu above apex → ring bottom (1330-90=1240) stays above apex 1250. ✓
+// Point lights re-derived from RING_Y so they follow if these values change.
+const COVE_APEX_Y  = 1250; // world-space apex of the cove pyramid
+const SIGN_Y       = 1480; // marquee board Y — 230 wu above apex (was 870, occluded)
+const RING_Y       = 1330; // glow ring Y  —  80 wu above apex (was 1300→1250 bottom-ring dips at radius 90)
 const RING_RADIUS  = 90;   // wu
 const RING_COUNT   = 10;   // spokes in the light ring
 
@@ -112,7 +131,11 @@ function buildMarqueeTexture(): THREE.CanvasTexture {
 // ---------------------------------------------------------------------------
 // Module-scope geometry and materials — never recreated per render.
 // ---------------------------------------------------------------------------
-const _marqueeGeo  = new THREE.PlaneGeometry(320, 80);
+// Board scaled up ~2.1× total for visibility from ~2600 wu approach distance.
+// IMPORTANT: sign and board have rotation.y = π/2 in JSX so the readable face
+// points +X (toward town). A +Z-facing plane is an invisible sliver from +X.
+//   Width: 665 wu (was 320, then 512). Height: 169 wu (was 80, then 130).
+const _marqueeGeo  = new THREE.PlaneGeometry(665, 169);
 const _marqueeMat  = new THREE.MeshBasicMaterial({
   transparent: true,
   depthWrite: false,
@@ -122,12 +145,56 @@ if (typeof document !== 'undefined') {
   _marqueeMat.map = buildMarqueeTexture();
 }
 
-// Board backing (dark panel behind the sign)
-const _boardGeo  = new THREE.BoxGeometry(336, 96, 4);
+// Board backing — matches enlarged sign
+const _boardGeo  = new THREE.BoxGeometry(681, 185, 4);
 const _boardMat  = new THREE.MeshBasicMaterial({ color: 0x03050f });
 
-// Support pole
-const _poleGeo  = new THREE.CylinderGeometry(4, 6, 400, 6);
+// ---------------------------------------------------------------------------
+// Vertical light beam — tall glowing cylinder rising from apex into sky.
+// Omni-directional: no facing problem, visible from across the map.
+// AdditiveBlending: layered over the sky without alpha-sorting issues.
+// MUST be module-scope (not recreated per render).
+// Beam spans Y=1250 (apex) to Y=2750, center at Y=2000, height=1500.
+// ---------------------------------------------------------------------------
+const _beamGeo = new THREE.CylinderGeometry(
+  35, 35, 1500,
+  12,  // radialSegments (low poly — sky cylinder, not close-up)
+  1,   // heightSegments
+  true, // openEnded — no caps
+);
+const _beamMat = new THREE.MeshBasicMaterial({
+  color: 0x00ffff,
+  transparent: true,
+  opacity: 0.45,
+  blending: THREE.AdditiveBlending,
+  depthWrite: false,
+  side: THREE.DoubleSide,
+  toneMapped: false, // stay bright under underwater tone mapping
+});
+
+// Wider fainter halo beam
+const _beamHaloGeo = new THREE.CylinderGeometry(
+  80, 80, 1500,
+  12,
+  1,
+  true,
+);
+const _beamHaloMat = new THREE.MeshBasicMaterial({
+  color: 0x0088ff,
+  transparent: true,
+  opacity: 0.18,
+  blending: THREE.AdditiveBlending,
+  depthWrite: false,
+  side: THREE.DoubleSide,
+  toneMapped: false,
+});
+
+// Support pole — extended from ground (Y=0) to well above RING_Y.
+// Pole height = RING_Y + 120 = 1420, centered at Y = 710.
+// The pole group.position.y offsets place it at (RING_Y + 120) / 2 above Y=0.
+// We derive height at module scope using the constants.
+const _POLE_HEIGHT = RING_Y + 120; // 1420 wu — ground to above ring
+const _poleGeo  = new THREE.CylinderGeometry(4, 8, _POLE_HEIGHT, 6);
 const _poleMat  = new THREE.MeshBasicMaterial({ color: 0x2a2050 });
 
 // Glow ring spokes — thin flat planes, no ShaderMaterial
@@ -176,15 +243,21 @@ export default function CoveBeacon() {
       name="cove-beacon"
       userData={{ perfChunk: 'cove-beacon' }}
     >
-      {/* Support pole — static, no animation */}
+      {/* Support pole — tall pylon from ground (Y≈0) to above RING_Y.
+          Pole center Y = _POLE_HEIGHT / 2 so the base sits at world Y=0.
+          At 1420 wu height this reads as a tall lit pylon from ~4160 wu camera distance. */}
       <mesh
         geometry={_poleGeo}
         material={_poleMat}
-        position={[0, RING_Y - 80, 0]}
+        position={[0, _POLE_HEIGHT / 2, 0]}
       />
 
-      {/* Marquee sign board */}
-      <group>
+      {/* Marquee sign board.
+          Default PlaneGeometry faces +Z; rotating 90° around Y makes it face +X (toward town).
+          Without this rotation the sign is edge-on from the town approach — invisible sliver.
+          Board width: 665 wu. Height: 169 wu (2.1× original).
+          useFrame float: position.y = SIGN_Y + sin(t)*8 — reassigned each frame on signRef. */}
+      <group rotation={[0, Math.PI / 2, 0]}>
         <mesh
           geometry={_boardGeo}
           material={_boardMat}
@@ -198,7 +271,23 @@ export default function CoveBeacon() {
         />
       </group>
 
-      {/* Rotating glow ring */}
+      {/* Vertical sky beam — tall glowing cylinders rising from apex (~Y=1250) into sky.
+          Omni-directional: visible from all approach angles, no facing problem.
+          Spans Y=1250 to Y=2750, center at Y=2000. AdditiveBlending (no alpha sort).
+          Two cylinders: narrow bright core (r=35) + wide faint halo (r=80). */}
+      <mesh
+        geometry={_beamGeo}
+        material={_beamMat}
+        position={[0, 2000, 0]}
+      />
+      <mesh
+        geometry={_beamHaloGeo}
+        material={_beamHaloMat}
+        position={[0, 2000, 0]}
+      />
+
+      {/* Rotating glow ring — now 50 wu above pyramid apex (1300 - 1250 = 50).
+          Apex is at ~Y=1250; RING_Y=1300 clears it. */}
       <group ref={ringRef} position={[0, RING_Y, 0]}>
         {spokeAngles.map((angle, i) => (
           <mesh
@@ -215,10 +304,9 @@ export default function CoveBeacon() {
         ))}
       </group>
 
-      {/* Atmosphere lights — kept very soft so they don't overpower the scene.
-          Three.js point lights are per-fragment on WebGPU so 3 max.
-          distance=1200 keeps them from bleeding to the next building slot
-          (slots are ~2600 wu apart at ring R=4160). */}
+      {/* Atmosphere lights — all positions derived from RING_Y so they move with constants.
+          3 point lights total (unchanged from prior version — staying in budget).
+          distance limits prevent bleeding to adjacent building slots (~2600 wu away). */}
       <pointLight
         color={0xff44cc}
         intensity={1.8}
