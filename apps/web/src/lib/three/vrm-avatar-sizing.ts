@@ -181,178 +181,526 @@ export function computeVRMAvatarFit(
  * @param category - 'hat' | 'glasses'
  * @param renderScale - the world scale applied to vrm.scene (from computeVRMAvatarFit).
  *   Required to convert head-bone native units → world units.
- * @returns { localPosition, localScale, headWidthWU } or null if no head bone.
- *   localPosition: THREE.Vector3 in head-bone-local space for the cosmetic Group.
- *   localScale:    uniform scale (scalar) for the cosmetic Group.
- *   headWidthWU:   head width in world units (diagnostic, also used by caller for
- *                  per-category override math).
+ * @returns { localPosition, desiredWorldWidth, headWidthWU } or null if no head bone.
+ *   localPosition:     THREE.Vector3 in head-bone-local space for the cosmetic Group.
+ *   desiredWorldWidth: target world-space width the cosmetic should occupy.
+ *                      HatOrGlassesRenderer converts this to a local scale after
+ *                      measuring the GLB asset width and bone world scale.
+ *   headWidthWU:       head width in world units (diagnostic + nudge math).
  */
 export interface CosmeticHeadFitResult {
   localPosition: THREE.Vector3;
-  localScale:    number;
-  /** head bounding-box width in world units (useful for debugging + nudge math) */
+  /**
+   * Desired WORLD width (world units) the cosmetic should occupy.
+   * = headWidthWU * CATEGORY_WIDTH_FACTOR[category].
+   * HatOrGlassesRenderer converts this to a local scale after measuring
+   * the GLB asset's authored width and the bone's world scale, eliminating
+   * the magic-30 and the bone-world-scale-frame error (BUG 2).
+   */
+  desiredWorldWidth: number;
+  /** head width in world units (diagnostic + used for nudge math in caller) */
   headWidthWU:   number;
 }
 
 /**
- * Reference head width (world units) the cosmetic GLBs were authored for.
+ * Ratio of head width to head height for a typical humanoid VRM head.
+ * Used as fallback by computeCosmeticHeadFit when no skinned head verts
+ * are found (non-skinned rig).  Value ≈ 0.85 (a humanoid head is slightly
+ * narrower than it is tall).
+ * Tunable by the orchestrator in browser: adjust here and rebuild.
+ */
+export const HEAD_WIDTH_TO_HEIGHT = 0.85;
+
+/**
+ * Per-category desired world width of the cosmetic as a fraction of headWidthWU.
+ * hat:    slightly wider than the head (brim overhang)
+ * glasses: slightly narrower than the head width (lens-to-lens span)
+ * Tunable by the orchestrator in browser: adjust here and rebuild.
+ */
+export const CATEGORY_WIDTH_FACTOR: Record<'hat' | 'glasses', number> = {
+  hat:     1.15,   // crown wide enough to CONTAIN the top hair (reduce poke-through)
+  glasses: 0.62,   // span eye-to-eye and sit ON the face (not head-wide goggles)
+};
+
+/**
+ * Per-rig head-fit overrides for avatars whose skin weights CORRUPT the
+ * automatic head measurement (no clean strong-weight signal exists on them):
+ *   - the chibi weights its whole upper body to the head bone → head measured
+ *     ~2.5x too big → giant hat that reads as floating;
+ *   - Hermes weights only her upper skull → head measured small/high → the hat
+ *     is swallowed by her (un-head-weighted) hair.
+ * Keyed by the avatar's rig key. Applied ON TOP of the measured head box:
+ *   widthMul     — scales head width + depth (→ cosmetic size)
+ *   heightMul    — scales head height (→ hat drop depth + glasses eye span)
+ *   topShiftFrac — shifts the head TOP up(+)/down(-) by a fraction of head height
+ * Tunable in /preview/cosmetics. A new corrupted rig gets an entry here — and
+ * should be flagged by a head-weight sanity check in the avatar pipeline.
+ */
+export interface RigHeadOverride {
+  /** When true, DISCARD the corrupt vert measurement and anchor the head box to
+   *  the head BONE using the metre dims below × bone world scale. */
+  boneAnchored?: boolean;
+  /** Crown Y relative to the head bone, native metres (× bone scale). MAY be
+   *  NEGATIVE — some broken rigs place the head MESH below the 'head' bone. */
+  headTopAboveBoneM?: number;
+  /** Head height (drives hat drop + glasses eye span), native metres. Falls back
+   *  to headTopAboveBoneM when omitted. Kept SEPARATE so the crown can sit below
+   *  the bone while the head still has a positive height. */
+  headHeightM?: number;
+  /** Head width / depth, native metres (× bone scale). */
+  headWidthM?: number;
+  headDepthM?: number;
+  /** When true, IGNORE the head bone AND skin-weight measurement entirely and
+   *  measure the head as the TOP SLAB of the posed body AABB: crown = body
+   *  max.y, head = the top `headFraction` of total body height, centred on the
+   *  body's X/Z. For chibi-class rigs whose auto-rig (Mixamo OR Meshy) both
+   *  drops the 'head' bone far below the real head AND rigidly weights 40–60% of
+   *  the body to it — so neither boneAnchored nor vert-weight finds the head, but
+   *  the silhouette top always does (pigtails/side-hair cancel on a symmetric
+   *  body, so the centre stays put and width is derived from height, not the raw
+   *  slab). */
+  geometricTopSlab?: boolean;
+  /** Head height as a fraction of total body height, for geometricTopSlab
+   *  (default 0.42). Tunable on /preview/cosmetics. */
+  headFraction?: number;
+}
+
+export const RIG_HEAD_OVERRIDE: Record<string, RigHeadOverride> = {
+  // These rigs weight the head bone so badly the vert measurement is wrong in
+  // BOTH position and size — so we bone-anchor them. Metres tuned on
+  // /preview/cosmetics (?{rig}Top=&{rig}H=&{rig}W=).
+  //
+  // Hermes: SOLVED — looks worn (top hat at her hairline). ✅
+  hermes: { boneAnchored: true, headTopAboveBoneM: 0.22, headWidthM: 0.32 },
+  // chibi: GEOMETRIC TOP-SLAB measure (2026-06-19). MEASURED ground truth: both
+  // chibis' auto-rigs place the 'head' bone at 42–58% of body height (eliza 57.6%,
+  // milady 42%) — FAR below the real head (crown at ~100%) — so the old
+  // boneAnchored override dropped the hat to the low bone → it landed on the
+  // neck/chest (the user-reported bug). A faithful Meshy re-rig was validated and
+  // does NOT help: Meshy weights 41%+ of the body (chest→crown) to the head bone
+  // too — a chibi's head dominates the silhouette, so no auto-rigger isolates it.
+  // The head IS reliably the top ~42% of the silhouette, so we measure it
+  // geometrically instead of trusting the broken bone/weights. headFraction tuned
+  // so the head spans ~crown..neck (eliza 1.10→1.90, milady 1.10→1.90 in rig m).
+  chibi: { geometricTopSlab: true, headFraction: 0.42 },
+};
+
+/**
+ * How far the hat DROPS onto the head, as a fraction of measured head height.
+ * A real hat is not balanced on the crown — the head goes UP INTO the hat, so
+ * the hat base sits BELOW the crown (around the upper head / hairline).
+ * 0.0 = base at crown (floats); 0.30 ≈ base ~1/3 down the head so the brim
+ * sits BELOW the hairline (crown contains the top hair) = worn look, not plonked.
+ * Tunable by the orchestrator in browser.
+ */
+const HAT_DROP_FRACTION = 0.30;
+
+/**
+ * Glasses sit at this fraction of measured head height BELOW the head top.
+ * Eyes are roughly mid-face, ~0.52 down from the crown on a stylized head.
+ * Tunable by the orchestrator in browser.
+ */
+const GLASSES_EYE_FRACTION = 0.52;
+
+/**
+ * How far forward glasses are offset, as a fraction of measured head DEPTH,
+ * along the face-forward direction — places the lenses just in front of the
+ * face surface (depth/2 ≈ face front) instead of floating off the head.
+ */
+const GLASSES_FORWARD_FACTOR = 0.45;
+
+/**
+ * Minimum skinned-vertex weight contribution from the head bone for a vertex
+ * to be included in the head AABB measurement.  0.5 means the head bone must
+ * be the dominant influence (> 50 % of the total weight for that vertex).
+ */
+const HEAD_WEIGHT_THRESHOLD = 0.5;
+
+/**
+ * Sign multiplier for the glasses facing offset.
  *
- * The procedural placeholder GLBs (generate-cosmetic-glbs.mjs) were built in
- * metric. A Milady VRM at renderScale ≈ 169 has a head bbox ≈ 28–34 wu wide.
- * We use 30 wu as the design reference — cosmetics authored at 1× scale look
- * correct on Milady at 30 wu.  Larger/smaller heads get cosmetics scaled
- * proportionally.
+ * Three.js `Object3D.getWorldDirection(target)` returns the object's LOCAL +Z
+ * axis in world space — NOT the facing direction.  All ClawVille VRMs end up
+ * facing WORLD -Z after load:
+ *   - Milady VRM0: `VRMUtils.rotateVRM0` applies a π Y-rotation → faces -Z.
+ *   - VRM1.x (Hermes/Tekk/Phanes/chibi): `faceYaw = Math.PI` → faces -Z.
+ *
+ * Therefore `scene.getWorldDirection()` returns the BACK of the avatar (+Z in
+ * world = behind).  Adding it directly would push glasses behind the head.
+ *
+ * Fix: multiply by `GLASSES_FACING_SIGN = -1` to flip the vector so it
+ * points face-forward.
+ *
+ * The orchestrator can verify the sign in the `/preview/cosmetics` route:
+ * if glasses appear behind the head, flip this to +1.
  */
-export const COSMETIC_REF_HEAD_WIDTH_WU = 30;
-
-/**
- * Hat clearance: extra vertical gap between measured head-top and hat base,
- * in world units.  Prevents the hat from clipping into hair.
- */
-const HAT_CLEARANCE_WU = 2;
-
-/**
- * Glasses sit at this fraction below head-top-to-head-bottom.
- * 0.25 ≈ eye-level on a typical humanoid head.
- */
-const GLASSES_EYE_FRACTION = 0.25;
-
-/**
- * How far forward (in world units, relative to head width) glasses are offset
- * from the head-bone origin along the BODY-FACING direction.  Prevents clipping
- * into the face.
- */
-const GLASSES_FORWARD_FACTOR = 0.5;
+export const GLASSES_FACING_SIGN = -1;
 
 export function computeCosmeticHeadFit(
   vrm: {
-    humanoid?: { getRawBoneNode?: (name: string) => THREE.Object3D | null } | null;
+    humanoid?: {
+      getRawBoneNode?: (name: string) => THREE.Object3D | null;
+      getNormalizedBoneNode?: (name: string) => THREE.Object3D | null;
+    } | null;
     scene: THREE.Object3D;
   } | null | undefined,
   category: 'hat' | 'glasses',
   renderScale: number,
+  rigKey?: string,
+  /** Dev tuning: explicit override that wins over the RIG_HEAD_OVERRIDE table. */
+  tuningOverride?: RigHeadOverride,
 ): CosmeticHeadFitResult | null {
   if (!vrm) return null;
 
+  // renderScale is retained in the signature for backwards-compat with existing callers
+  // but is no longer used internally — the new algorithm works in world space directly
+  // since vrm.scene is already at renderScale in the scene by the time equip runs.
+  void renderScale;
+
   // 1. Get the raw head bone (what the animator actually drives — NOT the
   //    normalized bone used by the AnimationMixer).
-  const headBone =
-    vrm.humanoid?.getRawBoneNode?.('head') ?? null;
+  const headBone = vrm.humanoid?.getRawBoneNode?.('head') ?? null;
   if (!headBone) return null;
 
   // Ensure world matrices are current.  The VRM is already at renderScale
   // in the scene at this point (caller applies scale before calling equip).
   vrm.scene.updateMatrixWorld(true);
 
-  // 2. World position of the head bone.
-  // Scratch vectors — local to this call, never allocated per frame.
-  const headBoneWorldPos = new THREE.Vector3();
-  headBone.getWorldPosition(headBoneWorldPos);
-
-  // 3. Build WORLD-space AABB of the head region.
-  //    We walk DIRECT children of the head bone and any non-SkinnedMesh
-  //    descendants whose geometry origin is close to the head bone.
-  //    SkinnedMesh bind-pose bboxes are unreliable (see
-  //    gotcha: skinned-mesh-bbox-inflation.md) — we skip them.
+  // 2. HEAD-ISOLATED AABB via skinned-vertex traversal.
   //
-  //    If no geometry is found under the head bone we fall back to a
-  //    fraction of the full body bbox so chibi / low-poly VRMs still get
-  //    a sensible estimate.
-  const headBox = new THREE.Box3();
-  headBone.traverse((child) => {
-    const mesh = child as THREE.Mesh;
-    if (!mesh.isMesh) return;
-    if ((mesh as THREE.SkinnedMesh).isSkinnedMesh) return; // unreliable bbox
-    if (!mesh.geometry) return;
-    mesh.geometry.computeBoundingBox();
-    const geoBbox = mesh.geometry.boundingBox;
-    if (!geoBbox) return;
-    // Expand the accumulating box with this mesh's geometry in world space.
-    const tempBox = geoBbox.clone().applyMatrix4(mesh.matrixWorld);
-    headBox.union(tempBox);
-  });
-
-  // Fallback: if head subtree has no usable geometry, estimate from full bbox.
-  const usedFallback = headBox.isEmpty();
-  if (usedFallback) {
-    // Estimate head as top 15 % of total body bbox height.
-    const bodyBox = new THREE.Box3().setFromObject(vrm.scene as unknown as THREE.Object3D);
-    const bodyHeight = bodyBox.max.y - bodyBox.min.y;
-    const headTopEst = bodyBox.max.y;
-    const headBottomEst = headTopEst - bodyHeight * 0.15;
-    const headHalfWidthEst = bodyHeight * 0.08; // typical head width ≈ 16% of body height
-    headBox.min.set(
-      headBoneWorldPos.x - headHalfWidthEst,
-      headBottomEst,
-      headBoneWorldPos.z - headHalfWidthEst,
-    );
-    headBox.max.set(
-      headBoneWorldPos.x + headHalfWidthEst,
-      headTopEst,
-      headBoneWorldPos.z + headHalfWidthEst,
-    );
+  //    Walk all SkinnedMesh nodes in vrm.scene.  For each mesh:
+  //      a. Find the head bone's index in the skeleton's bone array.
+  //      b. Iterate all vertices; for each, check the 4 skin-influence pairs
+  //         (skinIndex, skinWeight).  Include the vertex IFF the head bone's
+  //         total weight contribution >= HEAD_WEIGHT_THRESHOLD (0.5).
+  //      c. Call sm.applyBoneTransform(vertexIndex, tmp) to pose the vertex
+  //         at the current skeleton state (Three.js r182 SkinnedMesh.js:319).
+  //      d. sm.localToWorld(tmp) to convert to world space.
+  //      e. Expand headBox.
+  //
+  //    Cosmetics are plain THREE.Group (no SkinnedMesh), so they are auto-
+  //    excluded from the vertex loop — no name-prefix check needed.
+  //
+  //    If headBox is still empty after the loop (non-skinned rig, or avatar
+  //    scene has no meshes yet), fall back to the BONE-ANCHORED body-bbox
+  //    estimate (the previous "reconciler pass" algorithm) so the function
+  //    never returns null on a valid VRM with a head bone.
+  // 2. ROBUST GEOMETRIC HEAD MEASUREMENT (rig-independent). Production auto-rigs
+  //    vary wildly in how they skin the head — the chibi weights its whole upper
+  //    body to the head bone; Hermes weights only her upper skull — so we do NOT
+  //    trust skin weights for the head EXTENT. Two passes:
+  //      PASS 1 (seed): collect verts STRONGLY weighted to the head bone (>= 0.9).
+  //        Only the actual skull is ever weighted that high, so this rejects
+  //        arms/torso even on a bad rig → a clean head CENTRE + rough scale.
+  //        Drops the threshold if a rig has too few strong verts.
+  //      PASS 2 (geometric expand): from that seed, scan ALL skinned verts that
+  //        are geometrically NEAR the seed centre (seed-scaled radius) and above
+  //        its base → the full head+hair AABB by LOCATION, not weight. Captures
+  //        hair the head bone doesn't own (fixes Hermes) and excludes far body
+  //        verts (fixes chibi).
+  const seedBox = new THREE.Box3();
+  const tmp = new THREE.Vector3();
+  let seedCount = 0;
+  for (const seedThreshold of [0.9, 0.7, 0.5]) {
+    seedBox.makeEmpty();
+    seedCount = 0;
+    vrm.scene.traverse((child) => {
+      const sm = child as THREE.SkinnedMesh;
+      if (!sm.isSkinnedMesh || !sm.skeleton || !sm.geometry) return;
+      const headBoneIndex = sm.skeleton.bones.indexOf(headBone as THREE.Bone);
+      if (headBoneIndex === -1) return;
+      const si = sm.geometry.getAttribute('skinIndex') as THREE.BufferAttribute | undefined;
+      const sw = sm.geometry.getAttribute('skinWeight') as THREE.BufferAttribute | undefined;
+      const pos = sm.geometry.getAttribute('position') as THREE.BufferAttribute | undefined;
+      if (!si || !sw || !pos) return;
+      // equip-on-load race: refresh boneMatrices so applyBoneTransform is valid.
+      sm.skeleton.update();
+      for (let i = 0; i < pos.count; i++) {
+        let w = 0;
+        for (let s = 0; s < 4; s++) if (si.getComponent(i, s) === headBoneIndex) w += sw.getComponent(i, s);
+        if (w < seedThreshold) continue;
+        tmp.fromBufferAttribute(pos, i);
+        sm.applyBoneTransform(i, tmp);
+        sm.localToWorld(tmp);
+        if (!isFinite(tmp.x) || !isFinite(tmp.y) || !isFinite(tmp.z)) continue;
+        seedBox.expandByPoint(tmp);
+        seedCount++;
+      }
+    });
+    if (seedCount >= 8) break;
   }
 
-  const headSize = new THREE.Vector3();
-  headBox.getSize(headSize);
+  // 3. Derive measurement values from the geometric head AABB (or fall back).
+  let headTopWorldY: number;
+  let headWidthWU: number;
+  let headHeightWU: number;
+  let headDepthWU: number;
+  let headCenterX: number;
+  let headCenterZ: number;
+  const eps = 1e-4;
 
-  const headTopWorldY  = headBox.max.y;
-  const headWidthWU    = headSize.x; // WORLD units at current renderScale
-  const headHeightWU   = headSize.y;
+  if (seedCount >= 8 && !seedBox.isEmpty()) {
+    const seedCenter = new THREE.Vector3(); seedBox.getCenter(seedCenter);
+    const seedSize = new THREE.Vector3(); seedBox.getSize(seedSize);
 
-  // Scale cosmetic proportional to measured head width vs the reference.
-  // Clamp to a reasonable range to avoid absurdly large/tiny cosmetics on
-  // edge cases (e.g. a very low-poly head mesh with a 1-triangle bbox).
-  const rawScale = headWidthWU / COSMETIC_REF_HEAD_WIDTH_WU;
-  const localScale = Math.max(0.25, Math.min(4.0, rawScale));
+    // The strong-weight seed IS the head (skull): clean across rigs because only
+    // the skull is ever weighted >=0.9, so arms/torso (chibi) are already gone.
+    // Use it directly for WIDTH / DEPTH / CENTRE. Then a TIGHT, UPWARD-ONLY scan
+    // extends the TOP to a hair crown sitting DIRECTLY above the skull (radius =
+    // skull half-width, y strictly above the seed top, capped) so the hat clears
+    // the hair WITHOUT catching shoulders, wings, or side-hair (which inflated
+    // the earlier greedy expansion: Milady w 71->137, Tekk caught its wings).
+    const topRadius = Math.max(seedSize.x, seedSize.z, eps) * 0.55;
+    const topR2 = topRadius * topRadius;
+    const crownCeil = seedBox.max.y + Math.max(seedSize.y, eps) * 0.6; // hair adds <=60% skull height
+    const gtmp = new THREE.Vector3();
+    let crownY = seedBox.max.y;
+    vrm.scene.traverse((child) => {
+      const sm = child as THREE.SkinnedMesh;
+      if (!sm.isSkinnedMesh || !sm.skeleton || !sm.geometry) return;
+      const pos = sm.geometry.getAttribute('position') as THREE.BufferAttribute | undefined;
+      if (!pos) return;
+      sm.skeleton.update();
+      const step = pos.count > 15000 ? 3 : 1; // subsample huge meshes
+      for (let i = 0; i < pos.count; i += step) {
+        gtmp.fromBufferAttribute(pos, i);
+        sm.applyBoneTransform(i, gtmp);
+        sm.localToWorld(gtmp);
+        if (!isFinite(gtmp.y) || gtmp.y <= seedBox.max.y || gtmp.y > crownCeil) continue;
+        const dx = gtmp.x - seedCenter.x;
+        const dz = gtmp.z - seedCenter.z;
+        if (dx * dx + dz * dz > topR2) continue; // directly above the skull only
+        if (gtmp.y > crownY) crownY = gtmp.y;
+      }
+    });
 
-  // 4. Compute WORLD-SPACE target position of the cosmetic.
+    headTopWorldY = crownY;
+    headHeightWU  = Math.max(crownY - seedBox.min.y, eps);
+    headWidthWU   = Math.min(Math.max(seedSize.x, eps), headHeightWU * 1.4);
+    headDepthWU   = Math.min(Math.max(seedSize.z, eps), headHeightWU * 1.4);
+    headCenterX   = seedCenter.x;
+    headCenterZ   = seedCenter.z;
+  } else {
+    // FALLBACK PATH: no head-weighted verts found (non-skinned rig or T-pose
+    // skeleton not bound).  Use the bone-anchored body-bbox approach so the
+    // function never returns null for a valid VRM with a head bone.
+    const headBoneWorldPos = new THREE.Vector3();
+    headBone.getWorldPosition(headBoneWorldPos);
+
+    const bodyBox = new THREE.Box3();
+    vrm.scene.traverse((child) => {
+      const mesh = child as THREE.Mesh;
+      if (!mesh.isMesh) return;
+      if (!mesh.geometry) return;
+      // Skip cosmetic Groups (they are not Mesh, but guard anyway).
+      if (child.name.startsWith('cosmetic-')) return;
+      const meshBox = new THREE.Box3().setFromObject(mesh);
+      if (meshBox.isEmpty()) return;
+      bodyBox.union(meshBox);
+    });
+
+    if (bodyBox.isEmpty()) return null;
+
+    headTopWorldY = bodyBox.max.y;
+    headHeightWU  = Math.max(headTopWorldY - headBoneWorldPos.y, eps);
+    headWidthWU   = headHeightWU * HEAD_WIDTH_TO_HEIGHT;
+    headDepthWU   = headWidthWU; // assume square cross-section for fallback
+    headCenterX   = headBoneWorldPos.x;
+    headCenterZ   = headBoneWorldPos.z;
+  }
+
+  // 3b. Per-rig correction for avatars whose skin weights corrupt the auto
+  //     measurement (see RIG_HEAD_OVERRIDE). For the worst rigs we DISCARD the
+  //     vert measurement and anchor to the head BONE (reliable) + override dims.
+  const rigOverride = tuningOverride ?? (rigKey ? RIG_HEAD_OVERRIDE[rigKey] : undefined);
+  if (rigOverride?.boneAnchored) {
+    const hb = new THREE.Vector3(); headBone.getWorldPosition(hb);
+    const hsc = new THREE.Vector3(); headBone.getWorldScale(hsc);
+    const boneScale = (Math.abs(hsc.x) + Math.abs(hsc.y) + Math.abs(hsc.z)) / 3 || 1;
+    const topAboveM = rigOverride.headTopAboveBoneM ?? 0.13;
+    // Crown can be ABOVE or BELOW the bone (broken rigs displace the head mesh).
+    headTopWorldY = hb.y + topAboveM * boneScale;
+    // Height is SEPARATE (defaults to topAbove) so a negative crown still has size.
+    headHeightWU  = Math.max((rigOverride.headHeightM ?? Math.abs(topAboveM)) * boneScale, eps);
+    headWidthWU   = Math.max((rigOverride.headWidthM ?? 0.15) * boneScale, eps);
+    headDepthWU   = Math.max((rigOverride.headDepthM ?? rigOverride.headWidthM ?? 0.15) * boneScale, eps);
+    headCenterX   = hb.x;
+    headCenterZ   = hb.z;
+  } else if (rigOverride?.geometricTopSlab) {
+    // GEOMETRIC TOP-SLAB: discard bone + skin-weight entirely. Measure the full
+    // posed body AABB; the crown is its max.y; the head is the top `headFraction`
+    // of total height, centred on the body's X/Z. Width is derived from the head
+    // HEIGHT (not the raw slab) so pigtails / side-hair don't inflate it. Runs
+    // ONCE at equip — vert traversal is fine here (NOT per frame).
+    const bodyBox = new THREE.Box3();
+    const btmp = new THREE.Vector3();
+    vrm.scene.traverse((child) => {
+      const sm = child as THREE.SkinnedMesh;
+      if (!sm.isSkinnedMesh || !sm.skeleton || !sm.geometry) return;
+      if (sm.name.startsWith('cosmetic-')) return;
+      const pos = sm.geometry.getAttribute('position') as THREE.BufferAttribute | undefined;
+      if (!pos) return;
+      sm.skeleton.update();
+      const stride = pos.count > 15000 ? 3 : 1; // subsample huge meshes
+      for (let i = 0; i < pos.count; i += stride) {
+        btmp.fromBufferAttribute(pos, i);
+        sm.applyBoneTransform(i, btmp);
+        sm.localToWorld(btmp);
+        if (isFinite(btmp.x) && isFinite(btmp.y) && isFinite(btmp.z)) bodyBox.expandByPoint(btmp);
+      }
+    });
+    if (!bodyBox.isEmpty()) {
+      const bsz = new THREE.Vector3(); bodyBox.getSize(bsz);
+      const bctr = new THREE.Vector3(); bodyBox.getCenter(bctr);
+      const frac = rigOverride.headFraction ?? 0.42;
+      headTopWorldY = bodyBox.max.y;                                  // crown
+      headHeightWU  = Math.max(bsz.y * frac, eps);                    // top frac of body
+      headWidthWU   = Math.max(headHeightWU * HEAD_WIDTH_TO_HEIGHT, eps);
+      headDepthWU   = headWidthWU;
+      headCenterX   = bctr.x;
+      headCenterZ   = bctr.z;
+    }
+  }
+
+  // 4. desiredWorldWidth: the world width we want the cosmetic to occupy.
+  const desiredWorldWidth = headWidthWU * CATEGORY_WIDTH_FACTOR[category];
+
+  // 5. Compute WORLD-SPACE target position of the cosmetic.
   //
-  //    Hat: hover directly above the head top, slightly inward along Y.
-  //    Glasses: at eye level (fraction below head top) with a forward offset
-  //    along the body-facing direction.
+  //    Hat:    hover directly above the head top + HAT_CLEARANCE_WU.
+  //    Glasses: at eye level (GLASSES_EYE_FRACTION below head-top) with a
+  //             forward offset along the body-facing direction.
   //
-  //    Body facing direction in WORLD space:
-  //    We read the avatar scene's +Z-local axis in world space and NEGATE it
-  //    to get the facing direction. All ClawVille VRMs face -Z after load
-  //    (memory: feedback_vrm_facing_formula — Milady VRM0 gets rotateVRM0
-  //    which adds π, flipping to face -Z; Hermes/Tekk/Phanes/chibi VRM1.x
-  //    face +Z natively and get faceYaw=Math.PI applied in the picker/world
-  //    scene, also ending at -Z).  So the face direction = scene.getWorldDirection()
-  //    which returns the -Z local axis in world space.
-  const facingDirWorld = new THREE.Vector3();
-  vrm.scene.getWorldDirection(facingDirWorld); // −Z axis in world space = face forward
+  //    FACING DIRECTION (robust, per-avatar):
+  //    The NORMALIZED head bone faces world -Z by VRM spec — true for BOTH VRM0
+  //    and VRM1 after three-vrm normalization, and it tracks the scene's
+  //    rotation. So its world -Z axis IS the avatar's face-forward, regardless
+  //    of rig convention. This fixes glasses rendering behind/inside the head on
+  //    the VRM1 rigs, where the global getWorldDirection sign was wrong (it only
+  //    held for one orientation). Falls back to the legacy raw direction.
+  const facingDirWorld = new THREE.Vector3(0, 0, -1);
+  const normHeadBone = vrm.humanoid?.getNormalizedBoneNode?.('head') ?? null;
+  if (normHeadBone) {
+    // The normalized bone tree is updated by vrm.update() (a separate hierarchy
+    // from the raw skeleton). Force its world matrix current in case equip runs
+    // before the first vrm.update() — otherwise the face quaternion is stale.
+    normHeadBone.updateWorldMatrix(true, false);
+    const faceQuat = new THREE.Quaternion();
+    normHeadBone.getWorldQuaternion(faceQuat);
+    facingDirWorld.set(0, 0, -1).applyQuaternion(faceQuat);
+  } else {
+    vrm.scene.getWorldDirection(facingDirWorld);
+    facingDirWorld.multiplyScalar(GLASSES_FACING_SIGN);
+  }
+  facingDirWorld.y = 0; // keep forward horizontal
+  if (facingDirWorld.lengthSq() < 1e-8) facingDirWorld.set(0, 0, -1);
+  facingDirWorld.normalize();
 
   let targetWorldPos: THREE.Vector3;
 
   if (category === 'hat') {
-    // Place at head top + clearance, above head bone center XZ.
-    const centerX = (headBox.min.x + headBox.max.x) * 0.5;
-    const centerZ = (headBox.min.z + headBox.max.z) * 0.5;
+    // Drop the hat DOWN onto the head (base below the crown) so the head fills
+    // the hat opening — a worn look, not balanced-on-top.
     targetWorldPos = new THREE.Vector3(
-      centerX,
-      headTopWorldY + HAT_CLEARANCE_WU * localScale,
-      centerZ,
+      headCenterX,
+      headTopWorldY - headHeightWU * HAT_DROP_FRACTION,
+      headCenterZ,
     );
   } else {
-    // 'glasses': place at eye level, shifted forward.
+    // 'glasses': eye level (measured head height below the crown) + forward offset
+    // along the face-forward dir, sized by measured head DEPTH so the lenses sit
+    // just in front of the face surface.
     const eyeLevelWorldY = headTopWorldY - headHeightWU * GLASSES_EYE_FRACTION;
-    const forwardOffsetWU = headWidthWU * GLASSES_FORWARD_FACTOR;
-    const centerX = (headBox.min.x + headBox.max.x) * 0.5;
-    const centerZ = (headBox.min.z + headBox.max.z) * 0.5;
+    const forwardOffsetWU = headDepthWU * GLASSES_FORWARD_FACTOR;
     targetWorldPos = new THREE.Vector3(
-      centerX + facingDirWorld.x * forwardOffsetWU,
+      headCenterX + facingDirWorld.x * forwardOffsetWU,
       eyeLevelWorldY,
-      centerZ + facingDirWorld.z * forwardOffsetWU,
+      headCenterZ + facingDirWorld.z * forwardOffsetWU,
     );
   }
 
-  // 5. Convert world-space target position to HEAD-BONE-LOCAL space via the
-  //    bone's inverse world matrix.  This is AXIS-SIGN SAFE — it handles any
-  //    rig convention (VRM0 +Z forward, VRM1 -Z forward, Mixamo cm origin,
-  //    VRoid m origin) without a single hardcoded ±Z.
+  // 6. Convert world-space target → HEAD-BONE-LOCAL via the bone's inverse
+  //    world matrix.  AXIS-SIGN SAFE for any rig convention.
   const invBoneMat = new THREE.Matrix4().copy(headBone.matrixWorld).invert();
   const localPosition = targetWorldPos.clone().applyMatrix4(invBoneMat);
 
-  return { localPosition, localScale, headWidthWU };
+  // Guard final output for NaN (degenerate matrix inversion).
+  if (!isFinite(localPosition.x) || !isFinite(localPosition.y) || !isFinite(localPosition.z)) {
+    return null;
+  }
+
+  return { localPosition, desiredWorldWidth, headWidthWU };
+}
+
+/**
+ * Tunable: how far the hat's "hide footprint" radius is, as a fraction of head
+ * width, and how far BELOW the brim plane we start hiding (so the brim line
+ * itself is clean). Tuned on /preview/cosmetics (?{rig}HideR=&{rig}HideY=).
+ */
+export const SCALP_HIDE_RADIUS_FACTOR = 0.62;
+export const SCALP_HIDE_DROP_WU = 2;
+
+/**
+ * Hide the avatar's body-mesh geometry UNDER a hat so baked-in hair/scalp cannot
+ * poke through it. Most ClawVille avatars are a SINGLE fused mesh (hair baked
+ * into the body, one material — see VRM inspection 2026-06-07), so the hair can't
+ * be hidden by toggling a separate mesh. Instead we drop the index-buffer
+ * TRIANGLES whose posed centroid is inside the hat footprint (above the brim
+ * plane, within `radius`); the opaque hat covers the removed region. The face
+ * (below the brim) is untouched.
+ *
+ * Reversible — returns a restore fn (call on unequip / hat swap). Posed positions
+ * use applyBoneTransform (with skeleton.update first, per the equip-on-load race),
+ * computed once per vertex. NOT called for glasses.
+ */
+export function hideHeadGeometryUnderHat(
+  vrm: { scene: THREE.Object3D },
+  brimWorldY: number,
+  centerX: number,
+  centerZ: number,
+  radius: number,
+): () => void {
+  const restores: Array<() => void> = [];
+  const r2 = radius * radius;
+  const yFloor = brimWorldY - SCALP_HIDE_DROP_WU;
+  const tmp = new THREE.Vector3();
+  vrm.scene.traverse((child) => {
+    const sm = child as THREE.SkinnedMesh;
+    if (!sm.isSkinnedMesh || !sm.skeleton || !sm.geometry) return;
+    if (sm.name.startsWith('cosmetic-')) return;
+    const geo = sm.geometry;
+    const pos = geo.getAttribute('position') as THREE.BufferAttribute | undefined;
+    const index = geo.index;
+    if (!pos || !index) return;
+    sm.skeleton.update();
+    const n = pos.count;
+    const wx = new Float32Array(n);
+    const wy = new Float32Array(n);
+    const wz = new Float32Array(n);
+    for (let v = 0; v < n; v++) {
+      tmp.fromBufferAttribute(pos, v);
+      sm.applyBoneTransform(v, tmp);
+      sm.localToWorld(tmp);
+      wx[v] = tmp.x; wy[v] = tmp.y; wz[v] = tmp.z;
+    }
+    const src = index.array;
+    const kept: number[] = [];
+    let removed = 0;
+    for (let t = 0; t < src.length; t += 3) {
+      const a = src[t], b = src[t + 1], c = src[t + 2];
+      const cx = (wx[a] + wx[b] + wx[c]) / 3;
+      const cy = (wy[a] + wy[b] + wy[c]) / 3;
+      const cz = (wz[a] + wz[b] + wz[c]) / 3;
+      const dx = cx - centerX, dz = cz - centerZ;
+      if (cy >= yFloor && dx * dx + dz * dz <= r2) { removed++; continue; }
+      kept.push(a, b, c);
+    }
+    if (removed === 0) return;
+    const Arr = (src as Uint8Array | Uint16Array | Uint32Array).constructor as
+      | Uint16ArrayConstructor
+      | Uint32ArrayConstructor;
+    geo.setIndex(new THREE.BufferAttribute(new Arr(kept), 1));
+    restores.push(() => geo.setIndex(index));
+  });
+  return () => restores.forEach((r) => r());
 }

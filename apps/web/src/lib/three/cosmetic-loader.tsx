@@ -41,8 +41,16 @@ import { emitParticles } from '@/lib/three/particle-system';
 import { applyFattenedFrustumCulling } from '@/lib/three/vrm-loader';
 import {
   computeCosmeticHeadFit,
+  hideHeadGeometryUnderHat,
+  SCALP_HIDE_RADIUS_FACTOR,
   type CosmeticHeadFitResult,
 } from '@/lib/three/vrm-avatar-sizing';
+
+// Scratch objects for equip-time calculations — never allocated per frame.
+// Declared module-scope so they're never re-created per effect run.
+const _scratchSize   = new THREE.Vector3();
+const _scratchScale  = new THREE.Vector3();
+const _scratchBox    = new THREE.Box3();
 
 // ---------------------------------------------------------------------------
 // Types
@@ -120,6 +128,10 @@ export interface CosmeticLoaderProps {
    * units to world units. Ignored when vrm is absent.
    */
   vrmRenderScale?: number;
+  /** Avatar rig key (e.g. 'hermes', 'chibi') for per-rig fit overrides
+   *  (RIG_HEAD_OVERRIDE in vrm-avatar-sizing). Derived from the avatar's
+   *  animatorId. Omit/undefined → pure auto-fit (correct for well-rigged VRMs). */
+  avatarRigKey?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -167,16 +179,20 @@ function scopeCompatible(skuScope: string, context: CosmeticContext): boolean {
 
 /**
  * Pick the best variant for the current rig.
- * Priority: exact rig match > 'universal'
+ * Priority: exact rig match > 'universal' > first available row.
+ *
+ * The "first available" fallback prevents nothing rendering when the DB still
+ * has legacy rows under a specific rigType (e.g. 'milady-vrm') while the
+ * caller passes 'universal'. Without this fallback: exact=undefined,
+ * universal=undefined → null → NOTHING renders (BUG 3).
  */
 function pickVariant(
   variants: OwnedCosmetic['variants'],
   rigType: string,
 ): OwnedCosmetic['variants'][0] | null {
-  const exact = variants.find((v) => v.rigType === rigType);
-  if (exact) return exact;
+  const exact     = variants.find((v) => v.rigType === rigType);
   const universal = variants.find((v) => v.rigType === 'universal');
-  return universal ?? null;
+  return exact ?? universal ?? variants[0] ?? null;
 }
 
 // ---------------------------------------------------------------------------
@@ -450,12 +466,14 @@ function HatOrGlassesRenderer({
   category,
   vrm,
   vrmRenderScale,
+  avatarRigKey,
 }: {
   parentObject: THREE.Object3D;
   variant: OwnedCosmetic['variants'][0];
   category: 'hat' | 'glasses';
   vrm?: CosmeticLoaderProps['vrm'];
   vrmRenderScale?: number;
+  avatarRigKey?: string;
   // onDispose accepted for backwards compat but no longer used — React's
   // own useEffect cleanup handles disposal correctly across variant changes.
   onDispose?: (fn: () => void) => void;
@@ -481,6 +499,7 @@ function HatOrGlassesRenderer({
     let mounted = true;
     let attachedGroup: THREE.Group | null = null;
     let anchor: THREE.Object3D | null = null;
+    let scalpRestore: (() => void) | null = null;
 
     loadGlbAsset(variant.assetUrl).then((glbGroup) => {
       if (!mounted) {
@@ -500,7 +519,7 @@ function HatOrGlassesRenderer({
       // ─── Phase B: proportion-aware head fit (humanoid VRM path) ──────────
       let fit: CosmeticHeadFitResult | null = null;
       if (vrm && vrmRenderScale) {
-        fit = computeCosmeticHeadFit(vrm, category, vrmRenderScale);
+        fit = computeCosmeticHeadFit(vrm, category, vrmRenderScale, avatarRigKey);
       }
 
       if (fit) {
@@ -515,6 +534,38 @@ function HatOrGlassesRenderer({
           anchor = parentObject;
         }
 
+        // BUG 2 FIX — asset-aware, bone-scale-aware local scale.
+        //
+        // The cosmetic Group is parented to the head bone whose world scale
+        // already includes the avatar render-scale (~169–320×). Setting
+        // localScale = desiredWorldWidth / 30 was wrong: effective world size
+        // = boneWorldScale × groupLocalScale, so we need:
+        //
+        //   groupLocalScale = desiredWorldWidth / (assetWidth × boneWorldScale)
+        //
+        // where assetWidth is the GLB's authored X-axis span (glbGroup not yet
+        // added to any scene so it is in authored/asset-local units).
+        //
+        // If assetWidth is 0 or cannot be measured (degenerate asset), fall
+        // back to a scale of 1.0 so we at least render something visible.
+        _scratchBox.setFromObject(glbGroup);
+        _scratchBox.getSize(_scratchSize);
+        const assetWidth = _scratchSize.x;
+
+        anchor.getWorldScale(_scratchScale);
+        const boneWorldScaleX = _scratchScale.x;
+
+        let groupLocalScale: number;
+        if (assetWidth > 1e-6 && boneWorldScaleX > 1e-6) {
+          groupLocalScale = (fit.desiredWorldWidth / (assetWidth * boneWorldScaleX)) * nudgeScaleMult;
+          // Clamp to a sane range to guard against degenerate inputs.
+          groupLocalScale = Math.max(0.01, Math.min(1000, groupLocalScale));
+        } else {
+          // Degenerate asset or bone scale — fall back so something renders.
+          groupLocalScale = nudgeScaleMult;
+          console.warn('[CosmeticLoader] Cannot measure asset width or bone scale; using fallback scale', variant.assetUrl, { assetWidth, boneWorldScaleX });
+        }
+
         attachedGroup = new THREE.Group();
         attachedGroup.name = `cosmetic-${category}-${variant.id}`;
         // Apply computed position then add nudge on top.
@@ -522,12 +573,27 @@ function HatOrGlassesRenderer({
         attachedGroup.position.x += nudgeOffsetXYZ[0];
         attachedGroup.position.y += nudgeOffsetXYZ[1];
         attachedGroup.position.z += nudgeOffsetXYZ[2];
-        // Scale: auto-fit uniform scale × per-item scaleHint multiplier.
-        attachedGroup.scale.setScalar(fit.localScale * nudgeScaleMult);
+        // Scale: asset-aware + bone-scale-corrected local scale.
+        attachedGroup.scale.setScalar(groupLocalScale);
         attachedGroup.rotation.set(rotationXYZ[0], rotationXYZ[1], rotationXYZ[2]);
         attachedGroup.frustumCulled = false;
         attachedGroup.add(glbGroup);
         anchor.add(attachedGroup);
+
+        // Hide the head/scalp geometry UNDER the hat so baked-in hair can't poke
+        // through it (most avatars are a single fused mesh; see hideHeadGeometryUnderHat).
+        if (category === 'hat' && vrm) {
+          attachedGroup.updateWorldMatrix(true, false);
+          const hatWorld = new THREE.Vector3();
+          attachedGroup.getWorldPosition(hatWorld);
+          scalpRestore = hideHeadGeometryUnderHat(
+            vrm,
+            hatWorld.y,
+            hatWorld.x,
+            hatWorld.z,
+            fit.headWidthWU * SCALP_HIDE_RADIUS_FACTOR,
+          );
+        }
       } else {
         // ─── LEGACY PATH: bone name lookup + raw assetMeta offsets ──────────
         // Used for non-humanoid avatars (Phase D) and fallback when vrm is
@@ -561,6 +627,7 @@ function HatOrGlassesRenderer({
 
     return () => {
       mounted = false;
+      if (scalpRestore) { scalpRestore(); scalpRestore = null; } // restore hidden head geometry
       if (attachedGroup && anchor) {
         anchor.remove(attachedGroup);
         attachedGroup.traverse((c) => {
@@ -886,6 +953,7 @@ export function CosmeticLoader({
   parentObject,
   vrm,
   vrmRenderScale,
+  avatarRigKey,
 }: CosmeticLoaderProps) {
   const equipped = useEquippedCosmetics(avatarId, context, rigType);
 
@@ -958,6 +1026,7 @@ export function CosmeticLoader({
               category={cat as 'hat' | 'glasses'}
               vrm={vrm}
               vrmRenderScale={vrmRenderScale}
+              avatarRigKey={avatarRigKey}
             />
           );
         }
