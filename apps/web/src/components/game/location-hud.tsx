@@ -44,14 +44,15 @@ export default function LocationHUD() {
 
   const theme = BUILDING_OPENCLAW_THEMES[nearLocation];
   const characterName = nearCharacter;
-  // S5 — in NPC mode the transient TalkToCharacterBar owns "Talk to {resident}"
-  // (cheap GPT, no login); LocationHUD becomes the DISTINCT "Enter {building}"
-  // action (full ElizaOS resident chat) so the two bottom prompts aren't
-  // conflated/duplicated. In player/autonomous there is no TalkToCharacterBar,
-  // so LocationHUD keeps the "Talk to {resident}" wording.
+  // 2026-06-20 — knowledge buildings are CHAT-ONLY (no interior to "enter").
+  // The single proximity prompt is "Talk to {resident}" in ALL modes; tapping
+  // opens the ElizaOS resident chat MODAL (chat-panel — full chat + skill-claim).
+  // The old NPC-mode TalkToCharacterBar bottom bar was REMOVED (it duplicated
+  // this prompt — founder report: "entrance + chatbox when only chat exists").
+  // Only the Cove (a real walk-in interior with a SceneTransition) keeps "Enter".
   const npcMode = controlMode === 'npc';
   const isCove = nearLocation === 'cove';
-  const showTalk = !npcMode && !isCove && !!characterName;
+  const showTalk = !isCove && !!characterName;
   // Cove gets a distinct CTA — it's an entertainment venue, not a teacher building.
   const subjectLabel = isCove
     ? 'The Cove'
@@ -79,14 +80,11 @@ export default function LocationHUD() {
   // Lift above joystick zones (joysticks anchor at
   // max(env(safe-area-inset-bottom,0)+60px, 80px)); add another ~150px
   // so the pill sits above the nipples on every phone/tablet.
-  // S5 — every non-explore mode has a bottom chat pill (AvatarChatBar in
-  // player/autonomous, TalkToCharacterBar in npc); lift the prompt above the
-  // ~54px pill band so it never overlaps. Mobile already clears it (+220px).
-  // Non-explore modes all carry a bottom chat pill: AvatarChatBar in player/
-  // autonomous (/game/page.tsx mounts LocationHUD only when hasAvatar, so the
-  // pill is present) or TalkToCharacterBar in npc. (AvatarChatBar's avatar comes
-  // from the useAvatar() query, NOT the game store — do not read s.avatar here.)
-  const hasBottomChatBar = npcMode || controlMode === 'player' || controlMode === 'autonomous';
+  // Lift above a bottom chat pill when one exists. player/autonomous mount the
+  // AvatarChatBar (~54px); npc mode no longer has a bottom bar (TalkToCharacterBar
+  // removed 2026-06-20), so the prompt can sit lower there. Mobile clears it (+220px).
+  // (AvatarChatBar's avatar comes from the useAvatar() query, NOT the game store.)
+  const hasBottomChatBar = controlMode === 'player' || controlMode === 'autonomous';
   const bottomOffset = isMobile
     ? 'max(calc(env(safe-area-inset-bottom, 0px) + 220px), 240px)'
     : `calc(env(safe-area-inset-bottom, 0px) + ${hasBottomChatBar ? 84 : 36}px)`;
