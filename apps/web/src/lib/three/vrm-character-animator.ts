@@ -574,6 +574,18 @@ const PER_CHARACTER_IN_PLACE_CLIPS: Record<string, ReadonlySet<AnimName>> = {
   'hermes-male':   new Set(['run', 'walk']),
   'hermes-female': new Set(['run']),
   tekk:            new Set(['run', 'walk']),
+  // Adinero — Meshy VRM 1.0 rig (armature scale 0.01, hips world-Y ≈ 0.82m).
+  // Uses global clips (idle/walk/run) via fallback — no character-anim-overrides
+  // entry. The retargeter computes hipsPositionScale = vrmHipsHeight /
+  // motionHipsHeight. For global idle.glb motionHipsHeight ≈ 101.6 → scale ≈
+  // 0.0081 → the scaled position track is nearly zero but NOT zero; combined
+  // with the tiny hermes-male/idle.glb override (hipsHeight ≈ -0.028 →
+  // scale ≈ 29.7) the hips translate to Y ≈ -0.83m driving the entire skeleton
+  // underground. Fix: strip all position tracks so the FK rest-pose (feet at
+  // Y=0 per VRM spec) governs foot placement. Rotation-only retarget via
+  // rest-pose-differential is correct across Meshy rigs with Mixamo bone names.
+  // Drift values measured 2026-06-20 via gltf-transform hips-Y analysis.
+  adinero:         new Set(['idle', 'walk', 'run']),
 };
 
 function shouldStripPosition(name: AnimName, animatorId?: string): boolean {
