@@ -185,6 +185,8 @@ function handleWagerClientError(err: unknown): never {
       throw new HTTPException(500, { message: err.message });
     if (err.code === 'on_chain_error')
       throw new HTTPException(400, { message: err.message });
+    if (err.code === 'insufficient_funds')
+      throw new HTTPException(400, { message: err.message });
   }
   throw err;
 }

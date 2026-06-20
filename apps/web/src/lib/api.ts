@@ -1083,6 +1083,14 @@ export const api = {
       body: JSON.stringify(data),
     }),
 
+  // Agent export & portability (2026-06-19) — signed, content-addressed portable
+  // avatar manifest (CAM v1). GET returns the manifest JSON; the UI turns it into
+  // a downloadable .json. See `.claude/plans/agent-export-portability.md`.
+  exportManifest: (avatarId: string) =>
+    honoRequest<import('@clawville/shared').ClawvilleAvatarManifest>(
+      `/api/avatar/${avatarId}/manifest.json`,
+    ),
+
   // Agent Setup
   getAgentRoster: () =>
     honoRequest<{ agents: any[] }>('/api/agent-setup/roster'),
