@@ -38,5 +38,8 @@
     "wipeout": "/avatars/animations/hermes-female/wipeout.glb",
     "swimming": "/avatars/animations/hermes-female/swimming.glb",
     "praying": "/avatars/animations/hermes-female/praying.glb"
+  },
+  "adinero": {
+    "$comment": "Adinero uses GLOBAL clips for idle/walk/run — no per-character Mixamo bakes exist for this rig yet. The global clips have Mixamo-standard hips at Y≈95-102, so hipsPositionScale = vrmHipsHeight(≈0.82m) / motionHipsHeight(≈101) ≈ 0.008 — essentially zero, but non-zero. PER_CHARACTER_IN_PLACE_CLIPS['adinero'] strips all three position tracks so foot placement is governed solely by FK rest-pose (feet at Y=0 per VRM 1.0 spec) and the rotation-only retarget. Note: this $-prefixed key is inert (loader keys by AnimName only). If Meshy-baked locomotion clips are produced for this rig in the future, wire them here — PER_CHARACTER_IN_PLACE_CLIPS['adinero'] already has all three stripped defensively."
   }
 }

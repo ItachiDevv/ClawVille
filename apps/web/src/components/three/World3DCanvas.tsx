@@ -1426,9 +1426,15 @@ const SceneContents = memo(function SceneContents({
           half-width (5760 wu) still rendered fully even when fog-faded.
           New (2026-05-22): near=5000 far=10000 (camera.far=10000). Far-ring
           buildings at 5493wu start fogging at ~10%, fully fogged by 10000wu.
-          Updated 2026-06-15 (Phase 0 land, 576x576 world, half=9216wu):
-          near=6500 far=13500 (camera.far=14000). fog.far<=camera.far invariant. */}
-      {showWaterFogParticles && <fog attach="fog" args={[FOG_COLOR, 6500, 13500]} />}
+          2026-06-15 (Phase 0 land, 576x576 world, half=9216wu): near=6500
+          far=13500 (camera.far=14000) — pushed OUT for the bigger world, which
+          re-exposed the distant low-res sprawl (pixelly on Iris-Xe low DPR).
+          Pulled back 2026-06-20 per founder "target the fog more": near=5000
+          far=10500 (camera.far=11500). Building ring (≤8320wu across) stays
+          visible; everything past ~10500wu fogs out so the distant low-res
+          buildings/terrain are hidden again; fog.far(10500) ≤ camera.far(11500)
+          so geometry fully fades to fog BEFORE the far-plane cull (no pop). */}
+      {showWaterFogParticles && <fog attach="fog" args={[FOG_COLOR, 5000, 10500]} />}
 
       {/* Shared world geometry */}
       <group name="perf:terrain" userData={{ perfChunk: 'terrain' }}>
@@ -1867,10 +1873,13 @@ function World3DCanvas({ mode, perfFlags }: World3DCanvasProps) {
         camera={{
           fov: 50,
           near: 1,
-          // far: 14000 (raised 2026-06-15 for 576x576 / 18432wu world -- Phase 0 land).
-          // fog.far=13500 <= camera.far=14000 (invariant maintained).
-          // World half-width is now 9216 wu; buildings at ~4160wu stay well within view.
-          far: 14000,
+          // far: 11500 (pulled back 2026-06-20 from 14000). The 06-15 bump to
+          // 14000 for the 576x576 world re-exposed distant low-res geometry that
+          // reads as pixelly on the Iris-Xe low DPR; fog now fully hides it by
+          // 10500wu (fog.far ≤ camera.far invariant), so culling past 11500
+          // reclaims fill/geometry cost with nothing visible lost. Building ring
+          // (~4160wu radius, ≤8320wu across) stays well within view.
+          far: 11500,
           // Game mode: tighter starting position reinforces the bigger buildings/characters.
           // Pulled in from [0,700,1600] after proportions pass (2026-04-16).
           position: mode === 'game' ? [0, 600, 1300] : [0, 560, 1000],
