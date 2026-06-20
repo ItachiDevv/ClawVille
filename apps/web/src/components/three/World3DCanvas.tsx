@@ -31,6 +31,7 @@ import QuestBountyPavilion from '@/lib/three/quest-bounty-pavilion';
 import AuctionPodium from '@/lib/three/auction-podium';
 import TownDirectorySign from '@/lib/three/town-directory-sign';
 import CoveBeacon from '@/lib/three/cove-beacon';
+import CoveEntrance from '@/lib/three/cove-entrance';
 import ActivityIndicators from '@/lib/three/activity-indicators';
 import FloatingTexts3D from '@/lib/three/floating-text-3d';
 import NpcSpeechBubbles from '@/lib/three/npc-speech-bubbles';
@@ -1550,6 +1551,13 @@ const SceneContents = memo(function SceneContents({
           Proximity prompt (isCoveProximate) drives the LocationHUD CTA. */}
       <group name="perf:cove-beacon" userData={{ perfChunk: 'cove-beacon' }}>
         <CoveBeacon />
+      </group>
+
+      {/* Glowing portal/tunnel archway at the east (+X, town-facing) base of the
+          cove pyramid. Gives players a visible ENTER ▸ doorway to walk into.
+          Component owns 2 point lights (cyan/magenta); total scene point lights = 5. */}
+      <group name="perf:cove-entrance" userData={{ perfChunk: 'cove-entrance' }}>
+        <CoveEntrance />
       </group>
 
       {/* NPC speech bubbles — Dom overlay, renders chat from SSE stream */}
