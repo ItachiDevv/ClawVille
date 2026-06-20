@@ -556,11 +556,13 @@ export default function GamePage() {
           <LocationHUD />
           <ActivityFeed />
           <ChatPanel />
-          {/* Phase 6.2 (2026-04-27) — AvatarChatBar moved BACK out of the
-              hasAvatar block; lives only under the agent-connected branch
-              below. NPC-mode chat is now handled by TalkToCharacterBar
-              against /api/chat/transient (no Eliza, no DB, no rooms).
-              See talk-to-character-bar.tsx + chat-transient.ts. */}
+          {/* AvatarChatBar lives only under the agent-connected branch below.
+              KNOWLEDGE-BUILDING chat (all modes, incl. NPC) is now the single
+              proximity prompt → enterBuilding → ChatPanel (full ElizaOS resident
+              chat + skill-claim). The TalkToCharacterBar bottom bar below is
+              gated to NOT show at a building (`!nearLocation`) so it no longer
+              duplicates that prompt (founder report); it survives only for any
+              wandering-NPC chat path. */}
         </>
       )}
       {showDemoProgressHud && (
@@ -570,9 +572,9 @@ export default function GamePage() {
         </>
       )}
 
-      {/* NPC-mode chat: talk to nearest wandering world character.
-          Stateless one-shot OpenAI — no Eliza store. Component
-          self-gates on `controlMode === 'npc'`. */}
+      {/* NPC-mode chat with a non-building wandering character. Self-gates on
+          `controlMode === 'npc' && !chatOpen && !nearLocation` — at a building
+          the proximity prompt → ChatPanel modal owns the chat (2026-06-20). */}
       <TalkToCharacterBar />
 
       {/* Player-mode (agent-connected) UI — hidden in NPC/Explore mode.
