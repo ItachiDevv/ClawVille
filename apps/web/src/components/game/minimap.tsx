@@ -3,7 +3,7 @@
 import { useRef } from 'react';
 import { useGameStore } from '@/stores/game';
 import { MAP_WIDTH, MAP_HEIGHT, TILE_SIZE, buildingZones } from '@/lib/pixi/tilemap-data';
-import { MAP_LOCATIONS, BUILDING_OPENCLAW_THEMES } from '@clawville/shared';
+import { MAP_LOCATIONS } from '@clawville/shared';
 import { findPath } from '@/lib/pixi/client-pathfinding';
 
 const MM_W = 180;
@@ -40,6 +40,10 @@ export default function Minimap() {
   const setClickPath = useGameStore((s) => s.setClickPath);
   const controlMode = useGameStore((s) => s.controlMode);
   const movementFrozen = useGameStore((s) => s.movementFrozen);
+  // World Map / fast-travel (town-fast-travel, 2026-06-19). The minimap stays
+  // the WALK surface (click-to-path below); the "⤢ Map" button opens the large
+  // World Map modal which is the WARP surface.
+  const openWorldMap = useGameStore((s) => s.openWorldMap);
   const svgRef = useRef<SVGSVGElement>(null);
 
   const avatarX = avatarPosition.x * SCALE_X;
@@ -89,7 +93,20 @@ export default function Minimap() {
         {/* Header strip */}
         <div className="flex items-center justify-between px-3 pt-2 pb-1.5 border-b border-cyan-500/15">
           <span className="font-mono text-[9px] uppercase tracking-[0.3em] text-cyan-300/70">Sonar</span>
-          <span className="font-mono text-[8px] text-white/30">{Math.round(avatarPosition.x)},{Math.round(avatarPosition.y)}</span>
+          <div className="flex items-center gap-2">
+            <span className="font-mono text-[8px] text-white/30">{Math.round(avatarPosition.x)},{Math.round(avatarPosition.y)}</span>
+            {/* Expand → World Map (warp surface). Walk surface stays on the SVG below. */}
+            <button
+              type="button"
+              onClick={openWorldMap}
+              title="Open World Map (fast travel)"
+              aria-label="Open World Map"
+              className="flex items-center gap-1 rounded-md border border-cyan-400/30 bg-cyan-500/10 px-1.5 py-0.5 font-mono text-[8px] uppercase tracking-[0.18em] text-cyan-200 transition-colors hover:border-cyan-300/60 hover:bg-cyan-500/20"
+            >
+              <span aria-hidden>⤢</span>
+              <span>Map</span>
+            </button>
+          </div>
         </div>
 
         <svg

@@ -93,3 +93,18 @@ export interface UpgradeStructureResponse {
 export interface ParcelStructureResponse {
   structure: LandStructureDTO | null;
 }
+
+/** Where a logged-in player's avatar spawns when entering the world. */
+export type SpawnPreferenceMode = 'home' | 'town';
+
+/**
+ * POST /api/land/spawn-preference response (FROZEN contract).
+ * `mode: 'home'` requires an owned `parcelId` (server 403 `code:'not_owned'`
+ * otherwise); `mode: 'town'` clears the home spawn. The server echoes the
+ * resolved preference + home parcel id so the client can update local state
+ * without a refetch. `homeParcelId` is null when mode is 'town'.
+ */
+export interface SpawnPreferenceResponse {
+  spawnPreference: SpawnPreferenceMode;
+  homeParcelId: string | null;
+}

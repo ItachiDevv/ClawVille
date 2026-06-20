@@ -12,7 +12,13 @@ const MAX_CACHE_ENTRIES = 2000;
 
 const translateRateLimit = createRateLimiter({
   windowMs: 60_000,
-  maxPerWindow: 30,
+  // 30→60 (2026-06-18): the client now translates INCREMENTALLY (only changed
+  // subtrees, not a full re-walk per mutation) and skips high-churn numeric
+  // status strings, so legitimate usage makes far fewer calls — but a first
+  // full-page translate of a busy UI still needs a couple of batches; 60 gives
+  // headroom without making LLM spend easy to trigger. Client also self-backs-off
+  // ~12s on a 429 (game-language-control.tsx rateLimitedUntil).
+  maxPerWindow: 60,
 });
 
 const localeSchema = z

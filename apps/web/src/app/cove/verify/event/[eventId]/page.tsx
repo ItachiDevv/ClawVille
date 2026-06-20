@@ -16,6 +16,8 @@
 import { use } from 'react';
 import Link from 'next/link';
 import SlotsEventVerifier from '@/components/cove/history/SlotsEventVerifier';
+import ServerEventVerifier from '@/components/cove/history/ServerEventVerifier';
+import SupportLauncher from '@/components/support/SupportLauncher';
 import { useEffect, useState } from 'react';
 import { fetchHistoryEvent, type CoveHistoryEventRow, type GameType } from '@/lib/cove/history-client';
 import '@/styles/cove-tokens.css';
@@ -29,13 +31,6 @@ const GAME_LABEL: Record<GameType, string> = {
   blackjack: 'Blackjack',
   holdem: "Hold'em",
   baccarat: 'Baccarat',
-};
-
-const FUTURE_PHASE: Record<GameType, string> = {
-  slots: '',
-  blackjack: '6.7.1',
-  holdem: '6.7.2',
-  baccarat: '6.7.3',
 };
 
 export default function CoveVerifyEventPage({ params }: PageProps) {
@@ -102,6 +97,10 @@ export default function CoveVerifyEventPage({ params }: PageProps) {
             <Link href="/cove/verify" style={navLink()}>
               Manual verifier
             </Link>
+            <SupportLauncher
+              context={{ page: 'cove-verify', eventId, game: gameType ?? undefined }}
+              defaultCategory="fairness"
+            />
             <Link href="/cove" style={navLink()}>
               Cove
             </Link>
@@ -128,53 +127,9 @@ export default function CoveVerifyEventPage({ params }: PageProps) {
         ) : gameType === 'slots' ? (
           <SlotsEventVerifier eventId={eventId} />
         ) : (
-          <FutureVerifierPlaceholder gameType={gameType} />
+          <ServerEventVerifier eventId={eventId} gameType={gameType} />
         )}
       </div>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Placeholder for games that haven't shipped their real engine yet
-// ---------------------------------------------------------------------------
-
-function FutureVerifierPlaceholder({ gameType }: { gameType: GameType }) {
-  const phase = FUTURE_PHASE[gameType];
-  const label = GAME_LABEL[gameType];
-  return (
-    <div
-      style={{
-        marginTop: 20,
-        padding: 24,
-        borderRadius: 12,
-        border: '1px solid rgba(255,220,80,0.2)',
-        background: 'rgba(255,220,80,0.04)',
-      }}
-    >
-      <div
-        style={{
-          color: '#ffd684',
-          fontFamily: 'monospace',
-          fontSize: 16,
-          fontWeight: 800,
-          letterSpacing: '0.1em',
-          textTransform: 'uppercase',
-          marginBottom: 10,
-        }}
-      >
-        {label} Verifier
-      </div>
-      <p style={{ color: 'rgba(224,255,248,0.55)', fontFamily: 'monospace', fontSize: 13, lineHeight: 1.6, margin: 0 }}>
-        The {label} provably-fair verifier ships in Phase {phase}, when the{' '}
-        {label} engine moves to server-authoritative mode with commit-reveal
-        RNG. Until then, outcome data is stored in the row below — the hash
-        chain will be fully verifiable once Phase {phase} lands.
-      </p>
-      <p style={{ color: 'rgba(224,255,248,0.35)', fontFamily: 'monospace', fontSize: 12, lineHeight: 1.6, marginTop: 12, marginBottom: 0 }}>
-        Event ID: <code style={{ color: 'rgba(0,255,224,0.6)' }}>{gameType}</code> event —
-        hash chain committed, reveal pending engine migration.
-      </p>
     </div>
   );
 }

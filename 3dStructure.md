@@ -11,7 +11,15 @@
 > - **`GameFeatures.md`** — gameplay.
 > - **This doc** — *how* the 3D scene is wired: coordinates, camera, lights, GPU budget, animation, asset pipeline.
 
-**Last edit:** 2026-06-18 (Land sign rework — 3-category FOR-SALE sign system on ALL 180 plots; land-showroom.tsx sign code deleted). See §14 + §13 for detail.
+**Last edit:** 2026-06-20 (cove-fix: raised beacon above pyramid apex, added visible glowing portal/archway at east face, corrected COVE_DOOR_PX to east/town-facing side). See §15.5 below.
+
+**Prior Last edit:** 2026-06-20 (Adinero locomotion grounding fix — `animatorId: 'hermes-male'` → `'adinero'` + strip idle/walk/run position tracks). See §6c note below.
+
+**Prior Last edit:** 2026-06-20 (fog/far PULLBACK — fixes "much more pixelly" on Iris-Xe). Founder reported the world got much more pixelly after a recent push. Root cause traced: NOT a DPR/antialias change (those are the long-standing Iris-Xe `LOW_END_DPR_RANGE=[0.55,0.7]` + `antialias:false`, unchanged since May) and NOT avatar decimation — it was the **2026-06-15 Phase-0-land world expansion** (grid 360→576, `MAP_WIDTH` 11520→18432wu) which pushed fog OUT (`[6500,13500]`) and camera.far OUT (10000→14000) to fit the bigger world. That re-exposed a large sprawl of distant low-resolution geometry (far building ring + outer land parcels at up to ~12309wu from center) that, at the low Iris-Xe DPR, reads as pixelly/aliased. **Fix (`World3DCanvas.tsx`):** pulled fog back to `[FOG_COLOR, 5000, 10500]` and `camera.far` 14000→11500 (fog.far ≤ camera.far invariant kept; geometry fully fades to fog by 10500 BEFORE the 11500 frustum cull, so no hard pop). Matches the founder's documented 2026-05-22 direction ("target the fog more, i don't care about it much"). Building ring (R=130=4160wu, ≤8320wu across) stays clearly visible; everything past ~10500wu is hidden in fog and culled past 11500 (reclaims fill/geometry cost = FPS gain, "free" — no resolution change). **Trade-off (needs founder eyes, Rule E4):** outer land parcels viewed from spawn now fog/cull out and reappear as you walk toward them; if the founder wants more of the city visible at once, push fog/far back out (e.g. `[5500,12500]` / far 13000). DPR/FXAA sharpness bump is the SEPARATE next lever (costs FPS) — deferred pending this free pass. Frontend-only, no schema. NOT yet verified in-browser (chrome-devtools MCP disconnected).
+
+**Prior Last edit:** 2026-06-19 (town-ux: cove discoverability beacon + proximity prompt, directional fingerpost, spawn scatter, cove entrance animation). See §15 below.
+
+**Prior Last edit:** 2026-06-18 (Land sign rework — 3-category FOR-SALE sign system on ALL 180 plots; land-showroom.tsx sign code deleted). See §14 + §13 for detail.
 
 **Prior Last edit:** 2026-06-18 (S4–S9 deep audit — fixes). Two independent audits of the S4–S9 batch: my agent team (3da + 2× general-purpose) + a SEPARATE Codex review team. Codex caught 2 real BLOCKING bugs the in-house team missed: **(S7)** `useActivityInput.resetHeldInput()` cleared the keys but NOT the smoothed `dirRef` / pending `oneShotBitsRef` → in Reef Race the kart drifted for several ticks after alt-tab + a queued boost/power-up fired on refocus → now zeroes both; **(S9)** `translateVisibleText` checked `requestSeq` BEFORE the `await` but not after → a mid-flight language switch cached+applied a stale-locale translation → now re-checks `seq` immediately post-await before cache/apply. Also capped 3 pre-existing uncapped CDP debug arrays (`__VRM_INIT_LOG`≤300, `__VRM_INIT_ERRORS`≤100, `__VRM_NPC_EFFECT_LOG`≤500) — a minor long-session heap-growth/freeze vector (S8). All re-confirmed APPROVED by the Codex team. Files: `useActivityInput.ts`, `game-language-control.tsx`, `vrm-character-animator.ts`, `arena-npcs.tsx`.
 
@@ -531,7 +539,9 @@ Per VRM, `VRMCharacterAnimator` retargets `mixamorig:*` bone tracks onto the VRM
 
 **Humanoid avatar sizing** (`apps/web/src/lib/three/vrm-avatar-sizing.ts`) — every humanoid VRM (Milady / Hermes / Tekk / future) renders at the same on-screen height regardless of native bbox unit convention. `computeVRMAvatarFit(vrm, speciesOrAnimatorId, targetHeightOverride?)` measures the bbox at scale=1 (resets scale before measuring to prevent contamination), scales to `VRM_AVATAR_TARGET_HEIGHT_WU = 270` world units (tuned 2026-05-18 to match Nori's GUIDE_SCALE=200 rendering), and returns `offsetY = -box.min.y * scale` so feet land at world Y=0 whether the rig uses VRoid-spec feet-at-origin (Milady) or Mixamo hips-at-origin (Hermes/Tekk). `SPECIES_TARGET_HEIGHT_WU` overrides the target for accessories that legitimately overshoot the body silhouette (Tekk fan-wings: 320 wu; hermes-male: 297 wu; **phanes: 297 wu** (FIX-11, 2026-06-13 — the default Hatcher avatar; see the dual-resolution note below); chibi: 135 wu). **Phanes dual-resolution-path parity (FIX-11):** the same Hatcher agent is keyed two different ways depending on the viewer — `player-avatar.tsx` (owner view) passes `reg.animatorId` (`'hermes-male'`), while `arena-npcs.tsx` (peer / autonomous view) passes `npc.species` (`'phanes'`). Before this fix `species='phanes'` had NO key in `SPECIES_TARGET_HEIGHT_WU` and fell through to the 270 base, so the same agent rendered ~10% TALLER to its owner (297, animatorId-keyed) than to peers (270, species-keyed) — a Rule E5 three-axis-parity defect. Adding `phanes: 297` makes both lookup paths resolve to 297 (same as `hermes-male`, which `phanes` animates as). The optional `targetHeightOverride` param bypasses both maps — used by the agent picker (`PICKER_TARGET_HEIGHT_WU=22`) without polluting the world-scene constants. Used by `arena-npcs` (NPCs), `player-avatar` (player), and `SelectAgentCanvas` picker (`targetHeightOverride=22`). Do NOT use `reg.scale` in world/picker scenes — it is picker-display-only.
 
-**Adinero (wandering NPC clown, 2026-06-19)** — a new humanoid VRM wanderer (`species: 'adinero'`, asset `/avatars/adinero.vrm?v=1`, built via the OpenAI→Meshy-6→rig→VRM pipeline; 22/22 humanoid bones, meshopt+WebP ~3 MB). `MODEL_REGISTRY.adinero`: `animatorId: 'hermes-male'`, `faceYaw: Math.PI`, `pickerHidden: true` (NPC-only; never in /create-agent; not in shared `AGENT_MODELS`). Renders via the standard `arena-npcs` VRM path at the base `VRM_AVATAR_TARGET_HEIGHT_WU` (270 wu) — no `SPECIES_TARGET_HEIGHT_WU` override; `species:'adinero'` falls through to base, which is correct because an NPC is never player-controlled, so there is no animatorId-vs-species dual-resolution to reconcile (unlike Phanes/FIX-11). Locomotion = the shared `hermes-male` Mixamo retarget set (walk/run/idle); no native Meshy clips. Free-roamer in the town ring; see `GameFeatures.md §12a`.
+**Adinero (wandering NPC clown, 2026-06-19; locomotion fix 2026-06-20)** — a new humanoid VRM wanderer (`species: 'adinero'`, asset `/avatars/adinero.vrm?v=1`, built via the OpenAI→Meshy-6→rig→VRM pipeline; 22/22 humanoid bones, meshopt+WebP ~3 MB). `MODEL_REGISTRY.adinero`: `animatorId: 'adinero'` (CHANGED 2026-06-20 from `'hermes-male'` — see locomotion bug below), `faceYaw: Math.PI`, `pickerHidden: true` (NPC-only; never in /create-agent; not in shared `AGENT_MODELS`). Renders via the standard `arena-npcs` VRM path at the base `VRM_AVATAR_TARGET_HEIGHT_WU` (270 wu) — no `SPECIES_TARGET_HEIGHT_WU` override; `species:'adinero'` falls through to base. Free-roamer in the town ring; see `GameFeatures.md §12a`.
+
+**Adinero locomotion grounding fix (2026-06-20):** Root cause of "goes underground": Adinero's Meshy VRM 1.0 rig has `Armature scale=0.01`, hips world-Y ≈ 0.82m. When `animatorId='hermes-male'`, the animator loads `hermes-male/idle.glb` as the idle override — that clip's hips position Y ≈ −0.028 (baked in-place near ground level). `retargetMixamoClip` scales the hips Y position track by `hipsPositionScale = vrmHipsHeight / motionHipsHeight = 0.82 / 0.028 ≈ 29.7`, driving Adinero's hips to Y ≈ −0.83m below the feet during idle — the entire skeleton sinks underground. Walk and run are safe (position tracks stripped via `PER_CHARACTER_IN_PLACE_CLIPS['hermes-male'].{walk,run}`), but idle was NOT in that set. **Fix:** `animatorId` changed to `'adinero'`; `PER_CHARACTER_IN_PLACE_CLIPS['adinero'] = new Set(['idle','walk','run'])` strips ALL three position tracks; `character-anim-overrides.json` gains an `"adinero"` entry (comment-only, no path overrides — falls through to global clips whose hipsPositionScale ≈ 0.008 is nearly zero and irrelevant since stripped). Global idle/walk/run clips work correctly for Adinero's Meshy rig (Mixamo-convention bone names, correct VRM humanoid mapping; rotation-only retarget via rest-pose-differential governs foot placement with feet at Y=0 per VRM 1.0 spec). Measured: `hermes-male/idle.glb` hips drift=0 (cyclic) but Y≈−0.028 → pathological scale; global `idle.glb` Y≈101.6 → scale≈0.008 → near-zero (stripped anyway). No native Meshy locomotion clips exist yet; if baked in the future, wire them in `character-anim-overrides.json` under `"adinero"` — the strip set defensively covers all three slots already.
 
 **Per-character animation overrides** (`apps/web/src/lib/three/character-anim-overrides.json`) — when a VRM's proportions diverge enough from the generic Mixamo skeleton (chibi vs adult-realistic, female vs male gait), the retargeter produces visible foot-slide / hand-hip clipping. Fix: per-skeleton-class Mixamo bakes downloaded with "Skin: With Skin", retargeted to each character's actual bone lengths. `VRMCharacterAnimator(vrm, animatorId)` looks up `animatorId` → slot → GLB path in the JSON, falling back to the generic clip when no override exists. The JSON is the single source of truth; `agent-model-registry.ts` exposes `animatorId` per `ModelRegistryEntry` so picker / arena-npcs / player-avatar / reef-race all agree.
 
@@ -962,6 +972,7 @@ Draw-call budget (full equipped set): hat ≤ 1, aura ≤ 4 (instanced particles
 
 Compact log. Single line per change with commit reference where applicable.
 
+- 2026-06-20 — **Adinero locomotion grounding fix** (`agent-model-registry.ts`, `vrm-character-animator.ts`, `character-anim-overrides.json`): `MODEL_REGISTRY.adinero.animatorId` changed `'hermes-male'` → `'adinero'`; `PER_CHARACTER_IN_PLACE_CLIPS['adinero'] = new Set(['idle','walk','run'])` added; `"adinero"` entry added to `character-anim-overrides.json` (comment-only, no path overrides — falls through to global clips). Root cause: `hermes-male/idle.glb` hips Y ≈ −0.028 → `hipsPositionScale = 0.82/0.028 ≈ 29.7` → hips driven to Y ≈ −0.83m → full skeleton underground during idle. Stripping all three position tracks resolves the sink; rotation-only retarget on VRM 1.0 spec (feet at Y=0) is correct. Runtime-only fix; no asset mutation; no schema change.
 - 2026-06-18 — **Land sign rework** (`land-parcels.tsx` reworked + `land-showroom.tsx` simplified + `packages/shared/src/constants/land-signage.ts` NEW): replaced the single-category atlas sign system with a 3-category FOR-SALE sign system rendering on ALL 180 plots. Categories: `regular` (b/c/starter, 68×28wu plank, h=52 post, dark bg + tan border), `premium` (founder+a, 92×38wu, h=64, gold double border + "PREMIUM" subtitle), `premium-partner` (6 curated partner lots, 116×48wu + 256×80 canvas, h=76, cyan ornate border+topper, "PARTNER" subtitle). One CanvasTexture per category baked server-side; merged post+plank per category = 3+3=6 sign draw calls. Atlas system (`buildSignAtlas`, `remapUVsToAtlasRow`, `TIER_ROW_INDEX/GLYPHS/HEX`) deleted. Showroom guard (`SHOWROOM_PARCEL_IDS.has(parcel.id) continue`) removed — signs cover ALL 180 plots now. `ShowroomSign` component + `buildSignTexture`/`SignMaterials`/`acquireSignMaterials`/`releaseSignMaterials`/`_signMats`/`_signTextures`/`_signMatRefCount` deleted from `land-showroom.tsx`. New shared constant `LandSignCategory` + `PREMIUM_SIGN_TIERS` + `PREMIUM_PARTNER_PARCEL_IDS` + `getLandSignCategory` in `@clawville/shared`. Draw budget: 7→11 (+4). See §14 for full spec.
 - 2026-06-18 — **Land showroom** (`land-showroom.tsx` NEW + `land-parcels.tsx` edited + `World3DCanvas.tsx` mount + `packages/shared/src/constants/land-showroom.ts` NEW): decorative "kinda set up" layer — ~15 model buildings on outer starter-tier lots, each with a "FOR RENT" sign, so the empty for-sale world reads as populated and advertises the buy-and-fix-up path. Selection: every 7th of 108 starter lots (stride=7 → 15 lots), evenly spread around outer perimeter. Style cycle: coastal-cottage/fantasy-cottage/driftwood-cabin per k%3; structureType: home(k%2=0)/shop(k%2=1); level: 1 or 2 (starter-appropriate). Deterministic — pure math, no RNG/clock (multiplayer-safe). FOR RENT sign: one shared 256×64 `CanvasTexture` ("FOR RENT" + "CLAWVILLE ESTATES", amber accent on dark), one shared `MeshBasicMaterial` (plank), one shared `MeshStandardMaterial` warm-brown (post); each lot gets its own `BoxGeometry` plank+post disposed on unmount. Sign placement math: identical to land-parcels.tsx (`angle=atan2(-cx,-cz)`, `offset=size×0.5×0.40`, plank rotated by angle). NO drei `<Text>`/`<Billboard>`. Building per slot: same GLB clone+material-clone pattern as land-structures.tsx (`/models/land-structures/<style>/<type>.glb`); Suspense+GLBErrorBoundary primitive fallback. Hide-when-owned: per-frame `getParcelStatus(parcels, id)==='owned'` check in same `useFrame` as distance cull (CULL_DIST=14000wu, squared, zero alloc). FOR-SALE sign suppressed on those ~15 lots in land-parcels.tsx (`SHOWROOM_PARCEL_IDS.has(parcel.id) continue`) — lot frame (pad+posts+rails) intact. `SHOWROOM_PARCEL_IDS: ReadonlySet<string>` exported from `@clawville/shared`. New constant `LAND_SHOWROOM` + `SHOWROOM_PARCEL_IDS` added to `packages/shared/src/index.ts`. Draw budget: 16 buildings (GLB or primitive fallback, 3 draws each) + 16 sign posts + 16 sign planks = 48 objects, all distance-culled. Mounted `perf:land-showroom` group in `World3DCanvas.tsx` after `perf:land-structures`. No backend, no DB, no economy writes — purely decorative client layer. **Exact lot parcelIds (16 lots, stride-7):** parcel-starter-00, parcel-starter-07, parcel-starter-14, parcel-starter-21, parcel-starter-28, parcel-starter-35, parcel-starter-42, parcel-starter-49, parcel-starter-56, parcel-starter-63, parcel-starter-70, parcel-starter-77, parcel-starter-84, parcel-starter-91, parcel-starter-98, parcel-starter-105.
 - 2026-06-18 — **Land showroom PREMIUM tier** (`land-showroom.ts` seed + `land-showroom.tsx` render): added 6 Founders'-Row (inner premium ring) showcase lots so the "higher tier = nicer buildings" payoff is visible. NEW premium GLBs (Kenney, CC0, meshopt): `premium-tower/home.glb` (skyscraper, 986 tris, bbox 0.45×2.0×0.5 → tall tower) + `premium-mall/shop.glb` (mall, 2364 tris, bbox 2.0×1.65×1.22 → wide commercial). Seed appends `founders.filter` lots 0–5 (`PREMIUM_LOT_COUNT=6`), alternating `premium-tower`(home)/`premium-mall`(shop) at **level 5** (max scale ramp → they tower over the L1–2 starter cottages); 2 founder lots left open for the real auction. `ShowroomEntry` gains `signLabel?: 'rent'|'premium'` (default 'rent'). Render now builds TWO shared sign `CanvasTexture`s via `buildSignTexture(label)` — amber "FOR RENT"/"CLAWVILLE ESTATES" + gold "PREMIUM"/"FOUNDERS' ROW" — and `ShowroomSlot` picks the plank material by `entry.signLabel` (`ForRentSign`→`ShowroomSign`, `acquireSignMaterials` now returns `{rentPlankMat, premiumPlankMat, postMat}`, both textures disposed on release). Premium lots are in `SHOWROOM_PARCEL_IDS` so their FOUNDERS-tier FOR-SALE atlas sign is suppressed in land-parcels.tsx, replaced by the PREMIUM plank. Footprint/ground/cull/hide-when-owned unchanged from the starter path. Draw budget +~18 objects (6 buildings + 6 posts + 6 planks). Added to `/preview/land-structures` as the "Premium Showcase (Founders' Row)" candidate. **Premium parcelIds:** parcel-founder-00..05.
@@ -1077,3 +1088,102 @@ plankRotY = angle              // sign face toward origin
 **§13 change log entry (2026-06-18):** Land sign rework — deleted atlas system (`buildSignAtlas`, `remapUVsToAtlasRow`, `TIER_ROW_INDEX`, `TIER_GLYPHS`, `TIER_HEX`, single merged post/plank) and `SHOWROOM_PARCEL_IDS` import+guard from `land-parcels.tsx`. Added 3-category sign system (`regular`/`premium`/`premium-partner`) with per-category `CanvasTexture` + `mergeGeometries` batching. Signs now cover ALL 180 plots. `ShowroomSign` + sign singleton helpers deleted from `land-showroom.tsx`. New `packages/shared/src/constants/land-signage.ts` exports `LandSignCategory`, `PREMIUM_SIGN_TIERS`, `PREMIUM_PARTNER_PARCEL_IDS`, `getLandSignCategory`; re-exported from `@clawville/shared` index.
 
 Older history: `git log apps/web/src/lib/three/ apps/web/src/components/three/`.
+
+---
+
+## §15 — Town UX batch (town-ux-2026-06-19)
+
+### §15.1 — Cove discoverability: proximity prompt + world beacon
+
+**Problem:** the Cove casino (slot 9/W) was click-only. It has no NPC teacher, so `findNearestCharacter()` never returned it, `nearLocation` was never set to `'cove'`, and the `LocationHUD` entry pill never appeared. The building was functionally invisible to players who didn't already know to click it.
+
+**Fix — two-part:**
+
+**(a) Proximity detection.** `apps/web/src/lib/three/character-positions.ts` now exports `isCoveProximate(worldX, worldZ)` — a zero-alloc squared-distance check against the cove's tile-center (cx=158, cy=288 → world X=-4160, Z=0). Radius = **600 wu** (COVE_PROXIMITY_RADIUS export). Two identical proximity blocks in `apps/web/src/lib/three/player-avatar.tsx` (one per avatar VRM path) now fall through to `isCoveProximate` when `findNearestCharacter` returns null, setting `store.nearLocation = 'cove'`. Teacher buildings always take priority when both are in range.
+
+**(b) LocationHUD special-case.** `apps/web/src/components/game/location-hud.tsx` imports `triggerCoveWalkIn` from `arena-buildings.tsx` (now exported). When `nearLocation === 'cove'`, tapping the pill calls `triggerCoveWalkIn()` instead of the teacher-chat `enterBuilding()`. Label: "Enter the Cove" with the 🎰 icon; the "Learn about…" footer is suppressed (cove is not a teacher building). `'cove'` is already in `MAP_LOCATIONS` (Predictive Gaming Cove, icon 🎰) so the pill renders.
+
+**(c) World beacon.** New `apps/web/src/lib/three/cove-beacon.tsx`. Mounted in `World3DCanvas.tsx` as `perf:cove-beacon`. Components:
+- Animated neon "THE COVE" marquee board: 512×130 CanvasTexture (NO drei Text — Iris Xe crash), dark indigo background, gold border, cyan neon text, subtitle/tagline. Mounted at world (-4160, 1480, 0) with a ±8 wu vertical float in useFrame.
+- Slow-rotating ring of 10 MeshBasicMaterial spoke planes at world (-4160, 1300, 0). Radius=90 wu, pink/magenta tint, pulsing opacity.
+- Three soft PointLights (pink/cyan/gold, decay=2, distance 600–1200 wu) for casino-glow atmosphere. Light Y positions: 1380/1260/1260.
+- All geometry/materials at module scope (zero per-render alloc). useFrame refs are hoisted — no per-frame allocations.
+
+**⚠️ §15.5 cove-fix-2026-06-20 — SIGN_Y/RING_Y corrected.** Original values (SIGN_Y=870, RING_Y=620) were BELOW the pyramid apex (~1250 wu), causing full occlusion. See §15.5 for details.
+
+**Iris Xe compliance:** NO drei Text/Billboard, NO InstancedMesh+ShaderMaterial, NO per-frame `new Vector3()`.
+
+### §15.2 — Cove entrance animation (Task 2)
+
+`apps/web/src/lib/three/arena-buildings.tsx` `triggerCoveWalkIn()` dispatches a `'cove-walkin-start'` DOM CustomEvent when the walk-in starts. `World3DCanvas.tsx` new `CoveEntranceCameraPush` component (mounted in SceneContents, after JumpTicker) listens for this event and for 1.2s smoothly lerps the camera slightly toward the cove (X=-4160, slight Y pull-down) using a cubic ease-out. All lerp values are module-scope scratch (`_covePushTarget`, `_covePushScratch`), zero per-frame allocations. Total entrance flow ≤3s (1.2s push + existing 500ms fade + /cove page-in 500ms).
+
+### §15.3 — Town directory board (Task 3; REVISED 2026-06-19 — single readable board, replaces the 3-arm fingerpost)
+
+`apps/web/src/lib/three/town-directory-sign.tsx`. **Revision history:** old static inaccurate PNG → 3-arm fingerpost → **single front-facing triangle board (current).** The 3-arm fingerpost FAILED founder review: each arm pointed in its literal world direction, so the forward (Bounty) arm's flat text sat edge-on to the spawn camera (unreadable), and the baked labels were too small at spawn distance. The founder asked for the old flat-board readability with the words in a triangle showing directions.
+
+**Current design — one readable board facing the player:** a single wooden board mounted ON TOP of a hex-prism post (board centered at `y = POST_HEIGHT(260) + BOARD_H/2(150) = 410`, so the post never occludes the board face — the old fingerpost/FOR-SALE-sign post-occlusion trap). Board 400×300×16 wu + crossbar, all merged module-scope geometry. One player-facing (+Z) `PlaneGeometry(376×276)` carries a single CanvasTexture (1024×768, 4:3).
+
+**CanvasTexture = triangle layout (player at spawn faces −Z / south; on the +Z face):**
+| Position on board | Glyph | Destination | World dir from player | World coords |
+|---|---|---|---|---|
+| TOP centre | ↑ (cyan) | BOUNTY BOARD | straight ahead (south) | (0, −1220) |
+| BOTTOM-RIGHT | → (gold) | EXCHANGE | player's right (east) | (+1273, −120) |
+| BOTTOM-LEFT | ← (magenta) | COSMETICS | player's left (west) | (−1273, −120) |
+
+Title "TOWN CENTER" + carved double border + wood grain. Big high-contrast text (arrows 92–116px, labels 58–70px, warm-white `#fbf3e2` with dark shadow, colored glowing arrows). `anisotropy=8` for crispness at distance. Direction correctness: camera looks −Z with up +Y → camera-right = +X (east), so the texture's right = east = Exchange ✓, left = west = Cosmetics ✓, top = "straight ahead" wayfinding convention = Bounty ✓.
+
+**Single-faced** (front +Z only; primary view is the spawn/north side). **No async loading** (no PNG; texture baked synchronously at module load, SSR-guarded by `typeof document`, falls back to wood material for SSR). No drei Text/Billboard, no ShaderMaterial, no per-frame allocs.
+
+### §15.4 — Spawn scatter (Task 4)
+
+`apps/web/src/stores/game.ts` SPAWN_PX is now a per-client-load randomized value. At module load, `_scatterX` and `_scatterY` are generated once (`Math.random()`), clamped to a safe zone (±200 X, ±180 Y from base spawn), and added to the canonical base spawn `{MAP_WIDTH/2, MAP_HEIGHT/2 + 540}`. The `SPAWN_PX` constant and `avatarPositionRef` both use the scattered value. `resetStore` also resets to the SAME scatter for the session (same module-scope scatter constants are referenced). Prevents all players stacking on the exact same pixel in front of Nori.
+
+**Safe zone math:** scatter ±160 px (SPAWN_SCATTER_RADIUS), clamped ±200/±180 → town square center area (no overlap with sign at Z=-120, Nori at Z=+400, building ring at Z>2000).
+
+**§15 change log entry (2026-06-19):** town-ux batch — cove proximity (isCoveProximate, 600wu radius), LocationHUD cove CTA (triggerCoveWalkIn), cove-beacon.tsx (neon marquee + glow ring + 3 lights), CoveEntranceCameraPush (1.2s cubic camera drift), fingerpost sign rewrite (3 CanvasTexture arms, accurate directions), spawn scatter (±160px clamped, session-stable). Files: `character-positions.ts`, `player-avatar.tsx`, `location-hud.tsx`, `arena-buildings.tsx`, `cove-beacon.tsx` (new), `World3DCanvas.tsx`, `town-directory-sign.tsx`, `game.ts`.
+
+---
+
+### §15.5 — Cove beacon + portal fix (cove-fix-2026-06-20)
+
+**Root cause — confirmed beacon occlusion:** The cove GLB (cove-exterior-opt1.glb) is a near-cube (raw bbox 50.78×49.52×51.42 native units). With `targetMaxDim=1300` → scale≈25.28, the rendered building is **1284(x) × 1252(y) × 1300(z) wu**. The pyramid apex sits at world Y≈1250. The prior `SIGN_Y=870` and `RING_Y=620` were BOTH inside the pyramid mass, causing the entire beacon (marquee + ring + lights) to be fully occluded by the opaque pyramid walls. The file header comment incorrectly stated "1300 wu building" when 1300 is the max DIMENSION (largest axis); the building is ~1252 wu TALL.
+
+**Fix 1 — Raise beacon above apex** (`cove-beacon.tsx`):
+- `SIGN_Y`: 870 → **1480** (230 wu above apex — board top at ~1544, well clear of tip)
+- `RING_Y`: 620 → **1300** (50 wu above apex — ring floats just above pyramid tip)
+- Board PlaneGeometry: 320×80 → **512×130 wu** (~1.6× scale-up for visibility at ~4160 wu camera distance)
+- Board backing BoxGeometry: 336×96×4 → **528×148×4 wu**
+- Pole CylinderGeometry: 400 wu tall at y=540 → **1420 wu tall at y=710** (pole now spans world Y=0 to Y=1420, reads as a tall lit pylon)
+- Point light Y positions: 700/580/580 → **1380/1260/1260** (all derived from new RING_Y)
+
+**Fix 2 — Visible portal archway** (new `apps/web/src/lib/three/cove-entrance.tsx`):
+- Position: group at world (-3510, 0, 0) — the east/town-facing (+X) base face of the pyramid (center -4160 + half-footprint 650 = -3510)
+- `TorusGeometry(90, 14, 16, 48)` arch, bright cyan MeshBasicMaterial, rotated 90° around Z so the hole faces +X
+- `CylinderGeometry(75, 75, 140, 32, 1, true)` open tunnel barrel, BackSide dark-cyan, rotated 90° around Z to align axis with +X
+- Pulsing inner glow ring (TorusGeometry slightly larger, transparent, opacity animated in useFrame)
+- CanvasTexture "ENTER ▸" plate above arch (180×56 wu, float ±4 wu)
+- 2 PointLights (cyan 2.0 intensity d=600 / magenta 1.2 intensity d=400) at tunnel mouth
+- Mounted in `World3DCanvas.tsx` as `perf:cove-entrance`
+- All geometry + materials at module scope; no per-frame allocations
+
+**Fix 3 — Door target corrected** (`arena-buildings.tsx`):
+- `COVE_DOOR_PX`: was `{ x: MAP_WIDTH/2 - 4820, y: MAP_HEIGHT/2 }` (world -4820, the WEST far-side of the cove, wrong face)
+- Changed to `{ x: MAP_WIDTH/2 - 3650, y: MAP_HEIGHT/2 }` (world -3650, just outside the east portal mouth on the town-facing side)
+
+**Light budget after fix (Iris Xe validation):**
+| Light | Count | Notes |
+|---|---|---|
+| hemisphereLight | 1 | Free — no fragment pass (baked into ambient uniform) |
+| directionalLight (World3DCanvas) | 2 | No shadows — 1 pass each |
+| pointLight (CoveBeacon) | 3 | d=600–1200, decay=2 |
+| pointLight (CoveEntrance) | 2 | d=400–600, decay=2 |
+| **Total point lights** | **5** | **Under Iris Xe hard limit of 7** |
+
+**Math proof — geometry clears pyramid:**
+- Pyramid apex: `targetMaxDim=1300`, Y dimension is 49.52/51.42×1300 ≈ 1252 wu. Floor at Y≈-2, apex at Y≈**1250**.
+- `RING_Y=1300`: 1300 − 1250 = **50 wu above apex** ✓
+- `SIGN_Y=1480`: 1480 − 1250 = **230 wu above apex** ✓. Board bottom edge at 1480−65=1415 > 1250 ✓.
+- Portal arch center at world X = -4160 + 650 = **-3510** (half-footprint: 1300/2 = 650). The X dimension renders at ≈1284 wu (50.78/51.42×1300), so half-footprint is ≈642. -4160+642 = -3518, and the portal group is at -3510 — effectively flush with the pyramid's east wall ✓.
+- `COVE_DOOR_PX` world X = -3650: 140 wu east of the arch center, in open space between pyramid and town. Avatar walks TO the arch before fade ✓.
+
+**Files changed:** `apps/web/src/lib/three/cove-beacon.tsx` (SIGN_Y/RING_Y/board/pole), `apps/web/src/lib/three/cove-entrance.tsx` (new), `apps/web/src/lib/three/arena-buildings.tsx` (COVE_DOOR_PX), `apps/web/src/components/three/World3DCanvas.tsx` (import + mount CoveEntrance).
