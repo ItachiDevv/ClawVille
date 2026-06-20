@@ -11,7 +11,9 @@
 > - **`GameFeatures.md`** — gameplay.
 > - **This doc** — *how* the 3D scene is wired: coordinates, camera, lights, GPU budget, animation, asset pipeline.
 
-**Last edit:** 2026-06-20 (Adinero locomotion grounding fix — `animatorId: 'hermes-male'` → `'adinero'` + strip idle/walk/run position tracks). See §6c note below.
+**Last edit:** 2026-06-20 (cove-fix: raised beacon above pyramid apex, added visible glowing portal/archway at east face, corrected COVE_DOOR_PX to east/town-facing side). See §15.5 below.
+
+**Prior Last edit:** 2026-06-20 (Adinero locomotion grounding fix — `animatorId: 'hermes-male'` → `'adinero'` + strip idle/walk/run position tracks). See §6c note below.
 
 **Prior Last edit:** 2026-06-20 (fog/far PULLBACK — fixes "much more pixelly" on Iris-Xe). Founder reported the world got much more pixelly after a recent push. Root cause traced: NOT a DPR/antialias change (those are the long-standing Iris-Xe `LOW_END_DPR_RANGE=[0.55,0.7]` + `antialias:false`, unchanged since May) and NOT avatar decimation — it was the **2026-06-15 Phase-0-land world expansion** (grid 360→576, `MAP_WIDTH` 11520→18432wu) which pushed fog OUT (`[6500,13500]`) and camera.far OUT (10000→14000) to fit the bigger world. That re-exposed a large sprawl of distant low-resolution geometry (far building ring + outer land parcels at up to ~12309wu from center) that, at the low Iris-Xe DPR, reads as pixelly/aliased. **Fix (`World3DCanvas.tsx`):** pulled fog back to `[FOG_COLOR, 5000, 10500]` and `camera.far` 14000→11500 (fog.far ≤ camera.far invariant kept; geometry fully fades to fog by 10500 BEFORE the 11500 frustum cull, so no hard pop). Matches the founder's documented 2026-05-22 direction ("target the fog more, i don't care about it much"). Building ring (R=130=4160wu, ≤8320wu across) stays clearly visible; everything past ~10500wu is hidden in fog and culled past 11500 (reclaims fill/geometry cost = FPS gain, "free" — no resolution change). **Trade-off (needs founder eyes, Rule E4):** outer land parcels viewed from spawn now fog/cull out and reappear as you walk toward them; if the founder wants more of the city visible at once, push fog/far back out (e.g. `[5500,12500]` / far 13000). DPR/FXAA sharpness bump is the SEPARATE next lever (costs FPS) — deferred pending this free pass. Frontend-only, no schema. NOT yet verified in-browser (chrome-devtools MCP disconnected).
 
@@ -1102,10 +1104,12 @@ Older history: `git log apps/web/src/lib/three/ apps/web/src/components/three/`.
 **(b) LocationHUD special-case.** `apps/web/src/components/game/location-hud.tsx` imports `triggerCoveWalkIn` from `arena-buildings.tsx` (now exported). When `nearLocation === 'cove'`, tapping the pill calls `triggerCoveWalkIn()` instead of the teacher-chat `enterBuilding()`. Label: "Enter the Cove" with the 🎰 icon; the "Learn about…" footer is suppressed (cove is not a teacher building). `'cove'` is already in `MAP_LOCATIONS` (Predictive Gaming Cove, icon 🎰) so the pill renders.
 
 **(c) World beacon.** New `apps/web/src/lib/three/cove-beacon.tsx`. Mounted in `World3DCanvas.tsx` as `perf:cove-beacon`. Components:
-- Animated neon "THE COVE" marquee board: 512×128 CanvasTexture (NO drei Text — Iris Xe crash), dark indigo background, gold border, cyan neon text, subtitle/tagline. Mounted at world (-4160, 870, 0) with a ±8 wu vertical float in useFrame.
-- Slow-rotating ring of 10 MeshBasicMaterial spoke planes at world (-4160, 620, 0). Radius=90 wu, pink/magenta tint, pulsing opacity.
-- Three soft PointLights (pink/cyan/gold, decay=2, distance 600–1200 wu) for casino-glow atmosphere.
+- Animated neon "THE COVE" marquee board: 512×130 CanvasTexture (NO drei Text — Iris Xe crash), dark indigo background, gold border, cyan neon text, subtitle/tagline. Mounted at world (-4160, 1480, 0) with a ±8 wu vertical float in useFrame.
+- Slow-rotating ring of 10 MeshBasicMaterial spoke planes at world (-4160, 1300, 0). Radius=90 wu, pink/magenta tint, pulsing opacity.
+- Three soft PointLights (pink/cyan/gold, decay=2, distance 600–1200 wu) for casino-glow atmosphere. Light Y positions: 1380/1260/1260.
 - All geometry/materials at module scope (zero per-render alloc). useFrame refs are hoisted — no per-frame allocations.
+
+**⚠️ §15.5 cove-fix-2026-06-20 — SIGN_Y/RING_Y corrected.** Original values (SIGN_Y=870, RING_Y=620) were BELOW the pyramid apex (~1250 wu), causing full occlusion. See §15.5 for details.
 
 **Iris Xe compliance:** NO drei Text/Billboard, NO InstancedMesh+ShaderMaterial, NO per-frame `new Vector3()`.
 
@@ -1137,3 +1141,49 @@ Title "TOWN CENTER" + carved double border + wood grain. Big high-contrast text 
 **Safe zone math:** scatter ±160 px (SPAWN_SCATTER_RADIUS), clamped ±200/±180 → town square center area (no overlap with sign at Z=-120, Nori at Z=+400, building ring at Z>2000).
 
 **§15 change log entry (2026-06-19):** town-ux batch — cove proximity (isCoveProximate, 600wu radius), LocationHUD cove CTA (triggerCoveWalkIn), cove-beacon.tsx (neon marquee + glow ring + 3 lights), CoveEntranceCameraPush (1.2s cubic camera drift), fingerpost sign rewrite (3 CanvasTexture arms, accurate directions), spawn scatter (±160px clamped, session-stable). Files: `character-positions.ts`, `player-avatar.tsx`, `location-hud.tsx`, `arena-buildings.tsx`, `cove-beacon.tsx` (new), `World3DCanvas.tsx`, `town-directory-sign.tsx`, `game.ts`.
+
+---
+
+### §15.5 — Cove beacon + portal fix (cove-fix-2026-06-20)
+
+**Root cause — confirmed beacon occlusion:** The cove GLB (cove-exterior-opt1.glb) is a near-cube (raw bbox 50.78×49.52×51.42 native units). With `targetMaxDim=1300` → scale≈25.28, the rendered building is **1284(x) × 1252(y) × 1300(z) wu**. The pyramid apex sits at world Y≈1250. The prior `SIGN_Y=870` and `RING_Y=620` were BOTH inside the pyramid mass, causing the entire beacon (marquee + ring + lights) to be fully occluded by the opaque pyramid walls. The file header comment incorrectly stated "1300 wu building" when 1300 is the max DIMENSION (largest axis); the building is ~1252 wu TALL.
+
+**Fix 1 — Raise beacon above apex** (`cove-beacon.tsx`):
+- `SIGN_Y`: 870 → **1480** (230 wu above apex — board top at ~1544, well clear of tip)
+- `RING_Y`: 620 → **1300** (50 wu above apex — ring floats just above pyramid tip)
+- Board PlaneGeometry: 320×80 → **512×130 wu** (~1.6× scale-up for visibility at ~4160 wu camera distance)
+- Board backing BoxGeometry: 336×96×4 → **528×148×4 wu**
+- Pole CylinderGeometry: 400 wu tall at y=540 → **1420 wu tall at y=710** (pole now spans world Y=0 to Y=1420, reads as a tall lit pylon)
+- Point light Y positions: 700/580/580 → **1380/1260/1260** (all derived from new RING_Y)
+
+**Fix 2 — Visible portal archway** (new `apps/web/src/lib/three/cove-entrance.tsx`):
+- Position: group at world (-3510, 0, 0) — the east/town-facing (+X) base face of the pyramid (center -4160 + half-footprint 650 = -3510)
+- `TorusGeometry(90, 14, 16, 48)` arch, bright cyan MeshBasicMaterial, rotated 90° around Z so the hole faces +X
+- `CylinderGeometry(75, 75, 140, 32, 1, true)` open tunnel barrel, BackSide dark-cyan, rotated 90° around Z to align axis with +X
+- Pulsing inner glow ring (TorusGeometry slightly larger, transparent, opacity animated in useFrame)
+- CanvasTexture "ENTER ▸" plate above arch (180×56 wu, float ±4 wu)
+- 2 PointLights (cyan 2.0 intensity d=600 / magenta 1.2 intensity d=400) at tunnel mouth
+- Mounted in `World3DCanvas.tsx` as `perf:cove-entrance`
+- All geometry + materials at module scope; no per-frame allocations
+
+**Fix 3 — Door target corrected** (`arena-buildings.tsx`):
+- `COVE_DOOR_PX`: was `{ x: MAP_WIDTH/2 - 4820, y: MAP_HEIGHT/2 }` (world -4820, the WEST far-side of the cove, wrong face)
+- Changed to `{ x: MAP_WIDTH/2 - 3650, y: MAP_HEIGHT/2 }` (world -3650, just outside the east portal mouth on the town-facing side)
+
+**Light budget after fix (Iris Xe validation):**
+| Light | Count | Notes |
+|---|---|---|
+| hemisphereLight | 1 | Free — no fragment pass (baked into ambient uniform) |
+| directionalLight (World3DCanvas) | 2 | No shadows — 1 pass each |
+| pointLight (CoveBeacon) | 3 | d=600–1200, decay=2 |
+| pointLight (CoveEntrance) | 2 | d=400–600, decay=2 |
+| **Total point lights** | **5** | **Under Iris Xe hard limit of 7** |
+
+**Math proof — geometry clears pyramid:**
+- Pyramid apex: `targetMaxDim=1300`, Y dimension is 49.52/51.42×1300 ≈ 1252 wu. Floor at Y≈-2, apex at Y≈**1250**.
+- `RING_Y=1300`: 1300 − 1250 = **50 wu above apex** ✓
+- `SIGN_Y=1480`: 1480 − 1250 = **230 wu above apex** ✓. Board bottom edge at 1480−65=1415 > 1250 ✓.
+- Portal arch center at world X = -4160 + 650 = **-3510** (half-footprint: 1300/2 = 650). The X dimension renders at ≈1284 wu (50.78/51.42×1300), so half-footprint is ≈642. -4160+642 = -3518, and the portal group is at -3510 — effectively flush with the pyramid's east wall ✓.
+- `COVE_DOOR_PX` world X = -3650: 140 wu east of the arch center, in open space between pyramid and town. Avatar walks TO the arch before fade ✓.
+
+**Files changed:** `apps/web/src/lib/three/cove-beacon.tsx` (SIGN_Y/RING_Y/board/pole), `apps/web/src/lib/three/cove-entrance.tsx` (new), `apps/web/src/lib/three/arena-buildings.tsx` (COVE_DOOR_PX), `apps/web/src/components/three/World3DCanvas.tsx` (import + mount CoveEntrance).
