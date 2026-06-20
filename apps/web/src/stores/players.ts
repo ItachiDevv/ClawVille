@@ -44,10 +44,27 @@ export interface RemotePlayerState {
   isLocal: boolean;
 }
 
+/**
+ * Cap on the "former selves" id set (2026-06-19). A long session that flaps
+ * (repeated SSE reconnect / 409 rejoin) could otherwise accumulate ids
+ * unbounded. 16 covers any realistic reconnect churn; older ids age out (their
+ * server bodies are long GC'd, so they can never reappear in a snapshot anyway).
+ */
+const MAX_LOCAL_SESSION_IDS = 16;
+
 interface PlayerStoreState {
   players: RemotePlayerState[];
-  /** Stable sessionId for the local viewer (set by use-world-stream after /api/world/join). */
+  /** Latest presence id for the local viewer (set by use-world-stream after /api/world/join). */
   localSessionId: string | null;
+  /**
+   * EVERY presence id this client has been assigned this session ("former
+   * selves"), capped at MAX_LOCAL_SESSION_IDS. A reconnect/identity transition
+   * (e.g. guest→authed bootstrap flip) reseats us under a NEW publicId while the
+   * server may still hold our PRIOR body for up to 30s; rendering it would show
+   * a ghostly "Visitor" trailing us. `isLocal` filters against this whole set
+   * (not just the latest id) so we never render any of our own bodies.
+   */
+  localSessionIds: Set<string>;
   /** Current room ID assigned by the server. */
   roomId: string | null;
   setLocalSessionId: (sessionId: string | null) => void;
@@ -71,20 +88,35 @@ function fieldsEqual(a: RemotePlayerState, b: PlayerSnapshot): boolean {
 export const usePlayerStore = create<PlayerStoreState>((set, get) => ({
   players: [],
   localSessionId: null,
+  localSessionIds: new Set<string>(),
   roomId: null,
 
   setLocalSessionId: (sessionId) => {
-    if (get().localSessionId === sessionId) return;
-    set({ localSessionId: sessionId });
-    // Re-stamp isLocal on existing players when the local presence id changes.
-    // Immutable: replace only the entries whose isLocal flips (new object), keep
-    // the rest by reference — consistent with updateFromSnapshot's identity
-    // contract so the renderer's memo bails for untouched players.
-    const players = get().players;
+    const cur = get();
+    if (cur.localSessionId === sessionId) return;
+    // Accumulate "former selves" (every id we've been assigned this session).
+    // A new id is added to the set (capped, oldest evicted); a null id (unmount)
+    // just clears the latest pointer — clear() resets the set on teardown.
+    let ids = cur.localSessionIds;
+    if (sessionId != null && !ids.has(sessionId)) {
+      ids = new Set(ids);
+      ids.add(sessionId);
+      while (ids.size > MAX_LOCAL_SESSION_IDS) {
+        const oldest = ids.values().next().value;
+        if (oldest === undefined) break;
+        ids.delete(oldest);
+      }
+    }
+    set({ localSessionId: sessionId, localSessionIds: ids });
+    // Re-stamp isLocal on existing players against the UPDATED id set. Immutable:
+    // replace only the entries whose isLocal flips (new object), keep the rest by
+    // reference — consistent with updateFromSnapshot's identity contract so the
+    // renderer's memo bails for untouched players.
+    const players = cur.players;
     if (players.length === 0) return;
     let dirty = false;
     const restamped = players.map((p) => {
-      const next = p.id === sessionId;
+      const next = ids.has(p.id);
       if (p.isLocal === next) return p;
       dirty = true;
       return { ...p, isLocal: next };
@@ -100,7 +132,7 @@ export const usePlayerStore = create<PlayerStoreState>((set, get) => ({
   updateFromSnapshot: (incoming) => {
     const state = get();
     const now = Date.now();
-    const localSessionId = state.localSessionId;
+    const localSessionIds = state.localSessionIds;
     const prevMap = new Map(state.players.map((p) => [p.id, p]));
 
     // IMMUTABLE update (2026-06-12, Codex finding #5). Unlike the NPC store —
@@ -127,7 +159,10 @@ export const usePlayerStore = create<PlayerStoreState>((set, get) => ({
       // tsDelta measured from arrival times; floor at 16 ms to avoid
       // divide-by-near-zero if two snapshots land in the same wall-clock tick.
       const tsDelta = prev ? Math.max(16, now - prev.ts) : 200;
-      const isLocal = localSessionId != null && snap.id === localSessionId;
+      // isLocal against the WHOLE former-selves set so an orphaned prior body
+      // (different publicId, same browser) is filtered out, not rendered as a
+      // trailing "Visitor". See localSessionIds.
+      const isLocal = localSessionIds.has(snap.id);
 
       // Skip allocation when NOTHING changed for this player (no movement, no
       // identity change, same local flag) — keep the previous reference so memo
@@ -171,5 +206,6 @@ export const usePlayerStore = create<PlayerStoreState>((set, get) => ({
     set({ players: next });
   },
 
-  clear: () => set({ players: [], roomId: null }),
+  clear: () =>
+    set({ players: [], roomId: null, localSessionId: null, localSessionIds: new Set<string>() }),
 }));

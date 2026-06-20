@@ -16,6 +16,8 @@ import type {
   PlaceStructureResponse,
   UpgradeStructureResponse,
   ParcelStructureResponse,
+  SpawnPreferenceMode,
+  SpawnPreferenceResponse,
 } from '@/components/game/land/types';
 import { getFingerprint } from './fingerprint';
 
@@ -1081,6 +1083,14 @@ export const api = {
       body: JSON.stringify(data),
     }),
 
+  // Agent export & portability (2026-06-19) — signed, content-addressed portable
+  // avatar manifest (CAM v1). GET returns the manifest JSON; the UI turns it into
+  // a downloadable .json. See `.claude/plans/agent-export-portability.md`.
+  exportManifest: (avatarId: string) =>
+    honoRequest<import('@clawville/shared').ClawvilleAvatarManifest>(
+      `/api/avatar/${avatarId}/manifest.json`,
+    ),
+
   // Agent Setup
   getAgentRoster: () =>
     honoRequest<{ agents: any[] }>('/api/agent-setup/roster'),
@@ -1196,4 +1206,17 @@ export const api = {
     honoRequest<OwnedLandResponse>(
       `/api/land/owned/${encodeURIComponent(avatarId)}`,
     ),
+
+  /**
+   * Set the avatar's spawn preference (auth) — town center vs an owned home
+   * parcel. `mode: 'home'` REQUIRES `parcelId` of an owned parcel (server 403
+   * `code: 'not_owned'` otherwise); `mode: 'town'` clears the home spawn (no
+   * parcelId needed). Drives spawn-on-load in game/page.tsx. honoRequest throws
+   * ApiError{status,code} — callers branch on err.code, never the message.
+   */
+  setSpawnPreference: (body: { mode: SpawnPreferenceMode; parcelId?: string }) =>
+    honoRequest<SpawnPreferenceResponse>('/api/land/spawn-preference', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
 };

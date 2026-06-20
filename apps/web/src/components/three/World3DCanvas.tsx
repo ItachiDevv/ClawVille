@@ -30,6 +30,8 @@ import MarketplaceStall from '@/lib/three/marketplace-stall';
 import QuestBountyPavilion from '@/lib/three/quest-bounty-pavilion';
 import AuctionPodium from '@/lib/three/auction-podium';
 import TownDirectorySign from '@/lib/three/town-directory-sign';
+import CoveBeacon from '@/lib/three/cove-beacon';
+import CoveEntrance from '@/lib/three/cove-entrance';
 import ActivityIndicators from '@/lib/three/activity-indicators';
 import FloatingTexts3D from '@/lib/three/floating-text-3d';
 import NpcSpeechBubbles from '@/lib/three/npc-speech-bubbles';
@@ -507,6 +509,40 @@ function FPSFollowCamera({
 
     const { controlMode, possessedNpcId } = useGameStore.getState();
 
+    // One-shot camera focus SNAP (town-fast-travel warp re-anchor, 2026-06-19).
+    // The WarpOverlay teleports avatarPositionRef at its flash midpoint and then
+    // calls requestCameraFocus(target) to drop a focus request. We drain it here
+    // (FPSFollowCamera owns the camera in player/autonomous/npc modes — the only
+    // modes a warp can fire from, since warpTo() is gated to 'player') and snap
+    // the orbit target + camera to the destination in ONE frame. Without this,
+    // the exponential follow-lerp below would slow-pan across the map after the
+    // flash clears — a long warp would visibly "fly" the camera. Snapping target
+    // and camera by the SAME delta preserves the orbit geometry (angle/zoom/phi),
+    // exactly like WASDCameraController's focus drain and the jump translate below.
+    // Game coords (0..MAP_WIDTH) → world XZ via the same HALF_W/HALF_H projection.
+    // consumeCameraFocus() returns null on every normal frame (zero-alloc).
+    const focus = useGameStore.getState().consumeCameraFocus();
+    if (focus) {
+      const fx = Math.max(0, Math.min(MAP_WIDTH, focus.x)) - HALF_W;
+      const fz = Math.max(0, Math.min(MAP_HEIGHT, focus.y)) - HALF_H;
+      const tgtSnap = controls.target;
+      const dxSnap = fx - tgtSnap.x;
+      const dySnap = CHAR_TARGET_Y - tgtSnap.y;
+      const dzSnap = fz - tgtSnap.z;
+      tgtSnap.set(fx, CHAR_TARGET_Y, fz);
+      controls.object.position.x += dxSnap;
+      controls.object.position.y += dySnap;
+      controls.object.position.z += dzSnap;
+      if (controls.object.position.y < CAM_Y_MIN) {
+        controls.object.position.y = CAM_Y_MIN;
+      }
+      controls.update();
+      // Don't also run the lerp this frame — the body ref is already at the
+      // destination, so the snap leaves zero follow error. Fall through next
+      // frame into the normal smooth follow.
+      return;
+    }
+
     // Determine the character's 2D game-space position.
     // Use avatarPositionRef (module-scope, zero React overhead) for the player path —
     // the ref is always up-to-date at 60 Hz even when the reactive store is throttled.
@@ -917,6 +953,57 @@ function PerfCameraPreset({
   return null;
 }
 
+// ---------------------------------------------------------------------------
+// CoveEntranceCameraPush — smooth camera drift toward the cove on walk-in.
+// Listens for the 'cove-walkin-start' DOM event dispatched by triggerCoveWalkIn()
+// in arena-buildings.tsx, then for 1.2s pushes the camera slightly toward
+// world X=-4160 (cove direction). Zero per-frame allocations — uses module-scope
+// scratch Vector3 and purely primitive ref reads.
+// ---------------------------------------------------------------------------
+const _covePushTarget = new THREE.Vector3(-4160, 80, 0);
+const _covePushScratch = new THREE.Vector3();
+
+function CoveEntranceCameraPush() {
+  const { camera } = useThree();
+  const pushRef = useRef<{ startTime: number; startX: number; startY: number; startZ: number } | null>(null);
+
+  useEffect(() => {
+    function onCoveWalkIn() {
+      pushRef.current = {
+        startTime: performance.now(),
+        startX: camera.position.x,
+        startY: camera.position.y,
+        startZ: camera.position.z,
+      };
+    }
+    window.addEventListener('cove-walkin-start', onCoveWalkIn);
+    return () => window.removeEventListener('cove-walkin-start', onCoveWalkIn);
+  }, [camera]);
+
+  useFrame(() => {
+    const state = pushRef.current;
+    if (!state) return;
+    const elapsed = (performance.now() - state.startTime) / 1000;
+    const PUSH_DURATION = 1.2;
+    if (elapsed > PUSH_DURATION) {
+      pushRef.current = null;
+      return;
+    }
+    // Ease out cubic — starts fast, slows into the transition fade.
+    const t = elapsed / PUSH_DURATION;
+    const ease = 1 - Math.pow(1 - t, 3);
+    // Push camera 180 wu toward cove (X direction, slight pull-down in Y for drama).
+    _covePushScratch.set(
+      state.startX + (_covePushTarget.x - state.startX) * 0.08 * ease,
+      state.startY - 30 * ease,
+      state.startZ + (_covePushTarget.z - state.startZ) * 0.05 * ease,
+    );
+    camera.position.lerp(_covePushScratch, 0.12);
+  });
+
+  return null;
+}
+
 // REMOVED 2026-05-31 — OpaqueCanvasClearGuard caused the permanent blue screen.
 // It ran an INDEPENDENT requestAnimationFrame loop calling gl.render(scene, camera)
 // on top of R3F's own frameloop='always' render loop — measured live at exactly
@@ -1270,6 +1357,11 @@ const SceneContents = memo(function SceneContents({
           consumer reads current-frame heightOffset, not the prior frame's stale value. */}
       <JumpTicker />
 
+      {/* Cove entrance camera push — listens for 'cove-walkin-start' event
+          (dispatched by triggerCoveWalkIn in arena-buildings.tsx) and smoothly
+          pushes the camera toward the cove for 1.2s. Task 2 entrance anim. */}
+      <CoveEntranceCameraPush />
+
       {/* Single DOM overlay for all world-space labels (NPC names, building labels,
           speech bubbles). Replaces 30+ per-instance drei <Html> portals.
           Mount early so consumers (ArenaNpcs, ArenaBuildings, etc.) see the overlay
@@ -1334,9 +1426,15 @@ const SceneContents = memo(function SceneContents({
           half-width (5760 wu) still rendered fully even when fog-faded.
           New (2026-05-22): near=5000 far=10000 (camera.far=10000). Far-ring
           buildings at 5493wu start fogging at ~10%, fully fogged by 10000wu.
-          Updated 2026-06-15 (Phase 0 land, 576x576 world, half=9216wu):
-          near=6500 far=13500 (camera.far=14000). fog.far<=camera.far invariant. */}
-      {showWaterFogParticles && <fog attach="fog" args={[FOG_COLOR, 6500, 13500]} />}
+          2026-06-15 (Phase 0 land, 576x576 world, half=9216wu): near=6500
+          far=13500 (camera.far=14000) — pushed OUT for the bigger world, which
+          re-exposed the distant low-res sprawl (pixelly on Iris-Xe low DPR).
+          Pulled back 2026-06-20 per founder "target the fog more": near=5000
+          far=10500 (camera.far=11500). Building ring (≤8320wu across) stays
+          visible; everything past ~10500wu fogs out so the distant low-res
+          buildings/terrain are hidden again; fog.far(10500) ≤ camera.far(11500)
+          so geometry fully fades to fog BEFORE the far-plane cull (no pop). */}
+      {showWaterFogParticles && <fog attach="fog" args={[FOG_COLOR, 5000, 10500]} />}
 
       {/* Shared world geometry */}
       <group name="perf:terrain" userData={{ perfChunk: 'terrain' }}>
@@ -1452,6 +1550,20 @@ const SceneContents = memo(function SceneContents({
       {/* Wooden signboard directory — informational landmark at centre of stall row */}
       <group name="perf:town-directory-sign" userData={{ perfChunk: 'town-directory-sign' }}>
         <TownDirectorySign />
+      </group>
+
+      {/* Cove entertainment district beacon — neon marquee sign + glow ring
+          Floats above the Cove building (slot 9/W) at world (-4160, 870, 0).
+          Proximity prompt (isCoveProximate) drives the LocationHUD CTA. */}
+      <group name="perf:cove-beacon" userData={{ perfChunk: 'cove-beacon' }}>
+        <CoveBeacon />
+      </group>
+
+      {/* Glowing portal/tunnel archway at the east (+X, town-facing) base of the
+          cove pyramid. Gives players a visible ENTER ▸ doorway to walk into.
+          Component owns 2 point lights (cyan/magenta); total scene point lights = 5. */}
+      <group name="perf:cove-entrance" userData={{ perfChunk: 'cove-entrance' }}>
+        <CoveEntrance />
       </group>
 
       {/* NPC speech bubbles — Dom overlay, renders chat from SSE stream */}
@@ -1761,10 +1873,13 @@ function World3DCanvas({ mode, perfFlags }: World3DCanvasProps) {
         camera={{
           fov: 50,
           near: 1,
-          // far: 14000 (raised 2026-06-15 for 576x576 / 18432wu world -- Phase 0 land).
-          // fog.far=13500 <= camera.far=14000 (invariant maintained).
-          // World half-width is now 9216 wu; buildings at ~4160wu stay well within view.
-          far: 14000,
+          // far: 11500 (pulled back 2026-06-20 from 14000). The 06-15 bump to
+          // 14000 for the 576x576 world re-exposed distant low-res geometry that
+          // reads as pixelly on the Iris-Xe low DPR; fog now fully hides it by
+          // 10500wu (fog.far ≤ camera.far invariant), so culling past 11500
+          // reclaims fill/geometry cost with nothing visible lost. Building ring
+          // (~4160wu radius, ≤8320wu across) stays well within view.
+          far: 11500,
           // Game mode: tighter starting position reinforces the bigger buildings/characters.
           // Pulled in from [0,700,1600] after proportions pass (2026-04-16).
           position: mode === 'game' ? [0, 600, 1300] : [0, 560, 1000],

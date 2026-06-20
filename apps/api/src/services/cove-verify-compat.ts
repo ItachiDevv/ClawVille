@@ -57,10 +57,51 @@ function omit(o: Json, keys: readonly string[]): Json {
   return out;
 }
 
-/** Stable deep-equal via JSON.stringify (the verifier's existing equality op). */
-function jsonEq(a: unknown, b: unknown): boolean {
-  return JSON.stringify(a) === JSON.stringify(b);
+/**
+ * Recursively canonicalize a JSON value so equality is INSENSITIVE to object
+ * key order. Object keys are sorted; ARRAY order is PRESERVED (card sequences,
+ * reels, and winning lines are positional and must stay ordered).
+ *
+ * This is load-bearing for the /verify endpoint. `expected` is freshly built by
+ * the live engine serializers (keys in insertion order), while `stored` is read
+ * back from a Postgres `jsonb` column — and jsonb DOES NOT preserve key order
+ * (it stores keys sorted by length, then bytewise). A raw `JSON.stringify`
+ * comparison of the two therefore false-negatives on EVERY real stored row: the
+ * hand is provably fair (hash matches, every value identical) yet `verified`
+ * reports false, telling honest players the game was rigged. Sorting keys before
+ * stringify removes that artifact while STILL catching any genuine value or
+ * structural divergence (a wrong card, payout, or net still fails).
+ *
+ * (The unit tests never caught this because they build the "stored" side with JS
+ * object literals / `JSON.parse(JSON.stringify(...))`, both of which preserve
+ * insertion order — so they never reproduced jsonb's reordering. See the
+ * key-shuffle regression tests added alongside this fix.)
+ */
+function canonicalize(v: unknown): unknown {
+  if (Array.isArray(v)) return v.map(canonicalize);
+  if (v && typeof v === 'object') {
+    const o = v as Record<string, unknown>;
+    const out: Record<string, unknown> = {};
+    for (const k of Object.keys(o).sort()) out[k] = canonicalize(o[k]);
+    return out;
+  }
+  return v;
 }
+
+/**
+ * Deep-equal that is INSENSITIVE to object key order but SENSITIVE to array
+ * order and every value (see `canonicalize`). Replaces the previous raw
+ * `JSON.stringify` equality, which silently broke against jsonb-stored rows.
+ * Exported so the slots verify branch (`cove-history.ts`) — which compares
+ * `winningLines`, an array of OBJECTS whose keys jsonb also reorders — shares
+ * the same correct equality op.
+ */
+export function canonicalJsonEq(a: unknown, b: unknown): boolean {
+  return JSON.stringify(canonicalize(a)) === JSON.stringify(canonicalize(b));
+}
+
+/** Internal alias kept so the per-game comparators below read unchanged. */
+const jsonEq = canonicalJsonEq;
 
 // ---------------------------------------------------------------------------
 // Blackjack — new-field back-compat
