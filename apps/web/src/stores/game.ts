@@ -15,8 +15,25 @@ import { buildingZones, MAP_WIDTH, MAP_HEIGHT } from '@/lib/pixi/tilemap-data';
 // town-directory sign (world Z = −120).
 // Phase 0 land (2026-06-15): center px 5760 → 9216 (world grew 360→576 tiles).
 //   x = MAP_WIDTH/2 = 9216,  y = MAP_HEIGHT/2 + 540 = 9756.
+//
+// Spawn scatter (town-ux-2026-06-19): a small random offset per client load
+// prevents every player stacking on the exact same pixel in front of Nori.
+// Offset is ±SPAWN_SCATTER_RADIUS px (uniform random, seeded once at module
+// load so resetStore restores the SAME scattered position for this session).
+// Clamped to a town-square safe zone: X within ±200 of center, Y within
+// ±180 of base spawn — keeps players away from the sign (Z=-120), Nori
+// (Z=+400), and building ring (first slot > 2000 wu away).
 // ---------------------------------------------------------------------------
-const SPAWN_PX = { x: MAP_WIDTH / 2, y: MAP_HEIGHT / 2 + 540 };
+const SPAWN_SCATTER_RADIUS = 160; // game-px (≈ world units at 1px:1wu)
+const _scatterX = (Math.random() - 0.5) * 2 * SPAWN_SCATTER_RADIUS;
+const _scatterY = (Math.random() - 0.5) * 2 * SPAWN_SCATTER_RADIUS;
+// Clamp: keep within town square clear zone (no buildings/sign/Nori)
+const _safeScatterX = Math.max(-200, Math.min(200, _scatterX));
+const _safeScatterY = Math.max(-180, Math.min(180, _scatterY));
+const SPAWN_PX = {
+  x: MAP_WIDTH  / 2 + _safeScatterX,
+  y: MAP_HEIGHT / 2 + 540 + _safeScatterY,
+};
 
 // Drift guard (S3, 2026-06-16): the SERVER + DB derive spawn/center from
 // @clawville/shared world-dimensions; the client computes them from the pixi
@@ -26,16 +43,23 @@ const SPAWN_PX = { x: MAP_WIDTH / 2, y: MAP_HEIGHT / 2 + 540 };
 // ever drift from the shared constants (e.g. a future world grow updates the
 // tilemap but not world-dimensions.ts, or vice versa). Stripped from prod
 // builds; non-breaking (no behavior change, just a fail-fast in dev).
+// Drift guard: compare against the BASE spawn (before scatter) to keep
+// the assertion meaningful. SPAWN_PX includes a per-session ±scatter offset
+// (added 2026-06-19, town-ux) that is intentional client-only jitter — it
+// should NOT trigger the drift guard, which is checking world-dimension sync
+// between tilemap-data.ts and @clawville/shared world-dimensions.ts.
+const _BASE_SPAWN_X = MAP_WIDTH  / 2;
+const _BASE_SPAWN_Y = MAP_HEIGHT / 2 + 540;
 if (process.env.NODE_ENV !== 'production') {
   if (
     MAP_WIDTH !== WORLD_PX_WIDTH ||
     MAP_HEIGHT !== WORLD_PX_HEIGHT ||
-    SPAWN_PX.x !== SHARED_SPAWN_PX.x ||
-    SPAWN_PX.y !== SHARED_SPAWN_PX.y
+    _BASE_SPAWN_X !== SHARED_SPAWN_PX.x ||
+    _BASE_SPAWN_Y !== SHARED_SPAWN_PX.y
   ) {
     console.error(
       '[game.ts] SPAWN/WORLD DRIFT: client tilemap disagrees with @clawville/shared world-dimensions. ' +
-        `client {MAP_WIDTH:${MAP_WIDTH}, MAP_HEIGHT:${MAP_HEIGHT}, spawn:(${SPAWN_PX.x},${SPAWN_PX.y})} ` +
+        `client {MAP_WIDTH:${MAP_WIDTH}, MAP_HEIGHT:${MAP_HEIGHT}, baseSpawn:(${_BASE_SPAWN_X},${_BASE_SPAWN_Y})} ` +
         `vs shared {WORLD_PX_WIDTH:${WORLD_PX_WIDTH}, WORLD_PX_HEIGHT:${WORLD_PX_HEIGHT}, ` +
         `SPAWN_PX:(${SHARED_SPAWN_PX.x},${SHARED_SPAWN_PX.y})}. ` +
         'Update both layers (tilemap-data.ts + world-dimensions.ts) in the same diff.',
@@ -363,6 +387,27 @@ export interface GameState {
   landOfficeOpen: boolean;
   openLandOffice: () => void;
   closeLandOffice: () => void;
+
+  // ── World Map + Fast Travel (town-fasttravel-2026-06-19) ──────────────
+  // Interactive World Map modal — the WARP surface (the minimap stays the
+  // WALK surface). Opened from the minimap "⤢ Map" button. Freezes movement
+  // while open (mirrors every other modal so WASD/joystick can't drive the
+  // avatar behind the map).
+  worldMapOpen: boolean;
+  openWorldMap: () => void;
+  closeWorldMap: () => void;
+
+  // Quick-travel warp. `warpTarget` is the in-flight teleport destination in
+  // game-px (+ optional label, e.g. the building name). The WarpOverlay DOM
+  // animation consumes it: a ~1.4s radial flash masks an INSTANT teleport at
+  // its midpoint. `warpTo` is GATED on controlMode==='player' (the only mode
+  // with a WASD-controllable avatar) — a no-op in explore/npc/autonomous so a
+  // spectator/agent-driven body is never yanked. It also closes the World Map
+  // so the modal dismisses the moment the warp fires. `clearWarp` is called by
+  // the overlay at the end of the animation to unmount itself.
+  warpTarget: { x: number; y: number; label?: string } | null;
+  warpTo: (x: number, y: number, label?: string) => void;
+  clearWarp: () => void;
 
   // Bazaar
   bazaarOpen: boolean;
@@ -1021,6 +1066,43 @@ export const useGameStore = create<GameState>((set, get) => ({
   openLandOffice: () => set({ landOfficeOpen: true }),
   closeLandOffice: () => set({ landOfficeOpen: false }),
 
+  // ── World Map + Fast Travel (town-fasttravel-2026-06-19) ──────────────
+  worldMapOpen: false,
+  openWorldMap: () => {
+    // Freeze movement while the map is open so WASD/joystick can't drive the
+    // avatar behind the modal (mirrors enterBuilding / openBuildingPortal).
+    // Reset any in-flight jump so the avatar isn't stranded airborne under it.
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { resetJump } = require('@/lib/three/jump-state') as typeof import('@/lib/three/jump-state');
+    resetJump();
+    set({ worldMapOpen: true, movementFrozen: true });
+  },
+  closeWorldMap: () => set({ worldMapOpen: false, movementFrozen: false }),
+
+  warpTarget: null,
+  warpTo: (x, y, label) => {
+    // GATE: only a controllable player avatar may warp. In explore (camera
+    // spectator), npc (possessed NPC drives via NpcController), or autonomous
+    // (the agent navigates itself), there is no player body to teleport — a
+    // warp would either do nothing useful or yank a body the user isn't
+    // driving. Silent no-op outside 'player' (the World Map disables the
+    // button + shows a hint, so this is just defense-in-depth).
+    if (get().controlMode !== 'player') return;
+    // Close the World Map so it dismisses the instant the warp fires, and KEEP
+    // movement frozen for the whole ~1.4s warp animation. The teleport happens
+    // at the overlay midpoint; if movement were released here, an ALREADY-HELD
+    // W/joystick would keep driving player-avatar's movement (the overlay's
+    // capture-phase swallow only blocks NEW key presses, not held state) and
+    // drift the avatar off the freshly-set target after the teleport. Freezing
+    // through the warp makes player-avatar skip its movement integration the
+    // whole time; clearWarp() releases the freeze when the overlay unmounts.
+    set({ warpTarget: { x, y, label }, worldMapOpen: false, movementFrozen: true });
+  },
+  // Called by WarpOverlay at the animation END — unmount the overlay AND release
+  // the movement freeze warpTo() held through the warp (paired so the freeze can
+  // never leak past the animation).
+  clearWarp: () => set({ warpTarget: null, movementFrozen: false }),
+
   bazaarOpen: false,
   bazaarTab: 'browse' as const,
   openBazaar: () => set({ bazaarOpen: true, bazaarTab: 'browse' }),
@@ -1199,6 +1281,8 @@ export const useGameStore = create<GameState>((set, get) => ({
     skillBuilderOpen: false,
     marketplaceOpen: false,
     landOfficeOpen: false,
+    worldMapOpen: false,
+    warpTarget: null,
     bazaarOpen: false,
     auctionOpen: false,
     questBoardOpen: false,

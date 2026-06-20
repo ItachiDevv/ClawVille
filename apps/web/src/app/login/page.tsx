@@ -2,6 +2,7 @@
 
 import { useState, useEffect, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
+import { useQueryClient } from '@tanstack/react-query';
 import Link from 'next/link';
 import dynamic from 'next/dynamic';
 import { api } from '@/lib/api';
@@ -11,6 +12,7 @@ const LandingScene = dynamic(() => import('@/components/three/LandingScene'), { 
 function LoginForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const queryClient = useQueryClient();
   const [isSignup, setIsSignup] = useState(false);
 
   useEffect(() => {
@@ -24,6 +26,15 @@ function LoginForm() {
   const [name, setName] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+
+  // Evict the identity-bearing queries so the post-auth destination page
+  // (/game or /create-agent) fetches them fresh as the just-authed user
+  // instead of reading a stale pre-login cache. See handleSubmit for why.
+  function purgeAuthCache() {
+    queryClient.removeQueries({ queryKey: ['auth-me'] });
+    queryClient.removeQueries({ queryKey: ['avatar'] });
+    queryClient.removeQueries({ queryKey: ['agent-session'] });
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -48,9 +59,20 @@ function LoginForm() {
         } catch {
           // ignore — non-blocking
         }
+        // Drop any pre-auth cache so the destination refetches as the new user.
+        purgeAuthCache();
         router.push('/create-agent');
       } else {
         await api.login({ email, password });
+        // Auth-state-reconciliation fix (2026-06-19). The session cookie is now
+        // in the jar, but the shared SPA QueryClient may still hold a stale
+        // `auth-me: null` (or a guest avatar) cached from BEFORE login — fresh
+        // for `staleTime` (60s). Without this, the soft-nav into /game reads
+        // that stale null and renders LOGGED-OUT until a focus-triggered
+        // refetch ~60s+ later (the "logged in but shows logged-out for ~3 min"
+        // bug). removeQueries evicts the stale entries so /game mounts with NO
+        // cached auth and fetches clean (brief loading, never wrong-logged-out).
+        purgeAuthCache();
         router.push('/game');
       }
     } catch (err: any) {

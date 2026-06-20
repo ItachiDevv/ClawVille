@@ -70,8 +70,13 @@ const BUILDING_TARGET_HEIGHT = 1000;
 //    cove page fades in (500ms). Total flow ≤ 3s per plan acceptance criteria.
 // ---------------------------------------------------------------------------
 
-/** Cove door position in game-px (world tilemap space). Derived from map center. */
-const COVE_DOOR_PX = { x: MAP_WIDTH / 2 - 4820, y: MAP_HEIGHT / 2 };
+// Cove portal mouth is at the +X (east/town-facing) base of the pyramid.
+// Pyramid east face ≈ world X (-3510 wu). Target 140 wu EAST of that face — outside the portal:
+//   world X = -3510 + 140 → -3370, but avatar must approach from town so we pick -3650
+//   (just outside the arch, town side): world X (-3650) → game-px X = MAP_WIDTH/2 - 3650.
+// Was MAP_WIDTH/2 - 4820 (world -4820, the WEST/far side of the cove — wrong face, wrong direction).
+/** Cove door position in game-px — targets the +X east portal mouth (town-facing side). */
+const COVE_DOOR_PX = { x: MAP_WIDTH / 2 - 3650, y: MAP_HEIGHT / 2 };
 /** Avatar must be within this distance (game-px) to trigger the fade. */
 const DOOR_ARRIVE_DIST = 200;
 /** Hard timeout before triggering fade even if avatar hasn't arrived. */
@@ -87,7 +92,7 @@ const MAX_WALK_WAIT_MS = 1500;
  * Deliberately avoids React state so it can be called from the module-scope
  * BUILDING_MODELS onClick without needing a hook context.
  */
-function triggerCoveWalkIn(): void {
+export function triggerCoveWalkIn(): void {
   const store = useGameStore.getState();
 
   // Only walk in player/npc mode — in explore mode there is no avatar to walk.
@@ -104,6 +109,13 @@ function triggerCoveWalkIn(): void {
     { x: COVE_DOOR_PX.x,    y: COVE_DOOR_PX.y },
   ];
   store.setClickPath(path, null);
+
+  // Signal the camera controller to push toward the cove (task 2 entrance anim).
+  // The handler in World3DCanvas.tsx reads this event and initiates a smooth
+  // camera drift toward the cove for the duration of the walk-in (~1.2s).
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('cove-walkin-start'));
+  }
 
   const startMs = Date.now();
   let rafId = 0;

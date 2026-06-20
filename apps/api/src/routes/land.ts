@@ -150,6 +150,7 @@ import { HTTPException } from 'hono/http-exception';
 import { z } from 'zod';
 import {
   db,
+  avatars,
   landParcels,
   landStructures,
   landUpgrades,
@@ -250,6 +251,27 @@ const upgradeBodySchema = z
     idempotencyKey: z.string().min(1).max(64),
   })
   .strict();
+
+// spawn-preference (town-fast-travel, 2026-06-19): the avatar's re-spawn target.
+// `mode='town'` clears any home; `mode='home'` REQUIRES a `parcelId` the caller
+// owns (server-verified against land_parcels.owner_avatar_id). The `.strict()`
+// rejects stray fields; the `superRefine` enforces the home→parcelId dependency
+// at parse time so the handler can trust a present parcelId on the home branch.
+const spawnPreferenceBodySchema = z
+  .object({
+    mode: z.enum(['home', 'town']),
+    parcelId: z.string().uuid().optional(),
+  })
+  .strict()
+  .superRefine((val, ctx) => {
+    if (val.mode === 'home' && !val.parcelId) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'parcelId is required when mode is "home"',
+        path: ['parcelId'],
+      });
+    }
+  });
 
 // ─── 60s read cache + per-IP rate limit (mirror leaderboard `/agents`) ──────
 
@@ -1391,4 +1413,88 @@ landRoutes.post('/structures/:structureId/upgrade', requireAuthOrAgentSession, a
   });
 
   return c.json({ structure: result.structure, costCt: result.costCt });
+});
+
+// ─── 10. POST /spawn-preference  (AUTH, PARITY-BOUND) ───────────────────────
+//
+// Town fast-travel — set where the caller's avatar re-spawns on world entry.
+// PARITY (Rule E5): binds to `identity.avatarId` from `requireAuthOrAgentSession`
+// so a connected/hosted agent sets ITS OWN avatar's preference, not just a human.
+//
+//   body: { mode: 'town' }                 → spawn_preference='town', home_parcel_id=null
+//   body: { mode: 'home', parcelId: uuid } → asserts the caller OWNS parcelId,
+//                                             then spawn_preference='home', home_parcel_id=parcelId
+//
+//   200 → { spawnPreference: 'home'|'town', homeParcelId: string|null }
+//   400 → { error, code: 'invalid_body' }      (bad/missing fields, stray keys, home w/o parcelId)
+//   403 → { error, code: 'not_owned' }         (mode='home' but caller doesn't own parcelId)
+//   404 → { error, code: 'parcel_not_found' }  (mode='home' but parcelId doesn't exist)
+//
+// No CT moves here — this only writes the two spawn columns on the caller's own
+// avatar row. No raw clawTokens write; the ledger is untouched. The ownership
+// check + the write are done in ONE transaction with the parcel row locked
+// (`FOR UPDATE`) so a concurrent sale/transfer of the parcel can't slip a
+// no-longer-owned home past the check (TOCTOU). Same advisory-lock keying as the
+// land mutations is unnecessary (no cross-row supply invariant — a single
+// avatar row is updated), but the parcel row-lock + in-tx re-read of
+// owner_avatar_id is the authoritative ownership guard.
+landRoutes.post('/spawn-preference', requireAuthOrAgentSession, async (c) => {
+  const identity = c.get('identity');
+  const avatarId = identity.avatarId;
+
+  // Sentinel parse — a missing/invalid body is a 400, NEVER coerced into a
+  // valid path. (No `.catch(() => ({}))` that would silently accept garbage.)
+  const rawBody = await c.req.json().catch(() => undefined);
+  const parsed = spawnPreferenceBodySchema.safeParse(rawBody);
+  if (!parsed.success) {
+    return c.json({ error: 'invalid spawn-preference body', code: 'invalid_body' }, 400);
+  }
+  const { mode } = parsed.data;
+
+  // ── mode='town' — clear any home, fast path (no parcel touch) ──────────────
+  if (mode === 'town') {
+    await db
+      .update(avatars)
+      .set({ spawnPreference: 'town', homeParcelId: null, updatedAt: new Date() })
+      .where(eq(avatars.id, avatarId));
+    return c.json({ spawnPreference: 'town' as const, homeParcelId: null });
+  }
+
+  // ── mode='home' — parcelId guaranteed present by the schema superRefine ────
+  const parcelId = parsed.data.parcelId!;
+
+  // Ownership-verify + write atomically. The parcel row is locked (`FOR UPDATE`)
+  // and its owner re-read INSIDE the txn, so a parcel sold/transferred between a
+  // bare read and the write can't leave a home pointing at a parcel the caller
+  // no longer owns. Returns a discriminated result the handler maps to the
+  // documented JSON error bodies (the txn callback never builds a Response).
+  type SetHomeResult =
+    | { kind: 'ok' }
+    | { kind: 'parcel_not_found' }
+    | { kind: 'not_owned' };
+
+  const result = await db.transaction(async (tx): Promise<SetHomeResult> => {
+    const parcelRows = await tx.execute<{ owner_avatar_id: string | null }>(
+      sql`SELECT owner_avatar_id FROM land_parcels WHERE id = ${parcelId} FOR UPDATE`,
+    );
+    const parcel = parcelRows[0];
+    if (!parcel) return { kind: 'parcel_not_found' };
+    if (parcel.owner_avatar_id !== avatarId) return { kind: 'not_owned' };
+
+    await tx
+      .update(avatars)
+      .set({ spawnPreference: 'home', homeParcelId: parcelId, updatedAt: new Date() })
+      .where(eq(avatars.id, avatarId));
+
+    return { kind: 'ok' };
+  });
+
+  if (result.kind === 'parcel_not_found') {
+    return c.json({ error: 'parcel not found', code: 'parcel_not_found' }, 404);
+  }
+  if (result.kind === 'not_owned') {
+    return c.json({ error: 'you do not own that parcel', code: 'not_owned' }, 403);
+  }
+
+  return c.json({ spawnPreference: 'home' as const, homeParcelId: parcelId });
 });

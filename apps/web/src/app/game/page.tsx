@@ -31,6 +31,8 @@ import AgentConnectModal from '@/components/game/agent-connect-modal';
 import EmailVerifyBanner from '@/components/game/email-verify-banner';
 import GameLanguageControl from '@/components/game/game-language-control';
 import HatcherLaunchHandler from '@/components/game/hatcher-launch-handler';
+import WarpOverlay from '@/components/game/warp-overlay';
+import SpawnOnLoad from '@/components/game/spawn-on-load';
 
 const BuildingPortalModal = dynamic(
   () => import('@/components/game/building-portal-modal'),
@@ -49,6 +51,7 @@ const QuestBoardModal = dynamic(() => import('@/components/game/quest-board-moda
 const BountyBoardModal = dynamic(() => import('@/components/game/bounty-board-modal'), { ssr: false });
 const ExchangeModal = dynamic(() => import('@/components/game/exchange-modal'), { ssr: false });
 const LeaderboardModal = dynamic(() => import('@/components/game/leaderboard-modal'), { ssr: false });
+const WorldMapModal = dynamic(() => import('@/components/game/world-map-modal'), { ssr: false });
 import BuildingTooltip from '@/components/game/building-tooltip';
 import DailyLoginModal from '@/components/game/daily-login-modal';
 import QuestTracker from '@/components/game/quest-tracker';
@@ -508,6 +511,9 @@ export default function GamePage() {
       <BountyBoardModal />
       <ExchangeModal />
       <LeaderboardModal />
+      {/* World Map (fast-travel WARP surface). Opened from the minimap "⤢ Map"
+          button via openWorldMap(); gates internally on worldMapOpen. */}
+      <WorldMapModal />
 
       <SidebarMenu />
       <Minimap />
@@ -550,11 +556,13 @@ export default function GamePage() {
           <LocationHUD />
           <ActivityFeed />
           <ChatPanel />
-          {/* Phase 6.2 (2026-04-27) — AvatarChatBar moved BACK out of the
-              hasAvatar block; lives only under the agent-connected branch
-              below. NPC-mode chat is now handled by TalkToCharacterBar
-              against /api/chat/transient (no Eliza, no DB, no rooms).
-              See talk-to-character-bar.tsx + chat-transient.ts. */}
+          {/* AvatarChatBar lives only under the agent-connected branch below.
+              KNOWLEDGE-BUILDING chat (all modes, incl. NPC) is now the single
+              proximity prompt → enterBuilding → ChatPanel (full ElizaOS resident
+              chat + skill-claim). The TalkToCharacterBar bottom bar below is
+              gated to NOT show at a building (`!nearLocation`) so it no longer
+              duplicates that prompt (founder report); it survives only for any
+              wandering-NPC chat path. */}
         </>
       )}
       {showDemoProgressHud && (
@@ -564,9 +572,9 @@ export default function GamePage() {
         </>
       )}
 
-      {/* NPC-mode chat: talk to nearest wandering world character.
-          Stateless one-shot OpenAI — no Eliza store. Component
-          self-gates on `controlMode === 'npc'`. */}
+      {/* NPC-mode chat with a non-building wandering character. Self-gates on
+          `controlMode === 'npc' && !chatOpen && !nearLocation` — at a building
+          the proximity prompt → ChatPanel modal owns the chat (2026-06-20). */}
       <TalkToCharacterBar />
 
       {/* Player-mode (agent-connected) UI — hidden in NPC/Explore mode.
@@ -616,6 +624,16 @@ export default function GamePage() {
 
       {/* Research thought log — visible for all users */}
       <ThoughtLog />
+
+      {/* Fast-travel warp flash — gates internally on warpTarget (set by the
+          World Map's Quick Travel / map click via warpTo, player-mode only).
+          DOM/CSS only (Iris-Xe-safe), performs the teleport at its midpoint. */}
+      <WarpOverlay />
+
+      {/* Home-vs-town spawn placement — renders nothing. Repositions a logged-in
+          player to their owned home parcel on load when spawnPreference==='home'
+          (one-shot, race-safe — never yanks a moving player). */}
+      <SpawnOnLoad />
 
       {/* SceneTransition overlay — handles fade-to-black for cove walk-in
           (and future building entries). Sits at z-index 9999 above all HUD

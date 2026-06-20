@@ -1,0 +1,24 @@
+#:schema node_modules/wrangler/config-schema.json
+# ---------------------------------------------------------------------------
+# Cloudflare Worker — ClawVille Meshy webhook receiver
+# ---------------------------------------------------------------------------
+# Deploys to clawville-meshy-webhook.<account>.workers.dev
+#   POST /        -- Meshy task-status events (verify secret, log, 200)
+#   GET  /health  -- liveness
+#
+# Secrets (NOT in this file — set via `wrangler secret put`):
+#   MESHY_WEBHOOK_SECRET  -- shared secret; paste the SAME value into Meshy's
+#                            Create-Webhook form "Secret" field.
+#   MESHY_API_KEY         -- only used when ENABLE_DOWNSTREAM_RIG="true" later.
+#
+# See ./README.md for deploy + Meshy registration steps.
+# ---------------------------------------------------------------------------
+
+name = "clawville-meshy-webhook"
+main = "src/index.ts"
+compatibility_date = "2024-11-06"
+workers_dev = true
+
+[vars]
+WEBHOOK_STRICT = "false"        # flip to "true" once the signature header is known
+ENABLE_DOWNSTREAM_RIG = "false" # scaffolded option-4 auto-rig; keep off until confirmed
