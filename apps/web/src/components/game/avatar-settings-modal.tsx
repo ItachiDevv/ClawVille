@@ -499,6 +499,39 @@ function TakeAgentHomeSection({
     harness: string;
   } | null>(null);
   const [copied, setCopied] = useState(false);
+  const [downloadingManifest, setDownloadingManifest] = useState(false);
+  const [manifestError, setManifestError] = useState<string | null>(null);
+
+  // Download the signed, portable ClawVille Avatar Manifest (CAM v1) as a .json
+  // file — body URI + sha256, equipped cosmetics, owner/identity pubkeys,
+  // character + skillPack, and a service-issuer ed25519 signature. Harness-
+  // agnostic (works for every avatar, not just Milady exports).
+  const handleDownloadManifest = useCallback(async () => {
+    setManifestError(null);
+    setDownloadingManifest(true);
+    try {
+      const manifest = await api.exportManifest(avatarId);
+      const blob = new Blob([JSON.stringify(manifest, null, 2)], {
+        type: 'application/json',
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      const safeName = (manifest.name || 'avatar').replace(/[^a-zA-Z0-9_-]+/g, '-');
+      a.download = `${safeName}-clawville-manifest.json`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      addToast('📦', 'Portable manifest downloaded', 2500);
+    } catch (err) {
+      setManifestError(
+        err instanceof Error && err.message ? err.message : 'Could not build manifest',
+      );
+    } finally {
+      setDownloadingManifest(false);
+    }
+  }, [avatarId, addToast]);
 
   const handleGenerate = useCallback(async () => {
     setError(null);
@@ -613,6 +646,32 @@ function TakeAgentHomeSection({
               {copied ? 'Copied!' : 'Copy install command'}
             </button>
           </div>
+        )}
+      </div>
+
+      {/* Portable manifest (CAM v1) — harness-agnostic, signed, content-addressed.
+          The single artifact a user/agent walks away with: 3D body URI+sha256,
+          equipped cosmetics, owner + identity pubkeys, character + skillPack, and
+          a ClawVille service-issuer ed25519 signature. */}
+      <div className="bg-cyan-500/10 border border-cyan-400/25 rounded-lg p-3 space-y-2">
+        <h3 className="font-bold text-sm text-white">Take your agent anywhere</h3>
+        <p className="text-xs text-white/70">
+          Download a signed, portable <span className="font-mono text-cyan-200">manifest.json</span>{' '}
+          — your agent&apos;s 3D body, cosmetics, learned skills, and identity in
+          one verifiable file you can re-import or render elsewhere.
+        </p>
+        <button
+          type="button"
+          onClick={handleDownloadManifest}
+          disabled={downloadingManifest}
+          className="w-full px-3 py-2 rounded-lg bg-gradient-to-r from-cyan-500 to-sky-500 hover:from-cyan-400 hover:to-sky-400 text-white font-bold text-xs transition-all disabled:opacity-50 disabled:cursor-progress"
+        >
+          {downloadingManifest ? 'Building manifest…' : 'Download portable manifest (.json)'}
+        </button>
+        {manifestError && (
+          <p className="text-red-300 text-xs bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">
+            {manifestError}
+          </p>
         )}
       </div>
 
