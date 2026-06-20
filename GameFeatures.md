@@ -638,6 +638,8 @@ Server tick (`apps/api/src/services/npc-simulation.ts`) streams positions/direct
 
 When disconnected from SSE, `stores/npc.ts` runs a client-side wander loop at 10 Hz so the world doesn't go static. Server connection takes over via `setConnected(true)`.
 
+**Adinero (clown comedian, 2026-06-19)** — a pink-haired clown VRM wanderer (`species: 'adinero'` in `npc-definitions.ts`; built via the OpenAI→Meshy pipeline, asset `/avatars/adinero.vrm?v=1`, ~3 MB). Free-roamer (`buildingId: ''`) auto-constrained to the town-center ring (FREE_ROAMER annulus 1500–3200 wu from center 9216,9216); high `speed: 20` so the client velocity→run gate keeps him running frequently. Chat via `/api/chat/transient` (NPC mode → `TalkToCharacterBar`, look-up by name) using his roast `personality`: light, playful roasts of passers-by (OpenAI `gpt-4o-mini`). Decorative only — no CT/quests/skills, so Rule E5 agent-parity is N/A. Web render: `MODEL_REGISTRY.adinero` (animatorId `hermes-male`, `faceYaw: Math.PI`, `pickerHidden: true` so it never appears in /create-agent). No `npc-simulation.ts` or chat-route edits — rides the existing free-roamer + transient-chat systems.
+
 ### 12b. NPC ↔ NPC conversations
 
 NPCs talk to each other via `npc-conversation-engine.ts` (Gemini, direct — bypasses ElizaOS). Chat bubbles appear above the speaker for 6 seconds.
