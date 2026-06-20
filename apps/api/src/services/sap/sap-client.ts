@@ -358,40 +358,36 @@ async function executeTx(
   }
 }
 
-// Cache the genesis hash per RPC URL so we don't re-probe every live send (a
-// cluster's genesis hash is immutable). Keyed by URL so a config/RPC swap
-// re-probes. Only the live-send path populates it (dry-run never broadcasts).
-const genesisHashCache = new Map<string, string>();
-
 /**
- * Live-send mainnet guard (FIX-D). Fetch the connection's genesis hash and return
- * a structured refusal if it is the Solana MAINNET genesis. Caller invokes this
- * ONLY when the mainnet code gate is OFF — so a mainnet match here means a
- * misconfigured devnet box pointed at a mainnet RPC, which must NEVER broadcast.
- * On an RPC error we FAIL CLOSED (refuse the send) — we will not broadcast real
- * funds when we cannot prove the cluster is not mainnet.
+ * Live-send mainnet guard (FIX-D, hardened FIX-H). Fetch the connection's genesis
+ * hash and return a structured refusal if it is the Solana MAINNET genesis. Caller
+ * invokes this ONLY when the mainnet code gate is OFF — so a mainnet match here
+ * means a misconfigured devnet box pointed at a mainnet RPC, which must NEVER
+ * broadcast. On an RPC error we FAIL CLOSED (refuse the send).
+ *
+ * FIX-H: the genesis hash is probed FRESH on EVERY live send — NOT cached. A
+ * per-URL cache could be poisoned: an endpoint that first resolves to non-mainnet
+ * and is later re-pointed at mainnet (same URL) would skip the check on a stale
+ * cache hit. Live sends only occur when SAP_ENABLED + !SAP_DRY_RUN (rare,
+ * flip-to-live), so the extra RPC round-trip is immaterial; correctness wins.
  */
 async function assertNotMainnetGenesis(
   connection: Connection,
   label: string,
 ): Promise<SapFailure | null> {
-  const url = connection.rpcEndpoint;
-  let genesis = genesisHashCache.get(url);
-  if (!genesis) {
-    try {
-      genesis = await connection.getGenesisHash();
-      genesisHashCache.set(url, genesis);
-    } catch (err) {
-      // Fail closed: cannot prove the cluster — refuse to broadcast.
-      return {
-        ok: false,
-        code: 'mainnet_broadcast_refused',
-        message:
-          `SAP ${label}: could not verify the RPC's cluster genesis hash ` +
-          `(${err instanceof Error ? err.message : String(err)}); refusing to broadcast ` +
-          `(fail-closed — cannot prove the endpoint is not mainnet).`,
-      };
-    }
+  let genesis: string;
+  try {
+    genesis = await connection.getGenesisHash();
+  } catch (err) {
+    // Fail closed: cannot prove the cluster — refuse to broadcast.
+    return {
+      ok: false,
+      code: 'mainnet_broadcast_refused',
+      message:
+        `SAP ${label}: could not verify the RPC's cluster genesis hash ` +
+        `(${err instanceof Error ? err.message : String(err)}); refusing to broadcast ` +
+        `(fail-closed — cannot prove the endpoint is not mainnet).`,
+    };
   }
   if (genesis === SOLANA_MAINNET_GENESIS_HASH) {
     return {

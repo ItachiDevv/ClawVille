@@ -266,7 +266,18 @@ async function assertOnChainVersionPin(connection: Connection | null): Promise<v
       console.log('  ✅ version pin matches the deployed program.\n');
     }
   } catch (err) {
-    console.log(`  could not fetch live IDL (${err instanceof Error ? err.message : String(err)}) — skipping live version check.\n`);
+    // FIX-I: ship-gate is STRICT by default — an inability to fetch+confirm the
+    // live IDL means the version pin is unproven, so FAIL. An explicit offline
+    // escape (SAP_HARNESS_OFFLINE=true) downgrades to a warning for local runs
+    // that only want the structural-conformance check (no devnet RPC).
+    const offline = process.env.SAP_HARNESS_OFFLINE === 'true';
+    const msg = `  could not fetch live IDL (${err instanceof Error ? err.message : String(err)})`;
+    if (offline) {
+      console.log(`${msg} — SAP_HARNESS_OFFLINE set, skipping live version check (structural only).\n`);
+    } else {
+      hardFail = true;
+      console.log(`${msg} — ❌ FAIL: cannot confirm the version pin against the deployed program. Set SAP_HARNESS_OFFLINE=true for an offline structural-only run.\n`);
+    }
   }
 }
 
