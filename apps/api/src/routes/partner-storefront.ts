@@ -386,7 +386,9 @@ partnerStorefrontRoutes.post('/:partnerId/storefront/admin/fulfillment', adminOn
 
 const purchaseSchema = z.object({
   slug: z.string().min(3).max(64),
-  asset: z.enum(['usdc', 'sol']),
+  // USDC-ONLY: the x402 quote path always uses the USDC mint, so `sol` was a
+  // mis-quote. Reject it at the boundary (matches ct-topup; X402Asset='usdc').
+  asset: z.enum(['usdc']),
   usdCents: z.number().int().positive().max(1_000_000),
 });
 
@@ -452,63 +454,32 @@ partnerStorefrontRoutes.post(
       );
     }
 
-    // ── (Reached ONLY when an admin has enabled fulfillment) ───────────────────
-    // Build the x402 v2 quote bound to the PARTNER'S payoutPubkey — buyer → partner
-    // direct, NEVER our merchant/treasury wallet. Defense in depth: re-validate the
-    // persisted payout pubkey (a row that was somehow corrupted must not mint an
-    // unsettleable / mis-recipient quote).
-    if (!isValidBase58Pubkey(storefront.payoutPubkey)) {
-      console.error('[partner-storefront] stored payoutPubkey invalid — refusing quote', {
-        slug,
-        partnerId,
-      });
-      return c.json({ error: 'storefront_misconfigured', code: 'storefront_misconfigured' }, 503);
-    }
-
-    const network = resolvePartnerNetwork();
-    const quote = buildPartnerPurchaseQuote({
-      payoutPubkey: storefront.payoutPubkey,
-      asset,
-      usdCents,
-      network,
-      resource: {
-        url: `/api/partner/${partnerId}/storefront/purchase`,
-        description: `${storefront.displayName} — $${(usdCents / 100).toFixed(2)} ${asset.toUpperCase()} (paid directly to the partner)`,
-      },
-    });
-
-    // NO-CUSTODY assertion (belt-and-suspenders): the quote recipient MUST be the
-    // partner payout pubkey, never any ClawVille-controlled wallet. If a future
-    // edit ever bound `payTo` to our merchant wallet this would trip.
-    if (quote.accepts[0]?.payTo !== storefront.payoutPubkey) {
-      console.error('[partner-storefront] payTo binding mismatch — refusing quote');
-      return c.json({ error: 'quote_binding_error', code: 'quote_binding_error' }, 500);
-    }
-
-    // Surface the requirements as the 402 challenge. The buyer pays, then the
-    // (land Phase 5) settle endpoint runs `settlePartnerPurchase` with payTo =
-    // this same payoutPubkey and records a `service_purchases(kind='partner')`
-    // row — NO CT credit (the buyer already got real off-platform value). The
-    // settle leg is intentionally NOT shipped here because it depends on the
-    // land-bound `service_listings` row (structure_id FK) that the land epic owns.
-    c.header('PAYMENT-REQUIRED', Buffer.from(JSON.stringify(quote), 'utf8').toString('base64'));
-    c.header('Access-Control-Expose-Headers', 'PAYMENT-REQUIRED');
+    // ── THE OFFERING GUARD (FIX-2, price-authority) ────────────────────────────
+    // A client-supplied `usdCents` MUST NEVER drive a settlement. There is NO
+    // server-authored offering/price table yet — the land-bound
+    // `service_listings(kind='partner')` row (price quoted server-side, FK to a
+    // land `structure_id`) is DEFERRED to the land epic. Until a server-authored
+    // offering exists, a purchase has no trustworthy price to quote, so we 501
+    // `offering_required` BEFORE building ANY quote — REGARDLESS of the
+    // fulfillment gate above. This makes a 1¢-buy-any-service exploit structurally
+    // impossible even after an admin flips `fulfillmentEnabled` to true: the
+    // quote is never built from the request body's `usdCents`. When the land epic
+    // ships server-priced `service_listings`, this guard is replaced by a lookup
+    // of the offering's authoritative price (the body carries an offeringId, not a
+    // price). The `asset`/`usdCents` zod fields are accepted (wire-stable) but
+    // intentionally NOT used to price anything here.
+    void asset;
+    void usdCents;
     return c.json(
       {
-        partnerId,
-        slug,
-        payTo: storefront.payoutPubkey,
-        asset,
-        usdCents,
-        network,
-        accepts: quote.accepts,
-        x402Version: quote.x402Version,
-        // The buyer (identity-resolved for parity) pays the partner directly; the
-        // settle leg + service_purchases recording lands with land Phase 5.
+        error:
+          'partner purchases require a server-authored offering; client-priced purchases are not accepted',
+        code: 'offering_required',
+        // Audit anchor: the buyer was a real ledger subject (parity proven) even
+        // though no settlement is reachable yet.
         buyerAvatarId: identity.avatarId,
-        note: 'partner_direct_usdc_quote',
       },
-      402,
+      501,
     );
   },
 );

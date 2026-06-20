@@ -63,11 +63,15 @@ const USDC_ATOMIC_PER_UNIT = 10 ** USDC_DECIMALS; // 1_000_000
 
 /** Network discriminator used by callers + this module. */
 export type X402Network = 'devnet' | 'mainnet';
-/** Asset the on-ramp accepts. `sol` is reserved (the SVM exact scheme settles
- *  SPL tokens; native-SOL support is a later facilitator capability) — we map
- *  it to the same network's quote but currently price it as USDC-equivalent for
- *  the quote surface. Phase A ships `usdc` as the funded path. */
-export type X402Asset = 'usdc' | 'sol';
+/** Asset the on-ramp accepts. USDC-ONLY today. `sol` was previously accepted at
+ *  the route boundary but `buildTopupQuote` ALWAYS quotes the USDC SPL mint (the
+ *  SVM exact scheme settles SPL tokens; native-SOL support is a later facilitator
+ *  capability), so a caller paying `sol` would have been mis-quoted the USDC mint.
+ *  Until native-SOL settlement exists, `sol` is rejected at every route boundary
+ *  (zod `z.enum(['usdc'])`) and the type is narrowed to `'usdc'` so a stray `sol`
+ *  can never type-check its way back into the quote path. When native SOL lands,
+ *  widen this union AND branch the mint in `buildTopupQuote` in the same diff. */
+export type X402Asset = 'usdc';
 
 /** Resolve the CAIP-2 network id for a discriminator. */
 export function caip2ForNetwork(network: X402Network): Caip2 {
@@ -172,9 +176,9 @@ export function buildTopupQuote(input: BuildTopupQuoteInput): TopupQuote {
   // non-positive / non-integer amount into the wire.
   const amount = usdCentsToUsdcAtomic(usdCents);
 
-  // Both `usdc` and (reserved) `sol` settle on the SAME SPL exact scheme today;
-  // the asset is the USDC mint for the network. When native-SOL support lands
-  // this branches on `asset`.
+  // USDC-only today (`asset` is narrowed to `'usdc'`): the asset is the USDC mint
+  // for the network, settled on the SPL exact scheme. When native-SOL support
+  // lands, widen X402Asset and branch the mint here on `asset`.
   const assetMint = usdcMintForNetwork(network);
   const caip2 = caip2ForNetwork(network);
 
@@ -296,7 +300,20 @@ export async function verifyAndSettle(
     return failed('malformed_payment_header');
   }
 
-  const client = facilitatorClient();
+  // Build the facilitator client INSIDE the never-throw contract. `facilitatorClient()`
+  // calls `loadX402Config()`, which THROWS when `X402_ENABLED=true` but the merchant
+  // pubkey is missing (x402-config.ts), and could throw on a future config error. Left
+  // unguarded that throw would propagate out of verifyAndSettle and the route would map
+  // it to a 5xx — violating the documented "verifyAndSettle NEVER throws" safety contract
+  // (callers depend on a clean 4xx). Catch it → a normal failed() result so the route
+  // returns a clean 402, never a 500.
+  let client: HTTPFacilitatorClient;
+  try {
+    client = facilitatorClient();
+  } catch (err) {
+    console.warn('[x402-payai] facilitatorClient() threw (config error, treated as fail):', (err as Error).message);
+    return failed('facilitator_config_error');
+  }
 
   // --- 1) verify -----------------------------------------------------------
   let verify: VerifyResponse;

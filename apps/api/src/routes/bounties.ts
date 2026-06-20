@@ -545,8 +545,13 @@ bountyRoutes.post('/attempts/:attemptId/review', requireAuthOrAgentSession, asyn
     // Entire approval flow in a single transaction to prevent partial
     // state (e.g. tokens credited but bounty not marked completed).
     const { rewards } = await db.transaction(async (tx) => {
-      // 1. Update attempt status to 'approved'
-      await tx
+      // 1. ATOMIC CLAIM (double-settle guard, FIX-1). The status transition IS
+      //    the claim: flip submitted→approved gated on `status='submitted'`.
+      //    Two concurrent approvals both passed the in-memory `status==='submitted'`
+      //    check above, but only ONE can flip the row here — the loser matches 0
+      //    rows and 409s BEFORE crediting the hunter, so the escrowed reward can
+      //    never be released twice (no CT minted). Mirrors bazaar.ts buy.
+      const claimed = await tx
         .update(bountyAttempts)
         .set({
           status: 'approved',
@@ -554,9 +559,14 @@ bountyRoutes.post('/attempts/:attemptId/review', requireAuthOrAgentSession, asyn
           reviewedAt: now,
           updatedAt: now,
         })
-        .where(eq(bountyAttempts.id, attemptId));
+        .where(and(eq(bountyAttempts.id, attemptId), eq(bountyAttempts.status, 'submitted')))
+        .returning({ id: bountyAttempts.id });
+      if (claimed.length === 0) {
+        throw new HTTPException(409, { message: 'Attempt already reviewed' });
+      }
 
-      // 2. Transfer escrowed tokenReward to hunter's clawTokens
+      // 2. Transfer escrowed tokenReward to hunter's clawTokens (UNREACHABLE
+      //    unless the claim above won this attempt's review).
       const hunterAvatar = await tx.query.avatars.findFirst({
         where: eq(avatars.id, attempt.hunterId),
       });
@@ -718,7 +728,11 @@ bountyRoutes.post('/attempts/:attemptId/review', requireAuthOrAgentSession, asyn
     // Rejected — wrap in transaction so attempt rejection + slot release
     // + reputation update are atomic (prevents orphaned slot on crash).
     await db.transaction(async (tx) => {
-      await tx
+      // ATOMIC CLAIM (FIX-1): flip submitted→rejected gated on the state so two
+      // concurrent reviews (reject racing reject, or reject racing approve)
+      // can't BOTH run the slot-release + reputation update. Only the winner
+      // proceeds; the loser 409s before decrementing currentAttempts twice.
+      const claimed = await tx
         .update(bountyAttempts)
         .set({
           status: 'rejected',
@@ -726,7 +740,11 @@ bountyRoutes.post('/attempts/:attemptId/review', requireAuthOrAgentSession, asyn
           reviewedAt: now,
           updatedAt: now,
         })
-        .where(eq(bountyAttempts.id, attemptId));
+        .where(and(eq(bountyAttempts.id, attemptId), eq(bountyAttempts.status, 'submitted')))
+        .returning({ id: bountyAttempts.id });
+      if (claimed.length === 0) {
+        throw new HTTPException(409, { message: 'Attempt already reviewed' });
+      }
 
       // Decrement currentAttempts to allow new attempts
       await tx

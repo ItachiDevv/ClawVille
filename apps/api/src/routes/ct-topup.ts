@@ -56,6 +56,7 @@ import {
   type X402Network,
 } from '../services/x402-payai';
 import { creditClawTokens } from '../services/claw-token-ledger';
+import { withKeyedMutex } from '../services/keyed-mutex';
 
 export const ctTopupRoutes = new Hono<ActivityAuthContext>();
 
@@ -92,7 +93,10 @@ function resolveTopupNetwork(): X402Network {
 // ---------------------------------------------------------------------------
 
 const quoteSchema = z.object({
-  asset: z.enum(['usdc', 'sol']),
+  // USDC-ONLY: `sol` was accepted but `buildTopupQuote` always quotes the USDC
+  // mint, so a `sol` quote was a mis-quote. Reject `sol` at the boundary until
+  // native-SOL settlement exists (x402-payai.ts X402Asset narrowed to 'usdc').
+  asset: z.enum(['usdc']),
   // Positive integer cents. Upper bound caps a single top-up (defends against an
   // overflow / absurd quote); 1_000_000 cents = $10,000.
   usdCents: z.number().int().positive().max(1_000_000),
@@ -193,7 +197,8 @@ ctTopupRoutes.post('/quote', requireAuthOrAgentSession, async (c) => {
 
 const settleSchema = z.object({
   topupId: z.string().uuid(),
-  asset: z.enum(['usdc', 'sol']),
+  // USDC-ONLY (see quoteSchema): reject `sol` until native-SOL settlement exists.
+  asset: z.enum(['usdc']),
   usdCents: z.number().int().positive().max(1_000_000),
 });
 
@@ -245,6 +250,22 @@ ctTopupRoutes.post('/settle', requireAuthOrAgentSession, async (c) => {
     usdCents: number;
   };
 
+  // SERIALIZE per-topupId (FIX-5, payer-loss). Without this, two concurrent
+  // settles of the SAME topupId carrying DIFFERENT valid payments could BOTH pass
+  // the external verify→settle (each moves USDC on-chain), then race on the
+  // pending→settled UPDATE: one credits, the other's UPDATE matches no 'pending'
+  // row and 409s with NO CT — the second payer paid real USDC for nothing. The
+  // `ct_topups_txsig_unique` index only stops a double-CREDIT of the SAME
+  // signature; it does NOT stop two DIFFERENT signatures from both settling
+  // externally. The in-process mutex makes the read-pending → verifyAndSettle →
+  // credit section atomic per topupId: the second concurrent settle waits, then
+  // sees status==='settled' and replays (no second external settle).
+  //
+  // Single-node scope: this serializes within ONE API process. The
+  // `ct_topups_txsig_unique` index remains the cross-process double-CREDIT
+  // backstop; cross-process concurrent settles of one topupId with different
+  // payments remain a (much narrower, multi-instance-only) residual.
+  return withKeyedMutex(`ct-topup-settle:${topupId}`, async () => {
   // 3) FAST idempotency replay — BEFORE touching the facilitator. If THIS
   //    (avatarId, idempotencyKey) already settled, return the cached credit and
   //    never re-verify/re-settle. (The DB unique index is still the race-safe
@@ -465,6 +486,7 @@ ctTopupRoutes.post('/settle', requireAuthOrAgentSession, async (c) => {
     balance: balanceAfter,
     txSignature: settledTxSig,
   });
+  }); // end withKeyedMutex(`ct-topup-settle:${topupId}`) — serialized critical section
 });
 
 // ---------------------------------------------------------------------------
@@ -496,9 +518,19 @@ async function findSettledForReplay(input: {
       ),
     });
   }
-  // tx_signature is globally unique (partial index) — match on it directly.
+  // tx_signature is globally unique (partial index), but the REPLAY we return
+  // here is echoed to the caller (amountCt, txSignature). Scope it to the
+  // CALLER'S avatar so a caller replaying ANOTHER avatar's settled payment header
+  // can never read back that row's amount/signature (a cross-avatar metadata
+  // leak — there is no mint either way, the credit already happened on the owning
+  // avatar). When the row's avatar doesn't match, this returns null; the caller's
+  // collision handler then 409s `settle_in_flight` (the generic no-settled-row
+  // path) instead of leaking the foreign row.
   return db.query.ctTopups.findFirst({
-    where: eq(ctTopups.txSignature, input.txSignature),
+    where: and(
+      eq(ctTopups.txSignature, input.txSignature),
+      eq(ctTopups.avatarId, input.avatarId),
+    ),
   });
 }
 

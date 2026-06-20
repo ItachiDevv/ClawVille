@@ -58,6 +58,44 @@ import { x402ResourceServer, HTTPFacilitatorClient } from '@x402/core/server';
 import { registerExactSvmScheme } from '@x402/svm/exact/server';
 import type { paymentMiddleware } from '@x402/hono';
 
+// ---------------------------------------------------------------------------
+// FAIL-BOOT INVARIANT — the mock facilitator must NEVER run on production.
+// ---------------------------------------------------------------------------
+//
+// The in-API mock facilitator (`x402-mock-facilitator.ts`, mounted in index.ts)
+// RUBBER-STAMPS every `/settle`, so a settle against it credits CT for a payment
+// that never moved on-chain — i.e. it MINTS FREE ClawTokens. It is a test-only
+// affordance. This guard converts "never enable the mock on prod" from ops
+// discipline into a code-enforced invariant: if the mock facilitator is active
+// (`X402_MOCK_FACILITATOR==='true'` OR the resolved preset is `mock`) while the
+// immutable deploy signal says production (`CLAWVILLE_ENV==='production'`), the
+// API REFUSES TO BOOT — it throws at module load, exactly like the
+// `ALLOW_TEST_PARTNER_PUBKEY` guard in partner-signature.ts and the
+// `FINGERPRINT_SECRET` guard in middleware/fingerprint.ts, so a misconfigured
+// prod box crashes loudly until the var is removed instead of silently minting
+// free CT. This module is on the boot import graph (imported by x402-payai.ts ←
+// ct-topup.ts, which is mounted), so the throw fires at API startup regardless
+// of whether `X402_ENABLED` is set.
+//
+// `CLAWVILLE_ENV` is the immutable deploy signal (NODE_ENV is 'production' on
+// BOTH Coolify boxes, so it can't discriminate). Mock-on-staging or
+// mock-on-unset is fine (staging is where the harness runs); ONLY production is
+// forbidden.
+{
+  const mockPresetActive =
+    process.env.X402_MOCK_FACILITATOR === 'true' ||
+    process.env.X402_FACILITATOR_PRESET?.trim().toLowerCase() === 'mock';
+  if (mockPresetActive && process.env.CLAWVILLE_ENV === 'production') {
+    throw new Error(
+      '[x402] The MOCK x402 facilitator is active (X402_MOCK_FACILITATOR=true and/or ' +
+        'X402_FACILITATOR_PRESET=mock) while CLAWVILLE_ENV=production. The mock rubber-stamps ' +
+        'settlement and would MINT FREE ClawTokens — it MUST NEVER run on prod. Unset ' +
+        'X402_MOCK_FACILITATOR and set X402_FACILITATOR_PRESET to a real facilitator (payai/cdp) ' +
+        'on this box, or set CLAWVILLE_ENV=staging if this genuinely IS the staging box.',
+    );
+  }
+}
+
 export type X402FacilitatorPreset = 'cdp' | 'payai' | 'mock';
 
 export interface X402Config {

@@ -481,7 +481,27 @@ exchangeRoutes.post('/orders/:orderId/confirm', requireAuthOrAgentSession, async
       });
     }
 
-    // Recipient gets the escrowed CT.
+    // ATOMIC CLAIM (double-settle guard, FIX-1). The state transition IS the
+    // claim: flip submitted→completed gated on `state='submitted'` and only
+    // credit when this UPDATE wins a row. Two concurrent confirms of the same
+    // order both passed the in-memory `state==='submitted'` check above, but
+    // only ONE can flip the row here — the loser's UPDATE matches 0 rows and
+    // 409s BEFORE any credit, so the escrow can never be released twice (no CT
+    // minted). Mirrors bazaar.ts buy (UPDATE … WHERE status='active' RETURNING).
+    const [claimed] = await tx
+      .update(exchangeOrders)
+      .set({
+        state: 'completed',
+        completedAt: new Date(),
+        reviewNote: parsed.data.reviewNote ?? null,
+      })
+      .where(and(eq(exchangeOrders.id, order.id), eq(exchangeOrders.state, 'submitted')))
+      .returning();
+    if (!claimed) {
+      throw new HTTPException(409, { message: 'Order already settled' });
+    }
+
+    // Recipient gets the escrowed CT — UNREACHABLE unless the claim above won.
     const recipientId =
       listing.listingType === 'need' ? order.buyerId : listing.creatorId;
     const recipientReason =
@@ -498,16 +518,7 @@ exchangeRoutes.post('/orders/:orderId/confirm', requireAuthOrAgentSession, async
       tx,
     );
 
-    const [updated] = await tx
-      .update(exchangeOrders)
-      .set({
-        state: 'completed',
-        completedAt: new Date(),
-        reviewNote: parsed.data.reviewNote ?? null,
-      })
-      .where(eq(exchangeOrders.id, order.id))
-      .returning();
-    if (!updated) throw new HTTPException(500, { message: 'Update failed' });
+    const updated = claimed;
 
     // Stash for the post-tx audit emit so we have stable handles to
     // listing.listingType + recipient/amount without a re-query.
@@ -574,7 +585,28 @@ exchangeRoutes.post('/orders/:orderId/cancel', requireAuthOrAgentSession, async 
       throw new HTTPException(403, { message: 'Not authorized to cancel' });
     }
 
-    // Refund: who gets the money back depends on listing type.
+    // ATOMIC CLAIM BEFORE REFUND (double-refund guard, FIX-1). Flip the order
+    // to cancelled gated on its still-open/submitted state FIRST; only refund
+    // when this UPDATE wins a row. Two concurrent cancels — or a cancel racing
+    // a confirm — both saw an open/submitted state in memory, but only ONE can
+    // flip the row, so the escrow is refunded at most once. The loser 409s with
+    // no credit. (Mirrors bazaar.ts buy claim + bounties DELETE claim.)
+    const [claimed] = await tx
+      .update(exchangeOrders)
+      .set({ state: 'cancelled', cancelledAt: new Date() })
+      .where(
+        and(
+          eq(exchangeOrders.id, order.id),
+          inArray(exchangeOrders.state, ['open', 'submitted']),
+        ),
+      )
+      .returning();
+    if (!claimed) {
+      throw new HTTPException(409, { message: 'Order already settled or cancelled' });
+    }
+
+    // Refund: who gets the money back depends on listing type. UNREACHABLE
+    // unless the claim above won (so a concurrent confirm/cancel can't also pay).
     //   - NEED: creator escrowed at post time; on cancel, refund creator the
     //     per-order amount (not the full capacity bucket — that returns at
     //     listing-cancel time). We refund the creator now so the escrow
@@ -604,12 +636,7 @@ exchangeRoutes.post('/orders/:orderId/cancel', requireAuthOrAgentSession, async 
       );
     }
 
-    const [updated] = await tx
-      .update(exchangeOrders)
-      .set({ state: 'cancelled', cancelledAt: new Date() })
-      .where(eq(exchangeOrders.id, order.id))
-      .returning();
-    if (!updated) throw new HTTPException(500, { message: 'Update failed' });
+    const updated = claimed;
     (updated as any).__auditListingType = listing.listingType;
     (updated as any).__auditRefundedTo =
       listing.listingType === 'need' ? listing.creatorId : order.buyerId;
@@ -654,8 +681,45 @@ exchangeRoutes.post('/:id/cancel', requireAuthOrAgentSession, async (c) => {
       throw new HTTPException(400, { message: `Listing already ${listing.status}` });
     }
 
+    // ATOMIC CLAIM the listing itself FIRST (FIX-1). Flip status='open'→
+    // 'cancelled' gated on `status='open'`; only ONE of two concurrent listing-
+    // cancels wins this row. The loser matches 0 rows and 409s BEFORE running the
+    // per-order/creator refund block below — so the NEED remaining-slot refund
+    // (derived from a completed-count) can never fire twice. The final listing
+    // UPDATE at the end of the tx is now a no-op confirmation of this claim.
+    const [listingClaim] = await tx
+      .update(exchangeListings)
+      .set({ status: 'cancelled', updatedAt: new Date() })
+      .where(and(eq(exchangeListings.id, listing.id), eq(exchangeListings.status, 'open')))
+      .returning();
+    if (!listingClaim) {
+      throw new HTTPException(409, { message: 'Listing already cancelled or closed' });
+    }
+
     // For needs: refund the still-escrowed capacity (capacity − completed).
+    // ATOMIC CLAIM FIRST (FIX-1): cancel the open/submitted orders and capture
+    // exactly which rows THIS call flipped (RETURNING), so a concurrent per-order
+    // confirm/cancel that already moved a row out of open/submitted is NOT
+    // double-counted. The creator's remaining-slot refund is derived from the
+    // post-claim completed count, and we never refund a slot another path settled.
     if (listing.listingType === 'need') {
+      // Claim every still-open/submitted order for this listing → cancelled.
+      // Rows a concurrent confirm already completed (or a concurrent cancel
+      // already cancelled) are not matched here, so they're excluded from the
+      // refund math below.
+      await tx
+        .update(exchangeOrders)
+        .set({ state: 'cancelled', cancelledAt: new Date() })
+        .where(
+          and(
+            eq(exchangeOrders.listingId, listing.id),
+            inArray(exchangeOrders.state, ['open', 'submitted']),
+          ),
+        )
+        .returning();
+
+      // Re-count completed AFTER the claim so a confirm that won the race is
+      // reflected (its slot is NOT refunded — the hunter already got paid).
       const [completedRow] = await tx
         .select({ c: sql<number>`count(*)::int` })
         .from(exchangeOrders)
@@ -679,10 +743,13 @@ exchangeRoutes.post('/:id/cancel', requireAuthOrAgentSession, async (c) => {
           tx,
         );
       }
-      // Open orders also need to be cancelled — refund any escrow tied to
-      // OPEN orders is the creator's deposit, which we just refunded as part
-      // of the remaining-slot calc. Mark them cancelled.
-      await tx
+    } else {
+      // OFFERS: each open order's buyer needs their escrow back. ATOMIC CLAIM
+      // per order (FIX-1): flip each open/submitted order → cancelled gated on
+      // its state and capture the rows THIS call won via RETURNING. We refund
+      // ONLY the claimed rows, so an order being confirmed/cancelled concurrently
+      // (already out of open/submitted) is never double-refunded by this loop.
+      const claimedOrders = await tx
         .update(exchangeOrders)
         .set({ state: 'cancelled', cancelledAt: new Date() })
         .where(
@@ -690,19 +757,9 @@ exchangeRoutes.post('/:id/cancel', requireAuthOrAgentSession, async (c) => {
             eq(exchangeOrders.listingId, listing.id),
             inArray(exchangeOrders.state, ['open', 'submitted']),
           ),
-        );
-    } else {
-      // OFFERS: each open order's buyer needs their escrow back.
-      const openOrders = await tx
-        .select()
-        .from(exchangeOrders)
-        .where(
-          and(
-            eq(exchangeOrders.listingId, listing.id),
-            inArray(exchangeOrders.state, ['open', 'submitted']),
-          ),
-        );
-      for (const o of openOrders) {
+        )
+        .returning();
+      for (const o of claimedOrders) {
         await creditClawTokens(
           {
             avatarId: o.buyerId,
@@ -714,26 +771,11 @@ exchangeRoutes.post('/:id/cancel', requireAuthOrAgentSession, async (c) => {
           tx,
         );
       }
-      if (openOrders.length > 0) {
-        await tx
-          .update(exchangeOrders)
-          .set({ state: 'cancelled', cancelledAt: new Date() })
-          .where(
-            and(
-              eq(exchangeOrders.listingId, listing.id),
-              inArray(exchangeOrders.state, ['open', 'submitted']),
-            ),
-          );
-      }
     }
 
-    const [updated] = await tx
-      .update(exchangeListings)
-      .set({ status: 'cancelled', updatedAt: new Date() })
-      .where(eq(exchangeListings.id, listing.id))
-      .returning();
-    if (!updated) throw new HTTPException(500, { message: 'Update failed' });
-    return updated;
+    // The listing was already atomically claimed → cancelled at the top of this
+    // tx (`listingClaim`); return that row (no second UPDATE needed).
+    return listingClaim;
   });
 
   void logEventFromContext(c, {

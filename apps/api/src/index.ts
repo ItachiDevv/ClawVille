@@ -346,7 +346,20 @@ app.route('/api/admin', adminIdentityRoutes);
 // stamps every settlement, so it is gated OFF by default and MUST NEVER be
 // enabled in production. Pair with X402_FACILITATOR_PRESET=mock (or
 // X402_FACILITATOR_URL pointing here).
+//
+// PROD CRASH-LOUD GUARD: the AUTHORITATIVE fail-boot invariant lives at module
+// load in x402-config.ts (it fires before any request and covers both the
+// X402_MOCK_FACILITATOR flag AND the `mock` preset). This second check at the
+// literal mount site is belt-and-suspenders: a mounted mock on a prod box
+// (CLAWVILLE_ENV=production) would mint free CT, so we refuse to boot here too.
 if (process.env.X402_MOCK_FACILITATOR === 'true') {
+  if (process.env.CLAWVILLE_ENV === 'production') {
+    throw new Error(
+      '[x402-mock] Refusing to mount the MOCK facilitator: X402_MOCK_FACILITATOR=true while ' +
+        'CLAWVILLE_ENV=production. The mock rubber-stamps settlement and would MINT FREE ClawTokens. ' +
+        'Unset X402_MOCK_FACILITATOR on this box (see x402-config.ts for the authoritative guard).',
+    );
+  }
   app.route('/api/x402-mock', buildMockFacilitator());
   console.log(
     '[x402-mock] Mock facilitator MOUNTED at /api/x402-mock — TEST ONLY, never enable in prod.',

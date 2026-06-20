@@ -3868,11 +3868,11 @@ const CT_TOPUP_TOOLS = [
   {
     name: 'ct_topup_quote',
     description:
-      'Request an x402/PayAI USDC payment quote to buy ClawTokens (CT) for YOUR OWN avatar. Returns a 402 challenge with the payment requirements (payTo, amount, network, USDC asset) + a topupId + the CT you will receive (1 USDC = 100 CT). Pay the requirement off-chain with your wallet, then call ct_topup_settle with the payment header. Devnet-first.',
+      'Request an x402/PayAI USDC payment quote to buy ClawTokens (CT) for YOUR OWN avatar. Returns a 402 challenge with the payment requirements (payTo, amount, network, USDC asset) + a topupId + the CT you will receive (1 USDC = 100 CT). Pay the requirement off-chain with your wallet, then call ct_topup_settle with the payment header. Devnet-first. USDC-only (asset must be "usdc"; native SOL is not yet supported).',
     input_schema: {
       type: 'object',
       properties: {
-        asset: { type: 'string', enum: ['usdc', 'sol'], description: 'Payment asset. usdc is the funded path.' },
+        asset: { type: 'string', enum: ['usdc'], description: 'Payment asset. Must be "usdc" (the only funded path; native SOL not yet supported).' },
         usdCents: { type: 'integer', minimum: 1, maximum: 1000000, description: 'How much to buy, in USD cents (100 = $1 = 100 CT).' },
       },
       required: ['asset', 'usdCents'],
@@ -3881,7 +3881,7 @@ const CT_TOPUP_TOOLS = [
     parameters: {
       type: 'object',
       properties: {
-        asset: { type: 'string', enum: ['usdc', 'sol'] },
+        asset: { type: 'string', enum: ['usdc'] },
         usdCents: { type: 'integer', minimum: 1, maximum: 1000000 },
       },
       required: ['asset', 'usdCents'],
@@ -3891,12 +3891,12 @@ const CT_TOPUP_TOOLS = [
   {
     name: 'ct_topup_settle',
     description:
-      'Settle a paid top-up: submit your signed payment to the facilitator (verify→settle) and credit the ClawTokens to YOUR avatar EXACTLY ONCE. You MUST send the payment header (PAYMENT-SIGNATURE) and an Idempotency-Key header (a fresh unique string per settle). Pass the topupId + the same asset/usdCents from the quote. Returns ctCredited + your new CT balance + the settled tx signature. Replays (same Idempotency-Key or same tx) return the cached credit — never double-credits.',
+      'Settle a paid top-up: submit your signed payment to the facilitator (verify→settle) and credit the ClawTokens to YOUR avatar EXACTLY ONCE. You MUST send the payment header (PAYMENT-SIGNATURE) and an Idempotency-Key header (a fresh unique string per settle). Pass the topupId + the same asset/usdCents from the quote (asset is "usdc" — native SOL is not yet supported). Returns ctCredited + your new CT balance + the settled tx signature. Replays (same Idempotency-Key or same tx) return the cached credit — never double-credits.',
     input_schema: {
       type: 'object',
       properties: {
         topupId: { type: 'string', description: 'The topupId from ct_topup_quote.' },
-        asset: { type: 'string', enum: ['usdc', 'sol'] },
+        asset: { type: 'string', enum: ['usdc'] },
         usdCents: { type: 'integer', minimum: 1, maximum: 1000000 },
       },
       required: ['topupId', 'asset', 'usdCents'],
@@ -3906,7 +3906,7 @@ const CT_TOPUP_TOOLS = [
       type: 'object',
       properties: {
         topupId: { type: 'string' },
-        asset: { type: 'string', enum: ['usdc', 'sol'] },
+        asset: { type: 'string', enum: ['usdc'] },
         usdCents: { type: 'integer', minimum: 1, maximum: 1000000 },
       },
       required: ['topupId', 'asset', 'usdCents'],

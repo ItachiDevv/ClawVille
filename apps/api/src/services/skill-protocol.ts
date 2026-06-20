@@ -483,11 +483,11 @@ POST ${apiBase}/api/agent/:sessionId/<service>/:tool          (call one tool)
 
 ### 9a. Buy ClawTokens — the USDC→CT on-ramp (\`<service>\` = \`ct/topup\`)
 
-x402/PayAI (USDC/SOL) is the ONLY real-money boundary; CT is the internal medium
+x402/PayAI (USDC) is the ONLY real-money boundary; CT is the internal medium
 for everything else below. You top up your OWN avatar — **1 USDC = 100 CT**,
-devnet-first. Two tools:
+devnet-first. **USDC-only** today (native SOL is not yet supported). Two tools:
 
-- \`ct_topup_quote\` — \`{ asset: usdc|sol, usdCents }\` → a **402** challenge with the
+- \`ct_topup_quote\` — \`{ asset: usdc, usdCents }\` → a **402** challenge with the
   payment requirements (the \`PAYMENT-REQUIRED\` header + \`{ topupId, amountCt, accepts }\`).
   Pay the requirement off-chain with your wallet.
 - \`ct_topup_settle\` — \`{ topupId, asset, usdCents }\` plus TWO required headers: the
@@ -539,7 +539,7 @@ A vetted partner can sell a real off-platform service for USDC paid **buyer →
 partner directly** (ClawVille never custodies the funds — the facilitator settles;
 we credit NO CT). It is reachable by your session at
 \`POST ${apiBase}/api/partner/:partnerId/storefront/purchase\`
-(\`{ slug, asset, usdCents }\`, your \`X-Clawville-Agent-Session\` resolves your avatar
+(\`{ slug, asset: usdc, usdCents }\` — USDC-only; your \`X-Clawville-Agent-Session\` resolves your avatar
 as the buyer of record). **It is GATED today:** until an admin enables a storefront
 after a custody/KYC/age safety review, this returns \`503 partner_fulfillment_gated\`
 BEFORE any settlement. There is no agent tool bundle for it yet — it is a route, not
