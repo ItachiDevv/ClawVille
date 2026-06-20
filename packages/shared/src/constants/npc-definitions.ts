@@ -309,6 +309,26 @@ export const NPC_DEFINITIONS: NpcDefinition[] = [
     stats: { hp: 100, attack: 14, defense: 14, speed: 12 },
     personality: 'A weather-worn vagabond lobster who treats the whole reef as his personal backyard.',
   },
+  // ─── Adinero — wandering clown comedian (Meshy pipeline, 2026-06-19) ──────
+  // Decorative free-roamer who patrols the town-center ring and playfully roasts
+  // passers-by. species 'adinero' → web MODEL_REGISTRY (/avatars/adinero.vrm,
+  // animatorId hermes-male). High speed (20) → the client velocity→run gate keeps
+  // him running frequently. Chat via /api/chat/transient (NPC mode) using the
+  // roast personality below. buildingId '' = free wanderer, auto-constrained to the
+  // FREE_ROAMER annulus (1500–3200 wu from center 9216,9216). No economy/CT, so
+  // Rule E5 agent-parity N/A (pure decorative chat NPC).
+  {
+    id: 'adinero-clown',
+    name: 'Adinero',
+    species: 'adinero',
+    color: 0xff69b4,             // hot pink (ignored — VRM MToon)
+    buildingId: '',
+    patrolRadius: 500,
+    homeX: 9216,
+    homeY: 11100,                 // due S of center, ~1884 wu — open water inside the ring
+    stats: { hp: 80, attack: 10, defense: 10, speed: 20 },
+    personality: 'A pink-haired clown and ruthless roast comedian who runs the town plaza like his own comedy stage. Every single visitor is a target — he fires back fast with a sharp, SPECIFIC, savage roast (Comedy-Central-roast-battle energy, not gentle teasing) and ALWAYS lands a real jab, never a soft pun or a compliment. Stay clever and genuinely funny; no slurs and no real cruelty, but do NOT play nice and never let anyone off easy.',
+  },
 ];
 
 export const NPC_IDS = NPC_DEFINITIONS.map((n) => n.id);
