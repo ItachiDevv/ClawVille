@@ -298,15 +298,27 @@ exchangeRoutes.post('/:id/order', requireAuthOrAgentSession, async (c) => {
       throw new HTTPException(400, { message: 'Cannot order your own listing' });
     }
 
-    // Capacity check — count non-cancelled orders.
+    // Capacity check. For OFFERS, a cancelled order frees its slot — the buyer
+    // re-escrows on each new order, so a fresh order is self-funded and reusing a
+    // freed slot is safe. For NEEDS, the creator escrowed every slot up front and a
+    // per-order CANCEL already REFUNDED that slot's escrow to the creator (~line
+    // 615); re-filling a cancelled NEED slot would let a later CONFIRM pay a hunter
+    // with NO backing escrow — a CT faucet (FIX-9). So a cancelled NEED slot stays
+    // CONSUMED (count it toward capacity); the "need" for that slot ended when its
+    // escrow was returned. This also keeps `completed + cancelled <= capacity`,
+    // matching the listing-cancel refund accounting (FIX-8a).
     if (listing.capacity !== null) {
+      const consumingStates: ('open' | 'submitted' | 'completed' | 'cancelled')[] =
+        listing.listingType === 'need'
+          ? ['open', 'submitted', 'completed', 'cancelled']
+          : ['open', 'submitted', 'completed'];
       const [activeOrders] = await tx
         .select({ c: sql<number>`count(*)::int` })
         .from(exchangeOrders)
         .where(
           and(
             eq(exchangeOrders.listingId, listing.id),
-            inArray(exchangeOrders.state, ['open', 'submitted', 'completed']),
+            inArray(exchangeOrders.state, consumingStates),
           ),
         );
       if ((activeOrders?.c ?? 0) >= listing.capacity) {
@@ -696,17 +708,24 @@ exchangeRoutes.post('/:id/cancel', requireAuthOrAgentSession, async (c) => {
       throw new HTTPException(409, { message: 'Listing already cancelled or closed' });
     }
 
-    // For needs: refund the still-escrowed capacity (capacity − completed).
-    // ATOMIC CLAIM FIRST (FIX-1): cancel the open/submitted orders and capture
-    // exactly which rows THIS call flipped (RETURNING), so a concurrent per-order
-    // confirm/cancel that already moved a row out of open/submitted is NOT
-    // double-counted. The creator's remaining-slot refund is derived from the
-    // post-claim completed count, and we never refund a slot another path settled.
+    // For needs: refund ONLY the slots whose escrow has not already been
+    // released by another path. A NEED escrows `priceCt × capacity` at create;
+    // each slot's escrow is released exactly once, via one of:
+    //   - a per-order CONFIRM  → paid to the hunter  (slot = 'completed')
+    //   - a per-order CANCEL   → refunded to creator (slot = 'cancelled')
+    //   - this listing-cancel  → refunded to creator (the still-open remainder)
+    // The OLD code used `remaining = capacity − completed`, which double-counted
+    // slots already refunded by a prior per-order NEED cancel (`exchange_refund_need`,
+    // ~line 615): e.g. capacity=2, priceCt=100 → cancel O1 (refund 100) then cancel
+    // the listing (refund 100×2=200) ⇒ 300 returned on a 200 escrow ⇒ 100 CT minted.
+    // FIX-8a: subtract `cancelled` too, so the listing-cancel refunds only the
+    // never-released remainder. Combined with the per-order refunds, the total
+    // returned to the creator can never exceed the original escrow.
     if (listing.listingType === 'need') {
-      // Claim every still-open/submitted order for this listing → cancelled.
-      // Rows a concurrent confirm already completed (or a concurrent cancel
-      // already cancelled) are not matched here, so they're excluded from the
-      // refund math below.
+      // ATOMIC CLAIM FIRST (FIX-1): cancel every still-open/submitted order for
+      // this listing → cancelled. Rows a concurrent confirm already completed
+      // (or a concurrent cancel already cancelled) are not matched here, so the
+      // post-claim counts below reflect the settled state without double-counting.
       await tx
         .update(exchangeOrders)
         .set({ state: 'cancelled', cancelledAt: new Date() })
@@ -718,19 +737,24 @@ exchangeRoutes.post('/:id/cancel', requireAuthOrAgentSession, async (c) => {
         )
         .returning();
 
-      // Re-count completed AFTER the claim so a confirm that won the race is
-      // reflected (its slot is NOT refunded — the hunter already got paid).
-      const [completedRow] = await tx
-        .select({ c: sql<number>`count(*)::int` })
+      // Re-count completed AND cancelled AFTER the claim. `completed` slots were
+      // paid to hunters; `cancelled` slots were already refunded to the creator
+      // (by a prior per-order cancel) OR were just claimed→cancelled by THIS call.
+      // Either way their escrow is accounted for, so neither is refunded here.
+      const [countsRow] = await tx
+        .select({
+          completed: sql<number>`count(*) filter (where ${exchangeOrders.state} = 'completed')::int`,
+          cancelled: sql<number>`count(*) filter (where ${exchangeOrders.state} = 'cancelled')::int`,
+        })
         .from(exchangeOrders)
-        .where(
-          and(
-            eq(exchangeOrders.listingId, listing.id),
-            eq(exchangeOrders.state, 'completed'),
-          ),
-        );
-      const completed = completedRow?.c ?? 0;
-      const remaining = (listing.capacity ?? 1) - completed;
+        .where(eq(exchangeOrders.listingId, listing.id));
+      const completed = countsRow?.completed ?? 0;
+      const cancelled = countsRow?.cancelled ?? 0;
+      // Refund only slots never released to anyone. `cancelled` can exceed the
+      // original capacity when slots were cancelled+re-ordered, so clamp at 0 —
+      // this listing-cancel can never refund a negative or a slot another path
+      // already settled, so the combined refund total stays ≤ the escrow.
+      const remaining = Math.max(0, (listing.capacity ?? 1) - completed - cancelled);
       if (remaining > 0) {
         await creditClawTokens(
           {

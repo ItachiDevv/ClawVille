@@ -545,12 +545,54 @@ bountyRoutes.post('/attempts/:attemptId/review', requireAuthOrAgentSession, asyn
     // Entire approval flow in a single transaction to prevent partial
     // state (e.g. tokens credited but bounty not marked completed).
     const { rewards } = await db.transaction(async (tx) => {
+      // 0. ATOMIC SINGLE-ESCROW CLAIM (FIX-8b — CT faucet guard). A bounty
+      //    escrows `tokenReward` exactly ONCE at create, regardless of
+      //    `maxAttempts` (maxAttempts is only a concurrency cap on active
+      //    attempts, NOT a reward multiplier). The bounty therefore pays out
+      //    its single escrow to exactly ONE winning hunter. With maxAttempts≥2
+      //    and two simultaneously-submitted attempts, two concurrent approvals
+      //    claim DIFFERENT attempt rows (the per-attempt claim in step 1 finds
+      //    no conflict between them) and the OLD code's unguarded
+      //    `UPDATE bounties SET status='completed' WHERE id` let BOTH credit the
+      //    full `tokenReward` ⇒ one reward MINTED. We make the BOUNTY completion
+      //    the real single-release claim and run it FIRST: flip the bounty to
+      //    'completed' gated on a pre-completion status. The bounty row lock
+      //    serializes the racing approvals here — only ONE wins the row; the
+      //    loser matches 0 rows and 409s BEFORE touching any attempt or crediting
+      //    anyone, so the single escrow is released exactly once. Running this
+      //    BEFORE the per-attempt claim also makes the bounty row the sole
+      //    serialization point (no attempt→bounty vs bounty→attempt cross-lock),
+      //    so concurrent approvals can never deadlock against the reject-others
+      //    step below. Uses the enum's real pre-completion states ('open',
+      //    'in_progress') so an already cancelled/expired/completed bounty is
+      //    never (re)settled.
+      const bountyClaimed = await tx
+        .update(bounties)
+        .set({
+          status: 'completed',
+          completedAt: now,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(bounties.id, bounty.id),
+            sql`${bounties.status} IN ('open', 'in_progress')`,
+          ),
+        )
+        .returning({ id: bounties.id });
+      if (bountyClaimed.length === 0) {
+        throw new HTTPException(409, { message: 'bounty_already_settled' });
+      }
+
       // 1. ATOMIC CLAIM (double-settle guard, FIX-1). The status transition IS
       //    the claim: flip submitted→approved gated on `status='submitted'`.
       //    Two concurrent approvals both passed the in-memory `status==='submitted'`
       //    check above, but only ONE can flip the row here — the loser matches 0
       //    rows and 409s BEFORE crediting the hunter, so the escrowed reward can
-      //    never be released twice (no CT minted). Mirrors bazaar.ts buy.
+      //    never be released twice (no CT minted). Mirrors bazaar.ts buy. Still
+      //    kept as defense-in-depth alongside the bounty-level claim in step 0:
+      //    the bounty claim enforces single-escrow-single-payout across DIFFERENT
+      //    attempts; this attempt claim guards double-settling the SAME attempt.
       const claimed = await tx
         .update(bountyAttempts)
         .set({
@@ -566,7 +608,7 @@ bountyRoutes.post('/attempts/:attemptId/review', requireAuthOrAgentSession, asyn
       }
 
       // 2. Transfer escrowed tokenReward to hunter's clawTokens (UNREACHABLE
-      //    unless the claim above won this attempt's review).
+      //    unless BOTH the bounty claim (step 0) and this attempt's claim won).
       const hunterAvatar = await tx.query.avatars.findFirst({
         where: eq(avatars.id, attempt.hunterId),
       });
@@ -640,15 +682,11 @@ bountyRoutes.post('/attempts/:attemptId/review', requireAuthOrAgentSession, asyn
         // agent_config and custom rewards are noted but don't auto-transfer inventory
       }
 
-      // 4. Mark bounty as 'completed'
-      await tx
-        .update(bounties)
-        .set({
-          status: 'completed',
-          completedAt: now,
-          updatedAt: now,
-        })
-        .where(eq(bounties.id, bounty.id));
+      // 4. Bounty was already atomically claimed → 'completed' (with completedAt
+      //    + updatedAt) in step 0; no second UPDATE needed here. The old
+      //    unguarded `UPDATE bounties ... WHERE id` lived here and was the
+      //    FIX-8b faucet (it let two concurrent approvals both reach the credit);
+      //    the gated claim in step 0 replaces it.
 
       // 4b. Reject all other pending attempts for this bounty (prevent orphans)
       await tx
