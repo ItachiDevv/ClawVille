@@ -17,6 +17,7 @@ import { use } from 'react';
 import Link from 'next/link';
 import SlotsEventVerifier from '@/components/cove/history/SlotsEventVerifier';
 import ServerEventVerifier from '@/components/cove/history/ServerEventVerifier';
+import SupportLauncher from '@/components/support/SupportLauncher';
 import { useEffect, useState } from 'react';
 import { fetchHistoryEvent, type CoveHistoryEventRow, type GameType } from '@/lib/cove/history-client';
 import '@/styles/cove-tokens.css';
@@ -96,6 +97,10 @@ export default function CoveVerifyEventPage({ params }: PageProps) {
             <Link href="/cove/verify" style={navLink()}>
               Manual verifier
             </Link>
+            <SupportLauncher
+              context={{ page: 'cove-verify', eventId, game: gameType ?? undefined }}
+              defaultCategory="fairness"
+            />
             <Link href="/cove" style={navLink()}>
               Cove
             </Link>
