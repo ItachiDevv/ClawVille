@@ -66,6 +66,7 @@ import {
   findStakePda,
   findToolPda,
   findFeedbackPda,
+  findAttestationPda,
   findEscrowPda,
   toolNameHash,
   serviceHash,
@@ -437,6 +438,35 @@ async function main(): Promise<void> {
         agent: targetAgentPda,
         globalRegistry: global,
         systemProgram: SystemProgram.programId,
+      })
+      .transaction(),
+  );
+
+  // ── create_attestation (0.18.0: [attester, agent, attestation, global_registry, system_program]) ──
+  // Subject = targetAgentPda (NON-SIGNER); attester = wallet (the only signer).
+  const [attestationPda] = findAttestationPda(programId, targetAgentPda, wallet);
+  const attestMetaHash = toolNameHash('https://clawville.world/attest/note');
+  await runCase('create_attestation', funded, async () =>
+    program.methods
+      .createAttestation('verified', Array.from(attestMetaHash), new BN(0))
+      .accountsStrict({
+        attester: wallet,
+        agent: targetAgentPda,
+        attestation: attestationPda,
+        globalRegistry: global,
+        systemProgram: SystemProgram.programId,
+      })
+      .transaction(),
+  );
+
+  // ── revoke_attestation (0.18.0: [attester, agent, attestation]) — no args, no global_registry ──
+  await runCase('revoke_attestation', funded, async () =>
+    program.methods
+      .revokeAttestation()
+      .accountsStrict({
+        attester: wallet,
+        agent: targetAgentPda,
+        attestation: attestationPda,
       })
       .transaction(),
   );

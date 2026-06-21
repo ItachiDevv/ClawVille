@@ -63,8 +63,10 @@ import {
   findStakePda,
   findToolPda,
   findFeedbackPda,
+  findAttestationPda,
   findEscrowPda,
   toolNameHash,
+  sha256Bytes,
   serviceHash as deriveServiceHash,
 } from './sap-pdas';
 
@@ -654,6 +656,169 @@ export async function giveFeedback(input: GiveFeedbackInput): Promise<SapWriteRe
     });
   } catch (err) {
     return classifyChainError('giveFeedback:build', err);
+  }
+}
+
+export interface CreateAttestationInput {
+  /** The ATTESTER (signer) — the agent making the attestation, as ITS own wallet. */
+  attesterAvatarId: string;
+  /**
+   * The on-chain AgentAccount PDA of the SUBJECT agent being attested (base58).
+   * Used ONLY as a NON-SIGNER account. The program enforces "attester must NOT be
+   * the agent owner" on-chain. This is a body-supplied pubkey and NEVER a signer.
+   */
+  subjectAgentPda: string;
+  /** Attestation type/label — max 32 chars (e.g. 'verified', 'collaborated'). */
+  attestationType: string;
+  /**
+   * Optional off-chain metadata (URI / note). sha256'd → the 32-byte
+   * `metadata_hash` arg. Absent ⇒ 32 zero bytes (the "no metadata" sentinel).
+   */
+  metadata?: string;
+  /** Unix-seconds expiry (i64). 0 = never expires (per the on-chain docs). */
+  expiresAt?: bigint;
+}
+
+/**
+ * create_attestation — the attester agent attests to a counterpart (cross-agent
+ * web-of-trust; the "reputation = feedback + cross-agent attestations" Light rung).
+ *
+ * Attestation PDA = ["sap_attest", subjectAgent, attesterWallet]. The signer is
+ * the attester's OWN custodial wallet. The subject agent is a NON-SIGNER account.
+ *
+ * On-chain 0.18.0 account context (ORDER matters — verbatim from the IDL):
+ *   [attester(signer,writable), agent(subject,ro), attestation(pda,writable),
+ *    global_registry(pda,writable), system_program]
+ *
+ * Args: attestation_type:string(≤32), metadata_hash:[u8;32], expires_at:i64.
+ *
+ * REPUTATION (not money): gated on `cfg.enabled` ONLY — same as give_feedback,
+ * NOT the escrow gate. The route layer applies `requireLedgerCapable` (a custodial
+ * sign still occurs) before the handler reaches here.
+ */
+export async function createAttestation(
+  input: CreateAttestationInput,
+): Promise<SapWriteResult> {
+  const cfg = getConfig();
+  if (!cfg.enabled) {
+    return { ok: false, code: 'sap_disabled', message: 'SAP layer is disabled.' };
+  }
+  // attestation_type: program caps it at 32 chars — reject early + clean.
+  if (
+    typeof input.attestationType !== 'string' ||
+    input.attestationType.length < 1 ||
+    input.attestationType.length > 32
+  ) {
+    return {
+      ok: false,
+      code: 'invalid_amount',
+      message: 'attestationType must be a 1..32 char string.',
+    };
+  }
+  const expiresAt = input.expiresAt ?? 0n;
+  if (expiresAt < 0n) {
+    return { ok: false, code: 'invalid_amount', message: 'expiresAt must be ≥ 0 (0 = never).' };
+  }
+  let subjectAgent: PublicKey;
+  try {
+    subjectAgent = new PublicKey(input.subjectAgentPda);
+  } catch {
+    return { ok: false, code: 'invalid_pubkey', message: 'subjectAgentPda is not a valid pubkey.' };
+  }
+
+  const handle = await loadAvatarWallet(input.attesterAvatarId);
+  if ('ok' in handle && handle.ok === false) return handle;
+  const { keypair, publicKey: attester } = handle as AvatarWalletHandle;
+
+  const program = getProgram();
+  const { global } = deriveAgentPdaSet(cfg.programId, attester);
+  const [attestation] = findAttestationPda(cfg.programId, subjectAgent, attester);
+  // metadata_hash is a REQUIRED [u8;32] (not an Option like feedback's
+  // comment_hash) — sha256 the metadata, or 32 zero bytes when none is supplied.
+  const metadataHash = input.metadata
+    ? Array.from(sha256Bytes(input.metadata))
+    : Array.from(Buffer.alloc(32));
+
+  try {
+    const tx: Transaction = await program.methods
+      .createAttestation(input.attestationType, metadataHash, new BN(expiresAt.toString()))
+      .accountsStrict({
+        attester,
+        agent: subjectAgent,
+        attestation,
+        globalRegistry: global,
+        systemProgram: SYSTEM_PROGRAM_ID,
+      })
+      .transaction();
+
+    return executeTx(cfg, 'createAttestation', tx, keypair, {
+      attester: attester.toBase58(),
+      agent: subjectAgent.toBase58(),
+      attestation: attestation.toBase58(),
+      globalRegistry: global.toBase58(),
+    });
+  } catch (err) {
+    return classifyChainError('createAttestation:build', err);
+  }
+}
+
+export interface RevokeAttestationInput {
+  /** The original ATTESTER (signer) — only it may revoke, as ITS own wallet. */
+  attesterAvatarId: string;
+  /** The on-chain AgentAccount PDA of the SUBJECT agent (base58) — non-signer. */
+  subjectAgentPda: string;
+}
+
+/**
+ * revoke_attestation — the ORIGINAL attester revokes its own attestation of a
+ * subject. On-chain rule: "Original attester only." The PDA is the same
+ * ["sap_attest", subjectAgent, attesterWallet]; the program resolves the stored
+ * `agent`/`attester` relations from it.
+ *
+ * On-chain 0.18.0 account context (ORDER matters — verbatim from the IDL; note
+ * revoke does NOT touch global_registry):
+ *   [attester(signer,ro), agent(subject,ro), attestation(pda,writable)]
+ *
+ * Args: none. REPUTATION (not money): gated on `cfg.enabled` only.
+ */
+export async function revokeAttestation(
+  input: RevokeAttestationInput,
+): Promise<SapWriteResult> {
+  const cfg = getConfig();
+  if (!cfg.enabled) {
+    return { ok: false, code: 'sap_disabled', message: 'SAP layer is disabled.' };
+  }
+  let subjectAgent: PublicKey;
+  try {
+    subjectAgent = new PublicKey(input.subjectAgentPda);
+  } catch {
+    return { ok: false, code: 'invalid_pubkey', message: 'subjectAgentPda is not a valid pubkey.' };
+  }
+
+  const handle = await loadAvatarWallet(input.attesterAvatarId);
+  if ('ok' in handle && handle.ok === false) return handle;
+  const { keypair, publicKey: attester } = handle as AvatarWalletHandle;
+
+  const program = getProgram();
+  const [attestation] = findAttestationPda(cfg.programId, subjectAgent, attester);
+
+  try {
+    const tx: Transaction = await program.methods
+      .revokeAttestation()
+      .accountsStrict({
+        attester,
+        agent: subjectAgent,
+        attestation,
+      })
+      .transaction();
+
+    return executeTx(cfg, 'revokeAttestation', tx, keypair, {
+      attester: attester.toBase58(),
+      agent: subjectAgent.toBase58(),
+      attestation: attestation.toBase58(),
+    });
+  } catch (err) {
+    return classifyChainError('revokeAttestation:build', err);
   }
 }
 

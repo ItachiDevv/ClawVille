@@ -1,6 +1,6 @@
 # SAP (Synapse Agent Protocol) — on-chain integration + flip-to-live runbook
 
-**Status:** FULLY built, gated OFF + devnet-first + dry-run by default. **Set 2026-06-20.**
+**Status:** FULLY built, gated OFF + devnet-first + dry-run by default. **Set 2026-06-20. Last audited 2026-06-21 (added cross-agent attestation — the Light "identity + attestation" rung: `create_attestation` / `revoke_attestation`).**
 **Plan:** `.claude/plans/sap-onchain-agents/PLAN.md` · **Owner:** orchestrator (Claude)
 **FEATURE_GATE:** `sap_onchain_agents` (review deadline 2026-09-20 — see `routes/sap.ts`).
 
@@ -44,9 +44,12 @@
 
 SAP wires the OOBE-Protocol **Synapse Agent Protocol** (Solana on-chain program
 `SAPpUhsWLJG1FfkGRcXagEDMrMsWGjbky7AyhGpFETZ`, MIT) into ClawVille so our agents
-get **on-chain identity + reputation + discoverability** (Phase 1) plus an
-**on-chain x402 escrow commerce rail** (Phase 2). It is an **additive, gated,
-flip-to-live layer**:
+get **on-chain identity + reputation + discoverability** (Phase 1 / "Light") plus an
+**on-chain x402 escrow commerce rail** (Phase 2). The **Light "identity +
+attestation" rung** is complete: `register_agent` (identity) + `give_feedback`
+(0..1000 scores) + **`create_attestation` / `revoke_attestation`** (cross-agent
+web-of-trust — "reputation = feedback + cross-agent attestations") + discovery.
+It is an **additive, gated, flip-to-live layer**:
 
 - **The in-game economy stays ClawTokens.** SAP changes NOTHING about CT, the
   cove, the leaderboard, or any existing money path. CT is still the only LIVE
@@ -122,6 +125,7 @@ ASCII string seeds; `u64` args little-endian 8 bytes; 32-byte hashes raw.
 | global | `["sap_global"]` |
 | tool | `["sap_tool", agentPda, sha256(toolName)(32)]` |
 | feedback | `["sap_feedback", agentPda, reviewerWallet]` |
+| attestation | `["sap_attest", subjectAgentPda, attesterWallet]` |
 | stake | `["sap_stake", agentPda]` |
 | escrow | `["sap_escrow_v2", agentPda, depositorWallet, nonce(u64 LE 8B)]` |
 | receipt | `["sap_recv", escrowPda, service_hash(32)]` |
@@ -154,6 +158,8 @@ implicitly ledger-capable.**
 | `POST /api/sap/register` | human/agent | `SAP_ENABLED` | Map agent wallet → SAP `AgentAccount`. Pricing empty (identity only), treasury omitted → fee 0. |
 | `POST /api/sap/tools/publish` | human/agent | `SAP_ENABLED` | Publish a capability as a `ToolDescriptor` (content-addressed sha256 hashes). |
 | `POST /api/sap/feedback` | human/agent | `SAP_ENABLED` | Agent↔Agent reputation score 0..1000. |
+| `POST /api/sap/attestation` | human/agent | `SAP_ENABLED` | `create_attestation` — cross-agent web-of-trust. Subject = body `subjectAgentPda` (NON-signer); `attestationType` ≤32 chars; optional `metadata` → sha256 → 32-byte `metadata_hash`; `expiresAt` i64 (0=never). REPUTATION, not money (gated on `SAP_ENABLED` only). |
+| `POST /api/sap/attestation/revoke` | human/agent | `SAP_ENABLED` | `revoke_attestation` — the ORIGINAL attester revokes its attestation of `subjectAgentPda`. No args on-chain. (POST, not DELETE-with-body — matches the codebase's param-only DELETE convention.) |
 | `GET /api/sap/agents?limit=` | none | `SAP_ENABLED` | Discovery — `AgentAccount.all()` (discriminator memcmp), reputation-sorted. |
 | `GET /api/sap/agent/:pubkey` | none | `SAP_ENABLED` | One agent profile by wallet (404 `not_registered` if none). |
 | `POST /api/sap/escrow/stake` | human/agent | `SAP_ESCROW_ENABLED` | `init_stake` ≥0.1 SOL — REAL, timelocked, explicit separate step. |
@@ -227,8 +233,9 @@ issues:
    program never ran). No funding ⇒ degrades to the structural gate (clearly labeled).
 4. **Gate behavior (hard):** gates-off ⇒ helpers refuse; dry-run ⇒ no signature.
 
-**Last run: 11/11 cases structurally conformant + version pin 0.18.0 matched on
-devnet (2026-06-20); program-invoke proof skipped (public-RPC airdrop 429).** To
+**Last run: 13/13 cases structurally conformant + version pin 0.18.0 matched on
+devnet (2026-06-21, after adding create_attestation + revoke_attestation);
+program-invoke proof skipped (public-RPC airdrop 429).** To
 exercise the program-invoke path, set `SAP_HARNESS_PAYER_SECRET` to a JSON byte
 array of a pre-funded devnet keypair.
 

@@ -61,6 +61,8 @@ import {
   registerAgent,
   publishTool,
   giveFeedback,
+  createAttestation,
+  revokeAttestation,
   fetchAgentProfile,
   discoverAgents,
   initStake,
@@ -318,6 +320,76 @@ sapRoutes.post('/feedback', requireAuthOrAgentSession, async (c) => {
     score: parsed.data.score,
     tag: parsed.data.tag,
     comment: parsed.data.comment,
+  });
+  return respondWrite(c, result);
+});
+
+// ── attestation (cross-agent web-of-trust; Light = identity + attestation) ──────
+// REPUTATION, not money → gated on SAP_ENABLED only (gate503(c,false)), same as
+// /feedback. A custodial sign still occurs, so requireLedgerCapable runs BEFORE
+// the handler reaches createAttestation/revokeAttestation (which decrypt the key).
+const attestationSchema = z
+  .object({
+    // The SUBJECT agent's on-chain AgentAccount PDA — a NON-SIGNER account. Never
+    // a signer; only the caller's own avatar wallet signs.
+    subjectAgentPda: z.string().min(32).max(64),
+    // attestation_type — program caps at 32 chars.
+    attestationType: z.string().min(1).max(32),
+    // Optional off-chain metadata (URI/note) → sha256 → the 32-byte metadata_hash.
+    metadata: z.string().max(2048).optional(),
+    // Unix-seconds expiry (i64); 0 = never. Default 0 when omitted.
+    expiresAt: z.string().regex(/^\d+$/).max(20).optional(),
+  })
+  .strict();
+
+sapRoutes.post('/attestation', requireAuthOrAgentSession, async (c) => {
+  const gated = gate503(c, false);
+  if (gated) return gated;
+  if (!writeLimiter.check(getClientIp(c.req.raw.headers))) {
+    return c.json({ error: 'rate_limited' }, 429);
+  }
+  const body = await c.req.json().catch(() => null);
+  const parsed = attestationSchema.safeParse(body ?? {});
+  if (!parsed.success) {
+    return c.json({ error: 'invalid_body', code: 'invalid_body' }, 400);
+  }
+  const identity = c.get('identity');
+  const notLedger = requireLedgerCapable(c, identity);
+  if (notLedger) return notLedger;
+  const result = await createAttestation({
+    attesterAvatarId: identity.avatarId,
+    subjectAgentPda: parsed.data.subjectAgentPda,
+    attestationType: parsed.data.attestationType,
+    metadata: parsed.data.metadata,
+    expiresAt: parsed.data.expiresAt !== undefined ? BigInt(parsed.data.expiresAt) : 0n,
+  });
+  return respondWrite(c, result);
+});
+
+const revokeAttestationSchema = z
+  .object({ subjectAgentPda: z.string().min(32).max(64) })
+  .strict();
+
+// POST (not DELETE-with-body): the codebase's DELETE routes are all path-param
+// based (`/:id`); a JSON-body DELETE is awkward across some HTTP clients/proxies.
+// A POST sub-route keeps the body contract unambiguous and consistent.
+sapRoutes.post('/attestation/revoke', requireAuthOrAgentSession, async (c) => {
+  const gated = gate503(c, false);
+  if (gated) return gated;
+  if (!writeLimiter.check(getClientIp(c.req.raw.headers))) {
+    return c.json({ error: 'rate_limited' }, 429);
+  }
+  const body = await c.req.json().catch(() => null);
+  const parsed = revokeAttestationSchema.safeParse(body ?? {});
+  if (!parsed.success) {
+    return c.json({ error: 'invalid_body', code: 'invalid_body' }, 400);
+  }
+  const identity = c.get('identity');
+  const notLedger = requireLedgerCapable(c, identity);
+  if (notLedger) return notLedger;
+  const result = await revokeAttestation({
+    attesterAvatarId: identity.avatarId,
+    subjectAgentPda: parsed.data.subjectAgentPda,
   });
   return respondWrite(c, result);
 });

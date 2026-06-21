@@ -29,6 +29,10 @@ const SEED_PRICING = Buffer.from('sap_pricing', 'utf8');
 const SEED_GLOBAL = Buffer.from('sap_global', 'utf8');
 const SEED_TOOL = Buffer.from('sap_tool', 'utf8');
 const SEED_FEEDBACK = Buffer.from('sap_feedback', 'utf8');
+// Attestation seed = the IDL const byte array [115,97,112,95,97,116,116,101,115,116]
+// → ASCII "sap_attest" (verified by jq on the on-chain 0.18.0 IDL's
+// create_attestation/revoke_attestation/close_attestation account contexts).
+const SEED_ATTEST = Buffer.from('sap_attest', 'utf8');
 const SEED_STAKE = Buffer.from('sap_stake', 'utf8');
 const SEED_ESCROW_V2 = Buffer.from('sap_escrow_v2', 'utf8');
 const SEED_RECV = Buffer.from('sap_recv', 'utf8');
@@ -113,6 +117,28 @@ export function findFeedbackPda(
 ): [PublicKey, number] {
   return PublicKey.findProgramAddressSync(
     [SEED_FEEDBACK, agent.toBuffer(), reviewer.toBuffer()],
+    programId,
+  );
+}
+
+/**
+ * attestation: ["sap_attest", agentPda, attesterWallet]
+ *
+ * SEED ORDER (verbatim from the on-chain 0.18.0 IDL's create_attestation PDA):
+ * the SUBJECT agent PDA comes FIRST, then the attester wallet — i.e.
+ * `[SEED, agent, attester]`. This mirrors `findFeedbackPda`'s `[SEED, agent,
+ * reviewer]` shape (subject-then-actor), and the AgentAttestation account struct
+ * stores `agent` then `attester` in the same order. One attestation per
+ * (agent, attester) pair. The attester is the caller's OWN wallet (signer); the
+ * agent is the body-supplied SUBJECT pubkey (never a signer).
+ */
+export function findAttestationPda(
+  programId: PublicKey,
+  agent: PublicKey,
+  attester: PublicKey,
+): [PublicKey, number] {
+  return PublicKey.findProgramAddressSync(
+    [SEED_ATTEST, agent.toBuffer(), attester.toBuffer()],
     programId,
   );
 }
