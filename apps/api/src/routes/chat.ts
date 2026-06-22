@@ -107,6 +107,8 @@ chatRoutes.post('/system/:slug', requireAuth, async (c) => {
     roomId: characterRoomId(slug, user.id),
     platform: 'clawville',
     state,
+    // F3: live human↔Nori chat — keep replies short (tight token ceiling).
+    conversational: true,
   });
 
   // Reward a token + XP for chatting, same economy as a building teacher —
@@ -297,6 +299,10 @@ chatRoutes.post('/:id/chat', requireAuth, async (c) => {
     platform: 'clawville',
     dynamicContext,
     state,
+    // F3: live human↔teacher chat — keep replies short (tight token ceiling).
+    // The teacher can still emit a single [ACTION:] (token award) within 320
+    // tokens of prose+tag; the result text is appended AFTER generation, uncapped.
+    conversational: true,
   });
 
   // Award +1 ClawToken for chatting with a location agent (atomic + audited)
