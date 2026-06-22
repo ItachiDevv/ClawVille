@@ -50,6 +50,10 @@ import { useRef } from 'react';
 import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 import { triggerCoveWalkIn } from './arena-buildings';
+import { avatarPositionRef, useGameStore } from '@/stores/game';
+import { useTransitionStore } from '@/components/transitions/SceneTransition';
+import { isInsideCoveTunnel } from './character-positions';
+import { MAP_WIDTH, MAP_HEIGHT } from '@/lib/pixi/tilemap-data';
 
 // ---------------------------------------------------------------------------
 // World anchor
@@ -261,6 +265,15 @@ const _labelBackGeo = new THREE.BoxGeometry(LABEL_W + 12, LABEL_H + 12, 3);
 const _labelBackMat = new THREE.MeshBasicMaterial({ color: 0x01060f });
 
 // ---------------------------------------------------------------------------
+// Auto-enter (controls-rework 2026-06-21) — when a human-driven avatar walks
+// deep into the corridor we fade to the cove (no click/E needed). Gated to
+// player/npc; armed/re-armed by leaving the corridor so it fires once per entry.
+// ---------------------------------------------------------------------------
+const HALF_W = MAP_WIDTH / 2;
+const HALF_H = MAP_HEIGHT / 2;
+let _coveAutoArmed = true;
+
+// ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
 export default function CoveEntrance() {
@@ -268,6 +281,31 @@ export default function CoveEntrance() {
   const glowRef  = useRef<THREE.Mesh>(null);
 
   useFrame(({ clock }) => {
+    // ── Auto-enter: walk deep into the corridor → fade to /cove (no click/E) ──
+    // Only for human-driven avatars (player/npc). Autonomous agents and the
+    // explore free-cam never get yanked in. One trigger per entry via the
+    // module guard, re-armed once the avatar clears the mouth.
+    const store = useGameStore.getState();
+    const mode = store.controlMode;
+    if (mode === 'player' || mode === 'npc') {
+      const wx = avatarPositionRef.x - HALF_W;
+      const wz = avatarPositionRef.y - HALF_H;
+      if (isInsideCoveTunnel(wx, wz)) {
+        if (_coveAutoArmed && !store.movementFrozen && !useTransitionStore.getState().active) {
+          _coveAutoArmed = false;
+          triggerCoveWalkIn();
+        }
+      } else {
+        // Not deep in the corridor → re-arm. The trigger above always fires a
+        // SceneTransition that unmounts this component, so re-arming the moment
+        // the avatar steps out (rather than well past the mouth) can't loop —
+        // it only enables a fresh walk-in after returning from the cove.
+        _coveAutoArmed = true;
+      }
+    } else {
+      _coveAutoArmed = true;
+    }
+
     const t = clock.elapsedTime;
 
     // Pulse mouth arch glow opacity
