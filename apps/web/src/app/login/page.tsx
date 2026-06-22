@@ -36,6 +36,29 @@ function LoginForm() {
     queryClient.removeQueries({ queryKey: ['agent-session'] });
   }
 
+  // Phase 6.7.5 + 2026-06-21 hotfix — migrate any guest-mode Cove history rows
+  // from this browser's fingerprint to the now-authed user. Idempotent
+  // server-side (UPDATE filtered by the caller's own fp_hash where user_id IS
+  // NULL; a no-op when there's nothing to claim), so it's safe to call on EVERY
+  // auth. Previously this ran ONLY on signup, so an EXISTING account that played
+  // as a guest then LOGGED IN never claimed those rows — the founder's "won 20
+  // CT, no history" path. Now runs on both signup and login. Silent on failure
+  // (claim is never load-bearing for auth completion).
+  async function claimGuestCoveHistory() {
+    try {
+      const claim = await api.claimCoveHistory();
+      if (claim.claimed > 0) {
+        const plural = claim.claimed === 1 ? '' : 's';
+        sessionStorage.setItem(
+          'cv-cove-claim-toast',
+          `Claimed ${claim.claimed} guest play${plural} from your previous session.`,
+        );
+      }
+    } catch {
+      // ignore — non-blocking
+    }
+  }
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError('');
@@ -44,26 +67,16 @@ function LoginForm() {
     try {
       if (isSignup) {
         await api.signup({ email, password, name: name || undefined });
-        // Phase 6.7.5 — migrate any guest-mode Cove history rows from this
-        // browser's fingerprint to the new user. Silent on failure (claim
-        // is not load-bearing for signup completion).
-        try {
-          const claim = await api.claimCoveHistory();
-          if (claim.claimed > 0) {
-            const plural = claim.claimed === 1 ? '' : 's';
-            sessionStorage.setItem(
-              'cv-cove-claim-toast',
-              `Claimed ${claim.claimed} guest play${plural} from your previous session.`,
-            );
-          }
-        } catch {
-          // ignore — non-blocking
-        }
+        await claimGuestCoveHistory();
         // Drop any pre-auth cache so the destination refetches as the new user.
         purgeAuthCache();
         router.push('/create-agent');
       } else {
         await api.login({ email, password });
+        // Claim guest cove history on plain login too (hotfix 2026-06-21) — an
+        // existing user who played slots as a guest before logging in must see
+        // those plays under their account afterward.
+        await claimGuestCoveHistory();
         // Auth-state-reconciliation fix (2026-06-19). The session cookie is now
         // in the jar, but the shared SPA QueryClient may still hold a stale
         // `auth-me: null` (or a guest avatar) cached from BEFORE login — fresh
