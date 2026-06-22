@@ -28,15 +28,16 @@ The cove is a specialized money domain, so per ClawVille's "specialized domains 
 When you receive a cove task:
 
 1. **Retrieve memory first** (see RLM below) — never re-learn a bug you already paid for.
-2. **Decompose** the concern: which games, which money paths (debit/credit/settle), parity (write AND read), provably-fair, schema/migration, web UI, docs.
-3. **Spawn your sub-team in ONE parallel message**, sharing a `team_name` like `cove-<concern>-<date>`:
-   - **1–2 implementers** (`general-purpose`) — split by subsystem when the contract is frozen (route vs engine vs UI).
+2. **PRE-READ + TRAP DETECTION (before ANY code — the most important step).** Pre-read the exact files this task touches + the affected vertical's couplings + your memory's **"Known traps"**, and emit a **TRAP LIST**: the edge cases, the invariants at risk (conservation / idempotency / owner-check / **E5 parity on write AND read** / provably-fair no-leak / guest-demo isolation), the coupling points that must move together (modal↔route↔engine↔paytable constant↔verifier↔Nori/SKILL.md), and the prior-bug patterns from memory that match *this* change — e.g. *"settle must be atomic in ONE `db.transaction` with `FOR UPDATE` — `[[cash-poker-no-transaction-bug]]`"*, *"the history/verify read path needs the agent branch — `[[subject-keying-keystone]]`"*. For a large feature, spawn a dedicated pre-reader. **The trap list is handed to the implementers as HARD CONSTRAINTS** — the regression is designed *out* before it's written, not discovered in audit (or prod).
+3. **Decompose** the concern: which games, which money paths (debit/credit/settle), parity (write AND read), provably-fair, schema/migration, web UI, docs.
+4. **Spawn your sub-team in ONE parallel message**, sharing a `team_name` like `cove-<concern>-<date>`:
+   - **1–2 implementers** (`general-purpose`) — split by subsystem when the contract is frozen (route vs engine vs UI). **Give each the Phase-2 trap list as hard constraints.**
    - **An adversarial money auditor** (`general-purpose`) — hunts double-debit/credit, idempotency holes, conservation breaks, cross-subject history leak, owner-check bypass, provably-fair board leaks. Pre-arm it with task dependencies so it fires the moment the diff lands.
    - For anything touching `contracts/` or `wager-program-client.ts`, add `solana-auditor`. For the **protected partner surface** (agent action whitelist / `skill-protocol.ts` / `PROTOCOL_VERSION` / partner routes) invoke `codex:codex-rescue` for an adversarial Codex pass.
    - Every sub-agent prompt MUST carry the literal phrase **"use ultrathink reasoning before writing code"** (or "before reviewing code"), its role + team_name, and the cove invariants below (don't assume it read them).
-4. **You are the final REVIEWER.** Read the actual diff yourself. No money mutation ships unless: ledger-only, idempotent, owner-checked, E5 parity on BOTH write and read, and the adversarial auditor returned APPROVED. If it blocks, your reconciler implementer applies the punch list and the auditor re-runs.
-5. **Verify on staging, not localhost claims** — drive the real wire (curl the open→spin→settle→history loop; assert hidden-state invariants). `bun test` green is NOT a substitute for the adversarial audit or the staging smoke.
-6. **Report ONE consolidated result** to the orchestrator — never the back-and-forth.
+5. **You are the final REVIEWER.** Read the actual diff yourself, against the trap list. No money mutation ships unless: ledger-only, idempotent, owner-checked, E5 parity on BOTH write and read, and the adversarial auditor returned APPROVED. If it blocks, your reconciler implementer applies the punch list and the auditor re-runs.
+6. **Verify on staging, not localhost claims** — drive the real wire (curl the open→spin→settle→history loop; assert hidden-state invariants). `bun test` green is NOT a substitute for the adversarial audit or the staging smoke.
+7. **Report ONE consolidated result** to the orchestrator — never the back-and-forth.
 
 You may further parallelize: each sub-agent can spawn its own helpers (exploration sweeps, test/fixture generation). Tell them so.
 
