@@ -113,29 +113,75 @@ function convertToElizaCharacter(
 
   const bio = customization?.bio || template.bio.join('\n');
 
-  let system = `You are ${name}. ${template.description || ''}`;
-  if (customization?.personality) {
-    system += `\n\nPersonality: ${customization.personality}`;
-  }
-  if (customization?.greeting) {
-    system += `\n\nWhen someone enters, greet them: "${customization.greeting}"`;
-  }
-  if (customization?.rules?.length) {
-    system += `\n\nRules:\n${customization.rules.map((r) => `- ${r}`).join('\n')}`;
-  }
-  if (customization?.tone) {
-    system += `\n\nTone: ${customization.tone}`;
+  // Customization-first (fix 2026-06-21). When the caller (system-npc-seeder)
+  // supplies a fully-built `system` prompt it already encodes the character's
+  // identity + role verbatim ("You are Mr. Krabs, the resident character of
+  // Krusty Krab…"), so use it as-is. Only synthesize one from the template when
+  // customization omits it. ROOT CAUSE of the "every teacher + Nori answered as
+  // Pearl" bug: seeded agents carry agentConfig:{} → the constructor's locationId
+  // fell back to 'cron-automation' (Pearl) and this builder rebuilt system /
+  // messageExamples / adjectives / knowledge FROM that wrong fallback template
+  // while IGNORING the correct `customization` the seeder assembled.
+  let system: string;
+  if (customization?.system) {
+    system = customization.system;
+  } else {
+    system = `You are ${name}. ${template.description || ''}`;
+    if (customization?.personality) {
+      system += `\n\nPersonality: ${customization.personality}`;
+    }
+    if (customization?.greeting) {
+      system += `\n\nWhen someone enters, greet them: "${customization.greeting}"`;
+    }
+    if (customization?.rules?.length) {
+      system += `\n\nRules:\n${customization.rules.map((r) => `- ${r}`).join('\n')}`;
+    }
+    if (customization?.tone) {
+      system += `\n\nTone: ${customization.tone}`;
+    }
   }
 
-  // v2: legacy MessageExample[][] format is still accepted by createCharacter()
-  const messageExamples = template.messageExamples?.map((conversation: any) =>
+  // Customization-first messageExamples (fix 2026-06-21). The seeder stores them
+  // in the LocationTemplate shape `{ user, content: { text } }`; legacy/template
+  // entries use the same shape; avatar-style customization uses `{ user, content:
+  // <string> }`. Map either content shape safely and resolve the assistant turn's
+  // display name to the character's own name. v2 createCharacter() accepts this.
+  const rawExamples =
+    customization?.messageExamples && customization.messageExamples.length
+      ? customization.messageExamples
+      : template.messageExamples;
+  const messageExamples = rawExamples?.map((conversation: any) =>
     conversation.map((msg: any) => ({
-      name: msg.user.startsWith('{{') ? 'User' : msg.user,
+      name: msg.user?.startsWith('{{')
+        ? 'User'
+        : msg.user === 'assistant'
+          ? name
+          : msg.user,
       content: {
-        text: typeof msg.content === 'string' ? msg.content : msg.content.text || '',
+        text: typeof msg.content === 'string' ? msg.content : msg.content?.text || '',
       },
     }))
   );
+
+  // Customization-first knowledge / adjectives / style (same bug class — these
+  // were pulled from the wrong fallback template before).
+  const characterKnowledge =
+    customization?.knowledge && customization.knowledge.length
+      ? customization.knowledge
+      : template.knowledge || [];
+  const characterAdjectives =
+    customization?.adjectives && customization.adjectives.length
+      ? customization.adjectives
+      : template.adjectives || [];
+  const czStyle = customization?.style;
+  const characterStyle =
+    czStyle && !Array.isArray(czStyle)
+      ? { all: czStyle.all || [], chat: czStyle.chat || [], post: czStyle.post || [] }
+      : {
+          all: [...(template.style?.all || []), ...(Array.isArray(czStyle) ? czStyle : [])],
+          chat: template.style?.chat || [],
+          post: template.style?.post || [],
+        };
 
   // v2: @elizaos/plugin-bootstrap is built into @elizaos/core — do NOT add it here.
   // Embeddings are provided by our custom openai-embedding-provider (prepended
@@ -155,22 +201,18 @@ function convertToElizaCharacter(
     // Merge knowledge into bio — ElizaOS v2 treats knowledge[] strings as file paths
     bio: [
       ...(typeof bio === 'string' ? [bio] : bio),
-      ...(template.knowledge || []),
+      ...characterKnowledge,
     ],
     messageExamples: messageExamples as any,
     postExamples: [],
     topics: customization?.topics || template.topics || [],
-    adjectives: template.adjectives || [],
+    adjectives: characterAdjectives,
     knowledge: [],
     plugins,
     settings: {
       ...(template.settings || {}),
     } as any,
-    style: {
-      all: [...(template.style?.all || []), ...(Array.isArray(customization?.style) ? customization.style : [])],
-      chat: template.style?.chat || [],
-      post: template.style?.post || [],
-    },
+    style: characterStyle,
   };
 
   // createCharacter() converts loose CharacterInput to the strict protobuf Character
@@ -199,8 +241,16 @@ export class ElizaRuntime {
       // runtime, collaboration broker, etc.) — skip template loading entirely
       this.character = config.character;
     } else {
-      // Location agents load from templates
-      const locationId = (config.agentConfig?.locationId as string) || 'cron-automation';
+      // Location + system agents. The authoritative persona comes from
+      // `customization` (system-npc-seeder builds it complete: name, bio,
+      // knowledge, topics, adjectives, messageExamples, style, system) and
+      // convertToElizaCharacter is customization-first. The template is only a
+      // per-field fallback resolved by locationId. Do NOT default a missing
+      // locationId to a real character (was 'cron-automation' = Pearl) — that
+      // bled Pearl's persona into EVERY teacher and Nori the Town Guide. An
+      // empty/unknown id resolves to loadLocationTemplate's neutral
+      // "Shop Keeper" fallback, which customization then overrides field-by-field.
+      const locationId = (config.agentConfig?.locationId as string) || '';
       const template = loadLocationTemplate(locationId);
       this.character = convertToElizaCharacter(template, config);
     }
