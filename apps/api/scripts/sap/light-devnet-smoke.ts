@@ -11,6 +11,8 @@
  * (devnet airdrop is rate-limited; on 429 it reports the blocker, not a failure.)
  */
 
+import { existsSync, readFileSync, writeFileSync } from 'fs';
+import { join } from 'path';
 import {
   Connection, Keypair, PublicKey, SystemProgram, Transaction,
   sendAndConfirmTransaction, LAMPORTS_PER_SOL, type Commitment,
@@ -18,6 +20,18 @@ import {
 import { AnchorProvider, BN, Program } from '@coral-xyz/anchor';
 import idlJson from '../../src/services/sap/synapse_agent_sap.onchain.idl.json' with { type: 'json' };
 import { deriveAgentPdaSet, findGlobalPda, findAttestationPda } from '../../src/services/sap/sap-pdas';
+
+// PERSISTENT payer (gitignored devnet throwaway) so funding it is ONE-TIME — a
+// fresh-each-run keypair can never reuse a wallet the user already funded.
+const PAYER_PATH = join(import.meta.dir, '.smoke-payer.json');
+function loadOrCreatePayer(): { kp: Keypair; created: boolean } {
+  if (existsSync(PAYER_PATH)) {
+    return { kp: Keypair.fromSecretKey(Uint8Array.from(JSON.parse(readFileSync(PAYER_PATH, 'utf8')))), created: false };
+  }
+  const kp = Keypair.generate();
+  writeFileSync(PAYER_PATH, JSON.stringify(Array.from(kp.secretKey)), 'utf8');
+  return { kp, created: true };
+}
 
 const RPC = process.env.SAP_DEVNET_RPC ?? 'https://api.devnet.solana.com';
 const COMMITMENT: Commitment = 'confirmed';
@@ -67,19 +81,27 @@ async function main() {
   const connection = new Connection(RPC, COMMITMENT);
   const program = placeholderProgram(connection);
 
-  const A = Keypair.generate(); // attester
-  const B = Keypair.generate(); // subject
-  console.log(`attester A = ${A.publicKey.toBase58()}`);
-  console.log(`subject  B = ${B.publicKey.toBase58()}\n`);
+  const { kp: A, created } = loadOrCreatePayer(); // PERSISTENT attester/payer
+  const B = Keypair.generate(); // ephemeral subject (funded by A)
+  console.log(`attester/payer A = ${A.publicKey.toBase58()}  (${created ? 'newly created' : 'reused'}, persisted)`);
+  console.log(`subject       B = ${B.publicKey.toBase58()}\n`);
 
-  console.log('1) airdrop 1 SOL → A (devnet faucet, rate-limited) ...');
-  if (!(await airdrop(connection, A.publicKey, 1))) {
-    console.log('\n❌ BLOCKED: devnet airdrop unavailable (faucet rate-limit). The simulate-level');
-    console.log('   conformance harness (13/13 vs the live program) + the cluster-IDL diff stand;');
-    console.log('   re-run when the faucet is available, or pass a pre-funded SAP_SMOKE_PAYER.');
+  const NEED = 0.25 * LAMPORTS_PER_SOL;
+  let bal = await connection.getBalance(A.publicKey);
+  console.log(`1) A balance = ${bal / LAMPORTS_PER_SOL} SOL (need ≥ ${NEED / LAMPORTS_PER_SOL})`);
+  if (bal < NEED) {
+    console.log('   under-funded — trying devnet airdrop (rate-limited) ...');
+    await airdrop(connection, A.publicKey, 1);
+    bal = await connection.getBalance(A.publicKey);
+  }
+  if (bal < NEED) {
+    console.log(`\n⏳ FUND THIS PERSISTENT WALLET, then re-run the smoke:`);
+    console.log(`     ${A.publicKey.toBase58()}`);
+    console.log('   ~0.3 devnet SOL via https://faucet.solana.com (devnet) or any devnet wallet.');
+    console.log('   It persists at scripts/sap/.smoke-payer.json, so this is ONE-TIME.');
+    console.log('   (The earlier Ex1aRd8… wallet was ephemeral — its key was not saved — so it can\'t be reused.)');
     process.exit(3);
   }
-  console.log(`   A balance = ${(await connection.getBalance(A.publicKey)) / LAMPORTS_PER_SOL} SOL`);
 
   console.log('2) A → B transfer 0.2 SOL (so B can pay its own register rent) ...');
   const fund = new Transaction().add(SystemProgram.transfer({ fromPubkey: A.publicKey, toPubkey: B.publicKey, lamports: 0.2 * LAMPORTS_PER_SOL }));
