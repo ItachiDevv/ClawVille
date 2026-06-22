@@ -11,8 +11,25 @@
  */
 
 import { useInfiniteQuery } from '@tanstack/react-query';
+import { getFingerprint } from '../fingerprint';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000';
+
+/**
+ * Build the header bag for a guest-or-user cove-history request, injecting the
+ * stable browser fingerprint (2026-06-21 hotfix). The server scopes GUEST
+ * history reads by the `fpHash` derived from this header — without it, the
+ * server fell back to a RAW-IP hash that changed across IP churn, so a guest
+ * read keyed to a different subject than the one that wrote the spin and
+ * returned zero rows ("won 20 CT, no history"). Authed reads scope by user_id
+ * and ignore the header; the header is harmless for them.
+ */
+async function coveHistoryHeaders(): Promise<Record<string, string>> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  const fp = await getFingerprint();
+  if (fp) headers['X-CV-Fingerprint'] = fp;
+  return headers;
+}
 
 // ---------------------------------------------------------------------------
 // Wire types (must stay in sync with impl-api response shape)
@@ -85,7 +102,7 @@ export type EventVerifyResponse =
 export async function fetchEventVerdict(eventId: string): Promise<EventVerifyResponse> {
   const res = await fetch(`${API_BASE}/api/cove/history/${eventId}/verify`, {
     credentials: 'include',
-    headers: { 'Content-Type': 'application/json' },
+    headers: await coveHistoryHeaders(),
   });
   if (!res.ok) {
     let msg = `HTTP ${res.status}`;
@@ -118,7 +135,7 @@ async function fetchHistory(opts: {
 
   const res = await fetch(`${API_BASE}/api/cove/history?${params}`, {
     credentials: 'include',
-    headers: { 'Content-Type': 'application/json' },
+    headers: await coveHistoryHeaders(),
   });
 
   if (!res.ok) {
@@ -137,7 +154,7 @@ async function fetchHistory(opts: {
 export async function fetchHistoryEvent(eventId: string): Promise<CoveHistoryEventRow> {
   const res = await fetch(`${API_BASE}/api/cove/history/${eventId}`, {
     credentials: 'include',
-    headers: { 'Content-Type': 'application/json' },
+    headers: await coveHistoryHeaders(),
   });
   if (!res.ok) {
     let msg = `HTTP ${res.status}`;
