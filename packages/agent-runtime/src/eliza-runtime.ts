@@ -109,8 +109,8 @@ export type ElizaRuntimeState = 'idle' | 'initializing' | 'running' | 'paused' |
 // maxTokens:1000 ceiling because nothing in the persona prompt constrained length.
 // This directive is appended to EVERY such character's system prompt so the brevity
 // rule is GLOBAL and cannot drift per-template. Paired with CHAT_RESPONSE_MAX_TOKENS
-// as a hard backstop in processMessage (used only when no executable actions are in
-// scope, so multi-[ACTION:] cognition is never truncated mid-emit).
+// as a hard backstop in processMessage, applied to callers that flag
+// `conversational: true` (the human↔teacher / ↔Nori chat routes).
 const CONCISE_CHAT_DIRECTIVE =
   '\n\nRESPONSE LENGTH (strict): Keep every reply short and conversational — aim for ' +
   '2-3 sentences, and only go longer when the user explicitly asks you to go deep. ' +
@@ -118,9 +118,10 @@ const CONCISE_CHAT_DIRECTIVE =
   'restate the question, avoid numbered lists / headers / long monologues. This is live ' +
   'in-world chat, not an essay.';
 
-// Conversational ceiling for NPC chat that has no executable actions in scope.
-// ~320 tokens ≈ a generous paragraph: leaves headroom for a real teacher explanation
-// while cutting the ~750-word runaway essays the old 1000-token cap allowed.
+// Conversational ceiling for live human↔NPC chat (teacher / Nori), applied when the
+// caller passes `conversational: true`. ~320 tokens ≈ a generous paragraph: leaves
+// headroom for a real teacher explanation while cutting the ~750-word runaway essays
+// the old 1000-token cap allowed.
 const CHAT_RESPONSE_MAX_TOKENS = 320;
 
 function convertToElizaCharacter(
@@ -739,6 +740,15 @@ export class ElizaRuntime {
       dynamicContext?: string;
       /** State object for Providers and Actions (avatarData, worldSnapshot, services, etc.) */
       state?: Record<string, any>;
+      /**
+       * F3 (2026-06-21): mark this as live in-world conversational chat (human↔NPC
+       * teacher / Nori). When true the reply is capped at the tight
+       * CHAT_RESPONSE_MAX_TOKENS conversational ceiling so it stays short. Callers
+       * that omit it keep the larger default budget. Set by the building-teacher +
+       * system-agent chat routes; NOT set on paths that may emit action-heavy
+       * replies. The brevity DIRECTIVE in the system prompt applies regardless.
+       */
+      conversational?: boolean;
     } = {}
   ): Promise<ElizaMessage> {
     if (this.state !== 'running' || !this.runtime) {
@@ -816,11 +826,14 @@ export class ElizaRuntime {
       const promptWithHistory = promptParts.join('\n\n');
 
       // --- Generate LLM response ---
-      // F3 (2026-06-21): conversational NPC chat (no executable actions in scope —
-      // e.g. a human talking to a teacher or Nori) gets the tight CHAT_RESPONSE_MAX_TOKENS
-      // ceiling so replies stay short. Action-capable cognition keeps the larger 1000
-      // budget so multi-[ACTION:] sequences are never truncated mid-emit.
-      const responseMaxTokens = providerState.services ? 1000 : CHAT_RESPONSE_MAX_TOKENS;
+      // F3 (2026-06-21): callers that flag `conversational` (the human↔teacher and
+      // ↔Nori chat routes) get the tight CHAT_RESPONSE_MAX_TOKENS ceiling so replies
+      // stay short. Everything else keeps the larger 1000 budget so action-emitting
+      // or longer-form callers are never truncated. (NOTE: we deliberately do NOT key
+      // this on `providerState.services` — services are injected whenever the VISITOR
+      // has an avatar, i.e. for almost every real logged-in chat, so that gate would
+      // have left the founder's case uncapped.)
+      const responseMaxTokens = context.conversational ? CHAT_RESPONSE_MAX_TOKENS : 1000;
       const result = await this.runtime.generateText(promptWithHistory, {
         maxTokens: responseMaxTokens,
         stopSequences: [],
