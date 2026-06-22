@@ -95,6 +95,8 @@ Four modes in `apps/web/src/stores/game.ts` — `ControlMode = 'explore' | 'npc'
 | `player` | yes | WASD moves your avatar | Follows avatar | Normal gameplay (Controlled track in UI) |
 | `autonomous` | yes | Engine drives the avatar | Follows avatar | Watch your agent play |
 
+**Movement & interaction model (2026-06-21 controls-rework).** Desktop: **WASD** moves; **mouse-drag + arrow keys** rotate the camera (arrows are camera look, NOT a walk binding); **E** interacts with the nearest building / Nori. Mobile: **left joystick** moves, **right joystick** orbits the camera, **Jump button** (fixed — it inherited `pointer-events:none` and was untappable; now `pointer-events-auto`). **3D ground click-to-move was removed** (`click-to-move.tsx`) — clicking empty ground no longer walks the avatar. Still click-to-open: town-center stalls (bazaar→cosmetics, auction→bounties) + the cove; still path-driven: World-Map/minimap fast-travel + warp (they set `clickPath` programmatically). The **cove** has *both* entry affordances — a "Press E · Enter the Cove" proximity prompt at the tunnel mouth **and** auto-enter when you walk deep into the corridor (`isInsideCoveTunnel`); see `3dStructure.md §15.6`.
+
 ### 1a. Toggle (`apps/web/src/components/game/control-mode-toggle.tsx`)
 
 ```tsx
