@@ -31,6 +31,16 @@ export const AGENT_CATEGORIES = [
   'hermes',
   'milady',
   'other',
+  // ── Chibi (stylized half-height VRM humanoids) — added 2026-06-21 ──
+  // The two chibi VRMs (`eliza_chibi`, `milady_chibi`) were offered in the WEB
+  // picker (apps/web/.../agent-model-registry.ts category 'chibi', shown under the
+  // Milady tab) but were MISSING from this shared tuple + AGENT_MODELS, so
+  // /create-agent silently dropped a chibi pick and defaulted the avatar to
+  // DEFAULT_AGENT_MODEL_KEY (a Milady). Promoting chibi to a first-class shared
+  // category fixes the create path end-to-end. The DB CHECK
+  // `avatars_agent_category_valid` is extended in lockstep via
+  // packages/database/migrations/0005_add_chibi_agent_category.sql.
+  'chibi',
   // ── Hatcher (partner #2) — added 2026-06-01 ──
   // Dedicated category for agents that enter ClawVille from the Hatcher
   // hosting platform (`.claude/plans/hatcher-integration.md` §5). Backed by
@@ -109,6 +119,15 @@ export const AGENT_MODELS = [
   { key: 'hermes_female', label: 'Hermes',      category: 'hermes' },
   { key: 'hermes_male',   label: 'Hermes Male', category: 'hermes' },
   { key: 'tekk',          label: 'Tekk',        category: 'hermes' },
+
+  // ── Chibi (VRM humanoid avatars, half-height) — added 2026-06-21 ──
+  // Mini stylized humanoids. Web-side metadata (path/scale/preview/animatorId
+  // 'chibi') lives in agent-model-registry.ts. Shown in the /create-agent picker
+  // under the Milady tab (page.tsx groups category 'chibi' there). Added to the
+  // shared registry so a chibi pick at signup actually persists instead of being
+  // silently defaulted to a Milady. Keys MUST match the web registry exactly.
+  { key: 'eliza_chibi',  label: 'Eliza Chibi',  category: 'chibi' },
+  { key: 'milady_chibi', label: 'Milady Chibi', category: 'chibi' },
 
   // ── Hatcher (VRM humanoid avatars) — added 2026-06-01 ──
   // PLACEHOLDER (Phase 4 swap): these 8 keys currently point at the existing
