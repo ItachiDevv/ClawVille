@@ -1,24 +1,32 @@
 'use client';
 
-import { useRef, useMemo, useCallback, useEffect } from 'react';
-import { useFrame, useThree } from '@react-three/fiber';
+import { useRef, useMemo } from 'react';
+import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
-import { useGameStore, avatarPositionRef } from '@/stores/game';
-import { findPath } from '@/lib/pixi/client-pathfinding';
-import {
-  MAP_WIDTH,
-  MAP_HEIGHT,
-  TILE_SIZE,
-  buildingZones,
-} from '@/lib/pixi/tilemap-data';
+import { useGameStore } from '@/stores/game';
+import { MAP_WIDTH, MAP_HEIGHT } from '@/lib/pixi/tilemap-data';
 
 // ---------------------------------------------------------------------------
-// Constants
+// Click-to-move INPUT removed 2026-06-21 (controls-rework).
+//
+// The invisible ground-click raycast plane that walked the avatar to an
+// arbitrary clicked point was removed per founder direction: desktop movement
+// is WASD (camera look = mouse-drag + arrow keys), mobile movement is the left
+// joystick. Clicking the 3D ground no longer moves the avatar.
+//
+// Preserved, because they do NOT depend on this plane:
+//   - Town-center stalls (bazaar → cosmetics, auction → bounties) keep their
+//     OWN onClick handlers (bazaar-stall.tsx / auction-podium.tsx).
+//   - The cove keeps its building/tunnel click + the walk-in flow.
+//   - World-Map / minimap fast-travel + warp drive the avatar via clickPath
+//     PROGRAMMATICALLY (store.setClickPath) — player-avatar.tsx still consumes
+//     clickPath, so those keep working.
+//
+// This component now ONLY renders the path visuals (route dots + a pulsing
+// destination marker) for whatever clickPath is set programmatically.
 // ---------------------------------------------------------------------------
 const HALF_W = MAP_WIDTH / 2;
 const HALF_H = MAP_HEIGHT / 2;
-const SPEED = 200; // px/s — matches player-avatar.tsx
-const WAYPOINT_THRESHOLD = 6; // px — snap to next waypoint when this close
 const PATH_DOT_Y = 1.2; // slightly above ground
 const DOT_RADIUS = 1.8;
 const DOT_SEGMENTS = 8;
@@ -27,16 +35,7 @@ const DEST_PULSE_MAX = 4.5;
 const DEST_PULSE_SPEED = 4;
 const MAX_DOTS = 60; // cap rendered dots for performance
 
-// Building pixel zones for proximity detection (same as player-avatar)
-const pixelZones = buildingZones.map((z) => ({
-  id: z.id,
-  x: z.x * TILE_SIZE,
-  y: z.y * TILE_SIZE,
-  width: z.width * TILE_SIZE,
-  height: z.height * TILE_SIZE,
-}));
-
-// Module-scope scratch vectors — avoid per-frame allocations in useFrame hot paths
+// Module-scope scratch — avoid per-frame allocations in useFrame hot paths
 const _toWorldScratch = new THREE.Vector3();
 const _dotMatrix = new THREE.Matrix4();
 const _dotRotation = new THREE.Matrix4().makeRotationX(-Math.PI / 2);
@@ -44,83 +43,6 @@ const _dotRotation = new THREE.Matrix4().makeRotationX(-Math.PI / 2);
 /** Convert pixel coords to Three.js world coords — writes into scratch, caller must copy immediately */
 function toWorld(px: number, py: number): THREE.Vector3 {
   return _toWorldScratch.set(px - HALF_W, PATH_DOT_Y, py - HALF_H);
-}
-
-/** Convert Three.js world coords to pixel coords */
-function toPixel(wx: number, wz: number): { x: number; y: number } {
-  return { x: wx + HALF_W, y: wz + HALF_H };
-}
-
-// ---------------------------------------------------------------------------
-// Ground click handler — invisible plane for raycasting
-// ---------------------------------------------------------------------------
-function ClickPlane() {
-  const { camera, raycaster, pointer } = useThree();
-  const planeRef = useRef<THREE.Mesh>(null);
-  const groundPlane = useMemo(() => new THREE.Plane(new THREE.Vector3(0, 1, 0), 0), []);
-  const intersectPoint = useMemo(() => new THREE.Vector3(), []);
-
-  // PERF: ClickPlane never moves — disable matrixAutoUpdate so Three.js skips
-  // the per-frame matrix re-multiply for this invisible static mesh.
-  useEffect(() => {
-    if (!planeRef.current) return;
-    planeRef.current.matrixAutoUpdate = false;
-    planeRef.current.updateMatrix();
-  }, []);
-
-  const handleClick = useCallback(
-    (e: THREE.Event & { stopPropagation?: () => void }) => {
-      // Don't handle if movement is frozen (in building chat)
-      const store = useGameStore.getState();
-      if (store.movementFrozen) return;
-
-      // Cast ray onto Y=0 plane
-      raycaster.setFromCamera(pointer, camera);
-      const hit = raycaster.ray.intersectPlane(groundPlane, intersectPoint);
-      if (!hit) return;
-
-      const pixel = toPixel(hit.x, hit.z);
-
-      // Clamp to map bounds
-      pixel.x = Math.max(16, Math.min(MAP_WIDTH - 16, pixel.x));
-      pixel.y = Math.max(16, Math.min(MAP_HEIGHT - 16, pixel.y));
-
-      // Run A* from current position to click position
-      const path = findPath(avatarPositionRef.x, avatarPositionRef.y, pixel.x, pixel.y);
-
-      if (path.length > 0) {
-        // Check if destination is inside a building zone
-        const dest = path[path.length - 1];
-        let targetBuilding: string | null = null;
-        for (const zone of pixelZones) {
-          if (
-            dest.x >= zone.x &&
-            dest.x <= zone.x + zone.width &&
-            dest.y >= zone.y &&
-            dest.y <= zone.y + zone.height
-          ) {
-            targetBuilding = zone.id;
-            break;
-          }
-        }
-        store.setClickPath(path, targetBuilding);
-      }
-    },
-    [camera, raycaster, pointer, groundPlane, intersectPoint]
-  );
-
-  return (
-    <mesh
-      ref={planeRef}
-      rotation={[-Math.PI / 2, 0, 0]}
-      position={[0, 0.01, 0]}
-      onClick={handleClick}
-      visible={false}
-    >
-      <planeGeometry args={[MAP_WIDTH + 200, MAP_HEIGHT + 200]} />
-      <meshBasicMaterial transparent opacity={0} />
-    </mesh>
-  );
 }
 
 // ---------------------------------------------------------------------------
@@ -231,12 +153,11 @@ function DestinationMarker() {
 }
 
 // ---------------------------------------------------------------------------
-// Main ClickToMove component
+// Main ClickToMove component — path visuals only (ground-click input removed)
 // ---------------------------------------------------------------------------
 export default function ClickToMove() {
   return (
     <>
-      <ClickPlane />
       <PathDots />
       <DestinationMarker />
     </>

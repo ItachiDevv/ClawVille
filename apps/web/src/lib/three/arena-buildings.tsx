@@ -82,6 +82,11 @@ const COVE_DOOR_PX = { x: MAP_WIDTH / 2 - 3400, y: MAP_HEIGHT / 2 };
 const DOOR_ARRIVE_DIST = 200;
 /** Hard timeout before triggering fade even if avatar hasn't arrived. */
 const MAX_WALK_WAIT_MS = 1500;
+/** Idempotency guard: true while a cove walk-in is in flight (clickPath + poll
+ *  running, before the SceneTransition fires). A second trigger — double-click,
+ *  the click/auto-enter race, or a minimap fast-travel arrival — is a no-op
+ *  until the transition starts. Cleared right before the transition fires. */
+let _coveWalkInPending = false;
 
 /**
  * triggerCoveWalkIn() — called when the user clicks on the cove building.
@@ -103,8 +108,13 @@ export function triggerCoveWalkIn(): void {
     return;
   }
 
+  // Idempotent: ignore re-entry while a walk-in is already in flight (double
+  // click, the click/auto-enter race, or a fast-travel arrival landing on cove).
+  if (_coveWalkInPending) return;
+  _coveWalkInPending = true;
+
   // Build a minimal two-waypoint path: current position → door target.
-  // The existing click-to-move system in player-avatar.tsx will drive the avatar.
+  // player-avatar.tsx (the clickPath consumer) drives the avatar along it.
   const path = [
     { x: avatarPositionRef.x, y: avatarPositionRef.y },
     { x: COVE_DOOR_PX.x,    y: COVE_DOOR_PX.y },
@@ -129,6 +139,7 @@ export function triggerCoveWalkIn(): void {
 
     if (dist <= DOOR_ARRIVE_DIST || elapsed >= MAX_WALK_WAIT_MS) {
       // Avatar has arrived (or timed out) — clear the path and fade.
+      _coveWalkInPending = false;
       store.clearClickPath();
       useTransitionStore.getState().triggerTransition({ to: '/cove' });
       return;
