@@ -9,10 +9,11 @@
  *   'available' — for sale (default; shown as for-sale lot in 3D)
  *   'owned'     — claimed by a player/agent
  *   'reserved'  — held back (e.g. founder allocation, future use)
+ *   'retired'   — permanently removed from the economy (API may return this)
  */
 import { create } from 'zustand';
 
-export type ParcelStatus = 'available' | 'owned' | 'reserved';
+export type ParcelStatus = 'available' | 'owned' | 'reserved' | 'retired';
 
 export interface ParcelState {
   status: ParcelStatus;
@@ -21,23 +22,32 @@ export interface ParcelState {
 
 /**
  * A placed structure (home or shop) on an owned parcel, narrowed to exactly the
- * fields the 3D render layer needs. Keyed by `parcelId` in the store (one
+ * fields the 3D render layer needs. Keyed by `parcelCode` in the store (one
  * structure per parcel by the backend contract). `catalogKey` selects the GLB
  * (e.g. `home-cottage`, `shop-market`); `level` (1..5) drives the scale ramp.
+ *
+ * `parcelCode` — the render-key, equals `LAND_PARCELS[i].id` (e.g. `parcel-a-01`).
+ *   The 3D layer joins on this, NOT on the DB UUID.
+ * `parcelId`   — the DB UUID; kept for backwards-compat with StructureHydrator until
+ *   land-structures.tsx is migrated to use parcelCode for the parcelById lookup.
  */
 export interface PlacedStructure {
+  /** DB UUID of the parcel row — kept for backward-compat. */
   parcelId: string;
+  /** Render key — matches LAND_PARCELS[i].id (e.g. 'parcel-a-01'). Use this for 3D lookup. */
+  parcelCode: string;
   catalogKey: string;
   structureType: 'home' | 'shop';
   level: number;
 }
 
 interface LandStore {
-  /** Per-parcel state keyed by ParcelSlot.id (= parcelCode(tier, index)). */
+  /** Per-parcel state keyed by ParcelSlot.id (= parcelCode, e.g. 'parcel-a-01'). */
   parcels: Map<string, ParcelState>;
 
-  /** Placed structures keyed by parcelId. Populated by the render layer's
-   *  self-hydration (`api.getMyLand()`) and by the Land Office modal on edit. */
+  /** Placed structures keyed by parcelCode (= LAND_PARCELS[i].id). One entry
+   *  per owned parcel. Populated by the render layer's self-hydration
+   *  (`api.getMyLand()`) and by the Land Office modal on edit. */
   structures: Map<string, PlacedStructure>;
 
   /** Bulk-set parcel state from an API response. Existing entries not in the
@@ -46,11 +56,12 @@ interface LandStore {
 
   /** REPLACE the visible owner's structure set (full replace, not patch) — the
    *  list is the authoritative snapshot of one avatar's placed structures, so a
-   *  removed/swapped structure must disappear rather than linger. */
+   *  removed/swapped structure must disappear rather than linger.
+   *  The Map is keyed by PlacedStructure.parcelCode. */
   setStructures: (list: PlacedStructure[]) => void;
 
-  /** Reset a single parcel to 'available'. */
-  release: (parcelId: string) => void;
+  /** Reset a single parcel (by parcelCode) to 'available'. */
+  release: (parcelCode: string) => void;
 }
 
 export const useLandStore = create<LandStore>()((set) => ({
@@ -74,7 +85,9 @@ export const useLandStore = create<LandStore>()((set) => ({
   setStructures: (list) =>
     set(() => {
       const next = new Map<string, PlacedStructure>();
-      for (const s of list) next.set(s.parcelId, s);
+      // Key by parcelCode (= LAND_PARCELS[i].id) so the render layer's
+      // parcelById.get(structure.parcelCode) join resolves correctly.
+      for (const s of list) next.set(s.parcelCode, s);
       return { structures: next };
     }),
 
@@ -94,10 +107,10 @@ export function getParcelStatus(
   return parcels.get(parcelId)?.status ?? 'available';
 }
 
-/** Helper — get the placed structure for a parcel, or null if none placed. */
+/** Helper — get the placed structure for a parcel (by parcelCode), or null if none placed. */
 export function getStructure(
   structures: Map<string, PlacedStructure>,
-  parcelId: string,
+  parcelCode: string,
 ): PlacedStructure | null {
-  return structures.get(parcelId) ?? null;
+  return structures.get(parcelCode) ?? null;
 }
