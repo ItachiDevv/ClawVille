@@ -56,11 +56,16 @@ jobs:
       - name: Install workspace deps
         run: bun install --frozen-lockfile
 
-      - name: Build workspace packages
-        # The api tests import @clawville/{database,shared,agent-runtime,
-        # agent-templates} from their dist/. Build only the packages (turbo
-        # filter) — skip apps/web's next build, which isn't on the test path.
-        run: bunx turbo run build --filter='./packages/*'
+      - name: Build the packages the money tests import
+        # The poker + engine tests import ONLY @clawville/database + @clawville/
+        # shared (grep-verified: 11 + 7 import sites, zero agent-runtime/-
+        # templates). Build EXACTLY those — NOT '--filter=./packages/*', which
+        # also builds @clawville/agent-runtime, whose build has a CI-only turbo
+        # type-resolution failure (TS2307 '@clawville/database') off the money
+        # path. Narrowing both fixes the gate and halves its runtime.
+        # [agent-runtime build ordering tracked separately — masked locally by
+        # turbo cache.]
+        run: bunx turbo run build --filter=@clawville/database --filter=@clawville/shared
 
       - name: Run the money/cove/poker invariant suite
         # SCOPED to the service test dirs (poker tournament/cash/sims + the
