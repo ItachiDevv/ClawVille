@@ -210,6 +210,17 @@ export default function SlotScreenModal() {
   /** Per-spin idempotency key. Re-used inside one spin-press lifecycle. */
   const spinIdemKeyRef = useRef<string | null>(null);
   const toastSeqRef = useRef(0);
+  /**
+   * Stale-session self-heal guard (2026-06-21 hotfix). When /spin 404s because
+   * our in-memory sessionId no longer maps to a server-open session (closed /
+   * expired / never replicated), we transparently clear the pointer, re-open a
+   * fresh session, and retry the spin ONCE — so a legit player never sees the
+   * scary "Session not found" toast that previously surfaced (and surfaced
+   * "twice in a row" on a fast double-press / autoplay). This ref makes the
+   * retry single-shot: a second consecutive 404 (e.g. server genuinely down)
+   * falls through to the normal toast instead of looping.
+   */
+  const spinRecoveringRef = useRef(false);
 
   // ── Toast helpers ──────────────────────────────────────────────────────
   const showToast = useCallback((message: string, tone: ToastTone = 'info') => {
@@ -308,45 +319,80 @@ export default function SlotScreenModal() {
     setSpinTrigger(prev => prev + 1);
 
     try {
-      let activeSessionId = sessionId;
-      // `effectivePredict` is what this spin will actually wager. If we
-      // adopt an existing server session, its `startingBalance` is the
-      // authoritative pinned predict and supersedes the local chip — using
-      // the React-state `predict` here would lose the chip-snap to the
-      // very spin that triggered it, hitting 400
-      // predict_must_equal_session_reserved_predict on the wire.
-      let effectivePredict = predict;
-      if (!activeSessionId) {
-        const opened = await openSession.mutateAsync({
-          paytableId,
-          currency: 'clawtokens',
-          predict: predict.toString(),
+      // One spin attempt: ensure a server-open session (open lazily if our local
+      // pointer is empty), then spin it. `forceReopen` ignores the local/store
+      // pointer and always opens a fresh session — used by the 404 self-heal
+      // retry below so it can't re-target the dead session it just discovered.
+      const attemptSpin = async (forceReopen: boolean): Promise<SpinResponse> => {
+        let activeSessionId = forceReopen ? null : sessionId;
+        // `effectivePredict` is what this spin will actually wager. If we
+        // adopt an existing server session, its `startingBalance` is the
+        // authoritative pinned predict and supersedes the local chip — using
+        // the React-state `predict` here would lose the chip-snap to the
+        // very spin that triggered it, hitting 400
+        // predict_must_equal_session_reserved_predict on the wire.
+        let effectivePredict = predict;
+        if (!activeSessionId) {
+          const opened = await openSession.mutateAsync({
+            paytableId,
+            currency: 'clawtokens',
+            predict: predict.toString(),
+          });
+          activeSessionId = opened.sessionId;
+          setSessionMeta({
+            sessionId: opened.sessionId,
+            serverSeedHash: opened.serverSeedHash,
+            clientSeed: opened.clientSeed,
+            walletBalance: opened.walletBalance,
+          });
+          const sessionPredict = Number(opened.startingBalance);
+          if (Number.isFinite(sessionPredict) && sessionPredict > 0 && sessionPredict !== predict) {
+            setPredict(sessionPredict);
+            showToast(`Resumed session — predict locked to ${sessionPredict}`, 'info');
+            effectivePredict = sessionPredict;
+          }
+        }
+
+        if (!spinIdemKeyRef.current) {
+          spinIdemKeyRef.current = crypto.randomUUID();
+        }
+        const idemKey = spinIdemKeyRef.current;
+
+        return spin.mutateAsync({
+          sessionId: activeSessionId,
+          predict: effectivePredict.toString(),
+          idempotencyKey: idemKey,
         });
-        activeSessionId = opened.sessionId;
-        setSessionMeta({
-          sessionId: opened.sessionId,
-          serverSeedHash: opened.serverSeedHash,
-          clientSeed: opened.clientSeed,
-          walletBalance: opened.walletBalance,
-        });
-        const sessionPredict = Number(opened.startingBalance);
-        if (Number.isFinite(sessionPredict) && sessionPredict > 0 && sessionPredict !== predict) {
-          setPredict(sessionPredict);
-          showToast(`Resumed session — predict locked to ${sessionPredict}`, 'info');
-          effectivePredict = sessionPredict;
+      };
+
+      let res: SpinResponse;
+      try {
+        res = await attemptSpin(false);
+      } catch (err) {
+        // Stale-session self-heal (2026-06-21 hotfix). A 404 session_not_found
+        // means our in-memory sessionId no longer maps to a server-open session
+        // (closed / expired / never replicated). Transparently drop the dead
+        // pointer, mint a FRESH idempotency key (the old one may be tied to the
+        // dead session and would 409 on predict-mismatch), force-open a new
+        // session, and retry ONCE — so the player never sees the scary
+        // "Session not found" toast (which previously surfaced twice on a fast
+        // double-press / autoplay). `spinRecoveringRef` makes this single-shot:
+        // if the retry ALSO fails, we let it throw to the outer catch and toast
+        // normally instead of looping.
+        const is404 =
+          err instanceof CoveApiError &&
+          (err.status === 404 || err.code === 'session_not_found' || err.code === 'session_not_open');
+        if (is404 && !spinRecoveringRef.current) {
+          spinRecoveringRef.current = true;
+          clearSessionMeta();
+          spinIdemKeyRef.current = null; // fresh ticket for the fresh session
+          res = await attemptSpin(true);
+          spinRecoveringRef.current = false;
+        } else {
+          spinRecoveringRef.current = false;
+          throw err;
         }
       }
-
-      if (!spinIdemKeyRef.current) {
-        spinIdemKeyRef.current = crypto.randomUUID();
-      }
-      const idemKey = spinIdemKeyRef.current;
-
-      const res: SpinResponse = await spin.mutateAsync({
-        sessionId: activeSessionId,
-        predict: effectivePredict.toString(),
-        idempotencyKey: idemKey,
-      });
 
       const spinResult = spinResponseToSpinResult(res);
       pendingResultRef.current = spinResult;
@@ -363,6 +409,7 @@ export default function SlotScreenModal() {
       fx.reset();
       spinLockRef.current = false;
       spinIdemKeyRef.current = null;
+      spinRecoveringRef.current = false; // self-heal exhausted/inapplicable — reset guard
       if (autoplayTimerRef.current) clearTimeout(autoplayTimerRef.current);
       setAutoplay({ count: 0, remaining: 0, active: false });
       // Stale-session recovery: 404 / session_not_open from /spin means our
