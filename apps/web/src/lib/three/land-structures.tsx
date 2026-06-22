@@ -394,12 +394,21 @@ function StructureHydrator() {
       try {
         const res = await api.getMyLand();
         if (cancelled) return;
+        // Resolve each structure's parcelId (DB UUID) → parcelCode using the
+        // parcels in the SAME /me payload. parcelCode (= LAND_PARCELS[i].id) is
+        // the join key the 3D render uses; the structure DTO carries ONLY the
+        // UUID (no parcelCode field), so without this map the join falls back to
+        // the UUID and never matches → owned buildings never render. (Fixer:
+        // the orchestrator closed this gap after the render+state diffs landed.)
+        const uuidToParcelCode = new Map<string, string>();
+        for (const p of res.parcels) uuidToParcelCode.set(p.id, p.parcelCode);
         setStructures(
           res.structures.map((s) => ({
-            parcelId: s.parcelId,
-            catalogKey: s.catalogKey,
+            parcelId:      s.parcelId,
+            parcelCode:    uuidToParcelCode.get(s.parcelId) ?? s.parcelId,
+            catalogKey:    s.catalogKey,
             structureType: s.structureType,
-            level: s.level,
+            level:         s.level,
           })),
         );
       } catch {
@@ -434,11 +443,24 @@ export default function LandStructures() {
   // Resolve placed structures to (parcel, structure) render pairs. Cap at
   // MAX_PARCELS_PER_AVATAR for safety — one owner can never have more, and this
   // guards against a malformed hydration list bloating the scene.
+  //
+  // JOIN BUG FIX (feat/land-world-parity): the old code keyed parcelById by
+  // LAND_PARCELS[i].id (= the parcelCode, e.g. 'parcel-founder-00') but looked
+  // up structure.parcelId (a DB UUID) — these never matched so owned structures
+  // never rendered. The fix: prefer structure.parcelCode (provided by
+  // land-state-impl in this branch) which IS the parcelCode, with a fallback to
+  // structure.parcelId so pre-migration hydration data degrades gracefully
+  // rather than crashing.
   const slots = useMemo(() => {
     const out: Array<{ parcel: ParcelSlot; structure: PlacedStructure }> = [];
     for (const structure of structures.values()) {
-      const parcel = parcelById.get(structure.parcelId);
-      if (!parcel) continue; // unknown parcelId — skip rather than crash
+      // Use parcelCode (= LAND_PARCELS[i].id) as the join key.
+      // Fall back to parcelId for hydration data from older API builds that
+      // didn't include parcelCode in the response.
+      const joinKey = (structure as PlacedStructure & { parcelCode?: string }).parcelCode
+        ?? structure.parcelId;
+      const parcel = parcelById.get(joinKey);
+      if (!parcel) continue; // unknown key — skip rather than crash
       out.push({ parcel, structure });
       if (out.length >= MAX_PARCELS_PER_AVATAR) break;
     }

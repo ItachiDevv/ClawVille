@@ -1,29 +1,36 @@
 'use client';
 
 /**
- * land-parcels.tsx — 3-category FOR-SALE sign system on ALL 180 land plots.
+ * land-parcels.tsx — 3-category FOR-SALE sign system on AVAILABLE land plots only.
  *
- * Visual scheme (2026-06-18 rework):
+ * Visual scheme (2026-06-22 reactivity rework):
  *   • Tier-colored GROUND PAD  — flat PlaneGeometry slightly above sand, low roughness,
- *     slight emissive tint.  Merged per tier.  UNCHANGED from previous version.
+ *     slight emissive tint.  Merged per tier.  STATIC (always visible on all 180 plots).
  *   • Corner posts + top rail  — 4 BoxGeometry corner posts + 4 BoxGeometry top rails
  *     per parcel, tier-colored, merged together WITH the pad into one mesh per tier.
- *     UNCHANGED from previous version.
- *   • FOR-SALE sign system     — REPLACED. Three sign categories (regular / premium /
+ *     STATIC (always visible — decorative frame).
+ *   • FOR-SALE sign system     — Three sign categories (regular / premium /
  *     premium-partner) each with a dedicated CanvasTexture, size config, and merged
- *     mesh.  Signs now render on ALL 180 plots (showroom lots included — the showroom
- *     layer's sign was removed from land-showroom.tsx, so there is no visual conflict).
+ *     mesh.  Signs render ONLY on parcels whose status === 'available' in useLandStore.
+ *     Sign meshes REBUILD when the available-parcel set changes (dispose old geo,
+ *     build new merged geo from current available set, identity-guard on change).
+ *
+ * Click bridge (2026-06-22):
+ *   LandParcelSignHitboxes (exported from this module) renders invisible JSX meshes at
+ *   each available sign position. R3F onClick → openLandOffice(parcelCode). Mobile tap
+ *   works via R3F's pointer-event handling. Zero extra draw calls (invisible meshes are
+ *   not rendered by the GPU — Three.js skips .visible=false objects in the render pass).
  *
  * Sign categories (getLandSignCategory from land-signage.ts):
- *   regular        — basic sign.  Plank 68×28wu, post h=52.  Single-line "FOR SALE".
- *   premium        — ~1.35× bigger.  Plank 92×38wu, post h=64.  Gold double-border,
+ *   regular        — basic sign.  Plank 290×120wu, post h=220.  Single-line "FOR SALE".
+ *   premium        — ~1.35× bigger.  Plank 380×158wu, post h=270.  Gold double-border,
  *                    "FOR SALE" + "PREMIUM" subtitle.  Founder + A tiers.
- *   premium-partner — ~1.7× bigger.  Plank 116×48wu, post h=76.  Cyan/platinum ornate
+ *   premium-partner — ~1.7× bigger.  Plank 480×200wu, post h=320.  Cyan/platinum ornate
  *                    border+topper, "FOR SALE" + "PARTNER" subtitle.  Curated subset of
  *                    premium plots (see land-signage.ts PREMIUM_PARTNER_PARCEL_IDS).
  *
- * Draw calls: 5 (pad+border per tier) + 3 (plank per category) + 3 (post per category) = 11.
- * (Was 7.  New +4 from splitting 1 post+1 plank into 3 post+3 plank.)
+ * Draw calls: 5 (pad+border per tier) + up to 3 (plank per category) + up to 3 (post per
+ * category) = up to 11 when all 180 parcels are available. Drops as parcels are bought.
  *
  * Iris Xe / WebGPU constraints:
  *   - NO drei Text / Billboard (hard crash on Iris Xe)
@@ -33,7 +40,8 @@
  *   - All geometry uses MeshStandardMaterial or MeshBasicMaterial — NO ShaderMaterial
  *
  * Culling: each merged mesh has matrixAutoUpdate=false + tight computeBoundingBox/Sphere.
- * Cleanup: all geometries, materials, and canvas textures are disposed on unmount.
+ * Cleanup: all geometries, materials, and canvas textures are disposed on unmount +
+ *          on every sign-set rebuild (old sign geo disposed before new geo is created).
  */
 
 import { useMemo, useEffect, useRef } from 'react';
@@ -44,6 +52,8 @@ import { getLandSignCategory } from '@clawville/shared';
 import type { ParcelSlot } from '@clawville/shared';
 import type { LandTier } from '@clawville/shared';
 import type { LandSignCategory } from '@clawville/shared';
+import { useLandStore, getParcelStatus } from '@/stores/land';
+import { useGameStore } from '@/stores/game';
 
 // ---------------------------------------------------------------------------
 // Constants — body frame (UNCHANGED)
@@ -75,7 +85,7 @@ const RAIL_THICKNESS = 4;   // rail depth
 const RAIL_Y         = FLOOR_Y + POST_H - RAIL_H * 0.5; // sits at top of posts
 
 // ---------------------------------------------------------------------------
-// Constants — sign system (NEW 3-category)
+// Constants — sign system (3-category)
 // ---------------------------------------------------------------------------
 
 /**
@@ -105,6 +115,13 @@ const SIGN_SIZES: Record<LandSignCategory, SignSizeConfig> = {
  *  FRONT of any building (which sits at the plot center). 0.82 → ~0.41×size from
  *  center (the front edge is at 0.5×size), so a big sign clears a big building. */
 const SIGN_RADIAL_OFFSET = 0.82; // fraction of parcel half-size
+
+/** Hitbox half-sizes per category for invisible click targets (generous for tap). */
+const HITBOX_HALF: Record<LandSignCategory, { hw: number; hh: number; hd: number }> = {
+  'regular':         { hw: 180, hh: 130, hd: 40 },
+  'premium':         { hw: 230, hh: 170, hd: 50 },
+  'premium-partner': { hw: 280, hh: 215, hd: 60 },
+};
 
 // ---------------------------------------------------------------------------
 // Tier visual scheme (UNCHANGED)
@@ -138,7 +155,7 @@ const _m4  = new THREE.Matrix4();
 const _m4b = new THREE.Matrix4();
 
 // ---------------------------------------------------------------------------
-// Sign CanvasTexture builders (one per category)
+// Sign CanvasTexture builders (one per category) — called ONCE at module init
 // ---------------------------------------------------------------------------
 
 /**
@@ -294,7 +311,7 @@ function buildPremiumPartnerSignTexture(): THREE.CanvasTexture {
 }
 
 // ---------------------------------------------------------------------------
-// Geometry builders (UNCHANGED for body; new per-category for signs)
+// Geometry builders (UNCHANGED for body; per-category for signs)
 // ---------------------------------------------------------------------------
 
 /**
@@ -355,7 +372,7 @@ function buildParcelBodyGeo(parcel: ParcelSlot): THREE.BufferGeometry {
 }
 
 /**
- * Compute the sign position for a parcel (shared by post + plank builders).
+ * Compute the sign position for a parcel (shared by post + plank builders and hitbox).
  * Sign is offset toward world origin along the parcel-to-origin radial direction.
  */
 function signPosition(parcel: ParcelSlot): { signX: number; signZ: number; angle: number } {
@@ -407,25 +424,149 @@ function buildSignPlankGeo(
 }
 
 // ---------------------------------------------------------------------------
+// Static materials — created ONCE per module lifetime, shared across rebuilds.
+// Textures and materials are disposed on component UNMOUNT, not on rebuild.
+// ---------------------------------------------------------------------------
+
+interface StaticSignMaterials {
+  signPostMat:    THREE.MeshStandardMaterial;
+  signPlankMats:  Record<LandSignCategory, THREE.MeshBasicMaterial>;
+  textures:       THREE.CanvasTexture[];
+}
+
+function buildStaticSignMaterials(): StaticSignMaterials {
+  const signPostMat = new THREE.MeshStandardMaterial({
+    color:     0x6b4c1e,
+    roughness: 0.92,
+    metalness: 0.0,
+  });
+
+  const regularTex        = buildRegularSignTexture();
+  const premiumTex        = buildPremiumSignTexture();
+  const premiumPartnerTex = buildPremiumPartnerSignTexture();
+
+  const signPlankMats: Record<LandSignCategory, THREE.MeshBasicMaterial> = {
+    'regular':         new THREE.MeshBasicMaterial({ map: regularTex,        side: THREE.DoubleSide }),
+    'premium':         new THREE.MeshBasicMaterial({ map: premiumTex,        side: THREE.DoubleSide }),
+    'premium-partner': new THREE.MeshBasicMaterial({ map: premiumPartnerTex, side: THREE.DoubleSide }),
+  };
+
+  return {
+    signPostMat,
+    signPlankMats,
+    textures: [regularTex, premiumTex, premiumPartnerTex],
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Sign mesh builder — builds merged sign meshes for a subset of available parcels
+// ---------------------------------------------------------------------------
+
+const SIGN_CATEGORIES: LandSignCategory[] = ['regular', 'premium', 'premium-partner'];
+
+/**
+ * Build the 6 sign meshes (3 post + 3 plank) for a given set of available parcels.
+ * Returns the meshes and a dispose function for their geometries only (materials
+ * are shared statics; textures owned by the caller's StaticSignMaterials).
+ */
+function buildSignMeshes(
+  availableParcels: ParcelSlot[],
+  signPostMat: THREE.MeshStandardMaterial,
+  signPlankMats: Record<LandSignCategory, THREE.MeshBasicMaterial>,
+): THREE.Mesh[] {
+  if (availableParcels.length === 0) return [];
+
+  const postGeosByCategory  = new Map<LandSignCategory, THREE.BufferGeometry[]>();
+  const plankGeosByCategory = new Map<LandSignCategory, THREE.BufferGeometry[]>();
+  for (const cat of SIGN_CATEGORIES) {
+    postGeosByCategory.set(cat, []);
+    plankGeosByCategory.set(cat, []);
+  }
+
+  for (const parcel of availableParcels) {
+    const cat  = getLandSignCategory(parcel);
+    const cfg  = SIGN_SIZES[cat];
+    const { signX, signZ, angle } = signPosition(parcel);
+
+    postGeosByCategory.get(cat)!.push(buildSignPostGeo(signX, signZ, cfg));
+    plankGeosByCategory.get(cat)!.push(buildSignPlankGeo(parcel, signX, signZ, angle, cfg));
+  }
+
+  const signMeshes: THREE.Mesh[] = [];
+
+  for (const cat of SIGN_CATEGORIES) {
+    // --- Post mesh ---
+    const postGeos = postGeosByCategory.get(cat)!;
+    if (postGeos.length > 0) {
+      const mergedPosts = mergeGeometries(postGeos, false);
+      for (const g of postGeos) g.dispose();
+      if (mergedPosts) {
+        mergedPosts.computeBoundingBox();
+        mergedPosts.computeBoundingSphere();
+        const postMesh              = new THREE.Mesh(mergedPosts, signPostMat);
+        postMesh.name               = `land-sign-post-${cat}`;
+        postMesh.matrixAutoUpdate   = false;
+        postMesh.updateMatrix();
+        postMesh.frustumCulled      = true;
+        signMeshes.push(postMesh);
+      }
+    } else {
+      for (const g of postGeos) g.dispose();
+    }
+
+    // --- Plank mesh ---
+    const plankGeos = plankGeosByCategory.get(cat)!;
+    if (plankGeos.length > 0) {
+      const mergedPlanks = mergeGeometries(plankGeos, false);
+      for (const g of plankGeos) g.dispose();
+      if (mergedPlanks) {
+        mergedPlanks.computeBoundingBox();
+        mergedPlanks.computeBoundingSphere();
+        const plankMesh              = new THREE.Mesh(mergedPlanks, signPlankMats[cat]);
+        plankMesh.name               = `land-sign-plank-${cat}`;
+        plankMesh.matrixAutoUpdate   = false;
+        plankMesh.updateMatrix();
+        plankMesh.frustumCulled      = true;
+        signMeshes.push(plankMesh);
+      }
+    } else {
+      for (const g of plankGeos) g.dispose();
+    }
+  }
+
+  return signMeshes;
+}
+
+// ---------------------------------------------------------------------------
+// Derive a stable identity key for the available set (for change detection)
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a string key representing the current available-parcel set.
+ * We use a sorted join of parcelIds. This runs at most once per store
+ * change (not per frame) and the parcel count is ≤180, so it's cheap.
+ */
+function availableSetKey(parcels: Map<string, { status: string }>): string {
+  const available: string[] = [];
+  for (const p of LAND_PARCELS) {
+    const status = parcels.get(p.id)?.status ?? 'available';
+    if (status === 'available') available.push(p.id);
+  }
+  // Sorted for determinism (Map iteration order is insertion-order but
+  // store updates could re-insert in any order after setParcels).
+  available.sort();
+  return available.join(',');
+}
+
+// ---------------------------------------------------------------------------
 // Main component
 // ---------------------------------------------------------------------------
 
 export default function LandParcels() {
   const groupRef = useRef<THREE.Group>(null);
 
-  /**
-   * Build all geometry and materials ONCE at mount (useMemo with empty dep array).
-   * LAND_PARCELS is a frozen constant — recomputing on every re-render is wasteful.
-   *
-   * Result:
-   *   5 body meshes  (pad+posts+rails per tier)
-   *   3 post meshes  (one per sign category — warm brown MeshStandardMaterial)
-   *   3 plank meshes (one per sign category — CanvasTexture MeshBasicMaterial)
-   * = 11 draw calls total.
-   */
-  const { bodyMeshes, signMeshes, ownedMaterials } = useMemo(() => {
-
-    // ── Per-tier body materials ──────────────────────────────────────────────
+  // ── Static body meshes (pads + posts + rails per tier) — built ONCE ──────
+  const { bodyMeshes, bodyMaterials } = useMemo(() => {
     const tierMats = new Map<LandTier, THREE.MeshStandardMaterial>();
     for (const tier of TIERS_ORDER) {
       tierMats.set(tier, new THREE.MeshStandardMaterial({
@@ -438,7 +579,6 @@ export default function LandParcels() {
       }));
     }
 
-    // ── Body geometry — per tier ─────────────────────────────────────────────
     const bodyGeosByTier = new Map<LandTier, THREE.BufferGeometry[]>();
     for (const tier of TIERS_ORDER) bodyGeosByTier.set(tier, []);
 
@@ -464,119 +604,157 @@ export default function LandParcels() {
       bodyMeshes.push(mesh);
     }
 
-    // ── Sign materials — one post mat (shared warm brown) + one plank mat per category ──
+    return { bodyMeshes, bodyMaterials: [...tierMats.values()] };
+  }, []); // LAND_PARCELS is frozen — body never changes
 
-    // Shared post material — all categories use the same warm-brown wood color.
-    const signPostMat = new THREE.MeshStandardMaterial({
-      color:     0x6b4c1e,
-      roughness: 0.92,
-      metalness: 0.0,
-    });
+  // ── Static sign materials — built ONCE, reused across every sign rebuild ──
+  const staticSignMats = useMemo(() => buildStaticSignMaterials(), []);
 
-    const regularTex        = buildRegularSignTexture();
-    const premiumTex        = buildPremiumSignTexture();
-    const premiumPartnerTex = buildPremiumPartnerSignTexture();
+  // ── Reactive sign meshes — subscribe to parcels store ─────────────────────
+  // useLandStore returns the Map reference. A new Map identity on every
+  // setParcels() call triggers this hook. We derive the available set and
+  // identity-guard so rebuild only fires when WHICH parcels are available
+  // actually changes.
+  const parcels = useLandStore((s) => s.parcels);
 
-    const signPlankMats: Record<LandSignCategory, THREE.MeshBasicMaterial> = {
-      'regular':         new THREE.MeshBasicMaterial({ map: regularTex,        side: THREE.DoubleSide }),
-      'premium':         new THREE.MeshBasicMaterial({ map: premiumTex,        side: THREE.DoubleSide }),
-      'premium-partner': new THREE.MeshBasicMaterial({ map: premiumPartnerTex, side: THREE.DoubleSide }),
-    };
+  // Ref to hold current sign meshes + the last key we built them from.
+  const signMeshesRef = useRef<THREE.Mesh[]>([]);
+  const lastKeyRef    = useRef<string>('');
 
-    // ── Sign geometry — collect per category, then merge ────────────────────
-    const SIGN_CATEGORIES: LandSignCategory[] = ['regular', 'premium', 'premium-partner'];
-
-    const postGeosByCategory  = new Map<LandSignCategory, THREE.BufferGeometry[]>();
-    const plankGeosByCategory = new Map<LandSignCategory, THREE.BufferGeometry[]>();
-    for (const cat of SIGN_CATEGORIES) {
-      postGeosByCategory.set(cat, []);
-      plankGeosByCategory.set(cat, []);
-    }
-
-    // Signs render on ALL 180 plots (showroom lots included — land-showroom.tsx
-    // no longer renders its own sign, so there is zero visual conflict).
-    for (const parcel of LAND_PARCELS) {
-      const cat  = getLandSignCategory(parcel);
-      const cfg  = SIGN_SIZES[cat];
-      const { signX, signZ, angle } = signPosition(parcel);
-
-      postGeosByCategory.get(cat)!.push(buildSignPostGeo(signX, signZ, cfg));
-      plankGeosByCategory.get(cat)!.push(buildSignPlankGeo(parcel, signX, signZ, angle, cfg));
-    }
-
-    // Merge and create meshes for each category
-    const signMeshes: THREE.Mesh[] = [];
-
-    for (const cat of SIGN_CATEGORIES) {
-      // --- Post mesh ---
-      const postGeos = postGeosByCategory.get(cat)!;
-      const mergedPosts = mergeGeometries(postGeos, false);
-      for (const g of postGeos) g.dispose();
-      if (mergedPosts) {
-        mergedPosts.computeBoundingBox();
-        mergedPosts.computeBoundingSphere();
-        const postMesh              = new THREE.Mesh(mergedPosts, signPostMat);
-        postMesh.name               = `land-sign-post-${cat}`;
-        postMesh.matrixAutoUpdate   = false;
-        postMesh.updateMatrix();
-        postMesh.frustumCulled      = true;
-        signMeshes.push(postMesh);
-      }
-
-      // --- Plank mesh ---
-      const plankGeos = plankGeosByCategory.get(cat)!;
-      const mergedPlanks = mergeGeometries(plankGeos, false);
-      for (const g of plankGeos) g.dispose();
-      if (mergedPlanks) {
-        mergedPlanks.computeBoundingBox();
-        mergedPlanks.computeBoundingSphere();
-        const plankMesh              = new THREE.Mesh(mergedPlanks, signPlankMats[cat]);
-        plankMesh.name               = `land-sign-plank-${cat}`;
-        plankMesh.matrixAutoUpdate   = false;
-        plankMesh.updateMatrix();
-        plankMesh.frustumCulled      = true;
-        signMeshes.push(plankMesh);
-      }
-    }
-
-    // Collect all owned materials for dispose on unmount.
-    // Textures are owned by the MeshBasicMaterial maps — dispose via material.
-    const ownedMaterials: THREE.Material[] = [
-      ...Array.from(tierMats.values()),
-      signPostMat,
-      ...Object.values(signPlankMats),
-    ];
-
-    return { bodyMeshes, signMeshes, ownedMaterials };
-  }, []); // LAND_PARCELS + LAND_SIGNAGE are frozen constants — only run once
-
-  // Attach meshes to the R3F group imperatively
+  // Recompute sign meshes whenever parcels changes (store update triggers re-render).
+  // This runs synchronously after render (useEffect), not during render, so it's safe
+  // to imperatively add/remove from the group.
   useEffect(() => {
     const group = groupRef.current;
     if (!group) return;
 
-    for (const m of bodyMeshes) group.add(m);
-    for (const m of signMeshes)  group.add(m);
+    // Derive the new available set key. Only rebuild if it changed.
+    const newKey = availableSetKey(parcels);
+    if (newKey === lastKeyRef.current) return;
+    lastKeyRef.current = newKey;
 
+    // Remove + dispose old sign meshes from the group.
+    for (const m of signMeshesRef.current) {
+      group.remove(m);
+      m.geometry.dispose();
+    }
+
+    // Build new sign meshes for available parcels only.
+    const availableParcels = LAND_PARCELS.filter(
+      (p) => (parcels.get(p.id)?.status ?? 'available') === 'available',
+    );
+    const newSignMeshes = buildSignMeshes(
+      availableParcels,
+      staticSignMats.signPostMat,
+      staticSignMats.signPlankMats,
+    );
+    for (const m of newSignMeshes) group.add(m);
+    signMeshesRef.current = newSignMeshes;
+  }, [parcels, staticSignMats]);
+
+  // ── Attach body meshes to R3F group (once) ────────────────────────────────
+  useEffect(() => {
+    const group = groupRef.current;
+    if (!group) return;
+    for (const m of bodyMeshes) group.add(m);
     return () => {
-      // ── Teardown: dispose every owned resource ───────────────────────────
       for (const m of bodyMeshes) {
         m.geometry.dispose();
         group.remove(m);
       }
-      for (const m of signMeshes) {
-        m.geometry.dispose();
-        group.remove(m);
-      }
-      for (const mat of ownedMaterials) {
-        // Dispose any texture map owned by this material (CanvasTextures).
-        if ('map' in mat && (mat as THREE.MeshBasicMaterial).map) {
-          (mat as THREE.MeshBasicMaterial).map!.dispose();
-        }
-        mat.dispose();
-      }
+      for (const mat of bodyMaterials) mat.dispose();
     };
-  }, [bodyMeshes, signMeshes, ownedMaterials]);
+  }, [bodyMeshes, bodyMaterials]);
+
+  // ── Full unmount teardown — dispose sign meshes + shared sign materials ────
+  useEffect(() => {
+    return () => {
+      const group = groupRef.current;
+      if (group) {
+        for (const m of signMeshesRef.current) {
+          m.geometry.dispose();
+          group.remove(m);
+        }
+      }
+      signMeshesRef.current = [];
+      lastKeyRef.current = '';
+
+      // Dispose shared sign materials + textures.
+      for (const tex of staticSignMats.textures) tex.dispose();
+      staticSignMats.signPostMat.dispose();
+      for (const mat of Object.values(staticSignMats.signPlankMats)) mat.dispose();
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // run only on unmount
 
   return <group ref={groupRef} name="land-parcels" />;
+}
+
+// ---------------------------------------------------------------------------
+// LandParcelSignHitboxes — invisible JSX click targets for available signs
+// ---------------------------------------------------------------------------
+
+/**
+ * Renders one invisible BoxMesh per available-for-sale sign.
+ * R3F's pointer-event system handles onClick / onPointerDown for mouse + touch.
+ * Clicking (or tapping on mobile) calls openLandOffice(parcelCode) which opens
+ * the Land Office modal focused on that parcel.
+ *
+ * Iris Xe safe:
+ *   - invisible=true → Three.js skips this mesh in the render pass (no draw call).
+ *   - MeshBasicMaterial (transparent) — no ShaderMaterial.
+ *   - No per-frame allocations; the hitbox list rebuilds on store change (rare).
+ */
+
+// Shared transparent material for all hitboxes (never disposed — module-level singleton).
+const _hitboxMat = new THREE.MeshBasicMaterial({ transparent: true, opacity: 0 });
+
+export function LandParcelSignHitboxes() {
+  const parcels = useLandStore((s) => s.parcels);
+  // land-state-impl extends openLandOffice to accept an optional parcelCode.
+  // Cast to the extended signature so the click bridge compiles before the
+  // store type is updated. The runtime value is the same action — the store
+  // update and this call site are coordinated via the frozen contract.
+  const openLandOffice = useGameStore((s) => s.openLandOffice) as (parcelCode?: string) => void;
+
+  // Derive the list of available parcel hitbox specs. Memoized on parcels identity.
+  const hitboxes = useMemo(() => {
+    return LAND_PARCELS
+      .filter((p) => (parcels.get(p.id)?.status ?? 'available') === 'available')
+      .map((p) => {
+        const cat = getLandSignCategory(p);
+        const cfg = SIGN_SIZES[cat];
+        const hb  = HITBOX_HALF[cat];
+        const { signX, signZ } = signPosition(p);
+        const plankY = FLOOR_Y + cfg.postH - cfg.plankH * 0.6;
+        return {
+          parcelCode: p.id,
+          x:          signX,
+          y:          plankY,
+          z:          signZ,
+          hw:         hb.hw,
+          hh:         hb.hh,
+          hd:         hb.hd,
+        };
+      });
+  }, [parcels]);
+
+  return (
+    <>
+      {hitboxes.map((hb) => (
+        <mesh
+          key={hb.parcelCode}
+          position={[hb.x, hb.y, hb.z]}
+          visible={false}
+          material={_hitboxMat}
+          onClick={(e) => {
+            e.stopPropagation();
+            openLandOffice(hb.parcelCode);
+          }}
+        >
+          <boxGeometry args={[hb.hw * 2, hb.hh * 2, hb.hd * 2]} />
+        </mesh>
+      ))}
+    </>
+  );
 }
