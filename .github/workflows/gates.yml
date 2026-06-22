@@ -56,16 +56,16 @@ jobs:
       - name: Install workspace deps
         run: bun install --frozen-lockfile
 
-      - name: Build the packages the money tests import
-        # The poker + engine tests import ONLY @clawville/database + @clawville/
-        # shared (grep-verified: 11 + 7 import sites, zero agent-runtime/-
-        # templates). Build EXACTLY those — NOT '--filter=./packages/*', which
-        # also builds @clawville/agent-runtime, whose build has a CI-only turbo
-        # type-resolution failure (TS2307 '@clawville/database') off the money
-        # path. Narrowing both fixes the gate and halves its runtime.
-        # [agent-runtime build ordering tracked separately — masked locally by
-        # turbo cache.]
-        run: bunx turbo run build --filter=@clawville/database --filter=@clawville/shared
+      - name: Build the packages the money tests need
+        # The money tests transitively import npc-simulation.ts → @clawville/
+        # agent-runtime, so build agent-runtime; turbo pulls its deps
+        # (database, shared, agent-templates) in dependency order. This is the
+        # minimal set the suite resolves (verified 546/0 with exactly these
+        # dists). NOT '--filter=./packages/*' (drags in apps/web + wager-program).
+        # Requires the same-commit agent-runtime build fixes (declared
+        # @clawville/database dep + test-file tsc exclude) — without them a fresh
+        # CI build of agent-runtime errors TS2307, masked locally by turbo cache.
+        run: bunx turbo run build --filter=@clawville/agent-runtime
 
       - name: Run the money/cove/poker invariant suite
         # SCOPED to the service test dirs (poker tournament/cash/sims + the
