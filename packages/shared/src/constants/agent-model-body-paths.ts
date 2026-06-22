@@ -70,11 +70,9 @@ export const AGENT_MODEL_BODY_PATHS: Record<AgentModelKey, AgentModelBodyRef> = 
   helen: { path: '/avatars/helen.vrm?v=2', format: 'vrm' },
   clytemnestra: { path: '/avatars/clytemnestra.vrm?v=2', format: 'vrm' },
 
-  // NOTE: the web `MODEL_REGISTRY` also has `eliza_chibi` / `milady_chibi`, but
-  // the canonical shared `AGENT_MODELS` registry does NOT (they were never added
-  // to the server-side enum), so they are not valid `AgentModelKey`s and cannot
-  // be a key here. An avatar somehow carrying one resolves to a clean 422
-  // (NoExportableBodyError) rather than a wrong body. If chibi is ever promoted
-  // into `AGENT_MODELS`, add its body path here in the same diff (the coverage
-  // test will fail until you do).
+  // ── Chibi (VRM humanoid, half-height) — promoted into AGENT_MODELS 2026-06-21 ──
+  // ?v=3 matches MODEL_REGISTRY[*_chibi].path in the web registry (the query is
+  // part of the content-address — keep in sync, incl. the ?v on every bump).
+  eliza_chibi: { path: '/avatars/eliza-chibi.vrm?v=3', format: 'vrm' },
+  milady_chibi: { path: '/avatars/milady-chibi.vrm?v=3', format: 'vrm' },
 };

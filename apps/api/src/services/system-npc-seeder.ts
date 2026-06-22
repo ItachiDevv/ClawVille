@@ -188,6 +188,13 @@ export async function ensureSystemNpcs(): Promise<SeedResult[]> {
         .update(platformAgents)
         .set({
           customization,
+          // Defense-in-depth (2026-06-21): persist the buildingId so the runtime's
+          // template fallback resolves the RIGHT building even if it ever runs
+          // ahead of customization. The persona itself is customization-driven
+          // (see eliza-runtime convertToElizaCharacter customization-first fix),
+          // but a stamped locationId stops a future empty-config row from bleeding
+          // the 'cron-automation' (Pearl) fallback into this teacher.
+          config: { locationId: buildingId },
           updatedAt: new Date(),
         })
         .where(eq(platformAgents.id, existingPlatformAgent.id));
@@ -200,7 +207,7 @@ export async function ensureSystemNpcs(): Promise<SeedResult[]> {
           type: 'location-agent',
           status: 'stopped',
           customization,
-          config: {},
+          config: { locationId: buildingId },
         })
         .returning({ id: platformAgents.id });
       platformAgentId = inserted.id;
