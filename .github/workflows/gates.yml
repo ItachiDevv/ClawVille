@@ -1,0 +1,70 @@
+name: Gates — money/cove/poker invariant suite
+
+# CI-gates Phase 0 — arm the backstop.
+#
+# The money/cove/poker invariant test suite already EXISTS and is well-written,
+# but it NEVER ran in CI — a single config gap left the entire money-regression
+# backstop un-armed (a flipped payout constant or a broken conservation leg would
+# ship to prod uncaught). This gate runs that suite on every PR touching the
+# money/economy code, so a regression goes RED and BLOCKS the merge — keys, not
+# prompts.
+#
+# DB-tier note: CI has no `.env.local` (gitignored), so `DATABASE_URL` is unset
+# and the `describeIfDb`-gated tests SKIP. What runs is the IN-MEMORY suite — the
+# poker tournament + cash conservation/idempotency, the slot/blackjack/baccarat/
+# holdem engine logic, side-pot/rake conservation, the provably-fair replay — all
+# on FakeDb/FakeLedger. That is the guaranteed-green Phase-0 gate. Phase 0b adds a
+# Postgres(+pgvector) service + db:push so the DB-backed tests also run, once
+# verified green in CI (kept separate so this gate can be made REQUIRED today).
+#
+# Local equivalent: `cd apps/api && bun test`  (with DATABASE_URL UNSET).
+
+on:
+  pull_request:
+    paths:
+      - 'apps/api/src/**'
+      - 'packages/database/src/schema/**'
+      - 'packages/shared/src/constants/**'
+      - '.github/workflows/gates.yml'
+  push:
+    branches:
+      - master
+    paths:
+      - 'apps/api/src/**'
+      - 'packages/database/src/schema/**'
+      - 'packages/shared/src/constants/**'
+  workflow_dispatch: {}
+
+concurrency:
+  group: gates-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  api-invariant-tests:
+    name: api money/cove/poker invariant tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install workspace deps
+        run: bun install --frozen-lockfile
+
+      - name: Build workspace packages
+        # The api tests import @clawville/{database,shared,agent-runtime,
+        # agent-templates} from their dist/. Build only the packages (turbo
+        # filter) — skip apps/web's next build, which isn't on the test path.
+        run: bunx turbo run build --filter='./packages/*'
+
+      - name: Run the money/cove/poker invariant suite
+        # DATABASE_URL intentionally UNSET → describeIfDb tests skip; the
+        # in-memory conservation/idempotency/parity/no-leak suite runs and IS
+        # the gate. A flipped payout / broken conservation / lost idempotency
+        # makes this RED and blocks the merge.
+        run: cd apps/api && bun test
