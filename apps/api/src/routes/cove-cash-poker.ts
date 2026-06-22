@@ -45,6 +45,7 @@ import {
   type CashSubject,
   type CreateCashTableConfig,
 } from '../services/poker/cash-table-manager';
+import { HOUSE_TIER_STAKES } from '../services/poker/cash-house-config';
 import { InsufficientTokensError } from '../services/claw-token-ledger';
 import type { AppContext } from '../types';
 
@@ -59,14 +60,10 @@ const createLimiter = createRateLimiter({ maxPerWindow: 10, windowMs: 60_000 });
 const MAX_CONCURRENT_OPEN_TABLES_PER_CREATOR = 3;
 
 // ── Fixed house stake tiers (locked) ─────────────────────────────────────────
-const HOUSE_TIERS: Record<
-  string,
-  { buyInCt: number; smallBlindCt: number; bigBlindCt: number }
-> = {
-  low: { buyInCt: 20, smallBlindCt: 1, bigBlindCt: 2 },
-  mid: { buyInCt: 100, smallBlindCt: 5, bigBlindCt: 10 },
-  high: { buyInCt: 500, smallBlindCt: 25, bigBlindCt: 50 },
-};
+// SINGLE SOURCE OF TRUTH: `HOUSE_TIER_STAKES` in `cash-house-config.ts` — the SAME
+// map the house auto-scaler reads, so the human-facing create path and the scaler's
+// auto-create path can never drift on a tier's stakes.
+const HOUSE_TIERS = HOUSE_TIER_STAKES;
 
 /**
  * Resolve the request subject for an economy write. Precedence: Lucia human →
@@ -133,9 +130,16 @@ const idParamSchema = z.object({ id: z.string().uuid() });
 // ── Schemas ──────────────────────────────────────────────────────────────────
 
 const createTableSchema = z.discriminatedUnion('source', [
-  // House/public table: a FIXED tier ('low' | 'mid' | 'high'); stakes are derived.
+  // PUBLIC tier table created BY A USER/AGENT: a FIXED tier; stakes are derived.
+  // SCOPE LOCK (2026-06-22): the route ONLY ever mints `source='player-public'`.
+  // `source='house'` is RESERVED for the house auto-scaler, which calls
+  // `cashTableManager.createTable` DIRECTLY (never through this route). A house
+  // table fills with house-bank-debited bots and is self-driven by the tick, so
+  // letting a normal caller POST one would hand any user a house-bank-funded bot
+  // table on demand (a house-bank exposure/drain vector). Dropping 'house' from
+  // this enum is the hard gate: a user POST can never reach a house table.
   z.object({
-    source: z.enum(['house', 'player-public']),
+    source: z.literal('player-public'),
     tierKey: z.enum(['low', 'mid', 'high']),
     maxSeats: z.number().int().min(2).max(8).default(8),
     seededAgentSlots: z.number().int().min(0).max(8).default(0),
