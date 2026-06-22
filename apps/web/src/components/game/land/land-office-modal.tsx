@@ -25,6 +25,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import {
   LAND_TIERS,
   tierLabel,
@@ -38,6 +39,7 @@ import { useAvatar, useSetSpawnPreference } from '@/hooks/use-avatar';
 import { useIsMobile } from '@/hooks/use-is-mobile';
 import { api, ApiError } from '@/lib/api';
 import { useLandStore, type ParcelState } from '@/stores/land';
+import { LAND_PARCELS_QUERY_KEY } from '@/lib/three/land-state-hydrator';
 import type {
   LandParcelDTO,
   LandStructureDTO,
@@ -45,6 +47,12 @@ import type {
 } from './types';
 
 type Tab = 'for-sale' | 'my-land' | 'build';
+
+// ---------------------------------------------------------------------------
+// Ref-based parcel focus helper — scrolls a highlighted card into view.
+// Used when the modal is opened from a 3D parcel click (landOfficeFocusParcel).
+// ---------------------------------------------------------------------------
+const FOCUSED_CARD_ID = 'land-office-focused-parcel';
 
 /** Tier accent colors — matches the 3D parcel palette in land-parcels.tsx. */
 const TIER_ACCENT: Record<LandTier, string> = {
@@ -132,9 +140,14 @@ function PriceText({ priceCt }: { priceCt: number | null }) {
 function ForSaleTab({
   onBuy,
   clawTokens,
+  focusParcelCode,
+  onFocusConsumed,
 }: {
   onBuy: (parcel: LandParcelDTO) => void;
   clawTokens: number;
+  /** When set, scroll the matching parcel card into view and clear after. */
+  focusParcelCode?: string | null;
+  onFocusConsumed?: () => void;
 }) {
   const [parcels, setParcels] = useState<LandParcelDTO[]>([]);
   const [loading, setLoading] = useState(false);
@@ -157,6 +170,26 @@ function ForSaleTab({
   useEffect(() => {
     load();
   }, [load]);
+
+  // Scroll the focused parcel into view once the parcel list has loaded and
+  // the DOM element exists. Uses the DOM id set on the ParcelCard wrapper.
+  useEffect(() => {
+    if (!focusParcelCode || loading || parcels.length === 0) return;
+    // Reset tier filter to 'all' so the target parcel is visible in any tier.
+    setFilterTier('all');
+    // Defer one tick so the list has re-rendered with filterTier='all'.
+    const tid = setTimeout(() => {
+      const el = document.getElementById(FOCUSED_CARD_ID);
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        onFocusConsumed?.();
+      }
+    }, 60);
+    return () => clearTimeout(tid);
+    // Only re-run when focusParcelCode changes; loading/parcels are not deps here
+    // because we already guard on them above. eslint disable below is intentional.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusParcelCode]);
 
   // Group available parcels by tier in the value-gradient order (founder→starter).
   const byTier = useMemo(() => {
@@ -237,6 +270,7 @@ function ForSaleTab({
                       parcel={p}
                       clawTokens={clawTokens}
                       onBuy={onBuy}
+                      isFocused={!!focusParcelCode && p.parcelCode === focusParcelCode}
                     />
                   ))}
                 </div>
@@ -282,18 +316,24 @@ function ParcelCard({
   parcel,
   clawTokens,
   onBuy,
+  isFocused,
 }: {
   parcel: LandParcelDTO;
   clawTokens: number;
   onBuy: (p: LandParcelDTO) => void;
+  isFocused?: boolean;
 }) {
   const accent = TIER_ACCENT[parcel.tier];
   const isFounder = parcel.priceCt === null;
   const tooPoor = parcel.priceCt !== null && clawTokens < parcel.priceCt;
   return (
     <div
+      id={isFocused ? FOCUSED_CARD_ID : undefined}
       className="flex flex-col gap-2 rounded-xl border bg-cyan-500/[0.04] p-3"
-      style={{ borderColor: `${accent}33` }}
+      style={{
+        borderColor: isFocused ? '#38bdf8' : `${accent}33`,
+        boxShadow: isFocused ? '0 0 0 2px #38bdf880' : undefined,
+      }}
     >
       <div className="flex items-center justify-between gap-2">
         <span className="font-mono text-[11px] uppercase tracking-[0.14em] text-cyan-100">
@@ -963,7 +1003,10 @@ export default function LandOfficeModal() {
   const open = useGameStore((s) => s.landOfficeOpen);
   const close = useGameStore((s) => s.closeLandOffice);
   const addToast = useGameStore((s) => s.addToast);
+  const focusParcelCode = useGameStore((s) => s.landOfficeFocusParcel);
+  const clearLandOfficeFocus = useGameStore((s) => s.clearLandOfficeFocus);
   const setStoreParcels = useLandStore((s) => s.setParcels);
+  const queryClient = useQueryClient();
   const isMobile = useIsMobile();
   const { data: avatar } = useAvatar();
   const setSpawnPreference = useSetSpawnPreference();
@@ -1012,12 +1055,26 @@ export default function LandOfficeModal() {
     }
   }, [hasAvatar, setStoreParcels]);
 
-  // On open: load my land + hydrate the overlay.
+  // On open: load my land + hydrate the overlay. If opened with a focus parcel,
+  // auto-switch to the For-Sale tab so the highlighted card is visible.
   useEffect(() => {
     if (!open) return;
     refreshMyLand();
     hydrateOverlay(avatarId);
+    if (focusParcelCode) {
+      setTab('for-sale');
+    }
+    // focusParcelCode intentionally excluded from deps — we only want this to
+    // react to the open event, not to every focus change. Tab auto-switch on
+    // each new open is the correct semantic.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, refreshMyLand, hydrateOverlay, avatarId]);
+
+  // Helper — invalidate the world parcel query so LandStateHydrator refetches
+  // and the 3D scene reflects the new ownership without a page reload.
+  const invalidateLandState = useCallback(() => {
+    queryClient.invalidateQueries({ queryKey: LAND_PARCELS_QUERY_KEY });
+  }, [queryClient]);
 
   const handleClaim = async () => {
     setClaiming(true);
@@ -1031,6 +1088,8 @@ export default function LandOfficeModal() {
       );
       await refreshMyLand();
       await hydrateOverlay(avatarId);
+      // Invalidate the world parcel query so the 3D FOR-SALE sign updates live.
+      invalidateLandState();
       setTab('my-land');
     } catch (err) {
       const { code, status } = errCode(err);
@@ -1050,6 +1109,8 @@ export default function LandOfficeModal() {
     setBuyTarget(null);
     await refreshMyLand();
     await hydrateOverlay(avatarId);
+    // Invalidate the world parcel query so the 3D FOR-SALE sign updates live.
+    invalidateLandState();
     setTab('my-land');
   };
 
@@ -1099,7 +1160,14 @@ export default function LandOfficeModal() {
           )}
         </div>
 
-        {tab === 'for-sale' && <ForSaleTab onBuy={setBuyTarget} clawTokens={clawTokens} />}
+        {tab === 'for-sale' && (
+          <ForSaleTab
+            onBuy={setBuyTarget}
+            clawTokens={clawTokens}
+            focusParcelCode={focusParcelCode}
+            onFocusConsumed={clearLandOfficeFocus}
+          />
+        )}
         {tab === 'my-land' && (
           <MyLandTab
             parcels={myParcels}

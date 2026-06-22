@@ -36,9 +36,10 @@ import ActivityIndicators from '@/lib/three/activity-indicators';
 import FloatingTexts3D from '@/lib/three/floating-text-3d';
 import NpcSpeechBubbles from '@/lib/three/npc-speech-bubbles';
 import ClickToMove from '@/lib/three/click-to-move';
-import LandParcels from '@/lib/three/land-parcels';
+import LandParcels, { LandParcelSignHitboxes } from '@/lib/three/land-parcels';
 import LandStructures from '@/lib/three/land-structures';
 import LandShowroom from '@/lib/three/land-showroom';
+import LandStateHydrator from '@/lib/three/land-state-hydrator';
 import { KTX2LoaderSetup } from '@/lib/three/ktx2-loader-setup';
 import { MeshoptLoaderSetup } from '@/lib/three/meshopt-loader-setup';
 import { WorldLabelsOverlayMount } from '@/lib/three/world-labels-overlay';
@@ -1440,9 +1441,19 @@ const SceneContents = memo(function SceneContents({
       <group name="perf:terrain" userData={{ perfChunk: 'terrain' }}>
         <ArenaTerrain />
       </group>
+      {/* Land state hydrator — headless, no geometry, returns null.
+          Fetches all parcel ownership (available + owned) from the public API
+          and writes the parcelCode-keyed result into useLandStore.parcels so
+          every land-parcels / land-structures / land-showroom consumer reflects
+          real DB ownership without opening any modal. Invalidated by the Land
+          Office modal after buy/claim/place/upgrade so the world updates live.
+          Must live inside the R3F Canvas tree so React context (QueryClient)
+          is available. Guest-safe (public endpoint). */}
+      <LandStateHydrator />
+
       {/* Land parcels — 180 for-sale lots (Phase 1, square block-frames).
           Merged BufferGeometry pads + posts/rails + signs, 7 draw calls total.
-          No ownership/buy logic this slice — all parcels render as available.
+          Ownership state now read from useLandStore.parcels (hydrated above).
           See lib/three/land-parcels.tsx for draw-call budget and tier scheme.
           Wrapped in Suspense so a useMemo failure during canvas texture build
           doesn't crash the whole world. */}
@@ -1451,6 +1462,12 @@ const SceneContents = memo(function SceneContents({
           <LandParcels />
         </group>
       </Suspense>
+
+      {/* Land parcel sign hitboxes — invisible click targets on available FOR-SALE
+          signs.  R3F onClick → openLandOffice(parcelCode) → Land Office modal opens
+          focused on the clicked parcel.  Rebuilt reactively when parcels change.
+          Invisible meshes (visible=false) have ZERO GPU draw calls. */}
+      <LandParcelSignHitboxes />
 
       {/* Land structures — placed homes/shops rendered on owned parcels (Phase 1
           Stage 2). Clean low-poly primitive fallback today; real GLBs swap in
