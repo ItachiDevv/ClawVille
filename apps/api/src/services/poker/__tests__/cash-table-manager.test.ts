@@ -447,6 +447,22 @@ function humanSubject(avatarId: string): CashSubject {
   return { kind: 'user', userId: `u-${avatarId}`, avatarId, agentId: null };
 }
 
+/**
+ * The creator subject the house auto-scaler uses to stand up a `source='house'`
+ * table: its avatarId IS the house-bank avatar. The manager's house-table scope
+ * guard (2026-06-22) only lets the house-bank avatar create house tables, so any
+ * test that creates a house table must use THIS as the creator.
+ */
+function houseCreatorSubject(houseBankAvatarId: string): CashSubject {
+  return {
+    kind: 'agent',
+    userId: houseBankAvatarId,
+    avatarId: houseBankAvatarId,
+    agentId: 'poker-house-bank',
+    name: 'Poker House Bank',
+  };
+}
+
 describe('CashTableManager — P1 lifecycle + conservation', () => {
   const HOUSE_BANK_AVATAR = 'house-bank-1';
 
@@ -480,11 +496,12 @@ describe('CashTableManager — P1 lifecycle + conservation', () => {
     const human = 'human-1';
     ledger.setBalance(human, 1000);
 
-    // Create a Mid public table (100/5/10), seeded-agent fill of 1 slot so a
-    // single human reaches the 2-seat minimum.
+    // Create a Mid HOUSE table (100/5/10), seeded-agent fill of 1 slot so a
+    // single human reaches the 2-seat minimum. Seeding is HOUSE-ONLY (locked
+    // scope), so the seeding/conservation harness uses source='house'.
     const table = await mgr.createTable(
       {
-        source: 'player-public',
+        source: 'house',
         visibility: 'public',
         tierKey: 'mid',
         buyInCt: 100,
@@ -493,7 +510,8 @@ describe('CashTableManager — P1 lifecycle + conservation', () => {
         maxSeats: 6,
         seededAgentSlots: 1,
       },
-      humanSubject(human),
+      // House tables may only be created by the house-bank avatar (scope guard).
+      houseCreatorSubject(HOUSE_BANK_AVATAR),
     );
     expect(table.id).toBeTruthy();
 
@@ -691,12 +709,15 @@ describe('CashTableManager — P1 lifecycle + conservation', () => {
     expect(ledger.get(guest)).toBe(400); // 100 buy-in debited via the join path.
   });
 
-  it('refuses to seed agents when a houseBankAvatarProvider is missing (faucet guard)', async () => {
+  it('refuses to CREATE a house table when a houseBankAvatarProvider is missing (faucet guard, create-time)', async () => {
     const db = new FakeDb();
     const ledger = new FakeLedger();
     const sim = new PokerTableSim(new FakeClock());
     let seedCounter = 0;
-    // seededAgentProvider set but NO houseBankAvatarProvider → must refuse to fill.
+    // seededAgentProvider set but NO houseBankAvatarProvider. With no house bank
+    // wired, NO house table can even be created — the scope/faucet guard rejects at
+    // create time (a house table without a bank would mint bot chips), which is a
+    // STRONGER protection than the fill-time guard: there is no house table to sit at.
     const mgr = new CashTableManager({
       db: db as never,
       ledger: ledger as never,
@@ -709,11 +730,83 @@ describe('CashTableManager — P1 lifecycle + conservation', () => {
         name: 'Seeded Agent',
       }),
     });
-    const human = 'human-x';
-    ledger.setBalance(human, 1000);
-    const table = await mgr.createTable(
+    await expect(
+      mgr.createTable(
+        {
+          source: 'house',
+          visibility: 'public',
+          tierKey: 'mid',
+          buyInCt: 100,
+          smallBlindCt: 5,
+          bigBlindCt: 10,
+          maxSeats: 6,
+          seededAgentSlots: 1,
+        },
+        // Even a would-be house creator can't make a house table with no bank wired.
+        humanSubject('would-be-house'),
+      ),
+    ).rejects.toThrow(/may only be created by the house auto-scaler/);
+  });
+
+  it('rejects a NON-house-bank subject creating a source=house table even WITH a bank wired (scope guard)', async () => {
+    // The create guard binds the creator IDENTITY, not just bank presence: a normal
+    // user/agent (avatarId != house bank) is rejected even though a bank is wired.
+    const { mgr } = makeManager();
+    await expect(
+      mgr.createTable(
+        {
+          source: 'house',
+          visibility: 'public',
+          tierKey: 'low',
+          buyInCt: 20,
+          smallBlindCt: 1,
+          bigBlindCt: 2,
+          maxSeats: 6,
+          seededAgentSlots: 3,
+        },
+        humanSubject('regular-user'), // NOT the house bank
+      ),
+    ).rejects.toThrow(/may only be created by the house auto-scaler/);
+    // The house-bank creator IS allowed.
+    const ok = await mgr.createTable(
       {
-        source: 'player-public',
+        source: 'house',
+        visibility: 'public',
+        tierKey: 'low',
+        buyInCt: 20,
+        smallBlindCt: 1,
+        bigBlindCt: 2,
+        maxSeats: 6,
+        seededAgentSlots: 3,
+      },
+      houseCreatorSubject(HOUSE_BANK_AVATAR),
+    );
+    expect(ok.source).toBe('house');
+  });
+
+  it('refuses to FILL seeded agents if a house table somehow lacks a houseBankAvatarProvider (fill-time faucet guard, defense-in-depth)', async () => {
+    // Defense-in-depth: even if a house table existed without a bank (it can't via
+    // the create guard, but the fill-time guard must still hold), the fill path
+    // refuses to mint. We force this by creating the table WITH a bank, then driving
+    // a manager whose provider is missing — proving fillSeededAgents itself guards.
+    const db = new FakeDb();
+    const ledger = new FakeLedger();
+    const sim = new PokerTableSim(new FakeClock());
+    let seedCounter = 0;
+    // Manager A (with a bank) creates the house table row.
+    const mgrWithBank = new CashTableManager({
+      db: db as never,
+      ledger: ledger as never,
+      sim,
+      clock: new FakeClock(),
+      seedFn: () => (seedCounter++).toString(16).padStart(64, '0'),
+      seededAgentProvider: () => ({ avatarId: 'agent-seed-x', agentId: 'agent-seed', name: 'Seeded Agent' }),
+      houseBankAvatarProvider: () => HOUSE_BANK_AVATAR,
+    });
+    ledger.setBalance(HOUSE_BANK_AVATAR, 1_000_000);
+    const table = await mgrWithBank.createTable(
+      {
+        source: 'house',
         visibility: 'public',
         tierKey: 'mid',
         buyInCt: 100,
@@ -722,11 +815,21 @@ describe('CashTableManager — P1 lifecycle + conservation', () => {
         maxSeats: 6,
         seededAgentSlots: 1,
       },
-      humanSubject(human),
+      houseCreatorSubject(HOUSE_BANK_AVATAR),
     );
-    // The sit seats the human, then tries to fill seeded agents → throws (faucet
-    // guard). The human's own debit already happened; the throw surfaces the misconfig.
-    await expect(mgr.sitDown(table.id, humanSubject(human), 100)).rejects.toThrow(
+    // Manager B shares the same DB/sim but has a seeded provider and NO bank — its
+    // fill path must throw rather than mint.
+    const mgrNoBank = new CashTableManager({
+      db: db as never,
+      ledger: ledger as never,
+      sim,
+      clock: new FakeClock(),
+      seedFn: () => (seedCounter++).toString(16).padStart(64, '0'),
+      seededAgentProvider: () => ({ avatarId: 'agent-seed-y', agentId: 'agent-seed', name: 'Seeded Agent' }),
+    });
+    const human = 'human-x';
+    ledger.setBalance(human, 1000);
+    await expect(mgrNoBank.sitDown(table.id, humanSubject(human), 100)).rejects.toThrow(
       /no houseBankAvatarProvider/,
     );
   });
@@ -758,5 +861,713 @@ describe('CashTableManager — P1 lifecycle + conservation', () => {
       (s) => s.avatar_id === poor,
     );
     expect(seats.length).toBe(0);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// House auto-scaler + autonomous tick + advisor-policy bots — the always-on
+// house-table layer. These cover the NEW actors the scaler/tick/seeder add:
+//   (a) ALWAYS-ON MULTI-TABLE CONSERVATION across one shared house bank.
+//   (b) advanceTable SELF-DRIVE — a bot acts with NO human poke + next hand auto-starts.
+//   (c) ADVISOR POLICY — fixed-deal: nut → bet/raise, trash facing a bet → fold,
+//       on-turn-only + never out of turn.
+//   (d) BOT-YIELD — a seeded bot stands up (reclaimed to the bank) as reals grow,
+//       while ≥2 players remain.
+//   (e) HOUSE-ONLY — a player-public / private table is NEVER seeded.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * A multi-bot seeded provider: each distinct (tableId, seatIndex) gets its OWN bot
+ * avatar (a bot uuid never sits two live seats at once), mirroring the production
+ * bot-pool's per-(table,seat) reservation. Idempotent per seat (re-claim returns
+ * the same bot). Tracks issued ids so a test can fund / inspect them.
+ */
+function makeBotProvider() {
+  let counter = 0;
+  const bySeat = new Map<string, { avatarId: string; agentId: string; name: string }>();
+  const issued = new Set<string>();
+  const provider = (tableId: string, seatIndex: number) => {
+    const key = `${tableId}:${seatIndex}`;
+    const existing = bySeat.get(key);
+    if (existing) return existing;
+    const n = counter++;
+    const bot = {
+      avatarId: `bot-${String(n).padStart(3, '0')}`,
+      agentId: `poker-bot-${String(n).padStart(3, '0')}`,
+      name: `Felt-Bot-${String(n).padStart(3, '0')}`,
+    };
+    bySeat.set(key, bot);
+    issued.add(bot.avatarId);
+    return bot;
+  };
+  return { provider, issued, isBot: (id: string) => issued.has(id) };
+}
+
+describe('CashTableManager — house tables: multi-table conservation, self-drive, advisor, yield', () => {
+  const HOUSE_BANK_AVATAR = 'house-bank-shared';
+  const HOUSE_BANK_START = 1_000_000;
+
+  /** A manager whose seeded provider hands out a DISTINCT bot per (table, seat). */
+  function makeHouseManager(opts?: { seedFn?: () => string }) {
+    const db = new FakeDb();
+    const ledger = new FakeLedger();
+    ledger.setBalance(HOUSE_BANK_AVATAR, HOUSE_BANK_START);
+    const sim = new PokerTableSim(new FakeClock());
+    const bots = makeBotProvider();
+    let seedCounter = 0;
+    const mgr = new CashTableManager({
+      db: db as never,
+      ledger: ledger as never,
+      sim,
+      clock: new FakeClock(),
+      seedFn: opts?.seedFn ?? (() => (seedCounter++).toString(16).padStart(64, '0')),
+      seededAgentProvider: bots.provider,
+      houseBankAvatarProvider: () => HOUSE_BANK_AVATAR,
+    });
+    return { db, ledger, sim, mgr, bots };
+  }
+
+  function houseSubject(): CashSubject {
+    return {
+      kind: 'agent',
+      userId: HOUSE_BANK_AVATAR,
+      avatarId: HOUSE_BANK_AVATAR,
+      agentId: 'poker-house-bank',
+      name: 'Poker House Bank',
+    };
+  }
+
+  async function createMidHouseTable(mgr: CashTableManager) {
+    return mgr.createTable(
+      {
+        source: 'house',
+        visibility: 'public',
+        tierKey: 'mid',
+        buyInCt: 100,
+        smallBlindCt: 5,
+        bigBlindCt: 10,
+        maxSeats: 6,
+        seededAgentSlots: 3,
+      },
+      houseSubject(),
+    );
+  }
+
+  /**
+   * Drive a single house table to a between-hands idle boundary: the human
+   * checks/folds while the manager auto-drives the bots, settling each hand until
+   * `maxHands` have settled or the table goes idle. Returns the settled hand count.
+   */
+  async function playOutHands(
+    mgr: CashTableManager,
+    sim: PokerTableSim,
+    db: FakeDb,
+    tableId: string,
+    human: string,
+    maxHands: number,
+  ): Promise<number> {
+    const sid = `cash:${tableId}`;
+    let guard = 0;
+    while (guard++ < 400) {
+      const settledCount = (db.stores.get(pokerCashHands) as Row[]).filter(
+        (h) => String(h.table_id) === String(tableId) && h.settled_at,
+      ).length;
+      if (settledCount >= maxHands) return settledCount;
+
+      const view = mgr.getSeatViewForAgent(tableId, human);
+      if (view && view.isYourTurn) {
+        const action =
+          view.toCall > 0 ? ({ kind: 'fold' } as const) : ({ kind: 'check' } as const);
+        await mgr.submitAction({
+          tableId,
+          subject: humanSubject(human),
+          handNumber: view.handNumber,
+          actionSeq: guard,
+          action,
+        });
+        continue;
+      }
+      // Not the human's turn. Either a bot is mid-decision (advanceTable drives it)
+      // or the table is between hands — advanceTable both drives bots AND auto-starts.
+      await mgr.advanceTable(tableId);
+      // If still no live hand and the human isn't seated/your-turn, nothing left.
+      if (!sim.getPublicSnapshot(sid)) {
+        const stillLive = sim.getPublicSnapshot(sid);
+        if (!stillLive) {
+          // One more kick to start the next hand; if it can't start, we're idle.
+          const started = await mgr.startHandWhenReady(tableId);
+          if (!started) {
+            const settledNow = (db.stores.get(pokerCashHands) as Row[]).filter(
+              (h) => String(h.table_id) === String(tableId) && h.settled_at,
+            ).length;
+            return settledNow;
+          }
+        }
+      }
+    }
+    return (db.stores.get(pokerCashHands) as Row[]).filter(
+      (h) => String(h.table_id) === String(tableId) && h.settled_at,
+    ).length;
+  }
+
+  it('(a) keeps Σdebits == Σcredits + Σescrow across SEVERAL house tables (seed + re-buy + human win + cash-out)', async () => {
+    const { db, ledger, sim, mgr } = makeHouseManager();
+
+    // Three house tables, one shared house bank. Each gets a human + bot fill.
+    const humans = ['h-A', 'h-B', 'h-C'];
+    const tables: string[] = [];
+    for (const h of humans) {
+      ledger.setBalance(h, 1000);
+      const t = await createMidHouseTable(mgr);
+      tables.push(t.id);
+      await mgr.sitDown(t.id, humanSubject(h), 100);
+    }
+
+    // Every table now has the human + ≥1 seeded bot (fill target 3, capped by the
+    // single human → bots up to fill the small game). The house bank was debited for
+    // every seeded buy-in; conservation holds at each table.
+    for (const tableId of tables) {
+      const cons = await mgr.assertConservation(tableId);
+      expect(cons.ok).toBe(true);
+    }
+    // Conservation invariant across the WHOLE house bank from the very first moment.
+    const escrowSum0 = tables.reduce((acc, id) => {
+      const t = (db.stores.get(pokerCashTables) as Row[]).find((r) => String(r.id) === String(id))!;
+      return acc + Number(t.table_escrow_ct);
+    }, 0);
+    expect(ledger.totalDebited()).toBe(ledger.totalCredited() + escrowSum0);
+
+    // Force a busted bot at table 0 so the re-buy path runs at the next boundary.
+    // A REAL bust moves the busted seat's chips to a WINNER's seat (escrow-neutral),
+    // so we simulate that faithfully: zero the bot's stack AND move its chips onto
+    // another seat at the same table — escrow is UNCHANGED (no CT created/destroyed),
+    // exactly as a real hand would leave it. The busted seat flips to sitting_out so
+    // the next-boundary re-buy path (rebuyBustedBots) frees it and re-seats a fresh
+    // house-bank-debited bot.
+    const t0AllSeats = (db.stores.get(pokerCashSeats) as Row[]).filter(
+      (s) => String(s.table_id) === String(tables[0]) && s.status !== 'left',
+    );
+    const t0Seats = t0AllSeats.filter((s) => s.is_seeded === 'true');
+    expect(t0Seats.length).toBeGreaterThan(0);
+    const bustSeat = t0Seats[0]!;
+    const bustStack = Number(bustSeat.current_stack_ct);
+    // The winner = any OTHER active seat at this table (chips move there).
+    const winnerSeat = t0AllSeats.find((s) => s !== bustSeat)!;
+    expect(winnerSeat).toBeTruthy();
+    bustSeat.current_stack_ct = '0';
+    bustSeat.status = 'sitting_out';
+    winnerSeat.current_stack_ct = String(Number(winnerSeat.current_stack_ct) + bustStack);
+    // Escrow is intentionally LEFT UNCHANGED — chips only moved between seats.
+
+    // Between-hands boundary on table 0 → rebuyBustedBots frees the 0-stack bot
+    // (no credit) and fillSeededAgents re-seats toward the target with a fresh
+    // house-bank-debited bot. This crosses the house bank (debit), so the multi-table
+    // bank conservation must STILL hold afterward.
+    await mgr.startHandWhenReady(tables[0]);
+
+    // Play out a couple of hands on each table so chips move between human and bots
+    // (a human winning bot chips is naturally exercised at showdowns; we assert
+    // conservation regardless of who won).
+    for (let i = 0; i < humans.length; i++) {
+      await playOutHands(mgr, sim, db, tables[i]!, humans[i]!, 2);
+    }
+
+    // One human LEAVES + cashes out (escrow → its own wallet). Drive its table to a
+    // boundary if the leave queued.
+    const leaver = humans[1]!;
+    const leave = await mgr.leaveTable(tables[1]!, humanSubject(leaver));
+    if (leave.queued) {
+      let g = 0;
+      while (g++ < 200) {
+        const st = await mgr.getTableState(tables[1]!);
+        if (!st!.seats.find((s) => s.avatarId === leaver)) break;
+        const view = mgr.getSeatViewForAgent(tables[1]!, leaver);
+        if (view && view.isYourTurn) {
+          await mgr.submitAction({
+            tableId: tables[1]!,
+            subject: humanSubject(leaver),
+            handNumber: view.handNumber,
+            actionSeq: 5000 + g,
+            action: view.toCall > 0 ? { kind: 'fold' } : { kind: 'check' },
+          });
+        } else {
+          await mgr.advanceTable(tables[1]!);
+        }
+      }
+    }
+
+    // ── GLOBAL CONSERVATION across the house bank ───────────────────────────────
+    // Σ real-CT debits == Σ real-CT credits + Σ escrow still held across ALL tables.
+    // The seed debits, the re-buy debit, the per-hand chip shuffles (escrow-neutral),
+    // the human cash-out credit, and the bot reclaims all net to this identity.
+    const escrowSumFinal = tables.reduce((acc, id) => {
+      const t = (db.stores.get(pokerCashTables) as Row[]).find((r) => String(r.id) === String(id))!;
+      return acc + Number(t.table_escrow_ct);
+    }, 0);
+    expect(ledger.totalDebited()).toBe(ledger.totalCredited() + escrowSumFinal);
+
+    // Per-table at-rest invariant (escrow == Σ seat stacks) on every IDLE table.
+    for (const tableId of tables) {
+      if (sim.getPublicSnapshot(`cash:${tableId}`)) continue; // skip a still-live hand
+      const cons = await mgr.assertConservation(tableId);
+      expect(cons.ok).toBe(true);
+    }
+
+    // ── humanNet + houseNet + Σescrow == 0 (zero-sum, rake 0) ────────────────────
+    // Every CT holder is: the humans, the house bank, and chips still escrowed (held
+    // by seated bots/humans). Their net change from starting balances + the escrow
+    // still on the tables must sum to exactly zero — no CT minted or burned.
+    const humanNet = humans.reduce((acc, h) => acc + (ledger.get(h) - 1000), 0);
+    const houseNet = ledger.get(HOUSE_BANK_AVATAR) - HOUSE_BANK_START;
+    expect(humanNet + houseNet + escrowSumFinal).toBe(0);
+  });
+
+  it('(b) advanceTable SELF-DRIVES a bot with NO human poke, and the table auto-starts the next hand', async () => {
+    // A bot-only / solo-human table must keep dealing with ZERO human pokes. We use a
+    // BOT-ONLY table (two seeded bots) so EVERY action is the advisor's and EVERY
+    // hand-start is autonomous — proving advanceTable is a complete self-drive with
+    // no human involvement at all. (Seeding requires source='house'.)
+    const { db, ledger, sim, mgr, bots } = makeHouseManager();
+    void ledger;
+
+    const table = await createMidHouseTable(mgr);
+    const sid = `cash:${table.id}`;
+
+    // Seed TWO bots directly (no human) via the same provider the manager uses, so a
+    // hand can be started purely by the self-drive. We seat them through the manager's
+    // own sit path by claiming the provider, then kick the table with advanceTable —
+    // but sitDown needs a CashSubject; instead we let fillSeededAgents seat them by
+    // calling startHandWhenReady, which fills toward the target on a HOUSE table.
+    // A house table with 0 humans fills bots up to the target (≥2) and deals.
+    void bots;
+    await mgr.startHandWhenReady(table.id); // fills bots + may start a hand
+
+    // From here on we NEVER call submitAction. advanceTable must do everything:
+    // drive each bot's turn, settle completed hands, and auto-start the next hand.
+    const handsSettled = () =>
+      (db.stores.get(pokerCashHands) as Row[]).filter(
+        (h) => String(h.table_id) === String(table.id) && h.settled_at,
+      ).length;
+
+    let guard = 0;
+    let botOnlyProgress = false;
+    while (guard++ < 600 && handsSettled() < 3) {
+      const before = sim.getPublicSnapshot(sid);
+      const toActBefore = before?.toActSeatIndex ?? null;
+      const settledBeforePass = handsSettled();
+
+      await mgr.advanceTable(table.id);
+
+      const after = sim.getPublicSnapshot(sid);
+      // A bot acted (pointer moved or hand closed) OR a hand settled OR a new hand
+      // started — all WITHOUT any human poke.
+      if (
+        (before && toActBefore !== null && (!after || after.toActSeatIndex !== toActBefore)) ||
+        handsSettled() > settledBeforePass ||
+        (!before && after)
+      ) {
+        botOnlyProgress = true;
+      }
+      // Defensive: if nothing is live and nothing can start, stop.
+      if (!after && handsSettled() === settledBeforePass && !before) {
+        const started = await mgr.startHandWhenReady(table.id);
+        if (!started) break;
+      }
+    }
+
+    // The advisor-driven bots played AND the table kept dealing — entirely on
+    // advanceTable, with NO human action submitted anywhere in this test.
+    expect(botOnlyProgress).toBe(true);
+    expect(handsSettled()).toBeGreaterThanOrEqual(2); // multiple hands auto-dealt
+  });
+
+  it('(c) ADVISOR POLICY: a nut hand bets/raises, trash facing a bet folds, advice is on-turn-only', () => {
+    // Drive the manager's OWN sim directly (the manager exposes getActionAdvice that
+    // delegates to it) with two DETERMINISTIC deals: serverSeed 1 → seat 0 has a nut
+    // river (strength 0.760 ≥ 0.72); serverSeed 0 → seat 0 has a trash river
+    // (strength 0.412 < 0.45). The advisor's decision mapping is fixed-threshold +
+    // pure, so these are reproducible (verified offline against estimateStrength).
+    const { sim } = makeHouseManager();
+    const CLIENT = 'c1a4ca54';
+    const seed = (dec: number) => dec.toString(16).padStart(64, '0');
+
+    function driveHeadsUpToRiver(sid: string, serverSeedDec: number) {
+      sim.startHand({
+        tableId: sid,
+        handNumber: 1,
+        seatAssignments: [
+          { seatIndex: 0, avatarId: 'h', name: 'H', subjectType: 'human', chipStack: 100 },
+          { seatIndex: 1, avatarId: 'b', name: 'B', subjectType: 'agent', chipStack: 100 },
+        ],
+        blinds: { sb: 5, bb: 10, ante: 0 },
+        buttonSeatIndex: 0,
+        serverSeed: seed(serverSeedDec),
+        clientSeed: CLIENT,
+        turnClockMs: 25_000,
+        agentTurnGraceMs: 5_000,
+      });
+    }
+    const who = (i: number) => (i === 0 ? 'h' : 'b');
+    let key = 0;
+    const k = () => `adv-${key++}`;
+
+    // ── NUT: seat 0 to act on the river with the nut → advisor recommends bet/raise.
+    {
+      const sid = 'cash:adv-nut';
+      driveHeadsUpToRiver(sid, 1);
+      let guard = 0;
+      while (guard++ < 40) {
+        const snap = sim.getPublicSnapshot(sid)!;
+        if (snap.toActSeatIndex === null) break;
+        if (snap.street === 'river' && snap.toActSeatIndex === 0) break;
+        const idx = snap.toActSeatIndex;
+        const v = sim.getSeatViewForAgent(sid, who(idx))!;
+        sim.applyAction(sid, who(idx), v.toCall > 0 ? { kind: 'call' } : { kind: 'check' }, {
+          idempotencyKey: k(),
+        });
+      }
+      const snap = sim.getPublicSnapshot(sid)!;
+      expect(snap.street).toBe('river');
+      expect(snap.toActSeatIndex).toBe(0);
+      const advice = sim.getActionAdvice(sid, 'h')!;
+      expect(advice.strength).toBeGreaterThanOrEqual(0.72);
+      expect(advice.recommended).not.toBeNull();
+      // A nut hand value-bets/raises (NOT fold/check).
+      expect(['bet', 'raise']).toContain(advice.recommended!.kind);
+      // OFF-TURN: the OTHER seat gets no recommendation (advice is on-turn-only).
+      const off = sim.getActionAdvice(sid, 'b')!;
+      expect(off.recommended).toBeNull();
+    }
+
+    // ── TRASH facing a bet: seat 0 weak river, seat 1 bets into it → advisor folds.
+    {
+      const sid = 'cash:adv-trash';
+      driveHeadsUpToRiver(sid, 0);
+      let guard = 0;
+      // Drive to the river with seat 1 to act first (postflop heads-up).
+      while (guard++ < 40) {
+        const snap = sim.getPublicSnapshot(sid)!;
+        if (snap.toActSeatIndex === null) break;
+        if (snap.street === 'river' && snap.toActSeatIndex === 1) break;
+        const idx = snap.toActSeatIndex;
+        const v = sim.getSeatViewForAgent(sid, who(idx))!;
+        sim.applyAction(sid, who(idx), v.toCall > 0 ? { kind: 'call' } : { kind: 'check' }, {
+          idempotencyKey: k(),
+        });
+      }
+      // Seat 1 BETS into seat 0.
+      const v1 = sim.getSeatViewForAgent(sid, 'b')!;
+      expect(v1.legalActions).toContain('bet');
+      sim.applyAction(sid, 'b', { kind: 'bet', amount: v1.minRaiseTo }, { idempotencyKey: k() });
+
+      const snap = sim.getPublicSnapshot(sid)!;
+      expect(snap.toActSeatIndex).toBe(0); // seat 0 now faces the bet
+      const advice = sim.getActionAdvice(sid, 'h')!;
+      expect(advice.strength).toBeLessThan(0.45);
+      // Trash facing a bet → fold (no bluff in the baseline advisor).
+      expect(advice.recommended).toEqual({ kind: 'fold' });
+      // OFF-TURN: seat 1 (already acted, not to act) gets no recommendation.
+      const off = sim.getActionAdvice(sid, 'b')!;
+      expect(off.recommended).toBeNull();
+    }
+  });
+
+  it('(d) BOT-YIELD: as real players grow, a seeded bot stands up (reclaimed to the bank) while ≥2 players remain', async () => {
+    // Fill target 3: a solo human gets bots up to 3 total. When MORE reals join and
+    // push total occupancy above the small-game cap, surplus bots yield their seats.
+    const { db, ledger, sim, mgr } = makeHouseManager();
+
+    const reals = ['r-1', 'r-2', 'r-3'];
+    for (const r of reals) ledger.setBalance(r, 1000);
+
+    const table = await createMidHouseTable(mgr);
+
+    // First human sits → bots fill toward the target (≥1 bot).
+    await mgr.sitDown(table.id, humanSubject(reals[0]!), 100);
+    const seatsAfter1 = (db.stores.get(pokerCashSeats) as Row[]).filter(
+      (s) => String(s.table_id) === String(table.id) && s.status !== 'left',
+    );
+    const seededAfter1 = seatsAfter1.filter((s) => s.is_seeded === 'true').length;
+    expect(seededAfter1).toBeGreaterThanOrEqual(1);
+
+    const seededAtPeak = seededAfter1;
+
+    // Now MORE reals sit (each sit also runs startAndAdvance → queueBotYield). As the
+    // real count grows past the small-game cap, surplus bots are queued to yield.
+    await mgr.sitDown(table.id, humanSubject(reals[1]!), 100);
+    await mgr.sitDown(table.id, humanSubject(reals[2]!), 100);
+
+    // Drive the table through several between-hands boundaries so queued bot-yields
+    // are actually processed (processPendingLeaves cashes the yielded bot back to the
+    // house bank). The humans fold/check; bots play; we just advance the table.
+    let guard = 0;
+    while (guard++ < 300) {
+      // Act for whichever human is to act; else advance (drives bots + boundaries).
+      let acted = false;
+      for (const r of reals) {
+        const view = mgr.getSeatViewForAgent(table.id, r);
+        if (view && view.isYourTurn) {
+          await mgr.submitAction({
+            tableId: table.id,
+            subject: humanSubject(r),
+            handNumber: view.handNumber,
+            actionSeq: guard * 10 + reals.indexOf(r),
+            action: view.toCall > 0 ? { kind: 'fold' } : { kind: 'check' },
+          });
+          acted = true;
+          break;
+        }
+      }
+      if (!acted) await mgr.advanceTable(table.id);
+
+      // Stop once a seeded bot has actually been reclaimed to the house bank.
+      const reclaimCredits = ledger.credits.filter(
+        (c) => c.avatarId === HOUSE_BANK_AVATAR && c.reason === 'poker_cash_house_reclaim',
+      ).length;
+      if (reclaimCredits >= 1) break;
+    }
+
+    // A seeded bot stood up and its chips returned to the house bank.
+    const reclaimCredits = ledger.credits.filter(
+      (c) => c.avatarId === HOUSE_BANK_AVATAR && c.reason === 'poker_cash_house_reclaim',
+    );
+    expect(reclaimCredits.length).toBeGreaterThanOrEqual(1);
+
+    // Fewer seeded bots are in play than at the solo-human peak (a bot yielded).
+    const seatsNow = (db.stores.get(pokerCashSeats) as Row[]).filter(
+      (s) => String(s.table_id) === String(table.id) && s.status !== 'left',
+    );
+    const seededNow = seatsNow.filter((s) => s.is_seeded === 'true').length;
+    expect(seededNow).toBeLessThanOrEqual(seededAtPeak);
+
+    // ≥2 players remain (the table never went dead): real seats alone already ≥2.
+    const inPlay = seatsNow.filter((s) => Number(s.current_stack_ct) > 0).length;
+    expect(inPlay).toBeGreaterThanOrEqual(2);
+
+    // Conservation still holds at whatever rest/live state we stopped at.
+    if (!sim.getPublicSnapshot(`cash:${table.id}`)) {
+      const cons = await mgr.assertConservation(table.id);
+      expect(cons.ok).toBe(true);
+    }
+    const escrowNow = Number(
+      (db.stores.get(pokerCashTables) as Row[]).find((r) => String(r.id) === String(table.id))!
+        .table_escrow_ct,
+    );
+    expect(ledger.totalDebited()).toBe(ledger.totalCredited() + escrowNow);
+  });
+
+  it('(e) HOUSE-ONLY: a player-public table is NEVER seeded with bots (no house-bank debit)', async () => {
+    const { db, ledger, mgr } = makeHouseManager();
+    const human = 'pp-human';
+    ledger.setBalance(human, 1000);
+
+    // A PLAYER-PUBLIC table with seededAgentSlots > 0 — the fill path MUST still
+    // refuse to seed it (scope is locked to source='house').
+    const table = await mgr.createTable(
+      {
+        source: 'player-public',
+        visibility: 'public',
+        tierKey: 'mid',
+        buyInCt: 100,
+        smallBlindCt: 5,
+        bigBlindCt: 10,
+        maxSeats: 6,
+        seededAgentSlots: 3,
+      },
+      humanSubject(human),
+    );
+
+    const houseBankBefore = ledger.get(HOUSE_BANK_AVATAR);
+    await mgr.sitDown(table.id, humanSubject(human), 100);
+
+    // No seeded seat was written (only the lone human).
+    const seats = (db.stores.get(pokerCashSeats) as Row[]).filter(
+      (s) => String(s.table_id) === String(table.id) && s.status !== 'left',
+    );
+    expect(seats.length).toBe(1);
+    expect(seats.every((s) => s.is_seeded !== 'true')).toBe(true);
+
+    // The house bank was NOT debited (no seeded buy-in on a non-house table).
+    expect(ledger.get(HOUSE_BANK_AVATAR)).toBe(houseBankBefore);
+    // And no hand started (a lone human can't reach the 2-seat minimum without bots).
+    const sid = `cash:${table.id}`;
+    expect((db.stores.get(pokerCashHands) as Row[]).filter(
+      (h) => String(h.table_id) === String(table.id),
+    ).length).toBe(0);
+    void sid;
+  });
+
+  it('(e2) HOUSE-ONLY: a PRIVATE table is never seeded even with seededAgentSlots > 0', async () => {
+    const { db, ledger, mgr } = makeHouseManager();
+    const host = 'priv-host';
+    ledger.setBalance(host, 1000);
+
+    const table = await mgr.createTable(
+      {
+        source: 'private',
+        visibility: 'private',
+        tierKey: null,
+        buyInCt: 100,
+        smallBlindCt: 5,
+        bigBlindCt: 10,
+        maxSeats: 6,
+        seededAgentSlots: 3,
+        joinCode: 'PRIV01',
+      },
+      humanSubject(host),
+    );
+
+    const houseBankBefore = ledger.get(HOUSE_BANK_AVATAR);
+    await mgr.joinByCode('PRIV01', humanSubject(host));
+
+    const seats = (db.stores.get(pokerCashSeats) as Row[]).filter(
+      (s) => String(s.table_id) === String(table.id) && s.status !== 'left',
+    );
+    expect(seats.length).toBe(1);
+    expect(seats.every((s) => s.is_seeded !== 'true')).toBe(true);
+    expect(ledger.get(HOUSE_BANK_AVATAR)).toBe(houseBankBefore);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TURN-CLOCK timeout settlement (the OPEN HIGH #2 fix). The sim's expired-turn
+// auto-fold/auto-check now routes through the manager's `setTurnTimeoutHook` →
+// `handleTurnTimeout`, which runs UNDER the per-table lock and SETTLES the hand it
+// resolves in the SAME pass — so a timeout-resolved hand is NEVER left as an
+// undrained pendingResults entry (escrow stays consistent with Σ seat stacks),
+// even on a no-tick player-public/private table.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * A clock that CAPTURES the most-recently-armed timer callback so a test can FIRE
+ * it on demand (simulating the real `setTimeout` expiry). Unlike `FakeClock`
+ * (setTimer = no-op), this exposes `fireLatest()` to drive the turn-timeout path.
+ */
+class ControllableClock implements SimClock {
+  private t = 2_000_000;
+  private latest: (() => void) | null = null;
+  now(): number {
+    return this.t;
+  }
+  setTimer(cb: () => void): unknown {
+    this.latest = cb;
+    return { cb };
+  }
+  clearTimer(handle: unknown): void {
+    if (handle && (handle as { cb: () => void }).cb === this.latest) {
+      this.latest = null;
+    }
+  }
+  /** Fire the currently-armed timer callback (the to-act seat's turn clock). */
+  hasArmed(): boolean {
+    return this.latest !== null;
+  }
+  fireLatest(): void {
+    const cb = this.latest;
+    this.latest = null;
+    if (cb) cb();
+  }
+}
+
+describe('CashTableManager — turn-clock timeout settles under the lock (OPEN HIGH #2)', () => {
+  const HOUSE_BANK_AVATAR = 'house-bank-timeout';
+
+  it('a fired turn timeout on a 2-seat house table auto-resolves the hand AND settles it (escrow == Σ stacks, no stranded escrow)', async () => {
+    const db = new FakeDb();
+    const ledger = new FakeLedger();
+    ledger.setBalance(HOUSE_BANK_AVATAR, 1_000_000);
+    const clock = new ControllableClock();
+    // The SIM shares the controllable clock so its armed turn timer is captured and
+    // fired by the test (the real-timer path the FakeClock never exercised).
+    const sim = new PokerTableSim(clock);
+    const bots = makeBotProvider();
+    let seedCounter = 100;
+    const mgr = new CashTableManager({
+      db: db as never,
+      ledger: ledger as never,
+      sim,
+      clock,
+      seedFn: () => (seedCounter++).toString(16).padStart(64, '0'),
+      seededAgentProvider: bots.provider,
+      houseBankAvatarProvider: () => HOUSE_BANK_AVATAR,
+    });
+
+    const table = await mgr.createTable(
+      {
+        source: 'house',
+        visibility: 'public',
+        tierKey: 'low',
+        buyInCt: 20,
+        smallBlindCt: 1,
+        bigBlindCt: 2,
+        maxSeats: 6,
+        seededAgentSlots: 1,
+      },
+      {
+        kind: 'agent',
+        userId: HOUSE_BANK_AVATAR,
+        avatarId: HOUSE_BANK_AVATAR,
+        agentId: 'poker-house-bank',
+        name: 'Poker House Bank',
+      },
+    );
+
+    const human = 'human-timeout';
+    ledger.setBalance(human, 1000);
+    // Human sits → seeded bot fills to 2 → a hand starts and the manager drives the
+    // bot until it is the HUMAN's turn (the armed clock is on the human's seat).
+    await mgr.sitDown(table.id, humanSubject(human), 20);
+
+    const sid = `cash:${table.id}`;
+
+    // Drive the table WITHOUT a single human action: on each step, if a turn clock is
+    // armed (the human is to-act — the only seat the bot doesn't auto-drive), FIRE it
+    // (auto-check/fold) and let the hook settle + auto-start; otherwise `advanceTable`
+    // to start/progress a hand. We require that the human's turn is reached AND
+    // timeout-resolved AT LEAST ONCE (timesFired > 0) and that ≥1 hand settles — so
+    // the timeout settlement path (not just bot folds) is exercised.
+    let timesFired = 0;
+    let steps = 0;
+    while (steps++ < 200) {
+      const settledNow = (db.stores.get(pokerCashHands) as Row[]).filter(
+        (h) => String(h.table_id) === String(table.id) && h.settled_at,
+      ).length;
+      if (timesFired > 0 && settledNow >= 2) break;
+
+      if (clock.hasArmed()) {
+        clock.fireLatest();
+        timesFired++;
+        // The hook runs async (void this.handleTurnTimeout) — yield so it completes.
+        await Promise.resolve();
+        await new Promise((r) => setTimeout(r, 0));
+        continue;
+      }
+      await mgr.advanceTable(table.id);
+      await new Promise((r) => setTimeout(r, 0));
+      if (!clock.hasArmed() && !sim.getPublicSnapshot(sid)) {
+        // Idle with no live hand and nothing armed — one more start attempt; if it
+        // can't start (e.g. a seat busted below the minimum), stop.
+        const started = await mgr.startHandWhenReady(table.id);
+        if (!started) break;
+      }
+    }
+
+    // The human's turn was reached AND resolved by a fired timeout at least once
+    // (proving the real-timer auto-fold/check path ran), and hands settled.
+    expect(timesFired).toBeGreaterThan(0);
+    const settledAfter = (db.stores.get(pokerCashHands) as Row[]).filter(
+      (h) => String(h.table_id) === String(table.id) && h.settled_at,
+    ).length;
+    expect(settledAfter).toBeGreaterThan(0);
+
+    // CONSERVATION at rest: escrow == Σ active seat stacks — NO stranded escrow from
+    // an undrained timeout-resolved hand.
+    const cons = await mgr.assertConservation(table.id);
+    expect(cons.ok).toBe(true);
+    expect(cons.escrow).toBe(cons.seatSum);
+
+    // SUPPLY conservation: every chip in escrow traces to a real debit (human + house
+    // bank), nothing minted. Σ debits == Σ credits + escrow.
+    expect(ledger.totalDebited()).toBe(ledger.totalCredited() + cons.escrow);
   });
 });

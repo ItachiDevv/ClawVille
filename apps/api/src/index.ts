@@ -948,6 +948,30 @@ startSimulation(arenaMode);
     // never seat/play/settle/refund and buy-ins would stay escrowed forever.
     tournamentManager.startStartTriggerSweeper();
     console.log('[API] Activity room manager + queue + poker-MTT sweeper ready');
+
+    // Poker CASH GAMES — HOUSE TABLES + seeded bots (2026-06-22). Order matters:
+    //   1. `cashHouseSeeder.ensure()` provisions the house-bank avatar (one-time
+    //      guarded bankroll mint) + the M bot avatars. MUST complete BEFORE the
+    //      scaler/tick run — the scaler reads `houseBankAvatarId()` (throws until
+    //      ensured) and the tick's fill claims bots from the pool.
+    //   2. `startCashHouseScaler()` keeps N open house tables/tier alive (gated on
+    //      CASH_HOUSE_SCALER_ENABLED; runs an immediate first pass so the lobby is
+    //      populated at boot).
+    //   3. `startCashTableTick()` self-drives seeded bots so a solo human + bots
+    //      (or a bot-only) table keeps dealing with no human poke.
+    // Non-fatal: a seeder/scaler/tick failure must not crash the whole API boot —
+    // cash poker just won't have house tables until the next restart.
+    try {
+      const { cashHouseSeeder } = await import('./services/poker/cash-house-seeder');
+      const { startCashHouseScaler } = await import('./services/poker/cash-house-scaler');
+      const { startCashTableTick } = await import('./services/poker/cash-table-tick');
+      await cashHouseSeeder.ensure();
+      startCashHouseScaler();
+      startCashTableTick();
+      console.log('[API] Poker cash-house seeder + scaler + tick ready');
+    } catch (err) {
+      console.error('[API] Poker cash-house init failed (non-fatal):', err);
+    }
   } catch (err) {
     console.error('[API] Activity portal init failed:', err);
   }
@@ -973,6 +997,16 @@ async function gracefulShutdown(signal: string) {
     activityRoomManager.stopSweeper();
     activityQueueService.stopMatchmaker();
     tournamentManager.stopStartTriggerSweeper();
+    // Poker cash-house intervals (scaler + self-drive tick). Import inside the
+    // handler so a failed import doesn't crash shutdown; both stops are idempotent.
+    try {
+      const { stopCashHouseScaler } = await import('./services/poker/cash-house-scaler');
+      const { stopCashTableTick } = await import('./services/poker/cash-table-tick');
+      stopCashHouseScaler();
+      stopCashTableTick();
+    } catch {
+      // If the modules failed to load earlier, there's nothing to stop.
+    }
     try {
       const { stopSessionSweeper } = await import(
         './services/openclaw-session-sweeper'
