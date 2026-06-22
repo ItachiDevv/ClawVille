@@ -328,5 +328,3 @@ export const REAL_CLOCK: SimClock = {
   setTimer: (cb, ms) => setTimeout(cb, ms),
   clearTimer: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
 };
-
-// ci-gate verification no-op (revert after) 6e00d410
