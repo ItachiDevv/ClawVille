@@ -172,6 +172,23 @@ export default function PersonalityPage() {
       // Cross-validation with the modelKey's real category happens
       // server-side (apps/api/src/routes/avatars.ts), so we don't need to
       // re-derive here.
+      // Surface — don't silently default — when the picker forwarded a model the
+      // shared registry doesn't know. Root cause of the 2026-06-21 "picked a chibi
+      // at signup, loaded as the default Milady" bug: the chibi keys were offered
+      // by the web picker but absent from AGENT_MODEL_KEYS, so this check below
+      // dropped them to `undefined` and the server applied DEFAULT_AGENT_MODEL_KEY
+      // (a Milady) with NO feedback. chibi is now first-class, but if the web
+      // picker and the shared registry EVER drift again, fail loud here instead of
+      // silently substituting an avatar the user did not choose.
+      if (
+        step1.modelKey &&
+        !(AGENT_MODEL_KEYS as readonly string[]).includes(step1.modelKey)
+      ) {
+        setError(
+          "That avatar isn't available right now — go back and pick another one.",
+        );
+        return;
+      }
       const safeModelKey =
         step1.modelKey && (AGENT_MODEL_KEYS as readonly string[]).includes(step1.modelKey)
           ? step1.modelKey
