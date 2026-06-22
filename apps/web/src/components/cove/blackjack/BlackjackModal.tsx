@@ -410,6 +410,15 @@ export default function BlackjackModal() {
 
   // ── Refs ──────────────────────────────────────────────────────────────────
   const busyRef = useRef(false);                  // synchronous double-fire lock
+  // F4 (2026-06-22): handIds we have already settled this session. A stale
+  // GET /hand/current restore — read in the server's commit→settle window where a
+  // busted hand is momentarily status='in_progress' AND terminal — must NOT
+  // overwrite a hand we already settled and re-strand the player in player-turn on
+  // a terminal hand with no legal action and no Next Hand button (the founder's
+  // "bust shows but the table is stuck" freeze). Closes the root-cause race.
+  const settledHandIdsRef = useRef<Set<string>>(new Set());
+  // One-shot guard so the stranded-hand self-heal fires at most once per handId.
+  const healedHandIdRef = useRef<string | null>(null);
   const dealKeyRef = useRef<string | null>(null); // per-deal idempotency key
   const actionKeyRef = useRef<string | null>(null); // per-terminal-action key
   const toastSeqRef = useRef(0);
@@ -468,6 +477,11 @@ export default function BlackjackModal() {
     if (!handRes) return;
     if (isCurrentHandLive(handRes)) {
       const live: CurrentHandLive = handRes;
+      // F4 ROOT-CAUSE GUARD: ignore a "live" hand we already settled this session.
+      // This is the stale read from the server's commit→settle window — acting on
+      // it would clear `settled` and re-mount a terminal hand in player-turn, the
+      // exact strand. The authoritative settle already landed via applySettled.
+      if (settledHandIdsRef.current.has(live.handId)) return;
       const subHands: SubHandView[] = live.playerHands.map((h) => ({
         cards: h.cards,
         total: h.total,
@@ -562,6 +576,9 @@ export default function BlackjackModal() {
       setRevealedSeed(null);
       setAdvisorMessages([]);
       busyRef.current = false;
+      // F4: bound the settled-hand set + reset the self-heal guard per session-open.
+      settledHandIdsRef.current.clear();
+      healedHandIdRef.current = null;
       // Autonomous-driver teardown — cancel any pending auto-apply + reset the
       // run token so a stale in-flight decision can't fire after re-open.
       setAgentPending(null);
@@ -637,6 +654,9 @@ export default function BlackjackModal() {
 
   // ── Apply a settled response (single place balance/outcome land) ───────────
   const applySettled = useCallback((res: SettledHandResponse) => {
+    // F4: remember this hand is settled so a late/stale /hand/current restore
+    // (server commit→settle window) can never re-seed it as a live player-turn hand.
+    settledHandIdsRef.current.add(res.handId);
     setSettled(res);
     setBalance(res.balance);
     setHand(null);
@@ -1261,6 +1281,27 @@ export default function BlackjackModal() {
     }, Math.max(0, remaining));
     return () => clearTimeout(t);
   }, [agentPending, agentMode, applyAgentDecision]);
+
+  // ── F4 self-heal: recover a stranded terminal hand (2026-06-22) ─────────────
+  // SAFETY NET (independent of the root-cause guard above). If we are in
+  // player-turn with EVERY sub-hand terminal/resolved (so Hit/Stand are disabled
+  // via `activeResolved` and there are no live slots left) but never transitioned
+  // to `settled` — the one-off race the founder hit — the player is in a dead end:
+  // no legal action AND no "Next Hand" button (that's settled-phase-only). Re-derive
+  // the authoritative server state (which HAS settled the hand) to recover to the
+  // betting UI. Gated to fire at most once per handId (no loop), and only when
+  // nothing is in flight so it can never race a real settle/merge mid-transition
+  // (the normal post-hit settle window is covered by busyRef still being true).
+  useEffect(() => {
+    if (phase !== 'player-turn' || !hand) return;
+    if (inFlight || busyRef.current || agentBusyRef.current) return;
+    if (hand.playerHands.length === 0) return;
+    if (!hand.playerHands.every((h) => h.isResolved)) return;
+    if (healedHandIdRef.current === hand.handId) return;
+    healedHandIdRef.current = hand.handId;
+    showToast('Hand resolved — syncing the table…', 'info');
+    void resyncAfterStaleDecision();
+  }, [phase, hand, inFlight, resyncAfterStaleDecision, showToast]);
 
   // ── Settled outcome view helpers ───────────────────────────────────────────
   const settledOutcome: SerializedBlackjackHandResult | null = settled?.outcome ?? null;
