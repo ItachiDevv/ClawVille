@@ -755,7 +755,7 @@ export class CashTableManager {
         const res = await this.ledger.creditClawTokens(
           {
             avatarId: creditAvatarId,
-            amount: lockedStack,
+            amount: lockedStack + 1,
             reason: isSeeded ? 'poker_cash_house_reclaim' : 'poker_cash_cash_out',
             source: 'simulation',
             metadata: { tableId: table.id, seatIndex: seat.seatIndex, seeded: isSeeded },
