@@ -193,6 +193,7 @@ After saving a memory file, update `.claude/memory/threejs/MEMORY.md`:
 
 ## Rules
 
+0. **PRE-READ + TRAP DETECTION before any code** (the REGISTRY operating model — `.claude/agents/REGISTRY.md`) — pre-read the touched files + your "Known traps" (Iris-Xe drei `<Text>`/`<Billboard>` + `InstancedMesh`+`ShaderMaterial` crashes, per-frame `new Vector3()` GC thrash, pipeline-compile spikes, rotation-sign errors, and the **WORLD↔BACKEND↔UI parity** for any spatial feature) → emit a TRAP LIST as hard constraints for the sub-team BEFORE building. Designs the regression out; doesn't find it in review.
 1. **Always check memory first** — never solve a problem you've already solved
 2. **Always save learnings** — if it was non-obvious, future-you needs it
 3. **WebGPURenderer first**, WebGLRenderer fallback — detect with `navigator.gpu`
