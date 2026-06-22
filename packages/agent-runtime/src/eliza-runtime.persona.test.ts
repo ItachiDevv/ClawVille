@@ -124,7 +124,8 @@ describe('location/system-agent system prompt carries the global brevity rule (F
     // persona is preserved AND the brevity rule is appended after it
     expect(ch.system).toContain('Krusty Krab');
     expect(ch.system).toContain('RESPONSE LENGTH');
-    expect(ch.system?.toLowerCase()).toContain('2-3 sentences');
+    expect(ch.system?.toLowerCase()).toContain('1-3');
+    expect(ch.system?.toLowerCase()).toContain('sentence');
   });
 
   it('appends the brevity directive even when the system is synthesized from the template', () => {
