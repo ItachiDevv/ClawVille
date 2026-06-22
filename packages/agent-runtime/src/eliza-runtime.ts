@@ -112,17 +112,19 @@ export type ElizaRuntimeState = 'idle' | 'initializing' | 'running' | 'paused' |
 // as a hard backstop in processMessage, applied to callers that flag
 // `conversational: true` (the human↔teacher / ↔Nori chat routes).
 const CONCISE_CHAT_DIRECTIVE =
-  '\n\nRESPONSE LENGTH (strict): Keep every reply short and conversational — aim for ' +
-  '2-3 sentences, and only go longer when the user explicitly asks you to go deep. ' +
-  'Answer the actual question first, in plain prose. Do NOT pad with greetings, do not ' +
-  'restate the question, avoid numbered lists / headers / long monologues. This is live ' +
-  'in-world chat, not an essay.';
+  '\n\nRESPONSE LENGTH (STRICT — overrides any persona tendency to ramble): Reply in 1-3 ' +
+  'SHORT sentences. This is a quick in-world chat bubble, NOT a lesson or an essay. Answer the ' +
+  "question directly in plain prose; expand ONLY if the user explicitly asks you to \"go deep\", " +
+  '"explain in detail", or "tell me everything". Do NOT open with a greeting, do NOT restate the ' +
+  'question, no lists or headers, and keep any in-character flavor to a few words at most. If you ' +
+  'find yourself writing a 4th sentence of filler, stop.';
 
 // Conversational ceiling for live human↔NPC chat (teacher / Nori), applied when the
-// caller passes `conversational: true`. ~320 tokens ≈ a generous paragraph: leaves
-// headroom for a real teacher explanation while cutting the ~750-word runaway essays
-// the old 1000-token cap allowed.
-const CHAT_RESPONSE_MAX_TOKENS = 320;
+// caller passes `conversational: true`. ~200 tokens ≈ comfortably fits 1-3 sentences
+// with headroom; a firmer backstop than the first 320 cut (a live probe showed 320 +
+// the soft "aim for 2-3" wording still let gpt-4o-mini ramble to ~6 sentences). The
+// strengthened CONCISE_CHAT_DIRECTIVE does the real shaping; this just bounds runaway.
+const CHAT_RESPONSE_MAX_TOKENS = 200;
 
 function convertToElizaCharacter(
   template: LocationTemplate,
