@@ -74,7 +74,7 @@ import {
   baccaratOutcomesMatch,
   canonicalJsonEq,
 } from '../services/cove-verify-compat';
-import { blackjackHands, holdemHands, baccaratCoups, pokerCashHands } from '@clawville/database';
+import { blackjackHands, holdemHands, baccaratCoups } from '@clawville/database';
 import type { AppContext, AuthenticatedContext } from '../types';
 import type { Context } from 'hono';
 
@@ -86,17 +86,8 @@ coveHistoryRouter.use('*', sessionMiddleware);
 const HISTORY_DEFAULT_LIMIT = 50;
 const HISTORY_MAX_LIMIT = 200;
 
-const GAME_TYPES = ['slots', 'blackjack', 'holdem', 'baccarat', 'poker'] as const;
+const GAME_TYPES = ['slots', 'blackjack', 'holdem', 'baccarat'] as const;
 type GameType = (typeof GAME_TYPES)[number];
-
-/**
- * Cash-poker history packs a seat into the cove_game_events nonce so a multi-seat
- * hand can write one row per subject without colliding the (game_type, session_id,
- * nonce) unique index. MUST match `cash-table-manager.ts SEAT_NONCE_STRIDE`.
- *   nonce = handNumber * STRIDE + seatIndex  →  handNumber = floor(nonce/STRIDE),
- *   seatIndex = nonce % STRIDE.
- */
-const POKER_CASH_SEAT_NONCE_STRIDE = 100;
 
 const ADMIN_IDS = (process.env.ADMIN_USER_IDS ?? '')
   .split(',')
@@ -649,88 +640,6 @@ coveHistoryRouter.get('/:eventId/verify', async (c) => {
         verified,
         expected: expectedSerialized,
         stored,
-        hashMatches,
-      },
-      200,
-    );
-  }
-
-  if (event.gameType === 'poker') {
-    // Cash poker (ring) — a hand is its OWN commit-reveal unit (no multi-hand
-    // shoe), so the revealed seed lands on the row at settle. The nonce packs the
-    // seat: handNumber = floor(nonce/STRIDE), seatIndex = nonce % STRIDE.
-    //
-    // FULL multi-player engine REPLAY (deal + side-pots + showdown for every seat)
-    // is deferred to a later phase (the per-hand action log isn't persisted in P1
-    // — only the authoritative settled outcome is). So here we verify the two
-    // things the row CAN prove today:
-    //   1. the seed commitment: sha256(revealedServerSeed) === serverSeedHash;
-    //   2. consistency: the stored per-subject outcomeJson (committed/won/net for
-    //      THIS seat) matches the AUTHORITATIVE persisted `poker_cash_hands`
-    //      pot_result_json for the same (table, hand, seat).
-    // A future phase adds the deterministic re-deal; until then `verified` reflects
-    // hash + authoritative-consistency, and `reason` flags the deferred replay.
-    const handNumber = Math.floor(event.nonce / POKER_CASH_SEAT_NONCE_STRIDE);
-    const seatIndex = event.nonce % POKER_CASH_SEAT_NONCE_STRIDE;
-
-    const handRow = (
-      await db
-        .select()
-        .from(pokerCashHands)
-        .where(
-          and(
-            eq(pokerCashHands.tableId, event.sessionId),
-            eq(pokerCashHands.handNumber, handNumber),
-          ),
-        )
-        .limit(1)
-    )[0];
-
-    if (!handRow || !handRow.settledAt) {
-      return c.json(
-        {
-          verified: false,
-          reason: `poker_cash_hand_missing_for_replay: tableId=${event.sessionId} handNumber=${handNumber}`,
-          expected: null,
-          stored: event.outcomeJson,
-          hashMatches,
-        },
-        200,
-      );
-    }
-
-    // The authoritative per-seat result for THIS seat from the settled hand row.
-    const potResult = (handRow.potResultJson ?? []) as Array<{
-      seatIndex: number;
-      totalCommitted: number;
-      won: number;
-      net: number;
-      status?: string;
-      isWinner?: boolean;
-      handRankCategory?: number | null;
-    }>;
-    const authoritative = potResult.find((p) => p.seatIndex === seatIndex);
-    const stored = event.outcomeJson as {
-      totalCommitted?: number;
-      won?: number;
-      net?: number;
-    };
-
-    const seatMatches =
-      !!authoritative &&
-      Number(authoritative.totalCommitted) === Number(stored.totalCommitted) &&
-      Number(authoritative.won) === Number(stored.won) &&
-      Number(authoritative.net) === Number(stored.net) &&
-      // The history row's bet/payout columns must mirror the same outcome.
-      Number(event.betAmount) === Number(authoritative.totalCommitted) &&
-      Number(event.payout) === Number(authoritative.won);
-
-    return c.json(
-      {
-        verified: hashMatches && seatMatches,
-        reason: 'engine-replay-deferred; verified = seed-commit + authoritative-consistency',
-        expected: authoritative ?? null,
-        stored: event.outcomeJson,
         hashMatches,
       },
       200,

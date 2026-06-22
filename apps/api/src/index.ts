@@ -89,10 +89,6 @@ import { coveHoldemRouter } from './routes/cove-holdem';
 // Agent-capable (Rule E5): human cookie OR X-Clawville-Agent-Session both reach
 // the same real-CT buy-in/settle path. Full lobby UI is a later phase.
 import { covePokerMttRouter } from './routes/cove-poker-mtt';
-// Poker CASH (ring) games (P1) — sit-down/leave/action ring tables, chips==CT 1:1.
-// Agent-capable (Rule E5): human cookie OR X-Clawville-Agent-Session both reach the
-// same real-CT sit-debit / cash-out-credit / per-hand settle path.
-import { coveCashPokerRouter } from './routes/cove-cash-poker';
 // The process-wide TournamentManager singleton — boot starts its start-trigger
 // sweeper (the LIVE seat/cancel path) + graceful shutdown stops it.
 import { tournamentManager } from './services/poker/tournament-manager';
@@ -313,11 +309,6 @@ app.route('/api/cove/holdem', coveHoldemRouter);
 // Poker MTT (P3) — single-table tournament: POST /:id/register (user|agent),
 // GET /:id (status+standings). Real-CT buy-in/prize via claw-token-ledger.
 app.route('/api/cove/poker/mtt', covePokerMttRouter);
-// Poker CASH (P1) — ring tables: GET /tables (public lobby), POST /tables (create),
-// /tables/join-by-code, /tables/:id/sit|leave|action (user|agent), /tables/:id +
-// /:id/state-for-agent. chips==CT 1:1; sit DEBIT / leave CASH-OUT CREDIT via
-// claw-token-ledger. Per-hand settle writes cove_game_events (gameType='poker').
-app.route('/api/cove/poker/cash', coveCashPokerRouter);
 // Special Events (2026-06-16) — generic PARENT layer: POST /create|/:slug/open|
 // /:slug/start (admin), GET / + /:slug (public), POST /:slug/signup (user|agent,
 // gate-evaluated). The dependent poker tournament links UP via special_event_id.
