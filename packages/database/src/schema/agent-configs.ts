@@ -27,10 +27,11 @@ export interface AgentConfigExport {
    *  back to DB DEFAULTs ('lobster', 'openclaw', 'milady') when omitted.
    *  `agentCategory` mirrors the shared AGENT_CATEGORIES tuple (hardcoded here
    *  to avoid a @clawville/shared → @clawville/database dependency cycle).
-   *  'hatcher' added 2026-06-01 (partner #2) — keep in lockstep with
-   *  AGENT_CATEGORIES in packages/shared/src/constants/agent-models.ts. */
+   *  'hatcher' added 2026-06-01 (partner #2); 'chibi' added 2026-06-21 (F5) —
+   *  keep in lockstep with AGENT_CATEGORIES in
+   *  packages/shared/src/constants/agent-models.ts. */
   modelKey?: string;
-  agentCategory?: 'openclaw' | 'hermes' | 'milady' | 'other' | 'hatcher';
+  agentCategory?: 'openclaw' | 'hermes' | 'milady' | 'other' | 'hatcher' | 'chibi';
   harness?: 'openclaw' | 'hermes' | 'milady' | 'custom';
 }
 
