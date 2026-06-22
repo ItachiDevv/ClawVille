@@ -257,9 +257,13 @@ export const avatars = pgTable('avatars', {
   // carrying it would hit a Postgres CHECK violation. Applied to the shared
   // Supabase via migrations-manual/2026-06-01_add_hatcher_agent_category.sql
   // (NOT auto-run — db:push is flaky on this table; raw drop+recreate, once).
+  // 'chibi' added 2026-06-21: the two chibi VRMs are now first-class shared
+  // AGENT_CATEGORIES, selectable at /create-agent (under the Milady tab). Applied
+  // to both Supabase DBs via packages/database/migrations/0005_add_chibi_agent_category.sql
+  // (CI migration gate). Keep in lockstep with the shared tuple.
   agentCategoryCheck: check(
     'avatars_agent_category_valid',
-    sql`${t.agentCategory} IN ('openclaw','hermes','milady','other','hatcher')`,
+    sql`${t.agentCategory} IN ('openclaw','hermes','milady','other','hatcher','chibi')`,
   ),
   harnessCheck: check(
     'avatars_harness_valid',
