@@ -63,6 +63,19 @@ export default function AvatarChatBar() {
     staleTime: 30_000,
     retry: false,
   });
+  // F2 (2026-06-21): read the SAME ['agent-session'] cache game/page.tsx populates
+  // (enabled:false → pure cache subscription, no extra fetch). `mode === 'hosted'`
+  // means the avatar IS a server-hosted Eliza runtime (Milady/Hermes) — there is no
+  // external bearer to lose and nothing to "reconnect", so the paired-no-bearer
+  // "Reconnect your agent to chat as it" CTA below is meaningless and must not show.
+  // Chatting already talks to the hosted agent via the authed avatar-chat path.
+  const { data: agentSession } = useQuery({
+    queryKey: ['agent-session'],
+    queryFn: api.getAgentSession,
+    enabled: false,
+    staleTime: 30_000,
+  });
+  const agentHosted = agentSession?.connected === true && agentSession?.mode === 'hosted';
   const chatOpen = useGameStore((s) => s.chatOpen); // location chat open
   const agentPaired = useGameStore((s) => s.agentPaired);
   const agentConnected = useGameStore((s) => s.agentConnected);
@@ -79,7 +92,10 @@ export default function AvatarChatBar() {
   // (chatting WITH your avatar vs AS your connected agent). Never a fabricated
   // bearer — the only way to chat as the agent again is the in-session connect
   // flow that actually receives a bearer.
-  const pairedNoBearer = agentPaired && !agentSessionId;
+  // A hosted agent (Milady/Hermes runtime that IS the avatar) is paired with no
+  // bearer too, but it has nothing to reconnect — exclude it so F2's bogus
+  // "reconnect your agent" prompt never shows for hosted avatars.
+  const pairedNoBearer = agentPaired && !agentSessionId && !agentHosted;
   const [expanded, setExpanded] = useState(false);
   const [messages, setMessages] = useState<AvatarMessage[]>([]);
   const [input, setInput] = useState('');
