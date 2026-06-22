@@ -235,6 +235,18 @@ export const api = {
       expiresAt?: string | null;
       lastSeenAt?: string | null;
       reason?: 'no_bot' | 'expired';
+      // Liveness/source discriminator from the server (auth.ts /me/agent-session).
+      // 'hosted' = a Milady/Hermes Eliza runtime that IS the avatar (no external
+      // bearer to lose, nothing to "reconnect"); 'external-active|idle|expired' =
+      // a user-run agent reachable via a bearer. Used by the chat bar (F2) to
+      // suppress the meaningless "reconnect your agent" CTA for hosted avatars.
+      mode?:
+        | 'hosted'
+        | 'external-active'
+        | 'external-idle'
+        | 'external-expired'
+        | 'dismissed'
+        | 'none';
     }>('/api/auth/me/agent-session'),
 
   translateGameText: (
