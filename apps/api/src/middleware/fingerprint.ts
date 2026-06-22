@@ -86,11 +86,25 @@ export const fingerprintMiddleware: MiddlewareHandler<AppContext> = async (c, ne
 
   // Three-tier fallback so fpHash is ALWAYS non-empty:
   //   1. Browser-set X-CV-Fingerprint
-  //   2. UA + raw IP — non-browser callers (curl, agent SDK)
+  //   2. UA + IP /24 PREFIX — non-browser callers (curl, agent SDK)
   //   3. Sentinel "no-fp:<ipPrefix>" — last resort
+  //
+  // Tier-2 fp-stability fix (2026-06-21 prod hotfix). Previously tier-2 keyed
+  // on the RAW FULL client IP (`ua:<UA>:ip:<full ip>`), so a residential
+  // guest on a dynamic IP (DHCP renew / mobile-CGNAT / VPN toggle) got a
+  // DIFFERENT fpHash between writing a cove spin event and later reading
+  // history under the same UA — orphaning the recorded win ("won 20 CT, no
+  // history"). Keying tier-2 on the /24 `ipPrefix` keeps a single dynamic-IP
+  // guest in ONE bucket across IP churn within their ISP block. This is a
+  // BACKSTOP only: the browser now sends X-CV-Fingerprint on cove requests
+  // (tier-1 stable), so this tier serves header-less callers. Tradeoff: it
+  // slightly widens NAT/CGNAT collisions for header-less callers — acceptable
+  // because cove guest play is demo-only (no real CT at stake) and the
+  // anti-farm cap key is `(fp_hash, ip_prefix_hash)`, where ip_prefix_hash
+  // already collapses a shared prefix, so this does not weaken farm detection.
   const fpInput =
     rawFp ||
-    (ua || ip !== 'unknown' ? `ua:${ua}:ip:${ip}` : `no-fp:${ipPrefix}`);
+    (ua || ip !== 'unknown' ? `ua:${ua}:ip:${ipPrefix}` : `no-fp:${ipPrefix}`);
 
   c.set('fpHash', sha256Salted(fpInput));
   c.set('ipPrefixHash', sha256Salted(ipPrefix));
