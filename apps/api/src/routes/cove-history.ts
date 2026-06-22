@@ -51,6 +51,7 @@ import {
   type CoveGameEvent,
 } from '@clawville/database';
 import { requireAuth, sessionMiddleware } from '../middleware/auth';
+import { resolveAgentSession, AGENT_SESSION_HEADER } from '../middleware/require-auth-or-agent';
 import { runSpin, type MachineSlug, type SpinResult } from '../services/slot-engine';
 import {
   replayShoeUpToHand,
@@ -95,18 +96,56 @@ const ADMIN_IDS = (process.env.ADMIN_USER_IDS ?? '')
 
 // ─── Subject resolution ───────────────────────────────────────────────────
 //
-// Every read path resolves the caller's "subject" — either a logged-in user
-// (scope by user_id) or a guest (scope by guest_fp_hash). fingerprintMiddleware
-// guarantees fpHash is non-empty on every request, so the guest path always
-// has a non-null scope key.
+// Every read path resolves the caller's "subject". Precedence MUST mirror the
+// WRITE path (`cove-slots.ts` getSubject): Lucia human → agent session → guest.
+//
+//   - Lucia human  → scope by user_id
+//   - Agent session → scope by the agent's BOUND user_id (an agent settles real
+//     CT under its avatar's userId, so its history rows carry that userId — it
+//     must read by that same userId, NOT fall through to guest)
+//   - Guest        → scope by guest_fp_hash
+//
+// Before the 2026-06-21 hotfix this resolver had NO agent branch, so a
+// connected/hosted agent — whose spin events are written with userId set (via
+// cove-slots getSubject's agent branch) — fell through to the guest tier and
+// read ZERO rows ("won 20 CT, no history"). That was the E5-parity defect: the
+// write path resolved {user, agent, guest} but the read path only {user, guest}.
+//
+// The agent branch reuses `resolveAgentSession` verbatim from the write path so
+// the SAME ledger-capability + bound-avatar checks apply. An agent that is
+// ledger-capable and bound to an active avatar resolves to its bound userId and
+// reads its own history. An unknown/expired session, a non-ledger session, or a
+// session with no active avatar resolves to NULL here — we then fall through to
+// guest scoping (a read-only path; the worst case is it sees no rows, never
+// another user's). Read paths never SPEND, so a soft fall-through is safe (the
+// write path 401/403s instead, but reads must stay best-effort).
 
 type Subject =
   | { kind: 'user'; id: string }
   | { kind: 'guest'; fp: string };
 
-function resolveSubject(c: Context<AppContext>): Subject {
+async function resolveSubject(c: Context<AppContext>): Promise<Subject> {
   const user = c.get('user');
   if (user) return { kind: 'user', id: user.id };
+
+  // Agent-session path — a connected/hosted agent reading its own history.
+  // Reuse the exact write-path resolver so ledger-capability + bound-avatar
+  // gating can never drift between read and write. Only a fully-resolved
+  // ledger-capable agent bound to an active avatar gets userId scoping; any
+  // weaker session falls through to guest (read-only, no spend).
+  const agentSessionId = c.req.header(AGENT_SESSION_HEADER);
+  if (agentSessionId) {
+    const resolved = await resolveAgentSession(agentSessionId);
+    // `resolveAgentSession` already enforces ledger-capability (frozen flag +
+    // rebind re-validation) and only returns a non-null userId for a session
+    // bound to an active avatar. Scope by that bound userId so the agent sees
+    // exactly the rows its spins wrote (which used the SAME userId).
+    if (resolved && resolved.userId && resolved.ledgerCapable) {
+      return { kind: 'user', id: resolved.userId };
+    }
+    // else: unknown/expired/non-ledger/unbound — fall through to guest scoping.
+  }
+
   const fp = c.get('fpHash');
   // fingerprintMiddleware guarantees this; defensive throw keeps the type
   // narrowed and surfaces a misconfiguration loudly rather than silently
@@ -213,7 +252,7 @@ coveHistoryRouter.get('/', async (c) => {
     });
   }
   const { game, outcome, limit, cursor } = queryParsed.data;
-  const subject = resolveSubject(c);
+  const subject = await resolveSubject(c);
 
   // Scope filter — user_id for authed callers, guest_fp_hash for guests.
   // Each branch uses its own partial index so a guest read never falls back
@@ -268,7 +307,7 @@ coveHistoryRouter.get('/:eventId', async (c) => {
   if (!/^[0-9a-f-]{36}$/i.test(eventId)) {
     throw new HTTPException(400, { message: 'invalid_event_id' });
   }
-  const subject = resolveSubject(c);
+  const subject = await resolveSubject(c);
 
   const event = await db.query.coveGameEvents.findFirst({
     where: eq(coveGameEvents.id, eventId),
@@ -291,7 +330,7 @@ coveHistoryRouter.get('/:eventId/verify', async (c) => {
   if (!/^[0-9a-f-]{36}$/i.test(eventId)) {
     throw new HTTPException(400, { message: 'invalid_event_id' });
   }
-  const subject = resolveSubject(c);
+  const subject = await resolveSubject(c);
 
   const event = await db.query.coveGameEvents.findFirst({
     where: eq(coveGameEvents.id, eventId),
