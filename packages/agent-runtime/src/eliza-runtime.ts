@@ -104,6 +104,28 @@ export interface ElizaMessage {
 
 export type ElizaRuntimeState = 'idle' | 'initializing' | 'running' | 'paused' | 'stopped' | 'error';
 
+// F3 (2026-06-21): building teachers + Nori (every convertToElizaCharacter NPC)
+// were replying with multi-paragraph essays — the model rambled up to the old
+// maxTokens:1000 ceiling because nothing in the persona prompt constrained length.
+// This directive is appended to EVERY such character's system prompt so the brevity
+// rule is GLOBAL and cannot drift per-template. Paired with CHAT_RESPONSE_MAX_TOKENS
+// as a hard backstop in processMessage, applied to callers that flag
+// `conversational: true` (the human↔teacher / ↔Nori chat routes).
+const CONCISE_CHAT_DIRECTIVE =
+  '\n\nRESPONSE LENGTH (STRICT — overrides any persona tendency to ramble): Reply in 1-3 ' +
+  'SHORT sentences. This is a quick in-world chat bubble, NOT a lesson or an essay. Answer the ' +
+  "question directly in plain prose; expand ONLY if the user explicitly asks you to \"go deep\", " +
+  '"explain in detail", or "tell me everything". Do NOT open with a greeting, do NOT restate the ' +
+  'question, no lists or headers, and keep any in-character flavor to a few words at most. If you ' +
+  'find yourself writing a 4th sentence of filler, stop.';
+
+// Conversational ceiling for live human↔NPC chat (teacher / Nori), applied when the
+// caller passes `conversational: true`. ~200 tokens ≈ comfortably fits 1-3 sentences
+// with headroom; a firmer backstop than the first 320 cut (a live probe showed 320 +
+// the soft "aim for 2-3" wording still let gpt-4o-mini ramble to ~6 sentences). The
+// strengthened CONCISE_CHAT_DIRECTIVE does the real shaping; this just bounds runaway.
+const CHAT_RESPONSE_MAX_TOKENS = 200;
+
 function convertToElizaCharacter(
   template: LocationTemplate,
   config: ElizaRuntimeConfig
@@ -140,6 +162,12 @@ function convertToElizaCharacter(
       system += `\n\nTone: ${customization.tone}`;
     }
   }
+
+  // F3 (2026-06-21): global brevity rule. Appended AFTER the persona system prompt
+  // (whether it came from customization.system verbatim or was synthesized above) so
+  // every location + system agent (Nori) inherits it regardless of template — it
+  // cannot be dropped or contradicted by a per-template prompt.
+  system += CONCISE_CHAT_DIRECTIVE;
 
   // Customization-first messageExamples (fix 2026-06-21). The seeder stores them
   // in the LocationTemplate shape `{ user, content: { text } }`; legacy/template
@@ -714,6 +742,15 @@ export class ElizaRuntime {
       dynamicContext?: string;
       /** State object for Providers and Actions (avatarData, worldSnapshot, services, etc.) */
       state?: Record<string, any>;
+      /**
+       * F3 (2026-06-21): mark this as live in-world conversational chat (human↔NPC
+       * teacher / Nori). When true the reply is capped at the tight
+       * CHAT_RESPONSE_MAX_TOKENS conversational ceiling so it stays short. Callers
+       * that omit it keep the larger default budget. Set by the building-teacher +
+       * system-agent chat routes; NOT set on paths that may emit action-heavy
+       * replies. The brevity DIRECTIVE in the system prompt applies regardless.
+       */
+      conversational?: boolean;
     } = {}
   ): Promise<ElizaMessage> {
     if (this.state !== 'running' || !this.runtime) {
@@ -791,8 +828,16 @@ export class ElizaRuntime {
       const promptWithHistory = promptParts.join('\n\n');
 
       // --- Generate LLM response ---
+      // F3 (2026-06-21): callers that flag `conversational` (the human↔teacher and
+      // ↔Nori chat routes) get the tight CHAT_RESPONSE_MAX_TOKENS ceiling so replies
+      // stay short. Everything else keeps the larger 1000 budget so action-emitting
+      // or longer-form callers are never truncated. (NOTE: we deliberately do NOT key
+      // this on `providerState.services` — services are injected whenever the VISITOR
+      // has an avatar, i.e. for almost every real logged-in chat, so that gate would
+      // have left the founder's case uncapped.)
+      const responseMaxTokens = context.conversational ? CHAT_RESPONSE_MAX_TOKENS : 1000;
       const result = await this.runtime.generateText(promptWithHistory, {
-        maxTokens: 1000,
+        maxTokens: responseMaxTokens,
         stopSequences: [],
       });
 

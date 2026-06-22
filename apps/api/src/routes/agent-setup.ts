@@ -174,7 +174,9 @@ const importSchema = z.object({
     // Phase 2 — optional on imports from older exports; fall back to
     // DB DEFAULTs at insert time if omitted.
     modelKey: z.string().optional(),
-    agentCategory: z.enum(['openclaw', 'hermes', 'milady', 'other']).optional(),
+    // Keep in lockstep with AGENT_CATEGORIES (shared) + AgentConfigExport
+    // (database) so an exported hatcher/chibi agent re-imports without a 400.
+    agentCategory: z.enum(['openclaw', 'hermes', 'milady', 'other', 'hatcher', 'chibi']).optional(),
     harness: z.enum(['openclaw', 'hermes', 'milady', 'custom']).optional(),
   }),
   slotIndex: z.number().int().min(0).max(5).optional(),
