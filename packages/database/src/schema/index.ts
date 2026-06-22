@@ -95,6 +95,13 @@ export * from './baccarat';
 // NOT CT (only buy-in debit + prize credit cross the ledger). Distinct from the
 // vs-bots `holdem` tables above. Registered here so drizzle-kit sees the schema.
 export * from './poker';
+// Poker CASH (ring) games (P1, 2026-06-20) — poker_cash_tables / _seats / _hands /
+// _ledger_events. SEPARATE product from the MTT tournament above: FIXED blinds,
+// chips==CT 1:1, sit-down DEBIT / leave CASH-OUT CREDIT (the ledger crosses on every
+// sit/leave, NOT just buy-in+prize). RAKE=0 in P1 (rake columns reserved). PURELY
+// ADDITIVE — four net-new tables; the migration is idempotent CREATE … IF NOT EXISTS
+// (apply by hand, NOT db:push). See `poker-cash.ts` header.
+export * from './poker-cash';
 // Land Economy Phase 0 (2026-06-15) — converged land/property + services +
 // CT-on-ramp tables (land_parcels/structures/upgrades/transactions +
 // service_listings/service_purchases + partner_storefronts + ct_topups).
