@@ -11,7 +11,9 @@
 > - **`GameFeatures.md`** — gameplay.
 > - **This doc** — *how* the 3D scene is wired: coordinates, camera, lights, GPU budget, animation, asset pipeline.
 
-**Last edit:** 2026-06-20 (cove-fix: raised beacon above pyramid apex, added visible glowing portal/archway at east face, corrected COVE_DOOR_PX to east/town-facing side). See §15.5 below.
+**Last edit:** 2026-06-21 (controls-rework: removed 3D ground click-to-move — kept fast-travel/warp path visuals; cove "both prompts" — widened cove proximity along the tunnel corridor for the Press-E prompt + auto-enter when walking deep into the corridor (`isInsideCoveTunnel`, `COVE_AUTO_ENTER_MAX_X=-3450`, reachable east of the ≈-3586 collision wall); E-near-cove now runs the walk-in not a dead chat; mobile Jump button `pointer-events-auto` fix; town directory sign cosmetics/exchange restacked onto two lines; Codex-round fixes for fast-travel-to-cove + NPC cove parity + walk-in idempotency). See §15.6 below.
+
+**Prior Last edit:** 2026-06-20 (cove-fix: raised beacon above pyramid apex, added visible glowing portal/archway at east face, corrected COVE_DOOR_PX to east/town-facing side). See §15.5 below.
 
 **Prior Last edit:** 2026-06-20 (Adinero locomotion grounding fix — `animatorId: 'hermes-male'` → `'adinero'` + strip idle/walk/run position tracks). See §6c note below.
 
@@ -1187,3 +1189,20 @@ Title "TOWN CENTER" + carved double border + wood grain. Big high-contrast text 
 - `COVE_DOOR_PX` world X = -3650: 140 wu east of the arch center, in open space between pyramid and town. Avatar walks TO the arch before fade ✓.
 
 **Files changed:** `apps/web/src/lib/three/cove-beacon.tsx` (SIGN_Y/RING_Y/board/pole), `apps/web/src/lib/three/cove-entrance.tsx` (new), `apps/web/src/lib/three/arena-buildings.tsx` (COVE_DOOR_PX), `apps/web/src/components/three/World3DCanvas.tsx` (import + mount CoveEntrance).
+
+### §15.6 — Controls-rework + cove "both prompts" (2026-06-21)
+
+Founder report: the cove **walk-IN** (physically walking into the tunnel to enter) had been stripped — only click worked — and the desktop **click-to-move** was causing issues (and on mobile, tapping the screen / Jump button "fucked things up / didn't jump"). Scope (locked via 5 founder answers):
+
+- **Ground click-to-move REMOVED** (`click-to-move.tsx`): the invisible ground-raycast plane that walked the avatar to a clicked point is gone. Desktop movement = WASD; camera look = mouse-drag + arrow keys (founder: "arrows = camera look", NOT a walk binding). Mobile = left joystick. The component now renders ONLY the `clickPath` path-dots + destination marker, so **World-Map/minimap fast-travel + warp + the cove walk-in still render a route** (those set `clickPath` programmatically; `player-avatar.tsx` still consumes it). Town-center stalls (bazaar→cosmetics, auction→bounties) and the cove keep their OWN `onClick` handlers → unaffected. Teacher buildings now enter via proximity-**E** only (the old click-walk-then-enter `clickPathTarget` path died with the plane — intended).
+- **Cove "both prompts"** (`character-positions.ts` + `cove-entrance.tsx` + `player-avatar.tsx`):
+  - The 600 wu prompt circle is centered at the pyramid (-4160) and does NOT reach the tunnel mouth (world -3275, 885 wu away). Added a **tunnel-approach corridor** to `isCoveProximate` (world X ∈ [-3640, -3180], |Z| ≤ 150) so "Press E · Enter the Cove" shows as you approach/enter the mouth.
+  - **Auto-enter**: `isInsideCoveTunnel` (X ≤ `COVE_AUTO_ENTER_MAX_X = -3450`, |Z| ≤ 120) fires `triggerCoveWalkIn()` once the player walks deep into the corridor. The cove **collision AABB** east edge is world X ≈ **-3586** (`world-colliders.ts BUILDING_EXTENTS.cove halfX=546` + 28 buffer), so -3450 is reachable on foot (mid-corridor, east of the wall). Runs in a `useFrame` in `cove-entrance.tsx`, gated to `player`/`npc` (autonomous agents + explore free-cam never auto-enter); one trigger per entry via a module guard `_coveAutoArmed` re-armed at `COVE_REARM_X = -3250`; also guarded by `!movementFrozen` + `!useTransitionStore.active`.
+  - **E-near-cove** now runs `triggerCoveWalkIn()` instead of `enterBuilding('cove')` (which fell through to an empty teacher-chat). Patched in BOTH `player-avatar.tsx` E-handler blocks.
+- **Mobile Jump fix** (`mobile-controls.tsx`): the Jump button inherited `pointer-events:none` from its `pointer-events-none` parent (the joystick zones opt back in with `pointer-events-auto`; the button didn't) → untappable. Added `pointer-events-auto`. Removing the ground-click plane also stops mobile screen taps from hijacking movement.
+
+**Files changed:** `click-to-move.tsx` (ground-click input removed, path visuals kept), `character-positions.ts` (cove corridor proximity + `isInsideCoveTunnel` + `COVE_AUTO_ENTER_MAX_X`), `cove-entrance.tsx` (auto-enter `useFrame`), `player-avatar.tsx` (`triggerCoveWalkIn` import + E-near-cove in both blocks), `mobile-controls.tsx` (Jump `pointer-events-auto`). No new GLB/asset, no schema. Build: `bunx turbo build --filter=@clawville/web` green.
+
+**Codex E3 round-2 fixes (same diff):** (#2) `player-avatar.tsx` clickPathTarget arrival now special-cases `'cove' → triggerCoveWalkIn()` (both blocks) so **minimap/World-Map fast-travel to the cove** runs the walk-in, not the dead chat. (#3) `npc-controller.tsx` gained cove parity — imports `isCoveProximate` (sets `nearLocation='cove'` in NPC mode) + `triggerCoveWalkIn`, and its E-handler special-cases the cove (NPC mode syncs `avatarPositionRef`, so the `cove-entrance` auto-enter already covers NPC). (#4) `arena-buildings.tsx` `triggerCoveWalkIn` is now idempotent via a module `_coveWalkInPending` guard (no double-fire from the click/auto-enter race, double-click, or fast-travel arrival). Codex flagged that teacher-building 3D click-walk-then-enter is gone — that is **intended** (founder: remove click-to-move; teacher buildings enter via proximity-E; town-center stalls keep their own onClick).
+
+**Town directory sign (same diff, `town-directory-sign.tsx`):** the bottom row crammed "← COSMETICS" (x=0.26) and "EXCHANGE →" (x=0.74) onto ONE baseline → read as "COSMETICS EXCHANGE" squeezed at sign scale. Restacked as two centred lines — "← COSMETICS" (y=545) over "EXCHANGE →" (y=665) — on the 1024×768 board.

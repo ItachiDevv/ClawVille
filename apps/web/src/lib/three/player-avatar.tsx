@@ -24,6 +24,7 @@ import {
   type CharacterAnimator,
 } from '@/lib/three/character-animations';
 import { jumpState, isEditable, type ChargeMode } from '@/lib/three/jump-state';
+import { triggerCoveWalkIn } from './arena-buildings';
 import { registerInputReset } from '@/lib/three/input-reset';
 import { useVRMInstance, disposeVRMInstance, applyFattenedFrustumCulling } from '@/lib/three/vrm-loader';
 import {
@@ -363,7 +364,10 @@ function PlayerAvatarVRMInner({ reg }: { reg: ModelRegistryEntry }) {
           return;
         }
         if (store.nearLocation) {
-          store.enterBuilding(store.nearLocation);
+          // The cove is a walk-in venue (SceneTransition), not a teacher chat —
+          // E near it runs the walk-in flow, never enterBuilding's chat path.
+          if (store.nearLocation === 'cove') triggerCoveWalkIn();
+          else store.enterBuilding(store.nearLocation);
           lastEState = eNow;
           return;
         }
@@ -457,6 +461,7 @@ function PlayerAvatarVRMInner({ reg }: { reg: ModelRegistryEntry }) {
           if (store.clickPathIndex >= store.clickPath.length - 1) {
             const target = store.clickPathTarget;
             store.clearClickPath();
+            if (target === 'cove') { triggerCoveWalkIn(); return; }
             if (target && store.nearLocation === target) { store.enterBuilding(target); return; }
           } else { store.advanceClickPath(); }
         } else { vx = dx / dist; vy = dy / dist; }
@@ -839,7 +844,10 @@ function PlayerAvatarGLBInner() {
           return;
         }
         if (store.nearLocation) {
-          store.enterBuilding(store.nearLocation);
+          // The cove is a walk-in venue (SceneTransition), not a teacher chat —
+          // E near it runs the walk-in flow, never enterBuilding's chat path.
+          if (store.nearLocation === 'cove') triggerCoveWalkIn();
+          else store.enterBuilding(store.nearLocation);
           lastEState = eNow;
           return;
         }
@@ -945,6 +953,7 @@ function PlayerAvatarGLBInner() {
           if (store.clickPathIndex >= store.clickPath.length - 1) {
             const target = store.clickPathTarget;
             store.clearClickPath();
+            if (target === 'cove') { triggerCoveWalkIn(); return; }
             if (target && store.nearLocation === target) { store.enterBuilding(target); return; }
           } else { store.advanceClickPath(); }
         } else { vx = dx / dist; vy = dy / dist; }

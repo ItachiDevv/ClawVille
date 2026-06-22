@@ -102,10 +102,11 @@ function bakeDirectoryTexture(): THREE.CanvasTexture {
   drawArrow('↑', TEX_W / 2, 250, '#3ff0e0', 116);
   drawLabel('BOUNTY BOARD', TEX_W / 2, 350);
 
-  // ── BOTTOM-LEFT: ← Cosmetics ──
-  drawInline('←', 'COSMETICS', TEX_W * 0.26, 600, '#ff86e0', 'arrowLeft');
-  // ── BOTTOM-RIGHT: Exchange → ──
-  drawInline('→', 'EXCHANGE', TEX_W * 0.74, 600, '#ffd24a', 'arrowRight');
+  // ── BOTTOM: stacked directions — "← Cosmetics" over "Exchange →" ──
+  // Was one cramped row (x=0.26 / 0.74, same y) that read as "COSMETICS
+  // EXCHANGE" squeezed together at sign scale. Now two centred stacked lines.
+  drawInline('←', 'COSMETICS', TEX_W / 2, 545, '#ff86e0', 'arrowLeft');
+  drawInline('→', 'EXCHANGE', TEX_W / 2, 665, '#ffd24a', 'arrowRight');
 
   function drawArrow(glyph: string, x: number, y: number, color: string, size: number) {
     ctx.font = `bold ${size}px Arial, sans-serif`;
