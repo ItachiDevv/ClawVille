@@ -385,8 +385,21 @@ export interface GameState {
 
   // Land Office (Phase 1 land economy — browse / claim / buy / build)
   landOfficeOpen: boolean;
-  openLandOffice: () => void;
+  /**
+   * Open the Land Office modal.
+   * Pass `parcelCode` (e.g. `'parcel-a-01'`) when opening from a 3D parcel
+   * click so the modal auto-focuses that parcel in the For-Sale tab ready to buy.
+   * Omit (or pass undefined) for the normal sidebar open (no pre-selection).
+   */
+  openLandOffice: (parcelCode?: string) => void;
   closeLandOffice: () => void;
+  /**
+   * The parcel the Land Office should pre-focus on open. Set by openLandOffice
+   * when the caller provides a parcelCode; cleared by the modal once it has
+   * consumed the focus (or on close). null = no pre-selection.
+   */
+  landOfficeFocusParcel: string | null;
+  clearLandOfficeFocus: () => void;
 
   // ── World Map + Fast Travel (town-fasttravel-2026-06-19) ──────────────
   // Interactive World Map modal — the WARP surface (the minimap stays the
@@ -1063,8 +1076,13 @@ export const useGameStore = create<GameState>((set, get) => ({
   closeMarketplace: () => set({ marketplaceOpen: false }),
 
   landOfficeOpen: false,
-  openLandOffice: () => set({ landOfficeOpen: true }),
-  closeLandOffice: () => set({ landOfficeOpen: false }),
+  landOfficeFocusParcel: null,
+  openLandOffice: (parcelCode) => set({
+    landOfficeOpen: true,
+    landOfficeFocusParcel: parcelCode ?? null,
+  }),
+  closeLandOffice: () => set({ landOfficeOpen: false, landOfficeFocusParcel: null }),
+  clearLandOfficeFocus: () => set({ landOfficeFocusParcel: null }),
 
   // ── World Map + Fast Travel (town-fasttravel-2026-06-19) ──────────────
   worldMapOpen: false,
@@ -1281,6 +1299,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     skillBuilderOpen: false,
     marketplaceOpen: false,
     landOfficeOpen: false,
+    landOfficeFocusParcel: null,
     worldMapOpen: false,
     warpTarget: null,
     bazaarOpen: false,
