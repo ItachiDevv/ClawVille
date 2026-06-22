@@ -146,6 +146,7 @@ export class PokerTableSim {
   private sendToSeatFn: SendToSeatFn | null = null;
   private handCompleteFn: HandCompleteFn | null = null;
   private showdownBroadcastFn: ShowdownBroadcastFn | null = null;
+  private turnTimeoutHook: ((tableId: string) => void) | null = null;
 
   constructor(clock: SimClock = REAL_CLOCK) {
     this.clock = clock;
@@ -171,6 +172,24 @@ export class PokerTableSim {
    */
   setShowdownBroadcastFn(fn: ShowdownBroadcastFn): void {
     this.showdownBroadcastFn = fn;
+  }
+
+  /**
+   * Register a TURN-TIMEOUT HOOK that OWNS the auto-fold/auto-check resolution of
+   * an expired turn clock. When set, the armed turn timer fires THIS hook (passing
+   * the tableId) INSTEAD of calling `onTurnTimeout` directly — so a state-advancing
+   * owner (the cash `CashTableManager`) can run the timeout UNDER its per-table
+   * lock and SETTLE the hand the timeout resolves in the SAME critical section,
+   * rather than the sim mutating + resolving the hand outside any lock and leaving
+   * an undrained `pendingResults` entry (the OPEN HIGH bug this seam closes).
+   *
+   * The hook MUST eventually call `sim.onTurnTimeout(tableId)` itself (it is the
+   * one that actually advances/folds) — typically inside the owner's lock, followed
+   * by its settle. When NO hook is set (the WS demo / MTT paths), the timer falls
+   * back to calling `onTurnTimeout` directly, preserving their existing behavior.
+   */
+  setTurnTimeoutHook(fn: (tableId: string) => void): void {
+    this.turnTimeoutHook = fn;
   }
 
   // ── Lifecycle ─────────────────────────────────────────────────────────────
@@ -1117,8 +1136,19 @@ export class PokerTableSim {
     const seat = t.bySeatIndex.get(t.toActSeatIndex)!;
     const grace = seat.subjectType === 'agent' ? t.agentTurnGraceMs : 0;
     const ms = t.turnClockMs + grace;
+    const tableId = t.tableId;
     t.turnTimerHandle = this.clock.setTimer(() => {
-      this.onTurnTimeout(t.tableId);
+      // When a timeout-owning manager registered a hook (the cash manager), hand
+      // the expiry to it so the auto-fold/auto-check resolution runs UNDER its
+      // per-table lock and the resolved hand is SETTLED in the same pass — never
+      // mutating + resolving the hand outside a lock (the OPEN HIGH bug). The hook
+      // is responsible for calling `onTurnTimeout(tableId)` itself. With NO hook,
+      // resolve inline as before (WS demo / MTT paths).
+      if (this.turnTimeoutHook) {
+        this.turnTimeoutHook(tableId);
+      } else {
+        this.onTurnTimeout(tableId);
+      }
     }, ms);
   }
 

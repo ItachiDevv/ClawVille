@@ -54,6 +54,8 @@ import * as ledgerModule from '../claw-token-ledger';
 import { createServerSeed, sha256Hex } from '../provable-rng';
 import { PokerTableSim } from './poker-table-sim';
 import { cashTableSim } from './cash-table-sim-singleton';
+import { houseFillTargetSeats } from './cash-house-config';
+import { cashHouseSeeder, CashBotPoolExhaustedError } from './cash-house-seeder';
 import { REAL_CLOCK } from './poker-table-types';
 import type {
   Action,
@@ -175,6 +177,16 @@ function simTableId(tableId: string): string {
   return `cash:${tableId}`;
 }
 
+/**
+ * Inverse of `simTableId`: recover the table uuid from a `cash:<uuid>` sim id.
+ * Returns null if the id is not in the cash namespace (the turn-timeout hook is
+ * registered on the dedicated cash sim, so every fired id is `cash:`-prefixed, but
+ * we guard defensively so a foreign id is ignored rather than mis-locked).
+ */
+function unwrapSimTableId(simTid: string): string | null {
+  return simTid.startsWith('cash:') ? simTid.slice('cash:'.length) : null;
+}
+
 export class CashTableManager {
   private readonly db: DbLike;
   private readonly ledger: LedgerLike;
@@ -222,6 +234,64 @@ export class CashTableManager {
     this.sim.setHandCompleteFn((tid, result) => {
       this.pendingResults.set(tid, result);
     });
+
+    // TURN-CLOCK OWNERSHIP: route the sim's expired-turn auto-fold/auto-check
+    // through THIS manager so it runs UNDER the per-table lock and SETTLES the
+    // hand it resolves in the same critical section. Without this, the sim's
+    // armed `setTimeout` fired `onTurnTimeout` directly — mutating the SimTable +
+    // advancing + resolving the hand OUTSIDE `withTableLock` (racing a concurrent
+    // human action mid-suspension-point) and leaving an undrained `pendingResults`
+    // entry that no tick drains on a no-tick (player-public/private) table (CT
+    // stranded in escrow forever). `handleTurnTimeout` closes both holes.
+    // The sim hands us only the sim tableId (`cash:<uuid>`); recover the table uuid.
+    this.sim.setTurnTimeoutHook((simTid) => {
+      const tableId = unwrapSimTableId(simTid);
+      if (!tableId) return;
+      void this.handleTurnTimeout(tableId);
+    });
+  }
+
+  /**
+   * Resolve an EXPIRED turn clock UNDER the per-table lock and settle in the same
+   * pass. The sim's armed timer fires this (via `setTurnTimeoutHook`) instead of
+   * calling `onTurnTimeout` directly. We acquire `withTableLock(tableId)` — the
+   * SAME mutex the REST sit/leave/action + tick path uses — so the auto-fold/auto-
+   * check can NEVER interleave with a human action mid-suspension-point, then:
+   *   1. `sim.onTurnTimeout` — auto-check (nothing owed) or auto-fold the to-act
+   *      seat and advance; if that closes the hand the sim fires `handCompleteFn`
+   *      → `pendingResults`.
+   *   2. `driveSeededAgents` — if the timeout handed action to a bot, it acts now
+   *      (advisor) rather than waiting for its own clock to expire.
+   *   3. `settleIfComplete` — apply the chip deltas + persist the checkpoint +
+   *      stop the sim hand for the hand the timeout (or the bots) resolved, so NO
+   *      undrained `pendingResults` is ever left on ANY table (house OR no-tick
+   *      player-public/private) — escrow can never stay inflated vs Σ stacks.
+   *   4. if no live hand remains → `startAndAdvance` for the next one.
+   *
+   * Errors are swallowed (logged): a timer callback has no caller to surface to,
+   * and the per-table lock + the sim's defensive guards keep one stuck table from
+   * spinning. Idempotent-by-construction: if the lock-holder already resolved the
+   * turn, `onTurnTimeout` is a no-op (no seat to act) and `settleIfComplete` finds
+   * no pending result.
+   */
+  async handleTurnTimeout(tableId: string): Promise<void> {
+    try {
+      await this.withTableLock(tableId, async () => {
+        const sid = simTableId(tableId);
+        // The lock-holder we waited on may have already acted for this seat (the
+        // human beat the clock). onTurnTimeout is a no-op then (toActSeatIndex
+        // changed / hand ended), so this is safe to call unconditionally.
+        this.sim.onTurnTimeout(sid);
+        await this.settleIfComplete(tableId);
+        await this.driveSeededAgents(tableId);
+        await this.settleIfComplete(tableId);
+        if (!this.sim.getPublicSnapshot(sid)) {
+          await this.startAndAdvance(tableId);
+        }
+      });
+    } catch (err) {
+      console.error(`[cash-manager] handleTurnTimeout failed for ${tableId}:`, err);
+    }
   }
 
   // ── Per-table serialization ────────────────────────────────────────────────
@@ -258,6 +328,30 @@ export class CashTableManager {
     creator: CashSubject,
   ): Promise<PokerCashTable> {
     this.validateConfig(config);
+
+    // ── HOUSE-TABLE SCOPE GUARD (defense-in-depth, 2026-06-22) ───────────────
+    // `source='house'` tables fill with house-bank-debited bots and are
+    // self-driven by the boot tick. They may ONLY be created by the house
+    // auto-scaler, which constructs its creator subject from the house-bank
+    // avatar (`houseBankAvatarProvider`). A normal user/agent must NEVER be able
+    // to stand one up — that would hand any caller a house-bank-funded bot table
+    // on demand (a house-bank exposure/drain vector). The route already drops
+    // 'house' from its create enum (the primary gate); this is the belt-and-
+    // braces gate at the manager so a future caller/refactor can't bypass it.
+    // Resolve the house-bank avatar and require the creator to BE it. If no house
+    // bank is wired at all (bots disabled), no house table can be created.
+    if (config.source === 'house') {
+      const houseBankAvatarId = this.houseBankAvatarProvider
+        ? await this.houseBankAvatarProvider('')
+        : null;
+      if (!houseBankAvatarId || creator.avatarId !== houseBankAvatarId) {
+        throw new CashTableError(
+          'house_table_creation_forbidden',
+          "source='house' tables may only be created by the house auto-scaler",
+          403,
+        );
+      }
+    }
 
     const joinCode =
       config.visibility === 'private'
@@ -408,6 +502,17 @@ export class CashTableManager {
     }>;
     live: PublicTableSnapshot | null;
   } | null> {
+    // LAZY SETTLE-ON-READ (belt-and-braces, 2026-06-22): if a hand resolved but is
+    // not yet settled (a `pendingResults` entry survives — e.g. a timeout-resolved
+    // hand on a no-tick player-public/private table where the timeout hook somehow
+    // could not complete), drain it UNDER the lock BEFORE reading so a public read
+    // never reports an escrow inflated vs Σ seat stacks. No-op (cheap lock acquire)
+    // when nothing is pending — the common case. The settle is idempotent.
+    if (this.pendingResults.has(simTableId(tableId))) {
+      await this.withTableLock(tableId, async () => {
+        await this.settleIfComplete(tableId);
+      });
+    }
     const table = await this.getTable(tableId);
     if (!table) return null;
     const seats = await this.activeSeats(tableId);
@@ -509,6 +614,11 @@ export class CashTableManager {
   private async startAndAdvance(tableId: string): Promise<void> {
     const started = await this.maybeStartHand(tableId);
     if (!started) return;
+    // BOT-YIELD: if real players grew at this house table, queue seeded bots to
+    // stand up at the NEXT between-hands boundary (keeping ≥2 players), so real
+    // players are prioritized for the seats. Queues only — never disrupts the hand
+    // that just started; processPendingLeaves cashes them back to the bank.
+    await this.queueBotYield(tableId);
     await this.driveSeededAgents(tableId);
     await this.settleIfComplete(tableId);
   }
@@ -796,6 +906,15 @@ export class CashTableManager {
       return { stack: lockedStack, newEscrow: escrowAfter };
     });
 
+    // A SEEDED seat that just left frees its bot pool reservation so the same bot
+    // uuid can recycle to a new (table,seat). Harmless no-op for an injected/test
+    // bot that was never tracked by the seeder (release of an unmapped seat is a
+    // no-op), so this keeps the manager test-injectable while the production pool
+    // recycles promptly. Done OUTSIDE the tx (pure in-memory).
+    if (isSeeded) {
+      cashHouseSeeder.release(table.id, seat.seatIndex);
+    }
+
     // Keep the caller's in-memory table view consistent after the committed tx.
     table.tableEscrowCt = String(newEscrow);
     return stack;
@@ -861,6 +980,44 @@ export class CashTableManager {
         await this.startAndAdvance(input.tableId);
       }
       return result;
+    });
+  }
+
+  // ── Autonomous self-drive (the boot TICK's entry point) ─────────────────────
+
+  /**
+   * Advance ONE house table by one tick, WITHOUT any human poke. This is the
+   * entry point the boot `cash-table-tick` calls on every open `source='house'`
+   * table on its ~1.5s cadence so a solo-human-plus-bots (or bot-only) table keeps
+   * dealing: a bot on the button acts via the advisor policy, a closed hand
+   * settles, and the next hand auto-starts. Everything runs under the SAME
+   * `withTableLock(tableId)` the REST sit/leave/action path uses, so the tick can
+   * never interleave with a human action — it adds NO new money path, only re-uses
+   * `driveSeededAgents` / `settleIfComplete` / `startAndAdvance`.
+   *
+   * Ordering (all lock-held):
+   *   1. driveSeededAgents — a seeded seat whose turn it is acts now (advisor).
+   *   2. settleIfComplete  — if the bots (or a prior human action) closed the hand,
+   *      apply the chip deltas + persist the checkpoint + stop the sim hand.
+   *   3. if no live sim snapshot remains → startAndAdvance → maybeStartHand
+   *      (which itself runs processPendingLeaves → fillSeededAgents → deal) and
+   *      then drives + settles the freshly-started hand.
+   *
+   * A no-op when nothing is actionable (empty/idle table, or it's a human's turn).
+   * Never throws to the tick loop's per-table try/catch is the backstop, but the
+   * lock + the sim's defensive guards keep a single stuck table from spinning.
+   */
+  async advanceTable(tableId: string): Promise<void> {
+    return this.withTableLock(tableId, async () => {
+      const sid = simTableId(tableId);
+      // 1+2: progress any live hand the bots can move, settle if they closed it.
+      await this.driveSeededAgents(tableId);
+      await this.settleIfComplete(tableId);
+      // 3: no live hand left → try to start + advance the next one (this also
+      // runs processPendingLeaves + fillSeededAgents inside maybeStartHand).
+      if (!this.sim.getPublicSnapshot(sid)) {
+        await this.startAndAdvance(tableId);
+      }
     });
   }
 
@@ -1097,15 +1254,34 @@ export class CashTableManager {
   // ── Seeded agents (TRIVIAL STUB policy) ─────────────────────────────────────
 
   /**
-   * Fill empty seats with seeded agents up to the table's `seeded_agent_slots`, but
-   * only enough to reach a minimum of 2 occupied funded seats so a single human can
-   * play. Seeded agents are subject_type='agent', is_seeded=true. Their chips are
-   * REAL-CT-backed by a DEBIT against the house bank (CT-supply conservation —
-   * concern g), and returned to the house bank on the seeded agent's leave. A seeded
-   * provider WITHOUT a house bank is a faucet and is REFUSED here.
+   * Fill empty seats with seeded agents toward `CASH_HOUSE_FILL_TARGET_SEATS`
+   * (default 3 — a solo human + up to ~2 bots, a small live game, NOT a packed
+   * 6-max felt), capped by the table's `seeded_agent_slots`, the open seats, and
+   * (the bot-yield rule) the number of REAL occupied seats so real players are
+   * always prioritized. Seeded agents are subject_type='agent', is_seeded=true.
+   * Their chips are REAL-CT-backed by a DEBIT against the house bank (CT-supply
+   * conservation — concern g), returned to the house bank on the seeded agent's
+   * leave. A seeded provider WITHOUT a house bank is a faucet and is REFUSED here.
+   *
+   * SCOPE (locked): seeding is gated to `source='house'` tables ONLY. A
+   * player-public or private table NEVER fills with bots even if its
+   * `seededAgentSlots` were somehow > 0 — the seeded provider must only ever be
+   * exercised for house tables.
+   *
+   * POOL EXHAUSTION: the per-seat provider call is wrapped so a
+   * `CashBotPoolExhaustedError` (the singleton's seam throws it when the bot pool is
+   * fully reserved) simply stops the fill (seats fewer bots) rather than aborting a
+   * human's sit. M=24 ≫ 15 concurrent so this is a defensive belt-and-braces.
+   *
+   * BOT RE-BUY: a seeded seat that busted to 0 chips (dropped from the next deal)
+   * is re-bought via the SAME house-bank-debited path at this between-hands
+   * boundary, capped per call, so a populated table doesn't bleed bots over time
+   * while the bank's exposure stays bounded.
    */
   private async fillSeededAgents(table: PokerCashTable): Promise<void> {
     if (!this.seededAgentProvider || table.seededAgentSlots <= 0) return;
+    // SCOPE GUARD: bots seed HOUSE tables only — never player-public / private.
+    if (table.source !== 'house') return;
     // A seeded provider with no house bank would mint chips → refuse loudly.
     if (!this.houseBankAvatarProvider) {
       throw new CashTableError(
@@ -1114,24 +1290,46 @@ export class CashTableManager {
         500,
       );
     }
+
+    const houseBankAvatarId = await this.houseBankAvatarProvider(table.id);
+    const buyIn = Number(table.buyInCt);
+
+    // ── Step 1: re-buy busted bots (seeded seats at 0 chips) so the table stays
+    // populated. Each re-buy is a fresh house-bank-debited seat at a free index;
+    // the busted seat is cashed out (0 stack → no credit) and freed first so the
+    // seat count + slot budget stay accurate. Bounded by the same fill math below.
+    await this.rebuyBustedBots(table, houseBankAvatarId, buyIn);
+
+    // ── Step 2: top up toward the fill target.
     const seats = await this.activeSeats(table.id);
+    // "occupied" = any seat still in play (funded or sitting-in waiting for the
+    // next deal). Used both for the fill target and the bot-yield cap.
     const occupied = seats.filter((s) => Number(s.currentStackCt) > 0 || s.status === 'sitting_in');
+    const realOccupied = occupied.filter((s) => s.isSeeded !== 'true').length;
     const seededCount = seats.filter((s) => s.isSeeded === 'true').length;
 
-    // How many MORE seeded agents to add: enough to reach 2 occupied, capped by the
-    // remaining slot budget and the open seats.
-    const want = Math.max(0, 2 - occupied.length);
+    // Target TOTAL occupied seats (human + bots), clamped so we never exceed the
+    // bot cap or the felt. The bot-yield rule lives in `queueBotYield` (below); here
+    // we only ADD up to the target — never above it.
+    const target = Math.min(houseFillTargetSeats(), table.seededAgentSlots + realOccupied, table.maxSeats);
+    const want = Math.max(0, target - occupied.length);
     const budget = table.seededAgentSlots - seededCount;
     const toAdd = Math.min(want, budget, table.maxSeats - occupied.length);
     if (toAdd <= 0) return;
 
-    const houseBankAvatarId = await this.houseBankAvatarProvider(table.id);
-    const buyIn = Number(table.buyInCt);
-    let live = [...seats];
+    let live = await this.activeSeats(table.id);
     for (let i = 0; i < toAdd; i++) {
       const seatIndex = this.firstOpenSeatIndex(live, table.maxSeats);
       if (seatIndex === null) break;
-      const a = await this.seededAgentProvider(table.id, seatIndex);
+      let a: { avatarId: string; agentId: string; name: string };
+      try {
+        a = await this.seededAgentProvider(table.id, seatIndex);
+      } catch (err) {
+        // Pool exhausted (M=24 ≫ concurrent need) — seat fewer bots, never crash a
+        // human's sit. Any other provider error is a real fault → rethrow.
+        if (err instanceof CashBotPoolExhaustedError) break;
+        throw err;
+      }
       const subject: CashSubject = {
         kind: 'agent',
         userId: a.avatarId, // seeded agent: its own avatar is its identity anchor
@@ -1152,15 +1350,102 @@ export class CashTableManager {
   }
 
   /**
-   * Drive every SEEDED agent whose turn it currently is, using the trivial stub
-   * policy below, until it is a non-seeded seat's turn or the hand ends. Bounded by
-   * a generous step cap (defensive against any pointer bug). Settlement of a hand
-   * the agents close is handled by the caller's `settleIfComplete`.
+   * Re-seat seeded bots that busted to 0 chips at the between-hands boundary, so a
+   * populated house table stays populated over many hands. The busted bot's seat is
+   * cashed out first (0 stack ⇒ no credit, just freed + bot reservation released) and
+   * a fresh house-bank-debited seeded seat takes a free index — conservation holds
+   * (the seed debit is the only money move; the 0-stack reclaim is a no-op credit).
+   * Capped per call by the slot budget so a pathological run can't unboundedly
+   * re-buy in one pass (the next pass continues if still under budget).
+   */
+  private async rebuyBustedBots(
+    table: PokerCashTable,
+    houseBankAvatarId: string,
+    buyIn: number,
+  ): Promise<void> {
+    const seats = await this.activeSeats(table.id);
+    const busted = seats.filter((s) => s.isSeeded === 'true' && Number(s.currentStackCt) <= 0);
+    if (busted.length === 0) return;
+
+    for (const seat of busted) {
+      // Free the busted seat (0 stack ⇒ cashOutSeat credits nothing). cashOutSeat
+      // releases the bot pool reservation for the seeded seat, so the same bot uuid
+      // can recycle to a new (table,seat) on the next fill claim.
+      await this.cashOutSeat(table, seat);
+    }
+    // The top-up loop in fillSeededAgents re-seats toward the target using fresh
+    // claims, so we don't re-seat here — just freeing the busted seats is enough.
+  }
+
+  /**
+   * BOT-YIELD: when REAL (non-seeded) players GROW at a house table past the small-
+   * game fill target, stand the EXCESS seeded bots up between hands so real players
+   * get the seats — ALWAYS keeping ≥2 total players so the table never dies. This
+   * does NOT thrash against the fill: it only ever yields bots that are SURPLUS to
+   * `max(fillTarget, 2)` total seats. Steady state for a solo human is human + bots
+   * up to the fill target (no yield); when reals join and push total occupancy above
+   * the target, the matching number of bots stand up so the felt isn't bots crowding
+   * out real players, while the floor of 2 keeps a lone human with an opponent.
    *
-   * // STUB AGENT POLICY (P1 — REPLACE WITH REAL AGENT POKER AI LATER):
-   * //   - if nothing is owed (toCall === 0): CHECK.
-   * //   - if facing a bet: CALL, UNLESS the call is larger than ~half the stack,
-   * //     in which case FOLD. Never bets/raises. Just enough to COMPLETE hands.
+   * Queued via the existing `pendingLeaves` path (the seeded seat flips to
+   * 'sitting_out' for the next deal and is cashed back to the house bank at the
+   * between-hands boundary by `processPendingLeaves`). Called from `startAndAdvance`
+   * after a hand starts so a human who just sat reclaims a bot seat next hand. Lock
+   * is held by the caller.
+   */
+  private async queueBotYield(tableId: string): Promise<void> {
+    const seats = await this.activeSeats(tableId);
+    const inPlay = seats.filter((s) => s.status === 'sitting_in' && Number(s.currentStackCt) > 0);
+    const realInPlay = inPlay.filter((s) => s.isSeeded !== 'true').length;
+    const seededInPlay = inPlay.filter((s) => s.isSeeded === 'true');
+    if (seededInPlay.length === 0 || realInPlay === 0) return;
+
+    // The table should carry at most `max(fillTarget, 2)` total players (the small-
+    // game target, never below the 2-player floor). Bots surplus to that — once real
+    // players occupy seats — yield. We also never drop below 2 total players.
+    const cap = Math.max(houseFillTargetSeats(), 2);
+    const totalInPlay = inPlay.length;
+    // Surplus seats above the small-game cap (only positive once reals pushed the
+    // table over the target). Bounded so we keep ≥2 total players.
+    const surplus = Math.max(0, totalInPlay - cap);
+    const floorRoom = Math.max(0, totalInPlay - 2);
+    const toYield = Math.min(seededInPlay.length, surplus, floorRoom);
+    if (toYield <= 0) return;
+
+    let set = this.pendingLeaves.get(tableId);
+    if (!set) {
+      set = new Set<string>();
+      this.pendingLeaves.set(tableId, set);
+    }
+    // Yield the HIGHEST-indexed bots first (stable, deterministic) so freed seats are
+    // predictable. Flip them to sitting_out now so they're excluded from the next
+    // deal; processPendingLeaves cashes them back to the bank at the boundary.
+    const yieldSeats = [...seededInPlay].sort((a, b) => b.seatIndex - a.seatIndex).slice(0, toYield);
+    for (const seat of yieldSeats) {
+      if (set.has(seat.avatarId)) continue;
+      await this.db
+        .update(pokerCashSeats)
+        .set({ status: 'sitting_out', updatedAt: new Date() })
+        .where(eq(pokerCashSeats.id, seat.id));
+      set.add(seat.avatarId);
+    }
+  }
+
+  /**
+   * Drive every SEEDED agent whose turn it currently is, until it is a non-seeded
+   * seat's turn or the hand ends. Bounded by a generous step cap (defensive against
+   * any pointer bug). Settlement of a hand the agents close is handled by the
+   * caller's `settleIfComplete`.
+   *
+   * POLICY (P1): the sim's already-built, already-tested advisor
+   * `getActionAdvice(sid, avatarId).recommended` — a hand-strength + pot-odds +
+   * position heuristic that value-bets strong hands, calls price-justified medium
+   * hands, and folds trash to bets (roughly break-even, NOT a CT faucet/sink). The
+   * advisor's `recommended` is guaranteed to be a LEGAL action with raise/bet
+   * `amount` pre-clamped into `[minRaiseTo, maxRaiseTo]`, so `applyAction` never
+   * bounces. The trivial `stubAgentAction` survives ONLY as a null-fallback for the
+   * (shouldn't-happen on-turn) case where the advisor returns `recommended===null`,
+   * so a bot never stalls a hand.
    */
   private async driveSeededAgents(tableId: string): Promise<void> {
     const sid = simTableId(tableId);
@@ -1179,8 +1464,14 @@ export class CashTableManager {
       const view = this.sim.getSeatViewForAgent(sid, actingSeat.avatarId);
       if (!view || !view.isYourTurn) return;
 
-      const action = this.stubAgentAction(view.toCall, view.chipStack, view.legalActions);
-      const seq = guard; // monotonic per-agent step (unique idempotency within the hand)
+      // Advisor-driven decision (hand strength + pot odds + position). The advice's
+      // recommended action is already legal + amount-clamped; fall back to the
+      // trivial stub ONLY if the advisor declines to recommend (recommended null).
+      const advice = this.sim.getActionAdvice(sid, actingSeat.avatarId);
+      const action: Action =
+        advice?.recommended ??
+        this.stubAgentAction(view.toCall, view.chipStack, view.legalActions);
+
       const res = this.sim.applyAction(sid, actingSeat.avatarId, action, {
         idempotencyKey: `${view.handNumber}:seed:${guard}:${actingSeat.avatarId}`,
       });
