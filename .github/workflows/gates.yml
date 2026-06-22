@@ -84,3 +84,5 @@ jobs:
         # DATABASE_URL intentionally UNSET → describeIfDb tests skip; the
         # in-memory conservation/idempotency/parity/no-leak suite IS the gate.
         run: cd apps/api && bun test src/services/poker/ src/services/__tests__/
+
+# verify run: agent-runtime build fix
