@@ -110,3 +110,27 @@ describe('location/system-agent character is customization-first (F1 regression)
     expect(ch.name).toBe('Larry the Lobster');
   });
 });
+
+/**
+ * Regression: F3 (2026-06-21) — building teacher + Nori chat replies were too long
+ * (multi-paragraph essays). The fix appends a global brevity directive to EVERY
+ * location/system-agent system prompt in convertToElizaCharacter so it cannot drift
+ * per-template, paired with a tighter conversational maxTokens backstop in
+ * processMessage. These assertions lock the directive in.
+ */
+describe('location/system-agent system prompt carries the global brevity rule (F3 regression)', () => {
+  it('appends the 2-3 sentence brevity directive when customization supplies its own system', () => {
+    const ch = buildCharacter(mrKrabs);
+    // persona is preserved AND the brevity rule is appended after it
+    expect(ch.system).toContain('Krusty Krab');
+    expect(ch.system).toContain('RESPONSE LENGTH');
+    expect(ch.system?.toLowerCase()).toContain('2-3 sentences');
+  });
+
+  it('appends the brevity directive even when the system is synthesized from the template', () => {
+    // no customization.system → system is built from name/description, then the
+    // directive is appended. Proves it cannot be dropped by a template that omits it.
+    const ch = buildCharacter({ name: 'Larry the Lobster', bio: ['Beach bum.'] });
+    expect(ch.system).toContain('RESPONSE LENGTH');
+  });
+});

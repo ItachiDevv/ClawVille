@@ -104,6 +104,25 @@ export interface ElizaMessage {
 
 export type ElizaRuntimeState = 'idle' | 'initializing' | 'running' | 'paused' | 'stopped' | 'error';
 
+// F3 (2026-06-21): building teachers + Nori (every convertToElizaCharacter NPC)
+// were replying with multi-paragraph essays — the model rambled up to the old
+// maxTokens:1000 ceiling because nothing in the persona prompt constrained length.
+// This directive is appended to EVERY such character's system prompt so the brevity
+// rule is GLOBAL and cannot drift per-template. Paired with CHAT_RESPONSE_MAX_TOKENS
+// as a hard backstop in processMessage (used only when no executable actions are in
+// scope, so multi-[ACTION:] cognition is never truncated mid-emit).
+const CONCISE_CHAT_DIRECTIVE =
+  '\n\nRESPONSE LENGTH (strict): Keep every reply short and conversational — aim for ' +
+  '2-3 sentences, and only go longer when the user explicitly asks you to go deep. ' +
+  'Answer the actual question first, in plain prose. Do NOT pad with greetings, do not ' +
+  'restate the question, avoid numbered lists / headers / long monologues. This is live ' +
+  'in-world chat, not an essay.';
+
+// Conversational ceiling for NPC chat that has no executable actions in scope.
+// ~320 tokens ≈ a generous paragraph: leaves headroom for a real teacher explanation
+// while cutting the ~750-word runaway essays the old 1000-token cap allowed.
+const CHAT_RESPONSE_MAX_TOKENS = 320;
+
 function convertToElizaCharacter(
   template: LocationTemplate,
   config: ElizaRuntimeConfig
@@ -140,6 +159,12 @@ function convertToElizaCharacter(
       system += `\n\nTone: ${customization.tone}`;
     }
   }
+
+  // F3 (2026-06-21): global brevity rule. Appended AFTER the persona system prompt
+  // (whether it came from customization.system verbatim or was synthesized above) so
+  // every location + system agent (Nori) inherits it regardless of template — it
+  // cannot be dropped or contradicted by a per-template prompt.
+  system += CONCISE_CHAT_DIRECTIVE;
 
   // Customization-first messageExamples (fix 2026-06-21). The seeder stores them
   // in the LocationTemplate shape `{ user, content: { text } }`; legacy/template
@@ -791,8 +816,13 @@ export class ElizaRuntime {
       const promptWithHistory = promptParts.join('\n\n');
 
       // --- Generate LLM response ---
+      // F3 (2026-06-21): conversational NPC chat (no executable actions in scope —
+      // e.g. a human talking to a teacher or Nori) gets the tight CHAT_RESPONSE_MAX_TOKENS
+      // ceiling so replies stay short. Action-capable cognition keeps the larger 1000
+      // budget so multi-[ACTION:] sequences are never truncated mid-emit.
+      const responseMaxTokens = providerState.services ? 1000 : CHAT_RESPONSE_MAX_TOKENS;
       const result = await this.runtime.generateText(promptWithHistory, {
-        maxTokens: 1000,
+        maxTokens: responseMaxTokens,
         stopSequences: [],
       });
 
