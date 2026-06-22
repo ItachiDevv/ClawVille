@@ -14,10 +14,17 @@
  * session cookie ride along. Anonymous endpoints (paytables, verify) also
  * send the cookie — harmless; backend ignores it.
  *
- * Fingerprint: NOT injected here. Cove routes don't use the anti-farm
- * middleware (rate limit + auth is enough); avoiding the fingerprint
- * lookup also keeps the open/spin hot path off the fingerprint critical
- * path. If a future audit demands it, add `getFingerprint()` here.
+ * Fingerprint: INJECTED here as of the 2026-06-21 prod hotfix. The cove
+ * routes scope GUEST plays by the server-side `fpHash` derived from this
+ * header (cove-slots `getSubject` guest branch + cove-history `resolveSubject`
+ * guest branch). Without the header the server fell back to a RAW-IP-derived
+ * hash that CHANGED whenever a residential guest's IP churned (DHCP / mobile /
+ * VPN), so a guest's open session, ownerMatches, GET /session/current, and
+ * history read keyed to a DIFFERENT subject than the one that wrote the spin —
+ * orphaning the session (404 "session not found") and the recorded win ("won
+ * 20 CT, no history"). Sending the stable browser fingerprint makes all guest
+ * cove requests key to ONE fpHash regardless of IP changes. Authed (real-CT)
+ * requests are unaffected — they scope by the Lucia user_id, never the fp.
  *
  * Idempotency-Key (per /spin call): caller passes a `crypto.randomUUID()`
  * value. Generating it INSIDE the mutation function would defeat retries
@@ -28,6 +35,7 @@
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { MachineSlug, SymbolId, WildMultiplier, WinningLine } from './types';
+import { getFingerprint } from '../fingerprint';
 
 // ---------------------------------------------------------------------------
 // Env + helper
@@ -59,6 +67,15 @@ async function coveFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
     'Content-Type': 'application/json',
     ...(init.headers as Record<string, string> | undefined),
   };
+  // Stable browser fingerprint → server `fpHash` tier-1. Scopes guest cove
+  // sessions + history so they survive IP changes (2026-06-21 hotfix). Empty
+  // on SSR / FingerprintJS load failure — server falls back to UA+/24 hash.
+  // Never overwrite a caller-supplied header (none set it today, but keep the
+  // contract explicit).
+  if (!headers['X-CV-Fingerprint']) {
+    const fp = await getFingerprint();
+    if (fp) headers['X-CV-Fingerprint'] = fp;
+  }
   const res = await fetch(url, {
     ...init,
     credentials: 'include',
