@@ -231,7 +231,7 @@ export default function MobileControls() {
           onPointerCancel={handleJumpRelease}
           onLostPointerCapture={() => setJumpPressed(false)}
           onContextMenu={(event) => event.preventDefault()}
-          className="absolute right-5 z-10 flex h-16 w-16 select-none flex-col items-center justify-center rounded-full border border-cyan-200/60 bg-cyan-500/90 text-white shadow-[0_0_24px_rgba(34,211,238,0.45)] backdrop-blur-md active:translate-y-0.5 active:bg-cyan-400"
+          className="pointer-events-auto absolute right-5 z-10 flex h-16 w-16 select-none flex-col items-center justify-center rounded-full border border-cyan-200/60 bg-cyan-500/90 text-white shadow-[0_0_24px_rgba(34,211,238,0.45)] backdrop-blur-md active:translate-y-0.5 active:bg-cyan-400"
           style={{
             bottom: 'clamp(7rem, 38vw, 10.5rem)',
             right: 'max(calc(env(safe-area-inset-right, 0px) + 18px), 18px)',

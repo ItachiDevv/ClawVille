@@ -19,7 +19,8 @@ import { useGameStore, avatarPositionRef, type GameState } from '@/stores/game';
 import { useNpcStore } from '@/stores/npc';
 import type { NpcSpriteState } from '@/stores/npc';
 import { MAP_WIDTH, MAP_HEIGHT } from '@/lib/pixi/tilemap-data';
-import { findNearestCharacter } from '@/lib/three/character-positions';
+import { findNearestCharacter, isCoveProximate } from '@/lib/three/character-positions';
+import { triggerCoveWalkIn } from '@/lib/three/arena-buildings';
 import { NORI_WORLD_X, NORI_WORLD_Z, NORI_TALK_RADIUS_SQ } from '@/lib/three/town-guide';
 import { isEditable, jumpState } from '@/lib/three/jump-state';
 import { registerInputReset } from '@/lib/three/input-reset';
@@ -149,7 +150,9 @@ export default function NpcController() {
         return;
       }
       if (store.nearLocation) {
-        store.enterBuilding(store.nearLocation);
+        // Cove is a walk-in venue (SceneTransition), not a teacher chat.
+        if (store.nearLocation === 'cove') triggerCoveWalkIn();
+        else store.enterBuilding(store.nearLocation);
         _lastEState = eNow;
         return;
       }
@@ -169,7 +172,7 @@ export default function NpcController() {
       const wx = npc.x - MAP_WIDTH  / 2;
       const wz = npc.y - MAP_HEIGHT / 2;
       const nearest = findNearestCharacter(wx, wz);
-      const nearId = nearest ? nearest.buildingId : null;
+      const nearId: string | null = nearest ? nearest.buildingId : (isCoveProximate(wx, wz) ? 'cove' : null);
       const nearName = nearest ? nearest.characterName : null;
       if (nearId !== store.nearLocation) store.setNearLocation(nearId);
       if (nearName !== store.nearCharacter) store.setNearCharacter(nearName);
