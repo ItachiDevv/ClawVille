@@ -158,14 +158,51 @@ const COVE_WORLD_Z = OFFSET_Z + 288 * TILE_SIZE; // ≈ 0 wu
 export const COVE_PROXIMITY_RADIUS = 600;
 const COVE_PROXIMITY_SQ = COVE_PROXIMITY_RADIUS * COVE_PROXIMITY_RADIUS;
 
+// Tunnel corridor approach (town-ux controls-rework 2026-06-21).
+// The walk-in tunnel runs along +X (town-facing) from the pyramid: mouth at
+// world X ≈ -3275, and the cove collision AABB east edge is at X ≈ -3586, so the
+// WALKABLE corridor segment is roughly X ∈ [-3586, -3275], Z ≈ 0 (±90 wide).
+// The 600 wu circle above is centered at the pyramid (-4160) and does NOT reach
+// the mouth (885 wu away), so the "Press E · Enter the Cove" prompt would only
+// appear jammed against the wall. We widen proximity along the corridor so the
+// prompt shows as the player approaches/enters the tunnel mouth.
+const COVE_TUNNEL_PROMPT_MIN_X = -3640; // just east of the collision wall
+const COVE_TUNNEL_PROMPT_MAX_X = -3180; // ~95 wu in front of the mouth
+const COVE_TUNNEL_PROMPT_Z_HALF = 150;
+/** Deeper threshold: when the player walks THIS far into the corridor the cove
+ *  auto-enters (no click/E needed). -3450 sits between mid-tunnel (-3400) and the
+ *  collision wall (-3586) so it is always reachable on foot. */
+export const COVE_AUTO_ENTER_MAX_X = -3450;
+const COVE_AUTO_ENTER_Z_HALF = 120;
+
 /**
- * isCoveProximate — returns true when the player is within COVE_PROXIMITY_RADIUS
- * world units of the cove entrance. Zero-alloc, pure-primitive, safe in useFrame.
+ * isCoveProximate — true when the player is within the cove entry-prompt range:
+ * either inside the 600 wu circle around the pyramid OR inside the tunnel
+ * approach corridor. Zero-alloc, pure-primitive, safe in useFrame.
  */
 export function isCoveProximate(playerWorldX: number, playerWorldZ: number): boolean {
   const dx = playerWorldX - COVE_WORLD_X;
   const dz = playerWorldZ - COVE_WORLD_Z;
-  return (dx * dx + dz * dz) < COVE_PROXIMITY_SQ;
+  if ((dx * dx + dz * dz) < COVE_PROXIMITY_SQ) return true;
+  // Tunnel approach corridor (thin +X band centered on the tunnel).
+  return (
+    playerWorldX >= COVE_TUNNEL_PROMPT_MIN_X &&
+    playerWorldX <= COVE_TUNNEL_PROMPT_MAX_X &&
+    Math.abs(playerWorldZ - COVE_WORLD_Z) <= COVE_TUNNEL_PROMPT_Z_HALF
+  );
+}
+
+/**
+ * isInsideCoveTunnel — true when the player has walked DEEP into the corridor
+ * (past COVE_AUTO_ENTER_MAX_X within the tunnel width). Drives the auto-enter
+ * walk-in. Zero-alloc, pure-primitive, safe in useFrame.
+ */
+export function isInsideCoveTunnel(playerWorldX: number, playerWorldZ: number): boolean {
+  return (
+    playerWorldX <= COVE_AUTO_ENTER_MAX_X &&
+    playerWorldX >= COVE_TUNNEL_PROMPT_MIN_X - 80 &&
+    Math.abs(playerWorldZ - COVE_WORLD_Z) <= COVE_AUTO_ENTER_Z_HALF
+  );
 }
 
 // ---------------------------------------------------------------------------
