@@ -101,6 +101,14 @@ export * from './poker';
 // PURELY ADDITIVE — new tables only, db:push is a clean CREATE. Ownership binds
 // to avatars.id (the human+agent parity seam). See `.claude/plans/land-economy/`.
 export * from './land';
+// SAP Option C (2026-06-22) — on-chain USDC escrow gate settlement ledger
+// (sap_escrow_settlements). The (escrow_pda, job_id) unique index is the
+// at-most-once-settle guard that replaces the on-chain receipt the deployed
+// 0.18.0 program lacks. PURELY ADDITIVE; gated OFF (SAP_ESCROW_ENABLED=false,
+// SAP_DRY_RUN=true) so no row is written until a deliberate flip-to-live.
+// Ownership binds to avatars.id (the human+agent parity seam). See
+// `apps/api/src/services/sap/escrow-gate.ts` + `oobe-usdc-selfreport-spec.md`.
+export * from './sap-escrow';
 
 import { users, sessions } from './users';
 import { npcMemories, activityLog } from './memories';
@@ -127,6 +135,7 @@ import {
   partnerStorefronts,
   ctTopups,
 } from './land';
+import { sapEscrowSettlements, sapEscrowApprovals } from './sap-escrow';
 
 export const usersRelations = relations(users, ({ many, one }) => ({
   sessions: many(sessions),
@@ -509,5 +518,33 @@ export const ctTopupsRelations = relations(ctTopups, ({ one }) => ({
   avatar: one(avatars, {
     fields: [ctTopups.avatarId],
     references: [avatars.id],
+  }),
+}));
+
+// ── SAP Option C escrow gate (settlement ledger) ─────────────────────────────
+
+export const sapEscrowSettlementsRelations = relations(sapEscrowSettlements, ({ one }) => ({
+  depositor: one(avatars, {
+    fields: [sapEscrowSettlements.depositorAvatarId],
+    references: [avatars.id],
+    relationName: 'sapEscrowDepositor',
+  }),
+  worker: one(avatars, {
+    fields: [sapEscrowSettlements.workerAvatarId],
+    references: [avatars.id],
+    relationName: 'sapEscrowWorker',
+  }),
+}));
+
+export const sapEscrowApprovalsRelations = relations(sapEscrowApprovals, ({ one }) => ({
+  approver: one(avatars, {
+    fields: [sapEscrowApprovals.approverAvatarId],
+    references: [avatars.id],
+    relationName: 'sapEscrowApprovalApprover',
+  }),
+  worker: one(avatars, {
+    fields: [sapEscrowApprovals.workerAvatarId],
+    references: [avatars.id],
+    relationName: 'sapEscrowApprovalWorker',
   }),
 }));

@@ -35,6 +35,12 @@ const SEED_FEEDBACK = Buffer.from('sap_feedback', 'utf8');
 const SEED_ATTEST = Buffer.from('sap_attest', 'utf8');
 const SEED_STAKE = Buffer.from('sap_stake', 'utf8');
 const SEED_ESCROW_V2 = Buffer.from('sap_escrow_v2', 'utf8');
+// V1 (non-versioned) USDC escrow seed — DISTINCT from the v2 (native-SOL) seed.
+// Per `oobe-usdc-selfreport-spec.md` the entire USDC path uses the V1
+// instructions; the V1 escrow PDA = ["sap_escrow", agentPda, depositor] with NO
+// nonce → ONE escrow per (agent, depositor) pair. Verified against real mainnet
+// txs, NOT the (inconsistent) stored IDL.
+const SEED_ESCROW_V1 = Buffer.from('sap_escrow', 'utf8');
 const SEED_RECV = Buffer.from('sap_recv', 'utf8');
 const SEED_PENDING = Buffer.from('sap_pending', 'utf8');
 
@@ -148,7 +154,7 @@ export function findStakePda(programId: PublicKey, agent: PublicKey): [PublicKey
   return PublicKey.findProgramAddressSync([SEED_STAKE, agent.toBuffer()], programId);
 }
 
-/** escrow: ["sap_escrow_v2", agentPda, depositorWallet, nonce(u64 LE 8B)] */
+/** escrow (V2, native-SOL): ["sap_escrow_v2", agentPda, depositorWallet, nonce(u64 LE 8B)] */
 export function findEscrowPda(
   programId: PublicKey,
   agent: PublicKey,
@@ -157,6 +163,26 @@ export function findEscrowPda(
 ): [PublicKey, number] {
   return PublicKey.findProgramAddressSync(
     [SEED_ESCROW_V2, agent.toBuffer(), depositor.toBuffer(), u64LE(nonce)],
+    programId,
+  );
+}
+
+/**
+ * escrow (V1, USDC): ["sap_escrow", agentPda, depositorWallet] — NO nonce.
+ *
+ * This is the OOBE-spec-verified USDC escrow PDA (`oobe-usdc-selfreport-spec.md`
+ * §"Deterministic addresses"): order is (agent, depositor), no nonce, so there
+ * is exactly ONE escrow per (agent, depositor) pair. A second job for the same
+ * pair TOPS UP this same escrow (deposit_escrow), it does NOT create a new one.
+ * Used by the Option C USDC SelfReport lifecycle (sap-escrow-usdc.ts).
+ */
+export function findEscrowV1Pda(
+  programId: PublicKey,
+  agent: PublicKey,
+  depositor: PublicKey,
+): [PublicKey, number] {
+  return PublicKey.findProgramAddressSync(
+    [SEED_ESCROW_V1, agent.toBuffer(), depositor.toBuffer()],
     programId,
   );
 }

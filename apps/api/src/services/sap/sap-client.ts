@@ -69,6 +69,18 @@ import {
   sha256Bytes,
   serviceHash as deriveServiceHash,
 } from './sap-pdas';
+import {
+  deriveUsdcEscrowAddresses,
+  buildCreateEscrowUsdcIx,
+  buildDepositEscrowUsdcIx,
+  buildSettleCallsUsdcIx,
+  buildWithdrawEscrowUsdcIx,
+  type UsdcEscrowAddresses,
+} from './sap-escrow-usdc';
+import {
+  createAssociatedTokenAccountIdempotentInstruction,
+  USDC_MINT,
+} from './sap-spl';
 
 // AUTHORITATIVE IDL = what is DEPLOYED on devnet (fetched via Anchor
 // `Program.fetchIdl`), NOT the ahead-of-deployment repo IDL. The deployed
@@ -92,6 +104,7 @@ export const SETTLEMENT_SELF_REPORT = 0;
 export type SapErrorCode =
   | 'sap_disabled'
   | 'sap_escrow_disabled'
+  | 'sap_usdc_escrow_disabled'
   | 'avatar_wallet_missing'
   | 'invalid_pubkey'
   | 'invalid_mint'
@@ -144,6 +157,19 @@ export interface SapFailure {
   ok: false;
   code: SapErrorCode;
   message: string;
+  /**
+   * BLOCKING #5 fix — TRUE only when a LIVE transaction was actually broadcast to
+   * the network (`sendRawTransaction` returned a signature) but its CONFIRMATION
+   * was never observed (timeout / RPC drop). The escrow gate uses this to decide
+   * whether deleting/retrying is safe: a failure WITHOUT `broadcast` never touched
+   * the wire (clean delete OK); a failure WITH `broadcast` may have LANDED, so the
+   * gate must persist a recoverable `funding_unknown`/`failed` state + the
+   * `signature` and NEVER auto-delete or auto-retry (that would double-fund /
+   * double-pay). Always falsy on a dry-run (the simulator never broadcasts).
+   */
+  broadcast?: boolean;
+  /** The broadcast tx signature when `broadcast===true` (for reconciliation). */
+  signature?: string;
 }
 
 export type SapWriteResult = SapDryRunResult | SapLiveResult | SapFailure;
@@ -205,6 +231,7 @@ function getProgram(): Program {
 export function sapConfigSnapshot(): {
   enabled: boolean;
   escrowEnabled: boolean;
+  usdcEscrowEnabled: boolean;
   dryRun: boolean;
   cluster: string;
   programId: string;
@@ -214,6 +241,7 @@ export function sapConfigSnapshot(): {
   return {
     enabled: cfg.enabled,
     escrowEnabled: cfg.escrowEnabled,
+    usdcEscrowEnabled: cfg.usdcEscrowEnabled,
     dryRun: cfg.dryRun,
     cluster: cfg.cluster,
     programId: cfg.programId.toBase58(),
@@ -349,11 +377,24 @@ async function executeTx(
     // LIVE: sign + send + confirm. Reached only when SAP_DRY_RUN=false AND the
     // route already passed the enabled/escrow gate.
     tx.sign(signer);
+    // BLOCKING #5 fix — split BROADCAST from CONFIRM so a confirmation failure
+    // AFTER a successful broadcast is reported with `broadcast:true` + the
+    // signature (the tx may have LANDED). A pre-broadcast failure (build /
+    // blockhash / sendRawTransaction reject) falls through to the outer catch with
+    // NO `broadcast` flag (nothing hit the wire — a clean retry/delete is safe).
     const signature = await connection.sendRawTransaction(tx.serialize());
-    await connection.confirmTransaction(
-      { signature, blockhash, lastValidBlockHeight },
-      COMMITMENT,
-    );
+    try {
+      await connection.confirmTransaction(
+        { signature, blockhash, lastValidBlockHeight },
+        COMMITMENT,
+      );
+    } catch (confirmErr) {
+      // The send LANDED on the wire; we just never observed confirmation. Tag the
+      // failure so the caller persists a recoverable state + signature and NEVER
+      // auto-deletes/retries.
+      const failure = classifyChainError(`${label}:confirm`, confirmErr);
+      return { ...failure, broadcast: true, signature };
+    }
     return { ok: true, dryRun: false, signature, accounts };
   } catch (err) {
     return classifyChainError(label, err);
@@ -1301,5 +1342,361 @@ export async function closeEscrow(input: CloseEscrowInput): Promise<SapWriteResu
     });
   } catch (err) {
     return classifyChainError('closeEscrow:build', err);
+  }
+}
+
+// ─── Option C — OOBE USDC SelfReport escrow (V1 RAW instructions) ─────────────
+//
+// The USDC path uses the V1 (non-versioned) instructions with HAND-ASSEMBLED
+// account lists (the IDL is wrong — see sap-escrow-usdc.ts). These builders are
+// the low-level chain leg of the Option C escrow GATE (escrow-gate.ts); they do
+// NOT contain the verify/idempotency logic — that lives in the gate. Each one
+// hard-checks the Option C sub-gate (escrowEnabled AND usdcEscrowEnabled) BEFORE
+// touching the chain, resolves the acting avatar's custodial wallet, and runs
+// through the SAME `executeTx` dry-run/live + genesis-guard tail as the SOL rail.
+
+/** Option C USDC sub-gate: requires the master gate, SOL escrow gate, AND usdcEscrowEnabled. */
+function usdcEscrowGate(cfg: SapConfig): SapFailure | null {
+  if (!cfg.enabled) {
+    return { ok: false, code: 'sap_disabled', message: 'SAP layer is disabled.' };
+  }
+  if (!cfg.escrowEnabled) {
+    return { ok: false, code: 'sap_escrow_disabled', message: 'SAP escrow rail is disabled.' };
+  }
+  if (!cfg.usdcEscrowEnabled) {
+    return {
+      ok: false,
+      code: 'sap_usdc_escrow_disabled',
+      message: 'SAP Option C USDC escrow gate is disabled.',
+    };
+  }
+  return null;
+}
+
+/**
+ * The USDC escrow uses the MAINNET USDC mint (the only mint the deployed program
+ * honors per the spec). It is NOT cluster-pinned to the devnet test mint here
+ * because the OOBE-spec discriminators + account layout were reverse-engineered
+ * from MAINNET txs; a devnet rehearsal would mint-substitute deliberately. We
+ * pin the canonical mainnet USDC and let the genesis-hash guard refuse a real
+ * mainnet broadcast unless the mainnet code gate is on.
+ */
+function usdcMintForEscrow(): PublicKey {
+  return USDC_MINT;
+}
+
+export interface UsdcEscrowResolvedAddresses extends UsdcEscrowAddresses {
+  /** Acting avatar's wallet pubkey (base58) — for the gate's record. */
+  actingWallet: string;
+}
+
+/**
+ * Resolve every deterministic USDC-escrow address for a (worker, depositor) pair
+ * WITHOUT signing or sending. Read-only — used by the gate to compute the
+ * `escrowPda` (the idempotency key) before deciding to act. Gated identically to
+ * the write builders so a disabled rail leaks nothing.
+ */
+export function resolveUsdcEscrowAddresses(input: {
+  workerWalletPubkey: string;
+  depositorWalletPubkey: string;
+}): { ok: true; addrs: UsdcEscrowAddresses; mint: PublicKey } | SapFailure {
+  const cfg = getConfig();
+  const gate = usdcEscrowGate(cfg);
+  if (gate) return gate;
+  let workerWallet: PublicKey;
+  let depositorWallet: PublicKey;
+  try {
+    workerWallet = new PublicKey(input.workerWalletPubkey);
+    depositorWallet = new PublicKey(input.depositorWalletPubkey);
+  } catch {
+    return { ok: false, code: 'invalid_pubkey', message: 'invalid worker/depositor wallet pubkey.' };
+  }
+  const mint = usdcMintForEscrow();
+  const addrs = deriveUsdcEscrowAddresses({
+    programId: cfg.programId,
+    workerWallet,
+    depositorWallet,
+    mint,
+  });
+  return { ok: true, addrs, mint };
+}
+
+export interface CreateEscrowUsdcInput {
+  /** The DEPOSITOR (signer + payer) avatar — funds the escrow as ITS own wallet. */
+  depositorAvatarId: string;
+  /** The worker/service agent's registered wallet pubkey (base58) — escrow seed. */
+  workerWalletPubkey: string;
+  pricePerCall: bigint;
+  maxCalls: bigint;
+  initialDeposit: bigint;
+  /** Absolute unix-seconds expiry (i64). 0 = no expiry. */
+  expiresAt: bigint;
+}
+
+/**
+ * create_escrow (V1 USDC) — depositor opens + funds the escrow. Prepends an
+ * idempotent vault-ATA create (the program does NOT init the vault). Signer =
+ * the depositor's OWN custodial wallet.
+ */
+export async function createEscrowUsdc(input: CreateEscrowUsdcInput): Promise<SapWriteResult> {
+  const cfg = getConfig();
+  const gate = usdcEscrowGate(cfg);
+  if (gate) return gate;
+  if (input.pricePerCall <= 0n || input.maxCalls <= 0n || input.initialDeposit <= 0n) {
+    return { ok: false, code: 'invalid_amount', message: 'pricePerCall, maxCalls, initialDeposit must be > 0.' };
+  }
+  if (input.expiresAt < 0n) {
+    return { ok: false, code: 'invalid_amount', message: 'expiresAt must be ≥ 0 (0 = no expiry).' };
+  }
+  let workerWallet: PublicKey;
+  try {
+    workerWallet = new PublicKey(input.workerWalletPubkey);
+  } catch {
+    return { ok: false, code: 'invalid_pubkey', message: 'workerWalletPubkey is not a valid pubkey.' };
+  }
+
+  const handle = await loadAvatarWallet(input.depositorAvatarId);
+  if ('ok' in handle && handle.ok === false) return handle;
+  const { keypair, publicKey: depositor } = handle as AvatarWalletHandle;
+
+  const mint = usdcMintForEscrow();
+  const addrs = deriveUsdcEscrowAddresses({
+    programId: cfg.programId,
+    workerWallet,
+    depositorWallet: depositor,
+    mint,
+  });
+
+  try {
+    const tx = new Transaction();
+    // (1) Idempotent vault ATA create — payer = depositor, owner = escrow PDA.
+    tx.add(
+      createAssociatedTokenAccountIdempotentInstruction({
+        payer: depositor,
+        ata: addrs.vaultAta,
+        owner: addrs.escrowPda,
+        mint,
+      }),
+    );
+    // (2) create_escrow (V1) + initial deposit (one tx).
+    tx.add(
+      buildCreateEscrowUsdcIx({
+        depositor,
+        addrs,
+        programId: cfg.programId,
+        mint,
+        pricePerCall: input.pricePerCall,
+        maxCalls: input.maxCalls,
+        initialDeposit: input.initialDeposit,
+        expiresAt: input.expiresAt,
+      }),
+    );
+    return executeTx(cfg, 'createEscrowUsdc', tx, keypair, {
+      depositor: depositor.toBase58(),
+      worker: workerWallet.toBase58(),
+      agent: addrs.agentPda.toBase58(),
+      escrow: addrs.escrowPda.toBase58(),
+      vaultAta: addrs.vaultAta.toBase58(),
+      depositorAta: addrs.depositorAta.toBase58(),
+    });
+  } catch (err) {
+    return classifyChainError('createEscrowUsdc:build', err);
+  }
+}
+
+export interface DepositEscrowUsdcInput {
+  depositorAvatarId: string;
+  workerWalletPubkey: string;
+  amount: bigint;
+}
+
+/** deposit_escrow (V1 USDC) — top up the standing per-(agent,depositor) escrow. */
+export async function depositEscrowUsdc(input: DepositEscrowUsdcInput): Promise<SapWriteResult> {
+  const cfg = getConfig();
+  const gate = usdcEscrowGate(cfg);
+  if (gate) return gate;
+  if (input.amount <= 0n) {
+    return { ok: false, code: 'invalid_amount', message: 'amount must be > 0.' };
+  }
+  let workerWallet: PublicKey;
+  try {
+    workerWallet = new PublicKey(input.workerWalletPubkey);
+  } catch {
+    return { ok: false, code: 'invalid_pubkey', message: 'workerWalletPubkey is not a valid pubkey.' };
+  }
+
+  const handle = await loadAvatarWallet(input.depositorAvatarId);
+  if ('ok' in handle && handle.ok === false) return handle;
+  const { keypair, publicKey: depositor } = handle as AvatarWalletHandle;
+
+  const mint = usdcMintForEscrow();
+  const addrs = deriveUsdcEscrowAddresses({
+    programId: cfg.programId,
+    workerWallet,
+    depositorWallet: depositor,
+    mint,
+  });
+
+  try {
+    const tx = new Transaction();
+    // Idempotent vault ATA create is safe to prepend (no-op if it exists), so a
+    // deposit can never fail on a missing vault if create raced.
+    tx.add(
+      createAssociatedTokenAccountIdempotentInstruction({
+        payer: depositor,
+        ata: addrs.vaultAta,
+        owner: addrs.escrowPda,
+        mint,
+      }),
+    );
+    tx.add(
+      buildDepositEscrowUsdcIx({ depositor, addrs, programId: cfg.programId, amount: input.amount }),
+    );
+    return executeTx(cfg, 'depositEscrowUsdc', tx, keypair, {
+      depositor: depositor.toBase58(),
+      escrow: addrs.escrowPda.toBase58(),
+      vaultAta: addrs.vaultAta.toBase58(),
+    });
+  } catch (err) {
+    return classifyChainError('depositEscrowUsdc:build', err);
+  }
+}
+
+export interface SettleCallsUsdcInput {
+  /** The WORKER agent (signer, receives USDC) — settles as ITS own wallet. */
+  workerAvatarId: string;
+  /** The depositor's wallet pubkey (escrow PDA seed component), base58. */
+  depositorWalletPubkey: string;
+  callsToSettle: bigint;
+  /** The verification provider's 32-byte audit root → on-chain service_hash. */
+  auditRoot: Uint8Array;
+}
+
+/**
+ * settle_calls (V1 USDC) — release vault → worker's USDC ATA. Signer = the
+ * worker's OWN custodial wallet (= the agent PDA seed + the only settle
+ * authority). The 32-byte `auditRoot` is bound into `service_hash` for on-chain
+ * provenance. CALLED ONLY BY THE GATE after a passing verification + an atomic
+ * idempotency claim — never directly from a route.
+ */
+export async function settleCallsUsdc(input: SettleCallsUsdcInput): Promise<SapWriteResult> {
+  const cfg = getConfig();
+  const gate = usdcEscrowGate(cfg);
+  if (gate) return gate;
+  if (input.callsToSettle <= 0n) {
+    return { ok: false, code: 'invalid_amount', message: 'callsToSettle must be > 0.' };
+  }
+  if (input.auditRoot.length !== 32) {
+    return { ok: false, code: 'invalid_amount', message: 'auditRoot must be 32 bytes.' };
+  }
+  // Refuse a zero (sentinel) audit root — that is the verification-failed marker,
+  // and a settle must NEVER fire on it. Defense-in-depth: the gate already only
+  // calls settle on `passed===true`, but a non-zero root is a hard invariant of a
+  // legitimate release, so we reject it here too.
+  if (input.auditRoot.every((b) => b === 0)) {
+    return { ok: false, code: 'invalid_amount', message: 'auditRoot is all-zero (verification did not pass).' };
+  }
+  let depositorWallet: PublicKey;
+  try {
+    depositorWallet = new PublicKey(input.depositorWalletPubkey);
+  } catch {
+    return { ok: false, code: 'invalid_pubkey', message: 'depositorWalletPubkey is not a valid pubkey.' };
+  }
+
+  const handle = await loadAvatarWallet(input.workerAvatarId);
+  if ('ok' in handle && handle.ok === false) return handle;
+  const { keypair, publicKey: workerWallet } = handle as AvatarWalletHandle;
+
+  const mint = usdcMintForEscrow();
+  const addrs = deriveUsdcEscrowAddresses({
+    programId: cfg.programId,
+    workerWallet,
+    depositorWallet,
+    mint,
+  });
+
+  try {
+    const tx = new Transaction();
+    // Idempotent worker-ATA create (the settle DESTINATION). Payer = the worker.
+    // The program releases into agentAta; if it does not exist yet the settle
+    // would fail — create it idempotently first.
+    tx.add(
+      createAssociatedTokenAccountIdempotentInstruction({
+        payer: workerWallet,
+        ata: addrs.agentAta,
+        owner: workerWallet,
+        mint,
+      }),
+    );
+    tx.add(
+      buildSettleCallsUsdcIx({
+        workerWallet,
+        addrs,
+        programId: cfg.programId,
+        mint,
+        callsToSettle: input.callsToSettle,
+        serviceHash: Buffer.from(input.auditRoot),
+      }),
+    );
+    return executeTx(cfg, 'settleCallsUsdc', tx, keypair, {
+      worker: workerWallet.toBase58(),
+      agent: addrs.agentPda.toBase58(),
+      agentStats: addrs.agentStatsPda.toBase58(),
+      escrow: addrs.escrowPda.toBase58(),
+      vaultAta: addrs.vaultAta.toBase58(),
+      agentAta: addrs.agentAta.toBase58(),
+    });
+  } catch (err) {
+    return classifyChainError('settleCallsUsdc:build', err);
+  }
+}
+
+export interface WithdrawEscrowUsdcInput {
+  /** The DEPOSITOR (signer) avatar — reclaims unspent USDC as ITS own wallet. */
+  depositorAvatarId: string;
+  workerWalletPubkey: string;
+  amount: bigint;
+}
+
+/** withdraw_escrow (V1 USDC) — refund unspent USDC → depositor (cancel/expiry). */
+export async function withdrawEscrowUsdc(input: WithdrawEscrowUsdcInput): Promise<SapWriteResult> {
+  const cfg = getConfig();
+  const gate = usdcEscrowGate(cfg);
+  if (gate) return gate;
+  if (input.amount <= 0n) {
+    return { ok: false, code: 'invalid_amount', message: 'amount must be > 0.' };
+  }
+  let workerWallet: PublicKey;
+  try {
+    workerWallet = new PublicKey(input.workerWalletPubkey);
+  } catch {
+    return { ok: false, code: 'invalid_pubkey', message: 'workerWalletPubkey is not a valid pubkey.' };
+  }
+
+  const handle = await loadAvatarWallet(input.depositorAvatarId);
+  if ('ok' in handle && handle.ok === false) return handle;
+  const { keypair, publicKey: depositor } = handle as AvatarWalletHandle;
+
+  const mint = usdcMintForEscrow();
+  const addrs = deriveUsdcEscrowAddresses({
+    programId: cfg.programId,
+    workerWallet,
+    depositorWallet: depositor,
+    mint,
+  });
+
+  try {
+    const tx = new Transaction();
+    tx.add(
+      buildWithdrawEscrowUsdcIx({ depositor, addrs, programId: cfg.programId, amount: input.amount }),
+    );
+    return executeTx(cfg, 'withdrawEscrowUsdc', tx, keypair, {
+      depositor: depositor.toBase58(),
+      escrow: addrs.escrowPda.toBase58(),
+      vaultAta: addrs.vaultAta.toBase58(),
+      depositorAta: addrs.depositorAta.toBase58(),
+    });
+  } catch (err) {
+    return classifyChainError('withdrawEscrowUsdc:build', err);
   }
 }

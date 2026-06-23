@@ -104,6 +104,22 @@ export interface SapConfig {
   /** The cluster-correct USDC mint (the only SPL the escrow rail honors). */
   usdcMint: PublicKey;
   minStakeLamports: bigint;
+  // ── Option C (USDC SelfReport escrow gate) ──────────────────────────────────
+  /**
+   * Option C USDC escrow-gate sub-rail gate. Independent of (and ON TOP OF) the
+   * SOL `escrowEnabled` gate: the V1 USDC SelfReport path (create/deposit/
+   * settle/withdraw + verify-before-release) is DARK unless BOTH
+   * `escrowEnabled` AND this are true. Default false. Lets the older SOL
+   * (`_v2`) rail and the new Option C USDC rail be flipped independently.
+   */
+  usdcEscrowEnabled: boolean;
+  /**
+   * The fixed expiry window (seconds) applied to a USDC escrow at open time when
+   * the caller does not pin an absolute `expires_at`. Used only for the convenience
+   * "open with default expiry" path; the gate may pass an explicit absolute value.
+   * Default 7 days; floored at 1h.
+   */
+  usdcEscrowDefaultExpirySeconds: number;
 }
 
 /**
@@ -115,8 +131,18 @@ export interface SapConfig {
 export function loadSapConfig(): SapConfig {
   const enabled = process.env.SAP_ENABLED === 'true';
   const escrowEnabled = process.env.SAP_ESCROW_ENABLED === 'true';
+  // Option C USDC escrow gate — default OFF; requires BOTH escrowEnabled AND this.
+  const usdcEscrowEnabled = process.env.SAP_USDC_ESCROW_ENABLED === 'true';
   // Dry-run defaults ON (safe). It is OFF only when EXPLICITLY set to 'false'.
   const dryRun = process.env.SAP_DRY_RUN !== 'false';
+
+  // Default USDC escrow expiry window (seconds). Default 7 days; floor 1h.
+  const rawExpiry = Number.parseInt(
+    process.env.SAP_USDC_ESCROW_DEFAULT_EXPIRY_SECONDS ?? '604800',
+    10,
+  );
+  const usdcEscrowDefaultExpirySeconds =
+    Number.isFinite(rawExpiry) && rawExpiry >= 3600 ? rawExpiry : 604800;
 
   const rawCluster = (process.env.SAP_CLUSTER ?? 'devnet').trim().toLowerCase();
   if (rawCluster !== 'devnet' && rawCluster !== 'mainnet') {
@@ -184,6 +210,8 @@ export function loadSapConfig(): SapConfig {
     rpcUrl,
     usdcMint,
     minStakeLamports: SAP_MIN_STAKE_LAMPORTS,
+    usdcEscrowEnabled,
+    usdcEscrowDefaultExpirySeconds,
   };
 }
 

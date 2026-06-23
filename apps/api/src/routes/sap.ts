@@ -75,6 +75,15 @@ import {
   type SapWriteResult,
   type SapFailure,
 } from '../services/sap/sap-client';
+import {
+  openEscrow,
+  submitJob,
+  approveJob,
+  settleJob,
+  refundEscrow,
+  type EscrowGateResult,
+  type EscrowGateFailure,
+} from '../services/sap/escrow-gate';
 
 type DualContext = AppContext & ActivityAuthContext;
 
@@ -92,13 +101,21 @@ const writeLimiter = createRateLimiter({ maxPerWindow: 20, windowMs: 60_000 });
 // ─── gate helpers ─────────────────────────────────────────────────────────────
 
 /** Returns a 503 response when the relevant gate is off, else null. */
-function gate503(c: { json: (b: unknown, s?: 503) => Response }, needEscrow: boolean) {
+function gate503(
+  c: { json: (b: unknown, s?: 503) => Response },
+  needEscrow: boolean,
+  needUsdcEscrow = false,
+) {
   const cfg = sapConfigSnapshot();
   if (!cfg.enabled) {
     return c.json({ error: 'sap_disabled', code: 'sap_disabled' }, 503);
   }
-  if (needEscrow && !cfg.escrowEnabled) {
+  if ((needEscrow || needUsdcEscrow) && !cfg.escrowEnabled) {
     return c.json({ error: 'sap_escrow_disabled', code: 'sap_escrow_disabled' }, 503);
+  }
+  // Option C USDC gate sits ON TOP OF the SOL escrow gate.
+  if (needUsdcEscrow && !cfg.usdcEscrowEnabled) {
+    return c.json({ error: 'sap_usdc_escrow_disabled', code: 'sap_usdc_escrow_disabled' }, 503);
   }
   return null;
 }
@@ -142,6 +159,7 @@ function failureStatus(code: SapFailure['code']): 400 | 404 | 500 | 503 | 502 {
   switch (code) {
     case 'sap_disabled':
     case 'sap_escrow_disabled':
+    case 'sap_usdc_escrow_disabled':
     case 'mainnet_broadcast_refused':
       // A refusal to broadcast to the wrong cluster is a server-side safety stop,
       // not a client error — surface as 503 (service unavailable for this config).
@@ -612,4 +630,288 @@ sapRoutes.post('/escrow/close', requireAuthOrAgentSession, async (c) => {
     nonce: BigInt(parsed.data.nonce),
   });
   return respondWrite(c, result);
+});
+
+// ─── Option C — USDC SelfReport escrow GATE (SAP_USDC_ESCROW_ENABLED) ──────────
+//
+// The verify-before-release USDC commerce gate. ALL routes are triple-gated
+// (SAP_ENABLED + SAP_ESCROW_ENABLED + SAP_USDC_ESCROW_ENABLED) → 503 before any
+// chain work, Zod-validated, behind requireAuthOrAgentSession + requireLedgerCapable.
+//
+// ── RULE E5 PARITY (USDC escrow gate) ─────────────────────────────────────────
+// BOTH a human AND a connected/hosted agent session drive their role AS
+// THEMSELVES (resolved to their bound avatar's own Phase-5.1 custodial wallet,
+// REAL settlement — never a guest fallback):
+//   - REQUESTER role (open / approve-and-settle's funder / refund): the DEPOSITOR
+//     acts as `identity.avatarId`; the on-chain create/deposit/withdraw is signed
+//     by THAT avatar's wallet.
+//   - WORKER role (settle beneficiary): the WORKER acts as `identity.avatarId`;
+//     the on-chain settle_calls is signed by THAT avatar's wallet (= the gate key).
+// PARITY note — human path: POST /api/sap/escrow/usdc/* via Lucia cookie;
+//   agent path: same endpoints via X-Clawville-Agent-Session → bound avatar;
+//   settlement/signing binds to identity.avatarId (depositor on open/refund,
+//   worker on settle). No body-supplied pubkey is ever a signer; no guest path.
+
+/** Map an escrow-gate failure code → an HTTP status. */
+function gateFailureStatus(code: EscrowGateFailure['code']): 400 | 403 | 404 | 409 | 500 | 502 | 503 {
+  switch (code) {
+    case 'gate_disabled':
+    case 'sap_disabled':
+    case 'sap_escrow_disabled':
+    case 'sap_usdc_escrow_disabled':
+    case 'mainnet_broadcast_refused':
+      return 503;
+    case 'wallet_pubkey_missing':
+    case 'avatar_wallet_missing':
+    case 'job_not_found':
+      return 404;
+    case 'verification_failed':
+    case 'not_approved':
+    case 'approver_mismatch':
+    case 'self_dealing_forbidden':
+      // Authorization refusals on the release path — the caller is not entitled to
+      // (or has not been approved for) this settle. 403 Forbidden.
+      return 403;
+    case 'over_release':
+      // The requested release exceeds the authorized/approved/funded ceiling — a
+      // client-side over-request. 400 Bad Request.
+      return 400;
+    case 'already_settled':
+    case 'settle_in_progress':
+    case 'refund_in_progress':
+    case 'funding_unconfirmed':
+    case 'job_not_open':
+      // Lifecycle conflicts — the job is in a state that forbids this transition.
+      return 409;
+    case 'rpc_unreachable':
+      return 502;
+    case 'internal':
+      return 500;
+    case 'invalid_pubkey':
+    case 'invalid_mint':
+    case 'sol_only_for_now':
+    case 'invalid_amount':
+    case 'on_chain_error':
+    default:
+      return 400;
+  }
+}
+
+/** Serialize an escrow-gate result to a clean JSON response. */
+function respondGate(c: { json: (b: unknown, s?: number) => Response }, result: EscrowGateResult) {
+  if (result.ok === false) {
+    return c.json(
+      { error: result.code, code: result.code, message: result.message },
+      gateFailureStatus(result.code),
+    );
+  }
+  // Trim the settlement row to a safe DTO (never echo internal ids the caller
+  // doesn't need; expose the lifecycle-relevant fields).
+  const s = result.settlement;
+  const settlement = {
+    escrowPda: s.escrowPda,
+    jobId: s.jobId,
+    status: s.status,
+    pricePerCall: s.pricePerCall,
+    maxCalls: s.maxCalls,
+    callsSettled: s.callsSettled,
+    fundedAmount: s.fundedAmount,
+    releasedAmount: s.releasedAmount,
+    refundedAmount: s.refundedAmount,
+    verificationProvider: s.verificationProvider,
+    verificationPassed: s.verificationPassed,
+    auditRootHex: s.auditRootHex,
+    settleSignature: s.settleSignature,
+    fundingSignature: s.fundingSignature,
+    dryRun: s.dryRun,
+    settledAt: s.settledAt,
+  };
+  const base: Record<string, unknown> = { ok: true, phase: result.phase, settlement };
+  if ('replay' in result) base.replay = result.replay;
+  if (result.phase === 'approved') base.approvedCalls = result.approvedCalls;
+  if ('chain' in result && result.chain) {
+    const chain = result.chain;
+    if (chain.ok && chain.dryRun) {
+      base.chain = {
+        dryRun: true,
+        accepted: chain.accepted,
+        programReached: chain.programReached,
+        accounts: chain.accounts,
+        simulation: {
+          err: chain.simulation.err ?? null,
+          unitsConsumed: chain.simulation.unitsConsumed ?? null,
+          logs: chain.simulation.logs ?? [],
+        },
+      };
+    } else if (chain.ok) {
+      base.chain = { dryRun: false, signature: chain.signature, accounts: chain.accounts };
+    }
+  }
+  return c.json(base);
+}
+
+// ── open (depositor funds a USDC escrow against a worker for a job) ──
+const openEscrowSchema = z
+  .object({
+    /** The worker/service avatar this depositor is prepaying. */
+    workerAvatarId: z.string().uuid(),
+    /** Off-chain job id — the (escrow, job) idempotency key's job half. */
+    jobId: z.string().min(1).max(128),
+    /** USDC base units (6 decimals) as u64 strings. */
+    pricePerCall: u64Str,
+    maxCalls: u64Str,
+    initialDeposit: u64Str,
+    /** Absolute unix-seconds expiry. 0 = no expiry. */
+    expiresAt: z.string().regex(/^\d+$/).max(20).default('0'),
+  })
+  .strict();
+
+sapRoutes.post('/escrow/usdc/open', requireAuthOrAgentSession, async (c) => {
+  const gated = gate503(c, true, true);
+  if (gated) return gated;
+  if (!writeLimiter.check(getClientIp(c.req.raw.headers))) {
+    return c.json({ error: 'rate_limited' }, 429);
+  }
+  const parsed = openEscrowSchema.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) return c.json({ error: 'invalid_body', code: 'invalid_body' }, 400);
+  const identity = c.get('identity');
+  const notLedger = requireLedgerCapable(c, identity);
+  if (notLedger) return notLedger;
+  // The acting avatar IS the depositor (requester) — it funds as itself (E5).
+  const result = await openEscrow({
+    depositorAvatarId: identity.avatarId,
+    workerAvatarId: parsed.data.workerAvatarId,
+    jobId: parsed.data.jobId,
+    pricePerCall: BigInt(parsed.data.pricePerCall),
+    maxCalls: BigInt(parsed.data.maxCalls),
+    initialDeposit: BigInt(parsed.data.initialDeposit),
+    expiresAt: BigInt(parsed.data.expiresAt),
+  });
+  return respondGate(c, result);
+});
+
+// ── submit (worker records a deliverable submission) ──
+const submitJobSchema = z
+  .object({ escrowPda: z.string().min(32).max(64), jobId: z.string().min(1).max(128) })
+  .strict();
+
+sapRoutes.post('/escrow/usdc/submit', requireAuthOrAgentSession, async (c) => {
+  const gated = gate503(c, true, true);
+  if (gated) return gated;
+  if (!writeLimiter.check(getClientIp(c.req.raw.headers))) {
+    return c.json({ error: 'rate_limited' }, 429);
+  }
+  const parsed = submitJobSchema.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) return c.json({ error: 'invalid_body', code: 'invalid_body' }, 400);
+  const identity = c.get('identity');
+  const notLedger = requireLedgerCapable(c, identity);
+  if (notLedger) return notLedger;
+  const result = await submitJob({ escrowPda: parsed.data.escrowPda, jobId: parsed.data.jobId });
+  return respondGate(c, result);
+});
+
+// ── approve (DEPOSITOR-ONLY authenticated approval; BLOCKING #1 fix) ──
+// The depositor (and ONLY the depositor) records the persisted approval that gates
+// a settle. This REPLACES the old forgeable request-body `approval` object on the
+// settle route: a worker can no longer fabricate an approval to self-release. The
+// acting avatar MUST be the recorded depositor (asserted in the gate). Optional
+// `approvedCalls` caps the calls the approval authorizes for release.
+const approveJobSchema = z
+  .object({
+    escrowPda: z.string().min(32).max(64),
+    jobId: z.string().min(1).max(128),
+    /** Optional cap on approved calls (u64). Omitted ⇒ approve the job's maxCalls. */
+    approvedCalls: u64Str.optional(),
+  })
+  .strict();
+
+sapRoutes.post('/escrow/usdc/approve', requireAuthOrAgentSession, async (c) => {
+  const gated = gate503(c, true, true);
+  if (gated) return gated;
+  if (!writeLimiter.check(getClientIp(c.req.raw.headers))) {
+    return c.json({ error: 'rate_limited' }, 429);
+  }
+  const parsed = approveJobSchema.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) return c.json({ error: 'invalid_body', code: 'invalid_body' }, 400);
+  const identity = c.get('identity');
+  const notLedger = requireLedgerCapable(c, identity);
+  if (notLedger) return notLedger;
+  // The acting avatar IS the depositor (requester) — only it may approve a release
+  // of its own escrow. The gate re-asserts `callerAvatarId === row.depositorAvatarId`.
+  const result = await approveJob({
+    escrowPda: parsed.data.escrowPda,
+    jobId: parsed.data.jobId,
+    callerAvatarId: identity.avatarId,
+    approvedCalls: parsed.data.approvedCalls ? BigInt(parsed.data.approvedCalls) : undefined,
+  });
+  return respondGate(c, result);
+});
+
+// ── settle (worker releases the escrow ONLY after the DEPOSITOR's PERSISTED
+//    approval; BLOCKING #1/#2/#3 fix) ──
+// The verification signal is built SERVER-SIDE from the persisted approval row —
+// the route NO LONGER accepts a body `approval` (it was forgeable by the worker).
+// `callsToSettle` is an UPPER REQUEST: the gate clamps/rejects it against the
+// job's maxCalls, the depositor's approvedCalls, and the escrow's remaining funded
+// balance. The WORKER is the acting avatar (signs the release as itself).
+const settleJobSchema = z
+  .object({
+    escrowPda: z.string().min(32).max(64),
+    jobId: z.string().min(1).max(128),
+    callsToSettle: u64Str,
+  })
+  .strict();
+
+sapRoutes.post('/escrow/usdc/settle', requireAuthOrAgentSession, async (c) => {
+  const gated = gate503(c, true, true);
+  if (gated) return gated;
+  if (!writeLimiter.check(getClientIp(c.req.raw.headers))) {
+    return c.json({ error: 'rate_limited' }, 429);
+  }
+  const parsed = settleJobSchema.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) return c.json({ error: 'invalid_body', code: 'invalid_body' }, 400);
+  const identity = c.get('identity');
+  const notLedger = requireLedgerCapable(c, identity);
+  if (notLedger) return notLedger;
+  // The acting avatar IS the worker (settle beneficiary + the only settle signer).
+  // The gate asserts `callerAvatarId === row.workerAvatarId` (E5: worker settles
+  // as itself), READS the depositor's PERSISTED approval (never a body claim), and
+  // clamps the release to the authorized/approved/funded ceiling.
+  const result = await settleJob({
+    escrowPda: parsed.data.escrowPda,
+    jobId: parsed.data.jobId,
+    callerAvatarId: identity.avatarId,
+    callsToSettle: BigInt(parsed.data.callsToSettle),
+  });
+  return respondGate(c, result);
+});
+
+// ── refund (depositor reclaims unspent USDC on cancel/expiry/verify-fail) ──
+const refundEscrowSchema = z
+  .object({
+    escrowPda: z.string().min(32).max(64),
+    jobId: z.string().min(1).max(128),
+    amount: u64Str,
+  })
+  .strict();
+
+sapRoutes.post('/escrow/usdc/refund', requireAuthOrAgentSession, async (c) => {
+  const gated = gate503(c, true, true);
+  if (gated) return gated;
+  if (!writeLimiter.check(getClientIp(c.req.raw.headers))) {
+    return c.json({ error: 'rate_limited' }, 429);
+  }
+  const parsed = refundEscrowSchema.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) return c.json({ error: 'invalid_body', code: 'invalid_body' }, 400);
+  const identity = c.get('identity');
+  const notLedger = requireLedgerCapable(c, identity);
+  if (notLedger) return notLedger;
+  // The acting avatar IS the depositor — only it can reclaim its unspent USDC.
+  const result = await refundEscrow({
+    depositorAvatarId: identity.avatarId,
+    escrowPda: parsed.data.escrowPda,
+    jobId: parsed.data.jobId,
+    amount: BigInt(parsed.data.amount),
+  });
+  return respondGate(c, result);
 });

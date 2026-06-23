@@ -1,0 +1,1082 @@
+/**
+ * SAP Option C — escrow-gate orchestration (verify-before-release + HARD
+ * idempotency).
+ *
+ * FEATURE_GATE: sap_usdc_escrow_gate
+ * Status: FULLY built, GATED OFF (build-only). The whole Option C USDC escrow
+ *   gate is dark unless SAP_ENABLED=true AND SAP_ESCROW_ENABLED=true AND
+ *   SAP_USDC_ESCROW_ENABLED=true; and even then SAP_DRY_RUN=true (the default)
+ *   builds + simulates only — NEVER broadcasts. In-game economy stays ClawTokens;
+ *   this is an additive, flip-to-live, on-chain USDC layer.
+ * Metric to graduate: a deliberate founder decision to run AI↔AI USDC commerce
+ *   on-chain (devnet smoke with a funded depositor → mainnet code gate). No /dash
+ *   metric drives this — it is an opt-in commerce layer, not an A/B'd feature.
+ * Review deadline: 2026-09-22.
+ * On deadline: if still disabled with no devnet escrow smoke, either flip on
+ *   devnet for a real create→verify→settle smoke OR delete escrow-gate.ts +
+ *   sap-escrow-usdc.ts + the escrow routes (keep the spec for a future revisit).
+ *   Do NOT silently extend.
+ * Reference: .claude/plans/sap-onchain-agents/PLAN.md (Option C),
+ *   oobe-usdc-selfreport-spec.md, docs/sap-integration.md §10.
+ *
+ * ── Lifecycle (open → submit → approve → verify → settle | refund) ────────────
+ *   open    — depositor funds an OOBE USDC escrow against the worker agent
+ *             (custodial-signed for the depositor's Phase-5.1 wallet). A
+ *             `sap_escrow_settlements` row is upserted in `open` for (escrow,job),
+ *             recording `max_calls` + the job's `funded_amount`. depositor==worker
+ *             is REJECTED (no self-dealing escrow — BLOCKING #1).
+ *   submit  — the worker submits the deliverable (records `submitted`).
+ *   approve — the DEPOSITOR (and ONLY the depositor) records an authenticated
+ *             approval row (`sap_escrow_approvals`, keyed (escrow,job)). This is
+ *             the ONLY thing that authorizes a release (BLOCKING #1) — a worker
+ *             can no longer forge a request-body approval to self-release.
+ *   verify  — the gate runs the pluggable VerificationProvider over a signal built
+ *             SERVER-SIDE from the persisted approval (never the caller's body).
+ *   settle  — ONLY on `passed===true`: clamps `callsToSettle` to the
+ *             authorized/approved/funded ceiling (BLOCKING #2/#3), an atomic
+ *             at-most-once claim flips the row to `settling` (the unique index is
+ *             the lock), the gate binds the provider auditRoot into `service_hash`,
+ *             calls the SelfReport `settle_calls` (release vault → worker), records
+ *             `settled` + books `released_amount` into the funds ledger.
+ *   refund  — on cancel/expiry/verify-fail the depositor `withdraw`s unspent USDC
+ *             via an atomic `refunding` claim BEFORE any chain send (BLOCKING #4),
+ *             books `refunded_amount`.
+ *
+ * ── Two recovery states (BLOCKING #4 + #5) ────────────────────────────────────
+ *   refunding       — the atomic refund claim (mirrors `settling`); exactly one of
+ *                     {settle, refund} ever reaches the chain for an escrow.
+ *   funding_unknown — an OPEN tx BROADCAST but never confirmed; held for
+ *                     reconciliation with `funding_signature`, NEVER auto-deleted
+ *                     (deleting would free the slot → double-fund + orphan landed
+ *                     USDC). Excluded from the spendable funds ledger (fail-closed).
+ *
+ * ── HARD idempotency (money invariant) ────────────────────────────────────────
+ * A settle fires AT MOST ONCE per (escrow_pda, job_id). The mechanism:
+ *   1. The `sap_escrow_settlements (escrow_pda, job_id)` UNIQUE index.
+ *   2. The settle path, in ONE DB transaction, does a conditional UPDATE that
+ *      flips the row to `settling` ONLY from a non-terminal state
+ *      (`open|submitted`). The row-lock + the WHERE-clause state guard make the
+ *      check-then-claim atomic: a concurrent OR retried second settle finds the
+ *      row already `settling|settled` and gets ZERO rows updated → it bails
+ *      WITHOUT touching the chain. The chain send happens AFTER the claim commits,
+ *      so two callers can never both reach `settle_calls`.
+ *   3. On a successful settle the row is flipped to `settled` (terminal). On a
+ *      chain failure AFTER the claim it is flipped to `failed` (terminal, NOT
+ *      auto-retried — a send whose confirmation we never observed may have
+ *      landed; re-releasing would double-pay).
+ *
+ * This module NEVER writes avatars.clawTokens (this is a USDC path, not CT) and
+ * NEVER logs the custodial secret (the chain leg in sap-client decrypts in-memory
+ * only). It returns structured results; the route maps them to clean HTTP codes.
+ */
+
+import { and, eq } from 'drizzle-orm';
+import { sql } from 'drizzle-orm';
+import {
+  db,
+  wallets,
+  sapEscrowSettlements,
+  sapEscrowApprovals,
+  type SapEscrowSettlement,
+} from '@clawville/database';
+import {
+  createEscrowUsdc,
+  depositEscrowUsdc,
+  settleCallsUsdc,
+  withdrawEscrowUsdc,
+  resolveUsdcEscrowAddresses,
+  sapConfigSnapshot,
+  type SapWriteResult,
+  type SapFailure,
+} from './sap-client';
+import {
+  defaultVerificationProvider,
+  type VerificationProvider,
+  type VerificationJobContext,
+} from './sap-verification';
+
+// ─── structured gate results ──────────────────────────────────────────────────
+
+export type EscrowGateErrorCode =
+  | SapFailure['code']
+  | 'gate_disabled'
+  | 'wallet_pubkey_missing'
+  | 'verification_failed'
+  | 'already_settled'
+  | 'settle_in_progress'
+  | 'job_not_open'
+  | 'job_not_found'
+  // BLOCKING #1 — an agent may not be on both sides of its own release.
+  | 'self_dealing_forbidden'
+  // BLOCKING #1 — only the depositor's PERSISTED approval authorizes a release.
+  | 'not_approved'
+  | 'approver_mismatch'
+  // BLOCKING #2/#3 — the requested release exceeds the job's authorized calls,
+  // its approved calls, or the escrow's remaining funded balance.
+  | 'over_release'
+  // BLOCKING #4 — a refund/settle is already claimed; the live broadcast is gated.
+  | 'refund_in_progress'
+  // BLOCKING #5 — the (escrow, job) is in funding_unknown and must be reconciled.
+  | 'funding_unconfirmed'
+  | 'internal';
+
+export interface EscrowGateFailure {
+  ok: false;
+  code: EscrowGateErrorCode;
+  message: string;
+}
+
+export interface EscrowGateOpenResult {
+  ok: true;
+  phase: 'open';
+  settlement: SapEscrowSettlement;
+  /**
+   * The chain result IF a chain leg actually ran this call. NULL on an idempotent
+   * replay (the (escrow, job) was already open — we did NOT re-fund). Honest: a
+   * replay never fabricates a fake simulation/signature.
+   */
+  chain: SapWriteResult | null;
+  /** True when this call was an idempotent replay of an already-open job. */
+  replay: boolean;
+}
+
+export interface EscrowGateSubmitResult {
+  ok: true;
+  phase: 'submitted';
+  settlement: SapEscrowSettlement;
+}
+
+export interface EscrowGateApproveResult {
+  ok: true;
+  phase: 'approved';
+  settlement: SapEscrowSettlement;
+  /** The number of calls the depositor approved (null ⇒ the job's full maxCalls). */
+  approvedCalls: string | null;
+}
+
+export interface EscrowGateSettleResult {
+  ok: true;
+  phase: 'settled';
+  settlement: SapEscrowSettlement;
+  /**
+   * The chain settle result IF the chain settle ran this call (dry-run sim or
+   * live signature). NULL on an idempotent replay of an already-settled job —
+   * the prior outcome is on the `settlement` row (`settleSignature`/`dryRun`).
+   */
+  chain: SapWriteResult | null;
+  /** True when this call was an idempotent replay of an already-settled job. */
+  replay: boolean;
+}
+
+export interface EscrowGateRefundResult {
+  ok: true;
+  phase: 'refunded';
+  settlement: SapEscrowSettlement;
+  chain: SapWriteResult;
+}
+
+export type EscrowGateResult =
+  | EscrowGateOpenResult
+  | EscrowGateSubmitResult
+  | EscrowGateApproveResult
+  | EscrowGateSettleResult
+  | EscrowGateRefundResult
+  | EscrowGateFailure;
+
+// ─── helpers ──────────────────────────────────────────────────────────────────
+
+/** Top-level gate check mirrored from the config snapshot (defense-in-depth). */
+function gateOpen(): EscrowGateFailure | null {
+  const cfg = sapConfigSnapshot();
+  if (!cfg.enabled || !cfg.escrowEnabled || !cfg.usdcEscrowEnabled) {
+    return {
+      ok: false,
+      code: 'gate_disabled',
+      message: 'SAP Option C USDC escrow gate is disabled.',
+    };
+  }
+  return null;
+}
+
+/** Read an avatar's custodial wallet PUBKEY (base58) WITHOUT decrypting the secret. */
+async function avatarWalletPubkey(avatarId: string): Promise<string | null> {
+  const row = await db.query.wallets.findFirst({
+    where: and(eq(wallets.subjectType, 'avatar'), eq(wallets.subjectId, avatarId)),
+    columns: { publicKey: true },
+  });
+  return row?.publicKey ?? null;
+}
+
+function isUniqueViolation(err: unknown): boolean {
+  return (err as { code?: string } | null)?.code === '23505';
+}
+
+/** Parse a u64-as-decimal-string column to bigint; null/empty/garbage → 0n. */
+function u64(s: string | null | undefined): bigint {
+  if (!s) return 0n;
+  try {
+    const v = BigInt(s);
+    return v < 0n ? 0n : v;
+  } catch {
+    return 0n;
+  }
+}
+
+/**
+ * BLOCKING #2 + #3 — the PURE settle-ceiling computation, extracted so it is unit
+ * testable without a DB. The number of calls a settle may release is the MIN of:
+ *   (a) remainingAuthorized = maxCalls − callsAlreadySettled  (the job's ceiling),
+ *   (b) the depositor's approved calls (0 ⇒ no explicit cap, defaults to (a)),
+ *   (c) floor(escrowRemainingVaultBalance / pricePerCall)     (escrow-wide funds),
+ *   (d) floor(jobRemainingFunded / pricePerCall)              (this job's funds).
+ * A requested `callsToSettle` over this ceiling is an over-release (rejected, not
+ * truncated). All inputs are bigint base units; pricePerCall MUST be > 0.
+ */
+export function computeSettleCeiling(args: {
+  maxCalls: bigint;
+  callsAlreadySettled: bigint;
+  approvedCalls: bigint; // 0n ⇒ no explicit cap
+  pricePerCall: bigint; // > 0
+  escrowRemaining: bigint;
+  jobRemainingFunded: bigint;
+}): bigint {
+  if (args.pricePerCall <= 0n) return 0n;
+  const remainingAuthorized =
+    args.maxCalls > args.callsAlreadySettled ? args.maxCalls - args.callsAlreadySettled : 0n;
+  const approvalBound = args.approvedCalls > 0n ? args.approvedCalls : remainingAuthorized;
+  const callsVaultCanPay = args.escrowRemaining / args.pricePerCall; // floor
+  const callsJobFundsCanPay = args.jobRemainingFunded / args.pricePerCall; // floor
+
+  let ceiling = remainingAuthorized;
+  if (approvalBound < ceiling) ceiling = approvalBound;
+  if (callsVaultCanPay < ceiling) ceiling = callsVaultCanPay;
+  if (callsJobFundsCanPay < ceiling) ceiling = callsJobFundsCanPay;
+  return ceiling < 0n ? 0n : ceiling;
+}
+
+/**
+ * BLOCKING #2 + #3 — the per-escrow + per-job funds ledger.
+ *
+ * The V1 USDC escrow PDA is one-per-(agent,depositor) with NO nonce, so EVERY
+ * jobId for the pair shares ONE on-chain vault. There is no on-chain per-job
+ * accounting, so it lives HERE: we sum the funded / released / refunded amounts
+ * across ALL settlement rows for the escrow and enforce, before any settle:
+ *   - escrow-wide: sum(released) + sum(refunded) + thisRelease ≤ sum(funded)
+ *   - per-job:     job.released + thisRelease ≤ job.funded
+ * so a worker controlling one job can never release USDC the depositor earmarked
+ * for a sibling job, and no settle can over-draw the vault.
+ *
+ * Reads only CONFIRMED-funded rows (status NOT in the un-funded/abandoned set) so
+ * a never-funded or funding_unknown row never inflates the available balance.
+ */
+async function escrowFundsLedger(escrowPda: string): Promise<{
+  funded: bigint;
+  released: bigint;
+  refunded: bigint;
+  /** funded − released − refunded, floored at 0 (the spendable vault balance). */
+  remaining: bigint;
+}> {
+  const rows = await db.query.sapEscrowSettlements.findMany({
+    where: eq(sapEscrowSettlements.escrowPda, escrowPda),
+    columns: {
+      status: true,
+      fundedAmount: true,
+      releasedAmount: true,
+      refundedAmount: true,
+    },
+  });
+  let funded = 0n;
+  let released = 0n;
+  let refunded = 0n;
+  for (const r of rows) {
+    // Only count funding that actually landed. A `funding_unknown` row's deposit
+    // is UNCONFIRMED — exclude it from the spendable balance (fail-closed: it can
+    // only be counted after reconciliation flips it to a funded status).
+    if (r.status !== 'funding_unknown') {
+      funded += u64(r.fundedAmount);
+    }
+    released += u64(r.releasedAmount);
+    refunded += u64(r.refundedAmount);
+  }
+  const net = funded - released - refunded;
+  return { funded, released, refunded, remaining: net < 0n ? 0n : net };
+}
+
+// ─── 1. OPEN (deposit) ────────────────────────────────────────────────────────
+
+export interface OpenEscrowInput {
+  /** Depositor (requester) avatar — funds the escrow as itself. Rule E5 parity. */
+  depositorAvatarId: string;
+  /** Worker (service) avatar — the settle beneficiary. */
+  workerAvatarId: string;
+  /** Off-chain job id — the (escrow, job) idempotency key's job half. */
+  jobId: string;
+  pricePerCall: bigint;
+  maxCalls: bigint;
+  initialDeposit: bigint;
+  /** Absolute unix-seconds expiry (i64). 0 = no expiry. */
+  expiresAt: bigint;
+}
+
+/**
+ * Open (or top-up) a USDC escrow for (worker, depositor) and record/advance the
+ * `sap_escrow_settlements` row for (escrow, job).
+ *
+ * Because the V1 USDC escrow PDA is one-per-(agent,depositor) (no nonce), a
+ * second job for the same pair TOPS UP the same escrow (deposit_escrow), and is
+ * tracked as a DISTINCT settlement row keyed by its own jobId. The first job for
+ * the pair creates the escrow; subsequent ones deposit.
+ */
+export async function openEscrow(input: OpenEscrowInput): Promise<EscrowGateResult> {
+  const gated = gateOpen();
+  if (gated) return gated;
+
+  // BLOCKING #1 — an agent must NEVER be on both sides of its own release. If the
+  // depositor and worker are the same avatar, the worker could approve + settle to
+  // itself with no independent party. Reject self-dealing at open time (the
+  // simplest, hardest gate; a future self-dealing job would require an independent
+  // verifier provider, not the requester-approval one).
+  if (input.depositorAvatarId === input.workerAvatarId) {
+    return {
+      ok: false,
+      code: 'self_dealing_forbidden',
+      message: 'depositor and worker cannot be the same avatar (self-dealing escrow forbidden).',
+    };
+  }
+
+  const cfg = sapConfigSnapshot();
+  const workerWalletPubkey = await avatarWalletPubkey(input.workerAvatarId);
+  const depositorWalletPubkey = await avatarWalletPubkey(input.depositorAvatarId);
+  if (!workerWalletPubkey || !depositorWalletPubkey) {
+    return {
+      ok: false,
+      code: 'wallet_pubkey_missing',
+      message: 'worker or depositor avatar has no custodial wallet.',
+    };
+  }
+
+  const addr = resolveUsdcEscrowAddresses({ workerWalletPubkey, depositorWalletPubkey });
+  if (addr.ok === false) return { ok: false, code: addr.code, message: addr.message };
+  const escrowPda = addr.addrs.escrowPda.toBase58();
+
+  // ── CLAIM-FIRST, FUND-SECOND (no double-fund race) ──────────────────────────
+  // INSERT the (escrow, job) row FIRST so the unique index serializes concurrent
+  // opens: exactly ONE caller wins the INSERT and is the only one that funds the
+  // chain; a racing loser trips 23505, never funds, and serves the existing row.
+  // This closes the double-deposit window the old "read → fund → insert" had.
+  let row: SapEscrowSettlement;
+  let isTopUp: boolean;
+  try {
+    // "Top up vs create": is there ALREADY another job row for this escrow pair?
+    // (The first job for a pair created the on-chain escrow; a later one deposits.)
+    // Read INSIDE the try so the value is consistent with the row we then insert.
+    const priorForEscrow = await db.query.sapEscrowSettlements.findFirst({
+      where: eq(sapEscrowSettlements.escrowPda, escrowPda),
+      columns: { id: true },
+    });
+    isTopUp = !!priorForEscrow;
+
+    const [inserted] = await db
+      .insert(sapEscrowSettlements)
+      .values({
+        escrowPda,
+        jobId: input.jobId,
+        depositorAvatarId: input.depositorAvatarId,
+        workerAvatarId: input.workerAvatarId,
+        workerWalletPubkey,
+        depositorWalletPubkey,
+        tokenMint: addr.mint.toBase58(),
+        pricePerCall: input.pricePerCall.toString(),
+        // BLOCKING #2 — record the authorized call ceiling so settle clamps to it.
+        maxCalls: input.maxCalls.toString(),
+        // BLOCKING #3 — record this job's funded portion of the SHARED vault for
+        // the cross-job accounting invariant. Not counted toward the spendable
+        // balance until the chain fund leg confirms (set below on success).
+        fundedAmount: '0',
+        status: 'open',
+        dryRun: cfg.dryRun,
+        metadata: { isTopUp, funded: false },
+      })
+      .returning();
+    row = inserted;
+  } catch (err) {
+    if (isUniqueViolation(err)) {
+      // A concurrent / retried open already claimed this (escrow, job). We did NOT
+      // fund — serve the existing row idempotently (no double-charge).
+      const existing = await db.query.sapEscrowSettlements.findFirst({
+        where: and(
+          eq(sapEscrowSettlements.escrowPda, escrowPda),
+          eq(sapEscrowSettlements.jobId, input.jobId),
+        ),
+      });
+      if (existing) return { ok: true, phase: 'open', settlement: existing, chain: null, replay: true };
+    }
+    return { ok: false, code: 'internal', message: 'failed to record escrow settlement.' };
+  }
+
+  // We hold the claim — fund the chain (create the escrow, or top up an existing
+  // one for the pair). On dry-run this simulates only.
+  const chain = isTopUp
+    ? await depositEscrowUsdc({
+        depositorAvatarId: input.depositorAvatarId,
+        workerWalletPubkey,
+        amount: input.initialDeposit,
+      })
+    : await createEscrowUsdc({
+        depositorAvatarId: input.depositorAvatarId,
+        workerWalletPubkey,
+        pricePerCall: input.pricePerCall,
+        maxCalls: input.maxCalls,
+        initialDeposit: input.initialDeposit,
+        expiresAt: input.expiresAt,
+      });
+  if (chain.ok === false) {
+    if (chain.broadcast) {
+      // BLOCKING #5 — the fund tx was BROADCAST but we never confirmed it. It may
+      // have LANDED, putting real USDC in the vault. DELETING the row would (a)
+      // free the (escrow, job) slot → a retry could DOUBLE-FUND, and (b) orphan
+      // any landed USDC. So we DO NOT delete: persist a terminal-but-recoverable
+      // `funding_unknown` state + the broadcast signature for a reconciler to poll
+      // the chain before the slot is reused. The funds ledger excludes
+      // `funding_unknown` from the spendable balance (fail-closed).
+      await db
+        .update(sapEscrowSettlements)
+        .set({
+          status: 'funding_unknown',
+          fundingSignature: chain.signature ?? null,
+          dryRun: false,
+          metadata: { ...((row.metadata as object) ?? {}), isTopUp, funded: false, fundingError: chain.code },
+          updatedAt: new Date(),
+        })
+        .where(eq(sapEscrowSettlements.id, row.id));
+      return {
+        ok: false,
+        code: 'funding_unconfirmed',
+        message:
+          'escrow fund tx was broadcast but its confirmation was not observed; the ' +
+          'job is held in funding_unknown for reconciliation (no auto-retry / no slot reuse).',
+      };
+    }
+    // The chain fund leg NEVER hit the wire (build/blockhash/pre-broadcast reject,
+    // or a dry-run sim failure) — no funds moved. DELETE our just-claimed row so the
+    // (escrow, job) slot frees for a clean retry, and a later settle can never try
+    // to release an escrow that was never funded.
+    await db.delete(sapEscrowSettlements).where(eq(sapEscrowSettlements.id, row.id));
+    return { ok: false, code: chain.code, message: chain.message };
+  }
+
+  // Mark the row funded (records the realized dry-run flag from the chain leg) and
+  // book this job's funded portion into the per-escrow accounting ledger
+  // (BLOCKING #3). On dry-run the deposit is simulated; we still record the
+  // intended funded amount so the dry-run settle path exercises the SAME bounds.
+  const [funded] = await db
+    .update(sapEscrowSettlements)
+    .set({
+      dryRun: chain.dryRun,
+      fundedAmount: input.initialDeposit.toString(),
+      metadata: { isTopUp, funded: true },
+      updatedAt: new Date(),
+    })
+    .where(eq(sapEscrowSettlements.id, row.id))
+    .returning();
+
+  return { ok: true, phase: 'open', settlement: funded, chain, replay: false };
+}
+
+// ─── 2. SUBMIT ────────────────────────────────────────────────────────────────
+
+/** Record that the worker submitted the deliverable (open → submitted). */
+export async function submitJob(input: {
+  escrowPda: string;
+  jobId: string;
+}): Promise<EscrowGateResult> {
+  const gated = gateOpen();
+  if (gated) return gated;
+  // Only advance from `open`. A no-op on a non-open row (re-submit) is benign;
+  // we re-read and return the current row.
+  await db
+    .update(sapEscrowSettlements)
+    .set({ status: 'submitted', updatedAt: new Date() })
+    .where(
+      and(
+        eq(sapEscrowSettlements.escrowPda, input.escrowPda),
+        eq(sapEscrowSettlements.jobId, input.jobId),
+        eq(sapEscrowSettlements.status, 'open'),
+      ),
+    );
+  const row = await db.query.sapEscrowSettlements.findFirst({
+    where: and(
+      eq(sapEscrowSettlements.escrowPda, input.escrowPda),
+      eq(sapEscrowSettlements.jobId, input.jobId),
+    ),
+  });
+  if (!row) return { ok: false, code: 'job_not_found', message: 'no settlement row for (escrow, job).' };
+  return { ok: true, phase: 'submitted', settlement: row };
+}
+
+// ─── 2b. APPROVE (depositor-authenticated; BLOCKING #1 fix) ────────────────────
+
+export interface ApproveJobInput {
+  escrowPda: string;
+  jobId: string;
+  /**
+   * The avatar ACTING on the approve (the caller's bound avatar). Rule E5 + the
+   * BLOCKING #1 fix: ONLY the escrow's recorded depositor (the funds owner) may
+   * approve. The route already asserts `identity.avatarId === depositorAvatarId`;
+   * we re-assert here on the money path (defense-in-depth).
+   */
+  callerAvatarId: string;
+  /**
+   * Optional cap on the calls this approval authorizes for release (u64). Omitted
+   * ⇒ approve the job's full `maxCalls`. The settle path clamps `callsToSettle` to
+   * AT MOST this (in addition to the maxCalls + vault-balance bounds).
+   */
+  approvedCalls?: bigint;
+}
+
+/**
+ * Persist the depositor's AUTHENTICATED approval for (escrow, job). This is the
+ * ONLY thing that authorizes a settle — the settle path reads THIS row, never a
+ * request-body claim. Replaces the forgeable request-body `approval` object.
+ *
+ * The caller MUST be the recorded depositor. A re-approve UPSERTs (same (escrow,
+ * job) key) so exactly one authoritative approval exists. The approval can only be
+ * recorded while the job is still releasable (`open|submitted`) — not after a
+ * settle/refund/failure or while a settle is mid-flight.
+ */
+export async function approveJob(input: ApproveJobInput): Promise<EscrowGateResult> {
+  const gated = gateOpen();
+  if (gated) return gated;
+
+  const row = await db.query.sapEscrowSettlements.findFirst({
+    where: and(
+      eq(sapEscrowSettlements.escrowPda, input.escrowPda),
+      eq(sapEscrowSettlements.jobId, input.jobId),
+    ),
+  });
+  if (!row) {
+    return { ok: false, code: 'job_not_found', message: 'no settlement row for (escrow, job).' };
+  }
+
+  // ONLY the depositor (funds owner) may approve a release of their own escrow.
+  if (row.depositorAvatarId !== input.callerAvatarId) {
+    return {
+      ok: false,
+      code: 'approver_mismatch',
+      message: 'only the escrow depositor (requester) can approve a release.',
+    };
+  }
+
+  // Belt-and-suspenders: never let the depositor approve a release to itself.
+  if (row.workerAvatarId === row.depositorAvatarId) {
+    return {
+      ok: false,
+      code: 'self_dealing_forbidden',
+      message: 'depositor and worker are the same avatar; self-dealing release forbidden.',
+    };
+  }
+
+  // Only approve a job that is still releasable. A terminal/in-flight row cannot
+  // gain a fresh approval (no approving an already-settled/refunded/failed job, or
+  // racing an in-flight settle/refund claim).
+  if (row.status !== 'open' && row.status !== 'submitted') {
+    return {
+      ok: false,
+      code: 'job_not_open',
+      message: `job is ${row.status}; cannot approve.`,
+    };
+  }
+
+  // Validate the optional cap against the job's authorized ceiling.
+  const maxCalls = u64(row.maxCalls);
+  const approvedCalls = input.approvedCalls;
+  if (approvedCalls !== undefined) {
+    if (approvedCalls <= 0n) {
+      return { ok: false, code: 'over_release', message: 'approvedCalls must be > 0.' };
+    }
+    if (maxCalls > 0n && approvedCalls > maxCalls) {
+      return {
+        ok: false,
+        code: 'over_release',
+        message: `approvedCalls (${approvedCalls}) exceeds the job's maxCalls (${maxCalls}).`,
+      };
+    }
+  }
+
+  const approvedCallsStr = approvedCalls !== undefined ? approvedCalls.toString() : null;
+
+  // UPSERT on (escrow_pda, job_id) — one authoritative approval per job.
+  await db
+    .insert(sapEscrowApprovals)
+    .values({
+      escrowPda: input.escrowPda,
+      jobId: input.jobId,
+      approverAvatarId: row.depositorAvatarId,
+      workerAvatarId: row.workerAvatarId,
+      approvedCalls: approvedCallsStr,
+    })
+    .onConflictDoUpdate({
+      target: [sapEscrowApprovals.escrowPda, sapEscrowApprovals.jobId],
+      set: { approvedCalls: approvedCallsStr, approvedAt: new Date() },
+    });
+
+  return { ok: true, phase: 'approved', settlement: row, approvedCalls: approvedCallsStr };
+}
+
+// ─── 3+4. VERIFY + SETTLE (atomic, at-most-once) ──────────────────────────────
+
+export interface SettleJobInput {
+  escrowPda: string;
+  jobId: string;
+  /**
+   * The avatar ACTING on the settle (the caller's bound avatar). Rule E5: the
+   * worker settles AS ITSELF, so this MUST equal the recorded `workerAvatarId`.
+   * The gate asserts it (defense-in-depth) so a non-worker caller can't drive a
+   * settle of someone else's escrow even though the on-chain signer is always the
+   * recorded worker.
+   */
+  callerAvatarId: string;
+  /**
+   * u64 calls the worker REQUESTS to release. This is an UPPER REQUEST, not a
+   * trusted amount: the gate clamps/rejects it server-side (BLOCKING #2/#3)
+   * against the job's `maxCalls`, the depositor's persisted `approvedCalls`, and
+   * the escrow's remaining funded balance.
+   */
+  callsToSettle: bigint;
+  /**
+   * @deprecated BLOCKING #1 — IGNORED. The verification signal is built
+   * SERVER-SIDE from the PERSISTED depositor approval (`sap_escrow_approvals`),
+   * NEVER from a request body. A worker can no longer forge an approval. Kept on
+   * the type only so any legacy caller compiles; the value is discarded.
+   */
+  verificationSignal?: Record<string, unknown>;
+  /** Provider override (defaults to the v1 requester-approval provider). */
+  provider?: VerificationProvider;
+}
+
+/**
+ * Verify the job, and ONLY on a passing verdict, atomically claim + release the
+ * escrow exactly once.
+ *
+ * BLOCKING #1 — the verification signal is read from the PERSISTED depositor
+ * approval, NOT from the caller. The worker (who profits) can no longer fabricate
+ * an approval object to self-release.
+ *
+ * BLOCKING #2/#3 — `callsToSettle` is clamped/rejected server-side against the
+ * job's `maxCalls`, the depositor's `approvedCalls`, and the escrow's remaining
+ * funded balance (the cross-job accounting ledger), so no settle can over-release
+ * or drain USDC earmarked for a sibling job.
+ *
+ * Idempotency: the chain settle is reached ONLY if a conditional UPDATE flips the
+ * row from a non-terminal state (`open|submitted`) to `settling` and affects
+ * exactly ONE row. A concurrent/retried caller that finds the row already
+ * `settling` or `settled` short-circuits — `settled` returns the cached result
+ * (replay=true); `settling` returns `settle_in_progress`. The chain call only
+ * happens after the claim, so two callers can never both release.
+ */
+export async function settleJob(input: SettleJobInput): Promise<EscrowGateResult> {
+  const gated = gateOpen();
+  if (gated) return gated;
+
+  const provider = input.provider ?? defaultVerificationProvider;
+
+  // Load the row (we need both parties + wallet pubkeys + current status).
+  const row = await db.query.sapEscrowSettlements.findFirst({
+    where: and(
+      eq(sapEscrowSettlements.escrowPda, input.escrowPda),
+      eq(sapEscrowSettlements.jobId, input.jobId),
+    ),
+  });
+  if (!row) {
+    return { ok: false, code: 'job_not_found', message: 'no settlement row for (escrow, job).' };
+  }
+
+  // Rule E5 — the worker settles AS ITSELF. The acting caller MUST be the
+  // recorded worker. (The on-chain signer is always `row.workerAvatarId`'s wallet
+  // regardless, but binding the caller here stops a non-worker from driving a
+  // settle of someone else's escrow.)
+  if (row.workerAvatarId !== input.callerAvatarId) {
+    return { ok: false, code: 'job_not_open', message: 'only the worker (settle beneficiary) can settle this job.' };
+  }
+
+  // Terminal/already-claimed short-circuits BEFORE running verification (cheap).
+  if (row.status === 'settled') {
+    // Idempotent replay — the prior outcome lives on the row
+    // (`settleSignature`/`dryRun`). No fabricated chain object.
+    return { ok: true, phase: 'settled', settlement: row, chain: null, replay: true };
+  }
+  if (row.status === 'settling') {
+    return { ok: false, code: 'settle_in_progress', message: 'a settle is already in progress for this job.' };
+  }
+  if (row.status === 'refunding') {
+    // BLOCKING #4 — a refund holds the claim; never let a settle broadcast against
+    // an escrow with an in-flight withdraw.
+    return { ok: false, code: 'refund_in_progress', message: 'a refund is in progress for this job; cannot settle.' };
+  }
+  if (row.status === 'funding_unknown') {
+    // BLOCKING #5 — the fund tx was broadcast but never confirmed; the vault state
+    // is unknown. Never release until a reconciler resolves it.
+    return { ok: false, code: 'funding_unconfirmed', message: 'job funding is unconfirmed; cannot settle until reconciled.' };
+  }
+  if (row.status === 'refunded' || row.status === 'failed') {
+    return { ok: false, code: 'job_not_open', message: `job is ${row.status}; cannot settle.` };
+  }
+
+  // BLOCKING #1 — READ the depositor's PERSISTED approval. The verification signal
+  // is built SERVER-SIDE from this row; the caller's `verificationSignal` is
+  // IGNORED. No persisted approval ⇒ no settle (the worker cannot forge one).
+  const approval = await db.query.sapEscrowApprovals.findFirst({
+    where: and(
+      eq(sapEscrowApprovals.escrowPda, input.escrowPda),
+      eq(sapEscrowApprovals.jobId, input.jobId),
+    ),
+  });
+  if (!approval) {
+    return {
+      ok: false,
+      code: 'not_approved',
+      message: 'the depositor has not approved this job; no settle (call POST /escrow/usdc/approve as the depositor).',
+    };
+  }
+  // Defense-in-depth: the persisted approver MUST be the recorded depositor, and
+  // the depositor must not equal the worker (self-dealing). These are invariants
+  // the approve path already enforces; re-assert before releasing real money.
+  if (approval.approverAvatarId !== row.depositorAvatarId) {
+    return { ok: false, code: 'approver_mismatch', message: 'persisted approval approver is not the escrow depositor.' };
+  }
+  if (row.depositorAvatarId === row.workerAvatarId) {
+    return { ok: false, code: 'self_dealing_forbidden', message: 'depositor and worker are the same avatar; refusing to settle.' };
+  }
+
+  // ── BLOCKING #2 + #3 — clamp the requested release SERVER-SIDE ────────────────
+  // The settleable ceiling is the MIN of:
+  //   (a) the job's remaining authorized calls: maxCalls − callsAlreadySettled,
+  //   (b) the depositor's approved calls (if the approval set a cap),
+  //   (c) the calls the escrow's remaining funded balance can pay for:
+  //         floor(remainingVault / pricePerCall).
+  // A worker-requested `callsToSettle` over this ceiling is REJECTED (not silently
+  // truncated — an over-request is a protocol error / attack signal).
+  const pricePerCall = u64(row.pricePerCall);
+  if (pricePerCall <= 0n) {
+    return { ok: false, code: 'internal', message: 'escrow has no valid pricePerCall.' };
+  }
+  if (input.callsToSettle <= 0n) {
+    return { ok: false, code: 'over_release', message: 'callsToSettle must be > 0.' };
+  }
+
+  const maxCalls = u64(row.maxCalls);
+  const alreadySettled = u64(row.callsSettled);
+
+  // The escrow-wide accounting ledger (sum funded/released/refunded across ALL
+  // jobs sharing this vault) gives the remaining spendable balance. The per-job
+  // funded portion bounds this job's own releases so a worker can't drain USDC the
+  // depositor funded for a SIBLING job.
+  const ledger = await escrowFundsLedger(input.escrowPda);
+  const jobFunded = u64(row.fundedAmount);
+  const jobReleased = u64(row.releasedAmount);
+  const jobRemainingFunded = jobFunded > jobReleased ? jobFunded - jobReleased : 0n;
+
+  const ceiling = computeSettleCeiling({
+    maxCalls,
+    callsAlreadySettled: alreadySettled,
+    approvedCalls: u64(approval.approvedCalls), // 0n ⇒ no explicit cap (full job)
+    pricePerCall,
+    escrowRemaining: ledger.remaining,
+    jobRemainingFunded,
+  });
+
+  if (ceiling <= 0n || input.callsToSettle > ceiling) {
+    return {
+      ok: false,
+      code: 'over_release',
+      message:
+        `requested ${input.callsToSettle} calls exceeds the settleable ceiling ${ceiling} ` +
+        `(maxCalls=${maxCalls}, settled=${alreadySettled}, approved=${u64(approval.approvedCalls)}, ` +
+        `escrowRemaining=${ledger.remaining}, jobRemainingFunded=${jobRemainingFunded}, price=${pricePerCall}).`,
+    };
+  }
+
+  // The USDC base units this settle will release (for the accounting ledger).
+  const releaseAmount = input.callsToSettle * pricePerCall;
+
+  // (3) VERIFY — run the pluggable provider over the SERVER-BUILT signal derived
+  // from the persisted approval. Settle ONLY on passed===true.
+  const ctx: VerificationJobContext = {
+    escrowId: row.escrowPda,
+    jobId: row.jobId,
+    depositorAvatarId: row.depositorAvatarId,
+    workerAvatarId: row.workerAvatarId,
+    signal: {
+      approved: true,
+      approverAvatarId: approval.approverAvatarId,
+      approvedAt: approval.approvedAt.toISOString(),
+    },
+  };
+  const verdict = await provider.verify(ctx);
+
+  // Persist the FAILING verdict (provenance) — but ONLY on a still-non-terminal
+  // row, so a late failing-verdict write can never clobber a row another caller
+  // already flipped to settling/settled/failed/refunded. (For the SAME job +
+  // signal two callers can't diverge on pass/fail; this is belt-and-suspenders.)
+  if (!verdict.passed) {
+    await db
+      .update(sapEscrowSettlements)
+      .set({
+        verificationProvider: provider.id,
+        verificationPassed: false,
+        verificationDetail: verdict.detail ?? null,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(sapEscrowSettlements.id, row.id),
+          sql`${sapEscrowSettlements.status} IN ('open','submitted')`,
+        ),
+      );
+    return {
+      ok: false,
+      code: 'verification_failed',
+      message: verdict.detail ?? 'verification did not pass; no settle.',
+    };
+  }
+
+  const auditRoot = verdict.auditRoot;
+  if (auditRoot.length !== 32 || auditRoot.every((b) => b === 0)) {
+    // A passing verdict MUST carry a non-zero 32-byte audit root (the on-chain
+    // provenance binding). Refuse to settle on a malformed root.
+    return {
+      ok: false,
+      code: 'verification_failed',
+      message: 'verification passed but produced no valid audit root; refusing to settle.',
+    };
+  }
+  const auditRootHex = Buffer.from(auditRoot).toString('hex');
+
+  // (4a) ATOMIC CLAIM — flip open|submitted → settling for THIS row only. The
+  // conditional WHERE on status is the at-most-once lock: a second concurrent
+  // settle that already lost the race updates 0 rows. We do NOT yet advance
+  // `callsSettled`/`releasedAmount` here — those are booked on the SUCCESS path
+  // (4c) so a chain-failed settle never inflates the per-job/per-escrow ledger.
+  const claim = await db
+    .update(sapEscrowSettlements)
+    .set({
+      status: 'settling',
+      verificationProvider: provider.id,
+      verificationPassed: true,
+      verificationDetail: verdict.detail ?? null,
+      auditRootHex,
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(sapEscrowSettlements.id, row.id),
+        sql`${sapEscrowSettlements.status} IN ('open','submitted')`,
+      ),
+    )
+    .returning({ id: sapEscrowSettlements.id });
+
+  if (claim.length !== 1) {
+    // Lost the race — someone else claimed it between our read and the update.
+    // Re-read to report the precise state.
+    const cur = await db.query.sapEscrowSettlements.findFirst({
+      where: eq(sapEscrowSettlements.id, row.id),
+    });
+    if (cur?.status === 'settled') {
+      return { ok: true, phase: 'settled', settlement: cur, chain: null, replay: true };
+    }
+    return { ok: false, code: 'settle_in_progress', message: 'a settle is already in progress for this job.' };
+  }
+
+  // (4b) CHAIN SETTLE — release vault → worker ATA. Reached by AT MOST ONE caller
+  // (we hold the `settling` claim). The worker avatar signs as itself.
+  const chain = await settleCallsUsdc({
+    workerAvatarId: row.workerAvatarId,
+    depositorWalletPubkey: row.depositorWalletPubkey,
+    callsToSettle: input.callsToSettle,
+    auditRoot,
+  });
+
+  if (chain.ok === false) {
+    // Chain failed AFTER the claim. Mark `failed` (terminal) — do NOT auto-retry.
+    // A send whose confirmation we never saw could have landed; re-releasing
+    // would double-pay. A human must inspect the chain + decide. (BLOCKING #5
+    // parity — if the failure carries `broadcast`, record the signature so the
+    // reconciler knows a settle MAY have released; we still leave it `failed`,
+    // never auto-retried.)
+    await db
+      .update(sapEscrowSettlements)
+      .set({
+        status: 'failed',
+        settleSignature: chain.broadcast ? (chain.signature ?? null) : null,
+        updatedAt: new Date(),
+        metadata: {
+          ...((row.metadata as object) ?? {}),
+          settleError: chain.code,
+          settleBroadcastUnconfirmed: chain.broadcast === true,
+        },
+      })
+      .where(eq(sapEscrowSettlements.id, row.id));
+    return { ok: false, code: chain.code, message: chain.message };
+  }
+
+  // (4c) Success — flip to settled (terminal) + BOOK the accounting ledger:
+  // accumulate this job's settled-calls + released-USDC so the per-job and
+  // escrow-wide invariants (BLOCKING #2/#3) hold for any sibling/subsequent settle.
+  const settleSignature = chain.dryRun ? null : chain.signature;
+  const newCallsSettled = (alreadySettled + input.callsToSettle).toString();
+  const newReleasedAmount = (jobReleased + releaseAmount).toString();
+  const [settled] = await db
+    .update(sapEscrowSettlements)
+    .set({
+      status: 'settled',
+      callsSettled: newCallsSettled,
+      releasedAmount: newReleasedAmount,
+      settleSignature: settleSignature ?? null,
+      dryRun: chain.dryRun,
+      settledAt: new Date(),
+      updatedAt: new Date(),
+    })
+    .where(eq(sapEscrowSettlements.id, row.id))
+    .returning();
+
+  return { ok: true, phase: 'settled', settlement: settled, chain, replay: false };
+}
+
+// ─── 5. REFUND (cancel / expiry / verify-fail) ────────────────────────────────
+
+export interface RefundEscrowInput {
+  /** Depositor avatar — only the depositor can withdraw their unspent USDC. */
+  depositorAvatarId: string;
+  escrowPda: string;
+  jobId: string;
+  /** Amount of unspent USDC (base units) to reclaim. */
+  amount: bigint;
+}
+
+/**
+ * Refund unspent USDC to the depositor (cancel/expiry/verify-fail).
+ *
+ * BLOCKING #4 — refund vs settle TOCTOU fix. The OLD code sent the `withdraw`
+ * on-chain BEFORE any atomic claim, so a refund and a settle could BOTH broadcast
+ * live instructions against one escrow. Now refund makes an ATOMIC `refunding`
+ * claim (the same conditional-UPDATE lock the settle path uses) BEFORE any chain
+ * send, and operates ONLY from `open|submitted`:
+ *   - a settle holding the `settling` claim blocks the refund claim (0 rows), and
+ *     vice-versa — exactly one of {settle, refund} ever reaches the chain;
+ *   - a `settled` row can NEVER be relabelled `refunded` (the settle provenance
+ *     — settleSignature/auditRoot — is preserved), closing the 4th-reviewer's
+ *     provenance-overwrite hole;
+ *   - the final status UPDATE is guarded on `status='refunding'`.
+ */
+export async function refundEscrow(input: RefundEscrowInput): Promise<EscrowGateResult> {
+  const gated = gateOpen();
+  if (gated) return gated;
+
+  if (input.amount <= 0n) {
+    return { ok: false, code: 'over_release', message: 'refund amount must be > 0.' };
+  }
+
+  const row = await db.query.sapEscrowSettlements.findFirst({
+    where: and(
+      eq(sapEscrowSettlements.escrowPda, input.escrowPda),
+      eq(sapEscrowSettlements.jobId, input.jobId),
+    ),
+  });
+  if (!row) return { ok: false, code: 'job_not_found', message: 'no settlement row for (escrow, job).' };
+
+  // The depositor must be the row's depositor (the route already binds identity,
+  // but re-assert here as defense-in-depth on the money path).
+  if (row.depositorAvatarId !== input.depositorAvatarId) {
+    return { ok: false, code: 'internal', message: 'only the depositor can refund this escrow.' };
+  }
+
+  // Reject terminal / in-flight states up front for a precise error (the atomic
+  // claim below is the real guard against a concurrent settle).
+  if (row.status === 'settled' || row.status === 'refunded' || row.status === 'failed') {
+    return { ok: false, code: 'job_not_open', message: `job is ${row.status}; cannot refund.` };
+  }
+  if (row.status === 'settling') {
+    return { ok: false, code: 'settle_in_progress', message: 'cannot refund while a settle is in progress.' };
+  }
+  if (row.status === 'refunding') {
+    return { ok: false, code: 'refund_in_progress', message: 'a refund is already in progress for this job.' };
+  }
+  if (row.status === 'funding_unknown') {
+    return { ok: false, code: 'funding_unconfirmed', message: 'job funding is unconfirmed; resolve reconciliation before refunding.' };
+  }
+
+  // BLOCKING #4 — ATOMIC CLAIM `refunding` BEFORE any chain send. Only flips from
+  // open|submitted; a concurrent settle that already claimed `settling` makes this
+  // affect 0 rows → we bail WITHOUT broadcasting.
+  const claim = await db
+    .update(sapEscrowSettlements)
+    .set({ status: 'refunding', updatedAt: new Date() })
+    .where(
+      and(
+        eq(sapEscrowSettlements.id, row.id),
+        sql`${sapEscrowSettlements.status} IN ('open','submitted')`,
+      ),
+    )
+    .returning({ id: sapEscrowSettlements.id });
+
+  if (claim.length !== 1) {
+    // Lost the race to a concurrent settle/refund. Re-read for a precise code.
+    const cur = await db.query.sapEscrowSettlements.findFirst({
+      where: eq(sapEscrowSettlements.id, row.id),
+    });
+    if (cur?.status === 'settling' || cur?.status === 'settled') {
+      return { ok: false, code: 'settle_in_progress', message: 'a settle claimed this job first; cannot refund.' };
+    }
+    return { ok: false, code: 'refund_in_progress', message: 'a refund is already in progress for this job.' };
+  }
+
+  // We hold the `refunding` claim — now (and only now) touch the chain.
+  const chain = await withdrawEscrowUsdc({
+    depositorAvatarId: input.depositorAvatarId,
+    workerWalletPubkey: row.workerWalletPubkey,
+    amount: input.amount,
+  });
+
+  if (chain.ok === false) {
+    // BLOCKING #4/#5 — a withdraw failed AFTER claiming `refunding`. If it was
+    // BROADCAST-but-unconfirmed it may have moved funds → leave the row in a
+    // terminal `failed` state with the signature; NEVER auto-revert to open (that
+    // would let a retry double-withdraw). A pre-broadcast failure is also left
+    // `failed` (do not auto-retry on the money path); a human reconciles.
+    await db
+      .update(sapEscrowSettlements)
+      .set({
+        status: 'failed',
+        settleSignature: chain.broadcast ? (chain.signature ?? null) : null,
+        updatedAt: new Date(),
+        metadata: {
+          ...((row.metadata as object) ?? {}),
+          refundError: chain.code,
+          refundBroadcastUnconfirmed: chain.broadcast === true,
+        },
+      })
+      .where(
+        and(
+          eq(sapEscrowSettlements.id, row.id),
+          eq(sapEscrowSettlements.status, 'refunding'),
+        ),
+      );
+    return { ok: false, code: chain.code, message: chain.message };
+  }
+
+  // Success — flip refunding → refunded (guarded) + book the refunded amount into
+  // the accounting ledger (BLOCKING #3: counts toward sum(released)+sum(refunded)).
+  const newRefunded = (u64(row.refundedAmount) + input.amount).toString();
+  const [refunded] = await db
+    .update(sapEscrowSettlements)
+    .set({ status: 'refunded', refundedAmount: newRefunded, updatedAt: new Date() })
+    .where(
+      and(
+        eq(sapEscrowSettlements.id, row.id),
+        eq(sapEscrowSettlements.status, 'refunding'),
+      ),
+    )
+    .returning();
+
+  return { ok: true, phase: 'refunded', settlement: refunded, chain };
+}

@@ -352,3 +352,140 @@ later phase (post-merge); the MVP wires the routes + the dry-run harness.
 - **Custodial key handling** — verify no path logs/echoes the decrypted secret and
   the keypair is never persisted beyond the signing call (FIX-F closes the one
   unwrapped decrypt; re-audit on every new builder).
+
+## 10. Option C — OOBE USDC SelfReport escrow GATE (verify-before-release) — BUILT, gated
+
+> **Set 2026-06-22.** A backend-enforced verify-before-release USDC commerce gate
+> on the PROVEN OOBE SelfReport settle. Built FULLY, **gated OFF + dry-run + devnet-
+> first** — no money moves until a deliberate flip-to-live. In-game economy stays CT.
+
+### What it is
+
+The deployed program has NO on-chain CoSigned/receipt anti-replay (see the top
+box + §9), so the on-chain CoSigned/Covenant path is unexercised. **Option C**
+enforces the coupling in ClawVille's backend: depositor funds an escrow → worker
+does the work → backend runs a pluggable verifier → **only on a passing verdict**
+does the backend call the SelfReport `settle_calls` to release the vault to the
+worker, binding the verifier's 32-byte audit root into the on-chain `service_hash`.
+The at-most-once-settle invariant lives in a DB table (the on-chain receipt the
+0.18.0 program lacks).
+
+### The USDC path is V1 (non-versioned), NOT `_v2`
+
+Per `oobe-usdc-selfreport-spec.md` (reverse-engineered from real mainnet txs — the
+IDL is inconsistent), the entire USDC lifecycle uses the **V1** instructions
+`create_escrow` / `deposit_escrow` / `settle_calls` / `withdraw_escrow` with
+HAND-ASSEMBLED account lists + raw Borsh args (`sap-escrow-usdc.ts`), NOT the
+`_v2` family (`_v2` = native-SOL only). The V1 USDC escrow PDA is
+`["sap_escrow", agentPda, depositor]` (NO nonce → one escrow per (agent,
+depositor) pair; a 2nd job for the pair TOPS UP, tracked by a distinct `job_id`).
+`settle_calls` releases the vault ATA → the worker's own USDC ATA, no fee/treasury;
+the worker's registered wallet is the ONLY settle signer (= the backend gate key).
+`service_hash`[32] carries the verifier's `auditRoot`.
+
+### Three gates (Option C sits on top of the SOL escrow gate)
+
+`SAP_ENABLED` (master) → `SAP_ESCROW_ENABLED` (escrow rail) → `SAP_USDC_ESCROW_ENABLED`
+(Option C USDC sub-rail). ALL must be true; `SAP_DRY_RUN=true` (default) builds +
+`simulateTransaction` only. Mainnet still needs the `SAP_ALLOW_MAINNET` code gate +
+the live-send genesis-hash refusal (unchanged).
+
+### Pluggable verification provider
+
+`VerificationProvider` (`sap-verification.ts`) is a single-method abstraction:
+`verify(jobCtx) → { passed, auditRoot:Uint8Array(32), detail? }`. **v1 provider =
+`RequesterApprovalProvider`** — the escrow depositor (requester) must explicitly
+approve the job; `auditRoot = sha256(escrowId ‖ jobId ‖ approver ‖ approvedAt)`,
+approver must equal the depositor. The verification signal is built **server-side
+from the PERSISTED depositor approval** (`sap_escrow_approvals`), NEVER from a
+request body (see BLOCKING #1 fix below). Shaped so a future
+`CovenantVerificationProvider` (co-located `covenantd`, `POST /escrow/prove`, map
+`audit_root_hex` → `auditRoot`, ed25519-verify the proof) DROPS IN with no
+interface change.
+
+### HARD idempotency (the money invariant)
+
+`sap_escrow_settlements (escrow_pda, job_id)` is UNIQUE. The settle path runs a
+conditional `UPDATE … SET status='settling' WHERE id=? AND status IN ('open',
+'submitted')` — the row-lock + WHERE state-guard make check-then-claim atomic, so a
+concurrent OR retried second settle updates ZERO rows and bails WITHOUT touching
+the chain. The chain `settle_calls` runs ONLY after the claim commits; a success
+→ `settled` (terminal, records `settle_signature`/`dry_run`), a chain failure
+AFTER the claim → `failed` (terminal, NOT auto-retried — a send whose confirmation
+we never saw may have landed; re-releasing would double-pay). A replay of an
+already-`settled` job returns the cached row with `replay:true` and `chain:null`
+(no fabricated simulation). **Settle fires ONLY when the verifier `passed===true`
+AND the audit root is non-zero** (a zero root = the verification-failed sentinel,
+refused at both the gate and the chain builder).
+
+**Refund vs settle TOCTOU (BLOCKING #4):** `refund` now makes the SAME atomic claim
+(`status='refunding' WHERE status IN ('open','submitted')`) BEFORE any chain send,
+so exactly one of {settle, refund} ever reaches the chain for a given escrow, and a
+`settled` row can never be relabelled `refunded` (settle provenance preserved).
+
+**Two new lifecycle states:** `refunding` (the atomic refund claim, BLOCKING #4) and
+`funding_unknown` (an OPEN tx that was BROADCAST but never confirmed — BLOCKING #5:
+the row is held for reconciliation with its `funding_signature`, NOT deleted, so a
+retry can't double-fund and any landed USDC isn't orphaned; the funds ledger
+excludes it from the spendable balance).
+
+### Routes (`/api/sap/escrow/usdc/*` — all triple-gated 503, Zod, requireAuthOrAgentSession + requireLedgerCapable)
+
+| Route | Role / acting avatar | What |
+|---|---|---|
+| `POST /escrow/usdc/open` | DEPOSITOR (requester) as itself | fund (create or top-up) a USDC escrow against a worker for a `jobId`; records `max_calls` + `funded_amount`. Rejects depositor==worker (self-dealing) |
+| `POST /escrow/usdc/submit` | either party | record the worker's deliverable submission (open → submitted) |
+| `POST /escrow/usdc/approve` | DEPOSITOR as itself | persist the authenticated approval (`sap_escrow_approvals`) that gates the settle; optional `approvedCalls` cap. **The ONLY thing that authorizes a release** (BLOCKING #1) |
+| `POST /escrow/usdc/settle` | WORKER as itself | read the PERSISTED approval → clamp `callsToSettle` to maxCalls/approved/funded → atomic claim → release vault → worker ATA (≤ once per (escrow, job)) |
+| `POST /escrow/usdc/refund` | DEPOSITOR as itself | atomic `refunding` claim → reclaim unspent USDC (cancel / expiry / verify-fail); books `refunded_amount` |
+
+### Rule E5 parity
+
+BOTH a human (Lucia cookie) AND a connected/hosted agent (`X-Clawville-Agent-Session`)
+drive their role AS THEMSELVES, bound to their avatar's own Phase-5.1 custodial
+wallet with REAL settlement (never a guest fallback). Depositor signs create/
+deposit/withdraw; worker signs settle (the gate asserts `callerAvatarId ===
+row.workerAvatarId`). No body-supplied pubkey is ever a signer.
+
+### FEATURE_GATE prerequisites before flip-to-live
+
+`escrow-gate.ts` carries the `sap_usdc_escrow_gate` FEATURE_GATE. The five money-path
+BLOCKING fixes below were applied 2026-06-22 (still gated OFF + dry-run — build-only,
+no money moved). Items 1-5 are RESOLVED in code; items 6-7 remain devnet/audit gates
+before `SAP_USDC_ESCROW_ENABLED` is EVER flipped on for real money:
+
+1. **(RESOLVED — BLOCKING #1) Persisted approval, not a body claim.** The settle
+   route NO LONGER accepts a request-body `approval`. The depositor (and only the
+   depositor) records an authenticated approval via `POST /escrow/usdc/approve`
+   (`sap_escrow_approvals`, keyed `(escrow_pda, job_id)`); `settleJob` reads THAT
+   row and builds the verification signal server-side. A worker can no longer forge
+   an approval to self-release. `depositor == worker` is rejected at open + approve +
+   settle (no self-dealing).
+2. **(RESOLVED — BLOCKING #2) `callsToSettle` bounding.** `callsToSettle` is an
+   upper REQUEST; `settleJob` clamps/rejects it to `min(maxCalls − callsSettled,
+   approvedCalls, floor(escrowRemaining/price), floor(jobRemainingFunded/price))`
+   (`computeSettleCeiling`). An over-request is a 400 `over_release`, never a silent
+   truncation. `max_calls` is recorded at open.
+3. **(RESOLVED — BLOCKING #3) Cross-job fund accounting.** The nonce-less shared
+   `(agent,depositor)` vault now carries a per-job + escrow-wide funds ledger
+   (`funded_amount`/`released_amount`/`refunded_amount`): each settle enforces
+   `sum(released)+sum(refunded) ≤ sum(funded)` escrow-wide AND
+   `job.released ≤ job.funded` per-job, so a worker controlling one job cannot drain
+   USDC the depositor funded for a sibling job.
+4. **(RESOLVED — BLOCKING #4) Refund-vs-settle TOCTOU.** `refund` makes an atomic
+   `refunding` claim before any chain send and operates only from `open|submitted`,
+   so a refund and a settle can never both broadcast against one escrow, and a
+   `settled` row is never relabelled `refunded` (provenance preserved).
+5. **(RESOLVED — BLOCKING #5) Orphaned/double-funded deposit.** A broadcast-but-
+   unconfirmed open is held in `funding_unknown` with its `funding_signature` for
+   reconciliation — NEVER auto-deleted (which would free the slot → double-fund, and
+   orphan landed USDC). `executeTx` now distinguishes pre-broadcast failure (clean
+   delete) from broadcast-then-unconfirmed (`SapFailure.broadcast` + `signature`).
+6. **(GATE) Expiry/refund reconciliation** — confirm the OOBE `close_escrow`-for-USDC
+   rent reclaim (UNVERIFIED on-chain per the spec — 1 devnet test) and the
+   withdraw-amount math against the on-chain vault balance. Also wire the
+   `funding_unknown` reconciler (poll the broadcast signature / on-chain escrow
+   account before reusing the slot).
+7. **(GATE) Money-path audit** — full team + Codex adversarial on the USDC custody +
+   approve + settle + refund + idempotency path before the flip (per ARCHITECTURE /
+   CLAUDE.md), driven end-to-end on devnet with a funded depositor.
