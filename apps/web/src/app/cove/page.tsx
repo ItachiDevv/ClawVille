@@ -32,6 +32,7 @@ import SceneTransition, { useSceneTransition } from '@/components/transitions/Sc
 import SlotScreenModal from '@/components/cove/SlotScreenModal';
 import BlackjackModal from '@/components/cove/blackjack/BlackjackModal';
 import HoldemModal from '@/components/cove/holdem/HoldemModal';
+import { CashPokerLobbyMount } from '@/components/cove/poker/CashPokerLobby';
 import BaccaratModal from '@/components/cove/baccarat/BaccaratModal';
 import CoveMobileControls from '@/components/cove/CoveMobileControls';
 import SupportLauncher from '@/components/support/SupportLauncher';
@@ -257,6 +258,14 @@ export default function CovePage() {
           Same z-index policy as the other game modals. Connected-agent
           WebSocket protocol + real-money SOL/USDC land in Phase 6.5.2 / 6.5.4. */}
       <HoldemModal />
+
+      {/* Phase P4 — Texas Hold'em RING-TABLE lobby: the 3 always-on house
+          tables (Low/Mid/High) + player-hosted public + join-by-code. This is
+          what the poker hotspot now opens; the lobby self-navigates to the
+          full-screen felt route /cove/poker/cash/[id] on sit. The vs-bots
+          HoldemModal above is kept mounted but no longer reachable from the
+          hotspot (kept per "decide its fate later"). */}
+      <CashPokerLobbyMount />
 
       {/* Phase 6.6.1 — Baccarat (Punto Banco) table modal (REAL engine,
           server-authoritative, ClawToken fun-money tier, 8-deck commit-reveal

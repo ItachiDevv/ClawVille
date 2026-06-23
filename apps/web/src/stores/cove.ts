@@ -106,6 +106,15 @@ export interface CoveStore {
   openHoldemTable: (balance: number) => void;
   closeHoldemTable: () => void;
 
+  // ── Cash Poker (ring tables) lobby — P4 wiring ───────────────────────────
+  // CashPokerLobby is a self-contained modal: it lists the live house +
+  // player-public tables, handles create/join, and router.push-es to the felt
+  // route /cove/poker/cash/[id] on sit. The store owns only the open/close
+  // toggle; all table/seat/hand state is server-authoritative (cove-cash-poker).
+  cashPokerLobbyOpen: boolean;
+  openCashPokerLobby: () => void;
+  closeCashPokerLobby: () => void;
+
   // ── Blackjack modal state (Phase 6.4.1 — real authoritative engine) ──────
   // The store only owns modal open/close + the selected bet. All gameplay
   // state (shoe, hand, cards, outcome, balance) is server-authoritative and
@@ -242,6 +251,11 @@ export const useCoveStore = create<CoveStore>((set, get) => ({
   closeHoldemTable: () => {
     set({ holdemModalOpen: false });
   },
+
+  // Cash Poker (ring tables) lobby — P4 wiring. Modal owns its own table data.
+  cashPokerLobbyOpen: false,
+  openCashPokerLobby: () => set({ cashPokerLobbyOpen: true }),
+  closeCashPokerLobby: () => set({ cashPokerLobbyOpen: false }),
 
   // Blackjack state (Phase 6.4.1 — real authoritative engine).
   // Bet default 50 is a valid 5–500 chip. Modal owns the rest.
