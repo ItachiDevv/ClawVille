@@ -1,6 +1,8 @@
 'use client';
 
 import { useEffect, useRef } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
+import { LAND_PARCELS_QUERY_KEY } from '@/lib/land-query-keys';
 import { useNpcStore } from '@/stores/npc';
 import { usePlayerStore } from '@/stores/players';
 import { useResearchStore } from '@/stores/research';
@@ -65,6 +67,11 @@ export function useWorldStream() {
   const setRoomId = usePlayerStore((s) => s.setRoomId);
   const clearPlayers = usePlayerStore((s) => s.clear);
   const addCollaborationEntries = useResearchStore((s) => s.addCollaborationEntries);
+  // Live land-sync (2.1): invalidate the shared land query on a global `land`
+  // SSE event so LandStateHydrator refetches and the in-world for-sale signs
+  // update within ~1s of another player's buy/claim. The QueryClient instance is
+  // stable (one per app), so listing it in the stream effect's deps is a no-op.
+  const queryClient = useQueryClient();
 
   const retriesRef = useRef(0);
   const sessionIdRef = useRef<string | null>(null);
@@ -400,6 +407,16 @@ export function useWorldStream() {
         }
       });
 
+      // Live land-sync (2.1): the server fans a global `land` event to every
+      // world-stream subscriber when any player buys/claims a parcel (land is
+      // GLOBAL state, not per-room). Invalidate the shared land query so
+      // LandStateHydrator refetches authoritative ownership and the in-world
+      // for-sale signs update live — no reload, no 60s wait. We refetch rather
+      // than trust the event payload, so a malformed event is a harmless refetch.
+      es.addEventListener('land', () => {
+        void queryClient.invalidateQueries({ queryKey: LAND_PARCELS_QUERY_KEY });
+      });
+
       es.onerror = () => {
         setNpcConnected(false);
         es?.close();
@@ -525,5 +542,6 @@ export function useWorldStream() {
     setRoomId,
     clearPlayers,
     addCollaborationEntries,
+    queryClient,
   ]);
 }

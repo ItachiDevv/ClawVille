@@ -23,7 +23,7 @@
 
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
-import { streamSSE } from 'hono/streaming';
+import { streamSSE, type SSEStreamingApi } from 'hono/streaming';
 import { z } from 'zod';
 import { eq } from 'drizzle-orm';
 import { db, avatars } from '@clawville/database';
@@ -53,6 +53,44 @@ const TOWN_CENTER_Y = SPAWN_PX.y;
 export const worldRoutes = new Hono<AppContext>();
 
 worldRoutes.use('*', sessionMiddleware);
+
+// ---------------------------------------------------------------------------
+// Live land-sync (2.1) — global SSE fan-out for land state changes.
+//
+// Land is GLOBAL state (one `land_parcels` table; every room reads it), so a
+// buy/claim by ANY player must reach EVERY connected world-stream subscriber,
+// not just one room. Each `/:roomId/stream` handler registers its SSE writer in
+// this module-level set on connect and removes it on abort / failed keepalive;
+// `broadcastLandEvent` fans a single `land` event to all of them.
+//
+// OWNERSHIP NOTE: this module (world.ts / world-presence) owns the SSE channel;
+// `routes/land.ts` (the land domain) only CONSUMES `broadcastLandEvent`. This is
+// the minimal additive seam — no world-stream internals (snapshot/presence/tick)
+// are changed.
+// ---------------------------------------------------------------------------
+const landStreamSubscribers = new Set<SSEStreamingApi>();
+
+/**
+ * Fan a `land` SSE event out to every connected world-stream subscriber across
+ * ALL rooms. Called FIRE-AND-FORGET from routes/land.ts AFTER a land write has
+ * COMMITTED, so a failure here can NEVER affect the money path (the parcel row +
+ * the ledger debit are already durable before this runs). Per-subscriber catch:
+ * a dead/slow stream is dropped from the set rather than breaking the fan-out
+ * for everyone else. A no-op when there are no subscribers.
+ */
+export function broadcastLandEvent(payload: {
+  parcelCode: string;
+  status: 'available' | 'owned' | 'reserved' | 'retired';
+  ownerAvatarId: string | null;
+}): void {
+  if (landStreamSubscribers.size === 0) return;
+  const data = JSON.stringify(payload);
+  for (const stream of landStreamSubscribers) {
+    void stream.writeSSE({ data, event: 'land' }).catch(() => {
+      landStreamSubscribers.delete(stream);
+    });
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -423,8 +461,13 @@ worldRoutes.get('/:roomId/stream', async (c) => {
     };
 
     npcSimulation.addRoomListener(roomId, listener);
+    // Live land-sync (2.1): register this stream for the GLOBAL `land` fan-out
+    // (land is global, so every connected stream gets land events regardless of
+    // room). Removed on abort + on a failed keepalive write below.
+    landStreamSubscribers.add(stream);
     stream.onAbort(() => {
       npcSimulation.removeRoomListener(roomId, listener);
+      landStreamSubscribers.delete(stream);
     });
 
     // SSE keepalive — see npc-sse.ts for the Cloudflare HTTP/2 idle-reset
@@ -435,6 +478,7 @@ worldRoutes.get('/:roomId/stream', async (c) => {
         await stream.writeSSE({ data: '', event: 'keepalive' });
       } catch {
         npcSimulation.removeRoomListener(roomId, listener);
+        landStreamSubscribers.delete(stream);
         return;
       }
     }
