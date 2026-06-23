@@ -9,7 +9,8 @@
     "start": "bun run dist/index.js",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
-    "test:watch": "bun test --watch"
+    "test:watch": "bun test --watch",
+    "test:ci": "bun scripts/test-isolated.mjs"
   },
   "dependencies": {
     "@clawville/agent-runtime": "workspace:*",
