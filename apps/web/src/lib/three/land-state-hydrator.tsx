@@ -30,12 +30,13 @@ import { useQuery } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import { useLandStore, type ParcelState } from '@/stores/land';
 import type { LandParcelDTO } from '@/components/game/land/types';
+import { LAND_PARCELS_QUERY_KEY } from '@/lib/land-query-keys';
 
-// ---------------------------------------------------------------------------
-// Exported query key — the Land Office modal invalidates this on buy/claim
-// so the hydrator refetches without a full page reload.
-// ---------------------------------------------------------------------------
-export const LAND_PARCELS_QUERY_KEY = ['landParcels'] as const;
+// The query key now lives in a dependency-light shared module (`@/lib/land-query-keys`)
+// so the world SSE hook can invalidate it on a live `land` event WITHOUT importing
+// this three-pulling file. Re-export keeps existing importers (the Land Office
+// modal) working unchanged.
+export { LAND_PARCELS_QUERY_KEY };
 
 // ---------------------------------------------------------------------------
 // mapToParcelState — collapse a DTO status to the store's narrower ParcelState.
