@@ -83,12 +83,26 @@ export function broadcastLandEvent(payload: {
   status: 'available' | 'owned' | 'reserved' | 'retired';
   ownerAvatarId: string | null;
 }): void {
-  if (landStreamSubscribers.size === 0) return;
-  const data = JSON.stringify(payload);
-  for (const stream of landStreamSubscribers) {
-    void stream.writeSSE({ data, event: 'land' }).catch(() => {
-      landStreamSubscribers.delete(stream);
-    });
+  // FULLY GUARDED: this runs AFTER a committed buy/claim, so it must NEVER throw
+  // to the caller — a thrown notification side-effect would turn an already-
+  // settled sale into a client-facing 500. The async write rejection is handled
+  // per-subscriber (.catch); the OUTER try wraps JSON.stringify + any SYNCHRONOUS
+  // throw from writeSSE; the INNER try keeps one dead stream from aborting the
+  // fan-out to the rest. (Deleting from a Set mid-`for…of` is spec-safe.)
+  try {
+    if (landStreamSubscribers.size === 0) return;
+    const data = JSON.stringify(payload);
+    for (const stream of landStreamSubscribers) {
+      try {
+        void stream.writeSSE({ data, event: 'land' }).catch(() => {
+          landStreamSubscribers.delete(stream);
+        });
+      } catch {
+        landStreamSubscribers.delete(stream);
+      }
+    }
+  } catch {
+    /* notification side-effect must never surface as a request error */
   }
 }
 
