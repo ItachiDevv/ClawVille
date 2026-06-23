@@ -175,6 +175,7 @@ import { requireAuthOrAgentSession } from '../middleware/require-auth-or-agent';
 import type { ActivityAuthContext } from '../middleware/require-auth-or-agent';
 import { createRateLimiter, getClientIp } from '../middleware/rate-limit';
 import { logEventFromContext } from '../services/event-logger';
+import { broadcastLandEvent } from './world';
 import { debitClawTokens, InsufficientTokensError } from '../services/claw-token-ledger';
 import type { AppContext } from '../types';
 
@@ -727,6 +728,16 @@ landRoutes.post('/claim-starter', requireAuthOrAgentSession, async (c) => {
     },
   });
 
+  // Live land-sync (2.1): a fresh starter claim flips a parcel available→owned,
+  // so its in-world for-sale sign must vanish for OTHER players too. Fire-and-
+  // forget AFTER commit + the leaderboard event — a broadcast error can NEVER
+  // affect the (already durable) grant.
+  broadcastLandEvent({
+    parcelCode: result.parcel.parcelCode,
+    status: 'owned',
+    ownerAvatarId: avatarId,
+  });
+
   return c.json({ parcel: result.parcel, alreadyOwned: false });
 });
 
@@ -979,6 +990,16 @@ landRoutes.post('/parcels/:parcelId/buy', requireAuthOrAgentSession, async (c) =
       tier: bought.parcel.tier,
       amountCt: bought.amountCt,
     },
+  });
+
+  // Live land-sync (2.1): the buy flipped this parcel available→owned, so its
+  // in-world for-sale sign must vanish for OTHER players. Fire-and-forget AFTER
+  // commit + the leaderboard event — a broadcast error can NEVER affect the
+  // (already durable) sale.
+  broadcastLandEvent({
+    parcelCode: bought.parcel.parcelCode,
+    status: 'owned',
+    ownerAvatarId: avatarId,
   });
 
   return c.json({ parcel: bought.parcel, amountCt: bought.amountCt });
