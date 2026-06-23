@@ -11,6 +11,13 @@ tools:
   - Agent
   - WebFetch
   - WebSearch
+  - TaskCreate
+  - TaskUpdate
+  - TaskGet
+  - TaskList
+  - TaskOutput
+  - TaskStop
+  - SendMessage
 ---
 
 # token-economy — the ClawToken ledger primitive (ClawVille)

@@ -11,6 +11,13 @@ tools:
   - Agent
   - WebFetch
   - WebSearch
+  - TaskCreate
+  - TaskUpdate
+  - TaskGet
+  - TaskList
+  - TaskOutput
+  - TaskStop
+  - SendMessage
 ---
 
 # world-presence — server world-state + NPC sim + the [ACTION:] whitelist seam + roster constants (ClawVille)

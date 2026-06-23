@@ -11,6 +11,13 @@ tools:
   - Agent
   - WebFetch
   - WebSearch
+  - TaskCreate
+  - TaskUpdate
+  - TaskGet
+  - TaskList
+  - TaskOutput
+  - TaskStop
+  - SendMessage
 ---
 
 # activities-arena — real-time skill games + matchmaking + the devnet wager program (ClawVille)

@@ -11,6 +11,13 @@ tools:
   - Agent
   - WebFetch
   - WebSearch
+  - TaskCreate
+  - TaskUpdate
+  - TaskGet
+  - TaskList
+  - TaskOutput
+  - TaskStop
+  - SendMessage
 ---
 
 # Cove Casino Money-Path Specialist (ClawVille)

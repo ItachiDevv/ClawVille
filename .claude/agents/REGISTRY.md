@@ -33,6 +33,7 @@ Layer-ownership ("whoever's in `apps/web` this session owns the menu") is the ro
 - **RLM memory** at `.claude/memory/<domain>/` (committed, grows every session; `MEMORY.md` leads with a **"Known traps"** section that feeds Phase 0). Precedence: **live code > the 3 canonical docs > memory** — verify `git show origin/master:<f>` vs `origin/staging:<f>` vs working tree before trusting any FIXED/LIVE claim.
 - **Invariants:** money domains → CT-only/ledger-only, atomic-settle+idempotency, owner checks, **E5 parity on write AND read**, guest-demo isolation, no-faucet. Spatial domains → **WORLD↔BACKEND↔UI must agree, DB is truth.** All → staging-first; same-diff docs + the 3 knowledge surfaces.
 - **Consumes:** only review your *usage* of a shared primitive; never edit it — file the change to its owner.
+- **Team toolkit (all 12 managers carry it):** every domain agent has `Agent` + the full coordination set (`TaskCreate`, `TaskUpdate`, `TaskGet`, `TaskList`, `TaskOutput`, `TaskStop`, `SendMessage`), so Phase 1 can run a real `TaskList`/`SendMessage`-coordinated team with `addBlockedBy` task deps — not just sequential `Agent` spawns. **Caveat — keep teams SMALL + verify termination:** in-process teammates have no separate OS process and can't be force-killed (`TaskStop`/shutdown all fail; only a session restart clears a runaway — see `[[feedback_agent_team_runaway_unkillable]]`). Only spawn a member that has useful work NOW; never fan out idle `blockedBy` members; never layer `/goal`/`/rc` over a team.
 
 ## Coordination (anti-collision)
 
