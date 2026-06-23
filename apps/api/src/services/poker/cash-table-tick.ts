@@ -10,6 +10,14 @@
  * `source='house'` table by one tick so bots act on their turn, hands settle, and
  * the next hand auto-starts WITHOUT a human poke.
  *
+ * ── OPTION B (founder-approved 2026-06-22) ───────────────────────────────────
+ * `advanceTable` deals a hand ONLY when ≥1 REAL player (human OR connected/hosted
+ * agent — a sitting-in, non-seeded seat) is at the table. For a BOT-ONLY table the
+ * tick is a deal/money NO-OP: no new hand, no busted-bot re-buy, frozen stacks,
+ * zero bankroll churn. The tick still keeps the lobby populated — it eagerly tops
+ * up the seated bots toward the lobby target each pass (bounded, treasury-banked).
+ * So the always-populated look survives with NO 24/7 bot-vs-bot bankroll drain.
+ *
  * ── CADENCE INVARIANT ────────────────────────────────────────────────────────
  * `CASH_TABLE_TICK_MS` (default 1_500, clamped [250, 20_000]) MUST be well under
  * the sim's `turnClock (25_000) + grace (5_000)` so a bot acts BEFORE the sim's
