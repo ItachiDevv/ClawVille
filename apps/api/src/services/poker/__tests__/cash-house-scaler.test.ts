@@ -53,6 +53,8 @@ interface FakeTableRow {
 const state = {
   tables: [] as FakeTableRow[],
   createCalls: [] as Array<{ config: Record<string, unknown>; creator: Record<string, unknown> }>,
+  /** tableIds passed to the eager-seat path (Option B) — one per created table. */
+  seatHouseBotsCalls: [] as string[],
   /** When set, createTable throws for this tierKey (per-tier failure isolation). */
   failTier: null as string | null,
   houseBankId: 'house-bank-scaler-1',
@@ -63,6 +65,7 @@ const state = {
 function resetState(): void {
   state.tables = [];
   state.createCalls = [];
+  state.seatHouseBotsCalls = [];
   state.failTier = null;
   state.houseBankId = 'house-bank-scaler-1';
   state.bankNotReady = false;
@@ -91,6 +94,15 @@ mock.module('../cash-table-manager-singleton', () => ({
       };
       state.tables.push(row);
       return row;
+    },
+    // OPTION B (2026-06-22): the scaler eager-seats bots right after createTable so
+    // the lobby shows ~seededAgentSlots seated bots WITHOUT dealing. The scaler-
+    // contract test doesn't model seats/ledger — it only asserts the deficit/create
+    // math — so this is a no-op stub. Its presence is REQUIRED: the scaler now calls
+    // it, and an undefined method would throw into the per-tier try/catch and
+    // silently zero out `created`. Record the call so a test could assert it fires.
+    async seatHouseBots(tableId: string) {
+      state.seatHouseBotsCalls.push(tableId);
     },
   },
 }));
@@ -202,6 +214,14 @@ describe('cashHouseScaler — deficit creation, never-exceed-N, idempotency', ()
     expect(byTier('low')).toBe(HOUSE_TIERS.low.openTables);
     expect(byTier('mid')).toBe(HOUSE_TIERS.mid.openTables);
     expect(byTier('high')).toBe(HOUSE_TIERS.high.openTables);
+
+    // OPTION B: the scaler EAGER-SEATS bots once per created table (the populated-
+    // lobby look) — one seatHouseBots call per created table id.
+    expect(state.seatHouseBotsCalls.length).toBe(expectedTotal);
+    expect(new Set(state.seatHouseBotsCalls).size).toBe(expectedTotal); // distinct ids
+    for (const id of state.seatHouseBotsCalls) {
+      expect(state.tables.some((t) => t.id === id)).toBe(true);
+    }
   });
 
   it('every created table is source=house + visibility=public + house-bank creator + bot slots + locked stakes', async () => {
