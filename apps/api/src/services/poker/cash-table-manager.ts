@@ -381,6 +381,35 @@ export class CashTableManager {
     return row;
   }
 
+  /**
+   * EAGER LOBBY SEAT (OPTION B, founder-approved 2026-06-22) — seat the house bots
+   * at a `source='house'` table WITHOUT dealing a hand, so the lobby shows the
+   * "always populated" ~`seededAgentSlots` bots per table even with no human/agent
+   * yet. The scaler calls this right after `createTable` (and the boot tick re-runs
+   * it as a self-heal). It tops up bots toward the lobby/fill target (idempotent —
+   * re-running never double-seats, only fills the deficit), debiting the HOUSE BANK
+   * for each seeded buy-in exactly as the normal fill does (treasury-banked, the
+   * existing no-faucet guard unchanged). This locks a BOUNDED amount of CT in escrow
+   * (≈ Σ houseTables × seededAgentSlots × buyIn) — NOT an unbounded drain, because
+   * idle bots never re-buy (the deal-gate keeps a bot-only table from playing, and
+   * `rebuyBustedBots` is real-player-gated).
+   *
+   * Crucially it does NOT start a hand: `maybeStartHand` only deals once a real
+   * player sits, so these seated bots sit idle (stacks frozen) until then. Runs
+   * under the per-table lock (same mutex as sit/leave/action) so it can't interleave
+   * with a concurrent human sit. A no-op for non-house tables / no seeded provider.
+   */
+  async seatHouseBots(tableId: string): Promise<void> {
+    return this.withTableLock(tableId, async () => {
+      const table = await this.getTable(tableId);
+      if (!table || table.status !== 'open') return;
+      if (table.source !== 'house') return;
+      if (!this.seededAgentProvider || table.seededAgentSlots <= 0) return;
+      // Seat bots toward the lobby target WITHOUT re-buying or dealing.
+      await this.fillSeededAgents(table, { lobbyOnly: true });
+    });
+  }
+
   private validateConfig(config: CreateCashTableConfig): void {
     const { buyInCt, smallBlindCt, bigBlindCt, maxSeats, seededAgentSlots } = config;
     if (!Number.isInteger(buyInCt) || buyInCt <= 0) {
@@ -988,48 +1017,87 @@ export class CashTableManager {
   /**
    * Advance ONE house table by one tick, WITHOUT any human poke. This is the
    * entry point the boot `cash-table-tick` calls on every open `source='house'`
-   * table on its ~1.5s cadence so a solo-human-plus-bots (or bot-only) table keeps
-   * dealing: a bot on the button acts via the advisor policy, a closed hand
-   * settles, and the next hand auto-starts. Everything runs under the SAME
-   * `withTableLock(tableId)` the REST sit/leave/action path uses, so the tick can
-   * never interleave with a human action — it adds NO new money path, only re-uses
-   * `driveSeededAgents` / `settleIfComplete` / `startAndAdvance`.
+   * table on its ~1.5s cadence so a table that HAS A REAL PLAYER keeps dealing: a
+   * bot on the button acts via the advisor policy, a closed hand settles, and the
+   * next hand auto-starts. Everything runs under the SAME `withTableLock(tableId)`
+   * the REST sit/leave/action path uses, so the tick can never interleave with a
+   * human action — it adds NO new money path, only re-uses
+   * `driveSeededAgents` / `settleIfComplete` / `startAndAdvance` / `seatHouseBots`.
+   *
+   * OPTION B (founder-approved 2026-06-22): for a BOT-ONLY table (every sitting-in
+   * seat is a seeded bot, no human/agent) this is a NO-OP for dealing — it deals NO
+   * new hand and re-buys NO busted bot (both gated on a real player downstream), so
+   * the bots sit idle with FROZEN stacks and the bankroll never churns. It DOES keep
+   * the lobby populated: it eagerly tops up the seated bots toward the lobby target
+   * (`seatHouseBots`, idempotent, bounded house-bank debit) so a freshly-scaled or
+   * partially-emptied house table always shows ~`seededAgentSlots` bots ready for a
+   * player to sit into.
    *
    * Ordering (all lock-held):
-   *   1. driveSeededAgents — a seeded seat whose turn it is acts now (advisor).
+   *   1. driveSeededAgents — a seeded seat whose turn it is in a LIVE hand acts now
+   *      (advisor). A bot-only table has no live hand, so this is a no-op there.
    *   2. settleIfComplete  — if the bots (or a prior human action) closed the hand,
    *      apply the chip deltas + persist the checkpoint + stop the sim hand.
-   *   3. if no live sim snapshot remains → startAndAdvance → maybeStartHand
-   *      (which itself runs processPendingLeaves → fillSeededAgents → deal) and
-   *      then drives + settles the freshly-started hand.
+   *   3. if no live sim snapshot remains → startAndAdvance → maybeStartHand. That
+   *      DEALS only when ≥1 real player is sitting in (the Option B gate); a
+   *      bot-only table returns false and stays idle.
+   *   4. lobby self-heal — eagerly seat bots toward the lobby target (no deal) so an
+   *      under-populated house table refills its seated bots for the lobby look.
    *
-   * A no-op when nothing is actionable (empty/idle table, or it's a human's turn).
-   * Never throws to the tick loop's per-table try/catch is the backstop, but the
-   * lock + the sim's defensive guards keep a single stuck table from spinning.
+   * A no-op for dealing/money on an idle bot-only table; never throws (the tick
+   * loop's per-table try/catch is the backstop, and the lock + the sim's defensive
+   * guards keep a single stuck table from spinning).
    */
   async advanceTable(tableId: string): Promise<void> {
-    return this.withTableLock(tableId, async () => {
+    await this.withTableLock(tableId, async () => {
       const sid = simTableId(tableId);
       // 1+2: progress any live hand the bots can move, settle if they closed it.
       await this.driveSeededAgents(tableId);
       await this.settleIfComplete(tableId);
-      // 3: no live hand left → try to start + advance the next one (this also
-      // runs processPendingLeaves + fillSeededAgents inside maybeStartHand).
+      // 3: no live hand left → try to start + advance the next one. maybeStartHand
+      // DEALS only when a real player is present (Option B gate); a bot-only table
+      // returns false here and stays idle (no deal, no re-buy, no bank churn).
       if (!this.sim.getPublicSnapshot(sid)) {
         await this.startAndAdvance(tableId);
       }
     });
+    // 4: lobby self-heal — keep the seated-bot count topped up toward the lobby
+    // target so the "always populated" look survives a table that lost bots (e.g.
+    // bots that busted during real play and were not re-bought after the player
+    // left). Idempotent + bounded; its own lock acquire is cheap. Done AFTER the
+    // deal pass so we never seat a bot mid-deal. No-op once at target.
+    await this.seatHouseBots(tableId);
   }
 
   // ── Hand lifecycle ──────────────────────────────────────────────────────────
 
   /**
-   * Start a hand when the table has ≥2 sitting-in seats and no live hand. Fills
-   * empty seats with seeded agents up to `seeded_agent_slots` first (so a single
-   * human can play). The button rotates by hand number (P1 keeps it simple).
+   * Start a hand when the table has ≥2 sitting-in seats AND ≥1 REAL player, and
+   * no live hand. Fills empty seats with seeded agents up to `seeded_agent_slots`
+   * first (so a single human can play). The button rotates by hand number (P1
+   * keeps it simple).
    */
   async startHandWhenReady(tableId: string): Promise<boolean> {
     return this.withTableLock(tableId, async () => this.maybeStartHand(tableId));
+  }
+
+  /**
+   * OPTION B GATE (founder-approved 2026-06-22) — a house table deals a hand ONLY
+   * when ≥1 REAL player is sitting in. A "REAL player" is any sitting-in seat with
+   * `isSeeded === false` — this INCLUDES a connected/hosted agent (subject_type
+   * 'agent' but NOT seeded), so E5 human/agent parity holds: an agent sitting also
+   * triggers dealing. A table whose only sitting-in seats are seeded bots stays
+   * IDLE — no new hand deals, no bankroll churn — which is what stops the 24/7
+   * bot-vs-bot bankroll drain while KEEPING the bots seated for the populated-lobby
+   * look. Tested against the LIVE seat shape (sitting-in + not seeded).
+   */
+  private tableHasRealPlayer(seats: PokerCashSeat[]): boolean {
+    return seats.some(
+      (s) =>
+        s.status === 'sitting_in' &&
+        Number(s.currentStackCt) > 0 &&
+        s.isSeeded !== 'true',
+    );
   }
 
   /** INTERNAL (lock already held): try to start a hand. Returns whether one started. */
@@ -1048,7 +1116,19 @@ export class CashTableManager {
 
     const table = await this.requireOpenTable(tableId);
 
-    // Seed empty seats with agents (up to the slot budget) so hands can run.
+    // OPTION B SHORT-CIRCUIT — no REAL player sitting in ⇒ do NOT deal AND do NOT
+    // fill/re-buy bots. A bot-only house table stays idle: its already-seated bots
+    // keep their (constant) stacks, the autonomous tick is a no-op for it, and the
+    // house bank is NEVER debited for an idle re-buy. We read the CURRENT seats
+    // (the eager-seated bots are already here from the scaler) WITHOUT filling, so
+    // an idle table never crosses the ledger. Only once a real player sits does
+    // fillSeededAgents run (below) + a hand deal.
+    const currentSeats = await this.activeSeats(tableId);
+    if (!this.tableHasRealPlayer(currentSeats)) return false;
+
+    // A real player is present → top up / re-buy bots toward the fill target, then
+    // deal. fillSeededAgents itself re-checks the real-player gate before any
+    // re-buy (no idle re-buy), but we have already confirmed a real player here.
     await this.fillSeededAgents(table);
 
     const seats = await this.activeSeats(tableId);
@@ -1273,12 +1353,24 @@ export class CashTableManager {
    * fully reserved) simply stops the fill (seats fewer bots) rather than aborting a
    * human's sit. M=24 ≫ 15 concurrent so this is a defensive belt-and-braces.
    *
-   * BOT RE-BUY: a seeded seat that busted to 0 chips (dropped from the next deal)
-   * is re-bought via the SAME house-bank-debited path at this between-hands
-   * boundary, capped per call, so a populated table doesn't bleed bots over time
-   * while the bank's exposure stays bounded.
+   * BOT RE-BUY (OPTION B — real-player-gated): a seeded seat that busted to 0 chips
+   * is re-bought via the SAME house-bank-debited path at this between-hands boundary
+   * ONLY while ≥1 REAL player is present, so a populated table doesn't bleed bots
+   * during real play while the bank's exposure stays bounded. A bot busting with NO
+   * real player present is simply freed (no idle re-buy) — that re-buy-on-bust loop
+   * was the 24/7 bankroll drain.
+   *
+   * EAGER LOBBY SEAT (OPTION B): when the scaler calls this with `lobbyOnly=true`
+   * right after `createTable`, it seats bots toward the lobby target WITHOUT any
+   * re-buy (a fresh table has no busted bots) so the table shows ~`seededAgentSlots`
+   * seated bots in the lobby — but NO hand deals until a real player sits (that gate
+   * is in `maybeStartHand`). Idempotent: re-running the scaler tops up only to the
+   * target, never double-seats.
    */
-  private async fillSeededAgents(table: PokerCashTable): Promise<void> {
+  private async fillSeededAgents(
+    table: PokerCashTable,
+    opts: { lobbyOnly?: boolean } = {},
+  ): Promise<void> {
     if (!this.seededAgentProvider || table.seededAgentSlots <= 0) return;
     // SCOPE GUARD: bots seed HOUSE tables only — never player-public / private.
     if (table.source !== 'house') return;
@@ -1295,10 +1387,13 @@ export class CashTableManager {
     const buyIn = Number(table.buyInCt);
 
     // ── Step 1: re-buy busted bots (seeded seats at 0 chips) so the table stays
-    // populated. Each re-buy is a fresh house-bank-debited seat at a free index;
-    // the busted seat is cashed out (0 stack → no credit) and freed first so the
-    // seat count + slot budget stay accurate. Bounded by the same fill math below.
-    await this.rebuyBustedBots(table, houseBankAvatarId, buyIn);
+    // populated DURING REAL PLAY. OPTION B: gated on a REAL player being present —
+    // an idle (bot-only) table NEVER re-buys a busted bot (that was the drain).
+    // `rebuyBustedBots` re-checks the gate internally; we skip it entirely in the
+    // eager lobby-seat path (a fresh table has no busted bots to recycle anyway).
+    if (!opts.lobbyOnly) {
+      await this.rebuyBustedBots(table, houseBankAvatarId, buyIn);
+    }
 
     // ── Step 2: top up toward the fill target.
     const seats = await this.activeSeats(table.id);
@@ -1351,12 +1446,21 @@ export class CashTableManager {
 
   /**
    * Re-seat seeded bots that busted to 0 chips at the between-hands boundary, so a
-   * populated house table stays populated over many hands. The busted bot's seat is
-   * cashed out first (0 stack ⇒ no credit, just freed + bot reservation released) and
-   * a fresh house-bank-debited seeded seat takes a free index — conservation holds
-   * (the seed debit is the only money move; the 0-stack reclaim is a no-op credit).
-   * Capped per call by the slot budget so a pathological run can't unboundedly
-   * re-buy in one pass (the next pass continues if still under budget).
+   * populated house table stays populated over many hands DURING REAL PLAY. The
+   * busted bot's seat is cashed out first (0 stack ⇒ no credit, just freed + bot
+   * reservation released) and the top-up loop re-seats toward the target with a
+   * fresh house-bank-debited bot — conservation holds (the seed debit is the only
+   * money move; the 0-stack reclaim is a no-op credit).
+   *
+   * OPTION B GATE (founder-approved 2026-06-22): re-buy fires ONLY when ≥1 REAL
+   * player is present. With NO human/agent at the table a busted bot is NOT
+   * re-bought — it simply stays busted/idle — because the idle re-buy-on-bust loop
+   * (a busted bot re-buying from the bank 24/7 with no human) was THE bankroll
+   * drain. During real play, re-buy is fine: those chips were won by the
+   * human/agent, so CT is conserved. Note: with the `maybeStartHand` deal-gate, a
+   * bot-only table never deals, so its bots never bust — this gate is the
+   * belt-and-braces that also covers the post-real-player-leave window (a bot left
+   * short-stacked after the human leaves is not re-funded).
    */
   private async rebuyBustedBots(
     table: PokerCashTable,
@@ -1364,6 +1468,8 @@ export class CashTableManager {
     buyIn: number,
   ): Promise<void> {
     const seats = await this.activeSeats(table.id);
+    // OPTION B: no idle re-buy. Only recycle busted bots while a real player is here.
+    if (!this.tableHasRealPlayer(seats)) return;
     const busted = seats.filter((s) => s.isSeeded === 'true' && Number(s.currentStackCt) <= 0);
     if (busted.length === 0) return;
 
