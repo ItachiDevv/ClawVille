@@ -2,14 +2,17 @@
  * Poker CASH GAMES — house AUTO-SCALER.
  *
  * Keeps `N` open `source='house'` public tables alive per tier at all times so a
- * visitor always finds a live, bot-populated table to sit at. A guarded
+ * visitor always finds a populated, bot-seated table to sit at. A guarded
  * `setInterval` that, each pass and per tier:
  *   1. COUNTs the open `source='house'` public tables of that `tierKey`.
  *   2. Creates the deficit `(N - open)` via `cashTableManager.createTable(...)`
  *      with the HOUSE-BANK avatar as the creator subject.
- * It NEVER deletes a table — an empty house table simply idles (the tick + fill
- * populate it with bots on the first sit, or it sits empty harmlessly). A bounded
- * `N` per tier (env-overridable, default 2/2/1) keeps it from running away.
+ *   3. EAGER-SEATS the bots (`cashTableManager.seatHouseBots`) so the lobby shows
+ *      ~`seededAgentSlots` seated bots per table WITHOUT dealing a hand (Option B,
+ *      founder-approved 2026-06-22) — the "always populated" look with NO 24/7
+ *      bot-vs-bot bankroll drain (no hand deals until a REAL player sits).
+ * It NEVER deletes a table — an empty house table simply idles. A bounded `N` per
+ * tier (env-overridable, default 2/2/1) keeps it from running away.
  *
  * ── WHY IT BYPASSES THE PER-CREATOR CAP ──────────────────────────────────────
  * The route's `MAX_CONCURRENT_OPEN_TABLES_PER_CREATOR=3` cap lives ONLY in
@@ -25,8 +28,11 @@
  *   - The house-bank avatar is resolved fresh each pass from the seeder (which
  *     `ensure()`d at boot before the scaler starts), so a not-yet-ensured seeder
  *     surfaces as a caught per-pass error, never a crash.
- *   - It adds ZERO ledger writes — `createTable` only inserts a table row; all CT
- *     movement stays inside the manager's seat/settle path.
+ *   - The ONLY ledger writes it triggers are the bounded, treasury-banked seeded-bot
+ *     buy-ins via `seatHouseBots` (each a house-bank DEBIT, the existing no-faucet
+ *     guard unchanged) — a BOUNDED lock-up (≈ Σ tables × seededAgentSlots × buyIn),
+ *     NOT a drain: idle bots never re-buy (the deal-gate + real-player-gated re-buy).
+ *     All other CT movement stays inside the manager's seat/settle path.
  */
 
 import { sql } from 'drizzle-orm';
@@ -106,7 +112,16 @@ export async function cashHouseScalerPass(): Promise<number> {
             maxSeats: tier.maxSeats, // locked 6
             seededAgentSlots: seededSlots, // locked 3 (env-overridable)
           };
-          await cashTableManager.createTable(config, houseSubject);
+          const newTable = await cashTableManager.createTable(config, houseSubject);
+          // OPTION B (founder-approved 2026-06-22): EAGER-SEAT the bots right after
+          // create so the lobby shows ~seededSlots seated bots per house table — the
+          // "always populated" look — WITHOUT dealing a hand. `seatHouseBots` tops up
+          // toward the lobby target under the per-table lock and debits the house bank
+          // for each seeded buy-in (treasury-banked, no-faucet guard unchanged). NO
+          // hand deals until a REAL player sits (the `maybeStartHand` gate), so the
+          // idle bots' stacks stay frozen and the bankroll never churns bot-vs-bot.
+          // Idempotent: a future pass that re-seats only fills the deficit.
+          await cashTableManager.seatHouseBots(newTable.id);
           created++;
         }
       } catch (err) {
