@@ -28,7 +28,9 @@ if (!Number.isInteger(amount) || amount <= 0) {
   process.exit(1);
 }
 
-const client = postgres(process.env.DATABASE_URL, { max: 1 });
+// prepare:false — this runs a multi-statement client.begin() (CT ledger write) over the Supabase
+// transaction pooler (:6543), which silently drops such transactions without it. See packages/database/src/index.ts.
+const client = postgres(process.env.DATABASE_URL, { max: 1, prepare: false });
 
 try {
   await client.begin(async (sql) => {

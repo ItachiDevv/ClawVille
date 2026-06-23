@@ -58,7 +58,8 @@ if (!process.env.DATABASE_URL) {
   process.exit(1);
 }
 
-const db = postgres(process.env.DATABASE_URL, { max: 2 });
+// prepare:false — Supabase transaction pooler (:6543) requires it (see packages/database/src/index.ts).
+const db = postgres(process.env.DATABASE_URL, { max: 2, prepare: false });
 
 const VALID_STATUSES = ['planned', 'in_progress', 'shipped', 'blocked', 'paused'] as const;
 

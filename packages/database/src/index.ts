@@ -28,15 +28,18 @@ function getDb(): PostgresJsDatabase<typeof schema> {
   }
 
   // `prepare: false` is REQUIRED for the Supabase transaction pooler (port :6543,
-  // Supavisor transaction mode), which our DATABASE_URL uses. postgres.js defaults
-  // to PREPARED statements; over the transaction pooler those break multi-statement
-  // transactions: a `db.transaction(BEGIN/INSERT/COMMIT)` returns its RETURNING row
-  // but the COMMIT can land on a different pooled backend connection, so the INSERT
-  // is silently rolled back and the row is never persisted. Reproduced live: ~1/6
-  // slot `/session/open` calls handed back a sessionId for a row that did not exist
-  // in the DB → `session_not_found` on the next spin, intermittently breaking EVERY
-  // cove game (all settle inside a transaction). Disabling prepared statements is
-  // the documented Supabase fix and makes transactions durable on the pooler.
+  // Supavisor transaction mode), which our DATABASE_URL uses on both staging+prod.
+  // postgres.js defaults to NAMED prepared statements cached per backend connection,
+  // but the transaction pooler hands a DIFFERENT backend to each transaction, so a
+  // cached named statement isn't available on the next one. Over the pooler this
+  // intermittently corrupts multi-statement transactions (db.transaction =
+  // BEGIN/INSERT/COMMIT): VERIFIED live, ~1/6 (staging) to ~1/3 (prod) of slot
+  // /session/open inserts returned a RETURNING row that was NEVER persisted (direct
+  // DB query returned []), causing session_not_found on the next spin and
+  // intermittently breaking EVERY cove game + the CT ledger (all settle inside a
+  // transaction). `prepare: false` disables named prepared statements — Supabase's
+  // documented fix — making transactions durable on the pooler. (node-pg, used by
+  // ElizaOS plugin-sql, is unaffected: it uses UNNAMED statements by default.)
   const client = postgres(connectionString, { prepare: false });
   _db = drizzle(client, { schema });
   return _db;
