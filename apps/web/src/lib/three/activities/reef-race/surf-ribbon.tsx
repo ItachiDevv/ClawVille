@@ -1,44 +1,49 @@
 'use client';
 
 /**
- * surf-ribbon.tsx — the SURF ROAD: a glowing FLOATING WATER RIBBON (Rainbow-Road
- * style) winding through the cosmic void. THE WORLD. There is no land beneath it.
+ * surf-ribbon.tsx — THE WATER SURFACE: a premium surfable river ribbon winding
+ * through the canyon-river gorge.
  *
- * This is the centerpiece. It replaces the old flat WaterSurf ribbon + the
- * grass/sand ground ribbons + the bank walls. Three merged layers, all swept
- * along the SAME shared `clientSpline` and LIFTED + TILTED by the render-only
- * `reefTrackElevationAt(t)` + `reefTrackBankAngleAt(t)` (via reef-race-elevation):
+ * This is the HERO ASSET. The geometry is swept along the shared `clientSpline`,
+ * LIFTED + BANKED by `elevationAtT` + `bankAngleAtT` (the parity contract with
+ * the rider, camera, karts, etc.). The shader makes it read as REAL surf water.
  *
- *   1. WATER SURFACE — stylized deep-cosmos water on a plain Mesh with a custom
- *      ShaderMaterial (Iris-Xe safe: plain Mesh, NOT InstancedMesh+Shader).
- *      Deep teal→cyan depth gradient, glowing animated crests, fake sun/star
- *      glint, downstream flow. The vertices are pre-lifted/tilted on the CPU so
- *      the surface rides the elevation profile; the shader adds the heave + look.
- *   2. NEON RAILS — two bright glowing tube-ish bands along each banked edge so
- *      the ribbon reads as a floating track in space (the Rainbow-Road rails).
- *      MeshBasicMaterial emissive-bright (bloom target) — merged to 1 draw call.
- *   3. CREST CAPS — a thin bright glowing strip just inside each rail (waterline
- *      glow) merged into the rails draw for a premium neon edge.
+ * Three merged layers:
+ *   1. WATER SURFACE — analytic multi-wave water (ShaderMaterial on a plain Mesh,
+ *      Iris-Xe safe). Deep teal→bright turquoise depth gradient, 4-wave analytic
+ *      swell with gradient normals so specular glints ride crests, Fresnel sky
+ *      sheen, organic crest foam, bank spray, downstream current streaks.
+ *   2. NEON RAILS — thin edge-definition bands along each banked edge. Kept
+ *      SUBTLE (small dimensions, dimmer color) so the WATER is the star.
+ *      MeshBasicMaterial toneMapped:false (bloom target for definition glow only).
+ *   3. CREST CAPS — thin bright inner waterline strip merged with rails.
  *
- * THE PARITY CONTRACT: the ribbon Y is `reefTrackElevationAt(t)` at every t —
- * the SAME function the rider + camera read (reef-race-elevation.ts). Never a
- * flat plane, never a parallel hand-authored curve.
+ * PARITY CONTRACT: ribbon Y = reefTrackElevationAt(t) at every t. Same function
+ * as rider + camera. Never a flat plane.
  *
  * Iris Xe invariants:
- *   - ShaderMaterial ONLY on the plain water Mesh — rails use MeshBasicMaterial.
- *   - NO InstancedMesh + ShaderMaterial. NO drei <Text>/<Billboard>.
- *   - Custom ShaderMaterial MUST be fog:false (scene.fog + a shader lacking fog
- *     uniforms throws every frame — documented Iris-Xe gotcha). The void is the
- *     backdrop, not fog, so fog:false is correct anyway.
+ *   - ShaderMaterial ONLY on the plain water Mesh (not InstancedMesh).
+ *   - fog:false on ShaderMaterial (scene.fog uniforms not merged → throw every frame).
  *   - import from 'three' (NOT 'three/webgpu').
- *   - All geo/mat module-scope, baked once; frustumCulled=false (vertex shader
- *     heave + large swept bounds make the bind-pose bounding sphere stale).
- *   - One uniform write/frame (uTime). Zero per-frame allocation.
- *   - Noise scale kept LOW (12/8) — high scale aliases to grey from altitude
- *     (documented). The crest band uses UV.y so it stays crisp at any distance.
+ *   - NO drei <Text>/<Billboard>.
+ *   - Module-scope geo/mat built ONCE. ONE uniform write per frame. ZERO per-frame allocs.
+ *   - frustumCulled=false (vertex heave + large swept bounds make bind-pose bbox stale).
+ *   - Noise/wave scale capped: simplex noise scale ≤24 (higher aliases to grey from
+ *     altitude — documented gotcha). Analytic sin/cos waves are scale-immune.
  *
- * Draw calls: 1 water + 1 rails(merged L+R+crests) = 2.
+ * Draw calls: 1 water + 1 rails (merged L+R+crests) = 2.
  * Tris: water 128×2≈256 ; rails ~128×4 sides×2≈1024 → ~1300 total.
+ *
+ * Water design — what makes it read as surf:
+ *   - 4 summed directional sin-waves (UV-space) + analytic gradient normals
+ *   - Fresnel sheen: grazing → sky-color reflection; overhead → deep body color
+ *   - Specular glint from analytic normal (RIDES the crest profile, not flat)
+ *   - Depth: deep blue-teal at center channel → bright turquoise at shallow banks
+ *   - Crest foam: from wave peaks + organic cluster modulation (soft, not PS2 stripes)
+ *   - Bank spray: pulsing white foam at the waterline edges
+ *   - Current streaks: very subtle downstream flow-line texture
+ *   - UV scroll: downstream direction (UV.y decreases with time = flow toward viewer)
+ *   - Dusk sun warm glint (matches the gorge atmosphere palette)
  */
 
 import { useRef } from 'react';
@@ -52,38 +57,31 @@ import { clientSpline } from './reef-race-spline-instance';
 import { elevationAtT, bankAngleAtT } from './reef-race-elevation';
 
 // ─── Geometry constants ───────────────────────────────────────────────────────
-const RIBBON_SAMPLES = 128; // longitudinal samples (smoothness vs cost — 256 tris)
-const RAIL_HEIGHT    = 26;   // neon rail height above the water surface (wu)
-const RAIL_THICKNESS = 18;   // rail width outward from the ribbon edge (wu)
-const CREST_WIDTH    = 34;   // inner glowing waterline band width (wu)
+const RIBBON_SAMPLES  = 128; // longitudinal samples (256 tris on water surface)
+// Rails kept SMALL so they read as edge-definition, not dominant neon bands.
+// The WATER is the hero — rails just define the boundary.
+const RAIL_HEIGHT     = 10;   // neon rail height (was 26 — reduced to be subtle)
+const RAIL_THICKNESS  = 7;    // rail width outward from edge (was 18)
+const CREST_WIDTH     = 18;   // inner glowing waterline strip width (was 34)
 
-// ─── Local-frame helper: lifted + tilted left/right edge points at sample t ──
-//
-// In the local frame {tangent (forward), normal n̂ (left/lateral), up ŷ}, a roll
-// by `bank` about the tangent maps the lateral axis:
-//   n̂  →  cos(bank)·n̂ + sin(bank)·ŷ
-// so the LEFT edge offset (along +n̂ by hw) tilts up/down into the turn, and the
-// RIGHT edge (−n̂) tilts the opposite way. This banks the whole cross-section
-// like a Rainbow-Road turn. Y comes from the shared elevation profile.
+// ─── Local-frame helper: lifted + banked left/right edge points at t ─────────
 interface EdgeFrame {
-  cx: number; cz: number; cy: number;     // centerline (lifted)
-  lx: number; ly: number; lz: number;     // left edge (lifted + banked)
-  rx: number; ry: number; rz: number;     // right edge
-  /** Lateral unit (banked) — outward = +n̂ rolled, used to push the rails out. */
+  cx: number; cz: number; cy: number;
+  lx: number; ly: number; lz: number;
+  rx: number; ry: number; rz: number;
   unx: number; uny: number; unz: number;
 }
 
 function frameAt(t: number): EdgeFrame {
-  const c = clientSpline.centerlineAt(t);
-  const n = clientSpline.normalAt(t);  // 90° CCW of tangent = left of travel
+  const c  = clientSpline.centerlineAt(t);
+  const n  = clientSpline.normalAt(t);
   const hw = clientSpline.widthAt(t);
-  const y = elevationAtT(t);
+  const y  = elevationAtT(t);
   const bank = bankAngleAtT(t);
   const cb = Math.cos(bank);
   const sb = Math.sin(bank);
 
-  // Banked lateral unit vector (n̂ rolled about the forward/tangent axis):
-  //   lateral = cos(bank)·(n.x,0,n.z) + sin(bank)·(0,1,0)
+  // Banked lateral unit vector (n̂ rolled about the tangent axis)
   const unx = n.x * cb;
   const uny = sb;
   const unz = n.z * cb;
@@ -96,24 +94,87 @@ function frameAt(t: number): EdgeFrame {
   };
 }
 
-// ─── Water surface shader ──────────────────────────────────────────────────────
+// ─── Water surface shader ─────────────────────────────────────────────────────
 //
-// The vertices already carry the lifted+banked world position (built on CPU).
-// The vertex shader adds a small heaving displacement along world-up only (so it
-// never breaks the banked cross-section), and forwards UV + world pos.
+// VERTEX: 4 analytic sin-wave displacement (UV-space). Small amplitude (≤4wu)
+// keeps the banked cross-section intact and avoids canyon wall clipping.
+// Analytic gradient (dWave/dUVx, dWave/dUVy) is computed alongside displacement
+// so the normal is derived from the SAME math — specular glints ride the crests.
+//
+// FRAGMENT: depth gradient + multi-wave texture + analytic Fresnel + specular
+// + crest foam + bank spray + current streaks. All in UV-space noise (scale ≤24)
+// so it never aliases to grey from any camera altitude.
 const _waterVert = /* glsl */`
   uniform float uTime;
-  varying vec2 vUv;
-  varying vec3 vWorldPos;
+  varying vec2  vUv;
+  varying vec3  vWorldPos;
+  varying vec3  vWaveNormal; // analytic surface normal from wave sum
+
+  // 4 directional waves (UV space).
+  // dir = direction in UV space (normalized), amp = amplitude (wu),
+  // freq = spatial frequency (cycles across UV 0..1), speed = radians/sec.
+  // NOTE: these must be IDENTICAL between vertex and fragment so the normal
+  // and the displacement agree.
+
+  // Wave params — kept in UV-space so scale doesn't vary with world curvature.
+  //   W1: primary downstream swell (large slow roll)
+  //   W2: cross-channel chop
+  //   W3: secondary diagonal swell
+  //   W4: fine surface chop (low amplitude, high freq)
+  #define W1_DIR  vec2( 0.15, 1.00)   // mostly downstream with slight lateral
+  #define W1_AMP  3.8                  // wu
+  #define W1_FREQ 1.4                  // cycles across ribbon length
+  #define W1_SPD  1.3
+
+  #define W2_DIR  vec2( 1.00, 0.30)   // lateral cross-chop
+  #define W2_AMP  2.2
+  #define W2_FREQ 2.8
+  #define W2_SPD  1.9
+
+  #define W3_DIR  vec2(-0.60, 0.80)   // counter-diagonal
+  #define W3_AMP  1.4
+  #define W3_FREQ 3.5
+  #define W3_SPD  1.6
+
+  #define W4_DIR  vec2( 0.80, 0.60)   // fine diagonal chop
+  #define W4_AMP  0.8
+  #define W4_FREQ 5.5
+  #define W4_SPD  2.6
+
+  // Evaluate one wave: returns vec3(displacement_Y, dY/dUVx, dY/dUVy).
+  // phase = freq * dot(dir_norm, uv) - speed * time
+  // Y = amp * sin(phase)
+  // dY/dUVx = amp * cos(phase) * freq * dir_norm.x
+  // dY/dUVy = amp * cos(phase) * freq * dir_norm.y
+  vec3 evalWave(vec2 dir, float amp, float freq, float speed, vec2 uv) {
+    vec2  d    = normalize(dir);
+    float ph   = freq * dot(d, uv) - speed * uTime;
+    float s    = sin(ph);
+    float c    = cos(ph);
+    float dX   = amp * c * freq * d.x;
+    float dY   = amp * c * freq * d.y;
+    return vec3(amp * s, dX, dY);
+  }
 
   void main() {
     vUv = uv;
-    // gentle heave along world-up only — small (±6wu), keeps the banked profile
-    float heave = sin(position.x * 0.004 + uTime * 0.8) * 3.0
-                + sin(position.z * 0.003 + uTime * 1.1) * 2.0
-                + sin((position.x + position.z) * 0.0018 - uTime * 0.6) * 1.0;
+
+    // Sum 4 waves
+    vec3 r1 = evalWave(W1_DIR, W1_AMP, W1_FREQ, W1_SPD, uv);
+    vec3 r2 = evalWave(W2_DIR, W2_AMP, W2_FREQ, W2_SPD, uv);
+    vec3 r3 = evalWave(W3_DIR, W3_AMP, W3_FREQ, W3_SPD, uv);
+    vec3 r4 = evalWave(W4_DIR, W4_AMP, W4_FREQ, W4_SPD, uv);
+
+    float dispY = r1.x + r2.x + r3.x + r4.x;
+    float dX    = r1.y + r2.y + r3.y + r4.y;
+    float dZ    = r1.z + r2.z + r3.z + r4.z;
+
+    // Analytic surface normal (world-up frame): N = normalize(-dX, 1, -dZ)
+    // Scale gradient down to keep normal in sane range for a gentle swell.
+    vWaveNormal = normalize(vec3(-dX * 0.18, 1.0, -dZ * 0.18));
+
     vec3 displaced = position;
-    displaced.y += heave;
+    displaced.y += dispY;
     vWorldPos = (modelMatrix * vec4(displaced, 1.0)).xyz;
     gl_Position = projectionMatrix * modelViewMatrix * vec4(displaced, 1.0);
   }
@@ -123,15 +184,17 @@ const _waterFrag = /* glsl */`
   uniform float uTime;
   uniform vec3  uColorDeep;
   uniform vec3  uColorShallow;
-  uniform vec3  uColorCrest;
+  uniform vec3  uColorFoam;
+  uniform vec3  uColorSkyRefl;
   uniform vec3  uSunDir;
   varying vec2  vUv;
   varying vec3  vWorldPos;
+  varying vec3  vWaveNormal;
 
-  // 2D simplex noise (Ashima Arts)
+  // ── 2D simplex noise (Ashima Arts / open-domain) ──────────────────────────
   vec3 _m3(vec3 x){return x-floor(x*(1.0/289.0))*289.0;}
   vec2 _m2(vec2 x){return x-floor(x*(1.0/289.0))*289.0;}
-  vec3 _p(vec3 x){return _m3(((x*34.0)+1.0)*x);}
+  vec3 _pm(vec3 x){return _m3(((x*34.0)+1.0)*x);}
   float snoise(vec2 v){
     const vec4 C=vec4(0.211324865405187,0.366025403784439,-0.577350269189626,0.024390243902439);
     vec2 i=floor(v+dot(v,C.yy));
@@ -139,7 +202,7 @@ const _waterFrag = /* glsl */`
     vec2 i1=(x0.x>x0.y)?vec2(1.0,0.0):vec2(0.0,1.0);
     vec4 x12=x0.xyxy+C.xxzz; x12.xy-=i1;
     i=_m2(i);
-    vec3 p=_p(_p(i.y+vec3(0.0,i1.y,1.0))+i.x+vec3(0.0,i1.x,1.0));
+    vec3 p=_pm(_pm(i.y+vec3(0.0,i1.y,1.0))+i.x+vec3(0.0,i1.x,1.0));
     vec3 m=max(0.5-vec3(dot(x0,x0),dot(x12.xy,x12.xy),dot(x12.zw,x12.zw)),0.0);
     m=m*m; m=m*m;
     vec3 x=2.0*fract(p*C.www)-1.0;
@@ -148,38 +211,71 @@ const _waterFrag = /* glsl */`
     vec3 g; g.x=a0.x*x0.x+h.x*x0.y; g.yz=a0.yz*x12.xz+h.yz*x12.yw;
     return 130.0*dot(m,g);
   }
+  // ──────────────────────────────────────────────────────────────────────────
 
   void main() {
-    // depth: 0 at banks → 0.5 at centre
-    float edgeDist = min(vUv.x, 1.0 - vUv.x);
-    float depth    = smoothstep(0.0, 0.30, edgeDist);
-    vec3  base     = mix(uColorShallow, uColorDeep, depth);
+    // ─── 1. Depth gradient — deep blue channel → bright turquoise banks ────
+    // min(uv.x, 1-uv.x): 0 at both banks, 0.5 at channel center.
+    float edgeDist   = min(vUv.x, 1.0 - vUv.x);
+    float depth      = smoothstep(0.0, 0.28, edgeDist);
+    // Slight refraction wiggle — makes it feel like looking through water.
+    float wiggle     = sin(uTime * 0.5 + vWorldPos.z * 0.002) * 0.04;
+    float depthW     = clamp(depth + wiggle, 0.0, 1.0);
+    vec3  base       = mix(uColorShallow, uColorDeep, depthW);
 
-    // two scrolling noise layers — LOW scale (12/8) so it never aliases to grey
-    // from a high chase/orbit camera (documented surf-water gotcha).
-    vec2 s1 = vUv + vec2(0.0, -uTime * 0.04);
-    vec2 s2 = vUv + vec2(0.0, -uTime * 0.07) + vec2(13.1, 5.7);
+    // ─── 2. Flow noise — two UV-scrolled layers (scale 12/8 — safe from altitude)
+    // UV.y scrolls in -direction = downstream flow (track runs in +UV.y direction
+    // so negative scroll = water flows toward viewer / downstream the track).
+    vec2 s1 = vUv + vec2(0.0, -uTime * 0.055);
+    vec2 s2 = vUv + vec2(0.0, -uTime * 0.095) + vec2(17.3, 4.1);
     float n1 = snoise(s1 * 12.0) * 0.5 + 0.5;
     float n2 = snoise(s2 *  8.0) * 0.5 + 0.5;
     float flow = n1 * 0.6 + n2 * 0.4;
 
-    // glowing animated crests — soft organic clusters, painted as a bright cyan
-    // additive accent (bloom picks this up). Cluster-modulated so it's organic.
-    float crestField = smoothstep(0.55, 0.85, flow);
-    float cluster    = mix(0.55, 1.0, snoise(vUv * 24.0 + vec2(0.0, uTime * 0.02)) * 0.5 + 0.5);
-    float crest      = crestField * cluster;
-    base = mix(base, uColorCrest, crest * 0.85);
+    // ─── 3. Crest foam — from wave noise peaks + organic cluster modulation ─
+    // softField × clusterMod pattern (documented organic-foam-cluster technique):
+    // wide smoothstep (no harsh PS2 stripes) × fine-scale modulator.
+    float softField  = smoothstep(0.42, 0.80, flow);
+    // clusterMod at scale 24: proven safe from altitude, adds organic patches.
+    float clusterMod = mix(0.5, 1.0, snoise(vUv * 24.0 + vec2(0.0, uTime * 0.014)) * 0.5 + 0.5);
+    // Normal-derived crest: where wave crests tip (1 - N.y is highest at peaks).
+    float normalCrest = clamp(1.0 - vWaveNormal.y, 0.0, 1.0);
+    // Combine: noise-driven foam + normal-derived crest peak emphasis.
+    float whiteCap   = softField * clusterMod * 0.72 + normalCrest * 0.28;
+    base = mix(base, uColorFoam, clamp(whiteCap, 0.0, 1.0));
 
-    // fake sun/star glint — flat ribbon normal is world-up; rises in the centre.
-    vec3 normal  = vec3(0.0, 1.0, 0.0);
+    // ─── 4. Fresnel sky reflection ─────────────────────────────────────────
+    // F = F0 + (1-F0)*(1-NdotV)^5. Uses analytic wave normal (from vertex).
     vec3 viewDir = normalize(cameraPosition - vWorldPos);
-    vec3 refl    = reflect(-uSunDir, normal);
-    float spec   = pow(max(dot(refl, viewDir), 0.0), 40.0);
-    base += vec3(0.45, 0.7, 0.9) * spec * depth;
+    float NdotV  = max(dot(vWaveNormal, viewDir), 0.0);
+    float F0     = 0.02;
+    float fresnel = F0 + (1.0 - F0) * pow(1.0 - NdotV, 5.0);
+    // Sky reflection: blend in the sky color at grazing angles.
+    // Weight kept tasteful (0.35 max) — it's a surf channel, not a mirror.
+    base = mix(base, uColorSkyRefl, fresnel * 0.35 * depth);
 
-    // cosmic sheen: a faint violet rim near the banks (waterline shimmer)
-    float rim = (1.0 - depth);
-    base += vec3(0.10, 0.06, 0.20) * rim * (0.4 + 0.6 * n1);
+    // ─── 5. Specular glint — dusk warm sun, riding analytic wave crests ────
+    // sunDir pointed toward/above the chase camera (-Z side, above horizon).
+    // Analytic normal means glint moves across crest profiles, not flat.
+    vec3 reflected = reflect(-uSunDir, vWaveNormal);
+    float spec     = pow(max(dot(reflected, viewDir), 0.0), 90.0);
+    // Warm dusk tint, strongest at channel center (depth).
+    base += vec3(1.0, 0.88, 0.62) * spec * 0.55 * depth;
+
+    // ─── 6. Bank spray — pulsing white foam at the waterline edges ─────────
+    // (replaces the cosmic violet rim — reads as actual water meeting a bank)
+    float bankFactor = 1.0 - smoothstep(0.0, 0.065, edgeDist);
+    // Pulse varies along the track length (sin on vWorldPos.z) + with time.
+    float bankPulse  = 0.65 + 0.35 * sin(uTime * 1.8 + vWorldPos.z * 0.009);
+    float bankFoam   = bankFactor * bankPulse;
+    base = mix(base, uColorFoam, bankFoam * 0.78);
+
+    // ─── 7. Current streaks — very subtle downstream flow lines ───────────
+    // Low scales in both axes (x=5, y=1.8) for broad readable streaks, even
+    // from altitude (scale 5 = 5 cycles across width — well within safe range).
+    float streak = snoise(vec2(vUv.x * 5.0, vUv.y * 1.8 - uTime * 0.13)) * 0.5 + 0.5;
+    float streakLine = smoothstep(0.72, 0.76, streak) * 0.14;
+    base += vec3(0.8, 0.95, 1.0) * streakLine * (1.0 - bankFactor * 0.6);
 
     gl_FragColor = vec4(base, 1.0);
   }
@@ -187,11 +283,19 @@ const _waterFrag = /* glsl */`
 
 export const SurfWaterMaterial = shaderMaterial(
   {
-    uTime:         0,
-    uColorDeep:    new THREE.Color('#0a3a55'),   // deep cosmos teal
-    uColorShallow: new THREE.Color('#1fa8c8'),   // glowing cyan banks
-    uColorCrest:   new THREE.Color('#a9f3ff'),   // bright cyan-white crest glow
-    uSunDir:       new THREE.Vector3(0.34, 0.86, -0.38), // toward the chase cam
+    uTime:        0,
+    // Real surf water palette — dusk gorge canyon river:
+    // Deep channel: rich blue-teal (looks deep & cold in the center)
+    uColorDeep:   new THREE.Color('#0a5c8f'),
+    // Shallow banks: bright turquoise (sunlit, energy, carveable feel)
+    uColorShallow: new THREE.Color('#3ac8d8'),
+    // Foam: near-white with very faint blue tint (salt water foam)
+    uColorFoam:   new THREE.Color('#e2f7ff'),
+    // Sky reflection: warm dusk amber-purple (matches the CosmicVoid gorge palette)
+    uColorSkyRefl: new THREE.Color('#7a5a8a'),
+    // Sun direction: from upper-left toward chase cam (-Z direction, above horizon).
+    // Normalized: slightly left, high, facing the camera.
+    uSunDir:      new THREE.Vector3(-0.28, 0.87, -0.41),
   },
   _waterVert,
   _waterFrag,
@@ -204,7 +308,8 @@ declare module '@react-three/fiber' {
       uTime?: number;
       uColorDeep?: THREE.Color;
       uColorShallow?: THREE.Color;
-      uColorCrest?: THREE.Color;
+      uColorFoam?: THREE.Color;
+      uColorSkyRefl?: THREE.Color;
       uSunDir?: THREE.Vector3;
     };
   }
@@ -212,15 +317,13 @@ declare module '@react-three/fiber' {
 
 // ─── Geometry builders ─────────────────────────────────────────────────────────
 
-/** Water surface ribbon — lifted + banked, UV.x lateral, UV.y arclength. */
+/** Water surface ribbon — lifted + banked, UV.x lateral (0=left,1=right), UV.y arclength. */
 function buildWaterGeo(): THREE.BufferGeometry {
   const positions: number[] = [];
   const normals: number[]   = [];
   const uvs: number[]       = [];
   const indices: number[]   = [];
 
-  // CLOSED-LOOP: emit `samples` vertex pairs (t=0..(samples-1)/samples). The
-  // closing quad wraps the last pair back to verts 0/1 — no seam at the line.
   for (let i = 0; i < RIBBON_SAMPLES; i++) {
     const t = i / RIBBON_SAMPLES;
     const f = frameAt(t);
@@ -248,10 +351,9 @@ function buildWaterGeo(): THREE.BufferGeometry {
 }
 
 /**
- * Build a glowing rail running along one edge (side=+1 left, -1 right).
- * The rail is a thin vertical-ish band: a quad strip from the edge surface up
- * to RAIL_HEIGHT, pushed RAIL_THICKNESS outward along the banked lateral.
- * Returned as a single merged BufferGeometry (DoubleSide-lit by MeshBasic).
+ * Build the subtle edge rail along one side (side=+1 left, -1 right).
+ * Deliberately small dimensions so it reads as a waterline definition band,
+ * NOT a dominant glowing tube. Height 10wu, thickness 7wu.
  */
 function buildRailGeo(side: 1 | -1): THREE.BufferGeometry {
   const positions: number[] = [];
@@ -260,31 +362,24 @@ function buildRailGeo(side: 1 | -1): THREE.BufferGeometry {
   for (let i = 0; i < RIBBON_SAMPLES; i++) {
     const t = i / RIBBON_SAMPLES;
     const f = frameAt(t);
-    // edge base point on this side
     const ex = side === 1 ? f.lx : f.rx;
     const ey = side === 1 ? f.ly : f.ry;
     const ez = side === 1 ? f.lz : f.rz;
-    // outward push along banked lateral (away from centre on this side)
     const ox = f.unx * RAIL_THICKNESS * side;
     const oy = f.uny * RAIL_THICKNESS * side;
     const oz = f.unz * RAIL_THICKNESS * side;
 
-    // 4 verts: inner-bottom, inner-top, outer-bottom, outer-top (top = +up)
-    // bottom row sits at the edge; top row is RAIL_HEIGHT up (world-up).
-    positions.push(ex,            ey,                ez);             // inner-bottom
-    positions.push(ex,            ey + RAIL_HEIGHT,  ez);             // inner-top
-    positions.push(ex + ox,       ey + oy,           ez + oz);        // outer-bottom
-    positions.push(ex + ox,       ey + oy + RAIL_HEIGHT, ez + oz);    // outer-top
+    positions.push(ex,       ey,                ez);
+    positions.push(ex,       ey + RAIL_HEIGHT,  ez);
+    positions.push(ex + ox,  ey + oy,           ez + oz);
+    positions.push(ex + ox,  ey + oy + RAIL_HEIGHT, ez + oz);
 
     const base = i * 4;
     const next = (i + 1 < RIBBON_SAMPLES) ? base + 4 : 0;
-    // inner wall (inner-bottom, inner-top, next-inner-bottom, next-inner-top)
     indices.push(base + 0, base + 1, next + 0);
     indices.push(base + 1, next + 1, next + 0);
-    // top cap (inner-top, outer-top, next)
     indices.push(base + 1, base + 3, next + 1);
     indices.push(base + 3, next + 3, next + 1);
-    // outer wall
     indices.push(base + 2, next + 2, base + 3);
     indices.push(base + 3, next + 2, next + 3);
   }
@@ -297,8 +392,8 @@ function buildRailGeo(side: 1 | -1): THREE.BufferGeometry {
 }
 
 /**
- * Build a thin glowing crest band just inside each rail — a flat strip on the
- * water surface from the edge inward by CREST_WIDTH. The bright waterline glow.
+ * Build a thin glowing crest strip just inside each rail — the waterline glow.
+ * Width 18wu (was 34), sits above the water surface to avoid z-fighting.
  */
 function buildCrestGeo(side: 1 | -1): THREE.BufferGeometry {
   const positions: number[] = [];
@@ -310,15 +405,13 @@ function buildCrestGeo(side: 1 | -1): THREE.BufferGeometry {
     const ex = side === 1 ? f.lx : f.rx;
     const ey = side === 1 ? f.ly : f.ry;
     const ez = side === 1 ? f.lz : f.rz;
-    // inward along banked lateral toward centre (opposite of outward)
     const ix = -f.unx * CREST_WIDTH * side;
     const iy = -f.uny * CREST_WIDTH * side;
     const iz = -f.unz * CREST_WIDTH * side;
-    // slight +Y lift so it sits just above the water surface (no z-fight)
-    const lift = 1.5;
+    const lift = 1.2;
 
-    positions.push(ex,      ey + lift,      ez);        // edge
-    positions.push(ex + ix, ey + iy + lift, ez + iz);   // inner
+    positions.push(ex,       ey + lift,       ez);
+    positions.push(ex + ix,  ey + iy + lift,  ez + iz);
 
     const base = i * 2;
     const next = (i + 1 < RIBBON_SAMPLES) ? base + 2 : 0;
@@ -336,8 +429,6 @@ function buildCrestGeo(side: 1 | -1): THREE.BufferGeometry {
 // ─── Module-scope baked geometry ──────────────────────────────────────────────
 const _waterGeo = buildWaterGeo();
 
-// Merge both rails + both crests into ONE geometry (1 draw call). All four use
-// the same emissive neon material so a single merge is valid.
 const _railLeft   = buildRailGeo(1);
 const _railRight  = buildRailGeo(-1);
 const _crestLeft  = buildCrestGeo(1);
@@ -345,22 +436,23 @@ const _crestRight = buildCrestGeo(-1);
 const _railsGeo = mergeGeometries([_railLeft, _railRight, _crestLeft, _crestRight], false)!;
 _railLeft.dispose(); _railRight.dispose(); _crestLeft.dispose(); _crestRight.dispose();
 
-// Neon rail material — bright emissive cyan-white (the bloom target). NOT a
-// ShaderMaterial — MeshBasicMaterial keeps it Iris-Xe safe + bloom-friendly.
+// Rail material — softer warm-white glow (was cyan #7af6ff at full brightness).
+// Dims down from the previous dominant neon so the water surface reads first.
+// Still toneMapped:false so the bloom catches the edge definition for crispness.
 const _railMat = new THREE.MeshBasicMaterial({
-  color: '#7af6ff',
-  side: THREE.DoubleSide,
-  fog: false,
-  toneMapped: false, // keep it bright (>1 perceptually) so bloom catches it
+  color: '#98f0ff',    // slightly warmer, less aggressively cyan than #7af6ff
+  side:  THREE.DoubleSide,
+  fog:   false,
+  toneMapped: false,   // bloom target — keeps the edge crisp in the dusk gorge
 });
 
 // ─── SurfRibbon component ─────────────────────────────────────────────────────
 
 /**
- * SurfRibbon — the floating water ribbon + neon rails + crest glow. Mount inside
- * the scene's track group. The geometry is in ABSOLUTE world XZ + the shared
- * elevation Y, so it needs NO position offset (the parent track group should be
- * at Y=0 — the elevation function is the datum, not a flat plane).
+ * SurfRibbon — the surf water ribbon + subtle neon edge rails + waterline glow.
+ * The WATER is the hero. Rails are edge definition only.
+ * Mount inside the scene's track group. Geometry is in absolute world XZ + the
+ * shared elevation Y — parent track group must be at Y=0 (elevation is the datum).
  */
 export function SurfRibbon() {
   const matRef = useRef<InstanceType<typeof SurfWaterMaterial>>(null);
@@ -371,7 +463,7 @@ export function SurfRibbon() {
 
   return (
     <group>
-      {/* Glowing cosmic water surface (rides elevation + bank) */}
+      {/* Premium surf water surface — the hero. Rides elevation + bank. */}
       <mesh geometry={_waterGeo} frustumCulled={false} renderOrder={1}>
         <surfWaterMaterial
           ref={matRef}
@@ -381,7 +473,8 @@ export function SurfRibbon() {
         />
       </mesh>
 
-      {/* Neon banked rails + crest glow (merged, bloom target) */}
+      {/* Subtle neon edge rails + waterline glow strip (merged, bloom target).
+          Kept small so they define the track edge without dominating the water. */}
       <mesh
         geometry={_railsGeo}
         material={_railMat}
