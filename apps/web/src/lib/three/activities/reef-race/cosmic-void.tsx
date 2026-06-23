@@ -1,34 +1,32 @@
 'use client';
 
 /**
- * cosmic-void.tsx — the abstract COSMIC VOID backdrop for the SURF ROAD scene.
+ * cosmic-void.tsx — the abstract ATMOSPHERIC VOID backdrop for the SURF ROAD.
  *
- * Replaces the old sunny SkyDome + grass ground + sandy banks. The SURF ROAD is
- * a glowing floating water ribbon winding through a dreamlike deep void — there
- * is NO land, NO island, NO ground beneath it. This module is the mood: a deep
- * twilight-ocean-into-cosmos gradient dome, a starfield, and drifting glow
- * particles. The ribbon floats inside it.
+ * v5 (2026-06-23 SURF ROAD): pure black cosmos. Founder feedback: "very fucking
+ * drastic — land to space." Canyon walls + thin land shoulders now hug the water,
+ * and the backdrop is softened from pure-black-space to a MOODY ATMOSPHERIC HAZE —
+ * think: deep canyon dusk, the kind of sky you'd see above a shadowed gorge lit by
+ * glowing water below. Still abstract + floating, NOT a sky-over-terrain world.
+ *
+ * Changes from v5:
+ *   - Gradient palette warmed: zenith now deep amber-purple (like a shadowed cliff
+ *     at dusk) instead of cold indigo; horizon band softened to warm haze.
+ *   - A faint "canyon rim glow" — a slightly lighter band at the mid-horizon where
+ *     the distant canyon shoulders would fade into the atmosphere.
+ *   - Stars remain (now slightly dimmed — less "outer space", more "dusk sky just
+ *     showing first stars through atmospheric haze").
+ *   - Glow motes recoloured to amber-cyan instead of pure cyan/violet — echoes
+ *     the canyon rock's warm earthy tones in the air.
  *
  * Layers (render order):
- *   -2  GradientDome — huge BackSide sphere, vertex-color gradient (deep
- *        indigo zenith → teal-cyan horizon glow → violet nadir). MeshBasicMaterial
- *        (vertexColors), fog:false, depthWrite:false. Reads as a boundless void.
- *   -1  Starfield — two Points clouds (far dim + near bright), PointsMaterial
- *        (NEVER ShaderMaterial — Iris-Xe InstancedMesh/Points+Shader crash class).
- *        A slow yaw drift gives parallax life without per-vertex cost.
- *   -1  GlowMotes — a sparser cloud of larger additive cyan/violet motes that
- *        drift, suggesting cosmic dust + bioluminescence around the ribbon.
+ *   -2  GradientDome — huge BackSide sphere, vertex-color gradient. MeshBasicMaterial
+ *        (vertexColors), fog:false, depthWrite:false.
+ *   -1  Starfield — two Points clouds (far dim + near bright). PointsMaterial only.
+ *   -1  GlowMotes — sparser additive motes (amber-tinted) drifting in the gorge.
  *
- * Iris Xe invariants:
- *   - NO ShaderMaterial on Points/Instanced (PointsMaterial only).
- *   - NO drei <Text>/<Billboard>.
- *   - import from 'three' (NOT 'three/webgpu').
- *   - All geo/mat module-scope, baked once; frustumCulled=false on the dome.
- *   - One cheap group.rotation.y mutate per frame (no per-frame allocation).
- *   - fog:false everywhere — the void IS the far backdrop; fog would wall it.
- *
+ * Iris Xe invariants: unchanged (PointsMaterial only, no Shader on Points/Instanced).
  * Draw calls: 1 dome + 2 starfields + 1 glow motes = 4.
- * Tris/points: dome ~768 tris, ~3600 star points, ~280 glow points.
  */
 
 import { useRef } from 'react';
@@ -44,11 +42,13 @@ const DOME_RADIUS = 30000;
 const DOME_W_SEGS = 32;
 const DOME_H_SEGS = 16;
 
-// Deep cosmic gradient — twilight ocean dissolving into space.
-const VOID_NADIR   = new THREE.Color('#0a0418'); // near-black violet (below)
-const VOID_HORIZON = new THREE.Color('#163a5c'); // deep teal-blue band (mid)
-const VOID_GLOW    = new THREE.Color('#1f8fb0'); // cyan horizon glow (just above mid)
-const VOID_ZENITH  = new THREE.Color('#0c0b2a'); // deep indigo (above)
+// Atmospheric canyon-dusk gradient — warm haze over dark gorge.
+// Warmer than v5 pure-space: zenith = amber-purple dusk; horizon = warm haze;
+// nadir = warm dark (rock face glow from below).
+const VOID_NADIR   = new THREE.Color('#120a05'); // near-black warm (deep gorge base)
+const VOID_HORIZON = new THREE.Color('#2a1e35'); // dark purple-amber (canyon dusk mid)
+const VOID_GLOW    = new THREE.Color('#4a2e50'); // faint warm violet-rose rim glow
+const VOID_ZENITH  = new THREE.Color('#0f0b1a'); // deep indigo (sky, still dark)
 
 // Starfield extents — a box cloud filling the void interior.
 const STAR_SPREAD_XZ = 26000;
@@ -137,8 +137,9 @@ function makeGlowMoteGeo(): THREE.BufferGeometry {
   };
   const positions = new Float32Array(GLOW_MOTE_COUNT * 3);
   const colors = new Float32Array(GLOW_MOTE_COUNT * 3);
-  const cyan = new THREE.Color('#5fe9ff');
-  const violet = new THREE.Color('#9d7bff');
+  // Warm amber + cool cyan — echoes canyon rock warmth in the air particles
+  const cyan = new THREE.Color('#5fd9ff');
+  const violet = new THREE.Color('#d4885a'); // amber-warm instead of pure violet
   const c = new THREE.Color();
   // Glow motes cluster nearer the ribbon band (smaller XZ spread, mid Y) so they
   // read as bioluminescent dust drifting around the floating road.
@@ -172,21 +173,22 @@ const _domeMat = new THREE.MeshBasicMaterial({
 });
 
 // PointsMaterial — sizeAttenuation makes nearer points larger (parallax depth).
+// Slightly dimmed vs pure-space — faint stars visible through dusk atmosphere
 const _farStarMat = new THREE.PointsMaterial({
-  size: 26,
+  size: 22,
   sizeAttenuation: true,
   vertexColors: true,
   transparent: true,
-  opacity: 0.7,
+  opacity: 0.45, // dimmer — dusk atmosphere hazes distant stars
   depthWrite: false,
   fog: false,
 });
 const _nearStarMat = new THREE.PointsMaterial({
-  size: 48,
+  size: 40,
   sizeAttenuation: true,
   vertexColors: true,
   transparent: true,
-  opacity: 0.95,
+  opacity: 0.65, // still visible but subdued
   depthWrite: false,
   fog: false,
 });

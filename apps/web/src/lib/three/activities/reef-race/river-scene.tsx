@@ -15,11 +15,16 @@
  * boxes, a flat WaterSurf ribbon at WATER_Y=-200, and rocky cliffs. ALL OF THAT
  * IS REMOVED. What remains:
  *
- *   - <CosmicVoid />  — the gradient void dome + starfield + glow motes
- *                       (cosmic-void.tsx). The backdrop/mood.
+ *   - <CosmicVoid />   — the gradient void dome + starfield + glow motes
+ *                        (cosmic-void.tsx). v5.1: palette softened from pure-space
+ *                        to warm canyon-dusk atmosphere (still abstract/floating).
  *   - <SurfRibbon />  — the glowing floating water ribbon + neon banked rails +
  *                       crest glow (surf-ribbon.tsx). Rides the render-only
  *                       elevation + bank profile. THE WORLD.
+ *   - <CanyonRiver /> — NEW (v5.1). Rock canyon walls + thin earthy land
+ *                       shoulders swept along the same spline + elevation datum.
+ *                       Both geometry pieces lift/bank WITH the ribbon (parity
+ *                       contract preserved). 2 draw calls. (canyon-river.tsx)
  *   - <RacingKarts /> — 5 decorative spline karts (preview only; hidden in
  *                       gameplay where server karts render via ReefRacePlayer).
  *   - <Ramps />       — jump-ramp wedge meshes at the 6 spline ramp volumes.
@@ -27,8 +32,8 @@
  * Iris Xe invariants (unchanged): ShaderMaterial only on plain Mesh; no
  * InstancedMesh+ShaderMaterial; no drei <Text>/<Billboard>; import 'three' (not
  * 'three/webgpu'); module-scope geo/mat; frustumCulled=false on swept meshes;
- * ≤ 3 lights (parent owns lighting). Draw calls: void 4 + ribbon 2 + ramps 1
- * (+ karts ≤5 in preview) = ~7–12.
+ * ≤ 3 lights (parent owns lighting). Draw calls: void 4 + ribbon 2 + canyon 1
+ * + shoulder 1 + ramps 1 (+ karts ≤5 in preview) = ~9–14.
  *
  * REMOVED (2026-06-23 SURF ROAD): GroundShader + buildGroundRibbonGeo + the two
  * ground ribbons, SkyDome + makeDomeGeo, ScenerySpawner + PropInstances +
@@ -40,6 +45,7 @@
 
 import { CosmicVoid } from './cosmic-void';
 import { SurfRibbon } from './surf-ribbon';
+import { CanyonRiver } from './canyon-river';
 import { RacingKarts } from './racing-karts';
 import { Ramps } from './ramps';
 
@@ -76,6 +82,11 @@ export function RiverScene({
       {/* THE WORLD: glowing floating water ribbon + neon banked rails + crests.
           Rides reefTrackElevationAt(t) + reefTrackBankAngleAt(t). */}
       <SurfRibbon />
+
+      {/* Floating canyon: rock cliff walls + thin land shoulders hugging each
+          bank. Geometry swept along the same spline + elevation datum — land
+          floats and undulates WITH the ribbon through every climb/dip/bank. */}
+      <CanyonRiver />
 
       {/* 5 decorative surfboard karts along the spline (preview only) */}
       {showDemoKarts && <RacingKarts />}
