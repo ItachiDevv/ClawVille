@@ -44,6 +44,7 @@ import ReefRaceHazards       from './ReefRaceHazards';
 import ReefRaceApexMarkers   from './ReefRaceApexMarkers';
 import { ActivityBursts }    from '@/lib/three/activities/shared/activity-particles';
 import { RiverScene }       from './river-scene';
+import { CentralIsland }   from './central-island';
 import { useActivityStore } from '@/stores/activity';
 import {
   FOG_COLOR,
@@ -424,6 +425,13 @@ function SceneContents({ entities, selfAvatarId, matchPhase, raceStartMs }: Scen
           spline karts and decorative power-up boxes don't visually compete
           with the server-driven <ReefRacePlayer /> + <ReefRacePickups />. */}
       <RiverScene showDemoKarts={false} showDemoPickups={false} />
+
+      {/* Central island — low-poly atoll at world XZ (0,0) around which the
+          closed circuit orbits. Renders at world Y (no TRACK_SURFACE_Y offset)
+          so the island base sits at WATER_Y=-200 (same as RiverScene). */}
+      <Suspense fallback={null}>
+        <CentralIsland />
+      </Suspense>
 
       {/* Lighting */}
       <ReefLight />

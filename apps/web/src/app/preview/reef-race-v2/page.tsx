@@ -39,6 +39,7 @@ import { clone as skeletonClone } from 'three/examples/jsm/utils/SkeletonUtils.j
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { makeGeometryWebGPUSafe } from '@/lib/three/webgpu-geometry';
 import { RiverScene } from '@/lib/three/activities/reef-race/river-scene';
+import { CentralIsland } from '@/lib/three/activities/reef-race/central-island';
 
 // ─── Spline instance (always v2, bypasses env flag) ──────────────────────────
 // Import the same singleton used by ReefRaceTrack so we share the pre-built
@@ -160,13 +161,15 @@ function buildSplineRibbonGeo(samples: number): THREE.BufferGeometry {
   const uvs: number[]       = [];
   const indices: number[]   = [];
 
-  for (let i = 0; i <= samples; i++) {
+  // CLOSED-LOOP: emit `samples` vertex pairs only (t=0..t=(samples-1)/samples).
+  // The closing quad wraps indices back to 0/1 - no seam at start/finish.
+  for (let i = 0; i < samples; i++) {
     const t  = i / samples;
     const c  = clientSpline.centerlineAt(t);
     const n  = clientSpline.normalAt(t);
     const hw = clientSpline.widthAt(t);
 
-    // Left edge (normal = 90° CCW of tangent = left of travel)
+    // Left edge (normal = 90 CCW of tangent = left of travel)
     positions.push(c.x + n.x * hw, 0, c.z + n.z * hw);
     normals.push(0, 1, 0);
     uvs.push(0, t);
@@ -176,11 +179,11 @@ function buildSplineRibbonGeo(samples: number): THREE.BufferGeometry {
     normals.push(0, 1, 0);
     uvs.push(1, t);
 
-    if (i < samples) {
-      const base = i * 2;
-      indices.push(base, base + 1, base + 2);
-      indices.push(base + 1, base + 3, base + 2);
-    }
+    const base  = i * 2;
+    const nextL = (i + 1 < samples) ? base + 2 : 0;
+    const nextR = (i + 1 < samples) ? base + 3 : 1;
+    indices.push(base, base + 1, nextL);
+    indices.push(base + 1, nextR, nextL);
   }
 
   const geo = new THREE.BufferGeometry();
@@ -754,6 +757,11 @@ function SceneContents({
 
       {/* Low-poly stylized river atmosphere — dome, water surface, scenery */}
       <RiverScene />
+
+      {/* Central island — atoll at world XZ (0,0) around which the circuit orbits */}
+      <Suspense fallback={null}>
+        <CentralIsland />
+      </Suspense>
 
       {/* Production lighting */}
       <PreviewLighting />

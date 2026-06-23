@@ -90,10 +90,16 @@ function ordinal(n: number): string {
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
 function LapCounter({ selfAvatarId }: { selfAvatarId: string | null }) {
-  const lap = useActivityStore((s) => {
-    if (!selfAvatarId) return 1;
+  // `e.lap` is 0-based (completed laps). Display = lap+1 (current lap number).
+  // `e.totalLaps` from server delta; fall back to TOTAL_LAPS constant.
+  const { lapDisplay, totalLaps } = useActivityStore((s) => {
+    if (!selfAvatarId) return { lapDisplay: 1, totalLaps: TOTAL_LAPS };
     const e = s.entities.get(selfAvatarId) as any;
-    return e?.lap ?? 1;
+    const rawLap    = typeof e?.lap       === 'number' ? e.lap       : 0;
+    const rawTotal  = typeof e?.totalLaps === 'number' ? e.totalLaps : TOTAL_LAPS;
+    // Clamp display: lap 0 = "1/3", lap 2 = "3/3"; never exceed totalLaps
+    const display = Math.min(rawLap + 1, rawTotal);
+    return { lapDisplay: display, totalLaps: rawTotal };
   });
 
   return (
@@ -111,7 +117,7 @@ function LapCounter({ selfAvatarId }: { selfAvatarId: string | null }) {
         LAP
       </div>
       <div style={{ fontSize: 26, fontWeight: 700, letterSpacing: '0.05em', color: '#ffffff' }}>
-        {Math.min(lap, TOTAL_LAPS)}/{TOTAL_LAPS}
+        {lapDisplay}/{totalLaps}
       </div>
     </div>
   );
@@ -904,11 +910,11 @@ export default function ReefRaceHud({
           gap: 8,
         }}
       >
-        {USE_SPLINE ? (
-          <ProgressBar selfAvatarId={selfAvatarId} />
-        ) : (
-          <LapCounter selfAvatarId={selfAvatarId} />
-        )}
+        {/* Closed-loop lap circuit (v2 spline + v1 ellipse): both show lap counter.
+            The old ProgressBar showed "RACE 47%" which made no sense for a lap
+            circuit — replaced by the lap counter that reads `e.lap` (0-based,
+            displays lap+1) and `e.totalLaps` from the server delta. */}
+        <LapCounter selfAvatarId={selfAvatarId} />
         <PlacementTile selfAvatarId={selfAvatarId} />
         {/* Phase 4 — clean-checkpoint streak chip (C-IMPL-3 fix). Only
             renders mid-match; auto-dismisses on streak=0. Tier glow tracks

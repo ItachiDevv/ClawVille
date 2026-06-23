@@ -419,7 +419,10 @@ function buildSplineRibbonGeo(samples: number): THREE.BufferGeometry {
   const uvs: number[]       = [];
   const indices: number[]   = [];
 
-  for (let i = 0; i <= samples; i++) {
+  // CLOSED-LOOP: emit exactly `samples` vertex pairs (t=0..t=(samples-1)/samples).
+  // t=1.0 === t=0.0 on a closed spline — emitting it would duplicate vertex 0/1.
+  // The closing quad reuses vertices 0 and 1 so there is no seam at start/finish.
+  for (let i = 0; i < samples; i++) {
     const t = i / samples;
     const c = clientSpline.centerlineAt(t);
     const n = clientSpline.normalAt(t); // 90° CCW = left of travel
@@ -435,11 +438,11 @@ function buildSplineRibbonGeo(samples: number): THREE.BufferGeometry {
     normals.push(0, 1, 0);
     uvs.push(1, t);
 
-    if (i < samples) {
-      const base = i * 2;
-      indices.push(base, base + 1, base + 2);
-      indices.push(base + 1, base + 3, base + 2);
-    }
+    const base   = i * 2;
+    const nextL  = (i + 1 < samples) ? base + 2 : 0; // wrap to vertex 0
+    const nextR  = (i + 1 < samples) ? base + 3 : 1; // wrap to vertex 1
+    indices.push(base, base + 1, nextL);
+    indices.push(base + 1, nextR, nextL);
   }
 
   const geo = new THREE.BufferGeometry();

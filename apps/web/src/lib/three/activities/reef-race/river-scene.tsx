@@ -565,7 +565,11 @@ function buildGroundRibbonGeo(
   samples: number,
   widthSegs: number,
 ): THREE.BufferGeometry {
-  const rows     = samples + 1; // t-axis sample count (including t=1)
+  // CLOSED-LOOP: emit exactly `samples` rows (t=0..t=(samples-1)/samples).
+  // Row 0 and row `samples` map to the same world position (t=0 === t=1 on closed spline).
+  // The closing quads (last row → row 0) reuse row-0 vertices via index wrapping —
+  // no duplicate vertices, no seam.
+  const rows     = samples; // t-axis sample count (NO t=1 row — it equals t=0)
   const cols     = widthSegs + 1; // lateral vertex count per row
   const vtxCount = rows * cols;
 
@@ -575,7 +579,7 @@ function buildGroundRibbonGeo(
 
   // Build vertex grid
   for (let r = 0; r < rows; r++) {
-    const t  = r / (rows - 1); // [0, 1]
+    const t  = r / samples; // [0, (samples-1)/samples]
     const c  = clientSpline.centerlineAt(t);
     const n  = clientSpline.normalAt(t);
     const hw = clientSpline.widthAt(t);
@@ -605,20 +609,23 @@ function buildGroundRibbonGeo(
   }
 
   // Build index buffer — two triangles per quad between adjacent rows.
+  // CLOSED: last row's "next" row wraps to row 0 (index arithmetic: nextRow = (r+1) % rows).
+  //
   // Cross-product analysis (see JSDoc above) shows:
   //   side=+1 (left):  vertices extend in -X → tri1=(a,b,c), tri2=(b,d,c) for +Y normal
   //   side=-1 (right): vertices extend in +X → tri1=(a,c,b), tri2=(b,c,d) for +Y normal
   // These look like a swap vs. naive mirroring — that's intentional and mathematically correct.
-  const quadCount = (rows - 1) * widthSegs;
+  const quadCount = rows * widthSegs; // rows quads now (was rows-1), last row wraps to 0
   const indices   = new Uint32Array(quadCount * 6);
   let   idxPtr    = 0;
 
-  for (let r = 0; r < rows - 1; r++) {
+  for (let r = 0; r < rows; r++) {
+    const rNext = (r + 1) % rows; // wrap last row back to row 0
     for (let col = 0; col < widthSegs; col++) {
-      const a = r       * cols + col;
-      const b = r       * cols + col + 1;
-      const c = (r + 1) * cols + col;
-      const d = (r + 1) * cols + col + 1;
+      const a = r     * cols + col;
+      const b = r     * cols + col + 1;
+      const c = rNext * cols + col;
+      const d = rNext * cols + col + 1;
 
       if (side === 1) {
         // Left ribbon — vertices extend in -X direction (n.x < 0 for straight spline)
