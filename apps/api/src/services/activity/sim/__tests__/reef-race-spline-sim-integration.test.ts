@@ -59,10 +59,22 @@ const BOT_PETS = [
 const ALL_PETS = [HUMAN_PET, ...BOT_PETS];
 
 const DT = 1 / REEF_TICK_HZ;
-// CLOSED-LOOP (2026-06-22): a full N-lap race is ~3× one loop, so tick the
-// whole race window (the loop hard timeout) + a margin, NOT a single 90s loop.
-const SIM_DURATION_SEC = Math.ceil(REEF_RACE_LOOP_HARD_TIMEOUT_MS / 1000) + 10;
+// CLOSED-LOOP: tick enough sim-ticks for a body to physically complete the full
+// N-lap race on the v5 SURF ROAD (~59 391 wu/loop). The synchronous tick loop
+// runs in ~13s WALL, so the wall-clock-based hard timeout (430s) never fires —
+// the only thing that matters here is enough TICKS to cover the distance. The
+// SURF ROAD is aggressively twisty, so bots corner-slow (~250 wu/s avg on the
+// heaviest sections). Ground the window in the 2-lap arc distance at a
+// conservative carve pace (220 wu/s) + margin, NOT the wall-clock timeout, so a
+// finisher is guaranteed without an absurdly long run.
+const REEF_RACE_TWO_LAP_ARC_WU = 2 * 59391.2;
+const CONSERVATIVE_BOT_PACE_WU_S = 220;
+const SIM_DURATION_SEC =
+  Math.ceil(REEF_RACE_TWO_LAP_ARC_WU / CONSERVATIVE_BOT_PACE_WU_S) + 20;
 const TOTAL_TICKS = SIM_DURATION_SEC * REEF_TICK_HZ;
+// keep the import referenced (the hard timeout still gates the real sim, just
+// not this synchronous tick budget).
+void REEF_RACE_LOOP_HARD_TIMEOUT_MS;
 // Whole-race progress (lap + within-lap fraction) — the MONOTONIC ordering key.
 // Raw body.progress WRAPS 1→0 each lap on the closed loop, so regression must
 // be measured on this, not on body.progress.

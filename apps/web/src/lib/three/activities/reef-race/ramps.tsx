@@ -58,6 +58,7 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { buildSplineRampsClient } from './reef-race-config';
 import { clientSpline } from './reef-race-spline-instance';
+import { elevationAtT } from './reef-race-elevation';
 
 // ─── Asset path ───────────────────────────────────────────────────────────────
 
@@ -228,10 +229,18 @@ function RampsInner() {
       // rotY aligns the ramp's local +Z axis (travel direction) with the spline tangent
       const rotY = Math.atan2(tang.x, tang.z);
 
+      // SURF ROAD (2026-06-23): the ramp sits ON the floating ribbon, so its Y
+      // is the render-only elevation profile at the ramp's spline-t (was world
+      // Y=0 on the old flat water plane). The pivot already lands the ramp's
+      // entry bottom-center at this point. (The visual ramp does not bank with
+      // the ribbon roll — a ±28° lean on a jump wedge reads as broken; keeping
+      // it upright at the elevated centerline is the right call.)
+      const wy = elevationAtT(ramp.t);
+
       // Build the per-instance transform matrix: T(world) × R(rotY) × S(RAMP_SCALE)
       const instanceQ = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, rotY, 0));
       const instanceMatrix = new THREE.Matrix4().compose(
-        new THREE.Vector3(wx, 0, wz),
+        new THREE.Vector3(wx, wy, wz),
         instanceQ,
         new THREE.Vector3(RAMP_SCALE, RAMP_SCALE, RAMP_SCALE),
       );

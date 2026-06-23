@@ -1,93 +1,66 @@
 'use client';
 
 /**
- * /preview/reef-race-v2 — visual verification route for the v2 spline track.
+ * /preview/reef-race-v2 — visual verification route for the SURF ROAD track.
  *
- * DEV-ONLY: bypasses NEXT_PUBLIC_REEF_RACE_USE_SPLINE env flag so the human
- * can always inspect the v2 river-bed, surfboard scale, and proportions.
+ * DEV-ONLY: bypasses the NEXT_PUBLIC_REEF_RACE_USE_SPLINE env flag so the human
+ * can always inspect the floating-ribbon SURF ROAD.
  *
- * What to check:
- *   1. Track scale relative to the surfboard board
- *   2. Surfboard size relative to the magenta 5wu reference cube
- *   3. Surfboard Y mounting (on the river bed, not floating/sinking)
- *   4. River corridor width (4-5 karts side by side?)
- *   5. Bank wall heights — too short, too tall, fine?
- *   6. 3 extra karts at t=0.25, 0.5, 0.75 — consistent bed Y across curve
- *   7. Lighting + materials OK on Iris Xe (hemisphere + directional only)
- *   8. Tri count shown in overlay
+ * ─── 2026-06-23 SURF ROAD REBUILD ────────────────────────────────────────────
+ * This page used to assemble the land-disc preview: a sky-blue background, a
+ * sandy flat riverbed ribbon at Y=-250, grass-green bank walls, the CentralIsland
+ * atoll, and ground-disc framing cameras. ALL REMOVED. The preview now shows the
+ * real SURF ROAD: a glowing FLOATING WATER RIBBON winding through a cosmic void.
+ *
+ *   - <RiverScene /> mounts <CosmicVoid /> (gradient dome + starfield + glow
+ *     motes), <SurfRibbon /> (the glowing floating water + neon banked rails +
+ *     crests, rides reefTrackElevationAt(t) + reefTrackBankAngleAt(t)), the 5
+ *     decorative <RacingKarts />, and <Ramps />.
+ *   - <SurfBloom /> adds the selective neon glow (Iris-Xe-gated half-res).
+ *   - Camera presets reframed for the floating ribbon + cosmic void.
+ *
+ * What to check (orbit / side-on / cinematic):
+ *   1. A glowing floating water ribbon in an abstract cosmic void — NO land,
+ *      island, ground, or sky-over-terrain.
+ *   2. The ribbon aggressively zig-zags AND undulates in elevation (climbs/dips).
+ *   3. Neon rails along each banked edge, glowing (bloom).
+ *   4. Demo surfboard karts ride ON the ribbon through climbs/drops (not floating
+ *      above / sinking below) and lean into banked turns.
+ *   5. Starfield + drifting glow motes; deep twilight-into-cosmos gradient.
+ *   6. FPS ≥ floor on Iris Xe; zero console errors.
  *
  * Iris Xe invariants enforced:
- *   - No drei <Text> / <Billboard> — all labels are DOM HTML overlays
- *   - No InstancedMesh + ShaderMaterial
- *   - No per-frame allocations (module-scope scratch primitives only)
- *   - import from 'three' (NOT 'three/webgpu')
- *   - frustumCulled=false on every cloned SkinnedMesh scene
- *   - All geo/mat at module scope — zero repeated GC pressure
- *   - 1 hemisphere + 1 directional light with 1 shadow map (512×512)
+ *   - No drei <Text> / <Billboard>; no InstancedMesh + ShaderMaterial.
+ *   - import from 'three' (NOT 'three/webgpu'); module-scope geo/mat.
+ *   - ShaderMaterial only on plain Mesh (water); fog:false on shaders.
  */
 
 export const dynamic = 'force-dynamic';
 
-import { Suspense, useRef, useState, useEffect, useCallback, useMemo } from 'react';
+import { Suspense, useRef, useState, useEffect, useCallback } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
-import { useGLTF } from '@react-three/drei';
 import * as THREE from 'three';
 import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib';
-import { clone as skeletonClone } from 'three/examples/jsm/utils/SkeletonUtils.js';
-import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
-import { makeGeometryWebGPUSafe } from '@/lib/three/webgpu-geometry';
+
 import { RiverScene } from '@/lib/three/activities/reef-race/river-scene';
-import { CentralIsland } from '@/lib/three/activities/reef-race/central-island';
-
-// ─── Spline instance (always v2, bypasses env flag) ──────────────────────────
-// Import the same singleton used by ReefRaceTrack so we share the pre-built
-// arclength LUT. Module-load cost: ~1 ms (1 000-point Simpson integration).
+import { SurfBloom } from '@/lib/three/activities/reef-race/surf-bloom';
 import { clientSpline } from '@/lib/three/activities/reef-race/reef-race-spline-instance';
-
-// ─── Kart / geometry constants ────────────────────────────────────────────────
+import { elevationAtT } from '@/lib/three/activities/reef-race/reef-race-elevation';
 import {
-  KART_SCALE,
-  KART_Y_ABOVE_TRACK,
-  GLIDER_WIDTH,
-  GLIDER_HEIGHT,
-  GLIDER_LENGTH,
-  RIDER_MOUNT_OFFSET_DEFAULT,
+  FOG_COLOR,
+  FOG_NEAR,
+  FOG_FAR,
+  CAMERA_NEAR,
+  CAMERA_FAR,
+  HEMI_SKY_COLOR,
+  HEMI_GROUND_COLOR,
+  HEMI_INTENSITY,
+  DIR_COLOR,
+  DIR_INTENSITY,
+  DIR_POSITION,
 } from '@/lib/three/activities/reef-race/reef-race-config';
-
-// ─── Production lighting / fog constants (inlined from ReefRaceScene values) ──
-// Inlined rather than imported to avoid cross-module 'use client' import issues.
-const FOG_COLOR            = '#a8d8ff'; // sky-blue atmospheric haze, matches SkyDome horizon
-// Real v3 ring track footprint: X∈[-8026,7401], Z∈[-7607,7700] → span ±8026wu.
-// 27 CPs, arc ~53506wu. Corridor halfWidth 471–910wu (start straight ~900wu, bends ~480–700wu).
-// FOG tuned for the larger ring: near=10000 keeps island/corridor crisp from above,
-// far=32000 gives gentle haze at ring perimeter + keeps sky dome visible (radius=28000).
-// CAMERA_FAR=35000 gives 3000wu headroom beyond dome radius.
-const FOG_NEAR             = 10000;
-const FOG_FAR              = 32000;
-const CAMERA_NEAR          = 1;
-const CAMERA_FAR           = 35000;
-const HEMI_SKY_COLOR       = '#a8d8ff'; // matches SkyDome horizon
-const HEMI_GROUND_COLOR    = '#7cb342'; // grass green — matches GroundPlane + bank walls
-const HEMI_INTENSITY       = 0.5;
-const DIR_COLOR            = '#fffbe6';
-const DIR_INTENSITY        = 1.2;
-// Sun position for ±8026wu ring. Position at (6000,9000,4000) casts diagonal
-// shadows across the full enlarged ring (was 5000,8000,3000 for ±5200wu ring).
-const DIR_POSITION         = [6000, 9000, 4000] as const;
-const DIR_SHADOW_MAP_SIZE  = 1024;
-const DIR_SHADOW_NEAR      = 1;
-// Shadow far must reach WATER_Y=-200 at ring edge: sqrt(8026²+200²)≈8028wu + headroom.
-const DIR_SHADOW_FAR       = 22000;
-// Shadow frustum must enclose the full ±8026wu footprint plus ground ribbon
-// (ground extends to hw+150+2800≈3850wu beyond centerline → total reach ~11876wu).
-// Set to 10000 to cover ring edges without excessive shadow-map texel waste.
-const DIR_SHADOW_CAM_BOUNDS = 10000;
-
-// ─── Preload assets ───────────────────────────────────────────────────────────
-useGLTF.preload('/models/reef-race/surfboards/surfboard_1.glb');
-useGLTF.preload('/models/lobster.glb');
 
 // ─── Camera mode ─────────────────────────────────────────────────────────────
 const CAMERA_MODES = ['free-orbit', 'top-down', 'cinematic', 'side-on'] as const;
@@ -97,477 +70,58 @@ function isCameraMode(s: string | null): s is CameraMode {
   return CAMERA_MODES.includes(s as CameraMode);
 }
 
-// ─── Track geometry constants (mirroring ReefRaceTrack v3 ring values) ───────
-const V2_RIBBON_SAMPLES = 64;
-const V2_BANK_HEIGHT    = 80;  // wu — must match ReefRaceTrack
-
 // ─── Module-scope scratch (no per-frame allocations) ─────────────────────────
-// Camera presets are now below the spline imports (they use _startCenter, _startNormal,
-// _startTangent). _sc1/_sc2 are scratch vectors used in overlay distance calc + bbox.
 const _sc1 = new THREE.Vector3();
-const _sc2 = new THREE.Vector3();
 
-// ─── Module-scope materials (page-lifetime, never disposed) ──────────────────
-// Mirrors the exact materials in ReefRaceTrack.tsx for an accurate preview.
-
-/** Sandy river-bed surface. */
-const _riverMat = new THREE.MeshStandardMaterial({
-  color: 0xc8a572,
-  roughness: 0.85,
-  metalness: 0.0,
-  side: THREE.DoubleSide,
-  fog: false,
-});
-
-/**
- * Bank walls — recolored to grass green so they blend with the new ground plane
- * and sandy ribbon from RiverScene. The old dark-brown 0x6b5544 showed as an
- * ugly black stripe in the cinematic view (v1 leftover).
- */
-const _bankMat = new THREE.MeshStandardMaterial({
-  color: 0x7cb342,  // grass green — matches GroundPlane in river-scene.tsx
-  roughness: 0.9,
-  metalness: 0.0,
-  side: THREE.DoubleSide,
-  fog: false,
-});
-
-/** Finish-line gate (gold). */
-const _finishMat = new THREE.MeshStandardMaterial({
-  color: 0xffd600,
-  roughness: 0.3,
-  metalness: 0.6,
-  fog: false,
-  emissive: new THREE.Color(0xffd600),
-  emissiveIntensity: 0.3,
-});
-
-/** Magenta reference cube (yardstick). */
-const _refCubeMat = new THREE.MeshStandardMaterial({
-  color: 0xff00ff,
-  roughness: 0.5,
-  metalness: 0.2,
-  fog: false,
-});
-
-/** Faint grid on river bed. */
-const _gridMat = new THREE.MeshBasicMaterial({
-  color: 0xffffff,
-  wireframe: true,
-  opacity: 0.12,
-  transparent: true,
-  fog: false,
-});
-
-// ─── Reference cube geometry (5wu × 5wu × 5wu) ───────────────────────────────
-const _refCubeGeo = new THREE.BoxGeometry(5, 5, 5);
-
-// ─── Geometry builders (mirrors ReefRaceTrack.tsx buildSpline* exactly) ──────
-
-function buildSplineRibbonGeo(samples: number): THREE.BufferGeometry {
-  const positions: number[] = [];
-  const normals: number[]   = [];
-  const uvs: number[]       = [];
-  const indices: number[]   = [];
-
-  // CLOSED-LOOP: emit `samples` vertex pairs only (t=0..t=(samples-1)/samples).
-  // The closing quad wraps indices back to 0/1 - no seam at start/finish.
-  for (let i = 0; i < samples; i++) {
-    const t  = i / samples;
-    const c  = clientSpline.centerlineAt(t);
-    const n  = clientSpline.normalAt(t);
-    const hw = clientSpline.widthAt(t);
-
-    // Left edge (normal = 90 CCW of tangent = left of travel)
-    positions.push(c.x + n.x * hw, 0, c.z + n.z * hw);
-    normals.push(0, 1, 0);
-    uvs.push(0, t);
-
-    // Right edge
-    positions.push(c.x - n.x * hw, 0, c.z - n.z * hw);
-    normals.push(0, 1, 0);
-    uvs.push(1, t);
-
-    const base  = i * 2;
-    const nextL = (i + 1 < samples) ? base + 2 : 0;
-    const nextR = (i + 1 < samples) ? base + 3 : 1;
-    indices.push(base, base + 1, nextL);
-    indices.push(base + 1, nextR, nextL);
-  }
-
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-  geo.setAttribute('normal',   new THREE.Float32BufferAttribute(normals,   3));
-  geo.setAttribute('uv',       new THREE.Float32BufferAttribute(uvs,       2));
-  geo.setIndex(indices);
-  return makeGeometryWebGPUSafe(geo);
-}
-
-function buildSplineBankGeos(
-  samples: number,
-): { left: THREE.BufferGeometry; right: THREE.BufferGeometry } {
-  const leftGeos:  THREE.BufferGeometry[] = [];
-  const rightGeos: THREE.BufferGeometry[] = [];
-
-  for (let i = 0; i < samples; i++) {
-    const t0 = i / samples;
-    const t1 = (i + 1) / samples;
-    const c0 = clientSpline.centerlineAt(t0);
-    const n0 = clientSpline.normalAt(t0);
-    const hw0 = clientSpline.widthAt(t0);
-    const c1 = clientSpline.centerlineAt(t1);
-    const n1 = clientSpline.normalAt(t1);
-    const hw1 = clientSpline.widthAt(t1);
-
-    // Left bank
-    {
-      const lx0 = c0.x + n0.x * hw0;  const lz0 = c0.z + n0.z * hw0;
-      const lx1 = c1.x + n1.x * hw1;  const lz1 = c1.z + n1.z * hw1;
-      const geo = new THREE.BufferGeometry();
-      geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array([
-        lx0, 0,              lz0,
-        lx0, V2_BANK_HEIGHT, lz0,
-        lx1, 0,              lz1,
-        lx1, V2_BANK_HEIGHT, lz1,
-      ]), 3));
-      geo.setAttribute('normal', new THREE.BufferAttribute(new Float32Array([
-        n0.x, 0, n0.z,  n0.x, 0, n0.z,
-        n1.x, 0, n1.z,  n1.x, 0, n1.z,
-      ]), 3));
-      geo.setIndex([0, 1, 2, 1, 3, 2]);
-      leftGeos.push(geo);
-    }
-
-    // Right bank
-    {
-      const rx0 = c0.x - n0.x * hw0;  const rz0 = c0.z - n0.z * hw0;
-      const rx1 = c1.x - n1.x * hw1;  const rz1 = c1.z - n1.z * hw1;
-      const geo = new THREE.BufferGeometry();
-      geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array([
-        rx0, 0,              rz0,
-        rx0, V2_BANK_HEIGHT, rz0,
-        rx1, 0,              rz1,
-        rx1, V2_BANK_HEIGHT, rz1,
-      ]), 3));
-      geo.setAttribute('normal', new THREE.BufferAttribute(new Float32Array([
-        -n0.x, 0, -n0.z,  -n0.x, 0, -n0.z,
-        -n1.x, 0, -n1.z,  -n1.x, 0, -n1.z,
-      ]), 3));
-      geo.setIndex([0, 2, 1, 1, 2, 3]);
-      rightGeos.push(geo);
-    }
-  }
-
-  const left  = makeGeometryWebGPUSafe(mergeGeometries(leftGeos)!);
-  const right = makeGeometryWebGPUSafe(mergeGeometries(rightGeos)!);
-  leftGeos.forEach(g => g.dispose());
-  rightGeos.forEach(g => g.dispose());
-  return { left, right };
-}
-
-function buildFinishGateGeo(): THREE.BufferGeometry {
-  const c    = clientSpline.centerlineAt(1.0);
-  const n    = clientSpline.normalAt(1.0);
-  const hw   = clientSpline.widthAt(1.0);
-  const pillarR = 15;
-  const pillarH = 200;
-  const barH    = 15;
-
-  const lx = c.x + n.x * hw;  const lz = c.z + n.z * hw;
-  const rx = c.x - n.x * hw;  const rz = c.z - n.z * hw;
-
-  const lp  = new THREE.CylinderGeometry(pillarR, pillarR, pillarH, 8);
-  const rp  = new THREE.CylinderGeometry(pillarR, pillarR, pillarH, 8);
-  const bar = new THREE.BoxGeometry(hw * 2 + pillarR * 2, barH, pillarR);
-
-  lp.applyMatrix4(new THREE.Matrix4().makeTranslation(lx, pillarH / 2, lz));
-  rp.applyMatrix4(new THREE.Matrix4().makeTranslation(rx, pillarH / 2, rz));
-  bar.applyMatrix4(new THREE.Matrix4().makeTranslation(c.x, pillarH + barH / 2, c.z));
-
-  const merged = makeGeometryWebGPUSafe(mergeGeometries([lp, rp, bar])!);
-  lp.dispose(); rp.dispose(); bar.dispose();
-  return merged;
-}
-
-/** Build a faint 100wu × 100wu grid at the start-line position. */
-function buildStartGrid100(): THREE.BufferGeometry {
-  const c  = clientSpline.centerlineAt(0);
-  const hw = 50; // 100wu total width, 100wu total length
-  const geo = new THREE.PlaneGeometry(hw * 2, hw * 2, 10, 10);
-  geo.rotateX(-Math.PI / 2);
-  geo.translate(c.x, 0.5, c.z); // slight Y offset to prevent z-fighting with river bed
-  return geo;
-}
-
-// ─── Measurement helpers ──────────────────────────────────────────────────────
-
-/** Compute bounding box of scene in world space, ignoring SkinnedMesh nodes. */
-function safeBBox(obj: THREE.Object3D): THREE.Box3 {
-  const box = new THREE.Box3();
-  obj.traverse((o) => {
-    const mesh = o as THREE.Mesh;
-    if (!mesh.isMesh || (o as unknown as THREE.SkinnedMesh).isSkinnedMesh) return;
-    if (!mesh.geometry) return;
-    mesh.geometry.computeBoundingBox();
-    const local = mesh.geometry.boundingBox!.clone();
-    local.applyMatrix4(mesh.matrixWorld);
-    box.union(local);
-  });
-  return box;
-}
-
-/** Count triangles in an Object3D tree. */
-function countTris(root: THREE.Object3D): number {
-  let tris = 0;
-  root.traverse((o) => {
-    const mesh = o as THREE.Mesh;
-    if (!mesh.isMesh || !mesh.geometry) return;
-    const idx = mesh.geometry.index;
-    tris += idx ? idx.count / 3 : (mesh.geometry.attributes.position?.count ?? 0) / 3;
-  });
-  return Math.round(tris);
-}
-
-// ─── Kart positions at 4 track t-values ──────────────────────────────────────
-const KART_T_VALUES = [0, 0.25, 0.5, 0.75] as const;
-
-// ─── Camera preset positions ──────────────────────────────────────────────────
-// All computed at module scope from spline to avoid repeated calls.
-// Ring track v3 REAL footprint (2026-06-23): X∈[-8026,7401], Z∈[-7607,7700] → ±8026wu span.
-// 27 CPs, arc ~53506wu. Start/finish at centerlineAt(0)≈(-2600,-7300).
-// Ring centroid ≈ world origin (0,0).
+// ─── Camera presets (SURF ROAD — frame the floating ribbon in the void) ──────
+// Footprint ≈ 17687 × 16941 wu; elevation span ≈ 1634 (Y ∈ [-559, 1075]).
+// Start/finish at centerlineAt(0) ≈ XZ(-2400, -8200), elevation ≈ elevationAt(0).
 const _startCenter = clientSpline.centerlineAt(0);
 const _startNormal = clientSpline.normalAt(0);
 const _startTangent = clientSpline.tangentAt(0);
+const _startY = elevationAtT(0);
 
-// FOV=50° → half-angle 25° → tan≈0.466.
-// Ring half-span ≈ 8026wu → altitude to frame full ring = 8026/0.466 ≈ 17,230wu.
-// Using 17500 to comfortably frame the ring + ground bands + island at scale.
+// Top-down: high above the loop centroid, frames the whole zig-zag from above.
+// Half-span ≈ 9000wu; FOV 50 → altitude ≈ 9000/tan(25°) ≈ 19300 → 21000 headroom.
+const TOPDOWN_CAM    = new THREE.Vector3(0, 21000, 0);
+const TOPDOWN_TARGET = new THREE.Vector3(0, 300, 0);
 
-/** Top-down: directly above ring centroid (world origin), frames the full closed loop.
- *  Altitude re-derived from ±8026wu actual footprint (was 12500 for ±5200wu). */
-const TOPDOWN_CAM    = new THREE.Vector3(0, 17500, 0);
-const TOPDOWN_TARGET = new THREE.Vector3(0, 0, 0);
-
-/** Side-on: looking across the start straight from outside the ring.
- *  Camera placed 9000wu out along start normal, 4000wu elevated. */
-const SIDEON_CAM    = new THREE.Vector3(
+// Side-on: across the start straight, low + outside, to read the UNDULATION
+// silhouette of the floating ribbon against the void.
+const SIDEON_CAM = new THREE.Vector3(
   _startCenter.x + _startNormal.x * 9000,
-  4000,
+  3200,
   _startCenter.z + _startNormal.z * 9000,
 );
-const SIDEON_TARGET = new THREE.Vector3(_startCenter.x, -100, _startCenter.z + 4000);
+const SIDEON_TARGET = new THREE.Vector3(_startCenter.x, _startY + 200, _startCenter.z + 3000);
 
-/** Cinematic: INSIDE the canyon at water level — racer's POV looking down the start straight.
- *  Cam sits at y=-150 (50wu above WATER_Y=-200), behind the start, looking forward. */
+// Cinematic: just above + behind the start, looking down the ribbon — a racer's
+// hero shot of the glowing road receding into the cosmos.
 const CINEMATIC_CAM = new THREE.Vector3(
-  _startCenter.x - _startTangent.x * 700,
-  -150,                                         // 50wu above water surface (WATER_Y=-200)
-  _startCenter.z - _startTangent.z * 700,
+  _startCenter.x - _startTangent.x * 1200,
+  _startY + 520,
+  _startCenter.z - _startTangent.z * 1200,
 );
-const CINEMATIC_TARGET = new THREE.Vector3(_startCenter.x, -180, _startCenter.z + 2000);
+const CINEMATIC_TARGET = new THREE.Vector3(
+  _startCenter.x + _startTangent.x * 1800,
+  _startY + 120,
+  _startCenter.z + _startTangent.z * 1800,
+);
 
-/** Default free-orbit position: 3/4 perspective SE of the ring showing the full loop.
- *  Re-derived for ±8026wu actual footprint (was 9000,8000,9000 for ±5200wu). */
-const FREE_CAM    = new THREE.Vector3(12000, 10000, 12000);
-const FREE_TARGET = new THREE.Vector3(0, 0, 0);
-
-// ─── Spline Track component ───────────────────────────────────────────────────
-
-function SplineTrack({ onTriUpdate }: { onTriUpdate: (n: number) => void }) {
-  const riverRef  = useRef<THREE.Mesh>(null);
-  const bankGroup = useRef<THREE.Group>(null);
-  const finishRef = useRef<THREE.Mesh>(null);
-  const gridRef   = useRef<THREE.Mesh>(null);
-
-  const riverGeo  = useMemo(() => buildSplineRibbonGeo(V2_RIBBON_SAMPLES), []);
-  const bankGeos  = useMemo(() => buildSplineBankGeos(V2_RIBBON_SAMPLES),  []);
-  const finishGeo = useMemo(() => buildFinishGateGeo(), []);
-  const gridGeo   = useMemo(() => buildStartGrid100(), []);
-
-  useEffect(() => {
-    let tris = 0;
-    if (riverRef.current)  tris += countTris(riverRef.current);
-    if (bankGroup.current) tris += countTris(bankGroup.current);
-    if (finishRef.current) tris += countTris(finishRef.current);
-    onTriUpdate(tris);
-  }, [riverGeo, bankGeos, finishGeo, onTriUpdate]);
-
-  useEffect(() => {
-    // Freeze transforms for static geo (Iris Xe perf)
-    [riverRef.current, finishRef.current, gridRef.current].forEach(m => {
-      if (m) { m.matrixAutoUpdate = false; m.updateMatrix(); }
-    });
-    if (bankGroup.current) {
-      bankGroup.current.traverse(o => {
-        if ((o as THREE.Mesh).isMesh) { o.matrixAutoUpdate = false; (o as THREE.Mesh).updateMatrix(); }
-      });
-    }
-    return () => {
-      riverGeo.dispose();
-      bankGeos.left.dispose();
-      bankGeos.right.dispose();
-      finishGeo.dispose();
-      gridGeo.dispose();
-    };
-  }, [riverGeo, bankGeos, finishGeo, gridGeo]);
-
-  return (
-    <group>
-      {/* River bed — position.y -250 cascades from iter-6 WATER_Y=-200 (bed 50wu below water) */}
-      <mesh ref={riverRef} geometry={riverGeo} material={_riverMat} position-y={-250} receiveShadow matrixAutoUpdate={false} />
-
-      {/* Bank walls — HIDDEN: replaced by <RockyBanks /> from rocky-banks.tsx
-          which provides the canyon cliff geometry. The old grass-green bank
-          walls overlapped the new cliffs and cast shadows producing dark
-          rectangles inside the river area (iter-5b regression). */}
-      <group ref={bankGroup} visible={false}>
-        <mesh geometry={bankGeos.left}  material={_bankMat} matrixAutoUpdate={false} />
-        <mesh geometry={bankGeos.right} material={_bankMat} matrixAutoUpdate={false} />
-      </group>
-
-      {/* Finish gate */}
-      <mesh ref={finishRef} geometry={finishGeo} material={_finishMat} castShadow matrixAutoUpdate={false} />
-
-      {/* 100wu × 100wu scale grid at start */}
-      <mesh ref={gridRef} geometry={gridGeo} material={_gridMat} matrixAutoUpdate={false} />
-    </group>
-  );
-}
-
-// ─── Reference cube component ─────────────────────────────────────────────────
-// Placed at z=200 wu from start line. Magenta so it's unmistakable.
-
-function RefCube() {
-  const c = clientSpline.centerlineAt(0);
-  return (
-    <mesh
-      geometry={_refCubeGeo}
-      material={_refCubeMat}
-      position={[c.x + 80, 2.5, c.z + 200]}
-      matrixAutoUpdate={false}
-    />
-  );
-}
-
-// ─── Single surfboard + lobster kart ─────────────────────────────────────────
-
-interface KartProps {
-  t: number;
-  color: string;
-  onMounted?: (obj: THREE.Group) => void;
-  visible?: boolean;
-}
-
-function SplineSurfboardKart({ t, color, onMounted, visible = true }: KartProps) {
-  const { scene: sbSrc }   = useGLTF('/models/reef-race/surfboards/surfboard_1.glb');
-  const { scene: lobSrc }  = useGLTF('/models/lobster.glb');
-
-  const groupRef   = useRef<THREE.Group>(null);
-  const gliderRef  = useRef<THREE.Group>(null);
-  const riderRef   = useRef<THREE.Group>(null);
-
-  const clonedSurf = useMemo(() => {
-    const sb = sbSrc.clone(true);
-    sb.traverse(o => { o.frustumCulled = false; });
-    // Apply color tint (50% blend — same as ReefRacePlayer)
-    sb.traverse(o => {
-      const mesh = o as THREE.Mesh;
-      if (!mesh.isMesh) return;
-      const applyTint = (m: THREE.Material) => {
-        if ((m as THREE.MeshStandardMaterial).isMeshStandardMaterial) {
-          const c = (m as THREE.MeshStandardMaterial).clone();
-          c.color.lerp(new THREE.Color(color), 0.5);
-          return c;
-        }
-        return m;
-      };
-      mesh.material = Array.isArray(mesh.material)
-        ? mesh.material.map(applyTint)
-        : applyTint(mesh.material);
-    });
-    sb.scale.set(GLIDER_WIDTH, GLIDER_HEIGHT * 4, GLIDER_LENGTH);
-    return sb;
-  }, [sbSrc, color]);
-
-  const clonedLob = useMemo(() => {
-    const lob = skeletonClone(lobSrc);
-    lob.traverse(o => { o.frustumCulled = false; });
-    return lob;
-  }, [lobSrc]);
-
-  // Attach surfboard clone to gliderRef
-  useEffect(() => {
-    const g = gliderRef.current;
-    if (!g) return;
-    g.add(clonedSurf);
-    return () => { g.remove(clonedSurf); };
-  }, [clonedSurf]);
-
-  // Attach lobster clone to riderRef
-  useEffect(() => {
-    const r = riderRef.current;
-    if (!r) return;
-    r.add(clonedLob);
-    return () => { r.remove(clonedLob); };
-  }, [clonedLob]);
-
-  // Place group at spline position + Y = 0 (on river bed)
-  useEffect(() => {
-    const gr = groupRef.current;
-    if (!gr) return;
-    const c = clientSpline.centerlineAt(t);
-    const tangent = clientSpline.tangentAt(t);
-    gr.position.set(c.x, 0, c.z);
-    // Facing angle: atan2(tx, tz) — tangent faces direction of travel
-    gr.rotation.y = Math.atan2(tangent.x, tangent.z);
-    gr.updateMatrix();
-    gr.matrixAutoUpdate = false;
-    if (onMounted) onMounted(gr);
-  }, [t, onMounted]);
-
-  // GLIDER_LOCAL_Y = KART_Y_ABOVE_TRACK / KART_SCALE
-  const gliderLocalY = KART_Y_ABOVE_TRACK / KART_SCALE;
-
-  return (
-    <group ref={groupRef} scale={[KART_SCALE, KART_SCALE, KART_SCALE]} visible={visible}>
-      <group ref={gliderRef} position={[0, gliderLocalY, 0]}>
-        {/* clonedSurf attached via useEffect */}
-        <group ref={riderRef} position={RIDER_MOUNT_OFFSET_DEFAULT}>
-          {/* clonedLob attached via useEffect */}
-        </group>
-      </group>
-    </group>
-  );
-}
+// Default free-orbit: a 3/4 hero of the whole floating loop in the void.
+const FREE_CAM    = new THREE.Vector3(13000, 9000, 13000);
+const FREE_TARGET = new THREE.Vector3(0, 200, 0);
 
 // ─── Production lighting (mirrors ReefLight in ReefRaceScene.tsx) ─────────────
 
 function PreviewLighting() {
-  const dirRef = useRef<THREE.DirectionalLight>(null);
-  useEffect(() => {
-    const d = dirRef.current;
-    if (!d) return;
-    d.shadow.mapSize.set(DIR_SHADOW_MAP_SIZE, DIR_SHADOW_MAP_SIZE);
-    d.shadow.camera.near = DIR_SHADOW_NEAR;
-    d.shadow.camera.far  = DIR_SHADOW_FAR;
-    const oc = d.shadow.camera as THREE.OrthographicCamera;
-    oc.left = oc.bottom = -DIR_SHADOW_CAM_BOUNDS;
-    oc.right = oc.top   =  DIR_SHADOW_CAM_BOUNDS;
-    oc.updateProjectionMatrix();
-    d.matrixAutoUpdate = false;
-    d.updateMatrix();
-  }, []);
-
   return (
     <>
       <hemisphereLight args={[HEMI_SKY_COLOR, HEMI_GROUND_COLOR, HEMI_INTENSITY]} />
       <directionalLight
-        ref={dirRef}
         color={DIR_COLOR}
         intensity={DIR_INTENSITY}
-        position={DIR_POSITION}
-        castShadow
+        position={DIR_POSITION as unknown as [number, number, number]}
       />
     </>
   );
@@ -582,10 +136,9 @@ interface CamControllerProps {
   onCamDist: (d: number) => void;
 }
 
-function CamController({ mode, autoRotate, controlsRef, onCamDist }: CamControllerProps) {
+function CamController({ mode, controlsRef, onCamDist }: CamControllerProps) {
   const { camera } = useThree();
 
-  // Apply preset on mode change
   useEffect(() => {
     const cam = camera as THREE.PerspectiveCamera;
     cam.near = CAMERA_NEAR;
@@ -596,94 +149,39 @@ function CamController({ mode, autoRotate, controlsRef, onCamDist }: CamControll
     if (!ctrl) return;
 
     switch (mode) {
-      case 'top-down': {
+      case 'top-down':
         cam.position.copy(TOPDOWN_CAM);
         ctrl.target.copy(TOPDOWN_TARGET);
-        // Switch to no FOV perspective for top-down clarity
         cam.fov = 50;
         break;
-      }
-      case 'side-on': {
+      case 'side-on':
         cam.position.copy(SIDEON_CAM);
         ctrl.target.copy(SIDEON_TARGET);
         break;
-      }
-      case 'cinematic': {
+      case 'cinematic':
         cam.position.copy(CINEMATIC_CAM);
         ctrl.target.copy(CINEMATIC_TARGET);
         break;
-      }
-      default: {
-        // free-orbit
+      default:
         cam.position.copy(FREE_CAM);
         ctrl.target.copy(FREE_TARGET);
         break;
-      }
     }
     cam.updateProjectionMatrix();
     ctrl.update();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode]);
 
-  // Cinematic — STATIC inside canyon (no orbit). Removed orbit because it
-  // pushed the cam OUT of the canyon during sweep, breaking the "inside the
-  // ravine" framing. Static keeps the player POV consistent.
   useFrame(() => {
     if (mode === 'cinematic') {
       const ctrl = controlsRef.current;
-      if (!ctrl) return;
-      camera.position.copy(CINEMATIC_CAM);
-      ctrl.target.copy(CINEMATIC_TARGET);
-      ctrl.update();
+      if (ctrl) {
+        camera.position.copy(CINEMATIC_CAM);
+        ctrl.target.copy(CINEMATIC_TARGET);
+        ctrl.update();
+      }
     }
-
-    // Emit camera-to-origin distance for overlay
     onCamDist(camera.position.distanceTo(_sc1.set(0, 0, 0)));
-  });
-
-  return null;
-}
-
-// ─── Measurement collector ────────────────────────────────────────────────────
-// Reads surfboard bounding box and river half-width at t=0, reports to parent.
-
-interface MeasurementsProps {
-  kartGroupRef: React.RefObject<THREE.Group | null>;
-  onMeasurements: (m: PreviewMeasurements) => void;
-}
-
-interface PreviewMeasurements {
-  boardW: number;
-  boardL: number;
-  boardH: number;
-  riverHalfW: number;
-  riverHalfWAt025: number;
-}
-
-function MeasurementCollector({ kartGroupRef, onMeasurements }: MeasurementsProps) {
-  const measured = useRef(false);
-
-  useFrame(() => {
-    if (measured.current) return;
-    const gr = kartGroupRef.current;
-    if (!gr) return;
-
-    // Force matrix world update for a freshly-placed static group
-    gr.updateMatrixWorld(true);
-    const box = safeBBox(gr);
-    if (box.isEmpty()) return;
-
-    measured.current = true;
-    const sz = _sc2.set(0, 0, 0);
-    box.getSize(sz as THREE.Vector3);
-
-    onMeasurements({
-      boardW:        parseFloat(sz.x.toFixed(1)),
-      boardL:        parseFloat(sz.z.toFixed(1)),
-      boardH:        parseFloat(sz.y.toFixed(1)),
-      riverHalfW:    parseFloat(clientSpline.widthAt(0).toFixed(1)),
-      riverHalfWAt025: parseFloat(clientSpline.widthAt(0.25).toFixed(1)),
-    });
   });
 
   return null;
@@ -695,257 +193,124 @@ interface SceneContentsProps {
   mode: CameraMode;
   autoRotate: boolean;
   controlsRef: React.RefObject<OrbitControlsImpl | null>;
-  onTriCount: (total: number) => void;
   onCamDist: (d: number) => void;
-  onMeasurements: (m: PreviewMeasurements) => void;
 }
 
-// Stable kart colors for the 4 t-values
-const KART_COLORS = ['#00ccff', '#ff4400', '#44ff44', '#ffcc00'];
-
-function SceneContents({
-  mode,
-  autoRotate,
-  controlsRef,
-  onTriCount,
-  onCamDist,
-  onMeasurements,
-}: SceneContentsProps) {
-  // Tri counts from each sub-component, summed
-  const trackTriRef  = useRef(0);
-  const kartTrisRef  = useRef([0, 0, 0, 0]);
-  const triUpdateTick = useRef(0);
-
-  const reportTrackTris = useCallback((n: number) => {
-    trackTriRef.current = n;
-    triUpdateTick.current++;
-    onTriCount(trackTriRef.current + kartTrisRef.current.reduce((a, b) => a + b, 0));
-  }, [onTriCount]);
-
-  // Kart group ref for start kart (t=0) — used for measurements
-  const startKartRef = useRef<THREE.Group | null>(null);
-  const handleKartMounted = useCallback((gr: THREE.Group) => {
-    startKartRef.current = gr;
-  }, []);
-
-  // Grab tris from scene after mount (simple: use gl.info.render)
-  const { gl } = useThree();
-  useFrame(() => {
-    // Expose draw triangles in overlay via gl.info
-    void gl; // reference used in overlay via onTriCount from track geo
-  });
-
+function SceneContents({ mode, autoRotate, controlsRef, onCamDist }: SceneContentsProps) {
   return (
     <>
-      <CamController
-        mode={mode}
-        autoRotate={autoRotate}
-        controlsRef={controlsRef}
-        onCamDist={onCamDist}
-      />
+      <CamController mode={mode} autoRotate={autoRotate} controlsRef={controlsRef} onCamDist={onCamDist} />
 
-      {/* Free orbit / top-down / side-on: OrbitControls enabled; cinematic: overridden by CamController */}
       <OrbitControls
         ref={controlsRef as unknown as React.Ref<OrbitControlsImpl>}
         enableDamping
         dampingFactor={0.08}
         autoRotate={autoRotate && mode === 'free-orbit'}
-        autoRotateSpeed={1.0}
-        // Prevent going under the river bed
-        maxPolarAngle={Math.PI * 0.85}
-        // Clamp zoom to [500, 26000]. Ring v3 top-down preset is 17500wu altitude
-        // (±8026wu real footprint); 26000 gives zoom-out room before hitting fog haze.
-        // (Previous was 18000 for the miscalibrated ±5200wu estimate.)
+        autoRotateSpeed={0.8}
+        maxPolarAngle={Math.PI * 0.92}
         minDistance={500}
-        maxDistance={26000}
+        maxDistance={28000}
       />
 
-      {/* Production fog */}
+      {/* Deep cosmic void atmosphere */}
       <fog args={[FOG_COLOR, FOG_NEAR, FOG_FAR]} />
-      {/* Sky-blue clear color matches SkyDome horizon — prevents flash before dome renders */}
-      <color attach="background" args={['#a8d8ff']} />
+      <color attach="background" args={['#0c1a2e']} />
 
-      {/* Low-poly stylized river atmosphere — dome, water surface, scenery */}
-      <RiverScene />
+      {/* SURF ROAD: cosmic void + floating water ribbon + neon rails + demo karts
+          + ramps. Demo karts ON in the preview so the human sees riders on the
+          ribbon through the climbs/drops. */}
+      <RiverScene showDemoKarts />
 
-      {/* Central island — atoll at world XZ (0,0) around which the circuit orbits */}
-      <Suspense fallback={null}>
-        <CentralIsland />
-      </Suspense>
-
-      {/* Production lighting */}
       <PreviewLighting />
 
-      {/* River bed + bank walls + finish gate + scale grid */}
-      <Suspense fallback={null}>
-        <SplineTrack onTriUpdate={reportTrackTris} />
-      </Suspense>
-
-      {/* Demo karts now ride via <AnimatedKarts /> inside <RiverScene> — see
-          river-scene.tsx. The static t=0 SplineSurfboardKart is still mounted
-          (invisible) to keep the bbox-measurement HUD readout populated. */}
-      <Suspense fallback={null}>
-        <SplineSurfboardKart
-          t={0}
-          color={KART_COLORS[0]!}
-          onMounted={handleKartMounted}
-          visible={false}
-        />
-      </Suspense>
-
-      {/* Measurement collector — reads start kart bbox */}
-      <MeasurementCollector
-        kartGroupRef={startKartRef}
-        onMeasurements={onMeasurements}
-      />
-
-      {/* Magenta reference cube: 5wu × 5wu × 5wu at z=+200 from start */}
-      <RefCube />
+      {/* Selective neon bloom — LAST so it composes the final framebuffer */}
+      <SurfBloom />
     </>
   );
 }
 
 // ─── Overlay panel ────────────────────────────────────────────────────────────
 
-interface OverlayProps {
-  mode: CameraMode;
-  triCount: number | null;
-  camDist: number;
-  frameMs: number;
-  autoRotate: boolean;
-  measurements: PreviewMeasurements | null;
-  onModeChange: (m: CameraMode) => void;
-  onToggleAutoRotate: () => void;
-  onResetCamera: () => void;
-}
-
 const overlayStyle: React.CSSProperties = {
   position: 'absolute',
   top: 12,
   left: 12,
-  background: 'rgba(0,0,0,0.68)',
-  color: '#cde',
+  background: 'rgba(4,10,22,0.78)',
+  color: '#bfe8ff',
   fontFamily: 'monospace',
   fontSize: 12,
   lineHeight: 1.6,
   padding: '10px 14px',
   borderRadius: 6,
   zIndex: 20,
-  minWidth: 260,
+  minWidth: 240,
   pointerEvents: 'auto',
   userSelect: 'none',
 };
 
-const labelStyle: React.CSSProperties = {
-  color: '#8ab',
-  display: 'inline-block',
-  width: 160,
-};
-
-const valStyle: React.CSSProperties = {
-  color: '#fff',
-  fontWeight: 'bold',
-};
-
+const labelStyle: React.CSSProperties = { color: '#6fb4d6', display: 'inline-block', width: 150 };
+const valStyle: React.CSSProperties = { color: '#fff', fontWeight: 'bold' };
 const selectStyle: React.CSSProperties = {
-  background: '#1a3a6b',
-  color: '#cde',
-  border: '1px solid #4488cc',
-  borderRadius: 4,
-  padding: '2px 6px',
-  fontSize: 12,
-  cursor: 'pointer',
-  marginTop: 6,
-  width: '100%',
+  background: '#0e2a4a', color: '#bfe8ff', border: '1px solid #3a8fd0',
+  borderRadius: 4, padding: '2px 6px', fontSize: 12, cursor: 'pointer', marginTop: 6, width: '100%',
 };
-
 const btnStyle: React.CSSProperties = {
-  background: '#1a3a6b',
-  color: '#cde',
-  border: '1px solid #4488cc',
-  borderRadius: 4,
-  padding: '3px 10px',
-  fontSize: 12,
-  cursor: 'pointer',
-  marginTop: 4,
-  marginRight: 4,
+  background: '#0e2a4a', color: '#bfe8ff', border: '1px solid #3a8fd0',
+  borderRadius: 4, padding: '3px 10px', fontSize: 12, cursor: 'pointer', marginTop: 4, marginRight: 4,
 };
 
-function OverlayPanel({
-  mode,
-  triCount,
-  camDist,
-  frameMs,
-  autoRotate,
-  measurements,
-  onModeChange,
-  onToggleAutoRotate,
-  onResetCamera,
-}: OverlayProps) {
+interface OverlayProps {
+  mode: CameraMode;
+  camDist: number;
+  frameMs: number;
+  autoRotate: boolean;
+  onModeChange: (m: CameraMode) => void;
+  onToggleAutoRotate: () => void;
+  onResetCamera: () => void;
+}
+
+function OverlayPanel({ mode, camDist, frameMs, autoRotate, onModeChange, onToggleAutoRotate, onResetCamera }: OverlayProps) {
   return (
     <div style={overlayStyle}>
       <div style={{ fontWeight: 'bold', fontSize: 13, marginBottom: 6, color: '#fff', letterSpacing: 1 }}>
-        Reef Race v2 Preview
+        SURF ROAD Preview
       </div>
-
-      {/* Performance */}
-      <div><span style={labelStyle}>Triangles</span><span style={valStyle}>{triCount !== null ? triCount.toLocaleString() : '—'}</span></div>
       <div><span style={labelStyle}>Frame time</span><span style={valStyle}>{frameMs > 0 ? frameMs.toFixed(1) + ' ms' : '—'}</span></div>
-      <div><span style={labelStyle}>Cam dist from origin</span><span style={valStyle}>{camDist.toFixed(0)} wu</span></div>
+      <div><span style={labelStyle}>Cam dist (origin)</span><span style={valStyle}>{camDist.toFixed(0)} wu</span></div>
 
-      {/* Measurements */}
-      <div style={{ marginTop: 8, borderTop: '1px solid #334', paddingTop: 6 }}>
-        <div style={{ color: '#8ab', fontSize: 11, marginBottom: 4 }}>MEASUREMENTS (at t=0 start kart)</div>
-        <div><span style={labelStyle}>Surfboard width</span><span style={valStyle}>{measurements ? measurements.boardW + ' wu' : '—'}</span></div>
-        <div><span style={labelStyle}>Surfboard length</span><span style={valStyle}>{measurements ? measurements.boardL + ' wu' : '—'}</span></div>
-        <div><span style={labelStyle}>Surfboard height</span><span style={valStyle}>{measurements ? measurements.boardH + ' wu' : '—'}</span></div>
-        <div><span style={labelStyle}>River half-width at t=0</span><span style={valStyle}>{measurements ? measurements.riverHalfW + ' wu' : '—'}</span></div>
-        <div><span style={labelStyle}>River half-width at t=0.25</span><span style={valStyle}>{measurements ? measurements.riverHalfWAt025 + ' wu' : '—'}</span></div>
-        <div><span style={labelStyle}>Bank wall height</span><span style={valStyle}>{V2_BANK_HEIGHT} wu</span></div>
-        <div style={{ color: '#8ab', fontSize: 10, marginTop: 3 }}>Ref cube = 5×5×5 wu (magenta, z+200 from start)</div>
-      </div>
-
-      {/* Mode */}
-      <div style={{ marginTop: 8, borderTop: '1px solid #334', paddingTop: 6 }}>
-        <div style={{ color: '#8ab', fontSize: 11, marginBottom: 4 }}>CAMERA MODE</div>
+      <div style={{ marginTop: 8, borderTop: '1px solid #1c3a55', paddingTop: 6 }}>
+        <div style={{ color: '#6fb4d6', fontSize: 11, marginBottom: 4 }}>CAMERA MODE</div>
         <div><span style={labelStyle}>Current</span><span style={valStyle}>{mode}</span></div>
-        <select
-          value={mode}
-          onChange={e => onModeChange(e.target.value as CameraMode)}
-          style={selectStyle}
-        >
+        <select value={mode} onChange={e => onModeChange(e.target.value as CameraMode)} style={selectStyle}>
           {CAMERA_MODES.map(m => <option key={m} value={m}>{m}</option>)}
         </select>
       </div>
 
-      {/* Controls */}
       <div style={{ marginTop: 8 }}>
         <button style={btnStyle} onClick={onResetCamera}>Reset Camera</button>
         <button
-          style={{ ...btnStyle, background: autoRotate ? '#1a5a2b' : '#1a3a6b' }}
+          style={{ ...btnStyle, background: autoRotate ? '#0e4a2b' : '#0e2a4a' }}
           onClick={onToggleAutoRotate}
         >
           Auto-Rotate {autoRotate ? 'ON' : 'OFF'}
         </button>
       </div>
 
-      <div style={{ marginTop: 8, color: '#566', fontSize: 10 }}>
-        Kart colors: cyan=t=0, red=t=0.25, green=t=0.5, yellow=t=0.75
+      <div style={{ marginTop: 8, color: '#456', fontSize: 10 }}>
+        Floating water ribbon · neon rails · cosmic void. Karts ride the elevation.
       </div>
     </div>
   );
 }
 
 // ─── FPS ticker ───────────────────────────────────────────────────────────────
-// Measures render frame time inside the R3F loop for overlay display.
 
 function FrameTicker({ onFrameMs }: { onFrameMs: (ms: number) => void }) {
   const lastT = useRef(performance.now());
   useFrame(() => {
     const now = performance.now();
-    const dt  = now - lastT.current;
+    onFrameMs(now - lastT.current);
     lastT.current = now;
-    onFrameMs(dt);
   });
   return null;
 }
@@ -957,28 +322,19 @@ function ReefRacePreviewInner() {
   const router       = useRouter();
 
   const rawMode = searchParams.get('mode');
-  // Default to top-down so first paint shows the slalom layout. free-orbit
-  // landed at an unhelpful angle that made the river render as a vertical
-  // sliver (camera was almost parallel to bed plane). Confirmed visually
-  // 2026-04-29 from the broken first preview render.
-  const mode: CameraMode = isCameraMode(rawMode) ? rawMode : 'top-down';
+  // Default to free-orbit hero of the whole floating loop in the void.
+  const mode: CameraMode = isCameraMode(rawMode) ? rawMode : 'free-orbit';
 
-  const [triCount,     setTriCount]     = useState<number | null>(null);
-  const [camDist,      setCamDist]      = useState(0);
-  const [frameMs,      setFrameMs]      = useState(0);
-  const [autoRotate,   setAutoRotate]   = useState(false);
-  const [measurements, setMeasurements] = useState<PreviewMeasurements | null>(null);
+  const [camDist,    setCamDist]    = useState(0);
+  const [frameMs,    setFrameMs]    = useState(0);
+  const [autoRotate, setAutoRotate] = useState(false);
 
   const controlsRef = useRef<OrbitControlsImpl>(null);
 
   const handleModeChange = useCallback((m: CameraMode) => {
     router.push(`/preview/reef-race-v2?mode=${m}`);
   }, [router]);
-
-  const handleToggleAutoRotate = useCallback(() => {
-    setAutoRotate(v => !v);
-  }, []);
-
+  const handleToggleAutoRotate = useCallback(() => setAutoRotate(v => !v), []);
   const handleResetCamera = useCallback(() => {
     const ctrl = controlsRef.current;
     if (!ctrl) return;
@@ -987,24 +343,16 @@ function ReefRacePreviewInner() {
     ctrl.target.copy(FREE_TARGET);
     ctrl.update();
   }, []);
-
-  const handleTriCount    = useCallback((n: number) => setTriCount(n), []);
-  const handleCamDist     = useCallback((d: number) => setCamDist(d),  []);
-  const handleFrameMs     = useCallback((ms: number) => setFrameMs(ms), []);
-  const handleMeasurements = useCallback((m: PreviewMeasurements) => setMeasurements(m), []);
+  const handleCamDist = useCallback((d: number) => setCamDist(d), []);
+  const handleFrameMs = useCallback((ms: number) => setFrameMs(ms), []);
 
   return (
     <div style={{
-      width: '100vw',
-      height: '100vh',
-      background: FOG_COLOR,
-      overflow: 'hidden',
-      position: 'relative',
-      fontFamily: 'monospace',
+      width: '100vw', height: '100vh', background: '#0c1a2e',
+      overflow: 'hidden', position: 'relative', fontFamily: 'monospace',
     }}>
       <Canvas
         camera={{ position: [FREE_CAM.x, FREE_CAM.y, FREE_CAM.z], fov: 60, near: CAMERA_NEAR, far: CAMERA_FAR }}
-        shadows
         gl={{ antialias: false }}
         dpr={[1, 1.5]}
         style={{ width: '100%', height: '100%' }}
@@ -1014,9 +362,7 @@ function ReefRacePreviewInner() {
             mode={mode}
             autoRotate={autoRotate}
             controlsRef={controlsRef}
-            onTriCount={handleTriCount}
             onCamDist={handleCamDist}
-            onMeasurements={handleMeasurements}
           />
         </Suspense>
         <FrameTicker onFrameMs={handleFrameMs} />
@@ -1024,11 +370,9 @@ function ReefRacePreviewInner() {
 
       <OverlayPanel
         mode={mode}
-        triCount={triCount}
         camDist={camDist}
         frameMs={frameMs}
         autoRotate={autoRotate}
-        measurements={measurements}
         onModeChange={handleModeChange}
         onToggleAutoRotate={handleToggleAutoRotate}
         onResetCamera={handleResetCamera}
@@ -1038,8 +382,6 @@ function ReefRacePreviewInner() {
 }
 
 // ─── Root export — Suspense boundary for useSearchParams ─────────────────────
-// Next.js 16 requires wrapping useSearchParams in <Suspense> even on dynamic
-// 'use client' pages. The outer shell is the boundary; inner reads params.
 
 export default function ReefRaceV2PreviewPage() {
   return (

@@ -28,23 +28,23 @@
  * Performance budget: ≤70 draw calls / ≤220k tris.
  */
 
-import { Suspense, useEffect, useRef, useMemo, useCallback } from 'react';
+import { Suspense, useEffect, useRef, useCallback } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
 
 import ReefRaceTrack         from './ReefRaceTrack';
-import ReefRaceCheckpoints   from './ReefRaceCheckpoints';
-import ReefRaceStartGrid     from './ReefRaceStartGrid';
 import ReefRacePlayer        from './ReefRacePlayer';
 import ReefRaceGhost         from './ReefRaceGhost';
 import ReefRacePickups       from './ReefRacePickups';
 import ReefRaceBoostFX       from './ReefRaceBoostFX';
-import ReefRaceBoostRibbons  from './ReefRaceBoostRibbons';
-import ReefRaceHazards       from './ReefRaceHazards';
-import ReefRaceApexMarkers   from './ReefRaceApexMarkers';
+// SURF ROAD (2026-06-23): ReefRaceCheckpoints / ReefRaceStartGrid /
+// ReefRaceBoostRibbons / ReefRaceHazards / ReefRaceApexMarkers are no longer
+// mounted — flat v1-coordinate overlays that float wrong against the elevated
+// floating ribbon. See the SceneContents note. Imports removed.
 import { ActivityBursts }    from '@/lib/three/activities/shared/activity-particles';
 import { RiverScene }       from './river-scene';
-import { CentralIsland }   from './central-island';
+import { SurfBloom }        from './surf-bloom';
+import { elevationAtXZ, forgetTKey } from './reef-race-elevation';
 import { useActivityStore } from '@/stores/activity';
 import {
   FOG_COLOR,
@@ -65,8 +65,6 @@ import {
   DIR_SHADOW_NEAR,
   DIR_SHADOW_FAR,
   DIR_SHADOW_CAM_BOUNDS,
-  VOID_BACKDROP_Y,
-  VOID_BACKDROP_SIZE,
   TRACK_SURFACE_Y,
 } from './reef-race-config';
 import { selfPoseBus, SELF_POSE_BUS_STALE_MS } from './reef-race-self-bus';
@@ -166,33 +164,6 @@ function ReefLight() {
   );
 }
 
-// ─── Depth backdrop (below track plane) ──────────────────────────────────────
-// MeshBasicMaterial ignores fog — placed far enough to be invisible.
-function DepthBackdrop() {
-  const geo = useMemo(() => new THREE.PlaneGeometry(VOID_BACKDROP_SIZE, VOID_BACKDROP_SIZE), []);
-  const mat = useMemo(
-    () => new THREE.MeshBasicMaterial({ color: '#061020', side: THREE.FrontSide }),
-    [],
-  );
-  useEffect(() => {
-    return () => {
-      geo.dispose();
-      mat.dispose();
-    };
-  }, [geo, mat]);
-
-  return (
-    <mesh
-      geometry={geo}
-      material={mat}
-      position={[0, VOID_BACKDROP_Y, 0]}
-      rotation={[-Math.PI / 2, 0, 0]}
-      frustumCulled={false}
-      matrixAutoUpdate={false}
-    />
-  );
-}
-
 // ─── Chase camera ─────────────────────────────────────────────────────────────
 // Procedural lerp-follow in useFrame — no OrbitControls.
 // Module-scope scratch vectors prevent GC pressure.
@@ -219,6 +190,8 @@ function ChaseCamera({ selfEntity, shakeRef }: ChaseCamProps) {
     cam.far  = CAMERA_FAR;
     cam.fov  = 60;
     cam.updateProjectionMatrix();
+    // SURF ROAD: drop the 'cam' elevation-cache key on teardown.
+    return () => { forgetTKey('cam'); };
   }, [camera]);
 
   useFrame((_, delta) => {
@@ -318,15 +291,27 @@ function ChaseCamera({ selfEntity, shakeRef }: ChaseCamProps) {
       CAMERA_OFFSET.y,
       -CAMERA_OFFSET.x * Math.sin(heading) + CAMERA_OFFSET.z * Math.cos(heading),
     );
-    _targetPos.set(renderX, TRACK_SURFACE_Y, renderZ).add(_rotatedOffset);
+
+    // ─── SURF ROAD: lift the camera datum by the FLOATING ribbon elevation ────
+    // The ribbon Y at the kart's XZ is reefTrackElevationAt(closest spline-t),
+    // cheaply cached under the 'cam' key (one local-scan lookup/frame). Both the
+    // camera eye AND the lookAt rise/dip by the SAME value the ribbon + rider
+    // use (the parity contract) so the camera frames the rider through every
+    // climb/drop and never clips into the ribbon or loses the rider over a
+    // crest. TRACK_SURFACE_Y is now 0 (the datum is the elevation function).
+    const camGroundY = USE_SPLINE_CAMERA
+      ? TRACK_SURFACE_Y + elevationAtXZ(renderX, renderZ, 'cam')
+      : TRACK_SURFACE_Y;
+
+    _targetPos.set(renderX, camGroundY, renderZ).add(_rotatedOffset);
 
     // Lerp camera position.
     const lerpFactor = Math.min(1, CAMERA_LERP * delta);
     _camPos.copy(cam.position).lerp(_targetPos, lerpFactor);
     cam.position.copy(_camPos);
 
-    // Look at kart + upward offset.
-    _lookAt.set(renderX, TRACK_SURFACE_Y, renderZ).add(CAMERA_LOOK_OFFSET);
+    // Look at kart + upward offset (also riding the elevation datum).
+    _lookAt.set(renderX, camGroundY, renderZ).add(CAMERA_LOOK_OFFSET);
     cam.lookAt(_lookAt);
 
     // Screen shake — decay and apply camera position offset.
@@ -384,8 +369,15 @@ function SceneContents({ entities, selfAvatarId, matchPhase, raceStartMs }: Scen
   // Use module-scope scratch to avoid a `new Vector3()` allocation every render.
   // ReefRaceBoostFX only reads playerPos.x/y/z inside useFrame (RAF), which fires
   // after this render — the scratch value is stable for the duration of the frame.
+  // SURF ROAD: lift the boost-FX anchor onto the floating ribbon (render-only
+  // elevation at the self kart's XZ; reuses the 'cam' elevation-cache key since
+  // it's the same neighbourhood the camera already resolved this frame).
   const selfPos = selfEntity
-    ? _selfPosScratch.set(selfEntity.x, 0, selfEntity.y)
+    ? _selfPosScratch.set(
+        selfEntity.x,
+        USE_SPLINE_CAMERA ? elevationAtXZ(selfEntity.x, selfEntity.y, 'cam') : 0,
+        selfEntity.y,
+      )
     : null;
 
   // Screen shake — mutable ref, zero re-renders.
@@ -404,57 +396,47 @@ function SceneContents({ entities, selfAvatarId, matchPhase, raceStartMs }: Scen
       : false,
   );
 
-  const gantryPhase = useMemo(() => {
-    if (matchPhase === 'pregame-countdown') return 'red' as const;
-    if (matchPhase === 'live')              return 'green' as const;
-    return 'off' as const;
-  }, [matchPhase]);
+  // SURF ROAD: the start-grid countdown gantry is no longer rendered in-scene
+  // (the flat v1 start grid is unmounted — see the SceneContents note). The
+  // pregame countdown is shown in the HUD. `matchPhase` is still received for
+  // contract stability but no longer drives an in-scene gantry colour.
+  void matchPhase;
 
   return (
     <>
       {/* Chase camera (follows selfEntity) */}
       <ChaseCamera selfEntity={selfEntity} shakeRef={shakeRef} />
 
-      {/* Atmosphere */}
+      {/* Atmosphere — SURF ROAD: deep cosmic void. Fog is pushed far out (9000–
+          22000) so it only softens the FAR side of the loop into the void; the
+          ribbon + rails are fog:false (always crisp). Background = void colour so
+          the first paint (before the dome resolves) is already deep, not sky-blue. */}
       <fog args={[FOG_COLOR, FOG_NEAR, FOG_FAR]} />
-      {/* Sky-blue clear color matches SkyDome horizon — prevents flash before dome renders */}
-      <color attach="background" args={['#a8d8ff']} />
+      <color attach="background" args={['#0c1a2e']} />
 
-      {/* Low-poly stylized river atmosphere — dome, water surface, scenery.
-          showDemoKarts/Pickups disabled in real gameplay so the 5 cosmetic
-          spline karts and decorative power-up boxes don't visually compete
-          with the server-driven <ReefRacePlayer /> + <ReefRacePickups />. */}
+      {/* SURF ROAD: the cosmic void backdrop + the glowing FLOATING WATER RIBBON
+          (+ neon rails + crests) + ramps. No land/island/ground/sky. The ribbon
+          rides reefTrackElevationAt(t) + reefTrackBankAngleAt(t). Demo karts off
+          in gameplay (server karts render via <ReefRacePlayer />). */}
       <RiverScene showDemoKarts={false} showDemoPickups={false} />
-
-      {/* Central island — low-poly atoll at world XZ (0,0) around which the
-          closed circuit orbits. Renders at world Y (no TRACK_SURFACE_Y offset)
-          so the island base sits at WATER_Y=-200 (same as RiverScene). */}
-      <Suspense fallback={null}>
-        <CentralIsland />
-      </Suspense>
 
       {/* Lighting */}
       <ReefLight />
 
-      {/* Depth backdrop (below track plane) */}
-      <DepthBackdrop />
-
       <group position-y={TRACK_SURFACE_Y}>
-        {/* Static track geometry */}
+        {/* Spline-derived start/finish gate (lifted onto the ribbon).
+            SURF ROAD (2026-06-23): the flat v1-ellipse-coordinate overlays —
+            <ReefRaceCheckpoints/>, <ReefRaceBoostRibbons/>, <ReefRaceHazards/>,
+            <ReefRaceApexMarkers/>, <ReefRaceStartGrid/> — are NOT mounted in the
+            floating-ribbon scene. They were authored against the old flat plane
+            (Y=0) and the v1 ellipse/zone coords, so against the undulating ribbon
+            they float detached at the wrong altitude/position. They are pure
+            client visuals (no sim/scoring dependency); the countdown still shows
+            in the HUD, and the start/finish is marked by the spline finish gate.
+            Re-add later as spline-t + elevation-aware overlays if desired. */}
         <Suspense fallback={null}>
           <ReefRaceTrack />
         </Suspense>
-
-        {/* Checkpoints (merged static) */}
-        <ReefRaceCheckpoints />
-
-        {/* Phase 2 — boost ribbons, hazard patches, apex markers (static) */}
-        <ReefRaceBoostRibbons />
-        <ReefRaceHazards />
-        <ReefRaceApexMarkers />
-
-        {/* Start grid + gantry + flags */}
-        <ReefRaceStartGrid gantryPhase={gantryPhase} />
 
         {/* Player karts — up to 8 draw calls */}
         <Suspense fallback={null}>
@@ -486,8 +468,13 @@ function SceneContents({ entities, selfAvatarId, matchPhase, raceStartMs }: Scen
       {/* Dev debug surface — exposes window.__reefDebug in dev / ?debug=1 */}
       <DebugExpose entities={entities} />
 
-      {/* Pipeline pre-compilation — must be LAST */}
+      {/* Pipeline pre-compilation */}
       <PreCompilePipelines />
+
+      {/* SURF ROAD: selective bloom on the neon rails + water crests. Takes over
+          the render loop (positive-priority useFrame) so it MUST be the LAST
+          child — it composes the final framebuffer. Iris-Xe-gated (half-res). */}
+      <SurfBloom />
     </>
   );
 }

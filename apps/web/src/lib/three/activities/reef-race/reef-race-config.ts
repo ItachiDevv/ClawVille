@@ -260,8 +260,18 @@ export const PICKUP_SPIN_SPEED = 0.8;
 
 /** Pickup Y hover height above track surface. */
 export const PICKUP_Y_ABOVE_TRACK = 50;
-// Keep in sync with WATER_Y in water-surf.tsx:49 so race content sits on the flowing river surface.
-export const TRACK_SURFACE_Y = -200;
+/**
+ * Track-group base Y.
+ *
+ * SURF ROAD (2026-06-23): the floating ribbon's vertical datum is now the
+ * render-only `reefTrackElevationAt(t)` profile (reef-race-elevation.ts), NOT a
+ * flat plane. The ribbon vertices, the rider, and the chase camera all read
+ * elevation(t) directly, so the wrapping track group sits at world Y=0 and the
+ * per-t altitude lives in the geometry/transforms. Was -200 (the old flat water
+ * plane); a flat offset here would DOUBLE-shift everything off the elevation
+ * datum. Keep at 0.
+ */
+export const TRACK_SURFACE_Y = 0;
 
 /** Canvas texture size for '?' face. */
 export const PICKUP_TEXTURE_SIZE = 64;
@@ -299,60 +309,75 @@ export const CAMERA_NEAR = 1;
  * but opposing-side karts and props still need camera.far ≥ fog.far.
  * With FOG_FAR=4500, CAMERA_FAR must be ≥ 4500. 5000 gives headroom.
  */
-export const CAMERA_FAR = 5000;
+/**
+ * Camera far clip plane.
+ * SURF ROAD (2026-06-23): the cosmic void dome has radius 30000wu and the ribbon
+ * footprint is ~17687×16941wu, so the far plane must reach the dome from a chase
+ * pull-back without clipping the void. 34000 gives headroom beyond the 30000
+ * dome. Iris Xe rule: fog.far ≤ camera.far still holds (fog is pushed far out —
+ * the void IS the backdrop, not fog).
+ */
+export const CAMERA_FAR = 34000;
 
 /**
  * Chase-cam offset in player-local space (behind and above).
- * Y raised 200→280→320 (2026-04-29 QA: 280 still clipped Milady's hair tip ~5-10px;
- * 320 gives ~12° headroom above lookAt, well clear of 30° FOV half-angle top edge).
- * Math: lookAt at Y=130 from camera Y=320 at chase 350wu = 32° down pitch;
- * head_top at world Y≈175 → relative pitch atan2(45,350)=7.3° above lookAt = -25° from top edge.
+ * SURF ROAD (2026-06-23): raised + pulled back (320/-350 → 420/-560) to frame
+ * the floating ribbon through its climbs/drops + the wider void. The camera Y is
+ * also lifted by reefTrackElevationAt(t) at runtime (ReefRaceScene), so this is
+ * the LOCAL offset above the elevation datum. The extra height/pull-back keeps
+ * the rider centred when the ribbon undulates beneath the camera.
  */
-export const CAMERA_OFFSET = new THREE.Vector3(0, 320, -350);
+export const CAMERA_OFFSET = new THREE.Vector3(0, 420, -560);
 
 /**
  * Chase-cam look-at offset from player position (slightly above kart).
- * Y raised from 80→130 (2026-04-29 QA fix S1): lookAt at Y=130 targets chest
- * height; head sits ~89wu above that point; at 350wu chase distance the
- * vertical angle is atan2(89,350)≈14°, well within the ±30° FOV half-angle.
+ * SURF ROAD: lookAt Y 130→180 — the look target also rides elevation(t) at
+ * runtime; the higher local offset frames the rider + a little of the ribbon
+ * ahead/below through crests so the surfer is never lost over a rise.
  */
-export const CAMERA_LOOK_OFFSET = new THREE.Vector3(0, 130, 0);
+export const CAMERA_LOOK_OFFSET = new THREE.Vector3(0, 180, 0);
 
 /** Chase-cam lerp factor per second (0→1: instant, 1: no follow). */
 export const CAMERA_LERP = 5.0;
 
 // ─── Fog ─────────────────────────────────────────────────────────────────────
 
-/** Fog color — sky-blue atmospheric haze matching SkyDome horizon. */
-export const FOG_COLOR = '#a8d8ff';
+/**
+ * Fog color — deep cosmic void (matches the CosmicVoid dome horizon band).
+ * SURF ROAD (2026-06-23): was sky-blue '#a8d8ff'. The scene is now a deep void,
+ * so distant karts/props fade INTO the void colour rather than a bright sky.
+ */
+export const FOG_COLOR = '#0c1a2e';
 
 /**
  * Fog near distance.
- * Pushed out 800 → 1200 → 2000 on 2026-04-26.
- * Track surface uses fog=false so the racing line is always visible; fog is only
- * used for atmospheric depth on props/karts. Pushing near to 2000 keeps karts
- * crisp at normal racing distances (~350wu arm + 1000wu ahead).
+ * SURF ROAD: pushed far out (2000 → 9000). The ribbon + rails are fog:false
+ * (always crisp). Fog now only softens distant OPPOSING-side karts/props into
+ * the void at the far reaches of the ~17687wu footprint, so it must not bite
+ * until well past the chase framing (~560wu arm + a few thousand wu ahead).
  */
-export const FOG_NEAR = 2000;
+export const FOG_NEAR = 9000;
 
 /**
- * Fog far distance. MUST be ≤ CAMERA_FAR.
- * Iris Xe rule: fog.far > camera.far → FPS drop.
- * Bumped 1800 → 2700 → 4500 on 2026-04-26.
- * Ellipse perimeter ≈ 8500wu; far-side karts are up to ~2100wu from the
- * player + 350wu camera arm = ~2450wu from camera. 4500 keeps them visible
- * with gentle atmospheric haze (not instant pop-off).
+ * Fog far distance. MUST be ≤ CAMERA_FAR (34000). Iris Xe rule: fog.far ≤
+ * camera.far. SURF ROAD: 22000 fades the far side of the loop gently into the
+ * void without reaching/colouring the 30000 dome. Keeps the cosmic depth.
  */
-export const FOG_FAR = 4500;
+export const FOG_FAR = 22000;
 
 // ─── Lighting ────────────────────────────────────────────────────────────────
 
-export const HEMI_SKY_COLOR    = '#a8d8ff'; // matches SkyDome horizon
-export const HEMI_GROUND_COLOR = '#7cb342'; // grass green — matches GroundPlane in river-scene
-export const HEMI_INTENSITY    = 0.5;
+// SURF ROAD (2026-06-23): hemisphere recoloured for the cosmic void — a cool
+// cyan sky bounce + a deep-violet "ground" bounce (there is no ground; this is
+// the ambient fill that tints the rider/karts to match the void mood). Was
+// sky-blue / grass-green for the old land-disc scene.
+export const HEMI_SKY_COLOR    = '#3fd0ff'; // cyan void glow (top fill)
+export const HEMI_GROUND_COLOR = '#1a1640'; // deep indigo (bottom fill)
+export const HEMI_INTENSITY    = 0.65;
 
-export const DIR_COLOR             = '#fffbe6';
-export const DIR_INTENSITY         = 1.2;
+// Cool key light from above-front so the riders read crisply against the void.
+export const DIR_COLOR             = '#dff2ff';
+export const DIR_INTENSITY         = 1.25;
 export const DIR_POSITION          = [300, 800, 200] as const;
 export const DIR_SHADOW_MAP_SIZE   = 512;
 export const DIR_SHADOW_NEAR       = 1;
@@ -366,14 +391,30 @@ export const DIR_SHADOW_NEAR       = 1;
 export const DIR_SHADOW_FAR        = 4000;
 export const DIR_SHADOW_CAM_BOUNDS = 4000;
 
-// ─── Atmosphere (light rays + depth backdrop) ─────────────────────────────────
+// ─── Atmosphere (cosmic void backdrop) ────────────────────────────────────────
 
 /** Number of TSL volumetric light rays (4, not 7 per spec §2.9). */
 export const LIGHT_RAY_COUNT = 4;
 
-/** Y position of the depth backdrop plane. */
-export const VOID_BACKDROP_Y    = -1000;
-export const VOID_BACKDROP_SIZE = 12000;
+/**
+ * SURF ROAD (2026-06-23): the depth backdrop plane below the old flat water is
+ * RETIRED — there is no land/water plane any more, the ribbon floats in the
+ * CosmicVoid (cosmic-void.tsx: gradient dome + starfield + glow motes). These
+ * constants are kept ONLY so the (now-removed) DepthBackdrop import in any stale
+ * reference still type-checks; nothing renders them. The void dome (radius
+ * 30000) is the true backdrop. Safe to delete once all references are gone.
+ */
+export const VOID_BACKDROP_Y    = -8000;
+export const VOID_BACKDROP_SIZE = 60000;
+
+// ─── Bloom (selective neon glow — Iris-Xe gated) ──────────────────────────────
+//
+// The neon rails + water crests are the bloom targets. Bloom is the single
+// post-process pass for the SURF ROAD; it is CHEAP (UnrealBloomPass at low res)
+// and gated so the Iris-Xe floor stays ≥60 FPS. See ReefRaceScene <SurfBloom>.
+export const BLOOM_STRENGTH  = 0.85;  // glow intensity — tasteful, not blown out
+export const BLOOM_RADIUS    = 0.5;   // spread
+export const BLOOM_THRESHOLD = 0.65;  // only bright (neon/crest) pixels bloom
 
 // ─── Laps ─────────────────────────────────────────────────────────────────────
 

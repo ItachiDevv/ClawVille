@@ -74,6 +74,7 @@ import {
   type SurfBodyState,
 } from '@clawville/shared';
 import { selfInputBus, selfPoseBus, resetSelfPoseBus } from './reef-race-self-bus';
+import { tAtXZ, elevationAtT, bankAngleAtT, forgetTKey } from './reef-race-elevation';
 
 // ─── v2 feature flag ──────────────────────────────────────────────────────────
 const USE_SPLINE_PLAYER = process.env.NEXT_PUBLIC_REEF_RACE_USE_SPLINE === 'true';
@@ -601,6 +602,9 @@ function ReefRacePlayerInner({ entity, isSelf = false, triggerScreenShake }: Ree
   useEffect(() => {
     return () => {
       delete _lastXZ[entity.avatarId];
+      // SURF ROAD: drop the per-kart elevation XZ→t cache key so the Map in
+      // reef-race-elevation doesn't accrete dead avatarIds across remounts.
+      forgetTKey(entity.avatarId);
     };
   }, [entity.avatarId]);
 
@@ -967,10 +971,27 @@ function ReefRacePlayerInner({ entity, isSelf = false, triggerScreenShake }: Ree
     // BUG FIX (Bug 2): rotation from entity.rot (or prediction for self), not atan2.
     // Glider local-Y elevation (KART_Y_ABOVE_TRACK / KART_SCALE) is additive on
     // top of group.position.y via gliderRef.position.y.
+    //
+    // SURF ROAD (2026-06-23): the kart rides the FLOATING ribbon. Its Y is the
+    // render-only ribbon elevation at its XZ (reefTrackElevationAt at the
+    // closest spline-t, cheaply cached per avatarId via tAtXZ) PLUS the sim's
+    // per-body airborne heightOffset (entity.height). The SAME elevation
+    // function feeds the chase camera + the ribbon geometry — one vertical datum
+    // (the parity contract). The kart also ROLLS into banked turns by
+    // reefTrackBankAngleAt(t) so a banked turn reads as banked for ribbon +
+    // rider + camera together. v1 ellipse path is untouched (stays flat at y=0).
     group.position.x = interpX;
-    group.position.y = USE_SPLINE_PLAYER ? entityHeight : 0;
     group.position.z = interpZ;
-    group.rotation.y = interpRot;
+    if (USE_SPLINE_PLAYER) {
+      const tHere = tAtXZ(interpX, interpZ, entity.avatarId);
+      group.position.y = elevationAtT(tHere) + entityHeight;
+      // Roll into the turn (Euler XYZ: yaw on .y, bank lean on .z — same
+      // convention as the decorative RacingKarts). Banking is render-only.
+      group.rotation.set(0, interpRot, bankAngleAtT(tHere));
+    } else {
+      group.position.y = 0;
+      group.rotation.y = interpRot;
+    }
 
     // ─── Jump nose-up tilt (v2 only) ─────────────────────────────────────────
     // When airborne (height > 0): pitch glider nose up by ~8°.

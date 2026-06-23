@@ -65,10 +65,12 @@ import {
   KART_Y_ABOVE_TRACK,
 } from './reef-race-config';
 import { clientSpline } from './reef-race-spline-instance';
+import { elevationAtT } from './reef-race-elevation';
 
-// ─── Water surface Y — MUST match WATER_Y in river-scene.tsx ────────────────
-// option-C: deep canyon 200wu.
-const WATER_Y = -200;
+// SURF ROAD (2026-06-23): the karts ride the FLOATING ribbon, so their Y is the
+// render-only elevation profile reefTrackElevationAt(t) (via elevationAtT) — NOT
+// a flat WATER_Y plane (the old -200 canyon water surface is gone). The demo
+// karts now climb/dip with the ribbon exactly like the player/bots do.
 
 // ─── Race parameters ─────────────────────────────────────────────────────────
 
@@ -198,7 +200,7 @@ export function RacingKarts() {
       clone.scale.setScalar(KART_SCALE);
       clone.position.set(
         c.x + n.x * lat,
-        WATER_Y + KART_Y_ABOVE_TRACK,
+        elevationAtT(t0) + KART_Y_ABOVE_TRACK,
         c.z + n.z * lat,
       );
       clone.rotation.set(0, Math.atan2(tan.x, tan.z), 0);
@@ -249,7 +251,7 @@ export function RacingKarts() {
       const lat = KART_LATERAL[i];
       const wx  = c.x + n.x * lat;
       const wz  = c.z + n.z * lat;
-      const wy  = WATER_Y + KART_Y_ABOVE_TRACK
+      const wy  = elevationAtT(tc) + KART_Y_ABOVE_TRACK
                 + Math.sin(elapsed * BOB_FREQ + i * BOB_PHASE_STEP) * BOB_AMP;
 
       // ── Banking lean via curvature finite difference ───────────────────────

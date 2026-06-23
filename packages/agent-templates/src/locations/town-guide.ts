@@ -100,12 +100,15 @@ export const townGuide: LocationTemplate = {
     'Your avatar\'s archetype matters in Reef Race: Agility = tighter turns + longer slipstream window. Strength = faster drift charge + 40% knockback resistance. Intelligence = +20% power-up duration + 30% wider ribbon detection.',
     'Bots in Reef Race always race with neutral stats. So your investment in your avatar\'s archetype actually shows up against them.',
 
-    // 2026-06-23 WATER-DOMINANT redesign (v4) — same-diff knowledge sync: the
-    // CLOSED LAP CIRCUIT is now a BIG, WIDE, WINDY ring (the racing surface is
-    // WATER; land only frames it), and a race is 2 laps (was 3 — the loop is
-    // much bigger now). Supersedes the 2026-06-01 "winding river" framing AND
-    // the 2026-06-23 v3 "3 laps / S-chicane + hairpin" framing for orientation.
-    'Reef Race is a surfing race around a big, wide, WINDY closed circuit that loops a full 360 degrees around a small central island — one full lap around the island is one lap of the race, and a race is 2 laps. The whole racing surface is WATER: a wide surf channel that fits several racers side by side, so there is room to pick a line and overtake. The circuit winds a lot — sweeping bends, S-curves, and a tight far-west hairpin — plus a wide start/finish straight where everyone lines up. You ride ON the water and carve the board left/right through the bends; hold thrust to build speed and it CARRIES, ease off and you coast rather than stop. The fast line is a clean carve that holds momentum through the curves — fight the bends and you scrub speed. A lap counter and your live position show on the HUD. Top speed is the same for everyone, so reading the racing line over 2 laps is the skill, not button-mashing.',
+    // 2026-06-23 "SURF ROAD" redesign (v5) — same-diff knowledge sync: the
+    // founder reframed the whole thing. There is NO land and NO island anymore.
+    // Reef Race is now a RAINBOW-ROAD-style glowing FLOATING WATER RIBBON winding
+    // through an abstract cosmic void — the ribbon IS the world. Aggressively
+    // twisty (hairpins, S-chain, chicanes) and it UNDULATES in elevation (rises,
+    // dips, banks) like Rainbow Road. Still a closed loop = 1 lap, race = 2 laps.
+    // Supersedes the v4 "wide ring around a central island / land frames water"
+    // framing for orientation.
+    'Reef Race is "Mario Kart but surfing" on a Rainbow-Road-style track: you surf a glowing FLOATING WATER RIBBON that winds through an abstract cosmic void — there is no land and no island, the ribbon itself is the whole world, hanging in space with neon-glowing rails along its edges. The ribbon is aggressively twisty (a tight east hairpin, a flowing S-curve chain, a north chicane, a far-west U-hairpin) and it UNDULATES — it climbs, dips, and banks into the turns like Rainbow Road, so the track rises and falls beneath you as you race. One full loop of the ribbon is one lap, and a race is 2 laps. You ride ON the water surface and carve the board left/right through the bends; hold thrust to build speed and it CARRIES, ease off and you coast rather than stop. The fast line is a clean carve that holds momentum through the curves and over the crests — fight the bends and you scrub speed. A lap counter and your live position show on the HUD. Top speed is the same for everyone, so reading the racing line over 2 laps is the skill, not button-mashing.',
 
     // Phase 4 — PB ghost + streak + Lobster of the Day + match-end summary.
     // Same-diff rule (CLAUDE.md "Town Guide Knowledge Sync") — anything new
