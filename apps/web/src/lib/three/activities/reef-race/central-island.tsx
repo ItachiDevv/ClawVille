@@ -6,7 +6,8 @@
  * The closed-loop track orbits this island. The island fills the visual center
  * without overlapping the corridor (min self-distance 432wu, min corridor edge
  * at ~centerlineAt(t) - halfWidth, closest pass ~(-5050+290) = -4760 from origin
- * at the hairpin). Island radius = 2400wu fits comfortably inside the ring.
+ * at the hairpin). Island radius = 4500wu fits inside the ring with ~260wu
+ * clearance at the hairpin — tight but visually meaningful.
  *
  * Visual layers:
  *   1. Sand atoll base — flat disc (CylinderGeometry, sandy beige)
@@ -39,17 +40,21 @@ useGLTF.preload('/models/coral-reef3.glb');
 
 // ─── Island geometry constants ────────────────────────────────────────────────
 // Island ring fits inside the closed circuit. The closest corridor approach
-// from origin is roughly 4760wu (hairpin at X~-5050, half-width 290). Using
-// ISLAND_RADIUS=2400 leaves >2300wu clear of the nearest track edge — plenty
-// of visual separation, no overlap with the water ribbon.
-const ISLAND_RADIUS       = 2400;  // wu — atoll outer radius
-const ISLAND_HILL_RADIUS  = 1200;  // wu — raised central hill top
+// from origin is ~4760wu (hairpin at X~-5050, half-width 290). Using
+// ISLAND_RADIUS=4500 leaves ~260wu clear — tight but visible separation.
+// Previous value was 2400 which made the island look like a tiny sandbar dwarfed
+// by the green ground disc. Bumping to 4500 fills the visual centre so the track
+// reads as "loop around an atoll" rather than "loop around a pebble".
+const ISLAND_RADIUS       = 4500;  // wu — atoll outer radius (was 2400; bumped 2026-06-23)
+const ISLAND_HILL_RADIUS  = 2250;  // wu — raised central hill top (was 1200, proportional scale)
 const ISLAND_SEGS         = 48;    // polygon count for smooth circle
 const ISLAND_Y_SAND       = -4;    // slight below track-group Y=0 to avoid z-fight
-const ISLAND_HILL_HEIGHT  = 80;    // wu — hill crown height
+const ISLAND_HILL_HEIGHT  = 120;   // wu — hill crown height (taller to read at new scale)
 
 // Coral instance layout: 3 rings of varying radii around the atoll
-// Seeded deterministic so spawns are stable across hot-reloads
+// Ring radii scaled proportionally with island (was 1800/1400/2100 at R=2400;
+// now 3375/2625/3938 ≈ 3375/2625/3900 at R=4500 — ~×1.875 scale factor).
+// Seeded deterministic so spawns are stable across hot-reloads.
 const CORAL_CONFIGS: Array<{
   path: string;
   count: number;
@@ -58,9 +63,9 @@ const CORAL_CONFIGS: Array<{
   scaleMax: number;
   seed: number;
 }> = [
-  { path: '/models/coral-reef1.glb', count: 14, ringRadius: 1800, scaleMin: 0.6, scaleMax: 1.2, seed: 71 },
-  { path: '/models/coral-reef2.glb', count: 12, ringRadius: 1400, scaleMin: 0.5, scaleMax: 1.0, seed: 72 },
-  { path: '/models/coral-reef3.glb', count: 10, ringRadius: 2100, scaleMin: 0.8, scaleMax: 1.4, seed: 73 },
+  { path: '/models/coral-reef1.glb', count: 14, ringRadius: 3375, scaleMin: 0.6, scaleMax: 1.2, seed: 71 },
+  { path: '/models/coral-reef2.glb', count: 12, ringRadius: 2625, scaleMin: 0.5, scaleMax: 1.0, seed: 72 },
+  { path: '/models/coral-reef3.glb', count: 10, ringRadius: 3900, scaleMin: 0.8, scaleMax: 1.4, seed: 73 },
 ];
 
 // ─── Seeded PRNG ──────────────────────────────────────────────────────────────
@@ -96,7 +101,7 @@ const _hillMat = new THREE.MeshStandardMaterial({
 
 // ─── Island base geometry ─────────────────────────────────────────────────────
 function buildIslandBaseGeo(): THREE.BufferGeometry {
-  // Flat disc — atoll floor
+  // Flat disc — atoll floor (radius 4500wu at new scale)
   const disc = new THREE.CylinderGeometry(
     ISLAND_RADIUS, ISLAND_RADIUS,
     8,               // thin slab

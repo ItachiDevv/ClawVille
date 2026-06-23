@@ -513,15 +513,17 @@ export class ReefRaceSplineSim {
     // relative to origin dropped every kart ~3290 wu off-track in the island
     // centre. The fix anchors at the real start point.) Karts are placed BEHIND
     // the line along -tangent so their FIRST forward seam crossing is the start
-    // gun (lap model: see resolveProgress). Lateral stagger: 2 columns, 70 wu
-    // apart back along -tangent, 90 wu left/right along the normal. They face
-    // down-track (+tangent).
+    // gun (lap model: see resolveProgress). The v4 WATER-DOMINANT ring has a
+    // WIDE start/finish straight (hw≈900), so the grid is a proper wide 2×4
+    // starting grid: 2 columns 320 wu apart along the normal (well inside the
+    // 900-wu corridor, like a real start line), 120 wu apart back along
+    // -tangent. They face down-track (+tangent).
     const startCenter  = spline.centerlineAt(0); // start/finish line centre
     const startTangent = spline.tangentAt(0);    // direction of travel at the line
     const startNormal  = spline.normalAt(0);     // left of travel direction
 
-    const SPAWN_SPACING_Z = 70;
-    const SPAWN_OFFSET_X  = 90;
+    const SPAWN_SPACING_Z = 120; // back-stagger between rows (was 70 on the narrow track)
+    const SPAWN_OFFSET_X  = 320; // lateral half-gap between the 2 columns (was 90; corridor hw≈900)
 
     participantAvatarIds.forEach((avatarId, i) => {
       const row = Math.floor(i / 2);
@@ -529,7 +531,7 @@ export class ReefRaceSplineSim {
 
       // Place behind the start line along -tangent, staggered laterally, anchored
       // at the start centerline so the whole grid sits ON the loop.
-      const backZ = row * SPAWN_SPACING_Z + 30;
+      const backZ = row * SPAWN_SPACING_Z + 40;
       const x =
         startCenter.x + startTangent.x * (-backZ) + startNormal.x * col * SPAWN_OFFSET_X;
       const z =

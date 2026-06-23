@@ -2667,7 +2667,7 @@ describe('ReefRaceSim Phase 4 — streak counter', () => {
     expect(body.bestStreakThisMatch).toBe(2);
   });
 
-  // P4-T7 (S2 fix — milestones at 5/10/20/30/36)
+  // P4-T7 (milestones at 5/10/16/20/24 — re-spaced for the v4 24-checkpoint 2-lap race)
   it('P4-T7 (S2 fix) — event.streak_milestone fires at 5, 10, 20', () => {
     const { broadcasts } = captureBroadcasts();
     reefRaceSim.startRoom('room-a', 'reef-race', ['p1', 'p2', 'p3', 'p4'], { seed: 6 });

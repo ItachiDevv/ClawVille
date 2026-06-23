@@ -56,51 +56,57 @@
  *   Ground plane at y=-1 (just below grass — no z-fight with terrain).
  */
 
-import { Suspense, useRef, useEffect, useMemo } from 'react';
+import { Suspense, useRef, useEffect } from 'react';
 import { useGLTF } from '@react-three/drei';
 import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
-import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { clientSpline } from './reef-race-spline-instance';
-import { RockyCliffs } from './rocky-cliffs';
 import { WaterSurf } from './water-surf';
 import { RacingKarts } from './racing-karts';
 import { Ramps } from './ramps';
 
 // ─── Track layout constants ───────────────────────────────────────────────────
-// Track runs z=[0,28000] (90s rebuild); slight overrun on each end for ground coverage.
-const TRACK_LEN_Z    = 30000;
-const TRACK_START_Z  = -500;
-const TRACK_CENTER_Z = TRACK_START_Z + TRACK_LEN_Z / 2; // 14500
+// Closed-ring track (v3 2026-06-22): centroid is at world XZ (0,0).
+// Old linear-track constants (TRACK_LEN_Z, TRACK_START_Z) removed; SkyDome
+// is now centered at origin (0,0) to match the ring.
+const TRACK_CENTER_Z = 0; // ring track centroid = world origin
 
-// ─── Ground shader terrain — spline-following ribbon (iter-9) ────────────────
+// ─── Ground shader terrain — spline-following ribbon (iter-9, updated 2026-06-23) ─
 // Two ribbons (left + right) swept along clientSpline following the river path.
 // Each ribbon's inner edge sits at (halfWidth + GROUND_INNER_OFFSET) from the
-// spline centerline, so it is always OUTSIDE the max cliff outer envelope.
+// spline centerline — always OUTSIDE the water corridor edge.
 //
-// Non-overlap proof (iter-9, halfWidths ×1.5 from iter-8):
-//   max corridor halfWidth = 3300wu (lagoon/finish)
-//   max cliff lateralMax   =  600wu (German River variable-width bands)
-//   rock body half-width   ≈  173wu (3.85wu × SCALE_MAX=90 / 2)
-//   → max rock outer edge  = 3300 + 600 + 173 = 4073wu from centerline
+// 2026-06-23 v3 ring track — proportions recalibrated (updated 2026-06-23 for real footprint):
+//   Real track: 27 CPs, arc ~53506wu, halfWidth 471–910wu (start ~900wu, bends ~480–700wu).
+//   Footprint X∈[-8026,7401], Z∈[-7607,7700] → ±8026wu span.
+//   Min inner-edge distance from world origin = 5657wu.
 //
-//   GROUND_INNER_OFFSET = max cliff lateralMax (600) + rock half (173) + buffer (100) = 873wu
-//   ground inner edge at lagoon = 3300 + 873 = 4173wu ≥ 4073wu (100wu safety buffer)
+//   Old track had variable-width cliff bands (max hw=3300) + rocky bank GLBs:
+//     GROUND_INNER_OFFSET=873 ensured ground started BEYOND the cliff outer edge.
+//   New ring track has NO cliff zone (RockyCliffs removed with v3 switch):
+//     max halfWidth = 910wu (start straight), typical = 480–700wu (bends).
+//     GROUND_INNER_OFFSET now equals just a sandy bank buffer (no cliff to clear).
 //
-//   Per-section check:
-//     Lagoon  hw=3300: rock outer 4073, ground inner 4173 — 100wu gap ✓
-//     Kelp    hw=1990: rock outer 2763, ground inner 2863 — 100wu gap ✓
-//     Shipwreck hw=1650: rock outer 2423, ground inner 2523 — 100wu gap ✓
-//     Coral   hw=1320: rock outer 2093, ground inner 2193 — 100wu gap ✓
+//   OLD problem: at hw=910, ground inner edge was 910+873=1783wu. With
+//     GROUND_W=6000 the land extended to 7783wu per side — green dominated.
 //
-// Tri budget:
+//   NEW values (water-dominant):
+//     GROUND_INNER_OFFSET=150 — 150wu sandy bank between water edge and grass.
+//     GROUND_W=2800 — grass extends 2800wu beyond the bank, then stops.
+//     At start hw=910: ground covers 1060→3860wu. Water: 0→910wu. Ratio ~3:1. ✓
+//     At bend hw=540: ground covers 690→3490wu. Water: 0→540wu. Ratio ~4:1. ✓
+//     At hairpin hw=480: ground covers 630→3430wu. Water: 0→480wu. Ratio ~5:1. ✓
+//     Outer grass edge max = 910+150+2800 = 3860wu from centerline.
+//     Min inner-edge clearance from origin = 5657wu → 5657-3860 = 1797wu safe margin. ✓
+//
+// Tri budget (unchanged):
 //   RIBBON_SAMPLES=128, RIBBON_W_SEGS=64.
 //   tris per side = 128 × 64 × 2 = 16 384. Both sides = 32 768 tris.
 //
 // Iris Xe safety: plain Mesh + existing _groundShaderMat (THREE.ShaderMaterial).
 // NO InstancedMesh. matrixAutoUpdate=false. frustumCulled=false.
-const GROUND_INNER_OFFSET = 873;  // wu from cliff-max outer edge to ribbon inner edge
-const GROUND_W            = 6000; // ribbon width per side (wu)
+const GROUND_INNER_OFFSET = 150;  // wu sandy bank between water edge and grass (was 873, v3 ring 2026-06-23)
+const GROUND_W            = 2800; // ribbon width per side in wu (was 6000, v3 ring 2026-06-23)
 const GROUND_RIBBON_SAMPLES = 128; // longitudinal samples along spline (t-axis)
 const GROUND_RIBBON_W_SEGS  = 64;  // lateral segments per ribbon
 const GROUND_Y            = -1;   // slight Y below grass to avoid z-fight
@@ -121,47 +127,18 @@ if (process.env.NODE_ENV === 'development' && WATER_Y >= 0) {
 }
 
 // ─── Gameplay prop constants ──────────────────────────────────────────────────
-// Part 2A: Finish-line gate
-const GATE_POST_HALF_W = 520;  // half-width: gates span full river + margin
-const GATE_POST_W      = 40;
-const GATE_POST_H      = 250;
-const GATE_POST_D      = 60;
-const GATE_BAR_H       = 30;
-const GATE_BAR_D       = 40;
-const GATE_Z           = 28200; // just past finish line CP21 z≈28000 (90s rebuild)
-
-// Part 2B: Distance markers
-const MARKER_SPACING   = 2000;  // wu between markers
-const MARKER_X_OFFSET  = 650;   // outside grass, +X side
-const MARKER_POLE_W    = 4;
-const MARKER_POLE_H    = 200;
-const MARKER_FLAG_W    = 80;
-const MARKER_FLAG_H    = 40;
-const MARKER_COLORS    = [
-  new THREE.Color('#ff4400'),  // red
-  new THREE.Color('#44cc22'),  // green
-  new THREE.Color('#2266ff'),  // blue
-  new THREE.Color('#ffcc00'),  // yellow
-  new THREE.Color('#ff22aa'),  // pink
-  new THREE.Color('#22cccc'),  // teal
-  new THREE.Color('#ff8800'),  // orange
-  new THREE.Color('#aa44ff'),  // purple
-  new THREE.Color('#ff4400'),  // red again
-];
-
-// Part 2C: Power-up boxes
+// Part 2C: Power-up boxes (spline-t based — ring-correct, kept)
 const POWERUP_T_VALUES = [0.15, 0.3, 0.45, 0.6, 0.75, 0.9];
 const POWERUP_X_ALTS   = [150, -150, 150, -150, 150, -150]; // lateral offset alternating
 const POWERUP_SIZE     = 30;
 const POWERUP_BOB_AMP  = 5;
 const POWERUP_BOB_FREQ = 2;
-
-// Part 2F: Bridge
-const BRIDGE_Z         = 8500; // mid-track z position
-const BRIDGE_W         = 1100; // wu span (covers full river + banks)
-const BRIDGE_H         = 80;   // option-C: deep canyon, bridge floor y=+80, clearance over water (-200) = 280wu
-const BRIDGE_PLANK_H   = 30;   // plank thickness
-const BRIDGE_SUPPORT_W = 30;
+// NOTE: FinishGate (GATE_Z=28200), DistanceMarkers (z=2000..28000), and Bridge
+// (BRIDGE_Z=8500) were REMOVED 2026-06-23 — they were authored for the old linear
+// track and placed via fixed world-Z, rendering as floating props in empty water/space
+// on the closed-ring v3 layout. ReefRaceTrack.tsx already renders a spline-derived
+// finish gate at the real start position. Distance markers can be re-added later
+// as spline-t-parameterized props (every N/totalArc wu along the spline).
 
 // (AnimatedKarts inline kart constants removed — see racing-karts.tsx)
 
@@ -184,7 +161,7 @@ interface SpawnerDef {
   path: string;
   tValues: number[];
   side: number;   // +1 = left, -1 = right
-  xJitter: number; // wu from centerline (must be >= GROUND_INNER_OFFSET=873 to land on grass)
+  xJitter: number; // wu from centerline (must be >= GROUND_INNER_OFFSET=150 to land past sandy bank)
   scaleMin: number;
   scaleMax: number;
   seed: number;
@@ -202,7 +179,8 @@ function seededRand(seed: number) {
 
 /** Sample spline bank edge + xJitter for a prop spawn position.
  *  Props are placed at: centerline ± normal*(halfWidth + xJitter)
- *  so they are guaranteed to be BEYOND the water edge and onto the grass. */
+ *  so they are guaranteed to be BEYOND the water edge and onto the sandy bank / grass.
+ *  Grass starts at halfWidth + GROUND_INNER_OFFSET (150wu) from centerline. */
 function spawnPos(t: number, side: number, xJitter: number): THREE.Vector3 {
   const c  = clientSpline.centerlineAt(t);
   const n  = clientSpline.normalAt(t);
@@ -216,9 +194,10 @@ function spawnPos(t: number, side: number, xJitter: number): THREE.Vector3 {
 }
 
 // Spawner defs: xJitter is the TOTAL lateral offset from the spline centerline.
-// Ground inner edge = halfWidth + GROUND_INNER_OFFSET (873wu).
-// Props MUST have xJitter >= 873 to land on grass, not inside the cliff zone.
-// Grass extends from halfWidth+873 to halfWidth+873+6000wu — target [1000, 6500].
+// Ground inner edge = halfWidth + GROUND_INNER_OFFSET (150wu — v3 ring, no cliff zone).
+// Props MUST have xJitter >= 150 to land on grass, beyond the sandy bank.
+// Grass extends from halfWidth+150 to halfWidth+150+2800wu — target [200, 2950].
+// Existing xJitter values 950-2500 all land safely on grass at any hw (max grass outer = hw+2950).
 //
 // Per-type notes:
 //   Pine ~765 tris, Leafy ~724 tris, Rock-1/2 ~80 tris, Fence ~50 tris, Grass ~30 tris.
@@ -478,49 +457,8 @@ const _powerupMat = new THREE.MeshStandardMaterial({
   fog: false,
 });
 
-// ─── Finish gate material ─────────────────────────────────────────────────────
-const _gateMat = new THREE.MeshStandardMaterial({
-  color: new THREE.Color('#8B4513'),   // wooden brown
-  roughness: 0.9,
-  metalness: 0.0,
-  fog: false,
-});
-
-// ─── Checker flag canvas texture (for finish gate) ───────────────────────────
-function makeCheckerTexture(): THREE.CanvasTexture {
-  const canvas = document.createElement('canvas');
-  canvas.width  = 128;
-  canvas.height = 64;
-  const ctx = canvas.getContext('2d')!;
-  const cols = 8;
-  const rows = 4;
-  const cellW = canvas.width  / cols;
-  const cellH = canvas.height / rows;
-  for (let r = 0; r < rows; r++) {
-    for (let c = 0; c < cols; c++) {
-      ctx.fillStyle = (r + c) % 2 === 0 ? '#ffffff' : '#000000';
-      ctx.fillRect(c * cellW, r * cellH, cellW, cellH);
-    }
-  }
-  const tex = new THREE.CanvasTexture(canvas);
-  return tex;
-}
-
-// ─── Distance marker material (instanced flag colors set per mesh) ────────────
-const _poleMat = new THREE.MeshStandardMaterial({
-  color: new THREE.Color('#c8a050'),
-  roughness: 0.8,
-  metalness: 0.1,
-  fog: true,
-});
-
-// ─── Bridge material ───────────────────────────────────────────────────────────
-const _bridgeMat = new THREE.MeshStandardMaterial({
-  color: new THREE.Color('#9b7040'),   // weathered wood
-  roughness: 0.9,
-  metalness: 0.0,
-  fog: false,
-});
+// (FinishGate, DistanceMarker, and Bridge materials removed 2026-06-23 —
+//  those components used fixed world-Z and do not work on the closed-ring v3 layout.)
 
 // (Kart BoxGeometry + MeshStandardMaterial removed — see racing-karts.tsx)
 
@@ -667,68 +605,8 @@ const _domeGeo = makeDomeGeo();
 const _groundGeoLeft  = buildGroundRibbonGeo( 1, GROUND_RIBBON_SAMPLES, GROUND_RIBBON_W_SEGS);
 const _groundGeoRight = buildGroundRibbonGeo(-1, GROUND_RIBBON_SAMPLES, GROUND_RIBBON_W_SEGS);
 
-// Part 2A: finish gate geometry
-function buildFinishGateGeo(): THREE.BufferGeometry {
-  const parts: THREE.BufferGeometry[] = [];
-
-  // Left post
-  const leftPost = new THREE.BoxGeometry(GATE_POST_W, GATE_POST_H, GATE_POST_D);
-  leftPost.translate(-GATE_POST_HALF_W, GATE_POST_H / 2, GATE_Z);
-  parts.push(leftPost);
-
-  // Right post
-  const rightPost = new THREE.BoxGeometry(GATE_POST_W, GATE_POST_H, GATE_POST_D);
-  rightPost.translate(GATE_POST_HALF_W, GATE_POST_H / 2, GATE_Z);
-  parts.push(rightPost);
-
-  // Top bar spanning posts
-  const barW = GATE_POST_HALF_W * 2 + GATE_POST_W;
-  const topBar = new THREE.BoxGeometry(barW, GATE_BAR_H, GATE_BAR_D);
-  topBar.translate(0, GATE_POST_H + GATE_BAR_H / 2, GATE_Z);
-  parts.push(topBar);
-
-  // Merge
-  const merged = mergeGeometries(parts, false)!;
-  parts.forEach(g => g.dispose());
-  return merged;
-}
-
 // Part 2C: power-up box geometry (single 30wu cube — shared)
 const _powerupBoxGeo = new THREE.BoxGeometry(POWERUP_SIZE, POWERUP_SIZE, POWERUP_SIZE);
-
-// Part 2B: distance marker pole + flag (single shared geo, cloned per marker)
-const _markerPoleGeo  = new THREE.BoxGeometry(MARKER_POLE_W, MARKER_POLE_H, MARKER_POLE_W);
-const _markerFlagGeo  = new THREE.BufferGeometry().setFromPoints([
-  new THREE.Vector3(0, 0, 0),
-  new THREE.Vector3(MARKER_FLAG_W, 0, 0),
-  new THREE.Vector3(0, -MARKER_FLAG_H, 0),
-]);
-_markerFlagGeo.setIndex([0, 1, 2]);
-_markerFlagGeo.computeVertexNormals();
-
-// Part 2F: bridge geometry
-function buildBridgeGeo(): THREE.BufferGeometry {
-  const parts: THREE.BufferGeometry[] = [];
-
-  // Main plank
-  const plank = new THREE.BoxGeometry(BRIDGE_W, BRIDGE_PLANK_H, 120);
-  plank.translate(0, BRIDGE_H + BRIDGE_PLANK_H / 2, BRIDGE_Z);
-  parts.push(plank);
-
-  // Left support
-  const ls = new THREE.BoxGeometry(BRIDGE_SUPPORT_W, BRIDGE_H, BRIDGE_SUPPORT_W);
-  ls.translate(-BRIDGE_W / 2 + BRIDGE_SUPPORT_W, BRIDGE_H / 2, BRIDGE_Z);
-  parts.push(ls);
-
-  // Right support
-  const rs = new THREE.BoxGeometry(BRIDGE_SUPPORT_W, BRIDGE_H, BRIDGE_SUPPORT_W);
-  rs.translate(BRIDGE_W / 2 - BRIDGE_SUPPORT_W, BRIDGE_H / 2, BRIDGE_Z);
-  parts.push(rs);
-
-  const merged = mergeGeometries(parts, false)!;
-  parts.forEach(g => g.dispose());
-  return merged;
-}
 
 // ─── Module-scope materials (page-lifetime, never disposed) ──────────────────
 
@@ -911,122 +789,11 @@ function ScenerySpawner() {
   );
 }
 
-// ─── Part 2A: Finish-line gate ────────────────────────────────────────────────
-// Wooden arch over the river at GATE_Z with procedural checkered flag.
-
-function FinishGate() {
-  const gateGeo = useMemo(() => buildFinishGateGeo(), []);
-  const checkerTex = useMemo(() => {
-    if (typeof document === 'undefined') return null;
-    return makeCheckerTexture();
-  }, []);
-
-  // Checker flag plane between the posts
-  const flagMat = useMemo(() => new THREE.MeshBasicMaterial({
-    map: checkerTex,
-    side: THREE.DoubleSide,
-    fog: false,
-    transparent: false,
-  }), [checkerTex]);
-
-  const flagGeo = useMemo(() => {
-    const geo = new THREE.PlaneGeometry(GATE_POST_HALF_W * 2, GATE_POST_H * 0.6);
-    // Stand the flag plane vertically (PlaneGeometry is XY by default)
-    geo.translate(0, GATE_POST_H * 0.7, GATE_Z);
-    return geo;
-  }, []);
-
-  const meshRef = useRef<THREE.Mesh>(null);
-  const flagRef = useRef<THREE.Mesh>(null);
-
-  useEffect(() => {
-    [meshRef.current, flagRef.current].forEach(m => {
-      if (m) { m.matrixAutoUpdate = false; m.updateMatrix(); }
-    });
-    return () => {
-      gateGeo.dispose();
-      flagGeo.dispose();
-      checkerTex?.dispose();
-      flagMat.dispose();
-    };
-  }, [gateGeo, flagGeo, checkerTex, flagMat]);
-
-  return (
-    <group>
-      <mesh ref={meshRef} geometry={gateGeo} material={_gateMat} castShadow matrixAutoUpdate={false} />
-      {checkerTex && (
-        <mesh ref={flagRef} geometry={flagGeo} material={flagMat} matrixAutoUpdate={false} />
-      )}
-    </group>
-  );
-}
-
-// ─── Part 2B: Distance markers ────────────────────────────────────────────────
-// Small flag-on-pole at z = 2000, 4000, ..., 28000, placed at x=+MARKER_X_OFFSET.
-// Gentle flag sway animation.
-
-const _markerCount = Math.floor(28000 / MARKER_SPACING); // 14 markers (90s rebuild)
-
-function DistanceMarkers() {
-  // Each marker: pole + flag — all placed via useEffect for perf
-  const groupRef = useRef<THREE.Group>(null);
-
-  // Store flag meshes for animation
-  const flagRefs = useRef<THREE.Mesh[]>([]);
-
-  useEffect(() => {
-    const gr = groupRef.current;
-    if (!gr) return;
-    flagRefs.current = [];
-
-    for (let i = 0; i < _markerCount; i++) {
-      const z = (i + 1) * MARKER_SPACING;
-      const x = MARKER_X_OFFSET;
-      const color = MARKER_COLORS[i % MARKER_COLORS.length]!;
-
-      // Pole
-      const poleMesh = new THREE.Mesh(_markerPoleGeo, _poleMat);
-      poleMesh.position.set(x, MARKER_POLE_H / 2, z);
-      poleMesh.matrixAutoUpdate = false;
-      poleMesh.updateMatrix();
-      gr.add(poleMesh);
-
-      // Flag — individual material per flag for color variety
-      const flagMat = new THREE.MeshStandardMaterial({
-        color,
-        side: THREE.DoubleSide,
-        fog: true,
-        roughness: 0.8,
-        metalness: 0.0,
-      });
-      const flagMesh = new THREE.Mesh(_markerFlagGeo, flagMat);
-      // Position: top of pole, +X direction (flag hangs to the right of pole)
-      flagMesh.position.set(x + MARKER_POLE_W / 2, MARKER_POLE_H, z);
-      gr.add(flagMesh);
-      flagRefs.current.push(flagMesh);
-    }
-
-    return () => {
-      // Clean up individual flag materials
-      flagRefs.current.forEach(m => {
-        if ((m.material as THREE.Material).dispose) {
-          (m.material as THREE.Material).dispose();
-        }
-      });
-      while (gr.children.length > 0) gr.remove(gr.children[0]);
-    };
-  }, []);
-
-  // Gentle flag sway
-  useFrame(({ clock }) => {
-    const t = clock.getElapsedTime();
-    flagRefs.current.forEach((flag, i) => {
-      flag.rotation.y = Math.sin(t * 1.5 + i * 0.7) * 0.15;
-    });
-  });
-
-  return <group ref={groupRef} />;
-}
+// (FinishGate removed 2026-06-23: placed at fixed GATE_Z=28200, does not work on closed-ring v3 layout.
+//  ReefRaceTrack.tsx renders a spline-derived finish gate at centerlineAt(0)±hw(0).)
+// (DistanceMarkers removed 2026-06-23: placed at z=2000..28000 — old linear-track axis,
+//  renders as a line of flags marching across empty water/land on the ring layout.
+//  Re-add later as spline-t-parameterized props every N arc-wu along clientSpline.)
 
 // ─── Part 2C: Power-up boxes ──────────────────────────────────────────────────
 // Glowing rotating golden cubes hovering above water mid-river.
@@ -1084,30 +851,9 @@ function PowerUpBoxes() {
 
 // (AnimatedKarts function removed — replaced by <RacingKarts /> from racing-karts.tsx)
 
-// ─── Part 2F: Bridge prop ─────────────────────────────────────────────────────
-// Wooden plank bridge over the river at z=BRIDGE_Z.
-
-function Bridge() {
-  const bridgeGeo = useMemo(() => buildBridgeGeo(), []);
-  const meshRef   = useRef<THREE.Mesh>(null);
-
-  useEffect(() => {
-    const m = meshRef.current;
-    if (m) { m.matrixAutoUpdate = false; m.updateMatrix(); }
-    return () => { bridgeGeo.dispose(); };
-  }, [bridgeGeo]);
-
-  return (
-    <mesh
-      ref={meshRef}
-      geometry={bridgeGeo}
-      material={_bridgeMat}
-      castShadow
-      receiveShadow
-      matrixAutoUpdate={false}
-    />
-  );
-}
+// (Bridge removed 2026-06-23: placed at fixed BRIDGE_Z=8500, does not cross the ring corridor.
+//  Re-add later using clientSpline to find a valid t, then position+orient from
+//  centerlineAt(t) + tangentAt(t) + widthAt(t).)
 
 // ─── Public composite component ───────────────────────────────────────────────
 
@@ -1127,10 +873,14 @@ function Bridge() {
  * Renders (render order):
  *   -1: Sky dome (sunny blue gradient, BackSide sphere)
  *    0: Terrain shader ground (subdivided, rolling hills outside river corridor)
- *    1: Rocky cliff banks (canyon walls, 1264 tris, 1 draw call)
- *    2: Animated water ribbon (simplex noise + bank-edge foam, WATER_Y=-200)
- *    ?: Scenery props along banks (Quaternius CC0 trees at visible scale)
- *    ?: Gameplay juice: finish gate, distance markers, power-ups, <RacingKarts />, bridge
+ *    1: Animated water ribbon (Wave Race 64-style, WATER_Y=-200)
+ *    ?: Scenery props along banks (Quaternius CC0 trees; spline-t+normal-offset — ring-correct)
+ *    ?: Gameplay juice: power-ups (spline-t — ring-correct), <RacingKarts />, ramps
+ *
+ * REMOVED (2026-06-23): RockyCliffs (linear-track canyon walls), FinishGate
+ *   (fixed GATE_Z=28200), DistanceMarkers (z=2000..28000), Bridge (BRIDGE_Z=8500).
+ *   All used fixed world-Z and rendered as floating props in empty space on the
+ *   closed-ring v3 layout. ReefRaceTrack.tsx renders a spline-derived finish gate.
  *
  * Bank wall geometry from SplineTrack (buildSplineBankGeos) is intentionally
  * hidden by the parent page — set visible=false or recolor to grass green.
@@ -1142,12 +892,14 @@ function Bridge() {
  *   Drei `shaderMaterial()` factory + `extend()`. Iris Xe safe (plain Mesh).
  *   Water surface at WATER_Y=-200 (200wu deep ravine).
  *
- * GROUND SHADER (iter-9, spline-following ribbon — German River reference):
+ * GROUND SHADER (iter-9, updated v3 ring 2026-06-23):
  *   THREE.ShaderMaterial on TWO plain Meshes (one per side, sign ±1).
  *   Geometry = `buildGroundRibbonGeo` — 128 spline samples × 64 width-segments
  *   per side, ~32k tris total. Each ribbon cross-section sweeps along the spline
- *   at lateral `hw + 873wu` (max cliff outer envelope + 100wu safety buffer)
- *   outward to `+ GROUND_W (6000wu)` so the ground ENDS AT THE CLIFF BORDER.
+ *   at lateral `hw + 150wu` (sandy bank buffer — no cliff zone on v3 ring track)
+ *   outward to `+ GROUND_W (2800wu)` so ground FRAMES the water corridor without
+ *   dominating it. Previous values (873/6000wu) made the green disc 7-10× wider
+ *   than the water — the v3 recalibration targets ~3-5× (water-dominant).
  *   Vertex: value-noise Y displacement (mask removed; geometry is always outside corridor).
  *   Fragment: 3-tone grass+dirt blending with berm highlight.
  *
@@ -1173,20 +925,11 @@ export function RiverScene({
       {/* 0: Terrain shader ground — subdivided rolling hills */}
       <GroundShader />
 
-      {/* 1: Rocky canyon cliff banks — real CC0 boulder GLBs tiled along spline (~58K tris, 2 draw calls) */}
-      <RockyCliffs />
-
-      {/* 2: Animated water — Wave Race 64-style depth gradient + Phong sun glint (water-surf.tsx) */}
+      {/* 1: Animated water — Wave Race 64-style depth gradient + Phong sun glint (water-surf.tsx) */}
       <WaterSurf />
 
-      {/* Scenery props on the grass */}
+      {/* Scenery props on the grass (spline-t + normal-offset — ring-correct) */}
       <ScenerySpawner />
-
-      {/* Gameplay juice — Part 2A: Finish-line gate */}
-      <FinishGate />
-
-      {/* Gameplay juice — Part 2B: Distance markers every 2000wu */}
-      <DistanceMarkers />
 
       {/* Gameplay juice — Part 2C: Power-up boxes mid-river. Hidden in gameplay
           because <ReefRacePickups /> renders server-authoritative power-up state. */}
@@ -1195,9 +938,6 @@ export function RiverScene({
       {/* 5 surfboard karts animated along the spline. Hidden in gameplay because
           the player + 3 bots are rendered separately by <ReefRacePlayer />. */}
       {showDemoKarts && <RacingKarts />}
-
-      {/* Gameplay juice — Part 2F: Bridge at z=8500 */}
-      <Bridge />
 
       {/* SPEC 3: Ramp wedge meshes at 6 trigger volume positions */}
       <Ramps />

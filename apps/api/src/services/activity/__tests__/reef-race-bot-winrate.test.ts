@@ -125,6 +125,19 @@ mock.module('@clawville/database', () => ({
     activityId: 'activity_id',
     bestLapMs: 'best_lap_ms',
   },
+  // 2026-06-23: `activity-replay-log.ts` (transitively imported via the reward
+  // pipeline) references `activityReplays`; the schema gained this table after
+  // this mock was first written, so the named export was missing → Bun threw
+  // "Export named 'activityReplays' not found" at module load. Mock it with the
+  // column-name shape the replay log reads (id + the insert columns).
+  activityReplays: {
+    id: 'id',
+    roomId: 'room_id',
+    activityId: 'activity_id',
+    frames: 'frames',
+    participants: 'participants',
+    createdAt: 'created_at',
+  },
 }));
 
 // Mock drizzle-orm — reward-pipeline imports `{and, eq, gte, lt, sql}` and

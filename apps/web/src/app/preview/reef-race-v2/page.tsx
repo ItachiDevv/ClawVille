@@ -59,11 +59,13 @@ import {
 // ─── Production lighting / fog constants (inlined from ReefRaceScene values) ──
 // Inlined rather than imported to avoid cross-module 'use client' import issues.
 const FOG_COLOR            = '#a8d8ff'; // sky-blue atmospheric haze, matches SkyDome horizon
-// Track is 18 000 wu long × ±500 wu wide. FOG tuned for open-vista feel:
-// near=8000 keeps foreground crisp, far=30000 gives soft haze on distant banks.
-// CAMERA_FAR stays at 35000 so the dome (radius=28000) renders correctly.
-const FOG_NEAR             = 8000;
-const FOG_FAR              = 30000;
+// Real v3 ring track footprint: X∈[-8026,7401], Z∈[-7607,7700] → span ±8026wu.
+// 27 CPs, arc ~53506wu. Corridor halfWidth 471–910wu (start straight ~900wu, bends ~480–700wu).
+// FOG tuned for the larger ring: near=10000 keeps island/corridor crisp from above,
+// far=32000 gives gentle haze at ring perimeter + keeps sky dome visible (radius=28000).
+// CAMERA_FAR=35000 gives 3000wu headroom beyond dome radius.
+const FOG_NEAR             = 10000;
+const FOG_FAR              = 32000;
 const CAMERA_NEAR          = 1;
 const CAMERA_FAR           = 35000;
 const HEMI_SKY_COLOR       = '#a8d8ff'; // matches SkyDome horizon
@@ -71,12 +73,17 @@ const HEMI_GROUND_COLOR    = '#7cb342'; // grass green — matches GroundPlane +
 const HEMI_INTENSITY       = 0.5;
 const DIR_COLOR            = '#fffbe6';
 const DIR_INTENSITY        = 1.2;
-// Sun position scaled 10× so the shadow frustum encloses the whole 18 000-wu track.
-const DIR_POSITION         = [3000, 8000, 2000] as const;
+// Sun position for ±8026wu ring. Position at (6000,9000,4000) casts diagonal
+// shadows across the full enlarged ring (was 5000,8000,3000 for ±5200wu ring).
+const DIR_POSITION         = [6000, 9000, 4000] as const;
 const DIR_SHADOW_MAP_SIZE  = 1024;
 const DIR_SHADOW_NEAR      = 1;
-const DIR_SHADOW_FAR       = 25000;
-const DIR_SHADOW_CAM_BOUNDS = 12000;
+// Shadow far must reach WATER_Y=-200 at ring edge: sqrt(8026²+200²)≈8028wu + headroom.
+const DIR_SHADOW_FAR       = 22000;
+// Shadow frustum must enclose the full ±8026wu footprint plus ground ribbon
+// (ground extends to hw+150+2800≈3850wu beyond centerline → total reach ~11876wu).
+// Set to 10000 to cover ring edges without excessive shadow-map texel waste.
+const DIR_SHADOW_CAM_BOUNDS = 10000;
 
 // ─── Preload assets ───────────────────────────────────────────────────────────
 useGLTF.preload('/models/reef-race/surfboards/surfboard_1.glb');
@@ -90,11 +97,13 @@ function isCameraMode(s: string | null): s is CameraMode {
   return CAMERA_MODES.includes(s as CameraMode);
 }
 
-// ─── Track geometry constants (mirroring ReefRaceTrack v2 values) ────────────
+// ─── Track geometry constants (mirroring ReefRaceTrack v3 ring values) ───────
 const V2_RIBBON_SAMPLES = 64;
 const V2_BANK_HEIGHT    = 80;  // wu — must match ReefRaceTrack
 
 // ─── Module-scope scratch (no per-frame allocations) ─────────────────────────
+// Camera presets are now below the spline imports (they use _startCenter, _startNormal,
+// _startTangent). _sc1/_sc2 are scratch vectors used in overlay distance calc + bbox.
 const _sc1 = new THREE.Vector3();
 const _sc2 = new THREE.Vector3();
 
@@ -324,42 +333,44 @@ const KART_T_VALUES = [0, 0.25, 0.5, 0.75] as const;
 
 // ─── Camera preset positions ──────────────────────────────────────────────────
 // All computed at module scope from spline to avoid repeated calls.
+// Ring track v3 REAL footprint (2026-06-23): X∈[-8026,7401], Z∈[-7607,7700] → ±8026wu span.
+// 27 CPs, arc ~53506wu. Start/finish at centerlineAt(0)≈(-2600,-7300).
+// Ring centroid ≈ world origin (0,0).
 const _startCenter = clientSpline.centerlineAt(0);
-
-// All preset distances sized for an 18 000-wu-long, ±500-wu-wide spline.
-// FOV is 50° → half-angle 25° → tan ≈ 0.466. To frame the whole track
-// from above (~20 000 wu visible Z) we need altitude ≈ 21 500 wu.
-
-/** Top-down: directly above track midpoint, frames the whole spline. */
-const TOPDOWN_CAM    = new THREE.Vector3(_startCenter.x, 22000, _startCenter.z + 9000);
-const TOPDOWN_TARGET = new THREE.Vector3(_startCenter.x, 0,     _startCenter.z + 9000);
-
-/** Side-on: perpendicular to start tangent, elevated. */
 const _startNormal = clientSpline.normalAt(0);
-const SIDEON_CAM    = new THREE.Vector3(
-  _startCenter.x + _startNormal.x * 6000,
-  2400,
-  _startCenter.z + _startNormal.z * 6000,
-);
-const SIDEON_TARGET = new THREE.Vector3(_startCenter.x, -50, _startCenter.z + 4000);
-
-/** Cinematic: INSIDE the canyon at water level — racer's POV. */
 const _startTangent = clientSpline.tangentAt(0);
-// 2026-04-29 iter-6b: cam relocated INSIDE the canyon. Altitude 150 above
-// ground stared at green grass — cliff face was foreshortened to nothing.
-// Now cam sits at y=-150 (50wu above water surface y=-200), behind the start
-// kart, looking forward down the channel — cliff walls flank the view, water
-// fills the foreground, sky-blue dome above the canyon rim.
+
+// FOV=50° → half-angle 25° → tan≈0.466.
+// Ring half-span ≈ 8026wu → altitude to frame full ring = 8026/0.466 ≈ 17,230wu.
+// Using 17500 to comfortably frame the ring + ground bands + island at scale.
+
+/** Top-down: directly above ring centroid (world origin), frames the full closed loop.
+ *  Altitude re-derived from ±8026wu actual footprint (was 12500 for ±5200wu). */
+const TOPDOWN_CAM    = new THREE.Vector3(0, 17500, 0);
+const TOPDOWN_TARGET = new THREE.Vector3(0, 0, 0);
+
+/** Side-on: looking across the start straight from outside the ring.
+ *  Camera placed 9000wu out along start normal, 4000wu elevated. */
+const SIDEON_CAM    = new THREE.Vector3(
+  _startCenter.x + _startNormal.x * 9000,
+  4000,
+  _startCenter.z + _startNormal.z * 9000,
+);
+const SIDEON_TARGET = new THREE.Vector3(_startCenter.x, -100, _startCenter.z + 4000);
+
+/** Cinematic: INSIDE the canyon at water level — racer's POV looking down the start straight.
+ *  Cam sits at y=-150 (50wu above WATER_Y=-200), behind the start, looking forward. */
 const CINEMATIC_CAM = new THREE.Vector3(
   _startCenter.x - _startTangent.x * 700,
-  -150,                                         // option-C: deep canyon, cam y=-150 (50wu above water)
+  -150,                                         // 50wu above water surface (WATER_Y=-200)
   _startCenter.z - _startTangent.z * 700,
 );
 const CINEMATIC_TARGET = new THREE.Vector3(_startCenter.x, -180, _startCenter.z + 2000);
 
-/** Default free-orbit position: 3/4 perspective showing whole track length. */
-const FREE_CAM    = new THREE.Vector3(_startCenter.x + 8000, 8000, _startCenter.z + 28000);
-const FREE_TARGET = new THREE.Vector3(_startCenter.x, 0, _startCenter.z + 14000);
+/** Default free-orbit position: 3/4 perspective SE of the ring showing the full loop.
+ *  Re-derived for ±8026wu actual footprint (was 9000,8000,9000 for ±5200wu). */
+const FREE_CAM    = new THREE.Vector3(12000, 10000, 12000);
+const FREE_TARGET = new THREE.Vector3(0, 0, 0);
 
 // ─── Spline Track component ───────────────────────────────────────────────────
 
@@ -742,12 +753,11 @@ function SceneContents({
         autoRotateSpeed={1.0}
         // Prevent going under the river bed
         maxPolarAngle={Math.PI * 0.85}
-        // Clamp zoom so the user can't drift past CAMERA_FAR (35 000 wu) and
-        // see an empty sky-blue void. Confirmed 2026-04-29 from the user
-        // reporting "as you zoom out, everything disappears" — orbit had
-        // reached 1 033 782 wu, well past the far plane.
+        // Clamp zoom to [500, 26000]. Ring v3 top-down preset is 17500wu altitude
+        // (±8026wu real footprint); 26000 gives zoom-out room before hitting fog haze.
+        // (Previous was 18000 for the miscalibrated ±5200wu estimate.)
         minDistance={500}
-        maxDistance={28000}
+        maxDistance={26000}
       />
 
       {/* Production fog */}
