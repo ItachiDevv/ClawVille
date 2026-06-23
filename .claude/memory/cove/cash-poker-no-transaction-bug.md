@@ -1,24 +1,17 @@
 ---
 name: cash-poker-no-transaction-bug
-description: "cash-table-manager seat/cash-out do debit+insert+update as separate round-trips with NO db.transaction — only an in-process mutex, zero DB atomicity"
+description: "RESOLVED — cash-table-manager seat/cash-out/settle now wrap db.transaction + FOR UPDATE (was separate round-trips with no DB atomicity); fix verified by the house-bots money audit 2026-06-22"
 category: gotcha
 confidence: high
-date: 2026-06-21
+date: 2026-06-22
 ---
 
-# Cash poker has NO db.transaction (OPEN HIGH bug, LOCAL-ONLY)
+# Cash poker NO-db.transaction bug — RESOLVED (was OPEN HIGH)
 
-`cash-table-manager.ts` is the ONLY cove money core that NEVER opens a `db.transaction`. `grep '\.transaction(' cash-table-manager.ts` → none.
+**FIXED.** `cash-table-manager.ts` now opens a `db.transaction` with `SELECT … FOR UPDATE` on the parent table row for every money mutation, composing the ledger debit/credit INTO that same tx (so the CT row-lock + balance-assert + `claw_token_transactions` insert commit atomically with the seat/escrow write). Confirmed by the option-A + option-B house-bots money-conservation audits (2026-06-22): `seatSubject` (~`:711-753`), `cashOutSeat`, and `settleHand` are all single-tx + FOR UPDATE. `grep '\.transaction(' cash-table-manager.ts` now returns matches.
 
-- `seatSubject` (`:541-587`): debit → insert(seat) → update(escrow) → insert(ledger event) as **4 separate round-trips**.
-- `cashOutSeat` (`:652-709`): credit → update(seat 'left') → update(escrow) → insert(ledger event), likewise.
+**The original bug (for the record):** seat/cash-out did debit → insert(seat) → update(escrow) → insert(ledger) as **separate round-trips** under only the in-process `withTableLock` mutex — zero DB atomicity. Failure modes were: crash after the ledger debit but before the seat insert (CT debited, no seat); crash after a cash-out credit but before the seat flips to `'left'` (double cash-out on retry). The in-process mutex serializes same-process calls but is NOT a substitute for DB atomicity.
 
-The `withTableLock` in-process mutex serializes same-process calls but gives **ZERO DB atomicity**. Failure modes:
-- Crash AFTER the ledger debit but BEFORE the seat insert → CT debited with no seat (player loses CT).
-- Crash AFTER the cash-out credit but BEFORE the seat flips to 'left' → double cash-out on retry (seat still active).
+**Lesson that still holds:** any cove money mutation that touches the ledger AND a row write must compose both into ONE `db.transaction` under `FOR UPDATE` (mirror `tournament-manager.ts registerEntrant`), never a sequence of round-trips guarded only by an in-process mutex. The house-bots build (treasury-banked seeded bots) depends on this: every seeded buy-in DEBITS the house bank inside the seat tx, so `Σdebits == Σcredits + Σescrow` holds atomically.
 
-**Contrast the CORRECT pattern:** `tournament-manager.ts:787 registerEntrant` does debit+pool+entrant inside `this.db.transaction` under FOR UPDATE.
-
-**Fix before cash deploys:** wrap each money mutation in `db.transaction`, mirroring MTT. The in-process mutex is NOT a substitute for atomicity — do not assume it is.
-
-Status: OPEN, LOCAL-ONLY on `feat/poker-mtt-tournament`. Settle itself (`settleHand`) IS idempotent (`poker_cash_hands.settled_at` non-null under the (tableId,handNumber) unique row replays). Related: [[conservation-and-idempotency-patterns]], [[poker-money-models]].
+Status: RESOLVED on `staging` (cash games shipped with the tx). Related: [[conservation-and-idempotency-patterns]], [[poker-money-models]].
