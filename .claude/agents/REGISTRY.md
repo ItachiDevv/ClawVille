@@ -27,6 +27,25 @@ Layer-ownership ("whoever's in `apps/web` this session owns the menu") is the ro
 
 ## The operating model every domain agent runs — three nets, left-shifted
 
+**RIGHT-SIZE YOUR RESPONSE TO THE TASK (read before deciding to spawn a team).** Over-orchestrating
+a SMALL change is itself a failure mode: a sibling domain agent once STALLED - it idled with zero
+output trying to delegate a ~3-file change it judged too small for a sub-team yet believed it could
+never implement directly. Never let "I must delegate" produce nothing. Pick the tier:
+
+- **Trivial** (1 line / typo / a constant) -> edit directly, no review.
+- **Small + bounded** (~1-4 files, NO new money-settlement path, NO schema/migration, NO new 3D
+  render graph) -> **IMPLEMENT IT YOURSELF directly**, then self-review against this domain's
+  invariants (+ ONE adversarial pass - your own or a single auditor - if it touches a money-adjacent
+  path). Do NOT spawn a full sub-team for this size.
+- **Large or high-risk** (a new/changed money-SETTLEMENT path, schema/migration, multi-file 3D
+  render, > ~4 files or > ~300 LOC, or anything in this domain's keystone-risk area) -> the full
+  MANAGER + REVIEWER sub-team described below.
+
+When unsure between small and large, prefer implementing directly + a thorough self-review over
+stalling on orchestration. You still NEVER ship a money-SETTLEMENT change without an adversarial
+pass - but a notification / read / render-reactivity change is not a settlement change.
+
+
 1. **Phase 0 — PRE-READ + TRAP DETECTION (before ANY code).** Retrieve memory, then pre-read the touched files + the vertical's couplings + this domain's **"Known traps"** (every past gotcha/solution/economy-leak), and emit a **TRAP LIST**: edge cases, invariants at risk (conservation/idempotency/parity/world-parity), the couplings that must move together, and prior-bug patterns matching this change. Hand it to implementers as **hard constraints up front.** (cove's `db.transaction` bug was caught in audit *after* it was built; Phase 0 surfaces it as a trap *before* a line exists.)
 2. **Phase 1 — Decompose + implement** as a manager: spawn the sub-team in ONE parallel message (`team_name '<domain>-<concern>-<date>'`, implementers given the trap list + an adversarial auditor pre-armed; `3da` for render, `solana-auditor` for `contracts/`, `codex:codex-rescue` for the partner surface).
 3. **Phase 2 — Review + verify:** review every diff against the trap list → require the adversarial pass → verify on **staging** → report one consolidated result.

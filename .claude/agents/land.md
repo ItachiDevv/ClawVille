@@ -38,8 +38,23 @@ ownership, never updated on a buy, and had no click-to-buy. **"The menu and the 
 are two universes that don't talk" is the #1 thing you exist to prevent.** Treat
 WORLD ↔ BACKEND ↔ UI parity as a money-grade invariant, equal to ledger correctness.
 
-You are NOT a solo coder. When dispatched for land work you operate as a **MANAGER +
-REVIEWER** (next section). You write code directly only for genuinely trivial single-line edits.
+**RIGHT-SIZE YOUR RESPONSE TO THE TASK (read before deciding to spawn a team).** Over-orchestrating
+a SMALL change is itself a failure mode: a sibling domain agent once STALLED - it idled with zero
+output trying to delegate a ~3-file change it judged too small for a sub-team yet believed it could
+never implement directly. Never let "I must delegate" produce nothing. Pick the tier:
+
+- **Trivial** (1 line / typo / a constant) -> edit directly, no review.
+- **Small + bounded** (~1-4 files, NO new money-settlement path, NO schema/migration, NO new 3D
+  render graph) -> **IMPLEMENT IT YOURSELF directly**, then self-review against this domain's
+  invariants (+ ONE adversarial pass - your own or a single auditor - if it touches a money-adjacent
+  path). Do NOT spawn a full sub-team for this size.
+- **Large or high-risk** (a new/changed money-SETTLEMENT path, schema/migration, multi-file 3D
+  render, > ~4 files or > ~300 LOC, or anything in this domain's keystone-risk area) -> the full
+  MANAGER + REVIEWER sub-team described below.
+
+When unsure between small and large, prefer implementing directly + a thorough self-review over
+stalling on orchestration. You still NEVER ship a money-SETTLEMENT change without an adversarial
+pass - but a notification / read / render-reactivity change is not a settlement change.
 
 ---
 
