@@ -19,7 +19,7 @@
  *    ≤ 15 wu (half-interval), well under the 0.5 wu tolerance required for
  *    `tFromArclength`. Bumping to 2 000 is a one-line change if needed.
  *
- * 3. Phantom control points at open endpoints.
+ * 3. Phantom control points at open endpoints (OPEN mode only).
  *    Catmull-Rom needs four control points to evaluate one segment. At the
  *    open ends (t=0 and t=1) one phantom point is prepended/appended.
  *    Phantom[start] = CP[0] + (CP[0] - CP[1]) — reflects CP[1] across CP[0].
@@ -27,6 +27,37 @@
  *    This keeps the tangent at the endpoint consistent with the first/last
  *    real segment direction. The "+200 wu" note in the architecture doc refers
  *    to a specific track-design suggestion, not a formula invariant.
+ *
+ * 3b. PERIODIC CLOSURE (CLOSED mode, opt-in via `{ closed: true }`, added
+ *    2026-06-22 for the closed-loop ring track).
+ *    A closed loop has N real control points and **N segments, not N-1** —
+ *    the closing chord CP[N-1] → CP[0] is a REAL segment. There are NO phantom
+ *    reflections; instead the four-point neighbours WRAP AROUND the ring.
+ *
+ *    We build an AUGMENTED point array of length N+3 by wrapping:
+ *      pts = [ CP[N-1], CP[0], CP[1], …, CP[N-1], CP[0], CP[1] ]
+ *              ^wrap-1   ^─────── the N real CPs ───────^  ^wrap +1 +2
+ *    Indices 1..N are the N real CPs (pts[1] = CP[0], pts[N] = CP[N-1]).
+ *    Segment i (0..N-1) is evaluated from the four points pts[i..i+3] with
+ *    knot values knots[i..i+3] — identical machinery to the OPEN evaluator,
+ *    so the seam (segment N-1, the closing chord, → segment 0) is treated
+ *    EXACTLY like any interior boundary. That is why C1 continuity holds at
+ *    the seam with no special-casing: there is no special boundary.
+ *
+ *    Real parametric domain: t∈[0,1] maps to knot range [knots[1], knots[1+N]]
+ *    (CP[0] → CP[0]-again, one full loop). By construction
+ *      centerlineAt(0) === centerlineAt(1)  (same physical point — CP[0]),
+ *      tangentAt(0)    ≈   tangentAt(1)      (C1 across the seam),
+ *      widthAt(0)      ===  widthAt(1).
+ *    The knot increments for the wrap neighbours use the SAME real
+ *    sqrt-chord-length math (alpha=0.5) as interior knots, so the closing
+ *    chord contributes its true arc length to totalArcLength.
+ *
+ *    closestPointOnSpline in CLOSED mode: the coarse LUT scan covers the whole
+ *    loop (including the closing segment), and Newton is wrapped MODULO the
+ *    loop so a query point sitting just past the seam converges to the nearest
+ *    side (t near 0) instead of snapping to t≈1 on the wrong side. The final t
+ *    is normalised into [0, 1).
  *
  * 4. closestPointOnSpline — Newton's method seeded from LUT coarse scan.
  *    The LUT coarse scan (1 000 samples) identifies the t with smallest
@@ -105,6 +136,23 @@ export interface SplineControlPoint {
   z: number;
   /** Corridor half-width at this control point (wu). Must be > 0. */
   halfWidth: number;
+}
+
+/**
+ * Construction options for {@link ReefSpline}.
+ *
+ * Omitting the options object (or passing `{}`) yields a 100%-back-compat OPEN
+ * spline — bit-identical to the pre-2026-06-22 behaviour.
+ */
+export interface ReefSplineOptions {
+  /**
+   * When `true`, the spline is a TRUE PERIODIC (closed) loop: the four-point
+   * Catmull-Rom neighbours wrap around (CP[n-1] and CP[0] are neighbours), the
+   * closing chord CP[n-1]→CP[0] is a real segment (n segments, not n-1), and
+   * centerlineAt(0) === centerlineAt(1). Default `false` (open with phantom
+   * endpoints). See module doc note #3b.
+   */
+  closed?: boolean;
 }
 
 /**
@@ -206,37 +254,79 @@ export class ReefSpline {
   /** Total arc length of the spline (wu). */
   public readonly totalArcLength: number;
 
-  constructor(controlPoints: ReadonlyArray<SplineControlPoint>) {
-    if (controlPoints.length < 2) {
+  /** True when this spline is a periodic (closed) loop. See module doc #3b. */
+  public readonly closed: boolean;
+
+  /**
+   * @param controlPoints  The N real control points (no phantoms; for a closed
+   *                        loop do NOT repeat CP[0] at the end — the wrap is
+   *                        added internally).
+   * @param opts           Optional. `{ closed: true }` builds a periodic loop.
+   *                        Omitting it (or `{}`) is the back-compat OPEN spline.
+   */
+  constructor(
+    controlPoints: ReadonlyArray<SplineControlPoint>,
+    opts?: ReefSplineOptions,
+  ) {
+    const closed = opts?.closed === true;
+    // A closed loop needs at least 3 real CPs to form a non-degenerate ring;
+    // the open path keeps its historical 2-CP minimum.
+    if (closed) {
+      if (controlPoints.length < 3) {
+        throw new Error('ReefSpline closed loop requires at least 3 control points');
+      }
+    } else if (controlPoints.length < 2) {
       throw new Error('ReefSpline requires at least 2 control points');
     }
-
-    // ── Phantom control points ────────────────────────────────────────────
-    //
-    // Phantom[start] = 2*CP[0] - CP[1]   (reflects CP[1] across CP[0])
-    // Phantom[end]   = 2*CP[N-1] - CP[N-2] (reflects CP[N-2] across CP[N-1])
-    //
-    // This ensures the tangent at t=0 and t=1 is continuous with the
-    // adjacent real segment, with no special-casing in the evaluator.
-    const first = controlPoints[0];
-    const second = controlPoints[1];
-    const last = controlPoints[controlPoints.length - 1];
-    const secondLast = controlPoints[controlPoints.length - 2];
-
-    const phantomStart: SplineControlPoint = {
-      x: 2 * first.x - second.x,
-      z: 2 * first.z - second.z,
-      halfWidth: first.halfWidth,
-    };
-    const phantomEnd: SplineControlPoint = {
-      x: 2 * last.x - secondLast.x,
-      z: 2 * last.z - secondLast.z,
-      halfWidth: last.halfWidth,
-    };
-
-    const pts: SplineControlPoint[] = [phantomStart, ...controlPoints, phantomEnd];
-    this.pts = pts;
+    this.closed = closed;
     this.n = controlPoints.length;
+
+    let pts: SplineControlPoint[];
+    if (closed) {
+      // ── Periodic wrap (no phantom reflection) ───────────────────────────
+      //
+      // Augmented array of length N+3 wrapping the ring:
+      //   [ CP[N-1], CP[0], CP[1], …, CP[N-1], CP[0], CP[1] ]
+      //     wrap-1    1      2          N        N+1   N+2
+      // pts[1..N] are the N real CPs (pts[1]=CP[0] … pts[N]=CP[N-1]).
+      // Segment i (0..N-1) reads pts[i..i+3]; segment N-1 (the closing chord)
+      // reads pts[N-1..N+2] = [CP[N-2], CP[N-1], CP[0], CP[1]] — a real wrap,
+      // identical machinery to an interior segment so the seam is C1.
+      const n = controlPoints.length;
+      pts = new Array(n + 3);
+      pts[0] = controlPoints[n - 1];           // wrap before: CP[N-1]
+      for (let i = 0; i < n; i++) {
+        pts[i + 1] = controlPoints[i];         // the N real CPs
+      }
+      pts[n + 1] = controlPoints[0];           // wrap after: CP[0]
+      pts[n + 2] = controlPoints[1];           // wrap after: CP[1]
+    } else {
+      // ── Phantom control points (OPEN mode) ──────────────────────────────
+      //
+      // Phantom[start] = 2*CP[0] - CP[1]   (reflects CP[1] across CP[0])
+      // Phantom[end]   = 2*CP[N-1] - CP[N-2] (reflects CP[N-2] across CP[N-1])
+      //
+      // This ensures the tangent at t=0 and t=1 is continuous with the
+      // adjacent real segment, with no special-casing in the evaluator.
+      const first = controlPoints[0];
+      const second = controlPoints[1];
+      const last = controlPoints[controlPoints.length - 1];
+      const secondLast = controlPoints[controlPoints.length - 2];
+
+      const phantomStart: SplineControlPoint = {
+        x: 2 * first.x - second.x,
+        z: 2 * first.z - second.z,
+        halfWidth: first.halfWidth,
+      };
+      const phantomEnd: SplineControlPoint = {
+        x: 2 * last.x - secondLast.x,
+        z: 2 * last.z - secondLast.z,
+        halfWidth: last.halfWidth,
+      };
+
+      pts = [phantomStart, ...controlPoints, phantomEnd];
+    }
+    this.pts = pts;
 
     // ── Centripetal knot sequence ────────────────────────────────────────
     //
@@ -246,6 +336,8 @@ export class ReefSpline {
     //
     // This is the standard centripetal parameterisation that prevents
     // self-intersection and overshoot on non-uniform point spacing.
+    // In CLOSED mode the wrap neighbours use the SAME real sqrt-chord math, so
+    // the closing chord contributes its true length to the arc.
     const knots: number[] = new Array(pts.length);
     knots[0] = 0;
     for (let i = 1; i < pts.length; i++) {
@@ -257,9 +349,12 @@ export class ReefSpline {
     }
     this.knots = knots;
 
-    // kStart = knots[1] (t=0 maps here), kEnd = knots[n] (t=1 maps here)
+    // kStart = knots[1] (t=0 maps here).
+    // OPEN:   kEnd = knots[n]   (t=1 maps to CP[N-1], the last real CP).
+    // CLOSED: kEnd = knots[1+n] (t=1 maps to the wrap copy of CP[0] — i.e. one
+    //         full loop back to the start, INCLUDING the closing chord).
     const kStart = knots[1];
-    const kEnd = knots[this.n];
+    const kEnd = closed ? knots[1 + this.n] : knots[this.n];
     this.kStart = kStart;
     this.kRange = kEnd - kStart;
 
@@ -458,21 +553,46 @@ export class ReefSpline {
     // f'(t) ≈ central finite difference: (f(t+h) - f(t-h)) / (2h)
     // h is in global t units (NEWTON_DERIV_H).
     let t = bestT;
-    for (let iter = 0; iter < NEWTON_MAX_ITER; iter++) {
-      const f0 = this._newtonResidual(p, t);
+    if (this.closed) {
+      // CLOSED: the seam is continuous, so Newton wraps MODULO the loop rather
+      // than clamping. Central differences straddle the seam with wrap-around
+      // (no one-sided clamp), and the step wraps into [0,1) — so a point just
+      // past the seam converges to t near 0 instead of snapping to t≈1.
+      for (let iter = 0; iter < NEWTON_MAX_ITER; iter++) {
+        const f0 = this._newtonResidual(p, t);
 
-      const tP = Math.min(1, t + NEWTON_DERIV_H);
-      const tM = Math.max(0, t - NEWTON_DERIV_H);
-      const fP = this._newtonResidual(p, tP);
-      const fM = this._newtonResidual(p, tM);
+        const tP = wrap01(t + NEWTON_DERIV_H);
+        const tM = wrap01(t - NEWTON_DERIV_H);
+        const fP = this._newtonResidual(p, tP);
+        const fM = this._newtonResidual(p, tM);
 
-      const fPrime = (fP - fM) / (tP - tM);
-      if (Math.abs(fPrime) < 1e-12) break; // degenerate segment
+        // Denominator is the true (unwrapped) 2h — wrap01 only moves the
+        // EVALUATION point, the parametric spacing is still 2·NEWTON_DERIV_H.
+        const fPrime = (fP - fM) / (2 * NEWTON_DERIV_H);
+        if (Math.abs(fPrime) < 1e-12) break; // degenerate segment
 
-      const dt = f0 / fPrime;
-      t = Math.max(0, Math.min(1, t - dt));
+        const dt = f0 / fPrime;
+        t = wrap01(t - dt);
 
-      if (Math.abs(dt) < NEWTON_TOLERANCE) break;
+        if (Math.abs(dt) < NEWTON_TOLERANCE) break;
+      }
+    } else {
+      for (let iter = 0; iter < NEWTON_MAX_ITER; iter++) {
+        const f0 = this._newtonResidual(p, t);
+
+        const tP = Math.min(1, t + NEWTON_DERIV_H);
+        const tM = Math.max(0, t - NEWTON_DERIV_H);
+        const fP = this._newtonResidual(p, tP);
+        const fM = this._newtonResidual(p, tM);
+
+        const fPrime = (fP - fM) / (tP - tM);
+        if (Math.abs(fPrime) < 1e-12) break; // degenerate segment
+
+        const dt = f0 / fPrime;
+        t = Math.max(0, Math.min(1, t - dt));
+
+        if (Math.abs(dt) < NEWTON_TOLERANCE) break;
+      }
     }
 
     // ── Step 3: Result ──────────────────────────────────────────────────
@@ -518,8 +638,9 @@ export class ReefSpline {
 
     // Binary search for the segment whose knot interval contains tK.
     // Segment i has knot interval [knots[i+1], knots[i+2]] in the pts array.
-    // i ranges from 0 to n-2 (n-1 segments between n real points).
-    const numSegs = this.n - 1;
+    // OPEN:   i ∈ [0, n-2] — n-1 segments between n real points.
+    // CLOSED: i ∈ [0, n-1] — n segments (the extra one is the closing chord).
+    const numSegs = this.closed ? this.n : this.n - 1;
     let lo = 0;
     let hi = numSegs - 1;
 
@@ -611,6 +732,18 @@ export class ReefSpline {
     const d = this._derivXZ(seg, tK);
     return (c.x - p.x) * d.x + (c.z - p.z) * d.z;
   }
+}
+
+// ─── Module-level helpers ─────────────────────────────────────────────────────
+
+/**
+ * Wrap a parametric value into [0, 1) for closed-loop math. Handles arbitrary
+ * negative or >1 inputs (e.g. a Newton step that overshoots the seam).
+ */
+function wrap01(t: number): number {
+  const r = t - Math.floor(t);
+  // Math.floor handles negatives correctly; guard the exact-1.0 float edge.
+  return r >= 1 ? 0 : r;
 }
 
 // ─── Centripetal Catmull-Rom basis (Barry-Goldman recursive algorithm) ────────
