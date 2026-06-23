@@ -58,14 +58,15 @@ import {
 import type { BotController } from '../bots/bot-controller';
 import {
   REEF_TICK_HZ,
+  REEF_RACE_LAPS,
   REEF_MAX_SPEED,
   REEF_MAX_ACCEL,
   // REEF_DRAG retired in the v2 surf model — replaced by directional
   // forwardDrag + lateralGrip in integrateSurfStep (still used by the ellipse
   // sim via reef-race-sim.ts).
   REEF_BODY_RADIUS,
-  REEF_SOFT_TIMEOUT_MS,
-  REEF_HARD_TIMEOUT_MS,
+  REEF_RACE_LOOP_SOFT_TIMEOUT_MS,
+  REEF_RACE_LOOP_HARD_TIMEOUT_MS,
   REEF_MAX_POWER_UP_SLOTS,
   REEF_POWERUP_RESPAWN_MS,
   REEF_POWERUP_RADIUS,
@@ -229,10 +230,40 @@ interface SplineBody {
   vyAxis: number;        // vertical velocity (wu/s, +up)
   airborneTicks: number; // 0 = grounded, >0 = airborne
 
-  // ── Race progress ───────────────────────────────────────────────────────
-  /** Arclength fraction 0..1. 1.0 = finish line crossed. */
+  // ── Race progress (CLOSED-LOOP lap model, 2026-06-22) ─────────────────────
+  /**
+   * WITHIN-LAP arclength fraction 0..1 of ONE loop. Wraps 1→0 at the seam each
+   * lap. NOT the whole-race progress — combine with `lap` (see `totalProgress`).
+   */
   progress: number;
   prevProgress: number;
+  /**
+   * Completed-lap count (0-based). 0 during lap 1; increments each time the
+   * body crosses the start/finish seam in the forward direction. A body
+   * FINISHES when `lap` reaches `REEF_RACE_LAPS` (i.e. it has crossed the seam
+   * after completing the final lap). See `resolveProgress`.
+   */
+  lap: number;
+  /**
+   * True once the body has crossed the start/finish seam in the forward
+   * direction for the FIRST time (the "start gun" cross). Bodies spawn BEHIND
+   * the line (progress ≈ 1.0), so their first forward seam crossing is the
+   * race start, NOT a completed lap — it sets this flag and leaves `lap` at 0.
+   * Every forward seam crossing AFTER this increments `lap`.
+   */
+  startCrossed: boolean;
+  /**
+   * Server timestamp (ms) of the body's last start/finish line cross — set to
+   * the match start at spawn, refreshed to `now` on the start-gun cross and on
+   * each lap completion. Used to stamp `event.lap_completed.splitMs`.
+   */
+  lastLapAt: number;
+  /**
+   * False until the first `resolveProgress` sample seeds `progress`/`prevProgress`
+   * from the body's actual spawn position (behind the line, t≈0.97-1.0). Without
+   * this the first tick would read a spurious 0→0.97 jump as a seam crossing.
+   */
+  progressInitialized: boolean;
   finishedAt: number | null;
   placement: number | null;
   totalTimeMs: number;
@@ -271,7 +302,10 @@ interface SplineBodySnap {
   vz: number;
   rot: number;
   height: number;
+  /** Within-lap fraction 0..1 (wraps each lap). */
   progress: number;
+  /** Completed-lap count (0-based). */
+  lap: number;
   finishedAt: number | null;
   dnf: boolean;
   placement: number | null;
@@ -368,6 +402,16 @@ function quant(v: number, factor: number): number {
   return Math.round(v * factor) / factor;
 }
 
+/**
+ * Whole-race progress = completed laps + within-lap fraction. The monotonic
+ * ordering key for live placement (higher = further along the race). Closed-loop
+ * lap model (2026-06-22): `lap` is the completed-lap count, `progress` the
+ * within-lap fraction 0..1.
+ */
+function totalProgress(lap: number, progress: number): number {
+  return lap + progress;
+}
+
 // ─── Main class ───────────────────────────────────────────────────────────────
 
 /**
@@ -417,7 +461,10 @@ export class ReefRaceSplineSim {
     const startedAt = opts?.startedAt ?? Date.now();
 
     // Build the spline once — shared across all tick iterations.
-    const spline = new ReefSpline(REEF_RACE_DEFAULT_TRACK);
+    // CLOSED-LOOP (2026-06-22): the v3 track is a periodic ring; 1 lap = one
+    // full loop. `{ closed: true }` makes the closing chord a real segment so
+    // arclengthFromT spans the whole loop and the lap/finish math below is sound.
+    const spline = new ReefSpline(REEF_RACE_DEFAULT_TRACK, { closed: true });
 
     const botControllers = new Map<string, BotController>();
     if (opts?.bots) {
@@ -436,8 +483,10 @@ export class ReefRaceSplineSim {
       roomId,
       activityId,
       startedAt,
-      softEndsAt: startedAt + REEF_SOFT_TIMEOUT_MS,
-      hardEndsAt: startedAt + REEF_HARD_TIMEOUT_MS,
+      // CLOSED-LOOP: scale the race timeout by lap count (a 3-lap race is ~3×
+      // one loop) so racers aren't DNF'd mid-race by the single-loop cap.
+      softEndsAt: startedAt + REEF_RACE_LOOP_SOFT_TIMEOUT_MS,
+      hardEndsAt: startedAt + REEF_RACE_LOOP_HARD_TIMEOUT_MS,
       spline,
       tick: 0,
       bodies: new Map(),
@@ -457,12 +506,19 @@ export class ReefRaceSplineSim {
       rampCooldowns: new Map(),
     };
 
-    // ── Spawn bodies at the start line (t=0, z=0) ─────────────────────────
-    // Lateral stagger: 2 columns, spaced 70wu apart along -Z (behind line),
-    // 90wu left/right. Facing +Z (down-track) → rot = atan2(0, 1) = 0.
-    // tangent at t=0 is (0, 1) in XZ → rot = atan2(0, 1) = 0.
-    const startTangent = spline.tangentAt(0); // {x≈0, z≈1}
-    const startNormal  = spline.normalAt(0);  // {x≈-1, z≈0} (left of +Z)
+    // ── Spawn bodies on the start/finish line (t=0) ───────────────────────
+    // CLOSED-LOOP (2026-06-22): anchor the grid to the START CENTERLINE POSITION
+    // `centerlineAt(0)`, NOT the world origin. (The old open-track code computed
+    // the offsets from (0,0); since the new CP[0] is at (-1600,-4300), spawning
+    // relative to origin dropped every kart ~3290 wu off-track in the island
+    // centre. The fix anchors at the real start point.) Karts are placed BEHIND
+    // the line along -tangent so their FIRST forward seam crossing is the start
+    // gun (lap model: see resolveProgress). Lateral stagger: 2 columns, 70 wu
+    // apart back along -tangent, 90 wu left/right along the normal. They face
+    // down-track (+tangent).
+    const startCenter  = spline.centerlineAt(0); // start/finish line centre
+    const startTangent = spline.tangentAt(0);    // direction of travel at the line
+    const startNormal  = spline.normalAt(0);     // left of travel direction
 
     const SPAWN_SPACING_Z = 70;
     const SPAWN_OFFSET_X  = 90;
@@ -471,12 +527,15 @@ export class ReefRaceSplineSim {
       const row = Math.floor(i / 2);
       const col = i % 2 === 0 ? -1 : 1;   // left / right column
 
-      // Place behind start line along -tangent, staggered laterally.
+      // Place behind the start line along -tangent, staggered laterally, anchored
+      // at the start centerline so the whole grid sits ON the loop.
       const backZ = row * SPAWN_SPACING_Z + 30;
-      const x = startTangent.x * (-backZ) + startNormal.x * col * SPAWN_OFFSET_X;
-      const z = startTangent.z * (-backZ) + startNormal.z * col * SPAWN_OFFSET_X;
+      const x =
+        startCenter.x + startTangent.x * (-backZ) + startNormal.x * col * SPAWN_OFFSET_X;
+      const z =
+        startCenter.z + startTangent.z * (-backZ) + startNormal.z * col * SPAWN_OFFSET_X;
 
-      // Face down-track (+Z direction).
+      // Face down-track (+tangent direction).
       const rot = Math.atan2(startTangent.x, startTangent.z);
 
       const activeBoosts = new Map<ReefBoostKind, ReefBoostEntry>();
@@ -507,6 +566,10 @@ export class ReefRaceSplineSim {
         airborneTicks: 0,
         progress: 0,
         prevProgress: 0,
+        lap: 0,
+        startCrossed: false,
+        lastLapAt: startedAt,
+        progressInitialized: false,
         finishedAt: null,
         placement: null,
         totalTimeMs: 0,
@@ -709,8 +772,11 @@ export class ReefRaceSplineSim {
     const dnfers = Array.from(state.bodies.values())
       .filter((b) => b.finishedAt === null || b.dnf)
       .sort((a, b) => {
-        // Higher progress = better among DNFers.
-        if (b.progress !== a.progress) return b.progress - a.progress;
+        // Higher whole-race progress (lap + within-lap fraction) = better among
+        // DNFers — a lap-2 DNF outranks a lap-1 DNF.
+        const pa = totalProgress(a.lap, a.progress);
+        const pb = totalProgress(b.lap, b.progress);
+        if (pb !== pa) return pb - pa;
         return a.avatarId.localeCompare(b.avatarId);
       });
 
@@ -734,7 +800,9 @@ export class ReefRaceSplineSim {
       out.push({
         avatarId: d.avatarId,
         placement: placement++,
-        score: -(REEF_HARD_TIMEOUT_MS + 1),
+        // DNF score floor — below any finisher's -totalTimeMs (finishers can't
+        // exceed the loop hard timeout), so finishers always outrank DNFers.
+        score: -(REEF_RACE_LOOP_HARD_TIMEOUT_MS + 1),
         scoreMs: null,
       });
     }
@@ -1110,40 +1178,83 @@ export class ReefRaceSplineSim {
     }
   }
 
-  // ─── Progress + finish line ────────────────────────────────────────────────
+  // ─── Progress + lap + finish line (CLOSED-LOOP, 2026-06-22) ─────────────────
 
   /**
-   * Update body.progress from spline arclength fraction.
-   * Detects finish line crossing (progress crosses 1.0).
-   * Anti-cheat: flag progress regression beyond noise tolerance.
+   * Update body within-lap `progress` (arclength fraction of one loop) + `lap`
+   * (completed-lap count) from the spline, detect forward seam crossings, and
+   * finish a body when it completes lap `REEF_RACE_LAPS` and crosses the line.
+   *
+   * Lap model:
+   *   - `progress` ∈ [0,1) is the within-lap fraction and WRAPS 1→0 at the seam.
+   *   - A FORWARD SEAM CROSSING is `prevProgress` high (> SEAM_HI) and the new
+   *     within-lap progress low (< SEAM_LO). On a 30k-wu loop a body moves
+   *     ≤ ~17 wu/tick (≈ 0.0006 of the loop), so it can NEVER legitimately
+   *     jump 0.8→0.2 except by wrapping the seam — the gap makes the test robust.
+   *   - Bodies spawn BEHIND the line (progress ≈ 1.0). The FIRST forward seam
+   *     crossing is the "start gun" (sets `startCrossed`, leaves `lap`=0 = on
+   *     lap 1). Every crossing after that increments `lap`.
+   *   - A body FINISHES the instant it would increment `lap` to `REEF_RACE_LAPS`
+   *     — i.e. it crosses the start/finish seam after completing the final lap.
+   *
+   * Anti-cheat: a seam wrap is FORWARD progress, never a regression — the
+   * regression check runs on the WRAP-ADJUSTED within-lap delta.
    */
   private resolveProgress(state: SplineRoomState, now: number): void {
     for (const body of state.bodies.values()) {
       if (!body.alive || body.forfeited || body.finishedAt !== null) continue;
 
       const closest = state.spline.closestPointOnSpline({ x: body.x, z: body.z });
-      const arcS = state.spline.arclengthFromT(closest.t);
       const total = state.spline.totalArcLength;
+      const arcS = state.spline.arclengthFromT(closest.t);
       const newProgress = total > 0 ? arcS / total : 0;
 
-      // Anti-cheat regression check.
-      if (!progressIsMonotonic(newProgress, body.prevProgress)) {
-        this.flag(state, body.avatarId, 'checkpoint_skip',
-          `progress_regression: ${newProgress.toFixed(4)} < ${body.prevProgress.toFixed(4)} - 0.02`);
+      // First sample: seed from the spawn projection (body sits behind the line,
+      // progress ≈ 1.0) so the first tick is not read as a spurious wrap.
+      if (!body.progressInitialized) {
+        body.progress = newProgress;
+        body.prevProgress = newProgress;
+        body.progressInitialized = true;
+        continue;
       }
 
-      body.prevProgress = body.progress;
+      const prev = body.progress;
+
+      // Forward seam crossing: was high, now low (unambiguous on a 30k-wu loop).
+      const SEAM_HI = 0.7;
+      const SEAM_LO = 0.3;
+      const crossedSeamForward = prev > SEAM_HI && newProgress < SEAM_LO;
+
+      // Anti-cheat: compute the WRAP-ADJUSTED within-lap delta. A forward wrap
+      // adds 1.0 (the seam) so a legit lap completion is NOT a regression.
+      const wrappedDelta = crossedSeamForward
+        ? newProgress + 1 - prev
+        : newProgress - prev;
+      if (!progressIsMonotonic(wrappedDelta + prev, prev)) {
+        this.flag(state, body.avatarId, 'checkpoint_skip',
+          `progress_regression: delta=${wrappedDelta.toFixed(4)} (prev=${prev.toFixed(4)} new=${newProgress.toFixed(4)})`);
+      }
+
+      body.prevProgress = prev;
       body.progress = newProgress;
 
-      // Finish line: crossed from below 0.95 to ≥ 1.0, or prevProgress was
-      // already high and body is within 1 body-radius of finish.
-      // Use a 0.95 threshold on the pre-update value to avoid false triggers
-      // from teleportation bugs — the body must have genuinely traversed the
-      // course.
-      const justCrossedFinish =
-        body.prevProgress >= 0.95 && body.progress >= 1.0;
+      if (!crossedSeamForward) continue;
 
-      if (justCrossedFinish) {
+      // ── Forward seam crossing handling ──────────────────────────────────
+      if (!body.startCrossed) {
+        // First crossing = the START GUN. Now genuinely on lap 1; lap stays 0.
+        body.startCrossed = true;
+        body.lastLapAt = now;
+        continue;
+      }
+
+      // A genuine lap completion. Increment completed-lap count.
+      const splitMs = now - body.lastLapAt;
+      body.lastLapAt = now;
+      body.lap += 1;
+
+      if (body.lap >= REEF_RACE_LAPS) {
+        // Completed the final lap and crossed the start/finish line → FINISH.
         body.finishedAt = now;
         body.totalTimeMs = now - state.startedAt;
         body.vx = 0;
@@ -1168,6 +1279,17 @@ export class ReefRaceSplineSim {
           avatarId: body.avatarId,
           placement: finishPlacement,
           totalTimeMs: body.totalTimeMs,
+          lap: body.lap,
+        } as unknown as ServerFrame);
+      } else {
+        // Mid-race lap completion — emit a lap event so the HUD ticks the counter.
+        this.broadcastFn(state.roomId, {
+          type: 'event.lap_completed',
+          avatarId: body.avatarId,
+          lap: body.lap,
+          splitMs,
+          totalMs: now - state.startedAt,
+          totalLaps: REEF_RACE_LAPS,
         } as unknown as ServerFrame);
       }
     }
@@ -1623,7 +1745,15 @@ export class ReefRaceSplineSim {
       } else if (b.finishedAt !== null) {
         racing.push({ avatarId: b.avatarId, progress: Infinity, finishedAt: b.finishedAt, dnf: false });
       } else {
-        racing.push({ avatarId: b.avatarId, progress: b.progress, finishedAt: null, dnf: false });
+        // CLOSED-LOOP: order by whole-race progress (lap + within-lap fraction),
+        // NOT the within-lap fraction alone (a lap-2 leader at progress 0.1 is
+        // AHEAD of a lap-1 racer at progress 0.9).
+        racing.push({
+          avatarId: b.avatarId,
+          progress: totalProgress(b.lap, b.progress),
+          finishedAt: null,
+          dnf: false,
+        });
       }
     }
     racing.sort((a, b) => {
@@ -1656,6 +1786,7 @@ export class ReefRaceSplineSim {
         rot: quant(b.rot, ROT_QUANT),
         height: quant(b.heightOffset, POS_QUANT),
         progress: quant(b.progress, 10000),
+        lap: b.lap,
         finishedAt: b.finishedAt,
         dnf: b.dnf,
         placement: state.lastPlacementMap.get(b.avatarId) ?? null,
@@ -1712,7 +1843,12 @@ export class ReefRaceSplineSim {
           })),
         scores: snap.bodies.map((b) => ({
           avatarId: b.avatarId,
-          score: quant(b.progress, 10000),
+          // CLOSED-LOOP: score = whole-race progress (lap + within-lap fraction)
+          // so a fresh keyframe orders laps correctly even before the next delta.
+          score: quant(totalProgress(b.lap, b.progress), 10000),
+          lap: b.lap,
+          totalLaps: REEF_RACE_LAPS,
+          position: b.placement ?? undefined,
         })),
       },
     });
@@ -1735,6 +1871,7 @@ export class ReefRaceSplineSim {
           p.rot !== b.rot ||
           p.height !== b.height ||
           p.progress !== b.progress ||
+          p.lap !== b.lap ||
           p.finishedAt !== b.finishedAt ||
           p.dnf !== b.dnf ||
           p.placement !== b.placement
@@ -1751,6 +1888,10 @@ export class ReefRaceSplineSim {
           rot: b.rot,
           height: b.height !== 0 ? b.height : undefined,
           progress: b.progress,
+          // CLOSED-LOOP lap state — the render/HUD read these directly.
+          lap: b.lap,
+          totalLaps: REEF_RACE_LAPS,
+          position: b.placement ?? undefined,
           state: b.dnf
             ? ('dnf' as const)
             : b.finishedAt !== null
@@ -1910,9 +2051,10 @@ export class ReefRaceSplineSim {
         charges: slot.charges,
         cooldownUntil: slot.cooldownUntil,
       })),
-      // Bots running the v1 bot controller use lap/nextCheckpoint for
-      // steering heuristics; fake these from progress for Phase 1.
-      lap: Math.floor(b.progress),
+      // CLOSED-LOOP: real completed-lap count + a within-lap "checkpoint" proxy
+      // (12 phantom checkpoints around one loop) for the v1 bot's steering
+      // heuristics. `b.progress` is the within-lap fraction 0..1.
+      lap: b.lap,
       nextCheckpoint: Math.round(b.progress * 12) % 12,
       currentPlacement: placementMap.get(b.avatarId) ?? null,
       finishedAt: b.finishedAt,
@@ -1921,7 +2063,7 @@ export class ReefRaceSplineSim {
     return {
       selfAvatarId,
       bodies,
-      arenaRadius: 28000,  // approximate track length as "radius" for boundary heuristics (90s rebuild)
+      arenaRadius: Math.round(state.spline.totalArcLength),  // loop arc length as "radius" boundary heuristic (closed-loop)
       now: Date.now(),
       matchStartedAt: state.startedAt,
     };

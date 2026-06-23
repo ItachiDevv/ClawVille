@@ -92,6 +92,14 @@ const SWEEPER_INTERVAL_MS = 15_000;
 /** Countdown duration before sim starts (backend §1.2) */
 const COUNTDOWN_DURATION_MS = 5_000;
 
+/**
+ * Minimum countdown remainder a connecting client must still have for the
+ * 3-2-1 overlay to be worth showing. Below this, `ensureSyncedCountdown()`
+ * re-anchors the window to the connect time so navigation latency can't burn
+ * the countdown before the client can render it. 3s = a full "3…2…1…GO".
+ */
+const COUNTDOWN_MIN_SYNC_MS = 3_000;
+
 /** Crockford base32 alphabet (no I, L, O, U) — short-code character set */
 const CROCKFORD_BASE32 = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
 
@@ -499,6 +507,75 @@ class ActivityRoomManager {
     // Broadcast an FSM-state event for hub-attached clients (chunk #3).
     // The hub callback handles missing connections silently.
     this.broadcastFn(roomId, this.fsmEventFrame(room, toState));
+  }
+
+  /**
+   * Re-anchor a soon-to-expire COUNTDOWN so a freshly-connected client always
+   * gets a full synced 3-2-1 before the sim starts.
+   *
+   * WHY: `createRoom()` flips PENDING→COUNTDOWN immediately and arms the
+   * COUNTDOWN→LIVE timer at room-creation time — but the player still has to
+   * navigate the browser to the room page and open a WebSocket, which on a
+   * cold load easily burns 4-5s. By the time `registerConnection()` runs the
+   * original window is gone: the `event.countdown` sent on connect computes
+   * `remaining=0` (overlay is gated on `>0`) or the room already auto-advanced
+   * to LIVE — so the HUD jumps straight to RACE 0% with no countdown. This
+   * manifested in solo-vs-bots playtests as "no 3-2-1". The bug is
+   * sim-agnostic (the sim doesn't own the countdown and only starts at LIVE);
+   * both the ellipse and CLOSED-LOOP spline sims race the same window — spline
+   * only looked worse because its match flow surfaced it.
+   *
+   * FIX: when a player connects while the room is still in COUNTDOWN and the
+   * remaining window is below `COUNTDOWN_MIN_SYNC_MS`, restart the
+   * COUNTDOWN→LIVE timer anchored to NOW so everyone gets a clean, synced
+   * countdown. Idempotent + conservative: no-op unless the room is in
+   * COUNTDOWN with a short remainder, never shortens a healthy window, never
+   * touches LIVE/RESULTS rooms, and the existing COUNTDOWN→LIVE auto-advance
+   * (and its cancel-on-transition guard) are reused verbatim. Reversible by
+   * deleting this method + its single ws-hub call site.
+   *
+   * Returns the (possibly refreshed) `countdownStartedAt` so the caller can
+   * emit an accurate `event.countdown` in the same connect turn.
+   */
+  ensureSyncedCountdown(roomId: string): number | null {
+    const room = this.rooms.get(roomId);
+    if (!room || room.state !== 'countdown') return null;
+
+    const now = Date.now();
+    const anchoredAt = room.countdownStartedAt ?? room.createdAt;
+    const remaining = COUNTDOWN_DURATION_MS - (now - anchoredAt);
+
+    // Healthy window — leave it untouched so multiple connects in the same
+    // match don't keep pushing the start time out.
+    if (remaining >= COUNTDOWN_MIN_SYNC_MS) {
+      return room.countdownStartedAt;
+    }
+
+    // Re-anchor to now and rearm the auto-advance timer for a fresh window.
+    room.countdownStartedAt = now;
+    room.lastTouchedAt = now;
+
+    const existing = this.countdownTimers.get(roomId);
+    if (existing) clearTimeout(existing);
+
+    const timer = setTimeout(() => {
+      this.countdownTimers.delete(roomId);
+      const r = this.rooms.get(roomId);
+      if (!r || r.state !== 'countdown') return; // aborted / already live
+      this.transitionRoom(roomId, 'live').catch((err) => {
+        console.error(
+          `[activity-room-manager] re-anchored countdown→live failed for ${roomId}:`,
+          err,
+        );
+      });
+    }, COUNTDOWN_DURATION_MS);
+    this.countdownTimers.set(roomId, timer);
+
+    console.log(
+      `[activity-room-manager] room ${roomId} countdown re-anchored on connect (was ${Math.max(0, Math.round(remaining))}ms remaining → full ${COUNTDOWN_DURATION_MS}ms)`,
+    );
+
+    return room.countdownStartedAt;
   }
 
   /**

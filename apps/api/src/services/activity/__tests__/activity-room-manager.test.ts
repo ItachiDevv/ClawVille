@@ -189,6 +189,54 @@ describe('Room FSM transitions', () => {
   });
 });
 
+// ─── Synced countdown (ported from d490501f, 2026-06-22) ───────────────────
+
+describe('ensureSyncedCountdown', () => {
+  it('re-anchors a soon-to-expire countdown to now (the connect-latency fix)', async () => {
+    const room = await activityRoomManager.createRoom(
+      ACTIVITY_ID,
+      makeParticipants(4),
+      ACTIVITY_CONFIG,
+    );
+    expect(room.state).toBe('countdown');
+    // Simulate a slow client connect that burned almost the whole window: the
+    // countdown was anchored ~4.5s ago (< the 3s sync floor of remaining).
+    room.countdownStartedAt = Date.now() - 4_500;
+    const anchored = activityRoomManager.ensureSyncedCountdown(room.id);
+    // Window re-anchored to ~now so a full 3-2-1 still shows.
+    expect(anchored).not.toBeNull();
+    expect(Date.now() - (anchored ?? 0)).toBeLessThan(200);
+    expect(room.countdownStartedAt).toBe(anchored);
+  });
+
+  it('leaves a healthy countdown window untouched (idempotent, no push-out)', async () => {
+    const room = await activityRoomManager.createRoom(
+      ACTIVITY_ID,
+      makeParticipants(4),
+      ACTIVITY_CONFIG,
+    );
+    // Fresh window (just created) — plenty of remaining → no re-anchor.
+    const before = room.countdownStartedAt;
+    const anchored = activityRoomManager.ensureSyncedCountdown(room.id);
+    expect(anchored).toBe(before);
+    expect(room.countdownStartedAt).toBe(before);
+  });
+
+  it('is a no-op on a non-countdown room', async () => {
+    const room = await activityRoomManager.createRoom(
+      ACTIVITY_ID,
+      makeParticipants(4),
+      ACTIVITY_CONFIG,
+    );
+    await activityRoomManager.transitionRoom(room.id, 'live');
+    expect(activityRoomManager.ensureSyncedCountdown(room.id)).toBeNull();
+  });
+
+  it('returns null for an unknown room', () => {
+    expect(activityRoomManager.ensureSyncedCountdown('no-such-room')).toBeNull();
+  });
+});
+
 // ─── Concurrency caps ─────────────────────────────────────────────────────
 
 describe('Concurrency caps', () => {
@@ -266,13 +314,17 @@ describe('Short-code regeneration', () => {
 // ─── Sweeper ──────────────────────────────────────────────────────────────
 
 describe('Room sweeper', () => {
-  it('aborts COUNTDOWN rooms with no connected players', async () => {
+  it('aborts COUNTDOWN rooms with no connected players (after the connect-grace window)', async () => {
     const room = await activityRoomManager.createRoom(
       ACTIVITY_ID,
       makeParticipants(4),
       ACTIVITY_CONFIG,
     );
-    // None of the participants have `connected=true` — sweeper should kill.
+    // The sweeper grants a ~10s connect-grace before aborting an unconnected
+    // COUNTDOWN room (so a client navigating from the lobby isn't raced — see
+    // the sweeper's countdown branch). Age the countdown anchor past that grace
+    // so the abort condition is genuinely met. None are connected → kill.
+    room.countdownStartedAt = Date.now() - 11_000;
     await activityRoomManager.roomSweeper();
     expect(activityRoomManager.getRoom(room.id)).toBeUndefined();
   });

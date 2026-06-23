@@ -33,7 +33,8 @@ import {
   REEF_SKIP_PATTERN_THRESHOLD,
   REEF_CHECKPOINT_COUNT,
 } from '../../sim/reef-race-config';
-import { REEF_RACE_SEGMENTS } from '../../sim/reef-race-track-layout';
+import { REEF_RACE_SEGMENTS, REEF_RACE_DEFAULT_TRACK } from '../../sim/reef-race-track-layout';
+import { ReefSpline } from '../../sim/reef-race-spline';
 
 const DT_30HZ = 1 / 30;
 
@@ -282,16 +283,26 @@ describe('validateSegmentTime', () => {
     expect(v.detail).toContain('negative_elapsed');
   });
 
-  it('verifies the min-time formula matches the spec (z-length / speed * 0.7)', () => {
-    // kelp z-length = 12100 - 3000 = 9100 wu (90s rebuild, 2026-04-30).
-    // The formula reads the segment z-span, NOT the corridor halfWidth, so the
-    // 2026-06-01 surf-carving halfWidth tighten does not affect this floor.
+  it('verifies the min-time formula matches the spec (segment ARC-length / speed * 0.7)', () => {
+    // CLOSED-LOOP (2026-06-22): the floor is derived from the segment's ARC
+    // LENGTH on the closed ring (z is non-monotonic on a loop — the old
+    // z-length formula is retired). Re-derive the kelp segment's arc here from
+    // the same closed spline the validator uses, and assert the floor matches.
     const kelp = ranges[1];
     const kelpSeg = REEF_RACE_SEGMENTS[1];
-    const zLen = kelpSeg.zEnd - kelpSeg.zStart; // 9100
+    const spline = new ReefSpline(REEF_RACE_DEFAULT_TRACK, { closed: true });
+    const arcLen =
+      spline.arclengthFromT(kelpSeg.tEnd) - spline.arclengthFromT(kelpSeg.tStart);
     const expectedMs =
-      (zLen / REEF_MAX_SPEED) * REEF_SEGMENT_MIN_TIME_FRACTION * 1000;
+      (arcLen / REEF_MAX_SPEED) * REEF_SEGMENT_MIN_TIME_FRACTION * 1000;
     expect(kelp.minSegmentMs).toBeCloseTo(expectedMs, 5);
+    expect(kelp.minSegmentMs).toBeGreaterThan(0);
+  });
+
+  it('CLOSED-LOOP: a forward seam wrap (t 0.99→0.01) is forward progress, NOT a regression', () => {
+    const v = validateProgressMonotonic(0.01, 0.99);
+    expect(v.ok).toBe(true);
+    expect(v.flagged).toBe(false);
   });
 });
 

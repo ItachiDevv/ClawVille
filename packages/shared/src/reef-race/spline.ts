@@ -275,6 +275,20 @@ export class ReefSpline {
       if (controlPoints.length < 3) {
         throw new Error('ReefSpline closed loop requires at least 3 control points');
       }
+      // Reject an explicitly duplicated terminal CP (author appended a copy of
+      // CP[0] at the end). The wrap is INTERNAL — a literal duplicate makes the
+      // closing chord CP[N-1]→CP[0] zero/epsilon length, which collapses the
+      // seam knot span (the _kl/_kld helpers treat span<1e-12 as degenerate)
+      // and produces a seam CUSP. Authors must NOT include the closing point.
+      const f = controlPoints[0];
+      const l = controlPoints[controlPoints.length - 1];
+      if (Math.abs(f.x - l.x) < 1e-6 && Math.abs(f.z - l.z) < 1e-6) {
+        throw new Error(
+          'ReefSpline closed loop: do not duplicate the start point as the last ' +
+            'control point — the periodic wrap is added internally (CP[N-1]→CP[0] ' +
+            'is the closing chord). Drop the duplicated terminal CP.',
+        );
+      }
     } else if (controlPoints.length < 2) {
       throw new Error('ReefSpline requires at least 2 control points');
     }

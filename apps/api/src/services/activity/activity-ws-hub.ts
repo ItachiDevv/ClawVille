@@ -244,6 +244,20 @@ class ActivityWsHub {
     }
     roomMap.set(identity.avatarId, ws);
 
+    // Re-anchor a soon-to-expire COUNTDOWN BEFORE building the snapshot so the
+    // `RoomMeta.countdownStartedAt` carried by snapshot.init (which the HUD's
+    // local 3-2-1 ticker reads) and the one-shot `event.countdown` below agree
+    // on the SAME window. createRoom() arms the COUNTDOWN→LIVE timer at room
+    // creation, but the client only connects after navigating the browser —
+    // that latency burned the countdown (remaining=0 ⇒ overlay gated out, or
+    // the room already auto-advanced to LIVE), so the HUD jumped straight to
+    // RACE 0% with no 3-2-1. Sim-agnostic: the sim doesn't own the countdown
+    // and only starts at LIVE; this fixes both the ellipse and CLOSED-LOOP
+    // spline paths. No-op for a healthy window (see ensureSyncedCountdown).
+    if (room.state === 'countdown') {
+      activityRoomManager.ensureSyncedCountdown(room.id);
+    }
+
     // Send snapshot.init. Source varies by room state:
     //   COUNTDOWN → participant roster + empty world
     //   LIVE      → actual sim snapshot

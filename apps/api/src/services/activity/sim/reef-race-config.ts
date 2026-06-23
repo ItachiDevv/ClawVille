@@ -42,6 +42,16 @@ import type { Vec2 } from '@clawville/shared';
 /** Number of laps to complete a race. Plan-locked at 3. */
 export const REEF_LAPS = 3;
 
+/**
+ * Number of laps to complete an N-lap CLOSED-LOOP reef race (spline sim).
+ * Alias of {@link REEF_LAPS} — kept as a single source of truth so the
+ * ellipse-era `REEF_LAPS` and the closed-loop lap sim never drift apart.
+ * Default 3. A race finishes when a body completes lap `REEF_RACE_LAPS` and
+ * crosses the start/finish line (seam) going forward. See `reef-race-spline-sim.ts`
+ * `resolveProgress`.
+ */
+export const REEF_RACE_LAPS = REEF_LAPS;
+
 /** Number of checkpoints around the track including start/finish. */
 export const REEF_CHECKPOINT_COUNT = 12;
 
@@ -87,6 +97,12 @@ export const MIN_LAP_MS = 15_000;
  * Soft cap on round duration (ms). After this the round-end check
  * starts marking unfinished racers as DNF on the next tick. Plan §"Game
  * design — Reef Race" locks at 90s soft + 30s grace per straggler.
+ *
+ * NOTE (2026-06-22): this is the ELLIPSE sim's single-loop budget AND the
+ * CLOSED-LOOP sim's PER-LAP budget. The closed-loop spline sim scales its own
+ * total race timeout by `REEF_RACE_LAPS` (see REEF_RACE_LOOP_SOFT_TIMEOUT_MS).
+ * One closed loop ≈ 92s at ~330 wu/s cruise on the ~30 434 wu ring — matching
+ * this per-lap budget.
  */
 export const REEF_SOFT_TIMEOUT_MS = 90_000;
 
@@ -99,6 +115,20 @@ export const REEF_STRAGGLER_GRACE_MS = 30_000;
 
 /** Hard cap so DNFs eventually resolve even if all racers go dark. */
 export const REEF_HARD_TIMEOUT_MS = REEF_SOFT_TIMEOUT_MS + REEF_STRAGGLER_GRACE_MS;
+
+/**
+ * CLOSED-LOOP N-lap race soft timeout (ms) — the per-lap budget scaled by
+ * `REEF_RACE_LAPS`. A 3-lap race on the ~30 434 wu ring at ~330 wu/s cruise is
+ * ~277s, so the soft cap must cover the full race or every racer DNFs before
+ * finishing (the old single-loop 90s cap would time the race out mid-lap-2).
+ * The spline sim uses these in `startRoom`; the ellipse sim keeps the
+ * unscaled single-loop caps above.
+ */
+export const REEF_RACE_LOOP_SOFT_TIMEOUT_MS = REEF_SOFT_TIMEOUT_MS * REEF_RACE_LAPS;
+
+/** CLOSED-LOOP N-lap hard timeout (ms) = soft + one straggler grace window. */
+export const REEF_RACE_LOOP_HARD_TIMEOUT_MS =
+  REEF_RACE_LOOP_SOFT_TIMEOUT_MS + REEF_STRAGGLER_GRACE_MS;
 
 /**
  * Anti-cheat — repeated checkpoint-skip attempts inside this window

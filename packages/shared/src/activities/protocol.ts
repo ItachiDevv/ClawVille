@@ -351,11 +351,30 @@ export interface EntityDelta {
      */
     height?: number;
     /**
-     * Reef Race v2 (spline sim) — body's race progress as 0..1 fraction of
-     * spline arclength. Replaces lap-counter for the linear river layout.
-     * Optional; ellipse sim does not emit this field.
+     * Reef Race v2 (spline sim) — body's WITHIN-LAP race progress as a 0..1
+     * fraction of one loop of spline arclength (wraps 1→0 at the seam each lap).
+     * Optional; ellipse sim does not emit this field. The render/HUD combine
+     * this with `lap` (below) for the true race position; `lap + progress` is
+     * the monotonic ordering key.
      */
     progress?: number;
+    /**
+     * Reef Race v2 CLOSED-LOOP sim — completed-lap count (0-based: 0 on lap 1,
+     * increments each time the body crosses the start/finish seam forward).
+     * Pairs with `progress` (within-lap fraction). Render shows `lap+1 / totalLaps`.
+     */
+    lap?: number;
+    /**
+     * Reef Race v2 CLOSED-LOOP sim — live finishing position (1 = leading),
+     * ordered by (lap desc, then within-lap progress desc; finishers by time,
+     * DNF last). Server-computed each tick; the HUD reads this directly.
+     */
+    position?: number;
+    /**
+     * Reef Race v2 CLOSED-LOOP sim — total laps in the race (constant for the
+     * room; carried for HUD "lap X / N" rendering without a separate fetch).
+     */
+    totalLaps?: number;
     [k: string]: unknown;
   };
 }
@@ -377,6 +396,14 @@ export interface ScoreDelta {
   avatarId: string;
   score: number;
   placement?: number;
+  /**
+   * Reef Race v2 CLOSED-LOOP sim — completed-lap count, mirrored into the
+   * keyframe `scores[]` so a fresh keyframe carries lap state without waiting
+   * for the next per-entity delta. Optional; other activities omit it.
+   */
+  lap?: number;
+  /** Reef Race v2 CLOSED-LOOP sim — total laps in the race (HUD "lap X / N"). */
+  totalLaps?: number;
 }
 
 /** Full room state (for snapshot.init and snapshot.keyframe) */
@@ -395,7 +422,16 @@ export interface WorldState {
     kind: string;
     position: Vec2;
   }>;
-  scores: Array<{ avatarId: string; score: number }>;
+  scores: Array<{
+    avatarId: string;
+    score: number;
+    /** Reef Race v2 CLOSED-LOOP sim — completed-lap count (keyframe lap state). */
+    lap?: number;
+    /** Reef Race v2 CLOSED-LOOP sim — total laps in the race. */
+    totalLaps?: number;
+    /** Reef Race v2 CLOSED-LOOP sim — live finishing position (1 = leading). */
+    position?: number;
+  }>;
 }
 
 // ─── Server → Client frame union ────────────────────────────────────────────
@@ -444,16 +480,21 @@ export type ServerFrame =
     }
   | {
       /**
-       * Live ellipse Reef Race sim only. Retires when the v2 spline sim ships
-       * (`REEF_RACE_USE_SPLINE=true`) — the linear river layout has no laps,
-       * uses `event.crossed_finish` + per-tick `EntityDelta.changed.progress`
-       * instead. Kept here for backward compat with the live sim.
+       * Lap completed. Emitted by BOTH sims now:
+       *   - Ellipse sim (live): per-checkpoint-loop lap.
+       *   - v2 CLOSED-LOOP spline sim (2026-06-22): one per forward start/finish
+       *     seam crossing that completes a NON-final lap (the final lap fires
+       *     `event.crossed_finish` instead). It stamps real `splitMs` (time since
+       *     the previous lap line) + `totalMs` (since match start), and adds
+       *     `totalLaps` for "lap X / N" HUD rendering.
        */
       type: 'event.lap_completed';
       avatarId: string;
       lap: number;
       splitMs: number;
       totalMs: number;
+      /** v2 CLOSED-LOOP sim: total laps in the race (HUD "lap X / N"). Optional for the ellipse sim. */
+      totalLaps?: number;
     }
   | {
       /**

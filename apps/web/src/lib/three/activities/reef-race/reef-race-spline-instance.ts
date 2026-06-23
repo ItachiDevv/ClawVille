@@ -35,4 +35,8 @@ import { ReefSpline, REEF_RACE_DEFAULT_TRACK } from '@clawville/shared';
  *   arclengthFromT(t)→ number (wu)
  *   tFromArclength(s)→ number
  */
-export const clientSpline = new ReefSpline(REEF_RACE_DEFAULT_TRACK);
+// CLOSED-LOOP (2026-06-22): the v3 default track is a periodic ring (1 lap =
+// one full loop). Build with `{ closed: true }` so the visual ribbon's closing
+// chord CP[N-1]→CP[0] matches the server sim exactly (sim-coord-match invariant).
+// The 3D ribbon may still render a visible seam until the dedicated render pass.
+export const clientSpline = new ReefSpline(REEF_RACE_DEFAULT_TRACK, { closed: true });

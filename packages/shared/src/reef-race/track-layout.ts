@@ -1,216 +1,206 @@
 /**
  * reef-race-track-layout.ts
  *
- * LOCKED v2 default track for Reef Race — 19 control-point centripetal
- * Catmull-Rom slalom river. Consumed by `ReefSpline` (see `./spline.ts`) for
- * both the server sim corridor math AND the client-side 3D river-bed builder.
- * Single source of truth.
+ * LOCKED v3 default track for Reef Race — a CLOSED-LOOP ring of 20 centripetal
+ * Catmull-Rom control points winding 360° around a central island. Consumed by
+ * `ReefSpline` (see `./spline.ts`, built with `{ closed: true }`) for both the
+ * server sim corridor math AND the client-side 3D river-bed builder. Single
+ * source of truth.
  *
- * 2026-06-01 STEERING-MANDATORY RE-TUNE (this version): the prior layout's
- * slalom amplitudes (±300/±340/±300) were SMALLER than the local halfWidths
- * (480/440/400), so the x=0 axis stayed inside the corridor at every peak — a
- * kart driving dead-straight finished with zero wall contact on a path ~8.6%
- * SHORTER than the meander, making the slalom pointless (carve-skill premise
- * inverted; bots that follow the meander were systematically slower). Fixed by
- * raising amplitude ABOVE halfWidth at every slalom CP (A−W = +150..+170) and
- * lowering halfWidth to 290, so a straight x=0 line now EXITS the corridor by
- * +256.5 wu at its worst peak. Wavelength lengthened (kelp 7→6, wreck 5→4,
- * coral 5→4 CPs; CP count 22→19) so the min radius of curvature is 455.7 wu
- * (>> the 192 wu MAX_SPEED/TURN_RATE floor) and the arc stays at 30957 wu
- * (inside [28000, 31500]). All numbers verified by driving the real spline.
+ * 2026-06-22 CLOSED-LOOP REBUILD (this version): the prior v2 track was an OPEN
+ * dead-straight-z slalom (z monotonically 0→28000). The rebuild replaces it
+ * with a true closed ring — the race now LOOPS (t wraps 1→0 at the seam) rather
+ * than running point-to-point. The ring winds CCW around the island at (0,0):
+ * a wide START/FINISH STRAIGHT at the south, sweeping bends up the east + over
+ * the north, an S-CHICANE on the northwest, and a tight-but-carveable HAIRPIN
+ * on the far west, then a return run back to the start straight.
  *
- * 2026-04-30 90s rebuild (superseded): track lengthened 18 000 → 28 000 wu
- * z-span via CP-insertion with too-wide corridors.
+ *   Built as: `new ReefSpline(REEF_RACE_DEFAULT_TRACK, { closed: true })`.
+ *   The array is the 20 REAL control points only — do NOT repeat CP[0] at the
+ *   end; the periodic wrap is internal to ReefSpline (see spline.ts note #3b).
  *
- * ─── 5 themed segments ──────────────────────────────────────────────────────
+ * Why a loop: progress `t` is now CYCLIC. A lap/finish crossing is a +direction
+ * seam crossing (t 0.99→0.01), NOT "t reaches 1". The sim + anti-cheat handle
+ * the wrap (cyclic progress delta) — see `reef-race.ts` consumers.
  *
- *   Segment            z-range (wu)        CPs          halfWidth   Slalom A
- *   ----------------   -----------------   ----------   ---------   --------
- *   0  Open lagoon       0 →  3 000        CP 0,1,2      540 wu     none
- *   1  Kelp forest     3 000 → 12 100      CP 3-8        290 wu     ±440 wu
- *   2  Shipwreck      12 100 → 19 600      CP 9-12       290 wu     ±460 wu
- *   3  Coral canyon   19 600 → 26 100      CP 13-16      290 wu     ±440 wu
- *   4  Finish straight 26 100 → 28 000     CP 17,18      540 wu     none
+ * ─── Numeric verification (driving the REAL closed ReefSpline) ──────────────
  *
- *   Amplitude > halfWidth at EVERY slalom CP → the x=0 axis is OUTSIDE the
- *   corridor at the peaks → steering is MANDATORY (no straight bypass).
+ *   - totalArcLength       = 30434.3 wu                  (need [28000, 31000])
+ *   - heading sweep        = +2.0000 π                   (full 360° circumnav.)
+ *   - curvature reversals  = 4                           (chicane + hairpin)
+ *   - min radius of curv.  = 304.0 wu @ t≈0.775 (hairpin) (need ≥250, floor 192)
+ *   - HAIRPIN: R≈304 @ tip XZ≈(-5061,1006); 136° heading reversal over t≈0.62→0.80
+ *   - CHICANE: left-right reversal at t≈0.55→0.61 (R dips to ~1178 then back)
+ *   - min adjacent-CP spacing = 608.3 wu (CP14→CP15)     (need >88, Newton guard)
+ *   - min non-adjacent self-distance = 432.0 wu @ t≈0.763~0.787  (need >88)
+ *   - START/FINISH straight: t≈0.00→0.11, corridor 540-568 wu, heading change
+ *       only ~21° over the spawn zone (t=0..0.07) → clean spawns + finish gate.
+ *   - centerlineAt(0) at XZ=(-1600, -4300) (start/finish line, south).
  *
- * ─── Numeric verification (driving the real ReefSpline) ─────────────────────
+ *   At REEF_MAX_SPEED = 500 wu/s and ~330 wu/s effective cruise, one loop time
+ *   ≈ 30434 / 330 ≈ 92 s — matches the 90s soft-timeout + grace window
+ *   (REEF_SOFT_TIMEOUT_MS=90000 + REEF_STRAGGLER_GRACE_MS=30000).
  *
- *   - totalArcLength = 30957.3 wu                          (need [28000, 31500])
- *   - straight x=0 path: max(distance − halfWidth) = +256.5 wu @ z≈12917
- *       → walls ENGAGE (steering required; the bug this fixes was −97.8 wu)
- *   - min radius of curvature = 455.7 wu                    (need ≥192, ≳250)
- *   - min adjacent-CP spacing = 750 wu                      (need >88, Newton)
- *   - z strictly monotonic; corridor 580 wu ≈ 13 kart-widths (radius 22)
+ * ─── 5 themed segments (LOOP-APPROPRIATE — t-ranges, NOT z-ranges) ───────────
  *
- *   Slalom waveform: alternating sign per CP within a segment, with a
- *   same-side HANDOFF across segment boundaries (kelp ends −440, wreck starts
- *   −460; wreck ends +460, coral starts +440) so the transition is a gentle
- *   deepening rather than a hard fold — that keeps the arc under the ceiling
- *   while the within-segment peaks still wall off the straight line.
+ *   The old z-range scheme is BROKEN on a loop (z is non-monotonic — the ring
+ *   goes north then back south). Segments now carry explicit `tStart`/`tEnd`
+ *   spline-parameter fractions in [0,1], contiguous around the loop
+ *   (seg[0].tStart=0, last seg tEnd=1, seg[i].tStart === seg[i-1].tEnd). The
+ *   anti-cheat `buildSegmentTRanges` reads these DIRECTLY (no z-bisection).
  *
- *   At REEF_MAX_SPEED = 500 wu/s and ~330 wu/s effective cruise, one-shot race
- *   time ≈ 30957 / 330 ≈ 94 s — matches the 90s soft-timeout + grace window.
+ *   Segment            t-range          CPs        Theme / shape
+ *   ----------------   --------------   --------    -------------------------
+ *   0  lagoon          0.0000–0.1110    CP 0,1,2    start/finish straight (S)
+ *   1  kelp            0.1110–0.3482    CP 2-6      SE + east climbing sweep
+ *   2  shipwreck       0.3482–0.6105    CP 6-11     north sweep + NW chicane
+ *   3  coral           0.6105–0.8097    CP 11-16    far-west HAIRPIN
+ *   4  finish          0.8097–1.0000    CP 16-0     SW return run to start
  *
- * ─── Top-down schematic (X horizontal ±460, Z down 0→28000) ─────────────────
+ *   (CP→t are approximate — centripetal parameterisation is non-uniform; the
+ *   t-range boundaries are pinned to the CP transitions above.)
  *
- *   The corridor (halfWidth 290) is drawn as the band around the centerline
- *   `C`. The x=0 axis (`:`) shows the illegal "dead-straight" path — note it
- *   leaves the band at every slalom peak, which is the whole point.
+ * ─── Top-down schematic (X horizontal ±5200, Z vertical ±4500; island at 0,0)─
  *
- *     X:  -460 ........ 0 ........ +460
+ *                       NORTH sweep (CP7,8)
+ *               CP9 ╮          ╭──────╮
+ *          chicane  ╰─ CP10 ─╮ │      │ CP6
+ *           CP11 ──╯         ╰─╯       ╲
+ *          ╱                            ╲ CP5  (east climb)
+ *     CP12 (hairpin approach)            │
+ *      │                                 │ CP4
+ *   CP13                                 │
+ *   CP14 ◄── HAIRPIN tip (far west)      ╱ CP3
+ *   CP15                               ╱
+ *      │                             ╱
+ *   CP16 (exit)                    ╱
+ *       ╲                        ╱  CP2
+ *        CP17 ── CP18 ── CP19 ──┤
+ *                      ╔════════╪════════╗
+ *                CP0 ──╫── START/FINISH ─╫── CP1   (south straight, t=0)
+ *                      ╚═════════════════╝
  *
- *      [=====:=====]            z=0      CP0  start  (x=0)
- *      [=====:=====]            z=3000   CP2  lagoon→kelp gate
- *            : [===C===]        z=4400   CP3  kelp +440   (axis x=0 OUTSIDE)
- *      [===C===] :              z=5940   CP4  kelp −440
- *            : [===C===]        z=7480   CP5  kelp +440
- *        ...alternating ±440 through CP8 (−440) ...
- *      [===C===] :              z=13700  CP9  wreck −460  (handoff: stays L)
- *            : [===C===]        z=15670  CP10 wreck +460
- *        ...alternating ±460 through CP12 (+460) ...
- *            : [===C===]        z=21000  CP13 coral +440  (handoff: stays R)
- *        ...alternating ±440 through CP16 (−440) ...
- *      [=====:=====]            z=27250  CP17 finish entry (x=0)
- *      [=====:=====]            z=28000  CP18 FINISH       (x=0)
+ * ─── Periodic closure (no phantom CPs) ───────────────────────────────────────
  *
- *   The slalom alternates ±X to force left-right racing-line decisions; the
- *   lagoon and finish are dead-straight on the X=0 axis for clean spawn/finish
- *   gates. Because amplitude (440/460) > halfWidth (290), the X=0 axis is
- *   walled off on every slalom peak → there is NO straight bypass.
- *
- * ─── Phantom control points ─────────────────────────────────────────────────
- *
- *   Per `./spline.ts` design note #3, phantom CPs at t=0 and t=1 are computed
- *   AUTOMATICALLY by the ReefSpline constructor by reflecting CP[1] across
- *   CP[0] and CP[N-2] across CP[N-1]. Authors of this layout do NOT include
- *   phantoms in the array — only the 19 real interior CPs.
- *
- *   To verify the start-line tangent points "down-track" (+Z), we keep
- *   CP[0]=(0,0) and CP[1]=(0,1500): the reflection produces phantom_start
- *   at (0,-1500), so the t=0 tangent is exactly +Z. Same logic at the
- *   finish (CP17=(0,27250), CP18=(0,28000) → phantom_end at (0,28750)).
+ *   Per `./spline.ts` note #3b, the closed ReefSpline wraps the four-point
+ *   Catmull-Rom neighbours around the ring (CP[N-1] and CP[0] are neighbours).
+ *   There are N=20 SEGMENTS (the closing chord CP19→CP0 is a real segment), and
+ *   centerlineAt(0)===centerlineAt(1) by construction. Authors place only the
+ *   20 real CPs; the wrap is added internally. No phantoms, no reflection.
  *
  * @module reef-race-track-layout
  */
 
 import type { SplineControlPoint } from './spline';
 
-// ─── Themed segment z-range helpers ─────────────────────────────────────────
+// ─── Themed segment t-range helpers ─────────────────────────────────────────
 //
-// Exported so the visual track builder + obstacle placer can ask "what
-// segment am I in" by arc-distance and theme its meshes accordingly.
-// Keep these in lock-step with the table above.
+// Exported so the visual track builder + obstacle placer + anti-cheat can ask
+// "what segment am I in" by spline parameter t and theme/score accordingly.
+// Keep these in lock-step with the table in the module doc above.
 
 export interface ReefRaceSegmentRange {
   readonly id: 'lagoon' | 'kelp' | 'shipwreck' | 'coral' | 'finish';
-  /** Inclusive lower bound on z (wu). */
-  readonly zStart: number;
-  /** Exclusive upper bound on z (wu). */
-  readonly zEnd: number;
-  /** Designer-intent half-width for the segment (wu). The actual sim half-width
+  /**
+   * Inclusive lower-bound spline parameter for this segment (t ∈ [0,1]).
+   * Contiguous around the loop: seg[0].tStart === 0, and
+   * seg[i].tStart === seg[i-1].tEnd.
+   */
+  readonly tStart: number;
+  /**
+   * Exclusive upper-bound spline parameter for this segment (t ∈ [0,1]).
+   * The last segment's tEnd === 1 (the seam, == t=0).
+   */
+  readonly tEnd: number;
+  /**
+   * Designer-intent half-width for the segment (wu). The actual sim half-width
    * is the Catmull-Rom interpolation of the per-CP `halfWidth` values; this
-   * field is the spec value for documentation + obstacle placement. */
+   * field is the spec value for documentation + obstacle placement.
+   */
   readonly halfWidth: number;
 }
 
 export const REEF_RACE_SEGMENTS: ReadonlyArray<ReefRaceSegmentRange> = [
-  // 2026-06-01 STEERING-MANDATORY RE-TUNE (supersedes the first 2026-06-01
-  // "tighten"): the prior tighten was a NO-OP because the slalom amplitudes
-  // (±300/±340/±300) were SMALLER than the local halfWidths (480/440/400), so
-  // the x=0 axis stayed INSIDE the corridor at every peak — a kart driving
-  // dead-straight finished the whole track with ZERO wall contact, and that
-  // straight path is ~8.6% SHORTER than the meander (28000 vs 30628 wu), so
-  // ignoring the slalom was strictly optimal (carve-skill premise inverted).
+  // 2026-06-22 CLOSED-LOOP REBUILD — t-range segments (z-range scheme retired;
+  // z is non-monotonic on a loop). Boundaries pinned to CP transitions, all
+  // verified by driving the real closed spline. See module doc for the full
+  // verified-numbers block + schematic.
   //
-  // FIX (verified numerically by driving the real spline, audit-style):
-  //   - Amplitude > halfWidth at every slalom CP (A−W = +150..+170), AND the
-  //     spline-smoothed swing clears the wall so a straight x=0 line exits the
-  //     corridor by +256.5 wu at its worst peak → steering is MANDATORY.
-  //   - Wavelength lengthened (kelp 7→6 CPs Δz≈1820, shipwreck 5→4 Δz≈1967,
-  //     coral 5→4 Δz≈1700) so min radius of curvature = 455.7 wu (>> the
-  //     192 wu floor MAX_SPEED/TURN_RATE), i.e. a clean carve at REEF_MAX_SPEED
-  //     can hold the line — AND so the higher amplitude doesn't blow the arc:
-  //     totalArcLength = 30957 wu, inside [28000, 31500].
-  //   - halfWidth 290 on every slalom segment → 580 wu corridor ≈ 13 kart-
-  //     widths (kart radius 22 → ~44 width); well above the ~250 wu navigable
-  //     floor so bots/players still fit through the chicanes.
-  //   - CP count drops 22→19 (lengthened wavelength). REEF_RACE_DEFAULT_TRACK_LENGTH
-  //     + the layout test's CP-count assertion updated in the same diff.
-  //   See the per-CP table + the straight-line-exit regression test for proof.
-  //
-  // 2026-04-30 (superseded): 90s rebuild via CP-INSERTION, half-widths from
-  // iter-9 (×1.5 widening).
-  { id: 'lagoon',    zStart:     0, zEnd:  3000, halfWidth: 540 },
-  { id: 'kelp',      zStart:  3000, zEnd: 12100, halfWidth: 290 },
-  { id: 'shipwreck', zStart: 12100, zEnd: 19600, halfWidth: 290 },
-  { id: 'coral',     zStart: 19600, zEnd: 26100, halfWidth: 290 },
-  { id: 'finish',    zStart: 26100, zEnd: 28000, halfWidth: 540 },
+  //   lagoon    CP0-2   start/finish straight (south)   wide  (540)
+  //   kelp      CP2-6   SE + east climbing sweep        tight (290)
+  //   shipwreck CP6-11  north sweep + NW chicane         tight (290)
+  //   coral     CP11-16 far-west HAIRPIN                 tight (290)
+  //   finish    CP16-0  SW return run to start          tight→wide
+  { id: 'lagoon',    tStart: 0.0000, tEnd: 0.1110, halfWidth: 540 },
+  { id: 'kelp',      tStart: 0.1110, tEnd: 0.3482, halfWidth: 290 },
+  { id: 'shipwreck', tStart: 0.3482, tEnd: 0.6105, halfWidth: 290 },
+  { id: 'coral',     tStart: 0.6105, tEnd: 0.8097, halfWidth: 290 },
+  { id: 'finish',    tStart: 0.8097, tEnd: 1.0000, halfWidth: 290 },
 ];
 
 // ─── Track layout ───────────────────────────────────────────────────────────
 
 /**
- * REEF_RACE_DEFAULT_TRACK — locked v2 layout, 19 interior control points.
+ * REEF_RACE_DEFAULT_TRACK — locked v3 CLOSED-LOOP ring, 20 real control points.
  *
  * Coordinate frame: XZ plane (Y is altitude, owned by `body.heightOffset`
- * per spline-architecture §4). CP[0] at origin (z=0). Track extends in
- * +Z direction to z=28 000. X meanders within ±440–±460 wu for the slalom
- * segments and snaps to 0 on the lagoon/finish straights.
+ * per spline-architecture §4). The ring winds CCW around the island at (0,0).
+ * CP[0] sits on the START/FINISH line on the south straight at (-1600, -4300).
  *
- * Indices map 1:1 to the themed segments documented above. Field shape
- * matches `SplineControlPoint` exactly — passed straight to
- * `new ReefSpline(REEF_RACE_DEFAULT_TRACK)`.
+ * Build with `new ReefSpline(REEF_RACE_DEFAULT_TRACK, { closed: true })`. Do
+ * NOT append a copy of CP[0] — the periodic wrap is internal to ReefSpline.
+ *
+ * Field shape matches `SplineControlPoint` exactly. Indices map to the themed
+ * segments documented above.
  */
 export const REEF_RACE_DEFAULT_TRACK: ReadonlyArray<SplineControlPoint> = [
-  // 2026-06-01 STEERING-MANDATORY RE-TUNE — see REEF_RACE_SEGMENTS note above.
-  // amplitude > halfWidth at every slalom CP so a straight x=0 line is WALLED
-  // OFF (exits corridor by +256.5 wu at worst); wavelength lengthened so the
-  // meander's min radius of curvature (455.7 wu) stays carve-able at
-  // REEF_MAX_SPEED and the arc lands at 30957 wu (inside [28000, 31500]).
-  // The slalom uses a "same-side handoff" at the kelp→wreck and wreck→coral
-  // boundaries (e.g. kelp ends -440, wreck starts -460) so the transition is a
-  // gentle deepening, not a hard fold — this keeps the arc under the ceiling.
-  //
-  // Per-CP A vs halfWidth (A = |x|, W = halfWidth):
-  //   kelp  A=440 W=290 → A−W=+150     wreck A=460 W=290 → A−W=+170
-  //   coral A=440 W=290 → A−W=+150
-  //
-  // ── Segment 0: Open lagoon (wide, no slalom) ──────────────────────────────
-  { x:    0, z:     0, halfWidth: 540 }, // CP  0  start line, lagoon mouth
-  { x:    0, z:  1500, halfWidth: 540 }, // CP  1  lagoon middle
-  { x:    0, z:  3000, halfWidth: 540 }, // CP  2  lagoon → kelp gate
+  // 2026-06-22 CLOSED-LOOP REBUILD — see REEF_RACE_SEGMENTS + module doc.
+  // Verified on the real closed spline: arc 30434 wu, heading sweep +2π,
+  // min R 304 (hairpin), 4 curvature reversals (chicane+hairpin), min self-
+  // distance 432, min CP spacing 608.
 
-  // ── Segment 1: Kelp forest (first slalom, ±440 wu, 6 CPs, Δz≈1820) ─────────
-  { x:  440, z:  4400, halfWidth: 290 }, // CP  3  kelp curve +
-  { x: -440, z:  5940, halfWidth: 290 }, // CP  4  kelp curve -
-  { x:  440, z:  7480, halfWidth: 290 }, // CP  5  kelp curve +
-  { x: -440, z:  9020, halfWidth: 290 }, // CP  6  kelp curve -
-  { x:  440, z: 10560, halfWidth: 290 }, // CP  7  kelp curve +
-  { x: -440, z: 12100, halfWidth: 290 }, // CP  8  kelp → shipwreck gate (-)
+  // ── Segment 0: lagoon — START/FINISH STRAIGHT (south, wide) ───────────────
+  { x: -1600, z: -4300, halfWidth: 540 }, // CP  0  START/FINISH line (t=0)
+  { x:   200, z: -4480, halfWidth: 540 }, // CP  1  straight
+  { x:  2000, z: -4350, halfWidth: 540 }, // CP  2  straight end → SE turn-in
 
-  // ── Segment 2: Shipwreck graveyard (±460 wu, 4 CPs, Δz≈1967) ──────────────
-  // Starts -460 (kelp ended -440): same-side deepening, not a fold.
-  { x: -460, z: 13700, halfWidth: 290 }, // CP  9  hull-fragment chicane -
-  { x:  460, z: 15670, halfWidth: 290 }, // CP 10  hull-fragment chicane +
-  { x: -460, z: 17640, halfWidth: 290 }, // CP 11  hull-fragment chicane -
-  { x:  460, z: 19600, halfWidth: 290 }, // CP 12  shipwreck → coral gate (+)
+  // ── Segment 1: kelp — SE + east climbing sweep (tight) ────────────────────
+  { x:  3900, z: -3500, halfWidth: 290 }, // CP  3  SE sweep
+  { x:  4900, z: -1700, halfWidth: 290 }, // CP  4  east climb
+  { x:  5100, z:   350, halfWidth: 290 }, // CP  5  far east
+  { x:  4500, z:  2300, halfWidth: 290 }, // CP  6  east → north
 
-  // ── Segment 3: Coral canyon (±440 wu, 4 CPs, Δz≈1700) ─────────────────────
-  // Starts +440 (wreck ended +460): same-side handoff.
-  { x:  440, z: 21000, halfWidth: 290 }, // CP 13  coral chicane +
-  { x: -440, z: 22700, halfWidth: 290 }, // CP 14  coral chicane -
-  { x:  440, z: 24400, halfWidth: 290 }, // CP 15  coral chicane +
-  { x: -440, z: 26100, halfWidth: 290 }, // CP 16  coral → finish gate
+  // ── Segment 2: shipwreck — north sweep + NW S-CHICANE (tight) ─────────────
+  { x:  3050, z:  3750, halfWidth: 290 }, // CP  7  north sweep
+  { x:  1150, z:  4400, halfWidth: 290 }, // CP  8  north apex
+  { x:  -300, z:  4050, halfWidth: 290 }, // CP  9  CHICANE left
+  { x: -1100, z:  3050, halfWidth: 290 }, // CP 10  chicane reversal (bite)
+  { x: -2400, z:  3250, halfWidth: 290 }, // CP 11  chicane exit
 
-  // ── Segment 4: Finish straight (wide, no slalom) ──────────────────────────
-  { x:    0, z: 27250, halfWidth: 540 }, // CP 17  finish-straight entry
-  { x:    0, z: 28000, halfWidth: 540 }, // CP 18  FINISH LINE
+  // ── Segment 3: coral — far-west HAIRPIN (out-and-back, tight) ─────────────
+  { x: -3900, z:  2600, halfWidth: 290 }, // CP 12  hairpin approach (NW)
+  { x: -4750, z:  1750, halfWidth: 290 }, // CP 13  hairpin entry
+  { x: -5050, z:  1150, halfWidth: 290 }, // CP 14  hairpin tip (far west)
+  { x: -4950, z:   550, halfWidth: 290 }, // CP 15  hairpin pinch-back
+  { x: -4350, z:   150, halfWidth: 290 }, // CP 16  hairpin exit → finish run
+
+  // ── Segment 4: finish — SW return run to start straight ───────────────────
+  { x: -3500, z: -1100, halfWidth: 290 }, // CP 17  SW return
+  { x: -3000, z: -2600, halfWidth: 290 }, // CP 18  SW return
+  { x: -2400, z: -3700, halfWidth: 290 }, // CP 19  → closing chord to CP0
 ];
 
 /**
- * Compile-time sanity: 19 control points exactly (was 22 before the
- * 2026-06-01 steering-mandatory re-tune lengthened the slalom wavelength).
+ * Compile-time sanity: 20 real control points exactly (was 19 OPEN before the
+ * 2026-06-22 closed-loop rebuild). The closing chord CP19→CP0 is the 20th
+ * SEGMENT, added internally by ReefSpline's periodic wrap.
  */
-export const REEF_RACE_DEFAULT_TRACK_LENGTH = 19 as const;
+export const REEF_RACE_DEFAULT_TRACK_LENGTH = 20 as const;
+
+/**
+ * Verified total arc length of the closed ring (wu), driving the real
+ * `new ReefSpline(REEF_RACE_DEFAULT_TRACK, { closed: true })`. Exported so the
+ * sim/anti-cheat can avoid re-constructing the spline just to read the length.
+ * INCLUDES the closing chord. Re-verify if any CP changes.
+ */
+export const REEF_RACE_DEFAULT_TRACK_ARC_LENGTH = 30434.3 as const;

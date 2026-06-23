@@ -100,9 +100,11 @@ export const townGuide: LocationTemplate = {
     'Your avatar\'s archetype matters in Reef Race: Agility = tighter turns + longer slipstream window. Strength = faster drift charge + 40% knockback resistance. Intelligence = +20% power-up duration + 30% wider ribbon detection.',
     'Bots in Reef Race always race with neutral stats. So your investment in your avatar\'s archetype actually shows up against them.',
 
-    // 2026-06-01 surf rebuild — same-diff knowledge sync: the control feel +
-    // course identity changed (carve a tight river, not float open water).
-    'Reef Race is a surfing race down a winding river canyon — you ride ON the flowing water, not a flat track. Hold thrust to build speed and it CARRIES; ease off and you coast rather than stop. Lean left/right to carve the board through the bends. The river is a tight slalom, so the fast line is a clean carve through the meander — drive dead-straight and you slam the canyon walls. Reading the line, keeping momentum, and smooth carving are the skill; top speed is the same for everyone, so a careful racer beats a button-masher.',
+    // 2026-06-23 closed-loop rebuild — same-diff knowledge sync: Reef Race is
+    // now a CURVY CLOSED LAP CIRCUIT around a central island (1 lap = one full
+    // loop; race = 3 laps), not a point-to-point river. Supersedes the
+    // 2026-06-01 "winding river" framing for orientation.
+    'Reef Race is a surfing race around a curvy CLOSED CIRCUIT that loops a full 360 degrees around a small central island — one full lap around the island is one lap of the race, and a race is 3 laps. The circuit has sweeping bends, an S-chicane, and a tight hairpin, plus a wide start/finish straight where everyone lines up. You ride ON the water and carve the board left/right through the bends; hold thrust to build speed and it CARRIES, ease off and you coast rather than stop. The fast line is a clean carve that holds momentum through the curves — fight the bends and you scrub speed into the walls. A lap counter and your live position show on the HUD. Top speed is the same for everyone, so reading the racing line over 3 laps is the skill, not button-mashing.',
 
     // Phase 4 — PB ghost + streak + Lobster of the Day + match-end summary.
     // Same-diff rule (CLAUDE.md "Town Guide Knowledge Sync") — anything new
