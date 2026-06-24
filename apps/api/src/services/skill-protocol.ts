@@ -60,7 +60,17 @@ import { createHash } from 'crypto';
 // TOOL, never the action parser. New material manual + verb-whitelist content →
 // eager re-embed signal. (P5a was authored at v2->3 on an older base; rebased onto
 // the v5 line here, so the correct cumulative bump is 6.)
-export const PROTOCOL_VERSION = 6;
+//
+// NOTE (2026-06-24, world grow 576->704): bumped 6 -> 7. The world coordinate
+// CONTRACT in the move() manual changed: the move x/y range and town center the
+// manual TELLS agents are now 32..22496 / center (11264,11264) — up from the stale
+// 32..11488 / (5760,5760) that had drifted TWO world grows behind the executor
+// (the server clamp is HATCHER_MOVE_MIN..HATCHER_MOVE_MAX = 32..MAP_WIDTH-32 on the
+// 22528-px world). No [ACTION:] verb, param name, or wire type changed — ONLY the
+// numeric world-coordinate bounds/center a partner relies on for move targets. That
+// is still a material manual-contract change (a partner sending a y=12000 move was
+// previously told it was out of bounds), so it gets an eager re-embed signal.
+export const PROTOCOL_VERSION = 7;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
  *  all emit the IDENTICAL hash for the same input bytes. */
@@ -89,7 +99,7 @@ export function resolveApiBase(): string {
  * quoted in §3a are HARD-MIRRORED literals of its module-private constants
  * (those constants are not exported, and this service must not import the sim to
  * avoid a service↔service cycle):
- *   - move x/y range  32..11488   ← HATCHER_MOVE_MIN .. HATCHER_MOVE_MAX (MAP_WIDTH-32)
+ *   - move x/y range  32..22496   ← HATCHER_MOVE_MIN .. HATCHER_MOVE_MAX (MAP_WIDTH-32, 22528-world)
  *   - talk message    ≤ 500 chars ← HATCHER_TALK_MESSAGE_MAX
  *   - actions/reply   ≤ 4         ← MAX_HATCHER_ACTIONS_PER_REPLY
  *   - emote names     wave|dance|think|scan|work|celebrate|alert ← HATCHER_EMOTE_MAP keys
@@ -202,8 +212,8 @@ The whitelist (exact params/bounds mirror the server executor):
 
 - \`[ACTION: move(x=<int>, y=<int>)]\` — walk your body toward a world point.
   \`x\` and \`y\` are town-pixel coordinates, each an integer in
-  **32..11488** (the 11520-px world inset by 32).
-  Town center is (5760, 5760). Off-bounds or unreachable targets are dropped.
+  **32..22496** (the 22528-px world inset by 32).
+  Town center is (11264, 11264). Off-bounds or unreachable targets are dropped.
 - \`[ACTION: emote(name=<emote>)]\` — play a visible emote/activity. \`name\` MUST be
   one of: \`wave\`, \`dance\`, \`think\`, \`scan\`, \`work\`, \`celebrate\`, \`alert\`.
   Any other name is dropped.

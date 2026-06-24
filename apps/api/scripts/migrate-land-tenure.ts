@@ -16,6 +16,13 @@
  *      ladder with no divergence.
  *   3. TENURE back-fill: already-bought parcels -> 'owned', free starter claims
  *      -> 'starter'; available/unsold rows keep tenure NULL.
+ *   4. GRID RECENTER (576->704 world grow, 2026-06-24): recomputes every existing
+ *      row's grid_x/grid_y under the NEW 11264 HALF_MAP_WU (== +64 on each axis;
+ *      cx/cz are origin-invariant, only the offset changed) so old + new parcels
+ *      share ONE coordinate system. Done as ONE set-based UPDATE ... FROM (VALUES)
+ *      to absolute values (idempotent + collision-free under the
+ *      land_parcels_grid_unique index, which a per-row +64 loop would transiently
+ *      violate — two existing rows can be exactly +64 apart).
  *
  * EXPLICIT-URL-ONLY (the prod-write incident — see seed-land-parcels.ts)
  * ---------------------------------------------------------------------
@@ -50,9 +57,22 @@ import {
 
 const LOG = '[migrate-land-tenure]';
 
+// Grid-coord constants — MUST match `parcelToTileZone` in
+// `packages/shared/src/constants/land-parcels.ts` and `seed-land-parcels.ts`.
+// World grew 576->704 (2026-06-24): HALF_MAP_WU 9216 -> 11264, so EVERY existing
+// row's grid_x/grid_y (seeded under the old 9216 offset) is now stale by exactly
+// +64 (the parcel cx/cz are origin-invariant; only the offset changed). This
+// migration recomputes grid_x/grid_y from cx/cz under the NEW offset and UPDATEs
+// every row, so old + new parcels share ONE consistent coordinate system and a
+// stale old-grid coord can never collide with a new c-row's unique (grid_x,grid_y).
+const TILE_SIZE = 32; // wu per tile (== TILE_SIZE in land-parcels.ts)
+const HALF_MAP_WU = (704 / 2) * TILE_SIZE; // 11264 wu — grid half-width (704-world)
+
 interface RepriceRow {
   parcelCode: string;
   tier: LandTier;
+  gridX: number;
+  gridY: number;
   priceCt: number | null;
   rentCtWeekly: number | null;
 }
@@ -84,9 +104,19 @@ function buildRepriceRows(): RepriceRow[] {
     }
     seen.add(slot.id);
     const count = PARCEL_TIER_COUNTS[slot.tier];
+    const gridX = Math.floor((slot.cx + HALF_MAP_WU) / TILE_SIZE);
+    const gridY = Math.floor((slot.cz + HALF_MAP_WU) / TILE_SIZE);
+    if (!Number.isInteger(gridX) || gridX < 0 || gridX >= 704) {
+      throw new Error(`${LOG} grid_x out of bounds for ${slot.id}: gridX=${gridX} (cx=${slot.cx}); expected [0, 704).`);
+    }
+    if (!Number.isInteger(gridY) || gridY < 0 || gridY >= 704) {
+      throw new Error(`${LOG} grid_y out of bounds for ${slot.id}: gridY=${gridY} (cz=${slot.cz}); expected [0, 704).`);
+    }
     rows.push({
       parcelCode: slot.id,
       tier: slot.tier,
+      gridX,
+      gridY,
       priceCt: interpolate(LAND_TIER_LADDER[slot.tier], slot.indexInTier, count),
       rentCtWeekly: interpolate(LAND_RENT_LADDER[slot.tier], slot.indexInTier, count),
     });
@@ -125,6 +155,15 @@ function printDryRun(rows: RepriceRow[]): void {
   for (const tier of Object.keys(priceRanges)) console.log(`${LOG}   ${tier.padEnd(8)} ${priceRanges[tier]}`);
   console.log(`${LOG} per-tier WEEKLY rent_ct_weekly (min … max):`);
   for (const tier of Object.keys(rentRanges)) console.log(`${LOG}   ${tier.padEnd(8)} ${rentRanges[tier]}`);
+  // Grid recenter sample — one row per populated tier, NEW grid coords (704 world).
+  const gridSample = (tier: LandTier) => {
+    const r = rows.find((x) => x.tier === tier);
+    return r ? `${r.parcelCode} -> grid (${r.gridX}, ${r.gridY})` : '(none)';
+  };
+  console.log(`${LOG} grid recenter (576->704, +64/axis) sample NEW coords:`);
+  console.log(`${LOG}   founder  ${gridSample('founder')}`);
+  console.log(`${LOG}   starter  ${gridSample('starter')}`);
+  console.log(`${LOG}   c        ${gridSample('c')}`);
   console.log(`${LOG} DRY RUN complete — nothing written.`);
 }
 
@@ -159,8 +198,44 @@ async function runMigration(rows: RepriceRow[]): Promise<void> {
   try {
     await applyDdl(client);
 
-    // Reprice + rent-stamp in ONE transaction (atomic). price/rent recomputed
-    // from the new ladders so existing rows == the new ladder (no divergence).
+    // Reprice + rent-stamp + grid-recenter in ONE transaction (atomic).
+    //
+    // GRID RECENTER FIRST, as a SINGLE set-based statement — NOT a per-row loop.
+    // `land_parcels_grid_unique` is a UNIQUE index on (grid_x, grid_y), and the
+    // +64 recenter is a uniform shift, so two existing rows can be exactly +64
+    // apart: a per-row UPDATE would transiently collide (row A's NEW coord ==
+    // row B's still-old coord), failing the per-statement unique check. A single
+    // UPDATE ... FROM (VALUES ...) sets ALL rows to their ABSOLUTE new coords in
+    // ONE statement, so Postgres checks the index only at end-of-statement on the
+    // collision-free final state. Absolute values (from the frozen LAND_PARCELS
+    // cx/cz under the new 11264 offset) make it IDEMPOTENT — a re-run sets the
+    // same coords. Only matches existing parcel_codes; not-yet-seeded c-rows are
+    // untouched here (the seed inserts them later with the same 11264 offset).
+    // Build a parameterized VALUES list ($1,$2,$3),($4,$5,$6),... — injection-safe
+    // (all values are bound params, never string-concatenated) and portable on the
+    // raw postgres.js client via client.unsafe(query, params).
+    const gridParams: (string | number)[] = [];
+    const gridTuples = rows
+      .map((r, i) => {
+        const base = i * 3;
+        gridParams.push(r.parcelCode, r.gridX, r.gridY);
+        return `($${base + 1}, $${base + 2}::int, $${base + 3}::int)`;
+      })
+      .join(', ');
+    const regridResult = await client.unsafe(
+      `UPDATE land_parcels AS p
+         SET grid_x = v.gx, grid_y = v.gy, updated_at = now()
+       FROM (VALUES ${gridTuples}) AS v(code, gx, gy)
+       WHERE p.parcel_code = v.code
+         AND (p.grid_x <> v.gx OR p.grid_y <> v.gy)`,
+      gridParams,
+    );
+    const regridded = regridResult.count;
+
+    // Reprice + rent-stamp per row (price_ct / rent_ct_weekly have no unique
+    // constraint, so a per-row loop is safe). Recomputed from the new ladders so
+    // existing rows == the new ladder (no divergence). UPDATE-by-parcel_code:
+    // c-rows not yet seeded simply match 0 rows here until the seed inserts them.
     let repriced = 0;
     await client.begin(async (sql) => {
       for (const r of rows) {
@@ -176,7 +251,7 @@ async function runMigration(rows: RepriceRow[]): Promise<void> {
       await sql`UPDATE land_parcels SET tenure = 'starter' WHERE tier = 'starter' AND owner_avatar_id IS NOT NULL AND tenure IS NULL`;
       await sql`UPDATE land_parcels SET tenure = 'owned' WHERE tier <> 'starter' AND owner_avatar_id IS NOT NULL AND tenure IS NULL`;
     });
-    console.log(`${LOG} DONE. repriced=${repriced} of ${rows.length} parcel rows; tenure back-filled.`);
+    console.log(`${LOG} DONE. regridded=${regridded} (grid_x/grid_y +64 recenter), repriced=${repriced} of ${rows.length} parcel rows; tenure back-filled.`);
   } catch (err) {
     console.error(`${LOG} FAILED`, err);
     process.exit(1);

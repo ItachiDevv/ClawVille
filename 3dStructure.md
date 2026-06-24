@@ -134,6 +134,8 @@ Source: `apps/web/src/lib/pixi/tilemap-data.ts:6-10`
 
 Sand floor sits at `y = -2` (`arena-terrain.tsx:203`). Buildings, NPCs, and decorations ground to this plane.
 
+**Phase 1 land grow note (2026-06-24 — pending orchestrator constants freeze):** world will expand 576→704 tiles (18432→22528wu, half 9216→11264wu). The new tier-`c` outer land-parcel ring sits at half-side ~9760wu from origin — within the fog zone (`fog.near=5000, far=10500`). From spawn the ring reads at ~86% fog and materializes on approach; this is intended (see §4 fog note). All 3D render layers already read `MAP_WIDTH` dynamically and scale automatically. The three cove world-position literals (cove-beacon.tsx, cove-entrance.tsx, character-positions.ts) have been fixed to world-absolute constants (`-4160, 0`) so the cove stays at its current position regardless of grid size.
+
 ---
 
 ## 2. Building scale + pivot system
@@ -400,7 +402,9 @@ Hard cap: **3 lights** on Iris Xe (uniform limit + shader compile cost).
 | `directionalLight` (key) | `position [150, 350, 80], intensity 2.0, color 0xffeedd` | Warm key light from upper-right. |
 | `directionalLight` (fill) | `position [-100, 200, -60], intensity 0.5, color 0x88aacc` | Cool fill from opposite side for depth. |
 
-**Fog:** `fog(FOG_COLOR=0x0e3458, near=5000, far=10000)` (`World3DCanvas.tsx`). Updated 2026-05-22 after user direction to target fog more aggressively: far-ring buildings at ~5493wu get a light ~10% fog blend, horizon geometry is fully fogged by 10000wu, and `camera.far=10000` clips anything beyond that. Invariant: `fog.far` MUST always equal `camera.far`. Fog remains separate from `groundCover` and `activityFx`; the adaptive governor can remove decorative effects without dropping depth haze.
+**Fog:** `fog(FOG_COLOR=0x0e3458, near=5000, far=10500)`, `camera.far=11500` (`World3DCanvas.tsx` lines 1438, 1899). Pulled back 2026-06-20 from the Phase-0-land tuning (`[6500,13500]`/far 14000) because widening re-exposed distant low-res geometry that read as pixelly on Iris-Xe DPR 0.6. Current setting: building ring (≤8320wu across) is fully clear; everything past ~10500wu fades to fog and is culled at 11500. Invariant: `fog.far` ≤ `camera.far` (no hard pop at the clip plane). Fog remains separate from `groundCover` and `activityFx`; the adaptive governor can remove decorative effects without dropping depth haze.
+
+**Phase 1 land c-ring fog note (2026-06-24):** the new outer land-parcel ring (tier `c`, half-side ~9760wu) sits within the fog zone from spawn. At spawn (world origin), the ring is at `(9760−5000)/(10500−5000)` ≈ 86% fog blend — nearly invisible, appearing as the player walks toward it. This is intentional (same behavior as existing outer land parcels). To make the c-ring visible from spawn, fog would need widening to `[6000, 13000]` / `camera.far = 13500` — but that re-exposes the pixelly-geometry regression. Do not change fog without founder sign-off and FPS measurement on Iris Xe.
 
 **Disabled atmosphere effects** (mounted but gated with `{false && <X />}`):
 - `<UnderwaterAtmosphere />` — caustic plane + depth backdrop + dust particles. Overdraw on the additive transparent meshes is 8–15 ms/frame on integrated GPUs even when occluded. Last disabled 2026-04-30.
