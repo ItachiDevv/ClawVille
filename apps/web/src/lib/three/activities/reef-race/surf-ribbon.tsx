@@ -468,9 +468,19 @@ const _waterFrag = /* glsl */`
     vec2 wXZ1 = vWorldPos.xz + vec2(uTime * 3.7, -uTime * 2.2);   // mid-speed oct 1
     vec2 wXZ2 = vWorldPos.xz + vec2(-uTime * 1.5, uTime * 4.1);   // faster oct 2
 
-    // Octave 0 — coarse patches (~380wu cells): broad foam blobs on the larger crests.
-    vec2  c0 = floor(wXZ0 / 380.0);
-    vec2  f0 = fract(wXZ0 / 380.0);
+    // Octave 0 — broad foam LANES (~720wu cells): ~4-5 soft blobs across the
+    // 3219wu channel that read as "foam zones", not an 8-cell blocky patchwork.
+    // 3da-adversary review flagged the prior 380wu (8.5 cells) as the founder's
+    // "blockiness" at top-down/side-on far view. FIX: cell 380→720 (fewer/larger
+    // soft blobs) AND a ~37° lattice ROTATION so the square value-noise grid yields
+    // rhombus patches with NO horizontal/vertical bias (kills any residual axis-
+    // aligned read from altitude). cos37≈0.7986, sin37≈0.6018 — hand-baked rotation
+    // (no runtime trig). Only octave 0 is rotated; the finer octaves are already
+    // small enough to read as texture, not grid.
+    mat2  ROT0 = mat2(0.7986, -0.6018, 0.6018, 0.7986);
+    vec2  p0 = (ROT0 * wXZ0) / 720.0;
+    vec2  c0 = floor(p0);
+    vec2  f0 = fract(p0);
     vec2  u0 = f0 * f0 * (3.0 - 2.0 * f0);  // Hermite smooth
     float h00 = fract(sin(dot(c0,              vec2(127.1, 311.7))) * 43758.5453);
     float h01 = fract(sin(dot(c0 + vec2(1,0), vec2(127.1, 311.7))) * 43758.5453);
@@ -545,11 +555,30 @@ const _waterFrag = /* glsl */`
     // Fix: hash the bank position in world XZ with a slow time-advanced cell so
     // the spray intensity varies organically along the waterline, not as sine bands.
     float bankFactor  = 1.0 - smoothstep(0.0, 0.05, edgeDist);
-    vec2  bCell       = floor((vWorldPos.xz + vec2(uTime * 1.6, uTime * 0.9)) / 220.0);
-    float bankHash    = fract(sin(dot(bCell, vec2(347.3, 193.7))) * 38291.4753);
-    // Smooth the bank hash with one octave finer for spray froth texture.
-    vec2  bCellFine   = floor((vWorldPos.xz + vec2(uTime * 2.9, -uTime * 1.5)) / 80.0);
-    float bankHashFine = fract(sin(dot(bCellFine, vec2(211.5, 509.1))) * 61738.2934);
+    // 3da-adversary review: the raw single-tap bank hash had NO bilinear blend,
+    // so it JUMPED up to 0.78 at every cell boundary (~220wu) along the waterline
+    // — a visible C0 sawtooth in the spray strip. FIX: full Hermite bilinear blend
+    // (4 corner taps + f*f*(3-2f)) on BOTH bank octaves, identical to the main FBM
+    // octaves above, so spray varies smoothly along the bank. +6 ALU, no jumps.
+    vec2  bPos   = vWorldPos.xz + vec2(uTime * 1.6, uTime * 0.9);
+    vec2  bc0    = floor(bPos / 220.0);
+    vec2  bf0    = fract(bPos / 220.0);
+    vec2  bu0    = bf0 * bf0 * (3.0 - 2.0 * bf0);
+    float bh00 = fract(sin(dot(bc0,              vec2(347.3, 193.7))) * 38291.4753);
+    float bh10 = fract(sin(dot(bc0 + vec2(1,0), vec2(347.3, 193.7))) * 38291.4753);
+    float bh01 = fract(sin(dot(bc0 + vec2(0,1), vec2(347.3, 193.7))) * 38291.4753);
+    float bh11 = fract(sin(dot(bc0 + vec2(1,1), vec2(347.3, 193.7))) * 38291.4753);
+    float bankHash = mix(mix(bh00, bh10, bu0.x), mix(bh01, bh11, bu0.x), bu0.y);
+    // One octave finer for spray froth texture (also bilinear-smoothed).
+    vec2  bPosF  = vWorldPos.xz + vec2(uTime * 2.9, -uTime * 1.5);
+    vec2  bc1    = floor(bPosF / 80.0);
+    vec2  bf1    = fract(bPosF / 80.0);
+    vec2  bu1    = bf1 * bf1 * (3.0 - 2.0 * bf1);
+    float bf00 = fract(sin(dot(bc1,              vec2(211.5, 509.1))) * 61738.2934);
+    float bf10 = fract(sin(dot(bc1 + vec2(1,0), vec2(211.5, 509.1))) * 61738.2934);
+    float bf01 = fract(sin(dot(bc1 + vec2(0,1), vec2(211.5, 509.1))) * 61738.2934);
+    float bf11 = fract(sin(dot(bc1 + vec2(1,1), vec2(211.5, 509.1))) * 61738.2934);
+    float bankHashFine = mix(mix(bf00, bf10, bu1.x), mix(bf01, bf11, bu1.x), bu1.y);
     float bankSpray   = bankHash * 0.65 + bankHashFine * 0.35;    // [0,1] irregular
     float bankIntensity = 0.38 + bankSpray * 0.24;                // [0.38, 0.62] range
     base = mix(base, uColorFoam, bankFactor * bankIntensity * 0.34);
