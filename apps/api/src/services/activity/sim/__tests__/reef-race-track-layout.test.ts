@@ -75,17 +75,18 @@ const ARC_LENGTH_UPPER_WU = 96_000;
 const MIN_TURN_RADIUS_FLOOR_WU = 500 / 2.6;
 
 /**
- * THE WALL-CLAMP FIX (v6): the min radius of curvature must comfortably exceed
- * the WIDEST corridor half-width plus the carve floor, so a racing line fits
- * inside the wide corridor on EVERY corner. With max hw≈1038 and the 192 floor,
- * the min radius must beat ~1230 wu. v6 verifies min R ~2087 (margin R−hw 1282).
- * We assert min R ≥ this design target — far above the bare carve floor — so a
- * future tightening that would wall-clamp the wide corridor fails the test.
+ * THE WALL-CLAMP FIX (v6, widened ×1.55 for Mario-Kart-roomy gameplay): the min
+ * radius of curvature must comfortably exceed the WIDEST corridor half-width plus
+ * the carve floor, so a racing line fits inside the wide corridor on EVERY corner.
+ * With max hw≈1610 and the 192 floor, the min radius must beat ~1800 wu. The track
+ * verifies min R ~2087 (real min carve margin R−hw ~839 at the binding corner).
+ * We assert min R ≥ this design target — above max-hw+floor — so a future
+ * tightening that would wall-clamp the wide corridor fails the test.
  */
-const MIN_TURN_RADIUS_TARGET_WU = 1300;
+const MIN_TURN_RADIUS_TARGET_WU = 1800;
 
-/** Widest per-CP halfWidth in v6 (used for the carve-margin assertion). */
-const MAX_CORRIDOR_HALF_WIDTH_WU = 1038;
+/** Widest per-CP halfWidth after the ×1.55 widen (water ~3220 wu); test bound only. */
+const MAX_CORRIDOR_HALF_WIDTH_WU = 1620;
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
 

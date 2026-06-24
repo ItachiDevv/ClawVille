@@ -412,9 +412,13 @@ export const VOID_BACKDROP_SIZE = 60000;
 // The neon rails + water crests are the bloom targets. Bloom is the single
 // post-process pass for the SURF ROAD; it is CHEAP (UnrealBloomPass at low res)
 // and gated so the Iris-Xe floor stays ≥60 FPS. See ReefRaceScene <SurfBloom>.
-export const BLOOM_STRENGTH  = 0.85;  // glow intensity — tasteful, not blown out
-export const BLOOM_RADIUS    = 0.5;   // spread
-export const BLOOM_THRESHOLD = 0.65;  // only bright (neon/crest) pixels bloom
+export const BLOOM_STRENGTH  = 0.75;  // glow intensity — reduced slightly (water no longer over-bloomed)
+export const BLOOM_RADIUS    = 0.45;  // spread — tighter glow
+// Raised threshold 0.65 → 0.80 so the darker water body (deep #052d4a ≈ 0.11,
+// shallow #0e7a8a ≈ 0.43) stays BELOW the threshold and does not glow. The
+// neon rails (#98f0ff ≈ 0.93) still bloom. Foam crests on the water tips may
+// briefly bloom — acceptable (it reads as spray catching light, not solid glow).
+export const BLOOM_THRESHOLD = 0.80;  // only the neon rails + crest-tip spray bloom
 
 // ─── Laps ─────────────────────────────────────────────────────────────────────
 

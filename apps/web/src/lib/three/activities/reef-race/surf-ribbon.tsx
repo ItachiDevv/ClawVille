@@ -174,7 +174,7 @@ const _waterVert = /* glsl */`
   );
   const float WLEN[6]   = float[6](1700.0, 1150.0, 760.0, 520.0, 360.0, 240.0);
   const float WSTEEP[6] = float[6](  0.85,   0.80,  0.75,  0.70,  0.55,  0.40);
-  const float WAMP[6]   = float[6](  34.0,   22.0,  14.0,   8.5,   4.5,   2.4);
+  const float WAMP[6]   = float[6](  19.0,   12.0,   8.0,   4.8,   2.5,   1.3);
   const float WSPD[6]   = float[6]( 140.0,  115.0, 100.0,  88.0,  76.0,  64.0);
 
   void main() {
@@ -314,16 +314,15 @@ const _waterFrag = /* glsl */`
     float flow = n1 * 0.6 + n2 * 0.4;
 
     // ─── 3. Whitecaps — Jacobian crest compression × organic cluster ───────
-    // vFoam is the surface-compression at crests (the trochoidal pinch). Combine
-    // with the documented organic softField × clusterMod technique so the foam
-    // sits in alive patches on the crests, not hard PS2 stripes.
-    float crestFoam  = smoothstep(0.35, 0.85, vFoam);
-    float softField  = smoothstep(0.45, 0.82, flow);
+    // Tighter threshold: only the sharpest crest pinches get foam (tips, not
+    // broad foam blobs). The organic cluster modulates into alive patches.
+    float crestFoam  = smoothstep(0.58, 0.92, vFoam);  // tighter: only real tips
+    float softField  = smoothstep(0.55, 0.88, flow);
     float clusterMod = mix(0.55, 1.0, snoise(vUv * 24.0 + vec2(0.0, uTime * 0.018)) * 0.5 + 0.5);
     // Normal-tipping crest emphasis (1 - N.y peaks where the wave tilts hardest).
     float normalCrest = clamp((1.0 - vWaveNormal.y) * 3.0, 0.0, 1.0);
-    float whiteCap   = clamp(crestFoam * clusterMod * 0.85
-                             + normalCrest * softField * 0.45, 0.0, 1.0);
+    float whiteCap   = clamp(crestFoam * clusterMod * 0.55   // reduced from 0.85
+                             + normalCrest * softField * 0.28, 0.0, 1.0);  // reduced from 0.45
     // Whitecaps only in the open channel (taper to 0 at the pinned banks).
     whiteCap *= vDepthMask;
     base = mix(base, uColorFoam, whiteCap);
@@ -333,18 +332,20 @@ const _waterFrag = /* glsl */`
     float NdotV  = max(dot(vWaveNormal, viewDir), 0.0);
     float F0     = 0.02;
     float fresnel = F0 + (1.0 - F0) * pow(1.0 - NdotV, 5.0);
-    base = mix(base, uColorSkyRefl, fresnel * 0.35 * depth);
+    base = mix(base, uColorSkyRefl, fresnel * 0.20 * depth);  // reduced from 0.35 — less glow
 
     // ─── 5. Specular glint — dusk warm sun, riding the Gerstner crests ─────
     vec3 reflected = reflect(-uSunDir, vWaveNormal);
     float spec     = pow(max(dot(reflected, viewDir), 0.0), 90.0);
     base += vec3(1.0, 0.88, 0.62) * spec * 0.6 * depth;
 
-    // ─── 6. Bank spray — pulsing white foam at the waterline edges ─────────
-    float bankFactor = 1.0 - smoothstep(0.0, 0.065, edgeDist);
-    float bankPulse  = 0.65 + 0.35 * sin(uTime * 1.8 + vWorldPos.z * 0.009);
+    // ─── 6. Bank spray — thin wisp of foam at the waterline edges only ─────
+    // Reduced significantly: was 78% blend giving solid white icing at the
+    // banks; now a subtle 28% wisp — just enough to mark the water's edge.
+    float bankFactor = 1.0 - smoothstep(0.0, 0.045, edgeDist);  // narrower band
+    float bankPulse  = 0.55 + 0.25 * sin(uTime * 1.8 + vWorldPos.z * 0.009);  // less range
     float bankFoam   = bankFactor * bankPulse;
-    base = mix(base, uColorFoam, bankFoam * 0.78);
+    base = mix(base, uColorFoam, bankFoam * 0.28);  // reduced from 0.78
 
     // ─── 7. Current streaks — very subtle downstream flow lines ───────────
     float streak = snoise(vec2(vUv.x * 5.0, vUv.y * 1.8 - uTime * 0.13)) * 0.5 + 0.5;
@@ -359,12 +360,18 @@ export const SurfWaterMaterial = shaderMaterial(
   {
     uTime:        0,
     uEdgeTaper:   WATER_EDGE_TAPER,
-    // Real surf water palette — dusk gorge canyon river:
-    uColorDeep:   new THREE.Color('#0a5c8f'),   // rich blue-teal deep channel
-    uColorShallow: new THREE.Color('#3ac8d8'),  // bright turquoise shallow banks
-    uColorFoam:   new THREE.Color('#e2f7ff'),   // near-white salt foam
-    uColorSkyRefl: new THREE.Color('#7a5a8a'),  // warm dusk amber-purple sky
-    uSunDir:      new THREE.Vector3(-0.28, 0.87, -0.41),
+    // Deepened surf water palette — richly WET, not luminous:
+    // - Deep channel: darker, richer navy-teal (was #0a5c8f — too bright/luminous)
+    // - Shallow: deeper teal, less neon-turquoise (was #3ac8d8 — screamed glowing ice)
+    // - Foam: softer off-white, less blown out (was #e2f7ff — too pure white)
+    // - SkyRefl: kept warm dusk but slightly warmer (less bluing the water body)
+    // All values chosen to stay BELOW bloom threshold 0.80 so the water body
+    // does not glow; the neon rails (#98f0ff ≈ 0.93) remain the bloom targets.
+    uColorDeep:    new THREE.Color('#052d4a'),  // deep navy — dark troughs read clearly
+    uColorShallow: new THREE.Color('#0e7a8a'),  // teal, enriched — wet not neon
+    uColorFoam:    new THREE.Color('#b8dfe8'),  // soft blue-white — foam not cotton
+    uColorSkyRefl: new THREE.Color('#6a4878'),  // warm dusk purple sheen
+    uSunDir:       new THREE.Vector3(-0.28, 0.87, -0.41),
   },
   _waterVert,
   _waterFrag,
