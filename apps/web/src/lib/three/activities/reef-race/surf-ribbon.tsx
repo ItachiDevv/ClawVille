@@ -497,14 +497,16 @@ const _waterFrag = /* glsl */`
     // band on the crests, not a sub-pixel point. sunBoost=0 at ≤1 (committed exp
     // 380, mult 14) → 1 at uSunIntensity=2 (exp 120, mult 24).
     float sunBoost = max(uSunIntensity - 1.0, 0.0);
-    float discExp  = mix(380.0, 120.0, sunBoost);
-    vec3  glint = (uSunColor * pow(reflSun, discExp) * (14.0 + 10.0 * sunBoost)   // crisp glint
+    // Committed exp 380 is a near-sub-pixel disc at altitude → maxing did nothing
+    // (A/B-verified). BOOST widens the cone HARD (380→40) so the glint becomes a
+    // broad sparkle BAND across the crests, + brighter. sunBoost=0 at ≤1 → committed.
+    float discExp  = mix(380.0, 40.0, sunBoost);   // broad sparkle band at max
+    vec3  glint = (uSunColor * pow(reflSun, discExp) * (14.0 + 26.0 * sunBoost)   // crisp glint, wider+brighter
                 +  uSunColor * pow(reflSun, 12.0)  * 1.1)                          // soft warm halo
                 * uSunIntensity;                                                   // 0=off, 1=committed
-    // CLAMP the added glint so a maxed slider can't white-out the frame. Committed
-    // peak ~15.1 (14+1.1 at the disc centre) is under 20 → INERT at uSunIntensity≤1,
-    // caps only the boosted runaway (Codex clamp ask).
-    reflection += min(glint, vec3(20.0));
+    // CLAMP the added glint so it can't white-out the frame. Committed peak ~15.1 is
+    // under 20 → INERT at ≤1; ceiling lifts to 40 at max for a bright (not blown) band.
+    reflection += min(glint, vec3(20.0 + 20.0 * sunBoost));
     // Energy-controlled blend: reflection grows with Fresnel, body fades with it.
     vec3 base = mix(body, reflection, fresnel * 0.85);
 
@@ -514,11 +516,11 @@ const _waterFrag = /* glsl */`
     // Removed the * depth suppression: depth kills spec at the banks exactly where
     // the micro-normal tilt is largest — we want those sparks.
     vec3  halfV = normalize(viewDir + uSunDir);
-    float specExp = mix(70.0, 28.0, sunBoost);   // widen the Blinn cone above 1 (28 at uSunIntensity=2)
+    float specExp = mix(70.0, 12.0, sunBoost);   // widen the Blinn cone HARD above 1 (12 at max)
     float spec  = pow(max(dot(N, halfV), 0.0), specExp);
-    // CLAMP the spec add: committed peak ~1.2 (spec≤1) is under 3.0 → inert at ≤1,
-    // caps the boosted case (Codex clamp ask).
-    base += min(uSunColor * spec * 1.2 * uSunIntensity, vec3(3.0));   // 0=off, 1=committed
+    // CLAMP the spec add: committed peak ~1.2 (spec≤1) is under 3.0 → inert at ≤1;
+    // ceiling lifts to 6 at max for a brighter (bounded) crest sparkle.
+    base += min(uSunColor * spec * 1.2 * uSunIntensity, vec3(3.0 + 3.0 * sunBoost));   // 0=off, 1=committed
 
     // ─── E. ORGANIC WHITECAPS ─────────────────────────────────────────────────
     // DESIGN: foam = where waves BREAK × turbulent noise.
@@ -626,11 +628,14 @@ const _waterFrag = /* glsl */`
       + advectedFoam,                        // trailing foam behind crests
       0.0, 1.0
     );
-    whiteCap *= vDepthMask * uFoamAmt;       // 0=off, 1=committed; none at the pinned banks
-    // FIX (overshoot bug): clamp the mix factor to [0,1]. Without this, uFoamAmt>1
-    // drives whiteCap past 1 → mix(base,foam,>1) EXTRAPOLATES beyond foam (out-of-
-    // range / odd colour). Committed whiteCap is already ≤1 so this is inert at ≤1.
-    whiteCap = clamp(whiteCap, 0.0, 1.0);
+    // 0→1 ramp (committed at 1); cap the committed multiply at 1 so >1 doesn't just
+    // double a SPARSE patch (which the founder saw as "nothing" — verified via A/B).
+    whiteCap *= vDepthMask * min(uFoamAmt, 1.0);
+    // BOOST FLOOD (uFoamAmt>1): broad foam driven by TURBULENCE (present + broad,
+    // mean ~0.5) — NOT the sparse vFoam crest-compression — so foam visibly FLOODS
+    // the channel at max instead of widening a near-zero gate. foamBoost=0 at ≤1.
+    whiteCap += foamBoost * smoothstep(0.30, 0.62, turbulence) * vDepthMask * 0.85;
+    whiteCap = clamp(whiteCap, 0.0, 1.0);   // mix factor stays [0,1] (also fixes the >1 overshoot)
 
     base = mix(base, uColorFoam, whiteCap);
 
@@ -644,9 +649,14 @@ const _waterFrag = /* glsl */`
     // spray spreads across far more of the breaking area, + brighten. sprayBoost=0
     // at ≤1 (low edge 0.80 = committed). The mix factor is clamped → no overshoot.
     float sprayBoost = max(uSprayAmt - 1.0, 0.0);
-    float sprayLow   = 0.80 - 0.35 * sprayBoost;   // 0.80 at ≤1, 0.45 at uSprayAmt=2
-    float sprayMask = smoothstep(sprayLow, 0.97, vFoam) * turbHigh * vDepthMask * uSprayAmt;
-    vec3  sprayCol  = uColorFoam * (1.4 + 0.6 * sprayBoost) + vec3(0.05);   // brighter above 1
+    // The committed 0.80→0.97 gate is UNREACHABLE for these gentle waves (vFoam
+    // rarely exceeds ~0.6), so spray never fired (verified via A/B). BOOST drops BOTH
+    // edges into vFoam's real range so spray actually triggers across the breaking
+    // crests, + brighten. sprayBoost=0 at ≤1 → committed edges 0.80/0.97.
+    float sprayLow  = 0.80 - 0.50 * sprayBoost;   // 0.80 at ≤1, 0.30 at uSprayAmt=2
+    float sprayHigh = 0.97 - 0.45 * sprayBoost;   // 0.97 at ≤1, 0.52 at uSprayAmt=2
+    float sprayMask = smoothstep(sprayLow, sprayHigh, vFoam) * turbHigh * vDepthMask * uSprayAmt;
+    vec3  sprayCol  = uColorFoam * (1.4 + 0.8 * sprayBoost) + vec3(0.05);   // brighter above 1
     base = mix(base, sprayCol, clamp(sprayMask, 0.0, 1.0));
 
     // ─── Round 2 · CAUSTICS — shimmering refracted-light web ──────────────────
@@ -669,9 +679,14 @@ const _waterFrag = /* glsl */`
       float cr2 = 1.0 - abs(cos((-cp.x * 0.5 + cp.y * 0.8660254) * 0.91 + uTime * 0.7));
       float prod = cr0 * cr1 * cr2;
       float caustic   = prod * prod * prod * (0.6 + 0.4 * v1);   // x^3 (multiply form, cheaper than pow)
-      float causticAA = 1.0 - smoothstep(0.0, 2.0, footprint * 0.0125);
+      // The footprint-AA fades caustics to ~0 at the far camera (huge texel
+      // footprint) — THAT is why maxing the slider did nothing at altitude (A/B-
+      // verified). BOOST relaxes the AA cutoff so the web SURVIVES at altitude +
+      // brightens the additive. causticBoost=0 at ≤1 → committed cutoff 2.0, add 0.20.
+      float causticBoost = max(uCausticAmt - 1.0, 0.0);
+      float causticAA = 1.0 - smoothstep(0.0, 2.0 + 60.0 * causticBoost, footprint * 0.0125);
       caustic *= causticAA * (0.35 + 0.65 * depthW) * vDepthMask * (1.0 - whiteCap);
-      base += vec3(0.42, 0.86, 0.95) * caustic * 0.20 * uCausticAmt;   // cyan-white shimmer; live knob
+      base += vec3(0.42, 0.86, 0.95) * caustic * (0.20 + 0.45 * causticBoost) * min(uCausticAmt, 1.0);
     }
 
     // ─── Round 2 · DRIFTING MIST — faint haze pooling over the churned water ──
@@ -686,7 +701,11 @@ const _waterFrag = /* glsl */`
     // overshoots / fully whites-out (stays a veil, not a wall of foam).
     float mistBoost  = max(uMistAmt - 1.0, 0.0);
     float mistCoeff  = 0.12 + 0.43 * mistBoost;   // 0.12 at ≤1, 0.55 at uMistAmt=2
-    float mistVeil   = v0 * crestModerate * mistCoeff * vDepthMask * uMistAmt;
+    // The crestModerate gate is SPARSE (vFoam-driven) → mist was a faint tint
+    // (A/B-verified). BOOST blends the gate toward 1.0 so the veil spreads as broad
+    // atmosphere off the v0 hash. mistBoost=0 at ≤1 → committed crestModerate gate.
+    float mistGate   = mix(crestModerate, 1.0, clamp(mistBoost, 0.0, 1.0));
+    float mistVeil   = v0 * mistGate * mistCoeff * vDepthMask * min(uMistAmt, 1.0);
     mistVeil = clamp(mistVeil, 0.0, 0.85);        // no mix overshoot; committed max ~0.12 ≪ 0.85
     base = mix(base, uColorFoam, mistVeil);
 
