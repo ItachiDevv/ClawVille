@@ -204,7 +204,12 @@ const _waterVert = /* glsl */`
   // Amplitudes bumped on the swells so the peak-to-trough heave reads as REAL
   // surf (~185wu p2p, numerically verified) — the founder's "NOT flat" demand.
   // Q is normalized as STEEP/(w·A·N) so raising A keeps Q·k·A bounded (no cusp).
-  const float WAMP[7]   = float[7](  38.0,   25.0,  15.0,   8.4,   4.4,   2.4,   1.5);
+  // Round 2: amplitudes raised on the swells for TALLER rideable rolling waves
+  // (~245wu p2p, up from ~185) — the founder's "bigger waves you'd carve". Q is
+  // re-normalized per-octave below (STEEP/(w·A·N)) so raising A keeps the pinch
+  // bounded (no cusps). Edges still pin to the datum (taper), so the canyon seam
+  // is unaffected by the bigger heave.
+  const float WAMP[7]   = float[7](  50.0,   33.0,  19.0,  10.0,   5.0,   2.6,   1.6);
   const float WSPD[7]   = float[7]( 150.0,  126.0, 108.0,  94.0,  82.0,  70.0,  62.0);
 
   void main() {
@@ -218,6 +223,14 @@ const _waterVert = /* glsl */`
     vDepthMask = mask;
 
     vec3 base = position;          // lifted + banked datum vertex (un-waved)
+
+    // Round 2 — TRAVELING SET ENVELOPE: the two longest swells grow & fade in
+    // slow groups (~8400wu wavelength) that roll DOWN-TRACK, so distinct "sets"
+    // of bigger waves move through the channel instead of a uniform field. This
+    // is a low-freq, large-scale HEAVE modulation (not a thin color stripe), and
+    // because Q is re-normalized by the modulated A the horizontal pinch stays
+    // constant — only the vertical heave swells & recedes. Applied to k<2 below.
+    float setEnv = 0.72 + 0.28 * sin(dot(WDIR[0], base.xz) * 0.00075 - uTime * 0.6);
 
     // Gerstner accumulation in world XZ. Horizontal displacement (the pinch) is
     // along each wave's direction; vertical is the heave.
@@ -236,7 +249,7 @@ const _waterVert = /* glsl */`
     // every GLSL driver incl. Iris Xe.
     for (int k = 0; k < 7; k++) {
       vec2  D  = WDIR[k];
-      float A  = WAMP[k];
+      float A  = WAMP[k] * (k < 2 ? setEnv : 1.0);   // sets modulate the long swells
       float w  = 6.28318530718 / WLEN[k];
       float Q  = WSTEEP[k] / (w * A * NWAVES);
       float ph = w * dot(D, base.xz) + WSPD[k] * w * uTime;
@@ -314,6 +327,17 @@ const _waterVert = /* glsl */`
 //      the foam path). Zero sine/cos in the foam or bank-spray path — every
 //      modulation comes from hash-based value noise so the foam breaks into
 //      IRREGULAR PATCHES, never lines of any orientation.
+//   F. (round 2) CREST SPRAY — the sharpest breaking tips (high vFoam × dense
+//      turbulence) throw spray brighter than foam, allowed to spike past the
+//      bloom threshold so it catches light. + DRIFTING MIST: a faint veil over
+//      the churned zones reusing the coarse foam hash (drifts with the surf).
+//   G. (round 2) CAUSTICS — a ridged cosine product forming a cellular refracted-
+//      light web, made APERIODIC by a hash-field DOMAIN WARP + incommensurate
+//      per-layer frequencies (so it never reads as a regular grid) and pre-rotated
+//      ~22° (no axis bias); footprint-AA'd, gated to the open channel.
+// Round 2 also retunes the palette to a TROPICAL sunlit turquoise→deep-blue grade
+// and raises the Gerstner swell amplitudes (+ a traveling "set" envelope) for
+// taller rideable waves. The mesh/vertex Gerstner still carries the macro swell.
 // All water-body colours stay BELOW the bloom threshold (0.80) so only the neon
 // rails bloom; the sun-glint highlights are intentionally allowed to spike bright
 // for sparkle but are tiny in area.
@@ -550,6 +574,49 @@ const _waterFrag = /* glsl */`
 
     base = mix(base, uColorFoam, whiteCap);
 
+    // ─── Round 2 · CREST SPRAY — luminous spray off the sharpest breaking tips ─
+    // Only the highest crest-compression tips (vFoam → near-breaking) coinciding
+    // with dense turbulence throw spray. Spray is brighter than foam and is
+    // intentionally allowed to spike PAST the bloom threshold (like the sun
+    // glints) so it CATCHES LIGHT — the surf signature. Steep smoothstep keeps the
+    // area tiny, so it sparkles on the breaking peaks without washing the surface.
+    float sprayMask = smoothstep(0.80, 0.97, vFoam) * turbHigh * vDepthMask;
+    base = mix(base, uColorFoam * 1.4 + vec3(0.05), clamp(sprayMask, 0.0, 1.0));
+
+    // ─── Round 2 · CAUSTICS — shimmering refracted-light web ──────────────────
+    // Three RIDGED cosine layers form a web of bright nodes where the ridges
+    // coincide (the classic caustic look). NAIVE hex ridges (even rotated) form a
+    // REGULAR repeating lattice that can read as a grid from altitude — the
+    // founder's cardinal sin (Codex review caught this). Two fixes make it
+    // APERIODIC: (1) DOMAIN WARP — the sample point is displaced by the existing
+    // smooth hash fields (v0,v1), which themselves drift in time, so the ridges
+    // BEND organically and the web breathes/morphs; (2) INCOMMENSURATE per-layer
+    // frequencies (×1.00 / ×1.17 / ×0.91) so the three lattices never align into a
+    // clean repeat. Domain pre-rotated ~22° (no axis bias) + footprint-AA'd +
+    // gated to the open channel, faded under foam. Reuses v0/v1 → zero new noise
+    // taps; x*x*x instead of pow() (cheaper on the Iris Xe floor).
+    {
+      vec2  cp = mat2(0.927, 0.375, -0.375, 0.927) * vWorldPos.xz * 0.0125; // ~500wu cos period (~250wu visible ridge), 22° rot
+      cp += (vec2(v0, v1) - 0.5) * 3.0;                                     // organic domain warp (≈±120wu)
+      float cr0 = 1.0 - abs(cos((cp.x)                      * 1.00 + uTime * 0.9));
+      float cr1 = 1.0 - abs(cos((cp.x * 0.5 + cp.y * 0.8660254) * 1.17 - uTime * 1.1));
+      float cr2 = 1.0 - abs(cos((-cp.x * 0.5 + cp.y * 0.8660254) * 0.91 + uTime * 0.7));
+      float prod = cr0 * cr1 * cr2;
+      float caustic   = prod * prod * prod * (0.6 + 0.4 * v1);   // x^3 (multiply form, cheaper than pow)
+      float causticAA = 1.0 - smoothstep(0.0, 2.0, footprint * 0.0125);
+      caustic *= causticAA * (0.35 + 0.65 * depthW) * vDepthMask * (1.0 - whiteCap);
+      base += vec3(0.42, 0.86, 0.95) * caustic * 0.20;   // cyan-white shimmer
+    }
+
+    // ─── Round 2 · DRIFTING MIST — faint haze pooling over the churned water ──
+    // A soft white veil over the broken/churning zones, REUSING the coarse foam
+    // hash v0 (which drifts with the swell) so the sea-spray haze appears to HANG
+    // over the surf and move WITH it. Gated by the broad crest-compression zone +
+    // pinned-bank mask, kept well below the bloom threshold (subtle atmosphere).
+    // Reuses v0 → zero new noise taps.
+    float mistVeil = v0 * crestModerate * 0.12 * vDepthMask;
+    base = mix(base, uColorFoam, mistVeil);
+
     // ─── Bank spray — hash-based, NO periodic trig ────────────────────────────
     // Old: sin(uTime * 1.8 + vWorldPos.z * 0.009) → ~697wu period bands along bank.
     // Fix: hash the bank position in world XZ with a slow time-advanced cell so
@@ -605,13 +672,17 @@ export const SurfWaterMaterial = shaderMaterial(
     // Beer-Lambert absorption; shallows read teal. All body values stay BELOW the
     // bloom threshold (0.80) so only the neon rails (#98f0ff ≈ 0.93) bloom — the
     // sun-glint spikes are tiny in area and intentionally allowed to sparkle.
-    uColorDeep:    new THREE.Color('#04304f'),  // deep navy — dark troughs read clearly
-    uColorShallow: new THREE.Color('#117f93'),  // enriched teal — wet, not neon ice
-    uColorFoam:    new THREE.Color('#cfeaf1'),  // soft blue-white whitecap
-    // Analytic dusk-sky reflection endpoints + warm sun:
-    uSkyHorizon:   new THREE.Color('#3a4f78'),  // dusk blue-violet at the horizon band
-    uSkyZenith:    new THREE.Color('#101d3a'),  // deep indigo overhead
-    uSunColor:     new THREE.Color('#ffd9a0'),  // warm low dusk sun (disc + halo + glint)
+    // Round 2 — TROPICAL color grade: vivid sunlit turquoise→deep-blue gradient
+    // (was a cold navy→teal dusk palette). All body values still resolve BELOW the
+    // bloom threshold (0.80) after Beer-Lambert absorption + the Fresnel/reflection
+    // blend, so only the neon rails, sun glints, and crest-tip spray bloom.
+    uColorDeep:    new THREE.Color('#0a4f97'),  // vivid tropical deep blue (was navy)
+    uColorShallow: new THREE.Color('#1ec4b2'),  // bright tropical turquoise (was teal)
+    uColorFoam:    new THREE.Color('#dcf0f5'),  // brighter sunlit whitecap/spray
+    // Sky reflection endpoints + sun — warmed toward sunlit-tropical (was dusk):
+    uSkyHorizon:   new THREE.Color('#4d7fb0'),  // brighter tropical sky-blue horizon band
+    uSkyZenith:    new THREE.Color('#16386b'),  // brighter blue overhead (was deep indigo)
+    uSunColor:     new THREE.Color('#ffe0b0'),  // brighter warm sun (disc + halo + glint)
     uSunDir:       new THREE.Vector3(-0.28, 0.87, -0.41),
   },
   _waterVert,
