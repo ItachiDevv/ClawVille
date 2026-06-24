@@ -46,9 +46,11 @@ import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib';
 
 import { RiverScene } from '@/lib/three/activities/reef-race/river-scene';
 import { SurfBloom } from '@/lib/three/activities/reef-race/surf-bloom';
+import { ReefFreeDrive } from '@/lib/three/activities/reef-race/ReefFreeDrive';
 import { clientSpline } from '@/lib/three/activities/reef-race/reef-race-spline-instance';
 import { elevationAtT } from '@/lib/three/activities/reef-race/reef-race-elevation';
 import { ReefWaterTunerPanel } from '@/components/reef/ReefWaterTunerPanel';
+import { ReefPhysicsTunerPanel } from '@/components/reef/ReefPhysicsTunerPanel';
 import {
   FOG_COLOR,
   FOG_NEAR,
@@ -195,32 +197,39 @@ interface SceneContentsProps {
   autoRotate: boolean;
   controlsRef: React.RefObject<OrbitControlsImpl | null>;
   onCamDist: (d: number) => void;
+  /** DRIVE sandbox: keyboard-driven kart owns the camera — skip orbit cam + demo karts. */
+  drive: boolean;
 }
 
-function SceneContents({ mode, autoRotate, controlsRef, onCamDist }: SceneContentsProps) {
+function SceneContents({ mode, autoRotate, controlsRef, onCamDist, drive }: SceneContentsProps) {
   return (
     <>
-      <CamController mode={mode} autoRotate={autoRotate} controlsRef={controlsRef} onCamDist={onCamDist} />
-
-      <OrbitControls
-        ref={controlsRef as unknown as React.Ref<OrbitControlsImpl>}
-        enableDamping
-        dampingFactor={0.08}
-        autoRotate={autoRotate && mode === 'free-orbit'}
-        autoRotateSpeed={0.8}
-        maxPolarAngle={Math.PI * 0.92}
-        minDistance={500}
-        maxDistance={28000}
-      />
+      {/* Free-orbit / cinematic camera + orbit controls — ONLY in look modes. In
+          drive mode <ReefFreeDrive/> owns the chase camera, so these are skipped. */}
+      {!drive && (
+        <CamController mode={mode} autoRotate={autoRotate} controlsRef={controlsRef} onCamDist={onCamDist} />
+      )}
+      {!drive && (
+        <OrbitControls
+          ref={controlsRef as unknown as React.Ref<OrbitControlsImpl>}
+          enableDamping
+          dampingFactor={0.08}
+          autoRotate={autoRotate && mode === 'free-orbit'}
+          autoRotateSpeed={0.8}
+          maxPolarAngle={Math.PI * 0.92}
+          minDistance={500}
+          maxDistance={28000}
+        />
+      )}
 
       {/* Deep cosmic void atmosphere */}
       <fog args={[FOG_COLOR, FOG_NEAR, FOG_FAR]} />
       <color attach="background" args={['#0c1a2e']} />
 
-      {/* SURF ROAD: cosmic void + floating water ribbon + neon rails + demo karts
-          + ramps. Demo karts ON in the preview so the human sees riders on the
-          ribbon through the climbs/drops. */}
-      <RiverScene showDemoKarts />
+      {/* SURF ROAD scene. Look modes show decorative demo karts; drive mode hides
+          them (you ARE the kart) and mounts the keyboard-driven free-drive rig. */}
+      <RiverScene showDemoKarts={!drive} />
+      {drive && <ReefFreeDrive />}
 
       <PreviewLighting />
 
@@ -364,6 +373,9 @@ function ReefRacePreviewInner() {
   const router       = useRouter();
 
   const rawMode = searchParams.get('mode');
+  // DRIVE sandbox mode (keyboard-driven kart + physics tuner). Not a CameraMode —
+  // <ReefFreeDrive/> owns the chase camera. Reached via ?mode=drive.
+  const drive = rawMode === 'drive';
   // Default to free-orbit hero of the whole floating loop in the void.
   const mode: CameraMode = isCameraMode(rawMode) ? rawMode : 'free-orbit';
 
@@ -405,6 +417,7 @@ function ReefRacePreviewInner() {
             autoRotate={autoRotate}
             controlsRef={controlsRef}
             onCamDist={handleCamDist}
+            drive={drive}
           />
         </Suspense>
         <FrameTicker onStats={handleStats} />
@@ -420,9 +433,35 @@ function ReefRacePreviewInner() {
         onResetCamera={handleResetCamera}
       />
 
-      {/* Live water shader tuner — DEV TOOL, preview-only (writes WATER_TUNING; the
-          shader + bloom read it each frame). Dial knobs, watch the FPS meter. */}
-      <ReefWaterTunerPanel />
+      {/* Live tuner — physics in DRIVE mode (handling/drift/whip), water shader in
+          look modes. Both DEV TOOLs writing their singleton the loop reads each frame. */}
+      {drive ? <ReefPhysicsTunerPanel /> : <ReefWaterTunerPanel />}
+
+      {/* Drive ⇄ Look toggle. Drive = keyboard-driven free-drive sandbox + physics
+          tuner; Look = cinematic fly-through + water tuner. */}
+      <button
+        onClick={() => router.push(`/preview/reef-race-v2?mode=${drive ? 'cinematic' : 'drive'}`)}
+        style={{
+          position: 'absolute', bottom: 14, left: 14, zIndex: 30,
+          background: drive ? '#0e4a2b' : '#0e2a4a', color: '#bfe8ff',
+          border: '1px solid #3a8fd0', borderRadius: 6, padding: '8px 14px',
+          fontFamily: 'monospace', fontSize: 13, fontWeight: 'bold', cursor: 'pointer',
+        }}
+      >
+        {drive ? '👁 Exit to Look' : '🏄 Drive it'}
+      </button>
+
+      {drive && (
+        <div style={{
+          position: 'absolute', bottom: 14, left: 150, zIndex: 30,
+          background: 'rgba(4,10,22,0.78)', color: '#9cc7dd', border: '1px solid #1c3a55',
+          borderRadius: 6, padding: '8px 12px', fontFamily: 'monospace', fontSize: 12, lineHeight: 1.5,
+        }}>
+          <b style={{ color: '#fff' }}>A/D</b> or <b style={{ color: '#fff' }}>←/→</b> steer ·{' '}
+          <b style={{ color: '#fff' }}>S</b> brake · <b style={{ color: '#fff' }}>Shift</b> drift ·{' '}
+          <b style={{ color: '#fff' }}>Space</b> board-whip (bump the coral kart)
+        </div>
+      )}
     </div>
   );
 }
