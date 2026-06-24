@@ -233,10 +233,21 @@ const _waterVert = /* glsl */`
     // is a low-freq, large-scale HEAVE modulation (not a thin color stripe), and
     // because Q is re-normalized by the modulated A the horizontal pinch stays
     // constant — only the vertical heave swells & recedes. Applied to k<2 below.
-    // uSetStrength scales the envelope's swing: 0 ⇒ setEnv=1 (uniform swell, no
-    // sets); 1 ⇒ the committed 0.72±0.28 modulation. Mean rides toward 1.0 as
-    // strength→0 so disabling sets does NOT shrink the overall swell.
-    float setEnv = 1.0 - uSetStrength * 0.28 * (1.0 - sin(dot(WDIR[0], base.xz) * 0.00075 - uTime * 0.6));
+    // uSetStrength scales the envelope: 0 ⇒ setEnv=1 (uniform swell, no sets);
+    // 1 ⇒ the committed 0.72±0.28 modulation. uSetStrength>1 BOOST (make the slider
+    // visibly work): raise the swing coefficient AND shrink the set wavelength so
+    // several bigger "sets" pulse through one frame. setSwing keeps the committed
+    // 0.28 across [0,1] and climbs to ~0.68 at 2; setFreq shrinks the wavelength
+    // above 1.
+    // NEGATIVE-SAFE (Codex review caught this): a boosted swing can push the raw
+    // envelope below 0 in a deep set trough, which would make A negative and INVERT
+    // the Gerstner geometry. The max(setEnv,0) FLOOR caps it — the swell flattens in
+    // the deepest set troughs but never inverts. Inert at uSetStrength≤1, where
+    // setEnv∈[0.44,1.0] so the floor never triggers and swing/freq are committed.
+    float setSwing = 0.28 * min(uSetStrength, 1.0) + 0.40 * max(uSetStrength - 1.0, 0.0);
+    float setFreq  = 0.00075 * (1.0 + 0.6 * max(uSetStrength - 1.0, 0.0));
+    float setEnv = 1.0 - setSwing * (1.0 - sin(dot(WDIR[0], base.xz) * setFreq - uTime * 0.6));
+    setEnv = max(setEnv, 0.0);   // floor: no negative amplitude / inverted geometry
 
     // Gerstner accumulation in world XZ. Horizontal displacement (the pinch) is
     // along each wave's direction; vertical is the heave.
@@ -429,18 +440,28 @@ const _waterFrag = /* glsl */`
     const vec2  MD2 = vec2( 0.857493, -0.514496);  // (0.5,-0.3) norm
     const vec2  MD3 = vec2(-0.554700,  0.832050);  // (-0.2,0.3) norm
     // Footprint AA weights — 1 when the band resolves, →0 when finer than a texel.
-    float aa1 = 1.0 - smoothstep(0.0, 2.0, footprint * MK1);
-    float aa2 = 1.0 - smoothstep(0.0, 1.6, footprint * MK2);
-    float aa3 = 1.0 - smoothstep(0.0, 1.2, footprint * MK3);
+    // uMicroAmt>1 BOOST (make the slider visibly work at altitude): relax the
+    // footprint-AA cutoffs so the fine bands survive the huge texel footprint at
+    // race/cinematic altitude, and lift the gradient coefficients. microBoost = 0
+    // at ≤1 (committed) → climbs 0→1 as uMicroAmt 1→2, so 1.0 stays committed.
+    float microBoost = max(uMicroAmt - 1.0, 0.0);
+    float aa1 = 1.0 - smoothstep(0.0, 2.0 + 6.0 * microBoost, footprint * MK1);
+    float aa2 = 1.0 - smoothstep(0.0, 1.6 + 5.0 * microBoost, footprint * MK2);
+    float aa3 = 1.0 - smoothstep(0.0, 1.2 + 4.0 * microBoost, footprint * MK3);
     float p1 = dot(vWorldPos.xz, MD1) * MK1 + uTime * 1.30;
     float p2 = dot(vWorldPos.xz, MD2) * MK2 - uTime * 1.70;
     float p3 = dot(vWorldPos.xz, MD3) * MK3 + uTime * 2.20;
     // Gradient of the ripple heightfield → a horizontal slope perturbation.
+    float microGain = 1.0 + 1.8 * microBoost;   // 1 at ≤1 (committed), 2.8 at uMicroAmt=2
     vec2 microGrad = vec2(0.0);
-    microGrad += MD1 * (5.2 * MK1 * cos(p1) * aa1);
-    microGrad += MD2 * (3.0 * MK2 * cos(p2) * aa2);
-    microGrad += MD3 * (1.6 * MK3 * cos(p3) * aa3);
-    microGrad *= vDepthMask * uMicroAmt;   // relax to flat at the pinned banks; live knob
+    microGrad += MD1 * (5.2 * MK1 * cos(p1) * aa1 * microGain);
+    microGrad += MD2 * (3.0 * MK2 * cos(p2) * aa2 * microGain);
+    microGrad += MD3 * (1.6 * MK3 * cos(p3) * aa3 * microGain);
+    microGrad *= vDepthMask * uMicroAmt;   // 0=off, 1=committed; relax to flat at banks
+    // CLAMP the tilt so a maxed slider keeps the perturbed normal well-conditioned
+    // (no wild spec/fresnel blow-up). Committed |microGrad| (~0.4) is under 0.6, so
+    // this is INERT at uMicroAmt≤1 and only caps the boosted case (Codex clamp ask).
+    microGrad = clamp(microGrad, vec2(-0.6), vec2(0.6));
     // Perturb the macro Gerstner normal by the micro slope (small tilt, no full
     // renormalize blow-up — clamp keeps it well-conditioned).
     vec3 N = normalize(vec3(
@@ -471,9 +492,19 @@ const _waterFrag = /* glsl */`
     // exponent 1400→380 widens the disc so it covers more crest normals and
     // reads as an actual visible sparkle (was a sub-pixel point at race altitude).
     float reflSun  = clamp(dot(reflDir, uSunDir), 0.0, 1.0);
-    reflection += (uSunColor * pow(reflSun, 380.0) * 14.0    // crisp glint — wider + brighter
-                +  uSunColor * pow(reflSun, 12.0)  * 1.1)    // soft warm halo around it
-                * uSunIntensity;                             // live knob
+    // uSunIntensity>1 BOOST (make the slider visibly work at altitude): WIDEN the
+    // sun cone (drop the exponent) + brighten so the glint becomes a broad sparkle
+    // band on the crests, not a sub-pixel point. sunBoost=0 at ≤1 (committed exp
+    // 380, mult 14) → 1 at uSunIntensity=2 (exp 120, mult 24).
+    float sunBoost = max(uSunIntensity - 1.0, 0.0);
+    float discExp  = mix(380.0, 120.0, sunBoost);
+    vec3  glint = (uSunColor * pow(reflSun, discExp) * (14.0 + 10.0 * sunBoost)   // crisp glint
+                +  uSunColor * pow(reflSun, 12.0)  * 1.1)                          // soft warm halo
+                * uSunIntensity;                                                   // 0=off, 1=committed
+    // CLAMP the added glint so a maxed slider can't white-out the frame. Committed
+    // peak ~15.1 (14+1.1 at the disc centre) is under 20 → INERT at uSunIntensity≤1,
+    // caps only the boosted runaway (Codex clamp ask).
+    reflection += min(glint, vec3(20.0));
     // Energy-controlled blend: reflection grows with Fresnel, body fades with it.
     vec3 base = mix(body, reflection, fresnel * 0.85);
 
@@ -483,8 +514,11 @@ const _waterFrag = /* glsl */`
     // Removed the * depth suppression: depth kills spec at the banks exactly where
     // the micro-normal tilt is largest — we want those sparks.
     vec3  halfV = normalize(viewDir + uSunDir);
-    float spec  = pow(max(dot(N, halfV), 0.0), 70.0);
-    base += uSunColor * spec * 1.2 * uSunIntensity;   // live knob
+    float specExp = mix(70.0, 28.0, sunBoost);   // widen the Blinn cone above 1 (28 at uSunIntensity=2)
+    float spec  = pow(max(dot(N, halfV), 0.0), specExp);
+    // CLAMP the spec add: committed peak ~1.2 (spec≤1) is under 3.0 → inert at ≤1,
+    // caps the boosted case (Codex clamp ask).
+    base += min(uSunColor * spec * 1.2 * uSunIntensity, vec3(3.0));   // 0=off, 1=committed
 
     // ─── E. ORGANIC WHITECAPS ─────────────────────────────────────────────────
     // DESIGN: foam = where waves BREAK × turbulent noise.
@@ -564,7 +598,13 @@ const _waterFrag = /* glsl */`
     // → ~1 (near-breaking pinch). Gate foam at two thresholds:
     //   TIGHT: sharp crest-tip foam — requires HIGH Jacobian compression AND turbulence.
     //   MODERATE: scattered sea-foam patches — moderate compression + high turbulence.
-    float crestTight   = smoothstep(0.58, 0.92, vFoam);             // sharp crest TIPS
+    // uFoamAmt>1 BOOST: widen the SHARP-crest gate so foam COVERAGE grows (coverage
+    // reads far more at altitude than a 2× brightness on a sparse patch). foamBoost
+    // = 0 at ≤1 → crestTight low edge stays 0.58 (committed); 1 at uFoamAmt=2 → 0.28
+    // (much more of the wave foams). ONLY crestTight is widened — crestModerate and
+    // turbHigh are SHARED (spray/mist/advected foam) and stay committed (no coupling).
+    float foamBoost = max(uFoamAmt - 1.0, 0.0);
+    float crestTight   = smoothstep(0.58 - 0.30 * foamBoost, 0.92, vFoam);  // sharp crest TIPS (wider above 1)
     float crestModerate = smoothstep(0.30, 0.65, vFoam);            // broader compression zone
     float turbHigh      = smoothstep(0.55, 0.90, turbulence);       // only dense turbulence spots
 
@@ -586,7 +626,11 @@ const _waterFrag = /* glsl */`
       + advectedFoam,                        // trailing foam behind crests
       0.0, 1.0
     );
-    whiteCap *= vDepthMask * uFoamAmt;       // none at the pinned bank edges; live knob
+    whiteCap *= vDepthMask * uFoamAmt;       // 0=off, 1=committed; none at the pinned banks
+    // FIX (overshoot bug): clamp the mix factor to [0,1]. Without this, uFoamAmt>1
+    // drives whiteCap past 1 → mix(base,foam,>1) EXTRAPOLATES beyond foam (out-of-
+    // range / odd colour). Committed whiteCap is already ≤1 so this is inert at ≤1.
+    whiteCap = clamp(whiteCap, 0.0, 1.0);
 
     base = mix(base, uColorFoam, whiteCap);
 
@@ -596,8 +640,14 @@ const _waterFrag = /* glsl */`
     // intentionally allowed to spike PAST the bloom threshold (like the sun
     // glints) so it CATCHES LIGHT — the surf signature. Steep smoothstep keeps the
     // area tiny, so it sparkles on the breaking peaks without washing the surface.
-    float sprayMask = smoothstep(0.80, 0.97, vFoam) * turbHigh * vDepthMask * uSprayAmt;
-    base = mix(base, uColorFoam * 1.4 + vec3(0.05), clamp(sprayMask, 0.0, 1.0));
+    // uSprayAmt>1 BOOST: WIDEN the gate (drop the smoothstep low edge 0.80→0.45) so
+    // spray spreads across far more of the breaking area, + brighten. sprayBoost=0
+    // at ≤1 (low edge 0.80 = committed). The mix factor is clamped → no overshoot.
+    float sprayBoost = max(uSprayAmt - 1.0, 0.0);
+    float sprayLow   = 0.80 - 0.35 * sprayBoost;   // 0.80 at ≤1, 0.45 at uSprayAmt=2
+    float sprayMask = smoothstep(sprayLow, 0.97, vFoam) * turbHigh * vDepthMask * uSprayAmt;
+    vec3  sprayCol  = uColorFoam * (1.4 + 0.6 * sprayBoost) + vec3(0.05);   // brighter above 1
+    base = mix(base, sprayCol, clamp(sprayMask, 0.0, 1.0));
 
     // ─── Round 2 · CAUSTICS — shimmering refracted-light web ──────────────────
     // Three RIDGED cosine layers form a web of bright nodes where the ridges
@@ -630,7 +680,14 @@ const _waterFrag = /* glsl */`
     // over the surf and move WITH it. Gated by the broad crest-compression zone +
     // pinned-bank mask, kept well below the bloom threshold (subtle atmosphere).
     // Reuses v0 → zero new noise taps.
-    float mistVeil = v0 * crestModerate * 0.12 * vDepthMask * uMistAmt;
+    // uMistAmt>1 BOOST: raise the veil coefficient so the haze reads as obvious
+    // atmosphere, not a faint tint. mistBoost=0 at ≤1 (coeff 0.12 = committed) →
+    // coeff climbs to ~0.55 at uMistAmt=2. CLAMP the mix factor so it never
+    // overshoots / fully whites-out (stays a veil, not a wall of foam).
+    float mistBoost  = max(uMistAmt - 1.0, 0.0);
+    float mistCoeff  = 0.12 + 0.43 * mistBoost;   // 0.12 at ≤1, 0.55 at uMistAmt=2
+    float mistVeil   = v0 * crestModerate * mistCoeff * vDepthMask * uMistAmt;
+    mistVeil = clamp(mistVeil, 0.0, 0.85);        // no mix overshoot; committed max ~0.12 ≪ 0.85
     base = mix(base, uColorFoam, mistVeil);
 
     // ─── Bank spray — hash-based, NO periodic trig ────────────────────────────

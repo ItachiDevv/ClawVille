@@ -41,7 +41,7 @@ interface SliderDef {
 // Round-2 feature-cost knobs (0 disables → instant frame-time A/B per feature).
 const FEATURE_SLIDERS: SliderDef[] = [
   { key: 'waveAmp', label: 'Wave amplitude', min: 0, max: 2, step: 0.01 },
-  { key: 'setStrength', label: 'Set envelope', min: 0, max: 1, step: 0.01 },
+  { key: 'setStrength', label: 'Set envelope', min: 0, max: 2, step: 0.01 },
   { key: 'microAmt', label: 'Micro-normal', min: 0, max: 2, step: 0.01 },
   { key: 'causticAmt', label: 'Caustics', min: 0, max: 2, step: 0.01 },
   { key: 'sprayAmt', label: 'Crest spray', min: 0, max: 2, step: 0.01 },
