@@ -15,11 +15,12 @@
  * copies the current values into its uniforms each frame (≈8 scalar writes + a few
  * Color.copy — zero allocation, negligible cost). One source of truth, no churn.
  *
- * ─── DEFAULTS == the committed round-2 look ──────────────────────────────────
- * Every default below is the EXACT value shipped in `018f0898` (the founder-liked
- * round 2). All the `*Amt` knobs are ×1 multipliers folded into the shader, so a
- * fresh load with untouched sliders renders byte-identical to the committed shader.
- * Tuning only DEVIATES from the committed look; it never silently changes it.
+ * ─── DEFAULTS == the FOUNDER-TUNED committed look (baked 2026-06-24) ──────────
+ * The defaults below are the founder's signed-off tuner config (dialed live on the
+ * panel, then baked). They are NO LONGER all ×1 — `1.0` is not "neutral" anymore;
+ * the committed neutral IS this config. Prod never mounts the panel, so the shader
+ * reads exactly these every frame → prod renders the founder-tuned look. The panel
+ * still tunes live ON TOP of these; "Reset" restores them.
  *
  * ─── "v1 baseline" ───────────────────────────────────────────────────────────
  * `applyV1Baseline()` zeroes every round-2 addition (caustics, spray, mist, set
@@ -71,20 +72,31 @@ export interface WaterTuningColors {
 
 export type WaterTuning = WaterTuningScalars & WaterTuningColors;
 
-// ─── Committed round-2 defaults (mirror surf-ribbon.tsx uniforms @ 018f0898) ──
+// ─── Committed water defaults — FOUNDER-TUNED via the panel + signed off 2026-06-24.
+// These are the live committed look the prod reef scene renders (the shader reads
+// WATER_TUNING every frame; prod never mounts the panel, so it stays at these).
+// They are NO LONGER all ×1 — the founder dialed the sliders and these are the baked
+// result, so `1.0` is no longer "neutral"; the committed neutral IS this config.
+// The surf-ribbon.tsx material uniform defaults mirror these for the frame-0
+// fallback — keep the two in sync. Colours are unchanged from the round-2 palette
+// (founder kept them); only the scalar knobs + bloom moved.
 const ROUND2_SCALARS: WaterTuningScalars = {
-  waveAmp: 1,
-  setStrength: 1,
-  microAmt: 1,
-  causticAmt: 1,
-  sprayAmt: 1,
-  mistAmt: 1,
-  foamAmt: 1,
-  sunIntensity: 1,
-  bloomStrength: 0.75,   // BLOOM_STRENGTH
-  bloomRadius: 0.45,     // BLOOM_RADIUS
-  bloomThreshold: 0.8,   // BLOOM_THRESHOLD
+  waveAmp: 1.6,
+  setStrength: 1.73,
+  microAmt: 1.2,
+  causticAmt: 2,
+  sprayAmt: 2,
+  mistAmt: 0,          // founder turned drifting mist OFF
+  foamAmt: 1.2,
+  sunIntensity: 1.32,
+  bloomStrength: 2,
+  bloomRadius: 0.81,
+  bloomThreshold: 1,
 };
+
+/** Frozen snapshot of the committed scalar defaults — the tuner panel uses it to
+ *  mark a slider "at default" (vs founder-changed) and Reset restores these. */
+export const COMMITTED_SCALAR_DEFAULTS: Readonly<WaterTuningScalars> = { ...ROUND2_SCALARS };
 
 const ROUND2_COLOR_HEX = {
   colorDeep: '#0a4f97',

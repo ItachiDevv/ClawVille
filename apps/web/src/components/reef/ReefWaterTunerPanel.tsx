@@ -21,6 +21,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
   WATER_TUNING,
+  COMMITTED_SCALAR_DEFAULTS,
   applyV1Baseline,
   resetToRound2,
   snapshotTuning,
@@ -115,7 +116,7 @@ function Slider({
   value: number;
   onChange: (k: ScalarKey, v: number) => void;
 }) {
-  const atDefault = Math.abs(value - 1) < 1e-6;
+  const atDefault = Math.abs(value - COMMITTED_SCALAR_DEFAULTS[def.key]) < 1e-6;
   return (
     <div style={rowStyle}>
       <span style={rowLabel}>{def.label}</span>
@@ -199,7 +200,7 @@ export function ReefWaterTunerPanel() {
         </button>
       </div>
       <div style={{ color: '#456', fontSize: 10, marginTop: 2 }}>
-        Live — watch Frame time (left). 1.00 = committed; orange = changed.
+        Live — watch Frame time (left). Default = founder-tuned; orange = changed.
       </div>
 
       <div style={sectionHdr}>ROUND-2 FEATURES (0 = off)</div>
@@ -246,9 +247,9 @@ export function ReefWaterTunerPanel() {
             resetToRound2();
             refresh();
           }}
-          title="Restore the committed round-2 look"
+          title="Restore the founder-tuned committed defaults"
         >
-          Reset → round 2
+          Reset → default
         </button>
         <button style={btnStyle} onClick={onCopy} title="Copy current values to clipboard + console">
           Copy values

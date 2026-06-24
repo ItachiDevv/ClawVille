@@ -758,17 +758,19 @@ export const SurfWaterMaterial = shaderMaterial(
   {
     uTime:        0,
     uEdgeTaper:   WATER_EDGE_TAPER,
-    // ── LIVE tuner knobs (default 1.0 = committed look; the preview tuner panel
-    //    writes these via the WATER_TUNING singleton each frame; prod leaves them
-    //    at 1.0 so the committed look renders unchanged). ───────────────────────
-    uWaveAmp:      1,
-    uSetStrength:  1,
-    uMicroAmt:     1,
-    uCausticAmt:   1,
-    uSprayAmt:     1,
-    uMistAmt:      1,
-    uFoamAmt:      1,
-    uSunIntensity: 1,
+    // ── LIVE tuner knobs. These mirror the FOUNDER-TUNED committed defaults in
+    //    reef-water-tuning.ts COMMITTED_SCALAR_DEFAULTS (baked 2026-06-24) — they
+    //    are only the frame-0 fallback; the WATER_TUNING singleton is written into
+    //    these every frame by SurfRibbon's useFrame (prod included). KEEP IN SYNC
+    //    with reef-water-tuning.ts. (1.0 is no longer "neutral"; the tuned config is.)
+    uWaveAmp:      1.6,
+    uSetStrength:  1.73,
+    uMicroAmt:     1.2,
+    uCausticAmt:   2,
+    uSprayAmt:     2,
+    uMistAmt:      0,
+    uFoamAmt:      1.2,
+    uSunIntensity: 1.32,
     // ── Surf water palette — richly WET + reflective, not luminous ──────────
     // The reflection (analytic dusk sky + sun) is what reads as wet now, so the
     // body colours can stay deep + saturated. Deep channel reads dark through the
