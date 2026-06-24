@@ -534,6 +534,17 @@ startSimulation(arenaMode);
     console.error('[API] Body idle sweeper failed to start:', err);
   }
 
+  // 2026-06-24 — start the LAND RENT sweeper (builder-economics). Runs hourly,
+  // charges each due weekly rent on rented parcels, opens a grace window on a
+  // failed charge, and evicts after grace (parcel back to the pool, structure
+  // archived). The recurring CT sink. See `services/land-rent-sweeper.ts`.
+  try {
+    const { startLandRentSweeper } = await import('./services/land-rent-sweeper');
+    startLandRentSweeper();
+  } catch (err) {
+    console.error('[API] Land rent sweeper failed to start:', err);
+  }
+
   // Q2 Activity Portals — recover orphaned LIVE/COUNTDOWN rooms (pod
   // crash recovery per backend §12.1), hydrate persisted queue entries,
   // then start the room sweeper + matchmaker intervals. Order matters:
@@ -1012,6 +1023,12 @@ async function gracefulShutdown(signal: string) {
         './services/openclaw-session-sweeper'
       );
       stopSessionSweeper();
+    } catch {
+      // If the sweeper module failed to load earlier, there's nothing to stop.
+    }
+    try {
+      const { stopLandRentSweeper } = await import('./services/land-rent-sweeper');
+      stopLandRentSweeper();
     } catch {
       // If the sweeper module failed to load earlier, there's nothing to stop.
     }

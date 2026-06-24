@@ -164,6 +164,7 @@ import {
   STRUCTURE_UPGRADE_COSTS,
   MAX_STRUCTURE_LEVEL,
   MAX_PARCELS_PER_AVATAR,
+  RENT_PERIOD_DAYS,
   getCatalogEntry,
   getTierStructureRules,
   getTierMaxLevel,
@@ -307,7 +308,7 @@ function setReadCache(key: string, payload: LandParcelDTO[]): void {
  * AND `parcels:*:available` (the all-tiers browse), so a sold parcel must drop
  * BOTH or the for-sale list serves a stale entry for up to 60s.
  */
-function bustParcelsAvailableCache(tier: LandTier): void {
+export function bustParcelsAvailableCache(tier: LandTier): void {
   readCache.delete(`parcels:${tier}:available`);
   readCache.delete(`parcels:*:available`);
 }
@@ -341,7 +342,7 @@ function setOwnedCache(avatarId: string, payload: OwnedLandPayload): void {
 }
 
 /** Bust the combined owned cache after any write that changes an avatar's holdings. */
-function bustOwnedCache(avatarId: string): void {
+export function bustOwnedCache(avatarId: string): void {
   ownedCache.delete(`owned:${avatarId}`);
 }
 
@@ -426,8 +427,47 @@ async function fetchOwnedStructures(avatarId: string): Promise<LandStructureDTO[
       level: landStructures.level,
     })
     .from(landStructures)
-    .where(eq(landStructures.ownerAvatarId, avatarId));
+    // Exclude eviction-archived structures — they belong to a parcel the avatar
+    // no longer holds, so they must not show in "my structures" or the renderer.
+    .where(and(eq(landStructures.ownerAvatarId, avatarId), eq(landStructures.status, 'active')));
   return rows.map(toStructureDTO);
+}
+
+/**
+ * Drizzle transaction handle — lets the acquire helper run inside the route's
+ * existing tx (mirrors the `LedgerTx` alias in claw-token-ledger).
+ */
+type LandTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+/**
+ * On acquiring (buy/rent) a parcel that may be returning from an eviction,
+ * reconcile any leftover ARCHIVED structure under the already-held parcel lock:
+ *   - the SAME avatar re-acquiring  -> restore it (status -> 'active'), build intact;
+ *   - a DIFFERENT avatar acquiring  -> purge it (DELETE) so they build fresh and
+ *     the one-structure-per-parcel UNIQUE doesn't block their placement.
+ * Active structures never sit on an `available` parcel by construction (eviction
+ * archives them), so only the archived case is handled. Must be called with the
+ * parcel row already locked FOR UPDATE in the same tx.
+ */
+async function reconcileArchivedStructureOnAcquire(
+  tx: LandTx,
+  parcelId: string,
+  acquirerAvatarId: string,
+): Promise<void> {
+  const rows = await tx.execute<{ id: string; owner_avatar_id: string; status: string }>(
+    sql`SELECT id, owner_avatar_id, status FROM land_structures
+        WHERE parcel_id = ${parcelId}
+        FOR UPDATE`,
+  );
+  const s = rows[0];
+  if (!s || s.status !== 'archived') return;
+  if (s.owner_avatar_id === acquirerAvatarId) {
+    await tx.execute(
+      sql`UPDATE land_structures SET status = 'active', updated_at = now() WHERE id = ${s.id}`,
+    );
+  } else {
+    await tx.execute(sql`DELETE FROM land_structures WHERE id = ${s.id}`);
+  }
 }
 
 // ─── router ─────────────────────────────────────────────────────────────────
@@ -671,11 +711,13 @@ landRoutes.post('/claim-starter', requireAuthOrAgentSession, async (c) => {
         throw new HTTPException(409, { message: 'no_starter_available' });
       }
 
-      // (c) Flip ownership.
+      // (c) Flip ownership. tenure='starter' — free + owned permanently, never
+      // rents, never evicts (builder-economics 2026-06-24).
       await tx.execute(
         sql`UPDATE land_parcels
             SET status = 'owned',
                 owner_avatar_id = ${avatarId},
+                tenure = 'starter',
                 acquired_at = now(),
                 updated_at = now()
             WHERE id = ${pick.id}`,
@@ -775,7 +817,9 @@ landRoutes.get('/parcels/:parcelId/structure', async (c) => {
       level: landStructures.level,
     })
     .from(landStructures)
-    .where(eq(landStructures.parcelId, parcelId))
+    // Only an ACTIVE structure renders; an archived one sits on a now-available
+    // parcel awaiting restore/purge and must read as "no structure".
+    .where(and(eq(landStructures.parcelId, parcelId), eq(landStructures.status, 'active')))
     .limit(1);
 
   const structure = rows[0] ? toStructureDTO(rows[0]) : null;
@@ -930,15 +974,21 @@ landRoutes.post('/parcels/:parcelId/buy', requireAuthOrAgentSession, async (c) =
         tx,
       );
 
-      // (f) Flip ownership available → owned.
+      // (f) Flip ownership available → owned. tenure='owned' (one-time sink,
+      // permanent, never evicted — builder-economics 2026-06-24).
       await tx.execute(
         sql`UPDATE land_parcels
             SET status = 'owned',
                 owner_avatar_id = ${avatarId},
+                tenure = 'owned',
                 acquired_at = now(),
                 updated_at = now()
             WHERE id = ${parcel.id}`,
       );
+
+      // (f.1) If this parcel is returning from an eviction it may carry an
+      // archived structure — restore it for the same buyer, purge it otherwise.
+      await reconcileArchivedStructureOnAcquire(tx, parcel.id, avatarId);
 
       // (g) Land-domain audit row (burn-sink: buyer debited, no treasury credit).
       const meta = JSON.stringify({ tier: parcel.tier, parcelCode: parcel.parcel_code });
@@ -1518,4 +1568,229 @@ landRoutes.post('/spawn-preference', requireAuthOrAgentSession, async (c) => {
   }
 
   return c.json({ spawnPreference: 'home' as const, homeParcelId: parcelId });
+});
+
+// ─── 11. POST /parcels/:parcelId/rent  (AUTH, PARITY-BOUND, weekly-rent acquire) ─
+//
+// Acquire a parcel by RENTING it (builder-economics 2026-06-24). Mirrors /buy's
+// money discipline EXACTLY: per-avatar advisory lock (outer) + parcel row lock
+// (inner) + ledger debit IN-TX + audit row, all atomic. The weekly price is the
+// SERVER-stamped `land_parcels.rent_ct_weekly` (never the body). The first week is
+// charged immediately; `land-rent-sweeper` charges each subsequent week, applies
+// the grace window on a failed charge, and evicts after grace.
+//
+// PARITY (Rule E5): binds to `identity.avatarId` from requireAuthOrAgentSession,
+// so a connected/hosted agent rents to ITS OWN avatar and settles REAL CT exactly
+// as a human; no identity = 401, never a guest demo. Reaches agents via the same
+// authed HTTP path as /buy (the agent `[ACTION:]` whitelist exposure is the same
+// deferred Phase-3 surface for BOTH buy + rent — no PROTOCOL_VERSION bump here).
+//
+//   body: {} (.strict(); NO client price reaches the debit)
+//   200 → { parcel: LandParcelDTO, amountCt: number, rentPaidThrough: string }
+//         amountCt = the weekly rent debited (server-read rent_ct_weekly).
+//   400 → { error: 'invalid_body' | 'invalid_parcel_id' | 'insufficient_clawtokens'
+//                  | 'rent_not_available' }   (rent_not_available = tier carries no rent_ct_weekly)
+//   401 → no identity   ·   403 → bound user has no active avatar
+//   404 → { error: 'parcel_not_found' }
+//   409 → { error: 'parcel_not_available' | 'parcel_cap_reached' }
+//   501 → { error: 'founder_not_in_v1' }
+//   Single-acquire safety = the status flip 'available'→'owned' under the
+//   per-avatar advisory lock + `SELECT … FOR UPDATE` (a replay sees 'owned' → 409).
+landRoutes.post('/parcels/:parcelId/rent', requireAuthOrAgentSession, async (c) => {
+  const identity = c.get('identity');
+  const avatarId = identity.avatarId;
+
+  const idParsed = parcelIdSchema.safeParse(c.req.param('parcelId'));
+  if (!idParsed.success) {
+    return c.json({ error: 'invalid_parcel_id' }, 400);
+  }
+  const parcelId = idParsed.data;
+
+  // No client value reaches the write — the rent comes from the parcel row.
+  const rawBody = await c.req.json().catch(() => ({}));
+  if (!buyBodySchema.safeParse(rawBody).success) {
+    return c.json({ error: 'invalid_body' }, 400);
+  }
+
+  interface RentedParcel {
+    id: string;
+    parcelCode: string;
+    tier: LandTier;
+    status: 'available' | 'owned' | 'reserved' | 'retired';
+    gridX: number;
+    gridY: number;
+    priceCt: number | null;
+    ownerAvatarId: string | null;
+  }
+
+  let rented: { parcel: RentedParcel; amountCt: number; rentPaidThrough: string };
+  try {
+    rented = await db.transaction(async (tx) => {
+      // (0) Per-avatar advisory lock FIRST (outer — same deadlock order as buy):
+      // the cap COUNT below spans many rows, so no single row lock bounds it.
+      await tx.execute(
+        sql`SELECT pg_advisory_xact_lock(hashtextextended(${avatarId}, 0))`,
+      );
+
+      // (a) Lock the parcel row (inner). rent_ct_weekly + tier + status read here
+      // are the SOLE source of truth — the body never carries a price.
+      const parcelRows = await tx.execute<{
+        id: string;
+        parcel_code: string;
+        tier: LandTier;
+        status: string;
+        rent_ct_weekly: number | string | null;
+        owner_avatar_id: string | null;
+        grid_x: number | string;
+        grid_y: number | string;
+        price_ct: number | string | null;
+      }>(
+        sql`SELECT id, parcel_code, tier, status, rent_ct_weekly, owner_avatar_id, grid_x, grid_y, price_ct
+            FROM land_parcels
+            WHERE id = ${parcelId}
+            FOR UPDATE`,
+      );
+      const parcel = parcelRows[0];
+      if (!parcel) {
+        throw new HTTPException(404, { message: 'parcel_not_found' });
+      }
+
+      // (b) Single-acquire safety: only an 'available' parcel can be rented. A
+      // replayed/concurrent acquire sees 'owned' (or reserved/retired) → 409.
+      if (parcel.status !== 'available') {
+        throw new HTTPException(409, { message: 'parcel_not_available' });
+      }
+
+      // (c) Founder = auction/USDC-only (501). starter/founder carry rent_ct_weekly
+      // NULL (not rentable) → 'rent_not_available'. Guard a 0/NULL rent from ever
+      // reaching debitClawTokens (which throws on amount<=0).
+      const rentCt = parcel.rent_ct_weekly == null ? null : Number(parcel.rent_ct_weekly);
+      if (parcel.tier === 'founder') {
+        throw new HTTPException(501, { message: 'founder_not_in_v1' });
+      }
+      if (rentCt == null || rentCt <= 0) {
+        throw new HTTPException(400, { message: 'rent_not_available' });
+      }
+
+      // (d) Ownership cap — a rented parcel counts toward the cap (owner_avatar_id
+      // is set on rent). COUNT under the advisory lock; coerce the PG-wire string.
+      const countRows = await tx.execute<{ n: number | string }>(
+        sql`SELECT COUNT(*)::int AS n FROM land_parcels WHERE owner_avatar_id = ${avatarId}`,
+      );
+      if (Number(countRows[0]?.n ?? 0) >= MAX_PARCELS_PER_AVATAR) {
+        throw new HTTPException(409, { message: 'parcel_cap_reached' });
+      }
+
+      // (e) Debit the FIRST WEEK in this tx — a throw rolls back the flip too.
+      // Throws InsufficientTokensError (caught below) on a low balance.
+      const debit = await debitClawTokens(
+        {
+          avatarId,
+          amount: rentCt,
+          reason: 'land_parcel_rent',
+          source: 'api',
+          metadata: {
+            parcelId: parcel.id,
+            parcelCode: parcel.parcel_code,
+            tier: parcel.tier,
+            period: 'initial',
+          },
+        },
+        tx,
+      );
+
+      // (f) Flip available → owned, tenure='rented', paid through now + period.
+      await tx.execute(
+        sql`UPDATE land_parcels
+            SET status = 'owned',
+                owner_avatar_id = ${avatarId},
+                tenure = 'rented',
+                acquired_at = now(),
+                rent_paid_through = now() + make_interval(days => ${RENT_PERIOD_DAYS}),
+                grace_until = NULL,
+                updated_at = now()
+            WHERE id = ${parcel.id}`,
+      );
+
+      // (f.1) Restore/purge any eviction-archived structure on this parcel.
+      await reconcileArchivedStructureOnAcquire(tx, parcel.id, avatarId);
+
+      // (g) Land-domain audit row — rent payment (sink: renter debited, no credit).
+      const meta = JSON.stringify({
+        tier: parcel.tier,
+        parcelCode: parcel.parcel_code,
+        period: 'initial',
+        rentCtWeekly: rentCt,
+      });
+      await tx.execute(
+        sql`INSERT INTO land_transactions
+              (kind, parcel_id, avatar_id, amount_ct, debit_ledger_tx_id, metadata)
+            VALUES ('rent_payment', ${parcel.id}, ${avatarId}, ${rentCt}, ${debit.ledgerId}, ${meta}::jsonb)`,
+      );
+
+      // Read back the server-set rent_paid_through (server clock authoritative).
+      const ptRows = await tx.execute<{ rent_paid_through: string | Date | null }>(
+        sql`SELECT rent_paid_through FROM land_parcels WHERE id = ${parcel.id}`,
+      );
+      const pt = ptRows[0]?.rent_paid_through ?? null;
+
+      return {
+        parcel: {
+          id: parcel.id,
+          parcelCode: parcel.parcel_code,
+          tier: parcel.tier,
+          status: 'owned' as const,
+          gridX: Number(parcel.grid_x),
+          gridY: Number(parcel.grid_y),
+          priceCt: parcel.price_ct == null ? null : Number(parcel.price_ct),
+          ownerAvatarId: avatarId,
+        },
+        amountCt: rentCt,
+        rentPaidThrough: pt instanceof Date ? pt.toISOString() : String(pt ?? ''),
+      };
+    });
+  } catch (err) {
+    if (err instanceof InsufficientTokensError) {
+      return c.json({ error: 'insufficient_clawtokens' }, 400);
+    }
+    if (err instanceof HTTPException) {
+      return c.json({ error: err.message }, err.status as 400 | 404 | 409 | 501);
+    }
+    throw err;
+  }
+
+  // Committed — bust the owner's combined cache AND the for-sale pool cache for
+  // this tier (the parcel left 'available'). Then emit the leaderboard credit.
+  bustOwnedCache(avatarId);
+  bustParcelsAvailableCache(rented.parcel.tier);
+
+  // Acquiring a parcel (rent OR buy) is one PARCEL_PURCHASED credit (weight 5,
+  // capped 5/day). Weekly rent-sweep renewals emit NO leaderboard event.
+  void logEventFromContext(c, {
+    eventType: LAND_EVENT_TYPES.PARCEL_PURCHASED,
+    userId: identity.userId,
+    avatarId: identity.avatarId,
+    agentId: identity.kind === 'agent' ? identity.agentId : null,
+    payload: {
+      parcelCode: rented.parcel.parcelCode,
+      tier: rented.parcel.tier,
+      amountCt: rented.amountCt,
+      tenure: 'rented',
+    },
+  });
+
+  // Live land-sync (2.1): the rent flipped this parcel available→owned, so its
+  // in-world for-sale sign must vanish for OTHER players. Fire-and-forget AFTER
+  // commit — a broadcast error can NEVER affect the (already durable) rent.
+  broadcastLandEvent({
+    parcelCode: rented.parcel.parcelCode,
+    status: 'owned',
+    ownerAvatarId: avatarId,
+  });
+
+  return c.json({
+    parcel: rented.parcel,
+    amountCt: rented.amountCt,
+    rentPaidThrough: rented.rentPaidThrough,
+  });
 });
