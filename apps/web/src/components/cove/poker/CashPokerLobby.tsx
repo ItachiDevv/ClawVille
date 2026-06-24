@@ -26,7 +26,6 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { useCoveStore } from '@/stores/cove';
 import { RuneFrame, RpgButton } from '@/components/rpg';
 import { useIsMobile } from '@/hooks/use-is-mobile';
 import {
@@ -735,15 +734,4 @@ function Muted({ children }: { children: React.ReactNode }) {
       {children}
     </div>
   );
-}
-
-/**
- * Store-wired mount for the cove page. Opens when the poker hotspot fires
- * `openCashPokerLobby`; matches the prop-less self-reading pattern of the other
- * cove game modals so page.tsx just renders <CashPokerLobbyMount />.
- */
-export function CashPokerLobbyMount() {
-  const open = useCoveStore((s) => s.cashPokerLobbyOpen);
-  const onClose = useCoveStore((s) => s.closeCashPokerLobby);
-  return <CashPokerLobby open={open} onClose={onClose} />;
 }
