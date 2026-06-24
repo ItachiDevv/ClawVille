@@ -234,19 +234,26 @@ describe('validateProgressMonotonic', () => {
 });
 
 describe('validateSegmentTime', () => {
-  // The kelp segment (index 1) is the easiest to construct a deterministic
-  // test from: REEF_RACE_SEGMENTS[1] z-range = [3000, 12100] = 9100 wu
-  // (90s rebuild, 2026-04-30).
-  // minSegmentMs = 9100 / REEF_MAX_SPEED * 0.7 * 1000 = 9100 / 500 * 700 = 12 740 ms.
-  // The cached t-range table maps that z-range onto the spline.
+  // The kelp segment (index 1) is the easiest to construct a deterministic test
+  // from. On the CLOSED loop the segments carry explicit t-ranges (z is
+  // non-monotonic), and `minSegmentMs` is derived from the segment's ARC LENGTH
+  // on the live spline: minSegmentMs = segArc / REEF_MAX_SPEED * 0.7 * 1000.
+  // v6 WIDE SURF ROAD: kelp t-range ≈ [0.083, 0.273] → arc ≈ 17 246 wu →
+  // floor ≈ 24 144 ms (was ~12 740 ms on the v5 ring). The floor auto-tracks the
+  // track geometry, so these tests assert the BEHAVIOUR (under-floor flags,
+  // over-floor clears), with the elapsed times chosen relative to the v6 floor.
   const ranges = __getSegmentTRangesForTest(REEF_RACE_SEGMENTS);
 
   it('T5: flags too-fast traversal (segment crossed under min time)', () => {
     // Pick the kelp segment (index 1) and a t inside its range.
+    // v6 WIDE SURF ROAD: kelp arc ≈ 17 246 wu → floor = (17246/500)*0.7*1000
+    // ≈ 24 144 ms. (Was ~12 740 ms on the v5 ring.) Floors are arc-derived from
+    // the live spline, so they auto-track the track — the test asserts the
+    // BEHAVIOUR (under-floor flags, over-floor clears), not a hardcoded number.
     const kelp = ranges[1];
     expect(kelp.id).toBe('kelp');
     const tMid = (kelp.tStart + kelp.tEnd) * 0.5;
-    // Body entered the segment 1000ms ago — way under the ~12 740ms floor.
+    // Body entered the segment 1000ms ago — way under the ~24 144ms floor.
     const v = validateSegmentTime(tMid, 1_000_000, 999_000, REEF_RACE_SEGMENTS);
     expect(v.ok).toBe(false);
     expect(v.flagged).toBe(true);
@@ -254,12 +261,14 @@ describe('validateSegmentTime', () => {
     expect(v.detail).toContain('kelp');
   });
 
-  it('T6: ok when traversal exceeds min time (20s in a ~12.7s-floor segment)', () => {
-    // kelp z-length = 12100 - 3000 = 9100 wu (90s rebuild, 2026-04-30) →
-    // floor = (9100/500)*0.7*1000 = 12 740 ms. Use 20s elapsed (> floor) → ok.
+  it('T6: ok when traversal exceeds min time (35s in a ~24.1s-floor segment)', () => {
+    // v6 kelp arc ≈ 17 246 wu → floor = (17246/500)*0.7*1000 ≈ 24 144 ms. Use
+    // 35s elapsed (> the v6 floor) → ok. (Was 20s vs a 12.7s floor on v5; the
+    // wider/longer v6 ring raised the kelp floor above 20s, so the elapsed used
+    // here moves with it — the anti-cheat itself is unchanged.)
     const kelp = ranges[1];
     const tMid = (kelp.tStart + kelp.tEnd) * 0.5;
-    const v = validateSegmentTime(tMid, 1_000_000, 980_000, REEF_RACE_SEGMENTS);
+    const v = validateSegmentTime(tMid, 1_000_000, 965_000, REEF_RACE_SEGMENTS);
     expect(v.ok).toBe(true);
     expect(v.flagged).toBe(false);
   });

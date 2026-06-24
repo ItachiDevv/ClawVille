@@ -1,34 +1,43 @@
 /**
  * reef-race-track-layout.test.ts
  *
- * Sanity tests for the locked v5 "SURF ROAD" aggressively-twisty floating
- * CLOSED-LOOP default ribbon. Catches geometric regressions before they reach
- * the sim:
+ * Sanity tests for the locked v6 "WIDE SURF ROAD" aggressively-twisty floating
+ * CLOSED-LOOP default ribbon — now WIDE for 4-player racing. Catches geometric
+ * regressions before they reach the sim:
  *   - Exactly 32 control points (any add/remove must be intentional)
  *   - All adjacent CP-pair distances > 88 wu, INCLUDING the closing chord
  *     (Newton mis-segmenting guard)
- *   - Total spline arclength in [55 000, 66 000] wu (~145–175s loop window)
+ *   - Total spline arclength in [80 000, 96 000] wu (~215–266s loop window)
  *   - CP[0] on the start/finish line; centerlineAt(0) === centerlineAt(1)
  *   - Heading sweeps a full ±2π (one clean closed circumnavigation)
- *   - Min radius of curvature ≥ the carve floor (a real but carveable track)
- *   - MANY curvature sign reversals (aggressive zig-zag; v5 has 28)
- *   - Start/finish corridor is the widest gate (clean spawns + finish gate)
+ *   - Min radius of curvature comfortably exceeds the WIDEST corridor half-width
+ *     plus the carve floor (the WALL-CLAMP FIX — a racing line must fit inside
+ *     the wide corridor on every corner; v6 verifies carve margin ~1282 wu)
+ *   - MANY curvature sign reversals (aggressive zig-zag; v6 has 30)
+ *   - Corridor is WIDE everywhere (4+ boards fit even at the narrowest point)
  *   - No CENTERLINE self-intersection within 88 wu, AND the corridor EDGES never
  *     touch (single-winding circuit; the verified inter-pass clearance is large)
  *   - REEF_RACE_SEGMENTS is a contiguous t-range partition of the loop
  *   - The RENDER-ONLY elevation profile is periodic + bounded (no kink at seam,
  *     grade under the carve limit) — the sim never reads it but the render does.
  *
- * 2026-06-23 "SURF ROAD" REBUILD: founder reframed the vision — a floating
- * Rainbow-Road WATER RIBBON in a cosmic void, NO land. v5 is more aggressively
- * twisty (28 reversals vs 12), SPRAWLS (~16 982 wu footprint), has a render-only
- * ELEVATION profile (Y span ~1634 wu), and a narrower banked ribbon (hw 257–480
- * vs 471–910). CP count, start XZ, arc bounds, widths all move to match.
+ * 2026-06-23 "WIDE SURF ROAD" REBUILD: founder — "the river is WAY TOO THIN for
+ * 4 players … redesign … enlarge the ring." v6 WIDENS the corridor (hw 738–1038
+ * → water 1476–2077 wu wide, was 559–960) and ENLARGES the ring so every turn is
+ * a BROAD sweep (min R 2087 wu, carve margin R−hw 1282 wu — wall-clamp now
+ * impossible). 30 reversals (was 26) over a ~30 648×25 926 footprint. CP count,
+ * start XZ (0, -11425), arc bounds [80k,96k], widths, segment t-ranges all move.
+ *
+ * KEY GEOMETRIC TRUTH: a road of half-width hw can only carve a corner of radius
+ * R if R − hw > the carve floor (192 wu); otherwise no racing line fits inside
+ * the corridor and the sim wall-clamps + stalls (the v5 trap). So a WIDE river
+ * CANNOT have pinhead chicanes/hairpins — every turn is a broad sweep, and the
+ * zig-zag comes from many broad alternating sweeps over a huge footprint.
  *
  * The 88 wu CENTERLINE threshold is the Newton-basin guard (4 × REEF_BODY_RADIUS
  * = 88 wu). The corridor edge-clearance margin (≥150 wu of open space between
- * non-adjacent passes) is the wide-corridor self-intersection check; v5's
- * single-winding circuit verifies ~1868 wu.
+ * non-adjacent passes) is the wide-corridor self-intersection check; v6's
+ * single-winding circuit verifies ~4342 wu.
  */
 
 import { describe, it, expect } from 'bun:test';
@@ -52,25 +61,35 @@ const MIN_SAFE_CP_SPACING_WU = 88;
 /**
  * Corridor edge-clearance margin (wu). For a single-winding circuit the two
  * sides of the loop must not touch: the non-adjacent centerline gap must exceed
- * (halfWidth_i + halfWidth_j) by at least this margin. Verified value ~1868 wu.
+ * (halfWidth_i + halfWidth_j) by at least this margin. v6 verifies ~4342 wu.
  */
 const MIN_CORRIDOR_EDGE_CLEARANCE_WU = 150;
 
-/** Lower bound on totalArcLength — the v5 SURF ROAD ring (~59 391 wu). */
-const ARC_LENGTH_LOWER_WU = 55_000;
+/** Lower bound on totalArcLength — the v6 WIDE SURF ROAD ring (~88 052 wu). */
+const ARC_LENGTH_LOWER_WU = 80_000;
 
 /** Upper bound on totalArcLength — keeps the 2-lap race inside the lap budget. */
-const ARC_LENGTH_UPPER_WU = 66_000;
+const ARC_LENGTH_UPPER_WU = 96_000;
 
 /** Carve floor: REEF_MAX_SPEED / REEF_TURN_RATE = 500 / 2.6 ≈ 192.3 wu. */
 const MIN_TURN_RADIUS_FLOOR_WU = 500 / 2.6;
 
-/** Design-target min radius (above the hard floor; v5 verifies ~229.5 wu). */
-const MIN_TURN_RADIUS_TARGET_WU = 200;
+/**
+ * THE WALL-CLAMP FIX (v6): the min radius of curvature must comfortably exceed
+ * the WIDEST corridor half-width plus the carve floor, so a racing line fits
+ * inside the wide corridor on EVERY corner. With max hw≈1038 and the 192 floor,
+ * the min radius must beat ~1230 wu. v6 verifies min R ~2087 (margin R−hw 1282).
+ * We assert min R ≥ this design target — far above the bare carve floor — so a
+ * future tightening that would wall-clamp the wide corridor fails the test.
+ */
+const MIN_TURN_RADIUS_TARGET_WU = 1300;
+
+/** Widest per-CP halfWidth in v6 (used for the carve-margin assertion). */
+const MAX_CORRIDOR_HALF_WIDTH_WU = 1038;
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
-describe('REEF_RACE_DEFAULT_TRACK — locked v5 SURF ROAD floating closed-loop ribbon', () => {
+describe('REEF_RACE_DEFAULT_TRACK — locked v6 WIDE SURF ROAD floating closed-loop ribbon', () => {
   it('contains exactly 32 control points', () => {
     expect(REEF_RACE_DEFAULT_TRACK.length).toBe(32);
     expect(REEF_RACE_DEFAULT_TRACK_LENGTH).toBe(32);
@@ -78,9 +97,9 @@ describe('REEF_RACE_DEFAULT_TRACK — locked v5 SURF ROAD floating closed-loop r
 
   it('first CP sits on the start/finish line (south straight)', () => {
     const start = REEF_RACE_DEFAULT_TRACK[0];
-    // CP[0] anchors the start/finish line at XZ=(-2400, -8200).
-    expect(start.x).toBe(-2400);
-    expect(start.z).toBe(-8200);
+    // CP[0] anchors the start/finish line at XZ=(0, -11425).
+    expect(start.x).toBe(0);
+    expect(start.z).toBe(-11425);
     expect(start.halfWidth).toBeGreaterThan(0);
   });
 
@@ -90,23 +109,20 @@ describe('REEF_RACE_DEFAULT_TRACK — locked v5 SURF ROAD floating closed-loop r
     }
   });
 
-  it('start/finish straight CPs are the WIDEST gate; mid-loop hairpins are tighter', () => {
-    // Lagoon (start/finish, CP0-2) is the widest gate (clean spawns + finish);
-    // the esses/hairpins are tighter (a banked Rainbow-Road ribbon).
-    expect(REEF_RACE_DEFAULT_TRACK[0].halfWidth).toBeGreaterThanOrEqual(460);
-    expect(REEF_RACE_DEFAULT_TRACK[1].halfWidth).toBeGreaterThanOrEqual(440);
-    expect(REEF_RACE_DEFAULT_TRACK[2].halfWidth).toBeGreaterThanOrEqual(400);
-    // The tightest mid-loop CPs (S-chain CP10/11, W hairpin CP21/22) are the
-    // narrowest of the corridor but still surfable (~257-300 wu half-width).
-    expect(REEF_RACE_DEFAULT_TRACK[10].halfWidth).toBeLessThan(
-      REEF_RACE_DEFAULT_TRACK[0].halfWidth,
-    );
-    expect(REEF_RACE_DEFAULT_TRACK[21].halfWidth).toBeLessThan(
-      REEF_RACE_DEFAULT_TRACK[0].halfWidth,
-    );
-    // …and the minimum corridor is still surfable (>= ~250 wu half-width).
+  it('the corridor is WIDE everywhere — 4+ players fit even at the narrowest point', () => {
+    // v6 widened the river for real 4-player racing. EVERY CP half-width is wide
+    // (>= 700 wu → water >= 1400 wu, ~8 sim bodies of 44 wu side-by-side). No CP
+    // is a creek. The start/finish straight is among the widest (clean spawns).
     const minHw = Math.min(...REEF_RACE_DEFAULT_TRACK.map((c) => c.halfWidth));
-    expect(minHw).toBeGreaterThanOrEqual(250);
+    const maxHw = Math.max(...REEF_RACE_DEFAULT_TRACK.map((c) => c.halfWidth));
+    // eslint-disable-next-line no-console
+    console.log(`  per-CP halfWidth range = [${minHw}, ${maxHw}] (water ${2 * minHw}-${2 * maxHw} wu wide)`);
+    expect(minHw).toBeGreaterThanOrEqual(700);          // 4+ boards fit everywhere
+    expect(maxHw).toBeLessThanOrEqual(MAX_CORRIDOR_HALF_WIDTH_WU);
+    // The start/finish straight (CP0-2) is wide for clean spawns + finish gate.
+    expect(REEF_RACE_DEFAULT_TRACK[0].halfWidth).toBeGreaterThanOrEqual(900);
+    expect(REEF_RACE_DEFAULT_TRACK[1].halfWidth).toBeGreaterThanOrEqual(900);
+    expect(REEF_RACE_DEFAULT_TRACK[2].halfWidth).toBeGreaterThanOrEqual(900);
   });
 
   it('all adjacent CP-pair distances exceed 88 wu — INCLUDING the closing chord', () => {
@@ -152,7 +168,7 @@ describe('REEF_RACE_DEFAULT_TRACK — closed spline integration', () => {
     expect(spline.closed).toBe(true);
   });
 
-  it('total arclength falls in the SURF ROAD loop window [55 000, 66 000] wu', () => {
+  it('total arclength falls in the WIDE SURF ROAD loop window [80 000, 96 000] wu', () => {
     const arc = spline.totalArcLength;
     // eslint-disable-next-line no-console
     console.log(`  totalArcLength = ${arc.toFixed(1)} wu`);
@@ -197,10 +213,12 @@ describe('REEF_RACE_DEFAULT_TRACK — closed spline integration', () => {
     expect(Math.abs(Math.abs(sweep) - 2 * Math.PI)).toBeLessThan(0.02);
   });
 
-  it('min radius of curvature ≥ the carve floor (a followable track)', () => {
-    // A clean carve at REEF_MAX_SPEED=500 with REEF_TURN_RATE≈2.6 holds the line
-    // only if min R ≥ ≈192 wu. Design target ≳200. Sample finely with WRAP-
-    // AROUND finite differences (the loop has no endpoints).
+  it('min radius beats the WIDEST corridor + carve floor (THE WALL-CLAMP FIX)', () => {
+    // THE v6 INVARIANT: a racing line must fit INSIDE the wide corridor on every
+    // corner. That needs min R − hw(at min-R) > the carve floor (192 wu). With a
+    // wide corridor (max hw≈1038) a tight corner walls off the line and the sim
+    // wall-clamp stalls the kart (the v5 trap). Sample finely with WRAP-AROUND
+    // finite differences (the loop has no endpoints) and assert the carve margin.
     const N = 4000;
     const h = 1e-3;
     let minR = Infinity;
@@ -223,18 +241,23 @@ describe('REEF_RACE_DEFAULT_TRACK — closed spline integration', () => {
         minRT = t;
       }
     }
+    const hwAtMinR = spline.widthAt(minRT);
+    const carveMargin = minR - hwAtMinR;
     // eslint-disable-next-line no-console
     console.log(
-      `  min radius of curvature = ${minR.toFixed(1)} wu @ t=${minRT.toFixed(3)} ` +
-        `(floor=${MIN_TURN_RADIUS_FLOOR_WU.toFixed(1)} wu, target≥${MIN_TURN_RADIUS_TARGET_WU})`,
+      `  min radius = ${minR.toFixed(1)} wu @ t=${minRT.toFixed(3)} ` +
+        `(hw there=${hwAtMinR.toFixed(0)}, CARVE MARGIN R-hw=${carveMargin.toFixed(1)} wu, ` +
+        `floor=${MIN_TURN_RADIUS_FLOOR_WU.toFixed(1)}, design≥${MIN_TURN_RADIUS_TARGET_WU})`,
     );
     expect(minR).toBeGreaterThanOrEqual(MIN_TURN_RADIUS_FLOOR_WU);
     expect(minR).toBeGreaterThanOrEqual(MIN_TURN_RADIUS_TARGET_WU);
+    // The wall-clamp fix: a racing line fits inside the wide corridor everywhere.
+    expect(carveMargin).toBeGreaterThan(MIN_TURN_RADIUS_FLOOR_WU);
   });
 
   it('has MANY curvature sign reversals (aggressive zig-zag, not a plain oval)', () => {
-    // A plain circle has ZERO sign reversals; v5 SURF ROAD is an aggressive
-    // twisty circuit (esses + chicanes + hairpins) → many left↔right reversals.
+    // A plain circle has ZERO sign reversals; v6 WIDE SURF ROAD is an aggressive
+    // twisty circuit (broad alternating sweeps) → many left↔right reversals.
     // We smooth the per-step signed heading delta to ignore numerical noise,
     // then count genuine sign changes with a deadband.
     const N = 4000;
@@ -269,32 +292,44 @@ describe('REEF_RACE_DEFAULT_TRACK — closed spline integration', () => {
       if (sg !== 0) lastSign = sg;
     }
     // eslint-disable-next-line no-console
-    console.log(`  curvature sign reversals = ${reversals} (v5 aggressive zig-zag; need ≥12)`);
-    expect(reversals).toBeGreaterThanOrEqual(12);
+    console.log(`  curvature sign reversals (smoothed W=40) = ${reversals} (v6 aggressive zig-zag; need ≥8)`);
+    // NOTE: this is the HEAVILY-SMOOTHED count (±40-sample window + deadband) — a
+    // noise-robust proxy. The RAW curvature-sign-reversal count on v6 is 30 (see
+    // scratchpad/ring-final.ts, up from v5's 26), but the broad-sweep v6 turns
+    // merge under the ±0.01-t smoothing window into ~10 robust alternations. A
+    // plain oval reads 0; 8+ robust smoothed alternations proves the aggressive
+    // zig-zag character. (The threshold was 12 for v5's tighter/narrower esses.)
+    expect(reversals).toBeGreaterThanOrEqual(8);
   });
 
-  it('start/finish straight has the widest corridor for clean spawns', () => {
-    // The lagoon (t≈0..0.11) is the spawn + finish gate (the widest part).
+  it('the corridor is wide across the whole loop (sampled, not just at CPs)', () => {
+    // v6: the interpolated half-width must stay WIDE everywhere along the spline
+    // (4+ boards fit). The start/finish straight (t≈0) is among the widest.
+    let wMin = Infinity;
+    let wMax = -Infinity;
+    for (let i = 0; i < 4000; i++) {
+      const w = spline.widthAt(i / 4000);
+      if (w < wMin) wMin = w;
+      if (w > wMax) wMax = w;
+    }
     const wStart = spline.widthAt(0);
-    expect(wStart).toBeGreaterThanOrEqual(460);
-    expect(wStart).toBeLessThanOrEqual(520);
-    // Mid-loop (a hairpin/chicane region) must be tighter than the start gate.
-    const wMid = spline.widthAt(0.5);
-    expect(wMid).toBeLessThan(wStart);
-    // …but still surfable, not a creek.
-    expect(wMid).toBeGreaterThanOrEqual(250);
+    // eslint-disable-next-line no-console
+    console.log(`  sampled halfWidth = [${wMin.toFixed(0)}, ${wMax.toFixed(0)}], start=${wStart.toFixed(0)}`);
+    expect(wMin).toBeGreaterThanOrEqual(700);   // wide everywhere — 4+ boards fit
+    expect(wMax).toBeLessThanOrEqual(MAX_CORRIDOR_HALF_WIDTH_WU + 5);
+    expect(wStart).toBeGreaterThanOrEqual(900);  // wide start/finish gate
   });
 
   it('does not self-intersect within the body radius (no folds < 88 wu)', () => {
     // Dense centerline sampling; min distance between NON-adjacent samples must
     // exceed 88 wu. "Non-adjacent" excludes an arc neighbourhood around each
-    // sample. The skip window spans ~3200 wu of arc so the seam-adjacent
+    // sample. The skip window spans ~6000 wu of arc so the seam-adjacent
     // start-straight samples (t≈0.99 vs t≈0.01 — the SAME physical straight)
     // aren't counted as two passes.
     const M = 2000;
     const pts: Vec2[] = [];
     for (let i = 0; i < M; i++) pts.push(spline.centerlineAt(i / M));
-    const skip = Math.ceil(M * (3200 / spline.totalArcLength));
+    const skip = Math.ceil(M * (6000 / spline.totalArcLength));
     let minSelf = Infinity;
     let minPair = '';
     for (let i = 0; i < M; i++) {
@@ -327,7 +362,7 @@ describe('REEF_RACE_DEFAULT_TRACK — closed spline integration', () => {
       pts.push(spline.centerlineAt(t));
       hws.push(spline.widthAt(t));
     }
-    const skip = Math.ceil(M * (3200 / spline.totalArcLength));
+    const skip = Math.ceil(M * (6000 / spline.totalArcLength));
     let minClear = Infinity;
     let minPair = '';
     for (let i = 0; i < M; i++) {
@@ -430,13 +465,22 @@ describe('reefTrackBankAngleAt — RENDER-ONLY banking profile', () => {
     }
   });
 
-  it('leans into the tight turns (nonzero on the hairpins/esses)', () => {
-    // The far-west hairpin (t≈0.66) and the S-chain (t≈0.35) must produce a
-    // meaningful lean (>5°).
+  it('leans into the tight turns (nonzero on the broad sweeps)', () => {
+    // The east-bend sweep (t≈0.25, ~18°) and the W-bend (t≈0.65, ~15°) must
+    // produce a meaningful lean (>5°) — verified by scratchpad/bank-check2.ts.
     const fiveDeg = (5 * Math.PI) / 180;
-    const hairpinBank = Math.abs(reefTrackBankAngleAt(0.66, headingAt));
-    const essBank = Math.abs(reefTrackBankAngleAt(0.35, headingAt));
-    expect(Math.max(hairpinBank, essBank)).toBeGreaterThan(fiveDeg);
+    const eastBank = Math.abs(reefTrackBankAngleAt(0.25, headingAt));
+    const westBank = Math.abs(reefTrackBankAngleAt(0.65, headingAt));
+    expect(Math.max(eastBank, westBank)).toBeGreaterThan(fiveDeg);
+  });
+
+  it('stays near-flat on the start/finish straight (not pegged at the cap)', () => {
+    // v6 re-tuned BANK_GAIN: the old 9.0 pegged the whole ribbon at the 28° cap.
+    // The start straight (t≈0..0.05) must read as a gentle lean (< 12°), proving
+    // the gain is sane (the bank tracks curvature, not a constant max roll).
+    const twelveDeg = (12 * Math.PI) / 180;
+    expect(Math.abs(reefTrackBankAngleAt(0.02, headingAt))).toBeLessThan(twelveDeg);
+    expect(Math.abs(reefTrackBankAngleAt(0.05, headingAt))).toBeLessThan(twelveDeg);
   });
 });
 

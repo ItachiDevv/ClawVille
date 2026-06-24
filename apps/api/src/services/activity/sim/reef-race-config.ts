@@ -131,22 +131,24 @@ export const REEF_STRAGGLER_GRACE_MS = 30_000;
 export const REEF_HARD_TIMEOUT_MS = REEF_SOFT_TIMEOUT_MS + REEF_STRAGGLER_GRACE_MS;
 
 /**
- * CLOSED-LOOP per-lap soft budget (ms) for the v5 "SURF ROAD" floating ribbon.
+ * CLOSED-LOOP per-lap soft budget (ms) for the v6 "WIDE SURF ROAD" floating
+ * ribbon.
  *
  * The 90s `REEF_SOFT_TIMEOUT_MS` was tuned for the small ~9 000–30 000 wu
- * tracks; the v5 ribbon is ~59 391 wu — one loop takes ~145–175 s (humans
- * ~410 wu/s avg; 0.85-thrust bots ~340 wu/s → ~175 s). A 90s per-lap cap would
- * DNF every racer mid-lap-1. This budget covers the SLOWEST legit loop (~180 s
- * at heavy-cornering ~330 wu/s on the more-twisty SURF ROAD) plus margin:
+ * tracks; the v6 wide ribbon is ~88 052 wu (was ~60 257 in v5) — one loop takes
+ * ~215–266 s (humans ~410 wu/s avg; heavy-cornering bots ~330 wu/s → ~266 s).
+ * A 90s/200s per-lap cap would DNF every racer mid-lap-1. This budget covers the
+ * SLOWEST legit loop (~266 s at heavy-cornering ~330 wu/s on the wide SURF ROAD)
+ * plus margin:
  *
  *   per-lap budget = arc / slowPace × 1000 × safety
- *                  = 59391 / 330 × 1000 × 1.10 ≈ 198 s  → rounded to 200 s.
+ *                  = 88052 / 330 × 1000 × 1.10 ≈ 294 s  → rounded to 300 s.
  *
  * NOTE: NOT derived from `REEF_SOFT_TIMEOUT_MS` (which stays the ellipse single-
  * loop value) — it is its own arc-length-grounded number so the two sims can't
  * drift. Re-derive if the track arc length or REEF_MAX_SPEED changes.
  */
-export const REEF_RACE_LOOP_LAP_BUDGET_MS = 200_000;
+export const REEF_RACE_LOOP_LAP_BUDGET_MS = 300_000;
 
 /**
  * CLOSED-LOOP N-lap race soft timeout (ms) — the per-lap budget × lap count.

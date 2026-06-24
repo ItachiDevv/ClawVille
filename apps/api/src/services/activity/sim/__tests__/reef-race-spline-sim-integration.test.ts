@@ -60,14 +60,16 @@ const ALL_PETS = [HUMAN_PET, ...BOT_PETS];
 
 const DT = 1 / REEF_TICK_HZ;
 // CLOSED-LOOP: tick enough sim-ticks for a body to physically complete the full
-// N-lap race on the v5 SURF ROAD (~59 391 wu/loop). The synchronous tick loop
-// runs in ~13s WALL, so the wall-clock-based hard timeout (430s) never fires —
-// the only thing that matters here is enough TICKS to cover the distance. The
-// SURF ROAD is aggressively twisty, so bots corner-slow (~250 wu/s avg on the
-// heaviest sections). Ground the window in the 2-lap arc distance at a
-// conservative carve pace (220 wu/s) + margin, NOT the wall-clock timeout, so a
-// finisher is guaranteed without an absurdly long run.
-const REEF_RACE_TWO_LAP_ARC_WU = 2 * 59391.2;
+// N-lap race on the v6 WIDE SURF ROAD (~88 052 wu/loop, was ~59 391 in v5). The
+// synchronous tick loop runs in ~20s WALL, so the wall-clock-based hard timeout
+// never fires — the only thing that matters here is enough TICKS to cover the
+// distance. The WIDE SURF ROAD has BROAD sweeps (min R 2087, carve margin 1282)
+// so bots can carry more speed than the v5 narrow esses, but ground the window
+// conservatively in the 2-lap arc distance at a slow carve pace (220 wu/s) +
+// margin, NOT the wall-clock timeout, so a finisher is guaranteed. The wider
+// corridor (hw 738–1038) means NO wall-clamp stall (the v5 trap) — every corner
+// holds a racing line, so bodies actually progress and finish.
+const REEF_RACE_TWO_LAP_ARC_WU = 2 * 88051.9;
 const CONSERVATIVE_BOT_PACE_WU_S = 220;
 const SIM_DURATION_SEC =
   Math.ceil(REEF_RACE_TWO_LAP_ARC_WU / CONSERVATIVE_BOT_PACE_WU_S) + 20;
@@ -284,20 +286,23 @@ describe('ReefRaceSplineSim — full-room integration smoke test', () => {
     expect(humanBody.startCrossed).toBe(true);
     expect(humanPathLen).toBeGreaterThanOrEqual(1000);
 
-    // 6. Performance budget — the loop now breaks a short tail past the FIRST
-    // finisher (~6 500 ticks on the v4 ring), so the synchronous sim runs in
-    // ~12–16s wall-clock on a loaded machine. Report as a soft warning above 8s
-    // and only HARD-fail past the 20s cliff (a runaway-loop guard, machine-
-    // dependent — CI boxes vary). This is sim CPU time, not a product metric.
-    if (wallElapsedMs >= 8000) {
+    // 6. Performance budget — the loop breaks a short tail past the FIRST
+    // finisher (~10 000 ticks on the v6 WIDE ring, was ~6 500 on v4), so the
+    // synchronous sim runs in ~12–16s wall-clock alone and up to ~28s under
+    // combined-suite CPU load. Report as a soft warning above 15s and only
+    // HARD-fail past the 35s cliff (a runaway-loop guard, machine-dependent —
+    // CI boxes vary). This is sim CPU time, NOT a product metric — the v6 arc is
+    // ~46% longer than v5 (88 052 vs 60 257 wu) so the first finisher takes
+    // proportionally more synchronous ticks to reach. (Raised from 8s/20s on v5.)
+    if (wallElapsedMs >= 15000) {
       console.warn(
         `[spline-sim integration] ${ticksRun} ticks took ${wallElapsedMs.toFixed(0)} ms ` +
-          `(target: <8000 ms; 20000 ms cliff)`,
+          `(target: <15000 ms; 35000 ms cliff)`,
       );
     }
-    expect(wallElapsedMs).toBeLessThan(20000);
-  }, 40_000); // CLOSED-LOOP (v4): a full 2-lap race on the ~53.5k-wu ring would be
-              // ~8 000–11 000 ticks for all bodies to finish, but the loop breaks
-              // a short tail past the FIRST finisher (~6 500 ticks). Raise the
+    expect(wallElapsedMs).toBeLessThan(35000);
+  }, 70_000); // CLOSED-LOOP (v6): a full 2-lap race on the ~88k-wu WIDE ring is
+              // ~14 000–18 000 ticks for all bodies to finish, but the loop breaks
+              // a short tail past the FIRST finisher (~10 000 ticks). Raise the
               // per-test timeout well above bun's 5s default for the bigger ring.
 });

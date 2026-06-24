@@ -64,11 +64,26 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { clientSpline } from './reef-race-spline-instance';
 import { elevationAtT, bankAngleAtT } from './reef-race-elevation';
+import { WATER_SEAL_DROP } from './surf-cross-section';
 
 // ─── Geometry constants ────────────────────────────────────────────────────────
 
-/** Longitudinal samples — same as SurfRibbon for vertex alignment at the waterline. */
-const CANYON_SAMPLES = 128;
+/**
+ * Longitudinal samples — MUST EQUAL `RIBBON_SAMPLES` (224) in surf-ribbon.tsx.
+ *
+ * WATERTIGHT SEAM CONTRACT: the canyon inner-base polyline (v0) and the water
+ * edge polyline are both swept from the SAME `clientSpline` at t = i/SAMPLES.
+ * If the two sample counts differ, the polylines only coincide at the shared
+ * spline-t values; BETWEEN samples they chord differently and a lateral sliver
+ * opens on concave turns (at 128 vs 224, the inner-bank sagitta mismatch reached
+ * ~74wu — far more than the 40wu WATER_SEAL_DROP vertical lip can cover, since
+ * the cliff rises immediately from the base where the base pulls away from the
+ * water edge). Matching the count to 224 makes both edge polylines share
+ * BIT-IDENTICAL vertices at every sample on BOTH banks → zero chordal mismatch,
+ * truly watertight. Cost is trivial (still merges to 1 draw call each;
+ * ~3584 canyon verts + ~896 shoulder verts — well within the Iris Xe budget).
+ */
+const CANYON_SAMPLES = 224;
 
 // Canyon wall cross-section profile (offsets from the corridor half-width edge,
 // along the BANKED LATERAL direction outward and the world-UP direction).
@@ -82,8 +97,11 @@ const CLIFF_TOP_LAT    = 180;   // overhang — narrows slightly toward top
 const CLIFF_TOP_UP     = 340;   // cliff top
 
 // Shoulder: flat strip from cliff outer edge to shoulder limit.
-const SHOULDER_INNER_LAT = 200; // matches CLIFF_TOP_LAT (start of shoulder)
-const SHOULDER_OUTER_LAT = 480; // shoulder limit (~280wu wide)
+// Inner lat MUST equal CLIFF_TOP_LAT so the shoulder's inner row sits exactly
+// on the cliff-top edge — was 200 (a 20wu lateral gap vs the 180 cliff top that
+// the comment wrongly claimed to "match"), which opened a thin ridge seam.
+const SHOULDER_INNER_LAT = CLIFF_TOP_LAT; // shoulder starts exactly at cliff top (180)
+const SHOULDER_OUTER_LAT = 480; // shoulder limit (~300wu wide)
 const SHOULDER_UNDULATION = 22; // max vertical irregularity (hash-driven, org feel)
 
 // Colours — warm earthy rock palette.
@@ -161,7 +179,11 @@ function _buildCanyonBankGeo(side: 1 | -1): THREE.BufferGeometry {
   // Profile: 4 verts per sample × CANYON_SAMPLES rows.
   // Lateral offsets (positive = outward from water centre, along banked lateral):
   const laterals = [CLIFF_INNER_LAT, CLIFF_STEP1_LAT, CLIFF_STEP2_LAT, CLIFF_TOP_LAT];
-  const ups      = [0,               CLIFF_STEP1_UP,  CLIFF_STEP2_UP,  CLIFF_TOP_UP ];
+  // WATERTIGHT SEAL: inner base (v0) drops WATER_SEAL_DROP wu BELOW the banked
+  // datum so the rock forms a submerged lip UNDER the (tapered-to-datum) water
+  // edge — even a numerical residual can't open a gap to the void. The lip is
+  // hidden under the water surface so it reads as rock continuing into the water.
+  const ups      = [-WATER_SEAL_DROP, CLIFF_STEP1_UP,  CLIFF_STEP2_UP,  CLIFF_TOP_UP ];
   const PROFILE  = 4;
 
   const C = [_cBase, _cMid, _cLight, _cTop]; // colours per profile row
@@ -176,9 +198,14 @@ function _buildCanyonBankGeo(side: 1 | -1): THREE.BufferGeometry {
       const lat = laterals[p] * side;   // outward on this side
       const up  = ups[p];
 
-      // base point on the corridor edge of this bank, then push outward+up
+      // base point on the corridor edge of this bank, then push outward+up.
+      // Banked-Y MUST match SurfRibbon.frameAt(): left edge ly = cy + uny*hw,
+      // right edge ry = cy - uny*hw  →  cy + uny*hw*side. (Was `- uny*hw*side`,
+      // a sign flip that diverged from the water edge by 2*uny*hw on every
+      // banked turn — a hole exactly where the bank leans. Now pinned to the
+      // SAME banked datum point the water's tapered edge sits on.)
       const bx = f.cx + f.unx * f.hw * side;
-      const by = f.cy - f.uny * f.hw * side; // banked edge Y
+      const by = f.cy + f.uny * f.hw * side; // banked edge Y (matches water edge)
       const bz = f.cz + f.unz * f.hw * side;
 
       // displacement along banked lateral (outward) and world-up
@@ -255,9 +282,11 @@ function _buildShoulderBankGeo(side: 1 | -1): THREE.BufferGeometry {
     const t = i / CANYON_SAMPLES;
     const f = _frameAt(t);
 
-    // Base: the corridor edge of this bank (lifted + banked)
+    // Base: the corridor edge of this bank (lifted + banked).
+    // Same banked-Y datum as the canyon builder (cy + uny*hw*side) so the
+    // shoulder leans WITH the cliff top through every banked turn.
     const bx = f.cx + f.unx * f.hw * side;
-    const by = f.cy - f.uny * f.hw * side;
+    const by = f.cy + f.uny * f.hw * side;
     const bz = f.cz + f.unz * f.hw * side;
 
     // Inner vertex (at shoulder start = cliff top lat)
