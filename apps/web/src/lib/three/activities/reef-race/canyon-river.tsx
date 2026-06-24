@@ -69,21 +69,27 @@ import { WATER_SEAL_DROP } from './surf-cross-section';
 // ─── Geometry constants ────────────────────────────────────────────────────────
 
 /**
- * Longitudinal samples — MUST EQUAL `RIBBON_SAMPLES` (224) in surf-ribbon.tsx.
+ * Longitudinal samples — MUST EQUAL `RIBBON_SAMPLES` (320) in surf-ribbon.tsx.
  *
  * WATERTIGHT SEAM CONTRACT: the canyon inner-base polyline (v0) and the water
  * edge polyline are both swept from the SAME `clientSpline` at t = i/SAMPLES.
  * If the two sample counts differ, the polylines only coincide at the shared
- * spline-t values; BETWEEN samples they chord differently and a lateral sliver
- * opens on concave turns (at 128 vs 224, the inner-bank sagitta mismatch reached
- * ~74wu — far more than the 40wu WATER_SEAL_DROP vertical lip can cover, since
- * the cliff rises immediately from the base where the base pulls away from the
- * water edge). Matching the count to 224 makes both edge polylines share
- * BIT-IDENTICAL vertices at every sample on BOTH banks → zero chordal mismatch,
- * truly watertight. Cost is trivial (still merges to 1 draw call each;
- * ~3584 canyon verts + ~896 shoulder verts — well within the Iris Xe budget).
+ * spline-t values; BETWEEN samples they chord differently and the rock base
+ * pulls laterally off the water edge — on the tightest turns the rock base then
+ * sits at a DIFFERENT elevation datum than the finer water polyline and pokes
+ * ABOVE the waterline. PROVEN (scratchpad/reef-seam-proof.ts on the real spline):
+ * at 224-canyon vs 320-water the worst rock-above-water reached +71.5wu @ t≈0.703
+ * (the tightest-R region) with an 18.2wu lateral sliver — a visible HOLE, far
+ * beyond what the 40wu WATER_SEAL_DROP vertical lip can cover. Matching the count
+ * to 320 makes both edge polylines share BIT-IDENTICAL vertices at every sample
+ * on BOTH banks → 0.000wu lateral sliver and rock exactly 40wu BELOW water
+ * everywhere (worst rock-above-water = −40.0wu, i.e. always submerged), truly
+ * watertight. (The seam pin is row-count-DEPENDENT — the edge taper alone does NOT
+ * make it row-independent; the chordal datum mismatch is the failure mode. Earlier
+ * claim corrected 2026-06-24.) Cost is trivial: 320 rows still merge to 1 draw call
+ * each (~5120 canyon verts + ~1280 shoulder verts — negligible vs the 220k tri budget).
  */
-const CANYON_SAMPLES = 224;
+const CANYON_SAMPLES = 320;
 
 // Canyon wall cross-section profile (offsets from the corridor half-width edge,
 // along the BANKED LATERAL direction outward and the world-UP direction).
@@ -408,7 +414,7 @@ const _shoulderMat = new THREE.MeshStandardMaterial({
  * no position offset is needed (parent track group must be at Y=0).
  *
  * Draw calls added: 2 (canyon = 1, shoulder = 1).
- * Triangles added: canyon ~128×3 quads×2 sides×2 = ~1536; shoulder ~128×2 sides×2 = ~512. ≈ 2048 tris total.
+ * Triangles added: canyon 320×3 quads×2 sides×2 = ~3840; shoulder 320×1 quad×2 sides×2 = ~1280. ≈ 5120 tris total (CANYON_SAMPLES=320, matched to RIBBON_SAMPLES for the watertight seam).
  */
 export function CanyonRiver() {
   return (

@@ -55,8 +55,11 @@
  *     volume comes from THOSE, not noise.
  *
  * Draw calls: 1 water + 1 rails (merged L+R+crests) = 2.
- * Tris: water WIDTH_SEGS×RIBBON_SAMPLES×2 = 28×224×2 ≈ 12,544 ; rails ~128×4
- *   sides×2 ≈ 1024 → ~13.6k total. Sane for Iris Xe (bounded swept ribbon).
+ * Tris: water WIDTH_SEGS×RIBBON_SAMPLES×2 = 48×320×2 ≈ 30,720 ; rails ~128×4
+ *   sides×2 ≈ 1024 → ~31.7k total. Well within the scene's ≤220k tri budget
+ *   (Iris Xe, bounded swept ribbon). The denser grid carries the swells +
+ *   medium chop; the fragment-shader micro-normal bands carry the FINE detail
+ *   with no extra tris (the flatness fix).
  */
 
 import { useRef } from 'react';
@@ -71,14 +74,24 @@ import { elevationAtT, bankAngleAtT } from './reef-race-elevation';
 import { WATER_EDGE_TAPER } from './surf-cross-section';
 
 // ─── Geometry constants ───────────────────────────────────────────────────────
-// Longitudinal rows: enough that lengthwise crests read smooth over the ~88k-wu
-// loop. 224 rows → ~393wu spacing; the Gerstner crests are >800wu wavelength so
-// they sample cleanly.
-const RIBBON_SAMPLES = 224;
-// Lateral interior columns across the channel (left→right). 28 columns over a
-// ~2000wu width → ~71wu spacing, fine enough for crest form to read as 3D across
-// the width. WIDTH_SEGS columns ⇒ WIDTH_SEGS+1 vertices per row.
-const WIDTH_SEGS = 28;
+// PREMIUM REBUILD (2026-06-23): the v6 WIDE SURF ROAD made the channel 2287–
+// 3219wu wide (numerically verified — the old "1476–2077" comment was stale).
+// At the prior 28 cols the widest channel was 115wu/col, so the MEDIUM chop
+// (L=360–520wu, ~3–4 samples) was Nyquist-marginal and the river read as flat
+// low-poly mounds. We raise the mesh density so the swells + medium chop carry
+// on real geometry, and the FRAGMENT shader adds derivative-attenuated micro-
+// normal detail (scale-immune, zero extra tris) for the fine surface texture
+// between crests — the single biggest flatness fix.
+//
+// Longitudinal rows: 320 over the ~88k-wu loop → ~275wu/row. Waves ≥ ~600wu
+// sample cleanly lengthwise; the shorter octaves are carried by the micro-normal
+// bands in the fragment shader, not the mesh.
+const RIBBON_SAMPLES = 320;
+// Lateral interior columns across the channel (left→right). 48 columns over the
+// widest ~3219wu channel → ~67wu/col, so the medium chop (L≈360–520wu) now gets
+// 5–8 samples across the width and reads as genuine 3D crest form, not a smooth
+// interpolated sheet. WIDTH_SEGS columns ⇒ WIDTH_SEGS+1 vertices per row.
+const WIDTH_SEGS = 48;
 
 // Rails kept SMALL so they read as edge-definition, not dominant neon bands.
 const RAIL_HEIGHT     = 10;   // neon rail height
@@ -150,32 +163,49 @@ const _waterVert = /* glsl */`
   // surface is alive, not a single rolling sheet. A fixed WORLD direction reads
   // as a varied heading relative to the curving channel — exactly the alive look.
   //
-  // 6 octaves. Wavelengths chosen so 224 longitudinal rows (~393wu spacing) and
-  // 28 lateral columns (~71wu spacing) both sample the crests well (shortest
-  // L≈240wu still reads as form).
+  // 7 octaves. Wavelengths chosen so 320 longitudinal rows (~275wu spacing) and
+  // 48 lateral columns (~67wu spacing) both sample the swells + medium chop well.
+  // The shortest mesh-carried octave is L≈300wu (~4.5 samples/col) — the FINER
+  // surface texture below that lives in the fragment-shader micro-normal bands,
+  // which are scale-immune and cost no mesh resolution.
+  //
+  // PREMIUM tuning vs the old flat bank:
+  //   - higher steepness on the LONG swells (Q→0.92) → genuinely SHARP pinched
+  //     crests + broad troughs (the trochoidal silhouette that reads as surf),
+  //     not gentle rolling mounds. Q is normalized below so it never self-loops.
+  //   - a 7th broad-swell octave (L=2300) adds the slow heaving groundswell.
+  //   - wider directional spread (headings fan ±, plus two near-cross headings)
+  //     so the surface is a CHURNING interference field, not one rolling sheet.
+  //   - bigger amplitudes on the swells (A up to 26wu) for real readable heave on
+  //     the 2287–3219wu channel.
   //
   // PERF: the wave parameters are COMPILE-TIME CONSTANTS, so they live in const
   // arrays baked into the shader — NOT non-const arrays repopulated on every
   // vertex invocation. The directions are HAND-NORMALIZED to unit length and
-  // written as literals because GLSL ES 3.00 does not guarantee normalize() is
+  // written as literals because GLSL does not guarantee normalize() is
   // a const-expression usable in a const initializer. Source headings (pre-norm):
-  // (0.30,1.00) (1.00,0.45) (-0.65,0.80) (0.85,-0.55) (0.20,1.00) (-0.90,0.35).
+  // (0.25,1.00) (1.00,0.40) (-0.70,0.78) (0.90,-0.50) (0.15,1.00) (-0.95,0.32)
+  // (0.60,0.62).
   //
   // We accumulate displacement (dispX/Y/Z) AND the analytic Jacobian partials
   // (∂P/∂x, ∂P/∂z) so the fragment shader gets an exact normal + crest foam.
-  #define NWAVES 6.0
-  const vec2 WDIR[6] = vec2[6](
-    vec2( 0.287348,  0.957826),  // (0.30, 1.00) normalized
-    vec2( 0.911922,  0.410365),  // (1.00, 0.45) normalized
-    vec2(-0.630593,  0.776114),  // (-0.65, 0.80) normalized
-    vec2( 0.839570, -0.543251),  // (0.85, -0.55) normalized
-    vec2( 0.196116,  0.980581),  // (0.20, 1.00) normalized
-    vec2(-0.932005,  0.362446)   // (-0.90, 0.35) normalized
+  #define NWAVES 7.0
+  const vec2 WDIR[7] = vec2[7](
+    vec2( 0.242536,  0.970143),  // (0.25, 1.00) normalized — primary swell
+    vec2( 0.928477,  0.371391),  // (1.00, 0.40) normalized — cross swell
+    vec2(-0.668965,  0.743276),  // (-0.70, 0.78) normalized — opposing sweep
+    vec2( 0.873704, -0.486502),  // (0.90, -0.50) normalized — chop
+    vec2( 0.148556,  0.988899),  // (0.15, 1.00) normalized — down-river chop
+    vec2(-0.947696,  0.319234),  // (-0.95, 0.32) normalized — fine ripple
+    vec2( 0.695468,  0.718558)   // (0.60, 0.62) normalized — diagonal ripple
   );
-  const float WLEN[6]   = float[6](1700.0, 1150.0, 760.0, 520.0, 360.0, 240.0);
-  const float WSTEEP[6] = float[6](  0.85,   0.80,  0.75,  0.70,  0.55,  0.40);
-  const float WAMP[6]   = float[6](  19.0,   12.0,   8.0,   4.8,   2.5,   1.3);
-  const float WSPD[6]   = float[6]( 140.0,  115.0, 100.0,  88.0,  76.0,  64.0);
+  const float WLEN[7]   = float[7](2300.0, 1500.0, 980.0, 640.0, 460.0, 340.0, 300.0);
+  const float WSTEEP[7] = float[7](  0.92,   0.90,  0.86,  0.80,  0.66,  0.52,  0.42);
+  // Amplitudes bumped on the swells so the peak-to-trough heave reads as REAL
+  // surf (~185wu p2p, numerically verified) — the founder's "NOT flat" demand.
+  // Q is normalized as STEEP/(w·A·N) so raising A keeps Q·k·A bounded (no cusp).
+  const float WAMP[7]   = float[7](  38.0,   25.0,  15.0,   8.4,   4.4,   2.4,   1.5);
+  const float WSPD[7]   = float[7]( 150.0,  126.0, 108.0,  94.0,  82.0,  70.0,  62.0);
 
   void main() {
     vUv = uv;
@@ -201,11 +231,10 @@ const _waterVert = /* glsl */`
     float dPz_dx = 0.0, dPz_dz = 1.0;   // ∂(displaced.z)/∂x , /∂z
     float dPy_dx = 0.0, dPy_dz = 0.0;   // ∂(displaced.y)/∂x , /∂z
 
-    // 6 octaves over the baked const arrays. Math is byte-identical to the old
-    // unrolled macro — D is pre-normalized so normalize() is gone, nothing else
-    // changes. Constant trip count + constant array indices ⇒ fully unrollable on
+    // 7 octaves over the baked const arrays. D is pre-normalized so normalize()
+    // is gone. Constant trip count + constant array indices ⇒ fully unrollable on
     // every GLSL driver incl. Iris Xe.
-    for (int k = 0; k < 6; k++) {
+    for (int k = 0; k < 7; k++) {
       vec2  D  = WDIR[k];
       float A  = WAMP[k];
       float w  = 6.28318530718 / WLEN[k];
@@ -263,12 +292,39 @@ const _waterVert = /* glsl */`
   }
 `;
 
+// FRAGMENT — premium analytic water optics (threejs-water-optics technique).
+// The mesh + vertex Gerstner carry the SWELLS + medium chop. The fragment shader
+// adds the FINE surface detail + the wet/reflective look that the old flat pass
+// lacked:
+//   A. DERIVATIVE-ATTENUATED MICRO-NORMAL BANDS — three high-frequency analytic
+//      ripple gradients in world XZ, each attenuated by the on-screen texel
+//      footprint (fwidth) so they add crisp sparkle up close and FADE before they
+//      alias to grey at distance/altitude. This is scale-immune (no mesh cost,
+//      no texture taps) and is THE flatness fix — the surface now reads as water
+//      texture between the big crests instead of a smooth sheet.
+//   B. ANALYTIC SKY REFLECTION — a dusk sky gradient + sun disc + sun halo
+//      sampled along the reflected view ray, blended through side-aware Fresnel.
+//      Makes the water look genuinely reflective/wet, not a flat tinted plane.
+//   C. SIDE-AWARE FRESNEL + reflected-sun disc/halo glints riding the live
+//      micro-detailed normal → sharp moving sparkles on the crests.
+//   D. DEPTH TRANSLUCENCY — Beer-Lambert fallback absorption over an edge-derived
+//      path length, so the deep channel reads richer/darker than the shallows.
+//   E. ORGANIC WHITECAPS — Jacobian crest-compression × multi-octave hash FBM
+//      turbulence field (world-XZ, animated, 3 octaves, NO periodic functions in
+//      the foam path). Zero sine/cos in the foam or bank-spray path — every
+//      modulation comes from hash-based value noise so the foam breaks into
+//      IRREGULAR PATCHES, never lines of any orientation.
+// All water-body colours stay BELOW the bloom threshold (0.80) so only the neon
+// rails bloom; the sun-glint highlights are intentionally allowed to spike bright
+// for sparkle but are tiny in area.
 const _waterFrag = /* glsl */`
   uniform float uTime;
   uniform vec3  uColorDeep;
   uniform vec3  uColorShallow;
   uniform vec3  uColorFoam;
-  uniform vec3  uColorSkyRefl;
+  uniform vec3  uSkyHorizon;
+  uniform vec3  uSkyZenith;
+  uniform vec3  uSunColor;
   uniform vec3  uSunDir;
   varying vec2  vUv;
   varying vec3  vWorldPos;
@@ -296,61 +352,215 @@ const _waterFrag = /* glsl */`
     vec3 g; g.x=a0.x*x0.x+h.x*x0.y; g.yz=a0.yz*x12.xz+h.yz*x12.yw;
     return 130.0*dot(m,g);
   }
+
+  // ── Analytic dusk sky sampled along a reflected ray (technique B) ──────────
+  // A vertical gradient (horizon→zenith) + a tight sun disc + a broad sun halo,
+  // exactly the cheap analytic-sky reflection the water-optics skill prescribes.
+  // dir.y in [-1,1]; we only ever sample upward-ish reflected rays.
+  vec3 skyColor(vec3 dir) {
+    float h = clamp(dir.y * 0.5 + 0.5, 0.0, 1.0);
+    // Smooth horizon→zenith dusk ramp (gamma 1.4 keeps the horizon band wide).
+    vec3 grad = mix(uSkyHorizon, uSkyZenith, pow(h, 1.4));
+    float sunDot = clamp(dot(dir, uSunDir), 0.0, 1.0);
+    // Tight disc (specular sun) + soft warm halo around it.
+    grad += uSunColor * pow(sunDot, 900.0) * 6.0;   // crisp sun disc
+    grad += uSunColor * pow(sunDot, 18.0)  * 0.35;  // warm halo
+    return grad;
+  }
   // ──────────────────────────────────────────────────────────────────────────
 
   void main() {
-    // ─── 1. Depth gradient — deep blue channel → bright turquoise banks ────
-    float edgeDist   = min(vUv.x, 1.0 - vUv.x);
-    float depth      = smoothstep(0.0, 0.28, edgeDist);
-    float wiggle     = sin(uTime * 0.5 + vWorldPos.z * 0.002) * 0.04;
-    float depthW     = clamp(depth + wiggle, 0.0, 1.0);
-    vec3  base       = mix(uColorShallow, uColorDeep, depthW);
+    float edgeDist = min(vUv.x, 1.0 - vUv.x);          // 0 at banks, 0.5 at center
 
-    // ─── 2. Flow noise — two UV-scrolled layers (scale 12/8 — safe from altitude)
+    // ─── A. DERIVATIVE-ATTENUATED MICRO-NORMAL DETAIL (the flatness fix) ────
+    // Three analytic high-frequency ripple bands in WORLD XZ, each a directional
+    // cosine gradient. The on-screen texel footprint (fwidth of world XZ) gates
+    // each band: when a band's wavelength is finer than the footprint can resolve
+    // it is faded out BEFORE it aliases to grey sparkle. Up close all three fire
+    // and the surface sparkles with fine chop; far away only the coarse band
+    // survives. Scale-immune, zero mesh cost. The micro-detail is also tapered to
+    // 0 at the banks (vDepthMask) so the pinned watertight seam stays flat.
+    float footprint = max(length(fwidth(vWorldPos.xz)), 1e-3);
+    // Band wavenumbers (2π/λ): λ ≈ 150, 78, 42 wu — the fine texture below the
+    // mesh-carried octaves. Hand-normalized directions (no normalize() needed).
+    const float MK1 = 0.041888;   // 2π/150
+    const float MK2 = 0.080552;   // 2π/78
+    const float MK3 = 0.149600;   // 2π/42
+    const vec2  MD1 = vec2( 0.316228,  0.948683);  // (0.1,0.3) norm
+    const vec2  MD2 = vec2( 0.857493, -0.514496);  // (0.5,-0.3) norm
+    const vec2  MD3 = vec2(-0.554700,  0.832050);  // (-0.2,0.3) norm
+    // Footprint AA weights — 1 when the band resolves, →0 when finer than a texel.
+    float aa1 = 1.0 - smoothstep(0.0, 2.0, footprint * MK1);
+    float aa2 = 1.0 - smoothstep(0.0, 1.6, footprint * MK2);
+    float aa3 = 1.0 - smoothstep(0.0, 1.2, footprint * MK3);
+    float p1 = dot(vWorldPos.xz, MD1) * MK1 + uTime * 1.30;
+    float p2 = dot(vWorldPos.xz, MD2) * MK2 - uTime * 1.70;
+    float p3 = dot(vWorldPos.xz, MD3) * MK3 + uTime * 2.20;
+    // Gradient of the ripple heightfield → a horizontal slope perturbation.
+    vec2 microGrad = vec2(0.0);
+    microGrad += MD1 * (5.2 * MK1 * cos(p1) * aa1);
+    microGrad += MD2 * (3.0 * MK2 * cos(p2) * aa2);
+    microGrad += MD3 * (1.6 * MK3 * cos(p3) * aa3);
+    microGrad *= vDepthMask;   // relax to flat at the pinned banks
+    // Perturb the macro Gerstner normal by the micro slope (small tilt, no full
+    // renormalize blow-up — clamp keeps it well-conditioned).
+    vec3 N = normalize(vec3(
+      vWaveNormal.x - microGrad.x,
+      vWaveNormal.y,
+      vWaveNormal.z - microGrad.y
+    ));
+
+    // ─── D. Depth translucency — deep channel darker, shallows brighter ────
+    float depth   = smoothstep(0.0, 0.30, edgeDist);
+    float wiggle  = sin(uTime * 0.5 + vWorldPos.z * 0.002) * 0.04;
+    float depthW  = clamp(depth + wiggle, 0.0, 1.0);
+    // Beer-Lambert fallback: more "water" between eye and bed in the deep channel.
+    float pathLen = mix(0.4, 2.4, depthW);
+    vec3  absorb  = exp(-vec3(0.32, 0.14, 0.07) * pathLen);
+    vec3  body    = mix(uColorShallow, uColorDeep, depthW) * absorb;
+
+    // ─── B+C. Side-aware Fresnel + analytic sky reflection + sun glints ────
+    vec3  viewDir  = normalize(cameraPosition - vWorldPos);
+    float NdotV    = max(dot(N, viewDir), 1e-4);
+    float F0       = 0.02;
+    float fresnel  = F0 + (1.0 - F0) * pow(1.0 - NdotV, 5.0);
+    vec3  reflDir  = reflect(-viewDir, N);
+    if (reflDir.y < 0.0) reflDir.y = -reflDir.y;       // keep the reflection skyward
+    vec3  reflection = skyColor(reflDir);
+    // Reflected-sun disc + halo riding the live (micro-detailed) crest normal —
+    // this is the moving sparkle that makes the surface read as wet & alive.
+    // exponent 1400→380 widens the disc so it covers more crest normals and
+    // reads as an actual visible sparkle (was a sub-pixel point at race altitude).
+    float reflSun  = clamp(dot(reflDir, uSunDir), 0.0, 1.0);
+    reflection += uSunColor * pow(reflSun, 380.0) * 14.0    // crisp glint — wider + brighter
+                + uSunColor * pow(reflSun, 12.0)  * 1.1;    // soft warm halo around it
+    // Energy-controlled blend: reflection grows with Fresnel, body fades with it.
+    vec3 base = mix(body, reflection, fresnel * 0.85);
+
+    // Direct Blinn specular on the crests — riding the MICRO-DETAILED normal so
+    // it sparks on each ripple facet, not just the macro Gerstner shape.
+    // exponent 200→70: wider cone = more fragments hit spec per crest = VISIBLE.
+    // Removed the * depth suppression: depth kills spec at the banks exactly where
+    // the micro-normal tilt is largest — we want those sparks.
+    vec3  halfV = normalize(viewDir + uSunDir);
+    float spec  = pow(max(dot(N, halfV), 0.0), 70.0);
+    base += uSunColor * spec * 1.2;
+
+    // ─── E. ORGANIC WHITECAPS ─────────────────────────────────────────────────
+    // DESIGN: foam = where waves BREAK × turbulent noise.
+    // Source 1 — crest compression: Jacobian det<1 means surface is folding.
+    // Source 2 — multi-octave hash FBM turbulence (world-XZ, NO periodic functions).
+    //
+    // ZERO sine/cos in the foam path. Every modulation is a hash-based value noise
+    // (fract-sin), so patches are genuinely aperiodic at ALL orientations/altitudes.
+    //
+    // Hash value-noise helper — smooth bilinear hash on a world-XZ grid.
+    // latticeHash(p) returns [0,1] smoothly varying at GLSL compile-time constant cost.
+    // Using 4 hash taps (lattice corners) + smoothstep-smoothed bilinear blend (Hermite).
+    // This is cheap-hash value noise — NOT snoise (keeping snoise budget = 2 calls only).
+    //   ≈ 28 ALU total for 3 octaves (vs 75 ALU for 3 snoise calls) — well within budget.
+    //
+    // hashVal: fract(sin(dot(cell,k))*N) — the standard fract-sin hash.
+    // Each octave uses a different (k,N) pair so octaves are decorrelated.
+
+    // Animated world-XZ position (drift speed per-octave so patches slowly evolve).
+    vec2 wXZ0 = vWorldPos.xz + vec2(uTime * 2.1,  uTime * 1.3);   // slow drift oct 0
+    vec2 wXZ1 = vWorldPos.xz + vec2(uTime * 3.7, -uTime * 2.2);   // mid-speed oct 1
+    vec2 wXZ2 = vWorldPos.xz + vec2(-uTime * 1.5, uTime * 4.1);   // faster oct 2
+
+    // Octave 0 — coarse patches (~380wu cells): broad foam blobs on the larger crests.
+    vec2  c0 = floor(wXZ0 / 380.0);
+    vec2  f0 = fract(wXZ0 / 380.0);
+    vec2  u0 = f0 * f0 * (3.0 - 2.0 * f0);  // Hermite smooth
+    float h00 = fract(sin(dot(c0,              vec2(127.1, 311.7))) * 43758.5453);
+    float h01 = fract(sin(dot(c0 + vec2(1,0), vec2(127.1, 311.7))) * 43758.5453);
+    float h02 = fract(sin(dot(c0 + vec2(0,1), vec2(127.1, 311.7))) * 43758.5453);
+    float h03 = fract(sin(dot(c0 + vec2(1,1), vec2(127.1, 311.7))) * 43758.5453);
+    float v0  = mix(mix(h00, h01, u0.x), mix(h02, h03, u0.x), u0.y);
+
+    // Octave 1 — medium patches (~160wu cells): irregular sub-blobs within the coarse.
+    vec2  c1 = floor(wXZ1 / 160.0);
+    vec2  f1 = fract(wXZ1 / 160.0);
+    vec2  u1 = f1 * f1 * (3.0 - 2.0 * f1);
+    float h10 = fract(sin(dot(c1,              vec2(269.5, 183.3))) * 53471.7921);
+    float h11 = fract(sin(dot(c1 + vec2(1,0), vec2(269.5, 183.3))) * 53471.7921);
+    float h12 = fract(sin(dot(c1 + vec2(0,1), vec2(269.5, 183.3))) * 53471.7921);
+    float h13 = fract(sin(dot(c1 + vec2(1,1), vec2(269.5, 183.3))) * 53471.7921);
+    float v1  = mix(mix(h10, h11, u1.x), mix(h12, h13, u1.x), u1.y);
+
+    // Octave 2 — fine detail (~70wu cells): foam froth texture within each patch.
+    vec2  c2 = floor(wXZ2 / 70.0);
+    vec2  f2 = fract(wXZ2 / 70.0);
+    vec2  u2 = f2 * f2 * (3.0 - 2.0 * f2);
+    float h20 = fract(sin(dot(c2,              vec2(419.2,  371.9))) * 27383.6147);
+    float h21 = fract(sin(dot(c2 + vec2(1,0), vec2(419.2,  371.9))) * 27383.6147);
+    float h22 = fract(sin(dot(c2 + vec2(0,1), vec2(419.2,  371.9))) * 27383.6147);
+    float h23 = fract(sin(dot(c2 + vec2(1,1), vec2(419.2,  371.9))) * 27383.6147);
+    float v2  = mix(mix(h20, h21, u2.x), mix(h22, h23, u2.x), u2.y);
+
+    // FBM composite — octaves summed with decreasing weight.
+    // Result is [0,1] with organic irregular distribution (no periodic structure).
+    float turbulence = v0 * 0.54 + v1 * 0.31 + v2 * 0.15;   // sums to 1.0 weights
+
+    // Snoise 2-call whitecap field (same as before — these are the load-bearing
+    // snoise budget; foam turbulence above is hash-only, costs no snoise budget).
     vec2 s1 = vUv + vec2(0.0, -uTime * 0.055);
     vec2 s2 = vUv + vec2(0.0, -uTime * 0.095) + vec2(17.3, 4.1);
     float n1 = snoise(s1 * 12.0) * 0.5 + 0.5;
     float n2 = snoise(s2 *  8.0) * 0.5 + 0.5;
-    float flow = n1 * 0.6 + n2 * 0.4;
+    float snoiseField = n1 * 0.6 + n2 * 0.4;   // [0,1], UV-space, no UV-frequency stripe
 
-    // ─── 3. Whitecaps — Jacobian crest compression × organic cluster ───────
-    // Tighter threshold: only the sharpest crest pinches get foam (tips, not
-    // broad foam blobs). The organic cluster modulates into alive patches.
-    float crestFoam  = smoothstep(0.58, 0.92, vFoam);  // tighter: only real tips
-    float softField  = smoothstep(0.55, 0.88, flow);
-    float clusterMod = mix(0.55, 1.0, snoise(vUv * 24.0 + vec2(0.0, uTime * 0.018)) * 0.5 + 0.5);
-    // Normal-tipping crest emphasis (1 - N.y peaks where the wave tilts hardest).
-    float normalCrest = clamp((1.0 - vWaveNormal.y) * 3.0, 0.0, 1.0);
-    float whiteCap   = clamp(crestFoam * clusterMod * 0.55   // reduced from 0.85
-                             + normalCrest * softField * 0.28, 0.0, 1.0);  // reduced from 0.45
-    // Whitecaps only in the open channel (taper to 0 at the pinned banks).
-    whiteCap *= vDepthMask;
+    // Jacobian crest-compression signal: vFoam=(1-J) ranges from 0 (open trough)
+    // → ~1 (near-breaking pinch). Gate foam at two thresholds:
+    //   TIGHT: sharp crest-tip foam — requires HIGH Jacobian compression AND turbulence.
+    //   MODERATE: scattered sea-foam patches — moderate compression + high turbulence.
+    float crestTight   = smoothstep(0.58, 0.92, vFoam);             // sharp crest TIPS
+    float crestModerate = smoothstep(0.30, 0.65, vFoam);            // broader compression zone
+    float turbHigh      = smoothstep(0.55, 0.90, turbulence);       // only dense turbulence spots
+
+    // Advected trailing foam: snoise field helps foam linger BEHIND a breaking crest
+    // (looks like foam advected downstream by the wave). Soft, narrow coverage.
+    float advectedFoam = smoothstep(0.64, 0.85, snoiseField) * crestModerate * 0.25;
+
+    // Combined: crest tips × turbulence (the primary breaking foam)
+    //           + scattered patches at moderate compression zones × dense turbulence
+    //           + soft advected trailing foam
+    // NOTE: the old (normalCrest * turbMedium) term was removed — normalCrest was derived
+    // from N.y, which includes the cosine micro-normal bands; that leaked a periodic cosine
+    // signal into the foam path, biasing whitecaps toward faint regular stripes. The foam
+    // is now driven STRICTLY by Jacobian crest-compression × hash turbulence (zero periodic
+    // sin/cos in the foam path). The micro-normal bands stay in the N/lighting path only.
+    float whiteCap    = clamp(
+        crestTight    * turbHigh   * 0.72    // primary: sharp crest + turbulent patch
+      + crestModerate * turbHigh   * 0.30    // secondary: broader breaking zone × dense turb
+      + advectedFoam,                        // trailing foam behind crests
+      0.0, 1.0
+    );
+    whiteCap *= vDepthMask;                  // none at the pinned bank edges
+
     base = mix(base, uColorFoam, whiteCap);
 
-    // ─── 4. Fresnel sky reflection (analytic Gerstner normal) ──────────────
-    vec3 viewDir = normalize(cameraPosition - vWorldPos);
-    float NdotV  = max(dot(vWaveNormal, viewDir), 0.0);
-    float F0     = 0.02;
-    float fresnel = F0 + (1.0 - F0) * pow(1.0 - NdotV, 5.0);
-    base = mix(base, uColorSkyRefl, fresnel * 0.20 * depth);  // reduced from 0.35 — less glow
+    // ─── Bank spray — hash-based, NO periodic trig ────────────────────────────
+    // Old: sin(uTime * 1.8 + vWorldPos.z * 0.009) → ~697wu period bands along bank.
+    // Fix: hash the bank position in world XZ with a slow time-advanced cell so
+    // the spray intensity varies organically along the waterline, not as sine bands.
+    float bankFactor  = 1.0 - smoothstep(0.0, 0.05, edgeDist);
+    vec2  bCell       = floor((vWorldPos.xz + vec2(uTime * 1.6, uTime * 0.9)) / 220.0);
+    float bankHash    = fract(sin(dot(bCell, vec2(347.3, 193.7))) * 38291.4753);
+    // Smooth the bank hash with one octave finer for spray froth texture.
+    vec2  bCellFine   = floor((vWorldPos.xz + vec2(uTime * 2.9, -uTime * 1.5)) / 80.0);
+    float bankHashFine = fract(sin(dot(bCellFine, vec2(211.5, 509.1))) * 61738.2934);
+    float bankSpray   = bankHash * 0.65 + bankHashFine * 0.35;    // [0,1] irregular
+    float bankIntensity = 0.38 + bankSpray * 0.24;                // [0.38, 0.62] range
+    base = mix(base, uColorFoam, bankFactor * bankIntensity * 0.34);
 
-    // ─── 5. Specular glint — dusk warm sun, riding the Gerstner crests ─────
-    vec3 reflected = reflect(-uSunDir, vWaveNormal);
-    float spec     = pow(max(dot(reflected, viewDir), 0.0), 90.0);
-    base += vec3(1.0, 0.88, 0.62) * spec * 0.6 * depth;
-
-    // ─── 6. Bank spray — thin wisp of foam at the waterline edges only ─────
-    // Reduced significantly: was 78% blend giving solid white icing at the
-    // banks; now a subtle 28% wisp — just enough to mark the water's edge.
-    float bankFactor = 1.0 - smoothstep(0.0, 0.045, edgeDist);  // narrower band
-    float bankPulse  = 0.55 + 0.25 * sin(uTime * 1.8 + vWorldPos.z * 0.009);  // less range
-    float bankFoam   = bankFactor * bankPulse;
-    base = mix(base, uColorFoam, bankFoam * 0.28);  // reduced from 0.78
-
-    // ─── 7. Current streaks — very subtle downstream flow lines ───────────
-    float streak = snoise(vec2(vUv.x * 5.0, vUv.y * 1.8 - uTime * 0.13)) * 0.5 + 0.5;
-    float streakLine = smoothstep(0.72, 0.76, streak) * 0.14;
-    base += vec3(0.8, 0.95, 1.0) * streakLine * (1.0 - bankFactor * 0.6);
+    // ─── NO CURRENT STREAK TERM ───────────────────────────────────────────────
+    // The old sin(vWorldPos.x * 0.02244) streak was removed entirely.
+    // It produced ~11 evenly-spaced lateral lines across the 3219wu channel
+    // (period ~280wu × 11.5 = channel width) — exactly the lateral stripe problem.
+    // Any periodic streak function (horizontal OR lateral) will produce regular lines
+    // at some camera altitude. The turbulence-based foam above already adds the
+    // appearance of flow variation without any periodic function.
 
     gl_FragColor = vec4(base, 1.0);
   }
@@ -360,17 +570,19 @@ export const SurfWaterMaterial = shaderMaterial(
   {
     uTime:        0,
     uEdgeTaper:   WATER_EDGE_TAPER,
-    // Deepened surf water palette — richly WET, not luminous:
-    // - Deep channel: darker, richer navy-teal (was #0a5c8f — too bright/luminous)
-    // - Shallow: deeper teal, less neon-turquoise (was #3ac8d8 — screamed glowing ice)
-    // - Foam: softer off-white, less blown out (was #e2f7ff — too pure white)
-    // - SkyRefl: kept warm dusk but slightly warmer (less bluing the water body)
-    // All values chosen to stay BELOW bloom threshold 0.80 so the water body
-    // does not glow; the neon rails (#98f0ff ≈ 0.93) remain the bloom targets.
-    uColorDeep:    new THREE.Color('#052d4a'),  // deep navy — dark troughs read clearly
-    uColorShallow: new THREE.Color('#0e7a8a'),  // teal, enriched — wet not neon
-    uColorFoam:    new THREE.Color('#b8dfe8'),  // soft blue-white — foam not cotton
-    uColorSkyRefl: new THREE.Color('#6a4878'),  // warm dusk purple sheen
+    // ── Surf water palette — richly WET + reflective, not luminous ──────────
+    // The reflection (analytic dusk sky + sun) is what reads as wet now, so the
+    // body colours can stay deep + saturated. Deep channel reads dark through the
+    // Beer-Lambert absorption; shallows read teal. All body values stay BELOW the
+    // bloom threshold (0.80) so only the neon rails (#98f0ff ≈ 0.93) bloom — the
+    // sun-glint spikes are tiny in area and intentionally allowed to sparkle.
+    uColorDeep:    new THREE.Color('#04304f'),  // deep navy — dark troughs read clearly
+    uColorShallow: new THREE.Color('#117f93'),  // enriched teal — wet, not neon ice
+    uColorFoam:    new THREE.Color('#cfeaf1'),  // soft blue-white whitecap
+    // Analytic dusk-sky reflection endpoints + warm sun:
+    uSkyHorizon:   new THREE.Color('#3a4f78'),  // dusk blue-violet at the horizon band
+    uSkyZenith:    new THREE.Color('#101d3a'),  // deep indigo overhead
+    uSunColor:     new THREE.Color('#ffd9a0'),  // warm low dusk sun (disc + halo + glint)
     uSunDir:       new THREE.Vector3(-0.28, 0.87, -0.41),
   },
   _waterVert,
@@ -386,7 +598,9 @@ declare module '@react-three/fiber' {
       uColorDeep?: THREE.Color;
       uColorShallow?: THREE.Color;
       uColorFoam?: THREE.Color;
-      uColorSkyRefl?: THREE.Color;
+      uSkyHorizon?: THREE.Color;
+      uSkyZenith?: THREE.Color;
+      uSunColor?: THREE.Color;
       uSunDir?: THREE.Vector3;
     };
   }
