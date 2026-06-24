@@ -1029,11 +1029,8 @@ function BlackjackTableHotspot() {
 
 function HoldemTableHotspot() {
   const meshRef = useRef<THREE.Mesh>(null);
-  // The poker-table hotspot now opens the Texas Hold'em RING-TABLE lobby (the 3
-  // always-on house tables + player-hosted public + join-by-code), not the old
-  // vs-bots HoldemModal. The lobby fetches the live tables itself and handles
-  // the per-table buy-in on sit, so no bankroll lookup is needed here.
-  const openCashPokerLobby = useCoveStore((s) => s.openCashPokerLobby);
+  const openHoldemTable = useCoveStore((s) => s.openHoldemTable);
+  const { data: avatar } = useAvatar();
 
   useEffect(() => {
     const mesh = meshRef.current;
@@ -1043,7 +1040,8 @@ function HoldemTableHotspot() {
   }, []);
 
   const handleClick = () => {
-    openCashPokerLobby();
+    const balance = avatar?.clawTokens ?? 0;
+    openHoldemTable(balance);
   };
 
   return (
