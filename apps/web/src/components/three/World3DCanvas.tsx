@@ -39,6 +39,7 @@ import ClickToMove from '@/lib/three/click-to-move';
 import LandParcels, { LandParcelSignHitboxes } from '@/lib/three/land-parcels';
 import LandStructures from '@/lib/three/land-structures';
 import LandShowroom from '@/lib/three/land-showroom';
+import LandRingDecorations from '@/lib/three/land-ring-decorations';
 import LandStateHydrator from '@/lib/three/land-state-hydrator';
 import { KTX2LoaderSetup } from '@/lib/three/ktx2-loader-setup';
 import { MeshoptLoaderSetup } from '@/lib/three/meshopt-loader-setup';
@@ -1489,6 +1490,17 @@ const SceneContents = memo(function SceneContents({
           <LandShowroom />
         </group>
       </Suspense>
+
+      {/* Land ring ambient decorations — first representative pass (2026-06-24).
+          Fills inter-parcel gaps on founder/starter/c-ring with merged sea-themed
+          props (coral, kelp, barrels, lanterns, anchors, shells) + flat path
+          ribbons connecting parcels. All geometry merged by material UUID into
+          ~10-14 draw calls total. Props already preloaded by DeferredTerrainPreloads
+          (shared model paths) so zero additional fetch cost.
+          See lib/three/land-ring-decorations.tsx for full perf contract. */}
+      <group name="perf:land-ring-decorations" userData={{ perfChunk: 'land-ring-decorations' }}>
+        <LandRingDecorations />
+      </group>
 
       {/* Phase B: when ?meshlets=1, ArenaBuildings is replaced by
           <MeshletBuildingsR3F /> which runs the rasterizer as a high-priority
