@@ -23,9 +23,8 @@ import {
 
 /** Village center in tile space — derived from MAP_WIDTH so a future world grow
  *  re-centers automatically.
- *  Phase 0 land (2026-06-15): 576×576 tile grid, center at tile (288, 288).
- *  MAP_WIDTH/TILE_SIZE/2 = 18432/32/2 = 288.
- *  worldX = -9216 + 288*32 = 0, worldZ = -9216 + 288*32 = 0. */
+ *  Phase 1 land (2026-06-24): 704×704 tile grid, center at tile (352, 352).
+ *  MAP_WIDTH/TILE_SIZE/2 = 22528/32/2 = 352. World origin is always (0, 0). */
 export const VILLAGE_CENTER_TILE_X = MAP_WIDTH / TILE_SIZE / 2;
 /** Tile Y column mapping to world Z axis — village center row. */
 export const VILLAGE_CENTER_TILE_Z = MAP_HEIGHT / TILE_SIZE / 2;
@@ -49,8 +48,8 @@ export const NPC_INSET_WORLD = 1300; // world units
 // ---------------------------------------------------------------------------
 // World-space offsets (tile-space origin → Three.js world origin)
 // ---------------------------------------------------------------------------
-const OFFSET_X = -MAP_WIDTH  / 2; // -9216 (Phase 0 land: 18432-world)
-const OFFSET_Z = -MAP_HEIGHT / 2; // -9216
+const OFFSET_X = -MAP_WIDTH  / 2; // -11264 (Phase 1 land: 22528-world; was -9216 in 576-tile era)
+const OFFSET_Z = -MAP_HEIGHT / 2; // -11264
 
 // ---------------------------------------------------------------------------
 // computeNpcPlacement — identical logic to arena-location-npcs.tsx.
@@ -147,12 +146,15 @@ const TALK_RADIUS_SQ = TALK_RADIUS_WORLD * TALK_RADIUS_WORLD;
 // We expose a separate check so player-avatar.tsx can set nearLocation='cove'
 // when the player is close enough for the entry prompt to appear.
 //
-// Cove zone: id='cove', x=151, y=281, width=14, height=14.
-//   Tile center: cx=158, cy=288.
-//   World: worldX = -9216 + 158*32 = -4160, worldZ = -9216 + 288*32 = 0.
+// Cove zone world position is FIXED at (-4160, 0) wu — world-absolute.
+// R=130t building ring, 130 tiles west of origin. Do NOT re-derive from
+// OFFSET_X + tile*TILE_SIZE: OFFSET_X auto-updates to -MAP_WIDTH/2 when the
+// grid grows (576→704: OFFSET_X = -11264), but tile index 158 was relative to
+// the 576-grid center (288). After grow: -11264 + 5056 = -6208wu (wrong).
+// Same trap fixed in cove-beacon.tsx + cove-entrance.tsx.
 // ---------------------------------------------------------------------------
-const COVE_WORLD_X = OFFSET_X + 158 * TILE_SIZE; // ≈ -4160 wu
-const COVE_WORLD_Z = OFFSET_Z + 288 * TILE_SIZE; // ≈ 0 wu
+const COVE_WORLD_X = -4160; // wu — world-absolute; cove zone, 130 tiles W of origin
+const COVE_WORLD_Z = 0;     // wu — world-absolute; cove zone center-Z
 /** Radius (wu) within which the cove entry prompt appears. 600 wu = comfortably
  *  visible from the approach path without triggering across the ring. */
 export const COVE_PROXIMITY_RADIUS = 600;

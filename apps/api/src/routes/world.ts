@@ -43,10 +43,10 @@ import type { AppContext } from '../types';
 
 // Town-center spawn for guests / avatar-less agents / avatar rows missing a
 // position. Mirrors the client spawn (south of Nori) and the avatars.position_x/y
-// defaults (9216, 9756) — all three pinned to @clawville/shared SPAWN_PX so the
-// Land Phase 0 re-center (5120→18432) can never drift between layers (S3,
-// 2026-06-16). Was 2560,2560 (old 5120 world center), which placed every
-// fallback body at a corner-ward diagonal on the new 18432 world.
+// defaults (11264, 11804 after the 576→704 grow) — all three pinned to
+// @clawville/shared SPAWN_PX so a world re-center can never drift between layers
+// (S3, 2026-06-16; grown for land-builder-economics 2026-06-24). The SPAWN_PX
+// bump auto-propagates here — no edit to this line, only the comment.
 const TOWN_CENTER_X = SPAWN_PX.x;
 const TOWN_CENTER_Y = SPAWN_PX.y;
 

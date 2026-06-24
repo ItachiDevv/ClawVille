@@ -7,10 +7,10 @@
 // browser-only imports (no tilemap-data.ts, no @/ alias).
 //
 // COORDINATE SYSTEM:
-//   The NPC simulation uses "game-pixel" coords (origin at top-left, 0..18432).
+//   The NPC simulation uses "game-pixel" coords (origin at top-left, 0..22528).
 //   Three.js / world-colliders.ts uses centered coords (origin at map center).
 //   Conversion: worldX = gameX - MAP_HALF,  worldZ = gameY - MAP_HALF
-//   (MAP_HALF = 9216 — Phase 0 land 2026-06-15; was 5760)
+//   (MAP_HALF = 11264 — land-builder-economics 2026-06-24; was 9216)
 //
 // ZERO PER-CALL ALLOCATIONS:
 //   clampPosition2D uses module-scope scratch vars — safe for the 5 Hz
@@ -28,12 +28,12 @@ import { BUILDING_TILE_ZONES } from './npc-definitions';
 // ---------------------------------------------------------------------------
 
 const TILE_SIZE = 32;
-// MAP_WIDTH / 2 = MAP_HEIGHT / 2. Phase 0 land (2026-06-15): 11520-world → 18432-world.
-// MUST match the client MAP_WIDTH/2 in apps/web/src/lib/pixi/tilemap-data.ts (18432/2).
-// Note: building collider centerX/Z stay INVARIANT across this change — the +3456 px
-// shift in BUILDING_TILE_ZONES is exactly cancelled by the +3456 MAP_HALF bump
+// MAP_WIDTH / 2 = MAP_HEIGHT / 2. Land-builder-economics (2026-06-24): 18432-world → 22528-world.
+// MUST match the client MAP_WIDTH/2 in apps/web/src/lib/pixi/tilemap-data.ts (22528/2).
+// Note: building collider centerX/Z stay INVARIANT across this change — the +2048 px
+// (+64 tile) shift in BUILDING_TILE_ZONES is exactly cancelled by the +2048 MAP_HALF bump
 // (centerX = gamePxX − MAP_HALF), so each building's WORLD position is unchanged.
-const MAP_HALF = 9216;
+const MAP_HALF = 11264;
 
 /**
  * Per-building AABB half-extents — mirrors BUILDING_EXTENTS in world-colliders.ts.
