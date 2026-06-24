@@ -40,6 +40,7 @@ import LandParcels, { LandParcelSignHitboxes } from '@/lib/three/land-parcels';
 import LandStructures from '@/lib/three/land-structures';
 import LandShowroom from '@/lib/three/land-showroom';
 import LandRingDecorations from '@/lib/three/land-ring-decorations';
+import LandFounderApartments from '@/lib/three/land-founder-apartments';
 import LandStateHydrator from '@/lib/three/land-state-hydrator';
 import { KTX2LoaderSetup } from '@/lib/three/ktx2-loader-setup';
 import { MeshoptLoaderSetup } from '@/lib/three/meshopt-loader-setup';
@@ -1500,6 +1501,13 @@ const SceneContents = memo(function SceneContents({
           See lib/three/land-ring-decorations.tsx for full perf contract. */}
       <group name="perf:land-ring-decorations" userData={{ perfChunk: 'land-ring-decorations' }}>
         <LandRingDecorations />
+      </group>
+
+      {/* Founder-ring luxury apartment buildings — procedural, ~3 draw calls for 3
+          Type-A placements (body/gold/window merged per material bucket). Type B+C
+          and full-ring fill follow after sign-off. See land-founder-apartments.tsx. */}
+      <group name="perf:land-founder-apartments" userData={{ perfChunk: 'land-founder-apartments' }}>
+        <LandFounderApartments />
       </group>
 
       {/* Phase B: when ?meshlets=1, ArenaBuildings is replaced by
