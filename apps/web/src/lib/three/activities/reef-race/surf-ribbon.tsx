@@ -72,6 +72,7 @@ import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js
 import { clientSpline } from './reef-race-spline-instance';
 import { elevationAtT, bankAngleAtT } from './reef-race-elevation';
 import { WATER_EDGE_TAPER } from './surf-cross-section';
+import { WATER_TUNING } from './reef-water-tuning';
 
 // ─── Geometry constants ───────────────────────────────────────────────────────
 // PREMIUM REBUILD (2026-06-23): the v6 WIDE SURF ROAD made the channel 2287–
@@ -147,7 +148,9 @@ function frameAt(t: number): EdgeFrame {
 // pinned UNMOVED on the static banked datum the canyon meets.
 const _waterVert = /* glsl */`
   uniform float uTime;
-  uniform float uEdgeTaper;   // WATER_EDGE_TAPER (lateral band, UV.x units)
+  uniform float uEdgeTaper;     // WATER_EDGE_TAPER (lateral band, UV.x units)
+  uniform float uWaveAmp;       // LIVE tuner: master Gerstner amplitude mult (1 = committed)
+  uniform float uSetStrength;   // LIVE tuner: traveling-set envelope strength (1 = committed, 0 = off)
 
   varying vec2  vUv;
   varying vec3  vWorldPos;
@@ -230,7 +233,10 @@ const _waterVert = /* glsl */`
     // is a low-freq, large-scale HEAVE modulation (not a thin color stripe), and
     // because Q is re-normalized by the modulated A the horizontal pinch stays
     // constant — only the vertical heave swells & recedes. Applied to k<2 below.
-    float setEnv = 0.72 + 0.28 * sin(dot(WDIR[0], base.xz) * 0.00075 - uTime * 0.6);
+    // uSetStrength scales the envelope's swing: 0 ⇒ setEnv=1 (uniform swell, no
+    // sets); 1 ⇒ the committed 0.72±0.28 modulation. Mean rides toward 1.0 as
+    // strength→0 so disabling sets does NOT shrink the overall swell.
+    float setEnv = 1.0 - uSetStrength * 0.28 * (1.0 - sin(dot(WDIR[0], base.xz) * 0.00075 - uTime * 0.6));
 
     // Gerstner accumulation in world XZ. Horizontal displacement (the pinch) is
     // along each wave's direction; vertical is the heave.
@@ -249,9 +255,11 @@ const _waterVert = /* glsl */`
     // every GLSL driver incl. Iris Xe.
     for (int k = 0; k < 7; k++) {
       vec2  D  = WDIR[k];
-      float A  = WAMP[k] * (k < 2 ? setEnv : 1.0);   // sets modulate the long swells
+      float A  = WAMP[k] * (k < 2 ? setEnv : 1.0) * uWaveAmp;   // sets + live amp knob
       float w  = 6.28318530718 / WLEN[k];
-      float Q  = WSTEEP[k] / (w * A * NWAVES);
+      // max(A,1e-3) guards the Q normalization so uWaveAmp=0 (flat) can't divide by
+      // zero / produce inf*0=NaN. Q is only ever used as Q·A or Q·w·A, both finite.
+      float Q  = WSTEEP[k] / (w * max(A, 1e-3) * NWAVES);
       float ph = w * dot(D, base.xz) + WSPD[k] * w * uTime;
       float cc = cos(ph);
       float ss = sin(ph);
@@ -350,6 +358,13 @@ const _waterFrag = /* glsl */`
   uniform vec3  uSkyZenith;
   uniform vec3  uSunColor;
   uniform vec3  uSunDir;
+  // LIVE tuner knobs (default 1.0 = committed look; 0.0 disables that feature):
+  uniform float uMicroAmt;     // micro-normal detail-band intensity
+  uniform float uCausticAmt;   // caustic light-web intensity
+  uniform float uSprayAmt;     // crest-spray intensity
+  uniform float uMistAmt;      // drifting-mist intensity
+  uniform float uFoamAmt;      // whitecap/foam intensity
+  uniform float uSunIntensity; // sun glint + Blinn-spec sparkle intensity
   varying vec2  vUv;
   varying vec3  vWorldPos;
   varying vec3  vWaveNormal;
@@ -425,7 +440,7 @@ const _waterFrag = /* glsl */`
     microGrad += MD1 * (5.2 * MK1 * cos(p1) * aa1);
     microGrad += MD2 * (3.0 * MK2 * cos(p2) * aa2);
     microGrad += MD3 * (1.6 * MK3 * cos(p3) * aa3);
-    microGrad *= vDepthMask;   // relax to flat at the pinned banks
+    microGrad *= vDepthMask * uMicroAmt;   // relax to flat at the pinned banks; live knob
     // Perturb the macro Gerstner normal by the micro slope (small tilt, no full
     // renormalize blow-up — clamp keeps it well-conditioned).
     vec3 N = normalize(vec3(
@@ -456,8 +471,9 @@ const _waterFrag = /* glsl */`
     // exponent 1400→380 widens the disc so it covers more crest normals and
     // reads as an actual visible sparkle (was a sub-pixel point at race altitude).
     float reflSun  = clamp(dot(reflDir, uSunDir), 0.0, 1.0);
-    reflection += uSunColor * pow(reflSun, 380.0) * 14.0    // crisp glint — wider + brighter
-                + uSunColor * pow(reflSun, 12.0)  * 1.1;    // soft warm halo around it
+    reflection += (uSunColor * pow(reflSun, 380.0) * 14.0    // crisp glint — wider + brighter
+                +  uSunColor * pow(reflSun, 12.0)  * 1.1)    // soft warm halo around it
+                * uSunIntensity;                             // live knob
     // Energy-controlled blend: reflection grows with Fresnel, body fades with it.
     vec3 base = mix(body, reflection, fresnel * 0.85);
 
@@ -468,7 +484,7 @@ const _waterFrag = /* glsl */`
     // the micro-normal tilt is largest — we want those sparks.
     vec3  halfV = normalize(viewDir + uSunDir);
     float spec  = pow(max(dot(N, halfV), 0.0), 70.0);
-    base += uSunColor * spec * 1.2;
+    base += uSunColor * spec * 1.2 * uSunIntensity;   // live knob
 
     // ─── E. ORGANIC WHITECAPS ─────────────────────────────────────────────────
     // DESIGN: foam = where waves BREAK × turbulent noise.
@@ -570,7 +586,7 @@ const _waterFrag = /* glsl */`
       + advectedFoam,                        // trailing foam behind crests
       0.0, 1.0
     );
-    whiteCap *= vDepthMask;                  // none at the pinned bank edges
+    whiteCap *= vDepthMask * uFoamAmt;       // none at the pinned bank edges; live knob
 
     base = mix(base, uColorFoam, whiteCap);
 
@@ -580,7 +596,7 @@ const _waterFrag = /* glsl */`
     // intentionally allowed to spike PAST the bloom threshold (like the sun
     // glints) so it CATCHES LIGHT — the surf signature. Steep smoothstep keeps the
     // area tiny, so it sparkles on the breaking peaks without washing the surface.
-    float sprayMask = smoothstep(0.80, 0.97, vFoam) * turbHigh * vDepthMask;
+    float sprayMask = smoothstep(0.80, 0.97, vFoam) * turbHigh * vDepthMask * uSprayAmt;
     base = mix(base, uColorFoam * 1.4 + vec3(0.05), clamp(sprayMask, 0.0, 1.0));
 
     // ─── Round 2 · CAUSTICS — shimmering refracted-light web ──────────────────
@@ -605,7 +621,7 @@ const _waterFrag = /* glsl */`
       float caustic   = prod * prod * prod * (0.6 + 0.4 * v1);   // x^3 (multiply form, cheaper than pow)
       float causticAA = 1.0 - smoothstep(0.0, 2.0, footprint * 0.0125);
       caustic *= causticAA * (0.35 + 0.65 * depthW) * vDepthMask * (1.0 - whiteCap);
-      base += vec3(0.42, 0.86, 0.95) * caustic * 0.20;   // cyan-white shimmer
+      base += vec3(0.42, 0.86, 0.95) * caustic * 0.20 * uCausticAmt;   // cyan-white shimmer; live knob
     }
 
     // ─── Round 2 · DRIFTING MIST — faint haze pooling over the churned water ──
@@ -614,7 +630,7 @@ const _waterFrag = /* glsl */`
     // over the surf and move WITH it. Gated by the broad crest-compression zone +
     // pinned-bank mask, kept well below the bloom threshold (subtle atmosphere).
     // Reuses v0 → zero new noise taps.
-    float mistVeil = v0 * crestModerate * 0.12 * vDepthMask;
+    float mistVeil = v0 * crestModerate * 0.12 * vDepthMask * uMistAmt;
     base = mix(base, uColorFoam, mistVeil);
 
     // ─── Bank spray — hash-based, NO periodic trig ────────────────────────────
@@ -666,6 +682,17 @@ export const SurfWaterMaterial = shaderMaterial(
   {
     uTime:        0,
     uEdgeTaper:   WATER_EDGE_TAPER,
+    // ── LIVE tuner knobs (default 1.0 = committed look; the preview tuner panel
+    //    writes these via the WATER_TUNING singleton each frame; prod leaves them
+    //    at 1.0 so the committed look renders unchanged). ───────────────────────
+    uWaveAmp:      1,
+    uSetStrength:  1,
+    uMicroAmt:     1,
+    uCausticAmt:   1,
+    uSprayAmt:     1,
+    uMistAmt:      1,
+    uFoamAmt:      1,
+    uSunIntensity: 1,
     // ── Surf water palette — richly WET + reflective, not luminous ──────────
     // The reflection (analytic dusk sky + sun) is what reads as wet now, so the
     // body colours can stay deep + saturated. Deep channel reads dark through the
@@ -695,6 +722,14 @@ declare module '@react-three/fiber' {
     surfWaterMaterial: ThreeElements['shaderMaterial'] & {
       uTime?: number;
       uEdgeTaper?: number;
+      uWaveAmp?: number;
+      uSetStrength?: number;
+      uMicroAmt?: number;
+      uCausticAmt?: number;
+      uSprayAmt?: number;
+      uMistAmt?: number;
+      uFoamAmt?: number;
+      uSunIntensity?: number;
       uColorDeep?: THREE.Color;
       uColorShallow?: THREE.Color;
       uColorFoam?: THREE.Color;
@@ -876,7 +911,27 @@ export function SurfRibbon() {
   const matRef = useRef<InstanceType<typeof SurfWaterMaterial>>(null);
 
   useFrame((state) => {
-    if (matRef.current) matRef.current.uTime = state.clock.elapsedTime;
+    const m = matRef.current;
+    if (!m) return;
+    m.uTime = state.clock.elapsedTime;
+    // Pull the LIVE tuning singleton into uniforms each frame. In prod (no tuner
+    // panel) WATER_TUNING stays at its committed defaults, so this writes the
+    // committed look every frame (≈8 scalar writes + 6 Color.copy, no allocation).
+    const t = WATER_TUNING;
+    m.uWaveAmp      = t.waveAmp;
+    m.uSetStrength  = t.setStrength;
+    m.uMicroAmt     = t.microAmt;
+    m.uCausticAmt   = t.causticAmt;
+    m.uSprayAmt     = t.sprayAmt;
+    m.uMistAmt      = t.mistAmt;
+    m.uFoamAmt      = t.foamAmt;
+    m.uSunIntensity = t.sunIntensity;
+    m.uColorDeep.copy(t.colorDeep);
+    m.uColorShallow.copy(t.colorShallow);
+    m.uColorFoam.copy(t.colorFoam);
+    m.uSkyHorizon.copy(t.skyHorizon);
+    m.uSkyZenith.copy(t.skyZenith);
+    m.uSunColor.copy(t.sunColor);
   });
 
   return (

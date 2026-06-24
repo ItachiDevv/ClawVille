@@ -48,6 +48,7 @@ import { RiverScene } from '@/lib/three/activities/reef-race/river-scene';
 import { SurfBloom } from '@/lib/three/activities/reef-race/surf-bloom';
 import { clientSpline } from '@/lib/three/activities/reef-race/reef-race-spline-instance';
 import { elevationAtT } from '@/lib/three/activities/reef-race/reef-race-elevation';
+import { ReefWaterTunerPanel } from '@/components/reef/ReefWaterTunerPanel';
 import {
   FOG_COLOR,
   FOG_NEAR,
@@ -262,20 +263,25 @@ const btnStyle: React.CSSProperties = {
 interface OverlayProps {
   mode: CameraMode;
   camDist: number;
-  frameMs: number;
+  stats: FrameStats;
   autoRotate: boolean;
   onModeChange: (m: CameraMode) => void;
   onToggleAutoRotate: () => void;
   onResetCamera: () => void;
 }
 
-function OverlayPanel({ mode, camDist, frameMs, autoRotate, onModeChange, onToggleAutoRotate, onResetCamera }: OverlayProps) {
+function OverlayPanel({ mode, camDist, stats, autoRotate, onModeChange, onToggleAutoRotate, onResetCamera }: OverlayProps) {
+  // Perf-tier colour on FPS: green ≥60 (floor), amber 45–60, red <45 (downgrade).
+  const fpsColor = stats.fps >= 60 ? '#7dffa0' : stats.fps >= 45 ? '#ffd166' : '#ff6b6b';
   return (
     <div style={overlayStyle}>
       <div style={{ fontWeight: 'bold', fontSize: 13, marginBottom: 6, color: '#fff', letterSpacing: 1 }}>
         SURF ROAD Preview
       </div>
-      <div><span style={labelStyle}>Frame time</span><span style={valStyle}>{frameMs > 0 ? frameMs.toFixed(1) + ' ms' : '—'}</span></div>
+      <div><span style={labelStyle}>FPS (avg)</span><span style={{ ...valStyle, color: fpsColor }}>{stats.fps > 0 ? stats.fps.toFixed(0) : '—'}</span></div>
+      <div><span style={labelStyle}>Frame time (avg)</span><span style={{ ...valStyle, color: fpsColor }}>{stats.avgMs > 0 ? stats.avgMs.toFixed(1) + ' ms' : '—'}</span></div>
+      <div><span style={labelStyle}>Jank (max)</span><span style={valStyle}>{stats.maxMs > 0 ? stats.maxMs.toFixed(1) + ' ms' : '—'}</span></div>
+      <div><span style={labelStyle}>Geo / Tex</span><span style={valStyle}>{stats.geometries} / {stats.textures}</span></div>
       <div><span style={labelStyle}>Cam dist (origin)</span><span style={valStyle}>{camDist.toFixed(0)} wu</span></div>
 
       <div style={{ marginTop: 8, borderTop: '1px solid #1c3a55', paddingTop: 6 }}>
@@ -303,14 +309,50 @@ function OverlayPanel({ mode, camDist, frameMs, autoRotate, onModeChange, onTogg
   );
 }
 
-// ─── FPS ticker ───────────────────────────────────────────────────────────────
+// ─── Frame-time / FPS meter (rolling avg + jank, throttled emit) ─────────────
+// Measures wall-clock between frames (includes the bloom composer pass + browser
+// composite), averaged over a ~90-frame window so the number is readable, not
+// flickering. Emits to React only ~4×/sec so the overlay re-render doesn't itself
+// skew the measurement (the old per-frame setState was a hidden cost). This is the
+// instrument for "no visual downgrade in frame time" — read avg + jank (max).
 
-function FrameTicker({ onFrameMs }: { onFrameMs: (ms: number) => void }) {
+interface FrameStats {
+  avgMs: number;
+  fps: number;
+  maxMs: number;   // worst frame in the window — the jank/hitch signal
+  geometries: number;
+  textures: number;
+}
+
+function FrameTicker({ onStats }: { onStats: (s: FrameStats) => void }) {
+  const { gl } = useThree();
+  const buf = useRef<number[]>([]);
   const lastT = useRef(performance.now());
+  const lastEmit = useRef(performance.now());
   useFrame(() => {
     const now = performance.now();
-    onFrameMs(now - lastT.current);
+    const dt = now - lastT.current;
     lastT.current = now;
+    const b = buf.current;
+    b.push(dt);
+    if (b.length > 90) b.shift();
+    if (now - lastEmit.current >= 250 && b.length > 0) {
+      lastEmit.current = now;
+      let sum = 0;
+      let max = 0;
+      for (let i = 0; i < b.length; i++) {
+        sum += b[i];
+        if (b[i] > max) max = b[i];
+      }
+      const avg = sum / b.length;
+      onStats({
+        avgMs: avg,
+        fps: avg > 0 ? 1000 / avg : 0,
+        maxMs: max,
+        geometries: gl.info.memory.geometries,
+        textures: gl.info.memory.textures,
+      });
+    }
   });
   return null;
 }
@@ -326,7 +368,7 @@ function ReefRacePreviewInner() {
   const mode: CameraMode = isCameraMode(rawMode) ? rawMode : 'free-orbit';
 
   const [camDist,    setCamDist]    = useState(0);
-  const [frameMs,    setFrameMs]    = useState(0);
+  const [stats,      setStats]      = useState<FrameStats>({ avgMs: 0, fps: 0, maxMs: 0, geometries: 0, textures: 0 });
   const [autoRotate, setAutoRotate] = useState(false);
 
   const controlsRef = useRef<OrbitControlsImpl>(null);
@@ -344,7 +386,7 @@ function ReefRacePreviewInner() {
     ctrl.update();
   }, []);
   const handleCamDist = useCallback((d: number) => setCamDist(d), []);
-  const handleFrameMs = useCallback((ms: number) => setFrameMs(ms), []);
+  const handleStats = useCallback((s: FrameStats) => setStats(s), []);
 
   return (
     <div style={{
@@ -365,18 +407,22 @@ function ReefRacePreviewInner() {
             onCamDist={handleCamDist}
           />
         </Suspense>
-        <FrameTicker onFrameMs={handleFrameMs} />
+        <FrameTicker onStats={handleStats} />
       </Canvas>
 
       <OverlayPanel
         mode={mode}
         camDist={camDist}
-        frameMs={frameMs}
+        stats={stats}
         autoRotate={autoRotate}
         onModeChange={handleModeChange}
         onToggleAutoRotate={handleToggleAutoRotate}
         onResetCamera={handleResetCamera}
       />
+
+      {/* Live water shader tuner — DEV TOOL, preview-only (writes WATER_TUNING; the
+          shader + bloom read it each frame). Dial knobs, watch the FPS meter. */}
+      <ReefWaterTunerPanel />
     </div>
   );
 }

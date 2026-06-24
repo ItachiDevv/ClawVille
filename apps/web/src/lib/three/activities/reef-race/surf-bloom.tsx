@@ -31,7 +31,7 @@
  * Must be the LAST child in the scene tree so the composer captures everything.
  */
 
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import { useThree, useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 // three-stdlib is the repo's established, version-pinned source for jsm addons
@@ -41,9 +41,15 @@ import * as THREE from 'three';
 import { EffectComposer, RenderPass, UnrealBloomPass } from 'three-stdlib';
 
 import { BLOOM_STRENGTH, BLOOM_RADIUS, BLOOM_THRESHOLD } from './reef-race-config';
+import { WATER_TUNING } from './reef-water-tuning';
 
 export function SurfBloom() {
   const { gl, scene, camera, size } = useThree();
+
+  // Hold the bloom pass so the per-frame loop can push the LIVE tuner values
+  // (strength/radius/threshold) onto it. In prod (no tuner) WATER_TUNING stays at
+  // the committed BLOOM_* defaults, so this writes the committed bloom each frame.
+  const bloomRef = useRef<UnrealBloomPass | null>(null);
 
   // Build the composer once. Half-res bloom resolution for the Iris Xe budget.
   const composer = useMemo(() => {
@@ -62,6 +68,7 @@ export function SurfBloom() {
       BLOOM_THRESHOLD,
     );
     c.addPass(bloom);
+    bloomRef.current = bloom;
     return c;
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [gl, scene, camera]);
@@ -80,6 +87,14 @@ export function SurfBloom() {
   // Positive priority → R3F yields the render loop to us; we render the composed
   // (bloom) frame instead of the default gl.render(scene, camera).
   useFrame(() => {
+    const bloom = bloomRef.current;
+    if (bloom) {
+      // LIVE tuner: push current bloom params before rendering. UnrealBloomPass
+      // reads these per-render, so no recompile needed.
+      bloom.strength  = WATER_TUNING.bloomStrength;
+      bloom.radius    = WATER_TUNING.bloomRadius;
+      bloom.threshold = WATER_TUNING.bloomThreshold;
+    }
     if (composer) composer.render();
     else gl.render(scene, camera); // graceful no-bloom fallback (e.g. WebGPU)
   }, 1);
