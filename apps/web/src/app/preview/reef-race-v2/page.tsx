@@ -458,8 +458,8 @@ function ReefRacePreviewInner() {
           borderRadius: 6, padding: '8px 12px', fontFamily: 'monospace', fontSize: 12, lineHeight: 1.5,
         }}>
           <b style={{ color: '#fff' }}>A/D</b> or <b style={{ color: '#fff' }}>←/→</b> steer ·{' '}
-          <b style={{ color: '#fff' }}>S</b> brake · <b style={{ color: '#fff' }}>Shift</b> drift ·{' '}
-          <b style={{ color: '#fff' }}>Space</b> board-whip (bump the coral kart)
+          <b style={{ color: '#fff' }}>S</b> brake · <b style={{ color: '#fff' }}>Shift</b>+turn to charge drift,{' '}
+          <b style={{ color: '#fff' }}>release</b> to boost · <b style={{ color: '#fff' }}>Space</b> whip the coral rival
         </div>
       )}
     </div>

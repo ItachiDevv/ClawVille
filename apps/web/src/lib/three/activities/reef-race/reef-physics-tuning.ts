@@ -75,8 +75,9 @@ export interface ReefPhysicsTuning {
 
 // ─── Canonical defaults (mirror reef-race-config.ts @ ebb9c9a6) ──────────────
 const CANONICAL: ReefPhysicsTuning = {
-  maxSpeed: 500,
-  maxAccel: 2000,
+  // Founder-tuned 2026-06-24 (kept from the sandbox): faster top speed + accel.
+  maxSpeed: 940,
+  maxAccel: 3500,
   turnRate: 2.6,
   turnSpeedFalloff: 0.45,
   airborneSteerMult: 0.3,
@@ -100,13 +101,13 @@ const CANONICAL: ReefPhysicsTuning = {
   whipCooldownTicks: 24,
   whipSwingTicks: 12,
 
-  // View — bigger board + a closer, more top-down chase angle so the flat board
-  // reads as surfing (decorative KART_SCALE=20 is tiny edge-on at race altitude).
-  kartScale: 70,
-  rideHeight: 14,
-  camBack: 480,
-  camUp: 470,
-  camAhead: 320,
+  // View — founder-tuned 2026-06-24 (kept from the sandbox): big board, slightly
+  // sunk into the surface, pulled-back high chase cam looking well ahead.
+  kartScale: 125,
+  rideHeight: -20,
+  camBack: 710,
+  camUp: 660,
+  camAhead: 720,
 };
 
 /** The live singleton — read by the sandbox prediction loop, written by the panel. */
