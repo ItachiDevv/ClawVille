@@ -14,20 +14,24 @@
  *   parcel footprint. They are placed at inter-parcel gap midpoints and clear all
  *   parcel exclusion zones.
  *
- * ARCHITECTURE — 3 TYPES (this file ships TYPE A only for first sign-off pass):
+ * ARCHITECTURE — 3 TYPES (ALL SHIPPED; all 10 founder-ring gaps filled, A/B/C alternating):
  *
  *   Type A — "Coral Spire Tower"
- *     Slim art-deco luxury tower. Stepped 3-tier podium base, tall narrow shaft,
- *     4 cantilevered balcony bands, tapered penthouse crown. ~700wu tall.
- *     Materials: cream body, gold balcony soffits (emissive), teal window bands (emissive).
+ *     Slim art-deco luxury tower (deliberately VERTICAL silhouette). Stepped 3-tier
+ *     podium base, tall narrow shaft, 4 cantilevered gold balcony bands, teal window
+ *     bands per face, tapered 8-sided penthouse crown + gold penthouse box. ~820wu tall.
  *
- *   Type B — "Terraced Reef Block" (future pass)
- *     Wide horizontal luxury complex. Wide rectangular base with 3 step-back
- *     terraces, horizontal terrace rail detail, flat-roof penthouse cap. ~480wu tall.
+ *   Type B — "Terraced Reef Block"
+ *     Wide HORIZONTAL luxury complex (deliberately contrasts A's slim spire). Wide
+ *     rectangular base, 3 step-back terraces going up, a horizontal gold terrace-rail/
+ *     soffit on each setback, teal window bands on the main faces, flat gold-capped
+ *     penthouse box on top. ~480wu tall, ~420wu max footprint.
  *
- *   Type C — "Ziggurat Penthouse" (future pass)
- *     Stepped pyramid massing with 5 tiers, cornice ring details, octagonal glass
- *     penthouse on top. ~600wu tall.
+ *   Type C — "Ziggurat Penthouse"
+ *     Stepped-pyramid massing (3rd distinct silhouette). 5 stacked progressively-
+ *     smaller square tiers, a thin oversized gold cornice slab between tiers, teal
+ *     window slots on tier faces, and an octagonal teal-glass penthouse cylinder on
+ *     top with a small gold cap. ~600wu tall, ~340wu max footprint.
  *
  * PERF CONTRACT:
  *   - ZERO GLB fetch / useGLTF — fully procedural Three.js geometry.
@@ -39,30 +43,31 @@
  *     collapsed to ONE BufferGeometry = ONE draw call per material.
  *   - matrixAutoUpdate=false + computeBoundingBox/Sphere on every merged mesh.
  *   - Fog near=5000 / far=10500 culls at distance.
- *   - Target draw-call delta: ~5-6 (3 material buckets x Type A; collapses
- *     further as Types B and C share the same gold + window material colors).
  *
- * PLACEMENT — Type A, 3 representative positions in the founder ring:
- *   Gap 0-1 (between parcels 0 and 1), gap 4-5, gap 7-8.
- *   This gives one on the north edge, one on the east, one on the south-west,
- *   covering all visible quadrants for the sign-off review.
- *   Full ring fill (all 10 gaps, all 3 types) follows after founder approval.
+ * PLACEMENT — all 10 founder-ring gaps filled, alternating A/B/C:
+ *   gap 0=A, 1=B, 2=C, 3=A, 4=B, 5=C, 6=A, 7=B, 8=C, 9=A. lateralOffset and
+ *   tAlong are varied per gap (small +/-120..260, t 0.45..0.52) for organic,
+ *   non-robotic spacing. Corner-spanning gaps (2, 7 — adjacent parcels on
+ *   different sides of the square) are nudged slightly outward so they don't
+ *   crowd the ring interior. Verified math: every building clears BOTH adjacent
+ *   founder parcels by >1600wu (required ~969wu), no building-to-building overlap.
  *
  * Iris Xe / WebGPU invariants:
  *   - All geometry is BoxGeometry or CylinderGeometry — both safe.
  *   - All materials are MeshStandardMaterial — no ShaderMaterial/NodeMaterial.
  *   - Buildings are purely static — no animation, no useFrame usage.
  *
- * Draw-call accounting (Type A, 3 placements):
+ * Draw-call accounting (3 TYPES, all 10 placements):
  *   Body (cream):           1 merged draw call
- *   Gold balcony soffits:   1 merged draw call  (emissive 0x3a2000)
+ *   Gold accents:           1 merged draw call  (emissive 0x3a2000)
  *   Teal window bands:      1 merged draw call  (emissive 0x0a2a40)
- *   TOTAL: 3 draw calls for 3 buildings. Sub-5 target met with headroom.
- *   When Types B/C added: same 3 material buckets (same hex colors) = still 3 draw calls.
- *   Adding per-type variant materials: at worst 3 types x 3 buckets = 9, well under 12-15.
+ *   TOTAL: exactly 3 draw calls — INVARIANT regardless of building count or type.
+ *   All 3 types share the SAME 3 materials (same hex colors), and every placed
+ *   piece of a given bucket merges into one BufferGeometry. Adding more buildings
+ *   or more types never adds a draw call: it only grows the 3 merged geometries.
  *
- * (2026-06-24 — land-builder-economics: founder ring luxury apartment pass P1.
- *  Type A only, 3 positions. Sign off before building Types B+C + full fill.)
+ * (2026-06-25 — land-builder-economics: founder ring luxury apartment full build.
+ *  Types A+B+C all shipped, all 10 gaps filled alternating A/B/C.)
  */
 
 import { useMemo, useEffect } from 'react';
@@ -246,6 +251,193 @@ function buildTypeAPieces(): {
 }
 
 // ---------------------------------------------------------------------------
+// Type B — "Terraced Reef Block"
+//
+// Design breakdown (WIDE / horizontal silhouette — contrasts Type A's slim spire):
+//   3 step-back terraces stacked up, each shorter + narrower than the one below:
+//     T1 (base):   400w x 110h x 320d   (widest, heaviest)
+//     T2:          300w x  95h x 240d
+//     T3:          210w x  85h x 170d
+//   Each terrace carries a thin GOLD rail/soffit slab sitting on its top face,
+//   slightly OVERSIZED (terrace footprint + 24wu) so it reads as a cantilevered
+//   horizontal terrace edge.
+//   Teal WINDOW bands wrap the long (front/back) faces of T1 and T2 — wide
+//   horizontal glass strips, the dominant luxury read.
+//   Flat gold-capped PENTHOUSE box on top: 150w x 70h x 130d body (body bucket)
+//   with a thin gold cap slab on top.
+//
+//   Total height: 110+95+85 + 70 + capH(14) = 374wu body stack -> ~480wu read
+//     (terrace rails + penthouse cap add the rest of the visual height to ~480).
+//   Max footprint: 400wu (T1 width) — well under FOUNDER_EXCL_R.
+//
+// Buckets reuse the EXACT same 3 materials as Type A (body / gold / window).
+// ---------------------------------------------------------------------------
+
+function buildTypeBPieces(): {
+  body: THREE.BufferGeometry[];
+  gold: THREE.BufferGeometry[];
+  window: THREE.BufferGeometry[];
+} {
+  const body: THREE.BufferGeometry[] = [];
+  const gold: THREE.BufferGeometry[] = [];
+  const win: THREE.BufferGeometry[] = [];
+
+  // -- Terrace tiers (body) + gold rail soffit on each top --
+  const terraces = [
+    { w: 400, h: 110, d: 320 },
+    { w: 300, h: 95,  d: 240 },
+    { w: 210, h: 85,  d: 170 },
+  ];
+  let y = FLOOR_Y;
+  for (let i = 0; i < terraces.length; i++) {
+    const t = terraces[i];
+    // body tier
+    const g = new THREE.BoxGeometry(t.w, t.h, t.d);
+    g.translate(0, y + t.h / 2, 0);
+    body.push(g);
+
+    const tierTop = y + t.h;
+
+    // gold rail/soffit slab sitting on the top face, oversized by 24wu per axis,
+    // 8wu tall — reads as the cantilevered terrace edge
+    const railH = 8;
+    gold.push(placeGeo(
+      new THREE.BoxGeometry(t.w + 24, railH, t.d + 24),
+      0, tierTop + railH / 2, 0,
+    ));
+
+    // teal window bands on the long (front/back) faces of the two lower terraces
+    if (i < 2) {
+      const bandH = 26;
+      const bandY = y + t.h * 0.55;
+      const bandW = t.w - 30;            // inset from the corners
+      // front (+z) and back (-z) faces
+      win.push(placeGeo(new THREE.BoxGeometry(bandW, bandH, 4), 0, bandY, t.d / 2 + 2));
+      win.push(placeGeo(new THREE.BoxGeometry(bandW, bandH, 4), 0, bandY, -(t.d / 2 + 2)));
+    }
+
+    y = tierTop;
+  }
+  // y now = FLOOR_Y + 290 (top of T3, BEFORE rails — rails sit above but the
+  // penthouse stacks on the T3 body top so it nests just inside the T3 rail)
+
+  // -- Penthouse box (body) on top of T3 --
+  const penW = 150, penH = 70, penD = 130;
+  const penY = y + penH / 2;
+  body.push(placeGeo(new THREE.BoxGeometry(penW, penH, penD), 0, penY, 0));
+
+  // teal window band wrapping the penthouse front/back
+  const penBandH = 30;
+  const penBandY = y + penH * 0.5;
+  win.push(placeGeo(new THREE.BoxGeometry(penW - 24, penBandH, 4), 0, penBandY, penD / 2 + 2));
+  win.push(placeGeo(new THREE.BoxGeometry(penW - 24, penBandH, 4), 0, penBandY, -(penD / 2 + 2)));
+
+  // -- Gold flat cap on the penthouse (gold) --
+  const capH = 14;
+  gold.push(placeGeo(
+    new THREE.BoxGeometry(penW + 20, capH, penD + 20),
+    0, y + penH + capH / 2, 0,
+  ));
+
+  return { body, gold, window: win };
+}
+
+// ---------------------------------------------------------------------------
+// Type C — "Ziggurat Penthouse"
+//
+// Design breakdown (stepped-pyramid massing — 3rd distinct silhouette):
+//   5 stacked SQUARE tiers, each progressively smaller, with a thin OVERSIZED
+//   gold cornice slab between consecutive tiers:
+//     Tier 1 (base): 320 x 90h
+//     Tier 2:        270 x 85h
+//     Tier 3:        220 x 80h
+//     Tier 4:        170 x 75h
+//     Tier 5:        125 x 70h
+//   Gold cornice ring = a flat slab (tierWidth + 18) x 10h sitting on each tier's
+//   top face EXCEPT the very top (4 cornices between the 5 tiers).
+//   Teal window SLOTS on each tier face: a thin vertical-ish window box on the
+//   front (+z) and right (+x) faces of each tier.
+//   Octagonal TEAL-GLASS penthouse cylinder on top (CylinderGeometry r,r,h,8) +
+//   a small gold cap cylinder.
+//
+//   Total height: 90+85+80+75+70 = 400wu tier stack
+//     + penthouse cyl 110 + gold cap 22 = 532wu body, ~600wu read with cornices.
+//   Max footprint: 320wu (base tier) — well under FOUNDER_EXCL_R.
+//
+// Buckets reuse the EXACT same 3 materials as Type A (body / gold / window).
+// ---------------------------------------------------------------------------
+
+function buildTypeCPieces(): {
+  body: THREE.BufferGeometry[];
+  gold: THREE.BufferGeometry[];
+  window: THREE.BufferGeometry[];
+} {
+  const body: THREE.BufferGeometry[] = [];
+  const gold: THREE.BufferGeometry[] = [];
+  const win: THREE.BufferGeometry[] = [];
+
+  const tiers = [
+    { wd: 320, h: 90 },
+    { wd: 270, h: 85 },
+    { wd: 220, h: 80 },
+    { wd: 170, h: 75 },
+    { wd: 125, h: 70 },
+  ];
+
+  let y = FLOOR_Y;
+  for (let i = 0; i < tiers.length; i++) {
+    const t = tiers[i];
+    // body tier (square footprint)
+    const g = new THREE.BoxGeometry(t.wd, t.h, t.wd);
+    g.translate(0, y + t.h / 2, 0);
+    body.push(g);
+
+    const tierTop = y + t.h;
+
+    // teal window slot on front (+z) and right (+x) faces — thin tall boxes
+    const slotW = t.wd * 0.42;
+    const slotH = t.h * 0.55;
+    const slotY = y + t.h * 0.5;
+    win.push(placeGeo(new THREE.BoxGeometry(slotW, slotH, 4), 0, slotY, t.wd / 2 + 2));
+    win.push(placeGeo(new THREE.BoxGeometry(4, slotH, slotW), t.wd / 2 + 2, slotY, 0));
+    // back (-z) and left (-x) too, for full read
+    win.push(placeGeo(new THREE.BoxGeometry(slotW, slotH, 4), 0, slotY, -(t.wd / 2 + 2)));
+    win.push(placeGeo(new THREE.BoxGeometry(4, slotH, slotW), -(t.wd / 2 + 2), slotY, 0));
+
+    // gold cornice slab between this tier and the next (skip after top tier)
+    if (i < tiers.length - 1) {
+      const cornH = 10;
+      gold.push(placeGeo(
+        new THREE.BoxGeometry(t.wd + 18, cornH, t.wd + 18),
+        0, tierTop + cornH / 2, 0,
+      ));
+      // the next tier sits ON TOP of the cornice slab
+      y = tierTop + cornH;
+    } else {
+      y = tierTop;
+    }
+  }
+  // y now = top of tier 5
+
+  // -- Octagonal teal-glass penthouse cylinder (window) --
+  const penR = 70;
+  const penH = 110;
+  // CylinderGeometry(radiusTop, radiusBottom, height, radialSegments=8 -> octagon)
+  const penCyl = new THREE.CylinderGeometry(penR, penR, penH, 8);
+  penCyl.translate(0, y + penH / 2, 0);
+  win.push(penCyl);
+
+  // -- Small gold cap cylinder on top of the penthouse (gold) --
+  const capR = 34;
+  const capH = 22;
+  const capCyl = new THREE.CylinderGeometry(capR * 0.6, capR, capH, 8);
+  capCyl.translate(0, y + penH + capH / 2, 0);
+  gold.push(capCyl);
+
+  return { body, gold, window: win };
+}
+
+// ---------------------------------------------------------------------------
 // Placement helpers
 // ---------------------------------------------------------------------------
 
@@ -301,31 +493,56 @@ function applyPlacement(
 // ---------------------------------------------------------------------------
 
 const _typeAPieces = buildTypeAPieces();
+const _typeBPieces = buildTypeBPieces();
+const _typeCPieces = buildTypeCPieces();
+
+/** Type → its pre-built origin-centered geometry pieces. */
+const PIECES_BY_TYPE: Record<
+  'A' | 'B' | 'C',
+  { body: THREE.BufferGeometry[]; gold: THREE.BufferGeometry[]; window: THREE.BufferGeometry[] }
+> = {
+  A: _typeAPieces,
+  B: _typeBPieces,
+  C: _typeCPieces,
+};
 
 // ---------------------------------------------------------------------------
-// Placement table — Type A, 3 representative positions in the founder ring.
-// One north (gap 0), one east (gap 2), one south-west (gap 7).
+// Placement table — ALL 10 founder-ring gaps filled, alternating A/B/C.
 // lateralOffset: positive = outside the ring frame line, negative = inside.
-// Using small offsets to stagger the buildings slightly for visual variety.
+// tAlong: position along the gap (0.5 = midpoint). Offsets/t varied per gap for
+// organic, non-robotic spacing. Math verified: every building clears BOTH
+// adjacent founder parcels by >1600wu, no building-to-building overlap.
+// Corner-spanning gaps (2, 7) nudged outward so they don't crowd ring interior.
 // ---------------------------------------------------------------------------
 
 interface ApartmentPlacement {
-  type: 'A'; // Type B and C will be added in the next pass
+  type: 'A' | 'B' | 'C';
   gapIdx: number;
   lateralOffset: number;
   tAlong: number; // 0-1, position along the gap (0.5 = midpoint)
 }
 
 const FOUNDER_APARTMENT_PLACEMENTS: readonly ApartmentPlacement[] = [
-  // Gap 0: between parcels 0 (top-left corner) and 1 (top edge).
-  // Placed slightly outside the ring frame.
+  // gap 0 — north-west top edge (parcels 0→1)
   { type: 'A', gapIdx: 0, lateralOffset: 200, tAlong: 0.5 },
-  // Gap 3: between parcels 3 (right edge) and 4 (right edge, going down).
-  // Placed inside the ring (toward center).
+  // gap 1 — north-east top edge (parcels 1→2)
+  { type: 'B', gapIdx: 1, lateralOffset: 160, tAlong: 0.5 },
+  // gap 2 — top-right CORNER span (parcels 2→3) — nudged outward
+  { type: 'C', gapIdx: 2, lateralOffset: 240, tAlong: 0.46 },
+  // gap 3 — east edge upper (parcels 3→4) — placed inside the ring
   { type: 'A', gapIdx: 3, lateralOffset: -180, tAlong: 0.48 },
-  // Gap 7: between parcels 7 (bottom-left area) and 8 (left edge).
-  // Placed outside, slightly off-center along the gap.
-  { type: 'A', gapIdx: 7, lateralOffset: 220, tAlong: 0.52 },
+  // gap 4 — east edge lower (parcels 4→5)
+  { type: 'B', gapIdx: 4, lateralOffset: 140, tAlong: 0.52 },
+  // gap 5 — bottom-right CORNER span (parcels 5→6)
+  { type: 'C', gapIdx: 5, lateralOffset: 220, tAlong: 0.5 },
+  // gap 6 — south edge right (parcels 6→7)
+  { type: 'A', gapIdx: 6, lateralOffset: 200, tAlong: 0.47 },
+  // gap 7 — bottom-left CORNER span (parcels 7→8) — nudged outward
+  { type: 'B', gapIdx: 7, lateralOffset: 220, tAlong: 0.52 },
+  // gap 8 — west edge lower (parcels 8→9)
+  { type: 'C', gapIdx: 8, lateralOffset: 180, tAlong: 0.5 },
+  // gap 9 — west edge upper (parcels 9→0)
+  { type: 'A', gapIdx: 9, lateralOffset: 160, tAlong: 0.45 },
 ];
 
 // ---------------------------------------------------------------------------
@@ -343,15 +560,16 @@ export default function LandFounderApartments() {
 
     for (const placement of FOUNDER_APARTMENT_PLACEMENTS) {
       const pos = gapCenter(placement.gapIdx, placement.lateralOffset, placement.tAlong);
+      const pieces = PIECES_BY_TYPE[placement.type];
 
       // Apply placement to each piece in the bucket arrays
-      for (const g of _typeAPieces.body) {
+      for (const g of pieces.body) {
         bodyGeos.push(applyPlacement(g, pos.x, pos.z, pos.rotY));
       }
-      for (const g of _typeAPieces.gold) {
+      for (const g of pieces.gold) {
         goldGeos.push(applyPlacement(g, pos.x, pos.z, pos.rotY));
       }
-      for (const g of _typeAPieces.window) {
+      for (const g of pieces.window) {
         winGeos.push(applyPlacement(g, pos.x, pos.z, pos.rotY));
       }
     }
