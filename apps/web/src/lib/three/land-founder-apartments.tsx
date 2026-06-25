@@ -98,7 +98,7 @@ const FOUNDER_H_WU = FOUNDER_H_TILES * TILE_SIZE; // 6080
 const FOUNDER_COUNT = 10;
 
 /** Exclusion buffer around each parcel center (half-footprint + 2-tile gap). */
-const FOUNDER_EXCL_R = (FOUNDER_FOOT_TILES / 2 + 2) * TILE_SIZE; // 704wu
+const FOUNDER_EXCL_R = (FOUNDER_FOOT_TILES / 2 + 2) * TILE_SIZE; // 672wu
 
 function squarePerimeterPoint(s: number, h: number): { xt: number; zt: number } {
   const sideLen = 2 * h;
@@ -162,7 +162,7 @@ function placeGeo(
 //   Penthouse box: 120w x 80h x 120d sitting on crown base
 //
 //   Total height: 100+80+70 + 480 + 90 = 820wu  (from floor)
-//   Footprint:     280wu (podium base, well under FOUNDER_EXCL_R of 704wu from parcel)
+//   Footprint:     280wu (podium base, well under FOUNDER_EXCL_R of 672wu from parcel)
 //
 // Materials: 3 buckets —
 //   BODY: cream/white  0xf5f0e8, roughness 0.65, metalness 0.05
