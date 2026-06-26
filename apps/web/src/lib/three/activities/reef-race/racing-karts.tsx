@@ -132,21 +132,26 @@ useGLTF.preload('/models/reef-race/surfboards/surfboard_1.glb');
 
 // ─── Color tinting helper ─────────────────────────────────────────────────────
 /**
- * Replace the `.color` property on every MeshStandardMaterial / MeshLambertMaterial
- * / MeshBasicMaterial in the cloned scene graph.
- * Never swaps the material object — preserves maps, roughness, metalness, etc.
+ * Tint a kart by replacing `.color` on each material — but CLONE the material first.
+ * `scene.clone(true)` SHARES material instances across all 5 kart clones, so tinting
+ * in place would make the LAST kart's colour win on every kart (all 5 identical). The
+ * clone preserves maps, roughness, metalness, etc. while giving each kart its own colour.
  */
 function applyColorTint(root: THREE.Object3D, color: THREE.Color): void {
   root.traverse((child) => {
     if (!(child as THREE.Mesh).isMesh) return;
     const mesh = child as THREE.Mesh;
-    const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-    for (const mat of mats) {
-      if (!mat) continue;
-      const m = mat as { color?: THREE.Color };
-      if (m.color && m.color.isColor) {
-        m.color.copy(color);
-      }
+    if (Array.isArray(mesh.material)) {
+      mesh.material = mesh.material.map((mat) => {
+        if (!mat) return mat;
+        const m = mat.clone();
+        if ((m as { color?: THREE.Color }).color?.isColor) (m as { color: THREE.Color }).color.copy(color);
+        return m;
+      });
+    } else if (mesh.material) {
+      const m = mesh.material.clone();
+      if ((m as { color?: THREE.Color }).color?.isColor) (m as { color: THREE.Color }).color.copy(color);
+      mesh.material = m;
     }
   });
 }

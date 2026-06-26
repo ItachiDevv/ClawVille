@@ -60,6 +60,12 @@ export interface ReefPhysicsTuning {
   /** Visual swing duration (ticks) of the board tail. */
   whipSwingTicks: number;
 
+  // ── Off-track forgiveness (sandbox prototype of the Rainbow-Road void edge) ──
+  /** Extra lateral tolerance (wu) BEYOND the track half-width before you fall off.
+   *  Low = punishing (fall the instant you drift wide, which interrupts drift charging);
+   *  high = forgiving (room to carve a drift). Tuned up from the original hard 60. */
+  offtrackMargin: number;
+
   // ── VIEW (sandbox board + chase camera placement) ──
   /** Surfboard render scale (KART_SCALE=20 is the canonical decorative scale). */
   kartScale: number;
@@ -96,10 +102,14 @@ const CANONICAL: ReefPhysicsTuning = {
 
   // Whip — first-guess starting points (no canonical home yet; sandbox-tuned).
   whipSelfImpulse: 140,
-  whipBumpImpulse: 320,
+  whipBumpImpulse: 460,
   whipReach: 260,
   whipCooldownTicks: 24,
   whipSwingTicks: 12,
+
+  // Off-track forgiveness — wide tolerance so a drift can be carried without
+  // instantly dropping into the void (the original hard 60 reset drift charges).
+  offtrackMargin: 280,
 
   // View — founder-tuned 2026-06-24 (kept from the sandbox): big board, slightly
   // sunk into the surface, pulled-back high chase cam looking well ahead.

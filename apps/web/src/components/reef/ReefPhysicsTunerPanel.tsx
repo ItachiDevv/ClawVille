@@ -50,6 +50,9 @@ const WHIP: Def[] = [
   { key: 'whipCooldownTicks', label: 'Cooldown (ticks)', min: 4, max: 90, step: 1 },
   { key: 'whipSwingTicks', label: 'Swing (ticks)', min: 2, max: 40, step: 1 },
 ];
+const TRACK: Def[] = [
+  { key: 'offtrackMargin', label: 'Off-track margin', min: 0, max: 800, step: 20 },
+];
 const VIEW: Def[] = [
   { key: 'kartScale', label: 'Board scale', min: 20, max: 220, step: 5 },
   { key: 'rideHeight', label: 'Ride height', min: -40, max: 100, step: 2 },
@@ -116,6 +119,8 @@ export function ReefPhysicsTunerPanel() {
       {DRIFT.map((d) => <Slider key={d.key} def={d} onChange={set} />)}
       <div style={sectionHdr}>BOARD-WHIP</div>
       {WHIP.map((d) => <Slider key={d.key} def={d} onChange={set} />)}
+      <div style={sectionHdr}>TRACK</div>
+      {TRACK.map((d) => <Slider key={d.key} def={d} onChange={set} />)}
       <div style={sectionHdr}>VIEW (board + camera)</div>
       {VIEW.map((d) => <Slider key={d.key} def={d} onChange={set} />)}
       <div style={sectionHdr}>PRESETS</div>

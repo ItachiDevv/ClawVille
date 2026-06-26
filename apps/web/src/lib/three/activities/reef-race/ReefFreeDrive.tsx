@@ -21,12 +21,19 @@
  * the water, not under it. Off-track (lateral > widthAt(t)+margin) FALLS into the void +
  * respawns at the last safe centerline point (Rainbow-Road time penalty).
  *
- * The rival (coral) kart RIDES BESIDE you so the whip-bump is always testable; a whip
- * knocks it sideways and it eases back. SCOPE: whip-bump + off-track reset are FEEL
- * prototypes (client-only); authoritative multiplayer versions are a later sim job.
+ * Colours: the GLB shares ONE material instance across clones, so each board CLONES its
+ * material before tinting (else the last colour wins on both). Player = hot magenta (the
+ * old cyan was invisible on cyan water); its emissive ramps with the drift charge + flashes
+ * on boost — the drift's only visual feedback. Rival = coral.
+ *
+ * The rival kart LOCKS to a slot beside+ahead of you every tick (always within whipReach,
+ * so the whip-bump actually connects — the old 5%/tick ease let it lag ~700wu behind a
+ * fast player); a whip adds a transient knock offset that decays back to the slot. SCOPE:
+ * whip-bump + off-track reset are FEEL prototypes (client-only); authoritative multiplayer
+ * versions are a later sim job.
  *
  * Iris-Xe: surfboard GLB clones (no ShaderMaterial), import 'three', module-scope
- * scratch vectors (no per-frame `new THREE.Vector3`), frustumCulled=false.
+ * scratch vectors/colours (no per-frame `new THREE.Vector3`), frustumCulled=false.
  */
 
 import { useRef, useEffect } from 'react';
@@ -47,7 +54,6 @@ const TICK_DT = 1 / 30;
 const MAX_ACCUM = 0.25;
 const STEER_TARGET_OFFSET = 0.7;
 
-const OFFTRACK_MARGIN = 60;
 const FALL_TICKS = 34;
 const FALL_DEPTH = 1100;
 
@@ -63,7 +69,15 @@ const RIVAL_AHEAD = 40;
 const _camWanted = new THREE.Vector3();
 const _camLook = new THREE.Vector3();
 
-interface DummyState { x: number; z: number; vx: number; vz: number; }
+// Drift-charge / boost emissive ramp (player board glows brighter + whiter as the
+// mini-turbo charges, then flashes on boost — the only visual feedback the drift had).
+const _emBase = new THREE.Color('#ff2bd6'); // player rest emissive (magenta)
+const _emHot = new THREE.Color('#ffffff');  // hot-charge / boost flash target
+const _emTmp = new THREE.Color();
+
+/** Rival state. (x,z) is the rendered position = its slot beside the player PLUS a
+ *  transient (bx,bz) knock offset; (vx,vz) is the whip-bump velocity feeding the offset. */
+interface DummyState { x: number; z: number; vx: number; vz: number; bx: number; bz: number; }
 
 /**
  * Build the base quaternion that lays an arbitrarily-authored board FLAT + nose-forward:
@@ -102,7 +116,8 @@ export function ReefFreeDrive() {
   const whipSwing = useRef(0);
   const whipSide = useRef(1);
   const spacePrev = useRef(false);
-  const dummy = useRef<DummyState>({ x: 0, z: 0, vx: 0, vz: 0 });
+  const dummy = useRef<DummyState>({ x: 0, z: 0, vx: 0, vz: 0, bx: 0, bz: 0 });
+  const playerMats = useRef<THREE.MeshStandardMaterial[]>([]);
   const camInit = useRef(false);
   const falling = useRef(false);
   const fallTicks = useRef(0);
@@ -113,16 +128,29 @@ export function ReefFreeDrive() {
     if (!group || !src) return;
     while (group.children.length > 0) group.remove(group.children[0]);
 
-    const mk = (hex: string): THREE.Object3D => {
+    playerMats.current = [];
+    const mk = (hex: string, isPlayer: boolean): THREE.Object3D => {
       const clone = src.clone(true);
       const col = new THREE.Color(hex);
       clone.traverse((c) => {
         c.frustumCulled = false;
         const mesh = c as THREE.Mesh;
-        const mat = mesh.material as (THREE.MeshStandardMaterial | undefined);
-        if (mat && (mat as { color?: THREE.Color }).color?.isColor) {
+        if (!(mesh as { isMesh?: boolean }).isMesh || !mesh.material) return;
+        // CRITICAL: scene.clone(true) SHARES material instances, so tinting per clone
+        // would make the last colour win on BOTH boards. Clone the material per board.
+        const orig = mesh.material as THREE.MeshStandardMaterial;
+        const mat = orig.clone();
+        mesh.material = mat;
+        if ((mat as { color?: THREE.Color }).color?.isColor) {
           mat.color.copy(col);
-          if ('emissive' in mat && mat.emissive) { mat.emissive.copy(col); mat.emissiveIntensity = 0.45; }
+          if ('emissive' in mat && mat.emissive) {
+            mat.emissive.copy(col);
+            // Player glows enough to punch THROUGH the crest spray at rest (a flat board
+            // at the chase-cam framing sits in the foam zone); the drift charge/boost ramp
+            // (useFrame) drives the player's emissiveIntensity live above this base.
+            mat.emissiveIntensity = isPlayer ? 1.0 : 0.4;
+          }
+          if (isPlayer) playerMats.current.push(mat);
         }
       });
       // Auto-orient FLAT: recenter, then rotate the longest axis to +Z, thinnest to +Y.
@@ -146,10 +174,12 @@ export function ReefFreeDrive() {
     accum.current = 0; camInit.current = false;
     driftCharge.current = 0; boostTicks.current = 0; boostMult.current = 1; whipCd.current = 0;
     falling.current = false; fallTicks.current = 0; lastSafeT.current = 0;
-    dummy.current = { x: c0.x, z: c0.z, vx: 0, vz: 0 };
+    dummy.current = { x: c0.x, z: c0.z, vx: 0, vz: 0, bx: 0, bz: 0 };
 
-    playerRef.current = mk('#35d0ff');   // bright cyan — you
-    dummyObjRef.current = mk('#ff6a3d');  // coral — rival
+    // Player = hot magenta: max contrast on cyan water AND distinct from the coral
+    // rival (the old cyan player was invisible — same hue as the water + foam).
+    playerRef.current = mk('#ff2bd6', true);   // hot magenta — you
+    dummyObjRef.current = mk('#ff6a3d', false); // coral — rival
 
     return () => {
       while (group.children.length > 0) group.remove(group.children[0]);
@@ -269,19 +299,22 @@ export function ReefFreeDrive() {
     const c = clientSpline.centerlineAt(tNow);
     const lat = Math.hypot(p.x - c.x, p.z - c.z);
     const hw = clientSpline.widthAt(tNow);
-    if (lat > hw + OFFTRACK_MARGIN) { falling.current = true; fallTicks.current = 0; }
+    if (lat > hw + T.offtrackMargin) { falling.current = true; fallTicks.current = 0; }
     else lastSafeT.current = tNow;
 
-    // Rival rides beside+ahead of the player (always whip-reachable); bump knocks it,
-    // then it eases back to its riding slot.
+    // Rival LOCKS to a slot beside+ahead of the player every tick (so it stays within
+    // whipReach — the old 5%/tick ease let it lag ~700wu behind a fast player and the
+    // whip never connected). A whip adds a transient (bx,bz) knock offset that decays
+    // back to the slot, so the bump is VISIBLE without the rival drifting away.
     const rX = Math.cos(p.rot), rZ = -Math.sin(p.rot);   // player right
     const fX = Math.sin(p.rot), fZ = Math.cos(p.rot);    // player forward
     const tgtX = p.x + rX * RIVAL_LATERAL + fX * RIVAL_AHEAD;
     const tgtZ = p.z + rZ * RIVAL_LATERAL + fZ * RIVAL_AHEAD;
     const d = dummy.current;
-    d.x += d.vx * TICK_DT; d.z += d.vz * TICK_DT;   // bump momentum
-    d.vx *= 0.9; d.vz *= 0.9;                         // decay
-    d.x += (tgtX - d.x) * 0.05; d.z += (tgtZ - d.z) * 0.05;  // ease back beside player
+    d.bx += d.vx * TICK_DT; d.bz += d.vz * TICK_DT;   // knock velocity → offset
+    d.vx *= 0.92; d.vz *= 0.92;                        // velocity decays (slow = the knock travels)
+    d.bx *= 0.94; d.bz *= 0.94;                        // offset eases back to slot (slow = knock is readable)
+    d.x = tgtX + d.bx; d.z = tgtZ + d.bz;              // locked beside player + visible knock
   }
 
   useFrame((state, frameDt) => {
@@ -315,6 +348,21 @@ export function ReefFreeDrive() {
     player.position.set(p.x, py, p.z);
     player.rotation.set(pitch, p.rot + swingWag, bank);   // YXZ on the pivot
 
+    // Drift feedback: ramp the player board's emissive by charge tier, flash on boost.
+    const charge = driftCharge.current;
+    let ei = 1.0, hot = 0;                                            // rest: visible through spray
+    if (boostTicks.current > 0)            { ei = 3.0; hot = 0.75; } // boost flash
+    else if (charge >= T.driftTick3)       { ei = 2.4; hot = 0.55; } // tier 3
+    else if (charge >= T.driftTick2)       { ei = 1.9; hot = 0.38; } // tier 2
+    else if (charge >= T.driftTick1)       { ei = 1.5; hot = 0.20; } // tier 1
+    else if (charge > 0)                   { ei = 1.0 + 0.5 * (charge / Math.max(1, T.driftTick1)); }
+    _emTmp.copy(_emBase).lerp(_emHot, hot);
+    for (let i = 0; i < playerMats.current.length; i++) {
+      const m = playerMats.current[i];
+      m.emissive.copy(_emTmp);
+      m.emissiveIntensity = ei;
+    }
+
     const d = dummy.current;
     const dSurfaceY = elevationAtXZ(d.x, d.z, 'fd-dummy') + surfWaveHeightAt(d.x, d.z, time) + T.rideHeight;
     dObj.scale.setScalar(T.kartScale);
@@ -326,6 +374,26 @@ export function ReefFreeDrive() {
     if (!camInit.current) { camera.position.copy(_camWanted); camInit.current = true; }
     else camera.position.lerp(_camWanted, Math.min(1, CAM_LERP * frameDt));
     camera.lookAt(_camLook);
+
+    // DEV-ONLY live debug hook (sandbox-only; stripped by never running in prod game).
+    // Lets the verify harness read exact board/camera/physics state without RAF guessing.
+    if (typeof window !== 'undefined') {
+      (window as unknown as { __REEF?: unknown }).__REEF = {
+        mounted: true,
+        pred: { x: +p.x.toFixed(1), z: +p.z.toFixed(1), vx: +p.vx.toFixed(1), vz: +p.vz.toFixed(1), rot: +p.rot.toFixed(3), speed: +Math.hypot(p.vx, p.vz).toFixed(1) },
+        dummy: { x: +d.x.toFixed(1), z: +d.z.toFixed(1) },
+        t: +t.toFixed(4),
+        falling: falling.current, fallTicks: fallTicks.current, lastSafeT: +lastSafeT.current.toFixed(4),
+        driftCharge: driftCharge.current, boostTicks: boostTicks.current, boostMult: +boostMult.current.toFixed(2), whipCd: whipCd.current, whipSwing: whipSwing.current,
+        boardPos: [+player.position.x.toFixed(1), +player.position.y.toFixed(1), +player.position.z.toFixed(1)],
+        boardEulerDeg: [+(player.rotation.x * 57.2958).toFixed(1), +(player.rotation.y * 57.2958).toFixed(1), +(player.rotation.z * 57.2958).toFixed(1)],
+        boardScale: +player.scale.x.toFixed(1),
+        camPos: [+camera.position.x.toFixed(1), +camera.position.y.toFixed(1), +camera.position.z.toFixed(1)],
+        camToBoard: +camera.position.distanceTo(player.position).toFixed(1),
+        surfaceY: +surfaceY.toFixed(1), rideHeight: T.rideHeight,
+      };
+      (window as unknown as { __REEFOBJ?: unknown }).__REEFOBJ = { player, dummy: dObj, camera, scene: state.scene };
+    }
   });
 
   return <group ref={groupRef} />;
