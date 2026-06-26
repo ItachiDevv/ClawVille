@@ -11,7 +11,9 @@
 > - **`GameFeatures.md`** — gameplay.
 > - **This doc** — *how* the 3D scene is wired: coordinates, camera, lights, GPU budget, animation, asset pipeline.
 
-**Last edit:** 2026-06-26 (founder-ring luxury tower DETAIL REBUILD: `land-founder-apartments.tsx` — all 3 types re-detailed into impressive luxury high-rises. Added vertical pilaster fins, recessed glowing glass ribbons, layered cornices, grand glass+gold lobby bands, parapet rails, and significant glass observation penthouses (every crown element now >=270wu = >1 character, vs the old <135wu token caps). Heights pushed to real luxury-tower scale: A ≈1940wu (slender fluted spire), C ≈1180wu (monumental ziggurat), B ≈1040wu (broad stepped terraces) — 4–7× the 270wu character. Material buckets grown 3 → 5: added DARK accent (charcoal-navy 0x1c2733 — pilasters/mullions/frames/parapets/masts) + GLOW (lit amber 0xffd98a emissive 1.6 — lit window ribbons + rooftop beacons). DRAW CALLS now exactly 5 total (still bucket-count-invariant). Placement table unchanged. No new mount; no schema). See §13.
+**Last edit:** 2026-06-26 (SIGNAGE POLISH — for-sale signs + town directory crisp/proportionate rebuild). **(1) FOR-SALE post no longer pierces the text** (`land-parcels.tsx buildSignPostGeo`): post now rises from the floor and STOPS at the plank bottom (+ a small mount overlap) instead of running full-height through the plank's CENTERED text — `postH' = cfg.postH − 0.98·cfg.plankH`; plank height (`plankY`) unchanged; clearance below text-center ≈45.6/60/76wu for regular/premium/partner. **(2) FOR-SALE textures crisp + un-squished** (`land-parcels.tsx` 3 builders): canvases were 256×64 / 256×80 (≈0.5px/wu, 4:1 squished); now match each plank's W:H aspect at ~1024px long edge (1024×424 / 1024×426 / 1024×426), characterful display fonts (Arial Black/Impact + Georgia serif, no external load), beveled framing, headline≫subtitle hierarchy, tier identity (regular clean slate / premium gold+studs / partner cyan+topper), `anisotropy=8` + mipmaps + sRGB. Still 3 shared textures total (one per category) ≈ +5MB VRAM. **(3) Town directory redesigned** (`town-directory-sign.tsx bakeDirectoryTexture`): tiny header + oversized-floating BOUNTY → PROMINENT "TOWN CENTER" header (132px) + clean rule + a BALANCED 3-row list (uniform 96px labels, even spacing, aligned glowing arrow column); texture 1024×768 → 1536×1152; lighter shadows (no longer muddy). No geometry/material/mount/schema change beyond the post height math + texture content/res; draw-call budgets unchanged. See §14 + §15.3.
+
+**Prior Last edit:** 2026-06-26 (founder-ring luxury tower DETAIL REBUILD: `land-founder-apartments.tsx` — all 3 types re-detailed into impressive luxury high-rises. Added vertical pilaster fins, recessed glowing glass ribbons, layered cornices, grand glass+gold lobby bands, parapet rails, and significant glass observation penthouses (every crown element now >=270wu = >1 character, vs the old <135wu token caps). Heights pushed to real luxury-tower scale: A ≈1940wu (slender fluted spire), C ≈1180wu (monumental ziggurat), B ≈1040wu (broad stepped terraces) — 4–7× the 270wu character. Material buckets grown 3 → 5: added DARK accent (charcoal-navy 0x1c2733 — pilasters/mullions/frames/parapets/masts) + GLOW (lit amber 0xffd98a emissive 1.6 — lit window ribbons + rooftop beacons). DRAW CALLS now exactly 5 total (still bucket-count-invariant). Placement table unchanged. No new mount; no schema). See §13.
 
 **Prior Last edit:** 2026-06-25 (founder-ring luxury apartments FULL BUILD: `land-founder-apartments.tsx` — added Type B "Terraced Reef Block" (~480wu wide terraced) + Type C "Ziggurat Penthouse" (~600wu stepped pyramid); ALL 10 founder-ring gaps now filled alternating A/B/C. Still EXACTLY 3 merged draw calls total — all 3 types share the same 3 MeshStandardMaterials (cream body / gold / teal window) and every placed piece merges per bucket, so building count never adds a draw call. No new mount; no schema). See §13.
 
@@ -1078,13 +1080,17 @@ Compact log. Single line per change with commit reference where applicable.
 
 **Sign model — 3 categories:**
 
-| Category | Applies to | Plank W×H (wu) | Plank D | Post H | Canvas | Texture design |
+| Category | Applies to | Plank W×H (wu) | Plank D | Post H (`cfg`) | Canvas | Texture design |
 |---|---|---|---|---|---|---|
-| `regular` | b / c / starter tiers | 290 × 120 | 9 | 220 | 256×64 | Dark `#0a1520` bg, `#c9b48a` single border, "FOR SALE" white mono |
-| `premium` | founder + a tiers | 380 × 158 | 11 | 270 | 256×64 | Gold `#ffd54a` double border + corner ticks, "FOR SALE" white + "PREMIUM" gold subtitle |
-| `premium-partner` | curated partner lots | 480 × 200 | 13 | 320 | 256×80 | Cyan `#9fe9ff` ornate: double border + filled topper bar (10px) + dots, "FOR SALE" white + "PARTNER" cyan subtitle |
+| `regular` | b / c / starter tiers | 290 × 120 | 9 | 220 | 1024×424 | Slate gradient bg, beveled inset frame (`#d8c39a`), bold "FOR SALE" (Arial Black) + tracked "LAND PARCEL" subtitle |
+| `premium` | founder + a tiers | 380 × 158 | 11 | 270 | 1024×426 | Gold `#ffd24a` double frame + corner studs, "FOR SALE" (Arial Black) white + "PREMIUM" gold serif subtitle |
+| `premium-partner` | curated partner lots | 480 × 200 | 13 | 320 | 1024×426 | Cyan `#7fe6ff`/platinum ornate: topper band + double frame + studs + dots, "FOR SALE" white + "PARTNER" cyan serif subtitle |
 
-**Sign sizes ~4.3× larger than original** (2026-06-18 scaling for 2-ring big-plot layout — founder plots ~1216wu, starter ~1088wu; old ~70–116wu signs were too small to read at plot scale). Post heights 220–320wu put the readable plank at ~1/3–1/2 a building's height.
+**Sign sizes ~4.3× larger than original** (2026-06-18 scaling for 2-ring big-plot layout — founder plots ~1216wu, starter ~1088wu; old ~70–116wu signs were too small to read at plot scale). Post heights 220–320wu (`cfg.postH`).
+
+**Texture polish (2026-06-26):** canvases were 256×64 (regular/premium) / 256×80 (partner) on planks 290–480wu wide → ~0.5px/wu (blurry) AND wrong aspect (256×64 = 4:1 vs plank ≈2.42:1 → horizontally squished). Now each canvas MATCHES its plank's W:H aspect at ~1024px on the long edge (1024×424 / 1024×426 / 1024×426), with characterful display fonts (Arial Black/Impact headline + Georgia serif subtitle — canvas-safe, no external load), beveled/inset framing, proper hierarchy (big headline ≫ small subtitle), `anisotropy=8` + mipmaps + `SRGBColorSpace`. Still only **3 sign textures total** (one per CATEGORY, shared across all parcels) so the res bump is cheap VRAM (~3 × 1024×426 ≈ 5MB total, vs old ~0.06MB; +~5MB).
+
+**Post-height fix (2026-06-26):** `buildSignPostGeo` previously built a full-height post (`cfg.postH`, top at `FLOOR_Y+postH`) that ran straight UP THROUGH the plank's centered text. The post now rises from the floor and STOPS at the plank's bottom edge + a small mount overlap: `postH' = cfg.postH − 0.98·cfg.plankH`, `postY = FLOOR_Y + postH'·0.5`. The plank height (`plankY = FLOOR_Y + postH − plankH·0.6`) is UNCHANGED — sign sits exactly as before. Per-category clearance of post-top below text-center (FLOOR_Y=−2): regular ≈45.6wu, premium ≈60wu, partner ≈76wu; mount overlap 0.12·plankH each. The plank hitbox (`LandParcelSignHitboxes`, keyed on `plankY`) is unaffected.
 
 **Category resolver:** `getLandSignCategory(parcel: ParcelSlot): LandSignCategory` in `land-signage.ts`. Priority: `PREMIUM_PARTNER_PARCEL_IDS.has(id)` → `premium-partner`; tier in `PREMIUM_SIGN_TIERS (['founder','a'])` → `premium`; else → `regular`.
 
@@ -1096,8 +1102,9 @@ angle  = atan2(-cx, -cz)       // radial direction toward origin
 offset = size * 0.5 * 0.40     // SIGN_RADIAL_OFFSET=0.40
 signX  = cx + sin(angle)*offset
 signZ  = cz + cos(angle)*offset
-plankY = FLOOR_Y + postH - plankH*0.6
-postY  = FLOOR_Y + postH*0.5
+plankY = FLOOR_Y + postH - plankH*0.6          // text center (unchanged)
+postH' = postH - 0.98*plankH                   // post STOPS at plank bottom (2026-06-26 fix)
+postY  = FLOOR_Y + postH'*0.5
 plankRotY = angle              // sign face toward origin
 ```
 
@@ -1147,20 +1154,23 @@ Older history: `git log apps/web/src/lib/three/ apps/web/src/components/three/`.
 
 `apps/web/src/lib/three/arena-buildings.tsx` `triggerCoveWalkIn()` dispatches a `'cove-walkin-start'` DOM CustomEvent when the walk-in starts. `World3DCanvas.tsx` new `CoveEntranceCameraPush` component (mounted in SceneContents, after JumpTicker) listens for this event and for 1.2s smoothly lerps the camera slightly toward the cove (X=-4160, slight Y pull-down) using a cubic ease-out. All lerp values are module-scope scratch (`_covePushTarget`, `_covePushScratch`), zero per-frame allocations. Total entrance flow ≤3s (1.2s push + existing 500ms fade + /cove page-in 500ms).
 
-### §15.3 — Town directory board (Task 3; REVISED 2026-06-19 — single readable board, replaces the 3-arm fingerpost)
+### §15.3 — Town directory board (Task 3; REVISED 2026-06-19, REDESIGNED 2026-06-26 — balanced 3-row list)
 
-`apps/web/src/lib/three/town-directory-sign.tsx`. **Revision history:** old static inaccurate PNG → 3-arm fingerpost → **single front-facing triangle board (current).** The 3-arm fingerpost FAILED founder review: each arm pointed in its literal world direction, so the forward (Bounty) arm's flat text sat edge-on to the spawn camera (unreadable), and the baked labels were too small at spawn distance. The founder asked for the old flat-board readability with the words in a triangle showing directions.
+`apps/web/src/lib/three/town-directory-sign.tsx`. **Revision history:** old static inaccurate PNG → 3-arm fingerpost (arms edge-on, unreadable) → triangle board (Bounty label read bigger + floated above the other two, blurry, unbalanced) → **single front-facing board with a prominent header + balanced 3-row list (current, 2026-06-26).** Founder review of the triangle: "the header text is just tiny; the BOUNTY BOARD text is bigger than COSMETICS/EXCHANGE and vertically spaced above them for no reason; blurry, boring, disproportionate."
 
-**Current design — one readable board facing the player:** a single wooden board mounted ON TOP of a hex-prism post (board centered at `y = POST_HEIGHT(260) + BOARD_H/2(150) = 410`, so the post never occludes the board face — the old fingerpost/FOR-SALE-sign post-occlusion trap). Board 400×300×16 wu + crossbar, all merged module-scope geometry. One player-facing (+Z) `PlaneGeometry(376×276)` carries a single CanvasTexture (1024×768, 4:3).
+**Current design — one readable board facing the player:** a single wooden board mounted ON TOP of a hex-prism post (board centered at `y = POST_HEIGHT(260) + BOARD_H/2(150) = 410`, so the post never occludes the board face — the old fingerpost/FOR-SALE-sign post-occlusion trap). Board 400×300×16 wu + crossbar, all merged module-scope geometry. One player-facing (+Z) `PlaneGeometry(376×276)` carries a single CanvasTexture **1536×1152 (4:3, bumped from 1024×768 for crispness at spawn distance)**.
 
-**CanvasTexture = triangle layout (player at spawn faces −Z / south; on the +Z face):**
-| Position on board | Glyph | Destination | World dir from player | World coords |
+**CanvasTexture layout (player at spawn faces −Z / south; on the +Z face):**
+- **Header:** "TOWN CENTER" — PROMINENT 132px Georgia (was a dwarfed 56px) + a clean rule beneath it. The sign's title now has real presence.
+- **Three destinations:** a BALANCED 3-row list — UNIFORM label size (96px Georgia) + EVEN spacing (ROW_DY=230) + an ALIGNED arrow column (110px Arial, glowing colour). Kills the old "BOUNTY huge + floating above the other two" imbalance. Block is auto-centred from measured max arrow/label widths so arrows and labels line up across all rows.
+
+| Row | Glyph | Destination | World dir from player | World coords |
 |---|---|---|---|---|
-| TOP centre | ↑ (cyan) | BOUNTY BOARD | straight ahead (south) | (0, −1220) |
-| BOTTOM-RIGHT | → (gold) | EXCHANGE | player's right (east) | (+1273, −120) |
-| BOTTOM-LEFT | ← (magenta) | COSMETICS | player's left (west) | (−1273, −120) |
+| 1 | ↑ (cyan `#46f2e2`) | BOUNTY BOARD | straight ahead (south) | (0, −1220) |
+| 2 | ← (magenta `#ff8ce4`) | COSMETICS | player's left (west) | (−1273, −120) |
+| 3 | → (gold `#ffd24a`) | EXCHANGE | player's right (east) | (+1273, −120) |
 
-Title "TOWN CENTER" + carved double border + wood grain. Big high-contrast text (arrows 92–116px, labels 58–70px, warm-white `#fbf3e2` with dark shadow, colored glowing arrows). `anisotropy=8` for crispness at distance. Direction correctness: camera looks −Z with up +Y → camera-right = +X (east), so the texture's right = east = Exchange ✓, left = west = Cosmetics ✓, top = "straight ahead" wayfinding convention = Bounty ✓.
+Carved wood styling (gradient bg, light grain, light-bevel double border) — kept SHARP and high-contrast, NOT muddy: lighter drop shadows (blur 3–4, not the old heavy 5–6 muddying the lettering). `anisotropy=8` + mipmaps for crispness at distance. Direction correctness: camera looks −Z with up +Y → camera-right = +X (east), so the row arrows read east = Exchange ✓, west = Cosmetics ✓, top/straight-ahead = Bounty ✓.
 
 **Single-faced** (front +Z only; primary view is the spawn/north side). **No async loading** (no PNG; texture baked synchronously at module load, SSR-guarded by `typeof document`, falls back to wood material for SSR). No drei Text/Billboard, no ShaderMaterial, no per-frame allocs.
 
