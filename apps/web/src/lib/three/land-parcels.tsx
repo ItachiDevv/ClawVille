@@ -22,12 +22,23 @@
  *   not rendered by the GPU — Three.js skips .visible=false objects in the render pass).
  *
  * Sign categories (getLandSignCategory from land-signage.ts):
- *   regular        — basic sign.  Plank 290×120wu, post h=220.  Single-line "FOR SALE".
- *   premium        — ~1.35× bigger.  Plank 380×158wu, post h=270.  Gold double-border,
- *                    "FOR SALE" + "PREMIUM" subtitle.  Founder + A tiers.
- *   premium-partner — ~1.7× bigger.  Plank 480×200wu, post h=320.  Cyan/platinum ornate
- *                    border+topper, "FOR SALE" + "PARTNER" subtitle.  Curated subset of
- *                    premium plots (see land-signage.ts PREMIUM_PARTNER_PARCEL_IDS).
+ *   regular        — clean-slate sign.  Plank 290×120wu.  Slate ground, beveled inset
+ *                    frame, bold "FOR SALE" + "LAND PARCEL" subtitle.  Texture 1024×424.
+ *   premium        — ~1.35× bigger.  Plank 380×158wu.  Gold double-border + corner studs,
+ *                    "FOR SALE" + "PREMIUM" subtitle.  Founder + A tiers.  Texture 1024×426.
+ *   premium-partner — ~1.7× bigger.  Plank 480×200wu.  Cyan/platinum ornate border + topper
+ *                    band, "FOR SALE" + "PARTNER" subtitle.  Curated subset of premium plots
+ *                    (see land-signage.ts PREMIUM_PARTNER_PARCEL_IDS).  Texture 1024×426.
+ *
+ * Sign textures (2026-06-26 polish): each canvas matches its plank's W:H aspect
+ * (no horizontal squish) at ~1024px on the long edge (was 256×64 ≈ 0.5px/wu and
+ * 4:1 → squished), characterful display fonts (Arial Black/Impact + Georgia, no
+ * external load), anisotropy=8 + mipmaps + sRGB.  Only 3 sign textures total
+ * (one per CATEGORY, shared across all parcels) so ~1024px each is cheap VRAM.
+ *
+ * Sign post (2026-06-26 fix): the post now rises from the floor and STOPS at the
+ * plank's bottom edge (+ a small mount overlap), so it never crosses the plank's
+ * CENTERED text.  postH' = cfg.postH - 0.98*cfg.plankH (see buildSignPostGeo).
  *
  * Draw calls: 5 (pad+border per tier) + up to 3 (plank per category) + up to 3 (post per
  * category) = up to 11 when all 180 parcels are available. Drops as parcels are bought.
@@ -159,155 +170,196 @@ const _m4b = new THREE.Matrix4();
 // ---------------------------------------------------------------------------
 
 /**
- * Build a CanvasTexture for the 'regular' sign.
- * 256×64 canvas.  Dark background, thin tan/grey border, "FOR SALE" centered in white.
+ * Texture resolution + aspect — each canvas now MATCHES its plank's W:H aspect
+ * so the baked art is never horizontally squished, and is ~1024px on the long
+ * edge so the lettering is crisp at plot scale (vs the old 256×64 ≈ 0.5px/wu).
+ *
+ *   regular         plank 290×120 (2.417:1) → 1024×424
+ *   premium         plank 380×158 (2.405:1) → 1024×426
+ *   premium-partner plank 480×200 (2.400:1) → 1024×426
+ */
+const REG_W = 1024, REG_H = 424;
+const PREM_W = 1024, PREM_H = 426;
+const PART_W = 1024, PART_H = 426;
+
+/** Finish every sign texture identically: sRGB, anisotropy, mipmaps for distance. */
+function finishSignTexture(canvas: HTMLCanvasElement): THREE.CanvasTexture {
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace   = THREE.SRGBColorSpace;
+  tex.anisotropy   = 8;        // crisp at grazing angles / distance
+  tex.generateMipmaps = true;  // (default) smooth minification far away
+  tex.needsUpdate  = true;
+  return tex;
+}
+
+/**
+ * Build a CanvasTexture for the 'regular' sign — clean slate plank.
+ * Charcoal-slate ground, beveled inset frame, big bold "FOR SALE" headline
+ * over a smaller tan "LAND PARCEL" subtitle (proper hierarchy).
  */
 function buildRegularSignTexture(): THREE.CanvasTexture {
   const canvas = document.createElement('canvas');
-  canvas.width  = 256;
-  canvas.height = 64;
+  canvas.width  = REG_W;
+  canvas.height = REG_H;
   const ctx = canvas.getContext('2d')!;
+  const TAN = '#d8c39a';
 
-  // Background
-  ctx.fillStyle = '#0a1520';
-  ctx.fillRect(0, 0, 256, 64);
+  // Slate ground (subtle vertical gradient for depth)
+  const bg = ctx.createLinearGradient(0, 0, 0, REG_H);
+  bg.addColorStop(0, '#16222e');
+  bg.addColorStop(1, '#0a1219');
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, REG_W, REG_H);
 
-  // Thin single border (tan/grey tone)
-  ctx.strokeStyle = '#c9b48a';
-  ctx.lineWidth = 3;
-  ctx.strokeRect(3, 3, 250, 58);
+  // Beveled inset frame: dark drop edge under a light tan stroke (carved look)
+  ctx.strokeStyle = 'rgba(0,0,0,0.55)';
+  ctx.lineWidth = 18;
+  ctx.strokeRect(30, 30, REG_W - 60, REG_H - 60);
+  ctx.strokeStyle = TAN;
+  ctx.lineWidth = 8;
+  ctx.strokeRect(26, 26, REG_W - 52, REG_H - 52);
 
-  // "FOR SALE" centered
-  ctx.fillStyle = '#ffffff';
-  ctx.font = 'bold 20px monospace';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillText('FOR SALE', 128, 32);
 
-  const tex = new THREE.CanvasTexture(canvas);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  tex.needsUpdate = true;
-  return tex;
+  // Headline — bold condensed display face (canvas-safe, no external load)
+  ctx.fillStyle = '#ffffff';
+  ctx.font = '800 188px "Arial Black", Impact, sans-serif';
+  ctx.shadowColor = 'rgba(0,0,0,0.7)';
+  ctx.shadowBlur = 8;
+  ctx.shadowOffsetY = 4;
+  ctx.fillText('FOR SALE', REG_W / 2, REG_H * 0.42);
+  ctx.shadowBlur = 0;
+  ctx.shadowOffsetY = 0;
+
+  // Subtitle — smaller, letter-spaced via wider tracking text
+  ctx.fillStyle = TAN;
+  ctx.font = 'bold 62px "Trebuchet MS", sans-serif';
+  ctx.fillText('L A N D   P A R C E L', REG_W / 2, REG_H * 0.78);
+
+  return finishSignTexture(canvas);
 }
 
 /**
- * Build a CanvasTexture for the 'premium' sign.
- * 256×64 canvas.  Gold double border with corner accent ticks.
- * "FOR SALE" (white) + "PREMIUM" gold subtitle.
+ * Build a CanvasTexture for the 'premium' sign — gold double border + "PREMIUM".
+ * Founder + a-tier lots. Gold serif headline edge, gold double frame with corner
+ * studs, white "FOR SALE" headline over a gold "PREMIUM" subtitle.
  */
 function buildPremiumSignTexture(): THREE.CanvasTexture {
   const canvas = document.createElement('canvas');
-  canvas.width  = 256;
-  canvas.height = 64;
+  canvas.width  = PREM_W;
+  canvas.height = PREM_H;
   const ctx = canvas.getContext('2d')!;
-  const GOLD = '#ffd54a';
+  const GOLD  = '#ffd24a';
+  const GOLD2 = '#9c6b12';
 
-  // Background
-  ctx.fillStyle = '#0a1520';
-  ctx.fillRect(0, 0, 256, 64);
+  // Rich navy ground
+  const bg = ctx.createLinearGradient(0, 0, 0, PREM_H);
+  bg.addColorStop(0, '#142133');
+  bg.addColorStop(1, '#080d18');
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, PREM_W, PREM_H);
 
-  // Outer border
+  // Gold double frame
   ctx.strokeStyle = GOLD;
-  ctx.lineWidth = 3;
-  ctx.strokeRect(2, 2, 252, 60);
+  ctx.lineWidth = 12;
+  ctx.strokeRect(24, 24, PREM_W - 48, PREM_H - 48);
+  ctx.strokeStyle = GOLD2;
+  ctx.lineWidth = 4;
+  ctx.strokeRect(46, 46, PREM_W - 92, PREM_H - 92);
 
-  // Inner border (inset by 5px)
-  ctx.lineWidth = 1.5;
-  ctx.strokeRect(7, 7, 242, 50);
-
-  // Corner accent ticks (small filled squares at outer corners)
-  const TICK = 5;
+  // Corner studs (filled gold squares on the outer frame)
+  const STUD = 26;
   ctx.fillStyle = GOLD;
-  [[2, 2], [251 - TICK, 2], [2, 57 - TICK], [251 - TICK, 57 - TICK]].forEach(([x, y]) => {
-    ctx.fillRect(x, y, TICK, TICK);
-  });
+  ([[24, 24], [PREM_W - 24 - STUD, 24], [24, PREM_H - 24 - STUD], [PREM_W - 24 - STUD, PREM_H - 24 - STUD]] as Array<[number, number]>)
+    .forEach(([x, y]) => ctx.fillRect(x, y, STUD, STUD));
 
-  // "FOR SALE" (white, upper half)
-  ctx.fillStyle = '#ffffff';
-  ctx.font = 'bold 19px monospace';
   ctx.textAlign = 'center';
-  ctx.textBaseline = 'alphabetic';
-  ctx.fillText('FOR SALE', 128, 34);
+  ctx.textBaseline = 'middle';
 
-  // "PREMIUM" subtitle (gold, lower)
+  // Headline (white) — bold display, gold drop for richness
+  ctx.fillStyle = '#fff7e0';
+  ctx.font = '800 170px "Arial Black", Impact, sans-serif';
+  ctx.shadowColor = 'rgba(0,0,0,0.7)';
+  ctx.shadowBlur = 8;
+  ctx.shadowOffsetY = 4;
+  ctx.fillText('FOR SALE', PREM_W / 2, PREM_H * 0.40);
+  ctx.shadowBlur = 0;
+  ctx.shadowOffsetY = 0;
+
+  // Subtitle (gold) — smaller serif, tracked
   ctx.fillStyle = GOLD;
-  ctx.font = 'bold 12px monospace';
-  ctx.textBaseline = 'alphabetic';
-  ctx.fillText('PREMIUM', 128, 52);
+  ctx.font = 'bold 74px Georgia, serif';
+  ctx.fillText('P R E M I U M', PREM_W / 2, PREM_H * 0.76);
 
-  const tex = new THREE.CanvasTexture(canvas);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  tex.needsUpdate = true;
-  return tex;
+  return finishSignTexture(canvas);
 }
 
 /**
- * Build a CanvasTexture for the 'premium-partner' sign.
- * 256×80 canvas (extra height for the filled topper bar).
- * Cyan/platinum ornate double border, filled topper bar, "FOR SALE" + "PARTNER" subtitle.
+ * Build a CanvasTexture for the 'premium-partner' sign — cyan/platinum ornate.
+ * Curated partner lots. Filled cyan topper band, platinum/cyan double frame with
+ * corner studs + edge dots, white "FOR SALE" headline over a cyan "PARTNER" subtitle.
  */
 function buildPremiumPartnerSignTexture(): THREE.CanvasTexture {
   const canvas = document.createElement('canvas');
-  canvas.width  = 256;
-  canvas.height = 80;
+  canvas.width  = PART_W;
+  canvas.height = PART_H;
   const ctx = canvas.getContext('2d')!;
-  const CYAN = '#9fe9ff';
+  const CYAN = '#7fe6ff';
+  const PLAT = '#cfe7ef';
 
-  // Background
-  ctx.fillStyle = '#0a1520';
-  ctx.fillRect(0, 0, 256, 80);
+  // Deep teal-navy ground
+  const bg = ctx.createLinearGradient(0, 0, 0, PART_H);
+  bg.addColorStop(0, '#0d2733');
+  bg.addColorStop(1, '#06121a');
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, PART_W, PART_H);
 
-  // Filled topper bar across the full top (10px)
+  // Filled cyan topper band across the top
   ctx.fillStyle = CYAN;
-  ctx.fillRect(0, 0, 256, 10);
+  ctx.fillRect(0, 0, PART_W, 44);
 
-  // Thick outer border below topper
+  // Platinum + cyan double frame (below the band)
   ctx.strokeStyle = CYAN;
+  ctx.lineWidth = 14;
+  ctx.strokeRect(24, 60, PART_W - 48, PART_H - 84);
+  ctx.strokeStyle = PLAT;
   ctx.lineWidth = 4;
-  ctx.strokeRect(2, 12, 252, 66);
+  ctx.strokeRect(46, 82, PART_W - 92, PART_H - 128);
 
-  // Inner border (inset)
-  ctx.lineWidth = 1.5;
-  ctx.strokeRect(8, 18, 240, 54);
-
-  // Corner accents (outer corners of inner border, filled squares)
-  const TICK = 6;
+  // Corner studs on the inner frame
+  const STUD = 24;
   ctx.fillStyle = CYAN;
-  [[8, 18], [242 - TICK, 18], [8, 66 - TICK], [242 - TICK, 66 - TICK]].forEach(([x, y]) => {
-    ctx.fillRect(x, y, TICK, TICK);
-  });
+  ([[46, 82], [PART_W - 46 - STUD, 82], [46, PART_H - 46 - STUD], [PART_W - 46 - STUD, PART_H - 46 - STUD]] as Array<[number, number]>)
+    .forEach(([x, y]) => ctx.fillRect(x, y, STUD, STUD));
 
-  // Small decorative dots between corner accents along horizontal edges
-  const dotY1 = 20;
-  const dotY2 = 77;
-  for (let dotX = 40; dotX < 220; dotX += 28) {
+  // Decorative dots along the topper band
+  ctx.fillStyle = '#06121a';
+  for (let dotX = 80; dotX < PART_W - 60; dotX += 88) {
     ctx.beginPath();
-    ctx.arc(dotX, dotY1, 2, 0, Math.PI * 2);
-    ctx.fill();
-  }
-  for (let dotX = 40; dotX < 220; dotX += 28) {
-    ctx.beginPath();
-    ctx.arc(dotX, dotY2, 2, 0, Math.PI * 2);
+    ctx.arc(dotX, 22, 6, 0, Math.PI * 2);
     ctx.fill();
   }
 
-  // "FOR SALE" (white)
-  ctx.fillStyle = '#ffffff';
-  ctx.font = 'bold 20px monospace';
   ctx.textAlign = 'center';
-  ctx.textBaseline = 'alphabetic';
-  ctx.fillText('FOR SALE', 128, 47);
+  ctx.textBaseline = 'middle';
 
-  // "PARTNER" subtitle (cyan)
+  // Headline (white) — bold display
+  ctx.fillStyle = '#ffffff';
+  ctx.font = '800 162px "Arial Black", Impact, sans-serif';
+  ctx.shadowColor = 'rgba(0,0,0,0.7)';
+  ctx.shadowBlur = 8;
+  ctx.shadowOffsetY = 4;
+  ctx.fillText('FOR SALE', PART_W / 2, PART_H * 0.46);
+  ctx.shadowBlur = 0;
+  ctx.shadowOffsetY = 0;
+
+  // Subtitle (cyan) — tracked serif
   ctx.fillStyle = CYAN;
-  ctx.font = 'bold 13px monospace';
-  ctx.textBaseline = 'alphabetic';
-  ctx.fillText('PARTNER', 128, 65);
+  ctx.font = 'bold 78px Georgia, serif';
+  ctx.fillText('P A R T N E R', PART_W / 2, PART_H * 0.80);
 
-  const tex = new THREE.CanvasTexture(canvas);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  tex.needsUpdate = true;
-  return tex;
+  return finishSignTexture(canvas);
 }
 
 // ---------------------------------------------------------------------------
@@ -387,14 +439,29 @@ function signPosition(parcel: ParcelSlot): { signX: number; signZ: number; angle
 
 /**
  * Build a sign post geometry baked into world space for a given category.
+ *
+ * The post rises from the floor and STOPS at the bottom edge of the plank
+ * (with a tiny mount overlap), so it never crosses the plank's CENTERED text.
+ *
+ *   plankY      = FLOOR_Y + cfg.postH - cfg.plankH*0.6   (text center, unchanged)
+ *   plankBottom = plankY - cfg.plankH*0.5 = FLOOR_Y + cfg.postH - 1.1*cfg.plankH
+ *   postTop     = plankBottom + 0.12*cfg.plankH (small overlap to mount the sign)
+ *             ⇒ postH' = cfg.postH - 0.98*cfg.plankH
+ *
+ * Per-category clearance (post top vs text center, FLOOR_Y=-2):
+ *   regular         postH'≈102.4  top≈100.4  textY=146    → 45.6wu clear
+ *   premium         postH'≈115.2  top≈113.2  textY≈173.2  → 60.0wu clear
+ *   premium-partner postH'=124    top=122    textY=198    → 76.0wu clear
  */
 function buildSignPostGeo(
   signX: number,
   signZ: number,
   cfg: SignSizeConfig,
 ): THREE.BufferGeometry {
-  const postY = FLOOR_Y + cfg.postH * 0.5;
-  const geo = new THREE.BoxGeometry(cfg.postW, cfg.postH, cfg.postW);
+  // Post rises from the floor to the plank bottom + a small mount overlap.
+  const postH = cfg.postH - cfg.plankH * 0.98;
+  const postY = FLOOR_Y + postH * 0.5;
+  const geo = new THREE.BoxGeometry(cfg.postW, postH, cfg.postW);
   _m4.makeTranslation(signX, postY, signZ);
   geo.applyMatrix4(_m4);
   return geo;
