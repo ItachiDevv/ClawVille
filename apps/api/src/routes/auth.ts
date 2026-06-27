@@ -1009,6 +1009,11 @@ async function insertGuestAvatar(
           // tolerate a null characterConfig (chat is gated to non-guests
           // by other checks in the chat surfaces, not enforced here).
           clawTokens: 100,
+          // F1 vCLAW provenance: mirror clawTokens into softBalance so the
+          // avatars_vclaw_balance_sum CHECK holds (100 = 100+0+0). Legacy/guest CT
+          // is SOFT (non-cashable). Explicit set is required because clawTokens is
+          // explicit here — the column default only covers omitting both.
+          softBalance: 100,
           isActive: true,
           modelKey: DEFAULT_AGENT_MODEL_KEY,
           agentCategory: 'openclaw',

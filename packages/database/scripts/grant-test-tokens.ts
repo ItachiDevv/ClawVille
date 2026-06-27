@@ -44,13 +44,16 @@ try {
       throw new Error(`avatar ${avatarId} not found`);
     }
     const balanceAfter = avatar.claw_tokens + amount;
-    await sql`UPDATE avatars SET claw_tokens = ${balanceAfter} WHERE id = ${avatarId}`;
+    // F1 vCLAW provenance: the granted amount is non-cashable SOFT — add it to
+    // soft_balance so the avatars_vclaw_balance_sum CHECK holds
+    // (claw_tokens = soft+bought+earned); existing bought/earned are preserved.
+    await sql`UPDATE avatars SET claw_tokens = ${balanceAfter}, soft_balance = soft_balance + ${amount} WHERE id = ${avatarId}`;
     await sql`
       INSERT INTO claw_token_transactions
-        (avatar_id, user_id, amount, balance_after, reason, source, metadata)
+        (avatar_id, user_id, amount, balance_after, reason, source, provenance, metadata)
       VALUES
         (${avatarId}, ${avatar.user_id}, ${amount}, ${balanceAfter},
-         'admin_test_grant', 'admin', ${{ note: 'cosmetic verification' }}::jsonb)
+         'admin_test_grant', 'admin', 'soft', ${{ note: 'cosmetic verification' }}::jsonb)
     `;
     console.log(`✓ ${avatar.name} (${avatarId.slice(0, 8)}…)  ${avatar.claw_tokens} → ${balanceAfter} CT (+${amount})`);
   });

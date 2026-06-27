@@ -6,6 +6,7 @@ import {
   text,
   pgEnum,
   integer,
+  numeric,
   jsonb,
   index,
 } from 'drizzle-orm/pg-core';
@@ -90,6 +91,38 @@ export const clawTokenSourceEnum = pgEnum('claw_token_source', [
 ]);
 
 /**
+ * vCLAW PROVENANCE TAG (Tokenomics F1, 2026-06-27) — the CASHABILITY taxonomy.
+ *
+ * Distinct from `claw_token_source` above (which is a FAUCET-ORIGIN observability
+ * label). Provenance answers the only question that matters for the cash-out path:
+ * "can this balance ever leave the economy as real money?"
+ *
+ *   - `soft`   — play money: quests, daily login, cove/play winnings, faucet, AND
+ *                EVERY internal peer-transfer receipt (see the chokepoint rule).
+ *                Spendable in-world, NEVER cashable.
+ *   - `bought` — on-ramp purchases (fiat/SOL/USDC/CLV at the one-way store price).
+ *                You bought spend power, not a withdrawal right. NEVER cashable
+ *                (V-Bucks semantics). Carries a `usd_basis`.
+ *   - `earned` — agent labor paid by a REAL external customer (USDC via SAP/x402),
+ *                credited in FULL. The ONLY cashable tag. Carries a `usd_basis`.
+ *
+ * THE CHOKEPOINT INVARIANT (plan §3.1): `earned` is written in EXACTLY ONE code
+ * path — `claw-token-ledger.mintEarned()`. Every other credit path produces
+ * `soft` or `bought` only; `transferClawTokens` always credits the receiver
+ * `soft`. This makes "buy → fake-sell to my alt → cash out" impossible by
+ * construction: internal recirculation can never become cashable.
+ *
+ * GATED-OFF in F1: tagging is purely additive — NOTHING is cashable yet (no
+ * cash-out path exists). This enum is the ledger-side scaffolding the later
+ * cash-out gate (plan §12 gate 1) is built on.
+ */
+export const clawTokenProvenanceEnum = pgEnum('claw_token_provenance', [
+  'soft',
+  'bought',
+  'earned',
+]);
+
+/**
  * Append-only audit ledger for every ClawToken credit/debit.
  *
  * avatars.clawTokens remains the authoritative balance column; this table
@@ -117,6 +150,32 @@ export const clawTokenTransactions = pgTable(
     reason: text('reason').notNull(),
     /** High-level source category */
     source: clawTokenSourceEnum('source').notNull(),
+    /**
+     * vCLAW PROVENANCE TAG (Tokenomics F1, 2026-06-27) — the cashability tag for
+     * THIS row's delta. Credits stamp the tag minted (`soft`/`bought`/`earned`);
+     * debits stamp the tag BURNED (a multi-tag spend emits one row per tag so the
+     * audit trail shows exactly which cashable/non-cashable balance was consumed —
+     * see `claw-token-ledger.ts` allocator). Nullable for backfilled pre-F1 rows
+     * (historical ledger rows have no provenance). `earned` is written ONLY by
+     * `mintEarned()`; see `clawTokenProvenanceEnum`.
+     */
+    provenance: clawTokenProvenanceEnum('provenance'),
+    /**
+     * USD basis (Tokenomics F1) — the real-dollar value behind this row. Set for
+     * `bought` receipts (dollars paid at the on-ramp) and `earned` mints (the full
+     * USDC a real customer paid), NULL otherwise. numeric(20,6) = µUSD precision,
+     * room for any plausible amount. The cashable claim is denominated by THIS, set
+     * by the payer — never a house rate (backing, not a peg; plan §3.2).
+     */
+    usdBasis: numeric('usd_basis', { precision: 20, scale: 6 }),
+    /**
+     * Anti-abuse fingerprint scaffolding (Tokenomics F1, plan §6). `mintEarned`
+     * ACCEPTS + STORES these (salted sha256 of browser fp / IP-/24 prefix, supplied
+     * by the caller). ENFORCEMENT (per-pair caps / cooldown) is a LATER feature —
+     * F1 only lands the columns + the single write site that records them. Nullable.
+     */
+    fpHash: text('fp_hash'),
+    ipPrefixHash: text('ip_prefix_hash'),
     /** Reason-specific payload (bookId, buildingId, questId, txHash, etc.) */
     metadata: jsonb('metadata').default({}).notNull(),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
@@ -125,6 +184,8 @@ export const clawTokenTransactions = pgTable(
     avatarIdx: index('claw_token_tx_avatar_idx').on(t.avatarId, t.createdAt),
     userIdx: index('claw_token_tx_user_idx').on(t.userId, t.createdAt),
     sourceIdx: index('claw_token_tx_source_idx').on(t.source, t.createdAt),
+    // F1 — audit-by-cashability: scan all `earned` mints / all `bought` receipts.
+    provenanceIdx: index('claw_token_tx_provenance_idx').on(t.provenance, t.createdAt),
   }),
 );
 

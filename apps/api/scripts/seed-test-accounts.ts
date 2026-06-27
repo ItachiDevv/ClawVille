@@ -104,7 +104,13 @@ async function main() {
       let avatarId: string;
       if (existingAvatar[0]) {
         avatarId = existingAvatar[0].id;
-        await db.update(avatars).set({ clawTokens: 100_000 }).where(eq(avatars.id, avatarId));
+        // F1: mirror clawTokens into softBalance so avatars_vclaw_balance_sum holds
+        // (100_000 = 100_000+0+0). This UPDATE would otherwise leave the tags stale
+        // and violate the CHECK. Test CT is SOFT (non-cashable).
+        await db
+          .update(avatars)
+          .set({ clawTokens: 100_000, softBalance: 100_000, boughtBalance: 0, earnedBalance: 0 })
+          .where(eq(avatars.id, avatarId));
       } else {
         const insertedAv = await db.insert(avatars).values({
           userId,
@@ -116,6 +122,8 @@ async function main() {
           personality: { habitat: 'staging', hobby: 'testing', greeting: 'gm' },
           stats: { strength: 5, defence: 5, movement: 5 },
           clawTokens: 100_000,
+          // F1: mirror into softBalance so avatars_vclaw_balance_sum holds. SOFT.
+          softBalance: 100_000,
         }).returning({ id: avatars.id });
         avatarId = insertedAv[0].id;
       }
