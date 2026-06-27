@@ -10,6 +10,9 @@ import type { LandTier } from '@clawville/shared';
 /** Parcel lifecycle status as returned by the API. */
 export type LandParcelStatus = 'available' | 'owned' | 'reserved' | 'retired';
 
+/** How a parcel is held; null on an available/unsold parcel. */
+export type LandTenure = 'rented' | 'owned' | 'starter';
+
 /** A single land parcel row. `priceCt` is null for the founder tier (auction-only). */
 export interface LandParcelDTO {
   id: string;
@@ -20,6 +23,14 @@ export interface LandParcelDTO {
   gridY: number;
   priceCt: number | null;
   ownerAvatarId: string | null;
+  /**
+   * Weekly rent in CT, or null when the tier is not rentable. Rentable = c-tier
+   * only; starter/founder carry null. The Land Office gates its Rent action on
+   * `rentCtWeekly != null`.
+   */
+  rentCtWeekly: number | null;
+  /** How the parcel is held; null = available/unsold. */
+  tenure: LandTenure | null;
 }
 
 /** A structure (home or shop) placed on an owned parcel. */
@@ -75,6 +86,18 @@ export interface ClaimStarterResponse {
 export interface BuyParcelResponse {
   parcel: LandParcelDTO;
   amountCt: number;
+}
+
+/**
+ * POST /api/land/parcels/:id/rent response. `amountCt` = the weekly rent debited
+ * for the first week (server-read `rent_ct_weekly`). `rentPaidThrough` = ISO date
+ * the rent is paid through; the hourly sweeper charges the next week + grace →
+ * evict if unpaid.
+ */
+export interface RentParcelResponse {
+  parcel: LandParcelDTO;
+  amountCt: number;
+  rentPaidThrough: string;
 }
 
 /** POST /api/land/parcels/:id/structure response. */
