@@ -142,6 +142,30 @@ for (let _n = 1; _n <= 8; _n++) {
 
 // ─── SPEC 2: Milady VRM helpers ───────────────────────────────────────────────
 
+/**
+ * Lay an arbitrarily-authored board FLAT + nose-forward: map its longest local axis →
+ * world +Z (forward) and its thinnest → +Y (up). The surfboard_1.glb is authored STANDING
+ * VERTICAL (longest extent along local Y), so without this the v2 board renders upright.
+ * Verified flat in the free-drive sandbox (same helper). Robust to the GLB's authored frame.
+ */
+function surfboardBaseQuat(size: THREE.Vector3): THREE.Quaternion {
+  const dims = [size.x, size.y, size.z];
+  const longI = dims.indexOf(Math.max(dims[0], dims[1], dims[2]));
+  const thinI = dims.indexOf(Math.min(dims[0], dims[1], dims[2]));
+  const midI = 3 - longI - thinI;
+  const world: THREE.Vector3[] = [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()];
+  world[longI].set(0, 0, 1);  // longest → forward
+  world[thinI].set(0, 1, 0);  // thinnest → up
+  world[midI].set(1, 0, 0);   // remaining → right
+  const m = new THREE.Matrix4().makeBasis(world[0], world[1], world[2]);
+  if (m.determinant() < 0) { world[midI].multiplyScalar(-1); m.makeBasis(world[0], world[1], world[2]); }
+  return new THREE.Quaternion().setFromRotationMatrix(m);
+}
+
+/** Uniform scale (gliderRef-local) for the orientation-corrected surfboard so its longest
+ *  (now forward) extent ≈ GLIDER_LENGTH. GLB longest ≈ 2.0 local → ×2.5 ≈ 5.0. */
+const SURFBOARD_UNIFORM_SCALE = 2.5;
+
 /** True when the species string identifies a Milady VRM avatar. */
 function isMiladySpecies(species: string | undefined): species is string {
   return typeof species === 'string' && species.startsWith('milady_official_');
@@ -572,11 +596,27 @@ function ReefRacePlayerInner({ entity, isSelf = false, triggerScreenShake }: Ree
         }
       });
     }
-    // Scale: surfboard_1.glb is nominally 1m. In KART_SCALE local space, we
-    // target roughly GLIDER_LENGTH (5) in Z and GLIDER_WIDTH (2.5) in X.
-    // A scale of GLIDER_LENGTH fits the board footprint to the old BoxGeometry.
-    sb.scale.set(GLIDER_WIDTH, GLIDER_HEIGHT * 4, GLIDER_LENGTH);
-    return sb;
+    // Orient FLAT: the GLB is authored standing vertical, so a non-uniform scale left it
+    // upright. Recenter, then rotate longest→forward(+Z) / thinnest→up(+Y) via the verified
+    // base quat inside a wrapper group + a uniform scale. (Was sb.scale.set(2.5,1,5) which
+    // kept the longest extent on Y = vertical board.)
+    const box = new THREE.Box3().setFromObject(sb);
+    const size = new THREE.Vector3(); box.getSize(size);
+    const center = new THREE.Vector3(); box.getCenter(center);
+    sb.position.sub(center);
+    const oriented = new THREE.Group();
+    oriented.add(sb);
+    // surfboardBaseQuat lays the board FLAT, but bounding-box sizing recovers WHICH axis is
+    // long/thin — not its SIGN. For surfboard_1.glb the authored long/thin axes point
+    // nose-back + deck-down: the /preview/reef-race-v2?mode=racer harness measured
+    // normalDotDeckUp = longDotDeckForward = -1 (perfectly flat, but flipped 180° about the
+    // lateral axis). Correct with a 180° pre-rotation about the deck-right (gliderRef ±X)
+    // axis so the deck faces UP + nose points FORWARD. (180° about ±X is the same rotation,
+    // so the det-flip sign of the width axis is irrelevant.)
+    const _flipLateral = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), Math.PI);
+    oriented.quaternion.copy(_flipLateral).multiply(surfboardBaseQuat(size));
+    oriented.scale.setScalar(SURFBOARD_UNIFORM_SCALE);
+    return oriented;
   }, [surfboardSrc, entity.color]);
 
   // v2: attach / detach surfboard clone to gliderRef.

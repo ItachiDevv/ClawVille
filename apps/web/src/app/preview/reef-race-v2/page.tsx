@@ -47,6 +47,8 @@ import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib';
 import { RiverScene } from '@/lib/three/activities/reef-race/river-scene';
 import { SurfBloom } from '@/lib/three/activities/reef-race/surf-bloom';
 import { ReefFreeDrive } from '@/lib/three/activities/reef-race/ReefFreeDrive';
+import ReefRacePlayer from '@/lib/three/activities/reef-race/ReefRacePlayer';
+import type { ReefRaceEntity } from '@/lib/three/activities/reef-race/reef-race-types';
 import { clientSpline } from '@/lib/three/activities/reef-race/reef-race-spline-instance';
 import { elevationAtT } from '@/lib/three/activities/reef-race/reef-race-elevation';
 import { ReefWaterTunerPanel } from '@/components/reef/ReefWaterTunerPanel';
@@ -190,6 +192,39 @@ function CamController({ mode, controlsRef, onCamDist }: CamControllerProps) {
   return null;
 }
 
+// ─── Real-race kart render harness (?mode=racer) ─────────────────────────────
+// DEV-ONLY: mounts ONE real-race <ReefRacePlayer/> (the spline path) with a fixed
+// fake entity on a banked stretch + a close 3/4 camera, so the surf-tilt / banked
+// ride / board ORIENTATION baked into ReefRacePlayer can be eyeballed WITHOUT a live
+// race. Requires a build with NEXT_PUBLIC_REEF_RACE_USE_SPLINE=true (else ReefRacePlayer
+// takes the flat v1 path). The kart surfs IN PLACE (wave time advances; XZ fixed).
+const _HARNESS_T = 0.10; // a banked stretch of the spline
+function ReefRaceKartHarness() {
+  const { camera } = useThree();
+  const wrapRef = useRef<THREE.Group>(null);
+  const c = clientSpline.centerlineAt(_HARNESS_T);
+  const tan = clientSpline.tangentAt(_HARNESS_T);
+  const datumY = elevationAtT(_HARNESS_T);
+  const [entity] = useState<ReefRaceEntity>(() => ({
+    avatarId: 'harness-1', x: c.x, y: c.z, rot: Math.atan2(tan.x, tan.z),
+    vx: 0, vy: 0, alive: true, color: '#35d0ff', species: 'lobster', lap: 1,
+  }));
+  useFrame(() => {
+    // Close, low 3/4 view of the kart so the BOARD PROFILE (flat vs vertical) reads
+    // clearly. The kart renders at KART_SCALE world units around c; ~120u out / ~55u up.
+    camera.position.set(c.x + 120, datumY + 55, c.z + 120);
+    camera.lookAt(c.x, datumY + 12, c.z);
+    // DEV ground-truth: expose the kart wrapper so Playwright can read the surfboard's
+    // true world pose (no scene-handle hunting needed). Harmless; dev-only preview route.
+    if (typeof window !== 'undefined') (window as unknown as { __HARNESS_GROUP?: THREE.Group }).__HARNESS_GROUP = wrapRef.current ?? undefined;
+  });
+  return (
+    <group ref={wrapRef}>
+      <ReefRacePlayer entity={entity} isSelf={false} />
+    </group>
+  );
+}
+
 // ─── Scene contents ───────────────────────────────────────────────────────────
 
 interface SceneContentsProps {
@@ -199,17 +234,19 @@ interface SceneContentsProps {
   onCamDist: (d: number) => void;
   /** DRIVE sandbox: keyboard-driven kart owns the camera — skip orbit cam + demo karts. */
   drive: boolean;
+  /** RACER harness: mount one real-race ReefRacePlayer (spline path) + a close camera. */
+  racer: boolean;
 }
 
-function SceneContents({ mode, autoRotate, controlsRef, onCamDist, drive }: SceneContentsProps) {
+function SceneContents({ mode, autoRotate, controlsRef, onCamDist, drive, racer }: SceneContentsProps) {
   return (
     <>
       {/* Free-orbit / cinematic camera + orbit controls — ONLY in look modes. In
           drive mode <ReefFreeDrive/> owns the chase camera, so these are skipped. */}
-      {!drive && (
+      {!drive && !racer && (
         <CamController mode={mode} autoRotate={autoRotate} controlsRef={controlsRef} onCamDist={onCamDist} />
       )}
-      {!drive && (
+      {!drive && !racer && (
         <OrbitControls
           ref={controlsRef as unknown as React.Ref<OrbitControlsImpl>}
           enableDamping
@@ -228,8 +265,9 @@ function SceneContents({ mode, autoRotate, controlsRef, onCamDist, drive }: Scen
 
       {/* SURF ROAD scene. Look modes show decorative demo karts; drive mode hides
           them (you ARE the kart) and mounts the keyboard-driven free-drive rig. */}
-      <RiverScene showDemoKarts={!drive} />
+      <RiverScene showDemoKarts={!drive && !racer} />
       {drive && <ReefFreeDrive />}
+      {racer && <ReefRaceKartHarness />}
 
       <PreviewLighting />
 
@@ -376,6 +414,9 @@ function ReefRacePreviewInner() {
   // DRIVE sandbox mode (keyboard-driven kart + physics tuner). Not a CameraMode —
   // <ReefFreeDrive/> owns the chase camera. Reached via ?mode=drive.
   const drive = rawMode === 'drive';
+  // RACER harness mode — mount one real-race ReefRacePlayer (spline path) to eyeball
+  // the baked surf-tilt / banked ride / board orientation (needs the spline build flag).
+  const racer = rawMode === 'racer';
   // Default to free-orbit hero of the whole floating loop in the void.
   const mode: CameraMode = isCameraMode(rawMode) ? rawMode : 'free-orbit';
 
@@ -418,6 +459,7 @@ function ReefRacePreviewInner() {
             controlsRef={controlsRef}
             onCamDist={handleCamDist}
             drive={drive}
+            racer={racer}
           />
         </Suspense>
         <FrameTicker onStats={handleStats} />
