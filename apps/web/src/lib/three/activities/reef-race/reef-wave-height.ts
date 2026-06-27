@@ -1,28 +1,39 @@
 /**
- * reef-wave-height.ts — CPU mirror of the surf-ribbon.tsx water VERTICAL HEAVE.
+ * reef-wave-height.ts — CPU mirror of the surf-ribbon.tsx water SURFACE HEIGHT.
  *
- * The water surface in `surf-ribbon.tsx` is `datum + Gerstner displacement`. The
- * GERSTNER VERTICAL HEAVE (`dispY = Σ A·sin(phase)`) can reach ~±120wu above/below
- * the centerline datum. A kart placed at the datum therefore sits UNDERWATER half the
- * time. To make the board SURF, place it on the actual surface: datum + this heave.
+ * The water in `surf-ribbon.tsx` is a 7-octave GERSTNER surface: a base grid vertex is
+ * displaced BOTH vertically (`dispY`) AND horizontally (`dispX/dispZ`, the crest pinch),
+ * so `displaced = base + (dispX, dispY, dispZ)`. The surface point that ends up at a given
+ * world XZ therefore started at a DIFFERENT grid point. Sampling `dispY` at the world XZ
+ * directly (the old approach) over-/under-shoots: Gerstner crests pile up NARROW + TALL
+ * and troughs go BROAD + shallow, so a board placed at the naive sine height sits BELOW
+ * the real crests (submerged) and ABOVE the real troughs (floating) — the founder's
+ * "floats then submerges" bug.
  *
- * This evaluates the SAME vertical-heave sum the vertex shader computes, in world XZ,
- * in time-sync with the shader (same `clock.elapsedTime`). The horizontal Gerstner
- * pinch is omitted — it only nudges where a surface point lands laterally, which is
- * negligible for placing a kart that's already tracking its own XZ.
+ * Fix: INVERT the horizontal map. Find the grid base whose displaced position lands at the
+ * board's world XZ (fixed-point: base = worldXZ − dispXZ(base)), then return the height
+ * `dispY(base)` there. The shader normalises steepness so Σ(WSTEEP/N)=0.726 < 1, which makes
+ * the map a contraction ⇒ the fixed point converges; ~8 iterations gives sub-wu accuracy.
  *
- * ⚠️ CONSTANTS MUST STAY IN SYNC with `surf-ribbon.tsx` `_waterVert` (WDIR / WLEN /
- * WAMP / WSPD + the setEnv boost). If you retune the shader's Gerstner bank, update
- * here in the same diff (like the CANYON_SAMPLES==RIBBON_SAMPLES seam contract).
- * Reads `WATER_TUNING.waveAmp` / `.setStrength` so it matches whatever the water is
- * currently rendering (committed defaults in prod; live values under the water tuner).
+ * ⚠️ CONSTANTS MUST STAY IN SYNC with `surf-ribbon.tsx` `_waterVert` (WDIR / WLEN / WAMP /
+ * WSPD / WSTEEP + the setEnv swing/freq + the Q normalisation). If you retune the shader's
+ * Gerstner bank, update here in the same diff (like the CANYON_SAMPLES==RIBBON_SAMPLES seam
+ * contract). Time is read from the SAME `state.clock.elapsedTime` the shader's `uTime` uses,
+ * so the heave is phase-locked to what the water renders. Reads `WATER_TUNING.waveAmp` /
+ * `.setStrength` so it matches whatever the water is currently rendering (committed defaults
+ * in prod; live values under the water tuner).
+ *
+ * NOT applied: the bank edge-taper `mask` (uv.x → 0 at the ribbon edges). The board rides
+ * near the channel centre where mask≈1; if a board parks against a bank the height will read
+ * slightly high there (acceptable for the sandbox; add the lateral-fraction mask if needed).
  */
 
 import { WATER_TUNING } from './reef-water-tuning';
 
 const TWO_PI = 6.28318530718;
+const NWAVES = 7;
 
-// Mirror of surf-ribbon.tsx WDIR (pre-normalized), WLEN, WAMP, WSPD (7 octaves).
+// Mirror of surf-ribbon.tsx WDIR (pre-normalized), WLEN, WAMP, WSPD, WSTEEP (7 octaves).
 const WDIR: ReadonlyArray<readonly [number, number]> = [
   [0.242536, 0.970143],
   [0.928477, 0.371391],
@@ -35,30 +46,56 @@ const WDIR: ReadonlyArray<readonly [number, number]> = [
 const WLEN = [2300, 1500, 980, 640, 460, 340, 300];
 const WAMP = [50, 33, 19, 10, 5, 2.6, 1.6];
 const WSPD = [150, 126, 108, 94, 82, 70, 62];
+const WSTEEP = [0.92, 0.90, 0.86, 0.80, 0.66, 0.52, 0.42];
+
+// Reused output [dispX, dispZ, dispY] — surfWaveHeightAt is called sequentially (not
+// reentrant), so a shared module scratch avoids per-call allocation.
+const _disp = [0, 0, 0];
+
+/** Full 7-octave Gerstner displacement at grid point (bx,bz), time tSec. Writes _disp. */
+function gerstnerDisp(bx: number, bz: number, tSec: number, waveAmp: number, setStrength: number): void {
+  // Traveling "set" envelope on the two long swells (mirror surf-ribbon.tsx); negative-safe.
+  const setSwing = 0.28 * Math.min(setStrength, 1) + 0.4 * Math.max(setStrength - 1, 0);
+  const setFreq = 0.00075 * (1 + 0.6 * Math.max(setStrength - 1, 0));
+  const setPhase = (WDIR[0][0] * bx + WDIR[0][1] * bz) * setFreq - tSec * 0.6;
+  const setEnv = Math.max(0, 1 - setSwing * (1 - Math.sin(setPhase)));
+
+  let dispX = 0;
+  let dispZ = 0;
+  let dispY = 0;
+  for (let k = 0; k < 7; k++) {
+    const w = TWO_PI / WLEN[k];
+    const a = WAMP[k] * (k < 2 ? setEnv : 1) * waveAmp;
+    const q = WSTEEP[k] / (w * Math.max(a, 1e-3) * NWAVES); // matches shader Q normalisation
+    const ph = w * (WDIR[k][0] * bx + WDIR[k][1] * bz) + WSPD[k] * w * tSec;
+    const cc = Math.cos(ph);
+    const ss = Math.sin(ph);
+    dispX += q * a * WDIR[k][0] * cc;
+    dispZ += q * a * WDIR[k][1] * cc;
+    dispY += a * ss;
+  }
+  _disp[0] = dispX; _disp[1] = dispZ; _disp[2] = dispY;
+}
 
 /**
- * World-space vertical heave (wu) of the water surface at (x,z) and time `tSec`.
- * Add to the centerline datum (`elevationAtT`) + a small ride height to float a kart
- * on the surface. Mirrors the shader's traveling "set" envelope on the two long
- * swells (k<2), negative-safe floor included.
+ * World-space surface HEIGHT (wu, above the centerline datum) of the water at world (x,z)
+ * and time `tSec` — the Gerstner-correct height (horizontal pinch inverted), so a board
+ * placed at `elevationAtT + this + rideHeight` sits ON the rendered surface through crests
+ * and troughs (no float / submerge). Add to the centerline datum (`elevationAtT`).
  */
 export function surfWaveHeightAt(x: number, z: number, tSec: number): number {
   const waveAmp = WATER_TUNING.waveAmp;
   const setStrength = WATER_TUNING.setStrength;
 
-  // Traveling set envelope (mirror surf-ribbon.tsx): swing + freq boost above 1,
-  // floored at 0 so a boosted swing can't invert. Applied to the two long swells.
-  const setSwing = 0.28 * Math.min(setStrength, 1) + 0.4 * Math.max(setStrength - 1, 0);
-  const setFreq = 0.00075 * (1 + 0.6 * Math.max(setStrength - 1, 0));
-  const setPhase = (WDIR[0][0] * x + WDIR[0][1] * z) * setFreq - tSec * 0.6;
-  const setEnv = Math.max(0, 1 - setSwing * (1 - Math.sin(setPhase)));
-
-  let dispY = 0;
-  for (let k = 0; k < 7; k++) {
-    const w = TWO_PI / WLEN[k];
-    const a = WAMP[k] * (k < 2 ? setEnv : 1) * waveAmp;
-    const ph = w * (WDIR[k][0] * x + WDIR[k][1] * z) + WSPD[k] * w * tSec;
-    dispY += a * Math.sin(ph);
+  // Invert the horizontal Gerstner map: base ← worldXZ − dispXZ(base). Contraction
+  // (Σ WSTEEP/N = 0.726 < 1) ⇒ converges; 8 iters → sub-wu residual at our steepness.
+  let bx = x;
+  let bz = z;
+  for (let i = 0; i < 8; i++) {
+    gerstnerDisp(bx, bz, tSec, waveAmp, setStrength);
+    bx = x - _disp[0];
+    bz = z - _disp[1];
   }
-  return dispY;
+  gerstnerDisp(bx, bz, tSec, waveAmp, setStrength);
+  return _disp[2];
 }

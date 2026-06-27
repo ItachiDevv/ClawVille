@@ -148,6 +148,29 @@ export function elevationAtXZ(x: number, z: number, key: string): number {
 }
 
 /**
+ * Render-only BANKED water-surface datum Y (wu) at world (x,z), given a known spline t.
+ *
+ * The water ribbon is BANKED — its cross-section tilts across the channel. Mirroring
+ * `surf-ribbon.tsx` frameAt/buildWaterGeo, a vertex at lateral offset L (along the
+ * spline normal) from the centerline has Y = elevation(t) + sin(bank)·L (and its
+ * horizontal offset is cos(bank)·L). So for a body at world (x,z), its lateral offset
+ * along the normal is `offH = (P−centerline)·n` = cos(bank)·L, giving:
+ *
+ *     bankedY = elevation(t) + tan(bank) · offH
+ *
+ * A body that uses only the CENTERLINE `elevationAtT` floats above the low side / sinks
+ * on the high side of every banked turn (the offset grows with lateral distance) — which
+ * is exactly the "board doesn't track the water" bug. Use this for anything riding the
+ * water surface at a lateral offset. Bank is capped ±28° so tan stays well-behaved.
+ */
+export function bankedDatumYAtT(x: number, z: number, t: number): number {
+  const c = clientSpline.centerlineAt(t);
+  const n = clientSpline.normalAt(t);
+  const offH = (x - c.x) * n.x + (z - c.z) * n.z;
+  return reefTrackElevationAt(t) + Math.tan(bankAngleAtT(t)) * offH;
+}
+
+/**
  * Drop a cached key (call when a body despawns / the scene unmounts) so the Map
  * doesn't accrete dead keys across long sessions. Safe to call with an unknown
  * key. The 'cam' key is dropped on scene teardown.

@@ -77,12 +77,24 @@ export interface ReefPhysicsTuning {
   camUp: number;
   /** Chase cam look-ahead distance (wu). */
   camAhead: number;
+
+  // ── Board pose (surf feel) ──
+  /** Baseline nose-up trim (degrees) — the board planes tipped up at the front, like a
+   *  surfboard/speedboat, instead of lying dead flat. */
+  pitchTrimDeg: number;
+  /** Wave-slope pitch reactivity (× the board's nose-vs-tail surface slope). The nose
+   *  rides up wave faces and dips into troughs; 0 = ignore waves, 1 = match the surface. */
+  pitchWaveGain: number;
+  /** Lean-INTO-turn roll (× the board's angular velocity, rad/s). The board banks toward
+   *  the direction it's steering — left lean on a left carve, right on a right carve — on
+   *  TOP of the track bank + wave cross-slope. This is the symmetric turn responsiveness. */
+  turnLeanGain: number;
 }
 
 // ─── Canonical defaults (mirror reef-race-config.ts @ ebb9c9a6) ──────────────
 const CANONICAL: ReefPhysicsTuning = {
-  // Founder-tuned 2026-06-24 (kept from the sandbox): faster top speed + accel.
-  maxSpeed: 940,
+  // Founder-tuned: faster top speed + accel (speed bumped 940→1300 on 2026-06-27).
+  maxSpeed: 1300,
   maxAccel: 3500,
   turnRate: 2.6,
   turnSpeedFalloff: 0.45,
@@ -111,13 +123,20 @@ const CANONICAL: ReefPhysicsTuning = {
   // instantly dropping into the void (the original hard 60 reset drift charges).
   offtrackMargin: 280,
 
-  // View — founder-tuned 2026-06-24 (kept from the sandbox): big board, slightly
-  // sunk into the surface, pulled-back high chase cam looking well ahead.
+  // View — founder-tuned 2026-06-24 (kept from the sandbox): big board, pulled-back
+  // high chase cam looking well ahead. rideHeight is the offset ABOVE the (now
+  // Gerstner-correct) wave surface — POSITIVE so the board rides ON the water; -20
+  // sank it under the surface ("mostly covered in water"). Dial to taste.
   kartScale: 125,
-  rideHeight: -20,
+  rideHeight: 20,
   camBack: 710,
   camUp: 660,
   camAhead: 720,
+
+  // Board pose — planes nose-up + tips with the wave face (a flat board reads unnatural).
+  pitchTrimDeg: 10,
+  pitchWaveGain: 1.3,
+  turnLeanGain: 0,      // optional carve lean ON TOP of surface-conform roll (default off)
 };
 
 /** The live singleton — read by the sandbox prediction loop, written by the panel. */

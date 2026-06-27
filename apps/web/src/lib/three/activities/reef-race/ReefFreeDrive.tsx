@@ -32,8 +32,15 @@
  * whip-bump + off-track reset are FEEL prototypes (client-only); authoritative multiplayer
  * versions are a later sim job.
  *
+ * FLUIDITY: the sim steps at a fixed 30Hz but the scene renders at ~240fps, so the board
+ * is rendered at the INTERPOLATED pose between the previous and current sim state (alpha =
+ * accum/TICK_DT) — board, rival, rotation, and chase camera all read the lerped pose.
+ * Without it the board slides in ~8-frame jumps (the "glitchy motion"). Spawn/respawn
+ * teleports snap (no slide) for one frame.
+ *
  * Iris-Xe: surfboard GLB clones (no ShaderMaterial), import 'three', module-scope
- * scratch vectors/colours (no per-frame `new THREE.Vector3`), frustumCulled=false.
+ * scratch vectors/colours (no per-frame `new THREE.Vector3`), frustumCulled=false. The
+ * dev debug hook is gated on `window.__REEF_ON` and writes reused objects (no GC).
  */
 
 import { useRef, useEffect } from 'react';
@@ -43,7 +50,7 @@ import * as THREE from 'three';
 
 import { integrateSurfStep, type SurfBodyState } from '@clawville/shared';
 import { clientSpline } from './reef-race-spline-instance';
-import { tAtXZ, elevationAtT, bankAngleAtT, elevationAtXZ, forgetTKey } from './reef-race-elevation';
+import { tAtXZ, elevationAtT, bankedDatumYAtT, forgetTKey } from './reef-race-elevation';
 import { surfWaveHeightAt } from './reef-wave-height';
 import { REEF_PHYSICS_TUNING as T } from './reef-physics-tuning';
 
@@ -57,8 +64,11 @@ const STEER_TARGET_OFFSET = 0.7;
 const FALL_TICKS = 34;
 const FALL_DEPTH = 1100;
 
-const PITCH_SAMPLE = 140;
-const PITCH_CLAMP = 0.5;
+const PITCH_HALF_LEN = 120;  // ≈ half the board's length (wu) — sample the wave at nose & tail
+const ROLL_HALF_WIDTH = 36;  // ≈ half the board's width (wu) — sample the wave at left & right rail
+const PITCH_CLAMP = 0.6;     // ±34° — room for the nose-up trim + wave tip
+const ROLL_CLAMP = 0.8;      // ±46° — room for track-bank + wave cross-slope
+const DEG2RAD = 0.0174532925;
 
 const CAM_LERP = 6.0;
 const CAM_LOOK_UP = 60;
@@ -74,6 +84,56 @@ const _camLook = new THREE.Vector3();
 const _emBase = new THREE.Color('#ff2bd6'); // player rest emissive (magenta)
 const _emHot = new THREE.Color('#ffffff');  // hot-charge / boost flash target
 const _emTmp = new THREE.Color();
+
+// DEV debug hook — gated on `window.__REEF_ON` (off by default → zero hot-path cost),
+// writes into REUSED module objects (no per-frame allocation / GC). The verify harness
+// sets __REEF_ON then reads window.__REEF / __REEFOBJ.
+const _dbg = {
+  mounted: true,
+  pred: { x: 0, z: 0, vx: 0, vz: 0, rot: 0, speed: 0 },
+  dummy: { x: 0, z: 0 }, t: 0, alpha: 0,
+  falling: false, fallTicks: 0, lastSafeT: 0,
+  driftCharge: 0, boostTicks: 0, boostMult: 1, whipCd: 0, whipSwing: 0,
+  boardPos: [0, 0, 0], boardEulerDeg: [0, 0, 0], boardScale: 0,
+  camPos: [0, 0, 0], camToBoard: 0, surfaceY: 0, rideHeight: 0,
+};
+const _dbgObj: { player: unknown; dummy: unknown; camera: unknown; scene: unknown } =
+  { player: null, dummy: null, camera: null, scene: null };
+type ReefDebugWindow = { __REEF_ON?: boolean; __REEF?: unknown; __REEFOBJ?: unknown };
+const RAD2DEG = 57.29578;
+
+// Surf-conforming board tilt at world (x,z) facing `rot`, on spline `t`, at `time`.
+// PITCH (fore-aft): the wave-surface slope nose→tail + a baseline nose-up trim, so it
+// planes like a surfboard. ROLL (lateral): the wave-surface slope left→right rail PLUS
+// the track bank, so the board leans with the wave's cross-slope AND into banked turns.
+// Both gained by T.pitchWaveGain. Reused scratch (no per-call alloc). Used by BOTH boards.
+const _tiltOut = { pitch: 0, roll: 0 };
+function surfTilt(x: number, z: number, rot: number, t: number, time: number, angVel: number): { pitch: number; roll: number } {
+  const fX = Math.sin(rot), fZ = Math.cos(rot);   // forward
+  const rX = Math.cos(rot), rZ = -Math.sin(rot);  // right
+  // PITCH — nose vs tail (rotation.x<0 = nose up; wave term + trim both subtract)
+  const hNose = surfWaveHeightAt(x + fX * PITCH_HALF_LEN, z + fZ * PITCH_HALF_LEN, time);
+  const hTail = surfWaveHeightAt(x - fX * PITCH_HALF_LEN, z - fZ * PITCH_HALF_LEN, time);
+  let pitch = -Math.atan2(hNose - hTail, 2 * PITCH_HALF_LEN) * T.pitchWaveGain - T.pitchTrimDeg * DEG2RAD;
+  if (pitch < -PITCH_CLAMP) pitch = -PITCH_CLAMP; else if (pitch > PITCH_CLAMP) pitch = PITCH_CLAMP;
+  // ROLL — CONFORM to the FULL water surface (banked datum + wave). Sample the actual
+  // surface height at the board's left & right rails and tilt so the board lies FLAT on
+  // the lateral slope (water lower on the right ⇒ right rail DOWN). This replaces the old
+  // wave-only + separate bankAngle terms, which lived in different frames and ANTI-conformed
+  // (board tilted opposite the water). Sign verified vs the rendered mesh: rotation.z<0 =
+  // right rail UP, so conforming to down-right water needs +roll ⇒ roll = -atan2(sR - sL).
+  const rxR = x + rX * ROLL_HALF_WIDTH, rzR = z + rZ * ROLL_HALF_WIDTH;
+  const rxL = x - rX * ROLL_HALF_WIDTH, rzL = z - rZ * ROLL_HALF_WIDTH;
+  const sRight = bankedDatumYAtT(rxR, rzR, t) + surfWaveHeightAt(rxR, rzR, time);
+  const sLeft  = bankedDatumYAtT(rxL, rzL, t) + surfWaveHeightAt(rxL, rzL, time);
+  // Sign verified clean (board width-axis Y vs water cross-slope): roll<0 = right rail UP,
+  // so conforming to down-right water (sRight<sLeft) needs roll<0 ⇒ roll = +atan2(sR - sL).
+  let roll = Math.atan2(sRight - sLeft, 2 * ROLL_HALF_WIDTH)    // conform: lie flat on the slope
+           + angVel * T.turnLeanGain;                           // optional lean INTO the carve (default 0)
+  if (roll < -ROLL_CLAMP) roll = -ROLL_CLAMP; else if (roll > ROLL_CLAMP) roll = ROLL_CLAMP;
+  _tiltOut.pitch = pitch; _tiltOut.roll = roll;
+  return _tiltOut;
+}
 
 /** Rival state. (x,z) is the rendered position = its slot beside the player PLUS a
  *  transient (bx,bz) knock offset; (vx,vz) is the whip-bump velocity feeding the offset. */
@@ -122,6 +182,12 @@ export function ReefFreeDrive() {
   const falling = useRef(false);
   const fallTicks = useRef(0);
   const lastSafeT = useRef(0);
+  // Render interpolation: the state each fixed 30Hz step integrates FROM, lerped toward
+  // the post-step state by alpha=accum/TICK_DT so the ~240fps render is smooth (the sim
+  // only advances 30×/s; without this the board slides in ~8-frame jumps = the glitch).
+  const prevSelf = useRef({ x: 0, z: 0, rot: 0 });
+  const prevDummy = useRef({ x: 0, z: 0 });
+  const snapRender = useRef(true); // skip interpolation for 1 frame after spawn/respawn (teleport)
 
   useEffect(() => {
     const group = groupRef.current;
@@ -175,6 +241,9 @@ export function ReefFreeDrive() {
     driftCharge.current = 0; boostTicks.current = 0; boostMult.current = 1; whipCd.current = 0;
     falling.current = false; fallTicks.current = 0; lastSafeT.current = 0;
     dummy.current = { x: c0.x, z: c0.z, vx: 0, vz: 0, bx: 0, bz: 0 };
+    prevSelf.current = { x: c0.x, z: c0.z, rot: Math.atan2(tan0.x, tan0.z) };
+    prevDummy.current = { x: c0.x, z: c0.z };
+    snapRender.current = true;
 
     // Player = hot magenta: max contrast on cyan water AND distinct from the coral
     // rival (the old cyan player was invisible — same hue as the water + foam).
@@ -214,6 +283,7 @@ export function ReefFreeDrive() {
         p.rot = Math.atan2(tan.x, tan.z);
         falling.current = false; fallTicks.current = 0;
         driftCharge.current = 0; boostTicks.current = 0; boostMult.current = 1;
+        snapRender.current = true; // teleport — don't interpolate across the respawn
       }
       return;
     }
@@ -322,31 +392,55 @@ export function ReefFreeDrive() {
     const dObj = dummyObjRef.current;
     if (!player || !dObj) return;
 
+    const p = pred.current;
+    const d = dummy.current;
+
     accum.current += frameDt > MAX_ACCUM ? MAX_ACCUM : frameDt;
     let guard = 0;
-    while (accum.current >= TICK_DT && guard < 16) { step(); accum.current -= TICK_DT; guard++; }
+    while (accum.current >= TICK_DT && guard < 16) {
+      // Snapshot the state we integrate FROM, so render can interpolate toward the result.
+      prevSelf.current.x = p.x; prevSelf.current.z = p.z; prevSelf.current.rot = p.rot;
+      prevDummy.current.x = d.x; prevDummy.current.z = d.z;
+      step();
+      accum.current -= TICK_DT; guard++;
+    }
+    // After a spawn/respawn the integrate-from state is a teleport away — snap, don't slide.
+    if (snapRender.current) {
+      prevSelf.current.x = p.x; prevSelf.current.z = p.z; prevSelf.current.rot = p.rot;
+      prevDummy.current.x = d.x; prevDummy.current.z = d.z;
+      snapRender.current = false;
+    }
 
-    const p = pred.current;
     const time = state.clock.elapsedTime;
-    const t = tAtXZ(p.x, p.z, 'fd-self');
+    // Fraction toward the next sim tick — drives the smooth interpolation.
+    const alpha = accum.current >= TICK_DT ? 1 : accum.current / TICK_DT;
 
-    const surfaceY = elevationAtT(t) + surfWaveHeightAt(p.x, p.z, time) + T.rideHeight;
+    // ── Interpolated render pose (the fluidity fix: 30Hz sim → render-rate) ──
+    const rx = prevSelf.current.x + (p.x - prevSelf.current.x) * alpha;
+    const rz = prevSelf.current.z + (p.z - prevSelf.current.z) * alpha;
+    const rrot = prevSelf.current.rot + (p.rot - prevSelf.current.rot) * alpha;
+    // Angular velocity (rad/s) of the last sim tick — drives the lean-into-turn roll.
+    const angVel = (p.rot - prevSelf.current.rot) / TICK_DT;
+
+    const t = tAtXZ(rx, rz, 'fd-self');
+    const datumY = elevationAtT(t);   // CENTERLINE elevation (smooth, no bank tilt) — for the camera
+    // BOARD rides the BANKED water surface (tilts across the channel). Using the
+    // centerline datum made it float above the low side of every banked turn.
+    const surfaceY = bankedDatumYAtT(rx, rz, t) + surfWaveHeightAt(rx, rz, time) + T.rideHeight;
     const fallFrac = falling.current ? fallTicks.current / FALL_TICKS : 0;
     const py = surfaceY - fallFrac * fallFrac * FALL_DEPTH;
 
-    const fwdX = Math.sin(p.rot), fwdZ = Math.cos(p.rot);
-    const hAhead = surfWaveHeightAt(p.x + fwdX * PITCH_SAMPLE, p.z + fwdZ * PITCH_SAMPLE, time);
-    const hHere = surfWaveHeightAt(p.x, p.z, time);
-    let pitch = -Math.atan2(hAhead - hHere, PITCH_SAMPLE);
-    pitch = Math.max(-PITCH_CLAMP, Math.min(PITCH_CLAMP, pitch));
+    const fwdX = Math.sin(rrot), fwdZ = Math.cos(rrot);   // forward (also used by the camera below)
 
     const swingFrac = T.whipSwingTicks > 0 ? whipSwing.current / T.whipSwingTicks : 0;
     const swingWag = swingFrac * 0.5 * whipSide.current;
-    const bank = bankAngleAtT(t) + swingWag * 0.6;
+    // Full surf tilt: pitch (nose-up + wave fore-aft) + roll (wave cross-slope + track bank
+    // + lean into the turn).
+    const tilt = surfTilt(rx, rz, rrot, t, time, angVel);
 
     player.scale.setScalar(T.kartScale);
-    player.position.set(p.x, py, p.z);
-    player.rotation.set(pitch, p.rot + swingWag, bank);   // YXZ on the pivot
+    player.position.set(rx, py, rz);
+    player.rotation.set(tilt.pitch, rrot + swingWag, tilt.roll + swingWag * 0.6);   // YXZ on the pivot
 
     // Drift feedback: ramp the player board's emissive by charge tier, flash on boost.
     const charge = driftCharge.current;
@@ -363,36 +457,43 @@ export function ReefFreeDrive() {
       m.emissiveIntensity = ei;
     }
 
-    const d = dummy.current;
-    const dSurfaceY = elevationAtXZ(d.x, d.z, 'fd-dummy') + surfWaveHeightAt(d.x, d.z, time) + T.rideHeight;
+    // Rival — interpolated render pos too (tracks the interpolated player slot smoothly).
+    const dx = prevDummy.current.x + (d.x - prevDummy.current.x) * alpha;
+    const dz = prevDummy.current.z + (d.z - prevDummy.current.z) * alpha;
+    const dt = tAtXZ(dx, dz, 'fd-dummy');
+    const dSurfaceY = bankedDatumYAtT(dx, dz, dt) + surfWaveHeightAt(dx, dz, time) + T.rideHeight;
+    const dtilt = surfTilt(dx, dz, rrot, dt, time, angVel);   // rival gets the SAME tilt (was flat)
     dObj.scale.setScalar(T.kartScale);
-    dObj.position.set(d.x, dSurfaceY, d.z);
-    dObj.rotation.set(0, p.rot, 0);   // rival faces roughly down-track like the player
+    dObj.position.set(dx, dSurfaceY, dz);
+    dObj.rotation.set(dtilt.pitch, rrot, dtilt.roll);   // full wave pitch+roll, no whip swing
 
-    _camWanted.set(p.x - fwdX * T.camBack, py + T.camUp, p.z - fwdZ * T.camBack);
-    _camLook.set(p.x + fwdX * T.camAhead, py + CAM_LOOK_UP, p.z + fwdZ * T.camAhead);
+    // Camera follows the interpolated XZ but the SMOOTH track datum for Y (NOT py) — so
+    // the view doesn't bob/bounce with every wave the board rides over (the "jumpy" feel);
+    // the board still visibly surfs up/down the swell beneath the gliding camera.
+    _camWanted.set(rx - fwdX * T.camBack, datumY + T.camUp, rz - fwdZ * T.camBack);
+    _camLook.set(rx + fwdX * T.camAhead, datumY + CAM_LOOK_UP, rz + fwdZ * T.camAhead);
     if (!camInit.current) { camera.position.copy(_camWanted); camInit.current = true; }
     else camera.position.lerp(_camWanted, Math.min(1, CAM_LERP * frameDt));
     camera.lookAt(_camLook);
 
-    // DEV-ONLY live debug hook (sandbox-only; stripped by never running in prod game).
-    // Lets the verify harness read exact board/camera/physics state without RAF guessing.
-    if (typeof window !== 'undefined') {
-      (window as unknown as { __REEF?: unknown }).__REEF = {
-        mounted: true,
-        pred: { x: +p.x.toFixed(1), z: +p.z.toFixed(1), vx: +p.vx.toFixed(1), vz: +p.vz.toFixed(1), rot: +p.rot.toFixed(3), speed: +Math.hypot(p.vx, p.vz).toFixed(1) },
-        dummy: { x: +d.x.toFixed(1), z: +d.z.toFixed(1) },
-        t: +t.toFixed(4),
-        falling: falling.current, fallTicks: fallTicks.current, lastSafeT: +lastSafeT.current.toFixed(4),
-        driftCharge: driftCharge.current, boostTicks: boostTicks.current, boostMult: +boostMult.current.toFixed(2), whipCd: whipCd.current, whipSwing: whipSwing.current,
-        boardPos: [+player.position.x.toFixed(1), +player.position.y.toFixed(1), +player.position.z.toFixed(1)],
-        boardEulerDeg: [+(player.rotation.x * 57.2958).toFixed(1), +(player.rotation.y * 57.2958).toFixed(1), +(player.rotation.z * 57.2958).toFixed(1)],
-        boardScale: +player.scale.x.toFixed(1),
-        camPos: [+camera.position.x.toFixed(1), +camera.position.y.toFixed(1), +camera.position.z.toFixed(1)],
-        camToBoard: +camera.position.distanceTo(player.position).toFixed(1),
-        surfaceY: +surfaceY.toFixed(1), rideHeight: T.rideHeight,
-      };
-      (window as unknown as { __REEFOBJ?: unknown }).__REEFOBJ = { player, dummy: dObj, camera, scene: state.scene };
+    // DEV debug hook — gated + allocation-free (see _dbg). Off unless window.__REEF_ON.
+    const w = window as unknown as ReefDebugWindow;
+    if (w.__REEF_ON) {
+      const g = _dbg;
+      g.pred.x = p.x; g.pred.z = p.z; g.pred.vx = p.vx; g.pred.vz = p.vz; g.pred.rot = p.rot;
+      g.pred.speed = Math.hypot(p.vx, p.vz);
+      g.dummy.x = d.x; g.dummy.z = d.z; g.t = t; g.alpha = alpha;
+      g.falling = falling.current; g.fallTicks = fallTicks.current; g.lastSafeT = lastSafeT.current;
+      g.driftCharge = driftCharge.current; g.boostTicks = boostTicks.current; g.boostMult = boostMult.current;
+      g.whipCd = whipCd.current; g.whipSwing = whipSwing.current;
+      g.boardPos[0] = player.position.x; g.boardPos[1] = player.position.y; g.boardPos[2] = player.position.z;
+      g.boardEulerDeg[0] = player.rotation.x * RAD2DEG; g.boardEulerDeg[1] = player.rotation.y * RAD2DEG; g.boardEulerDeg[2] = player.rotation.z * RAD2DEG;
+      g.boardScale = player.scale.x;
+      g.camPos[0] = camera.position.x; g.camPos[1] = camera.position.y; g.camPos[2] = camera.position.z;
+      g.camToBoard = Math.hypot(camera.position.x - player.position.x, camera.position.y - player.position.y, camera.position.z - player.position.z);
+      g.surfaceY = surfaceY; g.rideHeight = T.rideHeight;
+      _dbgObj.player = player; _dbgObj.dummy = dObj; _dbgObj.camera = camera; _dbgObj.scene = state.scene;
+      w.__REEF = g; w.__REEFOBJ = _dbgObj;
     }
   });
 

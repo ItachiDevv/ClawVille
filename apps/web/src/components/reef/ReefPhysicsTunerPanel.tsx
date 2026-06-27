@@ -24,7 +24,7 @@ type Key = keyof ReefPhysicsTuning;
 interface Def { key: Key; label: string; min: number; max: number; step: number; }
 
 const HANDLING: Def[] = [
-  { key: 'maxSpeed', label: 'Max speed', min: 100, max: 1200, step: 10 },
+  { key: 'maxSpeed', label: 'Max speed', min: 100, max: 1800, step: 10 },
   { key: 'maxAccel', label: 'Acceleration', min: 200, max: 6000, step: 50 },
   { key: 'turnRate', label: 'Turn rate', min: 0.5, max: 6, step: 0.05 },
   { key: 'turnSpeedFalloff', label: 'Turn falloff', min: 0, max: 0.9, step: 0.01 },
@@ -56,6 +56,9 @@ const TRACK: Def[] = [
 const VIEW: Def[] = [
   { key: 'kartScale', label: 'Board scale', min: 20, max: 220, step: 5 },
   { key: 'rideHeight', label: 'Ride height', min: -40, max: 100, step: 2 },
+  { key: 'pitchTrimDeg', label: 'Nose-up trim°', min: 0, max: 25, step: 1 },
+  { key: 'pitchWaveGain', label: 'Wave tip gain', min: 0, max: 3, step: 0.1 },
+  { key: 'turnLeanGain', label: 'Turn lean', min: 0, max: 0.4, step: 0.01 },
   { key: 'camBack', label: 'Cam back', min: 150, max: 1200, step: 20 },
   { key: 'camUp', label: 'Cam height', min: 100, max: 1300, step: 20 },
   { key: 'camAhead', label: 'Cam ahead', min: 0, max: 800, step: 20 },
