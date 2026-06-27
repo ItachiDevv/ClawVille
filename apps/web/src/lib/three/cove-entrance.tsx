@@ -56,10 +56,15 @@ import { isInsideCoveTunnel } from './character-positions';
 import { MAP_WIDTH, MAP_HEIGHT } from '@/lib/pixi/tilemap-data';
 
 // ---------------------------------------------------------------------------
-// World anchor
+// World anchor — world-absolute, grow-proof.
+// Cove zone: R=130t building ring, 130 tiles west of origin = -4160wu.
+// Do NOT re-express as -MAP_WIDTH/2 + tile*TILE_SIZE: tile index 158 was
+// relative to the 576-tile grid center (288); after 576→704 that form gives
+// -11264 + 5056 = -6208wu (wrong). The world position is fixed regardless of
+// grid size.
 // ---------------------------------------------------------------------------
-const COVE_WORLD_X = -9216 + 158 * 32; // -4160 wu
-const COVE_WORLD_Z = -9216 + 288 * 32; // 0 wu
+const COVE_WORLD_X = -4160; // wu — world-absolute; cove zone, 130 tiles W of origin
+const COVE_WORLD_Z = 0;     // wu — world-absolute; cove zone center-Z
 
 // Group placed at east face of cove pyramid.
 // Pyramid half-footprint ≈ 642 wu from center → east face -4160+642 = -3518.

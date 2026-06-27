@@ -336,20 +336,21 @@ const statsSchema = z.object({
 // ---------------------------------------------------------------------------
 // FIX-13 (PHATCH-5) — `homeX`/`homeY` coordinate space, PINNED.
 // ---------------------------------------------------------------------------
-// The AUTHORITATIVE sim coordinate space is the 11520×11520 px world
-// (`npc-simulation.ts`: MAP_WIDTH = MAP_HEIGHT = 11520, TOWN_CENTER = MAP/2 =
-// 5760, HATCHER_MOVE bounds 32..MAP_WIDTH-32 = 11488). The spawned BODY uses
+// The AUTHORITATIVE sim coordinate space is the 22528×22528 px world
+// (`npc-simulation.ts`: MAP_WIDTH = MAP_HEIGHT = 22528, TOWN_CENTER = MAP/2 =
+// 11264, HATCHER_MOVE bounds 32..MAP_WIDTH-32 = 22496). The spawned BODY uses
 // `resolveSafeSpawn(homeX, homeY)` in THAT space (npc-simulation.ts:551/614), so
-// the schema bound (32..11488) and the default home MUST be expressed in it.
-// The old default of 2560 was the CENTER of the legacy 5120-px space
-// (`building-tools.ts` still tells agents "town center (2560,2560)") — a DIFFERENT
-// space than the body uses, so a partner-supplied 11520-space coordinate and our
-// 5120-space default lived side by side and a home could land far from center.
-// We pin the single space to the 11520-px sim and default to its TRUE center 5760
-// (verified against npc-simulation.ts MAP_WIDTH/TOWN_CENTER_X). The protocol
-// SKILL.md / CONTRACT.md must document this space + bounds + center (relay R5).
-// DEFAULT_HATCHER_HOME_X/Y live in agent-session-config.ts (the shared mint/
-// restore module) so the restore path defaults to the SAME center — see FIX-13.
+// the schema bound (32..22496) and the default home MUST be expressed in it.
+// World-grow history: the sim was 5120 (center 2560) -> 11520 (center 5760, the
+// PINNED value below until 2026-06-24) -> 18432 (576-grow) -> 22528 (704-grow,
+// land-builder-economics). This bound + the default home had drifted TWO grows
+// behind the executor (stuck at 11488/5760), so a partner-supplied home > 11488 in
+// the real 22528 world was REJECTED. Re-pinned to the live 22528 sim: bound
+// 32..22496, default home = TRUE center 11264 (verified against npc-simulation.ts
+// MAP_WIDTH/TOWN_CENTER_X). The protocol SKILL.md / CONTRACT.md must document this
+// space + bounds + center (relay R5). DEFAULT_HATCHER_HOME_X/Y live in
+// agent-session-config.ts (the shared mint/restore module) so the restore path
+// defaults to the SAME center — see FIX-13.
 const DEFAULT_HATCHER_PATROL_RADIUS = 100;
 
 /**
@@ -380,8 +381,8 @@ const registerSchema = z.object({
   color: z.number().int().min(0).max(0xffffff).optional(),
   personality: z.string().max(400).optional(),
   stats: statsSchema.optional(),
-  homeX: z.number().min(32).max(11488).optional(),
-  homeY: z.number().min(32).max(11488).optional(),
+  homeX: z.number().min(32).max(22496).optional(), // 32..MAP_WIDTH-32 (22528-world) — FIX-13
+  homeY: z.number().min(32).max(22496).optional(),
   patrolRadius: z.number().min(32).max(256).optional(),
   cognition: cognitionSchema,
   // FIX-8 (PHATCH-3 / HATCHER-ROTATESCOPEDTOKEN-UNREAD): Hatcher's
@@ -407,7 +408,7 @@ const registerSchema = z.object({
 // ClawVilleWalletPanel.tsx:117-135). Plain `z.object()` SILENTLY STRIPS unknown
 // keys, so these were discarded before the handler ran and every restat/reposition
 // returned 200 but changed nothing. We declare them here (same bounds as
-// `registerSchema`: `homeX`/`homeY` 32..11488 in the 11520 sim space — FIX-13;
+// `registerSchema`: `homeX`/`homeY` 32..22496 in the 22528 sim space — FIX-13;
 // `patrolRadius` 32..256; `stats` the FIX-3 widened band) and the handler merges
 // them into ONE `metadata` object (PHATCH-4 — a second `metadata` spread would
 // last-writer-wins clobber the personality write).
@@ -419,8 +420,8 @@ const patchSchema = z.object({
   mode: z.enum(['avatar', 'override']).optional(),
   targetNpcId: z.string().min(1).max(100).optional(),
   stats: statsSchema.optional(),
-  homeX: z.number().min(32).max(11488).optional(),
-  homeY: z.number().min(32).max(11488).optional(),
+  homeX: z.number().min(32).max(22496).optional(), // 32..MAP_WIDTH-32 (22528-world) — FIX-13
+  homeY: z.number().min(32).max(22496).optional(),
   patrolRadius: z.number().min(32).max(256).optional(),
   cognition: cognitionSchema.optional(),
   // FIX-8: accept-and-ignore (no-op) — see registerSchema for the full rationale.
@@ -896,8 +897,8 @@ partnerHatcherRoutes.post('/agents', async (c) => {
               metadata: {
                 ...(existing.metadata ?? {}),
                 personality: data.personality ?? existing.metadata?.personality,
-                // FIX-13: default home is the TRUE 11520-sim center (5760), not the
-                // legacy 5120-space 2560.
+                // FIX-13: default home is the TRUE 22528-sim center (11264), not a
+                // legacy smaller-world center.
                 homeX: data.homeX ?? existing.metadata?.homeX ?? DEFAULT_HATCHER_HOME_X,
                 homeY: data.homeY ?? existing.metadata?.homeY ?? DEFAULT_HATCHER_HOME_Y,
                 patrolRadius:
@@ -962,7 +963,7 @@ partnerHatcherRoutes.post('/agents', async (c) => {
             userId,
             metadata: {
               personality: data.personality,
-              // FIX-13: default home is the TRUE 11520-sim center (5760).
+              // FIX-13: default home is the TRUE 22528-sim center (11264).
               homeX: data.homeX ?? DEFAULT_HATCHER_HOME_X,
               homeY: data.homeY ?? DEFAULT_HATCHER_HOME_Y,
               patrolRadius: data.patrolRadius ?? DEFAULT_HATCHER_PATROL_RADIUS,
@@ -1101,7 +1102,7 @@ partnerHatcherRoutes.post('/agents', async (c) => {
           species: row.species,
           color: data.color,
           stats,
-          // FIX-13: 11520-sim-space defaults (5760 center) match the persisted row.
+          // FIX-13: 22528-sim-space defaults (11264 center) match the persisted row.
           homeX: row.metadata?.homeX ?? DEFAULT_HATCHER_HOME_X,
           homeY: row.metadata?.homeY ?? DEFAULT_HATCHER_HOME_Y,
           patrolRadius: row.metadata?.patrolRadius ?? DEFAULT_HATCHER_PATROL_RADIUS,
@@ -1503,7 +1504,7 @@ partnerHatcherRoutes.patch('/agents/:agentId', async (c) => {
               species: row.species,
               color: row.color,
               stats,
-              // FIX-13: 11520-sim-space defaults (5760 center). After FIX-2 the row's
+              // FIX-13: 22528-sim-space defaults (11264 center). After FIX-2 the row's
               // metadata now carries the partner-PATCHed home, so a reposition takes
               // effect on the re-spawned body here.
               homeX: row.metadata?.homeX ?? DEFAULT_HATCHER_HOME_X,
