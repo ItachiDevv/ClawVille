@@ -83,13 +83,14 @@ const HATCHER_EXCHANGE_URL =
 /** 10s outbound timeout — same budget as the cognition proxy in openclaw-client. */
 const EXCHANGE_TIMEOUT_MS = 10_000;
 
-/** Game-coord world center (MAP is 11520x11520; half = 5760 — see
- *  world-colliders-data.ts MAP_HALF). The no-body, no-home camera-focus
- *  fallback: a sensible "look at the town" default rather than an off-center
- *  southwest patch (which a 2560,2560 default — the register HOME default, not
- *  the map center — would produce). */
-const WORLD_CENTER_X = 5760;
-const WORLD_CENTER_Y = 5760;
+/** Game-coord world center (MAP is 22528x22528; half = 11264 — see
+ *  world-colliders-data.ts MAP_HALF, npc-simulation.ts MAP_WIDTH/2). The no-body,
+ *  no-home camera-focus fallback: a sensible "look at the town" default rather
+ *  than an off-center patch. Updated 2026-06-24 for the 576->704 world grow: this
+ *  fallback had drifted two world grows behind and was aiming at a far corner of
+ *  the live 22528 world; it now tracks the live world center. */
+const WORLD_CENTER_X = 11264;
+const WORLD_CENTER_Y = 11264;
 
 // Per-IP limiter. ~once per launch in normal use; 10/min/IP absorbs a retry
 // burst while denying a brute-force loop. Own bucket so it can't starve (or be
@@ -120,7 +121,7 @@ const exchangeSchema = z.object({
  * npc-simulation under the NAMESPACED id at register time — find its live
  * session(s) and read the pose); (2) the agent's PERSISTED home coordinates
  * (metadata.homeX/Y, the partner-set spawn); (3) the game-coord WORLD CENTER
- * (5760,5760) as a last resort so the camera looks at the town, never an
+ * (11264,11264) as a last resort so the camera looks at the town, never an
  * off-center patch. Every branch returns an in-bounds, sensible target.
  */
 function resolveAgentPosition(

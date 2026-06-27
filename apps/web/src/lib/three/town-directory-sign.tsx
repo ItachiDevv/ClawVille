@@ -4,18 +4,19 @@
  * TownDirectorySign — a single readable directory board at town centre.
  *
  * History: the old static PNG ("Auction / Bazaar / Marketplace") was
- * inaccurate (all paused). A first rework used a 3-arm fingerpost, but the
- * arms pointed in literal world directions, so the forward (Bounty) arm's
- * text sat edge-on to the player and the baked labels were too small —
- * unreadable. This version is what the founder asked for: ONE flat board
- * facing the player with the three live destinations laid out as a TRIANGLE
- * (forward on top, the two flanks below) with big, high-contrast labels.
+ * inaccurate (all paused). A first rework used a 3-arm fingerpost (arms pointed
+ * edge-on, unreadable). Then a "triangle" board (Bounty on top, flanks below) —
+ * but the Bounty label read bigger and floated above the other two, unbalanced
+ * and blurry. CURRENT (2026-06-26 polish): ONE flat board facing the player, a
+ * prominent "TOWN CENTER" header + clean rule, then the three live destinations
+ * as a BALANCED 3-row list — uniform label size, even spacing, an aligned arrow
+ * column. Texture bumped 1024×768 → 1536×1152 for crisp lettering at distance.
  *
  * Direction model — player stands at spawn (camera north of the sign,
- * looking SOUTH at it). On the board's player-facing (+Z) side:
- *   TOP    ↑  = Bounty Board   (straight ahead / south, world z≈-1220)
- *   RIGHT  →  = Exchange        (player's right / east,  world x≈+1273)
- *   LEFT   ←  = Cosmetics       (player's left  / west,  world x≈-1273)
+ * looking SOUTH at it). On the board's player-facing (+Z) side, the rows read:
+ *   ↑  Bounty Board   (straight ahead / south, world z≈-1220)
+ *   ←  Cosmetics      (player's left  / west,  world x≈-1273)
+ *   →  Exchange       (player's right / east,  world x≈+1273)
  *
  * All text is baked into a CanvasTexture on a PlaneGeometry. NO drei
  * <Text>/<Billboard> (Iris-Xe crash), NO ShaderMaterial (WebGPU crash),
@@ -47,8 +48,10 @@ const WOOD_COLOR = 0x6b3a1f;
 const FRAME_COLOR = 0x4a2810;
 
 // ─── CanvasTexture baking ────────────────────────────────────────────────────
-const TEX_W = 1024;
-const TEX_H = 768; // 4:3 to match BOARD_W:BOARD_H (400:300)
+// 1536×1152 (4:3, matches BOARD_W:BOARD_H = 400:300) — bumped from 1024×768 for
+// crisp lettering at spawn distance. 1 texture for the whole sign; ~7MB VRAM.
+const TEX_W = 1536;
+const TEX_H = 1152;
 
 function bakeDirectoryTexture(): THREE.CanvasTexture {
   const canvas = document.createElement('canvas');
@@ -58,126 +61,108 @@ function bakeDirectoryTexture(): THREE.CanvasTexture {
 
   // Wood plank background (vertical gradient)
   const grad = ctx.createLinearGradient(0, 0, 0, TEX_H);
-  grad.addColorStop(0, '#3a1d0d');
-  grad.addColorStop(1, '#281207');
+  grad.addColorStop(0, '#46260f');
+  grad.addColorStop(1, '#2b1408');
   ctx.fillStyle = grad;
   ctx.fillRect(0, 0, TEX_W, TEX_H);
 
   // Subtle horizontal grain
-  ctx.strokeStyle = 'rgba(120,72,30,0.16)';
+  ctx.strokeStyle = 'rgba(150,92,42,0.14)';
   ctx.lineWidth = 2;
-  for (let y = 24; y < TEX_H; y += 24) {
+  for (let y = 36; y < TEX_H; y += 36) {
     ctx.beginPath();
     ctx.moveTo(0, y);
     ctx.lineTo(TEX_W, y);
     ctx.stroke();
   }
 
-  // Carved double border
-  ctx.strokeStyle = '#8a5a30';
-  ctx.lineWidth = 12;
-  ctx.strokeRect(16, 16, TEX_W - 32, TEX_H - 32);
-  ctx.strokeStyle = 'rgba(0,0,0,0.5)';
-  ctx.lineWidth = 2;
-  ctx.strokeRect(30, 30, TEX_W - 60, TEX_H - 60);
+  // Carved double border (light bevel over a thin dark inner line)
+  ctx.strokeStyle = '#b07e44';
+  ctx.lineWidth = 18;
+  ctx.strokeRect(28, 28, TEX_W - 56, TEX_H - 56);
+  ctx.strokeStyle = 'rgba(0,0,0,0.45)';
+  ctx.lineWidth = 3;
+  ctx.strokeRect(52, 52, TEX_W - 104, TEX_H - 104);
 
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
 
-  // Title
-  ctx.fillStyle = '#e8c89a';
-  ctx.font = 'bold 56px Georgia, serif';
-  ctx.shadowColor = 'rgba(0,0,0,0.75)';
-  ctx.shadowBlur = 6;
-  ctx.fillText('TOWN CENTER', TEX_W / 2, 78);
+  // ── Header: "TOWN CENTER" — prominent title (was a dwarfed 56px on 1024) ──
+  ctx.fillStyle = '#ffe6b8';
+  ctx.font = '800 132px Georgia, serif';
+  ctx.shadowColor = 'rgba(0,0,0,0.55)';
+  ctx.shadowBlur = 4;
+  ctx.shadowOffsetY = 4;
+  ctx.fillText('TOWN CENTER', TEX_W / 2, 150);
   ctx.shadowBlur = 0;
-  ctx.strokeStyle = 'rgba(138,90,48,0.7)';
-  ctx.lineWidth = 3;
+  ctx.shadowOffsetY = 0;
+
+  // Clean rule under the title
+  ctx.strokeStyle = 'rgba(176,126,68,0.85)';
+  ctx.lineWidth = 5;
   ctx.beginPath();
-  ctx.moveTo(140, 124);
-  ctx.lineTo(TEX_W - 140, 124);
+  ctx.moveTo(190, 250);
+  ctx.lineTo(TEX_W - 190, 250);
   ctx.stroke();
 
-  // ── TOP (forward): ↑ Bounty Board — arrow above the label, centred ──
-  drawArrow('↑', TEX_W / 2, 250, '#3ff0e0', 116);
-  drawLabel('BOUNTY BOARD', TEX_W / 2, 350);
+  // ── Three destinations — uniform size, evenly spaced 3-row list ──
+  // Aligned arrow column (left of a fixed gutter) + label column, the whole
+  // block centred. Kills the old "BOUNTY huge + floating above the other two".
+  type Row = { glyph: string; label: string; color: string };
+  const rows: Row[] = [
+    { glyph: '↑', label: 'BOUNTY BOARD', color: '#46f2e2' }, // straight ahead
+    { glyph: '←', label: 'COSMETICS',    color: '#ff8ce4' }, // player's left
+    { glyph: '→', label: 'EXCHANGE',     color: '#ffd24a' }, // player's right
+  ];
 
-  // ── BOTTOM: stacked directions — "← Cosmetics" over "Exchange →" ──
-  // Was one cramped row (x=0.26 / 0.74, same y) that read as "COSMETICS
-  // EXCHANGE" squeezed together at sign scale. Now two centred stacked lines.
-  drawInline('←', 'COSMETICS', TEX_W / 2, 545, '#ff86e0', 'arrowLeft');
-  drawInline('→', 'EXCHANGE', TEX_W / 2, 665, '#ffd24a', 'arrowRight');
+  const ARROW_FONT = '800 110px Arial, sans-serif';
+  const LABEL_FONT = '700 96px Georgia, serif';
+  const GUTTER = 56;          // gap between arrow column and label column
+  const ROW_Y0 = 470;         // first row baseline
+  const ROW_DY = 230;         // even vertical spacing
 
-  function drawArrow(glyph: string, x: number, y: number, color: string, size: number) {
-    ctx.font = `bold ${size}px Arial, sans-serif`;
-    ctx.fillStyle = color;
-    ctx.shadowColor = color;
-    ctx.shadowBlur = 22;
-    ctx.fillText(glyph, x, y);
-    ctx.shadowBlur = 0;
-  }
-  function drawLabel(text: string, x: number, y: number) {
-    ctx.font = 'bold 70px Georgia, serif';
-    ctx.fillStyle = '#fbf3e2';
-    ctx.shadowColor = 'rgba(0,0,0,0.85)';
-    ctx.shadowBlur = 5;
-    ctx.fillText(text, x, y);
-    ctx.shadowBlur = 0;
-  }
-  // arrow + label on one baseline, centred as a unit
-  function drawInline(
-    glyph: string,
-    label: string,
-    centerX: number,
-    y: number,
-    color: string,
-    mode: 'arrowLeft' | 'arrowRight',
-  ) {
-    const arrowFont = 'bold 92px Arial, sans-serif';
-    const labelFont = 'bold 58px Georgia, serif';
-    ctx.font = arrowFont;
-    const aw = ctx.measureText(glyph).width;
-    ctx.font = labelFont;
-    const lw = ctx.measureText(label).width;
-    const gap = 22;
-    const total = aw + gap + lw;
-    let x = centerX - total / 2;
-    ctx.textAlign = 'left';
-    if (mode === 'arrowLeft') {
-      ctx.font = arrowFont;
-      ctx.fillStyle = color;
-      ctx.shadowColor = color;
-      ctx.shadowBlur = 20;
-      ctx.fillText(glyph, x, y);
-      ctx.shadowBlur = 0;
-      x += aw + gap;
-      ctx.font = labelFont;
-      ctx.fillStyle = '#fbf3e2';
-      ctx.shadowColor = 'rgba(0,0,0,0.85)';
-      ctx.shadowBlur = 5;
-      ctx.fillText(label, x, y);
-      ctx.shadowBlur = 0;
-    } else {
-      ctx.font = labelFont;
-      ctx.fillStyle = '#fbf3e2';
-      ctx.shadowColor = 'rgba(0,0,0,0.85)';
-      ctx.shadowBlur = 5;
-      ctx.fillText(label, x, y);
-      ctx.shadowBlur = 0;
-      x += lw + gap;
-      ctx.font = arrowFont;
-      ctx.fillStyle = color;
-      ctx.shadowColor = color;
-      ctx.shadowBlur = 20;
-      ctx.fillText(glyph, x, y);
-      ctx.shadowBlur = 0;
-    }
+  // Compute a shared centred block X so arrows + labels align across all rows.
+  ctx.font = ARROW_FONT;
+  let maxArrowW = 0;
+  for (const r of rows) maxArrowW = Math.max(maxArrowW, ctx.measureText(r.glyph).width);
+  ctx.font = LABEL_FONT;
+  let maxLabelW = 0;
+  for (const r of rows) maxLabelW = Math.max(maxLabelW, ctx.measureText(r.label).width);
+  const blockW = maxArrowW + GUTTER + maxLabelW;
+  const blockLeft = (TEX_W - blockW) / 2;
+  const arrowCenterX = blockLeft + maxArrowW / 2;     // arrows centred in their column
+  const labelLeftX = blockLeft + maxArrowW + GUTTER;  // labels left-aligned after gutter
+
+  rows.forEach((r, i) => {
+    const y = ROW_Y0 + i * ROW_DY;
+
+    // Glowing coloured arrow (consistent size for all three)
+    ctx.font = ARROW_FONT;
     ctx.textAlign = 'center';
-  }
+    ctx.fillStyle = r.color;
+    ctx.shadowColor = r.color;
+    ctx.shadowBlur = 18;
+    ctx.fillText(r.glyph, arrowCenterX, y);
+    ctx.shadowBlur = 0;
+
+    // Warm-white label (consistent size, light shadow — not muddy)
+    ctx.font = LABEL_FONT;
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#fbf3e2';
+    ctx.shadowColor = 'rgba(0,0,0,0.6)';
+    ctx.shadowBlur = 3;
+    ctx.shadowOffsetY = 3;
+    ctx.fillText(r.label, labelLeftX, y);
+    ctx.shadowBlur = 0;
+    ctx.shadowOffsetY = 0;
+  });
+
+  ctx.textAlign = 'center';
 
   const tex = new THREE.CanvasTexture(canvas);
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.anisotropy = 8; // stay crisp at grazing angles / distance
+  tex.generateMipmaps = true;
   tex.needsUpdate = true;
   return tex;
 }

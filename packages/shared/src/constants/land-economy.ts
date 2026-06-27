@@ -48,15 +48,60 @@ export const LAND_TIER_LADDER: Record<
   { minCt: number | null; maxCt: number | null }
 > = {
   starter: { minCt: 0, maxCt: 150 },
-  c: { minCt: 300, maxCt: 800 },
-  b: { minCt: 1500, maxCt: 4000 },
-  a: { minCt: 6000, maxCt: 15000 },
+  // Buy-outright bands (founder-locked 2026-06-24, builder-economics-design.md
+  // section 7). Raised ~5-6x over the original proposal so outright ownership is
+  // a real CT sink, not a few days of faucet earnings. EXISTING parcels are
+  // repriced to match via the tenure migration (existing == new, no divergence).
+  c: { minCt: 2000, maxCt: 4000 },
+  b: { minCt: 10000, maxCt: 24000 },
+  a: { minCt: 40000, maxCt: 80000 },
   // USDC / auction-only sentinel — out of the v1 CT settle path. NULL = no CT price.
+  founder: { minCt: null, maxCt: null },
+};
+
+/**
+ * Per-tier WEEKLY rent band (founder-locked 2026-06-24). Rent is the recurring
+ * CT sink (-> treasury/burn) that keeps the economy from inflating once services
+ * circulate. Interpolated per parcel index within tier EXACTLY like the buy
+ * ladder (innermost = max, outermost = min) and STAMPED on
+ * `land_parcels.rent_ct_weekly` at seed/migration; the rent route reads the
+ * stamped row value, NEVER this ladder (same discipline as price_ct).
+ *
+ * Buy is ~9-11 months of rent at these numbers, so buying is a premium over
+ * renting, not a shortcut. starter (free+owned, never rents) + founder
+ * (USDC/auction) are NULL = not rentable.
+ */
+export const LAND_RENT_LADDER: Record<
+  LandTier,
+  { minCt: number | null; maxCt: number | null }
+> = {
+  starter: { minCt: null, maxCt: null },
+  c: { minCt: 50, maxCt: 100 },
+  b: { minCt: 250, maxCt: 550 },
+  a: { minCt: 1000, maxCt: 2400 },
   founder: { minCt: null, maxCt: null },
 };
 
 /** Convenience flag: which tiers are buyable with CT in v1 (founder is USDC/auction-only). */
 export const CT_BUYABLE_TIERS: readonly LandTier[] = ['starter', 'c', 'b', 'a'] as const;
+
+/** Which tiers can be RENTED with CT in v1 (starter is free+owned; founder is auction-only). */
+export const CT_RENTABLE_TIERS: readonly LandTier[] = ['c', 'b', 'a'] as const;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Rent cycle timing (founder-locked 2026-06-24)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Rent charge period: a rented parcel owes `rent_ct_weekly` every 7 days. */
+export const RENT_PERIOD_DAYS = 7;
+
+/**
+ * Grace window after a missed rent charge. The parcel's perks + shop listings are
+ * PAUSED (hidden) for this many days; if the charge still cannot be collected by
+ * the end of grace, the parcel is evicted (returns to the available pool, the
+ * structure is archived not destroyed).
+ */
+export const RENT_GRACE_DAYS = 3;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Structure upgrade costs (Lv1 → Lv5)

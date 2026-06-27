@@ -23,7 +23,7 @@
 
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
-import { streamSSE } from 'hono/streaming';
+import { streamSSE, type SSEStreamingApi } from 'hono/streaming';
 import { z } from 'zod';
 import { eq } from 'drizzle-orm';
 import { db, avatars } from '@clawville/database';
@@ -43,16 +43,68 @@ import type { AppContext } from '../types';
 
 // Town-center spawn for guests / avatar-less agents / avatar rows missing a
 // position. Mirrors the client spawn (south of Nori) and the avatars.position_x/y
-// defaults (9216, 9756) — all three pinned to @clawville/shared SPAWN_PX so the
-// Land Phase 0 re-center (5120→18432) can never drift between layers (S3,
-// 2026-06-16). Was 2560,2560 (old 5120 world center), which placed every
-// fallback body at a corner-ward diagonal on the new 18432 world.
+// defaults (11264, 11804 after the 576→704 grow) — all three pinned to
+// @clawville/shared SPAWN_PX so a world re-center can never drift between layers
+// (S3, 2026-06-16; grown for land-builder-economics 2026-06-24). The SPAWN_PX
+// bump auto-propagates here — no edit to this line, only the comment.
 const TOWN_CENTER_X = SPAWN_PX.x;
 const TOWN_CENTER_Y = SPAWN_PX.y;
 
 export const worldRoutes = new Hono<AppContext>();
 
 worldRoutes.use('*', sessionMiddleware);
+
+// ---------------------------------------------------------------------------
+// Live land-sync (2.1) — global SSE fan-out for land state changes.
+//
+// Land is GLOBAL state (one `land_parcels` table; every room reads it), so a
+// buy/claim by ANY player must reach EVERY connected world-stream subscriber,
+// not just one room. Each `/:roomId/stream` handler registers its SSE writer in
+// this module-level set on connect and removes it on abort / failed keepalive;
+// `broadcastLandEvent` fans a single `land` event to all of them.
+//
+// OWNERSHIP NOTE: this module (world.ts / world-presence) owns the SSE channel;
+// `routes/land.ts` (the land domain) only CONSUMES `broadcastLandEvent`. This is
+// the minimal additive seam — no world-stream internals (snapshot/presence/tick)
+// are changed.
+// ---------------------------------------------------------------------------
+const landStreamSubscribers = new Set<SSEStreamingApi>();
+
+/**
+ * Fan a `land` SSE event out to every connected world-stream subscriber across
+ * ALL rooms. Called FIRE-AND-FORGET from routes/land.ts AFTER a land write has
+ * COMMITTED, so a failure here can NEVER affect the money path (the parcel row +
+ * the ledger debit are already durable before this runs). Per-subscriber catch:
+ * a dead/slow stream is dropped from the set rather than breaking the fan-out
+ * for everyone else. A no-op when there are no subscribers.
+ */
+export function broadcastLandEvent(payload: {
+  parcelCode: string;
+  status: 'available' | 'owned' | 'reserved' | 'retired';
+  ownerAvatarId: string | null;
+}): void {
+  // FULLY GUARDED: this runs AFTER a committed buy/claim, so it must NEVER throw
+  // to the caller — a thrown notification side-effect would turn an already-
+  // settled sale into a client-facing 500. The async write rejection is handled
+  // per-subscriber (.catch); the OUTER try wraps JSON.stringify + any SYNCHRONOUS
+  // throw from writeSSE; the INNER try keeps one dead stream from aborting the
+  // fan-out to the rest. (Deleting from a Set mid-`for…of` is spec-safe.)
+  try {
+    if (landStreamSubscribers.size === 0) return;
+    const data = JSON.stringify(payload);
+    for (const stream of landStreamSubscribers) {
+      try {
+        void stream.writeSSE({ data, event: 'land' }).catch(() => {
+          landStreamSubscribers.delete(stream);
+        });
+      } catch {
+        landStreamSubscribers.delete(stream);
+      }
+    }
+  } catch {
+    /* notification side-effect must never surface as a request error */
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -423,8 +475,13 @@ worldRoutes.get('/:roomId/stream', async (c) => {
     };
 
     npcSimulation.addRoomListener(roomId, listener);
+    // Live land-sync (2.1): register this stream for the GLOBAL `land` fan-out
+    // (land is global, so every connected stream gets land events regardless of
+    // room). Removed on abort + on a failed keepalive write below.
+    landStreamSubscribers.add(stream);
     stream.onAbort(() => {
       npcSimulation.removeRoomListener(roomId, listener);
+      landStreamSubscribers.delete(stream);
     });
 
     // SSE keepalive — see npc-sse.ts for the Cloudflare HTTP/2 idle-reset
@@ -435,6 +492,7 @@ worldRoutes.get('/:roomId/stream', async (c) => {
         await stream.writeSSE({ data: '', event: 'keepalive' });
       } catch {
         npcSimulation.removeRoomListener(roomId, listener);
+        landStreamSubscribers.delete(stream);
         return;
       }
     }
