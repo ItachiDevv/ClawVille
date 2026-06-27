@@ -235,6 +235,10 @@ class CashHouseSeederService {
         },
         stats: { strength: 5, defence: 5, movement: 5 },
         clawTokens: 0, // bots hold 0; the house bank is credited separately below
+        // F1 vCLAW provenance: mirror clawTokens (0) into softBalance so the
+        // avatars_vclaw_balance_sum CHECK holds (0 = 0+0+0). CRITICAL: without this
+        // the column DEFAULT 100 would make a bare insert 100, breaking 0 = 100.
+        softBalance: 0,
         isActive: false, // not visible in the NPC simulation
         agentCategory: 'openclaw',
         modelKey: 'lobster',
