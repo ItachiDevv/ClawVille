@@ -31,6 +31,9 @@
  *     gridY: number;         // int
  *     priceCt: number | null;// int CT or null (Founder = null)
  *     ownerAvatarId: string | null; // uuid or null (for-sale)
+ *     rentCtWeekly: number | null;  // int CT/wk or null (rentable = c-tier only;
+ *                                   // starter/founder carry NULL → not rentable)
+ *     tenure: 'rented'|'owned'|'starter'|null; // HOW the parcel is held; null = available/unsold
  *   };
  *
  *   type LandStructureDTO = {
@@ -63,7 +66,8 @@
  *      body: {} (empty / none — extra fields rejected, .strict())
  *      200 → { parcel: LandParcelClaimDTO, alreadyOwned: boolean }
  *            where LandParcelClaimDTO = Omit<LandParcelDTO, 'ownerAvatarId'>
- *              = { id, parcelCode, tier, status, gridX, gridY, priceCt }
+ *              = { id, parcelCode, tier, status, gridX, gridY, priceCt, rentCtWeekly, tenure }
+ *              (a starter carries tenure='starter', rentCtWeekly=null)
  *            alreadyOwned=true  → the avatar already held a starter (no new grant, no event)
  *            alreadyOwned=false → a starter parcel was granted this call
  *      400 → { error: 'invalid_body' }         (stray fields)
@@ -182,6 +186,9 @@ import type { AppContext } from '../types';
 
 // ─── shared shapes ──────────────────────────────────────────────────────────
 
+/** Parcel tenure — HOW a parcel is held; NULL on an available/unsold parcel. */
+type LandTenure = 'rented' | 'owned' | 'starter';
+
 /** The frozen parcel DTO returned by every read route (see contract above). */
 interface LandParcelDTO {
   id: string;
@@ -192,6 +199,14 @@ interface LandParcelDTO {
   gridY: number;
   priceCt: number | null;
   ownerAvatarId: string | null;
+  /**
+   * Weekly rent in CT (server-stamped `land_parcels.rent_ct_weekly`), or null when
+   * the tier is not rentable. Rentable = c-tier only; starter/founder carry NULL.
+   * The UI gates its "Rent" action on `rentCtWeekly != null`.
+   */
+  rentCtWeekly: number | null;
+  /** HOW the parcel is held; null = available/unsold (mirrors `land_tenure` enum). */
+  tenure: LandTenure | null;
 }
 
 /** The frozen structure DTO returned by placement / upgrade / structure reads. */
@@ -365,6 +380,8 @@ function toDTO(row: {
   gridY: number;
   priceCt: number | null;
   ownerAvatarId: string | null;
+  rentCtWeekly: number | null;
+  tenure: LandTenure | null;
 }): LandParcelDTO {
   return {
     id: row.id,
@@ -375,6 +392,8 @@ function toDTO(row: {
     gridY: row.gridY,
     priceCt: row.priceCt,
     ownerAvatarId: row.ownerAvatarId,
+    rentCtWeekly: row.rentCtWeekly,
+    tenure: row.tenure,
   };
 }
 
@@ -390,6 +409,8 @@ async function fetchOwnedParcels(avatarId: string): Promise<LandParcelDTO[]> {
       gridY: landParcels.gridY,
       priceCt: landParcels.priceCt,
       ownerAvatarId: landParcels.ownerAvatarId,
+      rentCtWeekly: landParcels.rentCtWeekly,
+      tenure: landParcels.tenure,
     })
     .from(landParcels)
     .where(eq(landParcels.ownerAvatarId, avatarId));
@@ -524,6 +545,8 @@ landRoutes.get('/parcels', async (c) => {
       gridY: landParcels.gridY,
       priceCt: landParcels.priceCt,
       ownerAvatarId: landParcels.ownerAvatarId,
+      rentCtWeekly: landParcels.rentCtWeekly,
+      tenure: landParcels.tenure,
     })
     .from(landParcels)
     .where(where);
@@ -591,6 +614,8 @@ landRoutes.post('/claim-starter', requireAuthOrAgentSession, async (c) => {
       gridX: landParcels.gridX,
       gridY: landParcels.gridY,
       priceCt: landParcels.priceCt,
+      rentCtWeekly: landParcels.rentCtWeekly,
+      tenure: landParcels.tenure,
     })
     .from(landParcels)
     .where(and(eq(landParcels.ownerAvatarId, avatarId), eq(landParcels.tier, 'starter')))
@@ -607,6 +632,8 @@ landRoutes.post('/claim-starter', requireAuthOrAgentSession, async (c) => {
         gridX: p.gridX,
         gridY: p.gridY,
         priceCt: p.priceCt,
+        rentCtWeekly: p.rentCtWeekly,
+        tenure: p.tenure,
       },
       alreadyOwned: true,
     });
@@ -631,6 +658,8 @@ landRoutes.post('/claim-starter', requireAuthOrAgentSession, async (c) => {
     gridX: number;
     gridY: number;
     priceCt: number | null;
+    rentCtWeekly: number | null;
+    tenure: LandTenure | null;
   }
 
   let result: ClaimResult;
@@ -664,8 +693,10 @@ landRoutes.post('/claim-starter', requireAuthOrAgentSession, async (c) => {
         grid_x: number | string;
         grid_y: number | string;
         price_ct: number | string | null;
+        rent_ct_weekly: number | string | null;
+        tenure: LandTenure | null;
       }>(
-        sql`SELECT id, parcel_code, tier, status, grid_x, grid_y, price_ct
+        sql`SELECT id, parcel_code, tier, status, grid_x, grid_y, price_ct, rent_ct_weekly, tenure
             FROM land_parcels
             WHERE owner_avatar_id = ${avatarId} AND tier = 'starter'
             LIMIT 1`,
@@ -682,6 +713,8 @@ landRoutes.post('/claim-starter', requireAuthOrAgentSession, async (c) => {
             gridX: Number(owned.grid_x),
             gridY: Number(owned.grid_y),
             priceCt: owned.price_ct == null ? null : Number(owned.price_ct),
+            rentCtWeekly: owned.rent_ct_weekly == null ? null : Number(owned.rent_ct_weekly),
+            tenure: owned.tenure,
           },
         };
       }
@@ -698,8 +731,9 @@ landRoutes.post('/claim-starter', requireAuthOrAgentSession, async (c) => {
         grid_x: number | string;
         grid_y: number | string;
         price_ct: number | string | null;
+        rent_ct_weekly: number | string | null;
       }>(
-        sql`SELECT id, parcel_code, tier, status, grid_x, grid_y, price_ct
+        sql`SELECT id, parcel_code, tier, status, grid_x, grid_y, price_ct, rent_ct_weekly
             FROM land_parcels
             WHERE tier = 'starter' AND status = 'available'
             ORDER BY parcel_code
@@ -741,6 +775,9 @@ landRoutes.post('/claim-starter', requireAuthOrAgentSession, async (c) => {
           gridX: Number(pick.grid_x),
           gridY: Number(pick.grid_y),
           priceCt: pick.price_ct == null ? null : Number(pick.price_ct),
+          // A starter is free + never rentable; the UPDATE just stamped tenure='starter'.
+          rentCtWeekly: pick.rent_ct_weekly == null ? null : Number(pick.rent_ct_weekly),
+          tenure: 'starter' as const,
         },
       };
     });
@@ -900,6 +937,8 @@ landRoutes.post('/parcels/:parcelId/buy', requireAuthOrAgentSession, async (c) =
     gridY: number;
     priceCt: number | null;
     ownerAvatarId: string | null;
+    rentCtWeekly: number | null;
+    tenure: LandTenure | null;
   }
 
   let bought: { parcel: BoughtParcel; amountCt: number };
@@ -922,11 +961,12 @@ landRoutes.post('/parcels/:parcelId/buy', requireAuthOrAgentSession, async (c) =
         tier: LandTier;
         status: string;
         price_ct: number | string | null;
+        rent_ct_weekly: number | string | null;
         owner_avatar_id: string | null;
         grid_x: number | string;
         grid_y: number | string;
       }>(
-        sql`SELECT id, parcel_code, tier, status, price_ct, owner_avatar_id, grid_x, grid_y
+        sql`SELECT id, parcel_code, tier, status, price_ct, rent_ct_weekly, owner_avatar_id, grid_x, grid_y
             FROM land_parcels
             WHERE id = ${parcelId}
             FOR UPDATE`,
@@ -1008,6 +1048,10 @@ landRoutes.post('/parcels/:parcelId/buy', requireAuthOrAgentSession, async (c) =
           gridY: Number(parcel.grid_y),
           priceCt,
           ownerAvatarId: avatarId,
+          // Buy is a one-time sink: tenure flips to 'owned'. The stamped weekly
+          // rent stays on the row (it is the listing rent, not a tenancy value).
+          rentCtWeekly: parcel.rent_ct_weekly == null ? null : Number(parcel.rent_ct_weekly),
+          tenure: 'owned' as const,
         },
         amountCt: priceCt,
       };
@@ -1621,6 +1665,8 @@ landRoutes.post('/parcels/:parcelId/rent', requireAuthOrAgentSession, async (c) 
     gridY: number;
     priceCt: number | null;
     ownerAvatarId: string | null;
+    rentCtWeekly: number | null;
+    tenure: LandTenure | null;
   }
 
   let rented: { parcel: RentedParcel; amountCt: number; rentPaidThrough: string };
@@ -1744,6 +1790,10 @@ landRoutes.post('/parcels/:parcelId/rent', requireAuthOrAgentSession, async (c) 
           gridY: Number(parcel.grid_y),
           priceCt: parcel.price_ct == null ? null : Number(parcel.price_ct),
           ownerAvatarId: avatarId,
+          // Rent flips tenure to 'rented'; rentCt is the (non-null) weekly rent
+          // just debited (the row keeps its stamped rent_ct_weekly).
+          rentCtWeekly: rentCt,
+          tenure: 'rented' as const,
         },
         amountCt: rentCt,
         rentPaidThrough: pt instanceof Date ? pt.toISOString() : String(pt ?? ''),

@@ -13,6 +13,7 @@ import type {
   MyLandResponse,
   ClaimStarterResponse,
   BuyParcelResponse,
+  RentParcelResponse,
   PlaceStructureResponse,
   UpgradeStructureResponse,
   ParcelStructureResponse,
@@ -1180,6 +1181,17 @@ export const api = {
     honoRequest<BuyParcelResponse>(
       `/api/land/parcels/${encodeURIComponent(parcelId)}/buy`,
       { method: 'POST' },
+    ),
+
+  /**
+   * Rent a c-tier parcel with CT (auth). Charges the first week immediately from
+   * the SERVER-stamped `rent_ct_weekly` — the body is empty, NO client price.
+   * Returns the paid-through date; the sweeper auto-charges each subsequent week.
+   */
+  rentParcel: (parcelId: string) =>
+    honoRequest<RentParcelResponse>(
+      `/api/land/parcels/${encodeURIComponent(parcelId)}/rent`,
+      { method: 'POST', body: JSON.stringify({}) },
     ),
 
   /** The signed-in player's owned parcels + structures (auth). */
