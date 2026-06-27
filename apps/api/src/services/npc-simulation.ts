@@ -39,13 +39,13 @@ import type { OpenClawClient } from './openclaw-client';
 import { roomRegistry, FREE_ROAMER_NPC_IDS } from './room-registry';
 import type { PlayerSnapshot } from '@clawville/shared';
 
-// Map dimensions — Phase 0 land (2026-06-15): 576×576 grid of 32px tiles = 18432×18432 world.
+// Map dimensions — land-builder-economics (2026-06-24): 704×704 grid of 32px tiles = 22528×22528 world.
 // CROSS-PACKAGE INVARIANT: this MUST equal the client `MAP_WIDTH`/`MAP_HEIGHT` in
-// apps/web/src/lib/pixi/tilemap-data.ts (MAP_COLS*TILE_SIZE = 576*32 = 18432). The
+// apps/web/src/lib/pixi/tilemap-data.ts (MAP_COLS*TILE_SIZE = 704*32 = 22528). The
 // server can't import the client tilemap module, so this value is duplicated by
 // necessity — if the client world dimension changes, change it here in the same diff.
-const MAP_WIDTH = 18432;
-const MAP_HEIGHT = 18432;
+const MAP_WIDTH = 22528;
+const MAP_HEIGHT = 22528;
 
 // Hatcher proxy-cognition (partner #2, Phase A — 2026-06-01). The canonical
 // "you are inside ClawVille" orientation text, joined + frozen once at module
@@ -68,7 +68,7 @@ const HATCHER_ORIENTATION_TEXT = CLAWVILLE_ORIENTATION_KNOWLEDGE.join('\n');
 // World bounds for move(): 32..(MAP_WIDTH-32). Town-px coords (the same space
 // `move`'s targetX/targetY use in the REST handler).
 const HATCHER_MOVE_MIN = 32;
-const HATCHER_MOVE_MAX = MAP_WIDTH - 32; // 18400 for the 18432 world
+const HATCHER_MOVE_MAX = MAP_WIDTH - 32; // 22496 for the 22528 world
 
 // emote(name) — the partner-facing emote vocabulary mapped to a real in-world
 // NpcActivity + emoji so the avatar visibly reacts. (The sim's activity enum is
@@ -124,8 +124,8 @@ const COVE_CENTER: { x: number; y: number } | null = (() => {
 // 300wu of center, walking through the directory sign, with near-zero
 // velocity (client clamp + entity push-out cancelled out their motion → no
 // facing update → "walking aimlessly" visual).
-const TOWN_CENTER_X = MAP_WIDTH / 2;       // 9216 (Phase 0 land: was 5760)
-const TOWN_CENTER_Y = MAP_HEIGHT / 2;      // 9216
+const TOWN_CENTER_X = MAP_WIDTH / 2;       // 11264 (land-builder-economics: was 9216)
+const TOWN_CENTER_Y = MAP_HEIGHT / 2;      // 11264
 const FREE_ROAMER_MIN_RADIUS = 1500;
 const FREE_ROAMER_MAX_RADIUS = 3200;
 const FREE_ROAMER_MIN_RADIUS_SQ = FREE_ROAMER_MIN_RADIUS * FREE_ROAMER_MIN_RADIUS;
@@ -1107,7 +1107,7 @@ class NpcSimulation {
    * (action-stripped) speech text.
    *
    * Whitelist (validate EVERY param; drop+log anything invalid):
-   *   move(x:int 32..11488, y:int 32..11488)             -> setNpcPath (findPath)
+   *   move(x:int 32..22496, y:int 32..22496)             -> setNpcPath (findPath)
    *   emote(name in {wave,dance,think,scan,work,celebrate,alert}) -> setNpcActivity
    *   enter_building(buildingId in the 10 MAP_LOCATIONS ids)      -> walk to building
    *   enter_cove()                                        -> walk to the Cove (casino gateway)
@@ -2267,8 +2267,9 @@ class NpcSimulation {
 
     const initiator = idle[Math.floor(Math.random() * idle.length)];
     // 2500 game-px partner-search radius — tuned for the Phase 6.2 world
-    // (was 11520×11520; now 18432² after Phase 0 land — ring footprint unchanged,
-    // so the 2500 radius still spans adjacent ring residents). Earlier 400px value
+    // (was 11520×11520; now 22528² after the 576→704 land-builder grow — the
+    // ring footprint is unchanged by the uniform recenter, so the 2500 radius
+    // still spans adjacent ring residents). Earlier 400px value
     // was sized for the ~5120 world and
     // was too tight after the expansion: NPCs scattered across 12 ring slots
     // (each ~2680px apart on the ring) almost never landed within 400px, so

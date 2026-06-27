@@ -6,7 +6,8 @@
 // casing, supply, and id format can never drift across concerns.
 //
 // Founder-locked decisions (see .claude/plans/land-economy/DESIGN.md final-answers addendum):
-//   - World grows to 576x576 tiles (geometry lives in land-parcels.ts).
+//   - World grows to 704x704 tiles (geometry lives in land-parcels.ts; grown 576→704
+//     2026-06-24 for the outer c ring).
 //   - Fixed concentric supply, scarce inner / abundant outer.
 //   - Tier enum is LOWERCASE (Postgres pgEnum convention) — display via tierLabel().
 //   - Starter is the onboarding FLOOR (every new player claims one free) — must never sell out.
@@ -39,21 +40,24 @@ export function tierLabel(tier: LandTier): string {
  * seed script and the leaderboard/pricing logic read these same counts. Re-confirm Starter vs
  * expected launch concurrency before go-live (ROADMAP §7-Q2).
  */
-// 2-RING "fewer big plots" layout (2026-06-18, founder review): collapsed from
-// 180 tiny plots (8/8/16/40/108) to 36 LARGE plots in TWO concentric square
-// rings, so a placed building reads at ~2.5-3x a character instead of ~1/2.
+// 3-RING layout (2026-06-24, land-builder-economics — "grow the world" option taken):
+// the world grew 576→704 tiles, enabling the new OUTER c ring on top of the prior
+// 2-ring (founder + starter) layout. 56 LARGE plots across THREE concentric squares,
+// so a placed building reads at ~2.5-3x a character instead of ~1/2.
 //   - founder  = PREMIUM inner ring (10 plots, just outside the town circle).
-//   - starter  = REGULAR outer ring (26 plots, surrounding the premium ring).
-//   - a/b/c    = 0 (the middle tiers are unused in the 2-ring layout; the enum +
-//                economic Records stay intact so nothing else has to change).
-// Footprints jump to 34-38 tiles (land-parcels.ts TIER_CONFIG). The middle tiers
-// can be repopulated later if we grow the map (the "grow the world" option).
+//   - starter  = REGULAR mid ring  (26 plots, surrounding the premium ring).
+//   - c        = OUTER ring        (20 plots, surrounding starter — NEW in the 704 world).
+//   - a/b      = 0 (still unused; the enum + economic Records stay intact so nothing
+//                else has to change). a/b can be repopulated if we grow further.
+// Footprints are 34-38 tiles (land-parcels.ts TIER_CONFIG). The c tier already has
+// full economic configs (price/rent/structure rules) in land-economy.ts, so enabling
+// it here produces 20 fully-priced, buyable + rentable parcels with no other change.
 export const PARCEL_TIER_COUNTS: Record<LandTier, number> = {
   founder: 10, // PREMIUM inner ring — big plots on the square just outside town
   a: 0,
   b: 0,
-  c: 0,
-  starter: 26, // REGULAR outer ring — big plots on the larger surrounding square
+  c: 20, // OUTER ring — big plots on the new outermost square (704-world grow)
+  starter: 26, // REGULAR mid ring — big plots on the surrounding square
 };
 
 /** Total fixed parcel supply across all tiers. */

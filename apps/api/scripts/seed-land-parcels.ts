@@ -5,7 +5,8 @@
  * WHAT THIS DOES
  * --------------
  * Inserts one `land_parcels` row per parcel in the FROZEN geometry constant
- * `LAND_PARCELS` (176 parcels: 4 founder + 8 a + 16 b + 40 c + 108 starter).
+ * `LAND_PARCELS` (56 parcels: 10 founder + 26 starter + 20 c — the 3-ring layout
+ * after the 576->704 world grow added the outer c ring; a/b are 0).
  * Each row stamps `parcel_code`, `tier`, `grid_x`, `grid_y`, and `price_ct`
  * (the per-row primary-sale price interpolated from the tier ladder). All other
  * columns take their schema defaults (status 'available', rake_bps 0,
@@ -36,7 +37,7 @@
  *
  * RUN
  * ---
- *   # Dry-run (DEFAULT-SAFE — no env, no connect, no write). Prints the 176 rows
+ *   # Dry-run (DEFAULT-SAFE — no env, no connect, no write). Prints the 56 rows
  *   # it WOULD insert + samples + per-tier price ranges. This is the verify step.
  *   bun apps/api/scripts/seed-land-parcels.ts --dry-run
  *
@@ -62,14 +63,16 @@ const LOG = '[seed-land-parcels]';
 // Grid-coord constants — MUST match `parcelToTileZone` in
 // `packages/shared/src/constants/land-parcels.ts` so the seeded grid_x/grid_y
 // land in the SAME tile cells the world/minimap renders the parcels at. There
-// it computes `HALF_MAP_WU = (576 / 2) * TILE_SIZE = 9216` and
+// it computes `HALF_MAP_WU = (704 / 2) * TILE_SIZE = 11264` and
 // `tileX = floor((cx + HALF_MAP_WU) / TILE_SIZE)`. We deliberately re-derive
 // the two literals here (NOT import a web tilemap module) so this script has no
-// dep beyond the pure `@clawville/shared` constants. World grid = 576x576 tiles.
+// dep beyond the pure `@clawville/shared` constants. World grid = 704x704 tiles
+// (grown 576->704 2026-06-24 for the outer c ring; the new c-parcels reach cx up
+// to 9760wu -> gridX floor((9760+11264)/32)=657 < 704, in-bounds).
 // ---------------------------------------------------------------------------
 const TILE_SIZE = 32; // wu per tile (== TILE_SIZE in land-parcels.ts)
-const HALF_MAP_WU = (576 / 2) * TILE_SIZE; // 9216 wu — grid half-width
-const WORLD_TILES = 576; // grid is WORLD_TILES x WORLD_TILES tiles
+const HALF_MAP_WU = (704 / 2) * TILE_SIZE; // 11264 wu — grid half-width
+const WORLD_TILES = 704; // grid is WORLD_TILES x WORLD_TILES tiles
 
 // ---------------------------------------------------------------------------
 // Derived seed row.
@@ -113,8 +116,8 @@ function interpolatePrice(tier: LandTier, indexInTier: number, count: number): n
 }
 
 /**
- * Build all 176 seed rows in deterministic order from the frozen geometry
- * constant. Asserts grid bounds + parcel-code uniqueness (throws on violation)
+ * Build all seed rows (56, the 3-ring layout) in deterministic order from the
+ * frozen geometry constant. Asserts grid bounds + parcel-code uniqueness (throws on violation)
  * so a geometry/constant drift fails LOUD in dry-run before any DB is touched.
  */
 function buildSeedRows(): SeedRow[] {
@@ -126,7 +129,7 @@ function buildSeedRows(): SeedRow[] {
     const gridX = Math.floor((slot.cx + HALF_MAP_WU) / TILE_SIZE);
     const gridY = Math.floor((slot.cz + HALF_MAP_WU) / TILE_SIZE);
 
-    // Grid sanity — every cell must sit inside the 576x576 world grid.
+    // Grid sanity — every cell must sit inside the 704x704 world grid.
     if (!Number.isInteger(gridX) || gridX < 0 || gridX >= WORLD_TILES) {
       throw new Error(
         `${LOG} grid_x out of bounds for ${slot.id}: gridX=${gridX} (cx=${slot.cx}); ` +
@@ -186,18 +189,19 @@ function printDryRun(rows: SeedRow[]): void {
   console.log(`${LOG} DRY RUN — no env read, no DB connection, no write.`);
   console.log(`${LOG} total rows: ${rows.length} (expected ${TOTAL_PARCEL_SUPPLY})`);
 
-  // 3 sample rows: one founder, one a, one starter.
+  // 3 sample rows: one founder, one starter, one c (the populated tiers in the
+  // 3-ring layout; a/b are count 0 so they are not sampled).
   const sampleFounder = rows.find((r) => r.tier === 'founder');
-  const sampleA = rows.find((r) => r.tier === 'a');
   const sampleStarter = rows.find((r) => r.tier === 'starter');
+  const sampleC = rows.find((r) => r.tier === 'c');
   const fmt = (r: SeedRow | undefined): string =>
     r
       ? `parcel_code=${r.parcelCode} tier=${r.tier} grid_x=${r.gridX} grid_y=${r.gridY} ` +
         `price_ct=${r.priceCt === null ? 'NULL' : r.priceCt}`
       : '(none)';
   console.log(`${LOG} sample [founder]: ${fmt(sampleFounder)}`);
-  console.log(`${LOG} sample [a]:       ${fmt(sampleA)}`);
   console.log(`${LOG} sample [starter]: ${fmt(sampleStarter)}`);
+  console.log(`${LOG} sample [c]:       ${fmt(sampleC)}`);
 
   // Per-tier price ranges.
   const ranges = perTierPriceRanges(rows);
@@ -232,7 +236,7 @@ async function runSeed(rows: SeedRow[]): Promise<void> {
 
   let inserted = 0;
   try {
-    // One transaction for all 176 rows. ON CONFLICT (parcel_code) DO NOTHING
+    // One transaction for all 56 rows. ON CONFLICT (parcel_code) DO NOTHING
     // makes a re-run idempotent. price_ct may be NULL (founder).
     await client.begin(async (sql) => {
       for (const r of rows) {
