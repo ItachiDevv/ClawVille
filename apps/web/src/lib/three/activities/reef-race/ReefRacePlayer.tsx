@@ -68,13 +68,24 @@ import {
   CLIENT_REBASE_VEL,
   CLIENT_REBASE_ROT,
   CLIENT_REBASE_SNAP_DIST,
+  SURF_RIDE_HEIGHT,
+  SURF_PITCH_TRIM_DEG,
+  SURF_PITCH_WAVE_GAIN,
+  SURF_PITCH_HALF_LEN,
+  SURF_ROLL_HALF_WIDTH,
+  SURF_PITCH_CLAMP,
+  SURF_ROLL_CLAMP,
 } from './reef-race-config';
+
+/** Degrees→radians for the surf nose-up trim. */
+const SURF_DEG2RAD = 0.0174532925;
 import {
   integrateSurfStep,
   type SurfBodyState,
 } from '@clawville/shared';
 import { selfInputBus, selfPoseBus, resetSelfPoseBus } from './reef-race-self-bus';
-import { tAtXZ, elevationAtT, bankAngleAtT, forgetTKey } from './reef-race-elevation';
+import { tAtXZ, bankedDatumYAtT, forgetTKey } from './reef-race-elevation';
+import { surfWaveHeightAt } from './reef-wave-height';
 
 // ─── v2 feature flag ──────────────────────────────────────────────────────────
 const USE_SPLINE_PLAYER = process.env.NEXT_PUBLIC_REEF_RACE_USE_SPLINE === 'true';
@@ -746,11 +757,14 @@ function ReefRacePlayerInner({ entity, isSelf = false, triggerScreenShake }: Ree
   // they change every snapshot and we only want to fire once per ramp event.
   // The burst position is "good enough" at the moment the event lands.
 
-  useFrame((_, delta) => {
+  useFrame((state, delta) => {
     const group      = groupRef.current;
     const glider     = gliderRef.current;
     const riderMount = riderMountRef.current;
     if (!group || !glider || !riderMount) return;
+    // Wave time — SAME clock the water shader's uTime uses, so the kart rides the
+    // surface in phase with the rendered waves.
+    const surfTime = state.clock.elapsedTime;
 
     // Cap delta to prevent spiral-of-death on stall frames.
     const dt = Math.min(delta, 0.1);
@@ -984,10 +998,36 @@ function ReefRacePlayerInner({ entity, isSelf = false, triggerScreenShake }: Ree
     group.position.z = interpZ;
     if (USE_SPLINE_PLAYER) {
       const tHere = tAtXZ(interpX, interpZ, entity.avatarId);
-      group.position.y = elevationAtT(tHere) + entityHeight;
-      // Roll into the turn (Euler XYZ: yaw on .y, bank lean on .z — same
-      // convention as the decorative RacingKarts). Banking is render-only.
-      group.rotation.set(0, interpRot, bankAngleAtT(tHere));
+      // SURF RIDE (baked from the founder-signed-off sandbox 2026-06-27): the kart
+      // sits ON the BANKED + WAVE water surface (not the flat centerline datum, which
+      // floated it above the low side of banked turns + ignored the swell). Y =
+      // banked-datum + Gerstner wave heave + a small ride-height, plus the sim's
+      // airborne heightOffset. Same datum the water shader renders (phase-locked).
+      group.position.y =
+        bankedDatumYAtT(interpX, interpZ, tHere) +
+        surfWaveHeightAt(interpX, interpZ, surfTime) +
+        SURF_RIDE_HEIGHT + entityHeight;
+
+      // SURF TILT — pitch (nose-up trim + wave fore-aft slope) + roll (CONFORM to the
+      // surface's lateral slope so the board lies flat on the banked/waved water).
+      // Mirrors the sandbox surfTilt; signs verified there against the rendered mesh.
+      const fX = Math.sin(interpRot), fZ = Math.cos(interpRot);   // forward
+      const rX = Math.cos(interpRot), rZ = -Math.sin(interpRot);  // right
+      const hNose = surfWaveHeightAt(interpX + fX * SURF_PITCH_HALF_LEN, interpZ + fZ * SURF_PITCH_HALF_LEN, surfTime);
+      const hTail = surfWaveHeightAt(interpX - fX * SURF_PITCH_HALF_LEN, interpZ - fZ * SURF_PITCH_HALF_LEN, surfTime);
+      let surfPitch = -Math.atan2(hNose - hTail, 2 * SURF_PITCH_HALF_LEN) * SURF_PITCH_WAVE_GAIN - SURF_PITCH_TRIM_DEG * SURF_DEG2RAD;
+      if (surfPitch < -SURF_PITCH_CLAMP) surfPitch = -SURF_PITCH_CLAMP; else if (surfPitch > SURF_PITCH_CLAMP) surfPitch = SURF_PITCH_CLAMP;
+      const rxR = interpX + rX * SURF_ROLL_HALF_WIDTH, rzR = interpZ + rZ * SURF_ROLL_HALF_WIDTH;
+      const rxL = interpX - rX * SURF_ROLL_HALF_WIDTH, rzL = interpZ - rZ * SURF_ROLL_HALF_WIDTH;
+      const sR = bankedDatumYAtT(rxR, rzR, tHere) + surfWaveHeightAt(rxR, rzR, surfTime);
+      const sL = bankedDatumYAtT(rxL, rzL, tHere) + surfWaveHeightAt(rxL, rzL, surfTime);
+      let surfRoll = Math.atan2(sR - sL, 2 * SURF_ROLL_HALF_WIDTH);   // conform: lie flat on the lateral slope
+      if (surfRoll < -SURF_ROLL_CLAMP) surfRoll = -SURF_ROLL_CLAMP; else if (surfRoll > SURF_ROLL_CLAMP) surfRoll = SURF_ROLL_CLAMP;
+      // YXZ order (yaw → pitch → roll) to MATCH the sandbox pivot the signs were
+      // verified against. The glider child adds the airborne jump nose-up (rotation.x)
+      // + a small velocity bank (rotation.z) on top.
+      group.rotation.order = 'YXZ';
+      group.rotation.set(surfPitch, interpRot, surfRoll);
     } else {
       group.position.y = 0;
       group.rotation.y = interpRot;

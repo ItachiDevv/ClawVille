@@ -600,6 +600,25 @@ export interface SplineRampClient {
   halfWidth: number;
 }
 
+// ─── Reef Race v2 — surf board POSE (render-only) ────────────────────────────
+//
+// Baked 2026-06-27 from the founder-signed-off free-drive sandbox
+// (REEF_PHYSICS_TUNING in reef-physics-tuning.ts). RENDER-ONLY — these make the
+// real-race kart RIDE the banked + waving water surface and SURF-TILT (nose-up +
+// wave-conform) exactly like the sandbox, instead of sitting flat on the centerline
+// datum. Used by ReefRacePlayer (real race) + mirrored by the sandbox tuner. The
+// SIM physics constants (speed/accel/turn) are NOT here — those live in
+// reef-race-config.ts (both web CLIENT_SURF_PARAMS + the api server config) and a
+// speed bump is a coordinated client+server change.
+export const SURF_RIDE_HEIGHT     = 20;   // wu the board floats ABOVE the local surface
+export const SURF_PITCH_TRIM_DEG  = 10;   // baseline nose-up plane angle
+export const SURF_PITCH_WAVE_GAIN = 1.3;  // × the nose-vs-tail wave slope
+export const SURF_TURN_LEAN_GAIN  = 0;    // optional lean-into-carve (× angVel rad/s); 0 = off
+export const SURF_PITCH_HALF_LEN  = 120;  // wu — sample the wave at nose & tail
+export const SURF_ROLL_HALF_WIDTH = 36;   // wu — sample the surface at left & right rail
+export const SURF_PITCH_CLAMP     = 0.6;  // ±34°
+export const SURF_ROLL_CLAMP      = 0.8;  // ±46°
+
 // ─── Reef Race v2 — client-side surf prediction params ───────────────────────
 //
 // keep in sync with apps/api/src/services/activity/sim/reef-race-config.ts
