@@ -600,9 +600,18 @@ class ActivityQueueService {
 
     // Determine fill target. preferredFill if reachable; minFill at QUEUE_TIMEOUT;
     // bot backfill warning at EXTENDED_TIMEOUT.
+    //
+    // GAP 2 (reef-gameplay-2026-06-27) — activities that opt into `earlyBotFill`
+    // (e.g. Reef Race) enable bot backfill at QUEUE_TIMEOUT_MS (~3s) instead of
+    // EXTENDED_TIMEOUT_MS (~6s), so a SOLO queuer for a 4-player activity gets a
+    // full grid fast rather than staring at a 6s empty lobby. Activities that
+    // do NOT opt in (bumper-shells, etc.) keep the ~6s bot-fill grace unchanged.
     let targetFill = preferredFill;
     let allowBots = false;
-    if (oldestAge > EXTENDED_TIMEOUT_MS) {
+    if (
+      oldestAge > EXTENDED_TIMEOUT_MS ||
+      (def.earlyBotFill && oldestAge > QUEUE_TIMEOUT_MS)
+    ) {
       targetFill = minFill;
       allowBots = true;
     } else if (oldestAge > QUEUE_TIMEOUT_MS) {

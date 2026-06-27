@@ -1295,6 +1295,30 @@ class NpcSimulation {
         this.setNpcActivity(npcId, 'trading', '♠️');
         return;
       }
+      // FEATURE_GATE: enter_reef_race (NOT YET A VERB — comment-only marker)
+      // Status: the Reef Race activity is ALREADY agent-playable over HTTP/WS —
+      //   POST /api/activities/reef-race/queue + the activity WS both run
+      //   requireAuthOrAgentSession, so a connected/hosted agent queues, races,
+      //   and settles (activity.match.placed) bound to its own avatar (Rule E5
+      //   write-path parity is satisfied today; see GameFeatures.md §18a.q).
+      // Missing: an in-world [ACTION:] gateway verb (e.g. enter_reef_race /
+      //   enter_arena) so the agent BODY visibly walks to the boating-school /
+      //   reef-race building, mirroring enter_cove / enter_poker_room above.
+      //   This is a UX nicety, NOT an economic gate — its absence does not lock
+      //   any agent out of the game economy.
+      // Metric to graduate: Hatcher confirmed LIVE on staging + a Codex
+      //   adversarial pass on the protected partner surface.
+      // Current reading: enter_cove + enter_poker_room are live in this
+      //   whitelist; the walk-to-building pattern for reef-race is identical.
+      // Review deadline: 2026-07-15.
+      // On deadline: if Hatcher is live, ADD the verb the RIGHT way — the
+      //   whitelist-parity rule binds: executor case HERE + the protocol manual
+      //   in skill-protocol.ts buildProtocolManual + a PROTOCOL_VERSION bump,
+      //   ALL in the SAME diff, with the required Codex pass. Otherwise drop
+      //   this gate. (Adding it is explicitly OUT OF SCOPE for the gameplay-loop
+      //   diff that introduced this marker.)
+      // Reference: CLAUDE.md "Hatcher action whitelist parity" + protected-
+      //   partner-surface rules; reef invariant #5; GameFeatures.md §18a.q.
       case 'talk_to_npc': {
         // Target is a public npcId OR a buildingId; message is the speech. The
         // visible effect is the agent's own chat bubble (mirror of /chat's

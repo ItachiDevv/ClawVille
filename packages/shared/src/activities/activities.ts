@@ -92,6 +92,15 @@ export interface ActivityDefinition {
   status: 'live' | 'coming-soon';
   /** Payout schedule — null for coming-soon stubs */
   rewardConfig?: ActivityRewardConfig;
+  /**
+   * Matchmaker hint — when `true`, bot backfill is enabled at `QUEUE_TIMEOUT_MS`
+   * (~3s) instead of `EXTENDED_TIMEOUT_MS` (~6s), so a SOLO queuer for an
+   * activity that needs ≥`queueMinPlayers` to start (e.g. Reef Race needs 4)
+   * gets a full grid quickly instead of staring at a longer empty-lobby grace.
+   * Omit (or `false`) to keep the default ~6s bot-fill grace. Server-side only —
+   * read by `apps/api/src/services/activity/activity-queue.ts` `matchActivity`.
+   */
+  earlyBotFill?: boolean;
 }
 
 /**
@@ -249,6 +258,9 @@ export const ACTIVITY_REGISTRY: readonly ActivityDefinition[] = [
     skillBuildingMatches: ['app-publishing'],
     status: 'live',
     rewardConfig: REEF_RACE_REWARD_CONFIG,
+    // Reef Race needs 4 to start; a lone queuer should get 3 bots fast (~3s)
+    // rather than wait out the ~6s human-grace window. See GAP 2 (2026-06-27).
+    earlyBotFill: true,
   },
 
   // ─── Coming soon (8 stubs — one per non-live building) ────────────────────
