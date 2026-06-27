@@ -98,13 +98,31 @@ export const landTransactionKindEnum = pgEnum('land_transaction_kind', [
   'structure_placement', // free placement (amount_ct = 0 in v1)
   'structure_upgrade', // CT upgrade-tier sink
   'service_sale', // peer CT service buy — full transfer to seller (no rake v1)
+  'rent_payment', // LIVE (2026-06-24): rent acquire + each weekly rent-sweep charge (CT sink)
+  'eviction', // LIVE (2026-06-24): rent lapsed past grace -> parcel returned to pool, structure archived
   // ── DEFERRED (reserved; no v1 write path) ──
   'parcel_resale', // NEXT milestone (P2P resale)
-  'rent_payment', // NEXT milestone (renting)
   'property_tax', // economy-health pass (recurring sink)
   'upkeep', // economy-health pass (recurring sink)
   'service_rake', // economy-health pass (house rake)
 ]);
+
+/**
+ * Parcel TENURE — HOW the parcel is held (orthogonal to `status`, which is pool
+ * membership). NULL on an `available`/unsold parcel.
+ *   rented  — held via the weekly-rent path; evictable on lapse (rent_paid_through/grace_until live)
+ *   owned   — bought outright (one-time CT sink) OR a permanent holder; never evicted
+ *   starter — the free first-claim onboarding parcel; never rents, never evicts
+ */
+export const landTenureEnum = pgEnum('land_tenure', ['rented', 'owned', 'starter']);
+
+/**
+ * Structure lifecycle. `active` = live + rendered. `archived` = soft-deleted by an
+ * eviction (the parcel returned to the pool but the build is preserved); a re-rent/
+ * buy by the SAME avatar restores it, a re-lease to a DIFFERENT avatar purges it.
+ * Archived structures are excluded from every owned/structure read + the renderer.
+ */
+export const landStructureStatusEnum = pgEnum('land_structure_status', ['active', 'archived']);
 
 /** Service listing kind. `peer` = CT (v1). `partner` = USDC via x402 (gated). */
 export const serviceListingKindEnum = pgEnum('service_listing_kind', ['peer', 'partner']);
@@ -175,6 +193,33 @@ export const landParcels = pgTable(
     }),
     acquiredAt: timestamp('acquired_at', { withTimezone: true }),
 
+    // ── tenure (builder-economics, 2026-06-24) ──
+    /**
+     * HOW the parcel is held. NULL = available/unsold. Set on acquire
+     * ('owned' = buy outright, 'rented' = weekly rent, 'starter' = free claim);
+     * cleared to NULL on eviction (parcel returns to the available pool).
+     */
+    tenure: landTenureEnum('tenure'),
+    /**
+     * Weekly rent in CT, STAMPED per-row at seed/migration from `LAND_RENT_LADDER`
+     * (same per-tier interpolation as price_ct). The rent route reads THIS, never
+     * the ladder. NULL for starter/founder (not rentable). Stays stamped across an
+     * eviction (it is the listing rent, not a per-tenancy value).
+     */
+    rentCtWeekly: integer('rent_ct_weekly'),
+    /**
+     * For a `rented` parcel: the instant the current paid period ends. The rent
+     * sweeper charges the next week when `now() >= rent_paid_through`. NULL for
+     * owned/starter/available.
+     */
+    rentPaidThrough: timestamp('rent_paid_through', { withTimezone: true }),
+    /**
+     * Set to `now() + RENT_GRACE_DAYS` when a weekly charge fails (insufficient
+     * CT). While set, perks + shop listings are paused. If still set and elapsed
+     * at the next sweep, the parcel is evicted. Cleared on a successful charge.
+     */
+    graceUntil: timestamp('grace_until', { withTimezone: true }),
+
     // ── RESERVED-INERT: Founder on-chain NFT linkage (custody-gated, no v1 write) ──
     /** base58 Solana mint address — populated only when a Founder parcel is minted. */
     nftMintAddress: varchar('nft_mint_address', { length: 64 }),
@@ -200,6 +245,13 @@ export const landParcels = pgTable(
     ownerIdx: index('land_parcels_owner_idx').on(t.ownerAvatarId),
     /** One parcel per world cell — supply integrity (ROADMAP R11). */
     gridUnique: uniqueIndex('land_parcels_grid_unique').on(t.gridX, t.gridY),
+    /**
+     * Rent sweeper hot path — only RENTED parcels are ever due. Partial index on
+     * the due-date keeps the periodic charge/grace/evict scan off the full table.
+     */
+    rentSweepIdx: index('land_parcels_rent_sweep_idx')
+      .on(t.rentPaidThrough)
+      .where(sql`tenure = 'rented'`),
   }),
 );
 
@@ -234,6 +286,12 @@ export const landStructures = pgTable(
     catalogKey: varchar('catalog_key', { length: 64 }).notNull(),
     /** Upgrade level 1..5 (Lv1 → Lv5). Drives perk magnitude + prestige + visual tier. */
     level: integer('level').notNull().default(1),
+    /**
+     * Lifecycle (builder-economics, 2026-06-24). `active` = live + rendered.
+     * `archived` = soft-deleted by an eviction; restored on same-avatar re-acquire,
+     * purged on re-lease to a different avatar. Excluded from owned/structure reads.
+     */
+    status: landStructureStatusEnum('status').notNull().default('active'),
     /**
      * RESERVED (no-op v1): decay level for the deferred upkeep/tax pass. 0 =
      * pristine. Future unpaid upkeep dims the render without re-architecture.
