@@ -21,10 +21,10 @@ export async function GET() {
   }
 }
 
-// Bounds track the shared world dimensions (S3, 2026-06-16). Land Phase 0 grew
-// the world to 18432 px; the old .max(5120) rejected the correct new spawn
-// (9216 > 5120), so the avatar row could never persist a valid position. Bound
-// to @clawville/shared so this can never drift from the client world size.
+// Bounds track the shared world dimensions (S3, 2026-06-16). The world grew to
+// 22528 px (576->704 land-builder grow, 2026-06-24); the bound is imported from
+// @clawville/shared (WORLD_PX_WIDTH/HEIGHT), so a world grow auto-raises it and
+// this validator can never drift from the client world size.
 const updatePositionSchema = z.object({
   positionX: z.number().int().min(0).max(WORLD_PX_WIDTH),
   positionY: z.number().int().min(0).max(WORLD_PX_HEIGHT),

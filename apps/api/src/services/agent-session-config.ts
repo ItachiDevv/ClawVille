@@ -299,18 +299,21 @@ export function buildOverrideSessionConfig(
  * contract, audited separately).
  */
 /**
- * Hatcher avatar home default — the TRUE center of the 11520-px sim
- * (TOWN_CENTER 5760,5760). Lives HERE, in the shared mint/restore config
- * module, so the MINT path (partner-hatcher.ts) and the RESTORE path
- * (openclaw-session-restore.ts) can never drift to different coordinate
- * spaces (the FIX-13 regression: mint defaulted 5760 while restore still
- * defaulted to the legacy 5120-space 2560, teleporting pre-fix agents on
- * an API restart). Hatcher's space + bounds + center is documented for the
- * partner via relay R5. NON-hatcher openclaw/gateway agents use a separate
- * 5120-space (center 2560) and intentionally do NOT use this constant.
+ * Hatcher avatar home default — the TRUE center of the 22528-px sim
+ * (TOWN_CENTER 11264,11264; npc-simulation.ts MAP_WIDTH/2 after the 704-grow).
+ * Lives HERE, in the shared mint/restore config module, so the MINT path
+ * (partner-hatcher.ts) and the RESTORE path (openclaw-session-restore.ts) can
+ * never drift to different coordinate spaces (the FIX-13 regression: mint
+ * defaulted to one center while restore defaulted to a legacy center,
+ * teleporting pre-fix agents on an API restart). Updated 2026-06-24 for the
+ * 576->704 world grow: this default had drifted TWO world grows behind the live
+ * sim, so a default-home agent spawned far off-center; it now tracks the live
+ * 22528-px sim center. Hatcher's space + bounds + center is documented for the
+ * partner via relay R5. NON-hatcher openclaw/gateway agents use a separate legacy
+ * space (a smaller-world center) and intentionally do NOT use this constant.
  */
-export const DEFAULT_HATCHER_HOME_X = 5760;
-export const DEFAULT_HATCHER_HOME_Y = 5760;
+export const DEFAULT_HATCHER_HOME_X = 11264;
+export const DEFAULT_HATCHER_HOME_Y = 11264;
 
 export const SPAWN_RELEVANT_FIELDS = [
   'agentId',

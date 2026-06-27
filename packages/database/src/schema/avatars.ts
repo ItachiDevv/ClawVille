@@ -118,13 +118,14 @@ export const avatars = pgTable('avatars', {
   platformAgentId: uuid('platform_agent_id')
     .references(() => platformAgents.id, { onDelete: 'set null' }),
   clawTokens: integer('claw_tokens').default(100).notNull(),
-  // town-center spawn (land Phase 0 re-center); mirrors @clawville/shared
-  // SPAWN_PX (9216, 9756). Migration 0002 resets existing rows. NOTE: drizzle
-  // column defaults MUST be numeric literals (importing @clawville/shared here
-  // would create a database→shared dependency cycle), so these are pinned by
-  // the comment, not by an import — keep them equal to SPAWN_PX.
-  positionX: integer('position_x').default(9216).notNull(),
-  positionY: integer('position_y').default(9756).notNull(),
+  // town-center spawn (land-builder-economics 704-world re-center); mirrors
+  // @clawville/shared SPAWN_PX (11264, 11804). Migration 0002 reset rows to the
+  // 576-world spawn; migration 0006 shifts every row +2048 for the 576→704 grow.
+  // NOTE: drizzle column defaults MUST be numeric literals (importing
+  // @clawville/shared here would create a database→shared dependency cycle), so
+  // these are pinned by the comment, not by an import — keep them equal to SPAWN_PX.
+  positionX: integer('position_x').default(11264).notNull(),
+  positionY: integer('position_y').default(11804).notNull(),
   /**
    * Town fast-travel — per-avatar spawn preference (town-fast-travel, 2026-06-19).
    *

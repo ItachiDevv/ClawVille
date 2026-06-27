@@ -13,8 +13,8 @@ import { buildingZones, MAP_WIDTH, MAP_HEIGHT } from '@/lib/pixi/tilemap-data';
 // re-centers automatically. +540 keeps the avatar 540 wu SOUTH of origin
 // (world Z = +540) — ~140 wu south of Nori (world Z = +400) and clear of the
 // town-directory sign (world Z = −120).
-// Phase 0 land (2026-06-15): center px 5760 → 9216 (world grew 360→576 tiles).
-//   x = MAP_WIDTH/2 = 9216,  y = MAP_HEIGHT/2 + 540 = 9756.
+// Land-builder-economics (2026-06-24): center px 9216 → 11264 (world grew 576→704 tiles).
+//   x = MAP_WIDTH/2 = 11264,  y = MAP_HEIGHT/2 + 540 = 11804.
 //
 // Spawn scatter (town-ux-2026-06-19): a small random offset per client load
 // prevents every player stacking on the exact same pixel in front of Nori.
@@ -75,7 +75,7 @@ if (process.env.NODE_ENV !== 'production') {
 // via setAvatarPosition so that subscribers like Minimap rebuild at most 10×/sec
 // instead of 60×/sec during movement.
 // ---------------------------------------------------------------------------
-// Phase 0 land (2026-06-15): world is 18432×18432 px. Center = (9216, 9216).
+// Land-builder-economics (2026-06-24): world is 22528×22528 px. Center = (11264, 11264).
 // Spawn 540 wu south of center: sign at world Z = −120, Nori at world Z = +400,
 // avatar spawn at world Z = SPAWN_PX.y − MAP_HEIGHT/2 = +540. See SPAWN_PX above.
 export const avatarPositionRef: { x: number; y: number } = { x: SPAWN_PX.x, y: SPAWN_PX.y };
@@ -1269,7 +1269,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     // GLB until setAvatarAppearance fired, which for an unauthenticated
     // session may never happen.
     avatarModelKey: 'lobster',
-    avatarPosition: { x: SPAWN_PX.x, y: SPAWN_PX.y }, // world Z=+540 — see SPAWN_PX (Phase 0 land: center 5760→9216)
+    avatarPosition: { x: SPAWN_PX.x, y: SPAWN_PX.y }, // world Z=+540 — see SPAWN_PX (land-builder-economics: center 9216→11264)
     movementDirection: 'idle',
     avatarSpeed: 0,
     nearLocation: null,

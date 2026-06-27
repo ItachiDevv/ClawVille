@@ -13,9 +13,11 @@
  *     per render. useFrame uses only primitive refs, zero per-frame allocations.
  *
  * Positioning:
- *   Cove zone: id='cove', tile center cx=158, cy=288 (576×576 tile grid).
- *   worldX = -9216 + 158*32 = -4160
- *   worldZ = -9216 + 288*32 = 0
+ *   Cove zone world position is FIXED at worldX=-4160, worldZ=0 wu.
+ *   These are world-absolute values (R=130t building ring, 130 tiles west of origin).
+ *   The old tile-index form (-9216+158*32) was relative to the 576-tile grid center
+ *   (288); after the 576→704 grow the center shifted to 352 so those indices are
+ *   stale — the world-absolute constants below are grow-proof.
  *
  *   The cove GLB (cove-exterior-opt1.glb) is a near-cube:
  *     raw bbox ≈ 50.78 × 49.52 × 51.42 native units, max dim 51.42.
@@ -42,12 +44,14 @@ import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 
 // ---------------------------------------------------------------------------
-// World position of the cove beacon.
-// Tile center cx=158, cy=288 (576×576 tile grid).
-// Offset: HALF_MAP = 9216 wu.
+// World position of the cove beacon — world-absolute, grow-proof.
+// Cove zone center: R=130t building ring, 130 tiles west of origin = -4160wu.
+// Do NOT re-express as -MAP_WIDTH/2 + tile*TILE_SIZE: the tile index (158) was
+// relative to the 576-tile grid center (288); after the 576→704 grow that form
+// would compute -11264 + 5056 = -6208wu (wrong). The world position is fixed.
 // ---------------------------------------------------------------------------
-const BEACON_WORLD_X = -9216 + 158 * 32; // -4160 wu
-const BEACON_WORLD_Z = -9216 + 288 * 32; // 0 wu
+const BEACON_WORLD_X = -4160; // wu — world-absolute; cove zone, 130 tiles W of origin
+const BEACON_WORLD_Z = 0;     // wu — world-absolute; cove zone center-Z
 
 // Cove pyramid dimensions (verified from GLB bbox + arena-buildings.tsx config):
 //   targetMaxDim=1300, raw bbox max dim 51.42 → scale≈25.28

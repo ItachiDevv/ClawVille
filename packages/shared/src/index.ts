@@ -95,14 +95,17 @@ export * from './types/world';
 // Server-usable AABB collision data (buildings + town-center props).
 export * from './constants/world-colliders-data';
 // World dimensions + canonical spawn/center coords (S3, 2026-06-16) — the
-// single source of truth the web client, API, and DB schema all align on so the
-// Land Phase 0 re-center (5120→18432) can never drift between layers again.
+// single source of truth the web client, API, and DB schema all align on so a
+// world re-center (5120→18432→22528, latest the 576→704 land-builder grow) can
+// never drift between layers again.
 export * from './constants/world-dimensions';
 // Land Economy Phase 0 (2026-06-15) — frozen tier contract (enum, supply counts, parcel-code
 // format). The geometry (`land-parcels`) + economic (`land-economy`) constants both import it.
 export * from './constants/land-tiers';
-// Land Economy Phase 0 (2026-06-15) — deterministic parcel geometry (180 parcels (8/8/16/40/108), SQUARE concentric block-frames).
-// Consumed by merged-seaweed.tsx (exclusion zones) and future 3D parcel-render pass.
+// Land Economy — deterministic parcel geometry (3-ring layout: 56 parcels
+// founder 10 / starter 26 / c 20, SQUARE concentric block-frames; c added by the
+// 576→704 land-builder grow 2026-06-24). Consumed by merged-seaweed.tsx (exclusion
+// zones) and the 3D parcel-render pass.
 export * from './constants/land-parcels';
 // Land Economy Phase 0 (2026-06-15) — economic constants (tier ladder, upgrade costs, structure
 // catalog, leaderboard event weights, founder-gated rest-bonus cap). Backend + frontend pricing.

@@ -9,21 +9,23 @@
 //     Math.random. Every client calling this gets an IDENTICAL array: multiplayer-safe.
 //   - Parcel ids match parcelCode(tier, index) exactly. The DB seed script and
 //     land_parcels.parcel_code use this same function — no mapping layer anywhere.
-//   - TOTAL_PARCEL_SUPPLY (180) parcels are enumerated: 8+8+16+40+108.
+//   - TOTAL_PARCEL_SUPPLY (56) parcels are enumerated: founder 10 + starter 26 + c 20
+//     (3-ring layout; a/b are 0). Was 180 (8+8+16+40+108) in the original 5-tier plan.
 //   - All coordinates are in world-units (wu). 1 tile = 32 wu.
-//     World center = (0, 0). Grid = 576x576 tiles = 18432x18432 wu.
+//     World center = (0, 0). Grid = 704x704 tiles = 22528x22528 wu.
 //   - Building ring is at R=130 tiles (~4160 wu) — parcels NEVER overlap it.
 //
 // Layout (axis-aligned SQUARE concentric BLOCK-FRAMES, inner=premium, outer=abundant):
 //
-//   2-RING "fewer big plots" layout (2026-06-18 founder review — supersedes the
-//   old 5-tier 180-plot table). Only founder + starter are populated:
+//   3-RING layout (2026-06-24 land-builder-economics — adds the new OUTER c-tier
+//   ring enabled by the 576→704 world grow). founder + starter + c are populated:
 //
 //   Tier     | role    | half-side h (tiles) | count | footprint (tiles) | footprint (wu)
 //   ---------|---------|---------------------|-------|-------------------|---------------
 //   founder  | PREMIUM |        190          |  10   |        38         |     1216
-//   a/b/c    | unused  |         —           |   0   |         —         |       —
+//   a/b      | unused  |         —           |   0   |         —         |       —
 //   starter  | REGULAR |        258          |  26   |        34         |     1088
+//   c        | OUTER   |        305          |  20   |        34         |     1088
 //
 // Plots are placed at EVEN ARC-LENGTH steps around the square perimeter (P=8·h tiles)
 // so corners always receive plots. s_i = i × (P/N), i ∈ [0, N).
@@ -54,8 +56,15 @@
 //     Nearest edges of adjacent tiers: 24t − (7/2 + 7/2) = 24 − 7 = 17t clear ✓
 //     (founder→a gap = 24t − (6/2+7/2) = 24 − 6.5 = 17.5t clear ✓)
 //
-//   MAP BOUNDS:
-//     Outer frame h=272t, footprint/2=3.5t → furthest edge = 275.5t < 288t half-grid → 12.5t margin ✓
+//   NEW OUTER c-RING (2026-06-24, h=305t, footprint=34t, count=20) NO-OVERLAP PROOF:
+//     c inner edge   = 305 − 34/2 = 288t  > starter outer edge 275t      → 13t gap   ✓
+//     c outer edge   = 305 + 34/2 = 322t  < new half-grid 352t (704/2)   → 30t margin ✓
+//     within-ring spacing = 8·305/20 = 122t >> 34t footprint              → no self-overlap ✓
+//     founder / starter / building-ring positions are UNCHANGED by this addition.
+//
+//   MAP BOUNDS (704×704 grid → half-grid 352t):
+//     Outermost frame is now c: h=305t, footprint/2=17t → furthest edge = 322t < 352t → 30t margin ✓
+//     (pre-grow 2-ring bound: starter h=258t furthest edge 275t < 288t half-grid — still holds.)
 
 import {
   type LandTier,
@@ -105,21 +114,22 @@ interface TierConfig {
   footprintTiles: number;
 }
 
-// 2-RING "fewer big plots" layout (2026-06-18). Only founder (PREMIUM inner) and
-// starter (REGULAR outer) are populated — PARCEL_TIER_COUNTS zeroes a/b/c.
+// 3-RING layout (2026-06-24 land-builder-economics — adds the OUTER c ring that
+// the 576→704 world grow enabled). founder (PREMIUM inner), starter (REGULAR mid),
+// and c (OUTER) are populated — PARCEL_TIER_COUNTS zeroes only a/b now.
 // Footprints are 34-38 tiles (1088-1216 wu) — ~5x the old 6-7t plots — so a
 // building (scaled to ~0.62-0.78x the footprint) reads at ~2.5-3x a character.
 //   founder (premium): h=190t (6080wu) inner edge 171t > building reach ~161t (10t clear).
-//   starter (regular): h=258t (8256wu) outer edge 275t < grid half 288t (13t margin).
-//   radial gap 68t - footprints(19+17) = 32t clear; within-ring spacing >> footprint.
-// a/b/c keep nominal configs (never generated at count 0). The middle tiers come
-// back if we grow the world.
+//   starter (regular): h=258t (8256wu) outer edge 275t; c inner edge 288t → 13t gap.
+//   c       (outer):   h=305t (9760wu) outer edge 322t < new grid half 352t (30t margin).
+//   within-ring spacing >> footprint for all three (founder 176t, starter 20.1t, c 122t).
+// a/b keep nominal configs (never generated at count 0). They come back if we grow further.
 const TIER_CONFIG: Record<LandTier, TierConfig> = {
   founder: { halfSideTiles: 190, footprintTiles: 38 }, // PREMIUM inner ring (big)
   a:       { halfSideTiles: 200, footprintTiles: 7 },  // unused (count 0)
   b:       { halfSideTiles: 224, footprintTiles: 7 },  // unused (count 0)
-  c:       { halfSideTiles: 248, footprintTiles: 7 },  // unused (count 0)
-  starter: { halfSideTiles: 258, footprintTiles: 34 }, // REGULAR outer ring (big)
+  c:       { halfSideTiles: 305, footprintTiles: 34 }, // OUTER ring (big) — new in the 704 world
+  starter: { halfSideTiles: 258, footprintTiles: 34 }, // REGULAR mid ring (big)
 };
 
 // ---------------------------------------------------------------------------
@@ -204,14 +214,14 @@ export function parcelCenterWorld(parcel: ParcelSlot): { x: number; y: number; z
 
 /** Convert a parcel's world center to its tile zone in the tilemap (upper-left tile coord).
  *  Uses the same half-offset formula as buildingZones. cx/cz are integer world-wu so the
- *  downstream gridX/gridY = floor((cx|cz + 9216)/32) math is always exact. */
+ *  downstream gridX/gridY = floor((cx|cz + 11264)/32) math is always exact. */
 export function parcelToTileZone(parcel: ParcelSlot): {
   x: number; // tile col of zone upper-left
   y: number; // tile row of zone upper-left
   width: number;
   height: number;
 } {
-  const HALF_MAP_WU = (576 / 2) * TILE_SIZE; // 9216 wu — grid half-width
+  const HALF_MAP_WU = (704 / 2) * TILE_SIZE; // 11264 wu — grid half-width (704-tile world)
   // Convert world center (wu) to tilemap pixel coords, then to tile coords.
   // tilemap px = worldCoord + HALF_MAP_WU. Tile = floor(px / TILE_SIZE).
   const tileX = Math.floor((parcel.cx + HALF_MAP_WU) / TILE_SIZE);

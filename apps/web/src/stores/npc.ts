@@ -640,12 +640,12 @@ export const useNpcStore = create<NpcStoreState>((set, get) => ({
       id: PLAYER_NPC_ID,
       name: 'You',
       // S3 (2026-06-16): spawn at the canonical town-center spawn from the
-      // @clawville/shared SSOT (SPAWN_PX = 9216,9756 — world center X, 140wu
-      // south of Nori). PREVIOUSLY hardcoded (5760,6300) — the 11520px-era
-      // center — which Land Phase 0's grow to 18432px left as a corner-ward
-      // diagonal, the exact NPC-mode "diagonal spawn" bug. Now drift-proof:
-      // game.ts asserts MAP_WIDTH/2 == WORLD_PX_WIDTH/2 and the computed spawn
-      // equals SPAWN_PX, so this and the player-mode body stay co-located.
+      // @clawville/shared SSOT (SPAWN_PX = 11264,11804 after the 576->704 grow —
+      // world center X, 140wu south of Nori). PREVIOUSLY hardcoded coords left an
+      // out-of-center diagonal on each world resize (the NPC-mode "diagonal spawn"
+      // bug). Now drift-proof: game.ts asserts MAP_WIDTH/2 == WORLD_PX_WIDTH/2 and
+      // the computed spawn equals SPAWN_PX, so this and the player-mode body stay
+      // co-located across any world grow.
       x: SPAWN_PX.x, y: SPAWN_PX.y,
       prevX: SPAWN_PX.x, prevY: SPAWN_PX.y,
       ts: 0, tsDelta: 200,
