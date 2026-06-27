@@ -89,6 +89,7 @@ mock.module('../activity-replay-log', () => ({
 
 const { activityQueueService, MAX_PARTY_SIZE } = await import('../activity-queue');
 const { activityRoomManager } = await import('../activity-room-manager');
+const { botPool } = await import('../bots/bot-pool');
 
 /**
  * Observer for matcher-created rooms — we use the real room manager
@@ -113,6 +114,9 @@ const ACTIVITY_ID = 'bumper-shells';
 beforeEach(() => {
   activityQueueService.__resetForTest();
   activityRoomManager.__resetForTest();
+  // Start every test with an EMPTY bot pool so the earlyBotFill tests own
+  // the only seeded slots — prevents cross-test bot backfill contamination.
+  botPool.__resetForTest();
   dbMock.reset();
   queueRowsSeed.length = 0;
 });
@@ -130,6 +134,54 @@ async function enqueueHuman(avatarId: string, partyId: string | null = null) {
     subjectType: 'human',
     partyId,
   });
+}
+
+// ─── earlyBotFill (Reef Race) helpers ─────────────────────────────────────
+// Reef Race opts into `earlyBotFill` so a SOLO queuer gets a full grid via
+// bot backfill at QUEUE_TIMEOUT_MS (~3s) instead of EXTENDED_TIMEOUT_MS (~6s).
+const REEF_ACTIVITY_ID = 'reef-race';
+
+async function enqueueReefHuman(avatarId: string) {
+  return activityQueueService.enqueue({
+    activityId: REEF_ACTIVITY_ID,
+    avatarId,
+    userId: `user-${avatarId}`,
+    agentId: null,
+    subjectType: 'human',
+    partyId: null,
+  });
+}
+
+/** Seed N bot slots into the pool so reserve() can hand them out. */
+function seedBotPool(count: number) {
+  botPool.__resetForTest(
+    Array.from({ length: count }, (_, i) => ({
+      index: i + 1,
+      slotId: `bot-${String(i + 1).padStart(3, '0')}`,
+      avatarId: `bbbbbbbb-0000-0000-0000-${String(i + 1).padStart(12, '0')}`,
+    })),
+  );
+}
+
+/** Backdate the head entry of an arbitrary activity's queue (see backdateOldest). */
+function backdateOldestFor(activityId: string, deltaMs: number) {
+  const queues: Map<string, Array<{ queuedAt: number }>> = (
+    activityQueueService as unknown as {
+      queues: Map<string, Array<{ queuedAt: number }>>;
+    }
+  ).queues;
+  const queue = queues.get(activityId);
+  if (!queue || queue.length === 0) return;
+  queue[0].queuedAt = Date.now() - deltaMs;
+}
+
+function observeMatchesFor(activityId: string) {
+  return activityRoomManager.listActiveRooms(activityId).map((r) => ({
+    activityId: r.activityId,
+    participantCount: r.participants.size,
+    hasBots: r.hasBots,
+    id: r.id,
+  }));
 }
 
 // ─── Enqueue / leave idempotency ──────────────────────────────────────────
@@ -201,6 +253,31 @@ describe('Matchmaker fill', () => {
   it('does NOT fall back if oldest entry is fresh', async () => {
     for (let i = 0; i < 4; i++) await enqueueHuman(pid(i));
     // No backdate — preferredFill (6) target still in effect.
+    await activityQueueService.runMatchmakerSweep();
+    expect(observeMatches().length).toBe(0);
+  });
+
+  // ─── GAP 2 (reef-gameplay-2026-06-27): earlyBotFill ─────────────────────
+  it('earlyBotFill backfills bots at QUEUE_TIMEOUT_MS for reef-race (solo → full grid)', async () => {
+    seedBotPool(8);
+    await enqueueReefHuman(pid(1));
+    // Age past QUEUE_TIMEOUT_MS (3s) but BEFORE EXTENDED_TIMEOUT_MS (6s).
+    // Without earlyBotFill this window would NOT enable bots — reef-race opts in.
+    backdateOldestFor(REEF_ACTIVITY_ID, 4_000);
+    await activityQueueService.runMatchmakerSweep();
+    const matches = observeMatchesFor(REEF_ACTIVITY_ID);
+    expect(matches.length).toBe(1);
+    // reef-race queueMinPlayers=4 → 1 human + 3 bots.
+    expect(matches[0].participantCount).toBe(4);
+    expect(matches[0].hasBots).toBe(true);
+  });
+
+  it('earlyBotFill is SCOPED — bumper-shells solo at 4s does NOT get early bots', async () => {
+    seedBotPool(8); // pool has bots available, but the activity must opt in
+    await enqueueHuman(pid(1)); // bumper-shells (no earlyBotFill)
+    // Same 3s–6s window. bumper-shells keeps the ~6s grace, so allowBots stays
+    // false, a lone queuer can't reach minFill (4), and no room forms.
+    backdateOldestFor(ACTIVITY_ID, 4_000);
     await activityQueueService.runMatchmakerSweep();
     expect(observeMatches().length).toBe(0);
   });
