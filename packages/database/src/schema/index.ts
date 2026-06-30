@@ -108,6 +108,12 @@ export * from './poker-cash';
 // PURELY ADDITIVE — new tables only, db:push is a clean CREATE. Ownership binds
 // to avatars.id (the human+agent parity seam). See `.claude/plans/land-economy/`.
 export * from './land';
+// SAP Option C — on-chain USDC escrow gate settlement ledger (2026-06-22).
+// sap_escrow_settlements / sap_escrow_approvals: the backend at-most-once-settle
+// + depositor-approval guard for the verify-before-release USDC rail. PURELY
+// ADDITIVE — two net-new tables + one enum, db:push is a clean CREATE (apply by
+// hand, NOT db:push). Gated OFF at route/service layer. See `sap-escrow.ts`.
+export * from './sap-escrow';
 
 import { users, sessions } from './users';
 import { npcMemories, activityLog } from './memories';
@@ -134,6 +140,7 @@ import {
   partnerStorefronts,
   ctTopups,
 } from './land';
+import { sapEscrowSettlements, sapEscrowApprovals } from './sap-escrow';
 
 export const usersRelations = relations(users, ({ many, one }) => ({
   sessions: many(sessions),
@@ -516,5 +523,33 @@ export const ctTopupsRelations = relations(ctTopups, ({ one }) => ({
   avatar: one(avatars, {
     fields: [ctTopups.avatarId],
     references: [avatars.id],
+  }),
+}));
+
+// ── SAP Option C escrow gate (settlement ledger) ─────────────────────────────
+
+export const sapEscrowSettlementsRelations = relations(sapEscrowSettlements, ({ one }) => ({
+  depositor: one(avatars, {
+    fields: [sapEscrowSettlements.depositorAvatarId],
+    references: [avatars.id],
+    relationName: 'sapEscrowDepositor',
+  }),
+  worker: one(avatars, {
+    fields: [sapEscrowSettlements.workerAvatarId],
+    references: [avatars.id],
+    relationName: 'sapEscrowWorker',
+  }),
+}));
+
+export const sapEscrowApprovalsRelations = relations(sapEscrowApprovals, ({ one }) => ({
+  approver: one(avatars, {
+    fields: [sapEscrowApprovals.approverAvatarId],
+    references: [avatars.id],
+    relationName: 'sapEscrowApprovalApprover',
+  }),
+  worker: one(avatars, {
+    fields: [sapEscrowApprovals.workerAvatarId],
+    references: [avatars.id],
+    relationName: 'sapEscrowApprovalWorker',
   }),
 }));
