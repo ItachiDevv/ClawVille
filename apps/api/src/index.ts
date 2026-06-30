@@ -80,6 +80,9 @@ import { fingerprintMiddleware } from './middleware/fingerprint';
 import { cosmeticsRoutes } from './routes/cosmetics';
 import { dashAuthRoutes } from './routes/dash-auth';
 import { wagerRoutes } from './routes/wager';
+// SAP Option C — on-chain agent identity + USDC escrow rail (gated OFF + devnet +
+// dry-run by default; mainnet is a code gate, not an env). See routes/sap.ts.
+import { sapRoutes } from './routes/sap';
 // Phase 6.1 slice 3 — cove slots fun-money backend wire (ClawTokens live;
 // SOL/USDC return 501 until Phase 6.2 custody).
 import { coveSlotsRouter } from './routes/cove-slots';
@@ -312,6 +315,14 @@ app.route('/api/partner/hatcher', partnerHatcherLaunchRoutes);
 // Wager lobbies + escrow (gambling-contracts vertical slice).
 // See routes/wager.ts header for the full surface + feature gates.
 app.route('/api/wager', wagerRoutes);
+// SAP — on-chain agent identity / reputation / tool / discovery + escrow USDC
+// money rail. Triple-gated DARK by default (SAP_ENABLED=false,
+// SAP_ESCROW_ENABLED=false, SAP_USDC_ESCROW_ENABLED=false, SAP_DRY_RUN=true) +
+// devnet-first; mainnet is a code gate (SAP_ALLOW_MAINNET in sap-config.ts), not
+// an env. The in-game economy stays ClawTokens. See routes/sap.ts FEATURE_GATE +
+// docs/sap-integration.md. Rule E5 parity: human cookie OR agent session both
+// bind to identity.avatarId's own custodial Phase-5.1 wallet.
+app.route('/api/sap', sapRoutes);
 // Phase 6.1 slice 3 — Cove slots (commit-reveal RNG + session escrow).
 // ClawTokens path is fully wired; SOL/USDC routes return 501 with a
 // friendly message until Phase 6.2 lands real-money custody.

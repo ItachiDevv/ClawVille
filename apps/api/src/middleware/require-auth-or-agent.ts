@@ -48,6 +48,15 @@ export type ActivityIdentity =
       agentId: string;
       /** The agent-session id used in the request header */
       sessionId: string;
+      /**
+       * Whether this agent session is authorized to spend/earn REAL ClawTokens
+       * and act on real-money/custodial paths (it PROVED ownership of its bound
+       * avatar). Forwarded verbatim from `resolveAgentSession` so real-money
+       * routes (cove, SAP on-chain) can fail closed on a non-ledger session
+       * (a stale / restored / ownership-unproven session is `false` and may
+       * perceive/chat but never trigger a custodial decrypt/sign or CT settle).
+       */
+      ledgerCapable: boolean;
     };
 
 /**
@@ -220,6 +229,7 @@ export async function resolveActivityIdentity(input: {
     avatarId: resolved.avatarId,
     agentId: resolved.agentId,
     sessionId: token,
+    ledgerCapable: resolved.ledgerCapable === true,
   };
 }
 
@@ -365,6 +375,11 @@ export const requireAuthOrAgentSession = createMiddleware<ActivityAuthContext>(
       avatarId: resolved.avatarId,
       agentId: resolved.agentId,
       sessionId,
+      // Forward the ledger-capability verdict verbatim so real-money/custodial
+      // routes (cove, SAP on-chain) can fail closed on a non-ledger session via
+      // their own `requireLedgerCapable`-style gate (a stale/restored/unproven
+      // session is `false`). `resolveAgentSession` already computes this.
+      ledgerCapable: resolved.ledgerCapable === true,
     });
     return next();
   },
