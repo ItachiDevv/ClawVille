@@ -105,6 +105,15 @@ export interface LedgerCreditInput {
    * `mintEarned`); the type makes it unrepresentable.
    */
   provenance?: CreditProvenance;
+  /**
+   * The USD basis to stamp on the ledger row, as a decimal string (numeric(20,6)),
+   * e.g. `"10.00"`. ONLY meaningful for a `'bought'` credit (the dollars the buyer
+   * paid on the on-ramp) — a `BOUGHT` row without a basis would lose the accounting
+   * record of the V-Bucks revenue. Ignored (and rejected, see below) for `'soft'`:
+   * SOFT is play money with no dollar behind it. EARNED's basis is set exclusively
+   * by `mintEarned`, never here. Defaults to null.
+   */
+  usdBasis?: string | null;
   /** Optional reason-specific metadata */
   metadata?: Record<string, unknown>;
 }
@@ -278,12 +287,24 @@ async function applyCreditInTx(
 
 /** Internal credit used by the public `creditClawTokens` (SOFT/BOUGHT only). */
 async function creditInTx(tx: LedgerTx, input: LedgerCreditInput): Promise<LedgerResult> {
+  const provenance: CreditProvenance = input.provenance ?? 'soft';
+  // usd_basis is a BOUGHT-only accounting field (the dollars the buyer paid).
+  // Refuse to stamp it on a SOFT credit — SOFT is play money with no dollar
+  // behind it, and a SOFT row carrying a usd_basis would corrupt the V-Bucks
+  // revenue ledger + EARNED's "basis ⇒ real money" reading. (EARNED's basis is
+  // set only by mintEarned, never through this public path.)
+  if (input.usdBasis != null && provenance !== 'bought') {
+    throw new Error(
+      `creditClawTokens: usdBasis is only valid for a 'bought' credit, got provenance='${provenance}'`,
+    );
+  }
   return applyCreditInTx(tx, {
     avatarId: input.avatarId,
     amount: input.amount,
     reason: input.reason,
     source: input.source,
-    provenance: input.provenance ?? 'soft',
+    provenance,
+    usdBasis: input.usdBasis ?? null,
     metadata: input.metadata,
   });
 }
@@ -377,8 +398,9 @@ async function debitInTx(tx: LedgerTx, input: LedgerDebitInput): Promise<LedgerR
 /**
  * Credit ClawTokens to an avatar. Row-locked, atomic with ledger insert.
  *
- * Mints SOFT by default; pass `provenance: 'bought'` for on-ramp purchases. The
- * type forbids `'earned'` — that is `mintEarned`'s exclusive job (plan §3.1).
+ * Mints SOFT by default; pass `provenance: 'bought'` for on-ramp purchases (and
+ * `usdBasis` = the dollars paid, so the BOUGHT row records the V-Bucks revenue).
+ * The type forbids `'earned'` — that is `mintEarned`'s exclusive job (plan §3.1).
  *
  * Pass `tx` to compose into a larger transaction (e.g. bazaar/auction transfers
  * where both buyer debit and seller credit must succeed together). If omitted,
