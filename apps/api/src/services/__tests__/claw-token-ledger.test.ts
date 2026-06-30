@@ -257,6 +257,41 @@ describe('claw-token-ledger F1 — credit provenance', () => {
     expect(row.claw_tokens).toBe(200);
     expect(ledgerFor(a.id).at(-1)!.provenance).toBe('bought');
   });
+
+  // ── Tokenomics F2 — the on-ramp BOUGHT credit stamps a usd_basis ───────────────
+  it("a BOUGHT credit stamps usd_basis = the dollars paid (the V-Bucks revenue record)", async () => {
+    const a = seedAvatar({ claw_tokens: 0, soft_balance: 0 });
+    // $10 buys 100 vCLAW at the F2 store price ($0.10/coin); the on-ramp passes the
+    // dollars paid as the usd_basis.
+    await creditClawTokens({
+      avatarId: a.id,
+      amount: 100,
+      reason: 'topup_usdc',
+      source: 'x402',
+      provenance: 'bought',
+      usdBasis: '10.00',
+    });
+    const last = ledgerFor(a.id).at(-1)!;
+    expect(last.provenance).toBe('bought');
+    expect(last.usdBasis).toBe('10.00');
+    expect(getAvatar(a.id).bought_balance).toBe(100);
+  });
+
+  it("a SOFT credit REFUSES a usd_basis (only BOUGHT carries dollars; SOFT is play money)", async () => {
+    const a = seedAvatar({ claw_tokens: 0, soft_balance: 0 });
+    await expect(
+      creditClawTokens({
+        avatarId: a.id,
+        amount: 50,
+        reason: 'quest',
+        source: 'quest',
+        // no provenance ⇒ defaults to SOFT; a usd_basis here is a misuse.
+        usdBasis: '5.00',
+      }),
+    ).rejects.toThrow(/usdBasis is only valid for a 'bought' credit/);
+    // The credit was rejected BEFORE any write — balance unchanged.
+    expect(getAvatar(a.id).soft_balance).toBe(0);
+  });
 });
 
 describe('claw-token-ledger F1 — mintEarned chokepoint', () => {

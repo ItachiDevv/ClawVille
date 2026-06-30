@@ -64,6 +64,9 @@ import { agentSetupRoutes } from './routes/agent-setup';
 import { skillsRoutes } from './routes/skills';
 import { agentV2Routes } from './routes/agent-v2';
 import { dashboardRoutes } from './routes/dashboard';
+// Tokenomics F2 — USDC→vCLAW on-ramp (Phase A) + the TEST-ONLY mock facilitator.
+import { ctTopupRoutes } from './routes/ct-topup';
+import { buildMockFacilitator } from './services/x402-mock-facilitator';
 import { portalRoutes } from './routes/portal';
 import { partnerHatcherRoutes } from './routes/partner-hatcher';
 import { partnerHatcherLaunchRoutes } from './routes/partner-hatcher-launch';
@@ -271,6 +274,13 @@ app.route('/api/agent-setup', agentSetupRoutes);
 app.route('/api/skills', skillsRoutes);
 app.route('/api/v2/agent', agentV2Routes);
 app.route('/api/dashboard', dashboardRoutes);
+// Tokenomics F2 — USDC→vCLAW on-ramp (Phase A): x402/PayAI quote+settle →
+// BOUGHT (non-cashable) vCLAW credit. Human (Lucia) + connected-agent
+// (X-Clawville-Agent-Session) parity via requireAuthOrAgentSession. Devnet-first;
+// mainnet is a config flip after a funded settled smoke. GATED: the route 503s
+// when CLAWVILLE_MERCHANT_WALLET_PUBKEY is unset, and X402_ENABLED stays off
+// until a funded smoke. See routes/ct-topup.ts + services/x402-payai.ts.
+app.route('/api/ct/topup', ctTopupRoutes);
 // Phase 5.1 — cross-world portal + account linking (see plan §6.2 + §15).
 app.route('/api/portal', portalRoutes);
 // SEC-1 / FIX-6 — bound the request body on EVERY partner-hatcher route BEFORE
@@ -338,6 +348,31 @@ app.route('/api/cove/economy', coveEconomyRouter);
 // Phase 5.1 — admin identity recovery stub. Returns 501 behind a
 // FEATURE_GATE until the support-chat verification workflow lights up.
 app.route('/api/admin', adminIdentityRoutes);
+
+// Tokenomics F2 — TEST-ONLY mock x402 facilitator. Lets the USDC→vCLAW on-ramp
+// be exercised end-to-end without real funds. It RUBBER-STAMPS every settlement,
+// so it is gated OFF by default and MUST NEVER run in production. Pair with
+// X402_FACILITATOR_PRESET=mock (or X402_FACILITATOR_URL pointing here).
+//
+// PROD CRASH-LOUD GUARD: the AUTHORITATIVE fail-boot invariant lives at module
+// load in x402-config.ts (it fires before any request and covers BOTH the
+// X402_MOCK_FACILITATOR flag AND the `mock` preset). This second check at the
+// literal mount site is belt-and-suspenders: a mounted mock anywhere but staging
+// (production OR unset) would mint free vCLAW, so we refuse to boot here too.
+if (process.env.X402_MOCK_FACILITATOR === 'true') {
+  if (process.env.CLAWVILLE_ENV !== 'staging') {
+    throw new Error(
+      `[x402-mock] Refusing to mount the MOCK facilitator: X402_MOCK_FACILITATOR=true while ` +
+        `CLAWVILLE_ENV is not 'staging' (it is ${process.env.CLAWVILLE_ENV ?? 'UNSET'}). The mock ` +
+        `rubber-stamps settlement and would MINT FREE vCLAW — it may run ONLY on staging. Unset ` +
+        `X402_MOCK_FACILITATOR on this box (see x402-config.ts for the authoritative guard).`,
+    );
+  }
+  app.route('/api/x402-mock', buildMockFacilitator());
+  console.log(
+    '[x402-mock] Mock facilitator MOUNTED at /api/x402-mock — TEST ONLY, never enable in prod.',
+  );
+}
 
 // Error handler — expected errors (HTTPException, InsufficientTokens) return
 // typed responses without alerting; unexpected exceptions fire an immediate
