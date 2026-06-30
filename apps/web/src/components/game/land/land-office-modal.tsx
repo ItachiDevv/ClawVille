@@ -139,11 +139,13 @@ function PriceText({ priceCt }: { priceCt: number | null }) {
 
 function ForSaleTab({
   onBuy,
+  onRent,
   clawTokens,
   focusParcelCode,
   onFocusConsumed,
 }: {
   onBuy: (parcel: LandParcelDTO) => void;
+  onRent: (parcel: LandParcelDTO) => void;
   clawTokens: number;
   /** When set, scroll the matching parcel card into view and clear after. */
   focusParcelCode?: string | null;
@@ -229,6 +231,8 @@ function ForSaleTab({
         they unlock <span className="font-semibold text-cyan-200">premium buildings</span>{' '}
         and <span className="font-semibold text-cyan-200">higher upgrade levels</span>.
         The price ladder rises from Starter Cove out at the rim up to Founders&apos; Row.
+        Mid-tier parcels can also be <span className="font-semibold text-cyan-200">rented weekly</span>{' '}
+        instead of bought outright.
       </p>
       <div className="mb-4 flex flex-wrap gap-2">
         <FilterChip label="All" active={filterTier === 'all'} onClick={() => setFilterTier('all')} />
@@ -270,6 +274,7 @@ function ForSaleTab({
                       parcel={p}
                       clawTokens={clawTokens}
                       onBuy={onBuy}
+                      onRent={onRent}
                       isFocused={!!focusParcelCode && p.parcelCode === focusParcelCode}
                     />
                   ))}
@@ -316,16 +321,22 @@ function ParcelCard({
   parcel,
   clawTokens,
   onBuy,
+  onRent,
   isFocused,
 }: {
   parcel: LandParcelDTO;
   clawTokens: number;
   onBuy: (p: LandParcelDTO) => void;
+  onRent: (p: LandParcelDTO) => void;
   isFocused?: boolean;
 }) {
   const accent = TIER_ACCENT[parcel.tier];
   const isFounder = parcel.priceCt === null;
   const tooPoor = parcel.priceCt !== null && clawTokens < parcel.priceCt;
+  // Rent is offered ONLY when the tier carries a weekly rent (c-tier today;
+  // starter/founder always carry rentCtWeekly == null and never show Rent).
+  const canRent = parcel.rentCtWeekly != null;
+  const tooPoorToRent = canRent && clawTokens < (parcel.rentCtWeekly ?? 0);
   return (
     <div
       id={isFocused ? FOCUSED_CARD_ID : undefined}
@@ -352,6 +363,23 @@ function ParcelCard({
           {isFounder ? 'Auction' : tooPoor ? 'Need more CT' : 'Buy'}
         </RpgButton>
       </div>
+      {/* c-tier parcels offer BOTH Buy (above) and Rent (here) — the player picks. */}
+      {canRent && (
+        <div className="flex items-center justify-between gap-2 border-t border-cyan-400/10 pt-2">
+          <span className="font-mono text-[11px] text-cyan-200">
+            {(parcel.rentCtWeekly ?? 0).toLocaleString()} CT
+            <span className="text-slate-400"> / week</span>
+          </span>
+          <RpgButton
+            size="sm"
+            variant="secondary"
+            disabled={tooPoorToRent}
+            onClick={() => onRent(parcel)}
+          >
+            {tooPoorToRent ? 'Need more CT' : 'Rent'}
+          </RpgButton>
+        </div>
+      )}
     </div>
   );
 }
@@ -439,6 +467,132 @@ function BuyModal({
           </RpgButton>
           <RpgButton size="sm" variant="primary" onClick={handleBuy} loading={buying}>
             Buy for {parcel.priceCt?.toLocaleString()} CT
+          </RpgButton>
+        </div>
+      </div>
+    </RpgModal>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Rent confirm modal (nested RpgModal) — weekly-rent acquire (c-tier only)
+// ---------------------------------------------------------------------------
+
+function rentErrorMessage(
+  code: string | undefined,
+  status: number | undefined,
+  rentCtWeekly: number,
+  have: number,
+): string {
+  switch (code) {
+    case 'insufficient_clawtokens':
+      return `Not enough ClawTokens — need ${rentCtWeekly.toLocaleString()}/wk, you have ${have.toLocaleString()}.`;
+    case 'parcel_not_available':
+      return 'Someone just took this parcel. Pick another.';
+    case 'parcel_cap_reached':
+      return `You already own the maximum of ${MAX_PARCELS_PER_AVATAR} parcels.`;
+    case 'rent_not_available':
+    case 'founder_not_in_v1':
+      return 'This parcel isn’t rentable.';
+    default:
+      if (status === 401) return 'Log in to rent land.';
+      return 'Rent failed — try again.';
+  }
+}
+
+/** Format an ISO date as a short, locale-friendly "paid through" date. */
+function formatPaidThrough(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+function RentModal({
+  parcel,
+  clawTokens,
+  onClose,
+  onRented,
+}: {
+  parcel: LandParcelDTO;
+  clawTokens: number;
+  onClose: () => void;
+  onRented: () => void;
+}) {
+  const [renting, setRenting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const addToast = useGameStore((s) => s.addToast);
+
+  // Only c-tier parcels reach here (rentCtWeekly != null). Guard for the type.
+  const rentCtWeekly = parcel.rentCtWeekly ?? 0;
+  const tooPoor = clawTokens < rentCtWeekly;
+
+  const handleRent = async () => {
+    setRenting(true);
+    setError(null);
+    try {
+      // EMPTY body — the weekly rent is read from the server-stamped parcel row.
+      const res = await api.rentParcel(parcel.id);
+      addToast(
+        '🔑',
+        `Rented ${res.parcel.parcelCode} — ${res.amountCt.toLocaleString()} CT/wk, paid through ${formatPaidThrough(res.rentPaidThrough)}.`,
+      );
+      onRented();
+    } catch (err) {
+      const { code, status } = errCode(err);
+      setError(rentErrorMessage(code, status, rentCtWeekly, clawTokens));
+      setRenting(false);
+    }
+  };
+
+  return (
+    <RpgModal open onClose={onClose} title="Confirm Rent" subtitle="Rent Land" tier="rare" maxWidth={440}>
+      <div className="space-y-4 p-1">
+        <div className="rounded-xl border border-cyan-400/20 bg-cyan-500/[0.05] p-4">
+          <div className="flex items-center justify-between">
+            <span className="font-mono text-[12px] uppercase tracking-[0.14em] text-cyan-100">
+              {parcel.parcelCode}
+            </span>
+            <TierBadge tier={parcel.tier} />
+          </div>
+          <div className="mt-3 flex items-center justify-between text-sm">
+            <span className="text-slate-200">Weekly rent</span>
+            <span className="font-mono font-bold text-amber-300">
+              {rentCtWeekly.toLocaleString()} CT / week
+            </span>
+          </div>
+          <div className="mt-1 flex items-center justify-between text-sm">
+            <span className="text-slate-200">Your balance</span>
+            <span className="font-mono font-bold text-cyan-200">{clawTokens.toLocaleString()} CT</span>
+          </div>
+        </div>
+
+        {/* How rent works — auto-charge weekly, grace window, eviction if unpaid. */}
+        <p className="rounded-lg border border-cyan-400/15 bg-cyan-500/[0.04] px-3 py-2.5 text-[12px] leading-relaxed text-slate-200">
+          You pay <span className="font-semibold text-cyan-100">{rentCtWeekly.toLocaleString()} CT</span> now
+          for the first <span className="font-semibold text-cyan-100">7&nbsp;days</span>. Rent then
+          auto-charges every week. If a charge can’t be paid, you get a short grace
+          window — then the parcel is <span className="font-semibold text-amber-200">evicted</span> and
+          returns to the pool (your build is preserved if you re-rent it).
+        </p>
+
+        {error && (
+          <p className="rounded-lg border border-rose-400/30 bg-rose-500/10 px-3 py-2 text-[12px] text-rose-200">
+            {error}
+          </p>
+        )}
+
+        <div className="flex justify-end gap-2">
+          <RpgButton size="sm" variant="ghost" onClick={onClose} disabled={renting}>
+            Cancel
+          </RpgButton>
+          <RpgButton
+            size="sm"
+            variant="primary"
+            onClick={handleRent}
+            loading={renting}
+            disabled={tooPoor}
+          >
+            {tooPoor ? 'Need more CT' : `Rent · ${rentCtWeekly.toLocaleString()} CT/wk`}
           </RpgButton>
         </div>
       </div>
@@ -1024,6 +1178,7 @@ export default function LandOfficeModal() {
   const [myLoading, setMyLoading] = useState(false);
   const [claiming, setClaiming] = useState(false);
   const [buyTarget, setBuyTarget] = useState<LandParcelDTO | null>(null);
+  const [rentTarget, setRentTarget] = useState<LandParcelDTO | null>(null);
   const [buildParcel, setBuildParcel] = useState<LandParcelDTO | null>(null);
 
   // Hydrate the 3D ownership overlay from a public ownership lookup.
@@ -1114,6 +1269,17 @@ export default function LandOfficeModal() {
     setTab('my-land');
   };
 
+  // Rent success mirrors buy: a rent flips the parcel available→owned, so the
+  // same refresh + overlay-hydrate + world-query-invalidate keeps the modal and
+  // the 3D scene in lockstep, then we land the player on My Land.
+  const handleRented = async () => {
+    setRentTarget(null);
+    await refreshMyLand();
+    await hydrateOverlay(avatarId);
+    invalidateLandState();
+    setTab('my-land');
+  };
+
   // Set / clear the spawn point. 'home' binds an owned parcel; 'town' reverts.
   // The mutation invalidates ['avatar'] so spawnPreference/homeParcelId refresh
   // here (the badge updates) and SpawnOnLoad reads the new value next load.
@@ -1163,6 +1329,7 @@ export default function LandOfficeModal() {
         {tab === 'for-sale' && (
           <ForSaleTab
             onBuy={setBuyTarget}
+            onRent={setRentTarget}
             clawTokens={clawTokens}
             focusParcelCode={focusParcelCode}
             onFocusConsumed={clearLandOfficeFocus}
@@ -1201,6 +1368,15 @@ export default function LandOfficeModal() {
           clawTokens={clawTokens}
           onClose={() => setBuyTarget(null)}
           onBought={handleBought}
+        />
+      )}
+
+      {rentTarget && (
+        <RentModal
+          parcel={rentTarget}
+          clawTokens={clawTokens}
+          onClose={() => setRentTarget(null)}
+          onRented={handleRented}
         />
       )}
     </>
