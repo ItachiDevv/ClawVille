@@ -5,7 +5,19 @@
 > **BASE: `origin/staging` @ `7ff0d793`, `PROTOCOL_VERSION = 7`.** The first attempt was built on a branch 818 commits stale (`PROTOCOL_VERSION = 3`) and is discarded. **Re-validate EVERY v3 line number against v7 before editing** — the session-lifecycle files moved hundreds of commits. Worktree: `C:/Users/itachi/Documents/Crypto/cv-agent-p0`, branch `feat/agent-metaverse-p0`.
 > **Reference only (do NOT merge):** the discarded v3 impl is commit `630a0602` on branch `feat/agent-metaverse-build` (worktree `cv-agent-metaverse`); its rehydrator draft is a useful shape reference but must be re-derived against v7.
 
-## P0 deliverables on v7 (D-1..D-4 unchanged from the design doc) + the folded fixes below
+## ⚠️ RE-SCOPE (2026-07-01, from regress-auditor's v7 pre-read — verified): D-1 rehydrator DROPPED
+
+**v7 ALREADY solved restart-survival, better than the v3 design.** `apps/api/src/services/openclaw-session-restore.ts` (2026-06-11), wired into `validateLiveAgentSession` (`require-auth-or-agent.ts:119`), does **lazy on-demand restore**: on a gate Map-miss it hashes the incoming bearer → finds the row by persisted `session_key_hash` → re-validates TTL fail-closed → rebuilds `{config,client}` under the agent's **ORIGINAL bearer** (not re-minted; hatcher-proxy cognition fully restored). Restore matrix: hatcher/nanoclaw/milady/anonymous = restorable; openclaw/ironclaw/custom real-gateway = NOT restorable (no persisted `auth_token`).
+
+Consequences:
+- **D-1 eager rehydrator: DROPPED.** Redundant + CONFLICTING — an eager boot-rehydrator that mints a fresh sessionId collides with lazy-restore (double-body for avatar / "already overridden" lockout for override when the real agent presents its surviving original bearer). Do NOT port it. (Eager in-world presence for SERVER-DRIVEN autonomous agents, if wanted, is a P1 concern and must be restore-compatible, not a fresh-id mint.)
+- **D-2 session-status: NARROWED to RESTORE-AWARE.** Not the v3 "require RAM-live → 410" (that would 410 restorable sessions and regress the restore feature). Fix only the residual lie: report `connected` when TTL-live AND (RAM-live OR `isRowRestorableFromIdentity(identityType)`); needs-reconnect only for TTL-live + UNRESTORABLE real-gateway types. Reuse the restore module's restorability logic.
+- **D-3 sweeper body-removal: KEEPS (ports cleanly)** — v7 sweeper still leaves a zombie body. Race-safe vs restore (restore refuses swept rows; mark-swept before remove). The v3 M1/H2 rehydrator races are moot (no fresh-id minting).
+- **H1/H2/M1** were rehydrator problems → moot. **B1 + D-4 unchanged.**
+
+**Net v7 P0 = B1 root-fix + restore-aware session-status (D-2) + sweeper body-removal (D-3) + scoped constants (D-4).** No rehydrator.
+
+## P0 deliverables on v7 (superseded where the RE-SCOPE above conflicts) + the folded fixes below
 
 ### B1 — BLOCKING, pre-existing LIVE vuln — FIX IN THIS DIFF (founder call: fold into P0)
 `GET /api/npc/state` + `GET /api/npc/stream` (`routes/npc-sse.ts`, **no auth**) and the multiplayer `/api/world/:room/stream` return `getSnapshot()` / `getRoomSnapshot()`, which spread each body verbatim — and an **avatar-mode connected agent's body carries `id = "oc-${sessionId}"`**, where `sessionId` IS the `X-Clawville-Agent-Session` bearer. Any unauthenticated visitor reads `oc-<S>` and replays it → impersonation; ledger-capable session → **real-CT theft**; else → drive the body + farm leaderboard as the bound user. Verified live on `origin/staging`. Pre-existing (the 2026-06-03 auth-lens "fix #1" scrubbed `getActiveOpenClawBots` but NOT the snapshot path).
