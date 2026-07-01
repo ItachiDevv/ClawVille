@@ -42,10 +42,12 @@ import {
   PublicKey,
   SystemProgram,
   Transaction,
+  type AccountMeta,
   type Commitment,
   type SimulatedTransactionResponse,
 } from '@solana/web3.js';
 import { AnchorProvider, BN, Program } from '@coral-xyz/anchor';
+import bs58 from 'bs58';
 import { db, eq, and, wallets } from '@clawville/database';
 import { decryptWalletRow } from '../keypair-vault';
 import {
@@ -65,6 +67,8 @@ import {
   findFeedbackPda,
   findAttestationPda,
   findEscrowPda,
+  findPendingPda,
+  findDisputePda,
   toolNameHash,
   sha256Bytes,
   serviceHash as deriveServiceHash,
@@ -78,7 +82,24 @@ import {
   type UsdcEscrowAddresses,
 } from './sap-escrow-usdc';
 import {
+  buildCreateEscrowV2Ix,
+  buildDepositEscrowV2Ix,
+  buildSettleCallsV2Ix,
+  buildCreatePendingSettlementIx,
+  buildFinalizeSettlementIx,
+  buildFileDisputeIx,
+  buildResolveDisputeIx,
+  buildWithdrawEscrowV2Ix,
+  SETTLEMENT_SECURITY,
+  DISPUTE_OUTCOME,
+  type DisputeOutcome,
+  type SettlementSecurityMode,
+} from './sap-escrow-v2';
+import {
   createAssociatedTokenAccountIdempotentInstruction,
+  getAssociatedTokenAddress,
+  TOKEN_PROGRAM_ID,
+  USDC_DECIMALS,
 } from './sap-spl';
 
 // AUTHORITATIVE IDL = what is DEPLOYED on devnet (fetched via Anchor
@@ -1386,6 +1407,28 @@ function usdcMintForEscrow(cfg: SapConfig): PublicKey {
   return cfg.usdcMint;
 }
 
+/**
+ * DisputeWindow-only guard (Codex money-path fix). The settle / pending / dispute /
+ * resolve executors below are hard-coded for the DisputeWindow flow (settle bumps
+ * pending → finalize releases; depositor disputes → arbiter resolves). If the config
+ * is CoSigned (a misconfig, since createEscrowV2Usdc refuses to CREATE a CoSigned
+ * escrow today), those executors would build a wrong-shaped tx. Refuse up front so a
+ * mode mismatch can never assemble a guaranteed-to-fail (or, once CoSigned ships,
+ * mis-shaped) transaction.
+ */
+function disputeWindowModeGate(cfg: SapConfig): SapFailure | null {
+  if (cfg.settlementMode !== 'DisputeWindow') {
+    return {
+      ok: false,
+      code: 'internal',
+      message:
+        `SAP_SETTLEMENT_MODE is '${cfg.settlementMode}' but this executor is DisputeWindow-only. ` +
+        'The CoSigned settle path is not implemented yet.',
+    };
+  }
+  return null;
+}
+
 export interface UsdcEscrowResolvedAddresses extends UsdcEscrowAddresses {
   /** Acting avatar's wallet pubkey (base58) — for the gate's record. */
   actingWallet: string;
@@ -1699,5 +1742,830 @@ export async function withdrawEscrowUsdc(input: WithdrawEscrowUsdcInput): Promis
     });
   } catch (err) {
     return classifyChainError('withdrawEscrowUsdc:build', err);
+  }
+}
+
+// ─── SAP Escrow V2 (DisputeWindow default / CoSigned pluggable) ────────────────
+//
+// The founder-locked BOUNTY settlement flow, on the V2 escrow family:
+//   post → fund (create_escrow_v2) → accept → complete →
+//   settle_calls_v2 + create_pending_settlement → (dispute window elapses) →
+//   finalize_settlement  |  file_dispute → arbiter resolve_dispute.
+//
+// Every builder these executors call is byte-precise-verified against the deployed
+// 0.18.0 IDL in sap-escrow-v2.ts (discriminators / account order / args / PDA seeds).
+// These executors only assemble the V2 accounts + SPL remaining, read the on-chain
+// settlement_index, and reuse the SAME rails as the V1 USDC path: the usdcEscrowGate
+// (enabled AND escrowEnabled AND usdcEscrowEnabled), the custodial loadAvatarWallet
+// (decrypt-in-memory-only; the acting agent is ALWAYS its own wallet — no body pubkey
+// is ever a signer), and the executeTx dry-run/live + genesis-guard tail. SAP_DRY_RUN
+// defaults true ⇒ NOTHING broadcasts; a dry-run only simulates.
+//
+// SPL-ORDER DISCIPLINE — assembleV2SplRemaining() below is the SINGLE source of truth
+// for the token `remaining_accounts` wire order, so a wrong order can only be wrong in
+// exactly one place and every unconfirmed layout is flagged inline:
+//   - create / deposit          : [depositorAta(W), vaultAta(W), mint(ro), tokenProgram(ro)]
+//                                  — SDK `attachSplAccounts` convention (well-supported).
+//   - settle_calls_v2 (Dispute) : remaining=[] — in DisputeWindow mode settle moves NO
+//                                  tokens (only bumps pending_amount/settlement_index);
+//                                  the token release is deferred to finalize_settlement.
+//                                  (CoSigned's dev-confirmed [co_signer(S,ro), treasury,
+//                                  ...spl] is intentionally NOT used here — the founder-
+//                                  locked flow is DisputeWindow.)
+//   - finalize / resolve / withdraw : NOT dev-confirmed. Best-support defaults are
+//                                  assembled below and EACH carries a TODO(devnet-confirm).
+//                                  Never silently guessed without the marker.
+// Vault ATA is ALWAYS getAssociatedTokenAddress(mint, escrowPda, /*allowOwnerOffCurve*/ true).
+
+/** The ATAs an SPL remaining-account list may reference (per-kind required subset). */
+interface V2SplAtas {
+  vaultAta: PublicKey;
+  tokenMint: PublicKey;
+  depositorAta?: PublicKey;
+  workerAta?: PublicKey;
+}
+
+/** Which V2 token-moving instruction an SPL remaining-account list is being built for. */
+type V2SplKind = 'create' | 'deposit' | 'finalize' | 'resolve' | 'withdraw';
+
+/**
+ * Assemble the SPL `remaining_accounts` for a V2 token-moving instruction — the
+ * SINGLE place the wire order lives. AccountMeta flags: every token account is
+ * WRITABLE (its balance changes); the mint + SPL token program are READONLY. The
+ * requested ATAs are validated per-kind (a missing one is a programming error, not a
+ * silent wrong-account).
+ *
+ * CONFIRMED:
+ *   create/deposit → [depositorAta, vaultAta, mint, tokenProgram] (SDK convention).
+ * UNCONFIRMED (best-support default; MUST be devnet-verified before a live flip):
+ *   finalize/resolve/withdraw → flagged inline with TODO(devnet-confirm).
+ */
+function assembleV2SplRemaining(kind: V2SplKind, atas: V2SplAtas): AccountMeta[] {
+  const w = (pubkey: PublicKey): AccountMeta => ({ pubkey, isSigner: false, isWritable: true });
+  const ro = (pubkey: PublicKey): AccountMeta => ({ pubkey, isSigner: false, isWritable: false });
+  const mint = ro(atas.tokenMint);
+  const tokenProgram = ro(TOKEN_PROGRAM_ID);
+  const vault = w(atas.vaultAta);
+  switch (kind) {
+    case 'create':
+    case 'deposit': {
+      // SDK `attachSplAccounts` convention: depositor pays IN → vault.
+      if (!atas.depositorAta) throw new Error(`assembleV2SplRemaining(${kind}): depositorAta required`);
+      return [w(atas.depositorAta), vault, mint, tokenProgram];
+    }
+    case 'finalize': {
+      // TODO(devnet-confirm): SPL remaining order/treasury for finalize_settlement not
+      // dev-verified. Best-support default releases vault → worker. The treasury FEE
+      // account POSITION is unconfirmed and is intentionally NOT invented here (a wrong
+      // extra account would fail the whole release); wire it only once devnet confirms.
+      if (!atas.workerAta) throw new Error('assembleV2SplRemaining(finalize): workerAta required');
+      return [vault, w(atas.workerAta), mint, tokenProgram];
+    }
+    case 'resolve': {
+      // TODO(devnet-confirm): SPL remaining order/identity for resolve_dispute not
+      // dev-verified. Best-support default carries BOTH destinations (vault → depositor
+      // on refund, vault → worker on release); the program selects by outcome.
+      if (!atas.depositorAta || !atas.workerAta) {
+        throw new Error('assembleV2SplRemaining(resolve): depositorAta + workerAta required');
+      }
+      return [vault, w(atas.depositorAta), w(atas.workerAta), mint, tokenProgram];
+    }
+    case 'withdraw': {
+      // TODO(devnet-confirm): SPL remaining order for withdraw_escrow_v2 not dev-verified.
+      // Best-support default refunds vault → depositor.
+      if (!atas.depositorAta) throw new Error('assembleV2SplRemaining(withdraw): depositorAta required');
+      return [vault, w(atas.depositorAta), mint, tokenProgram];
+    }
+    default: {
+      // Exhaustiveness guard — a new V2SplKind must add a case above.
+      const _exhaustive: never = kind;
+      throw new Error(`assembleV2SplRemaining: unhandled kind ${String(_exhaustive)}`);
+    }
+  }
+}
+
+/**
+ * Load the ClawVille ARBITER keypair used to sign `resolve_dispute` (DisputeWindow).
+ * Read from `SAP_ARBITER_KEYPAIR` as EITHER a base58 secret key OR a JSON byte array
+ * (the two shapes `solana-keygen` / wallet exports use). The secret lives in memory
+ * only for the sign — it is NEVER logged, echoed, or returned. Unset/invalid ⇒ a
+ * structured `internal` failure (a route returns a clean 5xx, never a stack leak).
+ *
+ * SEPARATE from the per-avatar custodial wallets: the arbiter is the ClawVille admin
+ * the escrow's on-chain `arbiter` field pins (= cfg.arbiterPubkey), not an agent.
+ */
+function loadArbiterKeypair(): { keypair: Keypair } | SapFailure {
+  const raw = process.env.SAP_ARBITER_KEYPAIR?.trim();
+  if (!raw) {
+    return { ok: false, code: 'internal', message: 'arbiter keypair not configured' };
+  }
+  try {
+    let secret: Uint8Array;
+    if (raw.startsWith('[')) {
+      const arr = JSON.parse(raw) as number[];
+      secret = Uint8Array.from(arr);
+    } else {
+      secret = bs58.decode(raw);
+    }
+    const keypair = Keypair.fromSecretKey(secret);
+    return { keypair };
+  } catch {
+    // Do NOT echo the caught error — it may reference the secret key material.
+    return { ok: false, code: 'internal', message: 'arbiter keypair not configured' };
+  }
+}
+
+export interface CreateEscrowV2UsdcInput {
+  /** DEPOSITOR (bounty creator) avatar — funds + signs as ITS own custodial wallet. */
+  depositorAvatarId: string;
+  /** Worker/service agent's registered wallet pubkey (base58) — the agent PDA seed. */
+  workerWalletPubkey: string;
+  /** Per-(agent,depositor) escrow nonce (u64) — the V2 escrow PDA seed. */
+  escrowNonce: bigint;
+  pricePerCall: bigint;
+  maxCalls: bigint;
+  initialDeposit: bigint;
+  /** Absolute unix-seconds work-deadline (i64). REQUIRED (> 0) for a bounty. */
+  expiresAt: bigint;
+}
+
+/**
+ * create_escrow_v2 (USDC, fund-at-create) — the DEPOSITOR opens + funds the escrow.
+ * settlement_security is taken from cfg.settlementMode:
+ *   - DisputeWindow (default) ⇒ security=2, arbiter=cfg.arbiterPubkey (REQUIRED — fail
+ *     if unset; the program cannot open a DisputeWindow escrow without an arbiter).
+ *   - CoSigned ⇒ security=1, co_signer=cfg.coSignerPubkey (REQUIRED — Covenant's key).
+ * Prepends an idempotent vault-ATA create (the program does NOT init the vault).
+ * Signer = the depositor's OWN custodial wallet.
+ */
+export async function createEscrowV2Usdc(
+  input: CreateEscrowV2UsdcInput,
+): Promise<SapWriteResult> {
+  const cfg = getConfig();
+  const gate = usdcEscrowGate(cfg);
+  if (gate) return gate;
+  if (input.pricePerCall <= 0n || input.maxCalls <= 0n || input.initialDeposit <= 0n) {
+    return {
+      ok: false,
+      code: 'invalid_amount',
+      message: 'pricePerCall, maxCalls, initialDeposit must be > 0.',
+    };
+  }
+  if (input.expiresAt <= 0n) {
+    return {
+      ok: false,
+      code: 'invalid_amount',
+      message: 'expiresAt (absolute unix-seconds work-deadline) must be > 0 for a bounty.',
+    };
+  }
+
+  // Resolve the mode's SettlementSecurity tag + the required authority pubkey.
+  let settlementSecurity: SettlementSecurityMode;
+  let coSigner: PublicKey | null = null;
+  let arbiter: PublicKey | null = null;
+  if (cfg.settlementMode === 'DisputeWindow') {
+    settlementSecurity = SETTLEMENT_SECURITY.DisputeWindow;
+    if (!cfg.arbiterPubkey) {
+      return {
+        ok: false,
+        code: 'internal',
+        message: 'DisputeWindow escrow requires SAP_ARBITER_PUBKEY (no arbiter configured).',
+      };
+    }
+    arbiter = cfg.arbiterPubkey;
+  } else {
+    // CoSigned (settlementSecurity=1) is pluggable-LATER (needs Covenant's live
+    // co-signature, which we do not hold — a joint op). There is NO CoSigned settle
+    // executor yet, so CREATING a CoSigned escrow now would strand the deposit
+    // (fundable but un-settleable). Refuse create until the CoSigned settle path
+    // (co_signer signer + treasury + dev-confirmed SPL remaining) ships. The
+    // co_signer config check is retained for that future path.
+    if (!cfg.coSignerPubkey) {
+      return {
+        ok: false,
+        code: 'internal',
+        message: 'CoSigned escrow requires SAP_COSIGNER_PUBKEY (no co-signer configured).',
+      };
+    }
+    return {
+      ok: false,
+      code: 'internal',
+      message:
+        'CoSigned settlement mode is not yet settle-able (no CoSigned settle executor — ' +
+        'it needs Covenant\'s live co-signature). Use SAP_SETTLEMENT_MODE=DisputeWindow. ' +
+        'Refusing to create a CoSigned escrow that could not be released.',
+    };
+    // (unreachable until the CoSigned settle path ships) coSigner = cfg.coSignerPubkey;
+  }
+
+  let workerWallet: PublicKey;
+  try {
+    workerWallet = new PublicKey(input.workerWalletPubkey);
+  } catch {
+    return { ok: false, code: 'invalid_pubkey', message: 'workerWalletPubkey is not a valid pubkey.' };
+  }
+
+  const handle = await loadAvatarWallet(input.depositorAvatarId);
+  if ('ok' in handle && handle.ok === false) return handle;
+  const { keypair, publicKey: depositor } = handle as AvatarWalletHandle;
+
+  const mint = usdcMintForEscrow(cfg);
+  const [agentPda] = findAgentPda(cfg.programId, workerWallet);
+  const [escrowPda] = findEscrowPda(cfg.programId, agentPda, depositor, input.escrowNonce);
+  const vaultAta = getAssociatedTokenAddress(mint, escrowPda, true);
+  const depositorAta = getAssociatedTokenAddress(mint, depositor, false);
+
+  try {
+    const tx = new Transaction();
+    // (1) Idempotent vault-ATA create — payer = depositor, owner = escrow PDA.
+    tx.add(
+      createAssociatedTokenAccountIdempotentInstruction({
+        payer: depositor,
+        ata: vaultAta,
+        owner: escrowPda,
+        mint,
+      }),
+    );
+    // (2) create_escrow_v2 (fund-at-create) — SPL remaining pays depositor → vault.
+    tx.add(
+      buildCreateEscrowV2Ix({
+        depositor,
+        agentPda,
+        escrowPda,
+        programId: cfg.programId,
+        escrowNonce: input.escrowNonce,
+        pricePerCall: input.pricePerCall,
+        maxCalls: input.maxCalls,
+        initialDeposit: input.initialDeposit,
+        expiresAt: input.expiresAt,
+        tokenMint: mint,
+        tokenDecimals: USDC_DECIMALS,
+        settlementSecurity,
+        disputeWindowSlots: cfg.disputeWindowSlots,
+        coSigner,
+        arbiter,
+        remaining: assembleV2SplRemaining('create', { vaultAta, depositorAta, tokenMint: mint }),
+      }),
+    );
+    return executeTx(cfg, 'createEscrowV2Usdc', tx, keypair, {
+      depositor: depositor.toBase58(),
+      worker: workerWallet.toBase58(),
+      agent: agentPda.toBase58(),
+      escrow: escrowPda.toBase58(),
+      vaultAta: vaultAta.toBase58(),
+      depositorAta: depositorAta.toBase58(),
+      settlementMode: cfg.settlementMode,
+    });
+  } catch (err) {
+    return classifyChainError('createEscrowV2Usdc:build', err);
+  }
+}
+
+export interface DepositEscrowV2UsdcInput {
+  depositorAvatarId: string;
+  workerWalletPubkey: string;
+  escrowNonce: bigint;
+  amount: bigint;
+}
+
+/** deposit_escrow_v2 (USDC) — top up an existing V2 escrow. Signer = the depositor. */
+export async function depositEscrowV2Usdc(
+  input: DepositEscrowV2UsdcInput,
+): Promise<SapWriteResult> {
+  const cfg = getConfig();
+  const gate = usdcEscrowGate(cfg);
+  if (gate) return gate;
+  if (input.amount <= 0n) {
+    return { ok: false, code: 'invalid_amount', message: 'amount must be > 0.' };
+  }
+  let workerWallet: PublicKey;
+  try {
+    workerWallet = new PublicKey(input.workerWalletPubkey);
+  } catch {
+    return { ok: false, code: 'invalid_pubkey', message: 'workerWalletPubkey is not a valid pubkey.' };
+  }
+
+  const handle = await loadAvatarWallet(input.depositorAvatarId);
+  if ('ok' in handle && handle.ok === false) return handle;
+  const { keypair, publicKey: depositor } = handle as AvatarWalletHandle;
+
+  const mint = usdcMintForEscrow(cfg);
+  const [agentPda] = findAgentPda(cfg.programId, workerWallet);
+  const [escrowPda] = findEscrowPda(cfg.programId, agentPda, depositor, input.escrowNonce);
+  const vaultAta = getAssociatedTokenAddress(mint, escrowPda, true);
+  const depositorAta = getAssociatedTokenAddress(mint, depositor, false);
+
+  try {
+    const tx = new Transaction();
+    // Idempotent vault-ATA create (no-op if it exists) so a deposit never fails on a
+    // missing vault if create raced.
+    tx.add(
+      createAssociatedTokenAccountIdempotentInstruction({
+        payer: depositor,
+        ata: vaultAta,
+        owner: escrowPda,
+        mint,
+      }),
+    );
+    tx.add(
+      buildDepositEscrowV2Ix({
+        depositor,
+        escrowPda,
+        programId: cfg.programId,
+        escrowNonce: input.escrowNonce,
+        amount: input.amount,
+        remaining: assembleV2SplRemaining('deposit', { vaultAta, depositorAta, tokenMint: mint }),
+      }),
+    );
+    return executeTx(cfg, 'depositEscrowV2Usdc', tx, keypair, {
+      depositor: depositor.toBase58(),
+      escrow: escrowPda.toBase58(),
+      vaultAta: vaultAta.toBase58(),
+      depositorAta: depositorAta.toBase58(),
+    });
+  } catch (err) {
+    return classifyChainError('depositEscrowV2Usdc:build', err);
+  }
+}
+
+export interface SettleAndCreatePendingUsdcInput {
+  /** WORKER agent (signer) — settles as ITS own custodial wallet (the agent PDA seed). */
+  workerAvatarId: string;
+  /** Depositor's wallet pubkey (base58) — the escrow PDA seed component. */
+  depositorWalletPubkey: string;
+  escrowNonce: bigint;
+  callsToSettle: bigint;
+  /** Verification provider's 32-byte audit root → on-chain service_hash. */
+  auditRoot: Uint8Array;
+  /** The pending release amount (base units) recorded for finalize/dispute. */
+  amount: bigint;
+}
+
+/**
+ * DisputeWindow release STEP 1 — ONE tx = settle_calls_v2 + create_pending_settlement.
+ * In DisputeWindow mode settle_calls_v2 moves NO tokens (remaining=[]); it only bumps
+ * pending_amount + settlement_index. create_pending_settlement records the pending
+ * release the finalize/dispute path acts on. The pending PDA is seeded by the escrow's
+ * CURRENT (pre-increment) settlement_index, READ from chain here (Anchor decodes the
+ * on-chain `settlement_index` u64 as a BN under the camelCase `settlementIndex`
+ * accessor). Signer = the worker's OWN custodial wallet.
+ */
+export async function settleAndCreatePendingUsdc(
+  input: SettleAndCreatePendingUsdcInput,
+): Promise<SapWriteResult> {
+  const cfg = getConfig();
+  const gate = usdcEscrowGate(cfg);
+  if (gate) return gate;
+  const modeGate = disputeWindowModeGate(cfg);
+  if (modeGate) return modeGate;
+  if (input.callsToSettle <= 0n) {
+    return { ok: false, code: 'invalid_amount', message: 'callsToSettle must be > 0.' };
+  }
+  if (input.amount <= 0n) {
+    return { ok: false, code: 'invalid_amount', message: 'amount must be > 0.' };
+  }
+  if (input.auditRoot.length !== 32) {
+    return { ok: false, code: 'invalid_amount', message: 'auditRoot must be 32 bytes.' };
+  }
+  // Refuse the all-zero sentinel (the verification-failed marker) — a settle must NEVER
+  // fire on it (defense-in-depth; the gate already only calls settle on passed===true).
+  if (input.auditRoot.every((b) => b === 0)) {
+    return {
+      ok: false,
+      code: 'invalid_amount',
+      message: 'auditRoot is all-zero (verification did not pass).',
+    };
+  }
+  let depositorWallet: PublicKey;
+  try {
+    depositorWallet = new PublicKey(input.depositorWalletPubkey);
+  } catch {
+    return { ok: false, code: 'invalid_pubkey', message: 'depositorWalletPubkey is not a valid pubkey.' };
+  }
+
+  const handle = await loadAvatarWallet(input.workerAvatarId);
+  if ('ok' in handle && handle.ok === false) return handle;
+  const { keypair, publicKey: workerWallet } = handle as AvatarWalletHandle;
+
+  const [agentPda] = findAgentPda(cfg.programId, workerWallet);
+  const [agentStatsPda] = findStatsPda(cfg.programId, agentPda);
+  const [escrowPda] = findEscrowPda(cfg.programId, agentPda, depositorWallet, input.escrowNonce);
+
+  // READ the escrow's CURRENT settlement_index (pre-increment) — the value the pending
+  // PDA seed uses. On a dry-run rehearsal the escrow may not exist yet (fetchNullable ⇒
+  // null) → default 0n so the encoding can still be exercised; a real RPC failure is
+  // surfaced as rpc_unreachable (never a silent wrong index).
+  let settlementIndex: bigint;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const escrowAcc = await (getProgram().account as any).escrowAccountV2.fetchNullable(escrowPda);
+    if (escrowAcc && escrowAcc.settlementIndex != null) {
+      settlementIndex = BigInt(escrowAcc.settlementIndex.toString());
+    } else {
+      // Escrow account not found. On a DRY-RUN rehearsal the escrow may legitimately
+      // not exist yet — default 0n so the encoding can still be exercised. But on a
+      // LIVE settle a missing escrow means we'd broadcast a real tx built against a
+      // nonexistent / wrong on-chain state (wrong pending PDA, guaranteed-fail-or-
+      // worse) — so FAIL LOUD instead (SEV: Codex money-path finding).
+      if (!cfg.dryRun) {
+        return {
+          ok: false,
+          code: 'on_chain_error',
+          message:
+            'settleAndCreatePendingUsdc: escrow account not found on-chain — refusing a ' +
+            'LIVE settle against a nonexistent/unfunded escrow (would build a wrong pending PDA).',
+        };
+      }
+      settlementIndex = 0n;
+    }
+  } catch (err) {
+    return classifyChainError('settleAndCreatePendingUsdc:readIndex', err);
+  }
+
+  const [pendingPda] = findPendingPda(cfg.programId, escrowPda, settlementIndex);
+  const auditRoot = Buffer.from(input.auditRoot);
+
+  try {
+    const tx = new Transaction();
+    // (1) settle_calls_v2 — DisputeWindow: NO token move (remaining=[]), bumps pending.
+    tx.add(
+      buildSettleCallsV2Ix({
+        workerWallet,
+        agentPda,
+        agentStatsPda,
+        escrowPda,
+        programId: cfg.programId,
+        escrowNonce: input.escrowNonce,
+        callsToSettle: input.callsToSettle,
+        serviceHash: auditRoot,
+        remaining: [], // DisputeWindow — the token release is deferred to finalize.
+      }),
+    );
+    // (2) create_pending_settlement — record the pending release (pre-increment index).
+    tx.add(
+      buildCreatePendingSettlementIx({
+        workerWallet,
+        agentPda,
+        escrowPda,
+        pendingPda,
+        programId: cfg.programId,
+        settlementIndex,
+        callsToSettle: input.callsToSettle,
+        amount: input.amount,
+        serviceHash: auditRoot,
+      }),
+    );
+    return executeTx(cfg, 'settleAndCreatePendingUsdc', tx, keypair, {
+      worker: workerWallet.toBase58(),
+      agent: agentPda.toBase58(),
+      agentStats: agentStatsPda.toBase58(),
+      escrow: escrowPda.toBase58(),
+      pending: pendingPda.toBase58(),
+      settlementIndex: settlementIndex.toString(),
+    });
+  } catch (err) {
+    return classifyChainError('settleAndCreatePendingUsdc:build', err);
+  }
+}
+
+export interface FinalizeSettlementUsdcInput {
+  /**
+   * The CRANK/payer avatar — signs + pays. finalize_settlement is permissionless once
+   * the window elapses, so ANY funded avatar (e.g. a house crank) can call it.
+   */
+  payerAvatarId: string;
+  /** Worker's registered wallet pubkey (base58) — release destination + agent PDA seed. */
+  workerWalletPubkey: string;
+  /** Depositor's wallet pubkey (base58) — the escrow PDA seed component. */
+  depositorWalletPubkey: string;
+  escrowNonce: bigint;
+  settlementIndex: bigint;
+}
+
+/**
+ * DisputeWindow release STEP 2 — finalize_settlement releases vault → worker after the
+ * dispute window elapses with no dispute. Prepends an idempotent worker-ATA create (the
+ * release destination). Permissionless: signer = any funded payer/crank avatar.
+ *
+ * TODO(devnet-confirm): SPL remaining order/treasury for finalize_settlement not
+ * dev-verified (assembleV2SplRemaining).
+ */
+export async function finalizeSettlementUsdc(
+  input: FinalizeSettlementUsdcInput,
+): Promise<SapWriteResult> {
+  const cfg = getConfig();
+  const gate = usdcEscrowGate(cfg);
+  if (gate) return gate;
+  const modeGate = disputeWindowModeGate(cfg);
+  if (modeGate) return modeGate;
+  let workerWallet: PublicKey;
+  let depositorWallet: PublicKey;
+  try {
+    workerWallet = new PublicKey(input.workerWalletPubkey);
+    depositorWallet = new PublicKey(input.depositorWalletPubkey);
+  } catch {
+    return { ok: false, code: 'invalid_pubkey', message: 'invalid worker/depositor wallet pubkey.' };
+  }
+
+  const handle = await loadAvatarWallet(input.payerAvatarId);
+  if ('ok' in handle && handle.ok === false) return handle;
+  const { keypair, publicKey: payer } = handle as AvatarWalletHandle;
+
+  const mint = usdcMintForEscrow(cfg);
+  const [agentPda] = findAgentPda(cfg.programId, workerWallet);
+  const [agentStatsPda] = findStatsPda(cfg.programId, agentPda);
+  const [escrowPda] = findEscrowPda(cfg.programId, agentPda, depositorWallet, input.escrowNonce);
+  const [pendingPda] = findPendingPda(cfg.programId, escrowPda, input.settlementIndex);
+  const vaultAta = getAssociatedTokenAddress(mint, escrowPda, true);
+  const workerAta = getAssociatedTokenAddress(mint, workerWallet, false);
+
+  try {
+    const tx = new Transaction();
+    // Idempotent worker-ATA create (the release DESTINATION) — payer = the crank.
+    tx.add(
+      createAssociatedTokenAccountIdempotentInstruction({
+        payer,
+        ata: workerAta,
+        owner: workerWallet,
+        mint,
+      }),
+    );
+    tx.add(
+      buildFinalizeSettlementIx({
+        payer,
+        agentWallet: workerWallet,
+        escrowPda,
+        pendingPda,
+        agentStatsPda,
+        programId: cfg.programId,
+        remaining: assembleV2SplRemaining('finalize', { vaultAta, workerAta, tokenMint: mint }),
+      }),
+    );
+    return executeTx(cfg, 'finalizeSettlementUsdc', tx, keypair, {
+      payer: payer.toBase58(),
+      worker: workerWallet.toBase58(),
+      agent: agentPda.toBase58(),
+      agentStats: agentStatsPda.toBase58(),
+      escrow: escrowPda.toBase58(),
+      pending: pendingPda.toBase58(),
+      vaultAta: vaultAta.toBase58(),
+      workerAta: workerAta.toBase58(),
+    });
+  } catch (err) {
+    return classifyChainError('finalizeSettlementUsdc:build', err);
+  }
+}
+
+export interface FileDisputeUsdcInput {
+  /** DEPOSITOR (bounty creator) avatar — the ONLY party that can dispute; signs. */
+  depositorAvatarId: string;
+  workerWalletPubkey: string;
+  escrowNonce: bigint;
+  settlementIndex: bigint;
+  /** 32-byte hash of the depositor's dispute evidence. */
+  evidenceHash: Uint8Array;
+}
+
+/**
+ * file_dispute (DisputeWindow) — the depositor disputes a pending release within the
+ * window, blocking finalize until the arbiter resolves. No token move. Signer = the
+ * depositor. dispute PDA = ["sap_dispute", pending].
+ */
+export async function fileDisputeUsdc(input: FileDisputeUsdcInput): Promise<SapWriteResult> {
+  const cfg = getConfig();
+  const gate = usdcEscrowGate(cfg);
+  if (gate) return gate;
+  const modeGate = disputeWindowModeGate(cfg);
+  if (modeGate) return modeGate;
+  if (input.evidenceHash.length !== 32) {
+    return { ok: false, code: 'invalid_amount', message: 'evidenceHash must be 32 bytes.' };
+  }
+  let workerWallet: PublicKey;
+  try {
+    workerWallet = new PublicKey(input.workerWalletPubkey);
+  } catch {
+    return { ok: false, code: 'invalid_pubkey', message: 'workerWalletPubkey is not a valid pubkey.' };
+  }
+
+  const handle = await loadAvatarWallet(input.depositorAvatarId);
+  if ('ok' in handle && handle.ok === false) return handle;
+  const { keypair, publicKey: depositor } = handle as AvatarWalletHandle;
+
+  const [agentPda] = findAgentPda(cfg.programId, workerWallet);
+  const [escrowPda] = findEscrowPda(cfg.programId, agentPda, depositor, input.escrowNonce);
+  const [pendingPda] = findPendingPda(cfg.programId, escrowPda, input.settlementIndex);
+  const [disputePda] = findDisputePda(cfg.programId, pendingPda);
+
+  try {
+    const tx = new Transaction();
+    tx.add(
+      buildFileDisputeIx({
+        depositor,
+        escrowPda,
+        pendingPda,
+        disputePda,
+        programId: cfg.programId,
+        evidenceHash: Buffer.from(input.evidenceHash),
+      }),
+    );
+    return executeTx(cfg, 'fileDisputeUsdc', tx, keypair, {
+      depositor: depositor.toBase58(),
+      escrow: escrowPda.toBase58(),
+      pending: pendingPda.toBase58(),
+      dispute: disputePda.toBase58(),
+    });
+  } catch (err) {
+    return classifyChainError('fileDisputeUsdc:build', err);
+  }
+}
+
+export interface ResolveDisputeUsdcInput {
+  workerWalletPubkey: string;
+  depositorWalletPubkey: string;
+  escrowNonce: bigint;
+  settlementIndex: bigint;
+  /** DepositorWins (refund) or AgentWins (release) — the only valid resolutions. */
+  outcome: DisputeOutcome;
+}
+
+/**
+ * resolve_dispute (DisputeWindow) — the ClawVille ARBITER settles a filed dispute:
+ * DepositorWins refunds the creator, AgentWins releases to the worker. Signer = the
+ * arbiter keypair (SAP_ARBITER_KEYPAIR), which MUST match the escrow's on-chain
+ * `arbiter` (= cfg.arbiterPubkey when set). Prepends idempotent depositor + worker ATA
+ * creates (either may be the destination; the arbiter pays rent).
+ *
+ * TODO(devnet-confirm): SPL remaining order/identity for resolve_dispute not
+ * dev-verified (assembleV2SplRemaining).
+ */
+export async function resolveDisputeUsdc(
+  input: ResolveDisputeUsdcInput,
+): Promise<SapWriteResult> {
+  const cfg = getConfig();
+  const gate = usdcEscrowGate(cfg);
+  if (gate) return gate;
+  const modeGate = disputeWindowModeGate(cfg);
+  if (modeGate) return modeGate;
+  if (input.outcome !== DISPUTE_OUTCOME.DepositorWins && input.outcome !== DISPUTE_OUTCOME.AgentWins) {
+    return {
+      ok: false,
+      code: 'invalid_amount',
+      message: 'outcome must be DepositorWins (1) or AgentWins (2).',
+    };
+  }
+  let workerWallet: PublicKey;
+  let depositorWallet: PublicKey;
+  try {
+    workerWallet = new PublicKey(input.workerWalletPubkey);
+    depositorWallet = new PublicKey(input.depositorWalletPubkey);
+  } catch {
+    return { ok: false, code: 'invalid_pubkey', message: 'invalid worker/depositor wallet pubkey.' };
+  }
+
+  const arbiterHandle = loadArbiterKeypair();
+  if ('ok' in arbiterHandle && arbiterHandle.ok === false) return arbiterHandle;
+  const { keypair: arbiterKeypair } = arbiterHandle as { keypair: Keypair };
+  // Defense-in-depth: the loaded arbiter MUST be the escrow's configured arbiter, or the
+  // on-chain arbiter constraint fails. Catch the misconfig BEFORE building the tx.
+  if (cfg.arbiterPubkey && !cfg.arbiterPubkey.equals(arbiterKeypair.publicKey)) {
+    return {
+      ok: false,
+      code: 'internal',
+      message: 'SAP_ARBITER_KEYPAIR does not match the configured SAP_ARBITER_PUBKEY.',
+    };
+  }
+
+  const mint = usdcMintForEscrow(cfg);
+  const [agentPda] = findAgentPda(cfg.programId, workerWallet);
+  const [agentStatsPda] = findStatsPda(cfg.programId, agentPda);
+  const [escrowPda] = findEscrowPda(cfg.programId, agentPda, depositorWallet, input.escrowNonce);
+  const [pendingPda] = findPendingPda(cfg.programId, escrowPda, input.settlementIndex);
+  const [disputePda] = findDisputePda(cfg.programId, pendingPda);
+  const vaultAta = getAssociatedTokenAddress(mint, escrowPda, true);
+  const depositorAta = getAssociatedTokenAddress(mint, depositorWallet, false);
+  const workerAta = getAssociatedTokenAddress(mint, workerWallet, false);
+
+  try {
+    const tx = new Transaction();
+    // Idempotent creates for BOTH possible destinations (arbiter pays rent) — the
+    // program releases to depositor (refund) or worker (release) by outcome.
+    tx.add(
+      createAssociatedTokenAccountIdempotentInstruction({
+        payer: arbiterKeypair.publicKey,
+        ata: depositorAta,
+        owner: depositorWallet,
+        mint,
+      }),
+    );
+    tx.add(
+      createAssociatedTokenAccountIdempotentInstruction({
+        payer: arbiterKeypair.publicKey,
+        ata: workerAta,
+        owner: workerWallet,
+        mint,
+      }),
+    );
+    tx.add(
+      buildResolveDisputeIx({
+        arbiter: arbiterKeypair.publicKey,
+        depositor: depositorWallet,
+        agentWallet: workerWallet,
+        escrowPda,
+        pendingPda,
+        disputePda,
+        agentStatsPda,
+        programId: cfg.programId,
+        outcome: input.outcome,
+        remaining: assembleV2SplRemaining('resolve', {
+          vaultAta,
+          depositorAta,
+          workerAta,
+          tokenMint: mint,
+        }),
+      }),
+    );
+    return executeTx(cfg, 'resolveDisputeUsdc', tx, arbiterKeypair, {
+      arbiter: arbiterKeypair.publicKey.toBase58(),
+      depositor: depositorWallet.toBase58(),
+      worker: workerWallet.toBase58(),
+      escrow: escrowPda.toBase58(),
+      pending: pendingPda.toBase58(),
+      dispute: disputePda.toBase58(),
+      outcome: String(input.outcome),
+    });
+  } catch (err) {
+    return classifyChainError('resolveDisputeUsdc:build', err);
+  }
+}
+
+export interface WithdrawEscrowV2UsdcInput {
+  depositorAvatarId: string;
+  workerWalletPubkey: string;
+  escrowNonce: bigint;
+  amount: bigint;
+}
+
+/**
+ * withdraw_escrow_v2 (USDC) — the DEPOSITOR (creator) reclaims unspent USDC after the
+ * work-deadline expires (or on cancel). Prepends an idempotent depositor-ATA create
+ * (the refund destination may have been closed). Signer = the depositor.
+ *
+ * TODO(devnet-confirm): SPL remaining order for withdraw_escrow_v2 not dev-verified
+ * (assembleV2SplRemaining).
+ */
+export async function withdrawEscrowV2Usdc(
+  input: WithdrawEscrowV2UsdcInput,
+): Promise<SapWriteResult> {
+  const cfg = getConfig();
+  const gate = usdcEscrowGate(cfg);
+  if (gate) return gate;
+  if (input.amount <= 0n) {
+    return { ok: false, code: 'invalid_amount', message: 'amount must be > 0.' };
+  }
+  let workerWallet: PublicKey;
+  try {
+    workerWallet = new PublicKey(input.workerWalletPubkey);
+  } catch {
+    return { ok: false, code: 'invalid_pubkey', message: 'workerWalletPubkey is not a valid pubkey.' };
+  }
+
+  const handle = await loadAvatarWallet(input.depositorAvatarId);
+  if ('ok' in handle && handle.ok === false) return handle;
+  const { keypair, publicKey: depositor } = handle as AvatarWalletHandle;
+
+  const mint = usdcMintForEscrow(cfg);
+  const [agentPda] = findAgentPda(cfg.programId, workerWallet);
+  const [escrowPda] = findEscrowPda(cfg.programId, agentPda, depositor, input.escrowNonce);
+  const vaultAta = getAssociatedTokenAddress(mint, escrowPda, true);
+  const depositorAta = getAssociatedTokenAddress(mint, depositor, false);
+
+  try {
+    const tx = new Transaction();
+    // Idempotent depositor-ATA create (the refund DESTINATION) — payer = the depositor.
+    tx.add(
+      createAssociatedTokenAccountIdempotentInstruction({
+        payer: depositor,
+        ata: depositorAta,
+        owner: depositor,
+        mint,
+      }),
+    );
+    tx.add(
+      buildWithdrawEscrowV2Ix({
+        depositor,
+        escrowPda,
+        programId: cfg.programId,
+        amount: input.amount,
+        remaining: assembleV2SplRemaining('withdraw', { vaultAta, depositorAta, tokenMint: mint }),
+      }),
+    );
+    return executeTx(cfg, 'withdrawEscrowV2Usdc', tx, keypair, {
+      depositor: depositor.toBase58(),
+      escrow: escrowPda.toBase58(),
+      vaultAta: vaultAta.toBase58(),
+      depositorAta: depositorAta.toBase58(),
+    });
+  } catch (err) {
+    return classifyChainError('withdrawEscrowV2Usdc:build', err);
   }
 }

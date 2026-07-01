@@ -53,7 +53,7 @@ if (!SEED_URL.includes(STAGING_REF)) {
 
 // ── account fixtures ─────────────────────────────────────────────────────────
 const PASSWORD = 'LandTest!2026'; // shared known password for manual form-login
-const COUNT = 2;
+const LANDTEST_COUNT = 2;
 const SESSION_TTL_DAYS = 90;
 
 interface Fixture {
@@ -61,16 +61,36 @@ interface Fixture {
   username: string;
   name: string;
   avatarName: string;
+  /** Human note on what this account is for (surfaced in the printout + docs). */
+  note?: string;
 }
-const FIXTURES: Fixture[] = Array.from({ length: COUNT }, (_, i) => {
-  const n = i + 1;
-  return {
-    email: `landtest${n}@staging.clawville.test`,
-    username: `landtest${n}`,
-    name: `Land Test ${n}`,
-    avatarName: `LandTest${n}`,
-  };
-});
+const FIXTURES: Fixture[] = [
+  ...Array.from({ length: LANDTEST_COUNT }, (_, i): Fixture => {
+    const n = i + 1;
+    return {
+      email: `landtest${n}@staging.clawville.test`,
+      username: `landtest${n}`,
+      name: `Land Test ${n}`,
+      avatarName: `LandTest${n}`,
+      note: 'general authed staging tests (land buy/claim, cove, quests)',
+    };
+  }),
+  // ── the persistent TEST HERMES AGENT (bounty → Metaplex identity milestone) ──
+  // The single ClawVille agent we drive through the bounty escrow flow end-to-end
+  // so the Covenant/OOBE dev can mint + 014-register its Metaplex Core identity,
+  // attest its verified bounty record, and gate it = FIRST ClawVille agent live in
+  // the Metaplex directory as verified (founder=@extratard, dev's ask 2026-07-01).
+  // It plays the WORKER in a SAP DisputeWindow escrow (agent-bound, verifiable
+  // settled record). Its custodial Solana wallet + SAP register_agent (devnet) are
+  // provisioned SEPARATELY when we run the bounty (not by this account seed).
+  {
+    email: 'hermestest@staging.clawville.test',
+    username: 'hermestest',
+    name: 'Hermes Test Agent',
+    avatarName: 'HermesTest',
+    note: 'PERSISTENT test Hermes agent — bounty-worker for the Metaplex verified-identity milestone. See docs/staging-test-accounts.md.',
+  },
+];
 
 async function main() {
   const client = postgres(SEED_URL!, { max: 1 });
@@ -143,6 +163,7 @@ async function main() {
         avatarId,
         avatarName: fx.avatarName,
         clawTokens: '100000',
+        note: fx.note ?? '',
       });
     }
   } finally {
@@ -157,6 +178,7 @@ async function main() {
     console.log(`     cookie  : ${a.cookie}   (drive authed API: -H "Cookie: <this>")`);
     console.log(`     userId  : ${a.userId}`);
     console.log(`     avatarId: ${a.avatarId}   CT: ${a.clawTokens}`);
+    if (a.note) console.log(`     note    : ${a.note}`);
     console.log('');
   }
   console.log('Session cookie is Lucia\'s default `auth_session`. The session lives',
