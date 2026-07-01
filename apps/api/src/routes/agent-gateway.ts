@@ -1206,6 +1206,14 @@ agentGatewayRoutes.get('/session-status', async (c) => {
       // D-2/H1 — needed to decide whether the caller must reconnect (see below).
       identityType: true,
       protocol: true,
+      // D-2 refinement (Codex P0 gate) — a hatcher-proxy row self-restores ONLY if
+      // its proxy config is structurally present (restore returns null otherwise).
+      // Cheap null-presence lets session-status tell a permanently-degraded Hatcher
+      // row to reconnect instead of polling connected:true forever. No decrypt.
+      proxyUrl: true,
+      proxyTokenEnc: true,
+      proxyTokenIv: true,
+      proxyTokenTag: true,
     },
   });
 
@@ -1252,7 +1260,21 @@ agentGatewayRoutes.get('/session-status', async (c) => {
   // real-gateway types (openclaw/ironclaw/custom, whose outbound auth_token is never
   // persisted) genuinely can't self-heal and get the needs-reconnect 410. TYPE-level
   // (fail-safe for degraded restorable rows) — see `isSessionRestorable`.
-  const restorable = isSessionRestorable(row.identityType, row.protocol);
+  //
+  // Refinement (Codex P0 gate): for a hatcher-proxy row, ALSO require the proxy
+  // config be structurally present — restore fails closed without it, so a row that
+  // permanently dropped its proxyUrl/token would otherwise report connected:true to
+  // a polling partner forever. This is the ONE cheap row-level case (null checks, no
+  // decrypt); undecryptable-key / SSRF-fail / override-collision stay type-level +
+  // documented (they need decrypt/DNS to detect, and the bearer gate is authoritative).
+  const hatcherProxyConfigPresent = !!(
+    row.proxyUrl && row.proxyTokenEnc && row.proxyTokenIv && row.proxyTokenTag
+  );
+  const restorable = isSessionRestorable(
+    row.identityType,
+    row.protocol,
+    hatcherProxyConfigPresent,
+  );
 
   if (!ramLive && !restorable) {
     return c.json(
