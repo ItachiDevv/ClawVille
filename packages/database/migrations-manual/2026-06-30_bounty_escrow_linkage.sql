@@ -48,3 +48,29 @@ ALTER TABLE IF EXISTS bounties
 CREATE INDEX IF NOT EXISTS bounties_escrow_pda_job_idx
   ON bounties (escrow_pda, escrow_job_id)
   WHERE escrow_pda IS NOT NULL;
+
+-- ── SEV-1 belt-and-suspenders: at most ONE 'approved' attempt per bounty ──────
+-- The real fix for the CT double-pay faucet is the ATOMIC APPROVAL CLAIM in the
+-- review route (UPDATE ... WHERE id=? AND status='submitted' RETURNING). This
+-- PARTIAL UNIQUE INDEX is a DB-level backstop: even if the code path ever
+-- regresses, Postgres refuses a second 'approved' row for the same bounty_id, so
+-- the hunter can never be paid twice.
+--
+-- Guarded in a DO block: if this migration runs against a DB that already carries
+-- historical duplicate-approved rows (from the pre-fix TOCTOU), a bare CREATE
+-- UNIQUE INDEX would ABORT the whole additive migration. We instead attempt it and
+-- downgrade a unique-violation to a loud NOTICE — the additive columns above still
+-- land, and an operator reconciles the pre-existing duplicates before re-running
+-- (at which point the index creates cleanly). IF NOT EXISTS makes re-runs a no-op.
+DO $$
+BEGIN
+  CREATE UNIQUE INDEX IF NOT EXISTS bounty_attempts_one_approved_per_bounty
+    ON bounty_attempts (bounty_id)
+    WHERE status = 'approved';
+EXCEPTION
+  WHEN unique_violation THEN
+    RAISE WARNING '[bounty-escrow] bounty_attempts_one_approved_per_bounty NOT created: '
+      'pre-existing duplicate approved attempts exist. Reconcile them (keep one '
+      'approved per bounty_id), then re-run this migration to install the guard.';
+END
+$$;
