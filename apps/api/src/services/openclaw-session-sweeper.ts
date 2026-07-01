@@ -26,6 +26,7 @@ import { db, openclawBots, agents, sql } from '@clawville/database';
 import { agentOrchestrator } from './agent-orchestrator';
 import { logEvent } from './event-logger';
 import { notifyHatcherSessionEnded } from './hatcher-session-webhook';
+import { npcSimulation } from './npc-simulation';
 
 const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000; // 24h
 
@@ -229,6 +230,48 @@ export async function sweepExpiredSessions(): Promise<number> {
       await agentOrchestrator.stopAgent(botAgent.id).catch((err) => {
         console.warn(`[SessionSweeper] stopAgent failed for ${botAgent.id}:`, err);
       });
+    }
+  }
+
+  // D-3 + M1 (P0 lifecycle-truth) — remove the in-world BODY for every swept
+  // session. Before P0 the sweeper stopped the Eliza runtime + flipped the TTL but
+  // NEVER called unregisterOpenClaw, so the spawned avatar/override lingered as a
+  // zombie NPC until the next API restart (the `/disconnect` route already removed
+  // the body in-request; only the periodic sweep leaked it).
+  //
+  // M1 race guard: a /connect or /reconnect that lands in the sweep window
+  // installs a FRESH live session (future TTL) for the SAME agentId. Blindly
+  // removing "the sessions for this expired agentId" would VOID that just-
+  // succeeded reconnect. So we RE-READ the row's CURRENT TTL immediately before
+  // removal and SKIP any agentId whose TTL is now in the future — never unregister
+  // a session whose row is live again. (`extendSessionTtl` / `/connect` always set
+  // the expiry to now+24h, strictly after this sweep's `now`, so a refresh is
+  // unambiguous. A lazy restore never fires on an expired row and never slides the
+  // TTL, so a still-expired re-read means no live session can have re-registered.)
+  for (const row of expired) {
+    let current: { sessionExpiresAt: Date | null } | undefined;
+    try {
+      current = await db.query.openclawBots.findFirst({
+        where: eq(openclawBots.agentId, row.agentId),
+        columns: { sessionExpiresAt: true },
+      });
+    } catch (err) {
+      console.warn(
+        `[SessionSweeper] TTL re-read failed for ${row.agentId} — skipping body removal (non-fatal):`,
+        err,
+      );
+      continue;
+    }
+    if (current?.sessionExpiresAt && current.sessionExpiresAt.getTime() > now.getTime()) {
+      // Reconnected inside the sweep window — keep the fresh body.
+      continue;
+    }
+    try {
+      for (const sid of npcSimulation.findActiveSessionsByAgentIds([row.agentId])) {
+        npcSimulation.unregisterOpenClaw(sid);
+      }
+    } catch (err) {
+      console.warn(`[SessionSweeper] body removal failed for ${row.agentId} (non-fatal):`, err);
     }
   }
 

@@ -370,7 +370,15 @@ openclawRoutes.post('/register', async (c) => {
     }
   }
 
-  // Register with simulation
+  // Register with simulation.
+  //
+  // P0 lifecycle (H2) — a same-agentId re-register after a boot rehydration must
+  // REPLACE the provisional placeholder body, not double-spawn (avatar) or hit an
+  // `already overridden` 400 lockout (override). `registerOpenClaw` now evicts any
+  // PROVISIONAL sibling for this agentId at its top, so this path is covered
+  // WITHOUT reintroducing the anti-grief hole this route deliberately avoids: the
+  // eviction is scoped to provisional (boot-rehydrated) sessions only, so an
+  // unauthenticated re-register can never knock out a victim's live owned session.
   try {
     npcSimulation.registerOpenClaw(config, client, restoredState);
   } catch (err: any) {
