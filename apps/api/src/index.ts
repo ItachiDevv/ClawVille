@@ -4,6 +4,7 @@ import { logger } from 'hono/logger';
 import { secureHeaders } from 'hono/secure-headers';
 import { bodyLimit } from 'hono/body-limit';
 import { HTTPException } from 'hono/http-exception';
+import { redactBearerTokens } from './services/log-redact';
 import { authRoutes } from './routes/auth';
 import { avatarRoutes } from './routes/avatars';
 import { userRoutes } from './routes/users';
@@ -117,7 +118,22 @@ import type { AppContext } from './types';
 const app = new Hono<AppContext>();
 
 // Global middleware
-app.use('*', logger());
+// Redact agent bearer sessionIds from the request log: several agent routes
+// carry the real-CT bearer as a `/:sessionId/…` PATH param, and hono/logger
+// prints every path — so an un-redacted logger writes the replayable credential
+// into stdout / the Coolify log drain (real-CT theft on log access). The custom
+// print fn scrubs only the LOG string; URLs/responses to the Hatcher partner are
+// unchanged. Pre-existing leak folded in at the P0 Codex gate (2026-07-01), same
+// class as the B1 body-id leak. See services/log-redact.ts.
+app.use(
+  '*',
+  logger((message: string, ...rest: string[]) => {
+    console.log(
+      redactBearerTokens(message),
+      ...rest.map((r) => (typeof r === 'string' ? redactBearerTokens(r) : r)),
+    );
+  }),
+);
 // secureHeaders defaults Cross-Origin-Resource-Policy to "same-origin", which
 // blocks api.clawville.world responses from being read by clawville.world
 // (different origins). The web app's SSE/fetch calls fail with "blocked by
