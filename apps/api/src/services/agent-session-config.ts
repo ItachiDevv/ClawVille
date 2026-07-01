@@ -179,21 +179,41 @@ export function isRowRestorableFromIdentity(identityType: string): boolean {
  * self-healing type stays `connected:true` (no needless reconnect — preserves the
  * Hatcher partner's transparent post-restart recovery).
  *
- * TYPE-LEVEL by design (session-status ruling, 2026-07-01): a DEGRADED restorable-
- * type row (hatcher missing proxyUrl/token, rotated VANITY key → undecryptable, SSRF
- * re-validation fail, override target already taken) still returns true here and
- * optimistically reports `connected:true`; the agent then recovers when its first
- * bearer call fails lazy-restore → 401/needsReconnect. This is fail-SAFE:
- * session-status grants NO access (the bearer gate `validateLiveAgentSession` is
- * authoritative), so a false-optimistic "connected" costs one extra request cycle,
- * never a security hole. A per-poll decrypt-probe (row-level restorability) is
- * deliberately NOT done — not worth the hot-path cost for a rare degraded case.
+ * MOSTLY TYPE-LEVEL by design (session-status ruling, 2026-07-01), with ONE cheap
+ * row-level refinement (Codex P0 gate). The optional `hatcherProxyConfigPresent`
+ * lets a caller that already has the row (session-status) reject a hatcher-proxy
+ * row whose proxy config is STRUCTURALLY ABSENT (`proxyUrl`/`proxyTokenEnc`/`Iv`/
+ * `Tag` null) — restore fail-closes on exactly that (`restoreAgentSessionFromRow`),
+ * so without the check a row that permanently dropped its proxy config would report
+ * `connected:true` to a polling partner FOREVER. It costs only null checks (no
+ * decrypt, no DNS). When the param is omitted (`undefined`) the behaviour is the
+ * original type-level union (backward-compatible for callers without the row).
+ *
+ * The OTHER degraded cases stay type-level + documented fail-SAFE: a rotated VANITY
+ * key → undecryptable token, an SSRF re-validation failure, or an override target
+ * already taken all still return true here and optimistically report
+ * `connected:true`; the agent recovers when its first bearer call fails lazy-restore
+ * → 401/needsReconnect. Detecting those needs a decrypt / DNS resolve, not worth the
+ * hot-path cost, and it is safe: session-status grants NO access (the bearer gate
+ * `validateLiveAgentSession` is authoritative), so a false-optimistic "connected"
+ * costs one extra request cycle, never a security hole.
+ *
+ * @param hatcherProxyConfigPresent when the caller has the row: `false` marks a
+ *   hatcher-proxy row with missing proxy config (→ NOT restorable); `true`/omitted
+ *   keep the type-level result.
  */
 export function isSessionRestorable(
   identityType: string,
   protocol: string | null | undefined,
+  hatcherProxyConfigPresent?: boolean,
 ): boolean {
-  return protocol === 'hatcher-proxy' || isRowRestorableFromIdentity(identityType);
+  if (protocol === 'hatcher-proxy') {
+    // Self-heals via restore ONLY if the proxy config is present. Omitted param
+    // (undefined) ⇒ type-level true (documented fail-safe); explicit false ⇒ the
+    // row can't rebuild cognition, so tell the agent to reconnect.
+    return hatcherProxyConfigPresent !== false;
+  }
+  return isRowRestorableFromIdentity(identityType);
 }
 
 /**

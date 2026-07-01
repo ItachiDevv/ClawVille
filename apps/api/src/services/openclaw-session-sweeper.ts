@@ -240,15 +240,31 @@ export async function sweepExpiredSessions(): Promise<number> {
   // the body in-request; only the periodic sweep leaked it).
   //
   // M1 race guard: a /connect or /reconnect that lands in the sweep window
-  // installs a FRESH live session (future TTL) for the SAME agentId. Blindly
-  // removing "the sessions for this expired agentId" would VOID that just-
-  // succeeded reconnect. So we RE-READ the row's CURRENT TTL immediately before
-  // removal and SKIP any agentId whose TTL is now in the future — never unregister
-  // a session whose row is live again. (`extendSessionTtl` / `/connect` always set
-  // the expiry to now+24h, strictly after this sweep's `now`, so a refresh is
-  // unambiguous. A lazy restore never fires on an expired row and never slides the
-  // TTL, so a still-expired re-read means no live session can have re-registered.)
+  // installs a FRESH live session (future TTL, and — since the avatar body id is
+  // now the DETERMINISTIC per-agentId `ocb-<agentId>` — potentially a fresh body
+  // under the SAME id) for the SAME agentId. Blindly removing "the sessions for
+  // this expired agentId" would VOID that just-succeeded reconnect. TWO guards,
+  // both required (Codex P0 gate, 2026-07-01):
+  //
+  //  (1) SNAPSHOT-BEFORE-AWAIT: capture the live session ids for the agentId
+  //      SYNCHRONOUSLY, BEFORE the TTL re-read `await`. A `/connect` that
+  //      registers a fresh session DURING that await is therefore NOT in the
+  //      snapshot, so the sweep never targets it. (Reading the RAM Map only
+  //      AFTER the await — as the first cut did — would re-enumerate and catch
+  //      the just-registered fresh session.)
+  //  (2) RE-READ TTL: if the row's CURRENT TTL is now in the future, a reconnect
+  //      already refreshed it → skip the whole agentId. (`extendSessionTtl` /
+  //      `/connect` set expiry to now+24h, strictly after this sweep's `now`; a
+  //      lazy restore never fires on an expired row and never slides the TTL, so
+  //      a still-expired re-read means no live session can have re-registered.)
+  //
+  // The ownership guard inside `unregisterOpenClaw` is the third backstop: even a
+  // snapshotted stale session will NOT tear down the shared `ocb-<agentId>` body
+  // if a newer session has already rebound it (`/connect` does not evict on a
+  // normal same-owner reconnect), so a stale sid can't orphan the live body.
   for (const row of expired) {
+    // (1) snapshot BEFORE the await — excludes any session registered mid-sweep.
+    const snapshotSids = npcSimulation.findActiveSessionsByAgentIds([row.agentId]);
     let current: { sessionExpiresAt: Date | null } | undefined;
     try {
       current = await db.query.openclawBots.findFirst({
@@ -263,11 +279,11 @@ export async function sweepExpiredSessions(): Promise<number> {
       continue;
     }
     if (current?.sessionExpiresAt && current.sessionExpiresAt.getTime() > now.getTime()) {
-      // Reconnected inside the sweep window — keep the fresh body.
+      // (2) reconnected inside the sweep window — keep the fresh body.
       continue;
     }
     try {
-      for (const sid of npcSimulation.findActiveSessionsByAgentIds([row.agentId])) {
+      for (const sid of snapshotSids) {
         npcSimulation.unregisterOpenClaw(sid);
       }
     } catch (err) {

@@ -824,9 +824,21 @@ class NpcSimulation {
       // B1 ROOT-FIX: avatar body id is `ocb-<base64url(agentId)>` (non-secret), not
       // `oc-<sessionId>`; resolve it from the bot's own config.
       const npcId = this.avatarBodyId(bot.config.agentId);
-      this.cleanupNpcFromCombats(npcId);
-      this.npcOverrides.delete(npcId);
-      this.npcs.delete(npcId);
+      // OWNERSHIP-SCOPED teardown (M1 sweeper race, Codex P0 gate 2026-07-01): the
+      // body id is DETERMINISTIC per agentId, so many sessionIds for one agentId
+      // share ONE body, and `npcOverrides[npcId]` names the CURRENT owner. `/connect`
+      // does NOT evict prior sessions on a normal (same-owner) reconnect, so a stale
+      // session (e.g. one the TTL sweeper is reaping) can coexist with a fresh one
+      // that has already rebound the body to itself. Tear the shared body down ONLY
+      // if THIS session still owns it — otherwise a stale unregister would orphan the
+      // live session (delete the body + override the newer session depends on, while
+      // that session stays Map-present so lazy-restore never re-heals it). If we no
+      // longer own it, just drop our own `openClawBots` entry below.
+      if (this.npcOverrides.get(npcId) === sessionId) {
+        this.cleanupNpcFromCombats(npcId);
+        this.npcOverrides.delete(npcId);
+        this.npcs.delete(npcId);
+      }
     }
     this.openClawBots.delete(sessionId);
     // sessionDigest, NOT the raw sessionId (Codex auth-lens fix #4) - bearer
