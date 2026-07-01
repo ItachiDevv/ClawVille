@@ -72,6 +72,7 @@ import { portalRoutes } from './routes/portal';
 import { partnerHatcherRoutes } from './routes/partner-hatcher';
 import { partnerHatcherLaunchRoutes } from './routes/partner-hatcher-launch';
 import { agentRegistrationRoutes } from './routes/agent-registration';
+import { agentEip8004Routes } from './routes/agent-eip8004';
 import { adminIdentityRoutes } from './routes/admin-identity';
 import { startSimulation } from './services/npc-simulation';
 import { alertError } from './services/alert-error';
@@ -227,6 +228,19 @@ app.get('/.well-known/clawville-issuer.json', (c) => {
 // `.well-known/*` isn't special-cased. The sub-app holds only the
 // `:fingerprint/...` path so the full mount path is the canonical URL.
 app.route('/.well-known/agents', agentRegistrationRoutes);
+
+// ---------------------------------------------------------------------------
+// EIP-8004 registration JSON for SAP/Metaplex-registered agents (identity rail)
+// ---------------------------------------------------------------------------
+// Public, per-SAP-agent EIP-8004 document served at
+//   GET /agents/:sapAgentPda/eip-8004.json
+// This exact URL is baked into each agent's MPL Core AgentIdentity plugin
+// (attached via the 1DREG / mpl-agent-014 registry), so the path is
+// immutable once an asset is minted. Covenant + the SAP SDK's
+// MetaplexBridge verifyLink/tripleCheckLink fetch it to validate the
+// asset ↔ SAP-agent link. Distinct from the fingerprint-keyed
+// /.well-known/agents route above (different key, different consumer).
+app.route('/agents', agentEip8004Routes);
 
 // API routes
 app.route('/api/auth', authRoutes);
