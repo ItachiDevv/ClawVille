@@ -350,6 +350,14 @@ class NpcSimulation {
   // OpenClaw bot registry
   private openClawBots: Map<string, { config: OpenClawRegistration; client: OpenClawClient }> = new Map();
   private npcOverrides: Map<string, string> = new Map(); // npcId → sessionId
+  // P0 lifecycle — sessionIds of boot-REHYDRATED bodies (agent-session-rehydrator).
+  // A provisional session is a PLACEHOLDER: the body renders + wanders, but it is
+  // ledger-INCAPABLE and no live bearer/brain has re-attached. It is REPLACED (not
+  // duplicated) by any real (re)registration for the same agentId — /connect,
+  // /reconnect, /register, lazy restore, partner mint — via evictProvisionalSiblings
+  // at the top of registerOpenClaw. session-status treats an agentId whose only live
+  // RAM session is provisional as "not attached" (see findActiveNonProvisionalSessionsByAgentIds).
+  private provisionalSessions: Set<string> = new Set();
   // Controlled-launch suppression: agentId → epoch-ms until which a Hatcher
   // proxy NPC is "human-driven" and must be hidden + frozen (its owner is
   // driving the bound avatar in 'player' mode). Refreshed at 5 Hz by
@@ -542,20 +550,96 @@ class NpcSimulation {
     }
   }
 
+  // ── B1 (P0, money-path) — PUBLIC WIRE ID SANITIZATION ───────────────────────
+  // An avatar-mode connected-agent body is keyed internally by `oc-${sessionId}`,
+  // where `sessionId` IS the `X-Clawville-Agent-Session` bearer the cove trusts
+  // for real-CT settlement. That id MUST NEVER cross a public serialization
+  // boundary — the unauth `/api/npc/state|stream` + `/api/world/:room/stream`
+  // snapshots would otherwise hand any visitor a replayable bearer (impersonate /
+  // drain the bound user's CT / drive the body). The prior auth-lens fix (#1,
+  // 2026-06-03) scrubbed `getActiveOpenClawBots` but NOT the snapshot path, which
+  // still spread each body verbatim (`{ ...n }` with `n.id === oc-<bearer>`) AND
+  // leaked the id a second time via `events[].npcId` (injectAgentChat), and via
+  // conversation/combat participant ids. These helpers map EVERY id-bearing
+  // snapshot field to a NON-secret, stable-per-body public token: the avatar
+  // body's `agentId` (stable + unique + one-body-per-agentId, so client entity
+  // interpolation is unbroken). Override bodies already expose the public
+  // `targetNpcId`; plain NPCs their own public id — both pass through unchanged.
+
+  /** Map an INTERNAL body id to its PUBLIC wire id (fail-CLOSED for `oc-` ids). */
+  publicNpcId(internalId: string): string {
+    // Only avatar-mode agent bodies are keyed `oc-<bearer>`; every other id
+    // (residents, override targets, wanderers, '' sentinels) is already public.
+    if (!internalId.startsWith('oc-')) return internalId;
+    const sessionId = this.npcOverrides.get(internalId);
+    if (sessionId !== undefined) {
+      const agentId = this.openClawBots.get(sessionId)?.config.agentId;
+      if (agentId) return agentId;
+    }
+    // FAIL CLOSED: an `oc-` id we cannot resolve to a public agentId (e.g. a
+    // stale event/convo referencing a body unregistered between capture and
+    // serialize) must NEVER be emitted raw — its trailing sessionId may still be
+    // a live-TTL bearer. Redact to a stable, one-way digest (never a usable id).
+    return `redacted-${sessionDigest(internalId.slice(3))}`;
+  }
+
+  /** Null-safe `publicNpcId` for optional id fields (combatTargetId/winner/typing). */
+  private publicNpcIdOrNull(id: string | null): string | null {
+    return id === null ? null : this.publicNpcId(id);
+  }
+
+  /** Wire-safe clone of an NPC runtime state (remaps `id` + `combatTargetId`). */
+  private toWireNpc(n: NpcRuntimeState): NpcRuntimeState {
+    return {
+      ...n,
+      id: this.publicNpcId(n.id),
+      combatTargetId: this.publicNpcIdOrNull(n.combatTargetId),
+    };
+  }
+
+  /** Wire-safe clone of a conversation (remaps participants + per-message speaker). */
+  private toWireConversation(c: NpcConversation): NpcConversation {
+    return {
+      ...c,
+      npc1Id: this.publicNpcId(c.npc1Id),
+      npc2Id: this.publicNpcId(c.npc2Id),
+      typingNpcId: this.publicNpcIdOrNull(c.typingNpcId),
+      messages: c.messages.map((m) => ({ ...m, npcId: this.publicNpcId(m.npcId) })),
+    };
+  }
+
+  /** Wire-safe clone of a combat (remaps attacker/defender/winner + round attacker). */
+  private toWireCombat(c: NpcCombat): NpcCombat {
+    return {
+      ...c,
+      attacker: this.publicNpcId(c.attacker),
+      defender: this.publicNpcId(c.defender),
+      winner: this.publicNpcIdOrNull(c.winner),
+      rounds: c.rounds.map((r) => ({ ...r, attacker: this.publicNpcId(r.attacker) })),
+    };
+  }
+
+  /** Wire-safe clone of a pending event (remaps `npcId`; '' passes through). */
+  private toWireEvent(e: SimulationEvent): SimulationEvent {
+    return { ...e, npcId: this.publicNpcId(e.npcId) };
+  }
+
   getSnapshot(): SimulationSnapshot {
     const now = Date.now();
     return {
       roomId: '',
       players: [],
+      // B1: filters run on the INTERNAL id (isHumanControlledOpenClawNpc reads
+      // npcOverrides), so they MUST precede the wire-id remap.
       npcs: Array.from(this.npcs.values())
         .filter((n) => !this.isHumanControlledOpenClawNpc(n.id, now))
-        .map((n) => ({ ...n })),
+        .map((n) => this.toWireNpc(n)),
       conversations: Array.from(this.conversations.values())
         .filter((c) => c.state === 'active')
         .filter((c) => !this.isHumanControlledOpenClawNpc(c.npc1Id, now) && !this.isHumanControlledOpenClawNpc(c.npc2Id, now))
-        .map((c) => ({ ...c, messages: [...c.messages] })),
-      combats: Array.from(this.combats.values()).filter((c) => c.state === 'active').map((c) => ({ ...c, rounds: [...c.rounds] })),
-      events: [...this.pendingEvents],
+        .map((c) => this.toWireConversation(c)),
+      combats: Array.from(this.combats.values()).filter((c) => c.state === 'active').map((c) => this.toWireCombat(c)),
+      events: this.pendingEvents.map((e) => this.toWireEvent(e)),
       autonomousAvatars: this.avatarAutonomyManager.getAutonomousAvatars(),
       browserClaws: this.getBrowserClawSnapshots(),
       arenaRound: this.arenaRound ? { ...this.arenaRound } : null,
@@ -587,21 +671,24 @@ class NpcSimulation {
     // present; wanderers are looked up by ID from `room.npcs`.
     const npcs: NpcRuntimeState[] = [];
     const now = Date.now();
+    // B1: membership/suppression checks read the INTERNAL npc.id (FREE_ROAMER set,
+    // room.npcs set, npcOverrides), so they run BEFORE the wire-id remap; only the
+    // pushed clone carries the public wire id.
     if (room) {
       for (const npc of this.npcs.values()) {
         // Hide a Hatcher proxy body whose owner is driving the bound avatar.
         if (this.isHumanControlledOpenClawNpc(npc.id, now)) continue;
         if (!FREE_ROAMER_NPC_IDS.has(npc.id)) {
-          npcs.push({ ...npc });
+          npcs.push(this.toWireNpc(npc));
         } else if (room.npcs.has(npc.id)) {
-          npcs.push({ ...npc });
+          npcs.push(this.toWireNpc(npc));
         }
       }
     } else {
       // Unknown room (e.g. solo- alias from npc-sse shim) → full roster.
       for (const npc of this.npcs.values()) {
         if (this.isHumanControlledOpenClawNpc(npc.id, now)) continue;
-        npcs.push({ ...npc });
+        npcs.push(this.toWireNpc(npc));
       }
     }
 
@@ -612,11 +699,11 @@ class NpcSimulation {
       conversations: Array.from(this.conversations.values())
         .filter((c) => c.state === 'active')
         .filter((c) => !this.isHumanControlledOpenClawNpc(c.npc1Id, now) && !this.isHumanControlledOpenClawNpc(c.npc2Id, now))
-        .map((c) => ({ ...c, messages: [...c.messages] })),
+        .map((c) => this.toWireConversation(c)),
       combats: Array.from(this.combats.values())
         .filter((c) => c.state === 'active')
-        .map((c) => ({ ...c, rounds: [...c.rounds] })),
-      events: [...this.pendingEvents],
+        .map((c) => this.toWireCombat(c)),
+      events: this.pendingEvents.map((e) => this.toWireEvent(e)),
       autonomousAvatars: this.avatarAutonomyManager.getAutonomousAvatars(),
       browserClaws: this.getBrowserClawSnapshots(),
       arenaRound: this.arenaRound ? { ...this.arenaRound } : null,
@@ -697,6 +784,18 @@ class NpcSimulation {
   // --- OpenClaw Methods ---
 
   registerOpenClaw(config: OpenClawRegistration, client: OpenClawClient, restoredState?: { lastX?: number; lastY?: number; knowledge?: string[] }) {
+    // P0 lifecycle — a boot-rehydrated PROVISIONAL body is a placeholder. ANY real
+    // (re)registration for the same agentId (/connect, /reconnect, /register, lazy
+    // restore, partner mint) must REPLACE it, never spawn a second body. This is
+    // the ONE chokepoint every registration path funnels through, so evicting the
+    // provisional sibling HERE closes the boot-rehydrate ↔ restore/reconnect
+    // collision (avatar: double body; override: OverrideTargetUnavailable lockout)
+    // in every path at once. Scoped to PROVISIONAL siblings only — a live owned
+    // session is never in provisionalSessions, so it can never be evicted here
+    // (anti-grief preserved, matching the openclaw.ts /register no-blanket-evict
+    // rule). Runs BEFORE the override-occupied check below so an override reconnect
+    // isn't blocked by its own provisional body holding the target.
+    this.evictProvisionalSiblings(config.agentId, config.sessionId);
     if (config.mode === 'override') {
       if (!this.npcs.has(config.targetNpcId)) throw new Error(`NPC "${config.targetNpcId}" not found`);
       // Typed sentinel (not a bare Error) so the partner-hatcher P5-2 path can map
@@ -774,6 +873,8 @@ class NpcSimulation {
   unregisterOpenClaw(sessionId: string): boolean {
     const bot = this.openClawBots.get(sessionId);
     if (!bot) return false;
+    // P0 lifecycle — drop the provisional flag (no-op if this was a real session).
+    this.provisionalSessions.delete(sessionId);
     // Drop any human-control suppression entry for this agent so a stale TTL
     // can't outlive the session (a re-registered agent gets a fresh window).
     this.humanControlledOpenClawUntil.delete(bot.config.agentId);
@@ -853,6 +954,53 @@ class NpcSimulation {
       if (ids.has(config.agentId)) found.push(sid);
     }
     return found;
+  }
+
+  /**
+   * P0 lifecycle — like `findActiveSessionsByAgentIds` but EXCLUDES boot-rehydrated
+   * PROVISIONAL placeholders. `session-status` uses this to answer truthfully: an
+   * agentId whose only live RAM session is provisional has NO real bearer/brain
+   * attached, so it is NOT "connected" in the sense a caller cares about (a
+   * non-restorable remote must reconnect; a self-healing one recovers on next use).
+   */
+  findActiveNonProvisionalSessionsByAgentIds(agentIds: Iterable<string>): string[] {
+    const ids = new Set(agentIds);
+    if (ids.size === 0) return [];
+    const found: string[] = [];
+    for (const [sid, { config }] of this.openClawBots) {
+      if (ids.has(config.agentId) && !this.provisionalSessions.has(sid)) found.push(sid);
+    }
+    return found;
+  }
+
+  /**
+   * P0 lifecycle — mark a session as boot-rehydrated PROVISIONAL. Called by the
+   * rehydrator immediately after `registerOpenClaw`. Idempotent.
+   */
+  markSessionProvisional(sessionId: string): void {
+    this.provisionalSessions.add(sessionId);
+  }
+
+  /**
+   * P0 lifecycle — evict every PROVISIONAL (boot-rehydrated) body registered under
+   * the same `agentId` (except `exceptSessionId`), so a real (re)registration
+   * REPLACES the placeholder instead of double-spawning. Scoped to provisional
+   * sessions ONLY — a live owned session is never in `provisionalSessions`, so
+   * this can never knock out a legitimate live session (anti-grief). Collects
+   * first, then unregisters, so the Map isn't mutated mid-iteration.
+   */
+  private evictProvisionalSiblings(agentId: string, exceptSessionId: string): void {
+    let toEvict: string[] | null = null;
+    for (const [sid, { config }] of this.openClawBots) {
+      if (sid !== exceptSessionId && config.agentId === agentId && this.provisionalSessions.has(sid)) {
+        (toEvict ??= []).push(sid);
+      }
+    }
+    if (!toEvict) return;
+    for (const sid of toEvict) {
+      this.unregisterOpenClaw(sid);
+      console.log(`[Rehydrate] provisional body replaced by live session for agent ${agentId}`);
+    }
   }
 
   /**
@@ -972,7 +1120,10 @@ class NpcSimulation {
       .sort((a, b) => a.dist - b.dist)
       .slice(0, 8)
       .map(({ o, dist }) => ({
-        id: o.id,
+        // B1 (money-path, PARTNER surface): this ships to the Hatcher partner in
+        // the `clawville.worldState` block. A raw avatar `oc-<sessionId>` id IS a
+        // real-CT bearer — emit the public agentId, never the bearer.
+        id: this.publicNpcId(o.id),
         name: o.name,
         isAgent: o.isOpenClaw,
         distance: dist,
@@ -2647,7 +2798,11 @@ class NpcSimulation {
       this.pendingEvents.push({
         id: this.nextId(), type: 'arena_complete',
         npcId: winner?.id ?? '', npcName: winner?.name ?? 'Nobody',
-        data: { winnerId: winner?.id, winnerName: winner?.name, winnerKills: winner?.kills ?? 0, winnerLevel: winner?.level ?? 1 },
+        // B1: `winnerId` duplicates an npc id inside the freeform `data` payload,
+        // which `toWireEvent` cannot generically remap — an avatar winner's raw
+        // `oc-<sessionId>` id is a real-CT bearer, so map it to the public id at
+        // the source (the winner body is still registered here).
+        data: { winnerId: winner ? this.publicNpcId(winner.id) : undefined, winnerName: winner?.name, winnerKills: winner?.kills ?? 0, winnerLevel: winner?.level ?? 1 },
         timestamp: now,
       });
       console.log(`[Arena] Complete! Winner: ${winner?.name ?? 'Nobody'} (Lv${winner?.level}, ${winner?.kills} kills)`);
