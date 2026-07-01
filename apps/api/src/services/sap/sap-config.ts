@@ -56,6 +56,25 @@ const DEFAULT_RPC_BY_CLUSTER: Record<SapCluster, string> = {
 export const USDC_MINT_MAINNET = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 export const USDC_MINT_DEVNET = '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU';
 
+// ── SAP Escrow V2 settlement config (DisputeWindow default / CoSigned pluggable) ──
+// The USDC settle path is the V2 escrow family (create_escrow_v2 → settle_calls_v2
+// + finalize/dispute), NOT the dead V1 SelfReport path. See sap-escrow-v2.ts.
+//
+// SAP's protocol treasury (0.5% fee sink) — the SAME wallet the OOBE SDK pins as
+// TREASURY_WALLET and the wallet the Covenant dev observed at settle
+// remaining_accounts[1] on the live 0.18.0 program. Passed as a settle/finalize
+// remaining account when a fee is collected.
+export const SAP_TREASURY_PUBKEY_DEFAULT = 'J7PyZAGKvprCz4SQ5DKBLAHstJxgVqZcz6kguUoWpP7P';
+// Covenant's operating co-signer (CoSigned mode ONLY). We hold the PUBKEY, never
+// the private key — a live CoSigned settle needs Covenant to co-sign (joint op).
+export const SAP_COVENANT_COSIGNER_PUBKEY = 'DKxXrxxCzAwLSXRUWzUouiW46GNf4PR2mjjhAbtCAkcK';
+// Default dispute window (slots). ~2160 slots ≈ 15 min at ~0.4s/slot. The period a
+// pending settlement is held before finalize, during which the depositor (bounty
+// creator) may file a dispute. Floor 1 (the program requires >= 1 for DisputeWindow).
+export const SAP_DEFAULT_DISPUTE_WINDOW_SLOTS = 2160n;
+
+export type SapSettlementMode = 'DisputeWindow' | 'CoSigned';
+
 // Solana cluster genesis hashes — the immutable fingerprint of a cluster, used by
 // the live-send path to REFUSE broadcasting to mainnet unless the mainnet code
 // gate is on (FIX-D: close the SAP_RPC_URL=<mainnet> + SAP_CLUSTER=devnet bypass —
@@ -120,6 +139,30 @@ export interface SapConfig {
    * Default 7 days; floored at 1h.
    */
   usdcEscrowDefaultExpirySeconds: number;
+  // ── V2 escrow settlement mode ────────────────────────────────────────────────
+  /**
+   * Settlement mode for USDC escrows. DEFAULT 'DisputeWindow' (autonomous: settle
+   * → wait window → finalize; depositor disputes → ClawVille arbiter resolves).
+   * 'CoSigned' requires Covenant to co-sign every release (joint op — we hold only
+   * the co-signer PUBKEY). Env `SAP_SETTLEMENT_MODE`.
+   */
+  settlementMode: SapSettlementMode;
+  /** DisputeWindow hold period in slots (env `SAP_DISPUTE_WINDOW_SLOTS`). */
+  disputeWindowSlots: bigint;
+  /** SAP protocol treasury (fee sink) — a settle/finalize remaining account. */
+  treasuryPubkey: PublicKey;
+  /**
+   * The ClawVille admin arbiter that resolves disputes (DisputeWindow). Set via
+   * `SAP_ARBITER_PUBKEY`; null ⇒ no arbiter configured (a DisputeWindow escrow
+   * cannot be created until one is set — the gate refuses). ClawVille MUST hold
+   * this keypair to sign `resolve_dispute` (loaded separately at sign time).
+   */
+  arbiterPubkey: PublicKey | null;
+  /**
+   * Covenant's co-signer pubkey (CoSigned mode). We hold only the pubkey; a live
+   * CoSigned settle needs Covenant's signature. Env `SAP_COSIGNER_PUBKEY`.
+   */
+  coSignerPubkey: PublicKey | null;
 }
 
 /**
@@ -201,6 +244,56 @@ export function loadSapConfig(): SapConfig {
     cluster === 'mainnet' ? USDC_MINT_MAINNET : USDC_MINT_DEVNET,
   );
 
+  // ── V2 settlement mode ──────────────────────────────────────────────────────
+  const rawMode = (process.env.SAP_SETTLEMENT_MODE ?? 'DisputeWindow').trim();
+  if (rawMode !== 'DisputeWindow' && rawMode !== 'CoSigned') {
+    throw new Error(
+      `[sap] SAP_SETTLEMENT_MODE must be 'DisputeWindow' or 'CoSigned' (got '${rawMode}').`,
+    );
+  }
+  const settlementMode = rawMode as SapSettlementMode;
+
+  const rawWindow = process.env.SAP_DISPUTE_WINDOW_SLOTS;
+  let disputeWindowSlots = SAP_DEFAULT_DISPUTE_WINDOW_SLOTS;
+  if (rawWindow !== undefined) {
+    try {
+      const parsed = BigInt(rawWindow.trim());
+      disputeWindowSlots = parsed < 1n ? 1n : parsed; // program requires >= 1
+    } catch {
+      throw new Error(`[sap] SAP_DISPUTE_WINDOW_SLOTS must be an integer (got '${rawWindow}').`);
+    }
+  }
+
+  let treasuryPubkey: PublicKey;
+  try {
+    treasuryPubkey = new PublicKey(
+      (process.env.SAP_TREASURY_PUBKEY ?? SAP_TREASURY_PUBKEY_DEFAULT).trim(),
+    );
+  } catch {
+    throw new Error(`[sap] SAP_TREASURY_PUBKEY is not a valid pubkey.`);
+  }
+
+  const arbiterRaw = process.env.SAP_ARBITER_PUBKEY?.trim();
+  let arbiterPubkey: PublicKey | null = null;
+  if (arbiterRaw) {
+    try {
+      arbiterPubkey = new PublicKey(arbiterRaw);
+    } catch {
+      throw new Error(`[sap] SAP_ARBITER_PUBKEY is not a valid pubkey: '${arbiterRaw}'.`);
+    }
+  }
+
+  // Co-signer defaults to Covenant's key in CoSigned mode (we hold only the pubkey).
+  const coSignerRaw = (process.env.SAP_COSIGNER_PUBKEY ?? SAP_COVENANT_COSIGNER_PUBKEY).trim();
+  let coSignerPubkey: PublicKey | null = null;
+  if (coSignerRaw) {
+    try {
+      coSignerPubkey = new PublicKey(coSignerRaw);
+    } catch {
+      throw new Error(`[sap] SAP_COSIGNER_PUBKEY is not a valid pubkey: '${coSignerRaw}'.`);
+    }
+  }
+
   return {
     enabled,
     escrowEnabled,
@@ -212,6 +305,11 @@ export function loadSapConfig(): SapConfig {
     minStakeLamports: SAP_MIN_STAKE_LAMPORTS,
     usdcEscrowEnabled,
     usdcEscrowDefaultExpirySeconds,
+    settlementMode,
+    disputeWindowSlots,
+    treasuryPubkey,
+    arbiterPubkey,
+    coSignerPubkey,
   };
 }
 

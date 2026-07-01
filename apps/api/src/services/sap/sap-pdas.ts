@@ -43,6 +43,7 @@ const SEED_ESCROW_V2 = Buffer.from('sap_escrow_v2', 'utf8');
 const SEED_ESCROW_V1 = Buffer.from('sap_escrow', 'utf8');
 const SEED_RECV = Buffer.from('sap_recv', 'utf8');
 const SEED_PENDING = Buffer.from('sap_pending', 'utf8');
+const SEED_DISPUTE = Buffer.from('sap_dispute', 'utf8');
 
 /** Encode a u64 (bigint) as 8-byte little-endian — the Borsh seed encoding. */
 export function u64LE(value: bigint): Buffer {
@@ -212,8 +213,11 @@ export function findReceiptPda(
 /**
  * pending: ["sap_pending", escrowPda, settlementIndex(u64 LE 8B)]
  *
- * NOTE (audit FIX-A): unused by the live 0.18.0 client (the CoSigned/DisputeWindow
- * settlement path is deferred). Retained for a future non-custodial settlement mode.
+ * The DisputeWindow / CoSigned settlement PDA. Verified against the on-chain
+ * 0.18.0 IDL (`create_pending_settlement.pending_settlement` seeds =
+ * `["sap_pending", escrow, arg:settlement_index]`). One pending settlement per
+ * (escrow, settlement_index); the escrow's `settlement_index` monotonically
+ * increments per settle so each release gets a fresh PDA.
  */
 export function findPendingPda(
   programId: PublicKey,
@@ -222,6 +226,24 @@ export function findPendingPda(
 ): [PublicKey, number] {
   return PublicKey.findProgramAddressSync(
     [SEED_PENDING, escrow.toBuffer(), u64LE(settlementIndex)],
+    programId,
+  );
+}
+
+/**
+ * dispute: ["sap_dispute", pendingSettlementPda]
+ *
+ * Verified against the on-chain 0.18.0 IDL (`file_dispute.dispute` +
+ * `resolve_dispute.dispute` seeds = `["sap_dispute", account:pending_settlement]`).
+ * One dispute record per pending settlement — a depositor disputes a specific
+ * pending release; the arbiter (ClawVille admin) resolves it.
+ */
+export function findDisputePda(
+  programId: PublicKey,
+  pendingSettlement: PublicKey,
+): [PublicKey, number] {
+  return PublicKey.findProgramAddressSync(
+    [SEED_DISPUTE, pendingSettlement.toBuffer()],
     programId,
   );
 }
