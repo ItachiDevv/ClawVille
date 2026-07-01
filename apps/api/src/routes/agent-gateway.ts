@@ -1931,11 +1931,10 @@ function buildPerception(npcId: string): AgentPerception | null {
     })
     .filter(({ distance }) => distance <= PERCEPTION_RADIUS)
     .map(({ other, distance }) => ({
-      // B1 (money-path): perception is authenticated but returns OTHER agents'
-      // bodies — an avatar body's raw `oc-<sessionId>` id IS that agent's real-CT
-      // bearer, so exposing it here lets any connected agent steal another's
-      // bearer. Emit the public agentId (residents/overrides pass through).
-      npcId: npcSimulation.publicNpcId(other.id),
+      // B1 ROOT-FIX: `other.id` for an avatar body is the non-secret
+      // `body-<agentId>` now (never the `oc-<sessionId>` bearer), so exposing it
+      // to another connected agent here no longer leaks a real-CT credential.
+      npcId: other.id,
       name: other.name,
       x: other.x,
       y: other.y,
@@ -1969,9 +1968,9 @@ function buildPerception(npcId: string): AgentPerception | null {
   const conversations = npcSimulation.getActiveConversations();
   const activeConversations = conversations.map((conv) => ({
     id: conv.id,
-    // B1: `involvesMe` compares the caller's INTERNAL id; only the exposed
-    // participant ids are remapped to non-secret public ids.
-    participants: [npcSimulation.publicNpcId(conv.npc1Id), npcSimulation.publicNpcId(conv.npc2Id)],
+    // B1 ROOT-FIX: participant ids are non-secret (`body-<agentId>` for avatar
+    // bodies) — safe to emit directly.
+    participants: [conv.npc1Id, conv.npc2Id],
     latestMessage: conv.messages.length > 0
       ? conv.messages[Math.min(conv.currentIndex, conv.messages.length - 1)].text
       : '',
@@ -1980,18 +1979,16 @@ function buildPerception(npcId: string): AgentPerception | null {
 
   // Active combats
   const combats = npcSimulation.getActiveCombats();
-  const activeCombats = combats.map((combat) => {
-    const last = combat.rounds.length > 0 ? combat.rounds[combat.rounds.length - 1] : null;
-    return {
-      id: combat.id,
-      // B1: remap the exposed participant ids; `involvesMe` stays on internal ids.
-      attacker: npcSimulation.publicNpcId(combat.attacker),
-      defender: npcSimulation.publicNpcId(combat.defender),
-      involvesMe: combat.attacker === npcId || combat.defender === npcId,
-      // The round's `attacker` is also an npc id — remap it too.
-      lastRound: last ? { ...last, attacker: npcSimulation.publicNpcId(last.attacker) } : null,
-    };
-  });
+  const activeCombats = combats.map((combat) => ({
+    id: combat.id,
+    // B1 ROOT-FIX: attacker/defender/round ids are non-secret now.
+    attacker: combat.attacker,
+    defender: combat.defender,
+    involvesMe: combat.attacker === npcId || combat.defender === npcId,
+    lastRound: combat.rounds.length > 0
+      ? combat.rounds[combat.rounds.length - 1]
+      : null,
+  }));
 
   const arenaRound = npcSimulation.getMode() === 'arena'
     ? (() => {
@@ -3035,11 +3032,10 @@ agentGatewayRoutes.get('/:sessionId/events', async (c) => {
 
       // --- combat_start when inCombat flips to true ---
       if (npc.inCombat && !wasInCombat) {
-        // B1: `npcId` is the caller's own body (self, already known to it), but
-        // `combatTargetId` is the OPPONENT — an avatar opponent's raw
-        // `oc-<sessionId>` id is its real-CT bearer, so remap it to the public id.
+        // B1 ROOT-FIX: `combatTargetId` (and `npcId`) are non-secret npc ids now
+        // (`body-<agentId>` for an avatar body), so they are safe to emit directly.
         await stream.write(
-          `event: combat_start\ndata: ${JSON.stringify({ npcId, combatTargetId: npc.combatTargetId ? npcSimulation.publicNpcId(npc.combatTargetId) : null })}\n\n`
+          `event: combat_start\ndata: ${JSON.stringify({ npcId, combatTargetId: npc.combatTargetId ?? null })}\n\n`
         );
       }
 
@@ -3051,10 +3047,9 @@ agentGatewayRoutes.get('/:sessionId/events', async (c) => {
         );
         if (myCombat && myCombat.rounds.length > 0) {
           const lastRound = myCombat.rounds[myCombat.rounds.length - 1];
-          // B1: the round's `attacker` is an npc id — an avatar attacker's raw
-          // `oc-<sessionId>` id is a real-CT bearer, so remap it to the public id.
+          // B1 ROOT-FIX: round `attacker` is a non-secret npc id now.
           await stream.write(
-            `event: combat_round\ndata: ${JSON.stringify({ combatId: myCombat.id, round: { ...lastRound, attacker: npcSimulation.publicNpcId(lastRound.attacker) } })}\n\n`
+            `event: combat_round\ndata: ${JSON.stringify({ combatId: myCombat.id, round: lastRound })}\n\n`
           );
         }
       }
