@@ -34,14 +34,12 @@ coverage
 .turbo
 
 # Claude Code — per-user / runtime state.
-# 2026-05-12: selectively un-ignored .claude/agents/ and .claude/workflows/
+# .claude fully ignored - brain in private agent-squad repo (junctioned)
 # so the agent definitions + workflow runbooks ship with the repo (every
 # contributor and every future agent session sees the same prompts +
 # checklists). Per-user state (settings.local.json, worktrees, memory,
 # plans, reports) stays local.
-.claude/*
-!.claude/agents/
-!.claude/workflows/
+.claude/
 
 # Misc
 .DS_Store
