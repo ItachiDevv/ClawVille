@@ -9,8 +9,8 @@
  * bearer and drain a victim's ClawTokens.
  *
  * THE ROOT-FIX (not a boundary-sanitize): the body id is now the non-secret
- * `body-${agentId}`, so the bearer is structurally ABSENT from every wire path —
- * present and future — and cannot be re-leaked by a new serializer.
+ * `ocb-${base64url(agentId)}`, so the bearer is structurally ABSENT from every
+ * wire path — present and future — and cannot be re-leaked by a new serializer.
  *
  * This test asserts the bearer NEVER appears in any sim serializer OR in the
  * primitives `buildPerception` (agent-gateway.ts) derives its npc-id fields from
@@ -30,7 +30,9 @@ import type { OpenClawRegistration } from '@clawville/shared';
 const SECRET_MARKER = 'SUPER_SECRET_BEARER_must_not_leak_9f8e7d6c5b4a';
 const SECRET_BEARER = `oc-${SECRET_MARKER}`;
 const AGENT_ID = 'leaktest-agent-01';
-const BODY_ID = `body-${AGENT_ID}`;
+// Mirrors npc-simulation.ts `avatarBodyId()` EXACTLY — the non-secret, DOM-safe,
+// deterministic body id (`ocb-<base64url(agentId)>`), never `oc-<sessionId>`.
+const BODY_ID = `ocb-${Buffer.from(AGENT_ID, 'utf8').toString('base64url')}`;
 
 function makeAvatarConfig(): OpenClawRegistration {
   return {
@@ -66,7 +68,7 @@ afterEach(() => {
 });
 
 describe('B1 root-fix — avatar body id is decoupled from the bearer sessionId', () => {
-  it('registers the body under `body-<agentId>`, never `oc-<sessionId>`', () => {
+  it('registers the body under `ocb-<base64url(agentId)>`, never `oc-<sessionId>`', () => {
     registerAvatar();
     expect(npcSimulation.getNpcIdForSession(SECRET_BEARER)).toBe(BODY_ID);
     const body = npcSimulation.getNpcById(BODY_ID);
@@ -134,7 +136,7 @@ describe('B1 root-fix — avatar body id is decoupled from the bearer sessionId'
       combats: Map<string, unknown>;
     };
     // Inject a conversation + combat referencing the avatar body BY ITS bodyId —
-    // exactly what the sim stores (initiator.id === `body-<agentId>`).
+    // exactly what the sim stores (initiator.id === `ocb-<base64url(agentId)>`).
     sim.conversations.set('convo-leaktest', {
       id: 'convo-leaktest', npc1Id: BODY_ID, npc2Id: 'some-resident',
       messages: [{ npcId: BODY_ID, npcName: 'LeakTestBot', text: 'hi' }],

@@ -755,7 +755,7 @@ class NpcSimulation {
       console.log(`[OpenClaw] Override registered: ${config.targetNpcId} -> sess:${sessionDigest(config.sessionId)} (${npc.autonomyMode})`);
     } else {
       const avatarConfig = config as OpenClawAvatarConfig;
-      // B1 ROOT-FIX: body id is the non-secret `body-<agentId>`, NEVER
+      // B1 ROOT-FIX: body id is the non-secret `ocb-<base64url(agentId)>`, NEVER
       // `oc-<sessionId>` (the sessionId is the real-CT bearer). npcOverrides keys
       // this bodyId → sessionId for the reverse lookup.
       const npcId = this.avatarBodyId(config.agentId);
@@ -802,7 +802,7 @@ class NpcSimulation {
       // Log the sessionDigest, NOT the raw sessionId (Codex auth-lens fix #4): the
       // sessionId is the real-CT bearer credential, so printing it leaks it into
       // logs. Digest is correlation-only. (The npcId is now the non-secret
-      // `body-<agentId>`, but the bearer sessionId is still secret.)
+      // `ocb-<base64url(agentId)>`, but the bearer sessionId is still secret.)
       console.log(`[OpenClaw] Avatar injected: "${avatarConfig.name}" (oc-sess:${sessionDigest(config.sessionId)}) [${config.autonomyMode ?? 'server-managed'}]${restoredState?.lastX != null ? ' [restored position]' : ''}`);
     }
   }
@@ -821,7 +821,7 @@ class NpcSimulation {
       const npc = this.npcs.get(npcId);
       if (npc) { npc.isOpenClaw = false; npc.inCombat = false; npc.combatTargetId = null; }
     } else {
-      // B1 ROOT-FIX: avatar body id is `body-<agentId>` (non-secret), not
+      // B1 ROOT-FIX: avatar body id is `ocb-<base64url(agentId)>` (non-secret), not
       // `oc-<sessionId>`; resolve it from the bot's own config.
       const npcId = this.avatarBodyId(bot.config.agentId);
       this.cleanupNpcFromCombats(npcId);
@@ -852,7 +852,7 @@ class NpcSimulation {
    * caller could harvest live bearer creds and spend a victim's real CT.
    *
    * The B1 ROOT-FIX (P0) removed the second vector at its source: an avatar body's
-   * in-world id is now the non-secret `body-<agentId>` (never `oc-<sessionId>`),
+   * in-world id is now the non-secret `ocb-<base64url(agentId)>` (never `oc-<sessionId>`),
    * so the bearer is structurally absent from EVERY wire path, not just this one.
    * We still emit only NON-secret identifiers here: the bot's stable public
    * `agentId` and (for override bodies) the public `targetNpcId`.
@@ -910,7 +910,7 @@ class NpcSimulation {
 
   /** Get avatar's current position for persistence on disconnect */
   getOpenClawAvatarPosition(sessionId: string): { x: number; y: number } | null {
-    // B1 ROOT-FIX: avatar body id is `body-<agentId>`, resolved from the config.
+    // B1 ROOT-FIX: avatar body id is `ocb-<base64url(agentId)>`, resolved from the config.
     const config = this.openClawBots.get(sessionId)?.config;
     if (!config) return null;
     const npcId = this.avatarBodyId(config.agentId);
@@ -1014,7 +1014,7 @@ class NpcSimulation {
       .slice(0, 8)
       .map(({ o, dist }) => ({
         // B1 ROOT-FIX: `o.id` for an avatar body is now the non-secret
-        // `body-<agentId>` (never the `oc-<sessionId>` bearer), so it is safe to
+        // `ocb-<base64url(agentId)>` (never the `oc-<sessionId>` bearer), so it is safe to
         // ship to the Hatcher partner in the `clawville.worldState` block.
         id: o.id,
         name: o.name,
@@ -1078,7 +1078,7 @@ class NpcSimulation {
   getNpcIdForSession(sessionId: string): string | null {
     const bot = this.openClawBots.get(sessionId);
     if (!bot) return null;
-    // B1 ROOT-FIX: avatar body id is the non-secret `body-<agentId>`.
+    // B1 ROOT-FIX: avatar body id is the non-secret `ocb-<base64url(agentId)>`.
     return bot.config.mode === 'override' ? bot.config.targetNpcId : this.avatarBodyId(bot.config.agentId);
   }
 
@@ -2699,7 +2699,7 @@ class NpcSimulation {
         id: this.nextId(), type: 'arena_complete',
         npcId: winner?.id ?? '', npcName: winner?.name ?? 'Nobody',
         // B1 ROOT-FIX: `winner.id` for an avatar body is the non-secret
-        // `body-<agentId>` now, so it is safe to emit directly.
+        // `ocb-<base64url(agentId)>` now, so it is safe to emit directly.
         data: { winnerId: winner?.id, winnerName: winner?.name, winnerKills: winner?.kills ?? 0, winnerLevel: winner?.level ?? 1 },
         timestamp: now,
       });

@@ -1925,7 +1925,7 @@ function buildPerception(npcId: string): AgentPerception | null {
     .filter(({ distance }) => distance <= PERCEPTION_RADIUS)
     .map(({ other, distance }) => ({
       // B1 ROOT-FIX: `other.id` for an avatar body is the non-secret
-      // `body-<agentId>` now (never the `oc-<sessionId>` bearer), so exposing it
+      // `ocb-<base64url(agentId)>` now (never the `oc-<sessionId>` bearer), so exposing it
       // to another connected agent here no longer leaks a real-CT credential.
       npcId: other.id,
       name: other.name,
@@ -1961,7 +1961,7 @@ function buildPerception(npcId: string): AgentPerception | null {
   const conversations = npcSimulation.getActiveConversations();
   const activeConversations = conversations.map((conv) => ({
     id: conv.id,
-    // B1 ROOT-FIX: participant ids are non-secret (`body-<agentId>` for avatar
+    // B1 ROOT-FIX: participant ids are non-secret (`ocb-<base64url(agentId)>` for avatar
     // bodies) — safe to emit directly.
     participants: [conv.npc1Id, conv.npc2Id],
     latestMessage: conv.messages.length > 0
@@ -3026,7 +3026,7 @@ agentGatewayRoutes.get('/:sessionId/events', async (c) => {
       // --- combat_start when inCombat flips to true ---
       if (npc.inCombat && !wasInCombat) {
         // B1 ROOT-FIX: `combatTargetId` (and `npcId`) are non-secret npc ids now
-        // (`body-<agentId>` for an avatar body), so they are safe to emit directly.
+        // (`ocb-<base64url(agentId)>` for an avatar body), so they are safe to emit directly.
         await stream.write(
           `event: combat_start\ndata: ${JSON.stringify({ npcId, combatTargetId: npc.combatTargetId ?? null })}\n\n`
         );
