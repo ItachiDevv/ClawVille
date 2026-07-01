@@ -121,4 +121,49 @@ describe('B1 root-fix — avatar body id is decoupled from the bearer sessionId'
     expect(npcSimulation.getNpcById(BODY_ID)).toBeNull();
     expect(npcSimulation.getNpcIdForSession(SECRET_BEARER)).toBeNull();
   });
+
+  it('conversations[]/combats[] participant ids stay CONSISTENT with npcs[].id (speech-bubble correlation)', () => {
+    // The web correlates speech bubbles by matching a message/participant id to a
+    // rendered npc's id (npc-speech-bubbles.tsx). The 2026-06-03 leak class was a
+    // wire-projection that remapped npcs[].id but MISSED a projection — so this
+    // asserts every participant id the snapshot emits equals the SAME bodyId as
+    // npcs[].id (they all read the runtime npc's `.id`, which is now the bodyId).
+    registerAvatar();
+    const sim = npcSimulation as unknown as {
+      conversations: Map<string, unknown>;
+      combats: Map<string, unknown>;
+    };
+    // Inject a conversation + combat referencing the avatar body BY ITS bodyId —
+    // exactly what the sim stores (initiator.id === `body-<agentId>`).
+    sim.conversations.set('convo-leaktest', {
+      id: 'convo-leaktest', npc1Id: BODY_ID, npc2Id: 'some-resident',
+      messages: [{ npcId: BODY_ID, npcName: 'LeakTestBot', text: 'hi' }],
+      currentIndex: 0, nextMessageAt: 0, state: 'active', typingNpcId: BODY_ID, typingUntil: 0,
+    });
+    sim.combats.set('combat-leaktest', {
+      id: 'combat-leaktest', attacker: BODY_ID, defender: 'some-resident',
+      rounds: [{ attacker: BODY_ID, damage: 1, defenderHpAfter: 99 }],
+      state: 'active', winner: null, lootTransferred: [], startedAt: 0, nextRoundAt: 0, phase: 'fighting',
+    });
+    try {
+      const snap = npcSimulation.getSnapshot();
+      const body = snap.npcs.find((n) => n.id === BODY_ID);
+      expect(body).toBeDefined();
+
+      const convo = snap.conversations.find((c) => c.id === 'convo-leaktest');
+      expect(convo?.npc1Id).toBe(body!.id);            // participant id === npcs[].id
+      expect(convo?.messages[0]?.npcId).toBe(body!.id); // speech-bubble correlation
+      expect(convo?.typingNpcId).toBe(body!.id);
+
+      const combat = snap.combats.find((c) => c.id === 'combat-leaktest');
+      expect(combat?.attacker).toBe(body!.id);
+      expect(combat?.rounds[0]?.attacker).toBe(body!.id);
+
+      // …and still no bearer anywhere in the derived participant surfaces.
+      expect(JSON.stringify({ convo, combat }).includes(SECRET_MARKER)).toBe(false);
+    } finally {
+      sim.conversations.delete('convo-leaktest');
+      sim.combats.delete('combat-leaktest');
+    }
+  });
 });
