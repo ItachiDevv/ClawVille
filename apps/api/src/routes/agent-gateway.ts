@@ -26,6 +26,7 @@ import { OpenClawClient } from '../services/openclaw-client';
 import {
   buildAvatarSessionConfig,
   buildOverrideSessionConfig,
+  isRowRestorableFromIdentity,
 } from '../services/agent-session-config';
 import { ensureWallet, ensureWalletWithFirstTimeSecret } from '../services/wallet-service';
 import { creditClawTokens } from '../services/claw-token-ledger';
@@ -1202,6 +1203,9 @@ agentGatewayRoutes.get('/session-status', async (c) => {
       id: true,
       lastSeenAt: true,
       sessionExpiresAt: true,
+      // D-2/H1 — needed to decide whether the caller must reconnect (see below).
+      identityType: true,
+      protocol: true,
     },
   });
 
@@ -1229,6 +1233,44 @@ agentGatewayRoutes.get('/session-status', async (c) => {
         lastSeenAt: row.lastSeenAt.toISOString(),
         expiresAt: row.sessionExpiresAt?.toISOString() ?? null,
         hint: 'Call POST /api/agent/reconnect with a signed challenge to get a fresh sessionId.',
+      },
+      410,
+    );
+  }
+
+  // D-2/H1 (P0 lifecycle-truth) — a live DB TTL alone LIES after a restart: the
+  // in-RAM session Map is rebuilt empty, so a live-TTL row would report
+  // `connected:true` while nothing is attached (the pre-P0 desync). Reconcile
+  // against RAM. A boot-rehydrated PROVISIONAL body does NOT count as "attached"
+  // (no bearer/brain re-attached), so we check NON-provisional liveness.
+  const nonProvisionalLive =
+    npcSimulation.findActiveNonProvisionalSessionsByAgentIds([agentId]).length > 0;
+
+  // When nothing non-provisional is attached, whether the caller must reconnect
+  // depends on whether v7's lazy restore can self-heal its bearer:
+  //   - SELF-HEALING (hatcher-proxy + nanoclaw/milady/anonymous): the remote's
+  //     stored bearer rebuilds transparently on next use
+  //     (restoreAgentSessionFromRow), so `connected:true` is TRUTHFUL and NO
+  //     reconnect is forced. This preserves the transparent post-restart recovery
+  //     the Hatcher partner already relies on (hatcher rows are
+  //     `protocol:'hatcher-proxy'` → self-healing → the partner sees NO change).
+  //   - NOT self-healing (real-gateway openclaw/ironclaw/custom): `auth_token` is
+  //     never persisted, so the old bearer can't be rebuilt — the caller MUST
+  //     /reconnect. ONLY this class gets the needs-reconnect 410, so the change
+  //     never touches the partner surface.
+  const selfHealing =
+    row.protocol === 'hatcher-proxy' || isRowRestorableFromIdentity(row.identityType);
+
+  if (!nonProvisionalLive && !selfHealing) {
+    return c.json(
+      {
+        connected: false,
+        needsReconnect: true,
+        reason: 'session_not_live',
+        lastSeenAt: row.lastSeenAt.toISOString(),
+        // Non-null: the `expired` guard above returned on a NULL sessionExpiresAt.
+        expiresAt: row.sessionExpiresAt!.toISOString(),
+        hint: 'Session row is live but no in-memory session is attached and it cannot self-restore. Call POST /api/agent/reconnect with a signed challenge to get a fresh sessionId.',
       },
       410,
     );
@@ -1889,7 +1931,11 @@ function buildPerception(npcId: string): AgentPerception | null {
     })
     .filter(({ distance }) => distance <= PERCEPTION_RADIUS)
     .map(({ other, distance }) => ({
-      npcId: other.id,
+      // B1 (money-path): perception is authenticated but returns OTHER agents'
+      // bodies — an avatar body's raw `oc-<sessionId>` id IS that agent's real-CT
+      // bearer, so exposing it here lets any connected agent steal another's
+      // bearer. Emit the public agentId (residents/overrides pass through).
+      npcId: npcSimulation.publicNpcId(other.id),
       name: other.name,
       x: other.x,
       y: other.y,
@@ -1923,7 +1969,9 @@ function buildPerception(npcId: string): AgentPerception | null {
   const conversations = npcSimulation.getActiveConversations();
   const activeConversations = conversations.map((conv) => ({
     id: conv.id,
-    participants: [conv.npc1Id, conv.npc2Id],
+    // B1: `involvesMe` compares the caller's INTERNAL id; only the exposed
+    // participant ids are remapped to non-secret public ids.
+    participants: [npcSimulation.publicNpcId(conv.npc1Id), npcSimulation.publicNpcId(conv.npc2Id)],
     latestMessage: conv.messages.length > 0
       ? conv.messages[Math.min(conv.currentIndex, conv.messages.length - 1)].text
       : '',
@@ -1932,15 +1980,18 @@ function buildPerception(npcId: string): AgentPerception | null {
 
   // Active combats
   const combats = npcSimulation.getActiveCombats();
-  const activeCombats = combats.map((combat) => ({
-    id: combat.id,
-    attacker: combat.attacker,
-    defender: combat.defender,
-    involvesMe: combat.attacker === npcId || combat.defender === npcId,
-    lastRound: combat.rounds.length > 0
-      ? combat.rounds[combat.rounds.length - 1]
-      : null,
-  }));
+  const activeCombats = combats.map((combat) => {
+    const last = combat.rounds.length > 0 ? combat.rounds[combat.rounds.length - 1] : null;
+    return {
+      id: combat.id,
+      // B1: remap the exposed participant ids; `involvesMe` stays on internal ids.
+      attacker: npcSimulation.publicNpcId(combat.attacker),
+      defender: npcSimulation.publicNpcId(combat.defender),
+      involvesMe: combat.attacker === npcId || combat.defender === npcId,
+      // The round's `attacker` is also an npc id — remap it too.
+      lastRound: last ? { ...last, attacker: npcSimulation.publicNpcId(last.attacker) } : null,
+    };
+  });
 
   const arenaRound = npcSimulation.getMode() === 'arena'
     ? (() => {
@@ -2984,8 +3035,11 @@ agentGatewayRoutes.get('/:sessionId/events', async (c) => {
 
       // --- combat_start when inCombat flips to true ---
       if (npc.inCombat && !wasInCombat) {
+        // B1: `npcId` is the caller's own body (self, already known to it), but
+        // `combatTargetId` is the OPPONENT — an avatar opponent's raw
+        // `oc-<sessionId>` id is its real-CT bearer, so remap it to the public id.
         await stream.write(
-          `event: combat_start\ndata: ${JSON.stringify({ npcId, combatTargetId: npc.combatTargetId ?? null })}\n\n`
+          `event: combat_start\ndata: ${JSON.stringify({ npcId, combatTargetId: npc.combatTargetId ? npcSimulation.publicNpcId(npc.combatTargetId) : null })}\n\n`
         );
       }
 
@@ -2997,8 +3051,10 @@ agentGatewayRoutes.get('/:sessionId/events', async (c) => {
         );
         if (myCombat && myCombat.rounds.length > 0) {
           const lastRound = myCombat.rounds[myCombat.rounds.length - 1];
+          // B1: the round's `attacker` is an npc id — an avatar attacker's raw
+          // `oc-<sessionId>` id is a real-CT bearer, so remap it to the public id.
           await stream.write(
-            `event: combat_round\ndata: ${JSON.stringify({ combatId: myCombat.id, round: lastRound })}\n\n`
+            `event: combat_round\ndata: ${JSON.stringify({ combatId: myCombat.id, round: { ...lastRound, attacker: npcSimulation.publicNpcId(lastRound.attacker) } })}\n\n`
           );
         }
       }
