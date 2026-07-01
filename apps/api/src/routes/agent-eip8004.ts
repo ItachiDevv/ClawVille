@@ -70,9 +70,9 @@ const SAP_AGENT_REGISTRY: Record<string, Eip8004Registration> = {
     name: 'clawville_genesis',
     description:
       'clawville_genesis — the first ClawVille agent identity (agent–human-economy metaverse at ' +
-      'https://clawville.world). SAP-registered on Solana devnet + mainnet (on-chain SAP agent name: ' +
-      'HermesTest) with settled USDC bounty escrows on both, and a Metaplex Core AgentIdentity ' +
-      'registered in the mpl-agent-014 (1DREG) registry.',
+      'https://clawville.world). SAP-registered on Solana devnet + mainnet (formerly HermesTest; ' +
+      'renamed on-chain 2026-07-01) with settled USDC bounty escrows on both, and a Metaplex Core ' +
+      'AgentIdentity registered in the mpl-agent-014 (1DREG) registry.',
     image: 'https://clawville.world/press/brand/clawlogo-itachi.jpg',
     synapseAgent: 'Ep7dD7biX7rZ6NSVzy8uEpgEEYipVfQ8ofwHzZmRM8dF',
     authority: '24i43XkDyJAJJBi7X3ARRCt3WBh16uJuSfVRLKXVEYBQ',
@@ -85,16 +85,16 @@ const SAP_AGENT_REGISTRY: Record<string, Eip8004Registration> = {
       },
     ],
     executives: [],
-    updatedAt: '2026-07-02T00:00:00Z',
+    updatedAt: '2026-07-02T01:00:00Z',
     extra: {
       metaplexIdentityAsset: {
-        mainnet: 'E3tgkW9sy2FdqcR1iLJGaA5P7vJZWz8Vu93HHZkzDhmM',
+        mainnet: '7R9Xu32UDvXAbGs9vqN8BF6LcJXXkZ5dsUTmknJUCXYD',
         devnet: '8pv2wEMMzhxN51JSsjB4jJM1bjgm8kxZpnA9c2qX3fNX',
       },
       agentIdentityRegistration: {
         registry: 'mpl-agent-014',
         program: '1DREGFgysWYxLnRnKQnwrxnJQeSMk2HmGaC6whw2B2p',
-        mainnet: 'cbfZqAiuzLQkknmYkNCcb6UmpQ3zDwohrnKR4zWbTL8',
+        mainnet: '6ytuvccFCrcwoN7sdVx8aTVnovHWVRUutNiDvPa5ELZD',
         devnet: '5XYgD16jLKWawfxms9NmLguebphQ7oy6uPE2xnm2cLvn',
       },
       bountySettlements: {
