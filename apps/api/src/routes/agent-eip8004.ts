@@ -45,6 +45,8 @@ interface Eip8004Registration {
   version: string;
   name: string;
   description: string;
+  /** Brand image URL — also served as `image` in the token metadata.json. */
+  image: string;
   /** SAP AgentAccount PDA (seeds ["sap_agent", wallet]) — the link key. */
   synapseAgent: string;
   /** Agent owner wallet (base58 ed25519). */
@@ -65,11 +67,13 @@ interface Eip8004Registration {
 const SAP_AGENT_REGISTRY: Record<string, Eip8004Registration> = {
   Ep7dD7biX7rZ6NSVzy8uEpgEEYipVfQ8ofwHzZmRM8dF: {
     version: '0.1',
-    name: 'HermesTest',
+    name: 'clawville_genesis',
     description:
-      'HermesTest — a ClawVille agent (agent–human-economy metaverse at https://clawville.world). ' +
-      'SAP-registered on Solana devnet + mainnet with settled USDC bounty escrows on both, ' +
-      'and a Metaplex Core AgentIdentity registered in the mpl-agent-014 (1DREG) registry.',
+      'clawville_genesis — the first ClawVille agent identity (agent–human-economy metaverse at ' +
+      'https://clawville.world). SAP-registered on Solana devnet + mainnet (on-chain SAP agent name: ' +
+      'HermesTest) with settled USDC bounty escrows on both, and a Metaplex Core AgentIdentity ' +
+      'registered in the mpl-agent-014 (1DREG) registry.',
+    image: 'https://clawville.world/press/brand/clawlogo-itachi.jpg',
     synapseAgent: 'Ep7dD7biX7rZ6NSVzy8uEpgEEYipVfQ8ofwHzZmRM8dF',
     authority: '24i43XkDyJAJJBi7X3ARRCt3WBh16uJuSfVRLKXVEYBQ',
     capabilities: ['bounty-execution', 'sap-escrow-settlement', 'x402-payments'],
@@ -81,7 +85,7 @@ const SAP_AGENT_REGISTRY: Record<string, Eip8004Registration> = {
       },
     ],
     executives: [],
-    updatedAt: '2026-07-01T22:00:00Z',
+    updatedAt: '2026-07-02T00:00:00Z',
     extra: {
       metaplexIdentityAsset: {
         mainnet: 'E3tgkW9sy2FdqcR1iLJGaA5P7vJZWz8Vu93HHZkzDhmM',
@@ -120,6 +124,36 @@ function isBase58Pubkey(value: string): boolean {
     return false;
   }
 }
+
+/**
+ * Token-metadata JSON for the agent's MPL Core identity asset — the asset's
+ * top-level `uri` points here (its `AgentIdentity` PLUGIN uri stays on
+ * eip-8004.json above; wallets/directories read THIS doc for name + image).
+ * Derived from the same registry entry so brand + link docs can't drift.
+ */
+agentEip8004Routes.get('/:sapAgentPda/metadata.json', (c) => {
+  const sapAgentPda = c.req.param('sapAgentPda').trim();
+  if (!isBase58Pubkey(sapAgentPda)) {
+    return c.json({ error: 'not_found' }, 404);
+  }
+  const registration = SAP_AGENT_REGISTRY[sapAgentPda];
+  if (!registration) {
+    return c.json({ error: 'not_found' }, 404);
+  }
+  c.header('Cache-Control', 'public, max-age=300');
+  c.header('Content-Type', 'application/json; charset=utf-8');
+  return c.json({
+    name: registration.name,
+    description: registration.description,
+    image: registration.image,
+    external_url: 'https://clawville.world',
+    attributes: [
+      { trait_type: 'registry', value: 'mpl-agent-014' },
+      { trait_type: 'synapse_agent', value: registration.synapseAgent },
+      { trait_type: 'eip_8004', value: `https://api.clawville.world/agents/${registration.synapseAgent}/eip-8004.json` },
+    ],
+  });
+});
 
 agentEip8004Routes.get('/:sapAgentPda/eip-8004.json', (c) => {
   const sapAgentPda = c.req.param('sapAgentPda').trim();
