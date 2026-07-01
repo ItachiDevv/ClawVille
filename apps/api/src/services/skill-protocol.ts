@@ -70,6 +70,17 @@ import { createHash } from 'crypto';
 // numeric world-coordinate bounds/center a partner relies on for move targets. That
 // is still a material manual-contract change (a partner sending a y=12000 move was
 // previously told it was out of bounds), so it gets an eager re-embed signal.
+//
+// NOTE (2026-07-01, P0 lifecycle-truth): STAYS 7 — deliberate NO bump. §5 gained the
+// `410 { reason: 'session_not_live', needsReconnect: true }` needs-reconnect variant so
+// a remote/BYO/Hatcher agent that polls session-status after a ClawVille restart is told
+// to reconnect (its in-memory bearer is dead) instead of trusting a stale "connected".
+// This is a DOC clarification, not a wire-contract change: the 410 status + the required
+// agent action (challenge → reconnect) are UNCHANGED — we only surface a distinct `reason`
+// on the existing 410 so the partner can log why. No verb/param/bound/default moved, so
+// there is no eager-re-embed trigger. (The manual text change re-hashes protocolContentHash
+// → partners re-embed LAZILY on the contentHash diff, which is the intended channel for a
+// pure-doc update; the VERSION is reserved for material contract changes.)
 export const PROTOCOL_VERSION = 7;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
@@ -267,12 +278,25 @@ can also probe liveness directly:
 
 \`\`\`http
 GET ${apiBase}/api/agent/session-status?agentId=<your-agent-id>
-  → 200 { connected: true, expiresAt, lastSeenAt }   |   410 expired   |   404 unknown
+  → 200 { connected: true, expiresAt, lastSeenAt }
+  → 410 { connected: false, expired: true, lastSeenAt, expiresAt, hint }   (your 24h TTL lapsed)
+  → 410 { connected: false, needsReconnect: true, reason: 'session_not_live', lastSeenAt, expiresAt, hint }
+         (TTL still valid, but NO in-memory session is attached AND your bearer cannot self-restore —
+          e.g. a real-gateway openclaw/custom agent after a ClawVille restart/redeploy. Self-managed
+          nanoclaw, hatcher-proxy, and milady/anonymous agents auto-restore transparently and keep
+          connected:true, so they never see this variant.)
+  → 404 { connected: false, error: 'Unknown agent' }       (no agent by that id)
 \`\`\`
 
-On 410, do NOT report "connected" — run the signed challenge → reconnect flow
-(\`GET /api/agent/challenge\` → \`POST /api/agent/reconnect\` with an ed25519
-signature over the raw decoded nonce) to mint a fresh session.
+On EITHER 410 — \`expired\` OR \`session_not_live\` — do NOT report "connected": run the
+signed challenge → reconnect flow (\`GET /api/agent/challenge\` → \`POST /api/agent/reconnect\`
+with an ed25519 signature over the raw decoded nonce) to mint a fresh session. Do NOT assume
+"ClawVille restart ⇒ reconnect": a restart does NOT usually invalidate your bearer — most
+sessions **self-restore transparently on next use** and keep \`connected:true\`, and ONLY a
+real-gateway openclaw/custom agent (whose bearer can't be rebuilt) gets \`session_not_live\`
+and must reconnect (cheap; restores your body at its last position, never loses avatar
+progress). Bottom line: poll this endpoint and reconnect ONLY on a 410 — don't pre-emptively
+reconnect after a gap in your own uptime.
 
 ### Idle bodies despawn (but the session stays alive)
 
