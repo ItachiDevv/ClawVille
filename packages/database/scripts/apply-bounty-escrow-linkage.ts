@@ -92,6 +92,29 @@ try {
     throw new Error(`[bounty-escrow] expected 8 columns, found ${colNames.length}`);
   }
 
+  // The SEV-1 belt-and-suspenders guard: at most one 'approved' attempt per bounty.
+  // It is created inside a DO block that downgrades a unique-violation (pre-existing
+  // duplicate approved rows) to a WARNING, so its ABSENCE is a soft signal — warn,
+  // do NOT fail the migration (the additive columns are the required part; the code
+  // path's atomic approval claim is the real guard). If absent, an operator must
+  // reconcile duplicate approved attempts and re-run to install it.
+  const guardIdx = await client`
+    SELECT indexname
+    FROM pg_indexes
+    WHERE schemaname = 'public'
+      AND indexname = 'bounty_attempts_one_approved_per_bounty'
+  `;
+  if (guardIdx.length === 1) {
+    console.log('[bounty-escrow] at-most-one-approved guard index: present');
+  } else {
+    console.warn(
+      '[bounty-escrow] ⚠ at-most-one-approved guard index NOT present — likely ' +
+        'pre-existing duplicate approved attempts blocked it. Reconcile duplicates ' +
+        '(keep one approved per bounty_id) and re-run to install the DB backstop. ' +
+        'The route-level atomic approval claim already prevents new double-pays.',
+    );
+  }
+
   console.log('[bounty-escrow] ✓ migration applied');
 } catch (err) {
   console.error('[bounty-escrow] FAILED:', err);

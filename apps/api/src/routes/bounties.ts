@@ -286,6 +286,7 @@ bountyRoutes.get('/featured', async (c) => {
       difficulty: bounties.difficulty,
       status: bounties.status,
       tokenReward: bounties.tokenReward,
+      paymentRail: bounties.paymentRail,
       maxAttempts: bounties.maxAttempts,
       currentAttempts: bounties.currentAttempts,
       tags: bounties.tags,
@@ -315,6 +316,7 @@ bountyRoutes.get('/featured', async (c) => {
     difficulty: r.difficulty,
     status: r.status,
     tokenReward: r.tokenReward,
+    paymentRail: r.paymentRail,
     maxAttempts: r.maxAttempts,
     currentAttempts: r.currentAttempts,
     tags: r.tags,
@@ -367,6 +369,8 @@ bountyRoutes.get('/my-bounties', requireAuthOrAgentSession, async (c) => {
     difficulty: r.difficulty,
     status: r.status,
     tokenReward: r.tokenReward,
+    paymentRail: r.paymentRail,
+    acceptanceCriteria: r.acceptanceCriteria,
     maxAttempts: r.maxAttempts,
     currentAttempts: r.currentAttempts,
     isFeatured: r.isFeatured,
@@ -404,6 +408,7 @@ bountyRoutes.get('/my-attempts', requireAuthOrAgentSession, async (c) => {
       bountyDescription: bounties.description,
       bountyDifficulty: bounties.difficulty,
       bountyTokenReward: bounties.tokenReward,
+      bountyPaymentRail: bounties.paymentRail,
       bountyStatus: bounties.status,
     })
     .from(bountyAttempts)
@@ -427,6 +432,7 @@ bountyRoutes.get('/my-attempts', requireAuthOrAgentSession, async (c) => {
       description: r.bountyDescription,
       difficulty: r.bountyDifficulty,
       tokenReward: r.bountyTokenReward,
+      paymentRail: r.bountyPaymentRail,
       status: r.bountyStatus,
     },
   }));
@@ -720,6 +726,25 @@ bountyRoutes.post('/attempts/:attemptId/review', requireAuthOrAgentSession, asyn
     });
   }
 
+  // SEV-1-B (Codex) — PRE-FLIGHT the USDC escrow rail BEFORE the review DB txn
+  // commits. The approve txn auto-rejects competing attempts + flips the bounty
+  // `completed` (a terminal, locked-out state). If we let that commit and THEN
+  // find the rail is gated off, the escrow can't open (escrow_pda stays null →
+  // admin-fail-refund is unreachable → the hunter is permanently cheated: bounty
+  // completed, no USDC released, no reclaim path). Fail the review 503 HERE, so a
+  // USDC approve NEVER commits a completed state it can't settle. Only an
+  // `approved` decision opens an escrow; a reject never does, so gate only that.
+  // (Today the rail is gated off so this is the reachable outcome on staging — the
+  // guard makes the failure a clean, non-committing 503 instead of a locked bounty.)
+  if (isUsdc && decision === 'approved' && !usdcRailGateOpen()) {
+    throw new HTTPException(503, {
+      message:
+        'The USDC bounty escrow rail is disabled (SAP_ENABLED / SAP_ESCROW_ENABLED / ' +
+        'SAP_USDC_ESCROW_ENABLED) — cannot settle this USDC bounty right now. The review ' +
+        'was NOT applied; the bounty stays open. Retry once the rail is enabled.',
+    });
+  }
+
   if (decision === 'approved') {
     // Entire approval flow in a single transaction to prevent partial
     // state (e.g. tokens credited but bounty not marked completed). NOTE: the
@@ -727,8 +752,18 @@ bountyRoutes.post('/attempts/:attemptId/review', requireAuthOrAgentSession, asyn
     // (below) — a chain call must never be held inside a DB transaction, and the
     // SAP settlement ledger has its OWN at-most-once idempotency.
     const { rewards, hunterAvatarId } = await db.transaction(async (tx) => {
-      // 1. Update attempt status to 'approved'
-      await tx
+      // 1. ATOMIC APPROVAL CLAIM (SEV-1 CT double-pay fix). The pre-txn
+      // `attempt.status !== 'submitted'` check above is a STALE READ under no lock:
+      // two concurrent approves for the same attemptId both pass it, both enter
+      // this txn, and — without a status guard on the UPDATE — both would credit
+      // the hunter `tokenReward` (creditClawTokens row-locks the avatar so they
+      // serialize, but BOTH land), minting CT from nothing (the creator was
+      // debited ONCE at create). We make the flip CONDITIONAL on the row still
+      // being 'submitted' and claim it via `.returning()`: exactly ONE concurrent
+      // approve claims the row (and proceeds to credit); the loser claims 0 rows
+      // and 409s BEFORE any credit. This mirrors the /claim route's atomic
+      // increment pattern.
+      const [claimed] = await tx
         .update(bountyAttempts)
         .set({
           status: 'approved',
@@ -736,7 +771,18 @@ bountyRoutes.post('/attempts/:attemptId/review', requireAuthOrAgentSession, asyn
           reviewedAt: now,
           updatedAt: now,
         })
-        .where(eq(bountyAttempts.id, attemptId));
+        .where(
+          and(
+            eq(bountyAttempts.id, attemptId),
+            eq(bountyAttempts.status, 'submitted'),
+          ),
+        )
+        .returning({ id: bountyAttempts.id });
+      if (!claimed) {
+        throw new HTTPException(409, {
+          message: 'Attempt already reviewed (concurrent approve lost the race).',
+        });
+      }
 
       // 2. Transfer escrowed tokenReward to hunter's clawTokens (CT rail ONLY).
       const hunterAvatar = await tx.query.avatars.findFirst({
@@ -815,7 +861,9 @@ bountyRoutes.post('/attempts/:attemptId/review', requireAuthOrAgentSession, asyn
         // agent_config and custom rewards are noted but don't auto-transfer inventory
       }
 
-      // 4. Mark bounty as 'completed'
+      // 4. Mark bounty as 'completed' (guarded on status='open' for symmetry with
+      // the atomic approval claim — a bounty can only be completed from open, so a
+      // race that somehow re-entered can't re-complete an already-terminal bounty).
       await tx
         .update(bounties)
         .set({
@@ -823,7 +871,7 @@ bountyRoutes.post('/attempts/:attemptId/review', requireAuthOrAgentSession, asyn
           completedAt: now,
           updatedAt: now,
         })
-        .where(eq(bounties.id, bounty.id));
+        .where(and(eq(bounties.id, bounty.id), eq(bounties.status, 'open')));
 
       // 4b. Reject all other pending attempts for this bounty (prevent orphans)
       await tx
@@ -1020,7 +1068,15 @@ bountyRoutes.post('/attempts/:attemptId/review', requireAuthOrAgentSession, asyn
     // Rejected — wrap in transaction so attempt rejection + slot release
     // + reputation update are atomic (prevents orphaned slot on crash).
     await db.transaction(async (tx) => {
-      await tx
+      // ATOMIC REJECTION CLAIM (same SEV-1 TOCTOU class as approve). The pre-txn
+      // status check is a stale read under no lock: two concurrent rejects — or a
+      // reject racing an approve — could both pass it, and without a status guard
+      // both would flip the row + BOTH decrement `currentAttempts` (a double
+      // slot-release that frees more attempt slots than exist, letting extra
+      // claims past maxAttempts). Claim the row conditionally on it still being
+      // 'submitted': exactly ONE reviewer transition (approve OR reject) lands; a
+      // loser claims 0 rows and 409s before touching the slot counter.
+      const [claimed] = await tx
         .update(bountyAttempts)
         .set({
           status: 'rejected',
@@ -1028,7 +1084,18 @@ bountyRoutes.post('/attempts/:attemptId/review', requireAuthOrAgentSession, asyn
           reviewedAt: now,
           updatedAt: now,
         })
-        .where(eq(bountyAttempts.id, attemptId));
+        .where(
+          and(
+            eq(bountyAttempts.id, attemptId),
+            eq(bountyAttempts.status, 'submitted'),
+          ),
+        )
+        .returning({ id: bountyAttempts.id });
+      if (!claimed) {
+        throw new HTTPException(409, {
+          message: 'Attempt already reviewed (concurrent review lost the race).',
+        });
+      }
 
       // Decrement currentAttempts to allow new attempts + record a FAIL verdict on
       // a USDC bounty. No escrow refund is needed here: a USDC bounty's escrow is
@@ -1202,6 +1269,8 @@ bountyRoutes.get('/:id', async (c) => {
       difficulty: bounties.difficulty,
       status: bounties.status,
       tokenReward: bounties.tokenReward,
+      paymentRail: bounties.paymentRail,
+      acceptanceCriteria: bounties.acceptanceCriteria,
       maxAttempts: bounties.maxAttempts,
       currentAttempts: bounties.currentAttempts,
       isFeatured: bounties.isFeatured,
@@ -1263,6 +1332,10 @@ bountyRoutes.get('/:id', async (c) => {
       difficulty: row.difficulty,
       status: row.status,
       tokenReward: row.tokenReward,
+      // paymentRail disambiguates whether tokenReward is CT or WHOLE USDC;
+      // acceptanceCriteria is the USDC-bounty verdict rubric (null for CT).
+      paymentRail: row.paymentRail,
+      acceptanceCriteria: row.acceptanceCriteria,
       maxAttempts: row.maxAttempts,
       currentAttempts: row.currentAttempts,
       isFeatured: row.isFeatured,
@@ -1551,6 +1624,15 @@ bountyRoutes.patch('/:id', requireAuthOrAgentSession, async (c) => {
         message: `Cannot reduce maxAttempts below current active attempts (${bounty.currentAttempts})`,
       });
     }
+    // SEV-2 (Codex) — a USDC bounty is a SINGLE-call escrow settled to ONE winning
+    // hunter (the create superRefine pins maxAttempts=1). PATCH must NOT be able to
+    // widen it: maxAttempts>1 on a USDC bounty would let multiple hunters expect
+    // the one escrow (undefined who settles). Re-assert the invariant here.
+    if (bounty.paymentRail === 'usdc' && data.maxAttempts !== 1) {
+      throw new HTTPException(400, {
+        message: 'A USDC bounty must keep maxAttempts=1 (single-call escrow, one winning hunter).',
+      });
+    }
     updates.maxAttempts = data.maxAttempts;
   }
   if (data.tags !== undefined) updates.tags = data.tags;
@@ -1573,6 +1655,7 @@ bountyRoutes.patch('/:id', requireAuthOrAgentSession, async (c) => {
       difficulty: updated.difficulty,
       status: updated.status,
       tokenReward: updated.tokenReward,
+      paymentRail: updated.paymentRail,
       maxAttempts: updated.maxAttempts,
       currentAttempts: updated.currentAttempts,
       tags: updated.tags,
@@ -1773,6 +1856,7 @@ bountyRoutes.get('/', async (c) => {
       difficulty: bounties.difficulty,
       status: bounties.status,
       tokenReward: bounties.tokenReward,
+      paymentRail: bounties.paymentRail,
       maxAttempts: bounties.maxAttempts,
       currentAttempts: bounties.currentAttempts,
       isFeatured: bounties.isFeatured,
@@ -1799,6 +1883,8 @@ bountyRoutes.get('/', async (c) => {
     difficulty: r.difficulty,
     status: r.status,
     tokenReward: r.tokenReward,
+    // paymentRail disambiguates whether tokenReward is CT or WHOLE USDC.
+    paymentRail: r.paymentRail,
     maxAttempts: r.maxAttempts,
     currentAttempts: r.currentAttempts,
     isFeatured: r.isFeatured,
