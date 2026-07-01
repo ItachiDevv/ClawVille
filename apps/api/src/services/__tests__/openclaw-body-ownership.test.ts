@@ -84,4 +84,29 @@ describe('unregisterOpenClaw is ownership-scoped for the shared ocb- body', () =
     expect(npcSimulation.unregisterOpenClaw(S1)).toBe(true);
     expect(npcSimulation.getNpcById(BODY_ID)).toBeNull();
   });
+
+  it('mirrors the sweeper: a session registered AFTER the snapshot is NOT swept, a genuinely-expired one IS', () => {
+    // Reproduce the sweeper's exact ordering (openclaw-session-sweeper.ts):
+    //   snapshot = findActiveSessionsByAgentIds(agentId)   <-- BEFORE the TTL await
+    //   [TTL re-read await — a /connect can register S2 here]
+    //   for (sid of snapshot) unregisterOpenClaw(sid)
+    register(S1); // the genuinely-expired session the sweeper picked up
+
+    // (T1) snapshot captured BEFORE the (simulated) TTL-reread await.
+    const snapshot = npcSimulation.findActiveSessionsByAgentIds([AGENT_ID]);
+    expect(snapshot).toContain(S1);
+
+    // (during await) a fresh reconnect registers S2 — NOT in the snapshot.
+    register(S2);
+    expect(snapshot).not.toContain(S2); // snapshot is a point-in-time copy
+
+    // (after await) sweeper unregisters ONLY the snapshot.
+    for (const sid of snapshot) npcSimulation.unregisterOpenClaw(sid);
+
+    // S2 (registered after the snapshot) survives WITH its body; S1 is gone.
+    expect(npcSimulation.getOpenClawBotConfig(S2)?.agentId).toBe(AGENT_ID);
+    expect(npcSimulation.getNpcById(BODY_ID)).not.toBeNull();
+    expect(npcSimulation.getNpcIdForSession(S2)).toBe(BODY_ID);
+    expect(npcSimulation.getOpenClawBotConfig(S1)).toBeNull();
+  });
 });
