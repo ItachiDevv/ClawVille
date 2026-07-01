@@ -273,7 +273,16 @@ export interface SimulationSnapshot {
   combats: NpcCombat[];
   events: SimulationEvent[];
   autonomousAvatars: Array<{
-    avatarId: string; userId: string; name: string; species: string; color: string;
+    // Identity-leak scrub (P0 2026-07-01, sibling of the B1 bearer fix): the raw
+    // AvatarSimBroadcast carries the owner `userId` + the raw `avatarId`
+    // (avatars.id UUID) — plus internal budget/action fields. None is a
+    // credential (no CT theft), but userId + the raw avatarId are internal
+    // identity that must NOT ship on the UNAUTH snapshot (enumeration /
+    // correlation). This PUBLIC shape drops userId + the budget/action fields,
+    // and `avatarId` here is the non-secret, non-reversible derivePublicId(
+    // avatars.id) — an opaque stable render/interp key, matching the player +
+    // browser-claw presence-id pattern. Projected by `publicAutonomousAvatars()`.
+    avatarId: string; name: string; species: string; color: string;
     x: number; y: number; direction: string; activity: string; activityEmoji: string;
     isAutonomous: boolean; chatMessage: string | null;
   }>;
@@ -574,6 +583,36 @@ class NpcSimulation {
     return `ocb-${Buffer.from(agentId, 'utf8').toString('base64url')}`;
   }
 
+  /**
+   * PUBLIC projection of the autonomous-avatar broadcast for the UNAUTH snapshot
+   * (`getSnapshot`/`getRoomSnapshot` → `/api/npc/state`, `/api/world/:room/stream`).
+   * Identity-leak scrub (P0 2026-07-01, sibling of the B1 bearer fix): the raw
+   * `AvatarSimBroadcast` carries the owner `userId` + the raw `avatarId`
+   * (avatars.id UUID) + internal budget/action fields. Neither id is a credential
+   * (no CT theft) but both are internal identity that must not go on the public
+   * wire (enumeration/correlation). This ALLOWLIST projection (not a denylist —
+   * new broadcast fields default to NOT-exposed) emits only render fields, drops
+   * `userId` + the budget/action fields, and replaces the raw `avatarId` with the
+   * same non-secret, non-reversible `derivePublicId` the player + browser-claw
+   * snapshots use — an opaque stable render/interp key. Single serialization
+   * point, so there is no sibling projection to miss.
+   */
+  private publicAutonomousAvatars(): SimulationSnapshot['autonomousAvatars'] {
+    return this.avatarAutonomyManager.getAutonomousAvatars().map((a) => ({
+      avatarId: derivePublicId(a.avatarId),
+      name: a.name,
+      species: a.species,
+      color: a.color,
+      x: a.x,
+      y: a.y,
+      direction: a.direction,
+      activity: a.activity,
+      activityEmoji: a.activityEmoji,
+      isAutonomous: a.isAutonomous,
+      chatMessage: a.chatMessage,
+    }));
+  }
+
   getSnapshot(): SimulationSnapshot {
     const now = Date.now();
     return {
@@ -588,7 +627,7 @@ class NpcSimulation {
         .map((c) => ({ ...c, messages: [...c.messages] })),
       combats: Array.from(this.combats.values()).filter((c) => c.state === 'active').map((c) => ({ ...c, rounds: [...c.rounds] })),
       events: [...this.pendingEvents],
-      autonomousAvatars: this.avatarAutonomyManager.getAutonomousAvatars(),
+      autonomousAvatars: this.publicAutonomousAvatars(),
       browserClaws: this.getBrowserClawSnapshots(),
       arenaRound: this.arenaRound ? { ...this.arenaRound } : null,
       arenaSettings: { ...this.arenaSettings },
@@ -649,7 +688,7 @@ class NpcSimulation {
         .filter((c) => c.state === 'active')
         .map((c) => ({ ...c, rounds: [...c.rounds] })),
       events: [...this.pendingEvents],
-      autonomousAvatars: this.avatarAutonomyManager.getAutonomousAvatars(),
+      autonomousAvatars: this.publicAutonomousAvatars(),
       browserClaws: this.getBrowserClawSnapshots(),
       arenaRound: this.arenaRound ? { ...this.arenaRound } : null,
       arenaSettings: { ...this.arenaSettings },
