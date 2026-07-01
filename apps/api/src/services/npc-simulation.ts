@@ -36,7 +36,7 @@ import {
   type CollaborationLogEntry,
 } from '@clawville/agent-runtime';
 import type { OpenClawClient } from './openclaw-client';
-import { roomRegistry, FREE_ROAMER_NPC_IDS } from './room-registry';
+import { roomRegistry, FREE_ROAMER_NPC_IDS, derivePublicId } from './room-registry';
 import type { PlayerSnapshot } from '@clawville/shared';
 
 // Map dimensions — land-builder-economics (2026-06-24): 704×704 grid of 32px tiles = 22528×22528 world.
@@ -492,9 +492,9 @@ class NpcSimulation {
     // but a path may have been assigned earlier in the same tick), and dropping
     // any walking activity prevents a stale "walking" pose lingering on the
     // hidden body when suppression later lapses.
-    for (const [sessionId, { config }] of this.openClawBots) {
+    for (const [, { config }] of this.openClawBots) {
       if (config.agentId !== agentId) continue;
-      const npcId = config.mode === 'override' ? config.targetNpcId : `oc-${sessionId}`;
+      const npcId = config.mode === 'override' ? config.targetNpcId : this.avatarBodyId(config.agentId);
       const npc = this.npcs.get(npcId);
       if (!npc) continue;
       npc.path = [];
@@ -550,78 +550,27 @@ class NpcSimulation {
     }
   }
 
-  // ── B1 (P0, money-path) — PUBLIC WIRE ID SANITIZATION ───────────────────────
-  // An avatar-mode connected-agent body is keyed internally by `oc-${sessionId}`,
-  // where `sessionId` IS the `X-Clawville-Agent-Session` bearer the cove trusts
-  // for real-CT settlement. That id MUST NEVER cross a public serialization
-  // boundary — the unauth `/api/npc/state|stream` + `/api/world/:room/stream`
-  // snapshots would otherwise hand any visitor a replayable bearer (impersonate /
-  // drain the bound user's CT / drive the body). The prior auth-lens fix (#1,
-  // 2026-06-03) scrubbed `getActiveOpenClawBots` but NOT the snapshot path, which
-  // still spread each body verbatim (`{ ...n }` with `n.id === oc-<bearer>`) AND
-  // leaked the id a second time via `events[].npcId` (injectAgentChat), and via
-  // conversation/combat participant ids. These helpers map EVERY id-bearing
-  // snapshot field to a NON-secret, stable-per-body public token: the avatar
-  // body's `agentId` (stable + unique + one-body-per-agentId, so client entity
-  // interpolation is unbroken). Override bodies already expose the public
-  // `targetNpcId`; plain NPCs their own public id — both pass through unchanged.
-
-  /** Map an INTERNAL body id to its PUBLIC wire id (fail-CLOSED for `oc-` ids). */
-  publicNpcId(internalId: string): string {
-    // Only avatar-mode agent bodies are keyed `oc-<bearer>`; every other id
-    // (residents, override targets, wanderers, '' sentinels) is already public.
-    if (!internalId.startsWith('oc-')) return internalId;
-    const sessionId = this.npcOverrides.get(internalId);
-    if (sessionId !== undefined) {
-      const agentId = this.openClawBots.get(sessionId)?.config.agentId;
-      if (agentId) return agentId;
-    }
-    // FAIL CLOSED: an `oc-` id we cannot resolve to a public agentId (e.g. a
-    // stale event/convo referencing a body unregistered between capture and
-    // serialize) must NEVER be emitted raw — its trailing sessionId may still be
-    // a live-TTL bearer. Redact to a stable, one-way digest (never a usable id).
-    return `redacted-${sessionDigest(internalId.slice(3))}`;
-  }
-
-  /** Null-safe `publicNpcId` for optional id fields (combatTargetId/winner/typing). */
-  private publicNpcIdOrNull(id: string | null): string | null {
-    return id === null ? null : this.publicNpcId(id);
-  }
-
-  /** Wire-safe clone of an NPC runtime state (remaps `id` + `combatTargetId`). */
-  private toWireNpc(n: NpcRuntimeState): NpcRuntimeState {
-    return {
-      ...n,
-      id: this.publicNpcId(n.id),
-      combatTargetId: this.publicNpcIdOrNull(n.combatTargetId),
-    };
-  }
-
-  /** Wire-safe clone of a conversation (remaps participants + per-message speaker). */
-  private toWireConversation(c: NpcConversation): NpcConversation {
-    return {
-      ...c,
-      npc1Id: this.publicNpcId(c.npc1Id),
-      npc2Id: this.publicNpcId(c.npc2Id),
-      typingNpcId: this.publicNpcIdOrNull(c.typingNpcId),
-      messages: c.messages.map((m) => ({ ...m, npcId: this.publicNpcId(m.npcId) })),
-    };
-  }
-
-  /** Wire-safe clone of a combat (remaps attacker/defender/winner + round attacker). */
-  private toWireCombat(c: NpcCombat): NpcCombat {
-    return {
-      ...c,
-      attacker: this.publicNpcId(c.attacker),
-      defender: this.publicNpcId(c.defender),
-      winner: this.publicNpcIdOrNull(c.winner),
-      rounds: c.rounds.map((r) => ({ ...r, attacker: this.publicNpcId(r.attacker) })),
-    };
-  }
-
-  /** Wire-safe clone of a pending event (remaps `npcId`; '' passes through). */
-  private toWireEvent(e: SimulationEvent): SimulationEvent {
-    return { ...e, npcId: this.publicNpcId(e.npcId) };
+  /**
+   * P0 (B1 ROOT-FIX) — the non-secret, STABLE, unique in-world body id for an
+   * avatar-mode connected agent. Decoupled from the sessionId so the bearer
+   * (`X-Clawville-Agent-Session`, the real-CT credential) can NEVER appear in a
+   * wire id — whether via the public `/api/npc/state|stream` snapshot, the
+   * authenticated `/perception` harvest path, the Hatcher partner world-state, or
+   * any FUTURE serializer. Bypass-proof by construction: the old
+   * `oc-${sessionId}` body id embedded the bearer, so a boundary-sanitize had to
+   * catch every serializer forever; this makes the id non-secret at the source.
+   *
+   * `body-${agentId}`: agentId is already the agent's public handle
+   * (getActiveOpenClawBots / perception / leaderboard) and is STABLE across
+   * reconnects (a sessionId hash would rotate → break client interpolation) and
+   * UNIQUE (one body per agentId). The `body-` prefix guarantees it can never
+   * collide with a resident/wanderer/override npc id in `this.npcs`, and never
+   * matches the client's `milady-`/`chibi-` render heuristic. Reverse lookup
+   * (bodyId → sessionId) is `npcOverrides`; forward (sessionId → bodyId) is this
+   * pure function of the config's agentId, so no extra map is needed.
+   */
+  private avatarBodyId(agentId: string): string {
+    return `body-${agentId}`;
   }
 
   getSnapshot(): SimulationSnapshot {
@@ -629,17 +578,15 @@ class NpcSimulation {
     return {
       roomId: '',
       players: [],
-      // B1: filters run on the INTERNAL id (isHumanControlledOpenClawNpc reads
-      // npcOverrides), so they MUST precede the wire-id remap.
       npcs: Array.from(this.npcs.values())
         .filter((n) => !this.isHumanControlledOpenClawNpc(n.id, now))
-        .map((n) => this.toWireNpc(n)),
+        .map((n) => ({ ...n })),
       conversations: Array.from(this.conversations.values())
         .filter((c) => c.state === 'active')
         .filter((c) => !this.isHumanControlledOpenClawNpc(c.npc1Id, now) && !this.isHumanControlledOpenClawNpc(c.npc2Id, now))
-        .map((c) => this.toWireConversation(c)),
-      combats: Array.from(this.combats.values()).filter((c) => c.state === 'active').map((c) => this.toWireCombat(c)),
-      events: this.pendingEvents.map((e) => this.toWireEvent(e)),
+        .map((c) => ({ ...c, messages: [...c.messages] })),
+      combats: Array.from(this.combats.values()).filter((c) => c.state === 'active').map((c) => ({ ...c, rounds: [...c.rounds] })),
+      events: [...this.pendingEvents],
       autonomousAvatars: this.avatarAutonomyManager.getAutonomousAvatars(),
       browserClaws: this.getBrowserClawSnapshots(),
       arenaRound: this.arenaRound ? { ...this.arenaRound } : null,
@@ -671,24 +618,21 @@ class NpcSimulation {
     // present; wanderers are looked up by ID from `room.npcs`.
     const npcs: NpcRuntimeState[] = [];
     const now = Date.now();
-    // B1: membership/suppression checks read the INTERNAL npc.id (FREE_ROAMER set,
-    // room.npcs set, npcOverrides), so they run BEFORE the wire-id remap; only the
-    // pushed clone carries the public wire id.
     if (room) {
       for (const npc of this.npcs.values()) {
         // Hide a Hatcher proxy body whose owner is driving the bound avatar.
         if (this.isHumanControlledOpenClawNpc(npc.id, now)) continue;
         if (!FREE_ROAMER_NPC_IDS.has(npc.id)) {
-          npcs.push(this.toWireNpc(npc));
+          npcs.push({ ...npc });
         } else if (room.npcs.has(npc.id)) {
-          npcs.push(this.toWireNpc(npc));
+          npcs.push({ ...npc });
         }
       }
     } else {
       // Unknown room (e.g. solo- alias from npc-sse shim) → full roster.
       for (const npc of this.npcs.values()) {
         if (this.isHumanControlledOpenClawNpc(npc.id, now)) continue;
-        npcs.push(this.toWireNpc(npc));
+        npcs.push({ ...npc });
       }
     }
 
@@ -699,11 +643,11 @@ class NpcSimulation {
       conversations: Array.from(this.conversations.values())
         .filter((c) => c.state === 'active')
         .filter((c) => !this.isHumanControlledOpenClawNpc(c.npc1Id, now) && !this.isHumanControlledOpenClawNpc(c.npc2Id, now))
-        .map((c) => this.toWireConversation(c)),
+        .map((c) => ({ ...c, messages: [...c.messages] })),
       combats: Array.from(this.combats.values())
         .filter((c) => c.state === 'active')
-        .map((c) => this.toWireCombat(c)),
-      events: this.pendingEvents.map((e) => this.toWireEvent(e)),
+        .map((c) => ({ ...c, rounds: [...c.rounds] })),
+      events: [...this.pendingEvents],
       autonomousAvatars: this.avatarAutonomyManager.getAutonomousAvatars(),
       browserClaws: this.getBrowserClawSnapshots(),
       arenaRound: this.arenaRound ? { ...this.arenaRound } : null,
@@ -822,7 +766,10 @@ class NpcSimulation {
       console.log(`[OpenClaw] Override registered: ${config.targetNpcId} -> sess:${sessionDigest(config.sessionId)} (${npc.autonomyMode})`);
     } else {
       const avatarConfig = config as OpenClawAvatarConfig;
-      const npcId = `oc-${config.sessionId}`;
+      // B1 ROOT-FIX: body id is the non-secret `body-<agentId>`, NEVER
+      // `oc-<sessionId>` (the sessionId is the real-CT bearer). npcOverrides keys
+      // this bodyId → sessionId for the reverse lookup.
+      const npcId = this.avatarBodyId(config.agentId);
       const rawSpawnX = restoredState?.lastX ?? avatarConfig.homeX;
       const rawSpawnY = restoredState?.lastY ?? avatarConfig.homeY;
       const spawn = this.resolveSafeSpawn(rawSpawnX, rawSpawnY);
@@ -863,9 +810,10 @@ class NpcSimulation {
         client.setWorldStateProvider(() => this.buildHatcherWorldState(npcId, 'avatar'));
         client.setSystemContextProvider(() => this.buildHatcherSystemContext(npcId));
       }
-      // Log the sessionDigest, NOT the raw npcId (Codex auth-lens fix #4): the
-      // avatar npcId is literally `oc-${config.sessionId}`, so printing it leaks
-      // the real-CT bearer credential into logs. Digest is correlation-only.
+      // Log the sessionDigest, NOT the raw sessionId (Codex auth-lens fix #4): the
+      // sessionId is the real-CT bearer credential, so printing it leaks it into
+      // logs. Digest is correlation-only. (The npcId is now the non-secret
+      // `body-<agentId>`, but the bearer sessionId is still secret.)
       console.log(`[OpenClaw] Avatar injected: "${avatarConfig.name}" (oc-sess:${sessionDigest(config.sessionId)}) [${config.autonomyMode ?? 'server-managed'}]${restoredState?.lastX != null ? ' [restored position]' : ''}`);
     }
   }
@@ -886,7 +834,9 @@ class NpcSimulation {
       const npc = this.npcs.get(npcId);
       if (npc) { npc.isOpenClaw = false; npc.inCombat = false; npc.combatTargetId = null; }
     } else {
-      const npcId = `oc-${sessionId}`;
+      // B1 ROOT-FIX: avatar body id is `body-<agentId>` (non-secret), not
+      // `oc-<sessionId>`; resolve it from the bot's own config.
+      const npcId = this.avatarBodyId(bot.config.agentId);
       this.cleanupNpcFromCombats(npcId);
       this.npcOverrides.delete(npcId);
       this.npcs.delete(npcId);
@@ -910,15 +860,15 @@ class NpcSimulation {
    * SECURITY (Codex auth-lens fix #1, 2026-06-03): this is surfaced by the
    * PUBLIC `GET /api/openclaw/active` endpoint, so it must carry NO recoverable
    * session id. The session id is the bearer credential the cove trusts for
-   * real-CT play; previously this returned the raw `sessionId` AND embedded it
+   * real-CT play; historically this returned the raw `sessionId` AND embedded it
    * a second time inside the avatar `npcId` (`oc-${sid}`) — so any unauthenticated
    * caller could harvest live bearer creds and spend a victim's real CT.
    *
-   * We now emit only NON-secret identifiers: the bot's stable public `agentId`
-   * and (for override bodies) the public `targetNpcId`. The avatar `npcId`
-   * remains `oc-${sid}` ONLY in the in-memory sim (it's the internal map key);
-   * it is NEVER surfaced here. Callers that need to address a body publicly use
-   * `agentId`.
+   * The B1 ROOT-FIX (P0) removed the second vector at its source: an avatar body's
+   * in-world id is now the non-secret `body-<agentId>` (never `oc-<sessionId>`),
+   * so the bearer is structurally absent from EVERY wire path, not just this one.
+   * We still emit only NON-secret identifiers here: the bot's stable public
+   * `agentId` and (for override bodies) the public `targetNpcId`.
    */
   getActiveOpenClawBots(): Array<{ agentId: string; mode: string; npcId?: string; name?: string }> {
     const result: Array<{ agentId: string; mode: string; npcId?: string; name?: string }> = [];
@@ -1020,7 +970,10 @@ class NpcSimulation {
 
   /** Get avatar's current position for persistence on disconnect */
   getOpenClawAvatarPosition(sessionId: string): { x: number; y: number } | null {
-    const npcId = `oc-${sessionId}`;
+    // B1 ROOT-FIX: avatar body id is `body-<agentId>`, resolved from the config.
+    const config = this.openClawBots.get(sessionId)?.config;
+    if (!config) return null;
+    const npcId = this.avatarBodyId(config.agentId);
     const npc = this.npcs.get(npcId);
     return npc ? { x: npc.x, y: npc.y } : null;
   }
@@ -1120,10 +1073,10 @@ class NpcSimulation {
       .sort((a, b) => a.dist - b.dist)
       .slice(0, 8)
       .map(({ o, dist }) => ({
-        // B1 (money-path, PARTNER surface): this ships to the Hatcher partner in
-        // the `clawville.worldState` block. A raw avatar `oc-<sessionId>` id IS a
-        // real-CT bearer — emit the public agentId, never the bearer.
-        id: this.publicNpcId(o.id),
+        // B1 ROOT-FIX: `o.id` for an avatar body is now the non-secret
+        // `body-<agentId>` (never the `oc-<sessionId>` bearer), so it is safe to
+        // ship to the Hatcher partner in the `clawville.worldState` block.
+        id: o.id,
         name: o.name,
         isAgent: o.isOpenClaw,
         distance: dist,
@@ -1185,7 +1138,8 @@ class NpcSimulation {
   getNpcIdForSession(sessionId: string): string | null {
     const bot = this.openClawBots.get(sessionId);
     if (!bot) return null;
-    return bot.config.mode === 'override' ? bot.config.targetNpcId : `oc-${sessionId}`;
+    // B1 ROOT-FIX: avatar body id is the non-secret `body-<agentId>`.
+    return bot.config.mode === 'override' ? bot.config.targetNpcId : this.avatarBodyId(bot.config.agentId);
   }
 
   /** Check if a session ID corresponds to a valid agent */
@@ -1517,7 +1471,13 @@ class NpcSimulation {
 
   getBrowserClawSnapshots(): BrowserClawSnapshot[] {
     return Array.from(this.browserClaws.values()).map((c) => ({
-      sessionId: c.sessionId,
+      // B1 (non-CT griefing vector, non-blocking): the raw browser-claw sessionId
+      // (`claw-<ts>-<rand>`, low entropy) was broadcast verbatim on the public
+      // snapshot, letting anyone impersonate/grief a browser claw. Emit the SAME
+      // salted, non-reversible presence id the multiplayer player snapshots use
+      // (derivePublicId) — stable per claw, opaque, brute-force-resistant. (Field
+      // name kept `sessionId` for wire compat; it now carries the public digest.)
+      sessionId: derivePublicId(c.sessionId),
       name: c.config.name,
       species: c.config.species,
       color: c.config.color,
@@ -2798,11 +2758,9 @@ class NpcSimulation {
       this.pendingEvents.push({
         id: this.nextId(), type: 'arena_complete',
         npcId: winner?.id ?? '', npcName: winner?.name ?? 'Nobody',
-        // B1: `winnerId` duplicates an npc id inside the freeform `data` payload,
-        // which `toWireEvent` cannot generically remap — an avatar winner's raw
-        // `oc-<sessionId>` id is a real-CT bearer, so map it to the public id at
-        // the source (the winner body is still registered here).
-        data: { winnerId: winner ? this.publicNpcId(winner.id) : undefined, winnerName: winner?.name, winnerKills: winner?.kills ?? 0, winnerLevel: winner?.level ?? 1 },
+        // B1 ROOT-FIX: `winner.id` for an avatar body is the non-secret
+        // `body-<agentId>` now, so it is safe to emit directly.
+        data: { winnerId: winner?.id, winnerName: winner?.name, winnerKills: winner?.kills ?? 0, winnerLevel: winner?.level ?? 1 },
         timestamp: now,
       });
       console.log(`[Arena] Complete! Winner: ${winner?.name ?? 'Nobody'} (Lv${winner?.level}, ${winner?.kills} kills)`);
