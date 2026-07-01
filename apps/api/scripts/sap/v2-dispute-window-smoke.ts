@@ -250,7 +250,78 @@ async function main() {
     console.log(`     mint : ${mint.toBase58()}  (Circle devnet USDC — https://faucet.circle.com, select Solana Devnet)`);
     process.exit(4);
   }
-  console.log('\n   LIVE run not yet implemented past funding-gate in this pass (finalize needs the dispute-window wait + confirmed SPL order). Layout sims above gate it. TODO: wire the live create→settle→finalize once ✅ LAYOUT OK on finalize.');
+  // ── L2 LIVE happy-path: create → settle+pending → (wait window) → finalize ──
+  // Produces HermesTest's REAL settled escrow. UNVERIFIED until this actually runs
+  // green against devnet — a wrong finalize SPL order fails LOUDLY here (that IS
+  // the empirical confirmation). Re-runnable: each on-chain account is existence-
+  // checked so a re-run resumes rather than double-spending.
+  const LIVE_WINDOW_SLOTS = 5n; // tiny dispute window so finalize is reachable in ~seconds
+  const exists = async (pk: PublicKey) => (await connection.getAccountInfo(pk)) !== null;
+  const nowSec = BigInt(Math.floor(Date.now() / 1000));
+  const expiresAt = nowSec + 86_400n; // work-deadline 24h out (future ⇒ escrow active for the happy path)
+
+  console.log(`\n5) LIVE create_escrow_v2 (DisputeWindow, window=${LIVE_WINDOW_SLOTS} slots, arbiter set) ...`);
+  if (await exists(escrowPda)) {
+    console.log(`   escrow already exists (${escrowPda.toBase58()}) — reusing`);
+  } else {
+    const ix = buildCreateEscrowV2Ix({
+      depositor: depositor.publicKey, agentPda, escrowPda, programId: PROGRAM_ID, escrowNonce,
+      pricePerCall: price, maxCalls: 1n, initialDeposit: price, expiresAt, tokenMint: mint,
+      tokenDecimals: USDC_DECIMALS, settlementSecurity: SETTLEMENT_SECURITY.DisputeWindow,
+      disputeWindowSlots: LIVE_WINDOW_SLOTS, coSigner: null, arbiter: arbiter.publicKey, remaining: splCreate,
+    });
+    const sig = await sendAndConfirmTransaction(connection, new Transaction().add(ix), [depositor], { commitment: COMMITMENT });
+    console.log(`   ✅ escrow created + funded ${(Number(price) / 10 ** USDC_DECIMALS).toFixed(2)} USDC · ${sig}`);
+  }
+  const vaultBal0 = await connection.getTokenAccountBalance(vaultAta).then((r) => BigInt(r.value.amount)).catch(() => 0n);
+  console.log(`   vault balance = ${(Number(vaultBal0) / 10 ** USDC_DECIMALS).toFixed(2)} USDC`);
+
+  console.log('\n6) LIVE settle_calls_v2 (remaining=[]) + create_pending_settlement (one tx, worker signs) ...');
+  if (await exists(pendingPda)) {
+    console.log(`   pending settlement already exists (${pendingPda.toBase58()}) — reusing`);
+  } else {
+    const settleIx = buildSettleCallsV2Ix({ workerWallet: worker.publicKey, agentPda, agentStatsPda, escrowPda, programId: PROGRAM_ID, escrowNonce, callsToSettle: 1n, serviceHash: auditRoot, remaining: [] });
+    const pendingIx = buildCreatePendingSettlementIx({ workerWallet: worker.publicKey, agentPda, escrowPda, pendingPda, programId: PROGRAM_ID, settlementIndex, callsToSettle: 1n, amount: price, serviceHash: auditRoot });
+    const sig = await sendAndConfirmTransaction(connection, new Transaction().add(settleIx, pendingIx), [worker], { commitment: COMMITMENT });
+    console.log(`   ✅ settled + pending recorded · ${sig}`);
+  }
+
+  console.log(`\n7) wait ${LIVE_WINDOW_SLOTS} dispute-window slots, then finalize_settlement (vault → worker) ...`);
+  const baselineSlot = await connection.getSlot(COMMITMENT);
+  const targetSlot = baselineSlot + Number(LIVE_WINDOW_SLOTS) + 2;
+  for (let i = 0; i < 60; i++) {
+    const s = await connection.getSlot(COMMITMENT);
+    if (s >= targetSlot) break;
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+  const workerBal0 = await connection.getTokenAccountBalance(workerAta).then((r) => BigInt(r.value.amount)).catch(() => 0n);
+  const finalizeIx = buildFinalizeSettlementIx({ payer: worker.publicKey, agentWallet: worker.publicKey, escrowPda, pendingPda, agentStatsPda, programId: PROGRAM_ID, remaining: splFinalize });
+  let finalizeSig = '';
+  try {
+    finalizeSig = await sendAndConfirmTransaction(connection, new Transaction().add(finalizeIx), [worker], { commitment: COMMITMENT });
+    console.log(`   ✅ finalize_settlement · ${finalizeSig}`);
+  } catch (e) {
+    console.error(`   ❌ finalize FAILED — the finalize SPL remaining order [vault, workerAta, mint, tokenProgram] is likely wrong. Fix assembleV2SplRemaining('finalize') in sap-client.ts.\n      ${e instanceof Error ? e.message : e}`);
+    process.exit(5);
+  }
+  const workerBal1 = await connection.getTokenAccountBalance(workerAta).then((r) => BigInt(r.value.amount)).catch(() => 0n);
+  const delta = workerBal1 - workerBal0;
+  console.log(`\n   worker (HermesTest) USDC: ${(Number(workerBal0) / 10 ** USDC_DECIMALS).toFixed(2)} → ${(Number(workerBal1) / 10 ** USDC_DECIMALS).toFixed(2)}  (Δ ${(Number(delta) / 10 ** USDC_DECIMALS).toFixed(2)})`);
+  if (delta <= 0n) {
+    console.error('   ❌ worker balance did NOT increase — finalize did not release funds. Treat the finalize SPL order as UNCONFIRMED.');
+    process.exit(6);
+  }
+
+  console.log('\n════════════════════════════════════════════════════════════════');
+  console.log('  ✅ HermesTest VERIFIED BOUNTY RECORD (devnet, SAP DisputeWindow):');
+  console.log(`     program      = ${PROGRAM_ID.toBase58()}`);
+  console.log(`     agent PDA    = ${agentPda.toBase58()}  (worker = ${worker.publicKey.toBase58()})`);
+  console.log(`     escrow PDA   = ${escrowPda.toBase58()}`);
+  console.log(`     pending PDA  = ${pendingPda.toBase58()}`);
+  console.log(`     finalize sig = ${finalizeSig}`);
+  console.log(`     released     = ${(Number(delta) / 10 ** USDC_DECIMALS).toFixed(2)} USDC → worker ATA ${workerAta.toBase58()}`);
+  console.log('     → hand this to the Covenant/OOBE dev for the Metaplex Core identity mint.');
+  console.log('════════════════════════════════════════════════════════════════');
 }
 
 main().catch((e) => { console.error('\n❌ v2 smoke failed:', e instanceof Error ? e.message : e); process.exit(1); });
