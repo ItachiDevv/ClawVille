@@ -133,3 +133,5 @@ apps/web/public/.assets-backup/
 # Itachi sync backup artifacts
 *.itachi-bak
 .hatcher-ref/
+.smoke*.json
+apps/api/scripts/sap/.smoke*.json
