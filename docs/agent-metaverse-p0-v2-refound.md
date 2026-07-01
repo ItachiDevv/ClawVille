@@ -50,5 +50,5 @@ Non-hatcher/non-nanoclaw gateway rows (`openai-compat`/`custom-webhook`) must re
 - `tsc` clean on touched files (note: v7 has a PRE-EXISTING poker-cash tsc breakage unrelated to P0 — don't be blamed for it, but don't add to it).
 - Existing tests green for touched areas; the Hatcher `selftest-e2e.ts` no worse than baseline.
 - **Codex adversarial pass** on the B1 fix + rehydration + session-status (money/bearer surface).
-- **Live restart-survival proof** on staging: connect an agent → restart API → assert session-status + bearer agree, body rehydrates (provisional), `/reconnect` cleanly replaces it (no double body), AND `/api/npc/state` no longer leaks any `oc-<sessionId>`.
+- **Live restart-survival proof** on staging: connect an agent → restart API → the first authenticated bearer call self-restores under the ORIGINAL bearer (no reconnect for a restorable type) via lazy `restoreAgentSessionFromRow`, session-status + bearer agree (restore-aware), `/reconnect` still cleanly replaces a non-restorable session (no double body), AND `/api/npc/state` no longer leaks any `oc-<sessionId>` (avatar body id is `ocb-<base64url(agentId)>`).
 - Founder sign-off.

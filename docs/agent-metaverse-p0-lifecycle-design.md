@@ -1,5 +1,7 @@
 # P0 — Lifecycle Truth: design + build spec
 
+> ⚠️ **SUPERSEDED (2026-07-01) — historical.** This v3 doc's DESIGN REASONING (the ground-truth table, the "don't persist the bearer sessionId" analysis) still holds, but its BUILD PLAN is obsolete: it was written against an 818-commits-stale base and proposes an **eager boot-rehydrator (D-1)** that was DROPPED. The as-built P0 uses v7's EXISTING lazy restore (`openclaw-session-restore.ts`) + a RESTORE-AWARE `session-status` — no eager rehydrator (deferred to P1, preserved in commit `c711234e`). The live worktree is `cv-agent-p0` / `feat/agent-metaverse-p0`, NOT the `cv-agent-metaverse` / `feat/agent-metaverse-build` named below. For the current plan read `docs/agent-metaverse-p0-v2-refound.md` (the re-scope) + `docs/agent-metaverse-model.md §9`.
+
 > Phase P0 of `docs/agent-metaverse-model.md §9`. The **smallest correct first diff**: make ONE lifecycle authority so `session-status`, the bearer gate, boot-rehydration, `/disconnect`, and the sweeper all AGREE — fixing the restart-desync at the source. **No autonomy engine, no substrate rename, no `[ACTION:]` generalization, no `PROTOCOL_VERSION` bump.**
 >
 > Runs in worktree `cv-agent-metaverse` on branch `feat/agent-metaverse-build`. Touches the PROTECTED Hatcher surface (session/bearer/`registerOpenClaw`/`openclaw_bots`) → full backend team + Codex adversarial review + mock-Hatcher harness stays green.
