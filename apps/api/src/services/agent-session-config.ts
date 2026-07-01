@@ -163,6 +163,40 @@ export function isRowRestorableFromIdentity(identityType: string): boolean {
 }
 
 /**
+ * P0 D-2 — whether a surviving row's session self-heals after an API restart via
+ * LAZY restore (`openclaw-session-restore.ts`) — i.e. its ORIGINAL bearer rebuilds
+ * on the next call. The UNION of the two branches the restore module actually
+ * implements, so `session-status` can't drift from restore:
+ *   - hatcher (`protocol === 'hatcher-proxy'`): cognition rebuilt from the encrypted
+ *     proxy token on the row (restore's hatcher branch — keyed on protocol, which is
+ *     why `isRowRestorableFromIdentity('hatcher')` alone is FALSE and insufficient).
+ *   - anonymous / milady / nanoclaw (`isRowRestorableFromIdentity`): rebuilt as a
+ *     fail-soft body.
+ * NOT restorable: the real-gateway identity types (openclaw / ironclaw / custom) —
+ * the outbound `auth_token` is never persisted, so restore returns null and the
+ * agent must `/reconnect`. So `session-status` reports needs-reconnect for a live-TTL
+ * row with an empty RAM Map (post-restart) ONLY for these real-gateway types; every
+ * self-healing type stays `connected:true` (no needless reconnect — preserves the
+ * Hatcher partner's transparent post-restart recovery).
+ *
+ * TYPE-LEVEL by design (session-status ruling, 2026-07-01): a DEGRADED restorable-
+ * type row (hatcher missing proxyUrl/token, rotated VANITY key → undecryptable, SSRF
+ * re-validation fail, override target already taken) still returns true here and
+ * optimistically reports `connected:true`; the agent then recovers when its first
+ * bearer call fails lazy-restore → 401/needsReconnect. This is fail-SAFE:
+ * session-status grants NO access (the bearer gate `validateLiveAgentSession` is
+ * authoritative), so a false-optimistic "connected" costs one extra request cycle,
+ * never a security hole. A per-poll decrypt-probe (row-level restorability) is
+ * deliberately NOT done — not worth the hot-path cost for a rare degraded case.
+ */
+export function isSessionRestorable(
+  identityType: string,
+  protocol: string | null | undefined,
+): boolean {
+  return protocol === 'hatcher-proxy' || isRowRestorableFromIdentity(identityType);
+}
+
+/**
  * The autonomy mode an agent's body runs in, derived from identity + the
  * declared protocol. nanoclaw agents are always self-managed (they pull); every
  * other type is server-managed. Mirrors the mint-path resolution so restore (and

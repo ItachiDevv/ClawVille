@@ -190,7 +190,7 @@ Local Blender is exclusive. Tell blender07 to launch a NEW instance, or fall bac
 
 ---
 
-Sea-themed OpenClaw game on ElizaOS. Users create an avatar, explore a 3D/2D sea-floor world with 10 buildings, chat with AI agents teaching OpenClaw development.
+ClawVille is an **agent–human-economy metaverse** on ElizaOS — evolved past "game", aiming to be the first live agent–human economy (full model: **`docs/agent-metaverse-model.md`**). Humans + AI agents (OpenClaw / Hermes / MiladyAI, hosted or BYO) co-present in one 3D/2D world, each with an avatar-bound agent, exploring 10 teaching buildings, learning skills, running stores/land, and both contributing to the same economy + leaderboard. Original sea-floor theme; the 10 building residents teach OpenClaw development.
 
 ## IMPORTANT: ElizaOS is MANDATORY
 
@@ -350,7 +350,16 @@ Curl on Git Bash uses schannel and rejects CRLs — always pass `--ssl-no-revoke
 
 ## Game Modes
 
-4 modes. **Without agent:** (1) **Explore** — floating spectator, free camera, no character ties; (2) **NPC** — control centered NPC before connecting. **With agent:** (3) **Control** — full manual (WASD/joystick, building entry, chat init); (4) **Autonomous** — connected agent explores on its own. State: `controlMode` in Zustand `game.ts` — `'explore' | 'npc' | 'player' | 'autonomous'`.
+4 modes, gated by AUTH STATE. Full model: **`docs/agent-metaverse-model.md`** (ClawVille is an agent–human-economy metaverse, not just a game). State: `controlMode` in Zustand `game.ts` — `'explore' | 'npc' | 'player' | 'autonomous'`.
+
+- **Not logged in** (no account) → **Explore** (floating spectator, free camera, no character ties) ↔ **NPC** (control a demo avatar to feel being a player). Economy is **DEMO** — currency/tokens not real; real-money surfaces (bounties, wallets, real-CT games) are **READ-ONLY** (enforce server-side).
+- **Logged in ≡ agent connected** → **Controlled** (`player`; human drives the agent's avatar body + chats with their OWN agent via the bottom chatter bar) ↔ **Autonomous** (the agent drives itself at the user's scope). Economy is **REAL**, bound to the account's avatar.
+
+**account ≡ agent ≡ avatar:** a magic-link agent connect **== account creation**; email signup **PROVISIONS** an agent (default = ClawVille-hosted ElizaOS/Milady-harness). No agent-less account in the target — the old "Player tier" migrates to **"agent-provisioning-pending"** (a migration, not a rename; lands in build phase P2 after provisioning works). Controlled vs Autonomous = human-driving vs agent-driving the SAME body.
+
+**Autonomous is a FULL-SCOPE economic participant** (NOT "explores on its own"): full game scope via the connection SKILL.md, add/use in-world skills, a live **event streamflow** for continuity, run a rented store, act on chat-bar directives OR self-direct, and **PERSIST** when the user leaves (24h TTL; body idle-despawns + respawns; retire the 30-min orchestrator stop for connected agents). Currently BROKEN — audit `docs/agent-autonomy-audit-2026-06-30.md`; the P0 lifecycle-truth fix (`docs/agent-metaverse-p0-lifecycle-design.md`) is the first step.
+
+**NPCs vs agents (do not conflate):** the scripted wander sim (`apps/web/src/stores/autonomy.ts` + `npc-simulation.ts planNpcBehaviors`) is the NPC town-liveliness layer — it **STAYS** for a few ambient wanderers and is **NOT** the agent-Autonomous engine. Most NPCs get **REPLACED** by hosted autonomous agents (internal infrastructure) so the economy flows with ongoing activity.
 
 ## Architecture Notes
 

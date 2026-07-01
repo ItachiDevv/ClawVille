@@ -12,8 +12,19 @@
 import type { AvatarStateStore, AvatarSimState } from './avatar-state-store';
 import type { ActivityEmojis } from './types';
 
-const MAP_WIDTH = 5120;
-const MAP_HEIGHT = 5120;
+// P0 (2026-07-01): 5120 → 22528 to match the CANONICAL world dimension.
+// This is a LIVE path (NOT dead, contra the P0 design-doc's "dead-path" label):
+// `stepMovement` below is called every bridge tick for every autonomous avatar
+// (`avatar-simulation-bridge.ts` tick → npc-simulation `avatarAutonomyManager.tick()`),
+// and it clamps `avatar.x/y` to `MAP_WIDTH-16`. At 5120 that pinned autonomous
+// avatars to the top-left [16, 5104] box while pathfinding (`findPath`) routes them
+// across the real 22528 world — so any target past ~5104 (incl. the town-center
+// buildings at ~11264 game-px) was unreachable: the avatar clamped at the boundary
+// and stalled (dist never < arrival threshold). Widening the clamp to the true world
+// size unblocks traversal. Canonical dim: `WORLD_PX_WIDTH/HEIGHT` (packages/shared
+// world-dimensions.ts) = npc-simulation `MAP_WIDTH` = 22528 (704 tiles × 32px).
+const MAP_WIDTH = 22528;
+const MAP_HEIGHT = 22528;
 const STEP_SIZE = 10;
 const IDLE_THRESHOLD_MS = 60_000; // 60s of no user input
 

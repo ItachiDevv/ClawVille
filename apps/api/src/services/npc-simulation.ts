@@ -350,14 +350,6 @@ class NpcSimulation {
   // OpenClaw bot registry
   private openClawBots: Map<string, { config: OpenClawRegistration; client: OpenClawClient }> = new Map();
   private npcOverrides: Map<string, string> = new Map(); // npcId → sessionId
-  // P0 lifecycle — sessionIds of boot-REHYDRATED bodies (agent-session-rehydrator).
-  // A provisional session is a PLACEHOLDER: the body renders + wanders, but it is
-  // ledger-INCAPABLE and no live bearer/brain has re-attached. It is REPLACED (not
-  // duplicated) by any real (re)registration for the same agentId — /connect,
-  // /reconnect, /register, lazy restore, partner mint — via evictProvisionalSiblings
-  // at the top of registerOpenClaw. session-status treats an agentId whose only live
-  // RAM session is provisional as "not attached" (see findActiveNonProvisionalSessionsByAgentIds).
-  private provisionalSessions: Set<string> = new Set();
   // Controlled-launch suppression: agentId → epoch-ms until which a Hatcher
   // proxy NPC is "human-driven" and must be hidden + frozen (its owner is
   // driving the bound avatar in 'player' mode). Refreshed at 5 Hz by
@@ -555,22 +547,31 @@ class NpcSimulation {
    * avatar-mode connected agent. Decoupled from the sessionId so the bearer
    * (`X-Clawville-Agent-Session`, the real-CT credential) can NEVER appear in a
    * wire id — whether via the public `/api/npc/state|stream` snapshot, the
-   * authenticated `/perception` harvest path, the Hatcher partner world-state, or
-   * any FUTURE serializer. Bypass-proof by construction: the old
-   * `oc-${sessionId}` body id embedded the bearer, so a boundary-sanitize had to
-   * catch every serializer forever; this makes the id non-secret at the source.
+   * authenticated `/perception` harvest path (the cross-agent harvest the
+   * adversary flagged), the Hatcher partner world-state, or any FUTURE serializer.
+   * It is ALSO the `talk_to_npc` target: the Hatcher action validates
+   * `this.npcs.has(target)`, and since this bodyId is the Map key, a perceived id
+   * resolves for free (a boundary-sanitize that kept the internal `oc-` key would
+   * BREAK that action). Bypass-proof at the source.
    *
-   * `body-${agentId}`: agentId is already the agent's public handle
-   * (getActiveOpenClawBots / perception / leaderboard) and is STABLE across
-   * reconnects (a sessionId hash would rotate → break client interpolation) and
-   * UNIQUE (one body per agentId). The `body-` prefix guarantees it can never
-   * collide with a resident/wanderer/override npc id in `this.npcs`, and never
-   * matches the client's `milady-`/`chibi-` render heuristic. Reverse lookup
-   * (bodyId → sessionId) is `npcOverrides`; forward (sessionId → bodyId) is this
-   * pure function of the config's agentId, so no extra map is needed.
+   * SHAPE — `ocb-${base64url(agentId)}` — a DETERMINISTIC, DOM-safe, non-secret
+   * encoding of the public agentId:
+   *   - DETERMINISTIC from agentId (not random): lazy-restore re-registers from the
+   *     row, so f(agentId) reproduces the SAME body id after a restart → entity
+   *     interpolation + `talk_to_npc` targets survive a restart identically (one
+   *     body per agentId, so f is unambiguous). A random-per-registration id would
+   *     pop the body + orphan a learned target on every restart.
+   *   - DOM-safe: base64url is `[A-Za-z0-9_-]` only, so the id never carries the
+   *     COLON in a namespaced agentId (`hatcher:…`/`milady:…`) that would break an
+   *     unescaped `querySelector('#…')` on the client's label DOM ids.
+   *   - The `ocb-` prefix guarantees no collision with a resident/wanderer/override
+   *     npc id in `this.npcs`, and never matches the client's `milady-`/`chibi-`
+   *     render heuristic. Client recovers the agentId by base64url-decoding the
+   *     tail. Reverse lookup (bodyId → sessionId) is `npcOverrides`; forward
+   *     (sessionId → bodyId) is this pure function, so no extra map is needed.
    */
   private avatarBodyId(agentId: string): string {
-    return `body-${agentId}`;
+    return `ocb-${Buffer.from(agentId, 'utf8').toString('base64url')}`;
   }
 
   getSnapshot(): SimulationSnapshot {
@@ -728,18 +729,6 @@ class NpcSimulation {
   // --- OpenClaw Methods ---
 
   registerOpenClaw(config: OpenClawRegistration, client: OpenClawClient, restoredState?: { lastX?: number; lastY?: number; knowledge?: string[] }) {
-    // P0 lifecycle — a boot-rehydrated PROVISIONAL body is a placeholder. ANY real
-    // (re)registration for the same agentId (/connect, /reconnect, /register, lazy
-    // restore, partner mint) must REPLACE it, never spawn a second body. This is
-    // the ONE chokepoint every registration path funnels through, so evicting the
-    // provisional sibling HERE closes the boot-rehydrate ↔ restore/reconnect
-    // collision (avatar: double body; override: OverrideTargetUnavailable lockout)
-    // in every path at once. Scoped to PROVISIONAL siblings only — a live owned
-    // session is never in provisionalSessions, so it can never be evicted here
-    // (anti-grief preserved, matching the openclaw.ts /register no-blanket-evict
-    // rule). Runs BEFORE the override-occupied check below so an override reconnect
-    // isn't blocked by its own provisional body holding the target.
-    this.evictProvisionalSiblings(config.agentId, config.sessionId);
     if (config.mode === 'override') {
       if (!this.npcs.has(config.targetNpcId)) throw new Error(`NPC "${config.targetNpcId}" not found`);
       // Typed sentinel (not a bare Error) so the partner-hatcher P5-2 path can map
@@ -821,8 +810,6 @@ class NpcSimulation {
   unregisterOpenClaw(sessionId: string): boolean {
     const bot = this.openClawBots.get(sessionId);
     if (!bot) return false;
-    // P0 lifecycle — drop the provisional flag (no-op if this was a real session).
-    this.provisionalSessions.delete(sessionId);
     // Drop any human-control suppression entry for this agent so a stale TTL
     // can't outlive the session (a re-registered agent gets a fresh window).
     this.humanControlledOpenClawUntil.delete(bot.config.agentId);
@@ -904,53 +891,6 @@ class NpcSimulation {
       if (ids.has(config.agentId)) found.push(sid);
     }
     return found;
-  }
-
-  /**
-   * P0 lifecycle — like `findActiveSessionsByAgentIds` but EXCLUDES boot-rehydrated
-   * PROVISIONAL placeholders. `session-status` uses this to answer truthfully: an
-   * agentId whose only live RAM session is provisional has NO real bearer/brain
-   * attached, so it is NOT "connected" in the sense a caller cares about (a
-   * non-restorable remote must reconnect; a self-healing one recovers on next use).
-   */
-  findActiveNonProvisionalSessionsByAgentIds(agentIds: Iterable<string>): string[] {
-    const ids = new Set(agentIds);
-    if (ids.size === 0) return [];
-    const found: string[] = [];
-    for (const [sid, { config }] of this.openClawBots) {
-      if (ids.has(config.agentId) && !this.provisionalSessions.has(sid)) found.push(sid);
-    }
-    return found;
-  }
-
-  /**
-   * P0 lifecycle — mark a session as boot-rehydrated PROVISIONAL. Called by the
-   * rehydrator immediately after `registerOpenClaw`. Idempotent.
-   */
-  markSessionProvisional(sessionId: string): void {
-    this.provisionalSessions.add(sessionId);
-  }
-
-  /**
-   * P0 lifecycle — evict every PROVISIONAL (boot-rehydrated) body registered under
-   * the same `agentId` (except `exceptSessionId`), so a real (re)registration
-   * REPLACES the placeholder instead of double-spawning. Scoped to provisional
-   * sessions ONLY — a live owned session is never in `provisionalSessions`, so
-   * this can never knock out a legitimate live session (anti-grief). Collects
-   * first, then unregisters, so the Map isn't mutated mid-iteration.
-   */
-  private evictProvisionalSiblings(agentId: string, exceptSessionId: string): void {
-    let toEvict: string[] | null = null;
-    for (const [sid, { config }] of this.openClawBots) {
-      if (sid !== exceptSessionId && config.agentId === agentId && this.provisionalSessions.has(sid)) {
-        (toEvict ??= []).push(sid);
-      }
-    }
-    if (!toEvict) return;
-    for (const sid of toEvict) {
-      this.unregisterOpenClaw(sid);
-      console.log(`[Rehydrate] provisional body replaced by live session for agent ${agentId}`);
-    }
   }
 
   /**

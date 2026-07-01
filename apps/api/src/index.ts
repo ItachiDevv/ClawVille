@@ -551,24 +551,13 @@ startSimulation(arenaMode);
     console.error('[API] System NPC seeder failed:', err);
   }
 
-  // P0 lifecycle-truth — rehydrate in-world bodies for every live-TTL
-  // `openclaw_bots` row so the world is populated immediately after a restart and
-  // server-driven agents (nanoclaw/milady/anonymous/fleet, which no external
-  // caller ever re-triggers) resume. Bodies come back PROVISIONAL + ledger-
-  // incapable; a real /connect / /reconnect / lazy-restore replaces the
-  // placeholder. Runs AFTER the sim + seeders (so override targets + the sim tick
-  // exist) and BEFORE the sweeper (so its first tick sees the restored registry).
-  // Awaited + guarded so a rehydrate failure can never crash boot. See
-  // `services/agent-session-rehydrator.ts`.
-  try {
-    const { rehydrateAgentSessions } = await import(
-      './services/agent-session-rehydrator'
-    );
-    const restored = await rehydrateAgentSessions();
-    console.log(`[API] Rehydrated ${restored} in-world agent bodies from live-TTL rows`);
-  } catch (err) {
-    console.error('[API] Agent-session rehydration failed (non-fatal):', err);
-  }
+  // P0 lifecycle-truth — NO eager boot-rehydration. v7 already survives a restart
+  // via LAZY restore (`openclaw-session-restore.ts`, wired into
+  // `validateLiveAgentSession`): on the first post-restart bearer use it rebuilds
+  // the session under the agent's ORIGINAL bearer. An eager rehydrator minting a
+  // fresh sessionId would COLLIDE with that (double body / override lockout), so
+  // it is intentionally absent. session-status (D-2) is restore-aware and the
+  // sweeper (D-3) removes the body on expiry.
 
   // Phase 6 — start the openclaw_bots session TTL sweeper. Runs every 5
   // min, reaps rows whose `session_expires_at` has passed and stops any
