@@ -26,7 +26,7 @@ import { OpenClawClient } from '../services/openclaw-client';
 import {
   buildAvatarSessionConfig,
   buildOverrideSessionConfig,
-  isRowRestorableFromIdentity,
+  isSessionRestorable,
 } from '../services/agent-session-config';
 import { ensureWallet, ensureWalletWithFirstTimeSecret } from '../services/wallet-service';
 import { creditClawTokens } from '../services/claw-token-ledger';
@@ -1238,30 +1238,23 @@ agentGatewayRoutes.get('/session-status', async (c) => {
     );
   }
 
-  // D-2/H1 (P0 lifecycle-truth) — a live DB TTL alone LIES after a restart: the
-  // in-RAM session Map is rebuilt empty, so a live-TTL row would report
-  // `connected:true` while nothing is attached (the pre-P0 desync). Reconcile
-  // against RAM. A boot-rehydrated PROVISIONAL body does NOT count as "attached"
-  // (no bearer/brain re-attached), so we check NON-provisional liveness.
-  const nonProvisionalLive =
-    npcSimulation.findActiveNonProvisionalSessionsByAgentIds([agentId]).length > 0;
+  // D-2 (P0 lifecycle-truth) — a live DB TTL alone LIES after a restart: the in-RAM
+  // session Map is rebuilt empty, so a live-TTL row would report `connected:true`
+  // while nothing is attached (the pre-P0 desync — but v7's LAZY restore mostly
+  // heals it, see below). Reconcile against RAM.
+  const ramLive = npcSimulation.findActiveSessionsByAgentIds([agentId]).length > 0;
 
-  // When nothing non-provisional is attached, whether the caller must reconnect
-  // depends on whether v7's lazy restore can self-heal its bearer:
-  //   - SELF-HEALING (hatcher-proxy + nanoclaw/milady/anonymous): the remote's
-  //     stored bearer rebuilds transparently on next use
-  //     (restoreAgentSessionFromRow), so `connected:true` is TRUTHFUL and NO
-  //     reconnect is forced. This preserves the transparent post-restart recovery
-  //     the Hatcher partner already relies on (hatcher rows are
-  //     `protocol:'hatcher-proxy'` → self-healing → the partner sees NO change).
-  //   - NOT self-healing (real-gateway openclaw/ironclaw/custom): `auth_token` is
-  //     never persisted, so the old bearer can't be rebuilt — the caller MUST
-  //     /reconnect. ONLY this class gets the needs-reconnect 410, so the change
-  //     never touches the partner surface.
-  const selfHealing =
-    row.protocol === 'hatcher-proxy' || isRowRestorableFromIdentity(row.identityType);
+  // When nothing is attached in RAM, whether the caller must reconnect depends on
+  // whether v7's lazy restore can self-heal the ORIGINAL bearer (openclaw-session-
+  // restore.ts): a self-healing type rebuilds transparently on the next bearer call,
+  // so `connected:true` is truthful and NO reconnect is forced — this preserves the
+  // Hatcher partner's transparent post-restart recovery. Only the unrestorable
+  // real-gateway types (openclaw/ironclaw/custom, whose outbound auth_token is never
+  // persisted) genuinely can't self-heal and get the needs-reconnect 410. TYPE-level
+  // (fail-safe for degraded restorable rows) — see `isSessionRestorable`.
+  const restorable = isSessionRestorable(row.identityType, row.protocol);
 
-  if (!nonProvisionalLive && !selfHealing) {
+  if (!ramLive && !restorable) {
     return c.json(
       {
         connected: false,
