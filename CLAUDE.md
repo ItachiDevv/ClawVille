@@ -449,7 +449,7 @@ Gate block format:
 // Reference: <Brand Identity / improvements.md §7 / related doc>
 ```
 
-Active gates as of 2026-04-21: `x402_payment_middleware`, `multi_agent_roster`, `skill_marketplace` (bazaar, marketplace, auctions). See `improvements.md` §7.
+Active gates as of 2026-04-21: `x402_payment_middleware`, `multi_agent_roster`. ~~`skill_marketplace` (bazaar, marketplace, auctions)~~ **— GATE DELETED 2026-07-02: the peer skill-commerce verticals (bazaar / marketplace / auctions / `published_skills`) were fully REMOVED from the codebase (prompt-injection risk — a sold/published skill is an injectable prompt), not un-paused.** See `improvements.md` §7 (if present).
 
 ### No lazy handoffs — full ship loop is YOUR job
 

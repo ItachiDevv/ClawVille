@@ -12,7 +12,7 @@
  *   - Authz: 403 if avatar exists but belongs to a different session user.
  *   - Rate limit: 10 requests per IP per minute (shared pattern with /connect).
  *   - No signing: we emit an unsigned snapshot. If chain-of-custody becomes a
- *     marketplace concern, add `issuedAt` + `exportHash` later (Phase 5+).
+ *     concern, add `issuedAt` + `exportHash` later (Phase 5+).
  *
  * The route is stateless — it reads the avatar, delegates to the pure
  * `buildCharacterExport` function in `@clawville/agent-runtime`, and returns

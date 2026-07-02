@@ -547,7 +547,7 @@ agentSetupRoutes.patch('/:id/loadout', requireAuth, async (c) => {
     const ownedItemIds = new Set(inventory.map((item) => item.itemId));
 
     for (const skillId of result.data.equippedSkills) {
-      // Check both raw ID and "skill-" prefixed version (bazaar purchases use "skill-" prefix)
+      // Check both raw ID and "skill-" prefixed version (legacy skill- inventory items from the removed peer-skill-commerce / quest-skill-reward paths)
       if (!ownedItemIds.has(skillId) && !ownedItemIds.has(`skill-${skillId}`)) {
         throw new HTTPException(400, {
           message: `Skill "${skillId}" is not in your inventory`,
