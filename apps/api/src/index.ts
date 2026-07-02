@@ -419,7 +419,12 @@ if (process.env.X402_MOCK_FACILITATOR === 'true') {
 // typed responses without alerting; unexpected exceptions fire an immediate
 // Telegram alert via alertError so we catch 500s on their first occurrence.
 app.onError((err, c) => {
-  console.error('API Error:', err);
+  // Redact any agent bearer from the stringified error (its message/stack can
+  // carry the request URL `/api/agent/oc-<bearer>/…`) before it hits stdout /
+  // the Coolify log drain. The alertError() call below redacts message+context
+  // internally; this covers the direct console.error. (redactBearerTokens is
+  // imported at the top of this file.)
+  console.error('API Error:', redactBearerTokens(String(err)));
   if (err instanceof HTTPException) {
     return c.json({ error: err.message, code: err.status }, err.status);
   }

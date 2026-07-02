@@ -19,6 +19,11 @@ import { npcSimulation } from '../npc-simulation';
 import { agentAutonomyDriver } from '../agent-autonomy-driver';
 import { buildHouseAvatarConfig } from '../house-agent-seeder';
 import { agentOrchestrator } from '../agent-orchestrator';
+// The REAL shared building-center guard used by /visit-building, /building/:id/chat
+// and /move — imported from its dependency-free module so F1 exercises the ACTUAL
+// money-path guard (not a copy) without dragging the agent-gateway route graph
+// (which throws at module load without FINGERPRINT_SECRET) into the test env.
+import { resolveBuildingCenter } from '../building-center';
 
 type Sim = {
   npcs: Map<string, any>;
@@ -221,6 +226,54 @@ describe('P1 autonomy driver — decide → enter_building', () => {
     agentAutonomyDriver.unregisterHouseAgent(bodyId);
   });
 
+  // NO-MONEY INVARIANT (P1 slice 4 is DEFERRED): the driver + the [ACTION:]
+  // executor must NOT settle any CT. Proven structurally + behaviorally — the
+  // executor switch (move/emote/enter_building/enter_cove/talk_to_npc) has ZERO
+  // ledger dependency: enter_building/move/emote only mutate in-world path/activity
+  // (emit NO event), and talk emits exactly one `agent_chat` speech bubble. So the
+  // ONLY event a decide→enter_building→talk turn can produce is `agent_chat` —
+  // never a settlement/token event. Locks the invariant so slice 4 can only add
+  // money through the authed, session-bound ledger path, never the action parser.
+  it('driver + executor settle ZERO CT during a decide → enter_building → talk turn (no-money invariant)', async () => {
+    const bodyId = 'ocb-nomoney';
+    const sessionId = 'oc-nomoney';
+    const target = 'api-integrations'; // a real teaching building
+    const sim = asSim();
+    const center = NPC_BUILDING_CENTERS[target];
+    // Body placed INSIDE the radius so the proximity gate PASSES the talk — the
+    // richest side-effect path in the P1 loop; if a reward existed, it would fire
+    // here. The sim interval is stopped (beforeEach), so the body stays put.
+    registerBody(bodyId, sessionId, 'nanoclaw', center.x + (BUILDING_INTERACTION_RADIUS - 100), center.y);
+    agentAutonomyDriver.registerHouseAgent({
+      agentId: bodyId,
+      bodyId,
+      platformAgentId: 'pa-nomoney',
+      systemUserId: 'sys-nomoney',
+    });
+    sim.pendingEvents = [];
+    try {
+      // A full decide turn (LLM stub → enter_building; no ledger, no event) …
+      await agentAutonomyDriver.driveOnce(
+        bodyId,
+        async () => `Learning. [ACTION: enter_building(buildingId=${target})]`,
+      );
+      // … then a near talk through the REAL executor (emits its speech bubble).
+      sim.executeHatcherAction(bodyId, sim.getNpcById(bodyId), 'talk_to_npc', {
+        buildingId: target,
+        message: 'teach me about integrations',
+      });
+      expect(sim.pendingEvents.length).toBeGreaterThan(0); // the talk actually ran
+      for (const ev of sim.pendingEvents) {
+        // Speech only — never a settlement/token event. (If the executor ever
+        // touched claw-token-ledger it would also throw here in the DB-less test
+        // env, so a clean pass is a second, implicit no-money proof.)
+        expect(ev.type).toBe('agent_chat');
+      }
+    } finally {
+      agentAutonomyDriver.unregisterHouseAgent(bodyId);
+    }
+  });
+
   it('registry is bounded and register/unregister round-trips', () => {
     agentAutonomyDriver.registerHouseAgent({
       agentId: 'ocb-a',
@@ -315,41 +368,42 @@ describe('P1 house agent config + ambient-conversation exclusion', () => {
   });
 });
 
-describe('F1 — /visit-building prototype-key guard (real-CT money path)', () => {
-  // A prototype key ("constructor"/"__proto__"/"toString"/…) is TRUTHY under bare
-  // bracket access but is NOT an own property. The pre-fix `if (!center)` truthy
-  // guard admitted it, then `dx = npc.x - center.x` = `n - undefined` = NaN, and
+describe('F1 — resolveBuildingCenter prototype-key guard (real-CT money path)', () => {
+  // A prototype key ("constructor"/"__proto__"/"toString"/"hasOwnProperty"/…) is
+  // TRUTHY under bare bracket access but is NOT an own property. A pre-fix
+  // `const center = NPC_BUILDING_CENTERS[id]; if (!center)` truthy guard admitted
+  // it, then `dx = npc.x - center.x` = `n - undefined` = NaN, and
   // `NaN > BUILDING_INTERACTION_RADIUS` is FALSE → the proximity check was SKIPPED
-  // → creditClawTokens('building_visit') fired FROM ANYWHERE (a real-CT farm). The
-  // fix (agent-gateway.ts visit-building) is an Object.hasOwn own-property guard,
-  // mirroring the npc-simulation executor gate. token-economy owns the credit
-  // surface — flag for the master-PR money audit.
-  it('demonstrates the pre-fix vulnerability shape (truthy proto key → NaN distance)', () => {
+  // → the real-CT building credit fired FROM ANYWHERE (a CT farm). The fix is the
+  // shared `resolveBuildingCenter` (Object.hasOwn own-property lookup) used by
+  // /visit-building, /building/:id/chat AND /move so all three share ONE guard.
+  // These assertions exercise the REAL exported helper, not an inline re-impl.
+  it('resolveBuildingCenter returns null for prototype keys (credit path unreachable)', () => {
+    expect(resolveBuildingCenter('constructor')).toBeNull();
+    expect(resolveBuildingCenter('__proto__')).toBeNull();
+    expect(resolveBuildingCenter('toString')).toBeNull();
+    expect(resolveBuildingCenter('hasOwnProperty')).toBeNull();
+  });
+
+  it('resolveBuildingCenter returns real coords for a genuine buildingId', () => {
+    const realId = Object.keys(NPC_BUILDING_CENTERS)[0];
+    const center = resolveBuildingCenter(realId);
+    expect(center).not.toBeNull();
+    expect(typeof center!.x).toBe('number');
+    expect(typeof center!.y).toBe('number');
+    expect(center).toEqual(NPC_BUILDING_CENTERS[realId]);
+  });
+
+  it('demonstrates WHY the guard matters: a bare proto key yields a NaN distance the > RADIUS check cannot reject', () => {
     const proto = NPC_BUILDING_CENTERS as unknown as Record<string, { x: number; y: number } | undefined>;
     // Bare bracket access on a prototype key IS truthy (what the old guard saw)…
     expect(proto.constructor).toBeTruthy();
     // …and yields a NaN distance the `> RADIUS` check can never reject:
-    const center = proto.constructor as unknown as { x?: number; y?: number };
-    const dx = 11264 - (center.x as number); // n - undefined = NaN
+    const dx = 11264 - ((proto.constructor as unknown as { x?: number }).x as number); // n - undefined = NaN
     expect(Number.isNaN(dx)).toBe(true);
     expect(NaN > BUILDING_INTERACTION_RADIUS).toBe(false); // proximity NOT rejected
-  });
-
-  it('Object.hasOwn guard rejects prototype keys, admits a real buildingId', () => {
-    const realId = Object.keys(NPC_BUILDING_CENTERS)[0];
-    expect(Object.hasOwn(NPC_BUILDING_CENTERS, 'constructor')).toBe(false);
-    expect(Object.hasOwn(NPC_BUILDING_CENTERS, '__proto__')).toBe(false);
-    expect(Object.hasOwn(NPC_BUILDING_CENTERS, 'toString')).toBe(false);
-    expect(Object.hasOwn(NPC_BUILDING_CENTERS, realId)).toBe(true);
-  });
-
-  it('the guard drops the credit for a prototype key, proceeds for a real building', () => {
-    // Mirror the exact route guard condition (agent-gateway.ts /visit-building):
-    //   if (!Object.hasOwn(NPC_BUILDING_CENTERS, buildingId)) return 400  // no credit
-    const guardRejects = (buildingId: string) => !Object.hasOwn(NPC_BUILDING_CENTERS, buildingId);
-    expect(guardRejects('constructor')).toBe(true); // → 400, creditClawTokens NEVER reached
-    expect(guardRejects('__proto__')).toBe(true);
-    expect(guardRejects('hasOwnProperty')).toBe(true);
-    expect(guardRejects(Object.keys(NPC_BUILDING_CENTERS)[0])).toBe(false); // → proceeds to proximity + credit
+    // …which is exactly why the shared guard returns null for such keys (→ 400, the
+    // real-CT credit is NEVER reached):
+    expect(resolveBuildingCenter('constructor')).toBeNull();
   });
 });

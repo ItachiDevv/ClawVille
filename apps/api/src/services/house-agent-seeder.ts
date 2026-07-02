@@ -31,7 +31,7 @@
  */
 
 import { randomBytes } from 'node:crypto';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, asc } from 'drizzle-orm';
 import { db, openclawBots, agents } from '@clawville/database';
 import { resolveAgentSpecies } from './agent-session-config';
 import type { OpenClawAvatarConfig } from '@clawville/shared';
@@ -180,12 +180,46 @@ export async function ensureHouseAgent(): Promise<HouseAgentSeedResult | null> {
   };
   const config = { openclawBotId: botId, houseAgentId: HOUSE_AGENT_ID };
 
+  // R3: order by createdAt so "which platform_agents row is canonical" is
+  // DETERMINISTIC across boots. A bare .find() picked an ARBITRARY row, so two
+  // concurrent boots (before the partial unique index existed) could insert 2 rows
+  // for the same openclawBotId and bind a DIFFERENT one each boot. Keep the EARLIEST
+  // match and dedupe the rest. The new index
+  // (platform_agents_openclaw_bot_singleton) prevents NEW duplicates; this cleans up
+  // any that predate it.
   const ocAgents = await db
     .select()
     .from(agents)
-    .where(and(eq(agents.type, 'openclaw-bot'), eq(agents.userId, systemUserId)));
-  const existingAgent =
-    ocAgents.find((a) => (a.config as Record<string, unknown>)?.openclawBotId === botId) ?? null;
+    .where(and(eq(agents.type, 'openclaw-bot'), eq(agents.userId, systemUserId)))
+    .orderBy(asc(agents.createdAt));
+  const matching = ocAgents.filter(
+    (a) => (a.config as Record<string, unknown>)?.openclawBotId === botId,
+  );
+  const existingAgent = matching[0] ?? null;
+  if (matching.length > 1) {
+    const extras = matching.slice(1);
+    console.warn(
+      `[HouseAgent] ${matching.length} platform_agents rows share this openclawBotId — deduping ${extras.length} extra(s), keeping ${sessionDigest(existingAgent!.id)}`,
+    );
+    for (const extra of extras) {
+      // Best-effort: stop any cached runtime, then delete the duplicate row. SAFE —
+      // platform_agent_logs.agent_id FK is ON DELETE cascade and nothing else
+      // targets platform_agents.id, so no orphan/FK-violation risk.
+      try {
+        await agentOrchestrator.stopAgent(extra.id);
+      } catch {
+        /* not running / already stopped */
+      }
+      try {
+        await db.delete(agents).where(eq(agents.id, extra.id));
+      } catch (err) {
+        console.warn(
+          `[HouseAgent] failed to delete duplicate platform_agents row ${sessionDigest(extra.id)} (non-fatal):`,
+          err instanceof Error ? err.message : err,
+        );
+      }
+    }
+  }
 
   let platformAgentId: string;
   if (existingAgent) {
