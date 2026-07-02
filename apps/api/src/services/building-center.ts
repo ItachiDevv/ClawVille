@@ -1,4 +1,4 @@
-import { NPC_BUILDING_CENTERS } from '@clawville/shared';
+import { NPC_BUILDING_CENTERS, BUILDING_OPENCLAW_THEMES } from '@clawville/shared';
 
 // ---------------------------------------------------------------------------
 // resolveBuildingCenter — the ONE own-property guard for a building's center.
@@ -20,4 +20,42 @@ import { NPC_BUILDING_CENTERS } from '@clawville/shared';
 // into the unit-test env.
 export function resolveBuildingCenter(buildingId: string): { x: number; y: number } | null {
   return Object.hasOwn(NPC_BUILDING_CENTERS, buildingId) ? NPC_BUILDING_CENTERS[buildingId] : null;
+}
+
+// ---------------------------------------------------------------------------
+// resolveBuildingId — label-tolerant slug resolver for the [ACTION:] executor.
+// ---------------------------------------------------------------------------
+// The Hatcher/autonomy perception prompt lists each teaching building as
+// "<label> [<slug>]" (e.g. "Chum Bucket [code-development]"). The LLM MOSTLY
+// emits the bracketed slug, but occasionally echoes the human LABEL instead
+// (`enter_building(buildingId=Chum Bucket)` — observed live on staging). A
+// strict own-property slug check drops that as unknown → a wasted decide tick.
+//
+// This maps a raw buildingId to its canonical slug by, in order:
+//   1. exact own-property slug match (the contract-correct input), then
+//   2. a case/punctuation-insensitive match against the slug, then the label.
+// Only ACTUAL teaching buildings (own-property of NPC_BUILDING_CENTERS) resolve;
+// inherited prototype keys never do. The alias table is a Map (not a plain
+// object) so a normalized "constructor"/"tostring"/etc. can NEVER hit
+// Object.prototype and resolve to a truthy function (the same prototype-key
+// CT-farm class `resolveBuildingCenter` guards against). Returns the canonical
+// slug, or null if nothing matches. The SKILL.md contract still says "use the
+// slug"; this is a lenient fallback, not a new/changed param — no wire change.
+const normalizeBuildingKey = (s: string): string =>
+  s.trim().toLowerCase().replace(/[^a-z0-9]+/g, '');
+
+const BUILDING_ID_ALIASES: Map<string, string> = (() => {
+  const map = new Map<string, string>();
+  for (const slug of Object.keys(NPC_BUILDING_CENTERS)) {
+    map.set(normalizeBuildingKey(slug), slug);
+    const label = BUILDING_OPENCLAW_THEMES[slug]?.label;
+    if (label) map.set(normalizeBuildingKey(label), slug);
+  }
+  return map;
+})();
+
+export function resolveBuildingId(raw: string | undefined | null): string | null {
+  if (!raw) return null;
+  if (Object.hasOwn(NPC_BUILDING_CENTERS, raw)) return raw;
+  return BUILDING_ID_ALIASES.get(normalizeBuildingKey(raw)) ?? null;
 }
