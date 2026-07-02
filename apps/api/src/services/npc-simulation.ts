@@ -38,6 +38,7 @@ import {
   type CollaborationLogEntry,
 } from '@clawville/agent-runtime';
 import type { OpenClawClient } from './openclaw-client';
+import { resolveBuildingId } from './building-center';
 import { roomRegistry, FREE_ROAMER_NPC_IDS, derivePublicId } from './room-registry';
 import type { PlayerSnapshot } from '@clawville/shared';
 
@@ -1469,11 +1470,13 @@ class NpcSimulation {
         return;
       }
       case 'enter_building': {
-        const buildingId = params.buildingId;
-        // Object.hasOwn guard (defense-in-depth): keep inherited prototype keys
-        // out of the building whitelist lookup.
-        if (!buildingId || !Object.hasOwn(NPC_BUILDING_CENTERS, buildingId)) {
-          console.warn(`[Hatcher] enter_building dropped — unknown buildingId "${buildingId}"`);
+        // Label-tolerant slug resolution (prototype-key-safe): the LLM usually
+        // emits the bracketed slug ("code-development") but occasionally echoes
+        // the human label ("Chum Bucket"). resolveBuildingId maps either to the
+        // canonical slug and rejects inherited prototype keys. null → drop.
+        const buildingId = resolveBuildingId(params.buildingId);
+        if (!buildingId) {
+          console.warn(`[Hatcher] enter_building dropped — unknown buildingId "${params.buildingId}"`);
           return;
         }
         const center = NPC_BUILDING_CENTERS[buildingId];
@@ -1549,17 +1552,20 @@ class NpcSimulation {
         // Target is a public npcId OR a buildingId; message is the speech. The
         // visible effect is the agent's own chat bubble (mirror of /chat's
         // injectAgentChat). Validate the target exists + bound the message.
-        const target = params.npcId ?? params.buildingId;
-        if (!target) {
+        const rawTarget = params.npcId ?? params.buildingId;
+        if (!rawTarget) {
           console.warn('[Hatcher] talk_to_npc dropped — no npcId/buildingId target');
           return;
         }
-        // Object.hasOwn guard (defense-in-depth): a real npc OR an own-property
-        // building key — never an inherited prototype key.
-        const validTarget =
-          this.npcs.has(target) || Object.hasOwn(NPC_BUILDING_CENTERS, target);
-        if (!validTarget) {
-          console.warn(`[Hatcher] talk_to_npc dropped — unknown target "${target}"`);
+        // Resolve to a live npc id (as-is) OR a canonical building slug. The
+        // building branch is label-tolerant (resolveBuildingId maps "Chum
+        // Bucket" → "code-development") and prototype-key-safe — never an
+        // inherited key. `target` below is the resolved value used for both the
+        // proximity center and validity.
+        const buildingTarget = this.npcs.has(rawTarget) ? null : resolveBuildingId(rawTarget);
+        const target = this.npcs.has(rawTarget) ? rawTarget : buildingTarget;
+        if (!target) {
+          console.warn(`[Hatcher] talk_to_npc dropped — unknown target "${rawTarget}"`);
           return;
         }
         const message = (params.message ?? '').slice(0, HATCHER_TALK_MESSAGE_MAX).trim();
@@ -1585,7 +1591,8 @@ class NpcSimulation {
         if (!isHatcherProxy) {
           // Resolve the target's center: a live npc body, else the building
           // center (Object.hasOwn guard — never an inherited prototype key).
-          // `validTarget` above guarantees one of the two resolves.
+          // `target` is already the resolved npc id / canonical building slug,
+          // so one of the two branches resolves.
           const targetNpc = this.npcs.get(target);
           let targetX: number;
           let targetY: number;
@@ -1597,8 +1604,8 @@ class NpcSimulation {
             targetX = center.x;
             targetY = center.y;
           } else {
-            // Unreachable given validTarget, but fail-closed: drop rather than
-            // let an unresolvable target skip the distance check.
+            // Unreachable given `target` resolved above, but fail-closed: drop
+            // rather than let an unresolvable target skip the distance check.
             console.warn(`[Autonomy] talk_to_npc dropped — target "${target}" not resolvable for proximity`);
             return;
           }
