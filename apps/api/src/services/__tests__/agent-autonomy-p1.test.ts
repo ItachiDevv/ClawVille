@@ -121,7 +121,10 @@ describe('P1 proximity gate — executeHatcherAction talk_to_npc', () => {
       'ocb-far',
       'oc-far',
       'nanoclaw',
-      center.x + BUILDING_INTERACTION_RADIUS + 500, // beyond the radius
+      // Gate now measures EDGE distance. api-integrations has an 850+28 wu
+      // half-extent, so this must clear the footprint edge by > RADIUS: +2500
+      // from center ⇒ ~1622 wu from the edge, unambiguously gated.
+      center.x + 2500,
       center.y,
     );
     sim.pendingEvents = [];
@@ -150,6 +153,23 @@ describe('P1 proximity gate — executeHatcherAction talk_to_npc', () => {
     expect(sim.pendingEvents.length).toBe(1);
     expect(sim.pendingEvents[0].type).toBe('agent_chat');
     expect(sim.pendingEvents[0].data.message).toBe('hello teacher');
+  });
+
+  it('PASSES at a large building where the OLD center-distance gate was unsatisfiable (the fix)', () => {
+    // api-integrations footprint half-extent ≈ 878 wu. A body standing just off
+    // the footprint edge sits ~1050 wu from CENTER — the OLD `distToCenter <=
+    // 1000` gate would WRONGLY drop it (the pathfinder can't get closer than the
+    // collider edge, so the building was un-interactable). Edge-distance (~172 wu
+    // here) passes, which is the bug fix.
+    const sim = asSim();
+    const center = NPC_BUILDING_CENTERS[TARGET];
+    const distFromCenter = 1050;
+    expect(distFromCenter).toBeGreaterThan(BUILDING_INTERACTION_RADIUS); // old gate WOULD have dropped it
+    const npc = registerBody('ocb-edge', 'oc-edge', 'nanoclaw', center.x + distFromCenter, center.y);
+    sim.pendingEvents = [];
+    sim.executeHatcherAction('ocb-edge', npc, 'talk_to_npc', { buildingId: TARGET, message: 'hello teacher' });
+    expect(sim.pendingEvents.length).toBe(1); // edge-distance ≪ RADIUS → passes
+    expect(sim.pendingEvents[0].type).toBe('agent_chat');
   });
 
   it('does NOT gate a hatcher-proxy body (far still passes — live-partner exemption)', () => {

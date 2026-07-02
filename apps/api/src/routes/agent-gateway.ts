@@ -3,6 +3,7 @@ import { stream } from 'hono/streaming';
 import { z } from 'zod';
 import {
   BUILDING_INTERACTION_RADIUS,
+  buildingEdgeDistanceGamePx,
   BUILDING_OPENCLAW_THEMES,
   ACTIVITY_EMOJIS,
   BUILDING_ACTIVITIES,
@@ -2197,14 +2198,13 @@ agentGatewayRoutes.post('/:sessionId/visit-building', async (c) => {
     return c.json({ error: `Unknown building: ${buildingId}` }, 400);
   }
 
-  // Proximity check — the SHARED BUILDING_INTERACTION_RADIUS (agent-metaverse
-  // P1, founder-signed): one source of truth for "close enough to interact,"
-  // harmonized with the new server-side proximity gate in npc-simulation. Was an
-  // ad-hoc `VISIT_RADIUS = 2000`; tightened to 1000 wu.
-  const dx = npc.x - center.x;
-  const dy = npc.y - center.y;
-  const dist = Math.sqrt(dx * dx + dy * dy);
-  if (dist > BUILDING_INTERACTION_RADIUS) return c.json({ error: `Too far from ${buildingId} (${Math.round(dist)}px away, need <${BUILDING_INTERACTION_RADIUS}px)` }, 400);
+  // Proximity check — measured to the building's collider FOOTPRINT (edge), NOT
+  // its center. A center-radius gate is geometrically unsatisfiable for the
+  // larger buildings (memory-rag / messaging-channels): their walkable approach
+  // is >1000 wu from center, so no agent could ever visit them. `resolveBuildingCenter`
+  // above already rejects unknown ids; null here → Infinity (fail-closed).
+  const dist = buildingEdgeDistanceGamePx(npc.x, npc.y, buildingId) ?? Infinity;
+  if (dist > BUILDING_INTERACTION_RADIUS) return c.json({ error: `Too far from ${buildingId} (${Math.round(dist)}px from its edge, need <${BUILDING_INTERACTION_RADIUS}px)` }, 400);
 
   // Set building activity
   const activities = BUILDING_ACTIVITIES[buildingId] ?? ['thinking'];
@@ -2362,17 +2362,15 @@ agentGatewayRoutes.post('/:sessionId/building/:buildingId/chat', async (c) => {
   const center = resolveBuildingCenter(buildingId);
   if (!center) return c.json({ error: `Unknown building: ${buildingId}` }, 400);
 
-  // Proximity check — must be near the building to chat with its character. Uses
-  // the shared BUILDING_INTERACTION_RADIUS (1000 wu), the SAME gate as
-  // /visit-building (was an ad-hoc CHAT_RADIUS=2000).
+  // Proximity check — measured to the building's collider FOOTPRINT (edge), the
+  // SAME gate as /visit-building. Center-distance was unsatisfiable for the
+  // larger buildings; `resolveBuildingCenter` above rejects unknown ids.
   const { npcId, npc } = resolved;
-  const dx = npc.x - center.x;
-  const dy = npc.y - center.y;
-  const dist = Math.sqrt(dx * dx + dy * dy);
+  const dist = buildingEdgeDistanceGamePx(npc.x, npc.y, buildingId) ?? Infinity;
   if (dist > BUILDING_INTERACTION_RADIUS) {
     return c.json(
       {
-        error: `Too far from ${buildingId} (${Math.round(dist)}px away, need <${BUILDING_INTERACTION_RADIUS}px). Move closer via POST /move.`,
+        error: `Too far from ${buildingId} (${Math.round(dist)}px from its edge, need <${BUILDING_INTERACTION_RADIUS}px). Move closer via POST /move.`,
       },
       400,
     );
