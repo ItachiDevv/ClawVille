@@ -159,8 +159,14 @@ class AgentAutonomyDriver {
       const runtime = agentOrchestrator.getRunningAgentRuntime(entry.platformAgentId);
       if (!runtime) continue; // runtime not warmed yet — try next tick
       this.inFlight.add(entry.agentId);
-      void this.driveOnce(entry.agentId, (prompt) =>
-        this.withTimeout(runtime.decide(prompt, { maxTokens: DECIDE_MAX_TOKENS })),
+      // Pass throttledIdle so driveOnce suppresses the LLM-bearing phases when
+      // the world is empty (cost control ≈ $1–2/day/agent); the cheap
+      // walking/cooldown polls inside driveOnce still run every tick so the body
+      // keeps arriving / cooling down.
+      void this.driveOnce(
+        entry.agentId,
+        (prompt) => this.withTimeout(runtime.decide(prompt, { maxTokens: DECIDE_MAX_TOKENS })),
+        throttledIdle,
       )
         .catch((err) =>
           console.error(
@@ -169,10 +175,6 @@ class AgentAutonomyDriver {
           ),
         )
         .finally(() => this.inFlight.delete(entry.agentId));
-      // NOTE: throttledIdle only suppresses the LLM-bearing phases INSIDE
-      // driveOnce (via the flag passed below) — walking/cooldown polls are free
-      // and always run so the body keeps progressing.
-      void throttledIdle;
     }
   }
 
@@ -245,6 +247,14 @@ class AgentAutonomyDriver {
     // Phase: deciding (default) → choose a teacher by need + walk (LLM).
     const prompt = this.buildDecisionPrompt(perception, entry);
     const reply = await decide(prompt);
+    // N3: clear any STALE destination from a PRIOR turn BEFORE dispatching, so
+    // post-dispatch destinationBuildingId is non-null ONLY if THIS turn's
+    // enter_building actually succeeded. Without this, a dropped enter_building
+    // (e.g. no path found) would leave a stale value and the driver would
+    // "walk" to a building it did not choose this turn. A valid enter_building
+    // re-stamps the field via setNpcPath; a re-pick of the same building still
+    // works (it is simply re-set).
+    npcSimulation.clearDestinationBuilding(entry.bodyId);
     npcSimulation.dispatchHatcherActions(entry.bodyId, reply);
     // Learn the CHOSEN target from the body itself: enter_building →
     // setNpcPath(..., buildingId) stamps destinationBuildingId. If the reply

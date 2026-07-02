@@ -487,6 +487,20 @@ class NpcSimulation {
     return true;
   }
 
+  /**
+   * True for a SELF-MANAGED OpenClaw body (the house agent / autonomous fleet).
+   * Such bodies are driven EXCLUSIVELY by `agentAutonomyDriver` on its own ~30s
+   * loop, so the 200ms sim must NOT pull one into an ambient NPC↔NPC
+   * conversation: that would set `inConversation` (freezing the driver mid
+   * walk→talk) AND produce degenerate empty bubbles (nanoclaw `chat()` returns
+   * ''). Mirrors the `isHumanControlledOpenClawNpc` suppression, scoped tightly
+   * to self-managed — Hatcher (server-managed) is intentionally NOT excluded and
+   * keeps its existing ambient behavior. (N4)
+   */
+  private isSelfManagedOpenClawNpc(npc: NpcRuntimeState): boolean {
+    return npc.isOpenClaw && npc.autonomyMode === 'self-managed';
+  }
+
   /** Prime/extend the human-driving suppression window for a specific agent. */
   markHumanControlledOpenClaw(agentId: string, ttlMs = 3000): void {
     this.humanControlledOpenClawUntil.set(agentId, Date.now() + ttlMs);
@@ -1125,6 +1139,18 @@ class NpcSimulation {
   /** Get NPC state by ID (for agent perception) */
   getNpcById(npcId: string): NpcRuntimeState | null {
     return this.npcs.get(npcId) ?? null;
+  }
+
+  /**
+   * Null a body's destinationBuildingId. Used by the autonomy driver (N3) to
+   * clear any STALE prior-turn destination BEFORE dispatching a new decision, so
+   * a dropped enter_building leaves the field null instead of a stale value the
+   * driver would misread as this turn's choice. A successful enter_building
+   * re-stamps it via setNpcPath.
+   */
+  clearDestinationBuilding(npcId: string): void {
+    const npc = this.npcs.get(npcId);
+    if (npc) npc.destinationBuildingId = null;
   }
 
   /** Map a session ID to the NPC body it controls */
@@ -1982,7 +2008,10 @@ class NpcSimulation {
 
   private planApproachNpc(npc: NpcRuntimeState) {
     const others = Array.from(this.npcs.values()).filter(
-      (o) => o.id !== npc.id && !o.isDead && !o.inCombat && !o.inConversation && o.activity !== 'sleeping'
+      (o) => o.id !== npc.id && !o.isDead && !o.inCombat && !o.inConversation && o.activity !== 'sleeping' &&
+        // N4: don't let ambient NPCs converge on / pair with a self-managed
+        // (house/fleet) body — it is driver-owned, not part of town liveliness.
+        !this.isSelfManagedOpenClawNpc(o)
     );
     if (others.length === 0) { npc.behaviorCooldown = 20; return; }
 
@@ -2515,6 +2544,7 @@ class NpcSimulation {
     return Array.from(this.npcs.values()).filter(
       (n) =>
         !this.isHumanControlledOpenClawNpc(n.id, now) &&
+        !this.isSelfManagedOpenClawNpc(n) && // N4: never an ambient-conversation subject
         !n.isDead && !n.inConversation && !n.inCombat && now >= n.conversationCooldownUntil
     );
   }
@@ -2525,6 +2555,7 @@ class NpcSimulation {
     const now = Date.now();
     for (const other of this.npcs.values()) {
       if (this.isHumanControlledOpenClawNpc(other.id, now)) continue;
+      if (this.isSelfManagedOpenClawNpc(other)) continue; // N4: not an ambient-conversation partner
       if (other.id === npc.id || other.isDead || other.inConversation || other.inCombat || now < other.invulnerableUntil || now < other.conversationCooldownUntil) continue;
       const dx = other.x - npc.x;
       const dy = other.y - npc.y;
