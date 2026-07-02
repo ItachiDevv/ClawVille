@@ -23,7 +23,8 @@ import { agentOrchestrator } from '../agent-orchestrator';
 // and /move — imported from its dependency-free module so F1 exercises the ACTUAL
 // money-path guard (not a copy) without dragging the agent-gateway route graph
 // (which throws at module load without FINGERPRINT_SECRET) into the test env.
-import { resolveBuildingCenter } from '../building-center';
+import { resolveBuildingCenter, resolveBuildingId } from '../building-center';
+import { BUILDING_OPENCLAW_THEMES } from '@clawville/shared';
 
 type Sim = {
   npcs: Map<string, any>;
@@ -405,5 +406,50 @@ describe('F1 — resolveBuildingCenter prototype-key guard (real-CT money path)'
     // …which is exactly why the shared guard returns null for such keys (→ 400, the
     // real-CT credit is NEVER reached):
     expect(resolveBuildingCenter('constructor')).toBeNull();
+  });
+});
+
+describe('resolveBuildingId — label-tolerant slug resolution (dropped-decide-tick fix)', () => {
+  // The autonomy/Hatcher perception lists each building as "<label> [<slug>]".
+  // The LLM usually emits the slug, but occasionally the human LABEL instead
+  // (observed live: `enter_building(buildingId=Chum Bucket)` → a dropped tick).
+  // resolveBuildingId maps EITHER form to the canonical slug, and — like
+  // resolveBuildingCenter — never resolves an inherited prototype key.
+  it('passes a genuine slug through unchanged', () => {
+    const slug = Object.keys(NPC_BUILDING_CENTERS)[0];
+    expect(resolveBuildingId(slug)).toBe(slug);
+  });
+
+  it('resolves a human label to its canonical slug', () => {
+    // code-development ⇔ "Chum Bucket" is the exact live-observed miss.
+    expect(resolveBuildingId('Chum Bucket')).toBe('code-development');
+    // Every themed teaching building resolves by its label.
+    for (const slug of Object.keys(NPC_BUILDING_CENTERS)) {
+      const label = BUILDING_OPENCLAW_THEMES[slug]?.label;
+      if (label) expect(resolveBuildingId(label)).toBe(slug);
+    }
+  });
+
+  it('is case/punctuation-insensitive for labels and slugs', () => {
+    expect(resolveBuildingId('chum bucket')).toBe('code-development');
+    expect(resolveBuildingId('  CHUM-BUCKET  ')).toBe('code-development');
+    expect(resolveBuildingId('CODE_DEVELOPMENT')).toBe('code-development');
+  });
+
+  it('returns null for prototype keys and unknown targets (no CT-farm alias)', () => {
+    expect(resolveBuildingId('constructor')).toBeNull();
+    expect(resolveBuildingId('__proto__')).toBeNull();
+    expect(resolveBuildingId('toString')).toBeNull();
+    expect(resolveBuildingId('hasOwnProperty')).toBeNull();
+    expect(resolveBuildingId('not-a-building')).toBeNull();
+    expect(resolveBuildingId('')).toBeNull();
+    expect(resolveBuildingId(null)).toBeNull();
+    expect(resolveBuildingId(undefined)).toBeNull();
+  });
+
+  it('only ever returns an own-property teaching-building slug', () => {
+    const resolved = resolveBuildingId('Chum Bucket');
+    expect(resolved).not.toBeNull();
+    expect(Object.hasOwn(NPC_BUILDING_CENTERS, resolved!)).toBe(true);
   });
 });
