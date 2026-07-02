@@ -3,6 +3,7 @@ import { stream } from 'hono/streaming';
 import { z } from 'zod';
 import {
   NPC_BUILDING_CENTERS,
+  BUILDING_INTERACTION_RADIUS,
   BUILDING_OPENCLAW_THEMES,
   ACTIVITY_EMOJIS,
   BUILDING_ACTIVITIES,
@@ -12,7 +13,6 @@ import {
   DEFAULT_AGENT_CATEGORY,
   DEFAULT_AGENT_HARNESS,
   type NpcActivity,
-  type AgentPerception,
   type AgentStats,
   type OpenClawRegistration,
 } from '@clawville/shared';
@@ -1926,118 +1926,11 @@ async function resolveSession(sessionId: string) {
 }
 
 // ---------------------------------------------------------------------------
-// buildPerception — shared helper for GET /perception and SSE /events
+// Perception — GET /perception and SSE /events call the SHARED builder on the
+// sim (agent-metaverse P1). `npcSimulation.buildPerception(npcId)` is the single
+// source of truth (the former module-local `buildPerception` moved there so the
+// autonomy driver reuses the exact same projection — no duplication/drift).
 // ---------------------------------------------------------------------------
-function buildPerception(npcId: string): AgentPerception | null {
-  const npc = npcSimulation.getNpcById(npcId);
-  if (!npc) return null;
-
-  const allNpcs = npcSimulation.getAllNpcs();
-  const PERCEPTION_RADIUS = 500;
-
-  // Nearby NPCs within radius
-  const nearbyNpcs = allNpcs
-    .filter((other) => other.id !== npcId)
-    .map((other) => {
-      const dx = other.x - npc.x;
-      const dy = other.y - npc.y;
-      const distance = Math.sqrt(dx * dx + dy * dy);
-      return { other, distance };
-    })
-    .filter(({ distance }) => distance <= PERCEPTION_RADIUS)
-    .map(({ other, distance }) => ({
-      // B1 ROOT-FIX: `other.id` for an avatar body is the non-secret
-      // `ocb-<base64url(agentId)>` now (never the `oc-<sessionId>` bearer), so exposing it
-      // to another connected agent here no longer leaks a real-CT credential.
-      npcId: other.id,
-      name: other.name,
-      x: other.x,
-      y: other.y,
-      distance: Math.round(distance),
-      species: other.species,
-      hp: other.hp,
-      isDead: other.isDead,
-      inCombat: other.inCombat,
-      activity: other.activity,
-      level: other.level,
-      isOpenClaw: other.isOpenClaw,
-    }));
-
-  // Nearby buildings
-  const nearbyBuildings = (Object.entries(NPC_BUILDING_CENTERS) as [string, { x: number; y: number }][]).map(([buildingId, center]) => {
-    const dx = center.x - npc.x;
-    const dy = center.y - npc.y;
-    const distance = Math.sqrt(dx * dx + dy * dy);
-    const theme = BUILDING_OPENCLAW_THEMES[buildingId];
-    return {
-      buildingId,
-      label: theme?.label ?? buildingId,
-      cryptoFocus: theme?.focus ?? '',
-      centerX: center.x,
-      centerY: center.y,
-      distance: Math.round(distance),
-    };
-  }).sort((a, b) => a.distance - b.distance);
-
-  // Active conversations involving this NPC
-  const conversations = npcSimulation.getActiveConversations();
-  const activeConversations = conversations.map((conv) => ({
-    id: conv.id,
-    // B1 ROOT-FIX: participant ids are non-secret (`ocb-<base64url(agentId)>` for avatar
-    // bodies) — safe to emit directly.
-    participants: [conv.npc1Id, conv.npc2Id],
-    latestMessage: conv.messages.length > 0
-      ? conv.messages[Math.min(conv.currentIndex, conv.messages.length - 1)].text
-      : '',
-    involvesMe: conv.npc1Id === npcId || conv.npc2Id === npcId,
-  }));
-
-  // Active combats
-  const combats = npcSimulation.getActiveCombats();
-  const activeCombats = combats.map((combat) => ({
-    id: combat.id,
-    // B1 ROOT-FIX: attacker/defender/round ids are non-secret now.
-    attacker: combat.attacker,
-    defender: combat.defender,
-    involvesMe: combat.attacker === npcId || combat.defender === npcId,
-    lastRound: combat.rounds.length > 0
-      ? combat.rounds[combat.rounds.length - 1]
-      : null,
-  }));
-
-  const arenaRound = npcSimulation.getMode() === 'arena'
-    ? (() => {
-        const snapshot = npcSimulation.getSnapshot();
-        return snapshot.arenaRound;
-      })()
-    : null;
-
-  return {
-    self: {
-      npcId: npc.id,
-      x: npc.x,
-      y: npc.y,
-      hp: npc.hp,
-      maxHp: npc.maxHp,
-      level: npc.level,
-      kills: npc.kills,
-      xp: npc.xp,
-      inventory: npc.inventory,
-      activity: npc.activity,
-      inCombat: npc.inCombat,
-      isDead: npc.isDead,
-      combatAction: npc.combatAction,
-      direction: npc.direction,
-    },
-    nearbyNpcs,
-    nearbyBuildings,
-    activeConversations,
-    activeCombats,
-    gameMode: npcSimulation.getMode(),
-    arenaRound,
-    timestamp: Date.now(),
-  };
-}
 
 // ---------------------------------------------------------------------------
 // GET /api/agent/:sessionId/perception
@@ -2047,7 +1940,7 @@ agentGatewayRoutes.get('/:sessionId/perception', async (c) => {
   const resolved = await resolveSession(sessionId);
   if (!resolved) return c.json({ error: 'Invalid or expired agent session' }, 404);
 
-  const perception = buildPerception(resolved.npcId);
+  const perception = npcSimulation.buildPerception(resolved.npcId);
   if (!perception) return c.json({ error: 'NPC state unavailable' }, 404);
 
   return c.json(perception);
@@ -2240,12 +2133,14 @@ agentGatewayRoutes.post('/:sessionId/visit-building', async (c) => {
   const center = NPC_BUILDING_CENTERS[buildingId];
   if (!center) return c.json({ error: `Unknown building: ${buildingId}` }, 400);
 
-  // Check proximity — relaxed to 2000px for early testing (TODO: tighten to 80px)
-  const VISIT_RADIUS = 2000;
+  // Proximity check — the SHARED BUILDING_INTERACTION_RADIUS (agent-metaverse
+  // P1, founder-signed): one source of truth for "close enough to interact,"
+  // harmonized with the new server-side proximity gate in npc-simulation. Was an
+  // ad-hoc `VISIT_RADIUS = 2000`; tightened to 1000 wu.
   const dx = npc.x - center.x;
   const dy = npc.y - center.y;
   const dist = Math.sqrt(dx * dx + dy * dy);
-  if (dist > VISIT_RADIUS) return c.json({ error: `Too far from ${buildingId} (${Math.round(dist)}px away, need <${VISIT_RADIUS}px)` }, 400);
+  if (dist > BUILDING_INTERACTION_RADIUS) return c.json({ error: `Too far from ${buildingId} (${Math.round(dist)}px away, need <${BUILDING_INTERACTION_RADIUS}px)` }, 400);
 
   // Set building activity
   const activities = BUILDING_ACTIVITIES[buildingId] ?? ['thinking'];
@@ -3040,7 +2935,7 @@ agentGatewayRoutes.get('/:sessionId/events', async (c) => {
       if (!npc) break;
 
       // --- perception every 2s ---
-      const perception = buildPerception(npcId);
+      const perception = npcSimulation.buildPerception(npcId);
       if (perception) {
         await stream.write(`event: perception\ndata: ${JSON.stringify(perception)}\n\n`);
       }
