@@ -101,7 +101,7 @@ export class AvatarSimulationBridge {
       // Phase 3: inject services so economic actions (BUY_ITEM, LEARN_SKILL) can execute.
       // buildRuntimeServices passes the avatar-keyed params straight through to
       // the ledger; the only translation it does now is mapping runtime-emitted
-      // source labels (e.g. 'shop', 'bazaar') to the ledger's enum values.
+      // source labels (e.g. 'shop') to the ledger's enum values.
       services: buildRuntimeServices(db),
     });
 

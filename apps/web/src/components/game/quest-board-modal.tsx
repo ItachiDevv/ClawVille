@@ -6,9 +6,10 @@
  * previous implementation: every `useQuery` / `useMutation` / store hook lives
  * on in place, only the presentation layer changed.
  *
- * Visual language: parchment-scroll + legendary-drop aesthetic, following the
- * bazaar-modal anchor. Quests are team-posted coding bounties — this file
- * treats the board like an RPG quest log crossed with a PR tracker.
+ * Visual language: parchment-scroll + legendary-drop aesthetic, built from the
+ * shared `@/components/rpg` primitives (RuneFrame, RpgButton, RpgModal,
+ * ItemCard). Quests are team-posted coding bounties — this file treats the
+ * board like an RPG quest log crossed with a PR tracker.
  *
  * Tier → rarity mapping (see Team 3b decision notes):
  *   side_quest  → uncommon (green)   — real, scoped work, legit but small
@@ -16,8 +17,8 @@
  *   legendary   → legendary (gold)   — pulses automatically via rarity tier
  *
  * Submission flow: nested `RpgModal` fired from the Active tab. Escape closes
- * the inner modal first, then the parent (same capture-phase pattern used by
- * the bazaar's review form).
+ * the inner modal first, then the parent (a capture-phase useEffect pattern
+ * for dismissing a nested modal before the outer one sees the keypress).
  */
 
 import { useState, useEffect, useCallback, useMemo, type CSSProperties, type ReactNode } from 'react';

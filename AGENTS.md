@@ -296,7 +296,7 @@ Every scaffolded feature (compiled but not in user flow) MUST carry a `FEATURE_G
 
 Gate block (TS comment lines): `FEATURE_GATE: <name>` · `Status` · `Metric to graduate` · `Current reading` (last `/dash` value) · `Review deadline` (YYYY-MM-DD) · `On deadline` · `Reference`.
 
-Active gates as of 2026-04-21: `x402_payment_middleware`, `multi_agent_roster`, `skill_marketplace` (bazaar, marketplace, auctions). See `improvements.md` §7.
+Active gates as of 2026-04-21: `x402_payment_middleware`, `multi_agent_roster`. ~~`skill_marketplace` (bazaar, marketplace, auctions)~~ **— GATE DELETED 2026-07-02: peer skill-commerce (bazaar / marketplace / auctions / `published_skills`) fully REMOVED (prompt-injection risk), not un-paused.** See `improvements.md` §7 (if present).
 
 ### No lazy handoffs — full ship loop is YOUR job
 
