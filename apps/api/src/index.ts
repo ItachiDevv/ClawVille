@@ -567,6 +567,28 @@ startSimulation(arenaMode);
     console.error('[API] System NPC seeder failed:', err);
   }
 
+  // Agent-metaverse P1 — activate the ONE ClawVille-hosted autonomous "house"
+  // agent (warms its ElizaOS runtime, registers its in-world body, hands it to
+  // the autonomy driver) then START the driver's own ~30s perceive→decide→act
+  // loop. Ordered AFTER the system-NPC seeder (shares the system user + a warmed
+  // runtime) and AFTER startSimulation() above (registerOpenClaw needs the live
+  // sim). Non-fatal: a house-agent failure must not crash boot — the world still
+  // runs, just without the autonomous agent. Driver starts regardless so a later
+  // (re)register still gets driven.
+  try {
+    const { ensureHouseAgent } = await import('./services/house-agent-seeder');
+    const { agentAutonomyDriver } = await import('./services/agent-autonomy-driver');
+    const house = await ensureHouseAgent();
+    if (house) {
+      console.log(
+        `[API] House agent active: body ${house.bodyId}${house.created ? ' [new]' : ''}`,
+      );
+    }
+    agentAutonomyDriver.start();
+  } catch (err) {
+    console.error('[API] House agent activation failed (non-fatal):', err);
+  }
+
   // P0 lifecycle-truth — NO eager boot-rehydration. v7 already survives a restart
   // via LAZY restore (`openclaw-session-restore.ts`, wired into
   // `validateLiveAgentSession`): on the first post-restart bearer use it rebuilds
@@ -1075,6 +1097,13 @@ async function gracefulShutdown(signal: string) {
     const { getCollaborationBroker } = await import('@clawville/agent-runtime');
 
     stopSimulation();
+    // Agent-metaverse P1 — stop the autonomy driver's 30s loop.
+    try {
+      const { agentAutonomyDriver } = await import('./services/agent-autonomy-driver');
+      agentAutonomyDriver.stop();
+    } catch {
+      // If the driver module failed to load earlier, there's nothing to stop.
+    }
     activityRoomManager.stopSweeper();
     activityQueueService.stopMatchmaker();
     tournamentManager.stopStartTriggerSweeper();
