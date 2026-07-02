@@ -18,6 +18,7 @@ import { NPC_BUILDING_CENTERS, BUILDING_INTERACTION_RADIUS } from '@clawville/sh
 import { npcSimulation } from '../npc-simulation';
 import { agentAutonomyDriver } from '../agent-autonomy-driver';
 import { buildHouseAvatarConfig } from '../house-agent-seeder';
+import { agentOrchestrator } from '../agent-orchestrator';
 
 type Sim = {
   npcs: Map<string, any>;
@@ -176,6 +177,7 @@ describe('P1 autonomy driver — decide → enter_building', () => {
       agentId: bodyId,
       bodyId,
       platformAgentId: 'pa-house-test',
+      systemUserId: 'sys-house-test',
     });
 
     // Spy on the sim's action executor so the assertion tests the DRIVER's
@@ -224,10 +226,50 @@ describe('P1 autonomy driver — decide → enter_building', () => {
       agentId: 'ocb-a',
       bodyId: 'ocb-a',
       platformAgentId: 'pa-a',
+      systemUserId: 'sys-a',
     });
     expect(agentAutonomyDriver.hasHouseAgent('ocb-a')).toBe(true);
     agentAutonomyDriver.unregisterHouseAgent('ocb-a');
     expect(agentAutonomyDriver.hasHouseAgent('ocb-a')).toBe(false);
+  });
+
+  // Boot-timing robustness (2026-07-01 staging bug): the seeder no longer warms
+  // the ElizaOS runtime at boot (that raced a 30s plugin-init timeout in the boot
+  // crush and could leave the agent bodyless). The driver LAZY-warms on tick:
+  // when the runtime isn't ready it must call
+  // ensureAgentRuntime(platformAgentId, systemUserId, {isHouse:true}) — preserving
+  // the inactivity-sweep exemption — and NOT drive; the `warming` overlap guard
+  // must prevent a second concurrent warm on the next tick.
+  it('lazy-warms the runtime on tick when the brain is not ready, preserving isHouse (boot-timing)', () => {
+    const orch = agentOrchestrator as unknown as {
+      getRunningAgentRuntime: (id: string) => unknown;
+      ensureAgentRuntime: (id: string, userId?: string, opts?: { isHouse?: boolean }) => Promise<unknown>;
+    };
+    const realGet = orch.getRunningAgentRuntime;
+    const realEnsure = orch.ensureAgentRuntime;
+    const ensureCalls: Array<[string, string | undefined, { isHouse?: boolean } | undefined]> = [];
+    orch.getRunningAgentRuntime = () => null; // brain never ready in this test
+    orch.ensureAgentRuntime = async (id, userId, opts) => {
+      ensureCalls.push([id, userId, opts]);
+      return null;
+    };
+    try {
+      agentAutonomyDriver.registerHouseAgent({
+        agentId: 'ocb-warm',
+        bodyId: 'ocb-warm',
+        platformAgentId: 'pa-warm',
+        systemUserId: 'sys-warm',
+      });
+      // Two synchronous ticks: the overlap guard must launch EXACTLY one warm.
+      (agentAutonomyDriver as unknown as { tick: () => void }).tick();
+      (agentAutonomyDriver as unknown as { tick: () => void }).tick();
+      expect(ensureCalls.length).toBe(1);
+      expect(ensureCalls[0]).toEqual(['pa-warm', 'sys-warm', { isHouse: true }]);
+    } finally {
+      agentAutonomyDriver.unregisterHouseAgent('ocb-warm');
+      orch.getRunningAgentRuntime = realGet;
+      orch.ensureAgentRuntime = realEnsure;
+    }
   });
 });
 

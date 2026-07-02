@@ -50,7 +50,11 @@ class AgentOrchestrator {
    * Ensure an agent runtime is available (lazy-start).
    * Starts the runtime on first chat message, not on config save.
    */
-  async ensureAgentRuntime(agentId: string, userId?: string): Promise<ElizaRuntime | null> {
+  async ensureAgentRuntime(
+    agentId: string,
+    userId?: string,
+    opts?: { isHouse?: boolean },
+  ): Promise<ElizaRuntime | null> {
     // Check if already running
     const existing = this.runningAgents.get(agentId);
     if (existing) {
@@ -84,7 +88,10 @@ class AgentOrchestrator {
       if (agent.status !== 'stopped' && agent.status !== 'pending') {
         await this.updateAgentStatus(agentId, 'stopped');
       }
-      await this.startAgent(agentId, agent.userId);
+      // Forward opts (e.g. isHouse) so a LAZY-warmed house agent keeps its
+      // inactivity-sweep exemption — the autonomy driver warms via this path
+      // (off the boot crush), NOT via the seeder's boot-time startAgent.
+      await this.startAgent(agentId, agent.userId, opts);
       const running = this.runningAgents.get(agentId);
       return running?.runtime ?? null;
     } catch (error) {
