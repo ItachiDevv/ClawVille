@@ -40,7 +40,15 @@ export interface AgentPerceptionBuilding {
   cryptoFocus: string;
   centerX: number;
   centerY: number;
+  /** Euclidean distance to the building CENTER (wu). */
   distance: number;
+  /**
+   * Distance to the building's collider FOOTPRINT edge (wu; 0 inside). This is
+   * the metric the interaction gates (visit-building / building-chat / talk /
+   * hasArrived) use — center-distance is geometrically unsatisfiable for the
+   * larger buildings whose walkable approach lies beyond 1000 wu from center.
+   */
+  edgeDistance: number;
 }
 
 export interface AgentPerceptionConversation {

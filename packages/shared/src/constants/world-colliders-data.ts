@@ -160,6 +160,41 @@ export function getServerColliders(): readonly ServerCollider2D[] {
 }
 
 // ---------------------------------------------------------------------------
+// Building interaction geometry — edge-distance, NOT center-distance.
+// ---------------------------------------------------------------------------
+// The agent building-interaction gates (visit-building, building/:id/chat,
+// talk_to_npc, the autonomy driver's hasArrived) must measure proximity to a
+// building's actual FOOTPRINT, not its center. The buildings are large
+// (memory-rag 722×723 wu half-extents, messaging-channels / api-integrations
+// 850×850), and their collider (+buffer +the moving entity's half-width +A*
+// padding) pushes the nearest WALKABLE approach well beyond 1000 wu from the
+// center — so a `distToCenter <= BUILDING_INTERACTION_RADIUS(=1000)` gate is
+// geometrically UNSATISFIABLE for the bigger buildings (a latent bug for the
+// hosted house agent too, not just connected agents). Measuring to the collider
+// AABB edge makes "near the building" reachable regardless of footprint.
+const BUILDING_COLLIDER_BY_ID: Readonly<Record<string, ServerCollider2D>> = Object.freeze(
+  Object.fromEntries(
+    SERVER_COLLIDERS.filter((c) => Object.hasOwn(BUILDING_TILE_ZONES, c.id)).map((c) => [c.id, c]),
+  ),
+);
+
+/**
+ * Distance in GAME-PIXEL units from a game-pixel point to the EDGE of a
+ * building's collider AABB (0 when the point is inside the footprint). Returns
+ * `null` for an unknown / non-building id (fail-closed at the call site).
+ * `halfX/halfZ` on the collider already include BUILDING_COLLISION_BUFFER.
+ */
+export function buildingEdgeDistanceGamePx(x: number, y: number, buildingId: string): number | null {
+  if (!Object.hasOwn(BUILDING_COLLIDER_BY_ID, buildingId)) return null;
+  const col = BUILDING_COLLIDER_BY_ID[buildingId]!;
+  const cx = col.centerX + MAP_HALF; // world-space → game-pixel
+  const cy = col.centerZ + MAP_HALF;
+  const dx = Math.max(0, Math.abs(x - cx) - col.halfX);
+  const dy = Math.max(0, Math.abs(y - cy) - col.halfZ);
+  return Math.hypot(dx, dy);
+}
+
+// ---------------------------------------------------------------------------
 // Module-scope scratch — zero per-call allocations
 // ---------------------------------------------------------------------------
 

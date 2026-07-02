@@ -2,6 +2,7 @@ import {
   NPC_DEFINITIONS,
   NPC_BUILDING_CENTERS,
   BUILDING_INTERACTION_RADIUS,
+  buildingEdgeDistanceGamePx,
   MAP_LOCATIONS,
   BUILDING_OPENCLAW_THEMES,
   type NpcDefinition,
@@ -1239,6 +1240,11 @@ class NpcSimulation {
         centerX: center.x,
         centerY: center.y,
         distance: Math.round(distance),
+        // Distance to the building's collider FOOTPRINT edge (0 inside). This is
+        // the metric the interaction gates use — center-distance is unsatisfiable
+        // for the larger buildings. Falls back to center-distance if the id has
+        // no collider entry (defensive; all 10 do).
+        edgeDistance: Math.round(buildingEdgeDistanceGamePx(npc.x, npc.y, buildingId) ?? distance),
       };
     }).sort((a, b) => a.distance - b.distance);
 
@@ -1594,22 +1600,21 @@ class NpcSimulation {
           // `target` is already the resolved npc id / canonical building slug,
           // so one of the two branches resolves.
           const targetNpc = this.npcs.get(target);
-          let targetX: number;
-          let targetY: number;
+          let dist: number;
           if (targetNpc) {
-            targetX = targetNpc.x;
-            targetY = targetNpc.y;
+            // NPC target → point-to-point distance.
+            dist = Math.hypot(npc.x - targetNpc.x, npc.y - targetNpc.y);
           } else if (Object.hasOwn(NPC_BUILDING_CENTERS, target)) {
-            const center = NPC_BUILDING_CENTERS[target];
-            targetX = center.x;
-            targetY = center.y;
+            // Building target → distance to the collider FOOTPRINT edge, NOT the
+            // center (a center-radius gate is unsatisfiable for the larger
+            // buildings; same fix as the /visit-building + /building/:id/chat gates).
+            dist = buildingEdgeDistanceGamePx(npc.x, npc.y, target) ?? Infinity;
           } else {
             // Unreachable given `target` resolved above, but fail-closed: drop
             // rather than let an unresolvable target skip the distance check.
             console.warn(`[Autonomy] talk_to_npc dropped — target "${target}" not resolvable for proximity`);
             return;
           }
-          const dist = Math.hypot(npc.x - targetX, npc.y - targetY);
           if (dist > BUILDING_INTERACTION_RADIUS) {
             console.warn(
               `[Autonomy] talk_to_npc gated — ${Math.round(dist)}wu from "${target}" (need <=${BUILDING_INTERACTION_RADIUS}wu)`,
