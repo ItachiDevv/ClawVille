@@ -492,6 +492,46 @@ warnIfTestPartnerPubkeyEnabled();
 const arenaMode = process.env.NPC_ARENA_MODE === 'true';
 startSimulation(arenaMode);
 
+// ── Process-level crash guards (2026-07-02 — boot-crush crash-loop fix) ──────
+// Registered BEFORE the boot IIFE so they cover boot-time faults. Root symptom:
+// on a slow/contended boot, ElizaOS's built-in bootstrap plugin fired its
+// internal 30s service-registration timeout (task / embedding-generation /
+// trajectory_logger) from a promise chain we do NOT own — surfacing as an
+// UNHANDLED REJECTION. With no handler, Bun killed the whole API → Coolify
+// restart → a multi-minute crash-loop until the init crush cleared (Coralia +
+// Nori + teachers never ran during it). The SEQUENTIAL warm below removes the
+// root contention; these handlers are the belt-and-suspenders net. Both LOG
+// LOUDLY and REDACTED (an agent route path/stack can carry a real-CT bearer,
+// cf. M1) so nothing is hidden.
+//
+// Split policy (deliberate):
+//  • unhandledRejection → NON-fatal (log + keep serving). This is the exact
+//    crash vector (a stray async reject from a third-party promise chain we
+//    don't own); a rejected optional-service registration must not take the
+//    server down, and the runtime lazy-restarts on next use.
+//  • uncaughtException → log + EXIT(1). A sync throw that escaped every
+//    try/catch means UNDEFINED process state; resuming risks a zombie serving
+//    on corrupt in-memory state (e.g. a poker/cove sim-tick on a bad table)
+//    with /health still green, so Coolify would never restart to self-heal.
+//    Exiting restores crash-ONLY self-healing. It does NOT re-introduce the
+//    crash-LOOP — that came from the rejection (now handled) + the concurrent
+//    warm (now serialized), not from a sync throw. The deliberate crash-loud
+//    boot invariants (FINGERPRINT_SECRET, ALLOW_TEST_PARTNER_PUBKEY-on-prod,
+//    CF-worker preflight) are unaffected: they throw at MODULE LOAD (before
+//    these handlers register) or call process.exit() directly, which
+//    uncaughtException does not intercept.
+process.on('unhandledRejection', (reason) => {
+  const msg = reason instanceof Error ? (reason.stack ?? reason.message) : String(reason);
+  console.error('[API] Unhandled promise rejection (kept alive, non-fatal):', redactBearerTokens(msg));
+});
+process.on('uncaughtException', (err) => {
+  console.error(
+    '[API] Uncaught exception — exiting for a clean restart:',
+    redactBearerTokens(err instanceof Error ? (err.stack ?? err.message) : String(err)),
+  );
+  process.exit(1);
+});
+
 // Pre-migrate ElizaOS schema + seed system-owned building NPCs so every user
 // can chat with Patrick/Gary/etc. without any setup. Non-blocking — a failure
 // must not crash API startup, but every deploy gets a fresh attempt.
@@ -554,17 +594,42 @@ startSimulation(arenaMode);
         .join(', ')}`,
     );
 
-    // Eager warmup — pre-boot every system-agent runtime so the first visitor
-    // doesn't eat the lazy-start latency (~2-3s). Errors swallowed so a single
-    // warmup failure doesn't crash boot; the lazy-start path catches the next
-    // attempt on first chat.
+    // SEQUENTIAL warmup — pre-boot every system-agent runtime, but ONE AT A TIME
+    // (2026-07-02 boot-crush fix; was an ~11-way concurrent fire-and-forget).
+    // All warms funnel through the global in-process init mutex
+    // (`packages/agent-runtime/src/eliza-runtime.ts`) + the plugin-sql advisory
+    // lock, so `initialize()` runs serially regardless. Firing all ~11 at once
+    // still stacked ~11 concurrent ensureAgentRuntime pipelines (config/ memory
+    // loads + queued inits) whose peak contention pushed the back-of-queue
+    // runtimes' ElizaOS bootstrap service-registration past its internal 30s
+    // "waiting for runtime initialization" timeout → that rejected on a promise
+    // chain we don't own → an unhandled rejection that crash-looped the API on a
+    // contended boot. Awaiting each warm before starting the next collapses that
+    // peak concurrency to one in-flight pipeline, keeping each init well inside
+    // the 30s window (house-agent-seeder.ts already defers Coralia's warm for the
+    // same reason). Detached (void IIFE) so boot + /health readiness never wait
+    // on the ~1–2 min warm chain; per-agent errors swallowed (lazy-start re-warms
+    // on first chat). Belt-and-suspenders: the process guards above also catch
+    // any residual service-registration reject.
     const systemUserId = await getSystemUserId();
-    for (const { slug, platformAgentId } of systemAgents) {
-      void agentOrchestrator
-        .ensureAgentRuntime(platformAgentId, systemUserId)
-        .then(() => console.log(`[API] Warmed system agent runtime: ${slug}`))
-        .catch((err) => console.error(`[API] Warmup failed for ${slug}:`, err));
-    }
+    void (async () => {
+      for (const { slug, platformAgentId } of systemAgents) {
+        try {
+          // ensureAgentRuntime RESOLVES null (does not throw) on a missing row /
+          // start-failure / the R1 wait-return-null branch — so a bare "Warmed"
+          // log would falsely claim success. Only log warm on a real runtime;
+          // otherwise WARN (lazy-start re-warms on first chat).
+          const runtime = await agentOrchestrator.ensureAgentRuntime(platformAgentId, systemUserId);
+          if (runtime) {
+            console.log(`[API] Warmed system agent runtime: ${slug}`);
+          } else {
+            console.warn(`[API] Warmup incomplete for ${slug} — runtime not ready (will lazy-start on first chat)`);
+          }
+        } catch (err) {
+          console.error(`[API] Warmup failed for ${slug}:`, err);
+        }
+      }
+    })();
 
     // Sanity: every template registered in SYSTEM_AGENT_TEMPLATES should
     // have been seeded. If a future slug gets skipped (e.g. DB error), log
