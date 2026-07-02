@@ -377,7 +377,11 @@ class AgentAutonomyDriver {
       (b) => b.buildingId === entry.targetBuildingId,
     );
     if (!building) return false;
-    return building.distance <= BUILDING_INTERACTION_RADIUS;
+    // Edge-distance (footprint), NOT center-distance — the same metric the
+    // interaction gates use. Center-distance is unsatisfiable for the larger
+    // buildings, so a center-based hasArrived would leave the driver walking
+    // forever (then WALK_TIMEOUT replans) and never reach 'arrived'/'talking'.
+    return building.edgeDistance <= BUILDING_INTERACTION_RADIUS;
   }
 
   /**
