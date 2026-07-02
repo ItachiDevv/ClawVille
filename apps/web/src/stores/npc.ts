@@ -1,11 +1,36 @@
 import { create } from 'zustand';
-import { SPAWN_PX } from '@clawville/shared';
+import { SPAWN_PX, AVATAR_COLORS } from '@clawville/shared';
 import { MAP_WIDTH, MAP_HEIGHT } from '@/lib/pixi/tilemap-data';
 import { clampMovement2D, ENTITY_HALF_HUMANOID } from '@/lib/three/collision/world-colliders';
 
 const NPC_HALF_W = MAP_WIDTH / 2;
 const NPC_HALF_H = MAP_HEIGHT / 2;
 const RETIRED_WANDERING_NPC_IDS = new Set(['wanderer-marlin', 'wanderer-riptide']);
+
+/**
+ * Autonomous-avatar (AvatarSimulationBridge) render bridge — B3 fix (2026-07-01).
+ *
+ * `avatars.color` is a named-enum string ('green'|'red'|'blue'|'yellow' — see
+ * `packages/database/src/schema/avatars.ts` avatarColorEnum), NOT the raw hex
+ * `number` NpcSpriteState.color expects (wandering NPCs carry a literal hex like
+ * 0xffc0ff). Reuse the SAME canonical name->hex table player-avatar.tsx/etc. are
+ * seeded from (`AVATAR_COLORS` in `@clawville/shared`) rather than inventing a
+ * second mapping that could drift from it.
+ */
+const AVATAR_COLOR_HEX: Record<string, number> = Object.fromEntries(
+  AVATAR_COLORS.map((c) => [c.id, parseInt(c.hex.slice(1), 16)]),
+);
+const DEFAULT_AVATAR_COLOR_HEX = 0xffffff;
+
+/**
+ * Client-side id namespace for autonomous-avatar entries merged into `npcs[]`.
+ * The wire `avatarId` is already an opaque derivePublicId() hash (16 hex chars,
+ * see `apps/api/src/services/room-registry.ts`) with no realistic collision risk
+ * against the human-readable wandering-NPC ids ('milady-miu', etc.) or
+ * PLAYER_NPC_ID — the prefix is defense-in-depth + makes the merged id
+ * self-describing for debugging (CDP scene traversal, perf HUD, etc.).
+ */
+const AUTONOMOUS_AVATAR_ID_PREFIX = 'autonomous-';
 
 export interface NpcSpriteState {
   id: string;
@@ -146,6 +171,36 @@ interface ServerSnapshot {
     npcName: string;
     data: any;
     timestamp: number;
+  }>;
+  /**
+   * Idle-avatar autonomy roster (AvatarSimulationBridge — B3, 2026-07-01). Mirrors
+   * `SimulationSnapshot['autonomousAvatars']` in `apps/api/src/services/npc-simulation.ts`
+   * `publicAutonomousAvatars()` — the PUBLIC (userId/raw-avatarId-scrubbed) shape.
+   * Optional because older cached/legacy snapshot shapes may omit it; guarded with
+   * `Array.isArray()` at the call site the same way `snapshot.npcs`/`snapshot.players`
+   * already are in `use-world-stream.ts`.
+   *
+   * ORTHOGONAL to `snapshot.npcs` (server wander sim) and `snapshot.players` (live
+   * connected browser sessions) — this is a THIRD roster: a logged-in human's own
+   * avatar, gone autonomous after 60s of no user input (see
+   * `packages/agent-runtime/src/simulation/movement.ts activateIdleAvatars`), driving
+   * itself via the ElizaOS runtime. The server already filters this array to
+   * `isAutonomous === true` only (`avatar-state-store.ts getBroadcast()`), so a
+   * still-controlled human body never doubles up here.
+   */
+  autonomousAvatars?: Array<{
+    avatarId: string;
+    name: string;
+    species: string;
+    /** Named color enum ('green'|'red'|'blue'|'yellow'), NOT a hex number — see AVATAR_COLOR_HEX. */
+    color: string;
+    x: number;
+    y: number;
+    direction: string;
+    activity: string;
+    activityEmoji: string;
+    isAutonomous: boolean;
+    chatMessage: string | null;
   }>;
   timestamp: number;
 }
@@ -493,6 +548,68 @@ export const useNpcStore = create<NpcStoreState>((set, get) => ({
       return candidate;
     });
 
+    // Ingest the idle-avatar autonomy roster (B3, 2026-07-01) — see the
+    // `autonomousAvatars` field doc on ServerSnapshot above. Reuses the SAME
+    // entity-interpolation bookkeeping (prevMap lookup, tsDelta clamp [120,320],
+    // npcFieldsEqual mutation-preserve) as the wandering-NPC path above so these
+    // bodies get identical render-1-tick-behind smoothing — server emits ~5Hz,
+    // same as the NPC sim tick. Defensive `isAutonomous` re-check: the server
+    // (`avatar-state-store.ts getBroadcast()`) already filters to
+    // isAutonomous===true only, but the client shouldn't blindly trust the wire
+    // never regresses that guarantee — a still-controlled human body rendering
+    // twice (once via usePlayerStore/remote-players.tsx, once here) would be a
+    // silent multiplayer-parity bug, not just a cosmetic one.
+    const rawAutonomousAvatars = Array.isArray(snapshot.autonomousAvatars)
+      ? snapshot.autonomousAvatars
+      : [];
+    const autonomousNpcs: NpcSpriteState[] = rawAutonomousAvatars
+      .filter((a) => a.isAutonomous)
+      .map((a) => {
+        const id = AUTONOMOUS_AVATAR_ID_PREFIX + a.avatarId;
+        const prev = prevMap.get(id);
+        const tsDelta = prev ? Math.min(320, Math.max(120, now - prev.ts)) : 200;
+        const candidate: NpcSpriteState = {
+          id,
+          name: a.name,
+          x: a.x,
+          y: a.y,
+          prevX: prev?.x ?? a.x,
+          prevY: prev?.y ?? a.y,
+          ts: now,
+          tsDelta,
+          direction: a.direction as NpcSpriteState['direction'],
+          species: a.species,
+          color: AVATAR_COLOR_HEX[a.color] ?? DEFAULT_AVATAR_COLOR_HEX,
+          hp: 100,
+          maxHp: 100,
+          isDead: false,
+          hasSword: false,
+          inCombat: false,
+          // No conversation system on autonomous avatars today — chatMessage
+          // drives a speech bubble (below) independent of this flag.
+          inConversation: false,
+          inventory: [],
+          isOpenClaw: false,
+          combatAction: null,
+          combatActionAt: 0,
+          facingAngle: prev?.facingAngle ?? null,
+          defaultIdleClip: prev?.defaultIdleClip,
+        };
+        // Same mutation-preserve trick as the wandering-NPC path — keeps
+        // React.memo bailing in VRMNpcMesh/GLBNpcMesh when nothing changed.
+        if (prev && npcFieldsEqual(prev, candidate)) {
+          prev.x = candidate.x;
+          prev.y = candidate.y;
+          prev.prevX = candidate.prevX;
+          prev.prevY = candidate.prevY;
+          prev.ts = candidate.ts;
+          prev.tsDelta = candidate.tsDelta;
+          prev.direction = candidate.direction;
+          return prev;
+        }
+        return candidate;
+      });
+
     // Process conversations into chat bubbles
     const newBubbles: NpcChatBubble[] = [...state.chatBubbles.filter((b) => b.expiresAt > now)];
     for (const convo of snapshot.conversations) {
@@ -531,6 +648,26 @@ export const useNpcStore = create<NpcStoreState>((set, get) => ({
             });
           }
         }
+      }
+    }
+
+    // Autonomous-avatar chatMessage → speech bubble (B3). Reuses the exact same
+    // NpcChatBubble shape + dedup-by-(npcId,text) + 8000ms expiry the agent_chat
+    // event branch above uses, so it renders through the EXISTING NpcSpeechBubbles
+    // component (`lib/three/npc-speech-bubbles.tsx`) with zero new UI — that
+    // component looks up bubble.npcId against the merged `npcs` array by id, which
+    // now includes these entries (see autonomousNpcs above + finalNpcs below).
+    for (const a of rawAutonomousAvatars) {
+      if (!a.isAutonomous || !a.chatMessage) continue;
+      const npcId = AUTONOMOUS_AVATAR_ID_PREFIX + a.avatarId;
+      const exists = newBubbles.some((b) => b.npcId === npcId && b.text === a.chatMessage);
+      if (!exists) {
+        newBubbles.push({
+          npcId,
+          speaker: a.name,
+          text: a.chatMessage,
+          expiresAt: now + 8000,
+        });
       }
     }
 
@@ -594,7 +731,11 @@ export const useNpcStore = create<NpcStoreState>((set, get) => ({
     const { useGameStore } = require('@/stores/game') as typeof import('@/stores/game');
     const isNpcMode = useGameStore.getState().controlMode === 'npc';
     const playerNpc = isNpcMode ? state.npcs.find((n) => n.id === PLAYER_NPC_ID) : undefined;
-    const finalNpcs = playerNpc ? [playerNpc, ...npcs] : npcs;
+    // Merge in the idle-avatar autonomy roster (B3) alongside the wandering-NPC
+    // roster — same array, same renderer (ArenaNpcs / NpcEntry routes by
+    // npc.species through MODEL_REGISTRY exactly as it does for any other entry).
+    const combinedNpcs = autonomousNpcs.length > 0 ? [...npcs, ...autonomousNpcs] : npcs;
+    const finalNpcs = playerNpc ? [playerNpc, ...combinedNpcs] : combinedNpcs;
 
     set({
       npcs: finalNpcs,
