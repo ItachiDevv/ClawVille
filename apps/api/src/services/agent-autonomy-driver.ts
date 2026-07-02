@@ -61,6 +61,15 @@ interface HouseAgentEntry {
   targetBuildingId: string | null;
   /** Last building chosen — favor variety, don't re-pick immediately. */
   lastBuildingId: string | null;
+  /**
+   * R4: count of consecutive empty/whitespace decide() replies in the deciding
+   * phase. `withTimeout` collapses a timeout OR a decide() error to '' (contract
+   * unchanged), so a persistent empty (e.g. OpenAI 429/quota) would spin the
+   * deciding phase with no signal. Incremented on an empty deciding reply, reset to
+   * 0 on a non-empty one; a WARN fires past EMPTY_DECIDE_WARN_THRESHOLD. Health
+   * SIGNAL only — it does NOT change drive behavior.
+   */
+  consecutiveEmptyDecides: number;
 }
 
 /** A single decision generator — real LLM in prod, canned in tests. */
@@ -74,11 +83,19 @@ const TALK_COOLDOWN_MS = 60_000; // linger after a conversation before re-decidi
 const IDLE_DECIDE_EVERY = 4; // when no humans: only LLM-decide every Nth tick
 const MAX_HOUSE_AGENTS = 64; // bound the registry
 const DECIDE_MAX_TOKENS = 200;
+// R2: if a runtime warm has been in-flight longer than this, evict it from the
+// `warming` map so a fresh warm can launch — a never-settling warm must not wedge
+// the agent bodyless forever behind the overlap guard.
+const WARM_WATCHDOG_MS = 90_000;
+// R4: consecutive empty decide() replies past this threshold WARN — a persistent
+// empty (OpenAI 429 / quota exhausted / bad key) otherwise spins the deciding phase
+// silently, since withTimeout maps a timeout/error to '' by contract.
+const EMPTY_DECIDE_WARN_THRESHOLD = 3;
 
 class AgentAutonomyDriver {
   private houseAgents = new Map<string, HouseAgentEntry>(); // agentId -> entry
   private inFlight = new Set<string>(); // agentIds mid-decision (overlap guard)
-  private warming = new Set<string>(); // agentIds mid runtime lazy-warm (overlap guard)
+  private warming = new Map<string, number>(); // agentId -> warmingSince ms (overlap guard + R2 watchdog)
   private interval: ReturnType<typeof setInterval> | null = null;
   private tickCount = 0;
 
@@ -111,6 +128,7 @@ class AgentAutonomyDriver {
       phaseSince: Date.now(),
       targetBuildingId: null,
       lastBuildingId: null,
+      consecutiveEmptyDecides: 0,
     });
     console.log(
       `[AutonomyDriver] registered house agent ${sessionDigest(entry.agentId)} (${this.houseAgents.size} total)`,
@@ -171,8 +189,25 @@ class AgentAutonomyDriver {
         // NEVER blocks the tick loop or launches duplicate warms. Skip driving
         // this tick; retry next tick once the runtime is ready. `{isHouse:true}`
         // preserves the inactivity-sweep exemption through the lazy path.
+        // R2: warming watchdog. A never-settling warm (its `.finally` never fires)
+        // would keep the agentId in `warming` forever, permanently blocking the
+        // overlap guard below so a fresh warm can never launch → the agent wedges
+        // bodyless. If a warm has been in-flight past WARM_WATCHDOG_MS, evict it so
+        // THIS tick relaunches. (R1 now makes ensureAgentRuntime REJECT on a hung
+        // init, so the `.finally` should fire — this watchdog is belt-and-suspenders.)
+        const warmingSince = this.warming.get(entry.agentId);
+        if (
+          warmingSince !== undefined &&
+          Date.now() - warmingSince > WARM_WATCHDOG_MS
+        ) {
+          console.warn(
+            `[AutonomyDriver] warm watchdog: ${sessionDigest(entry.agentId)} stuck warming ${Math.round((Date.now() - warmingSince) / 1000)}s (> ${WARM_WATCHDOG_MS}ms) — evicting stale warm, relaunching`,
+          );
+          this.warming.delete(entry.agentId);
+        }
         if (!this.warming.has(entry.agentId)) {
-          this.warming.add(entry.agentId);
+          const warmToken = Date.now();
+          this.warming.set(entry.agentId, warmToken);
           void agentOrchestrator
             .ensureAgentRuntime(entry.platformAgentId, entry.systemUserId, { isHouse: true })
             .catch((err) =>
@@ -181,7 +216,14 @@ class AgentAutonomyDriver {
                 err instanceof Error ? err.message : err,
               ),
             )
-            .finally(() => this.warming.delete(entry.agentId));
+            .finally(() => {
+              // Compare-and-delete: only clear if THIS warm is still current. A
+              // watchdog eviction may have replaced it with a newer warm whose
+              // timestamp we must not clobber (else a duplicate warm could launch).
+              if (this.warming.get(entry.agentId) === warmToken) {
+                this.warming.delete(entry.agentId);
+              }
+            });
         }
         continue;
       }
@@ -292,6 +334,21 @@ class AgentAutonomyDriver {
     console.log(
       `[AutonomyDriver][debug] decide ${sessionDigest(entry.agentId)} replyLen=${reply.length} reply=${JSON.stringify(reply.slice(0, 240))}`,
     );
+    // R4: empty-decide health signal (see HouseAgentEntry.consecutiveEmptyDecides).
+    // withTimeout maps a timeout/error to '' — a persistent empty (OpenAI 429 /
+    // quota / bad key) would spin here silently. Count consecutive empties and WARN
+    // past the threshold. This does NOT alter drive behavior: an empty reply still
+    // just fails to stamp a destination and we retry deciding next tick.
+    if (reply.trim().length === 0) {
+      entry.consecutiveEmptyDecides++;
+      if (entry.consecutiveEmptyDecides >= EMPTY_DECIDE_WARN_THRESHOLD) {
+        console.warn(
+          `[AutonomyDriver] ${sessionDigest(entry.agentId)} model returned empty ${entry.consecutiveEmptyDecides} times in a row — check OPENAI_API_KEY / quota / 429`,
+        );
+      }
+    } else {
+      entry.consecutiveEmptyDecides = 0;
+    }
     // N3: clear any STALE destination from a PRIOR turn BEFORE dispatching, so
     // post-dispatch destinationBuildingId is non-null ONLY if THIS turn's
     // enter_building actually succeeded. Without this, a dropped enter_building

@@ -39,6 +39,7 @@
 import { inArray } from 'drizzle-orm';
 import { db, openclawBots } from '@clawville/database';
 import { npcSimulation } from './npc-simulation';
+import { agentAutonomyDriver } from './agent-autonomy-driver';
 
 const DEFAULT_IDLE_DESPAWN_MS = 30 * 60 * 1000; // 30 min
 const MIN_IDLE_DESPAWN_MS = 5 * 60 * 1000; // 5 min floor (per spec)
@@ -95,8 +96,14 @@ export async function sweepIdleAgentBodies(): Promise<number> {
   // fixtures driven by the autonomy driver via `useModel` (which does not slide
   // `last_seen_at`), so they'd otherwise look idle and get reaped out from under
   // the driver — collect their agentIds and skip them below.
+  // R5 (belt-and-suspenders): a body is exempt if EITHER the autonomy driver is
+  // actively driving it (its in-memory registry) OR the DB is_house flag is set.
+  // Seeding the set with the driver's known house-agent ids means a silent is_house
+  // schema drift (column dropped/renamed → the DB flag reads false for every row)
+  // can NEVER cause a LIVE house body the driver is mid-drive on to be idle-reaped
+  // out from under it. The DB flag remains the second source of truth.
   const lastSeen = new Map<string, number>();
-  const houseAgentIds = new Set<string>();
+  const houseAgentIds = new Set<string>(agentAutonomyDriver.getHouseAgentIds());
   for (const r of rows) {
     if (r.isHouse) houseAgentIds.add(r.agentId);
     if (r.lastSeenAt) lastSeen.set(r.agentId, r.lastSeenAt.getTime());

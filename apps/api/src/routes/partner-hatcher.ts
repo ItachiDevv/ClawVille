@@ -1119,11 +1119,17 @@ partnerHatcherRoutes.post('/agents', async (c) => {
       spawned = true;
     } catch (err) {
       console.error('[Hatcher/register] in-world spawn failed:', err);
-      // P5-2: AVATAR mode is best-effort — a fresh `oc-<sessionId>` body never
-      // collides, so a throw is an unexpected transient; the row + bearer are
-      // committed + restore-healable, so we keep ok:true with spawned:false (the
-      // avatar body re-registers lazily on the next register/restore — that bearer
-      // is honest). OVERRIDE mode is NOT best-effort: the targetNpcId was validated
+      // P5-2: AVATAR mode is best-effort. The body id is the deterministic,
+      // non-secret `ocb-<base64url(agentId)>` (`avatarBodyId()`, npc-simulation.ts
+      // — the B1 root-fix), NOT `oc-<sessionId>` (the sessionId is the real-CT
+      // bearer and must never key a body). Keyed by the STABLE agentId, a
+      // re-register of the SAME agent just re-uses that body key (idempotent
+      // overwrite, not a collision) and a genuinely fresh agentId can't collide
+      // (the `ocb-` prefix is disjoint from resident/wanderer/override ids) — so a
+      // throw is an unexpected transient; the row + bearer are committed +
+      // restore-healable, so we keep ok:true with spawned:false (the avatar body
+      // re-registers lazily on the next register/restore — that bearer is honest).
+      // OVERRIDE mode is NOT best-effort: the targetNpcId was validated
       // against NPC_IDS before the tx (L663), so the only reachable throw is the
       // "already overridden" case (npc-simulation.ts:573) — the NPC is taken by
       // ANOTHER agent. restore re-attempts registerOpenClaw for an override row and
