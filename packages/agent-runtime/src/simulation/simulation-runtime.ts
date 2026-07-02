@@ -466,7 +466,7 @@ export class SimulationRuntime {
       const result = await action.handler(null, message, state, { parameters: params });
 
       // Track budget — increment on any purchase attempt, adjust if failed (compensating)
-      if (choice.action === 'BUY_ITEM' || choice.action === 'BUY_BAZAAR_LISTING') {
+      if (choice.action === 'BUY_ITEM') {
         const spent = result?.data?.price ?? 0;
         if (result?.success) {
           avatar.budgetSpent = Math.min(avatar.budgetMaxNt, avatar.budgetSpent + spent);
