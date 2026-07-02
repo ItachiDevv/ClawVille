@@ -10,7 +10,6 @@ import {
   pgEnum,
 } from 'drizzle-orm/pg-core';
 import { avatars } from './avatars';
-import { publishedSkills } from './marketplace';
 import { agentConfigs } from './agent-configs';
 
 export const bountyStatusEnum = pgEnum('bounty_status', [
@@ -155,8 +154,9 @@ export const bountyRewards = pgTable('bounty_rewards', {
     .notNull()
     .references(() => bounties.id, { onDelete: 'cascade' }),
   rewardType: bountyRewardTypeEnum('reward_type').notNull(),
-  skillId: uuid('skill_id')
-    .references(() => publishedSkills.id, { onDelete: 'set null' }),
+  // NOTE: the 'skill' bounty_reward_type enum value is now UNUSED (peer skill
+  // commerce removed 2026-07-02) — left in place because dropping a pg enum
+  // value requires a migration we are not running. No route ever writes it.
   agentConfigId: uuid('agent_config_id')
     .references(() => agentConfigs.id, { onDelete: 'set null' }),
   bookId: varchar('book_id', { length: 50 }),

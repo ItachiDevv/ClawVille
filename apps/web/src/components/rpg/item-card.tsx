@@ -1,9 +1,9 @@
 'use client';
 
 /**
- * ItemCard — the canonical tile component for any Gameify list (bazaar
- * listings, auction lots, quest board rows, bounty cards, agent roster
- * entries). Sits inside a RuneFrame so the rarity edge + corners are free.
+ * ItemCard — the canonical tile component for any Gameify list (quest board
+ * rows, bounty cards, land parcels, agent roster entries). Sits inside a
+ * RuneFrame so the rarity edge + corners are free.
  *
  * Deliberately data-shape-agnostic: downstream agents wire their own API
  * fields into the props. Only `rarity` + `name` are required.
