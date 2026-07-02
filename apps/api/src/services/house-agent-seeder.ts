@@ -216,13 +216,17 @@ export async function ensureHouseAgent(): Promise<HouseAgentSeedResult | null> {
     platformAgentId = inserted.id;
   }
 
-  // Warm the ElizaOS runtime (gpt-4o-mini). isHouse=true → the orchestrator's
-  // 30-min inactivity sweep skips it (the driver uses useModel, which does not
-  // bump lastActivity). Failure is non-fatal — the driver retries once warmed.
-  await agentOrchestrator.startAgent(platformAgentId, systemUserId, { isHouse: true });
-
   // ── 3. in-world AVATAR body (protocol 'nanoclaw', NOT 'hatcher-proxy';
   //       autonomyMode 'self-managed' so the sim planner never hijacks it) ────
+  // Register the body FIRST and INDEPENDENT of the ElizaOS runtime warm — the
+  // brain warm is DEFERRED to the driver's first tick (lazy), NOT done here at
+  // boot. WHY (2026-07-01 staging bug): warming during the boot crush (concurrent
+  // with the system-agent runtimes + the sim + sweepers) raced the
+  // plugin-bootstrap service registration to a 30s timeout, and because the warm
+  // ran BEFORE this body registration, the throw left Coralia BODYLESS (never in
+  // /api/npc/state, invisible, driver ticking with nothing to drive). A
+  // slow/failed brain must NEVER cost the body: register the body here; the
+  // driver lazy-warms the runtime off the boot crush and drives once ready.
   const sessionId = `oc-${randomBytes(24).toString('base64url')}`;
   const avatarConfig = buildHouseAvatarConfig(sessionId, species);
   const client = new OpenClawClient(avatarConfig);
@@ -232,8 +236,15 @@ export async function ensureHouseAgent(): Promise<HouseAgentSeedResult | null> {
     throw new Error('house-agent-seeder: body registration did not yield a bodyId');
   }
 
-  // ── 4. hand to the autonomy driver ────────────────────────────────────────
-  agentAutonomyDriver.registerHouseAgent({ agentId: HOUSE_AGENT_ID, bodyId, platformAgentId });
+  // ── 4. hand to the autonomy driver (it LAZY-warms the runtime via
+  //       ensureAgentRuntime(..., {isHouse:true}) on its first tick, off the boot
+  //       crush, then drives; skips gracefully until the brain is ready) ───────
+  agentAutonomyDriver.registerHouseAgent({
+    agentId: HOUSE_AGENT_ID,
+    bodyId,
+    platformAgentId,
+    systemUserId,
+  });
 
   console.log(
     `[HouseAgent] activated ${sessionDigest(HOUSE_AGENT_ID)} — body ${bodyId} (${species}), runtime ${platformAgentId}${created ? ' [new]' : ''}`,

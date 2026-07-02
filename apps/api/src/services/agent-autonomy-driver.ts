@@ -52,6 +52,8 @@ interface HouseAgentEntry {
   bodyId: string;
   /** platform_agents.id whose warmed ElizaOS runtime backs the decision. */
   platformAgentId: string;
+  /** system user id that owns the platform_agents row — for lazy runtime warm. */
+  systemUserId: string;
   phase: DrivePhase;
   /** epoch-ms the current phase was entered (for walk/talk timeouts). */
   phaseSince: number;
@@ -76,6 +78,7 @@ const DECIDE_MAX_TOKENS = 200;
 class AgentAutonomyDriver {
   private houseAgents = new Map<string, HouseAgentEntry>(); // agentId -> entry
   private inFlight = new Set<string>(); // agentIds mid-decision (overlap guard)
+  private warming = new Set<string>(); // agentIds mid runtime lazy-warm (overlap guard)
   private interval: ReturnType<typeof setInterval> | null = null;
   private tickCount = 0;
 
@@ -88,6 +91,7 @@ class AgentAutonomyDriver {
     agentId: string;
     bodyId: string;
     platformAgentId: string;
+    systemUserId: string;
   }): boolean {
     if (
       !this.houseAgents.has(entry.agentId) &&
@@ -102,6 +106,7 @@ class AgentAutonomyDriver {
       agentId: entry.agentId,
       bodyId: entry.bodyId,
       platformAgentId: entry.platformAgentId,
+      systemUserId: entry.systemUserId,
       phase: 'deciding',
       phaseSince: Date.now(),
       targetBuildingId: null,
@@ -116,6 +121,7 @@ class AgentAutonomyDriver {
   unregisterHouseAgent(agentId: string): void {
     this.houseAgents.delete(agentId);
     this.inFlight.delete(agentId);
+    this.warming.delete(agentId);
   }
 
   /** Server-side enumeration of the active house agent ids (never on the wire). */
@@ -157,7 +163,28 @@ class AgentAutonomyDriver {
     for (const entry of this.houseAgents.values()) {
       if (this.inFlight.has(entry.agentId)) continue;
       const runtime = agentOrchestrator.getRunningAgentRuntime(entry.platformAgentId);
-      if (!runtime) continue; // runtime not warmed yet — try next tick
+      if (!runtime) {
+        // Brain not warmed yet. The seeder no longer warms at boot (that raced a
+        // 30s plugin-init timeout in the boot crush and could leave the agent
+        // bodyless). LAZY-warm HERE, off the boot crush, on the driver's own tick
+        // — fire-and-forget + a `warming` overlap guard so a slow/failed warm
+        // NEVER blocks the tick loop or launches duplicate warms. Skip driving
+        // this tick; retry next tick once the runtime is ready. `{isHouse:true}`
+        // preserves the inactivity-sweep exemption through the lazy path.
+        if (!this.warming.has(entry.agentId)) {
+          this.warming.add(entry.agentId);
+          void agentOrchestrator
+            .ensureAgentRuntime(entry.platformAgentId, entry.systemUserId, { isHouse: true })
+            .catch((err) =>
+              console.warn(
+                `[AutonomyDriver] runtime warm failed for ${sessionDigest(entry.agentId)} — retry next tick:`,
+                err instanceof Error ? err.message : err,
+              ),
+            )
+            .finally(() => this.warming.delete(entry.agentId));
+        }
+        continue;
+      }
       this.inFlight.add(entry.agentId);
       // Pass throttledIdle so driveOnce suppresses the LLM-bearing phases when
       // the world is empty (cost control ≈ $1–2/day/agent); the cheap
