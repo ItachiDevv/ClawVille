@@ -19,6 +19,17 @@ interface RunningAgent {
    * on; stopping one on inactivity would 503 the next visitor until boot.
    */
   type?: string;
+  /**
+   * Agent-metaverse P1 — set true for a ClawVille-HOSTED "house" agent whose
+   * runtime is warmed at boot and driven autonomously by agent-autonomy-driver.
+   * Like a system agent, it must SURVIVE the 30-min inactivity sweep: the driver
+   * only calls `useModel` (never routes through the chat path that bumps
+   * `lastActivity`), so an active house agent would otherwise look idle and get
+   * stopped out from under the driver. Kept as a separate signal from `type`
+   * (house agents are `type:'openclaw-bot'`, not `'system-agent'`) so the two
+   * lifecycles stay distinct.
+   */
+  isHouse?: boolean;
 }
 
 const INACTIVITY_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
@@ -85,7 +96,11 @@ class AgentOrchestrator {
     }
   }
 
-  async startAgent(agentId: string, userId: string): Promise<void> {
+  async startAgent(
+    agentId: string,
+    userId: string,
+    opts?: { isHouse?: boolean },
+  ): Promise<void> {
     const agent = await db.query.agents.findFirst({
       where: and(eq(agents.id, agentId), eq(agents.userId, userId)),
     });
@@ -166,6 +181,7 @@ class AgentOrchestrator {
         lastActivity: new Date(),
         heartbeatIntervalId,
         type: agent.type ?? undefined,
+        isHouse: opts?.isHouse ?? false,
       });
 
       await this.updateAgentStatus(agentId, 'running');
@@ -204,7 +220,13 @@ class AgentOrchestrator {
       // because `stopAgent()` unconditionally writes
       // `updateAgentStatus('stopped')` to the DB on every sweep tick
       // even when no in-memory runtime is present.
-      if (agent.type === 'system-agent') continue;
+      //
+      // Agent-metaverse P1 — ALSO skip house agents (ClawVille-hosted
+      // autonomous fixtures). The autonomy driver keeps them acting via
+      // `useModel` (which does NOT bump `lastActivity`), so they'd look idle
+      // and get stopped out from under the driver — same "boot-seeded
+      // singleton the world depends on" rationale as system agents.
+      if (agent.type === 'system-agent' || agent.isHouse) continue;
 
       if (now - agent.lastActivity.getTime() > INACTIVITY_TIMEOUT_MS) {
         console.log(`[Orchestrator] Stopping inactive agent ${agentId}`);

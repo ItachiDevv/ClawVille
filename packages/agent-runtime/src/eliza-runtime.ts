@@ -6,6 +6,7 @@
 import {
   AgentRuntime as ElizaAgentRuntime,
   ChannelType,
+  ModelType,
   createCharacter,
   type Character,
   type CharacterInput,
@@ -918,6 +919,30 @@ export class ElizaRuntime {
       this.config.onError?.(error as Error);
       throw error;
     }
+  }
+
+  /**
+   * Single-shot decision generation for the autonomy driver (agent-metaverse
+   * P1). Routes through the SAME provider priority chain as chat — OpenClaw
+   * gateway (100) → OpenAI text provider (95, gpt-4o-mini) — so the model
+   * backend stays SWAPPABLE per-agent for the eventual fleet (point a house
+   * agent's gateway at a self-hosted OpenAI-compat endpoint and this method
+   * routes there automatically; no code change). We deliberately use the raw
+   * `useModel(TEXT_SMALL)` path (mirrors SimulationRuntime.planAvatarNextAction),
+   * NOT `processMessage`: the driver owns dispatch (it parses `[ACTION:]` tags
+   * and calls `npcSimulation.dispatchHatcherActions`), so we do NOT want
+   * processMessage's provider/action pipeline, memory writes, or history here.
+   * Returns the raw model text (never throws to the caller for an empty/odd
+   * result — it coerces to a string; a runtime that isn't started throws).
+   */
+  async decide(prompt: string, opts?: { maxTokens?: number }): Promise<string> {
+    if (!this.runtime) throw new Error('ElizaRuntime.decide: runtime not started');
+    const result = await this.runtime.useModel(ModelType.TEXT_SMALL, {
+      prompt,
+      maxTokens: opts?.maxTokens ?? 220,
+      stopSequences: [],
+    } as any);
+    return typeof result === 'string' ? result : String(result ?? '');
   }
 
   getCharacter(): Character {

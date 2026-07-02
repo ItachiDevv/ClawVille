@@ -1,12 +1,14 @@
 import {
   NPC_DEFINITIONS,
   NPC_BUILDING_CENTERS,
+  BUILDING_INTERACTION_RADIUS,
   MAP_LOCATIONS,
   BUILDING_OPENCLAW_THEMES,
   type NpcDefinition,
   type OpenClawRegistration,
   type OpenClawAvatarConfig,
   type NpcActivity,
+  type AgentPerception,
   ACTIVITY_EMOJIS,
   BUILDING_ACTIVITIES,
   type ClawConfig,
@@ -1153,6 +1155,132 @@ class NpcSimulation {
     return Array.from(this.combats.values()).filter(c => c.state === 'active');
   }
 
+  /**
+   * Build a connected-agent perception snapshot for a body (self pose + nearby
+   * NPCs within radius + ALL buildings by distance + active conversations /
+   * combats). The SINGLE shared perception builder (agent-metaverse P1): the
+   * authed gateway (`GET /perception` + SSE `/events`) AND the autonomy driver
+   * both call this — extracted here (from the former module-local
+   * `agent-gateway.ts buildPerception`) so the sim, which owns `this.npcs`, is
+   * the single source and there is no duplicated projection to drift.
+   *
+   * SECURITY: `other.id` for an avatar body is the non-secret
+   * `ocb-<base64url(agentId)>` (never the `oc-<sessionId>` bearer, per the B1
+   * root-fix), so exposing it to another agent leaks no real-CT credential.
+   */
+  buildPerception(npcId: string): AgentPerception | null {
+    const npc = this.npcs.get(npcId);
+    if (!npc) return null;
+
+    const PERCEPTION_RADIUS = 500;
+
+    // Nearby NPCs within radius
+    const nearbyNpcs = this.getAllNpcs()
+      .filter((other) => other.id !== npcId)
+      .map((other) => {
+        const dx = other.x - npc.x;
+        const dy = other.y - npc.y;
+        const distance = Math.sqrt(dx * dx + dy * dy);
+        return { other, distance };
+      })
+      .filter(({ distance }) => distance <= PERCEPTION_RADIUS)
+      .map(({ other, distance }) => ({
+        npcId: other.id,
+        name: other.name,
+        x: other.x,
+        y: other.y,
+        distance: Math.round(distance),
+        species: other.species,
+        hp: other.hp,
+        isDead: other.isDead,
+        inCombat: other.inCombat,
+        activity: other.activity,
+        level: other.level,
+        isOpenClaw: other.isOpenClaw,
+      }));
+
+    // Nearby buildings (all 10, sorted by distance) + their crypto focus.
+    const nearbyBuildings = (Object.entries(NPC_BUILDING_CENTERS) as [string, { x: number; y: number }][]).map(([buildingId, center]) => {
+      const dx = center.x - npc.x;
+      const dy = center.y - npc.y;
+      const distance = Math.sqrt(dx * dx + dy * dy);
+      const theme = BUILDING_OPENCLAW_THEMES[buildingId];
+      return {
+        buildingId,
+        label: theme?.label ?? buildingId,
+        cryptoFocus: theme?.focus ?? '',
+        centerX: center.x,
+        centerY: center.y,
+        distance: Math.round(distance),
+      };
+    }).sort((a, b) => a.distance - b.distance);
+
+    // Active conversations involving this NPC
+    const conversations = this.getActiveConversations();
+    const activeConversations = conversations.map((conv) => ({
+      id: conv.id,
+      participants: [conv.npc1Id, conv.npc2Id],
+      latestMessage: conv.messages.length > 0
+        ? conv.messages[Math.min(conv.currentIndex, conv.messages.length - 1)].text
+        : '',
+      involvesMe: conv.npc1Id === npcId || conv.npc2Id === npcId,
+    }));
+
+    // Active combats
+    const combats = this.getActiveCombats();
+    const activeCombats = combats.map((combat) => ({
+      id: combat.id,
+      attacker: combat.attacker,
+      defender: combat.defender,
+      involvesMe: combat.attacker === npcId || combat.defender === npcId,
+      lastRound: combat.rounds.length > 0
+        ? combat.rounds[combat.rounds.length - 1]
+        : null,
+    }));
+
+    const arenaRound = this.getMode() === 'arena'
+      ? this.getSnapshot().arenaRound
+      : null;
+
+    return {
+      self: {
+        npcId: npc.id,
+        x: npc.x,
+        y: npc.y,
+        hp: npc.hp,
+        maxHp: npc.maxHp,
+        level: npc.level,
+        kills: npc.kills,
+        xp: npc.xp,
+        inventory: npc.inventory,
+        activity: npc.activity,
+        inCombat: npc.inCombat,
+        isDead: npc.isDead,
+        combatAction: npc.combatAction,
+        direction: npc.direction,
+      },
+      nearbyNpcs,
+      nearbyBuildings,
+      activeConversations,
+      activeCombats,
+      gameMode: this.getMode(),
+      arenaRound,
+      timestamp: Date.now(),
+    };
+  }
+
+  /**
+   * Count of live HUMAN presences in the world — browser-legacy claws +
+   * multiplayer-room players across every room. Used ONLY by the autonomy
+   * driver's idle-throttle (cost control: back off the LLM cadence when nobody
+   * is around). Cheap (rooms ≤ 20). NEVER serialized onto any wire.
+   */
+  getActiveHumanCount(): number {
+    let n = this.browserClaws.size;
+    for (const room of roomRegistry.listRooms()) n += room.players.size;
+    return n;
+  }
+
   /** Set an NPC's path (for agent-controlled movement) */
   setNpcPath(npcId: string, path: PathNode[], destinationBuildingId?: string) {
     const npc = this.npcs.get(npcId);
@@ -1412,6 +1540,49 @@ class NpcSimulation {
         if (!message) {
           console.warn('[Hatcher] talk_to_npc dropped — empty message');
           return;
+        }
+        // PROXIMITY GATE (agent-metaverse P1 slice 3, founder-signed). A body
+        // must be physically NEAR its target to converse — the anti-abuse
+        // backbone: no walk/proximity → no interaction (→ no reward, once slice
+        // 4 wires it). Scope to NON-Hatcher bodies: Hatcher (`hatcher-proxy`) is
+        // a LIVE partner whose `talk` is contract-locked (§3a manual +
+        // PROTOCOL_VERSION + harness), so gating it needs the fast-follow — it
+        // stays exempt here. FAIL-CLOSED: an unresolvable body has no
+        // hatcher-proxy client → the gate applies. Predicate keys on the
+        // in-world client protocol (NOT `is_house`, which isn't on the reg config
+        // and is the wrong polarity). Both Hatcher register modes set
+        // `protocol==='hatcher-proxy'` (registerOpenClaw :786/:837) so Hatcher is
+        // exempt in avatar AND override mode; the house/fleet agent (nanoclaw)
+        // and any other non-proxy body is gated.
+        const isHatcherProxy =
+          this.getOpenClawClient(npcId)?.getProtocol() === 'hatcher-proxy';
+        if (!isHatcherProxy) {
+          // Resolve the target's center: a live npc body, else the building
+          // center (Object.hasOwn guard — never an inherited prototype key).
+          // `validTarget` above guarantees one of the two resolves.
+          const targetNpc = this.npcs.get(target);
+          let targetX: number;
+          let targetY: number;
+          if (targetNpc) {
+            targetX = targetNpc.x;
+            targetY = targetNpc.y;
+          } else if (Object.hasOwn(NPC_BUILDING_CENTERS, target)) {
+            const center = NPC_BUILDING_CENTERS[target];
+            targetX = center.x;
+            targetY = center.y;
+          } else {
+            // Unreachable given validTarget, but fail-closed: drop rather than
+            // let an unresolvable target skip the distance check.
+            console.warn(`[Autonomy] talk_to_npc dropped — target "${target}" not resolvable for proximity`);
+            return;
+          }
+          const dist = Math.hypot(npc.x - targetX, npc.y - targetY);
+          if (dist > BUILDING_INTERACTION_RADIUS) {
+            console.warn(
+              `[Autonomy] talk_to_npc gated — ${Math.round(dist)}wu from "${target}" (need <=${BUILDING_INTERACTION_RADIUS}wu)`,
+            );
+            return;
+          }
         }
         this.injectAgentChat(npcId, message);
         return;

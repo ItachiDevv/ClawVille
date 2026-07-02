@@ -73,10 +73,14 @@ export async function sweepIdleAgentBodies(): Promise<number> {
   // than one live body across a re-register race; despawn ALL of its bodies when
   // idle). Batch-read last_seen_at by agentId in ONE query.
   const agentIds = [...new Set(pairs.map((p) => p.agentId))];
-  let rows: Array<{ agentId: string; lastSeenAt: Date }>;
+  let rows: Array<{ agentId: string; lastSeenAt: Date; isHouse: boolean }>;
   try {
     rows = await db
-      .select({ agentId: openclawBots.agentId, lastSeenAt: openclawBots.lastSeenAt })
+      .select({
+        agentId: openclawBots.agentId,
+        lastSeenAt: openclawBots.lastSeenAt,
+        isHouse: openclawBots.isHouse,
+      })
       .from(openclawBots)
       .where(inArray(openclawBots.agentId, agentIds));
   } catch (err) {
@@ -87,13 +91,20 @@ export async function sweepIdleAgentBodies(): Promise<number> {
   // agentId -> lastSeenAt ms. A live body with no surviving row (shouldn't
   // happen — a live session always has a row) is treated as NOT idle (skip),
   // because despawning a body we can't restore from would strand the agent.
+  // House agents (agent-metaverse P1) are EXEMPT: they are ClawVille-hosted
+  // fixtures driven by the autonomy driver via `useModel` (which does not slide
+  // `last_seen_at`), so they'd otherwise look idle and get reaped out from under
+  // the driver — collect their agentIds and skip them below.
   const lastSeen = new Map<string, number>();
+  const houseAgentIds = new Set<string>();
   for (const r of rows) {
+    if (r.isHouse) houseAgentIds.add(r.agentId);
     if (r.lastSeenAt) lastSeen.set(r.agentId, r.lastSeenAt.getTime());
   }
 
   let despawned = 0;
   for (const { sessionId, agentId } of pairs) {
+    if (houseAgentIds.has(agentId)) continue; // hosted fixture — never idle-reaped
     const seen = lastSeen.get(agentId);
     if (seen === undefined) continue; // no row read — don't strand the agent
     if (seen >= cutoff) continue; // still active within the window

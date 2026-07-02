@@ -21,13 +21,15 @@ A **ClawVille-hosted ElizaOS "house" agent** — internal-only `is_house` flag, 
 
 ## Slices (with real edit points)
 
-### Slice 1 — lifecycle-consistency (mostly FREE via P0)
+> **BUILD STATUS (2026-07-01) — Slices 1 + 3 BUILT (API, non-money loop).** Branch `feat/agent-metaverse-p0`. Slice 2 (client render) done by another teammate; Slice 4 (settle/leaderboard) DEFERRED — the agent earns NOTHING yet. See "What shipped" at the bottom.
+
+### Slice 1 — lifecycle-consistency (mostly FREE via P0)  ✅ BUILT
 Register the house agent's body + warm its runtime at **boot** (a seeder like `ensureSystemAgents`, or `agent-orchestrator.startAgent`), NOT via the dead heartbeat. P0 already guarantees it survives restart (lazy-restore + restore-aware session-status). `reuse` `registerOpenClaw` (`npc-simulation.ts:770`) + `agent-orchestrator` (skip the 30-min inactivity stop for `is_house`, like system agents).
 
 ### Slice 2 — render the body (bug B3 fix, ~1 change)
 `apps/web/src/stores/npc.ts` `updateFromSnapshot` (`:383`) only processes `snapshot.npcs`, **never** `snapshot.autonomousAvatars` — so autonomous bodies arrive over the wire and are silently dropped. **Fix:** process `autonomousAvatars[]` there (map to `NpcSpriteState` w/ entity-interp `ts/tsDelta`), reusing the existing `VRMNpcMesh`/`GLBNpcMesh` render in `arena-npcs.tsx`. No new renderer. `extend`.
 
-### Slice 3 — autonomous action + THE PROXIMITY GATE
+### Slice 3 — autonomous action + THE PROXIMITY GATE  ✅ BUILT
 - **NEW `agent-autonomy-driver.ts`** (`build-new`): its own `setInterval` at **~30s** (not the 200ms NPC tick). Iterate active house agents (needs a public iterator over `session-agent-map`/orchestrator), `buildPerception(bodyId)` (`agent-gateway.ts:1931`, `reuse`) → decide via the SimulationRuntime pattern (agent-keyed variant of `planAvatarNextAction`) → dispatch. Fire-and-forget with in-flight tracking + LLM timeout so one slow brain can't block the tick.
 - **First behavior:** perceive → decide "which teacher can help me" → `enter_building` (= *walk to* the building, `:1317`) → `talk_to_npc` (the real conversation).
 - **NEW PROXIMITY GATE** (`build-new`) in `executeHatcherAction` `talk_to_npc` (`npc-simulation.ts:~1394`, before `injectAgentChat` `:1416`): resolve target pos (npc `this.npcs.get(target)` or `NPC_BUILDING_CENTERS[target]`) → `dist = hypot(dx,dy)` → if `dist > BUILDING_INTERACTION_RADIUS` drop + warn. **`BUILDING_INTERACTION_RADIUS = 1000 wu`** — ONE shared constant, replacing the ad-hoc `VISIT_RADIUS = 2000` on BOTH the authed visit-building path (`agent-gateway.ts:2244`) and this gate (harmonized, single source of truth). Units: **wu = game-space px** (1 tile = 32; world = 22528 wu). 1000 wu ≈ 2 building-widths (building zone = 448 wu) / ~½ the inter-building gap (~2000 wu) — clearly "at this teacher," slack for the 80 wu pathfind stand-off, no overlap with the neighbor. This is the anti-abuse backbone: **no walk/proximity → no interaction → no reward.** Applies to every agent (Hatcher, house, fleet) at the one server-side chokepoint.
@@ -44,6 +46,19 @@ Budget (`budgetMaxNt`, exists) · decision cooldown (`BehaviorCooldown`, exists)
 
 ## Verify (the proof — visible + on-ledger)
 On staging, one house agent: boots → registers a body → **renders (you SEE it walk)** → every 30s decides → walks to a teacher (proximity-gated) → has a **real conversation** → the turn settles CT + leaderboard + memory → the first-ever `world_teacher_chat` / `building.visited` rows appear (currently **0** in all history). Browser-verify the walk + conversation; assert the ledger/events/leaderboard/memory rows.
+
+## What shipped — Slices 1 + 3 (API, 2026-07-01)
+
+Non-money perceive→decide→act loop for ONE ClawVille-hosted house agent. No CT, no leaderboard (slice 4 deferred).
+
+- **is_house column** — `openclaw_bots.is_house BOOLEAN NOT NULL DEFAULT false` (`packages/database/src/schema/claws.ts`) + idempotent DDL `packages/database/migrations-manual/2026-07-01_add_openclaw_is_house.sql` (NOT db:push'd — orchestrator applies). Internal-only: NEVER serialized to any snapshot/roster/wire.
+- **House-agent seeder** — `apps/api/src/services/house-agent-seeder.ts` (`ensureHouseAgent`), wired at boot in `index.ts` after the system-NPC seeder. Mirrors `ensureSystemAgents`: upserts the `openclaw_bots` row (is_house=true, `session_expires_at=NULL` so the 24h sweeper skips it), the `platform_agents` (openclaw-bot, NO gateway → gpt-4o-mini via openai-text-provider, provider-SWAPPABLE for the fleet) runtime warmed via `agentOrchestrator.startAgent(..., {isHouse:true})`, and the in-world avatar body via `npcSimulation.registerOpenClaw` with **protocol `nanoclaw` (NOT hatcher-proxy)**. Body renders via `snapshot.npcs` (the Hatcher-proven path), NOT autonomousAvatars.
+- **Orchestrator exemption** — `RunningAgent.isHouse` + `startAgent(id, userId, {isHouse})`; `stopInactiveAgents` skips `type==='system-agent' || isHouse` (the driver drives via `useModel`, which does not bump `lastActivity`). Body-idle sweeper (`agent-body-idle-sweeper.ts`) also EXEMPTS is_house rows.
+- **Autonomy driver** — NEW `apps/api/src/services/agent-autonomy-driver.ts` on its OWN 30s interval (NOT the 200ms tick). Per house agent: `npcSimulation.buildPerception(bodyId)` → `ElizaRuntime.decide` (gpt-4o-mini) → `npcSimulation.dispatchHatcherActions`. Phase machine deciding→walking→arrived→talking. In-flight guard + hard LLM timeout + idle-throttle (backs off when `getActiveHumanCount()===0`) + bounded maps. Wired start/stop into `index.ts` boot/shutdown.
+- **Shared perception** — the former module-local `agent-gateway.ts buildPerception` MOVED to `npcSimulation.buildPerception(npcId)` (single source; gateway `/perception` + SSE `/events` + the driver all call it).
+- **Proximity gate** — in `executeHatcherAction` `talk_to_npc` (before `injectAgentChat`): non-hatcher-proxy bodies must be within `BUILDING_INTERACTION_RADIUS` of the target or the talk is DROPPED (fail-closed). Hatcher (`hatcher-proxy`) stays exempt (§3a fast-follow). `BUILDING_INTERACTION_RADIUS = 1000` is ONE shared constant (`packages/shared/src/constants/npc-definitions.ts`) that ALSO replaced the ad-hoc `VISIT_RADIUS=2000` on the authed `visit-building` path.
+- **decide()** — new `ElizaRuntime.decide(prompt)` (`useModel(TEXT_SMALL)`, provider-swappable) in `packages/agent-runtime/src/eliza-runtime.ts`.
+- **Tests** — `apps/api/src/services/__tests__/agent-autonomy-p1.test.ts`: gate DROP-far / PASS-near / hatcher-exempt + driver picks-teacher-emits-enter_building. tsc 0; suite green (0 new failures vs baseline).
 
 ## Settled decisions (founder sign-off, 2026-07-01)
 1. **Proximity radius = `BUILDING_INTERACTION_RADIUS = 1000 wu`** — ONE shared constant, replaces the ad-hoc `VISIT_RADIUS = 2000` on both the authed visit path AND the new gate. (wu = game-space px; 1000 ≈ 2 building-widths / half the inter-building gap; tunable after watching real arrivals.)

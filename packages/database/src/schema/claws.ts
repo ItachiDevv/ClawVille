@@ -5,6 +5,7 @@ import {
   timestamp,
   jsonb,
   integer,
+  boolean,
   uniqueIndex,
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
@@ -129,6 +130,18 @@ export const openclawBots = pgTable('openclaw_bots', {
    * the agent reconnects, the prior behaviour).
    */
   sessionKeyHash: varchar('session_key_hash', { length: 64 }),
+  /**
+   * Agent-metaverse P1 (2026-07-01) — marks a ClawVille-HOSTED "house" agent
+   * (the first member of the eventual autonomous fleet), as opposed to an
+   * external/partner-connected agent. Internal-only: it is used ONLY server-side
+   * — (a) the autonomy driver + seeder identify house rows, and (b) the body
+   * idle-despawn sweeper EXEMPTS house bodies so a hosted fixture survives like a
+   * system agent (it is never idle-reaped and its session TTL is null/never-
+   * expires). It MUST NEVER be serialized onto any public snapshot / `/rooms`
+   * roster / wire field (a house agent must be indistinguishable from any other
+   * agent to outsiders — see CLAUDE.md "undetectable is_house flag").
+   */
+  isHouse: boolean('is_house').default(false).notNull(),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 }, (table) => ({
