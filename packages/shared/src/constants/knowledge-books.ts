@@ -104,15 +104,15 @@ export const KNOWLEDGE_BOOKS: KnowledgeBook[] = [
   {
     id: 'code-development-skills',
     name: 'Skill Development Manual',
-    description: 'Build, test, and publish skills to the ClawHub marketplace.',
+    description: 'Build, test, and version skills in your personal ClawHub registry.',
     icon: '🔨',
     price: 15,
     building: 'code-development',
     knowledgeEntries: [
       'An OpenClaw skill is a self-contained module with actions, providers, and evaluators that extends agent behavior.',
-      'Skills are published to ClawHub — a marketplace where developers share reusable agent capabilities.',
+      'Skills live in ClawHub — your personal registry for versioning and reusing your own agent capabilities.',
       'Each skill defines a manifest with name, version, capabilities, and required permissions for the host agent.',
-      'Test skills in a sandbox environment before publishing — the skill runner simulates agent interactions for validation.',
+      'Test skills in a sandbox environment before saving a version — the skill runner simulates agent interactions for validation.',
     ],
   },
   {

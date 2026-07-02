@@ -26,10 +26,8 @@
  *
  *   - avatars.clawTokens ................ liquid balance ("gold" tab)
  *   - claw_token_transactions ........ lifetime earnings ("earned" tab)
- *   - bazaar_transactions ........... skill sales volume ("skills-sold" tab)
  *   - quest_rewards ................. quest completions ("quests" tab)
  *   - bounty_reputation.totalCompleted   bounty completions ("bounties" tab)
- *   - published_skills .............. total skills authored ("authored" tab)
  *
  * A lightweight 30-second in-memory cache keeps the public browse path cheap
  * even if it ends up getting hit by every avatar on every page load. No
@@ -43,8 +41,6 @@ import {
   db,
   avatars,
   clawTokenTransactions,
-  bazaarTransactions,
-  publishedSkills,
   questRewards,
   bountyReputation,
   openclawBots,
@@ -62,8 +58,6 @@ type SortMode =
   | 'composite'
   | 'gold'
   | 'earned'
-  | 'skills-sold'
-  | 'skills-authored'
   | 'quests'
   | 'bounties';
 
@@ -77,8 +71,6 @@ interface LeaderboardEntry {
   // Metrics (all always populated so the UI can show the same row across tabs)
   gold: number;
   earned: number;
-  skillsSold: number;
-  skillsAuthored: number;
   questsCompleted: number;
   bountiesCompleted: number;
   compositeScore: number;
@@ -94,8 +86,6 @@ const VALID_SORTS: SortMode[] = [
   'composite',
   'gold',
   'earned',
-  'skills-sold',
-  'skills-authored',
   'quests',
   'bounties',
 ];
@@ -108,8 +98,6 @@ const VALID_SORTS: SortMode[] = [
 const COMPOSITE_WEIGHTS = {
   gold: 1,            // 1 pt per ClawToken held
   earned: 1,          // 1 pt per ClawToken ever earned (tracks activity, not hoarding)
-  skillsSold: 500,    // skilled sellers get big credit
-  skillsAuthored: 250, // publishing even without sales counts
   questsCompleted: 300,
   bountiesCompleted: 400,
 };
@@ -118,8 +106,6 @@ function computeComposite(e: Omit<LeaderboardEntry, 'rank' | 'compositeScore'>):
   return (
     e.gold * COMPOSITE_WEIGHTS.gold +
     e.earned * COMPOSITE_WEIGHTS.earned +
-    e.skillsSold * COMPOSITE_WEIGHTS.skillsSold +
-    e.skillsAuthored * COMPOSITE_WEIGHTS.skillsAuthored +
     e.questsCompleted * COMPOSITE_WEIGHTS.questsCompleted +
     e.bountiesCompleted * COMPOSITE_WEIGHTS.bountiesCompleted
   );
@@ -187,33 +173,6 @@ async function buildSnapshot(cap: number): Promise<LeaderboardSnapshot> {
     earnedRows.map((r) => [r.avatarId, Number(r.total) || 0])
   );
 
-  const soldRows = await db
-    .select({
-      avatarId: bazaarTransactions.sellerId,
-      total: sql<number>`count(*)`.as('total'),
-    })
-    .from(bazaarTransactions)
-    .groupBy(bazaarTransactions.sellerId);
-
-  const soldByAvatar = new Map<string, number>(
-    soldRows.map((r) => [r.avatarId, Number(r.total) || 0])
-  );
-
-  const authoredRows = await db
-    .select({
-      avatarId: publishedSkills.authorAvatarId,
-      total: sql<number>`count(*)`.as('total'),
-    })
-    .from(publishedSkills)
-    .where(sql`${publishedSkills.authorAvatarId} is not null`)
-    .groupBy(publishedSkills.authorAvatarId);
-
-  const authoredByAvatar = new Map<string, number>(
-    authoredRows
-      .filter((r): r is { avatarId: string; total: number } => r.avatarId !== null)
-      .map((r) => [r.avatarId, Number(r.total) || 0])
-  );
-
   const questRows = await db
     .select({
       avatarId: questRewards.avatarId,
@@ -246,8 +205,6 @@ async function buildSnapshot(cap: number): Promise<LeaderboardSnapshot> {
       archetype: avatar.archetype ?? null,
       gold: avatar.clawTokens || 0,
       earned: earnedByAvatar.get(avatar.id) || 0,
-      skillsSold: soldByAvatar.get(avatar.id) || 0,
-      skillsAuthored: authoredByAvatar.get(avatar.id) || 0,
       questsCompleted: questByAvatar.get(avatar.id) || 0,
       bountiesCompleted: bountyByAvatar.get(avatar.id) || 0,
     };
@@ -277,12 +234,6 @@ function sortBy(entries: LeaderboardEntry[], mode: SortMode): LeaderboardEntry[]
       break;
     case 'earned':
       sorted.sort((a, b) => b.earned - a.earned);
-      break;
-    case 'skills-sold':
-      sorted.sort((a, b) => b.skillsSold - a.skillsSold);
-      break;
-    case 'skills-authored':
-      sorted.sort((a, b) => b.skillsAuthored - a.skillsAuthored);
       break;
     case 'quests':
       sorted.sort((a, b) => b.questsCompleted - a.questsCompleted);
@@ -1095,7 +1046,7 @@ leaderboardRoutes.get('/reef-race/daily-best-lap', async (c) => {
  * GET /api/leaderboard
  *
  * Query params:
- *   sort    — composite | gold | earned | skills-sold | skills-authored | quests | bounties
+ *   sort    — composite | gold | earned | quests | bounties
  *   limit   — 1..100, default 50
  *   offset  — 0.., default 0
  *   me      — truthy to also include the current user's avatar row, even if
@@ -1154,7 +1105,7 @@ leaderboardRoutes.get('/', sessionMiddleware, async (c) => {
  * GET /api/leaderboard/stats
  *
  * Aggregate stats for the header banner — total avatars, total gold in
- * circulation, total skills ever sold, total quests completed.
+ * circulation, total quests completed.
  */
 leaderboardRoutes.get('/stats', sessionMiddleware, async (c) => {
   let snapshot = getCache(DEFAULT_CAP);
@@ -1165,11 +1116,6 @@ leaderboardRoutes.get('/stats', sessionMiddleware, async (c) => {
 
   const totalGold = snapshot.entries.reduce((sum, e) => sum + e.gold, 0);
   const totalEarned = snapshot.entries.reduce((sum, e) => sum + e.earned, 0);
-  const totalSkillsSold = snapshot.entries.reduce((sum, e) => sum + e.skillsSold, 0);
-  const totalSkillsAuthored = snapshot.entries.reduce(
-    (sum, e) => sum + e.skillsAuthored,
-    0
-  );
   const totalQuestsCompleted = snapshot.entries.reduce(
     (sum, e) => sum + e.questsCompleted,
     0
@@ -1184,8 +1130,6 @@ leaderboardRoutes.get('/stats', sessionMiddleware, async (c) => {
     rankedAvatars: snapshot.entries.length,
     totalGold,
     totalEarned,
-    totalSkillsSold,
-    totalSkillsAuthored,
     totalQuestsCompleted,
     totalBountiesCompleted,
     generatedAt: snapshot.generatedAt,
