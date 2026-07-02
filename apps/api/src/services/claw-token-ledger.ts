@@ -50,7 +50,7 @@ import { logEvent } from './event-logger';
 
 /**
  * Drizzle transaction type — passing this lets the helpers compose into
- * a larger atomic block (e.g. bazaar transfers, auction settlement).
+ * a larger atomic block (e.g. peer transfers, escrow settlement).
  * When omitted, the helper opens its own transaction.
  */
 type LedgerTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
@@ -402,8 +402,8 @@ async function debitInTx(tx: LedgerTx, input: LedgerDebitInput): Promise<LedgerR
  * `usdBasis` = the dollars paid, so the BOUGHT row records the V-Bucks revenue).
  * The type forbids `'earned'` — that is `mintEarned`'s exclusive job (plan §3.1).
  *
- * Pass `tx` to compose into a larger transaction (e.g. bazaar/auction transfers
- * where both buyer debit and seller credit must succeed together). If omitted,
+ * Pass `tx` to compose into a larger transaction (e.g. peer transfers where
+ * both buyer debit and seller credit must succeed together). If omitted,
  * opens its own transaction.
  */
 export async function creditClawTokens(
@@ -487,7 +487,7 @@ export async function mintEarned(
 
 /**
  * Atomic transfer between two avatars — one transaction, both or neither.
- * Use for bazaar sales, auction settlements, bounty escrow release, etc.
+ * Use for peer transfers, escrow settlements, bounty escrow release, etc.
  *
  * PROVENANCE (plan §3.1, §5): the payer's debit burns SOFT→BOUGHT→EARNED, but the
  * RECEIVER is ALWAYS credited SOFT, regardless of which tag(s) the payer spent.
@@ -523,9 +523,9 @@ export async function transferClawTokens(input: {
   });
 
   // Agent↔agent settlement telemetry — fires only after the atomic transfer
-  // succeeds. Peer-to-peer transfers are currently paused (skill marketplace
-  // write handlers return 503) but ledger infra still supports it; the event
-  // keeps us informed if/when peer flows resume.
+  // succeeds. Peer skill commerce (the only caller of this path) was removed
+  // 2026-07-02, but `transferClawTokens` itself stays live ledger infra; the
+  // event keeps us informed if/when a peer-transfer caller is added back.
   void logEvent({
     eventType: 'tokens.settled',
     avatarId: input.toAvatarId,

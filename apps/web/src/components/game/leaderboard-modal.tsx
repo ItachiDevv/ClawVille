@@ -5,12 +5,12 @@
  * agents, humans, and projects" (see CLAUDE.md top priorities).
  *
  * Pulls live aggregate data from `/api/leaderboard` (composed in memory from
- * avatars + claw_token_transactions + bazaar_transactions + quest_rewards +
- * bounty_reputation) and renders a tabbed board with seven sort modes.
- * Top-3 rows get podium styling.
+ * avatars + claw_token_transactions + quest_rewards + bounty_reputation) and
+ * renders a tabbed board with five sort modes ('skills-sold' /
+ * 'skills-authored' were removed 2026-07-02 alongside peer skill commerce —
+ * see the SortMode comment below). Top-3 rows get podium styling.
  *
- * Follows the same shape as BazaarModal / AuctionModal — RpgModal shell,
- * RpgButton for tab chrome, useQuery for data fetching.
+ * RpgModal shell, RpgButton for tab chrome, useQuery for data fetching.
  */
 
 import { useMemo } from 'react';
@@ -31,28 +31,19 @@ import {
 // Types + tab metadata
 // ---------------------------------------------------------------------------
 
-type SortMode =
-  | 'composite'
-  | 'gold'
-  | 'earned'
-  | 'skills-sold'
-  | 'skills-authored'
-  | 'quests'
-  | 'bounties';
+// 'skills-sold' / 'skills-authored' sort modes were removed 2026-07-02
+// alongside peer skill commerce (bazaar/auctions/marketplace) — the backend
+// legacy board (apps/api/src/routes/leaderboard.ts) never carried these
+// fields on its own SortMode/LeaderboardEntry, so selecting either tab
+// crashed this modal (`undefined.toLocaleString()` in formatMetric below).
+type SortMode = 'composite' | 'gold' | 'earned' | 'quests' | 'bounties';
 
 interface TabMeta {
   value: SortMode;
   label: string;
   icon: string;
   /** Metric key on a leaderboard entry that this tab ranks by. */
-  metric:
-    | 'compositeScore'
-    | 'gold'
-    | 'earned'
-    | 'skillsSold'
-    | 'skillsAuthored'
-    | 'questsCompleted'
-    | 'bountiesCompleted';
+  metric: 'compositeScore' | 'gold' | 'earned' | 'questsCompleted' | 'bountiesCompleted';
   /** Unit label next to the metric value in each row. */
   unit: string;
   /** One-line explanation shown in the tab strip subtitle. */
@@ -83,22 +74,6 @@ const TABS: readonly TabMeta[] = [
     metric: 'earned',
     unit: 'NT',
     description: 'Lifetime ClawTokens earned (all sources).',
-  },
-  {
-    value: 'skills-sold',
-    label: 'Skills Sold',
-    icon: '🛒',
-    metric: 'skillsSold',
-    unit: 'sold',
-    description: 'Skills moved through the Bazaar.',
-  },
-  {
-    value: 'skills-authored',
-    label: 'Authors',
-    icon: '📚',
-    metric: 'skillsAuthored',
-    unit: 'pub',
-    description: 'Skills published to the marketplace.',
   },
   {
     value: 'quests',
@@ -234,11 +209,6 @@ function StatsBar() {
         value={formatMetric(data.totalGold)}
       />
       <StatPill
-        icon="🛒"
-        label="Skills sold"
-        value={data.totalSkillsSold.toLocaleString()}
-      />
-      <StatPill
         icon="📜"
         label="Quests"
         value={data.totalQuestsCompleted.toLocaleString()}
@@ -261,8 +231,6 @@ interface Entry {
   archetype: string | null;
   gold: number;
   earned: number;
-  skillsSold: number;
-  skillsAuthored: number;
   questsCompleted: number;
   bountiesCompleted: number;
   compositeScore: number;
@@ -413,7 +381,7 @@ function EntryRow({
         >
           <div>💰 {formatMetric(entry.gold)}</div>
           <div>
-            🛒 {entry.skillsSold} · 📜 {entry.questsCompleted} · 📌 {entry.bountiesCompleted}
+            📜 {entry.questsCompleted} · 📌 {entry.bountiesCompleted}
           </div>
         </div>
       )}
