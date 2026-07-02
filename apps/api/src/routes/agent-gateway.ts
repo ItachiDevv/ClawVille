@@ -2130,8 +2130,18 @@ agentGatewayRoutes.post('/:sessionId/visit-building', async (c) => {
   const { npcId, npc } = resolved;
   const { buildingId } = parsed.data;
 
+  // Object.hasOwn guard (NOT bare-bracket truthiness): NPC_BUILDING_CENTERS is
+  // Object.fromEntries(...) so it inherits Object.prototype, and visitSchema
+  // buildingId is z.string().min(1) (no enum). A bare `NPC_BUILDING_CENTERS[key]`
+  // truthy check lets an inherited prototype key ("constructor"/"__proto__"/
+  // "toString"/…) resolve to a truthy fn → the `!center` guard passes → `dx/dy`
+  // become NaN → `NaN > RADIUS` is FALSE → the proximity check is SKIPPED and the
+  // real-CT `creditClawTokens` below fires FROM ANYWHERE (a proximity-bypass CT
+  // farm). Mirror the npc-simulation executor gate: own-property lookup only.
+  if (!Object.hasOwn(NPC_BUILDING_CENTERS, buildingId)) {
+    return c.json({ error: `Unknown building: ${buildingId}` }, 400);
+  }
   const center = NPC_BUILDING_CENTERS[buildingId];
-  if (!center) return c.json({ error: `Unknown building: ${buildingId}` }, 400);
 
   // Proximity check — the SHARED BUILDING_INTERACTION_RADIUS (agent-metaverse
   // P1, founder-signed): one source of truth for "close enough to interact,"
