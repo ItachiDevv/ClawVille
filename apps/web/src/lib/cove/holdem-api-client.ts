@@ -38,9 +38,23 @@ export { CoveApiError } from './slot-api-client';
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000';
 
 /**
+ * Hard ceiling on a single Hold'em request before we abort. Without this a
+ * stalled Deal/Action leaves the react-query mutation `isPending=true` (and the
+ * modal `busyRef=true`) FOREVER — every button disabled, "Dealing…" frozen with
+ * no recovery. Aborting rejects the mutation so the modal catch/finally runs and
+ * the UI un-freezes. All holdem paths share this coveFetch, so all are covered.
+ */
+const COVE_HOLDEM_FETCH_TIMEOUT_MS = 15_000;
+
+/**
  * Same contract as the blackjack/slots coveFetch (kept local so a future
  * Hold'em-only header/retry tweak doesn't perturb the other hot paths). The
  * 501 currency-seam body is surfaced on the error so callers can branch.
+ *
+ * Every request is bounded by a ~15s AbortController timeout; an abort surfaces
+ * as a CoveApiError(408, 'request_timeout') and a raw network reject as
+ * CoveApiError(0, 'network_error') so both flow through describeHoldemError
+ * instead of leaking a raw DOMException/TypeError to the toast.
  */
 async function coveFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
   const url = `${API_BASE}${path}`;
@@ -48,24 +62,60 @@ async function coveFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
     'Content-Type': 'application/json',
     ...(init.headers as Record<string, string> | undefined),
   };
-  const res = await fetch(url, { ...init, credentials: 'include', headers });
-  if (!res.ok) {
-    let body: unknown = null;
-    try {
-      body = await res.json();
-    } catch {
-      // empty / non-JSON body — fall through with HTTP <status> message
-    }
-    const obj = (body ?? {}) as { error?: string; message?: string } & Record<string, unknown>;
-    const serverMessage = obj.message || obj.error || `HTTP ${res.status}`;
-    const code =
-      typeof serverMessage === 'string' ? serverMessage.split(/[\s:]/)[0] || null : null;
-    const err = new CoveApiError(res.status, serverMessage, code);
-    (err as CoveApiError & { body?: unknown }).body = obj;
-    throw err;
+  // Bound the request. Compose (never clobber) a caller-supplied signal — if the
+  // caller aborts, we abort too; our timeout aborts independently.
+  const controller = new AbortController();
+  const callerSignal = init.signal ?? undefined;
+  const onCallerAbort = () => controller.abort();
+  if (callerSignal) {
+    if (callerSignal.aborted) controller.abort();
+    else callerSignal.addEventListener('abort', onCallerAbort, { once: true });
   }
-  if (res.status === 204) return undefined as T;
-  return (await res.json()) as T;
+  const timeout = setTimeout(() => controller.abort(), COVE_HOLDEM_FETCH_TIMEOUT_MS);
+
+  // The try covers fetch AND the response-body read (res.json()); the timeout
+  // (and any caller abort) therefore bounds the WHOLE request, so a post-header
+  // body-stream stall/drop aborts instead of hanging forever. clearTimeout runs
+  // only after the body is parsed.
+  try {
+    const res = await fetch(url, { ...init, credentials: 'include', headers, signal: controller.signal });
+    if (!res.ok) {
+      let body: unknown = null;
+      try {
+        body = await res.json();
+      } catch (parseErr) {
+        // A body-read ABORT (our 15s ceiling firing mid-error-body) must surface
+        // as the 408 timeout, not the raw HTTP status — rethrow to the outer
+        // catch so it maps to 'request_timeout'. Otherwise it is an empty /
+        // non-JSON body — fall through with the HTTP <status> message.
+        if ((parseErr as { name?: string } | undefined)?.name === 'AbortError') throw parseErr;
+      }
+      const obj = (body ?? {}) as { error?: string; message?: string } & Record<string, unknown>;
+      const serverMessage = obj.message || obj.error || `HTTP ${res.status}`;
+      const code =
+        typeof serverMessage === 'string' ? serverMessage.split(/[\s:]/)[0] || null : null;
+      const apiErr = new CoveApiError(res.status, serverMessage, code);
+      (apiErr as CoveApiError & { body?: unknown }).body = obj;
+      throw apiErr;
+    }
+    if (res.status === 204) return undefined as T;
+    return (await res.json()) as T;
+  } catch (err) {
+    // A real server error (built above) passes through UNCHANGED — never
+    // re-mapped to 408/0, so the 501 currency seam / 4xx codes keep their real
+    // status. An AbortError is our 15s ceiling (or a caller cancel); any other
+    // reject is a network / body-stream failure. Wrap BOTH into a CoveApiError so
+    // describeHoldemError renders friendly copy instead of a raw DOMException/
+    // TypeError reaching the UI.
+    if (err instanceof CoveApiError) throw err;
+    if ((err as { name?: string } | undefined)?.name === 'AbortError') {
+      throw new CoveApiError(408, 'The table took too long to respond — try again.', 'request_timeout');
+    }
+    throw new CoveApiError(0, 'Network error — check your connection and try again.', 'network_error');
+  } finally {
+    clearTimeout(timeout);
+    if (callerSignal) callerSignal.removeEventListener('abort', onCallerAbort);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -230,6 +280,22 @@ export function describeHoldemError(err: unknown): string {
     return err instanceof Error ? err.message : 'Unknown error';
   }
   switch (err.status) {
+    case 0:
+      // Network failure (fetch reject that wasn't an abort) — surfaced as
+      // CoveApiError(0, …, 'network_error') by coveFetch. Do NOT instruct a
+      // blind re-press: a lost NON-terminal action is NOT idempotent
+      // server-side (the server anchors idempotency only on SETTLE rows), so
+      // re-sending it would be appended as the NEXT street's decision — a wrong
+      // betting outcome. Tell the player to reopen and check state instead.
+      return 'Network error — your last move may not have gone through. Reopen the table to check before acting again.';
+    case 408:
+      // Request timed out (15s AbortController ceiling) — 'request_timeout'.
+      // Replay-on-retry is safe ONLY for a TERMINAL action (its idempotency key
+      // replays the settled outcome). A NON-terminal action is NOT replayed —
+      // the server appends a re-POST as the next decision — so we must NOT tell
+      // the player to blindly "try that move again". Reopening resyncs the
+      // table (full in-progress-hand resync is the pending server follow-up).
+      return 'The table took too long to respond — your last move may have already registered. Reopen the table to check before acting again.';
     case 400:
       if (err.code?.startsWith('insufficient_clawtokens')) {
         return 'Not enough ClawTokens to buy in. Buy-in is 20–500 CT.';
