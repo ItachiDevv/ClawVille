@@ -8,8 +8,8 @@
  *
  * Until that workflow ships, this endpoint is a compiled-but-not-live
  * stub. The FEATURE_GATE comment below matches the format used in
- * `agent-setup.ts`, `bazaar.ts`, and `x402-config.ts` — a durable
- * contract with the future reviewer about when to light it up.
+ * `agent-setup.ts` and `x402-config.ts` — a durable contract with the
+ * future reviewer about when to light it up.
  */
 
 import { Hono } from 'hono';

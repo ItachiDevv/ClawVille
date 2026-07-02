@@ -49,14 +49,11 @@ import { randomBytes } from 'node:crypto';
 import { getBunWebSocketHelper } from './lib/bun-ws-adapter';
 import { researchSseRoutes } from './routes/research-sse';
 import { researchApiRoutes } from './routes/research';
-import { marketplaceRoutes } from './routes/marketplace';
 import { clawRoutes } from './routes/claws';
 import { agentGatewayRoutes } from './routes/agent-gateway';
 // pendingConnections is exported but only used internally by agent-gateway routes
 import { agentExportRoutes } from './routes/agent-export';
 import { avatarManifestRoutes } from './routes/avatar-manifest';
-import { bazaarRoutes } from './routes/bazaar';
-import { auctionRoutes } from './routes/auctions';
 import { questRoutes } from './routes/quests';
 import { bountyRoutes } from './routes/bounties';
 import { exchangeRoutes } from './routes/exchange';
@@ -283,7 +280,6 @@ app.route('/api/activities', activitiesV2Routes);
 app.route('/api/land', landRoutes);
 app.route('/api/research', researchSseRoutes);
 app.route('/api/research', researchApiRoutes);
-app.route('/api/marketplace', marketplaceRoutes);
 app.route('/api/claws', clawRoutes);
 app.route('/api/agent', agentGatewayRoutes);
 // Phase 3 — character export ("take my agent home") endpoint. Mounted at
@@ -297,8 +293,6 @@ app.get('/api/skills/connect', (c) => {
   const url = new URL(c.req.url);
   return c.redirect(`${url.origin}/api/agent/connect-skill?token=${token}`);
 });
-app.route('/api/bazaar', bazaarRoutes);
-app.route('/api/auctions', auctionRoutes);
 app.route('/api/quests', questRoutes);
 app.route('/api/bounties', bountyRoutes);
 app.route('/api/exchange', exchangeRoutes);

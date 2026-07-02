@@ -20,10 +20,10 @@
  *     - My Agent     — settings for the user's agent
  *     - Skill Forge  — skill authoring (renamed from Skill Builder)
  *
- *   ECONOMY (Priority 3: skill marketplace / value flow)
- *     - Marketplace  — knowledge book shop
- *     - Bazaar       — skill trading (rarity-tinted rare/cyan)
- *     - Auction      — timed bidding (rarity-tinted epic/purple)
+ *   ECONOMY (Priority 3: leaderboard-driven value flow — cosmetics + land,
+ *            NOT peer skill commerce, which was removed 2026-07-02)
+ *     - Land Office  — parcel economy (rarity-tinted epic/purple)
+ *     - Cosmetics    — first-party cosmetic shop (CT carve-out)
  *
  *   QUESTS  (Priority 4: gamified UI + leaderboard + free promo)
  *     - Quest Board   — team-posted coding bounties
@@ -49,7 +49,7 @@
  *
  * Store contract — zero new actions, reads/writes the exact existing store:
  *   setSettingsModalOpen, openLocationConfig, setAgentConnectModalOpen,
- *   setSkillBuilderOpen, openMarketplace, openBazaar, openAuction,
+ *   setSkillBuilderOpen, openLandOffice, setCosmeticDrawerOpen,
  *   openQuestBoard, openBountyBoard, toggleActivityFeed.
  */
 
@@ -617,10 +617,7 @@ function SidebarContent({ closeMenu }: SidebarContentProps) {
   const setSettingsModalOpen = useGameStore((s: GameState) => s.setSettingsModalOpen);
   const setAgentConnectModalOpen = useGameStore((s: GameState) => s.setAgentConnectModalOpen);
   const setSkillBuilderOpen = useGameStore((s: GameState) => s.setSkillBuilderOpen);
-  const openMarketplace = useGameStore((s: GameState) => s.openMarketplace);
   const openLandOffice = useGameStore((s: GameState) => s.openLandOffice);
-  const openBazaar = useGameStore((s: GameState) => s.openBazaar);
-  const openAuction = useGameStore((s: GameState) => s.openAuction);
   const setCosmeticDrawerOpen = useGameStore((s: GameState) => s.setCosmeticDrawerOpen);
   const openQuestBoard = useGameStore((s: GameState) => s.openQuestBoard);
   const openBountyBoard = useGameStore((s: GameState) => s.openBountyBoard);
@@ -899,14 +896,13 @@ function SidebarContent({ closeMenu }: SidebarContentProps) {
           />
         </div>
 
-        {/* ECONOMY — Priority 3: skill marketplace */}
-        <CategoryHeader label="Economy" subtitle="Trade · Buy · Sell" />
+        {/* ECONOMY — Priority 3: leaderboard-driven value flow (peer skill
+            commerce — bazaar/auction/marketplace — was removed 2026-07-02;
+            a sold/published "skill" is a prompt-injection vector). What
+            remains: land (parcel economy) and cosmetics (first-party CT
+            carve-out, not peer commerce). */}
+        <CategoryHeader label="Economy" subtitle="Land · Cosmetics" />
         <div className="rpg-sidebar-group">
-          <SidebarRow
-            icon="🛒"
-            label="Marketplace"
-            onClick={runAction(openMarketplace)}
-          />
           {/* Land Economy (Phase 1) — browse for-sale parcels, claim a free
               starter home, buy a priced parcel with CT, place + upgrade a
               building/shop. Higher tiers unlock nicer buildings + higher levels. */}
@@ -914,24 +910,6 @@ function SidebarContent({ closeMenu }: SidebarContentProps) {
             icon="🏝️"
             label="Land Office"
             onClick={runAction(openLandOffice)}
-            rarity="epic"
-          />
-          <SidebarRow
-            icon="⚖"
-            label="Bazaar"
-            // Sidebar Bazaar opens the COSMETIC DRAWER per the
-            // 2026-05-18 repoint (Bazaar stand was repurposed to the
-            // first-party cosmetics shop; "Bazaar" name kept). The
-            // legacy peer-skill-bazaar route is still in the store as
-            // openBazaar() but gated 503 by the marketplace-pause
-            // policy — leaving it unreachable from the UI.
-            onClick={runAction(() => setCosmeticDrawerOpen(true))}
-            rarity="rare"
-          />
-          <SidebarRow
-            icon="🔨"
-            label="Auction House"
-            onClick={runAction(openAuction)}
             rarity="epic"
           />
           {/* Q3 plan §4.4 — cosmetic drawer entry. Opens the owned-skins
