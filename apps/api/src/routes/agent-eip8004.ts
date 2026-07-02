@@ -85,16 +85,16 @@ const SAP_AGENT_REGISTRY: Record<string, Eip8004Registration> = {
       },
     ],
     executives: [],
-    updatedAt: '2026-07-02T01:00:00Z',
+    updatedAt: '2026-07-02T02:00:00Z',
     extra: {
       metaplexIdentityAsset: {
-        mainnet: '7R9Xu32UDvXAbGs9vqN8BF6LcJXXkZ5dsUTmknJUCXYD',
+        mainnet: 'ALcUH8xDxRbqZ7rLMQdXRuvx6TmdSfF7UxQFFe9Ad3om',
         devnet: '8pv2wEMMzhxN51JSsjB4jJM1bjgm8kxZpnA9c2qX3fNX',
       },
       agentIdentityRegistration: {
         registry: 'mpl-agent-014',
         program: '1DREGFgysWYxLnRnKQnwrxnJQeSMk2HmGaC6whw2B2p',
-        mainnet: '6ytuvccFCrcwoN7sdVx8aTVnovHWVRUutNiDvPa5ELZD',
+        mainnet: '4wuFYaBENsXKSH32owxaPuDSmhrQWoYbfGbaWAKxBZRZ',
         devnet: '5XYgD16jLKWawfxms9NmLguebphQ7oy6uPE2xnm2cLvn',
       },
       bountySettlements: {
