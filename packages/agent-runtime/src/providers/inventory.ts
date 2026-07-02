@@ -8,7 +8,7 @@ import type { Provider, ProviderResult } from './types';
  *
  * itemId conventions:
  *   "book-<buildingId>-<bookIndex>"  for knowledge books
- *   "skill-<skillId>"               for marketplace skills
+ *   "skill-<skillId>"               for quest/bounty skill rewards
  */
 export const inventoryProvider: Provider = {
   name: 'inventory',
