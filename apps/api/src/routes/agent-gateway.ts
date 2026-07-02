@@ -2,7 +2,6 @@ import { Hono } from 'hono';
 import { stream } from 'hono/streaming';
 import { z } from 'zod';
 import {
-  NPC_BUILDING_CENTERS,
   BUILDING_INTERACTION_RADIUS,
   BUILDING_OPENCLAW_THEMES,
   ACTIVITY_EMOJIS,
@@ -30,6 +29,10 @@ import {
 } from '../services/agent-session-config';
 import { ensureWallet, ensureWalletWithFirstTimeSecret } from '../services/wallet-service';
 import { creditClawTokens } from '../services/claw-token-ledger';
+// Shared own-property building-center guard (prototype-key CT-farm defense) used by
+// /visit-building, /building/:buildingId/chat and /move. Lives in its own
+// dependency-free module so the F1 money-path test can exercise the SAME guard.
+import { resolveBuildingCenter } from '../services/building-center';
 import { buildRuntimeServices } from '../services/runtime-services-adapter';
 import { getSystemNpcAgent } from '../services/system-npc-seeder';
 import {
@@ -150,6 +153,59 @@ async function resolveAvatarIdForBot(botUserId: string | null): Promise<string |
     columns: { id: true },
   });
   return avatar?.id ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// creditBuildingRewardOncePerDay — idempotent per-(avatar, building, reason,
+// UTC-day) 1-CT building reward (M2 anti-faucet).
+// ---------------------------------------------------------------------------
+// Both `/visit-building` and `/building/:buildingId/chat` credited 1 CT
+// UNCONDITIONALLY, so a ledger-bound agent parked within `BUILDING_INTERACTION_
+// RADIUS` could loop the endpoint and farm CT. This gates ONLY the ledger credit
+// (NOT `logEventFromContext` — the leaderboard keeps its own daily caps and must
+// still record every event). Concurrency-safe: the tx row-locks the SAME
+// `avatars` row `creditClawTokens` locks BEFORE the existence check, so two
+// simultaneous requests for the same key serialize — the first inserts + commits,
+// the second then observes the committed row and returns false (NO double-credit).
+// NO legit-visit regression: a DIFFERENT building or a NEW UTC day is a fresh key,
+// so distinct visits/chats still each pay once. Returns true iff it credited 1 CT.
+async function creditBuildingRewardOncePerDay(opts: {
+  avatarId: string;
+  buildingId: string;
+  reason: 'building_visit' | 'building_chat_teaching';
+  metadata: Record<string, unknown>;
+}): Promise<boolean> {
+  const startOfUtcDay = new Date();
+  startOfUtcDay.setUTCHours(0, 0, 0, 0);
+  return db.transaction(async (tx) => {
+    // Row-lock the avatar FIRST (the exact row `creditClawTokens` FOR UPDATEs) so
+    // the check-then-credit below is serialized against a concurrent duplicate.
+    await tx.execute(sql`SELECT 1 FROM avatars WHERE id = ${opts.avatarId} FOR UPDATE`);
+    // Existence probe for today's reward on this (avatar, reason, building). Mirror
+    // the `const [row] = await tx.execute<T>(…)` access shape used by the ledger
+    // (postgres-js `.execute()` returns a RowList; the first element is the row or
+    // undefined). `metadata->>'buildingId'` reads the jsonb text value both credit
+    // sites already store.
+    const [existing] = await tx.execute<{ present: number }>(sql`
+      SELECT 1 AS present FROM claw_token_transactions
+      WHERE avatar_id = ${opts.avatarId}
+        AND reason = ${opts.reason}
+        AND metadata->>'buildingId' = ${opts.buildingId}
+        AND created_at >= ${startOfUtcDay}
+      LIMIT 1`);
+    if (existing) return false; // already rewarded for this (avatar, building, reason) today
+    await creditClawTokens(
+      {
+        avatarId: opts.avatarId,
+        amount: 1,
+        reason: opts.reason,
+        source: 'api',
+        metadata: opts.metadata,
+      },
+      tx,
+    );
+    return true;
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -1977,7 +2033,10 @@ agentGatewayRoutes.post('/:sessionId/move', async (c) => {
   let destBuildingId: string | undefined;
 
   if (buildingId) {
-    const center = NPC_BUILDING_CENTERS[buildingId];
+    // M4: own-property guard (buildingId is an UNVALIDATED body param) via the
+    // shared resolveBuildingCenter — keeps inherited prototype keys out of the
+    // building-center lookup, matching /visit-building + /building/:id/chat.
+    const center = resolveBuildingCenter(buildingId);
     if (!center) return c.json({ error: `Unknown building: ${buildingId}` }, 400);
     destX = center.x + (Math.random() - 0.5) * 40;
     destY = center.y + 20 + Math.random() * 20;
@@ -2130,18 +2189,13 @@ agentGatewayRoutes.post('/:sessionId/visit-building', async (c) => {
   const { npcId, npc } = resolved;
   const { buildingId } = parsed.data;
 
-  // Object.hasOwn guard (NOT bare-bracket truthiness): NPC_BUILDING_CENTERS is
-  // Object.fromEntries(...) so it inherits Object.prototype, and visitSchema
-  // buildingId is z.string().min(1) (no enum). A bare `NPC_BUILDING_CENTERS[key]`
-  // truthy check lets an inherited prototype key ("constructor"/"__proto__"/
-  // "toString"/…) resolve to a truthy fn → the `!center` guard passes → `dx/dy`
-  // become NaN → `NaN > RADIUS` is FALSE → the proximity check is SKIPPED and the
-  // real-CT `creditClawTokens` below fires FROM ANYWHERE (a proximity-bypass CT
-  // farm). Mirror the npc-simulation executor gate: own-property lookup only.
-  if (!Object.hasOwn(NPC_BUILDING_CENTERS, buildingId)) {
+  // Own-property guard via the shared resolveBuildingCenter (prototype-key CT-farm
+  // defense — see the helper's docstring). Returns null for an inherited prototype
+  // key so the real-CT credit below can never fire from a proximity bypass.
+  const center = resolveBuildingCenter(buildingId);
+  if (!center) {
     return c.json({ error: `Unknown building: ${buildingId}` }, 400);
   }
-  const center = NPC_BUILDING_CENTERS[buildingId];
 
   // Proximity check — the SHARED BUILDING_INTERACTION_RADIUS (agent-metaverse
   // P1, founder-signed): one source of truth for "close enough to interact,"
@@ -2188,18 +2242,20 @@ agentGatewayRoutes.post('/:sessionId/visit-building', async (c) => {
         // userId/avatar, skip the credit honestly (tokenAwarded stays 0).
         const avatarId = await resolveAvatarIdForBot(bot.userId ?? null);
         if (avatarId) {
-          await creditClawTokens({
+          // M2 anti-faucet: idempotent per (avatar, building, reason, UTC-day). A
+          // same-day repeat visit returns false → tokenAwarded stays 0 (honest).
+          // sessionDigest, NOT the raw sessionId (Codex auth-lens fix #4):
+          // `claw_token_transactions.metadata` is a persisted JSON column, and the
+          // raw sessionId is the real-CT bearer — never store a recoverable bearer
+          // in a money-ledger row. Digest is correlation-only.
+          tokenAwarded = (await creditBuildingRewardOncePerDay({
             avatarId,
-            amount: 1,
+            buildingId,
             reason: 'building_visit',
-            source: 'api',
-            // sessionDigest, NOT the raw sessionId (Codex auth-lens fix #4):
-            // `claw_token_transactions.metadata` is a persisted JSON column, and
-            // the raw sessionId is the real-CT bearer credential — never store a
-            // recoverable bearer in a money-ledger row. Digest is correlation-only.
             metadata: { buildingId, sessionDigest: sessionDigest(sessionId), agentId: bot.agentId },
-          });
-          tokenAwarded = 1;
+          }))
+            ? 1
+            : 0;
         }
       }
     } catch (err) {
@@ -2299,19 +2355,24 @@ agentGatewayRoutes.post('/:sessionId/building/:buildingId/chat', async (c) => {
     return c.json({ error: 'Invalid request', details: parsed.error.flatten() }, 400);
   }
 
-  const center = NPC_BUILDING_CENTERS[buildingId];
+  // M3: own-property guard (buildingId is an UNVALIDATED URL path param) via the
+  // shared resolveBuildingCenter — a bare `NPC_BUILDING_CENTERS[buildingId]` truthy
+  // check admitted inherited prototype keys → NaN distance → proximity skipped →
+  // real-CT teaching credit from anywhere. Same guard as /visit-building + /move.
+  const center = resolveBuildingCenter(buildingId);
   if (!center) return c.json({ error: `Unknown building: ${buildingId}` }, 400);
 
-  // Proximity check — must be near the building to chat with its character
-  const CHAT_RADIUS = 2000;
+  // Proximity check — must be near the building to chat with its character. Uses
+  // the shared BUILDING_INTERACTION_RADIUS (1000 wu), the SAME gate as
+  // /visit-building (was an ad-hoc CHAT_RADIUS=2000).
   const { npcId, npc } = resolved;
   const dx = npc.x - center.x;
   const dy = npc.y - center.y;
   const dist = Math.sqrt(dx * dx + dy * dy);
-  if (dist > CHAT_RADIUS) {
+  if (dist > BUILDING_INTERACTION_RADIUS) {
     return c.json(
       {
-        error: `Too far from ${buildingId} (${Math.round(dist)}px away, need <${CHAT_RADIUS}px). Move closer via POST /move.`,
+        error: `Too far from ${buildingId} (${Math.round(dist)}px away, need <${BUILDING_INTERACTION_RADIUS}px). Move closer via POST /move.`,
       },
       400,
     );
@@ -2398,17 +2459,19 @@ agentGatewayRoutes.post('/:sessionId/building/:buildingId/chat', async (c) => {
         // userId/avatar (tokenAwarded stays 0).
         const avatarId = await resolveAvatarIdForBot(bot.userId ?? null);
         if (avatarId) {
-          await creditClawTokens({
+          // M2 anti-faucet: idempotent per (avatar, building, reason, UTC-day). A
+          // same-day repeat teaching turn returns false → tokenAwarded stays 0.
+          // sessionDigest, NOT the raw sessionId (Codex auth-lens fix #4) — see the
+          // building-visit credit above; money-ledger metadata is persisted, never
+          // store the recoverable real-CT bearer in it.
+          tokenAwarded = (await creditBuildingRewardOncePerDay({
             avatarId,
-            amount: 1,
+            buildingId,
             reason: 'building_chat_teaching',
-            source: 'api',
-            // sessionDigest, NOT the raw sessionId (Codex auth-lens fix #4) - see
-            // the building-visit credit above. Money-ledger metadata is persisted;
-            // never store the recoverable real-CT bearer in it.
             metadata: { buildingId, sessionDigest: sessionDigest(sessionId), agentId: bot.agentId, characterName: system.locationAgent.agentName },
-          });
-          tokenAwarded = 1;
+          }))
+            ? 1
+            : 0;
         }
       }
     } catch (err) {

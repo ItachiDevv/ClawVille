@@ -28,18 +28,51 @@ import type { Action, ActionResult, ClawvilleActionState } from './actions/types
 
 const ROOM_NAMESPACE = '6ba7b810-9dad-11d1-80b4-00c04fd430c8';
 
+// R1 (2026-07-02): hard ceiling on ONE agent's ElizaOS init. `runtime.initialize()`
+// takes the plugin-sql `pg_advisory_lock`; if a prior init hangs holding it, both a
+// queued init-mutex waiter AND initialize() itself can block FOREVER, wedging the box
+// on one boot. This bounds both. CRITICAL: the bound is an IN-PROCESS rejecting
+// Promise.race ONLY — NEVER an external shell timeout/kill. An external kill orphans
+// the bun process still squatting the advisory lock (the documented root cause of the
+// "stuck on one boot" flake); an in-process REJECT lets the SAME process run its catch
+// (state='error' + onError) and finally (release the mutex), freeing the lock cleanly.
+const INIT_TIMEOUT_MS = 90_000;
+
 class InitMutex {
   private queue: (() => void)[] = [];
   private locked = false;
   private releaseDelay = 2000;
 
-  async acquire(): Promise<void> {
+  async acquire(timeoutMs = INIT_TIMEOUT_MS): Promise<void> {
     if (!this.locked) {
       this.locked = true;
       return;
     }
-    return new Promise<void>((resolve) => {
-      this.queue.push(resolve);
+    // Queued behind a holder. R1: a queued waiter can NEVER resolve if the holder
+    // hangs on the plugin-sql advisory lock, so bound the wait and REJECT on timeout.
+    // On timeout we splice this waiter out of the queue so a late release() (which
+    // shift()s the queue after releaseDelay ms) never calls a stale resolver and
+    // hands the lock to a caller that already timed out and gave up.
+    return new Promise<void>((resolve, reject) => {
+      let settled = false;
+      const waiter = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve();
+      };
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        const idx = this.queue.indexOf(waiter);
+        if (idx !== -1) this.queue.splice(idx, 1);
+        reject(
+          new Error(
+            `[InitMutex] init-lock acquire timed out after ${timeoutMs}ms — a prior agent init is likely hung on the plugin-sql pg_advisory_lock`,
+          ),
+        );
+      }, timeoutMs);
+      this.queue.push(waiter);
     });
   }
 
@@ -370,10 +403,16 @@ export class ElizaRuntime {
     if (this.state === 'running') return;
     this.state = 'initializing';
 
-    await initMutex.acquire();
-    console.log(`[ElizaRuntime] Agent ${this.config.agentId} acquired init mutex`);
-
+    // R1: `acquired` gates the release in `finally`. `acquire()` now REJECTS on a
+    // timeout (a hung holder), and on that path we NEVER took the lock — so we must
+    // NOT release (that would hand a phantom release to the queue and advance it for
+    // a lock we never held). Only release if acquire actually succeeded.
+    let acquired = false;
     try {
+      await initMutex.acquire(INIT_TIMEOUT_MS);
+      acquired = true;
+      console.log(`[ElizaRuntime] Agent ${this.config.agentId} acquired init mutex`);
+
       if (this.config.apiKeys?.openai && !process.env.OPENAI_API_KEY) {
         process.env.OPENAI_API_KEY = this.config.apiKeys.openai;
       }
@@ -411,7 +450,28 @@ export class ElizaRuntime {
         actionPlanning: false,
       } as any);
 
-      await this.runtime.initialize();
+      // R1: `runtime.initialize()` can block INDEFINITELY on the plugin-sql
+      // pg_advisory_lock. Bound it with an IN-PROCESS rejecting Promise.race (NEVER
+      // an external kill — that orphans the lock-holding bun proc). On timeout the
+      // race REJECTS → the catch below runs (state='error' + onError + rethrow) and
+      // the finally releases the mutex, all IN THIS PROCESS. Clear the timer on the
+      // success path so no dangling timer keeps the event loop alive.
+      let initTimer: ReturnType<typeof setTimeout> | undefined;
+      const initTimeout = new Promise<never>((_, reject) => {
+        initTimer = setTimeout(() => {
+          reject(
+            new Error(
+              `[ElizaRuntime] runtime.initialize() timed out after ${INIT_TIMEOUT_MS}ms — likely wedged on the plugin-sql pg_advisory_lock`,
+            ),
+          );
+        }, INIT_TIMEOUT_MS);
+      });
+      try {
+        await Promise.race([this.runtime.initialize(), initTimeout]);
+      } finally {
+        if (initTimer) clearTimeout(initTimer);
+      }
+
       this.state = 'running';
       console.log(`[ElizaRuntime] Agent ${this.config.agentId} started`);
     } catch (error) {
@@ -420,7 +480,9 @@ export class ElizaRuntime {
       this.config.onError?.(error as Error);
       throw error;
     } finally {
-      initMutex.release();
+      // R1: release ONLY if acquire() actually succeeded (see `acquired` above) —
+      // the acquire-timeout path rejects without ever holding the lock.
+      if (acquired) initMutex.release();
     }
   }
 

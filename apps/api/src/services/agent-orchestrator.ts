@@ -62,29 +62,36 @@ class AgentOrchestrator {
       return existing.runtime;
     }
 
-    // Prevent concurrent startup
+    // Prevent concurrent startup. ATOMIC check-then-set (2026-07-02, Codex): the
+    // `.add()` MUST run with NO `await` between it and the `has()` guard, so two
+    // concurrent callers can never both pass — the loser sees the flag set and
+    // waits. Previously the flag was set only AFTER the awaited `db.query` lookup
+    // below, so two concurrent callers (e.g. multiple agents chatting the same
+    // building → two ensureAgentRuntime for the same system platformAgentId) could
+    // both pass the guard, both call startAgent, and duplicate-init/overwrite the
+    // runningAgents entry. Setting the flag first + moving the lookup inside the
+    // try/finally closes that window (the finally still clears on every path).
     if (this.recoveryInProgress.has(agentId)) {
       await new Promise((resolve) => setTimeout(resolve, 2000));
       const recovered = this.runningAgents.get(agentId);
       return recovered?.runtime ?? null;
     }
-
-    // Verify agent exists — openclaw-bot agents match by id only
-    const agent = userId
-      ? await db.query.agents.findFirst({
-          where: and(eq(agents.id, agentId), eq(agents.userId, userId)),
-        })
-      : await db.query.agents.findFirst({
-          where: eq(agents.id, agentId),
-        });
-
-    if (!agent) return null;
-
-    // Lazy-start the agent
-    console.log(`[Orchestrator] Lazy-starting agent ${agentId}`);
     this.recoveryInProgress.add(agentId);
 
     try {
+      // Verify agent exists — openclaw-bot agents match by id only
+      const agent = userId
+        ? await db.query.agents.findFirst({
+            where: and(eq(agents.id, agentId), eq(agents.userId, userId)),
+          })
+        : await db.query.agents.findFirst({
+            where: eq(agents.id, agentId),
+          });
+
+      if (!agent) return null;
+
+      // Lazy-start the agent
+      console.log(`[Orchestrator] Lazy-starting agent ${agentId}`);
       if (agent.status !== 'stopped' && agent.status !== 'pending') {
         await this.updateAgentStatus(agentId, 'stopped');
       }
@@ -99,6 +106,13 @@ class AgentOrchestrator {
       await this.updateAgentStatus(agentId, 'error');
       return null;
     } finally {
+      // R1 release valve: `startAgent` now REJECTS on a hung ElizaOS init (the
+      // in-process rejecting timeout in eliza-runtime.ts), and that rejection
+      // propagates into the catch above — so this finally ALWAYS clears the recovery
+      // guard. Previously a hung init could hang here forever, leaving the agentId
+      // stuck in `recoveryInProgress` so every future ensureAgentRuntime fell into
+      // the wait-2s-return-null branch permanently. R1's rejecting timeout is what
+      // now guarantees this line runs.
       this.recoveryInProgress.delete(agentId);
     }
   }
