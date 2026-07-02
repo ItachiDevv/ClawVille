@@ -757,90 +757,6 @@ export const api = {
       totalActivities: number;
     }>(`/api/openclaw/memory-export/${avatarId}`),
 
-  // Marketplace
-  getMarketplaceSkills: (sort = 'newest', page = 1, limit = 20) =>
-    honoRequest<{
-      skills: Array<{
-        id: string;
-        authorAvatarName: string;
-        authorSpecies: string;
-        name: string;
-        description: string;
-        upvoteCount: number;
-        downloadCount: number;
-        hasUpvoted: boolean;
-        createdAt: string;
-      }>;
-      page: number;
-      limit: number;
-    }>(`/api/marketplace/skills?sort=${sort}&page=${page}&limit=${limit}`),
-
-  getMarketplaceSkill: (id: string) =>
-    honoRequest<{
-      skill: {
-        id: string;
-        authorAvatarId: string;
-        authorAvatarName: string;
-        authorSpecies: string;
-        name: string;
-        description: string;
-        skillMd: string;
-        upvoteCount: number;
-        downloadCount: number;
-        hasUpvoted: boolean;
-        createdAt: string;
-      };
-    }>(`/api/marketplace/skills/${id}`),
-
-  publishSkill: (data: { name: string; description: string; skillMd: string }) =>
-    honoRequest<{
-      skill: {
-        id: string;
-        name: string;
-        description: string;
-        upvoteCount: number;
-        downloadCount: number;
-        hasUpvoted: boolean;
-        createdAt: string;
-      };
-    }>('/api/marketplace/publish', {
-      method: 'POST',
-      body: JSON.stringify(data),
-    }),
-
-  buySkill: (id: string) =>
-    honoRequest<{ success: boolean; clawTokens: number; skill: { id: string; name: string } }>(
-      `/api/marketplace/skills/${id}/buy`,
-      { method: 'POST' }
-    ),
-
-  upvoteSkill: (id: string) =>
-    honoRequest<{ upvoted: boolean; upvoteCount: number }>(
-      `/api/marketplace/skills/${id}/upvote`,
-      { method: 'POST' }
-    ),
-
-  getMyPublishedSkills: () =>
-    honoRequest<{
-      skills: Array<{
-        id: string;
-        authorAvatarName: string;
-        authorSpecies: string;
-        name: string;
-        description: string;
-        upvoteCount: number;
-        downloadCount: number;
-        hasUpvoted: boolean;
-        createdAt: string;
-      }>;
-    }>('/api/marketplace/my-skills'),
-
-  installSkill: (id: string) =>
-    honoRequest<{ success: boolean; skillName: string; newKnowledgeCount: number; totalKnowledge: number }>(
-      `/api/marketplace/skills/${id}/install`,
-      { method: 'POST' }
-    ),
-
   // Research
   triggerResearch: (sessionId: string, locationId: string) =>
     honoRequest<{ started: boolean; locationId: string }>('/api/research/trigger', {
@@ -868,52 +784,6 @@ export const api = {
 
   seedArticles: () =>
     honoRequest<{ started: boolean }>('/api/research/seed', { method: 'POST' }),
-
-  // Bazaar
-  getBazaarListings: (params?: { page?: number; rarity?: string; category?: string; sort?: string; minPrice?: number; maxPrice?: number }) =>
-    honoRequest<{ listings: any[]; total: number; page: number; pageSize: number }>(`/api/bazaar?${new URLSearchParams(Object.entries(params || {}).filter(([,v]) => v != null).map(([k,v]) => [k, String(v)])).toString()}`),
-  getBazaarListing: (id: string) =>
-    honoRequest<{ listing: any }>(`/api/bazaar/${id}`),
-  getBazaarFeatured: () =>
-    honoRequest<{ listings: any[] }>('/api/bazaar/featured'),
-  createBazaarListing: (data: { skillId: string; price: number }) =>
-    honoRequest<{ listing: any }>('/api/bazaar/list', { method: 'POST', body: JSON.stringify(data) }),
-  updateBazaarListing: (id: string, data: { price: number }) =>
-    honoRequest<{ listing: any }>(`/api/bazaar/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
-  cancelBazaarListing: (id: string) =>
-    honoRequest<{ success: boolean }>(`/api/bazaar/${id}`, { method: 'DELETE' }),
-  getMyBazaarListings: () =>
-    honoRequest<{ listings: any[] }>('/api/bazaar/my-listings'),
-  buyBazaarListing: (id: string) =>
-    honoRequest<{ success: boolean; transaction: any }>(`/api/bazaar/${id}/buy`, { method: 'POST' }),
-  getMyBazaarPurchases: () =>
-    honoRequest<{ purchases: any[] }>('/api/bazaar/my-purchases'),
-  reviewBazaarSkill: (listingId: string, data: { rating: number; comment?: string }) =>
-    honoRequest<{ review: any }>(`/api/bazaar/${listingId}/review`, { method: 'POST', body: JSON.stringify(data) }),
-  getBazaarSkillReviews: (skillId: string) =>
-    honoRequest<{ reviews: any[] }>(`/api/bazaar/skills/${skillId}/reviews`),
-  getBazaarStats: () =>
-    honoRequest<{ stats: any }>('/api/bazaar/stats'),
-
-  // Auctions
-  getAuctions: (params?: { page?: number; itemType?: string; status?: string; sort?: string }) =>
-    honoRequest<{ auctions: any[]; total: number; page: number; pageSize: number }>(
-      `/api/auctions?${new URLSearchParams(Object.entries(params || {}).filter(([,v]) => v != null).map(([k,v]) => [k, String(v)])).toString()}`
-    ),
-  getAuction: (id: string) =>
-    honoRequest<{ auction: any; bids: any[] }>(`/api/auctions/${id}`),
-  createAuction: (data: { title: string; description?: string; itemType: string; skillId?: string; startingBid: number; buyNowPrice?: number; durationHours?: number }) =>
-    honoRequest<{ auction: any }>('/api/auctions/create', { method: 'POST', body: JSON.stringify(data) }),
-  cancelAuction: (id: string) =>
-    honoRequest<{ success: boolean }>(`/api/auctions/${id}`, { method: 'DELETE' }),
-  placeBid: (id: string, amount: number) =>
-    honoRequest<{ success: boolean; auction: any }>(`/api/auctions/${id}/bid`, { method: 'POST', body: JSON.stringify({ amount }) }),
-  buyNow: (id: string) =>
-    honoRequest<{ success: boolean }>(`/api/auctions/${id}/buy-now`, { method: 'POST' }),
-  getMyAuctions: () =>
-    honoRequest<{ auctions: any[] }>('/api/auctions/my-auctions'),
-  getMyBids: () =>
-    honoRequest<{ auctions: any[] }>('/api/auctions/my-bids'),
 
   // Quests
   getQuests: (params?: { page?: number; tier?: string; status?: string }) =>
@@ -977,16 +847,14 @@ export const api = {
   getBountyReputation: (avatarId: string) =>
     honoRequest<{ reputation: any }>(`/api/bounties/reputation/${avatarId}`),
 
-  // Leaderboard (P4 — single ClawVille-owned ranking board)
+  // Leaderboard (P4 — single ClawVille-owned ranking board). 'skills-sold' /
+  // 'skills-authored' sort modes + fields removed 2026-07-02 — the backend
+  // legacy board (apps/api/src/routes/leaderboard.ts) never carried them on
+  // its own SortMode/LeaderboardEntry (peer skill commerce was already gone
+  // there), so this client contract was drifted/dead code that crashed the
+  // modal if selected. Narrowed to match the live route.
   getLeaderboard: (params?: {
-    sort?:
-      | 'composite'
-      | 'gold'
-      | 'earned'
-      | 'skills-sold'
-      | 'skills-authored'
-      | 'quests'
-      | 'bounties';
+    sort?: 'composite' | 'gold' | 'earned' | 'quests' | 'bounties';
     limit?: number;
     offset?: number;
     me?: boolean;
@@ -1007,8 +875,6 @@ export const api = {
         archetype: string | null;
         gold: number;
         earned: number;
-        skillsSold: number;
-        skillsAuthored: number;
         questsCompleted: number;
         bountiesCompleted: number;
         compositeScore: number;
@@ -1026,8 +892,6 @@ export const api = {
         species: string;
         gold: number;
         earned: number;
-        skillsSold: number;
-        skillsAuthored: number;
         questsCompleted: number;
         bountiesCompleted: number;
         compositeScore: number;
@@ -1041,8 +905,6 @@ export const api = {
       rankedAvatars: number;
       totalGold: number;
       totalEarned: number;
-      totalSkillsSold: number;
-      totalSkillsAuthored: number;
       totalQuestsCompleted: number;
       totalBountiesCompleted: number;
       generatedAt: string;

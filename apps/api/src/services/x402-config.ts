@@ -1,7 +1,7 @@
 // FEATURE_GATE: x402_payment_middleware
 // Status: scaffold live, flag OFF (X402_ENABLED defaults to false).
 // Retained, not deleted, on 2026-04-21 per founder call — reserved for later
-// metered-access features unrelated to the (now-paused) skill marketplace.
+// metered-access features unrelated to peer skill commerce (removed 2026-07-02).
 // Metric to graduate: any future feature requiring per-call metered access is
 //   proposed AND has a traction signal (e.g. gated API tier with visible
 //   demand on /dash).
