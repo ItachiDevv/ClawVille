@@ -80,7 +80,6 @@ const TICK_MS = 30_000; // driver interval — NOT the 200ms sim tick
 const LLM_TIMEOUT_MS = 15_000; // hard ceiling on one decision
 const WALK_TIMEOUT_MS = 120_000; // give up walking + replan if not arrived
 const TALK_COOLDOWN_MS = 60_000; // linger after a conversation before re-deciding
-const IDLE_DECIDE_EVERY = 4; // when no humans: only LLM-decide every Nth tick
 const MAX_HOUSE_AGENTS = 64; // bound the registry
 const DECIDE_MAX_TOKENS = 200;
 // R2: if a runtime warm has been in-flight longer than this, evict it from the
@@ -171,13 +170,12 @@ class AgentAutonomyDriver {
    */
   private tick(): void {
     this.tickCount++;
-    // Idle-throttle: when the world is empty, only run the LLM-bearing decision
-    // cadence every IDLE_DECIDE_EVERY ticks (cheap walk/cooldown polls still run
-    // every tick so the body keeps arriving / cooling down). This is a per-tick
-    // gate, not a per-agent one, so it is O(1) here.
-    const humansPresent = npcSimulation.getActiveHumanCount() > 0;
-    const throttledIdle = !humansPresent && this.tickCount % IDLE_DECIDE_EVERY !== 0;
-
+    // Human-presence INDEPENDENT cadence: the agent runs the SAME decision loop
+    // whether or not a human is in the world. ClawVille's premise is that hosted
+    // agents ARE the living economy — they must act continuously with ZERO
+    // external users present, not dial themselves down when nobody is watching
+    // (founder, 2026-07-02). Cost is controlled by the tick cadence + the planned
+    // migration to open-source/free decision models, NOT by gating on humans.
     for (const entry of this.houseAgents.values()) {
       if (this.inFlight.has(entry.agentId)) continue;
       const runtime = agentOrchestrator.getRunningAgentRuntime(entry.platformAgentId);
@@ -232,17 +230,12 @@ class AgentAutonomyDriver {
       // drive is reached with a LIVE runtime (rules out candidate b) + the
       // throttle state. Stripped by the follow-up parse fix.
       console.log(
-        `[AutonomyDriver][debug] drive t=${this.tickCount} ${sessionDigest(entry.agentId)} phase=${entry.phase} runtime=yes humansPresent=${humansPresent} throttledIdle=${throttledIdle}`,
+        `[AutonomyDriver][debug] drive t=${this.tickCount} ${sessionDigest(entry.agentId)} phase=${entry.phase} runtime=yes`,
       );
       this.inFlight.add(entry.agentId);
-      // Pass throttledIdle so driveOnce suppresses the LLM-bearing phases when
-      // the world is empty (cost control ≈ $1–2/day/agent); the cheap
-      // walking/cooldown polls inside driveOnce still run every tick so the body
-      // keeps arriving / cooling down.
       void this.driveOnce(
         entry.agentId,
         (prompt) => this.withTimeout(runtime.decide(prompt, { maxTokens: DECIDE_MAX_TOKENS })),
-        throttledIdle,
       )
         .catch((err) =>
           console.error(
@@ -258,13 +251,12 @@ class AgentAutonomyDriver {
    * Drive ONE house agent through one step of the phase machine. Exposed
    * (agentId + injectable `decide`) so tests can drive it with a canned reply
    * instead of a live model. Production passes the timeout-wrapped runtime
-   * decider. `throttledIdle` (default false) suppresses the LLM-bearing phases
-   * when the world is empty; the cheap walking/cooldown polls always run.
+   * decider. Runs the SAME cadence regardless of human presence — the agent
+   * acts continuously whether or not anyone is watching.
    */
   async driveOnce(
     agentId: string,
     decide: DecideFn,
-    throttledIdle = false,
   ): Promise<void> {
     const entry = this.houseAgents.get(agentId);
     if (!entry) return;
@@ -301,9 +293,6 @@ class AgentAutonomyDriver {
       entry.targetBuildingId = null;
       entry.phaseSince = now;
     }
-
-    // Beyond here every phase calls the LLM — honor the idle throttle.
-    if (throttledIdle) return;
 
     // Phase: arrived → converse with the teacher (LLM). The proximity gate in
     // executeHatcherAction PASSES because we only reach 'arrived' once within
