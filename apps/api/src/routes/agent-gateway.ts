@@ -178,6 +178,14 @@ async function creditBuildingRewardOncePerDay(opts: {
 }): Promise<boolean> {
   const startOfUtcDay = new Date();
   startOfUtcDay.setUTCHours(0, 0, 0, 0);
+  // ISO string, NOT the Date object: this raw `sql` runs through the postgres-js
+  // driver, whose generic param serializer calls `str()` → `Buffer.byteLength()`
+  // on the value and THROWS `ERR_INVALID_ARG_TYPE` for a Date ("Received an
+  // instance of Date"). Passing the ISO text (postgres casts it to timestamptz in
+  // the `created_at >=` comparison) is the driver-safe binding. This threw on
+  // EVERY building-visit/chat credit since M2 shipped — a connected agent earned
+  // 0 CT for building visits (caught by the OpenClaw e2e harness, 2026-07-02).
+  const startOfUtcDayIso = startOfUtcDay.toISOString();
   return db.transaction(async (tx) => {
     // Row-lock the avatar FIRST (the exact row `creditClawTokens` FOR UPDATEs) so
     // the check-then-credit below is serialized against a concurrent duplicate.
@@ -192,7 +200,7 @@ async function creditBuildingRewardOncePerDay(opts: {
       WHERE avatar_id = ${opts.avatarId}
         AND reason = ${opts.reason}
         AND metadata->>'buildingId' = ${opts.buildingId}
-        AND created_at >= ${startOfUtcDay}
+        AND created_at >= ${startOfUtcDayIso}
       LIMIT 1`);
     if (existing) return false; // already rewarded for this (avatar, building, reason) today
     await creditClawTokens(
