@@ -43,12 +43,21 @@ import { getSystemUserId } from './system-npc-seeder';
 import { sessionDigest } from './session-digest';
 
 /**
- * The single P1 house agent. A plain (non-reserved) agentId — MUST NOT start
- * with a reserved partner prefix (`hatcher:`), which the public registration
- * guards reject; this seeder writes the row directly (system-owned) so it is
- * exempt from those public guards, but a plain id keeps it unambiguous.
+ * The single P1 house agent id — a FIXED, OPAQUE, non-identifying constant
+ * (uuid-shaped; deliberately contains NO "house"/"clawville" substring and is
+ * NOT a reserved partner prefix like `hatcher:`/`milady:`). (N2)
+ *
+ * Opacity is a BRAND requirement: house/fleet agents must be indistinguishable
+ * to outsiders, but this id leaks two ways — `GET /api/openclaw/active` (public)
+ * emits the raw `agentId`, and the deterministic body id
+ * `ocb-<base64url(agentId)>` decodes straight back to it — so any identifying
+ * substring would out the fixture. It MUST stay a constant: the seeder looks up
+ * its `openclaw_bots` row by this id on every boot for idempotency, and the
+ * deterministic `avatarBodyId(agentId)` depends on it. This seeder writes the
+ * row directly (system-owned), exempt from the public registration guards that
+ * reject reserved prefixes.
  */
-const HOUSE_AGENT_ID = 'clawville-house-01';
+const HOUSE_AGENT_ID = '6f1d9a2c-4e83-4b57-9c0a-2d7e5f8b1a34';
 const HOUSE_AGENT_NAME = 'Coralia';
 const HOUSE_AGENT_PERSONALITY =
   'A curious, upbeat ClawVille resident who is eager to learn every skill the town teaches.';
@@ -67,6 +76,50 @@ export interface HouseAgentSeedResult {
   bodyId: string;
   platformAgentId: string;
   created: boolean;
+}
+
+/**
+ * Build the in-world avatar config for the house agent. Extracted as a PURE
+ * function (no I/O) so the B1 invariant is unit-testable without a DB.
+ *
+ * `autonomyMode: 'self-managed'` is load-bearing (B1): the 200ms sim planner
+ * (`planNpcBehaviors`) skips `isOpenClaw && autonomyMode === 'self-managed'`
+ * bodies, so the house body is driven EXCLUSIVELY by `agentAutonomyDriver`'s
+ * ~30s perceive→decide→act loop and is never wander-hijacked out from under the
+ * driver (which would break the walk→talk loop via the proximity gate). This
+ * also matches the canonical rule "NanoClaw agents are always self-managed"
+ * (routes/agent-gateway.ts). Path movement in `moveNpcs` is mode-independent, so
+ * the driver's A*-set walk paths still execute for a self-managed body.
+ */
+export function buildHouseAvatarConfig(
+  sessionId: string,
+  species: string,
+): OpenClawAvatarConfig {
+  return {
+    mode: 'avatar',
+    sessionId,
+    // Dummy gateway/auth — never used: nanoclaw's client.chat() returns '' and
+    // makes no outbound call (cognition is the local ElizaOS runtime).
+    gatewayUrl: 'http://localhost',
+    authToken: '',
+    agentId: HOUSE_AGENT_ID,
+    sessionKey: HOUSE_AGENT_ID,
+    protocol: 'nanoclaw',
+    // B1: self-managed → the 200ms sim planner leaves the body alone; the
+    // autonomy driver is its ONLY mover.
+    autonomyMode: 'self-managed',
+    name: HOUSE_AGENT_NAME,
+    species,
+    color: HOUSE_AGENT_COLOR,
+    stats: { hp: 100, attack: 10, defense: 10, speed: 10 },
+    personality: HOUSE_AGENT_PERSONALITY,
+    homeX: HOUSE_AGENT_HOME_X,
+    homeY: HOUSE_AGENT_HOME_Y,
+    patrolRadius: 300,
+    // No CT this dispatch (slice 4 deferred) — non-ledger, unbound.
+    ledgerCapable: false,
+    boundUserId: null,
+  };
 }
 
 /**
@@ -168,31 +221,10 @@ export async function ensureHouseAgent(): Promise<HouseAgentSeedResult | null> {
   // bump lastActivity). Failure is non-fatal — the driver retries once warmed.
   await agentOrchestrator.startAgent(platformAgentId, systemUserId, { isHouse: true });
 
-  // ── 3. in-world AVATAR body (protocol 'nanoclaw', NOT 'hatcher-proxy') ─────
+  // ── 3. in-world AVATAR body (protocol 'nanoclaw', NOT 'hatcher-proxy';
+  //       autonomyMode 'self-managed' so the sim planner never hijacks it) ────
   const sessionId = `oc-${randomBytes(24).toString('base64url')}`;
-  const avatarConfig: OpenClawAvatarConfig = {
-    mode: 'avatar',
-    sessionId,
-    // Dummy gateway/auth — never used: nanoclaw's client.chat() returns '' and
-    // makes no outbound call (cognition is the local ElizaOS runtime above).
-    gatewayUrl: 'http://localhost',
-    authToken: '',
-    agentId: HOUSE_AGENT_ID,
-    sessionKey: HOUSE_AGENT_ID,
-    protocol: 'nanoclaw',
-    autonomyMode: 'server-managed',
-    name: HOUSE_AGENT_NAME,
-    species,
-    color: HOUSE_AGENT_COLOR,
-    stats: { hp: 100, attack: 10, defense: 10, speed: 10 },
-    personality: HOUSE_AGENT_PERSONALITY,
-    homeX: HOUSE_AGENT_HOME_X,
-    homeY: HOUSE_AGENT_HOME_Y,
-    patrolRadius: 300,
-    // No CT this dispatch (slice 4 deferred) — non-ledger, unbound.
-    ledgerCapable: false,
-    boundUserId: null,
-  };
+  const avatarConfig = buildHouseAvatarConfig(sessionId, species);
   const client = new OpenClawClient(avatarConfig);
   npcSimulation.registerOpenClaw(avatarConfig, client);
   const bodyId = npcSimulation.getNpcIdForSession(sessionId);

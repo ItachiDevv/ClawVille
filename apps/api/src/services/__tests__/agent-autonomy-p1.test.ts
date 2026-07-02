@@ -17,6 +17,7 @@ import { describe, expect, it, beforeEach } from 'bun:test';
 import { NPC_BUILDING_CENTERS, BUILDING_INTERACTION_RADIUS } from '@clawville/shared';
 import { npcSimulation } from '../npc-simulation';
 import { agentAutonomyDriver } from '../agent-autonomy-driver';
+import { buildHouseAvatarConfig } from '../house-agent-seeder';
 
 type Sim = {
   npcs: Map<string, any>;
@@ -56,6 +57,14 @@ function makeBody(id: string, x: number, y: number) {
     direction: 'idle',
     species: 'milady_official_1',
     isOpenClaw: true,
+    // Default server-managed; N4 tests override to 'self-managed' where needed.
+    autonomyMode: 'server-managed' as 'server-managed' | 'self-managed' | 'native',
+    // Fields the ambient-conversation partner filters read (getIdleAliveNpcs /
+    // findNearestIdleNpc) — default to "eligible" so a test body is selectable
+    // unless it is deliberately excluded (dead / in-conversation / self-managed).
+    inConversation: false,
+    conversationCooldownUntil: 0,
+    invulnerableUntil: 0,
     path: [] as Array<{ x: number; y: number }>,
     pathIndex: 0,
     destinationBuildingId: null as string | null,
@@ -219,5 +228,47 @@ describe('P1 autonomy driver — decide → enter_building', () => {
     expect(agentAutonomyDriver.hasHouseAgent('ocb-a')).toBe(true);
     agentAutonomyDriver.unregisterHouseAgent('ocb-a');
     expect(agentAutonomyDriver.hasHouseAgent('ocb-a')).toBe(false);
+  });
+});
+
+describe('P1 house agent config + ambient-conversation exclusion', () => {
+  // B1 regression guard: the seeder must register the in-world body as
+  // 'self-managed' so the 200ms sim planner leaves it to the autonomy driver.
+  it("house avatar config registers the body as self-managed (B1)", () => {
+    const cfg = buildHouseAvatarConfig('oc-house-cfg', 'milady_official_1');
+    expect(cfg.autonomyMode).toBe('self-managed');
+    expect(cfg.protocol).toBe('nanoclaw');
+    expect(cfg.mode).toBe('avatar');
+  });
+
+  // N4 guard: a self-managed OpenClaw body is never picked as an ambient
+  // NPC↔NPC conversation partner, while a server-managed (Hatcher-like) body
+  // still is — proving the exclusion is scoped and does not regress Hatcher.
+  it('excludes a self-managed OpenClaw body from ambient-conversation selection, not a server-managed one (N4)', () => {
+    const sim = asSim() as unknown as {
+      npcs: Map<string, any>;
+      getIdleAliveNpcs: () => any[];
+      findNearestIdleNpc: (npc: any, maxDist: number) => any | null;
+    };
+    // Isolate to our 3 bodies so nearest-partner selection is deterministic
+    // (initNpcs seeds the default roster in beforeEach).
+    sim.npcs.clear();
+    const seeker = makeBody('npc-seeker', 11264, 11264);
+    const houseBody = makeBody('ocb-selfmanaged', 11314, 11264); // NEARER (50 wu)
+    houseBody.autonomyMode = 'self-managed';
+    const hatcherBody = makeBody('ocb-servermanaged', 11164, 11264); // farther (100 wu)
+    hatcherBody.autonomyMode = 'server-managed';
+    sim.npcs.set(seeker.id, seeker);
+    sim.npcs.set(houseBody.id, houseBody);
+    sim.npcs.set(hatcherBody.id, hatcherBody);
+
+    const idleIds = sim.getIdleAliveNpcs().map((n) => n.id);
+    expect(idleIds).not.toContain('ocb-selfmanaged'); // self-managed excluded
+    expect(idleIds).toContain('ocb-servermanaged'); // Hatcher (server-managed) unaffected
+
+    // Even though the self-managed body is NEARER, the partner search skips it
+    // and returns the server-managed body — proving the exclusion is scoped.
+    const partner = sim.findNearestIdleNpc(seeker, 5000);
+    expect(partner?.id).toBe('ocb-servermanaged');
   });
 });
