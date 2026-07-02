@@ -185,6 +185,13 @@ class AgentAutonomyDriver {
         }
         continue;
       }
+      // TEMP DEBUG (agent-metaverse-p1 silent-'deciding' diagnosis, 2026-07-01):
+      // one line per drive so a SILENT success path is observable — confirms the
+      // drive is reached with a LIVE runtime (rules out candidate b) + the
+      // throttle state. Stripped by the follow-up parse fix.
+      console.log(
+        `[AutonomyDriver][debug] drive t=${this.tickCount} ${sessionDigest(entry.agentId)} phase=${entry.phase} runtime=yes humansPresent=${humansPresent} throttledIdle=${throttledIdle}`,
+      );
       this.inFlight.add(entry.agentId);
       // Pass throttledIdle so driveOnce suppresses the LLM-bearing phases when
       // the world is empty (cost control ≈ $1–2/day/agent); the cheap
@@ -265,6 +272,11 @@ class AgentAutonomyDriver {
       );
       const prompt = this.buildTalkPrompt(entry.targetBuildingId, building?.label, building?.cryptoFocus);
       const reply = await decide(prompt);
+      // TEMP DEBUG (see above): the RAW talk reply — reveals whether gpt-4o-mini
+      // emits a parseable [ACTION: talk_to_npc(...)] tag.
+      console.log(
+        `[AutonomyDriver][debug] talk ${sessionDigest(entry.agentId)} replyLen=${reply.length} reply=${JSON.stringify(reply.slice(0, 240))}`,
+      );
       npcSimulation.dispatchHatcherActions(entry.bodyId, reply);
       entry.phase = 'talking';
       entry.phaseSince = now;
@@ -274,6 +286,12 @@ class AgentAutonomyDriver {
     // Phase: deciding (default) → choose a teacher by need + walk (LLM).
     const prompt = this.buildDecisionPrompt(perception, entry);
     const reply = await decide(prompt);
+    // TEMP DEBUG (see tick()): the RAW decision reply — the smoking gun for
+    // candidate (a). If this has content but no [ACTION: enter_building(...)] the
+    // executor recognizes, the parse — not the model call — is the stall.
+    console.log(
+      `[AutonomyDriver][debug] decide ${sessionDigest(entry.agentId)} replyLen=${reply.length} reply=${JSON.stringify(reply.slice(0, 240))}`,
+    );
     // N3: clear any STALE destination from a PRIOR turn BEFORE dispatching, so
     // post-dispatch destinationBuildingId is non-null ONLY if THIS turn's
     // enter_building actually succeeded. Without this, a dropped enter_building
@@ -289,6 +307,12 @@ class AgentAutonomyDriver {
     // executor), destinationBuildingId stays null → we retry deciding next tick.
     const body = npcSimulation.getNpcById(entry.bodyId);
     const chosen = body?.destinationBuildingId ?? null;
+    // TEMP DEBUG (see tick()): did dispatch stamp a destination? destSet=false with
+    // a non-empty reply above ⇒ candidate (a) (no parseable enter_building) OR (c)
+    // (a valid tag that dispatchHatcherActions no-op'd for the ocb- body).
+    console.log(
+      `[AutonomyDriver][debug] postDispatch ${sessionDigest(entry.agentId)} destinationBuildingId=${chosen ?? 'null'}`,
+    );
     if (chosen) {
       entry.phase = 'walking';
       entry.phaseSince = now;
