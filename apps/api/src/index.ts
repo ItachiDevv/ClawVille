@@ -493,16 +493,21 @@ const arenaMode = process.env.NPC_ARENA_MODE === 'true';
 startSimulation(arenaMode);
 
 // ── Process-level crash guards (2026-07-02 — boot-crush crash-loop fix) ──────
-// Registered BEFORE the boot IIFE so they cover boot-time faults. Root symptom:
-// on a slow/contended boot, ElizaOS's built-in bootstrap plugin fired its
-// internal 30s service-registration timeout (task / embedding-generation /
-// trajectory_logger) from a promise chain we do NOT own — surfacing as an
-// UNHANDLED REJECTION. With no handler, Bun killed the whole API → Coolify
-// restart → a multi-minute crash-loop until the init crush cleared (Coralia +
-// Nori + teachers never ran during it). The SEQUENTIAL warm below removes the
-// root contention; these handlers are the belt-and-suspenders net. Both LOG
-// LOUDLY and REDACTED (an agent route path/stack can carry a real-CT bearer,
-// cf. M1) so nothing is hidden.
+// Registered BEFORE the boot IIFE so they cover boot-time faults. This IS the
+// fix for the observed crash-loop (staging `restarts=2`, `Bun` crash footers).
+// Root cause: on a COLD/CONTENDED boot — cold Supabase + the ElizaOS migration
+// still holding the plugin-sql advisory lock + Coralia's driver lazy-warm racing
+// the town-guide boot warm — a single ElizaOS runtime's `initialize()` exceeded
+// the bootstrap plugin's internal 30s service-registration timeout (task /
+// embedding-generation / trajectory_logger). That timeout REJECTED on a promise
+// chain we do NOT own → an UNHANDLED REJECTION; with no handler, Bun killed the
+// whole API → Coolify restart → crash-loop until the boot was warm enough
+// (migration done, DB cached) that init finished under 30s. These handlers catch
+// that reject so it can't down the server. Both LOG LOUDLY and REDACTED (an
+// agent route path/stack can carry a real-CT bearer, cf. M1) so nothing is
+// hidden. (NB: it is a SINGLE-runtime contention, not a thundering herd — only
+// ONE system agent (town-guide) warms at boot today; the sequential warm below
+// is future-proofing, not the primary fix.)
 //
 // Split policy (deliberate):
 //  • unhandledRejection → NON-fatal (log + keep serving). This is the exact
@@ -594,23 +599,20 @@ process.on('uncaughtException', (err) => {
         .join(', ')}`,
     );
 
-    // SEQUENTIAL warmup — pre-boot every system-agent runtime, but ONE AT A TIME
-    // (2026-07-02 boot-crush fix; was an ~11-way concurrent fire-and-forget).
-    // All warms funnel through the global in-process init mutex
-    // (`packages/agent-runtime/src/eliza-runtime.ts`) + the plugin-sql advisory
-    // lock, so `initialize()` runs serially regardless. Firing all ~11 at once
-    // still stacked ~11 concurrent ensureAgentRuntime pipelines (config/ memory
-    // loads + queued inits) whose peak contention pushed the back-of-queue
-    // runtimes' ElizaOS bootstrap service-registration past its internal 30s
-    // "waiting for runtime initialization" timeout → that rejected on a promise
-    // chain we don't own → an unhandled rejection that crash-looped the API on a
-    // contended boot. Awaiting each warm before starting the next collapses that
-    // peak concurrency to one in-flight pipeline, keeping each init well inside
-    // the 30s window (house-agent-seeder.ts already defers Coralia's warm for the
-    // same reason). Detached (void IIFE) so boot + /health readiness never wait
-    // on the ~1–2 min warm chain; per-agent errors swallowed (lazy-start re-warms
-    // on first chat). Belt-and-suspenders: the process guards above also catch
-    // any residual service-registration reject.
+    // SEQUENTIAL warmup — pre-boot the system-agent runtime(s) one at a time,
+    // DEFENSIVE/future-proofing (NOT the crash-loop fix — that is the process
+    // guards above). Today `SYSTEM_AGENT_TEMPLATES` has exactly ONE entry
+    // (town-guide/Nori), so this loop warms a single runtime; the 10 building
+    // teachers are seeded as DB rows by `ensureSystemNpcs` and lazy-start on
+    // first chat, NOT warmed here. Was a concurrent fire-and-forget; kept
+    // sequential so that IF more system agents are added later, their warms
+    // funnel one-at-a-time through the global init mutex
+    // (`packages/agent-runtime/src/eliza-runtime.ts`) + plugin-sql advisory lock
+    // instead of stacking pipelines whose peak contention could push a runtime's
+    // ElizaOS bootstrap service-registration past its internal 30s timeout
+    // (house-agent-seeder.ts defers Coralia's warm for the same reason). Detached
+    // (void IIFE) so boot + /health readiness never wait on the warm chain;
+    // per-agent errors swallowed (lazy-start re-warms on first chat).
     const systemUserId = await getSystemUserId();
     void (async () => {
       for (const { slug, platformAgentId } of systemAgents) {
