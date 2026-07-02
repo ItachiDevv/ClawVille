@@ -314,3 +314,42 @@ describe('P1 house agent config + ambient-conversation exclusion', () => {
     expect(partner?.id).toBe('ocb-servermanaged');
   });
 });
+
+describe('F1 — /visit-building prototype-key guard (real-CT money path)', () => {
+  // A prototype key ("constructor"/"__proto__"/"toString"/…) is TRUTHY under bare
+  // bracket access but is NOT an own property. The pre-fix `if (!center)` truthy
+  // guard admitted it, then `dx = npc.x - center.x` = `n - undefined` = NaN, and
+  // `NaN > BUILDING_INTERACTION_RADIUS` is FALSE → the proximity check was SKIPPED
+  // → creditClawTokens('building_visit') fired FROM ANYWHERE (a real-CT farm). The
+  // fix (agent-gateway.ts visit-building) is an Object.hasOwn own-property guard,
+  // mirroring the npc-simulation executor gate. token-economy owns the credit
+  // surface — flag for the master-PR money audit.
+  it('demonstrates the pre-fix vulnerability shape (truthy proto key → NaN distance)', () => {
+    const proto = NPC_BUILDING_CENTERS as unknown as Record<string, { x: number; y: number } | undefined>;
+    // Bare bracket access on a prototype key IS truthy (what the old guard saw)…
+    expect(proto.constructor).toBeTruthy();
+    // …and yields a NaN distance the `> RADIUS` check can never reject:
+    const center = proto.constructor as unknown as { x?: number; y?: number };
+    const dx = 11264 - (center.x as number); // n - undefined = NaN
+    expect(Number.isNaN(dx)).toBe(true);
+    expect(NaN > BUILDING_INTERACTION_RADIUS).toBe(false); // proximity NOT rejected
+  });
+
+  it('Object.hasOwn guard rejects prototype keys, admits a real buildingId', () => {
+    const realId = Object.keys(NPC_BUILDING_CENTERS)[0];
+    expect(Object.hasOwn(NPC_BUILDING_CENTERS, 'constructor')).toBe(false);
+    expect(Object.hasOwn(NPC_BUILDING_CENTERS, '__proto__')).toBe(false);
+    expect(Object.hasOwn(NPC_BUILDING_CENTERS, 'toString')).toBe(false);
+    expect(Object.hasOwn(NPC_BUILDING_CENTERS, realId)).toBe(true);
+  });
+
+  it('the guard drops the credit for a prototype key, proceeds for a real building', () => {
+    // Mirror the exact route guard condition (agent-gateway.ts /visit-building):
+    //   if (!Object.hasOwn(NPC_BUILDING_CENTERS, buildingId)) return 400  // no credit
+    const guardRejects = (buildingId: string) => !Object.hasOwn(NPC_BUILDING_CENTERS, buildingId);
+    expect(guardRejects('constructor')).toBe(true); // → 400, creditClawTokens NEVER reached
+    expect(guardRejects('__proto__')).toBe(true);
+    expect(guardRejects('hasOwnProperty')).toBe(true);
+    expect(guardRejects(Object.keys(NPC_BUILDING_CENTERS)[0])).toBe(false); // → proceeds to proximity + credit
+  });
+});
