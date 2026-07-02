@@ -24,9 +24,12 @@
  *   close → POST /session/close (Lucia auth) reveals serverSeed + cashes out
  *           the remaining playerStack to the avatar.
  *
- * Idempotency: a fresh UUID is minted per Deal press and per action press,
- * reused on retry within that press. A synchronous `busyRef` lock blocks
- * double-fire before the first await.
+ * Idempotency: a fresh UUID is minted per Deal press; the /action key is
+ * DECISION-scoped (keyed to the (act, amount) decision, reused on a same-
+ * decision re-press so a lost terminal settle replays instead of double-
+ * charging, cleared on success). A synchronous `busyRef` lock blocks double-
+ * fire before the first await. Every request is also bounded by a ~15s
+ * client timeout so a stalled call can't freeze the modal forever.
  *
  * Agent modes (UI seam only — see AgentModeBar + FEATURE_GATE):
  *   - Control     — the human taps the buttons. A connected agent acts as an
@@ -338,10 +341,38 @@ export default function HoldemModal() {
   // ── Refs ──────────────────────────────────────────────────────────────────
   const busyRef = useRef(false);                    // synchronous double-fire lock
   const dealKeyRef = useRef<string | null>(null);   // per-deal idempotency key
-  const actionKeyRef = useRef<string | null>(null); // per-action idempotency key
+  // Decision-scoped idempotency key for /action. Keyed to the (act, amount)
+  // DECISION — not the button press, not the hand. A same-decision re-press
+  // REUSES the key so a lost-response TERMINAL action REPLAYS the settled
+  // outcome (server IdempotencyReplayError) instead of double-charging; a
+  // DIFFERENT decision mints a fresh key. Cleared on every success + in
+  // resetHand so the same (act, amount) legitimately recurring across streets
+  // (e.g. "check" preflop then "check" flop) can never collide into a stale
+  // replay — that is why we do NOT key by a hash of (handId, act, amount).
+  const pendingActionRef = useRef<{ act: string; amount?: number; key: string } | null>(null);
+  const walkAwayTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null); // deferred close after cash-out
+  // Monotonic open-session epoch — bumped on every close (below). Async handlers
+  // snapshot it before their first await and BAIL if it changed, so a stalled
+  // request from a PRIOR open session can never setState (apply a stale hand /
+  // outcome) onto a freshly reopened+dealt session, nor release the new session's
+  // busyRef. Closes the reset()-un-gates-without-aborting late-continuation clobber.
+  const openEpochRef = useRef(0);
   const toastSeqRef = useRef(0);
   const tableRef = useRef<HoldemTableWire | null>(null);
   tableRef.current = table;
+  // Capture the mutation reset fns in a ref (react-query returns a new mutation
+  // object every render, so referencing them directly in the close effect would
+  // churn its deps). <HoldemModal/> is always mounted (cove/page.tsx) and only
+  // self-gates with `if (!holdemModalOpen) return null`, so a stalled/in-flight
+  // mutation's isPending would otherwise PERSIST across close→reopen and freeze
+  // the reopened modal on "Dealing…"/disabled buttons. Cleared on close below.
+  const resetMutationsRef = useRef<() => void>(() => {});
+  resetMutationsRef.current = () => {
+    openTable.reset();
+    dealHand.reset();
+    action.reset();
+    closeTable.reset();
+  };
 
   const isAuthed = Boolean(avatar);
   const phase: 'idle' | 'player-turn' | 'settled' =
@@ -364,7 +395,7 @@ export default function HoldemModal() {
     setSettled(null);
     setShowRaise(false);
     dealKeyRef.current = null;
-    actionKeyRef.current = null;
+    pendingActionRef.current = null;
   }, []);
 
   // ── Eager restore on open ────────────────────────────────────────────────────
@@ -393,12 +424,35 @@ export default function HoldemModal() {
   // ── Reset everything on close ────────────────────────────────────────────────
   useEffect(() => {
     if (!holdemModalOpen) {
+      // Invalidate any in-flight handler from this now-closing session (see
+      // openEpochRef) so its late continuation can't clobber the next session.
+      openEpochRef.current += 1;
       setTable(null);
       resetHand();
       setRevealedSeed(null);
+      setToast(null); // clear any lingering toast so it can't flash on reopen
       busyRef.current = false;
+      // Clear stale mutation isPending so a reopened modal starts clean (see
+      // resetMutationsRef — the component stays mounted across open/close, so
+      // a prior session's in-flight/stalled mutation would otherwise leave the
+      // freshly reopened idle modal frozen on "Dealing…" until the 15s abort).
+      resetMutationsRef.current();
+      // Cancel a pending walk-away close so a late fire can't call handleClose
+      // after the modal is already closed.
+      if (walkAwayTimerRef.current) {
+        clearTimeout(walkAwayTimerRef.current);
+        walkAwayTimerRef.current = null;
+      }
     }
   }, [holdemModalOpen, resetHand]);
+
+  // ── Clear a pending walk-away timer on unmount ───────────────────────────────
+  useEffect(() => () => {
+    if (walkAwayTimerRef.current) {
+      clearTimeout(walkAwayTimerRef.current);
+      walkAwayTimerRef.current = null;
+    }
+  }, []);
 
   // ── Close handler (fire-and-forget close any open table, authed only) ────────
   const handleClose = useCallback(() => {
@@ -426,16 +480,21 @@ export default function HoldemModal() {
   // ── Open (or reuse) a table; returns the table or null on failure ────────────
   const ensureTable = useCallback(async (): Promise<HoldemTableWire | null> => {
     if (tableRef.current && tableRef.current.status === 'open') return tableRef.current;
+    const myEpoch = openEpochRef.current; // bail if the modal closes mid-open
     try {
       const buyIn = Math.max(
         COVE_HOLDEM_MIN_BUYIN,
         Math.min(COVE_HOLDEM_MAX_BUYIN, Math.floor(holdemBuyIn || COVE_HOLDEM_MIN_BUYIN)),
       );
       const opened = await openTable.mutateAsync({ currency: 'clawtoken', buyIn });
+      // Session closed during open — drop the stale setState. The opened table +
+      // buy-in are recoverable server-side via the eager-restore on reopen.
+      if (openEpochRef.current !== myEpoch) return null;
       setTable(opened.table);
       setBalance(opened.walletBalance);
       return opened.table;
     } catch (err) {
+      if (openEpochRef.current !== myEpoch) return null; // stale error — drop toast
       showToast(describeHoldemError(err), err instanceof CoveApiError && err.status >= 500 ? 'error' : 'warn');
       return null;
     }
@@ -492,24 +551,28 @@ export default function HoldemModal() {
     if (busyRef.current || phase !== 'idle') return;
     if (agentMode === 'autonomous') return; // gated — no connected-agent driver yet
     busyRef.current = true;
+    const myEpoch = openEpochRef.current; // bail if the modal closes mid-request
     try {
       const t = await ensureTable();
+      if (openEpochRef.current !== myEpoch) return; // session closed — drop
       if (!t) return;
       if (!dealKeyRef.current) dealKeyRef.current = crypto.randomUUID();
       const res: HoldemDealResponse = await dealHand.mutateAsync({
         tableId: t.id,
         idempotencyKey: dealKeyRef.current,
       });
+      if (openEpochRef.current !== myEpoch) return; // stale continuation — drop
       if (isHoldemSettled(res)) {
         applySettled(res); // resolved inline (human never had to act)
       } else {
         applyDealInProgress(res);
       }
     } catch (err) {
+      if (openEpochRef.current !== myEpoch) return; // stale error — drop
       showToast(describeHoldemError(err), err instanceof CoveApiError && err.status >= 500 ? 'error' : 'warn');
     } finally {
       dealKeyRef.current = null;
-      busyRef.current = false;
+      if (openEpochRef.current === myEpoch) busyRef.current = false; // only release MY lock
     }
   }, [phase, agentMode, ensureTable, dealHand, applySettled, applyDealInProgress, showToast]);
 
@@ -518,28 +581,39 @@ export default function HoldemModal() {
     if (busyRef.current || !live) return;
     if (agentMode === 'autonomous') return;
     busyRef.current = true;
-    // Every action gets an idempotency key (any action may settle the hand).
-    if (!actionKeyRef.current) actionKeyRef.current = crypto.randomUUID();
+    const myEpoch = openEpochRef.current; // bail if the modal closes mid-request
+    // Decision-scoped idempotency key. Same (act, amount) as the still-pending
+    // decision → REUSE its key so a lost-response terminal settle REPLAYS
+    // (never double-charges); a different decision mints fresh.
+    const pending = pendingActionRef.current;
+    if (!pending || pending.act !== act || pending.amount !== amount) {
+      pendingActionRef.current = { act, amount, key: crypto.randomUUID() };
+    }
+    const idempotencyKey = pendingActionRef.current.key;
     try {
       const res = await action.mutateAsync({
         handId: live.handId,
         action: act,
         ...(amount !== undefined ? { amount } : {}),
-        idempotencyKey: actionKeyRef.current,
+        idempotencyKey,
       });
+      if (openEpochRef.current !== myEpoch) return; // stale continuation — drop
       if (isHoldemSettled(res)) {
         applySettled(res);
-        actionKeyRef.current = null;
       } else {
         applyActionInProgress(res);
-        // Non-terminal continuation — clear the key so the NEXT action mints a
-        // fresh one (the key is per-decision settle, not per-hand).
-        actionKeyRef.current = null;
       }
+      // Success (terminal OR non-terminal) — clear the pending decision so the
+      // NEXT action mints a fresh key, even the same (act, amount) on a later
+      // street (e.g. "check" preflop then "check" flop won't reuse a stale key).
+      pendingActionRef.current = null;
     } catch (err) {
+      if (openEpochRef.current !== myEpoch) return; // stale error — drop
+      // KEEP pendingActionRef: a same-decision re-press replays the (possibly
+      // lost) terminal settle; a different-decision press mints fresh above.
       showToast(describeHoldemError(err), err instanceof CoveApiError && err.status >= 500 ? 'error' : 'warn');
     } finally {
-      busyRef.current = false;
+      if (openEpochRef.current === myEpoch) busyRef.current = false; // only release MY lock
     }
   }, [live, agentMode, action, applySettled, applyActionInProgress, showToast]);
 
@@ -597,27 +671,47 @@ export default function HoldemModal() {
 
   // ── WALK AWAY (close table → reveal seed + cash out, authed) ─────────────────
   const handleWalkAway = useCallback(async () => {
+    // Synchronous double-fire lock — mirror handleDeal/runAction. Without this a
+    // sub-frame double-click (or a click during the 1500ms seed-reveal window
+    // when `disabled={inFlight}` has lagged react-query) would fire two
+    // concurrent POST /session/close for the same table; the loser lands in
+    // catch, cancels the just-armed auto-close timer, and the modal hangs open
+    // on a now-closed table.
+    if (busyRef.current) return;
     const t = tableRef.current;
     if (!t || !isAuthed) { handleClose(); return; }
     if (live) { showToast('Finish the current hand first.', 'warn'); return; }
     busyRef.current = true;
+    const myEpoch = openEpochRef.current; // bail if the modal closes mid-cash-out
     try {
       const res = await closeTable.mutateAsync({ tableId: t.id });
+      if (openEpochRef.current !== myEpoch) return; // modal closed during cash-out — drop
       setRevealedSeed(res.serverSeed);
       setBalance(res.walletBalance);
       setTable((prev) => (prev ? { ...prev, status: 'closed', serverSeed: res.serverSeed, playerStack: '0' } : prev));
       showToast(`Cashed out ${res.cashOut} CT — seed ${res.serverSeed.slice(0, 10)}…${res.serverSeed.slice(-6)} revealed.`, 'info');
-      setTimeout(() => handleClose(), 1500);
+      if (walkAwayTimerRef.current) clearTimeout(walkAwayTimerRef.current);
+      walkAwayTimerRef.current = setTimeout(() => {
+        walkAwayTimerRef.current = null;
+        handleClose();
+      }, 1500);
     } catch (err) {
+      if (openEpochRef.current !== myEpoch) return; // stale error — drop
       showToast(describeHoldemError(err), 'warn');
     } finally {
-      busyRef.current = false;
+      if (openEpochRef.current === myEpoch) busyRef.current = false; // only release MY lock
     }
   }, [isAuthed, live, closeTable, showToast, handleClose]);
 
   // ── Derived display values ─────────────────────────────────────────────────
   const inFlight =
     openTable.isPending || dealHand.isPending || action.isPending || closeTable.isPending;
+
+  // Once the cash-out resolves (serverSeed revealed) the table is already
+  // 'closed' server-side; lock Walk Away so the 1500ms auto-close window can't
+  // re-fire a close on a closed table. Guests never reveal a seed, so their
+  // 'Close' button stays gated on inFlight only.
+  const walkAwayLocked = inFlight || Boolean(revealedSeed);
 
   const outcome: SerializedHoldemHand | null = settled?.outcome ?? null;
 
@@ -965,14 +1059,14 @@ export default function HoldemModal() {
                 {/* Crimson WALK AWAY — explicit bg+fg (No-Dark-Text-On-Dark-Panel). */}
                 <button
                   type="button" onClick={() => { void handleWalkAway(); }}
-                  disabled={inFlight}
+                  disabled={walkAwayLocked}
                   style={{
                     height: 40, fontSize: 12, fontWeight: 600,
                     fontFamily: 'var(--pt-data)', letterSpacing: '0.06em',
                     paddingLeft: 16, paddingRight: 16, borderRadius: 6,
                     border: 'none', background: '#dc2626', color: '#ffffff',
-                    cursor: inFlight ? 'not-allowed' : 'pointer', transition: 'background 0.15s',
-                    opacity: inFlight ? 0.6 : 1,
+                    cursor: walkAwayLocked ? 'not-allowed' : 'pointer', transition: 'background 0.15s',
+                    opacity: walkAwayLocked ? 0.6 : 1,
                   }}
                   onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = '#b91c1c'; }}
                   onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.background = '#dc2626'; }}
