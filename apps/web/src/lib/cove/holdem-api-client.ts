@@ -275,27 +275,66 @@ export function useCloseHoldemTable() {
 // Friendly user-facing error mapping (Hold'em codes + shared reuse).
 // ---------------------------------------------------------------------------
 
-export function describeHoldemError(err: unknown): string {
+/**
+ * Which request leg produced the error. The honest recovery guidance for an
+ * AMBIGUOUS outcome (status 0 network / 408 timeout) differs per leg, and the
+ * wrong guidance is a money bug: until the in-progress-hand RESYNC endpoint
+ * ships (Increment 1b), closing the modal mid-hand destroys the client's ONLY
+ * copy of the live handId while the server keeps the hand in_progress — after
+ * which /hand/deal 409s (hand_in_progress) AND /session/close 409s
+ * (table_has_in_progress_hand) with no recovery path, stranding the buy-in
+ * until manual server intervention (verified against cove-holdem.ts; real
+ * wedged tables exist on prod). So ambiguous-outcome copy must NEVER instruct
+ * "reopen the table" while a hand may be live. A same-decision re-press is the
+ * least-bad recovery: if the move never landed it lands now (authoritative
+ * state re-applies); if it landed terminally the idempotency key replays the
+ * settle; if it landed non-terminally the re-press either 409s harmlessly
+ * (not_human_turn) or — the imperfect case — appends as the next street's
+ * decision. Imperfect, but it never strands the stack.
+ */
+export type HoldemRequestLeg = 'open' | 'deal' | 'action' | 'close';
+
+const AMBIGUOUS_OUTCOME_COPY: Record<HoldemRequestLeg, { network: string; timeout: string }> = {
+  open: {
+    network:
+      'Network error — the buy-in may not have gone through. Check your connection and try again; if it did go through, your table resumes automatically.',
+    timeout:
+      'Opening the table took too long — if the buy-in went through, your table resumes automatically. Try again in a moment.',
+  },
+  deal: {
+    network:
+      'Network error — the deal may not have reached you. Keep this table open and press Deal again; if it says a hand is already in progress, that hand needs recovery — contact support, do not buy in again.',
+    timeout:
+      'The deal took too long — it may have gone through. Keep this table open and press Deal again; if it says a hand is already in progress, that hand needs recovery — contact support, do not buy in again.',
+  },
+  action: {
+    // Honest about the imperfect retry: the server appends a re-press as the
+    // player's NEXT due decision when the first press actually registered
+    // (isHandTerminal checks priorActions only), so a blind retry can act on a
+    // later street than the player thinks. Check/fold are the safe probes:
+    // an illegal check 400s harmlessly; fold is always legal and only forfeits.
+    network:
+      'Network error — your move may not have gone through. Keep this table open: closing mid-hand can strand your buy-in. Acting again catches the table up, but if your first press DID register, the retry counts as your NEXT decision — when unsure, check or fold rather than bet.',
+    timeout:
+      'The table took too long to respond — your move may have already registered. Keep this table open: closing mid-hand can strand your buy-in. Acting again catches the table up, but if your first press registered, the retry counts as your NEXT decision — when unsure, check or fold rather than bet.',
+  },
+  close: {
+    network:
+      'Network error — the cash-out may not have gone through. Try Walk Away again in a moment; if the table already closed, your chips were credited.',
+    timeout:
+      'Cash-out took too long — it may have gone through. Try Walk Away again in a moment; if the table already closed, your chips were credited.',
+  },
+};
+
+export function describeHoldemError(err: unknown, leg: HoldemRequestLeg = 'action'): string {
   if (!(err instanceof CoveApiError)) {
     return err instanceof Error ? err.message : 'Unknown error';
   }
   switch (err.status) {
     case 0:
-      // Network failure (fetch reject that wasn't an abort) — surfaced as
-      // CoveApiError(0, …, 'network_error') by coveFetch. Do NOT instruct a
-      // blind re-press: a lost NON-terminal action is NOT idempotent
-      // server-side (the server anchors idempotency only on SETTLE rows), so
-      // re-sending it would be appended as the NEXT street's decision — a wrong
-      // betting outcome. Tell the player to reopen and check state instead.
-      return 'Network error — your last move may not have gone through. Reopen the table to check before acting again.';
+      return AMBIGUOUS_OUTCOME_COPY[leg].network;
     case 408:
-      // Request timed out (15s AbortController ceiling) — 'request_timeout'.
-      // Replay-on-retry is safe ONLY for a TERMINAL action (its idempotency key
-      // replays the settled outcome). A NON-terminal action is NOT replayed —
-      // the server appends a re-POST as the next decision — so we must NOT tell
-      // the player to blindly "try that move again". Reopening resyncs the
-      // table (full in-progress-hand resync is the pending server follow-up).
-      return 'The table took too long to respond — your last move may have already registered. Reopen the table to check before acting again.';
+      return AMBIGUOUS_OUTCOME_COPY[leg].timeout;
     case 400:
       if (err.code?.startsWith('insufficient_clawtokens')) {
         return 'Not enough ClawTokens to buy in. Buy-in is 20–500 CT.';
@@ -321,10 +360,18 @@ export function describeHoldemError(err: unknown): string {
       return 'Table or hand not found — it may have expired. Start a new table.';
     case 409:
       if (err.code?.startsWith('hand_in_progress')) {
-        return 'Finish the current hand before dealing another.';
+        // The UI gates Deal on phase==='idle' (no visible hand), so this 409
+        // only surfaces when THIS window can't see the in-progress hand: either
+        // it's live in another window (finish it there), or the deal response
+        // was lost and no resync exists yet (the wedge state — server recovery
+        // only). Don't tell the player to "finish" a hand they can't see.
+        return 'A hand is already in progress on this table. If it is open in another window, finish it there; otherwise it needs server recovery — contact support. Your chips are not lost — do not buy in again.';
       }
       if (err.code?.startsWith('table_has_in_progress_hand')) {
-        return 'Finish the current hand before you walk away.';
+        // Same two cases via Walk Away: handleWalkAway client-gates on a
+        // visible live hand, so this server 409 means the hand lives in
+        // another window or was lost to the wedge.
+        return 'Cash-out is blocked by an unfinished hand. If it is open in another window, finish it there; otherwise it needs server recovery — contact support. Your chips are not lost.';
       }
       if (err.code?.startsWith('not_human_turn')) {
         return "It's not your turn — the hand already resolved.";
