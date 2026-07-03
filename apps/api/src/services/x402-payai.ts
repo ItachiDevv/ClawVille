@@ -390,10 +390,80 @@ export async function verifyAndSettle(
   };
 }
 
-// Phase D partner direct-USDC helpers (`buildPartnerPurchaseQuote` /
-// `settlePartnerPurchase`) were REMOVED here in F2 — they were inert (imported +
-// mounted nowhere) and F2's scope is the on-ramp only, so per the "no scaffolding
-// theater" policy they don't ship. They were thin wrappers over `buildTopupQuote`
-// (with `payTo`=partner pubkey) + `verifyAndSettle`; re-introduce them WITH a
-// route + FEATURE_GATE when the partner-storefront feature actually lands. The
-// original lives in git history on `feat/payai-x402-economy`.
+// ---------------------------------------------------------------------------
+// Phase D — partner direct-USDC settlement (buyer → PARTNER, NO custody, NO CT)
+// ---------------------------------------------------------------------------
+//
+// The on-ramp above credits CT because the buyer pays OUR merchant wallet. Phase
+// D is the OPPOSITE money shape: the buyer pays the PARTNER's OWN Solana wallet
+// DIRECTLY for a partner-provided service. ClawVille NEVER custodies those funds
+// and NEVER credits a single ClawToken for them — we are only the x402 quoting +
+// verify/settle orchestrator between the buyer and the partner.
+//
+// These are DELIBERATELY THIN wrappers over the SAME audited primitives above
+// (`buildTopupQuote` + `verifyAndSettle`), NOT a parallel money path. Reusing
+// them means the on-ramp's whole safety contract carries over for free:
+//   - verify→(only-on-valid)-settle ordering (no credit-before-settle),
+//   - `verifyAndSettle` NEVER throws (facilitator/config/decoding errors resolve
+//     to `{settled:false}` so the route maps a clean 4xx, never a leaked 5xx),
+//   - `settled:true` requires a NON-EMPTY tx signature (a blank-signature settle
+//     is treated as unsettled).
+// The ONLY thing that differs is the recipient (`payTo` = the partner's payout
+// pubkey, never our merchant/treasury wallet) and a defense-in-depth recipient
+// binding on the settle call (below). They were previously removed as inert; they
+// are re-introduced now because `impl-route` WIRES them behind a FEATURE_GATE, so
+// the "no scaffolding theater" policy is satisfied.
+
+export interface BuildPartnerPurchaseQuoteInput {
+  /** Partner's OWN Solana pubkey — buyer pays THIS directly. NEVER our merchant/treasury wallet. */
+  payoutPubkey: string;
+  asset: X402Asset;
+  usdCents: number;
+  network: X402Network;
+  resource?: { url: string; description?: string };
+  maxTimeoutSeconds?: number;
+}
+
+/**
+ * Build an x402 v2 quote for a DIRECT buyer→partner USDC purchase. Reuses
+ * `buildTopupQuote` — the partner `payoutPubkey` flows straight into its
+ * already-parameterized `payTo`, so the facilitator only settles a payment whose
+ * on-chain recipient is the partner. Nothing here credits CT.
+ */
+export function buildPartnerPurchaseQuote(input: BuildPartnerPurchaseQuoteInput): TopupQuote {
+  // Reuses buildTopupQuote — payoutPubkey flows into its already-parameterized payTo.
+  return buildTopupQuote({
+    payTo: input.payoutPubkey,
+    asset: input.asset,
+    usdCents: input.usdCents,
+    network: input.network,
+    resource: input.resource ?? {
+      url: '/api/partner/storefront/purchase',
+      description: `Partner service — $${(input.usdCents / 100).toFixed(2)} ${input.asset.toUpperCase()} (paid directly to the partner)`,
+    },
+    maxTimeoutSeconds: input.maxTimeoutSeconds,
+  });
+}
+
+export interface SettlePartnerPurchaseInput extends VerifyAndSettleInput {
+  /** The partner payout pubkey the payment MUST be paying — the NO-CUSTODY binding. */
+  expectedPayoutPubkey: string;
+}
+
+/**
+ * Verify+settle a DIRECT buyer→partner USDC payment. Thin wrapper over the same
+ * audited `verifyAndSettle`, with ONE extra guard: a NO-CUSTODY recipient binding.
+ * Credits ZERO CT (this function never touches the ledger).
+ */
+export async function settlePartnerPurchase(
+  input: SettlePartnerPurchaseInput,
+): Promise<VerifyAndSettleResult> {
+  // NO-CUSTODY / recipient binding (defense in depth): refuse to even CALL the
+  // facilitator unless the server-derived requirements pay the partner's payout
+  // pubkey. A mismatch means the caller mis-bound payTo (e.g. to our merchant
+  // wallet) — settle NOTHING. Never throws (mirrors verifyAndSettle's contract).
+  if (!input.expectedPayoutPubkey || input.requirements.payTo !== input.expectedPayoutPubkey) {
+    return failed('payout_binding_mismatch');
+  }
+  return verifyAndSettle({ paymentHeader: input.paymentHeader, requirements: input.requirements });
+}
