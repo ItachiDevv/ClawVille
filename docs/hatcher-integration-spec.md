@@ -241,6 +241,35 @@ ClawTokens + rank as read-only.**
 
 ---
 
+## 7a. Partner storefront — direct-USDC, gated (Phase D, ADDITIVE — 2026-07-02)
+
+A vetted partner (Hatcher today) can sell **real off-platform services for USDC paid DIRECTLY to the partner's
+own Solana pubkey** — **ClawVille never custodies the USDC and credits NO ClawTokens** for these purchases. This
+is a NEW router at **`/api/partner/storefront`**, mounted AFTER both `/api/partner/hatcher` groups, so it never
+shadows the live partner surface. It reuses the SAME x402 verify→settle facilitator primitive as the USDC→CT
+on-ramp (`x402-payai`), only the recipient differs (partner `payoutPubkey`, never our merchant wallet).
+
+**Status: VISIBLE-BUT-GATED** (`FEATURE_GATE partner_storefront_tier`). The primitive, the signed registration,
+and the admin gate are real, but no partner can transact today — `/quote` + `/settle` return **`503
+partner_fulfillment_gated`** for every storefront (the `fulfillment_enabled` schema default is false; only an
+admin flips it after a custody/KYC/age review), and even an enabled storefront returns **`400 offering_required`**
+because the SERVER-PRICED offering catalog is land-owned and deferred (a purchase can never carry a
+client-supplied price). Devnet-first (reuses the existing `X402_TOPUP_NETWORK`; NO new env var).
+
+| Route | Auth | Purpose |
+|---|---|---|
+| `POST /api/partner/storefront/register` | ed25519 partner-signed (§2a write challenge, `X-Hatcher-*` headers, ±5 min) | Register/upsert a storefront (slug UNIQUE, `payoutPubkey` base58-validated). NEVER sets `fulfillment_enabled`; a payout-pubkey CHANGE force-resets the gate to false/`pending`. → `401` unsigned, `409 slug_taken`, `400 invalid_payout_pubkey`. |
+| `POST /api/partner/storefront/admin/fulfillment` | **admin-only** (ADMIN_USER_IDS / dash cookie — NEVER the partner key) | Flip `fulfillment_enabled` (enabled ⇒ status `active`; disabled ⇒ `suspended`). → `404 storefront_not_found`. |
+| `POST /api/partner/storefront/quote` | human cookie **OR** connected/hosted agent (`X-Clawville-Agent-Session` → bound avatar; Rule E5 parity) | x402 402 challenge bound to the partner `payoutPubkey` for a server-priced `offeringId`. `503 partner_fulfillment_gated` (always today) → `400 offering_required`. |
+| `POST /api/partner/storefront/settle` | same parity | Verify+settle a paid purchase (Idempotency-Key + per-key mutex; `settlePartnerPurchase` with a NO-CUSTODY `expectedPayoutPubkey` binding). Credits NO CT. Same gate/offering deferral today. |
+
+**No `PROTOCOL_VERSION` bump** — additive; NOT surfaced via the agent protocol manual, the `[ACTION:]` whitelist,
+leaderboard events, or the shared `openclaw` types. Code: `apps/api/src/routes/partner-storefront.ts` +
+`apps/api/src/services/x402-payai.ts` (`buildPartnerPurchaseQuote` / `settlePartnerPurchase`). Schema:
+`partner_storefronts` (`packages/database/src/schema/land.ts`, pre-existing — no migration).
+
+---
+
 ## 8. Stats — `GET /api/partner/hatcher/agents/:agentId/stats` (signed per §2b)
 
 ```jsonc
@@ -276,6 +305,8 @@ play end to end.
 
 ---
 
-*Reconciled against live staging on 2026-06-15. Code is the source of truth: `apps/api/src/routes/partner-hatcher.ts`,
-`partner-hatcher-launch.ts`, `apps/api/src/services/{skill-protocol,npc-simulation,agent-session-config}.ts`,
+*Reconciled against live staging on 2026-06-15; **§7a partner storefront + `PROTOCOL_VERSION 5→7` correction added
+2026-07-02** (Phase D, additive — the wire contract for the existing partner-hatcher routes is unchanged). Code is
+the source of truth: `apps/api/src/routes/{partner-hatcher,partner-hatcher-launch,partner-storefront}.ts`,
+`apps/api/src/services/{skill-protocol,npc-simulation,agent-session-config,x402-payai}.ts`,
 `apps/api/src/routes/portal.ts`. Internal companions: `ARCHITECTURE.md §6/§7/§13`, `GameFeatures.md §2f`.*
