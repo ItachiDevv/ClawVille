@@ -16,8 +16,8 @@
 
 ## Critical rules
 
-- **NEVER `bun run dev` locally** — Three.js / WebGPU scene crashes Intel Iris Xe and requires a PC restart.
-- **Always:** push to `master` → Coolify auto-deploys → test on the production URL.
+- **Local dev:** `bun run dev` / HMR is FINE on the founder's desktop (2026-07-02 — the old ban was laptop-Iris-Xe-specific); final-verify WebGPU/perf work against the prod bundle (`bun run build && bun run start`). The SHIPPED product still targets the Iris Xe floor.
+- **Push flow is STAGING-FIRST (2026-05-24, CLAUDE.md):** push `staging` → verify on `staging.clawville.world` → PR staging→master. NEVER direct to master without the literal founder phrase `direct to master`.
 - Production: `https://clawville.world/game` · API: `https://api.clawville.world`
 - Server: Hetzner CCX13 + Coolify v4. Full playbook: `DEPLOY-HETZNER.md`. Deploy mechanics summary in `ARCHITECTURE.md §12`.
 - Iris Xe / GPU rules: canonical reference is `3dStructure.md §5a`. **Do not duplicate here.**
@@ -25,6 +25,18 @@
 ---
 
 ## 🟢 Active — biggest blocks first
+
+### 0. Agent-metaverse P1 follow-ups (2026-07-03 — P1 live-proven on staging `0b6a29a4`, founder sign-off pending)
+Full state: `docs/agent-metaverse-p1-plan.md` (Slice 4 shipped + live proof) + `docs/agent-metaverse-p0-v2-refound.md` (all P0 gates CLOSED incl. restart-survival 14/14 + reconnect fresh-bearer fix, PROTOCOL v9).
+- [ ] **FOUNDER: browser sign-off** — watch Coralia walk + converse on staging; click a magic-link control handback (Rule E4 gate for "done").
+- [ ] **FOUNDER: D2 board-policy conflict** — house/fleet agents currently EXCLUDED from the public board (safe default) vs D2's "internal-only management policy". One-line flip; options in `docs/agent-metaverse-model.md` §8 D2 note.
+- [ ] Teacher REPLY bubbles in-world — impossible today (10 residents are client-rendered; zero server sim bodies). New scope: server resident bodies or a pendingEvents type the client maps onto the location-NPC render. The turn settles fine without it.
+- [ ] Hatcher `talk_to_npc` proximity-gate fast-follow (tracked debt + checklist in `agent-metaverse-p1-plan.md` §Deferred; `.hatcher-ref/` must be refreshed first).
+- [ ] `cash-house-seeder.ts:114` `$house$disabled$` sentinel hash — `Bun.password.verify` THROWS → login route 500s (enumeration signal, no takeover). Same fix as house-agent-seeder (valid bcrypt of a discarded secret).
+- [ ] `partner-hatcher-p5-handler.test.ts` 3/4 red at HEAD (pre-existing) — a permanently-red test on the PROTECTED partner surface masks regressions. Root-cause or quarantine-with-ticket.
+- [ ] Building edge-margin refine (adjacent-large-building overlap nit, deferred from the edge-distance gate fix).
+- [ ] Pre-existing: bound identity-bootstrap can create unbounded users rows (tracked since the P1 adversarial pass).
+- [ ] Three-surface #3 gap: hosted-runtime protocol-knowledge injection (`createMemory` on restart) still unbuilt — content changes tracked, enforcement TODO.
 
 ### 1. ElizaOS v2 migration (4 phases, currently on Phase 1)
 
