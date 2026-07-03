@@ -31,6 +31,21 @@
  * avatar; guest: discarded). Bots have ephemeral per-hand stacks (always the
  * default buy-in at hand start) — they are house seats with no persistent
  * bankroll, so no per-bot columns are needed.
+ *
+ * Increment 1b (2026-07-03) — resync + replay idempotency columns:
+ *   - `holdem_hands.deal_idempotency_key`: the client's `Idempotency-Key` on
+ *     `POST /hand/deal`, stored SEPARATELY from `idempotency_key` (which is
+ *     the settle-replay anchor, overwritten at settle). Keeping the two
+ *     columns distinct means a lost-response DEAL retry replays the SAME
+ *     in-progress (or now-settled) hand without coupling to — or colliding
+ *     with — the terminal-settle idempotency machinery. Partial unique
+ *     `(table_id, deal_idempotency_key) WHERE deal_idempotency_key IS NOT
+ *     NULL` is the race-safe backstop (mirrors `idempotencyKey`'s pattern).
+ *   - `holdem_tables.cash_out`: the stringified-bigint amount cashed out at
+ *     `POST /session/close`, persisted so a close-replay (table already
+ *     'closed', same owner re-POSTs) can reconstruct the ORIGINAL response
+ *     without re-crediting — `playerStack` is zeroed at close and would
+ *     otherwise lose this figure.
  */
 
 import {
@@ -78,6 +93,12 @@ export const holdemTables = pgTable(
     status: text('status').notNull().default('open'),
     handsPlayed: integer('hands_played').notNull().default(0),
     engineVersion: text('engine_version').notNull().default('th-v1'),
+    /**
+     * Stringified bigint cashed out at close (Increment 1b). Null until the
+     * table closes. Persisted so a close-replay can reconstruct the original
+     * response after `playerStack` has been zeroed — see file header.
+     */
+    cashOut: text('cash_out'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     lastHandAt: timestamp('last_hand_at', { withTimezone: true }),
     closedAt: timestamp('closed_at', { withTimezone: true }),
@@ -123,7 +144,13 @@ export const holdemHands = pgTable(
      * reproduce the exact hand. JSON shape = HoldemActionRecord[] (engine).
      */
     actions: jsonb('actions').notNull(),
-    /** 'in_progress' | 'settled'. Terminal transition under FOR UPDATE = idempotency. */
+    /**
+     * 'in_progress' | 'settled'. Terminal transition under FOR UPDATE =
+     * idempotency. A third value, 'voided', is written ONLY by the offline
+     * `scripts/cove/unwedge-holdem-tables.ts` operator tool to free a hand
+     * stuck `in_progress` from before Increment 1b's replay fixes — never by
+     * the live route.
+     */
     status: text('status').notNull().default('in_progress'),
     /** Final settled outcome payload (serializeHandResult shape). Null until settled. */
     outcomeJson: jsonb('outcome_json'),
@@ -137,6 +164,13 @@ export const holdemHands = pgTable(
     endingStack: text('ending_stack'),
     /** Idempotency key (per settle attempt). (tableId, idempotencyKey) unique. */
     idempotencyKey: text('idempotency_key'),
+    /**
+     * Idempotency key (per DEAL attempt) — DELIBERATELY a separate column from
+     * `idempotencyKey` (the settle anchor). See file header "Increment 1b".
+     * Written on the FIRST deal for a given key; a re-POST with the same key
+     * replays this SAME hand row (in-progress peek or settled outcome).
+     */
+    dealIdempotencyKey: text('deal_idempotency_key'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     settledAt: timestamp('settled_at', { withTimezone: true }),
   },
@@ -148,6 +182,9 @@ export const holdemHands = pgTable(
     tableIdempotencyUnique: uniqueIndex('holdem_hands_table_idempotency_unique')
       .on(table.tableId, table.idempotencyKey)
       .where(sql`idempotency_key IS NOT NULL`),
+    tableDealIdempotencyUnique: uniqueIndex('holdem_hands_table_deal_idem_unique')
+      .on(table.tableId, table.dealIdempotencyKey)
+      .where(sql`deal_idempotency_key IS NOT NULL`),
     tableIdx: index('holdem_hands_table_idx').on(table.tableId),
   }),
 );

@@ -202,15 +202,54 @@ export interface HoldemTableWire {
   seats: number;
 }
 
+/**
+ * Owner-only in-progress hand view for resync (Increment 1b). NO BOARD-LEAK:
+ * `board` is street-truncated via `peekState` (preflop 0 / flop 3 / turn 4 /
+ * river 5), only the requesting subject's own `humanHole`, and NEVER the
+ * table's `serverSeed` — identical redaction posture to `/hand/deal` and
+ * `/action`'s in-progress responses (see `commit-reveal-no-board-leak`).
+ */
+export interface HoldemResyncHandView {
+  handId: string;
+  handIndex: number;
+  buttonSeat: number;
+  smallBlindSeat: number;
+  bigBlindSeat: number;
+  /** Stringified bigints unless noted. */
+  humanHole: HoldemCard[];
+  board: HoldemCard[];
+  toCall: string;
+  currentBet: string;
+  humanStack: string;
+  humanCommitted: string;
+  smallBlind: string;
+  bigBlind: string;
+  status: 'in_progress';
+}
+
 export interface OpenHoldemTableResponse {
   table: HoldemTableWire;
   walletBalance: number;
 }
 
-export type CurrentHoldemTableResponse = OpenHoldemTableResponse;
+/**
+ * Increment 1b: adds the optional live in-progress hand (resync surface) so a
+ * client/agent that lost a mid-hand response can rebuild its view WITHOUT
+ * blind reuse-and-resend (see memory `holdem-nonterminal-action-not-idempotent`).
+ * Deliberately its OWN interface (not `= OpenHoldemTableResponse`) so the
+ * pre-1b open-table shape stays untouched.
+ */
+export interface CurrentHoldemTableResponse {
+  table: HoldemTableWire;
+  walletBalance: number;
+  /** The table's live in_progress hand, or null/absent if none. */
+  hand?: HoldemResyncHandView | null;
+}
 
 export interface HoldemTableDetailResponse {
   table: HoldemTableWire;
+  /** Increment 1b — same resync view as `CurrentHoldemTableResponse`. */
+  hand?: HoldemResyncHandView | null;
 }
 
 /** In-progress hand response from POST /hand/deal (human still has a turn). */
