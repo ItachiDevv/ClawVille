@@ -1,8 +1,9 @@
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, or, isNull } from 'drizzle-orm';
 import { lucia } from '../lib/auth';
 import { db, users, openclawBots, avatars } from '@clawville/database';
+import { npcSimulation } from '../services/npc-simulation';
 import { sessionMiddleware, requireAuth } from '../middleware/auth';
 import { validateLiveAgentSession } from '../middleware/require-auth-or-agent';
 import { consumeTicket } from '../services/session-ticket-service';
@@ -810,6 +811,49 @@ authRoutes.get('/enter', async (c) => {
     return c.redirect(`${webOrigin}/?error=expired-link`, 302);
   }
 
+  // Magic-link onboarding D1 (2026-07-02) — BIND-AT-REDEMPTION, the deferred
+  // claim event. First-contact /connect deliberately does NOT bind
+  // `openclaw_bots.user_id` (see the agent-gateway "deliberately do NOT bind"
+  // comment); the human CLICKING the agent-issued link is the proof that this
+  // agent belongs to this account, so the bind happens HERE. Atomic guarded
+  // UPDATE: `user_id IS NULL OR user_id = <redeemer>` means we only fill an
+  // unowned row or re-affirm the same owner — a DIFFERENT existing owner is
+  // NEVER clobbered (skip + warn; `agentId` is a public handle, safe to log —
+  // never log the ticket or any bearer). Best-effort: a bind failure must not
+  // block the human's login, so the whole block is non-fatal.
+  if (consumed.issuedToAgentId) {
+    try {
+      const bound = await db
+        .update(openclawBots)
+        .set({ userId: consumed.userId, updatedAt: new Date() })
+        .where(
+          and(
+            eq(openclawBots.agentId, consumed.issuedToAgentId),
+            or(
+              isNull(openclawBots.userId),
+              eq(openclawBots.userId, consumed.userId),
+            ),
+          ),
+        )
+        .returning({ id: openclawBots.id });
+      if (bound.length > 0) {
+        // Propagate onto the LIVE in-memory session config(s) so the agent's
+        // demotion backstop (`resolveAgentSession`: config.boundUserId must
+        // equal the row's userId) passes WITHOUT a reconnect — the connected
+        // agent becomes ledger-capable the moment its human lands in-game.
+        npcSimulation.bindAgentOwner(consumed.issuedToAgentId, consumed.userId);
+      } else {
+        // Row missing, or already owned by a DIFFERENT user (the guard
+        // refused). Either way: no bind, login proceeds normally.
+        console.warn(
+          `[AuthEnter] agent bind skipped for agentId=${consumed.issuedToAgentId} (no row, or owned by a different user)`,
+        );
+      }
+    } catch (err) {
+      console.error('[AuthEnter] agent bind failed (non-fatal):', err);
+    }
+  }
+
   void logEventFromContext(c, {
     eventType: 'auth.magic_link.enter',
     userId: consumed.userId,
@@ -820,6 +864,14 @@ authRoutes.get('/enter', async (c) => {
     },
   });
 
+  // Founder scenario 1 (first-time): a ticket with NO avatar bound means the
+  // account has no avatar yet — route the fresh human to avatar creation
+  // instead of an empty /game. Scenario 2 (returning, avatar bound) keeps the
+  // /game landing; the game page's /me/agent-session hydration then drops them
+  // into Controlled ('player') mode on their agent's avatar.
+  if (consumed.avatarId == null) {
+    return c.redirect(`${webOrigin}/create-agent?from=agent-link`, 302);
+  }
   return c.redirect(`${webOrigin}/game`, 302);
 });
 

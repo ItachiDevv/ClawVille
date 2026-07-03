@@ -42,6 +42,12 @@
  *   - milady / anonymous: no outbound gateway (chat routes via the server-side
  *     Eliza runtime for milady, or is a no-op stub). RESTORABLE as a body — its
  *     cove/leaderboard binding (the thing the human cares about) is intact.
+ *   - hermes: self-managed pull agent, no caller-supplied gateway and no secrets
+ *     on the row (D7, 2026-07-02). RESTORABLE via the same generic no-gateway
+ *     path; the in-world protocol is RE-derived from the identityType at rebuild
+ *     time ('hermes-local' when the host-it-for-me gate is on, else the fail-soft
+ *     'nanoclaw'), NEVER read from the stored `protocol` column — the D1-fix
+ *     pattern below applies to it verbatim.
  *
  *   D1 FIX (2026-06-12): the IN-WORLD wire protocol for these no-gateway types
  *   is derived from the AUTHORITATIVE `identity_type` via
@@ -231,13 +237,17 @@ function rebuildAndRegister(
     return { config, bot };
   }
 
-  // ── nanoclaw / milady / anonymous: no outbound gateway (fail-soft client) ──
+  // ── nanoclaw / milady / anonymous / hermes: no outbound gateway (fail-soft) ──
   // The IN-WORLD wire protocol is decided by `resolveInWorldProtocol` from the
   // AUTHORITATIVE identityType, NOT the stored `protocol` column. For these types
   // it resolves to 'nanoclaw' whose `.chat()` returns '' with NO network call —
   // this is the D1 FIX: the old code passed the row's stored 'openai-compat'
   // straight through, so a restored anonymous/milady body POSTed to the dummy
   // `http://localhost:0` gateway and 502'd on every autonomous NPC conversation.
+  // (hermes re-derives to the equally fail-soft 'hermes-local' instead when the
+  // host-it-for-me gate is on — same authoritative-identity rule, so a restored
+  // hermes body tracks the CURRENT gate state, not whatever the row was minted
+  // under.)
   //
   // ── openclaw / ironclaw / custom (every REAL-GATEWAY identity type): the row
   // never persists `auth_token`, so a rebuilt body would 401/502 (mute). The

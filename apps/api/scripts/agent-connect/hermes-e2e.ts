@@ -1,28 +1,43 @@
 /**
- * OpenClaw connected-agent END-TO-END harness (token-bound, REAL-CT).
+ * Hermes connected-agent END-TO-END harness (token-bound, REAL-CT) — D7 of the
+ * magic-link onboarding build (2026-07-02).
  *
- * Proves the PRIMARY open-onboarding path (Priority #2): an external OpenClaw
- * agent connects as ITSELF, gets a real-CT-bound avatar, is present in-world,
- * and self-drives an action that settles REAL ClawTokens (E5 parity) — NOT the
- * hosted nanoclaw house agent (Coralia) and NOT the partner-signed Hatcher path.
+ * Proves the 'hermes' identityType on the open connect path: a self-hosted
+ * `hermes run` agent connects as ITSELF with NO gatewayUrl (self-managed pull,
+ * nanoclaw-like), gets a real-CT-bound avatar, is present in-world, self-drives
+ * an action that settles REAL ClawTokens (E5 parity), and its session is the
+ * restorable class (no-gateway → survives an API restart via lazy restore).
  *
- * Flow (mirrors a real self-managed OpenClaw runtime's own loop):
+ * Flow (mirrors openclaw-e2e.ts — same helpers, hermes-specific asserts):
  *   1. login as a staging test account            → auth_session cookie
- *   2. GET /api/auth/me                            → userId + avatarId + CT-before
+ *   2. GET /api/auth/me + /api/avatars/me          → userId + avatarId + CT-before
  *   3. POST /api/agent/connect-token {avatarId,userId}  (human mints the bind token)
- *   4. POST /api/agent/connect {connectionToken, identityType:'openclaw', ...}
- *                                                  → sessionId (BOUND → ledgerCapable)
- *   5. GET  /api/agent/:sid/perception             → body present + position + buildings
- *   6. POST /api/agent/:sid/move {buildingId}      → path the body to a teacher
- *   7. poll perception until within BUILDING_INTERACTION_RADIUS (self-drive arrival)
- *   8. POST /api/agent/:sid/visit-building {buildingId}  → tokenAwarded (real-CT credit)
- *   9. GET /api/auth/me                            → CT-after; assert +tokenAwarded (REAL settlement)
+ *   4. POST /api/agent/connect {connectionToken, identityType:'hermes'}  ← NO gatewayUrl
+ *                                                  → sessionId + identityType echo
+ *   5. GET  /api/agent/session-status?agentId=…    → connected:true (restorable-class note below)
+ *   6. GET  /api/agent/:sid/perception             → body present + buildings listed
+ *   7. POST /api/agent/:sid/move {buildingId}      → path the body to a teacher
+ *   8. poll perception until edgeDistance ≤ 1000   (self-drive arrival)
+ *   9. POST /api/agent/:sid/visit-building         → tokenAwarded (real-CT credit)
+ *  10. GET /api/avatars/me                         → CT-after; assert +tokenAwarded (E5)
+ *
+ * RESTORABLE-CLASS note (step 5): with the session live in RAM, session-status
+ * reports connected:true regardless — the harness asserts it is NOT told to
+ * reconnect. The restorable-class DERIVATION itself (hermes ∈ NO_GATEWAY →
+ * isSessionRestorable true → post-restart lazy restore) is DB-free unit-tested in
+ * src/services/__tests__/agent-session-config-hermes.test.ts; proving it live
+ * would require restarting the staging API mid-run, which this harness does not do.
+ *
+ * COGNITION LEG (--with-cognition): the host-it-for-me branch POSTs to a
+ * HARDCODED localhost:8642 on the API box, so it CANNOT be driven from this
+ * harness's network position. The flag prints the manual staging-box steps
+ * (mock-hermes-server + HERMES_LOCAL_GATEWAY_ENABLED=true) instead of asserting.
  *
  * Usage:
- *   bun run apps/api/scripts/agent-connect/openclaw-e2e.ts \
+ *   bun run apps/api/scripts/agent-connect/hermes-e2e.ts \
  *     --api-base https://api-staging.clawville.world \
  *     --email landtest1@staging.clawville.test --password 'LandTest!2026' \
- *     --agent-id e2e-openclaw-001
+ *     --agent-id e2e-hermes-001 [--with-cognition]
  *
  * Read-only-ish: it mints a bind token + spawns a bot bound to the TEST avatar and
  * moves it; it does not mutate any other account. Disconnect at the end best-effort.
@@ -37,8 +52,8 @@ const args = Object.fromEntries(
 const API = (args['api-base'] ?? 'https://api-staging.clawville.world').replace(/\/+$/, '');
 const EMAIL = args['email'] ?? 'landtest1@staging.clawville.test';
 const PASSWORD = args['password'] ?? 'LandTest!2026';
-const AGENT_ID = args['agent-id'] ?? `e2e-openclaw-${Date.now().toString(36)}`;
-const GATEWAY_URL = args['gateway-url'] ?? 'https://example.com/openclaw-mock'; // never called on the self-drive path
+const AGENT_ID = args['agent-id'] ?? `e2e-hermes-${Date.now().toString(36)}`;
+const WITH_COGNITION = args['with-cognition'] === 'true';
 
 let cookie = '';
 let pass = 0;
@@ -66,7 +81,7 @@ async function req(method: string, path: string, body?: unknown): Promise<{ stat
 function sleep(ms: number) { return new Promise((r) => setTimeout(r, ms)); }
 
 async function main() {
-  console.log(`\n=== OpenClaw connected-agent E2E (REAL-CT) → ${API} ===`);
+  console.log(`\n=== Hermes connected-agent E2E (REAL-CT) → ${API} ===`);
   console.log(`account=${EMAIL}  agentId=${AGENT_ID}\n`);
 
   // 1. login ----------------------------------------------------------------
@@ -95,25 +110,33 @@ async function main() {
   const token: string | undefined = tok.json?.token;
   if (!token) { console.log('token payload:', JSON.stringify(tok.json)?.slice(0, 400)); return finish(); }
 
-  // 4. connect the OpenClaw agent BOUND to the token -------------------------
+  // 4. connect the Hermes agent BOUND to the token ----------------------------
+  // Deliberately NO gatewayUrl and NO protocol: 'hermes' is a self-managed pull
+  // identity (like nanoclaw) — the server derives the in-world wire protocol
+  // from the identityType alone ('hermes-local' only when the host-it-for-me
+  // gate is on server-side; never from anything this request could supply).
   const conn = await req('POST', '/api/agent/connect', {
     connectionToken: token,
     agentId: AGENT_ID,
-    identityType: 'openclaw',
-    gatewayUrl: GATEWAY_URL,
-    protocol: 'openai-compat',
-    autonomyMode: 'self-managed',
+    identityType: 'hermes',
     mode: 'avatar',
-    name: 'E2EOpenClaw',
+    name: 'E2EHermes',
     species: 'milady_official_1',
   });
-  ok(conn.status === 200, 'CONNECT 200', `status=${conn.status} body=${JSON.stringify(conn.json)?.slice(0, 200)}`);
+  // Bearer hygiene: the 200 body contains the sessionId (the real-CT bearer) —
+  // print it ONLY on failure (error bodies carry no bearer), never on success.
+  ok(conn.status === 200, 'CONNECT 200', `status=${conn.status}${conn.status !== 200 ? ` body=${JSON.stringify(conn.json)?.slice(0, 200)}` : ''}`);
   const sessionId: string | undefined = conn.json?.sessionId;
   ok(!!sessionId, 'CONNECT returns sessionId (bearer)');
-  ok(conn.json?.identityType === 'openclaw', 'CONNECT identityType=openclaw', `got=${conn.json?.identityType}`);
+  ok(conn.json?.identityType === 'hermes', 'CONNECT identityType=hermes echoed', `got=${conn.json?.identityType}`);
   if (!sessionId) return finish();
 
-  // 5. perception → body present + position ----------------------------------
+  // 5. session-status → live + never told to reconnect (restorable-class) -----
+  const st = await req('GET', `/api/agent/session-status?agentId=${encodeURIComponent(AGENT_ID)}`);
+  ok(st.status === 200 && st.json?.connected === true, 'SESSION-STATUS connected:true', `status=${st.status} body=${JSON.stringify(st.json)?.slice(0, 200)}`);
+  ok(st.json?.needsReconnect === undefined, 'SESSION-STATUS no needsReconnect (restorable-class, see header note)');
+
+  // 6. perception → body present + position ----------------------------------
   const perc = await req('GET', `/api/agent/${sessionId}/perception`);
   ok(perc.status === 200, 'PERCEPTION 200', `status=${perc.status}`);
   const pos = perc.json?.position ?? perc.json?.self ?? perc.json;
@@ -125,11 +148,12 @@ async function main() {
   const targetBuildingId: string | undefined = target?.buildingId ?? target?.id;
   if (!targetBuildingId) { console.log('no building to target — perception:', JSON.stringify(perc.json)?.slice(0, 600)); return finish(); }
 
-  // 6. move toward the building (self-drive) ---------------------------------
+  // 7. move toward the building (self-drive — the pull loop a real `hermes run`
+  //    performs itself; the harness IS the agent here) ------------------------
   const mv = await req('POST', `/api/agent/${sessionId}/move`, { buildingId: targetBuildingId });
   ok(mv.status === 200, `MOVE toward ${targetBuildingId} 200`, `status=${mv.status} body=${JSON.stringify(mv.json)?.slice(0, 160)}`);
 
-  // 7. poll perception until arrived (within radius of the building EDGE) ------
+  // 8. poll perception until arrived (within radius of the building EDGE) ------
   let arrived = false;
   let lastEdge = Infinity;
   for (let i = 0; i < 40; i++) {
@@ -142,67 +166,42 @@ async function main() {
   }
   ok(arrived, `ARRIVED within 1000wu of ${targetBuildingId} EDGE`, `lastEdgeDist=${lastEdge}`);
 
-  // 8. visit-building → real-CT credit ---------------------------------------
+  // 9. visit-building → real-CT credit ---------------------------------------
   const visit = await req('POST', `/api/agent/${sessionId}/visit-building`, { buildingId: targetBuildingId });
   ok(visit.status === 200, `VISIT-BUILDING ${targetBuildingId} 200`, `status=${visit.status} body=${JSON.stringify(visit.json)?.slice(0, 200)}`);
   const tokenAwarded: number = visit.json?.tokenAwarded ?? 0;
   ok(tokenAwarded >= 1, 'VISIT awarded >=1 CT (real-CT credit fired)', `tokenAwarded=${tokenAwarded}`);
 
-  // 9. CT delta on the BOUND avatar → proves REAL settlement -----------------
+  // 10. CT delta on the BOUND avatar → proves REAL settlement -----------------
   const me2 = await req('GET', '/api/avatars/me');
   const av2 = me2.json?.avatar ?? null;
   const ctAfter: number | null = typeof av2?.clawTokens === 'number' ? av2.clawTokens : null;
   if (ctBefore !== null && ctAfter !== null) {
     ok(ctAfter - ctBefore >= tokenAwarded && tokenAwarded > 0, 'BOUND avatar CT increased by the award (E5 real-CT parity)', `${ctBefore} → ${ctAfter} (Δ=${ctAfter - ctBefore})`);
   } else {
-    console.log(`   [warn] CT balance not readable from /auth/me (before=${ctBefore} after=${ctAfter}) — tokenAwarded=${tokenAwarded} still proves the credit path`);
+    console.log(`   [warn] CT balance not readable from /avatars/me (before=${ctBefore} after=${ctAfter}) — tokenAwarded=${tokenAwarded} still proves the credit path`);
   }
 
-  // 10-15. CONTROL-LINK LEG (magic-link onboarding D1/D3/D4/D5) ---------------
-  // Full founder loop without a browser: agent mints a fresh control link →
-  // the "human" (this harness, holding a cookie jar) redeems it → the bind
-  // fires (idempotent same-user here) → human heartbeats controlMode:'player'
-  // → the AGENT observes humanControlled:true (suppression) → TTL lapse
-  // releases it.
-  const cl = await req('POST', `/api/agent/${sessionId}/control-link`, {});
-  ok(cl.status === 200 && !!cl.json?.url, 'CONTROL-LINK mint 200 + url', `status=${cl.status} expiresAt=${cl.json?.expiresAt}`);
-  if (cl.json?.url) {
-    const ticketUrl = new URL(cl.json.url);
-    const t = ticketUrl.searchParams.get('t');
-    ok(!!t, 'CONTROL-LINK url carries ?t= ticket');
-    // Redeem like a browser would (manual redirect so we can read Location +
-    // Set-Cookie). This logs "the human" in and fires the bind-at-redemption.
-    const redeem = await fetch(`${API}/api/auth/enter?t=${encodeURIComponent(t!)}`, { redirect: 'manual' });
-    const loc = redeem.headers.get('location') ?? '';
-    const redeemCookies: string[] = typeof (redeem.headers as any).getSetCookie === 'function' ? (redeem.headers as any).getSetCookie() : [];
-    const humanCookie = redeemCookies.find((c: string) => c.startsWith('auth_session='))?.split(';')[0];
-    ok(redeem.status === 302 && loc.includes('/game'), 'REDEEM 302 → /game (has avatar)', `status=${redeem.status} loc=${loc}`);
-    ok(!!humanCookie, 'REDEEM sets human auth_session cookie');
-    // Agent-side status: bound + ledger-capable after (idempotent) bind.
-    const st = await req('GET', `/api/agent/${sessionId}/status`);
-    ok(st.status === 200, 'STATUS 200', `status=${st.status}`);
-    ok(st.json?.session?.boundUser === true, 'STATUS session.boundUser=true (bind held)', JSON.stringify(st.json?.session));
-    ok(st.json?.stats != null && typeof st.json?.stats?.ct === 'number', 'STATUS stats present for bound session (E5)', `ct=${st.json?.stats?.ct}`);
-    if (humanCookie) {
-      // Human drives: heartbeat controlMode:'player' → agent body suppressed.
-      const hb = await fetch(`${API}/api/avatars/me/heartbeat`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', cookie: humanCookie },
-        body: JSON.stringify({ positionX: 11264, positionY: 11264, controlMode: 'player' }),
-      });
-      ok(hb.status === 200, 'HEARTBEAT player-mode 200', `status=${hb.status}`);
-      await sleep(1200);
-      const p1 = await req('GET', `/api/agent/${sessionId}/perception`);
-      ok(p1.json?.humanControlled === true, 'AGENT perception.humanControlled=true while human drives', `got=${p1.json?.humanControlled}`);
-      // Release: no further heartbeats → 15s TTL lapses → agent free again.
-      console.log('   …waiting 17s for the suppression TTL to lapse (release path)');
-      await sleep(17_000);
-      const p2 = await req('GET', `/api/agent/${sessionId}/perception`);
-      ok(p2.json?.humanControlled === false, 'AGENT perception.humanControlled=false after TTL lapse', `got=${p2.json?.humanControlled}`);
-    }
+  // cognition leg (manual — staging-box-local by design) ----------------------
+  if (WITH_COGNITION) {
+    console.log(`
+--- COGNITION LEG (manual, staging-box-local) ---
+The host-it-for-me branch POSTs to a HARDCODED http://localhost:8642 ON THE API
+BOX (server-side constant — this harness cannot reach or redirect it). To prove it:
+  1. ssh onto the staging API box and run:
+       bun run apps/api/scripts/agent-connect/mock-hermes-server.ts
+  2. set HERMES_LOCAL_GATEWAY_ENABLED=true on the staging API env + restart it.
+  3. re-run this harness (keeps a hermes body in-world), then wait for the sim to
+     pull the body into an ambient NPC conversation (or trigger one via chat).
+  4. PROOF: the mock's stdout logs the POST, and the in-world reply contains the
+     marker HERMES_MOCK_REPLY_V1.
+Unset the env (or leave the mock down) and the body degrades fail-soft to silence.
+--------------------------------------------------`);
   }
 
-  // cleanup (best-effort) ----------------------------------------------------
+  // cleanup (best-effort, NOT asserted — mirrors openclaw-e2e.ts; the signed
+  // POST /api/agent/disconnect needs the identity keypair this harness doesn't
+  // hold, so a 404/400 here is expected and the 24h TTL sweeper reaps the row) --
   const disc = await req('POST', `/api/agent/${sessionId}/disconnect`, {});
   console.log(`   cleanup disconnect → ${disc.status}`);
 

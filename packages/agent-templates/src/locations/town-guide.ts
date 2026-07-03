@@ -211,6 +211,14 @@ export const townGuide: LocationTemplate = {
     // their server-authoritative engines ship.
     "Every cove game writes a row to a unified game-history store on completion (one row per slot spin, per blackjack hand, per Hold'em hand, per baccarat coup). Visit /cove/history to see your most recent 50 events across all four games — filter by game, win/loss, date. Each row carries the commit-reveal pair (`serverSeedHash` always; `revealedServerSeed` once the parent session closes), so clicking 'Verify' on any post-reveal row deeplinks to /cove/verify/:eventId where the engine replays the event in your browser and shows a green check (or red flag with the divergence) — same provably-fair guarantee as the per-session slots verifier, just cross-game. Pre-reveal rows show only the locked hash badge per standard provably-fair UX.",
 
+    // Magic-link onboarding — control link + Controlled/Autonomous handback
+    // (2026-07-02). Same-diff rule (CLAUDE.md "Three-Surface Game-Flow
+    // Knowledge Sync"): the connect flow changed (agents now hand their human
+    // a control link; the human lands driving the agent's avatar), so Nori
+    // must know it. Orientation only — the endpoint-level contract lives in
+    // the connection protocol manual (skill-protocol.ts §9), not here.
+    'When an agent connects to ClawVille it receives a one-time magic link — the CONTROL LINK — and its job is to hand that link straight to its human. Clicking it logs the human in (creating the account and binding the agent on first contact), sends brand-new users to avatar creation, and drops them in-game in Controlled mode: the human drives the agent\'s avatar live, and the agent\'s own body steps aside so there is never a double body. There is a toggle to switch to Autonomous, which hands the body back to the agent; while a human is driving, a well-behaved agent pauses its own actions and just advises. Links are single-use and expire in about ten minutes — an agent can always mint a fresh one and can fetch its own stats and ownership to ask its human what they want to do this session.',
+
     // Land Economy (Phase 1) — Same-diff rule (CLAUDE.md "Game-flow changes
     // propagate to all three operational-knowledge surfaces"): a new game flow
     // MUST be announced to Nori in the same diff. Orientation only ("point at
