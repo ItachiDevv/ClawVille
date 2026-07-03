@@ -301,11 +301,23 @@ describe('x402-payai — facilitator feePayer (SVM exact scheme requirement)', (
   });
 
   it('resolveFacilitatorFeePayer: X402_FEE_PAYER env override wins without any fetch', async () => {
-    setEnv('X402_FEE_PAYER', 'EnvOverride1111111111111111111111111111111111');
+    // 44-char base58 (a real pubkey shape — the resolver validates this).
+    setEnv('X402_FEE_PAYER', 'EnvPayer111111111111111111111111111111111111');
     // Point the facilitator somewhere unreachable to PROVE no fetch is needed.
     setEnv('X402_FACILITATOR_URL', 'http://127.0.0.1:1');
     const fp = await resolveFacilitatorFeePayer('devnet');
-    expect(fp).toBe('EnvOverride1111111111111111111111111111111111');
+    expect(fp).toBe('EnvPayer111111111111111111111111111111111111');
+    setEnv('X402_FEE_PAYER', undefined);
+  });
+
+  it('resolveFacilitatorFeePayer: malformed env override is IGNORED (not propagated)', async () => {
+    // Codex MED: a typo'd / oversized / non-base58 override must never ship in a
+    // quote — the resolver rejects it and (with an unreachable facilitator) nulls.
+    setEnv('X402_FACILITATOR_URL', 'http://127.0.0.1:1');
+    for (const bad of ['not base58 0OIl', 'short', 'x'.repeat(64), 'EnvOverride1111111111111111111111111111111111']) {
+      setEnv('X402_FEE_PAYER', bad);
+      expect(await resolveFacilitatorFeePayer('devnet')).toBeNull();
+    }
     setEnv('X402_FEE_PAYER', undefined);
   });
 
