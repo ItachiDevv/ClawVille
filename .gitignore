@@ -132,4 +132,6 @@ apps/web/public/.assets-backup/
 *.itachi-bak
 .hatcher-ref/
 .smoke*.json
+.x402-*.json
+apps/api/scripts/x402/.x402-*.json
 apps/api/scripts/sap/.smoke*.json
