@@ -5,6 +5,7 @@ import dynamic from 'next/dynamic';
 import Link from 'next/link';
 import { useQuery } from '@tanstack/react-query';
 import { useAvatar } from '@/hooks/use-avatar';
+import { useAvatarHeartbeat } from '@/hooks/use-avatar-heartbeat';
 import { useMiladyEmbed } from '@/hooks/use-milady-embed';
 import { useWorldStream } from '@/hooks/use-world-stream';
 import { useGameStore, type GameState } from '@/stores/game';
@@ -372,6 +373,17 @@ export default function GamePage() {
 
   // Connect to research thought stream
   useResearchStream();
+
+  // Agent-magic-link-onboarding D3 — presence heartbeat while the HUMAN
+  // drives their own body (controlMode 'player'): POSTs
+  // /api/avatars/me/heartbeat every 10s with { controlMode: 'player' } so the
+  // server keeps the bound agent's in-world body suppressed (no double body,
+  // ≈15s server TTL) and the avatar's lastActiveAt fresh. No sends in other
+  // modes — the suppression lapses and the agent body returns (the designed
+  // Autonomous release path). Gated to authed non-guest avatar owners: the
+  // endpoint is requireAuth and guests never reach 'player' mode. Cadence
+  // math + hot-path discipline documented in use-avatar-heartbeat.ts.
+  useAvatarHeartbeat(isAuthenticated && !isGuest && !!avatar);
 
   // 2026-05-12: removed the auto-redirect to /create-agent for authenticated
   // users without an avatar. NPC mode is now a first-class landing surface —

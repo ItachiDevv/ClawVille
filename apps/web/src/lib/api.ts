@@ -4,6 +4,10 @@ import type {
   HatcherLaunchExchangeResponse,
   LandTier,
 } from '@clawville/shared';
+// Type-only (erased at compile time — no runtime store dependency): the
+// heartbeat body's optional controlMode mirrors the game store's union so the
+// two can never drift.
+import type { ControlMode } from '@/stores/game';
 import type {
   LandParcelDTO,
   LandParcelStatus,
@@ -473,11 +477,22 @@ export const api = {
       body: JSON.stringify({ bookId }),
     }),
 
-  // Heartbeat
-  sendHeartbeat: (positionX: number, positionY: number) =>
+  // Heartbeat — position + presence ping for the logged-in avatar.
+  // `controlMode` (optional, agent-magic-link-onboarding D3) tells the server
+  // who is driving the body right now: 'player' means the HUMAN is actively
+  // controlling it (Controlled mode), which the server uses to suppress the
+  // bound agent's own in-world body (no double body) for a short TTL (≈15s).
+  // The client must re-send on a shorter cadence for the suppression to hold —
+  // see hooks/use-avatar-heartbeat.ts (10s while 'player'). Omitted → the
+  // server treats it as "not human-driven" and the suppression lapses.
+  sendHeartbeat: (positionX: number, positionY: number, controlMode?: ControlMode) =>
     honoRequest<{ ok: boolean }>('/api/avatars/me/heartbeat', {
       method: 'POST',
-      body: JSON.stringify({ positionX, positionY }),
+      body: JSON.stringify({
+        positionX,
+        positionY,
+        ...(controlMode ? { controlMode } : {}),
+      }),
     }),
 
   // Daily login
@@ -701,11 +716,17 @@ export const api = {
       body: JSON.stringify(data),
     }),
 
-  // Heartbeat (alias matching ClawVille convention)
-  sendAvatarHeartbeat: (positionX: number, positionY: number) =>
+  // Heartbeat (alias matching ClawVille convention) — same optional
+  // controlMode contract as sendHeartbeat above; kept in lockstep so the two
+  // surfaces can't drift.
+  sendAvatarHeartbeat: (positionX: number, positionY: number, controlMode?: ControlMode) =>
     honoRequest<{ ok: boolean }>('/api/avatars/me/heartbeat', {
       method: 'POST',
-      body: JSON.stringify({ positionX, positionY }),
+      body: JSON.stringify({
+        positionX,
+        positionY,
+        ...(controlMode ? { controlMode } : {}),
+      }),
     }),
 
   // Activity Feed

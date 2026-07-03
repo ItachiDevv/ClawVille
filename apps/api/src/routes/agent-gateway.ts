@@ -19,7 +19,7 @@ import {
 import { npcSimulation } from '../services/npc-simulation';
 import { findPath } from '../services/pathfinding';
 import { memoryService } from '../services/memory-service';
-import { db, openclawBots, avatars, users, buildingSkills, eq, and, sql } from '@clawville/database';
+import { db, openclawBots, avatars, users, buildingSkills, landParcels, eq, and, sql } from '@clawville/database';
 import { agentOrchestrator } from '../services/agent-orchestrator';
 import { getSessionAgent } from '../services/session-agent-map';
 import { OpenClawClient } from '../services/openclaw-client';
@@ -41,6 +41,18 @@ import {
   generateIdentityKeypairForUser,
 } from '../services/identity-service';
 import { mintSessionTicket } from '../services/session-ticket-service';
+// Magic-link onboarding D5 (2026-07-02) — pure status-shape builder + the
+// read-side ledger predicate (dependency-free module, so the unbound→null
+// honesty rule is unit-tested without this route graph's env requirements).
+import {
+  buildAgentStatusResponse,
+  sessionLedgerCapable,
+  type AgentStatusStats,
+  type AgentStatusOwnership,
+} from '../services/agent-owner-binding';
+// Cached public-board lookup (same score/rank the /leaderboard page shows;
+// precedent: partner-hatcher.ts stats endpoint imports this the same way).
+import { getAgentLeaderboardEntry } from './leaderboard';
 import { logEvent, logEventFromContext } from '../services/event-logger';
 import { issueChallenge, consumeNonce } from '../services/auth-challenge';
 import {
@@ -287,7 +299,14 @@ const connectSchema = z.object({
   // row that masquerades as a Hatcher agent (and claim the hatcher avatar
   // category) without the partner signature — so it's not allowed on /connect.
   // See `.claude/plans/hatcher-integration.md` §13/§14 (proxy model is primary).
-  identityType: z.enum(['openclaw', 'ironclaw', 'nanoclaw', 'milady', 'custom', 'anonymous']).optional(),
+  //
+  // `hermes` (magic-link onboarding D7, 2026-07-02): a self-hosted `hermes run`
+  // connects like a nanoclaw-style self-managed pull agent. EXPLICIT opt-in
+  // ONLY — hermes is deliberately NOT inferred from gatewayUrl or any other
+  // field (the inference chain below is unchanged); a Hermes CLI declares
+  // `identityType: 'hermes'` itself. Session semantics (no-gateway fail-soft
+  // wire, restorability) live in agent-session-config.ts.
+  identityType: z.enum(['openclaw', 'ironclaw', 'nanoclaw', 'milady', 'custom', 'anonymous', 'hermes']).optional(),
 
   // Phase 5 — explicit identity key for first-contact bootstrap. When
   // `identityType` + `identityKey` are both present we resolve-or-
@@ -409,8 +428,10 @@ agentGatewayRoutes.post('/connect', async (c) => {
       : data.gatewayUrl ? 'openclaw'
       : 'anonymous');
 
-  // NanoClaw agents are always self-managed
-  const autonomyMode = data.protocol === 'nanoclaw'
+  // NanoClaw agents are always self-managed; so are Hermes agents (D7 —
+  // `hermes run` polls our REST like nanoclaw does; there is no gateway for
+  // the server to drive, so server-managed would leave a mute body).
+  const autonomyMode = data.protocol === 'nanoclaw' || identityType === 'hermes'
     ? 'self-managed'
     : (data.autonomyMode ?? 'server-managed');
 
@@ -1361,6 +1382,12 @@ agentGatewayRoutes.get('/session-status', async (c) => {
     lastSeenAt: row.lastSeenAt.toISOString(),
     // Non-null: the `expired` guard above returned on a NULL sessionExpiresAt.
     expiresAt: row.sessionExpiresAt!.toISOString(),
+    // Magic-link onboarding D4 (2026-07-02, additive): TRUE while the agent's
+    // human owner is live-driving the bound avatar (Controlled mode). The
+    // agent should pause self-driving while true — same TTL map the world-side
+    // body suppression reads, so signal and enforcement cannot drift. Also
+    // pushed on the SSE `control` event + carried on every perception.
+    humanControlled: npcSimulation.isAgentHumanControlled(agentId),
   });
 });
 
@@ -1680,6 +1707,12 @@ async function mintSessionTicketFromConnect(args: {
       identityType: ticketIdentityType,
       identityKey: ticketIdentityKey ?? args.resolvedAgentId,
       issuedToAgentSession: args.sessionId,
+      // Bind-at-redemption linkage (magic-link onboarding D1, 2026-07-02): the
+      // PUBLIC agentId this ticket is minted for. When the human clicks the
+      // link, `GET /api/auth/enter` binds `openclaw_bots.user_id` to the
+      // redeeming user for THIS agent (never clobbering a different owner) —
+      // the deferred first-contact claim event.
+      issuedToAgentId: args.resolvedAgentId,
       avatarName,
     });
 
@@ -3002,6 +3035,12 @@ agentGatewayRoutes.get('/:sessionId/events', async (c) => {
   return stream(c, async (stream) => {
     let wasInCombat = false;
     let tickCount = 0;
+    // Magic-link onboarding D4 (2026-07-02): last `humanControlled` state seen
+    // on THIS connection. `null` start ⇒ the FIRST tick always emits a
+    // `control` event (baseline for a freshly-attached agent), then only
+    // CHANGES emit — the agent gets an edge-triggered pause/resume signal
+    // instead of having to diff every perception itself.
+    let lastHumanControlled: boolean | null = null;
 
     while (true) {
       await stream.sleep(2000);
@@ -3017,6 +3056,19 @@ agentGatewayRoutes.get('/:sessionId/events', async (c) => {
       const perception = npcSimulation.buildPerception(npcId);
       if (perception) {
         await stream.write(`event: perception\ndata: ${JSON.stringify(perception)}\n\n`);
+      }
+
+      // --- control on CHANGE (D4): human took/released the avatar ---
+      // Derived from the live config's agentId (the same TTL map the world-side
+      // suppression reads); falls back to the perception field when present so
+      // the two surfaces agree by construction.
+      const tickConfig = npcSimulation.getOpenClawBotConfig(sessionId);
+      const humanControlled = tickConfig
+        ? npcSimulation.isAgentHumanControlled(tickConfig.agentId)
+        : (perception?.humanControlled ?? false);
+      if (humanControlled !== lastHumanControlled) {
+        await stream.write(`event: control\ndata: ${JSON.stringify({ humanControlled })}\n\n`);
+        lastHumanControlled = humanControlled;
       }
 
       // --- combat_start when inCombat flips to true ---
@@ -3063,6 +3115,235 @@ agentGatewayRoutes.get('/:sessionId/events', async (c) => {
     // events so we don't leak memory.
     clearSessionQueue(sessionId);
   });
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/agent/:sessionId/status — the directive surface (magic-link D5)
+// ---------------------------------------------------------------------------
+// A connected agent fetches this to PRESENT its state to its human ("here's my
+// CT, level, leaderboard rank, land, skills — what do you want me to do this
+// session?"). Session-bearer authed via the SAME fail-closed liveness gate as
+// /wallet (validateLiveAgentSession → {config, bot} in one shot; no TTL slide —
+// a status probe is not activity). NO bearer is ever echoed. `stats` and
+// `ownership` are null for unbound/demo sessions — enforced mechanically in
+// `buildAgentStatusResponse` (Rule E5 honesty), not by handler discipline.
+agentGatewayRoutes.get('/:sessionId/status', async (c) => {
+  const sessionId = c.req.param('sessionId');
+  const live = await validateLiveAgentSession(sessionId);
+  if (!live) return c.json({ error: 'Invalid or expired agent session' }, 404);
+  const { config, bot } = live;
+
+  let stats: AgentStatusStats | null = null;
+  let ownership: AgentStatusOwnership | null = null;
+  // SECURITY (adversarial panel 2026-07-02, BLOCKING): gate real economy reads
+  // on PROVEN-THIS-SESSION ownership, NOT on `bot.userId != null`. A non-ledger
+  // reconnect to a victim's PUBLIC agentId yields a live session with
+  // bot.userId=victim but config.ledgerCapable=false — keying on bot.userId
+  // would leak the victim's CT/level/leaderboard/land to any caller who knows
+  // the agentId. `sessionLedgerCapable` mirrors the cove spend gate (config flag
+  // + boundUserId === row userId), so a read can never report more than a spend
+  // could. `buildAgentStatusResponse` re-nulls stats/ownership on the same
+  // predicate (defense in depth), but we ALSO skip the queries entirely here so
+  // we never even touch a victim's rows.
+  const statsProven = sessionLedgerCapable(config, bot.userId ?? null);
+  if (statsProven && bot.userId) {
+    // Cheapest existing reads: ONE avatars row (ct/level/xp + characterConfig
+    // for the owned-skills intersection), ONE indexed land count, and the
+    // 60s-cached public-board snapshot for score/rank.
+    const avatar = await db.query.avatars.findFirst({
+      where: eq(avatars.userId, bot.userId),
+      columns: { id: true, clawTokens: true, level: true, xp: true, characterConfig: true },
+    });
+    if (avatar) {
+      // Leaderboard — reuses the public board's cached snapshot (same score +
+      // rank the agent sees at /leaderboard; null = no scored events yet /
+      // beyond the snapshot's 500-row horizon). Best-effort: a board hiccup
+      // must not fail the whole status read.
+      let leaderboard: AgentStatusStats['leaderboard'] = null;
+      try {
+        const entry = await getAgentLeaderboardEntry(bot.agentId);
+        if (entry) leaderboard = { score: entry.score, rank: entry.rank };
+      } catch (err) {
+        console.warn('[AgentStatus] leaderboard lookup failed (non-fatal):', err);
+      }
+      stats = {
+        ct: avatar.clawTokens ?? 0,
+        level: avatar.level ?? 1,
+        xp: avatar.xp ?? 0,
+        leaderboard,
+      };
+
+      // Land — one indexed count on owner_avatar_id.
+      let landCount = 0;
+      try {
+        const [row] = await db
+          .select({ c: sql<number>`count(*)::int` })
+          .from(landParcels)
+          .where(eq(landParcels.ownerAvatarId, avatar.id));
+        landCount = row?.c ?? 0;
+      } catch (err) {
+        console.warn('[AgentStatus] land count failed (non-fatal):', err);
+      }
+
+      // Owned skills — the SAME characterConfig ∩ building-books intersection
+      // rule the /connect ownedSkills block and the skill.md gates use.
+      const known: string[] =
+        (avatar.characterConfig as { knowledge?: string[] } | null)?.knowledge ?? [];
+      const ownedSkills: string[] = [];
+      if (known.length > 0) {
+        const knownSet = new Set(known);
+        for (const buildingId of SHOP_BUILDINGS) {
+          let owned = false;
+          for (const book of getBooksForBuilding(buildingId)) {
+            for (const entry of book.knowledgeEntries) {
+              if (knownSet.has(entry)) {
+                owned = true;
+                break;
+              }
+            }
+            if (owned) break;
+          }
+          if (owned) ownedSkills.push(`clawville-${buildingId}`);
+        }
+      }
+      ownership = { landParcels: landCount, ownedSkills };
+    }
+  }
+
+  return c.json(
+    buildAgentStatusResponse({
+      agentId: config.agentId,
+      identityType: bot.identityType,
+      expiresAt: bot.sessionExpiresAt ? bot.sessionExpiresAt.toISOString() : null,
+      // Same TTL map the world-side suppression + SSE `control` event read.
+      humanControlled: npcSimulation.isAgentHumanControlled(config.agentId),
+      botUserId: bot.userId ?? null,
+      // The read-side ledger predicate mirrors resolveAgentSession's grant
+      // condition (config flag + boundUserId === live row userId) — it can
+      // never report more capability than the spend gate would grant.
+      config: { ledgerCapable: config.ledgerCapable, boundUserId: config.boundUserId },
+      stats,
+      ownership,
+    }),
+  );
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/agent/:sessionId/control-link — fresh handback link (magic-link D5)
+// ---------------------------------------------------------------------------
+// The returning-scenario mint: an agent whose connect-time sessionTicket
+// expired (10-min TTL) mints a FRESH single-use control link on demand and
+// hands it to its human. Same conditions as the connect mint: the bot row's
+// bound userId wins; an UNBOUND agent may present its own {identityType,
+// identityKey} pair (the same self-declared identity trust model /connect
+// uses) — with neither, 403 {code:'no_identity'}. The ticket stamps
+// issued_to_agent_id, so redemption completes the deferred bind exactly like
+// the connect-issued link. Rate-limited per AGENT (not IP): ~5 links/hour.
+const controlLinkRateLimiter = createRateLimiter({
+  maxPerWindow: 5,
+  windowMs: 3_600_000,
+});
+
+const controlLinkSchema = z.object({
+  // max 16 matches agent_session_tickets.identity_type varchar(16) — a longer
+  // type would make the mint INSERT throw (500) instead of a clean 400 here.
+  identityType: z.string().min(1).max(16).optional(),
+  identityKey: z.string().min(1).max(256).optional(),
+});
+
+agentGatewayRoutes.post('/:sessionId/control-link', async (c) => {
+  const sessionId = c.req.param('sessionId');
+  const live = await validateLiveAgentSession(sessionId);
+  if (!live) return c.json({ error: 'Invalid or expired agent session' }, 404);
+  const { config, bot } = live;
+
+  const body = await c.req.json().catch(() => null);
+  const parsed = controlLinkSchema.safeParse(body ?? {});
+  if (!parsed.success) {
+    return c.json({ error: 'Invalid request', details: parsed.error.flatten() }, 400);
+  }
+
+  // Resolve the user the link will log in.
+  // SECURITY (adversarial panel 2026-07-02, BLOCKING — account takeover): trust
+  // the row's bound userId ONLY when THIS session PROVED ownership
+  // (`sessionLedgerCapable`: config.ledgerCapable + boundUserId === row userId).
+  // A non-ledger reconnect to a victim's PUBLIC agentId is a LIVE session with
+  // bot.userId=victim but ledgerCapable=false; without this gate it could mint a
+  // full-login magic link for the victim — a complete takeover from a public
+  // handle. An unproven session must instead present the self-declared identity
+  // credential (the same {identityType,identityKey} /connect demands), which an
+  // attacker who only knows the public agentId does not have.
+  let userId: string | null = sessionLedgerCapable(config, bot.userId ?? null)
+    ? bot.userId ?? null
+    : null;
+  let ticketIdentityType = bot.identityType;
+  let ticketIdentityKey: string = config.agentId;
+  if (!userId) {
+    const { identityType: bodyType, identityKey: bodyKey } = parsed.data;
+    if (bodyType && bodyKey) {
+      // SECURITY (panel BLOCKING): this unsigned public path must NEVER
+      // resolve-or-create into a RESERVED partner namespace (e.g. `hatcher:`) —
+      // that would mint a login for a partner user without the signed partner
+      // route. Mirrors /connect's reserved-namespace refusal.
+      if (isReservedPartnerIdentityType(bodyType)) {
+        return c.json({ error: 'reserved_identity_type' }, 403);
+      }
+      try {
+        const user = await resolveOrCreateUserByIdentity(bodyType, bodyKey);
+        userId = user.id;
+        ticketIdentityType = bodyType;
+        ticketIdentityKey = bodyKey;
+      } catch (err) {
+        console.error('[ControlLink] identity resolution failed:', err);
+        return c.json({ error: 'Identity bootstrap failed' }, 500);
+      }
+    }
+  }
+  if (!userId) {
+    return c.json(
+      {
+        code: 'no_identity',
+        error:
+          'This session is not bound to a user and presented no identity. Reconnect with identityType + identityKey, or claim a connect-token first.',
+      },
+      403,
+    );
+  }
+
+  // Per-USER budget — keyed on the RESOLVED authenticated user (not the public
+  // agentId) and counted only AFTER auth, so a caller who has NOT proven the
+  // user (a bare-agentId squat that 403s above) can never deplete a legitimate
+  // owner's hourly link budget (panel MINOR — griefing DoS).
+  if (!controlLinkRateLimiter.check(userId)) {
+    return c.json({ error: 'Too many control links. Try again later.' }, 429);
+  }
+
+  // Bind the ticket to the user's avatar when one exists (name lands in the
+  // instruction copy; a null avatarId routes the click to /create-agent).
+  const userAvatar = await db.query.avatars.findFirst({
+    where: eq(avatars.userId, userId),
+    columns: { id: true, name: true },
+  });
+
+  let minted: Awaited<ReturnType<typeof mintSessionTicket>>;
+  try {
+    minted = await mintSessionTicket({
+      userId,
+      avatarId: userAvatar?.id ?? null,
+      identityType: ticketIdentityType,
+      identityKey: ticketIdentityKey,
+      issuedToAgentSession: sessionId,
+      issuedToAgentId: config.agentId,
+      avatarName: userAvatar?.name ?? null,
+    });
+  } catch (err) {
+    console.error('[ControlLink] ticket mint failed:', err);
+    return c.json({ error: 'Failed to issue control link' }, 500);
+  }
+
+  // {url, expiresAt} only — the raw ticket value is inside the url already and
+  // the instruction copy lives in the protocol manual; keep the surface small.
+  return c.json({ url: minted.url, expiresAt: minted.expiresAt });
 });
 
 // ---------------------------------------------------------------------------

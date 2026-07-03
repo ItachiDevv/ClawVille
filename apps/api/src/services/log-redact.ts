@@ -26,17 +26,25 @@
  * + the P1 adversarial pass (`ct-` ticket); same vulnerability CLASS as the folded
  * B1 body-id leak (the credential must NEVER appear on any wire OR in any log).
  *
- * This scrubs the SECRET tail while keeping the `oc-`/`ag-`/`hat-`/`ct-` prefix (ops
- * can still tell it was an agent route). It is a pure string transform — it never
- * throws and only touches OUR log output: NO request/response/URL contract
- * changes, so it is completely invisible to the Hatcher partner.
+ * This scrubs the SECRET tail while keeping the `oc-`/`ag-`/`hat-`/`ct-`/`sess-`
+ * prefix (ops can still tell it was an agent route / magic-link). It is a pure
+ * string transform — it never throws and only touches OUR log output: NO
+ * request/response/URL contract changes, so it is completely invisible to the
+ * Hatcher partner.
+ *
+ * `sess-` (added 2026-07-02, adversarial panel): the magic-link `sessionTicket`
+ * (`sess-<base58(16)>`, ~22 chars) redeems into a FULL Lucia login session
+ * (`GET /api/auth/enter?t=…`) — a strictly MORE powerful credential than the
+ * `ct-` pending token, so an incidental log of an un-redeemed ticket URL is a
+ * direct login-as-victim within the 10-min TTL. The tail floor is `{16,}` so it
+ * catches the ~22-char base58 ticket (the old `{24,}` missed it).
  *
  * The lookbehind `(?<![A-Za-z0-9])` requires the prefix to start at a token
  * boundary so a substring like the `ag-` inside `flag-…` is never matched; the
- * `{24,}` tail floor keeps ordinary short ids (`oc-1`, `ag-x`) untouched while
- * still catching every 32-char real token.
+ * `{16,}` tail floor keeps ordinary short ids (`oc-1`, `ag-x`) untouched while
+ * still catching every real token/ticket (all ≥ ~22 chars).
  */
-const BEARER_TOKEN_RE = /(?<![A-Za-z0-9])(oc|ag|hat|ct)-[A-Za-z0-9_-]{24,}/g;
+const BEARER_TOKEN_RE = /(?<![A-Za-z0-9])(oc|ag|hat|ct|sess)-[A-Za-z0-9_-]{16,}/g;
 
 /** Replace any agent bearer sessionId in `input` with `<prefix>-<redacted>`. */
 export function redactBearerTokens(input: string): string {

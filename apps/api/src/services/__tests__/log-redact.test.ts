@@ -41,6 +41,17 @@ describe('redactBearerTokens', () => {
     expect(out.includes(t)).toBe(false);
   });
 
+  it('redacts the sess- magic-link ticket (full Lucia login credential)', () => {
+    // /api/auth/enter?t=sess-… redeems into a full account session — a leaked
+    // ticket URL in logs = login-as-victim within the 10-min TTL. sess- tickets
+    // are ~22 base58 chars (below the old {24,} floor), so the floor is {16,}.
+    // (adversarial panel 2026-07-02)
+    const t = 'sess-' + 'A'.repeat(22);
+    const out = redactBearerTokens(`  --> GET /api/auth/enter?t=${t} 302`);
+    expect(out).toBe('  --> GET /api/auth/enter?t=sess-<redacted> 302');
+    expect(out.includes(t)).toBe(false);
+  });
+
   it('redacts multiple bearers on one line', () => {
     const a = mkBearer('oc');
     const b = mkBearer('ag');
