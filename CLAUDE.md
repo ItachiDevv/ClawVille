@@ -4,6 +4,10 @@
 > **DOCUMENT EVERYTHING METICULOUSLY AND MAKE SURE THERE IS ALWAYS HUMAN-AGENT PARITY FOR ALL FEATURES.**
 > Every feature ships fully usable by BOTH a human AND a connected/hosted agent (agent plays as itself: agent session → bound avatar → real CT + leaderboard, never a guest fallback), and every change is documented in the same diff (canonical doc + PARITY note). Human-only or agent-only is a defect, not a scope cut. Enforced mechanically by Rule E5 below. Set 2026-06-03 after the Cove shipped with autonomous/connected-agent play left as disabled scaffolding.
 
+## Related private repo — agent plans + fleet + inference (`clawville-agents`)
+
+The agent-metaverse overhaul spec, fleet agent definitions, and inference infra live in the **private `clawville-agents`** repo — GitHub `github.com/ItachiDevv/clawville-agents`, local sibling **`../clawville-agents`** (both repos cloned under `…\Documents\Crypto\`). Read `clawville-agents/plans/agent-metaverse-model.md` for the model + phased build (P0–P4) + locked decisions D1–D9, and `clawville-agents/CLAUDE.md` for that repo's rules. **The P0–P4 build happens HERE (this repo), driven by that spec.** Do NOT re-scatter those plans into `.claude/plans` — the git-synced repo is the source of truth.
+
 ## ENFORCEMENT — mechanical, not judgment-based (set 2026-05-25 after meshlet/atlas session where zero-laziness rules failed to bind because Claude judged work "small enough" to shortcut)
 
 ### Rule E1 — "plan first, no code" session lock
