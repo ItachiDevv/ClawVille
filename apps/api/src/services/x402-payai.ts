@@ -157,6 +157,16 @@ export interface BuildTopupQuoteInput {
   resource?: { url: string; description?: string };
   /** Facilitator settle deadline. Default 120s (matches PayAI gasless settle). */
   maxTimeoutSeconds?: number;
+  /**
+   * The facilitator's gas fee-payer pubkey, surfaced in `extra.feePayer`.
+   * REQUIRED by real SVM facilitators (PayAI /verify hard-rejects requirements
+   * without it: 400 `missing_fee_payer` — live-probed 2026-07-03) AND by the
+   * @x402/svm exact CLIENT (it throws unless `extra.feePayer` is set, because
+   * the payment tx must name the facilitator as fee payer for co-signing).
+   * Resolve via `resolveFacilitatorFeePayer()` at the route boundary; omitted →
+   * `extra` carries no feePayer (the mock facilitator path doesn't need one).
+   */
+  feePayer?: string;
 }
 
 /**
@@ -205,7 +215,14 @@ export function buildTopupQuote(input: BuildTopupQuoteInput): TopupQuote {
     payTo,
     maxTimeoutSeconds: input.maxTimeoutSeconds ?? 120,
     // Provenance the facilitator/scheme may read; harmless to honest flows.
-    extra: { railAsset: asset, usdCents },
+    // feePayer (when resolved) is the facilitator's gas signer — the SVM exact
+    // scheme requires it in BOTH the client's signing input and the server-side
+    // requirements the facilitator re-validates (missing → 400 missing_fee_payer).
+    extra: {
+      railAsset: asset,
+      usdCents,
+      ...(input.feePayer ? { feePayer: input.feePayer } : {}),
+    },
   };
 
   return {
@@ -216,6 +233,82 @@ export function buildTopupQuote(input: BuildTopupQuoteInput): TopupQuote {
     },
     accepts: [requirement],
   };
+}
+
+// ---------------------------------------------------------------------------
+// resolveFacilitatorFeePayer — the facilitator's gas signer for SVM payments
+// ---------------------------------------------------------------------------
+
+/** Memoized /supported feePayer per (facilitatorUrl, caip2). TTL keeps quote
+ *  and settle inside one window agreeing on the same signer while still
+ *  following a facilitator key rotation eventually. */
+let _feePayerCache: {
+  url: string;
+  caip2: string;
+  feePayer: string;
+  fetchedAt: number;
+} | null = null;
+const FEE_PAYER_TTL_MS = 5 * 60_000;
+
+/**
+ * Resolve the facilitator's fee-payer pubkey for `network`, for injection into
+ * `buildTopupQuote({ feePayer })`. Real SVM facilitators publish it in
+ * `GET /supported` → `kinds[].extra.feePayer` (PayAI: one stable signer for
+ * both mainnet + devnet); the SVM exact scheme REQUIRES it in
+ * `requirements.extra.feePayer` (PayAI /verify → 400 `missing_fee_payer`
+ * without it) and the paying client needs it to build the co-signable tx.
+ *
+ * Order: `X402_FEE_PAYER` env override (ops escape hatch / pin) → memoized
+ * `/supported` lookup (5-min TTL) → null. NEVER throws; null = omit feePayer
+ * (the mock facilitator path neither publishes nor requires one).
+ */
+export async function resolveFacilitatorFeePayer(
+  network: X402Network,
+): Promise<string | null> {
+  const override = process.env.X402_FEE_PAYER?.trim();
+  if (override) return override;
+
+  const { facilitatorUrl } = loadX402Config();
+  if (!facilitatorUrl) return null;
+  const caip2 = caip2ForNetwork(network);
+
+  if (
+    _feePayerCache &&
+    _feePayerCache.url === facilitatorUrl &&
+    _feePayerCache.caip2 === caip2 &&
+    Date.now() - _feePayerCache.fetchedAt < FEE_PAYER_TTL_MS
+  ) {
+    return _feePayerCache.feePayer;
+  }
+
+  try {
+    const res = await fetch(`${facilitatorUrl}/supported`, {
+      signal: AbortSignal.timeout(5_000),
+    });
+    if (!res.ok) return null;
+    const body = (await res.json()) as {
+      kinds?: Array<{
+        scheme?: string;
+        network?: string;
+        extra?: { feePayer?: unknown };
+      }>;
+    };
+    const hit = body?.kinds?.find(
+      (k) =>
+        k?.scheme === 'exact' &&
+        k?.network === caip2 &&
+        typeof k?.extra?.feePayer === 'string' &&
+        k.extra.feePayer.length > 0,
+    );
+    if (!hit) return null;
+    const feePayer = hit.extra!.feePayer as string;
+    _feePayerCache = { url: facilitatorUrl, caip2, feePayer, fetchedAt: Date.now() };
+    return feePayer;
+  } catch {
+    // Unreachable facilitator / bad JSON / timeout — fail-open to "no feePayer"
+    // (verify will fail cleanly downstream if the facilitator required one).
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -422,6 +515,8 @@ export interface BuildPartnerPurchaseQuoteInput {
   network: X402Network;
   resource?: { url: string; description?: string };
   maxTimeoutSeconds?: number;
+  /** Facilitator gas signer — same contract as `BuildTopupQuoteInput.feePayer`. */
+  feePayer?: string;
 }
 
 /**
@@ -442,6 +537,7 @@ export function buildPartnerPurchaseQuote(input: BuildPartnerPurchaseQuoteInput)
       description: `Partner service — $${(input.usdCents / 100).toFixed(2)} ${input.asset.toUpperCase()} (paid directly to the partner)`,
     },
     maxTimeoutSeconds: input.maxTimeoutSeconds,
+    feePayer: input.feePayer,
   });
 }
 

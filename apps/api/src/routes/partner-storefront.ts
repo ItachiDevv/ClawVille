@@ -87,6 +87,7 @@ import { createRateLimiter, getClientIp } from '../middleware/rate-limit';
 import { withKeyedMutex } from '../services/keyed-mutex';
 import {
   buildPartnerPurchaseQuote,
+  resolveFacilitatorFeePayer,
   settlePartnerPurchase,
   type X402Asset,
   type X402Network,
@@ -500,6 +501,9 @@ partnerStorefrontRoutes.post('/quote', requireAuthOrAgentSession, async (c) => {
 
   const network = resolvePartnerNetwork();
   const asset: X402Asset = 'usdc';
+  // Facilitator gas signer — same contract as ct-topup: real SVM facilitators
+  // 400 missing_fee_payer without it; null (mock) → omitted.
+  const feePayer = await resolveFacilitatorFeePayer(network);
   const quote = buildPartnerPurchaseQuote({
     payoutPubkey: storefront.payoutPubkey,
     asset,
@@ -509,6 +513,7 @@ partnerStorefrontRoutes.post('/quote', requireAuthOrAgentSession, async (c) => {
       url: '/api/partner/storefront/settle',
       description: `${storefront.displayName} — $${(offering.priceUsdCents / 100).toFixed(2)} USDC (paid directly to the partner)`,
     },
+    feePayer: feePayer ?? undefined,
   });
 
   // NO-CUSTODY assertion (belt-and-suspenders): the quote recipient MUST be the
@@ -643,12 +648,15 @@ partnerStorefrontRoutes.post('/settle', requireAuthOrAgentSession, async (c) => 
     const asset: X402Asset = 'usdc';
     // Re-derive the EXACT requirements SERVER-SIDE (never the client echo), the
     // SAME way /quote built them, so the facilitator binds the payment to the
-    // partner's payout + the server-priced amount.
+    // partner's payout + the server-priced amount. Same memoized feePayer as
+    // /quote (real facilitators 400 missing_fee_payer without it).
+    const settleFeePayer = await resolveFacilitatorFeePayer(network);
     const quote = buildPartnerPurchaseQuote({
       payoutPubkey: storefront.payoutPubkey,
       asset,
       usdCents: offering.priceUsdCents,
       network,
+      feePayer: settleFeePayer ?? undefined,
     });
     const requirements = quote.accepts[0];
 
