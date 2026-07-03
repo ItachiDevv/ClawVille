@@ -15,7 +15,9 @@ import {
   CT_PER_USDC,
   usdToCt,
   usdCentsToUsdcAtomic,
+  buildTopupQuote,
   buildPartnerPurchaseQuote,
+  resolveFacilitatorFeePayer,
   settlePartnerPurchase,
 } from '../x402-payai';
 import { buildMockFacilitator } from '../x402-mock-facilitator';
@@ -242,6 +244,103 @@ describe('x402-payai — partner direct-USDC primitives (mock-facilitator harnes
     } finally {
       if (good === undefined) delete process.env.X402_FACILITATOR_URL;
       else process.env.X402_FACILITATOR_URL = good;
+    }
+  });
+});
+
+describe('x402-payai — facilitator feePayer (SVM exact scheme requirement)', () => {
+  const FEE_PAYER = 'FeePayer111111111111111111111111111111111111';
+  const DEVNET_CAIP2 = 'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1';
+  const priorEnv: Record<string, string | undefined> = {};
+  const setEnv = (k: string, v: string | undefined) => {
+    if (!(k in priorEnv)) priorEnv[k] = process.env[k];
+    if (v === undefined) delete process.env[k];
+    else process.env[k] = v;
+  };
+  afterAll(() => {
+    for (const [k, v] of Object.entries(priorEnv)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  });
+
+  it('buildTopupQuote includes extra.feePayer when provided (and keeps provenance keys)', () => {
+    const q = buildTopupQuote({
+      payTo: 'Merchant1111111111111111111111111111111111111',
+      asset: 'usdc',
+      usdCents: 10,
+      network: 'devnet',
+      feePayer: FEE_PAYER,
+    });
+    const extra = q.accepts[0]!.extra as Record<string, unknown>;
+    expect(extra.feePayer).toBe(FEE_PAYER);
+    expect(extra.railAsset).toBe('usdc');
+    expect(extra.usdCents).toBe(10);
+  });
+
+  it('buildTopupQuote WITHOUT feePayer omits the key entirely (mock-path back-compat)', () => {
+    const q = buildTopupQuote({
+      payTo: 'Merchant1111111111111111111111111111111111111',
+      asset: 'usdc',
+      usdCents: 10,
+      network: 'devnet',
+    });
+    const extra = q.accepts[0]!.extra as Record<string, unknown>;
+    expect('feePayer' in extra).toBe(false);
+  });
+
+  it('buildPartnerPurchaseQuote passes feePayer through to the shared primitive', () => {
+    const q = buildPartnerPurchaseQuote({
+      payoutPubkey: 'PARTNERpayout1111111111111111111111111111111',
+      asset: 'usdc',
+      usdCents: 100,
+      network: 'devnet',
+      feePayer: FEE_PAYER,
+    });
+    expect((q.accepts[0]!.extra as Record<string, unknown>).feePayer).toBe(FEE_PAYER);
+  });
+
+  it('resolveFacilitatorFeePayer: X402_FEE_PAYER env override wins without any fetch', async () => {
+    setEnv('X402_FEE_PAYER', 'EnvOverride1111111111111111111111111111111111');
+    // Point the facilitator somewhere unreachable to PROVE no fetch is needed.
+    setEnv('X402_FACILITATOR_URL', 'http://127.0.0.1:1');
+    const fp = await resolveFacilitatorFeePayer('devnet');
+    expect(fp).toBe('EnvOverride1111111111111111111111111111111111');
+    setEnv('X402_FEE_PAYER', undefined);
+  });
+
+  it('resolveFacilitatorFeePayer: unreachable facilitator → null, never throws', async () => {
+    setEnv('X402_FEE_PAYER', undefined);
+    setEnv('X402_FACILITATOR_URL', 'http://127.0.0.1:1');
+    const fp = await resolveFacilitatorFeePayer('devnet');
+    expect(fp).toBeNull();
+  });
+
+  it('resolveFacilitatorFeePayer: reads kinds[].extra.feePayer from /supported and memoizes', async () => {
+    const server = Bun.serve({
+      port: 0,
+      fetch: (req) =>
+        new URL(req.url).pathname === '/supported'
+          ? Response.json({
+              kinds: [
+                { scheme: 'exact', network: 'eip155:8453', extra: { feePayer: 'WRONG' } },
+                { scheme: 'exact', network: DEVNET_CAIP2, extra: { feePayer: FEE_PAYER } },
+              ],
+            })
+          : new Response('nope', { status: 404 }),
+    });
+    try {
+      setEnv('X402_FEE_PAYER', undefined);
+      setEnv('X402_FACILITATOR_URL', `http://127.0.0.1:${server.port}`);
+      const fp = await resolveFacilitatorFeePayer('devnet');
+      expect(fp).toBe(FEE_PAYER);
+      // Memoized: the SAME (url, network) resolves from cache even after the
+      // server is gone (this is what keeps quote + settle agreeing in-window).
+      server.stop(true);
+      const cached = await resolveFacilitatorFeePayer('devnet');
+      expect(cached).toBe(FEE_PAYER);
+    } finally {
+      server.stop(true);
     }
   });
 });
