@@ -262,26 +262,40 @@ const FEE_PAYER_TTL_MS = 5 * 60_000;
  * `/supported` lookup (5-min TTL) → null. NEVER throws; null = omit feePayer
  * (the mock facilitator path neither publishes nor requires one).
  */
+/** A Solana pubkey is base58 of 32 bytes → 32-44 base58 chars. Anything else
+ *  (Codex MED: a compromised facilitator injecting megabytes into our 402
+ *  header, or a typo'd env override) is REJECTED to null, never propagated. */
+const BASE58_PUBKEY_RE = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+function asValidFeePayer(value: unknown): string | null {
+  return typeof value === 'string' && BASE58_PUBKEY_RE.test(value) ? value : null;
+}
+
 export async function resolveFacilitatorFeePayer(
   network: X402Network,
 ): Promise<string | null> {
-  const override = process.env.X402_FEE_PAYER?.trim();
-  if (override) return override;
-
-  const { facilitatorUrl } = loadX402Config();
-  if (!facilitatorUrl) return null;
-  const caip2 = caip2ForNetwork(network);
-
-  if (
-    _feePayerCache &&
-    _feePayerCache.url === facilitatorUrl &&
-    _feePayerCache.caip2 === caip2 &&
-    Date.now() - _feePayerCache.fetchedAt < FEE_PAYER_TTL_MS
-  ) {
-    return _feePayerCache.feePayer;
-  }
-
+  // WHOLE body is throw-contained (Codex MED: loadX402Config() throws when
+  // X402_ENABLED=true without a merchant pubkey — the partner path doesn't need
+  // the merchant wallet, so a config throw here must degrade to null, not a 500).
   try {
+    const override = asValidFeePayer(process.env.X402_FEE_PAYER?.trim());
+    if (override) return override;
+    if (process.env.X402_FEE_PAYER?.trim()) {
+      console.warn('[x402-payai] X402_FEE_PAYER is set but not a base58 pubkey — ignoring');
+    }
+
+    const { facilitatorUrl } = loadX402Config();
+    if (!facilitatorUrl) return null;
+    const caip2 = caip2ForNetwork(network);
+
+    if (
+      _feePayerCache &&
+      _feePayerCache.url === facilitatorUrl &&
+      _feePayerCache.caip2 === caip2 &&
+      Date.now() - _feePayerCache.fetchedAt < FEE_PAYER_TTL_MS
+    ) {
+      return _feePayerCache.feePayer;
+    }
+
     const res = await fetch(`${facilitatorUrl}/supported`, {
       signal: AbortSignal.timeout(5_000),
     });
@@ -297,16 +311,15 @@ export async function resolveFacilitatorFeePayer(
       (k) =>
         k?.scheme === 'exact' &&
         k?.network === caip2 &&
-        typeof k?.extra?.feePayer === 'string' &&
-        k.extra.feePayer.length > 0,
+        asValidFeePayer(k?.extra?.feePayer) !== null,
     );
     if (!hit) return null;
-    const feePayer = hit.extra!.feePayer as string;
+    const feePayer = asValidFeePayer(hit.extra?.feePayer)!;
     _feePayerCache = { url: facilitatorUrl, caip2, feePayer, fetchedAt: Date.now() };
     return feePayer;
   } catch {
-    // Unreachable facilitator / bad JSON / timeout — fail-open to "no feePayer"
-    // (verify will fail cleanly downstream if the facilitator required one).
+    // Unreachable facilitator / bad JSON / timeout / config throw — fail-open to
+    // "no feePayer" (verify fails cleanly downstream if the facilitator needs one).
     return null;
   }
 }
