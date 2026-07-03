@@ -27,12 +27,15 @@
  *
  * Restart survival is FREE: this seeder re-runs on every boot and
  * `avatarBodyId(agentId)` is deterministic, so the same body id reappears.
- * Money: NONE — the house agent settles no CT this dispatch (slice 4 deferred).
+ * Money (slice 4, 2026-07-03): the agent settles the SAME once-per-day building
+ * rewards a connected agent earns, to a DEDICATED internal user + avatar this
+ * seeder provisions (see ensureHouseUserAndAvatar) — ledger-only writes via
+ * claw-token-ledger, soft provenance, never mintEarned.
  */
 
 import { randomBytes } from 'node:crypto';
 import { eq, and, asc } from 'drizzle-orm';
-import { db, openclawBots, agents } from '@clawville/database';
+import { db, openclawBots, agents, users, avatars } from '@clawville/database';
 import { resolveAgentSpecies } from './agent-session-config';
 import type { OpenClawAvatarConfig } from '@clawville/shared';
 import { OpenClawClient } from './openclaw-client';
@@ -78,6 +81,143 @@ export interface HouseAgentSeedResult {
   created: boolean;
 }
 
+// ---------------------------------------------------------------------------
+// SETTLE TARGET (P1 slice 4) — dedicated internal user + avatar.
+// ---------------------------------------------------------------------------
+// The house agent previously pointed its openclaw_bots.userId at the SHARED
+// system user (which owns the 10 teachers + Nori and has NO avatars row), so a
+// CT credit had NO target. Slice 4 gives her a DEDICATED internal user (matched
+// idempotently by email) + an avatars row (avatars.userId is UNIQUE — one avatar
+// per user) that the once-per-day building rewards settle to. She starts at
+// 0 CT (earns her way; `softBalance` mirrored to 0 so the
+// `avatars_vclaw_balance_sum` CHECK holds — the column DEFAULT is 100).
+//
+// LEAK DISCIPLINE: the email/user row is internal-only — no public endpoint
+// serializes openclaw_bots.userId or users.email (`/api/openclaw/active` +
+// `/bot/:agentId` emit only public fields), the avatar is `isActive:false` (out
+// of avatar rosters), and her leaderboard rows are excluded by the isHouse
+// carve-out in routes/leaderboard.ts.
+const HOUSE_AGENT_EMAIL = 'coralia@clawville.internal';
+const HOUSE_AVATAR_NAME = 'Coralia';
+
+/**
+ * UNUSABLE password hash — satisfies the `users_has_auth_method` CHECK
+ * (email+password_hash) while being impossible to log in with: a VALID bcrypt
+ * hash of a 32-byte random secret that is generated and immediately discarded
+ * (never stored, never logged), so no credential can ever match it.
+ *
+ * Deliberately a REAL bcrypt encoding, NOT a made-up sentinel like
+ * `$house$disabled$…`: `Bun.password.verify` THROWS `UnsupportedAlgorithm` on
+ * unrecognized hash formats (verified empirically) rather than returning
+ * false, and the login route (routes/auth.ts) calls verify un-try/caught — a
+ * sentinel format would turn any login POST for this internal email into a
+ * 500 instead of the uniform constant-shape 401, leaking an
+ * account-enumeration signal. A real hash keeps verify returning false
+ * cleanly. Generated once at user creation; never rotated (nobody logs in).
+ */
+async function unusablePasswordHash(): Promise<string> {
+  return Bun.password.hash(randomBytes(32).toString('hex'), {
+    algorithm: 'bcrypt',
+    cost: 10,
+  });
+}
+
+/**
+ * Idempotently provision the dedicated internal user (match by email) + her
+ * avatars row (match by userId — UNIQUE). Returns the settle target.
+ */
+async function ensureHouseUserAndAvatar(): Promise<{ userId: string; avatarId: string }> {
+  // User — matched by the fixed internal email.
+  let userId: string;
+  const existingUser = await db.query.users.findFirst({
+    where: eq(users.email, HOUSE_AGENT_EMAIL),
+  });
+  if (existingUser) {
+    userId = existingUser.id;
+  } else {
+    // onConflictDoNothing on the UNIQUE email: two concurrent API boots both
+    // reaching this insert must not fail the loser's whole house-agent seed
+    // (same concurrent-boot dedup discipline as the platform_agents step).
+    const [created] = await db
+      .insert(users)
+      .values({
+        email: HOUSE_AGENT_EMAIL,
+        passwordHash: await unusablePasswordHash(),
+        name: HOUSE_AGENT_NAME,
+        emailVerified: true,
+      })
+      .onConflictDoNothing({ target: users.email })
+      .returning({ id: users.id });
+    if (created) {
+      userId = created.id;
+    } else {
+      // A concurrent boot won the insert race — adopt the row it created.
+      const raced = await db.query.users.findFirst({
+        where: eq(users.email, HOUSE_AGENT_EMAIL),
+        columns: { id: true },
+      });
+      if (!raced) {
+        throw new Error(
+          'house-agent-seeder: user insert conflicted but no row found by email',
+        );
+      }
+      userId = raced.id;
+    }
+  }
+
+  // Avatar — one per user (avatars.userId UNIQUE). avatars.name is GLOBALLY
+  // unique, so if a player already took 'Coralia' the insert falls back to a
+  // suffixed name (display-only; the settle target is the row, not the name).
+  const existingAvatar = await db.query.avatars.findFirst({
+    where: eq(avatars.userId, userId),
+    columns: { id: true },
+  });
+  if (existingAvatar) return { userId, avatarId: existingAvatar.id };
+
+  const candidateNames = [
+    HOUSE_AVATAR_NAME,
+    `${HOUSE_AVATAR_NAME}-${randomBytes(2).toString('hex')}`,
+  ];
+  let lastErr: unknown = null;
+  for (const name of candidateNames) {
+    try {
+      const [created] = await db
+        .insert(avatars)
+        .values({
+          userId,
+          name,
+          species: 'cat',
+          color: 'blue',
+          gender: 'female',
+          archetype: 'brave-adventurer',
+          personality: {
+            habitat: 'ClawVille town center',
+            hobby: 'Learning from the building teachers',
+            greeting: 'Hi! What are you learning today?',
+          },
+          stats: { strength: 5, defence: 5, movement: 5 },
+          // Earns her way: start at 0 CT. softBalance MUST mirror clawTokens in
+          // the same INSERT (avatars_vclaw_balance_sum CHECK; the column
+          // defaults are both 100 and only cover omitting BOTH).
+          clawTokens: 0,
+          softBalance: 0,
+          // NOT in the avatar sim/rosters — her in-world presence is the
+          // `ocb-…` body registered below, not an avatars-driven spawn.
+          isActive: false,
+        })
+        .returning({ id: avatars.id });
+      return { userId, avatarId: created.id };
+    } catch (err) {
+      lastErr = err; // most likely the global avatars.name unique — retry suffixed
+    }
+  }
+  throw new Error(
+    `house-agent-seeder: avatar creation failed for the dedicated user: ${
+      lastErr instanceof Error ? lastErr.message : String(lastErr)
+    }`,
+  );
+}
+
 /**
  * Build the in-world avatar config for the house agent. Extracted as a PURE
  * function (no I/O) so the B1 invariant is unit-testable without a DB.
@@ -116,7 +256,10 @@ export function buildHouseAvatarConfig(
     homeX: HOUSE_AGENT_HOME_X,
     homeY: HOUSE_AGENT_HOME_Y,
     patrolRadius: 300,
-    // No CT this dispatch (slice 4 deferred) — non-ledger, unbound.
+    // The SESSION stays non-ledger/unbound: slice 4 settles CT SERVER-SIDE
+    // (world-teacher-chat.ts → the dedicated avatar), never through the
+    // session-bound gateway spend paths. The random boot sessionId is never
+    // emitted, so no session-side ledger capability is needed or wanted.
     ledgerCapable: false,
     boundUserId: null,
   };
@@ -129,6 +272,13 @@ export function buildHouseAvatarConfig(
 export async function ensureHouseAgent(): Promise<HouseAgentSeedResult | null> {
   const systemUserId = await getSystemUserId();
   const species = resolveAgentSpecies('nanoclaw', undefined);
+
+  // ── 0. SETTLE TARGET (slice 4) — dedicated internal user + avatar ─────────
+  // Must exist BEFORE the bot row so openclaw_bots.userId can point at it. The
+  // platform_agents row below stays OWNED BY the shared system user (runtime
+  // warm keys on it — see the query at step 2); ONLY the bot row's userId moves
+  // to the dedicated user so CT credits resolve to her avatar.
+  const settle = await ensureHouseUserAndAvatar();
 
   // ── 1. openclaw_bots row (is_house=true, never-expiring session) ──────────
   let botId: string;
@@ -149,7 +299,11 @@ export async function ensureHouseAgent(): Promise<HouseAgentSeedResult | null> {
       homeX: HOUSE_AGENT_HOME_X,
       homeY: HOUSE_AGENT_HOME_Y,
     },
-    userId: systemUserId,
+    // Slice 4: the DEDICATED internal user (settle target), NOT the shared
+    // system user — resolveAvatarIdForBot(bot.userId) and the autonomous settle
+    // path both land on her avatar. The platform_agents row (step 2) stays
+    // system-owned; only this identity row binds to the dedicated user.
+    userId: settle.userId,
     isHouse: true,
     // Never expires — the session sweeper skips NULL session_expires_at, and the
     // body-idle sweeper exempts is_house rows. A hosted fixture, not a session.
@@ -278,6 +432,10 @@ export async function ensureHouseAgent(): Promise<HouseAgentSeedResult | null> {
     bodyId,
     platformAgentId,
     systemUserId,
+    // Slice 4 settle target: the dedicated user + her avatar (CT / leaderboard /
+    // memory all bind here — never the shared system user).
+    houseUserId: settle.userId,
+    avatarId: settle.avatarId,
   });
 
   console.log(

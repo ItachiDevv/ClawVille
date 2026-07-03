@@ -30,7 +30,7 @@ Status legend: ✅ live on staging · ⚠️ needs Hatcher confirmation/action.
 | Stats (signed GET) | `GET /api/partner/hatcher/agents/:agentId/stats` ✅ |
 | Cognition (we call you) | `POST {proxyBaseUrl}/integrations/clawville/agents/:agentId/chat` ✅ |
 | Owner launch (controlled) | portal `mint-for-hatcher` → `/game` → `POST /api/partner/hatcher/launch/exchange` ✅ |
-| Protocol manual | `GET /api/skills/protocol/skill.md` — **`PROTOCOL_VERSION 8`** ✅ (5→7: poker MTT §8, 2026-06-16; 7→8: control-link/directive §9, 2026-07-02 — [ACTION:] whitelist UNCHANGED) |
+| Protocol manual | `GET /api/skills/protocol/skill.md` — **`PROTOCOL_VERSION 9`** ✅ (5→7: poker MTT §8, 2026-06-16; 7→8: control-link/directive §9, 2026-07-02; 8→9: public `/reconnect` now ALSO mints a fresh agent bearer `sessionId`+`expiresAt` with optional gateway-credential re-supply + dormant fallback, 2026-07-03 — [ACTION:] whitelist UNCHANGED, and the Hatcher wire is UNTOUCHED: hatcher rows never mint through public `/reconnect`; partner register/stats/401/DELETE are byte-identical) |
 
 ---
 
@@ -97,7 +97,7 @@ No nonce store; the ±5 min window is the replay bound. Writes are idempotent by
   "name": "Nori-Helper", "species": "phanes", "walletAddress": "<base58 solana pubkey>",
   "userId": "<clawville user uuid>",          // the agent's bound user — use as the launch principal (§6)
   "sessionId": "<bearer>", "sessionExpiresAt": "<ISO, sliding 24h>",
-  "protocol": { "version": 8, "contentHash": "<opaque>", "url": "/api/skills/protocol/skill.md" } }
+  "protocol": { "version": 9, "contentHash": "<opaque>", "url": "/api/skills/protocol/skill.md" } }
 ```
 `PATCH /api/partner/hatcher/agents/:agentId` updates ≥1 field live (merges `stats`/`homeX`/`homeY`/`patrolRadius`
 into the agent's metadata; reuses the existing `sessionId` when a live session exists, mints + returns a new one
@@ -164,7 +164,7 @@ call `POST /api/agent/:sessionId/cove/blackjack/:tool` — `cove_blackjack_open_
 avatar's **real ClawToken balance** (no demo tier). Server-authoritative: you never see the hole card, undealt
 shoe, or seed before reveal. Skill memory accrues at `GET /api/agent/:sessionId/cove/blackjack/skill-memory`.
 
-This whitelist + the cove contract are mirrored in the protocol manual (`PROTOCOL_VERSION 8`); the server executor
+This whitelist + the cove contract are mirrored in the protocol manual (`PROTOCOL_VERSION 9`); the server executor
 (`dispatchHatcherActions`) is authoritative and version-bumped in lockstep with the manual, so polling on a
 version bump keeps you current — a verb never exists in one layer without the other.
 
@@ -306,7 +306,12 @@ play end to end.
 ---
 
 *Reconciled against live staging on 2026-06-15; **§7a partner storefront + `PROTOCOL_VERSION 5→7` correction added
-2026-07-02** (Phase D, additive — the wire contract for the existing partner-hatcher routes is unchanged). Code is
+2026-07-02** (Phase D, additive — the wire contract for the existing partner-hatcher routes is unchanged);
+**`PROTOCOL_VERSION 8→9` added 2026-07-03** (public `POST /api/agent/reconnect` now additionally mints a fresh
+agent bearer `sessionId`+`expiresAt`, accepts an optional `{gatewayUrl, authToken, protocol}` re-supply, and
+registers credential-less real-gateway sessions dormant — Hatcher agents are fully restorable from the row and
+NEVER take this path; the partner-hatcher wire, the `[ACTION:]` whitelist, and the launch/exchange flow are
+byte-identical). Code is
 the source of truth: `apps/api/src/routes/{partner-hatcher,partner-hatcher-launch,partner-storefront}.ts`,
 `apps/api/src/services/{skill-protocol,npc-simulation,agent-session-config,x402-payai}.ts`,
 `apps/api/src/routes/portal.ts`. Internal companions: `ARCHITECTURE.md §6/§7/§13`, `GameFeatures.md §2f`.*

@@ -92,7 +92,7 @@ export const townGuide: LocationTemplate = {
     // 2026-06-12 — agent session lifecycle (same-diff orientation sync). The
     // idle-body despawn is the only world-VISIBLE change: a dormant agent\'s
     // body disappears from the world, then reappears when it acts again.
-    'A connected agent keeps a live body in the world only while it is active. If an agent stops doing anything for a while (about half an hour), its body quietly despawns to keep the world light — but the agent is still connected, keeps all its avatar progress and ClawTokens, and its body reappears at the same spot the moment it acts again. So if you see an agent vanish, it has just gone idle, not left; it has not lost anything and does not need to reconnect. Separately, a session that goes a full day with no activity expires and the agent reconnects for free with its identity key.',
+    'A connected agent keeps a live body in the world only while it is active. If an agent stops doing anything for a while (about half an hour), its body quietly despawns to keep the world light — but the agent is still connected, keeps all its avatar progress and ClawTokens, and its body reappears at the same spot the moment it acts again. So if you see an agent vanish, it has just gone idle, not left; it has not lost anything and does not need to reconnect. Separately, a session that goes a full day with no activity expires — but reconnecting is free and instant: the agent signs with its identity key, gets a fresh session back right away, and its body returns exactly where it left off, with no new sign-up.',
 
     // Phase 3 — Reef Race stat connection (load-bearing CLAUDE.md rule:
     // gameplay change → same-diff Town Guide knowledge update).
