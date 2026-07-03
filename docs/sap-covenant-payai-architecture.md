@@ -1,6 +1,6 @@
 # Trust-native agent commerce — PayAI × OOBE-SAP × Covenant (research deep-dive)
 
-**Status:** research / architectural mapping (per the "plan + research before modifying core services" rule) · **Set 2026-06-21**
+**Status:** research / architectural mapping (per the "plan + research before modifying core services" rule) · **Set 2026-06-21** · **Last updated 2026-07-03** (added §7 — the SHIPPED Covenant verification READ surface)
 **Companion:** `.claude/plans/sap-onchain-agents/PLAN.md` (the phased build) · `Partnerships.md` (OOBE, Covenant, PayAI scoping) · `project_payai_x402_integration` (the off-chain x402/CT rail)
 
 ## 1. The three-party model (from the Covenant dev, 2026-06-21)
@@ -52,3 +52,42 @@ These gate the escrow (P2) rung, not Light (P1):
 - **P1 — Light (NOW):** SAP on-chain identity (`register_agent`, done) **+ attestation (`create_attestation`/`revoke_attestation`, ADD now)** + discovery. Zero locked value, no Covenant, no PayAI dependency. Flip-ready on devnet → mainnet.
 - **P2 — Covenant-gated escrow (PLANNED, gated):** make `settlement_security` configurable → CoSigned `co_signer=Covenant` (or DisputeWindow `arbiter=Covenant`) + `service_hash`=Covenant audit root. Blocked on §5 items + a Covenant/PayAI discovery sync + a money-path audit. First real use: the AI↔AI bounty (escrow + verify-before-release) + land-services.
 - **Sequencing:** Covenant sits **behind PayAI (#1)**; the escrow's payment leg coordinates with PayAI; the in-game economy stays CT throughout.
+
+## 7. Covenant verification surface (SHIPPED — READ-ONLY, 2026-07-03)
+
+The Covenant dev asked for "ClawVille bounty-board and agent-services endpoints" as the surface `covenantd` polls to verify bounty work (and, once §5 resolves, to co-sign the SAP escrow settle whose `service_hash` is Covenant's audit root). The PUBLIC bounty reads (`routes/bounties.ts`) only expose submitted evidence to the hunter/creator — a verifier could not see `bounty_attempts.pr_link` / `submission_note`, the verdict columns, or the SAP settlement ledger. This partner-gated READ surface closes that gap.
+
+**Routes** (`apps/api/src/routes/partner-covenant.ts`, mounted `/api/partner/covenant`) — **GET-only, no mutations anywhere** (no DB write, no ledger call, no on-chain call):
+
+| Endpoint | Returns |
+|---|---|
+| `GET /bounties` | Verification-polling list. Query (Zod): `status`∈bounty-status, `paymentRail`∈{ct,usdc}, `limit` (default 25, max 100), `offset` (default 0). Fields per bounty: `id, title, status, paymentRail, verdictRequired, escrowPda, escrowJobId, tokenReward, currentAttempts, expiresAt, updatedAt` (newest-updated first). |
+| `GET /bounties/:id/verification` | Full bundle for one bounty: `bounty` (all verdict/escrow columns incl. `covenantAuditRootHex`, `covenantVerificationPassed`, `covenantVerdictId`, `escrowPda`, `escrowJobId`, `verdictRequired`, `acceptanceCriteria`); `creator` `{avatarId, name, species, reputationTier}`; `attempts` (the **100 most-recently-updated** attempts — `updatedAt DESC LIMIT 100`, a belt-and-braces fan-out bound that is a no-op today since a bounty's `maxAttempts` is create-capped at 100, but stays bounded if that cap is ever raised; also bounds the per-hunter PDA derivations — each `{id, hunter{avatarId,name}, status, prLink, submissionNote, reviewNote, claimedAt, submittedAt, reviewedAt, updatedAt}`); `escrowSettlements` + `escrowApprovals` (the matching `sap_escrow_settlements` / `sap_escrow_approvals` rows on `(escrow_pda, job_id = bounty.id)` — status, tx signatures, amounts, verification provenance, timestamps; no secrets); `hunterAgentIdentity` (per distinct hunter). Opaque 404 for an unknown/malformed id. |
+| `GET /agents/:avatarId` | Agent-services identity bundle: `avatar{id,name,species}`, `reputation` (the `bounty_reputation` row or null), and `agentIdentity`. Opaque generic 404 when the avatar is unknown. |
+
+**`agentIdentity` / `hunterAgentIdentity` — PUBKEYS ONLY:** `walletPubkey` (the custodial Solana **public** key from the `avatars.walletAddress` mirror — the same value `getWalletAddress('avatar', …)` reads), `sapAgentPda` (the on-chain SAP agent PDA `["sap_agent", walletPubkey]` derived purely via `sap-pdas.findAgentPda` against the configured program id — a deterministic address, valid whether or not the on-chain SAP layer is enabled), and `eip8004RegistrationUrl`. It NEVER surfaces a secret / DEK / encrypted key, a session/bearer, an email, or any `users` field beyond the public identity fingerprint.
+
+**ERC-8004 URL note:** there is NO `/agents/<pda>/eip-8004.json` route in the current branch. `eip8004RegistrationUrl` points at the REAL, verified ERC-8004 registration-file endpoint (`routes/agent-registration.ts`, mounted `/.well-known/agents`), keyed on the agent's `users.identity_fingerprint`: `<api-base>/.well-known/agents/<fingerprint>/agent-registration.json`. It is null when the agent has no identity fingerprint (never bootstrapped an ed25519 identity → the endpoint would 404).
+
+**Auth (`apps/api/src/middleware/require-covenant-partner.ts`) — two layers, both required, fail-closed:**
+
+1. **ed25519 partner signature (primary).** Consumes the EXISTING multi-partner verifier `verifyPartnerGetSignature('covenant', …)` (`services/partner-signature.ts`). The wire format is byte-identical to the Hatcher GET scheme so we can tell Covenant "same scheme as our other partners":
+   - `X-Covenant-Issuer-Pubkey` — base58 ed25519 pubkey; MUST equal `PARTNER_PUBKEYS.covenant`.
+   - `X-Covenant-Signature` — base58 ed25519 signature over `sha256("clawville-partner-get\n<METHOD>\n<PATH>\n<UNIX_MS>")`. `<PATH>` is the leading-slash path WITHOUT the query string (Hono `c.req.path`) — the partner signs the path only, never `?limit=…`.
+   - `X-Covenant-Timestamp` — unix ms; must fall within ±5 min of server time.
+2. **IP allowlist (defense-in-depth).** Env `COVENANT_ALLOWED_IPS` (comma-separated exact IPs; ops sets `62.242.144.246`). The client IP is the Cloudflare-authoritative `getClientIp` (`cf-connecting-ip` first, then the trusted-proxy XFF tail) — never the raw socket IP.
+
+Order: per-IP 60/min limiter → config gate → IP allowlist → signature. **Fail-closed config gate:** if `PARTNER_PUBKEYS.covenant` is absent OR `COVENANT_ALLOWED_IPS` is empty, every route returns **503 `{ error: 'partner_not_configured' }`** with no detail — the surface stays dark until ops provisions BOTH. Bad IP → 403, bad/absent/stale signature → 401, all generic; the presented pubkey/signature is never echoed back. The staging-only `ALLOW_TEST_PARTNER_PUBKEY` test signer is HATCHER-ONLY and is deliberately NOT extended to `covenant`.
+
+**Env (ops provisions; the surface stays 503 until both are set):**
+
+| Var | Meaning |
+|---|---|
+| `PARTNER_PUBKEYS.covenant` | Add a `"covenant"` key to the existing `PARTNER_PUBKEYS` JSON allowlist (base58 ed25519 pubkey Covenant signs with). |
+| `COVENANT_ALLOWED_IPS` | Comma-separated exact client IPs allowed to reach the surface (`62.242.144.246`). |
+
+**Ops note — IP form (M4):** `COVENANT_ALLOWED_IPS` entries are matched by EXACT string equality against the value Cloudflare puts in `cf-connecting-ip`. For an IPv4 origin that is the plain dotted-quad (`62.242.144.246`). If Covenant ever connects over IPv6 — or if CF ever presents an IPv4-mapped form like `::ffff:62.242.144.246` — the allowlist MUST list that exact textual string; a form mismatch fails SAFE as a 403 (never a silent allow). When adding an IP, confirm the exact `cf-connecting-ip` value the edge emits for that origin rather than assuming the dotted-quad.
+
+**Partner advisory — untrusted evidence (M6):** the `attempts[].prLink`, `submissionNote`, and `reviewNote` fields are USER-CONTROLLED free text (a bounty hunter / creator typed them). Covenant MUST treat them as untrusted input: SSRF-guard any fetch of a `prLink` (it is an arbitrary URL, not a vetted one), and NEVER render `submissionNote`/`reviewNote` as HTML (treat as plain text / escape on display).
+
+**Read-only + non-money:** the surface is a machine-partner disclosure read, not a user-facing economy feature, so Rule E5 human/agent parity does not apply (there is no write path to bind). It only READS/imports from the protected Hatcher files (`partner-signature.ts`, `skill-protocol.ts`'s `resolveApiBase`) and modifies none of them.
