@@ -204,6 +204,8 @@ describe('P1 autonomy driver — decide → enter_building', () => {
       bodyId,
       platformAgentId: 'pa-house-test',
       systemUserId: 'sys-house-test',
+      houseUserId: 'hu-sys-house-test',
+      avatarId: 'av-sys-house-test',
     });
 
     // Spy on the sim's action executor so the assertion tests the DRIVER's
@@ -247,14 +249,15 @@ describe('P1 autonomy driver — decide → enter_building', () => {
     agentAutonomyDriver.unregisterHouseAgent(bodyId);
   });
 
-  // NO-MONEY INVARIANT (P1 slice 4 is DEFERRED): the driver + the [ACTION:]
+  // NO-MONEY-IN-THE-EXECUTOR INVARIANT (unchanged by P1 slice 4): the [ACTION:]
   // executor must NOT settle any CT. Proven structurally + behaviorally — the
   // executor switch (move/emote/enter_building/enter_cove/talk_to_npc) has ZERO
   // ledger dependency: enter_building/move/emote only mutate in-world path/activity
   // (emit NO event), and talk emits exactly one `agent_chat` speech bubble. So the
   // ONLY event a decide→enter_building→talk turn can produce is `agent_chat` —
-  // never a settlement/token event. Locks the invariant so slice 4 can only add
-  // money through the authed, session-bound ledger path, never the action parser.
+  // never a settlement/token event. Slice 4 added money ONLY through the
+  // dedicated settle service (world-teacher-chat.ts → the ledger), never the
+  // action parser — this test locks that boundary.
   it('driver + executor settle ZERO CT during a decide → enter_building → talk turn (no-money invariant)', async () => {
     const bodyId = 'ocb-nomoney';
     const sessionId = 'oc-nomoney';
@@ -270,6 +273,8 @@ describe('P1 autonomy driver — decide → enter_building', () => {
       bodyId,
       platformAgentId: 'pa-nomoney',
       systemUserId: 'sys-nomoney',
+      houseUserId: 'hu-sys-nomoney',
+      avatarId: 'av-sys-nomoney',
     });
     sim.pendingEvents = [];
     try {
@@ -301,6 +306,8 @@ describe('P1 autonomy driver — decide → enter_building', () => {
       bodyId: 'ocb-a',
       platformAgentId: 'pa-a',
       systemUserId: 'sys-a',
+      houseUserId: 'hu-sys-a',
+      avatarId: 'av-sys-a',
     });
     expect(agentAutonomyDriver.hasHouseAgent('ocb-a')).toBe(true);
     agentAutonomyDriver.unregisterHouseAgent('ocb-a');
@@ -333,6 +340,8 @@ describe('P1 autonomy driver — decide → enter_building', () => {
         bodyId: 'ocb-warm',
         platformAgentId: 'pa-warm',
         systemUserId: 'sys-warm',
+        houseUserId: 'hu-sys-warm',
+        avatarId: 'av-sys-warm',
       });
       // Two synchronous ticks: the overlap guard must launch EXACTLY one warm.
       (agentAutonomyDriver as unknown as { tick: () => void }).tick();

@@ -28,19 +28,28 @@
  *   - Idle-throttle: when NO humans are in the world, the LLM-bearing phases
  *     back off to a slower cadence (cost control — one agent ≈ $1–2/day).
  *   - Every Map/Set is bounded (`MAX_HOUSE_AGENTS`).
- *   - Money: this driver NEVER settles CT (slice 4 deferred). The executor it
- *     calls does not touch the ledger.
+ *   - Money (slice 4, 2026-07-03): the [ACTION:] executor STILL never touches
+ *     the ledger. Settlement runs through `world-teacher-chat.ts` ONLY — the
+ *     arrival ('building.visited' + once-per-day 'building_visit' CT) and the
+ *     REAL conversed teacher turn ('agent.chat.turn' + once-per-day
+ *     'building_chat_teaching' CT + npc_memories lesson), both proximity-gated
+ *     fail-closed and idempotent per (avatar, building, reason, UTC-day).
+ *   - LLM-spend bound: a per-(agentId, buildingId) 60-min talk cooldown gates
+ *     the conducted teacher turn (each turn is a gpt-4o call carrying the
+ *     teacher's full skill corpus; the once-per-day CT probe does NOT bound
+ *     LLM cost by itself).
+ *   - Memory is behaviorally LIVE, not inert: the ~3 most recent npc_memories
+ *     lessons are folded into the decide prompt, and the teacher's latest reply
+ *     feeds the next decision context.
  *   - Leak: logs use `sessionDigest(agentId)` — NEVER the raw agentId/sessionId.
- *
- * NOT money/leaderboard: slice 4 (award on a proximity-passed conversed turn)
- * is deferred — the agent earns NOTHING this dispatch. The visible walk +
- * conversation is the non-money loop P1 proves.
  */
 
 import { BUILDING_INTERACTION_RADIUS } from '@clawville/shared';
 import { npcSimulation } from './npc-simulation';
 import { agentOrchestrator } from './agent-orchestrator';
 import { sessionDigest } from './session-digest';
+import { memoryService } from './memory-service';
+import { conductTeacherTurn, settleBuildingArrival } from './world-teacher-chat';
 
 /** Per-agent phase in the perceive→decide→act loop. */
 type DrivePhase = 'deciding' | 'walking' | 'arrived' | 'talking';
@@ -54,6 +63,13 @@ interface HouseAgentEntry {
   platformAgentId: string;
   /** system user id that owns the platform_agents row — for lazy runtime warm. */
   systemUserId: string;
+  /**
+   * Slice 4 settle target — the DEDICATED internal user that owns the house
+   * agent's openclaw_bots row + avatar (NOT the shared systemUserId above).
+   */
+  houseUserId: string;
+  /** avatars.id the once-per-day building rewards settle to. */
+  avatarId: string;
   phase: DrivePhase;
   /** epoch-ms the current phase was entered (for walk/talk timeouts). */
   phaseSince: number;
@@ -70,6 +86,12 @@ interface HouseAgentEntry {
    * SIGNAL only — it does NOT change drive behavior.
    */
   consecutiveEmptyDecides: number;
+  /**
+   * Slice 4 memory read-back — a short snippet of the LAST teacher reply, fed
+   * into the next decision prompt so the conversation actually informs the
+   * agent's next choice (memory made behaviorally live, not inert).
+   */
+  lastLesson: string | null;
 }
 
 /** A single decision generator — real LLM in prod, canned in tests. */
@@ -90,6 +112,37 @@ const WARM_WATCHDOG_MS = 90_000;
 // empty (OpenAI 429 / quota exhausted / bad key) otherwise spins the deciding phase
 // silently, since withTimeout maps a timeout/error to '' by contract.
 const EMPTY_DECIDE_WARN_THRESHOLD = 3;
+// Slice 4 LLM-spend bound: a conducted teacher turn is a gpt-4o call carrying the
+// teacher's FULL skill corpus, and the once-per-day CT probe does NOT bound LLM
+// cost by itself — so each (agentId, buildingId) pair may conduct at most one
+// turn per hour. In-memory (resets on restart — acceptable; the daily CT probe
+// is the money bound), bounded by TALK_COOLDOWN_MAP_MAX with expired-first eviction.
+const TALK_BUILDING_COOLDOWN_MS = 60 * 60 * 1000;
+const TALK_COOLDOWN_MAP_MAX = 1024; // MAX_HOUSE_AGENTS * ~10 buildings, headroom
+// Slice 4 memory read-back: bound the npc_memories fetch so a slow/absent DB can
+// never stall a decide tick — on timeout we simply decide without the lessons.
+const LESSON_FETCH_TIMEOUT_MS = 1_500;
+const LESSON_SNIPPET_MAX = 200;
+
+/** Matches the executor's HATCHER_ACTION_REGEX (npc-simulation.ts) — used to
+ * pull the `message` param out of the model's talk_to_npc tag so the SAME text
+ * the in-world bubble shows is what the teacher turn conducts. */
+const TALK_ACTION_RE = /\[ACTION:\s*talk_to_npc\(([^)]*)\)\]/;
+
+/** Extract the talk_to_npc message param from a reply, or null if none. Mirrors
+ * the executor's param split (comma-separated k=v, message last by prompt). */
+export function extractTalkMessage(reply: string): string | null {
+  const m = TALK_ACTION_RE.exec(reply);
+  if (!m) return null;
+  for (const part of m[1].split(',')) {
+    const eq = part.indexOf('=');
+    if (eq > 0 && part.slice(0, eq).trim() === 'message') {
+      const v = part.slice(eq + 1).trim();
+      return v.length > 0 ? v : null;
+    }
+  }
+  return null;
+}
 
 class AgentAutonomyDriver {
   private houseAgents = new Map<string, HouseAgentEntry>(); // agentId -> entry
@@ -97,6 +150,15 @@ class AgentAutonomyDriver {
   private warming = new Map<string, number>(); // agentId -> warmingSince ms (overlap guard + R2 watchdog)
   private interval: ReturnType<typeof setInterval> | null = null;
   private tickCount = 0;
+  // Slice 4: `${agentId}:${buildingId}` -> epoch-ms until which conducted
+  // teacher turns at that building are suppressed (LLM-spend bound).
+  private talkCooldownUntil = new Map<string, number>();
+
+  // Slice 4 seams — instance properties (not bare imports) so the unit tests can
+  // swap in mocks (settle-only-on-reply + cooldown are tested without a DB/LLM).
+  // Production values are the real world-teacher-chat functions.
+  teacherTurn: typeof conductTeacherTurn = conductTeacherTurn;
+  arrivalSettle: typeof settleBuildingArrival = settleBuildingArrival;
 
   /**
    * Register a boot-seeded house agent for autonomous driving. Bounded: past
@@ -108,6 +170,10 @@ class AgentAutonomyDriver {
     bodyId: string;
     platformAgentId: string;
     systemUserId: string;
+    /** Slice 4: dedicated internal user that owns the settle avatar. */
+    houseUserId: string;
+    /** Slice 4: avatars.id the building rewards settle to. */
+    avatarId: string;
   }): boolean {
     if (
       !this.houseAgents.has(entry.agentId) &&
@@ -123,11 +189,14 @@ class AgentAutonomyDriver {
       bodyId: entry.bodyId,
       platformAgentId: entry.platformAgentId,
       systemUserId: entry.systemUserId,
+      houseUserId: entry.houseUserId,
+      avatarId: entry.avatarId,
       phase: 'deciding',
       phaseSince: Date.now(),
       targetBuildingId: null,
       lastBuildingId: null,
       consecutiveEmptyDecides: 0,
+      lastLesson: null,
     });
     console.log(
       `[AutonomyDriver] registered house agent ${sessionDigest(entry.agentId)} (${this.houseAgents.size} total)`,
@@ -277,6 +346,23 @@ class AgentAutonomyDriver {
       if (this.hasArrived(perception, entry)) {
         entry.phase = 'arrived';
         entry.phaseSince = now;
+        // Slice 4: settle the ARRIVAL — 'building.visited' event + once-per-day
+        // 'building_visit' CT to the dedicated avatar. Fire-and-forget (the
+        // settle service is fail-soft + proximity re-checked server-side); a
+        // settle failure must never stall the phase machine.
+        if (entry.targetBuildingId) {
+          void this.arrivalSettle({
+            agentId: entry.agentId,
+            bodyId: entry.bodyId,
+            avatarId: entry.avatarId,
+            buildingId: entry.targetBuildingId,
+          }).catch((err) =>
+            console.warn(
+              `[AutonomyDriver] arrival settle failed for ${sessionDigest(entry.agentId)}:`,
+              err instanceof Error ? err.message : err,
+            ),
+          );
+        }
       } else if (now - entry.phaseSince > WALK_TIMEOUT_MS) {
         // Stuck / no progress — abandon this target and replan next tick.
         entry.phase = 'deciding';
@@ -298,24 +384,63 @@ class AgentAutonomyDriver {
     // executeHatcherAction PASSES because we only reach 'arrived' once within
     // BUILDING_INTERACTION_RADIUS of the target.
     if (entry.phase === 'arrived' && entry.targetBuildingId) {
+      const buildingId = entry.targetBuildingId;
+      // Slice 4 LLM-spend bound: at most one CONDUCTED turn per (agent, building)
+      // per hour. On cooldown → skip the talk LLM entirely (no question, no
+      // teacher call), linger, then re-decide (the decision prompt lists the
+      // cooled-down teachers so the agent favors somewhere new).
+      if (this.isTalkCooldownActive(entry.agentId, buildingId, now)) {
+        console.log(
+          `[AutonomyDriver][debug] talk skipped (cooldown) ${sessionDigest(entry.agentId)} building=${buildingId}`,
+        );
+        entry.phase = 'talking';
+        entry.phaseSince = now;
+        return;
+      }
       const building = perception.nearbyBuildings.find(
-        (b) => b.buildingId === entry.targetBuildingId,
+        (b) => b.buildingId === buildingId,
       );
-      const prompt = this.buildTalkPrompt(entry.targetBuildingId, building?.label, building?.cryptoFocus);
+      const prompt = this.buildTalkPrompt(buildingId, building?.label, building?.cryptoFocus);
       const reply = await decide(prompt);
       // TEMP DEBUG (see above): the RAW talk reply — reveals whether gpt-4o-mini
       // emits a parseable [ACTION: talk_to_npc(...)] tag.
       console.log(
         `[AutonomyDriver][debug] talk ${sessionDigest(entry.agentId)} replyLen=${reply.length} reply=${JSON.stringify(reply.slice(0, 240))}`,
       );
+      // The agent's OWN visible bubble — the existing [ACTION:] path (the
+      // executor's proximity gate re-checks server-side).
       npcSimulation.dispatchHatcherActions(entry.bodyId, reply);
+      // Slice 4: the REAL conversed turn — teacher reply + settle (CT +
+      // leaderboard + memory), ONLY when the model emitted a parseable talk
+      // message. The settle service re-checks proximity fail-closed and is
+      // fail-soft on every error, so a failed turn just earns nothing.
+      const message = extractTalkMessage(reply);
+      if (message) {
+        const turn = await this.teacherTurn({
+          agentId: entry.agentId,
+          bodyId: entry.bodyId,
+          avatarId: entry.avatarId,
+          buildingId,
+          message,
+        });
+        if (turn) {
+          // Success ⇒ start the per-building cooldown + feed the lesson into
+          // the next decision context (memory made behaviorally live).
+          this.stampTalkCooldown(entry.agentId, buildingId, now);
+          entry.lastLesson = turn.reply.replace(/\s+/g, ' ').slice(0, LESSON_SNIPPET_MAX);
+        }
+      }
       entry.phase = 'talking';
       entry.phaseSince = now;
       return;
     }
 
     // Phase: deciding (default) → choose a teacher by need + walk (LLM).
-    const prompt = this.buildDecisionPrompt(perception, entry);
+    // Slice 4 memory read-back: fold the most recent lessons into the prompt so
+    // stored memory actually shapes the next choice. Soft-timeout + fail-soft —
+    // a slow/absent DB must never stall the tick (we just decide without them).
+    const lessons = await this.readRecentLessons(entry.bodyId);
+    const prompt = this.buildDecisionPrompt(perception, entry, lessons);
     const reply = await decide(prompt);
     // TEMP DEBUG (see tick()): the RAW decision reply — the smoking gun for
     // candidate (a). If this has content but no [ACTION: enter_building(...)] the
@@ -392,16 +517,30 @@ class AgentAutonomyDriver {
   private buildDecisionPrompt(
     perception: NonNullable<ReturnType<typeof npcSimulation.buildPerception>>,
     entry: HouseAgentEntry,
+    recentLessons: string[] = [],
   ): string {
+    const now = Date.now();
     const options = perception.nearbyBuildings
-      .map(
-        (b) =>
-          `- ${b.buildingId}: "${b.label}"${b.cryptoFocus ? ` — teaches ${b.cryptoFocus}` : ''}`,
-      )
+      .map((b) => {
+        const cooled = this.isTalkCooldownActive(entry.agentId, b.buildingId, now);
+        return `- ${b.buildingId}: "${b.label}"${b.cryptoFocus ? ` — teaches ${b.cryptoFocus}` : ''}${cooled ? ' (you learned here very recently — pick somewhere else)' : ''}`;
+      })
       .join('\n');
     const avoid = entry.lastBuildingId
       ? `\nYou just visited "${entry.lastBuildingId}" — favor a DIFFERENT teacher to broaden your skills.`
       : '';
+    // Slice 4 memory read-back: recent lessons + the last teacher reply shape
+    // the next choice (learn what you DON'T know yet).
+    const lessonLines: string[] = [];
+    if (entry.lastLesson) lessonLines.push(`- (latest) ${entry.lastLesson}`);
+    for (const lesson of recentLessons) {
+      if (lessonLines.length >= 4) break;
+      lessonLines.push(`- ${lesson.replace(/\s+/g, ' ').slice(0, LESSON_SNIPPET_MAX)}`);
+    }
+    const learned =
+      lessonLines.length > 0
+        ? `\nWhat you learned recently (avoid repeating — build on it or learn something NEW):\n${lessonLines.join('\n')}\n`
+        : '';
     return [
       'You are an autonomous agent living in ClawVille, a world of teaching buildings.',
       'You want to LEARN. Choose the ONE teacher whose focus is most useful for you to learn next.',
@@ -409,11 +548,65 @@ class AgentAutonomyDriver {
       'Teachers (buildingId: name — focus):',
       options,
       avoid,
-      '',
+      learned,
       'Reply with ONE short sentence about what you want to learn, then EXACTLY this action tag',
       'with the buildingId you chose (copy an id verbatim from the list):',
       '[ACTION: enter_building(buildingId=<one of the ids above>)]',
     ].join('\n');
+  }
+
+  // ── Slice 4 helpers ────────────────────────────────────────────────────────
+
+  private cooldownKey(agentId: string, buildingId: string): string {
+    return `${agentId}:${buildingId}`;
+  }
+
+  private isTalkCooldownActive(agentId: string, buildingId: string, now: number): boolean {
+    const until = this.talkCooldownUntil.get(this.cooldownKey(agentId, buildingId));
+    return until !== undefined && now < until;
+  }
+
+  private stampTalkCooldown(agentId: string, buildingId: string, now: number): void {
+    // Bounded map: evict EXPIRED entries first when full; if still full (all
+    // live), drop the oldest — a lost cooldown only risks an extra LLM call,
+    // never a money leak (the daily CT probe is the money bound).
+    if (this.talkCooldownUntil.size >= TALK_COOLDOWN_MAP_MAX) {
+      for (const [k, until] of this.talkCooldownUntil) {
+        if (now >= until) this.talkCooldownUntil.delete(k);
+      }
+      if (this.talkCooldownUntil.size >= TALK_COOLDOWN_MAP_MAX) {
+        const oldest = this.talkCooldownUntil.keys().next().value;
+        if (oldest !== undefined) this.talkCooldownUntil.delete(oldest);
+      }
+    }
+    this.talkCooldownUntil.set(this.cooldownKey(agentId, buildingId), now + TALK_BUILDING_COOLDOWN_MS);
+  }
+
+  /**
+   * Fetch the agent's most recent stored lessons (npc_memories, entity = the
+   * in-world body id — the same key world-teacher-chat writes). Soft-timeout +
+   * fail-soft: on ANY error/timeout return [] so a slow/absent DB can never
+   * stall the decide tick (also keeps the DB-less unit tests fast).
+   */
+  private async readRecentLessons(bodyId: string): Promise<string[]> {
+    try {
+      const fetched = await new Promise<string[]>((resolve) => {
+        const timer = setTimeout(() => resolve([]), LESSON_FETCH_TIMEOUT_MS);
+        memoryService
+          .getRelevantMemories({ entityId: bodyId, limit: 3 })
+          .then((rows) => {
+            clearTimeout(timer);
+            resolve(rows.map((r) => r.content).filter((c): c is string => !!c));
+          })
+          .catch(() => {
+            clearTimeout(timer);
+            resolve([]);
+          });
+      });
+      return fetched;
+    } catch {
+      return [];
+    }
   }
 
   /**

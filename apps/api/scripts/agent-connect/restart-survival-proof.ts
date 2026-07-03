@@ -10,9 +10,14 @@
  *      the restart comes back with `ledgerCapable:false` (real-CT only after a
  *      proof-carrying /connect or /reconnect).
  *   4. NON-RESTORABLE (real-gateway class, e.g. openclaw): the old bearer is DEAD
- *      (401) after restart, and the Phase 5.1 signed-challenge /reconnect cleanly
- *      replaces it — new sessionId works, old bearer stays dead, exactly ONE
- *      in-world body, and /api/npc/state leaks no `oc-` sessionId.
+ *      (404) after restart, and the Phase 5.1 signed-challenge /reconnect cleanly
+ *      replaces it under the FIXED contract (2026-07-03 — the original run of this
+ *      proof found /reconnect minted ONLY the human sessionTicket): 200 with a
+ *      fresh `sessionId` (+ `dormant: true`, since no gateway credentials are
+ *      re-supplied here), the NEW bearer's perception works, the OLD bearer stays
+ *      dead (404), exactly ONE in-world `ocb-` body, `sessionTicket` STILL present
+ *      (the magic-link leg is preserved), and /api/npc/state leaks no `oc-`
+ *      sessionId.
  *
  * TWO PHASES (the restart happens between them, via SSH — see runbook below):
  *   bun run apps/api/scripts/agent-connect/restart-survival-proof.ts --phase pre
@@ -207,12 +212,22 @@ async function phasePost() {
   const rec = await req('POST', '/api/agent/reconnect', { body: { userId: state.bUserId, nonce, signature } });
   ok(rec.status === 200 && !!rec.json?.sessionId, 'B RECONNECT 200 → fresh sessionId', `status=${rec.status}`);
   const bNewSid: string | undefined = rec.json?.sessionId;
-  if (!bNewSid) { console.log('   reconnect payload:', JSON.stringify(rec.json)?.slice(0, 300)); return finish(); }
+  if (!bNewSid) { console.log('   reconnect payload keys:', Object.keys(rec.json ?? {}).join(',')); return finish(); }
+  // Backward-compat: the magic-link leg must be PRESERVED (additive contract) —
+  // sessionTicket + the refreshed TTL both still on the response.
+  ok(!!rec.json?.sessionTicket, 'B reconnect response STILL carries sessionTicket (magic-link leg preserved)');
+  ok(!!rec.json?.expiresAt, 'B reconnect response carries expiresAt for the fresh bearer', `expiresAt=${rec.json?.expiresAt}`);
+  // No gateway credentials were re-supplied, so a real-gateway (openclaw) session
+  // must come back DORMANT-INERT (perceive/move/act OK, no outbound chat).
+  ok(rec.json?.dormant === true, 'B session minted DORMANT (no credentials re-supplied, real-gateway type)', `dormant=${rec.json?.dormant}`);
 
   const bNewPerc = await req('GET', `/api/agent/${bNewSid}/perception`);
-  ok(bNewPerc.status === 200, 'B NEW bearer works');
+  ok(bNewPerc.status === 200, 'B NEW bearer works', `status=${bNewPerc.status}`);
+  // 404 — the gateway routes' designed dead-session response (resolveSession →
+  // null): the reconnect REBOUND session_key_hash to the new bearer, so the old
+  // one can neither restore (hash mismatch) nor resolve from RAM (evicted).
   const bOldAgain = await req('GET', `/api/agent/${state.bSessionId}/perception`);
-  ok(bOldAgain.status === 401, 'B OLD bearer STAYS dead after reconnect (no zombie session)', `status=${bOldAgain.status}`);
+  ok(bOldAgain.status === 404, 'B OLD bearer STAYS dead after reconnect (no zombie session, 404)', `status=${bOldAgain.status}`);
 
   // 4c. Exactly ONE in-world body for B + no oc- sessionId leak anywhere in npc/state.
   const world = await req('GET', '/api/npc/state');
@@ -222,7 +237,7 @@ async function phasePost() {
   ok(bodyCount >= 1, 'B has an in-world body after reconnect', `bodyId=${bBodyId} occurrences=${bodyCount}`);
   const npcIds: string[] = (world.json?.npcs ?? []).map((n: any) => String(n.npcId ?? n.id ?? ''));
   const dupBodies = npcIds.filter((id) => id === bBodyId).length;
-  ok(dupBodies <= 1, 'NO double body for B (reconnect replaced, not duplicated)', `bodies=${dupBodies}`);
+  ok(dupBodies === 1, 'EXACTLY ONE body for B (reconnect replaced, not duplicated, not dropped)', `bodies=${dupBodies}`);
   const ocLeak = /(?<![A-Za-z0-9])oc-[A-Za-z0-9_-]{16,}/.test(raw);
   ok(!ocLeak, '/api/npc/state leaks NO oc- sessionId (bodies are ocb-<agentId>)');
 

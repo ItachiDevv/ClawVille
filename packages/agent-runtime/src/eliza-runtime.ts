@@ -814,6 +814,17 @@ export class ElizaRuntime {
        * replies. The brevity DIRECTIVE in the system prompt applies regardless.
        */
       conversational?: boolean;
+      /**
+       * Per-turn text-model override (agent-metaverse P1 slice 4). Absent ⇒ the
+       * runtime's default text model (unchanged behaviour). The autonomous house
+       * teacher turn passes 'TEXT_SMALL' so a hosted teacher reply runs on
+       * gpt-4o-mini instead of the default TEXT_LARGE (gpt-4o) while carrying the
+       * teacher's full merged SKILL.md corpus — a verified-safe cost win. Kept a
+       * plain string union (NOT the core `ModelType` enum) so apps/api callers
+       * don't have to import @elizaos/core; it is assignable to `generateText`'s
+       * `modelType` (TextGenerationModelType).
+       */
+      modelType?: 'TEXT_SMALL' | 'TEXT_LARGE';
     } = {}
   ): Promise<ElizaMessage> {
     if (this.state !== 'running' || !this.runtime) {
@@ -902,6 +913,8 @@ export class ElizaRuntime {
       const result = await this.runtime.generateText(promptWithHistory, {
         maxTokens: responseMaxTokens,
         stopSequences: [],
+        // Per-turn model override — omitted (default model) unless the caller set it.
+        ...(context.modelType ? { modelType: context.modelType } : {}),
       });
 
       let responseText = result.text;

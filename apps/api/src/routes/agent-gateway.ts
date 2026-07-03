@@ -28,12 +28,26 @@ import {
   buildOverrideSessionConfig,
   isSessionRestorable,
 } from '../services/agent-session-config';
+// /reconnect session-mint planner (P0 gate fix, 2026-07-03) — pure decision
+// module (ledger/dormancy/credential rules) shared with its DB-free unit tests.
+// `gatewayCredentialZodFields` is the SAME zod trio connectSchema spreads below,
+// so /reconnect credentials are validated exactly like /connect structurally.
+import {
+  gatewayCredentialZodFields,
+  planReconnectSession,
+} from '../services/agent-reconnect-session';
 import { ensureWallet, ensureWalletWithFirstTimeSecret } from '../services/wallet-service';
-import { creditClawTokens } from '../services/claw-token-ledger';
 // Shared own-property building-center guard (prototype-key CT-farm defense) used by
 // /visit-building, /building/:buildingId/chat and /move. Lives in its own
 // dependency-free module so the F1 money-path test can exercise the SAME guard.
 import { resolveBuildingCenter } from '../services/building-center';
+// Once-per-day building reward + bot→avatar resolver — extracted (P1 slice 4) to
+// the dependency-light services/building-reward.ts so the autonomous settle path
+// shares the SAME probe+credit these routes use. Behavior-identical re-import.
+import {
+  creditBuildingRewardOncePerDay,
+  resolveAvatarIdForBot,
+} from '../services/building-reward';
 import { buildRuntimeServices } from '../services/runtime-services-adapter';
 import { getSystemNpcAgent } from '../services/system-npc-seeder';
 import {
@@ -150,84 +164,13 @@ const reconnectRateLimiter = createRateLimiter({
 });
 
 // ---------------------------------------------------------------------------
-// resolveAvatarIdForBot — map an openclaw_bots.userId to that user's avatars.id
-// ---------------------------------------------------------------------------
-// CT credits MUST target an `avatars.id` (the ledger row-locks the avatars
-// row). A connected agent's `openclaw_bots.id` is NOT an avatars PK — crediting
-// it threw "avatar not found" (swallowed), so connected agents never earned CT
-// for building visits / teacher chats. This resolves the human's avatar via the
-// bot's bound userId. Returns null when the bot is anonymous (no userId) or the
-// user has no avatar yet — callers then skip the credit honestly (tokenAwarded
-// stays 0) rather than throwing. (2026-06-01, Hatcher Phase A bug fix.)
-async function resolveAvatarIdForBot(botUserId: string | null): Promise<string | null> {
-  if (!botUserId) return null;
-  const avatar = await db.query.avatars.findFirst({
-    where: eq(avatars.userId, botUserId),
-    columns: { id: true },
-  });
-  return avatar?.id ?? null;
-}
-
-// ---------------------------------------------------------------------------
-// creditBuildingRewardOncePerDay — idempotent per-(avatar, building, reason,
-// UTC-day) 1-CT building reward (M2 anti-faucet).
-// ---------------------------------------------------------------------------
-// Both `/visit-building` and `/building/:buildingId/chat` credited 1 CT
-// UNCONDITIONALLY, so a ledger-bound agent parked within `BUILDING_INTERACTION_
-// RADIUS` could loop the endpoint and farm CT. This gates ONLY the ledger credit
-// (NOT `logEventFromContext` — the leaderboard keeps its own daily caps and must
-// still record every event). Concurrency-safe: the tx row-locks the SAME
-// `avatars` row `creditClawTokens` locks BEFORE the existence check, so two
-// simultaneous requests for the same key serialize — the first inserts + commits,
-// the second then observes the committed row and returns false (NO double-credit).
-// NO legit-visit regression: a DIFFERENT building or a NEW UTC day is a fresh key,
-// so distinct visits/chats still each pay once. Returns true iff it credited 1 CT.
-async function creditBuildingRewardOncePerDay(opts: {
-  avatarId: string;
-  buildingId: string;
-  reason: 'building_visit' | 'building_chat_teaching';
-  metadata: Record<string, unknown>;
-}): Promise<boolean> {
-  const startOfUtcDay = new Date();
-  startOfUtcDay.setUTCHours(0, 0, 0, 0);
-  // ISO string, NOT the Date object: this raw `sql` runs through the postgres-js
-  // driver, whose generic param serializer calls `str()` → `Buffer.byteLength()`
-  // on the value and THROWS `ERR_INVALID_ARG_TYPE` for a Date ("Received an
-  // instance of Date"). Passing the ISO text (postgres casts it to timestamptz in
-  // the `created_at >=` comparison) is the driver-safe binding. This threw on
-  // EVERY building-visit/chat credit since M2 shipped — a connected agent earned
-  // 0 CT for building visits (caught by the OpenClaw e2e harness, 2026-07-02).
-  const startOfUtcDayIso = startOfUtcDay.toISOString();
-  return db.transaction(async (tx) => {
-    // Row-lock the avatar FIRST (the exact row `creditClawTokens` FOR UPDATEs) so
-    // the check-then-credit below is serialized against a concurrent duplicate.
-    await tx.execute(sql`SELECT 1 FROM avatars WHERE id = ${opts.avatarId} FOR UPDATE`);
-    // Existence probe for today's reward on this (avatar, reason, building). Mirror
-    // the `const [row] = await tx.execute<T>(…)` access shape used by the ledger
-    // (postgres-js `.execute()` returns a RowList; the first element is the row or
-    // undefined). `metadata->>'buildingId'` reads the jsonb text value both credit
-    // sites already store.
-    const [existing] = await tx.execute<{ present: number }>(sql`
-      SELECT 1 AS present FROM claw_token_transactions
-      WHERE avatar_id = ${opts.avatarId}
-        AND reason = ${opts.reason}
-        AND metadata->>'buildingId' = ${opts.buildingId}
-        AND created_at >= ${startOfUtcDayIso}
-      LIMIT 1`);
-    if (existing) return false; // already rewarded for this (avatar, building, reason) today
-    await creditClawTokens(
-      {
-        avatarId: opts.avatarId,
-        amount: 1,
-        reason: opts.reason,
-        source: 'api',
-        metadata: opts.metadata,
-      },
-      tx,
-    );
-    return true;
-  });
-}
+// resolveAvatarIdForBot + creditBuildingRewardOncePerDay — MOVED (P1 slice 4,
+// 2026-07-03) to the dependency-light `services/building-reward.ts` VERBATIM so
+// the autonomous settle path (world-teacher-chat.ts) shares the EXACT same
+// once-per-day probe + ledger credit these two gateway call sites use (identical
+// economics; one probe key = no double-dip across paths). Behavior at the
+// `/visit-building` + `/building/:buildingId/chat` call sites is unchanged.
+// (Imported at the top of this file.)
 
 // ---------------------------------------------------------------------------
 // POST /api/agent/connect  — Universal agent registration
@@ -267,10 +210,11 @@ const connectSchema = z.object({
   color: z.number().int().min(0).max(0xffffff).optional(),
   personality: z.string().max(200).optional(),
 
-  // Gateway config (required for chat-routing agents, ignored for nanoclaw/anonymous/milady)
-  gatewayUrl: z.string().url().optional(),
-  authToken: z.string().min(1).optional(),
-  protocol: z.enum(['openai-compat', 'anthropic', 'custom-webhook', 'nanoclaw']).optional(),
+  // Gateway config (required for chat-routing agents, ignored for nanoclaw/anonymous/milady).
+  // The trio is the SHARED `gatewayCredentialZodFields` (agent-reconnect-session.ts)
+  // so /reconnect's optional credential re-supply is validated with the EXACT same
+  // shapes — structural parity, not a mirror.
+  ...gatewayCredentialZodFields,
   autonomyMode: z.enum(['server-managed', 'self-managed']).optional(),
 
   // Spawn position / stats
@@ -1093,6 +1037,13 @@ const reconnectSchema = z.object({
   userId: z.string().uuid(),
   nonce: z.string().min(32).max(64),
   signature: z.string().min(80).max(96),
+  // OPTIONAL gateway-credential re-supply (P0 gate fix, 2026-07-03). A
+  // real-gateway agent (openclaw/ironclaw/custom) whose outbound auth_token is
+  // never persisted can re-arm its outbound cognition client here; validated
+  // with the EXACT same shared zod shapes connectSchema uses. Omitted for a
+  // real-gateway type → the fresh session is registered DORMANT-INERT (the
+  // nanoclaw-style no-outbound fallback — "prefer dormant over broken").
+  ...gatewayCredentialZodFields,
 });
 
 agentGatewayRoutes.post('/reconnect', async (c) => {
@@ -1167,44 +1118,19 @@ agentGatewayRoutes.post('/reconnect', async (c) => {
   // `uuid` field surfaced in the response is the existing bot id so
   // the agent keeps a stable handle — or null if the user has never
   // connected a bot before (reconnect-on-fresh-device case).
+  // FULL row (P0 gate fix, 2026-07-03): the session-mint below rebuilds the
+  // in-world register config from the row's stored fields, exactly the way
+  // restore does — `columns: {id}` is no longer enough.
   const existingBot = await db.query.openclawBots.findFirst({
     where: eq(openclawBots.userId, userId),
     orderBy: (t, { desc }) => [desc(t.lastSeenAt)],
-    columns: { id: true },
   });
 
-  // Phase 6.1 — refresh the bot's session TTL on signed-challenge
-  // reconnect so an expired+swept row pops back alive without needing
-  // to re-do the magic-link /connect dance. Without this update, the
-  // SKILL.md promise "Reconnecting after disconnect is free" was
-  // misleading: /reconnect was re-issuing the Lucia session for the
-  // human but leaving openclaw_bots.session_expires_at frozen at the
-  // last /connect time, so /api/agent/session-status would still
-  // report 410 Gone after a successful /reconnect.
-  // Capture the refreshed expiry so the response can surface it (2026-06-12 —
-  // pull-side expiry visibility, parity with /connect). Null when the user has
-  // no existing bot row to refresh (nothing to expire yet).
-  let reconnectExpiresAt: Date | null = null;
-  if (existingBot) {
-    reconnectExpiresAt = computeSessionExpiresAt();
-    try {
-      await db
-        .update(openclawBots)
-        .set({
-          sessionExpiresAt: reconnectExpiresAt,
-          sessionSweptAt: null,
-          lastSeenAt: new Date(),
-          updatedAt: new Date(),
-        })
-        .where(eq(openclawBots.id, existingBot.id));
-    } catch (err) {
-      console.error('[AgentReconnect] TTL refresh failed (non-fatal):', err);
-    }
-  }
-
-  // Mint the session ticket. `identityType='reconnect'` + `identityKey=userId`
+  // Mint the session ticket FIRST. `identityType='reconnect'` + `identityKey=userId`
   // records the provenance in the ticket row for audit without leaking the
-  // pubkey itself.
+  // pubkey itself. Ordered BEFORE the agent-session mint so a ticket failure
+  // (500) leaves the row's session_key_hash untouched — the caller retries a
+  // clean reconnect instead of holding a rebound row with no bearer.
   let sessionTicket: Awaited<ReturnType<typeof mintSessionTicket>>;
   try {
     sessionTicket = await mintSessionTicket({
@@ -1219,18 +1145,128 @@ agentGatewayRoutes.post('/reconnect', async (c) => {
     return c.json({ error: 'Failed to issue session ticket' }, 500);
   }
 
+  // Phase 6.1 — refresh the bot's session TTL on signed-challenge reconnect so
+  // an expired+swept row pops back alive without re-doing the magic-link
+  // /connect dance. Null when the user has no bot row (nothing to expire yet).
+  //
+  // P0 GATE FIX (2026-07-03, found live by restart-survival-proof.ts): the
+  // handler used to refresh the TTL but mint ONLY the human sessionTicket — a
+  // NON-restorable real-gateway agent (openclaw/ironclaw/custom, outbound
+  // auth_token never persisted) had NO self-recovery after an API restart,
+  // contradicting the protocol manual + the P0 design. We now ALSO mint a
+  // FRESH agent bearer for the row, using the same machinery /connect uses:
+  //   - `ag-<24B crypto-random base64url>` sessionId,
+  //   - `session_key_hash` REBOUND to the new bearer in the SAME row update as
+  //     the TTL (this is what invalidates the old bearer: lazy restore matches
+  //     by hash, and a still-in-RAM stale session is torn down by
+  //     validateLiveAgentSession's present-and-mismatched-hash check),
+  //   - RAM registration via npcSimulation.registerOpenClaw with the config
+  //     rebuilt from the row (shared builders — the D1 anti-drift pattern).
+  // The mint decision (proof-carrying ledger rule, dormant-without-credentials
+  // fallback, partner-row refusal) lives in the pure, unit-tested
+  // `planReconnectSession` (services/agent-reconnect-session.ts).
+  let reconnectExpiresAt: Date | null = null;
+  let mintedSessionId: string | null = null;
+  let mintedDormant = false;
+  if (existingBot) {
+    reconnectExpiresAt = computeSessionExpiresAt();
+    const freshSessionId = `ag-${randomBytes(24).toString('base64url')}`;
+    const plan = planReconnectSession({
+      bot: existingBot,
+      provenUserId: userId,
+      sessionId: freshSessionId,
+      credentials: {
+        gatewayUrl: parsed.data.gatewayUrl,
+        authToken: parsed.data.authToken,
+        protocol: parsed.data.protocol,
+      },
+    });
+    try {
+      await db
+        .update(openclawBots)
+        .set({
+          sessionExpiresAt: reconnectExpiresAt,
+          sessionSweptAt: null,
+          lastSeenAt: new Date(),
+          updatedAt: new Date(),
+          // Hash rebind ONLY when a session is actually minted. A no-mint plan
+          // (reserved partner row — hatcher self-restores via its own signed
+          // path) keeps today's TTL-refresh-only behavior and MUST NOT touch
+          // session_key_hash (that would kill the partner's live bearer).
+          ...(plan.mint
+            ? {
+                sessionKeyHash: plan.persist.sessionKeyHash,
+                ...(plan.persist.gatewayUrl ? { gatewayUrl: plan.persist.gatewayUrl } : {}),
+                ...(plan.persist.protocol ? { protocol: plan.persist.protocol } : {}),
+              }
+            : {}),
+        })
+        .where(eq(openclawBots.id, existingBot.id));
+
+      if (plan.mint) {
+        // Evict every prior in-RAM session for this agentId BEFORE registering.
+        // Their bearers are already invalidated by the hash rebind above; the
+        // evict also releases an override-mode NPC seat so re-register can't
+        // throw against our own stale session. Body uniqueness holds either
+        // way: the avatar body id is the deterministic ocb-<base64url(agentId)>
+        // and registerOpenClaw Map-SETs (replaces), so no path yields a second
+        // body for the same agent.
+        try {
+          for (const stale of npcSimulation.findActiveSessionsByAgentIds([existingBot.agentId])) {
+            npcSimulation.unregisterOpenClaw(stale);
+          }
+        } catch (err) {
+          console.error('[AgentReconnect] stale-session eviction failed (non-fatal):', err);
+        }
+        const client = new OpenClawClient(plan.config);
+        npcSimulation.registerOpenClaw(plan.config, client, plan.restoredState);
+        mintedSessionId = freshSessionId;
+        mintedDormant = plan.dormant;
+      }
+    } catch (err) {
+      // Non-fatal for the magic-link leg: the ticket already minted, so the
+      // human flow still works. No sessionId is returned (a bearer whose hash
+      // persist failed — or whose body failed to register — would be
+      // dead-on-arrival); the agent simply reconnects again. Never log the raw
+      // sessionId (bearer credential) — digest only.
+      console.error(
+        `[AgentReconnect] session mint failed (non-fatal, ticket preserved) sess:${sessionDigest(freshSessionId)}:`,
+        err,
+      );
+      mintedSessionId = null;
+    }
+  }
+
   await logEvent({
     eventType: 'identity.reconnected',
     userId,
     avatarId: userAvatar?.id ?? null,
     agentId: existingBot?.id ?? null,
+    // Digest (never the raw bearer), stable per session — same rule as
+    // /connect's agent.connected event. Null when no session was minted.
+    sessionId: mintedSessionId ? sessionDigest(mintedSessionId) : null,
     payload: {
       via: 'signed-challenge',
+      sessionMinted: mintedSessionId !== null,
+      dormant: mintedDormant,
     },
   });
 
   return c.json({
     sessionTicket,
+    // P0 gate fix (2026-07-03), ADDITIVE: the fresh agent bearer + its TTL
+    // deadline. Present IFF the user has a bot row and the mint succeeded (a
+    // reserved partner row or a mint failure keeps the legacy ticket-only
+    // shape — sessionId simply absent). `dormant: true` marks a real-gateway
+    // session minted WITHOUT credentials: perceive/move/act works, outbound
+    // chat stays inert until a reconnect WITH {gatewayUrl, authToken, protocol}.
+    ...(mintedSessionId
+      ? {
+          sessionId: mintedSessionId,
+          expiresAt: reconnectExpiresAt!.toISOString(),
+          ...(mintedDormant ? { dormant: true } : {}),
+        }
+      : {}),
     avatarId: userAvatar?.id ?? null,
     uuid: existingBot?.id ?? null,
     // Pull-side expiry visibility (2026-06-12) — the refreshed TTL deadline,

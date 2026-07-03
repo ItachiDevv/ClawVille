@@ -605,6 +605,20 @@ export async function buildAgentSnapshot(
         LEAST(COUNT(*) FILTER (WHERE event_type = 'land.structure.upgraded'), ${LAND_C.structureUpgraded})::int AS land_struct_upgraded_c
       FROM events
       WHERE agent_id IS NOT NULL
+        -- House-agent carve-out (agent-metaverse P4 gate (a), landed early with
+        -- P1 slice 4): ClawVille-HOSTED house/fleet agents settle real economy
+        -- but must NEVER rank on the PUBLIC board. This is the DURABLE
+        -- subject-level exclusion — the house agent is excluded by a JOIN
+        -- against openclaw_bots.is_house (the FLAG itself), NOT by a
+        -- payload.isHouse tag, so a future fleet emitter that FORGETS to tag its
+        -- events can never silently rank a house agent (the tag can be dropped;
+        -- the flag cannot). The payload.isHouse tag on emissions stays for
+        -- forensics only. is_house is never serialized publicly — a scoring-time
+        -- SQL join does not violate that.
+        AND NOT EXISTS (
+          SELECT 1 FROM openclaw_bots ob
+          WHERE ob.agent_id = events.agent_id AND ob.is_house
+        )
         AND ts > now() - ${sql.raw(`interval '${interval}'`)}
       GROUP BY agent_id, date_trunc('day', ts)
     ),
@@ -660,6 +674,19 @@ export async function buildAgentSnapshot(
       FROM events
       WHERE agent_id IS NULL
         AND avatar_id IS NOT NULL
+        -- House-agent carve-out — DURABLE subject-level exclusion, KEEP IN
+        -- LOCKSTEP with agent_daily (P4 gate (a), landed early with P1 slice 4)
+        -- so neither the house agent SUBJECT nor her AVATAR subject can score.
+        -- Belt-and-braces: these rows have agent_id IS NULL, so we reach
+        -- is_house through the avatar's owning user — exclude any avatar whose
+        -- user also owns a house openclaw_bots row. Joined against the FLAG, not
+        -- a payload tag, so a forgotten emitter tag can never rank the house
+        -- avatar. (The payload.isHouse tag on emissions stays for forensics.)
+        AND NOT EXISTS (
+          SELECT 1 FROM avatars a2
+          JOIN openclaw_bots ob ON ob.user_id = a2.user_id AND ob.is_house
+          WHERE a2.id = events.avatar_id
+        )
         AND ts > now() - ${sql.raw(`interval '${interval}'`)}
       GROUP BY avatar_id, date_trunc('day', ts)
     ),
