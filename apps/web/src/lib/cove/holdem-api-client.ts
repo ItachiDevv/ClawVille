@@ -17,6 +17,13 @@
  * The wire types live in `@clawville/shared` (cove-holdem.ts) so the API route,
  * the verifier, and the client stay one-shape. CoveApiError is reused from
  * slot-api-client (same `{ error?, message? }` Hono body shape).
+ *
+ * Fingerprint (Increment 1b, 2026-07-03): every request now injects
+ * `X-CV-Fingerprint` (mirrors slot-api-client). Guest Hold'em previously keyed
+ * to the server's unstable UA+/24 fallback — the exact bug the slots
+ * fingerprint hotfix closed on 2026-06-21 — so a guest's open table, resync
+ * reads, and idempotency replay could all key to a DIFFERENT subject after an
+ * IP churn. Sending the stable browser fingerprint fixes that for Hold'em too.
  */
 
 import { useMutation, useQueryClient } from '@tanstack/react-query';
@@ -33,6 +40,7 @@ import type {
 } from '@clawville/shared';
 
 import { CoveApiError } from './slot-api-client';
+import { getFingerprint } from '../fingerprint';
 export { CoveApiError } from './slot-api-client';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000';
@@ -78,6 +86,19 @@ async function coveFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
   // body-stream stall/drop aborts instead of hanging forever. clearTimeout runs
   // only after the body is parsed.
   try {
+    // Stable browser fingerprint → server `fpHash` tier-1 (mirrors slot/
+    // baccarat/blackjack coveFetch). Empty on SSR / FingerprintJS load
+    // failure — getFingerprint() never rejects (internal try/catch), but it
+    // stays INSIDE this try anyway so any unexpected reject still maps
+    // through the outer catch to a friendly CoveApiError, never a raw throw.
+    // NOTE: the AbortController only cancels the fetch below, NOT this await —
+    // so this lookup is not literally bounded by the 15s ceiling. It's a fast,
+    // memoized, local (non-network) FingerprintJS computation, so it is not a
+    // hang risk; the ceiling still bounds the request itself.
+    if (!headers['X-CV-Fingerprint']) {
+      const fp = await getFingerprint();
+      if (fp) headers['X-CV-Fingerprint'] = fp;
+    }
     const res = await fetch(url, { ...init, credentials: 'include', headers, signal: controller.signal });
     if (!res.ok) {
       let body: unknown = null;
@@ -171,8 +192,11 @@ export async function fetchCurrentHoldemTable(): Promise<CurrentHoldemTableRespo
       method: 'GET',
     });
   } catch (err) {
-    // 404 = no open table (expected). 401 = guest (no auth) — also "nothing to
-    // restore"; the lazy-open path handles guests on the first Deal.
+    // 404 = no open table (expected — ledger subject OR guest; guests are
+    // resolved server-side via fpHash and get a real 200/404, not a 401).
+    // 401 is kept as a defensive fallback for an unrecognized subject — not
+    // expected on this route today, but harmless to treat the same as
+    // "nothing to restore" (the lazy-open path handles it on the first Deal).
     if (err instanceof CoveApiError && (err.status === 404 || err.status === 401)) {
       return null;
     }
@@ -254,14 +278,23 @@ export function useHoldemAction() {
 
 export interface CloseHoldemArgs {
   tableId: string;
+  /**
+   * Caller-minted UUID; reuse on retry of the SAME close (mirrors deal/
+   * action). The server's real anchor is the table's open→closed status flip
+   * under FOR UPDATE — this key is accepted + logged for audit only, not
+   * compared — but sending it keeps the wire contract consistent with the
+   * other two idempotency-keyed legs.
+   */
+  idempotencyKey: string;
 }
 
 export function useCloseHoldemTable() {
   const qc = useQueryClient();
   return useMutation<CloseHoldemTableResponse, CoveApiError, CloseHoldemArgs>({
-    mutationFn: ({ tableId }) =>
+    mutationFn: ({ tableId, idempotencyKey }) =>
       coveFetch<CloseHoldemTableResponse>('/api/cove/holdem/session/close', {
         method: 'POST',
+        headers: { 'Idempotency-Key': idempotencyKey },
         body: JSON.stringify({ tableId }),
       }),
     onSuccess: (_d, vars) => {
@@ -277,20 +310,27 @@ export function useCloseHoldemTable() {
 
 /**
  * Which request leg produced the error. The honest recovery guidance for an
- * AMBIGUOUS outcome (status 0 network / 408 timeout) differs per leg, and the
- * wrong guidance is a money bug: until the in-progress-hand RESYNC endpoint
- * ships (Increment 1b), closing the modal mid-hand destroys the client's ONLY
- * copy of the live handId while the server keeps the hand in_progress — after
- * which /hand/deal 409s (hand_in_progress) AND /session/close 409s
- * (table_has_in_progress_hand) with no recovery path, stranding the buy-in
- * until manual server intervention (verified against cove-holdem.ts; real
- * wedged tables exist on prod). So ambiguous-outcome copy must NEVER instruct
- * "reopen the table" while a hand may be live. A same-decision re-press is the
- * least-bad recovery: if the move never landed it lands now (authoritative
- * state re-applies); if it landed terminally the idempotency key replays the
- * settle; if it landed non-terminally the re-press either 409s harmlessly
- * (not_human_turn) or — the imperfect case — appends as the next street's
- * decision. Imperfect, but it never strands the stack.
+ * AMBIGUOUS outcome (status 0 network / 408 timeout) differs per leg.
+ *
+ * Increment 1b (2026-07-03) shipped the resync surface that closes the wedge
+ * documented in memory `holdem-nonterminal-action-not-idempotent`: `GET
+ * /session/current` + `GET /session/:id` now return the table's live
+ * in-progress hand (`hand`, owner-only, street-truncated board, no seed
+ * leak); `POST /hand/deal` REPLAYS the same hand on a reused Idempotency-Key
+ * instead of 409ing; a duplicate TERMINAL `/action` REPLAYS the settle
+ * instead of 409ing; and `POST /session/close` REPLAYS the original cash-out
+ * on a retry after the close already landed. HoldemModal's `tryResync` calls
+ * this surface on every ambiguous deal/action outcome (and eager-restore
+ * calls it on modal open), so a lost NON-terminal action is now recovered by
+ * adopting the server's authoritative live state — not just the old
+ * imperfect blind re-press. Reopening a table with a live hand also resumes
+ * it automatically (eager-restore), so closing the modal mid-hand no longer
+ * strands the buy-in; the operator-side `apps/api/scripts/cove/
+ * unwedge-holdem-tables.ts` script remains as a break-glass fallback, not the
+ * primary recovery path. The copy below is written for what CAN still go
+ * wrong post-1b: the resync itself failing or finding no live hand (the hand
+ * may have simply settled — we never invent a settled outcome client-side)
+ * and the genuine multi-window case (a hand truly live in a different tab).
  */
 export type HoldemRequestLeg = 'open' | 'deal' | 'action' | 'close';
 
@@ -302,27 +342,31 @@ const AMBIGUOUS_OUTCOME_COPY: Record<HoldemRequestLeg, { network: string; timeou
       'Opening the table took too long — if the buy-in went through, your table resumes automatically. Try again in a moment.',
   },
   deal: {
+    // Shown only when tryResync (Increment 1b) already tried and found no
+    // live hand to adopt — i.e. the deal never landed, or it landed and the
+    // hand already settled.
     network:
-      'Network error — the deal may not have reached you. Keep this table open and press Deal again; if it says a hand is already in progress, that hand needs recovery — contact support, do not buy in again.',
+      'Network error — the deal may not have gone through, or it landed and the hand already settled. Press Deal again; if a hand is open in another window, finish it there first.',
     timeout:
-      'The deal took too long — it may have gone through. Keep this table open and press Deal again; if it says a hand is already in progress, that hand needs recovery — contact support, do not buy in again.',
+      'The deal took too long to respond — it may have gone through, or the hand already settled. Press Deal again; if a hand is open in another window, finish it there first.',
   },
   action: {
-    // Honest about the imperfect retry: the server appends a re-press as the
-    // player's NEXT due decision when the first press actually registered
-    // (isHandTerminal checks priorActions only), so a blind retry can act on a
-    // later street than the player thinks. Check/fold are the safe probes:
-    // an illegal check 400s harmlessly; fold is always legal and only forfeits.
+    // Shown only when tryResync (Increment 1b) already tried and found no
+    // live hand to adopt for THIS window. A same-decision re-press stays the
+    // right move: if it never landed it lands now; if it landed terminally
+    // the idempotency key replays the settle instead of double-charging.
     network:
-      'Network error — your move may not have gone through. Keep this table open: closing mid-hand can strand your buy-in. Acting again catches the table up, but if your first press DID register, the retry counts as your NEXT decision — when unsure, check or fold rather than bet.',
+      'Network error — your move may not have gone through. Press it again — if it already landed, the server replays the same outcome instead of double-charging. We just tried to reconnect to the live hand automatically; if a hand is open in another window, finish it there.',
     timeout:
-      'The table took too long to respond — your move may have already registered. Keep this table open: closing mid-hand can strand your buy-in. Acting again catches the table up, but if your first press registered, the retry counts as your NEXT decision — when unsure, check or fold rather than bet.',
+      'The table took too long to respond — your move may have already registered. Press it again — if it already landed, the server replays the same outcome instead of double-charging. We just tried to reconnect to the live hand automatically; if a hand is open in another window, finish it there.',
   },
   close: {
+    // POST /session/close now REPLAYS the original cash-out on a retry after
+    // the close already landed (Increment 1b) — a retry is always safe.
     network:
-      'Network error — the cash-out may not have gone through. Try Walk Away again in a moment; if the table already closed, your chips were credited.',
+      'Network error — the cash-out may not have gone through. Try Walk Away again in a moment; a retry replays the same result if it already landed — your chips are never lost.',
     timeout:
-      'Cash-out took too long — it may have gone through. Try Walk Away again in a moment; if the table already closed, your chips were credited.',
+      'Cash-out took too long — it may have gone through. Try Walk Away again in a moment; a retry replays the same result if it already landed — your chips are never lost.',
   },
 };
 
@@ -360,18 +404,18 @@ export function describeHoldemError(err: unknown, leg: HoldemRequestLeg = 'actio
       return 'Table or hand not found — it may have expired. Start a new table.';
     case 409:
       if (err.code?.startsWith('hand_in_progress')) {
-        // The UI gates Deal on phase==='idle' (no visible hand), so this 409
-        // only surfaces when THIS window can't see the in-progress hand: either
-        // it's live in another window (finish it there), or the deal response
-        // was lost and no resync exists yet (the wedge state — server recovery
-        // only). Don't tell the player to "finish" a hand they can't see.
-        return 'A hand is already in progress on this table. If it is open in another window, finish it there; otherwise it needs server recovery — contact support. Your chips are not lost — do not buy in again.';
+        // The UI gates Deal on phase==='idle', and eager-restore + the
+        // rehydrate-on-ambiguous resync (Increment 1b) now pull ANY live
+        // hand for this table into `live` on open/reopen/retry — so this 409
+        // means the hand is live in a DIFFERENT window/tab that hasn't
+        // synced here yet.
+        return "A hand is already in progress on this table. If it's open in another window, finish it there — reopening this table resyncs to it automatically.";
       }
       if (err.code?.startsWith('table_has_in_progress_hand')) {
-        // Same two cases via Walk Away: handleWalkAway client-gates on a
-        // visible live hand, so this server 409 means the hand lives in
-        // another window or was lost to the wedge.
-        return 'Cash-out is blocked by an unfinished hand. If it is open in another window, finish it there; otherwise it needs server recovery — contact support. Your chips are not lost.';
+        // Same reasoning via Walk Away: handleWalkAway client-gates on a
+        // visible live hand, so this server 409 means the hand is live in a
+        // different window that hasn't synced here yet.
+        return "Cash-out is blocked by an unfinished hand. If it's open in another window, finish it there — reopening this table resyncs to it automatically.";
       }
       if (err.code?.startsWith('not_human_turn')) {
         return "It's not your turn — the hand already resolved.";

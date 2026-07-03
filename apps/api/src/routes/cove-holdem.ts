@@ -116,6 +116,7 @@ import {
 } from '../services/claw-token-ledger';
 import { logEventFromContext } from '../services/event-logger';
 import type { AppContext } from '../types';
+import type { HoldemResyncHandView } from '@clawville/shared';
 
 export const coveHoldemRouter = new Hono<AppContext>();
 coveHoldemRouter.use('*', sessionMiddleware);
@@ -135,6 +136,18 @@ const SUPPORTED_CURRENCIES = ['clawtoken', 'sol', 'usdc'] as const;
 
 /** Max length on the Idempotency-Key header (Stripe convention; matches blackjack). */
 const IDEMPOTENCY_KEY_MAX_LEN = 64;
+
+/** Read + length-validate the optional Idempotency-Key header. Shared by
+ * deal, action, and close (Increment 1b adds the deal + close call sites). */
+function readIdempotencyKey(c: Context): string | undefined {
+  const key = c.req.header('Idempotency-Key') ?? undefined;
+  if (key && key.length > IDEMPOTENCY_KEY_MAX_LEN) {
+    throw new HTTPException(400, {
+      message: `idempotency_key_must_be_1_to_${IDEMPOTENCY_KEY_MAX_LEN}_chars`,
+    });
+  }
+  return key;
+}
 
 /** Guest demo wallet (fun-money), mirrors cove-blackjack guest tier. */
 const GUEST_STARTING_BALANCE = 100n;
@@ -588,6 +601,62 @@ function deriveToCall(
   return { toCall, currentBet, humanStreet };
 }
 
+/**
+ * Structural (not nominal) row shape `buildInProgressHandView` needs — a
+ * SUBSET of `HoldemHand`'s columns so the function is testable with a plain
+ * object (no DB, no need to satisfy every drizzle column) while any real
+ * `HoldemHand` row still satisfies it for free (structural typing).
+ */
+export interface InProgressHandRow {
+  id: string;
+  handIndex: number;
+  buttonSeat: number;
+  startingStack: string;
+  actions: unknown;
+}
+
+/**
+ * THE single source for the in-progress hand view served by: the fresh-deal
+ * response, the deal-replay response, AND both resync reads (GET
+ * /session/current, GET /session/:id). Reuses `peekState` verbatim — it ALREADY
+ * truncates `board` to `visibleBoardCountForStreet` (the no-board-leak
+ * keystone) and only ever surfaces the REQUESTING subject's own `humanHole`.
+ * NEVER re-derive the board here; never add bot hole cards; never add
+ * `serverSeed` (the table param intentionally carries only the two secrets the
+ * engine needs, not the whole row, so there is nothing to leak by accident).
+ */
+export function buildInProgressHandView(
+  table: { serverSeed: string; clientSeed: string },
+  hand: InProgressHandRow,
+): HoldemResyncHandView {
+  const rawActions = hand.actions;
+  const actions: HoldemActionRecord[] = Array.isArray(rawActions)
+    ? (rawActions as HoldemActionRecord[])
+    : [];
+  const meta = {
+    handIndex: hand.handIndex,
+    buttonSeat: hand.buttonSeat,
+    startingStack: hand.startingStack,
+  };
+  const peek = peekState(table, meta, actions);
+  return {
+    handId: hand.id,
+    handIndex: hand.handIndex,
+    buttonSeat: hand.buttonSeat,
+    smallBlindSeat: (hand.buttonSeat + 1) % SEATS,
+    bigBlindSeat: (hand.buttonSeat + 2) % SEATS,
+    humanHole: peek.humanHole,
+    board: peek.board,
+    toCall: peek.toCall,
+    currentBet: peek.currentBet,
+    humanStack: peek.humanStack,
+    humanCommitted: peek.humanCommitted,
+    smallBlind: SMALL_BLIND.toString(),
+    bigBlind: BIG_BLIND.toString(),
+    status: 'in_progress',
+  };
+}
+
 // ─── POST /session/open ───────────────────────────────────────────────────────
 
 coveHoldemRouter.post('/session/open', async (c) => {
@@ -757,12 +826,7 @@ coveHoldemRouter.post('/session/open', async (c) => {
 // — chips move within the playerStack and only cross the ledger at buy-in/close.
 
 coveHoldemRouter.post('/hand/deal', async (c) => {
-  const idempotencyKey = c.req.header('Idempotency-Key') ?? undefined;
-  if (idempotencyKey && idempotencyKey.length > IDEMPOTENCY_KEY_MAX_LEN) {
-    throw new HTTPException(400, {
-      message: `idempotency_key_must_be_1_to_${IDEMPOTENCY_KEY_MAX_LEN}_chars`,
-    });
-  }
+  const idempotencyKey = readIdempotencyKey(c);
   const body = await c.req.json().catch(() => null);
   const parsed = dealSchema.safeParse(body);
   if (!parsed.success) {
@@ -779,112 +843,182 @@ coveHoldemRouter.post('/hand/deal', async (c) => {
     throw new HTTPException(409, { message: `table_not_open: status=${table.status}` });
   }
 
-  const dealResult = await db.transaction(async (tx) => {
-    const lockRows = await tx.execute<{
-      hand_counter: number | string;
-      player_stack: string;
-      status: string;
-    }>(
-      sql`SELECT hand_counter, player_stack, status
-          FROM holdem_tables WHERE id = ${table.id} FOR UPDATE`,
-    );
-    const lock = lockRows[0];
-    if (!lock) throw new HTTPException(404, { message: 'table_not_found' });
-    if (lock.status !== 'open') {
-      throw new HTTPException(409, { message: `table_not_open: status=${lock.status}` });
-    }
+  type DealTxResult =
+    | { kind: 'replay'; handRow: HoldemHand }
+    | {
+        kind: 'fresh';
+        handRow: HoldemHand;
+        handMeta: { handIndex: number; buttonSeat: number; startingStack: string };
+        terminalAtDeal: boolean;
+      };
 
-    // One live hand per table at a time (serialize — race-safe under the lock).
-    const liveRows = await tx.execute<{ id: string }>(
-      sql`SELECT id FROM holdem_hands
-          WHERE table_id = ${table.id} AND status = 'in_progress' LIMIT 1`,
-    );
-    if (liveRows[0]) {
-      throw new HTTPException(409, {
-        message: 'hand_in_progress: finish the current hand before dealing another',
-      });
-    }
+  // Arrow-const (not a hoisted `function` declaration) so TypeScript retains
+  // the `table` non-null narrowing from the guard above across this closure.
+  const dealTransaction = async (): Promise<DealTxResult> => {
+    return db.transaction(async (tx) => {
+      const lockRows = await tx.execute<{
+        hand_counter: number | string;
+        player_stack: string;
+        status: string;
+      }>(
+        sql`SELECT hand_counter, player_stack, status
+            FROM holdem_tables WHERE id = ${table.id} FOR UPDATE`,
+      );
+      const lock = lockRows[0];
+      if (!lock) throw new HTTPException(404, { message: 'table_not_found' });
+      if (lock.status !== 'open') {
+        throw new HTTPException(409, { message: `table_not_open: status=${lock.status}` });
+      }
 
-    const handIndex = Number(lock.hand_counter);
-    const startingStack = BigInt(lock.player_stack);
-    if (startingStack < BIG_BLIND) {
-      throw new HTTPException(400, {
-        message: `stack_too_low_to_play: have ${startingStack.toString()}, need ≥ ${BIG_BLIND.toString()}. Re-buy by closing + reopening.`,
-      });
-    }
+      // ── A1 deal-replay: a lost-response retry with the SAME Idempotency-Key
+      // returns the SAME hand instead of racing the `hand_in_progress` 409 (or
+      // worse, being silently swallowed by it with no way back to the hand the
+      // first attempt actually created). Checked BEFORE the live-hand guard,
+      // under the table lock, so this is race-safe against a concurrent first
+      // deal for the same key on the SAME table (the table row lock serializes
+      // them; the unique index below is defense-in-depth for any edge case
+      // where two txs interleave around it).
+      if (idempotencyKey) {
+        const existingRows = await tx.execute<{ id: string }>(
+          sql`SELECT id FROM holdem_hands
+              WHERE table_id = ${table.id} AND deal_idempotency_key = ${idempotencyKey}
+              LIMIT 1`,
+        );
+        const existingId = existingRows[0]?.id;
+        if (existingId) {
+          const existingHand = await tx.query.holdemHands.findFirst({
+            where: eq(holdemHands.id, existingId),
+          });
+          if (!existingHand) {
+            throw new HTTPException(500, { message: 'deal_replay_hand_missing' });
+          }
+          return { kind: 'replay', handRow: existingHand };
+        }
+      }
 
-    // Rotate the button by hand index (deterministic, recorded on the hand row).
-    const buttonSeat = handIndex % SEATS;
+      // One live hand per table at a time (serialize — race-safe under the lock).
+      const liveRows = await tx.execute<{ id: string }>(
+        sql`SELECT id FROM holdem_hands
+            WHERE table_id = ${table.id} AND status = 'in_progress' LIMIT 1`,
+      );
+      if (liveRows[0]) {
+        throw new HTTPException(409, {
+          message: 'hand_in_progress: finish the current hand before dealing another',
+        });
+      }
 
-    const handMeta = {
-      handIndex,
-      buttonSeat,
-      startingStack: startingStack.toString(),
-    };
+      const handIndex = Number(lock.hand_counter);
+      const startingStack = BigInt(lock.player_stack);
+      if (startingStack < BIG_BLIND) {
+        throw new HTTPException(400, {
+          message: `stack_too_low_to_play: have ${startingStack.toString()}, need ≥ ${BIG_BLIND.toString()}. Re-buy by closing + reopening.`,
+        });
+      }
 
-    // Run with an empty action list. If the engine completes (human never
-    // required to act), the hand is terminal at deal — settle immediately.
-    const terminalAtDeal = isHandTerminal(
-      { serverSeed: table.serverSeed, clientSeed: table.clientSeed },
-      handMeta,
-      [],
-    );
+      // Rotate the button by hand index (deterministic, recorded on the hand row).
+      const buttonSeat = handIndex % SEATS;
 
-    const [handRow] = await tx
-      .insert(holdemHands)
-      .values({
-        tableId: table.id,
+      const handMeta = {
         handIndex,
         buttonSeat,
         startingStack: startingStack.toString(),
-        actions: [] satisfies HoldemActionRecord[],
-        status: 'in_progress',
-      })
-      .returning();
-    if (!handRow) throw new HTTPException(500, { message: 'hand_insert_failed' });
+      };
 
-    // Reserve the hand index on the table so the next deal is monotonic.
-    await tx
-      .update(holdemTables)
-      .set({ handCounter: handIndex + 1, lastHandAt: new Date() })
-      .where(eq(holdemTables.id, table.id));
+      // Run with an empty action list. If the engine completes (human never
+      // required to act), the hand is terminal at deal — settle immediately.
+      const terminalAtDeal = isHandTerminal(
+        { serverSeed: table.serverSeed, clientSeed: table.clientSeed },
+        handMeta,
+        [],
+      );
 
-    return { handRow, handMeta, terminalAtDeal };
-  });
+      const [handRow] = await tx
+        .insert(holdemHands)
+        .values({
+          tableId: table.id,
+          handIndex,
+          buttonSeat,
+          startingStack: startingStack.toString(),
+          actions: [] satisfies HoldemActionRecord[],
+          status: 'in_progress',
+          dealIdempotencyKey: idempotencyKey ?? null,
+        })
+        .returning();
+      if (!handRow) throw new HTTPException(500, { message: 'hand_insert_failed' });
+
+      // Reserve the hand index on the table so the next deal is monotonic.
+      await tx
+        .update(holdemTables)
+        .set({ handCounter: handIndex + 1, lastHandAt: new Date() })
+        .where(eq(holdemTables.id, table.id));
+
+      return { kind: 'fresh', handRow, handMeta, terminalAtDeal };
+    });
+  };
+
+  let dealResult: DealTxResult;
+  try {
+    dealResult = await dealTransaction();
+  } catch (err) {
+    const pgCode = (err as { code?: string } | undefined)?.code;
+    // Two concurrent FIRST deals with the same key on the same table — the
+    // table FOR UPDATE lock already serializes this in practice; this is
+    // defense-in-depth mirroring the other 23505 races in this file (open,
+    // settle). Re-read OUTSIDE the aborted tx and replay.
+    if (pgCode === '23505' && idempotencyKey) {
+      const raceRows = await db
+        .select()
+        .from(holdemHands)
+        .where(and(eq(holdemHands.tableId, table.id), eq(holdemHands.dealIdempotencyKey, idempotencyKey)))
+        .limit(1);
+      const raceHand = raceRows[0];
+      if (!raceHand) throw err;
+      dealResult = { kind: 'replay', handRow: raceHand };
+    } else {
+      throw err;
+    }
+  }
+
+  if (dealResult.kind === 'replay') {
+    const replayHand = dealResult.handRow;
+    if (replayHand.status === 'settled') {
+      const settled = await buildSettledResponse(replayHand, table, subject);
+      return c.json({ ...settled, dealtImmediately: true }, 200);
+    }
+    const meta = {
+      handIndex: replayHand.handIndex,
+      buttonSeat: replayHand.buttonSeat,
+      startingStack: replayHand.startingStack,
+    };
+    const actions = loadActions(replayHand);
+    const terminal = isHandTerminal(
+      { serverSeed: table.serverSeed, clientSeed: table.clientSeed },
+      meta,
+      actions,
+    );
+    if (terminal) {
+      const settled = await settleHand(c, table.id, replayHand.id, subject, idempotencyKey);
+      return c.json({ ...settled, dealtImmediately: true }, 200);
+    }
+    const view = buildInProgressHandView(
+      { serverSeed: table.serverSeed, clientSeed: table.clientSeed },
+      replayHand,
+    );
+    return c.json({ tableId: table.id, startingStack: replayHand.startingStack, ...view }, 200);
+  }
 
   if (dealResult.terminalAtDeal) {
     const settled = await settleHand(c, table.id, dealResult.handRow.id, subject, idempotencyKey);
     return c.json({ ...settled, dealtImmediately: true }, 200);
   }
 
-  // Compute the visible state for the human's first decision.
-  const peek = peekState(
+  // Fresh deal, human still has a turn — SAME view-builder as the resync reads
+  // and the deal-replay path above (single source of truth, no drift).
+  const view = buildInProgressHandView(
     { serverSeed: table.serverSeed, clientSeed: table.clientSeed },
-    dealResult.handMeta,
-    [],
+    dealResult.handRow,
   );
-
-  return c.json(
-    {
-      handId: dealResult.handRow.id,
-      tableId: table.id,
-      handIndex: dealResult.handMeta.handIndex,
-      buttonSeat: dealResult.handMeta.buttonSeat,
-      smallBlindSeat: (dealResult.handMeta.buttonSeat + 1) % SEATS,
-      bigBlindSeat: (dealResult.handMeta.buttonSeat + 2) % SEATS,
-      startingStack: dealResult.handMeta.startingStack,
-      humanHole: peek.humanHole,
-      board: peek.board,
-      toCall: peek.toCall,
-      currentBet: peek.currentBet,
-      humanStack: peek.humanStack,
-      humanCommitted: peek.humanCommitted,
-      smallBlind: SMALL_BLIND.toString(),
-      bigBlind: BIG_BLIND.toString(),
-      status: 'in_progress',
-    },
-    200,
-  );
+  return c.json({ tableId: table.id, startingStack: dealResult.handMeta.startingStack, ...view }, 200);
 });
 
 // ─── POST /action ─────────────────────────────────────────────────────────────
@@ -895,12 +1029,7 @@ coveHoldemRouter.post('/hand/deal', async (c) => {
 // return the new visible state for the human's next decision.
 
 coveHoldemRouter.post('/action', async (c) => {
-  const idempotencyKey = c.req.header('Idempotency-Key') ?? undefined;
-  if (idempotencyKey && idempotencyKey.length > IDEMPOTENCY_KEY_MAX_LEN) {
-    throw new HTTPException(400, {
-      message: `idempotency_key_must_be_1_to_${IDEMPOTENCY_KEY_MAX_LEN}_chars`,
-    });
-  }
+  const idempotencyKey = readIdempotencyKey(c);
   const body = await c.req.json().catch(() => null);
   const parsed = actionSchema.safeParse(body);
   if (!parsed.success) {
@@ -933,8 +1062,13 @@ coveHoldemRouter.post('/action', async (c) => {
     ...(input.amount !== undefined ? { amount: input.amount.toString() } : {}),
   };
 
+  type ActionTxResult =
+    | { kind: 'settled-replay'; hand: HoldemHand }
+    | { kind: 'already-terminal' }
+    | { kind: 'updated'; hand: HoldemHand };
+
   // ── Append the decision under the hand lock so concurrent /action serialize.
-  const mutation = await db.transaction(async (tx) => {
+  const mutation: ActionTxResult = await db.transaction(async (tx) => {
     const lockRows = await tx.execute<{ status: string }>(
       sql`SELECT status FROM holdem_hands WHERE id = ${hand.id} FOR UPDATE`,
     );
@@ -942,7 +1076,8 @@ coveHoldemRouter.post('/action', async (c) => {
     if (!lock) throw new HTTPException(404, { message: 'hand_not_found' });
     if (lock.status === 'settled') {
       const fresh = await tx.query.holdemHands.findFirst({ where: eq(holdemHands.id, hand.id) });
-      return { settledReplay: fresh ?? null, updatedHand: null };
+      if (!fresh) throw new HTTPException(404, { message: 'hand_not_found' });
+      return { kind: 'settled-replay', hand: fresh };
     }
     if (lock.status !== 'in_progress') {
       throw new HTTPException(409, { message: 'hand_not_in_progress' });
@@ -954,14 +1089,22 @@ coveHoldemRouter.post('/action', async (c) => {
     const priorActions = loadActions(locked);
 
     // Defensive: the human must currently be the one to act. If the recorded
-    // actions ALONE already complete the hand, no further human action is legal.
+    // actions ALONE already complete the hand, no further human action is
+    // legal — BUT this is also the exact window a duplicate/retried TERMINAL
+    // action lands in (append committed, response lost, client retries with
+    // the SAME decision). Rather than 409 (which stranded the client with no
+    // way to see the outcome — see memory
+    // `holdem-nonterminal-action-not-idempotent`), settle NOW: `settleHand` is
+    // itself idempotent (status compare-and-set + Idempotency-Key backstop),
+    // so this is safe on every interleaving — first-to-arrive settles, any
+    // duplicate replays the same stored outcome.
     const meta = {
       handIndex: locked.handIndex,
       buttonSeat: locked.buttonSeat,
       startingStack: locked.startingStack,
     };
     if (isHandTerminal({ serverSeed: table.serverSeed, clientSeed: table.clientSeed }, meta, priorActions)) {
-      throw new HTTPException(409, { message: 'not_human_turn: hand already resolved server-side' });
+      return { kind: 'already-terminal' };
     }
 
     const nextActions = [...priorActions, newRecord];
@@ -993,13 +1136,17 @@ coveHoldemRouter.post('/action', async (c) => {
       .where(and(eq(holdemHands.id, hand.id), eq(holdemHands.status, 'in_progress')))
       .returning();
     if (!persisted[0]) throw new HTTPException(409, { message: 'hand_not_in_progress' });
-    return { settledReplay: null, updatedHand: persisted[0] };
+    return { kind: 'updated', hand: persisted[0] };
   });
 
-  if (mutation.settledReplay) {
-    return c.json(await buildSettledResponse(mutation.settledReplay, table, subject), 200);
+  if (mutation.kind === 'settled-replay') {
+    return c.json(await buildSettledResponse(mutation.hand, table, subject), 200);
   }
-  const updatedHand = mutation.updatedHand!;
+  if (mutation.kind === 'already-terminal') {
+    const settled = await settleHand(c, table.id, hand.id, subject, idempotencyKey);
+    return c.json(settled, 200);
+  }
+  const updatedHand = mutation.hand;
   const actions = loadActions(updatedHand);
   const meta = {
     handIndex: updatedHand.handIndex,
@@ -1389,6 +1536,34 @@ async function buildSettledResponse(
 // prior Lucia-only gate already excluded guests, so we keep that exclusion (403).
 // ownerMatch binds the table to the resolved userId, so an agent can never close
 // another user's table.
+//
+// A4 CLOSE-REPLAY (Increment 1b): a lost-response close retry used to 409
+// `table_not_open` even though the close had actually LANDED — stranding the
+// client with no way to see the cash-out figures. The replay ANCHORS on the
+// table's `status='closed' + ownerMatch` (the open→closed flip under FOR
+// UPDATE IS the idempotency event; the optional Idempotency-Key header is
+// accepted + validated for audit only, not compared — any owner re-POST to an
+// already-closed table gets the reconstructed original response). NEVER
+// re-credits — `cashOut` is read back from the persisted `cash_out` column
+// (playerStack is already zeroed by the first close, so that figure alone
+// cannot reconstruct the response).
+
+/** Rebuild the original close response from a persisted `closed` table row. */
+function buildCloseReplayResponse(row: HoldemTable, walletBalance: number) {
+  return {
+    tableId: row.id,
+    status: 'closed' as const,
+    serverSeed: row.serverSeed,
+    serverSeedHash: row.serverSeedHash,
+    clientSeed: row.clientSeed,
+    handsPlayed: row.handsPlayed,
+    totalBet: row.totalBet,
+    totalPayout: row.totalPayout,
+    cashOut: row.cashOut ?? '0',
+    walletBalance,
+    closedAt: (row.closedAt ?? new Date()).toISOString(),
+  };
+}
 
 coveHoldemRouter.post('/session/close', async (c) => {
   const body = await c.req.json().catch(() => null);
@@ -1396,6 +1571,9 @@ coveHoldemRouter.post('/session/close', async (c) => {
   if (!parsed.success) {
     throw new HTTPException(400, { message: 'invalid_input: ' + parsed.error.message });
   }
+  // Accepted + validated for audit trail only — the status flip is the anchor,
+  // not this key (see header note).
+  const closeIdempotencyKey = readIdempotencyKey(c);
   const subject = await getSubject(c);
   if (!isLedgerSubject(subject)) {
     throw new HTTPException(403, { message: 'guest_cannot_close_table: sign in or connect an agent' });
@@ -1406,20 +1584,34 @@ coveHoldemRouter.post('/session/close', async (c) => {
   });
   if (!table) throw new HTTPException(404, { message: 'table_not_found' });
   if (!ownerMatch(table, subject)) throw new HTTPException(403, { message: 'table_not_owned' });
-  if (table.status !== 'open') {
-    throw new HTTPException(409, { message: `table_not_open: status=${table.status}` });
+
+  // Pre-lock replay shortcut — already closed before we even try to lock.
+  if (table.status === 'closed') {
+    const avatarPre = await loadAvatarForUser(subject.userId);
+    return c.json(buildCloseReplayResponse(table, avatarPre.clawTokens), 200);
   }
 
   const avatar = await loadAvatarForUser(subject.userId);
 
-  const closed = await db.transaction(async (tx) => {
+  type CloseTxResult =
+    | { kind: 'already-closed' }
+    | {
+        kind: 'closed';
+        closedTable: HoldemTable;
+        cashOut: string;
+        cashOutBalance: number;
+      };
+
+  const closed: CloseTxResult = await db.transaction(async (tx) => {
     const lockRows = await tx.execute<{ status: string; player_stack: string }>(
       sql`SELECT status, player_stack FROM holdem_tables WHERE id = ${table.id} FOR UPDATE`,
     );
     const lock = lockRows[0];
     if (!lock) throw new HTTPException(404, { message: 'table_not_found' });
     if (lock.status !== 'open') {
-      throw new HTTPException(409, { message: `table_not_open: status=${lock.status}` });
+      // Raced closed between our pre-check and acquiring the lock — replay,
+      // don't 409 (A4).
+      return { kind: 'already-closed' };
     }
 
     // Refuse closing with an in-progress hand — revealing the seed while the
@@ -1456,7 +1648,7 @@ coveHoldemRouter.post('/session/close', async (c) => {
 
     const [closedTable] = await tx
       .update(holdemTables)
-      .set({ status: 'closed', playerStack: '0', closedAt: new Date() })
+      .set({ status: 'closed', playerStack: '0', cashOut: cashOut.toString(), closedAt: new Date() })
       .where(eq(holdemTables.id, table.id))
       .returning();
     if (!closedTable) throw new HTTPException(500, { message: 'table_close_failed' });
@@ -1467,8 +1659,14 @@ coveHoldemRouter.post('/session/close', async (c) => {
       .set({ revealedServerSeed: closedTable.serverSeed })
       .where(and(eq(coveGameEvents.sessionId, table.id), eq(coveGameEvents.gameType, 'holdem')));
 
-    return { closedTable, cashOut: cashOut.toString(), cashOutBalance };
+    return { kind: 'closed', closedTable, cashOut: cashOut.toString(), cashOutBalance };
   });
+
+  if (closed.kind === 'already-closed') {
+    const fresh = await loadTableOrThrow(table.id);
+    const avatarFresh = await loadAvatarForUser(subject.userId);
+    return c.json(buildCloseReplayResponse(fresh, avatarFresh.clawTokens), 200);
+  }
 
   void logEventFromContext(c, {
     eventType: 'cove.holdem.table.closed',
@@ -1482,6 +1680,7 @@ coveHoldemRouter.post('/session/close', async (c) => {
       totalPayout: closed.closedTable.totalPayout,
       cashOut: closed.cashOut,
       isAgent: subject.kind === 'agent',
+      idempotencyKey: closeIdempotencyKey ?? null,
     },
   });
 
@@ -1503,30 +1702,57 @@ coveHoldemRouter.post('/session/close', async (c) => {
   );
 });
 
+/**
+ * Load the table's live in_progress hand (if any) and build the owner-safe
+ * resync view. Shared by GET /session/current + GET /session/:id (A2/A5) so
+ * the two reads can never drift. Returns null when there is no live hand
+ * (including for a closed table, which by invariant can never have one).
+ */
+async function loadResyncHand(
+  table: Pick<HoldemTable, 'id' | 'status' | 'serverSeed' | 'clientSeed'>,
+): Promise<HoldemResyncHandView | null> {
+  if (table.status !== 'open') return null;
+  const liveHand = await db.query.holdemHands.findFirst({
+    where: and(eq(holdemHands.tableId, table.id), eq(holdemHands.status, 'in_progress')),
+  });
+  if (!liveHand) return null;
+  return buildInProgressHandView(
+    { serverSeed: table.serverSeed, clientSeed: table.clientSeed },
+    liveHand,
+  );
+}
+
 // ─── GET /session/current ─────────────────────────────────────────────────────
 //
-// Subject-resolved (ledger subjects only) so a connected agent can restore its
-// open table after a reconnect, exactly like a human after a page refresh. An
-// agent + its bound human share one userId-keyed table, so both see the same row.
+// Subject-resolved for BOTH ledger subjects (human/agent restore) AND guests
+// (A5 — a guest can resume via /session/open but, pre-1b, had no way back to a
+// live hand it wedged into: every Deal 409'd `hand_in_progress` with no
+// visibility). Now returns the live in-progress hand (if any) for every
+// subject kind that owns an open table. An agent + its bound human share one
+// userId-keyed table, so both see the same row.
 
 coveHoldemRouter.get('/session/current', async (c) => {
   const subject = await getSubject(c);
-  if (!isLedgerSubject(subject)) {
-    throw new HTTPException(403, { message: 'guest_has_no_persistent_table: sign in or connect an agent' });
-  }
   const row = await db.query.holdemTables.findFirst({
-    where: and(eq(holdemTables.userId, subject.userId), eq(holdemTables.status, 'open')),
+    where: isLedgerSubject(subject)
+      ? and(eq(holdemTables.userId, subject.userId), eq(holdemTables.status, 'open'))
+      : and(eq(holdemTables.guestFpHash, subject.guestFpHash), eq(holdemTables.status, 'open')),
   });
   if (!row) throw new HTTPException(404, { message: 'no_open_table' });
-  const avatar = await loadAvatarForUser(subject.userId);
-  return c.json({ table: publicTable(row), walletBalance: avatar.clawTokens }, 200);
+  const walletBalance = isLedgerSubject(subject)
+    ? (await loadAvatarForUser(subject.userId)).clawTokens
+    : Number(GUEST_STARTING_BALANCE) - Number(BigInt(row.buyInStack));
+  const hand = await loadResyncHand(row);
+  return c.json({ table: publicTable(row), walletBalance, hand }, 200);
 });
 
 // ─── GET /session/:id ─────────────────────────────────────────────────────────
 //
-// Owner-only table detail (serverSeed redacted while open). Subject-resolved so an
-// agent can inspect its own table; ownerMatch binds to the resolved userId, so an
-// agent can never read another user's table by id.
+// Owner-only table detail (serverSeed redacted while open). Subject-resolved so
+// an agent OR a guest can inspect its own table (A5 — relaxed from ledger-only:
+// `ownerMatch` already binds guests by fpHash, humans/agents by userId, so this
+// was only ever excluding guests by an extra check, not a real ownership gap).
+// Returns the live in-progress hand (if any) for resync (A2).
 
 coveHoldemRouter.get('/session/:id', async (c) => {
   const tableId = c.req.param('id');
@@ -1534,13 +1760,11 @@ coveHoldemRouter.get('/session/:id', async (c) => {
     throw new HTTPException(400, { message: 'invalid_table_id' });
   }
   const subject = await getSubject(c);
-  if (!isLedgerSubject(subject)) {
-    throw new HTTPException(403, { message: 'guest_cannot_inspect_table: sign in or connect an agent' });
-  }
   const row = await db.query.holdemTables.findFirst({ where: eq(holdemTables.id, tableId) });
   if (!row) throw new HTTPException(404, { message: 'table_not_found' });
   if (!ownerMatch(row, subject)) throw new HTTPException(403, { message: 'table_not_owned' });
-  return c.json({ table: publicTable(row) }, 200);
+  const hand = await loadResyncHand(row);
+  return c.json({ table: publicTable(row), hand }, 200);
 });
 
 export default coveHoldemRouter;
