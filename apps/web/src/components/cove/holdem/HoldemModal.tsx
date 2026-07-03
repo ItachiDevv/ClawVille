@@ -495,7 +495,7 @@ export default function HoldemModal() {
       return opened.table;
     } catch (err) {
       if (openEpochRef.current !== myEpoch) return null; // stale error — drop toast
-      showToast(describeHoldemError(err), err instanceof CoveApiError && err.status >= 500 ? 'error' : 'warn');
+      showToast(describeHoldemError(err, 'open'), err instanceof CoveApiError && err.status >= 500 ? 'error' : 'warn');
       return null;
     }
   }, [openTable, holdemBuyIn, showToast]);
@@ -569,7 +569,7 @@ export default function HoldemModal() {
       }
     } catch (err) {
       if (openEpochRef.current !== myEpoch) return; // stale error — drop
-      showToast(describeHoldemError(err), err instanceof CoveApiError && err.status >= 500 ? 'error' : 'warn');
+      showToast(describeHoldemError(err, 'deal'), err instanceof CoveApiError && err.status >= 500 ? 'error' : 'warn');
     } finally {
       dealKeyRef.current = null;
       if (openEpochRef.current === myEpoch) busyRef.current = false; // only release MY lock
@@ -611,7 +611,7 @@ export default function HoldemModal() {
       if (openEpochRef.current !== myEpoch) return; // stale error — drop
       // KEEP pendingActionRef: a same-decision re-press replays the (possibly
       // lost) terminal settle; a different-decision press mints fresh above.
-      showToast(describeHoldemError(err), err instanceof CoveApiError && err.status >= 500 ? 'error' : 'warn');
+      showToast(describeHoldemError(err, 'action'), err instanceof CoveApiError && err.status >= 500 ? 'error' : 'warn');
     } finally {
       if (openEpochRef.current === myEpoch) busyRef.current = false; // only release MY lock
     }
@@ -697,7 +697,35 @@ export default function HoldemModal() {
       }, 1500);
     } catch (err) {
       if (openEpochRef.current !== myEpoch) return; // stale error — drop
-      showToast(describeHoldemError(err), 'warn');
+      // Ambiguous outcome (0/408) or provably-already-closed (table_not_open):
+      // resolve against the server. A close that actually LANDED would leave a
+      // stale local 'open' table here — revealedSeed never set, Next Hand
+      // enabled — and ensureTable would reuse it, looping Deal on
+      // table_not_open 409s against a table whose chips were already credited.
+      const ambiguousClose =
+        err instanceof CoveApiError &&
+        (err.status === 0 || err.status === 408 || err.code?.startsWith('table_not_open') === true);
+      if (ambiguousClose) {
+        try {
+          const current = await fetchCurrentHoldemTable();
+          if (openEpochRef.current !== myEpoch) return; // modal closed — drop
+          if (!current || current.table.id !== t.id || current.table.status !== 'open') {
+            // The close landed server-side (chips credited in the same tx).
+            // Mark the local table closed so ensureTable can't reuse it — a
+            // Next Hand from here legitimately opens a fresh session.
+            setTable((prev) => (prev ? { ...prev, status: 'closed', playerStack: '0' } : prev));
+            if (current) setBalance(current.walletBalance);
+            showToast('Your cash-out went through — chips were credited.', 'info');
+            return;
+          }
+          // Table is genuinely still open — the close never landed; fall
+          // through to the retry copy (Walk Away again is safe).
+        } catch {
+          if (openEpochRef.current !== myEpoch) return; // modal closed — drop
+          // Resolve probe also failed — fall through to the retry copy.
+        }
+      }
+      showToast(describeHoldemError(err, 'close'), 'warn');
     } finally {
       if (openEpochRef.current === myEpoch) busyRef.current = false; // only release MY lock
     }
@@ -1048,9 +1076,15 @@ export default function HoldemModal() {
             {/* settled: NEXT HAND + WALK AWAY */}
             {phase === 'settled' && (
               <>
+                {/* revealedSeed gate (like walkAwayLocked): after Walk Away
+                    cashes out, the 1500ms auto-close timer is armed. Without
+                    this gate, Next Hand→Deal inside that window opens a FRESH
+                    buy-in whose deal response the timer's handleClose then
+                    epoch-drops — orphaning an in-progress hand server-side and
+                    stranding the new buy-in (no resync endpoint yet). */}
                 <button
                   type="button" onClick={handleNextHand}
-                  disabled={inFlight}
+                  disabled={inFlight || Boolean(revealedSeed)}
                   className="pt-btn pt-btn-primary"
                   style={{ height: 40, fontSize: 13, minWidth: 110 }}
                 >
