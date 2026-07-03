@@ -40,6 +40,10 @@ import {
 } from '@clawville/agent-runtime';
 import type { OpenClawClient } from './openclaw-client';
 import { resolveBuildingId } from './building-center';
+// Shared never-clobber ownership predicate (magic-link onboarding D1b) — the
+// SAME rule the /enter SQL bind guard states, from its dependency-free module
+// so bindAgentOwner + the route + the tests can never drift on it.
+import { canBindAgentOwner } from './agent-owner-binding';
 import { roomRegistry, FREE_ROAMER_NPC_IDS, derivePublicId } from './room-registry';
 import type { PlayerSnapshot } from '@clawville/shared';
 
@@ -363,6 +367,16 @@ class NpcSimulation {
   // OpenClaw bot registry
   private openClawBots: Map<string, { config: OpenClawRegistration; client: OpenClawClient }> = new Map();
   private npcOverrides: Map<string, string> = new Map(); // npcId → sessionId
+  // Magic-link onboarding D3 (2026-07-02): direct npcId → agentId for AVATAR-mode
+  // (`ocb-`) bodies, written at registerOpenClaw and cleared with the ownership-
+  // scoped body teardown. The human-control suppression predicate consults THIS
+  // map for avatar bodies instead of the npcOverrides→openClawBots session chain:
+  // that chain names the CURRENT owner session and dangles whenever the owning
+  // session churns (rebind eviction, sweeper races, restore windows), which left
+  // `ocb-` bodies unsuppressed while their human drove the avatar — the exact
+  // double-body gap this map closes. The body id is deterministic per agentId
+  // (`avatarBodyId`), so re-registration overwrites idempotently.
+  private avatarBodyOwners: Map<string, string> = new Map(); // ocb-npcId → agentId
   // Controlled-launch suppression: agentId → epoch-ms until which a Hatcher
   // proxy NPC is "human-driven" and must be hidden + frozen (its owner is
   // driving the bound avatar in 'player' mode). Refreshed at 5 Hz by
@@ -470,17 +484,42 @@ class NpcSimulation {
    * the collaboration broker queue; collaborationEvents is always empty.
    */
   /**
-   * True when `npcId` is a Hatcher proxy avatar body whose owner is actively
-   * driving the bound avatar in 'player' mode (controlled launch). Such a body
+   * True when `npcId` is a connected-agent body whose owner is actively
+   * driving the bound avatar in 'player' mode (Controlled). Such a body
    * must be hidden from snapshots and skipped by all autonomy planning so it
    * doesn't appear as a second, auto-walking copy of the player. Expired
-   * entries are pruned lazily on read. Maps npcId → sessionId → config.agentId.
+   * entries are pruned lazily on read.
+   *
+   * TWO resolution paths (magic-link onboarding D3, 2026-07-02):
+   *   - AVATAR-mode (`ocb-`) bodies resolve DIRECTLY via `avatarBodyOwners`
+   *     (npcId → agentId), immune to owning-session churn.
+   *   - OVERRIDE-mode bodies keep the original chain
+   *     (npcOverrides → openClawBots → config.agentId), since an override body
+   *     has no `avatarBodyOwners` entry.
+   * Before this, ONLY the session chain existed — an `ocb-` body whose owner
+   * session had churned was never suppressed (the double-body gap).
    */
   private isHumanControlledOpenClawNpc(npcId: string, now = Date.now()): boolean {
+    // Avatar-mode bodies: direct, session-independent lookup.
+    const avatarAgentId = this.avatarBodyOwners.get(npcId);
+    if (avatarAgentId) return this.isAgentHumanControlled(avatarAgentId, now);
+    // Override-mode bodies: npcId → current owner session → agentId.
     const sessionId = this.npcOverrides.get(npcId);
     if (!sessionId) return false;
     const agentId = this.openClawBots.get(sessionId)?.config.agentId;
     if (!agentId) return false;
+    return this.isAgentHumanControlled(agentId, now);
+  }
+
+  /**
+   * PUBLIC: is this agent currently human-controlled (its owner is driving the
+   * bound avatar in 'player' mode)? The single TTL read for the suppression
+   * window — the npcId predicate above, the SSE `control` event, perception's
+   * `humanControlled` field, and `GET /session-status` all consult this so the
+   * signal an agent sees can never drift from the suppression the world
+   * enforces. Expired entries are pruned lazily on read.
+   */
+  isAgentHumanControlled(agentId: string, now = Date.now()): boolean {
     const until = this.humanControlledOpenClawUntil.get(agentId) ?? 0;
     if (until <= now) {
       this.humanControlledOpenClawUntil.delete(agentId);
@@ -848,6 +887,11 @@ class NpcSimulation {
       });
       this.openClawBots.set(config.sessionId, { config, client });
       this.npcOverrides.set(npcId, config.sessionId);
+      // D3 (2026-07-02): record the session-independent npcId → agentId link so
+      // the human-control suppression predicate covers `ocb-` bodies even when
+      // the owning session churns. Idempotent — the body id is deterministic
+      // per agentId, so a re-register overwrites with the same value.
+      this.avatarBodyOwners.set(npcId, config.agentId);
       // Hatcher proxy-cognition: bind the STRUCTURED world-state provider to
       // the freshly-spawned avatar body (Hatcher owns the root prompt). Also
       // bind the legacy text provider for any non-Hatcher fallback (no-op for
@@ -895,6 +939,11 @@ class NpcSimulation {
         this.cleanupNpcFromCombats(npcId);
         this.npcOverrides.delete(npcId);
         this.npcs.delete(npcId);
+        // D3 (2026-07-02): the avatar body is gone, so drop its direct
+        // npcId → agentId suppression link with it. Scoped to the SAME
+        // ownership check above — a stale session tearing down must not strip
+        // the live body's suppression entry.
+        this.avatarBodyOwners.delete(npcId);
       }
     }
     this.openClawBots.delete(sessionId);
@@ -960,6 +1009,43 @@ class NpcSimulation {
       if (ids.has(config.agentId)) found.push(sid);
     }
     return found;
+  }
+
+  /**
+   * Magic-link onboarding D1b (2026-07-02) — propagate the bind-at-redemption
+   * claim event into every LIVE in-memory session for `agentId`, so the
+   * already-connected agent becomes ledger-capable WITHOUT a reconnect.
+   *
+   * Called by `GET /api/auth/enter` right after it atomically binds the
+   * `openclaw_bots.user_id` row (guarded UPDATE). The row bind alone is not
+   * enough: `resolveAgentSession` grants real-CT spend only when the session
+   * config's `boundUserId` matches the row's CURRENT `userId` (the round-2
+   * rebind demotion backstop), and a first-contact session was minted with
+   * `boundUserId: null` — so without this in-memory update the freshly-bound
+   * agent would stay demoted until its next /connect. Setting `boundUserId`
+   * here makes the backstop PASS for first-contact sessions (whose
+   * `ledgerCapable` flag is already true — no existing owner at registration).
+   *
+   * NEVER-CLOBBER (same rule as the SQL guard, via the shared
+   * `canBindAgentOwner`): a config that already proved ownership of a
+   * DIFFERENT user is left untouched — we only fill a null `boundUserId` or
+   * re-affirm the same user. `ledgerCapable` is deliberately NOT flipped: a
+   * session registered non-ledger (agentId-only reconnect to a bound bot)
+   * stays non-ledger; it re-proves ownership through connect-token or the
+   * signed-challenge reconnect, exactly as before.
+   *
+   * Returns the number of live configs updated (0 when the agent has no live
+   * session — the row bind still lands, and the next /connect picks it up).
+   */
+  bindAgentOwner(agentId: string, userId: string): number {
+    let updated = 0;
+    for (const [, { config }] of this.openClawBots) {
+      if (config.agentId !== agentId) continue;
+      if (!canBindAgentOwner(config.boundUserId ?? null, userId)) continue;
+      config.boundUserId = userId;
+      updated++;
+    }
+    return updated;
   }
 
   /**
@@ -1298,6 +1384,12 @@ class NpcSimulation {
       activeCombats,
       gameMode: this.getMode(),
       arenaRound,
+      // Magic-link onboarding D4 (2026-07-02): TRUE while this body's human
+      // owner is driving the bound avatar (Controlled mode). A self-managed
+      // agent seeing true should PAUSE self-driving — its in-world body is
+      // suppressed and its actions would fight the human's. Same predicate the
+      // world-side suppression uses, so signal and enforcement cannot drift.
+      humanControlled: this.isHumanControlledOpenClawNpc(npcId),
       timestamp: Date.now(),
     };
   }

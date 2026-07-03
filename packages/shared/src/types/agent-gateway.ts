@@ -74,6 +74,15 @@ export interface AgentPerception {
   activeCombats: AgentPerceptionCombat[];
   gameMode: 'arena' | 'world';
   arenaRound: { round: number; maxRounds: number; state: string; roundStartedAt: number } | null;
+  /**
+   * Magic-link onboarding D4 (2026-07-02, additive): TRUE while the agent's
+   * human owner is live-driving the bound avatar in Controlled ('player')
+   * mode. The agent's in-world body is suppressed for the duration; a
+   * self-managed agent should PAUSE self-driving while this is true and
+   * resume when it flips false (also emitted as the SSE `control` event on
+   * change, and on GET /session-status).
+   */
+  humanControlled: boolean;
   timestamp: number;
 }
 

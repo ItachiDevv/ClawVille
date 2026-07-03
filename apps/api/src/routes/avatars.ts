@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { eq, and, sql, isNull } from 'drizzle-orm';
-import { db, avatars, agents, avatarInventory, users } from '@clawville/database';
+import { db, avatars, agents, avatarInventory, users, openclawBots } from '@clawville/database';
 import {
   AVATAR_ARCHETYPES,
   ARCHETYPE_IDS,
@@ -978,6 +978,14 @@ avatarRoutes.post('/me/chat', requireAuth, async (c) => {
 const heartbeatSchema = z.object({
   positionX: z.number().min(0).max(WORLD_PX_WIDTH),
   positionY: z.number().min(0).max(WORLD_PX_HEIGHT),
+  // Magic-link onboarding D3 (2026-07-02, additive/optional): the client's
+  // current control mode. ONLY 'player' has a server-side effect — it marks
+  // the user's live bound agent human-controlled (15s TTL, refreshed each
+  // heartbeat) so the agent's in-world body is suppressed while the human
+  // drives (no double body). Any other value — or omitting the field — does
+  // nothing, and the suppression simply lapses within 15s (Autonomous toggle
+  // release). Enum kept in lockstep with the Zustand `controlMode` union.
+  controlMode: z.enum(['player', 'autonomous', 'explore', 'npc']).optional(),
 });
 
 // POST /api/avatars/me/dismiss-agent-banner
@@ -1060,6 +1068,33 @@ avatarRoutes.post('/me/heartbeat', requireAuth, async (c) => {
       });
   } else {
     bridge.reportUserActivity(user.id, positionX, positionY);
+  }
+
+  // D3 (2026-07-02) — Controlled-mode agent-body suppression. When the human
+  // reports they are DRIVING ('player'), look up their live bound bot (same
+  // most-recent-row-by-userId shape as /api/auth/me/agent-session) and prime
+  // the 15s human-control window — heartbeat cadence is well under 15s, so
+  // continuous driving keeps the agent's body suppressed; toggling Autonomous
+  // (or closing the tab) stops the marks and the window lapses on its own.
+  // Fire-and-forget + exactly ONE indexed query, and only on 'player' — the
+  // heartbeat hot path stays cheap for every other mode.
+  if (result.data.controlMode === 'player') {
+    db.query.openclawBots
+      .findFirst({
+        where: eq(openclawBots.userId, user.id),
+        orderBy: (t, { desc }) => [desc(t.lastSeenAt)],
+        columns: { agentId: true, sessionExpiresAt: true },
+      })
+      .then((bot) => {
+        // Live-session check mirrors the agent-session probe: an expired (or
+        // never-populated) TTL is NOT live, so a dead pairing never suppresses
+        // a body (there is no body to suppress) nor emits a bogus signal.
+        if (!bot || !bot.sessionExpiresAt || bot.sessionExpiresAt.getTime() <= Date.now()) return;
+        npcSimulation.markHumanControlledOpenClaw(bot.agentId, 15_000);
+      })
+      .catch((err) => {
+        console.error('[heartbeat] human-control mark failed (non-fatal):', err);
+      });
   }
 
   return c.json({ ok: true });
