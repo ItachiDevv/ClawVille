@@ -68,6 +68,7 @@ import { buildMockFacilitator } from './services/x402-mock-facilitator';
 import { portalRoutes } from './routes/portal';
 import { partnerHatcherRoutes } from './routes/partner-hatcher';
 import { partnerHatcherLaunchRoutes } from './routes/partner-hatcher-launch';
+import { partnerStorefrontRoutes } from './routes/partner-storefront';
 import { agentRegistrationRoutes } from './routes/agent-registration';
 import { agentEip8004Routes } from './routes/agent-eip8004';
 import { adminIdentityRoutes } from './routes/admin-identity';
@@ -336,6 +337,13 @@ app.route('/api/partner/hatcher', partnerHatcherRoutes);
 // POST /api/partner/hatcher/launch/exchange. See routes/partner-hatcher-launch.ts
 // + plan .claude/plans/hatcher-launch-exchange.md (§A).
 app.route('/api/partner/hatcher', partnerHatcherLaunchRoutes);
+// Phase D — ADDITIVE gated partner direct-USDC storefront (FEATURE_GATE
+// partner_storefront_tier). Buyer → partner USDC, WE NEVER CUSTODY, credits NO
+// CT. Mounted AFTER both `/api/partner/hatcher` groups so the LIVE partner-hatcher
+// routes match FIRST — this NEW `/api/partner/storefront` base never shadows them.
+// /quote + /settle 503 `partner_fulfillment_gated` until an admin enables a
+// custody-reviewed storefront (always, today). See routes/partner-storefront.ts.
+app.route('/api/partner/storefront', partnerStorefrontRoutes);
 // Wager lobbies + escrow (gambling-contracts vertical slice).
 // See routes/wager.ts header for the full surface + feature gates.
 app.route('/api/wager', wagerRoutes);
