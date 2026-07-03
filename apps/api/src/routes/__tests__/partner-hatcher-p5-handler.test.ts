@@ -96,7 +96,19 @@ function insertBuilder() {
   return {
     values(v: Row) { values = v; return this; },
     returning: async () => {
-      const inserted: Row = { id: 'inserted-id', walletAddress: null, ...values };
+      // `openclaw_bots.created_at`/`updated_at` are NOT NULL defaultNow() columns
+      // — a real INSERT always returns them, and `publicAgentRecord` calls
+      // `.toISOString()` on both. The insert VALUES the handler builds don't carry
+      // them (they're DB defaults), so seed them here or the stubbed returning row
+      // throws inside publicAgentRecord (→ 500). Placed before the spread so a
+      // future test that supplies its own still wins.
+      const inserted: Row = {
+        id: 'inserted-id',
+        walletAddress: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        ...values,
+      };
       state.inserts.push(inserted);
       state.existingRow = inserted;
       return [inserted];
@@ -109,7 +121,16 @@ function updateBuilder() {
   const builder = {
     set(v: Row) { values = v; return builder; },
     where() {
-      const merged = { ...(state.existingRow ?? {}), ...values };
+      // Carry defaultNow() columns through so a merged row handed to
+      // publicAgentRecord still has created_at/updated_at (the existingRow it
+      // merges over originates from an insert that already seeded both, but keep
+      // a fallback so a directly-seeded existingRow can't reintroduce the throw).
+      const merged = {
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        ...(state.existingRow ?? {}),
+        ...values,
+      };
       state.existingRow = merged;
       const p = Promise.resolve(undefined) as Promise<unknown> & { returning?: () => Promise<Row[]> };
       p.returning = async () => [merged];

@@ -70,6 +70,7 @@ import { buildMockFacilitator } from './services/x402-mock-facilitator';
 import { portalRoutes } from './routes/portal';
 import { partnerHatcherRoutes } from './routes/partner-hatcher';
 import { partnerHatcherLaunchRoutes } from './routes/partner-hatcher-launch';
+import { partnerCovenantRoutes } from './routes/partner-covenant';
 import { agentRegistrationRoutes } from './routes/agent-registration';
 import { adminIdentityRoutes } from './routes/admin-identity';
 import { startSimulation } from './services/npc-simulation';
@@ -312,6 +313,13 @@ app.route('/api/partner/hatcher', partnerHatcherRoutes);
 // POST /api/partner/hatcher/launch/exchange. See routes/partner-hatcher-launch.ts
 // + plan .claude/plans/hatcher-launch-exchange.md (§A).
 app.route('/api/partner/hatcher', partnerHatcherLaunchRoutes);
+// Covenant partner — READ-ONLY verification read surface (bounty evidence/verdict/
+// escrow linkage + agent-services identity). GET-only, no mutations, so no body-
+// size cap is needed (unlike the partner-hatcher write surface's 64 KB bodyLimit).
+// Fronted by requireCovenantPartner: ed25519 partner signature (same GET wire
+// scheme as Hatcher) + IP allowlist, fail-closed 503 when unprovisioned.
+// See routes/partner-covenant.ts + docs/sap-covenant-payai-architecture.md.
+app.route('/api/partner/covenant', partnerCovenantRoutes);
 // Wager lobbies + escrow (gambling-contracts vertical slice).
 // See routes/wager.ts header for the full surface + feature gates.
 app.route('/api/wager', wagerRoutes);
