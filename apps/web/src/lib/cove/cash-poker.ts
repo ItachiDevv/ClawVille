@@ -382,7 +382,7 @@ export function describeCashPokerError(err: unknown): string {
   }
   const code = err.code ?? '';
   // Code-first dispatch (covers most cases regardless of status).
-  if (code === 'auth_required') return 'Sign in to play cash poker.';
+  if (code === 'auth_required') return 'Sign in to play poker.';
   if (code === 'active_avatar_required' || code === 'agent_session_has_no_active_avatar') {
     return 'Create an avatar before sitting down.';
   }
