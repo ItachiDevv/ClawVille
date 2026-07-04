@@ -1,9 +1,12 @@
 'use client';
 
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { useRouter } from 'next/navigation';
-import { useCreateAvatar } from '@/hooks/use-avatar';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useAvatar, useCreateAvatar } from '@/hooks/use-avatar';
 import { useGameStore } from '@/stores/game';
+import { api } from '@/lib/api';
+import { FIRST_TIME_DISCLOSURE_STORAGE_KEY } from '@/components/game/first-time-backup-modal';
 import {
   AVATAR_ARCHETYPES,
   AGENT_CATEGORIES,
@@ -110,6 +113,35 @@ const ARCHETYPE_COLORS: Record<string, string> = {
 export default function PersonalityPage() {
   const router = useRouter();
   const createAvatarMutation = useCreateAvatar();
+  const queryClient = useQueryClient();
+
+  // P2 customize mode (2026-07-04) — signup auto-provisions the avatar, so a
+  // fresh signup arrives here already OWNING one. One avatar per user is a
+  // hard server constraint (POST would 400), so when an avatar exists this
+  // page submits via PATCH /api/avatars/me (+ /me/appearance for cosmetics)
+  // instead of POST, sending ONLY the fields that actually changed. No-avatar
+  // users (legacy / provisioning-pending) keep the POST path untouched.
+  const { data: avatar, isLoading: avatarLoading } = useAvatar();
+
+  // Guest gate (P2 post-panel BLOCKING #2, 2026-07-04). Mirror /create-agent:
+  // a guest ACCOUNT (is_guest=true) can't provision or customize an agent —
+  // the server 403s the customize PATCH with code:'guest_not_allowed'. A guest
+  // could still deep-link here with a stale createAvatarStep1 draft, so bounce
+  // them to /login before they submit. SCOPED to is_guest ONLY: an un-authed
+  // visitor (api.me 401s → authData undefined) is the legitimate POST-create
+  // auto-provision path and must reach the CREATE branch unchanged.
+  const { data: authData } = useQuery({
+    queryKey: ['auth-me'],
+    queryFn: () => api.me(),
+    retry: false,
+  });
+  const isGuestAccount = authData?.user?.isGuest === true;
+  useEffect(() => {
+    if (isGuestAccount) router.replace('/login');
+  }, [isGuestAccount, router]);
+
+  const customizeMode = !isGuestAccount && !!avatar;
+  const [isSaving, setIsSaving] = useState(false);
 
   const [step1, setStep1] = useState<Step1Data | null>(null);
   const [habitat, setHabitat] = useState('forest');
@@ -132,6 +164,32 @@ export default function PersonalityPage() {
     }
   }, [router]);
 
+  // Customize-mode prefill — hydrate archetype + personality from the
+  // provisioned avatar ONCE when it resolves (usually instantly from the
+  // ['avatar'] cache warmed by step 1), validated against the current option
+  // registries so a legacy row can't inject an unknown value. Functional
+  // archetype update so a user pick that raced the fetch is never clobbered.
+  const prefilledFromAvatarRef = useRef(false);
+  useEffect(() => {
+    if (!avatar || prefilledFromAvatarRef.current) return;
+    prefilledFromAvatarRef.current = true;
+    if (
+      typeof avatar.archetype === 'string' &&
+      AVATAR_ARCHETYPES.some((a) => a.id === avatar.archetype)
+    ) {
+      setSelectedArchetype((prev) => prev ?? (avatar.archetype as AvatarArchetypeId));
+    }
+    const p = avatar.personality as
+      | { habitat?: string; hobby?: string; greeting?: string }
+      | null
+      | undefined;
+    if (p?.habitat && HABITAT_OPTIONS.some((o) => o.value === p.habitat)) setHabitat(p.habitat);
+    if (p?.hobby && HOBBY_OPTIONS.some((o) => o.value === p.hobby)) setHobby(p.hobby);
+    if (p?.greeting && GREETING_OPTIONS.some((o) => o.value === p.greeting)) {
+      setGreetingStyle(p.greeting);
+    }
+  }, [avatar]);
+
   // Calculate stats from personality choices (mirrors API logic)
   const stats = useMemo(() => {
     const h = HABITAT_STATS[habitat] ?? { s: 0, d: 0, m: 0 };
@@ -149,6 +207,10 @@ export default function PersonalityPage() {
 
   async function handleCreate() {
     if (!step1) return;
+    // Don't race the avatar fetch: PATCH-vs-POST branches on whether an
+    // avatar exists, and guessing wrong dead-ends on the one-avatar-per-user
+    // 400. The button is disabled while loading; this is belt-and-braces.
+    if (avatarLoading) return;
     setError('');
 
     if (!selectedArchetype) {
@@ -202,6 +264,112 @@ export default function PersonalityPage() {
           ? (step1.harness as AgentHarness)
           : undefined;
 
+      // ---- P2 CUSTOMIZE (PATCH) PATH — the avatar already exists. ----
+      // One avatar per user is a hard server constraint, so we PATCH the
+      // provisioned row instead of POSTing a second one. Only fields that
+      // actually CHANGED are sent: an empty PATCH body 400s server-side, and
+      // unchanged values would just burn the 30/min/IP customize budget.
+      if (customizeMode && avatar) {
+        setIsSaving(true);
+        try {
+          // Identity/persona diffs → PATCH /api/avatars/me.
+          const customizeBody: {
+            name?: string;
+            species?: string;
+            archetypeId?: string;
+            personality?: { habitat: string; hobby: string; greeting: string };
+          } = {};
+          if (step1.name && step1.name !== avatar.name) customizeBody.name = step1.name;
+          if (step1.species && step1.species !== avatar.species) {
+            customizeBody.species = step1.species;
+          }
+          if (selectedArchetype !== avatar.archetype) {
+            customizeBody.archetypeId = selectedArchetype;
+          }
+          const prevP = avatar.personality as
+            | { habitat?: string; hobby?: string; greeting?: string }
+            | null
+            | undefined;
+          if (
+            prevP?.habitat !== habitat ||
+            prevP?.hobby !== hobby ||
+            prevP?.greeting !== greetingStyle
+          ) {
+            customizeBody.personality = { habitat, hobby, greeting: greetingStyle };
+          }
+          if (Object.keys(customizeBody).length > 0) {
+            await api.customizeAvatar(customizeBody);
+          }
+
+          // Cosmetic diffs → PATCH /me/appearance (modelKey/color/gender live
+          // there — harness-pool guard enforced server-side; step 1 already
+          // pre-filters the picker to the server-accepted pool).
+          const appearanceBody: {
+            modelKey?: string;
+            color?: 'green' | 'red' | 'blue' | 'yellow';
+            gender?: 'male' | 'female';
+          } = {};
+          if (safeModelKey && safeModelKey !== avatar.modelKey) {
+            appearanceBody.modelKey = safeModelKey;
+          }
+          if (
+            (step1.color === 'green' ||
+              step1.color === 'red' ||
+              step1.color === 'blue' ||
+              step1.color === 'yellow') &&
+            step1.color !== avatar.color
+          ) {
+            appearanceBody.color = step1.color;
+          }
+          if (
+            (step1.gender === 'male' || step1.gender === 'female') &&
+            step1.gender !== avatar.gender
+          ) {
+            appearanceBody.gender = step1.gender;
+          }
+          if (Object.keys(appearanceBody).length > 0) {
+            await api.editAvatarAppearance(appearanceBody);
+          }
+
+          // Refresh the authoritative row + the agent-session probe so /game
+          // never mounts against a stale 'provisioning-pending' answer cached
+          // ≤30s ago. Both keys pre-exist (purged on login, cleared on
+          // logout) — zero new query keys.
+          queryClient.invalidateQueries({ queryKey: ['avatar'] });
+          queryClient.invalidateQueries({ queryKey: ['agent-session'] });
+
+          // Deliberately NO one-time-secret stash here: the wallet secret was
+          // emitted EXACTLY ONCE at signup (the /login page stashes it for
+          // FirstTimeBackupModal) and the server never re-emits — these PATCH
+          // responses carry no secrets to stash.
+
+          sessionStorage.removeItem('createAvatarStep1');
+
+          // BEARER DISCIPLINE (P2 slice C): never fabricate an agent-session
+          // bearer. For a ClawVille-hosted avatar — milady/hermes harness +
+          // platformAgentId, the exact predicate /me/agent-session uses for
+          // mode 'hosted' — mark the user PAIRED without a bearer:
+          // setAgentPaired flips agentPaired/agentConnected/hasAgent, embodies
+          // them in 'player', and forces agentSessionId=null so the
+          // agent-bearer chat path stays OFF by construction (the server only
+          // emits a real bearer once, at an actual connect). Non-hosted
+          // avatars just normalise the mode.
+          const hosted =
+            (avatar.harness === 'milady' || avatar.harness === 'hermes') &&
+            !!avatar.platformAgentId;
+          if (hosted) {
+            useGameStore.getState().setAgentPaired(true, avatar.platformAgentId as string);
+          } else {
+            useGameStore.getState().setControlMode('player');
+          }
+
+          router.push('/game');
+        } finally {
+          setIsSaving(false);
+        }
+        return;
+      }
+
       const createRes = await createAvatarMutation.mutateAsync({
         name: step1.name,
         species: step1.species,
@@ -225,7 +393,7 @@ export default function PersonalityPage() {
       if (createRes.identity || createRes.wallet) {
         try {
           sessionStorage.setItem(
-            'clawville:firstTimeDisclosure',
+            FIRST_TIME_DISCLOSURE_STORAGE_KEY,
             JSON.stringify({
               avatarId: createRes.avatar?.id,
               avatarName: createRes.avatar?.name,
@@ -242,29 +410,40 @@ export default function PersonalityPage() {
 
       sessionStorage.removeItem('createAvatarStep1');
 
-      // Mark the agent as connected before the redirect. User feedback
-      // 2026-04-24: "drops agent into the world in explore/npc mode when
-      // we are supposed to be hosting milady agents". Root cause: the
-      // game store treats `agentConnected` as the source of truth for
-      // the mode-toggle labels — false shows "Explore / NPC Mode", true
-      // shows "Play / Autonomous". A fresh Milady avatar has no gateway
-      // session (the agent IS the avatar's Eliza runtime), so nothing was
-      // ever flipping agentConnected=true and the UI kept offering
-      // "Connect Your Agent" even though the agent was already alive
-      // server-side.
+      // The POST just provisioned the agent — refresh the agent-session probe
+      // so /game never mounts against a stale 'provisioning-pending' answer
+      // cached ≤30s ago (['avatar'] is already invalidated by useCreateAvatar).
+      queryClient.invalidateQueries({ queryKey: ['agent-session'] });
+
+      // Mark the agent as PAIRED before the redirect. User feedback
+      // 2026-04-24: a fresh Milady avatar has no gateway session (the agent
+      // IS the avatar's Eliza runtime), so nothing flipped the toggle to
+      // "Controlled / Autonomous" and the UI kept offering "Connect Your
+      // Agent" even though the agent was already alive server-side.
       //
-      // Fix: for Milady-harnessed avatars we auto-connect with the avatar's
-      // platformAgentId as the session id — the Eliza runtime is the
-      // session. For OpenClaw/Hermes self-hosted agents we skip this
-      // (those still need the Moltbook handshake via the Connect Agent
-      // modal to hand us their gateway URL + token).
+      // P2 slice C fix (2026-07-04) — FABRICATED-BEARER KILL: this used to
+      // call setAgentConnection(platformAgentId), passing the platform agent
+      // id AS an agent-session BEARER. The first agent-routed chat then sent
+      // that fake bearer to POST /api/openclaw/chat →
+      // validateLiveAgentSession 404 `agent_session_not_found` → "Agent
+      // session ended — reconnect" banner, and the /game hydration effect
+      // couldn't correct it (its clientSideBearer early-return shields a
+      // held bearer). The server emits a real bearer EXACTLY ONCE at an
+      // actual connect and never re-emits — a bearer can never be
+      // reconstructed client-side (game/page.tsx hydration comment is the
+      // canonical rationale).
       //
-      // setAgentConnection also flips hasAgent=true, sets
-      // controlMode='player', and drops isSpectator — so a single call
-      // does all the promotions we need.
+      // setAgentPaired(true, agentId) is the honest state: it flips
+      // agentPaired/agentConnected/hasAgent, embodies in 'player', and
+      // forces agentSessionId=null so the agent-bearer chat path stays OFF
+      // by construction — the chat bar uses the normal authed avatar path
+      // (which IS the hosted agent). The agentId is diagnostics/display
+      // only, never a bearer. For OpenClaw/Hermes self-hosted agents we
+      // skip this (those still need the Moltbook handshake via the Connect
+      // Agent modal to hand us their gateway URL + token).
       const agentIdForSession = createRes.agentId ?? createRes.avatar?.id;
       if (safeHarness === 'milady' && agentIdForSession) {
-        useGameStore.getState().setAgentConnection(agentIdForSession);
+        useGameStore.getState().setAgentPaired(true, agentIdForSession);
       } else {
         // Non-Milady fallback: still normalise the mode so a stale
         // spectator/npc state from a prior session doesn't leak into
@@ -533,10 +712,16 @@ export default function PersonalityPage() {
       {/* Create button */}
       <button
         onClick={handleCreate}
-        disabled={createAvatarMutation.isPending}
+        disabled={createAvatarMutation.isPending || isSaving || avatarLoading}
         className="w-full max-w-xl py-3 rounded-lg font-clawville text-sm uppercase tracking-wider bg-gradient-to-r from-cyan-600 to-cyan-500 hover:from-cyan-500 hover:to-cyan-400 text-white shadow-[0_0_20px_rgba(0,229,255,0.2)] text-xl disabled:opacity-50 disabled:cursor-not-allowed"
       >
-        {createAvatarMutation.isPending ? 'Creating...' : 'CREATE'}
+        {customizeMode
+          ? isSaving
+            ? 'Saving...'
+            : 'SAVE'
+          : createAvatarMutation.isPending
+            ? 'Creating...'
+            : 'CREATE'}
       </button>
     </div>
   );

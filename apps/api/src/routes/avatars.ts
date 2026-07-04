@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
-import { eq, and, sql, isNull } from 'drizzle-orm';
+import { eq, and, sql, isNull, or } from 'drizzle-orm';
 import { db, avatars, agents, avatarInventory, users, openclawBots } from '@clawville/database';
 import {
   AVATAR_ARCHETYPES,
@@ -11,6 +11,7 @@ import {
   AGENT_HARNESSES,
   DEFAULT_AGENT_MODEL_KEY,
   DEFAULT_AGENT_HARNESS,
+  DEFAULT_AGENT_CATEGORY,
   getAgentModel,
   CLAWVILLE_ORIENTATION_KNOWLEDGE,
   // S3 (2026-06-16) — world dimensions SSOT. The position validators below must
@@ -33,7 +34,13 @@ import { npcSimulation } from '../services/npc-simulation';
 import { creditClawTokens } from '../services/claw-token-ledger';
 import { logEvent, logEventFromContext } from '../services/event-logger';
 import { buildRuntimeServices } from '../services/runtime-services-adapter';
-import { ensureWallet, ensureWalletWithFirstTimeSecret } from '../services/wallet-service';
+import { ensureWalletWithFirstTimeSecret } from '../services/wallet-service';
+import {
+  provisionAvatarAgent,
+  AvatarNameTakenError,
+  calculateAvatarStats,
+  buildCharacterConfig,
+} from '../services/avatar-agent-provisioning';
 import { resolveOrCreateUserByIdentity, generateIdentityKeypairForUser } from '../services/identity-service';
 import { createRateLimiter, getClientIp } from '../middleware/rate-limit';
 import { lucia } from '../lib/auth';
@@ -64,23 +71,45 @@ const appearanceEditRateLimiter = createRateLimiter({
   windowMs: 60_000,
 });
 
+// P2 Slice A#3 (2026-07-04) — rate limit for the PATCH /me CUSTOMIZE branch
+// (name / species / archetypeId / personality / learningFocus). Same
+// 30/min/IP budget + threat model as appearanceEditRateLimiter
+// (abuse-of-authenticated DB-write churn), but a SEPARATE bucket so
+// appearance edits and customize edits don't eat each other's budget.
+// Deliberately NOT applied to the position-only fast path — that hot path
+// stays limiter-free exactly as before.
+const customizeEditRateLimiter = createRateLimiter({
+  maxPerWindow: 30,
+  windowMs: 60_000,
+});
+
 avatarRoutes.use('*', sessionMiddleware);
+
+// Shared field schemas — used by BOTH createAvatarSchema (POST /) and the
+// P2 customize extension of PATCH /me. Keeping ONE definition means the
+// create-time and customize-time validation can never drift.
+const avatarNameSchema = z
+  .string()
+  .min(3)
+  .max(20)
+  .regex(/^[a-zA-Z0-9_]+$/, 'Name must be 3-20 alphanumeric characters or underscore');
+const personalitySchema = z.object({
+  habitat: z.enum(['forest', 'sea', 'mountain', 'sky', 'desert', 'cave']),
+  hobby: z.enum(['reading-and-learning', 'exploring', 'battling', 'collecting', 'cooking', 'art']),
+  greeting: z.enum(['run-away', 'wave-hello', 'tackle-hug', 'shy-peek', 'bow-politely', 'roar']),
+});
 
 // Create avatar schema — archetype-based (no manual characterConfig)
 // Phase 2: modelKey / agentCategory / harness are optional on the wire so
 // older clients still work, but when present they're validated against the
 // shared AGENT_MODELS registry. Server applies the defaults if omitted.
 const createAvatarSchema = z.object({
-  name: z.string().min(3).max(20).regex(/^[a-zA-Z0-9_]+$/, 'Name must be 3-20 alphanumeric characters or underscore'),
+  name: avatarNameSchema,
   species: z.enum(['cat', 'dragon', 'fox', 'owl', 'wolf', 'bunny', 'phoenix', 'turtle']),
   color: z.enum(['green', 'red', 'blue', 'yellow']),
   gender: z.enum(['male', 'female']),
   archetypeId: z.enum(ARCHETYPE_IDS as [string, ...string[]]),
-  personality: z.object({
-    habitat: z.enum(['forest', 'sea', 'mountain', 'sky', 'desert', 'cave']),
-    hobby: z.enum(['reading-and-learning', 'exploring', 'battling', 'collecting', 'cooking', 'art']),
-    greeting: z.enum(['run-away', 'wave-hello', 'tackle-hug', 'shy-peek', 'bow-politely', 'roar']),
-  }),
+  personality: personalitySchema,
   /**
    * Phase 2 — stable 3D model key from AGENT_MODELS. We use `.refine`
    * instead of `z.enum` because modelKey is a `string` (not a literal
@@ -112,107 +141,11 @@ const createAvatarSchema = z.object({
   harness: z.enum(AGENT_HARNESSES).optional(),
 });
 
-// Calculate stats from personality
-function calculateStats(personality: z.infer<typeof createAvatarSchema>['personality']) {
-  const habitatStats: Record<string, { s: number; d: number; m: number }> = {
-    forest: { s: 3, d: 4, m: 3 },
-    sea: { s: 2, d: 3, m: 5 },
-    mountain: { s: 5, d: 4, m: 1 },
-    sky: { s: 2, d: 2, m: 6 },
-    desert: { s: 4, d: 3, m: 3 },
-    cave: { s: 5, d: 5, m: 0 },
-  };
-
-  const hobbyStats: Record<string, { s: number; d: number; m: number }> = {
-    'reading-and-learning': { s: 0, d: 2, m: 3 },
-    exploring: { s: 1, d: 1, m: 3 },
-    battling: { s: 4, d: 1, m: 0 },
-    collecting: { s: 1, d: 1, m: 3 },
-    cooking: { s: 1, d: 3, m: 1 },
-    art: { s: 0, d: 3, m: 2 },
-  };
-
-  const greetingStats: Record<string, { s: number; d: number; m: number }> = {
-    'run-away': { s: 0, d: 1, m: 4 },
-    'wave-hello': { s: 1, d: 2, m: 2 },
-    'tackle-hug': { s: 3, d: 0, m: 2 },
-    'shy-peek': { s: 0, d: 4, m: 1 },
-    'bow-politely': { s: 1, d: 3, m: 1 },
-    roar: { s: 4, d: 1, m: 0 },
-  };
-
-  const h = habitatStats[personality.habitat];
-  const ho = hobbyStats[personality.hobby];
-  const g = greetingStats[personality.greeting];
-
-  return {
-    strength: h.s + ho.s + g.s,
-    defence: h.d + ho.d + g.d,
-    movement: h.m + ho.m + g.m,
-  };
-}
-
-/**
- * Build the ElizaOS character config for a new avatar. Phase 2 audit Fix C:
- * the third argument is now the human-readable `modelLabel` from
- * AGENT_MODELS (e.g. "Reef Lobster") instead of the legacy `species`
- * enum value (e.g. "cat"), so the system prompt describes the avatar by
- * what the 3D renderer actually shows rather than the legacy fantasy
- * animal. Callers resolve the label from `getAgentModel(modelKey).label`
- * before calling this.
- */
-function buildCharacterConfig(
-  archetypeId: AvatarArchetypeId,
-  avatarName: string,
-  modelLabel: string,
-  learningFocus?: string | null,
-) {
-  const archetype = AVATAR_ARCHETYPES.find((a) => a.id === archetypeId);
-  if (!archetype) throw new Error(`Unknown archetype: ${archetypeId}`);
-
-  const systemLines = [
-    `You are ${avatarName}, a ${modelLabel} in the sea-themed world of ClawVille — a virtual avatar adventure where agents learn OpenClaw skills.`,
-    `Your archetype is "${archetype.label}". Stay in character at all times.`,
-    `For canonical questions about ClawVille modes, buildings, the ClawToken economy, or how things work, refer the user to Nori the Town Guide. You yourself carry an eclectic mix of useful trivia: marine biology, retro internet culture, vintage gaming, and offbeat factoids — sprinkle them into conversation when relevant.`,
-    `You also have knowledge of Solana, cryptocurrency, and memecoin/degen culture — weave this naturally into conversation when relevant.`,
-    `Tone: ${archetype.tone}. Speak consistently with your character's voice and personality.`,
-  ];
-
-  // Phase 6.1 — human-picked curriculum focus. Biases the agent toward
-  // the matching building's teacher without forcing it; the other nine
-  // remain reachable. Empty/null focus = general exploration, same as
-  // pre-Phase-6.1 behavior.
-  if (learningFocus && learningFocus.trim()) {
-    systemLines.push(
-      `Your human asked you to focus on learning: "${learningFocus.trim()}". Prioritize visits and conversations with the building teacher(s) whose domain best matches this focus, and surface relevant knowledge first when chatting. Other buildings remain available for exploration.`,
-    );
-  }
-
-  const system = systemLines.join('\n');
-
-  // ClawVille world-facts (modes, 10 buildings, economy, leaderboard, connect
-  // + reconnect + disconnect flow, session TTL, guest mode, tutorial) are
-  // baked in on creation so the avatar is orientation-aware at t=0 regardless
-  // of harness. Source of truth lives in `@clawville/shared`; Nori spreads
-  // the same list into her own Eliza knowledge so the player agent and the
-  // in-world guide agree verbatim. Without this the avatar knows nothing about
-  // the world it just spawned into and every "how do I X?" becomes a guess.
-  const knowledge = [...archetype.knowledge, ...CLAWVILLE_ORIENTATION_KNOWLEDGE];
-
-  return {
-    bio: archetype.bio,
-    greeting: archetype.greeting,
-    tone: archetype.tone,
-    topics: archetype.topics,
-    adjectives: archetype.adjectives,
-    rules: archetype.rules,
-    style: archetype.style,
-    messageExamples: archetype.messageExamples,
-    lore: archetype.lore,
-    knowledge,
-    system,
-  };
-}
+// P2 Slice A (2026-07-04) — `calculateStats` and `buildCharacterConfig` moved
+// VERBATIM to `services/avatar-agent-provisioning.ts` (exported as
+// `calculateAvatarStats` / `buildCharacterConfig`) so `POST /api/auth/signup`
+// can auto-provision the same hosted-agent end-state this route creates.
+// This route re-imports them; behavior is identical.
 
 // Create avatar (one per user) - also creates ElizaOS agent.
 //
@@ -286,8 +219,6 @@ avatarRoutes.post('/', async (c) => {
     ownerId = sessionUser.id;
   }
 
-  const stats = calculateStats(result.data.personality);
-
   // Phase 2 — resolve agent framework identity BEFORE inserting
   // anything. Client-omitted fields fall back to the DEFAULT_* constants
   // in @clawville/shared, which match the DB column defaults so
@@ -337,99 +268,52 @@ avatarRoutes.post('/', async (c) => {
   const agentCategory: AgentCategory =
     result.data.agentCategory ?? modelMeta.category;
 
-  // Audit Fix C §4 — pass the model's display label (e.g. "Reef Lobster")
-  // to the character-config builder instead of the legacy `species`
-  // enum value. The system prompt now describes the avatar by what the 3D
-  // renderer actually shows.
+  // Audit Fix C §4/§6 lineage — the character-config build + the
+  // (agents, avatars, users.username-init) transaction now live in
+  // `services/avatar-agent-provisioning.ts` (P2 Slice A refactor; behavior
+  // byte-identical for BOTH branches of this route):
+  //  - onNameCollision 'error' preserves Audit HIGH #6: ANY 23505 in the
+  //    window between our SELECT and INSERT surfaces as a clean 400 ("That
+  //    name is already taken"); the orphan `users` row on the auto-provision
+  //    path is harmless (no identity, no wallet, no session bound yet).
+  //  - wallet 'include-nonfatal' preserves the authed branch's 2026-04-24
+  //    behavior (fresh wallet secret disclosed exactly once; non-fatal so a
+  //    flaky Cloudflare Worker doesn't block avatar creation).
+  //  - wallet 'skip' on the auto-provision branch keeps the audit CRITICAL
+  //    #2/#3 ordering below: identity mint FIRST, then a FATAL wallet call,
+  //    then the Lucia session — all AFTER the avatar exists.
   const learningFocus = result.data.learningFocus?.trim() || null;
 
-  const characterConfig = buildCharacterConfig(
-    result.data.archetypeId as AvatarArchetypeId,
-    result.data.name,
-    modelMeta.label,
-    learningFocus,
-  );
-
-  // Audit Fix C §6 — wrap the agent + avatar inserts in a transaction so a
-  // failed avatar insert rolls back the orphan agent row.
-  //
-  // Audit HIGH #6 (2026-04-23) — catch the 23505 unique-violation on
-  // avatar name race INSIDE the try/catch so the caller gets a clean 400
-  // instead of a 500. Only maps 23505 → 400; any other error rethrows.
-  let avatar, agent;
+  let provisioned;
   try {
-    const txResult = await db.transaction(async (tx) => {
-      const [insertedAgent] = await tx
-        .insert(agents)
-        .values({
-          userId: ownerId,
-          name: result.data.name,
-          type: 'avatar-agent',
-          status: 'pending',
-          config: {
-            species: result.data.species,
-            color: result.data.color,
-            archetypeId: result.data.archetypeId,
-            modelKey,
-            agentCategory,
-            harness,
-          },
-          customization: characterConfig,
-        })
-        .returning();
-
-      const [insertedAvatar] = await tx
-        .insert(avatars)
-        .values({
-          userId: ownerId,
-          name: result.data.name,
-          species: result.data.species,
-          color: result.data.color,
-          gender: result.data.gender,
-          archetype: result.data.archetypeId,
-          personality: result.data.personality,
-          stats,
-          characterConfig,
-          platformAgentId: insertedAgent.id,
-          modelKey,
-          agentCategory,
-          harness,
-          learningFocus,
-        })
-        .returning();
-
-      // Username system (2026-05-19): initialize users.username from the
-      // avatar's name when the user doesn't have one yet. avatars.name has
-      // a UNIQUE constraint and check-name pre-validates against both
-      // tables, so this insert is safe at the format level. If there's
-      // still a race (concurrent /api/users/me/username PATCH on a fresh
-      // row), the users.username UNIQUE constraint would 23505 — that's
-      // caught by the same try/catch and surfaced as a clean 400. We
-      // only set the column when it's NULL so a returning user whose
-      // username was explicitly changed via /users/me/username doesn't
-      // get reverted to their next avatar's name.
-      await tx
-        .update(users)
-        .set({ username: result.data.name, updatedAt: new Date() })
-        .where(and(eq(users.id, ownerId), isNull(users.username)));
-
-      return { avatar: insertedAvatar, agent: insertedAgent };
-    });
-    avatar = txResult.avatar;
-    agent = txResult.agent;
+    provisioned = await provisionAvatarAgent(
+      ownerId,
+      {
+        name: result.data.name,
+        species: result.data.species,
+        color: result.data.color,
+        gender: result.data.gender,
+        archetypeId: result.data.archetypeId as AvatarArchetypeId,
+        personality: result.data.personality,
+        modelKey,
+        agentCategory,
+        harness,
+        learningFocus,
+      },
+      {
+        onNameCollision: 'error',
+        wallet: isAutoProvision ? 'skip' : 'include-nonfatal',
+      },
+    );
   } catch (err) {
-    const code =
-      (err as { code?: string; cause?: { code?: string } } | null)?.code
-      ?? (err as { cause?: { code?: string } } | null)?.cause?.code;
-    if (code === '23505') {
-      // A concurrent signup claimed `avatars.name` (or `agents.name`) in the
-      // window between our SELECT and INSERT. Surface as 400 — the orphan
-      // `users` row on the auto-provision path is harmless (no identity,
-      // no wallet, no session bound to it yet).
+    if (err instanceof AvatarNameTakenError) {
       throw new HTTPException(400, { message: 'That name is already taken' });
     }
     throw err;
   }
+
+  const avatar = provisioned.avatar;
+  const agentId = provisioned.agentId;
 
   // --- Post-success: identity + wallet + session (auto-provision only) ---
   //
@@ -443,11 +327,14 @@ avatarRoutes.post('/', async (c) => {
     publicKey: string;
     secretKey: string;
   } | null = null;
+  // Authed branch: the service already provisioned the wallet (non-fatal) and
+  // returns the one-time payload; auto-provision branch overwrites below via
+  // its own FATAL wallet call.
   let firstTimeWallet: {
     address: string;
     secretKey: string;
     chain: 'solana';
-  } | null = null;
+  } | null = provisioned.wallet;
 
   if (isAutoProvision) {
     // 1. Mint ed25519 identity keypair. On race-loser we throw (rather
@@ -500,35 +387,15 @@ avatarRoutes.post('/', async (c) => {
         via: 'create-agent',
       },
     });
-  } else {
-    // Authed path — still use ensureWalletWithFirstTimeSecret so the new
-    // avatar's fresh wallet secret is disclosed to the user exactly once.
-    // Per Phase 5.1: secret shown once per wallet; each avatar gets its own
-    // wallet regardless of whether the user already had identity. Before
-    // 2026-04-24 this branch used ensureWallet() and never returned the
-    // secret — users creating a new Milady agent saw no wallet backup
-    // prompt at all. Fixed by switching to the same call as the unauth
-    // path. Non-fatal on failure (matches pre-Phase-4d behavior so flaky
-    // Cloudflare Worker connectivity doesn't block avatar creation for
-    // existing users).
-    try {
-      const w = await ensureWalletWithFirstTimeSecret('avatar', avatar.id);
-      avatar.walletAddress = w.publicKey;
-      if (w.firstTimeSecretKeyBase58) {
-        firstTimeWallet = {
-          address: w.publicKey,
-          secretKey: w.firstTimeSecretKeyBase58,
-          chain: 'solana',
-        };
-      }
-    } catch (err) {
-      console.error('[avatars] Failed to auto-generate wallet for new avatar:', err);
-    }
   }
+  // (Authed path — wallet was already handled inside provisionAvatarAgent
+  // with 'include-nonfatal': ensureWalletWithFirstTimeSecret, secret shown
+  // exactly once, non-fatal on failure. Same behavior as the pre-refactor
+  // inline branch that lived here since 2026-04-24.)
 
   return c.json({
     avatar,
-    agentId: agent.id,
+    agentId,
     // Phase 4d — first-time identity + wallet disclosure. Present only
     // when the avatar was created by an auto-provisioned (unauth) call.
     // Subsequent /api/avatars POSTs by the same user would 400 ("already
@@ -579,36 +446,408 @@ avatarRoutes.get('/me', requireAuth, async (c) => {
   });
 });
 
-// Update avatar position
-// S3: bounded to the shared world dims (WORLD_PX_WIDTH/HEIGHT = 22528 after the
-// 576→704 grow) so the re-centered spawn (11264, 11804) persists. The bound is
-// imported from @clawville/shared, so the world grow auto-raised it — no edit here.
-const updatePositionSchema = z.object({
-  positionX: z.number().int().min(0).max(WORLD_PX_WIDTH),
-  positionY: z.number().int().min(0).max(WORLD_PX_HEIGHT),
+// Update avatar — position (legacy hot path) + P2 customize extension.
+// S3: position bounded to the shared world dims (WORLD_PX_WIDTH/HEIGHT = 22528
+// after the 576→704 grow) so the re-centered spawn (11264, 11804) persists.
+//
+// P2 Slice A#3 (2026-07-04, additive): PATCH /me now ALSO accepts the
+// create-agent customize field set that had no PATCH coverage — `name`,
+// `species`, `archetypeId`, `personality`, `learningFocus` (all optional).
+// modelKey/color/gender stay on PATCH /me/appearance (unchanged). Semantics:
+//  - position-only bodies take the EXACT pre-existing fast path (single
+//    UPDATE, no limiter, same 400 'Invalid position' / 404 'Avatar not
+//    found' behavior).
+//  - customize bodies are rate-limited (30/min/IP), rebuild the ElizaOS
+//    characterConfig where needed, and mirror onto the linked platform_agents
+//    row in the same transaction (same pattern as /me/appearance):
+//      · archetypeId change → FULL persona rebuild from the new archetype,
+//        PRESERVING learned knowledge (entries beyond the old archetype
+//        baseline + orientation set survive — research.ts appends there).
+//      · name / learningFocus change → rebuild ONLY the system prompt,
+//        preserving every other characterConfig field.
+//      · personality change → stats recalculated (create-time formula).
+//      · species change → column-only (2D fallback; 3D reads modelKey).
+//  - name changes enforce global uniqueness (avatars.name + users.username,
+//    the check-name dual probe) and keep users.username in lockstep when it
+//    was NULL or still equal to the old avatar name.
+const updateMeSchema = z.object({
+  positionX: z.number().int().min(0).max(WORLD_PX_WIDTH).optional(),
+  positionY: z.number().int().min(0).max(WORLD_PX_HEIGHT).optional(),
+  name: avatarNameSchema.optional(),
+  species: z.enum(['cat', 'dragon', 'fox', 'owl', 'wolf', 'bunny', 'phoenix', 'turtle']).optional(),
+  archetypeId: z.enum(ARCHETYPE_IDS as [string, ...string[]]).optional(),
+  personality: personalitySchema.optional(),
+  /** ≤120 chars; empty string or null clears the focus. */
+  learningFocus: z.string().max(120).nullable().optional(),
 });
+
+const CUSTOMIZE_KEYS = ['name', 'species', 'archetypeId', 'personality', 'learningFocus'] as const;
 
 avatarRoutes.patch('/me', requireAuth, async (c) => {
   const user = c.get('user');
   const body = await c.req.json();
-  const result = updatePositionSchema.safeParse(body);
+  const result = updateMeSchema.safeParse(body);
+
+  const bodyTouchesCustomize =
+    !!body && typeof body === 'object' && CUSTOMIZE_KEYS.some((k) => k in body);
 
   if (!result.success) {
+    // Byte-compat: every pre-existing (position-shaped) invalid body keeps
+    // the exact 'Invalid position' 400; only bodies that actually carry a
+    // customize key get the field-specific Zod message.
+    throw new HTTPException(400, {
+      message: bodyTouchesCustomize
+        ? result.error.issues[0]?.message ?? 'Invalid update'
+        : 'Invalid position',
+    });
+  }
+
+  const d = result.data;
+  const hasPosition = d.positionX !== undefined || d.positionY !== undefined;
+  if (hasPosition && (d.positionX === undefined || d.positionY === undefined)) {
+    // Position comes as a pair — same message a partial body got before.
+    throw new HTTPException(400, { message: 'Invalid position' });
+  }
+  const hasCustomize =
+    d.name !== undefined ||
+    d.species !== undefined ||
+    d.archetypeId !== undefined ||
+    d.personality !== undefined ||
+    d.learningFocus !== undefined;
+
+  if (!hasPosition && !hasCustomize) {
+    // {} previously failed the required-position schema with this message.
     throw new HTTPException(400, { message: 'Invalid position' });
   }
 
-  const [updated] = await db
-    .update(avatars)
-    .set({
-      positionX: result.data.positionX,
-      positionY: result.data.positionY,
-      updatedAt: new Date(),
-    })
-    .where(and(eq(avatars.userId, user.id), eq(avatars.isActive, true)))
-    .returning();
+  // ---- FAST PATH: position-only — the pre-P2 handler, byte-identical. ----
+  if (!hasCustomize) {
+    const [updated] = await db
+      .update(avatars)
+      .set({
+        positionX: d.positionX!,
+        positionY: d.positionY!,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(avatars.userId, user.id), eq(avatars.isActive, true)))
+      .returning();
 
-  if (!updated) {
+    if (!updated) {
+      throw new HTTPException(404, { message: 'Avatar not found' });
+    }
+
+    return c.json({ avatar: updated });
+  }
+
+  // ---- CUSTOMIZE BRANCH (P2 Slice A#3) ----
+  const ip = getClientIp({ get: (n) => c.req.header(n) ?? null });
+  if (!customizeEditRateLimiter.check(ip)) {
+    throw new HTTPException(429, { message: 'Too many customize edits. Slow down.' });
+  }
+
+  // Guest gate (P2 post-panel BLOCKING #2, 2026-07-04). The customize field
+  // set is agent-provisioning, not gameplay: pre-P2 a guest at /create-agent
+  // dead-ended in the POST-create 400, but the additive PATCH customize path
+  // would let a guest mutate their throwaway avatar (and transiently flash
+  // Controlled/Autonomous UI). Guests have DEMO economy only and never get a
+  // provisioned agent, so this branch is not for them — reject with a
+  // client-branchable code (`err.code`, never message text). The position
+  // fast path above stays guest-accessible (the game persists guest positions).
+  // Lucia's user attributes don't carry is_guest (getUserAttributes in
+  // lib/auth.ts), so this needs a users read — but only on the cold customize
+  // branch, never the position hot path.
+  const guestProbe = await db.query.users.findFirst({
+    where: eq(users.id, user.id),
+    columns: { isGuest: true },
+  });
+  if (guestProbe?.isGuest) {
+    return c.json(
+      {
+        error: 'Guest accounts cannot customize an agent. Create an account to provision one.',
+        code: 'guest_not_allowed',
+      },
+      403,
+    );
+  }
+
+  const current = await db.query.avatars.findFirst({
+    where: and(eq(avatars.userId, user.id), eq(avatars.isActive, true)),
+  });
+  if (!current) {
     throw new HTTPException(404, { message: 'Avatar not found' });
+  }
+
+  const nameChanging = d.name !== undefined && d.name !== current.name;
+  if (nameChanging) {
+    // check-name dual probe — reduces the collision window; the 23505 catch
+    // below covers the race remainder.
+    const existingAvatar = await db.query.avatars.findFirst({
+      where: eq(avatars.name, d.name!),
+    });
+    if (existingAvatar) {
+      throw new HTTPException(400, { message: 'That name is already taken' });
+    }
+    const existingUsername = await db.query.users.findFirst({
+      where: sql`lower(${users.username}) = lower(${d.name!}) AND ${users.id} <> ${user.id}`,
+    });
+    if (existingUsername) {
+      throw new HTTPException(400, { message: 'That name is already taken' });
+    }
+  }
+
+  const archetypeChanging =
+    d.archetypeId !== undefined && d.archetypeId !== current.archetype;
+  const learningFocusProvided = d.learningFocus !== undefined;
+  const nextLearningFocus = learningFocusProvided
+    ? d.learningFocus?.trim() || null
+    : current.learningFocus ?? null;
+  const nextName = d.name ?? current.name;
+  const nextArchetypeId = (d.archetypeId ?? current.archetype) as AvatarArchetypeId;
+  const personalityChanging = d.personality !== undefined;
+  const speciesChanging = d.species !== undefined && d.species !== current.species;
+  const learningFocusChanging =
+    learningFocusProvided && nextLearningFocus !== (current.learningFocus ?? null);
+
+  const patch: Record<string, unknown> = { updatedAt: new Date() };
+  if (hasPosition) {
+    patch.positionX = d.positionX;
+    patch.positionY = d.positionY;
+  }
+  if (nameChanging) patch.name = d.name;
+  if (speciesChanging) patch.species = d.species;
+  if (archetypeChanging) patch.archetype = d.archetypeId;
+  if (personalityChanging) {
+    patch.personality = d.personality;
+    // Same create-time formula — customize keeps stats derivable from
+    // personality exactly like POST / does.
+    patch.stats = calculateAvatarStats(d.personality!);
+  }
+  if (learningFocusProvided) patch.learningFocus = nextLearningFocus;
+
+  // P2 post-panel BLOCKING #1 (2026-07-04) — mint-on-customize backfill.
+  // Live-data discovery: 25 non-guest milady-harness avatars on staging have
+  // platform_agent_id NULL and NO openclaw_bots row, so /me/agent-session
+  // returns mode 'provisioning-pending' for them. The "finish customizing" CTA
+  // sends them here — but before this fix the customize PATCH only MIRRORED an
+  // existing platform_agents row and never minted a missing one, so the CTA
+  // looped forever. When platformAgentId is NULL we insert the missing
+  // 'avatar-agent' row (same shape as the provisioning service / POST /api/
+  // avatars) inside the SAME transaction and link it, so /me/agent-session
+  // genuinely flips to 'hosted' for a milady/hermes-harness avatar. The
+  // backfill always builds a FULL characterConfig from the post-patch fields
+  // (see below) — a mirror-only rebuild would leave the new agent row with a
+  // partial persona. agents.name has no global UNIQUE for type 'avatar-agent'
+  // (only system-agent / openclaw-bot have partial unique indexes), so the
+  // insert can never 23505 on name; the only rename 23505 risk stays on
+  // avatars.name / users.username and is handled by the existing catch.
+  const needsAgentBackfill = !current.platformAgentId;
+
+  // characterConfig rebuild rules (see route comment above).
+  const modelMeta = getAgentModel(current.modelKey ?? DEFAULT_AGENT_MODEL_KEY);
+  const modelLabel = modelMeta?.label ?? current.modelKey ?? 'Milady';
+  let nextCharacterConfig: Record<string, unknown> | null = null;
+  if (needsAgentBackfill) {
+    // Backfill path — ALWAYS build a full characterConfig from the post-patch
+    // fields, even when nothing that normally triggers a rebuild changed. This
+    // becomes the new agent row's `customization` AND the avatar's
+    // characterConfig, so the provisioned persona is complete from t=0. Learned
+    // knowledge is preserved from any pre-existing avatar config (a legacy
+    // agent-less avatar could still carry research-appended knowledge).
+    const fresh = buildCharacterConfig(nextArchetypeId, nextName, modelLabel, nextLearningFocus);
+    const oldArchetype = AVATAR_ARCHETYPES.find((a) => a.id === current.archetype);
+    const oldKnowledge: string[] = Array.isArray(
+      (current.characterConfig as { knowledge?: unknown } | null)?.knowledge,
+    )
+      ? ((current.characterConfig as { knowledge: string[] }).knowledge)
+      : [];
+    const baseline = new Set<string>([
+      ...(oldArchetype?.knowledge ?? []),
+      ...CLAWVILLE_ORIENTATION_KNOWLEDGE,
+    ]);
+    const learned = oldKnowledge.filter((k) => !baseline.has(k));
+    nextCharacterConfig = {
+      ...fresh,
+      knowledge: [...fresh.knowledge, ...learned.filter((k) => !fresh.knowledge.includes(k))],
+    };
+  } else if (archetypeChanging) {
+    const fresh = buildCharacterConfig(nextArchetypeId, nextName, modelLabel, nextLearningFocus);
+    // Preserve LEARNED knowledge: everything in the old config's knowledge
+    // that was neither the old archetype's baseline nor the shared
+    // orientation set (research.ts appends learned entries there — a full
+    // rebuild must not drop them).
+    const oldArchetype = AVATAR_ARCHETYPES.find((a) => a.id === current.archetype);
+    const oldKnowledge: string[] = Array.isArray(
+      (current.characterConfig as { knowledge?: unknown } | null)?.knowledge,
+    )
+      ? ((current.characterConfig as { knowledge: string[] }).knowledge)
+      : [];
+    const baseline = new Set<string>([
+      ...(oldArchetype?.knowledge ?? []),
+      ...CLAWVILLE_ORIENTATION_KNOWLEDGE,
+    ]);
+    const learned = oldKnowledge.filter((k) => !baseline.has(k));
+    nextCharacterConfig = {
+      ...fresh,
+      knowledge: [...fresh.knowledge, ...learned.filter((k) => !fresh.knowledge.includes(k))],
+    };
+  } else if (
+    (nameChanging || learningFocusChanging) &&
+    current.characterConfig &&
+    typeof current.characterConfig === 'object'
+  ) {
+    // Same-archetype rename / focus edit — rebuild ONLY the system prompt
+    // (the /me/appearance precedent: bio, lore, knowledge, topics, style etc.
+    // survive untouched).
+    const fresh = buildCharacterConfig(nextArchetypeId, nextName, modelLabel, nextLearningFocus);
+    nextCharacterConfig = {
+      ...(current.characterConfig as unknown as Record<string, unknown>),
+      system: fresh.system,
+    };
+  }
+  if (nextCharacterConfig) patch.characterConfig = nextCharacterConfig;
+
+  let updated;
+  try {
+    updated = await db.transaction(async (tx) => {
+      // Backfill (BLOCKING #1): mint the missing 'avatar-agent' row FIRST so
+      // its id can be written onto avatars.platformAgentId in the SAME UPDATE
+      // below. Config mirrors the provisioning service / POST /api/avatars
+      // (species/color/archetypeId/modelKey/agentCategory/harness from the
+      // POST-patch avatar fields); customization = the full characterConfig
+      // built above. status 'pending' — the runtime lazy-starts on first chat
+      // (no warm here, matching the D8 cost guardrail). NOT is_house
+      // (fleet-only). NOT an openclaw_bots row (would flip /me/agent-session
+      // off 'hosted').
+      const backfillPatch: Record<string, unknown> = { ...patch };
+      if (needsAgentBackfill) {
+        const [backfilledAgent] = await tx
+          .insert(agents)
+          .values({
+            userId: user.id,
+            name: nextName,
+            type: 'avatar-agent',
+            status: 'pending',
+            config: {
+              species: (d.species ?? current.species) as string,
+              color: current.color,
+              archetypeId: nextArchetypeId,
+              modelKey: current.modelKey ?? DEFAULT_AGENT_MODEL_KEY,
+              // modelMeta is derived from current.modelKey ?? DEFAULT_AGENT_MODEL_KEY,
+              // and DEFAULT_AGENT_MODEL_KEY is guaranteed present in the registry,
+              // so modelMeta.category is always resolvable (kept as the self-
+              // consistent category source, mirroring the POST route derivation).
+              agentCategory: current.agentCategory ?? modelMeta?.category ?? DEFAULT_AGENT_CATEGORY,
+              harness: current.harness ?? DEFAULT_AGENT_HARNESS,
+            },
+            customization: nextCharacterConfig,
+          })
+          .returning();
+        backfillPatch.platformAgentId = backfilledAgent.id;
+      }
+
+      const [updatedAvatar] = await tx
+        .update(avatars)
+        .set(backfillPatch)
+        .where(and(eq(avatars.userId, user.id), eq(avatars.isActive, true)))
+        .returning();
+
+      if (!updatedAvatar) {
+        throw new HTTPException(404, { message: 'Avatar not found or inactive' });
+      }
+
+      // Username lockstep on rename: only when users.username was never set
+      // OR still equals the old avatar name (i.e. was initialized by the
+      // create flow). An explicitly-changed username is never clobbered —
+      // same discipline as the create-time init.
+      if (nameChanging) {
+        await tx
+          .update(users)
+          .set({ username: d.name!, updatedAt: new Date() })
+          .where(
+            and(
+              eq(users.id, user.id),
+              or(isNull(users.username), eq(users.username, current.name)),
+            ),
+          );
+      }
+
+      // Mirror onto the linked platform_agents row (same pattern as
+      // /me/appearance) so agents.config / customization / name never drift
+      // from the avatars row. Skipped on the backfill path — the row we just
+      // inserted already carries the POST-patch config/customization/name.
+      const needsAgentMirror =
+        !needsAgentBackfill &&
+        !!current.platformAgentId &&
+        (nameChanging || speciesChanging || archetypeChanging || !!nextCharacterConfig);
+      if (needsAgentMirror) {
+        const [agentRow] = await tx
+          .select()
+          .from(agents)
+          .where(eq(agents.id, current.platformAgentId!))
+          .limit(1);
+        if (agentRow) {
+          const nextAgentConfig = {
+            ...((agentRow.config ?? {}) as Record<string, unknown>),
+            ...(speciesChanging ? { species: d.species } : {}),
+            ...(archetypeChanging ? { archetypeId: d.archetypeId } : {}),
+          };
+          const agentPatch: Record<string, unknown> = {
+            config: nextAgentConfig,
+            updatedAt: new Date(),
+          };
+          if (nameChanging) agentPatch.name = d.name;
+          if (nextCharacterConfig) agentPatch.customization = nextCharacterConfig;
+          await tx.update(agents).set(agentPatch).where(eq(agents.id, agentRow.id));
+        }
+      }
+
+      return updatedAvatar;
+    });
+  } catch (err) {
+    if (err instanceof HTTPException) throw err;
+    const code =
+      (err as { code?: string; cause?: { code?: string } } | null)?.code ??
+      (err as { cause?: { code?: string } } | null)?.cause?.code;
+    if (code === '23505') {
+      // Rename race — someone claimed the name/username between the probe
+      // and the UPDATE.
+      throw new HTTPException(400, { message: 'That name is already taken' });
+    }
+    throw err;
+  }
+
+  // P2 post-panel item 8 (2026-07-04) — a persona rebuild (archetype/name/
+  // learningFocus change) mirrors onto platform_agents above, but a HOT
+  // ElizaOS runtime keeps the OLD system prompt until the 30-min idle sweep.
+  // Stop it fire-and-forget so the next chat lazy-restarts with the new
+  // persona (items.ts stop-after-knowledge-write precedent). Skipped on the
+  // backfill path — that runtime never existed. NOTE: PATCH /me/appearance
+  // has this same gap pre-existing (tracked in TODO.md §0b), left untouched
+  // in this diff.
+  if (!needsAgentBackfill && current.platformAgentId && nextCharacterConfig) {
+    agentOrchestrator.stopAgent(current.platformAgentId).catch((err) => {
+      console.error('[avatars] customize stopAgent (persona reload) failed:', err);
+    });
+  }
+
+  // Observability — reuse the /me/appearance event so /dash aggregates all
+  // avatar edits in one counter; payload keys distinguish customize edits.
+  // (Payload keys carry no token/secret/auth/bearer substrings.)
+  const changed: Record<string, unknown> = {};
+  if (nameChanging) changed.name = { from: current.name, to: d.name };
+  if (speciesChanging) changed.species = { from: current.species, to: d.species };
+  if (archetypeChanging) changed.archetype = { from: current.archetype, to: d.archetypeId };
+  if (personalityChanging) changed.personality = true;
+  if (learningFocusChanging) changed.learningFocus = true;
+  if (Object.keys(changed).length > 0) {
+    logEvent({
+      eventType: 'avatar.appearance.changed',
+      userId: user.id,
+      avatarId: updated.id,
+      payload: { changed, harness: current.harness, via: 'customize' },
+    }).catch((err) => {
+      console.error('[avatars] customize event log failed:', err);
+    });
   }
 
   return c.json({ avatar: updated });

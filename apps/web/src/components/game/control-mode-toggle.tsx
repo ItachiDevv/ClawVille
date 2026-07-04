@@ -1,6 +1,9 @@
 'use client';
 
+import { useQuery } from '@tanstack/react-query';
 import { useGameStore, type GameState } from '@/stores/game';
+import { useAvatar } from '@/hooks/use-avatar';
+import { api } from '@/lib/api';
 
 export default function ControlModeToggle() {
   const controlMode = useGameStore((s: GameState) => s.controlMode);
@@ -8,18 +11,49 @@ export default function ControlModeToggle() {
   const setControlMode = useGameStore((s: GameState) => s.setControlMode);
   const toggleControlMode = useGameStore((s: GameState) => s.toggleControlMode);
 
-  // Toggle labels gate strictly on `agentConnected` (the real Moltbook
-  // handshake completed), NOT on `hasAvatar`. Guest auto-create mints a
-  // throwaway avatar for unauthenticated visitors so they can play activity
-  // games — but they remain NPC-mode visitors. The toggle is the
-  // "I have an agent in the world" switch, which only flips after a
-  // real connect.
-  //   agentConnected=false → Explore    ↔ NPC Mode    (spectator / possess NPC)
-  //   agentConnected=true  → Controlled ↔ Autonomous  (manual / autonomy engine)
-  const optionA = agentConnected ? 'Controlled' : 'Explore';
-  const optionB = agentConnected ? 'Autonomous' : 'NPC Mode';
+  // P2 toggle reconcile (2026-07-04, model doc §2/§7 B-class fix). The
+  // mode-pair labels used to gate ONLY on `agentConnected`, while the /game
+  // promotion effect embodies ANY resolved authenticated non-guest avatar
+  // owner in 'player' — so an owner whose agent session wasn't paired (idle
+  // external agent, provisioning race, pre-hydration frame) drove their body
+  // in 'player' while the toggle showed "Explore / NPC Mode" and clicking it
+  // hijacked their mode.
+  //
+  // Fix: derive `hasProvisionedAgent` from the SAME predicate the promotion
+  // effect uses (game/page.tsx: resolved authenticated non-guest + avatar —
+  // under P2, account ≡ agent, signup provisions) UNIONED with the
+  // reload-survivable paired flag. `agentConnected` itself keeps its
+  // paired-union semantics untouched for every other reader
+  // (showDemoProgressHud, cove autonomous availability, chat bar). Both
+  // queries are pre-existing keys (['avatar'], ['auth-me']) — cache-shared
+  // with /game, zero new keys, no new controlMode writer (the buttons call
+  // the same setControlMode/toggleControlMode they always did).
+  //
+  // Guest exemption preserved VERBATIM: a guest (or unresolved auth) never
+  // derives true here, so guests keep the Explore ↔ NPC pair — the
+  // guest-promotion-hijack class cannot recur through the labels.
+  const { data: avatar } = useAvatar();
+  const { data: authData, isLoading: authLoading } = useQuery({
+    queryKey: ['auth-me'],
+    queryFn: async () => {
+      try {
+        return await api.me();
+      } catch {
+        return null;
+      }
+    },
+    retry: false,
+  });
+  const isResolvedNonGuest =
+    !authLoading && !!authData?.user && !authData.user.isGuest;
+  const hasProvisionedAgent = agentConnected || (isResolvedNonGuest && !!avatar);
 
-  const aActive = agentConnected
+  //   hasProvisionedAgent=false → Explore    ↔ NPC Mode    (spectator / possess NPC)
+  //   hasProvisionedAgent=true  → Controlled ↔ Autonomous  (manual / autonomy engine)
+  const optionA = hasProvisionedAgent ? 'Controlled' : 'Explore';
+  const optionB = hasProvisionedAgent ? 'Autonomous' : 'NPC Mode';
+
+  const aActive = hasProvisionedAgent
     ? controlMode !== 'autonomous' // default: Controlled highlighted when mode isn't autonomous
     : controlMode === 'explore';
 
@@ -42,7 +76,11 @@ export default function ControlModeToggle() {
       <div className="flex items-center gap-0 rounded-full bg-[rgba(10,22,40,0.85)] backdrop-blur-md border border-cyan-500/20 shadow-[0_0_16px_rgba(0,229,255,0.07)] p-0.5">
         <button
           onClick={() => {
-            if (agentConnected) setControlMode('player');
+            // Direct setControlMode for the player pair (also ends
+            // hatcherSpectate — the owner takes the wheel); toggleControlMode
+            // keys on store `hasAgent`, which only tracks the PAIRED slice, so
+            // it must never route the provisioned pair.
+            if (hasProvisionedAgent) setControlMode('player');
             else if (!aActive) toggleControlMode();
           }}
           className={`
@@ -57,7 +95,7 @@ export default function ControlModeToggle() {
         </button>
         <button
           onClick={() => {
-            if (agentConnected) setControlMode('autonomous');
+            if (hasProvisionedAgent) setControlMode('autonomous');
             else if (aActive) toggleControlMode();
           }}
           className={`
