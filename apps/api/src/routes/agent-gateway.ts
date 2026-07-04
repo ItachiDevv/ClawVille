@@ -19,7 +19,7 @@ import {
 import { npcSimulation } from '../services/npc-simulation';
 import { findPath } from '../services/pathfinding';
 import { memoryService } from '../services/memory-service';
-import { db, openclawBots, avatars, users, buildingSkills, landParcels, eq, and, sql } from '@clawville/database';
+import { db, openclawBots, avatars, users, buildingSkills, landParcels, events as eventsTable, eq, and, sql, gt, asc, inArray } from '@clawville/database';
 import { agentOrchestrator } from '../services/agent-orchestrator';
 import { getSessionAgent } from '../services/session-agent-map';
 import { OpenClawClient } from '../services/openclaw-client';
@@ -74,7 +74,16 @@ import {
   expireSession,
   extendSessionTtl,
 } from '../services/openclaw-session-sweeper';
-import { drainKnowledgeEvents, clearSessionQueue } from '../services/skill-event-bus';
+import { drainKnowledgeEvents, drainAgentStreamEvents, clearSessionQueue } from '../services/skill-event-bus';
+import {
+  AGENT_STREAM_EVENT_TYPES,
+  REPLAY_LIMIT_MAX,
+  parseReplayQuery,
+  parseCursorValue,
+  projectDurableEvent,
+  computeNextCursor,
+  type DurableEventRow,
+} from '../services/agent-stream-config';
 import { runTool } from '../services/skill-tools-dispatcher';
 import { coveBlackjackRouter } from './cove-blackjack';
 import { covePokerMttRouter } from './cove-poker-mtt';
@@ -2060,6 +2069,43 @@ async function resolveSession(sessionId: string) {
 }
 
 // ---------------------------------------------------------------------------
+// Durable agent event-stream query (P3 slice 1, D7) — shared by the replay
+// endpoint AND the SSE reconnect catch-up. Reads the append-only `events` spine
+// WHERE agent_id = <this agent> AND event_type ∈ whitelist AND id > after,
+// ascending, capped. SAFE COLUMNS ONLY — id/eventType/ts/payload; NEVER
+// fp_hash/ip_prefix_hash/session_id. The server is stateless: the CALLER owns
+// its cursor (no server-side cursor storage).
+// ---------------------------------------------------------------------------
+async function queryDurableAgentEvents(
+  agentId: string,
+  afterId: bigint,
+  limit: number,
+): Promise<DurableEventRow[]> {
+  return db
+    .select({
+      id: eventsTable.id,
+      eventType: eventsTable.eventType,
+      ts: eventsTable.ts,
+      payload: eventsTable.payload,
+    })
+    .from(eventsTable)
+    .where(
+      and(
+        eq(eventsTable.agentId, agentId),
+        inArray(eventsTable.eventType, [...AGENT_STREAM_EVENT_TYPES]),
+        gt(eventsTable.id, afterId),
+      ),
+    )
+    .orderBy(asc(eventsTable.id))
+    .limit(limit);
+}
+
+// SSE reconnect catch-up page cap — bound the on-connect replay so a huge gap
+// can't stall the handshake; the paged `/events/replay` endpoint covers the
+// remainder. 20 pages * 500 = 10k events before we fall through to live.
+const SSE_REPLAY_MAX_PAGES = 20;
+
+// ---------------------------------------------------------------------------
 // Perception — GET /perception and SSE /events call the SHARED builder on the
 // sim (agent-metaverse P1). `npcSimulation.buildPerception(npcId)` is the single
 // source of truth (the former module-local `buildPerception` moved there so the
@@ -2386,7 +2432,12 @@ agentGatewayRoutes.post('/:sessionId/visit-building', async (c) => {
     sessionId: sessionDigest(sessionId),
     buildingId,
     payload: {
-      tokenAwarded,
+      // ctAwarded, NOT tokenAwarded: the event-logger sanitizer redacts any key
+      // containing the word `token`, so `tokenAwarded` lands as '[REDACTED]'
+      // write-only garbage — now that building.visited is agent-replayable, the
+      // durable payload must carry the REAL figure (precedent world-teacher-chat.ts).
+      // The response field below KEEPS `tokenAwarded` (read by the e2e scripts).
+      ctAwarded: tokenAwarded,
       activity: picked,
       knowledgeGained: knowledgeGained ? 1 : 0,
     },
@@ -2563,7 +2614,10 @@ agentGatewayRoutes.post('/:sessionId/building/:buildingId/chat', async (c) => {
       chatType: 'building',
       characterName: system.locationAgent.agentName,
       messageLength: parsed.data.message.length,
-      tokenAwarded,
+      // ctAwarded, NOT tokenAwarded: the sanitizer redacts `token`-containing
+      // keys. agent.chat.turn is agent-replayable, so the durable payload must
+      // carry the real CT figure. Response below KEEPS `tokenAwarded`.
+      ctAwarded: tokenAwarded,
       knowledgePersisted,
     },
   });
@@ -2704,6 +2758,50 @@ agentGatewayRoutes.get('/:sessionId/pending-installs', async (c) => {
   if (!resolved) return c.json({ error: 'Invalid or expired agent session' }, 404);
   const events = drainKnowledgeEvents(sessionId);
   return c.json({ events, drainedAt: new Date().toISOString() });
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/agent/:sessionId/events/replay?after=<id>&limit=<n>  (P3 slice 1, D7)
+// ---------------------------------------------------------------------------
+// Durable catch-up over the agent's OWN event history. The `events` table is the
+// append-only spine; this reads the whitelisted, agent-scoped rows since the
+// caller's cursor so a disconnect loses nothing. Unlike `/pending-installs`
+// (RAM-drain, one-shot), this is a STATELESS durable read — idempotent, paged,
+// re-runnable. The agent owns its cursor via the returned `nextCursor`.
+//
+// SAFE COLUMNS ONLY — the query + projection expose id/eventType/ts/payload and
+// nothing else (no fp_hash/ip_prefix_hash/session_id). Payloads were sanitized
+// write-side by event-logger.ts; we consume, never re-expose.
+// ---------------------------------------------------------------------------
+const eventsReplayRateLimiter = createRateLimiter({ maxPerWindow: 60, windowMs: 60_000 });
+
+agentGatewayRoutes.get('/:sessionId/events/replay', async (c) => {
+  // B1 (adversary): IP rate-limit BEFORE resolveSession/DB so a live bearer can't
+  // hammer the durable-read query. Mirrors `sessionStatusRateLimiter` (60/min/IP).
+  const ip = getClientIp({ get: (n) => c.req.header(n) ?? null });
+  if (!eventsReplayRateLimiter.check(ip)) {
+    return c.json({ error: 'Too many replay requests. Try again in 1 minute.', code: 'rate_limited' }, 429);
+  }
+
+  const sessionId = c.req.param('sessionId');
+  const resolved = await resolveSession(sessionId);
+  if (!resolved) return c.json({ error: 'Invalid or expired agent session' }, 404);
+
+  // Resolve the agent identity the SAME way the settle sites key their rows
+  // (getOpenClawBotConfig(sessionId).agentId == cove subject.agentId). An
+  // anonymous/legacy session with no bot config has no agent-scoped history.
+  const botConfig = npcSimulation.getOpenClawBotConfig(sessionId);
+  const agentId = botConfig?.agentId ?? null;
+  if (!agentId) return c.json({ events: [], nextCursor: null });
+
+  const parsed = parseReplayQuery(c.req.query());
+  if (!parsed) {
+    return c.json({ error: 'Invalid replay query', code: 'invalid_replay_query' }, 400);
+  }
+
+  const rows = await queryDurableAgentEvents(agentId, parsed.afterId, parsed.limit);
+  const events = rows.map(projectDurableEvent);
+  return c.json({ events, nextCursor: computeNextCursor(events) });
 });
 
 // ---------------------------------------------------------------------------
@@ -3056,6 +3154,12 @@ agentGatewayRoutes.get('/:sessionId/skills/:buildingId/skill.md', async (c) => {
 //
 // Session is re-validated each tick — if the bot is unregistered the stream
 // ends cleanly.
+//
+// B1 (adversary): the DURABLE reconnect catch-up (below) hits the DB, so it has
+// its OWN per-IP limiter — the live SSE loop itself is NEVER rate-limited (that
+// would change connect semantics). Over budget ⇒ skip catch-up, go live.
+const sseCatchupRateLimiter = createRateLimiter({ maxPerWindow: 30, windowMs: 60_000 });
+
 agentGatewayRoutes.get('/:sessionId/events', async (c) => {
   const sessionId = c.req.param('sessionId');
   const resolved = await resolveSession(sessionId);
@@ -3068,7 +3172,43 @@ agentGatewayRoutes.get('/:sessionId/events', async (c) => {
   c.header('Connection', 'keep-alive');
   c.header('X-Accel-Buffering', 'no');
 
+  // D7 slice-1 reconnect cursor: EventSource auto-sends `Last-Event-ID` on
+  // resume; `?after=` is the manual fallback. Both name an `events.id`.
+  const replayCursor = parseCursorValue(
+    c.req.header('Last-Event-ID') ?? c.req.query('after'),
+  );
+  const replayAgentId = npcSimulation.getOpenClawBotConfig(sessionId)?.agentId ?? null;
+  // Gate ONLY the catch-up with the per-IP limiter — and consume a token ONLY
+  // when a catch-up is actually requested (agent + cursor present), so a normal
+  // fresh connect never burns the budget. Over budget ⇒ catch-up is skipped and
+  // the agent falls back to the (separately limited) /events/replay endpoint.
+  const catchupAllowed =
+    replayAgentId != null &&
+    replayCursor != null &&
+    sseCatchupRateLimiter.check(getClientIp({ get: (n) => c.req.header(n) ?? null }));
+
   return stream(c, async (stream) => {
+    // --- D7 slice-1: durable catch-up on (re)connect BEFORE the live loop ----
+    // Replay whitelisted, agent-scoped durable rows since the cursor so a
+    // disconnect never drops a settlement/knowledge event. Each frame carries a
+    // standard SSE `id:` so the agent's `Last-Event-ID` keeps advancing. Paged +
+    // capped; a gap larger than the cap falls back to the /events/replay
+    // endpoint. Frames are labelled `event: replay` (durable catch-up) to
+    // distinguish them from live frames; the inner `eventType` drives dispatch.
+    if (catchupAllowed && replayAgentId && replayCursor != null) {
+      let cur = replayCursor;
+      for (let page = 0; page < SSE_REPLAY_MAX_PAGES; page++) {
+        const rows = await queryDurableAgentEvents(replayAgentId, cur, REPLAY_LIMIT_MAX);
+        if (rows.length === 0) break;
+        for (const row of rows) {
+          const ev = projectDurableEvent(row);
+          await stream.write(`event: replay\nid: ${ev.id}\ndata: ${JSON.stringify(ev)}\n\n`);
+          cur = row.id;
+        }
+        if (rows.length < REPLAY_LIMIT_MAX) break;
+      }
+    }
+
     let wasInCombat = false;
     let tickCount = 0;
     // Magic-link onboarding D4 (2026-07-02): last `humanControlled` state seen
@@ -3139,6 +3279,17 @@ agentGatewayRoutes.get('/:sessionId/events', async (c) => {
       const skillEvents = drainKnowledgeEvents(sessionId);
       for (const ev of skillEvents) {
         await stream.write(`event: knowledge_added\ndata: ${JSON.stringify(ev)}\n\n`);
+      }
+
+      // --- durable-backed stream frames (D7 slice-1): cove settlement confirms
+      // pushed by the settle sites. Each carries the backing `events.id` as the
+      // SSE `id:` so the agent's Last-Event-ID cursor advances on live delivery
+      // (reconnect then replays only what came after). ---
+      const streamEvents = drainAgentStreamEvents(sessionId);
+      for (const ev of streamEvents) {
+        await stream.write(
+          `event: ${ev.channel}\nid: ${ev.eventId}\ndata: ${JSON.stringify(ev.data)}\n\n`,
+        );
       }
 
       // --- ping every 10s (every 5 ticks at 2s cadence) ---

@@ -56,7 +56,12 @@ import { sessionDigest } from './session-digest';
 // `agent.connected` is invariant whether the digest happened at the call site or here.
 const RAW_BEARER_RE = /^(ag|oc|hat|claw)-[A-Za-z0-9_-]{32}$/;
 
-function redactBearer(v: unknown): unknown {
+// Exported for the focused unit test that PINS the events.agent_id ==
+// getOpenClawBotConfig().agentId join the P3 slice-1 replay depends on: a
+// canonical agentId handle must pass through UNCHANGED (so a settle/visit/chat
+// row is found by the replay's canonical agentId), while a raw bearer is
+// digested (so it can never land as agent_id). Pure — no env, no I/O.
+export function redactBearer(v: unknown): unknown {
   return typeof v === 'string' && RAW_BEARER_RE.test(v) ? sessionDigest(v) : v;
 }
 
@@ -365,7 +370,13 @@ export function shouldEmitAgentConnected(subjectKey: string, nowMs: number): boo
   return true;
 }
 
-export async function logEvent(input: EventInput): Promise<void> {
+/**
+ * Insert core shared by `logEvent` (void) and `logEventReturningId` (id). Same
+ * never-throws contract, same sanitization, same three-tier fallback. Returns
+ * the inserted `events.id` on the happy path, or `null` when the row was
+ * coalesced away (agent.connected dedupe) or BOTH inserts failed.
+ */
+async function writeEvent(input: EventInput): Promise<bigint | null> {
   // Fix B — coalesce rapid-reconnect agent.connected duplicates BEFORE any
   // insert. Subject precedence agentId → avatarId → userId; key includes the
   // fingerprint so distinct browsers stay independent. When no subject can be
@@ -375,7 +386,7 @@ export async function logEvent(input: EventInput): Promise<void> {
     if (subj !== null) {
       const key = `${subj}:${input.fpHash ?? 'nofp'}`;
       if (!shouldEmitAgentConnected(key, Date.now())) {
-        return;
+        return null;
       }
     }
   }
@@ -405,8 +416,11 @@ export async function logEvent(input: EventInput): Promise<void> {
   };
 
   try {
-    await db.insert(events).values(row);
-    return;
+    // RETURNING id so callers that need the durable cursor (P3 slice 1 — the
+    // live settlement-confirm push cites this as the SSE `id:`) can capture it;
+    // `logEvent` discards it, so existing call sites are unaffected.
+    const inserted = await db.insert(events).values(row).returning({ id: events.id });
+    return inserted[0]?.id ?? null;
   } catch (primaryErr) {
     try {
       await db.insert(eventWriteFailures).values({
@@ -415,7 +429,7 @@ export async function logEvent(input: EventInput): Promise<void> {
         errorMessage: String(primaryErr),
         errorStack: (primaryErr as Error)?.stack,
       });
-      return;
+      return null;
     } catch (secondaryErr) {
       console.warn(
         '[event-logger] DOUBLE FAILURE',
@@ -434,8 +448,22 @@ export async function logEvent(input: EventInput): Promise<void> {
           secondaryError: String(secondaryErr),
         },
       });
+      return null;
     }
   }
+}
+
+export async function logEvent(input: EventInput): Promise<void> {
+  await writeEvent(input);
+}
+
+/**
+ * Same as `logEvent` but returns the inserted `events.id` (or null on
+ * coalesce/failure). Use ONLY where the durable cursor is needed downstream
+ * (P3 slice 1 settlement-confirm delivery). Same never-throws contract.
+ */
+export async function logEventReturningId(input: EventInput): Promise<bigint | null> {
+  return writeEvent(input);
 }
 
 /**
@@ -453,9 +481,21 @@ export async function logEventFromContext(
   c: FingerprintedContext,
   input: EventInput,
 ): Promise<void> {
+  await logEventFromContextReturningId(c, input);
+}
+
+/**
+ * `logEventFromContext` variant that returns the inserted `events.id` (or null).
+ * Same fp/ip context extraction; use where the durable cursor is needed
+ * downstream (P3 slice 1 cove settlement-confirm delivery).
+ */
+export async function logEventFromContextReturningId(
+  c: FingerprintedContext,
+  input: EventInput,
+): Promise<bigint | null> {
   const fpHash = c.get('fpHash');
   const ipPrefixHash = c.get('ipPrefixHash');
-  return logEvent({
+  return logEventReturningId({
     ...input,
     fpHash:
       input.fpHash ?? (typeof fpHash === 'string' ? fpHash : null),

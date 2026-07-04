@@ -329,6 +329,29 @@ itemRoutes.post('/learn', requireAuthOrAgentSession, async (c) => {
               isNull(openclawBots.sessionSweptAt),
             ),
           );
+        // D7 slice-1: durable, agent-scoped, BEARER-FREE knowledge event so a
+        // briefly-disconnected agent can REPLAY the knowledge it gained (the RAM
+        // push below is live-only; the `book.read` row is human-scoped with no
+        // agent_id). NO skillUrl/toolsUrl here — those embed the raw session
+        // bearer and are session-specific; on replay the agent rebuilds them from
+        // its CURRENT session. One row per active agent bound to this user.
+        for (const b of activeBots) {
+          void logEventFromContext(c, {
+            eventType: 'agent.knowledge_added',
+            userId,
+            avatarId: avatar.id,
+            agentId: b.agentId,
+            buildingId: book.building,
+            payload: {
+              source: 'book',
+              buildingId: book.building,
+              skillName: `clawville-${book.building}`,
+              suggestedFilename: `clawville-${book.building}.md`,
+              sourceName: book.name,
+              knowledgeEntries: newKnowledge.slice(0, 8),
+            },
+          });
+        }
         const activeSessionIds = npcSimulation.findActiveSessionsByAgentIds(
           activeBots.map((b) => b.agentId),
         );
