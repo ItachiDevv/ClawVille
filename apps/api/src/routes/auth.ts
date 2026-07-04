@@ -11,6 +11,12 @@ import { createRateLimiter, getClientIp } from '../middleware/rate-limit';
 import { issueAuthToken, consumeAuthToken } from '../services/auth-token-service';
 import { sendEmail, isGuestEmail } from '../services/email-service';
 import {
+  provisionAvatarAgentForSignup,
+  runProvisioningFailSoft,
+  isAgentProvisioningPending,
+  type ProvisionAvatarAgentResult,
+} from '../services/avatar-agent-provisioning';
+import {
   verifyEmailTemplate,
   resetPasswordTemplate,
 } from '../templates/email-templates';
@@ -170,6 +176,42 @@ authRoutes.get('/me/agent-session', requireAuth, async (c) => {
     });
   }
 
+  // P2 Slice B (2026-07-04) — derived 'agent-provisioning-pending' (D1
+  // migration, NO DDL). Evaluated ONLY here at the old 'none' fall-through:
+  // the bot-row precedence, 'dismissed', and 'hosted' branches above are
+  // untouched. A resolved authenticated NON-guest user with no avatar (or an
+  // avatar without a platformAgentId) is in the transitional
+  // provisioning-pending state — the account exists but its agent rows
+  // don't, e.g. a legacy "Player tier" account or a signup whose fail-soft
+  // provisioning failed. Guests keep mode 'none' (never pending). One extra
+  // indexed PK read, only on this cold branch — hot branches pay nothing.
+  // `connected` stays false; `hasAvatar` tells the client whether the
+  // /create-agent surface should PATCH (prefill) or POST (fresh create).
+  //
+  // The read is required: Lucia's user attributes (getUserAttributes in
+  // lib/auth.ts) map only email/name/avatar_url/username — NOT is_guest — so
+  // c.get('user') can't answer the guest question. This one indexed PK read
+  // only runs on the cold fall-through (guests + non-provisioned users); the
+  // hot bot-row / hosted / dismissed branches above return before it.
+  const userRow = await db.query.users.findFirst({
+    where: eq(users.id, user.id),
+    columns: { isGuest: true },
+  });
+  if (
+    isAgentProvisioningPending({
+      isGuest: !!userRow?.isGuest,
+      hasAvatar: !!avatar,
+      hasPlatformAgent: !!avatar?.platformAgentId,
+    })
+  ) {
+    return c.json({
+      connected: false,
+      reason: 'no_bot',
+      mode: 'provisioning-pending',
+      hasAvatar: !!avatar,
+    });
+  }
+
   return c.json({ connected: false, reason: 'no_bot', mode: 'none' });
 });
 
@@ -201,7 +243,25 @@ const signupSchema = z.object({
   name: z.string().optional(),
 });
 
+// P2 Slice A (2026-07-04, plan hard-constraint #8) — signup now fans out to
+// agent+avatar provisioning INCLUDING a custodial wallet mint (Cloudflare
+// Worker key wraps), so it must carry the same 5/min/IP account-mint budget
+// as every other mint surface (`autoProvisionRateLimiter` in avatars.ts,
+// `guestRateLimiter` below, `connectRateLimiter` in agent-gateway.ts).
+// Checked BEFORE any DB work.
+const signupRateLimiter = createRateLimiter({
+  maxPerWindow: 5,
+  windowMs: 60_000,
+});
+
 authRoutes.post('/signup', async (c) => {
+  const ip = getClientIp(c.req.raw.headers);
+  if (!signupRateLimiter.check(ip)) {
+    throw new HTTPException(429, {
+      message: 'Too many signups from this IP. Try again in 1 minute.',
+    });
+  }
+
   const body = await c.req.json();
   const result = signupSchema.safeParse(body);
 
@@ -246,6 +306,22 @@ authRoutes.post('/signup', async (c) => {
   const cookie = lucia.createSessionCookie(session.id);
   c.header('Set-Cookie', cookie.serialize());
 
+  // P2 Slice A (2026-07-04) — Path B: email signup PROVISIONS the agent
+  // (model doc §1; D4: default = ClawVille-hosted ElizaOS / Milady-harness).
+  // Rows only — platform_agents 'avatar-agent' + avatars + username init +
+  // custodial wallet; the runtime lazy-starts on first chat (NO warm here —
+  // plugin-sql mutex/boot-crush + the D8 cost guardrail). FAIL-SOFT: any
+  // provisioning failure logs and the signup still 200s WITHOUT the agent
+  // fields — the account then surfaces as mode 'provisioning-pending' on
+  // /me/agent-session (Slice B) instead of a broken promise. Idempotent by
+  // userId (guards double-submit). Avatar name derives from the signup
+  // 'name' field, else the email local-part (sanitized + suffix-retry on
+  // the global name UNIQUE).
+  const provisioned: ProvisionAvatarAgentResult | null = await runProvisioningFailSoft(
+    'signup auto-provision',
+    () => provisionAvatarAgentForSignup(userId, { name, email }),
+  );
+
   void logEventFromContext(c, {
     eventType: 'auth.signup',
     userId,
@@ -253,6 +329,7 @@ authRoutes.post('/signup', async (c) => {
     payload: {
       route: 'POST /api/auth/signup',
       isGuestEmail: isGuestEmail(email),
+      agentProvisioned: !!provisioned,
       outcome: 'success',
     },
   });
@@ -284,7 +361,22 @@ authRoutes.post('/signup', async (c) => {
     })().catch(() => {});
   }
 
-  return c.json({ success: true });
+  // Response ADDS the avatar + one-time wallet payload with the SAME field
+  // names/shape `POST /api/avatars` returns today (`avatar` = full row,
+  // `agentId` = platform_agents id, `wallet` = { address, secretKey,
+  // chain:'solana' } present ONLY when the wallet was freshly created —
+  // exactly-once discipline unchanged, the server never re-emits). On
+  // provisioning failure the response is the legacy `{ success: true }`.
+  return c.json({
+    success: true,
+    ...(provisioned
+      ? {
+          avatar: provisioned.avatar,
+          agentId: provisioned.agentId,
+          ...(provisioned.wallet ? { wallet: provisioned.wallet } : {}),
+        }
+      : {}),
+  });
 });
 
 // Login

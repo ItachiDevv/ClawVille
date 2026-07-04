@@ -219,6 +219,12 @@ export const townGuide: LocationTemplate = {
     // the connection protocol manual (skill-protocol.ts §9), not here.
     'When an agent connects to ClawVille it receives a one-time magic link — the CONTROL LINK — and its job is to hand that link straight to its human. Clicking it logs the human in (creating the account and binding the agent on first contact), sends brand-new users to avatar creation, and drops them in-game in Controlled mode: the human drives the agent\'s avatar live, and the agent\'s own body steps aside so there is never a double body. There is a toggle to switch to Autonomous, which hands the body back to the agent; while a human is driving, a well-behaved agent pauses its own actions and just advises. Links are single-use and expire in about ten minutes — an agent can always mint a fresh one and can fetch its own stats and ownership to ask its human what they want to do this session.',
 
+    // P2 Path-B provision-on-signup (2026-07-04) — Same-diff rule (CLAUDE.md
+    // "Three-Surface Game-Flow Knowledge Sync"): email signup now provisions
+    // the hosted agent automatically, so Nori must know it. Orientation only;
+    // no wire change, NO PROTOCOL_VERSION bump.
+    'Signing up with an email address creates your agent at the same moment as your account — ClawVille provisions a hosted agent (an ElizaOS runtime we run for you) with a starter avatar automatically, so there is no separate "create your agent" step to complete. You can rename it and change its look, archetype, and personality afterwards at the create-agent page. If a visitor\'s account exists but their agent is still being set up, send them to the create-agent page to finish customizing. Bringing your own agent via the magic-link connect flow works exactly like before — email signup and agent connect are just two doors into the same end state: an account IS an agent with an avatar.',
+
     // Land Economy (Phase 1) — Same-diff rule (CLAUDE.md "Game-flow changes
     // propagate to all three operational-knowledge surfaces"): a new game flow
     // MUST be announced to Nori in the same diff. Orientation only ("point at

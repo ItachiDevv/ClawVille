@@ -639,6 +639,27 @@ function SidebarContent({ closeMenu }: SidebarContentProps) {
   });
   const showLogout = !!authData?.user && !authData.user.isGuest;
 
+  // P2 (2026-07-04) — the durable "Player tier / Upgrade to Trainer" framing
+  // is RETIRED (D1: Player tier → transitional 'agent-provisioning-pending').
+  // The server derives pending on /me/agent-session for a resolved NON-guest
+  // user whose agent rows don't exist yet; the row below re-labels to a
+  // "finish setup" CTA routing to /create-agent (which prefills + PATCHes an
+  // existing avatar, or POST-creates when none). Reuses the EXISTING
+  // ['agent-session'] query key (already purged on login + wiped by the
+  // logout queryClient.clear()) — zero new query keys. Guests never see
+  // pending: the enabled gate is non-guest AND the server returns 'none'
+  // for guests regardless.
+  const isAuthedNonGuest = !!authData?.user && !authData.user.isGuest;
+  const { data: agentSession } = useQuery({
+    queryKey: ['agent-session'],
+    queryFn: api.getAgentSession,
+    enabled: isAuthedNonGuest,
+    staleTime: 30_000,
+    retry: false,
+  });
+  const provisioningPending =
+    isAuthedNonGuest && agentSession?.mode === 'provisioning-pending';
+
   const [helpOpen, setHelpOpen] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
   const [crossingToScape, setCrossingToScape] = useState(false);
@@ -824,24 +845,30 @@ function SidebarContent({ closeMenu }: SidebarContentProps) {
         <CategoryHeader label="World" subtitle="Enter · Connect" />
         <div className="rpg-sidebar-group">
           {/*
-            Phase 2 plan §3.4 — tier-aware label. Same row, two intents:
-              - Player tier (hasAvatar && !agentConnected): primary "Upgrade
-                to Trainer" CTA. Click → existing agent-connect modal.
-                Avatar/CT/rank carry forward (server-side, non-destructive).
-              - Trainer tier (agentConnected): manage the bound bot.
-                Green dot indicates active session.
-            Identical onClick handler — only the framing changes.
-          */}
-          {/*
-            Icon + label stay aligned across all three states (audit-fix
-            2026-04-29 — preventing the ⬆️/'Agent' mismatch when a
-            logged-in user has no avatar yet). Both flip together based on
-            the same tier predicate.
+            P2 re-label (2026-07-04) — supersedes the Phase 2 §3.4 "Player
+            tier / Upgrade to Trainer" durable-tier framing (D1: that tier is
+            now the TRANSITIONAL 'agent-provisioning-pending' state). Three
+            states, one row:
+              - agentConnected: manage the bound agent (green dot = active).
+                Click → agent-connect modal (unchanged).
+              - provisioning-pending (server-derived, non-guest only):
+                "Finish Agent Setup" CTA → /create-agent, which prefills from
+                the provisioned avatar and PATCHes (or POST-creates when no
+                avatar row exists). Avatar/CT/rank carry forward — the setup
+                is non-destructive customization, not an upgrade.
+              - everything else (guest, external-expired, dismissed):
+                generic "Agent" row → connect modal.
+            Icon + label flip together on the same predicate (audit-fix
+            2026-04-29 alignment rule preserved).
           */}
           <SidebarRow
-            icon={agentConnected ? '🔌' : (hasAvatar ? '⬆️' : '🔌')}
-            label={agentConnected ? 'Agent' : (hasAvatar ? 'Upgrade to Trainer' : 'Agent')}
-            onClick={runAction(() => setAgentConnectModalOpen(true))}
+            icon={agentConnected ? '🔌' : (provisioningPending ? '✨' : '🔌')}
+            label={agentConnected ? 'Agent' : (provisioningPending ? 'Finish Agent Setup' : 'Agent')}
+            onClick={
+              !agentConnected && provisioningPending
+                ? runAction(() => router.push('/create-agent'))
+                : runAction(() => setAgentConnectModalOpen(true))
+            }
             active={agentConnected}
             badge={
               agentConnected ? (

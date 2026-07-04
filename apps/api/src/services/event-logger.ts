@@ -256,12 +256,21 @@ export interface ActivityMatchPlacedPayload {
   subjectType: 'human' | 'agent' | 'bot';
   /**
    * True when the participant is an un-authed guest (created via
-   * `POST /api/auth/guest`). The agent leaderboard SQL filters on
-   * `payload->>'isGuest' <> 'true'` to keep guest results out of the
-   * placement-tier credit, mirroring the existing bot exclusion.
-   * Defaults to undefined (omitted) for non-guest writers — the JSON
-   * filter coalesces a missing key to `''` which fails the `=` 'true'
-   * test, so it's safe to leave off legacy emitters.
+   * `POST /api/auth/guest`).
+   *
+   * STALE-CLAIM FIX (2026-07-04, verified against live code): the agent
+   * leaderboard SQL does NOT filter on this key — there is no
+   * `isGuest`/`is_guest` predicate anywhere in
+   * `apps/api/src/routes/leaderboard.ts`; the exclusions that DO exist
+   * there are the bot carve-out (`payload->>'subjectType' <> 'bot'`), the
+   * partner-import skill_md carve-out (`payload->>'via' <>
+   * 'partner-import'`), and the house-agent NOT-EXISTS join. Guests CAN
+   * rank on the global board today. Whether they should be excluded is an
+   * OPEN FOUNDER DECISION —
+   * see docs/agent-metaverse-p2-plan.md "Explicit NON-goals". The key is
+   * still written by emitters so the decision can be encoded later
+   * without a payload backfill. Defaults to undefined (omitted) for
+   * non-guest writers.
    */
   isGuest?: boolean;
 }

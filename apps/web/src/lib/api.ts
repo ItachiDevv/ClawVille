@@ -128,8 +128,22 @@ export interface GuestSignupResponse {
 
 export const api = {
   // Auth
+  // P2 Path-B (2026-07-04) — signup now AUTO-PROVISIONS the hosted agent
+  // (avatar + platform_agents row + custodial wallet) server-side, FAIL-SOFT.
+  // On provisioning success the response additionally carries the avatar +
+  // agentId + one-time wallet payload with the SAME field names/shape as
+  // POST /api/avatars (the FirstTimeBackupModal contract). `wallet.secretKey`
+  // is disclosed EXACTLY ONCE — the server never re-emits it. On fail-soft
+  // provisioning failure the response is the legacy `{ success: true }` and
+  // the account surfaces as mode 'provisioning-pending' on /me/agent-session.
   signup: (data: { email: string; password: string; name?: string }) =>
-    request<{ success: boolean }>('/api/auth/signup', {
+    request<{
+      success: boolean;
+      avatar?: { id: string; name: string } & Record<string, unknown>;
+      agentId?: string;
+      /** One-time custodial wallet disclosure — present only when freshly minted. */
+      wallet?: { address: string; secretKey: string; chain: 'solana' };
+    }>('/api/auth/signup', {
       method: 'POST',
       body: JSON.stringify(data),
     }),
@@ -245,13 +259,26 @@ export const api = {
       // bearer to lose, nothing to "reconnect"); 'external-active|idle|expired' =
       // a user-run agent reachable via a bearer. Used by the chat bar (F2) to
       // suppress the meaningless "reconnect your agent" CTA for hosted avatars.
+      // 'provisioning-pending' (P2, 2026-07-04) = D1 transitional state: a
+      // resolved authenticated NON-guest user whose agent rows don't exist yet
+      // (no avatar, or an avatar without a platformAgentId — e.g. a legacy
+      // "Player tier" account or a signup whose fail-soft provisioning failed).
+      // Guests NEVER get this mode (server-derived, no DDL). `connected` is
+      // always false for pending.
       mode?:
         | 'hosted'
         | 'external-active'
         | 'external-idle'
         | 'external-expired'
         | 'dismissed'
+        | 'provisioning-pending'
         | 'none';
+      /**
+       * Present only with mode 'provisioning-pending' — whether an avatar row
+       * exists. Tells /create-agent to PATCH-prefill (true) vs POST-create
+       * (false) without a second fetch.
+       */
+      hasAvatar?: boolean;
     }>('/api/auth/me/agent-session'),
 
   translateGameText: (
@@ -353,6 +380,29 @@ export const api = {
     request<{ avatar: any }>('/api/avatars/me', {
       method: 'PATCH',
       body: JSON.stringify({ positionX, positionY }),
+    }),
+
+  // P2 customize extension of PATCH /api/avatars/me (2026-07-04) — the
+  // /create-agent flow for a user who ALREADY has an avatar (fresh signup
+  // auto-provision) submits edits here instead of POSTing a second avatar.
+  // Patchable: name / species / archetypeId / personality / learningFocus
+  // (all optional; only send fields that actually changed — an empty body
+  // 400s, and unchanged values just burn the 30/min/IP customize budget).
+  // modelKey/color/gender stay on PATCH /me/appearance (editAvatarAppearance);
+  // harness/agentCategory are deliberately immutable (hosting contract).
+  // Server rebuilds the ElizaOS characterConfig preserving learned knowledge
+  // and mirrors onto platform_agents in the same tx. 400 'That name is
+  // already taken' on a name collision; 429 'Too many customize edits.'.
+  customizeAvatar: (data: {
+    name?: string;
+    species?: string;
+    archetypeId?: string;
+    personality?: { habitat: string; hobby: string; greeting: string };
+    learningFocus?: string | null;
+  }) =>
+    request<{ avatar: any }>('/api/avatars/me', {
+      method: 'PATCH',
+      body: JSON.stringify(data),
     }),
 
   // Phase 4c Layer 1 — in-game appearance edit. Backend validates modelKey

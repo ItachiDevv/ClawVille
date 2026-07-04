@@ -7,6 +7,7 @@ import { OpenClawClient } from '../services/openclaw-client';
 import { npcSimulation } from '../services/npc-simulation';
 import { db, avatars, users, npcMemories, activityLog, openclawBots, agents, eq, and, desc, sql } from '@clawville/database';
 import { sessionMiddleware, requireAuth } from '../middleware/auth';
+import { createRateLimiter, getClientIp } from '../middleware/rate-limit';
 import { validateLiveAgentSession } from '../middleware/require-auth-or-agent';
 import type { AppContext } from '../types';
 import { agentOrchestrator } from '../services/agent-orchestrator';
@@ -119,8 +120,25 @@ const avatarSchema = baseSchema.extend({
 
 const registerSchema = z.discriminatedUnion('mode', [overrideSchema, avatarSchema]);
 
+// P2 Slice D (2026-07-04) — unauth cost hole: this legacy register path is
+// UNAUTHENTICATED and (with `skipPing=1`) does a DB upsert + in-world body
+// spawn per call with zero throttling. 5/min/IP matches the `/connect` +
+// account-mint budget (`connectRateLimiter` in agent-gateway.ts). Additive
+// only — behavior below the limiter is unchanged.
+const registerRateLimiter = createRateLimiter({
+  maxPerWindow: 5,
+  windowMs: 60_000,
+});
+
 // POST /api/openclaw/register
 openclawRoutes.post('/register', async (c) => {
+  // Rate limit BEFORE any body parse / DB work (the /join Fix M1 pattern —
+  // don't let a spam wave burn Postgres round-trips).
+  const ip = getClientIp({ get: (n) => c.req.header(n) ?? null });
+  if (!registerRateLimiter.check(ip)) {
+    return c.json({ error: 'Too many registration attempts. Try again in 1 minute.' }, 429);
+  }
+
   const body = await c.req.json();
   const parsed = registerSchema.safeParse(body);
   if (!parsed.success) {
