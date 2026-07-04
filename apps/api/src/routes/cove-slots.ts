@@ -122,7 +122,8 @@ import {
   debitClawTokens,
   InsufficientTokensError,
 } from '../services/claw-token-ledger';
-import { logEventFromContext } from '../services/event-logger';
+import { logEventFromContext, logEventFromContextReturningId } from '../services/event-logger';
+import { publishCoveSettlement } from '../services/agent-settlement-publish';
 import {
   serializeSpinResult,
   serializeWildMultiplier,
@@ -1475,7 +1476,9 @@ coveSlotsRouter.post('/spin', async (c) => {
     throw err;
   }
 
-  void logEventFromContext(c, {
+  // Durable settle row (UNCHANGED shape) — capture events.id for the D7 slice-1
+  // live settlement-confirm cursor. Write is byte-identical to before.
+  const settleLogP = logEventFromContextReturningId(c, {
     eventType: 'cove.slots.spin.executed',
     userId: ledgerUserId(subject),
     avatarId: avatar?.id ?? null,
@@ -1490,6 +1493,29 @@ coveSlotsRouter.post('/spin', async (c) => {
       isAgent: subject.kind === 'agent',
     },
   });
+  // D7 slice-1 (DELIVERY-ONLY; money-lens review): live settlement-confirm to an
+  // ONLINE agent. Durability is the row above; fire-and-forget, never affects
+  // settlement. This is the FRESH-spin executor — idempotent replays return
+  // early upstream (idempotency fast-path) and never reach here, so no replay
+  // gate is needed. The LIVE frame below carries only spin facts (no session
+  // id). NOTE: the durable row above — and thus the /events/replay + SSE
+  // catch-up path — DOES include `sessionId: session.id`; that is the slot-GAME
+  // session UUID, NOT the X-Clawville-Agent-Session bearer, so replaying it
+  // leaks no credential (the write-side sanitizer would redact a real bearer).
+  if (subject.kind === 'agent') {
+    publishCoveSettlement({
+      agentId: subject.agentId,
+      game: 'slots',
+      eventIdPromise: settleLogP,
+      payload: {
+        spinId: spinRowId,
+        predict: predictBig.toString(),
+        winAmount: winAmountBig.toString(),
+      },
+    });
+  } else {
+    void settleLogP;
+  }
 
   const serialized = serializeSpinResult(spinResult);
   const response: SpinResponse = {

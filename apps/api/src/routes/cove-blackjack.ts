@@ -111,7 +111,8 @@ import {
   debitClawTokens,
   InsufficientTokensError,
 } from '../services/claw-token-ledger';
-import { logEventFromContext } from '../services/event-logger';
+import { logEventFromContext, logEventFromContextReturningId } from '../services/event-logger';
+import { publishCoveSettlement } from '../services/agent-settlement-publish';
 import { recordBlackjackSkillMemory } from '../services/game-skill-memory';
 import type { AppContext } from '../types';
 
@@ -1972,7 +1973,10 @@ async function settleHand(
     balance = txResult.balanceAfter;
   }
 
-  void logEventFromContext(c, {
+  // Durable settle row (UNCHANGED shape) — now capturing the events.id so the
+  // D7 slice-1 live settlement-confirm can cite it as the SSE cursor. The write
+  // is byte-identical to before; only the return value is used.
+  const settleLogP = logEventFromContextReturningId(c, {
     eventType: 'cove.blackjack.hand.settled',
     userId: ledgerUserId(subject),
     avatarId: avatar?.id ?? null,
@@ -1989,6 +1993,27 @@ async function settleHand(
       replay: txResult.replay,
     },
   });
+  // D7 slice-1 (DELIVERY-ONLY; money-lens review): live settlement-confirm to an
+  // ONLINE agent. Durability is the row above; this is fire-and-forget and can
+  // NEVER affect settlement (no ledger/control change). Fresh settles only — a
+  // concurrent-settle replay already delivered its confirm on the first pass.
+  if (subject.kind === 'agent' && !txResult.replay) {
+    publishCoveSettlement({
+      agentId: subject.agentId,
+      game: 'blackjack',
+      eventIdPromise: settleLogP,
+      payload: {
+        handId: hand.id,
+        shoeId,
+        handIndex: hand.handIndex,
+        bet: hand.bet,
+        payout: hand.payout,
+        net: hand.net,
+      },
+    });
+  } else {
+    void settleLogP;
+  }
 
   // ── Learn-through-play (Rule E5 / msg 6) ───────────────────────────────────
   // On a FRESH settle (never on an idempotent replay — that would double-write

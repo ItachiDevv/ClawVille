@@ -105,7 +105,8 @@ import {
   debitClawTokens,
   InsufficientTokensError,
 } from '../services/claw-token-ledger';
-import { logEventFromContext } from '../services/event-logger';
+import { logEventFromContext, logEventFromContextReturningId } from '../services/event-logger';
+import { publishCoveSettlement } from '../services/agent-settlement-publish';
 import type { AppContext } from '../types';
 
 export const coveBaccaratRouter = new Hono<AppContext>();
@@ -954,7 +955,9 @@ coveBaccaratRouter.post('/coup', async (c) => {
     balance = txResult.balanceAfter;
   }
 
-  void logEventFromContext(c, {
+  // Durable settle row (UNCHANGED shape) — capture events.id for the D7 slice-1
+  // live settlement-confirm cursor. Write is byte-identical to before.
+  const settleLogP = logEventFromContextReturningId(c, {
     eventType: 'cove.baccarat.coup.settled',
     userId: ledgerUserId(subject),
     avatarId: avatar?.id ?? null,
@@ -973,6 +976,28 @@ coveBaccaratRouter.post('/coup', async (c) => {
       replay: txResult.replay,
     },
   });
+  // D7 slice-1 (DELIVERY-ONLY; money-lens review): live settlement-confirm to an
+  // ONLINE agent. Durability is the row above; fire-and-forget, never affects
+  // settlement. Fresh settles only.
+  if (subject.kind === 'agent' && !txResult.replay) {
+    publishCoveSettlement({
+      agentId: subject.agentId,
+      game: 'baccarat',
+      eventIdPromise: settleLogP,
+      payload: {
+        coupId: coup.id,
+        shoeId: input.shoeId,
+        coupIndex: coup.coupIndex,
+        bet: coup.bet,
+        stake: coup.stake,
+        payout: coup.payout,
+        net: coup.net,
+        winner: outcome.winner,
+      },
+    });
+  } else {
+    void settleLogP;
+  }
 
   return c.json(
     {

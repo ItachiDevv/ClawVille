@@ -114,7 +114,8 @@ import {
   debitClawTokens,
   InsufficientTokensError,
 } from '../services/claw-token-ledger';
-import { logEventFromContext } from '../services/event-logger';
+import { logEventFromContext, logEventFromContextReturningId } from '../services/event-logger';
+import { publishCoveSettlement } from '../services/agent-settlement-publish';
 import type { AppContext } from '../types';
 import type { HoldemResyncHandView } from '@clawville/shared';
 
@@ -1463,7 +1464,9 @@ async function settleHand(
       ? (await loadAvatarForUser(subject.userId)).clawTokens
       : Number(GUEST_STARTING_BALANCE) - Number(BigInt(table.playerStack));
 
-  void logEventFromContext(c, {
+  // Durable settle row (UNCHANGED shape) — capture events.id for the D7 slice-1
+  // live settlement-confirm cursor. Write is byte-identical to before.
+  const settleLogP = logEventFromContextReturningId(c, {
     eventType: 'cove.holdem.hand.settled',
     userId: ledgerUserId(subject),
     agentId: subject.kind === 'agent' ? subject.agentId : null,
@@ -1479,6 +1482,26 @@ async function settleHand(
       replay: txResult.replay,
     },
   });
+  // D7 slice-1 (DELIVERY-ONLY; money-lens review): live settlement-confirm to an
+  // ONLINE agent. Durability is the row above; fire-and-forget, never affects
+  // settlement. Fresh settles only.
+  if (subject.kind === 'agent' && !txResult.replay) {
+    publishCoveSettlement({
+      agentId: subject.agentId,
+      game: 'holdem',
+      eventIdPromise: settleLogP,
+      payload: {
+        handId: hand.id,
+        tableId,
+        handIndex: hand.handIndex,
+        betAmount: hand.betAmount,
+        payout: hand.payout,
+        net: hand.net,
+      },
+    });
+  } else {
+    void settleLogP;
+  }
 
   return {
     handId: hand.id,

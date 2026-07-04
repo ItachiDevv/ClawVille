@@ -1,22 +1,30 @@
 /**
- * In-memory pub/sub for "knowledge added to a connected agent" events.
+ * In-memory pub/sub for the connected-agent LIVE event tier (P3 slice 1, D7).
  *
- * Used by `/api/items/learn` (book read) to push a notification onto the
- * agent's SSE perception stream so the harness can auto-install the
- * matching SKILL.md without requiring the user to manually re-export
- * their character JSON.
+ * Originally carried only `knowledge_added` (book-read auto-install push); it is
+ * now the typed AGENT event bus, additionally carrying `stream` frames
+ * (settlement confirms + future whitelisted agent events). The knowledge surface
+ * is UNCHANGED on the wire — `publishKnowledgeAdded` / `drainKnowledgeEvents`
+ * keep their exact shapes for the existing consumers (the `/events` SSE loop and
+ * the `/pending-installs` poller).
+ *
+ * DURABILITY lives in the `events` table, NOT here. This queue is the
+ * low-latency live tier only: an event dropped from RAM (disconnect, cap) is
+ * still replayable via `GET /api/agent/:sid/events/replay` and the SSE
+ * `Last-Event-ID` catch-up. So the queue is bounded (drop OLDEST past the cap)
+ * and cleared on SSE disconnect — it can never leak.
  *
  * Architecture:
- *   - Publishers: `apps/api/src/routes/items.ts` (book read), and any
- *     other code path that grants new knowledge to an avatar whose user has
- *     an active agent session.
- *   - Subscriber: the SSE loop at `agent-gateway.ts:/:sessionId/events`
- *     calls `drain(sessionId)` once per 2s tick and writes any pending
- *     events to the stream.
+ *   - Publishers: `routes/items.ts` (book read -> knowledge_added),
+ *     `services/agent-settlement-publish.ts` (cove settle -> stream), and any
+ *     other code granting a live event to a session with an active agent.
+ *   - Subscribers: the SSE loop at `agent-gateway.ts:/:sessionId/events` drains
+ *     `drainKnowledgeEvents` + `drainAgentStreamEvents` once per 2s tick; the
+ *     `/:sessionId/pending-installs` poller drains `drainKnowledgeEvents`.
  *
- * This is single-process in-memory only. If/when ClawVille scales to
- * multiple Bun replicas, this needs a Postgres LISTEN/NOTIFY or Redis
- * pub/sub backing — flag in CLAUDE.md when that day comes.
+ * This is single-process in-memory only. If/when ClawVille scales to multiple
+ * Bun replicas, the LIVE tier needs a Postgres LISTEN/NOTIFY or Redis pub/sub
+ * backing (the DURABLE tier already survives a replica bounce via the table).
  */
 export type KnowledgeAddedEvent = {
   type: 'knowledge_added';
@@ -54,21 +62,81 @@ export type KnowledgeAddedEvent = {
   emittedAt: string;
 };
 
-const queues = new Map<string, KnowledgeAddedEvent[]>();
+/**
+ * A generic durable-backed live frame (settlement confirms today; other
+ * whitelisted agent events later). `eventId` is the backing `events.id` so the
+ * SSE loop can emit a standard `id:` line and the agent's `Last-Event-ID` cursor
+ * advances. `data` is the BEARER-FREE frame body — it MUST NOT contain a raw
+ * session id or any secret (settlement facts only).
+ */
+export type AgentStreamEvent = {
+  type: 'stream';
+  /** SSE event name to emit (e.g. `settlement`). */
+  channel: string;
+  /** The durable `events.id` this frame is backed by (string; the SSE `id:` line). */
+  eventId: string;
+  /** Bearer-free frame body — NEVER a raw session id / secret. */
+  data: Record<string, unknown>;
+  /** Server clock, ISO-8601. */
+  emittedAt: string;
+};
 
-/** Push an event onto a session's pending queue. Idempotent on dropped sessions. */
-export function publishKnowledgeAdded(sessionId: string, event: KnowledgeAddedEvent): void {
+type BusEvent = KnowledgeAddedEvent | AgentStreamEvent;
+
+const queues = new Map<string, BusEvent[]>();
+
+/**
+ * Per-session queue cap. The DURABLE tier (events table + replay endpoint) is
+ * authoritative, so the live queue is best-effort: past the cap we drop the
+ * OLDEST frames rather than leak for a session that opens no SSE / never
+ * disconnects. Generous enough that a normally-drained session (every 2s via
+ * SSE, or 30-60s via the poller) never approaches it.
+ */
+const MAX_QUEUE_PER_SESSION = 512;
+
+function pushEvent(sessionId: string, ev: BusEvent): void {
   const q = queues.get(sessionId) ?? [];
-  q.push(event);
+  q.push(ev);
+  if (q.length > MAX_QUEUE_PER_SESSION) {
+    q.splice(0, q.length - MAX_QUEUE_PER_SESSION);
+  }
   queues.set(sessionId, q);
 }
 
-/** Drain any pending events for a session. Returns [] if none. */
-export function drainKnowledgeEvents(sessionId: string): KnowledgeAddedEvent[] {
+/** Drain (and remove) only the events of `type`, leaving the rest queued. */
+function drainByType<T extends BusEvent['type']>(
+  sessionId: string,
+  type: T,
+): Extract<BusEvent, { type: T }>[] {
   const q = queues.get(sessionId);
   if (!q || q.length === 0) return [];
-  queues.delete(sessionId);
-  return q;
+  const matched: BusEvent[] = [];
+  const rest: BusEvent[] = [];
+  for (const ev of q) (ev.type === type ? matched : rest).push(ev);
+  if (matched.length === 0) return [];
+  if (rest.length === 0) queues.delete(sessionId);
+  else queues.set(sessionId, rest);
+  return matched as Extract<BusEvent, { type: T }>[];
+}
+
+/** Push a knowledge-added event onto a session's pending queue. Idempotent on dropped sessions. */
+export function publishKnowledgeAdded(sessionId: string, event: KnowledgeAddedEvent): void {
+  pushEvent(sessionId, event);
+}
+
+/** Push a generic durable-backed stream event (settlement confirm, etc.) onto a session's queue. */
+export function publishAgentStreamEvent(sessionId: string, event: AgentStreamEvent): void {
+  pushEvent(sessionId, event);
+}
+
+/** Drain any pending knowledge-added events for a session. Returns [] if none. Leaves stream events queued. */
+export function drainKnowledgeEvents(sessionId: string): KnowledgeAddedEvent[] {
+  return drainByType(sessionId, 'knowledge_added');
+}
+
+/** Drain any pending stream events (settlement confirms, etc.) for a session. Returns [] if none. Leaves knowledge events queued. */
+export function drainAgentStreamEvents(sessionId: string): AgentStreamEvent[] {
+  return drainByType(sessionId, 'stream');
 }
 
 /** Drop a session's queue entirely on disconnect/expire so we don't leak memory. */
