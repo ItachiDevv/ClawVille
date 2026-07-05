@@ -635,6 +635,18 @@ function bustServiceListingsCache(structureId: string): void {
   }
 }
 
+/**
+ * Tolerant timestamp → ISO string. Raw `tx.execute<>()` / `db.execute<>()` rows
+ * return timestamp columns as STRINGS (postgres-js does NOT hydrate `Date` on a
+ * raw execute — unlike drizzle's typed `.select()`/`.returning()`, which do), so
+ * a site that assumes `Date` and calls `.toISOString()` crashes at runtime with
+ * "toISOString is not a function". This accepts either and always returns ISO —
+ * use it at EVERY raw-execute date-serialization site.
+ */
+function toIso(v: Date | string): string {
+  return v instanceof Date ? v.toISOString() : new Date(v).toISOString();
+}
+
 /** Typed-select/insert row → DTO mapper (camelCase already, typed drizzle path). */
 function toServiceListingDTO(row: typeof serviceListings.$inferSelect): ServiceListingDTO {
   return {
@@ -647,8 +659,10 @@ function toServiceListingDTO(row: typeof serviceListings.$inferSelect): ServiceL
     priceCt: row.priceCt,
     status: row.status,
     platformFeeBps: row.platformFeeBps,
-    createdAt: row.createdAt.toISOString(),
-    updatedAt: row.updatedAt.toISOString(),
+    // toIso (not a bare .toISOString()) so the mapper is robust even if a caller
+    // ever feeds it a raw-execute row (string dates) rather than a typed one.
+    createdAt: toIso(row.createdAt),
+    updatedAt: toIso(row.updatedAt),
   };
 }
 
@@ -2098,8 +2112,9 @@ landRoutes.post(
         price_ct: number | string;
         status: 'active' | 'paused' | 'delisted';
         platform_fee_bps: number | string;
-        created_at: Date;
-        updated_at: Date;
+        // Raw execute → timestamps arrive as STRINGS, not Date (see toIso).
+        created_at: string;
+        updated_at: string;
       }>(
         sql`INSERT INTO service_listings
               (structure_id, owner_avatar_id, kind, title, description, price_ct, status)
@@ -2119,8 +2134,8 @@ landRoutes.post(
           priceCt: Number(row.price_ct),
           status: row.status,
           platformFeeBps: Number(row.platform_fee_bps),
-          createdAt: row.created_at.toISOString(),
-          updatedAt: row.updated_at.toISOString(),
+          createdAt: toIso(row.created_at),
+          updatedAt: toIso(row.updated_at),
         },
       };
     });
@@ -2393,7 +2408,8 @@ landRoutes.post('/services/:listingId/buy', requireAuthOrAgentSession, async (c)
         seller_avatar_id: string;
         price_ct: number | string;
         land_transaction_id: string | null;
-        created_at: Date;
+        // Raw execute → timestamp arrives as a STRING, not Date (see toIso).
+        created_at: string;
       }>(
         sql`SELECT id, listing_id, buyer_avatar_id, seller_avatar_id, price_ct, land_transaction_id, created_at
             FROM service_purchases
@@ -2413,7 +2429,7 @@ landRoutes.post('/services/:listingId/buy', requireAuthOrAgentSession, async (c)
               sellerAvatarId: prior.seller_avatar_id,
               priceCt: cachedPriceCt,
               landTransactionId: prior.land_transaction_id,
-              createdAt: prior.created_at.toISOString(),
+              createdAt: toIso(prior.created_at),
             },
             priceCt: cachedPriceCt,
           };
@@ -2558,7 +2574,8 @@ landRoutes.post('/services/:listingId/buy', requireAuthOrAgentSession, async (c)
         seller_avatar_id: string;
         price_ct: number | string;
         land_transaction_id: string | null;
-        created_at: Date;
+        // Raw execute → timestamp arrives as a STRING, not Date (see toIso).
+        created_at: string;
       }>(
         sql`INSERT INTO service_purchases
               (listing_id, buyer_avatar_id, seller_avatar_id, price_ct, land_transaction_id, idempotency_key)
@@ -2576,7 +2593,7 @@ landRoutes.post('/services/:listingId/buy', requireAuthOrAgentSession, async (c)
           sellerAvatarId: row.seller_avatar_id,
           priceCt: Number(row.price_ct),
           landTransactionId: row.land_transaction_id,
-          createdAt: row.created_at.toISOString(),
+          createdAt: toIso(row.created_at),
         },
         priceCt,
         sellerAvatarId,
@@ -2615,8 +2632,10 @@ landRoutes.post('/services/:listingId/buy', requireAuthOrAgentSession, async (c)
               buyerAvatarId: winner.buyerAvatarId,
               sellerAvatarId: winner.sellerAvatarId,
               priceCt: winner.priceCt,
+              // winner.* is a drizzle .select() (real Date), but toIso keeps the
+              // whole route's date-serialization uniform + string-tolerant.
               landTransactionId: winner.landTransactionId,
-              createdAt: winner.createdAt.toISOString(),
+              createdAt: toIso(winner.createdAt),
             },
             priceCt: winner.priceCt,
             cached: true,

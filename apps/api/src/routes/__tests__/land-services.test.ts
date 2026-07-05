@@ -504,9 +504,18 @@ describeIfDb('land services — money-path route tests (requires DATABASE_URL)',
       body: JSON.stringify({ title: '1:1 Coaching', description: 'Live session', priceCt: 100 }),
     });
     expect(res.status).toBe(200);
-    const data = (await res.json()) as { listing: { id: string; status: string; ownerAvatarId: string } };
+    const data = (await res.json()) as {
+      listing: { id: string; status: string; ownerAvatarId: string; createdAt: string; updatedAt: string };
+    };
     expect(data.listing.status).toBe('active');
     expect(data.listing.ownerAvatarId).toBe(sellerAvatarId);
+    // Regression guard (2026-07-05 live-e2e 500): raw `tx.execute<>` returns
+    // timestamps as STRINGS, so a bare `.toISOString()` on a Date-typed field
+    // crashed this route. Assert the serialized dates are valid ISO strings.
+    expect(typeof data.listing.createdAt).toBe('string');
+    expect(Number.isNaN(Date.parse(data.listing.createdAt))).toBe(false);
+    expect(typeof data.listing.updatedAt).toBe('string');
+    expect(Number.isNaN(Date.parse(data.listing.updatedAt))).toBe(false);
     mainListingId = data.listing.id;
 
     // Public structure-scoped read reflects it immediately (cache-bust on write).
@@ -551,11 +560,19 @@ describeIfDb('land services — money-path route tests (requires DATABASE_URL)',
       body: JSON.stringify({ idempotencyKey }),
     });
     expect(res.status).toBe(200);
-    const data = (await res.json()) as { priceCt: number; cached: boolean; purchase: { sellerAvatarId: string; buyerAvatarId: string } };
+    const data = (await res.json()) as {
+      priceCt: number;
+      cached: boolean;
+      purchase: { sellerAvatarId: string; buyerAvatarId: string; createdAt: string };
+    };
     expect(data.cached).toBe(false);
     expect(data.priceCt).toBe(100);
     expect(data.purchase.sellerAvatarId).toBe(sellerAvatarId);
     expect(data.purchase.buyerAvatarId).toBe(buyerAvatarId);
+    // Regression guard (raw-execute string dates — see the LIST test): the FRESH
+    // buy branch serializes the purchase's created_at via toIso.
+    expect(typeof data.purchase.createdAt).toBe('string');
+    expect(Number.isNaN(Date.parse(data.purchase.createdAt))).toBe(false);
 
     const after = { buyer: await getBalance(buyerAvatarId), seller: await getBalance(sellerAvatarId) };
     expect(after.buyer).toBe(before.buyer - 100);
@@ -592,8 +609,12 @@ describeIfDb('land services — money-path route tests (requires DATABASE_URL)',
       body: JSON.stringify({ idempotencyKey }),
     });
     expect(res.status).toBe(200);
-    const data = (await res.json()) as { cached: boolean };
+    const data = (await res.json()) as { cached: boolean; purchase: { createdAt: string } };
     expect(data.cached).toBe(true);
+    // Regression guard: the CACHED replay branch also serializes created_at via
+    // toIso (raw-execute string date) — must be a valid ISO string, not a crash.
+    expect(typeof data.purchase.createdAt).toBe('string');
+    expect(Number.isNaN(Date.parse(data.purchase.createdAt))).toBe(false);
 
     const after = { buyer: await getBalance(buyerAvatarId), seller: await getBalance(sellerAvatarId) };
     expect(after.buyer).toBe(before.buyer);
