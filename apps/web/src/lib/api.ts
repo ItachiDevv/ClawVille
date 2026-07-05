@@ -23,6 +23,14 @@ import type {
   ParcelStructureResponse,
   SpawnPreferenceMode,
   SpawnPreferenceResponse,
+  ServiceListingDTO,
+  ListServiceRequest,
+  ListServiceResponse,
+  UpdateServiceRequest,
+  UpdateServiceResponse,
+  StructureServicesResponse,
+  BrowseServicesResponse,
+  BuyServiceResponse,
 } from '@/components/game/land/types';
 import { getFingerprint } from './fingerprint';
 
@@ -1199,4 +1207,58 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(body),
     }),
+
+  // ── Service listings — run-a-store (P3 Slice 4) ────────────────────────
+  // FROZEN contract — apps/api/src/routes/land.ts routes 12-16. Same
+  // honoRequest client — no special-casing for agent vs human callers (the
+  // server resolves identity from the Lucia cookie OR the connected-agent
+  // bearer header on its own dual-auth middleware).
+
+  /** List a peer service on an owned/rented ACTIVE 'shop' structure (auth). */
+  listService: (structureId: string, body: ListServiceRequest) =>
+    honoRequest<ListServiceResponse>(
+      `/api/land/structures/${encodeURIComponent(structureId)}/services`,
+      { method: 'POST', body: JSON.stringify(body) },
+    ),
+
+  /** Update or deactivate (pause/delist) one's own listing (auth). */
+  updateService: (listingId: string, patch: UpdateServiceRequest) =>
+    honoRequest<UpdateServiceResponse>(
+      `/api/land/services/${encodeURIComponent(listingId)}`,
+      { method: 'PATCH', body: JSON.stringify(patch) },
+    ),
+
+  /** Active listings for one structure (public). */
+  getStructureServices: (structureId: string) =>
+    honoRequest<StructureServicesResponse>(
+      `/api/land/structures/${encodeURIComponent(structureId)}/services`,
+    ),
+
+  /**
+   * The signed-in owner's OWN listings across ALL statuses (auth, uncached) —
+   * incl. paused/delisted, so the store-manage UI can re-activate a paused
+   * listing (the public browse fns are active-only).
+   */
+  getMyServices: () =>
+    honoRequest<{ listings: ServiceListingDTO[] }>('/api/land/services/mine'),
+
+  /** Paged browse of every active listing, newest first (public). */
+  browseServices: (page?: number, limit?: number) => {
+    const qs = new URLSearchParams();
+    if (page !== undefined) qs.set('page', String(page));
+    if (limit !== undefined) qs.set('limit', String(limit));
+    const q = qs.toString();
+    return honoRequest<BrowseServicesResponse>(`/api/land/services${q ? `?${q}` : ''}`);
+  },
+
+  /**
+   * Buy a listed service with CT (auth). The backend REQUIRES an
+   * idempotencyKey (same money-safety rule as upgradeStructure) — callers
+   * MUST pass a fresh key per buy click so a retry can never double-charge.
+   */
+  buyService: (listingId: string, idempotencyKey: string) =>
+    honoRequest<BuyServiceResponse>(
+      `/api/land/services/${encodeURIComponent(listingId)}/buy`,
+      { method: 'POST', body: JSON.stringify({ idempotencyKey }) },
+    ),
 };

@@ -158,8 +158,12 @@ import {
   landParcels,
   landStructures,
   landUpgrades,
+  serviceListings,
+  servicePurchases,
+  openclawBots,
   eq,
   and,
+  desc,
   sql,
 } from '@clawville/database';
 import {
@@ -181,7 +185,11 @@ import type { ActivityAuthContext } from '../middleware/require-auth-or-agent';
 import { createRateLimiter, getClientIp } from '../middleware/rate-limit';
 import { logEventFromContext } from '../services/event-logger';
 import { broadcastLandEvent } from './world';
-import { debitClawTokens, InsufficientTokensError } from '../services/claw-token-ledger';
+import {
+  debitClawTokens,
+  creditClawTokens,
+  InsufficientTokensError,
+} from '../services/claw-token-ledger';
 import type { AppContext } from '../types';
 
 // ─── shared shapes ──────────────────────────────────────────────────────────
@@ -266,6 +274,52 @@ const placeStructureBodySchema = z
 const upgradeBodySchema = z
   .object({
     idempotencyKey: z.string().min(1).max(64),
+  })
+  .strict();
+
+// ─── Service listings (run-a-store, Slice 4) ────────────────────────────────
+
+const listingIdSchema = z.string().uuid();
+
+// list: server derives structureId from the path + ownerAvatarId from
+// identity — the body only declares the sellable content. `.strict()`
+// rejects stray fields (no kind/status/platformFeeBps smuggling).
+const listServiceBodySchema = z
+  .object({
+    title: z.string().trim().min(1).max(80),
+    description: z.string().max(500).optional(),
+    priceCt: z.number().int().nonnegative().max(1_000_000),
+  })
+  .strict();
+
+// update/deactivate: every field optional, but at least one must be present
+// (an empty patch is a no-op the client should not be sending).
+const updateServiceBodySchema = z
+  .object({
+    title: z.string().trim().min(1).max(80).optional(),
+    description: z.string().max(500).optional(),
+    priceCt: z.number().int().nonnegative().max(1_000_000).optional(),
+    status: z.enum(['active', 'paused', 'delisted']).optional(),
+  })
+  .strict()
+  .refine((val) => Object.keys(val).length > 0, {
+    message: 'at least one field is required',
+  });
+
+// browse: GET /api/land/services?page=&limit= — page >= 1, limit clamped 1..50.
+const servicesPageQuerySchema = z
+  .object({
+    page: z.coerce.number().int().min(1).optional(),
+    limit: z.coerce.number().int().min(1).max(50).optional(),
+  })
+  .strict();
+
+// buy: the ONLY client input is a REQUIRED idempotency key (same Codex
+// BLOCK-HIGH rationale as /upgrade — a keyless retry would double-charge).
+// The price is always server-read from the locked listing row.
+const buyServiceBodySchema = z
+  .object({
+    idempotencyKey: z.string().min(8).max(64),
   })
   .strict();
 
@@ -489,6 +543,113 @@ async function reconcileArchivedStructureOnAcquire(
   } else {
     await tx.execute(sql`DELETE FROM land_structures WHERE id = ${s.id}`);
   }
+}
+
+// ─── Service listings — run-a-store (Slice 4, P3) ───────────────────────────
+//
+// A peer CT service: an avatar with an ACTIVE 'shop' structure lists a
+// service; another avatar buys it with CT, full transfer to the seller (no
+// rake — DESIGN decision #9 on `service_listings` in the schema doc). Mirrors
+// the parcel-buy money discipline EXACTLY: per-avatar advisory lock (outer) +
+// row lock (inner) + ledger debit/credit IN-TX + audit row, all atomic.
+//
+// PARITY (Rule E5): every write resolves `identity.avatarId` from
+// `requireAuthOrAgentSession` — a connected/hosted agent lists/updates/buys
+// through its OWN avatar exactly as a human does; the browse reads are public.
+//
+// `land.service.sold` is EMISSION-ONLY this slice (curated onto the agent
+// stream + LAND_EVENT_WEIGHTS already carries a weight=40/cap=50 entry in
+// `@clawville/shared` land-economy.ts) — the leaderboard scoring CTE wiring
+// is a deferred cross-domain decision owned by the land specialist / the
+// leaderboard-progression domain, NOT touched here.
+
+/** Per-structure cap on simultaneously-active listings (LIST route guard). */
+const MAX_ACTIVE_LISTINGS_PER_STRUCTURE = 6;
+
+/** A peer service listing (mirrors `service_listings`). */
+interface ServiceListingDTO {
+  id: string;
+  structureId: string;
+  ownerAvatarId: string;
+  kind: 'peer' | 'partner';
+  title: string;
+  description: string | null;
+  priceCt: number;
+  status: 'active' | 'paused' | 'delisted';
+  platformFeeBps: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** A settled service purchase (mirrors `service_purchases`). */
+interface ServicePurchaseDTO {
+  id: string;
+  listingId: string;
+  buyerAvatarId: string;
+  sellerAvatarId: string;
+  priceCt: number;
+  landTransactionId: string | null;
+  createdAt: string;
+}
+
+interface ServiceListingsPayload {
+  listings: ServiceListingDTO[];
+  nextPage?: number;
+}
+
+interface ServiceReadCacheEntry {
+  payload: ServiceListingsPayload;
+  expiresAt: number;
+}
+
+// Keyed on `services:struct:<structureId>` (single-structure browse) or
+// `services:all:<page>:<limit>` (paged all-active browse). A SEPARATE Map from
+// the parcel `readCache` above (different payload shape) but reuses the SAME
+// 60s TTL + the SAME `publicReadLimiter` rate limiter instance.
+const serviceListingsCache = new Map<string, ServiceReadCacheEntry>();
+
+function getServiceListingsCache(key: string): ServiceListingsPayload | null {
+  const hit = serviceListingsCache.get(key);
+  if (!hit) return null;
+  if (hit.expiresAt < Date.now()) {
+    serviceListingsCache.delete(key);
+    return null;
+  }
+  return hit.payload;
+}
+
+function setServiceListingsCache(key: string, payload: ServiceListingsPayload): void {
+  serviceListingsCache.set(key, { payload, expiresAt: Date.now() + READ_CACHE_TTL_MS });
+}
+
+/**
+ * Bust the browse caches for a structure's listings after a list/update
+ * mutates one. Also clears every paged `services:all:*` entry — a new/edited/
+ * delisted listing can move into or out of the all-active feed at any page,
+ * and there is no single stable key to target (unlike the parcel tier cache).
+ */
+function bustServiceListingsCache(structureId: string): void {
+  serviceListingsCache.delete(`services:struct:${structureId}`);
+  for (const key of serviceListingsCache.keys()) {
+    if (key.startsWith('services:all:')) serviceListingsCache.delete(key);
+  }
+}
+
+/** Typed-select/insert row → DTO mapper (camelCase already, typed drizzle path). */
+function toServiceListingDTO(row: typeof serviceListings.$inferSelect): ServiceListingDTO {
+  return {
+    id: row.id,
+    structureId: row.structureId,
+    ownerAvatarId: row.ownerAvatarId,
+    kind: row.kind,
+    title: row.title,
+    description: row.description,
+    priceCt: row.priceCt,
+    status: row.status,
+    platformFeeBps: row.platformFeeBps,
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+  };
 }
 
 // ─── router ─────────────────────────────────────────────────────────────────
@@ -1843,4 +2004,691 @@ landRoutes.post('/parcels/:parcelId/rent', requireAuthOrAgentSession, async (c) 
     amountCt: rented.amountCt,
     rentPaidThrough: rented.rentPaidThrough,
   });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Service listings — run-a-store (Slice 4, P3)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ─── 12. POST /structures/:structureId/services  (AUTH, PARITY-BOUND, free list) ─
+//
+//   body: { title: string (1..80), description?: string (0..500), priceCt: int (0..1_000_000) }
+//   200 → { listing: ServiceListingDTO }
+//   400 → { error: 'invalid_body' | 'invalid_structure_id' | 'not_a_shop' }
+//   401/403 as elsewhere   ·   403 → { error: 'not_structure_owner' }
+//   404 → { error: 'structure_not_found' }
+//   409 → { error: 'structure_archived' | 'ownership_desync' | 'listing_cap_reached' }
+
+landRoutes.post(
+  '/structures/:structureId/services',
+  requireAuthOrAgentSession,
+  async (c) => {
+    const identity = c.get('identity');
+    const avatarId = identity.avatarId;
+
+    const idParsed = structureIdSchema.safeParse(c.req.param('structureId'));
+    if (!idParsed.success) {
+      return c.json({ error: 'invalid_structure_id' }, 400);
+    }
+    const structureId = idParsed.data;
+
+    const rawBody = await c.req.json().catch(() => ({}));
+    const bodyParsed = listServiceBodySchema.safeParse(rawBody);
+    if (!bodyParsed.success) {
+      return c.json({ error: 'invalid_body' }, 400);
+    }
+    const { title, description, priceCt } = bodyParsed.data;
+
+    type ListResult =
+      | { kind: 'ok'; listing: ServiceListingDTO }
+      | { kind: 'structure_not_found' }
+      | { kind: 'not_a_shop' }
+      | { kind: 'structure_archived' }
+      | { kind: 'not_structure_owner' }
+      | { kind: 'ownership_desync' }
+      | { kind: 'listing_cap_reached' };
+
+    const result = await db.transaction(async (tx): Promise<ListResult> => {
+      // Per-avatar advisory lock (outer), then the structure+parcel rows
+      // (inner) — same deadlock order as buy/upgrade/place-structure.
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${avatarId}, 0))`);
+
+      const rows = await tx.execute<{
+        id: string;
+        parcel_id: string;
+        structure_type: 'home' | 'shop';
+        structure_status: string;
+        struct_owner: string;
+        parcel_owner: string | null;
+      }>(
+        sql`SELECT s.id, s.parcel_id, s.structure_type, s.status AS structure_status,
+                   s.owner_avatar_id AS struct_owner, p.owner_avatar_id AS parcel_owner
+            FROM land_structures s
+            JOIN land_parcels p ON p.id = s.parcel_id
+            WHERE s.id = ${structureId}
+            FOR UPDATE OF s, p`,
+      );
+      const s = rows[0];
+      if (!s) return { kind: 'structure_not_found' };
+      if (s.structure_type !== 'shop') return { kind: 'not_a_shop' };
+      if (s.structure_status !== 'active') return { kind: 'structure_archived' };
+      // Ownership is checked against the AUTHORITATIVE parcel row (covers BOTH
+      // an owned AND a rented parcel — rent sets land_parcels.owner_avatar_id
+      // to the renter, same as buy/upgrade's ownership discipline).
+      if (s.parcel_owner !== avatarId) return { kind: 'not_structure_owner' };
+      // Defense-in-depth: the structure's denorm owner must agree with the
+      // authoritative parcel owner (mirrors /upgrade's ownership_desync guard).
+      if (s.struct_owner !== avatarId) return { kind: 'ownership_desync' };
+
+      const countRows = await tx.execute<{ n: number | string }>(
+        sql`SELECT COUNT(*)::int AS n FROM service_listings
+            WHERE structure_id = ${structureId} AND status = 'active'`,
+      );
+      if (Number(countRows[0]?.n ?? 0) >= MAX_ACTIVE_LISTINGS_PER_STRUCTURE) {
+        return { kind: 'listing_cap_reached' };
+      }
+
+      const insertRows = await tx.execute<{
+        id: string;
+        structure_id: string;
+        owner_avatar_id: string;
+        kind: 'peer' | 'partner';
+        title: string;
+        description: string | null;
+        price_ct: number | string;
+        status: 'active' | 'paused' | 'delisted';
+        platform_fee_bps: number | string;
+        created_at: Date;
+        updated_at: Date;
+      }>(
+        sql`INSERT INTO service_listings
+              (structure_id, owner_avatar_id, kind, title, description, price_ct, status)
+            VALUES (${structureId}, ${avatarId}, 'peer', ${title}, ${description ?? null}, ${priceCt}, 'active')
+            RETURNING id, structure_id, owner_avatar_id, kind, title, description, price_ct, status, platform_fee_bps, created_at, updated_at`,
+      );
+      const row = insertRows[0]!;
+      return {
+        kind: 'ok',
+        listing: {
+          id: row.id,
+          structureId: row.structure_id,
+          ownerAvatarId: row.owner_avatar_id,
+          kind: row.kind,
+          title: row.title,
+          description: row.description,
+          priceCt: Number(row.price_ct),
+          status: row.status,
+          platformFeeBps: Number(row.platform_fee_bps),
+          createdAt: row.created_at.toISOString(),
+          updatedAt: row.updated_at.toISOString(),
+        },
+      };
+    });
+
+    if (result.kind !== 'ok') {
+      const statusByKind = {
+        structure_not_found: 404,
+        not_a_shop: 400,
+        structure_archived: 409,
+        not_structure_owner: 403,
+        ownership_desync: 409,
+        listing_cap_reached: 409,
+      } as const;
+      return c.json({ error: result.kind }, statusByKind[result.kind]);
+    }
+
+    bustServiceListingsCache(structureId);
+
+    return c.json({ listing: result.listing });
+  },
+);
+
+// ─── 13. PATCH /services/:listingId  (AUTH, PARITY-BOUND, own-listing only) ──
+//
+//   body: { title?, description?, priceCt?, status? } — at least one field (.strict())
+//   200 → { listing: ServiceListingDTO }
+//   400 → { error: 'invalid_body' | 'invalid_listing_id' }
+//   401/403 as elsewhere   ·   403 → { error: 'not_listing_owner' }
+//   404 → { error: 'listing_not_found' }
+
+landRoutes.patch('/services/:listingId', requireAuthOrAgentSession, async (c) => {
+  const identity = c.get('identity');
+  const avatarId = identity.avatarId;
+
+  const idParsed = listingIdSchema.safeParse(c.req.param('listingId'));
+  if (!idParsed.success) {
+    return c.json({ error: 'invalid_listing_id' }, 400);
+  }
+  const listingId = idParsed.data;
+
+  // Sentinel parse — an unparseable body is a hard 400, never coerced to {}.
+  const PARSE_FAILED = Symbol('parse_failed');
+  const rawBody: unknown = await c.req.json().catch(() => PARSE_FAILED);
+  if (rawBody === PARSE_FAILED) {
+    return c.json({ error: 'invalid_body' }, 400);
+  }
+  const bodyParsed = updateServiceBodySchema.safeParse(rawBody);
+  if (!bodyParsed.success) {
+    return c.json({ error: 'invalid_body' }, 400);
+  }
+  const patch = bodyParsed.data;
+
+  type PatchResult =
+    | { kind: 'ok'; listing: ServiceListingDTO }
+    | { kind: 'not_found' }
+    | { kind: 'not_owner' };
+
+  const result = await db.transaction(async (tx): Promise<PatchResult> => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${avatarId}, 0))`);
+
+    const rows = await tx.execute<{ id: string; owner_avatar_id: string }>(
+      sql`SELECT id, owner_avatar_id FROM service_listings WHERE id = ${listingId} FOR UPDATE`,
+    );
+    const existing = rows[0];
+    if (!existing) return { kind: 'not_found' };
+    if (existing.owner_avatar_id !== avatarId) return { kind: 'not_owner' };
+
+    const updates: Partial<typeof serviceListings.$inferInsert> = { updatedAt: new Date() };
+    if (patch.title !== undefined) updates.title = patch.title;
+    if (patch.description !== undefined) updates.description = patch.description;
+    if (patch.priceCt !== undefined) updates.priceCt = patch.priceCt;
+    if (patch.status !== undefined) updates.status = patch.status;
+
+    const [updated] = await tx
+      .update(serviceListings)
+      .set(updates)
+      .where(eq(serviceListings.id, listingId))
+      .returning();
+
+    return { kind: 'ok', listing: toServiceListingDTO(updated!) };
+  });
+
+  if (result.kind === 'not_found') {
+    return c.json({ error: 'listing_not_found' }, 404);
+  }
+  if (result.kind === 'not_owner') {
+    return c.json({ error: 'not_listing_owner' }, 403);
+  }
+
+  bustServiceListingsCache(result.listing.structureId);
+
+  return c.json({ listing: result.listing });
+});
+
+// ─── 14. GET /structures/:structureId/services  (PUBLIC, cached, rate-limited) ─
+//
+//   200 → { listings: ServiceListingDTO[] }   (active listings only)
+//   400 → { error: 'invalid_structure_id' }   ·   429 → { error: 'rate_limited' }
+
+landRoutes.get('/structures/:structureId/services', async (c) => {
+  if (!publicReadLimiter.check(getClientIp(c.req.raw.headers))) {
+    return c.json({ error: 'rate_limited' }, 429);
+  }
+
+  const idParsed = structureIdSchema.safeParse(c.req.param('structureId'));
+  if (!idParsed.success) {
+    return c.json({ error: 'invalid_structure_id' }, 400);
+  }
+  const structureId = idParsed.data;
+
+  const cacheKey = `services:struct:${structureId}`;
+  const cached = getServiceListingsCache(cacheKey);
+  if (cached) return c.json(cached);
+
+  const rows = await db
+    .select()
+    .from(serviceListings)
+    .where(and(eq(serviceListings.structureId, structureId), eq(serviceListings.status, 'active')));
+
+  const payload: ServiceListingsPayload = { listings: rows.map(toServiceListingDTO) };
+  setServiceListingsCache(cacheKey, payload);
+  return c.json(payload);
+});
+
+// ─── 15. GET /services/mine  (AUTH, PARITY-BOUND, owner-scoped, ALL statuses) ─
+//
+// The store owner's OWN listings across reloads — INCLUDING paused/delisted (the
+// public browse routes 14/16 are active-only), so an owner can see + re-activate
+// a listing they paused. This completes the manage loop the public reads can't.
+// Owner-scoped by `identity.avatarId` → no leak. NOT cached — an owner's own view
+// must reflect a just-completed list/patch immediately (same reasoning as /me).
+// PARITY (Rule E5): a connected/hosted agent lists a store just like a human, so
+// it reads ITS OWN listings through the same authed path.
+//
+//   200 → { listings: ServiceListingDTO[] }   (all statuses, newest first)
+//   401 → no identity   ·   403 → bound user has no active avatar
+//
+// Route-order note: registered BEFORE the paged `GET /services` below, but the
+// two are DISTINCT literal paths (`/services/mine` vs `/services`) with no param
+// route between them (there is no `GET /services/:id`), so there is no shadow.
+
+landRoutes.get('/services/mine', requireAuthOrAgentSession, async (c) => {
+  const identity = c.get('identity');
+  const avatarId = identity.avatarId;
+
+  const rows = await db
+    .select()
+    .from(serviceListings)
+    .where(eq(serviceListings.ownerAvatarId, avatarId))
+    .orderBy(desc(serviceListings.createdAt));
+
+  return c.json({ listings: rows.map(toServiceListingDTO) });
+});
+
+// ─── 16. GET /services?page=&limit=  (PUBLIC, cached, rate-limited, paged) ───
+//
+//   200 → { listings: ServiceListingDTO[], nextPage?: number }  (active only, newest first)
+//   400 → { error: 'invalid_query' }   ·   429 → { error: 'rate_limited' }
+
+landRoutes.get('/services', async (c) => {
+  if (!publicReadLimiter.check(getClientIp(c.req.raw.headers))) {
+    return c.json({ error: 'rate_limited' }, 429);
+  }
+
+  const parsed = servicesPageQuerySchema.safeParse({
+    page: c.req.query('page'),
+    limit: c.req.query('limit'),
+  });
+  if (!parsed.success) {
+    return c.json({ error: 'invalid_query' }, 400);
+  }
+  const page = parsed.data.page ?? 1;
+  const limit = parsed.data.limit ?? 20;
+
+  const cacheKey = `services:all:${page}:${limit}`;
+  const cached = getServiceListingsCache(cacheKey);
+  if (cached) return c.json(cached);
+
+  const offset = (page - 1) * limit;
+  // Fetch one extra row to know whether a next page exists without a COUNT(*).
+  const rows = await db
+    .select()
+    .from(serviceListings)
+    .where(eq(serviceListings.status, 'active'))
+    .orderBy(desc(serviceListings.createdAt))
+    .limit(limit + 1)
+    .offset(offset);
+
+  const hasNext = rows.length > limit;
+  const pageRows = hasNext ? rows.slice(0, limit) : rows;
+
+  const payload: ServiceListingsPayload = {
+    listings: pageRows.map(toServiceListingDTO),
+    ...(hasNext ? { nextPage: page + 1 } : {}),
+  };
+  setServiceListingsCache(cacheKey, payload);
+  return c.json(payload);
+});
+
+// ─── 17. POST /services/:listingId/buy  (AUTH, PARITY-BOUND, atomic, priced) ─
+//
+//   body: { idempotencyKey: string (8..64) }  REQUIRED (.strict())
+//   200 → { purchase: ServicePurchaseDTO, priceCt: number, cached: boolean }
+//   400 → { error: 'invalid_body' | 'invalid_listing_id' | 'insufficient_clawtokens' }
+//   401/403 as elsewhere
+//   404 → { error: 'listing_not_found' }
+//   409 → { error: 'listing_not_active' | 'not_a_peer_listing' | 'structure_unavailable'
+//                  | 'self_purchase' | 'idempotency_key_conflict' | 'concurrent_retry' }
+//     not_a_peer_listing   = a non-CT (USDC 'partner') listing can't settle here;
+//     structure_unavailable = the seller's shop was archived/evicted or the parcel
+//                             changed hands after the listing was created;
+//     concurrent_retry     = a mutual-buy deadlock (40P01) rolled this tx fully
+//                             back — retry with the SAME idempotencyKey.
+//
+// AFTER COMMIT (fresh purchase only): emits `land.service.sold` keyed to the
+// SELLER (weight 40, credited to the seller — this is a run-a-store sale, not
+// the buyer's action). A cached replay (same-key retry OR a concurrent 23505
+// loser re-served) emits NOTHING — the original request already emitted once.
+
+landRoutes.post('/services/:listingId/buy', requireAuthOrAgentSession, async (c) => {
+  const identity = c.get('identity');
+  const avatarId = identity.avatarId;
+
+  const idParsed = listingIdSchema.safeParse(c.req.param('listingId'));
+  if (!idParsed.success) {
+    return c.json({ error: 'invalid_listing_id' }, 400);
+  }
+  const listingId = idParsed.data;
+
+  // Sentinel parse (Codex money-safety pattern, mirrors /upgrade) — an
+  // unparseable body is a hard 400, never coerced toward a keyless charge.
+  const PARSE_FAILED = Symbol('parse_failed');
+  const rawBody: unknown = await c.req.json().catch(() => PARSE_FAILED);
+  if (rawBody === PARSE_FAILED) {
+    return c.json({ error: 'invalid_body' }, 400);
+  }
+  const bodyParsed = buyServiceBodySchema.safeParse(rawBody);
+  if (!bodyParsed.success) {
+    return c.json({ error: 'invalid_body' }, 400);
+  }
+  const idempotencyKey = bodyParsed.data.idempotencyKey;
+
+  type BuyResult =
+    | {
+        kind: 'fresh';
+        purchase: ServicePurchaseDTO;
+        priceCt: number;
+        sellerAvatarId: string;
+        structureId: string;
+      }
+    | { kind: 'cached'; purchase: ServicePurchaseDTO; priceCt: number };
+
+  let result: BuyResult;
+  try {
+    result = await db.transaction(async (tx): Promise<BuyResult> => {
+      // (0) Per-avatar advisory lock on the BUYER (outer — same order as buy/upgrade).
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${avatarId}, 0))`);
+
+      // (1) IDEMPOTENCY FIRST. The `service_purchases_idem_unique` index is
+      // GLOBAL on idempotency_key alone (mirrors land_upgrades) — look it up
+      // by itself and branch: same listing+buyer → replay the cached
+      // purchase (no new charge, no event); otherwise → clean 409 (the key
+      // was already spent on a different listing/buyer) rather than falling
+      // through to a 23505 that would roll back this call's debit and lie
+      // "replayed" while silently dropping this buyer's purchase.
+      const priorRows = await tx.execute<{
+        id: string;
+        listing_id: string;
+        buyer_avatar_id: string;
+        seller_avatar_id: string;
+        price_ct: number | string;
+        land_transaction_id: string | null;
+        created_at: Date;
+      }>(
+        sql`SELECT id, listing_id, buyer_avatar_id, seller_avatar_id, price_ct, land_transaction_id, created_at
+            FROM service_purchases
+            WHERE idempotency_key = ${idempotencyKey}
+            LIMIT 1`,
+      );
+      const prior = priorRows[0];
+      if (prior) {
+        if (prior.listing_id === listingId && prior.buyer_avatar_id === avatarId) {
+          const cachedPriceCt = Number(prior.price_ct);
+          return {
+            kind: 'cached',
+            purchase: {
+              id: prior.id,
+              listingId: prior.listing_id,
+              buyerAvatarId: prior.buyer_avatar_id,
+              sellerAvatarId: prior.seller_avatar_id,
+              priceCt: cachedPriceCt,
+              landTransactionId: prior.land_transaction_id,
+              createdAt: prior.created_at.toISOString(),
+            },
+            priceCt: cachedPriceCt,
+          };
+        }
+        throw new HTTPException(409, { message: 'idempotency_key_conflict' });
+      }
+
+      // (2) Lock the listing row.
+      const listingRows = await tx.execute<{
+        id: string;
+        structure_id: string;
+        owner_avatar_id: string;
+        kind: 'peer' | 'partner';
+        title: string;
+        price_ct: number | string;
+        status: string;
+      }>(
+        sql`SELECT id, structure_id, owner_avatar_id, kind, title, price_ct, status
+            FROM service_listings
+            WHERE id = ${listingId}
+            FOR UPDATE`,
+      );
+      const listing = listingRows[0];
+      if (!listing) {
+        throw new HTTPException(404, { message: 'listing_not_found' });
+      }
+      if (listing.status !== 'active') {
+        throw new HTTPException(409, { message: 'listing_not_active' });
+      }
+      // (2a) CT-TIER GUARD (audit ADVISORY→FIX #2) — only a 'peer' listing
+      // settles in CT. A future USDC 'partner' listing must NEVER be paid with
+      // CT through this route, even if one is somehow created active. Cheap
+      // defense-in-depth before any ledger touch.
+      if (listing.kind !== 'peer') {
+        throw new HTTPException(409, { message: 'not_a_peer_listing' });
+      }
+
+      // (2b) STALE-LISTING / POST-EVICTION GUARD (audit BLOCKING #1) — the buy
+      // is the one money route that trusted the listing's denorm owner without
+      // re-verifying the shop still exists AND is still held by the seller. The
+      // rent sweeper archives the structure + returns the parcel to the pool on
+      // a rent-lapse eviction but does NOT cascade-delist its service_listings
+      // (confirmed), so a listing can outlive the seller's ownership of the
+      // shop — a buy would then pay a seller who no longer runs it. Re-read the
+      // structure + parcel under a lock (mirrors the LIST/upgrade ownership-
+      // desync discipline) and reject a defunct/transferred shop BEFORE any
+      // ledger touch. Lock order is buyer-advisory → listing → land_structures
+      // → land_parcels (s-before-p, same as the LIST route), so no new deadlock
+      // edge is introduced.
+      const shopRows = await tx.execute<{
+        struct_status: string;
+        parcel_owner: string | null;
+      }>(
+        sql`SELECT s.status AS struct_status, p.owner_avatar_id AS parcel_owner
+            FROM land_structures s
+            JOIN land_parcels p ON p.id = s.parcel_id
+            WHERE s.id = ${listing.structure_id}
+            FOR UPDATE OF s, p`,
+      );
+      const shop = shopRows[0];
+      if (
+        !shop ||
+        shop.struct_status !== 'active' ||
+        shop.parcel_owner !== listing.owner_avatar_id
+      ) {
+        throw new HTTPException(409, { message: 'structure_unavailable' });
+      }
+
+      // (3) SERVER-authoritative price — the body never carries a price.
+      const priceCt = Number(listing.price_ct);
+      const sellerAvatarId = listing.owner_avatar_id;
+
+      // (4) Self-purchase — asserted BEFORE any ledger touch.
+      if (sellerAvatarId === avatarId) {
+        throw new HTTPException(409, { message: 'self_purchase' });
+      }
+
+      // (5) Settlement — conservation (price in == price out, NO rake, NO
+      // mint). priceCt===0 (free service) skips the ledger entirely
+      // (debitClawTokens throws on amount<=0) but still writes the audit +
+      // purchase rows below.
+      let debitLedgerId: string | null = null;
+      if (priceCt > 0) {
+        const debit = await debitClawTokens(
+          {
+            avatarId,
+            amount: priceCt,
+            reason: 'land_service_purchase',
+            source: 'api',
+            metadata: { listingId, sellerAvatarId },
+          },
+          tx,
+        );
+        debitLedgerId = debit.ledgerId;
+
+        // Seller is credited SOFT — peer CT can NEVER mint cashable EARNED
+        // (conservation; the laundering defense). Composed IN THIS tx (never
+        // transferClawTokens, which opens its OWN transaction and would break
+        // atomicity with the service_purchases insert below).
+        await creditClawTokens(
+          {
+            avatarId: sellerAvatarId,
+            amount: priceCt,
+            reason: 'land_service_sale',
+            source: 'api',
+            provenance: 'soft',
+            metadata: { listingId, buyerAvatarId: avatarId },
+          },
+          tx,
+        );
+      }
+
+      // (6) Land-domain audit row — parcel_id resolved via the structure join
+      // (a service listing has no parcel_id of its own).
+      const meta = JSON.stringify({ listingId, sellerAvatarId, title: listing.title });
+      const auditRows = await tx.execute<{ id: string }>(
+        sql`INSERT INTO land_transactions
+              (kind, parcel_id, structure_id, avatar_id, amount_ct, debit_ledger_tx_id, metadata)
+            VALUES (
+              'service_sale',
+              (SELECT parcel_id FROM land_structures WHERE id = ${listing.structure_id}),
+              ${listing.structure_id},
+              ${avatarId},
+              ${priceCt},
+              ${debitLedgerId},
+              ${meta}::jsonb
+            )
+            RETURNING id`,
+      );
+      const landTransactionId = auditRows[0]!.id;
+
+      // (7) Insert the purchase row. A concurrent same-key winner trips the
+      // GLOBAL idempotency_key unique index (23505) — let it propagate OUT of
+      // this transaction (rolling back the debit/credit we just made here,
+      // which is correct: the winner already committed its own charge) so the
+      // OUTER catch can re-fetch the winning row over a fresh, non-aborted
+      // connection (mirrors the /upgrade 23505 handler exactly).
+      const purchaseRows = await tx.execute<{
+        id: string;
+        listing_id: string;
+        buyer_avatar_id: string;
+        seller_avatar_id: string;
+        price_ct: number | string;
+        land_transaction_id: string | null;
+        created_at: Date;
+      }>(
+        sql`INSERT INTO service_purchases
+              (listing_id, buyer_avatar_id, seller_avatar_id, price_ct, land_transaction_id, idempotency_key)
+            VALUES (${listingId}, ${avatarId}, ${sellerAvatarId}, ${priceCt}, ${landTransactionId}, ${idempotencyKey})
+            RETURNING id, listing_id, buyer_avatar_id, seller_avatar_id, price_ct, land_transaction_id, created_at`,
+      );
+      const row = purchaseRows[0]!;
+
+      return {
+        kind: 'fresh',
+        purchase: {
+          id: row.id,
+          listingId: row.listing_id,
+          buyerAvatarId: row.buyer_avatar_id,
+          sellerAvatarId: row.seller_avatar_id,
+          priceCt: Number(row.price_ct),
+          landTransactionId: row.land_transaction_id,
+          createdAt: row.created_at.toISOString(),
+        },
+        priceCt,
+        sellerAvatarId,
+        structureId: listing.structure_id,
+      };
+    });
+  } catch (err) {
+    const pgCode = (err as { code?: string } | undefined)?.code;
+    if (pgCode === '23505') {
+      // Concurrent same-key winner — our INSERT tripped the GLOBAL
+      // idempotency_key unique index AFTER our own pre-check read (step 1), so
+      // the whole tx (including our debit/credit) rolled back. Re-fetch the
+      // winner OUTSIDE the now-aborted tx and serve it ONLY if it really is
+      // THIS listing+buyer (ownership-safe — never disclose another buyer's
+      // purchase row), mirroring the /upgrade 23505 handler's defensive check.
+      const winnerRows = await db
+        .select({
+          id: servicePurchases.id,
+          listingId: servicePurchases.listingId,
+          buyerAvatarId: servicePurchases.buyerAvatarId,
+          sellerAvatarId: servicePurchases.sellerAvatarId,
+          priceCt: servicePurchases.priceCt,
+          landTransactionId: servicePurchases.landTransactionId,
+          createdAt: servicePurchases.createdAt,
+        })
+        .from(servicePurchases)
+        .where(eq(servicePurchases.idempotencyKey, idempotencyKey))
+        .limit(1);
+      const winner = winnerRows[0];
+      if (winner && winner.listingId === listingId && winner.buyerAvatarId === avatarId) {
+        return c.json(
+          {
+            purchase: {
+              id: winner.id,
+              listingId: winner.listingId,
+              buyerAvatarId: winner.buyerAvatarId,
+              sellerAvatarId: winner.sellerAvatarId,
+              priceCt: winner.priceCt,
+              landTransactionId: winner.landTransactionId,
+              createdAt: winner.createdAt.toISOString(),
+            },
+            priceCt: winner.priceCt,
+            cached: true,
+          },
+          200,
+        );
+      }
+      return c.json({ error: 'idempotency_key_conflict' }, 409);
+    }
+    if (pgCode === '40P01') {
+      // Mutual-buy DEADLOCK (audit ADVISORY→FIX #3): A-buys-B's-service while
+      // B-buys-A's inverts the debit-own/credit-other ledger-row lock order.
+      // Postgres picks a victim and rolls its whole tx back (debit + credit +
+      // audit + purchase — nothing committed), so it is money-safe to ask the
+      // client to retry with the SAME idempotencyKey (which then proceeds fresh,
+      // or replays if the peer's tx already committed this key). Not re-ordering
+      // the ledger locks — the retryable-409 is the minimal correct fix.
+      return c.json({ error: 'concurrent_retry' }, 409);
+    }
+    if (err instanceof InsufficientTokensError) {
+      return c.json({ error: 'insufficient_clawtokens' }, 400);
+    }
+    if (err instanceof HTTPException) {
+      return c.json({ error: err.message }, err.status as 404 | 409);
+    }
+    throw err;
+  }
+
+  if (result.kind === 'cached') {
+    return c.json({ purchase: result.purchase, priceCt: result.priceCt, cached: true });
+  }
+
+  // FRESH purchase committed — bust the structure's + all-listings browse cache.
+  bustServiceListingsCache(result.structureId);
+
+  // Resolve the SELLER's own agentId/userId (durably — the seller may be
+  // offline right now) so the emitted event carries the SELLER as the
+  // credited subject, never the buyer. LEFT JOIN FROM avatars (not an INNER
+  // JOIN from openclaw_bots) — a human-only seller with no connected agent
+  // still needs its userId resolved for the event; an INNER JOIN would
+  // silently drop it and mis-attribute the row to no one. ORDER BY
+  // lastSeenAt DESC + LIMIT 1 is a deterministic tie-break for the rare case
+  // of more than one bot row per user — liveness is irrelevant here (this is
+  // a leaderboard-credit lookup, not a real-CT settlement gate).
+  const sellerRows = await db
+    .select({ userId: avatars.userId, agentId: openclawBots.agentId })
+    .from(avatars)
+    .leftJoin(openclawBots, eq(openclawBots.userId, avatars.userId))
+    .where(eq(avatars.id, result.sellerAvatarId))
+    .orderBy(desc(openclawBots.lastSeenAt))
+    .limit(1);
+  const seller = sellerRows[0];
+  const sellerUserId = seller?.userId ?? null;
+  const sellerAgentId = seller?.agentId ?? null;
+
+  // CONTRACT (leaderboard-progression, P3 slice 4): `priceCt` and
+  // `buyerAvatarId` are LOAD-BEARING for the scoring CTE — the paid-only
+  // filter (throw-proof text compare on priceCt) and the DISTINCT-BUYER
+  // anti-wash cap key. Never drop or rename them without coordinating with
+  // the leaderboard owner.
+  void logEventFromContext(c, {
+    eventType: LAND_EVENT_TYPES.SERVICE_SOLD,
+    userId: sellerUserId,
+    avatarId: result.sellerAvatarId,
+    agentId: sellerAgentId,
+    payload: {
+      listingId,
+      structureId: result.structureId,
+      priceCt: result.priceCt,
+      buyerAvatarId: avatarId,
+    },
+  });
+
+  return c.json({ purchase: result.purchase, priceCt: result.priceCt, cached: false });
 });

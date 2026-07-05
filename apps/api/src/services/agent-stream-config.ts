@@ -53,6 +53,11 @@ export const AGENT_STREAM_EVENT_TYPES = [
   // whitelist is stable before the emitter lands; a not-yet-emitted type simply
   // returns no rows.
   'agent.directive.set',
+  // Run-a-store (P3 slice 4) — the seller's settlement-confirm for a peer
+  // service sale (land.ts `POST /api/land/services/:listingId/buy`). Emitted
+  // with the SELLER as the explicit subject (agentId/avatarId/userId), so an
+  // agent running a shop can replay its own sale confirmations from history.
+  'land.service.sold',
 ] as const;
 
 export type AgentStreamEventType = (typeof AGENT_STREAM_EVENT_TYPES)[number];
