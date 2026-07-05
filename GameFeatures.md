@@ -122,6 +122,14 @@ Guest / logged-out: **Explore ↔ NPC Mode**. Logged-in non-guest avatar owner (
 - `setControlMode()` orchestrates: NPC spawn/cleanup for `npc` mode, autonomy-engine start/stop for `autonomous`, possession state for `npc`.
 - `toggleControlMode()` flips the disconnected pair (`explore↔npc`) or connected pair (`player↔autonomous`) and reuses `setControlMode()` so the side effects always run.
 
+### 1d. Autonomous — chat-bar directives (P3 slice 2, 2026-07-04)
+
+In **Autonomous** mode with a **hosted** agent (a ClawVille-run Eliza runtime — `agentHosted`, no external bearer), the bottom chatter bar (`avatar-chat-bar.tsx`) becomes a **DIRECTIVE channel**, not Q&A chat: what you type is a standing instruction your agent acts on autonomously (e.g. "go learn about cron jobs", "hang out at the reef"). The affordance is visible — a violet **"Directing"** badge in the header, a **"Direct your agent…"** placeholder, and each sent directive renders as a distinct violet **⟶ Directive** chip with a "Directive set — <name> will act on it autonomously" confirmation.
+
+- Routing gate: `controlMode === 'autonomous' && agentHosted && !agentSessionId`. **Bearer-connected** agents (a live `agentSessionId`) keep the existing `openclawChat` routing UNTOUCHED; **guests / logged-out** are unchanged; Controlled (`player`) mode is always Q&A.
+- Client: `api.setDirective(text)` / `api.clearDirective()` → `POST /api/avatars/me/directive`. Server persists the directive durably (`platform_agents.config.currentDirective`, read by both autonomous planners as a top-priority bias), writes it to the durable **goal stream** (`agent.directive.set`), and injects it into the running runtime's memory. Guests get 403; a still-provisioning agent gets 409; over-rate gets 429 — each surfaces a friendly inline message. Full backend contract: `ARCHITECTURE.md §6` (P3 slice 2).
+- The **autonomous engine itself** (the server avatar-simulation bridge / house-agent driver) is what consumes the directive; the client autonomy loop (`stores/autonomy.ts`) is unchanged.
+
 ### 1c. Guest mode (2026-04-23 — `POST /api/auth/guest`)
 
 Un-authed visitors can play activities + chat with NPCs as a throwaway "Guest Avatar" without signing up. Idempotent for already-authed callers. Rate-limited 5/min/IP. Two trigger points:

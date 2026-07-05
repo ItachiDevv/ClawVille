@@ -45,8 +45,10 @@ function getAgentChatGlyph(modelKey: string | undefined, category: AgentCategory
 }
 
 interface AvatarMessage {
+  // 'directive' (P3 slice 2) = a command the human sent to their autonomous
+  // agent (persisted server-side), NOT a chat turn — rendered distinctly.
   id: string;
-  role: 'user' | 'assistant';
+  role: 'user' | 'assistant' | 'directive';
   content: string;
 }
 
@@ -77,6 +79,7 @@ export default function AvatarChatBar() {
   });
   const agentHosted = agentSession?.connected === true && agentSession?.mode === 'hosted';
   const chatOpen = useGameStore((s) => s.chatOpen); // location chat open
+  const controlMode = useGameStore((s) => s.controlMode);
   const agentPaired = useGameStore((s) => s.agentPaired);
   const agentConnected = useGameStore((s) => s.agentConnected);
   const agentSessionId = useGameStore((s) => s.agentSessionId);
@@ -96,6 +99,12 @@ export default function AvatarChatBar() {
   // bearer too, but it has nothing to reconnect — exclude it so F2's bogus
   // "reconnect your agent" prompt never shows for hosted avatars.
   const pairedNoBearer = agentPaired && !agentSessionId && !agentHosted;
+  // P3 slice 2 — in Autonomous mode with a HOSTED agent (a ClawVille-run Eliza
+  // runtime, no external bearer), the bottom chatter is a DIRECTIVE channel:
+  // the human directs the agent (persisted server-side + biases the autonomous
+  // planner) rather than a Q&A chat. Bearer-connected agents (agentSessionId
+  // present) keep the openclawChat routing untouched.
+  const isDirectiveMode = controlMode === 'autonomous' && agentHosted && !agentSessionId;
   const [expanded, setExpanded] = useState(false);
   const [messages, setMessages] = useState<AvatarMessage[]>([]);
   const [input, setInput] = useState('');
@@ -172,6 +181,40 @@ export default function AvatarChatBar() {
     if (!input.trim() || loading) return;
     const content = input.trim();
     setInput('');
+
+    // P3 slice 2 — Autonomous + hosted: this is a DIRECTIVE, not a Q&A turn.
+    // Persist it server-side (goal stream + planner bias); render it distinctly.
+    if (isDirectiveMode) {
+      const directiveMsg: AvatarMessage = { id: crypto.randomUUID(), role: 'directive', content };
+      setMessages((prev) => [...prev, directiveMsg]);
+      scrollToBottom();
+      setLoading(true);
+      try {
+        await api.setDirective(content);
+        const okMsg: AvatarMessage = {
+          id: crypto.randomUUID(),
+          role: 'assistant',
+          content: `Directive set — ${avatar.name} will act on it autonomously.`,
+        };
+        setMessages((prev) => [...prev, okMsg]);
+      } catch (err: any) {
+        const code = err instanceof ApiError ? err.code : undefined;
+        const msg =
+          code === 'agent_provisioning_pending'
+            ? `${avatar.name} is still being provisioned — try again shortly.`
+            : code === 'guest_not_allowed'
+              ? 'Sign up to direct your own agent.'
+              : code === 'rate_limited'
+                ? 'Too many directives — try again in a minute.'
+                : `(Could not set directive: ${err?.message || 'unknown error'})`;
+        setMessages((prev) => [...prev, { id: crypto.randomUUID(), role: 'assistant', content: msg }]);
+      } finally {
+        setLoading(false);
+        if (!expanded) setHasUnread(true);
+        scrollToBottom();
+      }
+      return;
+    }
 
     const userMsg: AvatarMessage = { id: crypto.randomUUID(), role: 'user', content };
     setMessages((prev) => [...prev, userMsg]);
@@ -273,6 +316,37 @@ export default function AvatarChatBar() {
     }
   };
 
+  // P3 slice 2 (spec A1) — clear the standing directive from the "Directing"
+  // badge. Confirms in the thread; the agent resumes free autonomous behavior.
+  const handleClearDirective = async () => {
+    if (loading) return;
+    setLoading(true);
+    try {
+      await api.clearDirective();
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: crypto.randomUUID(),
+          role: 'assistant',
+          content: `Directive cleared — ${avatar.name} resumes free exploration.`,
+        },
+      ]);
+    } catch (err: any) {
+      const code = err instanceof ApiError ? err.code : undefined;
+      const msg =
+        code === 'guest_not_allowed'
+          ? 'Sign up to direct your own agent.'
+          : code === 'rate_limited'
+            ? 'Too many requests — try again in a minute.'
+            : `(Could not clear directive: ${err?.message || 'unknown error'})`;
+      setMessages((prev) => [...prev, { id: crypto.randomUUID(), role: 'assistant', content: msg }]);
+    } finally {
+      setLoading(false);
+      if (!expanded) setHasUnread(true);
+      scrollToBottom();
+    }
+  };
+
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
@@ -299,10 +373,29 @@ export default function AvatarChatBar() {
           <div className="flex items-center gap-2 px-3 py-2 bg-gradient-to-r from-cyan-600/25 to-cyan-500/10 border-b border-cyan-500/25">
             <AgentIcon size={22} />
             <span className="text-white font-bold text-sm">{avatar.name}</span>
+            {isDirectiveMode && (
+              <span className="flex items-center gap-1 pl-1.5 pr-1 py-0.5 rounded-full text-[10px] font-mono uppercase tracking-wider bg-violet-500/25 text-violet-100 border border-violet-300/40">
+                Directing
+                <button
+                  type="button"
+                  onClick={handleClearDirective}
+                  disabled={loading}
+                  aria-label="Clear directive — resume free exploration"
+                  title="Clear directive"
+                  className="inline-flex items-center justify-center w-5 h-5 rounded-full text-violet-100/90 hover:bg-violet-400/30 hover:text-white disabled:opacity-40 transition-colors"
+                >
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round">
+                    <path d="M18 6 6 18M6 6l12 12" />
+                  </svg>
+                </button>
+              </span>
+            )}
             <span className="text-white/45 text-xs ml-auto font-mono">
-              {knowledgeTopics.length > 0
-                ? `Knows: ${knowledgeTopics.slice(0, 3).join(', ')}${knowledgeTopics.length > 3 ? '…' : ''}`
-                : 'your agent'}
+              {isDirectiveMode
+                ? 'autonomous'
+                : knowledgeTopics.length > 0
+                  ? `Knows: ${knowledgeTopics.slice(0, 3).join(', ')}${knowledgeTopics.length > 3 ? '…' : ''}`
+                  : 'your agent'}
             </span>
           </div>
 
@@ -355,25 +448,39 @@ export default function AvatarChatBar() {
           <div className="max-h-64 overflow-y-auto px-3 py-2 space-y-2">
             {messages.length === 0 && (
               <p className="text-cyan-300/40 text-xs text-center py-4 font-mono uppercase tracking-[0.2em]">
-                Say something to {avatar.name}…
+                {isDirectiveMode ? `Direct ${avatar.name}…` : `Say something to ${avatar.name}…`}
               </p>
             )}
-            {messages.map((msg) => (
-              <div
-                key={msg.id}
-                className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
-              >
-                <div
-                  className={`max-w-[85%] rounded-lg px-3 py-1.5 text-sm ${
-                    msg.role === 'user'
-                      ? 'bg-cyan-500/90 text-white shadow-[0_0_12px_rgba(0,229,255,0.25)]'
-                      : 'bg-white/[0.08] text-cyan-50 border border-white/[0.06]'
-                  }`}
-                >
-                  {msg.content}
+            {messages.map((msg) =>
+              msg.role === 'directive' ? (
+                // P3 slice 2 — a directive the human sent to their autonomous
+                // agent. Distinct violet chip w/ label so it never reads as a
+                // chat question.
+                <div key={msg.id} className="flex justify-end">
+                  <div className="max-w-[85%] rounded-lg px-3 py-1.5 text-sm bg-gradient-to-r from-violet-600/90 to-fuchsia-600/80 text-white border border-violet-300/40 shadow-[0_0_12px_rgba(139,92,246,0.3)]">
+                    <span className="block text-[10px] font-mono uppercase tracking-[0.15em] text-violet-100/85 mb-0.5">
+                      ⟶ Directive
+                    </span>
+                    {msg.content}
+                  </div>
                 </div>
-              </div>
-            ))}
+              ) : (
+                <div
+                  key={msg.id}
+                  className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
+                >
+                  <div
+                    className={`max-w-[85%] rounded-lg px-3 py-1.5 text-sm ${
+                      msg.role === 'user'
+                        ? 'bg-cyan-500/90 text-white shadow-[0_0_12px_rgba(0,229,255,0.25)]'
+                        : 'bg-white/[0.08] text-cyan-50 border border-white/[0.06]'
+                    }`}
+                  >
+                    {msg.content}
+                  </div>
+                </div>
+              ),
+            )}
             {loading && (
               <div className="flex justify-start">
                 <div className="bg-white/[0.08] rounded-lg px-4 py-2 flex gap-1.5 items-center">
@@ -395,7 +502,7 @@ export default function AvatarChatBar() {
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={handleKeyDown}
-                placeholder={`Talk to ${avatar.name}…`}
+                placeholder={isDirectiveMode ? 'Direct your agent…' : `Talk to ${avatar.name}…`}
                 className="flex-1 bg-black/40 border border-cyan-500/15 text-white placeholder-white/30 rounded-lg px-3 py-1.5 text-sm outline-none focus:border-cyan-400/60 focus:ring-1 focus:ring-cyan-400/30 transition-colors"
                 disabled={loading}
               />

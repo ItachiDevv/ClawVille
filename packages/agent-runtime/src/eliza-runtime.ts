@@ -565,6 +565,49 @@ export class ElizaRuntime {
     return this.runtime;
   }
 
+  /**
+   * P3 slice 2 — inject the human's CURRENT directive as a memory so this
+   * agent's NEXT cognition turn sees it in context. The durable source of truth
+   * is the DB row (platform_agents.config.currentDirective); this is a
+   * best-effort mirror for an ALREADY-running runtime. Fire-and-forget from
+   * callers (it MUST NOT lazy-start a runtime just to store a directive —
+   * no-op when not running); never throws.
+   *
+   * `userKey` (the human's user id) lands the memory in the SAME room as that
+   * user's avatar chat (`generateRoomId(agentId, userKey)`) so the next
+   * `/me/chat` turn includes it in history; omit it for a dedicated directive
+   * room.
+   */
+  async injectDirectiveMemory(text: string, userKey?: string): Promise<void> {
+    if (this.state !== 'running' || !this.runtime) return;
+    try {
+      const agentId = this.config.agentId as UUID;
+      const key = userKey && userKey.length > 0 ? userKey : 'directive';
+      const roomId = generateRoomId(this.config.agentId, key);
+      const entityId = uuidv5(key, ROOM_NAMESPACE) as UUID;
+      const worldId = await this.ensureWorld();
+      await this.ensureRoom(roomId, key, worldId);
+      await this.ensureEntity(entityId, agentId);
+      await this.runtime.createMemory(
+        {
+          id: crypto.randomUUID() as UUID,
+          agentId,
+          entityId,
+          roomId,
+          content: { text: `[Directive from your human] ${text}`, source: 'directive' } as Content,
+          createdAt: Date.now(),
+          metadata: { type: 'message', source: 'directive' },
+        },
+        'messages',
+      );
+    } catch (err) {
+      console.warn(
+        '[ElizaRuntime] injectDirectiveMemory failed (non-fatal):',
+        (err as Error)?.message,
+      );
+    }
+  }
+
   private async ensureWorld(): Promise<UUID> {
     if (!this.runtime) throw new Error('Runtime not initialized');
     const worldId = this.config.agentId as UUID;

@@ -43,6 +43,12 @@ import {
 } from '../services/avatar-agent-provisioning';
 import { resolveOrCreateUserByIdentity, generateIdentityKeypairForUser } from '../services/identity-service';
 import { createRateLimiter, getClientIp } from '../middleware/rate-limit';
+import {
+  directiveBodySchema,
+  buildDirectiveValue,
+  setAgentDirective,
+  clearAgentDirective,
+} from '../services/agent-autonomy-state';
 import { lucia } from '../lib/auth';
 import type { AppContext } from '../types';
 import { z } from 'zod';
@@ -786,15 +792,26 @@ avatarRoutes.patch('/me', requireAuth, async (c) => {
           .where(eq(agents.id, current.platformAgentId!))
           .limit(1);
         if (agentRow) {
-          const nextAgentConfig = {
-            ...((agentRow.config ?? {}) as Record<string, unknown>),
+          // P3 slice 2 (spec A4) — mirror the changed keys via an ATOMIC jsonb
+          // merge of ONLY those keys, NOT a read-modify-write spread of the
+          // snapshot `agentRow.config`. The old spread rewrote the WHOLE config
+          // from a value read earlier in the tx, so a concurrent
+          // directive-set / cursor-advance committing in between was silently
+          // dropped (lost update). The `||` re-reads `agents.config` at UPDATE
+          // time (row-locked) and layers the mirrored keys on top, so those
+          // writes survive. Exact mirrored key set unchanged (species,
+          // archetypeId); config is written ONLY when one of them actually
+          // changes (name/characterConfig-only patches no longer touch config).
+          const configMerge: Record<string, unknown> = {
             ...(speciesChanging ? { species: d.species } : {}),
             ...(archetypeChanging ? { archetypeId: d.archetypeId } : {}),
           };
-          const agentPatch: Record<string, unknown> = {
-            config: nextAgentConfig,
-            updatedAt: new Date(),
-          };
+          const agentPatch: Record<string, unknown> = { updatedAt: new Date() };
+          if (Object.keys(configMerge).length > 0) {
+            agentPatch.config = sql`COALESCE(${agents.config}, '{}'::jsonb) || ${JSON.stringify(
+              configMerge,
+            )}::jsonb`;
+          }
           if (nameChanging) agentPatch.name = d.name;
           if (nextCharacterConfig) agentPatch.customization = nextCharacterConfig;
           await tx.update(agents).set(agentPatch).where(eq(agents.id, agentRow.id));
@@ -1208,6 +1225,142 @@ avatarRoutes.post('/me/chat', requireAuth, async (c) => {
       timestamp: response.timestamp.toISOString(),
     },
   });
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/avatars/me/directive  (P3 slice 2, D7 — hosted-only, off protected
+// surface)
+// ---------------------------------------------------------------------------
+// Direct your OWN hosted agent. In Autonomous mode the human types a directive
+// in the bottom chatter bar; instead of Q&A chat it is persisted durably
+// (platform_agents.config.currentDirective, read by BOTH autonomous planners),
+// written as an `agent.directive.set` durable event so it rides slice-1's goal
+// stream, and injected into the ALREADY-running runtime's memory (never
+// lazy-started — rows are the durable source). NOT a new [ACTION:] verb; a
+// directive is INPUT to cognition, not an action. No partner surface.
+//
+// Guests 403 (no real economy); provisioning-pending 409. Directive text is
+// untrusted user content — length-capped by the Zod schema, never interpolated
+// into SQL (atomic jsonb merge with bound params), rendered safely client-side.
+// ---------------------------------------------------------------------------
+const directiveRateLimiter = createRateLimiter({ maxPerWindow: 20, windowMs: 60_000 });
+
+/**
+ * Canonical connected-agent id for this user, or null. Matches the /events/replay
+ * + heartbeat resolution (most-recent openclaw_bots row by lastSeenAt). Used as
+ * the durable event's `agent_id` so a CONNECTED agent replays its directives via
+ * its session; a pure-hosted avatar (no bot row) writes an avatar-scoped event.
+ * We only ever read the canonical AGENT_ID handle here — never a raw bearer (the
+ * event-logger additionally digests any bearer-shaped value defensively).
+ */
+async function resolveConnectedAgentId(userId: string): Promise<string | null> {
+  try {
+    const bot = await db.query.openclawBots.findFirst({
+      where: eq(openclawBots.userId, userId),
+      orderBy: (t, { desc }) => [desc(t.lastSeenAt)],
+      columns: { agentId: true },
+    });
+    return bot?.agentId ?? null;
+  } catch {
+    return null;
+  }
+}
+
+avatarRoutes.post('/me/directive', requireAuth, async (c) => {
+  // IP rate-limit BEFORE any DB work (mirrors the replay endpoint's limiter).
+  const ip = getClientIp({ get: (n) => c.req.header(n) ?? null });
+  if (!directiveRateLimiter.check(ip)) {
+    return c.json(
+      { error: 'Too many directives. Try again in a minute.', code: 'rate_limited' },
+      429,
+    );
+  }
+
+  const user = c.get('user');
+
+  // Guests can't direct an agent (demo economy only). Lucia's user attributes
+  // don't surface isGuest, so read it off the row (same pattern as auth.ts).
+  const userRow = await db.query.users.findFirst({
+    where: eq(users.id, user.id),
+    columns: { isGuest: true },
+  });
+  if (userRow?.isGuest) {
+    return c.json(
+      {
+        error: 'Guests cannot direct an agent. Sign up to provision your own.',
+        code: 'guest_not_allowed',
+      },
+      403,
+    );
+  }
+
+  const body = await c.req.json().catch(() => ({}));
+  const parsed = directiveBodySchema.safeParse(body);
+  if (!parsed.success) {
+    return c.json(
+      {
+        error: parsed.error.issues[0]?.message ?? 'Invalid directive',
+        code: 'invalid_directive',
+      },
+      400,
+    );
+  }
+
+  const avatar = await db.query.avatars.findFirst({
+    where: and(eq(avatars.userId, user.id), eq(avatars.isActive, true)),
+    columns: { id: true, platformAgentId: true },
+  });
+  if (!avatar) {
+    return c.json({ error: 'You do not have an avatar yet', code: 'no_avatar' }, 404);
+  }
+  if (!avatar.platformAgentId) {
+    // agent-provisioning-pending — no hosted agent to direct yet.
+    return c.json(
+      {
+        error: 'Your agent is still being provisioned. Try again shortly.',
+        code: 'agent_provisioning_pending',
+      },
+      409,
+    );
+  }
+
+  const connectedAgentId = await resolveConnectedAgentId(user.id);
+
+  // Clear path (`{ clear: true }`, no directive text).
+  if (parsed.data.clear === true && !parsed.data.directive) {
+    await clearAgentDirective(avatar.platformAgentId);
+    void logEventFromContext(c, {
+      eventType: 'agent.directive.set',
+      userId: user.id,
+      avatarId: avatar.id,
+      agentId: connectedAgentId,
+      payload: { cleared: true, source: 'chat-bar' },
+    });
+    return c.json({ ok: true, directive: null, cleared: true });
+  }
+
+  const value = buildDirectiveValue(parsed.data.directive!, 'chat-bar');
+  await setAgentDirective(avatar.platformAgentId, value);
+
+  // Durable goal-stream event (rides slice-1 replay). agentId = the canonical
+  // connected-agent id when present; avatarId is always set (hosted scope).
+  void logEventFromContext(c, {
+    eventType: 'agent.directive.set',
+    userId: user.id,
+    avatarId: avatar.id,
+    agentId: connectedAgentId,
+    payload: { directive: value.text, source: 'chat-bar' },
+  });
+
+  // Best-effort inject into the ALREADY-running runtime (never lazy-start — the
+  // DB row is the durable source). Lands in the human's avatar-chat room so the
+  // next /me/chat turn sees it in history.
+  const runtime = agentOrchestrator.getRunningAgentRuntime(avatar.platformAgentId);
+  if (runtime) {
+    void runtime.injectDirectiveMemory(value.text, user.id);
+  }
+
+  return c.json({ ok: true, directive: value });
 });
 
 // Heartbeat — reports user activity + position

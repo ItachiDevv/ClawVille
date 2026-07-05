@@ -19,7 +19,7 @@ import {
 import { npcSimulation } from '../services/npc-simulation';
 import { findPath } from '../services/pathfinding';
 import { memoryService } from '../services/memory-service';
-import { db, openclawBots, avatars, users, buildingSkills, landParcels, events as eventsTable, eq, and, sql, gt, asc, inArray } from '@clawville/database';
+import { db, openclawBots, avatars, users, buildingSkills, landParcels, eq, and, sql } from '@clawville/database';
 import { agentOrchestrator } from '../services/agent-orchestrator';
 import { getSessionAgent } from '../services/session-agent-map';
 import { OpenClawClient } from '../services/openclaw-client';
@@ -76,14 +76,13 @@ import {
 } from '../services/openclaw-session-sweeper';
 import { drainKnowledgeEvents, drainAgentStreamEvents, clearSessionQueue } from '../services/skill-event-bus';
 import {
-  AGENT_STREAM_EVENT_TYPES,
   REPLAY_LIMIT_MAX,
   parseReplayQuery,
   parseCursorValue,
   projectDurableEvent,
   computeNextCursor,
-  type DurableEventRow,
 } from '../services/agent-stream-config';
+import { queryDurableAgentEvents } from '../services/agent-event-query';
 import { runTool } from '../services/skill-tools-dispatcher';
 import { coveBlackjackRouter } from './cove-blackjack';
 import { covePokerMttRouter } from './cove-poker-mtt';
@@ -2068,37 +2067,10 @@ async function resolveSession(sessionId: string) {
   return { npcId, npc };
 }
 
-// ---------------------------------------------------------------------------
 // Durable agent event-stream query (P3 slice 1, D7) — shared by the replay
-// endpoint AND the SSE reconnect catch-up. Reads the append-only `events` spine
-// WHERE agent_id = <this agent> AND event_type ∈ whitelist AND id > after,
-// ascending, capped. SAFE COLUMNS ONLY — id/eventType/ts/payload; NEVER
-// fp_hash/ip_prefix_hash/session_id. The server is stateless: the CALLER owns
-// its cursor (no server-side cursor storage).
-// ---------------------------------------------------------------------------
-async function queryDurableAgentEvents(
-  agentId: string,
-  afterId: bigint,
-  limit: number,
-): Promise<DurableEventRow[]> {
-  return db
-    .select({
-      id: eventsTable.id,
-      eventType: eventsTable.eventType,
-      ts: eventsTable.ts,
-      payload: eventsTable.payload,
-    })
-    .from(eventsTable)
-    .where(
-      and(
-        eq(eventsTable.agentId, agentId),
-        inArray(eventsTable.eventType, [...AGENT_STREAM_EVENT_TYPES]),
-        gt(eventsTable.id, afterId),
-      ),
-    )
-    .orderBy(asc(eventsTable.id))
-    .limit(limit);
-}
+// endpoint, the SSE reconnect catch-up, AND (slice 2) the autonomy driver's
+// wake-up seed. The SQL now lives in `services/agent-event-query.ts` so the
+// three consumers share ONE query instead of duplicating it (plan §1 slice 2).
 
 // SSE reconnect catch-up page cap — bound the on-connect replay so a huge gap
 // can't stall the handshake; the paged `/events/replay` endpoint covers the

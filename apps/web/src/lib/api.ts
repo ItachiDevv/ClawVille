@@ -361,6 +361,29 @@ export const api = {
       }
     ),
 
+  // P3 slice 2 — direct your OWN hosted agent (Autonomous mode). Persists the
+  // directive server-side (goal stream + autonomous-planner bias) instead of
+  // Q&A chat. Guests 403 (`guest_not_allowed`); provisioning-pending 409
+  // (`agent_provisioning_pending`); over-rate 429 (`rate_limited`).
+  setDirective: (directive: string) =>
+    request<{
+      ok: boolean;
+      directive: { text: string; setAt: string; setBy: string } | null;
+      cleared?: boolean;
+    }>('/api/avatars/me/directive', {
+      method: 'POST',
+      body: JSON.stringify({ directive }),
+    }),
+
+  clearDirective: () =>
+    request<{ ok: boolean; directive: null; cleared: boolean }>(
+      '/api/avatars/me/directive',
+      {
+        method: 'POST',
+        body: JSON.stringify({ clear: true }),
+      }
+    ),
+
   // Transient world-NPC chat — used by TalkToCharacterBar in NPC mode.
   // Stateless one-shot OpenAI; no Eliza, no DB writes. Client owns history.
   sendTransientChat: (

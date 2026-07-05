@@ -211,8 +211,17 @@ export class SimulationRuntime {
   /**
    * Plan the next action for a single avatar using the LLM.
    * Called by the bridge when an avatar is idle and cooldown has elapsed.
+   *
+   * P3 slice 2: `opts.directiveContext` is a pre-formatted top-priority block
+   * (the human's current directive, formatted by
+   * `agent-autonomy-state.formatDirectiveContext` in apps/api). When present it
+   * is prepended to the planning prompt so the directive shapes the choice; when
+   * absent/empty the prompt is byte-identical to the pre-directive behavior.
    */
-  async planAvatarNextAction(userId: string): Promise<ActionResult | null> {
+  async planAvatarNextAction(
+    userId: string,
+    opts: { directiveContext?: string | null } = {},
+  ): Promise<ActionResult | null> {
     if (!this.initialized) return null;
     const runtime = this.getRuntime();
     if (!runtime) return null;
@@ -288,14 +297,25 @@ export class SimulationRuntime {
         ? `Budget remaining: ${avatar.budgetMaxNt - avatar.budgetSpent} NT, ${avatar.budgetMaxPurchases - avatar.budgetPurchaseCount} purchases.`
         : '';
 
+      // P3 slice 2 directive bias — prepend the human's current directive as a
+      // top-priority block and swap the closing guidance line so the model
+      // pursues it. Empty directive ⇒ prompt is byte-identical to pre-slice-2.
+      const directiveBlock =
+        opts.directiveContext && opts.directiveContext.trim().length > 0
+          ? opts.directiveContext.trim()
+          : '';
+
       const prompt = [
+        ...(directiveBlock ? [directiveBlock, ''] : []),
         providerText,
         budgetLine,
         '',
         'Decide what this avatar should do next. Choose ONE of:',
         ...actionChoices,
         '',
-        'Favor variety — pick buildings the avatar has not visited yet. When visiting a building, try buying a book and learning from it before moving on. After several visits, return home and sleep.',
+        directiveBlock
+          ? 'If your directive names a building or goal, choose the action that pursues it (e.g. move to that building). Otherwise favor variety.'
+          : 'Favor variety — pick buildings the avatar has not visited yet. When visiting a building, try buying a book and learning from it before moving on. After several visits, return home and sleep.',
         '',
         `Respond ONLY with a single-line JSON object. Use userId="${userId}". Examples:`,
         ...examples,

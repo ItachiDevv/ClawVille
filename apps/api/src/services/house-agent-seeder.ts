@@ -34,7 +34,7 @@
  */
 
 import { randomBytes } from 'node:crypto';
-import { eq, and, asc } from 'drizzle-orm';
+import { eq, and, asc, sql } from 'drizzle-orm';
 import { db, openclawBots, agents, users, avatars } from '@clawville/database';
 import { resolveAgentSpecies } from './agent-session-config';
 import type { OpenClawAvatarConfig } from '@clawville/shared';
@@ -387,7 +387,22 @@ export async function ensureHouseAgent(): Promise<HouseAgentSeedResult | null> {
     }
     await db
       .update(agents)
-      .set({ name: HOUSE_AGENT_NAME, customization, config, status: 'stopped', updatedAt: new Date() })
+      .set({
+        name: HOUSE_AGENT_NAME,
+        customization,
+        // P3 slice 2 (B1) — ATOMIC jsonb merge, NOT a wholesale replace. House
+        // agents are the driver's only consumers, so `config.autonomyCursor`
+        // (and any `config.currentDirective`) is written on THIS row and MUST
+        // survive every boot re-seed — a plain `.set({config})` here wiped the
+        // cursor on every restart, making the cursor deliverable non-functional.
+        // Right operand wins, so the freshly-built seed keys override while the
+        // driver/directive keys (absent from `config`) are preserved. Mirrors
+        // agent-autonomy-state.ts. Fresh-create (else branch) keeps the plain
+        // object — nothing to preserve on a brand-new row.
+        config: sql`COALESCE(${agents.config}, '{}'::jsonb) || ${JSON.stringify(config)}::jsonb`,
+        status: 'stopped',
+        updatedAt: new Date(),
+      })
       .where(eq(agents.id, platformAgentId));
   } else {
     const [inserted] = await db
