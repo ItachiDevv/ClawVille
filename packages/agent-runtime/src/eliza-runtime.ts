@@ -22,6 +22,7 @@ import { loadLocationTemplate } from './character-loader';
 import { createOpenClawProviderPlugin, type OpenClawGatewayConfig } from './plugins/openclaw-provider';
 import { createOpenAIEmbeddingPlugin } from './plugins/openai-embedding-provider';
 import { createOpenAITextPlugin } from './plugins/openai-text-provider';
+import { embedText } from './plugins/embed-text';
 import { clawvillePlugin } from './plugins/clawville-plugin';
 import type { Provider, ProviderResult } from './providers/types';
 import type { Action, ActionResult, ClawvilleActionState } from './actions/types';
@@ -605,6 +606,158 @@ export class ElizaRuntime {
         '[ElizaRuntime] injectDirectiveMemory failed (non-fatal):',
         (err as Error)?.message,
       );
+    }
+  }
+
+  /**
+   * P3 slice 3 — the memory CONVERGENCE write. Persist one EARNED-SKILL lesson
+   * (a teacher turn) onto THIS agent's own ElizaOS runtime, keyed to the AVATAR
+   * (durable) rather than the transient in-world body — so the lesson survives
+   * idle-despawn, unlike the old `npc_memories` body-keyed write. The lesson is
+   * embedded (1536-dim, `embedText`) and stored in the `knowledge` memory table
+   * (the SAME proven path items.ts uses for book knowledge) so it is retrievable
+   * by semantic RAG via `searchEarnedSkillMemories`.
+   *
+   * ISOLATION: earned-skill lessons live under an AVATAR-scoped room/entity
+   * (`earned-skill:<avatarId>`) — distinct from the platform-agent-keyed
+   * (roomId=entityId=agentId) book-knowledge the KnowledgeProvider reads — so a
+   * lesson never bleeds into the human-chat knowledge RAG and vice-versa.
+   *
+   * D8 cost: this is the per-turn EMBEDDING spend the convergence adds to the
+   * autonomous loop (the old keyword store was free) — a deliberate, recorded
+   * tradeoff (ARCHITECTURE §6). If the embedding fails we DO NOT write an
+   * un-searchable row; we return false so the caller routes to the keyword-store
+   * fallback (a lesson must never become silently unretrievable).
+   *
+   * NEVER lazy-starts: no-op (returns false) when this runtime isn't running.
+   * Fail-soft: returns false on ANY error; never throws (a memory failure must
+   * not break a teacher turn or a driver tick).
+   */
+  async recordEarnedSkillMemory(input: {
+    avatarId: string;
+    buildingId: string;
+    teacherName?: string;
+    lesson: string;
+  }): Promise<boolean> {
+    if (this.state !== 'running' || !this.runtime) return false;
+    const lesson = input.lesson.trim();
+    if (!lesson || !input.avatarId) return false;
+    try {
+      // Embed FIRST — a lesson stored without a vector is invisible to
+      // searchMemories, so on an embedding failure we abort the ElizaOS write
+      // and let the caller fall back to the keyword store (never a dead row).
+      let embedding: number[];
+      try {
+        embedding = await embedText(lesson);
+      } catch (embErr) {
+        console.warn(
+          '[ElizaRuntime] recordEarnedSkillMemory embed failed — caller falls back to keyword store:',
+          (embErr as Error)?.message,
+        );
+        return false;
+      }
+
+      const agentId = this.config.agentId as UUID;
+      const key = `earned-skill:${input.avatarId}`;
+      const roomId = generateRoomId(this.config.agentId, key);
+      const entityId = uuidv5(key, ROOM_NAMESPACE) as UUID;
+      const worldId = await this.ensureWorld();
+      await this.ensureRoom(roomId, key, worldId);
+      await this.ensureEntity(entityId, agentId);
+
+      const memoryId = uuidv5(
+        `earned-skill:${input.avatarId}:${input.buildingId}:${lesson}`,
+        ROOM_NAMESPACE,
+      ) as UUID;
+      await this.runtime.createMemory(
+        {
+          id: memoryId,
+          agentId,
+          entityId,
+          roomId,
+          content: { text: lesson, source: 'earned-skill' } as Content,
+          embedding,
+          createdAt: Date.now(),
+          metadata: {
+            type: 'custom',
+            subtype: 'earned-skill',
+            buildingId: input.buildingId,
+            teacher: input.teacherName,
+            avatarId: input.avatarId,
+          },
+        } as any,
+        'knowledge',
+        true, // unique — idempotent on an identical lesson
+      );
+      return true;
+    } catch (err) {
+      console.warn(
+        '[ElizaRuntime] recordEarnedSkillMemory failed (non-fatal):',
+        (err as Error)?.message,
+      );
+      return false;
+    }
+  }
+
+  /**
+   * P3 slice 3 — the memory CONVERGENCE read. Semantic-RAG retrieval of THIS
+   * agent's own earned-skill lessons (avatar-keyed, embedded) — the replacement
+   * for the driver's old keyword `getRelevantMemories`. Embeds `query`, runs a
+   * vector search over the AVATAR-scoped `knowledge` rows, filters to
+   * `subtype:'earned-skill'` (+ an optional building), and returns the lesson
+   * strings ordered by relevance.
+   *
+   * NEVER lazy-starts: returns [] when this runtime isn't running (D8 guardrail —
+   * the caller keeps the keyword store as the not-running fallback). Fail-soft:
+   * [] on ANY error (embed failure, no rows yet); never throws.
+   */
+  async searchEarnedSkillMemories(input: {
+    avatarId: string;
+    query: string;
+    buildingId?: string;
+    limit?: number;
+  }): Promise<string[]> {
+    if (this.state !== 'running' || !this.runtime) return [];
+    if (!input.avatarId) return [];
+    const limit = input.limit ?? 5;
+    try {
+      let embedding: number[];
+      try {
+        embedding = await embedText(input.query && input.query.trim().length > 0 ? input.query : 'recent lessons');
+      } catch {
+        return [];
+      }
+      const key = `earned-skill:${input.avatarId}`;
+      const roomId = generateRoomId(this.config.agentId, key);
+      const entityId = uuidv5(key, ROOM_NAMESPACE) as UUID;
+      const results: Array<{ content?: { text?: string }; metadata?: Record<string, unknown> }> =
+        (await (this.runtime as any).searchMemories({
+          embedding,
+          tableName: 'knowledge',
+          roomId,
+          entityId,
+          // Over-fetch, then filter to earned-skill (+ building) in-app.
+          count: Math.max(limit * 3, 15),
+          // Low threshold — recall over precision; this is prompt seasoning.
+          match_threshold: 0.1,
+          unique: true,
+        })) ?? [];
+      const out: string[] = [];
+      for (const m of results) {
+        const meta = (m.metadata ?? {}) as Record<string, unknown>;
+        if (meta.subtype !== 'earned-skill') continue;
+        if (input.buildingId && meta.buildingId !== input.buildingId) continue;
+        const text = m.content?.text;
+        if (typeof text === 'string' && text.length > 0) out.push(text);
+        if (out.length >= limit) break;
+      }
+      return out;
+    } catch (err) {
+      console.warn(
+        '[ElizaRuntime] searchEarnedSkillMemories failed (non-fatal):',
+        (err as Error)?.message,
+      );
+      return [];
     }
   }
 

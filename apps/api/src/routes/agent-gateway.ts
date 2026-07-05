@@ -93,6 +93,7 @@ import {
   isReservedPartnerIdentityType,
 } from '../services/reserved-agent-namespaces';
 import { getBlackjackSkillContext } from '../services/game-skill-memory';
+import { readEarnedSkillLessons, recordEarnedSkillLesson } from '../services/earned-skill-memory';
 import {
   getBooksForBuilding,
   SHOP_BUILDINGS,
@@ -2577,6 +2578,45 @@ agentGatewayRoutes.post('/:sessionId/building/:buildingId/chat', async (c) => {
     }
   }
 
+  // P3 slice 3 — CONVERGENCE parity for CONNECTED agents: persist this teaching
+  // turn as an EARNED-SKILL lesson bound to the agent's OWN avatar, so the
+  // /skills/:bid/skill-memory endpoint returns real lessons for connected agents
+  // too — not just house agents (otherwise that endpoint would be empty for its
+  // intended audience). Fire-and-forget + fail-soft: it NEVER blocks or fails the
+  // chat response and is fully independent of the CT money path above. Lands in
+  // the agent's OWN ElizaOS runtime when warm (the wrapper case) else the
+  // avatar-keyed keyword store (readEarnedSkillLessons reads either back).
+  if (botConfig && responseContent.trim().length > 0) {
+    void (async () => {
+      try {
+        const learnBot = await db.query.openclawBots.findFirst({
+          where: eq(openclawBots.agentId, botConfig.agentId),
+          columns: { userId: true },
+        });
+        if (!learnBot?.userId) return;
+        const learnAvatar = await db.query.avatars.findFirst({
+          where: and(eq(avatars.userId, learnBot.userId), eq(avatars.isActive, true)),
+          columns: { id: true, platformAgentId: true },
+        });
+        if (!learnAvatar) return;
+        const teacherName = system.locationAgent.agentName;
+        const lesson = `${teacherName} at ${theme?.label ?? buildingId} taught me: ${responseContent
+          .replace(/\s+/g, ' ')
+          .slice(0, 240)}`;
+        await recordEarnedSkillLesson({
+          platformAgentId: learnAvatar.platformAgentId ?? '',
+          avatarId: learnAvatar.id,
+          agentId: botConfig.agentId,
+          buildingId,
+          teacherName,
+          lesson,
+        });
+      } catch {
+        /* fail-soft — earned-skill parity is best-effort, never blocks the chat */
+      }
+    })();
+  }
+
   void logEventFromContext(c, {
     eventType: 'agent.chat.turn',
     agentId: botConfig?.agentId ?? sessionDigest(sessionId),
@@ -2934,6 +2974,69 @@ agentGatewayRoutes.get('/:sessionId/skills/:buildingId/tools.json', async (c) =>
       'Access-Control-Expose-Headers': 'Content-Disposition, X-Skill-Filename',
     },
   });
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/agent/:sessionId/skills/:buildingId/skill-memory
+// ---------------------------------------------------------------------------
+// P3 slice 3 — the READ surface for a connected agent's converged EARNED-SKILL
+// lessons at a building (the direct analogue of the cove blackjack skill-memory
+// endpoint above: same session→bot→avatar resolution, same fail-closed liveness
+// gate, same avatar binding). OUTSIDE the versioned manual emitters
+// (skills.ts / skill-protocol.ts) so it carries NO PROTOCOL_VERSION bump — slice
+// 6 documents it. Lessons are produced by the teacher-chat convergence (the house
+// path via world-teacher-chat, the connected path via /building/:id/chat below)
+// and read from the agent's OWN ElizaOS runtime (semantic RAG) or the avatar-keyed
+// keyword fallback. UNGATED by curriculum ownership (an agent may always read its
+// OWN earned lessons); NOT inventory-locked like tools.json/skill.md.
+// ---------------------------------------------------------------------------
+const skillMemoryRateLimiter = createRateLimiter({ maxPerWindow: 60, windowMs: 60_000 });
+
+agentGatewayRoutes.get('/:sessionId/skills/:buildingId/skill-memory', async (c) => {
+  // IP rate-limit BEFORE validateLiveAgentSession/DB so a live bearer can't hammer
+  // the session-resolve + avatar-lookup + RAG read. Mirrors eventsReplayRateLimiter
+  // (60/min/IP).
+  const ip = getClientIp({ get: (n) => c.req.header(n) ?? null });
+  if (!skillMemoryRateLimiter.check(ip)) {
+    return c.json({ error: 'Too many skill-memory requests. Try again in 1 minute.', code: 'rate_limited' }, 429);
+  }
+
+  const sessionId = c.req.param('sessionId');
+  const buildingId = c.req.param('buildingId');
+  // Fail-closed liveness gate (shared validator) — same as the cove sibling.
+  if (!(await validateLiveAgentSession(sessionId))) {
+    return c.json({ error: 'Invalid or expired agent session' }, 404);
+  }
+  // Own-property building guard (prototype-key safety — mirrors /building/:id/chat
+  // + /visit-building). An inherited/unknown key can never resolve to a building.
+  if (!resolveBuildingCenter(buildingId)) {
+    return c.json({ error: `Unknown building: ${buildingId}` }, 400);
+  }
+  const botConfig = npcSimulation.getOpenClawBotConfig(sessionId);
+  if (!botConfig) return c.json({ error: 'No agent config for session' }, 404);
+
+  const bot = await db.query.openclawBots.findFirst({
+    where: eq(openclawBots.agentId, botConfig.agentId),
+    columns: { userId: true },
+  });
+  if (!bot?.userId) return c.json({ error: 'Agent not linked to a user' }, 404);
+
+  const avatar = await db.query.avatars.findFirst({
+    where: and(eq(avatars.userId, bot.userId), eq(avatars.isActive, true)),
+    columns: { id: true, platformAgentId: true },
+  });
+  if (!avatar) return c.json({ error: 'No active avatar for user' }, 404);
+
+  const theme = BUILDING_OPENCLAW_THEMES[buildingId];
+  const lessons = await readEarnedSkillLessons({
+    platformAgentId: avatar.platformAgentId ?? '',
+    avatarId: avatar.id,
+    buildingId,
+    // Bias the semantic-RAG retrieval toward this building's domain.
+    query: theme?.focus ?? buildingId,
+    limit: 10,
+  });
+  return c.json({ buildingId, lessons, count: lessons.length });
 });
 
 // ---------------------------------------------------------------------------

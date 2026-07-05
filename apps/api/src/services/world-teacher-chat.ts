@@ -32,8 +32,12 @@
  *         null) with the EXISTING 'agent.chat.turn' event type (weight 10, cap
  *         50/day — no new event type, no new CTE column). payload.isHouse=true
  *         is what the public-board carve-out (leaderboard.ts) keys on.
- *      c. Memory — memoryService.createMemory (the visit-building precedent):
- *         teacher + buildingId + a short lesson summary, kind 'conversation'.
+ *      c. Memory — an EARNED-SKILL lesson (teacher + buildingId + a short lesson
+ *         summary) CONVERGED onto the agent's OWN ElizaOS runtime (avatar-keyed,
+ *         embedded — survives idle-despawn) via `recordEarnedSkillLesson`, with
+ *         the avatar-keyed keyword store as the not-warm/embed-failed fallback
+ *         (P3 slice 3). The agent's prior lessons for this building are also
+ *         FOLDED into the teacher's context (step 2) so it builds on them.
  *
  * `settleBuildingArrival` is the sibling for the driver's ARRIVAL at a building
  * (the autonomy path emitted NEITHER the 'building.visited' event NOR the
@@ -56,24 +60,41 @@ import {
 import { npcSimulation } from './npc-simulation';
 import { agentOrchestrator } from './agent-orchestrator';
 import { getSystemNpcAgent } from './system-npc-seeder';
-import { memoryService } from './memory-service';
 import { logEvent } from './event-logger';
 import { creditBuildingRewardOncePerDay } from './building-reward';
 import { resolveBuildingCenter } from './building-center';
 import { sessionDigest } from './session-digest';
+import { recordEarnedSkillLesson, readEarnedSkillLessons } from './earned-skill-memory';
 
 /** Teacher reply bubble cap — keep in-world speech readable, not a wall. */
 const TEACHER_BUBBLE_MAX = 220;
-/** Lesson-summary cap for the npc_memories row (1–2 lines from the reply). */
+/** Lesson-summary cap for the earned-skill memory row (1–2 lines from the reply). */
 const LESSON_SUMMARY_MAX = 240;
+/**
+ * P3 slice 3 — bound the "prior lessons" fold read so a slow/absent memory store
+ * can never stall or fail a teacher turn (the read embeds a query + runs a vector
+ * search; on timeout we simply teach without the fold). Fail-soft to [].
+ */
+const FOLD_FETCH_TIMEOUT_MS = 2_500;
+/** Cap how many prior lessons fold into the teacher's context (seasoning, not a transcript). */
+const FOLD_LESSON_LIMIT = 3;
 
 export interface TeacherTurnInput {
   /** Stable house agent id (openclaw_bots.agent_id) — the leaderboard subject. */
   agentId: string;
-  /** In-world body id (`ocb-…`) — the sim/proximity + memory entity key. */
+  /** In-world body id (`ocb-…`) — the sim/proximity key. */
   bodyId: string;
   /** avatars.id the CT settles to (the dedicated house user's avatar). */
   avatarId: string;
+  /**
+   * P3 slice 3 — platform_agents.id whose warmed ElizaOS runtime backs the
+   * LEARNING agent. Used to (a) fold this agent's OWN prior earned-skill lessons
+   * for this building into the teacher's context and (b) converge the new lesson
+   * onto its ElizaOS runtime (avatar-keyed, survives despawn). Optional so a
+   * legacy caller without it still settles — it just skips the fold and lands the
+   * lesson in the avatar-keyed keyword fallback instead.
+   */
+  platformAgentId?: string;
   buildingId: string;
   /** The agent's question/message to the teacher. */
   message: string;
@@ -126,6 +147,32 @@ function proximityPassed(
 }
 
 /**
+ * P3 slice 3 — bounded, fail-soft read of the agent's OWN prior earned-skill
+ * lessons for a building, for the teacher-context fold. Raced against
+ * FOLD_FETCH_TIMEOUT_MS: on timeout/error return [] so a slow memory store (the
+ * read embeds a query + runs a vector search) never stalls or fails the turn.
+ */
+async function foldPriorLessons(
+  platformAgentId: string,
+  avatarId: string,
+  buildingId: string,
+  query: string,
+): Promise<string[]> {
+  return new Promise<string[]>((resolve) => {
+    const timer = setTimeout(() => resolve([]), FOLD_FETCH_TIMEOUT_MS);
+    readEarnedSkillLessons({ platformAgentId, avatarId, buildingId, query, limit: FOLD_LESSON_LIMIT })
+      .then((lessons) => {
+        clearTimeout(timer);
+        resolve(lessons);
+      })
+      .catch(() => {
+        clearTimeout(timer);
+        resolve([]);
+      });
+  });
+}
+
+/**
  * One REAL conversed teacher turn for an autonomous agent. Returns the teacher's
  * reply on success (settled: CT + leaderboard + memory), or null on ANY failure
  * (no reward, never throws).
@@ -133,7 +180,7 @@ function proximityPassed(
 export async function conductTeacherTurn(
   input: TeacherTurnInput,
 ): Promise<TeacherTurnResult | null> {
-  const { agentId, bodyId, avatarId, buildingId } = input;
+  const { agentId, bodyId, avatarId, buildingId, platformAgentId } = input;
   const message = input.message.trim();
   if (!message) return null;
 
@@ -171,6 +218,24 @@ export async function conductTeacherTurn(
     contextParts.push(
       `The visitor is an autonomous in-world agent named "${body?.name ?? 'an agent'}" who walked to your building to learn. Treat them as a peer agent capable of absorbing technical detail. Keep the reply short and teachable.`,
     );
+
+    // P3 slice 3 — fold the agent's OWN prior earned-skill lessons for THIS
+    // building into the teacher's context so it BUILDS ON prior lessons instead
+    // of repeating them. This is the measurable "use" of the converged memory:
+    // a lesson written on a previous turn (surviving idle-despawn) shapes the
+    // next turn's teaching. Bounded + fail-soft — a slow read never stalls the
+    // turn (it just teaches without the fold).
+    if (platformAgentId) {
+      const priorLessons = await foldPriorLessons(platformAgentId, avatarId, buildingId, message);
+      if (priorLessons.length > 0) {
+        contextParts.push(
+          `This agent has already learned the following from you here — build on it, teach ` +
+            `something NEW or go deeper, do NOT repeat:\n${priorLessons
+              .map((l) => `- ${l}`)
+              .join('\n')}`,
+        );
+      }
+    }
 
     let reply: string;
     try {
@@ -255,20 +320,21 @@ export async function conductTeacherTurn(
       },
     });
 
-    // 4c. Memory — the agent LEARNED something (visit-building precedent:
-    // entityId = the in-world body id, entityType 'npc'). Fire-and-forget.
-    const lesson = reply.replace(/\s+/g, ' ').slice(0, LESSON_SUMMARY_MAX);
-    memoryService
-      .createMemory({
-        entityId: bodyId,
-        entityType: 'npc',
-        targetEntityId: buildingId,
-        content: `${teacherName} at ${theme?.label ?? buildingId} taught me: ${lesson}`,
-        importance: 5,
-        kind: 'conversation',
-        metadata: { buildingId, teacher: teacherName, via: 'world-autonomous' },
-      })
-      .catch(() => {});
+    // 4c. Memory — the agent LEARNED something. P3 slice 3 CONVERGENCE: write to
+    // the agent's OWN ElizaOS runtime (avatar-keyed, embedded — survives the
+    // body idle-despawn that killed the old bodyId-keyed npc_memories write),
+    // with the avatar-keyed keyword store as the not-running/embed-failed
+    // fallback. Fire-and-forget + fail-soft: a memory failure never costs the
+    // turn's CT/leaderboard settlement.
+    const lessonSummary = reply.replace(/\s+/g, ' ').slice(0, LESSON_SUMMARY_MAX);
+    void recordEarnedSkillLesson({
+      platformAgentId: platformAgentId ?? '',
+      avatarId,
+      agentId,
+      buildingId,
+      teacherName,
+      lesson: `${teacherName} at ${theme?.label ?? buildingId} taught me: ${lessonSummary}`,
+    }).catch(() => {});
 
     return { reply, teacherName, tokenAwarded };
   } catch (err) {

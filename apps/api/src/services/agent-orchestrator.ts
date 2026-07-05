@@ -1,5 +1,5 @@
 import { eq, and } from 'drizzle-orm';
-import { db, agents, agentLogs } from '@clawville/database';
+import { db, agents, agentLogs, avatars, openclawBots } from '@clawville/database';
 import {
   ElizaRuntime,
   createElizaRuntime,
@@ -250,10 +250,58 @@ class AgentOrchestrator {
       if (agent.type === 'system-agent' || agent.isHouse) continue;
 
       if (now - agent.lastActivity.getTime() > INACTIVITY_TIMEOUT_MS) {
+        // D6 (P3 slice 3) — do NOT reap a hosted runtime that BACKS a LIVE
+        // connected agent session. The connected agent drives play through the
+        // gateway (`/:sid/*`), which slides the SESSION TTL but never touches
+        // THIS runtime's `lastActivity` (gateway actions warm the TEACHER's
+        // runtime, not the connected agent's own), so a live-session agent looks
+        // idle here and its wrapper/memory runtime would die mid-session. The
+        // check is the SAME live-session predicate validateLiveAgentSession uses.
+        // FAIL-OPEN to today's behavior (stop) on any error — prefer no-leak. A
+        // transient read error may stop a runtime that IS backing a live session,
+        // but that degradation is SOFT: the next connected action lazy re-warms the
+        // runtime (ensureAgentRuntime), and until then the converged-memory paths
+        // fall back to the keyword store — no data loss, no hard failure.
+        let backsLiveSession = false;
+        try {
+          backsLiveSession = await this.agentBacksLiveConnectedSession(agentId);
+        } catch {
+          backsLiveSession = false;
+        }
+        if (backsLiveSession) continue;
+
         console.log(`[Orchestrator] Stopping inactive agent ${agentId}`);
         await this.stopAgent(agentId);
       }
     }
+  }
+
+  /**
+   * D6 (P3 slice 3) — does this hosted runtime (platform_agents.id) back a LIVE
+   * connected agent session? Resolves the runtime's avatar (`avatars.platformAgentId`)
+   * → its owner → any `openclaw_bots` session for that owner that is still live
+   * (strictly-future `session_expires_at`, not swept). Same fail-closed TTL rule
+   * as `validateLiveAgentSession` / `restoreAgentSessionFromRow`. Returns false
+   * (→ eligible for the idle sweep) when no live session backs the runtime.
+   */
+  private async agentBacksLiveConnectedSession(platformAgentId: string): Promise<boolean> {
+    const rows = await db
+      .select({
+        expiresAt: openclawBots.sessionExpiresAt,
+        sweptAt: openclawBots.sessionSweptAt,
+      })
+      .from(avatars)
+      .innerJoin(openclawBots, eq(openclawBots.userId, avatars.userId))
+      .where(eq(avatars.platformAgentId, platformAgentId));
+    const now = Date.now();
+    for (const r of rows) {
+      const exp = r.expiresAt?.getTime();
+      if (exp === undefined || exp <= now) continue; // NULL / past = expired
+      const swept = r.sweptAt?.getTime();
+      if (swept !== undefined && swept >= exp) continue; // swept = reaped
+      return true; // a live connected session backs this runtime
+    }
+    return false;
   }
 
   private async updateAgentStatus(agentId: string, status: AgentStatus): Promise<void> {
