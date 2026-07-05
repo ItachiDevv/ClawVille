@@ -45,6 +45,11 @@ import { createAvatarVisitBuildingAction } from './actions/avatar-visit-building
 import { createAvatarReturnHomeAction } from './actions/avatar-return-home';
 import { createAvatarSleepAction } from './actions/avatar-sleep';
 import { createAvatarWorldStateProvider } from './providers/avatar-world-state';
+import { resolveDirectiveBuildingId } from './directive-resolver';
+
+// Re-export so existing importers (and the bridge) can reach the resolver from
+// the runtime module; the implementation lives in the pure directive-resolver.
+export { resolveDirectiveBuildingId } from './directive-resolver';
 
 const SIM_NAMESPACE = '6ba7b810-9dad-11d1-80b4-00c04fd430c8';
 const SIM_AGENT_ID = uuidv5('clawville-simulation-agent', SIM_NAMESPACE) as UUID;
@@ -54,6 +59,13 @@ const SIM_WORLD_ID = uuidv5('clawville-simulation-world', SIM_NAMESPACE) as UUID
 export interface SimulationRuntimeDeps {
   stateStore: AvatarStateStore;
   buildingCenters: BuildingCenters;
+  /**
+   * Optional id→display-name map (e.g. { 'memory-rag': "Squidward's House" }),
+   * supplied by the bridge from @clawville/shared MAP_LOCATIONS. Lets a directive
+   * resolve to a building by its human-facing NAME as well as its id. Absent ⇒
+   * the resolver is id-only (byte-identical to pre-Advisory-1).
+   */
+  buildingLabels?: Record<string, string>;
   buildingActivities: BuildingActivities;
   activityEmojis: ActivityEmojis;
   pathfind: PathfindFn;
@@ -244,6 +256,38 @@ export class SimulationRuntime {
           targetUserId: userId,
         } as any,
       };
+
+      // P3 slice 2 (fix, 2026-07-04): deterministically bias toward a building the
+      // directive NAMES. Without this the directive never measurably steers the
+      // avatar: the AVATAR_WORLD_STATE provider only lists the 6 NEAREST buildings,
+      // so a far target (e.g. memory-rag, ~8300px away, rank #9) is neither in the
+      // model's menu nor its examples, and gpt-4o-mini keeps its local loop —
+      // exactly the observed "directive has no effect" symptom. Text-only bias is
+      // not enough for a small model, so when the directive resolves to a known
+      // building and the avatar is not already heading there, dispatch the move
+      // directly (the honest, MEASURABLE bias the slice promises). Byte-identical
+      // to pre-slice-2 when no directive is present (resolver returns null on '').
+      if (opts.directiveContext && opts.directiveContext.trim().length > 0) {
+        const target = resolveDirectiveBuildingId(
+          opts.directiveContext,
+          this.deps.buildingCenters,
+          this.deps.buildingLabels,
+        );
+        if (target && avatar.destinationBuildingId !== target) {
+          const directed = await this.dispatchAction(
+            { action: 'AVATAR_MOVE_TO_BUILDING', userId, buildingId: target },
+            message,
+          );
+          // Only short-circuit on success. A failed move (unknown id / no path)
+          // falls through to the normal LLM plan so the avatar is never stuck.
+          if (directed?.success) {
+            avatar.lastActionName = 'AVATAR_MOVE_TO_BUILDING';
+            avatar.lastActionResult = directed.text ?? 'OK';
+            avatar.behaviorCooldown = 100;
+            return directed;
+          }
+        }
+      }
 
       // Compose state with the AVATAR_WORLD_STATE provider
       let providerText = '';

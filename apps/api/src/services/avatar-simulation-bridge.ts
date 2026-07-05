@@ -37,7 +37,15 @@ import {
   NPC_BUILDING_CENTERS,
   BUILDING_ACTIVITIES,
   ACTIVITY_EMOJIS,
+  MAP_LOCATIONS,
 } from '@clawville/shared';
+
+// id→display-name for the directive resolver (P3 slice 2). Lets a human/agent
+// directive name a building by its label ("Squidward's House") as well as its id
+// ("memory-rag"). Built once from the canonical MAP_LOCATIONS roster.
+const BUILDING_LABELS: Record<string, string> = Object.fromEntries(
+  MAP_LOCATIONS.map((l) => [l.id, l.name]),
+);
 import { db, activityLog } from '@clawville/database';
 
 import { findPath } from './pathfinding';
@@ -69,6 +77,7 @@ export class AvatarSimulationBridge {
     this.runtime = new SimulationRuntime({
       stateStore: this.stateStore,
       buildingCenters: NPC_BUILDING_CENTERS,
+      buildingLabels: BUILDING_LABELS,
       buildingActivities: BUILDING_ACTIVITIES,
       activityEmojis: ACTIVITY_EMOJIS,
       pathfind: findPath,

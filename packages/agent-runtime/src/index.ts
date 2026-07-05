@@ -95,6 +95,8 @@ export type {
 // Simulation runtime (Phase 2 autonomy)
 export { SimulationRuntime, createSimulationRuntime } from './simulation/simulation-runtime';
 export type { SimulationRuntimeDeps } from './simulation/simulation-runtime';
+// P3 slice 2 — directive→building resolver (pure; id + display-name matching).
+export { resolveDirectiveBuildingId } from './simulation/directive-resolver';
 export { AvatarStateStore } from './simulation/avatar-state-store';
 export type {
   AvatarSimState,
