@@ -57,7 +57,7 @@ export default function CashPokerLobby({ open, onClose }: CashPokerLobbyProps) {
     <div
       role="dialog"
       aria-modal="true"
-      aria-label="Cash poker lobby"
+      aria-label="Poker tables lobby"
       style={{
         position: 'fixed',
         inset: 0,
@@ -102,7 +102,7 @@ export default function CashPokerLobby({ open, onClose }: CashPokerLobbyProps) {
                 marginBottom: 3,
               }}
             >
-              Cove · Cash Poker
+              Cove · Poker Tables
             </div>
             <h2
               style={{
@@ -114,7 +114,7 @@ export default function CashPokerLobby({ open, onClose }: CashPokerLobbyProps) {
                 textShadow: '0 0 16px rgba(124,255,203,0.35)',
               }}
             >
-              No-Limit Hold&apos;em Ring Tables
+              No-Limit Hold&apos;em
             </h2>
           </div>
           <button

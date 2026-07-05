@@ -213,7 +213,7 @@ export default function CashPokerTablePage({ params }: { params: Promise<RoutePa
   if (!avatar) {
     return (
       <FullScreen
-        message="No avatar found — create one to play cash poker."
+        message="No avatar found — create one to play poker."
         action={{ label: 'BACK TO COVE', onClick: goBack }}
       />
     );
@@ -463,7 +463,7 @@ function Felt({
   return (
     <div
       role="group"
-      aria-label="Cash poker table"
+      aria-label="Poker table"
       style={{
         position: 'absolute',
         inset: 0,
@@ -719,7 +719,7 @@ function CashActionBar({
   return (
     <div
       role="toolbar"
-      aria-label="Cash poker actions"
+      aria-label="Poker actions"
       style={{
         position: 'absolute',
         bottom: 0,
