@@ -331,13 +331,22 @@ export function findPath(startX: number, startY: number, endX: number, endY: num
 
   let iterations = 0;
   // Safety cap on A* expansion — sized for the town-nav workload, NOT grid area.
-  // Building paths are start→goal bounded (e.g. messaging-channels ≈130 tiles from
-  // town center), so they expand well under this cap: growing the grid 360→704 does
-  // NOT slow or regress normal NPC/building paths (A* only explores toward the goal,
-  // not the whole grid). Only a pathological full-world corner-to-corner request could
-  // hit the cap and return [] (the NPC simply re-plans next tick) — acceptable, and
-  // those far targets were entirely UNREACHABLE before the grid grow anyway.
-  const maxIterations = 6000; // safety limit
+  // 2026-07-04 (P3 slice-2 debug): the old 6000 cap was WRONG — it silently broke
+  // 16 of the 100 building→building autonomous nav paths (measured). A* does NOT
+  // just "explore toward the goal": every concave collider pocket (the town-center
+  // prop cluster + the building ring) forces a wide frontier, so a cross-ring
+  // target expands FAR more than its path length. Measured worst-case reachable
+  // pair deployment-ops→mcp-tool-use needs 63,275 pops (path len ~267); memory-rag
+  // from app-publishing needs ~12k. All 100 pairs ARE reachable — they only failed
+  // because the cap fired first (findPath returned [] → the autonomous avatar could
+  // never walk to memory-rag / mcp-tool-use, and a directive naming those buildings
+  // produced no visible bias). Raised to cover the measured max with margin. This
+  // path is called only at planning decision points (behaviorCooldown≈50s apart per
+  // avatar), never per-tick, and the grid is memoized, so the worst-case cost is a
+  // rare one-off — but it IS a bigger single A* run, so it is perf-flagged for the
+  // world-presence owner (a corner-to-corner pathological request can still cap and
+  // re-plan next tick, as before).
+  const maxIterations = 80_000; // data-justified: measured building-nav max 63,275 pops
 
   while (open.size > 0 && iterations < maxIterations) {
     iterations++;
