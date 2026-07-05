@@ -365,7 +365,10 @@ export default function AvatarChatBar() {
   };
 
   return (
-    <div className="fixed bottom-0 left-1/2 -translate-x-1/2 z-50 flex flex-col items-center w-full max-w-lg px-4 pb-3">
+    // z-[60]: must WIN the hit test over the autonomy-hud (z-50, left-anchored
+    // w-80) — at 390px-wide portrait they horizontally collide and the hud
+    // swallowed taps on the Directing clear-✕ (viewport-sweep DEFECT 1).
+    <div className="fixed bottom-0 left-1/2 -translate-x-1/2 z-[60] flex flex-col items-center w-full max-w-lg px-4 pb-3">
       {/* Expanded chat area */}
       {expanded && (
         <div className="w-full mb-2 claw-panel !p-0 overflow-hidden animate-in fade-in slide-in-from-bottom-2 duration-200">
