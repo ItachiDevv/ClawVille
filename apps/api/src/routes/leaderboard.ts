@@ -277,13 +277,17 @@ interface AgentScoreBreakdown {
   activity_silver: number;
   activity_bronze: number;
   activity_other: number;
-  // Land economy (Phase 1) — capped daily counts of land-acquisition events.
-  // Scored at LAND_W weights (parcel 5 / placed 3 / upgraded 5). Surfaced so a
-  // dashboard can explain land contribution to score. Additive: older clients
-  // (web leaderboard page keeps its own breakdown map) ignore these.
+  // Land economy — capped daily counts of land contribution events.
+  // Scored at LAND_W weights (parcel 5 / placed 3 / upgraded 5 / service sold
+  // 40). Surfaced so a dashboard can explain land contribution to score.
+  // Additive: older clients (web leaderboard page keeps its own breakdown map)
+  // ignore these. `land_services_sold` is the DISTINCT-BUYER, PAID-ONLY count
+  // (see the LAND_W/LAND_C comment + the CTE FILTER), so it reflects distinct
+  // paying customers served that period, not raw sale volume.
   land_parcels: number;
   land_structures_placed: number;
   land_structures_upgraded: number;
+  land_services_sold: number;
 }
 
 interface AgentLeaderboardEntry {
@@ -381,29 +385,55 @@ const DAILY_CAPS = {
  * `LAND_W` / `LAND_C` objects for the SAME bound-param ergonomics as `W`/`C`
  * above (`${LAND_W.parcelPurchased}` in the SQL template).
  *
- * Land events are SIMPLE point/count events — no bot carve-out, no activity
- * proportional-cap math — so they wire in exactly like `building.visited`:
- * `LEAST(COUNT(*) FILTER (...), cap)` per (subject, day), summed × weight.
+ * The first THREE land events (`parcel.purchased`, `structure.placed`,
+ * `structure.upgraded`) are SIMPLE SELF-SUBJECT point/count events — no bot
+ * carve-out, no activity proportional-cap math — so they wire in exactly like
+ * `building.visited`: `LEAST(COUNT(*) FILTER (...), cap)` per (subject, day),
+ * summed × weight. They are not wash-prone: you buy your OWN parcel and
+ * place/upgrade on it, so there is no cross-party collusion vector.
  *
  * NOTE — `land.parcel.purchased` is emitted by BOTH the priced buy route AND
  * the Slice-A free starter-claim (payload.amountCt=0). We score ALL parcel
  * acquisitions equally (a parcel acquired = weight 5, capped at 5/day). This is
  * consistent + simple, and the cap (5/day == MAX_PARCELS_PER_AVATAR) bounds it.
  *
- * `land.service.sold` (weight 40, cap 50) is intentionally NOT wired here —
- * Phase 1 ships no service routes, so no such events exist yet. It wires in
- * when service routes ship (mirror the three columns below for the 4th event).
+ * The FOURTH event, `land.service.sold` (weight 40, cap 50 — the highest land
+ * weight, tying `collaboration`), is DIFFERENT: it is a CROSS-SUBJECT event —
+ * the BUYER pays but the SELLER is scored (run-a-store income). Wired here as of
+ * P3 Slice 4 (2026-07-05). Two anti-farm carve-outs, applied ONLY to this event
+ * (see the CTE FILTER below), because cross-subject + top-weight makes it the
+ * one wash-tradeable land event:
+ *   (a) PAID-ONLY — a free (priceCt=0) sale is rank-inert. The FILTER uses a
+ *       throw-proof TEXT predicate (`payload->>'priceCt' IS NOT NULL AND <> '0'`),
+ *       NOT a `::int` cast: the FILTER runs over every row in the (subject,day)
+ *       group and other event types also carry a `priceCt` key (e.g.
+ *       exchange.listing.created), so a numeric cast would 500 the whole board
+ *       if any of them ever wrote a non-numeric priceCt. Free sales still LOG for
+ *       audit but give zero rank so a seller can't self-list at 0 CT and farm.
+ *   (b) DISTINCT-BUYER cap — the count is `COUNT(DISTINCT payload->>'buyerAvatarId')`,
+ *       NOT `COUNT(*)`. A single colluding buyer therefore credits the seller for
+ *       AT MOST ONE sale/day regardless of how many times they buy, collapsing a
+ *       2-party wash from 50/day to 1/day. Reaching the 50/day cap requires 50
+ *       DISTINCT funded buyer avatars (1-per-user), a real Sybil cost that the
+ *       (fp_hash, ip_prefix_hash) forensic tier then flags. This also aligns the
+ *       score with genuine reach (distinct customers served) over raw volume.
+ *   Attribution note: the row's fp/ip are the BUYER's (event emitted from the
+ *   buyer's request context) while the scored subject is the SELLER — but the
+ *   per-(subject,day) LEAST cap never keyed on fp/ip (that's the forensic tag,
+ *   not the cap key), so the mismatch neither breaks nor weakens the cap.
  */
 const LAND_W = {
   parcelPurchased: LAND_EVENT_WEIGHTS[LAND_EVENT_TYPES.PARCEL_PURCHASED],
   structurePlaced: LAND_EVENT_WEIGHTS[LAND_EVENT_TYPES.STRUCTURE_PLACED],
   structureUpgraded: LAND_EVENT_WEIGHTS[LAND_EVENT_TYPES.STRUCTURE_UPGRADED],
+  serviceSold: LAND_EVENT_WEIGHTS[LAND_EVENT_TYPES.SERVICE_SOLD],
 } as const;
 
 const LAND_C = {
   parcelPurchased: LAND_EVENT_DAILY_CAPS[LAND_EVENT_TYPES.PARCEL_PURCHASED],
   structurePlaced: LAND_EVENT_DAILY_CAPS[LAND_EVENT_TYPES.STRUCTURE_PLACED],
   structureUpgraded: LAND_EVENT_DAILY_CAPS[LAND_EVENT_TYPES.STRUCTURE_UPGRADED],
+  serviceSold: LAND_EVENT_DAILY_CAPS[LAND_EVENT_TYPES.SERVICE_SOLD],
 } as const;
 
 const AGENT_CACHE_TTL_MS = 60_000;
@@ -532,6 +562,7 @@ export async function buildAgentSnapshot(
     land_parcels: number;
     land_structures_placed: number;
     land_structures_upgraded: number;
+    land_services_sold: number;
     score: number;
   }>(sql`
     WITH
@@ -596,13 +627,33 @@ export async function buildAgentSnapshot(
             AND payload->>'placement' IS NOT NULL
             AND coalesce(payload->>'subjectType','') <> 'bot'
         )::int AS act_total,
-        -- Land economy (Phase 1) — simple per-day capped counts, identical shape
-        -- to building.visited above. parcel.purchased scores free starter +
-        -- priced buy equally (a parcel acquired); PHASE: land.service.sold weight
-        -- 40 wires here as a 4th column when service routes ship.
+        -- Land economy — per-day capped counts. The first THREE are simple
+        -- self-subject counts, identical shape to building.visited above.
+        -- parcel.purchased scores free starter + priced buy equally (a parcel
+        -- acquired).
         LEAST(COUNT(*) FILTER (WHERE event_type = 'land.parcel.purchased'), ${LAND_C.parcelPurchased})::int AS land_parcels_c,
         LEAST(COUNT(*) FILTER (WHERE event_type = 'land.structure.placed'), ${LAND_C.structurePlaced})::int AS land_struct_placed_c,
-        LEAST(COUNT(*) FILTER (WHERE event_type = 'land.structure.upgraded'), ${LAND_C.structureUpgraded})::int AS land_struct_upgraded_c
+        LEAST(COUNT(*) FILTER (WHERE event_type = 'land.structure.upgraded'), ${LAND_C.structureUpgraded})::int AS land_struct_upgraded_c,
+        -- land.service.sold (weight 40, P3 Slice 4) — the CROSS-SUBJECT land
+        -- event (buyer pays, SELLER scored). Two anti-farm carve-outs applied
+        -- ONLY here (see LAND_W/LAND_C comment): (a) PAID-ONLY — a priceCt=0
+        -- sale is rank-inert (still logs for audit); (b) DISTINCT-BUYER — count
+        -- DISTINCT buyerAvatarId, not rows, so a single colluding buyer credits
+        -- the seller at most once/day (collapses a 2-party wash from 50→1/day;
+        -- the 50/day cap now requires 50 distinct funded buyers = a Sybil cost).
+        LEAST(COUNT(DISTINCT payload->>'buyerAvatarId') FILTER (
+          WHERE event_type = 'land.service.sold'
+            -- PAID-ONLY, throw-proof: pure TEXT compare, never a ::int cast.
+            -- The FILTER is evaluated over every row in the (subject, day) group,
+            -- and OTHER event types also carry a 'priceCt' payload key (e.g.
+            -- exchange.listing.created), so a numeric cast here would 500 the
+            -- WHOLE board the day any of them ever writes a non-numeric priceCt.
+            -- priceCt is a non-negative INT (jsonb serializes it canonically as
+            -- '0','1',… — no decimals/leading zeros), so "paid" == present AND
+            -- not '0'. A missing key (NULL) fails closed (excluded).
+            AND payload->>'priceCt' IS NOT NULL
+            AND payload->>'priceCt' <> '0'
+        ), ${LAND_C.serviceSold})::int AS land_services_sold_c
       FROM events
       WHERE agent_id IS NOT NULL
         -- House-agent carve-out (agent-metaverse P4 gate (a), landed early with
@@ -666,11 +717,26 @@ export async function buildAgentSnapshot(
             AND payload->>'placement' IS NOT NULL
             AND coalesce(payload->>'subjectType','') <> 'bot'
         )::int AS act_total,
-        -- Land economy (Phase 1) — same per-day capped counts as agent_daily.
-        -- KEEP IN LOCKSTEP with agent_daily (same three events, same caps).
+        -- Land economy — same per-day capped counts as agent_daily.
+        -- KEEP IN LOCKSTEP with agent_daily (same FOUR events, same caps, same
+        -- paid-only + DISTINCT-buyer carve-out on land.service.sold).
         LEAST(COUNT(*) FILTER (WHERE event_type = 'land.parcel.purchased'), ${LAND_C.parcelPurchased})::int AS land_parcels_c,
         LEAST(COUNT(*) FILTER (WHERE event_type = 'land.structure.placed'), ${LAND_C.structurePlaced})::int AS land_struct_placed_c,
-        LEAST(COUNT(*) FILTER (WHERE event_type = 'land.structure.upgraded'), ${LAND_C.structureUpgraded})::int AS land_struct_upgraded_c
+        LEAST(COUNT(*) FILTER (WHERE event_type = 'land.structure.upgraded'), ${LAND_C.structureUpgraded})::int AS land_struct_upgraded_c,
+        -- land.service.sold — see agent_daily comment. PAID-ONLY + DISTINCT-BUYER.
+        LEAST(COUNT(DISTINCT payload->>'buyerAvatarId') FILTER (
+          WHERE event_type = 'land.service.sold'
+            -- PAID-ONLY, throw-proof: pure TEXT compare, never a ::int cast.
+            -- The FILTER is evaluated over every row in the (subject, day) group,
+            -- and OTHER event types also carry a 'priceCt' payload key (e.g.
+            -- exchange.listing.created), so a numeric cast here would 500 the
+            -- WHOLE board the day any of them ever writes a non-numeric priceCt.
+            -- priceCt is a non-negative INT (jsonb serializes it canonically as
+            -- '0','1',… — no decimals/leading zeros), so "paid" == present AND
+            -- not '0'. A missing key (NULL) fails closed (excluded).
+            AND payload->>'priceCt' IS NOT NULL
+            AND payload->>'priceCt' <> '0'
+        ), ${LAND_C.serviceSold})::int AS land_services_sold_c
       FROM events
       WHERE agent_id IS NULL
         AND avatar_id IS NOT NULL
@@ -711,6 +777,7 @@ export async function buildAgentSnapshot(
         SUM(ad.land_parcels_c)::int AS land_parcels,
         SUM(ad.land_struct_placed_c)::int AS land_structures_placed,
         SUM(ad.land_struct_upgraded_c)::int AS land_structures_upgraded,
+        SUM(ad.land_services_sold_c)::int AS land_services_sold,
         (
           SUM(ad.visits_c) * ${W.buildingVisit}
           + SUM(ad.chats_c) * ${W.teacherChat}
@@ -721,6 +788,7 @@ export async function buildAgentSnapshot(
           + SUM(ad.land_parcels_c) * ${LAND_W.parcelPurchased}
           + SUM(ad.land_struct_placed_c) * ${LAND_W.structurePlaced}
           + SUM(ad.land_struct_upgraded_c) * ${LAND_W.structureUpgraded}
+          + SUM(ad.land_services_sold_c) * ${LAND_W.serviceSold}
           + ROUND(SUM(
               CASE WHEN ad.act_total = 0 THEN 0
                    ELSE (ad.act_wins * ${A[1]} + ad.act_silver * ${A[2]} + ad.act_bronze * ${A[3]} + ad.act_other * ${A.default})
@@ -748,6 +816,7 @@ export async function buildAgentSnapshot(
         SUM(pd.land_parcels_c)::int AS land_parcels,
         SUM(pd.land_struct_placed_c)::int AS land_structures_placed,
         SUM(pd.land_struct_upgraded_c)::int AS land_structures_upgraded,
+        SUM(pd.land_services_sold_c)::int AS land_services_sold,
         (
           SUM(pd.visits_c) * ${W.buildingVisit}
           + SUM(pd.chats_c) * ${W.teacherChat}
@@ -758,6 +827,7 @@ export async function buildAgentSnapshot(
           + SUM(pd.land_parcels_c) * ${LAND_W.parcelPurchased}
           + SUM(pd.land_struct_placed_c) * ${LAND_W.structurePlaced}
           + SUM(pd.land_struct_upgraded_c) * ${LAND_W.structureUpgraded}
+          + SUM(pd.land_services_sold_c) * ${LAND_W.serviceSold}
           + ROUND(SUM(
               CASE WHEN pd.act_total = 0 THEN 0
                    ELSE (pd.act_wins * ${A[1]} + pd.act_silver * ${A[2]} + pd.act_bronze * ${A[3]} + pd.act_other * ${A.default})
@@ -893,6 +963,7 @@ export async function buildAgentSnapshot(
         land_parcels: Number(r.land_parcels) || 0,
         land_structures_placed: Number(r.land_structures_placed) || 0,
         land_structures_upgraded: Number(r.land_structures_upgraded) || 0,
+        land_services_sold: Number(r.land_services_sold) || 0,
       },
       subjectType: r.subject_type,
     };
