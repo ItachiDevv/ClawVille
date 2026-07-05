@@ -208,6 +208,13 @@ class FakeDb {
       const t = this.tournaments.get(String(p[0]));
       return t ? [t] : [];
     }
+    // Narrow FOR UPDATE select used by cancelAndRefundOrphan (recovery refund path).
+    if (text.startsWith('SELECT id, status, settled_at, cancelled_at FROM poker_tournaments WHERE id = ? FOR UPDATE')) {
+      const t = this.tournaments.get(String(p[0]));
+      return t
+        ? [{ id: t.id, status: t.status, settled_at: t.settled_at, cancelled_at: t.cancelled_at }]
+        : [];
+    }
     if (text.startsWith('UPDATE poker_tournaments SET prize_pool_ct = ? WHERE id = ?')) {
       const t = this.tournaments.get(String(p[1]))!;
       t.prize_pool_ct = p[0];
@@ -347,6 +354,40 @@ class FakeDb {
           fp_hash: e.fp_hash ?? null,
           ip_prefix_hash: e.ip_prefix_hash ?? null,
         }));
+    }
+    // ── orphan recovery: settle-if-finished-else-refund ──────────────────────
+    if (
+      text.startsWith(
+        "SELECT id FROM poker_tournaments WHERE status IN ('running','seating') AND settled_at IS NULL AND cancelled_at IS NULL",
+      )
+    ) {
+      return [...this.tournaments.values()]
+        .filter(
+          (t) =>
+            (t.status === 'running' || t.status === 'seating') &&
+            !t.settled_at &&
+            !t.cancelled_at,
+        )
+        .map((t) => ({ id: t.id }));
+    }
+    if (
+      text.startsWith(
+        "SELECT COUNT(*)::int AS total, COUNT(*) FILTER (WHERE placement IS NULL)::int AS unplaced FROM poker_tournament_entrants WHERE tournament_id = ? AND status <> 'refunded'",
+      )
+    ) {
+      const es = [...this.entrants.values()].filter(
+        (e) => e.tournament_id === p[0] && e.status !== 'refunded',
+      );
+      return [{ total: es.length, unplaced: es.filter((e) => e.placement == null).length }];
+    }
+    if (
+      text.startsWith(
+        "SELECT id, avatar_id, buy_in_paid_ct FROM poker_tournament_entrants WHERE tournament_id = ? AND status <> 'refunded'",
+      )
+    ) {
+      return [...this.entrants.values()]
+        .filter((e) => e.tournament_id === p[0] && e.status !== 'refunded')
+        .map((e) => ({ id: e.id, avatar_id: e.avatar_id, buy_in_paid_ct: e.buy_in_paid_ct }));
     }
     if (text.startsWith('INSERT INTO poker_tournament_entrants') && text.includes('fp_hash, ip_prefix_hash) VALUES')) {
       const id = randomUUID();
@@ -931,6 +972,146 @@ describe('TournamentManager — single-table sit-n-go end-to-end (mocked DB + le
     expect(aEmit.fpHash).toBe('fp-agent'); // agent-driven event tagged with a real fp
     expect(aEmit.ipPrefixHash).toBe('ip-agent');
     expect(aEmit.subjectType).toBe('agent');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Settle conservation when the payout CURVE is DEEPER than the entrant count, and
+// orphan-recovery that must SETTLE (not void) a decided-but-uncommitted tournament.
+// These guard two money bugs found in the pre-tournament audit:
+//   #1 unclaimed deep-placement shares were VAPORIZED (sum(prizes)+rake < pool);
+//   #6 a crash between champion-placement and settle → recovery void-refunded a
+//      DECIDED tournament, discarding the real payout.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('TournamentManager — settle conservation + orphan-recovery money safety', () => {
+  let db: FakeDb;
+  let ledger: FakeLedger;
+  let clock: FakeClock;
+
+  beforeEach(() => {
+    db = new FakeDb();
+    ledger = new FakeLedger();
+    clock = new FakeClock();
+    db.seedBlindSchedule('sched-1', DEFAULT_BLIND_SCHEDULE);
+  });
+
+  // Seed a finished (all-placed) tournament directly, bypassing the hand sim.
+  function seedFinished(
+    tid: string,
+    entrants: Array<{ avatarId: string; placement: number | null }>,
+    opts: { pool: string; rakeBps?: number; curve?: PayoutCurveEntry[] } = { pool: '0' },
+  ): void {
+    db.seedTournament({
+      id: tid,
+      status: 'running',
+      buy_in_ct: '100',
+      rake_bps: opts.rakeBps ?? 0,
+      prize_pool_ct: opts.pool,
+      payout_curve_json: opts.curve ?? PAYOUT_3,
+    });
+    entrants.forEach((e, i) => {
+      db.entrants.set(`e-${i}`, {
+        id: `e-${i}`,
+        tournament_id: tid,
+        avatar_id: e.avatarId,
+        agent_id: null,
+        subject_type: 'user',
+        placement: e.placement,
+        status: 'registered',
+        buy_in_paid_ct: '100',
+        fp_hash: null,
+        ip_prefix_hash: null,
+        refunded_ct: '0',
+        registered_at: i,
+      });
+    });
+  }
+
+  it('(#1) curve deeper than entrant count: unclaimed deep-place share folds into 1st — no CT vaporized', async () => {
+    const { tm } = buildManager(db, ledger, clock);
+    const tid = randomUUID();
+    // pool 200, top-3 curve (50/30/20), rake 0, but only TWO finishers (1st, 2nd).
+    seedFinished(
+      tid,
+      [
+        { avatarId: 'av-1', placement: 1 },
+        { avatarId: 'av-2', placement: 2 },
+      ],
+      { pool: '200' },
+    );
+
+    const res = await tm.settleTournament(tid);
+    const prizeSum = res.results.reduce((a, r) => a + BigInt(r.prizeCt), 0n);
+    const rake = BigInt(res.rakeTakenCt);
+    // CONSERVATION: paid prizes + rake == pool. Pre-fix this was 160 + 0 (40 lost).
+    expect(prizeSum + rake).toBe(200n);
+    const byPlace = new Map(res.results.map((r) => [r.placement, BigInt(r.prizeCt)]));
+    expect(byPlace.get(1)).toBe(140n); // 100 (1st) + 40 (unclaimed 3rd folded in)
+    expect(byPlace.get(2)).toBe(60n);
+    // Ledger credited exactly the pool — nothing minted, nothing vaporized.
+    expect(ledger.totalCredited('poker_mtt_prize')).toBe(200);
+  });
+
+  it('(#1) still exact when entrants MEET the curve depth (regression: no over-fold)', async () => {
+    const { tm } = buildManager(db, ledger, clock);
+    const tid = randomUUID();
+    seedFinished(
+      tid,
+      [
+        { avatarId: 'av-1', placement: 1 },
+        { avatarId: 'av-2', placement: 2 },
+        { avatarId: 'av-3', placement: 3 },
+      ],
+      { pool: '300' },
+    );
+    const res = await tm.settleTournament(tid);
+    const byPlace = new Map(res.results.map((r) => [r.placement, BigInt(r.prizeCt)]));
+    expect(byPlace.get(1)).toBe(150n);
+    expect(byPlace.get(2)).toBe(90n);
+    expect(byPlace.get(3)).toBe(60n);
+    expect(BigInt(res.rakeTakenCt) + 150n + 90n + 60n).toBe(300n);
+  });
+
+  it('(#6) orphaned but FINISHED tournament SETTLES (pays real curve), not void-refund', async () => {
+    const { tm } = buildManager(db, ledger, clock);
+    const tid = randomUUID();
+    seedFinished(
+      tid,
+      [
+        { avatarId: 'av-1', placement: 1 },
+        { avatarId: 'av-2', placement: 2 },
+      ],
+      { pool: '200' },
+    );
+
+    const out = await tm.recoverOrphanedTournaments();
+    expect(out.recovered).toBe(1);
+    expect(out.refundedCount).toBe(0);
+    expect(ledger.totalCredited('poker_mtt_refund')).toBe(0);
+    // Real payout curve paid, conserved — the decided outcome is honored.
+    expect(ledger.totalCredited('poker_mtt_prize')).toBe(200);
+    expect(db.tournaments.get(tid)!.status).toBe('completed');
+  });
+
+  it('(#6) orphaned and UNFINISHED tournament still cancels + refunds escrow (CT net 0)', async () => {
+    const { tm } = buildManager(db, ledger, clock);
+    const tid = randomUUID();
+    // One live seat (placement NULL) → NOT finished → must refund, not settle.
+    seedFinished(
+      tid,
+      [
+        { avatarId: 'av-1', placement: 1 },
+        { avatarId: 'av-2', placement: null },
+      ],
+      { pool: '200' },
+    );
+
+    const out = await tm.recoverOrphanedTournaments();
+    expect(out.refundedCount).toBe(2);
+    expect(ledger.totalCredited('poker_mtt_refund')).toBe(200);
+    expect(ledger.totalCredited('poker_mtt_prize')).toBe(0);
+    expect(db.tournaments.get(tid)!.status).toBe('cancelled');
   });
 });
 

@@ -1851,8 +1851,20 @@ export class TournamentManager {
       const curve = (t.payout_curve_json as PayoutCurveEntry[] | undefined) ?? [];
       const prizeByPlacement = computePrizes(netPool, curve);
 
+      // CONSERVATION: only prizes for placements an entrant ACTUALLY finished at are
+      // paid out (the payout loop below keys on real placements), so `distributed`
+      // must sum ONLY those. Summing the FULL curve — including placements deeper
+      // than the entrant count — made `remainder` capture just the rounding dust,
+      // silently VAPORIZING the unclaimed deep-placement shares whenever
+      // #entrants < curve depth (e.g. a top-3 curve with only 2 finishers lost 3rd
+      // place's share). Sum over the placements that exist, then fold the FULL
+      // unclaimed remainder (rounding + unfilled deeper places) into 1st — always
+      // present (the champion) — so sum(paid prizes) + rake == pool exactly.
+      const placedPlacements = new Set(placed.map((e) => e.placement!));
       let distributed = 0n;
-      for (const v of prizeByPlacement.values()) distributed += v;
+      for (const [placement, v] of prizeByPlacement) {
+        if (placedPlacements.has(placement)) distributed += v;
+      }
       const remainder = netPool - distributed;
       if (remainder !== 0n) {
         const first = prizeByPlacement.get(1) ?? 0n;
@@ -1964,9 +1976,23 @@ export class TournamentManager {
         // Skip tournaments THIS pod is actively running (in-memory state present).
         if (this.running.has(row.id)) continue;
         try {
-          const n = await this.cancelAndRefundOrphan(row.id);
-          recovered += 1;
-          refundedCount += n;
+          // A tournament can orphan AFTER it actually FINISHED: a crash in the gap
+          // between completeTournament writing the champion's placement and
+          // settleTournament committing leaves status='running', settled_at NULL, yet
+          // every entrant placed. Voiding that (cancel+refund) would discard a DECIDED
+          // outcome and refund players who busted fairly. If every non-refunded
+          // entrant has a placement, SETTLE (pay the real curve) instead —
+          // settleTournament is idempotent + DB-only + FOR UPDATE locked, safe to
+          // drive from a cold pod. A still-running tournament always has ≥1 live seat
+          // with placement NULL, so this branch only fires on a genuinely finished one.
+          if (await this.isTournamentFullyPlaced(row.id)) {
+            await this.settleTournament(row.id);
+            recovered += 1;
+          } else {
+            const n = await this.cancelAndRefundOrphan(row.id);
+            recovered += 1;
+            refundedCount += n;
+          }
         } catch (err) {
           console.error(
             `[poker-mtt] orphan tournament recovery failed for ${row.id}:`,
@@ -1978,6 +2004,25 @@ export class TournamentManager {
       console.error('[poker-mtt] orphan tournament recovery query failed:', err);
     }
     return { recovered, refundedCount };
+  }
+
+  /**
+   * True iff the tournament has ≥1 non-refunded entrant and EVERY non-refunded
+   * entrant has a non-null placement — i.e. it actually finished (a champion at
+   * placement 1 + all busts placed) but did not commit its settle. Used by orphan
+   * recovery to settle-instead-of-void a decided-but-uncommitted tournament. A still
+   * -running tournament always has ≥1 live seat with placement NULL, so returns false;
+   * a 'seating' (never-started) tournament has all placements NULL, so also false.
+   */
+  private async isTournamentFullyPlaced(tournamentId: string): Promise<boolean> {
+    const rows = await this.db.execute<{ total: number; unplaced: number }>(
+      sql`SELECT COUNT(*)::int AS total,
+                 COUNT(*) FILTER (WHERE placement IS NULL)::int AS unplaced
+          FROM poker_tournament_entrants
+          WHERE tournament_id = ${tournamentId} AND status <> 'refunded'`,
+    );
+    const r = rows[0];
+    return !!r && r.total > 0 && r.unplaced === 0;
   }
 
   /**
