@@ -32,15 +32,17 @@
  *     the ledger. Settlement runs through `world-teacher-chat.ts` ONLY — the
  *     arrival ('building.visited' + once-per-day 'building_visit' CT) and the
  *     REAL conversed teacher turn ('agent.chat.turn' + once-per-day
- *     'building_chat_teaching' CT + npc_memories lesson), both proximity-gated
+ *     'building_chat_teaching' CT + an EARNED-SKILL lesson converged onto the
+ *     agent's OWN ElizaOS runtime — P3 slice 3), both proximity-gated
  *     fail-closed and idempotent per (avatar, building, reason, UTC-day).
  *   - LLM-spend bound: a per-(agentId, buildingId) 60-min talk cooldown gates
  *     the conducted teacher turn (each turn is a gpt-4o call carrying the
  *     teacher's full skill corpus; the once-per-day CT probe does NOT bound
  *     LLM cost by itself).
- *   - Memory is behaviorally LIVE, not inert: the ~3 most recent npc_memories
- *     lessons are folded into the decide prompt, and the teacher's latest reply
- *     feeds the next decision context.
+ *   - Memory is behaviorally LIVE, not inert: the ~3 most relevant earned-skill
+ *     lessons (P3 slice 3 — semantic RAG from the agent's OWN ElizaOS runtime,
+ *     keyword-store fallback when cold) are folded into the decide prompt, and
+ *     the teacher's latest reply feeds the next decision context.
  *   - Leak: logs use `sessionDigest(agentId)` — NEVER the raw agentId/sessionId.
  */
 
@@ -48,7 +50,7 @@ import { BUILDING_INTERACTION_RADIUS } from '@clawville/shared';
 import { npcSimulation } from './npc-simulation';
 import { agentOrchestrator } from './agent-orchestrator';
 import { sessionDigest } from './session-digest';
-import { memoryService } from './memory-service';
+import { readEarnedSkillLessons } from './earned-skill-memory';
 import { conductTeacherTurn, settleBuildingArrival } from './world-teacher-chat';
 import {
   getAgentDirective,
@@ -141,10 +143,19 @@ const EMPTY_DECIDE_WARN_THRESHOLD = 3;
 // is the money bound), bounded by TALK_COOLDOWN_MAP_MAX with expired-first eviction.
 const TALK_BUILDING_COOLDOWN_MS = 60 * 60 * 1000;
 const TALK_COOLDOWN_MAP_MAX = 1024; // MAX_HOUSE_AGENTS * ~10 buildings, headroom
-// Slice 4 memory read-back: bound the npc_memories fetch so a slow/absent DB can
-// never stall a decide tick — on timeout we simply decide without the lessons.
-const LESSON_FETCH_TIMEOUT_MS = 1_500;
+// Memory read-back bound. P3 slice 3: readRecentLessons now converges onto the
+// agent's OWN ElizaOS runtime (semantic RAG — embed a query + vector search),
+// falling back to the keyword store only when the runtime isn't warm. The RAG
+// path is heavier than the old keyword read (an embedding round-trip), so give it
+// a slightly larger ceiling than slice-2's 1.5s DB reads — still far under the
+// 15s LLM timeout + 30s tick, and fail-soft to [] on timeout (decide without the
+// lessons). This runs once per DECIDING phase (per learn-cycle), NOT every tick.
+const LESSON_RAG_TIMEOUT_MS = 4_000;
 const LESSON_SNIPPET_MAX = 200;
+// Default RAG query when the human has set no directive to bias the retrieval —
+// surfaces the agent's most central recent lessons as decision seasoning.
+const DEFAULT_LESSON_QUERY =
+  'recent lessons I learned from ClawVille teachers about agent development skills';
 // P3 slice 2: bound the directive + wake-up-seed reads (same fail-soft rationale
 // as the lesson fetch — a slow/absent DB must never stall a decide tick).
 const DIRECTIVE_FETCH_TIMEOUT_MS = 1_500;
@@ -451,6 +462,9 @@ class AgentAutonomyDriver {
           agentId: entry.agentId,
           bodyId: entry.bodyId,
           avatarId: entry.avatarId,
+          // P3 slice 3: the LEARNING agent's runtime — folds its prior lessons
+          // into the teacher's context AND converges the new lesson onto ElizaOS.
+          platformAgentId: entry.platformAgentId,
           buildingId,
           message,
         });
@@ -473,8 +487,11 @@ class AgentAutonomyDriver {
     // current directive as a top-priority bias. All three are soft-timeout +
     // fail-soft — a slow/absent DB must never stall the tick.
     await this.seedFromCursorOnce(entry);
-    const lessons = await this.readRecentLessons(entry.bodyId);
+    // P3 slice 3: read the directive FIRST so it can bias the semantic-RAG lesson
+    // retrieval (lessons relevant to what the human asked surface first); both
+    // reads are bounded + fail-soft so a slow store never stalls the tick.
     const directive = await this.readDirectiveBounded(entry.platformAgentId);
+    const lessons = await this.readRecentLessons(entry, directive?.text ?? null);
     const prompt = this.buildDecisionPrompt(perception, entry, lessons, directive?.text ?? null);
     const reply = await decide(prompt);
     // TEMP DEBUG (see tick()): the RAW decision reply — the smoking gun for
@@ -627,27 +644,39 @@ class AgentAutonomyDriver {
   }
 
   /**
-   * Fetch the agent's most recent stored lessons (npc_memories, entity = the
-   * in-world body id — the same key world-teacher-chat writes). Soft-timeout +
-   * fail-soft: on ANY error/timeout return [] so a slow/absent DB can never
-   * stall the decide tick (also keeps the DB-less unit tests fast).
+   * P3 slice 3 — fetch the agent's most recent EARNED-SKILL lessons via the
+   * CONVERGED store: semantic RAG from the agent's OWN warmed ElizaOS runtime
+   * (avatar-keyed, survives idle-despawn), falling back to the keyword store when
+   * the runtime isn't warm (readEarnedSkillLessons owns that selection + the
+   * D8 no-lazy-start guardrail). `queryHint` (the human's directive when set)
+   * biases the retrieval; otherwise a generic learning query is used. Soft-timeout
+   * + fail-soft: on ANY error/timeout return [] so a slow store can never stall
+   * the decide tick (also keeps the DB-less unit tests fast — no warm runtime →
+   * keyword fallback → [] on the missing DB).
    */
-  private async readRecentLessons(bodyId: string): Promise<string[]> {
+  private async readRecentLessons(
+    entry: HouseAgentEntry,
+    queryHint: string | null,
+  ): Promise<string[]> {
+    const query = queryHint && queryHint.trim().length > 0 ? queryHint : DEFAULT_LESSON_QUERY;
     try {
-      const fetched = await new Promise<string[]>((resolve) => {
-        const timer = setTimeout(() => resolve([]), LESSON_FETCH_TIMEOUT_MS);
-        memoryService
-          .getRelevantMemories({ entityId: bodyId, limit: 3 })
-          .then((rows) => {
+      return await new Promise<string[]>((resolve) => {
+        const timer = setTimeout(() => resolve([]), LESSON_RAG_TIMEOUT_MS);
+        readEarnedSkillLessons({
+          platformAgentId: entry.platformAgentId,
+          avatarId: entry.avatarId,
+          query,
+          limit: 3,
+        })
+          .then((lessons) => {
             clearTimeout(timer);
-            resolve(rows.map((r) => r.content).filter((c): c is string => !!c));
+            resolve(lessons);
           })
           .catch(() => {
             clearTimeout(timer);
             resolve([]);
           });
       });
-      return fetched;
     } catch {
       return [];
     }
