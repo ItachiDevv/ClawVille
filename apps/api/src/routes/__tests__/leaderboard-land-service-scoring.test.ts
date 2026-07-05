@@ -33,6 +33,7 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
+import * as dbMod from '@clawville/database';
 import { Hono } from 'hono';
 import { eq, inArray } from 'drizzle-orm';
 import { randomUUID } from 'crypto';
@@ -88,7 +89,9 @@ function buildApp() {
 
 describeIfDb('land.service.sold — scoring CTE (requires DATABASE_URL)', () => {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const dbMod = HAS_DB ? require('@clawville/database') : null;
+  // dbMod is the top-level ESM namespace import (bun test cannot resolve the
+  // workspace package via CJS require(); ESM import works — same as every
+  // other api test). describeIfDb still gates execution on DATABASE_URL.
 
   const TEST_TAG = `lbsvc${Date.now()}`;
   const PASSWORD = 'lbsvcpassword123';
@@ -114,38 +117,38 @@ describeIfDb('land.service.sold — scoring CTE (requires DATABASE_URL)', () => 
   let insertedHouseBotId = '';
 
   async function signupAndCreateAvatar(email: string): Promise<{ userId: string; avatarId: string }> {
+    // P2 (2026-07-04): signup AUTO-PROVISIONS the avatar (fail-soft, rows-only)
+    // and returns it in the response — a follow-up POST /api/avatars trips the
+    // one-avatar-per-user 400. Use the provisioned avatar; only fall back to an
+    // explicit create if the fail-soft provisioning didn't return one.
     const signup = await app.request('/api/auth/signup', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ email, password: PASSWORD, name: 'LB Svc Tester' }),
     });
     expect(signup.status).toBe(200);
-    const cookie = (signup.headers.get('set-cookie') ?? '').split(';')[0]!;
-    const avatarRes = await app.request('/api/avatars', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Cookie: cookie },
-      body: JSON.stringify({
-        name: `LB${Date.now()}${Math.floor(Math.random() * 10000)}`,
-        species: 'cat',
-        color: 'green',
-        gender: 'male',
-        personality: { habitat: 'forest', hobby: 'exploring', greeting: 'wave-hello' },
-        characterConfig: {
-          bio: 'A leaderboard land-service scoring tester avatar.',
-          greeting: 'Hello!',
-          personality: 'Test avatar',
-          tone: 'friendly',
-          topics: ['land'],
-          adjectives: ['thrifty'],
-          rules: [],
-          style: [],
-        },
-      }),
-    });
-    expect(avatarRes.status).toBe(200);
-    const avatarData = (await avatarRes.json()) as { avatar: { id: string } };
+    const signupData = (await signup.json()) as { avatar?: { id: string } };
+    let avatarId = signupData.avatar?.id ?? '';
+    if (!avatarId) {
+      const cookie = (signup.headers.get('set-cookie') ?? '').split(';')[0]!;
+      const avatarRes = await app.request('/api/avatars', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: cookie },
+        body: JSON.stringify({
+          name: `LB${Date.now()}${Math.floor(Math.random() * 10000)}`,
+          species: 'cat',
+          color: 'green',
+          gender: 'male',
+          personality: { habitat: 'forest', hobby: 'exploring', greeting: 'wave-hello' },
+        }),
+      });
+      expect(avatarRes.status).toBe(200);
+      const avatarData = (await avatarRes.json()) as { avatar: { id: string } };
+      avatarId = avatarData.avatar.id;
+    }
     const userRow = await dbMod.db.query.users.findFirst({ where: eq(dbMod.users.email, email) });
-    return { userId: userRow.id as string, avatarId: avatarData.avatar.id as string };
+    if (!userRow) throw new Error(`test fixture: no users row for ${email}`);
+    return { userId: userRow.id as string, avatarId };
   }
 
   /**

@@ -50,6 +50,7 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
+import * as dbMod from '@clawville/database';
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { eq, inArray } from 'drizzle-orm';
@@ -327,7 +328,9 @@ function buildApp() {
 
 describeIfDb('land services — money-path route tests (requires DATABASE_URL)', () => {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const dbMod = HAS_DB ? require('@clawville/database') : null;
+  // dbMod is the top-level ESM namespace import (bun test cannot resolve the
+  // workspace package via CJS require(); ESM import works — same as every
+  // other api test). describeIfDb still gates execution on DATABASE_URL.
 
   const TEST_TAG = `landsvc${Date.now()}`;
   const PASSWORD = 'landsvcpassword123';
@@ -358,36 +361,36 @@ describeIfDb('land services — money-path route tests (requires DATABASE_URL)',
     const cookieHeader = signup.headers.get('set-cookie') ?? '';
     const sessionCookie = cookieHeader.split(';')[0]!;
 
-    const avatarRes = await app.request('/api/avatars', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Cookie: sessionCookie },
-      body: JSON.stringify({
-        name: `LS${Date.now()}${Math.floor(Math.random() * 10000)}`,
-        species: 'cat',
-        color: 'green',
-        gender: 'male',
-        personality: { habitat: 'forest', hobby: 'exploring', greeting: 'wave-hello' },
-        characterConfig: {
-          bio: 'A land-services tester avatar.',
-          greeting: 'Hello there!',
-          personality: 'Test avatar',
-          tone: 'friendly',
-          topics: ['land'],
-          adjectives: ['thrifty'],
-          rules: [],
-          style: [],
-        },
-      }),
-    });
-    expect(avatarRes.status).toBe(200);
-    const avatarData = (await avatarRes.json()) as { avatar: { id: string } };
+    // P2 (2026-07-04): signup AUTO-PROVISIONS the avatar and returns it — a
+    // follow-up POST /api/avatars trips one-avatar-per-user 400. Use the
+    // provisioned avatar; fall back to explicit create only if fail-soft
+    // provisioning returned none.
+    const signupData = (await signup.json()) as { avatar?: { id: string } };
+    let avatarId = signupData.avatar?.id ?? '';
+    if (!avatarId) {
+      const avatarRes = await app.request('/api/avatars', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: sessionCookie },
+        body: JSON.stringify({
+          name: `LS${Date.now()}${Math.floor(Math.random() * 10000)}`,
+          species: 'cat',
+          color: 'green',
+          gender: 'male',
+          personality: { habitat: 'forest', hobby: 'exploring', greeting: 'wave-hello' },
+        }),
+      });
+      expect(avatarRes.status).toBe(200);
+      const avatarData = (await avatarRes.json()) as { avatar: { id: string } };
+      avatarId = avatarData.avatar.id;
+    }
     const userRow = await dbMod.db.query.users.findFirst({
       where: eq(dbMod.users.email, email),
     });
+    if (!userRow) throw new Error(`test fixture: no users row for ${email}`);
     return {
       cookie: sessionCookie,
       userId: userRow.id as string,
-      avatarId: avatarData.avatar.id as string,
+      avatarId,
     };
   }
 
@@ -401,6 +404,7 @@ describeIfDb('land services — money-path route tests (requires DATABASE_URL)',
 
   async function getBalance(avatarId: string): Promise<number> {
     const row = await dbMod.db.query.avatars.findFirst({ where: eq(dbMod.avatars.id, avatarId) });
+    if (!row) throw new Error(`test fixture: no avatars row for ${avatarId}`);
     return row.clawTokens as number;
   }
 
@@ -411,7 +415,8 @@ describeIfDb('land services — money-path route tests (requires DATABASE_URL)',
     const [parcel] = await dbMod.db
       .insert(dbMod.landParcels)
       .values({
-        parcelCode: `test-svc-${TEST_TAG}-${tag}`,
+        // varchar(32) cap: base36 ms (8ch) keeps this ~16 chars, not 34.
+        parcelCode: `tsvc${Date.now().toString(36)}${tag}`,
         tier: 'c',
         status: 'owned',
         gridX: -9_000_000 + gridCounter,
