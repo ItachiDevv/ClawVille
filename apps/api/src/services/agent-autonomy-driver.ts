@@ -50,6 +50,15 @@ import { agentOrchestrator } from './agent-orchestrator';
 import { sessionDigest } from './session-digest';
 import { memoryService } from './memory-service';
 import { conductTeacherTurn, settleBuildingArrival } from './world-teacher-chat';
+import {
+  getAgentDirective,
+  getAutonomyCursor,
+  setAutonomyCursor,
+  formatDirectiveContext,
+  summarizeAutonomyEvents,
+  type CurrentDirective,
+} from './agent-autonomy-state';
+import { queryDurableAgentEventsNewest } from './agent-event-query';
 
 /** Per-agent phase in the perceive→decide→act loop. */
 type DrivePhase = 'deciding' | 'walking' | 'arrived' | 'talking';
@@ -92,6 +101,19 @@ interface HouseAgentEntry {
    * agent's next choice (memory made behaviorally live, not inert).
    */
   lastLesson: string | null;
+  /**
+   * P3 slice 2 — one-time wake-up seed guard. On the first deciding drive after
+   * (re)start we read the durable whitelisted events since the persisted cursor
+   * (config.autonomyCursor) so the agent resumes from "since I last looked"
+   * instead of a bare snapshot. Set true after the attempt (success OR fail) so
+   * it runs exactly once per process lifetime, not every tick.
+   */
+  cursorSeeded: boolean;
+  /**
+   * P3 slice 2 — compact one-line summary of the events replayed on wake, folded
+   * into the decision prompt. Null until seeded / when nothing new happened.
+   */
+  recentEventSummary: string | null;
 }
 
 /** A single decision generator — real LLM in prod, canned in tests. */
@@ -123,6 +145,13 @@ const TALK_COOLDOWN_MAP_MAX = 1024; // MAX_HOUSE_AGENTS * ~10 buildings, headroo
 // never stall a decide tick — on timeout we simply decide without the lessons.
 const LESSON_FETCH_TIMEOUT_MS = 1_500;
 const LESSON_SNIPPET_MAX = 200;
+// P3 slice 2: bound the directive + wake-up-seed reads (same fail-soft rationale
+// as the lesson fetch — a slow/absent DB must never stall a decide tick).
+const DIRECTIVE_FETCH_TIMEOUT_MS = 1_500;
+const SEED_FETCH_TIMEOUT_MS = 1_500;
+// Cap the durable events replayed once on wake to seed "since I last acted"
+// context — this is prompt seasoning, not a transcript.
+const SEED_EVENT_LIMIT = 20;
 
 /** Matches the executor's HATCHER_ACTION_REGEX (npc-simulation.ts) — used to
  * pull the `message` param out of the model's talk_to_npc tag so the SAME text
@@ -197,6 +226,8 @@ class AgentAutonomyDriver {
       lastBuildingId: null,
       consecutiveEmptyDecides: 0,
       lastLesson: null,
+      cursorSeeded: false,
+      recentEventSummary: null,
     });
     console.log(
       `[AutonomyDriver] registered house agent ${sessionDigest(entry.agentId)} (${this.houseAgents.size} total)`,
@@ -436,11 +467,15 @@ class AgentAutonomyDriver {
     }
 
     // Phase: deciding (default) → choose a teacher by need + walk (LLM).
-    // Slice 4 memory read-back: fold the most recent lessons into the prompt so
-    // stored memory actually shapes the next choice. Soft-timeout + fail-soft —
-    // a slow/absent DB must never stall the tick (we just decide without them).
+    // P3 slice 2: on the first deciding drive after (re)start, seed "since I last
+    // acted" context from the durable event cursor. Slice 4 memory read-back:
+    // fold the most recent lessons in too. Slice 2 directive: read the human's
+    // current directive as a top-priority bias. All three are soft-timeout +
+    // fail-soft — a slow/absent DB must never stall the tick.
+    await this.seedFromCursorOnce(entry);
     const lessons = await this.readRecentLessons(entry.bodyId);
-    const prompt = this.buildDecisionPrompt(perception, entry, lessons);
+    const directive = await this.readDirectiveBounded(entry.platformAgentId);
+    const prompt = this.buildDecisionPrompt(perception, entry, lessons, directive?.text ?? null);
     const reply = await decide(prompt);
     // TEMP DEBUG (see tick()): the RAW decision reply — the smoking gun for
     // candidate (a). If this has content but no [ACTION: enter_building(...)] the
@@ -518,6 +553,7 @@ class AgentAutonomyDriver {
     perception: NonNullable<ReturnType<typeof npcSimulation.buildPerception>>,
     entry: HouseAgentEntry,
     recentLessons: string[] = [],
+    directiveText: string | null = null,
   ): string {
     const now = Date.now();
     const options = perception.nearbyBuildings
@@ -541,14 +577,22 @@ class AgentAutonomyDriver {
       lessonLines.length > 0
         ? `\nWhat you learned recently (avoid repeating — build on it or learn something NEW):\n${lessonLines.join('\n')}\n`
         : '';
+    // P3 slice 2: the human's directive (top priority) + the wake-up event seed.
+    // Both are conditional spreads so the prompt is byte-identical to pre-slice-2
+    // when neither is present.
+    const directiveBlock = formatDirectiveContext(directiveText); // '' when null/blank
     return [
+      ...(directiveBlock ? [directiveBlock, ''] : []),
       'You are an autonomous agent living in ClawVille, a world of teaching buildings.',
-      'You want to LEARN. Choose the ONE teacher whose focus is most useful for you to learn next.',
+      directiveBlock
+        ? "You want to LEARN and to follow your human's directive above — choose the ONE teacher whose focus best serves the directive (or is most useful to learn next)."
+        : 'You want to LEARN. Choose the ONE teacher whose focus is most useful for you to learn next.',
       '',
       'Teachers (buildingId: name — focus):',
       options,
       avoid,
       learned,
+      ...(entry.recentEventSummary ? [`Since you last acted: ${entry.recentEventSummary}`, ''] : []),
       'Reply with ONE short sentence about what you want to learn, then EXACTLY this action tag',
       'with the buildingId you chose (copy an id verbatim from the list):',
       '[ACTION: enter_building(buildingId=<one of the ids above>)]',
@@ -607,6 +651,90 @@ class AgentAutonomyDriver {
     } catch {
       return [];
     }
+  }
+
+  /**
+   * P3 slice 2 — read the agent's current directive (config.currentDirective),
+   * raced against DIRECTIVE_FETCH_TIMEOUT_MS. Null on timeout/error so a slow or
+   * absent DB never stalls or breaks a decide tick.
+   */
+  private readDirectiveBounded(platformAgentId: string): Promise<CurrentDirective | null> {
+    return new Promise<CurrentDirective | null>((resolve) => {
+      const timer = setTimeout(() => resolve(null), DIRECTIVE_FETCH_TIMEOUT_MS);
+      getAgentDirective(platformAgentId)
+        .then((d) => {
+          clearTimeout(timer);
+          resolve(d);
+        })
+        .catch(() => {
+          clearTimeout(timer);
+          resolve(null);
+        });
+    });
+  }
+
+  /**
+   * P3 slice 2 — ONE-TIME wake-up seed. Read the durable whitelisted events since
+   * the persisted cursor (config.autonomyCursor), summarize them into the next
+   * decision prompt, and advance the cursor. Runs exactly once per process
+   * lifetime per agent (guarded by `cursorSeeded`). Fully bounded + fail-soft:
+   * the guard is set BEFORE the read so a failure can't retry-spin, and a
+   * timed-out cursor read aborts WITHOUT advancing (so a degraded DB never
+   * corrupts the cursor forward).
+   */
+  private async seedFromCursorOnce(entry: HouseAgentEntry): Promise<void> {
+    if (entry.cursorSeeded) return;
+    entry.cursorSeeded = true;
+    const seed = await this.seedRead(entry.platformAgentId, entry.agentId);
+    if (seed) {
+      entry.recentEventSummary = seed.summary;
+      // Advance + persist the cursor so a restart resumes from here. Fail-soft:
+      // a failed write just re-reads the same window next start (idempotent seed).
+      await setAutonomyCursor(entry.platformAgentId, seed.maxId).catch(() => {});
+    }
+  }
+
+  /**
+   * Bounded read of {cursor → durable events → summary + max id}, or null on
+   * timeout/error/empty. The whole cursor+query pair is inside ONE timeout so a
+   * partial (cursor read OK, event read hung) can't advance the cursor on stale
+   * data — null aborts the seed and leaves the cursor untouched.
+   *
+   * Resume from the NEWEST tail, not the oldest gap: we fetch the newest ≤20
+   * whitelisted rows since the cursor (DESC) so the summary reflects RECENT
+   * activity (seasoning, not a transcript), and advance the cursor to the TRUE
+   * max id (`newestFirst[0].id`) so a restart with a large backlog does not
+   * re-walk the skipped older events one window at a time.
+   */
+  private seedRead(
+    platformAgentId: string,
+    agentId: string,
+  ): Promise<{ summary: string; maxId: bigint } | null> {
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => resolve(null), SEED_FETCH_TIMEOUT_MS);
+      (async () => {
+        const cursor = await getAutonomyCursor(platformAgentId);
+        const newestFirst = await queryDurableAgentEventsNewest(
+          agentId,
+          cursor ?? 0n,
+          SEED_EVENT_LIMIT,
+        );
+        if (newestFirst.length === 0) return null;
+        // DESC → [0] is the global max id since the cursor; re-sort ascending
+        // (oldest→newest) so the summary reads chronologically.
+        const maxId = newestFirst[0]!.id;
+        const ascending = [...newestFirst].reverse();
+        return { summary: summarizeAutonomyEvents(ascending), maxId };
+      })()
+        .then((r) => {
+          clearTimeout(timer);
+          resolve(r);
+        })
+        .catch(() => {
+          clearTimeout(timer);
+          resolve(null);
+        });
+    });
   }
 
   /**
