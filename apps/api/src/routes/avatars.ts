@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { eq, and, sql, isNull, or } from 'drizzle-orm';
-import { db, avatars, agents, avatarInventory, users, openclawBots } from '@clawville/database';
+import { db, avatars, agents, avatarInventory, users, agentBots } from '@clawville/database';
 import {
   AVATAR_ARCHETYPES,
   ARCHETYPE_IDS,
@@ -1255,8 +1255,8 @@ const directiveRateLimiter = createRateLimiter({ maxPerWindow: 20, windowMs: 60_
  */
 async function resolveConnectedAgentId(userId: string): Promise<string | null> {
   try {
-    const bot = await db.query.openclawBots.findFirst({
-      where: eq(openclawBots.userId, userId),
+    const bot = await db.query.agentBots.findFirst({
+      where: eq(agentBots.userId, userId),
       orderBy: (t, { desc }) => [desc(t.lastSeenAt)],
       columns: { agentId: true },
     });
@@ -1471,9 +1471,9 @@ avatarRoutes.post('/me/heartbeat', requireAuth, async (c) => {
   // Fire-and-forget + exactly ONE indexed query, and only on 'player' — the
   // heartbeat hot path stays cheap for every other mode.
   if (result.data.controlMode === 'player') {
-    db.query.openclawBots
+    db.query.agentBots
       .findFirst({
-        where: eq(openclawBots.userId, user.id),
+        where: eq(agentBots.userId, user.id),
         orderBy: (t, { desc }) => [desc(t.lastSeenAt)],
         columns: { agentId: true, sessionExpiresAt: true },
       })

@@ -29,7 +29,7 @@ import { z } from 'zod';
  * WHY the match is exact (esp. `building.visited` / `agent.chat.turn`, which fall
  * back to a `sessionDigest` when no bot config is present): BOTH the emit side
  * and the replay query resolve the agent id from the SAME source —
- * `npcSimulation.getOpenClawBotConfig(sessionId)?.agentId`. So a row written for a
+ * `npcSimulation.getAgentBotConfig(sessionId)?.agentId`. So a row written for a
  * real connected agent carries that canonical `agentId` and is returned; a row
  * written by the `sessionDigest(sessionId)` fallback (no live bot config) carries
  * a 16-hex digest the replay's canonical `agentId` can NEVER equal, so it is

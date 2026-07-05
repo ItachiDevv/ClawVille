@@ -6,7 +6,7 @@
  * protocol agrees byte-for-byte:
  *   - `routes/skills.ts` — the `/api/skills/manifest.json` protocol block and
  *     the `/api/skills/protocol/skill.md` served body.
- *   - `services/openclaw-client.ts` — the `clawville.orientation.version` shipped
+ *   - `services/agent-substrate-client.ts` — the `clawville.orientation.version` shipped
  *     on the hatcher-proxy cognition body.
  *   - `routes/partner-hatcher.ts` — the `protocol` pointer returned on register /
  *     patch so a partner knows on entry exactly which protocol manual version to
@@ -25,7 +25,7 @@ import { createHash } from 'crypto';
 /**
  * PROTOCOL_VERSION bumps when the protocol manual contract below changes (the
  * manifest exposes it so a partner knows EAGERLY to re-embed before the next
- * play session). Single source of truth — `skills.ts`, `openclaw-client.ts`,
+ * play session). Single source of truth — `skills.ts`, `agent-substrate-client.ts`,
  * and `partner-hatcher.ts` all import this rather than re-declare a literal.
  */
 // NOTE (2026-06-12, pass-6): bumped 4 -> 5. Across this session the protocol

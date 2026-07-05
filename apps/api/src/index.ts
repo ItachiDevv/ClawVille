@@ -659,7 +659,7 @@ process.on('uncaughtException', (err) => {
   // agent (warms its ElizaOS runtime, registers its in-world body, hands it to
   // the autonomy driver) then START the driver's own ~30s perceive→decide→act
   // loop. Ordered AFTER the system-NPC seeder (shares the system user + a warmed
-  // runtime) and AFTER startSimulation() above (registerOpenClaw needs the live
+  // runtime) and AFTER startSimulation() above (registerAgentBot needs the live
   // sim). Non-fatal: a house-agent failure must not crash boot — the world still
   // runs, just without the autonomous agent. Driver starts regardless so a later
   // (re)register still gets driven.
@@ -678,7 +678,7 @@ process.on('uncaughtException', (err) => {
   }
 
   // P0 lifecycle-truth — NO eager boot-rehydration. v7 already survives a restart
-  // via LAZY restore (`openclaw-session-restore.ts`, wired into
+  // via LAZY restore (`agent-session-restore.ts`, wired into
   // `validateLiveAgentSession`): on the first post-restart bearer use it rebuilds
   // the session under the agent's ORIGINAL bearer. An eager rehydrator minting a
   // fresh sessionId would COLLIDE with that (double body / override lockout), so
@@ -690,10 +690,10 @@ process.on('uncaughtException', (err) => {
   // still-mounted Eliza runtimes. Without this, a disconnected Hermes /
   // OpenClaw agent row lives forever and `/api/agent/session-status`
   // keeps answering `connected: true` until someone calls the explicit
-  // unregister. See `services/openclaw-session-sweeper.ts`.
+  // unregister. See `services/agent-session-sweeper.ts`.
   try {
     const { startSessionSweeper } = await import(
-      './services/openclaw-session-sweeper'
+      './services/agent-session-sweeper'
     );
     startSessionSweeper();
   } catch (err) {
@@ -1207,7 +1207,7 @@ async function gracefulShutdown(signal: string) {
     }
     try {
       const { stopSessionSweeper } = await import(
-        './services/openclaw-session-sweeper'
+        './services/agent-session-sweeper'
       );
       stopSessionSweeper();
     } catch {

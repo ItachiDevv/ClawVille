@@ -160,7 +160,7 @@ import {
   landUpgrades,
   serviceListings,
   servicePurchases,
-  openclawBots,
+  agentBots,
   eq,
   and,
   desc,
@@ -2681,11 +2681,11 @@ landRoutes.post('/services/:listingId/buy', requireAuthOrAgentSession, async (c)
   // of more than one bot row per user — liveness is irrelevant here (this is
   // a leaderboard-credit lookup, not a real-CT settlement gate).
   const sellerRows = await db
-    .select({ userId: avatars.userId, agentId: openclawBots.agentId })
+    .select({ userId: avatars.userId, agentId: agentBots.agentId })
     .from(avatars)
-    .leftJoin(openclawBots, eq(openclawBots.userId, avatars.userId))
+    .leftJoin(agentBots, eq(agentBots.userId, avatars.userId))
     .where(eq(avatars.id, result.sellerAvatarId))
-    .orderBy(desc(openclawBots.lastSeenAt))
+    .orderBy(desc(agentBots.lastSeenAt))
     .limit(1);
   const seller = sellerRows[0];
   const sellerUserId = seller?.userId ?? null;

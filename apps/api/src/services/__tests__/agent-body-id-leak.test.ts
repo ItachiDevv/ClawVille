@@ -23,8 +23,8 @@
 import { describe, expect, it, afterEach } from 'bun:test';
 
 import { npcSimulation } from '../npc-simulation';
-import { OpenClawClient } from '../openclaw-client';
-import type { OpenClawRegistration } from '@clawville/shared';
+import { AgentSubstrateClient } from '../agent-substrate-client';
+import type { AgentSubstrateRegistration } from '@clawville/shared';
 
 // The sessionId (bearer) carries a UNIQUE marker so any leak is unambiguous.
 const SECRET_MARKER = 'SUPER_SECRET_BEARER_must_not_leak_9f8e7d6c5b4a';
@@ -34,7 +34,7 @@ const AGENT_ID = 'leaktest-agent-01';
 // deterministic body id (`ocb-<base64url(agentId)>`), never `oc-<sessionId>`.
 const BODY_ID = `ocb-${Buffer.from(AGENT_ID, 'utf8').toString('base64url')}`;
 
-function makeAvatarConfig(): OpenClawRegistration {
+function makeAvatarConfig(): AgentSubstrateRegistration {
   return {
     agentId: AGENT_ID,
     sessionId: SECRET_BEARER,
@@ -54,17 +54,17 @@ function makeAvatarConfig(): OpenClawRegistration {
     personality: '',
     ledgerCapable: false,
     boundUserId: null,
-  } as OpenClawRegistration;
+  } as AgentSubstrateRegistration;
 }
 
 function registerAvatar(): void {
   const cfg = makeAvatarConfig();
-  npcSimulation.registerOpenClaw(cfg, new OpenClawClient(cfg));
+  npcSimulation.registerAgentBot(cfg, new AgentSubstrateClient(cfg));
 }
 
 afterEach(() => {
   // Idempotent — safe whether or not the test registered it.
-  npcSimulation.unregisterOpenClaw(SECRET_BEARER);
+  npcSimulation.unregisterAgentBot(SECRET_BEARER);
 });
 
 describe('B1 root-fix — avatar body id is decoupled from the bearer sessionId', () => {
@@ -82,10 +82,10 @@ describe('B1 root-fix — avatar body id is decoupled from the bearer sessionId'
   it('reverse lookups still resolve via the bodyId ↔ sessionId map', () => {
     registerAvatar();
     // bodyId → client (npcOverrides[bodyId] → sessionId → client)
-    expect(npcSimulation.getOpenClawClient(BODY_ID)).not.toBeNull();
+    expect(npcSimulation.getAgentBotClient(BODY_ID)).not.toBeNull();
     // sessionId → config + position (config.agentId → bodyId)
-    expect(npcSimulation.getOpenClawBotConfig(SECRET_BEARER)?.agentId).toBe(AGENT_ID);
-    expect(npcSimulation.getOpenClawAvatarPosition(SECRET_BEARER)).not.toBeNull();
+    expect(npcSimulation.getAgentBotConfig(SECRET_BEARER)?.agentId).toBe(AGENT_ID);
+    expect(npcSimulation.getAgentBotAvatarPosition(SECRET_BEARER)).not.toBeNull();
   });
 
   it('NO sim serializer OR perception-input leaks the bearer for an avatar body', () => {
@@ -96,7 +96,7 @@ describe('B1 root-fix — avatar body id is decoupled from the bearer sessionId'
       // Unknown rooms (incl. the npc-sse `solo-*` alias) fall to the full-roster path.
       getRoomSnapshot_room: JSON.stringify(npcSimulation.getRoomSnapshot('room-leaktest')),
       getRoomSnapshot_solo: JSON.stringify(npcSimulation.getRoomSnapshot('solo-leaktest')),
-      getActiveOpenClawBots: JSON.stringify(npcSimulation.getActiveOpenClawBots()),
+      getActiveAgentBots: JSON.stringify(npcSimulation.getActiveAgentBots()),
       // buildPerception (agent-gateway) derives every exposed npc-id field ONLY from
       // these three primitives, so covering them covers the perception harvest path.
       getAllNpcs: JSON.stringify(npcSimulation.getAllNpcs()),
@@ -116,7 +116,7 @@ describe('B1 root-fix — avatar body id is decoupled from the bearer sessionId'
 
   it('unregister removes the body and leaves no trace in the snapshot', () => {
     registerAvatar();
-    expect(npcSimulation.unregisterOpenClaw(SECRET_BEARER)).toBe(true);
+    expect(npcSimulation.unregisterAgentBot(SECRET_BEARER)).toBe(true);
     const json = JSON.stringify(npcSimulation.getSnapshot());
     expect(json.includes(SECRET_MARKER)).toBe(false);
     expect(json.includes(BODY_ID)).toBe(false);

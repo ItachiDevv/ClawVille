@@ -6,8 +6,8 @@ import {
   MAP_LOCATIONS,
   BUILDING_OPENCLAW_THEMES,
   type NpcDefinition,
-  type OpenClawRegistration,
-  type OpenClawAvatarConfig,
+  type AgentSubstrateRegistration,
+  type AgentAvatarConfig,
   type NpcActivity,
   type AgentPerception,
   ACTIVITY_EMOJIS,
@@ -38,7 +38,7 @@ import {
   getCollaborationBroker,
   type CollaborationLogEntry,
 } from '@clawville/agent-runtime';
-import type { OpenClawClient } from './openclaw-client';
+import type { AgentSubstrateClient } from './agent-substrate-client';
 import { resolveBuildingId } from './building-center';
 // Shared never-clobber ownership predicate (magic-link onboarding D1b) — the
 // SAME rule the /enter SQL bind guard states, from its dependency-free module
@@ -320,7 +320,7 @@ const INTERMISSION_MS = 8_000;      // 8s between rounds
 // --- Simulation Singleton ---
 
 /**
- * Thrown by `registerOpenClaw` in OVERRIDE mode when the target NPC is already
+ * Thrown by `registerAgentBot` in OVERRIDE mode when the target NPC is already
  * overridden by a DIFFERENT session. Callers (partner-hatcher register/PATCH P5-2)
  * map this to a client-actionable 409 `override_target_unavailable` vs a generic
  * 503 — a TYPED sentinel instead of message-string matching, so the HTTP status
@@ -365,12 +365,12 @@ class NpcSimulation {
   private arenaRound: ArenaRoundState | null = null;
 
   // OpenClaw bot registry
-  private openClawBots: Map<string, { config: OpenClawRegistration; client: OpenClawClient }> = new Map();
+  private agentBotSessions: Map<string, { config: AgentSubstrateRegistration; client: AgentSubstrateClient }> = new Map();
   private npcOverrides: Map<string, string> = new Map(); // npcId → sessionId
   // Magic-link onboarding D3 (2026-07-02): direct npcId → agentId for AVATAR-mode
-  // (`ocb-`) bodies, written at registerOpenClaw and cleared with the ownership-
+  // (`ocb-`) bodies, written at registerAgentBot and cleared with the ownership-
   // scoped body teardown. The human-control suppression predicate consults THIS
-  // map for avatar bodies instead of the npcOverrides→openClawBots session chain:
+  // map for avatar bodies instead of the npcOverrides→agentBotSessions session chain:
   // that chain names the CURRENT owner session and dangles whenever the owning
   // session churns (rebind eviction, sweeper races, restore windows), which left
   // `ocb-` bodies unsuppressed while their human drove the avatar — the exact
@@ -494,7 +494,7 @@ class NpcSimulation {
    *   - AVATAR-mode (`ocb-`) bodies resolve DIRECTLY via `avatarBodyOwners`
    *     (npcId → agentId), immune to owning-session churn.
    *   - OVERRIDE-mode bodies keep the original chain
-   *     (npcOverrides → openClawBots → config.agentId), since an override body
+   *     (npcOverrides → agentBotSessions → config.agentId), since an override body
    *     has no `avatarBodyOwners` entry.
    * Before this, ONLY the session chain existed — an `ocb-` body whose owner
    * session had churned was never suppressed (the double-body gap).
@@ -506,7 +506,7 @@ class NpcSimulation {
     // Override-mode bodies: npcId → current owner session → agentId.
     const sessionId = this.npcOverrides.get(npcId);
     if (!sessionId) return false;
-    const agentId = this.openClawBots.get(sessionId)?.config.agentId;
+    const agentId = this.agentBotSessions.get(sessionId)?.config.agentId;
     if (!agentId) return false;
     return this.isAgentHumanControlled(agentId, now);
   }
@@ -550,7 +550,7 @@ class NpcSimulation {
     // but a path may have been assigned earlier in the same tick), and dropping
     // any walking activity prevents a stale "walking" pose lingering on the
     // hidden body when suppression later lapses.
-    for (const [, { config }] of this.openClawBots) {
+    for (const [, { config }] of this.agentBotSessions) {
       if (config.agentId !== agentId) continue;
       const npcId = config.mode === 'override' ? config.targetNpcId : this.avatarBodyId(config.agentId);
       const npc = this.npcs.get(npcId);
@@ -824,13 +824,13 @@ class NpcSimulation {
 
   // --- OpenClaw Methods ---
 
-  registerOpenClaw(config: OpenClawRegistration, client: OpenClawClient, restoredState?: { lastX?: number; lastY?: number; knowledge?: string[] }) {
+  registerAgentBot(config: AgentSubstrateRegistration, client: AgentSubstrateClient, restoredState?: { lastX?: number; lastY?: number; knowledge?: string[] }) {
     if (config.mode === 'override') {
       if (!this.npcs.has(config.targetNpcId)) throw new Error(`NPC "${config.targetNpcId}" not found`);
       // Typed sentinel (not a bare Error) so the partner-hatcher P5-2 path can map
       // an occupied target to 409 via `instanceof`, never message-string matching.
       if (this.npcOverrides.has(config.targetNpcId)) throw new OverrideTargetUnavailableError(config.targetNpcId);
-      this.openClawBots.set(config.sessionId, { config, client });
+      this.agentBotSessions.set(config.sessionId, { config, client });
       this.npcOverrides.set(config.targetNpcId, config.sessionId);
       const npc = this.npcs.get(config.targetNpcId)!;
       npc.isOpenClaw = true;
@@ -850,7 +850,7 @@ class NpcSimulation {
       // hand it back. Digest is correlation-only.
       console.log(`[OpenClaw] Override registered: ${config.targetNpcId} -> sess:${sessionDigest(config.sessionId)} (${npc.autonomyMode})`);
     } else {
-      const avatarConfig = config as OpenClawAvatarConfig;
+      const avatarConfig = config as AgentAvatarConfig;
       // B1 ROOT-FIX: body id is the non-secret `ocb-<base64url(agentId)>`, NEVER
       // `oc-<sessionId>` (the sessionId is the real-CT bearer). npcOverrides keys
       // this bodyId → sessionId for the reverse lookup.
@@ -885,7 +885,7 @@ class NpcSimulation {
         combatAction: null, combatActionAt: 0,
         autonomyMode: config.autonomyMode ?? 'server-managed',
       });
-      this.openClawBots.set(config.sessionId, { config, client });
+      this.agentBotSessions.set(config.sessionId, { config, client });
       this.npcOverrides.set(npcId, config.sessionId);
       // D3 (2026-07-02): record the session-independent npcId → agentId link so
       // the human-control suppression predicate covers `ocb-` bodies even when
@@ -908,8 +908,8 @@ class NpcSimulation {
     }
   }
 
-  unregisterOpenClaw(sessionId: string): boolean {
-    const bot = this.openClawBots.get(sessionId);
+  unregisterAgentBot(sessionId: string): boolean {
+    const bot = this.agentBotSessions.get(sessionId);
     if (!bot) return false;
     // Drop any human-control suppression entry for this agent so a stale TTL
     // can't outlive the session (a re-registered agent gets a fresh window).
@@ -934,7 +934,7 @@ class NpcSimulation {
       // if THIS session still owns it — otherwise a stale unregister would orphan the
       // live session (delete the body + override the newer session depends on, while
       // that session stays Map-present so lazy-restore never re-heals it). If we no
-      // longer own it, just drop our own `openClawBots` entry below.
+      // longer own it, just drop our own `agentBotSessions` entry below.
       if (this.npcOverrides.get(npcId) === sessionId) {
         this.cleanupNpcFromCombats(npcId);
         this.npcOverrides.delete(npcId);
@@ -946,17 +946,17 @@ class NpcSimulation {
         this.avatarBodyOwners.delete(npcId);
       }
     }
-    this.openClawBots.delete(sessionId);
+    this.agentBotSessions.delete(sessionId);
     // sessionDigest, NOT the raw sessionId (Codex auth-lens fix #4) - bearer
     // credential, must not appear in logs.
     console.log(`[OpenClaw] Unregistered: sess:${sessionDigest(sessionId)}`);
     return true;
   }
 
-  getOpenClawClient(npcId: string): OpenClawClient | null {
+  getAgentBotClient(npcId: string): AgentSubstrateClient | null {
     const sessionId = this.npcOverrides.get(npcId);
     if (!sessionId) return null;
-    return this.openClawBots.get(sessionId)?.client ?? null;
+    return this.agentBotSessions.get(sessionId)?.client ?? null;
   }
 
   /**
@@ -975,9 +975,9 @@ class NpcSimulation {
    * We still emit only NON-secret identifiers here: the bot's stable public
    * `agentId` and (for override bodies) the public `targetNpcId`.
    */
-  getActiveOpenClawBots(): Array<{ agentId: string; mode: string; npcId?: string; name?: string }> {
+  getActiveAgentBots(): Array<{ agentId: string; mode: string; npcId?: string; name?: string }> {
     const result: Array<{ agentId: string; mode: string; npcId?: string; name?: string }> = [];
-    for (const [, { config }] of this.openClawBots) {
+    for (const [, { config }] of this.agentBotSessions) {
       if (config.mode === 'override') {
         result.push({ agentId: config.agentId, mode: 'override', npcId: config.targetNpcId });
       } else {
@@ -987,12 +987,12 @@ class NpcSimulation {
     return result;
   }
 
-  getOpenClawClientBySession(sessionId: string): OpenClawClient | null {
-    return this.openClawBots.get(sessionId)?.client ?? null;
+  getAgentBotClientBySession(sessionId: string): AgentSubstrateClient | null {
+    return this.agentBotSessions.get(sessionId)?.client ?? null;
   }
 
-  getOpenClawBotConfig(sessionId: string): OpenClawRegistration | null {
-    return this.openClawBots.get(sessionId)?.config ?? null;
+  getAgentBotConfig(sessionId: string): AgentSubstrateRegistration | null {
+    return this.agentBotSessions.get(sessionId)?.config ?? null;
   }
 
   /**
@@ -1005,7 +1005,7 @@ class NpcSimulation {
     const ids = new Set(agentIds);
     if (ids.size === 0) return [];
     const found: string[] = [];
-    for (const [sid, { config }] of this.openClawBots) {
+    for (const [sid, { config }] of this.agentBotSessions) {
       if (ids.has(config.agentId)) found.push(sid);
     }
     return found;
@@ -1039,7 +1039,7 @@ class NpcSimulation {
    */
   bindAgentOwner(agentId: string, userId: string): number {
     let updated = 0;
-    for (const [, { config }] of this.openClawBots) {
+    for (const [, { config }] of this.agentBotSessions) {
       if (config.agentId !== agentId) continue;
       if (!canBindAgentOwner(config.boundUserId ?? null, userId)) continue;
       config.boundUserId = userId;
@@ -1057,16 +1057,16 @@ class NpcSimulation {
    */
   getActiveAgentSessionPairs(): Array<{ sessionId: string; agentId: string }> {
     const pairs: Array<{ sessionId: string; agentId: string }> = [];
-    for (const [sid, { config }] of this.openClawBots) {
+    for (const [sid, { config }] of this.agentBotSessions) {
       pairs.push({ sessionId: sid, agentId: config.agentId });
     }
     return pairs;
   }
 
   /** Get avatar's current position for persistence on disconnect */
-  getOpenClawAvatarPosition(sessionId: string): { x: number; y: number } | null {
+  getAgentBotAvatarPosition(sessionId: string): { x: number; y: number } | null {
     // B1 ROOT-FIX: avatar body id is `ocb-<base64url(agentId)>`, resolved from the config.
-    const config = this.openClawBots.get(sessionId)?.config;
+    const config = this.agentBotSessions.get(sessionId)?.config;
     if (!config) return null;
     const npcId = this.avatarBodyId(config.agentId);
     const npc = this.npcs.get(npcId);
@@ -1084,7 +1084,7 @@ class NpcSimulation {
    * (apps/api/src/routes/agent-gateway.ts) exposes as JSON — kept here so the
    * sim (which can't import a route) can produce a self-contained system prompt
    * for the cognition seam. Bound to `npcId` at registration time via a
-   * provider closure on the OpenClawClient config.
+   * provider closure on the AgentSubstrateClient config.
    */
   buildHatcherSystemContext(npcId: string): string | null {
     const npc = this.npcs.get(npcId);
@@ -1243,7 +1243,7 @@ class NpcSimulation {
 
   /** Map a session ID to the NPC body it controls */
   getNpcIdForSession(sessionId: string): string | null {
-    const bot = this.openClawBots.get(sessionId);
+    const bot = this.agentBotSessions.get(sessionId);
     if (!bot) return null;
     // B1 ROOT-FIX: avatar body id is the non-secret `ocb-<base64url(agentId)>`.
     return bot.config.mode === 'override' ? bot.config.targetNpcId : this.avatarBodyId(bot.config.agentId);
@@ -1251,7 +1251,7 @@ class NpcSimulation {
 
   /** Check if a session ID corresponds to a valid agent */
   isValidAgentSession(sessionId: string): boolean {
-    return this.openClawBots.has(sessionId);
+    return this.agentBotSessions.has(sessionId);
   }
 
   /** Get all NPC states (for perception radius calculation) */
@@ -1681,11 +1681,11 @@ class NpcSimulation {
         // hatcher-proxy client → the gate applies. Predicate keys on the
         // in-world client protocol (NOT `is_house`, which isn't on the reg config
         // and is the wrong polarity). Both Hatcher register modes set
-        // `protocol==='hatcher-proxy'` (registerOpenClaw :786/:837) so Hatcher is
+        // `protocol==='hatcher-proxy'` (registerAgentBot :786/:837) so Hatcher is
         // exempt in avatar AND override mode; the house/fleet agent (nanoclaw)
         // and any other non-proxy body is gated.
         const isHatcherProxy =
-          this.getOpenClawClient(npcId)?.getProtocol() === 'hatcher-proxy';
+          this.getAgentBotClient(npcId)?.getProtocol() === 'hatcher-proxy';
         if (!isHatcherProxy) {
           // Resolve the target's center: a live npc body, else the building
           // center (Object.hasOwn guard — never an inherited prototype key).
@@ -2702,8 +2702,8 @@ class NpcSimulation {
     try {
       const def1 = NPC_DEFINITIONS.find((d: NpcDefinition) => d.id === initiator.id) ?? this.buildAvatarDef(initiator);
       const def2 = NPC_DEFINITIONS.find((d: NpcDefinition) => d.id === partner.id) ?? this.buildAvatarDef(partner);
-      const client1 = this.getOpenClawClient(initiator.id);
-      const client2 = this.getOpenClawClient(partner.id);
+      const client1 = this.getAgentBotClient(initiator.id);
+      const client2 = this.getAgentBotClient(partner.id);
 
       // Build conversation context with crypto speciality
       const npc1Theme = BUILDING_OPENCLAW_THEMES[def1.buildingId ?? ''];

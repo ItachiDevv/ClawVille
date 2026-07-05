@@ -23,7 +23,7 @@
  */
 
 import { describe, expect, it, beforeEach } from 'bun:test';
-import type { OpenClawClient } from '../openclaw-client';
+import type { AgentSubstrateClient } from '../agent-substrate-client';
 import { npcSimulation } from '../npc-simulation';
 import { buildAvatarSessionConfig } from '../agent-session-config';
 import {
@@ -34,7 +34,7 @@ import {
 
 type Sim = {
   npcs: Map<string, unknown>;
-  openClawBots: Map<string, { config: { agentId: string; boundUserId?: string | null } }>;
+  agentBotSessions: Map<string, { config: { agentId: string; boundUserId?: string | null } }>;
   npcOverrides: Map<string, string>;
   avatarBodyOwners: Map<string, string>;
   humanControlledOpenClawUntil: Map<string, number>;
@@ -49,7 +49,7 @@ function bodyIdFor(agentId: string): string {
   return `ocb-${Buffer.from(agentId, 'utf8').toString('base64url')}`;
 }
 
-/** Register a REAL avatar-mode body through the actual registerOpenClaw path
+/** Register a REAL avatar-mode body through the actual registerAgentBot path
  *  (nanoclaw fail-soft wire — no network, no DB), so `avatarBodyOwners` is
  *  populated exactly the way production populates it. */
 function registerAvatarBody(agentId: string, sessionId: string, boundUserId: string | null = null) {
@@ -72,8 +72,8 @@ function registerAvatarBody(agentId: string, sessionId: string, boundUserId: str
     boundUserId,
   });
   // Stub client — nanoclaw bodies never POST anywhere; the sim only stores it.
-  const client = { getProtocol: () => 'nanoclaw' } as unknown as OpenClawClient;
-  npcSimulation.registerOpenClaw(config, client);
+  const client = { getProtocol: () => 'nanoclaw' } as unknown as AgentSubstrateClient;
+  npcSimulation.registerAgentBot(config, client);
   return config;
 }
 
@@ -84,7 +84,7 @@ beforeEach(() => {
   // the whole `bun test` process, so this isolation is mandatory.
   (npcSimulation as unknown as { stop: () => void }).stop();
   sim.initNpcs();
-  sim.openClawBots.clear();
+  sim.agentBotSessions.clear();
   sim.npcOverrides.clear();
   sim.avatarBodyOwners.clear();
   sim.humanControlledOpenClawUntil.clear();
@@ -123,9 +123,9 @@ describe('(a) suppression covers avatar-mode ocb- bodies (avatarBodyOwners)', ()
 
     // Simulate the churn window: the owning session vanishes from the session
     // map (rebind eviction / sweeper race) while the body persists. The OLD
-    // npcOverrides→openClawBots chain now dangles — pre-fix this returned
+    // npcOverrides→agentBotSessions chain now dangles — pre-fix this returned
     // false and the human's driven avatar got a second, auto-walking body.
-    sim.openClawBots.delete('ag-churn-1');
+    sim.agentBotSessions.delete('ag-churn-1');
 
     npcSimulation.markHumanControlledOpenClaw(agentId, 15_000);
     expect(sim.isHumanControlledOpenClawNpc(bodyId)).toBe(true);
@@ -148,14 +148,14 @@ describe('(a) suppression covers avatar-mode ocb- bodies (avatarBodyOwners)', ()
     registerAvatarBody(agentId, 'ag-teardown-1');
     expect(sim.avatarBodyOwners.has(bodyId)).toBe(true);
 
-    npcSimulation.unregisterOpenClaw('ag-teardown-1');
+    npcSimulation.unregisterAgentBot('ag-teardown-1');
     expect(sim.avatarBodyOwners.has(bodyId)).toBe(false);
     // A stale (non-owning) unregister must NOT strip the live body's entry:
     registerAvatarBody(agentId, 'ag-teardown-2'); // rebinds npcOverrides to -2
-    sim.openClawBots.set('ag-teardown-stale', {
+    sim.agentBotSessions.set('ag-teardown-stale', {
       config: { agentId, boundUserId: null },
     } as never);
-    npcSimulation.unregisterOpenClaw('ag-teardown-stale'); // does not own the body
+    npcSimulation.unregisterAgentBot('ag-teardown-stale'); // does not own the body
     expect(sim.avatarBodyOwners.get(bodyId)).toBe(agentId);
   });
 });

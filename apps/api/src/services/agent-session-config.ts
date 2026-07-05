@@ -2,12 +2,12 @@
  * Shared, PURE config-builder for an agent's in-world `{config}` (2026-06-12).
  *
  * THE DRIFT BUG THIS PREVENTS (diagnostic-2026-06-12 D1):
- * Three independent code paths assemble the `OpenClawRegistration` that decides
+ * Three independent code paths assemble the `AgentSubstrateRegistration` that decides
  * what wire protocol an agent's in-world body speaks and which render model it
  * uses:
  *   1. mint:    POST /api/agent/connect          (agent-gateway.ts)
  *   2. mint:    POST /api/partner/hatcher/agents  (partner-hatcher.ts)
- *   3. restore: restoreAgentSessionFromRow        (openclaw-session-restore.ts)
+ *   3. restore: restoreAgentSessionFromRow        (agent-session-restore.ts)
  * When (3) diverged from (1)/(2) — restore read the row's stored `protocol`
  * (`'openai-compat'` for a no-gateway anonymous/milady agent) and built an
  * OpenAI-compat client that POSTs to the dummy `http://localhost:0` gateway,
@@ -32,7 +32,7 @@
  * that consults the gate also takes it as an optional parameter so tests stay
  * DB-free AND env-free.
  * The hatcher cognition secrets (proxyBaseUrl / scopedToken / proxyAgentId) are
- * client-construction inputs, NOT part of the `OpenClawRegistration`, so they
+ * client-construction inputs, NOT part of the `AgentSubstrateRegistration`, so they
  * are layered on by `buildHatcherClient` after this builder — keeping this module
  * free of decryption/SSRF concerns and trivially testable.
  */
@@ -43,17 +43,17 @@ import {
   getAgentModel,
   type AgentWireProtocol,
   type AgentAutonomyMode,
-  type OpenClawRegistration,
-  type OpenClawAvatarConfig,
+  type AgentSubstrateRegistration,
+  type AgentAvatarConfig,
 } from '@clawville/shared';
 
 /**
  * Combat-stat block carried on an avatar body. Matches the inline `stats` shape
- * on `OpenClawAvatarConfig` (NOT the perception `AgentStats` type — that one is
+ * on `AgentAvatarConfig` (NOT the perception `AgentStats` type — that one is
  * a per-turn telemetry struct). Derived from the config type so the two can't
  * drift.
  */
-type BodyStats = OpenClawAvatarConfig['stats'];
+type BodyStats = AgentAvatarConfig['stats'];
 
 /**
  * Identity types that have NO outbound cognition gateway of their own. Their
@@ -115,14 +115,14 @@ const HERMES_LOCAL_GATEWAY_ENABLED = process.env.HERMES_LOCAL_GATEWAY_ENABLED ==
 /**
  * The wire protocols an IN-WORLD body can actually speak — the shared
  * `AgentWireProtocol` union widened by exactly one SERVER-INTERNAL value:
- * 'hermes-local' (OpenClawClient POSTs to `HERMES_LOCAL_GATEWAY_URL`).
+ * 'hermes-local' (AgentSubstrateClient POSTs to `HERMES_LOCAL_GATEWAY_URL`).
  *
  * Why 'hermes-local' is NOT added to the shared union: `packages/shared/src/
- * types/openclaw.ts` is on the Hatcher partner-protected surface, and this value
+ * types/agent-substrate.ts` is on the Hatcher partner-protected surface, and this value
  * never crosses a partner wire, is never caller-suppliable (the connect schema's
  * `protocol` field can't request it), and is never authoritative on the row (the
  * in-world protocol is RE-derived from `identityType` on both mint and restore —
- * the D1 pattern). It exists only between this module and OpenClawClient, so it
+ * the D1 pattern). It exists only between this module and AgentSubstrateClient, so it
  * stays a server-internal widening here.
  */
 export type InWorldWireProtocol = AgentWireProtocol | 'hermes-local';
@@ -242,7 +242,7 @@ export function isRowRestorableFromIdentity(identityType: string): boolean {
 
 /**
  * P0 D-2 — whether a surviving row's session self-heals after an API restart via
- * LAZY restore (`openclaw-session-restore.ts`) — i.e. its ORIGINAL bearer rebuilds
+ * LAZY restore (`agent-session-restore.ts`) — i.e. its ORIGINAL bearer rebuilds
  * on the next call. The UNION of the two branches the restore module actually
  * implements, so `session-status` can't drift from restore:
  *   - hatcher (`protocol === 'hatcher-proxy'`): cognition rebuilt from the encrypted
@@ -362,13 +362,13 @@ function pickProtocol(base: AgentConfigBase): InWorldWireProtocol {
 }
 
 /**
- * Assemble the in-world `OpenClawRegistration` for an AVATAR-mode agent. The
+ * Assemble the in-world `AgentSubstrateRegistration` for an AVATAR-mode agent. The
  * SINGLE place protocol + species + autonomy + dummy-gateway defaults are
  * decided, so mint and restore produce byte-identical spawn-relevant config.
  */
 export function buildAvatarSessionConfig(
   inputs: AvatarConfigInputs,
-): OpenClawRegistration {
+): AgentSubstrateRegistration {
   const protocol = pickProtocol(inputs);
   return {
     agentId: inputs.agentId,
@@ -380,7 +380,7 @@ export function buildAvatarSessionConfig(
     authToken: inputs.authToken ?? '',
     // Narrow-cast: 'hermes-local' is the server-internal widening (see
     // InWorldWireProtocol) — the shared registration type stays on the
-    // partner-protected AgentWireProtocol union; OpenClawClient re-widens on read.
+    // partner-protected AgentWireProtocol union; AgentSubstrateClient re-widens on read.
     protocol: protocol as AgentWireProtocol,
     mode: 'avatar',
     autonomyMode: resolveAutonomyMode(
@@ -398,17 +398,17 @@ export function buildAvatarSessionConfig(
     personality: inputs.personality,
     ledgerCapable: inputs.ledgerCapable,
     boundUserId: inputs.boundUserId,
-  } as OpenClawRegistration;
+  } as AgentSubstrateRegistration;
 }
 
 /**
- * Assemble the in-world `OpenClawRegistration` for an OVERRIDE-mode agent (an
+ * Assemble the in-world `AgentSubstrateRegistration` for an OVERRIDE-mode agent (an
  * agent possessing an existing roaming NPC). Same protocol/autonomy resolution
  * as the avatar path; no render fields (the possessed NPC keeps its own body).
  */
 export function buildOverrideSessionConfig(
   inputs: OverrideConfigInputs,
-): OpenClawRegistration {
+): AgentSubstrateRegistration {
   const protocol = pickProtocol(inputs);
   return {
     agentId: inputs.agentId,
@@ -427,7 +427,7 @@ export function buildOverrideSessionConfig(
     targetNpcId: inputs.targetNpcId,
     ledgerCapable: inputs.ledgerCapable,
     boundUserId: inputs.boundUserId,
-  } as OpenClawRegistration;
+  } as AgentSubstrateRegistration;
 }
 
 /**
@@ -444,7 +444,7 @@ export function buildOverrideSessionConfig(
  * Hatcher avatar home default — the TRUE center of the 22528-px sim
  * (TOWN_CENTER 11264,11264; npc-simulation.ts MAP_WIDTH/2 after the 704-grow).
  * Lives HERE, in the shared mint/restore config module, so the MINT path
- * (partner-hatcher.ts) and the RESTORE path (openclaw-session-restore.ts) can
+ * (partner-hatcher.ts) and the RESTORE path (agent-session-restore.ts) can
  * never drift to different coordinate spaces (the FIX-13 regression: mint
  * defaulted to one center while restore defaulted to a legacy center,
  * teleporting pre-fix agents on an API restart). Updated 2026-06-24 for the
@@ -471,12 +471,12 @@ export const SPAWN_RELEVANT_FIELDS = [
 ] as const;
 
 /**
- * Project an `OpenClawRegistration` down to the spawn-relevant fields for the
+ * Project an `AgentSubstrateRegistration` down to the spawn-relevant fields for the
  * drift assertion. Missing fields (e.g. `name` on an override config) come out
  * `undefined` on both sides, so deep-equality still holds.
  */
 export function spawnRelevantProjection(
-  config: OpenClawRegistration,
+  config: AgentSubstrateRegistration,
 ): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const k of SPAWN_RELEVANT_FIELDS) {

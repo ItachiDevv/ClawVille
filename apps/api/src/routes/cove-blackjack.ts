@@ -84,7 +84,7 @@ import {
   blackjackShoes,
   blackjackHands,
   coveGameEvents,
-  openclawBots,
+  agentBots,
   type BlackjackShoe,
   type BlackjackHand,
 } from '@clawville/database';
@@ -2414,15 +2414,15 @@ coveBlackjackRouter.post('/agent/decide', requireAuth, async (c) => {
   // Resolve the human's bound connected agent + its LIVE session client. The
   // agent must be currently connected (a live npc-simulation session) for us to
   // synchronously ask it; otherwise there's nothing to relay → fall back.
-  const bot = await db.query.openclawBots.findFirst({
-    where: eq(openclawBots.userId, user.id),
+  const bot = await db.query.agentBots.findFirst({
+    where: eq(agentBots.userId, user.id),
     columns: { agentId: true },
   });
   if (!bot) return c.json({ error: 'no_connected_agent' }, 404);
   const liveSessions = npcSimulation.findActiveSessionsByAgentIds([bot.agentId]);
   const liveSessionId = liveSessions[0];
   if (!liveSessionId) return c.json({ error: 'no_connected_agent' }, 404);
-  const client = npcSimulation.getOpenClawClientBySession(liveSessionId);
+  const client = npcSimulation.getAgentBotClientBySession(liveSessionId);
   if (!client) return c.json({ error: 'no_connected_agent' }, 404);
   // nanoclaw/self-managed agents pull world-state + decide client-side; they
   // can't be synchronously asked via gateway push (chat() returns ''), so the

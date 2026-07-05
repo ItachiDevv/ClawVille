@@ -43,7 +43,7 @@ import {
   clawTokenTransactions,
   questRewards,
   bountyReputation,
-  openclawBots,
+  agentBots,
 } from '@clawville/database';
 import { LAND_EVENT_TYPES, LAND_EVENT_WEIGHTS, LAND_EVENT_DAILY_CAPS } from '@clawville/shared';
 import { sessionMiddleware } from '../middleware/auth';
@@ -866,13 +866,13 @@ export async function buildAgentSnapshot(
   const botRows = agentSubjectIds.length > 0
     ? await db
         .select({
-          agentId: openclawBots.agentId,
-          name: openclawBots.name,
-          userId: openclawBots.userId,
-          walletAddress: openclawBots.walletAddress,
+          agentId: agentBots.agentId,
+          name: agentBots.name,
+          userId: agentBots.userId,
+          walletAddress: agentBots.walletAddress,
         })
-        .from(openclawBots)
-        .where(inArray(openclawBots.agentId, agentSubjectIds))
+        .from(agentBots)
+        .where(inArray(agentBots.agentId, agentSubjectIds))
     : [];
 
   const botByAgentId = new Map(botRows.map((b) => [b.agentId, b]));

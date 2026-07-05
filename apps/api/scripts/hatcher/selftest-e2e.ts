@@ -491,6 +491,11 @@ async function main() {
       name: 'TestBot', species: 'hatcher_1', color: 0xff0000, cognitionBackend: 'hatcher-proxy', proxyUrl: 'https://api.hatcher.host',
       proxyTokenEnc: 'ENC_CIPHERTEXT_SHOULD_NEVER_APPEAR', proxyTokenIv: 'IV_SHOULD_NEVER_APPEAR', proxyTokenTag: 'TAG_SHOULD_NEVER_APPEAR',
       walletAddress: 'SoLPubKey1111111111111111111111111111111111', userId: 'user-id-1', sessionExpiresAt: future,
+      // Harness-mock completeness (pre-existing gap, NOT the substrate rename):
+      // publicAgentRecord emits registeredAt/updatedAt (partner-hatcher FIX-17),
+      // so the synthetic row must carry both timestamp columns.
+      createdAt: new Date(Date.now() - 86_400_000),
+      updatedAt: new Date(Date.now() - 3_600_000),
     } as unknown as Parameters<typeof ph.publicAgentRecord>[0];
     const out = ph.publicAgentRecord(syntheticRow) as Record<string, unknown>;
     const keys = Object.keys(out);
@@ -507,7 +512,7 @@ async function main() {
 
   await safe('C2 publicAgentRecord() protocol.contentHash matches the served manual hash (single source)', () => {
     const future = new Date(Date.now() + 3600_000);
-    const row = { agentId: 'hatcher:abc', id: 'u', identityType: 'hatcher', mode: 'avatar', targetNpcId: null, name: null, species: null, color: null, cognitionBackend: 'hatcher-proxy', proxyUrl: 'https://api.hatcher.host', proxyTokenEnc: 'x', proxyTokenIv: 'x', proxyTokenTag: 'x', walletAddress: null, userId: null, sessionExpiresAt: future } as unknown as Parameters<typeof ph.publicAgentRecord>[0];
+    const row = { agentId: 'hatcher:abc', id: 'u', identityType: 'hatcher', mode: 'avatar', targetNpcId: null, name: null, species: null, color: null, cognitionBackend: 'hatcher-proxy', proxyUrl: 'https://api.hatcher.host', proxyTokenEnc: 'x', proxyTokenIv: 'x', proxyTokenTag: 'x', walletAddress: null, userId: null, sessionExpiresAt: future, createdAt: new Date(Date.now() - 86_400_000), updatedAt: new Date(Date.now() - 3_600_000) } as unknown as Parameters<typeof ph.publicAgentRecord>[0];
     const out = ph.publicAgentRecord(row) as { protocol: { contentHash: string; version: number } };
     const liveHash = contentHashOf(buildProtocolManual(resolveApiBase()));
     // Assert against the LIVE manual hash (whatever the shipping manual produces)
@@ -530,6 +535,7 @@ async function main() {
       name: 'BoundBot', species: 'hatcher_2', color: 0x00ff00, cognitionBackend: 'hatcher-proxy', proxyUrl: 'https://api.hatcher.host',
       proxyTokenEnc: 'x', proxyTokenIv: 'x', proxyTokenTag: 'x',
       walletAddress: 'SoLAvatarWallet22222222222222222222222222222', userId: 'real-user-uuid-42', sessionExpiresAt: future,
+      createdAt: new Date(Date.now() - 86_400_000), updatedAt: new Date(Date.now() - 3_600_000),
     } as unknown as Parameters<typeof ph.publicAgentRecord>[0];
     const out = ph.publicAgentRecord(boundRow) as Record<string, unknown>;
     // userId present + echoed (the ledger anchor) and walletAddress present (the
@@ -559,7 +565,7 @@ async function main() {
     | { id: string; positionX: number; positionY: number; width: number; height: number }
     | undefined;
 
-  class MockOpenClawClient {
+  class MockAgentSubstrateClient {
     getProtocol() { return 'hatcher-proxy' as const; }
     setWorldStateProvider() {}
     setSystemContextProvider() {}
@@ -588,8 +594,8 @@ async function main() {
   // exercised end to end with NO DB write.
   const SELFTEST_USER_ID = '00000000-0000-4000-8000-00000000d00d';
   const SELFTEST_AVATAR_ID = '00000000-0000-4000-8000-00000000ava7';
-  const overrideConfig = { agentId: 'hatcher:selftest-d', sessionId: SELFTEST_SESSION, sessionKey: SELFTEST_SESSION, gatewayUrl: 'http://localhost:0', authToken: '', protocol: 'hatcher-proxy', mode: 'override', autonomyMode: 'server-managed', targetNpcId: overrideNpcId, ledgerCapable: true, boundUserId: SELFTEST_USER_ID } as unknown as Parameters<typeof npcSimulation.registerOpenClaw>[0];
-  npcSimulation.registerOpenClaw(overrideConfig, new MockOpenClawClient() as never);
+  const overrideConfig = { agentId: 'hatcher:selftest-d', sessionId: SELFTEST_SESSION, sessionKey: SELFTEST_SESSION, gatewayUrl: 'http://localhost:0', authToken: '', protocol: 'hatcher-proxy', mode: 'override', autonomyMode: 'server-managed', targetNpcId: overrideNpcId, ledgerCapable: true, boundUserId: SELFTEST_USER_ID } as unknown as Parameters<typeof npcSimulation.registerAgentBot>[0];
+  npcSimulation.registerAgentBot(overrideConfig, new MockAgentSubstrateClient() as never);
 
   // Helper: count agent_chat events currently in the snapshot whose message matches.
   function countAgentChatEvents(messageSubstring: string): number {
@@ -798,12 +804,12 @@ async function main() {
     check('F3 signPayload throws when CLAWVILLE_SERVICE_ISSUER_SK is missing', threw, `signPayload() with no SK env threw=${threw} (expect true)`);
   });
 
-  const ocMod = await import('../../src/services/openclaw-client.ts');
-  const { OpenClawClient } = ocMod;
+  const ocMod = await import('../../src/services/agent-substrate-client.ts');
+  const { AgentSubstrateClient } = ocMod;
 
   await safe('F4 chatHatcherProxy FAILS SOFT on network throw (returns empty, no throw, no token leak)', async () => {
     const SCOPED = 'super-secret-scoped-token-DO-NOT-LOG';
-    const client = new OpenClawClient({ sessionId: 's-f4', sessionKey: 's-f4', gatewayUrl: 'http://localhost:0', authToken: '', agentId: 'hatcher:f4', proxyAgentId: 'f4', protocol: 'hatcher-proxy', proxyBaseUrl: 'https://api.hatcher.host', scopedToken: SCOPED } as never);
+    const client = new AgentSubstrateClient({ sessionId: 's-f4', sessionKey: 's-f4', gatewayUrl: 'http://localhost:0', authToken: '', agentId: 'hatcher:f4', proxyAgentId: 'f4', protocol: 'hatcher-proxy', proxyBaseUrl: 'https://api.hatcher.host', scopedToken: SCOPED } as never);
     client.setWorldStateProvider(() => null);
     const origFetch = globalThis.fetch; const origErr = console.error; const logged: string[] = [];
     console.error = (...args: unknown[]) => { logged.push(args.map((a) => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ')); };
@@ -817,7 +823,7 @@ async function main() {
   });
 
   await safe('F5 chatHatcherProxy FAILS SOFT on non-2xx response', async () => {
-    const client = new OpenClawClient({ sessionId: 's-f5', sessionKey: 's-f5', gatewayUrl: 'http://localhost:0', authToken: '', agentId: 'hatcher:f5', proxyAgentId: 'f5', protocol: 'hatcher-proxy', proxyBaseUrl: 'https://api.hatcher.host', scopedToken: 'tok' } as never);
+    const client = new AgentSubstrateClient({ sessionId: 's-f5', sessionKey: 's-f5', gatewayUrl: 'http://localhost:0', authToken: '', agentId: 'hatcher:f5', proxyAgentId: 'f5', protocol: 'hatcher-proxy', proxyBaseUrl: 'https://api.hatcher.host', scopedToken: 'tok' } as never);
     client.setWorldStateProvider(() => null);
     const origFetch = globalThis.fetch;
     // @ts-expect-error override for test
@@ -828,7 +834,7 @@ async function main() {
   });
 
   await safe('F6 chatHatcherProxy FAILS SOFT on 3xx redirect (refuses to follow)', async () => {
-    const client = new OpenClawClient({ sessionId: 's-f6', sessionKey: 's-f6', gatewayUrl: 'http://localhost:0', authToken: '', agentId: 'hatcher:f6', proxyAgentId: 'f6', protocol: 'hatcher-proxy', proxyBaseUrl: 'https://api.hatcher.host', scopedToken: 'tok' } as never);
+    const client = new AgentSubstrateClient({ sessionId: 's-f6', sessionKey: 's-f6', gatewayUrl: 'http://localhost:0', authToken: '', agentId: 'hatcher:f6', proxyAgentId: 'f6', protocol: 'hatcher-proxy', proxyBaseUrl: 'https://api.hatcher.host', scopedToken: 'tok' } as never);
     client.setWorldStateProvider(() => null);
     const origFetch = globalThis.fetch;
     // @ts-expect-error override for test
@@ -839,7 +845,7 @@ async function main() {
   });
 
   await safe('F7 chatHatcherProxy reply cap = 4000 chars (DoS guard before [ACTION:] parser)', async () => {
-    const client = new OpenClawClient({ sessionId: 's-f7', sessionKey: 's-f7', gatewayUrl: 'http://localhost:0', authToken: '', agentId: 'hatcher:f7', proxyAgentId: 'f7', protocol: 'hatcher-proxy', proxyBaseUrl: 'https://api.hatcher.host', scopedToken: 'tok' } as never);
+    const client = new AgentSubstrateClient({ sessionId: 's-f7', sessionKey: 's-f7', gatewayUrl: 'http://localhost:0', authToken: '', agentId: 'hatcher:f7', proxyAgentId: 'f7', protocol: 'hatcher-proxy', proxyBaseUrl: 'https://api.hatcher.host', scopedToken: 'tok' } as never);
     client.setWorldStateProvider(() => null);
     const huge = 'x'.repeat(5000); const origFetch = globalThis.fetch;
     // @ts-expect-error override for test
@@ -850,7 +856,7 @@ async function main() {
   });
 
   await safe('F8 chatHatcherProxy FAILS SOFT on SSRF-rejected proxy URL (non-https)', async () => {
-    const client = new OpenClawClient({ sessionId: 's-f8', sessionKey: 's-f8', gatewayUrl: 'http://localhost:0', authToken: '', agentId: 'hatcher:f8', proxyAgentId: 'f8', protocol: 'hatcher-proxy', proxyBaseUrl: 'http://api.hatcher.host', scopedToken: 'tok' } as never);
+    const client = new AgentSubstrateClient({ sessionId: 's-f8', sessionKey: 's-f8', gatewayUrl: 'http://localhost:0', authToken: '', agentId: 'hatcher:f8', proxyAgentId: 'f8', protocol: 'hatcher-proxy', proxyBaseUrl: 'http://api.hatcher.host', scopedToken: 'tok' } as never);
     client.setWorldStateProvider(() => null);
     let fetchCalled = false; const origFetch = globalThis.fetch;
     // @ts-expect-error override for test
@@ -871,7 +877,7 @@ async function main() {
     // ed25519 signature never reach the internal address).
     const saved = process.env.HATCHER_PROXY_ALLOWED_HOSTS;
     process.env.HATCHER_PROXY_ALLOWED_HOSTS = 'localhost';
-    const client = new OpenClawClient({ sessionId: 's-f8b', sessionKey: 's-f8b', gatewayUrl: 'http://localhost:0', authToken: '', agentId: 'hatcher:f8b', proxyAgentId: 'f8b', protocol: 'hatcher-proxy', proxyBaseUrl: 'https://localhost', scopedToken: 'tok' } as never);
+    const client = new AgentSubstrateClient({ sessionId: 's-f8b', sessionKey: 's-f8b', gatewayUrl: 'http://localhost:0', authToken: '', agentId: 'hatcher:f8b', proxyAgentId: 'f8b', protocol: 'hatcher-proxy', proxyBaseUrl: 'https://localhost', scopedToken: 'tok' } as never);
     client.setWorldStateProvider(() => null);
     let fetchCalled = false; const origFetch = globalThis.fetch;
     // @ts-expect-error override for test
@@ -906,12 +912,12 @@ async function main() {
     let ok = true; const detail: string[] = [];
     try {
       // openai-compat protocol -> chatOpenAI, gateway = metadata IP literal.
-      const c1 = new OpenClawClient({ sessionId: 's-f8c1', sessionKey: 's-f8c1', gatewayUrl: 'http://169.254.169.254', authToken: 'agent-tok-1', agentId: 'oc-f8c1', protocol: 'openai-compat', mode: 'avatar' } as never);
+      const c1 = new AgentSubstrateClient({ sessionId: 's-f8c1', sessionKey: 's-f8c1', gatewayUrl: 'http://169.254.169.254', authToken: 'agent-tok-1', agentId: 'oc-f8c1', protocol: 'openai-compat', mode: 'avatar' } as never);
       const r1 = await c1.chat([{ role: 'user', content: 'hi' }]);
       if (r1 !== '' || fetchCalled) { ok = false; detail.push(`chatOpenAI(metadata-ip) reply=${JSON.stringify(r1)} fetchCalled=${fetchCalled}`); }
       // custom-webhook protocol -> chatCustomWebhook, gateway = loopback host.
       fetchCalled = false;
-      const c2 = new OpenClawClient({ sessionId: 's-f8c2', sessionKey: 's-f8c2', gatewayUrl: 'http://localhost/webhook', authToken: 'agent-tok-2', agentId: 'oc-f8c2', protocol: 'custom-webhook', mode: 'avatar' } as never);
+      const c2 = new AgentSubstrateClient({ sessionId: 's-f8c2', sessionKey: 's-f8c2', gatewayUrl: 'http://localhost/webhook', authToken: 'agent-tok-2', agentId: 'oc-f8c2', protocol: 'custom-webhook', mode: 'avatar' } as never);
       const r2 = await c2.chat([{ role: 'user', content: 'hi' }]);
       if (r2 !== '' || fetchCalled) { ok = false; detail.push(`chatCustomWebhook(loopback) reply=${JSON.stringify(r2)} fetchCalled=${fetchCalled}`); }
     } catch (e) {
@@ -958,7 +964,7 @@ async function main() {
     try {
       // openai-compat -> chatOpenAI. Public IP literal passes resolve; 302 must
       // hard-fail by throwing (NOT returning a reply, NOT following the redirect).
-      const c1 = new OpenClawClient({ sessionId: 's-f8d1', sessionKey: 's-f8d1', gatewayUrl: 'http://1.1.1.1', authToken: 'agent-tok-1', agentId: 'oc-f8d1', protocol: 'openai-compat', mode: 'avatar' } as never);
+      const c1 = new AgentSubstrateClient({ sessionId: 's-f8d1', sessionKey: 's-f8d1', gatewayUrl: 'http://1.1.1.1', authToken: 'agent-tok-1', agentId: 'oc-f8d1', protocol: 'openai-compat', mode: 'avatar' } as never);
       let r1: string | null = null; let threw1 = false;
       try { r1 = await c1.chat([{ role: 'user', content: 'hi' }]); } catch { threw1 = true; }
       // Acceptable: threw, OR returned '' — both are "no usable reply". A non-empty
@@ -966,7 +972,7 @@ async function main() {
       if (!threw1 && r1 !== '') { ok = false; detail.push(`chatOpenAI(302) reply=${JSON.stringify(r1)} threw=${threw1} (expect throw or '' — redirect not followed)`); }
       // custom-webhook -> chatCustomWebhook (the EXFIL path). 302 must return ''
       // BEFORE any body read (its own contract returns '' on the redirect branch).
-      const c2 = new OpenClawClient({ sessionId: 's-f8d2', sessionKey: 's-f8d2', gatewayUrl: 'http://1.1.1.1/webhook', authToken: 'agent-tok-2', agentId: 'oc-f8d2', protocol: 'custom-webhook', mode: 'avatar' } as never);
+      const c2 = new AgentSubstrateClient({ sessionId: 's-f8d2', sessionKey: 's-f8d2', gatewayUrl: 'http://1.1.1.1/webhook', authToken: 'agent-tok-2', agentId: 'oc-f8d2', protocol: 'custom-webhook', mode: 'avatar' } as never);
       let r2: string | null = null; let threw2 = false;
       try { r2 = await c2.chat([{ role: 'user', content: 'hi' }]); } catch { threw2 = true; }
       if (threw2 || r2 !== '') { ok = false; detail.push(`chatCustomWebhook(302) reply=${JSON.stringify(r2)} threw=${threw2} (expect '' — redirect not followed, no exfil)`); }
@@ -1223,7 +1229,7 @@ async function main() {
     const res = await app.request('/api/partner/hatcher/agents', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Hatcher-Issuer-Pubkey': partnerPubB58, 'X-Hatcher-Signature': sig, 'X-Hatcher-Timestamp': ts }, body });
     const j = (await res.json()) as { error?: string; ok?: boolean; sessionId?: string };
     const namespaced = 'hatcher:' + agentRaw;
-    const liveBody = npcSimulation.getActiveOpenClawBots().some((b) => b.agentId === namespaced);
+    const liveBody = npcSimulation.getActiveAgentBots().some((b) => b.agentId === namespaced);
     const is503 = res.status === 503 && j.error === 'session_persist_failed';
     const noBearer = j.sessionId === undefined && j.ok !== true;
     const ok = is503 && noBearer && !liveBody;
@@ -1234,7 +1240,7 @@ async function main() {
   // NEW (H10, Codex pass-4 P4-3): the LEGACY /api/openclaw/register must FAIL
   // CLOSED on a DB error — return 500 and register NO in-memory session. The old
   // code fell back to an ephemeral-only identity (botId:'') then still called
-  // registerOpenClaw, leaving a live Map body with no surviving row/hash that the
+  // registerAgentBot, leaving a live Map body with no surviving row/hash that the
   // shared validateLiveAgentSession contract treats as unusable (chat/cove re-read
   // the row → fail closed). We mount the legacy routes and drive a valid avatar
   // register with `skipPing=1` (no gateway round-trip); the DB upsert throws on the
@@ -1252,7 +1258,7 @@ async function main() {
     });
     const res = await ocApp.request('/api/openclaw/register?skipPing=1', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body });
     const j = (await res.json()) as { error?: string; code?: string; sessionId?: string };
-    const liveBody = npcSimulation.getActiveOpenClawBots().some((b) => b.agentId === agentRaw);
+    const liveBody = npcSimulation.getActiveAgentBots().some((b) => b.agentId === agentRaw);
     const is500 = res.status === 500 && j.code === 'registration_failed';
     const ok = is500 && j.sessionId === undefined && !liveBody;
     if (!ok) bugs.push('P4-3: legacy /openclaw/register DB-fail did NOT fail closed — returned a session or left a live body with no DB row');
@@ -1262,7 +1268,7 @@ async function main() {
   // NEW (H11, Codex pass-4 P4-1): per-agent SERIALIZATION yields ONE live body +
   // ONE bearer for two concurrent registers of the SAME agent. The register
   // critical section is `findActiveSessionsByAgentIds → unregister stale → mint
-  // sessionId → registerOpenClaw`; the in-memory Map is keyed by sessionId, so two
+  // sessionId → registerAgentBot`; the in-memory Map is keyed by sessionId, so two
   // raw-concurrent registers (each minting a DISTINCT sessionId) leave TWO avatar
   // bodies. The fix wraps that section in `withKeyedMutex(namespacedAgentId)`, so
   // the second register sees + evicts the first's body before spawning its own —
@@ -1280,7 +1286,7 @@ async function main() {
       // the lock did NOT hold.
       await new Promise<void>((r) => setTimeout(r, 1));
       for (const stale of npcSimulation.findActiveSessionsByAgentIds([namespaced])) {
-        npcSimulation.unregisterOpenClaw(stale);
+        npcSimulation.unregisterAgentBot(stale);
       }
       const sessionId = 'p4c-' + Math.random().toString(36).slice(2);
       const cfg = {
@@ -1290,8 +1296,8 @@ async function main() {
         stats: { hp: 100, attack: 10, defense: 8, speed: 6 },
         homeX: avatarHomeX, homeY: avatarHomeY, patrolRadius: 100, personality: 'x',
         ledgerCapable: true, boundUserId: SELFTEST_USER_ID,
-      } as unknown as Parameters<typeof npcSimulation.registerOpenClaw>[0];
-      npcSimulation.registerOpenClaw(cfg, new MockOpenClawClient() as never);
+      } as unknown as Parameters<typeof npcSimulation.registerAgentBot>[0];
+      npcSimulation.registerAgentBot(cfg, new MockAgentSubstrateClient() as never);
       return sessionId;
     };
 
@@ -1305,14 +1311,14 @@ async function main() {
     // Exactly ONE live body for this agent, and only the LAST-minted bearer is
     // live (the first was evicted by the second's cleanup — no orphan body).
     const liveSessions = npcSimulation.findActiveSessionsByAgentIds([namespaced]);
-    const bodyCount = npcSimulation.getActiveOpenClawBots().filter((b) => b.agentId === namespaced).length;
+    const bodyCount = npcSimulation.getActiveAgentBots().filter((b) => b.agentId === namespaced).length;
     const oneBody = bodyCount === 1 && liveSessions.length === 1;
     // The surviving session is one of the two minted ids (the second to run).
     const survivingIsKnown = liveSessions[0] === s1 || liveSessions[0] === s2;
     const ok = oneBody && survivingIsKnown;
     if (!ok) bugs.push('P4-1: two concurrent same-agent registers left ' + bodyCount + ' bodies / ' + liveSessions.length + ' live sessions (expected exactly 1 each)');
     // Cleanup the fixture body so it doesn't pollute later cases.
-    for (const sid of liveSessions) npcSimulation.unregisterOpenClaw(sid);
+    for (const sid of liveSessions) npcSimulation.unregisterAgentBot(sid);
     check('H11 two concurrent same-agent registers -> ONE body + ONE bearer (P4-1 serialization)', ok, `bodies=${bodyCount} liveSessions=${liveSessions.length} surviving=${liveSessions[0]} minted=[${s1},${s2}] (expect exactly 1 body + 1 live bearer; serialized cleanup evicts the first)`);
   });
 
@@ -1374,12 +1380,12 @@ async function main() {
   //   getSubject (only case I5 reaches it). validateLiveAgentSession (added in
   //   7cff0bba, require-auth-or-agent.ts:91-111) requires a real `openclaw_bots` DB
   //   row with a future `session_expires_at`; Map membership alone is no longer
-  //   enough. The fixture registers the session in-memory ONLY (registerOpenClaw,
+  //   enough. The fixture registers the session in-memory ONLY (registerAgentBot,
   //   above) and never inserts a row, so the DB lookup failed → 404/500. The fixture
   //   was stale for the NEW DB-row LIVENESS requirement, not for any ledger reason.
   //
   // FIXTURE FIX (test-only, no auth/cove code touched, NO DB connection or write):
-  //   We stub `db.query.openclawBots.findFirst` + `db.query.avatars.findFirst` so the
+  //   We stub `db.query.agentBots.findFirst` + `db.query.avatars.findFirst` so the
   //   shipped validateLiveAgentSession resolves the SELFTEST session EXACTLY as it
   //   resolves a real persisted Hatcher row: a future-TTL `openclaw_bots` row bound to
   //   SELFTEST_USER_ID + an active `avatars` row for that user. The stubs return rows
@@ -1391,13 +1397,13 @@ async function main() {
   const dbMod = await import('@clawville/database');
   const stubDb = dbMod.db as unknown as {
     query: {
-      openclawBots: { findFirst: (args?: unknown) => Promise<unknown> };
+      agentBots: { findFirst: (args?: unknown) => Promise<unknown> };
       avatars: { findFirst: (args?: unknown) => Promise<unknown> };
     };
   };
   // The fixture row now carries a real `sessionKeyHash = sha256Hex(SELFTEST_SESSION)`
   // so the b453fb18 restart-survival RESTORE path (restoreAgentSessionFromRow, which
-  // looks up `eq(openclawBots.sessionKeyHash, sha256Hex(incoming bearer))` on a
+  // looks up `eq(agentBots.sessionKeyHash, sha256Hex(incoming bearer))` on a
   // Map-MISS) resolves the fixture session — and ONLY the fixture session — exactly
   // as a real persisted Hatcher row would.
   const SELFTEST_SESSION_KEY_HASH = createHash('sha256').update(SELFTEST_SESSION).digest('hex');
@@ -1460,7 +1466,7 @@ async function main() {
     collectWhere(where, columns, values);
     return { columns, values };
   }
-  stubDb.query.openclawBots.findFirst = async (args?: unknown) => {
+  stubDb.query.agentBots.findFirst = async (args?: unknown) => {
     const { columns, values } = introspectWhere(args);
     // Live path: validateLiveAgentSession → eq(agent_id, config.agentId).
     if (columns.has('agent_id') && values.includes(overrideConfig.agentId)) {
@@ -1572,14 +1578,14 @@ async function main() {
     // hash check passes for the session that minted the current row hash, so the
     // fix does NOT break the legitimate single-live-session flow.
     SELFTEST_BOT_ROW.sessionKeyHash = SELFTEST_SESSION_KEY_HASH;
-    npcSimulation.registerOpenClaw(overrideConfig, new MockOpenClawClient() as never);
+    npcSimulation.registerAgentBot(overrideConfig, new MockAgentSubstrateClient() as never);
     const r = await ra.validateLiveAgentSession(SELFTEST_SESSION);
     check('J2 validateLiveAgentSession — re-aligned + re-registered bearer -> LIVE (legit single-session still passes)', r !== null && r.bot.agentId === overrideConfig.agentId, `validateLiveAgentSession(aligned bearer) => ${r === null ? 'null' : 'LIVE ' + r.bot.agentId} (expect LIVE — the session that minted the current row hash must still validate)`);
   });
 
   await safe('J3 validateLiveAgentSession — NULL row hash + live Map entry -> LIVE (R2-2 fixer carve-out: partner-mint null-window must not lock out)', async () => {
     const ra = await import('../../src/middleware/require-auth-or-agent.ts');
-    // The partner register/patch path calls registerOpenClaw (Map-live) BEFORE it
+    // The partner register/patch path calls registerAgentBot (Map-live) BEFORE it
     // persists session_key_hash, and that persist is EXPLICITLY non-fatal. So a
     // freshly-minted partner session is legitimately Map-registered with a NULL
     // row hash — in the 910→928 window, or permanently if the non-fatal persist
@@ -1588,7 +1594,7 @@ async function main() {
     // failure made fatal). The fixer softens the check to `present && mismatch`.
     // Precondition: J2 already re-registered the fixture session (Map-live) and
     // aligned the row hash. The body stays overridden, so do NOT re-register here
-    // (registerOpenClaw would throw "already overridden"). Flip ONLY the row hash
+    // (registerAgentBot would throw "already overridden"). Flip ONLY the row hash
     // to null and assert the SAME live Map entry still resolves LIVE.
     SELFTEST_BOT_ROW.sessionKeyHash = null;
     const r = await ra.validateLiveAgentSession(SELFTEST_SESSION);
