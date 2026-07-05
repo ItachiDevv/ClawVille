@@ -16,7 +16,7 @@
  * verified by the route), the freshly-drawn sessionId, and the OPTIONAL
  * re-supplied gateway credentials, it decides
  *   (a) whether a session may be minted at all,
- *   (b) the exact in-world `OpenClawRegistration` config (via the SHARED
+ *   (b) the exact in-world `AgentSubstrateRegistration` config (via the SHARED
  *       mint/restore builders in agent-session-config.ts — the D1 anti-drift
  *       pattern), and
  *   (c) what must be persisted back onto the row (the new bearer's
@@ -47,7 +47,7 @@
  *
  * ONE-BODY ASSERTION (why re-register can never duplicate): an avatar body's
  * in-world id is the DETERMINISTIC `ocb-<base64url(agentId)>` (npc-simulation
- * `avatarBodyId`), and `registerOpenClaw` does `npcs.set(bodyId, …)` +
+ * `avatarBodyId`), and `registerAgentBot` does `npcs.set(bodyId, …)` +
  * `npcOverrides.set(bodyId, sessionId)` — a Map SET, which REPLACES. The route
  * additionally evicts every prior in-RAM session for the agentId before
  * registering (their bearers are invalidated by the hash rebind anyway), which
@@ -56,7 +56,7 @@
  */
 
 import { z } from 'zod';
-import type { AgentWireProtocol, OpenClawRegistration } from '@clawville/shared';
+import type { AgentWireProtocol, AgentSubstrateRegistration } from '@clawville/shared';
 import {
   buildAvatarSessionConfig,
   buildOverrideSessionConfig,
@@ -133,8 +133,8 @@ export type ReconnectSessionPlan =
     }
   | {
       mint: true;
-      /** The in-world registration for `npcSimulation.registerOpenClaw`. */
-      config: OpenClawRegistration;
+      /** The in-world registration for `npcSimulation.registerAgentBot`. */
+      config: AgentSubstrateRegistration;
       /**
        * True when a real-gateway type was minted WITHOUT credentials — the
        * session is inert-dormant (fail-soft 'nanoclaw' wire, no outbound chat)
@@ -172,7 +172,7 @@ function rowHasRealGateway(bot: ReconnectBotRow): boolean {
  * Decide the session-mint for a signed-challenge /reconnect. PURE — the caller
  * (the route) already verified the signature, consumed the nonce, and located
  * the row; it executes the returned plan (DB persist → stale-session evict →
- * registerOpenClaw) and surfaces `sessionId`/`expiresAt`/`dormant` on the
+ * registerAgentBot) and surfaces `sessionId`/`expiresAt`/`dormant` on the
  * response.
  */
 export function planReconnectSession(input: {
@@ -246,7 +246,7 @@ export function planReconnectSession(input: {
     ...(dormant ? { protocolOverride: 'nanoclaw' as AgentWireProtocol } : {}),
   };
 
-  const config: OpenClawRegistration =
+  const config: AgentSubstrateRegistration =
     mode === 'override'
       ? buildOverrideSessionConfig({
           ...base,

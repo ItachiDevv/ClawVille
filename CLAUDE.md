@@ -210,13 +210,13 @@ Hatcher is our ONLY partner and runs **LIVE on our PROD** (Hatcher PROD → Claw
 
 **PROTECTED SURFACE (file-path trigger — editing ANY of these binds this rule):**
 - Routes: `apps/api/src/routes/{partner-hatcher,partner-hatcher-launch,portal}.ts` (incl. `mint-for-hatcher` / `accept-hatcher-link`), `routes/skills.ts` (manifest / protocol / per-building `skill.md` emitters).
-- Services: `partner-signature.ts`, `service-issuer.ts`, `skill-protocol.ts` (`PROTOCOL_VERSION` source), `openclaw-client.ts` (cognition `chatHatcherProxy`), `agent-session-config.ts`, `hatcher-config.ts` (SSRF allowlist), `hatcher-session-webhook.ts`, `reserved-agent-namespaces.ts`, `openclaw-session-restore.ts`.
+- Services: `partner-signature.ts`, `service-issuer.ts`, `skill-protocol.ts` (`PROTOCOL_VERSION` source), `agent-substrate-client.ts` (cognition `chatHatcherProxy`; renamed from `openclaw-client.ts` in P3 slice 5 — internal substrate rename, NO wire change), `agent-session-config.ts`, `hatcher-config.ts` (SSRF allowlist), `hatcher-session-webhook.ts`, `reserved-agent-namespaces.ts`, `agent-session-restore.ts` (renamed from `openclaw-session-restore.ts`, P3 slice 5).
 - Middleware: `require-auth-or-agent.ts` (`validateLiveAgentSession` — the bearer/TTL gate).
 - `npc-simulation.ts` — the Hatcher-touching parts: `dispatchHatcherActions`, `oc-`/override bodies, the controlled-launch suppression (`humanControlled*`).
-- Shared types: `packages/shared/src/types/openclaw.ts` (registration / response / error shapes).
+- Shared types: `packages/shared/src/types/agent-substrate.ts` (registration / response / error shapes; renamed from `types/openclaw.ts` in P3 slice 5 — a deprecated re-export shim is retained at the old path so the `types/openclaw` import path still resolves).
 - Harness + contract: `apps/api/scripts/hatcher/*` (`mock-hatcher-client.ts`, `mock-hatcher-proxy.ts`, `contract-probe.ts`, `run-mock-e2e.md`), `.hatcher-ref/CONTRACT.md`, `docs/hatcher-integration-spec.md` (the partner-facing single source of truth).
 
-**ALSO BINDS without a `partner-*` file in the diff** — the "unrelated change corrupts the partner" guard. If your change alters any of: the agent-session bearer/TTL model · the `hatcher:` namespace · the cognition request body shape · the `[ACTION:]` whitelist · the leaderboard event names/weights the stats endpoint reports · the shared `openclaw` types — the partner surface IS in scope, treat it as such.
+**ALSO BINDS without a `partner-*` file in the diff** — the "unrelated change corrupts the partner" guard. If your change alters any of: the agent-session bearer/TTL model · the `hatcher:` namespace · the cognition request body shape · the `[ACTION:]` whitelist · the leaderboard event names/weights the stats endpoint reports · the shared agent-substrate types (`types/agent-substrate.ts`, né `openclaw`) — the partner surface IS in scope, treat it as such.
 
 **MANDATES (every in-scope change, same diff, before "done"):**
 1. **Validate against the partner's REAL code, not our assumptions.** Check our side against Hatcher's ACTUAL open-source contract staged in `.hatcher-ref/` (their host-frontend types/methods + `CONTRACT.md`). If `.hatcher-ref/` is stale, refresh it from their public repo FIRST. (This is the lesson from the contract-parity session — assumptions drifted from their real frontend.)

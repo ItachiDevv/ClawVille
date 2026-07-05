@@ -71,7 +71,7 @@ import {
   db,
   users,
   avatars,
-  openclawBots,
+  agentBots,
   pendingAccountLinks,
 } from '@clawville/database';
 import type { AppContext } from '../types';
@@ -82,7 +82,7 @@ import { mintSessionTicket } from '../services/session-ticket-service';
 import { logEvent } from '../services/event-logger';
 import { verifyPartnerSignature } from '../services/partner-signature';
 // SSRF guards for the outbound partner session-issue fetches below. The
-// cognition path (openclaw-client.ts) already routes through these; the portal
+// cognition path (agent-substrate-client.ts) already routes through these; the portal
 // crossings must too, so "all outbound cognition/webhook/launch SSRF-guarded"
 // (CLAUDE.md) holds for the portal session-issue surface as well.
 //   - validateHatcherProxyUrlResolved → hatcher: host allowlist + DNS SSRF.
@@ -218,8 +218,8 @@ portalRoutes.post('/scape', sessionMiddleware, requireAuth, async (c) => {
     return c.json({ error: 'No avatar — create your agent first' }, 400);
   }
 
-  const latestBot = await db.query.openclawBots.findFirst({
-    where: eq(openclawBots.userId, user.id),
+  const latestBot = await db.query.agentBots.findFirst({
+    where: eq(agentBots.userId, user.id),
     orderBy: (t, { desc }) => [desc(t.lastSeenAt)],
     columns: { id: true },
   });
@@ -448,8 +448,8 @@ portalRoutes.post('/mint-for-scape', async (c) => {
     columns: { id: true, name: true },
   });
 
-  const latestBot = await db.query.openclawBots.findFirst({
-    where: eq(openclawBots.userId, userId),
+  const latestBot = await db.query.agentBots.findFirst({
+    where: eq(agentBots.userId, userId),
     orderBy: (t, { desc }) => [desc(t.lastSeenAt)],
     columns: { id: true },
   });
@@ -730,8 +730,8 @@ portalRoutes.post('/hatcher', sessionMiddleware, requireAuth, async (c) => {
     return c.json({ error: 'No avatar — create your agent first' }, 400);
   }
 
-  const latestBot = await db.query.openclawBots.findFirst({
-    where: eq(openclawBots.userId, user.id),
+  const latestBot = await db.query.agentBots.findFirst({
+    where: eq(agentBots.userId, user.id),
     orderBy: (t, { desc }) => [desc(t.lastSeenAt)],
     columns: { id: true },
   });
@@ -957,8 +957,8 @@ portalRoutes.post('/mint-for-hatcher', async (c) => {
     columns: { id: true, name: true },
   });
 
-  const latestBot = await db.query.openclawBots.findFirst({
-    where: eq(openclawBots.userId, userId),
+  const latestBot = await db.query.agentBots.findFirst({
+    where: eq(agentBots.userId, userId),
     orderBy: (t, { desc }) => [desc(t.lastSeenAt)],
     columns: { id: true },
   });

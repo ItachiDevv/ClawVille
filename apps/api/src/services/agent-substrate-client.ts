@@ -1,5 +1,5 @@
 import type {
-  OpenClawBotConfig,
+  AgentBotConfig,
   HatcherWorldState,
 } from '@clawville/shared';
 import { signPayload } from './service-issuer';
@@ -46,7 +46,7 @@ interface CustomWebhookResponse {
   response: string;
 }
 
-export class OpenClawClient {
+export class AgentSubstrateClient {
   private gatewayUrl: string;
   private authToken: string;
   private model: string;
@@ -63,13 +63,13 @@ export class OpenClawClient {
   private systemContextProvider: (() => string | null) | null;
   /**
    * Structured PUBLIC-ONLY world-state provider for the hatcher-proxy path.
-   * Bound to the resolved in-world npcId by `npcSimulation.registerOpenClaw`.
+   * Bound to the resolved in-world npcId by `npcSimulation.registerAgentBot`.
    * Replaces `systemContextProvider` for cognition: the partner owns the root
    * prompt and builds it from the `clawville` block we ship.
    */
   private worldStateProvider: (() => HatcherWorldState | null) | null;
 
-  constructor(config: OpenClawBotConfig) {
+  constructor(config: AgentBotConfig) {
     this.gatewayUrl = config.gatewayUrl.replace(/\/+$/, '');
     this.authToken = config.authToken;
     this.agentId = config.agentId;
@@ -90,7 +90,7 @@ export class OpenClawClient {
 
   /**
    * Bind the orientation + world-state system-message provider after the
-   * client is constructed. Used by `npcSimulation.registerOpenClaw` to wire
+   * client is constructed. Used by `npcSimulation.registerAgentBot` to wire
    * the provider to the resolved in-world npcId (only known once the body is
    * spawned). No-op for non-proxy protocols (they ignore it).
    *
@@ -105,7 +105,7 @@ export class OpenClawClient {
 
   /**
    * Bind the structured PUBLIC-ONLY world-state provider after construction.
-   * Used by `npcSimulation.registerOpenClaw` to wire the provider to the
+   * Used by `npcSimulation.registerAgentBot` to wire the provider to the
    * resolved in-world npcId. The hatcher-proxy chat ships this object in the
    * top-level `clawville.worldState` block so Hatcher builds its own prompt.
    * No-op for non-proxy protocols.
@@ -214,7 +214,7 @@ export class OpenClawClient {
     const outMessages: ChatMessage[] = [{ role: 'user', content: playerMessage }];
 
     // Structured world-state (PUBLIC-ONLY). Bound to the agent's in-world body
-    // by `npcSimulation.registerOpenClaw`. May be null if the body isn't in the
+    // by `npcSimulation.registerAgentBot`. May be null if the body isn't in the
     // world (or the provider threw) — we then omit `worldState` but still ship
     // the user turn + orientation pointer so cognition degrades, not crashes.
     let worldState: HatcherWorldState | null = null;

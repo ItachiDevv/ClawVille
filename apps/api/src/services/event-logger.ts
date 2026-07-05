@@ -57,7 +57,7 @@ import { sessionDigest } from './session-digest';
 const RAW_BEARER_RE = /^(ag|oc|hat|claw)-[A-Za-z0-9_-]{32}$/;
 
 // Exported for the focused unit test that PINS the events.agent_id ==
-// getOpenClawBotConfig().agentId join the P3 slice-1 replay depends on: a
+// getAgentBotConfig().agentId join the P3 slice-1 replay depends on: a
 // canonical agentId handle must pass through UNCHANGED (so a settle/visit/chat
 // row is found by the replay's canonical agentId), while a raw bearer is
 // digested (so it can never land as agent_id). Pure — no env, no I/O.

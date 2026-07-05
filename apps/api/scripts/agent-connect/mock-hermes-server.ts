@@ -22,7 +22,7 @@
  *
  * NO auth and NO signature verification, deliberately: the contract for
  * 'hermes-local' is a bare OpenAI-compat POST to a same-box runtime (nothing
- * secret is sent — see chatHermesLocal in services/openclaw-client.ts). To keep
+ * secret is sent — see chatHermesLocal in services/agent-substrate-client.ts). To keep
  * the mock unreachable from off-box it binds 127.0.0.1, not 0.0.0.0.
  *
  * Run:  bun run apps/api/scripts/agent-connect/mock-hermes-server.ts [--port 8642]

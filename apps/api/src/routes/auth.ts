@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { eq, and, or, isNull } from 'drizzle-orm';
 import { lucia } from '../lib/auth';
-import { db, users, openclawBots, avatars } from '@clawville/database';
+import { db, users, agentBots, avatars } from '@clawville/database';
 import { npcSimulation } from '../services/npc-simulation';
 import { sessionMiddleware, requireAuth } from '../middleware/auth';
 import { validateLiveAgentSession } from '../middleware/require-auth-or-agent';
@@ -94,8 +94,8 @@ authRoutes.get('/me/agent-session', requireAuth, async (c) => {
   // process should see the banner go gray within EXTERNAL_ACTIVE_WINDOW_MS
   // of the last action, not wait for a 24h sweep. The 24h TTL still gates
   // reconnect/replay; that's a separate concern.
-  const bot = await db.query.openclawBots.findFirst({
-    where: eq(openclawBots.userId, user.id),
+  const bot = await db.query.agentBots.findFirst({
+    where: eq(agentBots.userId, user.id),
     orderBy: (t, { desc }) => [desc(t.lastSeenAt)],
     columns: {
       agentId: true,
@@ -916,18 +916,18 @@ authRoutes.get('/enter', async (c) => {
   if (consumed.issuedToAgentId) {
     try {
       const bound = await db
-        .update(openclawBots)
+        .update(agentBots)
         .set({ userId: consumed.userId, updatedAt: new Date() })
         .where(
           and(
-            eq(openclawBots.agentId, consumed.issuedToAgentId),
+            eq(agentBots.agentId, consumed.issuedToAgentId),
             or(
-              isNull(openclawBots.userId),
-              eq(openclawBots.userId, consumed.userId),
+              isNull(agentBots.userId),
+              eq(agentBots.userId, consumed.userId),
             ),
           ),
         )
-        .returning({ id: openclawBots.id });
+        .returning({ id: agentBots.id });
       if (bound.length > 0) {
         // Propagate onto the LIVE in-memory session config(s) so the agent's
         // demotion backstop (`resolveAgentSession`: config.boundUserId must

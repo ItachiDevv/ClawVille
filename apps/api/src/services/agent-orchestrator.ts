@@ -1,5 +1,5 @@
 import { eq, and } from 'drizzle-orm';
-import { db, agents, agentLogs, avatars, openclawBots } from '@clawville/database';
+import { db, agents, agentLogs, avatars, agentBots } from '@clawville/database';
 import {
   ElizaRuntime,
   createElizaRuntime,
@@ -287,11 +287,11 @@ class AgentOrchestrator {
   private async agentBacksLiveConnectedSession(platformAgentId: string): Promise<boolean> {
     const rows = await db
       .select({
-        expiresAt: openclawBots.sessionExpiresAt,
-        sweptAt: openclawBots.sessionSweptAt,
+        expiresAt: agentBots.sessionExpiresAt,
+        sweptAt: agentBots.sessionSweptAt,
       })
       .from(avatars)
-      .innerJoin(openclawBots, eq(openclawBots.userId, avatars.userId))
+      .innerJoin(agentBots, eq(agentBots.userId, avatars.userId))
       .where(eq(avatars.platformAgentId, platformAgentId));
     const now = Date.now();
     for (const r of rows) {

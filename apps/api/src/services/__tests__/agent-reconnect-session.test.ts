@@ -28,7 +28,7 @@
 
 import { describe, it, expect, beforeEach } from 'bun:test';
 import { z } from 'zod';
-import type { OpenClawClient } from '../openclaw-client';
+import type { AgentSubstrateClient } from '../agent-substrate-client';
 import { npcSimulation } from '../npc-simulation';
 import { sha256Hex } from '../session-digest';
 import {
@@ -96,7 +96,7 @@ describe('(2) dormant-inert fallback (real-gateway type, no credentials)', () =>
     });
     if (!plan.mint) throw new Error('expected mint');
     expect(plan.dormant).toBe(true);
-    // The fail-soft wire: OpenClawClient.chat() for 'nanoclaw' returns '' with
+    // The fail-soft wire: AgentSubstrateClient.chat() for 'nanoclaw' returns '' with
     // NO network call, so the body is mute-but-alive (perceive/move/act works).
     expect(plan.config.protocol).toBe('nanoclaw');
     expect(plan.config.authToken).toBe('');
@@ -273,7 +273,7 @@ describe('(6) old-hash invalidation', () => {
 
 type Sim = {
   npcs: Map<string, unknown>;
-  openClawBots: Map<string, unknown>;
+  agentBotSessions: Map<string, unknown>;
   npcOverrides: Map<string, string>;
   avatarBodyOwners: Map<string, string>;
   humanControlledOpenClawUntil: Map<string, number>;
@@ -286,13 +286,13 @@ const bodyIdFor = (agentId: string) =>
 
 // Stub client — nanoclaw wires never POST; the sim only stores the instance.
 const stubClient = () =>
-  ({ getProtocol: () => 'nanoclaw' } as unknown as OpenClawClient);
+  ({ getProtocol: () => 'nanoclaw' } as unknown as AgentSubstrateClient);
 
 beforeEach(() => {
   const sim = asSim();
   (npcSimulation as unknown as { stop: () => void }).stop();
   sim.initNpcs();
-  sim.openClawBots.clear();
+  sim.agentBotSessions.clear();
   sim.npcOverrides.clear();
   sim.avatarBodyOwners.clear();
   sim.humanControlledOpenClawUntil.clear();
@@ -309,7 +309,7 @@ describe('(7) reconnect replaces the body — never duplicates, never leaves the
     // the DORMANT plan config so no outbound wire is ever armed in tests.
     const oldPlan = planReconnectSession({ bot, provenUserId: 'user-1', sessionId: OLD_SID });
     if (!oldPlan.mint) throw new Error('expected mint');
-    npcSimulation.registerOpenClaw(oldPlan.config, stubClient(), oldPlan.restoredState);
+    npcSimulation.registerAgentBot(oldPlan.config, stubClient(), oldPlan.restoredState);
     expect(npcSimulation.isValidAgentSession(OLD_SID)).toBe(true);
     expect(sim.npcs.has(bodyId)).toBe(true);
 
@@ -317,9 +317,9 @@ describe('(7) reconnect replaces the body — never duplicates, never leaves the
     const plan = planReconnectSession({ bot, provenUserId: 'user-1', sessionId: NEW_SID });
     if (!plan.mint) throw new Error('expected mint');
     for (const stale of npcSimulation.findActiveSessionsByAgentIds([agentId])) {
-      npcSimulation.unregisterOpenClaw(stale);
+      npcSimulation.unregisterAgentBot(stale);
     }
-    npcSimulation.registerOpenClaw(plan.config, stubClient(), plan.restoredState);
+    npcSimulation.registerAgentBot(plan.config, stubClient(), plan.restoredState);
 
     // EXACTLY ONE body (the deterministic ocb- id — Map.set replaces), owned
     // by the NEW session; the old bearer is no longer a valid RAM session.

@@ -118,7 +118,7 @@ import { avatars } from './avatars';
 import { agents, agentLogs } from './agents';
 import { locationAgents } from './location-agents';
 import { avatarInventory } from './inventory';
-import { openclawBots } from './claws';
+import { agentBots } from './claws';
 import { vanityKeypairs, tokenLaunches } from './token-launch';
 import { clawTokenTransactions } from './treasury';
 import { quests, questSubmissions, questRewards } from './quests';
@@ -204,9 +204,9 @@ export const locationAgentsRelations = relations(locationAgents, ({ one }) => ({
   }),
 }));
 
-export const openclawBotsRelations = relations(openclawBots, ({ one }) => ({
+export const agentBotsRelations = relations(agentBots, ({ one }) => ({
   user: one(users, {
-    fields: [openclawBots.userId],
+    fields: [agentBots.userId],
     references: [users.id],
   }),
 }));

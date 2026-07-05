@@ -22,7 +22,7 @@
  */
 
 import { and, eq, lt, or, isNull } from 'drizzle-orm';
-import { db, openclawBots, agents, sql } from '@clawville/database';
+import { db, agentBots, agents, sql } from '@clawville/database';
 import { agentOrchestrator } from './agent-orchestrator';
 import { logEvent } from './event-logger';
 import { notifyHatcherSessionEnded } from './hatcher-session-webhook';
@@ -62,7 +62,7 @@ export function computeSessionExpiresAt(now: Date = new Date()): Date {
 export async function extendSessionTtl(agentId: string): Promise<void> {
   const next = computeSessionExpiresAt();
   await db
-    .update(openclawBots)
+    .update(agentBots)
     .set({
       sessionExpiresAt: next,
       // Clear sessionSweptAt so the next genuine expiration fires
@@ -74,7 +74,7 @@ export async function extendSessionTtl(agentId: string): Promise<void> {
       lastSeenAt: new Date(),
       updatedAt: new Date(),
     })
-    .where(eq(openclawBots.agentId, agentId))
+    .where(eq(agentBots.agentId, agentId))
     .catch((err) => {
       // Non-fatal: TTL extension failure logs but never blocks the
       // agent's primary request (chat, activity, heartbeat).
@@ -96,7 +96,7 @@ export async function expireSession(agentId: string): Promise<void> {
   // `agent.session.disconnected` event in the route handler, and we
   // don't want a duplicate "expired" event firing at the next sweep.
   const rows = await db
-    .update(openclawBots)
+    .update(agentBots)
     // Null the restorable session-bearer hash on this TERMINAL transition (#8,
     // 2026-06-12). Restore already fails closed on the expired TTL, so this is
     // defense-in-depth, not a live-bypass fix — a disconnected session must not
@@ -104,8 +104,8 @@ export async function expireSession(agentId: string): Promise<void> {
     // /connect/register mints a fresh sessionId and writes a new hash, so this
     // does not break legitimate reconnect.
     .set({ sessionExpiresAt: now, sessionSweptAt: now, sessionKeyHash: null, updatedAt: now })
-    .where(eq(openclawBots.agentId, agentId))
-    .returning({ userId: openclawBots.userId, identityType: openclawBots.identityType });
+    .where(eq(agentBots.agentId, agentId))
+    .returning({ userId: agentBots.userId, identityType: agentBots.identityType });
 
   // Notify the partner (Hatcher-only, env-gated, fail-open) that this session
   // ended. Fire-and-forget — never block the disconnect on a webhook. The
@@ -160,19 +160,19 @@ export async function sweepExpiredSessions(): Promise<number> {
   //      processes correctly.
   const expired = await db
     .select({
-      id: openclawBots.id,
-      agentId: openclawBots.agentId,
-      userId: openclawBots.userId,
-      identityType: openclawBots.identityType,
+      id: agentBots.id,
+      agentId: agentBots.agentId,
+      userId: agentBots.userId,
+      identityType: agentBots.identityType,
     })
-    .from(openclawBots)
+    .from(agentBots)
     .where(
       and(
-        sql`${openclawBots.sessionExpiresAt} IS NOT NULL`,
-        lt(openclawBots.sessionExpiresAt, now),
+        sql`${agentBots.sessionExpiresAt} IS NOT NULL`,
+        lt(agentBots.sessionExpiresAt, now),
         or(
-          isNull(openclawBots.sessionSweptAt),
-          lt(openclawBots.sessionSweptAt, openclawBots.sessionExpiresAt),
+          isNull(agentBots.sessionSweptAt),
+          lt(agentBots.sessionSweptAt, agentBots.sessionExpiresAt),
         ),
       ),
     );
@@ -187,10 +187,10 @@ export async function sweepExpiredSessions(): Promise<number> {
   // so an expired row retains no bearer commitment; a reconnect mints a fresh
   // hash.
   await db
-    .update(openclawBots)
+    .update(agentBots)
     .set({ sessionSweptAt: now, sessionKeyHash: null, updatedAt: now })
     .where(
-      sql`${openclawBots.id} IN (${sql.join(expired.map((r) => sql`${r.id}`), sql`, `)})`,
+      sql`${agentBots.id} IN (${sql.join(expired.map((r) => sql`${r.id}`), sql`, `)})`,
     )
     .catch((err) => {
       console.warn('[SessionSweeper] mark-swept update failed (non-fatal):', err);
@@ -235,7 +235,7 @@ export async function sweepExpiredSessions(): Promise<number> {
 
   // D-3 + M1 (P0 lifecycle-truth) — remove the in-world BODY for every swept
   // session. Before P0 the sweeper stopped the Eliza runtime + flipped the TTL but
-  // NEVER called unregisterOpenClaw, so the spawned avatar/override lingered as a
+  // NEVER called unregisterAgentBot, so the spawned avatar/override lingered as a
   // zombie NPC until the next API restart (the `/disconnect` route already removed
   // the body in-request; only the periodic sweep leaked it).
   //
@@ -258,7 +258,7 @@ export async function sweepExpiredSessions(): Promise<number> {
   //      lazy restore never fires on an expired row and never slides the TTL, so
   //      a still-expired re-read means no live session can have re-registered.)
   //
-  // The ownership guard inside `unregisterOpenClaw` is the third backstop: even a
+  // The ownership guard inside `unregisterAgentBot` is the third backstop: even a
   // snapshotted stale session will NOT tear down the shared `ocb-<agentId>` body
   // if a newer session has already rebound it (`/connect` does not evict on a
   // normal same-owner reconnect), so a stale sid can't orphan the live body.
@@ -267,8 +267,8 @@ export async function sweepExpiredSessions(): Promise<number> {
     const snapshotSids = npcSimulation.findActiveSessionsByAgentIds([row.agentId]);
     let current: { sessionExpiresAt: Date | null } | undefined;
     try {
-      current = await db.query.openclawBots.findFirst({
-        where: eq(openclawBots.agentId, row.agentId),
+      current = await db.query.agentBots.findFirst({
+        where: eq(agentBots.agentId, row.agentId),
         columns: { sessionExpiresAt: true },
       });
     } catch (err) {
@@ -284,7 +284,7 @@ export async function sweepExpiredSessions(): Promise<number> {
     }
     try {
       for (const sid of snapshotSids) {
-        npcSimulation.unregisterOpenClaw(sid);
+        npcSimulation.unregisterAgentBot(sid);
       }
     } catch (err) {
       console.warn(`[SessionSweeper] body removal failed for ${row.agentId} (non-fatal):`, err);

@@ -2,7 +2,7 @@
  * Agent-session restart survival (2026-06-11).
  *
  * THE BUG: a connected agent's live session exists ONLY in npc-simulation's
- * in-memory `openClawBots` Map — the `ag-`/`oc-`/`hat-` bearer is never written
+ * in-memory `agentBotSessions` Map — the `ag-`/`oc-`/`hat-` bearer is never written
  * to disk. Every API deploy/restart rebuilds that Map empty, so the shared
  * `validateLiveAgentSession` gate map-missed and returned 404 "session not
  * found or expired" to the agent's owner the moment they typed in the chat bar.
@@ -77,17 +77,17 @@
  *     `http://localhost:0` (the restored-mute-body class, the D1 bug's cousin).
  *
  * CONCURRENCY: two simultaneous post-restart chat calls for the same agent both
- * Map-miss and both reach restore. registerOpenClaw is effectively idempotent by
+ * Map-miss and both reach restore. registerAgentBot is effectively idempotent by
  * sessionId (Map.set overwrites), but a DOUBLE override-register would throw
  * "already overridden" on the second. We guard with a per-agentId in-flight
  * promise so concurrent restores of the SAME agent coalesce onto one rebuild.
  */
 
 import { eq } from 'drizzle-orm';
-import { db, openclawBots } from '@clawville/database';
-import type { OpenClawRegistration } from '@clawville/shared';
+import { db, agentBots } from '@clawville/database';
+import type { AgentSubstrateRegistration } from '@clawville/shared';
 import { npcSimulation } from './npc-simulation';
-import { OpenClawClient } from './openclaw-client';
+import { AgentSubstrateClient } from './agent-substrate-client';
 import { decryptToken } from './keypair-vault';
 import { validateHatcherProxyUrl } from './hatcher-config';
 import { sha256Hex, sessionDigest } from './session-digest';
@@ -117,7 +117,7 @@ function rawHatcherAgentId(namespacedAgentId: string): string {
  */
 const inFlightRestores = new Map<string, Promise<LiveAgentSession | null>>();
 
-type BotRow = typeof openclawBots.$inferSelect;
+type BotRow = typeof agentBots.$inferSelect;
 
 /**
  * Rebuild the in-memory `{config, client}` for a surviving row and register it
@@ -133,7 +133,7 @@ function rebuildAndRegister(
   // If a concurrent restore (or a fresh connect) already re-registered this
   // exact sessionId while we were awaiting the DB read, reuse it rather than
   // double-register.
-  const already = npcSimulation.getOpenClawBotConfig(sessionId);
+  const already = npcSimulation.getAgentBotConfig(sessionId);
   if (already) {
     return { config: already, bot };
   }
@@ -181,7 +181,7 @@ function rebuildAndRegister(
     // mint path (which knows it is hatcher-proxy regardless of the row's
     // identityType column); `resolveAgentSpecies` inside the builder applies the
     // hatcher species fallback (DEFAULT_HATCHER_MODEL_KEY) for a null species.
-    const config: OpenClawRegistration =
+    const config: AgentSubstrateRegistration =
       mode === 'override'
         ? buildOverrideSessionConfig({
             mode: 'override',
@@ -220,7 +220,7 @@ function rebuildAndRegister(
             protocolOverride: 'hatcher-proxy',
           });
 
-    const client = new OpenClawClient({
+    const client = new AgentSubstrateClient({
       ...config,
       protocol: 'hatcher-proxy',
       proxyBaseUrl: urlCheck.url,
@@ -228,7 +228,7 @@ function rebuildAndRegister(
       scopedToken: decrypted,
     });
     try {
-      npcSimulation.registerOpenClaw(config, client, restoredPos(meta));
+      npcSimulation.registerAgentBot(config, client, restoredPos(meta));
     } catch {
       // Override target already taken / body already present — treat as
       // un-restorable this turn rather than crash the chat call.
@@ -277,7 +277,7 @@ function rebuildAndRegister(
   // Built via the SHARED config-builder so the protocol/species/autonomy
   // resolution is byte-identical to the /connect MINT path for this identity
   // type — the structural prevention against mint↔restore drift.
-  const config: OpenClawRegistration =
+  const config: AgentSubstrateRegistration =
     mode === 'override'
       ? buildOverrideSessionConfig({
           mode: 'override',
@@ -309,9 +309,9 @@ function rebuildAndRegister(
           boundUserId,
         });
 
-  const client = new OpenClawClient(config);
+  const client = new AgentSubstrateClient(config);
   try {
-    npcSimulation.registerOpenClaw(config, client, restoredPos(meta));
+    npcSimulation.registerAgentBot(config, client, restoredPos(meta));
   } catch {
     return null;
   }
@@ -353,8 +353,8 @@ export async function restoreAgentSessionFromRow(
   if (existing) return existing;
 
   const work = (async (): Promise<LiveAgentSession | null> => {
-    const bot = await db.query.openclawBots.findFirst({
-      where: eq(openclawBots.sessionKeyHash, keyHash),
+    const bot = await db.query.agentBots.findFirst({
+      where: eq(agentBots.sessionKeyHash, keyHash),
     });
     if (!bot) return null;
 

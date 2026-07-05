@@ -6,7 +6,7 @@
  * re-runs join), but a bare rejoin gets AUTO-FILLED — a deploy can SPLIT a group
  * of friends who were together in one room across two freshly-minted rooms.
  *
- * THE FIX (mirrors openclaw-session-restore.ts "persist the minimum durable
+ * THE FIX (mirrors agent-session-restore.ts "persist the minimum durable
  * anchor, rebuild on demand, fail closed"): on join the server hands the client
  * a signed ticket naming the room it landed in. The CLIENT holds the ticket
  * (the durable anchor — no server state, no DB row). On a RECOVERY rejoin the
@@ -112,7 +112,7 @@ export const ROOM_TICKET_TTL_MS = 15 * 60_000; // 15 minutes
  * (a Lucia cookie bearer / agent handle / guest fp hash) that ONLY the real
  * session can present, and we never put the raw bearer itself into the ticket
  * (a DB dump / log of a ticket must not yield a spendable credential — same rule
- * as openclaw-session-restore.ts hashing the bearer into session_key_hash). On
+ * as agent-session-restore.ts hashing the bearer into session_key_hash). On
  * redeem the route re-derives this subject from the LIVE sessionId and requires
  * equality, so a fully-leaked valid ticket is useless to anyone who can't also
  * present the matching cookie/agent-session/fingerprint.

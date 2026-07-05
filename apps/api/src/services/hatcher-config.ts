@@ -2,7 +2,7 @@
  * Hatcher partner #2 (Phase A — 2026-06-01) — proxy-cognition config + SSRF
  * guard.
  *
- * ClawVille's cognition seam (`OpenClawClient.chat()` case 'hatcher-proxy')
+ * ClawVille's cognition seam (`AgentSubstrateClient.chat()` case 'hatcher-proxy')
  * POSTs to a PARTNER-SUPPLIED URL. That is a classic SSRF surface: a
  * malicious or compromised registration could point `proxy_url` at an
  * internal address (169.254.169.254 metadata, localhost, a private RFC1918
@@ -225,7 +225,7 @@ export async function validateHatcherProxyUrlResolved(
  * arbitrary caller-supplied URL declared at /connect (only `z.string().url()`),
  * so we cannot constrain the host — but we MUST still refuse to POST the agent's
  * own token to a private/loopback/link-local/reserved address. The blind-SSRF
- * surface is `OpenClawClient.chatOpenAI` / `chatAnthropic` / `chatCustomWebhook`,
+ * surface is `AgentSubstrateClient.chatOpenAI` / `chatAnthropic` / `chatCustomWebhook`,
  * which fire on every NPC-conversation tick to `this.gatewayUrl`.
  *
  * Rules (all fail-CLOSED):

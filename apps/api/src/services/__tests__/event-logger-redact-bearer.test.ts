@@ -1,6 +1,6 @@
 /**
  * Pins the join invariant the P3 slice-1 replay depends on (adversary A3):
- * `events.agent_id` must equal `getOpenClawBotConfig(sessionId).agentId` for the
+ * `events.agent_id` must equal `getAgentBotConfig(sessionId).agentId` for the
  * agent-scoped replay query to return an agent's own settle/visit/chat rows.
  *
  * That holds because `event-logger.redactBearer` (the central write-side

@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { npcSimulation } from '../services/npc-simulation';
-import { db, openclawBots, eq } from '@clawville/database';
+import { db, agentBots, eq } from '@clawville/database';
 import { sessionMiddleware, requireAuth } from '../middleware/auth';
 import { createRateLimiter, getClientIp } from '../middleware/rate-limit';
 import type { AppContext, AuthenticatedContext } from '../types';
@@ -124,7 +124,7 @@ clawRoutes.post('/', requireAuth, async (c) => {
 
   const agentId = `claw-${user.id}-${Date.now()}`;
   const [claw] = await db
-    .insert(openclawBots)
+    .insert(agentBots)
     .values({
       agentId,
       gatewayUrl: '',
@@ -147,9 +147,9 @@ clawRoutes.post('/', requireAuth, async (c) => {
 // GET /api/claws/me — Get user's saved claws
 clawRoutes.get('/me', requireAuth, async (c) => {
   const user = c.get('user') as { id: string };
-  const userClaws = await db.query.openclawBots.findMany({
-    where: eq(openclawBots.userId, user.id),
-    orderBy: (openclawBots: any, { desc }: { desc: any }) => [desc(openclawBots.updatedAt)],
+  const userClaws = await db.query.agentBots.findMany({
+    where: eq(agentBots.userId, user.id),
+    orderBy: (agentBots: any, { desc }: { desc: any }) => [desc(agentBots.updatedAt)],
   });
   return c.json({ claws: userClaws });
 });
@@ -159,8 +159,8 @@ clawRoutes.patch('/:id', requireAuth, async (c) => {
   const user = c.get('user') as { id: string };
   const clawId = c.req.param('id');
 
-  const existing = await db.query.openclawBots.findFirst({
-    where: eq(openclawBots.id, clawId),
+  const existing = await db.query.agentBots.findFirst({
+    where: eq(agentBots.id, clawId),
   });
 
   if (!existing || existing.userId !== user.id) {
@@ -180,9 +180,9 @@ clawRoutes.patch('/:id', requireAuth, async (c) => {
   }
 
   const [updated] = await db
-    .update(openclawBots)
+    .update(agentBots)
     .set(updates)
-    .where(eq(openclawBots.id, clawId))
+    .where(eq(agentBots.id, clawId))
     .returning();
 
   return c.json({ claw: updated });

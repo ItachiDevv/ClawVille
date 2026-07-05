@@ -216,14 +216,14 @@ describeIfDb('land.service.sold — scoring CTE (requires DATABASE_URL)', () => 
     // House agent bound to the house user — is_house=true. Used by BOTH house
     // legs: agent-leg NOT EXISTS(agent_id) + avatar-leg NOT EXISTS(user_id join).
     const [bot] = await dbMod.db
-      .insert(dbMod.openclawBots)
+      .insert(dbMod.agentBots)
       .values({
         agentId: houseAgentId,
         mode: 'autonomous',
         userId: houseUserId,
         isHouse: true,
       })
-      .returning({ id: dbMod.openclawBots.id });
+      .returning({ id: dbMod.agentBots.id });
     insertedHouseBotId = bot.id as string;
   });
 
@@ -233,7 +233,7 @@ describeIfDb('land.service.sold — scoring CTE (requires DATABASE_URL)', () => 
       await dbMod.db.delete(dbMod.events).where(inArray(dbMod.events.id, insertedEventIds));
     }
     if (insertedHouseBotId) {
-      await dbMod.db.delete(dbMod.openclawBots).where(eq(dbMod.openclawBots.id, insertedHouseBotId));
+      await dbMod.db.delete(dbMod.agentBots).where(eq(dbMod.agentBots.id, insertedHouseBotId));
     }
     for (const uid of [trainerUserId, playerUserId, houseUserId].filter(Boolean)) {
       await dbMod.db.delete(dbMod.avatars).where(eq(dbMod.avatars.userId, uid));

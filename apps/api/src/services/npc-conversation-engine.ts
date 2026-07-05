@@ -1,6 +1,6 @@
 import { templates } from '@clawville/agent-templates';
 import { NPC_DEFINITIONS, type NpcDefinition } from '@clawville/shared';
-import type { OpenClawClient } from './openclaw-client';
+import type { AgentSubstrateClient } from './agent-substrate-client';
 
 // LLM config — OpenAI is the SOLE backend for both text generation and
 // embeddings across ClawVille. NPC banter is casual chat, so no extended
@@ -174,8 +174,8 @@ function parseConversation(
 export async function generateOpenClawConversation(
   npc1: NpcDefinition,
   npc2: NpcDefinition,
-  client1: OpenClawClient | null,
-  client2: OpenClawClient | null,
+  client1: AgentSubstrateClient | null,
+  client2: AgentSubstrateClient | null,
   arenaMode: boolean,
   _cryptoContext?: string,
   /**
@@ -185,7 +185,7 @@ export async function generateOpenClawConversation(
    * and returns the cleaned (action-stripped) speech. Returns the raw reply
    * unchanged for non-proxy clients / when omitted.
    */
-  processProxyReply?: (npcId: string, client: OpenClawClient, rawReply: string) => string,
+  processProxyReply?: (npcId: string, client: AgentSubstrateClient, rawReply: string) => string,
 ): Promise<ConversationMessage[]> {
   const arenaContext = arenaMode
     ? ' You are in the ClawVille Arena where NPCs battle each other.'

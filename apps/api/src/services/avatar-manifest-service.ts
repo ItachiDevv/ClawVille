@@ -91,7 +91,7 @@ function absolutize(pathOrUrl: string): string {
  * `redirect:'manual'` and hard-fails on any 3xx. This is the load-bearing SSRF
  * control: `validateOutboundUrlResolved` only vets the FIRST hostname's DNS, so
  * a benign-but-redirecting host could 302 us into 169.254.169.254 / RFC1918.
- * Refusing to follow (same as openclaw-client / hatcher-session-webhook) closes
+ * Refusing to follow (same as agent-substrate-client / hatcher-session-webhook) closes
  * the redirect-hop + DNS-rebind-after-resolve bypass. Server-controlled registry
  * mirror fetches pass `allowRedirect=true`.
  */

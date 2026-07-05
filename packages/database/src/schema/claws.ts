@@ -13,7 +13,7 @@ import { users } from './users';
 
 // --- OpenClaw Bot Persistence ---
 
-export interface OpenClawBotMetadata {
+export interface AgentBotMetadata {
   personality?: string;
   homeX?: number;
   homeY?: number;
@@ -23,7 +23,7 @@ export interface OpenClawBotMetadata {
   lastY?: number;
 }
 
-export const openclawBots = pgTable('openclaw_bots', {
+export const agentBots = pgTable('openclaw_bots', {
   id: uuid('id').primaryKey().defaultRandom(),
   agentId: varchar('agent_id', { length: 200 }).notNull().unique(),
   // Identity type — which framework is connecting.
@@ -43,7 +43,7 @@ export const openclawBots = pgTable('openclaw_bots', {
   species: varchar('species', { length: 50 }),
   color: integer('color'),
   knowledge: jsonb('knowledge').$type<string[]>().default([]),
-  metadata: jsonb('metadata').$type<OpenClawBotMetadata>(),
+  metadata: jsonb('metadata').$type<AgentBotMetadata>(),
   /**
    * Mirror of the agent's custodial Solana wallet address (base58 public key).
    * Secret key lives encrypted in the unified `wallets` table keyed on
@@ -92,7 +92,7 @@ export const openclawBots = pgTable('openclaw_bots', {
    * "needs backfill, not expired".
    *
    * Enforcement:
-   *   - `openclaw-session-sweeper.ts` runs every 5 min, marks rows where
+   *   - `agent-session-sweeper.ts` runs every 5 min, marks rows where
    *     session_expires_at < now() and stops any running Eliza runtime.
    *   - `GET /api/agent/session-status` returns 410 Gone past expiry.
    *   - `POST /api/agent/disconnect` sets session_expires_at = now()
@@ -121,7 +121,7 @@ export const openclawBots = pgTable('openclaw_bots', {
    * owner mid-chat). This column stores `sha256Hex(sessionId)` — the one-way
    * hash of the live bearer, NEVER the raw bearer (a DB dump must not yield a
    * spendable real-CT credential). On a Map-miss the restore path
-   * (`openclaw-session-restore.ts`) hashes the INCOMING bearer, finds the row by
+   * (`agent-session-restore.ts`) hashes the INCOMING bearer, finds the row by
    * this column, re-validates the sliding `session_expires_at` TTL fail-closed,
    * and rebuilds the in-memory session + client FROM THE ROW so the same
    * sessionId keeps working across restarts. Rewritten on every connect /

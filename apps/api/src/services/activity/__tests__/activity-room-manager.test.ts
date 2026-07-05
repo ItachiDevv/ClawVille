@@ -719,7 +719,7 @@ function makeDbMock() {
       return thenable<unknown[]>([]);
     },
     query: {
-      openclawBots: { findFirst: () => Promise.resolve(null) },
+      agentBots: { findFirst: () => Promise.resolve(null) },
       avatars: { findFirst: () => Promise.resolve(null) },
     },
     reset() {

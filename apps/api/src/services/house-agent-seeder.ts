@@ -15,7 +15,7 @@
  *      priority 95). Leaving the gateway UNSET keeps the model backend
  *      SWAPPABLE for the fleet — set `customization.gateway` later to route a
  *      house agent at a self-hosted OpenAI-compat endpoint, no code change.
- *   3. An in-world AVATAR body via `npcSimulation.registerOpenClaw` with
+ *   3. An in-world AVATAR body via `npcSimulation.registerAgentBot` with
  *      protocol `'nanoclaw'` — CRITICALLY **not** `'hatcher-proxy'` (a local
  *      ElizaOS runtime must not reuse the partner cognition transport; this is
  *      also what keeps the P1 proximity gate applying to the house agent while
@@ -35,10 +35,10 @@
 
 import { randomBytes } from 'node:crypto';
 import { eq, and, asc, sql } from 'drizzle-orm';
-import { db, openclawBots, agents, users, avatars } from '@clawville/database';
+import { db, agentBots, agents, users, avatars } from '@clawville/database';
 import { resolveAgentSpecies } from './agent-session-config';
-import type { OpenClawAvatarConfig } from '@clawville/shared';
-import { OpenClawClient } from './openclaw-client';
+import type { AgentAvatarConfig } from '@clawville/shared';
+import { AgentSubstrateClient } from './agent-substrate-client';
 import { npcSimulation } from './npc-simulation';
 import { agentOrchestrator } from './agent-orchestrator';
 import { agentAutonomyDriver } from './agent-autonomy-driver';
@@ -67,7 +67,7 @@ const HOUSE_AGENT_PERSONALITY =
 const HOUSE_AGENT_SYSTEM = `You are ${HOUSE_AGENT_NAME}, an autonomous agent living inside ClawVille — a world of teaching buildings. You explore the town, choose a teacher whose focus you want to learn, walk there, and have a short conversation to learn. Stay curious and concise.`;
 
 // Home = town center (11264, 11264 for the 22528² world). resolveSafeSpawn in
-// registerOpenClaw snaps this to the nearest walkable tile clear of building
+// registerAgentBot snaps this to the nearest walkable tile clear of building
 // zones, so a plaza-center home is safe.
 const HOUSE_AGENT_HOME_X = 11264;
 const HOUSE_AGENT_HOME_Y = 11264;
@@ -234,7 +234,7 @@ async function ensureHouseUserAndAvatar(): Promise<{ userId: string; avatarId: s
 export function buildHouseAvatarConfig(
   sessionId: string,
   species: string,
-): OpenClawAvatarConfig {
+): AgentAvatarConfig {
   return {
     mode: 'avatar',
     sessionId,
@@ -283,8 +283,8 @@ export async function ensureHouseAgent(): Promise<HouseAgentSeedResult | null> {
   // ── 1. openclaw_bots row (is_house=true, never-expiring session) ──────────
   let botId: string;
   let created = false;
-  const existingBot = await db.query.openclawBots.findFirst({
-    where: eq(openclawBots.agentId, HOUSE_AGENT_ID),
+  const existingBot = await db.query.agentBots.findFirst({
+    where: eq(agentBots.agentId, HOUSE_AGENT_ID),
   });
   const botValues = {
     identityType: 'nanoclaw',
@@ -313,12 +313,12 @@ export async function ensureHouseAgent(): Promise<HouseAgentSeedResult | null> {
   };
   if (existingBot) {
     botId = existingBot.id;
-    await db.update(openclawBots).set(botValues).where(eq(openclawBots.id, existingBot.id));
+    await db.update(agentBots).set(botValues).where(eq(agentBots.id, existingBot.id));
   } else {
     const [inserted] = await db
-      .insert(openclawBots)
+      .insert(agentBots)
       .values({ agentId: HOUSE_AGENT_ID, ...botValues })
-      .returning({ id: openclawBots.id });
+      .returning({ id: agentBots.id });
     botId = inserted.id;
     created = true;
   }
@@ -432,8 +432,8 @@ export async function ensureHouseAgent(): Promise<HouseAgentSeedResult | null> {
   // driver lazy-warms the runtime off the boot crush and drives once ready.
   const sessionId = `oc-${randomBytes(24).toString('base64url')}`;
   const avatarConfig = buildHouseAvatarConfig(sessionId, species);
-  const client = new OpenClawClient(avatarConfig);
-  npcSimulation.registerOpenClaw(avatarConfig, client);
+  const client = new AgentSubstrateClient(avatarConfig);
+  npcSimulation.registerAgentBot(avatarConfig, client);
   const bodyId = npcSimulation.getNpcIdForSession(sessionId);
   if (!bodyId) {
     throw new Error('house-agent-seeder: body registration did not yield a bodyId');

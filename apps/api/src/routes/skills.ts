@@ -28,7 +28,7 @@
 
 import { Hono } from 'hono';
 import type { MiddlewareHandler } from 'hono';
-import { db, buildingSkills, openclawBots, avatars, eq, and } from '@clawville/database';
+import { db, buildingSkills, agentBots, avatars, eq, and } from '@clawville/database';
 import { getBooksForBuilding, BUILDING_OPENCLAW_THEMES } from '@clawville/shared';
 import { lucia } from '../lib/auth';
 import { logEventFromContext } from '../services/event-logger';
@@ -71,7 +71,7 @@ const partnerSkillsRateLimit = partnerRateLimit({ maxPerWindow: 60, windowMs: 60
 //
 // PROTOCOL_VERSION + buildProtocolManual + contentHashOf + resolveApiBase now
 // live in `services/skill-protocol.ts` (single source of truth), so the manifest
-// block here, the served `/protocol/skill.md` body, the openclaw-client
+// block here, the served `/protocol/skill.md` body, the agent-substrate-client
 // orientation pointer, and the partner-hatcher protocol pointer never drift.
 
 skillsRoutes.get('/', async (c) => {
@@ -251,7 +251,7 @@ async function hasEndUserIdentity(c: import('hono').Context<AppContext>): Promis
     if (sid) {
       try {
         const { npcSimulation } = await import('../services/npc-simulation');
-        const cfg = npcSimulation.getOpenClawBotConfig(sid);
+        const cfg = npcSimulation.getAgentBotConfig(sid);
         if (cfg?.agentId) return true;
       } catch {
         /* fall through to partner-key gate */
@@ -331,12 +331,12 @@ async function resolveAvatarId(c: any): Promise<string | null> {
     let agentId: string | null = agentIdHeader ?? null;
     if (!agentId && auth) {
       const sid = auth.slice(7);
-      const cfg = npcSimulation.getOpenClawBotConfig(sid);
+      const cfg = npcSimulation.getAgentBotConfig(sid);
       agentId = cfg?.agentId ?? null;
     }
     if (agentId) {
-      const bot = await db.query.openclawBots.findFirst({
-        where: eq(openclawBots.agentId, agentId),
+      const bot = await db.query.agentBots.findFirst({
+        where: eq(agentBots.agentId, agentId),
         columns: { userId: true },
       });
       if (bot?.userId) {

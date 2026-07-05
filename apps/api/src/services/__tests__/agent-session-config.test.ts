@@ -366,8 +366,8 @@ describe('mint ≡ restore — spawn-relevant config is byte-identical per type'
 
 // ---------------------------------------------------------------------------
 // Guard the exact 502 regression: a no-gateway avatar body's gatewayUrl is the
-// dummy AND its protocol is the fail-soft one, so OpenClawClient.chat() never
-// POSTs. (OpenClawClient routes 'nanoclaw' to a '' no-op; 'openai-compat' would
+// dummy AND its protocol is the fail-soft one, so AgentSubstrateClient.chat() never
+// POSTs. (AgentSubstrateClient routes 'nanoclaw' to a '' no-op; 'openai-compat' would
 // POST to gatewayUrl — the bug.)
 // ---------------------------------------------------------------------------
 describe('no-gateway avatar bodies cannot POST to a gateway (the 502 guard)', () => {

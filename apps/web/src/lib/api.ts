@@ -588,7 +588,7 @@ export const api = {
     }),
 
   // OpenClaw
-  registerOpenClaw: (data: {
+  registerAgentBot: (data: {
     mode: 'override' | 'avatar';
     gatewayUrl: string;
     authToken: string;
@@ -618,7 +618,7 @@ export const api = {
       body: JSON.stringify(data),
     }),
 
-  unregisterOpenClaw: (sessionId: string) =>
+  unregisterAgentBot: (sessionId: string) =>
     honoRequest<{ success: boolean }>(`/api/openclaw/unregister/${sessionId}`, {
       method: 'DELETE',
     }),
@@ -705,7 +705,7 @@ export const api = {
   // Public world-view roster. Carries NO session id (auth-lens fix #1,
   // 2026-06-03 — the session id is a real-CT bearer credential and this is a
   // public endpoint); bodies are addressed by their stable public `agentId`.
-  getActiveOpenClawBots: () =>
+  getActiveAgentBots: () =>
     honoRequest<{
       bots: Array<{ agentId: string; mode: string; npcId?: string; name?: string }>;
     }>('/api/openclaw/active'),

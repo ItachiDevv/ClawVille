@@ -14,15 +14,15 @@ import {
   DEFAULT_AGENT_HARNESS,
   type NpcActivity,
   type AgentStats,
-  type OpenClawRegistration,
+  type AgentSubstrateRegistration,
 } from '@clawville/shared';
 import { npcSimulation } from '../services/npc-simulation';
 import { findPath } from '../services/pathfinding';
 import { memoryService } from '../services/memory-service';
-import { db, openclawBots, avatars, users, buildingSkills, landParcels, eq, and, sql } from '@clawville/database';
+import { db, agentBots, avatars, users, buildingSkills, landParcels, eq, and, sql } from '@clawville/database';
 import { agentOrchestrator } from '../services/agent-orchestrator';
 import { getSessionAgent } from '../services/session-agent-map';
-import { OpenClawClient } from '../services/openclaw-client';
+import { AgentSubstrateClient } from '../services/agent-substrate-client';
 import {
   buildAvatarSessionConfig,
   buildOverrideSessionConfig,
@@ -73,7 +73,7 @@ import {
   computeSessionExpiresAt,
   expireSession,
   extendSessionTtl,
-} from '../services/openclaw-session-sweeper';
+} from '../services/agent-session-sweeper';
 import { drainKnowledgeEvents, drainAgentStreamEvents, clearSessionQueue } from '../services/skill-event-bus';
 import {
   REPLAY_LIMIT_MAX,
@@ -418,7 +418,7 @@ agentGatewayRoutes.post('/connect', async (c) => {
   const agentStats = data.stats ?? { hp: 100, attack: 10, defense: 8, speed: 6 };
 
   // Render-model surface for a connected agent = `species` (the
-  // openclaw_bots.species column + the OpenClawRegistration config). Resolved
+  // openclaw_bots.species column + the AgentSubstrateRegistration config). Resolved
   // ONCE here so the persisted row, the spawn config, and the in-world sim all
   // agree. A returning agent keeps its stored species (set in the existing-row
   // branch below); a new one falls back to the Milady default (Step 2b) when no
@@ -451,8 +451,8 @@ agentGatewayRoutes.post('/connect', async (c) => {
   let existingBoundUserId: string | null = null;
 
   try {
-    const existing = await db.query.openclawBots.findFirst({
-      where: eq(openclawBots.agentId, resolvedAgentId),
+    const existing = await db.query.agentBots.findFirst({
+      where: eq(agentBots.agentId, resolvedAgentId),
     });
 
     if (existing) {
@@ -488,7 +488,7 @@ agentGatewayRoutes.post('/connect', async (c) => {
       const persistedSpecies = data.species ?? existing.species ?? resolvedSpecies;
       resolvedSpecies = persistedSpecies;
 
-      await db.update(openclawBots).set({
+      await db.update(agentBots).set({
         identityType,
         gatewayUrl: data.gatewayUrl ?? existing.gatewayUrl,
         protocol: data.protocol ? wireProtocol : existing.protocol,
@@ -520,14 +520,14 @@ agentGatewayRoutes.post('/connect', async (c) => {
         // event for the rest of its life.
         sessionSweptAt: null,
         updatedAt: new Date(),
-      }).where(eq(openclawBots.id, existing.id));
+      }).where(eq(agentBots.id, existing.id));
     } else {
       // First-time contact — use miladyCharacterName when present so the
       // bot is named from the Milady runtime rather than needing a separate
       // `name` field in the request body.
       const insertName = data.miladyCharacterName ?? data.name ?? null;
 
-      const [inserted] = await db.insert(openclawBots).values({
+      const [inserted] = await db.insert(agentBots).values({
         agentId: resolvedAgentId,
         identityType,
         gatewayUrl: data.gatewayUrl ?? null,
@@ -555,7 +555,7 @@ agentGatewayRoutes.post('/connect', async (c) => {
         // building visit, AND every mutating gateway action (move / chat /
         // visit-building / building-chat / combat-action / emote, all routed
         // through `resolveSession` below, FIX-4 2026-06-13). The 5-min sweeper
-        // in openclaw-session-sweeper.ts reaps anything past expiry.
+        // in agent-session-sweeper.ts reaps anything past expiry.
         sessionExpiresAt,
         // Restart survival (2026-06-11) — one-way hash of this connect's
         // bearer so the session is restorable from the row after a restart.
@@ -618,7 +618,7 @@ agentGatewayRoutes.post('/connect', async (c) => {
   if (ownershipRebound) {
     try {
       for (const stale of npcSimulation.findActiveSessionsByAgentIds([resolvedAgentId])) {
-        npcSimulation.unregisterOpenClaw(stale);
+        npcSimulation.unregisterAgentBot(stale);
       }
     } catch (err) {
       console.error('[AgentConnect] stale-session eviction on rebind failed (non-fatal):', err);
@@ -648,7 +648,7 @@ agentGatewayRoutes.post('/connect', async (c) => {
       // from the row — the structural prevention against mint↔restore drift
       // (diagnostic-2026-06-12 D1). `storedProtocol: wireProtocol` is exactly
       // what gets PERSISTED on the row, so restore reads the same input.
-      const config: OpenClawRegistration = buildOverrideSessionConfig({
+      const config: AgentSubstrateRegistration = buildOverrideSessionConfig({
         mode: 'override',
         agentId: resolvedAgentId,
         sessionId,
@@ -665,8 +665,8 @@ agentGatewayRoutes.post('/connect', async (c) => {
         // live row at spend time (rebind backstop, hardening round 2).
         boundUserId,
       });
-      const client = new OpenClawClient(config);
-      npcSimulation.registerOpenClaw(config, client);
+      const client = new AgentSubstrateClient(config);
+      npcSimulation.registerAgentBot(config, client);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       // Override registration failed (e.g. NPC already taken) — no session was
@@ -697,7 +697,7 @@ agentGatewayRoutes.post('/connect', async (c) => {
       // `http://localhost:0` gateway and 502s. `species: resolvedSpecies` was
       // already defaulted to the Milady key above (connect has no hatcher
       // branch), so the builder passes it through unchanged.
-      const config: OpenClawRegistration = buildAvatarSessionConfig({
+      const config: AgentSubstrateRegistration = buildAvatarSessionConfig({
         mode: 'avatar',
         agentId: resolvedAgentId,
         sessionId,
@@ -724,13 +724,13 @@ agentGatewayRoutes.post('/connect', async (c) => {
 
       // Stub client — nanoclaw/anonymous agents don't use outbound chat routing
       // but the simulation still needs a client instance for its bot map.
-      const client = new OpenClawClient(config);
+      const client = new AgentSubstrateClient(config);
 
       const restoredState = lastX != null && lastY != null
         ? { lastX, lastY, knowledge }
         : undefined;
 
-      npcSimulation.registerOpenClaw(config, client, restoredState);
+      npcSimulation.registerAgentBot(config, client, restoredState);
     } catch (err) {
       console.error('[AgentConnect] NPC registration error:', err);
       // Non-fatal — agent still gets a sessionId for REST polling
@@ -1130,8 +1130,8 @@ agentGatewayRoutes.post('/reconnect', async (c) => {
   // FULL row (P0 gate fix, 2026-07-03): the session-mint below rebuilds the
   // in-world register config from the row's stored fields, exactly the way
   // restore does — `columns: {id}` is no longer enough.
-  const existingBot = await db.query.openclawBots.findFirst({
-    where: eq(openclawBots.userId, userId),
+  const existingBot = await db.query.agentBots.findFirst({
+    where: eq(agentBots.userId, userId),
     orderBy: (t, { desc }) => [desc(t.lastSeenAt)],
   });
 
@@ -1169,7 +1169,7 @@ agentGatewayRoutes.post('/reconnect', async (c) => {
   //     the TTL (this is what invalidates the old bearer: lazy restore matches
   //     by hash, and a still-in-RAM stale session is torn down by
   //     validateLiveAgentSession's present-and-mismatched-hash check),
-  //   - RAM registration via npcSimulation.registerOpenClaw with the config
+  //   - RAM registration via npcSimulation.registerAgentBot with the config
   //     rebuilt from the row (shared builders — the D1 anti-drift pattern).
   // The mint decision (proof-carrying ledger rule, dormant-without-credentials
   // fallback, partner-row refusal) lives in the pure, unit-tested
@@ -1192,7 +1192,7 @@ agentGatewayRoutes.post('/reconnect', async (c) => {
     });
     try {
       await db
-        .update(openclawBots)
+        .update(agentBots)
         .set({
           sessionExpiresAt: reconnectExpiresAt,
           sessionSweptAt: null,
@@ -1210,7 +1210,7 @@ agentGatewayRoutes.post('/reconnect', async (c) => {
               }
             : {}),
         })
-        .where(eq(openclawBots.id, existingBot.id));
+        .where(eq(agentBots.id, existingBot.id));
 
       if (plan.mint) {
         // Evict every prior in-RAM session for this agentId BEFORE registering.
@@ -1218,17 +1218,17 @@ agentGatewayRoutes.post('/reconnect', async (c) => {
         // evict also releases an override-mode NPC seat so re-register can't
         // throw against our own stale session. Body uniqueness holds either
         // way: the avatar body id is the deterministic ocb-<base64url(agentId)>
-        // and registerOpenClaw Map-SETs (replaces), so no path yields a second
+        // and registerAgentBot Map-SETs (replaces), so no path yields a second
         // body for the same agent.
         try {
           for (const stale of npcSimulation.findActiveSessionsByAgentIds([existingBot.agentId])) {
-            npcSimulation.unregisterOpenClaw(stale);
+            npcSimulation.unregisterAgentBot(stale);
           }
         } catch (err) {
           console.error('[AgentReconnect] stale-session eviction failed (non-fatal):', err);
         }
-        const client = new OpenClawClient(plan.config);
-        npcSimulation.registerOpenClaw(plan.config, client, plan.restoredState);
+        const client = new AgentSubstrateClient(plan.config);
+        npcSimulation.registerAgentBot(plan.config, client, plan.restoredState);
         mintedSessionId = freshSessionId;
         mintedDormant = plan.dormant;
       }
@@ -1328,8 +1328,8 @@ agentGatewayRoutes.get('/session-status', async (c) => {
     return c.json({ error: 'Missing agentId query parameter' }, 400);
   }
 
-  const row = await db.query.openclawBots.findFirst({
-    where: eq(openclawBots.agentId, agentId),
+  const row = await db.query.agentBots.findFirst({
+    where: eq(agentBots.agentId, agentId),
     columns: {
       id: true,
       lastSeenAt: true,
@@ -1472,7 +1472,7 @@ agentGatewayRoutes.get('/wallet', async (c) => {
 
   // Fail-closed liveness gate (Codex auth-lens fix #5, 2026-06-03). This route
   // exposes the bound avatar's authoritative ClawToken balance, so it must NOT
-  // trust bare Map membership (`getOpenClawBotConfig`): an EXPIRED-but-in-map
+  // trust bare Map membership (`getAgentBotConfig`): an EXPIRED-but-in-map
   // session would otherwise keep reading a victim's live CT balance after the DB
   // TTL reaped it. Route through the SAME shared validator every other bearer
   // path uses (Map membership AND DB `session_expires_at > now`, NULL = expired,
@@ -1593,8 +1593,8 @@ agentGatewayRoutes.post('/disconnect', async (c) => {
   // just by passing B's agentId. Agents without a userId (pre-Phase-5
   // anonymous rows) can't be disconnected via this path; they fall back
   // to /openclaw/unregister.
-  const bot = await db.query.openclawBots.findFirst({
-    where: eq(openclawBots.agentId, agentId),
+  const bot = await db.query.agentBots.findFirst({
+    where: eq(agentBots.agentId, agentId),
     columns: { id: true, userId: true },
   });
   if (!bot || bot.userId !== userId) {
@@ -1613,7 +1613,7 @@ agentGatewayRoutes.post('/disconnect', async (c) => {
   try {
     const liveSessions = npcSimulation.findActiveSessionsByAgentIds([agentId]);
     for (const sid of liveSessions) {
-      if (npcSimulation.unregisterOpenClaw(sid)) removedBodies++;
+      if (npcSimulation.unregisterAgentBot(sid)) removedBodies++;
     }
   } catch (err) {
     console.error('[AgentDisconnect] in-world body removal failed (non-fatal):', err);
@@ -2056,11 +2056,11 @@ async function resolveSession(sessionId: string) {
   // shared `extendSessionTtl` helper carries its own `.catch()`. It is the single
   // source of truth for the slide (writes `sessionExpiresAt`, `lastSeenAt`, and
   // crucially `sessionSweptAt: null`), mirroring the location-chat path in
-  // `openclaw.ts`. `getOpenClawBotConfig` is a synchronous in-process Map lookup,
+  // `openclaw.ts`. `getAgentBotConfig` is a synchronous in-process Map lookup,
   // so resolving `agentId` here adds no DB round-trip. No double-slide risk: the
   // action handlers below only write knowledge/combat/`updatedAt`, never the TTL
   // columns. Anonymous/legacy sessions with no bot config simply skip the slide.
-  const config = npcSimulation.getOpenClawBotConfig(sessionId);
+  const config = npcSimulation.getAgentBotConfig(sessionId);
   if (config) {
     void extendSessionTtl(config.agentId);
   }
@@ -2185,10 +2185,10 @@ agentGatewayRoutes.post('/:sessionId/chat', async (c) => {
         const services = buildRuntimeServices(db);
 
         // Look up the bot via its resolved agentId (e.g. milady:xxx), NOT npcId
-        const botConfig = npcSimulation.getOpenClawBotConfig(sessionId);
+        const botConfig = npcSimulation.getAgentBotConfig(sessionId);
         const bot = botConfig
-          ? await db.query.openclawBots.findFirst({
-              where: eq(openclawBots.agentId, botConfig.agentId),
+          ? await db.query.agentBots.findFirst({
+              where: eq(agentBots.agentId, botConfig.agentId),
             })
           : null;
 
@@ -2220,7 +2220,7 @@ agentGatewayRoutes.post('/:sessionId/chat', async (c) => {
           // Raw sessionId is folded into ElizaOS room derivation (not stored as a
           // recoverable bearer column), so keying it raw re-opens no recoverable
           // leak while preserving chat-memory continuity across deploys.
-          userId: npcSimulation.getOpenClawBotConfig(sessionId)?.agentId ?? sessionId,
+          userId: npcSimulation.getAgentBotConfig(sessionId)?.agentId ?? sessionId,
           services,
           avatarData: bot ? {
             id: bot.id,
@@ -2239,7 +2239,7 @@ agentGatewayRoutes.post('/:sessionId/chat', async (c) => {
           // Raw sessionId is folded into ElizaOS room derivation (not stored as a
           // recoverable bearer column), so keying it raw re-opens no recoverable
           // leak while preserving chat-memory continuity across deploys.
-          userId: npcSimulation.getOpenClawBotConfig(sessionId)?.agentId ?? sessionId,
+          userId: npcSimulation.getAgentBotConfig(sessionId)?.agentId ?? sessionId,
           roomId: `agent-gateway-${npcId}`,
           platform: 'clawville-gateway',
           dynamicContext: `You are ${npc.name} in the ClawVille world. Respond in character.`,
@@ -2254,7 +2254,7 @@ agentGatewayRoutes.post('/:sessionId/chat', async (c) => {
 
   void logEventFromContext(c, {
     eventType: 'agent.chat.turn',
-    agentId: npcSimulation.getOpenClawBotConfig(sessionId)?.agentId ?? sessionDigest(sessionId),
+    agentId: npcSimulation.getAgentBotConfig(sessionId)?.agentId ?? sessionDigest(sessionId),
     sessionId: sessionDigest(sessionId),
     payload: {
       chatType: 'character',
@@ -2322,11 +2322,11 @@ agentGatewayRoutes.post('/:sessionId/visit-building', async (c) => {
   // quest validator's `(user_id = X OR avatar_id = Y)` check (audit-fix
   // 2026-04-29).
   let visitUserId: string | null = null;
-  const botConfig = npcSimulation.getOpenClawBotConfig(sessionId);
+  const botConfig = npcSimulation.getAgentBotConfig(sessionId);
   if (botConfig) {
     try {
-      const bot = await db.query.openclawBots.findFirst({
-        where: eq(openclawBots.agentId, botConfig.agentId),
+      const bot = await db.query.agentBots.findFirst({
+        where: eq(agentBots.agentId, botConfig.agentId),
       });
       if (bot) {
         visitUserId = bot.userId ?? null;
@@ -2376,16 +2376,16 @@ agentGatewayRoutes.post('/:sessionId/visit-building', async (c) => {
   if (botConfig && knowledgeGained) {
     (async () => {
       try {
-        const bot = await db.query.openclawBots.findFirst({
-          where: eq(openclawBots.agentId, botConfig.agentId),
+        const bot = await db.query.agentBots.findFirst({
+          where: eq(agentBots.agentId, botConfig.agentId),
         });
         if (bot) {
           const current: string[] = bot.knowledge ?? [];
           if (!current.includes(knowledgeGained!)) {
-            await db.update(openclawBots).set({
+            await db.update(agentBots).set({
               knowledge: [...current, knowledgeGained!],
               updatedAt: new Date(),
-            }).where(eq(openclawBots.id, bot.id));
+            }).where(eq(agentBots.id, bot.id));
           }
         }
       } catch (err) {
@@ -2516,7 +2516,7 @@ agentGatewayRoutes.post('/:sessionId/building/:buildingId/chat', async (c) => {
       // Raw sessionId is folded into ElizaOS room derivation (not stored as a
       // recoverable bearer column), so keying it raw re-opens no recoverable
       // leak while preserving chat-memory continuity across deploys.
-      userId: npcSimulation.getOpenClawBotConfig(sessionId)?.agentId ?? sessionId,
+      userId: npcSimulation.getAgentBotConfig(sessionId)?.agentId ?? sessionId,
       roomId,
       platform: 'clawville-agent-gateway',
       dynamicContext,
@@ -2533,11 +2533,11 @@ agentGatewayRoutes.post('/:sessionId/building/:buildingId/chat', async (c) => {
   // Persist the teaching into the bot's learned-knowledge ledger
   let tokenAwarded = 0;
   let knowledgePersisted = false;
-  const botConfig = npcSimulation.getOpenClawBotConfig(sessionId);
+  const botConfig = npcSimulation.getAgentBotConfig(sessionId);
   if (botConfig) {
     try {
-      const bot = await db.query.openclawBots.findFirst({
-        where: eq(openclawBots.agentId, botConfig.agentId),
+      const bot = await db.query.agentBots.findFirst({
+        where: eq(agentBots.agentId, botConfig.agentId),
       });
       if (bot) {
         // Summarise the exchange into a single knowledge line so we don't
@@ -2546,9 +2546,9 @@ agentGatewayRoutes.post('/:sessionId/building/:buildingId/chat', async (c) => {
         const current: string[] = bot.knowledge ?? [];
         if (!current.includes(entry)) {
           await db
-            .update(openclawBots)
+            .update(agentBots)
             .set({ knowledge: [...current, entry], updatedAt: new Date() })
-            .where(eq(openclawBots.id, bot.id));
+            .where(eq(agentBots.id, bot.id));
           knowledgePersisted = true;
         }
         // Award +1 ClawToken for successful teaching turn.
@@ -2589,8 +2589,8 @@ agentGatewayRoutes.post('/:sessionId/building/:buildingId/chat', async (c) => {
   if (botConfig && responseContent.trim().length > 0) {
     void (async () => {
       try {
-        const learnBot = await db.query.openclawBots.findFirst({
-          where: eq(openclawBots.agentId, botConfig.agentId),
+        const learnBot = await db.query.agentBots.findFirst({
+          where: eq(agentBots.agentId, botConfig.agentId),
           columns: { userId: true },
         });
         if (!learnBot?.userId) return;
@@ -2702,12 +2702,12 @@ agentGatewayRoutes.get('/:sessionId/knowledge', async (c) => {
     return c.json({ error: 'Invalid or expired agent session' }, 404);
   }
 
-  const botConfig = npcSimulation.getOpenClawBotConfig(sessionId);
+  const botConfig = npcSimulation.getAgentBotConfig(sessionId);
   if (!botConfig) return c.json({ knowledge: [] });
 
   try {
-    const bot = await db.query.openclawBots.findFirst({
-      where: eq(openclawBots.agentId, botConfig.agentId),
+    const bot = await db.query.agentBots.findFirst({
+      where: eq(agentBots.agentId, botConfig.agentId),
     });
     return c.json({ knowledge: bot?.knowledge ?? [] });
   } catch {
@@ -2724,14 +2724,14 @@ agentGatewayRoutes.get('/:sessionId/stats', async (c) => {
   if (!resolved) return c.json({ error: 'Invalid or expired agent session' }, 404);
 
   const { npcId, npc } = resolved;
-  const botConfig = npcSimulation.getOpenClawBotConfig(sessionId);
+  const botConfig = npcSimulation.getAgentBotConfig(sessionId);
 
   let totalMessages = 0;
   let knowledgeLearned: string[] = [];
   if (botConfig) {
     try {
-      const bot = await db.query.openclawBots.findFirst({
-        where: eq(openclawBots.agentId, botConfig.agentId),
+      const bot = await db.query.agentBots.findFirst({
+        where: eq(agentBots.agentId, botConfig.agentId),
       });
       if (bot) {
         totalMessages = bot.totalMessages;
@@ -2800,9 +2800,9 @@ agentGatewayRoutes.get('/:sessionId/events/replay', async (c) => {
   if (!resolved) return c.json({ error: 'Invalid or expired agent session' }, 404);
 
   // Resolve the agent identity the SAME way the settle sites key their rows
-  // (getOpenClawBotConfig(sessionId).agentId == cove subject.agentId). An
+  // (getAgentBotConfig(sessionId).agentId == cove subject.agentId). An
   // anonymous/legacy session with no bot config has no agent-scoped history.
-  const botConfig = npcSimulation.getOpenClawBotConfig(sessionId);
+  const botConfig = npcSimulation.getAgentBotConfig(sessionId);
   const agentId = botConfig?.agentId ?? null;
   if (!agentId) return c.json({ events: [], nextCursor: null });
 
@@ -2855,11 +2855,11 @@ agentGatewayRoutes.get('/:sessionId/owned-skills', async (c) => {
   const resolved = await resolveSession(sessionId);
   if (!resolved) return c.json({ error: 'Invalid or expired agent session' }, 404);
 
-  const botConfig = npcSimulation.getOpenClawBotConfig(sessionId);
+  const botConfig = npcSimulation.getAgentBotConfig(sessionId);
   if (!botConfig) return c.json({ ownedSkills: [] });
 
-  const bot = await db.query.openclawBots.findFirst({
-    where: eq(openclawBots.agentId, botConfig.agentId),
+  const bot = await db.query.agentBots.findFirst({
+    where: eq(agentBots.agentId, botConfig.agentId),
     columns: { userId: true },
   });
   if (!bot?.userId) return c.json({ ownedSkills: [] });
@@ -2921,11 +2921,11 @@ agentGatewayRoutes.get('/:sessionId/skills/:buildingId/tools.json', async (c) =>
   const resolved = await resolveSession(sessionId);
   if (!resolved) return c.json({ error: 'Invalid or expired agent session' }, 404);
 
-  const botConfig = npcSimulation.getOpenClawBotConfig(sessionId);
+  const botConfig = npcSimulation.getAgentBotConfig(sessionId);
   if (!botConfig) return c.json({ error: 'No agent config for session' }, 404);
 
-  const bot = await db.query.openclawBots.findFirst({
-    where: eq(openclawBots.agentId, botConfig.agentId),
+  const bot = await db.query.agentBots.findFirst({
+    where: eq(agentBots.agentId, botConfig.agentId),
     columns: { userId: true },
   });
   if (!bot?.userId) return c.json({ error: 'Agent not linked to a user' }, 404);
@@ -3012,11 +3012,11 @@ agentGatewayRoutes.get('/:sessionId/skills/:buildingId/skill-memory', async (c) 
   if (!resolveBuildingCenter(buildingId)) {
     return c.json({ error: `Unknown building: ${buildingId}` }, 400);
   }
-  const botConfig = npcSimulation.getOpenClawBotConfig(sessionId);
+  const botConfig = npcSimulation.getAgentBotConfig(sessionId);
   if (!botConfig) return c.json({ error: 'No agent config for session' }, 404);
 
-  const bot = await db.query.openclawBots.findFirst({
-    where: eq(openclawBots.agentId, botConfig.agentId),
+  const bot = await db.query.agentBots.findFirst({
+    where: eq(agentBots.agentId, botConfig.agentId),
     columns: { userId: true },
   });
   if (!bot?.userId) return c.json({ error: 'Agent not linked to a user' }, 404);
@@ -3056,12 +3056,12 @@ agentGatewayRoutes.post('/:sessionId/skills/:buildingId/tools/:toolName', async 
   const resolved = await resolveSession(sessionId);
   if (!resolved) return c.json({ error: 'Invalid or expired agent session' }, 404);
 
-  const botConfig = npcSimulation.getOpenClawBotConfig(sessionId);
+  const botConfig = npcSimulation.getAgentBotConfig(sessionId);
   if (!botConfig) return c.json({ error: 'No agent config for session' }, 404);
 
   // Ownership check (same as tools.json + skill.md)
-  const bot = await db.query.openclawBots.findFirst({
-    where: eq(openclawBots.agentId, botConfig.agentId),
+  const bot = await db.query.agentBots.findFirst({
+    where: eq(agentBots.agentId, botConfig.agentId),
     columns: { userId: true },
   });
   if (!bot?.userId) return c.json({ error: 'Agent not linked to a user' }, 404);
@@ -3138,12 +3138,12 @@ agentGatewayRoutes.get('/:sessionId/skills/:buildingId/skill.md', async (c) => {
   const resolved = await resolveSession(sessionId);
   if (!resolved) return c.json({ error: 'Invalid or expired agent session' }, 404);
 
-  const botConfig = npcSimulation.getOpenClawBotConfig(sessionId);
+  const botConfig = npcSimulation.getAgentBotConfig(sessionId);
   if (!botConfig) return c.json({ error: 'No agent config for session' }, 404);
 
   // Resolve the avatar linked to this agent (via openclaw_bots.userId → avatars.userId)
-  const bot = await db.query.openclawBots.findFirst({
-    where: eq(openclawBots.agentId, botConfig.agentId),
+  const bot = await db.query.agentBots.findFirst({
+    where: eq(agentBots.agentId, botConfig.agentId),
     columns: { userId: true },
   });
   if (!bot?.userId) return c.json({ error: 'Agent not linked to a user' }, 404);
@@ -3252,7 +3252,7 @@ agentGatewayRoutes.get('/:sessionId/events', async (c) => {
   const replayCursor = parseCursorValue(
     c.req.header('Last-Event-ID') ?? c.req.query('after'),
   );
-  const replayAgentId = npcSimulation.getOpenClawBotConfig(sessionId)?.agentId ?? null;
+  const replayAgentId = npcSimulation.getAgentBotConfig(sessionId)?.agentId ?? null;
   // Gate ONLY the catch-up with the per-IP limiter — and consume a token ONLY
   // when a catch-up is actually requested (agent + cursor present), so a normal
   // fresh connect never burns the budget. Over budget ⇒ catch-up is skipped and
@@ -3313,7 +3313,7 @@ agentGatewayRoutes.get('/:sessionId/events', async (c) => {
       // Derived from the live config's agentId (the same TTL map the world-side
       // suppression reads); falls back to the perception field when present so
       // the two surfaces agree by construction.
-      const tickConfig = npcSimulation.getOpenClawBotConfig(sessionId);
+      const tickConfig = npcSimulation.getAgentBotConfig(sessionId);
       const humanControlled = tickConfig
         ? npcSimulation.isAgentHumanControlled(tickConfig.agentId)
         : (perception?.humanControlled ?? false);
@@ -4303,11 +4303,11 @@ agentGatewayRoutes.get('/:sessionId/cove/blackjack/skill-memory', async (c) => {
   if (!(await validateLiveAgentSession(sessionId))) {
     return c.json({ error: 'Invalid or expired agent session' }, 404);
   }
-  const botConfig = npcSimulation.getOpenClawBotConfig(sessionId);
+  const botConfig = npcSimulation.getAgentBotConfig(sessionId);
   if (!botConfig) return c.json({ error: 'No agent config for session' }, 404);
 
-  const bot = await db.query.openclawBots.findFirst({
-    where: eq(openclawBots.agentId, botConfig.agentId),
+  const bot = await db.query.agentBots.findFirst({
+    where: eq(agentBots.agentId, botConfig.agentId),
     columns: { userId: true },
   });
   if (!bot?.userId) return c.json({ error: 'Agent not linked to a user' }, 404);
@@ -4414,7 +4414,7 @@ agentGatewayRoutes.post('/:sessionId/cove/blackjack/:tool', async (c) => {
 
   void logEventFromContext(c, {
     eventType: 'agent.tool.invoked',
-    agentId: npcSimulation.getOpenClawBotConfig(sessionId)?.agentId ?? sessionDigest(sessionId),
+    agentId: npcSimulation.getAgentBotConfig(sessionId)?.agentId ?? sessionDigest(sessionId),
     sessionId: sessionDigest(sessionId),
     payload: { toolName: tool, ok: res.ok, status: res.status, via: 'cove-blackjack' },
   });
@@ -4715,7 +4715,7 @@ agentGatewayRoutes.post('/:sessionId/cove/poker/:tool', async (c) => {
 
   void logEventFromContext(c, {
     eventType: 'agent.tool.invoked',
-    agentId: npcSimulation.getOpenClawBotConfig(sessionId)?.agentId ?? sessionDigest(sessionId),
+    agentId: npcSimulation.getAgentBotConfig(sessionId)?.agentId ?? sessionDigest(sessionId),
     sessionId: sessionDigest(sessionId),
     payload: { toolName: tool, ok: res.ok, status: res.status, via: 'cove-poker' },
   });

@@ -10,7 +10,7 @@ export * from './constants/building-types';
 export * from './constants/building-tools';
 export * from './constants/npc-definitions';
 export * from './constants/npc-activities';
-export * from './types/openclaw';
+export * from './types/agent-substrate';
 export * from './types/arena';
 export * from './types/research';
 export * from './types/claw';

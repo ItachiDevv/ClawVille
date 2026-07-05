@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { eq, and, sql, isNull, or, gt } from 'drizzle-orm';
-import { db, avatars, avatarInventory, agents, openclawBots, users } from '@clawville/database';
+import { db, avatars, avatarInventory, agents, agentBots, users } from '@clawville/database';
 import { getBookById, getBooksForBuilding, KNOWLEDGE_BOOKS, BUILDING_MILADY_SKILLS } from '@clawville/shared';
 import { miladyGateway } from '../services/milady-gateway';
 import { debitClawTokens } from '../services/claw-token-ledger';
@@ -317,16 +317,16 @@ itemRoutes.post('/learn', requireAuthOrAgentSession, async (c) => {
     void (async () => {
       try {
         const activeBots = await db
-          .select({ agentId: openclawBots.agentId })
-          .from(openclawBots)
+          .select({ agentId: agentBots.agentId })
+          .from(agentBots)
           .where(
             and(
-              eq(openclawBots.userId, userId),
+              eq(agentBots.userId, userId),
               or(
-                isNull(openclawBots.sessionExpiresAt),
-                gt(openclawBots.sessionExpiresAt, sql`now()`),
+                isNull(agentBots.sessionExpiresAt),
+                gt(agentBots.sessionExpiresAt, sql`now()`),
               ),
-              isNull(openclawBots.sessionSweptAt),
+              isNull(agentBots.sessionSweptAt),
             ),
           );
         // D7 slice-1: durable, agent-scoped, BEARER-FREE knowledge event so a

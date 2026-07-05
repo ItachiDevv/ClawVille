@@ -33,7 +33,7 @@ import type { TeacherTurnInput, TeacherTurnResult, BuildingArrivalInput } from '
 
 type Sim = {
   npcs: Map<string, any>;
-  openClawBots: Map<string, any>;
+  agentBotSessions: Map<string, any>;
   npcOverrides: Map<string, string>;
   pendingEvents: any[];
   initNpcs: () => void;
@@ -83,7 +83,7 @@ function registerBody(bodyId: string, sessionId: string, x: number, y: number) {
   const sim = asSim();
   const npc = makeBody(bodyId, x, y);
   sim.npcs.set(bodyId, npc);
-  sim.openClawBots.set(sessionId, {
+  sim.agentBotSessions.set(sessionId, {
     config: { agentId: bodyId, mode: 'avatar' },
     client: { getProtocol: () => 'nanoclaw' },
   });
@@ -110,7 +110,7 @@ const REAL_ARRIVAL_SETTLE = asDriver().arrivalSettle;
 beforeEach(() => {
   (npcSimulation as unknown as { stop: () => void }).stop();
   asSim().initNpcs();
-  asSim().openClawBots.clear();
+  asSim().agentBotSessions.clear();
   asSim().npcOverrides.clear();
   asSim().pendingEvents = [];
   for (const id of agentAutonomyDriver.getHouseAgentIds()) {

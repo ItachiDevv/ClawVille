@@ -28,7 +28,7 @@ import { BUILDING_OPENCLAW_THEMES } from '@clawville/shared';
 
 type Sim = {
   npcs: Map<string, any>;
-  openClawBots: Map<string, any>;
+  agentBotSessions: Map<string, any>;
   npcOverrides: Map<string, string>;
   pendingEvents: any[];
   initNpcs: () => void;
@@ -84,7 +84,7 @@ function registerBody(bodyId: string, sessionId: string, protocol: string, x: nu
   const sim = asSim();
   const npc = makeBody(bodyId, x, y);
   sim.npcs.set(bodyId, npc);
-  sim.openClawBots.set(sessionId, {
+  sim.agentBotSessions.set(sessionId, {
     config: { agentId: bodyId, mode: 'avatar' },
     client: { getProtocol: () => protocol },
   });
@@ -101,7 +101,7 @@ beforeEach(() => {
   // `bun test` process, so this isolation is mandatory, not defensive.
   (npcSimulation as unknown as { stop: () => void }).stop();
   sim.initNpcs();
-  sim.openClawBots.clear();
+  sim.agentBotSessions.clear();
   sim.npcOverrides.clear();
   sim.pendingEvents = [];
   // Reset the shared autonomy-driver registry so a leaked entry from a prior

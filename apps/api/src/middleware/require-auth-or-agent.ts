@@ -25,7 +25,7 @@
 import { createMiddleware } from 'hono/factory';
 import { HTTPException } from 'hono/http-exception';
 import { eq, and } from 'drizzle-orm';
-import { db, avatars, openclawBots } from '@clawville/database';
+import { db, avatars, agentBots } from '@clawville/database';
 import { npcSimulation } from '../services/npc-simulation';
 import { sha256Hex } from '../services/session-digest';
 import type { AppContext } from '../types';
@@ -77,8 +77,8 @@ export const AGENT_SESSION_HEADER = 'X-Clawville-Agent-Session';
 
 /** The live `openclaw_bots` row + in-memory config for a validated session. */
 export interface LiveAgentSession {
-  config: NonNullable<ReturnType<typeof npcSimulation.getOpenClawBotConfig>>;
-  bot: NonNullable<Awaited<ReturnType<typeof db.query.openclawBots.findFirst>>>;
+  config: NonNullable<ReturnType<typeof npcSimulation.getAgentBotConfig>>;
+  bot: NonNullable<Awaited<ReturnType<typeof db.query.agentBots.findFirst>>>;
 }
 
 /**
@@ -109,7 +109,7 @@ export interface LiveAgentSession {
  * bearer → find by `session_key_hash` → re-validate the SAME fail-closed TTL →
  * rebuild the in-memory session/client). The restore obeys the identical
  * TTL/ledger rules below, so it can never resurrect an expired row or grant
- * liveness this gate would refuse — see `openclaw-session-restore.ts`. The
+ * liveness this gate would refuse — see `agent-session-restore.ts`. The
  * restore re-registers under the incoming id, so the re-fetch below sees it as a
  * normal live session.
  */
@@ -123,22 +123,22 @@ export async function validateLiveAgentSession(
     // row). Dynamic import to avoid a static import cycle
     // (restore → npc-simulation → ... → this middleware).
     const { restoreAgentSessionFromRow } = await import(
-      '../services/openclaw-session-restore'
+      '../services/agent-session-restore'
     );
     return restoreAgentSessionFromRow(sessionId);
   }
 
-  const config = npcSimulation.getOpenClawBotConfig(sessionId);
+  const config = npcSimulation.getAgentBotConfig(sessionId);
   if (!config) return null;
 
-  const bot = await db.query.openclawBots.findFirst({
-    where: eq(openclawBots.agentId, config.agentId),
+  const bot = await db.query.agentBots.findFirst({
+    where: eq(agentBots.agentId, config.agentId),
   });
   if (!bot) return null;
 
   const expiresAt = bot.sessionExpiresAt;
   if (!expiresAt || expiresAt.getTime() <= Date.now()) {
-    npcSimulation.unregisterOpenClaw(sessionId);
+    npcSimulation.unregisterAgentBot(sessionId);
     return null;
   }
 
@@ -158,7 +158,7 @@ export async function validateLiveAgentSession(
   //
   // Null-hash carve-out (Codex round-2 fixer pass, 2026-06-12): we reject ONLY
   // when the stored hash is PRESENT and mismatches — NOT when it is null. The
-  // partner register/patch path (partner-hatcher.ts) calls `registerOpenClaw`
+  // partner register/patch path (partner-hatcher.ts) calls `registerAgentBot`
   // (Map-live) BEFORE persisting `session_key_hash`, and that persist is
   // EXPLICITLY non-fatal (try/catch, comment "won't survive a restart"). A strict
   // `!== ` would turn that documented-non-fatal failure FATAL — a freshly-minted
@@ -173,7 +173,7 @@ export async function validateLiveAgentSession(
   // the TTL gate rather than lock it out. The rotation attack is fully covered by
   // `present && mismatch` because rotation always writes the new bearer's hash.
   if (bot.sessionKeyHash && bot.sessionKeyHash !== sha256Hex(sessionId)) {
-    npcSimulation.unregisterOpenClaw(sessionId);
+    npcSimulation.unregisterAgentBot(sessionId);
     return null;
   }
 
@@ -297,7 +297,7 @@ export async function resolveAgentSession(
       // userId still null) is legitimately non-ledger but must stay alive so the
       // agent can keep perceiving/chatting; don't evict it.
       if (boundUserId && userId && boundUserId !== userId) {
-        npcSimulation.unregisterOpenClaw(sessionId);
+        npcSimulation.unregisterAgentBot(sessionId);
         return null;
       }
     }

@@ -2,7 +2,7 @@
  * Hermes host-it-for-me COGNITION-WIRE probe (D7, magic-link onboarding).
  *
  * DETERMINISTIC proof of the piece the unit tests do NOT cover: that the REAL
- * `OpenClawClient.chatHermesLocal` actually POSTs an OpenAI-compat body to the
+ * `AgentSubstrateClient.chatHermesLocal` actually POSTs an OpenAI-compat body to the
  * hardcoded local runtime (localhost:8642), parses the reply, and fails soft
  * when the runtime is down. (The unit tests prove the identityType→'hermes-local'
  * DERIVATION; this proves the WIRE.)
@@ -29,7 +29,7 @@ process.env.CLOUDFLARE_WORKER_URL ??= 'https://example.invalid';
 process.env.CLOUDFLARE_WORKER_BEARER ??= 'x';
 process.env.PARTNER_PUBKEYS ??= '{}';
 
-const { OpenClawClient } = await import('../../src/services/openclaw-client');
+const { AgentSubstrateClient } = await import('../../src/services/agent-substrate-client');
 
 const MOCK = 'apps/api/scripts/agent-connect/mock-hermes-server.ts';
 const MARKER = 'HERMES_MOCK_REPLY_V1';
@@ -45,7 +45,7 @@ function makeClient() {
   // Construct a 'hermes-local' client directly. gatewayUrl is IGNORED on this
   // path (chatHermesLocal hits the hardcoded HERMES_LOCAL_GATEWAY_URL), but the
   // constructor requires it.
-  return new OpenClawClient({
+  return new AgentSubstrateClient({
     agentId: 'probe-hermes-001',
     sessionId: 'probe-sess',
     gatewayUrl: 'http://localhost:0',
