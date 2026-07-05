@@ -1110,7 +1110,14 @@ process.on('uncaughtException', (err) => {
     // buy-ins. Without this call a pod crash mid-tournament strands every entrant's
     // buy-in in `prize_pool_ct` PERMANENTLY (no sweeper path, no abort-notify path,
     // no boot path would ever refund it). Idempotent (FOR UPDATE + per-entrant
-    // `status <> 'refunded'` guard) so re-boot never double-refunds.
+    // `status <> 'refunded'` guard) so re-boot never double-refunds. A fully-placed
+    // crash-orphan is SETTLED (real curve) instead of void-refunded; a malformed one
+    // is left FROZEN + alerted for operator intervention (see recoverOrphanedTournaments).
+    // ASSUMPTION: single-process recovery — the `this.running` skip that prevents
+    // stomping a live tournament is a PROCESS-LOCAL singleton, correct only under the
+    // current single-replica Coolify deploy (one API container per box). If this ever
+    // horizontally scales, a booting pod could void/settle a tournament another replica
+    // is actively running; that would need a DB-level owner lease, not the in-mem Map.
     await tournamentManager.recoverOrphanedTournaments();
     await activityQueueService.hydrateFromDb();
     // Chunk #10 — hydrate the bot avatarId pool BEFORE the matcher starts

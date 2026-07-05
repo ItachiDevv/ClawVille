@@ -61,6 +61,7 @@ import {
 import * as ledgerModule from '../claw-token-ledger';
 import { logEvent, ACTIVITY_EVENT_TYPES } from '../event-logger';
 import type { ActivityMatchPlacedPayload } from '../event-logger';
+import { alertError } from '../alert-error';
 import type {
   creditClawTokens as CreditFn,
   debitClawTokens as DebitFn,
@@ -1843,6 +1844,19 @@ export class TournamentManager {
         throw new TournamentError('tournament_not_finished', 409);
       }
 
+      // CRASH-LOUD placement-integrity guard (Codex gate 2026-07-04) — BEFORE any
+      // credit. The non-refunded entrants MUST form EXACTLY the permutation 1..N
+      // (unique placements, exactly one champion at 1, no gaps). Nothing in the
+      // schema forbade a duplicate placement, and the fold-remainder math AMPLIFIES
+      // that hole into a MINT: the payout loop credits per-entrant while `distributed`
+      // is Set-keyed over placements, so a duplicated placement is paid twice but
+      // counted once, inflating the fold-into-1st remainder ([1,1,2] / pool 300 /
+      // 50-30-20 → 210+210+90 = 510 paid = 210 CT minted). On violation: alert +
+      // throw (the enclosing tx rolls back → NOTHING credited). The DB-level
+      // `poker_entrants_tournament_placement_unique` partial index is the primary
+      // defense; this is defense-in-depth if it is ever absent.
+      await this.assertPlacementsPermutation(placed, tournamentId);
+
       const pool = BigInt(t.prize_pool_ct);
       const rakeBps = BigInt(t.rake_bps);
       const rake = (pool * rakeBps) / 10000n;
@@ -1986,6 +2000,14 @@ export class TournamentManager {
           // drive from a cold pod. A still-running tournament always has ≥1 live seat
           // with placement NULL, so this branch only fires on a genuinely finished one.
           if (await this.isTournamentFullyPlaced(row.id)) {
+            // If the placements are MALFORMED (not the permutation 1..N),
+            // settleTournament's crash-loud guard throws `tournament_placements_malformed`
+            // (after alerting) and the tx rolls back — nothing credited. We deliberately
+            // DO NOT fall through to cancel+refund here (that would void a possibly-
+            // decided result); the tournament is left FROZEN (still 'running', unsettled)
+            // for operator intervention, and the catch below logs it loudly. The
+            // per-boot re-attempt is a no-op-that-throws (credits nothing), so it stays
+            // safe + loud until an operator fixes the row.
             await this.settleTournament(row.id);
             recovered += 1;
           } else {
@@ -1995,7 +2017,7 @@ export class TournamentManager {
           }
         } catch (err) {
           console.error(
-            `[poker-mtt] orphan tournament recovery failed for ${row.id}:`,
+            `[poker-mtt] orphan tournament recovery failed for ${row.id} (left FROZEN — neither settled nor refunded):`,
             err,
           );
         }
@@ -2004,6 +2026,42 @@ export class TournamentManager {
       console.error('[poker-mtt] orphan tournament recovery query failed:', err);
     }
     return { recovered, refundedCount };
+  }
+
+  /**
+   * CRASH-LOUD guard: assert the given placed entrants' placements form EXACTLY the
+   * permutation 1..N (unique, no gaps, exactly one champion at placement 1). This is
+   * the precondition the prize math relies on for conservation — a duplicate or gap
+   * would MINT or mispay CT under the per-entrant payout loop. On violation: fire the
+   * critical alert-error hook (Telegram if configured, else console) and throw
+   * `tournament_placements_malformed` (500) so the enclosing settle transaction rolls
+   * back and NOTHING is credited. Never mutates state.
+   */
+  private async assertPlacementsPermutation(
+    placed: Array<{ placement: number | null }>,
+    tournamentId: string,
+  ): Promise<void> {
+    const placements = placed
+      .map((e) => e.placement)
+      .filter((p): p is number => p != null)
+      .sort((a, b) => a - b);
+    const n = placements.length;
+    let ok = n > 0;
+    for (let i = 0; i < n; i++) {
+      if (placements[i] !== i + 1) {
+        ok = false;
+        break;
+      }
+    }
+    if (!ok) {
+      await alertError({
+        severity: 'critical',
+        source: 'poker-mtt/settleTournament',
+        message: `tournament_placements_malformed: tournament ${tournamentId} non-refunded placements are not the permutation 1..${n} — settle FROZEN, credited nothing`,
+        context: { tournamentId, placements },
+      });
+      throw new TournamentError('tournament_placements_malformed', 500);
+    }
   }
 
   /**

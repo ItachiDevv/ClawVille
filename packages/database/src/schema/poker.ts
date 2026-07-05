@@ -258,6 +258,15 @@ export const pokerTournamentEntrants = pgTable(
       table.tournamentId,
       table.avatarId,
     ),
+    // Placements MUST be unique within a tournament (the permutation 1..N). A
+    // duplicate would mint/mispay CT at settle (the payout loop credits per entrant).
+    // Partial: NULL placements (still-alive/unseated entrants) are exempt. This is the
+    // DB-level primary defense; settleTournament also asserts the full permutation.
+    // Additive migration: migrations-manual/2026-07-04_poker_entrant_placement_unique.sql
+    // (never db:push). Set 2026-07-04 (Codex gate).
+    tournamentPlacementUnique: uniqueIndex('poker_entrants_tournament_placement_unique')
+      .on(table.tournamentId, table.placement)
+      .where(sql`placement IS NOT NULL`),
     tournamentIdx: index('poker_entrants_tournament_idx').on(table.tournamentId),
     subjectTypeCheck: check(
       'poker_entrants_subject_type_check',

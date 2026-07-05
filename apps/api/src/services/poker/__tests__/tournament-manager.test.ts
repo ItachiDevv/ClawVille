@@ -1113,6 +1113,56 @@ describe('TournamentManager — settle conservation + orphan-recovery money safe
     expect(ledger.totalCredited('poker_mtt_prize')).toBe(0);
     expect(db.tournaments.get(tid)!.status).toBe('cancelled');
   });
+
+  it('(guard) MALFORMED placements [1,1,2] → settleTournament throws, ZERO ledger writes (no mint)', async () => {
+    const { tm } = buildManager(db, ledger, clock);
+    const tid = randomUUID();
+    // Duplicate champion — NOT the permutation 1..N. Pre-guard this minted CT
+    // (payout loop pays per entrant; Set-keyed distributed inflated the 1st-fold).
+    seedFinished(
+      tid,
+      [
+        { avatarId: 'av-1', placement: 1 },
+        { avatarId: 'av-2', placement: 1 },
+        { avatarId: 'av-3', placement: 2 },
+      ],
+      { pool: '300' },
+    );
+
+    let threw: string | null = null;
+    try {
+      await tm.settleTournament(tid);
+    } catch (e) {
+      threw = (e as Error).message;
+    }
+    expect(threw).toBe('tournament_placements_malformed');
+    // Guard fires BEFORE any credit → nothing minted, tournament not flipped.
+    expect(ledger.totalCredited('poker_mtt_prize')).toBe(0);
+    expect(db.tournaments.get(tid)!.status).toBe('running');
+    expect(db.tournaments.get(tid)!.settled_at).toBeFalsy();
+  });
+
+  it('(guard) recovery on a MALFORMED fully-placed tournament FREEZES it — no settle, no refund', async () => {
+    const { tm } = buildManager(db, ledger, clock);
+    const tid = randomUUID();
+    seedFinished(
+      tid,
+      [
+        { avatarId: 'av-1', placement: 1 },
+        { avatarId: 'av-2', placement: 1 }, // duplicate → malformed, but fully placed
+      ],
+      { pool: '200' },
+    );
+
+    const out = await tm.recoverOrphanedTournaments();
+    // Neither settled (would MINT) nor refunded (would VOID a possibly-decided result).
+    expect(out.refundedCount).toBe(0);
+    expect(ledger.totalCredited('poker_mtt_prize')).toBe(0);
+    expect(ledger.totalCredited('poker_mtt_refund')).toBe(0);
+    expect(db.tournaments.get(tid)!.status).toBe('running'); // frozen, untouched
+    expect(db.tournaments.get(tid)!.settled_at).toBeFalsy();
+    expect(db.tournaments.get(tid)!.cancelled_at).toBeFalsy();
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
