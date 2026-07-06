@@ -83,10 +83,14 @@ function localProvider(v: string | undefined): 'openai' | 'ollama' {
 
 export function buildEndpointsFromEnv(env: Env = process.env): InferenceEndpoint[] {
   const cloudTimeout = numEnv(env.INFERENCE_CLOUD_TIMEOUT_MS, 60_000);
-  // Local default 12s (< the autonomy driver's 15s decide() budget) so a hung box
-  // fails over WITHIN that window. Safe because local endpoints use the ollama wire
-  // with think:false (~2s decisions), not the 6–50s reasoning path.
-  const localTimeout = numEnv(env.INFERENCE_LOCAL_TIMEOUT_MS, 12_000);
+  // Local default 60s. It MUST outlast a cold model-load (johns-pc restart re-warms
+  // the 14b in ~8-10s; a .223.14 failover cold-loads the 27b in ~20-25s): Ollama
+  // CANCELS an in-flight load when the client aborts, so a shorter timeout kills the
+  // load before it finishes → the box never warms → the breaker re-opens forever
+  // (observed with a 12s cutoff). 60s lets the load complete + cache, so the box
+  // self-heals. A DOWN box still fails over fast (ECONNREFUSED, not a timeout), and
+  // the autonomy driver's own 15s decide() timeout bounds user-facing latency.
+  const localTimeout = numEnv(env.INFERENCE_LOCAL_TIMEOUT_MS, 60_000);
 
   const endpoints: InferenceEndpoint[] = [];
 
