@@ -41,6 +41,18 @@ export interface InferenceEndpoint {
   /** Strip `<think>…</think>` reasoning blocks from responses (qwen3 et al.).
    *  Defaults to true for `kind:'local'`, false for cloud. */
   stripThinkTags?: boolean;
+  /**
+   * Wire protocol.
+   *   'openai' → POST `{baseUrl}/chat/completions` (OpenAI chat-completions).
+   *   'ollama' → POST `{baseUrl−/v1}/api/chat` with `think:false`, which DISABLES
+   *              qwen3's reasoning trace. This is load-bearing for the fleet: on a
+   *              complex decide() prompt qwen3 spends its whole token budget inside
+   *              `<think>` (verified >50s, well past the driver's 15s timeout → the
+   *              decision comes back empty). With `think:false` the same box answers
+   *              a valid `[ACTION:]` in ~2s.
+   * Defaults to 'openai'. Local Ollama endpoints default to 'ollama' in config.
+   */
+  provider?: 'openai' | 'ollama';
 }
 
 export interface InferenceMessage {
@@ -104,6 +116,11 @@ interface OpenAIChatResponse {
     message?: { content?: string };
     finish_reason?: string;
   }>;
+}
+
+interface OllamaChatResponse {
+  message?: { content?: string };
+  done_reason?: string;
 }
 
 export class InferenceRouter {
@@ -226,6 +243,12 @@ export class InferenceRouter {
   }
 
   private async callEndpoint(ep: InferenceEndpoint, args: GenerateArgs): Promise<string> {
+    return (ep.provider ?? 'openai') === 'ollama'
+      ? this.callOllamaNative(ep, args)
+      : this.callOpenAICompat(ep, args);
+  }
+
+  private async callOpenAICompat(ep: InferenceEndpoint, args: GenerateArgs): Promise<string> {
     const model = args.size === 'large' ? ep.largeModel : ep.smallModel;
     // Cloud endpoints re-read OPENAI_API_KEY at REQUEST time so a key set after the
     // router singleton was built (e.g. ElizaRuntime.start stamping it into env) is
@@ -265,15 +288,51 @@ export class InferenceRouter {
     const data = (await res.json()) as OpenAIChatResponse;
     const choice = data.choices?.[0];
     if (!choice) throw new Error(`[InferenceRouter:${ep.id}] no choices in response`);
+    return this.finalizeText(ep, choice.message?.content ?? '', `finish_reason=${choice.finish_reason}`);
+  }
 
-    let text = choice.message?.content ?? '';
-    const stripThink = ep.stripThinkTags ?? ep.kind === 'local';
-    if (stripThink && text) text = text.replace(THINK_TAG_RE, '').trim();
-    if (!text) {
+  /**
+   * Ollama-native wire: POST {baseUrl−/v1}/api/chat with `think:false`. The
+   * think-disable is the whole reason this path exists (see the `provider` docs on
+   * InferenceEndpoint): it turns a >50s empty qwen3 decide() into a ~2s valid one.
+   */
+  private async callOllamaNative(ep: InferenceEndpoint, args: GenerateArgs): Promise<string> {
+    const model = args.size === 'large' ? ep.largeModel : ep.smallModel;
+    const base = ep.baseUrl.replace(/\/v1\/?$/, '');
+    const options: Record<string, unknown> = {
+      temperature: args.temperature ?? 0.7,
+      num_predict: args.maxTokens ?? 1000,
+    };
+    if (args.stopSequences && args.stopSequences.length > 0) options.stop = args.stopSequences;
+
+    const res = await this.fetchImpl(`${base}/api/chat`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(ep.apiKey ? { Authorization: `Bearer ${ep.apiKey}` } : {}),
+      },
+      body: JSON.stringify({ model, messages: args.messages, stream: false, think: false, options }),
+      signal: AbortSignal.timeout(ep.timeoutMs),
+    });
+
+    if (!res.ok) {
+      const errBody = await res.text().catch(() => '');
       throw new Error(
-        `[InferenceRouter:${ep.id}] empty content (finish_reason=${choice.finish_reason})`,
+        `[InferenceRouter:${ep.id}] ${res.status} ${res.statusText}: ${errBody.slice(0, 300)}`,
       );
     }
+
+    const data = (await res.json()) as OllamaChatResponse;
+    return this.finalizeText(ep, data.message?.content ?? '', `done_reason=${data.done_reason}`);
+  }
+
+  private finalizeText(ep: InferenceEndpoint, raw: string, ctx: string): string {
+    let text = raw;
+    // Belt-and-suspenders: with think:false there is nothing to strip, but a
+    // stray `<think>` block (or an openai-compat local model) is still cleaned.
+    const stripThink = ep.stripThinkTags ?? ep.kind === 'local';
+    if (stripThink && text) text = text.replace(THINK_TAG_RE, '').trim();
+    if (!text) throw new Error(`[InferenceRouter:${ep.id}] empty content (${ctx})`);
     return text;
   }
 

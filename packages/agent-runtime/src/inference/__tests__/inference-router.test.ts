@@ -383,6 +383,39 @@ describe('InferenceRouter breaker timing + concurrency + error paths', () => {
     expect(calls['prim']).toBe(1);
   });
 
+  it('ollama-provider endpoint uses the native /api/chat wire with think:false and parses .message.content', async () => {
+    let capturedUrl = '';
+    let capturedBody: any = null;
+    const fetchImpl = (async (url: string | URL | Request, init?: any) => {
+      capturedUrl = String(url);
+      capturedBody = JSON.parse(init.body);
+      return {
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        text: async () => '',
+        // Ollama native shape: { message: { content } }, NOT { choices: [...] }
+        json: async () => ({ message: { content: 'ACTION: rest()' }, done_reason: 'stop' }),
+      } as unknown as Response;
+    }) as unknown as typeof fetch;
+
+    const ollamaEp: InferenceEndpoint = { ...PRIMARY, provider: 'ollama', baseUrl: 'http://box.local:11434/v1' };
+    const r = new InferenceRouter({
+      endpoints: [OPENAI, ollamaEp, SECONDARY],
+      routes: ROUTES,
+      fetchImpl,
+      now: () => 0,
+    });
+    const res = await r.generateText({ route: 'fleet', size: 'small', messages: [{ role: 'user', content: 'decide' }], maxTokens: 220 });
+    expect(res.endpointId).toBe('local-primary');
+    expect(res.text).toBe('ACTION: rest()');
+    expect(capturedUrl).toBe('http://box.local:11434/api/chat'); // /v1 stripped, native path
+    expect(capturedBody.think).toBe(false); // thinking disabled
+    expect(capturedBody.stream).toBe(false);
+    expect(capturedBody.options.num_predict).toBe(220);
+    expect(capturedBody.choices).toBeUndefined(); // not the openai wire
+  });
+
   it('a cloud endpoint with NO api key throws (fails loudly, not a silent hang)', async () => {
     const saved = process.env.OPENAI_API_KEY;
     delete process.env.OPENAI_API_KEY;
