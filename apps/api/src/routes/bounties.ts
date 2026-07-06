@@ -92,6 +92,7 @@ function escrowFailureStatus(code: string): 400 | 403 | 404 | 409 | 500 | 502 | 
     case 'sap_disabled':
     case 'sap_escrow_disabled':
     case 'sap_usdc_escrow_disabled':
+    case 'payai_rail_disabled':
     case 'mainnet_broadcast_refused':
       return 503;
     case 'wallet_pubkey_missing':
@@ -111,8 +112,11 @@ function escrowFailureStatus(code: string): 400 | 403 | 404 | 409 | 500 | 502 | 
     case 'refund_in_progress':
     case 'funding_unconfirmed':
     case 'job_not_open':
+    case 'rail_mixed_forbidden':
       return 409;
     case 'rpc_unreachable':
+    case 'payai_unavailable':
+    case 'payai_release_failed':
       return 502;
     case 'internal':
       return 500;

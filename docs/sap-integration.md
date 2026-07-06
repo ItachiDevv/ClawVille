@@ -390,6 +390,15 @@ the worker's registered wallet is the ONLY settle signer (= the backend gate key
 `simulateTransaction` only. Mainnet still needs the `SAP_ALLOW_MAINNET` code gate +
 the live-send genesis-hash refusal (unchanged).
 
+**+ a fourth, rail-selector gate (2026-07-06):** `SAP_PAYAI_SETTLEMENT_ENABLED`
+(default false) — with all three gates above ALSO true, NEW escrow jobs open on
+the `payai` settlement rail (no on-chain vault; the PASS-verdict release is an
+x402 exact-scheme USDC payment settled by the PayAI facilitator — see
+`docs/sap-covenant-payai-architecture.md §8` + `sap/payai-release.ts`). The rail
+is recorded per-row at open (`metadata.rail`); dispatch follows the ROW, never
+the live flag. On this rail `SAP_DRY_RUN=true` means facilitator VERIFY-only
+(`/settle` never called — no money can move).
+
 ### Pluggable verification provider
 
 `VerificationProvider` (`sap-verification.ts`) is a single-method abstraction:

@@ -133,6 +133,24 @@ export interface SapConfig {
    */
   usdcEscrowEnabled: boolean;
   /**
+   * PayAI x402 SETTLEMENT RAIL gate (the three-party topology's payment leg —
+   * SAP = escrow/at-most-once record, Covenant = release authorization, PayAI =
+   * the actual USDC movement). When true, a NEW bounty escrow job is opened on
+   * the `payai` rail: no on-chain SAP vault leg runs; on a PASS verdict the
+   * release is an x402 exact-scheme USDC payment (depositor custodial wallet →
+   * worker wallet) driven through the PayAI facilitator via
+   * `x402-payai.verifyAndSettle` (see sap/payai-release.ts). The SAP settlement
+   * ledger stays the at-most-once / approval / ceiling gate. Default false — the
+   * on-chain SAP vault rail remains the default. A job's rail is RECORDED AT
+   * OPEN (settlement row metadata) and dispatch at settle time follows the ROW,
+   * never this flag — a rail flip mid-lifecycle can never re-route or
+   * double-move funds. Env `SAP_PAYAI_SETTLEMENT_ENABLED`. Sits ON TOP OF the
+   * escrow gates (SAP_ENABLED + SAP_ESCROW_ENABLED + SAP_USDC_ESCROW_ENABLED)
+   * and under the same SAP_DRY_RUN posture (dry-run = facilitator VERIFY only,
+   * never /settle).
+   */
+  payaiSettlementEnabled: boolean;
+  /**
    * The fixed expiry window (seconds) applied to a USDC escrow at open time when
    * the caller does not pin an absolute `expires_at`. Used only for the convenience
    * "open with default expiry" path; the gate may pass an explicit absolute value.
@@ -176,6 +194,8 @@ export function loadSapConfig(): SapConfig {
   const escrowEnabled = process.env.SAP_ESCROW_ENABLED === 'true';
   // Option C USDC escrow gate — default OFF; requires BOTH escrowEnabled AND this.
   const usdcEscrowEnabled = process.env.SAP_USDC_ESCROW_ENABLED === 'true';
+  // PayAI x402 settlement rail — default OFF; on top of the escrow gates above.
+  const payaiSettlementEnabled = process.env.SAP_PAYAI_SETTLEMENT_ENABLED === 'true';
   // Dry-run defaults ON (safe). It is OFF only when EXPLICITLY set to 'false'.
   const dryRun = process.env.SAP_DRY_RUN !== 'false';
 
@@ -304,6 +324,7 @@ export function loadSapConfig(): SapConfig {
     usdcMint,
     minStakeLamports: SAP_MIN_STAKE_LAMPORTS,
     usdcEscrowEnabled,
+    payaiSettlementEnabled,
     usdcEscrowDefaultExpirySeconds,
     settlementMode,
     disputeWindowSlots,

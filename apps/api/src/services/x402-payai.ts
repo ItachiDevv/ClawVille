@@ -227,6 +227,16 @@ export interface VerifyAndSettleInput {
   paymentHeader: string;
   /** The requirements the quote issued (server-derived, NOT the client echo). */
   requirements: PaymentRequirements;
+  /**
+   * VERIFY-ONLY mode (the SAP_DRY_RUN analog for the PayAI settlement rail):
+   * run the facilitator `/verify` and STOP — `/settle` is NEVER called, so no
+   * on-chain money can move. The result is ALWAYS `settled:false`; a passing
+   * verify carries `isValid:true` + `failureReason:'verify_only_mode'` so a
+   * caller can distinguish "dry-run verified OK" from a real failure. The
+   * safety contract is unchanged: `settled:true` still ONLY ever means a real
+   * facilitator settle succeeded with a non-empty signature.
+   */
+  verifyOnly?: boolean;
 }
 
 export interface VerifyAndSettleResult {
@@ -348,6 +358,18 @@ export async function verifyAndSettle(
     });
   }
 
+  // --- 1b) verify-only short-circuit (dry-run posture) ----------------------
+  // The caller asked for verification WITHOUT settlement. `/settle` is never
+  // called; no money moves. `settled` stays false (the safety contract), with
+  // `isValid:true` + the sentinel reason marking a PASSING verify-only run.
+  if (input.verifyOnly === true) {
+    return failed('verify_only_mode', {
+      isValid: true,
+      payer: verify.payer ?? null,
+      raw: { verify },
+    });
+  }
+
   // --- 2) settle (only reached when verify.isValid === true) ---------------
   let settle: SettleResponse;
   try {
@@ -388,6 +410,60 @@ export async function verifyAndSettle(
     failureReason: null,
     raw: { verify, settle },
   };
+}
+
+// ---------------------------------------------------------------------------
+// resolveFacilitatorFeePayer — discover the facilitator's SVM fee payer
+// ---------------------------------------------------------------------------
+
+/**
+ * The SVM `exact` scheme requires the FACILITATOR's fee-payer address inside
+ * `requirements.extra.feePayer` — the payer signs a transfer whose gas the
+ * facilitator sponsors, and the facilitator REJECTS a payload whose feePayer is
+ * not one of its own signers. External buyers discover it from the 402 body;
+ * a SERVER-DRIVEN payment (the SAP payai release rail, where ClawVille itself is
+ * the payer's wallet operator) must resolve it from the facilitator's
+ * `/supported` endpoint before building the payload.
+ *
+ * Resolution order for the given network's CAIP-2 id:
+ *   1. a `kinds[]` entry (scheme 'exact', matching network) carrying a string
+ *      `extra.feePayer` — what the reference @x402/svm facilitator advertises;
+ *   2. the `signers[<caip2>]` map's first address (x402 v2 supported shape).
+ *
+ * NEVER throws — returns null on any facilitator/network/shape error so the
+ * money path can fail closed with a clean structured error (no 5xx leak).
+ */
+export async function resolveFacilitatorFeePayer(
+  network: X402Network,
+): Promise<string | null> {
+  const caip2 = caip2ForNetwork(network);
+  let client: HTTPFacilitatorClient;
+  try {
+    client = facilitatorClient();
+  } catch (err) {
+    console.warn(
+      '[x402-payai] resolveFacilitatorFeePayer: facilitatorClient() threw:',
+      (err as Error).message,
+    );
+    return null;
+  }
+  try {
+    const supported = await client.getSupported();
+    const kind = supported?.kinds?.find(
+      (k) => k.scheme === 'exact' && k.network === caip2,
+    );
+    const fromKind = kind?.extra?.feePayer;
+    if (typeof fromKind === 'string' && fromKind.length > 0) return fromKind;
+    const fromSigners = supported?.signers?.[caip2]?.[0];
+    if (typeof fromSigners === 'string' && fromSigners.length > 0) return fromSigners;
+    return null;
+  } catch (err) {
+    console.warn(
+      '[x402-payai] resolveFacilitatorFeePayer: /supported failed:',
+      (err as Error).message,
+    );
+    return null;
+  }
 }
 
 // Phase D partner direct-USDC helpers (`buildPartnerPurchaseQuote` /
