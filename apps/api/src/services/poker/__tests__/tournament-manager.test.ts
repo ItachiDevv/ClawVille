@@ -1234,6 +1234,67 @@ describe('TournamentManager — settle conservation + orphan-recovery money safe
     expect(ledger.totalCredited('poker_mtt_prize')).toBe(0);
     expect(db.tournaments.get(tid)!.status).toBe('cancelled');
   });
+
+  it('(#race) room-abort DURING completion (r.done set, champion placement not yet committed) does NOT dispose — completion owns it, winner SETTLES', async () => {
+    const { tm } = buildManager(db, ledger, clock);
+    const tid = randomUUID();
+    // Simulate completeTournament's synchronous prologue having run: r.done=true, but
+    // the champion-placement tx has NOT committed yet (champion still unplaced). At
+    // this instant isTournamentFullyPlaced would say FALSE — the pre-fix onRoomAborted
+    // (or a naive resolve) would refund this DECIDED tournament.
+    seedFinished(
+      tid,
+      [
+        { avatarId: 'av-1', placement: null }, // champion-to-be — placement not yet written
+        { avatarId: 'av-2', placement: 2 },
+      ],
+      { pool: '200' },
+    );
+    const internals = tm as unknown as { running: Map<string, { done: boolean; tables: Map<string, unknown> }> };
+    internals.running.set(tid, { done: true, tables: new Map() });
+    wireRoom(tm, 'room-race', 'table-race', tid);
+
+    // Abort fires INSIDE the race window.
+    await tm.onRoomAborted('room-race');
+    // Ownership gate held: completion owns the outcome → NO refund, NO cancel.
+    expect(ledger.totalCredited('poker_mtt_refund')).toBe(0);
+    expect(db.tournaments.get(tid)!.status).toBe('running');
+    expect(db.tournaments.get(tid)!.cancelled_at).toBeFalsy();
+    expect(db.tournaments.get(tid)!.settled_at).toBeFalsy();
+
+    // Completion now resumes past the placement window: champion crowned, then settle.
+    db.entrants.get('e-0')!.placement = 1;
+    const res = await tm.settleTournament(tid);
+    const prizeSum = res.results.reduce((a, r) => a + BigInt(r.prizeCt), 0n);
+    expect(prizeSum + BigInt(res.rakeTakenCt)).toBe(200n); // winner SETTLED, conserving
+    expect(ledger.totalCredited('poker_mtt_prize')).toBe(200);
+    expect(ledger.totalCredited('poker_mtt_refund')).toBe(0); // never refunded
+    expect(db.tournaments.get(tid)!.status).toBe('completed');
+  });
+
+  it('(#race belt) cancelAndRefundOrphan aborts (throws finished_not_refundable) if a placement commits under the lock', async () => {
+    const { tm } = buildManager(db, ledger, clock);
+    const tid = randomUUID();
+    // Fully placed at refund time (a placement landed in the window) → the under-lock
+    // re-check must REFUSE to refund a finished tournament.
+    seedFinished(
+      tid,
+      [
+        { avatarId: 'av-1', placement: 1 },
+        { avatarId: 'av-2', placement: 2 },
+      ],
+      { pool: '200' },
+    );
+    let threw: string | null = null;
+    try {
+      await tm.cancelAndRefundOrphan(tid);
+    } catch (e) {
+      threw = (e as Error).message;
+    }
+    expect(threw).toBe('tournament_finished_not_refundable');
+    expect(ledger.totalCredited('poker_mtt_refund')).toBe(0);
+    expect(db.tournaments.get(tid)!.status).toBe('running'); // not cancelled
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
