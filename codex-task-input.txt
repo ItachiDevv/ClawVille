@@ -1,0 +1,24 @@
+use ultrathink reasoning before writing code.
+
+STATUS: Previous spawn ran 35min, zero commits. Branch perf/meshlet-integration still at 2a8710a9. Start fresh.
+
+SHELL: Windows. Use bash -c commands. On sandbox error retry once, then cmd /c fallback.
+
+GOAL: Per-MESH atlas for ClawVille meshlet rasterizer.
+Project: C:Users
+ewmaDocumentsCryptoClawVille-meshlet
+Branch: perf/meshlet-integration
+
+PROBLEM: commit 2a8710a9 uses per-BUILDING atlas - one texture slot per building chosen from largest sub-mesh. All 5-20 sub-meshes share it. Wrong textures everywhere.
+
+FIX NEEDED:
+1. Read these files: apps/web/src/lib/three/meshlet/build-buildings-atlas.ts, apps/web/src/lib/three/meshlet/use-merged-buildings-asset.ts, apps/web/src/app/preview/meshlet-spike-all-12/page.tsx
+2. Replace collectAndMergeGeometries with collectSubMeshes that returns each Mesh node separately with its diffuse texture and baked localMatrix positions
+3. Replace buildBuildingsAtlas with buildPerMeshAtlas: dedup textures by JS object ref, 512px slots on 8x8=4096x4096 canvas, null diffuse = white fill
+4. Pass each sub-mesh as its own MergeInput to mergeGeometriesToMeshletAsset (sourceId = atlas slot index). All sub-meshes of one building share the same building-level worldMatrix.
+5. Same change in page.tsx inline loader
+6. bun run build in apps/web until exit 0
+7. Start server, screenshot via Chrome DevTools MCP at http://localhost:3000/preview/meshlet-spike-all-12?cb=5
+8. git commit + push to perf/meshlet-integration
+
+OUTPUT: shell errors, atlas dimensions, screenshot result, commit hash

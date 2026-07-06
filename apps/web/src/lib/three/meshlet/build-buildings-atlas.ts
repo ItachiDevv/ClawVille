@@ -346,6 +346,11 @@ export function buildSubMeshAtlas(inputs: SubMeshInput[]): SubMeshAtlasResult {
   });
 
   const texture = new THREE.Texture(canvas);
+  // GLTFLoader sets glTF color textures to flipY=false. The meshlet atlas is
+  // built from those same images and UVs, so it must use the same orientation.
+  // Leaving the default flipY=true mirrors atlas rows at upload time, causing
+  // sub-meshes to sample unrelated slots from other buildings.
+  texture.flipY = false;
   texture.minFilter = THREE.LinearMipmapLinearFilter;
   texture.magFilter = THREE.LinearFilter;
   texture.wrapS = THREE.ClampToEdgeWrapping;

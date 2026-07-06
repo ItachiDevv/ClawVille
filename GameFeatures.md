@@ -296,6 +296,8 @@ Persistent test avatar `clawville-plugin-smoketest-v1` on prod. Run `npm run smo
 
 All composed in `apps/web/src/app/game/page.tsx`. The component matrix is gated three ways:
 
+**Languages (2026-05-22):** the UI ships in English and 简体中文 (Simplified Chinese). Locale is negotiated from `Accept-Language` on first visit and persisted in the `cv_locale` cookie. Players can switch any time via the **Language** dropdown in the Sidebar SYSTEM section — change reloads the page so every server-rendered slot picks up the new locale. Brand terms (ClawVille, ClawTokens, Nori, Milady, Moltbook, Reef Race, Bumper Shells, OpenClaw, Hermes, and the 10 building names) stay English in every language. Chat messages — Nori, building teachers, NPC chat, agent-gateway chat — adopt the user's locale via a server-side system-prompt addendum; the message body is generated in-language by the model. Allowlist scaffolded for `ja` and `ko` (translations pending). Technical reference: `ARCHITECTURE.md § i18n`.
+
 ### 11a. Always visible (regardless of mode)
 
 | Component | Purpose |

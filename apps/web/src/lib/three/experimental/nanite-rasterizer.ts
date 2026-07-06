@@ -1423,10 +1423,16 @@ export class NaniteRasterizer {
             const ndc1 = p1.xyz.div(p1.w);
             const ndc2 = p2.xyz.div(p2.w);
 
-            // Early back-face culling in NDC
+            // Early degenerate-triangle culling in NDC.
+            // Do not treat opposite winding as invisible here: several GLB
+            // building assets contain thin shells/cutout planes whose source
+            // materials are rendered double-sided by the normal Three.js path.
+            // Culling by winding made close-up meshlet views lose large patches,
+            // especially when those large projected triangles were routed into
+            // the hardware fallback.
             const areaNdc = edgeFunction(ndc0, ndc1, ndc2);
 
-            If(areaNdc.greaterThan(0.0), () => {
+            If(areaNdc.greaterThan(0.0).or(areaNdc.lessThan(0.0)), () => {
               const ndcMinX = min(ndc0.x, min(ndc1.x, ndc2.x));
               const ndcMaxX = max(ndc0.x, max(ndc1.x, ndc2.x));
               const ndcMinY = min(ndc0.y, min(ndc1.y, ndc2.y));
@@ -1469,13 +1475,15 @@ export class NaniteRasterizer {
                     () => {
                       // SW barycentric rasteriser
                       const area = edgeFunction(s0, s1, s2);
+                      const areaSign = area.greaterThan(0.0).select(1.0, -1.0);
+                      const signedArea = area.mul(areaSign);
 
-                      const stepX_w0 = s1.y.sub(s2.y);
-                      const stepY_w0 = s2.x.sub(s1.x);
-                      const stepX_w1 = s2.y.sub(s0.y);
-                      const stepY_w1 = s0.x.sub(s2.x);
-                      const stepX_w2 = s0.y.sub(s1.y);
-                      const stepY_w2 = s1.x.sub(s0.x);
+                      const stepX_w0 = s1.y.sub(s2.y).mul(areaSign);
+                      const stepY_w0 = s2.x.sub(s1.x).mul(areaSign);
+                      const stepX_w1 = s2.y.sub(s0.y).mul(areaSign);
+                      const stepY_w1 = s0.x.sub(s2.x).mul(areaSign);
+                      const stepX_w2 = s0.y.sub(s1.y).mul(areaSign);
+                      const stepY_w2 = s1.x.sub(s0.x).mul(areaSign);
 
                       // Top-left rule
                       const isTopLeft0 = stepX_w0.lessThan(0.0).or(stepX_w0.equal(0.0).and(stepY_w0.greaterThan(0.0)));
@@ -1488,29 +1496,29 @@ export class NaniteRasterizer {
 
                       const pStart = vec2(float(startX).add(0.5), float(startY).add(0.5));
 
-                      const row_w0 = edgeFunction(s1, s2, pStart).toVar() as any;
-                      const row_w1 = edgeFunction(s2, s0, pStart).toVar() as any;
-                      const row_w2 = edgeFunction(s0, s1, pStart).toVar() as any;
+                      const row_w0 = edgeFunction(s1, s2, pStart).mul(areaSign).toVar() as any;
+                      const row_w1 = edgeFunction(s2, s0, pStart).mul(areaSign).toVar() as any;
+                      const row_w2 = edgeFunction(s0, s1, pStart).mul(areaSign).toVar() as any;
 
                       row_w0.addAssign(bias0);
                       row_w1.addAssign(bias1);
                       row_w2.addAssign(bias2);
 
                       // Incremental Z
-                      const b0_start = row_w0.div(area);
-                      const b1_start = row_w1.div(area);
-                      const b2_start = row_w2.div(area);
+                      const b0_start = row_w0.div(signedArea);
+                      const b1_start = row_w1.div(signedArea);
+                      const b2_start = row_w2.div(signedArea);
                       const row_z = b0_start.mul(ndc0.z)
                         .add(b1_start.mul(ndc1.z))
                         .add(b2_start.mul(ndc2.z))
                         .toVar() as any;
 
-                      const stepX_z = stepX_w0.div(area).mul(ndc0.z)
-                        .add(stepX_w1.div(area).mul(ndc1.z))
-                        .add(stepX_w2.div(area).mul(ndc2.z));
-                      const stepY_z = stepY_w0.div(area).mul(ndc0.z)
-                        .add(stepY_w1.div(area).mul(ndc1.z))
-                        .add(stepY_w2.div(area).mul(ndc2.z));
+                      const stepX_z = stepX_w0.div(signedArea).mul(ndc0.z)
+                        .add(stepX_w1.div(signedArea).mul(ndc1.z))
+                        .add(stepX_w2.div(signedArea).mul(ndc2.z));
+                      const stepY_z = stepY_w0.div(signedArea).mul(ndc0.z)
+                        .add(stepY_w1.div(signedArea).mul(ndc1.z))
+                        .add(stepY_w2.div(signedArea).mul(ndc2.z));
 
                       Loop({ name: 'y', type: 'int', start: startY, end: endY, condition: '<=' }, ({ y }: any) => {
                         const w0 = row_w0.toVar() as any;
@@ -1595,6 +1603,7 @@ export class NaniteRasterizer {
       const hwMaterial = new THREE.NodeMaterial();
       hwMaterial.depthWrite = true;
       hwMaterial.depthTest = true;
+      hwMaterial.side = THREE.DoubleSide;
 
       hwMaterial.positionNode = Fn(() => {
         const triIndex = vertexIndex.div(3);
@@ -1739,13 +1748,19 @@ export class NaniteRasterizer {
 
           const uv_interp = t_uv0.mul(b0_p).add(t_uv1.mul(b1_p)).add(t_uv2.mul(b2_p));
 
-          // Analytical screen-space UV derivatives
-          const dw0_dx = s2.y.sub(s1.y);
-          const dw1_dx = s0.y.sub(s2.y);
-          const dw2_dx = s1.y.sub(s0.y);
-          const dw0_dy = s1.x.sub(s2.x);
-          const dw1_dy = s2.x.sub(s0.x);
-          const dw2_dy = s0.x.sub(s1.x);
+          // Analytical screen-space UV derivatives. The edge-function
+          // derivatives must be normalized by triangle area because the
+          // barycentric weights above are edge / area. Without this division,
+          // gradients are inflated by pixel-area scale and texture sampling
+          // falls to the coarsest mip, making real GLB textures look like
+          // flat average colors.
+          const invSafeArea = float(1.0).div(safeArea);
+          const dw0_dx = s2.y.sub(s1.y).mul(invSafeArea);
+          const dw1_dx = s0.y.sub(s2.y).mul(invSafeArea);
+          const dw2_dx = s1.y.sub(s0.y).mul(invSafeArea);
+          const dw0_dy = s1.x.sub(s2.x).mul(invSafeArea);
+          const dw1_dy = s2.x.sub(s0.x).mul(invSafeArea);
+          const dw2_dy = s0.x.sub(s1.x).mul(invSafeArea);
 
           const q0 = float(1.0).div(p0.w);
           const q1 = float(1.0).div(p1.w);
