@@ -22,6 +22,7 @@ import { loadLocationTemplate } from './character-loader';
 import { createOpenClawProviderPlugin, type OpenClawGatewayConfig } from './plugins/openclaw-provider';
 import { createOpenAIEmbeddingPlugin } from './plugins/openai-embedding-provider';
 import { createOpenAITextPlugin } from './plugins/openai-text-provider';
+import type { InferenceRoute } from './inference/inference-router';
 import { embedText } from './plugins/embed-text';
 import { clawvillePlugin } from './plugins/clawville-plugin';
 import type { Provider, ProviderResult } from './providers/types';
@@ -121,6 +122,14 @@ export interface ElizaRuntimeConfig {
   };
   agentConfig: Record<string, unknown>;
   openclawGateway?: OpenClawGatewayConfig;
+  /**
+   * Inference route for this runtime's text generation (assigned by the
+   * orchestrator from the agent's type + house flag). Selects which ordered
+   * endpoint list the InferenceRouter walks (teacher → OpenAI, fleet → local
+   * boxes + failover, etc.). Absent ⇒ 'default' (OpenAI). Ignored when an
+   * `openclawGateway` is set (that path wins at priority 100).
+   */
+  inferenceRoute?: InferenceRoute;
   databaseUrl?: string;
   apiKeys?: {
     /** OpenAI API key — the sole backend for TEXT_SMALL/TEXT_LARGE generation and embeddings. */
@@ -523,14 +532,19 @@ export class ElizaRuntime {
     this.loadedPlugins.unshift(openaiEmbeddingPlugin as Plugin);
     console.log(`[ElizaRuntime] Loaded OpenAI embedding provider (text-embedding-3-small, 1536-dim)`);
 
-    // Prepend OpenAI text provider (priority 95 — global default for TEXT_SMALL/TEXT_LARGE)
-    // Sits immediately below OpenClaw gateway (100) in the priority chain.
-    // Embeddings (above) also go through OpenAI — it is the sole non-OpenClaw backend.
+    // Prepend the InferenceRouter-backed text provider (priority 95 — global
+    // default for TEXT_SMALL/TEXT_LARGE). Sits immediately below the OpenClaw
+    // gateway (100). The per-runtime `route` (assigned by the orchestrator from
+    // the agent's type + house flag) decides which endpoints the router walks
+    // — teachers → OpenAI, the house fleet → local boxes with failover. Model +
+    // auth now live on the router's endpoints, not here.
     const openaiTextPlugin = createOpenAITextPlugin({
-      apiKey: this.config.apiKeys?.openai,
+      route: this.config.inferenceRoute,
     });
     this.loadedPlugins.unshift(openaiTextPlugin as Plugin);
-    console.log(`[ElizaRuntime] Loaded OpenAI text provider (gpt-4o-mini/gpt-4o, priority 95)`);
+    console.log(
+      `[ElizaRuntime] Loaded InferenceRouter text provider (route=${this.config.inferenceRoute ?? 'default'}, priority 95)`,
+    );
 
     // Prepend OpenClaw provider plugin so it wins TEXT_GENERATION priority (priority 100 > 95)
     if (this.config.openclawGateway) {
