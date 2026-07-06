@@ -166,7 +166,9 @@ function OutcomeBanner({ outcome, net }: { outcome: BlackjackOutcome; net: bigin
       <div style={{
         background: 'var(--pt-velvet)',
         border: `2px solid ${accent}`,
-        padding: '14px 32px',
+        // Compact — the banner is in-flow now, so its height pushes the player
+        // row down; keep it short enough that both rows + banner fit at 720p.
+        padding: '7px 24px',
         boxShadow: `0 0 28px ${accent}55, 0 0 56px ${accent}22`,
         minWidth: 180,
       }}>
@@ -176,14 +178,14 @@ function OutcomeBanner({ outcome, net }: { outcome: BlackjackOutcome; net: bigin
           fontFamily: 'var(--pt-data)',
           letterSpacing: '0.2em',
           fontWeight: 700,
-          marginBottom: showNet ? 4 : 0,
+          marginBottom: showNet ? 3 : 0,
         }}>
           {label}
         </div>
         {showNet && (
           <div style={{
             color: netNum > 0 ? 'var(--pt-cream)' : '#e85555',
-            fontSize: 28,
+            fontSize: 20,
             fontWeight: 700,
             fontFamily: 'var(--pt-display)',
             lineHeight: 1,
