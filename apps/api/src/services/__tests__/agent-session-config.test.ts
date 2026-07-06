@@ -32,6 +32,7 @@ import {
   resolveAutonomyMode,
   spawnRelevantProjection,
   isRowRestorableFromIdentity,
+  isSessionRestorable,
   type AvatarConfigInputs,
   type OverrideConfigInputs,
 } from '../agent-session-config';
@@ -365,8 +366,8 @@ describe('mint ≡ restore — spawn-relevant config is byte-identical per type'
 
 // ---------------------------------------------------------------------------
 // Guard the exact 502 regression: a no-gateway avatar body's gatewayUrl is the
-// dummy AND its protocol is the fail-soft one, so OpenClawClient.chat() never
-// POSTs. (OpenClawClient routes 'nanoclaw' to a '' no-op; 'openai-compat' would
+// dummy AND its protocol is the fail-soft one, so AgentSubstrateClient.chat() never
+// POSTs. (AgentSubstrateClient routes 'nanoclaw' to a '' no-op; 'openai-compat' would
 // POST to gatewayUrl — the bug.)
 // ---------------------------------------------------------------------------
 describe('no-gateway avatar bodies cannot POST to a gateway (the 502 guard)', () => {
@@ -396,4 +397,35 @@ describe('no-gateway avatar bodies cannot POST to a gateway (the 502 guard)', ()
       expect(c.authToken).toBe('');
     });
   }
+});
+
+describe('isSessionRestorable — restore-aware session-status (D-2) + hatcher-proxy presence refinement', () => {
+  test('MIRRORS the restore module: hatcher-proxy + no-gateway types restorable, real-gateway NOT', () => {
+    // hatcher self-heals via the encrypted proxy token (restore keys on protocol).
+    expect(isSessionRestorable('hatcher', 'hatcher-proxy')).toBe(true);
+    // no-gateway identity types rebuild as fail-soft bodies.
+    for (const t of ['anonymous', 'milady', 'nanoclaw']) {
+      expect(isSessionRestorable(t, 'nanoclaw')).toBe(true);
+      expect(isSessionRestorable(t, null)).toBe(true);
+    }
+    // real-gateway types can't self-heal (no persisted auth_token) → must reconnect.
+    for (const t of ['openclaw', 'ironclaw', 'custom']) {
+      expect(isSessionRestorable(t, 'openai-compat')).toBe(false);
+    }
+  });
+
+  test('hatcher-proxy presence refinement: false ⇒ NOT restorable; true/omitted ⇒ restorable', () => {
+    // present (or param omitted → backward-compatible type-level true)
+    expect(isSessionRestorable('hatcher', 'hatcher-proxy')).toBe(true);
+    expect(isSessionRestorable('hatcher', 'hatcher-proxy', true)).toBe(true);
+    // structurally-degraded hatcher row (dropped proxy config) → tell it to reconnect
+    expect(isSessionRestorable('hatcher', 'hatcher-proxy', false)).toBe(false);
+  });
+
+  test('presence flag is IGNORED for non-hatcher-proxy protocols', () => {
+    // a no-gateway type stays restorable even if a stray false is passed…
+    expect(isSessionRestorable('nanoclaw', 'nanoclaw', false)).toBe(true);
+    // …and a real-gateway type stays non-restorable even if a stray true is passed.
+    expect(isSessionRestorable('openclaw', 'openai-compat', true)).toBe(false);
+  });
 });

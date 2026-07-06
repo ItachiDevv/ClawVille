@@ -9,11 +9,8 @@ export * from './inventory';
 export * from './claws';
 export * from './memories';
 export * from './research';
-export * from './marketplace';
-export * from './bazaar';
 export * from './token-launch';
 export * from './treasury';
-export * from './auctions';
 export * from './quests';
 export * from './agent-configs';
 export * from './bounties';
@@ -49,7 +46,7 @@ export * from './tutorial-quest-claims';
 export * from './cosmetics';
 // Q3 plan §gamification dashboard — phase status (mutable via dashboard MCP).
 export * from './dashboard-phases';
-// 2026-05-18 — peer marketplace replacing gated bazaar/auction. Needs +
+// 2026-05-18 — Exchange: peer items/services board (NEED/OFFER). Needs +
 // one_shot/repeatable offers. Subscriptions deferred.
 export * from './exchange';
 // Wager lobbies + escrow — mirrors deployed `clawville_wager` Anchor program.
@@ -121,12 +118,9 @@ import { avatars } from './avatars';
 import { agents, agentLogs } from './agents';
 import { locationAgents } from './location-agents';
 import { avatarInventory } from './inventory';
-import { publishedSkills, skillUpvotes } from './marketplace';
-import { bazaarListings, bazaarTransactions, bazaarReviews } from './bazaar';
-import { openclawBots } from './claws';
+import { agentBots } from './claws';
 import { vanityKeypairs, tokenLaunches } from './token-launch';
 import { clawTokenTransactions } from './treasury';
-import { auctions, auctionBids, auctionAgentConfigs } from './auctions';
 import { quests, questSubmissions, questRewards } from './quests';
 import { agentConfigs } from './agent-configs';
 import { bounties, bountyRewards, bountyAttempts, bountyReputation } from './bounties';
@@ -167,7 +161,6 @@ export const avatarsRelations = relations(avatars, ({ one, many }) => ({
     references: [agents.id],
   }),
   inventory: many(avatarInventory),
-  publishedSkills: many(publishedSkills),
   agentConfigs: many(agentConfigs),
 }));
 
@@ -211,30 +204,9 @@ export const locationAgentsRelations = relations(locationAgents, ({ one }) => ({
   }),
 }));
 
-export const publishedSkillsRelations = relations(publishedSkills, ({ one, many }) => ({
-  authorAvatar: one(avatars, {
-    fields: [publishedSkills.authorAvatarId],
-    references: [avatars.id],
-  }),
-  upvotes: many(skillUpvotes),
-  listings: many(bazaarListings),
-  reviews: many(bazaarReviews),
-}));
-
-export const skillUpvotesRelations = relations(skillUpvotes, ({ one }) => ({
-  skill: one(publishedSkills, {
-    fields: [skillUpvotes.skillId],
-    references: [publishedSkills.id],
-  }),
-  avatar: one(avatars, {
-    fields: [skillUpvotes.avatarId],
-    references: [avatars.id],
-  }),
-}));
-
-export const openclawBotsRelations = relations(openclawBots, ({ one }) => ({
+export const agentBotsRelations = relations(agentBots, ({ one }) => ({
   user: one(users, {
-    fields: [openclawBots.userId],
+    fields: [agentBots.userId],
     references: [users.id],
   }),
 }));
@@ -261,99 +233,7 @@ export const tokenLaunchesRelations = relations(tokenLaunches, ({ one }) => ({
   }),
 }));
 
-export const bazaarListingsRelations = relations(bazaarListings, ({ one }) => ({
-  skill: one(publishedSkills, {
-    fields: [bazaarListings.skillId],
-    references: [publishedSkills.id],
-  }),
-  seller: one(avatars, {
-    fields: [bazaarListings.sellerId],
-    references: [avatars.id],
-  }),
-}));
-
-export const bazaarTransactionsRelations = relations(bazaarTransactions, ({ one }) => ({
-  listing: one(bazaarListings, {
-    fields: [bazaarTransactions.listingId],
-    references: [bazaarListings.id],
-  }),
-  buyer: one(avatars, {
-    fields: [bazaarTransactions.buyerId],
-    references: [avatars.id],
-    relationName: 'transactionBuyer',
-  }),
-  seller: one(avatars, {
-    fields: [bazaarTransactions.sellerId],
-    references: [avatars.id],
-    relationName: 'transactionSeller',
-  }),
-  skill: one(publishedSkills, {
-    fields: [bazaarTransactions.skillId],
-    references: [publishedSkills.id],
-  }),
-}));
-
-export const bazaarReviewsRelations = relations(bazaarReviews, ({ one }) => ({
-  transaction: one(bazaarTransactions, {
-    fields: [bazaarReviews.transactionId],
-    references: [bazaarTransactions.id],
-  }),
-  reviewer: one(avatars, {
-    fields: [bazaarReviews.reviewerId],
-    references: [avatars.id],
-  }),
-  skill: one(publishedSkills, {
-    fields: [bazaarReviews.skillId],
-    references: [publishedSkills.id],
-  }),
-}));
-
-export const auctionsRelations = relations(auctions, ({ one, many }) => ({
-  seller: one(avatars, {
-    fields: [auctions.sellerId],
-    references: [avatars.id],
-    relationName: 'auctionSeller',
-  }),
-  currentBidder: one(avatars, {
-    fields: [auctions.currentBidderId],
-    references: [avatars.id],
-    relationName: 'auctionCurrentBidder',
-  }),
-  skill: one(publishedSkills, {
-    fields: [auctions.skillId],
-    references: [publishedSkills.id],
-  }),
-  bids: many(auctionBids),
-  agentConfigs: many(auctionAgentConfigs),
-}));
-
-export const auctionBidsRelations = relations(auctionBids, ({ one }) => ({
-  auction: one(auctions, {
-    fields: [auctionBids.auctionId],
-    references: [auctions.id],
-  }),
-  bidder: one(avatars, {
-    fields: [auctionBids.bidderId],
-    references: [avatars.id],
-  }),
-}));
-
-export const auctionAgentConfigsRelations = relations(auctionAgentConfigs, ({ one }) => ({
-  auction: one(auctions, {
-    fields: [auctionAgentConfigs.auctionId],
-    references: [auctions.id],
-  }),
-  avatar: one(avatars, {
-    fields: [auctionAgentConfigs.avatarId],
-    references: [avatars.id],
-  }),
-}));
-
 export const questsRelations = relations(quests, ({ one, many }) => ({
-  skillReward: one(publishedSkills, {
-    fields: [quests.skillRewardId],
-    references: [publishedSkills.id],
-  }),
   createdByUser: one(users, {
     fields: [quests.createdBy],
     references: [users.id],
@@ -390,10 +270,6 @@ export const questRewardsRelations = relations(questRewards, ({ one }) => ({
     fields: [questRewards.questId],
     references: [quests.id],
   }),
-  skill: one(publishedSkills, {
-    fields: [questRewards.skillId],
-    references: [publishedSkills.id],
-  }),
 }));
 
 export const agentConfigsRelations = relations(agentConfigs, ({ one }) => ({
@@ -409,7 +285,6 @@ export const bountiesRelations = relations(bounties, ({ one, many }) => ({
 
 export const bountyRewardsRelations = relations(bountyRewards, ({ one }) => ({
   bounty: one(bounties, { fields: [bountyRewards.bountyId], references: [bounties.id] }),
-  skill: one(publishedSkills, { fields: [bountyRewards.skillId], references: [publishedSkills.id] }),
   agentConfig: one(agentConfigs, { fields: [bountyRewards.agentConfigId], references: [agentConfigs.id] }),
 }));
 

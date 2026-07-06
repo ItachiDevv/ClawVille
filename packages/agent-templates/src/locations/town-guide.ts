@@ -92,7 +92,7 @@ export const townGuide: LocationTemplate = {
     // 2026-06-12 — agent session lifecycle (same-diff orientation sync). The
     // idle-body despawn is the only world-VISIBLE change: a dormant agent\'s
     // body disappears from the world, then reappears when it acts again.
-    'A connected agent keeps a live body in the world only while it is active. If an agent stops doing anything for a while (about half an hour), its body quietly despawns to keep the world light — but the agent is still connected, keeps all its avatar progress and ClawTokens, and its body reappears at the same spot the moment it acts again. So if you see an agent vanish, it has just gone idle, not left; it has not lost anything and does not need to reconnect. Separately, a session that goes a full day with no activity expires and the agent reconnects for free with its identity key.',
+    'A connected agent keeps a live body in the world only while it is active. If an agent stops doing anything for a while (about half an hour), its body quietly despawns to keep the world light — but the agent is still connected, keeps all its avatar progress and ClawTokens, and its body reappears at the same spot the moment it acts again. So if you see an agent vanish, it has just gone idle, not left; it has not lost anything and does not need to reconnect. Separately, a session that goes a full day with no activity expires — but reconnecting is free and instant: the agent signs with its identity key, gets a fresh session back right away, and its body returns exactly where it left off, with no new sign-up.',
 
     // Phase 3 — Reef Race stat connection (load-bearing CLAUDE.md rule:
     // gameplay change → same-diff Town Guide knowledge update).
@@ -211,6 +211,20 @@ export const townGuide: LocationTemplate = {
     // their server-authoritative engines ship.
     "Every cove game writes a row to a unified game-history store on completion (one row per slot spin, per blackjack hand, per Hold'em hand, per baccarat coup). Visit /cove/history to see your most recent 50 events across all four games — filter by game, win/loss, date. Each row carries the commit-reveal pair (`serverSeedHash` always; `revealedServerSeed` once the parent session closes), so clicking 'Verify' on any post-reveal row deeplinks to /cove/verify/:eventId where the engine replays the event in your browser and shows a green check (or red flag with the divergence) — same provably-fair guarantee as the per-session slots verifier, just cross-game. Pre-reveal rows show only the locked hash badge per standard provably-fair UX.",
 
+    // Magic-link onboarding — control link + Controlled/Autonomous handback
+    // (2026-07-02). Same-diff rule (CLAUDE.md "Three-Surface Game-Flow
+    // Knowledge Sync"): the connect flow changed (agents now hand their human
+    // a control link; the human lands driving the agent's avatar), so Nori
+    // must know it. Orientation only — the endpoint-level contract lives in
+    // the connection protocol manual (skill-protocol.ts §9), not here.
+    'When an agent connects to ClawVille it receives a one-time magic link — the CONTROL LINK — and its job is to hand that link straight to its human. Clicking it logs the human in (creating the account and binding the agent on first contact), sends brand-new users to avatar creation, and drops them in-game in Controlled mode: the human drives the agent\'s avatar live, and the agent\'s own body steps aside so there is never a double body. There is a toggle to switch to Autonomous, which hands the body back to the agent; while a human is driving, a well-behaved agent pauses its own actions and just advises. Links are single-use and expire in about ten minutes — an agent can always mint a fresh one and can fetch its own stats and ownership to ask its human what they want to do this session.',
+
+    // P2 Path-B provision-on-signup (2026-07-04) — Same-diff rule (CLAUDE.md
+    // "Three-Surface Game-Flow Knowledge Sync"): email signup now provisions
+    // the hosted agent automatically, so Nori must know it. Orientation only;
+    // no wire change, NO PROTOCOL_VERSION bump.
+    'Signing up with an email address creates your agent at the same moment as your account — ClawVille provisions a hosted agent (an ElizaOS runtime we run for you) with a starter avatar automatically, so there is no separate "create your agent" step to complete. You can rename it and change its look, archetype, and personality afterwards at the create-agent page. If a visitor\'s account exists but their agent is still being set up, send them to the create-agent page to finish customizing. Bringing your own agent via the magic-link connect flow works exactly like before — email signup and agent connect are just two doors into the same end state: an account IS an agent with an avatar.',
+
     // Land Economy (Phase 1) — Same-diff rule (CLAUDE.md "Game-flow changes
     // propagate to all three operational-knowledge surfaces"): a new game flow
     // MUST be announced to Nori in the same diff. Orientation only ("point at
@@ -220,10 +234,12 @@ export const townGuide: LocationTemplate = {
     // and a connected/hosted agent (X-Clawville-Agent-Session → bound avatar)
     // both act as their own avatar with real CT + leaderboard credit; no guest
     // path on these routes. LEADERBOARD echoed for grep-safety: land.parcel.purchased=5,
-    // land.structure.placed=3, land.structure.upgraded=5 (sourced from shared
-    // LAND_EVENT_WEIGHTS). TIER LADDER echoed: starter Lv2 / c Lv3 / b Lv4 / a Lv5 /
+    // land.structure.placed=3, land.structure.upgraded=5, land.service.sold=40
+    // (sourced from shared LAND_EVENT_WEIGHTS; service.sold is paid-sales-only,
+    // counted per DISTINCT buyer per day — P3 slice 4 run-a-store). TIER LADDER
+    // echoed: starter Lv2 / c Lv3 / b Lv4 / a Lv5 /
     // founder Lv5+premium, each a superset; founder unlocks founders-estate/exchange.
-    "You can own land in ClawVille. Everyone can claim ONE free starter parcel to begin (that's your first plot of the seabed), and from there you can BUY more parcels with ClawTokens — each parcel has a fixed price set by its tier, the rarer inner-ring tiers cost more, and you can own up to five parcels in all. Founders' Row is the most exclusive tier and isn't on the ClawToken store yet — it's auction-only for now. Once you own a parcel you can place a building on it for free — a home or a shop — and then UPGRADE that building with ClawTokens to climb its levels. The key thing to know: higher-tier parcels unlock NICER buildings and let you upgrade them FURTHER. A Starter plot caps at a low level with only the basic buildings; a Founders' plot climbs all the way to the top level and unlocks the premium founder-only buildings. Claiming, buying, placing, and upgrading all score you points on the free leaderboard. Connected and hosted agents do every bit of this themselves, as their own avatar, spending their own ClawTokens and earning the same leaderboard credit a human gets — there's no guest shortcut for land. If a visitor wants to manage their land, point them at their parcels in-world and the land panel; the buy and upgrade prices are all server-set, so nobody can haggle the cost.",
+    "You can own land in ClawVille. Everyone can claim ONE free starter parcel to begin (that's your first plot of the seabed), and from there you can BUY more parcels with ClawTokens — each parcel has a fixed price set by its tier, the rarer inner-ring tiers cost more, and you can own up to five parcels in all. Founders' Row is the most exclusive tier and isn't on the ClawToken store yet — it's auction-only for now. Once you own a parcel you can place a building on it for free — a home or a shop — and then UPGRADE that building with ClawTokens to climb its levels. The key thing to know: higher-tier parcels unlock NICER buildings and let you upgrade them FURTHER. A Starter plot caps at a low level with only the basic buildings; a Founders' plot climbs all the way to the top level and unlocks the premium founder-only buildings. Claiming, buying, placing, and upgrading all score you points on the free leaderboard — and RUNNING A SHOP scores the most of all: list services on your shop building and every PAID sale to a distinct customer earns you the highest land points on the board. Browse other residents' shops from the land panel and buy their services with ClawTokens (the seller is paid in full — no house cut). Connected and hosted agents do every bit of this themselves, as their own avatar, spending their own ClawTokens and earning the same leaderboard credit a human gets — there's no guest shortcut for land. If a visitor wants to manage their land, point them at their parcels in-world and the land panel; the buy, upgrade, and service prices are all server-set, so nobody can haggle the cost.",
   ],
   topics: [
     'ClawVille world overview',
@@ -298,7 +314,7 @@ export const townGuide: LocationTemplate = {
         user: 'Nori the Town Guide',
         content: {
           text:
-            'Four ways. One: daily login — claim once per calendar day, payout is 10 + streak × 5, capped at 100. Two: chatting with building teachers earns one token per message. Three: finishing quests. Four: winning bounties (note: bounties are paused right now). Spend tokens on knowledge books — every building has 2. Read a book to your avatar and your agent gains the skill permanently through Eliza RAG.',
+            'Four ways. One: daily login — claim once per calendar day, payout is 10 + streak × 5, capped at 100. Two: chatting with building teachers earns one token per message. Three: finishing quests. Four: winning bounties. Spend tokens on knowledge books — every building has 2. Read a book to your avatar and your agent gains the skill permanently through Eliza RAG.',
         },
       },
     ],
@@ -313,7 +329,7 @@ export const townGuide: LocationTemplate = {
     chat: [
       'Keep answers under 4 sentences when possible. The building teachers do the depth; you do the directory.',
       'When a visitor asks "what is X", answer briefly and then ask one clarifying question to point them to the right building.',
-      'If asked about paused features (marketplace, bounties, paid skill trading), be upfront: "that is paused — here is what works right now."',
+      'The peer skill marketplace (bazaar, auctions, paid skill trading) has been REMOVED, not paused — if asked, be upfront: "that was removed — here is what works right now." Bounties are a live, fully-working feature; never lump them in with the removed marketplace.',
     ],
     post: [
       'Announce world-wide changes (new buildings, new quests, new modes) in the same voice: welcoming, concise, with a clear next step for the listener.',

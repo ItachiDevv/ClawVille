@@ -26,10 +26,8 @@
  *
  *   - avatars.clawTokens ................ liquid balance ("gold" tab)
  *   - claw_token_transactions ........ lifetime earnings ("earned" tab)
- *   - bazaar_transactions ........... skill sales volume ("skills-sold" tab)
  *   - quest_rewards ................. quest completions ("quests" tab)
  *   - bounty_reputation.totalCompleted   bounty completions ("bounties" tab)
- *   - published_skills .............. total skills authored ("authored" tab)
  *
  * A lightweight 30-second in-memory cache keeps the public browse path cheap
  * even if it ends up getting hit by every avatar on every page load. No
@@ -43,11 +41,9 @@ import {
   db,
   avatars,
   clawTokenTransactions,
-  bazaarTransactions,
-  publishedSkills,
   questRewards,
   bountyReputation,
-  openclawBots,
+  agentBots,
 } from '@clawville/database';
 import { LAND_EVENT_TYPES, LAND_EVENT_WEIGHTS, LAND_EVENT_DAILY_CAPS } from '@clawville/shared';
 import { sessionMiddleware } from '../middleware/auth';
@@ -62,8 +58,6 @@ type SortMode =
   | 'composite'
   | 'gold'
   | 'earned'
-  | 'skills-sold'
-  | 'skills-authored'
   | 'quests'
   | 'bounties';
 
@@ -77,8 +71,6 @@ interface LeaderboardEntry {
   // Metrics (all always populated so the UI can show the same row across tabs)
   gold: number;
   earned: number;
-  skillsSold: number;
-  skillsAuthored: number;
   questsCompleted: number;
   bountiesCompleted: number;
   compositeScore: number;
@@ -94,8 +86,6 @@ const VALID_SORTS: SortMode[] = [
   'composite',
   'gold',
   'earned',
-  'skills-sold',
-  'skills-authored',
   'quests',
   'bounties',
 ];
@@ -108,8 +98,6 @@ const VALID_SORTS: SortMode[] = [
 const COMPOSITE_WEIGHTS = {
   gold: 1,            // 1 pt per ClawToken held
   earned: 1,          // 1 pt per ClawToken ever earned (tracks activity, not hoarding)
-  skillsSold: 500,    // skilled sellers get big credit
-  skillsAuthored: 250, // publishing even without sales counts
   questsCompleted: 300,
   bountiesCompleted: 400,
 };
@@ -118,8 +106,6 @@ function computeComposite(e: Omit<LeaderboardEntry, 'rank' | 'compositeScore'>):
   return (
     e.gold * COMPOSITE_WEIGHTS.gold +
     e.earned * COMPOSITE_WEIGHTS.earned +
-    e.skillsSold * COMPOSITE_WEIGHTS.skillsSold +
-    e.skillsAuthored * COMPOSITE_WEIGHTS.skillsAuthored +
     e.questsCompleted * COMPOSITE_WEIGHTS.questsCompleted +
     e.bountiesCompleted * COMPOSITE_WEIGHTS.bountiesCompleted
   );
@@ -187,33 +173,6 @@ async function buildSnapshot(cap: number): Promise<LeaderboardSnapshot> {
     earnedRows.map((r) => [r.avatarId, Number(r.total) || 0])
   );
 
-  const soldRows = await db
-    .select({
-      avatarId: bazaarTransactions.sellerId,
-      total: sql<number>`count(*)`.as('total'),
-    })
-    .from(bazaarTransactions)
-    .groupBy(bazaarTransactions.sellerId);
-
-  const soldByAvatar = new Map<string, number>(
-    soldRows.map((r) => [r.avatarId, Number(r.total) || 0])
-  );
-
-  const authoredRows = await db
-    .select({
-      avatarId: publishedSkills.authorAvatarId,
-      total: sql<number>`count(*)`.as('total'),
-    })
-    .from(publishedSkills)
-    .where(sql`${publishedSkills.authorAvatarId} is not null`)
-    .groupBy(publishedSkills.authorAvatarId);
-
-  const authoredByAvatar = new Map<string, number>(
-    authoredRows
-      .filter((r): r is { avatarId: string; total: number } => r.avatarId !== null)
-      .map((r) => [r.avatarId, Number(r.total) || 0])
-  );
-
   const questRows = await db
     .select({
       avatarId: questRewards.avatarId,
@@ -246,8 +205,6 @@ async function buildSnapshot(cap: number): Promise<LeaderboardSnapshot> {
       archetype: avatar.archetype ?? null,
       gold: avatar.clawTokens || 0,
       earned: earnedByAvatar.get(avatar.id) || 0,
-      skillsSold: soldByAvatar.get(avatar.id) || 0,
-      skillsAuthored: authoredByAvatar.get(avatar.id) || 0,
       questsCompleted: questByAvatar.get(avatar.id) || 0,
       bountiesCompleted: bountyByAvatar.get(avatar.id) || 0,
     };
@@ -277,12 +234,6 @@ function sortBy(entries: LeaderboardEntry[], mode: SortMode): LeaderboardEntry[]
       break;
     case 'earned':
       sorted.sort((a, b) => b.earned - a.earned);
-      break;
-    case 'skills-sold':
-      sorted.sort((a, b) => b.skillsSold - a.skillsSold);
-      break;
-    case 'skills-authored':
-      sorted.sort((a, b) => b.skillsAuthored - a.skillsAuthored);
       break;
     case 'quests':
       sorted.sort((a, b) => b.questsCompleted - a.questsCompleted);
@@ -326,13 +277,17 @@ interface AgentScoreBreakdown {
   activity_silver: number;
   activity_bronze: number;
   activity_other: number;
-  // Land economy (Phase 1) — capped daily counts of land-acquisition events.
-  // Scored at LAND_W weights (parcel 5 / placed 3 / upgraded 5). Surfaced so a
-  // dashboard can explain land contribution to score. Additive: older clients
-  // (web leaderboard page keeps its own breakdown map) ignore these.
+  // Land economy — capped daily counts of land contribution events.
+  // Scored at LAND_W weights (parcel 5 / placed 3 / upgraded 5 / service sold
+  // 40). Surfaced so a dashboard can explain land contribution to score.
+  // Additive: older clients (web leaderboard page keeps its own breakdown map)
+  // ignore these. `land_services_sold` is the DISTINCT-BUYER, PAID-ONLY count
+  // (see the LAND_W/LAND_C comment + the CTE FILTER), so it reflects distinct
+  // paying customers served that period, not raw sale volume.
   land_parcels: number;
   land_structures_placed: number;
   land_structures_upgraded: number;
+  land_services_sold: number;
 }
 
 interface AgentLeaderboardEntry {
@@ -430,29 +385,55 @@ const DAILY_CAPS = {
  * `LAND_W` / `LAND_C` objects for the SAME bound-param ergonomics as `W`/`C`
  * above (`${LAND_W.parcelPurchased}` in the SQL template).
  *
- * Land events are SIMPLE point/count events — no bot carve-out, no activity
- * proportional-cap math — so they wire in exactly like `building.visited`:
- * `LEAST(COUNT(*) FILTER (...), cap)` per (subject, day), summed × weight.
+ * The first THREE land events (`parcel.purchased`, `structure.placed`,
+ * `structure.upgraded`) are SIMPLE SELF-SUBJECT point/count events — no bot
+ * carve-out, no activity proportional-cap math — so they wire in exactly like
+ * `building.visited`: `LEAST(COUNT(*) FILTER (...), cap)` per (subject, day),
+ * summed × weight. They are not wash-prone: you buy your OWN parcel and
+ * place/upgrade on it, so there is no cross-party collusion vector.
  *
  * NOTE — `land.parcel.purchased` is emitted by BOTH the priced buy route AND
  * the Slice-A free starter-claim (payload.amountCt=0). We score ALL parcel
  * acquisitions equally (a parcel acquired = weight 5, capped at 5/day). This is
  * consistent + simple, and the cap (5/day == MAX_PARCELS_PER_AVATAR) bounds it.
  *
- * `land.service.sold` (weight 40, cap 50) is intentionally NOT wired here —
- * Phase 1 ships no service routes, so no such events exist yet. It wires in
- * when service routes ship (mirror the three columns below for the 4th event).
+ * The FOURTH event, `land.service.sold` (weight 40, cap 50 — the highest land
+ * weight, tying `collaboration`), is DIFFERENT: it is a CROSS-SUBJECT event —
+ * the BUYER pays but the SELLER is scored (run-a-store income). Wired here as of
+ * P3 Slice 4 (2026-07-05). Two anti-farm carve-outs, applied ONLY to this event
+ * (see the CTE FILTER below), because cross-subject + top-weight makes it the
+ * one wash-tradeable land event:
+ *   (a) PAID-ONLY — a free (priceCt=0) sale is rank-inert. The FILTER uses a
+ *       throw-proof TEXT predicate (`payload->>'priceCt' IS NOT NULL AND <> '0'`),
+ *       NOT a `::int` cast: the FILTER runs over every row in the (subject,day)
+ *       group and other event types also carry a `priceCt` key (e.g.
+ *       exchange.listing.created), so a numeric cast would 500 the whole board
+ *       if any of them ever wrote a non-numeric priceCt. Free sales still LOG for
+ *       audit but give zero rank so a seller can't self-list at 0 CT and farm.
+ *   (b) DISTINCT-BUYER cap — the count is `COUNT(DISTINCT payload->>'buyerAvatarId')`,
+ *       NOT `COUNT(*)`. A single colluding buyer therefore credits the seller for
+ *       AT MOST ONE sale/day regardless of how many times they buy, collapsing a
+ *       2-party wash from 50/day to 1/day. Reaching the 50/day cap requires 50
+ *       DISTINCT funded buyer avatars (1-per-user), a real Sybil cost that the
+ *       (fp_hash, ip_prefix_hash) forensic tier then flags. This also aligns the
+ *       score with genuine reach (distinct customers served) over raw volume.
+ *   Attribution note: the row's fp/ip are the BUYER's (event emitted from the
+ *   buyer's request context) while the scored subject is the SELLER — but the
+ *   per-(subject,day) LEAST cap never keyed on fp/ip (that's the forensic tag,
+ *   not the cap key), so the mismatch neither breaks nor weakens the cap.
  */
 const LAND_W = {
   parcelPurchased: LAND_EVENT_WEIGHTS[LAND_EVENT_TYPES.PARCEL_PURCHASED],
   structurePlaced: LAND_EVENT_WEIGHTS[LAND_EVENT_TYPES.STRUCTURE_PLACED],
   structureUpgraded: LAND_EVENT_WEIGHTS[LAND_EVENT_TYPES.STRUCTURE_UPGRADED],
+  serviceSold: LAND_EVENT_WEIGHTS[LAND_EVENT_TYPES.SERVICE_SOLD],
 } as const;
 
 const LAND_C = {
   parcelPurchased: LAND_EVENT_DAILY_CAPS[LAND_EVENT_TYPES.PARCEL_PURCHASED],
   structurePlaced: LAND_EVENT_DAILY_CAPS[LAND_EVENT_TYPES.STRUCTURE_PLACED],
   structureUpgraded: LAND_EVENT_DAILY_CAPS[LAND_EVENT_TYPES.STRUCTURE_UPGRADED],
+  serviceSold: LAND_EVENT_DAILY_CAPS[LAND_EVENT_TYPES.SERVICE_SOLD],
 } as const;
 
 const AGENT_CACHE_TTL_MS = 60_000;
@@ -581,6 +562,7 @@ export async function buildAgentSnapshot(
     land_parcels: number;
     land_structures_placed: number;
     land_structures_upgraded: number;
+    land_services_sold: number;
     score: number;
   }>(sql`
     WITH
@@ -645,15 +627,49 @@ export async function buildAgentSnapshot(
             AND payload->>'placement' IS NOT NULL
             AND coalesce(payload->>'subjectType','') <> 'bot'
         )::int AS act_total,
-        -- Land economy (Phase 1) — simple per-day capped counts, identical shape
-        -- to building.visited above. parcel.purchased scores free starter +
-        -- priced buy equally (a parcel acquired); PHASE: land.service.sold weight
-        -- 40 wires here as a 4th column when service routes ship.
+        -- Land economy — per-day capped counts. The first THREE are simple
+        -- self-subject counts, identical shape to building.visited above.
+        -- parcel.purchased scores free starter + priced buy equally (a parcel
+        -- acquired).
         LEAST(COUNT(*) FILTER (WHERE event_type = 'land.parcel.purchased'), ${LAND_C.parcelPurchased})::int AS land_parcels_c,
         LEAST(COUNT(*) FILTER (WHERE event_type = 'land.structure.placed'), ${LAND_C.structurePlaced})::int AS land_struct_placed_c,
-        LEAST(COUNT(*) FILTER (WHERE event_type = 'land.structure.upgraded'), ${LAND_C.structureUpgraded})::int AS land_struct_upgraded_c
+        LEAST(COUNT(*) FILTER (WHERE event_type = 'land.structure.upgraded'), ${LAND_C.structureUpgraded})::int AS land_struct_upgraded_c,
+        -- land.service.sold (weight 40, P3 Slice 4) — the CROSS-SUBJECT land
+        -- event (buyer pays, SELLER scored). Two anti-farm carve-outs applied
+        -- ONLY here (see LAND_W/LAND_C comment): (a) PAID-ONLY — a priceCt=0
+        -- sale is rank-inert (still logs for audit); (b) DISTINCT-BUYER — count
+        -- DISTINCT buyerAvatarId, not rows, so a single colluding buyer credits
+        -- the seller at most once/day (collapses a 2-party wash from 50→1/day;
+        -- the 50/day cap now requires 50 distinct funded buyers = a Sybil cost).
+        LEAST(COUNT(DISTINCT payload->>'buyerAvatarId') FILTER (
+          WHERE event_type = 'land.service.sold'
+            -- PAID-ONLY, throw-proof: pure TEXT compare, never a ::int cast.
+            -- The FILTER is evaluated over every row in the (subject, day) group,
+            -- and OTHER event types also carry a 'priceCt' payload key (e.g.
+            -- exchange.listing.created), so a numeric cast here would 500 the
+            -- WHOLE board the day any of them ever writes a non-numeric priceCt.
+            -- priceCt is a non-negative INT (jsonb serializes it canonically as
+            -- '0','1',… — no decimals/leading zeros), so "paid" == present AND
+            -- not '0'. A missing key (NULL) fails closed (excluded).
+            AND payload->>'priceCt' IS NOT NULL
+            AND payload->>'priceCt' <> '0'
+        ), ${LAND_C.serviceSold})::int AS land_services_sold_c
       FROM events
       WHERE agent_id IS NOT NULL
+        -- House-agent carve-out (agent-metaverse P4 gate (a), landed early with
+        -- P1 slice 4): ClawVille-HOSTED house/fleet agents settle real economy
+        -- but must NEVER rank on the PUBLIC board. This is the DURABLE
+        -- subject-level exclusion — the house agent is excluded by a JOIN
+        -- against openclaw_bots.is_house (the FLAG itself), NOT by a
+        -- payload.isHouse tag, so a future fleet emitter that FORGETS to tag its
+        -- events can never silently rank a house agent (the tag can be dropped;
+        -- the flag cannot). The payload.isHouse tag on emissions stays for
+        -- forensics only. is_house is never serialized publicly — a scoring-time
+        -- SQL join does not violate that.
+        AND NOT EXISTS (
+          SELECT 1 FROM openclaw_bots ob
+          WHERE ob.agent_id = events.agent_id AND ob.is_house
+        )
         AND ts > now() - ${sql.raw(`interval '${interval}'`)}
       GROUP BY agent_id, date_trunc('day', ts)
     ),
@@ -701,14 +717,42 @@ export async function buildAgentSnapshot(
             AND payload->>'placement' IS NOT NULL
             AND coalesce(payload->>'subjectType','') <> 'bot'
         )::int AS act_total,
-        -- Land economy (Phase 1) — same per-day capped counts as agent_daily.
-        -- KEEP IN LOCKSTEP with agent_daily (same three events, same caps).
+        -- Land economy — same per-day capped counts as agent_daily.
+        -- KEEP IN LOCKSTEP with agent_daily (same FOUR events, same caps, same
+        -- paid-only + DISTINCT-buyer carve-out on land.service.sold).
         LEAST(COUNT(*) FILTER (WHERE event_type = 'land.parcel.purchased'), ${LAND_C.parcelPurchased})::int AS land_parcels_c,
         LEAST(COUNT(*) FILTER (WHERE event_type = 'land.structure.placed'), ${LAND_C.structurePlaced})::int AS land_struct_placed_c,
-        LEAST(COUNT(*) FILTER (WHERE event_type = 'land.structure.upgraded'), ${LAND_C.structureUpgraded})::int AS land_struct_upgraded_c
+        LEAST(COUNT(*) FILTER (WHERE event_type = 'land.structure.upgraded'), ${LAND_C.structureUpgraded})::int AS land_struct_upgraded_c,
+        -- land.service.sold — see agent_daily comment. PAID-ONLY + DISTINCT-BUYER.
+        LEAST(COUNT(DISTINCT payload->>'buyerAvatarId') FILTER (
+          WHERE event_type = 'land.service.sold'
+            -- PAID-ONLY, throw-proof: pure TEXT compare, never a ::int cast.
+            -- The FILTER is evaluated over every row in the (subject, day) group,
+            -- and OTHER event types also carry a 'priceCt' payload key (e.g.
+            -- exchange.listing.created), so a numeric cast here would 500 the
+            -- WHOLE board the day any of them ever writes a non-numeric priceCt.
+            -- priceCt is a non-negative INT (jsonb serializes it canonically as
+            -- '0','1',… — no decimals/leading zeros), so "paid" == present AND
+            -- not '0'. A missing key (NULL) fails closed (excluded).
+            AND payload->>'priceCt' IS NOT NULL
+            AND payload->>'priceCt' <> '0'
+        ), ${LAND_C.serviceSold})::int AS land_services_sold_c
       FROM events
       WHERE agent_id IS NULL
         AND avatar_id IS NOT NULL
+        -- House-agent carve-out — DURABLE subject-level exclusion, KEEP IN
+        -- LOCKSTEP with agent_daily (P4 gate (a), landed early with P1 slice 4)
+        -- so neither the house agent SUBJECT nor her AVATAR subject can score.
+        -- Belt-and-braces: these rows have agent_id IS NULL, so we reach
+        -- is_house through the avatar's owning user — exclude any avatar whose
+        -- user also owns a house openclaw_bots row. Joined against the FLAG, not
+        -- a payload tag, so a forgotten emitter tag can never rank the house
+        -- avatar. (The payload.isHouse tag on emissions stays for forensics.)
+        AND NOT EXISTS (
+          SELECT 1 FROM avatars a2
+          JOIN openclaw_bots ob ON ob.user_id = a2.user_id AND ob.is_house
+          WHERE a2.id = events.avatar_id
+        )
         AND ts > now() - ${sql.raw(`interval '${interval}'`)}
       GROUP BY avatar_id, date_trunc('day', ts)
     ),
@@ -733,6 +777,7 @@ export async function buildAgentSnapshot(
         SUM(ad.land_parcels_c)::int AS land_parcels,
         SUM(ad.land_struct_placed_c)::int AS land_structures_placed,
         SUM(ad.land_struct_upgraded_c)::int AS land_structures_upgraded,
+        SUM(ad.land_services_sold_c)::int AS land_services_sold,
         (
           SUM(ad.visits_c) * ${W.buildingVisit}
           + SUM(ad.chats_c) * ${W.teacherChat}
@@ -743,6 +788,7 @@ export async function buildAgentSnapshot(
           + SUM(ad.land_parcels_c) * ${LAND_W.parcelPurchased}
           + SUM(ad.land_struct_placed_c) * ${LAND_W.structurePlaced}
           + SUM(ad.land_struct_upgraded_c) * ${LAND_W.structureUpgraded}
+          + SUM(ad.land_services_sold_c) * ${LAND_W.serviceSold}
           + ROUND(SUM(
               CASE WHEN ad.act_total = 0 THEN 0
                    ELSE (ad.act_wins * ${A[1]} + ad.act_silver * ${A[2]} + ad.act_bronze * ${A[3]} + ad.act_other * ${A.default})
@@ -770,6 +816,7 @@ export async function buildAgentSnapshot(
         SUM(pd.land_parcels_c)::int AS land_parcels,
         SUM(pd.land_struct_placed_c)::int AS land_structures_placed,
         SUM(pd.land_struct_upgraded_c)::int AS land_structures_upgraded,
+        SUM(pd.land_services_sold_c)::int AS land_services_sold,
         (
           SUM(pd.visits_c) * ${W.buildingVisit}
           + SUM(pd.chats_c) * ${W.teacherChat}
@@ -780,6 +827,7 @@ export async function buildAgentSnapshot(
           + SUM(pd.land_parcels_c) * ${LAND_W.parcelPurchased}
           + SUM(pd.land_struct_placed_c) * ${LAND_W.structurePlaced}
           + SUM(pd.land_struct_upgraded_c) * ${LAND_W.structureUpgraded}
+          + SUM(pd.land_services_sold_c) * ${LAND_W.serviceSold}
           + ROUND(SUM(
               CASE WHEN pd.act_total = 0 THEN 0
                    ELSE (pd.act_wins * ${A[1]} + pd.act_silver * ${A[2]} + pd.act_bronze * ${A[3]} + pd.act_other * ${A.default})
@@ -818,13 +866,13 @@ export async function buildAgentSnapshot(
   const botRows = agentSubjectIds.length > 0
     ? await db
         .select({
-          agentId: openclawBots.agentId,
-          name: openclawBots.name,
-          userId: openclawBots.userId,
-          walletAddress: openclawBots.walletAddress,
+          agentId: agentBots.agentId,
+          name: agentBots.name,
+          userId: agentBots.userId,
+          walletAddress: agentBots.walletAddress,
         })
-        .from(openclawBots)
-        .where(inArray(openclawBots.agentId, agentSubjectIds))
+        .from(agentBots)
+        .where(inArray(agentBots.agentId, agentSubjectIds))
     : [];
 
   const botByAgentId = new Map(botRows.map((b) => [b.agentId, b]));
@@ -915,6 +963,7 @@ export async function buildAgentSnapshot(
         land_parcels: Number(r.land_parcels) || 0,
         land_structures_placed: Number(r.land_structures_placed) || 0,
         land_structures_upgraded: Number(r.land_structures_upgraded) || 0,
+        land_services_sold: Number(r.land_services_sold) || 0,
       },
       subjectType: r.subject_type,
     };
@@ -1095,7 +1144,7 @@ leaderboardRoutes.get('/reef-race/daily-best-lap', async (c) => {
  * GET /api/leaderboard
  *
  * Query params:
- *   sort    — composite | gold | earned | skills-sold | skills-authored | quests | bounties
+ *   sort    — composite | gold | earned | quests | bounties
  *   limit   — 1..100, default 50
  *   offset  — 0.., default 0
  *   me      — truthy to also include the current user's avatar row, even if
@@ -1154,7 +1203,7 @@ leaderboardRoutes.get('/', sessionMiddleware, async (c) => {
  * GET /api/leaderboard/stats
  *
  * Aggregate stats for the header banner — total avatars, total gold in
- * circulation, total skills ever sold, total quests completed.
+ * circulation, total quests completed.
  */
 leaderboardRoutes.get('/stats', sessionMiddleware, async (c) => {
   let snapshot = getCache(DEFAULT_CAP);
@@ -1165,11 +1214,6 @@ leaderboardRoutes.get('/stats', sessionMiddleware, async (c) => {
 
   const totalGold = snapshot.entries.reduce((sum, e) => sum + e.gold, 0);
   const totalEarned = snapshot.entries.reduce((sum, e) => sum + e.earned, 0);
-  const totalSkillsSold = snapshot.entries.reduce((sum, e) => sum + e.skillsSold, 0);
-  const totalSkillsAuthored = snapshot.entries.reduce(
-    (sum, e) => sum + e.skillsAuthored,
-    0
-  );
   const totalQuestsCompleted = snapshot.entries.reduce(
     (sum, e) => sum + e.questsCompleted,
     0
@@ -1184,8 +1228,6 @@ leaderboardRoutes.get('/stats', sessionMiddleware, async (c) => {
     rankedAvatars: snapshot.entries.length,
     totalGold,
     totalEarned,
-    totalSkillsSold,
-    totalSkillsAuthored,
     totalQuestsCompleted,
     totalBountiesCompleted,
     generatedAt: snapshot.generatedAt,

@@ -3,7 +3,9 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import dynamic from 'next/dynamic';
-import { useCheckAvatarName } from '@/hooks/use-avatar';
+import { useQuery } from '@tanstack/react-query';
+import { api } from '@/lib/api';
+import { useAvatar, useCheckAvatarName } from '@/hooks/use-avatar';
 import {
   MODEL_REGISTRY,
   PICKER_COLORS,
@@ -137,6 +139,40 @@ export default function CreateAgentPage() {
   const router = useRouter();
   const checkNameMutation = useCheckAvatarName();
 
+  // --- P2 customize mode (2026-07-04) --------------------------------------
+  // Signup now AUTO-PROVISIONS the agent (Path-B), so a fresh signup arrives
+  // here already owning an avatar. One avatar per user is a hard server
+  // constraint — POSTing again 400s — so when useAvatar resolves an existing
+  // avatar this page runs in CUSTOMIZE mode: prefill every field from the
+  // provisioned row and step 2 submits via PATCH /api/avatars/me (+
+  // /me/appearance) instead of POST. Users with NO avatar (legacy accounts,
+  // fail-soft provisioning failures → mode 'provisioning-pending') keep the
+  // original POST-create flow untouched.
+  const { data: avatar } = useAvatar();
+
+  // Guest gate (P2 post-panel BLOCKING #2, 2026-07-04). Guests (throwaway
+  // guest ACCOUNTS, is_guest=true) have DEMO economy only and never get a
+  // provisioned agent — the server 403s their customize PATCH with
+  // code:'guest_not_allowed'. Rather than let a guest enter the forge (and
+  // transiently flash Controlled/Autonomous UI on submit), bounce them to the
+  // signup/login surface. This is SCOPED to is_guest accounts ONLY: a fully
+  // un-authenticated visitor (api.me 401s → authData undefined) is the
+  // legitimate "agent creation IS signup" auto-provision path (POST /api/
+  // avatars mints a fresh user for a session-less caller) and MUST NOT be
+  // redirected. retry:false so the 401 resolves without hammering the API.
+  const { data: authData } = useQuery({
+    queryKey: ['auth-me'],
+    queryFn: () => api.me(),
+    retry: false,
+  });
+  const isGuestAccount = authData?.user?.isGuest === true;
+  useEffect(() => {
+    if (isGuestAccount) router.replace('/login');
+  }, [isGuestAccount, router]);
+
+  // A guest must never enter customize mode against their throwaway avatar.
+  const customizeMode = !isGuestAccount && !!avatar;
+
   // --- Tab + gate state ---------------------------------------------------
   const [selectedTab, setSelectedTab] = useState<TabId>(() => {
     const s = readSessionStep1();
@@ -188,11 +224,45 @@ export default function CreateAgentPage() {
   }, []);
 
   // --- Derived ------------------------------------------------------------
+  // Customize mode locks the harness tab: harness/agentCategory are
+  // deliberately IMMUTABLE server-side (hosting contract — neither PATCH /me
+  // nor /me/appearance accepts them), so offering the other tabs would be a
+  // dead-end promise. Tab ids are 1:1 with harness ids.
+  const lockedTab: TabId | null = customizeMode
+    ? ((TABS.some((t) => t.id === (avatar?.harness as TabId))
+        ? (avatar!.harness as TabId)
+        : 'milady'))
+    : null;
+  useEffect(() => {
+    if (lockedTab && selectedTab !== lockedTab) setSelectedTab(lockedTab);
+  }, [lockedTab, selectedTab]);
+
   const currentTabMeta = TABS.find((t) => t.id === selectedTab)!;
   const harness: HarnessId = selectedTab; // 1:1 with the tab id
-  const showGate = !currentTabMeta.hosted && hasAgentByTab[selectedTab] !== true;
+  // Customize mode bypasses the SetupGate — the avatar (and its harness
+  // choice) already exists; re-asking "do you run an agent?" is a dead-end.
+  const showGate =
+    !customizeMode && !currentTabMeta.hosted && hasAgentByTab[selectedTab] !== true;
 
-  const currentPool = MODELS_BY_TAB[selectedTab];
+  // Customize mode swaps modelKey via PATCH /me/appearance, whose harness-pool
+  // guard is STRICTER than the create-time picker: a milady-HARNESS avatar may
+  // only swap to category==='milady' models (chibi is create-time-only there),
+  // and a non-milady avatar can never pick a milady model. Pre-filter to the
+  // server-accepted pool so the flow can't dead-end on a cross-pool 400
+  // (mirrors edit-appearance-section.tsx, incl. its NULL-harness fallback of
+  // deriving the pool from the current model's category).
+  const currentPool = useMemo(() => {
+    const base = MODELS_BY_TAB[selectedTab];
+    if (!customizeMode || !avatar) return base;
+    const currentIsMilady = avatar.harness
+      ? avatar.harness === 'milady'
+      : MODEL_REGISTRY[avatar.modelKey as ModelKey]?.category === 'milady';
+    return base.filter((k) =>
+      currentIsMilady
+        ? MODEL_REGISTRY[k].category === 'milady'
+        : MODEL_REGISTRY[k].category !== 'milady',
+    );
+  }, [selectedTab, customizeMode, avatar]);
   const selectedModelInPool = currentPool.includes(selectedModel)
     ? selectedModel
     : currentPool[0];
@@ -207,10 +277,38 @@ export default function CreateAgentPage() {
     }
   }, [selectedTab, selectedModel]);
 
+  // --- Customize-mode prefill (P2) ----------------------------------------
+  // When the provisioned avatar resolves, hydrate the form from it — ONCE.
+  // An in-progress step-1 draft in sessionStorage wins (back-nav from step 2
+  // or a tab reload mid-edit: the user was already editing, don't clobber).
+  const prefilledFromAvatarRef = useRef(false);
+  useEffect(() => {
+    if (!avatar || prefilledFromAvatarRef.current) return;
+    prefilledFromAvatarRef.current = true;
+    if (readSessionStep1()?.name) return;
+    if (typeof avatar.name === 'string' && avatar.name) setAgentName(avatar.name);
+    if (typeof avatar.modelKey === 'string' && avatar.modelKey in MODEL_REGISTRY) {
+      setSelectedModel(avatar.modelKey as ModelKey);
+    }
+    if (typeof avatar.color === 'string' && VALID_COLOR_IDS.has(avatar.color)) {
+      setSelectedColor(avatar.color as PickerColorId);
+    }
+    if (avatar.gender === 'female' || avatar.gender === 'male') {
+      setGender(avatar.gender);
+    }
+  }, [avatar]);
+
   // --- Name availability debounce ----------------------------------------
   useEffect(() => {
     if (!agentName || agentName.length < 3) {
       setNameStatus(null);
+      return;
+    }
+    // Customize mode: keeping the avatar's CURRENT name is always valid — the
+    // availability probe would report it "taken" (by yourself) and dead-end
+    // the flow. PATCH /me only enforces uniqueness on a CHANGED name.
+    if (customizeMode && avatar?.name === agentName) {
+      setNameStatus({ available: true });
       return;
     }
     let cancelled = false;
@@ -227,7 +325,7 @@ export default function CreateAgentPage() {
       clearTimeout(timer);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [agentName]);
+  }, [agentName, customizeMode, avatar?.name]);
 
   // --- Thumbnail capture --------------------------------------------------
   const captureThumbnail = (): Promise<string> => {
@@ -440,13 +538,19 @@ export default function CreateAgentPage() {
             ClawVille <span className="text-white/15">//</span> Agent Forge
           </div>
           <h1 className="font-clawville text-3xl md:text-4xl text-white drop-shadow-[0_0_20px_rgba(0,229,255,0.25)] tracking-widest">
-            CAST YOUR AGENT
+            {customizeMode ? 'CUSTOMIZE YOUR AGENT' : 'CAST YOUR AGENT'}
           </h1>
+          {customizeMode && (
+            <p className="mt-2 text-[11px] text-white/50 font-mono uppercase tracking-wider text-center">
+              Your agent was provisioned at signup — fine-tune it here.
+            </p>
+          )}
         </div>
 
-        {/* ── Tab bar ─────────────────────────────────────────────────── */}
+        {/* ── Tab bar — customize mode locks it to the avatar's immutable
+               harness (server hosting contract) ─────────────────────────── */}
         <div className="flex flex-wrap justify-center gap-2 mb-6">
-          {TABS.map((tab) => {
+          {(lockedTab ? TABS.filter((t) => t.id === lockedTab) : TABS).map((tab) => {
             const isActive = selectedTab === tab.id;
             const accent = tab.id === 'milady' ? 'pink' : 'cyan';
             return (

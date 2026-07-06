@@ -25,7 +25,7 @@
  *   - Backend / RNG / wager program (Concern 6.1+)
  */
 
-import { useCallback, useEffect } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import dynamic from 'next/dynamic';
 import Link from 'next/link';
 import SceneTransition, { useSceneTransition } from '@/components/transitions/SceneTransition';
@@ -37,6 +37,7 @@ import CoveMobileControls from '@/components/cove/CoveMobileControls';
 import SupportLauncher from '@/components/support/SupportLauncher';
 import { useAvatar } from '@/hooks/use-avatar';
 import { useGameStore } from '@/stores/game';
+import { useCoveStore } from '@/stores/cove';
 import { useIsMobile } from '@/hooks/use-is-mobile';
 import { MAP_WIDTH, MAP_HEIGHT } from '@/lib/pixi/tilemap-data';
 
@@ -112,6 +113,27 @@ export default function CovePage() {
       );
     }
   }, [avatar]);
+
+  // ── Table deep-link: /cove?table=blackjack|holdem|baccarat ─────────────────
+  // Opens that table's modal directly on load. Shareable links for players,
+  // and the deterministic entry point browser tests need — the modals are
+  // otherwise reachable only by walking the avatar to a 3D hotspot, which
+  // automation can't do reliably. The opener arg is only the INITIAL HUD
+  // balance (each modal re-derives the real balance from its own API
+  // responses), so firing before the avatar query settles is harmless.
+  const tableDeepLinkFiredRef = useRef(false);
+  useEffect(() => {
+    if (tableDeepLinkFiredRef.current) return;
+    tableDeepLinkFiredRef.current = true;
+    const table = new URLSearchParams(window.location.search).get('table');
+    if (!table) return;
+    const balance = avatar?.clawTokens ?? 0;
+    const cove = useCoveStore.getState();
+    if (table === 'holdem') cove.openHoldemTable(balance);
+    else if (table === 'blackjack') cove.openBlackjackTable(balance);
+    else if (table === 'baccarat') cove.openBaccaratTable(balance);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleBack = useCallback(() => {
     // Reset cursor in case the player was hovering a slot hotspot

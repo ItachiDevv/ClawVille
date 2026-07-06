@@ -48,7 +48,7 @@ export default function OpenClawAvatarPage() {
     setError('');
     setLoading(true);
     try {
-      const result = await api.registerOpenClaw({
+      const result = await api.registerAgentBot({
         mode: 'avatar',
         gatewayUrl,
         authToken,
@@ -76,7 +76,7 @@ export default function OpenClawAvatarPage() {
   async function handleDisconnect() {
     if (!sessionId) return;
     try {
-      await api.unregisterOpenClaw(sessionId);
+      await api.unregisterAgentBot(sessionId);
     } catch {
       // Ignore
     }

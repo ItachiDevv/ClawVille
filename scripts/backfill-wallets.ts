@@ -17,7 +17,7 @@ import { config } from 'dotenv';
 import { resolve } from 'path';
 config({ path: resolve(__dirname, '../.env.local') });
 
-import { db, avatars, openclawBots } from '@clawville/database';
+import { db, avatars, agentBots } from '@clawville/database';
 import { isNull } from 'drizzle-orm';
 import { ensureWallet } from '../apps/api/src/services/wallet-service';
 
@@ -48,9 +48,9 @@ async function main() {
 
   if (doAgents) {
     agentTargets = await db
-      .select({ id: openclawBots.id, agentId: openclawBots.agentId, name: openclawBots.name })
-      .from(openclawBots)
-      .where(isNull(openclawBots.walletAddress));
+      .select({ id: agentBots.id, agentId: agentBots.agentId, name: agentBots.name })
+      .from(agentBots)
+      .where(isNull(agentBots.walletAddress));
     console.log(`[backfill] Agents without a wallet: ${agentTargets.length}`);
   }
 

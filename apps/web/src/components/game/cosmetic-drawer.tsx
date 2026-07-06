@@ -7,9 +7,9 @@
  * ------------------
  * The cosmetics shop is a first-party CT wardrobe (skins, hats, auras,
  * boards, emotes …). It now wears the same @/components/rpg toolkit chrome
- * as the Exchange / Bazaar / Bounty board so the polish bar matches the rest
- * of the Gameify surface — rune-framed modal, rarity-tiered cosmetic tiles
- * (RuneFrame), CT token badge, themed empty states.
+ * as the Exchange / Land Office / Bounty board so the polish bar matches the
+ * rest of the Gameify surface — rune-framed modal, rarity-tiered cosmetic
+ * tiles (RuneFrame), CT token badge, themed empty states.
  *
  * Cyan/wardrobe palette: the modal sits on the `rare` (cyan) tier so the
  * chrome reads "cosmetics / loadout" rather than "marketplace" (amber) or

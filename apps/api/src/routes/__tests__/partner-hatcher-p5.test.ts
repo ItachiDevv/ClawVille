@@ -4,7 +4,7 @@
  * These run against the REAL `npcSimulation` singleton (NO DB, NO network) to
  * prove the two npc-simulation behaviours the P5-2 route fix relies on:
  *
- *   1. TRIGGER — `registerOpenClaw` THROWS when an override target NPC is already
+ *   1. TRIGGER — `registerAgentBot` THROWS when an override target NPC is already
  *      overridden. That throw is exactly what the register/PATCH override paths now
  *      catch to roll the DB write back and return a 503 (instead of ok:true +
  *      spawned:false handing the partner a bearer for a body that never appeared).
@@ -43,13 +43,13 @@ describe('Hatcher P5-2 — in-memory override-occupied + restore primitives', ()
       agentId, sessionId, sessionKey: sessionId, gatewayUrl: 'http://localhost:0',
       authToken: '', protocol: 'hatcher-proxy', mode: 'override',
       autonomyMode: 'server-managed', targetNpcId, ledgerCapable: true, boundUserId: null,
-    } as unknown as Parameters<typeof sim.npcSimulation.registerOpenClaw>[0];
+    } as unknown as Parameters<typeof sim.npcSimulation.registerAgentBot>[0];
   }
 
-  it('registerOpenClaw throws the TYPED OverrideTargetUnavailableError when the target is occupied (P5-2 trigger; nit #1 sentinel)', () => {
+  it('registerAgentBot throws the TYPED OverrideTargetUnavailableError when the target is occupied (P5-2 trigger; nit #1 sentinel)', () => {
     const target = NPC_IDS[1];
     const aSid = 'p5-occupant-A';
-    sim.npcSimulation.registerOpenClaw(
+    sim.npcSimulation.registerAgentBot(
       overrideConfig('hatcher:occupant-A', aSid, target),
       new MockClient() as never,
     );
@@ -58,7 +58,7 @@ describe('Hatcher P5-2 — in-memory override-occupied + restore primitives', ()
     // `instanceof`, never a message-string regex that could silently degrade.
     let caught: unknown;
     try {
-      sim.npcSimulation.registerOpenClaw(
+      sim.npcSimulation.registerAgentBot(
         overrideConfig('hatcher:intruder-B', 'p5-intruder-B', target),
         new MockClient() as never,
       );
@@ -67,7 +67,7 @@ describe('Hatcher P5-2 — in-memory override-occupied + restore primitives', ()
     }
     expect(caught).toBeInstanceOf(sim.OverrideTargetUnavailableError);
     expect((caught as InstanceType<typeof sim.OverrideTargetUnavailableError>).targetNpcId).toBe(target);
-    sim.npcSimulation.unregisterOpenClaw(aSid);
+    sim.npcSimulation.unregisterAgentBot(aSid);
   });
 
   it('a failed override re-register can RESTORE the prior body from the captured snapshot (P5-2 PATCH path)', () => {
@@ -76,46 +76,46 @@ describe('Hatcher P5-2 — in-memory override-occupied + restore primitives', ()
     const oldSid = 'p5-old-session';
     const oldCfg = overrideConfig(agentId, oldSid, target);
     const oldClient = new MockClient();
-    sim.npcSimulation.registerOpenClaw(oldCfg, oldClient as never);
+    sim.npcSimulation.registerAgentBot(oldCfg, oldClient as never);
 
     // Capture config+client BEFORE teardown (exactly what the PATCH handler does
     // so it can restore on a re-register failure).
     const liveSessions = sim.npcSimulation.findActiveSessionsByAgentIds([agentId]);
     expect(liveSessions).toContain(oldSid);
     const snap = liveSessions.map((sid) => ({
-      config: sim.npcSimulation.getOpenClawBotConfig(sid)!,
-      client: sim.npcSimulation.getOpenClawClientBySession(sid)!,
+      config: sim.npcSimulation.getAgentBotConfig(sid)!,
+      client: sim.npcSimulation.getAgentBotClientBySession(sid)!,
     }));
     expect(snap[0].config).toBeTruthy();
     expect(snap[0].client).toBeTruthy();
 
     // Tear down (PATCH unregisters the old body before re-register).
-    for (const sid of liveSessions) sim.npcSimulation.unregisterOpenClaw(sid);
+    for (const sid of liveSessions) sim.npcSimulation.unregisterAgentBot(sid);
     expect(sim.npcSimulation.findActiveSessionsByAgentIds([agentId])).toHaveLength(0);
 
     // Occupy the target with someone ELSE so the agent's re-register would fail.
     const blockerSid = 'p5-blocker';
-    sim.npcSimulation.registerOpenClaw(
+    sim.npcSimulation.registerAgentBot(
       overrideConfig('hatcher:blocker', blockerSid, target),
       new MockClient() as never,
     );
 
     // Re-register the agent's NEW body fails (target occupied by the blocker).
     expect(() =>
-      sim.npcSimulation.registerOpenClaw(
+      sim.npcSimulation.registerAgentBot(
         overrideConfig(agentId, 'p5-new-session', target),
         new MockClient() as never,
       ),
     ).toThrow();
 
     // Free the blocker's slot so the restore can re-take the agent's prior body.
-    sim.npcSimulation.unregisterOpenClaw(blockerSid);
+    sim.npcSimulation.unregisterAgentBot(blockerSid);
 
     // RESTORE the prior body from the captured snapshot.
-    for (const s of snap) sim.npcSimulation.registerOpenClaw(s.config, s.client as never);
+    for (const s of snap) sim.npcSimulation.registerAgentBot(s.config, s.client as never);
     // The agent's prior session is live again — not orphaned.
     expect(sim.npcSimulation.findActiveSessionsByAgentIds([agentId])).toContain(oldSid);
 
-    sim.npcSimulation.unregisterOpenClaw(oldSid);
+    sim.npcSimulation.unregisterAgentBot(oldSid);
   });
 });

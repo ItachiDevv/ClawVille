@@ -140,11 +140,19 @@ export const users = pgTable(
     // is_guest = true AND guest_expires_at < now() (TODO: scripts/prune-
     // guest-avatars.ts — not in this PR).
     //
-    // Brand carve-out: guest users are filtered out of the agent
-    // leaderboard, the per-activity leaderboards, and the /dash teacher-
-    // chat metric (same pattern as bot avatars in Q2 chunk #10). They still
-    // earn ClawTokens in-match — the dopamine works even pre-signup —
-    // but they get 0 leaderboard points.
+    // Brand carve-out — STALE-CLAIM FIX (2026-07-04, verified against live
+    // code): the GLOBAL agent/player leaderboard does NOT filter guests.
+    // `apps/api/src/routes/leaderboard.ts` contains no is_guest/isGuest
+    // predicate anywhere — the exclusions that DO exist there are the bot
+    // carve-out (`payload->>'subjectType' <> 'bot'`), the partner-import
+    // skill_md carve-out (`payload->>'via' <> 'partner-import'`), and the
+    // house-agent NOT-EXISTS join — so guest accounts CAN rank on the
+    // global board today. (The per-activity reward pipeline and the /dash
+    // teacher-chat metric have their own guest handling; this comment
+    // previously over-claimed a global-board filter that was never
+    // written.) Whether guests SHOULD be excluded from the global board is
+    // an OPEN FOUNDER DECISION — see docs/agent-metaverse-p2-plan.md
+    // "Explicit NON-goals". Do not add the SQL filter without that decision.
     // -----------------------------------------------------------------
     isGuest: boolean('is_guest').notNull().default(false),
     guestExpiresAt: timestamp('guest_expires_at', { withTimezone: true }),

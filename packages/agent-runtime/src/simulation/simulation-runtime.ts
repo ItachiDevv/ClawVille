@@ -45,6 +45,11 @@ import { createAvatarVisitBuildingAction } from './actions/avatar-visit-building
 import { createAvatarReturnHomeAction } from './actions/avatar-return-home';
 import { createAvatarSleepAction } from './actions/avatar-sleep';
 import { createAvatarWorldStateProvider } from './providers/avatar-world-state';
+import { resolveDirectiveBuildingId } from './directive-resolver';
+
+// Re-export so existing importers (and the bridge) can reach the resolver from
+// the runtime module; the implementation lives in the pure directive-resolver.
+export { resolveDirectiveBuildingId } from './directive-resolver';
 
 const SIM_NAMESPACE = '6ba7b810-9dad-11d1-80b4-00c04fd430c8';
 const SIM_AGENT_ID = uuidv5('clawville-simulation-agent', SIM_NAMESPACE) as UUID;
@@ -54,6 +59,13 @@ const SIM_WORLD_ID = uuidv5('clawville-simulation-world', SIM_NAMESPACE) as UUID
 export interface SimulationRuntimeDeps {
   stateStore: AvatarStateStore;
   buildingCenters: BuildingCenters;
+  /**
+   * Optional id→display-name map (e.g. { 'memory-rag': "Squidward's House" }),
+   * supplied by the bridge from @clawville/shared MAP_LOCATIONS. Lets a directive
+   * resolve to a building by its human-facing NAME as well as its id. Absent ⇒
+   * the resolver is id-only (byte-identical to pre-Advisory-1).
+   */
+  buildingLabels?: Record<string, string>;
   buildingActivities: BuildingActivities;
   activityEmojis: ActivityEmojis;
   pathfind: PathfindFn;
@@ -211,8 +223,17 @@ export class SimulationRuntime {
   /**
    * Plan the next action for a single avatar using the LLM.
    * Called by the bridge when an avatar is idle and cooldown has elapsed.
+   *
+   * P3 slice 2: `opts.directiveContext` is a pre-formatted top-priority block
+   * (the human's current directive, formatted by
+   * `agent-autonomy-state.formatDirectiveContext` in apps/api). When present it
+   * is prepended to the planning prompt so the directive shapes the choice; when
+   * absent/empty the prompt is byte-identical to the pre-directive behavior.
    */
-  async planAvatarNextAction(userId: string): Promise<ActionResult | null> {
+  async planAvatarNextAction(
+    userId: string,
+    opts: { directiveContext?: string | null } = {},
+  ): Promise<ActionResult | null> {
     if (!this.initialized) return null;
     const runtime = this.getRuntime();
     if (!runtime) return null;
@@ -235,6 +256,38 @@ export class SimulationRuntime {
           targetUserId: userId,
         } as any,
       };
+
+      // P3 slice 2 (fix, 2026-07-04): deterministically bias toward a building the
+      // directive NAMES. Without this the directive never measurably steers the
+      // avatar: the AVATAR_WORLD_STATE provider only lists the 6 NEAREST buildings,
+      // so a far target (e.g. memory-rag, ~8300px away, rank #9) is neither in the
+      // model's menu nor its examples, and gpt-4o-mini keeps its local loop —
+      // exactly the observed "directive has no effect" symptom. Text-only bias is
+      // not enough for a small model, so when the directive resolves to a known
+      // building and the avatar is not already heading there, dispatch the move
+      // directly (the honest, MEASURABLE bias the slice promises). Byte-identical
+      // to pre-slice-2 when no directive is present (resolver returns null on '').
+      if (opts.directiveContext && opts.directiveContext.trim().length > 0) {
+        const target = resolveDirectiveBuildingId(
+          opts.directiveContext,
+          this.deps.buildingCenters,
+          this.deps.buildingLabels,
+        );
+        if (target && avatar.destinationBuildingId !== target) {
+          const directed = await this.dispatchAction(
+            { action: 'AVATAR_MOVE_TO_BUILDING', userId, buildingId: target },
+            message,
+          );
+          // Only short-circuit on success. A failed move (unknown id / no path)
+          // falls through to the normal LLM plan so the avatar is never stuck.
+          if (directed?.success) {
+            avatar.lastActionName = 'AVATAR_MOVE_TO_BUILDING';
+            avatar.lastActionResult = directed.text ?? 'OK';
+            avatar.behaviorCooldown = 100;
+            return directed;
+          }
+        }
+      }
 
       // Compose state with the AVATAR_WORLD_STATE provider
       let providerText = '';
@@ -288,14 +341,25 @@ export class SimulationRuntime {
         ? `Budget remaining: ${avatar.budgetMaxNt - avatar.budgetSpent} NT, ${avatar.budgetMaxPurchases - avatar.budgetPurchaseCount} purchases.`
         : '';
 
+      // P3 slice 2 directive bias — prepend the human's current directive as a
+      // top-priority block and swap the closing guidance line so the model
+      // pursues it. Empty directive ⇒ prompt is byte-identical to pre-slice-2.
+      const directiveBlock =
+        opts.directiveContext && opts.directiveContext.trim().length > 0
+          ? opts.directiveContext.trim()
+          : '';
+
       const prompt = [
+        ...(directiveBlock ? [directiveBlock, ''] : []),
         providerText,
         budgetLine,
         '',
         'Decide what this avatar should do next. Choose ONE of:',
         ...actionChoices,
         '',
-        'Favor variety — pick buildings the avatar has not visited yet. When visiting a building, try buying a book and learning from it before moving on. After several visits, return home and sleep.',
+        directiveBlock
+          ? 'If your directive names a building or goal, choose the action that pursues it (e.g. move to that building). Otherwise favor variety.'
+          : 'Favor variety — pick buildings the avatar has not visited yet. When visiting a building, try buying a book and learning from it before moving on. After several visits, return home and sleep.',
         '',
         `Respond ONLY with a single-line JSON object. Use userId="${userId}". Examples:`,
         ...examples,
@@ -466,7 +530,7 @@ export class SimulationRuntime {
       const result = await action.handler(null, message, state, { parameters: params });
 
       // Track budget — increment on any purchase attempt, adjust if failed (compensating)
-      if (choice.action === 'BUY_ITEM' || choice.action === 'BUY_BAZAAR_LISTING') {
+      if (choice.action === 'BUY_ITEM') {
         const spent = result?.data?.price ?? 0;
         if (result?.success) {
           avatar.budgetSpent = Math.min(avatar.budgetMaxNt, avatar.budgetSpent + spent);

@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { eq, and, sql, isNull, or, gt } from 'drizzle-orm';
-import { db, avatars, avatarInventory, agents, openclawBots, users } from '@clawville/database';
+import { db, avatars, avatarInventory, agents, agentBots, users } from '@clawville/database';
 import { getBookById, getBooksForBuilding, KNOWLEDGE_BOOKS, BUILDING_MILADY_SKILLS } from '@clawville/shared';
 import { miladyGateway } from '../services/milady-gateway';
 import { debitClawTokens } from '../services/claw-token-ledger';
@@ -317,18 +317,41 @@ itemRoutes.post('/learn', requireAuthOrAgentSession, async (c) => {
     void (async () => {
       try {
         const activeBots = await db
-          .select({ agentId: openclawBots.agentId })
-          .from(openclawBots)
+          .select({ agentId: agentBots.agentId })
+          .from(agentBots)
           .where(
             and(
-              eq(openclawBots.userId, userId),
+              eq(agentBots.userId, userId),
               or(
-                isNull(openclawBots.sessionExpiresAt),
-                gt(openclawBots.sessionExpiresAt, sql`now()`),
+                isNull(agentBots.sessionExpiresAt),
+                gt(agentBots.sessionExpiresAt, sql`now()`),
               ),
-              isNull(openclawBots.sessionSweptAt),
+              isNull(agentBots.sessionSweptAt),
             ),
           );
+        // D7 slice-1: durable, agent-scoped, BEARER-FREE knowledge event so a
+        // briefly-disconnected agent can REPLAY the knowledge it gained (the RAM
+        // push below is live-only; the `book.read` row is human-scoped with no
+        // agent_id). NO skillUrl/toolsUrl here — those embed the raw session
+        // bearer and are session-specific; on replay the agent rebuilds them from
+        // its CURRENT session. One row per active agent bound to this user.
+        for (const b of activeBots) {
+          void logEventFromContext(c, {
+            eventType: 'agent.knowledge_added',
+            userId,
+            avatarId: avatar.id,
+            agentId: b.agentId,
+            buildingId: book.building,
+            payload: {
+              source: 'book',
+              buildingId: book.building,
+              skillName: `clawville-${book.building}`,
+              suggestedFilename: `clawville-${book.building}.md`,
+              sourceName: book.name,
+              knowledgeEntries: newKnowledge.slice(0, 8),
+            },
+          });
+        }
         const activeSessionIds = npcSimulation.findActiveSessionsByAgentIds(
           activeBots.map((b) => b.agentId),
         );

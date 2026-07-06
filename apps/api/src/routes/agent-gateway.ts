@@ -2,7 +2,8 @@ import { Hono } from 'hono';
 import { stream } from 'hono/streaming';
 import { z } from 'zod';
 import {
-  NPC_BUILDING_CENTERS,
+  BUILDING_INTERACTION_RADIUS,
+  buildingEdgeDistanceGamePx,
   BUILDING_OPENCLAW_THEMES,
   ACTIVITY_EMOJIS,
   BUILDING_ACTIVITIES,
@@ -12,23 +13,41 @@ import {
   DEFAULT_AGENT_CATEGORY,
   DEFAULT_AGENT_HARNESS,
   type NpcActivity,
-  type AgentPerception,
   type AgentStats,
-  type OpenClawRegistration,
+  type AgentSubstrateRegistration,
 } from '@clawville/shared';
 import { npcSimulation } from '../services/npc-simulation';
 import { findPath } from '../services/pathfinding';
 import { memoryService } from '../services/memory-service';
-import { db, openclawBots, avatars, users, buildingSkills, eq, and, sql } from '@clawville/database';
+import { db, agentBots, avatars, users, buildingSkills, landParcels, eq, and, sql } from '@clawville/database';
 import { agentOrchestrator } from '../services/agent-orchestrator';
 import { getSessionAgent } from '../services/session-agent-map';
-import { OpenClawClient } from '../services/openclaw-client';
+import { AgentSubstrateClient } from '../services/agent-substrate-client';
 import {
   buildAvatarSessionConfig,
   buildOverrideSessionConfig,
+  isSessionRestorable,
 } from '../services/agent-session-config';
+// /reconnect session-mint planner (P0 gate fix, 2026-07-03) — pure decision
+// module (ledger/dormancy/credential rules) shared with its DB-free unit tests.
+// `gatewayCredentialZodFields` is the SAME zod trio connectSchema spreads below,
+// so /reconnect credentials are validated exactly like /connect structurally.
+import {
+  gatewayCredentialZodFields,
+  planReconnectSession,
+} from '../services/agent-reconnect-session';
 import { ensureWallet, ensureWalletWithFirstTimeSecret } from '../services/wallet-service';
-import { creditClawTokens } from '../services/claw-token-ledger';
+// Shared own-property building-center guard (prototype-key CT-farm defense) used by
+// /visit-building, /building/:buildingId/chat and /move. Lives in its own
+// dependency-free module so the F1 money-path test can exercise the SAME guard.
+import { resolveBuildingCenter } from '../services/building-center';
+// Once-per-day building reward + bot→avatar resolver — extracted (P1 slice 4) to
+// the dependency-light services/building-reward.ts so the autonomous settle path
+// shares the SAME probe+credit these routes use. Behavior-identical re-import.
+import {
+  creditBuildingRewardOncePerDay,
+  resolveAvatarIdForBot,
+} from '../services/building-reward';
 import { buildRuntimeServices } from '../services/runtime-services-adapter';
 import { getSystemNpcAgent } from '../services/system-npc-seeder';
 import {
@@ -36,14 +55,34 @@ import {
   generateIdentityKeypairForUser,
 } from '../services/identity-service';
 import { mintSessionTicket } from '../services/session-ticket-service';
+// Magic-link onboarding D5 (2026-07-02) — pure status-shape builder + the
+// read-side ledger predicate (dependency-free module, so the unbound→null
+// honesty rule is unit-tested without this route graph's env requirements).
+import {
+  buildAgentStatusResponse,
+  sessionLedgerCapable,
+  type AgentStatusStats,
+  type AgentStatusOwnership,
+} from '../services/agent-owner-binding';
+// Cached public-board lookup (same score/rank the /leaderboard page shows;
+// precedent: partner-hatcher.ts stats endpoint imports this the same way).
+import { getAgentLeaderboardEntry } from './leaderboard';
 import { logEvent, logEventFromContext } from '../services/event-logger';
 import { issueChallenge, consumeNonce } from '../services/auth-challenge';
 import {
   computeSessionExpiresAt,
   expireSession,
   extendSessionTtl,
-} from '../services/openclaw-session-sweeper';
-import { drainKnowledgeEvents, clearSessionQueue } from '../services/skill-event-bus';
+} from '../services/agent-session-sweeper';
+import { drainKnowledgeEvents, drainAgentStreamEvents, clearSessionQueue } from '../services/skill-event-bus';
+import {
+  REPLAY_LIMIT_MAX,
+  parseReplayQuery,
+  parseCursorValue,
+  projectDurableEvent,
+  computeNextCursor,
+} from '../services/agent-stream-config';
+import { queryDurableAgentEvents } from '../services/agent-event-query';
 import { runTool } from '../services/skill-tools-dispatcher';
 import { coveBlackjackRouter } from './cove-blackjack';
 import { covePokerMttRouter } from './cove-poker-mtt';
@@ -54,6 +93,7 @@ import {
   isReservedPartnerIdentityType,
 } from '../services/reserved-agent-namespaces';
 import { getBlackjackSkillContext } from '../services/game-skill-memory';
+import { readEarnedSkillLessons, recordEarnedSkillLesson } from '../services/earned-skill-memory';
 import {
   getBooksForBuilding,
   SHOP_BUILDINGS,
@@ -133,23 +173,13 @@ const reconnectRateLimiter = createRateLimiter({
 });
 
 // ---------------------------------------------------------------------------
-// resolveAvatarIdForBot — map an openclaw_bots.userId to that user's avatars.id
-// ---------------------------------------------------------------------------
-// CT credits MUST target an `avatars.id` (the ledger row-locks the avatars
-// row). A connected agent's `openclaw_bots.id` is NOT an avatars PK — crediting
-// it threw "avatar not found" (swallowed), so connected agents never earned CT
-// for building visits / teacher chats. This resolves the human's avatar via the
-// bot's bound userId. Returns null when the bot is anonymous (no userId) or the
-// user has no avatar yet — callers then skip the credit honestly (tokenAwarded
-// stays 0) rather than throwing. (2026-06-01, Hatcher Phase A bug fix.)
-async function resolveAvatarIdForBot(botUserId: string | null): Promise<string | null> {
-  if (!botUserId) return null;
-  const avatar = await db.query.avatars.findFirst({
-    where: eq(avatars.userId, botUserId),
-    columns: { id: true },
-  });
-  return avatar?.id ?? null;
-}
+// resolveAvatarIdForBot + creditBuildingRewardOncePerDay — MOVED (P1 slice 4,
+// 2026-07-03) to the dependency-light `services/building-reward.ts` VERBATIM so
+// the autonomous settle path (world-teacher-chat.ts) shares the EXACT same
+// once-per-day probe + ledger credit these two gateway call sites use (identical
+// economics; one probe key = no double-dip across paths). Behavior at the
+// `/visit-building` + `/building/:buildingId/chat` call sites is unchanged.
+// (Imported at the top of this file.)
 
 // ---------------------------------------------------------------------------
 // POST /api/agent/connect  — Universal agent registration
@@ -189,10 +219,11 @@ const connectSchema = z.object({
   color: z.number().int().min(0).max(0xffffff).optional(),
   personality: z.string().max(200).optional(),
 
-  // Gateway config (required for chat-routing agents, ignored for nanoclaw/anonymous/milady)
-  gatewayUrl: z.string().url().optional(),
-  authToken: z.string().min(1).optional(),
-  protocol: z.enum(['openai-compat', 'anthropic', 'custom-webhook', 'nanoclaw']).optional(),
+  // Gateway config (required for chat-routing agents, ignored for nanoclaw/anonymous/milady).
+  // The trio is the SHARED `gatewayCredentialZodFields` (agent-reconnect-session.ts)
+  // so /reconnect's optional credential re-supply is validated with the EXACT same
+  // shapes — structural parity, not a mirror.
+  ...gatewayCredentialZodFields,
   autonomyMode: z.enum(['server-managed', 'self-managed']).optional(),
 
   // Spawn position / stats
@@ -221,7 +252,14 @@ const connectSchema = z.object({
   // row that masquerades as a Hatcher agent (and claim the hatcher avatar
   // category) without the partner signature — so it's not allowed on /connect.
   // See `.claude/plans/hatcher-integration.md` §13/§14 (proxy model is primary).
-  identityType: z.enum(['openclaw', 'ironclaw', 'nanoclaw', 'milady', 'custom', 'anonymous']).optional(),
+  //
+  // `hermes` (magic-link onboarding D7, 2026-07-02): a self-hosted `hermes run`
+  // connects like a nanoclaw-style self-managed pull agent. EXPLICIT opt-in
+  // ONLY — hermes is deliberately NOT inferred from gatewayUrl or any other
+  // field (the inference chain below is unchanged); a Hermes CLI declares
+  // `identityType: 'hermes'` itself. Session semantics (no-gateway fail-soft
+  // wire, restorability) live in agent-session-config.ts.
+  identityType: z.enum(['openclaw', 'ironclaw', 'nanoclaw', 'milady', 'custom', 'anonymous', 'hermes']).optional(),
 
   // Phase 5 — explicit identity key for first-contact bootstrap. When
   // `identityType` + `identityKey` are both present we resolve-or-
@@ -343,8 +381,10 @@ agentGatewayRoutes.post('/connect', async (c) => {
       : data.gatewayUrl ? 'openclaw'
       : 'anonymous');
 
-  // NanoClaw agents are always self-managed
-  const autonomyMode = data.protocol === 'nanoclaw'
+  // NanoClaw agents are always self-managed; so are Hermes agents (D7 —
+  // `hermes run` polls our REST like nanoclaw does; there is no gateway for
+  // the server to drive, so server-managed would leave a mute body).
+  const autonomyMode = data.protocol === 'nanoclaw' || identityType === 'hermes'
     ? 'self-managed'
     : (data.autonomyMode ?? 'server-managed');
 
@@ -378,7 +418,7 @@ agentGatewayRoutes.post('/connect', async (c) => {
   const agentStats = data.stats ?? { hp: 100, attack: 10, defense: 8, speed: 6 };
 
   // Render-model surface for a connected agent = `species` (the
-  // openclaw_bots.species column + the OpenClawRegistration config). Resolved
+  // openclaw_bots.species column + the AgentSubstrateRegistration config). Resolved
   // ONCE here so the persisted row, the spawn config, and the in-world sim all
   // agree. A returning agent keeps its stored species (set in the existing-row
   // branch below); a new one falls back to the Milady default (Step 2b) when no
@@ -411,8 +451,8 @@ agentGatewayRoutes.post('/connect', async (c) => {
   let existingBoundUserId: string | null = null;
 
   try {
-    const existing = await db.query.openclawBots.findFirst({
-      where: eq(openclawBots.agentId, resolvedAgentId),
+    const existing = await db.query.agentBots.findFirst({
+      where: eq(agentBots.agentId, resolvedAgentId),
     });
 
     if (existing) {
@@ -448,7 +488,7 @@ agentGatewayRoutes.post('/connect', async (c) => {
       const persistedSpecies = data.species ?? existing.species ?? resolvedSpecies;
       resolvedSpecies = persistedSpecies;
 
-      await db.update(openclawBots).set({
+      await db.update(agentBots).set({
         identityType,
         gatewayUrl: data.gatewayUrl ?? existing.gatewayUrl,
         protocol: data.protocol ? wireProtocol : existing.protocol,
@@ -480,14 +520,14 @@ agentGatewayRoutes.post('/connect', async (c) => {
         // event for the rest of its life.
         sessionSweptAt: null,
         updatedAt: new Date(),
-      }).where(eq(openclawBots.id, existing.id));
+      }).where(eq(agentBots.id, existing.id));
     } else {
       // First-time contact — use miladyCharacterName when present so the
       // bot is named from the Milady runtime rather than needing a separate
       // `name` field in the request body.
       const insertName = data.miladyCharacterName ?? data.name ?? null;
 
-      const [inserted] = await db.insert(openclawBots).values({
+      const [inserted] = await db.insert(agentBots).values({
         agentId: resolvedAgentId,
         identityType,
         gatewayUrl: data.gatewayUrl ?? null,
@@ -515,7 +555,7 @@ agentGatewayRoutes.post('/connect', async (c) => {
         // building visit, AND every mutating gateway action (move / chat /
         // visit-building / building-chat / combat-action / emote, all routed
         // through `resolveSession` below, FIX-4 2026-06-13). The 5-min sweeper
-        // in openclaw-session-sweeper.ts reaps anything past expiry.
+        // in agent-session-sweeper.ts reaps anything past expiry.
         sessionExpiresAt,
         // Restart survival (2026-06-11) — one-way hash of this connect's
         // bearer so the session is restorable from the row after a restart.
@@ -578,7 +618,7 @@ agentGatewayRoutes.post('/connect', async (c) => {
   if (ownershipRebound) {
     try {
       for (const stale of npcSimulation.findActiveSessionsByAgentIds([resolvedAgentId])) {
-        npcSimulation.unregisterOpenClaw(stale);
+        npcSimulation.unregisterAgentBot(stale);
       }
     } catch (err) {
       console.error('[AgentConnect] stale-session eviction on rebind failed (non-fatal):', err);
@@ -608,7 +648,7 @@ agentGatewayRoutes.post('/connect', async (c) => {
       // from the row — the structural prevention against mint↔restore drift
       // (diagnostic-2026-06-12 D1). `storedProtocol: wireProtocol` is exactly
       // what gets PERSISTED on the row, so restore reads the same input.
-      const config: OpenClawRegistration = buildOverrideSessionConfig({
+      const config: AgentSubstrateRegistration = buildOverrideSessionConfig({
         mode: 'override',
         agentId: resolvedAgentId,
         sessionId,
@@ -625,8 +665,8 @@ agentGatewayRoutes.post('/connect', async (c) => {
         // live row at spend time (rebind backstop, hardening round 2).
         boundUserId,
       });
-      const client = new OpenClawClient(config);
-      npcSimulation.registerOpenClaw(config, client);
+      const client = new AgentSubstrateClient(config);
+      npcSimulation.registerAgentBot(config, client);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       // Override registration failed (e.g. NPC already taken) — no session was
@@ -657,7 +697,7 @@ agentGatewayRoutes.post('/connect', async (c) => {
       // `http://localhost:0` gateway and 502s. `species: resolvedSpecies` was
       // already defaulted to the Milady key above (connect has no hatcher
       // branch), so the builder passes it through unchanged.
-      const config: OpenClawRegistration = buildAvatarSessionConfig({
+      const config: AgentSubstrateRegistration = buildAvatarSessionConfig({
         mode: 'avatar',
         agentId: resolvedAgentId,
         sessionId,
@@ -684,13 +724,13 @@ agentGatewayRoutes.post('/connect', async (c) => {
 
       // Stub client — nanoclaw/anonymous agents don't use outbound chat routing
       // but the simulation still needs a client instance for its bot map.
-      const client = new OpenClawClient(config);
+      const client = new AgentSubstrateClient(config);
 
       const restoredState = lastX != null && lastY != null
         ? { lastX, lastY, knowledge }
         : undefined;
 
-      npcSimulation.registerOpenClaw(config, client, restoredState);
+      npcSimulation.registerAgentBot(config, client, restoredState);
     } catch (err) {
       console.error('[AgentConnect] NPC registration error:', err);
       // Non-fatal — agent still gets a sessionId for REST polling
@@ -1006,6 +1046,13 @@ const reconnectSchema = z.object({
   userId: z.string().uuid(),
   nonce: z.string().min(32).max(64),
   signature: z.string().min(80).max(96),
+  // OPTIONAL gateway-credential re-supply (P0 gate fix, 2026-07-03). A
+  // real-gateway agent (openclaw/ironclaw/custom) whose outbound auth_token is
+  // never persisted can re-arm its outbound cognition client here; validated
+  // with the EXACT same shared zod shapes connectSchema uses. Omitted for a
+  // real-gateway type → the fresh session is registered DORMANT-INERT (the
+  // nanoclaw-style no-outbound fallback — "prefer dormant over broken").
+  ...gatewayCredentialZodFields,
 });
 
 agentGatewayRoutes.post('/reconnect', async (c) => {
@@ -1080,44 +1127,19 @@ agentGatewayRoutes.post('/reconnect', async (c) => {
   // `uuid` field surfaced in the response is the existing bot id so
   // the agent keeps a stable handle — or null if the user has never
   // connected a bot before (reconnect-on-fresh-device case).
-  const existingBot = await db.query.openclawBots.findFirst({
-    where: eq(openclawBots.userId, userId),
+  // FULL row (P0 gate fix, 2026-07-03): the session-mint below rebuilds the
+  // in-world register config from the row's stored fields, exactly the way
+  // restore does — `columns: {id}` is no longer enough.
+  const existingBot = await db.query.agentBots.findFirst({
+    where: eq(agentBots.userId, userId),
     orderBy: (t, { desc }) => [desc(t.lastSeenAt)],
-    columns: { id: true },
   });
 
-  // Phase 6.1 — refresh the bot's session TTL on signed-challenge
-  // reconnect so an expired+swept row pops back alive without needing
-  // to re-do the magic-link /connect dance. Without this update, the
-  // SKILL.md promise "Reconnecting after disconnect is free" was
-  // misleading: /reconnect was re-issuing the Lucia session for the
-  // human but leaving openclaw_bots.session_expires_at frozen at the
-  // last /connect time, so /api/agent/session-status would still
-  // report 410 Gone after a successful /reconnect.
-  // Capture the refreshed expiry so the response can surface it (2026-06-12 —
-  // pull-side expiry visibility, parity with /connect). Null when the user has
-  // no existing bot row to refresh (nothing to expire yet).
-  let reconnectExpiresAt: Date | null = null;
-  if (existingBot) {
-    reconnectExpiresAt = computeSessionExpiresAt();
-    try {
-      await db
-        .update(openclawBots)
-        .set({
-          sessionExpiresAt: reconnectExpiresAt,
-          sessionSweptAt: null,
-          lastSeenAt: new Date(),
-          updatedAt: new Date(),
-        })
-        .where(eq(openclawBots.id, existingBot.id));
-    } catch (err) {
-      console.error('[AgentReconnect] TTL refresh failed (non-fatal):', err);
-    }
-  }
-
-  // Mint the session ticket. `identityType='reconnect'` + `identityKey=userId`
+  // Mint the session ticket FIRST. `identityType='reconnect'` + `identityKey=userId`
   // records the provenance in the ticket row for audit without leaking the
-  // pubkey itself.
+  // pubkey itself. Ordered BEFORE the agent-session mint so a ticket failure
+  // (500) leaves the row's session_key_hash untouched — the caller retries a
+  // clean reconnect instead of holding a rebound row with no bearer.
   let sessionTicket: Awaited<ReturnType<typeof mintSessionTicket>>;
   try {
     sessionTicket = await mintSessionTicket({
@@ -1132,18 +1154,128 @@ agentGatewayRoutes.post('/reconnect', async (c) => {
     return c.json({ error: 'Failed to issue session ticket' }, 500);
   }
 
+  // Phase 6.1 — refresh the bot's session TTL on signed-challenge reconnect so
+  // an expired+swept row pops back alive without re-doing the magic-link
+  // /connect dance. Null when the user has no bot row (nothing to expire yet).
+  //
+  // P0 GATE FIX (2026-07-03, found live by restart-survival-proof.ts): the
+  // handler used to refresh the TTL but mint ONLY the human sessionTicket — a
+  // NON-restorable real-gateway agent (openclaw/ironclaw/custom, outbound
+  // auth_token never persisted) had NO self-recovery after an API restart,
+  // contradicting the protocol manual + the P0 design. We now ALSO mint a
+  // FRESH agent bearer for the row, using the same machinery /connect uses:
+  //   - `ag-<24B crypto-random base64url>` sessionId,
+  //   - `session_key_hash` REBOUND to the new bearer in the SAME row update as
+  //     the TTL (this is what invalidates the old bearer: lazy restore matches
+  //     by hash, and a still-in-RAM stale session is torn down by
+  //     validateLiveAgentSession's present-and-mismatched-hash check),
+  //   - RAM registration via npcSimulation.registerAgentBot with the config
+  //     rebuilt from the row (shared builders — the D1 anti-drift pattern).
+  // The mint decision (proof-carrying ledger rule, dormant-without-credentials
+  // fallback, partner-row refusal) lives in the pure, unit-tested
+  // `planReconnectSession` (services/agent-reconnect-session.ts).
+  let reconnectExpiresAt: Date | null = null;
+  let mintedSessionId: string | null = null;
+  let mintedDormant = false;
+  if (existingBot) {
+    reconnectExpiresAt = computeSessionExpiresAt();
+    const freshSessionId = `ag-${randomBytes(24).toString('base64url')}`;
+    const plan = planReconnectSession({
+      bot: existingBot,
+      provenUserId: userId,
+      sessionId: freshSessionId,
+      credentials: {
+        gatewayUrl: parsed.data.gatewayUrl,
+        authToken: parsed.data.authToken,
+        protocol: parsed.data.protocol,
+      },
+    });
+    try {
+      await db
+        .update(agentBots)
+        .set({
+          sessionExpiresAt: reconnectExpiresAt,
+          sessionSweptAt: null,
+          lastSeenAt: new Date(),
+          updatedAt: new Date(),
+          // Hash rebind ONLY when a session is actually minted. A no-mint plan
+          // (reserved partner row — hatcher self-restores via its own signed
+          // path) keeps today's TTL-refresh-only behavior and MUST NOT touch
+          // session_key_hash (that would kill the partner's live bearer).
+          ...(plan.mint
+            ? {
+                sessionKeyHash: plan.persist.sessionKeyHash,
+                ...(plan.persist.gatewayUrl ? { gatewayUrl: plan.persist.gatewayUrl } : {}),
+                ...(plan.persist.protocol ? { protocol: plan.persist.protocol } : {}),
+              }
+            : {}),
+        })
+        .where(eq(agentBots.id, existingBot.id));
+
+      if (plan.mint) {
+        // Evict every prior in-RAM session for this agentId BEFORE registering.
+        // Their bearers are already invalidated by the hash rebind above; the
+        // evict also releases an override-mode NPC seat so re-register can't
+        // throw against our own stale session. Body uniqueness holds either
+        // way: the avatar body id is the deterministic ocb-<base64url(agentId)>
+        // and registerAgentBot Map-SETs (replaces), so no path yields a second
+        // body for the same agent.
+        try {
+          for (const stale of npcSimulation.findActiveSessionsByAgentIds([existingBot.agentId])) {
+            npcSimulation.unregisterAgentBot(stale);
+          }
+        } catch (err) {
+          console.error('[AgentReconnect] stale-session eviction failed (non-fatal):', err);
+        }
+        const client = new AgentSubstrateClient(plan.config);
+        npcSimulation.registerAgentBot(plan.config, client, plan.restoredState);
+        mintedSessionId = freshSessionId;
+        mintedDormant = plan.dormant;
+      }
+    } catch (err) {
+      // Non-fatal for the magic-link leg: the ticket already minted, so the
+      // human flow still works. No sessionId is returned (a bearer whose hash
+      // persist failed — or whose body failed to register — would be
+      // dead-on-arrival); the agent simply reconnects again. Never log the raw
+      // sessionId (bearer credential) — digest only.
+      console.error(
+        `[AgentReconnect] session mint failed (non-fatal, ticket preserved) sess:${sessionDigest(freshSessionId)}:`,
+        err,
+      );
+      mintedSessionId = null;
+    }
+  }
+
   await logEvent({
     eventType: 'identity.reconnected',
     userId,
     avatarId: userAvatar?.id ?? null,
     agentId: existingBot?.id ?? null,
+    // Digest (never the raw bearer), stable per session — same rule as
+    // /connect's agent.connected event. Null when no session was minted.
+    sessionId: mintedSessionId ? sessionDigest(mintedSessionId) : null,
     payload: {
       via: 'signed-challenge',
+      sessionMinted: mintedSessionId !== null,
+      dormant: mintedDormant,
     },
   });
 
   return c.json({
     sessionTicket,
+    // P0 gate fix (2026-07-03), ADDITIVE: the fresh agent bearer + its TTL
+    // deadline. Present IFF the user has a bot row and the mint succeeded (a
+    // reserved partner row or a mint failure keeps the legacy ticket-only
+    // shape — sessionId simply absent). `dormant: true` marks a real-gateway
+    // session minted WITHOUT credentials: perceive/move/act works, outbound
+    // chat stays inert until a reconnect WITH {gatewayUrl, authToken, protocol}.
+    ...(mintedSessionId
+      ? {
+          sessionId: mintedSessionId,
+          expiresAt: reconnectExpiresAt!.toISOString(),
+          ...(mintedDormant ? { dormant: true } : {}),
+        }
+      : {}),
     avatarId: userAvatar?.id ?? null,
     uuid: existingBot?.id ?? null,
     // Pull-side expiry visibility (2026-06-12) — the refreshed TTL deadline,
@@ -1196,12 +1328,23 @@ agentGatewayRoutes.get('/session-status', async (c) => {
     return c.json({ error: 'Missing agentId query parameter' }, 400);
   }
 
-  const row = await db.query.openclawBots.findFirst({
-    where: eq(openclawBots.agentId, agentId),
+  const row = await db.query.agentBots.findFirst({
+    where: eq(agentBots.agentId, agentId),
     columns: {
       id: true,
       lastSeenAt: true,
       sessionExpiresAt: true,
+      // D-2/H1 — needed to decide whether the caller must reconnect (see below).
+      identityType: true,
+      protocol: true,
+      // D-2 refinement (Codex P0 gate) — a hatcher-proxy row self-restores ONLY if
+      // its proxy config is structurally present (restore returns null otherwise).
+      // Cheap null-presence lets session-status tell a permanently-degraded Hatcher
+      // row to reconnect instead of polling connected:true forever. No decrypt.
+      proxyUrl: true,
+      proxyTokenEnc: true,
+      proxyTokenIv: true,
+      proxyTokenTag: true,
     },
   });
 
@@ -1234,11 +1377,62 @@ agentGatewayRoutes.get('/session-status', async (c) => {
     );
   }
 
+  // D-2 (P0 lifecycle-truth) — a live DB TTL alone LIES after a restart: the in-RAM
+  // session Map is rebuilt empty, so a live-TTL row would report `connected:true`
+  // while nothing is attached (the pre-P0 desync — but v7's LAZY restore mostly
+  // heals it, see below). Reconcile against RAM.
+  const ramLive = npcSimulation.findActiveSessionsByAgentIds([agentId]).length > 0;
+
+  // When nothing is attached in RAM, whether the caller must reconnect depends on
+  // whether v7's lazy restore can self-heal the ORIGINAL bearer (openclaw-session-
+  // restore.ts): a self-healing type rebuilds transparently on the next bearer call,
+  // so `connected:true` is truthful and NO reconnect is forced — this preserves the
+  // Hatcher partner's transparent post-restart recovery. Only the unrestorable
+  // real-gateway types (openclaw/ironclaw/custom, whose outbound auth_token is never
+  // persisted) genuinely can't self-heal and get the needs-reconnect 410. TYPE-level
+  // (fail-safe for degraded restorable rows) — see `isSessionRestorable`.
+  //
+  // Refinement (Codex P0 gate): for a hatcher-proxy row, ALSO require the proxy
+  // config be structurally present — restore fails closed without it, so a row that
+  // permanently dropped its proxyUrl/token would otherwise report connected:true to
+  // a polling partner forever. This is the ONE cheap row-level case (null checks, no
+  // decrypt); undecryptable-key / SSRF-fail / override-collision stay type-level +
+  // documented (they need decrypt/DNS to detect, and the bearer gate is authoritative).
+  const hatcherProxyConfigPresent = !!(
+    row.proxyUrl && row.proxyTokenEnc && row.proxyTokenIv && row.proxyTokenTag
+  );
+  const restorable = isSessionRestorable(
+    row.identityType,
+    row.protocol,
+    hatcherProxyConfigPresent,
+  );
+
+  if (!ramLive && !restorable) {
+    return c.json(
+      {
+        connected: false,
+        needsReconnect: true,
+        reason: 'session_not_live',
+        lastSeenAt: row.lastSeenAt.toISOString(),
+        // Non-null: the `expired` guard above returned on a NULL sessionExpiresAt.
+        expiresAt: row.sessionExpiresAt!.toISOString(),
+        hint: 'Session row is live but no in-memory session is attached and it cannot self-restore. Call POST /api/agent/reconnect with a signed challenge to get a fresh sessionId.',
+      },
+      410,
+    );
+  }
+
   return c.json({
     connected: true,
     lastSeenAt: row.lastSeenAt.toISOString(),
     // Non-null: the `expired` guard above returned on a NULL sessionExpiresAt.
     expiresAt: row.sessionExpiresAt!.toISOString(),
+    // Magic-link onboarding D4 (2026-07-02, additive): TRUE while the agent's
+    // human owner is live-driving the bound avatar (Controlled mode). The
+    // agent should pause self-driving while true — same TTL map the world-side
+    // body suppression reads, so signal and enforcement cannot drift. Also
+    // pushed on the SSE `control` event + carried on every perception.
+    humanControlled: npcSimulation.isAgentHumanControlled(agentId),
   });
 });
 
@@ -1278,7 +1472,7 @@ agentGatewayRoutes.get('/wallet', async (c) => {
 
   // Fail-closed liveness gate (Codex auth-lens fix #5, 2026-06-03). This route
   // exposes the bound avatar's authoritative ClawToken balance, so it must NOT
-  // trust bare Map membership (`getOpenClawBotConfig`): an EXPIRED-but-in-map
+  // trust bare Map membership (`getAgentBotConfig`): an EXPIRED-but-in-map
   // session would otherwise keep reading a victim's live CT balance after the DB
   // TTL reaped it. Route through the SAME shared validator every other bearer
   // path uses (Map membership AND DB `session_expires_at > now`, NULL = expired,
@@ -1399,8 +1593,8 @@ agentGatewayRoutes.post('/disconnect', async (c) => {
   // just by passing B's agentId. Agents without a userId (pre-Phase-5
   // anonymous rows) can't be disconnected via this path; they fall back
   // to /openclaw/unregister.
-  const bot = await db.query.openclawBots.findFirst({
-    where: eq(openclawBots.agentId, agentId),
+  const bot = await db.query.agentBots.findFirst({
+    where: eq(agentBots.agentId, agentId),
     columns: { id: true, userId: true },
   });
   if (!bot || bot.userId !== userId) {
@@ -1419,7 +1613,7 @@ agentGatewayRoutes.post('/disconnect', async (c) => {
   try {
     const liveSessions = npcSimulation.findActiveSessionsByAgentIds([agentId]);
     for (const sid of liveSessions) {
-      if (npcSimulation.unregisterOpenClaw(sid)) removedBodies++;
+      if (npcSimulation.unregisterAgentBot(sid)) removedBodies++;
     }
   } catch (err) {
     console.error('[AgentDisconnect] in-world body removal failed (non-fatal):', err);
@@ -1558,6 +1752,12 @@ async function mintSessionTicketFromConnect(args: {
       identityType: ticketIdentityType,
       identityKey: ticketIdentityKey ?? args.resolvedAgentId,
       issuedToAgentSession: args.sessionId,
+      // Bind-at-redemption linkage (magic-link onboarding D1, 2026-07-02): the
+      // PUBLIC agentId this ticket is minted for. When the human clicks the
+      // link, `GET /api/auth/enter` binds `openclaw_bots.user_id` to the
+      // redeeming user for THIS agent (never clobbering a different owner) —
+      // the deferred first-contact claim event.
+      issuedToAgentId: args.resolvedAgentId,
       avatarName,
     });
 
@@ -1856,11 +2056,11 @@ async function resolveSession(sessionId: string) {
   // shared `extendSessionTtl` helper carries its own `.catch()`. It is the single
   // source of truth for the slide (writes `sessionExpiresAt`, `lastSeenAt`, and
   // crucially `sessionSweptAt: null`), mirroring the location-chat path in
-  // `openclaw.ts`. `getOpenClawBotConfig` is a synchronous in-process Map lookup,
+  // `openclaw.ts`. `getAgentBotConfig` is a synchronous in-process Map lookup,
   // so resolving `agentId` here adds no DB round-trip. No double-slide risk: the
   // action handlers below only write knowledge/combat/`updatedAt`, never the TTL
   // columns. Anonymous/legacy sessions with no bot config simply skip the slide.
-  const config = npcSimulation.getOpenClawBotConfig(sessionId);
+  const config = npcSimulation.getAgentBotConfig(sessionId);
   if (config) {
     void extendSessionTtl(config.agentId);
   }
@@ -1868,113 +2068,22 @@ async function resolveSession(sessionId: string) {
   return { npcId, npc };
 }
 
+// Durable agent event-stream query (P3 slice 1, D7) — shared by the replay
+// endpoint, the SSE reconnect catch-up, AND (slice 2) the autonomy driver's
+// wake-up seed. The SQL now lives in `services/agent-event-query.ts` so the
+// three consumers share ONE query instead of duplicating it (plan §1 slice 2).
+
+// SSE reconnect catch-up page cap — bound the on-connect replay so a huge gap
+// can't stall the handshake; the paged `/events/replay` endpoint covers the
+// remainder. 20 pages * 500 = 10k events before we fall through to live.
+const SSE_REPLAY_MAX_PAGES = 20;
+
 // ---------------------------------------------------------------------------
-// buildPerception — shared helper for GET /perception and SSE /events
+// Perception — GET /perception and SSE /events call the SHARED builder on the
+// sim (agent-metaverse P1). `npcSimulation.buildPerception(npcId)` is the single
+// source of truth (the former module-local `buildPerception` moved there so the
+// autonomy driver reuses the exact same projection — no duplication/drift).
 // ---------------------------------------------------------------------------
-function buildPerception(npcId: string): AgentPerception | null {
-  const npc = npcSimulation.getNpcById(npcId);
-  if (!npc) return null;
-
-  const allNpcs = npcSimulation.getAllNpcs();
-  const PERCEPTION_RADIUS = 500;
-
-  // Nearby NPCs within radius
-  const nearbyNpcs = allNpcs
-    .filter((other) => other.id !== npcId)
-    .map((other) => {
-      const dx = other.x - npc.x;
-      const dy = other.y - npc.y;
-      const distance = Math.sqrt(dx * dx + dy * dy);
-      return { other, distance };
-    })
-    .filter(({ distance }) => distance <= PERCEPTION_RADIUS)
-    .map(({ other, distance }) => ({
-      npcId: other.id,
-      name: other.name,
-      x: other.x,
-      y: other.y,
-      distance: Math.round(distance),
-      species: other.species,
-      hp: other.hp,
-      isDead: other.isDead,
-      inCombat: other.inCombat,
-      activity: other.activity,
-      level: other.level,
-      isOpenClaw: other.isOpenClaw,
-    }));
-
-  // Nearby buildings
-  const nearbyBuildings = (Object.entries(NPC_BUILDING_CENTERS) as [string, { x: number; y: number }][]).map(([buildingId, center]) => {
-    const dx = center.x - npc.x;
-    const dy = center.y - npc.y;
-    const distance = Math.sqrt(dx * dx + dy * dy);
-    const theme = BUILDING_OPENCLAW_THEMES[buildingId];
-    return {
-      buildingId,
-      label: theme?.label ?? buildingId,
-      cryptoFocus: theme?.focus ?? '',
-      centerX: center.x,
-      centerY: center.y,
-      distance: Math.round(distance),
-    };
-  }).sort((a, b) => a.distance - b.distance);
-
-  // Active conversations involving this NPC
-  const conversations = npcSimulation.getActiveConversations();
-  const activeConversations = conversations.map((conv) => ({
-    id: conv.id,
-    participants: [conv.npc1Id, conv.npc2Id],
-    latestMessage: conv.messages.length > 0
-      ? conv.messages[Math.min(conv.currentIndex, conv.messages.length - 1)].text
-      : '',
-    involvesMe: conv.npc1Id === npcId || conv.npc2Id === npcId,
-  }));
-
-  // Active combats
-  const combats = npcSimulation.getActiveCombats();
-  const activeCombats = combats.map((combat) => ({
-    id: combat.id,
-    attacker: combat.attacker,
-    defender: combat.defender,
-    involvesMe: combat.attacker === npcId || combat.defender === npcId,
-    lastRound: combat.rounds.length > 0
-      ? combat.rounds[combat.rounds.length - 1]
-      : null,
-  }));
-
-  const arenaRound = npcSimulation.getMode() === 'arena'
-    ? (() => {
-        const snapshot = npcSimulation.getSnapshot();
-        return snapshot.arenaRound;
-      })()
-    : null;
-
-  return {
-    self: {
-      npcId: npc.id,
-      x: npc.x,
-      y: npc.y,
-      hp: npc.hp,
-      maxHp: npc.maxHp,
-      level: npc.level,
-      kills: npc.kills,
-      xp: npc.xp,
-      inventory: npc.inventory,
-      activity: npc.activity,
-      inCombat: npc.inCombat,
-      isDead: npc.isDead,
-      combatAction: npc.combatAction,
-      direction: npc.direction,
-    },
-    nearbyNpcs,
-    nearbyBuildings,
-    activeConversations,
-    activeCombats,
-    gameMode: npcSimulation.getMode(),
-    arenaRound,
-    timestamp: Date.now(),
-  };
-}
 
 // ---------------------------------------------------------------------------
 // GET /api/agent/:sessionId/perception
@@ -1984,7 +2093,7 @@ agentGatewayRoutes.get('/:sessionId/perception', async (c) => {
   const resolved = await resolveSession(sessionId);
   if (!resolved) return c.json({ error: 'Invalid or expired agent session' }, 404);
 
-  const perception = buildPerception(resolved.npcId);
+  const perception = npcSimulation.buildPerception(resolved.npcId);
   if (!perception) return c.json({ error: 'NPC state unavailable' }, 404);
 
   return c.json(perception);
@@ -2021,7 +2130,10 @@ agentGatewayRoutes.post('/:sessionId/move', async (c) => {
   let destBuildingId: string | undefined;
 
   if (buildingId) {
-    const center = NPC_BUILDING_CENTERS[buildingId];
+    // M4: own-property guard (buildingId is an UNVALIDATED body param) via the
+    // shared resolveBuildingCenter — keeps inherited prototype keys out of the
+    // building-center lookup, matching /visit-building + /building/:id/chat.
+    const center = resolveBuildingCenter(buildingId);
     if (!center) return c.json({ error: `Unknown building: ${buildingId}` }, 400);
     destX = center.x + (Math.random() - 0.5) * 40;
     destY = center.y + 20 + Math.random() * 20;
@@ -2073,10 +2185,10 @@ agentGatewayRoutes.post('/:sessionId/chat', async (c) => {
         const services = buildRuntimeServices(db);
 
         // Look up the bot via its resolved agentId (e.g. milady:xxx), NOT npcId
-        const botConfig = npcSimulation.getOpenClawBotConfig(sessionId);
+        const botConfig = npcSimulation.getAgentBotConfig(sessionId);
         const bot = botConfig
-          ? await db.query.openclawBots.findFirst({
-              where: eq(openclawBots.agentId, botConfig.agentId),
+          ? await db.query.agentBots.findFirst({
+              where: eq(agentBots.agentId, botConfig.agentId),
             })
           : null;
 
@@ -2108,7 +2220,7 @@ agentGatewayRoutes.post('/:sessionId/chat', async (c) => {
           // Raw sessionId is folded into ElizaOS room derivation (not stored as a
           // recoverable bearer column), so keying it raw re-opens no recoverable
           // leak while preserving chat-memory continuity across deploys.
-          userId: npcSimulation.getOpenClawBotConfig(sessionId)?.agentId ?? sessionId,
+          userId: npcSimulation.getAgentBotConfig(sessionId)?.agentId ?? sessionId,
           services,
           avatarData: bot ? {
             id: bot.id,
@@ -2127,7 +2239,7 @@ agentGatewayRoutes.post('/:sessionId/chat', async (c) => {
           // Raw sessionId is folded into ElizaOS room derivation (not stored as a
           // recoverable bearer column), so keying it raw re-opens no recoverable
           // leak while preserving chat-memory continuity across deploys.
-          userId: npcSimulation.getOpenClawBotConfig(sessionId)?.agentId ?? sessionId,
+          userId: npcSimulation.getAgentBotConfig(sessionId)?.agentId ?? sessionId,
           roomId: `agent-gateway-${npcId}`,
           platform: 'clawville-gateway',
           dynamicContext: `You are ${npc.name} in the ClawVille world. Respond in character.`,
@@ -2142,7 +2254,7 @@ agentGatewayRoutes.post('/:sessionId/chat', async (c) => {
 
   void logEventFromContext(c, {
     eventType: 'agent.chat.turn',
-    agentId: npcSimulation.getOpenClawBotConfig(sessionId)?.agentId ?? sessionDigest(sessionId),
+    agentId: npcSimulation.getAgentBotConfig(sessionId)?.agentId ?? sessionDigest(sessionId),
     sessionId: sessionDigest(sessionId),
     payload: {
       chatType: 'character',
@@ -2174,15 +2286,21 @@ agentGatewayRoutes.post('/:sessionId/visit-building', async (c) => {
   const { npcId, npc } = resolved;
   const { buildingId } = parsed.data;
 
-  const center = NPC_BUILDING_CENTERS[buildingId];
-  if (!center) return c.json({ error: `Unknown building: ${buildingId}` }, 400);
+  // Own-property guard via the shared resolveBuildingCenter (prototype-key CT-farm
+  // defense — see the helper's docstring). Returns null for an inherited prototype
+  // key so the real-CT credit below can never fire from a proximity bypass.
+  const center = resolveBuildingCenter(buildingId);
+  if (!center) {
+    return c.json({ error: `Unknown building: ${buildingId}` }, 400);
+  }
 
-  // Check proximity — relaxed to 2000px for early testing (TODO: tighten to 80px)
-  const VISIT_RADIUS = 2000;
-  const dx = npc.x - center.x;
-  const dy = npc.y - center.y;
-  const dist = Math.sqrt(dx * dx + dy * dy);
-  if (dist > VISIT_RADIUS) return c.json({ error: `Too far from ${buildingId} (${Math.round(dist)}px away, need <${VISIT_RADIUS}px)` }, 400);
+  // Proximity check — measured to the building's collider FOOTPRINT (edge), NOT
+  // its center. A center-radius gate is geometrically unsatisfiable for the
+  // larger buildings (memory-rag / messaging-channels): their walkable approach
+  // is >1000 wu from center, so no agent could ever visit them. `resolveBuildingCenter`
+  // above already rejects unknown ids; null here → Infinity (fail-closed).
+  const dist = buildingEdgeDistanceGamePx(npc.x, npc.y, buildingId) ?? Infinity;
+  if (dist > BUILDING_INTERACTION_RADIUS) return c.json({ error: `Too far from ${buildingId} (${Math.round(dist)}px from its edge, need <${BUILDING_INTERACTION_RADIUS}px)` }, 400);
 
   // Set building activity
   const activities = BUILDING_ACTIVITIES[buildingId] ?? ['thinking'];
@@ -2204,11 +2322,11 @@ agentGatewayRoutes.post('/:sessionId/visit-building', async (c) => {
   // quest validator's `(user_id = X OR avatar_id = Y)` check (audit-fix
   // 2026-04-29).
   let visitUserId: string | null = null;
-  const botConfig = npcSimulation.getOpenClawBotConfig(sessionId);
+  const botConfig = npcSimulation.getAgentBotConfig(sessionId);
   if (botConfig) {
     try {
-      const bot = await db.query.openclawBots.findFirst({
-        where: eq(openclawBots.agentId, botConfig.agentId),
+      const bot = await db.query.agentBots.findFirst({
+        where: eq(agentBots.agentId, botConfig.agentId),
       });
       if (bot) {
         visitUserId = bot.userId ?? null;
@@ -2220,18 +2338,20 @@ agentGatewayRoutes.post('/:sessionId/visit-building', async (c) => {
         // userId/avatar, skip the credit honestly (tokenAwarded stays 0).
         const avatarId = await resolveAvatarIdForBot(bot.userId ?? null);
         if (avatarId) {
-          await creditClawTokens({
+          // M2 anti-faucet: idempotent per (avatar, building, reason, UTC-day). A
+          // same-day repeat visit returns false → tokenAwarded stays 0 (honest).
+          // sessionDigest, NOT the raw sessionId (Codex auth-lens fix #4):
+          // `claw_token_transactions.metadata` is a persisted JSON column, and the
+          // raw sessionId is the real-CT bearer — never store a recoverable bearer
+          // in a money-ledger row. Digest is correlation-only.
+          tokenAwarded = (await creditBuildingRewardOncePerDay({
             avatarId,
-            amount: 1,
+            buildingId,
             reason: 'building_visit',
-            source: 'api',
-            // sessionDigest, NOT the raw sessionId (Codex auth-lens fix #4):
-            // `claw_token_transactions.metadata` is a persisted JSON column, and
-            // the raw sessionId is the real-CT bearer credential — never store a
-            // recoverable bearer in a money-ledger row. Digest is correlation-only.
             metadata: { buildingId, sessionDigest: sessionDigest(sessionId), agentId: bot.agentId },
-          });
-          tokenAwarded = 1;
+          }))
+            ? 1
+            : 0;
         }
       }
     } catch (err) {
@@ -2256,16 +2376,16 @@ agentGatewayRoutes.post('/:sessionId/visit-building', async (c) => {
   if (botConfig && knowledgeGained) {
     (async () => {
       try {
-        const bot = await db.query.openclawBots.findFirst({
-          where: eq(openclawBots.agentId, botConfig.agentId),
+        const bot = await db.query.agentBots.findFirst({
+          where: eq(agentBots.agentId, botConfig.agentId),
         });
         if (bot) {
           const current: string[] = bot.knowledge ?? [];
           if (!current.includes(knowledgeGained!)) {
-            await db.update(openclawBots).set({
+            await db.update(agentBots).set({
               knowledge: [...current, knowledgeGained!],
               updatedAt: new Date(),
-            }).where(eq(openclawBots.id, bot.id));
+            }).where(eq(agentBots.id, bot.id));
           }
         }
       } catch (err) {
@@ -2285,7 +2405,12 @@ agentGatewayRoutes.post('/:sessionId/visit-building', async (c) => {
     sessionId: sessionDigest(sessionId),
     buildingId,
     payload: {
-      tokenAwarded,
+      // ctAwarded, NOT tokenAwarded: the event-logger sanitizer redacts any key
+      // containing the word `token`, so `tokenAwarded` lands as '[REDACTED]'
+      // write-only garbage — now that building.visited is agent-replayable, the
+      // durable payload must carry the REAL figure (precedent world-teacher-chat.ts).
+      // The response field below KEEPS `tokenAwarded` (read by the e2e scripts).
+      ctAwarded: tokenAwarded,
       activity: picked,
       knowledgeGained: knowledgeGained ? 1 : 0,
     },
@@ -2331,19 +2456,22 @@ agentGatewayRoutes.post('/:sessionId/building/:buildingId/chat', async (c) => {
     return c.json({ error: 'Invalid request', details: parsed.error.flatten() }, 400);
   }
 
-  const center = NPC_BUILDING_CENTERS[buildingId];
+  // M3: own-property guard (buildingId is an UNVALIDATED URL path param) via the
+  // shared resolveBuildingCenter — a bare `NPC_BUILDING_CENTERS[buildingId]` truthy
+  // check admitted inherited prototype keys → NaN distance → proximity skipped →
+  // real-CT teaching credit from anywhere. Same guard as /visit-building + /move.
+  const center = resolveBuildingCenter(buildingId);
   if (!center) return c.json({ error: `Unknown building: ${buildingId}` }, 400);
 
-  // Proximity check — must be near the building to chat with its character
-  const CHAT_RADIUS = 2000;
+  // Proximity check — measured to the building's collider FOOTPRINT (edge), the
+  // SAME gate as /visit-building. Center-distance was unsatisfiable for the
+  // larger buildings; `resolveBuildingCenter` above rejects unknown ids.
   const { npcId, npc } = resolved;
-  const dx = npc.x - center.x;
-  const dy = npc.y - center.y;
-  const dist = Math.sqrt(dx * dx + dy * dy);
-  if (dist > CHAT_RADIUS) {
+  const dist = buildingEdgeDistanceGamePx(npc.x, npc.y, buildingId) ?? Infinity;
+  if (dist > BUILDING_INTERACTION_RADIUS) {
     return c.json(
       {
-        error: `Too far from ${buildingId} (${Math.round(dist)}px away, need <${CHAT_RADIUS}px). Move closer via POST /move.`,
+        error: `Too far from ${buildingId} (${Math.round(dist)}px from its edge, need <${BUILDING_INTERACTION_RADIUS}px). Move closer via POST /move.`,
       },
       400,
     );
@@ -2388,7 +2516,7 @@ agentGatewayRoutes.post('/:sessionId/building/:buildingId/chat', async (c) => {
       // Raw sessionId is folded into ElizaOS room derivation (not stored as a
       // recoverable bearer column), so keying it raw re-opens no recoverable
       // leak while preserving chat-memory continuity across deploys.
-      userId: npcSimulation.getOpenClawBotConfig(sessionId)?.agentId ?? sessionId,
+      userId: npcSimulation.getAgentBotConfig(sessionId)?.agentId ?? sessionId,
       roomId,
       platform: 'clawville-agent-gateway',
       dynamicContext,
@@ -2405,11 +2533,11 @@ agentGatewayRoutes.post('/:sessionId/building/:buildingId/chat', async (c) => {
   // Persist the teaching into the bot's learned-knowledge ledger
   let tokenAwarded = 0;
   let knowledgePersisted = false;
-  const botConfig = npcSimulation.getOpenClawBotConfig(sessionId);
+  const botConfig = npcSimulation.getAgentBotConfig(sessionId);
   if (botConfig) {
     try {
-      const bot = await db.query.openclawBots.findFirst({
-        where: eq(openclawBots.agentId, botConfig.agentId),
+      const bot = await db.query.agentBots.findFirst({
+        where: eq(agentBots.agentId, botConfig.agentId),
       });
       if (bot) {
         // Summarise the exchange into a single knowledge line so we don't
@@ -2418,9 +2546,9 @@ agentGatewayRoutes.post('/:sessionId/building/:buildingId/chat', async (c) => {
         const current: string[] = bot.knowledge ?? [];
         if (!current.includes(entry)) {
           await db
-            .update(openclawBots)
+            .update(agentBots)
             .set({ knowledge: [...current, entry], updatedAt: new Date() })
-            .where(eq(openclawBots.id, bot.id));
+            .where(eq(agentBots.id, bot.id));
           knowledgePersisted = true;
         }
         // Award +1 ClawToken for successful teaching turn.
@@ -2430,22 +2558,63 @@ agentGatewayRoutes.post('/:sessionId/building/:buildingId/chat', async (c) => {
         // userId/avatar (tokenAwarded stays 0).
         const avatarId = await resolveAvatarIdForBot(bot.userId ?? null);
         if (avatarId) {
-          await creditClawTokens({
+          // M2 anti-faucet: idempotent per (avatar, building, reason, UTC-day). A
+          // same-day repeat teaching turn returns false → tokenAwarded stays 0.
+          // sessionDigest, NOT the raw sessionId (Codex auth-lens fix #4) — see the
+          // building-visit credit above; money-ledger metadata is persisted, never
+          // store the recoverable real-CT bearer in it.
+          tokenAwarded = (await creditBuildingRewardOncePerDay({
             avatarId,
-            amount: 1,
+            buildingId,
             reason: 'building_chat_teaching',
-            source: 'api',
-            // sessionDigest, NOT the raw sessionId (Codex auth-lens fix #4) - see
-            // the building-visit credit above. Money-ledger metadata is persisted;
-            // never store the recoverable real-CT bearer in it.
             metadata: { buildingId, sessionDigest: sessionDigest(sessionId), agentId: bot.agentId, characterName: system.locationAgent.agentName },
-          });
-          tokenAwarded = 1;
+          }))
+            ? 1
+            : 0;
         }
       }
     } catch (err) {
       console.error('[AgentGateway] building-chat knowledge persist failed:', err);
     }
+  }
+
+  // P3 slice 3 — CONVERGENCE parity for CONNECTED agents: persist this teaching
+  // turn as an EARNED-SKILL lesson bound to the agent's OWN avatar, so the
+  // /skills/:bid/skill-memory endpoint returns real lessons for connected agents
+  // too — not just house agents (otherwise that endpoint would be empty for its
+  // intended audience). Fire-and-forget + fail-soft: it NEVER blocks or fails the
+  // chat response and is fully independent of the CT money path above. Lands in
+  // the agent's OWN ElizaOS runtime when warm (the wrapper case) else the
+  // avatar-keyed keyword store (readEarnedSkillLessons reads either back).
+  if (botConfig && responseContent.trim().length > 0) {
+    void (async () => {
+      try {
+        const learnBot = await db.query.agentBots.findFirst({
+          where: eq(agentBots.agentId, botConfig.agentId),
+          columns: { userId: true },
+        });
+        if (!learnBot?.userId) return;
+        const learnAvatar = await db.query.avatars.findFirst({
+          where: and(eq(avatars.userId, learnBot.userId), eq(avatars.isActive, true)),
+          columns: { id: true, platformAgentId: true },
+        });
+        if (!learnAvatar) return;
+        const teacherName = system.locationAgent.agentName;
+        const lesson = `${teacherName} at ${theme?.label ?? buildingId} taught me: ${responseContent
+          .replace(/\s+/g, ' ')
+          .slice(0, 240)}`;
+        await recordEarnedSkillLesson({
+          platformAgentId: learnAvatar.platformAgentId ?? '',
+          avatarId: learnAvatar.id,
+          agentId: botConfig.agentId,
+          buildingId,
+          teacherName,
+          lesson,
+        });
+      } catch {
+        /* fail-soft — earned-skill parity is best-effort, never blocks the chat */
+      }
+    })();
   }
 
   void logEventFromContext(c, {
@@ -2457,7 +2626,10 @@ agentGatewayRoutes.post('/:sessionId/building/:buildingId/chat', async (c) => {
       chatType: 'building',
       characterName: system.locationAgent.agentName,
       messageLength: parsed.data.message.length,
-      tokenAwarded,
+      // ctAwarded, NOT tokenAwarded: the sanitizer redacts `token`-containing
+      // keys. agent.chat.turn is agent-replayable, so the durable payload must
+      // carry the real CT figure. Response below KEEPS `tokenAwarded`.
+      ctAwarded: tokenAwarded,
       knowledgePersisted,
     },
   });
@@ -2530,12 +2702,12 @@ agentGatewayRoutes.get('/:sessionId/knowledge', async (c) => {
     return c.json({ error: 'Invalid or expired agent session' }, 404);
   }
 
-  const botConfig = npcSimulation.getOpenClawBotConfig(sessionId);
+  const botConfig = npcSimulation.getAgentBotConfig(sessionId);
   if (!botConfig) return c.json({ knowledge: [] });
 
   try {
-    const bot = await db.query.openclawBots.findFirst({
-      where: eq(openclawBots.agentId, botConfig.agentId),
+    const bot = await db.query.agentBots.findFirst({
+      where: eq(agentBots.agentId, botConfig.agentId),
     });
     return c.json({ knowledge: bot?.knowledge ?? [] });
   } catch {
@@ -2552,14 +2724,14 @@ agentGatewayRoutes.get('/:sessionId/stats', async (c) => {
   if (!resolved) return c.json({ error: 'Invalid or expired agent session' }, 404);
 
   const { npcId, npc } = resolved;
-  const botConfig = npcSimulation.getOpenClawBotConfig(sessionId);
+  const botConfig = npcSimulation.getAgentBotConfig(sessionId);
 
   let totalMessages = 0;
   let knowledgeLearned: string[] = [];
   if (botConfig) {
     try {
-      const bot = await db.query.openclawBots.findFirst({
-        where: eq(openclawBots.agentId, botConfig.agentId),
+      const bot = await db.query.agentBots.findFirst({
+        where: eq(agentBots.agentId, botConfig.agentId),
       });
       if (bot) {
         totalMessages = bot.totalMessages;
@@ -2601,6 +2773,50 @@ agentGatewayRoutes.get('/:sessionId/pending-installs', async (c) => {
 });
 
 // ---------------------------------------------------------------------------
+// GET /api/agent/:sessionId/events/replay?after=<id>&limit=<n>  (P3 slice 1, D7)
+// ---------------------------------------------------------------------------
+// Durable catch-up over the agent's OWN event history. The `events` table is the
+// append-only spine; this reads the whitelisted, agent-scoped rows since the
+// caller's cursor so a disconnect loses nothing. Unlike `/pending-installs`
+// (RAM-drain, one-shot), this is a STATELESS durable read — idempotent, paged,
+// re-runnable. The agent owns its cursor via the returned `nextCursor`.
+//
+// SAFE COLUMNS ONLY — the query + projection expose id/eventType/ts/payload and
+// nothing else (no fp_hash/ip_prefix_hash/session_id). Payloads were sanitized
+// write-side by event-logger.ts; we consume, never re-expose.
+// ---------------------------------------------------------------------------
+const eventsReplayRateLimiter = createRateLimiter({ maxPerWindow: 60, windowMs: 60_000 });
+
+agentGatewayRoutes.get('/:sessionId/events/replay', async (c) => {
+  // B1 (adversary): IP rate-limit BEFORE resolveSession/DB so a live bearer can't
+  // hammer the durable-read query. Mirrors `sessionStatusRateLimiter` (60/min/IP).
+  const ip = getClientIp({ get: (n) => c.req.header(n) ?? null });
+  if (!eventsReplayRateLimiter.check(ip)) {
+    return c.json({ error: 'Too many replay requests. Try again in 1 minute.', code: 'rate_limited' }, 429);
+  }
+
+  const sessionId = c.req.param('sessionId');
+  const resolved = await resolveSession(sessionId);
+  if (!resolved) return c.json({ error: 'Invalid or expired agent session' }, 404);
+
+  // Resolve the agent identity the SAME way the settle sites key their rows
+  // (getAgentBotConfig(sessionId).agentId == cove subject.agentId). An
+  // anonymous/legacy session with no bot config has no agent-scoped history.
+  const botConfig = npcSimulation.getAgentBotConfig(sessionId);
+  const agentId = botConfig?.agentId ?? null;
+  if (!agentId) return c.json({ events: [], nextCursor: null });
+
+  const parsed = parseReplayQuery(c.req.query());
+  if (!parsed) {
+    return c.json({ error: 'Invalid replay query', code: 'invalid_replay_query' }, 400);
+  }
+
+  const rows = await queryDurableAgentEvents(agentId, parsed.afterId, parsed.limit);
+  const events = rows.map(projectDurableEvent);
+  return c.json({ events, nextCursor: computeNextCursor(events) });
+});
+
+// ---------------------------------------------------------------------------
 // GET /api/agent/:sessionId/tools.json
 // ---------------------------------------------------------------------------
 // Universal ClawVille game tools — connect/visit/buy/read/chat/move. NOT
@@ -2639,11 +2855,11 @@ agentGatewayRoutes.get('/:sessionId/owned-skills', async (c) => {
   const resolved = await resolveSession(sessionId);
   if (!resolved) return c.json({ error: 'Invalid or expired agent session' }, 404);
 
-  const botConfig = npcSimulation.getOpenClawBotConfig(sessionId);
+  const botConfig = npcSimulation.getAgentBotConfig(sessionId);
   if (!botConfig) return c.json({ ownedSkills: [] });
 
-  const bot = await db.query.openclawBots.findFirst({
-    where: eq(openclawBots.agentId, botConfig.agentId),
+  const bot = await db.query.agentBots.findFirst({
+    where: eq(agentBots.agentId, botConfig.agentId),
     columns: { userId: true },
   });
   if (!bot?.userId) return c.json({ ownedSkills: [] });
@@ -2705,11 +2921,11 @@ agentGatewayRoutes.get('/:sessionId/skills/:buildingId/tools.json', async (c) =>
   const resolved = await resolveSession(sessionId);
   if (!resolved) return c.json({ error: 'Invalid or expired agent session' }, 404);
 
-  const botConfig = npcSimulation.getOpenClawBotConfig(sessionId);
+  const botConfig = npcSimulation.getAgentBotConfig(sessionId);
   if (!botConfig) return c.json({ error: 'No agent config for session' }, 404);
 
-  const bot = await db.query.openclawBots.findFirst({
-    where: eq(openclawBots.agentId, botConfig.agentId),
+  const bot = await db.query.agentBots.findFirst({
+    where: eq(agentBots.agentId, botConfig.agentId),
     columns: { userId: true },
   });
   if (!bot?.userId) return c.json({ error: 'Agent not linked to a user' }, 404);
@@ -2761,6 +2977,69 @@ agentGatewayRoutes.get('/:sessionId/skills/:buildingId/tools.json', async (c) =>
 });
 
 // ---------------------------------------------------------------------------
+// GET /api/agent/:sessionId/skills/:buildingId/skill-memory
+// ---------------------------------------------------------------------------
+// P3 slice 3 — the READ surface for a connected agent's converged EARNED-SKILL
+// lessons at a building (the direct analogue of the cove blackjack skill-memory
+// endpoint above: same session→bot→avatar resolution, same fail-closed liveness
+// gate, same avatar binding). OUTSIDE the versioned manual emitters
+// (skills.ts / skill-protocol.ts) so it carries NO PROTOCOL_VERSION bump — slice
+// 6 documents it. Lessons are produced by the teacher-chat convergence (the house
+// path via world-teacher-chat, the connected path via /building/:id/chat below)
+// and read from the agent's OWN ElizaOS runtime (semantic RAG) or the avatar-keyed
+// keyword fallback. UNGATED by curriculum ownership (an agent may always read its
+// OWN earned lessons); NOT inventory-locked like tools.json/skill.md.
+// ---------------------------------------------------------------------------
+const skillMemoryRateLimiter = createRateLimiter({ maxPerWindow: 60, windowMs: 60_000 });
+
+agentGatewayRoutes.get('/:sessionId/skills/:buildingId/skill-memory', async (c) => {
+  // IP rate-limit BEFORE validateLiveAgentSession/DB so a live bearer can't hammer
+  // the session-resolve + avatar-lookup + RAG read. Mirrors eventsReplayRateLimiter
+  // (60/min/IP).
+  const ip = getClientIp({ get: (n) => c.req.header(n) ?? null });
+  if (!skillMemoryRateLimiter.check(ip)) {
+    return c.json({ error: 'Too many skill-memory requests. Try again in 1 minute.', code: 'rate_limited' }, 429);
+  }
+
+  const sessionId = c.req.param('sessionId');
+  const buildingId = c.req.param('buildingId');
+  // Fail-closed liveness gate (shared validator) — same as the cove sibling.
+  if (!(await validateLiveAgentSession(sessionId))) {
+    return c.json({ error: 'Invalid or expired agent session' }, 404);
+  }
+  // Own-property building guard (prototype-key safety — mirrors /building/:id/chat
+  // + /visit-building). An inherited/unknown key can never resolve to a building.
+  if (!resolveBuildingCenter(buildingId)) {
+    return c.json({ error: `Unknown building: ${buildingId}` }, 400);
+  }
+  const botConfig = npcSimulation.getAgentBotConfig(sessionId);
+  if (!botConfig) return c.json({ error: 'No agent config for session' }, 404);
+
+  const bot = await db.query.agentBots.findFirst({
+    where: eq(agentBots.agentId, botConfig.agentId),
+    columns: { userId: true },
+  });
+  if (!bot?.userId) return c.json({ error: 'Agent not linked to a user' }, 404);
+
+  const avatar = await db.query.avatars.findFirst({
+    where: and(eq(avatars.userId, bot.userId), eq(avatars.isActive, true)),
+    columns: { id: true, platformAgentId: true },
+  });
+  if (!avatar) return c.json({ error: 'No active avatar for user' }, 404);
+
+  const theme = BUILDING_OPENCLAW_THEMES[buildingId];
+  const lessons = await readEarnedSkillLessons({
+    platformAgentId: avatar.platformAgentId ?? '',
+    avatarId: avatar.id,
+    buildingId,
+    // Bias the semantic-RAG retrieval toward this building's domain.
+    query: theme?.focus ?? buildingId,
+    limit: 10,
+  });
+  return c.json({ buildingId, lessons, count: lessons.length });
+});
+
+// ---------------------------------------------------------------------------
 // POST /api/agent/:sessionId/skills/:buildingId/tools/:toolName
 // ---------------------------------------------------------------------------
 // Server-side execution endpoint for the building's domain tools. The
@@ -2777,12 +3056,12 @@ agentGatewayRoutes.post('/:sessionId/skills/:buildingId/tools/:toolName', async 
   const resolved = await resolveSession(sessionId);
   if (!resolved) return c.json({ error: 'Invalid or expired agent session' }, 404);
 
-  const botConfig = npcSimulation.getOpenClawBotConfig(sessionId);
+  const botConfig = npcSimulation.getAgentBotConfig(sessionId);
   if (!botConfig) return c.json({ error: 'No agent config for session' }, 404);
 
   // Ownership check (same as tools.json + skill.md)
-  const bot = await db.query.openclawBots.findFirst({
-    where: eq(openclawBots.agentId, botConfig.agentId),
+  const bot = await db.query.agentBots.findFirst({
+    where: eq(agentBots.agentId, botConfig.agentId),
     columns: { userId: true },
   });
   if (!bot?.userId) return c.json({ error: 'Agent not linked to a user' }, 404);
@@ -2859,12 +3138,12 @@ agentGatewayRoutes.get('/:sessionId/skills/:buildingId/skill.md', async (c) => {
   const resolved = await resolveSession(sessionId);
   if (!resolved) return c.json({ error: 'Invalid or expired agent session' }, 404);
 
-  const botConfig = npcSimulation.getOpenClawBotConfig(sessionId);
+  const botConfig = npcSimulation.getAgentBotConfig(sessionId);
   if (!botConfig) return c.json({ error: 'No agent config for session' }, 404);
 
   // Resolve the avatar linked to this agent (via openclaw_bots.userId → avatars.userId)
-  const bot = await db.query.openclawBots.findFirst({
-    where: eq(openclawBots.agentId, botConfig.agentId),
+  const bot = await db.query.agentBots.findFirst({
+    where: eq(agentBots.agentId, botConfig.agentId),
     columns: { userId: true },
   });
   if (!bot?.userId) return c.json({ error: 'Agent not linked to a user' }, 404);
@@ -2950,6 +3229,12 @@ agentGatewayRoutes.get('/:sessionId/skills/:buildingId/skill.md', async (c) => {
 //
 // Session is re-validated each tick — if the bot is unregistered the stream
 // ends cleanly.
+//
+// B1 (adversary): the DURABLE reconnect catch-up (below) hits the DB, so it has
+// its OWN per-IP limiter — the live SSE loop itself is NEVER rate-limited (that
+// would change connect semantics). Over budget ⇒ skip catch-up, go live.
+const sseCatchupRateLimiter = createRateLimiter({ maxPerWindow: 30, windowMs: 60_000 });
+
 agentGatewayRoutes.get('/:sessionId/events', async (c) => {
   const sessionId = c.req.param('sessionId');
   const resolved = await resolveSession(sessionId);
@@ -2962,9 +3247,51 @@ agentGatewayRoutes.get('/:sessionId/events', async (c) => {
   c.header('Connection', 'keep-alive');
   c.header('X-Accel-Buffering', 'no');
 
+  // D7 slice-1 reconnect cursor: EventSource auto-sends `Last-Event-ID` on
+  // resume; `?after=` is the manual fallback. Both name an `events.id`.
+  const replayCursor = parseCursorValue(
+    c.req.header('Last-Event-ID') ?? c.req.query('after'),
+  );
+  const replayAgentId = npcSimulation.getAgentBotConfig(sessionId)?.agentId ?? null;
+  // Gate ONLY the catch-up with the per-IP limiter — and consume a token ONLY
+  // when a catch-up is actually requested (agent + cursor present), so a normal
+  // fresh connect never burns the budget. Over budget ⇒ catch-up is skipped and
+  // the agent falls back to the (separately limited) /events/replay endpoint.
+  const catchupAllowed =
+    replayAgentId != null &&
+    replayCursor != null &&
+    sseCatchupRateLimiter.check(getClientIp({ get: (n) => c.req.header(n) ?? null }));
+
   return stream(c, async (stream) => {
+    // --- D7 slice-1: durable catch-up on (re)connect BEFORE the live loop ----
+    // Replay whitelisted, agent-scoped durable rows since the cursor so a
+    // disconnect never drops a settlement/knowledge event. Each frame carries a
+    // standard SSE `id:` so the agent's `Last-Event-ID` keeps advancing. Paged +
+    // capped; a gap larger than the cap falls back to the /events/replay
+    // endpoint. Frames are labelled `event: replay` (durable catch-up) to
+    // distinguish them from live frames; the inner `eventType` drives dispatch.
+    if (catchupAllowed && replayAgentId && replayCursor != null) {
+      let cur = replayCursor;
+      for (let page = 0; page < SSE_REPLAY_MAX_PAGES; page++) {
+        const rows = await queryDurableAgentEvents(replayAgentId, cur, REPLAY_LIMIT_MAX);
+        if (rows.length === 0) break;
+        for (const row of rows) {
+          const ev = projectDurableEvent(row);
+          await stream.write(`event: replay\nid: ${ev.id}\ndata: ${JSON.stringify(ev)}\n\n`);
+          cur = row.id;
+        }
+        if (rows.length < REPLAY_LIMIT_MAX) break;
+      }
+    }
+
     let wasInCombat = false;
     let tickCount = 0;
+    // Magic-link onboarding D4 (2026-07-02): last `humanControlled` state seen
+    // on THIS connection. `null` start ⇒ the FIRST tick always emits a
+    // `control` event (baseline for a freshly-attached agent), then only
+    // CHANGES emit — the agent gets an edge-triggered pause/resume signal
+    // instead of having to diff every perception itself.
+    let lastHumanControlled: boolean | null = null;
 
     while (true) {
       await stream.sleep(2000);
@@ -2977,13 +3304,28 @@ agentGatewayRoutes.get('/:sessionId/events', async (c) => {
       if (!npc) break;
 
       // --- perception every 2s ---
-      const perception = buildPerception(npcId);
+      const perception = npcSimulation.buildPerception(npcId);
       if (perception) {
         await stream.write(`event: perception\ndata: ${JSON.stringify(perception)}\n\n`);
       }
 
+      // --- control on CHANGE (D4): human took/released the avatar ---
+      // Derived from the live config's agentId (the same TTL map the world-side
+      // suppression reads); falls back to the perception field when present so
+      // the two surfaces agree by construction.
+      const tickConfig = npcSimulation.getAgentBotConfig(sessionId);
+      const humanControlled = tickConfig
+        ? npcSimulation.isAgentHumanControlled(tickConfig.agentId)
+        : (perception?.humanControlled ?? false);
+      if (humanControlled !== lastHumanControlled) {
+        await stream.write(`event: control\ndata: ${JSON.stringify({ humanControlled })}\n\n`);
+        lastHumanControlled = humanControlled;
+      }
+
       // --- combat_start when inCombat flips to true ---
       if (npc.inCombat && !wasInCombat) {
+        // B1 ROOT-FIX: `combatTargetId` (and `npcId`) are non-secret npc ids now
+        // (`ocb-<base64url(agentId)>` for an avatar body), so they are safe to emit directly.
         await stream.write(
           `event: combat_start\ndata: ${JSON.stringify({ npcId, combatTargetId: npc.combatTargetId ?? null })}\n\n`
         );
@@ -2997,6 +3339,7 @@ agentGatewayRoutes.get('/:sessionId/events', async (c) => {
         );
         if (myCombat && myCombat.rounds.length > 0) {
           const lastRound = myCombat.rounds[myCombat.rounds.length - 1];
+          // B1 ROOT-FIX: round `attacker` is a non-secret npc id now.
           await stream.write(
             `event: combat_round\ndata: ${JSON.stringify({ combatId: myCombat.id, round: lastRound })}\n\n`
           );
@@ -3013,6 +3356,17 @@ agentGatewayRoutes.get('/:sessionId/events', async (c) => {
         await stream.write(`event: knowledge_added\ndata: ${JSON.stringify(ev)}\n\n`);
       }
 
+      // --- durable-backed stream frames (D7 slice-1): cove settlement confirms
+      // pushed by the settle sites. Each carries the backing `events.id` as the
+      // SSE `id:` so the agent's Last-Event-ID cursor advances on live delivery
+      // (reconnect then replays only what came after). ---
+      const streamEvents = drainAgentStreamEvents(sessionId);
+      for (const ev of streamEvents) {
+        await stream.write(
+          `event: ${ev.channel}\nid: ${ev.eventId}\ndata: ${JSON.stringify(ev.data)}\n\n`,
+        );
+      }
+
       // --- ping every 10s (every 5 ticks at 2s cadence) ---
       tickCount++;
       if (tickCount % 5 === 0) {
@@ -3023,6 +3377,235 @@ agentGatewayRoutes.get('/:sessionId/events', async (c) => {
     // events so we don't leak memory.
     clearSessionQueue(sessionId);
   });
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/agent/:sessionId/status — the directive surface (magic-link D5)
+// ---------------------------------------------------------------------------
+// A connected agent fetches this to PRESENT its state to its human ("here's my
+// CT, level, leaderboard rank, land, skills — what do you want me to do this
+// session?"). Session-bearer authed via the SAME fail-closed liveness gate as
+// /wallet (validateLiveAgentSession → {config, bot} in one shot; no TTL slide —
+// a status probe is not activity). NO bearer is ever echoed. `stats` and
+// `ownership` are null for unbound/demo sessions — enforced mechanically in
+// `buildAgentStatusResponse` (Rule E5 honesty), not by handler discipline.
+agentGatewayRoutes.get('/:sessionId/status', async (c) => {
+  const sessionId = c.req.param('sessionId');
+  const live = await validateLiveAgentSession(sessionId);
+  if (!live) return c.json({ error: 'Invalid or expired agent session' }, 404);
+  const { config, bot } = live;
+
+  let stats: AgentStatusStats | null = null;
+  let ownership: AgentStatusOwnership | null = null;
+  // SECURITY (adversarial panel 2026-07-02, BLOCKING): gate real economy reads
+  // on PROVEN-THIS-SESSION ownership, NOT on `bot.userId != null`. A non-ledger
+  // reconnect to a victim's PUBLIC agentId yields a live session with
+  // bot.userId=victim but config.ledgerCapable=false — keying on bot.userId
+  // would leak the victim's CT/level/leaderboard/land to any caller who knows
+  // the agentId. `sessionLedgerCapable` mirrors the cove spend gate (config flag
+  // + boundUserId === row userId), so a read can never report more than a spend
+  // could. `buildAgentStatusResponse` re-nulls stats/ownership on the same
+  // predicate (defense in depth), but we ALSO skip the queries entirely here so
+  // we never even touch a victim's rows.
+  const statsProven = sessionLedgerCapable(config, bot.userId ?? null);
+  if (statsProven && bot.userId) {
+    // Cheapest existing reads: ONE avatars row (ct/level/xp + characterConfig
+    // for the owned-skills intersection), ONE indexed land count, and the
+    // 60s-cached public-board snapshot for score/rank.
+    const avatar = await db.query.avatars.findFirst({
+      where: eq(avatars.userId, bot.userId),
+      columns: { id: true, clawTokens: true, level: true, xp: true, characterConfig: true },
+    });
+    if (avatar) {
+      // Leaderboard — reuses the public board's cached snapshot (same score +
+      // rank the agent sees at /leaderboard; null = no scored events yet /
+      // beyond the snapshot's 500-row horizon). Best-effort: a board hiccup
+      // must not fail the whole status read.
+      let leaderboard: AgentStatusStats['leaderboard'] = null;
+      try {
+        const entry = await getAgentLeaderboardEntry(bot.agentId);
+        if (entry) leaderboard = { score: entry.score, rank: entry.rank };
+      } catch (err) {
+        console.warn('[AgentStatus] leaderboard lookup failed (non-fatal):', err);
+      }
+      stats = {
+        ct: avatar.clawTokens ?? 0,
+        level: avatar.level ?? 1,
+        xp: avatar.xp ?? 0,
+        leaderboard,
+      };
+
+      // Land — one indexed count on owner_avatar_id.
+      let landCount = 0;
+      try {
+        const [row] = await db
+          .select({ c: sql<number>`count(*)::int` })
+          .from(landParcels)
+          .where(eq(landParcels.ownerAvatarId, avatar.id));
+        landCount = row?.c ?? 0;
+      } catch (err) {
+        console.warn('[AgentStatus] land count failed (non-fatal):', err);
+      }
+
+      // Owned skills — the SAME characterConfig ∩ building-books intersection
+      // rule the /connect ownedSkills block and the skill.md gates use.
+      const known: string[] =
+        (avatar.characterConfig as { knowledge?: string[] } | null)?.knowledge ?? [];
+      const ownedSkills: string[] = [];
+      if (known.length > 0) {
+        const knownSet = new Set(known);
+        for (const buildingId of SHOP_BUILDINGS) {
+          let owned = false;
+          for (const book of getBooksForBuilding(buildingId)) {
+            for (const entry of book.knowledgeEntries) {
+              if (knownSet.has(entry)) {
+                owned = true;
+                break;
+              }
+            }
+            if (owned) break;
+          }
+          if (owned) ownedSkills.push(`clawville-${buildingId}`);
+        }
+      }
+      ownership = { landParcels: landCount, ownedSkills };
+    }
+  }
+
+  return c.json(
+    buildAgentStatusResponse({
+      agentId: config.agentId,
+      identityType: bot.identityType,
+      expiresAt: bot.sessionExpiresAt ? bot.sessionExpiresAt.toISOString() : null,
+      // Same TTL map the world-side suppression + SSE `control` event read.
+      humanControlled: npcSimulation.isAgentHumanControlled(config.agentId),
+      botUserId: bot.userId ?? null,
+      // The read-side ledger predicate mirrors resolveAgentSession's grant
+      // condition (config flag + boundUserId === live row userId) — it can
+      // never report more capability than the spend gate would grant.
+      config: { ledgerCapable: config.ledgerCapable, boundUserId: config.boundUserId },
+      stats,
+      ownership,
+    }),
+  );
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/agent/:sessionId/control-link — fresh handback link (magic-link D5)
+// ---------------------------------------------------------------------------
+// The returning-scenario mint: an agent whose connect-time sessionTicket
+// expired (10-min TTL) mints a FRESH single-use control link on demand and
+// hands it to its human. Same conditions as the connect mint: the bot row's
+// bound userId wins; an UNBOUND agent may present its own {identityType,
+// identityKey} pair (the same self-declared identity trust model /connect
+// uses) — with neither, 403 {code:'no_identity'}. The ticket stamps
+// issued_to_agent_id, so redemption completes the deferred bind exactly like
+// the connect-issued link. Rate-limited per AGENT (not IP): ~5 links/hour.
+const controlLinkRateLimiter = createRateLimiter({
+  maxPerWindow: 5,
+  windowMs: 3_600_000,
+});
+
+const controlLinkSchema = z.object({
+  // max 16 matches agent_session_tickets.identity_type varchar(16) — a longer
+  // type would make the mint INSERT throw (500) instead of a clean 400 here.
+  identityType: z.string().min(1).max(16).optional(),
+  identityKey: z.string().min(1).max(256).optional(),
+});
+
+agentGatewayRoutes.post('/:sessionId/control-link', async (c) => {
+  const sessionId = c.req.param('sessionId');
+  const live = await validateLiveAgentSession(sessionId);
+  if (!live) return c.json({ error: 'Invalid or expired agent session' }, 404);
+  const { config, bot } = live;
+
+  const body = await c.req.json().catch(() => null);
+  const parsed = controlLinkSchema.safeParse(body ?? {});
+  if (!parsed.success) {
+    return c.json({ error: 'Invalid request', details: parsed.error.flatten() }, 400);
+  }
+
+  // Resolve the user the link will log in.
+  // SECURITY (adversarial panel 2026-07-02, BLOCKING — account takeover): trust
+  // the row's bound userId ONLY when THIS session PROVED ownership
+  // (`sessionLedgerCapable`: config.ledgerCapable + boundUserId === row userId).
+  // A non-ledger reconnect to a victim's PUBLIC agentId is a LIVE session with
+  // bot.userId=victim but ledgerCapable=false; without this gate it could mint a
+  // full-login magic link for the victim — a complete takeover from a public
+  // handle. An unproven session must instead present the self-declared identity
+  // credential (the same {identityType,identityKey} /connect demands), which an
+  // attacker who only knows the public agentId does not have.
+  let userId: string | null = sessionLedgerCapable(config, bot.userId ?? null)
+    ? bot.userId ?? null
+    : null;
+  let ticketIdentityType = bot.identityType;
+  let ticketIdentityKey: string = config.agentId;
+  if (!userId) {
+    const { identityType: bodyType, identityKey: bodyKey } = parsed.data;
+    if (bodyType && bodyKey) {
+      // SECURITY (panel BLOCKING): this unsigned public path must NEVER
+      // resolve-or-create into a RESERVED partner namespace (e.g. `hatcher:`) —
+      // that would mint a login for a partner user without the signed partner
+      // route. Mirrors /connect's reserved-namespace refusal.
+      if (isReservedPartnerIdentityType(bodyType)) {
+        return c.json({ error: 'reserved_identity_type' }, 403);
+      }
+      try {
+        const user = await resolveOrCreateUserByIdentity(bodyType, bodyKey);
+        userId = user.id;
+        ticketIdentityType = bodyType;
+        ticketIdentityKey = bodyKey;
+      } catch (err) {
+        console.error('[ControlLink] identity resolution failed:', err);
+        return c.json({ error: 'Identity bootstrap failed' }, 500);
+      }
+    }
+  }
+  if (!userId) {
+    return c.json(
+      {
+        code: 'no_identity',
+        error:
+          'This session is not bound to a user and presented no identity. Reconnect with identityType + identityKey, or claim a connect-token first.',
+      },
+      403,
+    );
+  }
+
+  // Per-USER budget — keyed on the RESOLVED authenticated user (not the public
+  // agentId) and counted only AFTER auth, so a caller who has NOT proven the
+  // user (a bare-agentId squat that 403s above) can never deplete a legitimate
+  // owner's hourly link budget (panel MINOR — griefing DoS).
+  if (!controlLinkRateLimiter.check(userId)) {
+    return c.json({ error: 'Too many control links. Try again later.' }, 429);
+  }
+
+  // Bind the ticket to the user's avatar when one exists (name lands in the
+  // instruction copy; a null avatarId routes the click to /create-agent).
+  const userAvatar = await db.query.avatars.findFirst({
+    where: eq(avatars.userId, userId),
+    columns: { id: true, name: true },
+  });
+
+  let minted: Awaited<ReturnType<typeof mintSessionTicket>>;
+  try {
+    minted = await mintSessionTicket({
+      userId,
+      avatarId: userAvatar?.id ?? null,
+      identityType: ticketIdentityType,
+      identityKey: ticketIdentityKey,
+      issuedToAgentSession: sessionId,
+      issuedToAgentId: config.agentId,
+      avatarName: userAvatar?.name ?? null,
+    });
+  } catch (err) {
+    console.error('[ControlLink] ticket mint failed:', err);
+    return c.json({ error: 'Failed to issue control link' }, 500);
+  }
+
+  // {url, expiresAt} only — the raw ticket value is inside the url already and
+  // the instruction copy lives in the protocol manual; keep the surface small.
+  return c.json({ url: minted.url, expiresAt: minted.expiresAt });
 });
 
 // ---------------------------------------------------------------------------
@@ -3720,11 +4303,11 @@ agentGatewayRoutes.get('/:sessionId/cove/blackjack/skill-memory', async (c) => {
   if (!(await validateLiveAgentSession(sessionId))) {
     return c.json({ error: 'Invalid or expired agent session' }, 404);
   }
-  const botConfig = npcSimulation.getOpenClawBotConfig(sessionId);
+  const botConfig = npcSimulation.getAgentBotConfig(sessionId);
   if (!botConfig) return c.json({ error: 'No agent config for session' }, 404);
 
-  const bot = await db.query.openclawBots.findFirst({
-    where: eq(openclawBots.agentId, botConfig.agentId),
+  const bot = await db.query.agentBots.findFirst({
+    where: eq(agentBots.agentId, botConfig.agentId),
     columns: { userId: true },
   });
   if (!bot?.userId) return c.json({ error: 'Agent not linked to a user' }, 404);
@@ -3831,7 +4414,7 @@ agentGatewayRoutes.post('/:sessionId/cove/blackjack/:tool', async (c) => {
 
   void logEventFromContext(c, {
     eventType: 'agent.tool.invoked',
-    agentId: npcSimulation.getOpenClawBotConfig(sessionId)?.agentId ?? sessionDigest(sessionId),
+    agentId: npcSimulation.getAgentBotConfig(sessionId)?.agentId ?? sessionDigest(sessionId),
     sessionId: sessionDigest(sessionId),
     payload: { toolName: tool, ok: res.ok, status: res.status, via: 'cove-blackjack' },
   });
@@ -4132,7 +4715,7 @@ agentGatewayRoutes.post('/:sessionId/cove/poker/:tool', async (c) => {
 
   void logEventFromContext(c, {
     eventType: 'agent.tool.invoked',
-    agentId: npcSimulation.getOpenClawBotConfig(sessionId)?.agentId ?? sessionDigest(sessionId),
+    agentId: npcSimulation.getAgentBotConfig(sessionId)?.agentId ?? sessionDigest(sessionId),
     sessionId: sessionDigest(sessionId),
     payload: { toolName: tool, ok: res.ok, status: res.status, via: 'cove-poker' },
   });

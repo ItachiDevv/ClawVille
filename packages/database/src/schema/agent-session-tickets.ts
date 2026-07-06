@@ -54,6 +54,18 @@ export const agentSessionTickets = pgTable(
      * if the agent session later expires or is revoked.
      */
     issuedToAgentSession: varchar('issued_to_agent_session', { length: 64 }),
+    /**
+     * Magic-link onboarding (2026-07-02) — the PUBLIC `openclaw_bots.agent_id`
+     * of the agent this ticket was minted FOR. Redemption at `GET /api/auth/enter`
+     * uses it as the deferred-bind claim event: on successful consume the
+     * exchanger binds `openclaw_bots.user_id = ticket.user_id` for this agent
+     * (never clobbering a DIFFERENT existing owner) so the agent's live session
+     * becomes ledger-capable without a reconnect. NULLABLE + additive: tickets
+     * minted by non-agent flows (email login links, reconnect) leave it null and
+     * redemption skips the bind. This is a public handle, NOT a bearer — unlike
+     * `issued_to_agent_session` it needs no digesting.
+     */
+    issuedToAgentId: text('issued_to_agent_id'),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
     /** NULL until redeemed; set to `now()` atomically on redemption. */

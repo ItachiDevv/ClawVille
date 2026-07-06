@@ -25,7 +25,7 @@ import bs58 from 'bs58';
 import {
   db,
   avatars,
-  openclawBots,
+  agentBots,
   wallets,
   eq,
   and,
@@ -71,9 +71,9 @@ export async function ensureWallet(
     }
   } else if (subjectType === 'agent') {
     const [row] = await db
-      .select({ walletAddress: openclawBots.walletAddress })
-      .from(openclawBots)
-      .where(eq(openclawBots.id, subjectId))
+      .select({ walletAddress: agentBots.walletAddress })
+      .from(agentBots)
+      .where(eq(agentBots.id, subjectId))
       .limit(1);
     if (!row) throw new Error(`[wallet] Bot ${subjectId} not found`);
     if (row.walletAddress) {
@@ -174,9 +174,9 @@ export async function getWalletAddress(
   }
   if (subjectType === 'agent') {
     const [row] = await db
-      .select({ walletAddress: openclawBots.walletAddress })
-      .from(openclawBots)
-      .where(eq(openclawBots.id, subjectId))
+      .select({ walletAddress: agentBots.walletAddress })
+      .from(agentBots)
+      .where(eq(agentBots.id, subjectId))
       .limit(1);
     return row?.walletAddress ?? null;
   }
@@ -234,9 +234,9 @@ export async function ensureWalletWithFirstTimeSecret(
     }
   } else if (subjectType === 'agent') {
     const [row] = await db
-      .select({ walletAddress: openclawBots.walletAddress })
-      .from(openclawBots)
-      .where(eq(openclawBots.id, subjectId))
+      .select({ walletAddress: agentBots.walletAddress })
+      .from(agentBots)
+      .where(eq(agentBots.id, subjectId))
       .limit(1);
     if (!row) throw new Error(`[wallet] Bot ${subjectId} not found`);
     if (row.walletAddress) {
@@ -338,8 +338,8 @@ async function writeMirror(
       .where(eq(avatars.id, subjectId));
   } else if (subjectType === 'agent') {
     await db
-      .update(openclawBots)
+      .update(agentBots)
       .set({ walletAddress: publicKey, updatedAt: new Date() })
-      .where(eq(openclawBots.id, subjectId));
+      .where(eq(agentBots.id, subjectId));
   }
 }

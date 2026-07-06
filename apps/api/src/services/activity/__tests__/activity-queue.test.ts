@@ -410,7 +410,7 @@ function makeDbMock(queueRows: Array<Record<string, unknown>>) {
       };
     },
     query: {
-      openclawBots: { findFirst: () => Promise.resolve(null) },
+      agentBots: { findFirst: () => Promise.resolve(null) },
       avatars: { findFirst: () => Promise.resolve(null) },
     },
     reset() {

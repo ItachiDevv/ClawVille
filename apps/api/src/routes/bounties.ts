@@ -16,7 +16,6 @@ import {
 import {
   db,
   avatars,
-  publishedSkills,
   agentConfigs,
   avatarInventory,
   bounties,
@@ -186,8 +185,7 @@ async function recalculateSuccessRate(avatarId: string, tx?: BountyTx): Promise<
 const USDC_BOUNTY_REWARD_MAX = 1_000_000;
 
 const bonusRewardSchema = z.object({
-  rewardType: z.enum(['skill', 'agent_config', 'knowledge_book', 'custom']),
-  skillId: z.string().uuid().optional(),
+  rewardType: z.enum(['agent_config', 'knowledge_book', 'custom']),
   agentConfigId: z.string().uuid().optional(),
   bookId: z.string().optional(),
   customDescription: z.string().max(500).optional(),
@@ -499,16 +497,6 @@ bountyRoutes.post('/create', requireAuthOrAgentSession, async (c) => {
   // Validate bonus reward references
   if (data.bonusRewards) {
     for (const reward of data.bonusRewards) {
-      if (reward.rewardType === 'skill' && reward.skillId) {
-        const [skill] = await db
-          .select({ id: publishedSkills.id })
-          .from(publishedSkills)
-          .where(eq(publishedSkills.id, reward.skillId))
-          .limit(1);
-        if (!skill) {
-          throw new HTTPException(404, { message: `Skill reward not found: ${reward.skillId}` });
-        }
-      }
       if (reward.rewardType === 'agent_config' && reward.agentConfigId) {
         const [config] = await db
           .select({ id: agentConfigs.id })
@@ -566,7 +554,6 @@ bountyRoutes.post('/create', requireAuthOrAgentSession, async (c) => {
         data.bonusRewards.map((reward) => ({
           bountyId: created.id,
           rewardType: reward.rewardType,
-          skillId: reward.skillId ?? null,
           agentConfigId: reward.agentConfigId ?? null,
           bookId: reward.bookId ?? null,
           customDescription: reward.customDescription ?? null,
@@ -816,29 +803,6 @@ bountyRoutes.post('/attempts/:attemptId/review', requireAuthOrAgentSession, asyn
         .where(eq(bountyRewards.bountyId, bounty.id));
 
       for (const reward of txRewards) {
-        if (reward.rewardType === 'skill' && reward.skillId) {
-          const itemId = `skill-${reward.skillId}`;
-          const existingItem = await tx.query.avatarInventory.findFirst({
-            where: and(
-              eq(avatarInventory.avatarId, hunterAvatar.id),
-              eq(avatarInventory.itemId, itemId)
-            ),
-          });
-
-          if (existingItem) {
-            await tx
-              .update(avatarInventory)
-              .set({ quantity: existingItem.quantity + 1 })
-              .where(eq(avatarInventory.id, existingItem.id));
-          } else {
-            await tx.insert(avatarInventory).values({
-              avatarId: hunterAvatar.id,
-              itemId,
-              quantity: 1,
-            });
-          }
-        }
-
         if (reward.rewardType === 'knowledge_book' && reward.bookId) {
           const itemId = `book-${reward.bookId}`;
           const existingItem = await tx.query.avatarInventory.findFirst({
@@ -1352,7 +1316,6 @@ bountyRoutes.get('/:id', async (c) => {
     rewards: rewards.map((r) => ({
       id: r.id,
       rewardType: r.rewardType,
-      skillId: r.skillId,
       agentConfigId: r.agentConfigId,
       bookId: r.bookId,
       customDescription: r.customDescription,

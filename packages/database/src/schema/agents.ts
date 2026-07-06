@@ -58,6 +58,26 @@ export const platformAgents = pgTable(
     systemAgentSingleton: uniqueIndex('platform_agents_system_singleton')
       .on(table.userId, table.type, sql`(${table.customization}->>'slug')`)
       .where(sql`${table.type} = 'system-agent'`),
+
+    /**
+     * R3 (2026-07-02): partial unique index — at most ONE openclaw-bot row per
+     * (userId, type, config->>'openclawBotId'). Prevents concurrent boots from
+     * inserting duplicate `platform_agents` rows for the SAME house/connected bot,
+     * which made `house-agent-seeder.ts` and `routes/openclaw.ts` (both `.find()`
+     * an arbitrary matching row) bind a nondeterministic runtime each boot.
+     *
+     * Uses `IS NOT NULL` (NOT the jsonb `?` existence operator) so the predicate is
+     * a plain SQL expression and dodges the `?`→param-placeholder ambiguity in the
+     * driver. Mirrors the systemAgentSingleton partial-index precedent above.
+     *
+     * Manual migration + pre-index dedupe (a CREATE UNIQUE INDEX would throw on
+     * existing dups): migrations-manual/2026-07-02_platform_agents_openclaw_bot_singleton.sql.
+     */
+    openclawBotSingleton: uniqueIndex('platform_agents_openclaw_bot_singleton')
+      .on(table.userId, table.type, sql`(${table.config}->>'openclawBotId')`)
+      .where(
+        sql`${table.type} = 'openclaw-bot' AND (${table.config}->>'openclawBotId') IS NOT NULL`,
+      ),
   }),
 );
 

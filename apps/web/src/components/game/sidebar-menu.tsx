@@ -20,10 +20,10 @@
  *     - My Agent     — settings for the user's agent
  *     - Skill Forge  — skill authoring (renamed from Skill Builder)
  *
- *   ECONOMY (Priority 3: skill marketplace / value flow)
- *     - Marketplace  — knowledge book shop
- *     - Bazaar       — skill trading (rarity-tinted rare/cyan)
- *     - Auction      — timed bidding (rarity-tinted epic/purple)
+ *   ECONOMY (Priority 3: leaderboard-driven value flow — cosmetics + land,
+ *            NOT peer skill commerce, which was removed 2026-07-02)
+ *     - Land Office  — parcel economy (rarity-tinted epic/purple)
+ *     - Cosmetics    — first-party cosmetic shop (CT carve-out)
  *
  *   QUESTS  (Priority 4: gamified UI + leaderboard + free promo)
  *     - Quest Board   — team-posted coding bounties
@@ -49,7 +49,7 @@
  *
  * Store contract — zero new actions, reads/writes the exact existing store:
  *   setSettingsModalOpen, openLocationConfig, setAgentConnectModalOpen,
- *   setSkillBuilderOpen, openMarketplace, openBazaar, openAuction,
+ *   setSkillBuilderOpen, openLandOffice, setCosmeticDrawerOpen,
  *   openQuestBoard, openBountyBoard, toggleActivityFeed.
  */
 
@@ -617,10 +617,7 @@ function SidebarContent({ closeMenu }: SidebarContentProps) {
   const setSettingsModalOpen = useGameStore((s: GameState) => s.setSettingsModalOpen);
   const setAgentConnectModalOpen = useGameStore((s: GameState) => s.setAgentConnectModalOpen);
   const setSkillBuilderOpen = useGameStore((s: GameState) => s.setSkillBuilderOpen);
-  const openMarketplace = useGameStore((s: GameState) => s.openMarketplace);
   const openLandOffice = useGameStore((s: GameState) => s.openLandOffice);
-  const openBazaar = useGameStore((s: GameState) => s.openBazaar);
-  const openAuction = useGameStore((s: GameState) => s.openAuction);
   const setCosmeticDrawerOpen = useGameStore((s: GameState) => s.setCosmeticDrawerOpen);
   const openQuestBoard = useGameStore((s: GameState) => s.openQuestBoard);
   const openBountyBoard = useGameStore((s: GameState) => s.openBountyBoard);
@@ -641,6 +638,27 @@ function SidebarContent({ closeMenu }: SidebarContentProps) {
     retry: false,
   });
   const showLogout = !!authData?.user && !authData.user.isGuest;
+
+  // P2 (2026-07-04) — the durable "Player tier / Upgrade to Trainer" framing
+  // is RETIRED (D1: Player tier → transitional 'agent-provisioning-pending').
+  // The server derives pending on /me/agent-session for a resolved NON-guest
+  // user whose agent rows don't exist yet; the row below re-labels to a
+  // "finish setup" CTA routing to /create-agent (which prefills + PATCHes an
+  // existing avatar, or POST-creates when none). Reuses the EXISTING
+  // ['agent-session'] query key (already purged on login + wiped by the
+  // logout queryClient.clear()) — zero new query keys. Guests never see
+  // pending: the enabled gate is non-guest AND the server returns 'none'
+  // for guests regardless.
+  const isAuthedNonGuest = !!authData?.user && !authData.user.isGuest;
+  const { data: agentSession } = useQuery({
+    queryKey: ['agent-session'],
+    queryFn: api.getAgentSession,
+    enabled: isAuthedNonGuest,
+    staleTime: 30_000,
+    retry: false,
+  });
+  const provisioningPending =
+    isAuthedNonGuest && agentSession?.mode === 'provisioning-pending';
 
   const [helpOpen, setHelpOpen] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
@@ -827,24 +845,30 @@ function SidebarContent({ closeMenu }: SidebarContentProps) {
         <CategoryHeader label="World" subtitle="Enter · Connect" />
         <div className="rpg-sidebar-group">
           {/*
-            Phase 2 plan §3.4 — tier-aware label. Same row, two intents:
-              - Player tier (hasAvatar && !agentConnected): primary "Upgrade
-                to Trainer" CTA. Click → existing agent-connect modal.
-                Avatar/CT/rank carry forward (server-side, non-destructive).
-              - Trainer tier (agentConnected): manage the bound bot.
-                Green dot indicates active session.
-            Identical onClick handler — only the framing changes.
-          */}
-          {/*
-            Icon + label stay aligned across all three states (audit-fix
-            2026-04-29 — preventing the ⬆️/'Agent' mismatch when a
-            logged-in user has no avatar yet). Both flip together based on
-            the same tier predicate.
+            P2 re-label (2026-07-04) — supersedes the Phase 2 §3.4 "Player
+            tier / Upgrade to Trainer" durable-tier framing (D1: that tier is
+            now the TRANSITIONAL 'agent-provisioning-pending' state). Three
+            states, one row:
+              - agentConnected: manage the bound agent (green dot = active).
+                Click → agent-connect modal (unchanged).
+              - provisioning-pending (server-derived, non-guest only):
+                "Finish Agent Setup" CTA → /create-agent, which prefills from
+                the provisioned avatar and PATCHes (or POST-creates when no
+                avatar row exists). Avatar/CT/rank carry forward — the setup
+                is non-destructive customization, not an upgrade.
+              - everything else (guest, external-expired, dismissed):
+                generic "Agent" row → connect modal.
+            Icon + label flip together on the same predicate (audit-fix
+            2026-04-29 alignment rule preserved).
           */}
           <SidebarRow
-            icon={agentConnected ? '🔌' : (hasAvatar ? '⬆️' : '🔌')}
-            label={agentConnected ? 'Agent' : (hasAvatar ? 'Upgrade to Trainer' : 'Agent')}
-            onClick={runAction(() => setAgentConnectModalOpen(true))}
+            icon={agentConnected ? '🔌' : (provisioningPending ? '✨' : '🔌')}
+            label={agentConnected ? 'Agent' : (provisioningPending ? 'Finish Agent Setup' : 'Agent')}
+            onClick={
+              !agentConnected && provisioningPending
+                ? runAction(() => router.push('/create-agent'))
+                : runAction(() => setAgentConnectModalOpen(true))
+            }
             active={agentConnected}
             badge={
               agentConnected ? (
@@ -899,14 +923,13 @@ function SidebarContent({ closeMenu }: SidebarContentProps) {
           />
         </div>
 
-        {/* ECONOMY — Priority 3: skill marketplace */}
-        <CategoryHeader label="Economy" subtitle="Trade · Buy · Sell" />
+        {/* ECONOMY — Priority 3: leaderboard-driven value flow (peer skill
+            commerce — bazaar/auction/marketplace — was removed 2026-07-02;
+            a sold/published "skill" is a prompt-injection vector). What
+            remains: land (parcel economy) and cosmetics (first-party CT
+            carve-out, not peer commerce). */}
+        <CategoryHeader label="Economy" subtitle="Land · Cosmetics" />
         <div className="rpg-sidebar-group">
-          <SidebarRow
-            icon="🛒"
-            label="Marketplace"
-            onClick={runAction(openMarketplace)}
-          />
           {/* Land Economy (Phase 1) — browse for-sale parcels, claim a free
               starter home, buy a priced parcel with CT, place + upgrade a
               building/shop. Higher tiers unlock nicer buildings + higher levels. */}
@@ -914,24 +937,6 @@ function SidebarContent({ closeMenu }: SidebarContentProps) {
             icon="🏝️"
             label="Land Office"
             onClick={runAction(openLandOffice)}
-            rarity="epic"
-          />
-          <SidebarRow
-            icon="⚖"
-            label="Bazaar"
-            // Sidebar Bazaar opens the COSMETIC DRAWER per the
-            // 2026-05-18 repoint (Bazaar stand was repurposed to the
-            // first-party cosmetics shop; "Bazaar" name kept). The
-            // legacy peer-skill-bazaar route is still in the store as
-            // openBazaar() but gated 503 by the marketplace-pause
-            // policy — leaving it unreachable from the UI.
-            onClick={runAction(() => setCosmeticDrawerOpen(true))}
-            rarity="rare"
-          />
-          <SidebarRow
-            icon="🔨"
-            label="Auction House"
-            onClick={runAction(openAuction)}
             rarity="epic"
           />
           {/* Q3 plan §4.4 — cosmetic drawer entry. Opens the owned-skins

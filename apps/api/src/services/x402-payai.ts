@@ -157,6 +157,16 @@ export interface BuildTopupQuoteInput {
   resource?: { url: string; description?: string };
   /** Facilitator settle deadline. Default 120s (matches PayAI gasless settle). */
   maxTimeoutSeconds?: number;
+  /**
+   * The facilitator's gas fee-payer pubkey, surfaced in `extra.feePayer`.
+   * REQUIRED by real SVM facilitators (PayAI /verify hard-rejects requirements
+   * without it: 400 `missing_fee_payer` — live-probed 2026-07-03) AND by the
+   * @x402/svm exact CLIENT (it throws unless `extra.feePayer` is set, because
+   * the payment tx must name the facilitator as fee payer for co-signing).
+   * Resolve via `resolveFacilitatorFeePayer()` at the route boundary; omitted →
+   * `extra` carries no feePayer (the mock facilitator path doesn't need one).
+   */
+  feePayer?: string;
 }
 
 /**
@@ -205,7 +215,14 @@ export function buildTopupQuote(input: BuildTopupQuoteInput): TopupQuote {
     payTo,
     maxTimeoutSeconds: input.maxTimeoutSeconds ?? 120,
     // Provenance the facilitator/scheme may read; harmless to honest flows.
-    extra: { railAsset: asset, usdCents },
+    // feePayer (when resolved) is the facilitator's gas signer — the SVM exact
+    // scheme requires it in BOTH the client's signing input and the server-side
+    // requirements the facilitator re-validates (missing → 400 missing_fee_payer).
+    extra: {
+      railAsset: asset,
+      usdCents,
+      ...(input.feePayer ? { feePayer: input.feePayer } : {}),
+    },
   };
 
   return {
@@ -216,6 +233,95 @@ export function buildTopupQuote(input: BuildTopupQuoteInput): TopupQuote {
     },
     accepts: [requirement],
   };
+}
+
+// ---------------------------------------------------------------------------
+// resolveFacilitatorFeePayer — the facilitator's gas signer for SVM payments
+// ---------------------------------------------------------------------------
+
+/** Memoized /supported feePayer per (facilitatorUrl, caip2). TTL keeps quote
+ *  and settle inside one window agreeing on the same signer while still
+ *  following a facilitator key rotation eventually. */
+let _feePayerCache: {
+  url: string;
+  caip2: string;
+  feePayer: string;
+  fetchedAt: number;
+} | null = null;
+const FEE_PAYER_TTL_MS = 5 * 60_000;
+
+/**
+ * Resolve the facilitator's fee-payer pubkey for `network`, for injection into
+ * `buildTopupQuote({ feePayer })`. Real SVM facilitators publish it in
+ * `GET /supported` → `kinds[].extra.feePayer` (PayAI: one stable signer for
+ * both mainnet + devnet); the SVM exact scheme REQUIRES it in
+ * `requirements.extra.feePayer` (PayAI /verify → 400 `missing_fee_payer`
+ * without it) and the paying client needs it to build the co-signable tx.
+ *
+ * Order: `X402_FEE_PAYER` env override (ops escape hatch / pin) → memoized
+ * `/supported` lookup (5-min TTL) → null. NEVER throws; null = omit feePayer
+ * (the mock facilitator path neither publishes nor requires one).
+ */
+/** A Solana pubkey is base58 of 32 bytes → 32-44 base58 chars. Anything else
+ *  (Codex MED: a compromised facilitator injecting megabytes into our 402
+ *  header, or a typo'd env override) is REJECTED to null, never propagated. */
+const BASE58_PUBKEY_RE = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+function asValidFeePayer(value: unknown): string | null {
+  return typeof value === 'string' && BASE58_PUBKEY_RE.test(value) ? value : null;
+}
+
+export async function resolveFacilitatorFeePayer(
+  network: X402Network,
+): Promise<string | null> {
+  // WHOLE body is throw-contained (Codex MED: loadX402Config() throws when
+  // X402_ENABLED=true without a merchant pubkey — the partner path doesn't need
+  // the merchant wallet, so a config throw here must degrade to null, not a 500).
+  try {
+    const override = asValidFeePayer(process.env.X402_FEE_PAYER?.trim());
+    if (override) return override;
+    if (process.env.X402_FEE_PAYER?.trim()) {
+      console.warn('[x402-payai] X402_FEE_PAYER is set but not a base58 pubkey — ignoring');
+    }
+
+    const { facilitatorUrl } = loadX402Config();
+    if (!facilitatorUrl) return null;
+    const caip2 = caip2ForNetwork(network);
+
+    if (
+      _feePayerCache &&
+      _feePayerCache.url === facilitatorUrl &&
+      _feePayerCache.caip2 === caip2 &&
+      Date.now() - _feePayerCache.fetchedAt < FEE_PAYER_TTL_MS
+    ) {
+      return _feePayerCache.feePayer;
+    }
+
+    const res = await fetch(`${facilitatorUrl}/supported`, {
+      signal: AbortSignal.timeout(5_000),
+    });
+    if (!res.ok) return null;
+    const body = (await res.json()) as {
+      kinds?: Array<{
+        scheme?: string;
+        network?: string;
+        extra?: { feePayer?: unknown };
+      }>;
+    };
+    const hit = body?.kinds?.find(
+      (k) =>
+        k?.scheme === 'exact' &&
+        k?.network === caip2 &&
+        asValidFeePayer(k?.extra?.feePayer) !== null,
+    );
+    if (!hit) return null;
+    const feePayer = asValidFeePayer(hit.extra?.feePayer)!;
+    _feePayerCache = { url: facilitatorUrl, caip2, feePayer, fetchedAt: Date.now() };
+    return feePayer;
+  } catch {
+    // Unreachable facilitator / bad JSON / timeout / config throw — fail-open to
+    // "no feePayer" (verify fails cleanly downstream if the facilitator needs one).
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -413,63 +519,82 @@ export async function verifyAndSettle(
 }
 
 // ---------------------------------------------------------------------------
-// resolveFacilitatorFeePayer — discover the facilitator's SVM fee payer
+// Phase D — partner direct-USDC settlement (buyer → PARTNER, NO custody, NO CT)
 // ---------------------------------------------------------------------------
+//
+// The on-ramp above credits CT because the buyer pays OUR merchant wallet. Phase
+// D is the OPPOSITE money shape: the buyer pays the PARTNER's OWN Solana wallet
+// DIRECTLY for a partner-provided service. ClawVille NEVER custodies those funds
+// and NEVER credits a single ClawToken for them — we are only the x402 quoting +
+// verify/settle orchestrator between the buyer and the partner.
+//
+// These are DELIBERATELY THIN wrappers over the SAME audited primitives above
+// (`buildTopupQuote` + `verifyAndSettle`), NOT a parallel money path. Reusing
+// them means the on-ramp's whole safety contract carries over for free:
+//   - verify→(only-on-valid)-settle ordering (no credit-before-settle),
+//   - `verifyAndSettle` NEVER throws (facilitator/config/decoding errors resolve
+//     to `{settled:false}` so the route maps a clean 4xx, never a leaked 5xx),
+//   - `settled:true` requires a NON-EMPTY tx signature (a blank-signature settle
+//     is treated as unsettled).
+// The ONLY thing that differs is the recipient (`payTo` = the partner's payout
+// pubkey, never our merchant/treasury wallet) and a defense-in-depth recipient
+// binding on the settle call (below). They were previously removed as inert; they
+// are re-introduced now because `impl-route` WIRES them behind a FEATURE_GATE, so
+// the "no scaffolding theater" policy is satisfied.
 
-/**
- * The SVM `exact` scheme requires the FACILITATOR's fee-payer address inside
- * `requirements.extra.feePayer` — the payer signs a transfer whose gas the
- * facilitator sponsors, and the facilitator REJECTS a payload whose feePayer is
- * not one of its own signers. External buyers discover it from the 402 body;
- * a SERVER-DRIVEN payment (the SAP payai release rail, where ClawVille itself is
- * the payer's wallet operator) must resolve it from the facilitator's
- * `/supported` endpoint before building the payload.
- *
- * Resolution order for the given network's CAIP-2 id:
- *   1. a `kinds[]` entry (scheme 'exact', matching network) carrying a string
- *      `extra.feePayer` — what the reference @x402/svm facilitator advertises;
- *   2. the `signers[<caip2>]` map's first address (x402 v2 supported shape).
- *
- * NEVER throws — returns null on any facilitator/network/shape error so the
- * money path can fail closed with a clean structured error (no 5xx leak).
- */
-export async function resolveFacilitatorFeePayer(
-  network: X402Network,
-): Promise<string | null> {
-  const caip2 = caip2ForNetwork(network);
-  let client: HTTPFacilitatorClient;
-  try {
-    client = facilitatorClient();
-  } catch (err) {
-    console.warn(
-      '[x402-payai] resolveFacilitatorFeePayer: facilitatorClient() threw:',
-      (err as Error).message,
-    );
-    return null;
-  }
-  try {
-    const supported = await client.getSupported();
-    const kind = supported?.kinds?.find(
-      (k) => k.scheme === 'exact' && k.network === caip2,
-    );
-    const fromKind = kind?.extra?.feePayer;
-    if (typeof fromKind === 'string' && fromKind.length > 0) return fromKind;
-    const fromSigners = supported?.signers?.[caip2]?.[0];
-    if (typeof fromSigners === 'string' && fromSigners.length > 0) return fromSigners;
-    return null;
-  } catch (err) {
-    console.warn(
-      '[x402-payai] resolveFacilitatorFeePayer: /supported failed:',
-      (err as Error).message,
-    );
-    return null;
-  }
+export interface BuildPartnerPurchaseQuoteInput {
+  /** Partner's OWN Solana pubkey — buyer pays THIS directly. NEVER our merchant/treasury wallet. */
+  payoutPubkey: string;
+  asset: X402Asset;
+  usdCents: number;
+  network: X402Network;
+  resource?: { url: string; description?: string };
+  maxTimeoutSeconds?: number;
+  /** Facilitator gas signer — same contract as `BuildTopupQuoteInput.feePayer`. */
+  feePayer?: string;
 }
 
-// Phase D partner direct-USDC helpers (`buildPartnerPurchaseQuote` /
-// `settlePartnerPurchase`) were REMOVED here in F2 — they were inert (imported +
-// mounted nowhere) and F2's scope is the on-ramp only, so per the "no scaffolding
-// theater" policy they don't ship. They were thin wrappers over `buildTopupQuote`
-// (with `payTo`=partner pubkey) + `verifyAndSettle`; re-introduce them WITH a
-// route + FEATURE_GATE when the partner-storefront feature actually lands. The
-// original lives in git history on `feat/payai-x402-economy`.
+/**
+ * Build an x402 v2 quote for a DIRECT buyer→partner USDC purchase. Reuses
+ * `buildTopupQuote` — the partner `payoutPubkey` flows straight into its
+ * already-parameterized `payTo`, so the facilitator only settles a payment whose
+ * on-chain recipient is the partner. Nothing here credits CT.
+ */
+export function buildPartnerPurchaseQuote(input: BuildPartnerPurchaseQuoteInput): TopupQuote {
+  // Reuses buildTopupQuote — payoutPubkey flows into its already-parameterized payTo.
+  return buildTopupQuote({
+    payTo: input.payoutPubkey,
+    asset: input.asset,
+    usdCents: input.usdCents,
+    network: input.network,
+    resource: input.resource ?? {
+      url: '/api/partner/storefront/purchase',
+      description: `Partner service — $${(input.usdCents / 100).toFixed(2)} ${input.asset.toUpperCase()} (paid directly to the partner)`,
+    },
+    maxTimeoutSeconds: input.maxTimeoutSeconds,
+    feePayer: input.feePayer,
+  });
+}
+
+export interface SettlePartnerPurchaseInput extends VerifyAndSettleInput {
+  /** The partner payout pubkey the payment MUST be paying — the NO-CUSTODY binding. */
+  expectedPayoutPubkey: string;
+}
+
+/**
+ * Verify+settle a DIRECT buyer→partner USDC payment. Thin wrapper over the same
+ * audited `verifyAndSettle`, with ONE extra guard: a NO-CUSTODY recipient binding.
+ * Credits ZERO CT (this function never touches the ledger).
+ */
+export async function settlePartnerPurchase(
+  input: SettlePartnerPurchaseInput,
+): Promise<VerifyAndSettleResult> {
+  // NO-CUSTODY / recipient binding (defense in depth): refuse to even CALL the
+  // facilitator unless the server-derived requirements pay the partner's payout
+  // pubkey. A mismatch means the caller mis-bound payTo (e.g. to our merchant
+  // wallet) — settle NOTHING. Never throws (mirrors verifyAndSettle's contract).
+  if (!input.expectedPayoutPubkey || input.requirements.payTo !== input.expectedPayoutPubkey) {
+    return failed('payout_binding_mismatch');
+  }
+  return verifyAndSettle({ paymentHeader: input.paymentHeader, requirements: input.requirements });
+}

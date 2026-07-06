@@ -4,6 +4,10 @@ import type {
   HatcherLaunchExchangeResponse,
   LandTier,
 } from '@clawville/shared';
+// Type-only (erased at compile time — no runtime store dependency): the
+// heartbeat body's optional controlMode mirrors the game store's union so the
+// two can never drift.
+import type { ControlMode } from '@/stores/game';
 import type {
   LandParcelDTO,
   LandParcelStatus,
@@ -19,6 +23,14 @@ import type {
   ParcelStructureResponse,
   SpawnPreferenceMode,
   SpawnPreferenceResponse,
+  ServiceListingDTO,
+  ListServiceRequest,
+  ListServiceResponse,
+  UpdateServiceRequest,
+  UpdateServiceResponse,
+  StructureServicesResponse,
+  BrowseServicesResponse,
+  BuyServiceResponse,
 } from '@/components/game/land/types';
 import { getFingerprint } from './fingerprint';
 
@@ -124,8 +136,22 @@ export interface GuestSignupResponse {
 
 export const api = {
   // Auth
+  // P2 Path-B (2026-07-04) — signup now AUTO-PROVISIONS the hosted agent
+  // (avatar + platform_agents row + custodial wallet) server-side, FAIL-SOFT.
+  // On provisioning success the response additionally carries the avatar +
+  // agentId + one-time wallet payload with the SAME field names/shape as
+  // POST /api/avatars (the FirstTimeBackupModal contract). `wallet.secretKey`
+  // is disclosed EXACTLY ONCE — the server never re-emits it. On fail-soft
+  // provisioning failure the response is the legacy `{ success: true }` and
+  // the account surfaces as mode 'provisioning-pending' on /me/agent-session.
   signup: (data: { email: string; password: string; name?: string }) =>
-    request<{ success: boolean }>('/api/auth/signup', {
+    request<{
+      success: boolean;
+      avatar?: { id: string; name: string } & Record<string, unknown>;
+      agentId?: string;
+      /** One-time custodial wallet disclosure — present only when freshly minted. */
+      wallet?: { address: string; secretKey: string; chain: 'solana' };
+    }>('/api/auth/signup', {
       method: 'POST',
       body: JSON.stringify(data),
     }),
@@ -241,13 +267,26 @@ export const api = {
       // bearer to lose, nothing to "reconnect"); 'external-active|idle|expired' =
       // a user-run agent reachable via a bearer. Used by the chat bar (F2) to
       // suppress the meaningless "reconnect your agent" CTA for hosted avatars.
+      // 'provisioning-pending' (P2, 2026-07-04) = D1 transitional state: a
+      // resolved authenticated NON-guest user whose agent rows don't exist yet
+      // (no avatar, or an avatar without a platformAgentId — e.g. a legacy
+      // "Player tier" account or a signup whose fail-soft provisioning failed).
+      // Guests NEVER get this mode (server-derived, no DDL). `connected` is
+      // always false for pending.
       mode?:
         | 'hosted'
         | 'external-active'
         | 'external-idle'
         | 'external-expired'
         | 'dismissed'
+        | 'provisioning-pending'
         | 'none';
+      /**
+       * Present only with mode 'provisioning-pending' — whether an avatar row
+       * exists. Tells /create-agent to PATCH-prefill (true) vs POST-create
+       * (false) without a second fetch.
+       */
+      hasAvatar?: boolean;
     }>('/api/auth/me/agent-session'),
 
   translateGameText: (
@@ -330,6 +369,29 @@ export const api = {
       }
     ),
 
+  // P3 slice 2 — direct your OWN hosted agent (Autonomous mode). Persists the
+  // directive server-side (goal stream + autonomous-planner bias) instead of
+  // Q&A chat. Guests 403 (`guest_not_allowed`); provisioning-pending 409
+  // (`agent_provisioning_pending`); over-rate 429 (`rate_limited`).
+  setDirective: (directive: string) =>
+    request<{
+      ok: boolean;
+      directive: { text: string; setAt: string; setBy: string } | null;
+      cleared?: boolean;
+    }>('/api/avatars/me/directive', {
+      method: 'POST',
+      body: JSON.stringify({ directive }),
+    }),
+
+  clearDirective: () =>
+    request<{ ok: boolean; directive: null; cleared: boolean }>(
+      '/api/avatars/me/directive',
+      {
+        method: 'POST',
+        body: JSON.stringify({ clear: true }),
+      }
+    ),
+
   // Transient world-NPC chat — used by TalkToCharacterBar in NPC mode.
   // Stateless one-shot OpenAI; no Eliza, no DB writes. Client owns history.
   sendTransientChat: (
@@ -349,6 +411,29 @@ export const api = {
     request<{ avatar: any }>('/api/avatars/me', {
       method: 'PATCH',
       body: JSON.stringify({ positionX, positionY }),
+    }),
+
+  // P2 customize extension of PATCH /api/avatars/me (2026-07-04) — the
+  // /create-agent flow for a user who ALREADY has an avatar (fresh signup
+  // auto-provision) submits edits here instead of POSTing a second avatar.
+  // Patchable: name / species / archetypeId / personality / learningFocus
+  // (all optional; only send fields that actually changed — an empty body
+  // 400s, and unchanged values just burn the 30/min/IP customize budget).
+  // modelKey/color/gender stay on PATCH /me/appearance (editAvatarAppearance);
+  // harness/agentCategory are deliberately immutable (hosting contract).
+  // Server rebuilds the ElizaOS characterConfig preserving learned knowledge
+  // and mirrors onto platform_agents in the same tx. 400 'That name is
+  // already taken' on a name collision; 429 'Too many customize edits.'.
+  customizeAvatar: (data: {
+    name?: string;
+    species?: string;
+    archetypeId?: string;
+    personality?: { habitat: string; hobby: string; greeting: string };
+    learningFocus?: string | null;
+  }) =>
+    request<{ avatar: any }>('/api/avatars/me', {
+      method: 'PATCH',
+      body: JSON.stringify(data),
     }),
 
   // Phase 4c Layer 1 — in-game appearance edit. Backend validates modelKey
@@ -473,11 +558,22 @@ export const api = {
       body: JSON.stringify({ bookId }),
     }),
 
-  // Heartbeat
-  sendHeartbeat: (positionX: number, positionY: number) =>
+  // Heartbeat — position + presence ping for the logged-in avatar.
+  // `controlMode` (optional, agent-magic-link-onboarding D3) tells the server
+  // who is driving the body right now: 'player' means the HUMAN is actively
+  // controlling it (Controlled mode), which the server uses to suppress the
+  // bound agent's own in-world body (no double body) for a short TTL (≈15s).
+  // The client must re-send on a shorter cadence for the suppression to hold —
+  // see hooks/use-avatar-heartbeat.ts (10s while 'player'). Omitted → the
+  // server treats it as "not human-driven" and the suppression lapses.
+  sendHeartbeat: (positionX: number, positionY: number, controlMode?: ControlMode) =>
     honoRequest<{ ok: boolean }>('/api/avatars/me/heartbeat', {
       method: 'POST',
-      body: JSON.stringify({ positionX, positionY }),
+      body: JSON.stringify({
+        positionX,
+        positionY,
+        ...(controlMode ? { controlMode } : {}),
+      }),
     }),
 
   // Daily login
@@ -492,7 +588,7 @@ export const api = {
     }),
 
   // OpenClaw
-  registerOpenClaw: (data: {
+  registerAgentBot: (data: {
     mode: 'override' | 'avatar';
     gatewayUrl: string;
     authToken: string;
@@ -522,7 +618,7 @@ export const api = {
       body: JSON.stringify(data),
     }),
 
-  unregisterOpenClaw: (sessionId: string) =>
+  unregisterAgentBot: (sessionId: string) =>
     honoRequest<{ success: boolean }>(`/api/openclaw/unregister/${sessionId}`, {
       method: 'DELETE',
     }),
@@ -609,7 +705,7 @@ export const api = {
   // Public world-view roster. Carries NO session id (auth-lens fix #1,
   // 2026-06-03 — the session id is a real-CT bearer credential and this is a
   // public endpoint); bodies are addressed by their stable public `agentId`.
-  getActiveOpenClawBots: () =>
+  getActiveAgentBots: () =>
     honoRequest<{
       bots: Array<{ agentId: string; mode: string; npcId?: string; name?: string }>;
     }>('/api/openclaw/active'),
@@ -701,11 +797,17 @@ export const api = {
       body: JSON.stringify(data),
     }),
 
-  // Heartbeat (alias matching ClawVille convention)
-  sendAvatarHeartbeat: (positionX: number, positionY: number) =>
+  // Heartbeat (alias matching ClawVille convention) — same optional
+  // controlMode contract as sendHeartbeat above; kept in lockstep so the two
+  // surfaces can't drift.
+  sendAvatarHeartbeat: (positionX: number, positionY: number, controlMode?: ControlMode) =>
     honoRequest<{ ok: boolean }>('/api/avatars/me/heartbeat', {
       method: 'POST',
-      body: JSON.stringify({ positionX, positionY }),
+      body: JSON.stringify({
+        positionX,
+        positionY,
+        ...(controlMode ? { controlMode } : {}),
+      }),
     }),
 
   // Activity Feed
@@ -757,90 +859,6 @@ export const api = {
       totalActivities: number;
     }>(`/api/openclaw/memory-export/${avatarId}`),
 
-  // Marketplace
-  getMarketplaceSkills: (sort = 'newest', page = 1, limit = 20) =>
-    honoRequest<{
-      skills: Array<{
-        id: string;
-        authorAvatarName: string;
-        authorSpecies: string;
-        name: string;
-        description: string;
-        upvoteCount: number;
-        downloadCount: number;
-        hasUpvoted: boolean;
-        createdAt: string;
-      }>;
-      page: number;
-      limit: number;
-    }>(`/api/marketplace/skills?sort=${sort}&page=${page}&limit=${limit}`),
-
-  getMarketplaceSkill: (id: string) =>
-    honoRequest<{
-      skill: {
-        id: string;
-        authorAvatarId: string;
-        authorAvatarName: string;
-        authorSpecies: string;
-        name: string;
-        description: string;
-        skillMd: string;
-        upvoteCount: number;
-        downloadCount: number;
-        hasUpvoted: boolean;
-        createdAt: string;
-      };
-    }>(`/api/marketplace/skills/${id}`),
-
-  publishSkill: (data: { name: string; description: string; skillMd: string }) =>
-    honoRequest<{
-      skill: {
-        id: string;
-        name: string;
-        description: string;
-        upvoteCount: number;
-        downloadCount: number;
-        hasUpvoted: boolean;
-        createdAt: string;
-      };
-    }>('/api/marketplace/publish', {
-      method: 'POST',
-      body: JSON.stringify(data),
-    }),
-
-  buySkill: (id: string) =>
-    honoRequest<{ success: boolean; clawTokens: number; skill: { id: string; name: string } }>(
-      `/api/marketplace/skills/${id}/buy`,
-      { method: 'POST' }
-    ),
-
-  upvoteSkill: (id: string) =>
-    honoRequest<{ upvoted: boolean; upvoteCount: number }>(
-      `/api/marketplace/skills/${id}/upvote`,
-      { method: 'POST' }
-    ),
-
-  getMyPublishedSkills: () =>
-    honoRequest<{
-      skills: Array<{
-        id: string;
-        authorAvatarName: string;
-        authorSpecies: string;
-        name: string;
-        description: string;
-        upvoteCount: number;
-        downloadCount: number;
-        hasUpvoted: boolean;
-        createdAt: string;
-      }>;
-    }>('/api/marketplace/my-skills'),
-
-  installSkill: (id: string) =>
-    honoRequest<{ success: boolean; skillName: string; newKnowledgeCount: number; totalKnowledge: number }>(
-      `/api/marketplace/skills/${id}/install`,
-      { method: 'POST' }
-    ),
-
   // Research
   triggerResearch: (sessionId: string, locationId: string) =>
     honoRequest<{ started: boolean; locationId: string }>('/api/research/trigger', {
@@ -868,52 +886,6 @@ export const api = {
 
   seedArticles: () =>
     honoRequest<{ started: boolean }>('/api/research/seed', { method: 'POST' }),
-
-  // Bazaar
-  getBazaarListings: (params?: { page?: number; rarity?: string; category?: string; sort?: string; minPrice?: number; maxPrice?: number }) =>
-    honoRequest<{ listings: any[]; total: number; page: number; pageSize: number }>(`/api/bazaar?${new URLSearchParams(Object.entries(params || {}).filter(([,v]) => v != null).map(([k,v]) => [k, String(v)])).toString()}`),
-  getBazaarListing: (id: string) =>
-    honoRequest<{ listing: any }>(`/api/bazaar/${id}`),
-  getBazaarFeatured: () =>
-    honoRequest<{ listings: any[] }>('/api/bazaar/featured'),
-  createBazaarListing: (data: { skillId: string; price: number }) =>
-    honoRequest<{ listing: any }>('/api/bazaar/list', { method: 'POST', body: JSON.stringify(data) }),
-  updateBazaarListing: (id: string, data: { price: number }) =>
-    honoRequest<{ listing: any }>(`/api/bazaar/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
-  cancelBazaarListing: (id: string) =>
-    honoRequest<{ success: boolean }>(`/api/bazaar/${id}`, { method: 'DELETE' }),
-  getMyBazaarListings: () =>
-    honoRequest<{ listings: any[] }>('/api/bazaar/my-listings'),
-  buyBazaarListing: (id: string) =>
-    honoRequest<{ success: boolean; transaction: any }>(`/api/bazaar/${id}/buy`, { method: 'POST' }),
-  getMyBazaarPurchases: () =>
-    honoRequest<{ purchases: any[] }>('/api/bazaar/my-purchases'),
-  reviewBazaarSkill: (listingId: string, data: { rating: number; comment?: string }) =>
-    honoRequest<{ review: any }>(`/api/bazaar/${listingId}/review`, { method: 'POST', body: JSON.stringify(data) }),
-  getBazaarSkillReviews: (skillId: string) =>
-    honoRequest<{ reviews: any[] }>(`/api/bazaar/skills/${skillId}/reviews`),
-  getBazaarStats: () =>
-    honoRequest<{ stats: any }>('/api/bazaar/stats'),
-
-  // Auctions
-  getAuctions: (params?: { page?: number; itemType?: string; status?: string; sort?: string }) =>
-    honoRequest<{ auctions: any[]; total: number; page: number; pageSize: number }>(
-      `/api/auctions?${new URLSearchParams(Object.entries(params || {}).filter(([,v]) => v != null).map(([k,v]) => [k, String(v)])).toString()}`
-    ),
-  getAuction: (id: string) =>
-    honoRequest<{ auction: any; bids: any[] }>(`/api/auctions/${id}`),
-  createAuction: (data: { title: string; description?: string; itemType: string; skillId?: string; startingBid: number; buyNowPrice?: number; durationHours?: number }) =>
-    honoRequest<{ auction: any }>('/api/auctions/create', { method: 'POST', body: JSON.stringify(data) }),
-  cancelAuction: (id: string) =>
-    honoRequest<{ success: boolean }>(`/api/auctions/${id}`, { method: 'DELETE' }),
-  placeBid: (id: string, amount: number) =>
-    honoRequest<{ success: boolean; auction: any }>(`/api/auctions/${id}/bid`, { method: 'POST', body: JSON.stringify({ amount }) }),
-  buyNow: (id: string) =>
-    honoRequest<{ success: boolean }>(`/api/auctions/${id}/buy-now`, { method: 'POST' }),
-  getMyAuctions: () =>
-    honoRequest<{ auctions: any[] }>('/api/auctions/my-auctions'),
-  getMyBids: () =>
-    honoRequest<{ auctions: any[] }>('/api/auctions/my-bids'),
 
   // Quests
   getQuests: (params?: { page?: number; tier?: string; status?: string }) =>
@@ -977,16 +949,14 @@ export const api = {
   getBountyReputation: (avatarId: string) =>
     honoRequest<{ reputation: any }>(`/api/bounties/reputation/${avatarId}`),
 
-  // Leaderboard (P4 — single ClawVille-owned ranking board)
+  // Leaderboard (P4 — single ClawVille-owned ranking board). 'skills-sold' /
+  // 'skills-authored' sort modes + fields removed 2026-07-02 — the backend
+  // legacy board (apps/api/src/routes/leaderboard.ts) never carried them on
+  // its own SortMode/LeaderboardEntry (peer skill commerce was already gone
+  // there), so this client contract was drifted/dead code that crashed the
+  // modal if selected. Narrowed to match the live route.
   getLeaderboard: (params?: {
-    sort?:
-      | 'composite'
-      | 'gold'
-      | 'earned'
-      | 'skills-sold'
-      | 'skills-authored'
-      | 'quests'
-      | 'bounties';
+    sort?: 'composite' | 'gold' | 'earned' | 'quests' | 'bounties';
     limit?: number;
     offset?: number;
     me?: boolean;
@@ -1007,8 +977,6 @@ export const api = {
         archetype: string | null;
         gold: number;
         earned: number;
-        skillsSold: number;
-        skillsAuthored: number;
         questsCompleted: number;
         bountiesCompleted: number;
         compositeScore: number;
@@ -1026,8 +994,6 @@ export const api = {
         species: string;
         gold: number;
         earned: number;
-        skillsSold: number;
-        skillsAuthored: number;
         questsCompleted: number;
         bountiesCompleted: number;
         compositeScore: number;
@@ -1041,8 +1007,6 @@ export const api = {
       rankedAvatars: number;
       totalGold: number;
       totalEarned: number;
-      totalSkillsSold: number;
-      totalSkillsAuthored: number;
       totalQuestsCompleted: number;
       totalBountiesCompleted: number;
       generatedAt: string;
@@ -1243,4 +1207,58 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(body),
     }),
+
+  // ── Service listings — run-a-store (P3 Slice 4) ────────────────────────
+  // FROZEN contract — apps/api/src/routes/land.ts routes 12-16. Same
+  // honoRequest client — no special-casing for agent vs human callers (the
+  // server resolves identity from the Lucia cookie OR the connected-agent
+  // bearer header on its own dual-auth middleware).
+
+  /** List a peer service on an owned/rented ACTIVE 'shop' structure (auth). */
+  listService: (structureId: string, body: ListServiceRequest) =>
+    honoRequest<ListServiceResponse>(
+      `/api/land/structures/${encodeURIComponent(structureId)}/services`,
+      { method: 'POST', body: JSON.stringify(body) },
+    ),
+
+  /** Update or deactivate (pause/delist) one's own listing (auth). */
+  updateService: (listingId: string, patch: UpdateServiceRequest) =>
+    honoRequest<UpdateServiceResponse>(
+      `/api/land/services/${encodeURIComponent(listingId)}`,
+      { method: 'PATCH', body: JSON.stringify(patch) },
+    ),
+
+  /** Active listings for one structure (public). */
+  getStructureServices: (structureId: string) =>
+    honoRequest<StructureServicesResponse>(
+      `/api/land/structures/${encodeURIComponent(structureId)}/services`,
+    ),
+
+  /**
+   * The signed-in owner's OWN listings across ALL statuses (auth, uncached) —
+   * incl. paused/delisted, so the store-manage UI can re-activate a paused
+   * listing (the public browse fns are active-only).
+   */
+  getMyServices: () =>
+    honoRequest<{ listings: ServiceListingDTO[] }>('/api/land/services/mine'),
+
+  /** Paged browse of every active listing, newest first (public). */
+  browseServices: (page?: number, limit?: number) => {
+    const qs = new URLSearchParams();
+    if (page !== undefined) qs.set('page', String(page));
+    if (limit !== undefined) qs.set('limit', String(limit));
+    const q = qs.toString();
+    return honoRequest<BrowseServicesResponse>(`/api/land/services${q ? `?${q}` : ''}`);
+  },
+
+  /**
+   * Buy a listed service with CT (auth). The backend REQUIRES an
+   * idempotencyKey (same money-safety rule as upgradeStructure) — callers
+   * MUST pass a fresh key per buy click so a retry can never double-charge.
+   */
+  buyService: (listingId: string, idempotencyKey: string) =>
+    honoRequest<BuyServiceResponse>(
+      `/api/land/services/${encodeURIComponent(listingId)}/buy`,
+      { method: 'POST', body: JSON.stringify({ idempotencyKey }) },
+    ),
 };

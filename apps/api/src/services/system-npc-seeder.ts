@@ -21,6 +21,7 @@
  * rows identified by `type='system-agent'` + `customization.slug=<slug>`.
  */
 
+import { randomBytes } from 'node:crypto';
 import { eq, and, sql } from 'drizzle-orm';
 import {
   db,
@@ -42,6 +43,25 @@ const SYSTEM_USER_NAME = 'ClawVille System';
 /** Cached after first lookup. */
 let _systemUserId: string | null = null;
 
+/**
+ * UNUSABLE password hash — mirrors house-agent-seeder.ts's helper (kept a LOCAL
+ * copy to avoid a circular import: house-agent-seeder already imports
+ * getSystemUserId from THIS module). Satisfies the `users_has_auth_method`
+ * CHECK (packages/database/src/schema/users.ts — (email+password_hash) OR
+ * identity_fingerprint) on a FRESH database, while being impossible to log in
+ * with: a VALID bcrypt hash of a 32-byte random secret generated and
+ * immediately discarded (never stored, never logged). Deliberately a REAL
+ * bcrypt encoding, NOT a `$sentinel$` string, so the login route's un-try/caught
+ * `Bun.password.verify` returns false cleanly instead of THROWING
+ * UnsupportedAlgorithm → a 500 that leaks account enumeration.
+ */
+async function unusablePasswordHash(): Promise<string> {
+  return Bun.password.hash(randomBytes(32).toString('hex'), {
+    algorithm: 'bcrypt',
+    cost: 10,
+  });
+}
+
 async function getOrCreateSystemUser(): Promise<string> {
   if (_systemUserId) return _systemUserId;
   const existing = await db.query.users.findFirst({
@@ -55,6 +75,10 @@ async function getOrCreateSystemUser(): Promise<string> {
     .insert(users)
     .values({
       email: SYSTEM_USER_EMAIL,
+      // Required by users_has_auth_method (email+password_hash pair) — a bare
+      // email-only insert violates the CHECK on a fresh DB. Insert-path only, so
+      // existing live rows are unaffected.
+      passwordHash: await unusablePasswordHash(),
       name: SYSTEM_USER_NAME,
       emailVerified: true,
     })

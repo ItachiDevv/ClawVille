@@ -47,7 +47,7 @@ const PRESENCE_ID_SALT = process.env.FINGERPRINT_SECRET || 'test-only-presence-s
  * chars = 64 bits of address space; collision risk across a room of <=20
  * players is negligible while remaining stable across reconnects.
  */
-function derivePublicId(sessionId: string): string {
+export function derivePublicId(sessionId: string): string {
   return createHash('sha256').update(sessionId + PRESENCE_ID_SALT).digest('hex').slice(0, 16);
 }
 
