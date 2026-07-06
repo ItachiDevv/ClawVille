@@ -74,6 +74,9 @@ export interface GenerateArgs {
   temperature?: number;
   maxTokens?: number;
   stopSequences?: string[];
+  /** Per-call abort budget override (ms). Used by warmup() to allow a slow cold
+   *  model-load without inheriting the tight per-request timeout. */
+  timeoutMs?: number;
 }
 
 export interface GenerateResult {
@@ -192,6 +195,10 @@ export class InferenceRouter {
           size: 'small',
           messages: [{ role: 'user', content: 'warmup' }],
           maxTokens: 1,
+          // Generous budget — a cold 27B load is ~48s, well past the 60s request
+          // timeout under boot load; the warmup is off the decision path so it can
+          // afford to wait for the load to complete + cache.
+          timeoutMs: 180_000,
         }).catch(() => undefined),
       ),
     );
@@ -321,7 +328,7 @@ export class InferenceRouter {
         ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
       },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(ep.timeoutMs),
+      signal: AbortSignal.timeout(args.timeoutMs ?? ep.timeoutMs),
     });
 
     if (!res.ok) {
@@ -366,7 +373,7 @@ export class InferenceRouter {
         keep_alive: ep.keepAlive ?? '60m',
         options,
       }),
-      signal: AbortSignal.timeout(ep.timeoutMs),
+      signal: AbortSignal.timeout(args.timeoutMs ?? ep.timeoutMs),
     });
 
     if (!res.ok) {
