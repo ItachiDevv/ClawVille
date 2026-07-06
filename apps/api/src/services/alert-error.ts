@@ -82,6 +82,13 @@ export async function alertError(params: AlertErrorParams): Promise<void> {
     lines.push(`_(+${suppressedCount} more in last 60s)_`);
   }
 
+  // Bound the Telegram POST with an AbortController timeout so NO caller can ever
+  // hang on a stalled network — critical because some callers (e.g. the poker MTT
+  // settle guard) fire this while about to throw, and an unbounded fetch could
+  // otherwise stall a caller that awaited it. Fire-and-forget callers are already
+  // safe; this makes even an accidental `await` non-blocking past 5s.
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 5_000);
   try {
     await fetch(`https://api.telegram.org/bot${TOKEN}/sendMessage`, {
       method: 'POST',
@@ -91,8 +98,11 @@ export async function alertError(params: AlertErrorParams): Promise<void> {
         text: lines.join('\n'),
         parse_mode: 'Markdown',
       }),
+      signal: controller.signal,
     });
   } catch (err) {
     console.warn('[alert-error] Telegram send failed', err);
+  } finally {
+    clearTimeout(timer);
   }
 }

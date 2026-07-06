@@ -1990,34 +1990,20 @@ export class TournamentManager {
         // Skip tournaments THIS pod is actively running (in-memory state present).
         if (this.running.has(row.id)) continue;
         try {
-          // A tournament can orphan AFTER it actually FINISHED: a crash in the gap
-          // between completeTournament writing the champion's placement and
-          // settleTournament committing leaves status='running', settled_at NULL, yet
-          // every entrant placed. Voiding that (cancel+refund) would discard a DECIDED
-          // outcome and refund players who busted fairly. If every non-refunded
-          // entrant has a placement, SETTLE (pay the real curve) instead —
-          // settleTournament is idempotent + DB-only + FOR UPDATE locked, safe to
-          // drive from a cold pod. A still-running tournament always has ≥1 live seat
-          // with placement NULL, so this branch only fires on a genuinely finished one.
-          if (await this.isTournamentFullyPlaced(row.id)) {
-            // If the placements are MALFORMED (not the permutation 1..N),
-            // settleTournament's crash-loud guard throws `tournament_placements_malformed`
-            // (after alerting) and the tx rolls back — nothing credited. We deliberately
-            // DO NOT fall through to cancel+refund here (that would void a possibly-
-            // decided result); the tournament is left FROZEN (still 'running', unsettled)
-            // for operator intervention, and the catch below logs it loudly. The
-            // per-boot re-attempt is a no-op-that-throws (credits nothing), so it stays
-            // safe + loud until an operator fixes the row.
-            await this.settleTournament(row.id);
+          // Shared decide logic (settle-if-finished / freeze-if-malformed /
+          // refund-if-unfinished) — see resolveOrphanedTournament. A 'frozen' result is
+          // intentionally NOT counted as recovered; it stays running+unsettled for
+          // operator intervention (never minted, never void-refunded).
+          const res = await this.resolveOrphanedTournament(row.id);
+          if (res.action === 'refunded') {
             recovered += 1;
-          } else {
-            const n = await this.cancelAndRefundOrphan(row.id);
+            refundedCount += res.refundedCount;
+          } else if (res.action === 'settled') {
             recovered += 1;
-            refundedCount += n;
           }
         } catch (err) {
           console.error(
-            `[poker-mtt] orphan tournament recovery failed for ${row.id} (left FROZEN — neither settled nor refunded):`,
+            `[poker-mtt] orphan tournament recovery failed for ${row.id}:`,
             err,
           );
         }
@@ -2054,7 +2040,13 @@ export class TournamentManager {
       }
     }
     if (!ok) {
-      await alertError({
+      // FIRE-AND-FORGET the alert (do NOT await): this runs INSIDE the settle
+      // db.transaction with the tournament row FOR UPDATE locked. alertError does an
+      // awaited network POST; awaiting it here would keep the lock held (and delay the
+      // rollback) if the network stalls. alertError never throws (internal catch) and
+      // is now itself bounded by a 5s AbortController, so `void` is safe — throw
+      // immediately so the tx rolls back at once and NOTHING is credited.
+      void alertError({
         severity: 'critical',
         source: 'poker-mtt/settleTournament',
         message: `tournament_placements_malformed: tournament ${tournamentId} non-refunded placements are not the permutation 1..${n} — settle FROZEN, credited nothing`,
@@ -2081,6 +2073,42 @@ export class TournamentManager {
     );
     const r = rows[0];
     return !!r && r.total > 0 && r.unplaced === 0;
+  }
+
+  /**
+   * Decide + apply the terminal disposition of an orphaned/aborted tournament that is
+   * no longer being driven (a boot orphan OR a room-abort). SHARED by
+   * recoverOrphanedTournaments AND onRoomAborted so the two call sites can NEVER drift
+   * (a bug where one path void-refunds a decided tournament while the other settles it):
+   *   - fully placed + VALID permutation → SETTLE (pay the real curve; conserves)
+   *   - fully placed + MALFORMED placements → FROZEN (settleTournament's guard throws
+   *     `tournament_placements_malformed`; caught + logged here → NEITHER settle (mint)
+   *     NOR refund (void a possibly-decided result); operator intervention required)
+   *   - not yet finished → CANCEL + REFUND the escrow
+   * settleTournament + cancelAndRefundOrphan are each idempotent + FOR UPDATE locked, so
+   * this is safe to drive from a cold pod AND safe to double-invoke (boot + abort racing).
+   */
+  private async resolveOrphanedTournament(
+    tournamentId: string,
+  ): Promise<
+    { action: 'settled' } | { action: 'refunded'; refundedCount: number } | { action: 'frozen' }
+  > {
+    if (await this.isTournamentFullyPlaced(tournamentId)) {
+      try {
+        await this.settleTournament(tournamentId);
+        return { action: 'settled' };
+      } catch (err) {
+        if (err instanceof TournamentError && err.message === 'tournament_placements_malformed') {
+          console.error(
+            `[poker-mtt] tournament ${tournamentId} left FROZEN (malformed placements — neither settled nor refunded); operator intervention required.`,
+          );
+          return { action: 'frozen' };
+        }
+        throw err;
+      }
+    }
+    const refundedCount = await this.cancelAndRefundOrphan(tournamentId);
+    return { action: 'refunded', refundedCount };
   }
 
   /**
@@ -2175,13 +2203,21 @@ export class TournamentManager {
           }
         }
       }
-      // Settle the money: cancel + refund escrow (idempotent — a completed/settled
-      // tournament is skipped).
-      const refunded = await this.cancelAndRefundOrphan(tournamentId);
+      // Resolve the money through the SAME decide logic as boot recovery
+      // (resolveOrphanedTournament) so a room-abort can NEVER void a DECIDED
+      // (fully-placed) tournament, nor let a malformed one escape the freeze via a
+      // refund: settle-if-finished / freeze-if-malformed / refund-if-unfinished.
+      // (Previously this UNCONDITIONALLY cancel+refunded — the same class of bug the
+      // boot-recovery path fixed, at this second call site.)
+      const res = await this.resolveOrphanedTournament(tournamentId);
       this.running.delete(tournamentId);
-      console.warn(
-        `[poker-mtt] mtt room ${roomId} aborted → tournament ${tournamentId} cancelled + ${refunded} entrant(s) refunded (escrow not stranded).`,
-      );
+      const summary =
+        res.action === 'settled'
+          ? 'settled (prizes paid — decided result honored)'
+          : res.action === 'frozen'
+            ? 'left FROZEN (malformed placements — operator intervention required)'
+            : `cancelled + ${res.refundedCount} entrant(s) refunded (escrow not stranded)`;
+      console.warn(`[poker-mtt] mtt room ${roomId} aborted → tournament ${tournamentId} ${summary}.`);
     } catch (err) {
       console.error(`[poker-mtt] onRoomAborted handling failed for room ${roomId}:`, err);
     }

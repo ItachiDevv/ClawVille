@@ -1163,6 +1163,77 @@ describe('TournamentManager — settle conservation + orphan-recovery money safe
     expect(db.tournaments.get(tid)!.settled_at).toBeFalsy();
     expect(db.tournaments.get(tid)!.cancelled_at).toBeFalsy();
   });
+
+  // ── onRoomAborted routes through the SAME resolve logic (Codex round 3) ──────
+  // A live room-abort is the SECOND call site that disposes an orphaned tournament.
+  // It must decide identically to boot recovery, or a decided/malformed tournament
+  // could be void-refunded here. Wire the room→table→tournament maps + drive it.
+  function wireRoom(tm: TournamentManager, roomId: string, tableId: string, tid: string): void {
+    const internals = tm as unknown as {
+      roomToTable: Map<string, string>;
+      tableToTournament: Map<string, string>;
+    };
+    internals.roomToTable.set(roomId, tableId);
+    internals.tableToTournament.set(tableId, tid);
+  }
+
+  it('(#2 2nd site) room-abort on a VALID fully-placed tournament SETTLES (pays curve), not refund', async () => {
+    const { tm } = buildManager(db, ledger, clock);
+    const tid = randomUUID();
+    seedFinished(
+      tid,
+      [
+        { avatarId: 'av-1', placement: 1 },
+        { avatarId: 'av-2', placement: 2 },
+      ],
+      { pool: '200' },
+    );
+    wireRoom(tm, 'room-1', 'table-1', tid);
+
+    await tm.onRoomAborted('room-1');
+    expect(ledger.totalCredited('poker_mtt_prize')).toBe(200); // real curve paid
+    expect(ledger.totalCredited('poker_mtt_refund')).toBe(0); // NOT void-refunded
+    expect(db.tournaments.get(tid)!.status).toBe('completed');
+  });
+
+  it('(#2 2nd site) room-abort on a MALFORMED fully-placed tournament FREEZES it (no settle, no refund)', async () => {
+    const { tm } = buildManager(db, ledger, clock);
+    const tid = randomUUID();
+    seedFinished(
+      tid,
+      [
+        { avatarId: 'av-1', placement: 1 },
+        { avatarId: 'av-2', placement: 1 }, // duplicate → malformed
+      ],
+      { pool: '200' },
+    );
+    wireRoom(tm, 'room-2', 'table-2', tid);
+
+    await tm.onRoomAborted('room-2');
+    expect(ledger.totalCredited('poker_mtt_prize')).toBe(0);
+    expect(ledger.totalCredited('poker_mtt_refund')).toBe(0); // escaped-via-refund closed
+    expect(db.tournaments.get(tid)!.status).toBe('running'); // frozen
+    expect(db.tournaments.get(tid)!.cancelled_at).toBeFalsy();
+  });
+
+  it('(#2 2nd site) room-abort on a genuinely UNFINISHED tournament refunds the escrow', async () => {
+    const { tm } = buildManager(db, ledger, clock);
+    const tid = randomUUID();
+    seedFinished(
+      tid,
+      [
+        { avatarId: 'av-1', placement: 1 },
+        { avatarId: 'av-2', placement: null }, // live seat → unfinished
+      ],
+      { pool: '200' },
+    );
+    wireRoom(tm, 'room-3', 'table-3', tid);
+
+    await tm.onRoomAborted('room-3');
+    expect(ledger.totalCredited('poker_mtt_refund')).toBe(200);
+    expect(ledger.totalCredited('poker_mtt_prize')).toBe(0);
+    expect(db.tournaments.get(tid)!.status).toBe('cancelled');
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
