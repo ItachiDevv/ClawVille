@@ -145,11 +145,13 @@ function OutcomeBanner({ outcome, net }: { outcome: BlackjackOutcome; net: bigin
       role="status"
       aria-live="assertive"
       style={{
-        position: 'absolute',
-        left: '50%',
-        top: '38%',
-        transform: 'translate(-50%, -50%)',
-        zIndex: 10,
+        // IN-FLOW between the dealer and player rows — never absolute over the
+        // card strips. The old absolute top-38% placement sat ON the dealer row
+        // and covered every dealer card past the third (a 4-card dealer bust
+        // showed "26 BUST" with the bust card hidden under the banner).
+        position: 'relative',
+        zIndex: 2,
+        alignSelf: 'center',
         pointerEvents: 'none',
         animation: 'bj-banner-in 450ms cubic-bezier(0.22,1,0.36,1)',
         textAlign: 'center',
@@ -157,8 +159,8 @@ function OutcomeBanner({ outcome, net }: { outcome: BlackjackOutcome; net: bigin
     >
       <style>{`
         @keyframes bj-banner-in {
-          from { opacity: 0; transform: translate(-50%, -50%) scale(0.85); }
-          to   { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+          from { opacity: 0; transform: scale(0.85); }
+          to   { opacity: 1; transform: scale(1); }
         }
       `}</style>
       <div style={{
@@ -1456,6 +1458,14 @@ export default function BlackjackModal() {
             <HandRow label="Dealer" cards={dealerRenderCards} totalLabel={dealerTotalLabel} />
           </div>
 
+          {/* Settled banner — IN FLOW between the rows so it can never cover a card */}
+          {phase === 'settled' && settledPrimary && (
+            <OutcomeBanner
+              outcome={settledPrimary.outcome}
+              net={settled ? BigInt(settled.net) : 0n}
+            />
+          )}
+
           <div aria-hidden style={{ borderTop: '1px dashed rgba(60,180,100,0.2)', position: 'relative', zIndex: 1 }} />
 
           {/* Player (one or two sub-hands) */}
@@ -1509,13 +1519,6 @@ export default function BlackjackModal() {
             </div>
           )}
 
-          {/* Settled banner */}
-          {phase === 'settled' && settledPrimary && (
-            <OutcomeBanner
-              outcome={settledPrimary.outcome}
-              net={settled ? BigInt(settled.net) : 0n}
-            />
-          )}
         </div>
 
         {/* ── Action strip ─────────────────────────────────────────────── */}
