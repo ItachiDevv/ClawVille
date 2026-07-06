@@ -282,19 +282,20 @@ function OutcomeBanner({ outcome }: { outcome: SerializedBaccaratCoup }) {
       <div style={{
         background: 'var(--pt-velvet)',
         border: `2px solid ${accent}`,
-        padding: '14px 32px',
+        // Compact — in-flow now; keep it short so hands + banner + bet pill fit.
+        padding: '7px 24px',
         boxShadow: `0 0 28px ${accent}55, 0 0 56px ${accent}22`,
         minWidth: 200,
       }}>
         <div style={{
           color: accent, fontSize: 11, fontFamily: 'var(--pt-data)',
-          letterSpacing: '0.2em', fontWeight: 700, marginBottom: 4,
+          letterSpacing: '0.2em', fontWeight: 700, marginBottom: 3,
         }}>
           {winnerLabel} · {resultLabel}
         </div>
         <div style={{
           color: won ? 'var(--pt-cream)' : push ? 'var(--pt-cream-soft)' : '#e85555',
-          fontSize: 28, fontWeight: 700, fontFamily: 'var(--pt-display)', lineHeight: 1,
+          fontSize: 20, fontWeight: 700, fontFamily: 'var(--pt-display)', lineHeight: 1,
         }}>
           {net > 0 ? `+${net}` : `${net}`} CT
         </div>

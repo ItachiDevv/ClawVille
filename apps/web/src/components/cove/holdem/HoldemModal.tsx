@@ -1094,19 +1094,19 @@ export default function HoldemModal() {
             <div style={{
               background: 'var(--pt-velvet)',
               border: `2px solid ${humanNetNum >= 0 ? 'var(--pt-amber-glow)' : '#e85555'}`,
-              padding: '10px 32px',
+              padding: '7px 24px',
               boxShadow: `0 0 28px ${humanNetNum >= 0 ? 'var(--pt-amber-glow)' : '#e85555'}55`,
             }}>
               <div style={{
                 color: humanNetNum >= 0 ? 'var(--pt-amber)' : '#e85555',
                 fontSize: 11, fontFamily: 'var(--pt-data)',
-                letterSpacing: '0.2em', fontWeight: 700, marginBottom: 4,
+                letterSpacing: '0.2em', fontWeight: 700, marginBottom: 3,
               }}>
                 {winnerLabel}
               </div>
               <div style={{
                 color: humanNetNum >= 0 ? 'var(--pt-cream)' : '#e85555',
-                fontSize: 24, fontWeight: 700,
+                fontSize: 20, fontWeight: 700,
                 fontFamily: 'var(--pt-display)', lineHeight: 1,
               }}>
                 {humanNetNum >= 0 ? `+${humanNetNum}` : `${humanNetNum}`} CT
