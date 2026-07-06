@@ -21,6 +21,7 @@
     "@coral-xyz/anchor": "^0.31.1",
     "@elizaos/plugin-sql": "2.0.0-alpha.7",
     "@lucia-auth/adapter-drizzle": "^1.1.0",
+    "@solana/kit": "^6.8.0",
     "@solana/web3.js": "^1.95.0",
     "@x402/core": "^2.9.0",
     "@x402/hono": "^2.9.0",

@@ -1,6 +1,6 @@
 # Trust-native agent commerce — PayAI × OOBE-SAP × Covenant (research deep-dive)
 
-**Status:** research / architectural mapping (per the "plan + research before modifying core services" rule) · **Set 2026-06-21** · **Last updated 2026-07-03** (added §7 — the SHIPPED Covenant verification READ surface)
+**Status:** research / architectural mapping (per the "plan + research before modifying core services" rule) · **Set 2026-06-21** · **Last updated 2026-07-06** (added §8 — the PayAI settlement leg is now WIRED into the bounty escrow, gated off; §5 item 5 resolved for the bounty flow)
 **Companion:** `.claude/plans/sap-onchain-agents/PLAN.md` (the phased build) · `Partnerships.md` (OOBE, Covenant, PayAI scoping) · `project_payai_x402_integration` (the off-chain x402/CT rail)
 
 ## 1. The three-party model (from the Covenant dev, 2026-06-21)
@@ -46,6 +46,7 @@ These gate the escrow (P2) rung, not Light (P1):
 3. **Covenant's keypair / co-sign API:** what pubkey does Covenant co-sign with, and how does ClawVille hand it the settle tx for co-signing (their CLI/HTTP API)? SSRF-guard any outbound call (same discipline as Hatcher webhooks).
 4. **Covenant license + repo** — STILL UNLOCATED (Partnerships.md). Must be confirmed permissive (no AGPL/GPL) before adopting ANY Covenant code. The co-signer path may need no Covenant code (just their pubkey + a call to their verify endpoint) — confirm.
 5. **PayAI coordination:** how the SAP-escrow funding leg routes through / coexists with PayAI (the #1 "all x402 through PayAI" constraint). A discovery sync with both.
+   **→ RESOLVED for the BOUNTY flow (2026-07-06, §8):** on the `payai` settlement rail there is NO on-chain funding leg to coordinate — the depositor's USDC stays in their custodial wallet until the PASS verdict, and the single movement (depositor → worker) IS the PayAI-facilitated x402 payment. The residual §5.5 item narrows to: (a) any flow that still wants a REAL on-chain SAP vault (long-lived locks, CoSigned mode) and (b) how the depositor's custodial wallet is FUNDED in the first place (upstream on-ramp — already PayAI-facilitated via the ct-topup x402 rail). Both remain external-coordination items, not blockers for the bounty rail.
 
 ## 6. Phasing (see PLAN.md)
 
@@ -91,3 +92,20 @@ Order: per-IP 60/min limiter → config gate → IP allowlist → signature. **F
 **Partner advisory — untrusted evidence (M6):** the `attempts[].prLink`, `submissionNote`, and `reviewNote` fields are USER-CONTROLLED free text (a bounty hunter / creator typed them). Covenant MUST treat them as untrusted input: SSRF-guard any fetch of a `prLink` (it is an arbitrary URL, not a vetted one), and NEVER render `submissionNote`/`reviewNote` as HTML (treat as plain text / escape on display).
 
 **Read-only + non-money:** the surface is a machine-partner disclosure read, not a user-facing economy feature, so Rule E5 human/agent parity does not apply (there is no write path to bind). It only READS/imports from the protected Hatcher files (`partner-signature.ts`, `skill-protocol.ts`'s `resolveApiBase`) and modifies none of them.
+
+## 8. PayAI settlement leg — WIRED into the bounty escrow (2026-07-06, GATED OFF)
+
+The founder requirement — "SAP handles the escrow, Covenant records/verifies the agent actions, and the actual SETTLEMENT goes through PayAI" — is now code, as a per-job **settlement rail** on the SAP escrow gate. Env `SAP_PAYAI_SETTLEMENT_ENABLED` (default **false**), on top of the three escrow gates and under `SAP_DRY_RUN` (default true ⇒ facilitator **verify-only**, `/settle` never called) + the `SAP_ALLOW_MAINNET` code gate. Devnet-proven end-to-end by `apps/api/scripts/x402/settle-bounty.ts` (two real USDC settlements over the exact wire path).
+
+**The composition (which leg goes through PayAI, and why):** the **RELEASE leg**. An x402 facilitator settles a *payer-signed token transfer* (payer → payTo); it cannot execute SAP program instructions, so it can neither fund nor release the on-chain vault — the only leg PayAI can physically facilitate inside the escrow lifecycle is the payout itself. Accordingly, a `payai`-rail job:
+
+- **open** — records the (escrow_pda, job_id) commitment in `sap_escrow_settlements` (`fundedAmount` = the committed reward; `metadata.rail='payai'`, recorded at open, immutable) with **NO on-chain funding leg**. The depositor's USDC stays in their custodial wallet. Rails never mix on one escrow PDA (`rail_mixed_forbidden`) so the per-PDA funds ledger never blends vault balances with commitments.
+- **approve / verdict** — unchanged: the persisted depositor approval + the verification provider verdict (the Covenant seam; audit root = the release provenance) are the ONLY things that authorize a release.
+- **settle** — under the SAME atomic `settling` claim (the at-most-once lock), the release is ONE x402 `exact`-scheme USDC payment: the depositor's custodial wallet signs a `transfer_checked` to the worker (`sap/payai-release.ts`, `@x402/svm/exact/client` + `@solana/kit`), the PayAI facilitator verifies, co-signs as fee payer, and submits it on-chain, driven through `x402-payai.verifyAndSettle` (the one sanctioned PayAI boundary). The audit root + jobId are bound into the requirement's `extra` (wire-level provenance, the `service_hash` analog). The facilitator tx signature is recorded as `settle_signature`.
+- **refund / reject** — a pure ledger close: the USDC never left the depositor's wallet, so there is nothing to withdraw.
+
+**Conservation:** dispatch always follows the rail RECORDED ON THE ROW, never the live env flag, and a payai job never runs any vault leg — so exactly ONE USDC movement exists per job, on exactly one rail. No flag flip, retry, or mixed ledger can produce a double-pay. Idempotency is the escrow gate's own (escrow_pda, job_id) claim: at most one facilitator settle attempt ever fires per job (post-claim failures land terminal `failed`, mirroring the on-chain broadcast-unknown posture — stuck-and-alerted, never money-wrong).
+
+**Facilitator constraint enforced in code:** the rail refuses the silently-defaulted CDP facilitator — `X402_FACILITATOR_PRESET=payai` (prod), the staging mock (prod boot-guard crashes a box carrying it), or an explicit operator URL only.
+
+**Residual (external):** PayAI's hosted facilitator must advertise an SVM fee payer for the target network on `/supported` (gasless sponsorship — their stated devnet/mainnet capability; the devnet evidence run used the reference facilitator in-process for exactly this reason). Before flipping live: confirm the hosted facilitator's fee-payer discovery + a staging smoke against it, per the pre-flip audit ritual.

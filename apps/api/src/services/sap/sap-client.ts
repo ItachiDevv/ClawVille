@@ -252,6 +252,8 @@ export function sapConfigSnapshot(): {
   enabled: boolean;
   escrowEnabled: boolean;
   usdcEscrowEnabled: boolean;
+  /** PayAI x402 settlement rail gate (SAP_PAYAI_SETTLEMENT_ENABLED). */
+  payaiSettlementEnabled: boolean;
   dryRun: boolean;
   cluster: string;
   programId: string;
@@ -262,6 +264,7 @@ export function sapConfigSnapshot(): {
     enabled: cfg.enabled,
     escrowEnabled: cfg.escrowEnabled,
     usdcEscrowEnabled: cfg.usdcEscrowEnabled,
+    payaiSettlementEnabled: cfg.payaiSettlementEnabled,
     dryRun: cfg.dryRun,
     cluster: cfg.cluster,
     programId: cfg.programId.toBase58(),
@@ -311,6 +314,20 @@ async function loadAvatarWallet(
       message: 'wallet decrypt failed',
     };
   }
+}
+
+/**
+ * SIGN-SCOPED export of the custodial wallet loader for sibling SAP money
+ * modules (today: `payai-release.ts`, which must sign an x402 payment payload AS
+ * the depositor). Same contract as the private loader: decrypt IN MEMORY ONLY,
+ * sign, let the `Keypair` fall out of scope; NEVER log/echo/persist the secret;
+ * a missing row / decrypt failure returns a structured `SapFailure`, never a
+ * throw. Do NOT widen the callers of this beyond in-process signing legs.
+ */
+export async function loadAvatarWalletForSigning(
+  avatarId: string,
+): Promise<{ keypair: Keypair; publicKey: PublicKey } | SapFailure> {
+  return loadAvatarWallet(avatarId);
 }
 
 // ─── error classification ─────────────────────────────────────────────────────

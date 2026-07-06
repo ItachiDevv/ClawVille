@@ -65,9 +65,26 @@
  *      auto-retried — a send whose confirmation we never observed may have
  *      landed; re-releasing would double-pay).
  *
+ * ── Settlement rails (three-party topology) ───────────────────────────────────
+ * Every (escrow, job) row records its RAIL at open (`metadata.rail`):
+ *   onchain — the SAP program vault (fund at open, `settle_calls` releases
+ *             vault → worker ATA). The historical default.
+ *   payai   — the x402/PayAI settlement leg (SAP_PAYAI_SETTLEMENT_ENABLED):
+ *             NO vault; the single USDC movement is an x402 exact-scheme
+ *             payment (depositor custodial wallet → worker) settled by the
+ *             PayAI facilitator at settle time (payai-release.ts). SAP stays
+ *             the record/at-most-once/approval/ceiling gate; the Covenant/
+ *             verification verdict stays the release authorization; PayAI
+ *             moves the money. Dry-run = facilitator VERIFY-only.
+ * Dispatch always follows the ROW's recorded rail (never the live env flag) and
+ * rails never mix on one escrow PDA (`rail_mixed_forbidden`), so exactly ONE
+ * money movement exists per job, on exactly one rail — no double-pay is
+ * constructible from any flag flip or mixed ledger.
+ *
  * This module NEVER writes avatars.clawTokens (this is a USDC path, not CT) and
  * NEVER logs the custodial secret (the chain leg in sap-client decrypts in-memory
- * only). It returns structured results; the route maps them to clean HTTP codes.
+ * only; the payai leg's payload signing is equally in-memory-only). It returns
+ * structured results; the route maps them to clean HTTP codes.
  */
 
 import { and, eq } from 'drizzle-orm';
@@ -94,6 +111,13 @@ import {
   type VerificationProvider,
   type VerificationJobContext,
 } from './sap-verification';
+// The x402/PayAI settlement leg (rail='payai'): prepare (pre-claim, no money)
+// + execute (post-claim, the ONLY money-moving step on that rail).
+import {
+  preparePayaiRelease,
+  executePayaiRelease,
+  type PreparedPayaiRelease,
+} from './payai-release';
 // FIX 3 — per-escrowPda serialization. `withKeyedMutex` serializes concurrent
 // sibling settles/refunds WITHIN this process (so the read-ledger → claim → book
 // window can't interleave); the `pg_advisory_xact_lock` inside the claim txn
@@ -103,6 +127,34 @@ import { withKeyedMutex } from '../keyed-mutex';
 /** Per-escrow mutex key — serializes all settle/refund critical sections for one vault. */
 function escrowMutexKey(escrowPda: string): string {
   return `sap-escrow:${escrowPda}`;
+}
+
+// ─── settlement rail (three-party topology: SAP record · Covenant verdict · PayAI money) ─
+
+/**
+ * Which rail moves the job's USDC:
+ *   'onchain' — the SAP program vault (create/deposit at open, `settle_calls`
+ *               releases vault → worker ATA). The historical default.
+ *   'payai'   — the x402/PayAI settlement leg: NO on-chain vault; on a passing
+ *               verdict the release is an x402 exact-scheme payment (depositor
+ *               custodial wallet → worker) settled by the PayAI facilitator
+ *               (see `payai-release.ts`). The settlement ledger row is the
+ *               same at-most-once / approval / ceiling gate either way.
+ *
+ * The rail is RECORDED on the row's `metadata.rail` at OPEN and every later
+ * transition dispatches from the ROW — never from the live env flag — so a
+ * flag flip mid-lifecycle can never fund a vault AND settle via PayAI (the
+ * conservation keystone: exactly one money movement per job, on one rail).
+ * Rows predating this field (no `rail` key) are on-chain by definition.
+ */
+export type EscrowSettlementRail = 'onchain' | 'payai';
+
+/** Read the row's recorded rail (legacy rows without the key ⇒ 'onchain'). */
+export function settlementRail(
+  row: Pick<SapEscrowSettlement, 'metadata'>,
+): EscrowSettlementRail {
+  const rail = (row.metadata as Record<string, unknown> | null | undefined)?.rail;
+  return rail === 'payai' ? 'payai' : 'onchain';
 }
 
 // ─── structured gate results ──────────────────────────────────────────────────
@@ -131,6 +183,21 @@ export type EscrowGateErrorCode =
   | 'refund_in_progress'
   // BLOCKING #5 — the (escrow, job) is in funding_unknown and must be reconciled.
   | 'funding_unconfirmed'
+  // payai rail — the job was opened on (or requested for) the PayAI x402
+  // settlement rail while SAP_PAYAI_SETTLEMENT_ENABLED is off. Fail-closed:
+  // a payai row NEVER falls back to the on-chain vault (it was never funded
+  // on-chain), and an on-chain row never settles via PayAI. 503.
+  | 'payai_rail_disabled'
+  // payai rail — the facilitator/x402 config, fee-payer discovery, or payload
+  // construction failed BEFORE the settle claim. Nothing moved; retryable. 502.
+  | 'payai_unavailable'
+  // payai rail — the facilitator verify/settle failed AFTER the claim. The row
+  // is terminal `failed` (mirrors the on-chain post-claim failure posture). 502.
+  | 'payai_release_failed'
+  // An open tried to put a SECOND rail on an escrow PDA that already carries
+  // jobs on the other rail. The per-PDA funds ledger must never blend on-chain
+  // vault balances with payai commitments — one rail per vault. 409.
+  | 'rail_mixed_forbidden'
   | 'internal';
 
 export interface EscrowGateFailure {
@@ -145,8 +212,10 @@ export interface EscrowGateOpenResult {
   settlement: SapEscrowSettlement;
   /**
    * The chain result IF a chain leg actually ran this call. NULL on an idempotent
-   * replay (the (escrow, job) was already open — we did NOT re-fund). Honest: a
-   * replay never fabricates a fake simulation/signature.
+   * replay (the (escrow, job) was already open — we did NOT re-fund) AND on a
+   * `payai`-rail open (that rail has NO on-chain funding leg — the commitment is
+   * ledger-recorded only; the single money movement happens at settle, via the
+   * PayAI facilitator). Honest: never fabricates a fake simulation/signature.
    */
   chain: SapWriteResult | null;
   /** True when this call was an idempotent replay of an already-open job. */
@@ -174,9 +243,16 @@ export interface EscrowGateSettleResult {
   /**
    * The chain settle result IF the chain settle ran this call (dry-run sim or
    * live signature). NULL on an idempotent replay of an already-settled job —
-   * the prior outcome is on the `settlement` row (`settleSignature`/`dryRun`).
+   * the prior outcome is on the `settlement` row (`settleSignature`/`dryRun`) —
+   * AND on a `payai`-rail settle (no SAP chain leg; see `payai` below).
    */
   chain: SapWriteResult | null;
+  /**
+   * PayAI-rail outcome (rail='payai' settles only): the facilitator settlement.
+   * `signature` is the facilitator-submitted on-chain tx signature (null on a
+   * dry-run, which is facilitator VERIFY-only — no settle, no money moved).
+   */
+  payai?: { dryRun: boolean; signature: string | null };
   /** True when this call was an idempotent replay of an already-settled job. */
   replay: boolean;
 }
@@ -185,7 +261,12 @@ export interface EscrowGateRefundResult {
   ok: true;
   phase: 'refunded';
   settlement: SapEscrowSettlement;
-  chain: SapWriteResult;
+  /**
+   * The on-chain withdraw result. NULL on a `payai`-rail refund — that rail has
+   * no vault, so a refund is a pure LEDGER release of the job's commitment (the
+   * depositor's USDC never left their wallet; nothing to withdraw).
+   */
+  chain: SapWriteResult | null;
 }
 
 export type EscrowGateResult =
@@ -233,6 +314,40 @@ function u64(s: string | null | undefined): bigint {
   } catch {
     return 0n;
   }
+}
+
+/** The verdict→settle authorization decision (see `evaluateSettleAuthorization`). */
+export type SettleAuthorization =
+  | { authorized: true; auditRootHex: string }
+  | { authorized: false; reason: string };
+
+/**
+ * The verdict→settle authorization gate, extracted PURE so the money invariant is
+ * a NAMED, UNIT-TESTED unit instead of inline call-order in `settleJobLocked`
+ * (Codex audit advisory, 2026-07-06). Invariant: a settle — on EITHER rail (the
+ * on-chain SAP vault OR the payai facilitator) — may proceed to prepare/claim/
+ * release ONLY when this returns `{authorized:true}`. Two ways to be unauthorized:
+ *   (a) the verification verdict did not pass, or
+ *   (b) it passed but carries no valid 32-byte non-zero audit root (the provenance
+ *       binding) — refused as an integrity guard.
+ * Pure: no I/O, no DB, no side effects — the caller owns the failing-verdict
+ * provenance write. Behavior is byte-identical to the prior inline logic.
+ */
+export function evaluateSettleAuthorization(verdict: {
+  passed: boolean;
+  detail?: string | null;
+  auditRoot: Uint8Array;
+}): SettleAuthorization {
+  if (!verdict.passed) {
+    return { authorized: false, reason: verdict.detail ?? 'verification did not pass; no settle.' };
+  }
+  if (verdict.auditRoot.length !== 32 || verdict.auditRoot.every((b) => b === 0)) {
+    return {
+      authorized: false,
+      reason: 'verification passed but produced no valid audit root; refusing to settle.',
+    };
+  }
+  return { authorized: true, auditRootHex: Buffer.from(verdict.auditRoot).toString('hex') };
 }
 
 /**
@@ -351,6 +466,16 @@ export interface OpenEscrowInput {
   initialDeposit: bigint;
   /** Absolute unix-seconds expiry (i64). 0 = no expiry. */
   expiresAt: bigint;
+  /**
+   * Settlement rail for this job (default 'onchain'). 'payai' records the
+   * commitment in the settlement ledger WITHOUT an on-chain funding leg — the
+   * single USDC movement happens at settle, as an x402 payment through the
+   * PayAI facilitator. Recorded on the row at open; immutable thereafter.
+   * Requires SAP_PAYAI_SETTLEMENT_ENABLED (fail-closed here at open).
+   * NOTE (payai): `expiresAt` has no on-chain enforcement on this rail (there
+   * is no vault); expiry semantics live with the caller (e.g. bounty expiry).
+   */
+  rail?: EscrowSettlementRail;
 }
 
 /**
@@ -380,6 +505,19 @@ export async function openEscrow(input: OpenEscrowInput): Promise<EscrowGateResu
   }
 
   const cfg = sapConfigSnapshot();
+
+  // Rail selection — recorded on the row below and immutable thereafter. The
+  // payai rail is gated by its own flag ON TOP of the escrow gates (fail-closed
+  // at open: a disabled rail can never accumulate commitments).
+  const rail: EscrowSettlementRail = input.rail ?? 'onchain';
+  if (rail === 'payai' && !cfg.payaiSettlementEnabled) {
+    return {
+      ok: false,
+      code: 'payai_rail_disabled',
+      message: 'the PayAI x402 settlement rail is disabled (SAP_PAYAI_SETTLEMENT_ENABLED).',
+    };
+  }
+
   const workerWalletPubkey = await avatarWalletPubkey(input.workerAvatarId);
   const depositorWalletPubkey = await avatarWalletPubkey(input.depositorAvatarId);
   if (!workerWalletPubkey || !depositorWalletPubkey) {
@@ -407,9 +545,25 @@ export async function openEscrow(input: OpenEscrowInput): Promise<EscrowGateResu
     // Read INSIDE the try so the value is consistent with the row we then insert.
     const priorForEscrow = await db.query.sapEscrowSettlements.findFirst({
       where: eq(sapEscrowSettlements.escrowPda, escrowPda),
-      columns: { id: true },
+      columns: { id: true, metadata: true },
     });
     isTopUp = !!priorForEscrow;
+
+    // RAIL HOMOGENEITY — one rail per escrow PDA. The per-PDA funds ledger sums
+    // fundedAmount across ALL the vault's jobs; blending on-chain vault balances
+    // with payai commitments would corrupt the escrow-wide conservation check.
+    // Every open checks against an existing row, so homogeneity holds by
+    // induction. (The per-JOB funded bound independently caps each job at its
+    // own funding either way — this guard keeps the AGGREGATE ledger honest.)
+    if (priorForEscrow && settlementRail(priorForEscrow) !== rail) {
+      return {
+        ok: false,
+        code: 'rail_mixed_forbidden',
+        message:
+          `escrow ${escrowPda} already carries '${settlementRail(priorForEscrow)}'-rail jobs; ` +
+          `a '${rail}'-rail job cannot share the same vault ledger.`,
+      };
+    }
 
     const [inserted] = await db
       .insert(sapEscrowSettlements)
@@ -430,7 +584,7 @@ export async function openEscrow(input: OpenEscrowInput): Promise<EscrowGateResu
         fundedAmount: '0',
         status: 'open',
         dryRun: cfg.dryRun,
-        metadata: { isTopUp, funded: false },
+        metadata: { isTopUp, funded: false, rail },
       })
       .returning();
     row = inserted;
@@ -447,6 +601,30 @@ export async function openEscrow(input: OpenEscrowInput): Promise<EscrowGateResu
       if (existing) return { ok: true, phase: 'open', settlement: existing, chain: null, replay: true };
     }
     return { ok: false, code: 'internal', message: 'failed to record escrow settlement.' };
+  }
+
+  // ── PAYAI RAIL — no on-chain funding leg ─────────────────────────────────────
+  // The depositor's USDC stays in their custodial wallet until settle (where the
+  // PayAI facilitator moves it depositor→worker in ONE payment). We book the
+  // job's COMMITMENT as `fundedAmount` so the settle/refund ceilings enforce the
+  // exact same per-job + per-PDA conservation bounds as the vault rail.
+  // `funded:false` in metadata is honest — nothing sits in an on-chain vault;
+  // the facilitator's verify (payer balance/signature) is the funding check,
+  // run at settle time. A depositor draining their wallet between open and
+  // settle fails that verify — fail-closed, money never wrong (the bounty flow
+  // opens+approves+settles back-to-back, so the exposure window is one request).
+  if (rail === 'payai') {
+    const [committed] = await db
+      .update(sapEscrowSettlements)
+      .set({
+        dryRun: cfg.dryRun,
+        fundedAmount: input.initialDeposit.toString(),
+        metadata: { isTopUp, funded: false, committed: true, rail },
+        updatedAt: new Date(),
+      })
+      .where(eq(sapEscrowSettlements.id, row.id))
+      .returning();
+    return { ok: true, phase: 'open', settlement: committed, chain: null, replay: false };
   }
 
   // We hold the claim — fund the chain (create the escrow, or top up an existing
@@ -509,7 +687,7 @@ export async function openEscrow(input: OpenEscrowInput): Promise<EscrowGateResu
     .set({
       dryRun: chain.dryRun,
       fundedAmount: input.initialDeposit.toString(),
-      metadata: { isTopUp, funded: true },
+      metadata: { isTopUp, funded: true, rail },
       updatedAt: new Date(),
     })
     .where(eq(sapEscrowSettlements.id, row.id))
@@ -802,6 +980,22 @@ async function settleJobLocked(input: SettleJobInput): Promise<EscrowGateResult>
     return { ok: false, code: 'job_not_open', message: `job is ${row.status}; cannot settle.` };
   }
 
+  // ── RAIL DISPATCH — from the ROW's recorded rail, never the live env flag ────
+  // (conservation keystone: the rail chosen at open is the only rail that can
+  // ever move this job's money). A payai row whose rail flag has since been
+  // turned OFF fails closed HERE — cheap, pre-claim, never a fallback to the
+  // on-chain vault (which was never funded for a payai job).
+  const rail = settlementRail(row);
+  if (rail === 'payai' && !sapConfigSnapshot().payaiSettlementEnabled) {
+    return {
+      ok: false,
+      code: 'payai_rail_disabled',
+      message:
+        'this job settles on the PayAI x402 rail, which is disabled ' +
+        '(SAP_PAYAI_SETTLEMENT_ENABLED); re-enable the rail to settle.',
+    };
+  }
+
   // BLOCKING #1 — READ the depositor's PERSISTED approval. The verification signal
   // is built SERVER-SIDE from this row; the caller's `verificationSignal` is
   // IGNORED. No persisted approval ⇒ no settle (the worker cannot forge one).
@@ -893,44 +1087,60 @@ async function settleJobLocked(input: SettleJobInput): Promise<EscrowGateResult>
     },
   };
   const verdict = await provider.verify(ctx);
+  const auth = evaluateSettleAuthorization(verdict);
 
-  // Persist the FAILING verdict (provenance) — but ONLY on a still-non-terminal
-  // row, so a late failing-verdict write can never clobber a row another caller
-  // already flipped to settling/settled/failed/refunded. (For the SAME job +
-  // signal two callers can't diverge on pass/fail; this is belt-and-suspenders.)
-  if (!verdict.passed) {
-    await db
-      .update(sapEscrowSettlements)
-      .set({
-        verificationProvider: provider.id,
-        verificationPassed: false,
-        verificationDetail: verdict.detail ?? null,
-        updatedAt: new Date(),
-      })
-      .where(
-        and(
-          eq(sapEscrowSettlements.id, row.id),
-          sql`${sapEscrowSettlements.status} IN ('open','submitted')`,
-        ),
-      );
-    return {
-      ok: false,
-      code: 'verification_failed',
-      message: verdict.detail ?? 'verification did not pass; no settle.',
-    };
+  if (!auth.authorized) {
+    // Persist the FAILING-verdict provenance — ONLY when the verdict itself
+    // failed (a malformed-audit-root refusal is an integrity guard, not a verdict
+    // outcome, and writes no provenance) and ONLY on a still-non-terminal row, so
+    // a late failing-verdict write can never clobber a row another caller already
+    // flipped to settling/settled/failed/refunded. (For the SAME job + signal two
+    // callers can't diverge on pass/fail; this is belt-and-suspenders.)
+    if (!verdict.passed) {
+      await db
+        .update(sapEscrowSettlements)
+        .set({
+          verificationProvider: provider.id,
+          verificationPassed: false,
+          verificationDetail: verdict.detail ?? null,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(sapEscrowSettlements.id, row.id),
+            sql`${sapEscrowSettlements.status} IN ('open','submitted')`,
+          ),
+        );
+    }
+    return { ok: false, code: 'verification_failed', message: auth.reason };
   }
 
+  // Authorized: the verdict passed with a validated 32-byte non-zero root.
+  // `auditRootHex` binds the payai rail (x402 `extra`); the raw bytes bind the
+  // on-chain rail (`settle_calls` `service_hash`).
+  const auditRootHex = auth.auditRootHex;
   const auditRoot = verdict.auditRoot;
-  if (auditRoot.length !== 32 || auditRoot.every((b) => b === 0)) {
-    // A passing verdict MUST carry a non-zero 32-byte audit root (the on-chain
-    // provenance binding). Refuse to settle on a malformed root.
-    return {
-      ok: false,
-      code: 'verification_failed',
-      message: 'verification passed but produced no valid audit root; refusing to settle.',
-    };
+
+  // ── payai rail: PREPARE the x402 payment BEFORE the claim ────────────────────
+  // Everything fallible that moves NO money (gate/facilitator/fee-payer checks,
+  // custodial decrypt + payload signing) runs pre-claim: a failure here returns
+  // a clean structured error and leaves the row untouched + retryable, instead
+  // of bricking it terminal-`failed`. Only the facilitator verify→settle (the
+  // actual money movement) runs after the claim.
+  let payaiPrep: PreparedPayaiRelease | null = null;
+  if (rail === 'payai') {
+    const prep = await preparePayaiRelease({
+      depositorAvatarId: row.depositorAvatarId,
+      workerWalletPubkey: row.workerWalletPubkey,
+      amountBaseUnits: releaseAmount,
+      jobId: row.jobId,
+      auditRootHex,
+    });
+    if (prep.ok === false) {
+      return { ok: false, code: prep.code, message: prep.message };
+    }
+    payaiPrep = prep;
   }
-  const auditRootHex = Buffer.from(auditRoot).toString('hex');
 
   // (4a) ATOMIC CLAIM — flip open|submitted → settling for THIS row only, AND
   // re-confirm the escrow-wide ledger can still pay, all UNDER a cross-process
@@ -1017,6 +1227,77 @@ async function settleJobLocked(input: SettleJobInput): Promise<EscrowGateResult>
       return { ok: true, phase: 'settled', settlement: cur, chain: null, replay: true };
     }
     return { ok: false, code: 'settle_in_progress', message: 'a settle is already in progress for this job.' };
+  }
+
+  // ── (4b-payai) PAYAI SETTLE — the x402 payment through the facilitator ───────
+  // Reached by AT MOST ONE caller (we hold the `settling` claim — the SAME
+  // at-most-once lock that guards the on-chain rail guards this one). The
+  // depositor-signed payment prepared above is verified and settled by the
+  // PayAI facilitator (dry-run = VERIFY-only, no /settle, no money). This is
+  // the job's ONLY money movement — the vault leg never ran for a payai row.
+  if (rail === 'payai') {
+    const outcome = await executePayaiRelease(payaiPrep!, {
+      dryRun: sapConfigSnapshot().dryRun,
+    });
+
+    if (outcome.ok === false) {
+      // Failed AFTER the claim. Terminal `failed` — the exact posture of the
+      // on-chain rail: when the facilitator verify passed, a /settle was
+      // ATTEMPTED and may have landed (broadcastUnknown) — auto-retrying could
+      // double-pay; a human/reconciler inspects the facilitator + chain. A
+      // verify-stage failure provably submitted nothing, but stays terminal
+      // too (no auto-retry on the money path); the operator re-drive handle
+      // (admin re-settle) is the recovery, mirroring the on-chain rail.
+      await db
+        .update(sapEscrowSettlements)
+        .set({
+          status: 'failed',
+          updatedAt: new Date(),
+          metadata: {
+            ...((row.metadata as object) ?? {}),
+            settleError: outcome.code,
+            payaiFailure: outcome.message,
+            settleBroadcastUnconfirmed: outcome.broadcastUnknown,
+          },
+        })
+        .where(eq(sapEscrowSettlements.id, row.id));
+      return { ok: false, code: outcome.code, message: outcome.message };
+    }
+
+    // Success — book the ledger exactly like the on-chain rail (4c): terminal
+    // `settled`, calls + released accumulated so the per-job/per-PDA invariants
+    // hold for any sibling job. The facilitator tx signature IS the settle
+    // signature (a real on-chain USDC transfer, submitted by the facilitator).
+    const payaiSignature = outcome.dryRun ? null : outcome.signature;
+    const [settledPayai] = await db
+      .update(sapEscrowSettlements)
+      .set({
+        status: 'settled',
+        callsSettled: (alreadySettled + input.callsToSettle).toString(),
+        releasedAmount: (jobReleased + releaseAmount).toString(),
+        settleSignature: payaiSignature,
+        dryRun: outcome.dryRun,
+        settledAt: new Date(),
+        updatedAt: new Date(),
+        metadata: {
+          ...((row.metadata as object) ?? {}),
+          payaiFeePayer: payaiPrep!.feePayer,
+          // Audit only — pubkeys, never secrets. The facilitator-reported payer
+          // (when present) cross-checks the depositor custodial pubkey we signed as.
+          payaiPayer: outcome.payer ?? payaiPrep!.payerPubkey,
+        },
+      })
+      .where(eq(sapEscrowSettlements.id, row.id))
+      .returning();
+
+    return {
+      ok: true,
+      phase: 'settled',
+      settlement: settledPayai,
+      chain: null,
+      payai: { dryRun: outcome.dryRun, signature: payaiSignature },
+      replay: false,
+    };
   }
 
   // (4b) CHAIN SETTLE — release vault → worker ATA. Reached by AT MOST ONE caller
@@ -1240,6 +1521,29 @@ async function refundEscrowLocked(input: RefundEscrowInput): Promise<EscrowGateR
       return { ok: false, code: 'settle_in_progress', message: 'a settle claimed this job first; cannot refund.' };
     }
     return { ok: false, code: 'refund_in_progress', message: 'a refund is already in progress for this job.' };
+  }
+
+  // ── PAYAI RAIL refund — pure ledger release, no chain withdraw ───────────────
+  // A payai job's USDC never left the depositor's wallet (the single movement
+  // happens only at settle), so there is NO vault to withdraw from. The refund
+  // books the commitment released in the ledger and closes the row. The atomic
+  // `refunding` claim above still serializes this against a concurrent payai
+  // settle (exactly one of {settle, refund} wins). Deliberately NOT gated on
+  // SAP_PAYAI_SETTLEMENT_ENABLED: this moves no money, and a depositor must be
+  // able to close a stale commitment even after the rail is turned off.
+  if (settlementRail(row) === 'payai') {
+    const newRefundedPayai = (u64(row.refundedAmount) + input.amount).toString();
+    const [refundedPayai] = await db
+      .update(sapEscrowSettlements)
+      .set({ status: 'refunded', refundedAmount: newRefundedPayai, updatedAt: new Date() })
+      .where(
+        and(
+          eq(sapEscrowSettlements.id, row.id),
+          eq(sapEscrowSettlements.status, 'refunding'),
+        ),
+      )
+      .returning();
+    return { ok: true, phase: 'refunded', settlement: refundedPayai, chain: null };
   }
 
   // We hold the `refunding` claim — now (and only now) touch the chain.

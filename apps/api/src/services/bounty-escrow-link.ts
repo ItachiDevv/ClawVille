@@ -37,6 +37,22 @@
  * gate is off — `openEscrow`/`settleJob`/`refundEscrow` all short-circuit with
  * `gate_disabled` and this module surfaces that verbatim.
  *
+ * ── The PayAI settlement rail (the three-party topology, wired 2026-07-06) ────
+ * Founder constraint: SAP handles the ESCROW RECORD, Covenant RECORDS/VERIFIES
+ * the work (the verdict + audit root authorize release), and the actual
+ * SETTLEMENT goes through PayAI. With `SAP_PAYAI_SETTLEMENT_ENABLED=true`, NEW
+ * bounty escrows open on the `payai` rail: no on-chain SAP vault is funded; on
+ * the PASS verdict the escrow gate's settle step drives ONE x402 exact-scheme
+ * USDC payment (creator's custodial wallet → hunter's wallet) through the PayAI
+ * facilitator via `x402-payai.verifyAndSettle` (see `sap/payai-release.ts`).
+ * The (escrow_pda, job_id) at-most-once claim, the persisted creator approval,
+ * and the funds ceilings gate that payment exactly as they gate the vault
+ * release — and because a payai job NEVER runs the vault leg, exactly one USDC
+ * movement exists per bounty (conservation; no double-pay is constructible).
+ * On this rail a reject-path "refund" is a pure ledger close (the creator's
+ * USDC never left their wallet), and `SAP_DRY_RUN=true` maps to facilitator
+ * VERIFY-only (payload built + verified, `/settle` never called).
+ *
  * ── OPERATOR CAVEAT: one escrow VAULT per (creator, hunter) pair, NOT per bounty ─
  * The V1 USDC escrow PDA is `["sap_escrow", agentPda, depositor]` with NO nonce,
  * so ONE on-chain vault is shared by every job for a given (creator=depositor,
@@ -114,7 +130,26 @@ export async function openBountyEscrow(input: {
     maxCalls: 1n,
     initialDeposit: amount,
     expiresAt: input.expiresAt ?? 0n,
+    // THREE-PARTY TOPOLOGY rail selection (founder constraint: "SAP handles the
+    // escrow, Covenant records/verifies, the actual SETTLEMENT goes through
+    // PayAI"). With SAP_PAYAI_SETTLEMENT_ENABLED the job opens on the `payai`
+    // rail: the settlement ledger (at-most-once + approval + ceilings) is
+    // unchanged, but NO on-chain vault leg runs — on the PASS verdict the
+    // release is ONE x402 exact-scheme USDC payment (creator custodial wallet →
+    // hunter) settled by the PayAI facilitator. The flag is read ONLY here (at
+    // open); every later transition dispatches from the rail RECORDED on the
+    // row, so a flag flip mid-lifecycle can never double-move the reward.
+    rail: bountySettlementRail(),
   });
+}
+
+/**
+ * The rail NEW bounty escrows open on. `payai` when the PayAI settlement rail is
+ * enabled (the target topology — the actual USDC settlement routes through the
+ * PayAI facilitator); the on-chain SAP vault otherwise (the pre-PayAI default).
+ */
+export function bountySettlementRail(): 'onchain' | 'payai' {
+  return sapConfigSnapshot().payaiSettlementEnabled ? 'payai' : 'onchain';
 }
 
 /**
