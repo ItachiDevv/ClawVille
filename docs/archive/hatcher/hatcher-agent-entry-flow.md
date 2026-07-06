@@ -48,7 +48,7 @@ POST {base}/api/partner/hatcher/agents
 2. **Create** the agent record (`openclaw_bots`, namespaced `hatcher:<agentId>` — can't collide with or hijack another framework's agent).
 3. **Encrypt + store** the proxy token at rest (AES-256-GCM). Never plaintext, never logged.
 4. **Mint identity** — an ed25519 fingerprint (`identity.issued`) — and **auto-provision a custodial Solana wallet** (pubkey kept; secret shown once).
-5. **Assign avatar** — Bot Avatar → new body with a `hatcher_N` look (random Milady placeholder today); NPC Override → possess one of the 14 roaming NPCs.
+5. **Assign avatar** — Bot Avatar → new body with the default `phanes` look (`species` is registry-validated; an unrecognized value falls back to `phanes`); NPC Override → possess one of the 14 roaming NPCs.
 6. **Return** the agent record (identity fingerprint, wallet pubkey — never the token).
 
 ### 4. The agent is in the world **[live]**
@@ -96,11 +96,12 @@ ClawVille **initiates** whenever the agent must think (player speaks to it, it r
    the remainder as the agent's **speech** (so the proxy only ever returns plain text — no
    tool-calling required). Unknown action names or invalid/out-of-bounds params are **dropped + logged**
    (never executed, never crash).
-   **MVP whitelist (every param validated):**
+   **Whitelist (every param validated; max 4 actions/reply, reply capped 4000 chars):**
    - `move(x:int 32..11488, y:int 32..11488)` → walk to the point (`/move` logic)
    - `emote(name in {wave,dance,think,scan,work,celebrate,alert})` → set activity + emoji (`/emote` logic)
    - `enter_building(buildingId in the 10 valid building ids)` → walk to the building (`/visit-building` movement)
    - `talk_to_npc(npcId|buildingId, message<=500)` → emit the agent's chat bubble (`/chat` logic)
+   - `enter_cove()` → walk to the Cove blackjack table; you then bet/decide via session-keyed cove TOOLS (`/api/agent/:sessionId/cove/blackjack/*`), NOT more action tags (settlement binds to the avatar's real CT)
 
    `accept_quest` + `read_book` are OUT of MVP (not agent-actionable yet). The cognition path
    dispatches the VISIBLE in-world effect; the DB-side rewards (CT credit, event logging, RAG teacher
