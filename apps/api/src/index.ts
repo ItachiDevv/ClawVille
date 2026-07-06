@@ -672,6 +672,20 @@ process.on('uncaughtException', (err) => {
         `[API] House agent active: body ${house.bodyId}${house.created ? ' [new]' : ''}`,
       );
     }
+    // Pre-warm the local fleet boxes so the driver's first decisions don't eat a
+    // cold-load (both boxes stay warm; work is load-balanced across them). Fire-and-
+    // forget + fault-tolerant — a down box just fails silently and the breaker handles
+    // it. Logs the resolved endpoint/route config for boot observability.
+    try {
+      const { getInferenceRouter, describeInferenceConfig } = await import('@clawville/agent-runtime');
+      console.log(describeInferenceConfig());
+      void getInferenceRouter()
+        .warmup()
+        .then(() => console.log('[API] Inference local boxes warmed'))
+        .catch(() => {});
+    } catch (e) {
+      console.warn('[API] Inference warmup skipped:', (e as Error)?.message);
+    }
     agentAutonomyDriver.start();
   } catch (err) {
     console.error('[API] House agent activation failed (non-fatal):', err);

@@ -53,6 +53,13 @@ export interface InferenceEndpoint {
    * Defaults to 'openai'. Local Ollama endpoints default to 'ollama' in config.
    */
   provider?: 'openai' | 'ollama';
+  /**
+   * Ollama `keep_alive` — how long the box keeps this model resident after a
+   * request. Keeps both fleet boxes WARM between driver ticks so failover/
+   * distribution is instant (no cold-load). String ('60m'), seconds, or -1
+   * (never unload). Only sent on the ollama wire. Default from config ('60m').
+   */
+  keepAlive?: string | number;
 }
 
 export interface InferenceMessage {
@@ -128,6 +135,8 @@ export class InferenceRouter {
   private readonly routes: RouteTable;
   private readonly breaker: BreakerConfig;
   private readonly state = new Map<string, EndpointState>();
+  // Per-route round-robin cursor for load-balancing across the local boxes.
+  private readonly rrCursor = new Map<string, number>();
   private readonly fetchImpl: typeof fetch;
   private readonly now: () => number;
 
@@ -166,6 +175,29 @@ export class InferenceRouter {
   }
 
   /**
+   * Pre-load every LOCAL model so the boxes are WARM before the first real
+   * decision (avoids the cold-start timeout on boot/restart). Fire-and-forget +
+   * fault-tolerant: a down box just fails silently (the breaker handles it later).
+   * Bypasses the breaker/round-robin — it hits each local endpoint directly with a
+   * tiny request that loads the model and sets keep_alive. Never throws.
+   */
+  async warmup(): Promise<void> {
+    const locals = [...this.endpoints.values()].filter(
+      (e) => e.kind === 'local' || (e.provider ?? 'openai') === 'ollama',
+    );
+    await Promise.allSettled(
+      locals.map((ep) =>
+        this.callEndpoint(ep, {
+          route: 'fleet',
+          size: 'small',
+          messages: [{ role: 'user', content: 'warmup' }],
+          maxTokens: 1,
+        }).catch(() => undefined),
+      ),
+    );
+  }
+
+  /**
    * Generate text for a consumer class. Walks the route's ordered endpoint list,
    * skipping endpoints whose breaker is open (except the LAST endpoint, which is
    * the designated last-resort and is ALWAYS attempted so a cooldown window can
@@ -177,9 +209,23 @@ export class InferenceRouter {
       this.endpoints.has(id),
     );
     // Defensive: if a route somehow resolved empty, fall back to any endpoint.
-    const ids = configured.length > 0 ? configured : [...this.endpoints.keys()].slice(0, 1);
+    let ids = configured.length > 0 ? configured : [...this.endpoints.keys()].slice(0, 1);
     if (ids.length === 0) {
       throw new Error('[InferenceRouter] no endpoints configured');
+    }
+
+    // LOAD-BALANCE: when a route has ≥2 LOCAL endpoints (the fleet across johns-pc
+    // + the second box), round-robin the STARTING endpoint among them per request
+    // so work is DISTRIBUTED across both boxes (both stay warm + share the load).
+    // The other local remains the immediate failover; cloud/fallback endpoints keep
+    // their terminal position (OpenAI stays last).
+    const locals = ids.filter((id) => this.endpoints.get(id)!.kind === 'local');
+    if (locals.length >= 2) {
+      const rest = ids.filter((id) => this.endpoints.get(id)!.kind !== 'local');
+      const n = this.rrCursor.get(args.route) ?? 0;
+      this.rrCursor.set(args.route, n + 1);
+      const off = n % locals.length;
+      ids = [...locals.slice(off), ...locals.slice(0, off), ...rest];
     }
 
     let lastErr: Error | null = null;
@@ -311,7 +357,15 @@ export class InferenceRouter {
         'Content-Type': 'application/json',
         ...(ep.apiKey ? { Authorization: `Bearer ${ep.apiKey}` } : {}),
       },
-      body: JSON.stringify({ model, messages: args.messages, stream: false, think: false, options }),
+      body: JSON.stringify({
+        model,
+        messages: args.messages,
+        stream: false,
+        think: false,
+        // Keep the model resident between driver ticks so the box stays WARM.
+        keep_alive: ep.keepAlive ?? '60m',
+        options,
+      }),
       signal: AbortSignal.timeout(ep.timeoutMs),
     });
 

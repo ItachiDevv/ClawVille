@@ -81,6 +81,14 @@ function localProvider(v: string | undefined): 'openai' | 'ollama' {
   return v === 'openai' ? 'openai' : 'ollama';
 }
 
+// keep_alive: numeric (incl. -1 = never unload) passed as a number; a duration
+// string ('60m') passed through; default '60m' keeps both boxes warm between ticks.
+function keepAliveEnv(v: string | undefined): string | number {
+  if (!v) return '60m';
+  const n = Number(v);
+  return Number.isFinite(n) ? n : v;
+}
+
 export function buildEndpointsFromEnv(env: Env = process.env): InferenceEndpoint[] {
   const cloudTimeout = numEnv(env.INFERENCE_CLOUD_TIMEOUT_MS, 60_000);
   // Local default 60s. It MUST outlast a cold model-load (johns-pc restart re-warms
@@ -118,6 +126,7 @@ export function buildEndpointsFromEnv(env: Env = process.env): InferenceEndpoint
       timeoutMs: localTimeout,
       stripThinkTags: true,
       provider: localProvider(env.INFERENCE_LOCAL_PRIMARY_PROVIDER),
+      keepAlive: keepAliveEnv(env.INFERENCE_LOCAL_KEEP_ALIVE),
     });
   }
 
@@ -133,6 +142,7 @@ export function buildEndpointsFromEnv(env: Env = process.env): InferenceEndpoint
       timeoutMs: localTimeout,
       stripThinkTags: true,
       provider: localProvider(env.INFERENCE_LOCAL_SECONDARY_PROVIDER),
+      keepAlive: keepAliveEnv(env.INFERENCE_LOCAL_KEEP_ALIVE),
     });
   }
 

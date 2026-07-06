@@ -93,6 +93,24 @@ function router(
   return { r, calls, clock };
 }
 
+// A router with ONE local (no second local → no round-robin), so the breaker /
+// failover ordering is deterministic: fleet = [local-primary, openai].
+function router1(
+  behaviors: Record<string, Responder>,
+  opts?: { clock?: { t: number }; breaker?: { failThreshold?: number; cooldownMs?: number } },
+) {
+  const calls: Record<string, number> = {};
+  const clock = opts?.clock ?? { t: 0 };
+  const r = new InferenceRouter({
+    endpoints: [OPENAI, PRIMARY],
+    routes: { teacher: ['openai'], fleet: ['local-primary', 'openai'], 'hosted-user': ['openai'], default: ['openai'] },
+    breaker: { failThreshold: opts?.breaker?.failThreshold ?? 3, cooldownMs: opts?.breaker?.cooldownMs ?? 1000 },
+    fetchImpl: makeFetch(behaviors, calls),
+    now: () => clock.t,
+  });
+  return { r, calls, clock };
+}
+
 describe('InferenceRouter routing', () => {
   it('teacher route hits OpenAI and NEVER a local box (even when locals are up)', async () => {
     const { r, calls } = router({
@@ -136,37 +154,30 @@ describe('InferenceRouter routing', () => {
   });
 
   it('opens the breaker after failThreshold and SKIPS the dead endpoint on the next call', async () => {
-    let primUp = false;
-    const { r, calls } = router(
-      {
-        'api.openai.com': ok('CLOUD'),
-        'prim.local': () => (primUp ? { ok: true, content: 'LOCAL' } : { ok: false, status: 503 }),
-        'sec.local': ok('SECONDARY'),
-      },
+    // router1 = single local (no round-robin) so ordering is deterministic.
+    const { r, calls } = router1(
+      { 'api.openai.com': ok('CLOUD'), 'prim.local': fail() },
       { breaker: { failThreshold: 2, cooldownMs: 1000 } },
     );
 
-    // 2 fleet calls → 2 primary failures → breaker opens (each falls over to secondary)
+    // 2 fleet calls → 2 primary failures → breaker opens (each falls over to openai)
     await r.generateText({ route: 'fleet', size: 'small', messages: [{ role: 'user', content: 'a' }] });
     await r.generateText({ route: 'fleet', size: 'small', messages: [{ role: 'user', content: 'b' }] });
     expect(calls['prim.local']).toBe(2);
-    expect(calls['sec.local']).toBe(2);
 
-    // 3rd call while breaker OPEN → primary skipped entirely (no new fetch), served by secondary
+    // 3rd call while breaker OPEN → primary skipped (no new fetch), served by openai
     const res = await r.generateText({ route: 'fleet', size: 'small', messages: [{ role: 'user', content: 'c' }] });
-    expect(res.endpointId).toBe('local-secondary');
+    expect(res.endpointId).toBe('openai');
     expect(calls['prim.local']).toBe(2); // unchanged — skipped
-    expect(calls['sec.local']).toBe(3);
   });
 
   it('half-open probe recovers the endpoint after the cooldown elapses', async () => {
     let primUp = false;
     const clock = { t: 0 };
-    const { r, calls } = router(
+    const { r, calls } = router1(
       {
         'api.openai.com': ok('CLOUD'),
         'prim.local': () => (primUp ? { ok: true, content: 'LOCAL-BACK' } : { ok: false, status: 503 }),
-        'sec.local': ok('SECONDARY'),
       },
       { clock, breaker: { failThreshold: 2, cooldownMs: 1000 } },
     );
@@ -285,26 +296,25 @@ describe('InferenceRouter breaker timing + concurrency + error paths', () => {
     // cooldown is 30s. With the stale-timestamp bug, openUntil would land in the past
     // and primary would be re-probed on the next call. With the fix it stays open.
     const clock = { t: 0 };
-    const { r, calls } = router(
+    const { r, calls } = router1(
       {
         'api.openai.com': ok('CLOUD'),
         'prim.local': () => {
           clock.t += 60_000; // call took 60s (≥ 30s cooldown)
           return { ok: false, status: 503 };
         },
-        'sec.local': ok('SECONDARY'),
       },
       { clock, breaker: { failThreshold: 1, cooldownMs: 30_000 } },
     );
 
     // Call 1: primary fails after 60s → breaker opens with a FRESH deadline (now+30s).
     const a = await r.generateText({ route: 'fleet', size: 'small', messages: [{ role: 'user', content: 'a' }] });
-    expect(a.endpointId).toBe('local-secondary');
+    expect(a.endpointId).toBe('openai');
     expect(calls['prim.local']).toBe(1);
 
     // Call 2 (clock now 60000, breaker open until 90000): primary MUST be skipped.
     const b = await r.generateText({ route: 'fleet', size: 'small', messages: [{ role: 'user', content: 'b' }] });
-    expect(b.endpointId).toBe('local-secondary');
+    expect(b.endpointId).toBe('openai');
     expect(calls['prim.local']).toBe(1); // NOT re-probed — the M1 regression guard
   });
 
@@ -327,12 +337,14 @@ describe('InferenceRouter breaker timing + concurrency + error paths', () => {
         await gate; // hang — models a slow half-open recovery probe still in flight
         return { ok: true, status: 200, statusText: 'OK', text: async () => '', json: async () => ({ choices: [{ message: { content: 'LOCAL' } }] }) } as unknown as Response;
       }
-      return { ok: true, status: 200, statusText: 'OK', text: async () => '', json: async () => ({ choices: [{ message: { content: 'SECONDARY' } }] }) } as unknown as Response;
+      return { ok: true, status: 200, statusText: 'OK', text: async () => '', json: async () => ({ choices: [{ message: { content: 'CLOUD' } }] }) } as unknown as Response;
     }) as unknown as typeof fetch;
 
+    // Single local (fleet = [local-primary, openai]) → no round-robin, so p1
+    // deterministically takes the primary probe and p2 falls to openai.
     const r = new InferenceRouter({
-      endpoints: [OPENAI, PRIMARY, SECONDARY],
-      routes: ROUTES,
+      endpoints: [OPENAI, PRIMARY],
+      routes: { teacher: ['openai'], fleet: ['local-primary', 'openai'], 'hosted-user': ['openai'], default: ['openai'] },
       breaker: { failThreshold: 1, cooldownMs: 1000 },
       fetchImpl,
       now: () => clock.t,
@@ -347,12 +359,12 @@ describe('InferenceRouter breaker timing + concurrency + error paths', () => {
     primMode = 'hang';
 
     // 3) fire two CONCURRENT fleet calls. p1 takes the single half-open probe (hangs);
-    //    p2 must see probeInFlight=true → skip primary → served by secondary.
+    //    p2 must see probeInFlight=true → skip primary → served by openai.
     const p1 = r.generateText({ route: 'fleet', size: 'small', messages: [{ role: 'user', content: '1' }] });
     const p2 = r.generateText({ route: 'fleet', size: 'small', messages: [{ role: 'user', content: '2' }] });
 
     const r2 = await p2;
-    expect(r2.endpointId).toBe('local-secondary'); // did NOT touch the in-flight probe
+    expect(r2.endpointId).toBe('openai'); // did NOT touch the in-flight probe
     expect(primCalls).toBe(2); // p1's probe only — p2 did not add a 3rd primary hit
 
     releasePrimary();
@@ -412,8 +424,57 @@ describe('InferenceRouter breaker timing + concurrency + error paths', () => {
     expect(capturedUrl).toBe('http://box.local:11434/api/chat'); // /v1 stripped, native path
     expect(capturedBody.think).toBe(false); // thinking disabled
     expect(capturedBody.stream).toBe(false);
+    expect(capturedBody.keep_alive).toBeDefined(); // keeps the box warm
     expect(capturedBody.options.num_predict).toBe(220);
     expect(capturedBody.choices).toBeUndefined(); // not the openai wire
+  });
+
+  it('load-balances the fleet across BOTH local boxes (round-robin start); neither hits OpenAI when healthy', async () => {
+    const hits: string[] = [];
+    const fetchImpl = (async (url: string | URL | Request) => {
+      const u = String(url);
+      hits.push(u.includes('prim.local') ? 'primary' : u.includes('sec.local') ? 'secondary' : 'openai');
+      return {
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        text: async () => '',
+        json: async () => ({ message: { content: 'ok' }, choices: [{ message: { content: 'ok' } }] }),
+      } as unknown as Response;
+    }) as unknown as typeof fetch;
+    const r = new InferenceRouter({ endpoints: [OPENAI, PRIMARY, SECONDARY], routes: ROUTES, fetchImpl, now: () => 0 });
+
+    const a = await r.generateText({ route: 'fleet', size: 'small', messages: [{ role: 'user', content: '1' }] });
+    const b = await r.generateText({ route: 'fleet', size: 'small', messages: [{ role: 'user', content: '2' }] });
+    const c = await r.generateText({ route: 'fleet', size: 'small', messages: [{ role: 'user', content: '3' }] });
+    const d = await r.generateText({ route: 'fleet', size: 'small', messages: [{ role: 'user', content: '4' }] });
+
+    // consecutive requests alternate the starting box → work distributed across BOTH
+    expect([a.endpointId, b.endpointId, c.endpointId, d.endpointId]).toEqual([
+      'local-primary',
+      'local-secondary',
+      'local-primary',
+      'local-secondary',
+    ]);
+    expect(hits).not.toContain('openai'); // both locals healthy → OpenAI untouched
+  });
+
+  it('warmup() pre-loads every local box and tolerates a down box (never throws)', async () => {
+    const hit = new Set<string>();
+    const fetchImpl = (async (url: string | URL | Request) => {
+      const u = String(url);
+      if (u.includes('sec.local')) throw new Error('secondary down'); // must not break warmup
+      hit.add(u.includes('prim.local') ? 'primary' : 'openai');
+      return {
+        ok: true, status: 200, statusText: 'OK', text: async () => '', json: async () => ({ message: { content: 'w' } }),
+      } as unknown as Response;
+    }) as unknown as typeof fetch;
+    const prim: InferenceEndpoint = { ...PRIMARY, provider: 'ollama' };
+    const sec: InferenceEndpoint = { ...SECONDARY, provider: 'ollama' };
+    const r = new InferenceRouter({ endpoints: [OPENAI, prim, sec], routes: ROUTES, fetchImpl, now: () => 0 });
+    await r.warmup(); // secondary throws internally — warmup must still resolve
+    expect(hit.has('primary')).toBe(true); // primary local warmed
+    expect(hit.has('openai')).toBe(false); // cloud endpoints are NOT warmed
   });
 
   it('a cloud endpoint with NO api key throws (fails loudly, not a silent hang)', async () => {
