@@ -3,6 +3,7 @@ import { db, agents, agentLogs, avatars, agentBots } from '@clawville/database';
 import {
   ElizaRuntime,
   createElizaRuntime,
+  resolveInferenceRoute,
 } from '@clawville/agent-runtime';
 import type { AgentStatus } from '@clawville/shared';
 
@@ -146,6 +147,18 @@ class AgentOrchestrator {
             ? 'location-agent'
             : 'location-agent';
 
+      // Inference route — decides which endpoints the InferenceRouter walks for
+      // this runtime's text gen (teachers → OpenAI, our house fleet → local boxes
+      // + failover). Derived from the RAW DB type + house-ness. House-ness is
+      // resolved from BOTH the caller's `opts.isHouse` AND the platform_agents
+      // row's `config.houseAgentId`, so a house fixture routes to the fleet
+      // regardless of WHICH path warms its runtime first (the driver passes
+      // isHouse; a human-chat warm would not — the config marker covers that).
+      const isHouseAgent =
+        opts?.isHouse === true ||
+        Boolean((agent.config as Record<string, unknown> | null)?.houseAgentId);
+      const inferenceRoute = resolveInferenceRoute(agent.type, isHouseAgent);
+
       // Extract gateway config for openclaw-bot agents
       const gatewayData = customization.gateway as Record<string, unknown> | undefined;
       const openclawGateway = agentType === 'openclaw-bot' && gatewayData
@@ -180,6 +193,7 @@ class AgentOrchestrator {
         },
         agentConfig: (agent.config as Record<string, unknown>) ?? {},
         openclawGateway,
+        inferenceRoute,
         databaseUrl: process.env.DATABASE_URL,
         apiKeys: {
           // OpenAI backs BOTH text generation (openai-text-provider) and

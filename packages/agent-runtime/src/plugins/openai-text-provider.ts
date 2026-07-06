@@ -1,28 +1,27 @@
 /**
  * OpenAI Text Generation Provider Plugin for ElizaOS v2
  *
- * Single backend for TEXT_SMALL / TEXT_LARGE in all non-OpenClaw runtimes.
- * Routes all text generation through OpenAI's chat/completions endpoint.
- * Priority 95 places it immediately below the OpenClaw gateway plugin (100),
- * so:
+ * Provides TEXT_SMALL / TEXT_LARGE for all non-OpenClaw runtimes. As of the
+ * InferenceRouter refactor this plugin NO LONGER talks to OpenAI directly and no
+ * longer reads a global base URL — it delegates every call to the shared
+ * `InferenceRouter`, passing this runtime's ROUTE (teacher / fleet / hosted-user /
+ * default) and the SIZE (small/large). The router owns endpoint selection, per-box
+ * config, health-based failover, and metering. See `../inference/`.
  *
- *   OpenClaw override (100) ─► wins when gateway configured
- *   OpenAI text (95) ─────────► default for all other runtimes
+ * Priority 95 keeps it immediately below the OpenClaw gateway plugin (100):
  *
- * OpenAI is the sole TEXT-generation backend (below the OpenClaw gateway
- * override). EMBEDDINGS go through openai-embedding-provider
- * (text-embedding-3-small, 1536-dim).
+ *   OpenClaw override (100) ─► wins when a gateway is configured (BYO agents)
+ *   OpenAI text (95) ─────────► default for all other runtimes → InferenceRouter
  *
- * OpenAI splits TEXT_SMALL and TEXT_LARGE across two models:
- *   TEXT_SMALL ─► smallModel (default gpt-4o-mini)
- *   TEXT_LARGE ─► largeModel (default gpt-4o)
+ * Route is set per-runtime via `config.route` (assigned by the orchestrator from
+ * the agent's type + house flag). Unset ⇒ 'default' (→ OpenAI), unchanged from
+ * before. Model selection now lives on the ROUTER'S ENDPOINTS, not here:
+ * `config.forceSize` (used by the Pro preset) forces the large model on BOTH
+ * handlers; `config.smallModel/largeModel/model` are retained for API
+ * compatibility but no longer influence routing (endpoints define the models).
  *
- * Env vars:
- *   OPENAI_API_KEY     (or pass via config.apiKey)
- *   OPENAI_SMALL_MODEL (or pass via config.smallModel — default gpt-4o-mini)
- *   OPENAI_LARGE_MODEL (or pass via config.largeModel — default gpt-4o)
- *
- * No external SDK — uses fetch() directly.
+ * EMBEDDINGS are unaffected — they go through openai-embedding-provider
+ * (text-embedding-3-small, 1536-dim), still pinned to OpenAI.
  */
 
 import {
@@ -31,82 +30,41 @@ import {
   type IAgentRuntime,
   type GenerateTextParams,
 } from '@elizaos/core';
-
-// Base URL is env-overridable so the runtime can target a self-hosted,
-// OpenAI-compatible endpoint (e.g. a local inference box reached over a private
-// network) WITHOUT any host or IP address baked into source. The concrete
-// address lives ONLY in the deploy environment (`OPENAI_BASE_URL`), never here.
-// Unset → OpenAI, unchanged from before. Trailing slashes are trimmed so both
-// `https://host/v1` and `https://host/v1/` resolve identically.
-const OPENAI_BASE_URL = (process.env.OPENAI_BASE_URL ?? 'https://api.openai.com/v1').replace(/\/+$/, '');
-const OPENAI_API_URL = `${OPENAI_BASE_URL}/chat/completions`;
-
-// gpt-4o-mini is the fast, cheap default for TEXT_SMALL.
-// gpt-4o is the higher-quality default for TEXT_LARGE.
-const DEFAULT_SMALL_MODEL = 'gpt-4o-mini';
-const DEFAULT_LARGE_MODEL = 'gpt-4o';
+import { getInferenceRouter } from '../inference/inference-config';
+import type { InferenceRoute, InferenceSize } from '../inference/inference-router';
 
 export interface OpenAITextConfig {
-  /** Fallback to process.env.OPENAI_API_KEY if omitted. */
+  /** @deprecated Auth now lives on the router's `openai` endpoint (OPENAI_API_KEY). */
   apiKey?: string;
-  /**
-   * Model for TEXT_SMALL — defaults to OPENAI_SMALL_MODEL env or gpt-4o-mini.
-   * Overridden by `model` if that is set (forces a single model for both).
-   */
+  /** @deprecated Model selection moved to router endpoints. Retained for API compat. */
   smallModel?: string;
-  /**
-   * Model for TEXT_LARGE — defaults to OPENAI_LARGE_MODEL env or gpt-4o.
-   * Overridden by `model` if that is set (forces a single model for both).
-   */
+  /** @deprecated Model selection moved to router endpoints. Retained for API compat. */
   largeModel?: string;
-  /**
-   * Force a single model id for BOTH TEXT_SMALL and TEXT_LARGE.
-   * When set, takes precedence over smallModel/largeModel — used by
-   * createOpenAIProTextPlugin to pin the large model everywhere.
-   */
+  /** @deprecated Superseded by `forceSize`. Retained for API compat. */
   model?: string;
   /** Default max output tokens if not supplied by caller. */
   defaultMaxTokens?: number;
   /** Default temperature if not supplied. */
   defaultTemperature?: number;
-}
-
-interface OpenAIMessage {
-  role: 'system' | 'user' | 'assistant';
-  content: string;
-}
-
-interface OpenAIRequest {
-  model: string;
-  messages: OpenAIMessage[];
-  temperature?: number;
-  // max_completion_tokens (not the deprecated max_tokens): the current param,
-  // and the only one accepted by o-series reasoning models if OPENAI_*_MODEL is
-  // ever pointed at one. Works on gpt-4o-mini/gpt-4o too.
-  max_completion_tokens?: number;
-  stop?: string[];
-}
-
-interface OpenAIResponse {
-  choices?: Array<{
-    message?: {
-      content?: string;
-    };
-    finish_reason?: string;
-  }>;
+  /**
+   * Consumer class for THIS runtime — decides which ordered endpoint list the
+   * router walks. Assigned by the orchestrator (agent type + house flag).
+   * Absent ⇒ 'default' (OpenAI), identical to pre-router behavior.
+   */
+  route?: InferenceRoute;
+  /**
+   * Force BOTH handlers to request the endpoint's LARGE model (the Pro preset:
+   * collaboration runtimes that benefit from the larger model everywhere).
+   */
+  forceSize?: InferenceSize;
 }
 
 async function generate(
   prompt: string,
   params: Partial<GenerateTextParams>,
   config: OpenAITextConfig,
-  model: string,
+  size: InferenceSize,
 ): Promise<string> {
-  const apiKey = config.apiKey ?? process.env.OPENAI_API_KEY;
-  if (!apiKey) {
-    throw new Error('[OpenAIText] Missing OPENAI_API_KEY');
-  }
-
   const maxTokens =
     (params as any)?.maxTokens ??
     (params as any)?.maxOutputTokens ??
@@ -120,78 +78,26 @@ async function generate(
     ? ((params as any).stopSequences as string[])
     : [];
 
-  const body: OpenAIRequest = {
-    model,
-    messages: [
-      {
-        role: 'user',
-        content: prompt,
-      },
-    ],
+  const { text } = await getInferenceRouter().generateText({
+    route: config.route ?? 'default',
+    size: config.forceSize ?? size,
+    messages: [{ role: 'user', content: prompt }],
     temperature,
-    max_completion_tokens: maxTokens,
-    // OpenAI rejects stop: [] in some SDK paths — only include when non-empty
-    ...(stopSequences.length > 0 ? { stop: stopSequences } : {}),
-  };
-
-  const res = await fetch(OPENAI_API_URL, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify(body),
+    maxTokens,
+    stopSequences,
   });
-
-  if (!res.ok) {
-    const errBody = await res.text().catch(() => '');
-    throw new Error(
-      `[OpenAIText] ${res.status} ${res.statusText}: ${errBody.slice(0, 500)}`,
-    );
-  }
-
-  const data = (await res.json()) as OpenAIResponse;
-
-  const choice = data.choices?.[0];
-  if (!choice) {
-    throw new Error('[OpenAIText] No choices in response');
-  }
-
-  const text = choice.message?.content ?? '';
-
-  if (!text) {
-    throw new Error(
-      `[OpenAIText] Empty content in choice (finish_reason=${choice.finish_reason})`,
-    );
-  }
-
   return text;
 }
 
 /**
- * Creates an ElizaOS plugin that provides TEXT_SMALL + TEXT_LARGE via OpenAI.
- *
- * Default priority is 95 — immediately below OpenClaw gateway (100) and the
- * canonical text-gen backend for every other runtime.
- *
- * TEXT_SMALL routes to smallModel (default gpt-4o-mini), TEXT_LARGE routes to
- * largeModel (default gpt-4o). `config.model`, when set, forces a single model
- * for both handlers.
+ * Creates an ElizaOS plugin that provides TEXT_SMALL + TEXT_LARGE via the
+ * InferenceRouter. Default priority 95 (immediately below the OpenClaw gateway).
+ * TEXT_SMALL → router size 'small', TEXT_LARGE → router size 'large' (unless
+ * `config.forceSize` pins one for both).
  */
 export function createOpenAITextPlugin(config: OpenAITextConfig = {}): Plugin {
-  const smallModel =
-    config.model ??
-    config.smallModel ??
-    process.env.OPENAI_SMALL_MODEL ??
-    DEFAULT_SMALL_MODEL;
-  const largeModel =
-    config.model ??
-    config.largeModel ??
-    process.env.OPENAI_LARGE_MODEL ??
-    DEFAULT_LARGE_MODEL;
-
   const makeHandler =
-    (model: string) =>
+    (size: InferenceSize) =>
     async (
       _runtime: IAgentRuntime,
       params: GenerateTextParams,
@@ -200,28 +106,27 @@ export function createOpenAITextPlugin(config: OpenAITextConfig = {}): Plugin {
       if (!prompt) {
         throw new Error('[OpenAIText] Missing prompt');
       }
-      return generate(prompt, params, config, model);
+      return generate(prompt, params, config, size);
     };
 
+  const routeLabel = config.route ?? 'default';
   return {
     name: 'openai-text-provider',
-    description: `OpenAI ${smallModel}/${largeModel} for TEXT_SMALL/TEXT_LARGE (global default)`,
+    description: `InferenceRouter TEXT_SMALL/TEXT_LARGE (route=${routeLabel}, priority 95)`,
     models: {
-      [ModelType.TEXT_SMALL]: makeHandler(smallModel),
-      [ModelType.TEXT_LARGE]: makeHandler(largeModel),
+      [ModelType.TEXT_SMALL]: makeHandler('small'),
+      [ModelType.TEXT_LARGE]: makeHandler('large'),
     },
     priority: 95,
   };
 }
 
-/** Preset for collaboration runtimes that benefit from the larger model on BOTH sizes */
+/** Preset for collaboration runtimes that benefit from the large model on BOTH sizes. */
 export function createOpenAIProTextPlugin(
-  config: Omit<OpenAITextConfig, 'model' | 'smallModel' | 'largeModel'> = {},
+  config: Omit<OpenAITextConfig, 'model' | 'smallModel' | 'largeModel' | 'forceSize'> = {},
 ): Plugin {
-  const largeModel =
-    process.env.OPENAI_LARGE_MODEL ?? DEFAULT_LARGE_MODEL;
   return createOpenAITextPlugin({
     ...config,
-    model: largeModel,
+    forceSize: 'large',
   });
 }

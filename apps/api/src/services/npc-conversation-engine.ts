@@ -1,11 +1,13 @@
 import { templates } from '@clawville/agent-templates';
 import { NPC_DEFINITIONS, type NpcDefinition } from '@clawville/shared';
+import { getInferenceRouter } from '@clawville/agent-runtime';
 import type { AgentSubstrateClient } from './agent-substrate-client';
 
-// LLM config — OpenAI is the SOLE backend for both text generation and
-// embeddings across ClawVille. NPC banter is casual chat, so no extended
-// thinking — just a plain chat completion at high temperature.
-const OPENAI_MODEL = process.env.OPENAI_SMALL_MODEL ?? 'gpt-4o-mini';
+// NPC banter is casual chat, so no extended thinking — just a plain chat
+// completion at high temperature. It goes through the shared InferenceRouter on
+// the `default` route (→ OpenAI in the baked config) so there is ONE inference
+// surface per box — no second hardcoded api.openai.com path. Flip via
+// INFERENCE_ROUTE_DEFAULT if ambient banter should ever move off OpenAI.
 const LLM_TEMPERATURE = 0.9;
 const OPENAI_MAX_TOKENS = 400;
 
@@ -30,53 +32,31 @@ async function callLlmForNpc(
 }
 
 /**
- * Call OpenAI's chat completions endpoint — the sole NPC banter backend.
- * Uses OPENAI_SMALL_MODEL (default gpt-4o-mini) for cost efficiency.
- * Returns the trimmed text on success, or an empty string on any failure.
+ * Generate NPC banter via the shared InferenceRouter (`default` route → OpenAI
+ * gpt-4o-mini in the baked config). Returns the trimmed text on success, or an
+ * empty string on any failure — never throws (callers fall back to canned lines).
  */
 async function callOpenAIForNpc(
   systemPrompt: string | null,
   userMessage: string,
 ): Promise<string> {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) {
-    console.warn('[NPC Convo] OPENAI_API_KEY missing — no primary LLM available');
-    return '';
+  const messages: Array<{ role: 'system' | 'user'; content: string }> = [];
+  if (systemPrompt) {
+    messages.push({ role: 'system', content: systemPrompt });
   }
+  messages.push({ role: 'user', content: userMessage });
 
   try {
-    const messages: Array<{ role: string; content: string }> = [];
-    if (systemPrompt) {
-      messages.push({ role: 'system', content: systemPrompt });
-    }
-    messages.push({ role: 'user', content: userMessage });
-
-    const res = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model: OPENAI_MODEL,
-        messages,
-        temperature: LLM_TEMPERATURE,
-        max_completion_tokens: OPENAI_MAX_TOKENS,
-      }),
+    const { text } = await getInferenceRouter().generateText({
+      route: 'default',
+      size: 'small',
+      messages,
+      temperature: LLM_TEMPERATURE,
+      maxTokens: OPENAI_MAX_TOKENS,
     });
-
-    if (!res.ok) {
-      const errText = await res.text();
-      console.error(`[NPC Convo] OpenAI ${res.status}: ${errText.slice(0, 200)}`);
-      return '';
-    }
-
-    const data = (await res.json()) as any;
-    const text: string | undefined = data?.choices?.[0]?.message?.content;
-    if (!text) return '';
     return text.trim();
   } catch (err) {
-    console.error('[NPC Convo] OpenAI fetch failed:', err);
+    console.error('[NPC Convo] inference failed:', err instanceof Error ? err.message : err);
     return '';
   }
 }
