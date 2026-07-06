@@ -1727,23 +1727,50 @@ export class TournamentManager {
     }
   }
 
-  /** Crown the champion (if not already placed) and settle prizes idempotently. */
+  /**
+   * Crown the champion (if not already placed) and settle prizes idempotently.
+   *
+   * OWNERSHIP LIFECYCLE (Codex rounds 4+5) — `r.done` is the single-owner token, set
+   * SYNCHRONOUSLY here (before any await) so a racing onRoomAborted defers to us:
+   *   claim(r.done=true) → { FINISH (placement+settle+cleanup)
+   *                        | FAIL (non-fatal async error, process alive) → release
+   *                          (r.done=false) → bounded self-heal retry → FREEZE-if-exhausted
+   *                        | PROCESS-CRASH → boot recovery reclaims next boot }
+   * completeTournament is fire-and-forget (maybeCompleteTournament / the hand-complete
+   * callback), so a naked rejection would only be logged and the tournament would
+   * STRAND (stuck in this.running with r.done claimed forever, row 'running'/unsettled,
+   * buy-ins locked). The try/catch converts that into the release+retry leg.
+   */
   private async completeTournament(r: RunningTournament, champion?: LiveSeat): Promise<void> {
     if (r.done) return;
     r.done = true;
-    if (champion) {
-      await this.db.transaction(async (tx) => {
-        await tx.execute(
-          sql`UPDATE poker_tournament_entrants
-              SET placement = 1
-              WHERE tournament_id = ${r.tournamentId} AND avatar_id = ${champion.avatarId}
-                AND placement IS NULL`,
-        );
-      });
+    try {
+      if (champion) {
+        await this.db.transaction(async (tx) => {
+          await tx.execute(
+            sql`UPDATE poker_tournament_entrants
+                SET placement = 1
+                WHERE tournament_id = ${r.tournamentId} AND avatar_id = ${champion.avatarId}
+                  AND placement IS NULL`,
+          );
+        });
+      }
+      await this.settleTournament(r.tournamentId);
+      await this.finishCompletion(r);
+    } catch (err) {
+      this.handleCompletionFailure(r, err, 0);
     }
-    await this.settleTournament(r.tournamentId);
+  }
 
-    // Break every remaining table's WS room (→ results) after settlement.
+  /**
+   * Terminal cleanup for a tournament that reached a terminal outcome (settled /
+   * refunded / frozen-final): tear down every remaining table's WS room (→ results
+   * screen) and REMOVE the tournament from `this.running` so in-memory state and boot
+   * recovery can never diverge — a terminal tournament left in the map would make
+   * onRoomAborted no-op on a stale record AND hide it from boot recovery (which skips
+   * in-memory ids). Idempotent.
+   */
+  private async finishCompletion(r: RunningTournament): Promise<void> {
     for (const table of r.tables.values()) {
       if (table.roomBinding) {
         const { roomId } = table.roomBinding;
@@ -1765,6 +1792,64 @@ export class TournamentManager {
         }
       }
       this.tableToTournament.delete(table.tableId);
+    }
+    this.running.delete(r.tournamentId);
+  }
+
+  /**
+   * The "claim → FAIL → release → bounded-retry → freeze" leg of the ownership model:
+   * a NON-FATAL async failure mid-completion (transient DB/ledger error) with the
+   * process still ALIVE. Alerts, RELEASES ownership (`r.done = false`), and either
+   * schedules the next bounded self-heal retry or, after the last, FREEZES (leaves the
+   * row as-is, drops the in-memory record) with a final critical alert.
+   *
+   * Releasing ownership after a failure is SAFE against the round-4 completion-vs-abort
+   * race: the retry — and any concurrent abort that claims in the meantime — routes
+   * through resolveOrphanedTournament, which reads COMMITTED DB state (not the in-flight
+   * guess), so whatever actually committed decides the outcome. `attempt` = attempts
+   * already FAILED (0 = the initial completeTournament).
+   */
+  private handleCompletionFailure(r: RunningTournament, err: unknown, attempt: number): void {
+    const RETRY_DELAYS_MS = [5_000, 30_000, 120_000]; // 3 bounded self-heal retries (~5s/30s/2m)
+    const exhausted = attempt >= RETRY_DELAYS_MS.length;
+    void alertError({
+      severity: exhausted ? 'critical' : 'warning',
+      source: 'poker-mtt/completeTournament',
+      message: exhausted
+        ? `tournament ${r.tournamentId} FROZEN after ${attempt} failed completion attempts — operator intervention required (a process restart also reclaims it via boot recovery)`
+        : `tournament ${r.tournamentId} completion attempt ${attempt} failed — releasing ownership + scheduling self-heal retry`,
+      context: { tournamentId: r.tournamentId, attempt, err: String(err) },
+    });
+    // RELEASE ownership so the retry (or a concurrent abort/completion) can re-claim.
+    r.done = false;
+    if (exhausted) {
+      // Bounded — never loop forever. Leave the row FROZEN ('running'/unsettled) and
+      // drop the in-memory record so a process restart reclaims it via boot recovery.
+      this.running.delete(r.tournamentId);
+      return;
+    }
+    this.clock.setTimer(() => {
+      void this.retryCompletion(r, attempt);
+    }, RETRY_DELAYS_MS[attempt]);
+  }
+
+  /**
+   * A bounded self-heal retry of a failed completion. Re-claims via the SAME synchronous
+   * `r.done` discipline (if a concurrent abort/completion already owns it → SKIP; they
+   * finish/dispose), then routes through resolveOrphanedTournament — correct for whatever
+   * the DB has committed by now: placement committed → fully-placed → settle (idempotent
+   * under `settled_at`, so a partially-failed settle never double-pays); placement not
+   * committed → unfinished → refund; malformed → freeze. On its own failure, recurse
+   * with the next attempt.
+   */
+  private async retryCompletion(r: RunningTournament, attempt: number): Promise<void> {
+    if (r.done) return; // a concurrent abort/completion took ownership — let it finish.
+    r.done = true;
+    try {
+      await this.resolveOrphanedTournament(r.tournamentId);
+      await this.finishCompletion(r);
+    } catch (err) {
+      this.handleCompletionFailure(r, err, attempt + 1);
     }
   }
 
@@ -2230,6 +2315,12 @@ export class TournamentManager {
    * the FIRST line of defense — this hook only fires when a room genuinely aborts.
    */
   async onRoomAborted(roomId: string): Promise<void> {
+    // If THIS call claims ownership (r.done false→true) and then its disposition
+    // FAILS, we must RELEASE the claim (r.done=false) in the catch — otherwise an
+    // abort that grabbed ownership during a completion's self-heal-retry window and
+    // then failed would strand the tournament (r.done claimed, no retry). Releasing
+    // lets the pending completion retry (or boot recovery) reclaim.
+    let claimed: RunningTournament | undefined;
     try {
       const tableId = this.roomToTable.get(roomId);
       if (!tableId) return; // not an MTT room we own
@@ -2268,6 +2359,7 @@ export class TournamentManager {
         // Claim disposition SYNCHRONOUSLY (no await between the r.done read above and
         // this set) so a racing completeTournament sees r.done and bails.
         r.done = true;
+        claimed = r;
         for (const tb of r.tables.values()) {
           if (tb.handInFlight) {
             this.sim.stopTable(tb.tableId);
@@ -2292,6 +2384,10 @@ export class TournamentManager {
             : `cancelled + ${res.refundedCount} entrant(s) refunded (escrow not stranded)`;
       console.warn(`[poker-mtt] mtt room ${roomId} aborted → tournament ${tournamentId} ${summary}.`);
     } catch (err) {
+      // Release a claim THIS call made so it isn't stranded (a pending completion
+      // self-heal retry or boot recovery can then reclaim). If we never claimed
+      // (r undefined, or ownership was already held), there is nothing to release.
+      if (claimed) claimed.done = false;
       console.error(`[poker-mtt] onRoomAborted handling failed for room ${roomId}:`, err);
     }
   }

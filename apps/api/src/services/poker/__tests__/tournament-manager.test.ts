@@ -100,10 +100,19 @@ class FakeLedger {
     this.debits.push({ ...input });
     return { balanceAfter: bal - input.amount, ledgerId: randomUUID() };
   };
+  // Test-only fault injection: fail the next N credit calls (throw BEFORE mutating,
+  // so a failed credit leaves NO half-state — proves settle idempotency has no double
+  // -credit across a failed+retried settle). Set to a large number for a persistent
+  // outage; set to 1 for a transient blip.
+  failCreditsRemaining = 0;
   creditClawTokens = async (
     input: { avatarId: string; amount: number; reason: string },
     _tx?: unknown,
   ) => {
+    if (this.failCreditsRemaining > 0) {
+      this.failCreditsRemaining -= 1;
+      throw new Error('injected ledger credit failure');
+    }
     const bal = this.get(input.avatarId);
     this.balances.set(input.avatarId, bal + input.amount);
     this.credits.push({ ...input });
@@ -1294,6 +1303,87 @@ describe('TournamentManager — settle conservation + orphan-recovery money safe
     expect(threw).toBe('tournament_finished_not_refundable');
     expect(ledger.totalCredited('poker_mtt_refund')).toBe(0);
     expect(db.tournaments.get(tid)!.status).toBe('running'); // not cancelled
+  });
+
+  // ── claim → FAIL → release → bounded-retry → freeze (Codex round 5) ──────────
+  // The missing leg: a non-fatal async failure mid-completion with the process ALIVE.
+  // Without release+retry the tournament strands (r.done claimed forever, stuck in
+  // this.running, buy-ins locked). Uses the private completeTournament/retryCompletion
+  // (the wall-clock timer is a no-op under FakeClock, so the retry is driven directly).
+  type CompletionInternals = {
+    running: Map<string, { done: boolean; tournamentId: string; tables: Map<string, unknown> }>;
+    completeTournament(r: unknown, champ?: unknown): Promise<void>;
+    retryCompletion(r: unknown, attempt: number): Promise<void>;
+  };
+
+  it('(#5 self-heal) transient completion failure → releases ownership + retry settles the winner ONCE (no double-credit)', async () => {
+    const { tm } = buildManager(db, ledger, clock);
+    const tid = randomUUID();
+    seedFinished(
+      tid,
+      [
+        { avatarId: 'av-1', placement: 1 },
+        { avatarId: 'av-2', placement: 2 },
+      ],
+      { pool: '200' },
+    );
+    const r = { done: false, tournamentId: tid, tables: new Map<string, unknown>() };
+    const internals = tm as unknown as CompletionInternals;
+    internals.running.set(tid, r);
+
+    // First completion attempt fails on the first prize credit (transient blip).
+    ledger.failCreditsRemaining = 1;
+    await internals.completeTournament(r);
+    // Failed → ownership RELEASED, nothing settled, still tracked in-memory for retry.
+    expect(ledger.totalCredited('poker_mtt_prize')).toBe(0);
+    expect(r.done).toBe(false);
+    expect(db.tournaments.get(tid)!.status).toBe('running');
+    expect(internals.running.has(tid)).toBe(true);
+
+    // Self-heal retry (wall-clock timer is a no-op under FakeClock → drive it directly).
+    await internals.retryCompletion(r, 0);
+    // Settled EXACTLY once — conserving, no double-credit across the failed+retried settle.
+    expect(ledger.totalCredited('poker_mtt_prize')).toBe(200);
+    const results = [...db.results.values()].filter((x) => x.tournament_id === tid);
+    const prizeSum = results.reduce((a, x) => a + BigInt(String(x.prize_ct)), 0n);
+    expect(prizeSum).toBe(200n);
+    expect(db.tournaments.get(tid)!.status).toBe('completed');
+    expect(internals.running.has(tid)).toBe(false); // terminal cleanup
+  });
+
+  it('(#5 self-heal) persistent completion failure → FROZEN after bounded retries, zero credits, cleaned up, later abort no-ops safely', async () => {
+    const { tm } = buildManager(db, ledger, clock);
+    const tid = randomUUID();
+    seedFinished(
+      tid,
+      [
+        { avatarId: 'av-1', placement: 1 },
+        { avatarId: 'av-2', placement: 2 },
+      ],
+      { pool: '200' },
+    );
+    const r = { done: false, tournamentId: tid, tables: new Map<string, unknown>() };
+    const internals = tm as unknown as CompletionInternals;
+    internals.running.set(tid, r);
+    ledger.failCreditsRemaining = 999; // outage persists across every attempt
+
+    await internals.completeTournament(r); // attempt 0 fails
+    await internals.retryCompletion(r, 0); // attempt 1 fails
+    await internals.retryCompletion(r, 1); // attempt 2 fails
+    await internals.retryCompletion(r, 2); // bounded retries exhausted → FREEZE + cleanup
+
+    expect(ledger.totalCredited('poker_mtt_prize')).toBe(0);
+    expect(ledger.totalCredited('poker_mtt_refund')).toBe(0);
+    expect(db.tournaments.get(tid)!.status).toBe('running'); // frozen ('running'/unsettled)
+    expect(db.tournaments.get(tid)!.settled_at).toBeFalsy();
+    expect(internals.running.has(tid)).toBe(false); // removed on freeze → boot recovery owns it
+
+    // A subsequent room-abort must not crash / double-anything while the DB still fails.
+    wireRoom(tm, 'room-frozen', 'table-frozen', tid);
+    await tm.onRoomAborted('room-frozen'); // r gone → settle attempt fails → swallowed, no crash
+    expect(ledger.totalCredited('poker_mtt_prize')).toBe(0);
+    expect(ledger.totalCredited('poker_mtt_refund')).toBe(0);
+    expect(db.tournaments.get(tid)!.status).toBe('running');
   });
 });
 
