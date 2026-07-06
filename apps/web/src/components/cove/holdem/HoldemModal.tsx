@@ -1068,44 +1068,52 @@ export default function HoldemModal() {
           })}
 
           {/* Outcome overlay */}
-          {phase === 'settled' && winnerLabel && (
-            <div style={{
-              position: 'absolute', top: '28%', left: '50%',
-              transform: 'translate(-50%, -50%)',
-              zIndex: 10, pointerEvents: 'none',
-              animation: 'bj-banner-in 450ms cubic-bezier(0.22,1,0.36,1)',
+        </div>
+
+        {/* ── Settled banner — IN FLOW between the felt and the action strip.
+              The old absolute top-28% overlay sat on the top-arc seats and
+              covered the bots' hole cards exactly when they reveal at showdown. */}
+        {phase === 'settled' && winnerLabel && (
+          <div
+            role="status"
+            aria-live="assertive"
+            style={{
+              flexShrink: 0, alignSelf: 'center',
+              pointerEvents: 'none',
+              margin: '8px 0',
+              animation: 'holdem-banner-in 450ms cubic-bezier(0.22,1,0.36,1)',
               textAlign: 'center',
+            }}
+          >
+            <style>{`
+              @keyframes holdem-banner-in {
+                from { opacity: 0; transform: scale(0.85); }
+                to   { opacity: 1; transform: scale(1); }
+              }
+            `}</style>
+            <div style={{
+              background: 'var(--pt-velvet)',
+              border: `2px solid ${humanNetNum >= 0 ? 'var(--pt-amber-glow)' : '#e85555'}`,
+              padding: '10px 32px',
+              boxShadow: `0 0 28px ${humanNetNum >= 0 ? 'var(--pt-amber-glow)' : '#e85555'}55`,
             }}>
-              <style>{`
-                @keyframes bj-banner-in {
-                  from { opacity: 0; transform: translate(-50%, -50%) scale(0.85); }
-                  to   { opacity: 1; transform: translate(-50%, -50%) scale(1); }
-                }
-              `}</style>
               <div style={{
-                background: 'var(--pt-velvet)',
-                border: `2px solid ${humanNetNum >= 0 ? 'var(--pt-amber-glow)' : '#e85555'}`,
-                padding: '14px 32px',
-                boxShadow: `0 0 28px ${humanNetNum >= 0 ? 'var(--pt-amber-glow)' : '#e85555'}55`,
+                color: humanNetNum >= 0 ? 'var(--pt-amber)' : '#e85555',
+                fontSize: 11, fontFamily: 'var(--pt-data)',
+                letterSpacing: '0.2em', fontWeight: 700, marginBottom: 4,
               }}>
-                <div style={{
-                  color: humanNetNum >= 0 ? 'var(--pt-amber)' : '#e85555',
-                  fontSize: 11, fontFamily: 'var(--pt-data)',
-                  letterSpacing: '0.2em', fontWeight: 700, marginBottom: 4,
-                }}>
-                  {winnerLabel}
-                </div>
-                <div style={{
-                  color: humanNetNum >= 0 ? 'var(--pt-cream)' : '#e85555',
-                  fontSize: 28, fontWeight: 700,
-                  fontFamily: 'var(--pt-display)', lineHeight: 1,
-                }}>
-                  {humanNetNum >= 0 ? `+${humanNetNum}` : `${humanNetNum}`} CT
-                </div>
+                {winnerLabel}
+              </div>
+              <div style={{
+                color: humanNetNum >= 0 ? 'var(--pt-cream)' : '#e85555',
+                fontSize: 24, fontWeight: 700,
+                fontFamily: 'var(--pt-display)', lineHeight: 1,
+              }}>
+                {humanNetNum >= 0 ? `+${humanNetNum}` : `${humanNetNum}`} CT
               </div>
             </div>
-          )}
-        </div>
+          </div>
+        )}
 
         {/* ── Action strip ─────────────────────────────────────────────── */}
         <div style={{

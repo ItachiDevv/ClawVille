@@ -262,11 +262,12 @@ function OutcomeBanner({ outcome }: { outcome: SerializedBaccaratCoup }) {
       role="status"
       aria-live="assertive"
       style={{
-        position: 'absolute',
-        left: '50%',
-        top: '50%',
-        transform: 'translate(-50%, -50%)',
-        zIndex: 10,
+        // IN-FLOW below the two hand columns — never absolute over the cards.
+        // The old absolute center placement (top 50%) sat directly on the
+        // Player/Banker card rows and covered the drawn third cards.
+        position: 'relative',
+        zIndex: 2,
+        alignSelf: 'center',
         pointerEvents: 'none',
         animation: 'bac-banner-in 450ms cubic-bezier(0.22,1,0.36,1)',
         textAlign: 'center',
@@ -274,8 +275,8 @@ function OutcomeBanner({ outcome }: { outcome: SerializedBaccaratCoup }) {
     >
       <style>{`
         @keyframes bac-banner-in {
-          from { opacity: 0; transform: translate(-50%, -50%) scale(0.85); }
-          to   { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+          from { opacity: 0; transform: scale(0.85); }
+          to   { opacity: 1; transform: scale(1); }
         }
       `}</style>
       <div style={{
@@ -673,6 +674,9 @@ export default function BaccaratModal() {
             />
           </div>
 
+          {/* Settled banner — IN FLOW under the hands so it can never cover a card */}
+          {phase === 'settled' && outcome && <OutcomeBanner outcome={outcome} />}
+
           {/* Your bet pill — shows the active wager once a coup is settled */}
           {phase === 'settled' && outcome && (
             <div style={{
@@ -686,8 +690,6 @@ export default function BaccaratModal() {
             </div>
           )}
 
-          {/* Settled banner */}
-          {phase === 'settled' && outcome && <OutcomeBanner outcome={outcome} />}
         </div>
 
         {/* ── Action strip ─────────────────────────────────────────────── */}
