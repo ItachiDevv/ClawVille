@@ -447,6 +447,16 @@ interface RunningTournament {
   tables: Map<number, RunningTable>;
   done: boolean;
   /**
+   * SHARED disposition-progress state (Codex round 6) — owned by the tournament record,
+   * NOT per-actor. `dispositionFailures` is the bounded attempt counter across EVERY
+   * disposition actor (completion, abort, scheduled retry); `dispositionRetryPending`
+   * is true while a self-heal retry timer is armed (collapses stacked failures to ONE
+   * pending timer). Both drive `ensureDispositionProgress` — see THE DISPOSITION
+   * INVARIANT there.
+   */
+  dispositionFailures?: number;
+  dispositionRetryPending?: boolean;
+  /**
    * SERIALIZATION: hand-completions are processed ONE AT A TIME per tournament so
    * the per-table loops, the between-hands rebalance/break/consolidation, and the
    * next-hand starts never interleave (a multi-table double-start race). The sim
@@ -1758,7 +1768,9 @@ export class TournamentManager {
       await this.settleTournament(r.tournamentId);
       await this.finishCompletion(r);
     } catch (err) {
-      this.handleCompletionFailure(r, err, 0);
+      // Non-fatal async failure mid-completion → route through the ONE shared
+      // disposition scheduler (never schedule/freeze inline). See onDispositionFailure.
+      this.onDispositionFailure(r, err);
     }
   }
 
@@ -1797,59 +1809,83 @@ export class TournamentManager {
   }
 
   /**
-   * The "claim → FAIL → release → bounded-retry → freeze" leg of the ownership model:
-   * a NON-FATAL async failure mid-completion (transient DB/ledger error) with the
-   * process still ALIVE. Alerts, RELEASES ownership (`r.done = false`), and either
-   * schedules the next bounded self-heal retry or, after the last, FREEZES (leaves the
-   * row as-is, drops the in-memory record) with a final critical alert.
-   *
-   * Releasing ownership after a failure is SAFE against the round-4 completion-vs-abort
-   * race: the retry — and any concurrent abort that claims in the meantime — routes
-   * through resolveOrphanedTournament, which reads COMMITTED DB state (not the in-flight
-   * guess), so whatever actually committed decides the outcome. `attempt` = attempts
-   * already FAILED (0 = the initial completeTournament).
+   * The ONE release-after-failure entry point. EVERY disposition actor whose attempt
+   * FAILS (completeTournament, a scheduled retry, or onRoomAborted) calls THIS — never
+   * schedules a timer or releases `r.done` on its own. It bumps the SHARED bounded
+   * attempt counter, alerts, RELEASES ownership (`r.done = false`), and hands off to the
+   * shared scheduler. Releasing after a failure is SAFE against the round-4 race because
+   * every re-entry routes through resolveOrphanedTournament, which reads COMMITTED DB
+   * state (not the in-flight guess).
    */
-  private handleCompletionFailure(r: RunningTournament, err: unknown, attempt: number): void {
-    const RETRY_DELAYS_MS = [5_000, 30_000, 120_000]; // 3 bounded self-heal retries (~5s/30s/2m)
-    const exhausted = attempt >= RETRY_DELAYS_MS.length;
+  private onDispositionFailure(r: RunningTournament, err: unknown): void {
+    r.dispositionFailures = (r.dispositionFailures ?? 0) + 1;
     void alertError({
-      severity: exhausted ? 'critical' : 'warning',
-      source: 'poker-mtt/completeTournament',
-      message: exhausted
-        ? `tournament ${r.tournamentId} FROZEN after ${attempt} failed completion attempts — operator intervention required (a process restart also reclaims it via boot recovery)`
-        : `tournament ${r.tournamentId} completion attempt ${attempt} failed — releasing ownership + scheduling self-heal retry`,
-      context: { tournamentId: r.tournamentId, attempt, err: String(err) },
+      severity: 'warning',
+      source: 'poker-mtt/disposition',
+      message: `tournament ${r.tournamentId} disposition attempt ${r.dispositionFailures} failed — releasing ownership + ensuring progress`,
+      context: { tournamentId: r.tournamentId, attempt: r.dispositionFailures, err: String(err) },
     });
-    // RELEASE ownership so the retry (or a concurrent abort/completion) can re-claim.
     r.done = false;
-    if (exhausted) {
-      // Bounded — never loop forever. Leave the row FROZEN ('running'/unsettled) and
-      // drop the in-memory record so a process restart reclaims it via boot recovery.
-      this.running.delete(r.tournamentId);
-      return;
-    }
-    this.clock.setTimer(() => {
-      void this.retryCompletion(r, attempt);
-    }, RETRY_DELAYS_MS[attempt]);
+    this.ensureDispositionProgress(r);
   }
 
   /**
-   * A bounded self-heal retry of a failed completion. Re-claims via the SAME synchronous
-   * `r.done` discipline (if a concurrent abort/completion already owns it → SKIP; they
-   * finish/dispose), then routes through resolveOrphanedTournament — correct for whatever
-   * the DB has committed by now: placement committed → fully-placed → settle (idempotent
-   * under `settled_at`, so a partially-failed settle never double-pays); placement not
-   * committed → unfinished → refund; malformed → freeze. On its own failure, recurse
-   * with the next attempt.
+   * THE DISPOSITION INVARIANT (Codex round 6): for any NON-TERMINAL tournament with an
+   * in-memory record, at every instant EXACTLY ONE of the following holds — an owner is
+   * actively progressing (`r.done === true`), OR a retry timer is pending
+   * (`r.dispositionRetryPending === true`), OR it is frozen-final (critical-alerted +
+   * removed from `this.running`).
+   *
+   * This is the SINGLE scheduler every release-after-failure site routes through
+   * (grep-provable: every `r.done = false` is in onDispositionFailure, which ends here).
+   * It either arms the next bounded retry timer or freezes-final, and COLLAPSES stacked
+   * failures to at most ONE pending timer. Idempotent.
    */
-  private async retryCompletion(r: RunningTournament, attempt: number): Promise<void> {
-    if (r.done) return; // a concurrent abort/completion took ownership — let it finish.
+  private ensureDispositionProgress(r: RunningTournament): void {
+    if (r.done) return; // an owner is actively progressing — nothing to schedule.
+    if (!this.running.has(r.tournamentId)) return; // already terminal + cleaned up.
+    if (r.dispositionRetryPending) return; // a timer is already pending → collapse.
+
+    const DELAYS_MS = [5_000, 30_000, 120_000]; // 3 bounded self-heal retries (~5s/30s/2m)
+    const failures = r.dispositionFailures ?? 0;
+    if (failures > DELAYS_MS.length) {
+      // FROZEN-FINAL: bounded retries exhausted. One critical alert + drop the in-memory
+      // record (the row stays 'running'/unsettled; a process restart / boot recovery
+      // reclaims). No timer armed — the invariant's third leg.
+      void alertError({
+        severity: 'critical',
+        source: 'poker-mtt/disposition',
+        message: `tournament ${r.tournamentId} FROZEN after ${failures} failed disposition attempts — operator intervention required (a process restart also reclaims it via boot recovery)`,
+        context: { tournamentId: r.tournamentId, failures },
+      });
+      this.running.delete(r.tournamentId);
+      return;
+    }
+    r.dispositionRetryPending = true;
+    this.clock.setTimer(() => {
+      void this.runDisposition(r);
+    }, DELAYS_MS[failures - 1] ?? DELAYS_MS[0]);
+  }
+
+  /**
+   * The scheduled disposition retry (the shared scheduler's timer body). Clears the
+   * pending flag (this timer has fired), then re-claims via the synchronous `r.done`
+   * discipline. If a concurrent owner (completion / abort) holds ownership it NO-OPS —
+   * that is SAFE precisely because that owner's own failure routes back through
+   * onDispositionFailure → ensureDispositionProgress, so progress is still guaranteed
+   * (the invariant). Otherwise it routes through resolveOrphanedTournament (reads
+   * COMMITTED state → settle-idempotent / refund / freeze) then finishCompletion. On its
+   * own failure it re-enters onDispositionFailure.
+   */
+  private async runDisposition(r: RunningTournament): Promise<void> {
+    r.dispositionRetryPending = false; // this timer has fired — no longer pending.
+    if (r.done) return; // a concurrent owner has it — its failure will re-ensure progress.
     r.done = true;
     try {
       await this.resolveOrphanedTournament(r.tournamentId);
       await this.finishCompletion(r);
     } catch (err) {
-      this.handleCompletionFailure(r, err, attempt + 1);
+      this.onDispositionFailure(r, err);
     }
   }
 
@@ -2375,7 +2411,15 @@ export class TournamentManager {
       // (Previously this UNCONDITIONALLY cancel+refunded — the same class of bug the
       // boot-recovery path fixed, at this second call site.)
       const res = await this.resolveOrphanedTournament(tournamentId);
-      this.running.delete(tournamentId);
+      // Terminal cleanup goes through finishCompletion on EVERY terminal outcome,
+      // regardless of actor (Codex round 6) — a terminal tournament must never be left
+      // in this.running. If there is no in-memory record (boot orphan), the plain delete
+      // is a no-op (it was never in the map).
+      if (r) {
+        await this.finishCompletion(r);
+      } else {
+        this.running.delete(tournamentId);
+      }
       const summary =
         res.action === 'settled'
           ? 'settled (prizes paid — decided result honored)'
@@ -2384,10 +2428,14 @@ export class TournamentManager {
             : `cancelled + ${res.refundedCount} entrant(s) refunded (escrow not stranded)`;
       console.warn(`[poker-mtt] mtt room ${roomId} aborted → tournament ${tournamentId} ${summary}.`);
     } catch (err) {
-      // Release a claim THIS call made so it isn't stranded (a pending completion
-      // self-heal retry or boot recovery can then reclaim). If we never claimed
-      // (r undefined, or ownership was already held), there is nothing to release.
-      if (claimed) claimed.done = false;
+      // If THIS call claimed ownership and its disposition FAILED, route through the ONE
+      // shared scheduler (onDispositionFailure → ensureDispositionProgress) — never just
+      // release r.done here. That guarantees the invariant: after this failure a retry
+      // timer is pending (or it froze-final), so an abort that grabbed ownership during a
+      // completion's retry window and then failed can NEVER strand the tournament (the
+      // round-4-class, two-actor edition). If we never claimed (r undefined / ownership
+      // already held), there is nothing to release.
+      if (claimed) this.onDispositionFailure(claimed, err);
       console.error(`[poker-mtt] onRoomAborted handling failed for room ${roomId}:`, err);
     }
   }

@@ -49,6 +49,7 @@ import type { BlindLevel, PayoutCurveEntry } from '@clawville/database';
 
 class FakeClock implements SimClock {
   private t = 1_000_000;
+  setTimerCalls = 0; // observability for the disposition-scheduler tests
   now(): number {
     return this.t;
   }
@@ -56,7 +57,8 @@ class FakeClock implements SimClock {
     this.t += ms;
   }
   setTimer(): unknown {
-    return null; // turns are driven explicitly; no auto-fire
+    this.setTimerCalls += 1;
+    return null; // turns/retries are driven explicitly; no auto-fire
   }
   clearTimer(): void {
     /* no-op */
@@ -1305,18 +1307,32 @@ describe('TournamentManager — settle conservation + orphan-recovery money safe
     expect(db.tournaments.get(tid)!.status).toBe('running'); // not cancelled
   });
 
-  // ── claim → FAIL → release → bounded-retry → freeze (Codex round 5) ──────────
-  // The missing leg: a non-fatal async failure mid-completion with the process ALIVE.
-  // Without release+retry the tournament strands (r.done claimed forever, stuck in
-  // this.running, buy-ins locked). Uses the private completeTournament/retryCompletion
-  // (the wall-clock timer is a no-op under FakeClock, so the retry is driven directly).
-  type CompletionInternals = {
-    running: Map<string, { done: boolean; tournamentId: string; tables: Map<string, unknown> }>;
-    completeTournament(r: unknown, champ?: unknown): Promise<void>;
-    retryCompletion(r: unknown, attempt: number): Promise<void>;
+  // ── ONE shared disposition scheduler + the invariant (Codex rounds 5-6) ──────
+  // THE DISPOSITION INVARIANT: for any non-terminal tournament with an in-memory
+  // record, at every instant an owner is progressing (r.done), OR a retry timer is
+  // pending (dispositionRetryPending), OR it is frozen-final (removed from running).
+  // The wall-clock timer is a no-op under FakeClock, so the scheduled retry
+  // (runDisposition) is driven directly; clock.setTimerCalls observes timer arming.
+  type DispositionRecord = {
+    done: boolean;
+    tournamentId: string;
+    tables: Map<string, unknown>;
+    dispositionFailures?: number;
+    dispositionRetryPending?: boolean;
   };
+  type CompletionInternals = {
+    running: Map<string, DispositionRecord>;
+    completeTournament(r: unknown, champ?: unknown): Promise<void>;
+    runDisposition(r: unknown): Promise<void>;
+    onDispositionFailure(r: unknown, err: unknown): void;
+  };
+  const mkRecord = (tid: string): DispositionRecord => ({
+    done: false,
+    tournamentId: tid,
+    tables: new Map<string, unknown>(),
+  });
 
-  it('(#5 self-heal) transient completion failure → releases ownership + retry settles the winner ONCE (no double-credit)', async () => {
+  it('(#5 self-heal) transient completion failure → releases ownership + scheduled retry settles the winner ONCE (no double-credit)', async () => {
     const { tm } = buildManager(db, ledger, clock);
     const tid = randomUUID();
     seedFinished(
@@ -1327,21 +1343,22 @@ describe('TournamentManager — settle conservation + orphan-recovery money safe
       ],
       { pool: '200' },
     );
-    const r = { done: false, tournamentId: tid, tables: new Map<string, unknown>() };
+    const r = mkRecord(tid);
     const internals = tm as unknown as CompletionInternals;
     internals.running.set(tid, r);
 
     // First completion attempt fails on the first prize credit (transient blip).
     ledger.failCreditsRemaining = 1;
     await internals.completeTournament(r);
-    // Failed → ownership RELEASED, nothing settled, still tracked in-memory for retry.
+    // Failed → ownership RELEASED, a retry timer is PENDING (invariant), nothing settled.
     expect(ledger.totalCredited('poker_mtt_prize')).toBe(0);
     expect(r.done).toBe(false);
+    expect(r.dispositionRetryPending).toBe(true);
     expect(db.tournaments.get(tid)!.status).toBe('running');
     expect(internals.running.has(tid)).toBe(true);
 
-    // Self-heal retry (wall-clock timer is a no-op under FakeClock → drive it directly).
-    await internals.retryCompletion(r, 0);
+    // Drive the scheduled retry (timer is a no-op under FakeClock).
+    await internals.runDisposition(r);
     // Settled EXACTLY once — conserving, no double-credit across the failed+retried settle.
     expect(ledger.totalCredited('poker_mtt_prize')).toBe(200);
     const results = [...db.results.values()].filter((x) => x.tournament_id === tid);
@@ -1362,21 +1379,22 @@ describe('TournamentManager — settle conservation + orphan-recovery money safe
       ],
       { pool: '200' },
     );
-    const r = { done: false, tournamentId: tid, tables: new Map<string, unknown>() };
+    const r = mkRecord(tid);
     const internals = tm as unknown as CompletionInternals;
     internals.running.set(tid, r);
     ledger.failCreditsRemaining = 999; // outage persists across every attempt
 
-    await internals.completeTournament(r); // attempt 0 fails
-    await internals.retryCompletion(r, 0); // attempt 1 fails
-    await internals.retryCompletion(r, 1); // attempt 2 fails
-    await internals.retryCompletion(r, 2); // bounded retries exhausted → FREEZE + cleanup
+    await internals.completeTournament(r); // failure 1 → schedule
+    await internals.runDisposition(r); // failure 2 → schedule
+    await internals.runDisposition(r); // failure 3 → schedule
+    await internals.runDisposition(r); // failure 4 → bounded retries exhausted → FREEZE
 
     expect(ledger.totalCredited('poker_mtt_prize')).toBe(0);
     expect(ledger.totalCredited('poker_mtt_refund')).toBe(0);
     expect(db.tournaments.get(tid)!.status).toBe('running'); // frozen ('running'/unsettled)
     expect(db.tournaments.get(tid)!.settled_at).toBeFalsy();
     expect(internals.running.has(tid)).toBe(false); // removed on freeze → boot recovery owns it
+    expect(r.dispositionRetryPending).toBe(false); // no timer armed after freeze (invariant's 3rd leg)
 
     // A subsequent room-abort must not crash / double-anything while the DB still fails.
     wireRoom(tm, 'room-frozen', 'table-frozen', tid);
@@ -1384,6 +1402,76 @@ describe('TournamentManager — settle conservation + orphan-recovery money safe
     expect(ledger.totalCredited('poker_mtt_prize')).toBe(0);
     expect(ledger.totalCredited('poker_mtt_refund')).toBe(0);
     expect(db.tournaments.get(tid)!.status).toBe('running');
+  });
+
+  it('(#6 two-actor) completion-retry-pending + abort claims + retry no-ops + abort FAILS → NOT stranded (timer re-armed)', async () => {
+    // Codex round-6 exact interleaving, replayed via the real primitives.
+    const { tm } = buildManager(db, ledger, clock);
+    const tid = randomUUID();
+    seedFinished(
+      tid,
+      [
+        { avatarId: 'av-1', placement: 1 },
+        { avatarId: 'av-2', placement: 2 },
+      ],
+      { pool: '200' },
+    );
+    const r = mkRecord(tid);
+    const internals = tm as unknown as CompletionInternals;
+    internals.running.set(tid, r);
+
+    // (1) completion fails → releases + schedules retry #1 (one timer armed).
+    ledger.failCreditsRemaining = 999; // keep the DB "down" through the interleaving
+    await internals.completeTournament(r);
+    expect(r.dispositionRetryPending).toBe(true);
+    expect(clock.setTimerCalls).toBe(1);
+
+    // (2) an ABORT claims ownership before the timer fires.
+    r.done = true;
+
+    // (3) the retry timer fires → runDisposition clears the pending flag, sees ownership
+    //     claimed → NO-OP, and (the round-5 bug) does NOT requeue on its own.
+    await internals.runDisposition(r);
+    expect(r.done).toBe(true); // abort still owns it; retry did nothing
+    expect(r.dispositionRetryPending).toBe(false); // timer consumed, none re-armed by the no-op
+
+    // (4) the abort's own disposition FAILS → routes through the shared scheduler.
+    internals.onDispositionFailure(r, new Error('abort disposition failed'));
+
+    // (5) INVARIANT: not stranded — a retry timer is pending again (or it is terminal).
+    expect(r.done).toBe(false);
+    const pendingOrTerminal = r.dispositionRetryPending || !internals.running.has(tid);
+    expect(pendingOrTerminal).toBe(true);
+    expect(r.dispositionRetryPending).toBe(true);
+
+    // And the shared retry now SUCCEEDS once the DB recovers → winner settled once.
+    ledger.failCreditsRemaining = 0;
+    await internals.runDisposition(r);
+    expect(ledger.totalCredited('poker_mtt_prize')).toBe(200);
+    expect(db.tournaments.get(tid)!.status).toBe('completed');
+    expect(internals.running.has(tid)).toBe(false);
+  });
+
+  it('(#6 collapse) stacked failures while a retry is pending → exactly ONE pending timer', async () => {
+    const { tm } = buildManager(db, ledger, clock);
+    const tid = randomUUID();
+    seedFinished(tid, [{ avatarId: 'av-1', placement: 1 }, { avatarId: 'av-2', placement: 2 }], {
+      pool: '200',
+    });
+    const r = mkRecord(tid);
+    const internals = tm as unknown as CompletionInternals;
+    internals.running.set(tid, r);
+
+    ledger.failCreditsRemaining = 999;
+    await internals.completeTournament(r); // failure 1 → arms timer (setTimer #1)
+    expect(clock.setTimerCalls).toBe(1);
+    expect(r.dispositionRetryPending).toBe(true);
+
+    // A second failure arrives while a timer is already pending → MUST collapse.
+    internals.onDispositionFailure(r, new Error('second concurrent failure'));
+    internals.onDispositionFailure(r, new Error('third concurrent failure'));
+    expect(clock.setTimerCalls).toBe(1); // still exactly one timer armed
+    expect(r.dispositionRetryPending).toBe(true);
   });
 });
 
