@@ -121,7 +121,7 @@ function BetChip({ value, selected, disabled, onClick }: {
 // ---------------------------------------------------------------------------
 // Outcome banner — driven entirely by the server-settled result.
 // ---------------------------------------------------------------------------
-function OutcomeBanner({ outcome, net }: { outcome: BlackjackOutcome; net: bigint }) {
+function OutcomeBanner({ outcome, net, rake }: { outcome: BlackjackOutcome; net: bigint; rake: bigint }) {
   const isWin = outcome === 'blackjack' || outcome === 'win';
   const isPush = outcome === 'push';
   const isSurrender = outcome === 'surrender';
@@ -191,6 +191,14 @@ function OutcomeBanner({ outcome, net }: { outcome: BlackjackOutcome; net: bigin
             lineHeight: 1,
           }}>
             {netNum > 0 ? `+${netNum}` : `${netNum}`} CT
+          </div>
+        )}
+        {rake > 0n && (
+          <div style={{
+            marginTop: 4, fontSize: 10, fontFamily: 'var(--pt-data)',
+            color: 'var(--pt-brass)', letterSpacing: '0.04em',
+          }}>
+            {Number(rake)} CT rake kept
           </div>
         )}
       </div>
@@ -1460,11 +1468,15 @@ export default function BlackjackModal() {
             <HandRow label="Dealer" cards={dealerRenderCards} totalLabel={dealerTotalLabel} />
           </div>
 
-          {/* Settled banner — IN FLOW between the rows so it can never cover a card */}
+          {/* Settled banner — IN FLOW between the rows so it can never cover a card.
+              net = the RAKED net (what the balance actually moved) — the gross
+              `net` overstated wins by the 5% rake and made the HUD math look
+              wrong (+75 shown, +72 credited). Falls back to gross for pre-rake rows. */}
           {phase === 'settled' && settledPrimary && (
             <OutcomeBanner
               outcome={settledPrimary.outcome}
-              net={settled ? BigInt(settled.net) : 0n}
+              net={BigInt(settledOutcome?.rakedNet ?? settled?.net ?? '0')}
+              rake={BigInt(settledOutcome?.rake ?? '0')}
             />
           )}
 

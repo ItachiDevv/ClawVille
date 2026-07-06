@@ -1014,7 +1014,10 @@ export default function HoldemModal() {
 
         {/* ── Felt + seat oval ─────────────────────────────────────────── */}
         <div style={{
-          flex: 1, position: 'relative', minHeight: 340,
+          // minHeight 340→300: the settled banner is IN FLOW below the felt now,
+          // so at 720p the felt must be able to shrink enough that the banner +
+          // action strip (NEXT HAND / Walk Away) stay fully on screen.
+          flex: 1, position: 'relative', minHeight: 300,
           background: 'linear-gradient(180deg, #0d3a1e 0%, #0a2e18 50%, #0d3a1e 100%)',
           overflow: 'hidden',
         }}>
