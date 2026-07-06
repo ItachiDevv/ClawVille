@@ -77,9 +77,16 @@ export function resolveInferenceRoute(
   }
 }
 
+function localProvider(v: string | undefined): 'openai' | 'ollama' {
+  return v === 'openai' ? 'openai' : 'ollama';
+}
+
 export function buildEndpointsFromEnv(env: Env = process.env): InferenceEndpoint[] {
   const cloudTimeout = numEnv(env.INFERENCE_CLOUD_TIMEOUT_MS, 60_000);
-  const localTimeout = numEnv(env.INFERENCE_LOCAL_TIMEOUT_MS, 60_000);
+  // Local default 12s (< the autonomy driver's 15s decide() budget) so a hung box
+  // fails over WITHIN that window. Safe because local endpoints use the ollama wire
+  // with think:false (~2s decisions), not the 6–50s reasoning path.
+  const localTimeout = numEnv(env.INFERENCE_LOCAL_TIMEOUT_MS, 12_000);
 
   const endpoints: InferenceEndpoint[] = [];
 
@@ -106,6 +113,7 @@ export function buildEndpointsFromEnv(env: Env = process.env): InferenceEndpoint
       kind: 'local',
       timeoutMs: localTimeout,
       stripThinkTags: true,
+      provider: localProvider(env.INFERENCE_LOCAL_PRIMARY_PROVIDER),
     });
   }
 
@@ -120,6 +128,7 @@ export function buildEndpointsFromEnv(env: Env = process.env): InferenceEndpoint
       kind: 'local',
       timeoutMs: localTimeout,
       stripThinkTags: true,
+      provider: localProvider(env.INFERENCE_LOCAL_SECONDARY_PROVIDER),
     });
   }
 
