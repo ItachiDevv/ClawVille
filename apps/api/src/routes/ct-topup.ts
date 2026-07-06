@@ -56,6 +56,7 @@ import {
 import { loadX402Config } from '../services/x402-config';
 import {
   buildTopupQuote,
+  resolveFacilitatorFeePayer,
   verifyAndSettle,
   usdToCt,
   type X402Asset,
@@ -176,6 +177,10 @@ ctTopupRoutes.post('/quote', requireAuthOrAgentSession, async (c) => {
     return c.json({ error: 'quote_failed', code: 'quote_failed' }, 500);
   }
 
+  // Facilitator gas signer: REQUIRED by real SVM facilitators (PayAI /verify →
+  // 400 missing_fee_payer without it) and by the paying client's exact-scheme
+  // signer. null (mock/unreachable facilitator) → omitted, as before.
+  const feePayer = await resolveFacilitatorFeePayer(network);
   const quote = buildTopupQuote({
     payTo: config.merchantWalletPubkey,
     asset,
@@ -185,6 +190,7 @@ ctTopupRoutes.post('/quote', requireAuthOrAgentSession, async (c) => {
       url: '/api/ct/topup',
       description: `Buy ${amountCt} ClawTokens ($${(usdCents / 100).toFixed(2)} ${asset.toUpperCase()})`,
     },
+    feePayer: feePayer ?? undefined,
   });
 
   // Surface the requirements both as the base64 PAYMENT-REQUIRED header (x402
@@ -358,11 +364,16 @@ ctTopupRoutes.post('/settle', requireAuthOrAgentSession, async (c) => {
   const network = (meta.network === 'mainnet' || meta.network === 'devnet'
     ? meta.network
     : resolveTopupNetwork()) as X402Network;
+  // Same feePayer resolution as /quote (memoized, 5-min TTL — quote + settle in
+  // one window agree on the same facilitator signer). The facilitator re-checks
+  // requirements.extra.feePayer at verify; omitting it 400s on real facilitators.
+  const settleFeePayer = await resolveFacilitatorFeePayer(network);
   const quote = buildTopupQuote({
     payTo: config.merchantWalletPubkey,
     asset,
     usdCents: rowUsdCents,
     network,
+    feePayer: settleFeePayer ?? undefined,
   });
   const requirements = quote.accepts[0];
 

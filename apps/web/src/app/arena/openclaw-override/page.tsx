@@ -34,7 +34,7 @@ export default function OpenClawOverridePage() {
     setError('');
     setLoading(true);
     try {
-      const result = await api.registerOpenClaw({
+      const result = await api.registerAgentBot({
         mode: 'override',
         gatewayUrl,
         authToken,
@@ -55,7 +55,7 @@ export default function OpenClawOverridePage() {
   async function handleDisconnect() {
     if (!sessionId) return;
     try {
-      await api.unregisterOpenClaw(sessionId);
+      await api.unregisterAgentBot(sessionId);
     } catch {
       // Ignore — may already be gone
     }

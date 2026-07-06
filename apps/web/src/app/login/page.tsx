@@ -6,6 +6,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import Link from 'next/link';
 import dynamic from 'next/dynamic';
 import { api } from '@/lib/api';
+import { FIRST_TIME_DISCLOSURE_STORAGE_KEY } from '@/components/game/first-time-backup-modal';
 
 const LandingScene = dynamic(() => import('@/components/three/LandingScene'), { ssr: false });
 
@@ -66,10 +67,40 @@ function LoginForm() {
 
     try {
       if (isSignup) {
-        await api.signup({ email, password, name: name || undefined });
+        const res = await api.signup({ email, password, name: name || undefined });
+        // P2 Path-B (2026-07-04) — signup now auto-provisions the hosted
+        // agent server-side, and the response carries the ONE-TIME custodial
+        // wallet secret (server never re-emits it). Stash it under the EXACT
+        // sessionStorage contract FirstTimeBackupModal reads on /game first
+        // mount (same key + payload shape /create-agent/personality writes) —
+        // a mismatched key would silently lose the secret forever. identity
+        // is null here: signup provisioning mints no identity keypair (that
+        // disclosure only exists on the unauth POST /api/avatars branch).
+        // sessionStorage (not localStorage) is intentional — purged when the
+        // tab closes, same tradeoff as the personality-page stash.
+        if (res.wallet?.secretKey) {
+          try {
+            sessionStorage.setItem(
+              FIRST_TIME_DISCLOSURE_STORAGE_KEY,
+              JSON.stringify({
+                avatarId: res.avatar?.id,
+                avatarName: res.avatar?.name ?? '',
+                identity: null,
+                wallet: res.wallet,
+                issuedAt: Date.now(),
+              }),
+            );
+          } catch {
+            // sessionStorage quota exceeded or disabled — fall through.
+            // User can still recover via the support-chat flow later.
+          }
+        }
         await claimGuestCoveHistory();
         // Drop any pre-auth cache so the destination refetches as the new user.
         purgeAuthCache();
+        // /create-agent detects the freshly-provisioned avatar and runs in
+        // customize mode (prefill + PATCH) — it never dead-ends on the
+        // one-avatar-per-user constraint.
         router.push('/create-agent');
       } else {
         await api.login({ email, password });

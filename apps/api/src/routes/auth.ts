@@ -1,14 +1,21 @@
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, or, isNull } from 'drizzle-orm';
 import { lucia } from '../lib/auth';
-import { db, users, openclawBots, avatars } from '@clawville/database';
+import { db, users, agentBots, avatars } from '@clawville/database';
+import { npcSimulation } from '../services/npc-simulation';
 import { sessionMiddleware, requireAuth } from '../middleware/auth';
 import { validateLiveAgentSession } from '../middleware/require-auth-or-agent';
 import { consumeTicket } from '../services/session-ticket-service';
 import { createRateLimiter, getClientIp } from '../middleware/rate-limit';
 import { issueAuthToken, consumeAuthToken } from '../services/auth-token-service';
 import { sendEmail, isGuestEmail } from '../services/email-service';
+import {
+  provisionAvatarAgentForSignup,
+  runProvisioningFailSoft,
+  isAgentProvisioningPending,
+  type ProvisionAvatarAgentResult,
+} from '../services/avatar-agent-provisioning';
 import {
   verifyEmailTemplate,
   resetPasswordTemplate,
@@ -87,8 +94,8 @@ authRoutes.get('/me/agent-session', requireAuth, async (c) => {
   // process should see the banner go gray within EXTERNAL_ACTIVE_WINDOW_MS
   // of the last action, not wait for a 24h sweep. The 24h TTL still gates
   // reconnect/replay; that's a separate concern.
-  const bot = await db.query.openclawBots.findFirst({
-    where: eq(openclawBots.userId, user.id),
+  const bot = await db.query.agentBots.findFirst({
+    where: eq(agentBots.userId, user.id),
     orderBy: (t, { desc }) => [desc(t.lastSeenAt)],
     columns: {
       agentId: true,
@@ -169,6 +176,42 @@ authRoutes.get('/me/agent-session', requireAuth, async (c) => {
     });
   }
 
+  // P2 Slice B (2026-07-04) — derived 'agent-provisioning-pending' (D1
+  // migration, NO DDL). Evaluated ONLY here at the old 'none' fall-through:
+  // the bot-row precedence, 'dismissed', and 'hosted' branches above are
+  // untouched. A resolved authenticated NON-guest user with no avatar (or an
+  // avatar without a platformAgentId) is in the transitional
+  // provisioning-pending state — the account exists but its agent rows
+  // don't, e.g. a legacy "Player tier" account or a signup whose fail-soft
+  // provisioning failed. Guests keep mode 'none' (never pending). One extra
+  // indexed PK read, only on this cold branch — hot branches pay nothing.
+  // `connected` stays false; `hasAvatar` tells the client whether the
+  // /create-agent surface should PATCH (prefill) or POST (fresh create).
+  //
+  // The read is required: Lucia's user attributes (getUserAttributes in
+  // lib/auth.ts) map only email/name/avatar_url/username — NOT is_guest — so
+  // c.get('user') can't answer the guest question. This one indexed PK read
+  // only runs on the cold fall-through (guests + non-provisioned users); the
+  // hot bot-row / hosted / dismissed branches above return before it.
+  const userRow = await db.query.users.findFirst({
+    where: eq(users.id, user.id),
+    columns: { isGuest: true },
+  });
+  if (
+    isAgentProvisioningPending({
+      isGuest: !!userRow?.isGuest,
+      hasAvatar: !!avatar,
+      hasPlatformAgent: !!avatar?.platformAgentId,
+    })
+  ) {
+    return c.json({
+      connected: false,
+      reason: 'no_bot',
+      mode: 'provisioning-pending',
+      hasAvatar: !!avatar,
+    });
+  }
+
   return c.json({ connected: false, reason: 'no_bot', mode: 'none' });
 });
 
@@ -200,7 +243,25 @@ const signupSchema = z.object({
   name: z.string().optional(),
 });
 
+// P2 Slice A (2026-07-04, plan hard-constraint #8) — signup now fans out to
+// agent+avatar provisioning INCLUDING a custodial wallet mint (Cloudflare
+// Worker key wraps), so it must carry the same 5/min/IP account-mint budget
+// as every other mint surface (`autoProvisionRateLimiter` in avatars.ts,
+// `guestRateLimiter` below, `connectRateLimiter` in agent-gateway.ts).
+// Checked BEFORE any DB work.
+const signupRateLimiter = createRateLimiter({
+  maxPerWindow: 5,
+  windowMs: 60_000,
+});
+
 authRoutes.post('/signup', async (c) => {
+  const ip = getClientIp(c.req.raw.headers);
+  if (!signupRateLimiter.check(ip)) {
+    throw new HTTPException(429, {
+      message: 'Too many signups from this IP. Try again in 1 minute.',
+    });
+  }
+
   const body = await c.req.json();
   const result = signupSchema.safeParse(body);
 
@@ -245,6 +306,22 @@ authRoutes.post('/signup', async (c) => {
   const cookie = lucia.createSessionCookie(session.id);
   c.header('Set-Cookie', cookie.serialize());
 
+  // P2 Slice A (2026-07-04) — Path B: email signup PROVISIONS the agent
+  // (model doc §1; D4: default = ClawVille-hosted ElizaOS / Milady-harness).
+  // Rows only — platform_agents 'avatar-agent' + avatars + username init +
+  // custodial wallet; the runtime lazy-starts on first chat (NO warm here —
+  // plugin-sql mutex/boot-crush + the D8 cost guardrail). FAIL-SOFT: any
+  // provisioning failure logs and the signup still 200s WITHOUT the agent
+  // fields — the account then surfaces as mode 'provisioning-pending' on
+  // /me/agent-session (Slice B) instead of a broken promise. Idempotent by
+  // userId (guards double-submit). Avatar name derives from the signup
+  // 'name' field, else the email local-part (sanitized + suffix-retry on
+  // the global name UNIQUE).
+  const provisioned: ProvisionAvatarAgentResult | null = await runProvisioningFailSoft(
+    'signup auto-provision',
+    () => provisionAvatarAgentForSignup(userId, { name, email }),
+  );
+
   void logEventFromContext(c, {
     eventType: 'auth.signup',
     userId,
@@ -252,6 +329,7 @@ authRoutes.post('/signup', async (c) => {
     payload: {
       route: 'POST /api/auth/signup',
       isGuestEmail: isGuestEmail(email),
+      agentProvisioned: !!provisioned,
       outcome: 'success',
     },
   });
@@ -283,7 +361,22 @@ authRoutes.post('/signup', async (c) => {
     })().catch(() => {});
   }
 
-  return c.json({ success: true });
+  // Response ADDS the avatar + one-time wallet payload with the SAME field
+  // names/shape `POST /api/avatars` returns today (`avatar` = full row,
+  // `agentId` = platform_agents id, `wallet` = { address, secretKey,
+  // chain:'solana' } present ONLY when the wallet was freshly created —
+  // exactly-once discipline unchanged, the server never re-emits). On
+  // provisioning failure the response is the legacy `{ success: true }`.
+  return c.json({
+    success: true,
+    ...(provisioned
+      ? {
+          avatar: provisioned.avatar,
+          agentId: provisioned.agentId,
+          ...(provisioned.wallet ? { wallet: provisioned.wallet } : {}),
+        }
+      : {}),
+  });
 });
 
 // Login
@@ -810,6 +903,49 @@ authRoutes.get('/enter', async (c) => {
     return c.redirect(`${webOrigin}/?error=expired-link`, 302);
   }
 
+  // Magic-link onboarding D1 (2026-07-02) — BIND-AT-REDEMPTION, the deferred
+  // claim event. First-contact /connect deliberately does NOT bind
+  // `openclaw_bots.user_id` (see the agent-gateway "deliberately do NOT bind"
+  // comment); the human CLICKING the agent-issued link is the proof that this
+  // agent belongs to this account, so the bind happens HERE. Atomic guarded
+  // UPDATE: `user_id IS NULL OR user_id = <redeemer>` means we only fill an
+  // unowned row or re-affirm the same owner — a DIFFERENT existing owner is
+  // NEVER clobbered (skip + warn; `agentId` is a public handle, safe to log —
+  // never log the ticket or any bearer). Best-effort: a bind failure must not
+  // block the human's login, so the whole block is non-fatal.
+  if (consumed.issuedToAgentId) {
+    try {
+      const bound = await db
+        .update(agentBots)
+        .set({ userId: consumed.userId, updatedAt: new Date() })
+        .where(
+          and(
+            eq(agentBots.agentId, consumed.issuedToAgentId),
+            or(
+              isNull(agentBots.userId),
+              eq(agentBots.userId, consumed.userId),
+            ),
+          ),
+        )
+        .returning({ id: agentBots.id });
+      if (bound.length > 0) {
+        // Propagate onto the LIVE in-memory session config(s) so the agent's
+        // demotion backstop (`resolveAgentSession`: config.boundUserId must
+        // equal the row's userId) passes WITHOUT a reconnect — the connected
+        // agent becomes ledger-capable the moment its human lands in-game.
+        npcSimulation.bindAgentOwner(consumed.issuedToAgentId, consumed.userId);
+      } else {
+        // Row missing, or already owned by a DIFFERENT user (the guard
+        // refused). Either way: no bind, login proceeds normally.
+        console.warn(
+          `[AuthEnter] agent bind skipped for agentId=${consumed.issuedToAgentId} (no row, or owned by a different user)`,
+        );
+      }
+    } catch (err) {
+      console.error('[AuthEnter] agent bind failed (non-fatal):', err);
+    }
+  }
+
   void logEventFromContext(c, {
     eventType: 'auth.magic_link.enter',
     userId: consumed.userId,
@@ -820,6 +956,14 @@ authRoutes.get('/enter', async (c) => {
     },
   });
 
+  // Founder scenario 1 (first-time): a ticket with NO avatar bound means the
+  // account has no avatar yet — route the fresh human to avatar creation
+  // instead of an empty /game. Scenario 2 (returning, avatar bound) keeps the
+  // /game landing; the game page's /me/agent-session hydration then drops them
+  // into Controlled ('player') mode on their agent's avatar.
+  if (consumed.avatarId == null) {
+    return c.redirect(`${webOrigin}/create-agent?from=agent-link`, 302);
+  }
   return c.redirect(`${webOrigin}/game`, 302);
 });
 

@@ -7,7 +7,6 @@
  *
  * - items.ts POST /learn → embed knowledge entries before storing
  * - KnowledgeProvider → embed user message for similarity search
- * - marketplace.ts POST /install → embed skill knowledge on install
  *
  * DIMENSION INVARIANT: this MUST emit the SAME 1536-dim vectors as
  * openai-embedding-provider.ts. KnowledgeProvider embeds the user query

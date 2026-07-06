@@ -131,3 +131,77 @@ export interface SpawnPreferenceResponse {
   spawnPreference: SpawnPreferenceMode;
   homeParcelId: string | null;
 }
+
+// ── Service listings — run-a-store (P3 Slice 4) ────────────────────────────
+// Mirrors the FROZEN backend contract (apps/api/src/routes/land.ts routes
+// 12-16). A peer CT service listed on an owned/rented ACTIVE 'shop' structure;
+// buying it settles full-price CT to the seller (no rake — v1 design).
+
+/** A peer service listing (mirrors `service_listings`). */
+export interface ServiceListingDTO {
+  id: string;
+  structureId: string;
+  ownerAvatarId: string;
+  kind: 'peer' | 'partner';
+  title: string;
+  description: string | null;
+  priceCt: number;
+  status: 'active' | 'paused' | 'delisted';
+  platformFeeBps: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** A settled service purchase (mirrors `service_purchases`). */
+export interface ServicePurchaseDTO {
+  id: string;
+  listingId: string;
+  buyerAvatarId: string;
+  sellerAvatarId: string;
+  priceCt: number;
+  landTransactionId: string | null;
+  createdAt: string;
+}
+
+/** POST /api/land/structures/:structureId/services request body. */
+export interface ListServiceRequest {
+  title: string;
+  description?: string;
+  priceCt: number;
+}
+
+/** POST /api/land/structures/:structureId/services response. */
+export interface ListServiceResponse {
+  listing: ServiceListingDTO;
+}
+
+/** PATCH /api/land/services/:listingId request body — at least one field required. */
+export interface UpdateServiceRequest {
+  title?: string;
+  description?: string;
+  priceCt?: number;
+  status?: 'active' | 'paused' | 'delisted';
+}
+
+/** PATCH /api/land/services/:listingId response. */
+export interface UpdateServiceResponse {
+  listing: ServiceListingDTO;
+}
+
+/** GET /api/land/structures/:structureId/services response (active listings only). */
+export interface StructureServicesResponse {
+  listings: ServiceListingDTO[];
+}
+
+/** GET /api/land/services?page=&limit= response (paged, active only, newest first). */
+export interface BrowseServicesResponse {
+  listings: ServiceListingDTO[];
+  nextPage?: number;
+}
+
+/** POST /api/land/services/:listingId/buy response. `cached` = an idempotent replay (no new charge). */
+export interface BuyServiceResponse {
+  purchase: ServicePurchaseDTO;
+  priceCt: number;
+  cached: boolean;
+}

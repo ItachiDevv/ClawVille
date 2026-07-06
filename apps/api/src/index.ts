@@ -4,6 +4,7 @@ import { logger } from 'hono/logger';
 import { secureHeaders } from 'hono/secure-headers';
 import { bodyLimit } from 'hono/body-limit';
 import { HTTPException } from 'hono/http-exception';
+import { redactBearerTokens } from './services/log-redact';
 import { authRoutes } from './routes/auth';
 import { avatarRoutes } from './routes/avatars';
 import { userRoutes } from './routes/users';
@@ -48,14 +49,11 @@ import { randomBytes } from 'node:crypto';
 import { getBunWebSocketHelper } from './lib/bun-ws-adapter';
 import { researchSseRoutes } from './routes/research-sse';
 import { researchApiRoutes } from './routes/research';
-import { marketplaceRoutes } from './routes/marketplace';
 import { clawRoutes } from './routes/claws';
 import { agentGatewayRoutes } from './routes/agent-gateway';
 // pendingConnections is exported but only used internally by agent-gateway routes
 import { agentExportRoutes } from './routes/agent-export';
 import { avatarManifestRoutes } from './routes/avatar-manifest';
-import { bazaarRoutes } from './routes/bazaar';
-import { auctionRoutes } from './routes/auctions';
 import { questRoutes } from './routes/quests';
 import { bountyRoutes } from './routes/bounties';
 import { exchangeRoutes } from './routes/exchange';
@@ -71,7 +69,9 @@ import { portalRoutes } from './routes/portal';
 import { partnerHatcherRoutes } from './routes/partner-hatcher';
 import { partnerHatcherLaunchRoutes } from './routes/partner-hatcher-launch';
 import { partnerCovenantRoutes } from './routes/partner-covenant';
+import { partnerStorefrontRoutes } from './routes/partner-storefront';
 import { agentRegistrationRoutes } from './routes/agent-registration';
+import { agentEip8004Routes } from './routes/agent-eip8004';
 import { adminIdentityRoutes } from './routes/admin-identity';
 import { startSimulation } from './services/npc-simulation';
 import { alertError } from './services/alert-error';
@@ -128,7 +128,22 @@ import type { AppContext } from './types';
 const app = new Hono<AppContext>();
 
 // Global middleware
-app.use('*', logger());
+// Redact agent bearer sessionIds from the request log: several agent routes
+// carry the real-CT bearer as a `/:sessionId/…` PATH param, and hono/logger
+// prints every path — so an un-redacted logger writes the replayable credential
+// into stdout / the Coolify log drain (real-CT theft on log access). The custom
+// print fn scrubs only the LOG string; URLs/responses to the Hatcher partner are
+// unchanged. Pre-existing leak folded in at the P0 Codex gate (2026-07-01), same
+// class as the B1 body-id leak. See services/log-redact.ts.
+app.use(
+  '*',
+  logger((message: string, ...rest: string[]) => {
+    console.log(
+      redactBearerTokens(message),
+      ...rest.map((r) => (typeof r === 'string' ? redactBearerTokens(r) : r)),
+    );
+  }),
+);
 // secureHeaders defaults Cross-Origin-Resource-Policy to "same-origin", which
 // blocks api.clawville.world responses from being read by clawville.world
 // (different origins). The web app's SSE/fetch calls fail with "blocked by
@@ -213,6 +228,19 @@ app.get('/.well-known/clawville-issuer.json', (c) => {
 // `:fingerprint/...` path so the full mount path is the canonical URL.
 app.route('/.well-known/agents', agentRegistrationRoutes);
 
+// ---------------------------------------------------------------------------
+// EIP-8004 registration JSON for SAP/Metaplex-registered agents (identity rail)
+// ---------------------------------------------------------------------------
+// Public, per-SAP-agent EIP-8004 document served at
+//   GET /agents/:sapAgentPda/eip-8004.json
+// This exact URL is baked into each agent's MPL Core AgentIdentity plugin
+// (attached via the 1DREG / mpl-agent-014 registry), so the path is
+// immutable once an asset is minted. Covenant + the SAP SDK's
+// MetaplexBridge verifyLink/tripleCheckLink fetch it to validate the
+// asset ↔ SAP-agent link. Distinct from the fingerprint-keyed
+// /.well-known/agents route above (different key, different consumer).
+app.route('/agents', agentEip8004Routes);
+
 // API routes
 app.route('/api/auth', authRoutes);
 app.route('/api/avatars', avatarRoutes);
@@ -254,7 +282,6 @@ app.route('/api/activities', activitiesV2Routes);
 app.route('/api/land', landRoutes);
 app.route('/api/research', researchSseRoutes);
 app.route('/api/research', researchApiRoutes);
-app.route('/api/marketplace', marketplaceRoutes);
 app.route('/api/claws', clawRoutes);
 app.route('/api/agent', agentGatewayRoutes);
 // Phase 3 — character export ("take my agent home") endpoint. Mounted at
@@ -268,8 +295,6 @@ app.get('/api/skills/connect', (c) => {
   const url = new URL(c.req.url);
   return c.redirect(`${url.origin}/api/agent/connect-skill?token=${token}`);
 });
-app.route('/api/bazaar', bazaarRoutes);
-app.route('/api/auctions', auctionRoutes);
 app.route('/api/quests', questRoutes);
 app.route('/api/bounties', bountyRoutes);
 app.route('/api/exchange', exchangeRoutes);
@@ -320,6 +345,13 @@ app.route('/api/partner/hatcher', partnerHatcherLaunchRoutes);
 // scheme as Hatcher) + IP allowlist, fail-closed 503 when unprovisioned.
 // See routes/partner-covenant.ts + docs/sap-covenant-payai-architecture.md.
 app.route('/api/partner/covenant', partnerCovenantRoutes);
+// Phase D — ADDITIVE gated partner direct-USDC storefront (FEATURE_GATE
+// partner_storefront_tier). Buyer → partner USDC, WE NEVER CUSTODY, credits NO
+// CT. Mounted AFTER both `/api/partner/hatcher` groups so the LIVE partner-hatcher
+// routes match FIRST — this NEW `/api/partner/storefront` base never shadows them.
+// /quote + /settle 503 `partner_fulfillment_gated` until an admin enables a
+// custody-reviewed storefront (always, today). See routes/partner-storefront.ts.
+app.route('/api/partner/storefront', partnerStorefrontRoutes);
 // Wager lobbies + escrow (gambling-contracts vertical slice).
 // See routes/wager.ts header for the full surface + feature gates.
 app.route('/api/wager', wagerRoutes);
@@ -397,7 +429,12 @@ if (process.env.X402_MOCK_FACILITATOR === 'true') {
 // typed responses without alerting; unexpected exceptions fire an immediate
 // Telegram alert via alertError so we catch 500s on their first occurrence.
 app.onError((err, c) => {
-  console.error('API Error:', err);
+  // Redact any agent bearer from the stringified error (its message/stack can
+  // carry the request URL `/api/agent/oc-<bearer>/…`) before it hits stdout /
+  // the Coolify log drain. The alertError() call below redacts message+context
+  // internally; this covers the direct console.error. (redactBearerTokens is
+  // imported at the top of this file.)
+  console.error('API Error:', redactBearerTokens(String(err)));
   if (err instanceof HTTPException) {
     return c.json({ error: err.message, code: err.status }, err.status);
   }
@@ -465,6 +502,51 @@ warnIfTestPartnerPubkeyEnabled();
 const arenaMode = process.env.NPC_ARENA_MODE === 'true';
 startSimulation(arenaMode);
 
+// ── Process-level crash guards (2026-07-02 — boot-crush crash-loop fix) ──────
+// Registered BEFORE the boot IIFE so they cover boot-time faults. This IS the
+// fix for the observed crash-loop (staging `restarts=2`, `Bun` crash footers).
+// Root cause: on a COLD/CONTENDED boot — cold Supabase + the ElizaOS migration
+// still holding the plugin-sql advisory lock + Coralia's driver lazy-warm racing
+// the town-guide boot warm — a single ElizaOS runtime's `initialize()` exceeded
+// the bootstrap plugin's internal 30s service-registration timeout (task /
+// embedding-generation / trajectory_logger). That timeout REJECTED on a promise
+// chain we do NOT own → an UNHANDLED REJECTION; with no handler, Bun killed the
+// whole API → Coolify restart → crash-loop until the boot was warm enough
+// (migration done, DB cached) that init finished under 30s. These handlers catch
+// that reject so it can't down the server. Both LOG LOUDLY and REDACTED (an
+// agent route path/stack can carry a real-CT bearer, cf. M1) so nothing is
+// hidden. (NB: it is a SINGLE-runtime contention, not a thundering herd — only
+// ONE system agent (town-guide) warms at boot today; the sequential warm below
+// is future-proofing, not the primary fix.)
+//
+// Split policy (deliberate):
+//  • unhandledRejection → NON-fatal (log + keep serving). This is the exact
+//    crash vector (a stray async reject from a third-party promise chain we
+//    don't own); a rejected optional-service registration must not take the
+//    server down, and the runtime lazy-restarts on next use.
+//  • uncaughtException → log + EXIT(1). A sync throw that escaped every
+//    try/catch means UNDEFINED process state; resuming risks a zombie serving
+//    on corrupt in-memory state (e.g. a poker/cove sim-tick on a bad table)
+//    with /health still green, so Coolify would never restart to self-heal.
+//    Exiting restores crash-ONLY self-healing. It does NOT re-introduce the
+//    crash-LOOP — that came from the rejection (now handled) + the concurrent
+//    warm (now serialized), not from a sync throw. The deliberate crash-loud
+//    boot invariants (FINGERPRINT_SECRET, ALLOW_TEST_PARTNER_PUBKEY-on-prod,
+//    CF-worker preflight) are unaffected: they throw at MODULE LOAD (before
+//    these handlers register) or call process.exit() directly, which
+//    uncaughtException does not intercept.
+process.on('unhandledRejection', (reason) => {
+  const msg = reason instanceof Error ? (reason.stack ?? reason.message) : String(reason);
+  console.error('[API] Unhandled promise rejection (kept alive, non-fatal):', redactBearerTokens(msg));
+});
+process.on('uncaughtException', (err) => {
+  console.error(
+    '[API] Uncaught exception — exiting for a clean restart:',
+    redactBearerTokens(err instanceof Error ? (err.stack ?? err.message) : String(err)),
+  );
+  process.exit(1);
+});
+
 // Pre-migrate ElizaOS schema + seed system-owned building NPCs so every user
 // can chat with Patrick/Gary/etc. without any setup. Non-blocking — a failure
 // must not crash API startup, but every deploy gets a fresh attempt.
@@ -527,17 +609,39 @@ startSimulation(arenaMode);
         .join(', ')}`,
     );
 
-    // Eager warmup — pre-boot every system-agent runtime so the first visitor
-    // doesn't eat the lazy-start latency (~2-3s). Errors swallowed so a single
-    // warmup failure doesn't crash boot; the lazy-start path catches the next
-    // attempt on first chat.
+    // SEQUENTIAL warmup — pre-boot the system-agent runtime(s) one at a time,
+    // DEFENSIVE/future-proofing (NOT the crash-loop fix — that is the process
+    // guards above). Today `SYSTEM_AGENT_TEMPLATES` has exactly ONE entry
+    // (town-guide/Nori), so this loop warms a single runtime; the 10 building
+    // teachers are seeded as DB rows by `ensureSystemNpcs` and lazy-start on
+    // first chat, NOT warmed here. Was a concurrent fire-and-forget; kept
+    // sequential so that IF more system agents are added later, their warms
+    // funnel one-at-a-time through the global init mutex
+    // (`packages/agent-runtime/src/eliza-runtime.ts`) + plugin-sql advisory lock
+    // instead of stacking pipelines whose peak contention could push a runtime's
+    // ElizaOS bootstrap service-registration past its internal 30s timeout
+    // (house-agent-seeder.ts defers Coralia's warm for the same reason). Detached
+    // (void IIFE) so boot + /health readiness never wait on the warm chain;
+    // per-agent errors swallowed (lazy-start re-warms on first chat).
     const systemUserId = await getSystemUserId();
-    for (const { slug, platformAgentId } of systemAgents) {
-      void agentOrchestrator
-        .ensureAgentRuntime(platformAgentId, systemUserId)
-        .then(() => console.log(`[API] Warmed system agent runtime: ${slug}`))
-        .catch((err) => console.error(`[API] Warmup failed for ${slug}:`, err));
-    }
+    void (async () => {
+      for (const { slug, platformAgentId } of systemAgents) {
+        try {
+          // ensureAgentRuntime RESOLVES null (does not throw) on a missing row /
+          // start-failure / the R1 wait-return-null branch — so a bare "Warmed"
+          // log would falsely claim success. Only log warm on a real runtime;
+          // otherwise WARN (lazy-start re-warms on first chat).
+          const runtime = await agentOrchestrator.ensureAgentRuntime(platformAgentId, systemUserId);
+          if (runtime) {
+            console.log(`[API] Warmed system agent runtime: ${slug}`);
+          } else {
+            console.warn(`[API] Warmup incomplete for ${slug} — runtime not ready (will lazy-start on first chat)`);
+          }
+        } catch (err) {
+          console.error(`[API] Warmup failed for ${slug}:`, err);
+        }
+      }
+    })();
 
     // Sanity: every template registered in SYSTEM_AGENT_TEMPLATES should
     // have been seeded. If a future slug gets skipped (e.g. DB error), log
@@ -559,15 +663,59 @@ startSimulation(arenaMode);
     console.error('[API] System NPC seeder failed:', err);
   }
 
+  // Agent-metaverse P1 — activate the ONE ClawVille-hosted autonomous "house"
+  // agent (warms its ElizaOS runtime, registers its in-world body, hands it to
+  // the autonomy driver) then START the driver's own ~30s perceive→decide→act
+  // loop. Ordered AFTER the system-NPC seeder (shares the system user + a warmed
+  // runtime) and AFTER startSimulation() above (registerAgentBot needs the live
+  // sim). Non-fatal: a house-agent failure must not crash boot — the world still
+  // runs, just without the autonomous agent. Driver starts regardless so a later
+  // (re)register still gets driven.
+  try {
+    const { ensureHouseAgent } = await import('./services/house-agent-seeder');
+    const { agentAutonomyDriver } = await import('./services/agent-autonomy-driver');
+    const house = await ensureHouseAgent();
+    if (house) {
+      console.log(
+        `[API] House agent active: body ${house.bodyId}${house.created ? ' [new]' : ''}`,
+      );
+    }
+    // Pre-warm the local fleet boxes so the driver's first decisions don't eat a
+    // cold-load (both boxes stay warm; work is load-balanced across them). Fire-and-
+    // forget + fault-tolerant — a down box just fails silently and the breaker handles
+    // it. Logs the resolved endpoint/route config for boot observability.
+    try {
+      const { getInferenceRouter, describeInferenceConfig } = await import('@clawville/agent-runtime');
+      console.log(describeInferenceConfig());
+      void getInferenceRouter()
+        .warmup()
+        .then(() => console.log('[API] Inference local boxes warmed'))
+        .catch(() => {});
+    } catch (e) {
+      console.warn('[API] Inference warmup skipped:', (e as Error)?.message);
+    }
+    agentAutonomyDriver.start();
+  } catch (err) {
+    console.error('[API] House agent activation failed (non-fatal):', err);
+  }
+
+  // P0 lifecycle-truth — NO eager boot-rehydration. v7 already survives a restart
+  // via LAZY restore (`agent-session-restore.ts`, wired into
+  // `validateLiveAgentSession`): on the first post-restart bearer use it rebuilds
+  // the session under the agent's ORIGINAL bearer. An eager rehydrator minting a
+  // fresh sessionId would COLLIDE with that (double body / override lockout), so
+  // it is intentionally absent. session-status (D-2) is restore-aware and the
+  // sweeper (D-3) removes the body on expiry.
+
   // Phase 6 — start the openclaw_bots session TTL sweeper. Runs every 5
   // min, reaps rows whose `session_expires_at` has passed and stops any
   // still-mounted Eliza runtimes. Without this, a disconnected Hermes /
   // OpenClaw agent row lives forever and `/api/agent/session-status`
   // keeps answering `connected: true` until someone calls the explicit
-  // unregister. See `services/openclaw-session-sweeper.ts`.
+  // unregister. See `services/agent-session-sweeper.ts`.
   try {
     const { startSessionSweeper } = await import(
-      './services/openclaw-session-sweeper'
+      './services/agent-session-sweeper'
     );
     startSessionSweeper();
   } catch (err) {
@@ -1059,6 +1207,13 @@ async function gracefulShutdown(signal: string) {
     const { getCollaborationBroker } = await import('@clawville/agent-runtime');
 
     stopSimulation();
+    // Agent-metaverse P1 — stop the autonomy driver's 30s loop.
+    try {
+      const { agentAutonomyDriver } = await import('./services/agent-autonomy-driver');
+      agentAutonomyDriver.stop();
+    } catch {
+      // If the driver module failed to load earlier, there's nothing to stop.
+    }
     activityRoomManager.stopSweeper();
     activityQueueService.stopMatchmaker();
     tournamentManager.stopStartTriggerSweeper();
@@ -1074,7 +1229,7 @@ async function gracefulShutdown(signal: string) {
     }
     try {
       const { stopSessionSweeper } = await import(
-        './services/openclaw-session-sweeper'
+        './services/agent-session-sweeper'
       );
       stopSessionSweeper();
     } catch {

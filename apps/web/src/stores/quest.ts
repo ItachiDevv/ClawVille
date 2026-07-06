@@ -80,7 +80,7 @@ interface CondEvalContext {
   counters: QuestCounters;
   distinct: DistinctSets;
   visitedBuildingsSize: number;
-  hasOpenClawBot: boolean;
+  hasAgentBot: boolean;
 }
 
 function evalCondition(
@@ -101,7 +101,7 @@ function evalCondition(
       return { met: v >= cond.threshold, ratio: Math.min(1, v / cond.threshold) };
     }
     case 'openClaw':
-      return { met: ctx.hasOpenClawBot, ratio: ctx.hasOpenClawBot ? 1 : 0 };
+      return { met: ctx.hasAgentBot, ratio: ctx.hasAgentBot ? 1 : 0 };
     case 'compound': {
       const sub = cond.predicates.map((p) => evalCondition(p, ctx));
       const met = sub.every((s) => s.met);
@@ -119,7 +119,7 @@ function buildEvalContext(state: QuestStoreState): CondEvalContext {
     counters: state.counters,
     distinct: state.distinct,
     visitedBuildingsSize: useGameStore.getState().visitedBuildings.size,
-    hasOpenClawBot: useNpcStore.getState().npcs.some((npc) => npc.isOpenClaw),
+    hasAgentBot: useNpcStore.getState().npcs.some((npc) => npc.isOpenClaw),
   };
 }
 

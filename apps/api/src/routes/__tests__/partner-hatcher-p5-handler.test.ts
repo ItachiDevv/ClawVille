@@ -58,7 +58,7 @@ ensureEnv('CLAWVILLE_SERVICE_ISSUER_PUBKEY', bs58.encode(issuerKp.publicKey));
 
 // ---------------------------------------------------------------------------
 // In-memory `db` stub. The register handler does: tx.execute (advisory lock),
-// tx.query.openclawBots.findFirst (re-read), tx.insert (...).returning(),
+// tx.query.agentBots.findFirst (re-read), tx.insert (...).returning(),
 // tx.select (cap count). Post-commit it calls db.update / ensureWallet — those use
 // the mocked db too and are wrapped non-fatal, so a stub miss just logs+continues.
 // A throw inside the tx callback rejects (mirrors ROLLBACK). We probe the REAL sim
@@ -96,19 +96,7 @@ function insertBuilder() {
   return {
     values(v: Row) { values = v; return this; },
     returning: async () => {
-      // `openclaw_bots.created_at`/`updated_at` are NOT NULL defaultNow() columns
-      // — a real INSERT always returns them, and `publicAgentRecord` calls
-      // `.toISOString()` on both. The insert VALUES the handler builds don't carry
-      // them (they're DB defaults), so seed them here or the stubbed returning row
-      // throws inside publicAgentRecord (→ 500). Placed before the spread so a
-      // future test that supplies its own still wins.
-      const inserted: Row = {
-        id: 'inserted-id',
-        walletAddress: null,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-        ...values,
-      };
+      const inserted: Row = { id: 'inserted-id', walletAddress: null, ...values };
       state.inserts.push(inserted);
       state.existingRow = inserted;
       return [inserted];
@@ -121,16 +109,7 @@ function updateBuilder() {
   const builder = {
     set(v: Row) { values = v; return builder; },
     where() {
-      // Carry defaultNow() columns through so a merged row handed to
-      // publicAgentRecord still has created_at/updated_at (the existingRow it
-      // merges over originates from an insert that already seeded both, but keep
-      // a fallback so a directly-seeded existingRow can't reintroduce the throw).
-      const merged = {
-        createdAt: new Date(),
-        updatedAt: new Date(),
-        ...(state.existingRow ?? {}),
-        ...values,
-      };
+      const merged = { ...(state.existingRow ?? {}), ...values };
       state.existingRow = merged;
       const p = Promise.resolve(undefined) as Promise<unknown> & { returning?: () => Promise<Row[]> };
       p.returning = async () => [merged];
@@ -155,7 +134,7 @@ let sim: typeof import('../../services/npc-simulation');
 
 const txStub = {
   execute: async () => undefined,
-  query: { openclawBots: { findFirst: async () => state.existingRow } },
+  query: { agentBots: { findFirst: async () => state.existingRow } },
   update: () => updateBuilder(),
   insert: () => insertBuilder(),
   select: () => selectBuilder(),
@@ -179,7 +158,7 @@ const dbStub = {
   insert: () => insertBuilder(),
   select: () => selectBuilder(),
   query: {
-    openclawBots: { findFirst: async () => state.existingRow },
+    agentBots: { findFirst: async () => state.existingRow },
     avatars: { findFirst: async () => null },
   },
 };
@@ -232,10 +211,10 @@ describe('Hatcher P5-1 + P5-2 — handler-driven (mocked db, real sim)', () => {
 
   afterEach(() => {
     // Clean up any bodies WE spawned + any the handler spawned for our test agents.
-    for (const sid of spawnedSids.splice(0)) sim.npcSimulation.unregisterOpenClaw(sid);
+    for (const sid of spawnedSids.splice(0)) sim.npcSimulation.unregisterAgentBot(sid);
     for (const agentId of ['hatcher:p5-held-tx', 'hatcher:p5-override-fail', 'hatcher:p6-patch-override', 'hatcher:p6-minted-override']) {
       for (const sid of sim.npcSimulation.findActiveSessionsByAgentIds([agentId])) {
-        sim.npcSimulation.unregisterOpenClaw(sid);
+        sim.npcSimulation.unregisterAgentBot(sid);
       }
     }
   });
@@ -282,12 +261,12 @@ describe('Hatcher P5-1 + P5-2 — handler-driven (mocked db, real sim)', () => {
     // Occupy the target with a DIFFERENT agent so the handler's override spawn
     // throws ("already overridden") — the real P5-2 trigger.
     const blockerSid = 'p5-blocker-handler';
-    sim.npcSimulation.registerOpenClaw(
+    sim.npcSimulation.registerAgentBot(
       {
         agentId: 'hatcher:blocker-handler', sessionId: blockerSid, sessionKey: blockerSid,
         gatewayUrl: 'http://localhost:0', authToken: '', protocol: 'hatcher-proxy', mode: 'override',
         autonomyMode: 'server-managed', targetNpcId: target, ledgerCapable: true, boundUserId: null,
-      } as unknown as Parameters<typeof sim.npcSimulation.registerOpenClaw>[0],
+      } as unknown as Parameters<typeof sim.npcSimulation.registerAgentBot>[0],
       { getProtocol: () => 'hatcher-proxy', setWorldStateProvider() {}, setSystemContextProvider() {} } as never,
     );
     spawnedSids.push(blockerSid);
@@ -344,12 +323,12 @@ describe('Hatcher P5-1 + P5-2 — handler-driven (mocked db, real sim)', () => {
     //    throws OverrideTargetUnavailableError (the real P6-2 trigger).
     const target = NPC_IDS[5];
     const blockerSid = 'p6-blocker-handler';
-    sim.npcSimulation.registerOpenClaw(
+    sim.npcSimulation.registerAgentBot(
       {
         agentId: 'hatcher:p6-blocker', sessionId: blockerSid, sessionKey: blockerSid,
         gatewayUrl: 'http://localhost:0', authToken: '', protocol: 'hatcher-proxy', mode: 'override',
         autonomyMode: 'server-managed', targetNpcId: target, ledgerCapable: true, boundUserId: null,
-      } as unknown as Parameters<typeof sim.npcSimulation.registerOpenClaw>[0],
+      } as unknown as Parameters<typeof sim.npcSimulation.registerAgentBot>[0],
       { getProtocol: () => 'hatcher-proxy', setWorldStateProvider() {}, setSystemContextProvider() {} } as never,
     );
     spawnedSids.push(blockerSid);
@@ -409,19 +388,19 @@ describe('Hatcher P5-1 + P5-2 — handler-driven (mocked db, real sim)', () => {
     // Despawn the live body so the PATCH has NO session to preserve → it MINTS a new
     // bearer. (Free the override seat too so re-register would normally succeed.)
     for (const sid of sim.npcSimulation.findActiveSessionsByAgentIds(['hatcher:p6-minted-override'])) {
-      sim.npcSimulation.unregisterOpenClaw(sid);
+      sim.npcSimulation.unregisterAgentBot(sid);
     }
     expect(sim.npcSimulation.findActiveSessionsByAgentIds(['hatcher:p6-minted-override'])).toHaveLength(0);
 
     // 2) Occupy a DIFFERENT target so the minted re-register throws.
     const occupied = NPC_IDS[7];
     const blockerSid = 'p6-minted-blocker';
-    sim.npcSimulation.registerOpenClaw(
+    sim.npcSimulation.registerAgentBot(
       {
         agentId: 'hatcher:p6-minted-blocker', sessionId: blockerSid, sessionKey: blockerSid,
         gatewayUrl: 'http://localhost:0', authToken: '', protocol: 'hatcher-proxy', mode: 'override',
         autonomyMode: 'server-managed', targetNpcId: occupied, ledgerCapable: true, boundUserId: null,
-      } as unknown as Parameters<typeof sim.npcSimulation.registerOpenClaw>[0],
+      } as unknown as Parameters<typeof sim.npcSimulation.registerAgentBot>[0],
       { getProtocol: () => 'hatcher-proxy', setWorldStateProvider() {}, setSystemContextProvider() {} } as never,
     );
     spawnedSids.push(blockerSid);

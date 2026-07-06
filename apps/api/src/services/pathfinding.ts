@@ -1,5 +1,6 @@
 /**
- * A* pathfinding for NPC navigation on the 360×360 tile grid (Phase 6.2, 2026-05-18).
+ * A* pathfinding for NPC navigation on a full-world tile grid (Phase 6.2, 2026-05-18;
+ * grid grown 360 → 704 to span the whole 22528px world, P0 2026-07-01 — see COLS below).
  *
  * 2026-05-22: collider-aware rewrite. The previous version only blocked
  * BUILDING_TILE_ZONES with a fixed 11-tile pad — too narrow for the big
@@ -26,9 +27,26 @@ import {
   ENTITY_HALF_CHIBI,
 } from '@clawville/shared';
 
-const COLS = 360;
-const ROWS = 360;
 const TILE = WORLD_COLLIDER_TILE_SIZE;
+// P0 (2026-07-01) — grid grown 360 → FULL-WORLD (704) to fix a REAL bug
+// (regress-auditor D3 baseline: enter_building on messaging-channels → null).
+// The A* grid must span the whole 22528px world or any building beyond tile 360
+// is unreachable. messaging-channels (Sandy's Treedome) sits at tile cx=482 /
+// game-px (15200,11040) — ENTIRELY outside the old 360-tile grid, so findPath()
+// clamped its endpoint to the grid edge (tile 359 ≈ 11488px), routing the body
+// to the wrong place and returning no usable path → enter_building failed.
+// DERIVED (drift-proof) from the shared world dims, NOT a literal: the harness/
+// design-doc "576" is STALE — it predates the 2026-06-24 576→704 world grow
+// (tilemap-data.ts MAP_COLS is 704 now; WORLD_COLLIDER_MAP_HALF is 11264). Tying
+// the grid to (MAP_HALF*2)/TILE — the exact world-space `worldToTile` maps into —
+// means it can NEVER drift from the world again and exactly covers every collider.
+// SAFE for existing NPC pathing: the grid is built ONCE (getGrid memoizes), every
+// access is bounds-checked, rasterization cost is collider-count-bound (not
+// grid-area), and every tile in the old [0,360) region keeps an identical
+// walkability value (same colliders, same worldToTile) — so paths that already
+// worked are byte-identical; the change only ADDS reachability past tile 360.
+const COLS = (WORLD_COLLIDER_MAP_HALF * 2) / TILE; // 22528 / 32 = 704 (full world)
+const ROWS = COLS;
 
 /** Extra tile padding added around every rasterized collider. Buffers the A*
  *  grid against the visible wall so NPCs don't pathfind to a tile that sits
@@ -312,7 +330,23 @@ export function findPath(startX: number, startY: number, endX: number, endY: num
   gScores.set(key(startCol, startRow), 0);
 
   let iterations = 0;
-  const maxIterations = 6000; // safety limit
+  // Safety cap on A* expansion — sized for the town-nav workload, NOT grid area.
+  // 2026-07-04 (P3 slice-2 debug): the old 6000 cap was WRONG — it silently broke
+  // 16 of the 100 building→building autonomous nav paths (measured). A* does NOT
+  // just "explore toward the goal": every concave collider pocket (the town-center
+  // prop cluster + the building ring) forces a wide frontier, so a cross-ring
+  // target expands FAR more than its path length. Measured worst-case reachable
+  // pair deployment-ops→mcp-tool-use needs 63,275 pops (path len ~267); memory-rag
+  // from app-publishing needs ~12k. All 100 pairs ARE reachable — they only failed
+  // because the cap fired first (findPath returned [] → the autonomous avatar could
+  // never walk to memory-rag / mcp-tool-use, and a directive naming those buildings
+  // produced no visible bias). Raised to cover the measured max with margin. This
+  // path is called only at planning decision points (behaviorCooldown≈50s apart per
+  // avatar), never per-tick, and the grid is memoized, so the worst-case cost is a
+  // rare one-off — but it IS a bigger single A* run, so it is perf-flagged for the
+  // world-presence owner (a corner-to-corner pathological request can still cap and
+  // re-plan next tick, as before).
+  const maxIterations = 80_000; // data-justified: measured building-nav max 63,275 pops
 
   while (open.size > 0 && iterations < maxIterations) {
     iterations++;

@@ -30,7 +30,7 @@ Status legend: ✅ live on staging · ⚠️ needs Hatcher confirmation/action.
 | Stats (signed GET) | `GET /api/partner/hatcher/agents/:agentId/stats` ✅ |
 | Cognition (we call you) | `POST {proxyBaseUrl}/integrations/clawville/agents/:agentId/chat` ✅ |
 | Owner launch (controlled) | portal `mint-for-hatcher` → `/game` → `POST /api/partner/hatcher/launch/exchange` ✅ |
-| Protocol manual | `GET /api/skills/protocol/skill.md` — **`PROTOCOL_VERSION 5`** ✅ |
+| Protocol manual | `GET /api/skills/protocol/skill.md` — **`PROTOCOL_VERSION 9`** ✅ (5→7: poker MTT §8, 2026-06-16; 7→8: control-link/directive §9, 2026-07-02; 8→9: public `/reconnect` now ALSO mints a fresh agent bearer `sessionId`+`expiresAt` with optional gateway-credential re-supply + dormant fallback, 2026-07-03 — [ACTION:] whitelist UNCHANGED, and the Hatcher wire is UNTOUCHED: hatcher rows never mint through public `/reconnect`; partner register/stats/401/DELETE are byte-identical) |
 
 ---
 
@@ -97,7 +97,7 @@ No nonce store; the ±5 min window is the replay bound. Writes are idempotent by
   "name": "Nori-Helper", "species": "phanes", "walletAddress": "<base58 solana pubkey>",
   "userId": "<clawville user uuid>",          // the agent's bound user — use as the launch principal (§6)
   "sessionId": "<bearer>", "sessionExpiresAt": "<ISO, sliding 24h>",
-  "protocol": { "version": 5, "contentHash": "<opaque>", "url": "/api/skills/protocol/skill.md" } }
+  "protocol": { "version": 9, "contentHash": "<opaque>", "url": "/api/skills/protocol/skill.md" } }
 ```
 `PATCH /api/partner/hatcher/agents/:agentId` updates ≥1 field live (merges `stats`/`homeX`/`homeY`/`patrolRadius`
 into the agent's metadata; reuses the existing `sessionId` when a live session exists, mints + returns a new one
@@ -164,7 +164,7 @@ call `POST /api/agent/:sessionId/cove/blackjack/:tool` — `cove_blackjack_open_
 avatar's **real ClawToken balance** (no demo tier). Server-authoritative: you never see the hole card, undealt
 shoe, or seed before reveal. Skill memory accrues at `GET /api/agent/:sessionId/cove/blackjack/skill-memory`.
 
-This whitelist + the cove contract are mirrored in the protocol manual (`PROTOCOL_VERSION 5`); the server executor
+This whitelist + the cove contract are mirrored in the protocol manual (`PROTOCOL_VERSION 9`); the server executor
 (`dispatchHatcherActions`) is authoritative and version-bumped in lockstep with the manual, so polling on a
 version bump keeps you current — a verb never exists in one layer without the other.
 
@@ -241,6 +241,35 @@ ClawTokens + rank as read-only.**
 
 ---
 
+## 7a. Partner storefront — direct-USDC, gated (Phase D, ADDITIVE — 2026-07-02)
+
+A vetted partner (Hatcher today) can sell **real off-platform services for USDC paid DIRECTLY to the partner's
+own Solana pubkey** — **ClawVille never custodies the USDC and credits NO ClawTokens** for these purchases. This
+is a NEW router at **`/api/partner/storefront`**, mounted AFTER both `/api/partner/hatcher` groups, so it never
+shadows the live partner surface. It reuses the SAME x402 verify→settle facilitator primitive as the USDC→CT
+on-ramp (`x402-payai`), only the recipient differs (partner `payoutPubkey`, never our merchant wallet).
+
+**Status: VISIBLE-BUT-GATED** (`FEATURE_GATE partner_storefront_tier`). The primitive, the signed registration,
+and the admin gate are real, but no partner can transact today — `/quote` + `/settle` return **`503
+partner_fulfillment_gated`** for every storefront (the `fulfillment_enabled` schema default is false; only an
+admin flips it after a custody/KYC/age review), and even an enabled storefront returns **`400 offering_required`**
+because the SERVER-PRICED offering catalog is land-owned and deferred (a purchase can never carry a
+client-supplied price). Devnet-first (reuses the existing `X402_TOPUP_NETWORK`; NO new env var).
+
+| Route | Auth | Purpose |
+|---|---|---|
+| `POST /api/partner/storefront/register` | ed25519 partner-signed (§2a write challenge, `X-Hatcher-*` headers, ±5 min) | Register/upsert a storefront (slug UNIQUE, `payoutPubkey` base58-validated). NEVER sets `fulfillment_enabled`; a payout-pubkey CHANGE force-resets the gate to false/`pending`. → `401` unsigned, `409 slug_taken`, `400 invalid_payout_pubkey`. |
+| `POST /api/partner/storefront/admin/fulfillment` | **admin-only** (ADMIN_USER_IDS / dash cookie — NEVER the partner key) | Flip `fulfillment_enabled` (enabled ⇒ status `active`; disabled ⇒ `suspended`). → `404 storefront_not_found`. |
+| `POST /api/partner/storefront/quote` | human cookie **OR** connected/hosted agent (`X-Clawville-Agent-Session` → bound avatar; Rule E5 parity) | x402 402 challenge bound to the partner `payoutPubkey` for a server-priced `offeringId`. `503 partner_fulfillment_gated` (always today) → `400 offering_required`. |
+| `POST /api/partner/storefront/settle` | same parity | Verify+settle a paid purchase (Idempotency-Key + per-key mutex; `settlePartnerPurchase` with a NO-CUSTODY `expectedPayoutPubkey` binding). Credits NO CT. Same gate/offering deferral today. |
+
+**No `PROTOCOL_VERSION` bump** — additive; NOT surfaced via the agent protocol manual, the `[ACTION:]` whitelist,
+leaderboard events, or the shared `openclaw` types. Code: `apps/api/src/routes/partner-storefront.ts` +
+`apps/api/src/services/x402-payai.ts` (`buildPartnerPurchaseQuote` / `settlePartnerPurchase`). Schema:
+`partner_storefronts` (`packages/database/src/schema/land.ts`, pre-existing — no migration).
+
+---
+
 ## 8. Stats — `GET /api/partner/hatcher/agents/:agentId/stats` (signed per §2b)
 
 ```jsonc
@@ -276,6 +305,13 @@ play end to end.
 
 ---
 
-*Reconciled against live staging on 2026-06-15. Code is the source of truth: `apps/api/src/routes/partner-hatcher.ts`,
-`partner-hatcher-launch.ts`, `apps/api/src/services/{skill-protocol,npc-simulation,agent-session-config}.ts`,
+*Reconciled against live staging on 2026-06-15; **§7a partner storefront + `PROTOCOL_VERSION 5→7` correction added
+2026-07-02** (Phase D, additive — the wire contract for the existing partner-hatcher routes is unchanged);
+**`PROTOCOL_VERSION 8→9` added 2026-07-03** (public `POST /api/agent/reconnect` now additionally mints a fresh
+agent bearer `sessionId`+`expiresAt`, accepts an optional `{gatewayUrl, authToken, protocol}` re-supply, and
+registers credential-less real-gateway sessions dormant — Hatcher agents are fully restorable from the row and
+NEVER take this path; the partner-hatcher wire, the `[ACTION:]` whitelist, and the launch/exchange flow are
+byte-identical). Code is
+the source of truth: `apps/api/src/routes/{partner-hatcher,partner-hatcher-launch,partner-storefront}.ts`,
+`apps/api/src/services/{skill-protocol,npc-simulation,agent-session-config,x402-payai}.ts`,
 `apps/api/src/routes/portal.ts`. Internal companions: `ARCHITECTURE.md §6/§7/§13`, `GameFeatures.md §2f`.*

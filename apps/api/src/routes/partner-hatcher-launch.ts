@@ -39,7 +39,7 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { eq } from 'drizzle-orm';
-import { db, openclawBots } from '@clawville/database';
+import { db, agentBots } from '@clawville/database';
 import type { HatcherLaunchExchangeResponse } from '@clawville/shared';
 import type { AppContext } from '../types';
 import { createRateLimiter, getClientIp } from '../middleware/rate-limit';
@@ -80,7 +80,7 @@ function namespaceHatcherAgentId(rawAgentId: string): string {
 const HATCHER_EXCHANGE_URL =
   'https://api.hatcher.host/integrations/clawville/launch/exchange';
 
-/** 10s outbound timeout — same budget as the cognition proxy in openclaw-client. */
+/** 10s outbound timeout — same budget as the cognition proxy in agent-substrate-client. */
 const EXCHANGE_TIMEOUT_MS = 10_000;
 
 /** Game-coord world center (MAP is 22528x22528; half = 11264 — see
@@ -126,12 +126,12 @@ const exchangeSchema = z.object({
  */
 function resolveAgentPosition(
   namespacedAgentId: string,
-  row: typeof openclawBots.$inferSelect,
+  row: typeof agentBots.$inferSelect,
 ): { x: number; y: number } {
   try {
     const sessions = npcSimulation.findActiveSessionsByAgentIds([namespacedAgentId]);
     for (const sid of sessions) {
-      const pos = npcSimulation.getOpenClawAvatarPosition(sid);
+      const pos = npcSimulation.getAgentBotAvatarPosition(sid);
       if (pos) return pos;
     }
   } catch {
@@ -183,8 +183,8 @@ partnerHatcherLaunchRoutes.post('/launch/exchange', async (c) => {
   // An unknown agent → 404, no signed-request oracle, no launch-token leak to a
   // signature. Namespacing means a Hatcher launch can only resolve a Hatcher row.
   const namespacedAgentId = namespaceHatcherAgentId(rawAgentId);
-  const row = await db.query.openclawBots.findFirst({
-    where: eq(openclawBots.agentId, namespacedAgentId),
+  const row = await db.query.agentBots.findFirst({
+    where: eq(agentBots.agentId, namespacedAgentId),
   });
   if (!row || row.identityType !== 'hatcher') {
     const body: HatcherLaunchExchangeResponse = { ok: false, error: 'agent_not_registered' };

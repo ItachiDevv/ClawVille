@@ -2,18 +2,19 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { randomBytes } from 'crypto';
 import { NPC_IDS, BUILDING_OPENCLAW_THEMES, getAgentModel, DEFAULT_AGENT_MODEL_KEY } from '@clawville/shared';
-import type { OpenClawRegistration, OpenClawBotIdentity } from '@clawville/shared';
-import { OpenClawClient } from '../services/openclaw-client';
+import type { AgentSubstrateRegistration, AgentBotIdentity } from '@clawville/shared';
+import { AgentSubstrateClient } from '../services/agent-substrate-client';
 import { npcSimulation } from '../services/npc-simulation';
-import { db, avatars, users, npcMemories, activityLog, openclawBots, agents, eq, and, desc, sql } from '@clawville/database';
+import { db, avatars, users, npcMemories, activityLog, agentBots, agents, eq, and, desc, sql } from '@clawville/database';
 import { sessionMiddleware, requireAuth } from '../middleware/auth';
+import { createRateLimiter, getClientIp } from '../middleware/rate-limit';
 import { validateLiveAgentSession } from '../middleware/require-auth-or-agent';
 import type { AppContext } from '../types';
 import { agentOrchestrator } from '../services/agent-orchestrator';
 import { setSessionAgent, getSessionAgent, deleteSessionAgent } from '../services/session-agent-map';
 import { buildRuntimeServices } from '../services/runtime-services-adapter';
 import { generateSkillMd } from '../services/skill-generator';
-import { computeSessionExpiresAt } from '../services/openclaw-session-sweeper';
+import { computeSessionExpiresAt } from '../services/agent-session-sweeper';
 import { sha256Hex } from '../services/session-digest';
 import {
   isReservedPartnerAgentId,
@@ -119,8 +120,25 @@ const avatarSchema = baseSchema.extend({
 
 const registerSchema = z.discriminatedUnion('mode', [overrideSchema, avatarSchema]);
 
+// P2 Slice D (2026-07-04) — unauth cost hole: this legacy register path is
+// UNAUTHENTICATED and (with `skipPing=1`) does a DB upsert + in-world body
+// spawn per call with zero throttling. 5/min/IP matches the `/connect` +
+// account-mint budget (`connectRateLimiter` in agent-gateway.ts). Additive
+// only — behavior below the limiter is unchanged.
+const registerRateLimiter = createRateLimiter({
+  maxPerWindow: 5,
+  windowMs: 60_000,
+});
+
 // POST /api/openclaw/register
 openclawRoutes.post('/register', async (c) => {
+  // Rate limit BEFORE any body parse / DB work (the /join Fix M1 pattern —
+  // don't let a spam wave burn Postgres round-trips).
+  const ip = getClientIp({ get: (n) => c.req.header(n) ?? null });
+  if (!registerRateLimiter.check(ip)) {
+    return c.json({ error: 'Too many registration attempts. Try again in 1 minute.' }, 429);
+  }
+
   const body = await c.req.json();
   const parsed = registerSchema.safeParse(body);
   if (!parsed.success) {
@@ -180,15 +198,15 @@ openclawRoutes.post('/register', async (c) => {
   // unauthenticated caller knock a victim's legitimate live (ledger-capable)
   // session out of the map just by re-registering the victim's known agentId — a
   // griefing/DoS vector. No rebind happens, so no eviction is warranted.
-  const config: OpenClawRegistration = {
+  const config: AgentSubstrateRegistration = {
     ...data,
     sessionId,
     ledgerCapable: false,
     boundUserId: null,
-  } as OpenClawRegistration;
+  } as AgentSubstrateRegistration;
 
   // Test connectivity (skip if skipPing query param is set — for testing)
-  const client = new OpenClawClient(config);
+  const client = new AgentSubstrateClient(config);
   const skipPing = c.req.query('skipPing') === '1';
   if (!skipPing) {
     const alive = await client.ping();
@@ -198,12 +216,12 @@ openclawRoutes.post('/register', async (c) => {
   }
 
   // Upsert openclaw_bots by agentId
-  let identity: OpenClawBotIdentity;
+  let identity: AgentBotIdentity;
   let restoredState: { lastX?: number; lastY?: number; knowledge?: string[] } | undefined;
 
   try {
-    const existing = await db.query.openclawBots.findFirst({
-      where: eq(openclawBots.agentId, data.agentId),
+    const existing = await db.query.agentBots.findFirst({
+      where: eq(agentBots.agentId, data.agentId),
     });
 
     if (existing) {
@@ -215,7 +233,7 @@ openclawRoutes.post('/register', async (c) => {
         return c.json({ error: 'Invalid request' }, 400);
       }
       // Returning bot — increment sessions, update gateway
-      await db.update(openclawBots).set({
+      await db.update(agentBots).set({
         gatewayUrl: data.gatewayUrl,
         protocol: data.protocol ?? 'openai-compat',
         mode: data.mode,
@@ -234,7 +252,7 @@ openclawRoutes.post('/register', async (c) => {
         // one event. Same rationale as the /api/agent/connect path.
         sessionSweptAt: null,
         updatedAt: new Date(),
-      }).where(eq(openclawBots.id, existing.id));
+      }).where(eq(agentBots.id, existing.id));
 
       const meta = existing.metadata as any;
       if (data.mode === 'avatar' && meta?.lastX != null && meta?.lastY != null) {
@@ -261,7 +279,7 @@ openclawRoutes.post('/register', async (c) => {
         stats: data.stats,
       } : undefined;
 
-      const [inserted] = await db.insert(openclawBots).values({
+      const [inserted] = await db.insert(agentBots).values({
         agentId: data.agentId,
         gatewayUrl: data.gatewayUrl,
         protocol: data.protocol ?? 'openai-compat',
@@ -299,7 +317,7 @@ openclawRoutes.post('/register', async (c) => {
     // resolver, the gateway routes) re-reads the row by agentId and fails closed
     // when it is absent, so the ephemeral body could never authenticate — it
     // would only spawn an un-addressable, un-restorable NPC in the sim. Return a
-    // retryable 500 BEFORE `registerOpenClaw` (below) ever runs, so no live
+    // retryable 500 BEFORE `registerAgentBot` (below) ever runs, so no live
     // session is created without its surviving DB row + bearer hash.
     return c.json({ error: 'Registration failed — could not persist agent. Please retry.', code: 'registration_failed' }, 500);
   }
@@ -372,7 +390,7 @@ openclawRoutes.post('/register', async (c) => {
 
   // Register with simulation
   try {
-    npcSimulation.registerOpenClaw(config, client, restoredState);
+    npcSimulation.registerAgentBot(config, client, restoredState);
   } catch (err: any) {
     return c.json({ error: err.message || 'Registration failed' }, 400);
   }
@@ -385,14 +403,14 @@ openclawRoutes.delete('/unregister/:sessionId', async (c) => {
   const sessionId = c.req.param('sessionId');
 
   // Save avatar position before removing from simulation
-  const botConfig = npcSimulation.getOpenClawBotConfig(sessionId);
+  const botConfig = npcSimulation.getAgentBotConfig(sessionId);
   if (botConfig) {
-    const pos = botConfig.mode === 'avatar' ? npcSimulation.getOpenClawAvatarPosition(sessionId) : null;
+    const pos = botConfig.mode === 'avatar' ? npcSimulation.getAgentBotAvatarPosition(sessionId) : null;
     // Fire-and-forget: persist last position + update lastSeenAt
     (async () => {
       try {
-        const existing = await db.query.openclawBots.findFirst({
-          where: eq(openclawBots.agentId, botConfig.agentId),
+        const existing = await db.query.agentBots.findFirst({
+          where: eq(agentBots.agentId, botConfig.agentId),
         });
         if (existing) {
           const meta = (existing.metadata as any) ?? {};
@@ -400,7 +418,7 @@ openclawRoutes.delete('/unregister/:sessionId', async (c) => {
             meta.lastX = pos.x;
             meta.lastY = pos.y;
           }
-          await db.update(openclawBots).set({
+          await db.update(agentBots).set({
             metadata: meta,
             lastSeenAt: new Date(),
             // Phase 6 — explicit unregister flips session to expired
@@ -420,7 +438,7 @@ openclawRoutes.delete('/unregister/:sessionId', async (c) => {
             // explicit disconnect).
             sessionKeyHash: null,
             updatedAt: new Date(),
-          }).where(eq(openclawBots.id, existing.id));
+          }).where(eq(agentBots.id, existing.id));
         }
       } catch (err) {
         console.error('[OpenClaw] Failed to save disconnect state:', err);
@@ -437,7 +455,7 @@ openclawRoutes.delete('/unregister/:sessionId', async (c) => {
     deleteSessionAgent(sessionId);
   }
 
-  const removed = npcSimulation.unregisterOpenClaw(sessionId);
+  const removed = npcSimulation.unregisterAgentBot(sessionId);
   if (!removed) {
     return c.json({ error: 'Session not found' }, 404);
   }
@@ -450,19 +468,19 @@ openclawRoutes.delete('/unregister/:sessionId', async (c) => {
 // so it must never leak a session id. The session id is the bearer credential the
 // cove trusts for real-CT play; this previously returned the raw `sessionId` and
 // also embedded it inside the avatar `npcId` (`oc-${sid}`), letting anyone harvest
-// live bearer creds + spend a victim's real CT. `getActiveOpenClawBots()` now emits
+// live bearer creds + spend a victim's real CT. `getActiveAgentBots()` now emits
 // only non-secret identifiers (public `agentId` + override `targetNpcId`). Do NOT
 // add the session id back to this shape.
 openclawRoutes.get('/active', (c) => {
-  const bots = npcSimulation.getActiveOpenClawBots();
+  const bots = npcSimulation.getActiveAgentBots();
   return c.json({ bots });
 });
 
 // GET /api/openclaw/bot/:agentId — public bot profile
 openclawRoutes.get('/bot/:agentId', async (c) => {
   const agentId = c.req.param('agentId');
-  const bot = await db.query.openclawBots.findFirst({
-    where: eq(openclawBots.agentId, agentId),
+  const bot = await db.query.agentBots.findFirst({
+    where: eq(agentBots.agentId, agentId),
   });
   if (!bot) {
     return c.json({ error: 'Bot not found' }, 404);
@@ -505,7 +523,7 @@ openclawRoutes.post('/chat', async (c) => {
 
   // Fail-closed liveness gate BEFORE the map-only client lookup or any TTL
   // slide (Codex auth-lens fix #2, 2026-06-03). The previous code trusted bare
-  // Map membership (`getOpenClawClientBySession`) and then refreshed
+  // Map membership (`getAgentBotClientBySession`) and then refreshed
   // `openclaw_bots.session_expires_at` at the end of the handler — so an
   // EXPIRED-but-still-in-memory session could call /chat to RESURRECT its 24h
   // TTL and then pass the cove's `session_expires_at > now` validation. Route
@@ -521,7 +539,7 @@ openclawRoutes.post('/chat', async (c) => {
       404,
     );
   }
-  const client = npcSimulation.getOpenClawClientBySession(sessionId);
+  const client = npcSimulation.getAgentBotClientBySession(sessionId);
   if (!client) {
     return c.json(
       {
@@ -533,10 +551,10 @@ openclawRoutes.post('/chat', async (c) => {
   }
 
   // Look up actual bot data from DB instead of trusting client avatarContext
-  const botConfig = npcSimulation.getOpenClawBotConfig(sessionId);
+  const botConfig = npcSimulation.getAgentBotConfig(sessionId);
   const bot = botConfig
-    ? await db.query.openclawBots.findFirst({
-        where: eq(openclawBots.agentId, botConfig.agentId),
+    ? await db.query.agentBots.findFirst({
+        where: eq(agentBots.agentId, botConfig.agentId),
       })
     : null;
 
@@ -602,14 +620,14 @@ openclawRoutes.post('/chat', async (c) => {
   }
 
   // Fire-and-forget: increment message count
-  const botCfg = npcSimulation.getOpenClawBotConfig(sessionId);
+  const botCfg = npcSimulation.getAgentBotConfig(sessionId);
   if (botCfg) {
-    db.update(openclawBots).set({
-      totalMessages: sql`${openclawBots.totalMessages} + 1`,
+    db.update(agentBots).set({
+      totalMessages: sql`${agentBots.totalMessages} + 1`,
       lastSeenAt: new Date(),
       // Phase 6 — slide the 24h session TTL forward on every chat.
       sessionExpiresAt: computeSessionExpiresAt(),
-    }).where(eq(openclawBots.agentId, botCfg.agentId)).catch(() => {});
+    }).where(eq(agentBots.agentId, botCfg.agentId)).catch(() => {});
   }
 
   return c.json({
@@ -657,7 +675,7 @@ openclawRoutes.post('/location-chat', sessionMiddleware, async (c) => {
       404,
     );
   }
-  const client = npcSimulation.getOpenClawClientBySession(sessionId);
+  const client = npcSimulation.getAgentBotClientBySession(sessionId);
   if (!client) {
     return c.json(
       {
@@ -682,10 +700,10 @@ openclawRoutes.post('/location-chat', sessionMiddleware, async (c) => {
   }
 
   // Look up actual bot data from DB (same as /chat endpoint)
-  const locBotConfig = npcSimulation.getOpenClawBotConfig(sessionId);
+  const locBotConfig = npcSimulation.getAgentBotConfig(sessionId);
   const locBot = locBotConfig
-    ? await db.query.openclawBots.findFirst({
-        where: eq(openclawBots.agentId, locBotConfig.agentId),
+    ? await db.query.agentBots.findFirst({
+        where: eq(agentBots.agentId, locBotConfig.agentId),
       })
     : null;
 
@@ -771,21 +789,21 @@ openclawRoutes.post('/location-chat', sessionMiddleware, async (c) => {
       }
 
       // Also persist knowledge to openclaw_bots table (fire-and-forget)
-      const botCfg = npcSimulation.getOpenClawBotConfig(sessionId);
+      const botCfg = npcSimulation.getAgentBotConfig(sessionId);
       if (botCfg) {
         (async () => {
           try {
-            const bot = await db.query.openclawBots.findFirst({
-              where: eq(openclawBots.agentId, botCfg.agentId),
+            const bot = await db.query.agentBots.findFirst({
+              where: eq(agentBots.agentId, botCfg.agentId),
             });
             if (bot) {
               const currentBotKnowledge: string[] = bot.knowledge ?? [];
               const newBotEntries = knowledgeLearned.filter((e) => !currentBotKnowledge.includes(e));
               if (newBotEntries.length > 0) {
-                await db.update(openclawBots).set({
+                await db.update(agentBots).set({
                   knowledge: [...currentBotKnowledge, ...newBotEntries],
                   updatedAt: new Date(),
-                }).where(eq(openclawBots.id, bot.id));
+                }).where(eq(agentBots.id, bot.id));
               }
             }
           } catch (err) {
@@ -796,14 +814,14 @@ openclawRoutes.post('/location-chat', sessionMiddleware, async (c) => {
     }
 
     // Fire-and-forget: increment message count
-    const locBotCfg = npcSimulation.getOpenClawBotConfig(sessionId);
+    const locBotCfg = npcSimulation.getAgentBotConfig(sessionId);
     if (locBotCfg) {
-      db.update(openclawBots).set({
-        totalMessages: sql`${openclawBots.totalMessages} + 1`,
+      db.update(agentBots).set({
+        totalMessages: sql`${agentBots.totalMessages} + 1`,
         lastSeenAt: new Date(),
         // Phase 6 — slide the 24h session TTL forward on every chat.
         sessionExpiresAt: computeSessionExpiresAt(),
-      }).where(eq(openclawBots.agentId, locBotCfg.agentId)).catch(() => {});
+      }).where(eq(agentBots.agentId, locBotCfg.agentId)).catch(() => {});
     }
 
     return c.json({

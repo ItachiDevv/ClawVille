@@ -57,9 +57,35 @@ export { createOpenAIEmbeddingPlugin } from './plugins/openai-embedding-provider
 export type { OpenAIEmbeddingConfig } from './plugins/openai-embedding-provider';
 
 // OpenAI text generation provider (global default for text gen — the sole
-// text backend below the OpenClaw gateway override).
+// text backend below the OpenClaw gateway override). Delegates to the InferenceRouter.
 export { createOpenAITextPlugin, createOpenAIProTextPlugin } from './plugins/openai-text-provider';
 export type { OpenAITextConfig } from './plugins/openai-text-provider';
+
+// Inference router — the single text-gen router (named endpoints + per-consumer
+// routes + health-based failover). Replaces the old global OPENAI_BASE_URL hack.
+export {
+  InferenceRouter,
+} from './inference/inference-router';
+export type {
+  InferenceRoute,
+  InferenceSize,
+  InferenceEndpoint,
+  InferenceMessage,
+  GenerateArgs,
+  GenerateResult,
+  BreakerConfig,
+  RouteTable,
+  EndpointStats,
+} from './inference/inference-router';
+export {
+  getInferenceRouter,
+  buildInferenceRouterFromEnv,
+  buildEndpointsFromEnv,
+  buildRouteTableFromEnv,
+  describeInferenceConfig,
+  resolveInferenceRoute,
+  __resetInferenceRouter,
+} from './inference/inference-config';
 
 // Collaboration (Phase 3 — cross-building consultation)
 export {
@@ -95,6 +121,8 @@ export type {
 // Simulation runtime (Phase 2 autonomy)
 export { SimulationRuntime, createSimulationRuntime } from './simulation/simulation-runtime';
 export type { SimulationRuntimeDeps } from './simulation/simulation-runtime';
+// P3 slice 2 — directive→building resolver (pure; id + display-name matching).
+export { resolveDirectiveBuildingId } from './simulation/directive-resolver';
 export { AvatarStateStore } from './simulation/avatar-state-store';
 export type {
   AvatarSimState,

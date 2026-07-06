@@ -1,6 +1,6 @@
 /**
  * RPG rarity tier definitions — the visual language backbone shared by every
- * Gameify modal (Bazaar, Auction House, Quest Board, Bounty Board, Agent Setup).
+ * Gameify modal (Quest Board, Bounty Board, Land Office, Agent Setup).
  *
  * Tiers are WoW-flavoured item quality colours harmonized with the ClawVille
  * dark-navy + cyan HUD baseline. The gradients are deliberately subtle so the
@@ -8,15 +8,17 @@
  *
  * Backend truth
  * -------------
- * The Hono API (`apps/api/src/routes/bazaar.ts`) auto-computes rarity server-side
- * from the skill's knowledge entry count:
+ * Peer skill commerce (`apps/api/src/routes/bazaar.ts`, the original source
+ * of a server-computed rarity from a skill's knowledge entry count) was
+ * removed 2026-07-02 — a sold/published "skill" was a prompt-injection
+ * vector. No live route auto-computes rarity today; features that use this
+ * module (quests, bounties, land) set a tier explicitly. The 5-tier naming
+ * below is kept stable for any future feature that DOES compute rarity
+ * server-side and needs a matching pgEnum:
  *   <5  = common, 5-9 = uncommon, 10-14 = rare, 15-19 = epic, 20+ = legendary
- * and stores it on `published_skills.rarity` (pgEnum). So the first 5 tiers
- * must match the backend enum one-for-one — do NOT rename them.
  *
  * `mythic` is reserved client-side for future ultra-rare items that surpass
- * the 20-entry legendary ceiling. No backend rows use it today. When the
- * backend grows a 6th tier, we add a matching pgEnum value — no rename needed.
+ * the 20-entry legendary ceiling. No backend rows use it today.
  *
  * Usage
  * -----
@@ -158,8 +160,9 @@ const RARITY_INDEX: Readonly<Record<RarityId, RarityTier>> = Object.freeze(
  * Resolve a rarity id to its tier definition. Falls back to `common` if the
  * input is null/undefined/unknown (e.g. legacy rows with missing rarity).
  *
- * TODO: once the backend guarantees every bazaar/auction/quest row ships a
- * rarity field, drop the fallback and treat unknown ids as a type error.
+ * TODO: once the backend guarantees every rarity-bearing row (quest, land
+ * structure, etc.) ships a rarity field, drop the fallback and treat unknown
+ * ids as a type error.
  */
 export function getRarity(id: string | null | undefined): RarityTier {
   if (!id) return RARITY_INDEX.common;
@@ -174,9 +177,7 @@ export function compareRarity(a: RarityId, b: RarityId): number {
 
 /**
  * Client-side fallback mapper — ONLY use when a data source (e.g. a future
- * endpoint that forgets to expose rarity) doesn't return one. The bazaar API
- * already computes rarity server-side, so this should not be called for
- * bazaar listings today.
+ * endpoint that forgets to expose rarity) doesn't return one.
  *
  * TODO: remove once every Gameify endpoint ships rarity server-side.
  */

@@ -53,7 +53,11 @@ if (!SEED_URL.includes(STAGING_REF)) {
 
 // ── account fixtures ─────────────────────────────────────────────────────────
 const PASSWORD = 'LandTest!2026'; // shared known password for manual form-login
-const LANDTEST_COUNT = 2;
+// 3rd account added 2026-07-03: restart-survival-proof.ts needs a VIRGIN user
+// (identityPubkey still NULL) so first-connect returns the identity secretKey
+// needed to sign the /reconnect challenge. landtest1/2 burned theirs in the
+// 2026-07-02 connected-agent e2e runs. Idempotent: existing accounts untouched.
+const COUNT = 3;
 const SESSION_TTL_DAYS = 90;
 
 interface Fixture {
@@ -65,7 +69,7 @@ interface Fixture {
   note?: string;
 }
 const FIXTURES: Fixture[] = [
-  ...Array.from({ length: LANDTEST_COUNT }, (_, i): Fixture => {
+  ...Array.from({ length: COUNT }, (_, i): Fixture => {
     const n = i + 1;
     return {
       email: `landtest${n}@staging.clawville.test`,

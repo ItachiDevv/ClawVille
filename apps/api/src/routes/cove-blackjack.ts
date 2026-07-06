@@ -84,7 +84,7 @@ import {
   blackjackShoes,
   blackjackHands,
   coveGameEvents,
-  openclawBots,
+  agentBots,
   type BlackjackShoe,
   type BlackjackHand,
 } from '@clawville/database';
@@ -111,7 +111,8 @@ import {
   debitClawTokens,
   InsufficientTokensError,
 } from '../services/claw-token-ledger';
-import { logEventFromContext } from '../services/event-logger';
+import { logEventFromContext, logEventFromContextReturningId } from '../services/event-logger';
+import { publishCoveSettlement } from '../services/agent-settlement-publish';
 import { recordBlackjackSkillMemory } from '../services/game-skill-memory';
 import type { AppContext } from '../types';
 
@@ -1972,7 +1973,10 @@ async function settleHand(
     balance = txResult.balanceAfter;
   }
 
-  void logEventFromContext(c, {
+  // Durable settle row (UNCHANGED shape) — now capturing the events.id so the
+  // D7 slice-1 live settlement-confirm can cite it as the SSE cursor. The write
+  // is byte-identical to before; only the return value is used.
+  const settleLogP = logEventFromContextReturningId(c, {
     eventType: 'cove.blackjack.hand.settled',
     userId: ledgerUserId(subject),
     avatarId: avatar?.id ?? null,
@@ -1989,6 +1993,27 @@ async function settleHand(
       replay: txResult.replay,
     },
   });
+  // D7 slice-1 (DELIVERY-ONLY; money-lens review): live settlement-confirm to an
+  // ONLINE agent. Durability is the row above; this is fire-and-forget and can
+  // NEVER affect settlement (no ledger/control change). Fresh settles only — a
+  // concurrent-settle replay already delivered its confirm on the first pass.
+  if (subject.kind === 'agent' && !txResult.replay) {
+    publishCoveSettlement({
+      agentId: subject.agentId,
+      game: 'blackjack',
+      eventIdPromise: settleLogP,
+      payload: {
+        handId: hand.id,
+        shoeId,
+        handIndex: hand.handIndex,
+        bet: hand.bet,
+        payout: hand.payout,
+        net: hand.net,
+      },
+    });
+  } else {
+    void settleLogP;
+  }
 
   // ── Learn-through-play (Rule E5 / msg 6) ───────────────────────────────────
   // On a FRESH settle (never on an idempotent replay — that would double-write
@@ -2389,15 +2414,15 @@ coveBlackjackRouter.post('/agent/decide', requireAuth, async (c) => {
   // Resolve the human's bound connected agent + its LIVE session client. The
   // agent must be currently connected (a live npc-simulation session) for us to
   // synchronously ask it; otherwise there's nothing to relay → fall back.
-  const bot = await db.query.openclawBots.findFirst({
-    where: eq(openclawBots.userId, user.id),
+  const bot = await db.query.agentBots.findFirst({
+    where: eq(agentBots.userId, user.id),
     columns: { agentId: true },
   });
   if (!bot) return c.json({ error: 'no_connected_agent' }, 404);
   const liveSessions = npcSimulation.findActiveSessionsByAgentIds([bot.agentId]);
   const liveSessionId = liveSessions[0];
   if (!liveSessionId) return c.json({ error: 'no_connected_agent' }, 404);
-  const client = npcSimulation.getOpenClawClientBySession(liveSessionId);
+  const client = npcSimulation.getAgentBotClientBySession(liveSessionId);
   if (!client) return c.json({ error: 'no_connected_agent' }, 404);
   // nanoclaw/self-managed agents pull world-state + decide client-side; they
   // can't be synchronously asked via gateway push (chat() returns ''), so the

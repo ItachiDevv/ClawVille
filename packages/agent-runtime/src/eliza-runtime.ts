@@ -6,6 +6,7 @@
 import {
   AgentRuntime as ElizaAgentRuntime,
   ChannelType,
+  ModelType,
   createCharacter,
   type Character,
   type CharacterInput,
@@ -21,24 +22,59 @@ import { loadLocationTemplate } from './character-loader';
 import { createOpenClawProviderPlugin, type OpenClawGatewayConfig } from './plugins/openclaw-provider';
 import { createOpenAIEmbeddingPlugin } from './plugins/openai-embedding-provider';
 import { createOpenAITextPlugin } from './plugins/openai-text-provider';
+import type { InferenceRoute } from './inference/inference-router';
+import { embedText } from './plugins/embed-text';
 import { clawvillePlugin } from './plugins/clawville-plugin';
 import type { Provider, ProviderResult } from './providers/types';
 import type { Action, ActionResult, ClawvilleActionState } from './actions/types';
 
 const ROOM_NAMESPACE = '6ba7b810-9dad-11d1-80b4-00c04fd430c8';
 
+// R1 (2026-07-02): hard ceiling on ONE agent's ElizaOS init. `runtime.initialize()`
+// takes the plugin-sql `pg_advisory_lock`; if a prior init hangs holding it, both a
+// queued init-mutex waiter AND initialize() itself can block FOREVER, wedging the box
+// on one boot. This bounds both. CRITICAL: the bound is an IN-PROCESS rejecting
+// Promise.race ONLY — NEVER an external shell timeout/kill. An external kill orphans
+// the bun process still squatting the advisory lock (the documented root cause of the
+// "stuck on one boot" flake); an in-process REJECT lets the SAME process run its catch
+// (state='error' + onError) and finally (release the mutex), freeing the lock cleanly.
+const INIT_TIMEOUT_MS = 90_000;
+
 class InitMutex {
   private queue: (() => void)[] = [];
   private locked = false;
   private releaseDelay = 2000;
 
-  async acquire(): Promise<void> {
+  async acquire(timeoutMs = INIT_TIMEOUT_MS): Promise<void> {
     if (!this.locked) {
       this.locked = true;
       return;
     }
-    return new Promise<void>((resolve) => {
-      this.queue.push(resolve);
+    // Queued behind a holder. R1: a queued waiter can NEVER resolve if the holder
+    // hangs on the plugin-sql advisory lock, so bound the wait and REJECT on timeout.
+    // On timeout we splice this waiter out of the queue so a late release() (which
+    // shift()s the queue after releaseDelay ms) never calls a stale resolver and
+    // hands the lock to a caller that already timed out and gave up.
+    return new Promise<void>((resolve, reject) => {
+      let settled = false;
+      const waiter = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve();
+      };
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        const idx = this.queue.indexOf(waiter);
+        if (idx !== -1) this.queue.splice(idx, 1);
+        reject(
+          new Error(
+            `[InitMutex] init-lock acquire timed out after ${timeoutMs}ms — a prior agent init is likely hung on the plugin-sql pg_advisory_lock`,
+          ),
+        );
+      }, timeoutMs);
+      this.queue.push(waiter);
     });
   }
 
@@ -86,6 +122,14 @@ export interface ElizaRuntimeConfig {
   };
   agentConfig: Record<string, unknown>;
   openclawGateway?: OpenClawGatewayConfig;
+  /**
+   * Inference route for this runtime's text generation (assigned by the
+   * orchestrator from the agent's type + house flag). Selects which ordered
+   * endpoint list the InferenceRouter walks (teacher → OpenAI, fleet → local
+   * boxes + failover, etc.). Absent ⇒ 'default' (OpenAI). Ignored when an
+   * `openclawGateway` is set (that path wins at priority 100).
+   */
+  inferenceRoute?: InferenceRoute;
   databaseUrl?: string;
   apiKeys?: {
     /** OpenAI API key — the sole backend for TEXT_SMALL/TEXT_LARGE generation and embeddings. */
@@ -369,10 +413,16 @@ export class ElizaRuntime {
     if (this.state === 'running') return;
     this.state = 'initializing';
 
-    await initMutex.acquire();
-    console.log(`[ElizaRuntime] Agent ${this.config.agentId} acquired init mutex`);
-
+    // R1: `acquired` gates the release in `finally`. `acquire()` now REJECTS on a
+    // timeout (a hung holder), and on that path we NEVER took the lock — so we must
+    // NOT release (that would hand a phantom release to the queue and advance it for
+    // a lock we never held). Only release if acquire actually succeeded.
+    let acquired = false;
     try {
+      await initMutex.acquire(INIT_TIMEOUT_MS);
+      acquired = true;
+      console.log(`[ElizaRuntime] Agent ${this.config.agentId} acquired init mutex`);
+
       if (this.config.apiKeys?.openai && !process.env.OPENAI_API_KEY) {
         process.env.OPENAI_API_KEY = this.config.apiKeys.openai;
       }
@@ -410,7 +460,28 @@ export class ElizaRuntime {
         actionPlanning: false,
       } as any);
 
-      await this.runtime.initialize();
+      // R1: `runtime.initialize()` can block INDEFINITELY on the plugin-sql
+      // pg_advisory_lock. Bound it with an IN-PROCESS rejecting Promise.race (NEVER
+      // an external kill — that orphans the lock-holding bun proc). On timeout the
+      // race REJECTS → the catch below runs (state='error' + onError + rethrow) and
+      // the finally releases the mutex, all IN THIS PROCESS. Clear the timer on the
+      // success path so no dangling timer keeps the event loop alive.
+      let initTimer: ReturnType<typeof setTimeout> | undefined;
+      const initTimeout = new Promise<never>((_, reject) => {
+        initTimer = setTimeout(() => {
+          reject(
+            new Error(
+              `[ElizaRuntime] runtime.initialize() timed out after ${INIT_TIMEOUT_MS}ms — likely wedged on the plugin-sql pg_advisory_lock`,
+            ),
+          );
+        }, INIT_TIMEOUT_MS);
+      });
+      try {
+        await Promise.race([this.runtime.initialize(), initTimeout]);
+      } finally {
+        if (initTimer) clearTimeout(initTimer);
+      }
+
       this.state = 'running';
       console.log(`[ElizaRuntime] Agent ${this.config.agentId} started`);
     } catch (error) {
@@ -419,7 +490,9 @@ export class ElizaRuntime {
       this.config.onError?.(error as Error);
       throw error;
     } finally {
-      initMutex.release();
+      // R1: release ONLY if acquire() actually succeeded (see `acquired` above) —
+      // the acquire-timeout path rejects without ever holding the lock.
+      if (acquired) initMutex.release();
     }
   }
 
@@ -459,14 +532,19 @@ export class ElizaRuntime {
     this.loadedPlugins.unshift(openaiEmbeddingPlugin as Plugin);
     console.log(`[ElizaRuntime] Loaded OpenAI embedding provider (text-embedding-3-small, 1536-dim)`);
 
-    // Prepend OpenAI text provider (priority 95 — global default for TEXT_SMALL/TEXT_LARGE)
-    // Sits immediately below OpenClaw gateway (100) in the priority chain.
-    // Embeddings (above) also go through OpenAI — it is the sole non-OpenClaw backend.
+    // Prepend the InferenceRouter-backed text provider (priority 95 — global
+    // default for TEXT_SMALL/TEXT_LARGE). Sits immediately below the OpenClaw
+    // gateway (100). The per-runtime `route` (assigned by the orchestrator from
+    // the agent's type + house flag) decides which endpoints the router walks
+    // — teachers → OpenAI, the house fleet → local boxes with failover. Model +
+    // auth now live on the router's endpoints, not here.
     const openaiTextPlugin = createOpenAITextPlugin({
-      apiKey: this.config.apiKeys?.openai,
+      route: this.config.inferenceRoute,
     });
     this.loadedPlugins.unshift(openaiTextPlugin as Plugin);
-    console.log(`[ElizaRuntime] Loaded OpenAI text provider (gpt-4o-mini/gpt-4o, priority 95)`);
+    console.log(
+      `[ElizaRuntime] Loaded InferenceRouter text provider (route=${this.config.inferenceRoute ?? 'default'}, priority 95)`,
+    );
 
     // Prepend OpenClaw provider plugin so it wins TEXT_GENERATION priority (priority 100 > 95)
     if (this.config.openclawGateway) {
@@ -500,6 +578,201 @@ export class ElizaRuntime {
    *  (e.g., createMemory for Phase 2 knowledge embedding). */
   getElizaRuntime(): IAgentRuntime | null {
     return this.runtime;
+  }
+
+  /**
+   * P3 slice 2 — inject the human's CURRENT directive as a memory so this
+   * agent's NEXT cognition turn sees it in context. The durable source of truth
+   * is the DB row (platform_agents.config.currentDirective); this is a
+   * best-effort mirror for an ALREADY-running runtime. Fire-and-forget from
+   * callers (it MUST NOT lazy-start a runtime just to store a directive —
+   * no-op when not running); never throws.
+   *
+   * `userKey` (the human's user id) lands the memory in the SAME room as that
+   * user's avatar chat (`generateRoomId(agentId, userKey)`) so the next
+   * `/me/chat` turn includes it in history; omit it for a dedicated directive
+   * room.
+   */
+  async injectDirectiveMemory(text: string, userKey?: string): Promise<void> {
+    if (this.state !== 'running' || !this.runtime) return;
+    try {
+      const agentId = this.config.agentId as UUID;
+      const key = userKey && userKey.length > 0 ? userKey : 'directive';
+      const roomId = generateRoomId(this.config.agentId, key);
+      const entityId = uuidv5(key, ROOM_NAMESPACE) as UUID;
+      const worldId = await this.ensureWorld();
+      await this.ensureRoom(roomId, key, worldId);
+      await this.ensureEntity(entityId, agentId);
+      await this.runtime.createMemory(
+        {
+          id: crypto.randomUUID() as UUID,
+          agentId,
+          entityId,
+          roomId,
+          content: { text: `[Directive from your human] ${text}`, source: 'directive' } as Content,
+          createdAt: Date.now(),
+          metadata: { type: 'message', source: 'directive' },
+        },
+        'messages',
+      );
+    } catch (err) {
+      console.warn(
+        '[ElizaRuntime] injectDirectiveMemory failed (non-fatal):',
+        (err as Error)?.message,
+      );
+    }
+  }
+
+  /**
+   * P3 slice 3 — the memory CONVERGENCE write. Persist one EARNED-SKILL lesson
+   * (a teacher turn) onto THIS agent's own ElizaOS runtime, keyed to the AVATAR
+   * (durable) rather than the transient in-world body — so the lesson survives
+   * idle-despawn, unlike the old `npc_memories` body-keyed write. The lesson is
+   * embedded (1536-dim, `embedText`) and stored in the `knowledge` memory table
+   * (the SAME proven path items.ts uses for book knowledge) so it is retrievable
+   * by semantic RAG via `searchEarnedSkillMemories`.
+   *
+   * ISOLATION: earned-skill lessons live under an AVATAR-scoped room/entity
+   * (`earned-skill:<avatarId>`) — distinct from the platform-agent-keyed
+   * (roomId=entityId=agentId) book-knowledge the KnowledgeProvider reads — so a
+   * lesson never bleeds into the human-chat knowledge RAG and vice-versa.
+   *
+   * D8 cost: this is the per-turn EMBEDDING spend the convergence adds to the
+   * autonomous loop (the old keyword store was free) — a deliberate, recorded
+   * tradeoff (ARCHITECTURE §6). If the embedding fails we DO NOT write an
+   * un-searchable row; we return false so the caller routes to the keyword-store
+   * fallback (a lesson must never become silently unretrievable).
+   *
+   * NEVER lazy-starts: no-op (returns false) when this runtime isn't running.
+   * Fail-soft: returns false on ANY error; never throws (a memory failure must
+   * not break a teacher turn or a driver tick).
+   */
+  async recordEarnedSkillMemory(input: {
+    avatarId: string;
+    buildingId: string;
+    teacherName?: string;
+    lesson: string;
+  }): Promise<boolean> {
+    if (this.state !== 'running' || !this.runtime) return false;
+    const lesson = input.lesson.trim();
+    if (!lesson || !input.avatarId) return false;
+    try {
+      // Embed FIRST — a lesson stored without a vector is invisible to
+      // searchMemories, so on an embedding failure we abort the ElizaOS write
+      // and let the caller fall back to the keyword store (never a dead row).
+      let embedding: number[];
+      try {
+        embedding = await embedText(lesson);
+      } catch (embErr) {
+        console.warn(
+          '[ElizaRuntime] recordEarnedSkillMemory embed failed — caller falls back to keyword store:',
+          (embErr as Error)?.message,
+        );
+        return false;
+      }
+
+      const agentId = this.config.agentId as UUID;
+      const key = `earned-skill:${input.avatarId}`;
+      const roomId = generateRoomId(this.config.agentId, key);
+      const entityId = uuidv5(key, ROOM_NAMESPACE) as UUID;
+      const worldId = await this.ensureWorld();
+      await this.ensureRoom(roomId, key, worldId);
+      await this.ensureEntity(entityId, agentId);
+
+      const memoryId = uuidv5(
+        `earned-skill:${input.avatarId}:${input.buildingId}:${lesson}`,
+        ROOM_NAMESPACE,
+      ) as UUID;
+      await this.runtime.createMemory(
+        {
+          id: memoryId,
+          agentId,
+          entityId,
+          roomId,
+          content: { text: lesson, source: 'earned-skill' } as Content,
+          embedding,
+          createdAt: Date.now(),
+          metadata: {
+            type: 'custom',
+            subtype: 'earned-skill',
+            buildingId: input.buildingId,
+            teacher: input.teacherName,
+            avatarId: input.avatarId,
+          },
+        } as any,
+        'knowledge',
+        true, // unique — idempotent on an identical lesson
+      );
+      return true;
+    } catch (err) {
+      console.warn(
+        '[ElizaRuntime] recordEarnedSkillMemory failed (non-fatal):',
+        (err as Error)?.message,
+      );
+      return false;
+    }
+  }
+
+  /**
+   * P3 slice 3 — the memory CONVERGENCE read. Semantic-RAG retrieval of THIS
+   * agent's own earned-skill lessons (avatar-keyed, embedded) — the replacement
+   * for the driver's old keyword `getRelevantMemories`. Embeds `query`, runs a
+   * vector search over the AVATAR-scoped `knowledge` rows, filters to
+   * `subtype:'earned-skill'` (+ an optional building), and returns the lesson
+   * strings ordered by relevance.
+   *
+   * NEVER lazy-starts: returns [] when this runtime isn't running (D8 guardrail —
+   * the caller keeps the keyword store as the not-running fallback). Fail-soft:
+   * [] on ANY error (embed failure, no rows yet); never throws.
+   */
+  async searchEarnedSkillMemories(input: {
+    avatarId: string;
+    query: string;
+    buildingId?: string;
+    limit?: number;
+  }): Promise<string[]> {
+    if (this.state !== 'running' || !this.runtime) return [];
+    if (!input.avatarId) return [];
+    const limit = input.limit ?? 5;
+    try {
+      let embedding: number[];
+      try {
+        embedding = await embedText(input.query && input.query.trim().length > 0 ? input.query : 'recent lessons');
+      } catch {
+        return [];
+      }
+      const key = `earned-skill:${input.avatarId}`;
+      const roomId = generateRoomId(this.config.agentId, key);
+      const entityId = uuidv5(key, ROOM_NAMESPACE) as UUID;
+      const results: Array<{ content?: { text?: string }; metadata?: Record<string, unknown> }> =
+        (await (this.runtime as any).searchMemories({
+          embedding,
+          tableName: 'knowledge',
+          roomId,
+          entityId,
+          // Over-fetch, then filter to earned-skill (+ building) in-app.
+          count: Math.max(limit * 3, 15),
+          // Low threshold — recall over precision; this is prompt seasoning.
+          match_threshold: 0.1,
+          unique: true,
+        })) ?? [];
+      const out: string[] = [];
+      for (const m of results) {
+        const meta = (m.metadata ?? {}) as Record<string, unknown>;
+        if (meta.subtype !== 'earned-skill') continue;
+        if (input.buildingId && meta.buildingId !== input.buildingId) continue;
+        const text = m.content?.text;
+        if (typeof text === 'string' && text.length > 0) out.push(text);
+        if (out.length >= limit) break;
+      }
+      return out;
+    } catch (err) {
+      console.warn(
+        '[ElizaRuntime] searchEarnedSkillMemories failed (non-fatal):',
+        (err as Error)?.message,
+      );
+      return [];
+    }
   }
 
   private async ensureWorld(): Promise<UUID> {
@@ -751,6 +1024,17 @@ export class ElizaRuntime {
        * replies. The brevity DIRECTIVE in the system prompt applies regardless.
        */
       conversational?: boolean;
+      /**
+       * Per-turn text-model override (agent-metaverse P1 slice 4). Absent ⇒ the
+       * runtime's default text model (unchanged behaviour). The autonomous house
+       * teacher turn passes 'TEXT_SMALL' so a hosted teacher reply runs on
+       * gpt-4o-mini instead of the default TEXT_LARGE (gpt-4o) while carrying the
+       * teacher's full merged SKILL.md corpus — a verified-safe cost win. Kept a
+       * plain string union (NOT the core `ModelType` enum) so apps/api callers
+       * don't have to import @elizaos/core; it is assignable to `generateText`'s
+       * `modelType` (TextGenerationModelType).
+       */
+      modelType?: 'TEXT_SMALL' | 'TEXT_LARGE';
     } = {}
   ): Promise<ElizaMessage> {
     if (this.state !== 'running' || !this.runtime) {
@@ -839,6 +1123,8 @@ export class ElizaRuntime {
       const result = await this.runtime.generateText(promptWithHistory, {
         maxTokens: responseMaxTokens,
         stopSequences: [],
+        // Per-turn model override — omitted (default model) unless the caller set it.
+        ...(context.modelType ? { modelType: context.modelType } : {}),
       });
 
       let responseText = result.text;
@@ -918,6 +1204,30 @@ export class ElizaRuntime {
       this.config.onError?.(error as Error);
       throw error;
     }
+  }
+
+  /**
+   * Single-shot decision generation for the autonomy driver (agent-metaverse
+   * P1). Routes through the SAME provider priority chain as chat — OpenClaw
+   * gateway (100) → OpenAI text provider (95, gpt-4o-mini) — so the model
+   * backend stays SWAPPABLE per-agent for the eventual fleet (point a house
+   * agent's gateway at a self-hosted OpenAI-compat endpoint and this method
+   * routes there automatically; no code change). We deliberately use the raw
+   * `useModel(TEXT_SMALL)` path (mirrors SimulationRuntime.planAvatarNextAction),
+   * NOT `processMessage`: the driver owns dispatch (it parses `[ACTION:]` tags
+   * and calls `npcSimulation.dispatchHatcherActions`), so we do NOT want
+   * processMessage's provider/action pipeline, memory writes, or history here.
+   * Returns the raw model text (never throws to the caller for an empty/odd
+   * result — it coerces to a string; a runtime that isn't started throws).
+   */
+  async decide(prompt: string, opts?: { maxTokens?: number }): Promise<string> {
+    if (!this.runtime) throw new Error('ElizaRuntime.decide: runtime not started');
+    const result = await this.runtime.useModel(ModelType.TEXT_SMALL, {
+      prompt,
+      maxTokens: opts?.maxTokens ?? 220,
+      stopSequences: [],
+    } as any);
+    return typeof result === 'string' ? result : String(result ?? '');
   }
 
   getCharacter(): Character {
