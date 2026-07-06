@@ -32,7 +32,14 @@ import {
   type GenerateTextParams,
 } from '@elizaos/core';
 
-const OPENAI_API_URL = 'https://api.openai.com/v1/chat/completions';
+// Base URL is env-overridable so the runtime can target a self-hosted,
+// OpenAI-compatible endpoint (e.g. a local inference box reached over a private
+// network) WITHOUT any host or IP address baked into source. The concrete
+// address lives ONLY in the deploy environment (`OPENAI_BASE_URL`), never here.
+// Unset → OpenAI, unchanged from before. Trailing slashes are trimmed so both
+// `https://host/v1` and `https://host/v1/` resolve identically.
+const OPENAI_BASE_URL = (process.env.OPENAI_BASE_URL ?? 'https://api.openai.com/v1').replace(/\/+$/, '');
+const OPENAI_API_URL = `${OPENAI_BASE_URL}/chat/completions`;
 
 // gpt-4o-mini is the fast, cheap default for TEXT_SMALL.
 // gpt-4o is the higher-quality default for TEXT_LARGE.
