@@ -657,9 +657,15 @@ describeIfDb('phase B — money-path E2E (requires DATABASE_URL + migration 0013
     });
     expect(claim.status).toBe(200);
     const claimData = (await claim.json()) as { parcel: { parcelCode: string } };
-    expect(claimData.parcel.parcelCode).toBe(starterCodeB);
+    // claim-starter allocates the NEXT AVAILABLE starter — the release test above
+    // returned starterCodeA to the pool, so the allocator may legitimately hand
+    // back A or B. The lapse-conservation math is parcel-agnostic: assert on
+    // WHICHEVER fixture parcel was claimed (first live-DB run caught the hard
+    // .toBe(starterCodeB) as an ordering assumption, not a product bug).
+    const lapsedCode = claimData.parcel.parcelCode;
+    expect([starterCodeA, starterCodeB]).toContain(lapsedCode);
 
-    const parcel = await getParcelByCode(starterCodeB);
+    const parcel = await getParcelByCode(lapsedCode);
     await forceGraceElapsed(parcel.id as string);
     const treasuryBefore = await treasuryBalance();
     const lapserBefore = await getBalance(lapserAvatarId); // 3000 after the claim debit
@@ -673,7 +679,7 @@ describeIfDb('phase B — money-path E2E (requires DATABASE_URL + migration 0013
     expect(await getBalance(lapserAvatarId)).toBe(lapserBefore);
     expect(await treasuryBalance()).toBe(treasuryBefore + LAND_STARTER_DEPOSIT_CT);
 
-    const reverted = await getParcelByCode(starterCodeB);
+    const reverted = await getParcelByCode(lapsedCode);
     expect(reverted.status).toBe('available');
     expect(reverted.tenure).toBeNull();
     expect(reverted.depositRemainingCt).toBeNull();
