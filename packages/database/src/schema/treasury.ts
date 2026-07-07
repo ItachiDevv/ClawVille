@@ -30,16 +30,25 @@ import { avatars } from './avatars';
  *   `G5WgvGYK5mLxQbVUmNhFKeWwEhT235p2HjKmkbpMbMWy`; production must rotate
  *   via the program's `update_config` instruction and re-seed this row
  *   with the new keypair before pointing prod traffic at it.
+ * - `clv-swap` (Tokenomics C3, 2026-07-07): the DEDICATED CLV buy-side swap
+ *   wallet the (Codex-review-gated) live swap executor would fund clips from.
+ *   Provisioned as ONE row by `scripts/generate-clv-swap-wallet.ts` (AES-256-GCM
+ *   at rest, same scheme as every treasury row). The dry-run executor only ever
+ *   READS the pubkey (`getClvSwapWalletPubkey()` in
+ *   `apps/api/src/services/clv-swap-executor.ts`) — it NEVER decrypts the
+ *   secret; live signing is a Codex-gated seam.
  *
  * Postgres enum add: extending this list requires
- * `ALTER TYPE treasury_purpose ADD VALUE 'wager-settlement-authority'`
- * which drizzle-kit handles in `db:push` (Drizzle 0.33+ emits the ALTER).
+ * `ALTER TYPE treasury_purpose ADD VALUE IF NOT EXISTS '<value>'` — shipped in
+ * the numbered migrations (e.g. `0014_clv_swap_queue.sql` for 'clv-swap');
+ * NEVER via db:push.
  */
 export const treasuryPurposeEnum = pgEnum('treasury_purpose', [
   'x402-merchant',
   'fee-collector',
   'escrow',
   'wager-settlement-authority',
+  'clv-swap',
 ]);
 
 /**

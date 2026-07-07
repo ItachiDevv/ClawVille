@@ -52,8 +52,12 @@ import { logEvent } from './event-logger';
  * Drizzle transaction type — passing this lets the helpers compose into
  * a larger atomic block (e.g. peer transfers, escrow settlement).
  * When omitted, the helper opens its own transaction.
+ *
+ * EXPORTED (Tokenomics C3, 2026-07-07 — type-only, zero runtime change) so
+ * sibling settle-composable seams (`clv-swap-executor.ts enqueueClvBuy`) share
+ * THIS exact transaction type instead of re-deriving a drifting copy.
  */
-type LedgerTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+export type LedgerTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
 export type ClawTokenSource =
   | 'api'

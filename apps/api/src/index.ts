@@ -127,6 +127,11 @@ import { treasuryRouter } from './routes/treasury';
 // Tokenomics T0 (2026-07-07) — admin-only CLV price-oracle read surface
 // (GET /api/oracle/clv). READ-ONLY price feed; never touches the CT ledger.
 import { oracleRouter } from './routes/oracle';
+// Tokenomics C3 (2026-07-07) — CLV buy-queue DRY-RUN worker. STATIC import is
+// deliberate: clv-swap-executor.ts throws AT MODULE LOAD when
+// CLV_SWAP_EXECUTE=true (live execution is Codex-review-gated), so a box
+// carrying that flag refuses to boot — the x402-config crash-loud pattern.
+import { startClvSwapWorker, stopClvSwapWorker } from './services/clv-swap-executor';
 import { walletLinkRoutes } from './routes/wallet-link';
 import type { AppContext } from './types';
 
@@ -1240,6 +1245,23 @@ process.on('uncaughtException', (err) => {
     } catch (err) {
       console.error('[API] CLV price oracle init failed (non-fatal):', err);
     }
+
+    // CLV SWAP DRY-RUN WORKER (Tokenomics C3, 2026-07-07) — scans
+    // `clv_buy_queue` planned rows and LOGS the clip plan it WOULD execute
+    // (oracle quote + LP depth + planClips). NO signing, NO tx, NO row
+    // mutation — live execution is Codex-review-gated (CLV_SWAP_EXECUTE=true
+    // already refused to boot at module load via the static import above; a
+    // gate throw here is re-escalated to a crash rather than swallowed).
+    try {
+      startClvSwapWorker();
+      console.log('[API] CLV swap dry-run worker started');
+    } catch (err) {
+      if ((err as Error)?.message?.includes('Codex-review-gated')) {
+        console.error('[API] FATAL:', (err as Error).message);
+        process.exit(1);
+      }
+      console.error('[API] CLV swap dry-run worker init failed (non-fatal):', err);
+    }
   } catch (err) {
     console.error('[API] Activity portal init failed:', err);
   }
@@ -1301,6 +1323,13 @@ async function gracefulShutdown(signal: string) {
       stopClvPriceOracle();
     } catch {
       // If the oracle module failed to load earlier, there's nothing to stop.
+    }
+    // Tokenomics C3 — stop the CLV swap dry-run worker (statically imported;
+    // idempotent no-op when it never started).
+    try {
+      stopClvSwapWorker();
+    } catch {
+      // Nothing to stop.
     }
     await Promise.allSettled([
       npcSimulation.avatarAutonomyManager.shutdown(),

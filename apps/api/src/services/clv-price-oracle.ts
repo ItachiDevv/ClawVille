@@ -35,6 +35,19 @@
  *                     the latest snapshot is older than the max-stale window
  *                     (`CLV_ORACLE_MAX_STALE_MS`, default 10 min) — a >10-min
  *                     price is NEVER served as a usable quote.
+ *
+ * LP DEPTH (Tokenomics C3, 2026-07-07) — `poolLiquidityUsd`:
+ *   The highest-liquidity DexScreener pair's `liquidity.usd` (BOTH sides of the
+ *   pool, USD). Previously fetched into a local `bestLiq` and DISCARDED; now
+ *   surfaced through the cache so the CLV swap executor (`clv-swap-executor.ts`)
+ *   can size price-impact-capped clips. DexScreener is the ONLY depth source
+ *   (Helius DAS carries no pool liquidity), so `fetchSpot` now runs BOTH feeds
+ *   in parallel every poll: the PRICE preference is unchanged (Helius primary →
+ *   DexScreener fallback) while the DEPTH always refreshes from DexScreener when
+ *   it responds. Depth is memory-only (NOT persisted to `clv_price_snapshots` —
+ *   no schema change), so it re-warms within one poll (~60s) of boot; it goes
+ *   `null` when the reading is missing or older than the same max-stale window
+ *   as the price (a stale depth must never size a clip plan).
  */
 
 import { db, clvPriceSnapshots } from '@clawville/database';
@@ -78,6 +91,15 @@ export interface ClvPriceQuote {
   stale: boolean;
   /** false = no data yet OR latest snapshot > max-stale (quoteUsd is null). */
   available: boolean;
+  /**
+   * LP depth (Tokenomics C3): the highest-liquidity DexScreener pair's
+   * `liquidity.usd` — BOTH sides of the pool, in USD. null when never fetched
+   * OR when the last reading is older than the max-stale window (a stale depth
+   * must never size a swap clip plan). Memory-only; not persisted.
+   */
+  poolLiquidityUsd: number | null;
+  /** ISO time of the liquidity reading backing `poolLiquidityUsd`. */
+  liquidityAsOf: string | null;
 }
 
 interface SpotResult {
@@ -85,10 +107,14 @@ interface SpotResult {
   /** Full-precision decimal string for storage in numeric(20,12). */
   priceStr: string;
   source: ClvStoredSource;
+  /** DexScreener pool depth (USD, both sides) when it responded; else null. */
+  liquidityUsd: number | null;
 }
 
 // ── In-memory cache (the poller keeps it fresh; getClvPrice reads it sync) ──
 let latestQuote: { price: number; source: ClvStoredSource; at: number } | null = null;
+/** Latest DexScreener pool depth (USD, both sides) + when it was read. */
+let latestLiquidity: { usd: number; at: number } | null = null;
 /** Rolling 30-min window of { price, at(ms) } in ascending time order. */
 const twapSamples: Array<{ price: number; at: number }> = [];
 /** Did the MOST RECENT poll attempt get a live price? false → serving cache. */
@@ -178,10 +204,15 @@ interface DexScreenerPair {
 
 /**
  * DexScreener spot (keyless). Returns the highest-liquidity pair's `priceUsd`
- * (full-precision string) or null. Mirrors the /dash token-economy fetch, but
- * picks by liquidity rather than blindly taking `pairs[0]`.
+ * (full-precision string) PLUS that pair's `liquidity.usd` (Tokenomics C3 —
+ * previously computed into `bestLiq` and discarded), or null. Mirrors the /dash
+ * token-economy fetch, but picks by liquidity rather than blindly `pairs[0]`.
+ * `liquidityUsd` is null when the winning pair carried no finite depth field.
  */
-async function fetchDexScreenerPrice(): Promise<string | null> {
+async function fetchDexScreenerPrice(): Promise<{
+  priceStr: string;
+  liquidityUsd: number | null;
+} | null> {
   try {
     const res = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${CLV_MINT}`, {
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
@@ -196,7 +227,10 @@ async function fetchDexScreenerPrice(): Promise<string | null> {
       if (!p.priceUsd) continue;
       const n = Number(p.priceUsd);
       if (!Number.isFinite(n) || n <= 0) continue;
-      const liq = typeof p.liquidity?.usd === 'number' ? p.liquidity.usd : 0;
+      const liq =
+        typeof p.liquidity?.usd === 'number' && Number.isFinite(p.liquidity.usd)
+          ? p.liquidity.usd
+          : 0;
       if (liq > bestLiq) {
         best = p;
         bestLiq = liq;
@@ -204,28 +238,39 @@ async function fetchDexScreenerPrice(): Promise<string | null> {
     }
     const priceStr = best?.priceUsd;
     if (!priceStr) return null;
-    return priceStr;
+    // bestLiq is >= 0 whenever a best pair was selected; a 0 means the winning
+    // pair reported no (or zero) depth — surface it as a real 0 reading so the
+    // swap planner refuses on "no usable depth" rather than seeing stale data.
+    return { priceStr, liquidityUsd: bestLiq >= 0 ? bestLiq : null };
   } catch {
     return null;
   }
 }
 
-/** Helius primary → DexScreener fallback. null only when BOTH fail. */
+/**
+ * One poll round. PRICE preference is unchanged (Helius primary → DexScreener
+ * fallback; null only when BOTH fail). DEPTH (Tokenomics C3) always comes from
+ * DexScreener — the only feed that carries pool liquidity — so both feeds are
+ * fetched in PARALLEL every round (one extra keyless request per ~60s poll)
+ * instead of DexScreener only running on a Helius failure.
+ */
 async function fetchSpot(): Promise<SpotResult | null> {
-  const heliusPrice = await fetchHeliusPrice();
+  const [heliusPrice, dex] = await Promise.all([fetchHeliusPrice(), fetchDexScreenerPrice()]);
+  const liquidityUsd = dex?.liquidityUsd ?? null;
   if (heliusPrice !== null) {
     return {
       priceNum: heliusPrice,
       priceStr: numberToPlainDecimal(heliusPrice),
       source: 'helius',
+      liquidityUsd,
     };
   }
-  const dexStr = await fetchDexScreenerPrice();
-  if (dexStr !== null) {
+  if (dex !== null) {
     return {
-      priceNum: Number(dexStr),
-      priceStr: normalizeDecimalString(dexStr),
+      priceNum: Number(dex.priceStr),
+      priceStr: normalizeDecimalString(dex.priceStr),
       source: 'dexscreener',
+      liquidityUsd,
     };
   }
   return null;
@@ -271,6 +316,12 @@ async function pollOnce(): Promise<void> {
     console.error('[clv-price-oracle] snapshot insert failed (non-fatal):', err);
   }
   latestQuote = { price: spot.priceNum, source: spot.source, at };
+  // LP depth (C3): refresh only when DexScreener actually answered this round —
+  // a Helius-only round keeps the previous reading (aged out by the max-stale
+  // window in getClvPrice, never silently served forever).
+  if (spot.liquidityUsd !== null) {
+    latestLiquidity = { usd: spot.liquidityUsd, at };
+  }
   pushSample(spot.priceNum, at);
   lastFetchOk = true;
 }
@@ -324,6 +375,17 @@ async function seedFromDb(): Promise<void> {
  */
 export function getClvPrice(): ClvPriceQuote {
   const now = Date.now();
+  const maxStale = resolveMaxStaleMs();
+
+  // LP depth (C3): same max-stale discipline as the price — a reading older
+  // than the window is reported as null (a stale depth must never size clips).
+  let poolLiquidityUsd: number | null = null;
+  let liquidityAsOf: string | null = null;
+  if (latestLiquidity && now - latestLiquidity.at <= maxStale) {
+    poolLiquidityUsd = latestLiquidity.usd;
+    liquidityAsOf = new Date(latestLiquidity.at).toISOString();
+  }
+
   if (latestQuote === null) {
     return {
       spotUsd: null,
@@ -333,13 +395,14 @@ export function getClvPrice(): ClvPriceQuote {
       source: null,
       stale: true,
       available: false,
+      poolLiquidityUsd,
+      liquidityAsOf,
     };
   }
   const spot = latestQuote.price;
   const twap = computeTwap(spot, now);
   const asOf = new Date(latestQuote.at).toISOString();
   const ageMs = now - latestQuote.at;
-  const maxStale = resolveMaxStaleMs();
 
   if (ageMs > maxStale) {
     // REFUSE — never serve a >max-stale price as a usable quote. spot/twap are
@@ -353,6 +416,8 @@ export function getClvPrice(): ClvPriceQuote {
       source: 'last_known',
       stale: true,
       available: false,
+      poolLiquidityUsd,
+      liquidityAsOf,
     };
   }
 
@@ -365,6 +430,8 @@ export function getClvPrice(): ClvPriceQuote {
     source: stale ? 'last_known' : latestQuote.source,
     stale,
     available: true,
+    poolLiquidityUsd,
+    liquidityAsOf,
   };
 }
 
