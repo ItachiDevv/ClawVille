@@ -124,6 +124,9 @@ import { supportRouter } from './routes/support';
 // per gameType; faucet detector). FEATURE_GATE: cove_ct_economy_monitor.
 import { coveEconomyRouter } from './routes/cove-economy';
 import { treasuryRouter } from './routes/treasury';
+// Tokenomics T0 (2026-07-07) — admin-only CLV price-oracle read surface
+// (GET /api/oracle/clv). READ-ONLY price feed; never touches the CT ledger.
+import { oracleRouter } from './routes/oracle';
 import type { AppContext } from './types';
 
 const app = new Hono<AppContext>();
@@ -401,6 +404,10 @@ app.route('/api/cove/economy', coveEconomyRouter);
 // GET /api/treasury/summary reports the fee-sink avatar's balance (total +
 // soft/bought/earned) with an optional ?byReason=true per-fee-site breakdown.
 app.route('/api/treasury', treasuryRouter);
+// Tokenomics T0 (2026-07-07) — admin-only CLV price-oracle read surface:
+// GET /api/oracle/clv reports the current house-favorable quote (min(spot,
+// 30-min TWAP)) + optional ?history=N raw snapshots. READ-ONLY USD price feed.
+app.route('/api/oracle', oracleRouter);
 // Phase 5.1 — admin identity recovery stub. Returns 501 behind a
 // FEATURE_GATE until the support-chat verification workflow lights up.
 app.route('/api/admin', adminIdentityRoutes);
@@ -1211,6 +1218,21 @@ process.on('uncaughtException', (err) => {
         err,
       );
     }
+
+    // CLV PRICE ORACLE (Tokenomics T0, 2026-07-07) — READ-ONLY price feed.
+    // Seeds the 30-min TWAP window from `clv_price_snapshots`, then polls the
+    // CLV price (Helius primary → keyless DexScreener fallback) every ~60s,
+    // writing a snapshot row + refreshing an in-memory spot/TWAP cache behind
+    // `getClvPrice()`. Fire-and-forget: a fetch/DB failure logs + degrades to
+    // last-known, never crashes boot. Read surface: GET /api/oracle/clv (admin).
+    // Never touches `avatars.clawTokens` or the ledger — all values are USD.
+    try {
+      const { startClvPriceOracle } = await import('./services/clv-price-oracle');
+      startClvPriceOracle();
+      console.log('[API] CLV price oracle started');
+    } catch (err) {
+      console.error('[API] CLV price oracle init failed (non-fatal):', err);
+    }
   } catch (err) {
     console.error('[API] Activity portal init failed:', err);
   }
@@ -1266,6 +1288,12 @@ async function gracefulShutdown(signal: string) {
       stopLandRentSweeper();
     } catch {
       // If the sweeper module failed to load earlier, there's nothing to stop.
+    }
+    try {
+      const { stopClvPriceOracle } = await import('./services/clv-price-oracle');
+      stopClvPriceOracle();
+    } catch {
+      // If the oracle module failed to load earlier, there's nothing to stop.
     }
     await Promise.allSettled([
       npcSimulation.avatarAutonomyManager.shutdown(),
