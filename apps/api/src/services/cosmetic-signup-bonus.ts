@@ -32,13 +32,13 @@ import { db, cosmeticBonusGrants, sql } from '@clawville/database';
 
 /**
  * The one-time signup bonus, in vCLAW units. Founder-set 2026-07-07: $5 of
- * cosmetics-only promo credit. Value is 50 in the PRE-redenomination ($0.10/CT)
- * era this slice ships into; the A3 ¢-peg ×10 redenomination BUMPS this constant
- * to 500 AND multiplies existing grant rows ×10, so the final state is 500
- * post-redenomination units (= $5 at the $0.01 peg). See migration
- * 0011_redenominate_ct_x10.sql.
+ * cosmetics-only promo credit = 500 units at the A3 ¢-peg ($0.01/unit). This is
+ * the POST-redenomination value: A2 shipped 50 (pre-×10, $0.10/CT era); the A3
+ * ¢-peg redenomination (migration `0011`) BUMPED this constant to 500 AND
+ * multiplied every existing grant row ×10 in the same guarded pass, so every
+ * account — pre- or post-migration — ends at 500 units = $5.
  */
-export const SIGNUP_BONUS_COSMETIC_CT = 50;
+export const SIGNUP_BONUS_COSMETIC_CT = 500;
 
 /** Drizzle transaction type — lets callers compose into a larger atomic block. */
 type LedgerTx = Parameters<Parameters<typeof db.transaction>[0]>[0];

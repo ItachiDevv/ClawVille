@@ -21,11 +21,12 @@
  * converts a SETTLED on-chain payment into internal vCLAW via the audited
  * `claw-token-ledger`. vCLAW is never written directly.
  *
- * TOKENOMICS F2 — the credit is tagged BOUGHT (provenance:'bought'), non-cashable
- * V-Bucks, with `usd_basis` = the dollars paid stamped on the ledger row. The
- * store buy-price is $10 = 100 vCLAW ($0.10/coin, `CT_PER_USDC=10`). BOUGHT can
- * never be cashed out (only EARNED is, via the separate mintEarned chokepoint) —
- * this on-ramp is one-way buy power, never a withdrawal right.
+ * TOKENOMICS F2/A3 — the credit is tagged BOUGHT (provenance:'bought'),
+ * non-cashable V-Bucks, with `usd_basis` = the dollars paid stamped on the ledger
+ * row. The store buy-price is the ¢-peg $1 = 100 vCLAW ($0.01/coin,
+ * `CT_PER_USDC=100` after the A3 redenomination). BOUGHT can never be cashed out
+ * (only EARNED is, via the separate mintEarned chokepoint) — this on-ramp is
+ * one-way buy power, never a withdrawal right.
  *
  * PARITY (Rule E5): both a logged-in human (Lucia cookie) AND a connected/hosted
  * agent (X-Clawville-Agent-Session → its bound avatar) reach BOTH routes through
@@ -141,8 +142,9 @@ ctTopupRoutes.post('/quote', requireAuthOrAgentSession, requireNonGuestIdentity,
   const network = resolveTopupNetwork();
   const amountCt = usdToCt(usdCents);
 
-  // Sub-dime guard: at CT_PER_USDC=10, usdToCt(1..9 cents) floors to 0. A 0-CT
-  // quote would let the buyer pay real USDC for nothing — settle's
+  // Zero-CT guard: `usdToCt` floors, so any USD amount that maps to 0 vCLAW (only
+  // possible at a future fractional rate — at the A3 ¢-peg CT_PER_USDC=100, even 1
+  // cent → 1 vCLAW) would let the buyer pay real USDC for nothing. settle's
   // creditClawTokens rejects a non-positive amount, so the tx rolls back and the
   // row sticks pending while the USDC sits in the merchant wallet. Reject here,
   // BEFORE persisting a row or issuing the payment requirement.

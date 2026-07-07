@@ -38,20 +38,28 @@ export {
  * (DESIGN §3 / ROADMAP §6.C4):
  *
  *   - starter: 1st claim is FREE (the seed flags the abundant starter rung with
- *     priceCt=0 for the free-grant path); the rest seed around ~150 CT.
+ *     priceCt=0 for the free-grant path); the rest seed around ~1500 units.
  *   - founder: USDC/auction sentinel — `min/max` are `null`. The seed leaves
  *     `land_parcels.price_ct` NULL and the v1 buy route returns 501
  *     (`founder_tier_not_in_v1`). Any consumer MUST handle `null`.
+ *
+ * A3 ¢-peg re-band (2026-07-07): STARTER kept purchasing power — max ×10
+ * (150→1500 units = $15 at $0.01), matching the founder's "starter stays cheap
+ * (0–1,500 units)". The c/b/a buy-outright bands are LEFT UNCHANGED (NOT ×10,
+ * NOT re-banded): per the founder, C/B/A purchase prices become IRRELEVANT once
+ * land tenure moves to CLV hold-to-keep in Phase B — "leave values, do not gate
+ * on them, note it." So c/b/a are effectively 10× cheaper in USD now (a stopgap
+ * until Phase B replaces buy-outright with claim-locks) and MUST NOT be treated
+ * as a coherent USD price. Migration 0011 ×10's only the starter parcel rows.
  */
 export const LAND_TIER_LADDER: Record<
   LandTier,
   { minCt: number | null; maxCt: number | null }
 > = {
-  starter: { minCt: 0, maxCt: 150 },
-  // Buy-outright bands (founder-locked 2026-06-24, builder-economics-design.md
-  // section 7). Raised ~5-6x over the original proposal so outright ownership is
-  // a real CT sink, not a few days of faucet earnings. EXISTING parcels are
-  // repriced to match via the tenure migration (existing == new, no divergence).
+  starter: { minCt: 0, maxCt: 1500 },
+  // Buy-outright bands (founder-locked 2026-06-24). LEFT UNCHANGED by the A3
+  // re-band — DEPRECATED/IRRELEVANT (Phase B replaces buy-outright with CLV
+  // claim-locks; do not gate on these USD-wise). See the block comment above.
   c: { minCt: 2000, maxCt: 4000 },
   b: { minCt: 10000, maxCt: 24000 },
   a: { minCt: 40000, maxCt: 80000 },
@@ -70,6 +78,12 @@ export const LAND_TIER_LADDER: Record<
  * Buy is ~9-11 months of rent at these numbers, so buying is a premium over
  * renting, not a shortcut. starter (free+owned, never rents) + founder
  * (USDC/auction) are NULL = not rentable.
+ *
+ * A3 ¢-peg re-band (2026-07-07): these values are UNCHANGED — they are already
+ * the founder's target band (c 50–100, b 250–550, a 1000–2400 units/week), so
+ * the re-band OVERRIDES the ×10 for rent (migration 0011 does NOT touch
+ * rent_ct_weekly rows). At the $0.01 peg that is $0.50–24/wk (was $5–240/wk at
+ * the old $0.10 rate — rent got 10× cheaper in USD, deliberately).
  */
 export const LAND_RENT_LADDER: Record<
   LandTier,
@@ -118,6 +132,12 @@ export const RENT_GRACE_DAYS = 3;
  *
  * The upgrade route derives `cost = STRUCTURE_UPGRADE_COSTS[currentLevel + 1]`
  * — never client-trusted.
+ *
+ * A3 ¢-peg re-band (2026-07-07): LEFT UNCHANGED — structure upgrades were NOT in
+ * the founder's explicit A3 re-band list, and they belong to the same land
+ * buy-outright surface that Phase B (CLV hold-to-keep) supersedes, so like the
+ * c/b/a purchase prices they are DEPRECATED and now ~10× cheaper in USD. Do not
+ * treat these as a coherent USD price; Phase B re-sizes the land/structure sinks.
  */
 export const STRUCTURE_UPGRADE_COSTS: readonly number[] = [0, 0, 600, 1800, 4500, 11000];
 

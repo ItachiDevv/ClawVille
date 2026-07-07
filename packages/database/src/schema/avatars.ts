@@ -117,7 +117,7 @@ export const avatars = pgTable('avatars', {
   /** Link to platform_agents table for ElizaOS runtime */
   platformAgentId: uuid('platform_agent_id')
     .references(() => platformAgents.id, { onDelete: 'set null' }),
-  clawTokens: integer('claw_tokens').default(100).notNull(),
+  clawTokens: integer('claw_tokens').default(1000).notNull(),
   /**
    * vCLAW PROVENANCE PER-TAG BALANCES (Tokenomics F1, 2026-06-27).
    *
@@ -138,17 +138,19 @@ export const avatars = pgTable('avatars', {
    * start 0. The migration's idempotent backfill moves the existing balance into
    * `soft_balance` for already-populated rows.
    *
-   * ⚠️ `soft_balance` DEFAULT MUST TRACK `claw_tokens`'s DEFAULT (both 100). The
-   * `avatars_vclaw_balance_sum` CHECK is immediate/non-deferrable, so a bare INSERT
-   * that omits BOTH columns must satisfy `claw_tokens(default 100) = soft(default
-   * 100) + bought(0) + earned(0)`. If these two defaults ever diverge, every
-   * default-relying INSERT (guest signup, create-agent, agent-setup, Hatcher
-   * provision, web avatars route) throws a CHECK violation. Sites that set
+   * ⚠️ `soft_balance` DEFAULT MUST TRACK `claw_tokens`'s DEFAULT (both 1000 after
+   * the A3 ¢-peg redenomination — was 100/100 pre-A3; migration `0011` did the ×10
+   * on both the existing rows AND the column DEFAULT so new-account starting value
+   * stays $10). The `avatars_vclaw_balance_sum` CHECK is immediate/non-deferrable,
+   * so a bare INSERT that omits BOTH columns must satisfy `claw_tokens(default
+   * 1000) = soft(default 1000) + bought(0) + earned(0)`. If these two defaults ever
+   * diverge, every default-relying INSERT (guest signup, create-agent, agent-setup,
+   * Hatcher provision, web avatars route) throws a CHECK violation. Sites that set
    * `clawTokens` EXPLICITLY to a non-default value (house-bank seeder=0, bumper
    * bots=0, test-accounts=100_000) MUST mirror that value into `softBalance` in the
    * same INSERT/UPDATE — the column default only covers omitting BOTH.
    */
-  softBalance: integer('soft_balance').default(100).notNull(),
+  softBalance: integer('soft_balance').default(1000).notNull(),
   boughtBalance: integer('bought_balance').default(0).notNull(),
   earnedBalance: integer('earned_balance').default(0).notNull(),
   // town-center spawn (land-builder-economics 704-world re-center); mirrors

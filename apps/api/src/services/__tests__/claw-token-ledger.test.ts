@@ -553,9 +553,13 @@ describe('claw-token-ledger F1 — DEFAULT-INSERT must satisfy the sum CHECK (re
   }).avatars;
   const colDefault = (name: string): number => Number(avatarsTable[name]?.default ?? NaN);
 
-  it('soft_balance DEFAULT mirrors claw_tokens DEFAULT (both 100)', () => {
-    expect(colDefault('clawTokens')).toBe(100);
-    expect(colDefault('softBalance')).toBe(100);
+  it('soft_balance DEFAULT mirrors claw_tokens DEFAULT (both 1000 after the A3 ¢-peg ×10)', () => {
+    // A3 (2026-07-07) redenomination bumped BOTH starting-balance defaults 100→1000
+    // (migration 0011) so a new account keeps the same $10 value at the $0.01 peg.
+    // The mirror property (the reason this test exists) is unchanged — both defaults
+    // must stay EQUAL or every default-relying INSERT trips the sum CHECK.
+    expect(colDefault('clawTokens')).toBe(1000);
+    expect(colDefault('softBalance')).toBe(1000);
   });
 
   it('bought_balance and earned_balance DEFAULT to 0', () => {
