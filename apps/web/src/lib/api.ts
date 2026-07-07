@@ -144,7 +144,7 @@ export const api = {
   // is disclosed EXACTLY ONCE — the server never re-emits it. On fail-soft
   // provisioning failure the response is the legacy `{ success: true }` and
   // the account surfaces as mode 'provisioning-pending' on /me/agent-session.
-  signup: (data: { email: string; password: string; name?: string }) =>
+  signup: (data: { email: string; password: string; name?: string; harness?: 'milady' | 'hermes' | 'openclaw' }) =>
     request<{
       success: boolean;
       avatar?: { id: string; name: string } & Record<string, unknown>;

@@ -241,6 +241,11 @@ const signupSchema = z.object({
   email: z.string().email(),
   password: z.string().min(8),
   name: z.string().optional(),
+  // Founder spec: the user CHOOSES their agent runtime at sign up (Milady is
+  // only the fallback when omitted). Mirrors SIGNUP_HARNESSES in
+  // avatar-agent-provisioning.ts; 'custom' needs gateway config the signup
+  // form doesn't collect, so it stays a /create-agent concern.
+  harness: z.enum(['milady', 'hermes', 'openclaw']).optional(),
 });
 
 // P2 Slice A (2026-07-04, plan hard-constraint #8) — signup now fans out to
@@ -278,7 +283,7 @@ authRoutes.post('/signup', async (c) => {
     });
   }
 
-  const { email: rawEmail, password, name } = result.data;
+  const { email: rawEmail, password, name, harness } = result.data;
   const email = rawEmail.toLowerCase();
 
   const existingUser = await db.query.users.findFirst({
@@ -319,7 +324,7 @@ authRoutes.post('/signup', async (c) => {
   // the global name UNIQUE).
   const provisioned: ProvisionAvatarAgentResult | null = await runProvisioningFailSoft(
     'signup auto-provision',
-    () => provisionAvatarAgentForSignup(userId, { name, email }),
+    () => provisionAvatarAgentForSignup(userId, { name, email, harness }),
   );
 
   void logEventFromContext(c, {

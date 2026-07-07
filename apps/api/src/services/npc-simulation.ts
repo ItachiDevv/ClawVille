@@ -39,6 +39,14 @@ import {
   type CollaborationLogEntry,
 } from '@clawville/agent-runtime';
 import type { AgentSubstrateClient } from './agent-substrate-client';
+// P3 slice 6: the two in-world-cognition predicates below are driven from the
+// PROTOCOL capability table (agent-session-config.ts), generalizing the former
+// hardcoded `=== 'hatcher-proxy'` checks to every server-hosted-cognition
+// protocol ([ACTION:] parity) while keeping the proximity-exemption Hatcher-only.
+import {
+  protocolEmitsInWorldActions,
+  protocolProximityGateExempt,
+} from './agent-session-config';
 import { resolveBuildingId } from './building-center';
 // Shared never-clobber ownership predicate (magic-link onboarding D1b) — the
 // SAME rule the /enter SQL bind guard states, from its dependency-free module
@@ -1674,19 +1682,24 @@ class NpcSimulation {
         // PROXIMITY GATE (agent-metaverse P1 slice 3, founder-signed). A body
         // must be physically NEAR its target to converse — the anti-abuse
         // backbone: no walk/proximity → no interaction (→ no reward, once slice
-        // 4 wires it). Scope to NON-Hatcher bodies: Hatcher (`hatcher-proxy`) is
-        // a LIVE partner whose `talk` is contract-locked (§3a manual +
-        // PROTOCOL_VERSION + harness), so gating it needs the fast-follow — it
-        // stays exempt here. FAIL-CLOSED: an unresolvable body has no
-        // hatcher-proxy client → the gate applies. Predicate keys on the
-        // in-world client protocol (NOT `is_house`, which isn't on the reg config
-        // and is the wrong polarity). Both Hatcher register modes set
+        // 4 wires it). EXEMPT only the contract-locked-talk protocols: today that
+        // is Hatcher (`hatcher-proxy`) ONLY — a LIVE partner whose `talk` is
+        // contract-locked (§3a manual + PROTOCOL_VERSION + harness). Server-hosted
+        // harnesses (hermes-local, any future hosted protocol) STAY GATED here —
+        // they must walk to talk — even though they DO get [ACTION:] parsing
+        // (dispatch predicate below). The two capabilities are deliberately
+        // distinct: `protocolProximityGateExempt` (hatcher-only) ≠
+        // `protocolEmitsInWorldActions` (all server-hosted). P3 slice 6 replaced
+        // the former hardcoded `=== 'hatcher-proxy'` with the capability read so
+        // the two never drift. FAIL-CLOSED: an unresolvable body → undefined
+        // protocol → NOT exempt → the gate applies. Predicate keys on the in-world
+        // client protocol (NOT `is_house`, which isn't on the reg config and is
+        // the wrong polarity). Both Hatcher register modes set
         // `protocol==='hatcher-proxy'` (registerAgentBot :786/:837) so Hatcher is
-        // exempt in avatar AND override mode; the house/fleet agent (nanoclaw)
-        // and any other non-proxy body is gated.
-        const isHatcherProxy =
-          this.getAgentBotClient(npcId)?.getProtocol() === 'hatcher-proxy';
-        if (!isHatcherProxy) {
+        // exempt in avatar AND override mode.
+        const proximityExempt =
+          protocolProximityGateExempt(this.getAgentBotClient(npcId)?.getProtocol());
+        if (!proximityExempt) {
           // Resolve the target's center: a live npc body, else the building
           // center (Object.hasOwn guard — never an inherited prototype key).
           // `target` is already the resolved npc id / canonical building slug,
@@ -2722,11 +2735,17 @@ class NpcSimulation {
           client2,
           this.arenaMode,
           cryptoContext,
-          // Hatcher proxy-cognition: only the hatcher-proxy path parses +
-          // dispatches [ACTION:] tags and strips them; every other protocol
-          // returns the reply unchanged.
+          // Server-hosted cognition: parse + dispatch [ACTION:] tags (and strip
+          // them from speech) for EVERY server-hosted-cognition protocol
+          // ({hatcher-proxy, hermes-local}) — not just Hatcher (P3 slice 6
+          // [ACTION:] parity). `dispatchHatcherActions` is the generic whitelist
+          // executor (keyed on npcId, human-control-suppressed); its name is
+          // historical. BYO/unknown protocols return the reply unchanged
+          // (fail-closed via the capability table). hermes-local emits no reply
+          // until the deferred inference flip lands, so this path is inert for it
+          // today but wired for the instant it does.
           (npcId, client, rawReply) =>
-            client.getProtocol() === 'hatcher-proxy'
+            protocolEmitsInWorldActions(client.getProtocol())
               ? this.dispatchHatcherActions(npcId, rawReply)
               : rawReply,
         );

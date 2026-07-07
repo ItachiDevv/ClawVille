@@ -56,33 +56,117 @@ import {
 type BodyStats = AgentAvatarConfig['stats'];
 
 /**
- * Identity types that have NO outbound cognition gateway of their own. Their
- * in-world body must NEVER be given an HTTP-POSTing client (openai-compat /
- * anthropic / custom-webhook) — it would POST to the dummy `http://localhost:0`
- * gateway and 502. They speak `'nanoclaw'` in-world, whose `.chat()` returns ''
- * with no network call (fail-soft):
- *   - anonymous — one-off test agent, no brain.
- *   - milady    — chat is served by the SERVER-SIDE Eliza runtime in the REST
- *                 chat routes (tried before the client); the in-world autonomous
- *                 conversation has no Eliza, so a '' reply degrades to a canned
- *                 greeting rather than a 502.
- *   - nanoclaw  — self-managed pull agent; already speaks 'nanoclaw' by design.
- *   - hermes    — self-managed pull agent (`hermes run` polls our REST like
- *                 nanoclaw; D7, magic-link onboarding 2026-07-02). Speaks the
- *                 fail-soft 'nanoclaw' protocol in-world UNLESS the env-gated
- *                 host-it-for-me branch is enabled, in which case
- *                 `resolveInWorldProtocol` upgrades it to 'hermes-local' — a
- *                 POST to the HARDCODED server-side localhost runtime (see the
- *                 gate below), equally fail-soft ('' on any error). Either way
- *                 the row carries NO caller-supplied gateway and NO secrets, so
- *                 every no-gateway restore guarantee holds for it.
+ * Per-identity-type ADAPTER — the single explicit table the identity→config
+ * resolvers read from (P3 slice 6, 2026-07-06). Promotes what used to be
+ * scattered `if (identityType === …)` branches PLUS the old
+ * `NO_GATEWAY_IDENTITY_TYPES` set into ONE record per harness, so the resolvers
+ * (`resolveInWorldProtocol` / `isRowRestorableFromIdentity` / `resolveAutonomyMode`
+ * / `resolveAgentSpecies`, and `isSessionRestorable` via the first) cannot drift
+ * on how a given identity is treated. STRICTLY BEHAVIOR-PRESERVING: every field
+ * reproduces the exact prior branch — the mint↔restore drift regression test pins
+ * this for every identity type.
+ *
+ * The NO-OUTBOUND-GATEWAY identities (`protocolKind:'fail-soft'` or
+ * `'hermes-gated'`, `restorableFromRow:true`) — anonymous / milady / nanoclaw /
+ * hermes — must NEVER be given an HTTP-POSTing client (openai-compat / anthropic
+ * / custom-webhook); it would POST to the dummy `http://localhost:0` gateway and
+ * 502. They speak the fail-soft `'nanoclaw'` in-world (`.chat()` → '' with no
+ * network) — except hermes, which the host-it-for-me gate can upgrade to the
+ * equally fail-soft `'hermes-local'` (POST to the HARDCODED server-side runtime).
+ * Either way the row carries NO caller-supplied gateway and NO secrets, so every
+ * no-gateway restore guarantee holds.
  */
-const NO_GATEWAY_IDENTITY_TYPES: ReadonlySet<string> = new Set([
-  'anonymous',
-  'milady',
-  'nanoclaw',
-  'hermes',
-]);
+interface IdentityAdapter {
+  /**
+   * How the IN-WORLD wire protocol is resolved for a body of this identity:
+   *   - 'hatcher-proxy'    → always 'hatcher-proxy' (cognition via the partner).
+   *   - 'hermes-gated'     → 'hermes-local' when the host-it-for-me gate is on,
+   *                          else the fail-soft 'nanoclaw' stub.
+   *   - 'fail-soft'        → always 'nanoclaw' (no outbound gateway, no network).
+   *   - 'declared-gateway' → the row's declared HTTP protocol (default
+   *                          'openai-compat') — a REAL reachable gateway.
+   */
+  protocolKind: 'hatcher-proxy' | 'hermes-gated' | 'fail-soft' | 'declared-gateway';
+  /**
+   * Can the in-world body be rebuilt purely from the persisted openclaw_bots row
+   * after an API restart? TRUE only for the no-outbound-gateway types (they
+   * persist no secret auth_token, so the row is sufficient). Hatcher is FALSE
+   * here — its restore is keyed on `protocol==='hatcher-proxy'` in a SEPARATE
+   * branch (see `isSessionRestorable`), not on the identityType enum.
+   */
+  restorableFromRow: boolean;
+  /**
+   * This identity pull-drives itself (always self-managed) regardless of the
+   * requested mode — the nanoclaw/hermes REST-poll agents. Every other identity
+   * honors the requested mode, defaulting to server-managed. (An orthogonal
+   * `storedProtocol==='nanoclaw'` override still forces self-managed for ANY
+   * identity — preserved in `resolveAutonomyMode`, deliberately NOT encoded here.)
+   */
+  selfManaged: boolean;
+  /**
+   * Render-model fallback category when the row carries no explicit species.
+   * 'hatcher' → the reserved Greek-avatar default; 'default' → the Milady
+   * default. ALSO the reserved-avatar coercion key: only the 'hatcher'-category
+   * identity may keep a hatcher-category species (every other identity is coerced
+   * to the default), which is exactly the prior `identityType !== 'hatcher'` test
+   * since hatcher is the ONLY 'hatcher'-category entry.
+   */
+  speciesFallback: 'hatcher' | 'default';
+  /**
+   * Does ClawVille GENUINELY server-host this harness's cognition runtime? Drives
+   * the TRUTHFUL `/me/agent-session` "hosted" advertisement (`isHostedHarness`):
+   *   - 'always'       → milady (server-side Eliza, always reachable).
+   *   - 'hermes-gated' → hermes: hosted ONLY when HERMES_LOCAL_GATEWAY_ENABLED
+   *                      (otherwise it's a self-managed BYO pull agent — calling
+   *                      it "hosted, always connected" is a false advertisement).
+   *   - 'never'        → self-managed / external / partner-hosted identities.
+   */
+  hosted: 'always' | 'hermes-gated' | 'never';
+}
+
+const IDENTITY_ADAPTERS: Readonly<Record<string, IdentityAdapter>> = {
+  // Hatcher partner: forced hatcher-proxy cognition + reserved Greek avatars.
+  hatcher:   { protocolKind: 'hatcher-proxy',    restorableFromRow: false, selfManaged: false, speciesFallback: 'hatcher', hosted: 'never' },
+  // No-outbound-gateway, ClawVille-hosted Eliza runtime: milady is genuinely hosted.
+  milady:    { protocolKind: 'fail-soft',        restorableFromRow: true,  selfManaged: false, speciesFallback: 'default', hosted: 'always' },
+  // No-outbound-gateway one-off test agent, no brain.
+  anonymous: { protocolKind: 'fail-soft',        restorableFromRow: true,  selfManaged: false, speciesFallback: 'default', hosted: 'never' },
+  // Self-managed pull agent; already speaks 'nanoclaw' by design.
+  nanoclaw:  { protocolKind: 'fail-soft',        restorableFromRow: true,  selfManaged: true,  speciesFallback: 'default', hosted: 'never' },
+  // Self-managed pull agent; host-it-for-me gate upgrades its reactive cognition
+  // to the server-hosted 'hermes-local' runtime (D7, 2026-07-02).
+  hermes:    { protocolKind: 'hermes-gated',     restorableFromRow: true,  selfManaged: true,  speciesFallback: 'default', hosted: 'hermes-gated' },
+  // Real-gateway harnesses: honor the declared HTTP protocol; auth_token never
+  // persisted → NOT restorable from the row (restore returns null → reconnect).
+  openclaw:  { protocolKind: 'declared-gateway', restorableFromRow: false, selfManaged: false, speciesFallback: 'default', hosted: 'never' },
+  ironclaw:  { protocolKind: 'declared-gateway', restorableFromRow: false, selfManaged: false, speciesFallback: 'default', hosted: 'never' },
+  custom:    { protocolKind: 'declared-gateway', restorableFromRow: false, selfManaged: false, speciesFallback: 'default', hosted: 'never' },
+};
+
+/**
+ * The FAIL-CLOSED adapter for an UNKNOWN / future identity type: treated as a
+ * real-gateway harness with NO self-heal, NO reserved avatars, NOT server-hosted.
+ * Exactly reproduces the prior fall-through (unknown type → declared protocol,
+ * not restorable, server-managed default, default species, never hosted).
+ */
+const DEFAULT_IDENTITY_ADAPTER: IdentityAdapter = {
+  protocolKind: 'declared-gateway',
+  restorableFromRow: false,
+  selfManaged: false,
+  speciesFallback: 'default',
+  hosted: 'never',
+};
+
+/**
+ * Resolve the adapter for an identity type, fail-closed for unknown types.
+ * `Object.hasOwn` (not `in`) so an identity named after a prototype key —
+ * `'toString'`, `'constructor'` — can never bypass into an inherited value.
+ */
+function getIdentityAdapter(identityType: string): IdentityAdapter {
+  return Object.hasOwn(IDENTITY_ADAPTERS, identityType)
+    ? IDENTITY_ADAPTERS[identityType]
+    : DEFAULT_IDENTITY_ADAPTER;
+}
 
 /**
  * D7 host-it-for-me Hermes cognition (magic-link onboarding, 2026-07-02).
@@ -141,6 +225,7 @@ export function resolveAgentSpecies(
   identityType: string,
   species: string | null | undefined,
 ): string {
+  const isHatcherCategory = getIdentityAdapter(identityType).speciesFallback === 'hatcher';
   if (species) {
     // Hatcher-category render models (phanes + the bespoke Greek avatars) are
     // RESERVED for the Hatcher partner identity. /api/agent/connect and the legacy
@@ -148,16 +233,15 @@ export function resolveAgentSpecies(
     // generic agent could claim a reserved Hatcher VRM by passing species:'cronus'
     // etc. Coerce any non-hatcher identity's reserved request to the default model
     // — reserved avatars stay "selectable only through Hatcher" (the partner mint
-    // path sets identityType 'hatcher', which is exempt). Closes the leak Codex
-    // flagged across connect/register/mint/restore at the single chokepoint.
-    if (identityType !== 'hatcher' && getAgentModel(species)?.category === 'hatcher') {
+    // path sets identityType 'hatcher', the ONLY 'hatcher'-category adapter, which
+    // is exempt). Closes the leak Codex flagged across connect/register/mint/restore
+    // at the single chokepoint.
+    if (!isHatcherCategory && getAgentModel(species)?.category === 'hatcher') {
       return DEFAULT_AGENT_MODEL_KEY;
     }
     return species;
   }
-  return identityType === 'hatcher'
-    ? DEFAULT_HATCHER_MODEL_KEY
-    : DEFAULT_AGENT_MODEL_KEY;
+  return isHatcherCategory ? DEFAULT_HATCHER_MODEL_KEY : DEFAULT_AGENT_MODEL_KEY;
 }
 
 /**
@@ -194,14 +278,15 @@ export function resolveInWorldProtocol(
   storedProtocol: string | null | undefined,
   hermesLocalEnabled: boolean = HERMES_LOCAL_GATEWAY_ENABLED,
 ): InWorldWireProtocol {
-  if (identityType === 'hatcher') return 'hatcher-proxy';
-  // hermes MUST be checked before the NO_GATEWAY set (it is a member): the gate
-  // upgrades its fail-soft stub to the local host-it-for-me client.
-  if (identityType === 'hermes') {
-    return hermesLocalEnabled ? 'hermes-local' : 'nanoclaw';
-  }
-  if (NO_GATEWAY_IDENTITY_TYPES.has(identityType)) return 'nanoclaw';
-  // Real-gateway identity: honor its declared protocol, default openai-compat.
+  const kind = getIdentityAdapter(identityType).protocolKind;
+  if (kind === 'hatcher-proxy') return 'hatcher-proxy';
+  // hermes: the host-it-for-me gate upgrades its fail-soft stub to the local
+  // runtime client. (The registry keys hermes to 'hermes-gated' — never the
+  // plain 'fail-soft' — so it can never fall through to the stub when enabled.)
+  if (kind === 'hermes-gated') return hermesLocalEnabled ? 'hermes-local' : 'nanoclaw';
+  if (kind === 'fail-soft') return 'nanoclaw';
+  // 'declared-gateway' — a REAL reachable gateway: honor its declared protocol,
+  // default openai-compat.
   return (storedProtocol as AgentWireProtocol) ?? 'openai-compat';
 }
 
@@ -237,7 +322,7 @@ export function resolveInWorldProtocol(
  * that fall-through.
  */
 export function isRowRestorableFromIdentity(identityType: string): boolean {
-  return NO_GATEWAY_IDENTITY_TYPES.has(identityType);
+  return getIdentityAdapter(identityType).restorableFromRow;
 }
 
 /**
@@ -307,14 +392,124 @@ export function resolveAutonomyMode(
   storedProtocol: string | null | undefined,
   requested?: AgentAutonomyMode | null,
 ): AgentAutonomyMode {
-  if (
-    identityType === 'nanoclaw' ||
-    identityType === 'hermes' ||
-    storedProtocol === 'nanoclaw'
-  ) {
+  // The identity's own self-managed flag (nanoclaw/hermes) OR the orthogonal
+  // row-level override (a stored 'nanoclaw' protocol on ANY identity) both force
+  // self-managed — the exact prior disjunction.
+  if (getIdentityAdapter(identityType).selfManaged || storedProtocol === 'nanoclaw') {
     return 'self-managed';
   }
   return requested ?? 'server-managed';
+}
+
+/**
+ * IN-WORLD PROTOCOL capability table (P3 slice 6, 2026-07-06). Keyed by the
+ * in-world WIRE PROTOCOL (what `AgentSubstrateClient.getProtocol()` returns), NOT
+ * the identityType — because the two npc-simulation predicates that consume this
+ * read the live client's protocol, not the row's identity. It is the single
+ * source generalizing the two previously-hardcoded `=== 'hatcher-proxy'` checks
+ * from Hatcher-only to "every server-hosted-cognition protocol".
+ *
+ * EXHAUSTIVE by construction: typed `Record<InWorldWireProtocol, …>`, so adding a
+ * member to `InWorldWireProtocol` fails compilation until its capabilities are
+ * declared here — no protocol can silently inherit a default. FAIL-CLOSED at the
+ * read boundary: an unknown/undefined protocol string grants NEITHER capability
+ * (the exported predicates below).
+ *
+ * Two capabilities, deliberately DISTINCT (do not collapse them):
+ *   - `emitsInWorldActions` — the body's reply is parsed for `[ACTION:]` tags and
+ *     dispatched (`dispatchHatcherActions`). TRUE only for the SERVER-HOSTED-
+ *     cognition protocols {hatcher-proxy, hermes-local}: their replies are trusted
+ *     to carry structured in-world action tags. This is the `[ACTION:]` parity the
+ *     slice grants beyond Hatcher.
+ *   - `proximityGateExempt` — exempt from the "must physically walk NEAR the
+ *     target to talk" anti-abuse gate. TRUE only for {hatcher-proxy}: Hatcher's
+ *     `talk` is contract-locked (§3a manual + PROTOCOL_VERSION + harness), so it
+ *     is trusted to converse without a proximity walk. Every hosted harness
+ *     (hermes-local, any future hosted protocol) STAYS GATED — it must walk to
+ *     talk, preserving the anti-abuse backbone. Widening this to a hosted protocol
+ *     would be an anti-abuse regression, so it is intentionally hatcher-only.
+ *
+ * BYO gateways (openai-compat / anthropic / custom-webhook) get NEITHER — they are
+ * not server-hosted; this slice does not change their in-world behavior.
+ *
+ * HOSTED-OPENCLAW follow-up: once the deferred local-inference flip stands up a
+ * server-hosted OpenClaw in-world cognition protocol, it routes through that
+ * hosted protocol and gets `[ACTION:]` parity by adding ONE entry here with
+ * `emitsInWorldActions:true` (and staying `proximityGateExempt:false` unless
+ * contract-locked). No predicate rewrite — the generalization already reads this
+ * table. There is intentionally NO fake 'openclaw-local' protocol today.
+ */
+interface ProtocolCapabilities {
+  /** Reply is parsed for in-world `[ACTION:]` tags and dispatched. */
+  emitsInWorldActions: boolean;
+  /** Exempt from the walk-near-to-talk anti-abuse proximity gate. */
+  proximityGateExempt: boolean;
+}
+
+const PROTOCOL_CAPABILITIES: Readonly<Record<InWorldWireProtocol, ProtocolCapabilities>> = {
+  // Server-hosted cognition — emits [ACTION:]; Hatcher additionally proximity-exempt
+  // (contract-locked talk).
+  'hatcher-proxy':  { emitsInWorldActions: true,  proximityGateExempt: true },
+  // Server-hosted local runtime (D7) — emits [ACTION:] but STAYS proximity-gated.
+  'hermes-local':   { emitsInWorldActions: true,  proximityGateExempt: false },
+  // Fail-soft stub — no reply, no action, no exemption.
+  'nanoclaw':       { emitsInWorldActions: false, proximityGateExempt: false },
+  // BYO gateways — not server-hosted; unchanged in-world behavior.
+  'openai-compat':  { emitsInWorldActions: false, proximityGateExempt: false },
+  'anthropic':      { emitsInWorldActions: false, proximityGateExempt: false },
+  'custom-webhook': { emitsInWorldActions: false, proximityGateExempt: false },
+};
+
+/**
+ * TRUE iff a body speaking `protocol` should have its reply parsed for in-world
+ * `[ACTION:]` tags. Server-hosted-cognition protocols only ({hatcher-proxy,
+ * hermes-local}). FAIL-CLOSED: unknown / undefined / '' → false (never grant
+ * `[ACTION:]` parsing to an unrecognized protocol). `Object.hasOwn` (not `in`) so
+ * a prototype-key protocol string cannot bypass into an inherited value.
+ */
+export function protocolEmitsInWorldActions(protocol?: string | null): boolean {
+  return protocol != null && Object.hasOwn(PROTOCOL_CAPABILITIES, protocol)
+    ? PROTOCOL_CAPABILITIES[protocol as InWorldWireProtocol].emitsInWorldActions
+    : false;
+}
+
+/**
+ * TRUE iff a body speaking `protocol` is EXEMPT from the walk-near-to-talk
+ * anti-abuse proximity gate. Hatcher-only ({hatcher-proxy}) — its talk is
+ * contract-locked. FAIL-CLOSED: unknown / undefined / '' → false → the gate
+ * APPLIES (the exact prior fail-closed behavior: an unresolvable body has no
+ * hatcher-proxy client → gated).
+ */
+export function protocolProximityGateExempt(protocol?: string | null): boolean {
+  return protocol != null && Object.hasOwn(PROTOCOL_CAPABILITIES, protocol)
+    ? PROTOCOL_CAPABILITIES[protocol as InWorldWireProtocol].proximityGateExempt
+    : false;
+}
+
+/**
+ * TRUTHFUL "is ClawVille genuinely server-hosting this harness's runtime?" —
+ * drives the `/me/agent-session` "hosted" advertisement (P3 slice 6 honesty fix,
+ * 2026-07-06). Reads the identity registry's `hosted` field (a harness IS an
+ * identity type in this namespace):
+ *   - milady → always (server-side Eliza runs end-to-end).
+ *   - hermes → ONLY when the host-it-for-me local runtime is enabled; otherwise
+ *     hermes is a self-managed BYO pull agent and advertising it "hosted, always
+ *     connected" is false. Its true liveness comes from the openclaw_bots
+ *     lastSeenAt path, not this carve-out.
+ *   - everything else (incl. unknown harness / '' ) → false (fail-closed).
+ *
+ * @param hermesLocalEnabled test seam for the D7 gate — defaults to the boot-time
+ *   `HERMES_LOCAL_GATEWAY_ENABLED` env read (matches how the deploy sets env
+ *   per-box). Consulted ONLY on the hermes branch.
+ */
+export function isHostedHarness(
+  harness: string,
+  hermesLocalEnabled: boolean = HERMES_LOCAL_GATEWAY_ENABLED,
+): boolean {
+  const hosted = getIdentityAdapter(harness).hosted;
+  if (hosted === 'always') return true;
+  if (hosted === 'hermes-gated') return hermesLocalEnabled;
+  return false; // 'never' + the fail-closed default adapter
 }
 
 /** Inputs common to avatar + override config assembly. */

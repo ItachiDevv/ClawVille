@@ -33,6 +33,9 @@ import {
   spawnRelevantProjection,
   isRowRestorableFromIdentity,
   isSessionRestorable,
+  protocolEmitsInWorldActions,
+  protocolProximityGateExempt,
+  isHostedHarness,
   type AvatarConfigInputs,
   type OverrideConfigInputs,
 } from '../agent-session-config';
@@ -427,5 +430,139 @@ describe('isSessionRestorable — restore-aware session-status (D-2) + hatcher-p
     expect(isSessionRestorable('nanoclaw', 'nanoclaw', false)).toBe(true);
     // …and a real-gateway type stays non-restorable even if a stray true is passed.
     expect(isSessionRestorable('openclaw', 'openai-compat', true)).toBe(false);
+  });
+});
+
+// ===========================================================================
+// P3 SLICE 6 — identity-adapter registry + protocol-capability table + honesty
+// resolver. These prove (a) the registry is BEHAVIOR-PRESERVING for the types
+// the pre-existing MATRIX didn't cover (hermes across the host-it-for-me gate,
+// unknown/prototype-key identities), (b) the new PROTOCOL-capability predicates
+// are exhaustive + fail-closed and keep the two capabilities DISTINCT, and (c)
+// the /me/agent-session "hosted" advertisement is now truthful.
+// ===========================================================================
+
+describe('slice 6 — hermes host-it-for-me gate (deterministic via explicit param)', () => {
+  test('gate OFF → fail-soft nanoclaw stub (no network)', () => {
+    expect(resolveInWorldProtocol('hermes', 'openai-compat', false)).toBe('nanoclaw');
+    expect(resolveInWorldProtocol('hermes', null, false)).toBe('nanoclaw');
+  });
+  test('gate ON → hermes-local server-hosted runtime', () => {
+    expect(resolveInWorldProtocol('hermes', 'openai-compat', true)).toBe('hermes-local');
+    expect(resolveInWorldProtocol('hermes', 'nanoclaw', true)).toBe('hermes-local');
+  });
+  test('the gate is consulted ONLY on hermes — every other identity is gate-inert', () => {
+    for (const enabled of [true, false]) {
+      expect(resolveInWorldProtocol('hatcher', 'hatcher-proxy', enabled)).toBe('hatcher-proxy');
+      expect(resolveInWorldProtocol('milady', 'openai-compat', enabled)).toBe('nanoclaw');
+      expect(resolveInWorldProtocol('anonymous', 'openai-compat', enabled)).toBe('nanoclaw');
+      expect(resolveInWorldProtocol('nanoclaw', 'nanoclaw', enabled)).toBe('nanoclaw');
+      expect(resolveInWorldProtocol('openclaw', 'openai-compat', enabled)).toBe('openai-compat');
+      expect(resolveInWorldProtocol('ironclaw', 'anthropic', enabled)).toBe('anthropic');
+      expect(resolveInWorldProtocol('custom', 'custom-webhook', enabled)).toBe('custom-webhook');
+    }
+  });
+  test('hermes across the OTHER resolvers: restorable, self-managed, default species', () => {
+    expect(isRowRestorableFromIdentity('hermes')).toBe(true);
+    expect(isSessionRestorable('hermes', 'openai-compat')).toBe(true);
+    expect(resolveAutonomyMode('hermes', 'openai-compat')).toBe('self-managed');
+    expect(resolveAutonomyMode('hermes', 'openai-compat', 'server-managed')).toBe('self-managed');
+    expect(resolveAgentSpecies('hermes', null)).toBe(DEFAULT_AGENT_MODEL_KEY);
+    expect(resolveAgentSpecies('hermes', 'turtle')).toBe('turtle');
+  });
+});
+
+describe('slice 6 — registry fail-closed for unknown / prototype-key identity types', () => {
+  test('unknown identity → declared-gateway protocol, NOT restorable, server-managed, default species', () => {
+    expect(resolveInWorldProtocol('some-future-framework', 'openai-compat')).toBe('openai-compat');
+    expect(resolveInWorldProtocol('some-future-framework', null)).toBe('openai-compat');
+    expect(isRowRestorableFromIdentity('some-future-framework')).toBe(false);
+    expect(resolveAutonomyMode('some-future-framework', 'openai-compat')).toBe('server-managed');
+    expect(resolveAgentSpecies('some-future-framework', null)).toBe(DEFAULT_AGENT_MODEL_KEY);
+  });
+  test('a prototype-key identity string cannot bypass into an inherited adapter', () => {
+    for (const key of ['constructor', 'toString', '__proto__', 'hasOwnProperty', 'valueOf']) {
+      expect(isRowRestorableFromIdentity(key)).toBe(false);
+      expect(resolveInWorldProtocol(key, 'openai-compat')).toBe('openai-compat');
+      expect(resolveAgentSpecies(key, null)).toBe(DEFAULT_AGENT_MODEL_KEY);
+      expect(resolveAutonomyMode(key, 'openai-compat')).toBe('server-managed');
+    }
+  });
+  test('the storedProtocol==="nanoclaw" override still forces self-managed for ANY identity', () => {
+    // Preserved orthogonal clause — independent of the identity adapter.
+    expect(resolveAutonomyMode('openclaw', 'nanoclaw')).toBe('self-managed');
+    expect(resolveAutonomyMode('some-future-framework', 'nanoclaw')).toBe('self-managed');
+  });
+});
+
+describe('slice 6 — protocol capability table ([ACTION:] parity + proximity exemption)', () => {
+  const HOSTED_COGNITION = ['hatcher-proxy', 'hermes-local'];
+  const NON_ACTION = ['nanoclaw', 'openai-compat', 'anthropic', 'custom-webhook'];
+
+  test('emitsInWorldActions: TRUE only for the server-hosted-cognition protocols', () => {
+    for (const p of HOSTED_COGNITION) expect(protocolEmitsInWorldActions(p)).toBe(true);
+    for (const p of NON_ACTION) expect(protocolEmitsInWorldActions(p)).toBe(false);
+  });
+
+  test('proximityGateExempt: TRUE only for hatcher-proxy (hosted harnesses STAY gated)', () => {
+    expect(protocolProximityGateExempt('hatcher-proxy')).toBe(true);
+    // The load-bearing anti-abuse invariant: hermes-local emits [ACTION:] but MUST
+    // still walk-to-talk. Widening this would be an anti-abuse regression.
+    expect(protocolProximityGateExempt('hermes-local')).toBe(false);
+    for (const p of NON_ACTION) expect(protocolProximityGateExempt(p)).toBe(false);
+  });
+
+  test('the two capabilities are DISTINCT (not collapsed) for hermes-local', () => {
+    expect(protocolEmitsInWorldActions('hermes-local')).toBe(true);
+    expect(protocolProximityGateExempt('hermes-local')).toBe(false);
+  });
+
+  test('the table is keyed by PROTOCOL, not identity — "hatcher" (identity) grants nothing', () => {
+    // The protocol is 'hatcher-proxy'; the bare identity string is not a protocol.
+    expect(protocolEmitsInWorldActions('hatcher')).toBe(false);
+    expect(protocolProximityGateExempt('hatcher')).toBe(false);
+    // Case sensitivity: an exact match is required.
+    expect(protocolEmitsInWorldActions('HATCHER-PROXY')).toBe(false);
+    expect(protocolProximityGateExempt('HATCHER-PROXY')).toBe(false);
+  });
+
+  test('FAIL-CLOSED: unknown / undefined / empty protocol grants NEITHER capability', () => {
+    for (const p of ['bogus', '', undefined, null]) {
+      expect(protocolEmitsInWorldActions(p as string | undefined)).toBe(false);
+      expect(protocolProximityGateExempt(p as string | undefined)).toBe(false);
+    }
+  });
+
+  test('prototype-key protocol strings cannot bypass into an inherited capability', () => {
+    for (const key of ['constructor', 'toString', '__proto__', 'hasOwnProperty', 'valueOf']) {
+      expect(protocolEmitsInWorldActions(key)).toBe(false);
+      expect(protocolProximityGateExempt(key)).toBe(false);
+    }
+  });
+});
+
+describe('slice 6 — isHostedHarness: truthful /me/agent-session advertisement', () => {
+  test('milady is ALWAYS genuinely hosted, regardless of the hermes gate', () => {
+    expect(isHostedHarness('milady', false)).toBe(true);
+    expect(isHostedHarness('milady', true)).toBe(true);
+  });
+  test('hermes is hosted ONLY when the host-it-for-me runtime is enabled (THE honesty fix)', () => {
+    expect(isHostedHarness('hermes', false)).toBe(false); // was falsely "hosted, always connected"
+    expect(isHostedHarness('hermes', true)).toBe(true);
+  });
+  test('every external / self-managed / partner harness is NOT hosted', () => {
+    for (const enabled of [true, false]) {
+      for (const h of ['openclaw', 'ironclaw', 'custom', 'nanoclaw', 'anonymous', 'hatcher']) {
+        expect(isHostedHarness(h, enabled)).toBe(false);
+      }
+    }
+  });
+  test('unknown / empty / prototype-key harness → NOT hosted (fail-closed; matches old Set.has(""))', () => {
+    for (const enabled of [true, false]) {
+      expect(isHostedHarness('', enabled)).toBe(false);
+      expect(isHostedHarness('some-future-harness', enabled)).toBe(false);
+      expect(isHostedHarness('__proto__', enabled)).toBe(false);
+      expect(isHostedHarness('constructor', enabled)).toBe(false);
+    }
   });
 });

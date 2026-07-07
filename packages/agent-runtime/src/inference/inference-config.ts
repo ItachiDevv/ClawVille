@@ -14,6 +14,10 @@
  *   INFERENCE_ROUTE_TEACHER / _FLEET / _HOSTED_USER / _DEFAULT   CSV of endpoint ids (override defaults)
  *   INFERENCE_CLOUD_TIMEOUT_MS / INFERENCE_LOCAL_TIMEOUT_MS      per-request abort budget (default 60000)
  *   INFERENCE_FAIL_THRESHOLD / INFERENCE_COOLDOWN_MS            breaker tuning (default 3 / 30000)
+ *   INFERENCE_PRIMARY_MAX_INFLIGHT   primary-preferred-overflow saturation cap (default 3):
+ *       route-list order is the PREFERENCE order; the FIRST local in a route absorbs
+ *       everything until it holds this many in-flight requests (or its breaker opens),
+ *       and only then does work spill to the next local. Put the 7900 XTX box first.
  */
 
 import {
@@ -211,6 +215,10 @@ export function buildInferenceRouterFromEnv(env: Env = process.env): InferenceRo
       failThreshold: numEnv(env.INFERENCE_FAIL_THRESHOLD, 3),
       cooldownMs: numEnv(env.INFERENCE_COOLDOWN_MS, 30_000),
     },
+    // Primary-preferred-overflow saturation cap: in-flight requests the FIRST
+    // local in a route absorbs before work spills to the next local. Route-list
+    // order is the preference order (put the 7900 XTX box first).
+    primaryMaxInflight: numEnv(env.INFERENCE_PRIMARY_MAX_INFLIGHT, 3),
   });
 }
 
