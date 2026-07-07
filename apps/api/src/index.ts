@@ -69,6 +69,11 @@ import { ctTopupRoutes } from './routes/ct-topup';
 // requireAuthOrAgentSession) + the signature-verified, DB-idempotent webhook
 // recorder. NO custodial auto-sign (Codex-gated seam), NO CT movement.
 import { moonpayRoutes } from './routes/moonpay';
+// Tokenomics C — checkout stage (2026-07-07): generic x402 USDC checkout for
+// ANY vCLAW-priced thing. Importing the route ALSO side-effect-imports the
+// fulfillers (cosmetic-purchase + rent-prepay register themselves) — the
+// registry is populated before any request runs.
+import { x402CheckoutRoutes } from './routes/x402-checkout';
 import { buildMockFacilitator } from './services/x402-mock-facilitator';
 import { portalRoutes } from './routes/portal';
 import { partnerHatcherRoutes } from './routes/partner-hatcher';
@@ -331,6 +336,15 @@ app.route('/api/ct/topup', ctTopupRoutes);
 // moonpay_events.external_tx_id UNIQUE index; records arrivals ONLY — never
 // signs, never moves CT). Sandbox-pinned; live is a Codex-reviewed code change.
 app.route('/api/moonpay', moonpayRoutes);
+// Tokenomics C — generic x402 checkout: ANY vCLAW-priced thing settles as a
+// REAL USDC payment (¢-peg quote unit; buyer's internal vCLAW NEVER debited).
+// POST /quote (server-priced, 402 challenge + pending x402_checkouts row) +
+// POST /settle (verify→settle→ONE tx {flip + kind fulfiller}; exactly-once by
+// the partial-UNIQUE tx_signature). Human + connected-agent parity via
+// requireAuthOrAgentSession (agent settles for ITS OWN avatar; non-ledger
+// sessions 403). GATED like ct-topup: 503 until the merchant wallet is set;
+// devnet-first. See routes/x402-checkout.ts + services/x402-checkout.ts.
+app.route('/api/x402/checkout', x402CheckoutRoutes);
 // Phase 5.1 — cross-world portal + account linking (see plan §6.2 + §15).
 app.route('/api/portal', portalRoutes);
 // SEC-1 / FIX-6 — bound the request body on EVERY partner-hatcher route BEFORE
