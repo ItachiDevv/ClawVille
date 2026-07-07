@@ -123,6 +123,7 @@ import { supportRouter } from './routes/support';
 // Economy fix 2026-05-29 — admin-only CT-economy monitor (minted/burned/houseNet
 // per gameType; faucet detector). FEATURE_GATE: cove_ct_economy_monitor.
 import { coveEconomyRouter } from './routes/cove-economy';
+import { treasuryRouter } from './routes/treasury';
 import type { AppContext } from './types';
 
 const app = new Hono<AppContext>();
@@ -396,6 +397,10 @@ app.route('/api/support', supportRouter);
 // summary aggregates cove_game_events minted/burned/houseNet by gameType to
 // detect any game that has gone net-positive to players (a faucet).
 app.route('/api/cove/economy', coveEconomyRouter);
+// Tokenomics T0 (2026-07-07) — admin-only house-treasury read surface:
+// GET /api/treasury/summary reports the fee-sink avatar's balance (total +
+// soft/bought/earned) with an optional ?byReason=true per-fee-site breakdown.
+app.route('/api/treasury', treasuryRouter);
 // Phase 5.1 — admin identity recovery stub. Returns 501 behind a
 // FEATURE_GATE until the support-chat verification workflow lights up.
 app.route('/api/admin', adminIdentityRoutes);
@@ -1184,6 +1189,27 @@ process.on('uncaughtException', (err) => {
       console.log('[API] Poker cash-house seeder + scaler + tick ready');
     } catch (err) {
       console.error('[API] Poker cash-house init failed (non-fatal):', err);
+    }
+
+    // HOUSE TREASURY (Tokenomics T0, 2026-07-07) — the named fee-sink subject.
+    // `ensure()` provisions the system user + 0-CT avatar + the
+    // `treasury_subjects` ('house-fees') registry row, idempotently, with NO
+    // bankroll mint (pure revenue sink — contrast the cash-house bank above).
+    // Every routed fee site (cove rakes, baccarat commission, MTT rake,
+    // cosmetics/books, land sale/upgrade/rent) resolves the id lazily at settle
+    // time via `getHouseTreasuryAvatarId()`, which self-heals by re-running
+    // `ensure()` if this boot pass failed — so a failure here degrades fee
+    // routing to the pre-T0 burn behavior, never blocks a player settlement,
+    // and never crashes boot.
+    try {
+      const { houseTreasurySeeder } = await import('./services/house-treasury-seeder');
+      await houseTreasurySeeder.ensure();
+      console.log('[API] House-treasury seeder ready');
+    } catch (err) {
+      console.error(
+        '[API] House-treasury init failed (non-fatal; fees burn until the lazy resolver heals):',
+        err,
+      );
     }
   } catch (err) {
     console.error('[API] Activity portal init failed:', err);

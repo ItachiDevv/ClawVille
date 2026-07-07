@@ -112,6 +112,7 @@ import {
   debitClawTokens,
   InsufficientTokensError,
 } from '../services/claw-token-ledger';
+import { getHouseTreasuryAvatarId } from '../services/house-treasury-seeder';
 import { logEventFromContext, logEventFromContextReturningId } from '../services/event-logger';
 import { publishCoveSettlement } from '../services/agent-settlement-publish';
 import { recordBlackjackSkillMemory } from '../services/game-skill-memory';
@@ -1869,6 +1870,35 @@ async function settleHand(
           tx,
         );
         balanceAfter = credit.balanceAfter;
+      }
+      // ── T0 fee routing (2026-07-07): materialize the rake as house revenue ──
+      // The rake was previously a silent reduced-mint burn (withheld from the
+      // player's credit and never landing anywhere). Route it to the named
+      // house-treasury subject IN THIS SAME settle tx — first-settle branch
+      // only (the settled/idempotency replays return before this point, so a
+      // replay can never re-credit), ledger-subject branch only (guest demo
+      // rake stays demo — crediting it would MINT real CT from demo chips).
+      // PLAYER-SIDE UNCHANGED: the player still receives exactly
+      // `raked.rakedPayout` above. rake ≤ totalPayout ≤ MAX_SAFE (checked).
+      const rakeNumber = Number(raked.rake);
+      if (Number.isInteger(rakeNumber) && rakeNumber > 0) {
+        const treasuryId = await getHouseTreasuryAvatarId();
+        if (treasuryId) {
+          await creditClawTokens(
+            {
+              avatarId: treasuryId,
+              amount: rakeNumber,
+              reason: 'house_fee_blackjack_rake',
+              source: 'system',
+              metadata: { shoeId, handId, handIndex },
+            },
+            tx,
+          );
+        } else {
+          console.error(
+            `[cove-blackjack] house treasury unavailable — rake ${rakeNumber} CT burned (pre-T0 behavior) for hand ${handId}`,
+          );
+        }
       }
     } else {
       // Guest demo accounting — no ledger writes. The base stake already folded

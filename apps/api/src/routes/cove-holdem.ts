@@ -115,6 +115,7 @@ import {
   debitClawTokens,
   InsufficientTokensError,
 } from '../services/claw-token-ledger';
+import { getHouseTreasuryAvatarId } from '../services/house-treasury-seeder';
 import { logEventFromContext, logEventFromContextReturningId } from '../services/event-logger';
 import { publishCoveSettlement } from '../services/agent-settlement-publish';
 import type { AppContext } from '../types';
@@ -1429,6 +1430,54 @@ async function settleHand(
           return { hand: fresh, table: fullTable!, replay: true };
         }
         throw new HTTPException(500, { message: 'hand_settle_failed' });
+      }
+
+      // ── T0 fee routing (2026-07-07): materialize the HUMAN's rake share ────
+      // Placed AFTER the in_progress→settled flip so it is unambiguously the
+      // first-settle branch (every replay path returned above). Two scoping
+      // rules keep this from becoming a faucet:
+      //   1. LEDGER SUBJECTS ONLY — a guest table's stack is demo CT (no buy-in
+      //      debit ever happened), so its rake must never mint real CT.
+      //   2. The HUMAN's rake share ONLY: `humanPayout - humanRakedPayout`, NOT
+      //      the engine's full pot `raked.rake` — the bot seats' stacks are
+      //      VIRTUAL (reset every hand, never bought in), so bot-side rake is
+      //      accounting fiction; crediting it would mint CT from nothing (see
+      //      computeHoldemRake's "only the HUMAN's raked payout has real
+      //      economic meaning" note — this is deliberate drift from the
+      //      revenue-map doc's `raked.rake` anchor, flagged in the T0 report).
+      // PLAYER-SIDE UNCHANGED: the stack advance above already used
+      // `humanRakedPayout`; the eventual close cash-out is untouched.
+      // humanRakeShare ≤ humanPayout ≤ MAX_SAFE (checked above).
+      if (isLedgerSubject(subject)) {
+        const humanRakeShare = r.humanPayout - raked.humanRakedPayout;
+        if (humanRakeShare > 0n) {
+          const feeNumber = Number(humanRakeShare);
+          if (Number.isInteger(feeNumber) && feeNumber > 0) {
+            const treasuryId = await getHouseTreasuryAvatarId();
+            if (treasuryId) {
+              await creditClawTokens(
+                {
+                  avatarId: treasuryId,
+                  amount: feeNumber,
+                  reason: 'house_fee_holdem_rake',
+                  source: 'system',
+                  metadata: {
+                    tableId,
+                    handId,
+                    handIndex: hand.handIndex,
+                    potRake: raked.rake.toString(),
+                    humanRakeShare: humanRakeShare.toString(),
+                  },
+                },
+                tx,
+              );
+            } else {
+              console.error(
+                `[cove-holdem] house treasury unavailable — rake share ${feeNumber} CT burned (pre-T0 behavior) for hand ${handId}`,
+              );
+            }
+          }
+        }
       }
 
       // One cove_game_events row PER HAND. serverSeedHash committed at open;

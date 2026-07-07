@@ -106,6 +106,7 @@ import {
   debitClawTokens,
   InsufficientTokensError,
 } from '../services/claw-token-ledger';
+import { getHouseTreasuryAvatarId } from '../services/house-treasury-seeder';
 import { logEventFromContext, logEventFromContextReturningId } from '../services/event-logger';
 import { publishCoveSettlement } from '../services/agent-settlement-publish';
 import type { AppContext } from '../types';
@@ -863,6 +864,36 @@ coveBaccaratRouter.post('/coup', async (c) => {
             tx,
           );
           balanceAfter = credit.balanceAfter;
+        }
+        // ── T0 fee routing (2026-07-07): materialize the banker commission ──
+        // The engine ALREADY surfaces the commission as a first-class field:
+        // `r.commission = stake - floor(stake*95/100)` on a WON banker bet, 0
+        // otherwise (settleBet/CoupResult — no engine change needed, and
+        // `r.payout` is untouched so the player-side credit above is exactly
+        // what it was). Route it to the house treasury IN THIS SAME coup tx —
+        // first-settle branch only (the idempotency pre-check + the 23505
+        // replay path return/abort before or roll back with this credit),
+        // ledger-subject branch only (guest demo commission stays demo).
+        // commission ≤ stake ≤ MAX_SAFE (checked above).
+        const commissionNumber = Number(r.commission);
+        if (Number.isInteger(commissionNumber) && commissionNumber > 0) {
+          const treasuryId = await getHouseTreasuryAvatarId();
+          if (treasuryId) {
+            await creditClawTokens(
+              {
+                avatarId: treasuryId,
+                amount: commissionNumber,
+                reason: 'house_fee_baccarat_commission',
+                source: 'system',
+                metadata: { shoeId: input.shoeId, coupIndex, bet, winner: r.winner },
+              },
+              tx,
+            );
+          } else {
+            console.error(
+              `[cove-baccarat] house treasury unavailable — commission ${commissionNumber} CT burned (pre-T0 behavior) for shoe ${input.shoeId} coup ${coupIndex}`,
+            );
+          }
         }
       } else {
         // Guest demo accounting — no ledger writes. Balance = starting +

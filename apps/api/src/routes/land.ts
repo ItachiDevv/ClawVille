@@ -191,6 +191,7 @@ import {
   creditClawTokens,
   InsufficientTokensError,
 } from '../services/claw-token-ledger';
+import { getHouseTreasuryAvatarId } from '../services/house-treasury-seeder';
 import type { AppContext } from '../types';
 
 // ─── shared shapes ──────────────────────────────────────────────────────────
@@ -1190,6 +1191,36 @@ landRoutes.post('/parcels/:parcelId/buy', requireAuthOrAgentSession, requireNonG
         tx,
       );
 
+      // (e.1) T0 fee routing (2026-07-07): the primary-sale price → house
+      // treasury, IN THIS SAME tx (debit + credit = net-neutral supply; the CT
+      // moves buyer→treasury instead of burning to nobody). Buyer-side amount
+      // UNCHANGED; the status-flip idempotency above means a replay 409s before
+      // any money moves. A null treasury degrades to the pre-T0 burn.
+      if (Number.isInteger(priceCt) && priceCt > 0) {
+        const treasuryId = await getHouseTreasuryAvatarId();
+        if (treasuryId) {
+          await creditClawTokens(
+            {
+              avatarId: treasuryId,
+              amount: priceCt,
+              reason: 'house_fee_land_sale',
+              source: 'system',
+              metadata: {
+                parcelId: parcel.id,
+                parcelCode: parcel.parcel_code,
+                tier: parcel.tier,
+                buyerAvatarId: avatarId,
+              },
+            },
+            tx,
+          );
+        } else {
+          console.error(
+            `[land] house treasury unavailable — ${priceCt} CT land sale burned (pre-T0 behavior) for parcel ${parcel.parcel_code}`,
+          );
+        }
+      }
+
       // (f) Flip ownership available → owned. tenure='owned' (one-time sink,
       // permanent, never evicted — builder-economics 2026-06-24).
       await tx.execute(
@@ -1206,7 +1237,8 @@ landRoutes.post('/parcels/:parcelId/buy', requireAuthOrAgentSession, requireNonG
       // archived structure — restore it for the same buyer, purge it otherwise.
       await reconcileArchivedStructureOnAcquire(tx, parcel.id, avatarId);
 
-      // (g) Land-domain audit row (burn-sink: buyer debited, no treasury credit).
+      // (g) Land-domain audit row (buyer debited; since T0 the price is credited
+      // to the house treasury in this same tx — see (e.1) — no longer a burn).
       const meta = JSON.stringify({ tier: parcel.tier, parcelCode: parcel.parcel_code });
       await tx.execute(
         sql`INSERT INTO land_transactions
@@ -1582,6 +1614,31 @@ landRoutes.post('/structures/:structureId/upgrade', requireAuthOrAgentSession, r
           tx,
         );
         ledgerId = debit.ledgerId;
+
+        // T0 fee routing (2026-07-07): the upgrade cost → house treasury, IN
+        // THIS SAME tx (net-neutral supply; the CT moves owner→treasury instead
+        // of burning). Owner-side amount UNCHANGED; the idempotency-key replay
+        // above returns before any money moves, so a retry never re-credits.
+        // A null treasury degrades to the pre-T0 burn.
+        if (Number.isInteger(cost)) {
+          const treasuryId = await getHouseTreasuryAvatarId();
+          if (treasuryId) {
+            await creditClawTokens(
+              {
+                avatarId: treasuryId,
+                amount: cost,
+                reason: 'house_fee_structure_upgrade',
+                source: 'system',
+                metadata: { structureId, toLevel: target, tier: s.tier, ownerAvatarId: avatarId },
+              },
+              tx,
+            );
+          } else {
+            console.error(
+              `[land] house treasury unavailable — ${cost} CT upgrade burned (pre-T0 behavior) for structure ${structureId}`,
+            );
+          }
+        }
       }
 
       await tx.execute(
@@ -1921,6 +1978,39 @@ landRoutes.post('/parcels/:parcelId/rent', requireAuthOrAgentSession, requireNon
         tx,
       );
 
+      // (e.1) T0 fee routing (2026-07-07): the first week's rent → house
+      // treasury, IN THIS SAME tx. There is NO player-landlord on this path —
+      // the rent previously burned to nobody (verified: the audit row below was
+      // commented "sink: renter debited, no credit"), so the FULL rent routes
+      // to the treasury. Renter-side amount UNCHANGED; the status-flip
+      // idempotency means a replay 409s before any money moves. A null
+      // treasury degrades to the pre-T0 burn.
+      if (Number.isInteger(rentCt) && rentCt > 0) {
+        const treasuryId = await getHouseTreasuryAvatarId();
+        if (treasuryId) {
+          await creditClawTokens(
+            {
+              avatarId: treasuryId,
+              amount: rentCt,
+              reason: 'house_fee_land_rent',
+              source: 'system',
+              metadata: {
+                parcelId: parcel.id,
+                parcelCode: parcel.parcel_code,
+                tier: parcel.tier,
+                period: 'initial',
+                renterAvatarId: avatarId,
+              },
+            },
+            tx,
+          );
+        } else {
+          console.error(
+            `[land] house treasury unavailable — ${rentCt} CT rent burned (pre-T0 behavior) for parcel ${parcel.parcel_code}`,
+          );
+        }
+      }
+
       // (f) Flip available → owned, tenure='rented', paid through now + period.
       await tx.execute(
         sql`UPDATE land_parcels
@@ -1937,7 +2027,8 @@ landRoutes.post('/parcels/:parcelId/rent', requireAuthOrAgentSession, requireNon
       // (f.1) Restore/purge any eviction-archived structure on this parcel.
       await reconcileArchivedStructureOnAcquire(tx, parcel.id, avatarId);
 
-      // (g) Land-domain audit row — rent payment (sink: renter debited, no credit).
+      // (g) Land-domain audit row — rent payment (renter debited; since T0 the
+      // rent is credited to the house treasury in this same tx — see (e.1)).
       const meta = JSON.stringify({
         tier: parcel.tier,
         parcelCode: parcel.parcel_code,
