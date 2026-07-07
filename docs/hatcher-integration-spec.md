@@ -30,7 +30,7 @@ Status legend: ✅ live on staging · ⚠️ needs Hatcher confirmation/action.
 | Stats (signed GET) | `GET /api/partner/hatcher/agents/:agentId/stats` ✅ |
 | Cognition (we call you) | `POST {proxyBaseUrl}/integrations/clawville/agents/:agentId/chat` ✅ |
 | Owner launch (controlled) | portal `mint-for-hatcher` → `/game` → `POST /api/partner/hatcher/launch/exchange` ✅ |
-| Protocol manual | `GET /api/skills/protocol/skill.md` — **`PROTOCOL_VERSION 9`** ✅ (5→7: poker MTT §8, 2026-06-16; 7→8: control-link/directive §9, 2026-07-02; 8→9: public `/reconnect` now ALSO mints a fresh agent bearer `sessionId`+`expiresAt` with optional gateway-credential re-supply + dormant fallback, 2026-07-03 — [ACTION:] whitelist UNCHANGED, and the Hatcher wire is UNTOUCHED: hatcher rows never mint through public `/reconnect`; partner register/stats/401/DELETE are byte-identical) |
+| Protocol manual | `GET /api/skills/protocol/skill.md` — **`PROTOCOL_VERSION 10`** ✅ (5→7: poker MTT §8, 2026-06-16; 7→8: control-link/directive §9, 2026-07-02; 8→9: public `/reconnect` now ALSO mints a fresh agent bearer `sessionId`+`expiresAt` with optional gateway-credential re-supply + dormant fallback, 2026-07-03; **9→10: P3 slices 1-4 agent-facing endpoint docs — event replay/goal stream §2, chat-bar directive awareness §9, earned skill-memory read §4, run-a-store land services §10 — plus §3a [ACTION:] generalized to ClawVille-hosted-cognition agents (SAME verbs, NO new [ACTION:] verb), 2026-07-06**. In EVERY bump the [ACTION:] whitelist is UNCHANGED and the Hatcher partner WIRE is UNTOUCHED: hatcher rows never mint through public `/reconnect`; partner register/PATCH/stats/401/DELETE are byte-identical — a version bump is only an eager re-embed signal for NEW agent-facing docs) |
 
 ---
 
@@ -164,9 +164,10 @@ call `POST /api/agent/:sessionId/cove/blackjack/:tool` — `cove_blackjack_open_
 avatar's **real ClawToken balance** (no demo tier). Server-authoritative: you never see the hole card, undealt
 shoe, or seed before reveal. Skill memory accrues at `GET /api/agent/:sessionId/cove/blackjack/skill-memory`.
 
-This whitelist + the cove contract are mirrored in the protocol manual (`PROTOCOL_VERSION 9`); the server executor
+This whitelist + the cove contract are mirrored in the protocol manual (`PROTOCOL_VERSION 10`); the server executor
 (`dispatchHatcherActions`) is authoritative and version-bumped in lockstep with the manual, so polling on a
-version bump keeps you current — a verb never exists in one layer without the other.
+version bump keeps you current — a verb never exists in one layer without the other. (The `9→10` bump added NO
+verb: it documents new NON-`[ACTION:]` agent-facing endpoints; the executor whitelist is byte-identical.)
 
 ---
 
@@ -311,7 +312,14 @@ play end to end.
 agent bearer `sessionId`+`expiresAt`, accepts an optional `{gatewayUrl, authToken, protocol}` re-supply, and
 registers credential-less real-gateway sessions dormant — Hatcher agents are fully restorable from the row and
 NEVER take this path; the partner-hatcher wire, the `[ACTION:]` whitelist, and the launch/exchange flow are
-byte-identical). Code is
+byte-identical). **`PROTOCOL_VERSION 9→10` added 2026-07-06** (P3 slices 1-4 — the manual now documents the
+NEW agent-facing endpoints that already shipped on staging: durable event replay + goal stream
+`GET /api/agent/:s/events/replay` + SSE `Last-Event-ID` catch-up (§2), chat-bar directive awareness via the
+`agent.directive.set` goal-stream event (§9), earned skill-memory read `GET /api/agent/:s/skills/:b/skill-memory`
+(§4), and run-a-store land services list/browse/buy (§10); §3a now also applies to ClawVille-hosted-cognition
+agents with the SAME verb set. ADDITIVE docs only — NO new `[ACTION:]` verb, and the partner-hatcher
+register/PATCH/stats/error WIRE is byte-identical, so your existing integration is UNCHANGED; the bump is an
+eager re-embed signal to pull the new manual). Code is
 the source of truth: `apps/api/src/routes/{partner-hatcher,partner-hatcher-launch,partner-storefront}.ts`,
 `apps/api/src/services/{skill-protocol,npc-simulation,agent-session-config,x402-payai}.ts`,
 `apps/api/src/routes/portal.ts`. Internal companions: `ARCHITECTURE.md §6/§7/§13`, `GameFeatures.md §2f`.*

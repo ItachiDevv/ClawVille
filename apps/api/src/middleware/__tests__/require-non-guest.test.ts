@@ -16,20 +16,18 @@
  *   7. isGuestUser reflects the row's isGuest (true / false / missing → false).
  */
 
-// Env BEFORE touching the database module: spreading the lazy `db` Proxy below
-// reads `realDb.query`, which constructs the postgres client and THROWS at
-// module load when DATABASE_URL is unset (pre-existing fragility — the file
-// only passed when an earlier test file in the shared bun process had set it).
-// SCOPED to module init: the placeholder is DELETED again right after the stub
-// is built (see below), so DB-gated suites loading later in the same process
-// still SKIP instead of running against a fake URL. No connection ever opens
-// (every query hit is stubbed).
-const DB_URL_WAS_SET = !!process.env.DATABASE_URL;
-if (!DB_URL_WAS_SET) {
-  process.env.DATABASE_URL = 'postgresql://u:p@localhost:5432/db';
-}
-
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import type { Next } from 'hono';
+
+// bun:test's mock() infers `() => Promise<string>`, which is not assignable to
+// Hono's `Next` (`() => Promise<void>`). The middleware passes next()'s return
+// value through, so the tests assert on the 'NEXT' sentinel — this helper casts
+// the TYPE only (intersection keeps the Mock assertion surface); runtime is
+// unchanged.
+const mockNext = () => {
+  const fn = mock(async () => 'NEXT');
+  return fn as typeof fn & Next;
+};
 import * as realDatabase from '@clawville/database';
 
 // The value the stubbed users.findFirst returns for the NEXT call. Each test
@@ -58,12 +56,6 @@ mock.module('@clawville/database', () => ({
   db: fakeDb,
 }));
 
-// Stub built — drop the module-init placeholder so later files see the real
-// (absent) env and keep their skip-when-no-DB behavior.
-if (!DB_URL_WAS_SET) {
-  delete process.env.DATABASE_URL;
-}
-
 // Import the guards AFTER the mock is registered.
 const { requireNonGuestUser, requireNonGuestIdentity, isGuestUser } = await import(
   '../require-non-guest'
@@ -89,9 +81,7 @@ beforeEach(() => {
 describe('requireNonGuestUser (AppContext — after requireAuth / sessionMiddleware)', () => {
   it('403s a guest Lucia user and does NOT call next', async () => {
     nextUserRow = { isGuest: true };
-    // Cast keeps bun's Mock assignable to Hono's Next (Promise<void>) while the
-    // runtime still resolves the 'NEXT' sentinel the passthrough asserts on.
-    const next = mock(async () => 'NEXT' as unknown as void);
+    const next = mockNext();
     const res: any = await requireNonGuestUser(makeCtx({ user: { id: GUEST_ID } }), next);
     expect(res.__json).toBe(true);
     expect(res.status).toBe(403);
@@ -101,20 +91,16 @@ describe('requireNonGuestUser (AppContext — after requireAuth / sessionMiddlew
 
   it('passes a non-guest Lucia user (calls next)', async () => {
     nextUserRow = { isGuest: false };
-    // Cast keeps bun's Mock assignable to Hono's Next (Promise<void>) while the
-    // runtime still resolves the 'NEXT' sentinel the passthrough asserts on.
-    const next = mock(async () => 'NEXT' as unknown as void);
-    const res = await requireNonGuestUser(makeCtx({ user: { id: REAL_ID } }), next);
-    expect(res as unknown).toBe('NEXT');
+    const next = mockNext();
+    const res: any = await requireNonGuestUser(makeCtx({ user: { id: REAL_ID } }), next);
+    expect(res).toBe('NEXT');
     expect(next).toHaveBeenCalledTimes(1);
   });
 
   it('passes when there is NO Lucia user (agent path) WITHOUT a DB hit', async () => {
-    // Cast keeps bun's Mock assignable to Hono's Next (Promise<void>) while the
-    // runtime still resolves the 'NEXT' sentinel the passthrough asserts on.
-    const next = mock(async () => 'NEXT' as unknown as void);
-    const res = await requireNonGuestUser(makeCtx({ user: null }), next);
-    expect(res as unknown).toBe('NEXT');
+    const next = mockNext();
+    const res: any = await requireNonGuestUser(makeCtx({ user: null }), next);
+    expect(res).toBe('NEXT');
     expect(next).toHaveBeenCalledTimes(1);
     expect(usersFindFirst).not.toHaveBeenCalled();
   });
@@ -123,9 +109,7 @@ describe('requireNonGuestUser (AppContext — after requireAuth / sessionMiddlew
 describe('requireNonGuestIdentity (ActivityAuthContext — after requireAuthOrAgentSession)', () => {
   it('403s a kind:"user" guest and does NOT call next', async () => {
     nextUserRow = { isGuest: true };
-    // Cast keeps bun's Mock assignable to Hono's Next (Promise<void>) while the
-    // runtime still resolves the 'NEXT' sentinel the passthrough asserts on.
-    const next = mock(async () => 'NEXT' as unknown as void);
+    const next = mockNext();
     const res: any = await requireNonGuestIdentity(
       makeCtx({ identity: { kind: 'user', userId: GUEST_ID } }),
       next,
@@ -137,28 +121,24 @@ describe('requireNonGuestIdentity (ActivityAuthContext — after requireAuthOrAg
 
   it('passes a kind:"user" non-guest (calls next)', async () => {
     nextUserRow = { isGuest: false };
-    // Cast keeps bun's Mock assignable to Hono's Next (Promise<void>) while the
-    // runtime still resolves the 'NEXT' sentinel the passthrough asserts on.
-    const next = mock(async () => 'NEXT' as unknown as void);
-    const res = await requireNonGuestIdentity(
+    const next = mockNext();
+    const res: any = await requireNonGuestIdentity(
       makeCtx({ identity: { kind: 'user', userId: REAL_ID } }),
       next,
     );
-    expect(res as unknown).toBe('NEXT');
+    expect(res).toBe('NEXT');
     expect(next).toHaveBeenCalledTimes(1);
   });
 
   // E5 AGENT-PASSTHROUGH LOCK: an agent is NEVER a guest and must pass without
   // ever hitting the DB (no needless users lookup on the agent path).
   it('passes a kind:"agent" identity WITHOUT a DB hit', async () => {
-    // Cast keeps bun's Mock assignable to Hono's Next (Promise<void>) while the
-    // runtime still resolves the 'NEXT' sentinel the passthrough asserts on.
-    const next = mock(async () => 'NEXT' as unknown as void);
-    const res = await requireNonGuestIdentity(
+    const next = mockNext();
+    const res: any = await requireNonGuestIdentity(
       makeCtx({ identity: { kind: 'agent', userId: REAL_ID, agentId: 'a1' } }),
       next,
     );
-    expect(res as unknown).toBe('NEXT');
+    expect(res).toBe('NEXT');
     expect(next).toHaveBeenCalledTimes(1);
     expect(usersFindFirst).not.toHaveBeenCalled();
   });

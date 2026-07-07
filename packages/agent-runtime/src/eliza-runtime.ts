@@ -92,8 +92,69 @@ class InitMutex {
 
 const initMutex = new InitMutex();
 
+// R2 (2026-07-07): plugin-sql runs its schema migration on EVERY agent
+// `initialize()`, and that migration takes a GLOBAL per-plugin advisory lock
+// (`pg_advisory_lock(648842597483074957)` — the id is derived from the plugin
+// name, identical for every agent). Over the Supabase TRANSACTION-mode pooler
+// (:6543) a session-scoped advisory lock orphans on a pooled backend and never
+// releases, so the NEXT agent's migration blocks on `pg_advisory_lock` forever
+// (→ our 90s init timeout → "Failed to start avatar agent runtime"). With dozens
+// of agents on a box each re-running the identical no-op migration, this is the
+// dominant agent-start flake under load. The schema is the SAME for every agent,
+// so migrating once per process is sufficient: the FIRST init migrates (under
+// the InitMutex, so it is the only migrator — no contention), and every init
+// after a successful migrate passes `skipMigrations: true`, never touching the
+// advisory-lock path. Belt-and-suspenders: point the adapter at a SESSION-mode
+// connection (ELIZA_DATABASE_URL, :5432) so even that one migration's lock is
+// released cleanly on disconnect and can never orphan. Flag flips only on
+// SUCCESS, so a failed first migrate lets the next init retry it.
+let migrationsCompleted = false;
+
+// R2: Supabase Supavisor exposes TRANSACTION pooling on :6543 and SESSION
+// pooling on :5432 on the SAME host with the SAME credentials + database.
+// Session mode is required for plugin-sql's migration advisory lock to be held
+// on a stable backend and released on disconnect (transaction mode orphans it
+// → the agent-start wedge). Swap the port ONLY for a Supabase pooler URL on
+// :6543; leave direct connections (already :5432) and any non-Supabase URL
+// untouched. Pure + total.
+export function toSupabaseSessionModeUrl(url: string): string {
+  if (!url) return url;
+  if (url.includes('pooler.supabase.com:6543')) {
+    return url.replace('pooler.supabase.com:6543', 'pooler.supabase.com:5432');
+  }
+  return url;
+}
+
 function generateRoomId(agentId: string, userId: string): UUID {
   return uuidv5(`${agentId}-${userId}`, ROOM_NAMESPACE) as UUID;
+}
+
+/**
+ * Split the connection protocol manual into `## `-heading sections (P3 slice 6,
+ * surface #3). Any content before the first `## ` heading (the frontmatter + H1 +
+ * intro) becomes its own leading chunk. This mirrors the EXACT re-chunk
+ * granularity the manual itself instructs agents to use ("split on `## `
+ * headings"); deeper `### ` subsections stay within their parent `## ` chunk.
+ * Pure + total (never throws); returns [] only for empty input.
+ */
+function splitProtocolManualSections(manual: string): string[] {
+  const sections: string[] = [];
+  let current: string[] = [];
+  const flush = () => {
+    if (current.length === 0) return;
+    const joined = current.join('\n').trim();
+    if (joined) sections.push(joined);
+  };
+  for (const line of manual.split('\n')) {
+    if (line.startsWith('## ')) {
+      flush();
+      current = [line];
+    } else {
+      current.push(line);
+    }
+  }
+  flush();
+  return sections;
 }
 
 export interface ElizaRuntimeConfig {
@@ -444,8 +505,24 @@ export class ElizaRuntime {
       if (typeof createDatabaseAdapter !== 'function') {
         throw new Error('[ElizaRuntime] @elizaos/plugin-sql did not export createDatabaseAdapter');
       }
+      // R2: the ElizaOS adapter needs a SESSION-mode connection so plugin-sql's
+      // migration advisory lock (`pg_advisory_lock`) is held on a stable backend
+      // and released on disconnect — over the Supabase TRANSACTION-mode pooler
+      // (:6543) that session lock orphans and wedges every later agent's
+      // migration (see R2 note above). We DERIVE the session-mode URL from the
+      // effective app DATABASE_URL (swap the Supabase pooler port :6543→:5432,
+      // same host + credentials + DB) rather than requiring a separate env — a
+      // hand-set ELIZA_DATABASE_URL silently pointed the adapter at a STALE DB
+      // ref once (the Coolify env row is overridden at runtime by a baked
+      // .env.local, so it drifted from the DB the app actually runs on).
+      // ELIZA_DATABASE_URL stays as an explicit override for non-Supabase setups.
+      const effectiveDbUrl =
+        this.config.databaseUrl || process.env.DATABASE_URL || '';
+      const adapterUrl =
+        process.env.ELIZA_DATABASE_URL ||
+        toSupabaseSessionModeUrl(effectiveDbUrl);
       const adapter = createDatabaseAdapter(
-        { postgresUrl: this.config.databaseUrl || process.env.DATABASE_URL || '' },
+        { postgresUrl: adapterUrl },
         this.config.agentId as UUID
       );
 
@@ -476,10 +553,27 @@ export class ElizaRuntime {
           );
         }, INIT_TIMEOUT_MS);
       });
+      // R2: only the FIRST successful init per process runs the plugin-sql
+      // migration (identical schema for every agent); every init afterwards
+      // skips it, so the global migration advisory lock is taken at most once
+      // and can never wedge later agents. `initialize()` honours
+      // `options.skipMigrations` (see @elizaos/core AgentRuntime.initialize).
+      const skipMigrations = migrationsCompleted;
       try {
-        await Promise.race([this.runtime.initialize(), initTimeout]);
+        await Promise.race([
+          this.runtime.initialize({ skipMigrations } as any),
+          initTimeout,
+        ]);
       } finally {
         if (initTimer) clearTimeout(initTimer);
+      }
+      // Flip only AFTER a clean init — a failed first migrate leaves the flag
+      // false so the next agent retries the migration rather than skipping it.
+      if (!migrationsCompleted) {
+        migrationsCompleted = true;
+        console.log(
+          `[ElizaRuntime] plugin-sql migration completed once for this process; subsequent agent inits will skip migrations`,
+        );
       }
 
       this.state = 'running';
@@ -772,6 +866,114 @@ export class ElizaRuntime {
         (err as Error)?.message,
       );
       return [];
+    }
+  }
+
+  /**
+   * P3 slice 6 — SURFACE #3 of the three operational-knowledge surfaces
+   * (CLAUDE.md "Game-flow changes propagate to all three ... surfaces"): inject the
+   * CONNECTION PROTOCOL MANUAL into THIS hosted agent's OWN ElizaOS runtime so a
+   * ClawVille-hosted player agent knows the same protocol/table contract a
+   * connected agent fetches from `/api/skills/protocol/skill.md`. The
+   * `protocol-knowledge` metadata subtype was named-but-UNUSED until now — this is
+   * its first writer.
+   *
+   * Mirrors `recordEarnedSkillMemory`: embed + `createMemory` into the `knowledge`
+   * table, but under a FIXED per-agent ISOLATED room/entity (`protocol-knowledge`)
+   * distinct from BOTH the platform-agent-keyed book-knowledge the KnowledgeProvider
+   * reads AND the `earned-skill:<avatarId>` scope — so the manual never bleeds into
+   * teacher / human-chat RAG, and a future protocol-aware reader can query just this
+   * room. The full manual is CHUNKED on `## ` headings (the exact granularity agents
+   * are told to re-chunk it at) and each section embedded as its own row.
+   *
+   * DEDUPE BY VERSION: each chunk's memory id is derived from
+   * `protocol-knowledge:v<version>:<index>` + `unique:true`, so re-injecting the
+   * SAME version is idempotent, and a `PROTOCOL_VERSION` bump ADDS the new rows
+   * (old-version rows harmlessly remain; the `version` metadata lets a reader prefer
+   * the newest). Re-injection happens on the next runtime START after a version
+   * bump (the caller passes the LIVE version) — the natural lifecycle boundary; no
+   * out-of-band stop is needed because `knowledge` rows are read live at query time,
+   * not cached at construction.
+   *
+   * NEVER lazy-starts: no-op (false) when this runtime isn't running. Fail-SOFT per
+   * chunk — an embed/write failure on ONE section skips it and continues; returns
+   * true iff AT LEAST ONE section landed, and NEVER throws (injection must never
+   * block or crash a boot). Injects NO secret — the manual is the public, token-free
+   * surface (do not pass a per-token connect block here).
+   */
+  async injectProtocolKnowledge(manual: string, version: number): Promise<boolean> {
+    if (this.state !== 'running' || !this.runtime) return false;
+    const text = (manual ?? '').trim();
+    if (!text || !Number.isFinite(version)) return false;
+
+    const chunks = splitProtocolManualSections(text);
+    if (chunks.length === 0) return false;
+
+    try {
+      const agentId = this.config.agentId as UUID;
+      const key = 'protocol-knowledge';
+      const roomId = generateRoomId(this.config.agentId, key);
+      const entityId = uuidv5(key, ROOM_NAMESPACE) as UUID;
+      const worldId = await this.ensureWorld();
+      await this.ensureRoom(roomId, key, worldId);
+      await this.ensureEntity(entityId, agentId);
+
+      let wrote = 0;
+      for (let i = 0; i < chunks.length; i++) {
+        const section = chunks[i]!;
+        try {
+          // Embed FIRST — an un-vectored row is invisible to searchMemories, so on
+          // an embed failure we skip THIS section (never write a dead row) and move
+          // on; the rest of the manual still lands.
+          let embedding: number[];
+          try {
+            embedding = await embedText(section);
+          } catch (embErr) {
+            console.warn(
+              '[ElizaRuntime] injectProtocolKnowledge embed failed (skip section):',
+              (embErr as Error)?.message,
+            );
+            continue;
+          }
+          const memoryId = uuidv5(
+            `protocol-knowledge:v${version}:${i}`,
+            ROOM_NAMESPACE,
+          ) as UUID;
+          await this.runtime.createMemory(
+            {
+              id: memoryId,
+              agentId,
+              entityId,
+              roomId,
+              content: { text: section, source: 'protocol' } as Content,
+              embedding,
+              createdAt: Date.now(),
+              metadata: {
+                type: 'documentation',
+                source: 'protocol',
+                subtype: 'protocol-knowledge',
+                version,
+                section: i,
+              },
+            } as any,
+            'knowledge',
+            true, // unique — idempotent on the same (version, section)
+          );
+          wrote++;
+        } catch (sectionErr) {
+          console.warn(
+            '[ElizaRuntime] injectProtocolKnowledge write failed (skip section):',
+            (sectionErr as Error)?.message,
+          );
+        }
+      }
+      return wrote > 0;
+    } catch (err) {
+      console.warn(
+        '[ElizaRuntime] injectProtocolKnowledge failed (non-fatal):',
+        (err as Error)?.message,
+      );
+      return false;
     }
   }
 

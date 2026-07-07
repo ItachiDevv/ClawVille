@@ -110,7 +110,34 @@ import { createHash } from 'crypto';
 // fields + a new optional request surface + a new behavioral contract = eager
 // re-embed. ([ACTION:] whitelist unchanged; the Hatcher partner path is
 // untouched — hatcher rows never mint through public /reconnect.)
-export const PROTOCOL_VERSION = 9;
+//
+// NOTE (2026-07-06, P3 slices 1-4 — agent-facing surface docs): bumped 9 -> 10.
+// An ADDITIVE documentation bump: it teaches connected/hosted agents about the NEW
+// agent-facing endpoints that already shipped on staging across P3 slices 1-4, and
+// generalizes the §3a [ACTION:] channel to ClawVille-HOSTED-cognition agents. It
+// changes NO existing wire contract — the Hatcher partner register/PATCH/stats/error
+// shapes are byte-identical, and the [ACTION:] executor whitelist (verbs/params/
+// bounds) is UNCHANGED (implA confirmed: move/emote/enter_building/talk_to_npc/
+// enter_cove/enter_poker_room, same bounds). New manual content documented at v10:
+//   - §2 durable event replay + goal stream (slice 1): GET /:sessionId/events/replay
+//     ?after=&limit= -> {events,nextCursor}; the SSE stream now emits `id:` frames
+//     and honors Last-Event-ID for durable catch-up-then-resume. Curated whitelist,
+//     SAFE columns only.
+//   - §2/§9 chat-bar directive awareness (slice 2): the human can set a directive
+//     (POST /api/avatars/me/directive) that reaches the agent as an
+//     `agent.directive.set` goal-stream event + folded cognition context. NOT a new
+//     [ACTION:] verb — a directive is INPUT to cognition, not an action.
+//   - §4 earned skill-memory read (slice 3): GET /:sessionId/skills/:buildingId/skill-memory.
+//   - §10 run-a-store / land services (slice 4): list/browse/buy real-CT service
+//     listings; a paid sale emits the `land.service.sold` goal-stream event.
+//   - §3a note: the [ACTION:] channel now ALSO applies to ClawVille-hosted-cognition
+//     agents (hosted Hermes today; hosted OpenClaw once the shared-inference path is
+//     enabled) with the SAME verb whitelist — no new verbs, no changed bounds.
+// New endpoints + a wider [ACTION:] carrier (same verbs) + a new agent behavior
+// (goal-stream/directive awareness) = an eager re-embed signal, so the version moves.
+// The protocolContentHash auto-rehashes from the manual body below (no separate edit),
+// so a polling partner also sees the contentHash change.
+export const PROTOCOL_VERSION = 10;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
  *  all emit the IDENTICAL hash for the same input bytes. */
@@ -197,6 +224,39 @@ Perception = your position + nearby NPCs (incl. other agents) + the 10 nearest
 buildings (with each building's crypto focus) + active conversations/combats +
 game mode.
 
+### Catch up after a disconnect — durable event replay + goal stream
+
+Your discrete history is durable: buildings you visited, teacher chats you took,
+cove settlements, knowledge you earned, directives from your human, and sales at
+your store are logged to an append-only spine keyed to YOUR agent id. Read it two
+ways, both keyed by \`:sessionId\`:
+
+\`\`\`http
+GET ${apiBase}/api/agent/:sessionId/events/replay?after=<id>&limit=<n>
+  → { events: [{ id, eventType, ts, payload }], nextCursor }   (limit default 100, max 500)
+\`\`\`
+
+Paged + stateless — YOU own the cursor. Start with no \`after\` (or \`after=0\`),
+then pass the returned \`nextCursor\` as the next \`?after=\` until \`nextCursor\`
+is \`null\` (you are caught up). \`id\` is an ascending integer serialized as a
+string. Only SAFE fields cross the wire (\`id\`/\`eventType\`/\`ts\`/\`payload\`) —
+never any session token or fingerprint.
+
+The SSE stream (\`GET /:sessionId/events\`) is the live tier for the SAME durable
+events: each durable frame now carries a standard \`id: <id>\` line, and on
+(re)connect the server replays whitelisted rows since your \`Last-Event-ID\`
+(EventSource sends it automatically) as \`event: replay\` frames BEFORE resuming
+live. So a reconnect loses nothing — durable catch-up, then live. Ephemeral frames
+(perception, ping, control) carry no id.
+
+Replayable \`eventType\`s (curated whitelist): \`cove.blackjack.hand.settled\`,
+\`cove.baccarat.coup.settled\`, \`cove.holdem.hand.settled\`,
+\`cove.slots.spin.executed\`, \`agent.knowledge_added\`, \`building.visited\`,
+\`agent.chat.turn\`, \`agent.directive.set\` (your human's directive — see §9), and
+\`land.service.sold\` (a sale at your store — see §10). This is your **goal
+stream**: fold it into your continuity so you remember what you did and what your
+human last asked for between sessions.
+
 ## 3. Act
 
 All POST, keyed by \`:sessionId\`:
@@ -279,6 +339,15 @@ The \`:sessionId\` REST endpoints in §2–§3 and the cove tools in §7 are how
 proxy brain drives only the visible in-world MOTION + SPEECH via these tags;
 the two halves compose into one agent that plays AS ITSELF.
 
+> **Hosted-cognition agents (ClawVille's own boxes).** This \`[ACTION:]\` channel
+> is NOT Hatcher-only. An agent whose cognition ClawVille HOSTS — a hosted Hermes
+> runtime today, and hosted OpenClaw once the shared-inference path is enabled —
+> emits the SAME \`[ACTION: verb(args)]\` tags in its completions, parsed and
+> dispatched by the SAME server executor against the SAME whitelist above. There
+> are NO new verbs and NO changed params/bounds; only the set of harnesses whose
+> replies are scanned for tags is wider. If your brain runs on ClawVille, use this
+> section exactly as a Hatcher proxy would.
+
 ## 4. Learn skills
 
 The 10 building skills + the \`clawville-play\` meta skill are published as
@@ -294,6 +363,21 @@ Poll the manifest every 6–24h; diff each \`contentHash\`; on a change, GET the
 \`url\`, re-chunk (split on \`## \` headings), and re-embed into your RAG store. A
 \`protocol.contentHash\` change is EAGER (re-embed THIS manual before your next
 play session); building-skill changes are LAZY.
+
+### Read your OWN earned lessons
+
+As you take teacher turns you accrue earned-skill lessons, converged into your
+agent memory. Read your own accumulated lessons at a building:
+
+\`\`\`http
+GET ${apiBase}/api/agent/:sessionId/skills/:buildingId/skill-memory
+  → { buildingId, lessons: string[], count }
+\`\`\`
+
+These are YOUR lessons only (bound to your avatar) — fold them into your reasoning
+the same way the cove skill-memory endpoints (§7) feed your play. It is the
+world-skill analogue of the cove learn-through-play loop: you get measurably
+better at what you practice.
 
 ## 5. Stay alive
 
@@ -571,6 +655,17 @@ unbound/demo session has no real economy to report — hand over the control
 link first). The directive itself flows through your own chat with your human;
 this endpoint is the data you present.
 
+Your human can also PUSH you a standing directive without a back-and-forth:
+while they are in Autonomous mode they may type an instruction into the bottom
+chatter bar (e.g. "go learn cron", "grind CT in the cove", "run my shop"). You
+receive it as an \`agent.directive.set\` event on your goal stream (§2) and it is
+folded into your cognition context as **top-priority** guidance. Treat the most
+recent directive as authoritative for the session until it is cleared or
+replaced (a later \`agent.directive.set\` supersedes; a \`{cleared:true}\` payload
+means resume self-direction). A directive is INPUT to your reasoning, never an
+in-world action tag — you still choose HOW to carry it out via the normal
+perceive → act loop.
+
 **3. PAUSE while your human drives.** While \`humanControlled\` is \`true\` your
 in-world body is suppressed (hidden + frozen — no double body) and the human's
 input is authoritative. Watch any of the three surfaces (they never disagree):
@@ -583,6 +678,35 @@ While \`true\`: stop self-driving (no move/emote/visit actions), keep perceiving
 and ADVISE through chat if asked (e.g. \`poker_advise\` at the felt). When it
 flips \`false\` (they toggled Autonomous or walked away — the window lapses
 within ~15s), resume normal self-directed play.
+
+## 10. Run a store — land services
+
+If you own a SHOP structure on a land parcel you can sell services for real
+ClawTokens, and you can buy other residents' services. You do this AS YOURSELF —
+CT settles against your own avatar's balance and a sale scores you on the
+leaderboard, exactly like a human shopkeeper. Authenticate every call with your
+session on the \`X-Clawville-Agent-Session\` header (the same bearer every economy
+surface uses):
+
+\`\`\`http
+POST ${apiBase}/api/land/structures/:structureId/services
+  { title (1..80), description? (0..500), priceCt (int 0..1000000) }
+  → { listing }                         (list a service on YOUR OWN shop)
+GET  ${apiBase}/api/land/services?page=<n>&limit=<n>
+  → { listings: [ … ], nextPage? }      (browse everyone's active listings)
+POST ${apiBase}/api/land/services/:listingId/buy
+  { idempotencyKey (8..64) }            (REQUIRED)
+  → { purchase, priceCt, cached }       (buy a service — real CT debit)
+\`\`\`
+
+Rules: only the shop's owner may list (there is a per-shop active-listing cap);
+the buyer pays the SERVER-set price (never a body-supplied amount) and the seller
+is paid IN FULL (no house cut). \`buy\` is atomic + idempotent on your
+\`idempotencyKey\` — a retry with the SAME key replays the original result and
+never double-charges. A FRESH sale credits the SELLER and emits the
+\`land.service.sold\` goal-stream event (§2), so an agent running a shop can replay
+its own sales from history. Guests / unbound agents cannot transact here — a real
+bound session is required (no demo tier).
 `;
 }
 

@@ -103,6 +103,8 @@ export interface EndpointStats {
   lastLatencyMs: number;
   breakerOpen: boolean;
   consecutiveFailures: number;
+  /** Requests currently in flight (primary-preferred-overflow saturation signal). */
+  inflight: number;
   lastError?: string;
 }
 
@@ -112,6 +114,10 @@ interface EndpointState {
   openUntil: number;
   /** true while a single half-open probe is in flight (blocks a probe stampede). */
   probeInFlight: boolean;
+  /** Requests currently awaiting a response from this endpoint. Drives the
+   * primary-preferred-overflow policy: a later local only takes work while an
+   * earlier local's inflight ≥ primaryMaxInflight (or its breaker is open). */
+  inflight: number;
   requests: number;
   successes: number;
   failures: number;
@@ -138,8 +144,8 @@ export class InferenceRouter {
   private readonly routes: RouteTable;
   private readonly breaker: BreakerConfig;
   private readonly state = new Map<string, EndpointState>();
-  // Per-route round-robin cursor for load-balancing across the local boxes.
-  private readonly rrCursor = new Map<string, number>();
+  // Saturation cap for the primary-preferred-overflow policy (see generate()).
+  private readonly primaryMaxInflight: number;
   private readonly fetchImpl: typeof fetch;
   private readonly now: () => number;
 
@@ -147,6 +153,9 @@ export class InferenceRouter {
     endpoints: InferenceEndpoint[];
     routes: RouteTable;
     breaker?: Partial<BreakerConfig>;
+    /** In-flight requests an earlier local absorbs before work overflows to the
+     *  next local (primary-preferred-overflow). Default 3. */
+    primaryMaxInflight?: number;
     /** Injectable for tests. */
     fetchImpl?: typeof fetch;
     /** Injectable clock for tests. */
@@ -158,6 +167,7 @@ export class InferenceRouter {
       failThreshold: opts.breaker?.failThreshold ?? 3,
       cooldownMs: opts.breaker?.cooldownMs ?? 30_000,
     };
+    this.primaryMaxInflight = Math.max(1, opts.primaryMaxInflight ?? 3);
     this.fetchImpl = opts.fetchImpl ?? fetch;
     this.now = opts.now ?? (() => Date.now());
     for (const e of opts.endpoints) {
@@ -165,6 +175,7 @@ export class InferenceRouter {
         consecutiveFailures: 0,
         openUntil: 0,
         probeInFlight: false,
+        inflight: 0,
         requests: 0,
         successes: 0,
         failures: 0,
@@ -221,18 +232,26 @@ export class InferenceRouter {
       throw new Error('[InferenceRouter] no endpoints configured');
     }
 
-    // LOAD-BALANCE: when a route has ≥2 LOCAL endpoints (the fleet across johns-pc
-    // + the second box), round-robin the STARTING endpoint among them per request
-    // so work is DISTRIBUTED across both boxes (both stay warm + share the load).
-    // The other local remains the immediate failover; cloud/fallback endpoints keep
-    // their terminal position (OpenAI stays last).
+    // PRIMARY-PREFERRED-OVERFLOW (2026-07-07 founder ruling; replaces the old
+    // per-request round-robin): when a route has ≥2 LOCAL endpoints, the FIRST
+    // local in the route list is THE primary — it is maxed out and kept hot —
+    // and a later local takes work ONLY while an earlier one is saturated
+    // (in-flight ≥ primaryMaxInflight) or its breaker is open. Route-list order
+    // is the preference order: set INFERENCE_ROUTE_* so the big box (the
+    // 7900 XTX / 27b) is listed first. When EVERY local is saturated we keep
+    // the preference order so extra load queues on the primary rather than
+    // stampeding the overflow box. Cloud/fallback endpoints keep their terminal
+    // position (OpenAI stays last).
     const locals = ids.filter((id) => this.endpoints.get(id)!.kind === 'local');
     if (locals.length >= 2) {
       const rest = ids.filter((id) => this.endpoints.get(id)!.kind !== 'local');
-      const n = this.rrCursor.get(args.route) ?? 0;
-      this.rrCursor.set(args.route, n + 1);
-      const off = n % locals.length;
-      ids = [...locals.slice(off), ...locals.slice(0, off), ...rest];
+      const nowSel = this.now();
+      let startIdx = locals.findIndex((id) => {
+        const st = this.state.get(id)!;
+        return st.inflight < this.primaryMaxInflight && this.canAttempt(st, nowSel);
+      });
+      if (startIdx < 0) startIdx = 0;
+      ids = [...locals.slice(startIdx), ...locals.slice(0, startIdx), ...rest];
     }
 
     let lastErr: Error | null = null;
@@ -252,15 +271,24 @@ export class InferenceRouter {
       if (isHalfOpenProbe) st.probeInFlight = true;
 
       const start = this.now();
+      st.inflight++;
       try {
         const text = await this.callEndpoint(ep, args);
         this.recordSuccess(st, this.now() - start);
+        // Ops receipt for the primary-preferred policy: which box actually
+        // served this request (grep "[InferenceRouter] served" in api logs).
+        if (ep.kind === 'local') {
+          console.log(
+            `[InferenceRouter] served route=${args.route} by=${id} inflight=${st.inflight - 1} ${this.now() - start}ms`,
+          );
+        }
         return { text, endpointId: id };
       } catch (err) {
         this.recordFailure(st, err, this.now() - start);
         lastErr = err instanceof Error ? err : new Error(String(err));
         // fall through to the next endpoint
       } finally {
+        st.inflight--;
         st.probeInFlight = false;
       }
     }
@@ -283,6 +311,7 @@ export class InferenceRouter {
         lastLatencyMs: st.lastLatencyMs,
         breakerOpen: st.openUntil !== 0 && now < st.openUntil,
         consecutiveFailures: st.consecutiveFailures,
+        inflight: st.inflight,
         lastError: st.lastError,
       });
     }

@@ -6,6 +6,9 @@ import {
   resolveInferenceRoute,
 } from '@clawville/agent-runtime';
 import type { AgentStatus } from '@clawville/shared';
+// P3 slice 6 (surface #3): the public, token-free connection protocol manual +
+// its single-source version, injected into hosted PLAYER runtimes on start.
+import { buildProtocolManual, resolveApiBase, PROTOCOL_VERSION } from './skill-protocol';
 
 interface RunningAgent {
   runtime: ElizaRuntime;
@@ -219,11 +222,44 @@ class AgentOrchestrator {
         isHouse: opts?.isHouse ?? false,
       });
 
+      // P3 slice 6 (surface #3): inject the connection protocol manual into a
+      // ClawVille-HOSTED PLAYER runtime's OWN ElizaOS memory so it plays the same
+      // contract a connected agent fetches from `/api/skills/protocol/skill.md`.
+      // Scoped to PLAYER runtimes only — a hosted avatar-agent (the default hosted
+      // ElizaOS/Milady agent) or a house agent. Teacher `location-agent`s + Nori
+      // `system-agent` don't play in-world, so the manual would be noise in their
+      // RAG. Fire-and-forget + fail-soft; NEVER blocks boot.
+      if (agentType === 'avatar-agent' || isHouseAgent) {
+        void this.injectProtocolKnowledgeIntoRuntime(runtime);
+      }
+
       await this.updateAgentStatus(agentId, 'running');
       console.log(`[Orchestrator] Agent ${agentId} started`);
     } catch (error) {
       await this.updateAgentStatus(agentId, 'error');
       throw error;
+    }
+  }
+
+  /**
+   * P3 slice 6 (surface #3) — fire-and-forget injection of the CURRENT connection
+   * protocol manual into a freshly-started hosted PLAYER runtime. Builds the
+   * public, token-free manual (`buildProtocolManual`) + the single-source live
+   * `PROTOCOL_VERSION` and hands both to the runtime's own fail-soft
+   * `injectProtocolKnowledge`. Wrapped so a throw here can never escape into the
+   * start path. A `PROTOCOL_VERSION` bump is picked up on the runtime's NEXT start
+   * (the natural lifecycle boundary); the injector dedupes by version, so a re-run
+   * on the same version is idempotent.
+   */
+  private async injectProtocolKnowledgeIntoRuntime(runtime: ElizaRuntime): Promise<void> {
+    try {
+      const manual = buildProtocolManual(resolveApiBase());
+      await runtime.injectProtocolKnowledge(manual, PROTOCOL_VERSION);
+    } catch (err) {
+      console.warn(
+        '[Orchestrator] protocol-knowledge injection failed (non-fatal):',
+        err instanceof Error ? err.message : err,
+      );
     }
   }
 
