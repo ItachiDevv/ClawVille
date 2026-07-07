@@ -72,6 +72,42 @@ export const treasuryWallets = pgTable(
   }),
 );
 
+/**
+ * TREASURY SUBJECTS (Tokenomics T0, 2026-07-07) — first-class registry naming
+ * the singleton HOUSE-TREASURY avatar(s).
+ *
+ * The ClawToken ledger can only hold a balance on an `avatars` row (every
+ * `claw_token_transactions` row requires `avatar_id`, and the
+ * `avatars_vclaw_balance_sum` CHECK lives there), so the house treasury IS a
+ * system avatar — this table is the durable, queryable NAME for it, so it is a
+ * first-class subject rather than "just another avatar".
+ *
+ *   - `purpose` — UNIQUE role key. T0 ships the singleton `'house-fees'`: the
+ *     pure revenue SINK every routed fee credits (cove rakes, baccarat
+ *     commission, MTT rake, cosmetics/book purchases, land sale/upgrade/rent).
+ *     It starts at 0 CT, is NEVER minted a bankroll, and NEVER pays players.
+ *   - `avatarId` — FK to the balance-bearing system avatar. ON DELETE RESTRICT:
+ *     the treasury avatar must never be cascade-deleted out from under the
+ *     registry (deleting it would orphan the accumulated revenue).
+ *
+ * Provisioned idempotently on boot by
+ * `apps/api/src/services/house-treasury-seeder.ts` (mirrors the audited
+ * cash-house-seeder pattern). Distinct from `treasuryWallets` above (Solana
+ * keypair custody) — this table names in-game CT ledger subjects.
+ */
+export const treasurySubjects = pgTable('treasury_subjects', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  /** Unique role key, e.g. 'house-fees' (T0 singleton). */
+  purpose: text('purpose').notNull().unique(),
+  /** The balance-bearing system avatar this subject's CT lives on. */
+  avatarId: uuid('avatar_id')
+    .notNull()
+    .references(() => avatars.id, { onDelete: 'restrict' }),
+  /** Freeform operator notes. */
+  notes: text('notes'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+});
+
 // --- ClawToken audit ledger ---
 
 /**

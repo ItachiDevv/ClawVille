@@ -4,7 +4,8 @@ import { eq, and, sql, isNull, or, gt } from 'drizzle-orm';
 import { db, avatars, avatarInventory, agents, agentBots, users } from '@clawville/database';
 import { getBookById, getBooksForBuilding, KNOWLEDGE_BOOKS, BUILDING_MILADY_SKILLS } from '@clawville/shared';
 import { miladyGateway } from '../services/milady-gateway';
-import { debitClawTokens } from '../services/claw-token-ledger';
+import { creditClawTokens, debitClawTokens } from '../services/claw-token-ledger';
+import { getHouseTreasuryAvatarId } from '../services/house-treasury-seeder';
 import { requireAuth } from '../middleware/auth';
 import { sessionMiddleware } from '../middleware/auth';
 import { requireAuthOrAgentSession } from '../middleware/require-auth-or-agent';
@@ -103,6 +104,30 @@ itemRoutes.post('/buy', requireAuthOrAgentSession, requireNonGuestIdentity, asyn
       source: 'api',
       metadata: { bookId: book.id, bookName: book.name },
     }, tx);
+
+    // 1b. T0 fee routing (2026-07-07): book revenue → house treasury, IN THIS
+    // SAME tx as the debit + inventory insert (net-neutral supply — the price
+    // moves player→treasury instead of burning). Buyer-side amount UNCHANGED.
+    // A null treasury (unavailable) degrades to the pre-T0 burn.
+    if (Number.isInteger(book.price) && book.price > 0) {
+      const treasuryId = await getHouseTreasuryAvatarId();
+      if (treasuryId) {
+        await creditClawTokens(
+          {
+            avatarId: treasuryId,
+            amount: book.price,
+            reason: 'house_fee_book_purchase',
+            source: 'system',
+            metadata: { bookId: book.id, buyerAvatarId: avatar.id },
+          },
+          tx,
+        );
+      } else {
+        console.error(
+          `[items] house treasury unavailable — ${book.price} CT book purchase burned (pre-T0 behavior) for book ${book.id}`,
+        );
+      }
+    }
 
     // 2. Check if already in inventory
     const existingItem = await tx.query.avatarInventory.findFirst({

@@ -579,3 +579,70 @@ describe('claw-token-ledger F1 — DEFAULT-INSERT must satisfy the sum CHECK (re
   // migrated staging DB — the unit layer here can only assert the column-default
   // contract, which is the exact invariant that broke.
 });
+
+describe('claw-token-ledger T0 — fee routing conservation (debit player + credit treasury in ONE tx)', () => {
+  // T0 routes every silent-burn fee as `debitClawTokens(player, price, tx)` +
+  // `creditClawTokens(treasury, price, tx)` COMPOSED into one transaction (shop
+  // shape), or `creditClawTokens(treasury, rake, tx)` alongside the raked payout
+  // (cove shape). This proves the composed shape at the ledger layer:
+  //   - total supply is CONSERVED on a purchase (player -P, treasury +P),
+  //   - the treasury credit lands SOFT (fees are SOFT; never bought/earned),
+  //   - both legs write audit rows against the SAME tx.
+  it('purchase shape: player -P / treasury +P conserves supply; treasury credit is SOFT', async () => {
+    const player = seedAvatar({ claw_tokens: 500, soft_balance: 500 });
+    const treasury = seedAvatar({ claw_tokens: 0, soft_balance: 0 }); // pure sink starts at 0
+    const P = 120;
+
+    await fakeDb.transaction(async (tx) => {
+      await debitClawTokens(
+        { avatarId: player.id, amount: P, reason: 'buy_cosmetic', source: 'api' },
+        tx as never,
+      );
+      await creditClawTokens(
+        { avatarId: treasury.id, amount: P, reason: 'house_fee_cosmetic_purchase', source: 'system' },
+        tx as never,
+      );
+    });
+
+    const p = getAvatar(player.id);
+    const t = getAvatar(treasury.id);
+    expect(p.claw_tokens).toBe(380); // player-side amount exactly as before T0
+    expect(t.claw_tokens).toBe(120); // the fee LANDS instead of burning
+    expect(p.claw_tokens + t.claw_tokens).toBe(500); // supply conserved
+    // Treasury revenue is SOFT (T0 invariant — bought/earned stay 0).
+    expect(t.soft_balance).toBe(120);
+    expect(t.bought_balance).toBe(0);
+    expect(t.earned_balance).toBe(0);
+    // Both legs audited: one debit row on the player, one credit on the treasury.
+    const treasuryRows = ledgerFor(treasury.id);
+    expect(treasuryRows.length).toBe(1);
+    expect(treasuryRows[0]!.reason).toBe('house_fee_cosmetic_purchase');
+    expect(treasuryRows[0]!.amount).toBe(P);
+    expect(treasuryRows[0]!.provenance).toBe('soft');
+    expect(ledgerFor(player.id).at(-1)!.amount).toBe(-P);
+  });
+
+  it('rake shape: crediting the treasury the withheld rake never touches the player', async () => {
+    const player = seedAvatar({ claw_tokens: 1000, soft_balance: 1000 });
+    const treasury = seedAvatar({ claw_tokens: 0, soft_balance: 0 });
+    // Blackjack-style: player is credited the RAKED payout; the rake goes to the
+    // treasury in the same tx. Player-side number is the raked figure, unchanged.
+    const rakedPayout = 95;
+    const rake = 5;
+
+    await fakeDb.transaction(async (tx) => {
+      await creditClawTokens(
+        { avatarId: player.id, amount: rakedPayout, reason: 'cove_blackjack_payout', source: 'api' },
+        tx as never,
+      );
+      await creditClawTokens(
+        { avatarId: treasury.id, amount: rake, reason: 'house_fee_blackjack_rake', source: 'system' },
+        tx as never,
+      );
+    });
+
+    expect(getAvatar(player.id).claw_tokens).toBe(1095); // exactly the raked payout
+    expect(getAvatar(treasury.id).claw_tokens).toBe(rake);
+    expect(ledgerFor(treasury.id)[0]!.provenance).toBe('soft');
+  });
+});

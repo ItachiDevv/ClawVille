@@ -37,7 +37,8 @@ import {
 import { requireAuth, sessionMiddleware } from '../middleware/auth';
 import { requireNonGuestUser } from '../middleware/require-non-guest';
 import { logEventFromContext } from '../services/event-logger';
-import { debitClawTokens, InsufficientTokensError } from '../services/claw-token-ledger';
+import { creditClawTokens, debitClawTokens, InsufficientTokensError } from '../services/claw-token-ledger';
+import { getHouseTreasuryAvatarId } from '../services/house-treasury-seeder';
 import type { AppContext } from '../types';
 
 export const cosmeticsRoutes = new Hono<AppContext>();
@@ -322,6 +323,32 @@ cosmeticsRoutes.post('/:skuId/buy', sessionMiddleware, requireAuth, requireNonGu
         },
         tx,
       );
+      // ── T0 fee routing (2026-07-07): shop revenue → house treasury ──────
+      // The purchase debit previously burned to nobody. Credit the SAME price
+      // to the house treasury IN THIS SAME tx (debit + credit = net-neutral
+      // supply; the CT moves player→treasury instead of vanishing). Buyer-side
+      // amount UNCHANGED. The `alreadyOwned` idempotent replay returns before
+      // this tx, so a re-buy never re-credits. A null treasury (unavailable)
+      // degrades to the pre-T0 burn — never blocks the purchase.
+      if (Number.isInteger(sku.priceCt) && sku.priceCt > 0) {
+        const treasuryId = await getHouseTreasuryAvatarId();
+        if (treasuryId) {
+          await creditClawTokens(
+            {
+              avatarId: treasuryId,
+              amount: sku.priceCt,
+              reason: 'house_fee_cosmetic_purchase',
+              source: 'system',
+              metadata: { skuId, slug: sku.slug, buyerAvatarId: avatar.id },
+            },
+            tx,
+          );
+        } else {
+          console.error(
+            `[cosmetics] house treasury unavailable — ${sku.priceCt} CT purchase burned (pre-T0 behavior) for sku ${skuId}`,
+          );
+        }
+      }
       const [row] = await tx
         .insert(avatarSkins)
         .values({

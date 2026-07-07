@@ -32,7 +32,8 @@
 import { sql } from 'drizzle-orm';
 import { db } from '@clawville/database';
 import { RENT_PERIOD_DAYS, RENT_GRACE_DAYS, type LandTier } from '@clawville/shared';
-import { debitClawTokens, InsufficientTokensError } from './claw-token-ledger';
+import { creditClawTokens, debitClawTokens, InsufficientTokensError } from './claw-token-ledger';
+import { getHouseTreasuryAvatarId } from './house-treasury-seeder';
 import { broadcastLandEvent } from '../routes/world';
 import { bustOwnedCache, bustParcelsAvailableCache } from '../routes/land';
 
@@ -153,6 +154,38 @@ async function processDueParcel(parcelId: string): Promise<SweepAction> {
         },
         tx,
       );
+      // T0 fee routing (2026-07-07): the weekly rent → house treasury, IN THIS
+      // SAME per-parcel tx as the tenant's debit (net-neutral supply — there is
+      // NO player-landlord; the rent previously burned to nobody). Tenant-side
+      // amount UNCHANGED; the lock-time re-read above (rent_due under FOR
+      // UPDATE) already makes the charge exactly-once per due week, and this
+      // credit rides that same guarantee. A null treasury (unavailable)
+      // degrades to the pre-T0 burn — never blocks the charge.
+      if (Number.isInteger(rentCt) && rentCt > 0) {
+        const treasuryId = await getHouseTreasuryAvatarId();
+        if (treasuryId) {
+          await creditClawTokens(
+            {
+              avatarId: treasuryId,
+              amount: rentCt,
+              reason: 'house_fee_land_rent',
+              source: 'system',
+              metadata: {
+                parcelId: p.id,
+                parcelCode: p.parcel_code,
+                tier: p.tier,
+                period: 'weekly',
+                renterAvatarId: ownerAvatarId,
+              },
+            },
+            tx,
+          );
+        } else {
+          console.error(
+            `[LandRentSweeper] house treasury unavailable — ${rentCt} CT weekly rent burned (pre-T0 behavior) for parcel ${p.parcel_code}`,
+          );
+        }
+      }
       // Charged — advance a fresh week from now (forgives outage arrears), clear grace.
       await tx.execute(
         sql`UPDATE land_parcels

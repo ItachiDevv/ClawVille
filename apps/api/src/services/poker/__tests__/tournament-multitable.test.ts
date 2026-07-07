@@ -367,6 +367,10 @@ interface Harness {
  * round-robin over registration order is fully reproducible) + fake WS-room seam
  * that records moves + room bindings.
  */
+/** T0 fee routing — fake house-treasury avatarId the injected resolver returns
+ * (a raked settle credits the FAKE ledger here, never touching a real DB). */
+const TREASURY_AVATAR = 'av-house-treasury';
+
 function buildManager(db: FakeDb, ledger: FakeLedger, clock: FakeClock): Harness {
   const sim = new PokerTableSim(clock);
   const broadcast: BroadcastFn = () => {};
@@ -397,6 +401,9 @@ function buildManager(db: FakeDb, ledger: FakeLedger, clock: FakeClock): Harness
     onMoveFn: (info) => {
       moves.push(info);
     },
+    // T0: settle credits the rake to this fake treasury via the FAKE ledger
+    // (the default resolver would lazily import the real seeder → real DB).
+    resolveTreasuryAvatarId: async () => TREASURY_AVATAR,
   });
   return { db, ledger, clock, sim, tm, placementEmits, moves, rooms };
 }
@@ -616,6 +623,10 @@ describe('TournamentManager — MULTI-TABLE MTT end-to-end (mocked DB + ledger)'
     const totalBuyIns = ledger.totalDebited('poker_mtt_buyin');
     const totalPrizes = ledger.totalCredited('poker_mtt_prize');
     expect(BigInt(totalBuyIns) - BigInt(totalPrizes)).toBe(rake);
+    // T0 fee routing: the withheld rake now lands on the house treasury (same
+    // settle tx, fresh-settle branch only) — supply closes exactly.
+    expect(ledger.totalCredited('house_fee_mtt_rake')).toBe(Number(rake));
+    expect(ledger.get(TREASURY_AVATAR)).toBe(Number(rake));
 
     // ── leaderboard parity: ONE activity.match.placed per placed entrant ───────
     expect(placementEmits.length).toBe(N);
@@ -634,10 +645,14 @@ describe('TournamentManager — MULTI-TABLE MTT end-to-end (mocked DB + ledger)'
 
     // ── idempotent settle: settle AGAIN → no second credit, NO re-emit ─────────
     const prizeCreditsBefore = ledger.credits.filter((c) => c.reason === 'poker_mtt_prize').length;
+    const treasuryBefore = ledger.get(TREASURY_AVATAR);
     const emitsBefore = placementEmits.length;
     const re = await tm.settleTournament(tid);
     expect(re.alreadySettled).toBe(true);
     expect(ledger.credits.filter((c) => c.reason === 'poker_mtt_prize').length).toBe(prizeCreditsBefore);
+    // T0: replay must NOT re-credit the treasury (fee lives in fresh-settle only).
+    expect(ledger.get(TREASURY_AVATAR)).toBe(treasuryBefore);
+    expect(ledger.credits.filter((c) => c.reason === 'house_fee_mtt_rake').length).toBe(1);
     expect(placementEmits.length).toBe(emitsBefore);
   });
 
