@@ -6,6 +6,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import Link from 'next/link';
 import dynamic from 'next/dynamic';
 import { api } from '@/lib/api';
+import { FIRST_TIME_DISCLOSURE_STORAGE_KEY } from '@/components/game/first-time-backup-modal';
 
 const LandingScene = dynamic(() => import('@/components/three/LandingScene'), { ssr: false });
 
@@ -24,6 +25,10 @@ function LoginForm() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [name, setName] = useState('');
+  // Founder spec: the runtime harness is CHOSEN at sign up (Milady preselected
+  // as the recommended hosted default, never forced). Mirrors the server
+  // signupSchema enum; 'custom' (BYO gateway) stays a /create-agent concern.
+  const [harness, setHarness] = useState<'milady' | 'hermes' | 'openclaw'>('milady');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
@@ -66,10 +71,40 @@ function LoginForm() {
 
     try {
       if (isSignup) {
-        await api.signup({ email, password, name: name || undefined });
+        const res = await api.signup({ email, password, name: name || undefined, harness });
+        // P2 Path-B (2026-07-04) — signup now auto-provisions the hosted
+        // agent server-side, and the response carries the ONE-TIME custodial
+        // wallet secret (server never re-emits it). Stash it under the EXACT
+        // sessionStorage contract FirstTimeBackupModal reads on /game first
+        // mount (same key + payload shape /create-agent/personality writes) —
+        // a mismatched key would silently lose the secret forever. identity
+        // is null here: signup provisioning mints no identity keypair (that
+        // disclosure only exists on the unauth POST /api/avatars branch).
+        // sessionStorage (not localStorage) is intentional — purged when the
+        // tab closes, same tradeoff as the personality-page stash.
+        if (res.wallet?.secretKey) {
+          try {
+            sessionStorage.setItem(
+              FIRST_TIME_DISCLOSURE_STORAGE_KEY,
+              JSON.stringify({
+                avatarId: res.avatar?.id,
+                avatarName: res.avatar?.name ?? '',
+                identity: null,
+                wallet: res.wallet,
+                issuedAt: Date.now(),
+              }),
+            );
+          } catch {
+            // sessionStorage quota exceeded or disabled — fall through.
+            // User can still recover via the support-chat flow later.
+          }
+        }
         await claimGuestCoveHistory();
         // Drop any pre-auth cache so the destination refetches as the new user.
         purgeAuthCache();
+        // /create-agent detects the freshly-provisioned avatar and runs in
+        // customize mode (prefill + PATCH) — it never dead-ends on the
+        // one-avatar-per-user constraint.
         router.push('/create-agent');
       } else {
         await api.login({ email, password });
@@ -196,6 +231,36 @@ function LoginForm() {
                     className="w-full px-4 py-2.5 rounded-lg bg-white/[0.05] border border-white/10 text-white placeholder:text-white/20 focus:outline-none focus:border-cyan-500/50 focus:shadow-[0_0_12px_rgba(0,229,255,0.1)] transition-all"
                     placeholder="Your display name"
                   />
+                </div>
+              )}
+
+              {isSignup && (
+                <div>
+                  <label className="block text-white/50 text-xs font-mono uppercase tracking-wider mb-1.5">Agent Runtime</label>
+                  <div className="grid grid-cols-3 gap-2">
+                    {([
+                      { id: 'milady' as const, label: 'Milady' },
+                      { id: 'hermes' as const, label: 'Hermes' },
+                      { id: 'openclaw' as const, label: 'OpenClaw' },
+                    ]).map((opt) => (
+                      <button
+                        key={opt.id}
+                        type="button"
+                        onClick={() => setHarness(opt.id)}
+                        aria-pressed={harness === opt.id}
+                        className={`px-2 py-2 rounded-lg text-sm font-medium border transition-all ${
+                          harness === opt.id
+                            ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40 shadow-[0_0_12px_rgba(0,229,255,0.15)]'
+                            : 'bg-white/[0.05] text-white/50 border-white/10 hover:text-white/70'
+                        }`}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                  <p className="mt-1.5 text-[11px] text-white/35">
+                    All three run hosted by ClawVille — you can customize your agent after sign up.
+                  </p>
                 </div>
               )}
 

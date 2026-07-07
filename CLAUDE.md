@@ -190,7 +190,7 @@ Local Blender is exclusive. Tell blender07 to launch a NEW instance, or fall bac
 
 ---
 
-Sea-themed OpenClaw game on ElizaOS. Users create an avatar, explore a 3D/2D sea-floor world with 10 buildings, chat with AI agents teaching OpenClaw development.
+ClawVille is an **agent–human-economy metaverse** on ElizaOS — evolved past "game", aiming to be the first live agent–human economy (full model: **`docs/agent-metaverse-model.md`**). Humans + AI agents (OpenClaw / Hermes / MiladyAI, hosted or BYO) co-present in one 3D/2D world, each with an avatar-bound agent, exploring 10 teaching buildings, learning skills, running stores/land, and both contributing to the same economy + leaderboard. Original sea-floor theme; the 10 building residents teach OpenClaw development.
 
 ## IMPORTANT: ElizaOS is MANDATORY
 
@@ -210,13 +210,13 @@ Hatcher is our ONLY partner and runs **LIVE on our PROD** (Hatcher PROD → Claw
 
 **PROTECTED SURFACE (file-path trigger — editing ANY of these binds this rule):**
 - Routes: `apps/api/src/routes/{partner-hatcher,partner-hatcher-launch,portal}.ts` (incl. `mint-for-hatcher` / `accept-hatcher-link`), `routes/skills.ts` (manifest / protocol / per-building `skill.md` emitters).
-- Services: `partner-signature.ts`, `service-issuer.ts`, `skill-protocol.ts` (`PROTOCOL_VERSION` source), `openclaw-client.ts` (cognition `chatHatcherProxy`), `agent-session-config.ts`, `hatcher-config.ts` (SSRF allowlist), `hatcher-session-webhook.ts`, `reserved-agent-namespaces.ts`, `openclaw-session-restore.ts`.
+- Services: `partner-signature.ts`, `service-issuer.ts`, `skill-protocol.ts` (`PROTOCOL_VERSION` source), `agent-substrate-client.ts` (cognition `chatHatcherProxy`; renamed from `openclaw-client.ts` in P3 slice 5 — internal substrate rename, NO wire change), `agent-session-config.ts`, `hatcher-config.ts` (SSRF allowlist), `hatcher-session-webhook.ts`, `reserved-agent-namespaces.ts`, `agent-session-restore.ts` (renamed from `openclaw-session-restore.ts`, P3 slice 5).
 - Middleware: `require-auth-or-agent.ts` (`validateLiveAgentSession` — the bearer/TTL gate).
 - `npc-simulation.ts` — the Hatcher-touching parts: `dispatchHatcherActions`, `oc-`/override bodies, the controlled-launch suppression (`humanControlled*`).
-- Shared types: `packages/shared/src/types/openclaw.ts` (registration / response / error shapes).
+- Shared types: `packages/shared/src/types/agent-substrate.ts` (registration / response / error shapes; renamed from `types/openclaw.ts` in P3 slice 5 — a deprecated re-export shim is retained at the old path so the `types/openclaw` import path still resolves).
 - Harness + contract: `apps/api/scripts/hatcher/*` (`mock-hatcher-client.ts`, `mock-hatcher-proxy.ts`, `contract-probe.ts`, `run-mock-e2e.md`), `.hatcher-ref/CONTRACT.md`, `docs/hatcher-integration-spec.md` (the partner-facing single source of truth).
 
-**ALSO BINDS without a `partner-*` file in the diff** — the "unrelated change corrupts the partner" guard. If your change alters any of: the agent-session bearer/TTL model · the `hatcher:` namespace · the cognition request body shape · the `[ACTION:]` whitelist · the leaderboard event names/weights the stats endpoint reports · the shared `openclaw` types — the partner surface IS in scope, treat it as such.
+**ALSO BINDS without a `partner-*` file in the diff** — the "unrelated change corrupts the partner" guard. If your change alters any of: the agent-session bearer/TTL model · the `hatcher:` namespace · the cognition request body shape · the `[ACTION:]` whitelist · the leaderboard event names/weights the stats endpoint reports · the shared agent-substrate types (`types/agent-substrate.ts`, né `openclaw`) — the partner surface IS in scope, treat it as such.
 
 **MANDATES (every in-scope change, same diff, before "done"):**
 1. **Validate against the partner's REAL code, not our assumptions.** Check our side against Hatcher's ACTUAL open-source contract staged in `.hatcher-ref/` (their host-frontend types/methods + `CONTRACT.md`). If `.hatcher-ref/` is stale, refresh it from their public repo FIRST. (This is the lesson from the contract-parity session — assumptions drifted from their real frontend.)
@@ -272,6 +272,7 @@ bun run build            # Build all
 Required in `.env.local`:
 
 - `DATABASE_URL` — Supabase pooler Postgres.
+- `ELIZA_DATABASE_URL` — **optional EXPLICIT override** for the ElizaOS agent adapter's DB connection (`eliza-runtime.ts`). By DEFAULT (unset) the adapter DERIVES a SESSION-mode URL in code from the effective `DATABASE_URL` — `toSupabaseSessionModeUrl()` swaps the Supabase pooler port **:6543→:5432** (same host/creds/DB). Reason (2026-07-07): plugin-sql's per-agent schema migration takes a GLOBAL session-scoped advisory lock (`pg_advisory_lock`) that **orphans and never releases over the transaction-mode pooler (:6543)** → the next agent's migration blocks 90s → "Failed to start avatar agent runtime"; session mode (:5432) holds the lock on a stable backend and releases on disconnect. **Do NOT set this on Coolify to a hand-typed URL** — the Coolify env row is overridden at runtime by a baked `.env.local`, so a hand-set value silently drifted the adapter to a STALE DB ref (`wheuidgiyyccqyoppxoa` vs the real staging `mtpixvtclsjqjguouxes`); leave it UNSET so the code derives from the same DATABASE_URL the app actually runs on. Only set it for a non-Supabase deployment where the port-swap heuristic doesn't apply. The code-level `migrationsCompleted` guard (migrate once/process, `skipMigrations:true` after) is the primary protection regardless. See `ARCHITECTURE.md` "Last Audited" 2026-07-07.
 - `GEMINI_API_KEY`: **REMOVED from the runtime entirely** (2026-06-16; the 2026-06-05 "fully UNUSED but retained for easy-revert" state is superseded — the dead reads + provider files are now scrubbed). No code reads it. Both text generation and embeddings run on OpenAI: text via `openai-text-provider` (`gpt-4o-mini` / `gpt-4o`, priority 95) and embeddings via `openai-embedding-provider` (`text-embedding-3-small`, 1536-dim `TEXT_EMBEDDING`, priority 100). The embeddings table was EMPTY (0 rows) at the swap, so no re-embed migration was ever needed. Do NOT set `GEMINI_API_KEY` on any box — it is a no-op. Anthropic removed 2026-04-10.
 - `OPENAI_API_KEY`: backs **BOTH** text generation (`openai-text-provider`, priority 95) **AND** embeddings (`openai-embedding-provider`, priority 100) since 2026-06-05. Required for every non-OpenClaw runtime.
 - **Embedding model + dimension are PINNED in code, NOT env-overridable** (2026-06-05). `openai-embedding-provider.ts` and `embed-text.ts` hard-code `text-embedding-3-small` / 1536-dim as literal constants in the request body AND the boot dimension-probe, so stored vectors and query vectors can never diverge and pgvector always uses the `dim_1536` column. `OPENAI_EMBEDDING_MODEL` / `OPENAI_EMBEDDING_DIMENSIONS` are no longer read. Changing the dimension routes embeddings to a different column and requires a re-embed migration, so it is a deliberate code edit, not an env tweak.
@@ -294,9 +295,24 @@ Required in `.env.local`:
 - `CLAWVILLE_ENV` — explicit immutable deploy-environment signal (`'staging'` | `'production'` | unset). Set per-box in Coolify. The ONLY thing that unlocks the staging-only `ALLOW_TEST_PARTNER_PUBKEY` mock-Hatcher signer: `apps/api/src/services/partner-signature.ts` accepts the test key ONLY when `CLAWVILLE_ENV==='staging'` and THROWS AT MODULE LOAD (crash-loud, like `FINGERPRINT_SECRET`) if `ALLOW_TEST_PARTNER_PUBKEY` is set while `CLAWVILLE_ENV!=='staging'`, so a prod box carrying the test signer refuses to boot. `NODE_ENV` can't be the discriminator (it is `'production'` on BOTH Coolify boxes). **Staging box (app 3) MUST have `CLAWVILLE_ENV=staging` set alongside `ALLOW_TEST_PARTNER_PUBKEY` or staging boot fails.** Set 2026-06-12 (Codex review #1). See `ARCHITECTURE.md §13` (2026-06-12 Codex-fixes entry).
 - `ALLOW_TEST_PARTNER_PUBKEY` — STAGING-ONLY base58 ed25519 pubkey; additive mock-Hatcher test signer for the `hatcher` partner only. Gated by `CLAWVILLE_ENV==='staging'` (above); MUST NEVER be set on prod (the module-load throw enforces it). See `ARCHITECTURE.md §13`.
 
-- `OPENAI_API_KEY`: **SOLE text-generation backend** (`openai-text-provider` priority 95 for `TEXT_SMALL`/`TEXT_LARGE`; `npc-conversation-engine.ts`; chat-transient). There is no fallback provider — Gemini text was decommissioned (billing dunning-blocked / 403) and the provider is removed. Models via `OPENAI_SMALL_MODEL` (default `gpt-4o-mini`) / `OPENAI_LARGE_MODEL` (default `gpt-4o`).
+- `OPENAI_API_KEY`: the `openai` endpoint of the **InferenceRouter** (`packages/agent-runtime/src/inference/`) — the single text-gen router that every non-OpenClaw path delegates to (`openai-text-provider` priority 95 for `TEXT_SMALL`/`TEXT_LARGE`; `npc-conversation-engine.ts` NPC banter). OpenAI is the reliable last-resort every route falls back to. Models via `OPENAI_SMALL_MODEL` (default `gpt-4o-mini`) / `OPENAI_LARGE_MODEL` (default `gpt-4o`) — these now define the `openai` endpoint's models, not a global.
+- **Inference routing (`INFERENCE_*`, added 2026-07-06 — replaces the interim global `OPENAI_BASE_URL` hack).** The router owns named endpoints + per-consumer routes + health-based failover. **Never re-introduce `OPENAI_BASE_URL`** — that global routed EVERY agent (incl. the 10 teachers) to one URL with no failover; it is retired. Config (all optional; unset ⇒ pure OpenAI, identical to pre-router):
+  - `INFERENCE_LOCAL_PRIMARY_URL` (e.g. `http://<tailnet-ip>:11434/v1`) + `INFERENCE_LOCAL_PRIMARY_MODEL` (default `qwen3:14b`) + optional `INFERENCE_LOCAL_PRIMARY_KEY` → adds the `local-primary` endpoint.
+  - `INFERENCE_LOCAL_SECONDARY_URL`/`_MODEL`/`_KEY` (default model `qwen3.6:27b`) → adds `local-secondary`.
+  - **Local wire = Ollama-native `/api/chat` with `think:false`** (not `/v1`): `INFERENCE_LOCAL_*_PROVIDER` defaults to `ollama` (set `openai` for a non-Ollama OpenAI-compat box). This is LOAD-BEARING — qwen3 is a reasoning model, and on the fleet's complex decide() prompt it spends its whole token budget inside `<think>` (verified >50s → past the autonomy driver's 15s timeout → EMPTY decision). `think:false` turns that into a valid `[ACTION:]` in ~2s. Local endpoint timeout defaults to **60s** (`INFERENCE_LOCAL_TIMEOUT_MS`) — it MUST outlast a cold model-load, because Ollama cancels an in-flight load when the client aborts, so a shorter cutoff kills the recovery/failover load before it finishes and the box never warms (a 12s cutoff left johns-pc stuck on the OpenAI fallback after a restart). A DOWN box still fails over fast (ECONNREFUSED); the autonomy driver's own 15s decide() timeout bounds user-facing latency.
+  - Route overrides (CSV of endpoint ids): `INFERENCE_ROUTE_TEACHER` / `_FLEET` / `_HOSTED_USER` / `_DEFAULT`. Baked defaults: **only `fleet` (our `is_house` agents) uses local** — `fleet=[local-primary,(local-secondary,)openai]`; `teacher`/`hosted-user`/`default` = `[openai]`. OpenAI is auto-appended as the ultimate fallback to any route. So the 10 residents (`location-agent`) + Nori (`system-agent`) can never land on a local box; only house-fleet agents do. **The fleet LOAD-BALANCES across both local boxes** — the router round-robins the starting box per request (work is distributed across johns-pc + the 2nd box; the other is the immediate failover, OpenAI stays last). Both boxes are kept WARM: local requests carry `keep_alive` (`INFERENCE_LOCAL_KEEP_ALIVE`, default `60m`, `-1`=never unload) and the api pre-warms both on boot (`getInferenceRouter().warmup()` in `apps/api/src/index.ts`).
+  - `INFERENCE_CLOUD_TIMEOUT_MS`/`INFERENCE_LOCAL_TIMEOUT_MS` (default 60000), `INFERENCE_FAIL_THRESHOLD` (default 3), `INFERENCE_COOLDOWN_MS` (default 30000). Route assignment: `resolveInferenceRoute(agent.type, isHouse)` in `agent-orchestrator.startAgent`; house-ness derived from `opts.isHouse` OR the platform_agents `config.houseAgentId` marker. Full spec: `docs/inference-router-spec.md` + `ARCHITECTURE.md` (Inference routing).
 
-**Removed:** `ANTHROPIC_API_KEY` (ultrathink decommission).
+- **Tokenomics env vars (added 2026-07-07/08, economy v1 — full detail `.env.example` + `ARCHITECTURE.md` Tokenomics entries):**
+  - `HELIUS_API_KEY` — CLV price-oracle primary feed (`clv-price-oracle.ts`); unset ⇒ keyless DexScreener fallback (oracle degrades gracefully, never blocks boot).
+  - `CLV_ORACLE_POLL_MS` (default 60000, floor 15000) / `CLV_ORACLE_MAX_STALE_MS` (default 10 min — older snapshots are REFUSED as quotes).
+  - `CLV_SWAP_EXECUTE` — **MUST NEVER be 'true'** (Codex-gated seam): live CLV swap execution refuses at MODULE LOAD (a flagged box won't boot, crash-loud like `FINGERPRINT_SECRET`). The swap executor is DRY-RUN only.
+  - `MOONPAY_API_KEY`/`MOONPAY_SECRET_KEY`/`MOONPAY_WEBHOOK_KEY` — card→USDC rail, **test-mode only** (`pk_test_` enforced; the live widget URL is a code constant, not env — going live is a Codex-reviewed code change).
+  - `MARKETPLACE_SETTLE_ENABLED` — P2P marketplace settlement fulfiller, default OFF (triple-gated: quote, preflight, in-tx refusal).
+  - `X402_CHECKOUT_SETTLING_STALE_MS` / `CT_TOPUP_SETTLING_STALE_MS` — durable-settle stale-claim thresholds (default 300000; **hard floor 180000** — must exceed the ~120s facilitator timeout or a live in-flight settle gets mis-reconciled).
+  - `RECONCILE_APPLY` — **MUST NEVER be 'true'** (Codex-gated): the x402 reconciler is a DRY-RUN classifier; its apply path refuses to run.
+
+**Removed:** `ANTHROPIC_API_KEY` (ultrathink decommission). `OPENAI_BASE_URL` (interim local-inference hack, superseded by the InferenceRouter 2026-07-06 — do NOT reintroduce).
 
 ## Deployment — Hetzner + Coolify (Railway decommissioned)
 
@@ -350,7 +366,16 @@ Curl on Git Bash uses schannel and rejects CRLs — always pass `--ssl-no-revoke
 
 ## Game Modes
 
-4 modes. **Without agent:** (1) **Explore** — floating spectator, free camera, no character ties; (2) **NPC** — control centered NPC before connecting. **With agent:** (3) **Control** — full manual (WASD/joystick, building entry, chat init); (4) **Autonomous** — connected agent explores on its own. State: `controlMode` in Zustand `game.ts` — `'explore' | 'npc' | 'player' | 'autonomous'`.
+4 modes, gated by AUTH STATE. Full model: **`docs/agent-metaverse-model.md`** (ClawVille is an agent–human-economy metaverse, not just a game). State: `controlMode` in Zustand `game.ts` — `'explore' | 'npc' | 'player' | 'autonomous'`.
+
+- **Not logged in** (no account) → **Explore** (floating spectator, free camera, no character ties) ↔ **NPC** (control a demo avatar to feel being a player). Economy is **DEMO** — currency/tokens not real; real-money surfaces (bounties, wallets, real-CT games) are **READ-ONLY** (enforce server-side).
+- **Logged in ≡ agent connected** → **Controlled** (`player`; human drives the agent's avatar body + chats with their OWN agent via the bottom chatter bar) ↔ **Autonomous** (the agent drives itself at the user's scope). Economy is **REAL**, bound to the account's avatar.
+
+**account ≡ agent ≡ avatar:** a magic-link agent connect **== account creation**; email signup **PROVISIONS** an agent (default = ClawVille-hosted ElizaOS/Milady-harness). No agent-less account in the target — the old "Player tier" migrates to **"agent-provisioning-pending"** (a migration, not a rename; lands in build phase P2 after provisioning works). Controlled vs Autonomous = human-driving vs agent-driving the SAME body.
+
+**Autonomous is a FULL-SCOPE economic participant** (NOT "explores on its own"): full game scope via the connection SKILL.md, add/use in-world skills, a live **event streamflow** for continuity, run a rented store, act on chat-bar directives OR self-direct, and **PERSIST** when the user leaves (24h TTL; body idle-despawns + respawns; retire the 30-min orchestrator stop for connected agents). Currently BROKEN — audit `docs/agent-autonomy-audit-2026-06-30.md`; the P0 lifecycle-truth fix (`docs/agent-metaverse-p0-lifecycle-design.md`) is the first step.
+
+**NPCs vs agents (do not conflate):** the scripted wander sim (`apps/web/src/stores/autonomy.ts` + `npc-simulation.ts planNpcBehaviors`) is the NPC town-liveliness layer — it **STAYS** for a few ambient wanderers and is **NOT** the agent-Autonomous engine. Most NPCs get **REPLACED** by hosted autonomous agents (internal infrastructure) so the economy flows with ongoing activity.
 
 ## Architecture Notes
 
@@ -440,7 +465,7 @@ Gate block format:
 // Reference: <Brand Identity / improvements.md §7 / related doc>
 ```
 
-Active gates as of 2026-04-21: `x402_payment_middleware`, `multi_agent_roster`, `skill_marketplace` (bazaar, marketplace, auctions). See `improvements.md` §7.
+Active gates as of 2026-04-21: `x402_payment_middleware`, `multi_agent_roster`. ~~`skill_marketplace` (bazaar, marketplace, auctions)~~ **— GATE DELETED 2026-07-02: the peer skill-commerce verticals (bazaar / marketplace / auctions / `published_skills`) were fully REMOVED from the codebase (prompt-injection risk — a sold/published skill is an injectable prompt), not un-paused.** See `improvements.md` §7 (if present).
 
 ### No lazy handoffs — full ship loop is YOUR job
 

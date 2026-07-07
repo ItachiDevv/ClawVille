@@ -109,9 +109,17 @@ export async function mintSessionTicket(params: {
   identityType: string;
   identityKey: string;
   issuedToAgentSession?: string | null;
+  /**
+   * Magic-link onboarding (2026-07-02) — the PUBLIC `openclaw_bots.agent_id`
+   * this ticket is minted FOR. Redemption uses it as the deferred-bind claim
+   * event (bind `openclaw_bots.user_id` to the redeeming user, never clobbering
+   * a different owner). Public handle, not a bearer — stored raw. Omit/null for
+   * non-agent flows (reconnect, email links) and redemption skips the bind.
+   */
+  issuedToAgentId?: string | null;
   avatarName?: string | null;
 }): Promise<MintedTicket> {
-  const { userId, avatarId, identityType, identityKey, issuedToAgentSession, avatarName } = params;
+  const { userId, avatarId, identityType, identityKey, issuedToAgentSession, issuedToAgentId, avatarName } = params;
 
   const ttlSeconds = resolveTtlSeconds();
   const now = Date.now();
@@ -127,6 +135,9 @@ export async function mintSessionTicket(params: {
     // fix #4): consumeTicket never re-reads this as a live bearer, so digesting
     // cannot break redemption. Never persist a recoverable session bearer.
     issuedToAgentSession: issuedToAgentSession ? sessionDigest(issuedToAgentSession) : null,
+    // Public agent handle for the bind-at-redemption claim event (see the
+    // param JSDoc) — deliberately raw, unlike the digested session above.
+    issuedToAgentId: issuedToAgentId ?? null,
     expiresAt,
     identityType,
     identityKey,
@@ -136,8 +147,13 @@ export async function mintSessionTicket(params: {
   const url = `${webOrigin}/enter?t=${encodeURIComponent(ticket)}`;
 
   const ttlMinutes = Math.round(ttlSeconds / 60);
-  const subject = avatarName ? `as ${avatarName}` : 'and meet your agent';
-  const instruction = `Open this URL to enter ClawVille ${subject}. Link expires in ${ttlMinutes} minute${ttlMinutes === 1 ? '' : 's'}.`;
+  const subject = avatarName ? `as ${avatarName}` : 'into ClawVille';
+  // Agent-facing copy (magic-link onboarding, 2026-07-02): every flow that
+  // surfaces this instruction relays it through an AGENT to its human, so it
+  // now tells the agent explicitly to hand the link over — clicking it logs
+  // the human in and gives them live control of the agent's avatar
+  // (Controlled mode, with the Autonomous toggle available).
+  const instruction = `Hand this link to your human. Opening it logs them ${subject} and gives them live control of your avatar (Controlled mode — they can toggle Autonomous). Single-use; expires in ${ttlMinutes} minute${ttlMinutes === 1 ? '' : 's'}.`;
 
   return {
     ticket,
@@ -152,6 +168,12 @@ export interface ConsumedTicket {
   avatarId: string | null;
   ticket: string;
   identityType: string;
+  /**
+   * Public `openclaw_bots.agent_id` this ticket was minted for, or null for
+   * non-agent flows. Redemption binds the agent row to `userId` when present
+   * (the deferred-bind claim event — see the schema column JSDoc).
+   */
+  issuedToAgentId: string | null;
 }
 
 /**
@@ -185,6 +207,7 @@ export async function consumeTicket(ticket: string): Promise<ConsumedTicket | nu
       avatarId: agentSessionTickets.avatarId,
       ticket: agentSessionTickets.ticket,
       identityType: agentSessionTickets.identityType,
+      issuedToAgentId: agentSessionTickets.issuedToAgentId,
     });
 
   const row = updated[0];
@@ -194,5 +217,6 @@ export async function consumeTicket(ticket: string): Promise<ConsumedTicket | nu
     avatarId: row.avatarId,
     ticket: row.ticket,
     identityType: row.identityType,
+    issuedToAgentId: row.issuedToAgentId ?? null,
   };
 }

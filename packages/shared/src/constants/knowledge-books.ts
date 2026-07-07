@@ -8,6 +8,11 @@ export interface KnowledgeBook {
   knowledgeEntries: string[];
 }
 
+// Prices are in vCLAW at the A3 ¢-peg ($0.01/unit, 2026-07-07): a book costs
+// $0.80–$2.20. The relative ladder is unchanged from the pre-redenomination era —
+// every price was multiplied ×10 in lockstep with the balance redenomination
+// (migration 0011), so purchasing power is identical (was 8–22 CT at $0.10/CT).
+// Read at purchase time via getBookById().price (items.ts) — no DB copy.
 export const KNOWLEDGE_BOOKS: KnowledgeBook[] = [
   // === Cron Automation (Downtown Building) ===
   {
@@ -15,7 +20,7 @@ export const KNOWLEDGE_BOOKS: KnowledgeBook[] = [
     name: 'Cron Scheduling 101',
     description: 'Master cron expressions and task automation for AI agents.',
     icon: '⏰',
-    price: 8,
+    price: 80,
     building: 'cron-automation',
     knowledgeEntries: [
       'Cron expressions use five fields: minute, hour, day-of-month, month, day-of-week to define recurring schedules.',
@@ -29,7 +34,7 @@ export const KNOWLEDGE_BOOKS: KnowledgeBook[] = [
     name: 'Advanced Scheduling Patterns',
     description: 'Complex scheduling: chaining, retries, dead-letter queues, and distributed cron.',
     icon: '🕰️',
-    price: 12,
+    price: 120,
     building: 'cron-automation',
     knowledgeEntries: [
       'Distributed cron uses leader election to ensure only one node runs a scheduled task across a cluster.',
@@ -45,7 +50,7 @@ export const KNOWLEDGE_BOOKS: KnowledgeBook[] = [
     name: 'Webhook Patterns',
     description: 'Design reliable webhook endpoints and event-driven agent architectures.',
     icon: '🔗',
-    price: 10,
+    price: 100,
     building: 'api-integrations',
     knowledgeEntries: [
       'Webhooks deliver real-time event notifications via HTTP POST — faster and more efficient than polling APIs.',
@@ -59,7 +64,7 @@ export const KNOWLEDGE_BOOKS: KnowledgeBook[] = [
     name: 'Event-Driven Agent Design',
     description: 'Build reactive agents that respond to real-world events in real time.',
     icon: '⚡',
-    price: 14,
+    price: 140,
     building: 'api-integrations',
     knowledgeEntries: [
       'Event-driven architecture decouples producers from consumers — agents react to events without tight coupling to sources.',
@@ -75,7 +80,7 @@ export const KNOWLEDGE_BOOKS: KnowledgeBook[] = [
     name: 'Vector Memory Guide',
     description: 'Understanding embeddings, LanceDB, and semantic search for agent memory.',
     icon: '🧠',
-    price: 12,
+    price: 120,
     building: 'memory-rag',
     knowledgeEntries: [
       'Vector embeddings convert text into high-dimensional number arrays that capture semantic meaning — similar concepts cluster nearby.',
@@ -90,7 +95,7 @@ export const KNOWLEDGE_BOOKS: KnowledgeBook[] = [
     name: 'Memory Architecture Deep Dive',
     description: 'Advanced memory patterns: episodic recall, memory consolidation, and forgetting curves.',
     icon: '🗃️',
-    price: 16,
+    price: 160,
     building: 'memory-rag',
     knowledgeEntries: [
       'Episodic memory stores specific interaction sequences — agents recall past conversations with temporal context.',
@@ -104,15 +109,15 @@ export const KNOWLEDGE_BOOKS: KnowledgeBook[] = [
   {
     id: 'code-development-skills',
     name: 'Skill Development Manual',
-    description: 'Build, test, and publish skills to the ClawHub marketplace.',
+    description: 'Build, test, and version skills in your personal ClawHub registry.',
     icon: '🔨',
-    price: 15,
+    price: 150,
     building: 'code-development',
     knowledgeEntries: [
       'An OpenClaw skill is a self-contained module with actions, providers, and evaluators that extends agent behavior.',
-      'Skills are published to ClawHub — a marketplace where developers share reusable agent capabilities.',
+      'Skills live in ClawHub — your personal registry for versioning and reusing your own agent capabilities.',
       'Each skill defines a manifest with name, version, capabilities, and required permissions for the host agent.',
-      'Test skills in a sandbox environment before publishing — the skill runner simulates agent interactions for validation.',
+      'Test skills in a sandbox environment before saving a version — the skill runner simulates agent interactions for validation.',
     ],
   },
   {
@@ -120,7 +125,7 @@ export const KNOWLEDGE_BOOKS: KnowledgeBook[] = [
     name: 'Skill Composition Patterns',
     description: 'Combine multiple skills into powerful agent workflows.',
     icon: '🧩',
-    price: 18,
+    price: 180,
     building: 'code-development',
     knowledgeEntries: [
       'Skill composition chains multiple capabilities — a research skill feeds into a summarization skill then a publishing skill.',
@@ -136,7 +141,7 @@ export const KNOWLEDGE_BOOKS: KnowledgeBook[] = [
     name: 'Multi-Platform Messaging',
     description: 'Connect agents to Discord, Telegram, Twitter, Farcaster and more.',
     icon: '🌉',
-    price: 10,
+    price: 100,
     building: 'messaging-channels',
     knowledgeEntries: [
       'OpenClaw agents can simultaneously operate on Discord, Telegram, Twitter, Farcaster, and custom API channels.',
@@ -150,7 +155,7 @@ export const KNOWLEDGE_BOOKS: KnowledgeBook[] = [
     name: 'Channel Orchestration',
     description: 'Coordinate agent behavior across multiple channels simultaneously.',
     icon: '📡',
-    price: 13,
+    price: 130,
     building: 'messaging-channels',
     knowledgeEntries: [
       'Channel-aware context lets agents tailor responses to the platform — formal on email, casual on Discord.',
@@ -166,7 +171,7 @@ export const KNOWLEDGE_BOOKS: KnowledgeBook[] = [
     name: 'Plugin Architecture',
     description: 'Design and build tools and plugins that extend agent capabilities.',
     icon: '🛠️',
-    price: 12,
+    price: 120,
     building: 'mcp-tool-use',
     knowledgeEntries: [
       'OpenClaw plugins follow a standard interface: actions (what the agent can do), providers (data the agent can access), and evaluators (how the agent reflects).',
@@ -180,7 +185,7 @@ export const KNOWLEDGE_BOOKS: KnowledgeBook[] = [
     name: 'Custom Tool Building',
     description: 'Create your own tools from APIs, databases, and external services.',
     icon: '⚒️',
-    price: 15,
+    price: 150,
     building: 'mcp-tool-use',
     knowledgeEntries: [
       'API wrapper tools expose external services to agents — define input schemas, handle auth, and format responses.',
@@ -196,7 +201,7 @@ export const KNOWLEDGE_BOOKS: KnowledgeBook[] = [
     name: 'AI Visual Pipelines',
     description: 'Frontier AI models for image, video, and 3D generation — Nano Banana Pro, FLUX.2, Veo 3.1, Kling 3.0, Hunyuan 3D — and the fal.ai / Replicate / ComfyUI pipelines that orchestrate them.',
     icon: '🎨',
-    price: 15,
+    price: 150,
     building: 'visual-creation',
     knowledgeEntries: [
       'For frontier image generation in 2026, the top three are Nano Banana Pro (gemini-3-pro-image-preview), GPT Image 2, and FLUX.2 Pro — all callable via OpenAI-compatible REST or the fal.ai aggregator.',
@@ -213,7 +218,7 @@ export const KNOWLEDGE_BOOKS: KnowledgeBook[] = [
     name: 'Production Toolkit',
     description: 'Working artist depth in Photoshop, After Effects, Premiere Pro, DaVinci Resolve, CapCut, Blender, and TouchDesigner — the keyboard maps, scripting surfaces, and pipelines pros use daily.',
     icon: '🛠️',
-    price: 20,
+    price: 200,
     building: 'visual-creation',
     knowledgeEntries: [
       'Photoshop 27.6 (April 2026) runs Generative Fill on Firefly Image 5 at 2K with a model picker exposing Firefly + Gemini 3 Pro (Nano Banana) + FLUX.2 + GPT-Image side-by-side; UXP scripts in .psjs are the modern automation path (BatchPlay descriptors inside core.executeAsModal).',
@@ -233,7 +238,7 @@ export const KNOWLEDGE_BOOKS: KnowledgeBook[] = [
     name: 'App Store Survival Guide',
     description: 'Pass App Store Review on the first try. Apple guidelines, Google Play Closed Testing rule, Microsoft Store fees, Steam Direct, IARC age ratings — Mrs. Puff\'s playbook.',
     icon: '📋',
-    price: 18,
+    price: 180,
     building: 'app-publishing',
     knowledgeEntries: [
       'Apple Developer Program is $99/year (mandatory Mac + Xcode + Apple ID with 2FA); the most-cited App Store rejection reasons are 5.1.1 (privacy policy URL), 2.1 (completeness/crashes), 4.3 (design spam), and 5.1.2 (data use mismatch).',
@@ -250,7 +255,7 @@ export const KNOWLEDGE_BOOKS: KnowledgeBook[] = [
     name: 'Cross-Platform Publisher',
     description: 'One codebase, many stores. React Native + Expo, Flutter, Tauri 2, MAUI, Unity for games. Plus alt stores (Itch, Epic, AltStore PAL, Flathub, Huawei) and code-signing across platforms.',
     icon: '🚀',
-    price: 22,
+    price: 220,
     building: 'app-publishing',
     knowledgeEntries: [
       'Framework decision tree: Tauri 2 (Rust + native webview, 2-10MB bundles vs Electron 100MB+) for desktop, Flutter (Impeller, pixel-identical UI) for branded mobile, React Native + Expo for web-team mobile, Unity/Unreal/Godot for games, .NET MAUI for .NET shops, Kotlin Multiplatform + Compose for Kotlin teams.',
@@ -270,7 +275,7 @@ export const KNOWLEDGE_BOOKS: KnowledgeBook[] = [
     name: 'Agent Security Handbook',
     description: 'Permissions, access control, and security best practices for AI agents.',
     icon: '🏰',
-    price: 15,
+    price: 150,
     building: 'agent-security',
     knowledgeEntries: [
       'OpenClaw uses role-based access control (RBAC) — agents, users, and tools each have defined permission scopes.',
@@ -284,7 +289,7 @@ export const KNOWLEDGE_BOOKS: KnowledgeBook[] = [
     name: 'Threat Modeling for AI Agents',
     description: 'Identify and mitigate security risks in autonomous agent systems.',
     icon: '🛡️',
-    price: 18,
+    price: 180,
     building: 'agent-security',
     knowledgeEntries: [
       'Agent threat modeling maps attack surfaces: user inputs, tool invocations, memory access, and external API calls.',
@@ -300,7 +305,7 @@ export const KNOWLEDGE_BOOKS: KnowledgeBook[] = [
     name: 'Deployment & Config Guide',
     description: 'Configure, deploy, and manage agent environments at scale.',
     icon: '⚙️',
-    price: 10,
+    price: 100,
     building: 'deployment-ops',
     knowledgeEntries: [
       'OpenClaw agents are configured via character JSON files that define personality, skills, model providers, and behavior rules.',
@@ -314,7 +319,7 @@ export const KNOWLEDGE_BOOKS: KnowledgeBook[] = [
     name: 'Scaling Agent Fleets',
     description: 'Run hundreds of agents efficiently with resource management and orchestration.',
     icon: '🚀',
-    price: 15,
+    price: 150,
     building: 'deployment-ops',
     knowledgeEntries: [
       'Agent fleet management orchestrates many agents from a single control plane — start, stop, update, and monitor at scale.',

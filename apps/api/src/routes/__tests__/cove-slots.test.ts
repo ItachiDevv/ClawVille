@@ -235,7 +235,10 @@ describeIfDb('Cove Slots — session lifecycle (requires DATABASE_URL)', () => {
     // Top up balance so we can do many spins without InsufficientTokens.
     await dbMod.db
       .update(dbMod.avatars)
-      .set({ clawTokens: 100_000 })
+      // F1 vCLAW provenance: mirror into tag balances so the
+      // avatars_vclaw_balance_sum CHECK (claw_tokens = soft+bought+earned) holds.
+      // Test top-up is non-cashable SOFT.
+      .set({ clawTokens: 100_000, softBalance: 100_000, boughtBalance: 0, earnedBalance: 0 })
       .where(eq(dbMod.avatars.id, avatarId1));
 
     const u2 = await signupAndCreateAvatar(TEST_EMAIL_2);

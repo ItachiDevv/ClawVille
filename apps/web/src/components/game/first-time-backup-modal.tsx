@@ -17,7 +17,11 @@
 import { useCallback, useEffect, useState } from 'react';
 
 interface FirstTimeDisclosure {
-  avatarId: string;
+  // Optional (2026-07-04): the /login signup writer stores `res.avatar?.id`,
+  // which is `string | undefined` when fail-soft provisioning returned no
+  // avatar. The reader here never consumes avatarId, so the honest type is
+  // optional rather than forcing a non-null assertion at the writer.
+  avatarId?: string;
   avatarName: string;
   identity: {
     userId: string;
@@ -32,7 +36,18 @@ interface FirstTimeDisclosure {
   issuedAt: number;
 }
 
-const STORAGE_KEY = 'clawville:firstTimeDisclosure';
+/**
+ * Shared sessionStorage contract. Written by BOTH one-time-secret emitters:
+ *  - /create-agent/personality (POST /api/avatars auto-provision response)
+ *  - /login signup path (P2 Path-B: POST /api/auth/signup now provisions the
+ *    agent + wallet server-side and returns the one-time payload — 2026-07-04)
+ * Read + purged HERE on /game first mount. Key and payload shape
+ * (FirstTimeDisclosure) must stay in lockstep across all three sites —
+ * import this constant, never inline the literal.
+ */
+export const FIRST_TIME_DISCLOSURE_STORAGE_KEY = 'clawville:firstTimeDisclosure';
+
+const STORAGE_KEY = FIRST_TIME_DISCLOSURE_STORAGE_KEY;
 
 export default function FirstTimeBackupModal() {
   const [disclosure, setDisclosure] = useState<FirstTimeDisclosure | null>(null);

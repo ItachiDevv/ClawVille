@@ -38,7 +38,7 @@ export function sessionDigest(sessionId: string): string {
  * every deploy, but the DB row survives with its sliding TTL). We store the
  * HASH, never the raw bearer: the raw agent-session id is the real-CT bearer
  * credential, so a DB dump must not yield a spendable token. The restore path
- * (`openclaw-session-restore.ts`) hashes the INCOMING bearer and looks the row
+ * (`agent-session-restore.ts`) hashes the INCOMING bearer and looks the row
  * up by this column — a match proves the caller holds the live id without that
  * id ever touching disk. Full 256-bit width (vs the 64-bit `sessionDigest`
  * correlation prefix) because this column is an equality key on a UNIQUE

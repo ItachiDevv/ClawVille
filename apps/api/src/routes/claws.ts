@@ -1,11 +1,45 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { npcSimulation } from '../services/npc-simulation';
-import { db, openclawBots, eq } from '@clawville/database';
+import { db, agentBots, eq } from '@clawville/database';
 import { sessionMiddleware, requireAuth } from '../middleware/auth';
+import { createRateLimiter, getClientIp } from '../middleware/rate-limit';
 import type { AppContext, AuthenticatedContext } from '../types';
 
 const clawRoutes = new Hono<AppContext>();
+
+// FEATURE_GATE: browser_claws
+// Status: DEAD client feature (agent-metaverse model doc §7 B3) — the
+//   /connect + /heartbeat endpoints below register "browser claws" into the
+//   npc-simulation broadcast, but `browserClaws` has ZERO renderers/callers
+//   in apps/web (verified 2026-07-04; live snapshot count 0). They are
+//   unauthenticated writes into unbounded in-memory state, kept alive only
+//   by this file. P2 Slice D adds the rate limiters below as the interim
+//   cost cap; delete-vs-keep is decided in its own audited diff per B3.
+// Metric to graduate: >0 legitimate claw connects/week from a real client
+//   surface (grep npc-simulation browser-claw snapshot on /dash or logs).
+// Current reading: 0 (no client caller exists in apps/web).
+// Review deadline: 2026-08-15
+// On deadline: delete POST /api/claws/connect|disconnect|heartbeat + the
+//   npcSimulation browser-claw surface (registerBrowserClaw /
+//   updateBrowserClawPosition / getBrowserClaw) in an audited diff.
+// Reference: docs/agent-metaverse-p2-plan.md Slice D + docs/agent-metaverse-model.md §7 B3
+
+// P2 Slice D (2026-07-04) — unauth cost holes: /connect (unbounded in-memory
+// registration) and /heartbeat (unauth in-memory writes) get 10/min/IP.
+// Separate buckets per route (rate-limit.ts guidance) so a burst against one
+// doesn't eat the other's budget. Additive only — behavior unchanged below
+// the limiter. NOTE: 10/min deliberately breaks any long-lived live claw
+// (heartbeats would exceed it) — acceptable because the feature is DEAD (B3,
+// see the FEATURE_GATE above); this is a cost cap, not a serving budget.
+const clawConnectRateLimiter = createRateLimiter({
+  maxPerWindow: 10,
+  windowMs: 60_000,
+});
+const clawHeartbeatRateLimiter = createRateLimiter({
+  maxPerWindow: 10,
+  windowMs: 60_000,
+});
 
 const clawConfigSchema = z.object({
   name: z.string().min(1).max(100),
@@ -30,6 +64,11 @@ const clawConfigSchema = z.object({
 
 // POST /api/claws/connect — Register a browser claw in the world (no auth required)
 clawRoutes.post('/connect', sessionMiddleware, async (c) => {
+  const ip = getClientIp({ get: (n) => c.req.header(n) ?? null });
+  if (!clawConnectRateLimiter.check(ip)) {
+    return c.json({ error: 'Too many claw connections. Try again in 1 minute.' }, 429);
+  }
+
   const body = await c.req.json();
   const parsed = clawConfigSchema.safeParse(body);
   if (!parsed.success) {
@@ -55,6 +94,11 @@ clawRoutes.post('/disconnect', sessionMiddleware, async (c) => {
 
 // POST /api/claws/heartbeat — Update position and keep alive
 clawRoutes.post('/heartbeat', sessionMiddleware, async (c) => {
+  const ip = getClientIp({ get: (n) => c.req.header(n) ?? null });
+  if (!clawHeartbeatRateLimiter.check(ip)) {
+    return c.json({ error: 'Too many heartbeats. Try again in 1 minute.' }, 429);
+  }
+
   const body = await c.req.json();
   const { sessionId, x, y, direction, activity } = body;
   if (!sessionId || typeof x !== 'number' || typeof y !== 'number') {
@@ -80,7 +124,7 @@ clawRoutes.post('/', requireAuth, async (c) => {
 
   const agentId = `claw-${user.id}-${Date.now()}`;
   const [claw] = await db
-    .insert(openclawBots)
+    .insert(agentBots)
     .values({
       agentId,
       gatewayUrl: '',
@@ -103,9 +147,9 @@ clawRoutes.post('/', requireAuth, async (c) => {
 // GET /api/claws/me — Get user's saved claws
 clawRoutes.get('/me', requireAuth, async (c) => {
   const user = c.get('user') as { id: string };
-  const userClaws = await db.query.openclawBots.findMany({
-    where: eq(openclawBots.userId, user.id),
-    orderBy: (openclawBots: any, { desc }: { desc: any }) => [desc(openclawBots.updatedAt)],
+  const userClaws = await db.query.agentBots.findMany({
+    where: eq(agentBots.userId, user.id),
+    orderBy: (agentBots: any, { desc }: { desc: any }) => [desc(agentBots.updatedAt)],
   });
   return c.json({ claws: userClaws });
 });
@@ -115,8 +159,8 @@ clawRoutes.patch('/:id', requireAuth, async (c) => {
   const user = c.get('user') as { id: string };
   const clawId = c.req.param('id');
 
-  const existing = await db.query.openclawBots.findFirst({
-    where: eq(openclawBots.id, clawId),
+  const existing = await db.query.agentBots.findFirst({
+    where: eq(agentBots.id, clawId),
   });
 
   if (!existing || existing.userId !== user.id) {
@@ -136,9 +180,9 @@ clawRoutes.patch('/:id', requireAuth, async (c) => {
   }
 
   const [updated] = await db
-    .update(openclawBots)
+    .update(agentBots)
     .set(updates)
-    .where(eq(openclawBots.id, clawId))
+    .where(eq(agentBots.id, clawId))
     .returning();
 
   return c.json({ claw: updated });

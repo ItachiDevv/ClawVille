@@ -100,6 +100,13 @@ export const landTransactionKindEnum = pgEnum('land_transaction_kind', [
   'service_sale', // peer CT service buy — full transfer to seller (no rake v1)
   'rent_payment', // LIVE (2026-06-24): rent acquire + each weekly rent-sweep charge (CT sink)
   'eviction', // LIVE (2026-06-24): rent lapsed past grace -> parcel returned to pool, structure archived
+  // ── Phase B tenure model (2026-07-07) ──
+  'land_deposit_escrow', // B1 starter claim — refundable deposit debited INTO escrow (NOT revenue)
+  'land_deposit_topup', // B1 top-up — adds to the escrow remainder
+  'land_deposit_refund', // B1 voluntary release — escrow remainder credited back to the claimant
+  // ── Tokenomics C checkout stage (2026-07-07, migration 0016) ──
+  'land_deposit_prepay_usdc', // USDC x402 checkout funds the escrow remainder — NO avatar debit; backed by the recorded settlement (usd_basis in metadata). See rent-prepay fulfiller.
+  'hold_claim', // B2 c/b/a/founder claim — CLV hold proven, no CT debit (amount_ct = 0)
   // ── DEFERRED (reserved; no v1 write path) ──
   'parcel_resale', // NEXT milestone (P2P resale)
   'property_tax', // economy-health pass (recurring sink)
@@ -111,10 +118,33 @@ export const landTransactionKindEnum = pgEnum('land_transaction_kind', [
  * Parcel TENURE — HOW the parcel is held (orthogonal to `status`, which is pool
  * membership). NULL on an `available`/unsold parcel.
  *   rented  — held via the weekly-rent path; evictable on lapse (rent_paid_through/grace_until live)
- *   owned   — bought outright (one-time CT sink) OR a permanent holder; never evicted
- *   starter — the free first-claim onboarding parcel; never rents, never evicts
+ *   owned   — LEGACY buy-outright (Phase B migrates these to grandfathered 'hold';
+ *             the buy route is disabled — `tenure_model_active`)
+ *   starter — LEGACY free first-claim parcel (pre-Phase-B); never rents, never evicts.
+ *             New starter claims use 'deposit'.
+ *   deposit — Phase B1 starter deposit-escrow: refundable deposit held on the row
+ *             (`deposit_remaining_ct`); weekly rent draws FROM the escrow → treasury;
+ *             exhaustion → grace → lapse (remainder forfeits)
+ *   hold    — Phase B2 hold-to-keep (c/b/a/founder): CLV balance ≥ stacked
+ *             thresholds required; weekly CT upkeep debits the holder → treasury;
+ *             CLV-below OR insufficient CT → grace → lapse
  */
-export const landTenureEnum = pgEnum('land_tenure', ['rented', 'owned', 'starter']);
+export const landTenureEnum = pgEnum('land_tenure', [
+  'rented',
+  'owned',
+  'starter',
+  'deposit',
+  'hold',
+]);
+
+/**
+ * Which SUBJECT's CLV backs a B2 hold parcel — decides how the sweeper re-checks
+ * the hold: 'user' → the human's linked self-custody wallet
+ * (`users.linked_wallet_pubkey`); 'agent' → the agent's custodial wallet
+ * (`avatars.wallet_address`). NULL on non-hold rows AND on grandfathered holds
+ * (which are never CLV-checked).
+ */
+export const landHoldSubjectEnum = pgEnum('land_hold_subject', ['user', 'agent']);
 
 /**
  * Structure lifecycle. `active` = live + rendered. `archived` = soft-deleted by an
@@ -144,11 +174,22 @@ export const partnerStorefrontStatusEnum = pgEnum('partner_storefront_status', [
 /** CT top-up on-ramp rail. Only `x402` is wired in Phase 4; `stripe`/`clv` reserved. */
 export const ctTopupRailEnum = pgEnum('ct_topup_rail', ['x402', 'stripe', 'clv']);
 
-/** CT top-up settlement state. */
+/**
+ * CT top-up settlement state — the DURABLE, cross-process, resumable machine
+ * (mirrors x402_checkouts after the Codex money-path review). pending → settling
+ * (DB-backed claim BEFORE the facilitator) → settling+tx_signature (CAPTURE: the
+ * signature is persisted in its OWN committed UPDATE the instant the facilitator
+ * settles, BEFORE the CT credit — a credit failure can never lose it and
+ * re-settle real USDC) → settled (credit ran). A stale settling claim with no
+ * signature → reconcile (money-state unknown, NEVER auto-retried). CHECK
+ * `ct_topups_settled_has_signature`: a settled row ALWAYS carries the signature.
+ */
 export const ctTopupStatusEnum = pgEnum('ct_topup_status', [
   'pending', // 402 quote issued, awaiting signed payment
-  'settled', // facilitator settled the tx; CT credited
-  'failed', // verify/settle rejected
+  'settling', // CLAIMED for settlement; facilitator call in-flight (tx_signature NULL) or CAPTURED awaiting/​resuming the credit (tx_signature set)
+  'settled', // facilitator settled the tx AND CT credited; tx_signature ALWAYS present (CHECK)
+  'failed', // verify/settle definitively rejected (no money moved)
+  'reconcile', // money-state UNKNOWN (stale settling w/o signature) OR a settled tx-sig owned by another top-up — needs chain reconciliation, NEVER auto-retried
 ]);
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -220,6 +261,64 @@ export const landParcels = pgTable(
      */
     graceUntil: timestamp('grace_until', { withTimezone: true }),
 
+    // ── Phase B tenure model (2026-07-07) — deposit-escrow + hold-to-keep ──
+    /**
+     * B1: the ORIGINAL claim deposit (units) debited into escrow at claim time.
+     * Immutable for the life of the tenancy (top-ups grow `deposit_remaining_ct`,
+     * not this). NULL on non-deposit rows.
+     */
+    depositCt: integer('deposit_ct'),
+    /**
+     * B1: the LIVE escrow remainder (units).
+     *
+     * ═══ ESCROW-CONSERVATION INVARIANT (money-load-bearing) ═══
+     * The CT counted here traces to a claimant avatar debit OR a recorded USDC
+     * settlement (the Tokenomics-C extension, 2026-07-07 — see below) and
+     * exists NOWHERE in any avatar balance while escrowed — this column is the
+     * sole record of it. Every mutation preserves:
+     *
+     *   deposit_remaining_ct = (claim deposit + Σ top-ups + Σ USDC prepays)
+     *                          − Σ weekly draws − refund − forfeit   ≥ 0
+     *
+     * so, over a tenancy's life:
+     *   Σ draws + refund + forfeit == claim + Σ top-ups + Σ USDC prepays.
+     * Draws/forfeits CREDIT the house treasury (balanced by the claim/top-up
+     * debits — net supply change is always ≤ 0, i.e. the escrow can never MINT);
+     * the refund credits the claimant. The `land_parcels_deposit_remaining_nonneg`
+     * CHECK is the DB backstop; `decideDepositSweep` (land-rent-sweeper) is the
+     * single draw-math authority; unit tests prove exact conservation.
+     * Cleared to NULL on lapse/release (after the forfeit/refund books it).
+     *
+     * ── Tokenomics-C EXTENSION (LAND-DOMAIN, CODEX-review-gated; 2026-07-07):
+     * a `land_deposit_prepay_usdc` row (rent-prepay checkout fulfiller,
+     * `apps/api/src/services/checkout-fulfillers/rent-prepay.ts`) grows the
+     * remainder with NO avatar debit — the backing is the settled x402 USDC
+     * payment recorded on the SAME-tx `x402_checkouts` row + stamped as
+     * `usd_basis` in the land_transactions metadata. A later draw of that CT
+     * into the treasury is therefore a BACKED emission (real dollars entered),
+     * and a refund/forfeit of it conserves exactly like a debited top-up. Any
+     * escrow credit WITHOUT (an avatar debit XOR a settled-USDC usd_basis) is
+     * a conservation bug.
+     */
+    depositRemainingCt: integer('deposit_remaining_ct'),
+    /**
+     * B2: the CLV hold threshold STAMPED at claim time from
+     * `LAND_HOLD_THRESHOLDS_CLV` — in CLV **uiAmount** (human token count),
+     * despite the `_ct` suffix the land columns share. The sweeper re-checks
+     * SUM(hold_threshold_ct) across the owner's non-grandfathered hold parcels
+     * against the subject's live CLV balance. NULL on non-hold rows.
+     */
+    holdThresholdCt: integer('hold_threshold_ct'),
+    /** B2: which subject's CLV backs this hold (see `landHoldSubjectEnum`). */
+    holdSubject: landHoldSubjectEnum('hold_subject'),
+    /**
+     * TRUE on a legacy buy-outright parcel migrated to 'hold' by
+     * migrate-land-tenure-phaseB.ts: it pays weekly upkeep but is NEVER
+     * CLV-checked (it predates the hold requirement) and is EXCLUDED from the
+     * stacked-threshold sums. Always false on fresh Phase-B claims.
+     */
+    grandfathered: boolean('grandfathered').notNull().default(false),
+
     // ── RESERVED-INERT: Founder on-chain NFT linkage (custody-gated, no v1 write) ──
     /** base58 Solana mint address — populated only when a Founder parcel is minted. */
     nftMintAddress: varchar('nft_mint_address', { length: 64 }),
@@ -246,12 +345,24 @@ export const landParcels = pgTable(
     /** One parcel per world cell — supply integrity (ROADMAP R11). */
     gridUnique: uniqueIndex('land_parcels_grid_unique').on(t.gridX, t.gridY),
     /**
-     * Rent sweeper hot path — only RENTED parcels are ever due. Partial index on
-     * the due-date keeps the periodic charge/grace/evict scan off the full table.
+     * Tenure sweeper hot path (Phase B, 2026-07-07 — supersedes
+     * `land_parcels_rent_sweep_idx`): rented + deposit + hold parcels are the
+     * only ones ever due. Partial index on the due-date keeps the periodic
+     * charge/grace/evict scan off the full table. Migration 0013 drops the old
+     * rented-only index and creates this one.
      */
-    rentSweepIdx: index('land_parcels_rent_sweep_idx')
+    tenureSweepIdx: index('land_parcels_tenure_sweep_idx')
       .on(t.rentPaidThrough)
-      .where(sql`tenure = 'rented'`),
+      .where(sql`tenure IN ('rented', 'deposit', 'hold')`),
+    /**
+     * DB backstop for the escrow-conservation invariant — a draw/refund bug can
+     * never book more OUT of the escrow than was paid IN (see the
+     * `depositRemainingCt` column doc).
+     */
+    depositRemainingNonNeg: check(
+      'land_parcels_deposit_remaining_nonneg',
+      sql`${t.depositRemainingCt} IS NULL OR ${t.depositRemainingCt} >= 0`,
+    ),
   }),
 );
 
@@ -554,6 +665,15 @@ export const ctTopups = pgTable(
     /** USD basis logged at receipt for accounting (numeric, nullable until settle). */
     usdBasisAtReceipt: numeric('usd_basis_at_receipt'),
     status: ctTopupStatusEnum('status').notNull().default('pending'),
+    /**
+     * The CLAIM token of the process that flipped this row pending→settling
+     * (a fresh uuid per claim). Only the holder may CAPTURE/release it; a stale
+     * claim is reconciled, never stolen. NULL unless status='settling'.
+     * (Durable settle machine — Codex money-path review.)
+     */
+    settlingId: uuid('settling_id'),
+    /** When the current settling claim started — drives stale-claim detection. */
+    settlingStartedAt: timestamp('settling_started_at', { withTimezone: true }),
     /** Client-supplied idempotency on the settle call (per-avatar). */
     idempotencyKey: varchar('idempotency_key', { length: 64 }),
     metadata: jsonb('metadata').$type<Record<string, unknown>>().default({}).notNull(),
@@ -569,6 +689,15 @@ export const ctTopups = pgTable(
     idemUnique: uniqueIndex('ct_topups_idem_unique')
       .on(t.avatarId, t.idempotencyKey)
       .where(sql`idempotency_key IS NOT NULL`),
+    /**
+     * A `settled` row ALWAYS carries the tx signature (Codex money-path review):
+     * the money proof can never be absent on a credited top-up, so a settled row
+     * can never be replayed as a credit without a signature.
+     */
+    settledHasSignature: check(
+      'ct_topups_settled_has_signature',
+      sql`${t.status} <> 'settled' OR ${t.txSignature} IS NOT NULL`,
+    ),
   }),
 );
 

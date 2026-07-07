@@ -38,20 +38,28 @@ export {
  * (DESIGN §3 / ROADMAP §6.C4):
  *
  *   - starter: 1st claim is FREE (the seed flags the abundant starter rung with
- *     priceCt=0 for the free-grant path); the rest seed around ~150 CT.
+ *     priceCt=0 for the free-grant path); the rest seed around ~1500 units.
  *   - founder: USDC/auction sentinel — `min/max` are `null`. The seed leaves
  *     `land_parcels.price_ct` NULL and the v1 buy route returns 501
  *     (`founder_tier_not_in_v1`). Any consumer MUST handle `null`.
+ *
+ * A3 ¢-peg re-band (2026-07-07): STARTER kept purchasing power — max ×10
+ * (150→1500 units = $15 at $0.01), matching the founder's "starter stays cheap
+ * (0–1,500 units)". The c/b/a buy-outright bands are LEFT UNCHANGED (NOT ×10,
+ * NOT re-banded): per the founder, C/B/A purchase prices become IRRELEVANT once
+ * land tenure moves to CLV hold-to-keep in Phase B — "leave values, do not gate
+ * on them, note it." So c/b/a are effectively 10× cheaper in USD now (a stopgap
+ * until Phase B replaces buy-outright with claim-locks) and MUST NOT be treated
+ * as a coherent USD price. Migration 0011 ×10's only the starter parcel rows.
  */
 export const LAND_TIER_LADDER: Record<
   LandTier,
   { minCt: number | null; maxCt: number | null }
 > = {
-  starter: { minCt: 0, maxCt: 150 },
-  // Buy-outright bands (founder-locked 2026-06-24, builder-economics-design.md
-  // section 7). Raised ~5-6x over the original proposal so outright ownership is
-  // a real CT sink, not a few days of faucet earnings. EXISTING parcels are
-  // repriced to match via the tenure migration (existing == new, no divergence).
+  starter: { minCt: 0, maxCt: 1500 },
+  // Buy-outright bands (founder-locked 2026-06-24). LEFT UNCHANGED by the A3
+  // re-band — DEPRECATED/IRRELEVANT (Phase B replaces buy-outright with CLV
+  // claim-locks; do not gate on these USD-wise). See the block comment above.
   c: { minCt: 2000, maxCt: 4000 },
   b: { minCt: 10000, maxCt: 24000 },
   a: { minCt: 40000, maxCt: 80000 },
@@ -70,6 +78,12 @@ export const LAND_TIER_LADDER: Record<
  * Buy is ~9-11 months of rent at these numbers, so buying is a premium over
  * renting, not a shortcut. starter (free+owned, never rents) + founder
  * (USDC/auction) are NULL = not rentable.
+ *
+ * A3 ¢-peg re-band (2026-07-07): these values are UNCHANGED — they are already
+ * the founder's target band (c 50–100, b 250–550, a 1000–2400 units/week), so
+ * the re-band OVERRIDES the ×10 for rent (migration 0011 does NOT touch
+ * rent_ct_weekly rows). At the $0.01 peg that is $0.50–24/wk (was $5–240/wk at
+ * the old $0.10 rate — rent got 10× cheaper in USD, deliberately).
  */
 export const LAND_RENT_LADDER: Record<
   LandTier,
@@ -87,6 +101,74 @@ export const CT_BUYABLE_TIERS: readonly LandTier[] = ['starter', 'c', 'b', 'a'] 
 
 /** Which tiers can be RENTED with CT in v1 (starter is free+owned; founder is auction-only). */
 export const CT_RENTABLE_TIERS: readonly LandTier[] = ['c', 'b', 'a'] as const;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase B tenure model (FOUNDER-DECIDED 2026-07-07) — deposit-escrow + hold-to-keep
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Land is never sold permanently. Two tenure mechanisms replace buy-outright:
+//   B1 starter  = vCLAW DEPOSIT-ESCROW. The claim debits a refundable deposit
+//                 into escrow (a NUMBER on the parcel row — the CT exists in NO
+//                 avatar balance while escrowed). Weekly rent auto-draws from
+//                 the escrow remainder → house treasury; voluntary release
+//                 refunds the remainder; exhaustion → grace → lapse (remainder
+//                 forfeits to the treasury — nothing refunded).
+//   B2 c/b/a/founder = HOLD-TO-KEEP. Claiming requires the subject's CLV
+//                 balance ≥ the tier threshold (thresholds STACK across held
+//                 parcels); a weekly CT upkeep draws from the holder's avatar
+//                 balance → treasury. CLV-below-threshold OR insufficient CT at
+//                 sweep → grace → lapse. Purchase (price_ct) is DEAD for these
+//                 tiers (`tenure_model_active` 409).
+
+/**
+ * Refundable vCLAW deposit (units) debited INTO ESCROW on a starter claim.
+ * FOUNDER-LOCKED 2026-07-07 (2000 units ≈ $20 at the ¢-peg). Refundable on
+ * voluntary release (remainder only); forfeited on lapse. NOT revenue at claim
+ * time — only the weekly draws (and a lapse forfeit) reach the treasury.
+ */
+export const LAND_STARTER_DEPOSIT_CT = 2000;
+
+/**
+ * Weekly rent (units/week) auto-drawn FROM THE ESCROW REMAINDER of a starter
+ * deposit parcel — the tenant is never debited again after the claim; the
+ * sweeper moves escrow → treasury.
+ *
+ * ⚠ FOUNDER-TUNABLE / UNCONFIRMED (JUDGMENT CALL 2026-07-07): 100/wk makes the
+ * 2000 deposit last ≈ 20 weeks with no top-up — chosen to sit at the c-tier
+ * rent ceiling (LAND_RENT_LADDER c = 50–100) so a starter is never cheaper to
+ * hold than a paid tier. Confirm with the founder before prod.
+ */
+export const LAND_STARTER_RENT_CT_WEEKLY = 100;
+
+/**
+ * Per-tier CLV hold thresholds for B2 hold-to-keep, in CLV **uiAmount** (human
+ * token count — NOT atomic base units; compare against
+ * `ClvBalanceResult.uiAmount`). FOUNDER-LOCKED 2026-07-07:
+ * c 100k / b 500k / a 2.5M / founder 10M. `null` = the tier is not holdable
+ * (starter uses the B1 deposit-escrow path). Thresholds STACK: holding
+ * multiple parcels requires the SUM of their thresholds.
+ */
+export const LAND_HOLD_THRESHOLDS_CLV: Record<LandTier, number | null> = {
+  starter: null,
+  c: 100_000,
+  b: 500_000,
+  a: 2_500_000,
+  founder: 10_000_000,
+};
+
+/**
+ * Weekly CT upkeep for a FOUNDER-tier hold parcel (units/week). Founder rows
+ * carry rent_ct_weekly NULL (the rent ladder never priced them), so the
+ * claim-hold route stamps THIS value on acquisition. c/b/a hold parcels keep
+ * their already-stamped `rent_ct_weekly` as the upkeep. Founder-tunable —
+ * set at the a-tier rent ceiling (LAND_RENT_LADDER a max = 2400).
+ */
+export const FOUNDER_UPKEEP_CT_WEEKLY = 2400;
+
+/** The CLV hold threshold for a tier (uiAmount), or null when not holdable. */
+export function holdThresholdForTier(tier: LandTier): number | null {
+  return LAND_HOLD_THRESHOLDS_CLV[tier];
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Rent cycle timing (founder-locked 2026-06-24)
@@ -118,6 +200,12 @@ export const RENT_GRACE_DAYS = 3;
  *
  * The upgrade route derives `cost = STRUCTURE_UPGRADE_COSTS[currentLevel + 1]`
  * — never client-trusted.
+ *
+ * A3 ¢-peg re-band (2026-07-07): LEFT UNCHANGED — structure upgrades were NOT in
+ * the founder's explicit A3 re-band list, and they belong to the same land
+ * buy-outright surface that Phase B (CLV hold-to-keep) supersedes, so like the
+ * c/b/a purchase prices they are DEPRECATED and now ~10× cheaper in USD. Do not
+ * treat these as a coherent USD price; Phase B re-sizes the land/structure sinks.
  */
 export const STRUCTURE_UPGRADE_COSTS: readonly number[] = [0, 0, 600, 1800, 4500, 11000];
 

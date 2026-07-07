@@ -153,7 +153,7 @@ export default function AgentConnectModal() {
       } catch { /* non-blocking */ }
     }
     if (agentSessionId) {
-      try { await api.unregisterOpenClaw(agentSessionId); } catch { /* ignore */ }
+      try { await api.unregisterAgentBot(agentSessionId); } catch { /* ignore */ }
     }
     // Persist the dismissal — without this, the Milady server-hosted carve-out
     // in /api/auth/me/agent-session re-asserts connected:true on every reload

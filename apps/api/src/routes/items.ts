@@ -1,13 +1,15 @@
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { eq, and, sql, isNull, or, gt } from 'drizzle-orm';
-import { db, avatars, avatarInventory, agents, openclawBots, users } from '@clawville/database';
+import { db, avatars, avatarInventory, agents, agentBots, users } from '@clawville/database';
 import { getBookById, getBooksForBuilding, KNOWLEDGE_BOOKS, BUILDING_MILADY_SKILLS } from '@clawville/shared';
 import { miladyGateway } from '../services/milady-gateway';
-import { debitClawTokens } from '../services/claw-token-ledger';
+import { creditClawTokens, debitClawTokens } from '../services/claw-token-ledger';
+import { getHouseTreasuryAvatarId } from '../services/house-treasury-seeder';
 import { requireAuth } from '../middleware/auth';
 import { sessionMiddleware } from '../middleware/auth';
 import { requireAuthOrAgentSession } from '../middleware/require-auth-or-agent';
+import { requireNonGuestIdentity } from '../middleware/require-non-guest';
 import { agentOrchestrator } from '../services/agent-orchestrator';
 import { embedText } from '@clawville/agent-runtime';
 import { logEventFromContext } from '../services/event-logger';
@@ -64,7 +66,7 @@ const buySchema = z.object({
   itemId: z.string().min(1).max(50),
 });
 
-itemRoutes.post('/buy', requireAuthOrAgentSession, async (c) => {
+itemRoutes.post('/buy', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
   const identity = c.get('identity');
   const userId = identity.userId;
   const body = await c.req.json();
@@ -102,6 +104,30 @@ itemRoutes.post('/buy', requireAuthOrAgentSession, async (c) => {
       source: 'api',
       metadata: { bookId: book.id, bookName: book.name },
     }, tx);
+
+    // 1b. T0 fee routing (2026-07-07): book revenue → house treasury, IN THIS
+    // SAME tx as the debit + inventory insert (net-neutral supply — the price
+    // moves player→treasury instead of burning). Buyer-side amount UNCHANGED.
+    // A null treasury (unavailable) degrades to the pre-T0 burn.
+    if (Number.isInteger(book.price) && book.price > 0) {
+      const treasuryId = await getHouseTreasuryAvatarId();
+      if (treasuryId) {
+        await creditClawTokens(
+          {
+            avatarId: treasuryId,
+            amount: book.price,
+            reason: 'house_fee_book_purchase',
+            source: 'system',
+            metadata: { bookId: book.id, buyerAvatarId: avatar.id },
+          },
+          tx,
+        );
+      } else {
+        console.error(
+          `[items] house treasury unavailable — ${book.price} CT book purchase burned (pre-T0 behavior) for book ${book.id}`,
+        );
+      }
+    }
 
     // 2. Check if already in inventory
     const existingItem = await tx.query.avatarInventory.findFirst({
@@ -317,18 +343,41 @@ itemRoutes.post('/learn', requireAuthOrAgentSession, async (c) => {
     void (async () => {
       try {
         const activeBots = await db
-          .select({ agentId: openclawBots.agentId })
-          .from(openclawBots)
+          .select({ agentId: agentBots.agentId })
+          .from(agentBots)
           .where(
             and(
-              eq(openclawBots.userId, userId),
+              eq(agentBots.userId, userId),
               or(
-                isNull(openclawBots.sessionExpiresAt),
-                gt(openclawBots.sessionExpiresAt, sql`now()`),
+                isNull(agentBots.sessionExpiresAt),
+                gt(agentBots.sessionExpiresAt, sql`now()`),
               ),
-              isNull(openclawBots.sessionSweptAt),
+              isNull(agentBots.sessionSweptAt),
             ),
           );
+        // D7 slice-1: durable, agent-scoped, BEARER-FREE knowledge event so a
+        // briefly-disconnected agent can REPLAY the knowledge it gained (the RAM
+        // push below is live-only; the `book.read` row is human-scoped with no
+        // agent_id). NO skillUrl/toolsUrl here — those embed the raw session
+        // bearer and are session-specific; on replay the agent rebuilds them from
+        // its CURRENT session. One row per active agent bound to this user.
+        for (const b of activeBots) {
+          void logEventFromContext(c, {
+            eventType: 'agent.knowledge_added',
+            userId,
+            avatarId: avatar.id,
+            agentId: b.agentId,
+            buildingId: book.building,
+            payload: {
+              source: 'book',
+              buildingId: book.building,
+              skillName: `clawville-${book.building}`,
+              suggestedFilename: `clawville-${book.building}.md`,
+              sourceName: book.name,
+              knowledgeEntries: newKnowledge.slice(0, 8),
+            },
+          });
+        }
         const activeSessionIds = npcSimulation.findActiveSessionsByAgentIds(
           activeBots.map((b) => b.agentId),
         );

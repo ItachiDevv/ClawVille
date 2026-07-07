@@ -9,7 +9,6 @@ import {
 } from 'drizzle-orm/pg-core';
 import { users } from './users';
 import { avatars } from './avatars';
-import { publishedSkills } from './marketplace';
 
 export const questTierEnum = pgEnum('quest_tier', [
   'side_quest',
@@ -40,8 +39,6 @@ export const quests = pgTable('quests', {
   tier: questTierEnum('tier').notNull(),
   status: questStatusEnum('status').default('active').notNull(),
   tokenReward: integer('token_reward').notNull(),
-  skillRewardId: uuid('skill_reward_id')
-    .references(() => publishedSkills.id, { onDelete: 'set null' }),
   titleReward: varchar('title_reward', { length: 100 }),
   maxCompletions: integer('max_completions').default(1),
   currentCompletions: integer('current_completions').default(0),
@@ -87,8 +84,6 @@ export const questRewards = pgTable('quest_rewards', {
     .notNull()
     .references(() => quests.id, { onDelete: 'cascade' }),
   tokensAwarded: integer('tokens_awarded').notNull(),
-  skillId: uuid('skill_id')
-    .references(() => publishedSkills.id, { onDelete: 'set null' }),
   titleAwarded: varchar('title_awarded', { length: 100 }),
   claimedAt: timestamp('claimed_at').defaultNow().notNull(),
 });

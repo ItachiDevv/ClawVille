@@ -1,12 +1,15 @@
 import {
   NPC_DEFINITIONS,
   NPC_BUILDING_CENTERS,
+  BUILDING_INTERACTION_RADIUS,
+  buildingEdgeDistanceGamePx,
   MAP_LOCATIONS,
   BUILDING_OPENCLAW_THEMES,
   type NpcDefinition,
-  type OpenClawRegistration,
-  type OpenClawAvatarConfig,
+  type AgentSubstrateRegistration,
+  type AgentAvatarConfig,
   type NpcActivity,
+  type AgentPerception,
   ACTIVITY_EMOJIS,
   BUILDING_ACTIVITIES,
   type ClawConfig,
@@ -35,8 +38,21 @@ import {
   getCollaborationBroker,
   type CollaborationLogEntry,
 } from '@clawville/agent-runtime';
-import type { OpenClawClient } from './openclaw-client';
-import { roomRegistry, FREE_ROAMER_NPC_IDS } from './room-registry';
+import type { AgentSubstrateClient } from './agent-substrate-client';
+// P3 slice 6: the two in-world-cognition predicates below are driven from the
+// PROTOCOL capability table (agent-session-config.ts), generalizing the former
+// hardcoded `=== 'hatcher-proxy'` checks to every server-hosted-cognition
+// protocol ([ACTION:] parity) while keeping the proximity-exemption Hatcher-only.
+import {
+  protocolEmitsInWorldActions,
+  protocolProximityGateExempt,
+} from './agent-session-config';
+import { resolveBuildingId } from './building-center';
+// Shared never-clobber ownership predicate (magic-link onboarding D1b) — the
+// SAME rule the /enter SQL bind guard states, from its dependency-free module
+// so bindAgentOwner + the route + the tests can never drift on it.
+import { canBindAgentOwner } from './agent-owner-binding';
+import { roomRegistry, FREE_ROAMER_NPC_IDS, derivePublicId } from './room-registry';
 import type { PlayerSnapshot } from '@clawville/shared';
 
 // Map dimensions — land-builder-economics (2026-06-24): 704×704 grid of 32px tiles = 22528×22528 world.
@@ -273,7 +289,16 @@ export interface SimulationSnapshot {
   combats: NpcCombat[];
   events: SimulationEvent[];
   autonomousAvatars: Array<{
-    avatarId: string; userId: string; name: string; species: string; color: string;
+    // Identity-leak scrub (P0 2026-07-01, sibling of the B1 bearer fix): the raw
+    // AvatarSimBroadcast carries the owner `userId` + the raw `avatarId`
+    // (avatars.id UUID) — plus internal budget/action fields. None is a
+    // credential (no CT theft), but userId + the raw avatarId are internal
+    // identity that must NOT ship on the UNAUTH snapshot (enumeration /
+    // correlation). This PUBLIC shape drops userId + the budget/action fields,
+    // and `avatarId` here is the non-secret, non-reversible derivePublicId(
+    // avatars.id) — an opaque stable render/interp key, matching the player +
+    // browser-claw presence-id pattern. Projected by `publicAutonomousAvatars()`.
+    avatarId: string; name: string; species: string; color: string;
     x: number; y: number; direction: string; activity: string; activityEmoji: string;
     isAutonomous: boolean; chatMessage: string | null;
   }>;
@@ -303,7 +328,7 @@ const INTERMISSION_MS = 8_000;      // 8s between rounds
 // --- Simulation Singleton ---
 
 /**
- * Thrown by `registerOpenClaw` in OVERRIDE mode when the target NPC is already
+ * Thrown by `registerAgentBot` in OVERRIDE mode when the target NPC is already
  * overridden by a DIFFERENT session. Callers (partner-hatcher register/PATCH P5-2)
  * map this to a client-actionable 409 `override_target_unavailable` vs a generic
  * 503 — a TYPED sentinel instead of message-string matching, so the HTTP status
@@ -348,8 +373,18 @@ class NpcSimulation {
   private arenaRound: ArenaRoundState | null = null;
 
   // OpenClaw bot registry
-  private openClawBots: Map<string, { config: OpenClawRegistration; client: OpenClawClient }> = new Map();
+  private agentBotSessions: Map<string, { config: AgentSubstrateRegistration; client: AgentSubstrateClient }> = new Map();
   private npcOverrides: Map<string, string> = new Map(); // npcId → sessionId
+  // Magic-link onboarding D3 (2026-07-02): direct npcId → agentId for AVATAR-mode
+  // (`ocb-`) bodies, written at registerAgentBot and cleared with the ownership-
+  // scoped body teardown. The human-control suppression predicate consults THIS
+  // map for avatar bodies instead of the npcOverrides→agentBotSessions session chain:
+  // that chain names the CURRENT owner session and dangles whenever the owning
+  // session churns (rebind eviction, sweeper races, restore windows), which left
+  // `ocb-` bodies unsuppressed while their human drove the avatar — the exact
+  // double-body gap this map closes. The body id is deterministic per agentId
+  // (`avatarBodyId`), so re-registration overwrites idempotently.
+  private avatarBodyOwners: Map<string, string> = new Map(); // ocb-npcId → agentId
   // Controlled-launch suppression: agentId → epoch-ms until which a Hatcher
   // proxy NPC is "human-driven" and must be hidden + frozen (its owner is
   // driving the bound avatar in 'player' mode). Refreshed at 5 Hz by
@@ -457,23 +492,62 @@ class NpcSimulation {
    * the collaboration broker queue; collaborationEvents is always empty.
    */
   /**
-   * True when `npcId` is a Hatcher proxy avatar body whose owner is actively
-   * driving the bound avatar in 'player' mode (controlled launch). Such a body
+   * True when `npcId` is a connected-agent body whose owner is actively
+   * driving the bound avatar in 'player' mode (Controlled). Such a body
    * must be hidden from snapshots and skipped by all autonomy planning so it
    * doesn't appear as a second, auto-walking copy of the player. Expired
-   * entries are pruned lazily on read. Maps npcId → sessionId → config.agentId.
+   * entries are pruned lazily on read.
+   *
+   * TWO resolution paths (magic-link onboarding D3, 2026-07-02):
+   *   - AVATAR-mode (`ocb-`) bodies resolve DIRECTLY via `avatarBodyOwners`
+   *     (npcId → agentId), immune to owning-session churn.
+   *   - OVERRIDE-mode bodies keep the original chain
+   *     (npcOverrides → agentBotSessions → config.agentId), since an override body
+   *     has no `avatarBodyOwners` entry.
+   * Before this, ONLY the session chain existed — an `ocb-` body whose owner
+   * session had churned was never suppressed (the double-body gap).
    */
   private isHumanControlledOpenClawNpc(npcId: string, now = Date.now()): boolean {
+    // Avatar-mode bodies: direct, session-independent lookup.
+    const avatarAgentId = this.avatarBodyOwners.get(npcId);
+    if (avatarAgentId) return this.isAgentHumanControlled(avatarAgentId, now);
+    // Override-mode bodies: npcId → current owner session → agentId.
     const sessionId = this.npcOverrides.get(npcId);
     if (!sessionId) return false;
-    const agentId = this.openClawBots.get(sessionId)?.config.agentId;
+    const agentId = this.agentBotSessions.get(sessionId)?.config.agentId;
     if (!agentId) return false;
+    return this.isAgentHumanControlled(agentId, now);
+  }
+
+  /**
+   * PUBLIC: is this agent currently human-controlled (its owner is driving the
+   * bound avatar in 'player' mode)? The single TTL read for the suppression
+   * window — the npcId predicate above, the SSE `control` event, perception's
+   * `humanControlled` field, and `GET /session-status` all consult this so the
+   * signal an agent sees can never drift from the suppression the world
+   * enforces. Expired entries are pruned lazily on read.
+   */
+  isAgentHumanControlled(agentId: string, now = Date.now()): boolean {
     const until = this.humanControlledOpenClawUntil.get(agentId) ?? 0;
     if (until <= now) {
       this.humanControlledOpenClawUntil.delete(agentId);
       return false;
     }
     return true;
+  }
+
+  /**
+   * True for a SELF-MANAGED OpenClaw body (the house agent / autonomous fleet).
+   * Such bodies are driven EXCLUSIVELY by `agentAutonomyDriver` on its own ~30s
+   * loop, so the 200ms sim must NOT pull one into an ambient NPC↔NPC
+   * conversation: that would set `inConversation` (freezing the driver mid
+   * walk→talk) AND produce degenerate empty bubbles (nanoclaw `chat()` returns
+   * ''). Mirrors the `isHumanControlledOpenClawNpc` suppression, scoped tightly
+   * to self-managed — Hatcher (server-managed) is intentionally NOT excluded and
+   * keeps its existing ambient behavior. (N4)
+   */
+  private isSelfManagedOpenClawNpc(npc: NpcRuntimeState): boolean {
+    return npc.isOpenClaw && npc.autonomyMode === 'self-managed';
   }
 
   /** Prime/extend the human-driving suppression window for a specific agent. */
@@ -484,9 +558,9 @@ class NpcSimulation {
     // but a path may have been assigned earlier in the same tick), and dropping
     // any walking activity prevents a stale "walking" pose lingering on the
     // hidden body when suppression later lapses.
-    for (const [sessionId, { config }] of this.openClawBots) {
+    for (const [, { config }] of this.agentBotSessions) {
       if (config.agentId !== agentId) continue;
-      const npcId = config.mode === 'override' ? config.targetNpcId : `oc-${sessionId}`;
+      const npcId = config.mode === 'override' ? config.targetNpcId : this.avatarBodyId(config.agentId);
       const npc = this.npcs.get(npcId);
       if (!npc) continue;
       npc.path = [];
@@ -542,6 +616,68 @@ class NpcSimulation {
     }
   }
 
+  /**
+   * P0 (B1 ROOT-FIX) — the non-secret, STABLE, unique in-world body id for an
+   * avatar-mode connected agent. Decoupled from the sessionId so the bearer
+   * (`X-Clawville-Agent-Session`, the real-CT credential) can NEVER appear in a
+   * wire id — whether via the public `/api/npc/state|stream` snapshot, the
+   * authenticated `/perception` harvest path (the cross-agent harvest the
+   * adversary flagged), the Hatcher partner world-state, or any FUTURE serializer.
+   * It is ALSO the `talk_to_npc` target: the Hatcher action validates
+   * `this.npcs.has(target)`, and since this bodyId is the Map key, a perceived id
+   * resolves for free (a boundary-sanitize that kept the internal `oc-` key would
+   * BREAK that action). Bypass-proof at the source.
+   *
+   * SHAPE — `ocb-${base64url(agentId)}` — a DETERMINISTIC, DOM-safe, non-secret
+   * encoding of the public agentId:
+   *   - DETERMINISTIC from agentId (not random): lazy-restore re-registers from the
+   *     row, so f(agentId) reproduces the SAME body id after a restart → entity
+   *     interpolation + `talk_to_npc` targets survive a restart identically (one
+   *     body per agentId, so f is unambiguous). A random-per-registration id would
+   *     pop the body + orphan a learned target on every restart.
+   *   - DOM-safe: base64url is `[A-Za-z0-9_-]` only, so the id never carries the
+   *     COLON in a namespaced agentId (`hatcher:…`/`milady:…`) that would break an
+   *     unescaped `querySelector('#…')` on the client's label DOM ids.
+   *   - The `ocb-` prefix guarantees no collision with a resident/wanderer/override
+   *     npc id in `this.npcs`, and never matches the client's `milady-`/`chibi-`
+   *     render heuristic. Client recovers the agentId by base64url-decoding the
+   *     tail. Reverse lookup (bodyId → sessionId) is `npcOverrides`; forward
+   *     (sessionId → bodyId) is this pure function, so no extra map is needed.
+   */
+  private avatarBodyId(agentId: string): string {
+    return `ocb-${Buffer.from(agentId, 'utf8').toString('base64url')}`;
+  }
+
+  /**
+   * PUBLIC projection of the autonomous-avatar broadcast for the UNAUTH snapshot
+   * (`getSnapshot`/`getRoomSnapshot` → `/api/npc/state`, `/api/world/:room/stream`).
+   * Identity-leak scrub (P0 2026-07-01, sibling of the B1 bearer fix): the raw
+   * `AvatarSimBroadcast` carries the owner `userId` + the raw `avatarId`
+   * (avatars.id UUID) + internal budget/action fields. Neither id is a credential
+   * (no CT theft) but both are internal identity that must not go on the public
+   * wire (enumeration/correlation). This ALLOWLIST projection (not a denylist —
+   * new broadcast fields default to NOT-exposed) emits only render fields, drops
+   * `userId` + the budget/action fields, and replaces the raw `avatarId` with the
+   * same non-secret, non-reversible `derivePublicId` the player + browser-claw
+   * snapshots use — an opaque stable render/interp key. Single serialization
+   * point, so there is no sibling projection to miss.
+   */
+  private publicAutonomousAvatars(): SimulationSnapshot['autonomousAvatars'] {
+    return this.avatarAutonomyManager.getAutonomousAvatars().map((a) => ({
+      avatarId: derivePublicId(a.avatarId),
+      name: a.name,
+      species: a.species,
+      color: a.color,
+      x: a.x,
+      y: a.y,
+      direction: a.direction,
+      activity: a.activity,
+      activityEmoji: a.activityEmoji,
+      isAutonomous: a.isAutonomous,
+      chatMessage: a.chatMessage,
+    }));
+  }
+
   getSnapshot(): SimulationSnapshot {
     const now = Date.now();
     return {
@@ -556,7 +692,7 @@ class NpcSimulation {
         .map((c) => ({ ...c, messages: [...c.messages] })),
       combats: Array.from(this.combats.values()).filter((c) => c.state === 'active').map((c) => ({ ...c, rounds: [...c.rounds] })),
       events: [...this.pendingEvents],
-      autonomousAvatars: this.avatarAutonomyManager.getAutonomousAvatars(),
+      autonomousAvatars: this.publicAutonomousAvatars(),
       browserClaws: this.getBrowserClawSnapshots(),
       arenaRound: this.arenaRound ? { ...this.arenaRound } : null,
       arenaSettings: { ...this.arenaSettings },
@@ -617,7 +753,7 @@ class NpcSimulation {
         .filter((c) => c.state === 'active')
         .map((c) => ({ ...c, rounds: [...c.rounds] })),
       events: [...this.pendingEvents],
-      autonomousAvatars: this.avatarAutonomyManager.getAutonomousAvatars(),
+      autonomousAvatars: this.publicAutonomousAvatars(),
       browserClaws: this.getBrowserClawSnapshots(),
       arenaRound: this.arenaRound ? { ...this.arenaRound } : null,
       arenaSettings: { ...this.arenaSettings },
@@ -696,13 +832,13 @@ class NpcSimulation {
 
   // --- OpenClaw Methods ---
 
-  registerOpenClaw(config: OpenClawRegistration, client: OpenClawClient, restoredState?: { lastX?: number; lastY?: number; knowledge?: string[] }) {
+  registerAgentBot(config: AgentSubstrateRegistration, client: AgentSubstrateClient, restoredState?: { lastX?: number; lastY?: number; knowledge?: string[] }) {
     if (config.mode === 'override') {
       if (!this.npcs.has(config.targetNpcId)) throw new Error(`NPC "${config.targetNpcId}" not found`);
       // Typed sentinel (not a bare Error) so the partner-hatcher P5-2 path can map
       // an occupied target to 409 via `instanceof`, never message-string matching.
       if (this.npcOverrides.has(config.targetNpcId)) throw new OverrideTargetUnavailableError(config.targetNpcId);
-      this.openClawBots.set(config.sessionId, { config, client });
+      this.agentBotSessions.set(config.sessionId, { config, client });
       this.npcOverrides.set(config.targetNpcId, config.sessionId);
       const npc = this.npcs.get(config.targetNpcId)!;
       npc.isOpenClaw = true;
@@ -722,8 +858,11 @@ class NpcSimulation {
       // hand it back. Digest is correlation-only.
       console.log(`[OpenClaw] Override registered: ${config.targetNpcId} -> sess:${sessionDigest(config.sessionId)} (${npc.autonomyMode})`);
     } else {
-      const avatarConfig = config as OpenClawAvatarConfig;
-      const npcId = `oc-${config.sessionId}`;
+      const avatarConfig = config as AgentAvatarConfig;
+      // B1 ROOT-FIX: body id is the non-secret `ocb-<base64url(agentId)>`, NEVER
+      // `oc-<sessionId>` (the sessionId is the real-CT bearer). npcOverrides keys
+      // this bodyId → sessionId for the reverse lookup.
+      const npcId = this.avatarBodyId(config.agentId);
       const rawSpawnX = restoredState?.lastX ?? avatarConfig.homeX;
       const rawSpawnY = restoredState?.lastY ?? avatarConfig.homeY;
       const spawn = this.resolveSafeSpawn(rawSpawnX, rawSpawnY);
@@ -754,8 +893,13 @@ class NpcSimulation {
         combatAction: null, combatActionAt: 0,
         autonomyMode: config.autonomyMode ?? 'server-managed',
       });
-      this.openClawBots.set(config.sessionId, { config, client });
+      this.agentBotSessions.set(config.sessionId, { config, client });
       this.npcOverrides.set(npcId, config.sessionId);
+      // D3 (2026-07-02): record the session-independent npcId → agentId link so
+      // the human-control suppression predicate covers `ocb-` bodies even when
+      // the owning session churns. Idempotent — the body id is deterministic
+      // per agentId, so a re-register overwrites with the same value.
+      this.avatarBodyOwners.set(npcId, config.agentId);
       // Hatcher proxy-cognition: bind the STRUCTURED world-state provider to
       // the freshly-spawned avatar body (Hatcher owns the root prompt). Also
       // bind the legacy text provider for any non-Hatcher fallback (no-op for
@@ -764,15 +908,16 @@ class NpcSimulation {
         client.setWorldStateProvider(() => this.buildHatcherWorldState(npcId, 'avatar'));
         client.setSystemContextProvider(() => this.buildHatcherSystemContext(npcId));
       }
-      // Log the sessionDigest, NOT the raw npcId (Codex auth-lens fix #4): the
-      // avatar npcId is literally `oc-${config.sessionId}`, so printing it leaks
-      // the real-CT bearer credential into logs. Digest is correlation-only.
+      // Log the sessionDigest, NOT the raw sessionId (Codex auth-lens fix #4): the
+      // sessionId is the real-CT bearer credential, so printing it leaks it into
+      // logs. Digest is correlation-only. (The npcId is now the non-secret
+      // `ocb-<base64url(agentId)>`, but the bearer sessionId is still secret.)
       console.log(`[OpenClaw] Avatar injected: "${avatarConfig.name}" (oc-sess:${sessionDigest(config.sessionId)}) [${config.autonomyMode ?? 'server-managed'}]${restoredState?.lastX != null ? ' [restored position]' : ''}`);
     }
   }
 
-  unregisterOpenClaw(sessionId: string): boolean {
-    const bot = this.openClawBots.get(sessionId);
+  unregisterAgentBot(sessionId: string): boolean {
+    const bot = this.agentBotSessions.get(sessionId);
     if (!bot) return false;
     // Drop any human-control suppression entry for this agent so a stale TTL
     // can't outlive the session (a re-registered agent gets a fresh window).
@@ -785,22 +930,41 @@ class NpcSimulation {
       const npc = this.npcs.get(npcId);
       if (npc) { npc.isOpenClaw = false; npc.inCombat = false; npc.combatTargetId = null; }
     } else {
-      const npcId = `oc-${sessionId}`;
-      this.cleanupNpcFromCombats(npcId);
-      this.npcOverrides.delete(npcId);
-      this.npcs.delete(npcId);
+      // B1 ROOT-FIX: avatar body id is `ocb-<base64url(agentId)>` (non-secret), not
+      // `oc-<sessionId>`; resolve it from the bot's own config.
+      const npcId = this.avatarBodyId(bot.config.agentId);
+      // OWNERSHIP-SCOPED teardown (M1 sweeper race, Codex P0 gate 2026-07-01): the
+      // body id is DETERMINISTIC per agentId, so many sessionIds for one agentId
+      // share ONE body, and `npcOverrides[npcId]` names the CURRENT owner. `/connect`
+      // does NOT evict prior sessions on a normal (same-owner) reconnect, so a stale
+      // session (e.g. one the TTL sweeper is reaping) can coexist with a fresh one
+      // that has already rebound the body to itself. Tear the shared body down ONLY
+      // if THIS session still owns it — otherwise a stale unregister would orphan the
+      // live session (delete the body + override the newer session depends on, while
+      // that session stays Map-present so lazy-restore never re-heals it). If we no
+      // longer own it, just drop our own `agentBotSessions` entry below.
+      if (this.npcOverrides.get(npcId) === sessionId) {
+        this.cleanupNpcFromCombats(npcId);
+        this.npcOverrides.delete(npcId);
+        this.npcs.delete(npcId);
+        // D3 (2026-07-02): the avatar body is gone, so drop its direct
+        // npcId → agentId suppression link with it. Scoped to the SAME
+        // ownership check above — a stale session tearing down must not strip
+        // the live body's suppression entry.
+        this.avatarBodyOwners.delete(npcId);
+      }
     }
-    this.openClawBots.delete(sessionId);
+    this.agentBotSessions.delete(sessionId);
     // sessionDigest, NOT the raw sessionId (Codex auth-lens fix #4) - bearer
     // credential, must not appear in logs.
     console.log(`[OpenClaw] Unregistered: sess:${sessionDigest(sessionId)}`);
     return true;
   }
 
-  getOpenClawClient(npcId: string): OpenClawClient | null {
+  getAgentBotClient(npcId: string): AgentSubstrateClient | null {
     const sessionId = this.npcOverrides.get(npcId);
     if (!sessionId) return null;
-    return this.openClawBots.get(sessionId)?.client ?? null;
+    return this.agentBotSessions.get(sessionId)?.client ?? null;
   }
 
   /**
@@ -809,19 +973,19 @@ class NpcSimulation {
    * SECURITY (Codex auth-lens fix #1, 2026-06-03): this is surfaced by the
    * PUBLIC `GET /api/openclaw/active` endpoint, so it must carry NO recoverable
    * session id. The session id is the bearer credential the cove trusts for
-   * real-CT play; previously this returned the raw `sessionId` AND embedded it
+   * real-CT play; historically this returned the raw `sessionId` AND embedded it
    * a second time inside the avatar `npcId` (`oc-${sid}`) — so any unauthenticated
    * caller could harvest live bearer creds and spend a victim's real CT.
    *
-   * We now emit only NON-secret identifiers: the bot's stable public `agentId`
-   * and (for override bodies) the public `targetNpcId`. The avatar `npcId`
-   * remains `oc-${sid}` ONLY in the in-memory sim (it's the internal map key);
-   * it is NEVER surfaced here. Callers that need to address a body publicly use
-   * `agentId`.
+   * The B1 ROOT-FIX (P0) removed the second vector at its source: an avatar body's
+   * in-world id is now the non-secret `ocb-<base64url(agentId)>` (never `oc-<sessionId>`),
+   * so the bearer is structurally absent from EVERY wire path, not just this one.
+   * We still emit only NON-secret identifiers here: the bot's stable public
+   * `agentId` and (for override bodies) the public `targetNpcId`.
    */
-  getActiveOpenClawBots(): Array<{ agentId: string; mode: string; npcId?: string; name?: string }> {
+  getActiveAgentBots(): Array<{ agentId: string; mode: string; npcId?: string; name?: string }> {
     const result: Array<{ agentId: string; mode: string; npcId?: string; name?: string }> = [];
-    for (const [, { config }] of this.openClawBots) {
+    for (const [, { config }] of this.agentBotSessions) {
       if (config.mode === 'override') {
         result.push({ agentId: config.agentId, mode: 'override', npcId: config.targetNpcId });
       } else {
@@ -831,12 +995,12 @@ class NpcSimulation {
     return result;
   }
 
-  getOpenClawClientBySession(sessionId: string): OpenClawClient | null {
-    return this.openClawBots.get(sessionId)?.client ?? null;
+  getAgentBotClientBySession(sessionId: string): AgentSubstrateClient | null {
+    return this.agentBotSessions.get(sessionId)?.client ?? null;
   }
 
-  getOpenClawBotConfig(sessionId: string): OpenClawRegistration | null {
-    return this.openClawBots.get(sessionId)?.config ?? null;
+  getAgentBotConfig(sessionId: string): AgentSubstrateRegistration | null {
+    return this.agentBotSessions.get(sessionId)?.config ?? null;
   }
 
   /**
@@ -849,10 +1013,47 @@ class NpcSimulation {
     const ids = new Set(agentIds);
     if (ids.size === 0) return [];
     const found: string[] = [];
-    for (const [sid, { config }] of this.openClawBots) {
+    for (const [sid, { config }] of this.agentBotSessions) {
       if (ids.has(config.agentId)) found.push(sid);
     }
     return found;
+  }
+
+  /**
+   * Magic-link onboarding D1b (2026-07-02) — propagate the bind-at-redemption
+   * claim event into every LIVE in-memory session for `agentId`, so the
+   * already-connected agent becomes ledger-capable WITHOUT a reconnect.
+   *
+   * Called by `GET /api/auth/enter` right after it atomically binds the
+   * `openclaw_bots.user_id` row (guarded UPDATE). The row bind alone is not
+   * enough: `resolveAgentSession` grants real-CT spend only when the session
+   * config's `boundUserId` matches the row's CURRENT `userId` (the round-2
+   * rebind demotion backstop), and a first-contact session was minted with
+   * `boundUserId: null` — so without this in-memory update the freshly-bound
+   * agent would stay demoted until its next /connect. Setting `boundUserId`
+   * here makes the backstop PASS for first-contact sessions (whose
+   * `ledgerCapable` flag is already true — no existing owner at registration).
+   *
+   * NEVER-CLOBBER (same rule as the SQL guard, via the shared
+   * `canBindAgentOwner`): a config that already proved ownership of a
+   * DIFFERENT user is left untouched — we only fill a null `boundUserId` or
+   * re-affirm the same user. `ledgerCapable` is deliberately NOT flipped: a
+   * session registered non-ledger (agentId-only reconnect to a bound bot)
+   * stays non-ledger; it re-proves ownership through connect-token or the
+   * signed-challenge reconnect, exactly as before.
+   *
+   * Returns the number of live configs updated (0 when the agent has no live
+   * session — the row bind still lands, and the next /connect picks it up).
+   */
+  bindAgentOwner(agentId: string, userId: string): number {
+    let updated = 0;
+    for (const [, { config }] of this.agentBotSessions) {
+      if (config.agentId !== agentId) continue;
+      if (!canBindAgentOwner(config.boundUserId ?? null, userId)) continue;
+      config.boundUserId = userId;
+      updated++;
+    }
+    return updated;
   }
 
   /**
@@ -864,15 +1065,18 @@ class NpcSimulation {
    */
   getActiveAgentSessionPairs(): Array<{ sessionId: string; agentId: string }> {
     const pairs: Array<{ sessionId: string; agentId: string }> = [];
-    for (const [sid, { config }] of this.openClawBots) {
+    for (const [sid, { config }] of this.agentBotSessions) {
       pairs.push({ sessionId: sid, agentId: config.agentId });
     }
     return pairs;
   }
 
   /** Get avatar's current position for persistence on disconnect */
-  getOpenClawAvatarPosition(sessionId: string): { x: number; y: number } | null {
-    const npcId = `oc-${sessionId}`;
+  getAgentBotAvatarPosition(sessionId: string): { x: number; y: number } | null {
+    // B1 ROOT-FIX: avatar body id is `ocb-<base64url(agentId)>`, resolved from the config.
+    const config = this.agentBotSessions.get(sessionId)?.config;
+    if (!config) return null;
+    const npcId = this.avatarBodyId(config.agentId);
     const npc = this.npcs.get(npcId);
     return npc ? { x: npc.x, y: npc.y } : null;
   }
@@ -888,7 +1092,7 @@ class NpcSimulation {
    * (apps/api/src/routes/agent-gateway.ts) exposes as JSON — kept here so the
    * sim (which can't import a route) can produce a self-contained system prompt
    * for the cognition seam. Bound to `npcId` at registration time via a
-   * provider closure on the OpenClawClient config.
+   * provider closure on the AgentSubstrateClient config.
    */
   buildHatcherSystemContext(npcId: string): string | null {
     const npc = this.npcs.get(npcId);
@@ -972,6 +1176,9 @@ class NpcSimulation {
       .sort((a, b) => a.dist - b.dist)
       .slice(0, 8)
       .map(({ o, dist }) => ({
+        // B1 ROOT-FIX: `o.id` for an avatar body is now the non-secret
+        // `ocb-<base64url(agentId)>` (never the `oc-<sessionId>` bearer), so it is safe to
+        // ship to the Hatcher partner in the `clawville.worldState` block.
         id: o.id,
         name: o.name,
         isAgent: o.isOpenClaw,
@@ -1030,16 +1237,29 @@ class NpcSimulation {
     return this.npcs.get(npcId) ?? null;
   }
 
+  /**
+   * Null a body's destinationBuildingId. Used by the autonomy driver (N3) to
+   * clear any STALE prior-turn destination BEFORE dispatching a new decision, so
+   * a dropped enter_building leaves the field null instead of a stale value the
+   * driver would misread as this turn's choice. A successful enter_building
+   * re-stamps it via setNpcPath.
+   */
+  clearDestinationBuilding(npcId: string): void {
+    const npc = this.npcs.get(npcId);
+    if (npc) npc.destinationBuildingId = null;
+  }
+
   /** Map a session ID to the NPC body it controls */
   getNpcIdForSession(sessionId: string): string | null {
-    const bot = this.openClawBots.get(sessionId);
+    const bot = this.agentBotSessions.get(sessionId);
     if (!bot) return null;
-    return bot.config.mode === 'override' ? bot.config.targetNpcId : `oc-${sessionId}`;
+    // B1 ROOT-FIX: avatar body id is the non-secret `ocb-<base64url(agentId)>`.
+    return bot.config.mode === 'override' ? bot.config.targetNpcId : this.avatarBodyId(bot.config.agentId);
   }
 
   /** Check if a session ID corresponds to a valid agent */
   isValidAgentSession(sessionId: string): boolean {
-    return this.openClawBots.has(sessionId);
+    return this.agentBotSessions.has(sessionId);
   }
 
   /** Get all NPC states (for perception radius calculation) */
@@ -1055,6 +1275,143 @@ class NpcSimulation {
   /** Get all active combats */
   getActiveCombats(): NpcCombat[] {
     return Array.from(this.combats.values()).filter(c => c.state === 'active');
+  }
+
+  /**
+   * Build a connected-agent perception snapshot for a body (self pose + nearby
+   * NPCs within radius + ALL buildings by distance + active conversations /
+   * combats). The SINGLE shared perception builder (agent-metaverse P1): the
+   * authed gateway (`GET /perception` + SSE `/events`) AND the autonomy driver
+   * both call this — extracted here (from the former module-local
+   * `agent-gateway.ts buildPerception`) so the sim, which owns `this.npcs`, is
+   * the single source and there is no duplicated projection to drift.
+   *
+   * SECURITY: `other.id` for an avatar body is the non-secret
+   * `ocb-<base64url(agentId)>` (never the `oc-<sessionId>` bearer, per the B1
+   * root-fix), so exposing it to another agent leaks no real-CT credential.
+   */
+  buildPerception(npcId: string): AgentPerception | null {
+    const npc = this.npcs.get(npcId);
+    if (!npc) return null;
+
+    const PERCEPTION_RADIUS = 500;
+
+    // Nearby NPCs within radius
+    const nearbyNpcs = this.getAllNpcs()
+      .filter((other) => other.id !== npcId)
+      .map((other) => {
+        const dx = other.x - npc.x;
+        const dy = other.y - npc.y;
+        const distance = Math.sqrt(dx * dx + dy * dy);
+        return { other, distance };
+      })
+      .filter(({ distance }) => distance <= PERCEPTION_RADIUS)
+      .map(({ other, distance }) => ({
+        npcId: other.id,
+        name: other.name,
+        x: other.x,
+        y: other.y,
+        distance: Math.round(distance),
+        species: other.species,
+        hp: other.hp,
+        isDead: other.isDead,
+        inCombat: other.inCombat,
+        activity: other.activity,
+        level: other.level,
+        isOpenClaw: other.isOpenClaw,
+      }));
+
+    // Nearby buildings (all 10, sorted by distance) + their crypto focus.
+    const nearbyBuildings = (Object.entries(NPC_BUILDING_CENTERS) as [string, { x: number; y: number }][]).map(([buildingId, center]) => {
+      const dx = center.x - npc.x;
+      const dy = center.y - npc.y;
+      const distance = Math.sqrt(dx * dx + dy * dy);
+      const theme = BUILDING_OPENCLAW_THEMES[buildingId];
+      return {
+        buildingId,
+        label: theme?.label ?? buildingId,
+        cryptoFocus: theme?.focus ?? '',
+        centerX: center.x,
+        centerY: center.y,
+        distance: Math.round(distance),
+        // Distance to the building's collider FOOTPRINT edge (0 inside). This is
+        // the metric the interaction gates use — center-distance is unsatisfiable
+        // for the larger buildings. Falls back to center-distance if the id has
+        // no collider entry (defensive; all 10 do).
+        edgeDistance: Math.round(buildingEdgeDistanceGamePx(npc.x, npc.y, buildingId) ?? distance),
+      };
+    }).sort((a, b) => a.distance - b.distance);
+
+    // Active conversations involving this NPC
+    const conversations = this.getActiveConversations();
+    const activeConversations = conversations.map((conv) => ({
+      id: conv.id,
+      participants: [conv.npc1Id, conv.npc2Id],
+      latestMessage: conv.messages.length > 0
+        ? conv.messages[Math.min(conv.currentIndex, conv.messages.length - 1)].text
+        : '',
+      involvesMe: conv.npc1Id === npcId || conv.npc2Id === npcId,
+    }));
+
+    // Active combats
+    const combats = this.getActiveCombats();
+    const activeCombats = combats.map((combat) => ({
+      id: combat.id,
+      attacker: combat.attacker,
+      defender: combat.defender,
+      involvesMe: combat.attacker === npcId || combat.defender === npcId,
+      lastRound: combat.rounds.length > 0
+        ? combat.rounds[combat.rounds.length - 1]
+        : null,
+    }));
+
+    const arenaRound = this.getMode() === 'arena'
+      ? this.getSnapshot().arenaRound
+      : null;
+
+    return {
+      self: {
+        npcId: npc.id,
+        x: npc.x,
+        y: npc.y,
+        hp: npc.hp,
+        maxHp: npc.maxHp,
+        level: npc.level,
+        kills: npc.kills,
+        xp: npc.xp,
+        inventory: npc.inventory,
+        activity: npc.activity,
+        inCombat: npc.inCombat,
+        isDead: npc.isDead,
+        combatAction: npc.combatAction,
+        direction: npc.direction,
+      },
+      nearbyNpcs,
+      nearbyBuildings,
+      activeConversations,
+      activeCombats,
+      gameMode: this.getMode(),
+      arenaRound,
+      // Magic-link onboarding D4 (2026-07-02): TRUE while this body's human
+      // owner is driving the bound avatar (Controlled mode). A self-managed
+      // agent seeing true should PAUSE self-driving — its in-world body is
+      // suppressed and its actions would fight the human's. Same predicate the
+      // world-side suppression uses, so signal and enforcement cannot drift.
+      humanControlled: this.isHumanControlledOpenClawNpc(npcId),
+      timestamp: Date.now(),
+    };
+  }
+
+  /**
+   * Count of live HUMAN presences in the world — browser-legacy claws +
+   * multiplayer-room players across every room. Used ONLY by the autonomy
+   * driver's idle-throttle (cost control: back off the LLM cadence when nobody
+   * is around). Cheap (rooms ≤ 20). NEVER serialized onto any wire.
+   */
+  getActiveHumanCount(): number {
+    let n = this.browserClaws.size;
+    for (const room of roomRegistry.listRooms()) n += room.players.size;
+    return n;
   }
 
   /** Set an NPC's path (for agent-controlled movement) */
@@ -1219,11 +1576,13 @@ class NpcSimulation {
         return;
       }
       case 'enter_building': {
-        const buildingId = params.buildingId;
-        // Object.hasOwn guard (defense-in-depth): keep inherited prototype keys
-        // out of the building whitelist lookup.
-        if (!buildingId || !Object.hasOwn(NPC_BUILDING_CENTERS, buildingId)) {
-          console.warn(`[Hatcher] enter_building dropped — unknown buildingId "${buildingId}"`);
+        // Label-tolerant slug resolution (prototype-key-safe): the LLM usually
+        // emits the bracketed slug ("code-development") but occasionally echoes
+        // the human label ("Chum Bucket"). resolveBuildingId maps either to the
+        // canonical slug and rejects inherited prototype keys. null → drop.
+        const buildingId = resolveBuildingId(params.buildingId);
+        if (!buildingId) {
+          console.warn(`[Hatcher] enter_building dropped — unknown buildingId "${params.buildingId}"`);
           return;
         }
         const center = NPC_BUILDING_CENTERS[buildingId];
@@ -1299,23 +1658,74 @@ class NpcSimulation {
         // Target is a public npcId OR a buildingId; message is the speech. The
         // visible effect is the agent's own chat bubble (mirror of /chat's
         // injectAgentChat). Validate the target exists + bound the message.
-        const target = params.npcId ?? params.buildingId;
-        if (!target) {
+        const rawTarget = params.npcId ?? params.buildingId;
+        if (!rawTarget) {
           console.warn('[Hatcher] talk_to_npc dropped — no npcId/buildingId target');
           return;
         }
-        // Object.hasOwn guard (defense-in-depth): a real npc OR an own-property
-        // building key — never an inherited prototype key.
-        const validTarget =
-          this.npcs.has(target) || Object.hasOwn(NPC_BUILDING_CENTERS, target);
-        if (!validTarget) {
-          console.warn(`[Hatcher] talk_to_npc dropped — unknown target "${target}"`);
+        // Resolve to a live npc id (as-is) OR a canonical building slug. The
+        // building branch is label-tolerant (resolveBuildingId maps "Chum
+        // Bucket" → "code-development") and prototype-key-safe — never an
+        // inherited key. `target` below is the resolved value used for both the
+        // proximity center and validity.
+        const buildingTarget = this.npcs.has(rawTarget) ? null : resolveBuildingId(rawTarget);
+        const target = this.npcs.has(rawTarget) ? rawTarget : buildingTarget;
+        if (!target) {
+          console.warn(`[Hatcher] talk_to_npc dropped — unknown target "${rawTarget}"`);
           return;
         }
         const message = (params.message ?? '').slice(0, HATCHER_TALK_MESSAGE_MAX).trim();
         if (!message) {
           console.warn('[Hatcher] talk_to_npc dropped — empty message');
           return;
+        }
+        // PROXIMITY GATE (agent-metaverse P1 slice 3, founder-signed). A body
+        // must be physically NEAR its target to converse — the anti-abuse
+        // backbone: no walk/proximity → no interaction (→ no reward, once slice
+        // 4 wires it). EXEMPT only the contract-locked-talk protocols: today that
+        // is Hatcher (`hatcher-proxy`) ONLY — a LIVE partner whose `talk` is
+        // contract-locked (§3a manual + PROTOCOL_VERSION + harness). Server-hosted
+        // harnesses (hermes-local, any future hosted protocol) STAY GATED here —
+        // they must walk to talk — even though they DO get [ACTION:] parsing
+        // (dispatch predicate below). The two capabilities are deliberately
+        // distinct: `protocolProximityGateExempt` (hatcher-only) ≠
+        // `protocolEmitsInWorldActions` (all server-hosted). P3 slice 6 replaced
+        // the former hardcoded `=== 'hatcher-proxy'` with the capability read so
+        // the two never drift. FAIL-CLOSED: an unresolvable body → undefined
+        // protocol → NOT exempt → the gate applies. Predicate keys on the in-world
+        // client protocol (NOT `is_house`, which isn't on the reg config and is
+        // the wrong polarity). Both Hatcher register modes set
+        // `protocol==='hatcher-proxy'` (registerAgentBot :786/:837) so Hatcher is
+        // exempt in avatar AND override mode.
+        const proximityExempt =
+          protocolProximityGateExempt(this.getAgentBotClient(npcId)?.getProtocol());
+        if (!proximityExempt) {
+          // Resolve the target's center: a live npc body, else the building
+          // center (Object.hasOwn guard — never an inherited prototype key).
+          // `target` is already the resolved npc id / canonical building slug,
+          // so one of the two branches resolves.
+          const targetNpc = this.npcs.get(target);
+          let dist: number;
+          if (targetNpc) {
+            // NPC target → point-to-point distance.
+            dist = Math.hypot(npc.x - targetNpc.x, npc.y - targetNpc.y);
+          } else if (Object.hasOwn(NPC_BUILDING_CENTERS, target)) {
+            // Building target → distance to the collider FOOTPRINT edge, NOT the
+            // center (a center-radius gate is unsatisfiable for the larger
+            // buildings; same fix as the /visit-building + /building/:id/chat gates).
+            dist = buildingEdgeDistanceGamePx(npc.x, npc.y, target) ?? Infinity;
+          } else {
+            // Unreachable given `target` resolved above, but fail-closed: drop
+            // rather than let an unresolvable target skip the distance check.
+            console.warn(`[Autonomy] talk_to_npc dropped — target "${target}" not resolvable for proximity`);
+            return;
+          }
+          if (dist > BUILDING_INTERACTION_RADIUS) {
+            console.warn(
+              `[Autonomy] talk_to_npc gated — ${Math.round(dist)}wu from "${target}" (need <=${BUILDING_INTERACTION_RADIUS}wu)`,
+            );
+            return;
+          }
         }
         this.injectAgentChat(npcId, message);
         return;
@@ -1366,7 +1776,13 @@ class NpcSimulation {
 
   getBrowserClawSnapshots(): BrowserClawSnapshot[] {
     return Array.from(this.browserClaws.values()).map((c) => ({
-      sessionId: c.sessionId,
+      // B1 (non-CT griefing vector, non-blocking): the raw browser-claw sessionId
+      // (`claw-<ts>-<rand>`, low entropy) was broadcast verbatim on the public
+      // snapshot, letting anyone impersonate/grief a browser claw. Emit the SAME
+      // salted, non-reversible presence id the multiplayer player snapshots use
+      // (derivePublicId) — stable per claw, opaque, brute-force-resistant. (Field
+      // name kept `sessionId` for wire compat; it now carries the public digest.)
+      sessionId: derivePublicId(c.sessionId),
       name: c.config.name,
       species: c.config.species,
       color: c.config.color,
@@ -1709,7 +2125,10 @@ class NpcSimulation {
 
   private planApproachNpc(npc: NpcRuntimeState) {
     const others = Array.from(this.npcs.values()).filter(
-      (o) => o.id !== npc.id && !o.isDead && !o.inCombat && !o.inConversation && o.activity !== 'sleeping'
+      (o) => o.id !== npc.id && !o.isDead && !o.inCombat && !o.inConversation && o.activity !== 'sleeping' &&
+        // N4: don't let ambient NPCs converge on / pair with a self-managed
+        // (house/fleet) body — it is driver-owned, not part of town liveliness.
+        !this.isSelfManagedOpenClawNpc(o)
     );
     if (others.length === 0) { npc.behaviorCooldown = 20; return; }
 
@@ -2242,6 +2661,7 @@ class NpcSimulation {
     return Array.from(this.npcs.values()).filter(
       (n) =>
         !this.isHumanControlledOpenClawNpc(n.id, now) &&
+        !this.isSelfManagedOpenClawNpc(n) && // N4: never an ambient-conversation subject
         !n.isDead && !n.inConversation && !n.inCombat && now >= n.conversationCooldownUntil
     );
   }
@@ -2252,6 +2672,7 @@ class NpcSimulation {
     const now = Date.now();
     for (const other of this.npcs.values()) {
       if (this.isHumanControlledOpenClawNpc(other.id, now)) continue;
+      if (this.isSelfManagedOpenClawNpc(other)) continue; // N4: not an ambient-conversation partner
       if (other.id === npc.id || other.isDead || other.inConversation || other.inCombat || now < other.invulnerableUntil || now < other.conversationCooldownUntil) continue;
       const dx = other.x - npc.x;
       const dy = other.y - npc.y;
@@ -2294,8 +2715,8 @@ class NpcSimulation {
     try {
       const def1 = NPC_DEFINITIONS.find((d: NpcDefinition) => d.id === initiator.id) ?? this.buildAvatarDef(initiator);
       const def2 = NPC_DEFINITIONS.find((d: NpcDefinition) => d.id === partner.id) ?? this.buildAvatarDef(partner);
-      const client1 = this.getOpenClawClient(initiator.id);
-      const client2 = this.getOpenClawClient(partner.id);
+      const client1 = this.getAgentBotClient(initiator.id);
+      const client2 = this.getAgentBotClient(partner.id);
 
       // Build conversation context with crypto speciality
       const npc1Theme = BUILDING_OPENCLAW_THEMES[def1.buildingId ?? ''];
@@ -2314,11 +2735,17 @@ class NpcSimulation {
           client2,
           this.arenaMode,
           cryptoContext,
-          // Hatcher proxy-cognition: only the hatcher-proxy path parses +
-          // dispatches [ACTION:] tags and strips them; every other protocol
-          // returns the reply unchanged.
+          // Server-hosted cognition: parse + dispatch [ACTION:] tags (and strip
+          // them from speech) for EVERY server-hosted-cognition protocol
+          // ({hatcher-proxy, hermes-local}) — not just Hatcher (P3 slice 6
+          // [ACTION:] parity). `dispatchHatcherActions` is the generic whitelist
+          // executor (keyed on npcId, human-control-suppressed); its name is
+          // historical. BYO/unknown protocols return the reply unchanged
+          // (fail-closed via the capability table). hermes-local emits no reply
+          // until the deferred inference flip lands, so this path is inert for it
+          // today but wired for the instant it does.
           (npcId, client, rawReply) =>
-            client.getProtocol() === 'hatcher-proxy'
+            protocolEmitsInWorldActions(client.getProtocol())
               ? this.dispatchHatcherActions(npcId, rawReply)
               : rawReply,
         );
@@ -2647,6 +3074,8 @@ class NpcSimulation {
       this.pendingEvents.push({
         id: this.nextId(), type: 'arena_complete',
         npcId: winner?.id ?? '', npcName: winner?.name ?? 'Nobody',
+        // B1 ROOT-FIX: `winner.id` for an avatar body is the non-secret
+        // `ocb-<base64url(agentId)>` now, so it is safe to emit directly.
         data: { winnerId: winner?.id, winnerName: winner?.name, winnerKills: winner?.kills ?? 0, winnerLevel: winner?.level ?? 1 },
         timestamp: now,
       });

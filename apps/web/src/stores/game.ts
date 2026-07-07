@@ -378,11 +378,6 @@ export interface GameState {
   skillBuilderOpen: boolean;
   setSkillBuilderOpen: (open: boolean) => void;
 
-  // Marketplace
-  marketplaceOpen: boolean;
-  openMarketplace: () => void;
-  closeMarketplace: () => void;
-
   // Land Office (Phase 1 land economy — browse / claim / buy / build)
   landOfficeOpen: boolean;
   /**
@@ -422,20 +417,6 @@ export interface GameState {
   warpTo: (x: number, y: number, label?: string) => void;
   clearWarp: () => void;
 
-  // Bazaar
-  bazaarOpen: boolean;
-  bazaarTab: 'browse' | 'my-listings' | 'my-purchases';
-  openBazaar: () => void;
-  closeBazaar: () => void;
-  setBazaarTab: (tab: 'browse' | 'my-listings' | 'my-purchases') => void;
-
-  // Auction House
-  auctionOpen: boolean;
-  auctionTab: 'browse' | 'my-auctions' | 'my-bids';
-  openAuction: () => void;
-  closeAuction: () => void;
-  setAuctionTab: (tab: 'browse' | 'my-auctions' | 'my-bids') => void;
-
   // Quest Board
   questBoardOpen: boolean;
   questBoardTab: 'available' | 'active' | 'completed';
@@ -450,8 +431,8 @@ export interface GameState {
   closeBountyBoard: () => void;
   setBountyBoardTab: (tab: 'browse' | 'my-bounties' | 'my-attempts' | 'create') => void;
 
-  // Exchange — peer marketplace (Needs + Offers). The Marketplace 3D
-  // stand and a sidebar entry both open this modal. See
+  // Exchange — peer marketplace (Needs + Offers). Opened via the in-world
+  // 3D marketplace stand (lib/three/marketplace-stall.tsx). See
   // packages/database/src/schema/exchange.ts for the escrow flow doc.
   exchangeOpen: boolean;
   exchangeTab: 'browse' | 'my-listings' | 'my-orders' | 'post';
@@ -459,27 +440,18 @@ export interface GameState {
   closeExchange: () => void;
   setExchangeTab: (tab: 'browse' | 'my-listings' | 'my-orders' | 'post') => void;
 
-  // Leaderboard — P4 single ClawVille-owned ranking board
+  // Leaderboard — P4 single ClawVille-owned ranking board. 'skills-sold' /
+  // 'skills-authored' sort modes were removed 2026-07-02 alongside peer skill
+  // commerce (bazaar/auctions/marketplace) — the backend legacy board
+  // (apps/api/src/routes/leaderboard.ts) never carried these fields on its
+  // own SortMode/LeaderboardEntry, so selecting either tab crashed the modal
+  // (`undefined.toLocaleString()` in formatMetric). Fixed by dropping both.
   leaderboardOpen: boolean;
-  leaderboardSort:
-    | 'composite'
-    | 'gold'
-    | 'earned'
-    | 'skills-sold'
-    | 'skills-authored'
-    | 'quests'
-    | 'bounties';
+  leaderboardSort: 'composite' | 'gold' | 'earned' | 'quests' | 'bounties';
   openLeaderboard: () => void;
   closeLeaderboard: () => void;
   setLeaderboardSort: (
-    sort:
-      | 'composite'
-      | 'gold'
-      | 'earned'
-      | 'skills-sold'
-      | 'skills-authored'
-      | 'quests'
-      | 'bounties'
+    sort: 'composite' | 'gold' | 'earned' | 'quests' | 'bounties'
   ) => void;
 
   // Zoom
@@ -1071,10 +1043,6 @@ export const useGameStore = create<GameState>((set, get) => ({
   skillBuilderOpen: false,
   setSkillBuilderOpen: (open) => set({ skillBuilderOpen: open }),
 
-  marketplaceOpen: false,
-  openMarketplace: () => set({ marketplaceOpen: true }),
-  closeMarketplace: () => set({ marketplaceOpen: false }),
-
   landOfficeOpen: false,
   landOfficeFocusParcel: null,
   openLandOffice: (parcelCode) => set({
@@ -1120,18 +1088,6 @@ export const useGameStore = create<GameState>((set, get) => ({
   // the movement freeze warpTo() held through the warp (paired so the freeze can
   // never leak past the animation).
   clearWarp: () => set({ warpTarget: null, movementFrozen: false }),
-
-  bazaarOpen: false,
-  bazaarTab: 'browse' as const,
-  openBazaar: () => set({ bazaarOpen: true, bazaarTab: 'browse' }),
-  closeBazaar: () => set({ bazaarOpen: false }),
-  setBazaarTab: (tab: 'browse' | 'my-listings' | 'my-purchases') => set({ bazaarTab: tab }),
-
-  auctionOpen: false,
-  auctionTab: 'browse' as const,
-  openAuction: () => set({ auctionOpen: true, auctionTab: 'browse' }),
-  closeAuction: () => set({ auctionOpen: false }),
-  setAuctionTab: (tab: 'browse' | 'my-auctions' | 'my-bids') => set({ auctionTab: tab }),
 
   questBoardOpen: false,
   questBoardTab: 'available' as const,
@@ -1297,13 +1253,10 @@ export const useGameStore = create<GameState>((set, get) => ({
     agentConnectModalOpen: false,
     toasts: [],
     skillBuilderOpen: false,
-    marketplaceOpen: false,
     landOfficeOpen: false,
     landOfficeFocusParcel: null,
     worldMapOpen: false,
     warpTarget: null,
-    bazaarOpen: false,
-    auctionOpen: false,
     questBoardOpen: false,
     bountyBoardOpen: false,
     exchangeOpen: false,

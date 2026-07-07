@@ -1,7 +1,7 @@
 // FEATURE_GATE: x402_payment_middleware
 // Status: scaffold live, flag OFF (X402_ENABLED defaults to false).
 // Retained, not deleted, on 2026-04-21 per founder call — reserved for later
-// metered-access features unrelated to the (now-paused) skill marketplace.
+// metered-access features unrelated to peer skill commerce (removed 2026-07-02).
 // Metric to graduate: any future feature requiring per-call metered access is
 //   proposed AND has a traction signal (e.g. gated API tier with visible
 //   demand on /dash).
@@ -24,9 +24,18 @@
  * Environment variables consumed:
  *   X402_ENABLED                       — "true" to register the middleware on
  *                                        /api/v2/* routes. Default: off.
- *   X402_FACILITATOR_URL               — Base URL of the x402 facilitator. For
- *                                        Solana mainnet use the Coinbase CDP
- *                                        facilitator. Default: Coinbase CDP v2.
+ *   X402_FACILITATOR_PRESET            — Named facilitator: "cdp" (Coinbase
+ *                                        CDP, default), "payai" (PayAI hosted
+ *                                        facilitator — standards-compliant,
+ *                                        no API key, live Solana mainnet+devnet),
+ *                                        or "mock" (the local mock facilitator
+ *                                        in x402-mock-facilitator.ts, for tests).
+ *   X402_FACILITATOR_URL               — Explicit facilitator base URL. When
+ *                                        set it OVERRIDES the preset. The
+ *                                        @x402/core HTTPFacilitatorClient appends
+ *                                        /verify, /settle, /supported to it.
+ *   X402_MOCK_FACILITATOR_URL          — Base URL used by the "mock" preset.
+ *                                        Default: http://localhost:4000/api/x402-mock.
  *   CLAWVILLE_MERCHANT_WALLET_PUBKEY   — Base58 Solana public key that receives
  *                                        USDC settlements. Pulled from
  *                                        treasury_wallets via
@@ -49,11 +58,100 @@ import { x402ResourceServer, HTTPFacilitatorClient } from '@x402/core/server';
 import { registerExactSvmScheme } from '@x402/svm/exact/server';
 import type { paymentMiddleware } from '@x402/hono';
 
+// ---------------------------------------------------------------------------
+// FAIL-BOOT INVARIANT — the mock facilitator must NEVER run on production.
+// ---------------------------------------------------------------------------
+//
+// The in-API mock facilitator (`x402-mock-facilitator.ts`, mounted in index.ts)
+// RUBBER-STAMPS every `/settle`, so a settle against it credits CT for a payment
+// that never moved on-chain — i.e. it MINTS FREE ClawTokens. It is a test-only
+// affordance. This guard converts "never enable the mock on prod" from ops
+// discipline into a code-enforced invariant: if the mock facilitator is active
+// (`X402_MOCK_FACILITATOR==='true'` OR the resolved preset is `mock`) while the
+// immutable deploy signal says production (`CLAWVILLE_ENV==='production'`), the
+// API REFUSES TO BOOT — it throws at module load, exactly like the
+// `ALLOW_TEST_PARTNER_PUBKEY` guard in partner-signature.ts and the
+// `FINGERPRINT_SECRET` guard in middleware/fingerprint.ts, so a misconfigured
+// prod box crashes loudly until the var is removed instead of silently minting
+// free CT. This module is on the boot import graph (imported by x402-payai.ts ←
+// ct-topup.ts, which is mounted), so the throw fires at API startup regardless
+// of whether `X402_ENABLED` is set.
+//
+// `CLAWVILLE_ENV` is the immutable deploy signal (NODE_ENV is 'production' on
+// BOTH Coolify boxes, so it can't discriminate). The mock is allowed ONLY when
+// CLAWVILLE_ENV === 'staging' — production OR UNSET both throw. An UNSET env on a
+// prod box must NOT silently permit a free-CT mint (the `=== 'production'` form
+// failed open on unset). Mirrors partner-signature.ts's ALLOW_TEST_PARTNER_PUBKEY
+// gate (`!isStagingEnv()`): allow-list staging, deny everything else.
+{
+  const mockPresetActive =
+    process.env.X402_MOCK_FACILITATOR === 'true' ||
+    process.env.X402_FACILITATOR_PRESET?.trim().toLowerCase() === 'mock';
+  if (mockPresetActive && process.env.CLAWVILLE_ENV !== 'staging') {
+    throw new Error(
+      `[x402] The MOCK x402 facilitator is active (X402_MOCK_FACILITATOR=true and/or ` +
+        `X402_FACILITATOR_PRESET=mock) while CLAWVILLE_ENV is not 'staging' (it is ` +
+        `${process.env.CLAWVILLE_ENV ?? 'UNSET'}). The mock rubber-stamps settlement and ` +
+        `would MINT FREE ClawTokens — it may run ONLY on the staging box. Unset ` +
+        `X402_MOCK_FACILITATOR and set X402_FACILITATOR_PRESET to a real facilitator ` +
+        `(payai/cdp), or set CLAWVILLE_ENV=staging if this genuinely IS the staging box.`,
+    );
+  }
+}
+
+export type X402FacilitatorPreset = 'cdp' | 'payai' | 'mock';
+
 export interface X402Config {
   enabled: boolean;
+  /** Which named facilitator the URL resolved from (for logs). */
+  facilitatorPreset: X402FacilitatorPreset;
+  /** Whether facilitatorUrl came from an explicit X402_FACILITATOR_URL override. */
+  facilitatorUrlExplicit: boolean;
   facilitatorUrl: string;
   merchantWalletPubkey: string;
   network: string;
+}
+
+/** Coinbase CDP v2 x402 facilitator (Base/EVM first-party + Solana via CDP). */
+const CDP_FACILITATOR_URL = 'https://api.cdp.coinbase.com/platform/v2/x402';
+/** PayAI hosted facilitator — standards-compliant, no API key, Solana + 20 EVM chains. */
+const PAYAI_FACILITATOR_URL = 'https://facilitator.payai.network';
+/** Default base path the in-API mock facilitator is mounted at (see index.ts). */
+const DEFAULT_MOCK_FACILITATOR_URL = 'http://localhost:4000/api/x402-mock';
+
+/**
+ * Resolve the facilitator base URL. An explicit `X402_FACILITATOR_URL` always
+ * wins (and is reported as explicit); otherwise the `X402_FACILITATOR_PRESET`
+ * selects a known facilitator. Unknown presets fall back to CDP — the historical
+ * default — so this change is backward-compatible.
+ */
+function resolveFacilitator(): {
+  url: string;
+  preset: X402FacilitatorPreset;
+  explicit: boolean;
+} {
+  const explicitUrl = process.env.X402_FACILITATOR_URL?.trim();
+  const rawPreset = (process.env.X402_FACILITATOR_PRESET?.trim().toLowerCase() ?? 'cdp');
+  const preset: X402FacilitatorPreset =
+    rawPreset === 'payai' || rawPreset === 'mock' ? rawPreset : 'cdp';
+
+  if (explicitUrl) {
+    return { url: explicitUrl, preset, explicit: true };
+  }
+
+  switch (preset) {
+    case 'payai':
+      return { url: PAYAI_FACILITATOR_URL, preset, explicit: false };
+    case 'mock':
+      return {
+        url: process.env.X402_MOCK_FACILITATOR_URL?.trim() || DEFAULT_MOCK_FACILITATOR_URL,
+        preset,
+        explicit: false,
+      };
+    case 'cdp':
+    default:
+      return { url: CDP_FACILITATOR_URL, preset: 'cdp', explicit: false };
+  }
 }
 
 /**
@@ -63,8 +161,8 @@ export interface X402Config {
  */
 export function loadX402Config(): X402Config {
   const enabled = process.env.X402_ENABLED === 'true';
-  const facilitatorUrl =
-    process.env.X402_FACILITATOR_URL ?? 'https://api.cdp.coinbase.com/platform/v2/x402';
+  const { url: facilitatorUrl, preset: facilitatorPreset, explicit: facilitatorUrlExplicit } =
+    resolveFacilitator();
   const merchantWalletPubkey = process.env.CLAWVILLE_MERCHANT_WALLET_PUBKEY ?? '';
   const network = process.env.X402_NETWORK ?? 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp';
 
@@ -75,7 +173,14 @@ export function loadX402Config(): X402Config {
     );
   }
 
-  return { enabled, facilitatorUrl, merchantWalletPubkey, network };
+  return {
+    enabled,
+    facilitatorPreset,
+    facilitatorUrlExplicit,
+    facilitatorUrl,
+    merchantWalletPubkey,
+    network,
+  };
 }
 
 /**

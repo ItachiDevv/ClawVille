@@ -255,10 +255,11 @@ interface AvatarContext {
   priorBestMs: number | null;
   /**
    * True when this avatar belongs to a guest user (un-authed visitor who
-   * auto-created via POST /api/auth/guest). Brand carve-out: guests
-   * still earn ClawTokens (in-game dopamine works) but get
-   * `leaderboardPoints = 0` so they don't appear on per-activity boards.
-   * Same shape as the `subjectType='bot'` carve-out, different trigger.
+   * auto-created via POST /api/auth/guest). Guest all-demo economy (founder
+   * ruling 2026-07-06): guests earn NEITHER real ClawTokens NOR leaderboard
+   * points — `tokensAwarded` AND `leaderboardPoints` are both forced to 0,
+   * exactly like the `subjectType='bot'` carve-out (different trigger). A real
+   * account is required to earn to the real CT ledger.
    */
   isGuest: boolean;
 }
@@ -389,11 +390,13 @@ export async function issueRewardsForRoom(
         sim.scoreMs != null &&
         (ctx.priorBestMs == null || sim.scoreMs < ctx.priorBestMs);
 
-      // Guests still earn tokens (the dopamine works — they can spend
-      // them on books in-game and convert to a real account later),
-      // but get 0 leaderboard points so they don't pollute the ranking.
-      // Same shape as the bot carve-out, different trigger.
-      const tokensAwarded = isBot
+      // Guest all-demo economy (founder ruling 2026-07-06): guests earn NO
+      // real CT — a real account is required to earn to the real ledger. So
+      // `tokensAwarded` is 0 for guests (same as bots), the credit block below
+      // then naturally skips them (no ledger row → no mint), and
+      // `activity_results.tokensAwarded` equals what was actually credited (0)
+      // — no phantom tokens. Guests already had 0 leaderboardPoints.
+      const tokensAwarded = (isBot || ctx.isGuest)
         ? 0
         : breakdown.base +
           breakdown.firstPlayOfDayBonus +

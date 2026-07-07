@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { sessionMiddleware, requireAuth } from '../middleware/auth';
+import { createRateLimiter, getClientIp } from '../middleware/rate-limit';
 import { articleScraper } from '../services/article-scraper';
 import { researchService } from '../services/research-service';
 import { researchEventBus } from './research-sse';
@@ -20,7 +21,22 @@ const triggerSchema = z.object({
   clawSessionId: z.string().optional(),
 });
 
+// P2 Slice D (2026-07-04) — unauth cost hole: the claw-session branch of
+// /trigger fires an anonymous LLM + scrape pipeline with zero throttling.
+// 5/min/IP (the account-mint budget). Additive only — applied BEFORE any
+// body parse so a spam wave can't burn pipeline spend, and it covers the
+// authed avatar branch too (research is expensive regardless of auth).
+const researchTriggerRateLimiter = createRateLimiter({
+  maxPerWindow: 5,
+  windowMs: 60_000,
+});
+
 researchApiRoutes.post('/trigger', sessionMiddleware, async (c) => {
+  const ip = getClientIp({ get: (n) => c.req.header(n) ?? null });
+  if (!researchTriggerRateLimiter.check(ip)) {
+    return c.json({ error: 'Too many research triggers. Try again in 1 minute.' }, 429);
+  }
+
   const body = await c.req.json();
   const parsed = triggerSchema.safeParse(body);
   if (!parsed.success) {

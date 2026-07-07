@@ -9,11 +9,11 @@ export * from './inventory';
 export * from './claws';
 export * from './memories';
 export * from './research';
-export * from './marketplace';
-export * from './bazaar';
 export * from './token-launch';
 export * from './treasury';
-export * from './auctions';
+// Tokenomics T0 (2026-07-07) — CLV price-oracle snapshot history (durable TWAP
+// seed + admin read). READ-ONLY price feed; never a ClawToken balance table.
+export * from './token-market';
 export * from './quests';
 export * from './agent-configs';
 export * from './bounties';
@@ -47,9 +47,10 @@ export * from './support-tickets';
 export * from './tutorial-quest-claims';
 // Q3 plan §4 — cosmetic engine (cosmetic_skus + cosmetic_variants + avatar_skins).
 export * from './cosmetics';
+export * from './cosmetic-bonus';
 // Q3 plan §gamification dashboard — phase status (mutable via dashboard MCP).
 export * from './dashboard-phases';
-// 2026-05-18 — peer marketplace replacing gated bazaar/auction. Needs +
+// 2026-05-18 — Exchange: peer items/services board (NEED/OFFER). Needs +
 // one_shot/repeatable offers. Subscriptions deferred.
 export * from './exchange';
 // Wager lobbies + escrow — mirrors deployed `clawville_wager` Anchor program.
@@ -95,12 +96,47 @@ export * from './baccarat';
 // NOT CT (only buy-in debit + prize credit cross the ledger). Distinct from the
 // vs-bots `holdem` tables above. Registered here so drizzle-kit sees the schema.
 export * from './poker';
+// Poker CASH (ring) games (P1, 2026-06-20) — poker_cash_tables / _seats / _hands /
+// _ledger_events. SEPARATE product from the MTT tournament above: FIXED blinds,
+// chips==CT 1:1, sit-down DEBIT / leave CASH-OUT CREDIT (the ledger crosses on every
+// sit/leave, NOT just buy-in+prize). RAKE=0 in P1 (rake columns reserved). PURELY
+// ADDITIVE — four net-new tables; the migration is idempotent CREATE … IF NOT EXISTS
+// (apply by hand, NOT db:push). See `poker-cash.ts` header.
+export * from './poker-cash';
 // Land Economy Phase 0 (2026-06-15) — converged land/property + services +
 // CT-on-ramp tables (land_parcels/structures/upgrades/transactions +
 // service_listings/service_purchases + partner_storefronts + ct_topups).
 // PURELY ADDITIVE — new tables only, db:push is a clean CREATE. Ownership binds
 // to avatars.id (the human+agent parity seam). See `.claude/plans/land-economy/`.
 export * from './land';
+// SAP Option C — on-chain USDC escrow gate settlement ledger (2026-06-22).
+// sap_escrow_settlements / sap_escrow_approvals: the backend at-most-once-settle
+// + depositor-approval guard for the verify-before-release USDC rail. PURELY
+// ADDITIVE — two net-new tables + one enum, db:push is a clean CREATE (apply by
+// hand, NOT db:push). Gated OFF at route/service layer. See `sap-escrow.ts`.
+export * from './sap-escrow';
+// Tokenomics C3 (2026-07-07) — CLV buy-queue seam (clv_buy_queue +
+// clv_buy_status). Records swap INTENT only; the executor is DRY-RUN gated
+// (CLV_SWAP_EXECUTE=true refuses to boot). Migration 0014 (idempotent, by hand).
+export * from './swap';
+// Tokenomics C2 (2026-07-07) — MoonPay TEST-MODE card rail webhook idempotency
+// ledger (moonpay_events; UNIQUE external_tx_id = the replay guard). Records
+// USDC arrivals only — no CT movement, no custodial auto-sign (Codex-gated
+// seam). Migration 0015 (idempotent, by hand).
+export * from './moonpay';
+// Tokenomics C — checkout stage (2026-07-07) — generic x402 checkout ledger
+// (x402_checkouts + checkout_item_kind/checkout_status). Copies ct_topups'
+// exactly-once shape (partial-UNIQUE tx_signature + (avatar_id, idem_key));
+// price_vclaw is the QUOTE unit only — the buyer pays USDC underneath, no
+// internal vCLAW debit. Migration 0016 (idempotent, by hand — NEVER db:push).
+export * from './checkout';
+// Tokenomics C — marketplace stage / C4 (2026-07-07) — P2P marketplace v1
+// (market_listings + market_deed_locks + market_settlements). Settlement is
+// FLAG-GATED OFF (MARKETPLACE_SETTLE_ENABLED); seller CLV payouts + the 4.44%
+// rake + the deed transfer are QUEUED Codex-gated INTENTS, never live sends.
+// LEDGER-ONLY: nothing here touches avatars.clawTokens. Migration 0017
+// (idempotent, by hand — NEVER db:push).
+export * from './market';
 
 import { users, sessions } from './users';
 import { npcMemories, activityLog } from './memories';
@@ -108,12 +144,9 @@ import { avatars } from './avatars';
 import { agents, agentLogs } from './agents';
 import { locationAgents } from './location-agents';
 import { avatarInventory } from './inventory';
-import { publishedSkills, skillUpvotes } from './marketplace';
-import { bazaarListings, bazaarTransactions, bazaarReviews } from './bazaar';
-import { openclawBots } from './claws';
+import { agentBots } from './claws';
 import { vanityKeypairs, tokenLaunches } from './token-launch';
 import { clawTokenTransactions } from './treasury';
-import { auctions, auctionBids, auctionAgentConfigs } from './auctions';
 import { quests, questSubmissions, questRewards } from './quests';
 import { agentConfigs } from './agent-configs';
 import { bounties, bountyRewards, bountyAttempts, bountyReputation } from './bounties';
@@ -127,6 +160,7 @@ import {
   partnerStorefronts,
   ctTopups,
 } from './land';
+import { sapEscrowSettlements, sapEscrowApprovals } from './sap-escrow';
 
 export const usersRelations = relations(users, ({ many, one }) => ({
   sessions: many(sessions),
@@ -153,7 +187,6 @@ export const avatarsRelations = relations(avatars, ({ one, many }) => ({
     references: [agents.id],
   }),
   inventory: many(avatarInventory),
-  publishedSkills: many(publishedSkills),
   agentConfigs: many(agentConfigs),
 }));
 
@@ -197,30 +230,9 @@ export const locationAgentsRelations = relations(locationAgents, ({ one }) => ({
   }),
 }));
 
-export const publishedSkillsRelations = relations(publishedSkills, ({ one, many }) => ({
-  authorAvatar: one(avatars, {
-    fields: [publishedSkills.authorAvatarId],
-    references: [avatars.id],
-  }),
-  upvotes: many(skillUpvotes),
-  listings: many(bazaarListings),
-  reviews: many(bazaarReviews),
-}));
-
-export const skillUpvotesRelations = relations(skillUpvotes, ({ one }) => ({
-  skill: one(publishedSkills, {
-    fields: [skillUpvotes.skillId],
-    references: [publishedSkills.id],
-  }),
-  avatar: one(avatars, {
-    fields: [skillUpvotes.avatarId],
-    references: [avatars.id],
-  }),
-}));
-
-export const openclawBotsRelations = relations(openclawBots, ({ one }) => ({
+export const agentBotsRelations = relations(agentBots, ({ one }) => ({
   user: one(users, {
-    fields: [openclawBots.userId],
+    fields: [agentBots.userId],
     references: [users.id],
   }),
 }));
@@ -247,99 +259,7 @@ export const tokenLaunchesRelations = relations(tokenLaunches, ({ one }) => ({
   }),
 }));
 
-export const bazaarListingsRelations = relations(bazaarListings, ({ one }) => ({
-  skill: one(publishedSkills, {
-    fields: [bazaarListings.skillId],
-    references: [publishedSkills.id],
-  }),
-  seller: one(avatars, {
-    fields: [bazaarListings.sellerId],
-    references: [avatars.id],
-  }),
-}));
-
-export const bazaarTransactionsRelations = relations(bazaarTransactions, ({ one }) => ({
-  listing: one(bazaarListings, {
-    fields: [bazaarTransactions.listingId],
-    references: [bazaarListings.id],
-  }),
-  buyer: one(avatars, {
-    fields: [bazaarTransactions.buyerId],
-    references: [avatars.id],
-    relationName: 'transactionBuyer',
-  }),
-  seller: one(avatars, {
-    fields: [bazaarTransactions.sellerId],
-    references: [avatars.id],
-    relationName: 'transactionSeller',
-  }),
-  skill: one(publishedSkills, {
-    fields: [bazaarTransactions.skillId],
-    references: [publishedSkills.id],
-  }),
-}));
-
-export const bazaarReviewsRelations = relations(bazaarReviews, ({ one }) => ({
-  transaction: one(bazaarTransactions, {
-    fields: [bazaarReviews.transactionId],
-    references: [bazaarTransactions.id],
-  }),
-  reviewer: one(avatars, {
-    fields: [bazaarReviews.reviewerId],
-    references: [avatars.id],
-  }),
-  skill: one(publishedSkills, {
-    fields: [bazaarReviews.skillId],
-    references: [publishedSkills.id],
-  }),
-}));
-
-export const auctionsRelations = relations(auctions, ({ one, many }) => ({
-  seller: one(avatars, {
-    fields: [auctions.sellerId],
-    references: [avatars.id],
-    relationName: 'auctionSeller',
-  }),
-  currentBidder: one(avatars, {
-    fields: [auctions.currentBidderId],
-    references: [avatars.id],
-    relationName: 'auctionCurrentBidder',
-  }),
-  skill: one(publishedSkills, {
-    fields: [auctions.skillId],
-    references: [publishedSkills.id],
-  }),
-  bids: many(auctionBids),
-  agentConfigs: many(auctionAgentConfigs),
-}));
-
-export const auctionBidsRelations = relations(auctionBids, ({ one }) => ({
-  auction: one(auctions, {
-    fields: [auctionBids.auctionId],
-    references: [auctions.id],
-  }),
-  bidder: one(avatars, {
-    fields: [auctionBids.bidderId],
-    references: [avatars.id],
-  }),
-}));
-
-export const auctionAgentConfigsRelations = relations(auctionAgentConfigs, ({ one }) => ({
-  auction: one(auctions, {
-    fields: [auctionAgentConfigs.auctionId],
-    references: [auctions.id],
-  }),
-  avatar: one(avatars, {
-    fields: [auctionAgentConfigs.avatarId],
-    references: [avatars.id],
-  }),
-}));
-
 export const questsRelations = relations(quests, ({ one, many }) => ({
-  skillReward: one(publishedSkills, {
-    fields: [quests.skillRewardId],
-    references: [publishedSkills.id],
-  }),
   createdByUser: one(users, {
     fields: [quests.createdBy],
     references: [users.id],
@@ -376,10 +296,6 @@ export const questRewardsRelations = relations(questRewards, ({ one }) => ({
     fields: [questRewards.questId],
     references: [quests.id],
   }),
-  skill: one(publishedSkills, {
-    fields: [questRewards.skillId],
-    references: [publishedSkills.id],
-  }),
 }));
 
 export const agentConfigsRelations = relations(agentConfigs, ({ one }) => ({
@@ -395,7 +311,6 @@ export const bountiesRelations = relations(bounties, ({ one, many }) => ({
 
 export const bountyRewardsRelations = relations(bountyRewards, ({ one }) => ({
   bounty: one(bounties, { fields: [bountyRewards.bountyId], references: [bounties.id] }),
-  skill: one(publishedSkills, { fields: [bountyRewards.skillId], references: [publishedSkills.id] }),
   agentConfig: one(agentConfigs, { fields: [bountyRewards.agentConfigId], references: [agentConfigs.id] }),
 }));
 
@@ -509,5 +424,33 @@ export const ctTopupsRelations = relations(ctTopups, ({ one }) => ({
   avatar: one(avatars, {
     fields: [ctTopups.avatarId],
     references: [avatars.id],
+  }),
+}));
+
+// ── SAP Option C escrow gate (settlement ledger) ─────────────────────────────
+
+export const sapEscrowSettlementsRelations = relations(sapEscrowSettlements, ({ one }) => ({
+  depositor: one(avatars, {
+    fields: [sapEscrowSettlements.depositorAvatarId],
+    references: [avatars.id],
+    relationName: 'sapEscrowDepositor',
+  }),
+  worker: one(avatars, {
+    fields: [sapEscrowSettlements.workerAvatarId],
+    references: [avatars.id],
+    relationName: 'sapEscrowWorker',
+  }),
+}));
+
+export const sapEscrowApprovalsRelations = relations(sapEscrowApprovals, ({ one }) => ({
+  approver: one(avatars, {
+    fields: [sapEscrowApprovals.approverAvatarId],
+    references: [avatars.id],
+    relationName: 'sapEscrowApprovalApprover',
+  }),
+  worker: one(avatars, {
+    fields: [sapEscrowApprovals.workerAvatarId],
+    references: [avatars.id],
+    relationName: 'sapEscrowApprovalWorker',
   }),
 }));

@@ -29,8 +29,15 @@
  *     status: 'available'|'owned'|'reserved'|'retired';
  *     gridX: number;         // int
  *     gridY: number;         // int
- *     priceCt: number | null;// int CT or null (Founder = null)
+ *     priceCt: number | null;// int CT or null (LEGACY buy price — buy is disabled in Phase B)
  *     ownerAvatarId: string | null; // uuid or null (for-sale)
+ *     rentCtWeekly: number | null;  // int CT/wk — deposit draw (starter) or hold
+ *                                   // upkeep (c/b/a/founder); null = not stamped
+ *     tenure: 'rented'|'owned'|'starter'|'deposit'|'hold'|null; // HOW the parcel is held; null = available/unsold
+ *     // ── Phase B additive fields (2026-07-07; null on non-deposit/non-hold rows) ──
+ *     depositCt: number | null;          // B1: original claim deposit (immutable)
+ *     depositRemainingCt: number | null; // B1: live escrow remainder (top-up when low!)
+ *     holdThresholdCt: number | null;    // B2: stamped CLV threshold (CLV uiAmount)
  *   };
  *
  *   type LandStructureDTO = {
@@ -60,13 +67,19 @@
  *      401 → no identity   ·  403 → bound user has no active avatar
  *
  * 4. POST /api/land/claim-starter            (AUTH: human cookie OR agent session)
+ *      PHASE B (2026-07-07): the claim now debits a REFUNDABLE
+ *      LAND_STARTER_DEPOSIT_CT (2000) INTO ESCROW — no treasury credit at claim
+ *      time (the deposit is not revenue; the weekly sweep draws rent from it).
  *      body: {} (empty / none — extra fields rejected, .strict())
- *      200 → { parcel: LandParcelClaimDTO, alreadyOwned: boolean }
+ *      200 → { parcel: LandParcelClaimDTO, alreadyOwned: boolean,
+ *              depositCt?: number, depositRemainingCt?: number }
  *            where LandParcelClaimDTO = Omit<LandParcelDTO, 'ownerAvatarId'>
- *              = { id, parcelCode, tier, status, gridX, gridY, priceCt }
- *            alreadyOwned=true  → the avatar already held a starter (no new grant, no event)
- *            alreadyOwned=false → a starter parcel was granted this call
- *      400 → { error: 'invalid_body' }         (stray fields)
+ *            (a fresh claim carries tenure='deposit',
+ *             rentCtWeekly=LAND_STARTER_RENT_CT_WEEKLY, depositCt=depositRemainingCt=2000)
+ *            alreadyOwned=true  → the avatar already held a starter-tier parcel
+ *              (legacy tenure='starter' OR Phase-B 'deposit') — NO charge, no event
+ *            alreadyOwned=false → a starter parcel was granted + deposit escrowed this call
+ *      400 → { error: 'invalid_body' | 'insufficient_clawtokens' }
  *      401 → no identity   ·  403 → bound user has no active avatar
  *      409 → { error: 'no_starter_available' } (starter pool exhausted)
  *
@@ -84,17 +97,46 @@
  *                           upgradeCosts: number[] }
  *      400 → { error: 'invalid_tier' }         ·   429 → { error: 'rate_limited' }
  *
- * 7. POST /api/land/parcels/:parcelId/buy         (AUTH, PARITY-BOUND, priced sale)
- *      body: {} (empty / none — .strict(); NO client price reaches the debit)
- *      200 → { parcel: LandParcelDTO, amountCt: number }
- *            amountCt = the SERVER-read `land_parcels.price_ct` that was debited.
- *      400 → { error: 'invalid_body' | 'invalid_parcel_id' | 'insufficient_clawtokens' }
+ * 7. POST /api/land/parcels/:parcelId/buy         (DISABLED — Phase B, 2026-07-07)
+ *      409 → { error: 'tenure_model_active' } for ALL tiers, unconditionally.
+ *      Land is never sold permanently under the founder-locked tenure model:
+ *      starter → POST /claim-starter (deposit-escrow); c/b/a/founder →
+ *      POST /parcels/:parcelId/claim-hold (CLV hold-to-keep). The pre-Phase-B
+ *      priced-sale implementation lives in git history (<= this diff's parent).
+ *      POST /parcels/:parcelId/rent is disabled identically.
+ *
+ * 7b. POST /api/land/parcels/:parcelId/claim-hold  (AUTH, PARITY-BOUND, Phase B2)
+ *      body: {} (.strict()) — NO client value reaches the write.
+ *      Requires the subject's CLV balance ≥ Σ(stacked thresholds of its
+ *      non-grandfathered holds) + holdThresholdForTier(tier). NO CT debit at
+ *      claim; weekly upkeep (rent_ct_weekly; founder-stamped 2400) is drawn by
+ *      the sweeper from the holder's avatar CT → treasury.
+ *      200 → { parcel: LandParcelDTO, requiredClv: number, heldClv: number }
+ *      400 → { error: 'invalid_body' | 'invalid_parcel_id' | 'use_claim_starter' }
  *      401 → no identity   ·   403 → bound user has no active avatar
+ *      403 → { error: 'wallet_not_linked' }      (human with no linked wallet)
+ *      403 → { error: 'agent_wallet_missing' }   (agent avatar with no custodial pubkey)
+ *      403 → { error: 'insufficient_clv_hold', requiredClv, heldClv }
  *      404 → { error: 'parcel_not_found' }
  *      409 → { error: 'parcel_not_available' | 'parcel_cap_reached' }
- *      501 → { error: 'founder_not_in_v1' }    (Founder = auction/USDC, priceCt NULL)
- *      Single-charge safety = the status flip 'available'→'owned' under the
- *      per-avatar advisory lock + `SELECT … FOR UPDATE` (a replay sees 'owned' → 409).
+ *      503 → { error: 'clv_balance_unavailable' } (FAIL-CLOSED: RPC/read down)
+ *
+ * 7c. POST /api/land/parcels/:parcelId/deposit-topup  (AUTH, PARITY-BOUND, B1)
+ *      body: { amountCt: int 1..1_000_000 } (.strict()) — the ONLY client value,
+ *      and it is a self-debit ceiling-capped by Zod, never a price.
+ *      200 → { parcelCode, depositRemainingCt, amountCt, graceCleared: boolean }
+ *      400 → { error: 'invalid_body' | 'invalid_parcel_id' | 'insufficient_clawtokens' }
+ *      403 → { error: 'not_parcel_owner' }   ·   404 → { error: 'parcel_not_found' }
+ *      409 → { error: 'not_deposit_tenure' }
+ *
+ * 7d. POST /api/land/parcels/:parcelId/release   (AUTH, PARITY-BOUND, B1+B2)
+ *      body: {} (.strict()). Voluntary release: tenure='deposit' refunds the
+ *      escrow remainder to the claimant; tenure='hold' refunds NOTHING. Both
+ *      revert the parcel to the pool + archive its active structure.
+ *      200 → { released: true, refundedCt: number, parcel: LandParcelDTO }
+ *      400 → { error: 'invalid_body' | 'invalid_parcel_id' }
+ *      403 → { error: 'not_parcel_owner' }   ·   404 → { error: 'parcel_not_found' }
+ *      409 → { error: 'not_releasable_tenure' } (tenure not deposit|hold)
  *
  * 8. POST /api/land/parcels/:parcelId/structure   (AUTH, PARITY-BOUND, free Lv1)
  *      body: { structureType: 'home'|'shop', catalogKey: string }  (.strict())
@@ -154,8 +196,12 @@ import {
   landParcels,
   landStructures,
   landUpgrades,
+  serviceListings,
+  servicePurchases,
+  agentBots,
   eq,
   and,
+  desc,
   sql,
 } from '@clawville/database';
 import {
@@ -165,6 +211,10 @@ import {
   MAX_STRUCTURE_LEVEL,
   MAX_PARCELS_PER_AVATAR,
   RENT_PERIOD_DAYS,
+  LAND_STARTER_DEPOSIT_CT,
+  LAND_STARTER_RENT_CT_WEEKLY,
+  FOUNDER_UPKEEP_CT_WEEKLY,
+  holdThresholdForTier,
   getCatalogEntry,
   getTierStructureRules,
   getTierMaxLevel,
@@ -174,13 +224,46 @@ import {
 import { sessionMiddleware } from '../middleware/auth';
 import { requireAuthOrAgentSession } from '../middleware/require-auth-or-agent';
 import type { ActivityAuthContext } from '../middleware/require-auth-or-agent';
+import { requireNonGuestIdentity } from '../middleware/require-non-guest';
 import { createRateLimiter, getClientIp } from '../middleware/rate-limit';
 import { logEventFromContext } from '../services/event-logger';
 import { broadcastLandEvent } from './world';
-import { debitClawTokens, InsufficientTokensError } from '../services/claw-token-ledger';
+import {
+  debitClawTokens,
+  creditClawTokens,
+  InsufficientTokensError,
+} from '../services/claw-token-ledger';
+import { getHouseTreasuryAvatarId } from '../services/house-treasury-seeder';
+import {
+  getLinkedWalletClvBalance,
+  getWalletClvBalance,
+  type ClvBalanceResult,
+} from '../services/linked-wallet-clv-balance';
 import type { AppContext } from '../types';
 
 // ─── shared shapes ──────────────────────────────────────────────────────────
+
+/**
+ * Parcel tenure — HOW a parcel is held; NULL on an available/unsold parcel.
+ * Phase B (2026-07-07): 'deposit' = starter deposit-escrow; 'hold' = CLV
+ * hold-to-keep (c/b/a/founder). 'owned'/'starter' are legacy (grandfathered).
+ */
+type LandTenure = 'rented' | 'owned' | 'starter' | 'deposit' | 'hold';
+
+/**
+ * Thrown inside the claim-hold tx when the subject's CLV balance is below the
+ * stacked hold requirement — carries both numbers so the 403 body can tell the
+ * caller exactly how much CLV the claim needs vs what the wallet holds.
+ */
+class InsufficientClvHoldError extends Error {
+  constructor(
+    public readonly requiredClv: number,
+    public readonly heldClv: number,
+  ) {
+    super('insufficient_clv_hold');
+    this.name = 'InsufficientClvHoldError';
+  }
+}
 
 /** The frozen parcel DTO returned by every read route (see contract above). */
 interface LandParcelDTO {
@@ -192,6 +275,20 @@ interface LandParcelDTO {
   gridY: number;
   priceCt: number | null;
   ownerAvatarId: string | null;
+  /**
+   * Weekly CT amount (server-stamped `land_parcels.rent_ct_weekly`): the escrow
+   * draw for a 'deposit' starter, the upkeep for a 'hold' parcel, the legacy
+   * rent for a 'rented' one. Null = not stamped.
+   */
+  rentCtWeekly: number | null;
+  /** HOW the parcel is held; null = available/unsold (mirrors `land_tenure` enum). */
+  tenure: LandTenure | null;
+  /** B1: original claim deposit escrowed (immutable); null on non-deposit rows. */
+  depositCt: number | null;
+  /** B1: live escrow remainder (see the schema conservation invariant); null on non-deposit rows. */
+  depositRemainingCt: number | null;
+  /** B2: stamped CLV hold threshold (CLV uiAmount); null on non-hold rows. */
+  holdThresholdCt: number | null;
 }
 
 /** The frozen structure DTO returned by placement / upgrade / structure reads. */
@@ -228,9 +325,18 @@ const avatarIdSchema = z.string().uuid();
 const parcelIdSchema = z.string().uuid();
 const structureIdSchema = z.string().uuid();
 
-// buy takes NO input — the price is read from `land_parcels.price_ct`, never the
-// body. Reject any stray field so a client cannot smuggle a price/tier/etc.
-const buyBodySchema = z.object({}).strict();
+// claim-hold + release take NO input — every value is server-resolved. Reject
+// any stray field so a client cannot smuggle a price/tier/threshold/etc.
+const emptyStrictBodySchema = z.object({}).strict();
+
+// deposit-topup: the ONLY client value is the top-up amount — a SELF-debit into
+// the caller's own escrow, hard-capped by Zod (1..1_000_000). It is never a
+// price and never reaches any other avatar's balance.
+const depositTopupBodySchema = z
+  .object({
+    amountCt: z.number().int().min(1).max(1_000_000),
+  })
+  .strict();
 
 // placement: server validates the SKU against the parcel's tier; the body only
 // declares WHICH catalog model + type. No level / price (placement is free Lv1).
@@ -251,6 +357,52 @@ const placeStructureBodySchema = z
 const upgradeBodySchema = z
   .object({
     idempotencyKey: z.string().min(1).max(64),
+  })
+  .strict();
+
+// ─── Service listings (run-a-store, Slice 4) ────────────────────────────────
+
+const listingIdSchema = z.string().uuid();
+
+// list: server derives structureId from the path + ownerAvatarId from
+// identity — the body only declares the sellable content. `.strict()`
+// rejects stray fields (no kind/status/platformFeeBps smuggling).
+const listServiceBodySchema = z
+  .object({
+    title: z.string().trim().min(1).max(80),
+    description: z.string().max(500).optional(),
+    priceCt: z.number().int().nonnegative().max(1_000_000),
+  })
+  .strict();
+
+// update/deactivate: every field optional, but at least one must be present
+// (an empty patch is a no-op the client should not be sending).
+const updateServiceBodySchema = z
+  .object({
+    title: z.string().trim().min(1).max(80).optional(),
+    description: z.string().max(500).optional(),
+    priceCt: z.number().int().nonnegative().max(1_000_000).optional(),
+    status: z.enum(['active', 'paused', 'delisted']).optional(),
+  })
+  .strict()
+  .refine((val) => Object.keys(val).length > 0, {
+    message: 'at least one field is required',
+  });
+
+// browse: GET /api/land/services?page=&limit= — page >= 1, limit clamped 1..50.
+const servicesPageQuerySchema = z
+  .object({
+    page: z.coerce.number().int().min(1).optional(),
+    limit: z.coerce.number().int().min(1).max(50).optional(),
+  })
+  .strict();
+
+// buy: the ONLY client input is a REQUIRED idempotency key (same Codex
+// BLOCK-HIGH rationale as /upgrade — a keyless retry would double-charge).
+// The price is always server-read from the locked listing row.
+const buyServiceBodySchema = z
+  .object({
+    idempotencyKey: z.string().min(8).max(64),
   })
   .strict();
 
@@ -365,6 +517,11 @@ function toDTO(row: {
   gridY: number;
   priceCt: number | null;
   ownerAvatarId: string | null;
+  rentCtWeekly: number | null;
+  tenure: LandTenure | null;
+  depositCt: number | null;
+  depositRemainingCt: number | null;
+  holdThresholdCt: number | null;
 }): LandParcelDTO {
   return {
     id: row.id,
@@ -375,6 +532,11 @@ function toDTO(row: {
     gridY: row.gridY,
     priceCt: row.priceCt,
     ownerAvatarId: row.ownerAvatarId,
+    rentCtWeekly: row.rentCtWeekly,
+    tenure: row.tenure,
+    depositCt: row.depositCt,
+    depositRemainingCt: row.depositRemainingCt,
+    holdThresholdCt: row.holdThresholdCt,
   };
 }
 
@@ -390,6 +552,11 @@ async function fetchOwnedParcels(avatarId: string): Promise<LandParcelDTO[]> {
       gridY: landParcels.gridY,
       priceCt: landParcels.priceCt,
       ownerAvatarId: landParcels.ownerAvatarId,
+      rentCtWeekly: landParcels.rentCtWeekly,
+      tenure: landParcels.tenure,
+      depositCt: landParcels.depositCt,
+      depositRemainingCt: landParcels.depositRemainingCt,
+      holdThresholdCt: landParcels.holdThresholdCt,
     })
     .from(landParcels)
     .where(eq(landParcels.ownerAvatarId, avatarId));
@@ -470,6 +637,127 @@ async function reconcileArchivedStructureOnAcquire(
   }
 }
 
+// ─── Service listings — run-a-store (Slice 4, P3) ───────────────────────────
+//
+// A peer CT service: an avatar with an ACTIVE 'shop' structure lists a
+// service; another avatar buys it with CT, full transfer to the seller (no
+// rake — DESIGN decision #9 on `service_listings` in the schema doc). Mirrors
+// the parcel-buy money discipline EXACTLY: per-avatar advisory lock (outer) +
+// row lock (inner) + ledger debit/credit IN-TX + audit row, all atomic.
+//
+// PARITY (Rule E5): every write resolves `identity.avatarId` from
+// `requireAuthOrAgentSession` — a connected/hosted agent lists/updates/buys
+// through its OWN avatar exactly as a human does; the browse reads are public.
+//
+// `land.service.sold` is EMISSION-ONLY this slice (curated onto the agent
+// stream + LAND_EVENT_WEIGHTS already carries a weight=40/cap=50 entry in
+// `@clawville/shared` land-economy.ts) — the leaderboard scoring CTE wiring
+// is a deferred cross-domain decision owned by the land specialist / the
+// leaderboard-progression domain, NOT touched here.
+
+/** Per-structure cap on simultaneously-active listings (LIST route guard). */
+const MAX_ACTIVE_LISTINGS_PER_STRUCTURE = 6;
+
+/** A peer service listing (mirrors `service_listings`). */
+interface ServiceListingDTO {
+  id: string;
+  structureId: string;
+  ownerAvatarId: string;
+  kind: 'peer' | 'partner';
+  title: string;
+  description: string | null;
+  priceCt: number;
+  status: 'active' | 'paused' | 'delisted';
+  platformFeeBps: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** A settled service purchase (mirrors `service_purchases`). */
+interface ServicePurchaseDTO {
+  id: string;
+  listingId: string;
+  buyerAvatarId: string;
+  sellerAvatarId: string;
+  priceCt: number;
+  landTransactionId: string | null;
+  createdAt: string;
+}
+
+interface ServiceListingsPayload {
+  listings: ServiceListingDTO[];
+  nextPage?: number;
+}
+
+interface ServiceReadCacheEntry {
+  payload: ServiceListingsPayload;
+  expiresAt: number;
+}
+
+// Keyed on `services:struct:<structureId>` (single-structure browse) or
+// `services:all:<page>:<limit>` (paged all-active browse). A SEPARATE Map from
+// the parcel `readCache` above (different payload shape) but reuses the SAME
+// 60s TTL + the SAME `publicReadLimiter` rate limiter instance.
+const serviceListingsCache = new Map<string, ServiceReadCacheEntry>();
+
+function getServiceListingsCache(key: string): ServiceListingsPayload | null {
+  const hit = serviceListingsCache.get(key);
+  if (!hit) return null;
+  if (hit.expiresAt < Date.now()) {
+    serviceListingsCache.delete(key);
+    return null;
+  }
+  return hit.payload;
+}
+
+function setServiceListingsCache(key: string, payload: ServiceListingsPayload): void {
+  serviceListingsCache.set(key, { payload, expiresAt: Date.now() + READ_CACHE_TTL_MS });
+}
+
+/**
+ * Bust the browse caches for a structure's listings after a list/update
+ * mutates one. Also clears every paged `services:all:*` entry — a new/edited/
+ * delisted listing can move into or out of the all-active feed at any page,
+ * and there is no single stable key to target (unlike the parcel tier cache).
+ */
+function bustServiceListingsCache(structureId: string): void {
+  serviceListingsCache.delete(`services:struct:${structureId}`);
+  for (const key of serviceListingsCache.keys()) {
+    if (key.startsWith('services:all:')) serviceListingsCache.delete(key);
+  }
+}
+
+/**
+ * Tolerant timestamp → ISO string. Raw `tx.execute<>()` / `db.execute<>()` rows
+ * return timestamp columns as STRINGS (postgres-js does NOT hydrate `Date` on a
+ * raw execute — unlike drizzle's typed `.select()`/`.returning()`, which do), so
+ * a site that assumes `Date` and calls `.toISOString()` crashes at runtime with
+ * "toISOString is not a function". This accepts either and always returns ISO —
+ * use it at EVERY raw-execute date-serialization site.
+ */
+function toIso(v: Date | string): string {
+  return v instanceof Date ? v.toISOString() : new Date(v).toISOString();
+}
+
+/** Typed-select/insert row → DTO mapper (camelCase already, typed drizzle path). */
+function toServiceListingDTO(row: typeof serviceListings.$inferSelect): ServiceListingDTO {
+  return {
+    id: row.id,
+    structureId: row.structureId,
+    ownerAvatarId: row.ownerAvatarId,
+    kind: row.kind,
+    title: row.title,
+    description: row.description,
+    priceCt: row.priceCt,
+    status: row.status,
+    platformFeeBps: row.platformFeeBps,
+    // toIso (not a bare .toISOString()) so the mapper is robust even if a caller
+    // ever feeds it a raw-execute row (string dates) rather than a typed one.
+    createdAt: toIso(row.createdAt),
+    updatedAt: toIso(row.updatedAt),
+  };
+}
+
 // ─── router ─────────────────────────────────────────────────────────────────
 
 // `DualContext` = base app context + the `identity` variable that
@@ -524,6 +812,11 @@ landRoutes.get('/parcels', async (c) => {
       gridY: landParcels.gridY,
       priceCt: landParcels.priceCt,
       ownerAvatarId: landParcels.ownerAvatarId,
+      rentCtWeekly: landParcels.rentCtWeekly,
+      tenure: landParcels.tenure,
+      depositCt: landParcels.depositCt,
+      depositRemainingCt: landParcels.depositRemainingCt,
+      holdThresholdCt: landParcels.holdThresholdCt,
     })
     .from(landParcels)
     .where(where);
@@ -568,7 +861,7 @@ landRoutes.get('/me', requireAuthOrAgentSession, async (c) => {
 
 // ─── 4. POST /claim-starter  (AUTH, PARITY-BOUND, idempotent, atomic) ───────
 
-landRoutes.post('/claim-starter', requireAuthOrAgentSession, async (c) => {
+landRoutes.post('/claim-starter', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
   const identity = c.get('identity');
   const avatarId = identity.avatarId;
 
@@ -580,8 +873,11 @@ landRoutes.post('/claim-starter', requireAuthOrAgentSession, async (c) => {
   }
 
   // Idempotent fast-path (outside the txn): if this avatar already owns ANY
-  // starter, return it without locking the pool. The in-txn re-check below is
-  // the correctness guard against a concurrent double-claim.
+  // starter-TIER parcel — a legacy free tenure='starter' row OR a Phase-B
+  // tenure='deposit' one (both are tier='starter', which is what the check
+  // keys on) — return it WITHOUT charging a deposit and without locking the
+  // pool. The in-txn re-check below is the correctness guard against a
+  // concurrent double-claim (and double-DEBIT, now that the claim costs CT).
   const existingFast = await db
     .select({
       id: landParcels.id,
@@ -591,6 +887,11 @@ landRoutes.post('/claim-starter', requireAuthOrAgentSession, async (c) => {
       gridX: landParcels.gridX,
       gridY: landParcels.gridY,
       priceCt: landParcels.priceCt,
+      rentCtWeekly: landParcels.rentCtWeekly,
+      tenure: landParcels.tenure,
+      depositCt: landParcels.depositCt,
+      depositRemainingCt: landParcels.depositRemainingCt,
+      holdThresholdCt: landParcels.holdThresholdCt,
     })
     .from(landParcels)
     .where(and(eq(landParcels.ownerAvatarId, avatarId), eq(landParcels.tier, 'starter')))
@@ -607,16 +908,27 @@ landRoutes.post('/claim-starter', requireAuthOrAgentSession, async (c) => {
         gridX: p.gridX,
         gridY: p.gridY,
         priceCt: p.priceCt,
+        rentCtWeekly: p.rentCtWeekly,
+        tenure: p.tenure,
+        depositCt: p.depositCt,
+        depositRemainingCt: p.depositRemainingCt,
+        holdThresholdCt: p.holdThresholdCt,
       },
       alreadyOwned: true,
     });
   }
 
-  // ── atomic grant ──────────────────────────────────────────────────────────
+  // ── atomic deposit-escrow grant (Phase B1, 2026-07-07) ────────────────────
+  // The claim DEBITS `LAND_STARTER_DEPOSIT_CT` from the claimant INTO ESCROW —
+  // the amount is recorded on the parcel row (`deposit_ct` / `deposit_
+  // remaining_ct`) and credited to NOBODY (refundable, not revenue; the weekly
+  // sweep draws rent from the remainder → treasury). Debit + ownership flip +
+  // audit are ONE transaction: an InsufficientTokens throw rolls back the flip,
+  // and any flip failure rolls back the debit.
+  //
   // Note: the 5-cap `MAX_PARCELS_PER_AVATAR` is NOT the binding constraint here
   // — a starter is one-per-avatar via the ownership idempotency check (the
-  // in-txn re-select below). The cap is enforced on the PRICED buy in a later
-  // slice; we deliberately do not apply it to the free starter grant.
+  // in-txn re-select below).
   //
   // `tx.execute` returns INT/text columns as strings (PG wire format) — coerce
   // grid coords with Number() before they land in the response.
@@ -631,6 +943,11 @@ landRoutes.post('/claim-starter', requireAuthOrAgentSession, async (c) => {
     gridX: number;
     gridY: number;
     priceCt: number | null;
+    rentCtWeekly: number | null;
+    tenure: LandTenure | null;
+    depositCt: number | null;
+    depositRemainingCt: number | null;
+    holdThresholdCt: number | null;
   }
 
   let result: ClaimResult;
@@ -664,8 +981,14 @@ landRoutes.post('/claim-starter', requireAuthOrAgentSession, async (c) => {
         grid_x: number | string;
         grid_y: number | string;
         price_ct: number | string | null;
+        rent_ct_weekly: number | string | null;
+        tenure: LandTenure | null;
+        deposit_ct: number | string | null;
+        deposit_remaining_ct: number | string | null;
+        hold_threshold_ct: number | string | null;
       }>(
-        sql`SELECT id, parcel_code, tier, status, grid_x, grid_y, price_ct
+        sql`SELECT id, parcel_code, tier, status, grid_x, grid_y, price_ct, rent_ct_weekly, tenure,
+                   deposit_ct, deposit_remaining_ct, hold_threshold_ct
             FROM land_parcels
             WHERE owner_avatar_id = ${avatarId} AND tier = 'starter'
             LIMIT 1`,
@@ -682,6 +1005,13 @@ landRoutes.post('/claim-starter', requireAuthOrAgentSession, async (c) => {
             gridX: Number(owned.grid_x),
             gridY: Number(owned.grid_y),
             priceCt: owned.price_ct == null ? null : Number(owned.price_ct),
+            rentCtWeekly: owned.rent_ct_weekly == null ? null : Number(owned.rent_ct_weekly),
+            tenure: owned.tenure,
+            depositCt: owned.deposit_ct == null ? null : Number(owned.deposit_ct),
+            depositRemainingCt:
+              owned.deposit_remaining_ct == null ? null : Number(owned.deposit_remaining_ct),
+            holdThresholdCt:
+              owned.hold_threshold_ct == null ? null : Number(owned.hold_threshold_ct),
           },
         };
       }
@@ -698,8 +1028,9 @@ landRoutes.post('/claim-starter', requireAuthOrAgentSession, async (c) => {
         grid_x: number | string;
         grid_y: number | string;
         price_ct: number | string | null;
+        rent_ct_weekly: number | string | null;
       }>(
-        sql`SELECT id, parcel_code, tier, status, grid_x, grid_y, price_ct
+        sql`SELECT id, parcel_code, tier, status, grid_x, grid_y, price_ct, rent_ct_weekly
             FROM land_parcels
             WHERE tier = 'starter' AND status = 'available'
             ORDER BY parcel_code
@@ -711,23 +1042,57 @@ landRoutes.post('/claim-starter', requireAuthOrAgentSession, async (c) => {
         throw new HTTPException(409, { message: 'no_starter_available' });
       }
 
-      // (c) Flip ownership. tenure='starter' — free + owned permanently, never
-      // rents, never evicts (builder-economics 2026-06-24).
+      // (c) ESCROW DEBIT (Phase B1) — the refundable deposit leaves the
+      // claimant's balance IN THIS TX. There is deliberately NO treasury (or
+      // any other) credit here: the deposit is not revenue — it is held as the
+      // `deposit_remaining_ct` NUMBER on the row (see the schema conservation
+      // invariant). Throws InsufficientTokensError (caught below → 400) on a
+      // low balance, rolling back the SKIP LOCKED pick with it.
+      const debit = await debitClawTokens(
+        {
+          avatarId,
+          amount: LAND_STARTER_DEPOSIT_CT,
+          reason: 'land_deposit_escrow',
+          source: 'api',
+          metadata: {
+            parcelId: pick.id,
+            parcelCode: pick.parcel_code,
+            tier: pick.tier,
+            refundable: true,
+          },
+        },
+        tx,
+      );
+
+      // (d) Flip ownership. tenure='deposit' — the escrow numbers + the weekly
+      // draw schedule are stamped here; the sweeper draws from the remainder
+      // when rent_paid_through elapses.
       await tx.execute(
         sql`UPDATE land_parcels
             SET status = 'owned',
                 owner_avatar_id = ${avatarId},
-                tenure = 'starter',
+                tenure = 'deposit',
                 acquired_at = now(),
+                deposit_ct = ${LAND_STARTER_DEPOSIT_CT},
+                deposit_remaining_ct = ${LAND_STARTER_DEPOSIT_CT},
+                rent_ct_weekly = ${LAND_STARTER_RENT_CT_WEEKLY},
+                rent_paid_through = now() + make_interval(days => ${RENT_PERIOD_DAYS}),
+                grace_until = NULL,
                 updated_at = now()
             WHERE id = ${pick.id}`,
       );
 
-      // (d) Audit-spine row — free grant (amount_ct = 0, no ledger debit).
-      const meta = JSON.stringify({ free: true, reason: 'starter_claim' });
+      // (e) Audit-spine row — the escrow movement (amount = the deposit,
+      // cross-ref'd to the ledger debit). NOT a purchase: kind is the dedicated
+      // 'land_deposit_escrow'.
+      const meta = JSON.stringify({
+        reason: 'starter_claim_deposit',
+        refundable: true,
+        rentCtWeekly: LAND_STARTER_RENT_CT_WEEKLY,
+      });
       await tx.execute(
-        sql`INSERT INTO land_transactions (kind, parcel_id, avatar_id, amount_ct, metadata)
-            VALUES ('parcel_purchase', ${pick.id}, ${avatarId}, 0, ${meta}::jsonb)`,
+        sql`INSERT INTO land_transactions (kind, parcel_id, avatar_id, amount_ct, debit_ledger_tx_id, metadata)
+            VALUES ('land_deposit_escrow', ${pick.id}, ${avatarId}, ${LAND_STARTER_DEPOSIT_CT}, ${debit.ledgerId}, ${meta}::jsonb)`,
       );
 
       return {
@@ -741,10 +1106,20 @@ landRoutes.post('/claim-starter', requireAuthOrAgentSession, async (c) => {
           gridX: Number(pick.grid_x),
           gridY: Number(pick.grid_y),
           priceCt: pick.price_ct == null ? null : Number(pick.price_ct),
+          // The UPDATE just stamped the deposit tenancy — reflect the stamped
+          // values, not the pre-claim row.
+          rentCtWeekly: LAND_STARTER_RENT_CT_WEEKLY,
+          tenure: 'deposit' as const,
+          depositCt: LAND_STARTER_DEPOSIT_CT,
+          depositRemainingCt: LAND_STARTER_DEPOSIT_CT,
+          holdThresholdCt: null,
         },
       };
     });
   } catch (err) {
+    if (err instanceof InsufficientTokensError) {
+      return c.json({ error: 'insufficient_clawtokens' }, 400);
+    }
     if (err instanceof HTTPException) throw err;
     throw err;
   }
@@ -766,7 +1141,12 @@ landRoutes.post('/claim-starter', requireAuthOrAgentSession, async (c) => {
     payload: {
       parcelCode: result.parcel.parcelCode,
       tier: result.parcel.tier,
+      // amountCt stays 0: the deposit is a refundable ESCROW, not a spend —
+      // reporting it as a purchase amount would overstate revenue. The escrow
+      // size rides alongside for observability.
       amountCt: 0,
+      depositCt: LAND_STARTER_DEPOSIT_CT,
+      tenure: 'deposit',
     },
   });
 
@@ -780,7 +1160,12 @@ landRoutes.post('/claim-starter', requireAuthOrAgentSession, async (c) => {
     ownerAvatarId: avatarId,
   });
 
-  return c.json({ parcel: result.parcel, alreadyOwned: false });
+  return c.json({
+    parcel: result.parcel,
+    alreadyOwned: false,
+    depositCt: LAND_STARTER_DEPOSIT_CT,
+    depositRemainingCt: LAND_STARTER_DEPOSIT_CT,
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -873,9 +1258,45 @@ landRoutes.get('/catalog', async (c) => {
   return c.json({ tiers, upgradeCosts: STRUCTURE_UPGRADE_COSTS });
 });
 
-// ─── 7. POST /parcels/:parcelId/buy  (AUTH, PARITY-BOUND, priced primary sale) ─
+// ─── 7. POST /parcels/:parcelId/buy  (DISABLED — Phase B tenure model) ──────
+//
+// FOUNDER-DECIDED (2026-07-07): land is NEVER sold permanently. Acquisition is
+// now tenure-only — starter via POST /claim-starter (deposit-escrow, B1),
+// c/b/a/founder via POST /parcels/:parcelId/claim-hold (CLV hold-to-keep, B2).
+// The route stays registered (stable 409 contract for old clients) but is a
+// dead end for ALL tiers, deliberately WITHOUT auth middleware so every caller
+// gets the same machine-readable refusal without a session lookup. The
+// pre-Phase-B priced-sale implementation (advisory lock + FOR UPDATE + in-tx
+// debit + T0 treasury credit) lives in git history at this diff's parent.
+landRoutes.post('/parcels/:parcelId/buy', (c) => c.json({ error: 'tenure_model_active' }, 409));
 
-landRoutes.post('/parcels/:parcelId/buy', requireAuthOrAgentSession, async (c) => {
+// ─── 7b. POST /parcels/:parcelId/claim-hold  (AUTH, PARITY-BOUND, Phase B2) ──
+//
+// HOLD-TO-KEEP acquire for c/b/a/founder: the caller proves its CLV balance ≥
+// the SUM of its existing non-grandfathered hold thresholds + this tier's
+// threshold (thresholds STACK — see LAND_HOLD_THRESHOLDS_CLV). NO CT debit at
+// claim: the hold IS the consideration; the weekly CT upkeep (rent_ct_weekly;
+// founder-stamped FOUNDER_UPKEEP_CT_WEEKLY) is drawn by land-rent-sweeper from
+// the holder's avatar balance → house treasury.
+//
+// CLV resolution (Rule E5 parity — both subject kinds, both FAIL-CLOSED here):
+//   human (identity.kind='user')  → users.linked_wallet_pubkey (ownership
+//     proven by routes/wallet-link.ts) → getLinkedWalletClvBalance;
+//     not linked → 403 wallet_not_linked.
+//   agent (identity.kind='agent') → avatars.wallet_address (the agent's own
+//     custodial wallet) → getWalletClvBalance; missing → 403 agent_wallet_missing.
+//   Read unavailable (RPC down / fail-soft {available:false}) → 503
+//     clv_balance_unavailable — a hold is NEVER granted on an unconfirmed
+//     balance. (The sweeper is the mirror image: it FAILS-OPEN and never
+//     lapses on an unconfirmed balance.)
+//
+// The RPC read runs BEFORE the money tx — never hold advisory/row locks across
+// a network call. The balance is external chain state (5-min cached, fail-soft)
+// that no DB lock could pin anyway; what MUST be lock-consistent is the
+// stacked-threshold SUM + the compare + the flip, and those all run inside the
+// tx under advisory(avatar) + FOR UPDATE, so two concurrent claims by the same
+// subject serialize and the second sees the first's committed hold in its SUM.
+landRoutes.post('/parcels/:parcelId/claim-hold', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
   const identity = c.get('identity');
   const avatarId = identity.avatarId;
 
@@ -885,13 +1306,55 @@ landRoutes.post('/parcels/:parcelId/buy', requireAuthOrAgentSession, async (c) =
   }
   const parcelId = idParsed.data;
 
-  // No client value reaches the write — the price comes from the parcel row.
+  // No client value reaches the write — threshold/tier/upkeep are all
+  // server-resolved. Reject any stray field.
   const rawBody = await c.req.json().catch(() => ({}));
-  if (!buyBodySchema.safeParse(rawBody).success) {
+  if (!emptyStrictBodySchema.safeParse(rawBody).success) {
     return c.json({ error: 'invalid_body' }, 400);
   }
 
-  interface BoughtParcel {
+  // (pre-1) Cheap UNLOCKED pre-checks so a 404 / starter-tier / already-owned
+  // parcel never burns an RPC read. Advisory only — the authoritative
+  // re-checks run under the lock inside the tx.
+  const preRows = await db
+    .select({ tier: landParcels.tier, status: landParcels.status })
+    .from(landParcels)
+    .where(eq(landParcels.id, parcelId))
+    .limit(1);
+  const pre = preRows[0];
+  if (!pre) return c.json({ error: 'parcel_not_found' }, 404);
+  if (pre.tier === 'starter') return c.json({ error: 'use_claim_starter' }, 400);
+  if (pre.status !== 'available') return c.json({ error: 'parcel_not_available' }, 409);
+
+  // (pre-2) Resolve the subject's CLV balance — FAIL-CLOSED on every branch.
+  let clv: ClvBalanceResult;
+  let clvWalletPubkey: string;
+  if (identity.kind === 'user') {
+    const linked = await getLinkedWalletClvBalance(identity.userId);
+    if (!linked.linked || !linked.walletPubkey) {
+      return c.json({ error: 'wallet_not_linked' }, 403);
+    }
+    clv = linked.clv;
+    clvWalletPubkey = linked.walletPubkey;
+  } else {
+    const avatarRow = await db.query.avatars.findFirst({
+      where: eq(avatars.id, avatarId),
+      columns: { walletAddress: true },
+    });
+    const pubkey = avatarRow?.walletAddress ?? null;
+    if (!pubkey) {
+      return c.json({ error: 'agent_wallet_missing' }, 403);
+    }
+    clv = await getWalletClvBalance(pubkey);
+    clvWalletPubkey = pubkey;
+  }
+  if (clv.available !== true || clv.uiAmount == null) {
+    // FAIL-CLOSED: cannot confirm the hold → cannot grant the parcel.
+    return c.json({ error: 'clv_balance_unavailable' }, 503);
+  }
+  const heldClv = clv.uiAmount;
+
+  interface HeldParcel {
     id: string;
     parcelCode: string;
     tier: LandTier;
@@ -900,33 +1363,37 @@ landRoutes.post('/parcels/:parcelId/buy', requireAuthOrAgentSession, async (c) =
     gridY: number;
     priceCt: number | null;
     ownerAvatarId: string | null;
+    rentCtWeekly: number | null;
+    tenure: LandTenure | null;
+    depositCt: number | null;
+    depositRemainingCt: number | null;
+    holdThresholdCt: number | null;
   }
 
-  let bought: { parcel: BoughtParcel; amountCt: number };
+  let claimed: { parcel: HeldParcel; requiredClv: number };
   try {
-    bought = await db.transaction(async (tx) => {
-      // (0) Per-avatar serialization FIRST (outer lock — deadlock order rule):
-      // the cap COUNT below spans MANY parcel rows, so no single row lock can
-      // bound it. The advisory lock keyed on the avatar serializes same-avatar
-      // buys so two concurrent buys can't both pass the < cap check. Different
-      // avatars hash to different keys and never block each other.
+    claimed = await db.transaction(async (tx) => {
+      // (0) Per-avatar advisory lock FIRST (outer — deadlock order rule): the
+      // stacked-threshold SUM and the parcel-cap COUNT below span MANY rows, so
+      // no single row lock can bound them; the advisory lock serializes
+      // same-subject claims. Different avatars never block each other.
       await tx.execute(
         sql`SELECT pg_advisory_xact_lock(hashtextextended(${avatarId}, 0))`,
       );
 
-      // (a) Lock the parcel row (inner lock). price_ct + tier + status read here
-      // are the SOLE source of truth — the body never carries a price.
+      // (a) Lock the parcel row (inner). tier/status re-read UNDER the lock is
+      // authoritative — the unlocked pre-checks above were a fast path only.
       const parcelRows = await tx.execute<{
         id: string;
         parcel_code: string;
         tier: LandTier;
         status: string;
         price_ct: number | string | null;
-        owner_avatar_id: string | null;
+        rent_ct_weekly: number | string | null;
         grid_x: number | string;
         grid_y: number | string;
       }>(
-        sql`SELECT id, parcel_code, tier, status, price_ct, owner_avatar_id, grid_x, grid_y
+        sql`SELECT id, parcel_code, tier, status, price_ct, rent_ct_weekly, grid_x, grid_y
             FROM land_parcels
             WHERE id = ${parcelId}
             FOR UPDATE`,
@@ -935,68 +1402,95 @@ landRoutes.post('/parcels/:parcelId/buy', requireAuthOrAgentSession, async (c) =
       if (!parcel) {
         throw new HTTPException(404, { message: 'parcel_not_found' });
       }
-
-      // (b) Single-charge safety: only an 'available' parcel can be bought. A
-      // replayed/concurrent buy sees 'owned' (or reserved/retired) → 409, never
-      // a second debit. The status flip below IS the idempotency key.
+      if (parcel.tier === 'starter') {
+        throw new HTTPException(400, { message: 'use_claim_starter' });
+      }
       if (parcel.status !== 'available') {
         throw new HTTPException(409, { message: 'parcel_not_available' });
       }
 
-      // (c) Founder = auction/USDC-only in v1 (price_ct NULL). Also guard a
-      // 0/NULL price from ever reaching debitClawTokens (which throws on amount<=0):
-      // a 0-price row is the FREE starter path (claim-starter), not a priced buy.
-      const priceCt = parcel.price_ct == null ? null : Number(parcel.price_ct);
-      if (parcel.tier === 'founder' || priceCt == null || priceCt <= 0) {
-        throw new HTTPException(501, { message: 'founder_not_in_v1' });
+      const threshold = holdThresholdForTier(parcel.tier);
+      if (threshold == null) {
+        // starter is the only null-threshold tier and was rejected above —
+        // pure defense against a future tier addition.
+        throw new HTTPException(400, { message: 'use_claim_starter' });
       }
 
-      // (d) Ownership cap — COUNT under the advisory lock. Coerce the string
-      // COUNT (PG wire) to a number BEFORE comparing, or it compares lexically.
+      // (b) Stacked requirement — SUM of the caller's existing
+      // non-grandfathered hold thresholds + this tier's, computed UNDER the
+      // advisory lock. Grandfathered holds are excluded by definition (they
+      // never proved CLV). NOTE: claim-time stacking includes holds currently
+      // in grace (conservative — claiming MORE while failing a hold check must
+      // not get cheaper); the sweeper's re-check applies the grace carve-out.
+      const sumRows = await tx.execute<{ s: number | string }>(
+        sql`SELECT COALESCE(SUM(hold_threshold_ct), 0)::int AS s
+            FROM land_parcels
+            WHERE owner_avatar_id = ${avatarId}
+              AND tenure = 'hold'
+              AND grandfathered = false`,
+      );
+      const requiredClv = Number(sumRows[0]?.s ?? 0) + threshold;
+
+      // (c) THE HOLD GATE — compare the live uiAmount (human token count)
+      // against the stacked requirement.
+      if (heldClv < requiredClv) {
+        throw new InsufficientClvHoldError(requiredClv, heldClv);
+      }
+
+      // (d) Ownership cap — COUNT under the advisory lock (PG-wire string →
+      // Number before comparing).
       const countRows = await tx.execute<{ n: number | string }>(
         sql`SELECT COUNT(*)::int AS n FROM land_parcels WHERE owner_avatar_id = ${avatarId}`,
       );
-      const ownedCount = Number(countRows[0]?.n ?? 0);
-      if (ownedCount >= MAX_PARCELS_PER_AVATAR) {
+      if (Number(countRows[0]?.n ?? 0) >= MAX_PARCELS_PER_AVATAR) {
         throw new HTTPException(409, { message: 'parcel_cap_reached' });
       }
 
-      // (e) Debit IN THIS TX — a throw rolls back the status flip too. Throws
-      // InsufficientTokensError (caught below) on a low balance.
-      const debit = await debitClawTokens(
-        {
-          avatarId,
-          amount: priceCt,
-          reason: 'land_parcel_purchase',
-          source: 'api',
-          metadata: { parcelId: parcel.id, parcelCode: parcel.parcel_code, tier: parcel.tier },
-        },
-        tx,
-      );
-
-      // (f) Flip ownership available → owned. tenure='owned' (one-time sink,
-      // permanent, never evicted — builder-economics 2026-06-24).
+      // (e) NO price debit — flip the parcel to a hold tenancy. rent_ct_weekly:
+      // founder rows carry NULL (the rent ladder never priced them) → stamp
+      // FOUNDER_UPKEEP_CT_WEEKLY; c/b/a keep their stamped weekly rent as the
+      // upkeep (COALESCE keeps an existing value).
+      const founderDefault = parcel.tier === 'founder' ? FOUNDER_UPKEEP_CT_WEEKLY : null;
       await tx.execute(
         sql`UPDATE land_parcels
             SET status = 'owned',
                 owner_avatar_id = ${avatarId},
-                tenure = 'owned',
+                tenure = 'hold',
                 acquired_at = now(),
+                hold_threshold_ct = ${threshold},
+                hold_subject = ${identity.kind},
+                grandfathered = false,
+                rent_ct_weekly = COALESCE(rent_ct_weekly, ${founderDefault}),
+                rent_paid_through = now() + make_interval(days => ${RENT_PERIOD_DAYS}),
+                grace_until = NULL,
                 updated_at = now()
             WHERE id = ${parcel.id}`,
       );
 
-      // (f.1) If this parcel is returning from an eviction it may carry an
-      // archived structure — restore it for the same buyer, purge it otherwise.
+      // (e.1) Restore/purge any eviction-archived structure on this parcel.
       await reconcileArchivedStructureOnAcquire(tx, parcel.id, avatarId);
 
-      // (g) Land-domain audit row (burn-sink: buyer debited, no treasury credit).
-      const meta = JSON.stringify({ tier: parcel.tier, parcelCode: parcel.parcel_code });
+      // (f) Audit — hold_claim, amount 0 (no CT moved at claim).
+      const meta = JSON.stringify({
+        tier: parcel.tier,
+        parcelCode: parcel.parcel_code,
+        holdThresholdClv: threshold,
+        requiredClv,
+        heldClv,
+        holdSubject: identity.kind,
+        clvWallet: clvWalletPubkey,
+      });
       await tx.execute(
-        sql`INSERT INTO land_transactions
-              (kind, parcel_id, avatar_id, amount_ct, debit_ledger_tx_id, metadata)
-            VALUES ('parcel_purchase', ${parcel.id}, ${avatarId}, ${priceCt}, ${debit.ledgerId}, ${meta}::jsonb)`,
+        sql`INSERT INTO land_transactions (kind, parcel_id, avatar_id, amount_ct, metadata)
+            VALUES ('hold_claim', ${parcel.id}, ${avatarId}, 0, ${meta}::jsonb)`,
       );
+
+      // (g) Read back the stamped weekly upkeep (COALESCE result) for the DTO.
+      const backRows = await tx.execute<{ rent_ct_weekly: number | string | null }>(
+        sql`SELECT rent_ct_weekly FROM land_parcels WHERE id = ${parcel.id}`,
+      );
+      const stampedWeekly =
+        backRows[0]?.rent_ct_weekly == null ? null : Number(backRows[0].rent_ct_weekly);
 
       return {
         parcel: {
@@ -1006,21 +1500,26 @@ landRoutes.post('/parcels/:parcelId/buy', requireAuthOrAgentSession, async (c) =
           status: 'owned' as const,
           gridX: Number(parcel.grid_x),
           gridY: Number(parcel.grid_y),
-          priceCt,
+          priceCt: parcel.price_ct == null ? null : Number(parcel.price_ct),
           ownerAvatarId: avatarId,
+          rentCtWeekly: stampedWeekly,
+          tenure: 'hold' as const,
+          depositCt: null,
+          depositRemainingCt: null,
+          holdThresholdCt: threshold,
         },
-        amountCt: priceCt,
+        requiredClv,
       };
     });
   } catch (err) {
-    if (err instanceof InsufficientTokensError) {
-      return c.json({ error: 'insufficient_clawtokens' }, 400);
+    if (err instanceof InsufficientClvHoldError) {
+      return c.json(
+        { error: 'insufficient_clv_hold', requiredClv: err.requiredClv, heldClv: err.heldClv },
+        403,
+      );
     }
     if (err instanceof HTTPException) {
-      // Map the in-tx HTTPExceptions to the documented JSON error bodies.
-      const code = err.message;
-      const status = err.status;
-      return c.json({ error: code }, status as 404 | 409 | 501);
+      return c.json({ error: err.message }, err.status as 400 | 404 | 409);
     }
     throw err;
   }
@@ -1028,36 +1527,353 @@ landRoutes.post('/parcels/:parcelId/buy', requireAuthOrAgentSession, async (c) =
   // Committed — bust the owner's combined cache AND the for-sale pool cache for
   // this tier (the parcel left 'available'). Then emit the leaderboard credit.
   bustOwnedCache(avatarId);
-  bustParcelsAvailableCache(bought.parcel.tier);
+  bustParcelsAvailableCache(claimed.parcel.tier);
 
+  // Acquiring a parcel (hold, like buy/rent before it) is one PARCEL_PURCHASED
+  // credit (weight 5, capped 5/day). Weekly upkeep sweeps emit NO event.
   void logEventFromContext(c, {
     eventType: LAND_EVENT_TYPES.PARCEL_PURCHASED,
     userId: identity.userId,
     avatarId: identity.avatarId,
     agentId: identity.kind === 'agent' ? identity.agentId : null,
     payload: {
-      parcelCode: bought.parcel.parcelCode,
-      tier: bought.parcel.tier,
-      amountCt: bought.amountCt,
+      parcelCode: claimed.parcel.parcelCode,
+      tier: claimed.parcel.tier,
+      amountCt: 0,
+      tenure: 'hold',
+      holdThresholdClv: claimed.parcel.holdThresholdCt,
     },
   });
 
-  // Live land-sync (2.1): the buy flipped this parcel available→owned, so its
-  // in-world for-sale sign must vanish for OTHER players. Fire-and-forget AFTER
-  // commit + the leaderboard event — a broadcast error can NEVER affect the
-  // (already durable) sale.
+  // Live land-sync: the claim flipped this parcel available→owned, so its
+  // in-world for-sale sign must vanish for OTHER players. Fire-and-forget
+  // AFTER commit — a broadcast error can NEVER affect the (durable) claim.
   broadcastLandEvent({
-    parcelCode: bought.parcel.parcelCode,
+    parcelCode: claimed.parcel.parcelCode,
     status: 'owned',
     ownerAvatarId: avatarId,
   });
 
-  return c.json({ parcel: bought.parcel, amountCt: bought.amountCt });
+  return c.json({ parcel: claimed.parcel, requiredClv: claimed.requiredClv, heldClv });
+});
+
+// ─── 7c. POST /parcels/:parcelId/deposit-topup  (AUTH, PARITY-BOUND, B1) ─────
+//
+// Adds CT to the caller's OWN deposit escrow (deposit_remaining_ct += amount).
+// The amount is the only client value and it is a SELF-debit (Zod-capped
+// 1..1_000_000) — it can never move value to any other subject; the same
+// conservation shape as the claim (claimant debited, NOBODY credited, the
+// remainder number grows). A remainder that again covers a full week clears an
+// open grace window.
+landRoutes.post('/parcels/:parcelId/deposit-topup', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
+  const identity = c.get('identity');
+  const avatarId = identity.avatarId;
+
+  const idParsed = parcelIdSchema.safeParse(c.req.param('parcelId'));
+  if (!idParsed.success) {
+    return c.json({ error: 'invalid_parcel_id' }, 400);
+  }
+  const parcelId = idParsed.data;
+
+  // Sentinel parse (mirrors /upgrade's money-safety pattern) — an unparseable
+  // body is a hard 400, never coerced toward a debit.
+  const PARSE_FAILED = Symbol('parse_failed');
+  const rawBody: unknown = await c.req.json().catch(() => PARSE_FAILED);
+  if (rawBody === PARSE_FAILED) {
+    return c.json({ error: 'invalid_body' }, 400);
+  }
+  const bodyParsed = depositTopupBodySchema.safeParse(rawBody);
+  if (!bodyParsed.success) {
+    return c.json({ error: 'invalid_body' }, 400);
+  }
+  const amountCt = bodyParsed.data.amountCt;
+
+  type TopupResult = {
+    parcelCode: string;
+    depositRemainingCt: number;
+    graceCleared: boolean;
+  };
+
+  let topped: TopupResult;
+  try {
+    topped = await db.transaction(async (tx): Promise<TopupResult> => {
+      // Per-avatar advisory lock (outer), then the parcel row (inner) — same
+      // deadlock order as every land mutation.
+      await tx.execute(
+        sql`SELECT pg_advisory_xact_lock(hashtextextended(${avatarId}, 0))`,
+      );
+
+      const rows = await tx.execute<{
+        id: string;
+        parcel_code: string;
+        owner_avatar_id: string | null;
+        tenure: LandTenure | null;
+        deposit_remaining_ct: number | string | null;
+        rent_ct_weekly: number | string | null;
+        grace_until: string | Date | null;
+      }>(
+        sql`SELECT id, parcel_code, owner_avatar_id, tenure, deposit_remaining_ct, rent_ct_weekly, grace_until
+            FROM land_parcels
+            WHERE id = ${parcelId}
+            FOR UPDATE`,
+      );
+      const p = rows[0];
+      if (!p) {
+        throw new HTTPException(404, { message: 'parcel_not_found' });
+      }
+      if (p.owner_avatar_id !== avatarId) {
+        throw new HTTPException(403, { message: 'not_parcel_owner' });
+      }
+      if (p.tenure !== 'deposit') {
+        throw new HTTPException(409, { message: 'not_deposit_tenure' });
+      }
+
+      // ESCROW DEBIT — into the remainder, IN THIS TX. Throws
+      // InsufficientTokensError (→ 400) on a low balance.
+      const debit = await debitClawTokens(
+        {
+          avatarId,
+          amount: amountCt,
+          reason: 'land_deposit_topup',
+          source: 'api',
+          metadata: { parcelId: p.id, parcelCode: p.parcel_code, refundable: true },
+        },
+        tx,
+      );
+
+      const newRemaining = Number(p.deposit_remaining_ct ?? 0) + amountCt;
+      const rentWeekly = p.rent_ct_weekly == null ? null : Number(p.rent_ct_weekly);
+      // Covers a full week again → un-pause the tenancy (clear grace). The
+      // response flag reports whether a grace was ACTUALLY lifted.
+      const coversWeek = rentWeekly != null && rentWeekly > 0 && newRemaining >= rentWeekly;
+      const graceCleared = coversWeek && p.grace_until != null;
+      await tx.execute(
+        sql`UPDATE land_parcels
+            SET deposit_remaining_ct = deposit_remaining_ct + ${amountCt},
+                grace_until = CASE WHEN ${coversWeek} THEN NULL ELSE grace_until END,
+                updated_at = now()
+            WHERE id = ${p.id}`,
+      );
+
+      const meta = JSON.stringify({ newRemaining, graceCleared, refundable: true });
+      await tx.execute(
+        sql`INSERT INTO land_transactions (kind, parcel_id, avatar_id, amount_ct, debit_ledger_tx_id, metadata)
+            VALUES ('land_deposit_topup', ${p.id}, ${avatarId}, ${amountCt}, ${debit.ledgerId}, ${meta}::jsonb)`,
+      );
+
+      return { parcelCode: p.parcel_code, depositRemainingCt: newRemaining, graceCleared };
+    });
+  } catch (err) {
+    if (err instanceof InsufficientTokensError) {
+      return c.json({ error: 'insufficient_clawtokens' }, 400);
+    }
+    if (err instanceof HTTPException) {
+      return c.json({ error: err.message }, err.status as 403 | 404 | 409);
+    }
+    throw err;
+  }
+
+  // The owner's /me must reflect the new remainder immediately.
+  bustOwnedCache(avatarId);
+
+  return c.json({
+    parcelCode: topped.parcelCode,
+    depositRemainingCt: topped.depositRemainingCt,
+    amountCt,
+    graceCleared: topped.graceCleared,
+  });
+});
+
+// ─── 7d. POST /parcels/:parcelId/release  (AUTH, PARITY-BOUND, B1 + B2) ──────
+//
+// Voluntary release back to the pool. tenure='deposit' → the escrow REMAINDER
+// is refunded to the claimant (credited SOFT — the ledger's receiver rule, so
+// escrow can never launder into a cashable tag); everything already drawn as
+// rent stays with the treasury. tenure='hold' → nothing was escrowed, nothing
+// refunds. Both revert the parcel (status='available', every tenure field
+// cleared) and archive the active structure (restored on a same-avatar
+// re-acquire, purged on a re-lease — the eviction convention).
+landRoutes.post('/parcels/:parcelId/release', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
+  const identity = c.get('identity');
+  const avatarId = identity.avatarId;
+
+  const idParsed = parcelIdSchema.safeParse(c.req.param('parcelId'));
+  if (!idParsed.success) {
+    return c.json({ error: 'invalid_parcel_id' }, 400);
+  }
+  const parcelId = idParsed.data;
+
+  const rawBody = await c.req.json().catch(() => ({}));
+  if (!emptyStrictBodySchema.safeParse(rawBody).success) {
+    return c.json({ error: 'invalid_body' }, 400);
+  }
+
+  interface ReleasedParcel {
+    id: string;
+    parcelCode: string;
+    tier: LandTier;
+    status: 'available' | 'owned' | 'reserved' | 'retired';
+    gridX: number;
+    gridY: number;
+    priceCt: number | null;
+    ownerAvatarId: string | null;
+    rentCtWeekly: number | null;
+    tenure: LandTenure | null;
+    depositCt: number | null;
+    depositRemainingCt: number | null;
+    holdThresholdCt: number | null;
+  }
+
+  let released: { parcel: ReleasedParcel; refundedCt: number };
+  try {
+    released = await db.transaction(async (tx) => {
+      // Per-avatar advisory lock (outer), then the parcel row (inner).
+      await tx.execute(
+        sql`SELECT pg_advisory_xact_lock(hashtextextended(${avatarId}, 0))`,
+      );
+
+      const rows = await tx.execute<{
+        id: string;
+        parcel_code: string;
+        tier: LandTier;
+        owner_avatar_id: string | null;
+        tenure: LandTenure | null;
+        deposit_remaining_ct: number | string | null;
+        rent_ct_weekly: number | string | null;
+        price_ct: number | string | null;
+        grid_x: number | string;
+        grid_y: number | string;
+      }>(
+        sql`SELECT id, parcel_code, tier, owner_avatar_id, tenure, deposit_remaining_ct,
+                   rent_ct_weekly, price_ct, grid_x, grid_y
+            FROM land_parcels
+            WHERE id = ${parcelId}
+            FOR UPDATE`,
+      );
+      const p = rows[0];
+      if (!p) {
+        throw new HTTPException(404, { message: 'parcel_not_found' });
+      }
+      if (p.owner_avatar_id !== avatarId) {
+        throw new HTTPException(403, { message: 'not_parcel_owner' });
+      }
+      if (p.tenure !== 'deposit' && p.tenure !== 'hold') {
+        // Legacy tenures (starter/owned/rented) keep their existing lifecycle —
+        // release is a Phase-B surface only.
+        throw new HTTPException(409, { message: 'not_releasable_tenure' });
+      }
+
+      let refundedCt = 0;
+      if (p.tenure === 'deposit') {
+        const remaining = Number(p.deposit_remaining_ct ?? 0);
+        let creditLedgerId: string | null = null;
+        if (remaining > 0) {
+          // ESCROW REFUND — the remainder returns to the claimant IN THIS TX.
+          // This is the `refund` leg of the conservation invariant:
+          // draws + refund + forfeit == claim + topups.
+          const credit = await creditClawTokens(
+            {
+              avatarId,
+              amount: remaining,
+              reason: 'land_deposit_refund',
+              source: 'api',
+              metadata: { parcelId: p.id, parcelCode: p.parcel_code },
+            },
+            tx,
+          );
+          creditLedgerId = credit.ledgerId;
+          refundedCt = remaining;
+        }
+        const meta = JSON.stringify({
+          reason: 'voluntary_release',
+          tenure: 'deposit',
+          refundedCt,
+        });
+        await tx.execute(
+          sql`INSERT INTO land_transactions (kind, parcel_id, avatar_id, amount_ct, credit_ledger_tx_id, metadata)
+              VALUES ('land_deposit_refund', ${p.id}, ${avatarId}, ${refundedCt}, ${creditLedgerId}, ${meta}::jsonb)`,
+        );
+      } else {
+        // tenure='hold': nothing escrowed → nothing to refund. Audit the
+        // pool-return as an 'eviction' row disambiguated by metadata (the kind
+        // enum has no dedicated voluntary-release value; 'eviction' == "parcel
+        // returned to the pool", which is exactly what happened — JUDGMENT CALL,
+        // see the Phase-B report).
+        const meta = JSON.stringify({ reason: 'voluntary_release', tenure: 'hold' });
+        await tx.execute(
+          sql`INSERT INTO land_transactions (kind, parcel_id, avatar_id, amount_ct, metadata)
+              VALUES ('eviction', ${p.id}, ${avatarId}, 0, ${meta}::jsonb)`,
+        );
+      }
+
+      // Revert to the pool — clears EVERY tenure field (rent + deposit + hold +
+      // grandfathered). Mirrors the sweeper's revertParcelToPool; rent_ct_weekly
+      // stays stamped (it is the listing value, not a per-tenancy one).
+      await tx.execute(
+        sql`UPDATE land_parcels
+            SET status = 'available',
+                owner_avatar_id = NULL,
+                tenure = NULL,
+                acquired_at = NULL,
+                rent_paid_through = NULL,
+                grace_until = NULL,
+                deposit_ct = NULL,
+                deposit_remaining_ct = NULL,
+                hold_threshold_ct = NULL,
+                hold_subject = NULL,
+                grandfathered = false,
+                updated_at = now()
+            WHERE id = ${p.id}`,
+      );
+      // Archive (soft-delete) the active structure — the eviction convention.
+      await tx.execute(
+        sql`UPDATE land_structures
+            SET status = 'archived', updated_at = now()
+            WHERE parcel_id = ${p.id} AND status = 'active'`,
+      );
+
+      return {
+        refundedCt,
+        parcel: {
+          id: p.id,
+          parcelCode: p.parcel_code,
+          tier: p.tier,
+          status: 'available' as const,
+          gridX: Number(p.grid_x),
+          gridY: Number(p.grid_y),
+          priceCt: p.price_ct == null ? null : Number(p.price_ct),
+          ownerAvatarId: null,
+          rentCtWeekly: p.rent_ct_weekly == null ? null : Number(p.rent_ct_weekly),
+          tenure: null,
+          depositCt: null,
+          depositRemainingCt: null,
+          holdThresholdCt: null,
+        },
+      };
+    });
+  } catch (err) {
+    if (err instanceof HTTPException) {
+      return c.json({ error: err.message }, err.status as 403 | 404 | 409);
+    }
+    throw err;
+  }
+
+  // Committed — the parcel is back in the pool: bust the owner cache + the
+  // for-sale pool cache, and tell every connected player live.
+  bustOwnedCache(avatarId);
+  bustParcelsAvailableCache(released.parcel.tier);
+  broadcastLandEvent({
+    parcelCode: released.parcel.parcelCode,
+    status: 'available',
+    ownerAvatarId: null,
+  });
+
+  return c.json({ released: true, refundedCt: released.refundedCt, parcel: released.parcel });
 });
 
 // ─── 8. POST /parcels/:parcelId/structure  (AUTH, PARITY-BOUND, free Lv1) ────
 
-landRoutes.post('/parcels/:parcelId/structure', requireAuthOrAgentSession, async (c) => {
+landRoutes.post('/parcels/:parcelId/structure', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
   const identity = c.get('identity');
   const avatarId = identity.avatarId;
 
@@ -1193,7 +2009,7 @@ landRoutes.post('/parcels/:parcelId/structure', requireAuthOrAgentSession, async
 
 // ─── 9. POST /structures/:structureId/upgrade  (AUTH, PARITY-BOUND, priced) ──
 
-landRoutes.post('/structures/:structureId/upgrade', requireAuthOrAgentSession, async (c) => {
+landRoutes.post('/structures/:structureId/upgrade', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
   const identity = c.get('identity');
   const avatarId = identity.avatarId;
 
@@ -1362,6 +2178,31 @@ landRoutes.post('/structures/:structureId/upgrade', requireAuthOrAgentSession, a
           tx,
         );
         ledgerId = debit.ledgerId;
+
+        // T0 fee routing (2026-07-07): the upgrade cost → house treasury, IN
+        // THIS SAME tx (net-neutral supply; the CT moves owner→treasury instead
+        // of burning). Owner-side amount UNCHANGED; the idempotency-key replay
+        // above returns before any money moves, so a retry never re-credits.
+        // A null treasury degrades to the pre-T0 burn.
+        if (Number.isInteger(cost)) {
+          const treasuryId = await getHouseTreasuryAvatarId();
+          if (treasuryId) {
+            await creditClawTokens(
+              {
+                avatarId: treasuryId,
+                amount: cost,
+                reason: 'house_fee_structure_upgrade',
+                source: 'system',
+                metadata: { structureId, toLevel: target, tier: s.tier, ownerAvatarId: avatarId },
+              },
+              tx,
+            );
+          } else {
+            console.error(
+              `[land] house treasury unavailable — ${cost} CT upgrade burned (pre-T0 behavior) for structure ${structureId}`,
+            );
+          }
+        }
       }
 
       await tx.execute(
@@ -1570,227 +2411,706 @@ landRoutes.post('/spawn-preference', requireAuthOrAgentSession, async (c) => {
   return c.json({ spawnPreference: 'home' as const, homeParcelId: parcelId });
 });
 
-// ─── 11. POST /parcels/:parcelId/rent  (AUTH, PARITY-BOUND, weekly-rent acquire) ─
+// ─── 11. POST /parcels/:parcelId/rent  (DISABLED — Phase B tenure model) ─────
 //
-// Acquire a parcel by RENTING it (builder-economics 2026-06-24). Mirrors /buy's
-// money discipline EXACTLY: per-avatar advisory lock (outer) + parcel row lock
-// (inner) + ledger debit IN-TX + audit row, all atomic. The weekly price is the
-// SERVER-stamped `land_parcels.rent_ct_weekly` (never the body). The first week is
-// charged immediately; `land-rent-sweeper` charges each subsequent week, applies
-// the grace window on a failed charge, and evicts after grace.
+// FOUNDER-DECIDED (2026-07-07): rent-to-acquire is superseded by the two
+// Phase-B tenure mechanisms (starter deposit-escrow via /claim-starter;
+// c/b/a/founder CLV hold-to-keep via /parcels/:parcelId/claim-hold). EXISTING
+// tenure='rented' parcels are untouched — the sweeper still charges/graces/
+// evicts them — but no NEW rental can start. Registered without auth middleware
+// (same rationale as the disabled /buy): every caller gets the same 409. The
+// pre-Phase-B implementation lives in git history at this diff's parent.
+landRoutes.post('/parcels/:parcelId/rent', (c) => c.json({ error: 'tenure_model_active' }, 409));
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Service listings — run-a-store (Slice 4, P3)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ─── 12. POST /structures/:structureId/services  (AUTH, PARITY-BOUND, free list) ─
 //
-// PARITY (Rule E5): binds to `identity.avatarId` from requireAuthOrAgentSession,
-// so a connected/hosted agent rents to ITS OWN avatar and settles REAL CT exactly
-// as a human; no identity = 401, never a guest demo. Reaches agents via the same
-// authed HTTP path as /buy (the agent `[ACTION:]` whitelist exposure is the same
-// deferred Phase-3 surface for BOTH buy + rent — no PROTOCOL_VERSION bump here).
+//   body: { title: string (1..80), description?: string (0..500), priceCt: int (0..1_000_000) }
+//   200 → { listing: ServiceListingDTO }
+//   400 → { error: 'invalid_body' | 'invalid_structure_id' | 'not_a_shop' }
+//   401/403 as elsewhere   ·   403 → { error: 'not_structure_owner' }
+//   404 → { error: 'structure_not_found' }
+//   409 → { error: 'structure_archived' | 'ownership_desync' | 'listing_cap_reached' }
+
+landRoutes.post(
+  '/structures/:structureId/services',
+  requireAuthOrAgentSession,
+  requireNonGuestIdentity,
+  async (c) => {
+    const identity = c.get('identity');
+    const avatarId = identity.avatarId;
+
+    const idParsed = structureIdSchema.safeParse(c.req.param('structureId'));
+    if (!idParsed.success) {
+      return c.json({ error: 'invalid_structure_id' }, 400);
+    }
+    const structureId = idParsed.data;
+
+    const rawBody = await c.req.json().catch(() => ({}));
+    const bodyParsed = listServiceBodySchema.safeParse(rawBody);
+    if (!bodyParsed.success) {
+      return c.json({ error: 'invalid_body' }, 400);
+    }
+    const { title, description, priceCt } = bodyParsed.data;
+
+    type ListResult =
+      | { kind: 'ok'; listing: ServiceListingDTO }
+      | { kind: 'structure_not_found' }
+      | { kind: 'not_a_shop' }
+      | { kind: 'structure_archived' }
+      | { kind: 'not_structure_owner' }
+      | { kind: 'ownership_desync' }
+      | { kind: 'listing_cap_reached' };
+
+    const result = await db.transaction(async (tx): Promise<ListResult> => {
+      // Per-avatar advisory lock (outer), then the structure+parcel rows
+      // (inner) — same deadlock order as buy/upgrade/place-structure.
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${avatarId}, 0))`);
+
+      const rows = await tx.execute<{
+        id: string;
+        parcel_id: string;
+        structure_type: 'home' | 'shop';
+        structure_status: string;
+        struct_owner: string;
+        parcel_owner: string | null;
+      }>(
+        sql`SELECT s.id, s.parcel_id, s.structure_type, s.status AS structure_status,
+                   s.owner_avatar_id AS struct_owner, p.owner_avatar_id AS parcel_owner
+            FROM land_structures s
+            JOIN land_parcels p ON p.id = s.parcel_id
+            WHERE s.id = ${structureId}
+            FOR UPDATE OF s, p`,
+      );
+      const s = rows[0];
+      if (!s) return { kind: 'structure_not_found' };
+      if (s.structure_type !== 'shop') return { kind: 'not_a_shop' };
+      if (s.structure_status !== 'active') return { kind: 'structure_archived' };
+      // Ownership is checked against the AUTHORITATIVE parcel row (covers BOTH
+      // an owned AND a rented parcel — rent sets land_parcels.owner_avatar_id
+      // to the renter, same as buy/upgrade's ownership discipline).
+      if (s.parcel_owner !== avatarId) return { kind: 'not_structure_owner' };
+      // Defense-in-depth: the structure's denorm owner must agree with the
+      // authoritative parcel owner (mirrors /upgrade's ownership_desync guard).
+      if (s.struct_owner !== avatarId) return { kind: 'ownership_desync' };
+
+      const countRows = await tx.execute<{ n: number | string }>(
+        sql`SELECT COUNT(*)::int AS n FROM service_listings
+            WHERE structure_id = ${structureId} AND status = 'active'`,
+      );
+      if (Number(countRows[0]?.n ?? 0) >= MAX_ACTIVE_LISTINGS_PER_STRUCTURE) {
+        return { kind: 'listing_cap_reached' };
+      }
+
+      const insertRows = await tx.execute<{
+        id: string;
+        structure_id: string;
+        owner_avatar_id: string;
+        kind: 'peer' | 'partner';
+        title: string;
+        description: string | null;
+        price_ct: number | string;
+        status: 'active' | 'paused' | 'delisted';
+        platform_fee_bps: number | string;
+        // Raw execute → timestamps arrive as STRINGS, not Date (see toIso).
+        created_at: string;
+        updated_at: string;
+      }>(
+        sql`INSERT INTO service_listings
+              (structure_id, owner_avatar_id, kind, title, description, price_ct, status)
+            VALUES (${structureId}, ${avatarId}, 'peer', ${title}, ${description ?? null}, ${priceCt}, 'active')
+            RETURNING id, structure_id, owner_avatar_id, kind, title, description, price_ct, status, platform_fee_bps, created_at, updated_at`,
+      );
+      const row = insertRows[0]!;
+      return {
+        kind: 'ok',
+        listing: {
+          id: row.id,
+          structureId: row.structure_id,
+          ownerAvatarId: row.owner_avatar_id,
+          kind: row.kind,
+          title: row.title,
+          description: row.description,
+          priceCt: Number(row.price_ct),
+          status: row.status,
+          platformFeeBps: Number(row.platform_fee_bps),
+          createdAt: toIso(row.created_at),
+          updatedAt: toIso(row.updated_at),
+        },
+      };
+    });
+
+    if (result.kind !== 'ok') {
+      const statusByKind = {
+        structure_not_found: 404,
+        not_a_shop: 400,
+        structure_archived: 409,
+        not_structure_owner: 403,
+        ownership_desync: 409,
+        listing_cap_reached: 409,
+      } as const;
+      return c.json({ error: result.kind }, statusByKind[result.kind]);
+    }
+
+    bustServiceListingsCache(structureId);
+
+    return c.json({ listing: result.listing });
+  },
+);
+
+// ─── 13. PATCH /services/:listingId  (AUTH, PARITY-BOUND, own-listing only) ──
 //
-//   body: {} (.strict(); NO client price reaches the debit)
-//   200 → { parcel: LandParcelDTO, amountCt: number, rentPaidThrough: string }
-//         amountCt = the weekly rent debited (server-read rent_ct_weekly).
-//   400 → { error: 'invalid_body' | 'invalid_parcel_id' | 'insufficient_clawtokens'
-//                  | 'rent_not_available' }   (rent_not_available = tier carries no rent_ct_weekly)
-//   401 → no identity   ·   403 → bound user has no active avatar
-//   404 → { error: 'parcel_not_found' }
-//   409 → { error: 'parcel_not_available' | 'parcel_cap_reached' }
-//   501 → { error: 'founder_not_in_v1' }
-//   Single-acquire safety = the status flip 'available'→'owned' under the
-//   per-avatar advisory lock + `SELECT … FOR UPDATE` (a replay sees 'owned' → 409).
-landRoutes.post('/parcels/:parcelId/rent', requireAuthOrAgentSession, async (c) => {
+//   body: { title?, description?, priceCt?, status? } — at least one field (.strict())
+//   200 → { listing: ServiceListingDTO }
+//   400 → { error: 'invalid_body' | 'invalid_listing_id' }
+//   401/403 as elsewhere   ·   403 → { error: 'not_listing_owner' }
+//   404 → { error: 'listing_not_found' }
+
+landRoutes.patch('/services/:listingId', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
   const identity = c.get('identity');
   const avatarId = identity.avatarId;
 
-  const idParsed = parcelIdSchema.safeParse(c.req.param('parcelId'));
+  const idParsed = listingIdSchema.safeParse(c.req.param('listingId'));
   if (!idParsed.success) {
-    return c.json({ error: 'invalid_parcel_id' }, 400);
+    return c.json({ error: 'invalid_listing_id' }, 400);
   }
-  const parcelId = idParsed.data;
+  const listingId = idParsed.data;
 
-  // No client value reaches the write — the rent comes from the parcel row.
-  const rawBody = await c.req.json().catch(() => ({}));
-  if (!buyBodySchema.safeParse(rawBody).success) {
+  // Sentinel parse — an unparseable body is a hard 400, never coerced to {}.
+  const PARSE_FAILED = Symbol('parse_failed');
+  const rawBody: unknown = await c.req.json().catch(() => PARSE_FAILED);
+  if (rawBody === PARSE_FAILED) {
     return c.json({ error: 'invalid_body' }, 400);
   }
+  const bodyParsed = updateServiceBodySchema.safeParse(rawBody);
+  if (!bodyParsed.success) {
+    return c.json({ error: 'invalid_body' }, 400);
+  }
+  const patch = bodyParsed.data;
 
-  interface RentedParcel {
-    id: string;
-    parcelCode: string;
-    tier: LandTier;
-    status: 'available' | 'owned' | 'reserved' | 'retired';
-    gridX: number;
-    gridY: number;
-    priceCt: number | null;
-    ownerAvatarId: string | null;
+  type PatchResult =
+    | { kind: 'ok'; listing: ServiceListingDTO }
+    | { kind: 'not_found' }
+    | { kind: 'not_owner' };
+
+  const result = await db.transaction(async (tx): Promise<PatchResult> => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${avatarId}, 0))`);
+
+    const rows = await tx.execute<{ id: string; owner_avatar_id: string }>(
+      sql`SELECT id, owner_avatar_id FROM service_listings WHERE id = ${listingId} FOR UPDATE`,
+    );
+    const existing = rows[0];
+    if (!existing) return { kind: 'not_found' };
+    if (existing.owner_avatar_id !== avatarId) return { kind: 'not_owner' };
+
+    const updates: Partial<typeof serviceListings.$inferInsert> = { updatedAt: new Date() };
+    if (patch.title !== undefined) updates.title = patch.title;
+    if (patch.description !== undefined) updates.description = patch.description;
+    if (patch.priceCt !== undefined) updates.priceCt = patch.priceCt;
+    if (patch.status !== undefined) updates.status = patch.status;
+
+    const [updated] = await tx
+      .update(serviceListings)
+      .set(updates)
+      .where(eq(serviceListings.id, listingId))
+      .returning();
+
+    return { kind: 'ok', listing: toServiceListingDTO(updated!) };
+  });
+
+  if (result.kind === 'not_found') {
+    return c.json({ error: 'listing_not_found' }, 404);
+  }
+  if (result.kind === 'not_owner') {
+    return c.json({ error: 'not_listing_owner' }, 403);
   }
 
-  let rented: { parcel: RentedParcel; amountCt: number; rentPaidThrough: string };
-  try {
-    rented = await db.transaction(async (tx) => {
-      // (0) Per-avatar advisory lock FIRST (outer — same deadlock order as buy):
-      // the cap COUNT below spans many rows, so no single row lock bounds it.
-      await tx.execute(
-        sql`SELECT pg_advisory_xact_lock(hashtextextended(${avatarId}, 0))`,
-      );
+  bustServiceListingsCache(result.listing.structureId);
 
-      // (a) Lock the parcel row (inner). rent_ct_weekly + tier + status read here
-      // are the SOLE source of truth — the body never carries a price.
-      const parcelRows = await tx.execute<{
+  return c.json({ listing: result.listing });
+});
+
+// ─── 14. GET /structures/:structureId/services  (PUBLIC, cached, rate-limited) ─
+//
+//   200 → { listings: ServiceListingDTO[] }   (active listings only)
+//   400 → { error: 'invalid_structure_id' }   ·   429 → { error: 'rate_limited' }
+
+landRoutes.get('/structures/:structureId/services', async (c) => {
+  if (!publicReadLimiter.check(getClientIp(c.req.raw.headers))) {
+    return c.json({ error: 'rate_limited' }, 429);
+  }
+
+  const idParsed = structureIdSchema.safeParse(c.req.param('structureId'));
+  if (!idParsed.success) {
+    return c.json({ error: 'invalid_structure_id' }, 400);
+  }
+  const structureId = idParsed.data;
+
+  const cacheKey = `services:struct:${structureId}`;
+  const cached = getServiceListingsCache(cacheKey);
+  if (cached) return c.json(cached);
+
+  const rows = await db
+    .select()
+    .from(serviceListings)
+    .where(and(eq(serviceListings.structureId, structureId), eq(serviceListings.status, 'active')));
+
+  const payload: ServiceListingsPayload = { listings: rows.map(toServiceListingDTO) };
+  setServiceListingsCache(cacheKey, payload);
+  return c.json(payload);
+});
+
+// ─── 15. GET /services/mine  (AUTH, PARITY-BOUND, owner-scoped, ALL statuses) ─
+//
+// The store owner's OWN listings across reloads — INCLUDING paused/delisted (the
+// public browse routes 14/16 are active-only), so an owner can see + re-activate
+// a listing they paused. This completes the manage loop the public reads can't.
+// Owner-scoped by `identity.avatarId` → no leak. NOT cached — an owner's own view
+// must reflect a just-completed list/patch immediately (same reasoning as /me).
+// PARITY (Rule E5): a connected/hosted agent lists a store just like a human, so
+// it reads ITS OWN listings through the same authed path.
+//
+//   200 → { listings: ServiceListingDTO[] }   (all statuses, newest first)
+//   401 → no identity   ·   403 → bound user has no active avatar
+//
+// Route-order note: registered BEFORE the paged `GET /services` below, but the
+// two are DISTINCT literal paths (`/services/mine` vs `/services`) with no param
+// route between them (there is no `GET /services/:id`), so there is no shadow.
+
+landRoutes.get('/services/mine', requireAuthOrAgentSession, async (c) => {
+  const identity = c.get('identity');
+  const avatarId = identity.avatarId;
+
+  const rows = await db
+    .select()
+    .from(serviceListings)
+    .where(eq(serviceListings.ownerAvatarId, avatarId))
+    .orderBy(desc(serviceListings.createdAt));
+
+  return c.json({ listings: rows.map(toServiceListingDTO) });
+});
+
+// ─── 16. GET /services?page=&limit=  (PUBLIC, cached, rate-limited, paged) ───
+//
+//   200 → { listings: ServiceListingDTO[], nextPage?: number }  (active only, newest first)
+//   400 → { error: 'invalid_query' }   ·   429 → { error: 'rate_limited' }
+
+landRoutes.get('/services', async (c) => {
+  if (!publicReadLimiter.check(getClientIp(c.req.raw.headers))) {
+    return c.json({ error: 'rate_limited' }, 429);
+  }
+
+  const parsed = servicesPageQuerySchema.safeParse({
+    page: c.req.query('page'),
+    limit: c.req.query('limit'),
+  });
+  if (!parsed.success) {
+    return c.json({ error: 'invalid_query' }, 400);
+  }
+  const page = parsed.data.page ?? 1;
+  const limit = parsed.data.limit ?? 20;
+
+  const cacheKey = `services:all:${page}:${limit}`;
+  const cached = getServiceListingsCache(cacheKey);
+  if (cached) return c.json(cached);
+
+  const offset = (page - 1) * limit;
+  // Fetch one extra row to know whether a next page exists without a COUNT(*).
+  const rows = await db
+    .select()
+    .from(serviceListings)
+    .where(eq(serviceListings.status, 'active'))
+    .orderBy(desc(serviceListings.createdAt))
+    .limit(limit + 1)
+    .offset(offset);
+
+  const hasNext = rows.length > limit;
+  const pageRows = hasNext ? rows.slice(0, limit) : rows;
+
+  const payload: ServiceListingsPayload = {
+    listings: pageRows.map(toServiceListingDTO),
+    ...(hasNext ? { nextPage: page + 1 } : {}),
+  };
+  setServiceListingsCache(cacheKey, payload);
+  return c.json(payload);
+});
+
+// ─── 17. POST /services/:listingId/buy  (AUTH, PARITY-BOUND, atomic, priced) ─
+//
+//   body: { idempotencyKey: string (8..64) }  REQUIRED (.strict())
+//   200 → { purchase: ServicePurchaseDTO, priceCt: number, cached: boolean }
+//   400 → { error: 'invalid_body' | 'invalid_listing_id' | 'insufficient_clawtokens' }
+//   401/403 as elsewhere
+//   404 → { error: 'listing_not_found' }
+//   409 → { error: 'listing_not_active' | 'not_a_peer_listing' | 'structure_unavailable'
+//                  | 'self_purchase' | 'idempotency_key_conflict' | 'concurrent_retry' }
+//     not_a_peer_listing   = a non-CT (USDC 'partner') listing can't settle here;
+//     structure_unavailable = the seller's shop was archived/evicted or the parcel
+//                             changed hands after the listing was created;
+//     concurrent_retry     = a mutual-buy deadlock (40P01) rolled this tx fully
+//                             back — retry with the SAME idempotencyKey.
+//
+// AFTER COMMIT (fresh purchase only): emits `land.service.sold` keyed to the
+// SELLER (weight 40, credited to the seller — this is a run-a-store sale, not
+// the buyer's action). A cached replay (same-key retry OR a concurrent 23505
+// loser re-served) emits NOTHING — the original request already emitted once.
+
+landRoutes.post('/services/:listingId/buy', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
+  const identity = c.get('identity');
+  const avatarId = identity.avatarId;
+
+  const idParsed = listingIdSchema.safeParse(c.req.param('listingId'));
+  if (!idParsed.success) {
+    return c.json({ error: 'invalid_listing_id' }, 400);
+  }
+  const listingId = idParsed.data;
+
+  // Sentinel parse (Codex money-safety pattern, mirrors /upgrade) — an
+  // unparseable body is a hard 400, never coerced toward a keyless charge.
+  const PARSE_FAILED = Symbol('parse_failed');
+  const rawBody: unknown = await c.req.json().catch(() => PARSE_FAILED);
+  if (rawBody === PARSE_FAILED) {
+    return c.json({ error: 'invalid_body' }, 400);
+  }
+  const bodyParsed = buyServiceBodySchema.safeParse(rawBody);
+  if (!bodyParsed.success) {
+    return c.json({ error: 'invalid_body' }, 400);
+  }
+  const idempotencyKey = bodyParsed.data.idempotencyKey;
+
+  type BuyResult =
+    | {
+        kind: 'fresh';
+        purchase: ServicePurchaseDTO;
+        priceCt: number;
+        sellerAvatarId: string;
+        structureId: string;
+      }
+    | { kind: 'cached'; purchase: ServicePurchaseDTO; priceCt: number };
+
+  let result: BuyResult;
+  try {
+    result = await db.transaction(async (tx): Promise<BuyResult> => {
+      // (0) Per-avatar advisory lock on the BUYER (outer — same order as buy/upgrade).
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${avatarId}, 0))`);
+
+      // (1) IDEMPOTENCY FIRST. The `service_purchases_idem_unique` index is
+      // GLOBAL on idempotency_key alone (mirrors land_upgrades) — look it up
+      // by itself and branch: same listing+buyer → replay the cached
+      // purchase (no new charge, no event); otherwise → clean 409 (the key
+      // was already spent on a different listing/buyer) rather than falling
+      // through to a 23505 that would roll back this call's debit and lie
+      // "replayed" while silently dropping this buyer's purchase.
+      const priorRows = await tx.execute<{
         id: string;
-        parcel_code: string;
-        tier: LandTier;
-        status: string;
-        rent_ct_weekly: number | string | null;
-        owner_avatar_id: string | null;
-        grid_x: number | string;
-        grid_y: number | string;
-        price_ct: number | string | null;
+        listing_id: string;
+        buyer_avatar_id: string;
+        seller_avatar_id: string;
+        price_ct: number | string;
+        land_transaction_id: string | null;
+        // Raw execute → timestamp arrives as a STRING, not Date (see toIso).
+        created_at: string;
       }>(
-        sql`SELECT id, parcel_code, tier, status, rent_ct_weekly, owner_avatar_id, grid_x, grid_y, price_ct
-            FROM land_parcels
-            WHERE id = ${parcelId}
+        sql`SELECT id, listing_id, buyer_avatar_id, seller_avatar_id, price_ct, land_transaction_id, created_at
+            FROM service_purchases
+            WHERE idempotency_key = ${idempotencyKey}
+            LIMIT 1`,
+      );
+      const prior = priorRows[0];
+      if (prior) {
+        if (prior.listing_id === listingId && prior.buyer_avatar_id === avatarId) {
+          const cachedPriceCt = Number(prior.price_ct);
+          return {
+            kind: 'cached',
+            purchase: {
+              id: prior.id,
+              listingId: prior.listing_id,
+              buyerAvatarId: prior.buyer_avatar_id,
+              sellerAvatarId: prior.seller_avatar_id,
+              priceCt: cachedPriceCt,
+              landTransactionId: prior.land_transaction_id,
+              createdAt: toIso(prior.created_at),
+            },
+            priceCt: cachedPriceCt,
+          };
+        }
+        throw new HTTPException(409, { message: 'idempotency_key_conflict' });
+      }
+
+      // (2) Lock the listing row.
+      const listingRows = await tx.execute<{
+        id: string;
+        structure_id: string;
+        owner_avatar_id: string;
+        kind: 'peer' | 'partner';
+        title: string;
+        price_ct: number | string;
+        status: string;
+      }>(
+        sql`SELECT id, structure_id, owner_avatar_id, kind, title, price_ct, status
+            FROM service_listings
+            WHERE id = ${listingId}
             FOR UPDATE`,
       );
-      const parcel = parcelRows[0];
-      if (!parcel) {
-        throw new HTTPException(404, { message: 'parcel_not_found' });
+      const listing = listingRows[0];
+      if (!listing) {
+        throw new HTTPException(404, { message: 'listing_not_found' });
+      }
+      if (listing.status !== 'active') {
+        throw new HTTPException(409, { message: 'listing_not_active' });
+      }
+      // (2a) CT-TIER GUARD (audit ADVISORY→FIX #2) — only a 'peer' listing
+      // settles in CT. A future USDC 'partner' listing must NEVER be paid with
+      // CT through this route, even if one is somehow created active. Cheap
+      // defense-in-depth before any ledger touch.
+      if (listing.kind !== 'peer') {
+        throw new HTTPException(409, { message: 'not_a_peer_listing' });
       }
 
-      // (b) Single-acquire safety: only an 'available' parcel can be rented. A
-      // replayed/concurrent acquire sees 'owned' (or reserved/retired) → 409.
-      if (parcel.status !== 'available') {
-        throw new HTTPException(409, { message: 'parcel_not_available' });
-      }
-
-      // (c) Founder = auction/USDC-only (501). starter/founder carry rent_ct_weekly
-      // NULL (not rentable) → 'rent_not_available'. Guard a 0/NULL rent from ever
-      // reaching debitClawTokens (which throws on amount<=0).
-      const rentCt = parcel.rent_ct_weekly == null ? null : Number(parcel.rent_ct_weekly);
-      if (parcel.tier === 'founder') {
-        throw new HTTPException(501, { message: 'founder_not_in_v1' });
-      }
-      if (rentCt == null || rentCt <= 0) {
-        throw new HTTPException(400, { message: 'rent_not_available' });
-      }
-
-      // (d) Ownership cap — a rented parcel counts toward the cap (owner_avatar_id
-      // is set on rent). COUNT under the advisory lock; coerce the PG-wire string.
-      const countRows = await tx.execute<{ n: number | string }>(
-        sql`SELECT COUNT(*)::int AS n FROM land_parcels WHERE owner_avatar_id = ${avatarId}`,
+      // (2b) STALE-LISTING / POST-EVICTION GUARD (audit BLOCKING #1) — the buy
+      // is the one money route that trusted the listing's denorm owner without
+      // re-verifying the shop still exists AND is still held by the seller. The
+      // rent sweeper archives the structure + returns the parcel to the pool on
+      // a rent-lapse eviction but does NOT cascade-delist its service_listings
+      // (confirmed), so a listing can outlive the seller's ownership of the
+      // shop — a buy would then pay a seller who no longer runs it. Re-read the
+      // structure + parcel under a lock (mirrors the LIST/upgrade ownership-
+      // desync discipline) and reject a defunct/transferred shop BEFORE any
+      // ledger touch. Lock order is buyer-advisory → listing → land_structures
+      // → land_parcels (s-before-p, same as the LIST route), so no new deadlock
+      // edge is introduced.
+      const shopRows = await tx.execute<{
+        struct_status: string;
+        parcel_owner: string | null;
+      }>(
+        sql`SELECT s.status AS struct_status, p.owner_avatar_id AS parcel_owner
+            FROM land_structures s
+            JOIN land_parcels p ON p.id = s.parcel_id
+            WHERE s.id = ${listing.structure_id}
+            FOR UPDATE OF s, p`,
       );
-      if (Number(countRows[0]?.n ?? 0) >= MAX_PARCELS_PER_AVATAR) {
-        throw new HTTPException(409, { message: 'parcel_cap_reached' });
+      const shop = shopRows[0];
+      if (
+        !shop ||
+        shop.struct_status !== 'active' ||
+        shop.parcel_owner !== listing.owner_avatar_id
+      ) {
+        throw new HTTPException(409, { message: 'structure_unavailable' });
       }
 
-      // (e) Debit the FIRST WEEK in this tx — a throw rolls back the flip too.
-      // Throws InsufficientTokensError (caught below) on a low balance.
-      const debit = await debitClawTokens(
-        {
-          avatarId,
-          amount: rentCt,
-          reason: 'land_parcel_rent',
-          source: 'api',
-          metadata: {
-            parcelId: parcel.id,
-            parcelCode: parcel.parcel_code,
-            tier: parcel.tier,
-            period: 'initial',
+      // (3) SERVER-authoritative price — the body never carries a price.
+      const priceCt = Number(listing.price_ct);
+      const sellerAvatarId = listing.owner_avatar_id;
+
+      // (4) Self-purchase — asserted BEFORE any ledger touch.
+      if (sellerAvatarId === avatarId) {
+        throw new HTTPException(409, { message: 'self_purchase' });
+      }
+
+      // (5) Settlement — conservation (price in == price out, NO rake, NO
+      // mint). priceCt===0 (free service) skips the ledger entirely
+      // (debitClawTokens throws on amount<=0) but still writes the audit +
+      // purchase rows below.
+      let debitLedgerId: string | null = null;
+      if (priceCt > 0) {
+        const debit = await debitClawTokens(
+          {
+            avatarId,
+            amount: priceCt,
+            reason: 'land_service_purchase',
+            source: 'api',
+            metadata: { listingId, sellerAvatarId },
           },
-        },
-        tx,
-      );
+          tx,
+        );
+        debitLedgerId = debit.ledgerId;
 
-      // (f) Flip available → owned, tenure='rented', paid through now + period.
-      await tx.execute(
-        sql`UPDATE land_parcels
-            SET status = 'owned',
-                owner_avatar_id = ${avatarId},
-                tenure = 'rented',
-                acquired_at = now(),
-                rent_paid_through = now() + make_interval(days => ${RENT_PERIOD_DAYS}),
-                grace_until = NULL,
-                updated_at = now()
-            WHERE id = ${parcel.id}`,
-      );
+        // Seller is credited SOFT — peer CT can NEVER mint cashable EARNED
+        // (conservation; the laundering defense). Composed IN THIS tx (never
+        // transferClawTokens, which opens its OWN transaction and would break
+        // atomicity with the service_purchases insert below).
+        await creditClawTokens(
+          {
+            avatarId: sellerAvatarId,
+            amount: priceCt,
+            reason: 'land_service_sale',
+            source: 'api',
+            provenance: 'soft',
+            metadata: { listingId, buyerAvatarId: avatarId },
+          },
+          tx,
+        );
+      }
 
-      // (f.1) Restore/purge any eviction-archived structure on this parcel.
-      await reconcileArchivedStructureOnAcquire(tx, parcel.id, avatarId);
-
-      // (g) Land-domain audit row — rent payment (sink: renter debited, no credit).
-      const meta = JSON.stringify({
-        tier: parcel.tier,
-        parcelCode: parcel.parcel_code,
-        period: 'initial',
-        rentCtWeekly: rentCt,
-      });
-      await tx.execute(
+      // (6) Land-domain audit row — parcel_id resolved via the structure join
+      // (a service listing has no parcel_id of its own).
+      const meta = JSON.stringify({ listingId, sellerAvatarId, title: listing.title });
+      const auditRows = await tx.execute<{ id: string }>(
         sql`INSERT INTO land_transactions
-              (kind, parcel_id, avatar_id, amount_ct, debit_ledger_tx_id, metadata)
-            VALUES ('rent_payment', ${parcel.id}, ${avatarId}, ${rentCt}, ${debit.ledgerId}, ${meta}::jsonb)`,
+              (kind, parcel_id, structure_id, avatar_id, amount_ct, debit_ledger_tx_id, metadata)
+            VALUES (
+              'service_sale',
+              (SELECT parcel_id FROM land_structures WHERE id = ${listing.structure_id}),
+              ${listing.structure_id},
+              ${avatarId},
+              ${priceCt},
+              ${debitLedgerId},
+              ${meta}::jsonb
+            )
+            RETURNING id`,
       );
+      const landTransactionId = auditRows[0]!.id;
 
-      // Read back the server-set rent_paid_through (server clock authoritative).
-      const ptRows = await tx.execute<{ rent_paid_through: string | Date | null }>(
-        sql`SELECT rent_paid_through FROM land_parcels WHERE id = ${parcel.id}`,
+      // (7) Insert the purchase row. A concurrent same-key winner trips the
+      // GLOBAL idempotency_key unique index (23505) — let it propagate OUT of
+      // this transaction (rolling back the debit/credit we just made here,
+      // which is correct: the winner already committed its own charge) so the
+      // OUTER catch can re-fetch the winning row over a fresh, non-aborted
+      // connection (mirrors the /upgrade 23505 handler exactly).
+      const purchaseRows = await tx.execute<{
+        id: string;
+        listing_id: string;
+        buyer_avatar_id: string;
+        seller_avatar_id: string;
+        price_ct: number | string;
+        land_transaction_id: string | null;
+        // Raw execute → timestamp arrives as a STRING, not Date (see toIso).
+        created_at: string;
+      }>(
+        sql`INSERT INTO service_purchases
+              (listing_id, buyer_avatar_id, seller_avatar_id, price_ct, land_transaction_id, idempotency_key)
+            VALUES (${listingId}, ${avatarId}, ${sellerAvatarId}, ${priceCt}, ${landTransactionId}, ${idempotencyKey})
+            RETURNING id, listing_id, buyer_avatar_id, seller_avatar_id, price_ct, land_transaction_id, created_at`,
       );
-      const pt = ptRows[0]?.rent_paid_through ?? null;
+      const row = purchaseRows[0]!;
 
       return {
-        parcel: {
-          id: parcel.id,
-          parcelCode: parcel.parcel_code,
-          tier: parcel.tier,
-          status: 'owned' as const,
-          gridX: Number(parcel.grid_x),
-          gridY: Number(parcel.grid_y),
-          priceCt: parcel.price_ct == null ? null : Number(parcel.price_ct),
-          ownerAvatarId: avatarId,
+        kind: 'fresh',
+        purchase: {
+          id: row.id,
+          listingId: row.listing_id,
+          buyerAvatarId: row.buyer_avatar_id,
+          sellerAvatarId: row.seller_avatar_id,
+          priceCt: Number(row.price_ct),
+          landTransactionId: row.land_transaction_id,
+          createdAt: toIso(row.created_at),
         },
-        amountCt: rentCt,
-        rentPaidThrough: pt instanceof Date ? pt.toISOString() : String(pt ?? ''),
+        priceCt,
+        sellerAvatarId,
+        structureId: listing.structure_id,
       };
     });
   } catch (err) {
+    const pgCode = (err as { code?: string } | undefined)?.code;
+    if (pgCode === '23505') {
+      // Concurrent same-key winner — our INSERT tripped the GLOBAL
+      // idempotency_key unique index AFTER our own pre-check read (step 1), so
+      // the whole tx (including our debit/credit) rolled back. Re-fetch the
+      // winner OUTSIDE the now-aborted tx and serve it ONLY if it really is
+      // THIS listing+buyer (ownership-safe — never disclose another buyer's
+      // purchase row), mirroring the /upgrade 23505 handler's defensive check.
+      const winnerRows = await db
+        .select({
+          id: servicePurchases.id,
+          listingId: servicePurchases.listingId,
+          buyerAvatarId: servicePurchases.buyerAvatarId,
+          sellerAvatarId: servicePurchases.sellerAvatarId,
+          priceCt: servicePurchases.priceCt,
+          landTransactionId: servicePurchases.landTransactionId,
+          createdAt: servicePurchases.createdAt,
+        })
+        .from(servicePurchases)
+        .where(eq(servicePurchases.idempotencyKey, idempotencyKey))
+        .limit(1);
+      const winner = winnerRows[0];
+      if (winner && winner.listingId === listingId && winner.buyerAvatarId === avatarId) {
+        return c.json(
+          {
+            purchase: {
+              id: winner.id,
+              listingId: winner.listingId,
+              buyerAvatarId: winner.buyerAvatarId,
+              sellerAvatarId: winner.sellerAvatarId,
+              priceCt: winner.priceCt,
+              // winner.* is a drizzle .select() (real Date), but toIso keeps the
+              // whole route's date-serialization uniform + string-tolerant.
+              landTransactionId: winner.landTransactionId,
+              createdAt: toIso(winner.createdAt),
+            },
+            priceCt: winner.priceCt,
+            cached: true,
+          },
+          200,
+        );
+      }
+      return c.json({ error: 'idempotency_key_conflict' }, 409);
+    }
+    if (pgCode === '40P01') {
+      // Mutual-buy DEADLOCK (audit ADVISORY→FIX #3): A-buys-B's-service while
+      // B-buys-A's inverts the debit-own/credit-other ledger-row lock order.
+      // Postgres picks a victim and rolls its whole tx back (debit + credit +
+      // audit + purchase — nothing committed), so it is money-safe to ask the
+      // client to retry with the SAME idempotencyKey (which then proceeds fresh,
+      // or replays if the peer's tx already committed this key). Not re-ordering
+      // the ledger locks — the retryable-409 is the minimal correct fix.
+      return c.json({ error: 'concurrent_retry' }, 409);
+    }
     if (err instanceof InsufficientTokensError) {
       return c.json({ error: 'insufficient_clawtokens' }, 400);
     }
     if (err instanceof HTTPException) {
-      return c.json({ error: err.message }, err.status as 400 | 404 | 409 | 501);
+      return c.json({ error: err.message }, err.status as 404 | 409);
     }
     throw err;
   }
 
-  // Committed — bust the owner's combined cache AND the for-sale pool cache for
-  // this tier (the parcel left 'available'). Then emit the leaderboard credit.
-  bustOwnedCache(avatarId);
-  bustParcelsAvailableCache(rented.parcel.tier);
+  if (result.kind === 'cached') {
+    return c.json({ purchase: result.purchase, priceCt: result.priceCt, cached: true });
+  }
 
-  // Acquiring a parcel (rent OR buy) is one PARCEL_PURCHASED credit (weight 5,
-  // capped 5/day). Weekly rent-sweep renewals emit NO leaderboard event.
+  // FRESH purchase committed — bust the structure's + all-listings browse cache.
+  bustServiceListingsCache(result.structureId);
+
+  // Resolve the SELLER's own agentId/userId (durably — the seller may be
+  // offline right now) so the emitted event carries the SELLER as the
+  // credited subject, never the buyer. LEFT JOIN FROM avatars (not an INNER
+  // JOIN from openclaw_bots) — a human-only seller with no connected agent
+  // still needs its userId resolved for the event; an INNER JOIN would
+  // silently drop it and mis-attribute the row to no one. ORDER BY
+  // lastSeenAt DESC + LIMIT 1 is a deterministic tie-break for the rare case
+  // of more than one bot row per user — liveness is irrelevant here (this is
+  // a leaderboard-credit lookup, not a real-CT settlement gate).
+  const sellerRows = await db
+    .select({ userId: avatars.userId, agentId: agentBots.agentId })
+    .from(avatars)
+    .leftJoin(agentBots, eq(agentBots.userId, avatars.userId))
+    .where(eq(avatars.id, result.sellerAvatarId))
+    .orderBy(desc(agentBots.lastSeenAt))
+    .limit(1);
+  const seller = sellerRows[0];
+  const sellerUserId = seller?.userId ?? null;
+  const sellerAgentId = seller?.agentId ?? null;
+
+  // CONTRACT (leaderboard-progression, P3 slice 4): `priceCt` and
+  // `buyerAvatarId` are LOAD-BEARING for the scoring CTE — the paid-only
+  // filter (throw-proof text compare on priceCt) and the DISTINCT-BUYER
+  // anti-wash cap key. Never drop or rename them without coordinating with
+  // the leaderboard owner.
   void logEventFromContext(c, {
-    eventType: LAND_EVENT_TYPES.PARCEL_PURCHASED,
-    userId: identity.userId,
-    avatarId: identity.avatarId,
-    agentId: identity.kind === 'agent' ? identity.agentId : null,
+    eventType: LAND_EVENT_TYPES.SERVICE_SOLD,
+    userId: sellerUserId,
+    avatarId: result.sellerAvatarId,
+    agentId: sellerAgentId,
     payload: {
-      parcelCode: rented.parcel.parcelCode,
-      tier: rented.parcel.tier,
-      amountCt: rented.amountCt,
-      tenure: 'rented',
+      listingId,
+      structureId: result.structureId,
+      priceCt: result.priceCt,
+      buyerAvatarId: avatarId,
     },
   });
 
-  // Live land-sync (2.1): the rent flipped this parcel available→owned, so its
-  // in-world for-sale sign must vanish for OTHER players. Fire-and-forget AFTER
-  // commit — a broadcast error can NEVER affect the (already durable) rent.
-  broadcastLandEvent({
-    parcelCode: rented.parcel.parcelCode,
-    status: 'owned',
-    ownerAvatarId: avatarId,
-  });
-
-  return c.json({
-    parcel: rented.parcel,
-    amountCt: rented.amountCt,
-    rentPaidThrough: rented.rentPaidThrough,
-  });
+  return c.json({ purchase: result.purchase, priceCt: result.priceCt, cached: false });
 });

@@ -108,6 +108,7 @@ import {
 } from '@clawville/shared';
 import { sessionMiddleware } from '../middleware/auth';
 import { resolveAgentSession } from '../middleware/require-auth-or-agent';
+import { isGuestUser } from '../middleware/require-non-guest';
 import {
   CLIENT_SEED_MAX_LENGTH,
   createServerSeed,
@@ -122,7 +123,8 @@ import {
   debitClawTokens,
   InsufficientTokensError,
 } from '../services/claw-token-ledger';
-import { logEventFromContext } from '../services/event-logger';
+import { logEventFromContext, logEventFromContextReturningId } from '../services/event-logger';
+import { publishCoveSettlement } from '../services/agent-settlement-publish';
 import {
   serializeSpinResult,
   serializeWildMultiplier,
@@ -272,6 +274,21 @@ type SlotSubject =
   | { kind: 'guest'; userId: null; avatarId: null; agentId: null; sessionId: null; guestFpHash: string };
 
 /**
+ * The DEMO `kind:'guest'` subject (session/shoe demo balance, ZERO ledger),
+ * keyed on the request fingerprint hash. Used by BOTH an anonymous visitor
+ * AND a guest ACCOUNT (`is_guest` Lucia user) — the founder-ruling 2026-07-06
+ * fully-demo guest economy. fpHash is always present (fingerprintMiddleware
+ * throws at API boot if FINGERPRINT_SECRET is unset); the check is defense-in-depth.
+ */
+function guestDemoSubject(c: { get(key: 'fpHash'): string }): SlotSubject {
+  const fpHash = c.get('fpHash');
+  if (!fpHash) {
+    throw new HTTPException(500, { message: 'fpHash_missing_for_guest_request' });
+  }
+  return { kind: 'guest', userId: null, avatarId: null, agentId: null, sessionId: null, guestFpHash: fpHash };
+}
+
+/**
  * Resolve the request subject. Precedence: Lucia human → agent session → guest
  * (verbatim semantics from `cove-blackjack.ts` getSubject).
  *
@@ -292,6 +309,17 @@ async function getSubject(c: {
 }): Promise<SlotSubject> {
   const user = c.get('user');
   if (user) {
+    // Guest ACCOUNTS run the FULLY-DEMO economy (founder ruling 2026-07-06): an
+    // `is_guest` Lucia user has an avatar + a 100-CT SOFT balance but must NEVER
+    // bet/win/lose REAL CT in the Cove. Route them to the SAME demo `kind:'guest'`
+    // subject an anonymous visitor gets — session/shoe demo balance, ZERO ledger.
+    // NOT a 403: guests keep playing the Cove for fun on demo CT. Non-guest humans
+    // fall through to the real-CT `kind:'user'` path below. A connected/hosted
+    // agent resolves via the agent-session header (a guest is never an agent, E5),
+    // so real-CT agent parity is untouched.
+    if (await isGuestUser(user.id)) {
+      return guestDemoSubject(c);
+    }
     return { kind: 'user', userId: user.id, avatarId: null, agentId: null, sessionId: null, guestFpHash: null };
   }
 
@@ -330,16 +358,7 @@ async function getSubject(c: {
     };
   }
 
-  const fpHash = c.get('fpHash');
-  // fingerprintMiddleware crashes API boot if FINGERPRINT_SECRET is unset,
-  // and its three-tier fallback (X-CV-Fingerprint → UA+IP → no-fp:<prefix>)
-  // guarantees fpHash is never empty. Defense-in-depth check anyway.
-  if (!fpHash) {
-    throw new HTTPException(500, {
-      message: 'fpHash_missing_for_guest_request',
-    });
-  }
-  return { kind: 'guest', userId: null, avatarId: null, agentId: null, sessionId: null, guestFpHash: fpHash };
+  return guestDemoSubject(c);
 }
 
 /**
@@ -1475,7 +1494,9 @@ coveSlotsRouter.post('/spin', async (c) => {
     throw err;
   }
 
-  void logEventFromContext(c, {
+  // Durable settle row (UNCHANGED shape) — capture events.id for the D7 slice-1
+  // live settlement-confirm cursor. Write is byte-identical to before.
+  const settleLogP = logEventFromContextReturningId(c, {
     eventType: 'cove.slots.spin.executed',
     userId: ledgerUserId(subject),
     avatarId: avatar?.id ?? null,
@@ -1490,6 +1511,29 @@ coveSlotsRouter.post('/spin', async (c) => {
       isAgent: subject.kind === 'agent',
     },
   });
+  // D7 slice-1 (DELIVERY-ONLY; money-lens review): live settlement-confirm to an
+  // ONLINE agent. Durability is the row above; fire-and-forget, never affects
+  // settlement. This is the FRESH-spin executor — idempotent replays return
+  // early upstream (idempotency fast-path) and never reach here, so no replay
+  // gate is needed. The LIVE frame below carries only spin facts (no session
+  // id). NOTE: the durable row above — and thus the /events/replay + SSE
+  // catch-up path — DOES include `sessionId: session.id`; that is the slot-GAME
+  // session UUID, NOT the X-Clawville-Agent-Session bearer, so replaying it
+  // leaks no credential (the write-side sanitizer would redact a real bearer).
+  if (subject.kind === 'agent') {
+    publishCoveSettlement({
+      agentId: subject.agentId,
+      game: 'slots',
+      eventIdPromise: settleLogP,
+      payload: {
+        spinId: spinRowId,
+        predict: predictBig.toString(),
+        winAmount: winAmountBig.toString(),
+      },
+    });
+  } else {
+    void settleLogP;
+  }
 
   const serialized = serializeSpinResult(spinResult);
   const response: SpinResponse = {

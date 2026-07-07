@@ -1,10 +1,12 @@
 'use client';
 
+import { useQuery } from '@tanstack/react-query';
 import { useAvatar } from '@/hooks/use-avatar';
 import { AVATAR_SPECIES, KNOWLEDGE_BOOKS } from '@clawville/shared';
 import { useGameStore } from '@/stores/game';
 import { useIsMobile } from '@/hooks/use-is-mobile';
 import { buildingZones } from '@/lib/pixi/tilemap-data';
+import { api } from '@/lib/api';
 
 function StatBar({ label, value, max = 20, color = 'bg-emerald-400' }: { label: string; value: number; max?: number; color?: string }) {
   const pct = Math.min(100, Math.round((value / max) * 100));
@@ -29,6 +31,22 @@ export default function AvatarStatusBar() {
   const visitedBuildings = useGameStore((s) => s.visitedBuildings);
   const controlMode = useGameStore((s) => s.controlMode);
   const isMobile = useIsMobile();
+  // Guest accounts run an ALL-DEMO economy (founder ruling 2026-07-06): their
+  // tokens are demo-only, so the balance chip must say so. Shares the SAME
+  // react-query cache key as game/page.tsx (['auth-me'] + api.me()), so this
+  // adds no extra network round trip.
+  const { data: authData } = useQuery({
+    queryKey: ['auth-me'],
+    queryFn: async () => {
+      try {
+        return await api.me();
+      } catch {
+        return null;
+      }
+    },
+    retry: false,
+  });
+  const isGuest = !!(authData as any)?.user?.isGuest;
 
   if (isLoading) return null;
   // Hide on ALL touch devices (incl. iPad Air/Pro which exceed Tailwind's
@@ -99,18 +117,26 @@ export default function AvatarStatusBar() {
   return (
     <div className="claw-panel fixed bottom-4 left-4 z-40 w-56">
       {/* Avatar identity row */}
-      <div className="flex items-center gap-2 md:mb-3">
+      <div className={`flex items-center gap-2 ${isGuest ? '' : 'md:mb-3'}`}>
         <span className="text-xl">{emoji}</span>
         <div className="flex-1 min-w-0">
           <span className="text-white font-bold text-sm truncate block">{avatar.name}</span>
           <span className="text-cyan-400/60 text-[10px] font-mono">Lv {avatar.level ?? 1}</span>
         </div>
-        {/* Token balance */}
+        {/* Token balance — guests run an all-demo economy, so their balance is
+            labeled DEMO (they never earn real CT). */}
         <span className="flex items-center gap-1 text-[11px] font-bold text-amber-300 bg-amber-500/15 border border-amber-500/20 rounded-full px-2.5 py-0.5">
           <span className="text-xs">&#x1FA99;</span>
-          {avatar.clawTokens ?? 100}
+          {avatar.clawTokens ?? 100}{isGuest ? ' DEMO' : ''}
         </span>
       </div>
+
+      {/* Guest demo-economy caption (light text on dark panel). */}
+      {isGuest && (
+        <div className="text-[10px] text-amber-200/80 mt-1 md:mb-3">
+          Demo tokens — sign up to earn real CT.
+        </div>
+      )}
 
       {/* Stats */}
       <div className="hidden md:block space-y-1.5">

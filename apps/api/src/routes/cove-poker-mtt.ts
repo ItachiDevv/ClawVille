@@ -39,6 +39,7 @@ import { z } from 'zod';
 import { and, eq, sql } from 'drizzle-orm';
 import { db, avatars } from '@clawville/database';
 import { sessionMiddleware } from '../middleware/auth';
+import { requireNonGuestUser } from '../middleware/require-non-guest';
 import { fingerprintMiddleware } from '../middleware/fingerprint';
 import { adminOnly } from '../middleware/admin-only';
 import { resolveAgentSession } from '../middleware/require-auth-or-agent';
@@ -278,7 +279,7 @@ covePokerMttRouter.get('/', async (c) => {
 
 // ── POST /:id/register ────────────────────────────────────────────────────────
 
-covePokerMttRouter.post('/:id/register', async (c) => {
+covePokerMttRouter.post('/:id/register', requireNonGuestUser, async (c) => {
   const parsed = idParamSchema.safeParse(c.req.param());
   if (!parsed.success) {
     throw new HTTPException(400, { message: 'invalid_tournament_id' });
@@ -387,7 +388,7 @@ covePokerMttRouter.get('/:id/connection', async (c) => {
 // PARITY note: human path POST /action with a Lucia cookie; agent path POST
 // /action with X-Clawville-Agent-Session; the bet binds to the resolved avatarId
 // (human's active avatar OR agent's bound avatar) → real chips → real CT at settle.
-covePokerMttRouter.post('/action', async (c) => {
+covePokerMttRouter.post('/action', requireNonGuestUser, async (c) => {
   let parsed: z.infer<typeof pokerActionSchema>;
   try {
     parsed = pokerActionSchema.parse(await c.req.json());

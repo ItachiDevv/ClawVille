@@ -10,6 +10,13 @@ import type { LandTier } from '@clawville/shared';
 /** Parcel lifecycle status as returned by the API. */
 export type LandParcelStatus = 'available' | 'owned' | 'reserved' | 'retired';
 
+/**
+ * How a parcel is held; null on an available/unsold parcel. Phase B
+ * (2026-07-07): 'deposit' = starter deposit-escrow, 'hold' = CLV hold-to-keep
+ * (c/b/a/founder); 'owned'/'starter' are legacy grandfathered tenures.
+ */
+export type LandTenure = 'rented' | 'owned' | 'starter' | 'deposit' | 'hold';
+
 /** A single land parcel row. `priceCt` is null for the founder tier (auction-only). */
 export interface LandParcelDTO {
   id: string;
@@ -20,6 +27,14 @@ export interface LandParcelDTO {
   gridY: number;
   priceCt: number | null;
   ownerAvatarId: string | null;
+  /**
+   * Weekly rent in CT, or null when the tier is not rentable. Rentable = c-tier
+   * only; starter/founder carry null. The Land Office gates its Rent action on
+   * `rentCtWeekly != null`.
+   */
+  rentCtWeekly: number | null;
+  /** How the parcel is held; null = available/unsold. */
+  tenure: LandTenure | null;
 }
 
 /** A structure (home or shop) placed on an owned parcel. */
@@ -77,6 +92,18 @@ export interface BuyParcelResponse {
   amountCt: number;
 }
 
+/**
+ * POST /api/land/parcels/:id/rent response. `amountCt` = the weekly rent debited
+ * for the first week (server-read `rent_ct_weekly`). `rentPaidThrough` = ISO date
+ * the rent is paid through; the hourly sweeper charges the next week + grace →
+ * evict if unpaid.
+ */
+export interface RentParcelResponse {
+  parcel: LandParcelDTO;
+  amountCt: number;
+  rentPaidThrough: string;
+}
+
 /** POST /api/land/parcels/:id/structure response. */
 export interface PlaceStructureResponse {
   structure: LandStructureDTO;
@@ -107,4 +134,78 @@ export type SpawnPreferenceMode = 'home' | 'town';
 export interface SpawnPreferenceResponse {
   spawnPreference: SpawnPreferenceMode;
   homeParcelId: string | null;
+}
+
+// ── Service listings — run-a-store (P3 Slice 4) ────────────────────────────
+// Mirrors the FROZEN backend contract (apps/api/src/routes/land.ts routes
+// 12-16). A peer CT service listed on an owned/rented ACTIVE 'shop' structure;
+// buying it settles full-price CT to the seller (no rake — v1 design).
+
+/** A peer service listing (mirrors `service_listings`). */
+export interface ServiceListingDTO {
+  id: string;
+  structureId: string;
+  ownerAvatarId: string;
+  kind: 'peer' | 'partner';
+  title: string;
+  description: string | null;
+  priceCt: number;
+  status: 'active' | 'paused' | 'delisted';
+  platformFeeBps: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** A settled service purchase (mirrors `service_purchases`). */
+export interface ServicePurchaseDTO {
+  id: string;
+  listingId: string;
+  buyerAvatarId: string;
+  sellerAvatarId: string;
+  priceCt: number;
+  landTransactionId: string | null;
+  createdAt: string;
+}
+
+/** POST /api/land/structures/:structureId/services request body. */
+export interface ListServiceRequest {
+  title: string;
+  description?: string;
+  priceCt: number;
+}
+
+/** POST /api/land/structures/:structureId/services response. */
+export interface ListServiceResponse {
+  listing: ServiceListingDTO;
+}
+
+/** PATCH /api/land/services/:listingId request body — at least one field required. */
+export interface UpdateServiceRequest {
+  title?: string;
+  description?: string;
+  priceCt?: number;
+  status?: 'active' | 'paused' | 'delisted';
+}
+
+/** PATCH /api/land/services/:listingId response. */
+export interface UpdateServiceResponse {
+  listing: ServiceListingDTO;
+}
+
+/** GET /api/land/structures/:structureId/services response (active listings only). */
+export interface StructureServicesResponse {
+  listings: ServiceListingDTO[];
+}
+
+/** GET /api/land/services?page=&limit= response (paged, active only, newest first). */
+export interface BrowseServicesResponse {
+  listings: ServiceListingDTO[];
+  nextPage?: number;
+}
+
+/** POST /api/land/services/:listingId/buy response. `cached` = an idempotent replay (no new charge). */
+export interface BuyServiceResponse {
+  purchase: ServicePurchaseDTO;
+  priceCt: number;
+  cached: boolean;
 }

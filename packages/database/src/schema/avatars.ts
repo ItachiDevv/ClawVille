@@ -117,7 +117,42 @@ export const avatars = pgTable('avatars', {
   /** Link to platform_agents table for ElizaOS runtime */
   platformAgentId: uuid('platform_agent_id')
     .references(() => platformAgents.id, { onDelete: 'set null' }),
-  clawTokens: integer('claw_tokens').default(100).notNull(),
+  clawTokens: integer('claw_tokens').default(1000).notNull(),
+  /**
+   * vCLAW PROVENANCE PER-TAG BALANCES (Tokenomics F1, 2026-06-27).
+   *
+   * `clawTokens` stays the ONE displayed TOTAL. These three split that total by
+   * cashability so the ledger can burn non-cashable balance first and preserve the
+   * cashable (`earned`) balance. HARD INVARIANT, maintained atomically in the SAME
+   * FOR-UPDATE transaction as every balance change by `claw-token-ledger.ts`:
+   *
+   *     claw_tokens = soft_balance + bought_balance + earned_balance
+   *
+   * Defense-in-depth: the Postgres CHECK `avatars_vclaw_balance_sum` (constraint
+   * block at the table tail) rejects any direct-SQL write that breaks the sum.
+   * Per-tag COLUMNS (not derive-from-ledger-rows) so the hot spend path reads the
+   * three balances in O(1) under the row lock instead of aggregating history.
+   *
+   * Backfill (migration 2026-06-27): legacy `claw_tokens` migrates ENTIRELY into
+   * `soft_balance` (legacy CT was never paid for ⇒ honored as SOFT); bought/earned
+   * start 0. The migration's idempotent backfill moves the existing balance into
+   * `soft_balance` for already-populated rows.
+   *
+   * ⚠️ `soft_balance` DEFAULT MUST TRACK `claw_tokens`'s DEFAULT (both 1000 after
+   * the A3 ¢-peg redenomination — was 100/100 pre-A3; migration `0011` did the ×10
+   * on both the existing rows AND the column DEFAULT so new-account starting value
+   * stays $10). The `avatars_vclaw_balance_sum` CHECK is immediate/non-deferrable,
+   * so a bare INSERT that omits BOTH columns must satisfy `claw_tokens(default
+   * 1000) = soft(default 1000) + bought(0) + earned(0)`. If these two defaults ever
+   * diverge, every default-relying INSERT (guest signup, create-agent, agent-setup,
+   * Hatcher provision, web avatars route) throws a CHECK violation. Sites that set
+   * `clawTokens` EXPLICITLY to a non-default value (house-bank seeder=0, bumper
+   * bots=0, test-accounts=100_000) MUST mirror that value into `softBalance` in the
+   * same INSERT/UPDATE — the column default only covers omitting BOTH.
+   */
+  softBalance: integer('soft_balance').default(1000).notNull(),
+  boughtBalance: integer('bought_balance').default(0).notNull(),
+  earnedBalance: integer('earned_balance').default(0).notNull(),
   // town-center spawn (land-builder-economics 704-world re-center); mirrors
   // @clawville/shared SPAWN_PX (11264, 11804). Migration 0002 reset rows to the
   // 576-world spawn; migration 0006 shifts every row +2048 for the 576→704 grow.
@@ -276,5 +311,16 @@ export const avatars = pgTable('avatars', {
   spawnPreferenceCheck: check(
     'avatars_spawn_preference_valid',
     sql`${t.spawnPreference} IN ('town','home')`,
+  ),
+  // Tokenomics F1 (2026-06-27) — the per-tag sum invariant as a DB-level guard.
+  // Defense-in-depth against any writer (admin SQL, cron, a future buggy code
+  // path) that mutates a tag balance without keeping `claw_tokens` equal to the
+  // sum of the three tags. `claw-token-ledger.ts` maintains this atomically; the
+  // CHECK is the belt-and-suspenders backstop. Added by migration
+  // 2026-06-27_vclaw_provenance.sql AFTER the backfill (so it never rejects a
+  // pre-backfill row whose tags are still 0 while claw_tokens is non-zero).
+  vclawBalanceSumCheck: check(
+    'avatars_vclaw_balance_sum',
+    sql`${t.clawTokens} = ${t.softBalance} + ${t.boughtBalance} + ${t.earnedBalance}`,
   ),
 }));

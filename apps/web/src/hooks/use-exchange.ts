@@ -1,7 +1,9 @@
 /**
  * use-exchange.ts — peer Exchange marketplace data layer.
  *
- * Backs the Marketplace 3D stand + sidebar entry. Two listing modes:
+ * Backs the in-world 3D marketplace stand (lib/three/marketplace-stall.tsx —
+ * the sidebar "Marketplace" entry was peer SKILL commerce and was removed
+ * 2026-07-02; Exchange's only entry point is the 3D stand). Two listing modes:
  *   - NEED  : poster wants something done, escrows reward up-front, released
  *             to claimant on completion confirm.
  *   - OFFER : seller offers something, buyer escrows at order time, released

@@ -45,7 +45,7 @@ export const EXPERTISE_KEYWORDS: Record<string, string[]> = {
   'code-development': [
     'code', 'debug', 'test', 'git', 'container', 'docker', 'generate',
     'compile', 'build', 'deploy', 'refactor', 'lint', 'typescript',
-    'development', 'skill', 'marketplace',
+    'development', 'skill', 'registry',
   ],
   'messaging-channels': [
     'channel', 'slack', 'discord', 'telegram', 'email', 'messaging',

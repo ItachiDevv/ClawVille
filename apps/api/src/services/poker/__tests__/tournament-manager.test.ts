@@ -630,6 +630,10 @@ const PAYOUT_3: PayoutCurveEntry[] = [
   { placement: 3, share: 0.2 },
 ];
 
+/** T0 fee routing — the fake house-treasury avatarId the injected resolver returns
+ * (so a raked settle credits the FAKE ledger here, never touching a real DB). */
+const TREASURY_AVATAR = 'av-house-treasury';
+
 function buildManager(db: FakeDb, ledger: FakeLedger, clock: FakeClock) {
   const sim = new PokerTableSim(clock);
   // Swallow the WS surface callbacks (broadcast/per-seat) — the TM only wires the
@@ -653,6 +657,9 @@ function buildManager(db: FakeDb, ledger: FakeLedger, clock: FakeClock) {
     emitPlacementFn: (emit) => {
       placementEmits.push(emit);
     },
+    // T0: settle credits the rake to this fake treasury via the FAKE ledger
+    // (the default resolver would lazily import the real seeder → real DB).
+    resolveTreasuryAvatarId: async () => TREASURY_AVATAR,
   });
   return { tm, sim, placementEmits };
 }
@@ -832,6 +839,13 @@ describe('TournamentManager — single-table sit-n-go end-to-end (mocked DB + le
     const totalPrizes = ledger.totalCredited('poker_mtt_prize');
     expect(BigInt(totalBuyIns) - BigInt(totalPrizes)).toBe(rake); // 400 - 380 == 20
 
+    // T0 fee routing: the withheld rake is CREDITED to the house treasury in the
+    // same settle (no longer a silent burn). Full conservation closes exactly:
+    // buy-ins == prizes + treasury credit.
+    expect(ledger.totalCredited('house_fee_mtt_rake')).toBe(Number(rake)); // 20
+    expect(ledger.get(TREASURY_AVATAR)).toBe(Number(rake));
+    expect(BigInt(totalBuyIns)).toBe(BigInt(totalPrizes) + rake); // supply closed
+
     // ── (5c) Leaderboard parity: ONE activity.match.placed per placed entrant ──
     // The free-agent leaderboard credits `activity.match.placed`. Wiring MUST fire
     // for every placed subject (Rule E5 parity — human + agent alike).
@@ -851,12 +865,17 @@ describe('TournamentManager — single-table sit-n-go end-to-end (mocked DB + le
     // ── (5b) Idempotent settle: settle AGAIN → no second credit, NO re-emit ────
     const prizeCreditsBefore = ledger.credits.filter((c) => c.reason === 'poker_mtt_prize').length;
     const balancesBefore = avatars.map((a) => ledger.get(a));
+    const treasuryBefore = ledger.get(TREASURY_AVATAR);
     const emitsBefore = placementEmits.length;
     const re = await tm.settleTournament(tid);
     expect(re.alreadySettled).toBe(true);
     const prizeCreditsAfter = ledger.credits.filter((c) => c.reason === 'poker_mtt_prize').length;
     expect(prizeCreditsAfter).toBe(prizeCreditsBefore); // no new credits
     expect(avatars.map((a) => ledger.get(a))).toEqual(balancesBefore);
+    // T0: an idempotent replay must NOT re-credit the treasury either (the fee
+    // credit lives in the fresh-settle branch only).
+    expect(ledger.get(TREASURY_AVATAR)).toBe(treasuryBefore);
+    expect(ledger.credits.filter((c) => c.reason === 'house_fee_mtt_rake').length).toBe(1);
     // An idempotent replay must NOT re-emit leaderboard placements (would
     // double-credit the board for the same placement on a re-settle).
     expect(placementEmits.length).toBe(emitsBefore);
