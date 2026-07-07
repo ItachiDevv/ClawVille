@@ -33,6 +33,16 @@ ensureEnv('VANITY_ENCRYPTION_KEY', HEX32);
 
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
 import * as realDatabase from '@clawville/database';
+import * as realOracle from '../clv-price-oracle';
+
+// Captured BEFORE mock.module patches the namespace in place (the
+// x402-checkout.test.ts leak-guard convention). The oracle mock below MUST
+// spread these so every non-stubbed export survives for later test files in
+// bun's shared module registry — CLV_MINT in particular is imported at module
+// load by linked-wallet-clv-balance (pulled by the C4 market suite); without
+// the spread, any later suite whose import graph touches those exports dies
+// at load with "Export named 'CLV_MINT' not found".
+const REAL_ORACLE_EXPORTS = { ...realOracle };
 
 // ── @clawville/database stub ────────────────────────────────────────────────
 type InsertedValues = Record<string, unknown>;
@@ -72,6 +82,7 @@ let stubQuote: { quoteUsd: number | null; poolLiquidityUsd: number | null } = {
   poolLiquidityUsd: 22_000,
 };
 mock.module('../clv-price-oracle', () => ({
+  ...REAL_ORACLE_EXPORTS,
   getClvPrice: () => ({
     spotUsd: stubQuote.quoteUsd,
     twap30mUsd: stubQuote.quoteUsd,
