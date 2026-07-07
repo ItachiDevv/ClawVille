@@ -353,7 +353,7 @@ describe('ct-topup settle — durable claim → capture → resumable credit', (
     expect(creditCalls.length).toBe(0);
   });
 
-  it('TRANSIENT facilitator failure ⇒ 402, claim RELEASED to pending (no failed write)', async () => {
+  it('VERIFY-phase transport error ⇒ 402, claim RELEASED to pending (no money, no failed)', async () => {
     findFirstQueue = [pendingRow()];
     verifyAndSettleResult = { settled: false, isValid: false, txSignature: null, failureReason: 'facilitator_verify_error' };
     const res = await settle();
@@ -362,6 +362,22 @@ describe('ct-topup settle — durable claim → capture → resumable credit', (
     expect(json.transient).toBe(true);
     expect(updateCalls.find((s) => s.status === 'pending')).toBeDefined(); // released
     expect(updateCalls.find((s) => s.status === 'failed')).toBeUndefined();
+  });
+
+  it('SETTLE-phase error (ambiguous) ⇒ 409 reconcile, NEVER pending (Codex round-2 BLOCKING)', async () => {
+    findFirstQueue = [pendingRow()];
+    // The /settle call was attempted and threw — the settlement MAY have landed.
+    verifyAndSettleResult = { settled: false, isValid: false, txSignature: null, failureReason: 'facilitator_settle_error' };
+    const res = await settle();
+    expect(res.status).toBe(409);
+    const json = (await res.json()) as Record<string, unknown>;
+    expect(json.code).toBe('topup_reconciliation');
+    expect(json.status).toBe('reconcile');
+    // Money-state UNKNOWN ⇒ never released to pending (no retry may re-settle).
+    expect(updateCalls.find((s) => s.status === 'reconcile')).toBeDefined();
+    expect(updateCalls.find((s) => s.status === 'pending')).toBeUndefined();
+    expect(updateCalls.find((s) => s.status === 'failed')).toBeUndefined();
+    expect(creditCalls.length).toBe(0);
   });
 
   it('STALE settling claim (no signature, aged) ⇒ 409 reconcile, facilitator NOT re-called', async () => {

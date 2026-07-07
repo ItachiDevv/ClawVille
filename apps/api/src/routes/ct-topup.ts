@@ -49,7 +49,7 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { randomUUID } from 'node:crypto';
-import { db, ctTopups, avatars, and, eq, isNull } from '@clawville/database';
+import { db, ctTopups, avatars, and, eq, isNull, inArray, sql } from '@clawville/database';
 import { sessionMiddleware } from '../middleware/auth';
 import {
   requireAuthOrAgentSession,
@@ -245,13 +245,15 @@ class TopupCreditAlreadyDone extends Error {
 
 /** A `settling` row with NO signature older than this is a DEAD claim (its
  *  process died before the facilitator returned) → reconcile, NEVER an auto-retry
- *  of the facilitator. Floor 30s; MUST exceed the facilitator settle timeout
- *  (~120s) so a live in-flight settle is never mis-reconciled. */
+ *  of the facilitator. The floor MUST exceed the facilitator settle timeout
+ *  (~120s) PLUS margin so a live in-flight settle is never mis-reconciled while
+ *  still working — Codex round-2 HIGH: floor 180_000. Default 300_000. */
 const TOPUP_SETTLING_STALE_MS_DEFAULT = 5 * 60_000;
+const TOPUP_SETTLING_STALE_MS_FLOOR = 180_000;
 function resolveTopupSettlingStaleMs(): number {
   const raw = process.env.CT_TOPUP_SETTLING_STALE_MS;
   const n = raw ? Number.parseInt(raw, 10) : NaN;
-  return Number.isFinite(n) && n >= 30_000 ? n : TOPUP_SETTLING_STALE_MS_DEFAULT;
+  return Number.isFinite(n) && n >= TOPUP_SETTLING_STALE_MS_FLOOR ? n : TOPUP_SETTLING_STALE_MS_DEFAULT;
 }
 
 /** A ct-topup settle outcome the route maps straight to a JSON response. Keeps
@@ -395,24 +397,39 @@ ctTopupRoutes.post('/settle', requireAuthOrAgentSession, requireNonGuestIdentity
     });
     const requirements = quote.accepts[0];
 
-    // 6) Verify → (only on valid) settle. MONEY MAY MOVE HERE.
+    // 6) Verify → (only on valid) settle. MONEY MAY MOVE HERE. Failure
+    //    classification is money-state-critical (Codex round-2 BLOCKING): a
+    //    SETTLE-phase error is AMBIGUOUS (the /settle call was attempted and
+    //    threw — it MAY have landed on-chain) and must NEVER release to pending;
+    //    a VERIFY-phase error happened before /settle was ever called (no money).
     const result = await verifyAndSettle({ paymentHeader, requirements });
     if (!result.settled || !result.txSignature) {
       const reason = result.failureReason ?? 'unsettled';
-      const transient = reason === 'facilitator_verify_error' || reason === 'facilitator_settle_error';
-      if (transient) {
-        // NO money moved. Release the claim (settling → pending) so a retry of
-        // the SAME topup can re-claim. Checked to our settlingId.
-        await releaseTopupClaim(topupId, settlingId);
-      } else {
-        // Definitive rejection, NO money moved → terminal failed (checked to our
-        // claim). A known-bad payment can't be re-poked.
-        await db
-          .update(ctTopups)
-          .set({ status: 'failed', settlingId: null, settlingStartedAt: null, metadata: { ...meta, failureReason: reason } })
-          .where(and(eq(ctTopups.id, topupId), eq(ctTopups.status, 'settling'), eq(ctTopups.settlingId, settlingId)));
+      if (reason === 'facilitator_settle_error') {
+        // AMBIGUOUS — money-state UNKNOWN. Reconcile (never pending, never failed).
+        console.error(
+          `[ct-topup] AMBIGUOUS SETTLE — facilitator /settle threw; money-state unknown; ` +
+            `topup=${topupId} → reconcile (no re-settle)`,
+        );
+        await markTopupReconcile(topupId, settlingId, 'settle_ambiguous', null, result);
+        return c.json(
+          { error: 'topup_reconciliation', code: 'topup_reconciliation', status: 'reconcile' },
+          409,
+        );
       }
-      return c.json({ error: 'payment_not_settled', code: 'payment_not_settled', reason, transient }, 402);
+      if (reason === 'facilitator_verify_error') {
+        // Verify-phase transport error — /settle was NEVER called, NO money moved.
+        // Release the claim so a retry can re-claim the SAME topup.
+        await releaseTopupClaim(topupId, settlingId);
+        return c.json({ error: 'payment_not_settled', code: 'payment_not_settled', reason, transient: true }, 402);
+      }
+      // Definitive rejection — the facilitator reported no settlement, no money
+      // moved → terminal failed (checked to our claim).
+      await db
+        .update(ctTopups)
+        .set({ status: 'failed', settlingId: null, settlingStartedAt: null, metadata: { ...meta, failureReason: reason } })
+        .where(and(eq(ctTopups.id, topupId), eq(ctTopups.status, 'settling'), eq(ctTopups.settlingId, settlingId)));
+      return c.json({ error: 'payment_not_settled', code: 'payment_not_settled', reason, transient: false }, 402);
     }
 
     // 7) CAPTURE: persist the tx signature IMMEDIATELY in its OWN committed
@@ -453,7 +470,9 @@ ctTopupRoutes.post('/settle', requireAuthOrAgentSession, requireNonGuestIdentity
           `[ct-topup] SIGNATURE CONFLICT — settled tx ${txSignature} already owned by another top-up; ` +
             `topup=${topupId} → reconcile (no credit)`,
         );
-        await markTopupReconcile(topupId, settlingId, 'signature_conflict', txSignature, meta, result);
+        await markTopupReconcile(topupId, settlingId, 'signature_conflict', txSignature, result, {
+          allowExistingReconcile: true,
+        });
         return c.json({ error: 'signature_conflict', code: 'signature_conflict', status: 'reconcile' }, 409);
       }
       console.error(
@@ -482,7 +501,9 @@ ctTopupRoutes.post('/settle', requireAuthOrAgentSession, requireNonGuestIdentity
         `[ct-topup] CAPTURE MATCHED NO ROW AFTER USDC MOVED — topup=${topupId} tx=${txSignature}; ` +
           `MANUAL reconcile required`,
       );
-      await markTopupReconcile(topupId, settlingId, 'capture_lost', txSignature, meta, result);
+      await markTopupReconcile(topupId, settlingId, 'capture_lost', txSignature, result, {
+        allowExistingReconcile: true,
+      });
       return c.json({ error: 'topup_reconciliation', code: 'topup_reconciliation', status: 'reconcile' }, 409);
     }
 
@@ -540,15 +561,9 @@ async function dispatchExistingTopup(row: TopupRow, avatarId: string): Promise<T
         `[ct-topup] STALE SETTLING CLAIM — topup=${row.id} settling ${Math.round(ageMs / 1000)}s ` +
           `with no signature; money-state UNKNOWN → reconcile (no facilitator re-call)`,
       );
-      await markTopupReconcile(
-        row.id,
-        row.settlingId,
-        'stale_settling',
-        null,
-        (row.metadata ?? {}) as Record<string, unknown>,
-        null,
-        true,
-      );
+      await markTopupReconcile(row.id, row.settlingId, 'stale_settling', null, null, {
+        requireNullSignature: true,
+      });
       const after = await db.query.ctTopups.findFirst({
         where: and(eq(ctTopups.id, row.id), eq(ctTopups.avatarId, avatarId)),
       });
@@ -662,21 +677,31 @@ async function releaseTopupClaim(topupId: string, settlingId: string): Promise<v
 }
 
 /** Move a settling row to the terminal `reconcile` state, recording the spent
- *  signature (if any) in metadata for the chain-check reconciler. NEVER writes
- *  the tx_signature COLUMN (that stays the exactly-once capture key). Checked to
- *  the claim; a miss is logged LOUD — money is never silently lost. */
+ *  signature (if any) for the chain-check reconciler. Codex round-2 HIGH: MERGE
+ *  into the row's CURRENT metadata (jsonb `||`) and, in `allowExistingReconcile`
+ *  mode, attach to a row a concurrent path already flipped to `reconcile` so the
+ *  spent signature is NEVER dropped on the capture-lost interleaving. NEVER writes
+ *  the tx_signature COLUMN. A miss is logged LOUD — money is never silently lost. */
 async function markTopupReconcile(
   topupId: string,
   settlingId: string | null,
   reason: string,
   spentTxSignature: string | null,
-  meta: Record<string, unknown>,
   result: { payer?: string | null; network?: string | null } | null,
-  requireNullSignature = false,
+  opts: { requireNullSignature?: boolean; allowExistingReconcile?: boolean } = {},
 ): Promise<void> {
-  const conds = [eq(ctTopups.id, topupId), eq(ctTopups.status, 'settling')];
-  if (settlingId) conds.push(eq(ctTopups.settlingId, settlingId));
-  if (requireNullSignature) conds.push(isNull(ctTopups.txSignature));
+  const patch: Record<string, unknown> = { reconcileReason: reason };
+  // Chain-poll anchors for the reconciler (spent signature, or payer + amount +
+  // window for the ambiguous/stale cases).
+  if (result?.payer) patch.expectedPayer = result.payer;
+  if (result?.network) patch.settleNetwork = result.network;
+  if (spentTxSignature) patch.spentTxSignature = spentTxSignature;
+  const statuses: Array<'settling' | 'reconcile'> = opts.allowExistingReconcile
+    ? ['settling', 'reconcile']
+    : ['settling'];
+  const conds = [eq(ctTopups.id, topupId), inArray(ctTopups.status, statuses)];
+  if (settlingId && !opts.allowExistingReconcile) conds.push(eq(ctTopups.settlingId, settlingId));
+  if (opts.requireNullSignature) conds.push(isNull(ctTopups.txSignature));
   try {
     const updated = await db
       .update(ctTopups)
@@ -684,13 +709,7 @@ async function markTopupReconcile(
         status: 'reconcile',
         settlingId: null,
         settlingStartedAt: null,
-        metadata: {
-          ...meta,
-          reconcileReason: reason,
-          ...(spentTxSignature
-            ? { spentTxSignature, settlePayer: result?.payer ?? undefined, settleNetwork: result?.network ?? undefined }
-            : {}),
-        },
+        metadata: sql`${ctTopups.metadata} || ${JSON.stringify(patch)}::jsonb`,
       })
       .where(and(...conds))
       .returning({ id: ctTopups.id });

@@ -52,7 +52,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { db, x402Checkouts, avatars, and, eq, isNull } from '@clawville/database';
+import { db, x402Checkouts, avatars, and, eq, isNull, inArray, sql } from '@clawville/database';
 import { loadX402Config } from './x402-config';
 import {
   buildTopupQuote,
@@ -340,15 +340,18 @@ type CheckoutRow = NonNullable<Awaited<ReturnType<typeof db.query.x402Checkouts.
 /**
  * A `settling` row with NO signature older than this is a DEAD claim (its
  * process died before the facilitator returned) → reconcile, NEVER an auto-retry
- * of the facilitator (Codex finding 1). Floor 30s; MUST exceed the facilitator
- * settle timeout (buildTopupQuote maxTimeoutSeconds default 120s) so a live
- * in-flight settle is never mis-reconciled.
+ * of the facilitator. The floor MUST exceed the facilitator settle timeout
+ * (buildTopupQuote maxTimeoutSeconds default 120s) PLUS margin so a live
+ * in-flight settle is never mis-reconciled while it is still working — Codex
+ * round-2 HIGH: floor 180_000 (a sub-timeout threshold could reconcile a live
+ * settle and strand its money). Default 300_000 (5 min).
  */
 const SETTLING_STALE_MS_DEFAULT = 5 * 60_000;
+const SETTLING_STALE_MS_FLOOR = 180_000;
 function resolveSettlingStaleMs(): number {
   const raw = process.env.X402_CHECKOUT_SETTLING_STALE_MS;
   const n = raw ? Number.parseInt(raw, 10) : NaN;
-  return Number.isFinite(n) && n >= 30_000 ? n : SETTLING_STALE_MS_DEFAULT;
+  return Number.isFinite(n) && n >= SETTLING_STALE_MS_FLOOR ? n : SETTLING_STALE_MS_DEFAULT;
 }
 
 /** Thrown inside the fulfillment tx when the settling→settled flip matches no row
@@ -485,35 +488,52 @@ export async function settleCheckout(input: {
     });
     const requirements = quote.accepts[0];
 
-    // 8) Verify → (only on valid) settle. MONEY MAY MOVE HERE.
+    // 8) Verify → (only on valid) settle. MONEY MAY MOVE HERE. The failure
+    //    classification is money-state-critical (Codex round-2 BLOCKING):
+    //    a SETTLE-phase error is AMBIGUOUS — the /settle call was attempted and
+    //    threw, so it MAY have landed on-chain before the error surfaced — and
+    //    must NEVER release to pending (a retry would re-call the facilitator and
+    //    could double-settle). A VERIFY-phase error happened BEFORE /settle was
+    //    ever called, so no money moved and the claim can be released.
     const result = await verifyAndSettle({ paymentHeader, requirements });
     if (!result.settled || !result.txSignature) {
       const reason = result.failureReason ?? 'unsettled';
-      const transient = reason === 'facilitator_verify_error' || reason === 'facilitator_settle_error';
-      if (transient) {
-        // NO money moved. Release the claim (settling → pending) so a retry of
-        // the SAME checkout can re-claim. Checked to our settlingId.
-        await releaseClaim(checkoutId, settlingId);
-      } else {
-        // Definitive rejection, NO money moved → terminal failed (checked to our
-        // claim). A known-bad payment can't be re-poked.
-        await db
-          .update(x402Checkouts)
-          .set({
-            status: 'failed',
-            settlingId: null,
-            settlingStartedAt: null,
-            metadata: { ...meta, failureReason: reason },
-          })
-          .where(
-            and(
-              eq(x402Checkouts.id, checkoutId),
-              eq(x402Checkouts.status, 'settling'),
-              eq(x402Checkouts.settlingId, settlingId),
-            ),
-          );
+      if (reason === 'facilitator_settle_error') {
+        // AMBIGUOUS — money-state UNKNOWN. Move to reconcile (never pending, never
+        // failed); the reconciler resolves it against the chain.
+        console.error(
+          `[x402-checkout] AMBIGUOUS SETTLE — facilitator /settle threw; money-state unknown; ` +
+            `checkout=${checkoutId} → reconcile (no re-settle)`,
+        );
+        await markReconcile(checkoutId, settlingId, 'settle_ambiguous', null, result);
+        return { ok: false as const, code: 'checkout_reconciliation' as const, status: 'reconcile' };
       }
-      return { ok: false as const, code: 'payment_not_settled' as const, reason, transient };
+      if (reason === 'facilitator_verify_error') {
+        // Verify-phase transport error — /settle was NEVER called, NO money moved.
+        // Release the claim so a retry can re-claim the SAME checkout.
+        await releaseClaim(checkoutId, settlingId);
+        return { ok: false as const, code: 'payment_not_settled' as const, reason, transient: true };
+      }
+      // Definitive rejection (payment_invalid / malformed_payment_header /
+      // settlement_failed / facilitator_config_error / verify_only_mode) — the
+      // facilitator explicitly reported NO settlement, so no money moved →
+      // terminal failed (checked to our claim). A known-bad payment can't re-poke.
+      await db
+        .update(x402Checkouts)
+        .set({
+          status: 'failed',
+          settlingId: null,
+          settlingStartedAt: null,
+          metadata: { ...meta, failureReason: reason },
+        })
+        .where(
+          and(
+            eq(x402Checkouts.id, checkoutId),
+            eq(x402Checkouts.status, 'settling'),
+            eq(x402Checkouts.settlingId, settlingId),
+          ),
+        );
+      return { ok: false as const, code: 'payment_not_settled' as const, reason, transient: false };
     }
 
     // 9) CAPTURE (Codex finding 2): the facilitator settled — persist the tx
@@ -554,7 +574,9 @@ export async function settleCheckout(input: {
           `[x402-checkout] SIGNATURE CONFLICT — settled tx ${txSignature} already owned by another ` +
             `checkout; checkout=${checkoutId} → reconcile (no fulfillment)`,
         );
-        await markReconcile(checkoutId, settlingId, 'signature_conflict', txSignature, meta, result);
+        await markReconcile(checkoutId, settlingId, 'signature_conflict', txSignature, result, {
+          allowExistingReconcile: true,
+        });
         return { ok: false as const, code: 'signature_conflict' as const, status: 'reconcile' };
       }
       // Transient error persisting the signature — money moved, sig NOT yet
@@ -581,7 +603,9 @@ export async function settleCheckout(input: {
         `[x402-checkout] CAPTURE MATCHED NO ROW AFTER USDC MOVED — checkout=${checkoutId} ` +
           `tx=${txSignature}; MANUAL reconcile required`,
       );
-      await markReconcile(checkoutId, settlingId, 'capture_lost', txSignature, meta, result);
+      await markReconcile(checkoutId, settlingId, 'capture_lost', txSignature, result, {
+        allowExistingReconcile: true,
+      });
       return { ok: false as const, code: 'checkout_reconciliation' as const, status: 'reconcile' };
     }
 
@@ -641,15 +665,9 @@ async function dispatchExistingRow(
         `[x402-checkout] STALE SETTLING CLAIM — checkout=${row.id} settling ${Math.round(ageMs / 1000)}s ` +
           `with no signature; money-state UNKNOWN → reconcile (no facilitator re-call)`,
       );
-      await markReconcile(
-        row.id,
-        row.settlingId,
-        'stale_settling',
-        null,
-        (row.metadata ?? {}) as Record<string, unknown>,
-        null,
-        true,
-      );
+      await markReconcile(row.id, row.settlingId, 'stale_settling', null, null, {
+        requireNullSignature: true,
+      });
       // Re-read to report the resolved state (reconcile, or resumed if a capture
       // beat the reconcile in).
       const after = await db.query.x402Checkouts.findFirst({
@@ -838,21 +856,38 @@ async function releaseClaim(checkoutId: string, settlingId: string): Promise<voi
 }
 
 /** Move a settling row to the terminal `reconcile` state, recording the spent
- *  signature (if any) in metadata for the chain-check reconciler. NEVER writes
- *  the tx_signature COLUMN (that stays the exactly-once capture key). Checked to
- *  the claim; a miss is logged LOUD — money is never silently lost. */
+ *  signature (if any) for the chain-check reconciler. Codex round-2 HIGH: MERGE
+ *  into the row's CURRENT metadata (jsonb `||`) — never clobber — and, in
+ *  `allowExistingReconcile` mode, attach to a row that a concurrent path already
+ *  flipped to `reconcile` so the spent signature is NEVER dropped on the
+ *  capture-lost interleaving. NEVER writes the tx_signature COLUMN (that stays
+ *  the exactly-once capture key). A miss is logged LOUD — money is never silently
+ *  lost. */
 async function markReconcile(
   checkoutId: string,
   settlingId: string | null,
   reason: string,
   spentTxSignature: string | null,
-  meta: Record<string, unknown>,
   result: { payer?: string | null; network?: string | null } | null,
-  requireNullSignature = false,
+  opts: { requireNullSignature?: boolean; allowExistingReconcile?: boolean } = {},
 ): Promise<void> {
-  const conds = [eq(x402Checkouts.id, checkoutId), eq(x402Checkouts.status, 'settling')];
-  if (settlingId) conds.push(eq(x402Checkouts.settlingId, settlingId));
-  if (requireNullSignature) conds.push(isNull(x402Checkouts.txSignature));
+  const patch: Record<string, unknown> = { reconcileReason: reason };
+  // The reconciler polls the chain by the spent signature (when we have it) OR by
+  // the payer + amount + window (the ambiguous/stale cases). Record whatever the
+  // facilitator told us so the reconciler has a chain-poll anchor.
+  if (result?.payer) patch.expectedPayer = result.payer;
+  if (result?.network) patch.settleNetwork = result.network;
+  if (spentTxSignature) patch.spentTxSignature = spentTxSignature;
+  const statuses: Array<'settling' | 'reconcile'> = opts.allowExistingReconcile
+    ? ['settling', 'reconcile']
+    : ['settling'];
+  const conds = [eq(x402Checkouts.id, checkoutId), inArray(x402Checkouts.status, statuses)];
+  // Scope to OUR claim only when NOT attaching to a possibly-already-reconcile
+  // row (a reconcile row has settling_id NULL, so the settlingId eq would miss).
+  if (settlingId && !opts.allowExistingReconcile) {
+    conds.push(eq(x402Checkouts.settlingId, settlingId));
+  }
+  if (opts.requireNullSignature) conds.push(isNull(x402Checkouts.txSignature));
   try {
     const updated = await db
       .update(x402Checkouts)
@@ -860,17 +895,7 @@ async function markReconcile(
         status: 'reconcile',
         settlingId: null,
         settlingStartedAt: null,
-        metadata: {
-          ...meta,
-          reconcileReason: reason,
-          ...(spentTxSignature
-            ? {
-                spentTxSignature,
-                settlePayer: result?.payer ?? undefined,
-                settleNetwork: result?.network ?? undefined,
-              }
-            : {}),
-        },
+        metadata: sql`${x402Checkouts.metadata} || ${JSON.stringify(patch)}::jsonb`,
       })
       .where(and(...conds))
       .returning({ id: x402Checkouts.id });
