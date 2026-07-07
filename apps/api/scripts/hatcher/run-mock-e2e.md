@@ -34,15 +34,23 @@ agents, post stats, real-CT-capable avatars). There is no per-power scoping
 because the routes hardcode `partnerId='hatcher'` (residual risk, documented in
 ARCHITECTURE.md).
 
-**Code-enforced prod kill-switch (defense-in-depth):** even if the var is
-mistakenly set on the prod api box, `loadTestPartnerPubkey()` refuses it there —
-it detects prod via `CORS_ORIGIN` (prod contains `clawville.world` and NOT
-`staging`; staging contains `staging.clawville.world`). On prod the test signer
-is INERT and the API logs a LOUD `🚨 ALLOW_TEST_PARTNER_PUBKEY is SET ON
-PRODUCTION` error at boot. On staging the API logs a one-line `⚠️
+**Code-enforced prod kill-switch (defense-in-depth):** the test signer is
+honored ONLY when the box carries the IMMUTABLE `CLAWVILLE_ENV === 'staging'`
+deploy signal (`partner-signature.ts` `isStagingEnv()`), and
+`partner-signature.ts` THROWS AT MODULE LOAD (crash-loud, like `FINGERPRINT_SECRET`)
+if `ALLOW_TEST_PARTNER_PUBKEY` is set while `CLAWVILLE_ENV !== 'staging'` — so a
+prod box that mistakenly carries the test signer REFUSES TO BOOT. `NODE_ENV`
+cannot discriminate (it is `'production'` on BOTH Coolify boxes); the old
+`CORS_ORIGIN` inference was RETIRED for this immutable per-box signal (2026-06-12,
+Codex review #1). On staging the API logs a one-line `⚠️
 ALLOW_TEST_PARTNER_PUBKEY is SET` warning (expected during a harness run). The
 kill-switch is a backstop, NOT a license to leave the var set — still UNSET it
 after every run (cleanup below).
+
+> **PREREQUISITE:** the staging api box MUST also carry `CLAWVILLE_ENV=staging`
+> (set per-box in Coolify) alongside `ALLOW_TEST_PARTNER_PUBKEY`, or staging boot
+> fails the module-load throw. Confirm both are present before the run
+> (`docker exec <api-container> env | grep -E 'CLAWVILLE_ENV|ALLOW_TEST_PARTNER_PUBKEY'`).
 
 1. Generate the keypair locally (prints the pubkey, writes the keyfile):
 
