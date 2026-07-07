@@ -119,6 +119,11 @@ export * from './sap-escrow';
 // clv_buy_status). Records swap INTENT only; the executor is DRY-RUN gated
 // (CLV_SWAP_EXECUTE=true refuses to boot). Migration 0014 (idempotent, by hand).
 export * from './swap';
+// Tokenomics C2 (2026-07-07) — MoonPay TEST-MODE card rail webhook idempotency
+// ledger (moonpay_events; UNIQUE external_tx_id = the replay guard). Records
+// USDC arrivals only — no CT movement, no custodial auto-sign (Codex-gated
+// seam). Migration 0015 (idempotent, by hand).
+export * from './moonpay';
 
 import { users, sessions } from './users';
 import { npcMemories, activityLog } from './memories';
