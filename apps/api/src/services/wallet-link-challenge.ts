@@ -6,12 +6,14 @@
  * linking:
  *
  *   - `POST /api/wallet/link/challenge` (authed) issues a nonce BOUND to the
- *     requesting `userId`.
- *   - the user signs `bs58.decode(nonce)` with their self-custody wallet key.
+ *     requesting `userId` + the exact human-readable `messageToSign`.
+ *   - the user signs the UTF-8 bytes of `messageToSign` (SIWS-lite: readable in
+ *     the wallet UI + names the target account — never a blind 32-byte blob).
  *   - `POST /api/wallet/link` (authed) presents { walletPubkey, nonce,
  *     signature }; we `consume(nonce, userId)` (anti-replay + binds the proof to
- *     the SAME account that requested it), then verify the ed25519 signature
- *     against the CLAIMED walletPubkey.
+ *     the SAME account that requested it), reconstruct the message server-side
+ *     from (userId, nonce), then verify the ed25519 signature against the
+ *     CLAIMED walletPubkey.
  *
  * Binding the nonce to `userId` (vs the generic agent-reconnect store) means a
  * nonce issued to account A can never be consumed by account B — one fewer moving
@@ -54,18 +56,38 @@ cleanupTimer.unref?.();
 export interface WalletLinkChallengeIssued {
   nonce: string;
   expiresAt: string;
+  /** The EXACT string the wallet must sign (UTF-8) — see buildWalletLinkMessage. */
+  messageToSign: string;
 }
 
 /**
- * Issue a fresh 32-byte random nonce bound to `userId`. The client returns it to
- * the wallet, which signs `bs58.decode(nonce)` with the wallet's private key.
+ * The EXACT string the wallet signs (UTF-8 bytes). Human-readable (SIWS-lite) so
+ * wallet UIs display the intent instead of an opaque 32-byte blob, and
+ * ACCOUNT-BOUND so a signature phished out of a victim on another site can only
+ * ever link the wallet to the account NAMED IN THE TEXT the victim saw — it can
+ * never be redirected to an attacker's account. (Raw blind-nonce signing was the
+ * orchestrator-review finding this replaces: attacker requests a challenge for
+ * HIS account, tricks the victim into blind-signing the bytes, then submits the
+ * victim's pubkey+signature to pass hold-tier checks with the victim's balance.)
+ */
+export function buildWalletLinkMessage(userId: string, nonce: string): string {
+  return `ClawVille wallet link\naccount: ${userId}\nnonce: ${nonce}`;
+}
+
+/**
+ * Issue a fresh 32-byte random nonce bound to `userId`. The client has the
+ * wallet sign the UTF-8 bytes of `messageToSign` (NOT the raw decoded nonce).
  */
 export function issueWalletLinkChallenge(userId: string): WalletLinkChallengeIssued {
   const raw = randomBytes(32);
   const nonce = bs58.encode(raw);
   const expiresAtMs = Date.now() + NONCE_TTL_MS;
   nonces.set(nonce, { userId, expiresAt: expiresAtMs });
-  return { nonce, expiresAt: new Date(expiresAtMs).toISOString() };
+  return {
+    nonce,
+    expiresAt: new Date(expiresAtMs).toISOString(),
+    messageToSign: buildWalletLinkMessage(userId, nonce),
+  };
 }
 
 /**

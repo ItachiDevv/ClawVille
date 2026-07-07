@@ -63,7 +63,103 @@ BEGIN
     ALTER TABLE avatars ALTER COLUMN claw_tokens SET DEFAULT 1000;
     ALTER TABLE avatars ALTER COLUMN soft_balance SET DEFAULT 1000;
 
+    -- ── 5-8) REVIEW-FIX (orchestrator review, same day): value-preservation ────
+    -- A redenomination must preserve value EVERYWHERE; re-bands change values
+    -- DELIBERATELY (0012 / T3). The initial pass missed the columns below.
+
+    -- 5) LEDGER HISTORY — claw_token_transactions is the auditable history and the
+    --    DESIGNED replay source for Phase 5+ on-chain opening balances (schema
+    --    comment). ×10'd balances with un-×10'd history breaks ledger replay and
+    --    balance_after reconciliation forever. Signed amounts: ×10 preserves sign.
+    --    usd_basis is DOLLARS — deliberately untouched. Core table: fails loud.
+    UPDATE claw_token_transactions SET
+      amount        = amount        * 10,
+      balance_after = balance_after * 10;
+
+    -- 6) Reward columns that must keep purchasing power (T3 re-bands them
+    --    deliberately later). Core tables: fail loud.
+    UPDATE quests   SET token_reward = token_reward * 10;
+    UPDATE bounties SET token_reward = token_reward * 10;
+
+    -- 7) Feature-vertical integer CT columns — to_regclass-guarded (db:push-era
+    --    tables; staging has dropped some before): absent ⇒ NOTICE + skip.
+    IF to_regclass('public.ct_topups') IS NOT NULL THEN
+      UPDATE ct_topups SET amount_ct = amount_ct * 10;
+    ELSE RAISE NOTICE '0011: ct_topups absent — skipped'; END IF;
+    IF to_regclass('public.land_upgrades') IS NOT NULL THEN
+      UPDATE land_upgrades SET cost_ct = cost_ct * 10;
+    ELSE RAISE NOTICE '0011: land_upgrades absent — skipped'; END IF;
+    IF to_regclass('public.land_transactions') IS NOT NULL THEN
+      UPDATE land_transactions SET amount_ct = amount_ct * 10;
+    ELSE RAISE NOTICE '0011: land_transactions absent — skipped'; END IF;
+    IF to_regclass('public.service_listings') IS NOT NULL THEN
+      UPDATE service_listings SET price_ct = price_ct * 10;
+    ELSE RAISE NOTICE '0011: service_listings absent — skipped'; END IF;
+    IF to_regclass('public.service_purchases') IS NOT NULL THEN
+      UPDATE service_purchases SET price_ct = price_ct * 10;
+    ELSE RAISE NOTICE '0011: service_purchases absent — skipped'; END IF;
+    IF to_regclass('public.special_events') IS NOT NULL THEN
+      UPDATE special_events SET gate_ct = gate_ct * 10 WHERE gate_ct IS NOT NULL;
+    ELSE RAISE NOTICE '0011: special_events absent — skipped'; END IF;
+    IF to_regclass('public.exchange_listings') IS NOT NULL THEN
+      UPDATE exchange_listings SET price_ct = price_ct * 10;
+    ELSE RAISE NOTICE '0011: exchange_listings absent — skipped'; END IF;
+    IF to_regclass('public.exchange_orders') IS NOT NULL THEN
+      UPDATE exchange_orders SET amount_ct = amount_ct * 10;
+    ELSE RAISE NOTICE '0011: exchange_orders absent — skipped'; END IF;
+
+    -- 8) Poker CT is STRINGIFIED BIGINT (text cols) — ×10 via ::bigint math.
+    --    PLAY CHIPS (poker_tournaments.starting_stack, entrants.chip_stack) are
+    --    NOT CT (schema: "play chips, NOT CT") — deliberately untouched.
+    --    Guarded: poker tables have been db:push-dropped on staging before.
+    IF to_regclass('public.poker_tournaments') IS NOT NULL THEN
+      UPDATE poker_tournaments SET
+        buy_in_ct     = (buy_in_ct::bigint     * 10)::text,
+        prize_pool_ct = (prize_pool_ct::bigint * 10)::text,
+        rake_taken_ct = CASE WHEN rake_taken_ct IS NULL THEN NULL
+                             ELSE (rake_taken_ct::bigint * 10)::text END;
+    ELSE RAISE NOTICE '0011: poker_tournaments absent — skipped'; END IF;
+    IF to_regclass('public.poker_tournament_entrants') IS NOT NULL THEN
+      UPDATE poker_tournament_entrants SET
+        buy_in_paid_ct = (buy_in_paid_ct::bigint * 10)::text,
+        refunded_ct    = (refunded_ct::bigint    * 10)::text;
+    ELSE RAISE NOTICE '0011: poker_tournament_entrants absent — skipped'; END IF;
+    IF to_regclass('public.poker_tournament_results') IS NOT NULL THEN
+      UPDATE poker_tournament_results SET prize_ct = (prize_ct::bigint * 10)::text;
+    ELSE RAISE NOTICE '0011: poker_tournament_results absent — skipped'; END IF;
+    IF to_regclass('public.poker_cash_tables') IS NOT NULL THEN
+      UPDATE poker_cash_tables SET
+        buy_in_ct        = (buy_in_ct::bigint        * 10)::text,
+        small_blind_ct   = (small_blind_ct::bigint   * 10)::text,
+        big_blind_ct     = (big_blind_ct::bigint     * 10)::text,
+        rake_cap_ct      = CASE WHEN rake_cap_ct IS NULL THEN NULL
+                                ELSE (rake_cap_ct::bigint * 10)::text END,
+        table_escrow_ct  = (table_escrow_ct::bigint  * 10)::text,
+        rake_taken_ct    = (rake_taken_ct::bigint    * 10)::text;
+    ELSE RAISE NOTICE '0011: poker_cash_tables absent — skipped'; END IF;
+    IF to_regclass('public.poker_cash_seats') IS NOT NULL THEN
+      UPDATE poker_cash_seats SET
+        current_stack_ct    = (current_stack_ct::bigint    * 10)::text,
+        total_bought_in_ct  = (total_bought_in_ct::bigint  * 10)::text,
+        total_cashed_out_ct = (total_cashed_out_ct::bigint * 10)::text;
+    ELSE RAISE NOTICE '0011: poker_cash_seats absent — skipped'; END IF;
+    IF to_regclass('public.poker_cash_hands') IS NOT NULL THEN
+      UPDATE poker_cash_hands SET
+        pot_total_ct  = CASE WHEN pot_total_ct IS NULL THEN NULL
+                             ELSE (pot_total_ct::bigint * 10)::text END,
+        rake_taken_ct = (rake_taken_ct::bigint * 10)::text;
+    ELSE RAISE NOTICE '0011: poker_cash_hands absent — skipped'; END IF;
+    IF to_regclass('public.poker_cash_ledger_events') IS NOT NULL THEN
+      UPDATE poker_cash_ledger_events SET amount_ct = (amount_ct::bigint * 10)::text;
+    ELSE RAISE NOTICE '0011: poker_cash_ledger_events absent — skipped'; END IF;
+
+    -- DELIBERATELY untouched (documented decisions, not misses): all
+    -- usd_basis/numeric-dollar columns (DOLLARS), wager.* lamports (SOL rail),
+    -- cosmetic_skus.price_ct (0012 re-band), land_parcels.rent_ct_weekly (already
+    -- the founder's target band), land_parcels.price_ct c/b/a/founder (deprecated
+    -- for Phase B claim-locks), poker play-chip columns (not CT).
+
     INSERT INTO tokenomics_migrations (id) VALUES ('redenominate_ct_x10');
-    RAISE NOTICE 'redenominate_ct_x10 applied — balances/grants/starter-land x10, avatar defaults 1000';
+    RAISE NOTICE 'redenominate_ct_x10 applied — balances/grants/starter-land/ledger-history/rewards/feature-tables/poker-CT x10, avatar defaults 1000';
   END IF;
 END $$;
