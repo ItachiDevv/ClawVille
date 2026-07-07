@@ -16,6 +16,16 @@
  *   7. isGuestUser reflects the row's isGuest (true / false / missing → false).
  */
 
+// Env BEFORE the database import: spreading the lazy `db` Proxy below reads
+// `realDb.query`, which constructs the postgres client and THROWS at module
+// load when DATABASE_URL is unset (pre-existing fragility — the file only
+// passed when something else in the process had set it). Mirrors the
+// partner-storefront.test.ts ensureEnv pattern; no connection is ever opened
+// (every query hit is stubbed).
+if (!process.env.DATABASE_URL) {
+  process.env.DATABASE_URL = 'postgresql://u:p@localhost:5432/db';
+}
+
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
 import * as realDatabase from '@clawville/database';
 
@@ -70,7 +80,9 @@ beforeEach(() => {
 describe('requireNonGuestUser (AppContext — after requireAuth / sessionMiddleware)', () => {
   it('403s a guest Lucia user and does NOT call next', async () => {
     nextUserRow = { isGuest: true };
-    const next = mock(async () => 'NEXT');
+    // Cast keeps bun's Mock assignable to Hono's Next (Promise<void>) while the
+    // runtime still resolves the 'NEXT' sentinel the passthrough asserts on.
+    const next = mock(async () => 'NEXT' as unknown as void);
     const res: any = await requireNonGuestUser(makeCtx({ user: { id: GUEST_ID } }), next);
     expect(res.__json).toBe(true);
     expect(res.status).toBe(403);
@@ -80,16 +92,20 @@ describe('requireNonGuestUser (AppContext — after requireAuth / sessionMiddlew
 
   it('passes a non-guest Lucia user (calls next)', async () => {
     nextUserRow = { isGuest: false };
-    const next = mock(async () => 'NEXT');
+    // Cast keeps bun's Mock assignable to Hono's Next (Promise<void>) while the
+    // runtime still resolves the 'NEXT' sentinel the passthrough asserts on.
+    const next = mock(async () => 'NEXT' as unknown as void);
     const res = await requireNonGuestUser(makeCtx({ user: { id: REAL_ID } }), next);
-    expect(res).toBe('NEXT');
+    expect(res as unknown).toBe('NEXT');
     expect(next).toHaveBeenCalledTimes(1);
   });
 
   it('passes when there is NO Lucia user (agent path) WITHOUT a DB hit', async () => {
-    const next = mock(async () => 'NEXT');
+    // Cast keeps bun's Mock assignable to Hono's Next (Promise<void>) while the
+    // runtime still resolves the 'NEXT' sentinel the passthrough asserts on.
+    const next = mock(async () => 'NEXT' as unknown as void);
     const res = await requireNonGuestUser(makeCtx({ user: null }), next);
-    expect(res).toBe('NEXT');
+    expect(res as unknown).toBe('NEXT');
     expect(next).toHaveBeenCalledTimes(1);
     expect(usersFindFirst).not.toHaveBeenCalled();
   });
@@ -98,7 +114,9 @@ describe('requireNonGuestUser (AppContext — after requireAuth / sessionMiddlew
 describe('requireNonGuestIdentity (ActivityAuthContext — after requireAuthOrAgentSession)', () => {
   it('403s a kind:"user" guest and does NOT call next', async () => {
     nextUserRow = { isGuest: true };
-    const next = mock(async () => 'NEXT');
+    // Cast keeps bun's Mock assignable to Hono's Next (Promise<void>) while the
+    // runtime still resolves the 'NEXT' sentinel the passthrough asserts on.
+    const next = mock(async () => 'NEXT' as unknown as void);
     const res: any = await requireNonGuestIdentity(
       makeCtx({ identity: { kind: 'user', userId: GUEST_ID } }),
       next,
@@ -110,24 +128,28 @@ describe('requireNonGuestIdentity (ActivityAuthContext — after requireAuthOrAg
 
   it('passes a kind:"user" non-guest (calls next)', async () => {
     nextUserRow = { isGuest: false };
-    const next = mock(async () => 'NEXT');
+    // Cast keeps bun's Mock assignable to Hono's Next (Promise<void>) while the
+    // runtime still resolves the 'NEXT' sentinel the passthrough asserts on.
+    const next = mock(async () => 'NEXT' as unknown as void);
     const res = await requireNonGuestIdentity(
       makeCtx({ identity: { kind: 'user', userId: REAL_ID } }),
       next,
     );
-    expect(res).toBe('NEXT');
+    expect(res as unknown).toBe('NEXT');
     expect(next).toHaveBeenCalledTimes(1);
   });
 
   // E5 AGENT-PASSTHROUGH LOCK: an agent is NEVER a guest and must pass without
   // ever hitting the DB (no needless users lookup on the agent path).
   it('passes a kind:"agent" identity WITHOUT a DB hit', async () => {
-    const next = mock(async () => 'NEXT');
+    // Cast keeps bun's Mock assignable to Hono's Next (Promise<void>) while the
+    // runtime still resolves the 'NEXT' sentinel the passthrough asserts on.
+    const next = mock(async () => 'NEXT' as unknown as void);
     const res = await requireNonGuestIdentity(
       makeCtx({ identity: { kind: 'agent', userId: REAL_ID, agentId: 'a1' } }),
       next,
     );
-    expect(res).toBe('NEXT');
+    expect(res as unknown).toBe('NEXT');
     expect(next).toHaveBeenCalledTimes(1);
     expect(usersFindFirst).not.toHaveBeenCalled();
   });
