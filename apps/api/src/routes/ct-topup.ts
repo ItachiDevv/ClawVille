@@ -48,7 +48,8 @@
 
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { db, ctTopups, avatars, and, eq } from '@clawville/database';
+import { randomUUID } from 'node:crypto';
+import { db, ctTopups, avatars, and, eq, isNull } from '@clawville/database';
 import { sessionMiddleware } from '../middleware/auth';
 import {
   requireAuthOrAgentSession,
@@ -232,15 +233,36 @@ const settleSchema = z.object({
   usdCents: z.number().int().positive().max(1_000_000),
 });
 
-/** Raised inside the settle tx when the tx_signature OR idempotency unique index
- *  trips (23505). Caught OUTSIDE the (now-aborted) tx to replay the already-
- *  credited row — a clean idempotent replay, never a 500 / double-credit. */
-class TopupReplay extends Error {
-  constructor(public readonly kind: 'txsig' | 'idem') {
-    super(`ct_topup_replay:${kind}`);
-    this.name = 'TopupReplay';
+/** Thrown inside the credit tx when the settling→settled flip matches no row (a
+ *  concurrent resume already credited it) → caught outside → idempotent replay.
+ *  The facilitator is NEVER re-called on this path. */
+class TopupCreditAlreadyDone extends Error {
+  constructor() {
+    super('ct_topup_credit_already_done');
+    this.name = 'TopupCreditAlreadyDone';
   }
 }
+
+/** A `settling` row with NO signature older than this is a DEAD claim (its
+ *  process died before the facilitator returned) → reconcile, NEVER an auto-retry
+ *  of the facilitator. Floor 30s; MUST exceed the facilitator settle timeout
+ *  (~120s) so a live in-flight settle is never mis-reconciled. */
+const TOPUP_SETTLING_STALE_MS_DEFAULT = 5 * 60_000;
+function resolveTopupSettlingStaleMs(): number {
+  const raw = process.env.CT_TOPUP_SETTLING_STALE_MS;
+  const n = raw ? Number.parseInt(raw, 10) : NaN;
+  return Number.isFinite(n) && n >= 30_000 ? n : TOPUP_SETTLING_STALE_MS_DEFAULT;
+}
+
+/** A ct-topup settle outcome the route maps straight to a JSON response. Keeps
+ *  the durable-machine helpers (dispatch / credit / reconcile) decoupled from the
+ *  Hono context. */
+type TopupOutcome = {
+  httpStatus: 200 | 400 | 402 | 404 | 409 | 500 | 503;
+  json: Record<string, unknown>;
+};
+/** The x402_checkouts row shape ct_topups mirrors for the settle machine. */
+type TopupRow = NonNullable<Awaited<ReturnType<typeof db.query.ctTopups.findFirst>>>;
 
 ctTopupRoutes.post('/settle', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
   const identity = c.get('identity');
@@ -296,243 +318,184 @@ ctTopupRoutes.post('/settle', requireAuthOrAgentSession, requireNonGuestIdentity
   // backstop; cross-process concurrent settles of one topupId with different
   // payments remain a (much narrower, multi-instance-only) residual.
   return withKeyedMutex(`ct-topup-settle:${topupId}`, async () => {
-  // 3) FAST idempotency replay — BEFORE touching the facilitator. If THIS
-  //    (avatarId, idempotencyKey) already settled, return the cached credit and
-  //    never re-verify/re-settle. (The DB unique index is still the race-safe
-  //    backstop inside the tx; this is the cheap common-case short-circuit.)
-  const priorByKey = await db.query.ctTopups.findFirst({
-    where: and(
-      eq(ctTopups.avatarId, identity.avatarId),
-      eq(ctTopups.idempotencyKey, idempotencyKey),
-    ),
-  });
-  if (priorByKey && priorByKey.status === 'settled') {
-    const bal = await currentBalance(identity.avatarId);
-    return c.json({
-      ctCredited: priorByKey.amountCt,
-      balance: bal,
-      txSignature: priorByKey.txSignature,
-      replay: true,
+    // 1) Load the row BOUND TO THE CALLER'S avatar — the ONLY replay lookup
+    //    (scoped by topupId): an agent/human settles ITS OWN top-up; a foreign
+    //    id resolves to no row. A settled/settling/failed/reconcile row
+    //    dispatches to terminal/resume handling and NEVER re-settles.
+    const row = await db.query.ctTopups.findFirst({
+      where: and(eq(ctTopups.id, topupId), eq(ctTopups.avatarId, identity.avatarId)),
     });
-  }
+    if (!row) {
+      return c.json({ error: 'topup_not_found', code: 'topup_not_found' }, 404);
+    }
+    if (row.status !== 'pending') {
+      const o = await dispatchExistingTopup(row, identity.avatarId);
+      return c.json(o.json, o.httpStatus);
+    }
 
-  // 4) Load the pending row this settle targets. Bound to the CALLER'S avatar
-  //    (identity.avatarId) so an agent/human can only settle ITS OWN top-up —
-  //    a foreign topupId resolves to no row. We re-derive the credit amount from
-  //    the SERVER-side row + the quote rate, never trusting the client's usdCents
-  //    for the credit (we only sanity-check the client echo against the row).
-  const pending = await db.query.ctTopups.findFirst({
-    where: and(eq(ctTopups.id, topupId), eq(ctTopups.avatarId, identity.avatarId)),
-  });
-  if (!pending) {
-    return c.json({ error: 'topup_not_found', code: 'topup_not_found' }, 404);
-  }
+    // 2) Client-echo validation (ct-topup-specific): reject a tampered/forged
+    //    settle whose asset/usdCents disagree with the persisted quote. The
+    //    CREDIT amount always comes from the server-side row, never the client.
+    const meta = (row.metadata ?? {}) as { asset?: string; usdCents?: number; network?: string };
+    const rowUsdCents = typeof meta.usdCents === 'number' ? meta.usdCents : null;
+    if (rowUsdCents === null || meta.asset !== asset || rowUsdCents !== usdCents) {
+      return c.json({ error: 'quote_mismatch', code: 'quote_mismatch' }, 400);
+    }
+    const amountCt = usdToCt(rowUsdCents);
+    if (amountCt !== row.amountCt) {
+      console.error('[ct-topup] amountCt drift', { topupId, amountCt, rowAmountCt: row.amountCt });
+      return c.json({ error: 'quote_mismatch', code: 'quote_mismatch' }, 400);
+    }
 
-  // Already-settled row (re-settle of a finished top-up) → idempotent replay of
-  // the stored outcome. This covers a settle retry that reuses the topupId but a
-  // NEW idempotency key after the first settle already finished.
-  if (pending.status === 'settled') {
-    const bal = await currentBalance(identity.avatarId);
-    return c.json({
-      ctCredited: pending.amountCt,
-      balance: bal,
-      txSignature: pending.txSignature,
-      replay: true,
+    // 3) On-ramp must be configured BEFORE we claim.
+    const config = loadX402Config();
+    if (!config.merchantWalletPubkey) {
+      return c.json({ error: 'on_ramp_unconfigured', code: 'on_ramp_unconfigured' }, 503);
+    }
+
+    // 4) DB-BACKED CLAIM (cross-process): pending → settling. Only the winner of
+    //    `WHERE status='pending'` calls the facilitator; every other settle sees
+    //    'settling' and never double-calls verify→settle. The claim stakes the
+    //    idempotency key — a reuse on a DIFFERENT top-up 23505s to a clean
+    //    conflict BEFORE any money moves.
+    const settlingId = randomUUID();
+    let claimed: { id: string }[];
+    try {
+      claimed = await db
+        .update(ctTopups)
+        .set({ status: 'settling', settlingId, settlingStartedAt: new Date(), idempotencyKey })
+        .where(and(eq(ctTopups.id, topupId), eq(ctTopups.status, 'pending')))
+        .returning({ id: ctTopups.id });
+    } catch (err) {
+      if ((err as { code?: string } | undefined)?.code === '23505') {
+        return c.json({ error: 'idempotency_key_conflict', code: 'idempotency_key_conflict' }, 409);
+      }
+      throw err;
+    }
+    if (claimed.length === 0) {
+      const reread = await db.query.ctTopups.findFirst({
+        where: and(eq(ctTopups.id, topupId), eq(ctTopups.avatarId, identity.avatarId)),
+      });
+      if (!reread) return c.json({ error: 'topup_not_found', code: 'topup_not_found' }, 404);
+      const o = await dispatchExistingTopup(reread, identity.avatarId);
+      return c.json(o.json, o.httpStatus);
+    }
+
+    // 5) Re-derive the EXACT requirements the quote issued — server-side.
+    const network = (meta.network === 'mainnet' || meta.network === 'devnet'
+      ? meta.network
+      : resolveTopupNetwork()) as X402Network;
+    const settleFeePayer = await resolveFacilitatorFeePayer(network);
+    const quote = buildTopupQuote({
+      payTo: config.merchantWalletPubkey,
+      asset,
+      usdCents: rowUsdCents,
+      network,
+      feePayer: settleFeePayer ?? undefined,
     });
-  }
-  // A 'failed' row is terminal — do not let it be re-settled / poisoned.
-  if (pending.status !== 'pending') {
-    return c.json({ error: 'topup_not_pending', code: 'topup_not_pending', status: pending.status }, 409);
-  }
+    const requirements = quote.accepts[0];
 
-  // The amount to credit is the row's stored amountCt (set at quote time from the
-  // row's usdCents). Re-derive from usdCents-on-the-row to be safe, and reject if
-  // the client's echoed usdCents/asset disagree with the persisted quote — a
-  // mismatch means a tampered/forged settle that must not credit the quoted CT.
-  const meta = (pending.metadata ?? {}) as { asset?: string; usdCents?: number; network?: string };
-  const rowUsdCents = typeof meta.usdCents === 'number' ? meta.usdCents : null;
-  if (rowUsdCents === null || meta.asset !== asset || rowUsdCents !== usdCents) {
-    return c.json({ error: 'quote_mismatch', code: 'quote_mismatch' }, 400);
-  }
-  const amountCt = usdToCt(rowUsdCents);
-  // Internal consistency guard — the row's amountCt was computed from the SAME
-  // rate at quote time; a divergence means a corrupted/edited row. Refuse.
-  if (amountCt !== pending.amountCt) {
-    console.error('[ct-topup] amountCt drift', { topupId, amountCt, rowAmountCt: pending.amountCt });
-    return c.json({ error: 'quote_mismatch', code: 'quote_mismatch' }, 400);
-  }
-
-  // 5) Re-derive the EXACT requirements the quote issued — server-side, NOT from
-  //    the client's payload `accepted` echo. The facilitator verify binds the
-  //    payment to THESE (payTo / amount / network / asset); a forged or
-  //    underpaid payment fails verify and never credits.
-  const config = loadX402Config();
-  if (!config.merchantWalletPubkey) {
-    return c.json({ error: 'on_ramp_unconfigured', code: 'on_ramp_unconfigured' }, 503);
-  }
-  const network = (meta.network === 'mainnet' || meta.network === 'devnet'
-    ? meta.network
-    : resolveTopupNetwork()) as X402Network;
-  // Same feePayer resolution as /quote (memoized, 5-min TTL — quote + settle in
-  // one window agree on the same facilitator signer). The facilitator re-checks
-  // requirements.extra.feePayer at verify; omitting it 400s on real facilitators.
-  const settleFeePayer = await resolveFacilitatorFeePayer(network);
-  const quote = buildTopupQuote({
-    payTo: config.merchantWalletPubkey,
-    asset,
-    usdCents: rowUsdCents,
-    network,
-    feePayer: settleFeePayer ?? undefined,
-  });
-  const requirements = quote.accepts[0];
-
-  // 6) Verify → (only on valid) settle through the facilitator. NEVER throws;
-  //    returns settled:false on any verify/settle failure → a clean 402, NEVER a
-  //    5xx, and NEVER a credit.
-  const result = await verifyAndSettle({ paymentHeader, requirements });
-  if (!result.settled || !result.txSignature) {
-    // Distinguish a DEFINITIVE rejection (the payment is invalid / settlement was
-    // refused on-chain) from a TRANSIENT facilitator/network hiccup. A transient
-    // failure must leave the row PENDING so the caller can retry the SAME topupId
-    // once the facilitator recovers; only a definitive rejection poisons the row
-    // to 'failed' (so a known-bad payment can't be re-attempted into a half state
-    // and /dash can see real failed attempts).
-    const reason = result.failureReason ?? 'unsettled';
-    const transient = reason === 'facilitator_verify_error' || reason === 'facilitator_settle_error';
-    if (!transient) {
-      try {
+    // 6) Verify → (only on valid) settle. MONEY MAY MOVE HERE.
+    const result = await verifyAndSettle({ paymentHeader, requirements });
+    if (!result.settled || !result.txSignature) {
+      const reason = result.failureReason ?? 'unsettled';
+      const transient = reason === 'facilitator_verify_error' || reason === 'facilitator_settle_error';
+      if (transient) {
+        // NO money moved. Release the claim (settling → pending) so a retry of
+        // the SAME topup can re-claim. Checked to our settlingId.
+        await releaseTopupClaim(topupId, settlingId);
+      } else {
+        // Definitive rejection, NO money moved → terminal failed (checked to our
+        // claim). A known-bad payment can't be re-poked.
         await db
           .update(ctTopups)
-          .set({ status: 'failed', metadata: { ...meta, failureReason: reason } })
-          .where(and(eq(ctTopups.id, topupId), eq(ctTopups.status, 'pending')));
-      } catch (err) {
-        console.warn('[ct-topup] mark-failed write failed (non-fatal):', (err as Error).message);
+          .set({ status: 'failed', settlingId: null, settlingStartedAt: null, metadata: { ...meta, failureReason: reason } })
+          .where(and(eq(ctTopups.id, topupId), eq(ctTopups.status, 'settling'), eq(ctTopups.settlingId, settlingId)));
       }
+      return c.json({ error: 'payment_not_settled', code: 'payment_not_settled', reason, transient }, 402);
     }
-    return c.json(
-      { error: 'payment_not_settled', code: 'payment_not_settled', reason, transient },
-      402,
-    );
-  }
 
-  const txSignature = result.txSignature;
-
-  // 7) ATOMIC settle: flip the pending row → settled (claiming the tx_signature)
-  //    + credit CT, in ONE transaction. The tx_signature UNIQUE index is the
-  //    double-credit hard guard; a concurrent/duplicate settle of the SAME
-  //    signature trips 23505, the tx (credit included) rolls back, and we replay
-  //    the already-credited row OUTSIDE the aborted tx.
-  let balanceAfter: number;
-  let creditedCt: number;
-  let settledTxSig: string;
-  try {
-    const out = await db.transaction(async (tx) => {
-      // Re-read the row UNDER no lock is unnecessary — the UPDATE's WHERE
-      // status='pending' is the optimistic guard, and the unique indexes are the
-      // race-safe backstops. Flip pending→settled, claim the signature + idem key.
-      let updated:
-        | { id: string; amountCt: number }[]
-        | undefined;
-      try {
-        updated = await tx
-          .update(ctTopups)
-          .set({
-            status: 'settled',
-            txSignature,
-            usdBasisAtReceipt: (rowUsdCents / 100).toFixed(2),
-            idempotencyKey,
-            metadata: {
-              ...meta,
-              txSignature,
-              asset,
-              usdCents: rowUsdCents,
-              settlePayer: result.payer ?? undefined,
-              settleNetwork: result.network ?? undefined,
-            },
-          })
-          .where(and(eq(ctTopups.id, topupId), eq(ctTopups.status, 'pending')))
-          .returning({ id: ctTopups.id, amountCt: ctTopups.amountCt });
-      } catch (err) {
-        const pgCode = (err as { code?: string } | undefined)?.code;
-        if (pgCode === '23505') {
-          // Which unique index? The constraint name tells us, but either way the
-          // outcome is the same: already credited → replay. Default to txsig.
-          const constraint = (err as { constraint?: string } | undefined)?.constraint ?? '';
-          throw new TopupReplay(constraint.includes('idem') ? 'idem' : 'txsig');
-        }
-        throw err;
+    // 7) CAPTURE: persist the tx signature IMMEDIATELY in its OWN committed
+    //    UPDATE, BEFORE the credit. The money proof is now durable, so a later
+    //    credit failure can NEVER lose it and re-settle real USDC on retry. The
+    //    tx_signature partial-UNIQUE makes the capture the single exactly-once
+    //    claim of this on-chain payment.
+    const txSignature = result.txSignature;
+    const usdBasis = (rowUsdCents / 100).toFixed(2);
+    const captureMeta: Record<string, unknown> = {
+      ...meta,
+      txSignature,
+      asset,
+      usdCents: rowUsdCents,
+      settlePayer: result.payer ?? undefined,
+      settleNetwork: result.network ?? undefined,
+    };
+    let captured: { id: string }[];
+    try {
+      captured = await db
+        .update(ctTopups)
+        .set({ txSignature, usdBasisAtReceipt: usdBasis, metadata: captureMeta })
+        .where(
+          and(
+            eq(ctTopups.id, topupId),
+            eq(ctTopups.status, 'settling'),
+            eq(ctTopups.settlingId, settlingId),
+            isNull(ctTopups.txSignature),
+          ),
+        )
+        .returning({ id: ctTopups.id });
+    } catch (err) {
+      if ((err as { code?: string } | undefined)?.code === '23505') {
+        // The settled signature is ALREADY owned by a DIFFERENT top-up: the same
+        // on-chain payment maps to another row. NEVER credit this one on that
+        // signature — reconcile, recording the spent signature in metadata.
+        console.error(
+          `[ct-topup] SIGNATURE CONFLICT — settled tx ${txSignature} already owned by another top-up; ` +
+            `topup=${topupId} → reconcile (no credit)`,
+        );
+        await markTopupReconcile(topupId, settlingId, 'signature_conflict', txSignature, meta, result);
+        return c.json({ error: 'signature_conflict', code: 'signature_conflict', status: 'reconcile' }, 409);
       }
-
-      if (!updated || updated.length === 0) {
-        // The WHERE status='pending' matched nothing — a concurrent settle won
-        // the row first. Signal a replay; the post-tx handler re-reads the now-
-        // settled row and returns its cached credit.
-        throw new TopupReplay('txsig');
-      }
-
-      // Credit vCLAW in the SAME tx — credit + row-flip are atomic. Passing `tx`
-      // composes into this transaction, so a later failure rolls BOTH back.
-      //
-      // TOKENOMICS F2: on-ramp credits are tagged BOUGHT (non-cashable V-Bucks),
-      // NOT the default SOFT. The ledger row carries `usd_basis` = the dollars the
-      // buyer actually paid (rowUsdCents → "X.XX"), the SAME value stamped on the
-      // ct_topups.usd_basis_at_receipt column above, so the BOUGHT provenance row
-      // records the real-money V-Bucks revenue. BOUGHT is non-cashable BY
-      // CONSTRUCTION (F1: only EARNED — minted exclusively by mintEarned at an
-      // external-customer settlement — is cashable); tagging here can never make
-      // an on-ramp purchase withdrawable.
-      const ledger = await creditClawTokens(
-        {
-          avatarId: identity.avatarId,
-          amount: updated[0].amountCt,
-          reason: 'topup_usdc',
-          source: 'x402',
-          provenance: 'bought',
-          usdBasis: (rowUsdCents / 100).toFixed(2),
-          metadata: { txSignature, asset, usdCents: rowUsdCents, topupId },
-        },
-        tx,
+      console.error(
+        `[ct-topup] CAPTURE FAILED AFTER USDC MOVED — signature not yet durable; topup=${topupId} ` +
+          `tx=${txSignature} err=${(err as Error).message}`,
       );
-
-      return { balanceAfter: ledger.balanceAfter, creditedCt: updated[0].amountCt };
-    });
-    balanceAfter = out.balanceAfter;
-    creditedCt = out.creditedCt;
-    settledTxSig = txSignature;
-  } catch (err) {
-    if (err instanceof TopupReplay) {
-      // The settle tx rolled back on a unique-index collision (already credited
-      // by a prior/concurrent settle). Re-read the colliding settled row OUTSIDE
-      // the aborted tx and replay its cached credit — never double-credit.
-      const replayed = await findSettledForReplay({
-        avatarId: identity.avatarId,
-        txSignature,
-        idempotencyKey,
-        kind: err.kind,
-      });
-      if (replayed && replayed.status === 'settled') {
-        const bal = await currentBalance(identity.avatarId);
-        return c.json({
-          ctCredited: replayed.amountCt,
-          balance: bal,
-          txSignature: replayed.txSignature,
-          replay: true,
-        });
-      }
-      // Collision but no settled row found (extremely unlikely) — 409 rather than
-      // a misleading replay or a double-credit.
-      return c.json({ error: 'settle_in_flight', code: 'settle_in_flight' }, 409);
+      return c.json({ error: 'settle_failed', code: 'settle_failed', transient: true }, 500);
     }
-    console.error('[ct-topup] settle transaction failed:', (err as Error).message);
-    return c.json({ error: 'settle_failed', code: 'settle_failed' }, 500);
-  }
+    if (captured.length === 0) {
+      const reread = await db.query.ctTopups.findFirst({
+        where: and(eq(ctTopups.id, topupId), eq(ctTopups.avatarId, identity.avatarId)),
+      });
+      if (reread && reread.txSignature === txSignature) {
+        const o =
+          reread.status === 'settled'
+            ? topupReplayOutcome(reread, await currentBalance(identity.avatarId))
+            : reread.status === 'settling'
+              ? await runTopupCredit(reread, identity.avatarId)
+              : {
+                  httpStatus: 409 as const,
+                  json: { error: 'topup_reconciliation', code: 'topup_reconciliation', status: reread.status },
+                };
+        return c.json(o.json, o.httpStatus);
+      }
+      console.error(
+        `[ct-topup] CAPTURE MATCHED NO ROW AFTER USDC MOVED — topup=${topupId} tx=${txSignature}; ` +
+          `MANUAL reconcile required`,
+      );
+      await markTopupReconcile(topupId, settlingId, 'capture_lost', txSignature, meta, result);
+      return c.json({ error: 'topup_reconciliation', code: 'topup_reconciliation', status: 'reconcile' }, 409);
+    }
 
-  return c.json({
-    ctCredited: creditedCt,
-    balance: balanceAfter,
-    txSignature: settledTxSig,
-  });
-  }); // end withKeyedMutex(`ct-topup-settle:${topupId}`) — serialized critical section
+    // 8) CREDIT (resumable). Re-read the captured row + run the shared credit
+    //    (flip settling→settled + creditClawTokens BOUGHT, atomically). The
+    //    facilitator is NEVER called again.
+    const capturedRow = await db.query.ctTopups.findFirst({ where: eq(ctTopups.id, topupId) });
+    if (!capturedRow) {
+      return c.json({ error: 'settle_failed', code: 'settle_failed', transient: true }, 500);
+    }
+    const o = await runTopupCredit(capturedRow, identity.avatarId);
+    return c.json(o.json, o.httpStatus);
+  }); // end withKeyedMutex(`ct-topup-settle:${topupId}`) — per-topup in-process serialization
 });
 
 // ---------------------------------------------------------------------------
@@ -548,36 +511,215 @@ async function currentBalance(avatarId: string): Promise<number> {
   return row?.clawTokens ?? 0;
 }
 
-/** Re-read the already-settled row a collision replays. Prefer the row carrying
- *  THIS tx signature (the double-credit guard); fall back to the idem-key row. */
-async function findSettledForReplay(input: {
-  avatarId: string;
-  txSignature: string;
-  idempotencyKey: string;
-  kind: 'txsig' | 'idem';
-}) {
-  if (input.kind === 'idem') {
-    return db.query.ctTopups.findFirst({
-      where: and(
-        eq(ctTopups.avatarId, input.avatarId),
-        eq(ctTopups.idempotencyKey, input.idempotencyKey),
-      ),
-    });
+/** Dispatch a NON-pending ct_topups row (loaded by topupId+avatar) to its
+ *  terminal or RESUME outcome. Never calls the facilitator. */
+async function dispatchExistingTopup(row: TopupRow, avatarId: string): Promise<TopupOutcome> {
+  switch (row.status) {
+    case 'settled':
+      return topupReplayOutcome(row, await currentBalance(avatarId));
+    case 'failed':
+      return { httpStatus: 409, json: { error: 'topup_not_pending', code: 'topup_not_pending', status: 'failed' } };
+    case 'reconcile':
+      return { httpStatus: 409, json: { error: 'topup_reconciliation', code: 'topup_reconciliation', status: 'reconcile' } };
+    case 'settling': {
+      if (row.txSignature) {
+        // CAPTURED — the money is durable, only the credit is incomplete. RESUME
+        // it (never re-call the facilitator).
+        return runTopupCredit(row, avatarId);
+      }
+      const startedAt = row.settlingStartedAt ? new Date(row.settlingStartedAt).getTime() : 0;
+      const ageMs = Date.now() - startedAt;
+      if (ageMs < resolveTopupSettlingStaleMs()) {
+        // A concurrent settle holds a FRESH claim — let the caller retry shortly.
+        return { httpStatus: 409, json: { error: 'settle_in_flight', code: 'settle_in_flight' } };
+      }
+      // STALE claim, no signature: money-state UNKNOWN. Do NOT re-call the
+      // facilitator — a chain-check reconciler resolves whether the payment
+      // landed. `requireNullSignature` guards a capture racing in right now.
+      console.error(
+        `[ct-topup] STALE SETTLING CLAIM — topup=${row.id} settling ${Math.round(ageMs / 1000)}s ` +
+          `with no signature; money-state UNKNOWN → reconcile (no facilitator re-call)`,
+      );
+      await markTopupReconcile(
+        row.id,
+        row.settlingId,
+        'stale_settling',
+        null,
+        (row.metadata ?? {}) as Record<string, unknown>,
+        null,
+        true,
+      );
+      const after = await db.query.ctTopups.findFirst({
+        where: and(eq(ctTopups.id, row.id), eq(ctTopups.avatarId, avatarId)),
+      });
+      if (after && after.status === 'settling' && after.txSignature) {
+        return runTopupCredit(after, avatarId);
+      }
+      return { httpStatus: 409, json: { error: 'topup_reconciliation', code: 'topup_reconciliation', status: 'reconcile' } };
+    }
+    default:
+      return { httpStatus: 409, json: { error: 'topup_not_pending', code: 'topup_not_pending', status: row.status } };
   }
-  // tx_signature is globally unique (partial index), but the REPLAY we return
-  // here is echoed to the caller (amountCt, txSignature). Scope it to the
-  // CALLER'S avatar so a caller replaying ANOTHER avatar's settled payment header
-  // can never read back that row's amount/signature (a cross-avatar metadata
-  // leak — there is no mint either way, the credit already happened on the owning
-  // avatar). When the row's avatar doesn't match, this returns null; the caller's
-  // collision handler then 409s `settle_in_flight` (the generic no-settled-row
-  // path) instead of leaking the foreign row.
-  return db.query.ctTopups.findFirst({
-    where: and(
-      eq(ctTopups.txSignature, input.txSignature),
-      eq(ctTopups.avatarId, input.avatarId),
-    ),
-  });
+}
+
+/** Credit a CAPTURED top-up (settling + tx_signature): flip settling→settled +
+ *  creditClawTokens BOUGHT, in ONE atomic tx. Resumable + exactly-once — a prior
+ *  failed attempt rolled back ENTIRELY, so this credits exactly once; a
+ *  concurrent resume that already settled is detected (0-row flip) and replayed.
+ *  NEVER calls the facilitator. */
+async function runTopupCredit(row: TopupRow, avatarId: string): Promise<TopupOutcome> {
+  const topupId = row.id;
+  const txSignature = row.txSignature;
+  if (!txSignature) {
+    console.error(`[ct-topup] runTopupCredit without a signature — topup=${topupId}`);
+    return { httpStatus: 500, json: { error: 'settle_failed', code: 'settle_failed', transient: true } };
+  }
+  const meta = (row.metadata ?? {}) as { asset?: string; usdCents?: number };
+  const rowUsdCents = typeof meta.usdCents === 'number' ? meta.usdCents : null;
+  // usd_basis for the BOUGHT credit — prefer the persisted receipt column (set at
+  // CAPTURE), else re-derive from the row's usdCents. Non-empty for the ledger.
+  const usdBasis =
+    typeof row.usdBasisAtReceipt === 'string' && row.usdBasisAtReceipt.length > 0
+      ? row.usdBasisAtReceipt
+      : rowUsdCents !== null
+        ? (rowUsdCents / 100).toFixed(2)
+        : undefined;
+
+  try {
+    const out = await db.transaction(async (tx) => {
+      // Flip settling(+sig) → settled FIRST, checked. A concurrent resume that
+      // already credited ⇒ 0 rows ⇒ TopupCreditAlreadyDone ⇒ replay (the credit
+      // NEVER runs twice).
+      const flipped = await tx
+        .update(ctTopups)
+        .set({ status: 'settled', settlingId: null, settlingStartedAt: null })
+        .where(
+          and(
+            eq(ctTopups.id, topupId),
+            eq(ctTopups.status, 'settling'),
+            eq(ctTopups.txSignature, txSignature),
+          ),
+        )
+        .returning({ id: ctTopups.id, amountCt: ctTopups.amountCt });
+      if (flipped.length === 0) {
+        throw new TopupCreditAlreadyDone();
+      }
+
+      // Credit vCLAW BOUGHT in the SAME tx — the flip + credit are atomic; any
+      // failure rolls BOTH back (the row stays settling+sig, resumable, the
+      // signature never lost). TOKENOMICS F2: on-ramp credits are BOUGHT
+      // (non-cashable V-Bucks) with usd_basis = the dollars paid.
+      const ledger = await creditClawTokens(
+        {
+          avatarId,
+          amount: flipped[0].amountCt,
+          reason: 'topup_usdc',
+          source: 'x402',
+          provenance: 'bought',
+          usdBasis,
+          metadata: { txSignature, asset: meta.asset, usdCents: rowUsdCents ?? undefined, topupId },
+        },
+        tx,
+      );
+      return { balanceAfter: ledger.balanceAfter, creditedCt: flipped[0].amountCt };
+    });
+    return {
+      httpStatus: 200,
+      json: { ctCredited: out.creditedCt, balance: out.balanceAfter, txSignature },
+    };
+  } catch (err) {
+    if (err instanceof TopupCreditAlreadyDone) {
+      const settled = await db.query.ctTopups.findFirst({
+        where: and(eq(ctTopups.id, topupId), eq(ctTopups.avatarId, avatarId)),
+      });
+      if (settled && settled.status === 'settled') {
+        return topupReplayOutcome(settled, await currentBalance(avatarId));
+      }
+      return { httpStatus: 409, json: { error: 'settle_in_flight', code: 'settle_in_flight' } };
+    }
+    // POST-CAPTURE credit failure. The signature is DURABLE (captured), the row
+    // stays settling+sig, so a retry RESUMES this credit and NEVER re-calls the
+    // facilitator. Loud; transient.
+    console.error(
+      `[ct-topup] CREDIT TX FAILED AFTER USDC CAPTURED — row left settling+signature for idempotent ` +
+        `resume (no facilitator re-call); topup=${topupId} tx=${txSignature} err=${(err as Error).message}`,
+    );
+    return { httpStatus: 500, json: { error: 'settle_failed', code: 'settle_failed', transient: true } };
+  }
+}
+
+/** Release a settling claim back to pending (a transient, NO-money-moved
+ *  facilitator failure) so a retry can re-claim. Checked to the claim holder. */
+async function releaseTopupClaim(topupId: string, settlingId: string): Promise<void> {
+  try {
+    await db
+      .update(ctTopups)
+      .set({ status: 'pending', settlingId: null, settlingStartedAt: null, idempotencyKey: null })
+      .where(and(eq(ctTopups.id, topupId), eq(ctTopups.status, 'settling'), eq(ctTopups.settlingId, settlingId)));
+  } catch (err) {
+    console.warn('[ct-topup] releaseTopupClaim failed (non-fatal):', (err as Error).message);
+  }
+}
+
+/** Move a settling row to the terminal `reconcile` state, recording the spent
+ *  signature (if any) in metadata for the chain-check reconciler. NEVER writes
+ *  the tx_signature COLUMN (that stays the exactly-once capture key). Checked to
+ *  the claim; a miss is logged LOUD — money is never silently lost. */
+async function markTopupReconcile(
+  topupId: string,
+  settlingId: string | null,
+  reason: string,
+  spentTxSignature: string | null,
+  meta: Record<string, unknown>,
+  result: { payer?: string | null; network?: string | null } | null,
+  requireNullSignature = false,
+): Promise<void> {
+  const conds = [eq(ctTopups.id, topupId), eq(ctTopups.status, 'settling')];
+  if (settlingId) conds.push(eq(ctTopups.settlingId, settlingId));
+  if (requireNullSignature) conds.push(isNull(ctTopups.txSignature));
+  try {
+    const updated = await db
+      .update(ctTopups)
+      .set({
+        status: 'reconcile',
+        settlingId: null,
+        settlingStartedAt: null,
+        metadata: {
+          ...meta,
+          reconcileReason: reason,
+          ...(spentTxSignature
+            ? { spentTxSignature, settlePayer: result?.payer ?? undefined, settleNetwork: result?.network ?? undefined }
+            : {}),
+        },
+      })
+      .where(and(...conds))
+      .returning({ id: ctTopups.id });
+    if (updated.length === 0) {
+      console.error(
+        `[ct-topup] RECONCILE RECORD MISSED — topup=${topupId} reason=${reason} ` +
+          `spentTx=${spentTxSignature ?? 'none'} — MANUAL reconciliation required`,
+      );
+    }
+  } catch (err) {
+    console.error(
+      `[ct-topup] RECONCILE RECORD FAILED — topup=${topupId} reason=${reason} ` +
+        `spentTx=${spentTxSignature ?? 'none'}: ${(err as Error).message}`,
+    );
+  }
+}
+
+/** Shape an already-settled row into the idempotent credit-replay outcome. A
+ *  settled row ALWAYS carries a signature (DB CHECK); a settled-without-signature
+ *  row is corruption and is REFUSED, never replayed as a credit. */
+function topupReplayOutcome(row: TopupRow, balance: number): TopupOutcome {
+  if (!row.txSignature) {
+    console.error(`[ct-topup] settled row ${row.id} has NO tx_signature — refusing replay (corruption)`);
+    return { httpStatus: 500, json: { error: 'settle_failed', code: 'settle_failed' } };
+  }
+  return {
+    httpStatus: 200,
+    json: { ctCredited: row.amountCt, balance, txSignature: row.txSignature, replay: true },
+  };
 }
 
 export default ctTopupRoutes;
