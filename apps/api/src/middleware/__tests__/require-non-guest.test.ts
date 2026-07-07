@@ -17,6 +17,17 @@
  */
 
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import type { Next } from 'hono';
+
+// bun:test's mock() infers `() => Promise<string>`, which is not assignable to
+// Hono's `Next` (`() => Promise<void>`). The middleware passes next()'s return
+// value through, so the tests assert on the 'NEXT' sentinel — this helper casts
+// the TYPE only (intersection keeps the Mock assertion surface); runtime is
+// unchanged.
+const mockNext = () => {
+  const fn = mock(async () => 'NEXT');
+  return fn as typeof fn & Next;
+};
 import * as realDatabase from '@clawville/database';
 
 // The value the stubbed users.findFirst returns for the NEXT call. Each test
@@ -70,7 +81,7 @@ beforeEach(() => {
 describe('requireNonGuestUser (AppContext — after requireAuth / sessionMiddleware)', () => {
   it('403s a guest Lucia user and does NOT call next', async () => {
     nextUserRow = { isGuest: true };
-    const next = mock(async () => 'NEXT');
+    const next = mockNext();
     const res: any = await requireNonGuestUser(makeCtx({ user: { id: GUEST_ID } }), next);
     expect(res.__json).toBe(true);
     expect(res.status).toBe(403);
@@ -80,15 +91,15 @@ describe('requireNonGuestUser (AppContext — after requireAuth / sessionMiddlew
 
   it('passes a non-guest Lucia user (calls next)', async () => {
     nextUserRow = { isGuest: false };
-    const next = mock(async () => 'NEXT');
-    const res = await requireNonGuestUser(makeCtx({ user: { id: REAL_ID } }), next);
+    const next = mockNext();
+    const res: any = await requireNonGuestUser(makeCtx({ user: { id: REAL_ID } }), next);
     expect(res).toBe('NEXT');
     expect(next).toHaveBeenCalledTimes(1);
   });
 
   it('passes when there is NO Lucia user (agent path) WITHOUT a DB hit', async () => {
-    const next = mock(async () => 'NEXT');
-    const res = await requireNonGuestUser(makeCtx({ user: null }), next);
+    const next = mockNext();
+    const res: any = await requireNonGuestUser(makeCtx({ user: null }), next);
     expect(res).toBe('NEXT');
     expect(next).toHaveBeenCalledTimes(1);
     expect(usersFindFirst).not.toHaveBeenCalled();
@@ -98,7 +109,7 @@ describe('requireNonGuestUser (AppContext — after requireAuth / sessionMiddlew
 describe('requireNonGuestIdentity (ActivityAuthContext — after requireAuthOrAgentSession)', () => {
   it('403s a kind:"user" guest and does NOT call next', async () => {
     nextUserRow = { isGuest: true };
-    const next = mock(async () => 'NEXT');
+    const next = mockNext();
     const res: any = await requireNonGuestIdentity(
       makeCtx({ identity: { kind: 'user', userId: GUEST_ID } }),
       next,
@@ -110,8 +121,8 @@ describe('requireNonGuestIdentity (ActivityAuthContext — after requireAuthOrAg
 
   it('passes a kind:"user" non-guest (calls next)', async () => {
     nextUserRow = { isGuest: false };
-    const next = mock(async () => 'NEXT');
-    const res = await requireNonGuestIdentity(
+    const next = mockNext();
+    const res: any = await requireNonGuestIdentity(
       makeCtx({ identity: { kind: 'user', userId: REAL_ID } }),
       next,
     );
@@ -122,8 +133,8 @@ describe('requireNonGuestIdentity (ActivityAuthContext — after requireAuthOrAg
   // E5 AGENT-PASSTHROUGH LOCK: an agent is NEVER a guest and must pass without
   // ever hitting the DB (no needless users lookup on the agent path).
   it('passes a kind:"agent" identity WITHOUT a DB hit', async () => {
-    const next = mock(async () => 'NEXT');
-    const res = await requireNonGuestIdentity(
+    const next = mockNext();
+    const res: any = await requireNonGuestIdentity(
       makeCtx({ identity: { kind: 'agent', userId: REAL_ID, agentId: 'a1' } }),
       next,
     );
