@@ -163,37 +163,57 @@ function squarePerimeterPoint(s: number, h: number): { xt: number; zt: number } 
 // Deterministic parcel generator
 // ---------------------------------------------------------------------------
 
+/**
+ * Deterministically generate `count` parcel slots for ONE tier on its square
+ * block-frame — the SAME arc-length perimeter walk `generateParcels()` runs,
+ * extracted as its per-tier body so a consumer can generate a tier at a count
+ * OTHER than `PARCEL_TIER_COUNTS[tier]` WITHOUT mutating the frozen render
+ * supply. Pure (math only — no RNG/clock); `count <= 0` → `[]`.
+ *
+ * Two consumers, ONE formula (so positions can never drift between them):
+ *   - `LAND_PARCELS` (the render supply) calls it per tier at `PARCEL_TIER_COUNTS`.
+ *   - The Phase-B land seed calls it for the a/b HOLD-tier inventory (12 b / 6 a)
+ *     that the render supply intentionally OMITS (`PARCEL_TIER_COUNTS` a/b = 0),
+ *     so those DB rows land on grid cells consistent with the founder/starter/c
+ *     convention by construction. Calling it with a>0/b>0 here does NOT change
+ *     `LAND_PARCELS` or `PARCEL_TIER_COUNTS`, so the 3D render is untouched.
+ */
+export function generateParcelsForTier(tier: LandTier, count: number): ParcelSlot[] {
+  if (count <= 0) return [];
+  const cfg = TIER_CONFIG[tier];
+  const h = cfg.halfSideTiles;
+  const perimeter = 8 * h; // tiles
+  const step = perimeter / count;
+  const footprintWU = cfg.footprintTiles * TILE_SIZE;
+  const radiusWU = h * TILE_SIZE; // Chebyshev frame radius in wu
+
+  const parcels: ParcelSlot[] = [];
+  for (let i = 0; i < count; i++) {
+    const s = i * step; // arc-length position in tiles along the perimeter
+    const { xt, zt } = squarePerimeterPoint(s, h);
+    const cx = Math.round(xt * TILE_SIZE);
+    const cz = Math.round(zt * TILE_SIZE);
+
+    parcels.push({
+      id: parcelCode(tier, i),
+      tier,
+      indexInTier: i,
+      cx,
+      cz,
+      size: footprintWU,
+      angle: Math.atan2(cz, cx),
+      radius: radiusWU,
+    });
+  }
+  return parcels;
+}
+
 function generateParcels(): ParcelSlot[] {
   const parcels: ParcelSlot[] = [];
-
   for (const tier of LAND_TIERS) {
-    const count = PARCEL_TIER_COUNTS[tier];
-    const cfg = TIER_CONFIG[tier];
-    const h = cfg.halfSideTiles;
-    const perimeter = 8 * h; // tiles
-    const step = perimeter / count;
-    const footprintWU = cfg.footprintTiles * TILE_SIZE;
-    const radiusWU = h * TILE_SIZE; // Chebyshev frame radius in wu
-
-    for (let i = 0; i < count; i++) {
-      const s = i * step; // arc-length position in tiles along the perimeter
-      const { xt, zt } = squarePerimeterPoint(s, h);
-      const cx = Math.round(xt * TILE_SIZE);
-      const cz = Math.round(zt * TILE_SIZE);
-
-      parcels.push({
-        id: parcelCode(tier, i),
-        tier,
-        indexInTier: i,
-        cx,
-        cz,
-        size: footprintWU,
-        angle: Math.atan2(cz, cx),
-        radius: radiusWU,
-      });
-    }
+    // Identical to the prior inline loop — LAND_PARCELS output is unchanged.
+    parcels.push(...generateParcelsForTier(tier, PARCEL_TIER_COUNTS[tier]));
   }
-
   return parcels;
 }
 
