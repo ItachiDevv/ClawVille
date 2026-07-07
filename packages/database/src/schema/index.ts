@@ -11,6 +11,9 @@ export * from './memories';
 export * from './research';
 export * from './token-launch';
 export * from './treasury';
+// Tokenomics T0 (2026-07-07) — CLV price-oracle snapshot history (durable TWAP
+// seed + admin read). READ-ONLY price feed; never a ClawToken balance table.
+export * from './token-market';
 export * from './quests';
 export * from './agent-configs';
 export * from './bounties';
