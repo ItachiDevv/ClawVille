@@ -134,6 +134,23 @@ export const users = pgTable(
     linkedHatcherAt: timestamp('linked_hatcher_at', { withTimezone: true }),
 
     // -----------------------------------------------------------------
+    // Tokenomics (2026-07-07) — persistent SELF-CUSTODY wallet link.
+    //
+    // The base58 Solana pubkey of a wallet the user PROVES they control by
+    // signing a server-issued challenge (see routes/wallet-link.ts, mirroring
+    // the Phase 5.1 signed-challenge reconnect). This is the wallet whose CLV
+    // ($CLAWVILLE) balance backs the hold-tier / seller-license / land
+    // hold-to-keep checks (Tokenomics M4/M3). The CLV NEVER leaves the wallet —
+    // we only READ the balance (Kintara's non-custodial pattern), so this is a
+    // pubkey POINTER, never a custody column (custodial secrets live encrypted
+    // in the `wallets` table). Nullable (not every account links one);
+    // re-linking REPLACES the value. UNIQUE (partial, WHERE NOT NULL — many
+    // NULLs allowed) so one on-chain wallet can back at most one account.
+    linkedWalletPubkey: varchar('linked_wallet_pubkey', { length: 44 }),
+    /** When the current `linked_wallet_pubkey` was last proven + set. */
+    linkedWalletAt: timestamp('linked_wallet_at', { withTimezone: true }),
+
+    // -----------------------------------------------------------------
     // Guest-avatar auto-create (2026-04-23) — un-authenticated visitors get
     // a throwaway user + avatar so they can play the Q2 activity games and
     // chat with NPCs without signing up. Cleanup cron deletes rows where

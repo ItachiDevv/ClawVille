@@ -45,6 +45,7 @@
 
 import { db as realDb } from '@clawville/database';
 import { sql } from 'drizzle-orm';
+import { readSplTokenBalance } from './solana-token-balance';
 import * as ledgerModule from './claw-token-ledger';
 import type {
   creditClawTokens as CreditFn,
@@ -859,18 +860,10 @@ function defaultEventRpc(): EventRpc {
       return BigInt(res.value.amount);
     },
     async getTokenBalance(mint: string, ownerPubkey: string): Promise<bigint> {
-      const res = await getConn().getParsedTokenAccountsByOwner(new (PublicKey())(ownerPubkey), {
-        mint: new (PublicKey())(mint),
-      });
-      let total = 0n;
-      for (const { account } of res.value) {
-        const parsed = account.data as unknown as {
-          parsed?: { info?: { tokenAmount?: { amount?: string } } };
-        };
-        const amt = parsed.parsed?.info?.tokenAmount?.amount;
-        if (amt) total += BigInt(amt);
-      }
-      return total;
+      // Extracted to the shared reader (Tokenomics Phase A) — the CLV
+      // linked-wallet balance service reads through the SAME helper. The
+      // hold-gate only needs the atomic total, so we drop decimals/uiAmount.
+      return (await readSplTokenBalance(getConn(), mint, ownerPubkey)).amountAtomic;
     },
     async getSolTransfer(
       txSig: string,
