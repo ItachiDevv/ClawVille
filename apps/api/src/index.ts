@@ -127,6 +127,7 @@ import { treasuryRouter } from './routes/treasury';
 // Tokenomics T0 (2026-07-07) — admin-only CLV price-oracle read surface
 // (GET /api/oracle/clv). READ-ONLY price feed; never touches the CT ledger.
 import { oracleRouter } from './routes/oracle';
+import { walletLinkRoutes } from './routes/wallet-link';
 import type { AppContext } from './types';
 
 const app = new Hono<AppContext>();
@@ -408,6 +409,12 @@ app.route('/api/treasury', treasuryRouter);
 // GET /api/oracle/clv reports the current house-favorable quote (min(spot,
 // 30-min TWAP)) + optional ?history=N raw snapshots. READ-ONLY USD price feed.
 app.route('/api/oracle', oracleRouter);
+// Tokenomics Phase A / Slice A1 (2026-07-07) — self-custody wallet link:
+// POST /api/wallet/link/challenge → issue a nonce; POST /api/wallet/link →
+// prove control (sign the nonce) + persist the pubkey pointer; GET
+// /api/wallet/link → linked wallet + its (cached, mainnet) CLV balance. The
+// non-custodial balance-read link backing the hold-tier / seller-license checks.
+app.route('/api/wallet', walletLinkRoutes);
 // Phase 5.1 — admin identity recovery stub. Returns 501 behind a
 // FEATURE_GATE until the support-chat verification workflow lights up.
 app.route('/api/admin', adminIdentityRoutes);
