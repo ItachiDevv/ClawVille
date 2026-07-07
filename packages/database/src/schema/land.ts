@@ -100,6 +100,11 @@ export const landTransactionKindEnum = pgEnum('land_transaction_kind', [
   'service_sale', // peer CT service buy — full transfer to seller (no rake v1)
   'rent_payment', // LIVE (2026-06-24): rent acquire + each weekly rent-sweep charge (CT sink)
   'eviction', // LIVE (2026-06-24): rent lapsed past grace -> parcel returned to pool, structure archived
+  // ── Phase B tenure model (2026-07-07) ──
+  'land_deposit_escrow', // B1 starter claim — refundable deposit debited INTO escrow (NOT revenue)
+  'land_deposit_topup', // B1 top-up — adds to the escrow remainder
+  'land_deposit_refund', // B1 voluntary release — escrow remainder credited back to the claimant
+  'hold_claim', // B2 c/b/a/founder claim — CLV hold proven, no CT debit (amount_ct = 0)
   // ── DEFERRED (reserved; no v1 write path) ──
   'parcel_resale', // NEXT milestone (P2P resale)
   'property_tax', // economy-health pass (recurring sink)
@@ -111,10 +116,33 @@ export const landTransactionKindEnum = pgEnum('land_transaction_kind', [
  * Parcel TENURE — HOW the parcel is held (orthogonal to `status`, which is pool
  * membership). NULL on an `available`/unsold parcel.
  *   rented  — held via the weekly-rent path; evictable on lapse (rent_paid_through/grace_until live)
- *   owned   — bought outright (one-time CT sink) OR a permanent holder; never evicted
- *   starter — the free first-claim onboarding parcel; never rents, never evicts
+ *   owned   — LEGACY buy-outright (Phase B migrates these to grandfathered 'hold';
+ *             the buy route is disabled — `tenure_model_active`)
+ *   starter — LEGACY free first-claim parcel (pre-Phase-B); never rents, never evicts.
+ *             New starter claims use 'deposit'.
+ *   deposit — Phase B1 starter deposit-escrow: refundable deposit held on the row
+ *             (`deposit_remaining_ct`); weekly rent draws FROM the escrow → treasury;
+ *             exhaustion → grace → lapse (remainder forfeits)
+ *   hold    — Phase B2 hold-to-keep (c/b/a/founder): CLV balance ≥ stacked
+ *             thresholds required; weekly CT upkeep debits the holder → treasury;
+ *             CLV-below OR insufficient CT → grace → lapse
  */
-export const landTenureEnum = pgEnum('land_tenure', ['rented', 'owned', 'starter']);
+export const landTenureEnum = pgEnum('land_tenure', [
+  'rented',
+  'owned',
+  'starter',
+  'deposit',
+  'hold',
+]);
+
+/**
+ * Which SUBJECT's CLV backs a B2 hold parcel — decides how the sweeper re-checks
+ * the hold: 'user' → the human's linked self-custody wallet
+ * (`users.linked_wallet_pubkey`); 'agent' → the agent's custodial wallet
+ * (`avatars.wallet_address`). NULL on non-hold rows AND on grandfathered holds
+ * (which are never CLV-checked).
+ */
+export const landHoldSubjectEnum = pgEnum('land_hold_subject', ['user', 'agent']);
 
 /**
  * Structure lifecycle. `active` = live + rendered. `archived` = soft-deleted by an
@@ -220,6 +248,51 @@ export const landParcels = pgTable(
      */
     graceUntil: timestamp('grace_until', { withTimezone: true }),
 
+    // ── Phase B tenure model (2026-07-07) — deposit-escrow + hold-to-keep ──
+    /**
+     * B1: the ORIGINAL claim deposit (units) debited into escrow at claim time.
+     * Immutable for the life of the tenancy (top-ups grow `deposit_remaining_ct`,
+     * not this). NULL on non-deposit rows.
+     */
+    depositCt: integer('deposit_ct'),
+    /**
+     * B1: the LIVE escrow remainder (units).
+     *
+     * ═══ ESCROW-CONSERVATION INVARIANT (money-load-bearing) ═══
+     * The CT counted here was debited from the claimant's avatar balance at
+     * claim/top-up time and exists NOWHERE in any avatar balance while escrowed
+     * — this column is the sole record of it. Every mutation preserves:
+     *
+     *   deposit_remaining_ct = (claim deposit + Σ top-ups)
+     *                          − Σ weekly draws − refund − forfeit   ≥ 0
+     *
+     * so, over a tenancy's life:  Σ draws + refund + forfeit == claim + Σ top-ups.
+     * Draws/forfeits CREDIT the house treasury (balanced by the claim/top-up
+     * debits — net supply change is always ≤ 0, i.e. the escrow can never MINT);
+     * the refund credits the claimant. The `land_parcels_deposit_remaining_nonneg`
+     * CHECK is the DB backstop; `decideDepositSweep` (land-rent-sweeper) is the
+     * single draw-math authority; unit tests prove exact conservation.
+     * Cleared to NULL on lapse/release (after the forfeit/refund books it).
+     */
+    depositRemainingCt: integer('deposit_remaining_ct'),
+    /**
+     * B2: the CLV hold threshold STAMPED at claim time from
+     * `LAND_HOLD_THRESHOLDS_CLV` — in CLV **uiAmount** (human token count),
+     * despite the `_ct` suffix the land columns share. The sweeper re-checks
+     * SUM(hold_threshold_ct) across the owner's non-grandfathered hold parcels
+     * against the subject's live CLV balance. NULL on non-hold rows.
+     */
+    holdThresholdCt: integer('hold_threshold_ct'),
+    /** B2: which subject's CLV backs this hold (see `landHoldSubjectEnum`). */
+    holdSubject: landHoldSubjectEnum('hold_subject'),
+    /**
+     * TRUE on a legacy buy-outright parcel migrated to 'hold' by
+     * migrate-land-tenure-phaseB.ts: it pays weekly upkeep but is NEVER
+     * CLV-checked (it predates the hold requirement) and is EXCLUDED from the
+     * stacked-threshold sums. Always false on fresh Phase-B claims.
+     */
+    grandfathered: boolean('grandfathered').notNull().default(false),
+
     // ── RESERVED-INERT: Founder on-chain NFT linkage (custody-gated, no v1 write) ──
     /** base58 Solana mint address — populated only when a Founder parcel is minted. */
     nftMintAddress: varchar('nft_mint_address', { length: 64 }),
@@ -246,12 +319,24 @@ export const landParcels = pgTable(
     /** One parcel per world cell — supply integrity (ROADMAP R11). */
     gridUnique: uniqueIndex('land_parcels_grid_unique').on(t.gridX, t.gridY),
     /**
-     * Rent sweeper hot path — only RENTED parcels are ever due. Partial index on
-     * the due-date keeps the periodic charge/grace/evict scan off the full table.
+     * Tenure sweeper hot path (Phase B, 2026-07-07 — supersedes
+     * `land_parcels_rent_sweep_idx`): rented + deposit + hold parcels are the
+     * only ones ever due. Partial index on the due-date keeps the periodic
+     * charge/grace/evict scan off the full table. Migration 0013 drops the old
+     * rented-only index and creates this one.
      */
-    rentSweepIdx: index('land_parcels_rent_sweep_idx')
+    tenureSweepIdx: index('land_parcels_tenure_sweep_idx')
       .on(t.rentPaidThrough)
-      .where(sql`tenure = 'rented'`),
+      .where(sql`tenure IN ('rented', 'deposit', 'hold')`),
+    /**
+     * DB backstop for the escrow-conservation invariant — a draw/refund bug can
+     * never book more OUT of the escrow than was paid IN (see the
+     * `depositRemainingCt` column doc).
+     */
+    depositRemainingNonNeg: check(
+      'land_parcels_deposit_remaining_nonneg',
+      sql`${t.depositRemainingCt} IS NULL OR ${t.depositRemainingCt} >= 0`,
+    ),
   }),
 );
 
