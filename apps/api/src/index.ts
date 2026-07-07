@@ -71,9 +71,13 @@ import { ctTopupRoutes } from './routes/ct-topup';
 import { moonpayRoutes } from './routes/moonpay';
 // Tokenomics C — checkout stage (2026-07-07): generic x402 USDC checkout for
 // ANY vCLAW-priced thing. Importing the route ALSO side-effect-imports the
-// fulfillers (cosmetic-purchase + rent-prepay register themselves) — the
-// registry is populated before any request runs.
+// fulfillers (cosmetic-purchase + rent-prepay + marketplace-purchase register
+// themselves) — the registry is populated before any request runs.
 import { x402CheckoutRoutes } from './routes/x402-checkout';
+// Tokenomics C4 (2026-07-07): P2P marketplace v1 — list/browse/cancel with the
+// CLV seller license + deed escrow-lock. SETTLEMENT flag-gated OFF
+// (MARKETPLACE_SETTLE_ENABLED); the buyer path is the x402 checkout above.
+import { marketRoutes } from './routes/market';
 import { buildMockFacilitator } from './services/x402-mock-facilitator';
 import { portalRoutes } from './routes/portal';
 import { partnerHatcherRoutes } from './routes/partner-hatcher';
@@ -345,6 +349,15 @@ app.route('/api/moonpay', moonpayRoutes);
 // sessions 403). GATED like ct-topup: 503 until the merchant wallet is set;
 // devnet-first. See routes/x402-checkout.ts + services/x402-checkout.ts.
 app.route('/api/x402/checkout', x402CheckoutRoutes);
+// Tokenomics C4 (2026-07-07) — P2P marketplace v1: sellers list (CLV Resident
+// license ≥ 50k uiAmount, fail-soft REFUSE; land_deed only — earned_bundle
+// refused; deed escrow-locked in market_deed_locks), buyers settle via the
+// x402 checkout above (itemKind 'marketplace_purchase'). SETTLEMENT IS
+// FLAG-GATED OFF (MARKETPLACE_SETTLE_ENABLED — quote/preflight/fulfiller all
+// refuse while unset). Seller CLV payout (95.56%) + treasury rake (4.44%) are
+// QUEUED pending_review intents; on-chain sends + the deed owner-flip are
+// Codex-gated seams. E5 parity via requireAuthOrAgentSession on every write.
+app.route('/api/market', marketRoutes);
 // Phase 5.1 — cross-world portal + account linking (see plan §6.2 + §15).
 app.route('/api/portal', portalRoutes);
 // SEC-1 / FIX-6 — bound the request body on EVERY partner-hatcher route BEFORE
