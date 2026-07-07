@@ -174,11 +174,22 @@ export const partnerStorefrontStatusEnum = pgEnum('partner_storefront_status', [
 /** CT top-up on-ramp rail. Only `x402` is wired in Phase 4; `stripe`/`clv` reserved. */
 export const ctTopupRailEnum = pgEnum('ct_topup_rail', ['x402', 'stripe', 'clv']);
 
-/** CT top-up settlement state. */
+/**
+ * CT top-up settlement state — the DURABLE, cross-process, resumable machine
+ * (mirrors x402_checkouts after the Codex money-path review). pending → settling
+ * (DB-backed claim BEFORE the facilitator) → settling+tx_signature (CAPTURE: the
+ * signature is persisted in its OWN committed UPDATE the instant the facilitator
+ * settles, BEFORE the CT credit — a credit failure can never lose it and
+ * re-settle real USDC) → settled (credit ran). A stale settling claim with no
+ * signature → reconcile (money-state unknown, NEVER auto-retried). CHECK
+ * `ct_topups_settled_has_signature`: a settled row ALWAYS carries the signature.
+ */
 export const ctTopupStatusEnum = pgEnum('ct_topup_status', [
   'pending', // 402 quote issued, awaiting signed payment
-  'settled', // facilitator settled the tx; CT credited
-  'failed', // verify/settle rejected
+  'settling', // CLAIMED for settlement; facilitator call in-flight (tx_signature NULL) or CAPTURED awaiting/​resuming the credit (tx_signature set)
+  'settled', // facilitator settled the tx AND CT credited; tx_signature ALWAYS present (CHECK)
+  'failed', // verify/settle definitively rejected (no money moved)
+  'reconcile', // money-state UNKNOWN (stale settling w/o signature) OR a settled tx-sig owned by another top-up — needs chain reconciliation, NEVER auto-retried
 ]);
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -654,6 +665,15 @@ export const ctTopups = pgTable(
     /** USD basis logged at receipt for accounting (numeric, nullable until settle). */
     usdBasisAtReceipt: numeric('usd_basis_at_receipt'),
     status: ctTopupStatusEnum('status').notNull().default('pending'),
+    /**
+     * The CLAIM token of the process that flipped this row pending→settling
+     * (a fresh uuid per claim). Only the holder may CAPTURE/release it; a stale
+     * claim is reconciled, never stolen. NULL unless status='settling'.
+     * (Durable settle machine — Codex money-path review.)
+     */
+    settlingId: uuid('settling_id'),
+    /** When the current settling claim started — drives stale-claim detection. */
+    settlingStartedAt: timestamp('settling_started_at', { withTimezone: true }),
     /** Client-supplied idempotency on the settle call (per-avatar). */
     idempotencyKey: varchar('idempotency_key', { length: 64 }),
     metadata: jsonb('metadata').$type<Record<string, unknown>>().default({}).notNull(),
@@ -669,6 +689,15 @@ export const ctTopups = pgTable(
     idemUnique: uniqueIndex('ct_topups_idem_unique')
       .on(t.avatarId, t.idempotencyKey)
       .where(sql`idempotency_key IS NOT NULL`),
+    /**
+     * A `settled` row ALWAYS carries the tx signature (Codex money-path review):
+     * the money proof can never be absent on a credited top-up, so a settled row
+     * can never be replayed as a credit without a signature.
+     */
+    settledHasSignature: check(
+      'ct_topups_settled_has_signature',
+      sql`${t.status} <> 'settled' OR ${t.txSignature} IS NOT NULL`,
+    ),
   }),
 );
 
