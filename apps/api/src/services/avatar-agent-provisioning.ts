@@ -46,6 +46,7 @@ import type {
   AgentModelKey,
 } from '@clawville/shared';
 import { ensureWalletWithFirstTimeSecret } from './wallet-service';
+import { ensureCosmeticSignupBonus } from './cosmetic-signup-bonus';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -535,6 +536,21 @@ export async function provisionAvatarAgent(
     } catch (err) {
       console.error('[avatars] Failed to auto-generate wallet for new avatar:', err);
     }
+  }
+
+  // Tokenomics A2 — one-time cosmetics-scoped signup bonus, granted at account
+  // creation. This is the shared chokepoint for the create-agent (POST
+  // /api/avatars) + email-signup paths, both of which mint a real (non-guest)
+  // account here. Idempotent by construction (UNIQUE user_id), and NON-FATAL:
+  // a failure must never abort provisioning (the caller may already wrap this in
+  // runProvisioningFailSoft, but we belt-and-suspenders here too). Guests never
+  // reach this path (they use the auth.ts guest branch). Agent-connect / Hatcher
+  // avatar-insert paths do NOT flow through here — their signup-bonus parity is
+  // deferred to Phase C (agent-owner economy), consistent with A1's parity note.
+  try {
+    await ensureCosmeticSignupBonus({ userId, avatarId: avatar.id });
+  } catch (err) {
+    console.error('[avatar-provisioning] cosmetic signup bonus grant failed (non-fatal):', err);
   }
 
   return {

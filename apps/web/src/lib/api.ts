@@ -588,6 +588,12 @@ export const api = {
        * animates but NO real CT was credited, so the modal labels it demo.
        */
       demo?: boolean;
+      /**
+       * A2 (2026-07-07): true when the daily-login CT reward has been RETIRED
+       * (founder killed the faucet). `tokensEarned` is always 0; the client
+       * suppresses the reward modal on this flag.
+       */
+      retired?: boolean;
     }>('/api/avatars/me/daily-login', {
       method: 'POST',
     }),

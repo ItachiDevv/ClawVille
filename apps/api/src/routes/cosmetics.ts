@@ -39,6 +39,7 @@ import { requireNonGuestUser } from '../middleware/require-non-guest';
 import { logEventFromContext } from '../services/event-logger';
 import { creditClawTokens, debitClawTokens, InsufficientTokensError } from '../services/claw-token-ledger';
 import { getHouseTreasuryAvatarId } from '../services/house-treasury-seeder';
+import { spendCosmeticBonusInTx } from '../services/cosmetic-signup-bonus';
 import type { AppContext } from '../types';
 
 export const cosmeticsRoutes = new Hono<AppContext>();
@@ -309,62 +310,85 @@ cosmeticsRoutes.post('/:skuId/buy', sessionMiddleware, requireAuth, requireNonGu
     });
   }
 
-  // Atomic debit + insert.
-  let result: { balanceAfter: number; avatarSkinId: string };
+  // Atomic bonus-draw + debit + insert.
+  let result: { balanceAfter: number; avatarSkinId: string; grantUsed: number; realCt: number };
   try {
     result = await db.transaction(async (tx) => {
-      const debit = await debitClawTokens(
-        {
-          avatarId: avatar.id,
-          amount: sku.priceCt,
-          reason: 'buy_cosmetic',
-          source: 'api',
-          metadata: { skuId, slug: sku.slug, category: sku.category },
-        },
-        tx,
-      );
-      // ── T0 fee routing (2026-07-07): shop revenue → house treasury ──────
-      // The purchase debit previously burned to nobody. Credit the SAME price
-      // to the house treasury IN THIS SAME tx (debit + credit = net-neutral
-      // supply; the CT moves player→treasury instead of vanishing). Buyer-side
-      // amount UNCHANGED. The `alreadyOwned` idempotent replay returns before
-      // this tx, so a re-buy never re-credits. A null treasury (unavailable)
-      // degrades to the pre-T0 burn — never blocks the purchase.
-      if (Number.isInteger(sku.priceCt) && sku.priceCt > 0) {
+      // ── A2 cosmetics-scoped signup bonus (2026-07-07) ───────────────────
+      // Draw the one-time signup-bonus grant FIRST (row-locked, in-tx). It is a
+      // scoped promo that lives OUTSIDE avatars.clawTokens (schema/cosmetic-
+      // bonus.ts), so it can only be spent HERE. Only the REAL-CT remainder is
+      // debited from the buyer + routed to the treasury below — the grant
+      // portion mints NOTHING (a house-eaten marketing expense). Rolls back with
+      // the whole tx on any failure, so a failed purchase never consumes it.
+      const grantUsed = await spendCosmeticBonusInTx(tx, user.id, sku.priceCt);
+      const realCt = sku.priceCt - grantUsed;
+
+      // Debit only the real-CT remainder. Skip entirely when the grant fully
+      // covers the price (debitClawTokens rejects a non-positive amount).
+      let debitLedgerId: string | null = null;
+      let balanceAfter = avatar.clawTokens; // unchanged when fully grant-funded
+      if (realCt > 0) {
+        const debit = await debitClawTokens(
+          {
+            avatarId: avatar.id,
+            amount: realCt,
+            reason: 'buy_cosmetic',
+            source: 'api',
+            metadata: { skuId, slug: sku.slug, category: sku.category, grantUsed, priceCt: sku.priceCt },
+          },
+          tx,
+        );
+        debitLedgerId = debit.ledgerId;
+        balanceAfter = debit.balanceAfter;
+
+        // ── T0 fee routing (2026-07-07): shop revenue → house treasury ────
+        // Credit ONLY the real-CT remainder to the treasury (debit == credit =
+        // net-neutral supply; the CT moves player→treasury). CONSERVATION: the
+        // grant portion is NOT credited here — crediting the full priceCt while
+        // only debiting realCt would MINT `grantUsed` into the treasury. Buyer-
+        // side amount UNCHANGED. The `alreadyOwned` replay returns before this
+        // tx, so a re-buy never re-credits. A null treasury degrades to the
+        // pre-T0 burn — never blocks the purchase.
         const treasuryId = await getHouseTreasuryAvatarId();
         if (treasuryId) {
           await creditClawTokens(
             {
               avatarId: treasuryId,
-              amount: sku.priceCt,
+              amount: realCt,
               reason: 'house_fee_cosmetic_purchase',
               source: 'system',
-              metadata: { skuId, slug: sku.slug, buyerAvatarId: avatar.id },
+              metadata: { skuId, slug: sku.slug, buyerAvatarId: avatar.id, grantUsed, priceCt: sku.priceCt },
             },
             tx,
           );
         } else {
           console.error(
-            `[cosmetics] house treasury unavailable — ${sku.priceCt} CT purchase burned (pre-T0 behavior) for sku ${skuId}`,
+            `[cosmetics] house treasury unavailable — ${realCt} CT purchase burned (pre-T0 behavior) for sku ${skuId}`,
           );
         }
       }
+
       const [row] = await tx
         .insert(avatarSkins)
         .values({
           avatarId: avatar.id,
           skuId: sku.id,
           acquiredVia: 'shop_ct',
-          ledgerId: debit.ledgerId,
+          // Null when fully bonus-funded (no debit ledger row) — the
+          // cosmetic.purchased event records grantUsed/realCt for the audit.
+          ledgerId: debitLedgerId,
           equipped: false,
         })
         .returning({ id: avatarSkins.id });
-      return { balanceAfter: debit.balanceAfter, avatarSkinId: row.id };
+      return { balanceAfter, avatarSkinId: row.id, grantUsed, realCt };
     });
   } catch (err) {
     if (err instanceof InsufficientTokensError) {
+      // `err.requested` is the real-CT remainder we tried to debit (after the
+      // bonus), `err.available` the buyer's balance — report those, not priceCt.
       throw new HTTPException(400, {
-        message: `Not enough ClawTokens. Need ${sku.priceCt}, have ${avatar.clawTokens}.`,
+        message: `Not enough ClawTokens. Need ${err.requested}, have ${err.available}.`,
       });
     }
     throw err;
@@ -379,6 +403,10 @@ cosmeticsRoutes.post('/:skuId/buy', sessionMiddleware, requireAuth, requireNonGu
       slug: sku.slug,
       category: sku.category,
       pricePaid: sku.priceCt,
+      // A2 — split the price into the real CT charged vs the signup-bonus
+      // covered portion (the treasury only received `realCt`).
+      bonusApplied: result.grantUsed,
+      realCtCharged: result.realCt,
       balanceAfter: result.balanceAfter,
     },
   });
@@ -388,5 +416,7 @@ cosmeticsRoutes.post('/:skuId/buy', sessionMiddleware, requireAuth, requireNonGu
     alreadyOwned: false,
     avatarSkinId: result.avatarSkinId,
     clawTokens: result.balanceAfter,
+    // A2 — how much of the price the cosmetics signup bonus covered (0 when none).
+    bonusApplied: result.grantUsed,
   });
 });
