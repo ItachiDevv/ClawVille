@@ -583,6 +583,11 @@ export const api = {
       tokensEarned: number;
       totalTokens: number;
       alreadyClaimed: boolean;
+      /**
+       * True when the caller is a guest (all-demo economy) — the streak
+       * animates but NO real CT was credited, so the modal labels it demo.
+       */
+      demo?: boolean;
     }>('/api/avatars/me/daily-login', {
       method: 'POST',
     }),

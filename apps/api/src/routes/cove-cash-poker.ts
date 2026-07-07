@@ -36,6 +36,7 @@ import { z } from 'zod';
 import { and, eq } from 'drizzle-orm';
 import { db, avatars } from '@clawville/database';
 import { sessionMiddleware } from '../middleware/auth';
+import { requireNonGuestUser } from '../middleware/require-non-guest';
 import { fingerprintMiddleware } from '../middleware/fingerprint';
 import { resolveAgentSession } from '../middleware/require-auth-or-agent';
 import { createRateLimiter, getClientIp } from '../middleware/rate-limit';
@@ -192,7 +193,7 @@ coveCashPokerRouter.get('/tables', async (c) => {
 });
 
 // ── POST /tables (create) ────────────────────────────────────────────────────
-coveCashPokerRouter.post('/tables', async (c) => {
+coveCashPokerRouter.post('/tables', requireNonGuestUser, async (c) => {
   const ip = getClientIp(c.req.raw.headers);
   if (!createLimiter.check(ip)) {
     throw new HTTPException(429, { message: 'rate_limited' });
@@ -271,7 +272,7 @@ coveCashPokerRouter.post('/tables', async (c) => {
 });
 
 // ── POST /tables/join-by-code ────────────────────────────────────────────────
-coveCashPokerRouter.post('/tables/join-by-code', async (c) => {
+coveCashPokerRouter.post('/tables/join-by-code', requireNonGuestUser, async (c) => {
   let body: z.infer<typeof joinByCodeSchema>;
   try {
     body = joinByCodeSchema.parse(await c.req.json());
@@ -288,7 +289,7 @@ coveCashPokerRouter.post('/tables/join-by-code', async (c) => {
 });
 
 // ── POST /tables/:id/sit ─────────────────────────────────────────────────────
-coveCashPokerRouter.post('/tables/:id/sit', async (c) => {
+coveCashPokerRouter.post('/tables/:id/sit', requireNonGuestUser, async (c) => {
   const parsed = idParamSchema.safeParse(c.req.param());
   if (!parsed.success) throw new HTTPException(400, { message: 'invalid_table_id' });
   let body: z.infer<typeof sitSchema>;
@@ -307,7 +308,7 @@ coveCashPokerRouter.post('/tables/:id/sit', async (c) => {
 });
 
 // ── POST /tables/:id/leave ───────────────────────────────────────────────────
-coveCashPokerRouter.post('/tables/:id/leave', async (c) => {
+coveCashPokerRouter.post('/tables/:id/leave', requireNonGuestUser, async (c) => {
   const parsed = idParamSchema.safeParse(c.req.param());
   if (!parsed.success) throw new HTTPException(400, { message: 'invalid_table_id' });
   const subject = await resolveSubject(c);
@@ -322,7 +323,7 @@ coveCashPokerRouter.post('/tables/:id/leave', async (c) => {
 });
 
 // ── POST /tables/:id/action ──────────────────────────────────────────────────
-coveCashPokerRouter.post('/tables/:id/action', async (c) => {
+coveCashPokerRouter.post('/tables/:id/action', requireNonGuestUser, async (c) => {
   const parsed = idParamSchema.safeParse(c.req.param());
   if (!parsed.success) throw new HTTPException(400, { message: 'invalid_table_id' });
   let body: z.infer<typeof actionSchema>;

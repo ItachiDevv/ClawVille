@@ -182,6 +182,7 @@ import {
 import { sessionMiddleware } from '../middleware/auth';
 import { requireAuthOrAgentSession } from '../middleware/require-auth-or-agent';
 import type { ActivityAuthContext } from '../middleware/require-auth-or-agent';
+import { requireNonGuestIdentity } from '../middleware/require-non-guest';
 import { createRateLimiter, getClientIp } from '../middleware/rate-limit';
 import { logEventFromContext } from '../services/event-logger';
 import { broadcastLandEvent } from './world';
@@ -766,7 +767,7 @@ landRoutes.get('/me', requireAuthOrAgentSession, async (c) => {
 
 // ─── 4. POST /claim-starter  (AUTH, PARITY-BOUND, idempotent, atomic) ───────
 
-landRoutes.post('/claim-starter', requireAuthOrAgentSession, async (c) => {
+landRoutes.post('/claim-starter', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
   const identity = c.get('identity');
   const avatarId = identity.avatarId;
 
@@ -1087,7 +1088,7 @@ landRoutes.get('/catalog', async (c) => {
 
 // ─── 7. POST /parcels/:parcelId/buy  (AUTH, PARITY-BOUND, priced primary sale) ─
 
-landRoutes.post('/parcels/:parcelId/buy', requireAuthOrAgentSession, async (c) => {
+landRoutes.post('/parcels/:parcelId/buy', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
   const identity = c.get('identity');
   const avatarId = identity.avatarId;
 
@@ -1276,7 +1277,7 @@ landRoutes.post('/parcels/:parcelId/buy', requireAuthOrAgentSession, async (c) =
 
 // ─── 8. POST /parcels/:parcelId/structure  (AUTH, PARITY-BOUND, free Lv1) ────
 
-landRoutes.post('/parcels/:parcelId/structure', requireAuthOrAgentSession, async (c) => {
+landRoutes.post('/parcels/:parcelId/structure', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
   const identity = c.get('identity');
   const avatarId = identity.avatarId;
 
@@ -1412,7 +1413,7 @@ landRoutes.post('/parcels/:parcelId/structure', requireAuthOrAgentSession, async
 
 // ─── 9. POST /structures/:structureId/upgrade  (AUTH, PARITY-BOUND, priced) ──
 
-landRoutes.post('/structures/:structureId/upgrade', requireAuthOrAgentSession, async (c) => {
+landRoutes.post('/structures/:structureId/upgrade', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
   const identity = c.get('identity');
   const avatarId = identity.avatarId;
 
@@ -1815,7 +1816,7 @@ landRoutes.post('/spawn-preference', requireAuthOrAgentSession, async (c) => {
 //   501 → { error: 'founder_not_in_v1' }
 //   Single-acquire safety = the status flip 'available'→'owned' under the
 //   per-avatar advisory lock + `SELECT … FOR UPDATE` (a replay sees 'owned' → 409).
-landRoutes.post('/parcels/:parcelId/rent', requireAuthOrAgentSession, async (c) => {
+landRoutes.post('/parcels/:parcelId/rent', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
   const identity = c.get('identity');
   const avatarId = identity.avatarId;
 
@@ -2036,6 +2037,7 @@ landRoutes.post('/parcels/:parcelId/rent', requireAuthOrAgentSession, async (c) 
 landRoutes.post(
   '/structures/:structureId/services',
   requireAuthOrAgentSession,
+  requireNonGuestIdentity,
   async (c) => {
     const identity = c.get('identity');
     const avatarId = identity.avatarId;
@@ -2166,7 +2168,7 @@ landRoutes.post(
 //   401/403 as elsewhere   ·   403 → { error: 'not_listing_owner' }
 //   404 → { error: 'listing_not_found' }
 
-landRoutes.patch('/services/:listingId', requireAuthOrAgentSession, async (c) => {
+landRoutes.patch('/services/:listingId', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
   const identity = c.get('identity');
   const avatarId = identity.avatarId;
 
@@ -2355,7 +2357,7 @@ landRoutes.get('/services', async (c) => {
 // the buyer's action). A cached replay (same-key retry OR a concurrent 23505
 // loser re-served) emits NOTHING — the original request already emitted once.
 
-landRoutes.post('/services/:listingId/buy', requireAuthOrAgentSession, async (c) => {
+landRoutes.post('/services/:listingId/buy', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
   const identity = c.get('identity');
   const avatarId = identity.avatarId;
 

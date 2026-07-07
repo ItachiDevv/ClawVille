@@ -20,6 +20,7 @@ import {
   requireAuthOrAgentSession,
   type ActivityAuthContext,
 } from '../middleware/require-auth-or-agent';
+import { requireNonGuestIdentity } from '../middleware/require-non-guest';
 import { creditClawTokens, debitClawTokens } from '../services/claw-token-ledger';
 import { logEventFromContext } from '../services/event-logger';
 import {
@@ -209,7 +210,7 @@ exchangeRoutes.get('/my-orders', requireAuthOrAgentSession, async (c) => {
 
 // ─── POST /create ───────────────────────────────────────────────────────────
 
-exchangeRoutes.post('/create', requireAuthOrAgentSession, async (c) => {
+exchangeRoutes.post('/create', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
   const me = await getActingAvatar(c);
   const body = await c.req.json().catch(() => ({}));
   const parsed = createSchema.safeParse(body);
@@ -292,7 +293,7 @@ exchangeRoutes.post('/create', requireAuthOrAgentSession, async (c) => {
 
 // ─── POST /:id/order — place an order against a listing ─────────────────────
 
-exchangeRoutes.post('/:id/order', requireAuthOrAgentSession, async (c) => {
+exchangeRoutes.post('/:id/order', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
   const id = c.req.param('id');
   validateUuid(id, 'Listing');
   const me = await getActingAvatar(c);
@@ -426,7 +427,7 @@ const submitSchema = z.object({
   deliveryNote: z.string().max(2000).optional(),
 });
 
-exchangeRoutes.post('/orders/:orderId/submit', requireAuthOrAgentSession, async (c) => {
+exchangeRoutes.post('/orders/:orderId/submit', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
   const orderId = c.req.param('orderId');
   validateUuid(orderId, 'Order');
   const me = await getActingAvatar(c);
@@ -511,7 +512,7 @@ const confirmSchema = z.object({
   reviewNote: z.string().max(2000).optional(),
 });
 
-exchangeRoutes.post('/orders/:orderId/confirm', requireAuthOrAgentSession, async (c) => {
+exchangeRoutes.post('/orders/:orderId/confirm', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
   const orderId = c.req.param('orderId');
   validateUuid(orderId, 'Order');
   const me = await getActingAvatar(c);
@@ -647,7 +648,7 @@ exchangeRoutes.post('/orders/:orderId/confirm', requireAuthOrAgentSession, async
 
 // ─── POST /orders/:orderId/cancel — refund + cancel ─────────────────────────
 
-exchangeRoutes.post('/orders/:orderId/cancel', requireAuthOrAgentSession, async (c) => {
+exchangeRoutes.post('/orders/:orderId/cancel', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
   const orderId = c.req.param('orderId');
   validateUuid(orderId, 'Order');
   const me = await getActingAvatar(c);
@@ -752,7 +753,7 @@ exchangeRoutes.post('/orders/:orderId/cancel', requireAuthOrAgentSession, async 
 
 // ─── POST /:id/cancel — author cancels listing (refund remaining escrow) ───
 
-exchangeRoutes.post('/:id/cancel', requireAuthOrAgentSession, async (c) => {
+exchangeRoutes.post('/:id/cancel', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
   const id = c.req.param('id');
   validateUuid(id, 'Listing');
   const me = await getActingAvatar(c);

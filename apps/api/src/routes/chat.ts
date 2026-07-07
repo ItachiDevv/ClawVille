@@ -113,8 +113,11 @@ chatRoutes.post('/system/:slug', requireAuth, async (c) => {
 
   // Reward a token + XP for chatting, same economy as a building teacher —
   // but only once per (userId, slug) every 60s to stop spam mints.
+  // Guest avatars run an ALL-DEMO economy: they NEVER touch the real CT
+  // ledger (and `&&` short-circuits so they also don't consume the limiter),
+  // so both `creditClawTokens` AND the `awardXp` level-up leak are skipped.
   let tokenAwarded: 0 | 1 = 0;
-  if (avatar && systemAgentRewardLimiter.tryConsume(user.id, slug)) {
+  if (avatar && !avatar.isGuest && systemAgentRewardLimiter.tryConsume(user.id, slug)) {
     tokenAwarded = 1;
     await creditClawTokens({
       avatarId: avatar.id,
@@ -305,8 +308,12 @@ chatRoutes.post('/:id/chat', requireAuth, async (c) => {
     conversational: true,
   });
 
-  // Award +1 ClawToken for chatting with a location agent (atomic + audited)
-  if (avatar) {
+  // Award +1 ClawToken for chatting with a location agent (atomic + audited).
+  // Guest avatars run an ALL-DEMO economy: they NEVER touch the real CT ledger,
+  // so BOTH the direct credit AND the `awardXp` level-up token leak (50 real CT
+  // on level-up) are skipped for guests — gating the whole block is what closes
+  // the XP leak (awardXp is only ever called from this file).
+  if (avatar && !avatar.isGuest) {
     await creditClawTokens({
       avatarId: avatar.id,
       amount: 1,
@@ -327,7 +334,9 @@ chatRoutes.post('/:id/chat', requireAuth, async (c) => {
     payload: {
       chatType: 'location',
       messageLength: result.data.content.length,
-      tokenAwarded: avatar ? 1 : 0,
+      // Guests earn NO real CT (all-demo economy) → tokenAwarded is 0 for them,
+      // so this event field equals what was actually credited (conservation).
+      tokenAwarded: (avatar && !avatar.isGuest) ? 1 : 0,
       // Guest-avatar carve-out (2026-04-23) — flag for /dash teacher-chat
       // metric so guest chats are excluded from the "real engagement"
       // count. The dashboard SQL filters `payload->>'isGuest' <> 'true'`.

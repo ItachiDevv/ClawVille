@@ -6,6 +6,7 @@ import {
   requireAuthOrAgentSession,
   type ActivityAuthContext,
 } from '../middleware/require-auth-or-agent';
+import { requireNonGuestIdentity } from '../middleware/require-non-guest';
 import { adminOnly } from '../middleware/admin-only';
 import { creditClawTokens, debitClawTokens } from '../services/claw-token-ledger';
 import {
@@ -445,7 +446,7 @@ bountyRoutes.get('/my-attempts', requireAuthOrAgentSession, async (c) => {
 // ---------------------------------------------------------------------------
 // 4. POST /create — Create a bounty (auth + escrow)
 // ---------------------------------------------------------------------------
-bountyRoutes.post('/create', requireAuthOrAgentSession, async (c) => {
+bountyRoutes.post('/create', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
 
   const body = await c.req.json();
   const parsed = createBountySchema.safeParse(body);
@@ -655,7 +656,7 @@ bountyRoutes.get('/reputation/:avatarId', async (c) => {
 // ---------------------------------------------------------------------------
 // 12. POST /attempts/:attemptId/review — Review a submission (bounty creator)
 // ---------------------------------------------------------------------------
-bountyRoutes.post('/attempts/:attemptId/review', requireAuthOrAgentSession, async (c) => {
+bountyRoutes.post('/attempts/:attemptId/review', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
   const attemptId = c.req.param('attemptId');
   validateUuid(attemptId, 'Attempt');
 
@@ -1327,7 +1328,7 @@ bountyRoutes.get('/:id', async (c) => {
 // ---------------------------------------------------------------------------
 // 8. POST /:id/claim — Claim a bounty (auth)
 // ---------------------------------------------------------------------------
-bountyRoutes.post('/:id/claim', requireAuthOrAgentSession, async (c) => {
+bountyRoutes.post('/:id/claim', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
   const id = c.req.param('id');
   validateUuid(id, 'Bounty');
 
@@ -1422,7 +1423,7 @@ bountyRoutes.post('/:id/claim', requireAuthOrAgentSession, async (c) => {
 // ---------------------------------------------------------------------------
 // 9. POST /:id/submit — Submit completed work (auth)
 // ---------------------------------------------------------------------------
-bountyRoutes.post('/:id/submit', requireAuthOrAgentSession, async (c) => {
+bountyRoutes.post('/:id/submit', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
   const id = c.req.param('id'); // bounty ID
   validateUuid(id, 'Bounty');
 
@@ -1485,7 +1486,7 @@ bountyRoutes.post('/:id/submit', requireAuthOrAgentSession, async (c) => {
 // ---------------------------------------------------------------------------
 // 10. POST /:id/abandon — Abandon an attempt (auth)
 // ---------------------------------------------------------------------------
-bountyRoutes.post('/:id/abandon', requireAuthOrAgentSession, async (c) => {
+bountyRoutes.post('/:id/abandon', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
   const id = c.req.param('id'); // bounty ID
   validateUuid(id, 'Bounty');
 
@@ -1539,7 +1540,7 @@ bountyRoutes.post('/:id/abandon', requireAuthOrAgentSession, async (c) => {
 // ---------------------------------------------------------------------------
 // 5. PATCH /:id — Update bounty (only if open, only by creator, can't change tokenReward)
 // ---------------------------------------------------------------------------
-bountyRoutes.patch('/:id', requireAuthOrAgentSession, async (c) => {
+bountyRoutes.patch('/:id', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
   const id = c.req.param('id');
   validateUuid(id, 'Bounty');
 
@@ -1636,7 +1637,7 @@ bountyRoutes.patch('/:id', requireAuthOrAgentSession, async (c) => {
 // ---------------------------------------------------------------------------
 // 6. DELETE /:id — Cancel bounty (refund escrow if no active attempts)
 // ---------------------------------------------------------------------------
-bountyRoutes.delete('/:id', requireAuthOrAgentSession, async (c) => {
+bountyRoutes.delete('/:id', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
   const id = c.req.param('id');
   validateUuid(id, 'Bounty');
 
