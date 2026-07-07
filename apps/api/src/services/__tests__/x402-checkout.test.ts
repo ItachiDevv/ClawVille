@@ -11,12 +11,19 @@
  *      at quote AND at settle BEFORE the facilitator is ever called (the
  *      "never take USDC we can't fulfill" rule); duplicate registration
  *      throws.
- *   3. EXACTLY-ONCE: a 23505 on the pending→settled flip (double settle of
- *      the same tx signature) rolls the whole tx back and replays the
- *      already-fulfilled row — the fulfiller runs ZERO times on the replay
- *      path; the fast idempotency-key path replays without touching the
- *      facilitator at all. Definitive verify failures poison the row to
- *      'failed'; transient facilitator failures leave it PENDING.
+ *   3. DURABLE SETTLE MACHINE (the Codex money-path review): pending → settling
+ *      (a DB-backed CLAIM that stakes the idempotency key BEFORE the facilitator
+ *      — a key reused on another checkout 23505s to a clean conflict, no money
+ *      moved) → CAPTURE (the signature is persisted in its OWN UPDATE the instant
+ *      the facilitator settles, BEFORE fulfillment — a capture 23505 means the
+ *      signature is owned by another checkout ⇒ reconcile, the fulfiller NEVER
+ *      runs on another item's payment) → FULFILL (flip settling→settled + the
+ *      fulfiller atomically). A captured-but-unfulfilled row RESUMES without
+ *      re-calling the facilitator; a settled row replays; a settled row WITHOUT a
+ *      signature refuses replay (corruption). A stale settling claim with no
+ *      signature ⇒ reconcile (money-state unknown, NEVER auto-retried); a fresh
+ *      one ⇒ settle_in_flight. Definitive verify failures ⇒ terminal failed;
+ *      transient failures RELEASE the claim back to pending.
  *   4. COSMETIC FULFILLER CONSERVATION: mints/debits ZERO internal vCLAW —
  *      no creditClawTokens/debitClawTokens/mintEarned/transferClawTokens call
  *      for the buyer OR the treasury, no raw avatars write; grants the skin
@@ -95,6 +102,11 @@ let insertReturnRows: Row[] = [{ id: 'checkout-1' }];
 const updateCalls: Array<{ set: Row; hasReturning: boolean }> = [];
 /** Programmable behavior for the NEXT update(...).returning() — throw or rows. */
 let updateReturningImpl: () => Row[] = () => [{ id: 'checkout-1' }];
+/** Optional per-call queue for update(...).returning() — shift one behavior per
+ *  call; falls back to updateReturningImpl when empty. Lets a test script the
+ *  durable multi-UPDATE flow (claim → capture → flip) with distinct behavior
+ *  (rows, [], or throw) per step. */
+let updateReturningQueue: Array<() => Row[]> = [];
 let findFirstQueue: Array<Row | undefined> = [];
 let txRan = 0;
 
@@ -105,7 +117,8 @@ function whereResult() {
   return {
     returning: async (_sel: unknown) => {
       updateCalls[updateCalls.length - 1]!.hasReturning = true;
-      return updateReturningImpl();
+      const step = updateReturningQueue.length > 0 ? updateReturningQueue.shift()! : updateReturningImpl;
+      return step();
     },
     then: p.then.bind(p),
     catch: p.catch.bind(p),
@@ -314,6 +327,7 @@ beforeEach(() => {
   enqueueCalls.length = 0;
   insertReturnRows = [{ id: 'checkout-1' }];
   updateReturningImpl = () => [{ id: 'checkout-1' }];
+  updateReturningQueue = [];
   findFirstQueue = [];
   executeQueue = [];
   selectReturnRows = [];
@@ -365,7 +379,7 @@ describe('x402-checkout — fulfiller registry', () => {
   });
 
   it('settle of an UNREGISTERED kind refuses BEFORE the facilitator is called', async () => {
-    findFirstQueue = [undefined, pendingRow({ itemKind: '__unregistered__' })];
+    findFirstQueue = [pendingRow({ itemKind: '__unregistered__' })];
     const res = await checkout.settleCheckout({
       checkoutId: 'checkout-1',
       subject: SUBJECT,
@@ -464,7 +478,7 @@ describe('x402-checkout — quote', () => {
 // 3. Settle — exactly-once + replay + failure classes
 // ─────────────────────────────────────────────────────────────────────────────
 
-describe('x402-checkout — settle exactly-once', () => {
+describe('x402-checkout — settle: durable claim → capture → resumable fulfill', () => {
   const settleArgs = {
     checkoutId: 'checkout-1',
     subject: SUBJECT,
@@ -472,56 +486,146 @@ describe('x402-checkout — settle exactly-once', () => {
     idempotencyKey: 'idem-1',
   };
 
-  it('happy settle: ONE tx {flip + fulfiller}, ctx carries the ¢-peg usdBasis + signature', async () => {
-    findFirstQueue = [undefined, pendingRow()];
+  /** A settling row that has ALREADY captured the signature (money durable,
+   *  fulfillment pending) — the shape step-10 re-reads + the resume path loads. */
+  function capturedRow(overrides: Row = {}): Row {
+    return pendingRow({
+      status: 'settling',
+      txSignature: 'SIG_TEST_1',
+      usdBasisAtReceipt: '5.00',
+      settlingId: 'claim-1',
+      settlingStartedAt: new Date().toISOString(),
+      metadata: {
+        network: 'devnet',
+        subjectKind: 'agent',
+        txSignature: 'SIG_TEST_1',
+        settlePayer: 'PayerPubkey111',
+        settleNetwork: 'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1',
+      },
+      ...overrides,
+    });
+  }
+
+  /** A settling row still awaiting the facilitator (NO signature yet), aged. */
+  function settlingNoSigRow(ageMs: number, overrides: Row = {}): Row {
+    return pendingRow({
+      status: 'settling',
+      txSignature: null,
+      settlingId: 'claim-x',
+      settlingStartedAt: new Date(Date.now() - ageMs).toISOString(),
+      ...overrides,
+    });
+  }
+
+  const throw23505 = () => () => {
+    throw Object.assign(new Error('duplicate key value violates unique constraint'), {
+      code: '23505',
+    });
+  };
+
+  it('happy settle: CLAIM (settling) → facilitator → CAPTURE (signature) → FULFILL (settled)', async () => {
+    // step-1 load (pending) → step-10 re-read (captured). claim/capture/flip all
+    // return [{id}] via the default updateReturningImpl.
+    findFirstQueue = [pendingRow(), capturedRow()];
     const res = await checkout.settleCheckout(settleArgs);
     expect(res.ok).toBe(true);
     if (!res.ok) return;
     expect(res.txSignature).toBe('SIG_TEST_1');
     expect(res.replay).toBe(false);
     expect(res.fulfillment).toEqual({ proof: 'test-fulfilled' });
-    expect(txRan).toBe(1);
+    expect(txRan).toBe(1); // ONLY the fulfillment runs in a tx; claim+capture are direct UPDATEs
     expect(verifyAndSettleCalls).toBe(1);
     expect(testFulfillerCalls.length).toBe(1);
     const ctx = testFulfillerCalls[0]!;
-    expect(ctx.tx).toBe(fakeTx as never); // fulfiller composes into THE settle tx
-    expect(ctx.priceVclaw).toBe(500);
-    expect(ctx.usdCents).toBe(500);
+    expect(ctx.tx).toBe(fakeTx as never); // fulfiller composes into THE fulfillment tx
     expect(ctx.usdBasis).toBe('5.00');
     expect(ctx.txSignature).toBe('SIG_TEST_1');
-    // Flip captured: settled + signature + usd basis + idem key claimed.
+
+    // CLAIM staked status='settling' + a settlingId + the idempotency key BEFORE
+    // the facilitator (Codex finding 1 — the DB-backed cross-process claim).
+    const claim = updateCalls.find((u) => u.set.status === 'settling');
+    expect(claim).toBeDefined();
+    expect(claim!.set.idempotencyKey).toBe('idem-1');
+    expect(claim!.set.settlingId).toBeTruthy();
+
+    // CAPTURE persisted the signature IMMEDIATELY, in its own UPDATE, BEFORE
+    // fulfillment (Codex finding 2 — the money proof is durable).
+    const capture = updateCalls.find(
+      (u) => u.set.txSignature === 'SIG_TEST_1' && u.set.status === undefined,
+    );
+    expect(capture).toBeDefined();
+    expect(capture!.set.usdBasisAtReceipt).toBe('5.00');
+
+    // FLIP settling → settled (carries NO signature — it was already captured).
     const flip = updateCalls.find((u) => u.set.status === 'settled');
     expect(flip).toBeDefined();
-    expect(flip!.set).toMatchObject({
-      txSignature: 'SIG_TEST_1',
-      usdBasisAtReceipt: '5.00',
-      idempotencyKey: 'idem-1',
-    });
   });
 
-  it('double-settle (23505 on the txsig unique) ⇒ whole tx rolls back ⇒ replay, fulfiller runs ZERO times', async () => {
-    const settledRow = pendingRow({
-      status: 'settled',
-      txSignature: 'SIG_TEST_1',
-      metadata: { fulfillment: { proof: 'first-run' } },
-    });
-    // priorByKey miss → pending load → (flip throws 23505) → replay re-read.
-    findFirstQueue = [undefined, pendingRow(), settledRow];
-    updateReturningImpl = () => {
-      throw Object.assign(new Error('duplicate key value violates unique constraint'), {
-        code: '23505',
-        constraint: 'x402_checkouts_txsig_unique',
-      });
-    };
+  it('idempotency-key reuse on ANOTHER checkout ⇒ claim 23505 ⇒ conflict, NO money moves', async () => {
+    findFirstQueue = [pendingRow()];
+    updateReturningQueue = [throw23505()]; // the CLAIM trips the (avatar,key) UNIQUE
+    const res = await checkout.settleCheckout(settleArgs);
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.code).toBe('idempotency_key_conflict');
+    expect(verifyAndSettleCalls).toBe(0); // never reached the facilitator
+    expect(testFulfillerCalls.length).toBe(0);
+  });
+
+  it('DEFINITIVE verify rejection ⇒ terminal failed; no fulfillment, no money', async () => {
+    findFirstQueue = [pendingRow()];
+    verifyAndSettleResult = { settled: false, isValid: false, txSignature: null, failureReason: 'payment_invalid' };
+    const res = await checkout.settleCheckout(settleArgs);
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.code).toBe('payment_not_settled');
+    expect(res.transient).toBe(false);
+    // Claimed (settling) then flipped to failed — checked to our claim.
+    expect(updateCalls.find((u) => u.set.status === 'settling')).toBeDefined();
+    expect(updateCalls.find((u) => u.set.status === 'failed')).toBeDefined();
+    expect(testFulfillerCalls.length).toBe(0);
+  });
+
+  it('TRANSIENT facilitator failure ⇒ RELEASE the claim back to pending (no failed write)', async () => {
+    findFirstQueue = [pendingRow()];
+    verifyAndSettleResult = { settled: false, isValid: false, txSignature: null, failureReason: 'facilitator_verify_error' };
+    const res = await checkout.settleCheckout(settleArgs);
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.code).toBe('payment_not_settled');
+    expect(res.transient).toBe(true);
+    // Released settling → pending; NEVER failed (the payment can still land).
+    expect(updateCalls.find((u) => u.set.status === 'pending')).toBeDefined();
+    expect(updateCalls.find((u) => u.set.status === 'failed')).toBeUndefined();
+  });
+
+  it('SIGNATURE CONFLICT: capture 23505 (sig owned by another checkout) ⇒ reconcile, fulfiller ZERO', async () => {
+    findFirstQueue = [pendingRow()];
+    // claim → ok; CAPTURE → 23505 (the tx_signature UNIQUE — another checkout owns it).
+    updateReturningQueue = [() => [{ id: 'checkout-1' }], throw23505()];
+    const res = await checkout.settleCheckout(settleArgs);
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.code).toBe('signature_conflict');
+    expect(res.status).toBe('reconcile');
+    expect(verifyAndSettleCalls).toBe(1); // money DID move — hence reconcile, not a clean fail
+    expect(testFulfillerCalls.length).toBe(0); // NEVER fulfilled on another item's signature
+    expect(updateCalls.find((u) => u.set.status === 'reconcile')).toBeDefined();
+  });
+
+  it('RESUME: a captured row (settling + signature) re-fulfills WITHOUT re-calling the facilitator', async () => {
+    findFirstQueue = [capturedRow()]; // step-1 load finds a captured, unfulfilled row
     const res = await checkout.settleCheckout(settleArgs);
     expect(res.ok).toBe(true);
     if (!res.ok) return;
-    expect(res.replay).toBe(true);
-    expect(res.fulfillment).toEqual({ proof: 'first-run' });
-    expect(testFulfillerCalls.length).toBe(0); // SINGLE fulfillment — never re-ran
+    expect(res.txSignature).toBe('SIG_TEST_1');
+    expect(res.replay).toBe(false);
+    expect(verifyAndSettleCalls).toBe(0); // the facilitator is NEVER re-called on resume
+    expect(testFulfillerCalls.length).toBe(1); // fulfilled exactly once
+    expect(updateCalls.find((u) => u.set.status === 'settled')).toBeDefined();
   });
 
-  it('fast idempotency replay: settled row by (avatar, key) short-circuits BEFORE the facilitator', async () => {
+  it('settled row on load ⇒ idempotent replay; facilitator + fulfiller untouched', async () => {
     findFirstQueue = [
       pendingRow({ status: 'settled', txSignature: 'SIG_PRIOR', metadata: { fulfillment: { a: 1 } } }),
     ];
@@ -530,37 +634,46 @@ describe('x402-checkout — settle exactly-once', () => {
     if (!res.ok) return;
     expect(res.replay).toBe(true);
     expect(res.txSignature).toBe('SIG_PRIOR');
+    expect(res.fulfillment).toEqual({ a: 1 });
     expect(verifyAndSettleCalls).toBe(0);
     expect(testFulfillerCalls.length).toBe(0);
     expect(txRan).toBe(0);
   });
 
-  it('DEFINITIVE verify rejection poisons the row to failed; no fulfillment', async () => {
-    findFirstQueue = [undefined, pendingRow()];
-    verifyAndSettleResult = { settled: false, isValid: false, txSignature: null, failureReason: 'payment_invalid' };
+  it('settled row WITHOUT a signature ⇒ replay REFUSED (Codex finding 5, corruption guard)', async () => {
+    findFirstQueue = [pendingRow({ status: 'settled', txSignature: null })];
     const res = await checkout.settleCheckout(settleArgs);
     expect(res.ok).toBe(false);
     if (res.ok) return;
-    expect(res.code).toBe('payment_not_settled');
-    expect(res.transient).toBe(false);
-    const failed = updateCalls.find((u) => u.set.status === 'failed');
-    expect(failed).toBeDefined();
-    expect(testFulfillerCalls.length).toBe(0);
+    expect(res.code).toBe('settle_failed'); // never replayed as ok without the money proof
   });
 
-  it('TRANSIENT facilitator failure leaves the row PENDING (no failed write)', async () => {
-    findFirstQueue = [undefined, pendingRow()];
-    verifyAndSettleResult = { settled: false, isValid: false, txSignature: null, failureReason: 'facilitator_verify_error' };
+  it('STALE settling claim (no signature, aged) ⇒ reconcile, facilitator NOT re-called', async () => {
+    // step-1 load = a 10-min-old settling row w/o signature; re-read = reconcile.
+    findFirstQueue = [
+      settlingNoSigRow(10 * 60_000),
+      pendingRow({ status: 'reconcile', txSignature: null }),
+    ];
     const res = await checkout.settleCheckout(settleArgs);
     expect(res.ok).toBe(false);
     if (res.ok) return;
-    expect(res.code).toBe('payment_not_settled');
-    expect(res.transient).toBe(true);
-    expect(updateCalls.find((u) => u.set.status === 'failed')).toBeUndefined();
+    expect(res.code).toBe('checkout_reconciliation');
+    expect(res.status).toBe('reconcile');
+    expect(verifyAndSettleCalls).toBe(0); // money-state UNKNOWN ⇒ NEVER auto-retry the facilitator
+    expect(updateCalls.find((u) => u.set.status === 'reconcile')).toBeDefined();
   });
 
-  it('foreign checkoutId (caller-bound row load misses) → checkout_not_found, facilitator untouched', async () => {
-    findFirstQueue = [undefined, undefined];
+  it('FRESH settling claim (no signature, recent) ⇒ settle_in_flight (a concurrent settle owns it)', async () => {
+    findFirstQueue = [settlingNoSigRow(1_000)]; // 1s old — a live concurrent settle
+    const res = await checkout.settleCheckout(settleArgs);
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.code).toBe('settle_in_flight');
+    expect(verifyAndSettleCalls).toBe(0);
+  });
+
+  it('foreign checkoutId (caller-bound row load misses) ⇒ checkout_not_found, facilitator untouched', async () => {
+    findFirstQueue = [undefined];
     const res = await checkout.settleCheckout(settleArgs);
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.code).toBe('checkout_not_found');
