@@ -326,25 +326,54 @@ export async function runProvisioningFailSoft<T>(
 
 export const SIGNUP_PROVISION_ARCHETYPE = 'curious-scholar' as const;
 
-export function buildSignupProvisionParams(nameBase: string): ProvisionAvatarAgentParams {
-  const modelKey = DEFAULT_AGENT_MODEL_KEY;
+/**
+ * Harnesses a user may pick ON THE SIGNUP FORM (founder spec: the user
+ * chooses their runtime at sign up — Milady is only the fallback when no
+ * choice is made, NOT a forced default). 'custom' stays a /create-agent
+ * concern (it needs gateway config that the signup form doesn't collect).
+ *
+ * Per-harness default model key keeps the (modelKey, agentCategory, harness)
+ * triple SELF-CONSISTENT the same way the /create-agent picker does: the
+ * category always derives from the model registry meta.
+ */
+export const SIGNUP_HARNESSES = ['milady', 'hermes', 'openclaw'] as const;
+export type SignupHarness = (typeof SIGNUP_HARNESSES)[number];
+
+const SIGNUP_HARNESS_DEFAULT_MODEL: Record<SignupHarness, AgentModelKey> = {
+  milady: DEFAULT_AGENT_MODEL_KEY,
+  hermes: 'hermes_female',
+  openclaw: 'lobster',
+};
+
+// Web MODEL_KEY_TO_LEGACY_SPECIES parity (agent-model-registry.ts): keeps the
+// FIRST customize submit for an unchanged fresh signup free of a reconciling
+// species PATCH. Humanoid VRMs (milady/hermes) map to 'fox'; lobster → 'cat'.
+const SIGNUP_HARNESS_SPECIES: Record<SignupHarness, AvatarSpecies> = {
+  milady: 'fox',
+  hermes: 'fox',
+  openclaw: 'cat',
+};
+
+export function buildSignupProvisionParams(
+  nameBase: string,
+  harness?: SignupHarness,
+): ProvisionAvatarAgentParams {
+  const chosen: SignupHarness =
+    harness && (SIGNUP_HARNESSES as readonly string[]).includes(harness)
+      ? harness
+      : (DEFAULT_AGENT_HARNESS as SignupHarness);
+  const modelKey = SIGNUP_HARNESS_DEFAULT_MODEL[chosen];
   const modelMeta = getAgentModel(modelKey);
   if (!modelMeta) {
-    // Unreachable unless the shared registry drops the default key — fail
+    // Unreachable unless the shared registry drops the key — fail
     // loudly (the signup caller wraps this in runProvisioningFailSoft).
-    throw new Error(`[avatar-provisioning] DEFAULT_AGENT_MODEL_KEY '${modelKey}' missing from registry`);
+    throw new Error(`[avatar-provisioning] signup default model '${modelKey}' missing from registry`);
   }
   return {
     name: nameBase,
-    // Align the legacy `species` with what the web /create-agent customize
-    // path derives for this model: apps/web/src/lib/three/agent-model-registry.ts
-    // MODEL_KEY_TO_LEGACY_SPECIES maps every milady_official_* model (the
-    // DEFAULT_AGENT_MODEL_KEY here) to 'fox'. Provisioning with 'fox' means the
-    // FIRST customize submit for an unchanged fresh signup computes
-    // step1.species === avatar.species and sends NO reconciling species PATCH.
-    species: 'fox',
+    species: SIGNUP_HARNESS_SPECIES[chosen],
     color: 'blue',
-    gender: 'male',
+    gender: chosen === 'hermes' ? 'female' : 'male',
     archetypeId: SIGNUP_PROVISION_ARCHETYPE as AvatarArchetypeId,
     personality: {
       habitat: 'sea',
@@ -353,7 +382,7 @@ export function buildSignupProvisionParams(nameBase: string): ProvisionAvatarAge
     },
     modelKey,
     agentCategory: modelMeta.category,
-    harness: DEFAULT_AGENT_HARNESS,
+    harness: chosen,
     learningFocus: null,
   };
 }
@@ -553,10 +582,10 @@ export async function provisionAvatarAgent(
  */
 export async function provisionAvatarAgentForSignup(
   userId: string,
-  input: { name?: string | null; email: string },
+  input: { name?: string | null; email: string; harness?: SignupHarness },
 ): Promise<ProvisionAvatarAgentResult> {
   const nameBase = deriveSignupAvatarNameBase(input.name, input.email);
-  return provisionAvatarAgent(userId, buildSignupProvisionParams(nameBase), {
+  return provisionAvatarAgent(userId, buildSignupProvisionParams(nameBase, input.harness), {
     onNameCollision: 'suffix-retry',
     wallet: 'include-nonfatal',
     skipIfAvatarExists: true,
