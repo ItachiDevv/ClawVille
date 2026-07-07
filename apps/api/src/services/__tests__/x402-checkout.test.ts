@@ -586,7 +586,7 @@ describe('x402-checkout — settle: durable claim → capture → resumable fulf
     expect(testFulfillerCalls.length).toBe(0);
   });
 
-  it('TRANSIENT facilitator failure ⇒ RELEASE the claim back to pending (no failed write)', async () => {
+  it('VERIFY-phase transport error ⇒ RELEASE the claim to pending (no money moved, no failed)', async () => {
     findFirstQueue = [pendingRow()];
     verifyAndSettleResult = { settled: false, isValid: false, txSignature: null, failureReason: 'facilitator_verify_error' };
     const res = await checkout.settleCheckout(settleArgs);
@@ -596,6 +596,22 @@ describe('x402-checkout — settle: durable claim → capture → resumable fulf
     expect(res.transient).toBe(true);
     // Released settling → pending; NEVER failed (the payment can still land).
     expect(updateCalls.find((u) => u.set.status === 'pending')).toBeDefined();
+    expect(updateCalls.find((u) => u.set.status === 'failed')).toBeUndefined();
+  });
+
+  it('SETTLE-phase error (ambiguous) ⇒ reconcile, NEVER pending (Codex round-2 BLOCKING)', async () => {
+    findFirstQueue = [pendingRow()];
+    // The /settle call was attempted and threw — the settlement MAY have landed.
+    verifyAndSettleResult = { settled: false, isValid: false, txSignature: null, failureReason: 'facilitator_settle_error' };
+    const res = await checkout.settleCheckout(settleArgs);
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.code).toBe('checkout_reconciliation');
+    expect(res.status).toBe('reconcile');
+    // Money-state UNKNOWN ⇒ the claim is NEVER released to pending (a retry must
+    // never re-call the facilitator after an ambiguous settle).
+    expect(updateCalls.find((u) => u.set.status === 'reconcile')).toBeDefined();
+    expect(updateCalls.find((u) => u.set.status === 'pending')).toBeUndefined();
     expect(updateCalls.find((u) => u.set.status === 'failed')).toBeUndefined();
   });
 
