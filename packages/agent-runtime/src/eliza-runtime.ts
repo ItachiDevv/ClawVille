@@ -110,6 +110,21 @@ const initMutex = new InitMutex();
 // SUCCESS, so a failed first migrate lets the next init retry it.
 let migrationsCompleted = false;
 
+// R2: Supabase Supavisor exposes TRANSACTION pooling on :6543 and SESSION
+// pooling on :5432 on the SAME host with the SAME credentials + database.
+// Session mode is required for plugin-sql's migration advisory lock to be held
+// on a stable backend and released on disconnect (transaction mode orphans it
+// → the agent-start wedge). Swap the port ONLY for a Supabase pooler URL on
+// :6543; leave direct connections (already :5432) and any non-Supabase URL
+// untouched. Pure + total.
+export function toSupabaseSessionModeUrl(url: string): string {
+  if (!url) return url;
+  if (url.includes('pooler.supabase.com:6543')) {
+    return url.replace('pooler.supabase.com:6543', 'pooler.supabase.com:5432');
+  }
+  return url;
+}
+
 function generateRoomId(agentId: string, userId: string): UUID {
   return uuidv5(`${agentId}-${userId}`, ROOM_NAMESPACE) as UUID;
 }
@@ -490,18 +505,22 @@ export class ElizaRuntime {
       if (typeof createDatabaseAdapter !== 'function') {
         throw new Error('[ElizaRuntime] @elizaos/plugin-sql did not export createDatabaseAdapter');
       }
-      // R2: prefer a SESSION-mode connection for the ElizaOS adapter so
-      // plugin-sql's migration advisory lock (`pg_advisory_lock`) is held on a
-      // stable backend and released on disconnect — over the TRANSACTION-mode
-      // pooler (:6543) that session lock orphans and wedges every later agent's
-      // migration. ELIZA_DATABASE_URL should be the same DB on the session-mode
-      // port (:5432). Falls back to the normal URL when unset (the skip-after-
-      // first-migrate guard below still prevents per-agent lock contention).
+      // R2: the ElizaOS adapter needs a SESSION-mode connection so plugin-sql's
+      // migration advisory lock (`pg_advisory_lock`) is held on a stable backend
+      // and released on disconnect — over the Supabase TRANSACTION-mode pooler
+      // (:6543) that session lock orphans and wedges every later agent's
+      // migration (see R2 note above). We DERIVE the session-mode URL from the
+      // effective app DATABASE_URL (swap the Supabase pooler port :6543→:5432,
+      // same host + credentials + DB) rather than requiring a separate env — a
+      // hand-set ELIZA_DATABASE_URL silently pointed the adapter at a STALE DB
+      // ref once (the Coolify env row is overridden at runtime by a baked
+      // .env.local, so it drifted from the DB the app actually runs on).
+      // ELIZA_DATABASE_URL stays as an explicit override for non-Supabase setups.
+      const effectiveDbUrl =
+        this.config.databaseUrl || process.env.DATABASE_URL || '';
       const adapterUrl =
         process.env.ELIZA_DATABASE_URL ||
-        this.config.databaseUrl ||
-        process.env.DATABASE_URL ||
-        '';
+        toSupabaseSessionModeUrl(effectiveDbUrl);
       const adapter = createDatabaseAdapter(
         { postgresUrl: adapterUrl },
         this.config.agentId as UUID
