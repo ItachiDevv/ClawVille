@@ -8,7 +8,11 @@
  *
  *   GET /api/oracle/clv[?history=N]
  *     → { mint, quote: { spotUsd, twap30mUsd, quoteUsd, asOf, source, stale,
- *         available }, history?: [{ id, priceUsd, source, createdAt }...], asOf }
+ *         available, poolLiquidityUsd, liquidityAsOf },
+ *         history?: [{ id, priceUsd, source, createdAt }...], asOf }
+ *
+ * `poolLiquidityUsd` (Tokenomics C3) is the DexScreener LP depth (USD, both
+ * sides) feeding the swap executor's clip planner; null when missing/stale.
  *
  * `quote` is the current in-memory house-favorable quote (min(spot, 30-min
  * TWAP); `available:false` + `quoteUsd:null` when there is no data yet or the
