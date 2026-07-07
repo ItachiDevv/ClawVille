@@ -9,6 +9,7 @@ import { describe, it, expect, beforeEach } from 'bun:test';
 import {
   issueWalletLinkChallenge,
   consumeWalletLinkChallenge,
+  buildWalletLinkMessage,
   _resetWalletLinkNoncesForTest,
 } from '../wallet-link-challenge';
 
@@ -52,5 +53,19 @@ describe('wallet-link-challenge', () => {
     expect(a.nonce).not.toBe(b.nonce);
     expect(consumeWalletLinkChallenge(a.nonce, USER_A)).toBe(true);
     expect(consumeWalletLinkChallenge(b.nonce, USER_A)).toBe(true);
+  });
+
+  it('issues an account-bound human-readable messageToSign (anti blind-signing)', () => {
+    const issued = issueWalletLinkChallenge(USER_A);
+    expect(issued.messageToSign).toBe(buildWalletLinkMessage(USER_A, issued.nonce));
+    // Readable + binds the exact account and nonce the wallet UI displays.
+    expect(issued.messageToSign).toContain('ClawVille wallet link');
+    expect(issued.messageToSign).toContain(`account: ${USER_A}`);
+    expect(issued.messageToSign).toContain(`nonce: ${issued.nonce}`);
+  });
+
+  it('messages for different accounts differ even with the same nonce (binding)', () => {
+    const { nonce } = issueWalletLinkChallenge(USER_A);
+    expect(buildWalletLinkMessage(USER_A, nonce)).not.toBe(buildWalletLinkMessage(USER_B, nonce));
   });
 });

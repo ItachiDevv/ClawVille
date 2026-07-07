@@ -6,8 +6,11 @@
  *   GET  /api/wallet/link           — read the linked wallet + its CLV balance.
  *
  * The user proves they control a self-custody wallet by signing a server-issued
- * challenge with that wallet's key — the SAME signed-challenge shape as the Phase
- * 5.1 agent reconnect (`agent-gateway.ts /reconnect`), reused here. We verify the
+ * challenge with that wallet's key. UNLIKE the Phase 5.1 agent reconnect (raw
+ * nonce — fine for agent-owned keys with no wallet-UI phishing surface), HUMAN
+ * wallet linking signs an ACCOUNT-BOUND human-readable message (SIWS-lite; see
+ * buildWalletLinkMessage) so a blind-signed blob phished on another site can
+ * never link a victim's wallet to an attacker's account. We verify the
  * ed25519 signature against the CLAIMED wallet pubkey, then persist the pubkey as
  * a POINTER on `users.linked_wallet_pubkey`. The wallet's CLV never leaves it and
  * we never touch its private key — this is a non-custodial balance-read link
@@ -31,6 +34,7 @@ import { requireNonGuestUser } from '../middleware/require-non-guest';
 import {
   issueWalletLinkChallenge,
   consumeWalletLinkChallenge,
+  buildWalletLinkMessage,
 } from '../services/wallet-link-challenge';
 import {
   getLinkedWalletClvBalance,
@@ -86,15 +90,15 @@ walletLinkRoutes.post('/', requireAuth, requireNonGuestUser, async (c) => {
     return c.json({ error: 'invalid_or_expired_challenge', code: 'invalid_challenge' }, 401);
   }
 
-  // 2) Verify the ed25519 signature of the RAW 32-byte nonce against the CLAIMED
-  //    wallet pubkey. `nacl.sign.detached.verify` returns false on any malformed
-  //    input; we bs58-decode first + length-check so a garbage pubkey is a clean
-  //    400 (not a link to an un-spendable key).
-  let nonceBytes: Uint8Array;
+  // 2) Verify the ed25519 signature of the ACCOUNT-BOUND human-readable message
+  //    (SIWS-lite, reconstructed server-side from THIS user's id + the nonce —
+  //    see buildWalletLinkMessage for the blind-signing attack this closes)
+  //    against the CLAIMED wallet pubkey. `nacl.sign.detached.verify` returns
+  //    false on any malformed input; we bs58-decode + length-check first so a
+  //    garbage pubkey is a clean 400 (not a link to an un-spendable key).
   let sigBytes: Uint8Array;
   let pubBytes: Uint8Array;
   try {
-    nonceBytes = bs58.decode(nonce);
     sigBytes = bs58.decode(signature);
     pubBytes = bs58.decode(walletPubkey);
   } catch {
@@ -106,7 +110,8 @@ walletLinkRoutes.post('/', requireAuth, requireNonGuestUser, async (c) => {
   if (sigBytes.length !== 64) {
     return c.json({ error: 'invalid_signature', code: 'invalid_signature' }, 400);
   }
-  const ok = nacl.sign.detached.verify(nonceBytes, sigBytes, pubBytes);
+  const messageBytes = new TextEncoder().encode(buildWalletLinkMessage(user.id, nonce));
+  const ok = nacl.sign.detached.verify(messageBytes, sigBytes, pubBytes);
   if (!ok) {
     return c.json({ error: 'signature_verification_failed', code: 'invalid_signature' }, 401);
   }
