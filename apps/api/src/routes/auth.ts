@@ -1152,6 +1152,13 @@ async function insertGuestAvatar(
           // real account. Leaving it null is safe — the avatar routes
           // tolerate a null characterConfig (chat is gated to non-guests
           // by other checks in the chat surfaces, not enforced here).
+          // Guest all-demo economy (founder ruling 2026-07-06): this 100 CT is a
+          // ONE-TIME DEMO starting balance (off-ledger genesis grant). Guests
+          // NEVER earn to the real CT ledger afterward — every guest earn path
+          // (daily-login, system-agent + location chat incl. XP level-up, activity
+          // matches) is gated off the ledger, and guests are blocked from the
+          // wager + bounty economies. The UI labels this balance DEMO. Do NOT
+          // change these values.
           clawTokens: 100,
           // F1 vCLAW provenance: mirror clawTokens into softBalance so the
           // avatars_vclaw_balance_sum CHECK holds (100 = 100+0+0). Legacy/guest CT

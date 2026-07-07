@@ -35,6 +35,7 @@ import {
   avatars,
 } from '@clawville/database';
 import { requireAuth, sessionMiddleware } from '../middleware/auth';
+import { requireNonGuestUser } from '../middleware/require-non-guest';
 import { logEventFromContext } from '../services/event-logger';
 import { debitClawTokens, InsufficientTokensError } from '../services/claw-token-ledger';
 import type { AppContext } from '../types';
@@ -260,7 +261,7 @@ cosmeticsRoutes.post('/:skuId/unequip', sessionMiddleware, requireAuth, async (c
 // db.transaction(). debitClawTokens accepts a tx parameter to compose into
 // the same lock-scope so a failed insert rolls the debit back.
 
-cosmeticsRoutes.post('/:skuId/buy', sessionMiddleware, requireAuth, async (c) => {
+cosmeticsRoutes.post('/:skuId/buy', sessionMiddleware, requireAuth, requireNonGuestUser, async (c) => {
   const user = c.get('user') as { id: string };
   const skuId = c.req.param('skuId');
 

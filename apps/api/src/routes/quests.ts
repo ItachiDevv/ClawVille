@@ -3,6 +3,7 @@ import { HTTPException } from 'hono/http-exception';
 import { z } from 'zod';
 import type { AppContext } from '../types';
 import { sessionMiddleware, requireAuth } from '../middleware/auth';
+import { requireNonGuestUser } from '../middleware/require-non-guest';
 import { creditClawTokens } from '../services/claw-token-ledger';
 import { logEventFromContext } from '../services/event-logger';
 import {
@@ -576,7 +577,7 @@ questRoutes.get('/:id', async (c) => {
 // ---------------------------------------------------------------------------
 // 3. POST /:id/accept — Accept a quest (auth)
 // ---------------------------------------------------------------------------
-questRoutes.post('/:id/accept', requireAuth, async (c) => {
+questRoutes.post('/:id/accept', requireAuth, requireNonGuestUser, async (c) => {
   const user = c.get('user') as { id: string };
   const id = c.req.param('id');
   validateUuid(id, 'Quest');
@@ -646,7 +647,7 @@ questRoutes.post('/:id/accept', requireAuth, async (c) => {
 // ---------------------------------------------------------------------------
 // 4. POST /:id/start — Mark submission as in_progress (auth)
 // ---------------------------------------------------------------------------
-questRoutes.post('/:id/start', requireAuth, async (c) => {
+questRoutes.post('/:id/start', requireAuth, requireNonGuestUser, async (c) => {
   const user = c.get('user') as { id: string };
   const id = c.req.param('id'); // quest ID
   validateUuid(id, 'Quest');
@@ -689,7 +690,7 @@ questRoutes.post('/:id/start', requireAuth, async (c) => {
 // ---------------------------------------------------------------------------
 // 5. POST /:id/submit — Submit completed work (auth)
 // ---------------------------------------------------------------------------
-questRoutes.post('/:id/submit', requireAuth, async (c) => {
+questRoutes.post('/:id/submit', requireAuth, requireNonGuestUser, async (c) => {
   const user = c.get('user') as { id: string };
   const id = c.req.param('id'); // quest ID
   validateUuid(id, 'Quest');

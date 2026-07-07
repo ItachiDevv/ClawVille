@@ -11,6 +11,7 @@ export default function DailyLoginModal() {
   const [streak, setStreak] = useState(0);
   const [tokensEarned, setTokensEarned] = useState(0);
   const [totalTokens, setTotalTokens] = useState(0);
+  const [demo, setDemo] = useState(false);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -21,6 +22,7 @@ export default function DailyLoginModal() {
         setStreak(res.streak);
         setTokensEarned(res.tokensEarned);
         setTotalTokens(res.totalTokens);
+        setDemo(!!res.demo);
         setDailyLoginClaimed(true, res.streak);
 
         if (!res.alreadyClaimed) {
@@ -56,12 +58,22 @@ export default function DailyLoginModal() {
 
         {/* Reward */}
         <div className="bg-cyan-500/10 rounded-lg px-4 py-3 mb-3 border-2 border-cyan-400/40 shadow-[0_0_20px_rgba(0,229,255,0.15)]">
-          <div className="text-3xl font-bold text-cyan-200">
-            +{tokensEarned} &#x1fa99;
-          </div>
-          <div className="text-xs text-cyan-300/70 mt-1">
-            ClawTokens earned! Total: {totalTokens}
-          </div>
+          {demo ? (
+            // Guests run an all-demo economy — no real CT is credited, so show a
+            // sign-up prompt INSTEAD of a phantom "+N" reward (tokensEarned is 0).
+            <div className="text-base font-bold text-amber-200">
+              Sign up to earn real ClawTokens
+            </div>
+          ) : (
+            <>
+              <div className="text-3xl font-bold text-cyan-200">
+                +{tokensEarned} &#x1fa99;
+              </div>
+              <div className="text-xs text-cyan-300/70 mt-1">
+                ClawTokens earned! Total: {totalTokens}
+              </div>
+            </>
+          )}
         </div>
 
         {/* Streak milestones */}

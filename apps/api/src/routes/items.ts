@@ -8,6 +8,7 @@ import { debitClawTokens } from '../services/claw-token-ledger';
 import { requireAuth } from '../middleware/auth';
 import { sessionMiddleware } from '../middleware/auth';
 import { requireAuthOrAgentSession } from '../middleware/require-auth-or-agent';
+import { requireNonGuestIdentity } from '../middleware/require-non-guest';
 import { agentOrchestrator } from '../services/agent-orchestrator';
 import { embedText } from '@clawville/agent-runtime';
 import { logEventFromContext } from '../services/event-logger';
@@ -64,7 +65,7 @@ const buySchema = z.object({
   itemId: z.string().min(1).max(50),
 });
 
-itemRoutes.post('/buy', requireAuthOrAgentSession, async (c) => {
+itemRoutes.post('/buy', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
   const identity = c.get('identity');
   const userId = identity.userId;
   const body = await c.req.json();

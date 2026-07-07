@@ -1443,6 +1443,15 @@ avatarRoutes.post('/me/heartbeat', requireAuth, async (c) => {
       })
       .then((avatar) => {
         if (!avatar) return;
+        // Guest all-demo economy (founder ruling 2026-07-06): NEVER register a
+        // guest avatar in the autonomy bridge. A registered avatar goes
+        // autonomous on idle (activateIdleAvatars) and the sim's `awardToken`
+        // dbHook credits REAL CT (`reason:'autonomous_visit'`) with no isGuest
+        // check — a guest would earn real CT just by going idle. Skipping
+        // registration closes that earn leak AND keeps guest avatars off the
+        // sim CPU. (Guests are not autonomous economic participants: autonomous
+        // = an AGENT driving its avatar, and an agent is never a guest.)
+        if (avatar.isGuest) return;
         bridge.register({
           avatarId: avatar.id,
           userId: user.id,
@@ -1514,6 +1523,9 @@ avatarRoutes.post('/me/daily-login', requireAuth, async (c) => {
       tokensEarned: 0,
       totalTokens: avatar.clawTokens,
       alreadyClaimed: true,
+      // Guests run an all-demo economy — surface `demo` so the UI can label
+      // the streak reward as demo tokens (no real CT was ever credited).
+      demo: avatar.isGuest,
     });
   }
 
@@ -1532,7 +1544,9 @@ avatarRoutes.post('/me/daily-login', requireAuth, async (c) => {
   // Calculate reward: 10 + streak * 5, max 100
   const tokensEarned = Math.min(100, 10 + newStreak * 5);
 
-  // Update streak metadata first — the token credit goes through the ledger
+  // Update streak metadata first — the token credit goes through the ledger.
+  // The streak counters are NOT CT, so guests keep their streak (demo dopamine)
+  // while never touching the real ledger below.
   await db.update(avatars)
     .set({
       loginStreak: newStreak,
@@ -1540,6 +1554,21 @@ avatarRoutes.post('/me/daily-login', requireAuth, async (c) => {
       updatedAt: new Date(),
     })
     .where(and(eq(avatars.userId, user.id), eq(avatars.isActive, true)));
+
+  // Guest all-demo economy: SHORT-CIRCUIT before the ledger — a guest earn must
+  // neither mint nor vaporize CT (pure skip, no ledger row). Their streak still
+  // advances (metadata above) but NO real CT is credited. `tokensEarned: 0` — we
+  // never show "earned N" while the balance stays flat; the UI labels it DEMO and
+  // shows a sign-up prompt instead of a phantom reward.
+  if (avatar.isGuest) {
+    return c.json({
+      streak: newStreak,
+      tokensEarned: 0,
+      totalTokens: avatar.clawTokens,
+      alreadyClaimed: false,
+      demo: true,
+    });
+  }
 
   // Atomic + audited token credit
   const { balanceAfter: totalTokens } = await creditClawTokens({

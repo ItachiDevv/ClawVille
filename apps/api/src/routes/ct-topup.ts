@@ -53,6 +53,7 @@ import {
   requireAuthOrAgentSession,
   type ActivityAuthContext,
 } from '../middleware/require-auth-or-agent';
+import { requireNonGuestIdentity } from '../middleware/require-non-guest';
 import { loadX402Config } from '../services/x402-config';
 import {
   buildTopupQuote,
@@ -109,7 +110,7 @@ const quoteSchema = z.object({
   usdCents: z.number().int().positive().max(1_000_000),
 });
 
-ctTopupRoutes.post('/quote', requireAuthOrAgentSession, async (c) => {
+ctTopupRoutes.post('/quote', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
   const identity = c.get('identity');
 
   let body: unknown;
@@ -233,7 +234,7 @@ class TopupReplay extends Error {
   }
 }
 
-ctTopupRoutes.post('/settle', requireAuthOrAgentSession, async (c) => {
+ctTopupRoutes.post('/settle', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
   const identity = c.get('identity');
 
   // 1) Idempotency-Key header is REQUIRED on settle (terminal money action).
