@@ -301,10 +301,30 @@ x402CheckoutRoutes.post('/settle', requireAuthOrAgentSession, requireNonGuestIde
           409,
         );
       case 'settle_in_flight':
+        // Another process holds a fresh settling claim on this checkout — the
+        // caller retries the SAME checkoutId shortly (no money moved by us).
         return c.json({ error: result.code, code: result.code }, 409);
+      case 'idempotency_key_conflict':
+        // This avatar reused an Idempotency-Key on a DIFFERENT checkout. No money
+        // moved — the client must use a fresh key per checkout.
+        return c.json({ error: result.code, code: result.code }, 409);
+      case 'checkout_reconciliation':
+      case 'signature_conflict':
+        // Money-state needs reconciliation: a stale settling claim (money-state
+        // unknown), a capture that could not be recorded, or a settled signature
+        // already owned by another checkout. The row is in `reconcile` — a
+        // chain-check reconciler resolves it; the settle is NOT auto-retried.
+        return c.json({ error: result.code, code: result.code, status: result.status }, 409);
       case 'settle_failed':
       default:
-        return c.json({ error: 'settle_failed', code: 'settle_failed' }, 500);
+        // Includes the transient post-capture fulfillment failure (result
+        // .transient===true): the signature is durable, the row is settling+sig,
+        // and a retry of the SAME checkoutId RESUMES fulfillment without
+        // re-calling the facilitator.
+        return c.json(
+          { error: 'settle_failed', code: 'settle_failed', ...(result.transient ? { transient: true } : {}) },
+          500,
+        );
     }
   }
 

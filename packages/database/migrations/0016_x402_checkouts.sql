@@ -49,8 +49,14 @@ DO $$ BEGIN
 EXCEPTION WHEN duplicate_object THEN null; END $$;
 
 DO $$ BEGIN
-  CREATE TYPE checkout_status AS ENUM ('pending', 'settled', 'failed');
+  CREATE TYPE checkout_status AS ENUM ('pending', 'settling', 'settled', 'failed', 'reconcile');
 EXCEPTION WHEN duplicate_object THEN null; END $$;
+
+-- Upgrade an enum created by an earlier (3-value) run of this migration to the
+-- durable settle machine (Codex money-path review). ADD VALUE IF NOT EXISTS is
+-- idempotent + autocommit-only (cannot run inside a txn block; own statements).
+ALTER TYPE checkout_status ADD VALUE IF NOT EXISTS 'settling';
+ALTER TYPE checkout_status ADD VALUE IF NOT EXISTS 'reconcile';
 
 -- ── land audit kind for the USDC escrow prepay (own autocommit statement) ────
 ALTER TYPE land_transaction_kind ADD VALUE IF NOT EXISTS 'land_deposit_prepay_usdc';
@@ -67,12 +73,26 @@ CREATE TABLE IF NOT EXISTS "x402_checkouts" (
   "tx_signature" text,
   "usd_basis_at_receipt" numeric,
   "status" checkout_status NOT NULL DEFAULT 'pending',
+  "settling_id" uuid,
+  "settling_started_at" timestamp with time zone,
   "idempotency_key" varchar(64),
   "metadata" jsonb NOT NULL DEFAULT '{}'::jsonb,
   "created_at" timestamp with time zone NOT NULL DEFAULT now(),
   CONSTRAINT "x402_checkouts_price_vclaw_positive" CHECK ("price_vclaw" > 0),
-  CONSTRAINT "x402_checkouts_usd_cents_positive" CHECK ("usd_cents" > 0)
+  CONSTRAINT "x402_checkouts_usd_cents_positive" CHECK ("usd_cents" > 0),
+  -- A settled row ALWAYS carries the money proof (Codex review, finding 5).
+  CONSTRAINT "x402_checkouts_settled_has_signature"
+    CHECK ("status" <> 'settled' OR "tx_signature" IS NOT NULL)
 );
+
+-- Upgrade a table created by an earlier run of this migration (durable settle
+-- machine columns + the settled-has-signature CHECK). All additive + idempotent.
+ALTER TABLE "x402_checkouts" ADD COLUMN IF NOT EXISTS "settling_id" uuid;
+ALTER TABLE "x402_checkouts" ADD COLUMN IF NOT EXISTS "settling_started_at" timestamp with time zone;
+DO $$ BEGIN
+  ALTER TABLE "x402_checkouts" ADD CONSTRAINT "x402_checkouts_settled_has_signature"
+    CHECK ("status" <> 'settled' OR "tx_signature" IS NOT NULL);
+EXCEPTION WHEN duplicate_object THEN null; END $$;
 
 CREATE INDEX IF NOT EXISTS "x402_checkouts_avatar_idx"
   ON "x402_checkouts" ("avatar_id", "created_at");

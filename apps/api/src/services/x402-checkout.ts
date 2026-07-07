@@ -51,7 +51,8 @@
  * refuses CLEANLY while the row is still pending and NO money has moved.
  */
 
-import { db, x402Checkouts, avatars, and, eq } from '@clawville/database';
+import { randomUUID } from 'node:crypto';
+import { db, x402Checkouts, avatars, and, eq, isNull } from '@clawville/database';
 import { loadX402Config } from './x402-config';
 import {
   buildTopupQuote,
@@ -321,24 +322,42 @@ export type CheckoutSettleResult =
         | 'payment_not_settled'
         | 'fulfillment_refused'
         | 'settle_in_flight'
+        | 'idempotency_key_conflict'
+        | 'checkout_reconciliation'
+        | 'signature_conflict'
         | 'settle_failed';
       /** payment_not_settled: the facilitator reason + whether a retry may work. */
       reason?: string;
       transient?: boolean;
       /** precondition_failed / fulfillment_refused: the kind-specific code. */
       refusalCode?: string;
-      /** checkout_not_pending: the row's actual status. */
+      /** checkout_not_pending / *_reconciliation / signature_conflict: the row's state. */
       status?: string;
     };
 
-/** Raised inside the settle tx when a unique index trips (23505) or the
- *  pending→settled flip matched no row — already fulfilled by a prior /
- *  concurrent settle. Caught OUTSIDE the aborted tx to replay. (ct-topup's
- *  TopupReplay, verbatim shape.) */
-class CheckoutReplay extends Error {
-  constructor(public readonly kind: 'txsig' | 'idem') {
-    super(`x402_checkout_replay:${kind}`);
-    this.name = 'CheckoutReplay';
+type CheckoutRow = NonNullable<Awaited<ReturnType<typeof db.query.x402Checkouts.findFirst>>>;
+
+/**
+ * A `settling` row with NO signature older than this is a DEAD claim (its
+ * process died before the facilitator returned) → reconcile, NEVER an auto-retry
+ * of the facilitator (Codex finding 1). Floor 30s; MUST exceed the facilitator
+ * settle timeout (buildTopupQuote maxTimeoutSeconds default 120s) so a live
+ * in-flight settle is never mis-reconciled.
+ */
+const SETTLING_STALE_MS_DEFAULT = 5 * 60_000;
+function resolveSettlingStaleMs(): number {
+  const raw = process.env.X402_CHECKOUT_SETTLING_STALE_MS;
+  const n = raw ? Number.parseInt(raw, 10) : NaN;
+  return Number.isFinite(n) && n >= 30_000 ? n : SETTLING_STALE_MS_DEFAULT;
+}
+
+/** Thrown inside the fulfillment tx when the settling→settled flip matches no row
+ *  (a concurrent resume already settled it) → caught outside → idempotent replay.
+ *  The facilitator is NEVER re-called on this path. */
+class CheckoutAlreadySettled extends Error {
+  constructor() {
+    super('x402_checkout_already_settled');
+    this.name = 'CheckoutAlreadySettled';
   }
 }
 
@@ -350,60 +369,41 @@ export async function settleCheckout(input: {
 }): Promise<CheckoutSettleResult> {
   const { checkoutId, subject, paymentHeader, idempotencyKey } = input;
 
-  // SERIALIZE per-checkoutId (ct-topup FIX-5, payer-loss): two concurrent
-  // settles of the SAME checkout carrying DIFFERENT valid payments could BOTH
-  // pass the external verify→settle (each moves USDC on-chain) then race the
-  // pending→settled UPDATE — the loser paid real USDC for nothing. The mutex
-  // makes read-pending → verifyAndSettle → fulfill atomic per checkoutId
-  // within this process; the txsig unique index stays the cross-process
-  // double-FULFILLMENT backstop.
+  // In-process serialization per checkoutId — an efficiency layer, NOT the
+  // correctness guarantee. The DURABLE guarantees are the DB-backed CLAIM (only
+  // one process flips pending→settling before the facilitator is called) and the
+  // tx_signature partial-UNIQUE CAPTURE (a settled signature is bound to exactly
+  // one checkout). Cross-process safety comes from those, not this mutex.
   return withKeyedMutex(`x402-checkout-settle:${checkoutId}`, async () => {
-    // 1) FAST idempotency replay — BEFORE touching the facilitator.
-    const priorByKey = await db.query.x402Checkouts.findFirst({
-      where: and(
-        eq(x402Checkouts.avatarId, subject.avatarId),
-        eq(x402Checkouts.idempotencyKey, idempotencyKey),
-      ),
-    });
-    if (priorByKey && priorByKey.status === 'settled') {
-      return replayResult(priorByKey);
-    }
-
-    // 2) Load the pending row BOUND TO THE CALLER'S avatar — an agent/human can
-    //    only settle ITS OWN checkout; a foreign checkoutId resolves to no row.
-    const pending = await db.query.x402Checkouts.findFirst({
+    // 1) Load the row BOUND TO THE CALLER'S avatar — an agent/human can only
+    //    settle ITS OWN checkout; a foreign checkoutId resolves to no row. This
+    //    is the ONLY replay lookup, scoped by checkoutId (Codex finding 4): a
+    //    settled/settling/failed/reconcile row dispatches to terminal/resume
+    //    handling and NEVER echoes another checkout's fulfillment.
+    const row = await db.query.x402Checkouts.findFirst({
       where: and(eq(x402Checkouts.id, checkoutId), eq(x402Checkouts.avatarId, subject.avatarId)),
     });
-    if (!pending) {
+    if (!row) {
       return { ok: false as const, code: 'checkout_not_found' as const };
     }
-    if (pending.status === 'settled') {
-      return replayResult(pending);
-    }
-    if (pending.status !== 'pending') {
-      // 'failed' is terminal — a known-bad payment/refusal can't be re-poked.
-      return {
-        ok: false as const,
-        code: 'checkout_not_pending' as const,
-        status: pending.status,
-      };
+    if (row.status !== 'pending') {
+      return dispatchExistingRow(row, subject);
     }
 
-    const itemKind = pending.itemKind as CheckoutItemKind;
+    const itemKind = row.itemKind as CheckoutItemKind;
 
-    // 3) Fulfiller MUST exist BEFORE the facilitator is called — never take
-    //    USDC we can't fulfill. (Quote refuses too; this covers a deploy that
-    //    dropped a fulfiller between quote and settle.)
-    const fulfiller = getFulfiller(itemKind);
-    if (!fulfiller) {
+    // 2) Fulfiller MUST exist BEFORE we claim/settle — never take USDC we can't
+    //    fulfill. (Quote refuses too; this covers a deploy that dropped a
+    //    fulfiller between quote and settle.)
+    if (!getFulfiller(itemKind)) {
       return { ok: false as const, code: 'fulfiller_unavailable' as const };
     }
 
-    // 4) Amounts come from the PERSISTED ROW (server-authoritative — there is
-    //    no client echo to trust). Internal-consistency guard: a peg-violating
-    //    or tampered row must never reach the facilitator.
-    const priceVclaw = pending.priceVclaw;
-    const rowUsdCents = pending.usdCents;
+    // 3) Amounts come from the PERSISTED ROW (server-authoritative — no client
+    //    echo to trust). A peg-violating / tampered row never reaches the
+    //    facilitator.
+    const priceVclaw = row.priceVclaw;
+    const rowUsdCents = row.usdCents;
     if (
       !Number.isInteger(priceVclaw) ||
       priceVclaw <= 0 ||
@@ -414,34 +414,64 @@ export async function settleCheckout(input: {
       return { ok: false as const, code: 'settle_failed' as const };
     }
 
-    // 5) READ-ONLY PREFLIGHT (when the kind registered one) — re-check the
-    //    fulfillment preconditions BEFORE any money moves. A precondition that
-    //    died since the quote (parcel released, cosmetic already owned, …)
-    //    refuses cleanly: row stays PENDING, facilitator never called.
+    // 4) READ-ONLY PREFLIGHT — re-check preconditions BEFORE claiming/settling. A
+    //    precondition that died since the quote refuses cleanly: row stays
+    //    PENDING, no claim taken, facilitator never called, no money moves.
     const preflight = preflights.get(itemKind);
     if (preflight) {
       let pre: Awaited<ReturnType<CheckoutPreflight>>;
       try {
-        pre = await preflight({ subject, itemRef: pending.itemRef, priceVclaw });
+        pre = await preflight({ subject, itemRef: row.itemRef, priceVclaw });
       } catch (err) {
         console.error('[x402-checkout] preflight threw:', (err as Error).message);
         return { ok: false as const, code: 'settle_failed' as const };
       }
       if (!pre.ok) {
-        return {
-          ok: false as const,
-          code: 'precondition_failed' as const,
-          refusalCode: pre.code,
-        };
+        return { ok: false as const, code: 'precondition_failed' as const, refusalCode: pre.code };
       }
     }
 
-    // 6) Re-derive the EXACT requirements the quote issued — server-side.
+    // 5) On-ramp must be configured BEFORE we claim (no point staking a claim on
+    //    a row we can't settle).
     const config = loadX402Config();
     if (!config.merchantWalletPubkey) {
       return { ok: false as const, code: 'on_ramp_unconfigured' as const };
     }
-    const meta = (pending.metadata ?? {}) as Record<string, unknown>;
+
+    // 6) DB-BACKED CLAIM (Codex finding 1): pending → settling, exclusive across
+    //    PROCESSES. Only the winner of `WHERE status='pending'` calls the
+    //    facilitator; every other settle sees 'settling' and never double-calls
+    //    verify→settle. The claim also stakes the idempotency key: a reuse on a
+    //    DIFFERENT checkout trips the (avatar,key) UNIQUE → a clean conflict
+    //    BEFORE any money moves.
+    const settlingId = randomUUID();
+    let claimed: { id: string }[];
+    try {
+      claimed = await db
+        .update(x402Checkouts)
+        .set({ status: 'settling', settlingId, settlingStartedAt: new Date(), idempotencyKey })
+        .where(and(eq(x402Checkouts.id, checkoutId), eq(x402Checkouts.status, 'pending')))
+        .returning({ id: x402Checkouts.id });
+    } catch (err) {
+      if ((err as { code?: string } | undefined)?.code === '23505') {
+        // (avatar, idempotency_key) UNIQUE tripped — this avatar used this key on
+        // ANOTHER checkout. Refuse; NO money has moved.
+        return { ok: false as const, code: 'idempotency_key_conflict' as const };
+      }
+      throw err;
+    }
+    if (claimed.length === 0) {
+      // Someone else advanced this checkout between our read and here — re-read +
+      // dispatch (resume / replay / in-flight / reconcile).
+      const reread = await db.query.x402Checkouts.findFirst({
+        where: and(eq(x402Checkouts.id, checkoutId), eq(x402Checkouts.avatarId, subject.avatarId)),
+      });
+      if (!reread) return { ok: false as const, code: 'checkout_not_found' as const };
+      return dispatchExistingRow(reread, subject);
+    }
+
+    // 7) Re-derive the EXACT requirements the quote issued — server-side.
+    const meta = (row.metadata ?? {}) as Record<string, unknown>;
     const network = (meta.network === 'mainnet' || meta.network === 'devnet'
       ? meta.network
       : resolveTopupNetwork()) as X402Network;
@@ -455,187 +485,420 @@ export async function settleCheckout(input: {
     });
     const requirements = quote.accepts[0];
 
-    // 7) Verify → (only on valid) settle. NEVER throws; !settled → clean
-    //    result. Transient facilitator failure leaves the row PENDING for a
-    //    retry of the SAME checkoutId; definitive rejection poisons to failed.
+    // 8) Verify → (only on valid) settle. MONEY MAY MOVE HERE.
     const result = await verifyAndSettle({ paymentHeader, requirements });
     if (!result.settled || !result.txSignature) {
       const reason = result.failureReason ?? 'unsettled';
       const transient = reason === 'facilitator_verify_error' || reason === 'facilitator_settle_error';
-      if (!transient) {
-        try {
-          await db
-            .update(x402Checkouts)
-            .set({ status: 'failed', metadata: { ...meta, failureReason: reason } })
-            .where(and(eq(x402Checkouts.id, checkoutId), eq(x402Checkouts.status, 'pending')));
-        } catch (err) {
-          console.warn('[x402-checkout] mark-failed write failed (non-fatal):', (err as Error).message);
-        }
+      if (transient) {
+        // NO money moved. Release the claim (settling → pending) so a retry of
+        // the SAME checkout can re-claim. Checked to our settlingId.
+        await releaseClaim(checkoutId, settlingId);
+      } else {
+        // Definitive rejection, NO money moved → terminal failed (checked to our
+        // claim). A known-bad payment can't be re-poked.
+        await db
+          .update(x402Checkouts)
+          .set({
+            status: 'failed',
+            settlingId: null,
+            settlingStartedAt: null,
+            metadata: { ...meta, failureReason: reason },
+          })
+          .where(
+            and(
+              eq(x402Checkouts.id, checkoutId),
+              eq(x402Checkouts.status, 'settling'),
+              eq(x402Checkouts.settlingId, settlingId),
+            ),
+          );
       }
       return { ok: false as const, code: 'payment_not_settled' as const, reason, transient };
     }
 
+    // 9) CAPTURE (Codex finding 2): the facilitator settled — persist the tx
+    //    signature IMMEDIATELY in its OWN committed UPDATE, BEFORE fulfillment is
+    //    attempted. The money proof is now durable, so a later fulfillment
+    //    failure can NEVER lose it and re-settle real USDC on retry. The
+    //    tx_signature partial-UNIQUE makes the capture the single exactly-once
+    //    binding of this on-chain payment to this checkout.
     const txSignature = result.txSignature;
     const usdBasis = (rowUsdCents / 100).toFixed(2);
-
-    // 8) ATOMIC settle: flip pending→settled (claiming the tx signature under
-    //    the partial-UNIQUE index) + the fulfiller's writes, in ONE tx. A
-    //    duplicate signature/idem key trips 23505 → the WHOLE tx (fulfillment
-    //    included) rolls back → replay the already-fulfilled row outside.
+    const captureMeta: Record<string, unknown> = {
+      ...meta,
+      txSignature,
+      settlePayer: result.payer ?? undefined,
+      settleNetwork: result.network ?? undefined,
+    };
+    let captured: { id: string }[];
     try {
-      const settled = await db.transaction(async (tx) => {
-        const settleMeta: Record<string, unknown> = {
-          ...meta,
-          txSignature,
-          settlePayer: result.payer ?? undefined,
-          settleNetwork: result.network ?? undefined,
-        };
-        let updated: { id: string }[] | undefined;
-        try {
-          updated = await tx
-            .update(x402Checkouts)
-            .set({
-              status: 'settled',
-              txSignature,
-              usdBasisAtReceipt: usdBasis,
-              idempotencyKey,
-              metadata: settleMeta,
-            })
-            .where(and(eq(x402Checkouts.id, checkoutId), eq(x402Checkouts.status, 'pending')))
-            .returning({ id: x402Checkouts.id });
-        } catch (err) {
-          const pgCode = (err as { code?: string } | undefined)?.code;
-          if (pgCode === '23505') {
-            const constraint = (err as { constraint?: string } | undefined)?.constraint ?? '';
-            throw new CheckoutReplay(constraint.includes('idem') ? 'idem' : 'txsig');
-          }
-          throw err;
-        }
-        if (!updated || updated.length === 0) {
-          // WHERE status='pending' matched nothing — a concurrent settle won.
-          throw new CheckoutReplay('txsig');
-        }
-
-        // THE FULFILLER — all item-domain writes compose into THIS tx. It may
-        // throw CheckoutFulfillmentRefusal (authoritative row-locked
-        // precondition failure) → whole tx rolls back → terminal-failure
-        // handling below.
-        const fulfillment = await fulfiller({
-          tx,
-          checkoutId,
-          subject,
-          itemKind,
-          itemRef: pending.itemRef,
-          priceVclaw,
-          usdCents: rowUsdCents,
-          usdBasis,
-          txSignature,
-          settlePayer: result.payer,
-          network: result.network,
-        });
-        const detail = fulfillment.detail ?? {};
-
-        // Persist the fulfillment detail on the row (same tx) so replays can
-        // echo it back.
-        await tx
-          .update(x402Checkouts)
-          .set({ metadata: { ...settleMeta, fulfillment: detail } })
-          .where(eq(x402Checkouts.id, checkoutId));
-
-        return { detail };
-      });
-
-      return {
-        ok: true as const,
-        checkoutId,
-        itemKind,
-        itemRef: pending.itemRef,
-        priceVclaw,
-        txSignature,
-        replay: false,
-        fulfillment: settled.detail,
-      };
+      captured = await db
+        .update(x402Checkouts)
+        .set({ txSignature, usdBasisAtReceipt: usdBasis, metadata: captureMeta })
+        .where(
+          and(
+            eq(x402Checkouts.id, checkoutId),
+            eq(x402Checkouts.status, 'settling'),
+            eq(x402Checkouts.settlingId, settlingId),
+            isNull(x402Checkouts.txSignature),
+          ),
+        )
+        .returning({ id: x402Checkouts.id });
     } catch (err) {
-      if (err instanceof CheckoutReplay) {
-        const replayed = await findSettledForReplay({
-          avatarId: subject.avatarId,
-          txSignature,
-          idempotencyKey,
-          kind: err.kind,
-        });
-        if (replayed && replayed.status === 'settled') {
-          return replayResult(replayed);
-        }
-        return { ok: false as const, code: 'settle_in_flight' as const };
-      }
-      if (err instanceof CheckoutFulfillmentRefusal) {
-        // USDC MOVED but the authoritative in-tx precondition refused (the
-        // preflight narrowed this to a near-zero race window). Least-bad
-        // terminal state, recorded OUTSIDE the aborted tx: fail the row
-        // CLAIMING the tx signature (nothing else can ever claim it) + a LOUD
-        // ops trail. Manual refund path — money is never silently dropped.
+      if ((err as { code?: string } | undefined)?.code === '23505') {
+        // The settled signature is ALREADY owned by a DIFFERENT checkout (Codex
+        // finding 4): the same on-chain payment maps to another item. NEVER
+        // fulfill this one on that signature — reconcile, recording the spent
+        // signature in metadata (the column stays owned by the other checkout).
         console.error(
-          `[x402-checkout] FULFILLMENT REFUSED AFTER SETTLE — USDC arrived but could not be fulfilled; ` +
-            `manual refund required. checkout=${checkoutId} kind=${itemKind} refusal=${err.code} tx=${txSignature}`,
+          `[x402-checkout] SIGNATURE CONFLICT — settled tx ${txSignature} already owned by another ` +
+            `checkout; checkout=${checkoutId} → reconcile (no fulfillment)`,
         );
-        try {
-          await db
-            .update(x402Checkouts)
-            .set({
-              status: 'failed',
-              txSignature,
-              usdBasisAtReceipt: usdBasis,
-              metadata: {
-                ...meta,
-                failureReason: 'fulfillment_refused',
-                refusalCode: err.code,
-                txSignature,
-                settlePayer: result.payer ?? undefined,
-                settleNetwork: result.network ?? undefined,
-              },
-            })
-            .where(and(eq(x402Checkouts.id, checkoutId), eq(x402Checkouts.status, 'pending')));
-        } catch (recordErr) {
-          console.error(
-            '[x402-checkout] failed to record fulfillment refusal (manual reconciliation needed):',
-            (recordErr as Error).message,
-          );
-        }
-        return {
-          ok: false as const,
-          code: 'fulfillment_refused' as const,
-          refusalCode: err.code,
-        };
+        await markReconcile(checkoutId, settlingId, 'signature_conflict', txSignature, meta, result);
+        return { ok: false as const, code: 'signature_conflict' as const, status: 'reconcile' };
       }
-      // POST-SETTLE STRAND (audit M1): we only reach this try AFTER
-      // verifyAndSettle returned settled:true with a signature, so the USDC has
-      // ALREADY moved on-chain. A non-replay, non-refusal throw here (a 40001
-      // serialization_failure under the fulfillers' advisory/parcel locks, a
-      // transient DB error, or an enqueueClvBuy failure) rolled the whole tx
-      // back, so the row is still 'pending' and a retry re-settles idempotently
-      // (same signature ⇒ the txsig UNIQUE flip claims it once, the fulfiller
-      // runs exactly once). Recovery is correct, but the strand is otherwise
-      // INVISIBLE to ops — so log it as LOUDLY as the fulfillment-refused path
-      // and mark the result transient so the caller knows a retry is expected.
+      // Transient error persisting the signature — money moved, sig NOT yet
+      // durable on our row. Leave the claim: a retry inside the stale window is
+      // settle_in_flight, past it reconcile. LOUD.
       console.error(
-        `[x402-checkout] SETTLE TX FAILED AFTER USDC MOVED — payment settled on-chain but ` +
-          `fulfillment rolled back; row left PENDING for idempotent retry (manual reconcile if ` +
-          `the client never retries). checkout=${checkoutId} kind=${itemKind} tx=${txSignature} ` +
-          `err=${(err as Error).message}`,
+        `[x402-checkout] CAPTURE FAILED AFTER USDC MOVED — signature not yet durable; ` +
+          `checkout=${checkoutId} tx=${txSignature} err=${(err as Error).message}`,
       );
       return { ok: false as const, code: 'settle_failed' as const, transient: true };
     }
-  }); // end withKeyedMutex — serialized critical section per checkoutId
+    if (captured.length === 0) {
+      // Our claim no longer matches (settlingId changed, or already captured). If
+      // the row now carries OUR signature, resume/replay; else money moved but we
+      // could not record it → loud reconcile.
+      const reread = await db.query.x402Checkouts.findFirst({
+        where: and(eq(x402Checkouts.id, checkoutId), eq(x402Checkouts.avatarId, subject.avatarId)),
+      });
+      if (reread && reread.txSignature === txSignature) {
+        if (reread.status === 'settled') return replayResult(reread);
+        if (reread.status === 'settling') return runFulfillment(reread, subject);
+      }
+      console.error(
+        `[x402-checkout] CAPTURE MATCHED NO ROW AFTER USDC MOVED — checkout=${checkoutId} ` +
+          `tx=${txSignature}; MANUAL reconcile required`,
+      );
+      await markReconcile(checkoutId, settlingId, 'capture_lost', txSignature, meta, result);
+      return { ok: false as const, code: 'checkout_reconciliation' as const, status: 'reconcile' };
+    }
+
+    // 10) FULFILL (resumable). Re-read the captured row for the full context and
+    //     run the shared, resumable fulfillment (flip settling→settled + the
+    //     fulfiller, atomically). The facilitator is NEVER called again.
+    const capturedRow = await db.query.x402Checkouts.findFirst({
+      where: eq(x402Checkouts.id, checkoutId),
+    });
+    if (!capturedRow) {
+      // Impossible (we just updated it) — defensive. Row is captured+durable; a
+      // retry resumes.
+      return { ok: false as const, code: 'settle_failed' as const, transient: true };
+    }
+    return runFulfillment(capturedRow, subject);
+  }); // end withKeyedMutex — per-checkout in-process serialization
 }
 
 // ---------------------------------------------------------------------------
-// helpers
+// settle helpers
 // ---------------------------------------------------------------------------
 
-type CheckoutRow = NonNullable<Awaited<ReturnType<typeof db.query.x402Checkouts.findFirst>>>;
+/** Dispatch a NON-pending row (loaded by checkoutId+avatar) to its terminal or
+ *  RESUME outcome. NEVER calls the facilitator. */
+async function dispatchExistingRow(
+  row: CheckoutRow,
+  subject: CheckoutSubject,
+): Promise<CheckoutSettleResult> {
+  switch (row.status) {
+    case 'settled':
+      return replayResult(row);
+    case 'failed':
+      // Definitive facilitator rejection OR a recorded post-settle refusal —
+      // terminal either way (a refusal row carries the signature for the refund
+      // trail). Not re-pokable.
+      return { ok: false as const, code: 'checkout_not_pending' as const, status: 'failed' };
+    case 'reconcile':
+      return { ok: false as const, code: 'checkout_reconciliation' as const, status: 'reconcile' };
+    case 'settling': {
+      if (row.txSignature) {
+        // CAPTURED — the money is durable, only fulfillment is incomplete. RESUME
+        // it (never re-call the facilitator).
+        return runFulfillment(row, subject);
+      }
+      // settling with NO signature — the facilitator call is in-flight or its
+      // process died mid-call.
+      const startedAt = row.settlingStartedAt ? new Date(row.settlingStartedAt).getTime() : 0;
+      const ageMs = Date.now() - startedAt;
+      if (ageMs < resolveSettlingStaleMs()) {
+        // A concurrent settle holds a FRESH claim — let the caller retry shortly.
+        return { ok: false as const, code: 'settle_in_flight' as const };
+      }
+      // STALE claim, no signature: money-state UNKNOWN. Do NOT re-call the
+      // facilitator (Codex finding 1) — a chain-check reconciler resolves whether
+      // the payment landed. `requireNullSignature` guards a capture racing in.
+      console.error(
+        `[x402-checkout] STALE SETTLING CLAIM — checkout=${row.id} settling ${Math.round(ageMs / 1000)}s ` +
+          `with no signature; money-state UNKNOWN → reconcile (no facilitator re-call)`,
+      );
+      await markReconcile(
+        row.id,
+        row.settlingId,
+        'stale_settling',
+        null,
+        (row.metadata ?? {}) as Record<string, unknown>,
+        null,
+        true,
+      );
+      // Re-read to report the resolved state (reconcile, or resumed if a capture
+      // beat the reconcile in).
+      const after = await db.query.x402Checkouts.findFirst({
+        where: and(eq(x402Checkouts.id, row.id), eq(x402Checkouts.avatarId, subject.avatarId)),
+      });
+      if (after && after.status === 'settling' && after.txSignature) {
+        return runFulfillment(after, subject);
+      }
+      return { ok: false as const, code: 'checkout_reconciliation' as const, status: 'reconcile' };
+    }
+    default:
+      return { ok: false as const, code: 'checkout_not_pending' as const, status: row.status };
+  }
+}
 
-/** Shape an already-settled row into the idempotent replay response. */
+/** Run the fulfiller for a CAPTURED row (settling + tx_signature), flipping
+ *  settling→settled atomically. Resumable + exactly-once: a prior failed attempt
+ *  rolled back ENTIRELY (flip + all fulfiller writes are one tx), so this applies
+ *  the fulfiller exactly once; a concurrent resume that already settled the row
+ *  is detected (0-row flip → CheckoutAlreadySettled) and replayed. NEVER calls
+ *  the facilitator. */
+async function runFulfillment(
+  row: CheckoutRow,
+  subject: CheckoutSubject,
+): Promise<CheckoutSettleResult> {
+  const checkoutId = row.id;
+  const itemKind = row.itemKind as CheckoutItemKind;
+  const txSignature = row.txSignature;
+  if (!txSignature) {
+    // runFulfillment is only ever called on a captured row — defensive.
+    console.error(`[x402-checkout] runFulfillment without a signature — checkout=${checkoutId}`);
+    return { ok: false as const, code: 'settle_failed' as const, transient: true };
+  }
+  const fulfiller = getFulfiller(itemKind);
+  if (!fulfiller) {
+    return { ok: false as const, code: 'fulfiller_unavailable' as const };
+  }
+  const rowUsdCents = row.usdCents;
+  const usdBasis = (rowUsdCents / 100).toFixed(2);
+  const meta = (row.metadata ?? {}) as Record<string, unknown>;
+  const settlePayer = typeof meta.settlePayer === 'string' ? meta.settlePayer : null;
+  const network =
+    typeof meta.settleNetwork === 'string'
+      ? (meta.settleNetwork as string)
+      : typeof meta.network === 'string'
+        ? (meta.network as string)
+        : null;
+
+  try {
+    const out = await db.transaction(async (tx) => {
+      // Flip settling(+sig) → settled FIRST, checked. A concurrent resume that
+      // already settled ⇒ 0 rows ⇒ CheckoutAlreadySettled ⇒ replay (the fulfiller
+      // NEVER runs twice).
+      const flipped = await tx
+        .update(x402Checkouts)
+        .set({ status: 'settled', settlingId: null, settlingStartedAt: null })
+        .where(
+          and(
+            eq(x402Checkouts.id, checkoutId),
+            eq(x402Checkouts.status, 'settling'),
+            eq(x402Checkouts.txSignature, txSignature),
+          ),
+        )
+        .returning({ id: x402Checkouts.id });
+      if (flipped.length === 0) {
+        throw new CheckoutAlreadySettled();
+      }
+
+      // THE FULFILLER — all item-domain writes compose into THIS tx. On any throw
+      // (refusal OR error) the whole tx (flip included) rolls back → the row
+      // stays settling+sig, resumable, and the signature is never lost.
+      const fulfillment = await fulfiller({
+        tx,
+        checkoutId,
+        subject,
+        itemKind,
+        itemRef: row.itemRef,
+        priceVclaw: row.priceVclaw,
+        usdCents: rowUsdCents,
+        usdBasis,
+        txSignature,
+        settlePayer,
+        network,
+      });
+      const detail = fulfillment.detail ?? {};
+      await tx
+        .update(x402Checkouts)
+        .set({ metadata: { ...meta, fulfillment: detail } })
+        .where(eq(x402Checkouts.id, checkoutId));
+      return { detail };
+    });
+
+    return {
+      ok: true as const,
+      checkoutId,
+      itemKind,
+      itemRef: row.itemRef,
+      priceVclaw: row.priceVclaw,
+      txSignature,
+      replay: false,
+      fulfillment: out.detail,
+    };
+  } catch (err) {
+    if (err instanceof CheckoutAlreadySettled) {
+      const settled = await db.query.x402Checkouts.findFirst({
+        where: and(eq(x402Checkouts.id, checkoutId), eq(x402Checkouts.avatarId, subject.avatarId)),
+      });
+      if (settled && settled.status === 'settled') return replayResult(settled);
+      return { ok: false as const, code: 'settle_in_flight' as const };
+    }
+    if (err instanceof CheckoutFulfillmentRefusal) {
+      // Money moved + captured, fulfillment REFUSED (an authoritative row-locked
+      // precondition failed — the preflight narrowed this to a near-zero window).
+      // MANDATORY, CHECKED terminal record CARRYING the signature (Codex finding
+      // 3): settling(+sig) → failed. A missed/errored record is escalated LOUD —
+      // the money proof is already durable on the row, so ops reconciles.
+      const refusalCode = err.code;
+      let recorded: { id: string }[] | undefined;
+      try {
+        recorded = await db
+          .update(x402Checkouts)
+          .set({
+            status: 'failed',
+            settlingId: null,
+            settlingStartedAt: null,
+            metadata: { ...meta, failureReason: 'fulfillment_refused', refusalCode },
+          })
+          .where(
+            and(
+              eq(x402Checkouts.id, checkoutId),
+              eq(x402Checkouts.status, 'settling'),
+              eq(x402Checkouts.txSignature, txSignature),
+            ),
+          )
+          .returning({ id: x402Checkouts.id });
+      } catch (recErr) {
+        console.error(
+          `[x402-checkout] FULFILLMENT-REFUSED RECORD ERROR — checkout=${checkoutId} tx=${txSignature} ` +
+            `refusal=${refusalCode}: ${(recErr as Error).message}`,
+        );
+      }
+      if (!recorded || recorded.length === 0) {
+        console.error(
+          `[x402-checkout] FULFILLMENT REFUSED AFTER SETTLE — USDC moved, terminal record MISSED; ` +
+            `checkout=${checkoutId} kind=${itemKind} refusal=${refusalCode} tx=${txSignature} — MANUAL refund + reconcile`,
+        );
+      } else {
+        console.error(
+          `[x402-checkout] FULFILLMENT REFUSED AFTER SETTLE — USDC moved but could not be fulfilled; ` +
+            `manual refund required. checkout=${checkoutId} kind=${itemKind} refusal=${refusalCode} tx=${txSignature}`,
+        );
+      }
+      return { ok: false as const, code: 'fulfillment_refused' as const, refusalCode };
+    }
+    // POST-CAPTURE transient failure (a 40001 serialization_failure under the
+    // fulfillers' advisory/parcel locks, a transient DB error, an enqueueClvBuy
+    // failure). The signature is DURABLE (captured), the row stays settling+sig,
+    // so a retry RESUMES this fulfillment and NEVER re-calls the facilitator.
+    // Loud; transient.
+    console.error(
+      `[x402-checkout] FULFILLMENT TX FAILED AFTER USDC CAPTURED — row left settling+signature for ` +
+        `idempotent resume (no facilitator re-call); checkout=${checkoutId} kind=${itemKind} ` +
+        `tx=${txSignature} err=${(err as Error).message}`,
+    );
+    return { ok: false as const, code: 'settle_failed' as const, transient: true };
+  }
+}
+
+/** Release a settling claim back to pending (a transient, NO-money-moved
+ *  facilitator failure) so a retry can re-claim. Checked to the claim holder. */
+async function releaseClaim(checkoutId: string, settlingId: string): Promise<void> {
+  try {
+    await db
+      .update(x402Checkouts)
+      .set({ status: 'pending', settlingId: null, settlingStartedAt: null, idempotencyKey: null })
+      .where(
+        and(
+          eq(x402Checkouts.id, checkoutId),
+          eq(x402Checkouts.status, 'settling'),
+          eq(x402Checkouts.settlingId, settlingId),
+        ),
+      );
+  } catch (err) {
+    console.warn('[x402-checkout] releaseClaim failed (non-fatal):', (err as Error).message);
+  }
+}
+
+/** Move a settling row to the terminal `reconcile` state, recording the spent
+ *  signature (if any) in metadata for the chain-check reconciler. NEVER writes
+ *  the tx_signature COLUMN (that stays the exactly-once capture key). Checked to
+ *  the claim; a miss is logged LOUD — money is never silently lost. */
+async function markReconcile(
+  checkoutId: string,
+  settlingId: string | null,
+  reason: string,
+  spentTxSignature: string | null,
+  meta: Record<string, unknown>,
+  result: { payer?: string | null; network?: string | null } | null,
+  requireNullSignature = false,
+): Promise<void> {
+  const conds = [eq(x402Checkouts.id, checkoutId), eq(x402Checkouts.status, 'settling')];
+  if (settlingId) conds.push(eq(x402Checkouts.settlingId, settlingId));
+  if (requireNullSignature) conds.push(isNull(x402Checkouts.txSignature));
+  try {
+    const updated = await db
+      .update(x402Checkouts)
+      .set({
+        status: 'reconcile',
+        settlingId: null,
+        settlingStartedAt: null,
+        metadata: {
+          ...meta,
+          reconcileReason: reason,
+          ...(spentTxSignature
+            ? {
+                spentTxSignature,
+                settlePayer: result?.payer ?? undefined,
+                settleNetwork: result?.network ?? undefined,
+              }
+            : {}),
+        },
+      })
+      .where(and(...conds))
+      .returning({ id: x402Checkouts.id });
+    if (updated.length === 0) {
+      console.error(
+        `[x402-checkout] RECONCILE RECORD MISSED — checkout=${checkoutId} reason=${reason} ` +
+          `spentTx=${spentTxSignature ?? 'none'} — MANUAL reconciliation required`,
+      );
+    }
+  } catch (err) {
+    console.error(
+      `[x402-checkout] RECONCILE RECORD FAILED — checkout=${checkoutId} reason=${reason} ` +
+        `spentTx=${spentTxSignature ?? 'none'}: ${(err as Error).message}`,
+    );
+  }
+}
+
+/** Shape an already-settled row into the idempotent replay response. A settled
+ *  row ALWAYS carries a signature (DB CHECK `x402_checkouts_settled_has_signature`);
+ *  a settled-without-signature row is corruption and is REFUSED, never replayed
+ *  as ok (Codex finding 5). */
 function replayResult(row: CheckoutRow): CheckoutSettleResult {
+  if (!row.txSignature) {
+    console.error(
+      `[x402-checkout] settled row ${row.id} has NO tx_signature — refusing replay (corruption)`,
+    );
+    return { ok: false as const, code: 'settle_failed' as const };
+  }
   const meta = (row.metadata ?? {}) as Record<string, unknown>;
   const fulfillment =
     meta.fulfillment && typeof meta.fulfillment === 'object'
@@ -647,35 +910,10 @@ function replayResult(row: CheckoutRow): CheckoutSettleResult {
     itemKind: row.itemKind as CheckoutItemKind,
     itemRef: row.itemRef,
     priceVclaw: row.priceVclaw,
-    txSignature: row.txSignature ?? '',
+    txSignature: row.txSignature,
     replay: true,
     fulfillment,
   };
-}
-
-/** Re-read the already-settled row a collision replays. Scoped to the CALLER'S
- *  avatar (ct-topup's cross-avatar-leak guard): a caller replaying another
- *  avatar's settled payment header reads nothing and 409s settle_in_flight. */
-async function findSettledForReplay(input: {
-  avatarId: string;
-  txSignature: string;
-  idempotencyKey: string;
-  kind: 'txsig' | 'idem';
-}) {
-  if (input.kind === 'idem') {
-    return db.query.x402Checkouts.findFirst({
-      where: and(
-        eq(x402Checkouts.avatarId, input.avatarId),
-        eq(x402Checkouts.idempotencyKey, input.idempotencyKey),
-      ),
-    });
-  }
-  return db.query.x402Checkouts.findFirst({
-    where: and(
-      eq(x402Checkouts.txSignature, input.txSignature),
-      eq(x402Checkouts.avatarId, input.avatarId),
-    ),
-  });
 }
 
 /** Current CT balance (read-only) — exported for route responses that want to
