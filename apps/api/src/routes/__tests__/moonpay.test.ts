@@ -26,11 +26,15 @@
 
 // Crash-loud module-load env BEFORE imports (mirrors partner-storefront.test.ts —
 // the route pulls require-auth-or-agent → npc-simulation and friends).
+// DATABASE_URL is SCOPED to module init (deleted again after the route import
+// below) so DB-gated suites loading later in the shared bun process keep their
+// skip-when-no-DB behavior instead of running against a fake URL.
 const HEX32 = '0'.repeat(64);
 function ensureEnv(k: string, v: string) {
   if (!process.env[k]) process.env[k] = v;
 }
 ensureEnv('FINGERPRINT_SECRET', HEX32);
+const DB_URL_WAS_SET = !!process.env.DATABASE_URL;
 ensureEnv('DATABASE_URL', 'postgresql://u:p@localhost:5432/db');
 ensureEnv('CLOUDFLARE_WORKER_URL', 'https://example.invalid');
 ensureEnv('CLOUDFLARE_WORKER_BEARER', 'dummy');
@@ -91,6 +95,12 @@ const {
   computeCardFee,
   MOONPAY_WIDGET_BASE_URL,
 } = await import('../../services/moonpay-config');
+
+// Route chain loaded — drop the module-init DATABASE_URL placeholder so later
+// files in the shared process keep their skip-when-no-DB behavior.
+if (!DB_URL_WAS_SET) {
+  delete process.env.DATABASE_URL;
+}
 
 const WEBHOOK_KEY = 'wk_test_whsec789';
 
