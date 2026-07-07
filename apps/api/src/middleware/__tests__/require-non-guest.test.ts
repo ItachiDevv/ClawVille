@@ -39,6 +39,13 @@ const usersFindFirst = mock(async () => nextUserRow);
 
 // Spread the real drizzle instance so ONLY users.findFirst is faked (keeps
 // db.transaction / db.query.avatars real for any co-running test file).
+// The `db` getter CONSTRUCTS the client on first access and throws without a
+// connection string — placeholder SCOPED to this dereference (never connects;
+// queries are mocked), dropped right after so DB-gated sibling suites keep
+// their skip-when-no-DB behavior (merge-reconcile of ours f0a35fdd + staging's
+// ae0e9705 versions of this file).
+const DB_URL_WAS_SET = !!process.env.DATABASE_URL;
+if (!DB_URL_WAS_SET) process.env.DATABASE_URL = 'postgresql://u:p@localhost:5432/db';
 const realDb = (realDatabase as any).db;
 const fakeDb = {
   ...realDb,
@@ -50,6 +57,7 @@ const fakeDb = {
     },
   },
 };
+if (!DB_URL_WAS_SET) delete process.env.DATABASE_URL;
 
 mock.module('@clawville/database', () => ({
   ...realDatabase,
