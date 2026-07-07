@@ -84,6 +84,12 @@ function invalidateLandServices(qc: QueryClient): void {
 // ---------------------------------------------------------------------------
 const FOCUSED_CARD_ID = 'land-office-focused-parcel';
 
+// ---------------------------------------------------------------------------
+// Ref-based parcel focus helper — scrolls a highlighted card into view.
+// Used when the modal is opened from a 3D parcel click (landOfficeFocusParcel).
+// ---------------------------------------------------------------------------
+const FOCUSED_CARD_ID = 'land-office-focused-parcel';
+
 /** Tier accent colors — matches the 3D parcel palette in land-parcels.tsx. */
 const TIER_ACCENT: Record<LandTier, string> = {
   founder: '#f5c842',
