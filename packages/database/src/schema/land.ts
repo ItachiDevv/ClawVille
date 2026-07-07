@@ -104,6 +104,8 @@ export const landTransactionKindEnum = pgEnum('land_transaction_kind', [
   'land_deposit_escrow', // B1 starter claim — refundable deposit debited INTO escrow (NOT revenue)
   'land_deposit_topup', // B1 top-up — adds to the escrow remainder
   'land_deposit_refund', // B1 voluntary release — escrow remainder credited back to the claimant
+  // ── Tokenomics C checkout stage (2026-07-07, migration 0016) ──
+  'land_deposit_prepay_usdc', // USDC x402 checkout funds the escrow remainder — NO avatar debit; backed by the recorded settlement (usd_basis in metadata). See rent-prepay fulfiller.
   'hold_claim', // B2 c/b/a/founder claim — CLV hold proven, no CT debit (amount_ct = 0)
   // ── DEFERRED (reserved; no v1 write path) ──
   'parcel_resale', // NEXT milestone (P2P resale)
@@ -259,20 +261,33 @@ export const landParcels = pgTable(
      * B1: the LIVE escrow remainder (units).
      *
      * ═══ ESCROW-CONSERVATION INVARIANT (money-load-bearing) ═══
-     * The CT counted here was debited from the claimant's avatar balance at
-     * claim/top-up time and exists NOWHERE in any avatar balance while escrowed
-     * — this column is the sole record of it. Every mutation preserves:
+     * The CT counted here traces to a claimant avatar debit OR a recorded USDC
+     * settlement (the Tokenomics-C extension, 2026-07-07 — see below) and
+     * exists NOWHERE in any avatar balance while escrowed — this column is the
+     * sole record of it. Every mutation preserves:
      *
-     *   deposit_remaining_ct = (claim deposit + Σ top-ups)
+     *   deposit_remaining_ct = (claim deposit + Σ top-ups + Σ USDC prepays)
      *                          − Σ weekly draws − refund − forfeit   ≥ 0
      *
-     * so, over a tenancy's life:  Σ draws + refund + forfeit == claim + Σ top-ups.
+     * so, over a tenancy's life:
+     *   Σ draws + refund + forfeit == claim + Σ top-ups + Σ USDC prepays.
      * Draws/forfeits CREDIT the house treasury (balanced by the claim/top-up
      * debits — net supply change is always ≤ 0, i.e. the escrow can never MINT);
      * the refund credits the claimant. The `land_parcels_deposit_remaining_nonneg`
      * CHECK is the DB backstop; `decideDepositSweep` (land-rent-sweeper) is the
      * single draw-math authority; unit tests prove exact conservation.
      * Cleared to NULL on lapse/release (after the forfeit/refund books it).
+     *
+     * ── Tokenomics-C EXTENSION (LAND-DOMAIN, CODEX-review-gated; 2026-07-07):
+     * a `land_deposit_prepay_usdc` row (rent-prepay checkout fulfiller,
+     * `apps/api/src/services/checkout-fulfillers/rent-prepay.ts`) grows the
+     * remainder with NO avatar debit — the backing is the settled x402 USDC
+     * payment recorded on the SAME-tx `x402_checkouts` row + stamped as
+     * `usd_basis` in the land_transactions metadata. A later draw of that CT
+     * into the treasury is therefore a BACKED emission (real dollars entered),
+     * and a refund/forfeit of it conserves exactly like a debited top-up. Any
+     * escrow credit WITHOUT (an avatar debit XOR a settled-USDC usd_basis) is
+     * a conservation bug.
      */
     depositRemainingCt: integer('deposit_remaining_ct'),
     /**

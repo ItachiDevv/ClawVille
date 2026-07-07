@@ -124,6 +124,12 @@ export * from './swap';
 // USDC arrivals only — no CT movement, no custodial auto-sign (Codex-gated
 // seam). Migration 0015 (idempotent, by hand).
 export * from './moonpay';
+// Tokenomics C — checkout stage (2026-07-07) — generic x402 checkout ledger
+// (x402_checkouts + checkout_item_kind/checkout_status). Copies ct_topups'
+// exactly-once shape (partial-UNIQUE tx_signature + (avatar_id, idem_key));
+// price_vclaw is the QUOTE unit only — the buyer pays USDC underneath, no
+// internal vCLAW debit. Migration 0016 (idempotent, by hand — NEVER db:push).
+export * from './checkout';
 
 import { users, sessions } from './users';
 import { npcMemories, activityLog } from './memories';
