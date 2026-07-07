@@ -39,7 +39,7 @@
  * has NOT proven avatar ownership (`ledgerCapable === false`) is 403'd —
  * checkouts mutate the avatar's persistent economy (skins, land escrow).
  *
- * IMPORTING THE FULFILLERS IS LOAD-BEARING: the two imports below are the
+ * IMPORTING THE FULFILLERS IS LOAD-BEARING: the three imports below are the
  * side-effect registrations (`registerFulfiller`) — index.ts pulling this
  * route pulls the fulfillers, so `getFulfiller` is always populated before
  * any request runs. Removing an import silently 503s that kind (fail-closed,
@@ -65,6 +65,7 @@ import {
 // SIDE-EFFECT IMPORTS — register the fulfillers + preflights (see header).
 import { resolveCosmeticCheckoutItem } from '../services/checkout-fulfillers/cosmetic-purchase';
 import { resolveRentPrepayCheckoutItem } from '../services/checkout-fulfillers/rent-prepay';
+import { resolveMarketplaceCheckoutItem } from '../services/checkout-fulfillers/marketplace-purchase';
 import { bustOwnedCache } from './land';
 
 export const x402CheckoutRoutes = new Hono<ActivityAuthContext>();
@@ -108,6 +109,13 @@ const quoteSchema = z.discriminatedUnion('itemKind', [
      *  deposit-topup body) — same 1..1_000_000 cap as depositTopupBodySchema. */
     amountVclaw: z.number().int().min(1).max(CHECKOUT_MAX_PRICE_VCLAW),
   }),
+  z.object({
+    itemKind: z.literal('marketplace_purchase'),
+    /** The market listing id. Price comes from the listing row — NEVER the
+     *  client. FLAG-GATED: refuses `marketplace_settle_disabled` (503) until
+     *  MARKETPLACE_SETTLE_ENABLED='true' — no 402 is issued while gated. */
+    itemRef: z.string().uuid(),
+  }),
 ]);
 
 x402CheckoutRoutes.post('/quote', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
@@ -139,6 +147,18 @@ x402CheckoutRoutes.post('/quote', requireAuthOrAgentSession, requireNonGuestIden
     if (!item.ok) {
       const status =
         item.code === 'not_found' ? 404 : item.code === 'already_owned' ? 409 : 400;
+      return c.json({ error: item.code, code: item.code }, status);
+    }
+    priceVclaw = item.priceVclaw;
+  } else if (parsed.data.itemKind === 'marketplace_purchase') {
+    const item = await resolveMarketplaceCheckoutItem(subject.avatarId, parsed.data.itemRef);
+    if (!item.ok) {
+      const status =
+        item.code === 'marketplace_settle_disabled'
+          ? 503 // FLAG-GATED OFF — settlement not enabled, no 402 is issued
+          : item.code === 'listing_not_found'
+            ? 404
+            : 409; // not_active / expired / own_listing / earned / owner-drift
       return c.json({ error: item.code, code: item.code }, status);
     }
     priceVclaw = item.priceVclaw;

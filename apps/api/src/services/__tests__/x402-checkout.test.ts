@@ -273,7 +273,7 @@ function pendingRow(overrides: Row = {}): Row {
     id: 'checkout-1',
     avatarId: 'avatar-1',
     userId: 'user-1',
-    itemKind: 'marketplace_purchase',
+    itemKind: 'tournament_entry',
     itemRef: 'item-ref-1',
     priceVclaw: 500,
     usdCents: 500,
@@ -329,10 +329,12 @@ beforeEach(() => {
   };
 });
 
-// A test fulfiller registered under the marketplace kind (unclaimed by the two
-// shipped fulfillers) so registry/settle tests control their own fulfillment.
+// A test fulfiller registered under the tournament kind (the ONE kind still
+// unclaimed by shipped fulfillers — marketplace_purchase is claimed by the C4
+// module, whose registration would collide in the shared bun module registry)
+// so registry/settle tests control their own fulfillment.
 let testFulfillerCalls: Array<import('../x402-checkout').CheckoutFulfillmentContext> = [];
-checkout.registerFulfiller('marketplace_purchase', async (ctx) => {
+checkout.registerFulfiller('tournament_entry', async (ctx) => {
   testFulfillerCalls.push(ctx);
   return { fulfilled: true, detail: { proof: 'test-fulfilled' } };
 });
@@ -348,8 +350,12 @@ describe('x402-checkout — fulfiller registry', () => {
   it('shipped fulfillers self-registered via side-effect import; unclaimed kind is undefined', () => {
     expect(checkout.getFulfiller('cosmetic_purchase')).toBeDefined();
     expect(checkout.getFulfiller('rent_payment')).toBeDefined();
-    expect(checkout.getFulfiller('marketplace_purchase')).toBeDefined(); // the test one
-    expect(checkout.getFulfiller('tournament_entry')).toBeUndefined();
+    expect(checkout.getFulfiller('tournament_entry')).toBeDefined(); // the test one
+    // A kind nothing registered (cast — every enum kind may be claimed once
+    // the C4 marketplace module loads anywhere in the shared bun process).
+    expect(
+      checkout.getFulfiller('__unregistered__' as unknown as import('../x402-checkout').CheckoutItemKind),
+    ).toBeUndefined();
   });
 
   it('duplicate registration throws (wiring-bug tripwire)', () => {
@@ -359,7 +365,7 @@ describe('x402-checkout — fulfiller registry', () => {
   });
 
   it('settle of an UNREGISTERED kind refuses BEFORE the facilitator is called', async () => {
-    findFirstQueue = [undefined, pendingRow({ itemKind: 'tournament_entry' })];
+    findFirstQueue = [undefined, pendingRow({ itemKind: '__unregistered__' })];
     const res = await checkout.settleCheckout({
       checkoutId: 'checkout-1',
       subject: SUBJECT,
@@ -375,7 +381,7 @@ describe('x402-checkout — fulfiller registry', () => {
   it('quote of an UNREGISTERED kind refuses with no pending row', async () => {
     const res = await checkout.createCheckoutQuote({
       subject: SUBJECT,
-      itemKind: 'tournament_entry',
+      itemKind: '__unregistered__' as unknown as import('../x402-checkout').CheckoutItemKind,
       itemRef: 'item-x',
       priceVclaw: 100,
     });
@@ -395,7 +401,7 @@ describe('x402-checkout — quote', () => {
     async (bad) => {
       const res = await checkout.createCheckoutQuote({
         subject: SUBJECT,
-        itemKind: 'marketplace_purchase',
+        itemKind: 'tournament_entry',
         itemRef: 'item-1',
         priceVclaw: bad as number,
       });
@@ -408,7 +414,7 @@ describe('x402-checkout — quote', () => {
   it('happy quote: pending row + ¢-pegged 402 requirement (usdCents === priceVclaw)', async () => {
     const res = await checkout.createCheckoutQuote({
       subject: SUBJECT,
-      itemKind: 'marketplace_purchase',
+      itemKind: 'tournament_entry',
       itemRef: 'item-1',
       priceVclaw: 500,
     });
@@ -421,7 +427,7 @@ describe('x402-checkout — quote', () => {
     expect(insertCalls.length).toBe(1);
     expect(insertCalls[0]!.values).toMatchObject({
       avatarId: 'avatar-1',
-      itemKind: 'marketplace_purchase',
+      itemKind: 'tournament_entry',
       itemRef: 'item-1',
       priceVclaw: 500,
       usdCents: 500,
@@ -441,7 +447,7 @@ describe('x402-checkout — quote', () => {
     try {
       const res = await checkout.createCheckoutQuote({
         subject: SUBJECT,
-        itemKind: 'marketplace_purchase',
+        itemKind: 'tournament_entry',
         itemRef: 'item-1',
         priceVclaw: 500,
       });
