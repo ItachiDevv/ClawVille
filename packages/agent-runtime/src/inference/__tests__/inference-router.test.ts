@@ -429,7 +429,10 @@ describe('InferenceRouter breaker timing + concurrency + error paths', () => {
     expect(capturedBody.choices).toBeUndefined(); // not the openai wire
   });
 
-  it('load-balances the fleet across BOTH local boxes (round-robin start); neither hits OpenAI when healthy', async () => {
+  // PRIMARY-PREFERRED-OVERFLOW (2026-07-07 founder ruling; replaced the old
+  // per-request round-robin): route-list order = preference order; the FIRST
+  // local is maxed out, the second takes work only at saturation/breaker-open.
+  it('primary-preferred: sequential requests ALL stick to the FIRST local (no round-robin); OpenAI untouched', async () => {
     const hits: string[] = [];
     const fetchImpl = (async (url: string | URL | Request) => {
       const u = String(url);
@@ -444,19 +447,79 @@ describe('InferenceRouter breaker timing + concurrency + error paths', () => {
     }) as unknown as typeof fetch;
     const r = new InferenceRouter({ endpoints: [OPENAI, PRIMARY, SECONDARY], routes: ROUTES, fetchImpl, now: () => 0 });
 
-    const a = await r.generateText({ route: 'fleet', size: 'small', messages: [{ role: 'user', content: '1' }] });
-    const b = await r.generateText({ route: 'fleet', size: 'small', messages: [{ role: 'user', content: '2' }] });
-    const c = await r.generateText({ route: 'fleet', size: 'small', messages: [{ role: 'user', content: '3' }] });
-    const d = await r.generateText({ route: 'fleet', size: 'small', messages: [{ role: 'user', content: '4' }] });
+    const ids: string[] = [];
+    for (let i = 0; i < 4; i++) {
+      ids.push((await r.generateText({ route: 'fleet', size: 'small', messages: [{ role: 'user', content: String(i) }] })).endpointId);
+    }
+    expect(ids).toEqual(['local-primary', 'local-primary', 'local-primary', 'local-primary']);
+    expect(hits).not.toContain('secondary'); // idle primary absorbs everything
+    expect(hits).not.toContain('openai');
+  });
 
-    // consecutive requests alternate the starting box → work distributed across BOTH
-    expect([a.endpointId, b.endpointId, c.endpointId, d.endpointId]).toEqual([
-      'local-primary',
-      'local-secondary',
-      'local-primary',
-      'local-secondary',
-    ]);
-    expect(hits).not.toContain('openai'); // both locals healthy → OpenAI untouched
+  it('overflows to the second local ONLY while the primary is saturated (inflight ≥ cap), and returns to the primary after drain', async () => {
+    const release: Array<() => void> = [];
+    const okResp = {
+      ok: true, status: 200, statusText: 'OK', text: async () => '',
+      json: async () => ({ message: { content: 'ok' }, choices: [{ message: { content: 'ok' } }] }),
+    } as unknown as Response;
+    const fetchImpl = (async (url: string | URL | Request) => {
+      if (String(url).includes('prim.local')) {
+        // primary hangs until released — simulates a busy 27b box
+        return await new Promise<Response>((resolve) => release.push(() => resolve(okResp)));
+      }
+      return okResp;
+    }) as unknown as typeof fetch;
+    const r = new InferenceRouter({
+      endpoints: [OPENAI, PRIMARY, SECONDARY], routes: ROUTES,
+      primaryMaxInflight: 2, fetchImpl, now: () => 0,
+    });
+    const gen = (m: string) => r.generateText({ route: 'fleet', size: 'small', messages: [{ role: 'user', content: m }] });
+
+    const p1 = gen('1');
+    const p2 = gen('2');
+    await new Promise((t) => setTimeout(t, 10)); // both reach the primary fetch → inflight = cap
+    const c = await gen('3'); // saturated primary → overflow
+    expect(c.endpointId).toBe('local-secondary');
+
+    release.splice(0).forEach((f) => f()); // drain the primary
+    expect((await p1).endpointId).toBe('local-primary');
+    expect((await p2).endpointId).toBe('local-primary');
+
+    const d = gen('4'); // primary idle again → preferred again
+    await new Promise((t) => setTimeout(t, 10));
+    release.splice(0).forEach((f) => f());
+    expect((await d).endpointId).toBe('local-primary');
+  });
+
+  it('when EVERY local is saturated, new work queues on the PRIMARY (preference order kept, no backup stampede)', async () => {
+    const hits: string[] = [];
+    const release: Array<() => void> = [];
+    const okResp = {
+      ok: true, status: 200, statusText: 'OK', text: async () => '',
+      json: async () => ({ message: { content: 'ok' }, choices: [{ message: { content: 'ok' } }] }),
+    } as unknown as Response;
+    const fetchImpl = (async (url: string | URL | Request) => {
+      const u = String(url);
+      hits.push(u.includes('prim.local') ? 'primary' : u.includes('sec.local') ? 'secondary' : 'openai');
+      // EVERY local hangs until released
+      return await new Promise<Response>((resolve) => release.push(() => resolve(okResp)));
+    }) as unknown as typeof fetch;
+    const r = new InferenceRouter({
+      endpoints: [OPENAI, PRIMARY, SECONDARY], routes: ROUTES,
+      primaryMaxInflight: 1, fetchImpl, now: () => 0,
+    });
+    const gen = (m: string) => r.generateText({ route: 'fleet', size: 'small', messages: [{ role: 'user', content: m }] });
+
+    const p1 = gen('1'); // → primary (inflight 1 = cap)
+    await new Promise((t) => setTimeout(t, 10));
+    const p2 = gen('2'); // primary saturated → secondary (inflight 1 = cap)
+    await new Promise((t) => setTimeout(t, 10));
+    const p3 = gen('3'); // ALL saturated → keeps preference order → queues on primary
+    await new Promise((t) => setTimeout(t, 10));
+
+    expect(hits).toEqual(['primary', 'secondary', 'primary']);
+    release.splice(0).forEach((f) => f());
+    await Promise.all([p1, p2, p3]);
   });
 
   it('warmup() pre-loads every local box and tolerates a down box (never throws)', async () => {
