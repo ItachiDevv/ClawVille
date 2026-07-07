@@ -10,8 +10,12 @@ import type { LandTier } from '@clawville/shared';
 /** Parcel lifecycle status as returned by the API. */
 export type LandParcelStatus = 'available' | 'owned' | 'reserved' | 'retired';
 
-/** How a parcel is held; null on an available/unsold parcel. */
-export type LandTenure = 'rented' | 'owned' | 'starter';
+/**
+ * How a parcel is held; null on an available/unsold parcel. Phase B
+ * (2026-07-07): 'deposit' = starter deposit-escrow, 'hold' = CLV hold-to-keep
+ * (c/b/a/founder); 'owned'/'starter' are legacy grandfathered tenures.
+ */
+export type LandTenure = 'rented' | 'owned' | 'starter' | 'deposit' | 'hold';
 
 /** A single land parcel row. `priceCt` is null for the founder tier (auction-only). */
 export interface LandParcelDTO {
