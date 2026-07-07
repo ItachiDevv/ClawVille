@@ -87,12 +87,13 @@ moonpayRoutes.post(
     const identity = c.get('identity');
 
     let body: unknown = {};
-    // An empty body is fine (all fields optional) — only reject when a body is
-    // present but not JSON.
-    const rawLen = c.req.header('content-length');
-    if (rawLen && rawLen !== '0') {
+    // An empty body is fine (all fields optional); a NON-empty body must be
+    // valid JSON. Read the raw text (works for chunked requests with no
+    // content-length too) rather than trusting the content-length header.
+    const rawText = await c.req.text();
+    if (rawText.trim().length > 0) {
       try {
-        body = await c.req.json();
+        body = JSON.parse(rawText);
       } catch {
         return c.json({ error: 'invalid_json_body', code: 'invalid_json' }, 400);
       }
