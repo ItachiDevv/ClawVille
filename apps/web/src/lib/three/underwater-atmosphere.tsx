@@ -8,7 +8,7 @@ import {
   sin,
   cos,
   time,
-  positionLocal,
+  positionGeometry,
   uv,
   mix,
   fract,
@@ -238,21 +238,24 @@ function createDustMaterial(): THREE.PointsNodeMaterial {
   // Each particle drifts upward by time * speed, wrapping within FIELD_H using fract.
   // This creates a continuous upward loop with no CPU involvement.
   const driftY = fract(
-    positionLocal.y.div(float(FIELD_H)).add(time.mul(float(DRIFT_SPEED / FIELD_H))),
+    positionGeometry.y.div(float(FIELD_H)).add(time.mul(float(DRIFT_SPEED / FIELD_H))),
   ).mul(float(FIELD_H));
 
   // Gentle sideways sway — different frequency per particle (using X pos as phase)
-  const swayX = sin(time.mul(float(0.3)).add(positionLocal.x.mul(float(0.012)))).mul(
+  const swayX = sin(time.mul(float(0.3)).add(positionGeometry.x.mul(float(0.012)))).mul(
     float(4.0),
   );
-  const swayZ = cos(time.mul(float(0.22)).add(positionLocal.z.mul(float(0.015)))).mul(
+  const swayZ = cos(time.mul(float(0.22)).add(positionGeometry.z.mul(float(0.015)))).mul(
     float(3.0),
   );
 
+  // positionGeometry reads the raw per-vertex attribute directly. This Points
+  // cloud has no skinning/instancing, so it's equivalent to positionLocal —
+  // but geometry is the precise intent for a vertex-stage-only displacement.
   mat.positionNode = vec3(
-    positionLocal.x.add(swayX),
+    positionGeometry.x.add(swayX),
     driftY,
-    positionLocal.z.add(swayZ),
+    positionGeometry.z.add(swayZ),
   );
 
   // Soft white-blue colour

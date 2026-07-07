@@ -2,7 +2,7 @@
 
 import { useMemo, useEffect } from 'react';
 import * as THREE from 'three/webgpu';
-import { attribute, positionLocal, float, sin, cos, vec3, time } from 'three/tsl';
+import { attribute, positionGeometry, float, sin, cos, vec3, time } from 'three/tsl';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { MAP_WIDTH, MAP_HEIGHT, TILE_SIZE, buildingZones } from '@/lib/pixi/tilemap-data';
 import { LAND_PARCELS } from '@clawville/shared';
@@ -420,9 +420,11 @@ function createSeaweedMaterial(): THREE.MeshBasicNodeMaterial {
     alphaTest: 0.5,
   });
 
-  const phase     = attribute('aPhase',     'float');
-  const height    = attribute('aHeight',    'float');
-  const amplitude = attribute('aAmplitude', 'float');
+  // r185 @types/three widens attribute()'s inferred node type to string unless
+  // the generic is explicit — without it every downstream .mul/.add fails to type.
+  const phase     = attribute<'float'>('aPhase',     'float');
+  const height    = attribute<'float'>('aHeight',    'float');
+  const amplitude = attribute<'float'>('aAmplitude', 'float');
 
   // Wave 1 — primary sway (faster, directional)
   const wave1X = sin(time.mul(float(0.9)).add(phase))
@@ -442,8 +444,11 @@ function createSeaweedMaterial(): THREE.MeshBasicNodeMaterial {
     .mul(height)
     .mul(amplitude.mul(float(0.25)));
 
-  // Combine both waves and displace on GPU
-  mat.positionNode = positionLocal.add(
+  // Combine both waves and displace on GPU.
+  // positionGeometry reads the raw per-vertex attribute directly. This mesh has
+  // no skinning/morph/instancing, so it's equivalent to positionLocal — but
+  // geometry is the precise intent for a vertex-stage-only displacement.
+  mat.positionNode = positionGeometry.add(
     vec3(
       wave1X.add(wave2X),
       float(0),
