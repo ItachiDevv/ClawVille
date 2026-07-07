@@ -1,9 +1,10 @@
 /**
- * x402-payai pure-conversion unit tests (Tokenomics F2).
+ * x402-payai pure-conversion unit tests (Tokenomics A3 ¢-peg).
  *
  * Locks the store buy-price math so a rate edit can't silently regress:
- *   - `CT_PER_USDC = 10` ($0.10/coin) — the F2 founder rate (was 100).
- *   - `usdToCt($10) = 100` (NOT 1000) — the headline store price.
+ *   - `CT_PER_USDC = 100` ($0.01/coin) — the A3 ¢-peg rate (was 10 at the F2
+ *     $0.10/coin rate; the redenomination ×10'd balances in lockstep).
+ *   - `usdToCt($10) = 1000` — the headline store price.
  *   - `usdCentsToUsdcAtomic` is the on-chain USDC unit conversion and is
  *     INDEPENDENT of the vCLAW rate (a dollar is always a dollar of USDC).
  *
@@ -22,30 +23,30 @@ import {
 } from '../x402-payai';
 import { buildMockFacilitator } from '../x402-mock-facilitator';
 
-describe('x402-payai — F2 store buy-price ($0.10/coin)', () => {
-  it('CT_PER_USDC is 10 (the F2 founder rate, was 100)', () => {
-    expect(CT_PER_USDC).toBe(10);
+describe('x402-payai — A3 ¢-peg store buy-price ($0.01/coin)', () => {
+  it('CT_PER_USDC is 100 (the A3 ¢-peg rate, was 10 at the F2 $0.10/coin rate)', () => {
+    expect(CT_PER_USDC).toBe(100);
   });
 
-  it('usdToCt($10) = 100 vCLAW — the headline store price (NOT 1000)', () => {
-    // $10 = 1000 cents → (1000/100) * 10 = 100.
-    expect(usdToCt(1000)).toBe(100);
+  it('usdToCt($10) = 1000 vCLAW — the headline store price', () => {
+    // $10 = 1000 cents → (1000/100) * 100 = 1000.
+    expect(usdToCt(1000)).toBe(1000);
   });
 
-  it('usdToCt($1) = 10 vCLAW (1 USDC buys 10 coins)', () => {
-    expect(usdToCt(100)).toBe(10);
+  it('usdToCt($1) = 100 vCLAW (1 USDC buys 100 coins at the ¢-peg)', () => {
+    expect(usdToCt(100)).toBe(100);
   });
 
-  it('usdToCt($100) = 1000 vCLAW (linear in the amount)', () => {
-    expect(usdToCt(10_000)).toBe(1000);
+  it('usdToCt($100) = 10000 vCLAW (linear in the amount)', () => {
+    expect(usdToCt(10_000)).toBe(10_000);
   });
 
-  it('floors a sub-dime cents amount that cannot mint a whole coin', () => {
-    // 5 cents → (5/100)*10 = 0.5 → floor 0. (The route caps usdCents ≥ 1, but the
-    // primitive must never mint a fractional coin regardless.)
-    expect(usdToCt(5)).toBe(0);
-    // 10 cents → exactly 1 coin.
-    expect(usdToCt(10)).toBe(1);
+  it('mints a whole coin per cent at the ¢-peg (1¢ → 1 unit, no longer floors to 0)', () => {
+    // At CT_PER_USDC=100: 1 cent → (1/100)*100 = 1. floor() still guards any future
+    // fractional rate, but at the ¢-peg every whole cent maps to a whole unit.
+    expect(usdToCt(1)).toBe(1);
+    expect(usdToCt(5)).toBe(5);
+    expect(usdToCt(10)).toBe(10);
   });
 
   it('rejects a non-positive / non-integer cents amount', () => {

@@ -93,8 +93,11 @@ export function usdcMintForNetwork(network: X402Network): string {
 /**
  * vCLAW (ClawTokens) minted per 1 USDC at the one-way store buy-price.
  *
- * Tokenomics F2 (founder decision 2026-06-27): the store price is $10 = 100 vCLAW
- * = $0.10 per coin, so 1 USDC buys 10 vCLAW. (Was 100 in the ~$0.01/coin demo era.)
+ * Tokenomics A3 (¢-peg redenomination, founder decision 2026-07-07): the store
+ * price is $1 = 100 vCLAW = $0.01 per coin, so 1 USDC buys 100 vCLAW. (Was 10 at
+ * the F2 $0.10/coin rate; the ×10 redenomination migration `0011` multiplied ALL
+ * CT balances + purchasing-power-preserving prices in lockstep, so nothing
+ * changed in USD terms — a coin is now worth 1¢ and there are 10× as many of them.)
  *
  * This is a ONE-WAY BUY price, NOT a peg and NOT a redeem rate: BOUGHT vCLAW is
  * non-cashable (V-Bucks — you bought spend power, not a withdrawal right). The
@@ -102,7 +105,7 @@ export function usdcMintForNetwork(network: X402Network): string {
  * this constant. Changing this number only changes how many coins a buyer gets;
  * it can never make BOUGHT redeemable. The SINGLE source of truth for the rate.
  */
-export const CT_PER_USDC = 10;
+export const CT_PER_USDC = 100;
 
 /**
  * Convert a USD amount (in integer cents) to vCLAW. vCLAW is an INTEGER currency
@@ -110,16 +113,16 @@ export const CT_PER_USDC = 10;
  * mint a fractional coin. Throws on a non-finite / non-positive / non-integer
  * cents value so a bad quote can never reach a credit.
  *
- *   100 cents  (=$1  = 1 USDC)  → 10 vCLAW.
- *   1000 cents (=$10 = 10 USDC) → 100 vCLAW.  (the headline store price)
+ *   100 cents  (=$1  = 1 USDC)  → 100 vCLAW.
+ *   1000 cents (=$10 = 10 USDC) → 1000 vCLAW.  (the headline store price)
  */
 export function usdToCt(usdCents: number): number {
   if (!Number.isInteger(usdCents) || usdCents <= 0) {
     throw new Error(`usdToCt: usdCents must be a positive integer, got ${usdCents}`);
   }
-  // cents → dollars (÷100) → vCLAW (×CT_PER_USDC). With CT_PER_USDC=10 this yields
-  // $0.10/coin. The rate is editable in ONE place (CT_PER_USDC). floor() guards
-  // any future non-divisible rate (e.g. an odd-cent amount at a fractional rate).
+  // cents → dollars (÷100) → vCLAW (×CT_PER_USDC). With CT_PER_USDC=100 this yields
+  // $0.01/coin (the ¢-peg). The rate is editable in ONE place (CT_PER_USDC).
+  // floor() guards any future non-divisible rate (e.g. an odd-cent amount).
   return Math.floor((usdCents / 100) * CT_PER_USDC);
 }
 

@@ -56,9 +56,9 @@ describe('cosmetic signup bonus — allocateCosmeticSpend', () => {
     }
   });
 
-  it('the signup-bonus constant is the pre-redenomination $5 value (50); A3 bumps it to 500', () => {
-    // Guards the commit-ordering contract: this slice ships 50 (pre-×10). If a
-    // later edit changes it without the A3 redenomination, this test flags it.
-    expect(SIGNUP_BONUS_COSMETIC_CT).toBe(50);
+  it('the signup-bonus constant is the post-redenomination $5 value (500 units at the ¢-peg)', () => {
+    // A2 shipped 50 (pre-×10); the A3 ¢-peg redenomination bumped it to 500 AND
+    // migrated existing grant rows ×10, so every account lands at 500 units = $5.
+    expect(SIGNUP_BONUS_COSMETIC_CT).toBe(500);
   });
 });
