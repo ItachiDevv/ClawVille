@@ -607,8 +607,23 @@ export async function settleCheckout(input: {
           refusalCode: err.code,
         };
       }
-      console.error('[x402-checkout] settle transaction failed:', (err as Error).message);
-      return { ok: false as const, code: 'settle_failed' as const };
+      // POST-SETTLE STRAND (audit M1): we only reach this try AFTER
+      // verifyAndSettle returned settled:true with a signature, so the USDC has
+      // ALREADY moved on-chain. A non-replay, non-refusal throw here (a 40001
+      // serialization_failure under the fulfillers' advisory/parcel locks, a
+      // transient DB error, or an enqueueClvBuy failure) rolled the whole tx
+      // back, so the row is still 'pending' and a retry re-settles idempotently
+      // (same signature ⇒ the txsig UNIQUE flip claims it once, the fulfiller
+      // runs exactly once). Recovery is correct, but the strand is otherwise
+      // INVISIBLE to ops — so log it as LOUDLY as the fulfillment-refused path
+      // and mark the result transient so the caller knows a retry is expected.
+      console.error(
+        `[x402-checkout] SETTLE TX FAILED AFTER USDC MOVED — payment settled on-chain but ` +
+          `fulfillment rolled back; row left PENDING for idempotent retry (manual reconcile if ` +
+          `the client never retries). checkout=${checkoutId} kind=${itemKind} tx=${txSignature} ` +
+          `err=${(err as Error).message}`,
+      );
+      return { ok: false as const, code: 'settle_failed' as const, transient: true };
     }
   }); // end withKeyedMutex — serialized critical section per checkoutId
 }
