@@ -82,8 +82,14 @@ const IDEMPOTENCY_KEY_MAX_LEN = 64;
  *  AFTER a funded settled smoke (the plan's devnet-first rule). The x402 config
  *  default `X402_NETWORK` is mainnet (legacy demo default), so we read it but map
  *  anything that isn't the mainnet CAIP-2 to devnet, and EXPLICITLY default the
- *  on-ramp to devnet when X402_TOPUP_NETWORK is unset. */
-function resolveTopupNetwork(): X402Network {
+ *  on-ramp to devnet when X402_TOPUP_NETWORK is unset.
+ *
+ *  EXPORTED (Tokenomics C checkout stage, 2026-07-07): the generic x402
+ *  checkout (`services/x402-checkout.ts`) settles on the SAME merchant wallet
+ *  and MUST live on the SAME network as the top-up on-ramp — one env var
+ *  (`X402_TOPUP_NETWORK`) flips the whole USDC-in family together, never one
+ *  surface at a time. */
+export function resolveTopupNetwork(): X402Network {
   const explicit = process.env.X402_TOPUP_NETWORK?.trim().toLowerCase();
   if (explicit === 'mainnet') return 'mainnet';
   if (explicit === 'devnet') return 'devnet';
