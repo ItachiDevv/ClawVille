@@ -303,6 +303,15 @@ Required in `.env.local`:
   - Route overrides (CSV of endpoint ids): `INFERENCE_ROUTE_TEACHER` / `_FLEET` / `_HOSTED_USER` / `_DEFAULT`. Baked defaults: **only `fleet` (our `is_house` agents) uses local** — `fleet=[local-primary,(local-secondary,)openai]`; `teacher`/`hosted-user`/`default` = `[openai]`. OpenAI is auto-appended as the ultimate fallback to any route. So the 10 residents (`location-agent`) + Nori (`system-agent`) can never land on a local box; only house-fleet agents do. **The fleet LOAD-BALANCES across both local boxes** — the router round-robins the starting box per request (work is distributed across johns-pc + the 2nd box; the other is the immediate failover, OpenAI stays last). Both boxes are kept WARM: local requests carry `keep_alive` (`INFERENCE_LOCAL_KEEP_ALIVE`, default `60m`, `-1`=never unload) and the api pre-warms both on boot (`getInferenceRouter().warmup()` in `apps/api/src/index.ts`).
   - `INFERENCE_CLOUD_TIMEOUT_MS`/`INFERENCE_LOCAL_TIMEOUT_MS` (default 60000), `INFERENCE_FAIL_THRESHOLD` (default 3), `INFERENCE_COOLDOWN_MS` (default 30000). Route assignment: `resolveInferenceRoute(agent.type, isHouse)` in `agent-orchestrator.startAgent`; house-ness derived from `opts.isHouse` OR the platform_agents `config.houseAgentId` marker. Full spec: `docs/inference-router-spec.md` + `ARCHITECTURE.md` (Inference routing).
 
+- **Tokenomics env vars (added 2026-07-07/08, economy v1 — full detail `.env.example` + `ARCHITECTURE.md` Tokenomics entries):**
+  - `HELIUS_API_KEY` — CLV price-oracle primary feed (`clv-price-oracle.ts`); unset ⇒ keyless DexScreener fallback (oracle degrades gracefully, never blocks boot).
+  - `CLV_ORACLE_POLL_MS` (default 60000, floor 15000) / `CLV_ORACLE_MAX_STALE_MS` (default 10 min — older snapshots are REFUSED as quotes).
+  - `CLV_SWAP_EXECUTE` — **MUST NEVER be 'true'** (Codex-gated seam): live CLV swap execution refuses at MODULE LOAD (a flagged box won't boot, crash-loud like `FINGERPRINT_SECRET`). The swap executor is DRY-RUN only.
+  - `MOONPAY_API_KEY`/`MOONPAY_SECRET_KEY`/`MOONPAY_WEBHOOK_KEY` — card→USDC rail, **test-mode only** (`pk_test_` enforced; the live widget URL is a code constant, not env — going live is a Codex-reviewed code change).
+  - `MARKETPLACE_SETTLE_ENABLED` — P2P marketplace settlement fulfiller, default OFF (triple-gated: quote, preflight, in-tx refusal).
+  - `X402_CHECKOUT_SETTLING_STALE_MS` / `CT_TOPUP_SETTLING_STALE_MS` — durable-settle stale-claim thresholds (default 300000; **hard floor 180000** — must exceed the ~120s facilitator timeout or a live in-flight settle gets mis-reconciled).
+  - `RECONCILE_APPLY` — **MUST NEVER be 'true'** (Codex-gated): the x402 reconciler is a DRY-RUN classifier; its apply path refuses to run.
+
 **Removed:** `ANTHROPIC_API_KEY` (ultrathink decommission). `OPENAI_BASE_URL` (interim local-inference hack, superseded by the InferenceRouter 2026-07-06 — do NOT reintroduce).
 
 ## Deployment — Hetzner + Coolify (Railway decommissioned)
