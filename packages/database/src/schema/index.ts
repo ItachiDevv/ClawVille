@@ -47,6 +47,7 @@ export * from './support-tickets';
 export * from './tutorial-quest-claims';
 // Q3 plan §4 — cosmetic engine (cosmetic_skus + cosmetic_variants + avatar_skins).
 export * from './cosmetics';
+export * from './cosmetic-bonus';
 // Q3 plan §gamification dashboard — phase status (mutable via dashboard MCP).
 export * from './dashboard-phases';
 // 2026-05-18 — Exchange: peer items/services board (NEED/OFFER). Needs +

@@ -25,7 +25,10 @@ export default function DailyLoginModal() {
         setDemo(!!res.demo);
         setDailyLoginClaimed(true, res.streak);
 
-        if (!res.alreadyClaimed) {
+        // A2 (2026-07-07): the daily-login CT reward was retired (founder killed
+        // the biggest faucet). When the server reports `retired`, suppress the
+        // reward modal entirely — no phantom "+0" popup on every game load.
+        if (!res.alreadyClaimed && !res.retired) {
           setShow(true);
         }
         setLoading(false);

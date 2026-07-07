@@ -31,7 +31,8 @@ import { requireAuth } from '../middleware/auth';
 import { sessionMiddleware } from '../middleware/auth';
 import { agentOrchestrator } from '../services/agent-orchestrator';
 import { npcSimulation } from '../services/npc-simulation';
-import { creditClawTokens } from '../services/claw-token-ledger';
+// creditClawTokens import removed 2026-07-07 (A2): the daily-login CT credit —
+// its only use in this file — was retired. Re-add if a new CT credit path lands here.
 import { logEvent, logEventFromContext } from '../services/event-logger';
 import { buildRuntimeServices } from '../services/runtime-services-adapter';
 import { ensureWalletWithFirstTimeSecret } from '../services/wallet-service';
@@ -1516,20 +1517,28 @@ avatarRoutes.post('/me/daily-login', requireAuth, async (c) => {
   const today = new Date().toISOString().slice(0, 10); // "YYYY-MM-DD"
   const lastLogin = avatar.lastLoginDate;
 
-  // Already claimed today
+  // ── A2 (2026-07-07): daily-login CT reward RETIRED (founder decision) ──────
+  // The daily-login credit (10 + streak×5, capped 100/day) was the single biggest
+  // CT faucet — ~$10/day free at the old $0.10 rate — and the founder killed it.
+  // The endpoint STAYS (the game still calls it on load), but it credits ZERO CT
+  // and writes NO ledger row: there is no `creditClawTokens` call here anymore.
+  // We still advance the login STREAK (metadata, not CT — other surfaces read
+  // `loginStreak`), and return `retired: true` so the client suppresses the
+  // reward modal instead of flashing a phantom "+0".
+
+  // Already advanced today → no-op (report the current streak + retired).
   if (lastLogin === today) {
     return c.json({
+      retired: true,
       streak: avatar.loginStreak,
       tokensEarned: 0,
       totalTokens: avatar.clawTokens,
       alreadyClaimed: true,
-      // Guests run an all-demo economy — surface `demo` so the UI can label
-      // the streak reward as demo tokens (no real CT was ever credited).
       demo: avatar.isGuest,
     });
   }
 
-  // Check if streak continues (yesterday) or resets
+  // Streak continues (yesterday) or resets.
   let newStreak = 1;
   if (lastLogin) {
     const lastDate = new Date(lastLogin);
@@ -1541,12 +1550,7 @@ avatarRoutes.post('/me/daily-login', requireAuth, async (c) => {
     // diffDays > 1 means gap, reset to 1
   }
 
-  // Calculate reward: 10 + streak * 5, max 100
-  const tokensEarned = Math.min(100, 10 + newStreak * 5);
-
-  // Update streak metadata first — the token credit goes through the ledger.
-  // The streak counters are NOT CT, so guests keep their streak (demo dopamine)
-  // while never touching the real ledger below.
+  // Advance the streak metadata ONLY — NO CT credit, NO ledger row (faucet gone).
   await db.update(avatars)
     .set({
       loginStreak: newStreak,
@@ -1555,29 +1559,12 @@ avatarRoutes.post('/me/daily-login', requireAuth, async (c) => {
     })
     .where(and(eq(avatars.userId, user.id), eq(avatars.isActive, true)));
 
-  // Guest all-demo economy: SHORT-CIRCUIT before the ledger — a guest earn must
-  // neither mint nor vaporize CT (pure skip, no ledger row). Their streak still
-  // advances (metadata above) but NO real CT is credited. `tokensEarned: 0` — we
-  // never show "earned N" while the balance stays flat; the UI labels it DEMO and
-  // shows a sign-up prompt instead of a phantom reward.
-  if (avatar.isGuest) {
-    return c.json({
-      streak: newStreak,
-      tokensEarned: 0,
-      totalTokens: avatar.clawTokens,
-      alreadyClaimed: false,
-      demo: true,
-    });
-  }
-
-  // Atomic + audited token credit
-  const { balanceAfter: totalTokens } = await creditClawTokens({
-    avatarId: avatar.id,
-    amount: tokensEarned,
-    reason: 'daily_login',
-    source: 'daily_login',
-    metadata: { streak: newStreak, date: today },
+  return c.json({
+    retired: true,
+    streak: newStreak,
+    tokensEarned: 0,
+    totalTokens: avatar.clawTokens,
+    alreadyClaimed: false,
+    demo: avatar.isGuest,
   });
-
-  return c.json({ streak: newStreak, tokensEarned, totalTokens, alreadyClaimed: false });
 });
