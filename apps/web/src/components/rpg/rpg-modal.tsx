@@ -17,26 +17,26 @@
  *   tier      — rarity that drives the frame glow (defaults to 'rare' cyan).
  *   glow      — override the tier's automatic glow setting.
  *   headerIcon — optional icon node (e.g. crest, sigil) rendered to the left of title.
- *   tokenBadge — optional right-side slot for a currency pill (like the bazaar token count).
+ *   tokenBadge — optional right-side slot for a currency pill (e.g. a CT balance).
  *   footer    — optional footer slot rendered below the scroll body.
- *   maxWidth  — override the default 960px max-width (e.g. 1200 for auction).
+ *   maxWidth  — override the default 960px max-width for wider content.
  *
  * Escape handling: listens for `keydown` on `window` while open and calls
  * `onClose()`. The parent is responsible for any nested escape state (review
  * form dismissal, etc.) by intercepting escape BEFORE the RpgModal sees it
- * (the bazaar does this via its own useEffect).
+ * (quest-board-modal does this via its own useEffect for its nested submission modal).
  *
  * Usage
  * -----
  *   <RpgModal
- *     open={bazaarOpen}
- *     onClose={closeBazaar}
- *     title="Skill Bazaar"
- *     subtitle="Trade · Buy · Sell"
+ *     open={questBoardOpen}
+ *     onClose={closeQuestBoard}
+ *     title="Quest Board"
+ *     subtitle="Earn · Compete"
  *     tier="rare"
- *     tokenBadge={<span>{tokens} NT</span>}
+ *     tokenBadge={<span>{tokens} CT</span>}
  *   >
- *     <BazaarBody />
+ *     <QuestBoardBody />
  *   </RpgModal>
  */
 

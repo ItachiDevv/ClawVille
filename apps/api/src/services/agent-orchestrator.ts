@@ -1,10 +1,14 @@
 import { eq, and } from 'drizzle-orm';
-import { db, agents, agentLogs } from '@clawville/database';
+import { db, agents, agentLogs, avatars, agentBots } from '@clawville/database';
 import {
   ElizaRuntime,
   createElizaRuntime,
+  resolveInferenceRoute,
 } from '@clawville/agent-runtime';
 import type { AgentStatus } from '@clawville/shared';
+// P3 slice 6 (surface #3): the public, token-free connection protocol manual +
+// its single-source version, injected into hosted PLAYER runtimes on start.
+import { buildProtocolManual, resolveApiBase, PROTOCOL_VERSION } from './skill-protocol';
 
 interface RunningAgent {
   runtime: ElizaRuntime;
@@ -19,6 +23,17 @@ interface RunningAgent {
    * on; stopping one on inactivity would 503 the next visitor until boot.
    */
   type?: string;
+  /**
+   * Agent-metaverse P1 — set true for a ClawVille-HOSTED "house" agent whose
+   * runtime is warmed at boot and driven autonomously by agent-autonomy-driver.
+   * Like a system agent, it must SURVIVE the 30-min inactivity sweep: the driver
+   * only calls `useModel` (never routes through the chat path that bumps
+   * `lastActivity`), so an active house agent would otherwise look idle and get
+   * stopped out from under the driver. Kept as a separate signal from `type`
+   * (house agents are `type:'openclaw-bot'`, not `'system-agent'`) so the two
+   * lifecycles stay distinct.
+   */
+  isHouse?: boolean;
 }
 
 const INACTIVITY_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
@@ -39,7 +54,11 @@ class AgentOrchestrator {
    * Ensure an agent runtime is available (lazy-start).
    * Starts the runtime on first chat message, not on config save.
    */
-  async ensureAgentRuntime(agentId: string, userId?: string): Promise<ElizaRuntime | null> {
+  async ensureAgentRuntime(
+    agentId: string,
+    userId?: string,
+    opts?: { isHouse?: boolean },
+  ): Promise<ElizaRuntime | null> {
     // Check if already running
     const existing = this.runningAgents.get(agentId);
     if (existing) {
@@ -47,33 +66,43 @@ class AgentOrchestrator {
       return existing.runtime;
     }
 
-    // Prevent concurrent startup
+    // Prevent concurrent startup. ATOMIC check-then-set (2026-07-02, Codex): the
+    // `.add()` MUST run with NO `await` between it and the `has()` guard, so two
+    // concurrent callers can never both pass — the loser sees the flag set and
+    // waits. Previously the flag was set only AFTER the awaited `db.query` lookup
+    // below, so two concurrent callers (e.g. multiple agents chatting the same
+    // building → two ensureAgentRuntime for the same system platformAgentId) could
+    // both pass the guard, both call startAgent, and duplicate-init/overwrite the
+    // runningAgents entry. Setting the flag first + moving the lookup inside the
+    // try/finally closes that window (the finally still clears on every path).
     if (this.recoveryInProgress.has(agentId)) {
       await new Promise((resolve) => setTimeout(resolve, 2000));
       const recovered = this.runningAgents.get(agentId);
       return recovered?.runtime ?? null;
     }
-
-    // Verify agent exists — openclaw-bot agents match by id only
-    const agent = userId
-      ? await db.query.agents.findFirst({
-          where: and(eq(agents.id, agentId), eq(agents.userId, userId)),
-        })
-      : await db.query.agents.findFirst({
-          where: eq(agents.id, agentId),
-        });
-
-    if (!agent) return null;
-
-    // Lazy-start the agent
-    console.log(`[Orchestrator] Lazy-starting agent ${agentId}`);
     this.recoveryInProgress.add(agentId);
 
     try {
+      // Verify agent exists — openclaw-bot agents match by id only
+      const agent = userId
+        ? await db.query.agents.findFirst({
+            where: and(eq(agents.id, agentId), eq(agents.userId, userId)),
+          })
+        : await db.query.agents.findFirst({
+            where: eq(agents.id, agentId),
+          });
+
+      if (!agent) return null;
+
+      // Lazy-start the agent
+      console.log(`[Orchestrator] Lazy-starting agent ${agentId}`);
       if (agent.status !== 'stopped' && agent.status !== 'pending') {
         await this.updateAgentStatus(agentId, 'stopped');
       }
-      await this.startAgent(agentId, agent.userId);
+      // Forward opts (e.g. isHouse) so a LAZY-warmed house agent keeps its
+      // inactivity-sweep exemption — the autonomy driver warms via this path
+      // (off the boot crush), NOT via the seeder's boot-time startAgent.
+      await this.startAgent(agentId, agent.userId, opts);
       const running = this.runningAgents.get(agentId);
       return running?.runtime ?? null;
     } catch (error) {
@@ -81,11 +110,22 @@ class AgentOrchestrator {
       await this.updateAgentStatus(agentId, 'error');
       return null;
     } finally {
+      // R1 release valve: `startAgent` now REJECTS on a hung ElizaOS init (the
+      // in-process rejecting timeout in eliza-runtime.ts), and that rejection
+      // propagates into the catch above — so this finally ALWAYS clears the recovery
+      // guard. Previously a hung init could hang here forever, leaving the agentId
+      // stuck in `recoveryInProgress` so every future ensureAgentRuntime fell into
+      // the wait-2s-return-null branch permanently. R1's rejecting timeout is what
+      // now guarantees this line runs.
       this.recoveryInProgress.delete(agentId);
     }
   }
 
-  async startAgent(agentId: string, userId: string): Promise<void> {
+  async startAgent(
+    agentId: string,
+    userId: string,
+    opts?: { isHouse?: boolean },
+  ): Promise<void> {
     const agent = await db.query.agents.findFirst({
       where: and(eq(agents.id, agentId), eq(agents.userId, userId)),
     });
@@ -109,6 +149,18 @@ class AgentOrchestrator {
           : agent.type === 'system-agent'
             ? 'location-agent'
             : 'location-agent';
+
+      // Inference route — decides which endpoints the InferenceRouter walks for
+      // this runtime's text gen (teachers → OpenAI, our house fleet → local boxes
+      // + failover). Derived from the RAW DB type + house-ness. House-ness is
+      // resolved from BOTH the caller's `opts.isHouse` AND the platform_agents
+      // row's `config.houseAgentId`, so a house fixture routes to the fleet
+      // regardless of WHICH path warms its runtime first (the driver passes
+      // isHouse; a human-chat warm would not — the config marker covers that).
+      const isHouseAgent =
+        opts?.isHouse === true ||
+        Boolean((agent.config as Record<string, unknown> | null)?.houseAgentId);
+      const inferenceRoute = resolveInferenceRoute(agent.type, isHouseAgent);
 
       // Extract gateway config for openclaw-bot agents
       const gatewayData = customization.gateway as Record<string, unknown> | undefined;
@@ -144,6 +196,7 @@ class AgentOrchestrator {
         },
         agentConfig: (agent.config as Record<string, unknown>) ?? {},
         openclawGateway,
+        inferenceRoute,
         databaseUrl: process.env.DATABASE_URL,
         apiKeys: {
           // OpenAI backs BOTH text generation (openai-text-provider) and
@@ -166,13 +219,47 @@ class AgentOrchestrator {
         lastActivity: new Date(),
         heartbeatIntervalId,
         type: agent.type ?? undefined,
+        isHouse: opts?.isHouse ?? false,
       });
+
+      // P3 slice 6 (surface #3): inject the connection protocol manual into a
+      // ClawVille-HOSTED PLAYER runtime's OWN ElizaOS memory so it plays the same
+      // contract a connected agent fetches from `/api/skills/protocol/skill.md`.
+      // Scoped to PLAYER runtimes only — a hosted avatar-agent (the default hosted
+      // ElizaOS/Milady agent) or a house agent. Teacher `location-agent`s + Nori
+      // `system-agent` don't play in-world, so the manual would be noise in their
+      // RAG. Fire-and-forget + fail-soft; NEVER blocks boot.
+      if (agentType === 'avatar-agent' || isHouseAgent) {
+        void this.injectProtocolKnowledgeIntoRuntime(runtime);
+      }
 
       await this.updateAgentStatus(agentId, 'running');
       console.log(`[Orchestrator] Agent ${agentId} started`);
     } catch (error) {
       await this.updateAgentStatus(agentId, 'error');
       throw error;
+    }
+  }
+
+  /**
+   * P3 slice 6 (surface #3) — fire-and-forget injection of the CURRENT connection
+   * protocol manual into a freshly-started hosted PLAYER runtime. Builds the
+   * public, token-free manual (`buildProtocolManual`) + the single-source live
+   * `PROTOCOL_VERSION` and hands both to the runtime's own fail-soft
+   * `injectProtocolKnowledge`. Wrapped so a throw here can never escape into the
+   * start path. A `PROTOCOL_VERSION` bump is picked up on the runtime's NEXT start
+   * (the natural lifecycle boundary); the injector dedupes by version, so a re-run
+   * on the same version is idempotent.
+   */
+  private async injectProtocolKnowledgeIntoRuntime(runtime: ElizaRuntime): Promise<void> {
+    try {
+      const manual = buildProtocolManual(resolveApiBase());
+      await runtime.injectProtocolKnowledge(manual, PROTOCOL_VERSION);
+    } catch (err) {
+      console.warn(
+        '[Orchestrator] protocol-knowledge injection failed (non-fatal):',
+        err instanceof Error ? err.message : err,
+      );
     }
   }
 
@@ -204,13 +291,67 @@ class AgentOrchestrator {
       // because `stopAgent()` unconditionally writes
       // `updateAgentStatus('stopped')` to the DB on every sweep tick
       // even when no in-memory runtime is present.
-      if (agent.type === 'system-agent') continue;
+      //
+      // Agent-metaverse P1 — ALSO skip house agents (ClawVille-hosted
+      // autonomous fixtures). The autonomy driver keeps them acting via
+      // `useModel` (which does NOT bump `lastActivity`), so they'd look idle
+      // and get stopped out from under the driver — same "boot-seeded
+      // singleton the world depends on" rationale as system agents.
+      if (agent.type === 'system-agent' || agent.isHouse) continue;
 
       if (now - agent.lastActivity.getTime() > INACTIVITY_TIMEOUT_MS) {
+        // D6 (P3 slice 3) — do NOT reap a hosted runtime that BACKS a LIVE
+        // connected agent session. The connected agent drives play through the
+        // gateway (`/:sid/*`), which slides the SESSION TTL but never touches
+        // THIS runtime's `lastActivity` (gateway actions warm the TEACHER's
+        // runtime, not the connected agent's own), so a live-session agent looks
+        // idle here and its wrapper/memory runtime would die mid-session. The
+        // check is the SAME live-session predicate validateLiveAgentSession uses.
+        // FAIL-OPEN to today's behavior (stop) on any error — prefer no-leak. A
+        // transient read error may stop a runtime that IS backing a live session,
+        // but that degradation is SOFT: the next connected action lazy re-warms the
+        // runtime (ensureAgentRuntime), and until then the converged-memory paths
+        // fall back to the keyword store — no data loss, no hard failure.
+        let backsLiveSession = false;
+        try {
+          backsLiveSession = await this.agentBacksLiveConnectedSession(agentId);
+        } catch {
+          backsLiveSession = false;
+        }
+        if (backsLiveSession) continue;
+
         console.log(`[Orchestrator] Stopping inactive agent ${agentId}`);
         await this.stopAgent(agentId);
       }
     }
+  }
+
+  /**
+   * D6 (P3 slice 3) — does this hosted runtime (platform_agents.id) back a LIVE
+   * connected agent session? Resolves the runtime's avatar (`avatars.platformAgentId`)
+   * → its owner → any `openclaw_bots` session for that owner that is still live
+   * (strictly-future `session_expires_at`, not swept). Same fail-closed TTL rule
+   * as `validateLiveAgentSession` / `restoreAgentSessionFromRow`. Returns false
+   * (→ eligible for the idle sweep) when no live session backs the runtime.
+   */
+  private async agentBacksLiveConnectedSession(platformAgentId: string): Promise<boolean> {
+    const rows = await db
+      .select({
+        expiresAt: agentBots.sessionExpiresAt,
+        sweptAt: agentBots.sessionSweptAt,
+      })
+      .from(avatars)
+      .innerJoin(agentBots, eq(agentBots.userId, avatars.userId))
+      .where(eq(avatars.platformAgentId, platformAgentId));
+    const now = Date.now();
+    for (const r of rows) {
+      const exp = r.expiresAt?.getTime();
+      if (exp === undefined || exp <= now) continue; // NULL / past = expired
+      const swept = r.sweptAt?.getTime();
+      if (swept !== undefined && swept >= exp) continue; // swept = reaped
+      return true; // a live connected session backs this runtime
+    }
+    return false;
   }
 
   private async updateAgentStatus(agentId: string, status: AgentStatus): Promise<void> {

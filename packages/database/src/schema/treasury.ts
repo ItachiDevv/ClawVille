@@ -6,6 +6,7 @@ import {
   text,
   pgEnum,
   integer,
+  numeric,
   jsonb,
   index,
 } from 'drizzle-orm/pg-core';
@@ -29,16 +30,25 @@ import { avatars } from './avatars';
  *   `G5WgvGYK5mLxQbVUmNhFKeWwEhT235p2HjKmkbpMbMWy`; production must rotate
  *   via the program's `update_config` instruction and re-seed this row
  *   with the new keypair before pointing prod traffic at it.
+ * - `clv-swap` (Tokenomics C3, 2026-07-07): the DEDICATED CLV buy-side swap
+ *   wallet the (Codex-review-gated) live swap executor would fund clips from.
+ *   Provisioned as ONE row by `scripts/generate-clv-swap-wallet.ts` (AES-256-GCM
+ *   at rest, same scheme as every treasury row). The dry-run executor only ever
+ *   READS the pubkey (`getClvSwapWalletPubkey()` in
+ *   `apps/api/src/services/clv-swap-executor.ts`) — it NEVER decrypts the
+ *   secret; live signing is a Codex-gated seam.
  *
  * Postgres enum add: extending this list requires
- * `ALTER TYPE treasury_purpose ADD VALUE 'wager-settlement-authority'`
- * which drizzle-kit handles in `db:push` (Drizzle 0.33+ emits the ALTER).
+ * `ALTER TYPE treasury_purpose ADD VALUE IF NOT EXISTS '<value>'` — shipped in
+ * the numbered migrations (e.g. `0014_clv_swap_queue.sql` for 'clv-swap');
+ * NEVER via db:push.
  */
 export const treasuryPurposeEnum = pgEnum('treasury_purpose', [
   'x402-merchant',
   'fee-collector',
   'escrow',
   'wager-settlement-authority',
+  'clv-swap',
 ]);
 
 /**
@@ -71,6 +81,42 @@ export const treasuryWallets = pgTable(
   }),
 );
 
+/**
+ * TREASURY SUBJECTS (Tokenomics T0, 2026-07-07) — first-class registry naming
+ * the singleton HOUSE-TREASURY avatar(s).
+ *
+ * The ClawToken ledger can only hold a balance on an `avatars` row (every
+ * `claw_token_transactions` row requires `avatar_id`, and the
+ * `avatars_vclaw_balance_sum` CHECK lives there), so the house treasury IS a
+ * system avatar — this table is the durable, queryable NAME for it, so it is a
+ * first-class subject rather than "just another avatar".
+ *
+ *   - `purpose` — UNIQUE role key. T0 ships the singleton `'house-fees'`: the
+ *     pure revenue SINK every routed fee credits (cove rakes, baccarat
+ *     commission, MTT rake, cosmetics/book purchases, land sale/upgrade/rent).
+ *     It starts at 0 CT, is NEVER minted a bankroll, and NEVER pays players.
+ *   - `avatarId` — FK to the balance-bearing system avatar. ON DELETE RESTRICT:
+ *     the treasury avatar must never be cascade-deleted out from under the
+ *     registry (deleting it would orphan the accumulated revenue).
+ *
+ * Provisioned idempotently on boot by
+ * `apps/api/src/services/house-treasury-seeder.ts` (mirrors the audited
+ * cash-house-seeder pattern). Distinct from `treasuryWallets` above (Solana
+ * keypair custody) — this table names in-game CT ledger subjects.
+ */
+export const treasurySubjects = pgTable('treasury_subjects', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  /** Unique role key, e.g. 'house-fees' (T0 singleton). */
+  purpose: text('purpose').notNull().unique(),
+  /** The balance-bearing system avatar this subject's CT lives on. */
+  avatarId: uuid('avatar_id')
+    .notNull()
+    .references(() => avatars.id, { onDelete: 'restrict' }),
+  /** Freeform operator notes. */
+  notes: text('notes'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+});
+
 // --- ClawToken audit ledger ---
 
 /**
@@ -87,6 +133,38 @@ export const clawTokenSourceEnum = pgEnum('claw_token_source', [
   'admin',            // manual admin grant
   'x402',             // future: real USDC top-up via x402 (deferred)
   'system',           // fallback for internal adjustments
+]);
+
+/**
+ * vCLAW PROVENANCE TAG (Tokenomics F1, 2026-06-27) — the CASHABILITY taxonomy.
+ *
+ * Distinct from `claw_token_source` above (which is a FAUCET-ORIGIN observability
+ * label). Provenance answers the only question that matters for the cash-out path:
+ * "can this balance ever leave the economy as real money?"
+ *
+ *   - `soft`   — play money: quests, daily login, cove/play winnings, faucet, AND
+ *                EVERY internal peer-transfer receipt (see the chokepoint rule).
+ *                Spendable in-world, NEVER cashable.
+ *   - `bought` — on-ramp purchases (fiat/SOL/USDC/CLV at the one-way store price).
+ *                You bought spend power, not a withdrawal right. NEVER cashable
+ *                (V-Bucks semantics). Carries a `usd_basis`.
+ *   - `earned` — agent labor paid by a REAL external customer (USDC via SAP/x402),
+ *                credited in FULL. The ONLY cashable tag. Carries a `usd_basis`.
+ *
+ * THE CHOKEPOINT INVARIANT (plan §3.1): `earned` is written in EXACTLY ONE code
+ * path — `claw-token-ledger.mintEarned()`. Every other credit path produces
+ * `soft` or `bought` only; `transferClawTokens` always credits the receiver
+ * `soft`. This makes "buy → fake-sell to my alt → cash out" impossible by
+ * construction: internal recirculation can never become cashable.
+ *
+ * GATED-OFF in F1: tagging is purely additive — NOTHING is cashable yet (no
+ * cash-out path exists). This enum is the ledger-side scaffolding the later
+ * cash-out gate (plan §12 gate 1) is built on.
+ */
+export const clawTokenProvenanceEnum = pgEnum('claw_token_provenance', [
+  'soft',
+  'bought',
+  'earned',
 ]);
 
 /**
@@ -117,6 +195,32 @@ export const clawTokenTransactions = pgTable(
     reason: text('reason').notNull(),
     /** High-level source category */
     source: clawTokenSourceEnum('source').notNull(),
+    /**
+     * vCLAW PROVENANCE TAG (Tokenomics F1, 2026-06-27) — the cashability tag for
+     * THIS row's delta. Credits stamp the tag minted (`soft`/`bought`/`earned`);
+     * debits stamp the tag BURNED (a multi-tag spend emits one row per tag so the
+     * audit trail shows exactly which cashable/non-cashable balance was consumed —
+     * see `claw-token-ledger.ts` allocator). Nullable for backfilled pre-F1 rows
+     * (historical ledger rows have no provenance). `earned` is written ONLY by
+     * `mintEarned()`; see `clawTokenProvenanceEnum`.
+     */
+    provenance: clawTokenProvenanceEnum('provenance'),
+    /**
+     * USD basis (Tokenomics F1) — the real-dollar value behind this row. Set for
+     * `bought` receipts (dollars paid at the on-ramp) and `earned` mints (the full
+     * USDC a real customer paid), NULL otherwise. numeric(20,6) = µUSD precision,
+     * room for any plausible amount. The cashable claim is denominated by THIS, set
+     * by the payer — never a house rate (backing, not a peg; plan §3.2).
+     */
+    usdBasis: numeric('usd_basis', { precision: 20, scale: 6 }),
+    /**
+     * Anti-abuse fingerprint scaffolding (Tokenomics F1, plan §6). `mintEarned`
+     * ACCEPTS + STORES these (salted sha256 of browser fp / IP-/24 prefix, supplied
+     * by the caller). ENFORCEMENT (per-pair caps / cooldown) is a LATER feature —
+     * F1 only lands the columns + the single write site that records them. Nullable.
+     */
+    fpHash: text('fp_hash'),
+    ipPrefixHash: text('ip_prefix_hash'),
     /** Reason-specific payload (bookId, buildingId, questId, txHash, etc.) */
     metadata: jsonb('metadata').default({}).notNull(),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
@@ -125,6 +229,8 @@ export const clawTokenTransactions = pgTable(
     avatarIdx: index('claw_token_tx_avatar_idx').on(t.avatarId, t.createdAt),
     userIdx: index('claw_token_tx_user_idx').on(t.userId, t.createdAt),
     sourceIdx: index('claw_token_tx_source_idx').on(t.source, t.createdAt),
+    // F1 — audit-by-cashability: scan all `earned` mints / all `bought` receipts.
+    provenanceIdx: index('claw_token_tx_provenance_idx').on(t.provenance, t.createdAt),
   }),
 );
 

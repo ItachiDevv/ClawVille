@@ -61,6 +61,7 @@ import {
   type Lobby,
 } from '@clawville/database';
 import { sessionMiddleware, requireAuth } from '../middleware/auth';
+import { requireNonGuestUser } from '../middleware/require-non-guest';
 import { adminOnly } from '../middleware/admin-only';
 import { createRateLimiter, getClientIp } from '../middleware/rate-limit';
 import { logEventFromContext } from '../services/event-logger';
@@ -193,7 +194,7 @@ function handleWagerClientError(err: unknown): never {
 
 // ─── POST /lobbies ────────────────────────────────────────────────────────
 
-wagerRoutes.post('/lobbies', requireAuth, async (c) => {
+wagerRoutes.post('/lobbies', requireAuth, requireNonGuestUser, async (c) => {
   checkRate(writeLimiter, getClientIp(c.req.raw.headers));
 
   const body = await c.req.json().catch(() => null);
@@ -446,7 +447,7 @@ wagerRoutes.get('/lobbies/:idOrInviteCode', async (c) => {
 
 // ─── POST /lobbies/:id/join ───────────────────────────────────────────────
 
-wagerRoutes.post('/lobbies/:id/join', requireAuth, async (c) => {
+wagerRoutes.post('/lobbies/:id/join', requireAuth, requireNonGuestUser, async (c) => {
   checkRate(writeLimiter, getClientIp(c.req.raw.headers));
   const id = lobbyIdParam.safeParse(c.req.param('id'));
   if (!id.success) throw new HTTPException(400, { message: 'invalid_lobby_id' });
@@ -682,7 +683,7 @@ wagerRoutes.post('/lobbies/:id/settle', adminOnly, async (c) => {
 
 // ─── POST /lobbies/:id/cancel ─────────────────────────────────────────────
 
-wagerRoutes.post('/lobbies/:id/cancel', requireAuth, async (c) => {
+wagerRoutes.post('/lobbies/:id/cancel', requireAuth, requireNonGuestUser, async (c) => {
   checkRate(writeLimiter, getClientIp(c.req.raw.headers));
   const id = lobbyIdParam.safeParse(c.req.param('id'));
   if (!id.success) throw new HTTPException(400, { message: 'invalid_lobby_id' });
@@ -774,7 +775,7 @@ wagerRoutes.post('/lobbies/:id/cancel', requireAuth, async (c) => {
 
 // ─── POST /lobbies/:id/refund ─────────────────────────────────────────────
 
-wagerRoutes.post('/lobbies/:id/refund', requireAuth, async (c) => {
+wagerRoutes.post('/lobbies/:id/refund', requireAuth, requireNonGuestUser, async (c) => {
   checkRate(writeLimiter, getClientIp(c.req.raw.headers));
   const id = lobbyIdParam.safeParse(c.req.param('id'));
   if (!id.success) throw new HTTPException(400, { message: 'invalid_lobby_id' });

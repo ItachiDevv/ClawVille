@@ -49,14 +49,11 @@ import { randomBytes } from 'node:crypto';
 import { getBunWebSocketHelper } from './lib/bun-ws-adapter';
 import { researchSseRoutes } from './routes/research-sse';
 import { researchApiRoutes } from './routes/research';
-import { marketplaceRoutes } from './routes/marketplace';
 import { clawRoutes } from './routes/claws';
 import { agentGatewayRoutes } from './routes/agent-gateway';
 // pendingConnections is exported but only used internally by agent-gateway routes
 import { agentExportRoutes } from './routes/agent-export';
 import { avatarManifestRoutes } from './routes/avatar-manifest';
-import { bazaarRoutes } from './routes/bazaar';
-import { auctionRoutes } from './routes/auctions';
 import { questRoutes } from './routes/quests';
 import { bountyRoutes } from './routes/bounties';
 import { exchangeRoutes } from './routes/exchange';
@@ -65,9 +62,28 @@ import { agentSetupRoutes } from './routes/agent-setup';
 import { skillsRoutes } from './routes/skills';
 import { agentV2Routes } from './routes/agent-v2';
 import { dashboardRoutes } from './routes/dashboard';
+// Tokenomics F2 — USDC→vCLAW on-ramp (Phase A) + the TEST-ONLY mock facilitator.
+import { ctTopupRoutes } from './routes/ct-topup';
+// Tokenomics C2 (2026-07-07) — MoonPay TEST-MODE card→USDC rail: signed
+// SANDBOX widget URL (funds the caller's OWN custodial wallet; E5 parity via
+// requireAuthOrAgentSession) + the signature-verified, DB-idempotent webhook
+// recorder. NO custodial auto-sign (Codex-gated seam), NO CT movement.
+import { moonpayRoutes } from './routes/moonpay';
+// Tokenomics C — checkout stage (2026-07-07): generic x402 USDC checkout for
+// ANY vCLAW-priced thing. Importing the route ALSO side-effect-imports the
+// fulfillers (cosmetic-purchase + rent-prepay + marketplace-purchase register
+// themselves) — the registry is populated before any request runs.
+import { x402CheckoutRoutes } from './routes/x402-checkout';
+// Tokenomics C4 (2026-07-07): P2P marketplace v1 — list/browse/cancel with the
+// CLV seller license + deed escrow-lock. SETTLEMENT flag-gated OFF
+// (MARKETPLACE_SETTLE_ENABLED); the buyer path is the x402 checkout above.
+import { marketRoutes } from './routes/market';
+import { buildMockFacilitator } from './services/x402-mock-facilitator';
 import { portalRoutes } from './routes/portal';
 import { partnerHatcherRoutes } from './routes/partner-hatcher';
 import { partnerHatcherLaunchRoutes } from './routes/partner-hatcher-launch';
+import { partnerCovenantRoutes } from './routes/partner-covenant';
+import { partnerStorefrontRoutes } from './routes/partner-storefront';
 import { agentRegistrationRoutes } from './routes/agent-registration';
 import { agentEip8004Routes } from './routes/agent-eip8004';
 import { adminIdentityRoutes } from './routes/admin-identity';
@@ -79,6 +95,9 @@ import { fingerprintMiddleware } from './middleware/fingerprint';
 import { cosmeticsRoutes } from './routes/cosmetics';
 import { dashAuthRoutes } from './routes/dash-auth';
 import { wagerRoutes } from './routes/wager';
+// SAP Option C — on-chain agent identity + USDC escrow rail (gated OFF + devnet +
+// dry-run by default; mainnet is a code gate, not an env). See routes/sap.ts.
+import { sapRoutes } from './routes/sap';
 // Phase 6.1 slice 3 — cove slots fun-money backend wire (ClawTokens live;
 // SOL/USDC return 501 until Phase 6.2 custody).
 import { coveSlotsRouter } from './routes/cove-slots';
@@ -91,6 +110,10 @@ import { coveHoldemRouter } from './routes/cove-holdem';
 // Agent-capable (Rule E5): human cookie OR X-Clawville-Agent-Session both reach
 // the same real-CT buy-in/settle path. Full lobby UI is a later phase.
 import { covePokerMttRouter } from './routes/cove-poker-mtt';
+// Poker CASH (ring) games (P1) — sit-down/leave/action ring tables, chips==CT 1:1.
+// Agent-capable (Rule E5): human cookie OR X-Clawville-Agent-Session both reach the
+// same real-CT sit-debit / cash-out-credit / per-hand settle path.
+import { coveCashPokerRouter } from './routes/cove-cash-poker';
 // The process-wide TournamentManager singleton — boot starts its start-trigger
 // sweeper (the LIVE seat/cancel path) + graceful shutdown stops it.
 import { tournamentManager } from './services/poker/tournament-manager';
@@ -114,6 +137,16 @@ import { supportRouter } from './routes/support';
 // Economy fix 2026-05-29 — admin-only CT-economy monitor (minted/burned/houseNet
 // per gameType; faucet detector). FEATURE_GATE: cove_ct_economy_monitor.
 import { coveEconomyRouter } from './routes/cove-economy';
+import { treasuryRouter } from './routes/treasury';
+// Tokenomics T0 (2026-07-07) — admin-only CLV price-oracle read surface
+// (GET /api/oracle/clv). READ-ONLY price feed; never touches the CT ledger.
+import { oracleRouter } from './routes/oracle';
+// Tokenomics C3 (2026-07-07) — CLV buy-queue DRY-RUN worker. STATIC import is
+// deliberate: clv-swap-executor.ts throws AT MODULE LOAD when
+// CLV_SWAP_EXECUTE=true (live execution is Codex-review-gated), so a box
+// carrying that flag refuses to boot — the x402-config crash-loud pattern.
+import { startClvSwapWorker, stopClvSwapWorker } from './services/clv-swap-executor';
+import { walletLinkRoutes } from './routes/wallet-link';
 import type { AppContext } from './types';
 
 const app = new Hono<AppContext>();
@@ -273,7 +306,6 @@ app.route('/api/activities', activitiesV2Routes);
 app.route('/api/land', landRoutes);
 app.route('/api/research', researchSseRoutes);
 app.route('/api/research', researchApiRoutes);
-app.route('/api/marketplace', marketplaceRoutes);
 app.route('/api/claws', clawRoutes);
 app.route('/api/agent', agentGatewayRoutes);
 // Phase 3 — character export ("take my agent home") endpoint. Mounted at
@@ -287,8 +319,6 @@ app.get('/api/skills/connect', (c) => {
   const url = new URL(c.req.url);
   return c.redirect(`${url.origin}/api/agent/connect-skill?token=${token}`);
 });
-app.route('/api/bazaar', bazaarRoutes);
-app.route('/api/auctions', auctionRoutes);
 app.route('/api/quests', questRoutes);
 app.route('/api/bounties', bountyRoutes);
 app.route('/api/exchange', exchangeRoutes);
@@ -297,6 +327,37 @@ app.route('/api/agent-setup', agentSetupRoutes);
 app.route('/api/skills', skillsRoutes);
 app.route('/api/v2/agent', agentV2Routes);
 app.route('/api/dashboard', dashboardRoutes);
+// Tokenomics F2 — USDC→vCLAW on-ramp (Phase A): x402/PayAI quote+settle →
+// BOUGHT (non-cashable) vCLAW credit. Human (Lucia) + connected-agent
+// (X-Clawville-Agent-Session) parity via requireAuthOrAgentSession. Devnet-first;
+// mainnet is a config flip after a funded settled smoke. GATED: the route 503s
+// when CLAWVILLE_MERCHANT_WALLET_PUBKEY is unset, and X402_ENABLED stays off
+// until a funded smoke. See routes/ct-topup.ts + services/x402-payai.ts.
+app.route('/api/ct/topup', ctTopupRoutes);
+// Tokenomics C2 — MoonPay TEST-MODE card rail. POST /widget-url (human OR
+// connected-agent via requireAuthOrAgentSession — each funds ITS OWN custodial
+// wallet) + POST /webhook (Moonpay-Signature-V2-verified; idempotent by the
+// moonpay_events.external_tx_id UNIQUE index; records arrivals ONLY — never
+// signs, never moves CT). Sandbox-pinned; live is a Codex-reviewed code change.
+app.route('/api/moonpay', moonpayRoutes);
+// Tokenomics C — generic x402 checkout: ANY vCLAW-priced thing settles as a
+// REAL USDC payment (¢-peg quote unit; buyer's internal vCLAW NEVER debited).
+// POST /quote (server-priced, 402 challenge + pending x402_checkouts row) +
+// POST /settle (verify→settle→ONE tx {flip + kind fulfiller}; exactly-once by
+// the partial-UNIQUE tx_signature). Human + connected-agent parity via
+// requireAuthOrAgentSession (agent settles for ITS OWN avatar; non-ledger
+// sessions 403). GATED like ct-topup: 503 until the merchant wallet is set;
+// devnet-first. See routes/x402-checkout.ts + services/x402-checkout.ts.
+app.route('/api/x402/checkout', x402CheckoutRoutes);
+// Tokenomics C4 (2026-07-07) — P2P marketplace v1: sellers list (CLV Resident
+// license ≥ 50k uiAmount, fail-soft REFUSE; land_deed only — earned_bundle
+// refused; deed escrow-locked in market_deed_locks), buyers settle via the
+// x402 checkout above (itemKind 'marketplace_purchase'). SETTLEMENT IS
+// FLAG-GATED OFF (MARKETPLACE_SETTLE_ENABLED — quote/preflight/fulfiller all
+// refuse while unset). Seller CLV payout (95.56%) + treasury rake (4.44%) are
+// QUEUED pending_review intents; on-chain sends + the deed owner-flip are
+// Codex-gated seams. E5 parity via requireAuthOrAgentSession on every write.
+app.route('/api/market', marketRoutes);
 // Phase 5.1 — cross-world portal + account linking (see plan §6.2 + §15).
 app.route('/api/portal', portalRoutes);
 // SEC-1 / FIX-6 — bound the request body on EVERY partner-hatcher route BEFORE
@@ -325,9 +386,31 @@ app.route('/api/partner/hatcher', partnerHatcherRoutes);
 // POST /api/partner/hatcher/launch/exchange. See routes/partner-hatcher-launch.ts
 // + plan .claude/plans/hatcher-launch-exchange.md (§A).
 app.route('/api/partner/hatcher', partnerHatcherLaunchRoutes);
+// Covenant partner — READ-ONLY verification read surface (bounty evidence/verdict/
+// escrow linkage + agent-services identity). GET-only, no mutations, so no body-
+// size cap is needed (unlike the partner-hatcher write surface's 64 KB bodyLimit).
+// Fronted by requireCovenantPartner: ed25519 partner signature (same GET wire
+// scheme as Hatcher) + IP allowlist, fail-closed 503 when unprovisioned.
+// See routes/partner-covenant.ts + docs/sap-covenant-payai-architecture.md.
+app.route('/api/partner/covenant', partnerCovenantRoutes);
+// Phase D — ADDITIVE gated partner direct-USDC storefront (FEATURE_GATE
+// partner_storefront_tier). Buyer → partner USDC, WE NEVER CUSTODY, credits NO
+// CT. Mounted AFTER both `/api/partner/hatcher` groups so the LIVE partner-hatcher
+// routes match FIRST — this NEW `/api/partner/storefront` base never shadows them.
+// /quote + /settle 503 `partner_fulfillment_gated` until an admin enables a
+// custody-reviewed storefront (always, today). See routes/partner-storefront.ts.
+app.route('/api/partner/storefront', partnerStorefrontRoutes);
 // Wager lobbies + escrow (gambling-contracts vertical slice).
 // See routes/wager.ts header for the full surface + feature gates.
 app.route('/api/wager', wagerRoutes);
+// SAP — on-chain agent identity / reputation / tool / discovery + escrow USDC
+// money rail. Triple-gated DARK by default (SAP_ENABLED=false,
+// SAP_ESCROW_ENABLED=false, SAP_USDC_ESCROW_ENABLED=false, SAP_DRY_RUN=true) +
+// devnet-first; mainnet is a code gate (SAP_ALLOW_MAINNET in sap-config.ts), not
+// an env. The in-game economy stays ClawTokens. See routes/sap.ts FEATURE_GATE +
+// docs/sap-integration.md. Rule E5 parity: human cookie OR agent session both
+// bind to identity.avatarId's own custodial Phase-5.1 wallet.
+app.route('/api/sap', sapRoutes);
 // Phase 6.1 slice 3 — Cove slots (commit-reveal RNG + session escrow).
 // ClawTokens path is fully wired; SOL/USDC routes return 501 with a
 // friendly message until Phase 6.2 lands real-money custody.
@@ -339,6 +422,11 @@ app.route('/api/cove/holdem', coveHoldemRouter);
 // Poker MTT (P3) — single-table tournament: POST /:id/register (user|agent),
 // GET /:id (status+standings). Real-CT buy-in/prize via claw-token-ledger.
 app.route('/api/cove/poker/mtt', covePokerMttRouter);
+// Poker CASH (P1) — ring tables: GET /tables (public lobby), POST /tables (create),
+// /tables/join-by-code, /tables/:id/sit|leave|action (user|agent), /tables/:id +
+// /:id/state-for-agent. chips==CT 1:1; sit DEBIT / leave CASH-OUT CREDIT via
+// claw-token-ledger. Per-hand settle writes cove_game_events (gameType='poker').
+app.route('/api/cove/poker/cash', coveCashPokerRouter);
 // Special Events (2026-06-16) — generic PARENT layer: POST /create|/:slug/open|
 // /:slug/start (admin), GET / + /:slug (public), POST /:slug/signup (user|agent,
 // gate-evaluated). The dependent poker tournament links UP via special_event_id.
@@ -356,15 +444,59 @@ app.route('/api/support', supportRouter);
 // summary aggregates cove_game_events minted/burned/houseNet by gameType to
 // detect any game that has gone net-positive to players (a faucet).
 app.route('/api/cove/economy', coveEconomyRouter);
+// Tokenomics T0 (2026-07-07) — admin-only house-treasury read surface:
+// GET /api/treasury/summary reports the fee-sink avatar's balance (total +
+// soft/bought/earned) with an optional ?byReason=true per-fee-site breakdown.
+app.route('/api/treasury', treasuryRouter);
+// Tokenomics T0 (2026-07-07) — admin-only CLV price-oracle read surface:
+// GET /api/oracle/clv reports the current house-favorable quote (min(spot,
+// 30-min TWAP)) + optional ?history=N raw snapshots. READ-ONLY USD price feed.
+app.route('/api/oracle', oracleRouter);
+// Tokenomics Phase A / Slice A1 (2026-07-07) — self-custody wallet link:
+// POST /api/wallet/link/challenge → issue a nonce; POST /api/wallet/link →
+// prove control (sign the nonce) + persist the pubkey pointer; GET
+// /api/wallet/link → linked wallet + its (cached, mainnet) CLV balance. The
+// non-custodial balance-read link backing the hold-tier / seller-license checks.
+app.route('/api/wallet', walletLinkRoutes);
 // Phase 5.1 — admin identity recovery stub. Returns 501 behind a
 // FEATURE_GATE until the support-chat verification workflow lights up.
 app.route('/api/admin', adminIdentityRoutes);
+
+// Tokenomics F2 — TEST-ONLY mock x402 facilitator. Lets the USDC→vCLAW on-ramp
+// be exercised end-to-end without real funds. It RUBBER-STAMPS every settlement,
+// so it is gated OFF by default and MUST NEVER run in production. Pair with
+// X402_FACILITATOR_PRESET=mock (or X402_FACILITATOR_URL pointing here).
+//
+// PROD CRASH-LOUD GUARD: the AUTHORITATIVE fail-boot invariant lives at module
+// load in x402-config.ts (it fires before any request and covers BOTH the
+// X402_MOCK_FACILITATOR flag AND the `mock` preset). This second check at the
+// literal mount site is belt-and-suspenders: a mounted mock anywhere but staging
+// (production OR unset) would mint free vCLAW, so we refuse to boot here too.
+if (process.env.X402_MOCK_FACILITATOR === 'true') {
+  if (process.env.CLAWVILLE_ENV !== 'staging') {
+    throw new Error(
+      `[x402-mock] Refusing to mount the MOCK facilitator: X402_MOCK_FACILITATOR=true while ` +
+        `CLAWVILLE_ENV is not 'staging' (it is ${process.env.CLAWVILLE_ENV ?? 'UNSET'}). The mock ` +
+        `rubber-stamps settlement and would MINT FREE vCLAW — it may run ONLY on staging. Unset ` +
+        `X402_MOCK_FACILITATOR on this box (see x402-config.ts for the authoritative guard).`,
+    );
+  }
+  app.route('/api/x402-mock', buildMockFacilitator());
+  console.log(
+    '[x402-mock] Mock facilitator MOUNTED at /api/x402-mock — TEST ONLY, never enable in prod.',
+  );
+}
 
 // Error handler — expected errors (HTTPException, InsufficientTokens) return
 // typed responses without alerting; unexpected exceptions fire an immediate
 // Telegram alert via alertError so we catch 500s on their first occurrence.
 app.onError((err, c) => {
-  console.error('API Error:', err);
+  // Redact any agent bearer from the stringified error (its message/stack can
+  // carry the request URL `/api/agent/oc-<bearer>/…`) before it hits stdout /
+  // the Coolify log drain. The alertError() call below redacts message+context
+  // internally; this covers the direct console.error. (redactBearerTokens is
+  // imported at the top of this file.)
+  console.error('API Error:', redactBearerTokens(String(err)));
   if (err instanceof HTTPException) {
     return c.json({ error: err.message, code: err.status }, err.status);
   }
@@ -432,6 +564,51 @@ warnIfTestPartnerPubkeyEnabled();
 const arenaMode = process.env.NPC_ARENA_MODE === 'true';
 startSimulation(arenaMode);
 
+// ── Process-level crash guards (2026-07-02 — boot-crush crash-loop fix) ──────
+// Registered BEFORE the boot IIFE so they cover boot-time faults. This IS the
+// fix for the observed crash-loop (staging `restarts=2`, `Bun` crash footers).
+// Root cause: on a COLD/CONTENDED boot — cold Supabase + the ElizaOS migration
+// still holding the plugin-sql advisory lock + Coralia's driver lazy-warm racing
+// the town-guide boot warm — a single ElizaOS runtime's `initialize()` exceeded
+// the bootstrap plugin's internal 30s service-registration timeout (task /
+// embedding-generation / trajectory_logger). That timeout REJECTED on a promise
+// chain we do NOT own → an UNHANDLED REJECTION; with no handler, Bun killed the
+// whole API → Coolify restart → crash-loop until the boot was warm enough
+// (migration done, DB cached) that init finished under 30s. These handlers catch
+// that reject so it can't down the server. Both LOG LOUDLY and REDACTED (an
+// agent route path/stack can carry a real-CT bearer, cf. M1) so nothing is
+// hidden. (NB: it is a SINGLE-runtime contention, not a thundering herd — only
+// ONE system agent (town-guide) warms at boot today; the sequential warm below
+// is future-proofing, not the primary fix.)
+//
+// Split policy (deliberate):
+//  • unhandledRejection → NON-fatal (log + keep serving). This is the exact
+//    crash vector (a stray async reject from a third-party promise chain we
+//    don't own); a rejected optional-service registration must not take the
+//    server down, and the runtime lazy-restarts on next use.
+//  • uncaughtException → log + EXIT(1). A sync throw that escaped every
+//    try/catch means UNDEFINED process state; resuming risks a zombie serving
+//    on corrupt in-memory state (e.g. a poker/cove sim-tick on a bad table)
+//    with /health still green, so Coolify would never restart to self-heal.
+//    Exiting restores crash-ONLY self-healing. It does NOT re-introduce the
+//    crash-LOOP — that came from the rejection (now handled) + the concurrent
+//    warm (now serialized), not from a sync throw. The deliberate crash-loud
+//    boot invariants (FINGERPRINT_SECRET, ALLOW_TEST_PARTNER_PUBKEY-on-prod,
+//    CF-worker preflight) are unaffected: they throw at MODULE LOAD (before
+//    these handlers register) or call process.exit() directly, which
+//    uncaughtException does not intercept.
+process.on('unhandledRejection', (reason) => {
+  const msg = reason instanceof Error ? (reason.stack ?? reason.message) : String(reason);
+  console.error('[API] Unhandled promise rejection (kept alive, non-fatal):', redactBearerTokens(msg));
+});
+process.on('uncaughtException', (err) => {
+  console.error(
+    '[API] Uncaught exception — exiting for a clean restart:',
+    redactBearerTokens(err instanceof Error ? (err.stack ?? err.message) : String(err)),
+  );
+  process.exit(1);
+});
+
 // Pre-migrate ElizaOS schema + seed system-owned building NPCs so every user
 // can chat with Patrick/Gary/etc. without any setup. Non-blocking — a failure
 // must not crash API startup, but every deploy gets a fresh attempt.
@@ -494,17 +671,39 @@ startSimulation(arenaMode);
         .join(', ')}`,
     );
 
-    // Eager warmup — pre-boot every system-agent runtime so the first visitor
-    // doesn't eat the lazy-start latency (~2-3s). Errors swallowed so a single
-    // warmup failure doesn't crash boot; the lazy-start path catches the next
-    // attempt on first chat.
+    // SEQUENTIAL warmup — pre-boot the system-agent runtime(s) one at a time,
+    // DEFENSIVE/future-proofing (NOT the crash-loop fix — that is the process
+    // guards above). Today `SYSTEM_AGENT_TEMPLATES` has exactly ONE entry
+    // (town-guide/Nori), so this loop warms a single runtime; the 10 building
+    // teachers are seeded as DB rows by `ensureSystemNpcs` and lazy-start on
+    // first chat, NOT warmed here. Was a concurrent fire-and-forget; kept
+    // sequential so that IF more system agents are added later, their warms
+    // funnel one-at-a-time through the global init mutex
+    // (`packages/agent-runtime/src/eliza-runtime.ts`) + plugin-sql advisory lock
+    // instead of stacking pipelines whose peak contention could push a runtime's
+    // ElizaOS bootstrap service-registration past its internal 30s timeout
+    // (house-agent-seeder.ts defers Coralia's warm for the same reason). Detached
+    // (void IIFE) so boot + /health readiness never wait on the warm chain;
+    // per-agent errors swallowed (lazy-start re-warms on first chat).
     const systemUserId = await getSystemUserId();
-    for (const { slug, platformAgentId } of systemAgents) {
-      void agentOrchestrator
-        .ensureAgentRuntime(platformAgentId, systemUserId)
-        .then(() => console.log(`[API] Warmed system agent runtime: ${slug}`))
-        .catch((err) => console.error(`[API] Warmup failed for ${slug}:`, err));
-    }
+    void (async () => {
+      for (const { slug, platformAgentId } of systemAgents) {
+        try {
+          // ensureAgentRuntime RESOLVES null (does not throw) on a missing row /
+          // start-failure / the R1 wait-return-null branch — so a bare "Warmed"
+          // log would falsely claim success. Only log warm on a real runtime;
+          // otherwise WARN (lazy-start re-warms on first chat).
+          const runtime = await agentOrchestrator.ensureAgentRuntime(platformAgentId, systemUserId);
+          if (runtime) {
+            console.log(`[API] Warmed system agent runtime: ${slug}`);
+          } else {
+            console.warn(`[API] Warmup incomplete for ${slug} — runtime not ready (will lazy-start on first chat)`);
+          }
+        } catch (err) {
+          console.error(`[API] Warmup failed for ${slug}:`, err);
+        }
+      }
+    })();
 
     // Sanity: every template registered in SYSTEM_AGENT_TEMPLATES should
     // have been seeded. If a future slug gets skipped (e.g. DB error), log
@@ -526,15 +725,59 @@ startSimulation(arenaMode);
     console.error('[API] System NPC seeder failed:', err);
   }
 
+  // Agent-metaverse P1 — activate the ONE ClawVille-hosted autonomous "house"
+  // agent (warms its ElizaOS runtime, registers its in-world body, hands it to
+  // the autonomy driver) then START the driver's own ~30s perceive→decide→act
+  // loop. Ordered AFTER the system-NPC seeder (shares the system user + a warmed
+  // runtime) and AFTER startSimulation() above (registerAgentBot needs the live
+  // sim). Non-fatal: a house-agent failure must not crash boot — the world still
+  // runs, just without the autonomous agent. Driver starts regardless so a later
+  // (re)register still gets driven.
+  try {
+    const { ensureHouseAgent } = await import('./services/house-agent-seeder');
+    const { agentAutonomyDriver } = await import('./services/agent-autonomy-driver');
+    const house = await ensureHouseAgent();
+    if (house) {
+      console.log(
+        `[API] House agent active: body ${house.bodyId}${house.created ? ' [new]' : ''}`,
+      );
+    }
+    // Pre-warm the local fleet boxes so the driver's first decisions don't eat a
+    // cold-load (both boxes stay warm; work is load-balanced across them). Fire-and-
+    // forget + fault-tolerant — a down box just fails silently and the breaker handles
+    // it. Logs the resolved endpoint/route config for boot observability.
+    try {
+      const { getInferenceRouter, describeInferenceConfig } = await import('@clawville/agent-runtime');
+      console.log(describeInferenceConfig());
+      void getInferenceRouter()
+        .warmup()
+        .then(() => console.log('[API] Inference local boxes warmed'))
+        .catch(() => {});
+    } catch (e) {
+      console.warn('[API] Inference warmup skipped:', (e as Error)?.message);
+    }
+    agentAutonomyDriver.start();
+  } catch (err) {
+    console.error('[API] House agent activation failed (non-fatal):', err);
+  }
+
+  // P0 lifecycle-truth — NO eager boot-rehydration. v7 already survives a restart
+  // via LAZY restore (`agent-session-restore.ts`, wired into
+  // `validateLiveAgentSession`): on the first post-restart bearer use it rebuilds
+  // the session under the agent's ORIGINAL bearer. An eager rehydrator minting a
+  // fresh sessionId would COLLIDE with that (double body / override lockout), so
+  // it is intentionally absent. session-status (D-2) is restore-aware and the
+  // sweeper (D-3) removes the body on expiry.
+
   // Phase 6 — start the openclaw_bots session TTL sweeper. Runs every 5
   // min, reaps rows whose `session_expires_at` has passed and stops any
   // still-mounted Eliza runtimes. Without this, a disconnected Hermes /
   // OpenClaw agent row lives forever and `/api/agent/session-status`
   // keeps answering `connected: true` until someone calls the explicit
-  // unregister. See `services/openclaw-session-sweeper.ts`.
+  // unregister. See `services/agent-session-sweeper.ts`.
   try {
     const { startSessionSweeper } = await import(
-      './services/openclaw-session-sweeper'
+      './services/agent-session-sweeper'
     );
     startSessionSweeper();
   } catch (err) {
@@ -980,6 +1223,83 @@ startSimulation(arenaMode);
     // never seat/play/settle/refund and buy-ins would stay escrowed forever.
     tournamentManager.startStartTriggerSweeper();
     console.log('[API] Activity room manager + queue + poker-MTT sweeper ready');
+
+    // Poker CASH GAMES — HOUSE TABLES + seeded bots (2026-06-22). Order matters:
+    //   1. `cashHouseSeeder.ensure()` provisions the house-bank avatar (one-time
+    //      guarded bankroll mint) + the M bot avatars. MUST complete BEFORE the
+    //      scaler/tick run — the scaler reads `houseBankAvatarId()` (throws until
+    //      ensured) and the tick's fill claims bots from the pool.
+    //   2. `startCashHouseScaler()` keeps N open house tables/tier alive (gated on
+    //      CASH_HOUSE_SCALER_ENABLED; runs an immediate first pass so the lobby is
+    //      populated at boot).
+    //   3. `startCashTableTick()` self-drives seeded bots so a solo human + bots
+    //      (or a bot-only) table keeps dealing with no human poke.
+    // Non-fatal: a seeder/scaler/tick failure must not crash the whole API boot —
+    // cash poker just won't have house tables until the next restart.
+    try {
+      const { cashHouseSeeder } = await import('./services/poker/cash-house-seeder');
+      const { startCashHouseScaler } = await import('./services/poker/cash-house-scaler');
+      const { startCashTableTick } = await import('./services/poker/cash-table-tick');
+      await cashHouseSeeder.ensure();
+      startCashHouseScaler();
+      startCashTableTick();
+      console.log('[API] Poker cash-house seeder + scaler + tick ready');
+    } catch (err) {
+      console.error('[API] Poker cash-house init failed (non-fatal):', err);
+    }
+
+    // HOUSE TREASURY (Tokenomics T0, 2026-07-07) — the named fee-sink subject.
+    // `ensure()` provisions the system user + 0-CT avatar + the
+    // `treasury_subjects` ('house-fees') registry row, idempotently, with NO
+    // bankroll mint (pure revenue sink — contrast the cash-house bank above).
+    // Every routed fee site (cove rakes, baccarat commission, MTT rake,
+    // cosmetics/books, land sale/upgrade/rent) resolves the id lazily at settle
+    // time via `getHouseTreasuryAvatarId()`, which self-heals by re-running
+    // `ensure()` if this boot pass failed — so a failure here degrades fee
+    // routing to the pre-T0 burn behavior, never blocks a player settlement,
+    // and never crashes boot.
+    try {
+      const { houseTreasurySeeder } = await import('./services/house-treasury-seeder');
+      await houseTreasurySeeder.ensure();
+      console.log('[API] House-treasury seeder ready');
+    } catch (err) {
+      console.error(
+        '[API] House-treasury init failed (non-fatal; fees burn until the lazy resolver heals):',
+        err,
+      );
+    }
+
+    // CLV PRICE ORACLE (Tokenomics T0, 2026-07-07) — READ-ONLY price feed.
+    // Seeds the 30-min TWAP window from `clv_price_snapshots`, then polls the
+    // CLV price (Helius primary → keyless DexScreener fallback) every ~60s,
+    // writing a snapshot row + refreshing an in-memory spot/TWAP cache behind
+    // `getClvPrice()`. Fire-and-forget: a fetch/DB failure logs + degrades to
+    // last-known, never crashes boot. Read surface: GET /api/oracle/clv (admin).
+    // Never touches `avatars.clawTokens` or the ledger — all values are USD.
+    try {
+      const { startClvPriceOracle } = await import('./services/clv-price-oracle');
+      startClvPriceOracle();
+      console.log('[API] CLV price oracle started');
+    } catch (err) {
+      console.error('[API] CLV price oracle init failed (non-fatal):', err);
+    }
+
+    // CLV SWAP DRY-RUN WORKER (Tokenomics C3, 2026-07-07) — scans
+    // `clv_buy_queue` planned rows and LOGS the clip plan it WOULD execute
+    // (oracle quote + LP depth + planClips). NO signing, NO tx, NO row
+    // mutation — live execution is Codex-review-gated (CLV_SWAP_EXECUTE=true
+    // already refused to boot at module load via the static import above; a
+    // gate throw here is re-escalated to a crash rather than swallowed).
+    try {
+      startClvSwapWorker();
+      console.log('[API] CLV swap dry-run worker started');
+    } catch (err) {
+      if ((err as Error)?.message?.includes('Codex-review-gated')) {
+        console.error('[API] FATAL:', (err as Error).message);
+        process.exit(1);
+      }
+      console.error('[API] CLV swap dry-run worker init failed (non-fatal):', err);
+    }
   } catch (err) {
     console.error('[API] Activity portal init failed:', err);
   }
@@ -1002,12 +1322,29 @@ async function gracefulShutdown(signal: string) {
     const { getCollaborationBroker } = await import('@clawville/agent-runtime');
 
     stopSimulation();
+    // Agent-metaverse P1 — stop the autonomy driver's 30s loop.
+    try {
+      const { agentAutonomyDriver } = await import('./services/agent-autonomy-driver');
+      agentAutonomyDriver.stop();
+    } catch {
+      // If the driver module failed to load earlier, there's nothing to stop.
+    }
     activityRoomManager.stopSweeper();
     activityQueueService.stopMatchmaker();
     tournamentManager.stopStartTriggerSweeper();
+    // Poker cash-house intervals (scaler + self-drive tick). Import inside the
+    // handler so a failed import doesn't crash shutdown; both stops are idempotent.
+    try {
+      const { stopCashHouseScaler } = await import('./services/poker/cash-house-scaler');
+      const { stopCashTableTick } = await import('./services/poker/cash-table-tick');
+      stopCashHouseScaler();
+      stopCashTableTick();
+    } catch {
+      // If the modules failed to load earlier, there's nothing to stop.
+    }
     try {
       const { stopSessionSweeper } = await import(
-        './services/openclaw-session-sweeper'
+        './services/agent-session-sweeper'
       );
       stopSessionSweeper();
     } catch {
@@ -1018,6 +1355,19 @@ async function gracefulShutdown(signal: string) {
       stopLandRentSweeper();
     } catch {
       // If the sweeper module failed to load earlier, there's nothing to stop.
+    }
+    try {
+      const { stopClvPriceOracle } = await import('./services/clv-price-oracle');
+      stopClvPriceOracle();
+    } catch {
+      // If the oracle module failed to load earlier, there's nothing to stop.
+    }
+    // Tokenomics C3 — stop the CLV swap dry-run worker (statically imported;
+    // idempotent no-op when it never started).
+    try {
+      stopClvSwapWorker();
+    } catch {
+      // Nothing to stop.
     }
     await Promise.allSettled([
       npcSimulation.avatarAutonomyManager.shutdown(),

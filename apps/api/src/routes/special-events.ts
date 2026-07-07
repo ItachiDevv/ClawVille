@@ -42,6 +42,7 @@ import { z } from 'zod';
 import { and, eq } from 'drizzle-orm';
 import { db, avatars } from '@clawville/database';
 import { sessionMiddleware } from '../middleware/auth';
+import { requireNonGuestUser } from '../middleware/require-non-guest';
 import { fingerprintMiddleware } from '../middleware/fingerprint';
 import { adminOnly } from '../middleware/admin-only';
 import { resolveAgentSession } from '../middleware/require-auth-or-agent';
@@ -260,7 +261,7 @@ specialEventsRouter.get('/:slug', async (c) => {
 });
 
 // ── POST /:slug/signup (AGENT-CAPABLE) ────────────────────────────────────────
-specialEventsRouter.post('/:slug/signup', async (c) => {
+specialEventsRouter.post('/:slug/signup', requireNonGuestUser, async (c) => {
   const parsed = slugParamSchema.safeParse(c.req.param());
   if (!parsed.success) throw new HTTPException(400, { message: 'invalid_slug' });
 

@@ -84,12 +84,13 @@ import {
   blackjackShoes,
   blackjackHands,
   coveGameEvents,
-  openclawBots,
+  agentBots,
   type BlackjackShoe,
   type BlackjackHand,
 } from '@clawville/database';
 import { sessionMiddleware, requireAuth } from '../middleware/auth';
 import { resolveAgentSession } from '../middleware/require-auth-or-agent';
+import { isGuestUser } from '../middleware/require-non-guest';
 import { npcSimulation } from '../services/npc-simulation';
 import { createServerSeed } from '../services/provable-rng';
 import {
@@ -111,7 +112,9 @@ import {
   debitClawTokens,
   InsufficientTokensError,
 } from '../services/claw-token-ledger';
-import { logEventFromContext } from '../services/event-logger';
+import { getHouseTreasuryAvatarId } from '../services/house-treasury-seeder';
+import { logEventFromContext, logEventFromContextReturningId } from '../services/event-logger';
+import { publishCoveSettlement } from '../services/agent-settlement-publish';
 import { recordBlackjackSkillMemory } from '../services/game-skill-memory';
 import type { AppContext } from '../types';
 
@@ -230,6 +233,21 @@ type BjSubject =
   | { kind: 'guest'; userId: null; avatarId: null; agentId: null; sessionId: null; guestFpHash: string };
 
 /**
+ * The DEMO `kind:'guest'` subject (session/shoe demo balance, ZERO ledger),
+ * keyed on the request fingerprint hash. Used by BOTH an anonymous visitor
+ * AND a guest ACCOUNT (`is_guest` Lucia user) — the founder-ruling 2026-07-06
+ * fully-demo guest economy. fpHash is always present (fingerprintMiddleware
+ * throws at API boot if FINGERPRINT_SECRET is unset); the check is defense-in-depth.
+ */
+function guestDemoSubject(c: { get(key: 'fpHash'): string }): BjSubject {
+  const fpHash = c.get('fpHash');
+  if (!fpHash) {
+    throw new HTTPException(500, { message: 'fpHash_missing_for_guest_request' });
+  }
+  return { kind: 'guest', userId: null, avatarId: null, agentId: null, sessionId: null, guestFpHash: fpHash };
+}
+
+/**
  * Resolve the request subject. Precedence: Lucia human → agent session → guest.
  *
  * Async (was sync) because the agent branch does a DB lookup to map the opaque
@@ -250,6 +268,17 @@ async function getSubject(c: {
 }): Promise<BjSubject> {
   const user = c.get('user');
   if (user) {
+    // Guest ACCOUNTS run the FULLY-DEMO economy (founder ruling 2026-07-06): an
+    // `is_guest` Lucia user has an avatar + a 100-CT SOFT balance but must NEVER
+    // bet/win/lose REAL CT in the Cove. Route them to the SAME demo `kind:'guest'`
+    // subject an anonymous visitor gets — session/shoe demo balance, ZERO ledger.
+    // NOT a 403: guests keep playing the Cove for fun on demo CT. Non-guest humans
+    // fall through to the real-CT `kind:'user'` path below. A connected/hosted
+    // agent resolves via the agent-session header (a guest is never an agent, E5),
+    // so real-CT agent parity is untouched.
+    if (await isGuestUser(user.id)) {
+      return guestDemoSubject(c);
+    }
     return { kind: 'user', userId: user.id, avatarId: null, agentId: null, sessionId: null, guestFpHash: null };
   }
 
@@ -292,11 +321,7 @@ async function getSubject(c: {
     };
   }
 
-  const fpHash = c.get('fpHash');
-  if (!fpHash) {
-    throw new HTTPException(500, { message: 'fpHash_missing_for_guest_request' });
-  }
-  return { kind: 'guest', userId: null, avatarId: null, agentId: null, sessionId: null, guestFpHash: fpHash };
+  return guestDemoSubject(c);
 }
 
 /**
@@ -1846,6 +1871,35 @@ async function settleHand(
         );
         balanceAfter = credit.balanceAfter;
       }
+      // ── T0 fee routing (2026-07-07): materialize the rake as house revenue ──
+      // The rake was previously a silent reduced-mint burn (withheld from the
+      // player's credit and never landing anywhere). Route it to the named
+      // house-treasury subject IN THIS SAME settle tx — first-settle branch
+      // only (the settled/idempotency replays return before this point, so a
+      // replay can never re-credit), ledger-subject branch only (guest demo
+      // rake stays demo — crediting it would MINT real CT from demo chips).
+      // PLAYER-SIDE UNCHANGED: the player still receives exactly
+      // `raked.rakedPayout` above. rake ≤ totalPayout ≤ MAX_SAFE (checked).
+      const rakeNumber = Number(raked.rake);
+      if (Number.isInteger(rakeNumber) && rakeNumber > 0) {
+        const treasuryId = await getHouseTreasuryAvatarId();
+        if (treasuryId) {
+          await creditClawTokens(
+            {
+              avatarId: treasuryId,
+              amount: rakeNumber,
+              reason: 'house_fee_blackjack_rake',
+              source: 'system',
+              metadata: { shoeId, handId, handIndex },
+            },
+            tx,
+          );
+        } else {
+          console.error(
+            `[cove-blackjack] house treasury unavailable — rake ${rakeNumber} CT burned (pre-T0 behavior) for hand ${handId}`,
+          );
+        }
+      }
     } else {
       // Guest demo accounting — no ledger writes. The base stake already folded
       // into shoeLock.total_bet at deal; here we add only the incremental stake
@@ -1972,7 +2026,10 @@ async function settleHand(
     balance = txResult.balanceAfter;
   }
 
-  void logEventFromContext(c, {
+  // Durable settle row (UNCHANGED shape) — now capturing the events.id so the
+  // D7 slice-1 live settlement-confirm can cite it as the SSE cursor. The write
+  // is byte-identical to before; only the return value is used.
+  const settleLogP = logEventFromContextReturningId(c, {
     eventType: 'cove.blackjack.hand.settled',
     userId: ledgerUserId(subject),
     avatarId: avatar?.id ?? null,
@@ -1989,6 +2046,27 @@ async function settleHand(
       replay: txResult.replay,
     },
   });
+  // D7 slice-1 (DELIVERY-ONLY; money-lens review): live settlement-confirm to an
+  // ONLINE agent. Durability is the row above; this is fire-and-forget and can
+  // NEVER affect settlement (no ledger/control change). Fresh settles only — a
+  // concurrent-settle replay already delivered its confirm on the first pass.
+  if (subject.kind === 'agent' && !txResult.replay) {
+    publishCoveSettlement({
+      agentId: subject.agentId,
+      game: 'blackjack',
+      eventIdPromise: settleLogP,
+      payload: {
+        handId: hand.id,
+        shoeId,
+        handIndex: hand.handIndex,
+        bet: hand.bet,
+        payout: hand.payout,
+        net: hand.net,
+      },
+    });
+  } else {
+    void settleLogP;
+  }
 
   // ── Learn-through-play (Rule E5 / msg 6) ───────────────────────────────────
   // On a FRESH settle (never on an idempotent replay — that would double-write
@@ -2389,15 +2467,15 @@ coveBlackjackRouter.post('/agent/decide', requireAuth, async (c) => {
   // Resolve the human's bound connected agent + its LIVE session client. The
   // agent must be currently connected (a live npc-simulation session) for us to
   // synchronously ask it; otherwise there's nothing to relay → fall back.
-  const bot = await db.query.openclawBots.findFirst({
-    where: eq(openclawBots.userId, user.id),
+  const bot = await db.query.agentBots.findFirst({
+    where: eq(agentBots.userId, user.id),
     columns: { agentId: true },
   });
   if (!bot) return c.json({ error: 'no_connected_agent' }, 404);
   const liveSessions = npcSimulation.findActiveSessionsByAgentIds([bot.agentId]);
   const liveSessionId = liveSessions[0];
   if (!liveSessionId) return c.json({ error: 'no_connected_agent' }, 404);
-  const client = npcSimulation.getOpenClawClientBySession(liveSessionId);
+  const client = npcSimulation.getAgentBotClientBySession(liveSessionId);
   if (!client) return c.json({ error: 'no_connected_agent' }, 404);
   // nanoclaw/self-managed agents pull world-state + decide client-side; they
   // can't be synchronously asked via gateway push (chat() returns ''), so the

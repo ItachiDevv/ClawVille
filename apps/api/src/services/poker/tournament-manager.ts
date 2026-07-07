@@ -163,6 +163,17 @@ export interface TournamentManagerDeps {
    * + new tables. Best-effort: a throw is logged and never blocks the move.
    */
   onMoveFn?: (info: MttMoveInfo) => Promise<void> | void;
+  /**
+   * T0 fee routing (2026-07-07) — house-treasury resolver seam. At settle, a
+   * positive tournament rake is credited to this avatarId via
+   * `this.ledger.creditClawTokens(..., tx)` in the SAME settle transaction as
+   * the prize credits (reason `house_fee_mtt_rake`). Defaults to the real
+   * `getHouseTreasuryAvatarId()` (lazy-imported so unit tests that never rake
+   * touch no real DB). MUST resolve to null — never throw — when the treasury
+   * is unavailable: the settle then proceeds with the pre-T0 burn behavior for
+   * the rake (a missing treasury must never strand a field's prizes).
+   */
+  resolveTreasuryAvatarId?: () => Promise<string | null>;
 }
 
 /** One leaderboard placement emission (one per placed entrant at settle). */
@@ -465,6 +476,8 @@ export class TournamentManager {
   private readonly seedFn: () => string;
   private readonly shuffleFn: (n: number) => number;
   private readonly emitPlacementFn: (emit: PlacementEmit) => void | Promise<void>;
+  /** T0 fee routing — house-treasury resolver (null = unavailable; never throws). */
+  private readonly resolveTreasuryAvatarId: () => Promise<string | null>;
   // Mutable so the production singleton can have its WS-room seam wired LATER by
   // the bridge via `setSeatHandlers`. Tests inject them at construction via deps.
   private onSeatFn: TournamentManagerDeps['onSeatFn'] | null;
@@ -534,6 +547,16 @@ export class TournamentManager {
     this.onSeatFn = deps.onSeatFn ?? null;
     this.onTournamentEndFn = deps.onTournamentEndFn ?? null;
     this.onMoveFn = deps.onMoveFn ?? null;
+    // T0 fee routing: default = the real house-treasury resolver, LAZY-imported
+    // at call time so constructing a TM (incl. in unit tests, where rakeBps is
+    // usually 0 and the resolver never fires) touches no real DB. The real
+    // resolver never throws — it returns null when the treasury is unavailable.
+    this.resolveTreasuryAvatarId =
+      deps.resolveTreasuryAvatarId ??
+      (async () => {
+        const { getHouseTreasuryAvatarId } = await import('../house-treasury-seeder');
+        return getHouseTreasuryAvatarId();
+      });
 
     // The TM EXCLUSIVELY owns the hand-complete handler on ITS sim instance. The
     // sim fires it with the sim tableId; we route to the owning tournament+table.
@@ -1890,6 +1913,40 @@ export class TournamentManager {
           fpHash: e.fp_hash,
           ipPrefixHash: e.ip_prefix_hash,
         });
+      }
+
+      // ── T0 fee routing (2026-07-07): materialize the tournament rake ────────
+      // The rake was withheld from the prize pool (netPool = pool - rake) and
+      // previously vanished — the buy-in debits minus the prize credits burned
+      // it. Credit it to the house treasury IN THIS SAME settle tx, fresh-settle
+      // branch only (the `settled_at` replay + the cancelled path return above,
+      // so a re-settle can never re-credit). Conservation extends to:
+      //   sum(prizes) + treasuryCredit == prizePoolCt.
+      // PLAYER-SIDE UNCHANGED: every prize amount above is exactly what it was.
+      // Dormant today (rakeBps defaults 0 ⇒ rake 0n ⇒ no-op) but WIRED. A null
+      // resolver result (treasury unavailable) degrades to the pre-T0 burn — it
+      // must never strand the field's prizes.
+      if (rake > 0n) {
+        const rakeNumber = Number(rake);
+        if (Number.isInteger(rakeNumber) && rakeNumber > 0) {
+          const treasuryId = await this.resolveTreasuryAvatarId();
+          if (treasuryId) {
+            await this.ledger.creditClawTokens(
+              {
+                avatarId: treasuryId,
+                amount: rakeNumber,
+                reason: 'house_fee_mtt_rake',
+                source: 'system',
+                metadata: { tournamentId, rakeBps: Number(rakeBps), prizePoolCt: pool.toString() },
+              },
+              tx,
+            );
+          } else {
+            console.error(
+              `[poker-mtt] house treasury unavailable — rake ${rakeNumber} CT burned (pre-T0 behavior) for tournament ${tournamentId}`,
+            );
+          }
+        }
       }
 
       await tx.execute(

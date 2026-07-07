@@ -72,6 +72,40 @@ export const NPC_BUILDING_CENTERS: Record<string, { x: number; y: number }> = Ob
   Object.entries(NPC_HOME_POSITIONS).map(([id, p]) => [id, { x: p.homeX, y: p.homeY }])
 );
 
+/**
+ * Building-interaction proximity radius, in world units (wu = game-space px;
+ * 1 tile = 32 wu; world = 22528 wu). The SINGLE source of truth for "close
+ * enough to interact with a teacher/building" — a body must be within this
+ * distance of the target's center for a `talk_to_npc` / `visit-building` to
+ * count (agent-metaverse P1 anti-abuse backbone: no walk/proximity → no
+ * interaction → no reward). Replaces the ad-hoc `VISIT_RADIUS = 2000` on the
+ * authed visit path AND backs the new server-side proximity gate in
+ * `npc-simulation.executeHatcherAction` (talk_to_npc).
+ *
+ * 1000 wu ≈ 2 building-widths (building zone = 14 tiles = 448 wu) / ~½ the
+ * inter-building gap on the ring — clearly "at this teacher," with slack for
+ * the pathfind entrance stand-off. Tunable after watching real arrivals.
+ * Founder-signed (agent-metaverse-p1-plan.md §48).
+ *
+ * EDGE-DISTANCE SEMANTICS (2026-07-02): the gates now measure this margin from
+ * the building's collider FOOTPRINT edge (`buildingEdgeDistanceGamePx`), not the
+ * center — a center-radius gate was geometrically unsatisfiable for the larger
+ * buildings (their walkable approach is >1000 wu from center). ACCEPTED TRADEOFF
+ * (adversarial-reviewed 2026-07-02): the original "no overlap with the neighbour"
+ * property assumed a center test; measured from the edge with a 1000 wu margin,
+ * two ADJACENT LARGE footprints (e.g. messaging-channels ↔ api-integrations, both
+ * 850 half-extent) dilate into overlapping claim-zones, so an agent standing
+ * between them can claim ~2–3 adjacent teachers from one spot instead of walking
+ * to each. Bounded, NOT a faucet: building rewards are idempotent per
+ * (avatar, building, reason, UTC-day) + capped 10/day, the agent must be in the
+ * ring and must name each building, and there is no wrong-building misfire.
+ * PROPER FIX (tracked follow-up): make `/move` + `enter_building` target a
+ * reachable point just OUTSIDE the AABB edge so the pathfind stand-off shrinks,
+ * then drop this margin to ~250–300 wu to restore the no-neighbour-overlap
+ * property. Not done here to avoid re-breaking the (proven-live) arrival path.
+ */
+export const BUILDING_INTERACTION_RADIUS = 1000;
+
 // Wandering NPC species distribution — 4 model categories:
 //   milady   (neo-chibi VRMs): milady_official_1..8                      (8 of 14) — free wanderers
 //   hermes   (VRMs):           hermes_female, hermes_male, tekk          (3 of 14) — free wanderers

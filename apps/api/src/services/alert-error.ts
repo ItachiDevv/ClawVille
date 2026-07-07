@@ -13,6 +13,8 @@
  * bug from drowning the Telegram chat.
  */
 
+import { redactBearerTokens } from './log-redact';
+
 const TOKEN = process.env.ITACHI_DEBUG_BOT_TOKEN;
 const CHAT_ID = process.env.ITACHI_DEBUG_CHAT_ID;
 
@@ -40,7 +42,13 @@ export interface AlertErrorParams {
 }
 
 export async function alertError(params: AlertErrorParams): Promise<void> {
-  const { severity, source, message, context } = params;
+  const { severity, source, context } = params;
+  // Redact any agent bearer sessionId from the message at the TOP — covers ALL
+  // three callers (event-logger double-failure, the Hono onError uncaught-error
+  // path whose message is `Uncaught error on <method> <path>` and whose path can
+  // be `/api/agent/oc-<bearer>/…`, and explicit business-logic failures). Without
+  // this the raw, replayable real-CT bearer lands on Telegram + stdout/Coolify.
+  const message = redactBearerTokens(params.message);
 
   if (!TOKEN || !CHAT_ID) {
     console.warn('[alert-error] Telegram credentials not configured, skipping alert', {
@@ -64,7 +72,10 @@ export async function alertError(params: AlertErrorParams): Promise<void> {
   ];
   if (context) {
     lines.push('```');
-    lines.push(JSON.stringify(context, null, 2));
+    // Redact the STRING form of the context — its `error`/`stack` fields on the
+    // onError path serialize the request URL (raw bearer) and any bearer embedded
+    // in an error message. Redact after stringify so nested values are covered.
+    lines.push(redactBearerTokens(JSON.stringify(context, null, 2)));
     lines.push('```');
   }
   if (suppressedCount > 0) {

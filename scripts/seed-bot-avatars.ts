@@ -123,6 +123,10 @@ async function seed(): Promise<void> {
       // only exist as DB rows so `activity_room_participants.avatar_id` FK
       // stays valid. The matcher attaches them with subjectType='bot'.
       clawTokens: 0, // bots do not earn or spend
+      // F1 vCLAW provenance: mirror clawTokens (0) into softBalance so the
+      // avatars_vclaw_balance_sum CHECK holds (0 = 0+0+0). Without this the column
+      // DEFAULT 100 makes a bare insert 100, breaking 0 = 100 for these bot rows.
+      softBalance: 0,
       isActive: false, // not visible in NPC simulation
       agentCategory: 'openclaw',
       modelKey: 'lobster',

@@ -2,7 +2,7 @@
  * SSRF-guard regression tests for the Hatcher cognition proxy (Phase A, fixer
  * pass 2026-06-01).
  *
- * The cognition seam (`OpenClawClient.chat()` case 'hatcher-proxy') POSTs to a
+ * The cognition seam (`AgentSubstrateClient.chat()` case 'hatcher-proxy') POSTs to a
  * PARTNER-SUPPLIED URL. Two blocking SSRF findings drove these:
  *   1. The hostname-string allowlist cannot stop an IP literal that points at
  *      a private/loopback/link-local host (169.254.169.254 metadata, 127.0.0.1,
@@ -11,7 +11,7 @@
  *      attacker subdomain). The async resolved-validator must reject that.
  *
  * (The redirect-follow vector — a 3xx from an allowlisted host bouncing us to
- * an internal address — is closed in `openclaw-client.ts` via redirect:'manual'
+ * an internal address — is closed in `agent-substrate-client.ts` via redirect:'manual'
  * + a hard 3xx fail; that path needs a live fetch so it's smoke-tested on
  * staging, per the casino live-smoke rule.)
  */

@@ -37,15 +37,27 @@ import {
   NPC_BUILDING_CENTERS,
   BUILDING_ACTIVITIES,
   ACTIVITY_EMOJIS,
+  MAP_LOCATIONS,
 } from '@clawville/shared';
+
+// id→display-name for the directive resolver (P3 slice 2). Lets a human/agent
+// directive name a building by its label ("Squidward's House") as well as its id
+// ("memory-rag"). Built once from the canonical MAP_LOCATIONS roster.
+const BUILDING_LABELS: Record<string, string> = Object.fromEntries(
+  MAP_LOCATIONS.map((l) => [l.id, l.name]),
+);
 import { db, activityLog } from '@clawville/database';
 
 import { findPath } from './pathfinding';
 import { creditClawTokens } from './claw-token-ledger';
 import { buildRuntimeServices } from './runtime-services-adapter';
+import { getAgentDirectiveForAvatar, formatDirectiveContext } from './agent-autonomy-state';
 
 const VISIT_CHAT_COOLDOWN_MS = 30_000;
 const IDLE_UNREGISTER_MS = 30 * 60 * 1000; // 30 min — auto-cleanup abandoned avatars
+// P3 slice 2: bound the per-plan directive read so a slow/absent DB can never
+// stall a planning decision — on timeout we simply plan without the directive.
+const DIRECTIVE_FETCH_TIMEOUT_MS = 1_500;
 
 export class AvatarSimulationBridge {
   private stateStore: AvatarStateStore;
@@ -65,6 +77,7 @@ export class AvatarSimulationBridge {
     this.runtime = new SimulationRuntime({
       stateStore: this.stateStore,
       buildingCenters: NPC_BUILDING_CENTERS,
+      buildingLabels: BUILDING_LABELS,
       buildingActivities: BUILDING_ACTIVITIES,
       activityEmojis: ACTIVITY_EMOJIS,
       pathfind: findPath,
@@ -101,7 +114,7 @@ export class AvatarSimulationBridge {
       // Phase 3: inject services so economic actions (BUY_ITEM, LEARN_SKILL) can execute.
       // buildRuntimeServices passes the avatar-keyed params straight through to
       // the ledger; the only translation it does now is mapping runtime-emitted
-      // source labels (e.g. 'shop', 'bazaar') to the ledger's enum values.
+      // source labels (e.g. 'shop') to the ledger's enum values.
       services: buildRuntimeServices(db),
     });
 
@@ -221,19 +234,53 @@ export class AvatarSimulationBridge {
         continue;
       }
 
-      // 3. Plan next action when idle + cooldown elapsed (with in-flight guard)
+      // 3. Plan next action when idle + cooldown elapsed (with in-flight guard).
+      // P3 slice 2: read the human's current directive (fail-soft, bounded) and
+      // pass it as a top-priority bias into the planner.
       if (avatar.activity === 'idle') {
         avatar.behaviorCooldown--;
         if (avatar.behaviorCooldown <= 0 && !this.inFlightPlanners.has(avatar.userId)) {
           avatar.behaviorCooldown = 100;
           this.inFlightPlanners.add(avatar.userId);
-          this.runtime
-            .planAvatarNextAction(avatar.userId)
+          void this.planWithDirective(avatar.userId, avatar.avatarId)
             .catch((err) => console.error('[AvatarSimBridge] planAvatarNextAction failed:', err))
             .finally(() => this.inFlightPlanners.delete(avatar.userId));
         }
       }
     }
+  }
+
+  /**
+   * P3 slice 2 — read the avatar's current directive (bounded + fail-soft) and
+   * run the planner with it as top-priority context. A slow/absent DB or a
+   * missing directive both degrade to today's byte-identical planning.
+   */
+  private async planWithDirective(userId: string, avatarId: string): Promise<void> {
+    let directiveContext: string | null = null;
+    try {
+      const directive = await this.readDirectiveBounded(avatarId);
+      directiveContext = directive ? formatDirectiveContext(directive.text) : null;
+    } catch {
+      /* fail-soft — plan without a directive */
+    }
+    if (!this.runtime) return;
+    await this.runtime.planAvatarNextAction(userId, { directiveContext });
+  }
+
+  /** Directive read raced against DIRECTIVE_FETCH_TIMEOUT_MS; null on timeout/err. */
+  private readDirectiveBounded(avatarId: string) {
+    return new Promise<Awaited<ReturnType<typeof getAgentDirectiveForAvatar>>>((resolve) => {
+      const timer = setTimeout(() => resolve(null), DIRECTIVE_FETCH_TIMEOUT_MS);
+      getAgentDirectiveForAvatar(avatarId)
+        .then((d) => {
+          clearTimeout(timer);
+          resolve(d);
+        })
+        .catch(() => {
+          clearTimeout(timer);
+          resolve(null);
+        });
+    });
   }
 
   async shutdown(): Promise<void> {

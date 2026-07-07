@@ -3,13 +3,13 @@ import { HTTPException } from 'hono/http-exception';
 import { z } from 'zod';
 import type { AppContext } from '../types';
 import { sessionMiddleware, requireAuth } from '../middleware/auth';
+import { requireNonGuestUser } from '../middleware/require-non-guest';
 import { creditClawTokens } from '../services/claw-token-ledger';
 import { logEventFromContext } from '../services/event-logger';
 import {
   db,
   users,
   avatars,
-  publishedSkills,
   quests,
   questSubmissions,
   questRewards,
@@ -83,7 +83,6 @@ const createQuestSchema = z.object({
   description: z.string().min(10).max(5000),
   tier: z.enum(['side_quest', 'main_quest', 'legendary']),
   tokenReward: z.number().int().min(1),
-  skillRewardId: z.string().uuid().optional(),
   titleReward: z.string().max(100).optional(),
   maxCompletions: z.number().int().min(1).default(1),
   requirements: z.string().max(5000).optional(),
@@ -97,7 +96,6 @@ const updateQuestSchema = z.object({
   tier: z.enum(['side_quest', 'main_quest', 'legendary']).optional(),
   status: z.enum(['draft', 'active', 'completed', 'archived']).optional(),
   tokenReward: z.number().int().min(1).optional(),
-  skillRewardId: z.string().uuid().nullable().optional(),
   titleReward: z.string().max(100).nullable().optional(),
   maxCompletions: z.number().int().min(1).optional(),
   requirements: z.string().max(5000).nullable().optional(),
@@ -128,7 +126,6 @@ questRoutes.get('/my-quests', requireAuth, async (c) => {
       questDescription: quests.description,
       questTier: quests.tier,
       questTokenReward: quests.tokenReward,
-      questSkillRewardId: quests.skillRewardId,
       questTitleReward: quests.titleReward,
       questStatus: quests.status,
     })
@@ -153,7 +150,6 @@ questRoutes.get('/my-quests', requireAuth, async (c) => {
       description: r.questDescription,
       tier: r.questTier,
       tokenReward: r.questTokenReward,
-      skillRewardId: r.questSkillRewardId,
       titleReward: r.questTitleReward,
       status: r.questStatus,
     },
@@ -175,11 +171,9 @@ questRoutes.get('/quest-log', requireAuth, async (c) => {
       questTitle: quests.title,
       questTier: quests.tier,
       questDescription: quests.description,
-      skillName: publishedSkills.name,
     })
     .from(questRewards)
     .innerJoin(quests, eq(questRewards.questId, quests.id))
-    .leftJoin(publishedSkills, eq(questRewards.skillId, publishedSkills.id))
     .where(eq(questRewards.avatarId, avatar.id))
     .orderBy(desc(questRewards.claimedAt));
 
@@ -188,8 +182,6 @@ questRoutes.get('/quest-log', requireAuth, async (c) => {
     questId: r.reward.questId,
     submissionId: r.reward.submissionId,
     tokensAwarded: r.reward.tokensAwarded,
-    skillId: r.reward.skillId,
-    skillName: r.skillName ?? null,
     titleAwarded: r.reward.titleAwarded,
     claimedAt: r.reward.claimedAt.toISOString(),
     quest: {
@@ -224,19 +216,6 @@ questRoutes.post('/admin/create', requireAuth, async (c) => {
 
   const data = parsed.data;
 
-  // If skillRewardId provided, verify it exists
-  if (data.skillRewardId) {
-    const [skill] = await db
-      .select({ id: publishedSkills.id })
-      .from(publishedSkills)
-      .where(eq(publishedSkills.id, data.skillRewardId))
-      .limit(1);
-
-    if (!skill) {
-      throw new HTTPException(404, { message: 'Skill reward not found' });
-    }
-  }
-
   const [quest] = await db
     .insert(quests)
     .values({
@@ -244,7 +223,6 @@ questRoutes.post('/admin/create', requireAuth, async (c) => {
       description: data.description,
       tier: data.tier,
       tokenReward: data.tokenReward,
-      skillRewardId: data.skillRewardId ?? null,
       titleReward: data.titleReward ?? null,
       maxCompletions: data.maxCompletions,
       requirements: data.requirements ?? null,
@@ -263,7 +241,6 @@ questRoutes.post('/admin/create', requireAuth, async (c) => {
       tier: quest.tier,
       status: quest.status,
       tokenReward: quest.tokenReward,
-      skillRewardId: quest.skillRewardId,
       titleReward: quest.titleReward,
       maxCompletions: quest.maxCompletions,
       currentCompletions: quest.currentCompletions,
@@ -365,8 +342,6 @@ questRoutes.patch('/admin/:id', requireAuth, async (c) => {
   if (data.tier !== undefined) updates.tier = data.tier;
   if (data.status !== undefined) updates.status = data.status;
   if (data.tokenReward !== undefined) updates.tokenReward = data.tokenReward;
-  if (data.skillRewardId !== undefined)
-    updates.skillRewardId = data.skillRewardId;
   if (data.titleReward !== undefined) updates.titleReward = data.titleReward;
   if (data.maxCompletions !== undefined)
     updates.maxCompletions = data.maxCompletions;
@@ -391,7 +366,6 @@ questRoutes.patch('/admin/:id', requireAuth, async (c) => {
       tier: updated.tier,
       status: updated.status,
       tokenReward: updated.tokenReward,
-      skillRewardId: updated.skillRewardId,
       titleReward: updated.titleReward,
       maxCompletions: updated.maxCompletions,
       currentCompletions: updated.currentCompletions,
@@ -474,48 +448,23 @@ questRoutes.post('/admin/:submissionId/review', requireAuth, async (c) => {
         metadata: { questId: quest.id, submissionId: claimed.id },
       }, tx);
 
-      // 3. If quest has skillRewardId, add skill to avatar_inventory
-      if (quest.skillRewardId) {
-        const itemId = `skill-${quest.skillRewardId}`;
-        const existingItem = await tx.query.avatarInventory.findFirst({
-          where: and(
-            eq(avatarInventory.avatarId, claimed.avatarId),
-            eq(avatarInventory.itemId, itemId)
-          ),
-        });
-
-        if (existingItem) {
-          await tx
-            .update(avatarInventory)
-            .set({ quantity: existingItem.quantity + 1 })
-            .where(eq(avatarInventory.id, existingItem.id));
-        } else {
-          await tx.insert(avatarInventory).values({
-            avatarId: claimed.avatarId,
-            itemId,
-            quantity: 1,
-          });
-        }
-      }
-
-      // 4. Create quest_reward record
+      // 3. Create quest_reward record
       await tx.insert(questRewards).values({
         submissionId,
         avatarId: claimed.avatarId,
         questId: quest.id,
         tokensAwarded: quest.tokenReward,
-        skillId: quest.skillRewardId ?? null,
         titleAwarded: quest.titleReward ?? null,
       });
 
-      // 5. Increment quest.currentCompletions
+      // 4. Increment quest.currentCompletions
       const newCompletions = (quest.currentCompletions ?? 0) + 1;
       const questUpdates: Record<string, unknown> = {
         currentCompletions: newCompletions,
         updatedAt: now,
       };
 
-      // 6. If currentCompletions >= maxCompletions, mark quest as 'completed'
+      // 5. If currentCompletions >= maxCompletions, mark quest as 'completed'
       if (quest.maxCompletions && newCompletions >= quest.maxCompletions) {
         questUpdates.status = 'completed';
       }
@@ -524,7 +473,6 @@ questRoutes.post('/admin/:submissionId/review', requireAuth, async (c) => {
 
       return {
         tokensAwarded: quest.tokenReward,
-        skillRewardId: quest.skillRewardId ?? null,
         titleAwarded: quest.titleReward ?? null,
         questCompleted:
           quest.maxCompletions != null && newCompletions >= quest.maxCompletions,
@@ -605,25 +553,6 @@ questRoutes.get('/:id', async (c) => {
     countByStatus[row.status] = row.count;
   }
 
-  // Get skill reward details if present
-  let skillReward = null;
-  if (quest.skillRewardId) {
-    const [skill] = await db
-      .select({
-        id: publishedSkills.id,
-        name: publishedSkills.name,
-        description: publishedSkills.description,
-        rarity: publishedSkills.rarity,
-      })
-      .from(publishedSkills)
-      .where(eq(publishedSkills.id, quest.skillRewardId))
-      .limit(1);
-
-    if (skill) {
-      skillReward = skill;
-    }
-  }
-
   return c.json({
     quest: {
       id: quest.id,
@@ -632,8 +561,6 @@ questRoutes.get('/:id', async (c) => {
       tier: quest.tier,
       status: quest.status,
       tokenReward: quest.tokenReward,
-      skillRewardId: quest.skillRewardId,
-      skillReward,
       titleReward: quest.titleReward,
       maxCompletions: quest.maxCompletions,
       currentCompletions: quest.currentCompletions,
@@ -650,7 +577,7 @@ questRoutes.get('/:id', async (c) => {
 // ---------------------------------------------------------------------------
 // 3. POST /:id/accept — Accept a quest (auth)
 // ---------------------------------------------------------------------------
-questRoutes.post('/:id/accept', requireAuth, async (c) => {
+questRoutes.post('/:id/accept', requireAuth, requireNonGuestUser, async (c) => {
   const user = c.get('user') as { id: string };
   const id = c.req.param('id');
   validateUuid(id, 'Quest');
@@ -720,7 +647,7 @@ questRoutes.post('/:id/accept', requireAuth, async (c) => {
 // ---------------------------------------------------------------------------
 // 4. POST /:id/start — Mark submission as in_progress (auth)
 // ---------------------------------------------------------------------------
-questRoutes.post('/:id/start', requireAuth, async (c) => {
+questRoutes.post('/:id/start', requireAuth, requireNonGuestUser, async (c) => {
   const user = c.get('user') as { id: string };
   const id = c.req.param('id'); // quest ID
   validateUuid(id, 'Quest');
@@ -763,7 +690,7 @@ questRoutes.post('/:id/start', requireAuth, async (c) => {
 // ---------------------------------------------------------------------------
 // 5. POST /:id/submit — Submit completed work (auth)
 // ---------------------------------------------------------------------------
-questRoutes.post('/:id/submit', requireAuth, async (c) => {
+questRoutes.post('/:id/submit', requireAuth, requireNonGuestUser, async (c) => {
   const user = c.get('user') as { id: string };
   const id = c.req.param('id'); // quest ID
   validateUuid(id, 'Quest');
@@ -872,7 +799,6 @@ questRoutes.get('/', async (c) => {
       tier: quests.tier,
       status: quests.status,
       tokenReward: quests.tokenReward,
-      skillRewardId: quests.skillRewardId,
       titleReward: quests.titleReward,
       maxCompletions: quests.maxCompletions,
       currentCompletions: quests.currentCompletions,
@@ -894,7 +820,6 @@ questRoutes.get('/', async (c) => {
     tier: r.tier,
     status: r.status,
     tokenReward: r.tokenReward,
-    skillRewardId: r.skillRewardId,
     titleReward: r.titleReward,
     maxCompletions: r.maxCompletions,
     currentCompletions: r.currentCompletions,

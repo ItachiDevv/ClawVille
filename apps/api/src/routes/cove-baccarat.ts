@@ -87,6 +87,7 @@ import {
 } from '@clawville/database';
 import { sessionMiddleware } from '../middleware/auth';
 import { resolveAgentSession } from '../middleware/require-auth-or-agent';
+import { isGuestUser } from '../middleware/require-non-guest';
 import { createServerSeed } from '../services/provable-rng';
 import {
   playCoup,
@@ -105,7 +106,9 @@ import {
   debitClawTokens,
   InsufficientTokensError,
 } from '../services/claw-token-ledger';
-import { logEventFromContext } from '../services/event-logger';
+import { getHouseTreasuryAvatarId } from '../services/house-treasury-seeder';
+import { logEventFromContext, logEventFromContextReturningId } from '../services/event-logger';
+import { publishCoveSettlement } from '../services/agent-settlement-publish';
 import type { AppContext } from '../types';
 
 export const coveBaccaratRouter = new Hono<AppContext>();
@@ -217,6 +220,21 @@ type BacSubject =
   | { kind: 'guest'; userId: null; avatarId: null; agentId: null; sessionId: null; guestFpHash: string };
 
 /**
+ * The DEMO `kind:'guest'` subject (session/shoe demo balance, ZERO ledger),
+ * keyed on the request fingerprint hash. Used by BOTH an anonymous visitor
+ * AND a guest ACCOUNT (`is_guest` Lucia user) — the founder-ruling 2026-07-06
+ * fully-demo guest economy. fpHash is always present (fingerprintMiddleware
+ * throws at API boot if FINGERPRINT_SECRET is unset); the check is defense-in-depth.
+ */
+function guestDemoSubject(c: { get(key: 'fpHash'): string }): BacSubject {
+  const fpHash = c.get('fpHash');
+  if (!fpHash) {
+    throw new HTTPException(500, { message: 'fpHash_missing_for_guest_request' });
+  }
+  return { kind: 'guest', userId: null, avatarId: null, agentId: null, sessionId: null, guestFpHash: fpHash };
+}
+
+/**
  * Resolve the request subject. Precedence: Lucia human → agent session → guest.
  *
  * Async (was sync) because the agent branch does a DB lookup to map the opaque
@@ -233,6 +251,17 @@ async function getSubject(c: {
 }): Promise<BacSubject> {
   const user = c.get('user');
   if (user) {
+    // Guest ACCOUNTS run the FULLY-DEMO economy (founder ruling 2026-07-06): an
+    // `is_guest` Lucia user has an avatar + a 100-CT SOFT balance but must NEVER
+    // bet/win/lose REAL CT in the Cove. Route them to the SAME demo `kind:'guest'`
+    // subject an anonymous visitor gets — session/shoe demo balance, ZERO ledger.
+    // NOT a 403: guests keep playing the Cove for fun on demo CT. Non-guest humans
+    // fall through to the real-CT `kind:'user'` path below. A connected/hosted
+    // agent resolves via the agent-session header (a guest is never an agent, E5),
+    // so real-CT agent parity is untouched.
+    if (await isGuestUser(user.id)) {
+      return guestDemoSubject(c);
+    }
     return { kind: 'user', userId: user.id, avatarId: null, agentId: null, sessionId: null, guestFpHash: null };
   }
 
@@ -265,11 +294,7 @@ async function getSubject(c: {
     };
   }
 
-  const fpHash = c.get('fpHash');
-  if (!fpHash) {
-    throw new HTTPException(500, { message: 'fpHash_missing_for_guest_request' });
-  }
-  return { kind: 'guest', userId: null, avatarId: null, agentId: null, sessionId: null, guestFpHash: fpHash };
+  return guestDemoSubject(c);
 }
 
 /**
@@ -840,6 +865,36 @@ coveBaccaratRouter.post('/coup', async (c) => {
           );
           balanceAfter = credit.balanceAfter;
         }
+        // ── T0 fee routing (2026-07-07): materialize the banker commission ──
+        // The engine ALREADY surfaces the commission as a first-class field:
+        // `r.commission = stake - floor(stake*95/100)` on a WON banker bet, 0
+        // otherwise (settleBet/CoupResult — no engine change needed, and
+        // `r.payout` is untouched so the player-side credit above is exactly
+        // what it was). Route it to the house treasury IN THIS SAME coup tx —
+        // first-settle branch only (the idempotency pre-check + the 23505
+        // replay path return/abort before or roll back with this credit),
+        // ledger-subject branch only (guest demo commission stays demo).
+        // commission ≤ stake ≤ MAX_SAFE (checked above).
+        const commissionNumber = Number(r.commission);
+        if (Number.isInteger(commissionNumber) && commissionNumber > 0) {
+          const treasuryId = await getHouseTreasuryAvatarId();
+          if (treasuryId) {
+            await creditClawTokens(
+              {
+                avatarId: treasuryId,
+                amount: commissionNumber,
+                reason: 'house_fee_baccarat_commission',
+                source: 'system',
+                metadata: { shoeId: input.shoeId, coupIndex, bet, winner: r.winner },
+              },
+              tx,
+            );
+          } else {
+            console.error(
+              `[cove-baccarat] house treasury unavailable — commission ${commissionNumber} CT burned (pre-T0 behavior) for shoe ${input.shoeId} coup ${coupIndex}`,
+            );
+          }
+        }
       } else {
         // Guest demo accounting — no ledger writes. Balance = starting +
         // total_payout - total_bet, with this coup's stake + payout folded in.
@@ -954,7 +1009,9 @@ coveBaccaratRouter.post('/coup', async (c) => {
     balance = txResult.balanceAfter;
   }
 
-  void logEventFromContext(c, {
+  // Durable settle row (UNCHANGED shape) — capture events.id for the D7 slice-1
+  // live settlement-confirm cursor. Write is byte-identical to before.
+  const settleLogP = logEventFromContextReturningId(c, {
     eventType: 'cove.baccarat.coup.settled',
     userId: ledgerUserId(subject),
     avatarId: avatar?.id ?? null,
@@ -973,6 +1030,28 @@ coveBaccaratRouter.post('/coup', async (c) => {
       replay: txResult.replay,
     },
   });
+  // D7 slice-1 (DELIVERY-ONLY; money-lens review): live settlement-confirm to an
+  // ONLINE agent. Durability is the row above; fire-and-forget, never affects
+  // settlement. Fresh settles only.
+  if (subject.kind === 'agent' && !txResult.replay) {
+    publishCoveSettlement({
+      agentId: subject.agentId,
+      game: 'baccarat',
+      eventIdPromise: settleLogP,
+      payload: {
+        coupId: coup.id,
+        shoeId: input.shoeId,
+        coupIndex: coup.coupIndex,
+        bet: coup.bet,
+        stake: coup.stake,
+        payout: coup.payout,
+        net: coup.net,
+        winner: outcome.winner,
+      },
+    });
+  } else {
+    void settleLogP;
+  }
 
   return c.json(
     {

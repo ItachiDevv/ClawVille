@@ -11,13 +11,20 @@
  *   houseNet = burned - minted  — POSITIVE = house-positive (sink); NEGATIVE = a
  *                                 FAUCET (players net-minted CT — alarm).
  *
- * "The house is implicit": the cove never writes a treasury row. Net CT
- * minted/burned across all events IS the house's P&L. The baccarat commission
- * fix + the hold'em pot-rake + the blackjack net-winnings rake all show up here
- * as extra `burned` (the raked CT is recorded in `payout` AFTER the rake, so the
- * gap widens in the house's favor). This monitor is the detector the economy
- * plan §3 demands: if any gameType trends houseNet < 0, a game has gone
- * net-positive to players and must be retuned BEFORE the real-money tier.
+ * "The house is implicit" IN THIS MONITOR: the cove never writes a treasury
+ * row INTO `cove_game_events`. Net CT minted/burned across all events IS the
+ * house's P&L. The baccarat commission fix + the hold'em pot-rake + the
+ * blackjack net-winnings rake all show up here as extra `burned` (the raked CT
+ * is recorded in `payout` AFTER the rake, so the gap widens in the house's
+ * favor). This monitor is the detector the economy plan §3 demands: if any
+ * gameType trends houseNet < 0, a game has gone net-positive to players and
+ * must be retuned BEFORE the real-money tier.
+ *
+ * T0 NOTE (2026-07-07): fee routing now ALSO credits those rakes/commissions to
+ * the named house-treasury avatar via `claw_token_transactions` ONLY (reasons
+ * `house_fee_*`, in the same settle tx) — it writes NO `cove_game_events` row
+ * and changes NO bet/payout value, so THIS monitor's math is untouched and
+ * nothing double-counts. The treasury's own view is `GET /api/treasury/summary`.
  *
  * NOTE: `bet_amount` / `payout` are TEXT-stringified bigints (lamport/µUSDC
  * seam). Today every cove row is fun-money CT that fits an int8, so we sum them

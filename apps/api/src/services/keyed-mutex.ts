@@ -8,7 +8,7 @@
  * WHY: the Hatcher register/PATCH handlers have an in-memory critical section
  * (npc-simulation stale-session cleanup + spawn) that a Postgres advisory lock
  * alone does NOT cover - the advisory lock serializes the DB transaction across
- * processes, but the `registerOpenClaw` Map mutation happens AFTER the tx commits
+ * processes, but the `registerAgentBot` Map mutation happens AFTER the tx commits
  * and is process-local. Two concurrent same-process requests for one agentId
  * could both clean stale sessions, both mint a bearer, and both spawn a body
  * (duplicate avatars keyed by distinct sessionIds) even while the DB tx is

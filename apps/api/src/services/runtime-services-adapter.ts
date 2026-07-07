@@ -5,10 +5,10 @@
  * agent-runtime's `ClawvilleServices` slot. After concern 1h, the
  * runtime now uses `avatarId` natively, so the only translation
  * remaining at this boundary is mapping runtime-emitted source labels
- * (e.g. `'shop'` from BUY_ITEM, `'bazaar'` from BUY_BAZAAR_LISTING) to
- * the ledger's enforced `ClawTokenSource` enum — those values are NOT
- * in the Postgres `claw_token_source` enum and would throw
- * `invalid input value for enum` if passed through unchanged.
+ * (e.g. `'shop'` from BUY_ITEM) to the ledger's enforced
+ * `ClawTokenSource` enum — those values are NOT in the Postgres
+ * `claw_token_source` enum and would throw `invalid input value for
+ * enum` if passed through unchanged.
  */
 
 import type { ClawvilleServices } from '@clawville/agent-runtime';
@@ -54,10 +54,10 @@ export function buildRuntimeServices(db: any): ClawvilleServices {
 
 /**
  * Translate runtime-emitted source strings to the ledger's enforced enum.
- * Runtime actions (e.g. BUY_ITEM, BUY_BAZAAR_LISTING) emit free-form labels
- * like 'shop', 'bazaar'. Postgres claw_token_source enum only knows the
- * values listed in ClawTokenSource. Anything originating from the autonomous
- * planner is conceptually 'simulation' for ledger-attribution purposes.
+ * Runtime actions (e.g. BUY_ITEM) emit free-form labels like 'shop'.
+ * Postgres claw_token_source enum only knows the values listed in
+ * ClawTokenSource. Anything originating from the autonomous planner is
+ * conceptually 'simulation' for ledger-attribution purposes.
  */
 function mapRuntimeSourceToLedger(source: string): ClawTokenSource {
   const known: readonly ClawTokenSource[] = [
@@ -67,6 +67,6 @@ function mapRuntimeSourceToLedger(source: string): ClawTokenSource {
   if ((known as readonly string[]).includes(source)) {
     return source as ClawTokenSource;
   }
-  // 'shop', 'bazaar', or any other runtime-action label → 'simulation'
+  // 'shop', or any other runtime-action label → 'simulation'
   return 'simulation';
 }

@@ -11,9 +11,9 @@
  * CRITICAL — DESPAWN IS NOT EXPIRY (read before editing):
  *   - We do NOT touch `session_expires_at`, `session_swept_at`, OR
  *     `session_key_hash`. The 24h sliding session TTL and the expiry webhook are
- *     the SESSION-sweeper's job (openclaw-session-sweeper.ts). This sweeper only
+ *     the SESSION-sweeper's job (agent-session-sweeper.ts). This sweeper only
  *     removes the in-memory Map entry + the in-world NPC via
- *     `npcSimulation.unregisterOpenClaw` (the SAME body removal /disconnect and
+ *     `npcSimulation.unregisterAgentBot` (the SAME body removal /disconnect and
  *     partner-DELETE use) and writes ONLY `metadata` (the last position) +
  *     `updated_at`. The DB row, the TTL columns, and the restore hash all survive
  *     untouched. Restore finds the row by `session_key_hash = sha256(incoming
@@ -23,7 +23,7 @@
  *     three are regression-frozen for this path.
  *   - Because the session stays valid, the agent's NEXT authenticated activity
  *     Map-misses in `validateLiveAgentSession`, which restores the session from
- *     the surviving row (openclaw-session-restore.ts) and RE-SPAWNS the body at
+ *     the surviving row (agent-session-restore.ts) and RE-SPAWNS the body at
  *     its last persisted position. So idle-despawn is transparent: the agent is
  *     still "connected", it just stops costing sim while dormant and re-bodies on
  *     its next move.
@@ -37,8 +37,9 @@
  */
 
 import { inArray } from 'drizzle-orm';
-import { db, openclawBots } from '@clawville/database';
+import { db, agentBots } from '@clawville/database';
 import { npcSimulation } from './npc-simulation';
+import { agentAutonomyDriver } from './agent-autonomy-driver';
 
 const DEFAULT_IDLE_DESPAWN_MS = 30 * 60 * 1000; // 30 min
 const MIN_IDLE_DESPAWN_MS = 5 * 60 * 1000; // 5 min floor (per spec)
@@ -73,12 +74,16 @@ export async function sweepIdleAgentBodies(): Promise<number> {
   // than one live body across a re-register race; despawn ALL of its bodies when
   // idle). Batch-read last_seen_at by agentId in ONE query.
   const agentIds = [...new Set(pairs.map((p) => p.agentId))];
-  let rows: Array<{ agentId: string; lastSeenAt: Date }>;
+  let rows: Array<{ agentId: string; lastSeenAt: Date; isHouse: boolean }>;
   try {
     rows = await db
-      .select({ agentId: openclawBots.agentId, lastSeenAt: openclawBots.lastSeenAt })
-      .from(openclawBots)
-      .where(inArray(openclawBots.agentId, agentIds));
+      .select({
+        agentId: agentBots.agentId,
+        lastSeenAt: agentBots.lastSeenAt,
+        isHouse: agentBots.isHouse,
+      })
+      .from(agentBots)
+      .where(inArray(agentBots.agentId, agentIds));
   } catch (err) {
     console.warn('[BodyIdleSweeper] last_seen_at read failed (non-fatal):', err);
     return 0;
@@ -87,13 +92,26 @@ export async function sweepIdleAgentBodies(): Promise<number> {
   // agentId -> lastSeenAt ms. A live body with no surviving row (shouldn't
   // happen — a live session always has a row) is treated as NOT idle (skip),
   // because despawning a body we can't restore from would strand the agent.
+  // House agents (agent-metaverse P1) are EXEMPT: they are ClawVille-hosted
+  // fixtures driven by the autonomy driver via `useModel` (which does not slide
+  // `last_seen_at`), so they'd otherwise look idle and get reaped out from under
+  // the driver — collect their agentIds and skip them below.
+  // R5 (belt-and-suspenders): a body is exempt if EITHER the autonomy driver is
+  // actively driving it (its in-memory registry) OR the DB is_house flag is set.
+  // Seeding the set with the driver's known house-agent ids means a silent is_house
+  // schema drift (column dropped/renamed → the DB flag reads false for every row)
+  // can NEVER cause a LIVE house body the driver is mid-drive on to be idle-reaped
+  // out from under it. The DB flag remains the second source of truth.
   const lastSeen = new Map<string, number>();
+  const houseAgentIds = new Set<string>(agentAutonomyDriver.getHouseAgentIds());
   for (const r of rows) {
+    if (r.isHouse) houseAgentIds.add(r.agentId);
     if (r.lastSeenAt) lastSeen.set(r.agentId, r.lastSeenAt.getTime());
   }
 
   let despawned = 0;
   for (const { sessionId, agentId } of pairs) {
+    if (houseAgentIds.has(agentId)) continue; // hosted fixture — never idle-reaped
     const seen = lastSeen.get(agentId);
     if (seen === undefined) continue; // no row read — don't strand the agent
     if (seen >= cutoff) continue; // still active within the window
@@ -103,20 +121,20 @@ export async function sweepIdleAgentBodies(): Promise<number> {
     // position to persist). Best-effort: a persist failure just means restore
     // falls back to the last stored / home position.
     try {
-      const config = npcSimulation.getOpenClawBotConfig(sessionId);
+      const config = npcSimulation.getAgentBotConfig(sessionId);
       if (config && config.mode === 'avatar') {
-        const pos = npcSimulation.getOpenClawAvatarPosition(sessionId);
+        const pos = npcSimulation.getAgentBotAvatarPosition(sessionId);
         if (pos) {
-          const existing = await db.query.openclawBots.findFirst({
-            where: inArray(openclawBots.agentId, [agentId]),
+          const existing = await db.query.agentBots.findFirst({
+            where: inArray(agentBots.agentId, [agentId]),
             columns: { id: true, metadata: true },
           });
           if (existing) {
             const meta = { ...(existing.metadata ?? {}), lastX: pos.x, lastY: pos.y };
             await db
-              .update(openclawBots)
+              .update(agentBots)
               .set({ metadata: meta, updatedAt: new Date() })
-              .where(inArray(openclawBots.id, [existing.id]));
+              .where(inArray(agentBots.id, [existing.id]));
           }
         }
       }
@@ -127,7 +145,7 @@ export async function sweepIdleAgentBodies(): Promise<number> {
     // Remove the in-world body + Map entry. Does NOT touch the DB session TTL —
     // the session stays restorable on the agent's next authenticated activity.
     try {
-      if (npcSimulation.unregisterOpenClaw(sessionId)) despawned++;
+      if (npcSimulation.unregisterAgentBot(sessionId)) despawned++;
     } catch (err) {
       console.warn('[BodyIdleSweeper] body despawn failed (non-fatal):', err);
     }

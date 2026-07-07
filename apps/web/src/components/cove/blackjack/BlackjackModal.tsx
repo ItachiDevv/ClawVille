@@ -121,7 +121,7 @@ function BetChip({ value, selected, disabled, onClick }: {
 // ---------------------------------------------------------------------------
 // Outcome banner — driven entirely by the server-settled result.
 // ---------------------------------------------------------------------------
-function OutcomeBanner({ outcome, net }: { outcome: BlackjackOutcome; net: bigint }) {
+function OutcomeBanner({ outcome, net, rake }: { outcome: BlackjackOutcome; net: bigint; rake: bigint }) {
   const isWin = outcome === 'blackjack' || outcome === 'win';
   const isPush = outcome === 'push';
   const isSurrender = outcome === 'surrender';
@@ -145,11 +145,13 @@ function OutcomeBanner({ outcome, net }: { outcome: BlackjackOutcome; net: bigin
       role="status"
       aria-live="assertive"
       style={{
-        position: 'absolute',
-        left: '50%',
-        top: '38%',
-        transform: 'translate(-50%, -50%)',
-        zIndex: 10,
+        // IN-FLOW between the dealer and player rows — never absolute over the
+        // card strips. The old absolute top-38% placement sat ON the dealer row
+        // and covered every dealer card past the third (a 4-card dealer bust
+        // showed "26 BUST" with the bust card hidden under the banner).
+        position: 'relative',
+        zIndex: 2,
+        alignSelf: 'center',
         pointerEvents: 'none',
         animation: 'bj-banner-in 450ms cubic-bezier(0.22,1,0.36,1)',
         textAlign: 'center',
@@ -157,14 +159,16 @@ function OutcomeBanner({ outcome, net }: { outcome: BlackjackOutcome; net: bigin
     >
       <style>{`
         @keyframes bj-banner-in {
-          from { opacity: 0; transform: translate(-50%, -50%) scale(0.85); }
-          to   { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+          from { opacity: 0; transform: scale(0.85); }
+          to   { opacity: 1; transform: scale(1); }
         }
       `}</style>
       <div style={{
         background: 'var(--pt-velvet)',
         border: `2px solid ${accent}`,
-        padding: '14px 32px',
+        // Compact — the banner is in-flow now, so its height pushes the player
+        // row down; keep it short enough that both rows + banner fit at 720p.
+        padding: '7px 24px',
         boxShadow: `0 0 28px ${accent}55, 0 0 56px ${accent}22`,
         minWidth: 180,
       }}>
@@ -174,19 +178,27 @@ function OutcomeBanner({ outcome, net }: { outcome: BlackjackOutcome; net: bigin
           fontFamily: 'var(--pt-data)',
           letterSpacing: '0.2em',
           fontWeight: 700,
-          marginBottom: showNet ? 4 : 0,
+          marginBottom: showNet ? 3 : 0,
         }}>
           {label}
         </div>
         {showNet && (
           <div style={{
             color: netNum > 0 ? 'var(--pt-cream)' : '#e85555',
-            fontSize: 28,
+            fontSize: 20,
             fontWeight: 700,
             fontFamily: 'var(--pt-display)',
             lineHeight: 1,
           }}>
             {netNum > 0 ? `+${netNum}` : `${netNum}`} CT
+          </div>
+        )}
+        {rake > 0n && (
+          <div style={{
+            marginTop: 4, fontSize: 10, fontFamily: 'var(--pt-data)',
+            color: 'var(--pt-brass)', letterSpacing: '0.04em',
+          }}>
+            {Number(rake)} CT rake kept
           </div>
         )}
       </div>
@@ -1456,6 +1468,18 @@ export default function BlackjackModal() {
             <HandRow label="Dealer" cards={dealerRenderCards} totalLabel={dealerTotalLabel} />
           </div>
 
+          {/* Settled banner — IN FLOW between the rows so it can never cover a card.
+              net = the RAKED net (what the balance actually moved) — the gross
+              `net` overstated wins by the 5% rake and made the HUD math look
+              wrong (+75 shown, +72 credited). Falls back to gross for pre-rake rows. */}
+          {phase === 'settled' && settledPrimary && (
+            <OutcomeBanner
+              outcome={settledPrimary.outcome}
+              net={BigInt(settledOutcome?.rakedNet ?? settled?.net ?? '0')}
+              rake={BigInt(settledOutcome?.rake ?? '0')}
+            />
+          )}
+
           <div aria-hidden style={{ borderTop: '1px dashed rgba(60,180,100,0.2)', position: 'relative', zIndex: 1 }} />
 
           {/* Player (one or two sub-hands) */}
@@ -1509,13 +1533,6 @@ export default function BlackjackModal() {
             </div>
           )}
 
-          {/* Settled banner */}
-          {phase === 'settled' && settledPrimary && (
-            <OutcomeBanner
-              outcome={settledPrimary.outcome}
-              net={settled ? BigInt(settled.net) : 0n}
-            />
-          )}
         </div>
 
         {/* ── Action strip ─────────────────────────────────────────────── */}

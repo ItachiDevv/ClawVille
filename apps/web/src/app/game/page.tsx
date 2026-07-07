@@ -5,6 +5,7 @@ import dynamic from 'next/dynamic';
 import Link from 'next/link';
 import { useQuery } from '@tanstack/react-query';
 import { useAvatar } from '@/hooks/use-avatar';
+import { useAvatarHeartbeat } from '@/hooks/use-avatar-heartbeat';
 import { useMiladyEmbed } from '@/hooks/use-milady-embed';
 import { useWorldStream } from '@/hooks/use-world-stream';
 import { useGameStore, type GameState } from '@/stores/game';
@@ -43,10 +44,7 @@ const ActivityLobbyModal = dynamic(
   { ssr: false },
 );
 const SkillBuilderModal = dynamic(() => import('@/components/game/skill-builder-modal'), { ssr: false });
-const MarketplaceModal = dynamic(() => import('@/components/game/marketplace-modal'), { ssr: false });
 const LandOfficeModal = dynamic(() => import('@/components/game/land/land-office-modal'), { ssr: false });
-const BazaarModal = dynamic(() => import('@/components/game/bazaar-modal'), { ssr: false });
-const AuctionModal = dynamic(() => import('@/components/game/auction-modal'), { ssr: false });
 const QuestBoardModal = dynamic(() => import('@/components/game/quest-board-modal'), { ssr: false });
 const BountyBoardModal = dynamic(() => import('@/components/game/bounty-board-modal'), { ssr: false });
 const ExchangeModal = dynamic(() => import('@/components/game/exchange-modal'), { ssr: false });
@@ -112,10 +110,20 @@ function NanoClawBanner({
   hasAvatar,
   isAuthenticated,
   isGuest,
+  provisioningPending,
 }: {
   hasAvatar: boolean;
   isAuthenticated: boolean;
   isGuest: boolean;
+  /**
+   * P2 (2026-07-04) — server-derived 'provisioning-pending' from the
+   * ['agent-session'] query (D1: transitional state, NOT a durable tier).
+   * The parent computes it as `isAuthenticated && !isGuest && mode ===
+   * 'provisioning-pending'`, and this component ALSO renders the guest/
+   * logged-out branch BEFORE the pending branch — belt-and-braces so a
+   * guest can never see the pending surface.
+   */
+  provisioningPending: boolean;
 }) {
   // Paired = reload-survivable "this user has a connected agent" (drives the
   // green pill). agentConnected is the union (paired and/or live bearer); the
@@ -129,13 +137,18 @@ function NanoClawBanner({
   const setAgentConnectModalOpen = useGameStore((s: GameState) => s.setAgentConnectModalOpen);
   const showPaired = agentPaired || agentConnected;
 
-  // Banner has four states keyed on (isAuthenticated, showPaired, hasAvatar):
+  // Banner has five states keyed on (isAuthenticated, showPaired,
+  // provisioningPending, hasAvatar):
   //   showPaired=true                           → green "Bot Training Active" pill
   //   !isAuthenticated || guest user            → "Log In" + "Sign Up" (agent CTAs hidden:
   //                                                connecting an agent requires an account,
   //                                                so showing them to a logged-out visitor
   //                                                just routes them through the connect
   //                                                modal which then bounces them to /login)
+  //   provisioningPending (non-guest only —
+  //     evaluated AFTER the guest branch)       → "finish customizing" CTA → /create-agent
+  //                                                (+ "Connect Your Agent" so the external
+  //                                                path stays reachable)
   //   isAuthenticated && !showPaired &&
   //     !hasAvatar                              → "Create Agent" + "Connect Your Agent"
   //   isAuthenticated && !showPaired &&
@@ -173,6 +186,36 @@ function NanoClawBanner({
         >
           <span className="text-white font-bold text-sm">Sign Up</span>
         </Link>
+      </div>
+    );
+  }
+
+  // P2 agent-provisioning-pending (D1) — the account exists but its agent
+  // rows don't (fail-soft signup provisioning, or a legacy agent-less
+  // account). Transitional surface, not a tier: route to /create-agent to
+  // finish (customize-PATCH when an avatar row exists, POST-create when
+  // not — the page detects which). Guests can never reach this branch (the
+  // guest/logged-out return above runs first, and the parent already gates
+  // the prop on !isGuest).
+  if (provisioningPending) {
+    return (
+      <div className="fixed left-1/2 -translate-x-1/2 z-50 top-3 flex items-center gap-2">
+        <Link
+          href="/create-agent"
+          className="flex items-center gap-2 px-4 py-2 rounded-full bg-black/60 backdrop-blur-sm border border-amber-400/50 shadow-lg hover:bg-black/80 hover:border-amber-300/70 transition-all"
+        >
+          <span className="w-2.5 h-2.5 rounded-full bg-amber-300 shadow-[0_0_6px_rgba(252,211,77,0.6)] animate-pulse" />
+          <span className="text-amber-200 font-bold text-sm">
+            Your agent is being set up — finish customizing
+          </span>
+        </Link>
+        <button
+          onClick={() => setAgentConnectModalOpen(true, 'connect')}
+          className="flex items-center gap-2 px-4 py-2 rounded-full bg-black/60 backdrop-blur-sm border border-yellow-500/40 shadow-lg hover:bg-black/80 hover:border-yellow-400/60 transition-all"
+        >
+          <span className="text-lg">🔌</span>
+          <span className="text-yellow-300 font-bold text-sm">Connect Your Agent</span>
+        </button>
       </div>
     );
   }
@@ -376,6 +419,17 @@ export default function GamePage() {
   // Connect to research thought stream
   useResearchStream();
 
+  // Agent-magic-link-onboarding D3 — presence heartbeat while the HUMAN
+  // drives their own body (controlMode 'player'): POSTs
+  // /api/avatars/me/heartbeat every 10s with { controlMode: 'player' } so the
+  // server keeps the bound agent's in-world body suppressed (no double body,
+  // ≈15s server TTL) and the avatar's lastActiveAt fresh. No sends in other
+  // modes — the suppression lapses and the agent body returns (the designed
+  // Autonomous release path). Gated to authed non-guest avatar owners: the
+  // endpoint is requireAuth and guests never reach 'player' mode. Cadence
+  // math + hot-path discipline documented in use-avatar-heartbeat.ts.
+  useAvatarHeartbeat(isAuthenticated && !isGuest && !!avatar);
+
   // 2026-05-12: removed the auto-redirect to /create-agent for authenticated
   // users without an avatar. NPC mode is now a first-class landing surface —
   // the NanoClawBanner exposes a "Create Agent" CTA alongside "Connect Your
@@ -447,6 +501,12 @@ export default function GamePage() {
   // the fetch so this is false, which correctly hides avatar-gated UI until resolved.
   const hasAvatar = !!avatar;
   const showDemoProgressHud = !agentConnected && !isLoading;
+  // P2 (2026-07-04) — derived from the EXISTING ['agent-session'] query (zero
+  // new query keys; already in login purgeAuthCache + the logout clear).
+  // Guests are excluded here AND server-side (guests always get mode 'none')
+  // AND in the banner's branch order — triple gate by design.
+  const provisioningPending =
+    isAuthenticated && !isGuest && agentSession?.mode === 'provisioning-pending';
 
   // NOTE: do NOT conditionally return early here based on isLoading/authLoading.
   // An early-return swaps the whole React tree, which unmounts the first
@@ -469,7 +529,12 @@ export default function GamePage() {
       <SeaLoadingScreen />
       <World3DCanvas mode="game" />
       <BuildingTooltip />
-      <NanoClawBanner hasAvatar={hasAvatar} isAuthenticated={isAuthenticated} isGuest={isGuest} />
+      <NanoClawBanner
+        hasAvatar={hasAvatar}
+        isAuthenticated={isAuthenticated}
+        isGuest={isGuest}
+        provisioningPending={provisioningPending}
+      />
       {/* Soft email-verification nudge — renders only when the user is
           authenticated, NOT a guest, HAS a real email to confirm, and that
           email is still unverified (plus the 7d dismissal window inside the
@@ -503,10 +568,7 @@ export default function GamePage() {
       )}
       <FirstTimeBackupModal />
       <SkillBuilderModal />
-      <MarketplaceModal />
       <LandOfficeModal />
-      <BazaarModal />
-      <AuctionModal />
       <QuestBoardModal />
       <BountyBoardModal />
       <ExchangeModal />

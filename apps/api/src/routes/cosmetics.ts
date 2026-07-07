@@ -35,11 +35,122 @@ import {
   avatars,
 } from '@clawville/database';
 import { requireAuth, sessionMiddleware } from '../middleware/auth';
+import { requireNonGuestUser } from '../middleware/require-non-guest';
 import { logEventFromContext } from '../services/event-logger';
-import { debitClawTokens, InsufficientTokensError } from '../services/claw-token-ledger';
+import { creditClawTokens, debitClawTokens, InsufficientTokensError, type LedgerTx } from '../services/claw-token-ledger';
+import { getHouseTreasuryAvatarId } from '../services/house-treasury-seeder';
+import { spendCosmeticBonusInTx } from '../services/cosmetic-signup-bonus';
 import type { AppContext } from '../types';
 
 export const cosmeticsRoutes = new Hono<AppContext>();
+
+// ---------------------------------------------------------------------------
+// SHARED PURCHASE HELPERS (Tokenomics C checkout stage, 2026-07-07)
+// ---------------------------------------------------------------------------
+// The SKU validation + ownership check + skin grant were previously inlined in
+// POST /:skuId/buy. They are extracted here so the CT balance-buy below AND
+// the x402 USDC checkout fulfiller
+// (`services/checkout-fulfillers/cosmetic-purchase.ts`) run the SAME
+// validation and the SAME idempotent grant — two payment rails, one item
+// path. HTTP-agnostic on purpose (typed codes, no HTTPException) so the
+// fulfiller can map codes to checkout refusals.
+//
+// NOTE the two rails' MONEY MODELS differ by design and neither helper moves
+// value: the balance-buy keeps its vCLAW debit + treasury credit; the USDC
+// fulfiller debits/mints ZERO internal vCLAW (the buyer paid USDC — the
+// treasury's revenue is the on-chain USDC→CLV buy queue, not a minted credit).
+
+export type SkuPurchasabilityCheck =
+  | { ok: true; sku: typeof cosmeticSkus.$inferSelect }
+  | {
+      ok: false;
+      code: 'not_found' | 'not_yet_available' | 'no_longer_available' | 'wrong_currency';
+      /** For wrong_currency: the currency the SKU demands. */
+      requiredCurrency?: string;
+    };
+
+/**
+ * Validate a SKU is purchasable RIGHT NOW on a CT-denominated rail: exists,
+ * inside its availability window, and not exclusive to a non-CT currency.
+ * Behavior-identical to the checks the balance-buy always ran. Read-only.
+ */
+export async function checkSkuPurchasable(skuId: string): Promise<SkuPurchasabilityCheck> {
+  if (!uuidRegex.test(skuId)) return { ok: false, code: 'not_found' };
+  const sku = await db.query.cosmeticSkus.findFirst({ where: eq(cosmeticSkus.id, skuId) });
+  if (!sku) return { ok: false, code: 'not_found' };
+  const now = new Date();
+  if (sku.availableFrom && sku.availableFrom > now) {
+    return { ok: false, code: 'not_yet_available' };
+  }
+  if (sku.availableUntil && sku.availableUntil <= now) {
+    return { ok: false, code: 'no_longer_available' };
+  }
+  if (sku.exclusiveCurrency && sku.exclusiveCurrency !== 'CT') {
+    // CLV / SOL / fiat exclusives are not buyable on either CT-denominated
+    // rail (balance OR the ¢-pegged USDC checkout) — they go through a
+    // currency-specific path (Phase 4 follow-up).
+    return { ok: false, code: 'wrong_currency', requiredCurrency: sku.exclusiveCurrency };
+  }
+  return { ok: true, sku };
+}
+
+/** Read-only ownership probe (outside or inside a tx). */
+export async function findOwnedSkin(
+  avatarId: string,
+  skuId: string,
+  tx?: LedgerTx,
+): Promise<{ id: string; equipped: boolean } | null> {
+  const runner = tx ?? db;
+  const rows = await runner
+    .select({ id: avatarSkins.id, equipped: avatarSkins.equipped })
+    .from(avatarSkins)
+    .where(and(eq(avatarSkins.avatarId, avatarId), eq(avatarSkins.skuId, skuId)))
+    .limit(1);
+  return rows.length > 0 ? rows[0] : null;
+}
+
+/**
+ * Idempotently grant a skin INSIDE the caller's transaction. Uses ON CONFLICT
+ * DO NOTHING on the `uniq_avatar_skin_avatar_sku` index so a concurrent
+ * double-grant can never 23505-poison the surrounding money tx — the loser
+ * reads the winner's row and reports `alreadyOwned: true`. The caller decides
+ * what alreadyOwned means for ITS money model (the balance-buy rolls back its
+ * debit; the USDC fulfiller records a no-op grant — the payment already
+ * settled).
+ */
+export async function grantSkinInTx(
+  tx: LedgerTx,
+  input: {
+    avatarId: string;
+    skuId: string;
+    /** Provenance for revenue audits — 'shop_ct' | 'shop_usdc' | … */
+    acquiredVia: string;
+    /** Ledger row of the CT debit (balance-buy) — null on non-CT rails. */
+    ledgerId: string | null;
+  },
+): Promise<{ avatarSkinId: string; alreadyOwned: boolean }> {
+  const inserted = await tx
+    .insert(avatarSkins)
+    .values({
+      avatarId: input.avatarId,
+      skuId: input.skuId,
+      acquiredVia: input.acquiredVia,
+      ledgerId: input.ledgerId,
+      equipped: false,
+    })
+    .onConflictDoNothing({ target: [avatarSkins.avatarId, avatarSkins.skuId] })
+    .returning({ id: avatarSkins.id });
+  if (inserted.length > 0) {
+    return { avatarSkinId: inserted[0].id, alreadyOwned: false };
+  }
+  const existing = await findOwnedSkin(input.avatarId, input.skuId, tx);
+  if (!existing) {
+    // Conflict fired yet no row visible — only possible if the owning tx is
+    // still uncommitted elsewhere. Surface it; the caller's tx rolls back.
+    throw new Error(`grantSkinInTx: conflict without visible row (avatar=${input.avatarId} sku=${input.skuId})`);
+  }
+  return { avatarSkinId: existing.id, alreadyOwned: true };
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -260,83 +371,149 @@ cosmeticsRoutes.post('/:skuId/unequip', sessionMiddleware, requireAuth, async (c
 // db.transaction(). debitClawTokens accepts a tx parameter to compose into
 // the same lock-scope so a failed insert rolls the debit back.
 
-cosmeticsRoutes.post('/:skuId/buy', sessionMiddleware, requireAuth, async (c) => {
+/** In-tx control-flow signal: the skin turned out to be owned AFTER the debit
+ *  ran (a concurrent double-buy race). Thrown to roll the WHOLE tx back
+ *  (debit + treasury credit included) and answer alreadyOwned — previously
+ *  this race 23505'd into a 500. Module-private. */
+class AlreadyOwnedRace extends Error {
+  constructor(public readonly avatarSkinId: string) {
+    super('cosmetic_already_owned_race');
+    this.name = 'AlreadyOwnedRace';
+  }
+}
+
+cosmeticsRoutes.post('/:skuId/buy', sessionMiddleware, requireAuth, requireNonGuestUser, async (c) => {
   const user = c.get('user') as { id: string };
   const skuId = c.req.param('skuId');
 
-  if (!uuidRegex.test(skuId)) {
-    throw new HTTPException(400, { message: 'Invalid skuId' });
+  // SKU must exist, be inside its availability window, and be CT-buyable —
+  // the SAME shared check the USDC checkout fulfiller runs (extracted 2026-07-07).
+  const purchasable = await checkSkuPurchasable(skuId);
+  if (!purchasable.ok) {
+    switch (purchasable.code) {
+      case 'not_found':
+        throw new HTTPException(
+          uuidRegex.test(skuId) ? 404 : 400,
+          { message: uuidRegex.test(skuId) ? 'Cosmetic not found' : 'Invalid skuId' },
+        );
+      case 'not_yet_available':
+        throw new HTTPException(400, { message: 'Not yet available' });
+      case 'no_longer_available':
+        throw new HTTPException(400, { message: 'No longer available' });
+      case 'wrong_currency':
+        throw new HTTPException(400, {
+          message: `This item must be purchased with ${purchasable.requiredCurrency}.`,
+        });
+    }
   }
-
-  // SKU must exist and be currently available (window check).
-  const sku = await db.query.cosmeticSkus.findFirst({
-    where: eq(cosmeticSkus.id, skuId),
-  });
-  if (!sku) throw new HTTPException(404, { message: 'Cosmetic not found' });
-
-  const now = new Date();
-  if (sku.availableFrom && sku.availableFrom > now) {
-    throw new HTTPException(400, { message: 'Not yet available' });
-  }
-  if (sku.availableUntil && sku.availableUntil <= now) {
-    throw new HTTPException(400, { message: 'No longer available' });
-  }
-  if (sku.exclusiveCurrency && sku.exclusiveCurrency !== 'CT') {
-    // CLV / SOL / fiat exclusives are not buyable via this endpoint —
-    // they go through a separate currency-specific path (Phase 4 follow-up).
-    throw new HTTPException(400, {
-      message: `This item must be purchased with ${sku.exclusiveCurrency}.`,
-    });
-  }
+  const sku = purchasable.sku;
 
   const avatar = await getCallerAvatar(user.id);
 
   // Idempotent: already owned ⇒ 200 with `{ alreadyOwned: true }`.
-  const existing = await db
-    .select({ id: avatarSkins.id, equipped: avatarSkins.equipped })
-    .from(avatarSkins)
-    .where(and(eq(avatarSkins.avatarId, avatar.id), eq(avatarSkins.skuId, skuId)))
-    .limit(1);
-  if (existing.length > 0) {
+  const existing = await findOwnedSkin(avatar.id, skuId);
+  if (existing) {
     return c.json({
       ok: true,
       alreadyOwned: true,
-      avatarSkinId: existing[0].id,
-      equipped: existing[0].equipped,
+      avatarSkinId: existing.id,
+      equipped: existing.equipped,
       clawTokens: avatar.clawTokens,
     });
   }
 
-  // Atomic debit + insert.
-  let result: { balanceAfter: number; avatarSkinId: string };
+  // Atomic bonus-draw + debit + insert.
+  let result: { balanceAfter: number; avatarSkinId: string; grantUsed: number; realCt: number };
   try {
     result = await db.transaction(async (tx) => {
-      const debit = await debitClawTokens(
-        {
-          avatarId: avatar.id,
-          amount: sku.priceCt,
-          reason: 'buy_cosmetic',
-          source: 'api',
-          metadata: { skuId, slug: sku.slug, category: sku.category },
-        },
-        tx,
-      );
-      const [row] = await tx
-        .insert(avatarSkins)
-        .values({
-          avatarId: avatar.id,
-          skuId: sku.id,
-          acquiredVia: 'shop_ct',
-          ledgerId: debit.ledgerId,
-          equipped: false,
-        })
-        .returning({ id: avatarSkins.id });
-      return { balanceAfter: debit.balanceAfter, avatarSkinId: row.id };
+      // ── A2 cosmetics-scoped signup bonus (2026-07-07) ───────────────────
+      // Draw the one-time signup-bonus grant FIRST (row-locked, in-tx). It is a
+      // scoped promo that lives OUTSIDE avatars.clawTokens (schema/cosmetic-
+      // bonus.ts), so it can only be spent HERE. Only the REAL-CT remainder is
+      // debited from the buyer + routed to the treasury below — the grant
+      // portion mints NOTHING (a house-eaten marketing expense). Rolls back with
+      // the whole tx on any failure, so a failed purchase never consumes it.
+      const grantUsed = await spendCosmeticBonusInTx(tx, user.id, sku.priceCt);
+      const realCt = sku.priceCt - grantUsed;
+
+      // Debit only the real-CT remainder. Skip entirely when the grant fully
+      // covers the price (debitClawTokens rejects a non-positive amount).
+      let debitLedgerId: string | null = null;
+      let balanceAfter = avatar.clawTokens; // unchanged when fully grant-funded
+      if (realCt > 0) {
+        const debit = await debitClawTokens(
+          {
+            avatarId: avatar.id,
+            amount: realCt,
+            reason: 'buy_cosmetic',
+            source: 'api',
+            metadata: { skuId, slug: sku.slug, category: sku.category, grantUsed, priceCt: sku.priceCt },
+          },
+          tx,
+        );
+        debitLedgerId = debit.ledgerId;
+        balanceAfter = debit.balanceAfter;
+
+        // ── T0 fee routing (2026-07-07): shop revenue → house treasury ────
+        // Credit ONLY the real-CT remainder to the treasury (debit == credit =
+        // net-neutral supply; the CT moves player→treasury). CONSERVATION: the
+        // grant portion is NOT credited here — crediting the full priceCt while
+        // only debiting realCt would MINT `grantUsed` into the treasury. Buyer-
+        // side amount UNCHANGED. The `alreadyOwned` replay returns before this
+        // tx, so a re-buy never re-credits. A null treasury degrades to the
+        // pre-T0 burn — never blocks the purchase.
+        const treasuryId = await getHouseTreasuryAvatarId();
+        if (treasuryId) {
+          await creditClawTokens(
+            {
+              avatarId: treasuryId,
+              amount: realCt,
+              reason: 'house_fee_cosmetic_purchase',
+              source: 'system',
+              metadata: { skuId, slug: sku.slug, buyerAvatarId: avatar.id, grantUsed, priceCt: sku.priceCt },
+            },
+            tx,
+          );
+        } else {
+          console.error(
+            `[cosmetics] house treasury unavailable — ${realCt} CT purchase burned (pre-T0 behavior) for sku ${skuId}`,
+          );
+        }
+      }
+
+      // Shared idempotent grant (2026-07-07). ledgerId is null when fully
+      // bonus-funded (no debit ledger row) — the cosmetic.purchased event
+      // records grantUsed/realCt for the audit. If a concurrent buy won the
+      // grant while we were debiting, roll the WHOLE tx back (debit +
+      // treasury credit) and answer alreadyOwned instead of the old 23505→500.
+      const grant = await grantSkinInTx(tx, {
+        avatarId: avatar.id,
+        skuId: sku.id,
+        acquiredVia: 'shop_ct',
+        ledgerId: debitLedgerId,
+      });
+      if (grant.alreadyOwned) {
+        throw new AlreadyOwnedRace(grant.avatarSkinId);
+      }
+      return { balanceAfter, avatarSkinId: grant.avatarSkinId, grantUsed, realCt };
     });
   } catch (err) {
+    if (err instanceof AlreadyOwnedRace) {
+      return c.json({
+        ok: true,
+        alreadyOwned: true,
+        avatarSkinId: err.avatarSkinId,
+        // The concurrent winner inserts with equipped:false; equip is a
+        // separate endpoint, so this is exact, not a guess.
+        equipped: false,
+        clawTokens: avatar.clawTokens,
+      });
+    }
     if (err instanceof InsufficientTokensError) {
+      // `err.requested` is the real-CT remainder we tried to debit (after the
+      // bonus), `err.available` the buyer's balance — report those, not priceCt.
       throw new HTTPException(400, {
-        message: `Not enough ClawTokens. Need ${sku.priceCt}, have ${avatar.clawTokens}.`,
+        message: `Not enough ClawTokens. Need ${err.requested}, have ${err.available}.`,
       });
     }
     throw err;
@@ -351,6 +528,10 @@ cosmeticsRoutes.post('/:skuId/buy', sessionMiddleware, requireAuth, async (c) =>
       slug: sku.slug,
       category: sku.category,
       pricePaid: sku.priceCt,
+      // A2 — split the price into the real CT charged vs the signup-bonus
+      // covered portion (the treasury only received `realCt`).
+      bonusApplied: result.grantUsed,
+      realCtCharged: result.realCt,
       balanceAfter: result.balanceAfter,
     },
   });
@@ -360,5 +541,7 @@ cosmeticsRoutes.post('/:skuId/buy', sessionMiddleware, requireAuth, async (c) =>
     alreadyOwned: false,
     avatarSkinId: result.avatarSkinId,
     clawTokens: result.balanceAfter,
+    // A2 — how much of the price the cosmetics signup bonus covered (0 when none).
+    bonusApplied: result.grantUsed,
   });
 });
