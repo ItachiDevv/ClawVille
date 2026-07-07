@@ -92,6 +92,24 @@ class InitMutex {
 
 const initMutex = new InitMutex();
 
+// R2 (2026-07-07): plugin-sql runs its schema migration on EVERY agent
+// `initialize()`, and that migration takes a GLOBAL per-plugin advisory lock
+// (`pg_advisory_lock(648842597483074957)` — the id is derived from the plugin
+// name, identical for every agent). Over the Supabase TRANSACTION-mode pooler
+// (:6543) a session-scoped advisory lock orphans on a pooled backend and never
+// releases, so the NEXT agent's migration blocks on `pg_advisory_lock` forever
+// (→ our 90s init timeout → "Failed to start avatar agent runtime"). With dozens
+// of agents on a box each re-running the identical no-op migration, this is the
+// dominant agent-start flake under load. The schema is the SAME for every agent,
+// so migrating once per process is sufficient: the FIRST init migrates (under
+// the InitMutex, so it is the only migrator — no contention), and every init
+// after a successful migrate passes `skipMigrations: true`, never touching the
+// advisory-lock path. Belt-and-suspenders: point the adapter at a SESSION-mode
+// connection (ELIZA_DATABASE_URL, :5432) so even that one migration's lock is
+// released cleanly on disconnect and can never orphan. Flag flips only on
+// SUCCESS, so a failed first migrate lets the next init retry it.
+let migrationsCompleted = false;
+
 function generateRoomId(agentId: string, userId: string): UUID {
   return uuidv5(`${agentId}-${userId}`, ROOM_NAMESPACE) as UUID;
 }
@@ -472,8 +490,20 @@ export class ElizaRuntime {
       if (typeof createDatabaseAdapter !== 'function') {
         throw new Error('[ElizaRuntime] @elizaos/plugin-sql did not export createDatabaseAdapter');
       }
+      // R2: prefer a SESSION-mode connection for the ElizaOS adapter so
+      // plugin-sql's migration advisory lock (`pg_advisory_lock`) is held on a
+      // stable backend and released on disconnect — over the TRANSACTION-mode
+      // pooler (:6543) that session lock orphans and wedges every later agent's
+      // migration. ELIZA_DATABASE_URL should be the same DB on the session-mode
+      // port (:5432). Falls back to the normal URL when unset (the skip-after-
+      // first-migrate guard below still prevents per-agent lock contention).
+      const adapterUrl =
+        process.env.ELIZA_DATABASE_URL ||
+        this.config.databaseUrl ||
+        process.env.DATABASE_URL ||
+        '';
       const adapter = createDatabaseAdapter(
-        { postgresUrl: this.config.databaseUrl || process.env.DATABASE_URL || '' },
+        { postgresUrl: adapterUrl },
         this.config.agentId as UUID
       );
 
@@ -504,10 +534,27 @@ export class ElizaRuntime {
           );
         }, INIT_TIMEOUT_MS);
       });
+      // R2: only the FIRST successful init per process runs the plugin-sql
+      // migration (identical schema for every agent); every init afterwards
+      // skips it, so the global migration advisory lock is taken at most once
+      // and can never wedge later agents. `initialize()` honours
+      // `options.skipMigrations` (see @elizaos/core AgentRuntime.initialize).
+      const skipMigrations = migrationsCompleted;
       try {
-        await Promise.race([this.runtime.initialize(), initTimeout]);
+        await Promise.race([
+          this.runtime.initialize({ skipMigrations } as any),
+          initTimeout,
+        ]);
       } finally {
         if (initTimer) clearTimeout(initTimer);
+      }
+      // Flip only AFTER a clean init — a failed first migrate leaves the flag
+      // false so the next agent retries the migration rather than skipping it.
+      if (!migrationsCompleted) {
+        migrationsCompleted = true;
+        console.log(
+          `[ElizaRuntime] plugin-sql migration completed once for this process; subsequent agent inits will skip migrations`,
+        );
       }
 
       this.state = 'running';
