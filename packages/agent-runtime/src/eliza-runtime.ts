@@ -96,6 +96,34 @@ function generateRoomId(agentId: string, userId: string): UUID {
   return uuidv5(`${agentId}-${userId}`, ROOM_NAMESPACE) as UUID;
 }
 
+/**
+ * Split the connection protocol manual into `## `-heading sections (P3 slice 6,
+ * surface #3). Any content before the first `## ` heading (the frontmatter + H1 +
+ * intro) becomes its own leading chunk. This mirrors the EXACT re-chunk
+ * granularity the manual itself instructs agents to use ("split on `## `
+ * headings"); deeper `### ` subsections stay within their parent `## ` chunk.
+ * Pure + total (never throws); returns [] only for empty input.
+ */
+function splitProtocolManualSections(manual: string): string[] {
+  const sections: string[] = [];
+  let current: string[] = [];
+  const flush = () => {
+    if (current.length === 0) return;
+    const joined = current.join('\n').trim();
+    if (joined) sections.push(joined);
+  };
+  for (const line of manual.split('\n')) {
+    if (line.startsWith('## ')) {
+      flush();
+      current = [line];
+    } else {
+      current.push(line);
+    }
+  }
+  flush();
+  return sections;
+}
+
 export interface ElizaRuntimeConfig {
   agentId: string;
   agentType: 'location-agent' | 'avatar-agent' | string;
@@ -772,6 +800,114 @@ export class ElizaRuntime {
         (err as Error)?.message,
       );
       return [];
+    }
+  }
+
+  /**
+   * P3 slice 6 — SURFACE #3 of the three operational-knowledge surfaces
+   * (CLAUDE.md "Game-flow changes propagate to all three ... surfaces"): inject the
+   * CONNECTION PROTOCOL MANUAL into THIS hosted agent's OWN ElizaOS runtime so a
+   * ClawVille-hosted player agent knows the same protocol/table contract a
+   * connected agent fetches from `/api/skills/protocol/skill.md`. The
+   * `protocol-knowledge` metadata subtype was named-but-UNUSED until now — this is
+   * its first writer.
+   *
+   * Mirrors `recordEarnedSkillMemory`: embed + `createMemory` into the `knowledge`
+   * table, but under a FIXED per-agent ISOLATED room/entity (`protocol-knowledge`)
+   * distinct from BOTH the platform-agent-keyed book-knowledge the KnowledgeProvider
+   * reads AND the `earned-skill:<avatarId>` scope — so the manual never bleeds into
+   * teacher / human-chat RAG, and a future protocol-aware reader can query just this
+   * room. The full manual is CHUNKED on `## ` headings (the exact granularity agents
+   * are told to re-chunk it at) and each section embedded as its own row.
+   *
+   * DEDUPE BY VERSION: each chunk's memory id is derived from
+   * `protocol-knowledge:v<version>:<index>` + `unique:true`, so re-injecting the
+   * SAME version is idempotent, and a `PROTOCOL_VERSION` bump ADDS the new rows
+   * (old-version rows harmlessly remain; the `version` metadata lets a reader prefer
+   * the newest). Re-injection happens on the next runtime START after a version
+   * bump (the caller passes the LIVE version) — the natural lifecycle boundary; no
+   * out-of-band stop is needed because `knowledge` rows are read live at query time,
+   * not cached at construction.
+   *
+   * NEVER lazy-starts: no-op (false) when this runtime isn't running. Fail-SOFT per
+   * chunk — an embed/write failure on ONE section skips it and continues; returns
+   * true iff AT LEAST ONE section landed, and NEVER throws (injection must never
+   * block or crash a boot). Injects NO secret — the manual is the public, token-free
+   * surface (do not pass a per-token connect block here).
+   */
+  async injectProtocolKnowledge(manual: string, version: number): Promise<boolean> {
+    if (this.state !== 'running' || !this.runtime) return false;
+    const text = (manual ?? '').trim();
+    if (!text || !Number.isFinite(version)) return false;
+
+    const chunks = splitProtocolManualSections(text);
+    if (chunks.length === 0) return false;
+
+    try {
+      const agentId = this.config.agentId as UUID;
+      const key = 'protocol-knowledge';
+      const roomId = generateRoomId(this.config.agentId, key);
+      const entityId = uuidv5(key, ROOM_NAMESPACE) as UUID;
+      const worldId = await this.ensureWorld();
+      await this.ensureRoom(roomId, key, worldId);
+      await this.ensureEntity(entityId, agentId);
+
+      let wrote = 0;
+      for (let i = 0; i < chunks.length; i++) {
+        const section = chunks[i]!;
+        try {
+          // Embed FIRST — an un-vectored row is invisible to searchMemories, so on
+          // an embed failure we skip THIS section (never write a dead row) and move
+          // on; the rest of the manual still lands.
+          let embedding: number[];
+          try {
+            embedding = await embedText(section);
+          } catch (embErr) {
+            console.warn(
+              '[ElizaRuntime] injectProtocolKnowledge embed failed (skip section):',
+              (embErr as Error)?.message,
+            );
+            continue;
+          }
+          const memoryId = uuidv5(
+            `protocol-knowledge:v${version}:${i}`,
+            ROOM_NAMESPACE,
+          ) as UUID;
+          await this.runtime.createMemory(
+            {
+              id: memoryId,
+              agentId,
+              entityId,
+              roomId,
+              content: { text: section, source: 'protocol' } as Content,
+              embedding,
+              createdAt: Date.now(),
+              metadata: {
+                type: 'documentation',
+                source: 'protocol',
+                subtype: 'protocol-knowledge',
+                version,
+                section: i,
+              },
+            } as any,
+            'knowledge',
+            true, // unique — idempotent on the same (version, section)
+          );
+          wrote++;
+        } catch (sectionErr) {
+          console.warn(
+            '[ElizaRuntime] injectProtocolKnowledge write failed (skip section):',
+            (sectionErr as Error)?.message,
+          );
+        }
+      }
+      return wrote > 0;
+    } catch (err) {
+      console.warn(
+        '[ElizaRuntime] injectProtocolKnowledge failed (non-fatal):',
+        (err as Error)?.message,
+      );
+      return false;
     }
   }
 
