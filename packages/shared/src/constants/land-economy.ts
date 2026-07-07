@@ -103,6 +103,74 @@ export const CT_BUYABLE_TIERS: readonly LandTier[] = ['starter', 'c', 'b', 'a'] 
 export const CT_RENTABLE_TIERS: readonly LandTier[] = ['c', 'b', 'a'] as const;
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Phase B tenure model (FOUNDER-DECIDED 2026-07-07) — deposit-escrow + hold-to-keep
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Land is never sold permanently. Two tenure mechanisms replace buy-outright:
+//   B1 starter  = vCLAW DEPOSIT-ESCROW. The claim debits a refundable deposit
+//                 into escrow (a NUMBER on the parcel row — the CT exists in NO
+//                 avatar balance while escrowed). Weekly rent auto-draws from
+//                 the escrow remainder → house treasury; voluntary release
+//                 refunds the remainder; exhaustion → grace → lapse (remainder
+//                 forfeits to the treasury — nothing refunded).
+//   B2 c/b/a/founder = HOLD-TO-KEEP. Claiming requires the subject's CLV
+//                 balance ≥ the tier threshold (thresholds STACK across held
+//                 parcels); a weekly CT upkeep draws from the holder's avatar
+//                 balance → treasury. CLV-below-threshold OR insufficient CT at
+//                 sweep → grace → lapse. Purchase (price_ct) is DEAD for these
+//                 tiers (`tenure_model_active` 409).
+
+/**
+ * Refundable vCLAW deposit (units) debited INTO ESCROW on a starter claim.
+ * FOUNDER-LOCKED 2026-07-07 (2000 units ≈ $20 at the ¢-peg). Refundable on
+ * voluntary release (remainder only); forfeited on lapse. NOT revenue at claim
+ * time — only the weekly draws (and a lapse forfeit) reach the treasury.
+ */
+export const LAND_STARTER_DEPOSIT_CT = 2000;
+
+/**
+ * Weekly rent (units/week) auto-drawn FROM THE ESCROW REMAINDER of a starter
+ * deposit parcel — the tenant is never debited again after the claim; the
+ * sweeper moves escrow → treasury.
+ *
+ * ⚠ FOUNDER-TUNABLE / UNCONFIRMED (JUDGMENT CALL 2026-07-07): 100/wk makes the
+ * 2000 deposit last ≈ 20 weeks with no top-up — chosen to sit at the c-tier
+ * rent ceiling (LAND_RENT_LADDER c = 50–100) so a starter is never cheaper to
+ * hold than a paid tier. Confirm with the founder before prod.
+ */
+export const LAND_STARTER_RENT_CT_WEEKLY = 100;
+
+/**
+ * Per-tier CLV hold thresholds for B2 hold-to-keep, in CLV **uiAmount** (human
+ * token count — NOT atomic base units; compare against
+ * `ClvBalanceResult.uiAmount`). FOUNDER-LOCKED 2026-07-07:
+ * c 100k / b 500k / a 2.5M / founder 10M. `null` = the tier is not holdable
+ * (starter uses the B1 deposit-escrow path). Thresholds STACK: holding
+ * multiple parcels requires the SUM of their thresholds.
+ */
+export const LAND_HOLD_THRESHOLDS_CLV: Record<LandTier, number | null> = {
+  starter: null,
+  c: 100_000,
+  b: 500_000,
+  a: 2_500_000,
+  founder: 10_000_000,
+};
+
+/**
+ * Weekly CT upkeep for a FOUNDER-tier hold parcel (units/week). Founder rows
+ * carry rent_ct_weekly NULL (the rent ladder never priced them), so the
+ * claim-hold route stamps THIS value on acquisition. c/b/a hold parcels keep
+ * their already-stamped `rent_ct_weekly` as the upkeep. Founder-tunable —
+ * set at the a-tier rent ceiling (LAND_RENT_LADDER a max = 2400).
+ */
+export const FOUNDER_UPKEEP_CT_WEEKLY = 2400;
+
+/** The CLV hold threshold for a tier (uiAmount), or null when not holdable. */
+export function holdThresholdForTier(tier: LandTier): number | null {
+  return LAND_HOLD_THRESHOLDS_CLV[tier];
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Rent cycle timing (founder-locked 2026-06-24)
 // ─────────────────────────────────────────────────────────────────────────────
 
