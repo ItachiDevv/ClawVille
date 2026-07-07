@@ -16,13 +16,16 @@
  *   7. isGuestUser reflects the row's isGuest (true / false / missing → false).
  */
 
-// Env BEFORE the database import: spreading the lazy `db` Proxy below reads
-// `realDb.query`, which constructs the postgres client and THROWS at module
-// load when DATABASE_URL is unset (pre-existing fragility — the file only
-// passed when something else in the process had set it). Mirrors the
-// partner-storefront.test.ts ensureEnv pattern; no connection is ever opened
+// Env BEFORE touching the database module: spreading the lazy `db` Proxy below
+// reads `realDb.query`, which constructs the postgres client and THROWS at
+// module load when DATABASE_URL is unset (pre-existing fragility — the file
+// only passed when an earlier test file in the shared bun process had set it).
+// SCOPED to module init: the placeholder is DELETED again right after the stub
+// is built (see below), so DB-gated suites loading later in the same process
+// still SKIP instead of running against a fake URL. No connection ever opens
 // (every query hit is stubbed).
-if (!process.env.DATABASE_URL) {
+const DB_URL_WAS_SET = !!process.env.DATABASE_URL;
+if (!DB_URL_WAS_SET) {
   process.env.DATABASE_URL = 'postgresql://u:p@localhost:5432/db';
 }
 
@@ -54,6 +57,12 @@ mock.module('@clawville/database', () => ({
   ...realDatabase,
   db: fakeDb,
 }));
+
+// Stub built — drop the module-init placeholder so later files see the real
+// (absent) env and keep their skip-when-no-DB behavior.
+if (!DB_URL_WAS_SET) {
+  delete process.env.DATABASE_URL;
+}
 
 // Import the guards AFTER the mock is registered.
 const { requireNonGuestUser, requireNonGuestIdentity, isGuestUser } = await import(

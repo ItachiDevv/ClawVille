@@ -20,11 +20,14 @@
  */
 
 // Crash-loud module-load env the transitive import chain needs (mirrors
-// partner-storefront.test.ts).
+// partner-storefront.test.ts). DATABASE_URL is SCOPED to module init (deleted
+// again after the executor import below) so DB-gated suites loading later in
+// the shared bun process keep their skip-when-no-DB behavior.
 const HEX32 = '0'.repeat(64);
 function ensureEnv(k: string, v: string) {
   if (!process.env[k]) process.env[k] = v;
 }
+const DB_URL_WAS_SET = !!process.env.DATABASE_URL;
 ensureEnv('DATABASE_URL', 'postgresql://u:p@localhost:5432/db');
 ensureEnv('VANITY_ENCRYPTION_KEY', HEX32);
 
@@ -94,6 +97,12 @@ const {
   resolveClvSwapMaxImpactBps,
   DEFAULT_CLIP_SPACING_MS,
 } = await import('../clv-swap-executor');
+
+// Executor loaded — drop the module-init DATABASE_URL placeholder so later
+// files in the shared process keep their skip-when-no-DB behavior.
+if (!DB_URL_WAS_SET) {
+  delete process.env.DATABASE_URL;
+}
 
 const sumMicro = (clips: Array<{ amountUsdc: string }>) =>
   clips.reduce((acc, c) => {
