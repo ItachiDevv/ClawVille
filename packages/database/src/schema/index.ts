@@ -130,6 +130,13 @@ export * from './moonpay';
 // price_vclaw is the QUOTE unit only — the buyer pays USDC underneath, no
 // internal vCLAW debit. Migration 0016 (idempotent, by hand — NEVER db:push).
 export * from './checkout';
+// Tokenomics C — marketplace stage / C4 (2026-07-07) — P2P marketplace v1
+// (market_listings + market_deed_locks + market_settlements). Settlement is
+// FLAG-GATED OFF (MARKETPLACE_SETTLE_ENABLED); seller CLV payouts + the 4.44%
+// rake + the deed transfer are QUEUED Codex-gated INTENTS, never live sends.
+// LEDGER-ONLY: nothing here touches avatars.clawTokens. Migration 0017
+// (idempotent, by hand — NEVER db:push).
+export * from './market';
 
 import { users, sessions } from './users';
 import { npcMemories, activityLog } from './memories';
