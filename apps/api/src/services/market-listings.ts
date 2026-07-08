@@ -172,16 +172,41 @@ const LISTING_SELECT_COLS = sql.raw(
 // createMarketListing — (create) → active [+ deed escrow-lock, same tx]
 // ---------------------------------------------------------------------------
 
-/** Tenures whose holder OWNS the deed. 'rented'/'deposit'/'starter' refuse —
- *  a renter/depositor does not own the parcel; those transfer semantics are
- *  the Codex+land-gated executor's scope, not v1's. */
-const TRANSFERABLE_TENURES = new Set(['owned', 'hold']);
+/** Tenures whose holder OWNS the deed OUTRIGHT and may list it.
+ *  'rented'/'deposit'/'starter' refuse (`not_transferable_tenure`) — a renter/
+ *  depositor does not own the parcel. 'hold' refuses with its OWN typed code
+ *  (`hold_transfer_not_supported`) — see the gate block below.
+ *
+ *  // FEATURE_GATE: market_hold_deed_transfer
+ *  // Status: 'hold' tenure REFUSED at list time (narrowed from ['owned','hold']
+ *  //   2026-07-08, Codex re-review). The deed-transfer executor's flip
+ *  //   normalizes tenure='owned' + NULLs hold_threshold_ct/hold_subject, so a
+ *  //   sold HOLD parcel would permanently escape BOTH the CLV-holding
+ *  //   obligation AND the weekly tenure sweep (land_parcels tenureSweepIdx
+ *  //   excludes 'owned') — an economic hole, not a scope cut. Data-driven:
+ *  //   ZERO 'hold' parcels exist on prod or staging today, so narrowing costs
+ *  //   nothing.
+ *  // Metric to graduate: the designed HOLD-deed transfer ships BEFORE any
+ *  //   hold parcel ever lists — the buyer INHERITS the hold obligation,
+ *  //   re-stamped to the BUYER's subject (hold_subject = buyer) with an
+ *  //   INDEPENDENT CLV-threshold check against the buyer's wallet mirroring
+ *  //   the primary hold-claim flow, and the executor flip keeps tenure='hold'
+ *  //   + the re-stamped hold cols instead of the fresh-owned reset.
+ *  // Current reading: 0 hold parcels on prod/staging; 0 refused hold listings.
+ *  // Review deadline: 2026-08-07 (rides the deed-transfer executor gate).
+ *  // On deadline: if hold parcels still don't exist, keep refusing; if land
+ *  //   ships hold tenure at scale first, this becomes a BLOCKING follow-up.
+ *  // Reference: market-deed-transfer-executor.ts flip semantics; land tenure
+ *  //   model (ARCHITECTURE.md §13, 2026-07-07 Phase B entry).
+ */
+const TRANSFERABLE_TENURES = new Set(['owned']);
 
 export type CreateListingRefusal =
   | 'earned_not_available' // trap 6 — EARNED doesn't exist yet; land_deed only
   | 'parcel_not_found'
   | 'not_parcel_owner'
   | 'not_transferable_tenure'
+  | 'hold_transfer_not_supported' // 'hold' deeds can't list until buyer-inherits-obligation ships (gate above)
   | 'parcel_already_listed';
 
 export type CreateListingResult =
@@ -233,7 +258,14 @@ export async function createMarketListing(input: {
       const parcel = parcels[0];
       if (!parcel) throw new ListingRefused('parcel_not_found');
       if (parcel.owner_avatar_id !== sellerAvatarId) throw new ListingRefused('not_parcel_owner');
-      if (parcel.tenure == null || !TRANSFERABLE_TENURES.has(parcel.tenure)) {
+      if (parcel.tenure === 'hold') {
+        // SPECIFIC typed refusal (distinct from the generic non-owner tenures):
+        // a HOLD deed sale must transfer the CLV-hold obligation to the buyer —
+        // unbuilt (FEATURE_GATE market_hold_deed_transfer above). Refusing at
+        // list time is what keeps the deed-flip's tenure='owned' normalization
+        // sound: only 'owned' parcels can ever enter the transfer pipe.
+        throw new ListingRefused('hold_transfer_not_supported');
+      } else if (parcel.tenure == null || !TRANSFERABLE_TENURES.has(parcel.tenure)) {
         throw new ListingRefused('not_transferable_tenure');
       }
 
