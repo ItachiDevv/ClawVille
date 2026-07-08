@@ -579,6 +579,29 @@ function stopAutonomyKeepalive(): void {
   }
 }
 
+/**
+ * Tear down the SERVER Autonomous enrollment + the client keepalive when the
+ * store leaves Autonomous by a path OTHER than `setControlMode` — agent
+ * disconnect/unpair (`setAgentConnection` / `setAgentPaired(false)`), losing the
+ * agent (`setHasAgent`), or logout (`resetStore`). Without this, the 5-min
+ * keepalive interval keeps re-arming enrollment and the server driver keeps
+ * acting + settling REAL CT on the avatar after the user has disconnected /
+ * logged out. Idempotent + safe to over-call: `postAutonomy(false)` is a
+ * server-side no-op when nothing is enrolled, and `stopAutonomyKeepalive` is a
+ * no-op when no timer is set. Guarded on the PRIOR mode so it fires ONLY on a
+ * genuine departure from Autonomous.
+ *
+ * D6 tab-close persistence is unaffected: no store method runs on a raw tab
+ * close, so the timer dies with the page and the server session persists to its
+ * 24h TTL — exactly the "user leaves, agent keeps acting" contract. This cleanup
+ * covers only the EXPLICIT exits (disconnect / unpair / logout).
+ */
+function leaveAutonomousServerCleanup(priorMode: ControlMode): void {
+  if (priorMode !== 'autonomous') return;
+  stopAutonomyKeepalive();
+  void postAutonomy(false);
+}
+
 export const useGameStore = create<GameState>((set, get) => ({
   controlMode: 'explore',
   hasAgent: false,
@@ -698,6 +721,10 @@ export const useGameStore = create<GameState>((set, get) => ({
     }
   },
   setHasAgent: (v) => {
+    // §B.1: losing/setting the agent moves out of Autonomous — tear down the
+    // server enrollment + keepalive first (this method sets a non-autonomous
+    // mode below and bypasses setControlMode's own cleanup).
+    leaveAutonomousServerCleanup(get().controlMode);
     // Reset jump state before mode change — prevents avatar being airborne on agent connect/disconnect
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const { resetJump } = require('@/lib/three/jump-state') as typeof import('@/lib/three/jump-state');
@@ -996,6 +1023,12 @@ export const useGameStore = create<GameState>((set, get) => ({
     const connected = !!sessionId;
     const prev = get();
 
+    // §B.1: any connect/disconnect that moves out of Autonomous must tear down
+    // the SERVER driver enrollment + the keepalive (this method sets a
+    // non-autonomous mode below, bypassing setControlMode's cleanup). Fires only
+    // when prev was Autonomous; deactivate is a server no-op otherwise.
+    leaveAutonomousServerCleanup(prev.controlMode);
+
     // If the user was mid-autonomous session and the claw is being disconnected,
     // stop the autonomy engine's tick interval before wiping the mode — otherwise
     // the 500ms interval would keep running and fire goal planning against a
@@ -1071,6 +1104,10 @@ export const useGameStore = create<GameState>((set, get) => ({
       // churn control mode (a useAvatar refetch re-runs the hydration effect).
       const prev = get();
       if (prev.agentPaired && prev.agentConnected && prev.agentSessionId === null) return;
+      // §B.1: a re-pair that moves out of Autonomous tears down the server
+      // enrollment + keepalive (after the no-op early-return above, so a stable
+      // paired-no-bearer hydration does NOT deactivate a live autonomous agent).
+      leaveAutonomousServerCleanup(prev.controlMode);
       // Hatcher-launch spectate preservation (Codex pass-8): a successful launch
       // lands the owner in 'explore' + hatcherSpectate to watch the agent. If
       // /api/auth/me/agent-session resolves AFTER the exchange, this paired
@@ -1095,6 +1132,8 @@ export const useGameStore = create<GameState>((set, get) => ({
     // if it was running against the now-unpaired agent.
     const prev = get();
     if (prev.controlMode === 'autonomous') {
+      // §B.1: server driver + keepalive teardown on unpair (agent gone).
+      leaveAutonomousServerCleanup(prev.controlMode);
       const { useAutonomyStore } = require('@/stores/autonomy') as typeof import('@/stores/autonomy');
       useAutonomyStore.getState().stopAutonomy();
     }
@@ -1277,6 +1316,10 @@ export const useGameStore = create<GameState>((set, get) => ({
     resetJump();
     // Stop autonomy engine if running — resetStore is called on logout
     if (get().controlMode === 'autonomous') {
+      // §B.1: logout must also tear down the SERVER driver enrollment + the
+      // keepalive, or the agent keeps acting + settling CT after logout (and the
+      // 5-min keepalive keeps re-arming). Idempotent server no-op otherwise.
+      leaveAutonomousServerCleanup('autonomous');
       try {
         const { useAutonomyStore } = require('@/stores/autonomy') as typeof import('@/stores/autonomy');
         useAutonomyStore.getState().stopAutonomy();
