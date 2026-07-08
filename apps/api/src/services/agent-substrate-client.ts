@@ -531,6 +531,84 @@ export class AgentSubstrateClient {
     }
   }
 
+  /**
+   * COLD-START PRE-WARM for the two SERVER-HOSTED LOCAL runtimes
+   * ('hermes-local' / 'openclaw-local'). A hosted agent's FIRST-EVER turn through
+   * the local gateway pays a cold-start cost that can exceed the sim's chat leash
+   * (openclaw cold session ≈42s vs the 30s-capped `*_LOCAL_TIMEOUT_MS`), so that
+   * first real turn fails soft to '' once before cognition flows. This fires ONE
+   * trivial completion OFF the user-facing path with its OWN generous leash to
+   * warm the model + (for openclaw) the pinned gateway session ahead of the first
+   * real turn.
+   *
+   * NOT A CHAT TURN: the reply is read only to drain the socket and is
+   * DISCARDED — it never reaches the sim's [ACTION:] parser, credits no CT, emits
+   * no leaderboard/event row, and surfaces nowhere. Byte-identical wire shape to
+   * the real `chatHermesLocal` / `chatOpenclawLocal` request (same URL, same
+   * optional Bearer, same fixed model name, and for openclaw the SAME
+   * `user: agentId` session pin) so it warms the EXACT session the first real turn
+   * will reuse — only the prompt is minimized (`max_tokens:1`) and the leash is
+   * longer.
+   *
+   * NEVER THROWS: every error (runtime down / ECONNREFUSED, timeout, non-2xx,
+   * redirect, malformed body) is swallowed and logged status-only. A no-op for
+   * any non-local-hosted protocol, so callers can invoke it unconditionally.
+   *
+   * @param timeoutMs cold-start leash for THIS warm-up only (caller passes a
+   *   generous value, e.g. 60s — deliberately longer than the sim chat leash).
+   */
+  async prewarmLocalGateway(timeoutMs: number): Promise<void> {
+    if (this.protocol !== 'hermes-local' && this.protocol !== 'openclaw-local') {
+      return; // no-op for every non-local-hosted protocol
+    }
+    const isOpenclaw = this.protocol === 'openclaw-local';
+    const gatewayUrl = isOpenclaw ? OPENCLAW_LOCAL_GATEWAY_URL : HERMES_LOCAL_GATEWAY_URL;
+    const gatewayKey = isOpenclaw ? OPENCLAW_LOCAL_GATEWAY_KEY : HERMES_LOCAL_GATEWAY_KEY;
+    const model = isOpenclaw ? 'openclaw' : 'hermes';
+
+    // Mirror the real local-chat body EXACTLY (fixed model name; openclaw pins the
+    // session via `user: agentId`) so we warm the RIGHT session — only the prompt
+    // is minimized and generation capped at a single token.
+    const body: Record<string, unknown> = {
+      model,
+      messages: [{ role: 'user', content: 'ping' }],
+      max_tokens: 1,
+      temperature: 0,
+    };
+    if (isOpenclaw) body.user = this.agentId;
+
+    const startedAt = Date.now();
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const res = await fetch(`${gatewayUrl}/v1/chat/completions`, {
+        method: 'POST',
+        // Same no-follow stance as every other outbound path — a 3xx from a
+        // misbehaving local runtime is not a routing instruction.
+        redirect: 'manual',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(gatewayKey ? { Authorization: `Bearer ${gatewayKey}` } : {}),
+        },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+      // Drain the body so the socket frees, then DISCARD it — the reply is never
+      // surfaced. Log status + elapsed only (no secrets, no reply content).
+      await res.text().catch(() => '');
+      console.log(
+        `[Prewarm] ${this.protocol} warm-up for agent ${this.agentId} → status ${res.status} (${Date.now() - startedAt}ms)`,
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.log(
+        `[Prewarm] ${this.protocol} warm-up for agent ${this.agentId} failed: ${msg} (${Date.now() - startedAt}ms)`,
+      );
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
   private async chatOpenAI(messages: ChatMessage[]): Promise<string> {
     // SSRF guard (Codex round-2 R2-6, 2026-06-12). gatewayUrl is an arbitrary
     // agent-supplied URL validated only by `z.string().url()` at /connect — never

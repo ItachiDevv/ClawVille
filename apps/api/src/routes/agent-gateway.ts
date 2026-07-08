@@ -23,6 +23,7 @@ import { db, agentBots, avatars, users, buildingSkills, landParcels, eq, and, sq
 import { agentOrchestrator } from '../services/agent-orchestrator';
 import { getSessionAgent } from '../services/session-agent-map';
 import { AgentSubstrateClient } from '../services/agent-substrate-client';
+import { maybePrewarmHostedGateway } from '../services/hosted-gateway-prewarm';
 import {
   buildAvatarSessionConfig,
   buildOverrideSessionConfig,
@@ -667,6 +668,10 @@ agentGatewayRoutes.post('/connect', async (c) => {
       });
       const client = new AgentSubstrateClient(config);
       npcSimulation.registerAgentBot(config, client);
+      // Fire-and-forget cold-start pre-warm for a hosted local runtime
+      // (hermes-local/openclaw-local). No-op for every other protocol; never
+      // blocks/throws. See services/hosted-gateway-prewarm.ts (gate-doc §B.7).
+      maybePrewarmHostedGateway(resolvedAgentId, client);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       // Override registration failed (e.g. NPC already taken) — no session was
@@ -731,6 +736,10 @@ agentGatewayRoutes.post('/connect', async (c) => {
         : undefined;
 
       npcSimulation.registerAgentBot(config, client, restoredState);
+      // Fire-and-forget cold-start pre-warm for a hosted local runtime
+      // (hermes-local/openclaw-local). No-op for every other protocol; never
+      // blocks/throws. See services/hosted-gateway-prewarm.ts (gate-doc §B.7).
+      maybePrewarmHostedGateway(resolvedAgentId, client);
     } catch (err) {
       console.error('[AgentConnect] NPC registration error:', err);
       // Non-fatal — agent still gets a sessionId for REST polling
@@ -1229,6 +1238,10 @@ agentGatewayRoutes.post('/reconnect', async (c) => {
         }
         const client = new AgentSubstrateClient(plan.config);
         npcSimulation.registerAgentBot(plan.config, client, plan.restoredState);
+        // Fire-and-forget cold-start pre-warm on reconnect (cold-again after an
+        // API restart). No-op for every non-local-hosted protocol; idempotent per
+        // process, never blocks/throws. See services/hosted-gateway-prewarm.ts.
+        maybePrewarmHostedGateway(existingBot.agentId, client);
         mintedSessionId = freshSessionId;
         mintedDormant = plan.dormant;
       }
