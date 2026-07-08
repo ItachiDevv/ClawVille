@@ -8,6 +8,7 @@ import { api } from '@/lib/api';
 import { AVATAR_SPECIES, AVATAR_COLORS, AVATAR_ARCHETYPES } from '@clawville/shared';
 import { SetupInstructions } from '@/components/create-agent/setup-instructions';
 import { EditAppearanceSection } from '@/components/game/edit-appearance-section';
+import { WalletPanel } from '@/components/game/wallet/wallet-panel';
 import {
   Dialog,
   DialogContent,
@@ -131,6 +132,11 @@ export default function AvatarSettingsModal() {
               user can change their public handle without renaming their
               in-world character. */}
           <UsernameSection />
+
+          {/* Wallet (Tokenomics Phase A) — in-game custodial deposit address +
+              linked self-custody wallet. Shared component with the standalone
+              HUD wallet modal so the two never drift. Public keys only. */}
+          <WalletPanel variant="section" />
 
           {/* Phase 4c Layer 1 — in-game appearance edits */}
           <EditAppearanceSection

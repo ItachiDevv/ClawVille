@@ -50,6 +50,7 @@ const BountyBoardModal = dynamic(() => import('@/components/game/bounty-board-mo
 const ExchangeModal = dynamic(() => import('@/components/game/exchange-modal'), { ssr: false });
 const LeaderboardModal = dynamic(() => import('@/components/game/leaderboard-modal'), { ssr: false });
 const WorldMapModal = dynamic(() => import('@/components/game/world-map-modal'), { ssr: false });
+const WalletModal = dynamic(() => import('@/components/game/wallet/wallet-modal'), { ssr: false });
 import BuildingTooltip from '@/components/game/building-tooltip';
 import DailyLoginModal from '@/components/game/daily-login-modal';
 import QuestTracker from '@/components/game/quest-tracker';
@@ -576,6 +577,10 @@ export default function GamePage() {
       {/* World Map (fast-travel WARP surface). Opened from the minimap "⤢ Map"
           button via openWorldMap(); gates internally on worldMapOpen. */}
       <WorldMapModal />
+      {/* Wallet-visibility modal — top-level so any authed avatar owner can
+          open it regardless of control mode; gates internally on
+          walletLinkModalOpen. Land Office deep-links here via openWalletLink(). */}
+      <WalletModal />
 
       <SidebarMenu />
       <Minimap />

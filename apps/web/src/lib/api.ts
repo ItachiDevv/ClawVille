@@ -359,6 +359,52 @@ export const api = {
 
   getMyAvatar: () => request<{ avatar: any }>('/api/avatars/me'),
 
+  // ── Self-custody wallet link (Tokenomics Phase A / routes/wallet-link.ts) ──
+  // Read the linked wallet + its (cached, mainnet) CLV balance. `linked:false`
+  // when the user has not linked a self-custody wallet yet.
+  getWalletLink: () =>
+    request<{
+      linked: boolean;
+      walletPubkey: string | null;
+      clv: {
+        available: boolean;
+        amountAtomic: string | null;
+        decimals: number | null;
+        uiAmount: number | null;
+        cached: boolean;
+        fetchedAt: string | null;
+      };
+    }>('/api/wallet/link'),
+
+  // Issue a nonce + the EXACT human-readable message the wallet must sign
+  // (SIWS-lite, account-bound — see wallet-link-challenge.ts).
+  walletLinkChallenge: () =>
+    request<{ nonce: string; expiresAt: string; messageToSign: string }>(
+      '/api/wallet/link/challenge',
+      { method: 'POST' },
+    ),
+
+  // Prove control of a self-custody wallet by presenting the signed nonce →
+  // persist the pubkey as a POINTER (users.linked_wallet_pubkey). Public-key +
+  // signature only; no secret ever leaves the wallet.
+  linkWallet: (body: { walletPubkey: string; nonce: string; signature: string }) =>
+    request<{
+      ok: boolean;
+      linked: boolean;
+      walletPubkey: string;
+      clv: {
+        available: boolean;
+        amountAtomic: string | null;
+        decimals: number | null;
+        uiAmount: number | null;
+        cached: boolean;
+        fetchedAt: string | null;
+      };
+    }>('/api/wallet/link', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
   // Avatar chat (chat with your own avatar)
   sendAvatarChat: (content: string) =>
     request<{ message: { role: string; content: string; timestamp: string } }>(

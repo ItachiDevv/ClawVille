@@ -36,7 +36,7 @@ import { agentAutonomyDriver } from '../services/agent-autonomy-driver';
 // its only use in this file — was retired. Re-add if a new CT credit path lands here.
 import { logEvent, logEventFromContext } from '../services/event-logger';
 import { buildRuntimeServices } from '../services/runtime-services-adapter';
-import { ensureWalletWithFirstTimeSecret } from '../services/wallet-service';
+import { ensureWalletWithFirstTimeSecret, getWalletAddress } from '../services/wallet-service';
 import {
   provisionAvatarAgent,
   AvatarNameTakenError,
@@ -443,9 +443,19 @@ avatarRoutes.get('/me', requireAuth, async (c) => {
     },
   });
 
+  // Wallet-visibility (Tokenomics Phase A, 2026-07-08) — the custodial
+  // Solana address the wallet UI displays. `avatars.wallet_address` is a
+  // MIRROR of the canonical `wallets` row; older avatars can carry a NULL
+  // mirror even though the wallet exists, so backfill from the canonical
+  // table when the mirror is empty. PUBLIC key only — no secret is ever
+  // resolved here (see wallets.ts JSDoc / the "secretKey once" invariant).
+  const walletAddress =
+    avatar.walletAddress ?? (await getWalletAddress('avatar', avatar.id));
+
   return c.json({
     avatar: {
       ...avatar,
+      walletAddress,
       linkedScapePrincipalId: userScape?.linkedScapePrincipalId ?? null,
       linkedScapeDisplayName: userScape?.linkedScapeDisplayName ?? null,
       linkedHatcherPrincipalId: userScape?.linkedHatcherPrincipalId ?? null,
