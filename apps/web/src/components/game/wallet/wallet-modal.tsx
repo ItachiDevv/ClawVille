@@ -4,8 +4,8 @@
  * WalletModal — the standalone HUD wallet surface (Tokenomics Phase A).
  *
  * Opened by the persistent HUD entry points (avatar-status-bar chip, sidebar
- * "Wallet" button) via `walletModalOpen`, and deep-linked by the Land Office
- * (`setWalletModalOpen(true)`) when a human's self-custody wallet isn't linked.
+ * "Wallet" button) via `walletLinkModalOpen`, and deep-linked by the Land Office
+ * (`openWalletLink()`) when a human's self-custody wallet isn't linked.
  *
  * Mounted at the top level of /game (NOT inside the agentConnected branch) so it
  * serves any authed avatar owner regardless of control mode. Body reuses the
@@ -25,11 +25,16 @@ import {
 import { WalletPanel } from './wallet-panel';
 
 export default function WalletModal() {
-  const walletModalOpen = useGameStore((s) => s.walletModalOpen);
-  const setWalletModalOpen = useGameStore((s) => s.setWalletModalOpen);
+  const walletLinkModalOpen = useGameStore((s) => s.walletLinkModalOpen);
+  const closeWalletLink = useGameStore((s) => s.closeWalletLink);
 
   return (
-    <Dialog open={walletModalOpen} onOpenChange={setWalletModalOpen}>
+    <Dialog
+      open={walletLinkModalOpen}
+      onOpenChange={(open) => {
+        if (!open) closeWalletLink();
+      }}
+    >
       <DialogContent className="max-w-md w-[calc(100vw-1.5rem)] max-h-[85vh] overflow-hidden flex flex-col">
         <DialogHeader>
           <div className="flex items-center justify-between">

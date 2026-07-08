@@ -25,8 +25,9 @@
  */
 
 import { useCallback, useState } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useAvatar } from '@/hooks/use-avatar';
+import { useWalletLink } from '@/hooks/use-wallet-link';
 import { useGameStore } from '@/stores/game';
 import { api } from '@/lib/api';
 import {
@@ -43,7 +44,7 @@ export function WalletPanel({ variant = 'section' }: { variant?: 'section' | 'mo
   return (
     <div className={variant === 'modal' ? 'space-y-4' : 'space-y-3'}>
       <CustodialWalletCard address={custodial} />
-      <LinkedWalletCard hasAvatar={!!avatar} />
+      <LinkedWalletCard />
     </div>
   );
 }
@@ -82,18 +83,12 @@ function CustodialWalletCard({ address }: { address: string | null }) {
 // Linked self-custody wallet
 // ---------------------------------------------------------------------------
 
-function LinkedWalletCard({ hasAvatar }: { hasAvatar: boolean }) {
+function LinkedWalletCard() {
   const queryClient = useQueryClient();
   const addToast = useGameStore((s) => s.addToast);
   const [error, setError] = useState<string | null>(null);
 
-  const linkQuery = useQuery({
-    queryKey: ['wallet-link'],
-    queryFn: api.getWalletLink,
-    enabled: hasAvatar,
-    retry: false,
-    staleTime: 60_000,
-  });
+  const linkQuery = useWalletLink();
 
   const linkMutation = useMutation({
     mutationFn: async () => {
@@ -129,8 +124,8 @@ function LinkedWalletCard({ hasAvatar }: { hasAvatar: boolean }) {
     },
   });
 
-  const linked = linkQuery.data?.linked && linkQuery.data.walletPubkey;
-  const clv = linkQuery.data?.clv;
+  const linked = linkQuery.linked;
+  const clv = linkQuery.clv;
 
   const onLink = () => {
     setError(null);
@@ -161,7 +156,7 @@ function LinkedWalletCard({ hasAvatar }: { hasAvatar: boolean }) {
           </div>
           <AddressField
             label="Linked wallet"
-            address={linkQuery.data!.walletPubkey!}
+            address={linkQuery.walletPubkey!}
             accent="cyan"
           />
           <div className="flex items-center justify-between gap-2 pt-1 border-t border-white/10">
