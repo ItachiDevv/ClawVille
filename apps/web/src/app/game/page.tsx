@@ -579,7 +579,7 @@ export default function GamePage() {
       <WorldMapModal />
       {/* Wallet-visibility modal — top-level so any authed avatar owner can
           open it regardless of control mode; gates internally on
-          walletModalOpen. Land Office deep-links here via setWalletModalOpen. */}
+          walletLinkModalOpen. Land Office deep-links here via openWalletLink(). */}
       <WalletModal />
 
       <SidebarMenu />

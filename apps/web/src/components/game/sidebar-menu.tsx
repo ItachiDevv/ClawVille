@@ -77,7 +77,7 @@ import { api } from '@/lib/api';
 
 function CharacterFrame({ onCreateAvatar }: { onCreateAvatar: () => void }) {
   const { data: avatar, isLoading } = useAvatar();
-  const setWalletModalOpen = useGameStore((s: GameState) => s.setWalletModalOpen);
+  const openWalletLink = useGameStore((s: GameState) => s.openWalletLink);
 
   if (isLoading) {
     return (
@@ -252,7 +252,7 @@ function CharacterFrame({ onCreateAvatar }: { onCreateAvatar: () => void }) {
       {(avatar as { walletAddress?: string | null }).walletAddress && (
         <button
           type="button"
-          onClick={() => setWalletModalOpen(true)}
+          onClick={openWalletLink}
           title="View your wallet"
           style={{
             display: 'flex',

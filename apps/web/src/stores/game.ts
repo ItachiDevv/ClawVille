@@ -234,10 +234,13 @@ export interface GameState {
 
   // Wallet-visibility modal (Tokenomics Phase A) — the persistent HUD entry
   // point (avatar-status-bar chip / sidebar) opens this; the Land Office
-  // deep-links to it via setWalletModalOpen(true) when a human's self-custody
-  // wallet isn't linked yet. Mounted always (top-level), inert until opened.
-  walletModalOpen: boolean;
-  setWalletModalOpen: (open: boolean) => void;
+  // deep-links to it via openWalletLink() when a human hits wallet_not_linked.
+  // Mounted always (top-level), inert until opened. NOTE: the modal shows the
+  // full wallet surface (custodial deposit address + linked wallet), not only
+  // the link action — the name reflects the land-team call site (frozen contract).
+  walletLinkModalOpen: boolean;
+  openWalletLink: () => void;
+  closeWalletLink: () => void;
 
   // Q3 plan §4.4 — cosmetic drawer (Phase 3 surface). Drawer lists owned
   // cosmetics with equip/unequip toggles. Catalog is empty at Phase 3 launch;
@@ -828,8 +831,9 @@ export const useGameStore = create<GameState>((set, get) => ({
   settingsModalOpen: false,
   setSettingsModalOpen: (open) => set({ settingsModalOpen: open }),
 
-  walletModalOpen: false,
-  setWalletModalOpen: (open) => set({ walletModalOpen: open }),
+  walletLinkModalOpen: false,
+  openWalletLink: () => set({ walletLinkModalOpen: true }),
+  closeWalletLink: () => set({ walletLinkModalOpen: false }),
 
   cosmeticDrawerOpen: false,
   setCosmeticDrawerOpen: (open) => set({ cosmeticDrawerOpen: open }),
@@ -1249,7 +1253,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     movementFrozen: false,
     menuOpen: false,
     settingsModalOpen: false,
-    walletModalOpen: false,
+    walletLinkModalOpen: false,
     locationConfigModalOpen: false,
     locationConfigTarget: null,
     inventoryOpen: false,
