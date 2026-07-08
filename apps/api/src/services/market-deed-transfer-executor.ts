@@ -61,14 +61,23 @@
  * (`deed_transfer_escrow_present`) if the parcel carries a LIVE deposit escrow
  * (`deposit_remaining_ct > 0`) — NULLing it would vaporize escrowed CT and
  * break the land escrow-conservation invariant. Should be impossible (only
- * 'owned'/'hold' tenures can list) — defense-in-depth, terminal, loud.
+ * the 'owned' tenure can list — 'hold' is refused at list time, see below) —
+ * defense-in-depth, terminal, loud.
  * On any terminal conflict the `market_deed_locks` row stays HELD
  * (house-favorable freeze of the parcel's transferability until ops resolves).
  *
  * ── WHAT THE FLIP WRITES (land_parcels — via OUR OWN SQL; land.ts untouched) ─
- * owner_avatar_id=buyer · status='owned' · tenure='owned' [FLAG for land
- * review: a P2P-bought parcel defaults to the buy-outright tenure; land may
- * prefer 'hold' with a re-stamped threshold] · acquired_at=now() · deposit_ct/
+ * owner_avatar_id=buyer · status='owned' · tenure='owned' [CONSISTENT by
+ * construction (2026-07-08 Codex re-review — resolves the earlier "FLAG for
+ * land review" on tenure): ONLY 'owned' parcels can enter this pipe, because
+ * `market-listings.ts` refuses a 'hold' parcel at LIST time
+ * (`hold_transfer_not_supported`), so the 'owned' normalization + the
+ * hold-col NULLing below can never strip a live CLV-hold obligation or drop a
+ * parcel out of the weekly tenure sweep. HOLD-deed transfer — buyer INHERITS
+ * the obligation, re-stamped to the buyer's subject with an independent
+ * CLV-threshold check — is the designed follow-up gated in market-listings.ts
+ * (FEATURE_GATE market_hold_deed_transfer) BEFORE hold parcels ever list] ·
+ * acquired_at=now() · deposit_ct/
  * deposit_remaining_ct/rent_paid_through/grace_until/hold_threshold_ct/
  * hold_subject=NULL · grandfathered=false · rent_ct_weekly KEPT (per-parcel
  * seed-stamped listing value, not per-tenancy). Any structure on the parcel
@@ -282,8 +291,11 @@ function makeTxApi(tx: DrizzleTx): DeedTransferTx {
     },
     async flipParcelToBuyer(parcelId, sellerAvatarId, buyerAvatarId) {
       // Fresh-owned reset. rent_ct_weekly is deliberately KEPT (per-parcel
-      // seed-stamped listing value). Tenure default 'owned' — FLAG for land
-      // review (see module header).
+      // seed-stamped listing value). tenure='owned' + the hold-col NULLing is
+      // CONSISTENT by construction: only 'owned' parcels can list ('hold'
+      // refuses `hold_transfer_not_supported` at list time in
+      // market-listings.ts), so this reset can never strip a live CLV-hold
+      // obligation (see module header — the earlier tenure FLAG is resolved).
       const rows = await tx.execute<{ id: string }>(
         sql`UPDATE land_parcels
             SET owner_avatar_id = ${buyerAvatarId},
@@ -486,7 +498,7 @@ export async function runDeedTransferForSettlement(
 
     // 5) ESCROW GUARD — a live deposit escrow must never be vaporized by the
     //    fresh-owned reset (land escrow-conservation invariant). Should be
-    //    impossible (only 'owned'/'hold' tenures list) — terminal + loud.
+    //    impossible (only the 'owned' tenure lists) — terminal + loud.
     if (parcel.depositRemainingCt !== null && parcel.depositRemainingCt > 0) {
       console.error(
         `[market-deed-transfer] LIVE ESCROW ON DEED PARCEL — settlement=${settlementId} ` +

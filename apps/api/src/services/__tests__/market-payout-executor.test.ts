@@ -100,6 +100,7 @@ function settlementOf(over: Partial<PayoutSettlementRow> = {}): PayoutSettlement
     payoutSellerTxSignature: null,
     payoutRakeTxSignature: null,
     payoutClvAtomic: null,
+    payoutRakeClvAtomic: null,
     payoutExecutedRate: null,
     payoutFailureReason: null,
     ...over,
@@ -240,6 +241,9 @@ function makeHarness(opts: {
       }
       s.payoutRakeTxSignature = signature;
       s.rakeClvMeta = rakeClvAtomic;
+      // Mirrors the real defaultDb, which merges the amount into the row's
+      // jsonb metadata (surfaced back as payoutRakeClvAtomic by toPayoutRow).
+      s.payoutRakeClvAtomic = rakeClvAtomic;
       return true;
     },
     async markPaid(id, claimId) {
@@ -419,6 +423,10 @@ describe('ORDERING — deed first; claim before custody; capture before send', (
     if (!second.ok) throw new Error('unreachable');
     expect(second.replay).toBe(true);
     expect(h.log.filter((l) => l === 'sendRaw').length).toBe(sendsAfterFirst);
+    // The replay reports the REAL captured rake (durable metadata stamp) —
+    // not a hardcoded '0' (2026-07-08, Codex re-review).
+    expect(second.rakeClvAtomic).toBe(RAKE_CLV.toString());
+    expect(second.sellerClvAtomic).toBe(SELLER_CLV.toString());
   });
 
   it('DOUBLE-CLAIM: a row already in "sending" refuses (payout_in_flight)', async () => {
@@ -641,14 +649,19 @@ describe('EXACTLY-ONCE — ambiguous never retried; resume never re-sends', () =
         payoutSellerTxSignature: 'seller-sig-1',
         payoutRakeTxSignature: 'rake-sig-1',
         payoutClvAtomic: SELLER_CLV.toString(),
+        payoutRakeClvAtomic: RAKE_CLV.toString(), // the durable metadata stamp
         payoutExecutedRate: RATE,
       },
       sigStatus: { 'rake-sig-1': 'confirmed' },
     });
     const res = await resumeMarketPayout(SETT, h.deps);
     expect(res.ok).toBe(true);
+    if (!res.ok) throw new Error('unreachable');
     expect(h.log.filter((l) => l === 'sendRaw').length).toBe(0);
     expect(h.settlements.get(SETT)!.payoutStatus).toBe('paid');
+    // Case-A reporting surfaces the REAL captured rake, not a hardcoded '0'.
+    expect(res.rakeClvAtomic).toBe(RAKE_CLV.toString());
+    expect(res.sellerClvAtomic).toBe(SELLER_CLV.toString());
   });
 
   it('resume with a captured sig NOT provable on chain: TERMINAL reconcile, no re-send', async () => {

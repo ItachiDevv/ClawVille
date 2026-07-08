@@ -16,15 +16,21 @@
  *     `CLV_SWAP_EXECUTE === 'true'`.
  *
  * Together the locks make the live path STRUCTURALLY UNREACHABLE in a running
- * API today (flag on ⇒ no boot; flag off ⇒ every entrypoint refuses). Opening
- * the seam is a ONE-LINE Codex-reviewed change: remove the module-load throw
- * in `clv-swap-executor.ts`; then `CLV_SWAP_EXECUTE=true` enables exactly this
- * audited path. index.ts is UNCHANGED — the dry-run worker remains the ONLY
- * boot-wired behavior; nothing imports this module at boot.
+ * API today (flag on ⇒ no boot; flag off ⇒ every entrypoint refuses). THE REAL
+ * GO-LIVE DIFF (corrected 2026-07-08, Codex re-review — it is NOT "one line on
+ * top of unchanged boot wiring"): remove ONLY the module-load throw in
+ * `clv-swap-executor.ts`. index.ts's boot wiring is ALREADY CONDITIONAL on
+ * `CLV_SWAP_EXECUTE`: flag unset/false ⇒ the dry-run worker (today's only
+ * reachable behavior); flag 'true' ⇒ `startClvSwapLiveWorker()` from this
+ * module. While the throw stands, the live branch is DEAD CODE (a flagged box
+ * refuses to boot at module load) — dark-safe; once the throw is removed, the
+ * flag cleanly selects this audited path instead of crash-looping the API on
+ * the dry-run worker's gate.
  *
  * // FEATURE_GATE: clv_swap_live_execution
- * // Status: dark plumbing — exported but unreachable (module-load throw +
- * //   default-OFF gate + mainnet/mock network guard); NOT wired into index.ts.
+ * // Status: dark plumbing — unreachable (module-load throw + default-OFF gate
+ * //   + mainnet/mock network guard); index.ts boot wiring is CONDITIONAL on
+ * //   CLV_SWAP_EXECUTE='true' (a dead branch while the throw stands).
  * // Metric to graduate: Codex adversarial review PASSED on this file +
  * //   clv-swap-custody.ts + migration 0019/0019a, AND a staging harness smoke
  * //   of the funding sweep + one clip against a funded wallet.
@@ -84,7 +90,7 @@
  *
  * ── TESTABILITY ─────────────────────────────────────────────────────────────
  * All I/O is behind an injectable `ClvSwapLiveDeps` (db api, oracle, custody,
- * fetch, send/confirm, sleep). Defaults are the real implementations; tests
+ * fetch, send/confirm, sleep, ops alert). Defaults are the real implementations; tests
  * inject fakes and assert ORDERING (claim before decrypt, capture before
  * send), refusals, and conservation without touching chain/DB.
  */
@@ -109,9 +115,11 @@ import {
   and,
   eq,
   asc,
+  lt,
   sql,
   type ClvSwapFunding,
 } from '@clawville/database';
+import { alertError, type AlertErrorParams } from './alert-error';
 import { getClvPrice, CLV_MINT, type ClvPriceQuote } from './clv-price-oracle';
 import {
   resolveClvSwapMaxImpactBps,
@@ -142,8 +150,9 @@ export function isLiveClvSwapExecutionEnabled(): boolean {
 }
 
 /** Re-asserted at EVERY live entrypoint. Default-OFF: throws unless the env is
- *  the literal 'true'. Removing the executor's module-load throw (the one-line
- *  Codex change) is what makes this gate openable. */
+ *  the literal 'true'. Removing the executor's module-load throw (the
+ *  Codex-reviewed go-live change — see the module header) is what makes this
+ *  gate openable; the index.ts boot wiring is already conditional. */
 export function requireLiveClvSwapExecution(): void {
   if (!isLiveClvSwapExecutionEnabled()) {
     throw new Error(
@@ -208,11 +217,63 @@ export function parseRowSlippageBps(maxSlippage: string | null): number | null {
 }
 
 const DEFAULT_JUPITER_BASE_URL = 'https://lite-api.jup.ag';
-/** `CLV_SWAP_JUPITER_BASE_URL` — Jupiter API base (default the keyless
- *  lite-api; a paid quote-api key/base is an ops swap, same wire shape). */
-function resolveJupiterBaseUrl(): string {
+/** HOST ALLOWLIST for the Jupiter API base — mirrors the `hatcher-config.ts`
+ *  SSRF-allowlist pattern (parse the URL, check the hostname against a pinned
+ *  Set, reject otherwise). Only Jupiter's own hosts may serve the money
+ *  wire's quotes/swap transactions. */
+const JUPITER_ALLOWED_HOSTS = new Set(['lite-api.jup.ag', 'api.jup.ag']);
+/** `CLV_SWAP_JUPITER_BASE_URL` — Jupiter API base, HOST-ALLOWLISTED
+ *  (2026-07-08, Codex re-review; previously any bare `https://` URL was
+ *  accepted). Default: the keyless lite-api. The paid `api.jup.ag` is the
+ *  only other accepted host (an ops swap, same wire shape). Anything else —
+ *  unparseable, non-https, embedded credentials, or an off-allowlist host —
+ *  FALLS BACK to the default with a loud warn, so a mis-set or hostile env
+ *  can only ever point the swap wire at Jupiter itself. Exported for tests. */
+export function resolveJupiterBaseUrl(): string {
   const raw = process.env.CLV_SWAP_JUPITER_BASE_URL?.trim();
-  return raw && /^https:\/\//.test(raw) ? raw.replace(/\/+$/, '') : DEFAULT_JUPITER_BASE_URL;
+  if (!raw) return DEFAULT_JUPITER_BASE_URL;
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    console.warn(
+      `[clv-swap-live] CLV_SWAP_JUPITER_BASE_URL is not a parseable URL — ` +
+        `falling back to ${DEFAULT_JUPITER_BASE_URL}`,
+    );
+    return DEFAULT_JUPITER_BASE_URL;
+  }
+  if (
+    parsed.protocol !== 'https:' ||
+    parsed.username !== '' ||
+    parsed.password !== '' ||
+    !JUPITER_ALLOWED_HOSTS.has(parsed.hostname.toLowerCase())
+  ) {
+    console.warn(
+      `[clv-swap-live] CLV_SWAP_JUPITER_BASE_URL (host '${parsed.hostname}') is not an allowed ` +
+        `Jupiter base — must be https, credential-free, host ∈ {${[...JUPITER_ALLOWED_HOSTS].join(', ')}} — ` +
+        `falling back to ${DEFAULT_JUPITER_BASE_URL}`,
+    );
+    return DEFAULT_JUPITER_BASE_URL;
+  }
+  return raw.replace(/\/+$/, '');
+}
+
+/**
+ * `CLV_SWAP_EXECUTING_STALE_MS` — how old an 'executing' claim must be before
+ * the live tick treats it as a CRASHED claim and PAGES OPS (2026-07-08, Codex
+ * re-review). ALERT-ONLY: the row is NEVER auto-resumed/auto-retried — a
+ * resume cannot prove the money-state of the stopping clip, so resolution is
+ * a manual reconcile decision; the confirmed fills stay durable in
+ * `tx_signatures`. Default 300_000; hard floor 180_000 (mirrors
+ * `MARKET_PAYOUT_STALE_MS`: must exceed a live clip send+confirm cycle with
+ * margin so an in-flight execution is never mis-paged).
+ */
+const EXECUTING_STALE_MS_DEFAULT = 5 * 60_000;
+const EXECUTING_STALE_MS_FLOOR = 180_000;
+export function resolveClvSwapExecutingStaleMs(): number {
+  const raw = process.env.CLV_SWAP_EXECUTING_STALE_MS;
+  const n = raw ? Number.parseInt(raw, 10) : NaN;
+  return Number.isFinite(n) && n >= EXECUTING_STALE_MS_FLOOR ? n : EXECUTING_STALE_MS_DEFAULT;
 }
 
 /** CLV is a 6-decimal Token-2022 mint (see clv-price-oracle.ts header). */
@@ -376,6 +437,10 @@ export interface ClipFillRecord {
 export interface ClvSwapLiveDb {
   getQueueRow(queueId: string): Promise<QueueRow | null>;
   listPlannedQueueRows(limit: number): Promise<QueueRow[]>;
+  /** Rows stuck 'executing' with `claimed_at` older than the cutoff — CRASHED
+   *  claims (their confirmed fills are durable in tx_signatures). READ-ONLY:
+   *  the live tick only ALERTS on these; it never mutates or resumes them. */
+  listStaleExecutingQueueRows(cutoff: Date, limit: number): Promise<QueueRow[]>;
   /** THE atomic claim: planned→executing, checked, RETURNING the row. */
   claimQueueRow(queueId: string, claimId: string): Promise<QueueRow | null>;
   /** Capture-before-send: append one clip fill, checked to the claim. */
@@ -421,6 +486,9 @@ export interface ClvSwapLiveDeps {
     lastValidBlockHeight: number,
   ) => Promise<'confirmed' | 'failed'>;
   sleep?: (ms: number) => Promise<void>;
+  /** Ops pager for stale-claim alerts (defaults to the shared Telegram
+   *  `alertError`; never throws). Injectable so tests assert the page. */
+  alert?: (params: AlertErrorParams) => Promise<void>;
 }
 
 const defaultDb: ClvSwapLiveDb = {
@@ -434,6 +502,14 @@ const defaultDb: ClvSwapLiveDb = {
       .from(clvBuyQueue)
       .where(eq(clvBuyQueue.status, 'planned'))
       .orderBy(asc(clvBuyQueue.createdAt))
+      .limit(limit);
+  },
+  async listStaleExecutingQueueRows(cutoff, limit) {
+    return db
+      .select()
+      .from(clvBuyQueue)
+      .where(and(eq(clvBuyQueue.status, 'executing'), lt(clvBuyQueue.claimedAt, cutoff)))
+      .orderBy(asc(clvBuyQueue.claimedAt))
       .limit(limit);
   },
   async claimQueueRow(queueId, claimId) {
@@ -602,6 +678,7 @@ function resolveDeps(deps?: ClvSwapLiveDeps): Required<ClvSwapLiveDeps> {
         return res.value.err ? 'failed' : 'confirmed';
       }),
     sleep: deps?.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms))),
+    alert: deps?.alert ?? alertError,
   };
 }
 
@@ -1149,14 +1226,15 @@ export async function executeQueuedClvBuy(
 }
 
 // ---------------------------------------------------------------------------
-// LIVE worker — exported, NEVER boot-wired (the dry-run worker is the default)
+// LIVE worker — boot-wired ONLY behind CLV_SWAP_EXECUTE='true' (dry-run default)
 // ---------------------------------------------------------------------------
 
 /**
- * One live pass: scan a small batch of planned rows; for each, sweep its
- * funding then execute. Exported for the (future, Codex-gated) live worker +
- * the staging harness — index.ts does NOT call this; the dry-run worker
- * remains the only boot behavior.
+ * One live pass: (1) page ops on any STALE 'executing' claim (a crashed
+ * mid-execution claim — ALERT-ONLY, never auto-resumed), then (2) scan a small
+ * batch of planned rows; for each, sweep its funding then execute. Driven by
+ * the live worker below (which index.ts boot-selects only when
+ * `CLV_SWAP_EXECUTE === 'true'`) + the staging harness.
  */
 export async function runLiveClvSwapTick(
   deps?: ClvSwapLiveDeps,
@@ -1164,6 +1242,39 @@ export async function runLiveClvSwapTick(
   requireLiveClvSwapExecution();
   assertMainnetRealMoneyContext();
   const d = resolveDeps(deps);
+
+  // STALE-CLAIM ALERTING (2026-07-08, Codex re-review) — a row stuck
+  // 'executing' past the stale floor is a CRASHED claim (its confirmed fills
+  // are durable in tx_signatures). ALERT-ONLY: page ops and skip — NO
+  // auto-retry, NO auto-resume (a resume cannot prove the money-state of the
+  // stopping clip; the row stays for a manual reconcile decision).
+  try {
+    const staleCutoff = new Date(Date.now() - resolveClvSwapExecutingStaleMs());
+    const staleRows = await d.db.listStaleExecutingQueueRows(staleCutoff, 10);
+    for (const staleRow of staleRows) {
+      console.error(
+        `[clv-swap-live] STALE 'executing' CLAIM — queue=${staleRow.id} ` +
+          `claimed_at=${staleRow.claimedAt?.toISOString() ?? 'NULL'} amount=$${staleRow.amountUsdc}; ` +
+          `crashed claim — manual reconcile required (NEVER auto-resumed)`,
+      );
+      await d.alert({
+        severity: 'warning',
+        source: 'clv-swap-live',
+        message:
+          `clv_buy_queue row stuck 'executing' past the stale floor — queue=${staleRow.id} ` +
+          `(crashed claim; manual reconcile, never auto-retried)`,
+        context: {
+          queueId: staleRow.id,
+          claimId: staleRow.claimId,
+          claimedAt: staleRow.claimedAt?.toISOString() ?? null,
+          amountUsdc: staleRow.amountUsdc,
+        },
+      });
+    }
+  } catch (err) {
+    // The stale scan is monitoring — it must never block the live pass.
+    console.error('[clv-swap-live] stale-claim scan failed (non-fatal):', err);
+  }
 
   const rows = await d.db.listPlannedQueueRows(10);
   const results: Array<{
@@ -1185,10 +1296,11 @@ export async function runLiveClvSwapTick(
 let liveWorkerTimer: ReturnType<typeof setInterval> | null = null;
 
 /**
- * The live worker loop. EXPORTED BUT DARK: nothing in index.ts calls this —
- * the dry-run worker stays the default boot behavior. Gated at start AND
- * inherits the per-entrypoint gates of every tick. Wiring this into boot is
- * part of the Codex-reviewed go-live change, never a drive-by.
+ * The live worker loop. Boot-wired in index.ts ONLY behind
+ * `CLV_SWAP_EXECUTE === 'true'` — a DEAD branch while the executor's
+ * module-load throw stands (the dry-run worker stays the default boot
+ * behavior). Gated at start AND inherits the per-entrypoint gates of every
+ * tick.
  */
 export function startClvSwapLiveWorker(pollMs = 300_000): void {
   requireLiveClvSwapExecution();
