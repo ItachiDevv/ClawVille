@@ -487,6 +487,13 @@ export class AgentSubstrateClient {
           messages,
           max_tokens: this.maxTokens,
           temperature: 0.8,
+          // Pin ONE continuous gateway session per hosted agent. The real
+          // OpenClaw gateway mints a NEW random agent session per request when
+          // neither `user` nor an `x-openclaw-session-key` header is present
+          // (docs/gateway/health.md — 4-22KB store bloat per call, and zero
+          // conversational continuity). `user` is the OpenAI-standard field the
+          // gateway maps to a stable session; the mock ignores it.
+          user: this.agentId,
         }),
         signal: controller.signal,
       });
