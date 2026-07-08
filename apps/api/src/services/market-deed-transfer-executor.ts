@@ -154,8 +154,13 @@ export interface DeedTransferTx {
    * lock). Returns false when the tripwire missed — caller treats as conflict.
    */
   flipParcelToBuyer(parcelId: string, sellerAvatarId: string, buyerAvatarId: string): Promise<boolean>;
-  /** Denormalized land_structures.owner_avatar_id → buyer (as-is). Returns count. */
-  transferStructuresToBuyer(parcelId: string, buyerAvatarId: string): Promise<number>;
+  /** Denormalized land_structures.owner_avatar_id → buyer (only the SELLER's
+   *  own ACTIVE structure, as-is). Returns count. */
+  transferStructuresToBuyer(
+    parcelId: string,
+    sellerAvatarId: string,
+    buyerAvatarId: string,
+  ): Promise<number>;
   /** Stamp deed_transferred_at (checked: claim + still NULL). */
   stampDeedTransferred(settlementId: string, claimId: string): Promise<boolean>;
   /** DELETE the market_deed_locks row (same tx as the flip). */
@@ -298,12 +303,20 @@ function makeTxApi(tx: DrizzleTx): DeedTransferTx {
       );
       return rows.length > 0;
     },
-    async transferStructuresToBuyer(parcelId, buyerAvatarId) {
-      // Transfer AS-IS (status/level untouched) — FLAG for land review.
+    async transferStructuresToBuyer(parcelId, sellerAvatarId, buyerAvatarId) {
+      // Transfer ONLY the SELLER's own ACTIVE structure AS-IS (status/level
+      // untouched). Scoped to `owner_avatar_id = seller AND status = 'active'`
+      // (adversarial-audit item 3): a bare `WHERE parcel_id` would also reassign
+      // an ARCHIVED structure left by a PRIOR evicted tenant (a third party) to
+      // the buyer. What happens to a seller-owned ARCHIVED structure on a deed
+      // sale (transfer vs purge, mirroring `reconcileArchivedStructureOnAcquire`)
+      // is a land-domain policy decision — left untouched here, FLAG for land review.
       const rows = await tx.execute<{ id: string }>(
         sql`UPDATE land_structures
             SET owner_avatar_id = ${buyerAvatarId}, updated_at = now()
             WHERE parcel_id = ${parcelId}
+              AND owner_avatar_id = ${sellerAvatarId}
+              AND status = 'active'
             RETURNING id`,
       );
       return rows.length;
@@ -499,6 +512,7 @@ export async function runDeedTransferForSettlement(
     // 7) Denormalized structures → buyer (as-is; FLAG for land review).
     const structuresTransferred = await tx.transferStructuresToBuyer(
       parcelId,
+      settlement.sellerAvatarId,
       settlement.buyerAvatarId,
     );
 

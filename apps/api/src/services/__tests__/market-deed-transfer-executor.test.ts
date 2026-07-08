@@ -189,11 +189,13 @@ function makeHarness(opts: {
       p.flippedTo = buyerAvatarId;
       return true;
     },
-    async transferStructuresToBuyer(parcelId, buyerAvatarId) {
+    async transferStructuresToBuyer(parcelId, sellerAvatarId, buyerAvatarId) {
       log.push('transferStructures');
       let n = 0;
       for (const st of state.structures.values()) {
-        if (st.parcelId === parcelId) {
+        // Mirror the SQL: only the SELLER's own ACTIVE structure moves — an
+        // archived structure or a third party's is left untouched (audit item 3).
+        if (st.parcelId === parcelId && st.ownerAvatarId === sellerAvatarId && st.status === 'active') {
           st.ownerAvatarId = buyerAvatarId;
           n += 1;
         }
