@@ -7,9 +7,12 @@
  *   • For Sale  — browse for-sale parcels grouped by tier (founder→starter).
  *                 Hold tiers (c/b/a/founder) are acquired via CLAIM (hold-to-
  *                 keep): prove a CLV hold, pay weekly CT upkeep — no CT price.
- *                 The tier-ladder visibly rises toward town.
+ *                 Starter is claimed via a refundable CT DEPOSIT held in escrow
+ *                 (auto-assigned parcel). The tier-ladder visibly rises toward
+ *                 town.
  *   • My Land   — owned parcels + each parcel's structure + level, with a
- *                 prominent "Claim free home" CTA when the player owns nothing.
+ *                 prominent "Claim your first home" CTA (refundable starter
+ *                 deposit — NOT free) when the player owns nothing.
  *   • Build     — on a selected owned parcel: place + upgrade a building/shop,
  *                 with the TIER ADVANTAGE surfaced ("nicer options for higher
  *                 tiers" — higher tier ⇒ premium SKUs + higher max level).
@@ -35,12 +38,15 @@ import {
   MAX_PARCELS_PER_AVATAR,
   holdThresholdForTier,
   FOUNDER_UPKEEP_CT_WEEKLY,
+  LAND_STARTER_DEPOSIT_CT,
+  LAND_STARTER_RENT_CT_WEEKLY,
   type LandTier,
 } from '@clawville/shared';
 import { RpgModal, RpgButton } from '@/components/rpg';
 import { useGameStore } from '@/stores/game';
 import { useAvatar, useSetSpawnPreference } from '@/hooks/use-avatar';
 import { useIsMobile } from '@/hooks/use-is-mobile';
+import { useWalletLink } from '@/hooks/use-wallet-link';
 import { api, ApiError } from '@/lib/api';
 import { useLandStore, type ParcelState } from '@/stores/land';
 import { LAND_PARCELS_QUERY_KEY } from '@/lib/three/land-state-hydrator';
@@ -50,7 +56,6 @@ import type {
   LandCatalogTierResponse,
   ServiceListingDTO,
   BrowseServicesResponse,
-  WalletLinkStatus,
 } from './types';
 
 type Tab = 'for-sale' | 'my-land' | 'build' | 'services';
@@ -153,21 +158,6 @@ function TierBadge({ tier }: { tier: LandTier }) {
   );
 }
 
-function PriceText({ priceCt }: { priceCt: number | null }) {
-  if (priceCt === null) {
-    return (
-      <span className="font-mono text-[11px] uppercase tracking-[0.14em] text-amber-300">
-        Auction · Coming soon
-      </span>
-    );
-  }
-  return (
-    <span className="font-mono text-sm font-bold text-amber-300">
-      {priceCt.toLocaleString()} CT
-    </span>
-  );
-}
-
 // ---------------------------------------------------------------------------
 // Hold-to-keep helpers (Phase B2 — c/b/a/founder claim via CLV hold)
 // ---------------------------------------------------------------------------
@@ -219,20 +209,22 @@ function stackedRequiredClv(tier: LandTier, existingHoldSum: number): number {
 // ---------------------------------------------------------------------------
 
 function ForSaleTab({
-  onBuy,
   onClaim,
-  clawTokens,
-  walletLink,
+  onClaimStarter,
+  heldClv,
   existingHoldSum,
   focusParcelCode,
   onFocusConsumed,
 }: {
-  onBuy: (parcel: LandParcelDTO) => void;
   /** Open the hold-to-keep ClaimHoldModal for a c/b/a/founder parcel. */
   onClaim: (parcel: LandParcelDTO) => void;
-  clawTokens: number;
-  /** Linked-wallet CLV qualification (null = logged out / fetch failed). */
-  walletLink: WalletLinkStatus | null;
+  /**
+   * Open the StarterClaimModal (deposit-escrow). Parcel-AGNOSTIC — the
+   * claim-starter route takes no parcelId and AUTO-PICKS an available lot.
+   */
+  onClaimStarter: () => void;
+  /** Linked-wallet CLV uiAmount, or null (logged out / not linked / read down). */
+  heldClv: number | null;
   /** Σ of the caller's existing hold thresholds (stacking) — see stackedRequiredClv. */
   existingHoldSum: number;
   /** When set, scroll the matching parcel card into view and clear after. */
@@ -361,10 +353,9 @@ function ForSaleTab({
                     <ParcelCard
                       key={p.id}
                       parcel={p}
-                      clawTokens={clawTokens}
-                      onBuy={onBuy}
                       onClaim={onClaim}
-                      walletLink={walletLink}
+                      onClaimStarter={onClaimStarter}
+                      heldClv={heldClv}
                       existingHoldSum={existingHoldSum}
                       isFocused={!!focusParcelCode && p.parcelCode === focusParcelCode}
                     />
@@ -410,37 +401,34 @@ function FilterChip({
 
 function ParcelCard({
   parcel,
-  clawTokens,
-  onBuy,
   onClaim,
-  walletLink,
+  onClaimStarter,
+  heldClv,
   existingHoldSum,
   isFocused,
 }: {
   parcel: LandParcelDTO;
-  clawTokens: number;
-  onBuy: (p: LandParcelDTO) => void;
   onClaim: (p: LandParcelDTO) => void;
-  walletLink: WalletLinkStatus | null;
+  /** Open the parcel-agnostic StarterClaimModal (server auto-picks the lot). */
+  onClaimStarter: () => void;
+  /** Linked-wallet CLV uiAmount, or null (logged out / not linked / read down). */
+  heldClv: number | null;
   existingHoldSum: number;
   isFocused?: boolean;
 }) {
   const accent = TIER_ACCENT[parcel.tier];
   // Hold tiers (c/b/a/founder) acquire via CLAIM (hold-to-keep) — the old Buy
-  // route is retired (409 tenure_model_active). Starter keeps its legacy card.
+  // route is retired (409 tenure_model_active). Starter acquires via the
+  // deposit-escrow claim (§18b.j B1) — its old Buy button was equally dead.
   const holdTier = isHoldTier(parcel.tier);
   const tierThreshold = holdThresholdForTier(parcel.tier);
   const upkeep = weeklyUpkeepCt(parcel);
   // Qualified/short badge — display-only (server is authoritative; see
   // stackedRequiredClv for the grandfathered caveat). null = unknown.
-  const heldClv =
-    walletLink?.linked && walletLink.clv.available ? walletLink.clv.uiAmount : null;
   const qualified =
     holdTier && heldClv != null
       ? heldClv >= stackedRequiredClv(parcel.tier, existingHoldSum)
       : null;
-  const isFounder = parcel.priceCt === null;
-  const tooPoor = parcel.priceCt !== null && clawTokens < parcel.priceCt;
   return (
     <div
       id={isFocused ? FOCUSED_CARD_ID : undefined}
@@ -497,112 +485,33 @@ function ParcelCard({
           </div>
         </>
       ) : (
-        <div className="flex items-center justify-between gap-2">
-          <PriceText priceCt={parcel.priceCt} />
-          <RpgButton
-            size="sm"
-            variant={isFounder ? 'ghost' : 'primary'}
-            disabled={isFounder || tooPoor}
-            onClick={() => onBuy(parcel)}
-          >
-            {isFounder ? 'Auction' : tooPoor ? 'Need more CT' : 'Buy'}
-          </RpgButton>
-        </div>
+        <>
+          {/* Starter = deposit-escrow (§18b.j B1). The retired Buy button
+              (always 409 tenure_model_active) is replaced by Claim → the
+              parcel-AGNOSTIC StarterClaimModal: claim-starter takes no
+              parcelId and AUTO-PICKS an available lot, so the button opens
+              the confirm without binding to THIS card's parcel. Affordability
+              is gated inside the modal (mirrors BuyModal's tooPoor pattern). */}
+          <div className="flex items-center justify-between gap-2">
+            <span className="font-mono text-sm font-bold text-amber-300">
+              Refundable {LAND_STARTER_DEPOSIT_CT.toLocaleString()} CT deposit
+            </span>
+            <RpgButton
+              size="sm"
+              variant="primary"
+              className="min-h-[44px]"
+              onClick={onClaimStarter}
+            >
+              Claim
+            </RpgButton>
+          </div>
+          <span className="font-mono text-[11px] text-cyan-200">
+            {LAND_STARTER_RENT_CT_WEEKLY.toLocaleString()} CT
+            <span className="text-slate-400"> / week upkeep, drawn from the deposit</span>
+          </span>
+        </>
       )}
     </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Buy confirm modal (nested RpgModal)
-// ---------------------------------------------------------------------------
-
-function buyErrorMessage(code: string | undefined, status: number | undefined, parcel: LandParcelDTO, have: number): string {
-  switch (code) {
-    case 'insufficient_clawtokens':
-      return `Not enough ClawTokens — need ${parcel.priceCt?.toLocaleString() ?? '?'}, you have ${have.toLocaleString()}.`;
-    case 'parcel_not_available':
-      return 'This parcel was just sold. Pick another.';
-    case 'parcel_cap_reached':
-      return `You already own the maximum of ${MAX_PARCELS_PER_AVATAR} parcels.`;
-    case 'founder_not_in_v1':
-      return 'Founders’ Row is auction-only — coming soon.';
-    // Phase B: /buy is retired for EVERY tier (the server answers before auth).
-    case 'tenure_model_active':
-      return 'Buying outright is retired — land is now claimed (starter deposit or CLV hold).';
-    default:
-      if (status === 401) return 'Log in to buy land.';
-      return 'Purchase failed — try again.';
-  }
-}
-
-function BuyModal({
-  parcel,
-  clawTokens,
-  onClose,
-  onBought,
-}: {
-  parcel: LandParcelDTO;
-  clawTokens: number;
-  onClose: () => void;
-  onBought: () => void;
-}) {
-  const [buying, setBuying] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const addToast = useGameStore((s) => s.addToast);
-
-  const handleBuy = async () => {
-    setBuying(true);
-    setError(null);
-    try {
-      const res = await api.buyParcel(parcel.id);
-      addToast('🏝️', `Bought ${res.parcel.parcelCode} for ${res.amountCt.toLocaleString()} CT!`);
-      onBought();
-    } catch (err) {
-      const { code, status } = errCode(err);
-      setError(buyErrorMessage(code, status, parcel, clawTokens));
-      setBuying(false);
-    }
-  };
-
-  return (
-    <RpgModal open onClose={onClose} title="Confirm Purchase" subtitle="Buy Land" tier="epic" maxWidth={420}>
-      <div className="space-y-4 p-1">
-        <div className="rounded-xl border border-cyan-400/20 bg-cyan-500/[0.05] p-4">
-          <div className="flex items-center justify-between">
-            <span className="font-mono text-[12px] uppercase tracking-[0.14em] text-cyan-100">
-              {parcel.parcelCode}
-            </span>
-            <TierBadge tier={parcel.tier} />
-          </div>
-          <div className="mt-3 flex items-center justify-between text-sm">
-            <span className="text-slate-200">Price</span>
-            <span className="font-mono font-bold text-amber-300">
-              {parcel.priceCt?.toLocaleString() ?? '—'} CT
-            </span>
-          </div>
-          <div className="mt-1 flex items-center justify-between text-sm">
-            <span className="text-slate-200">Your balance</span>
-            <span className="font-mono font-bold text-cyan-200">{clawTokens.toLocaleString()} CT</span>
-          </div>
-        </div>
-
-        {error && (
-          <p className="rounded-lg border border-rose-400/30 bg-rose-500/10 px-3 py-2 text-[12px] text-rose-200">
-            {error}
-          </p>
-        )}
-
-        <div className="flex justify-end gap-2">
-          <RpgButton size="sm" variant="ghost" onClick={onClose} disabled={buying}>
-            Cancel
-          </RpgButton>
-          <RpgButton size="sm" variant="primary" onClick={handleBuy} loading={buying}>
-            Buy for {parcel.priceCt?.toLocaleString()} CT
-          </RpgButton>
-        </div>
-      </div>
-    </RpgModal>
   );
 }
 
@@ -642,7 +551,7 @@ function claimHoldErrorMessage(
       return `You already hold the maximum of ${MAX_PARCELS_PER_AVATAR} parcels.`;
     // Starter tier shouldn't reach this modal — defensive.
     case 'use_claim_starter':
-      return 'Starter parcels are claimed free on the My Land tab, not held.';
+      return 'Starter parcels are claimed with a refundable CT deposit (For Sale or My Land), not a CLV hold.';
     // Defensive — marketplace deed escrow-lock (claim-hold doesn't emit it today).
     case 'deed_locked_by_listing':
       return 'This deed is locked by a live marketplace listing — try again once it clears.';
@@ -665,14 +574,18 @@ function claimHoldErrorMessage(
  */
 function ClaimHoldModal({
   parcel,
-  walletLink,
+  linked,
+  heldClv,
   existingHoldSum,
   onClose,
   onClaimed,
   onRequestWalletLink,
 }: {
   parcel: LandParcelDTO;
-  walletLink: WalletLinkStatus | null;
+  /** Whether the caller has a linked self-custody wallet (wallet team's hook). */
+  linked: boolean;
+  /** Linked-wallet CLV uiAmount, or null (not linked / read down). */
+  heldClv: number | null;
   existingHoldSum: number;
   onClose: () => void;
   onClaimed: () => void;
@@ -685,9 +598,6 @@ function ClaimHoldModal({
   const tierThreshold = holdThresholdForTier(parcel.tier) ?? 0;
   const requiredClv = stackedRequiredClv(parcel.tier, existingHoldSum);
   const upkeep = weeklyUpkeepCt(parcel);
-  const linked = walletLink?.linked === true;
-  const heldClv =
-    linked && walletLink.clv.available ? walletLink.clv.uiAmount : null;
   // Display-only verdict — the server re-checks under lock and is authoritative
   // (the client sum can over-count for grandfathered legacy owners), so Claim
   // stays ENABLED on a "short" verdict; only not-linked disables it.
@@ -806,6 +716,155 @@ function ClaimHoldModal({
 }
 
 // ---------------------------------------------------------------------------
+// Starter claim confirm modal — deposit-escrow (Phase B1)
+// ---------------------------------------------------------------------------
+
+/**
+ * One distinct message per claim-starter error code (contract: land.ts
+ * claim-starter route). NOTE `already_owned` is NOT an error — the route
+ * replies 200 `{ parcel, alreadyOwned: true }` and NEVER re-charges, so the
+ * success path handles it. Switch on errCode() output; never prose-match.
+ */
+function starterClaimErrorMessage(code: string | undefined, status: number | undefined): string {
+  switch (code) {
+    case 'insufficient_clawtokens':
+      return `You need ${LAND_STARTER_DEPOSIT_CT.toLocaleString()} CT for the refundable deposit — top up and try again.`;
+    case 'no_starter_available':
+      return 'All Starter Coves are taken right now — check back soon.';
+    default:
+      if (status === 401) return 'Log in to claim a home.';
+      return 'Couldn’t claim a Starter Cove — try again.';
+  }
+}
+
+/**
+ * Starter deposit-claim confirm (mirrors ClaimHoldModal/BuyModal). PARCEL-
+ * AGNOSTIC: `POST /api/land/claim-starter` takes NO body/parcelId — the
+ * server AUTO-PICKS an available starter (SKIP LOCKED), so the modal
+ * discloses the auto-assignment instead of implying the user picked a lot.
+ * The LAND_STARTER_DEPOSIT_CT (2000) CT deposit is REFUNDABLE escrow, NOT a
+ * purchase: LAND_STARTER_RENT_CT_WEEKLY (100) CT/week upkeep auto-draws from
+ * it, `release` refunds the remainder, and exhaustion → grace → the cove is
+ * released with the remaining deposit forfeited. No client amount is ever
+ * sent — the server derives everything.
+ */
+function StarterClaimModal({
+  clawTokens,
+  onClose,
+  onClaimed,
+}: {
+  clawTokens: number;
+  onClose: () => void;
+  onClaimed: () => void;
+}) {
+  const [claiming, setClaiming] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const addToast = useGameStore((s) => s.addToast);
+  const tooPoor = clawTokens < LAND_STARTER_DEPOSIT_CT;
+
+  const handleClaim = async () => {
+    setClaiming(true);
+    setError(null);
+    try {
+      // NO body — the server auto-assigns an available starter parcel.
+      const res = await api.claimStarterPlot();
+      // HONEST success copy: a refundable deposit was escrowed — never "free".
+      addToast(
+        '🏡',
+        res.alreadyOwned
+          ? `You already have your Starter Cove (${res.parcel.parcelCode}).`
+          : `Claimed ${res.parcel.parcelCode} — your Starter Cove! ${LAND_STARTER_DEPOSIT_CT.toLocaleString()} CT is held as a refundable deposit.`,
+      );
+      onClaimed();
+    } catch (err) {
+      const { code, status } = errCode(err);
+      setError(starterClaimErrorMessage(code, status));
+      setClaiming(false);
+    }
+  };
+
+  return (
+    <RpgModal open onClose={onClose} title="Claim a Starter Cove" subtitle="Your first home" tier="rare" maxWidth={440}>
+      <div className="space-y-4 p-1">
+        <div className="rounded-xl border border-cyan-400/20 bg-cyan-500/[0.05] p-4">
+          <div className="flex items-center justify-between">
+            <span className="font-mono text-[12px] uppercase tracking-[0.14em] text-cyan-100">
+              Starter Cove
+            </span>
+            <TierBadge tier="starter" />
+          </div>
+          <div className="mt-3 flex items-center justify-between text-sm">
+            <span className="text-slate-200">Refundable deposit</span>
+            <span className="font-mono font-bold text-amber-300">
+              {LAND_STARTER_DEPOSIT_CT.toLocaleString()} CT
+            </span>
+          </div>
+          <div className="mt-1 flex items-center justify-between text-sm">
+            <span className="text-slate-200">Weekly upkeep</span>
+            <span className="font-mono font-bold text-cyan-200">
+              {LAND_STARTER_RENT_CT_WEEKLY.toLocaleString()} CT
+              <span className="font-normal text-slate-300"> / week, from the deposit</span>
+            </span>
+          </div>
+          <div className="mt-1 flex items-center justify-between text-sm">
+            <span className="text-slate-200">Your balance</span>
+            <span className={`font-mono font-bold ${tooPoor ? 'text-amber-200' : 'text-cyan-200'}`}>
+              {clawTokens.toLocaleString()} CT
+            </span>
+          </div>
+        </div>
+
+        {/* The deposit terms, honestly — escrow, not a purchase, never "free". */}
+        <p className="rounded-lg border border-cyan-400/15 bg-cyan-500/[0.04] px-3 py-2.5 text-[12px] leading-relaxed text-slate-200">
+          <span className="font-semibold text-cyan-100">
+            An available Starter Cove is assigned to you
+          </span>{' '}
+          (you don’t pick a specific lot). The{' '}
+          <span className="font-semibold text-cyan-100">
+            {LAND_STARTER_DEPOSIT_CT.toLocaleString()} CT deposit is refundable
+          </span>{' '}
+          — held in escrow, not a purchase: release the cove and you get back whatever
+          upkeep hasn’t already drawn. A weekly upkeep of{' '}
+          <span className="font-semibold text-cyan-100">
+            {LAND_STARTER_RENT_CT_WEEKLY.toLocaleString()} CT
+          </span>{' '}
+          auto-draws from the deposit. Running low? Top it up from My Land. If it can’t
+          cover a week you get a short grace window — then the cove is{' '}
+          <span className="font-semibold text-amber-200">
+            released and the remaining deposit is forfeited
+          </span>
+          .
+        </p>
+
+        {error && (
+          <p className="rounded-lg border border-rose-400/30 bg-rose-500/10 px-3 py-2 text-[12px] text-rose-200">
+            {error}
+          </p>
+        )}
+
+        <div className="flex justify-end gap-2">
+          <RpgButton size="sm" variant="ghost" className="min-h-[44px]" onClick={onClose} disabled={claiming}>
+            Cancel
+          </RpgButton>
+          <RpgButton
+            size="sm"
+            variant="primary"
+            className="min-h-[44px]"
+            onClick={handleClaim}
+            loading={claiming}
+            disabled={tooPoor}
+          >
+            {tooPoor
+              ? 'Need more CT'
+              : `Claim · ${LAND_STARTER_DEPOSIT_CT.toLocaleString()} CT deposit`}
+          </RpgButton>
+        </div>
+      </div>
+    </RpgModal>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // My-Land tab
 // ---------------------------------------------------------------------------
 
@@ -814,7 +873,6 @@ function MyLandTab({
   structures,
   loading,
   hasAvatar,
-  claiming,
   spawnPreference,
   homeParcelId,
   settingSpawn,
@@ -826,11 +884,11 @@ function MyLandTab({
   structures: LandStructureDTO[];
   loading: boolean;
   hasAvatar: boolean;
-  claiming: boolean;
   spawnPreference: 'home' | 'town';
   homeParcelId: string | null;
   settingSpawn: boolean;
   onSetSpawn: (mode: 'home' | 'town', parcelId?: string) => void;
+  /** Opens the StarterClaimModal confirm — the claim itself happens there. */
   onClaim: () => void;
   onBuild: (parcel: LandParcelDTO) => void;
 }) {
@@ -855,15 +913,23 @@ function MyLandTab({
 
   return (
     <div>
-      {/* Claim free home CTA — prominent when the player owns nothing. */}
+      {/* Claim-your-first-home CTA — prominent when the player owns nothing.
+          HONEST deposit terms (§18b.j B1): NOT free — a refundable 2000 CT
+          deposit held in escrow, 100 CT/week upkeep auto-drawn from it. The
+          button only OPENS the StarterClaimModal confirm (no silent charge). */}
       <div className="mb-4 rounded-xl border border-emerald-400/30 bg-emerald-500/[0.07] p-4">
         <div className="flex flex-col gap-1">
           <span className="font-clawville text-sm text-emerald-100">
-            🏡 Claim your free starter home
+            🏡 Claim your first home
           </span>
           <span className="text-[12px] leading-relaxed text-slate-200">
-            Every player gets one free Starter Cove parcel — build a basic home or
-            shop (up to Lv2). Buy a higher tier later for premium buildings.
+            Claim a Starter Cove with a refundable{' '}
+            <span className="font-semibold text-emerald-200">
+              {LAND_STARTER_DEPOSIT_CT.toLocaleString()} CT deposit
+            </span>{' '}
+            ({LAND_STARTER_RENT_CT_WEEKLY.toLocaleString()} CT/week upkeep draws from
+            it; release refunds the rest). Build a basic home or shop (up to Lv2);
+            claim a higher tier later for premium buildings.
           </span>
         </div>
         <RpgButton
@@ -871,10 +937,9 @@ function MyLandTab({
           variant="primary"
           rarity="uncommon"
           onClick={onClaim}
-          loading={claiming}
-          className="mt-3"
+          className="mt-3 min-h-[44px]"
         >
-          {parcels.length > 0 ? 'Claim another (if available)' : 'Claim free home'}
+          {parcels.length > 0 ? 'Claim a Starter Cove (if available)' : 'Claim your first home'}
         </RpgButton>
       </div>
 
@@ -917,8 +982,8 @@ function MyLandTab({
         <p className="py-8 text-center font-mono text-xs text-slate-300">Loading your land…</p>
       ) : parcels.length === 0 ? (
         <p className="py-6 text-center font-mono text-xs text-slate-400">
-          You don&apos;t own any parcels yet. Claim a free home above, or buy one in
-          For&nbsp;Sale.
+          You don&apos;t own any parcels yet. Claim your first home above (refundable
+          deposit), or claim a higher tier in For&nbsp;Sale.
         </p>
       ) : (
         <div className="max-h-[44vh] space-y-2 overflow-y-auto pr-1">
@@ -1977,30 +2042,22 @@ export default function LandOfficeModal() {
   const [myParcels, setMyParcels] = useState<LandParcelDTO[]>([]);
   const [myStructures, setMyStructures] = useState<LandStructureDTO[]>([]);
   const [myLoading, setMyLoading] = useState(false);
-  const [claiming, setClaiming] = useState(false);
-  const [buyTarget, setBuyTarget] = useState<LandParcelDTO | null>(null);
+  // Starter deposit-claim confirm (parcel-agnostic — claim-starter auto-picks).
+  // Buy-outright was REMOVED with the rest of the dead /buy path: every tier
+  // now acquires via Claim (starter → deposit-escrow, c/b/a/founder → CLV
+  // hold), so no ParcelCard renders a Buy button and there is no buyTarget.
+  const [starterClaimOpen, setStarterClaimOpen] = useState(false);
   const [claimTarget, setClaimTarget] = useState<LandParcelDTO | null>(null);
   const [buildParcel, setBuildParcel] = useState<LandParcelDTO | null>(null);
 
   // Hold-to-keep qualification (Phase B2): the linked wallet + its CLV balance,
-  // fetched ONCE per modal open (never per-card). null = logged out / guest /
-  // fetch failed — the claim UI then shows the "Link a wallet" path.
-  const [walletLink, setWalletLink] = useState<WalletLinkStatus | null>(null);
-  useEffect(() => {
-    if (!open || !hasAvatar) return;
-    let cancelled = false;
-    api
-      .getWalletLink()
-      .then((res) => {
-        if (!cancelled) setWalletLink(res);
-      })
-      .catch(() => {
-        if (!cancelled) setWalletLink(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [open, hasAvatar]);
+  // read via the wallet-visibility-ui team's shared hook (['wallet-link'] cache,
+  // deduped across the HUD wallet chip + here). `heldClv` collapses to the
+  // spendable-for-qualification number: the CLV uiAmount only when a wallet is
+  // linked AND the on-chain read succeeded — else null (→ "Link a wallet" /
+  // "can't verify" paths). No per-card fetch; the hook is cached.
+  const { linked: walletLinked, clvUiAmount, clvAvailable } = useWalletLink();
+  const heldClv = walletLinked && clvAvailable ? clvUiAmount : null;
 
   // Σ of the caller's EXISTING hold thresholds — thresholds STACK server-side,
   // so a new claim requires (this sum + the new tier's threshold) CLV. Prefer
@@ -2072,47 +2129,23 @@ export default function LandOfficeModal() {
     queryClient.invalidateQueries({ queryKey: LAND_PARCELS_QUERY_KEY });
   }, [queryClient]);
 
-  const handleClaim = async () => {
-    setClaiming(true);
-    try {
-      const res = await api.claimStarterPlot();
-      addToast(
-        '🏡',
-        res.alreadyOwned
-          ? `You already own ${res.parcel.parcelCode}.`
-          : `Claimed ${res.parcel.parcelCode} — your free starter home!`,
-      );
-      await refreshMyLand();
-      await hydrateOverlay(avatarId);
-      // Invalidate the world parcel query so the 3D FOR-SALE sign updates live.
-      invalidateLandState();
-      setTab('my-land');
-    } catch (err) {
-      const { code, status } = errCode(err);
-      const msg =
-        code === 'no_starter_available'
-          ? 'No free starter parcels are available right now.'
-          : status === 401
-            ? 'Log in to claim a home.'
-            : 'Could not claim a home — try again.';
-      addToast('⚠️', msg, 4500);
-    } finally {
-      setClaiming(false);
-    }
-  };
-
-  const handleBought = async () => {
-    setBuyTarget(null);
+  // Starter claim success — MIRRORS handleClaimedHold exactly: the WORLD↔DB↔UI
+  // parity path (the auto-assigned starter flips available→owned; its in-world
+  // FOR-SALE sign vanishes; My Land shows it). The claim itself (POST
+  // /api/land/claim-starter, the 2000 CT deposit debit) happens inside
+  // StarterClaimModal behind an explicit confirm — the old top-level silent
+  // charge with "free" copy is gone.
+  const handleStarterClaimed = async () => {
+    setStarterClaimOpen(false);
     await refreshMyLand();
     await hydrateOverlay(avatarId);
-    // Invalidate the world parcel query so the 3D FOR-SALE sign updates live.
     invalidateLandState();
     setTab('my-land');
   };
 
-  // Claim (hold-to-keep) success — MIRRORS handleBought exactly: this is the
-  // WORLD↔DB↔UI parity path (modal list + 3D FOR-SALE sign + My Land all flip
-  // together). refreshMyLand also updates existingHoldSum for the next claim.
+  // Claim (hold-to-keep) success — WORLD↔DB↔UI parity path (modal list + 3D
+  // FOR-SALE sign + My Land all flip together). refreshMyLand also updates
+  // existingHoldSum for the next claim.
   const handleClaimedHold = async () => {
     setClaimTarget(null);
     await refreshMyLand();
@@ -2121,12 +2154,13 @@ export default function LandOfficeModal() {
     setTab('my-land');
   };
 
-  // WALLET SEAM (wired at merge): opens the wallet-visibility-ui wallet modal
-  // (deposit address + link flow). The link mutation and the claim
-  // qualification read share the ['wallet-link'] cache, so a successful link
-  // is instantly visible here.
+  // WALLET SEAM: open the wallet-visibility-ui team's link modal (mounted
+  // top-level in /game; we mount nothing). Close our claim modal first so the
+  // wallet modal is the sole foreground — the user links, reopens, and the
+  // ['wallet-link'] cache refresh flips `linked`/`heldClv` here automatically.
   const openWalletLink = useGameStore((s) => s.openWalletLink);
   const handleRequestWalletLink = useCallback(() => {
+    setClaimTarget(null);
     openWalletLink();
   }, [openWalletLink]);
 
@@ -2179,10 +2213,9 @@ export default function LandOfficeModal() {
 
         {tab === 'for-sale' && (
           <ForSaleTab
-            onBuy={setBuyTarget}
             onClaim={setClaimTarget}
-            clawTokens={clawTokens}
-            walletLink={walletLink}
+            onClaimStarter={() => setStarterClaimOpen(true)}
+            heldClv={heldClv}
             existingHoldSum={existingHoldSum}
             focusParcelCode={focusParcelCode}
             onFocusConsumed={clearLandOfficeFocus}
@@ -2194,12 +2227,11 @@ export default function LandOfficeModal() {
             structures={myStructures}
             loading={myLoading}
             hasAvatar={hasAvatar}
-            claiming={claiming}
             spawnPreference={spawnPreference}
             homeParcelId={homeParcelId}
             settingSpawn={setSpawnPreference.isPending}
             onSetSpawn={handleSetSpawn}
-            onClaim={handleClaim}
+            onClaim={() => setStarterClaimOpen(true)}
             onBuild={openBuild}
           />
         )}
@@ -2218,23 +2250,23 @@ export default function LandOfficeModal() {
         )}
       </RpgModal>
 
-      {buyTarget && (
-        <BuyModal
-          parcel={buyTarget}
-          clawTokens={clawTokens}
-          onClose={() => setBuyTarget(null)}
-          onBought={handleBought}
-        />
-      )}
-
       {claimTarget && (
         <ClaimHoldModal
           parcel={claimTarget}
-          walletLink={walletLink}
+          linked={walletLinked}
+          heldClv={heldClv}
           existingHoldSum={existingHoldSum}
           onClose={() => setClaimTarget(null)}
           onClaimed={handleClaimedHold}
           onRequestWalletLink={handleRequestWalletLink}
+        />
+      )}
+
+      {starterClaimOpen && (
+        <StarterClaimModal
+          clawTokens={clawTokens}
+          onClose={() => setStarterClaimOpen(false)}
+          onClaimed={handleStarterClaimed}
         />
       )}
     </>

@@ -978,8 +978,9 @@ function SidebarContent({ closeMenu }: SidebarContentProps) {
             carve-out, not peer commerce). */}
         <CategoryHeader label="Economy" subtitle="Land · Cosmetics" />
         <div className="rpg-sidebar-group">
-          {/* Land Economy (Phase 1) — browse for-sale parcels, claim a free
-              starter home, buy a priced parcel with CT, place + upgrade a
+          {/* Land Economy (Phase B tenure model) — browse for-sale parcels,
+              claim a Starter Cove (refundable CT deposit) or a higher tier
+              (CLV hold-to-keep; buy-outright retired), place + upgrade a
               building/shop. Higher tiers unlock nicer buildings + higher levels. */}
           <SidebarRow
             icon="🏝️"
