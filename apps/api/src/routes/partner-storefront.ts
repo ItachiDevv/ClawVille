@@ -82,6 +82,7 @@ import {
   requireAuthOrAgentSession,
   type ActivityAuthContext,
 } from '../middleware/require-auth-or-agent';
+import { requireNonGuestIdentity } from '../middleware/require-non-guest';
 import { verifyPartnerWriteSignature } from '../services/partner-signature';
 import { createRateLimiter, getClientIp } from '../middleware/rate-limit';
 import { withKeyedMutex } from '../services/keyed-mutex';
@@ -427,7 +428,7 @@ const quoteSchema = z.object({
   offeringId: z.string().min(1).max(128),
 });
 
-partnerStorefrontRoutes.post('/quote', requireAuthOrAgentSession, async (c) => {
+partnerStorefrontRoutes.post('/quote', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
   const ip = getClientIp({ get: (n) => c.req.header(n) ?? null });
   if (!storefrontPurchaseRateLimiter.check(ip)) {
     return c.json({ error: 'rate_limited', code: 'rate_limited' }, 429);
@@ -555,7 +556,7 @@ const settleSchema = z.object({
   offeringId: z.string().min(1).max(128),
 });
 
-partnerStorefrontRoutes.post('/settle', requireAuthOrAgentSession, async (c) => {
+partnerStorefrontRoutes.post('/settle', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
   const ip = getClientIp({ get: (n) => c.req.header(n) ?? null });
   if (!storefrontPurchaseRateLimiter.check(ip)) {
     return c.json({ error: 'rate_limited', code: 'rate_limited' }, 429);

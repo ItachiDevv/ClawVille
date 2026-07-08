@@ -54,6 +54,7 @@ import { z } from 'zod';
 import { sessionMiddleware } from '../middleware/auth';
 import { requireAuthOrAgentSession } from '../middleware/require-auth-or-agent';
 import type { ActivityAuthContext } from '../middleware/require-auth-or-agent';
+import { requireNonGuestIdentity } from '../middleware/require-non-guest';
 import { createRateLimiter, getClientIp } from '../middleware/rate-limit';
 import type { AppContext } from '../types';
 import {
@@ -251,7 +252,7 @@ const registerSchema = z
   })
   .strict();
 
-sapRoutes.post('/register', requireAuthOrAgentSession, async (c) => {
+sapRoutes.post('/register', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
   const gated = gate503(c, false);
   if (gated) return gated;
   if (!writeLimiter.check(getClientIp(c.req.raw.headers))) {
@@ -291,7 +292,7 @@ const publishToolSchema = z
   })
   .strict();
 
-sapRoutes.post('/tools/publish', requireAuthOrAgentSession, async (c) => {
+sapRoutes.post('/tools/publish', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
   const gated = gate503(c, false);
   if (gated) return gated;
   if (!writeLimiter.check(getClientIp(c.req.raw.headers))) {
@@ -318,7 +319,7 @@ const feedbackSchema = z
   })
   .strict();
 
-sapRoutes.post('/feedback', requireAuthOrAgentSession, async (c) => {
+sapRoutes.post('/feedback', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
   const gated = gate503(c, false);
   if (gated) return gated;
   if (!writeLimiter.check(getClientIp(c.req.raw.headers))) {
@@ -360,7 +361,7 @@ const attestationSchema = z
   })
   .strict();
 
-sapRoutes.post('/attestation', requireAuthOrAgentSession, async (c) => {
+sapRoutes.post('/attestation', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
   const gated = gate503(c, false);
   if (gated) return gated;
   if (!writeLimiter.check(getClientIp(c.req.raw.headers))) {
@@ -391,7 +392,7 @@ const revokeAttestationSchema = z
 // POST (not DELETE-with-body): the codebase's DELETE routes are all path-param
 // based (`/:id`); a JSON-body DELETE is awkward across some HTTP clients/proxies.
 // A POST sub-route keeps the body contract unambiguous and consistent.
-sapRoutes.post('/attestation/revoke', requireAuthOrAgentSession, async (c) => {
+sapRoutes.post('/attestation/revoke', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
   const gated = gate503(c, false);
   if (gated) return gated;
   if (!writeLimiter.check(getClientIp(c.req.raw.headers))) {
@@ -453,7 +454,7 @@ const u64Str = z
 
 const stakeSchema = z.object({ lamports: u64Str }).strict();
 
-sapRoutes.post('/escrow/stake', requireAuthOrAgentSession, async (c) => {
+sapRoutes.post('/escrow/stake', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
   const gated = gate503(c, true);
   if (gated) return gated;
   if (!writeLimiter.check(getClientIp(c.req.raw.headers))) {
@@ -468,7 +469,7 @@ sapRoutes.post('/escrow/stake', requireAuthOrAgentSession, async (c) => {
   return respondWrite(c, result);
 });
 
-sapRoutes.post('/escrow/deposit-stake', requireAuthOrAgentSession, async (c) => {
+sapRoutes.post('/escrow/deposit-stake', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
   const gated = gate503(c, true);
   if (gated) return gated;
   if (!writeLimiter.check(getClientIp(c.req.raw.headers))) {
@@ -496,7 +497,7 @@ const createEscrowSchema = z
   })
   .strict();
 
-sapRoutes.post('/escrow/create', requireAuthOrAgentSession, async (c) => {
+sapRoutes.post('/escrow/create', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
   const gated = gate503(c, true);
   if (gated) return gated;
   if (!writeLimiter.check(getClientIp(c.req.raw.headers))) {
@@ -528,7 +529,7 @@ const depositEscrowSchema = z
   })
   .strict();
 
-sapRoutes.post('/escrow/deposit', requireAuthOrAgentSession, async (c) => {
+sapRoutes.post('/escrow/deposit', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
   const gated = gate503(c, true);
   if (gated) return gated;
   if (!writeLimiter.check(getClientIp(c.req.raw.headers))) {
@@ -558,7 +559,7 @@ const settleSchema = z
   })
   .strict();
 
-sapRoutes.post('/escrow/settle', requireAuthOrAgentSession, async (c) => {
+sapRoutes.post('/escrow/settle', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
   const gated = gate503(c, true);
   if (gated) return gated;
   if (!writeLimiter.check(getClientIp(c.req.raw.headers))) {
@@ -589,7 +590,7 @@ const withdrawSchema = z
   })
   .strict();
 
-sapRoutes.post('/escrow/withdraw', requireAuthOrAgentSession, async (c) => {
+sapRoutes.post('/escrow/withdraw', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
   const gated = gate503(c, true);
   if (gated) return gated;
   if (!writeLimiter.check(getClientIp(c.req.raw.headers))) {
@@ -613,7 +614,7 @@ const closeSchema = z
   .object({ serviceAgentPda: z.string().min(32).max(64), nonce: u64Str })
   .strict();
 
-sapRoutes.post('/escrow/close', requireAuthOrAgentSession, async (c) => {
+sapRoutes.post('/escrow/close', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
   const gated = gate503(c, true);
   if (gated) return gated;
   if (!writeLimiter.check(getClientIp(c.req.raw.headers))) {
@@ -771,7 +772,7 @@ const openEscrowSchema = z
   })
   .strict();
 
-sapRoutes.post('/escrow/usdc/open', requireAuthOrAgentSession, async (c) => {
+sapRoutes.post('/escrow/usdc/open', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
   const gated = gate503(c, true, true);
   if (gated) return gated;
   if (!writeLimiter.check(getClientIp(c.req.raw.headers))) {
@@ -800,7 +801,7 @@ const submitJobSchema = z
   .object({ escrowPda: z.string().min(32).max(64), jobId: z.string().min(1).max(128) })
   .strict();
 
-sapRoutes.post('/escrow/usdc/submit', requireAuthOrAgentSession, async (c) => {
+sapRoutes.post('/escrow/usdc/submit', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
   const gated = gate503(c, true, true);
   if (gated) return gated;
   if (!writeLimiter.check(getClientIp(c.req.raw.headers))) {
@@ -835,7 +836,7 @@ const approveJobSchema = z
   })
   .strict();
 
-sapRoutes.post('/escrow/usdc/approve', requireAuthOrAgentSession, async (c) => {
+sapRoutes.post('/escrow/usdc/approve', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
   const gated = gate503(c, true, true);
   if (gated) return gated;
   if (!writeLimiter.check(getClientIp(c.req.raw.headers))) {
@@ -872,7 +873,7 @@ const settleJobSchema = z
   })
   .strict();
 
-sapRoutes.post('/escrow/usdc/settle', requireAuthOrAgentSession, async (c) => {
+sapRoutes.post('/escrow/usdc/settle', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
   const gated = gate503(c, true, true);
   if (gated) return gated;
   if (!writeLimiter.check(getClientIp(c.req.raw.headers))) {
@@ -905,7 +906,7 @@ const refundEscrowSchema = z
   })
   .strict();
 
-sapRoutes.post('/escrow/usdc/refund', requireAuthOrAgentSession, async (c) => {
+sapRoutes.post('/escrow/usdc/refund', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
   const gated = gate503(c, true, true);
   if (gated) return gated;
   if (!writeLimiter.check(getClientIp(c.req.raw.headers))) {
