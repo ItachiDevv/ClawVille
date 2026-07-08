@@ -46,7 +46,7 @@
  *   `avatars.clawTokens`.
  */
 
-import { db, clvBuyQueue, treasuryWallets, eq, asc, desc } from '@clawville/database';
+import { db, clvBuyQueue, treasuryWallets, eq, asc, desc, sql } from '@clawville/database';
 import { getClvPrice } from './clv-price-oracle';
 import type { LedgerTx } from './claw-token-ledger';
 
@@ -123,15 +123,19 @@ function resolveWorkerPollMs(): number {
  */
 const AMOUNT_USDC_RE = /^(?!0+(?:\.0*)?$)\d{1,14}(?:\.\d{1,6})?$/;
 
-/** Parse a validated decimal string to integer µUSD. null on invalid input. */
-function usdcToMicro(amount: string): bigint | null {
+/** Parse a validated decimal string to integer µUSD. null on invalid input.
+ *  EXPORTED (GoLive executors, 2026-07-07) so the dark live path
+ *  (`clv-swap-live.ts`) shares THIS exact money parser instead of re-deriving
+ *  a drifting copy. */
+export function usdcToMicro(amount: string): bigint | null {
   if (typeof amount !== 'string' || !AMOUNT_USDC_RE.test(amount)) return null;
   const [ints, frac = ''] = amount.split('.');
   return BigInt(ints) * 1_000_000n + BigInt((frac + '000000').slice(0, 6));
 }
 
-/** Render integer µUSD back to a plain 6-dp decimal string. */
-function microToUsdc(micro: bigint): string {
+/** Render integer µUSD back to a plain 6-dp decimal string. EXPORTED — see
+ *  `usdcToMicro`. */
+export function microToUsdc(micro: bigint): string {
   const ints = micro / 1_000_000n;
   const frac = (micro % 1_000_000n).toString().padStart(6, '0');
   return `${ints}.${frac}`;
@@ -152,6 +156,19 @@ export interface EnqueueClvBuyInput {
 }
 
 /**
+ * HARD MAX-NOTIONAL CAP on a single enqueued buy: $10,000 in µUSD.
+ *
+ * Mirrors `CHECKOUT_MAX_PRICE_VCLAW` (1_000_000 vCLAW @ the ¢-peg = $10,000 —
+ * `x402-checkout.ts`), which is itself the ct-topup quote cap. A single owed
+ * buy larger than the largest possible settled checkout is by definition a
+ * caller bug (or a compromised caller), so it is REFUSED before any DB touch.
+ * Deliberately a CODE CONSTANT, not an env knob — a fat-fingered env must
+ * never raise the money ceiling. If `CHECKOUT_MAX_PRICE_VCLAW` ever changes,
+ * change this in the same diff (cross-referenced comment there is the tie).
+ */
+export const MAX_ENQUEUE_NOTIONAL_MICRO_USD = 10_000n * 1_000_000n; // $10,000
+
+/**
  * Record ONE owed CLV buy as a `clv_buy_queue` row (status='planned'), stamping
  * the oracle's current `getClvPrice().quoteUsd` as `quoted_price` (NULL when
  * the oracle has no usable quote — the intent is still recorded).
@@ -159,19 +176,42 @@ export interface EnqueueClvBuyInput {
  * Pass the caller's `LedgerTx` to compose into a settle transaction (the intent
  * row commits/rolls back atomically WITH the settle); omit ⇒ own transaction.
  *
+ * IDEMPOTENT PER SOURCE EVENT (GoLive executors, 2026-07-07): the insert is an
+ * `INSERT … ON CONFLICT (reason, source_ref) WHERE source_ref IS NOT NULL DO
+ * UPDATE … RETURNING id` upsert against the partial UNIQUE
+ * `clv_buy_queue_reason_source_ref_uniq` (migration 0019). A replayed settle
+ * (the checkout engine's idempotent-resume path re-running a fulfiller whose
+ * prior tx rolled back, or any caller retry) therefore returns the EXISTING
+ * `{queueId}` instead of throwing 23505 or double-recording an owed buy — the
+ * marketplace fulfiller depends on a `{queueId}` return, NEVER a throw. The
+ * conflict merge is a deliberate NO-OP (`reason = clv_buy_queue.reason`): a
+ * replay can never mutate the recorded money intent (amount/quote/status all
+ * keep their first-write values); an amount that DIFFERS from the recorded row
+ * is logged LOUD (a replay must carry the same money).
+ *
  * Does NO CT-ledger write and NO on-chain action. Throws on invalid input
- * (non-positive / NaN / non-decimal amount, empty reason/sourceRef) BEFORE any
- * DB touch, so a bad caller can never persist a malformed intent.
+ * (non-positive / NaN / non-decimal / over-cap amount, empty reason/sourceRef)
+ * BEFORE any DB touch, so a bad caller can never persist a malformed intent.
  */
 export async function enqueueClvBuy(
   input: EnqueueClvBuyInput,
   tx?: LedgerTx,
 ): Promise<{ queueId: string }> {
   const amount = typeof input.amountUsdc === 'string' ? input.amountUsdc.trim() : '';
-  if (usdcToMicro(amount) === null) {
+  const amountMicro = usdcToMicro(amount);
+  if (amountMicro === null) {
     throw new Error(
       `[clv-swap] enqueueClvBuy: amountUsdc must be a positive decimal string ` +
         `(≤6 fractional digits, ≤14 integer digits), got ${JSON.stringify(input.amountUsdc)}`,
+    );
+  }
+  // HARD MAX-NOTIONAL CAP — see MAX_ENQUEUE_NOTIONAL_MICRO_USD. Refused BEFORE
+  // any DB touch; a single owed buy can never exceed the largest possible
+  // settled checkout ($10k, CHECKOUT_MAX_PRICE_VCLAW at the ¢-peg).
+  if (amountMicro > MAX_ENQUEUE_NOTIONAL_MICRO_USD) {
+    throw new Error(
+      `[clv-swap] enqueueClvBuy: amountUsdc ${amount} exceeds the hard max-notional cap ` +
+        `$${MAX_ENQUEUE_NOTIONAL_MICRO_USD / 1_000_000n} (mirrors CHECKOUT_MAX_PRICE_VCLAW)`,
     );
   }
   const reason = typeof input.reason === 'string' ? input.reason.trim() : '';
@@ -200,8 +240,30 @@ export async function enqueueClvBuy(
         sourceRef,
         metadata: input.metadata ?? {},
       })
-      .returning({ id: clvBuyQueue.id });
+      // Upsert against the (reason, source_ref) partial UNIQUE. The SET is a
+      // deliberate self-assignment no-op — it exists ONLY so RETURNING yields
+      // the EXISTING row's id on conflict (DO NOTHING returns no row). A
+      // replay never mutates the recorded intent.
+      .onConflictDoUpdate({
+        target: [clvBuyQueue.reason, clvBuyQueue.sourceRef],
+        targetWhere: sql`source_ref IS NOT NULL`,
+        set: { reason: sql`${clvBuyQueue.reason}` },
+      })
+      .returning({ id: clvBuyQueue.id, amountUsdc: clvBuyQueue.amountUsdc });
     if (!row) throw new Error('[clv-swap] enqueueClvBuy: insert returned no row');
+    // Replay observability: the row we got back may be a PRE-EXISTING intent.
+    // Same source event ⇒ same money — a differing amount is a caller bug or
+    // tamper signal; the FIRST-recorded amount stands (never mutated), loud.
+    if (typeof row.amountUsdc === 'string') {
+      const existingMicro = usdcToMicro(row.amountUsdc);
+      if (existingMicro !== null && existingMicro !== amountMicro) {
+        console.error(
+          `[clv-swap] enqueueClvBuy REPLAY AMOUNT MISMATCH — queue=${row.id} ` +
+            `(${reason}/${sourceRef}) recorded $${row.amountUsdc} but replay carried ` +
+            `$${amount}; the recorded amount stands — investigate the caller`,
+        );
+      }
+    }
     return { queueId: row.id };
   };
 

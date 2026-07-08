@@ -47,14 +47,23 @@ const REAL_ORACLE_EXPORTS = { ...realOracle };
 // ── @clawville/database stub ────────────────────────────────────────────────
 type InsertedValues = Record<string, unknown>;
 const ownTxInserts: InsertedValues[] = [];
-let insertReturnRows: Array<{ id: string }> = [{ id: 'queue-row-1' }];
+let insertReturnRows: Array<{ id: string; amountUsdc?: string }> = [{ id: 'queue-row-1' }];
 let dbTransactionCalls = 0;
+/** Recorded onConflictDoUpdate configs (the GoLive upsert — one per insert). */
+const conflictConfigs: Array<Record<string, unknown>> = [];
 
 function makeInsertChain(sink: InsertedValues[]) {
   return (_table: unknown) => ({
     values: (v: InsertedValues) => {
       sink.push(v);
       return {
+        // GoLive executors: enqueueClvBuy upserts via onConflictDoUpdate(...)
+        // then .returning(...). The config is recorded so tests can assert the
+        // conflict target is the (reason, source_ref) partial UNIQUE.
+        onConflictDoUpdate: (cfg: Record<string, unknown>) => {
+          conflictConfigs.push(cfg);
+          return { returning: async (_sel: unknown) => insertReturnRows };
+        },
         returning: async (_sel: unknown) => insertReturnRows,
       };
     },
@@ -107,6 +116,7 @@ const {
   stopClvSwapWorker,
   resolveClvSwapMaxImpactBps,
   DEFAULT_CLIP_SPACING_MS,
+  MAX_ENQUEUE_NOTIONAL_MICRO_USD,
 } = await import('../clv-swap-executor');
 
 // Executor loaded — drop the module-init DATABASE_URL placeholder so later
@@ -123,6 +133,7 @@ const sumMicro = (clips: Array<{ amountUsdc: string }>) =>
 
 beforeEach(() => {
   ownTxInserts.length = 0;
+  conflictConfigs.length = 0;
   dbTransactionCalls = 0;
   insertReturnRows = [{ id: 'queue-row-1' }];
   stubQuote = { quoteUsd: 0.00007, poolLiquidityUsd: 22_000 };
@@ -277,6 +288,67 @@ describe('enqueueClvBuy — input guards + insert composition', () => {
     expect(providedInserts.length).toBe(1);
     expect(dbTransactionCalls).toBe(0);
     expect(ownTxInserts.length).toBe(0);
+  });
+
+  // ── GoLive executors (2026-07-07): hard cap + idempotent upsert ──────────
+  it('HARD MAX-NOTIONAL CAP: > $10,000 throws BEFORE any DB touch; == passes', async () => {
+    expect(MAX_ENQUEUE_NOTIONAL_MICRO_USD).toBe(10_000n * 1_000_000n);
+    await expect(
+      enqueueClvBuy({ amountUsdc: '10000.000001', reason: 'r', sourceRef: 's' }),
+    ).rejects.toThrow(/max-notional cap/);
+    await expect(
+      enqueueClvBuy({ amountUsdc: '99999', reason: 'r', sourceRef: 's' }),
+    ).rejects.toThrow(/max-notional cap/);
+    expect(ownTxInserts.length).toBe(0);
+    expect(dbTransactionCalls).toBe(0);
+    // Exactly at the cap is allowed (== the largest possible settled checkout).
+    const out = await enqueueClvBuy({ amountUsdc: '10000', reason: 'r', sourceRef: 's' });
+    expect(out.queueId).toBe('queue-row-1');
+    expect(ownTxInserts.length).toBe(1);
+  });
+
+  it('UPSERTS on (reason, source_ref): the insert carries an onConflictDoUpdate', async () => {
+    await enqueueClvBuy({ amountUsdc: '5', reason: 'checkout_clv_leg', sourceRef: 'chk-1' });
+    expect(conflictConfigs.length).toBe(1);
+    const cfg = conflictConfigs[0];
+    // Conflict target is the two-column partial UNIQUE; a set-merge exists
+    // (drizzle needs DO UPDATE for RETURNING to yield the existing row).
+    expect(Array.isArray(cfg.target)).toBe(true);
+    expect((cfg.target as unknown[]).length).toBe(2);
+    expect(cfg.targetWhere).toBeDefined();
+    expect(cfg.set).toBeDefined();
+  });
+
+  it('DOUBLE-ENQUEUE same source_ref: replay returns the EXISTING queueId (never a throw)', async () => {
+    // The stub models the DB's conflict path: RETURNING yields the
+    // pre-existing row (different id + the FIRST-recorded amount).
+    insertReturnRows = [{ id: 'existing-queue-7', amountUsdc: '5.000000' }];
+    const out = await enqueueClvBuy({
+      amountUsdc: '5.000000',
+      reason: 'checkout_clv_leg',
+      sourceRef: 'chk-replayed',
+    });
+    expect(out.queueId).toBe('existing-queue-7');
+  });
+
+  it('REPLAY AMOUNT MISMATCH: still returns the existing id, logs LOUD, never mutates', async () => {
+    insertReturnRows = [{ id: 'existing-queue-8', amountUsdc: '5.000000' }];
+    const errors: string[] = [];
+    const realError = console.error;
+    console.error = (...args: unknown[]) => {
+      errors.push(args.map(String).join(' '));
+    };
+    try {
+      const out = await enqueueClvBuy({
+        amountUsdc: '9.000000', // replay carrying the WRONG money
+        reason: 'checkout_clv_leg',
+        sourceRef: 'chk-replayed-bad',
+      });
+      expect(out.queueId).toBe('existing-queue-8');
+      expect(errors.some((e) => e.includes('REPLAY AMOUNT MISMATCH'))).toBe(true);
+    } finally {
+      console.error = realError;
+    }
   });
 });
 
