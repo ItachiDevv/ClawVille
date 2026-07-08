@@ -8,6 +8,7 @@ import { PROTOCOL_VERSION } from './skill-protocol';
 import {
   HERMES_LOCAL_GATEWAY_URL,
   HERMES_LOCAL_GATEWAY_KEY,
+  HERMES_LOCAL_TIMEOUT_MS,
   type InWorldWireProtocol,
 } from './agent-session-config';
 
@@ -360,9 +361,11 @@ export class AgentSubstrateClient {
    */
   private async chatHermesLocal(messages: ChatMessage[]): Promise<string> {
     const controller = new AbortController();
-    // Short leash (constructor default 10s) — a hung local runtime must not
-    // pin the sim's conversation tick longer than a real gateway would.
-    const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
+    // Leash sized for the REAL hosted agent loop (HERMES_LOCAL_TIMEOUT_MS,
+    // default 10s, clamp [1s,30s]) — a hung local runtime must not pin the
+    // sim's conversation tick, but the real Hermes loop measured 7.3s idle on
+    // qwen3.6:27b, so the leash is env-tunable where 10s is too tight.
+    const timeout = setTimeout(() => controller.abort(), HERMES_LOCAL_TIMEOUT_MS);
     try {
       const res = await fetch(`${HERMES_LOCAL_GATEWAY_URL}/v1/chat/completions`, {
         method: 'POST',

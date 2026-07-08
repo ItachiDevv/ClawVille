@@ -209,6 +209,21 @@ export const HERMES_LOCAL_GATEWAY_URL = 'http://localhost:8642';
 export const HERMES_LOCAL_GATEWAY_KEY = process.env.HERMES_LOCAL_GATEWAY_KEY ?? '';
 
 /**
+ * Leash for a hermes-local cognition POST (ms). The 10s AgentSubstrateClient
+ * default was sized for thin BYO gateways; the REAL hosted Hermes agent loop
+ * measured 7.3s on an idle qwen3.6:27b for a trivial turn (2026-07-08), so a
+ * busier prompt or GPU contention overruns 10s and the body goes fail-soft
+ * silent. Env-tunable, clamped [1s, 30s]; default keeps the design 10s. The
+ * fail-soft contract is unchanged — this only sizes the leash.
+ */
+export const HERMES_LOCAL_TIMEOUT_MS = (() => {
+  const raw = process.env.HERMES_LOCAL_TIMEOUT_MS;
+  const n = raw ? Number.parseInt(raw, 10) : 10_000;
+  if (!Number.isFinite(n)) return 10_000;
+  return Math.min(30_000, Math.max(1_000, n));
+})();
+
+/**
  * Boot-time gate for the 'hermes-local' upgrade. Read ONCE at module load (the
  * documented single env read of this module — matches how the deploy sets env
  * per-box); tests exercise both states via the explicit parameter on
