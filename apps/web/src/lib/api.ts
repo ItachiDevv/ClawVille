@@ -1192,7 +1192,13 @@ export const api = {
     (): Promise<LandCatalogAllResponse>;
   },
 
-  /** Claim the free starter home (auth). Idempotent — `alreadyOwned` on repeat. */
+  /**
+   * Claim a Starter Cove (auth, non-guest). NO body/parcelId — the server
+   * AUTO-PICKS an available starter and debits the refundable
+   * LAND_STARTER_DEPOSIT_CT (2000 CT) into escrow (NOT free, NOT a purchase;
+   * weekly upkeep auto-draws from it). Idempotent — `alreadyOwned: true` on
+   * repeat, never re-charged.
+   */
   claimStarterPlot: () =>
     honoRequest<ClaimStarterResponse>('/api/land/claim-starter', {
       method: 'POST',
@@ -1228,9 +1234,6 @@ export const api = {
       `/api/land/parcels/${encodeURIComponent(parcelId)}/claim-hold`,
       { method: 'POST', body: JSON.stringify({}) },
     ),
-
-  // (getWalletLink lives in the wallet section above — deduped at merge; the
-  // hold-qualification read consumes the same client + ['wallet-link'] cache.)
 
   /** The signed-in player's owned parcels + structures (auth). */
   getMyLand: () => honoRequest<MyLandResponse>('/api/land/me'),

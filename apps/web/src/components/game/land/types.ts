@@ -131,27 +131,6 @@ export interface ClaimHoldResponse {
   heldClv: number;
 }
 
-/**
- * GET /api/wallet/link response — the linked self-custody wallet + its (cached,
- * fail-soft) CLV balance. This is EXACTLY the read the claim-hold route consumes
- * for humans (`getLinkedWalletClvBalance`), mirrored read-only for the Land
- * Office qualification display. `clv.available=false` = RPC read down (claim
- * would 503 `clv_balance_unavailable`); `linked=false` = no wallet linked yet
- * (claim would 403 `wallet_not_linked`).
- */
-export interface WalletLinkStatus {
-  linked: boolean;
-  walletPubkey: string | null;
-  clv: {
-    available: boolean;
-    amountAtomic: string | null;
-    decimals: number | null;
-    uiAmount: number | null;
-    cached: boolean;
-    fetchedAt: string | null;
-  };
-}
-
 /** POST /api/land/parcels/:id/structure response. */
 export interface PlaceStructureResponse {
   structure: LandStructureDTO;
