@@ -18,6 +18,8 @@ import type {
   ClaimStarterResponse,
   BuyParcelResponse,
   RentParcelResponse,
+  ClaimHoldResponse,
+  WalletLinkStatus,
   PlaceStructureResponse,
   UpgradeStructureResponse,
   ParcelStructureResponse,
@@ -1168,6 +1170,28 @@ export const api = {
       `/api/land/parcels/${encodeURIComponent(parcelId)}/rent`,
       { method: 'POST', body: JSON.stringify({}) },
     ),
+
+  /**
+   * Claim a c/b/a/founder parcel by PROVING a CLV hold (Phase B2 hold-to-keep,
+   * auth non-guest). EMPTY body (`emptyStrictBodySchema` rejects stray fields) —
+   * NO client price/threshold EVER reaches the write: the server derives the
+   * stacked CLV requirement and reads the live balance itself. No CT is debited
+   * at claim; the weekly CT upkeep is auto-charged by the rent sweeper.
+   */
+  claimHoldParcel: (parcelId: string) =>
+    honoRequest<ClaimHoldResponse>(
+      `/api/land/parcels/${encodeURIComponent(parcelId)}/claim-hold`,
+      { method: 'POST', body: JSON.stringify({}) },
+    ),
+
+  /**
+   * Read-only hold-qualification read (auth): the linked wallet + its cached
+   * CLV balance — the exact same read claim-hold consumes for humans. 401
+   * (guest / logged out) throws; callers treat that as "not qualified yet".
+   * NOTE: coordinate with wallet-visibility-ui team — if they add getWalletLink,
+   * dedupe at merge.
+   */
+  getWalletLink: () => honoRequest<WalletLinkStatus>('/api/wallet/link'),
 
   /** The signed-in player's owned parcels + structures (auth). */
   getMyLand: () => honoRequest<MyLandResponse>('/api/land/me'),
