@@ -277,6 +277,15 @@ export async function sweepExpiredSessions(): Promise<number> {
         `[SessionSweeper] TTL re-read failed for ${row.agentId} — skipping body removal (non-fatal):`,
         err,
       );
+      // §B.1 MONEY-SAFE fail direction (Codex a00693c9 finding): the row was
+      // query-flagged expired AND already marked swept above, so a re-read
+      // failure here means it is NOT retried on the next sweep. A leaked BODY is
+      // cosmetic (skipped, recovered on restart), but a leaked DRIVER entry keeps
+      // SETTLING CT — so on an inconclusive re-read we still tear down the driver
+      // enrollment (idempotent, house-safe). A false positive (the row was
+      // actually reconnected in-window) simply re-enrolls via the client's 5-min
+      // keepalive — cheap + recoverable, unlike an unbounded CT leak.
+      agentAutonomyDriver.unregisterUserAgent(row.agentId);
       continue;
     }
     if (current?.sessionExpiresAt && current.sessionExpiresAt.getTime() > now.getTime()) {
