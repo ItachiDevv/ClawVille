@@ -62,6 +62,15 @@ describe('isHostedAvatarAgentSessionRow — the un-spoofable discriminator', () 
     expect(
       isHostedAvatarAgentSessionRow(hostedSessionBot(), hostedAvatar({ harness: 'custom' })),
     ).toBe(false);
+    // agentId + hosted harness match BUT identityType is a BYO/external one →
+    // false (Codex 2026-07-08: agentId + identityType are both caller-suppliable at
+    // /connect, so a same-user BYO agent with a matching agentId must NOT be
+    // mislabeled hosted — the 'nanoclaw' identity conjunct excludes it).
+    for (const identityType of ['openclaw', 'hermes', 'milady', 'custom', 'hatcher', 'ironclaw', 'anonymous']) {
+      expect(
+        isHostedAvatarAgentSessionRow(hostedSessionBot({ identityType }), hostedAvatar()),
+      ).toBe(false);
+    }
     // no platformAgentId → false
     expect(
       isHostedAvatarAgentSessionRow(hostedSessionBot(), hostedAvatar({ platformAgentId: null })),
@@ -179,6 +188,30 @@ describe('genuine BYO/external rows are unchanged', () => {
     const r = call(hostedSessionBot(), hostedAvatar({ harness: 'custom' }));
     if (r.kind !== 'response') throw new Error('unreachable');
     expect(r.body.mode).toBe('external-active');
+  });
+
+  it('SAME-USER BYO collision: matching agentId + hosted harness but non-nanoclaw identity → external (Codex fix)', () => {
+    // A same-user BYO agent that deliberately connected with agentId == its owner's
+    // platformAgentId and identityType 'openclaw' must report external-active (and
+    // stay subject to expired/idle), NOT be masked as always-alive 'hosted'.
+    const active = call(
+      hostedSessionBot({ agentId: PLATFORM_AGENT_ID, identityType: 'openclaw' }),
+      hostedAvatar(),
+    );
+    if (active.kind !== 'response') throw new Error('unreachable');
+    expect(active.body.mode).toBe('external-active');
+
+    // ...and a DEAD such BYO row is correctly reported expired (not masked hosted).
+    const expired = call(
+      hostedSessionBot({
+        agentId: PLATFORM_AGENT_ID,
+        identityType: 'openclaw',
+        sessionExpiresAt: new Date(NOW - 1),
+      }),
+      hostedAvatar(),
+    );
+    if (expired.kind !== 'response') throw new Error('unreachable');
+    expect(expired.body.mode).toBe('external-expired');
   });
 });
 
