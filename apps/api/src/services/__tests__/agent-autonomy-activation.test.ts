@@ -82,9 +82,15 @@ function registerHostedBody(platformAgentId: string, bearer: string, owner = OWN
 // ── seams -------------------------------------------------------------------
 const originalResolveActiveAvatar = activationSeams.resolveActiveAvatar;
 const originalEnsureSession = activationSeams.ensureSession;
+const originalSetFlag = activationSeams.setEnrolledFlag;
+const originalClearFlag = activationSeams.clearEnrolledFlagForOwner;
 
 let ensureSessionCalls = 0;
 let bearerCounter = 0;
+// §B.1 durable-autonomy flag recorders (the real seams are DB writes; DB-free
+// here we record the calls so we can assert the flag lifecycle).
+let flagSetCalls: string[] = [];
+let flagClearCalls: string[] = [];
 
 /** Default happy-path seams: a real owner avatar + a real registered body. */
 function installHappySeams(platformAgentId = PLATFORM_AGENT_ID) {
@@ -129,12 +135,23 @@ beforeEach(() => {
   npcSimulation.avatarAutonomyManager.unregister(OWNER);
   ensureSessionCalls = 0;
   bearerCounter = 0;
+  flagSetCalls = [];
+  flagClearCalls = [];
+  // Swap the durable-flag DB writes for recorders (DB-free).
+  activationSeams.setEnrolledFlag = async (agentId: string) => {
+    flagSetCalls.push(agentId);
+  };
+  activationSeams.clearEnrolledFlagForOwner = async (ownerUserId: string) => {
+    flagClearCalls.push(ownerUserId);
+  };
   installHappySeams();
 });
 
 afterEach(() => {
   activationSeams.resolveActiveAvatar = originalResolveActiveAvatar;
   activationSeams.ensureSession = originalEnsureSession;
+  activationSeams.setEnrolledFlag = originalSetFlag;
+  activationSeams.clearEnrolledFlagForOwner = originalClearFlag;
   clearDriver();
 });
 
@@ -500,5 +517,72 @@ describe('(8) enrollment must not outlive its session (logout + TTL teardown)', 
     // Over-calling on a real user entry is idempotent.
     // (no user entry enrolled here → still a safe no-op)
     expect(agentAutonomyDriver.userAgentCount()).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (9) DURABLE AUTONOMY — the persisted enrollment intent (deploy-survival).
+//     activate SETS the flag (so the server-side reconcile re-enrolls across a
+//     restart with NO client); EVERY teardown CLEARS it. The reconcile itself is
+//     covered in agent-autonomy-reconcile.test.ts; the TTL-sweep + logout clears
+//     ride the sweeper mark-swept UPDATE + deactivate (staging-verified DB path).
+// ---------------------------------------------------------------------------
+describe('(9) durable enrollment flag lifecycle', () => {
+  it('activate PERSISTS the flag (by the session agentId) after a successful enroll', async () => {
+    const result = await activateAutonomyForOwner(OWNER);
+    expect(result.ok).toBe(true);
+    expect(flagSetCalls).toEqual([PLATFORM_AGENT_ID]);
+  });
+
+  it('a REJECTED activation (guest) never persists the flag', async () => {
+    activationSeams.resolveActiveAvatar = async () => ({
+      id: AVATAR_ID,
+      platformAgentId: PLATFORM_AGENT_ID,
+      isGuest: true,
+    });
+    const r = await activateAutonomyForOwner(OWNER);
+    expect(r).toEqual({ ok: false, code: 'guest_forbidden' });
+    expect(flagSetCalls).toEqual([]);
+  });
+
+  it('deactivate CLEARS the flag (by owner userId)', async () => {
+    await activateAutonomyForOwner(OWNER);
+    flagClearCalls = [];
+    await deactivateAutonomyForOwner(OWNER);
+    expect(flagClearCalls).toEqual([OWNER]);
+  });
+
+  it('deactivate/logout CLEARS the flag EVEN when not in-memory-enrolled (logout after restart)', async () => {
+    // No prior activation this process (registry wiped by a restart) — deactivate
+    // must STILL clear the durable intent so the reconcile cannot re-enroll a
+    // logged-out user. This is the money-path guarantee (keyed by userId).
+    expect(agentAutonomyDriver.isOwnerEnrolled(OWNER)).toBe(false);
+    await deactivateAutonomyForOwner(OWNER);
+    expect(flagClearCalls).toEqual([OWNER]);
+  });
+
+  it('clears the flag BEFORE the in-memory teardown (crash-safe ordering)', async () => {
+    // The clear must precede unregister so a crash between them can never leave
+    // flag=true + not-enrolled (which the reconcile would resurrect).
+    const order: string[] = [];
+    activationSeams.clearEnrolledFlagForOwner = async () => {
+      order.push('flag-clear');
+    };
+    await activateAutonomyForOwner(OWNER);
+    // Spy the in-memory unregister via the enrolled-check flip.
+    const origUnregister = agentAutonomyDriver.unregisterUserAgent.bind(agentAutonomyDriver);
+    (agentAutonomyDriver as unknown as { unregisterUserAgent: (id: string) => void }).unregisterUserAgent = (
+      id: string,
+    ) => {
+      order.push('unregister');
+      origUnregister(id);
+    };
+    try {
+      await deactivateAutonomyForOwner(OWNER);
+    } finally {
+      (agentAutonomyDriver as unknown as { unregisterUserAgent: (id: string) => void }).unregisterUserAgent =
+        origUnregister;
+    }
+    expect(order).toEqual(['flag-clear', 'unregister']);
   });
 });

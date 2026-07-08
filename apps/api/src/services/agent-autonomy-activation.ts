@@ -46,7 +46,7 @@
  */
 
 import { and, eq } from 'drizzle-orm';
-import { db, avatars } from '@clawville/database';
+import { db, avatars, agentBots } from '@clawville/database';
 import { agentAutonomyDriver } from './agent-autonomy-driver';
 import { ensureHostedAvatarAgentSession } from './hosted-avatar-agent-session';
 import { npcSimulation } from './npc-simulation';
@@ -87,6 +87,30 @@ export const activationSeams = {
       })
       .then((row) => row ?? null),
   ensureSession: ensureHostedAvatarAgentSession,
+  /**
+   * PERSIST the durable "intends to run autonomous" flag on the hosted-avatar
+   * session row (by agent_id), so a server restart re-enrolls it with no client
+   * (the reconcile). Set AFTER a successful enroll.
+   */
+  setEnrolledFlag: async (agentId: string): Promise<void> => {
+    await db
+      .update(agentBots)
+      .set({ autonomyEnrolled: true, updatedAt: new Date() })
+      .where(eq(agentBots.agentId, agentId));
+  },
+  /**
+   * CLEAR the durable flag for an owner (by user_id, scoped to non-house rows).
+   * Keyed by userId — NOT agentId — so it works even when the in-memory driver
+   * entry is absent (e.g. a logout right after a restart, before the reconcile
+   * re-enrolled). One-avatar-per-user ⇒ at most one hosted-avatar row carries the
+   * flag, and a BYO row never has it set, so this clears exactly the right row.
+   */
+  clearEnrolledFlagForOwner: async (ownerUserId: string): Promise<void> => {
+    await db
+      .update(agentBots)
+      .set({ autonomyEnrolled: false, updatedAt: new Date() })
+      .where(and(eq(agentBots.userId, ownerUserId), eq(agentBots.isHouse, false)));
+  },
 };
 
 /**
@@ -149,6 +173,18 @@ export async function activateAutonomyForOwner(
   // un-suppressed regardless of what state the binding was left in.
   npcSimulation.releaseHumanControlledOpenClaw(ownerUserId, session.agentId);
 
+  // DURABLE AUTONOMY — persist the enrollment intent AFTER a successful enroll so
+  // the server-side reconcile re-enrolls this agent across a restart/deploy with
+  // ZERO client involvement (a browser-closed persisting agent has no keepalive).
+  // Non-fatal: the in-memory enrollment already succeeded (the agent IS driving);
+  // a flag-write failure just means restart-survival degrades to the client
+  // keepalive for this one agent (and the next activate/reconcile retries it).
+  try {
+    await activationSeams.setEnrolledFlag(session.agentId);
+  } catch (err) {
+    console.warn('[AutonomyActivation] set enrolled flag failed (non-fatal):', err);
+  }
+
   console.log(
     `[AutonomyActivation] owner enrolled agent ${sessionDigest(session.agentId)} body:${session.bodyId} (reused=${registered.reused})`,
   );
@@ -164,8 +200,21 @@ export async function activateAutonomyForOwner(
  * restore it. Does NOT tear down the §B.2 session/row/body (D6).
  */
 export async function deactivateAutonomyForOwner(ownerUserId: string): Promise<void> {
+  // Clear the DURABLE intent FIRST + by userId (authoritative, cookie/registry
+  // independent). Ordering is money-safe: if we crash after this, the reconcile
+  // can NEVER re-enroll a user who deactivated/logged out (flag already false);
+  // the in-memory entry that may linger this process is wiped on the next
+  // restart. Clearing by userId (not the enrolled agentId) means logout still
+  // tears down the intent even when the in-memory entry is absent (e.g. a logout
+  // right after a restart, before the reconcile re-enrolled). Non-fatal.
+  try {
+    await activationSeams.clearEnrolledFlagForOwner(ownerUserId);
+  } catch (err) {
+    console.warn('[AutonomyActivation] clear enrolled flag failed (non-fatal):', err);
+  }
+
   const agentId = agentAutonomyDriver.getEnrolledAgentForOwner(ownerUserId);
-  if (!agentId) return; // never enrolled / already deactivated — no-op
+  if (!agentId) return; // not in-memory-enrolled — durable flag already cleared
   agentAutonomyDriver.unregisterUserAgent(agentId);
   // Two-body handback: durable binding (so the 5 Hz position refresh keeps the
   // suppression alive while the human drives) + an immediate window (so the
