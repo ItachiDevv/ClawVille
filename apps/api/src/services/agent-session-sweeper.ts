@@ -104,7 +104,10 @@ export async function expireSession(agentId: string): Promise<void> {
     // retain a bearer commitment a future change could re-honor. A subsequent
     // /connect/register mints a fresh sessionId and writes a new hash, so this
     // does not break legitimate reconnect.
-    .set({ sessionExpiresAt: now, sessionSweptAt: now, sessionKeyHash: null, updatedAt: now })
+    // §B.1 durable autonomy: an explicit /disconnect is a terminal session
+    // teardown, so clear the autonomy-enrolled intent atomically here too (the
+    // reconcile must not re-enroll a deliberately-disconnected session).
+    .set({ sessionExpiresAt: now, sessionSweptAt: now, sessionKeyHash: null, autonomyEnrolled: false, updatedAt: now })
     .where(eq(agentBots.agentId, agentId))
     .returning({ userId: agentBots.userId, identityType: agentBots.identityType });
 
@@ -189,7 +192,14 @@ export async function sweepExpiredSessions(): Promise<number> {
   // hash.
   await db
     .update(agentBots)
-    .set({ sessionSweptAt: now, sessionKeyHash: null, updatedAt: now })
+    // §B.1 durable autonomy: clear the autonomy-enrolled intent ATOMICALLY with
+    // the mark-swept, for EVERY expired row (unconditional here, before the
+    // per-row reconnect guards) — a genuinely-expired 24h session's autonomy
+    // intent is dead. Combined with the per-row unregisterUserAgent below (in
+    // both the genuine-expiry and the re-read-failure branches), the driver
+    // entry + the durable flag are both torn down, so the reconcile can never
+    // resurrect an expired session.
+    .set({ sessionSweptAt: now, sessionKeyHash: null, autonomyEnrolled: false, updatedAt: now })
     .where(
       sql`${agentBots.id} IN (${sql.join(expired.map((r) => sql`${r.id}`), sql`, `)})`,
     )

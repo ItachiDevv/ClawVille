@@ -141,6 +141,12 @@ type DecideFn = (prompt: string) => Promise<string>;
 
 // Cadence + safety constants.
 const TICK_MS = 30_000; // driver interval — NOT the 200ms sim tick
+// §B.1 durable autonomy — run the server-side re-enrollment reconcile every N
+// driver ticks (10 × 30s = ~5 min), AND on tick 1 (~30s after start/boot) so a
+// deploy re-enrolls browser-closed persisting agents promptly with no client.
+// The periodic cadence also heals a crash mid-teardown. The reconcile carries its
+// own overlap guard, so a slow pass never stacks.
+const RECONCILE_EVERY_N_TICKS = 10;
 const LLM_TIMEOUT_MS = 15_000; // hard ceiling on one decision
 const WALK_TIMEOUT_MS = 120_000; // give up walking + replan if not arrived
 const TALK_COOLDOWN_MS = 60_000; // linger after a conversation before re-deciding
@@ -465,12 +471,40 @@ class AgentAutonomyDriver {
   }
 
   /**
+   * §B.1 durable autonomy — run one reconcile pass (re-enroll persisted-flag
+   * agents). LAZY-imported so the driver keeps NO static import of the reconcile
+   * module (which imports the activation service, which imports THIS driver) — a
+   * static edge would form a cycle; the runtime import resolves cleanly since the
+   * driver + activation singletons are already constructed by first tick. Never
+   * throws into the tick loop.
+   */
+  private async runReconcile(): Promise<void> {
+    try {
+      const { reconcileDurableAutonomy } = await import('./agent-autonomy-reconcile');
+      await reconcileDurableAutonomy();
+    } catch (err) {
+      console.warn(
+        '[AutonomyDriver] durable-autonomy reconcile failed (non-fatal):',
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+
+  /**
    * One driver tick. Fires each house agent's drive fire-and-forget (never
    * awaited — a slow brain must not delay the next agent or the next tick). The
    * in-flight guard skips an agent whose previous decision is still running.
    */
   private tick(): void {
     this.tickCount++;
+    // §B.1 durable autonomy: re-enroll persisted-flag agents with NO client.
+    // Tick 1 (~30s after start) covers the "on driver start" case (a deploy
+    // re-enrolls away-agents promptly); every RECONCILE_EVERY_N_TICKS after also
+    // heals a crash mid-teardown. Fire-and-forget — a slow DB read must never
+    // delay the drive loop; the reconcile module guards its own overlap.
+    if (this.tickCount % RECONCILE_EVERY_N_TICKS === 1) {
+      void this.runReconcile();
+    }
     // Human-presence INDEPENDENT cadence: the agent runs the SAME decision loop
     // whether or not a human is in the world. ClawVille's premise is that hosted
     // agents ARE the living economy — they must act continuously with ZERO
