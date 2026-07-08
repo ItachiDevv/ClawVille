@@ -73,6 +73,18 @@ authRoutes.get('/me', requireAuth, async (c) => {
 // are always reachable (no external process to time out). External harnesses
 // (openclaw / custom) point at a process the user runs locally — their
 // liveness is derived from how recently the bot acted.
+//
+// ⚠️ DELIBERATE — do NOT "fix" this to isHostedHarness() (commit e1b78a49
+// excluded that wiring on purpose). This set answers the AVATAR-namespace
+// question: does this avatar's platform_agents row back a working server-side
+// runtime? A hermes-HARNESS avatar runs a real ElizaOS runtime through the
+// orchestrator (the chat path is harness-agnostic via platformAgentId), so it
+// is genuinely hosted even while HERMES_LOCAL_GATEWAY_ENABLED is off. That env
+// gate governs the CONNECT namespace (openclaw_bots identityType 'hermes' —
+// BYO pull agents / the hermes-local wire), whose liveness is already handled
+// truthfully by the bot-row branch above, which takes precedence over this
+// carve-out. isHostedHarness() is the connect-namespace helper; wiring it here
+// would falsely demote working hosted hermes avatars behind a disabled flag.
 const HOSTED_HARNESSES = new Set(['milady', 'hermes']);
 const EXTERNAL_ACTIVE_WINDOW_MS = (() => {
   const raw = process.env.EXTERNAL_BOT_ACTIVE_WINDOW_SECONDS;

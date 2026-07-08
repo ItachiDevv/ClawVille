@@ -113,13 +113,22 @@ interface IdentityAdapter {
    */
   speciesFallback: 'hatcher' | 'default';
   /**
-   * Does ClawVille GENUINELY server-host this harness's cognition runtime? Drives
-   * the TRUTHFUL `/me/agent-session` "hosted" advertisement (`isHostedHarness`):
+   * Does ClawVille server-host this identity's NATIVE cognition runtime (the
+   * real framework the name implies), read by `isHostedHarness`:
    *   - 'always'       → milady (server-side Eliza, always reachable).
-   *   - 'hermes-gated' → hermes: hosted ONLY when HERMES_LOCAL_GATEWAY_ENABLED
-   *                      (otherwise it's a self-managed BYO pull agent — calling
-   *                      it "hosted, always connected" is a false advertisement).
+   *   - 'hermes-gated' → hermes: a REAL Hermes runtime is reachable ONLY when
+   *                      HERMES_LOCAL_GATEWAY_ENABLED (the hermes-local wire);
+   *                      otherwise a CONNECT-namespace hermes identity is a
+   *                      self-managed BYO pull agent.
    *   - 'never'        → self-managed / external / partner-hosted identities.
+   *
+   * ⚠️ SCOPE — connect-namespace (openclaw_bots identityType) ONLY. This field
+   * does NOT drive the `/me/agent-session` "hosted" advertisement and MUST NOT
+   * be wired there: an AVATAR-agent's hosting is a property of its
+   * platform_agents row (harness-agnostic ElizaOS runtime via the orchestrator),
+   * so a signup-provisioned hermes-HARNESS avatar is genuinely hosted even with
+   * the gate off. Wiring this into auth.ts was DELIBERATELY EXCLUDED in commit
+   * e1b78a49 (P3 slice 6) for exactly that reason — see auth.ts HOSTED_HARNESSES.
    */
   hosted: 'always' | 'hermes-gated' | 'never';
 }
@@ -487,16 +496,25 @@ export function protocolProximityGateExempt(protocol?: string | null): boolean {
 }
 
 /**
- * TRUTHFUL "is ClawVille genuinely server-hosting this harness's runtime?" —
- * drives the `/me/agent-session` "hosted" advertisement (P3 slice 6 honesty fix,
- * 2026-07-06). Reads the identity registry's `hosted` field (a harness IS an
- * identity type in this namespace):
+ * "Does ClawVille server-host this identity's NATIVE cognition runtime?" —
+ * connect-namespace (openclaw_bots identityType) semantics ONLY:
  *   - milady → always (server-side Eliza runs end-to-end).
- *   - hermes → ONLY when the host-it-for-me local runtime is enabled; otherwise
- *     hermes is a self-managed BYO pull agent and advertising it "hosted, always
- *     connected" is false. Its true liveness comes from the openclaw_bots
- *     lastSeenAt path, not this carve-out.
+ *   - hermes → ONLY when the host-it-for-me local runtime is enabled
+ *     (HERMES_LOCAL_GATEWAY_ENABLED → the hermes-local wire); otherwise a
+ *     connect-namespace hermes identity is a self-managed BYO pull agent whose
+ *     true liveness comes from the openclaw_bots lastSeenAt path.
  *   - everything else (incl. unknown harness / '' ) → false (fail-closed).
+ *
+ * ⚠️ NOT WIRED to `/me/agent-session`, and deliberately so (commit e1b78a49,
+ * P3 slice 6): that route's "hosted" branch describes AVATAR-agents, whose
+ * hosting is a property of the platform_agents row (harness-agnostic ElizaOS
+ * runtime via agent-orchestrator) — gating it on this helper would falsely
+ * demote working hosted hermes-HARNESS avatars behind a disabled env flag.
+ * auth.ts `HOSTED_HARNESSES` is the authoritative avatar-namespace predicate.
+ * This helper currently has NO production call site (tests pin its contract);
+ * it exists as the gate for future host-it-for-me UI in the connect namespace.
+ * If you are about to wire it somewhere, first decide which namespace your
+ * caller is in — avatar (platform_agents) or connect (openclaw_bots).
  *
  * @param hermesLocalEnabled test seam for the D7 gate — defaults to the boot-time
  *   `HERMES_LOCAL_GATEWAY_ENABLED` env read (matches how the deploy sets env
