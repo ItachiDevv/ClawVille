@@ -4,8 +4,10 @@
  * land-office-modal.tsx — the HUMAN in-game surface for the Land Economy.
  *
  * Opened from the sidebar ECONOMY section ("Land Office"). Lets a player:
- *   • For Sale  — browse for-sale parcels grouped by tier (founder→starter),
- *                 with price + a tier-ladder that visibly rises toward town.
+ *   • For Sale  — browse for-sale parcels grouped by tier (founder→starter).
+ *                 Hold tiers (c/b/a/founder) are acquired via CLAIM (hold-to-
+ *                 keep): prove a CLV hold, pay weekly CT upkeep — no CT price.
+ *                 The tier-ladder visibly rises toward town.
  *   • My Land   — owned parcels + each parcel's structure + level, with a
  *                 prominent "Claim free home" CTA when the player owns nothing.
  *   • Build     — on a selected owned parcel: place + upgrade a building/shop,
@@ -31,6 +33,8 @@ import {
   tierLabel,
   getTierStructureRules,
   MAX_PARCELS_PER_AVATAR,
+  holdThresholdForTier,
+  FOUNDER_UPKEEP_CT_WEEKLY,
   type LandTier,
 } from '@clawville/shared';
 import { RpgModal, RpgButton } from '@/components/rpg';
@@ -46,6 +50,7 @@ import type {
   LandCatalogTierResponse,
   ServiceListingDTO,
   BrowseServicesResponse,
+  WalletLinkStatus,
 } from './types';
 
 type Tab = 'for-sale' | 'my-land' | 'build' | 'services';
@@ -164,19 +169,72 @@ function PriceText({ priceCt }: { priceCt: number | null }) {
 }
 
 // ---------------------------------------------------------------------------
+// Hold-to-keep helpers (Phase B2 — c/b/a/founder claim via CLV hold)
+// ---------------------------------------------------------------------------
+
+/** Hold-to-keep tiers = the ones with a CLV hold threshold (c/b/a/founder). */
+function isHoldTier(tier: LandTier): boolean {
+  return holdThresholdForTier(tier) != null;
+}
+
+/** Compact CLV formatter: 100000→"100K", 500000→"500K", 2500000→"2.5M", 10000000→"10M". */
+function formatClv(amount: number): string {
+  if (amount >= 1_000_000) {
+    const m = amount / 1_000_000;
+    return `${Number.isInteger(m) ? m.toFixed(0) : m.toFixed(1)}M`;
+  }
+  if (amount >= 1_000) {
+    const k = amount / 1_000;
+    return `${Number.isInteger(k) ? k.toFixed(0) : k.toFixed(1)}K`;
+  }
+  return amount.toLocaleString();
+}
+
+/**
+ * Weekly CT upkeep for a hold-tier parcel. Available c/b/a rows carry a
+ * seed-stamped `rentCtWeekly`; available FOUNDER rows carry null (the server
+ * stamps FOUNDER_UPKEEP_CT_WEEKLY only AT claim), so display the constant.
+ */
+function weeklyUpkeepCt(parcel: LandParcelDTO): number | null {
+  return parcel.rentCtWeekly ?? (parcel.tier === 'founder' ? FOUNDER_UPKEEP_CT_WEEKLY : null);
+}
+
+/**
+ * The CLV a claim on `tier` requires ON TOP of what the caller already holds
+ * against other parcels (thresholds STACK server-side). `existingHoldSum` is
+ * computed client-side from the caller's owned `tenure==='hold'` parcels
+ * because honoRequest drops the server's requiredClv/heldClv extras from the
+ * 403 error body. KNOWN LIMITATION: the DTO does not expose `grandfathered`,
+ * so a grandfathered legacy owner's holds (excluded from the SERVER sum) are
+ * counted here — the display can over-state the requirement for those few
+ * legacy accounts. The server is authoritative and will still accept, which is
+ * why the Claim button is never disabled on a client-side "short" verdict.
+ */
+function stackedRequiredClv(tier: LandTier, existingHoldSum: number): number {
+  return existingHoldSum + (holdThresholdForTier(tier) ?? 0);
+}
+
+// ---------------------------------------------------------------------------
 // For-Sale tab
 // ---------------------------------------------------------------------------
 
 function ForSaleTab({
   onBuy,
-  onRent,
+  onClaim,
   clawTokens,
+  walletLink,
+  existingHoldSum,
   focusParcelCode,
   onFocusConsumed,
 }: {
   onBuy: (parcel: LandParcelDTO) => void;
-  onRent: (parcel: LandParcelDTO) => void;
+  /** Open the hold-to-keep ClaimHoldModal for a c/b/a/founder parcel. */
+  onClaim: (parcel: LandParcelDTO) => void;
   clawTokens: number;
+  /** Linked-wallet CLV qualification (null = logged out / fetch failed). */
+  walletLink: WalletLinkStatus | null;
+  /** Σ of the caller's existing hold thresholds (stacking) — see stackedRequiredClv. */
+  existingHoldSum: number;
   /** When set, scroll the matching parcel card into view and clear after. */
   focusParcelCode?: string | null;
   onFocusConsumed?: () => void;
@@ -257,12 +315,13 @@ function ForSaleTab({
     <div>
       {/* Tier ladder note + filter chips */}
       <p className="mb-3 text-[12px] leading-relaxed text-slate-200">
-        Parcels closer to the town center belong to higher tiers — pricier, but
-        they unlock <span className="font-semibold text-cyan-200">premium buildings</span>{' '}
+        Parcels closer to the town center belong to higher tiers — they unlock{' '}
+        <span className="font-semibold text-cyan-200">premium buildings</span>{' '}
         and <span className="font-semibold text-cyan-200">higher upgrade levels</span>.
-        The price ladder rises from Starter Cove out at the rim up to Founders&apos; Row.
-        Mid-tier parcels can also be <span className="font-semibold text-cyan-200">rented weekly</span>{' '}
-        instead of bought outright.
+        Higher tiers are <span className="font-semibold text-cyan-200">claimed by holding CLV</span>{' '}
+        in your linked wallet (no CT price — hold to keep, plus a small weekly CT
+        upkeep). The hold ladder rises from Starter Cove out at the rim up to
+        Founders&apos; Row.
       </p>
       <div className="mb-4 flex flex-wrap gap-2">
         <FilterChip label="All" active={filterTier === 'all'} onClick={() => setFilterTier('all')} />
@@ -293,7 +352,7 @@ function ForSaleTab({
               {list.length === 0 ? (
                 <p className="rounded-lg border border-cyan-400/10 bg-cyan-500/[0.03] px-3 py-3 font-mono text-[11px] text-slate-400">
                   {tier === 'founder'
-                    ? 'Founders’ Row is auction-only — coming soon.'
+                    ? 'No Founders’ Row lots open right now.'
                     : 'Sold out in this tier right now.'}
                 </p>
               ) : (
@@ -304,7 +363,9 @@ function ForSaleTab({
                       parcel={p}
                       clawTokens={clawTokens}
                       onBuy={onBuy}
-                      onRent={onRent}
+                      onClaim={onClaim}
+                      walletLink={walletLink}
+                      existingHoldSum={existingHoldSum}
                       isFocused={!!focusParcelCode && p.parcelCode === focusParcelCode}
                     />
                   ))}
@@ -351,22 +412,35 @@ function ParcelCard({
   parcel,
   clawTokens,
   onBuy,
-  onRent,
+  onClaim,
+  walletLink,
+  existingHoldSum,
   isFocused,
 }: {
   parcel: LandParcelDTO;
   clawTokens: number;
   onBuy: (p: LandParcelDTO) => void;
-  onRent: (p: LandParcelDTO) => void;
+  onClaim: (p: LandParcelDTO) => void;
+  walletLink: WalletLinkStatus | null;
+  existingHoldSum: number;
   isFocused?: boolean;
 }) {
   const accent = TIER_ACCENT[parcel.tier];
+  // Hold tiers (c/b/a/founder) acquire via CLAIM (hold-to-keep) — the old Buy
+  // route is retired (409 tenure_model_active). Starter keeps its legacy card.
+  const holdTier = isHoldTier(parcel.tier);
+  const tierThreshold = holdThresholdForTier(parcel.tier);
+  const upkeep = weeklyUpkeepCt(parcel);
+  // Qualified/short badge — display-only (server is authoritative; see
+  // stackedRequiredClv for the grandfathered caveat). null = unknown.
+  const heldClv =
+    walletLink?.linked && walletLink.clv.available ? walletLink.clv.uiAmount : null;
+  const qualified =
+    holdTier && heldClv != null
+      ? heldClv >= stackedRequiredClv(parcel.tier, existingHoldSum)
+      : null;
   const isFounder = parcel.priceCt === null;
   const tooPoor = parcel.priceCt !== null && clawTokens < parcel.priceCt;
-  // Rent is offered ONLY when the tier carries a weekly rent (c-tier today;
-  // starter/founder always carry rentCtWeekly == null and never show Rent).
-  const canRent = parcel.rentCtWeekly != null;
-  const tooPoorToRent = canRent && clawTokens < (parcel.rentCtWeekly ?? 0);
   return (
     <div
       id={isFocused ? FOCUSED_CARD_ID : undefined}
@@ -382,31 +456,56 @@ function ParcelCard({
         </span>
         <TierBadge tier={parcel.tier} />
       </div>
-      <div className="flex items-center justify-between gap-2">
-        <PriceText priceCt={parcel.priceCt} />
-        <RpgButton
-          size="sm"
-          variant={isFounder ? 'ghost' : 'primary'}
-          disabled={isFounder || tooPoor}
-          onClick={() => onBuy(parcel)}
-        >
-          {isFounder ? 'Auction' : tooPoor ? 'Need more CT' : 'Buy'}
-        </RpgButton>
-      </div>
-      {/* c-tier parcels offer BOTH Buy (above) and Rent (here) — the player picks. */}
-      {canRent && (
-        <div className="flex items-center justify-between gap-2 border-t border-cyan-400/10 pt-2">
-          <span className="font-mono text-[11px] text-cyan-200">
-            {(parcel.rentCtWeekly ?? 0).toLocaleString()} CT
-            <span className="text-slate-400"> / week</span>
-          </span>
+      {holdTier ? (
+        <>
+          {/* Hold-to-keep: show the CLV hold + Claim (replaces the retired Buy). */}
+          <div className="flex items-center justify-between gap-2">
+            <span className="font-mono text-sm font-bold text-amber-300">
+              Hold {formatClv(tierThreshold ?? 0)} CLV
+            </span>
+            <RpgButton
+              size="sm"
+              variant="primary"
+              className="min-h-[44px]"
+              onClick={() => onClaim(parcel)}
+            >
+              Claim
+            </RpgButton>
+          </div>
+          <div className="flex items-center justify-between gap-2">
+            <span className="font-mono text-[11px] text-cyan-200">
+              {upkeep != null ? (
+                <>
+                  {upkeep.toLocaleString()} CT
+                  <span className="text-slate-400"> / week upkeep</span>
+                </>
+              ) : (
+                <span className="text-slate-400">weekly upkeep set at claim</span>
+              )}
+            </span>
+            {qualified != null && (
+              <span
+                className={`inline-flex items-center rounded-full border px-2 py-0.5 font-mono text-[9px] font-bold uppercase tracking-[0.14em] ${
+                  qualified
+                    ? 'border-emerald-300/40 bg-emerald-400/15 text-emerald-200'
+                    : 'border-amber-300/40 bg-amber-400/15 text-amber-200'
+                }`}
+              >
+                {qualified ? '✓ CLV qualified' : 'CLV short'}
+              </span>
+            )}
+          </div>
+        </>
+      ) : (
+        <div className="flex items-center justify-between gap-2">
+          <PriceText priceCt={parcel.priceCt} />
           <RpgButton
             size="sm"
-            variant="secondary"
-            disabled={tooPoorToRent}
-            onClick={() => onRent(parcel)}
+            variant={isFounder ? 'ghost' : 'primary'}
+            disabled={isFounder || tooPoor}
+            onClick={() => onBuy(parcel)}
           >
-            {tooPoorToRent ? 'Need more CT' : 'Rent'}
+            {isFounder ? 'Auction' : tooPoor ? 'Need more CT' : 'Buy'}
           </RpgButton>
         </div>
       )}
@@ -428,6 +527,9 @@ function buyErrorMessage(code: string | undefined, status: number | undefined, p
       return `You already own the maximum of ${MAX_PARCELS_PER_AVATAR} parcels.`;
     case 'founder_not_in_v1':
       return 'Founders’ Row is auction-only — coming soon.';
+    // Phase B: /buy is retired for EVERY tier (the server answers before auth).
+    case 'tenure_model_active':
+      return 'Buying outright is retired — land is now claimed (starter deposit or CLV hold).';
     default:
       if (status === 401) return 'Log in to buy land.';
       return 'Purchase failed — try again.';
@@ -505,77 +607,112 @@ function BuyModal({
 }
 
 // ---------------------------------------------------------------------------
-// Rent confirm modal (nested RpgModal) — weekly-rent acquire (c-tier only)
+// Claim (hold-to-keep) confirm modal — c/b/a/founder (Phase B2)
 // ---------------------------------------------------------------------------
 
-function rentErrorMessage(
+/**
+ * One distinct message per claim-hold error code (contract: land.ts route 7b).
+ * `requiredClv`/`heldClv` are CLIENT-computed — honoRequest drops the server's
+ * extra fields from the 403 `insufficient_clv_hold` body (only error/code
+ * survive into ApiError). Switch on errCode() output; never string-match prose.
+ */
+function claimHoldErrorMessage(
   code: string | undefined,
   status: number | undefined,
-  rentCtWeekly: number,
-  have: number,
+  parcel: LandParcelDTO,
+  requiredClv: number,
+  heldClv: number | null,
 ): string {
   switch (code) {
-    case 'insufficient_clawtokens':
-      return `Not enough ClawTokens — need ${rentCtWeekly.toLocaleString()}/wk, you have ${have.toLocaleString()}.`;
+    case 'wallet_not_linked':
+      return 'Link a self-custody wallet first — your CLV hold is verified against it.';
+    // Agent-only (humans shouldn't hit this) — handled defensively.
+    case 'agent_wallet_missing':
+      return 'This agent has no custodial wallet — reconnect the agent and try again.';
+    case 'insufficient_clv_hold':
+      return `Not enough CLV held — this claim needs ${formatClv(requiredClv)} CLV in your wallet${
+        heldClv != null ? `, you hold ${heldClv.toLocaleString()}` : ''
+      }.`;
+    // FAIL-CLOSED: the chain read is down — the server never grants unverified.
+    case 'clv_balance_unavailable':
+      return 'We can’t verify your CLV balance right now — try again in a minute.';
     case 'parcel_not_available':
-      return 'Someone just took this parcel. Pick another.';
+      return 'Someone just claimed this parcel. Pick another.';
     case 'parcel_cap_reached':
-      return `You already own the maximum of ${MAX_PARCELS_PER_AVATAR} parcels.`;
-    case 'rent_not_available':
-    case 'founder_not_in_v1':
-      return 'This parcel isn’t rentable.';
+      return `You already hold the maximum of ${MAX_PARCELS_PER_AVATAR} parcels.`;
+    // Starter tier shouldn't reach this modal — defensive.
+    case 'use_claim_starter':
+      return 'Starter parcels are claimed free on the My Land tab, not held.';
+    // Defensive — marketplace deed escrow-lock (claim-hold doesn't emit it today).
+    case 'deed_locked_by_listing':
+      return 'This deed is locked by a live marketplace listing — try again once it clears.';
+    case 'parcel_not_found':
+      return 'That parcel no longer exists.';
+    case 'invalid_parcel_id':
+    case 'invalid_body':
+      return 'Claim request was malformed — reopen the panel and try again.';
     default:
-      if (status === 401) return 'Log in to rent land.';
-      return 'Rent failed — try again.';
+      if (status === 401) return 'Log in to claim land.';
+      return `Could not claim ${parcel.parcelCode} — try again.`;
   }
 }
 
-/** Format an ISO date as a short, locale-friendly "paid through" date. */
-function formatPaidThrough(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
-}
-
-function RentModal({
+/**
+ * Hold-to-keep claim confirm (mirrors BuyModal). NO CT is spent to
+ * claim — the player must HOLD the tier's CLV threshold (stacking with their
+ * existing holds) in their linked wallet, and the weekly CT upkeep auto-charges
+ * like rent. Not-linked users get a "Link a wallet" CTA instead of Claim.
+ */
+function ClaimHoldModal({
   parcel,
-  clawTokens,
+  walletLink,
+  existingHoldSum,
   onClose,
-  onRented,
+  onClaimed,
+  onRequestWalletLink,
 }: {
   parcel: LandParcelDTO;
-  clawTokens: number;
+  walletLink: WalletLinkStatus | null;
+  existingHoldSum: number;
   onClose: () => void;
-  onRented: () => void;
+  onClaimed: () => void;
+  onRequestWalletLink: () => void;
 }) {
-  const [renting, setRenting] = useState(false);
+  const [claiming, setClaiming] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const addToast = useGameStore((s) => s.addToast);
 
-  // Only c-tier parcels reach here (rentCtWeekly != null). Guard for the type.
-  const rentCtWeekly = parcel.rentCtWeekly ?? 0;
-  const tooPoor = clawTokens < rentCtWeekly;
+  const tierThreshold = holdThresholdForTier(parcel.tier) ?? 0;
+  const requiredClv = stackedRequiredClv(parcel.tier, existingHoldSum);
+  const upkeep = weeklyUpkeepCt(parcel);
+  const linked = walletLink?.linked === true;
+  const heldClv =
+    linked && walletLink.clv.available ? walletLink.clv.uiAmount : null;
+  // Display-only verdict — the server re-checks under lock and is authoritative
+  // (the client sum can over-count for grandfathered legacy owners), so Claim
+  // stays ENABLED on a "short" verdict; only not-linked disables it.
+  const qualified = heldClv != null ? heldClv >= requiredClv : null;
 
-  const handleRent = async () => {
-    setRenting(true);
+  const handleClaim = async () => {
+    setClaiming(true);
     setError(null);
     try {
-      // EMPTY body — the weekly rent is read from the server-stamped parcel row.
-      const res = await api.rentParcel(parcel.id);
+      // EMPTY body — the threshold + live balance are server-derived, always.
+      const res = await api.claimHoldParcel(parcel.id);
       addToast(
-        '🔑',
-        `Rented ${res.parcel.parcelCode} — ${res.amountCt.toLocaleString()} CT/wk, paid through ${formatPaidThrough(res.rentPaidThrough)}.`,
+        '🏝️',
+        `Claimed ${res.parcel.parcelCode} — held with ${formatClv(res.parcel.holdThresholdCt ?? tierThreshold)} CLV!`,
       );
-      onRented();
+      onClaimed();
     } catch (err) {
       const { code, status } = errCode(err);
-      setError(rentErrorMessage(code, status, rentCtWeekly, clawTokens));
-      setRenting(false);
+      setError(claimHoldErrorMessage(code, status, parcel, requiredClv, heldClv));
+      setClaiming(false);
     }
   };
 
   return (
-    <RpgModal open onClose={onClose} title="Confirm Rent" subtitle="Rent Land" tier="rare" maxWidth={440}>
+    <RpgModal open onClose={onClose} title="Confirm Claim" subtitle="Hold to Keep" tier="epic" maxWidth={460}>
       <div className="space-y-4 p-1">
         <div className="rounded-xl border border-cyan-400/20 bg-cyan-500/[0.05] p-4">
           <div className="flex items-center justify-between">
@@ -585,24 +722,56 @@ function RentModal({
             <TierBadge tier={parcel.tier} />
           </div>
           <div className="mt-3 flex items-center justify-between text-sm">
-            <span className="text-slate-200">Weekly rent</span>
-            <span className="font-mono font-bold text-amber-300">
-              {rentCtWeekly.toLocaleString()} CT / week
+            <span className="text-slate-200">CLV hold required</span>
+            <span className="font-mono font-bold text-amber-300">{formatClv(requiredClv)} CLV</span>
+          </div>
+          {existingHoldSum > 0 && (
+            <p className="mt-1 text-right font-mono text-[10px] text-slate-300">
+              this parcel {formatClv(tierThreshold)} + {formatClv(existingHoldSum)} already held ={' '}
+              {formatClv(requiredClv)}
+            </p>
+          )}
+          <div className="mt-1 flex items-center justify-between text-sm">
+            <span className="text-slate-200">You hold</span>
+            <span
+              className={`font-mono font-bold ${
+                heldClv != null ? 'text-cyan-200' : 'text-amber-200'
+              }`}
+            >
+              {!linked
+                ? 'Wallet not linked'
+                : heldClv == null
+                  ? 'Can’t verify right now'
+                  : `${heldClv.toLocaleString()} CLV`}
             </span>
           </div>
-          <div className="mt-1 flex items-center justify-between text-sm">
-            <span className="text-slate-200">Your balance</span>
-            <span className="font-mono font-bold text-cyan-200">{clawTokens.toLocaleString()} CT</span>
-          </div>
+          {qualified != null && (
+            <p
+              className={`mt-2 rounded-lg border px-2 py-1 text-right font-mono text-[10px] font-bold uppercase tracking-[0.14em] ${
+                qualified
+                  ? 'border-emerald-300/40 bg-emerald-400/10 text-emerald-200'
+                  : 'border-amber-300/40 bg-amber-400/10 text-amber-200'
+              }`}
+            >
+              {qualified
+                ? '✓ You qualify'
+                : `${formatClv(requiredClv - (heldClv ?? 0))} CLV short — server has the final say`}
+            </p>
+          )}
         </div>
 
-        {/* How rent works — auto-charge weekly, grace window, eviction if unpaid. */}
+        {/* How hold-to-keep works — no CT spent to claim; hold CLV + weekly upkeep. */}
         <p className="rounded-lg border border-cyan-400/15 bg-cyan-500/[0.04] px-3 py-2.5 text-[12px] leading-relaxed text-slate-200">
-          You pay <span className="font-semibold text-cyan-100">{rentCtWeekly.toLocaleString()} CT</span> now
-          for the first <span className="font-semibold text-cyan-100">7&nbsp;days</span>. Rent then
-          auto-charges every week. If a charge can’t be paid, you get a short grace
-          window — then the parcel is <span className="font-semibold text-amber-200">evicted</span> and
-          returns to the pool (your build is preserved if you re-rent it).
+          <span className="font-semibold text-cyan-100">No CT is spent to claim.</span>{' '}
+          You keep this parcel by <span className="font-semibold text-cyan-100">holding{' '}
+          {formatClv(requiredClv)} CLV</span> in your linked wallet, plus a weekly upkeep of{' '}
+          <span className="font-semibold text-cyan-100">
+            {upkeep != null ? `${upkeep.toLocaleString()} CT` : 'CT (stamped at claim)'}
+          </span>{' '}
+          auto-charged from your balance — like rent. If the upkeep can’t be paid or your
+          CLV drops below the hold, you get a short grace window — then the parcel is{' '}
+          <span className="font-semibold text-amber-200">evicted</span> and returns to the
+          pool (your build is preserved).
         </p>
 
         {error && (
@@ -612,18 +781,24 @@ function RentModal({
         )}
 
         <div className="flex justify-end gap-2">
-          <RpgButton size="sm" variant="ghost" onClick={onClose} disabled={renting}>
+          <RpgButton size="sm" variant="ghost" className="min-h-[44px]" onClick={onClose} disabled={claiming}>
             Cancel
           </RpgButton>
-          <RpgButton
-            size="sm"
-            variant="primary"
-            onClick={handleRent}
-            loading={renting}
-            disabled={tooPoor}
-          >
-            {tooPoor ? 'Need more CT' : `Rent · ${rentCtWeekly.toLocaleString()} CT/wk`}
-          </RpgButton>
+          {linked ? (
+            <RpgButton
+              size="sm"
+              variant="primary"
+              className="min-h-[44px]"
+              onClick={handleClaim}
+              loading={claiming}
+            >
+              Claim · hold {formatClv(requiredClv)} CLV
+            </RpgButton>
+          ) : (
+            <RpgButton size="sm" variant="primary" className="min-h-[44px]" onClick={onRequestWalletLink}>
+              Link a wallet
+            </RpgButton>
+          )}
         </div>
       </div>
     </RpgModal>
@@ -1251,7 +1426,7 @@ function serviceUpdateErrorMessage(code: string | undefined, status: number | un
   }
 }
 
-/** Buy-confirm modal for a service listing — mirrors BuyModal/RentModal. */
+/** Buy-confirm modal for a service listing — mirrors BuyModal. */
 function BuyServiceModal({
   listing,
   clawTokens,
@@ -1804,8 +1979,45 @@ export default function LandOfficeModal() {
   const [myLoading, setMyLoading] = useState(false);
   const [claiming, setClaiming] = useState(false);
   const [buyTarget, setBuyTarget] = useState<LandParcelDTO | null>(null);
-  const [rentTarget, setRentTarget] = useState<LandParcelDTO | null>(null);
+  const [claimTarget, setClaimTarget] = useState<LandParcelDTO | null>(null);
   const [buildParcel, setBuildParcel] = useState<LandParcelDTO | null>(null);
+
+  // Hold-to-keep qualification (Phase B2): the linked wallet + its CLV balance,
+  // fetched ONCE per modal open (never per-card). null = logged out / guest /
+  // fetch failed — the claim UI then shows the "Link a wallet" path.
+  const [walletLink, setWalletLink] = useState<WalletLinkStatus | null>(null);
+  useEffect(() => {
+    if (!open || !hasAvatar) return;
+    let cancelled = false;
+    api
+      .getWalletLink()
+      .then((res) => {
+        if (!cancelled) setWalletLink(res);
+      })
+      .catch(() => {
+        if (!cancelled) setWalletLink(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, hasAvatar]);
+
+  // Σ of the caller's EXISTING hold thresholds — thresholds STACK server-side,
+  // so a new claim requires (this sum + the new tier's threshold) CLV. Prefer
+  // the server-stamped holdThresholdCt (mirrors the server's SUM exactly);
+  // derive from tier as a fallback. See stackedRequiredClv for the
+  // grandfathered caveat (DTO has no `grandfathered` flag).
+  const existingHoldSum = useMemo(
+    () =>
+      myParcels.reduce(
+        (sum, p) =>
+          p.tenure === 'hold'
+            ? sum + (p.holdThresholdCt ?? holdThresholdForTier(p.tier) ?? 0)
+            : sum,
+        0,
+      ),
+    [myParcels],
+  );
 
   // Owned active 'shop' structures — the Services tab's Manage surface.
   const myShops = useMemo(() => myStructures.filter((s) => s.structureType === 'shop'), [myStructures]);
@@ -1898,16 +2110,23 @@ export default function LandOfficeModal() {
     setTab('my-land');
   };
 
-  // Rent success mirrors buy: a rent flips the parcel available→owned, so the
-  // same refresh + overlay-hydrate + world-query-invalidate keeps the modal and
-  // the 3D scene in lockstep, then we land the player on My Land.
-  const handleRented = async () => {
-    setRentTarget(null);
+  // Claim (hold-to-keep) success — MIRRORS handleBought exactly: this is the
+  // WORLD↔DB↔UI parity path (modal list + 3D FOR-SALE sign + My Land all flip
+  // together). refreshMyLand also updates existingHoldSum for the next claim.
+  const handleClaimedHold = async () => {
+    setClaimTarget(null);
     await refreshMyLand();
     await hydrateOverlay(avatarId);
     invalidateLandState();
     setTab('my-land');
   };
+
+  // WALLET SEAM: land manager wires this to the wallet-visibility-ui open-modal
+  // store action during review; fallback toast until then. Deliberately NOT a
+  // stores/game.ts change — keeps this diff decoupled from the wallet team's.
+  const handleRequestWalletLink = useCallback(() => {
+    addToast('🔗', 'Link a self-custody wallet to claim hold-tier land, then try again.', 5000);
+  }, [addToast]);
 
   // Set / clear the spawn point. 'home' binds an owned parcel; 'town' reverts.
   // The mutation invalidates ['avatar'] so spawnPreference/homeParcelId refresh
@@ -1959,8 +2178,10 @@ export default function LandOfficeModal() {
         {tab === 'for-sale' && (
           <ForSaleTab
             onBuy={setBuyTarget}
-            onRent={setRentTarget}
+            onClaim={setClaimTarget}
             clawTokens={clawTokens}
+            walletLink={walletLink}
+            existingHoldSum={existingHoldSum}
             focusParcelCode={focusParcelCode}
             onFocusConsumed={clearLandOfficeFocus}
           />
@@ -2004,12 +2225,14 @@ export default function LandOfficeModal() {
         />
       )}
 
-      {rentTarget && (
-        <RentModal
-          parcel={rentTarget}
-          clawTokens={clawTokens}
-          onClose={() => setRentTarget(null)}
-          onRented={handleRented}
+      {claimTarget && (
+        <ClaimHoldModal
+          parcel={claimTarget}
+          walletLink={walletLink}
+          existingHoldSum={existingHoldSum}
+          onClose={() => setClaimTarget(null)}
+          onClaimed={handleClaimedHold}
+          onRequestWalletLink={handleRequestWalletLink}
         />
       )}
     </>
