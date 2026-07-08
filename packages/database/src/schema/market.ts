@@ -94,11 +94,14 @@
  * no-op that never double-queues the buy or double-records the payout intent.
  *
  * v1 LIMITS: `earned_bundle` listings are REFUSED (`earned_not_available`) —
- * EARNED provenance does not exist yet; only `land_deed` may list. Deed-able
- * tenures are 'owned' + 'hold' (ownership tenures); 'rented'/'deposit'/
- * 'starter' refuse `not_transferable_tenure` (a renter/depositor does not own
- * the deed; escrow/hold transfer semantics are the Codex+land-gated executor's
- * problem, not v1's).
+ * EARNED provenance does not exist yet; only `land_deed` may list. The ONLY
+ * deed-able tenure is 'owned' (narrowed from 'owned'+'hold' 2026-07-08, Codex
+ * re-review): 'hold' refuses the typed `hold_transfer_not_supported` because
+ * the deed-flip normalizes tenure='owned' + NULLs the hold cols, which would
+ * strip the CLV-hold obligation — buyer-inherits-obligation transfer is the
+ * gated follow-up (FEATURE_GATE `market_hold_deed_transfer`,
+ * apps/api services/market-listings.ts); 'rented'/'deposit'/'starter' refuse
+ * `not_transferable_tenure` (a renter/depositor does not own the deed).
  *
  * Migrations: `packages/database/migrations/0017_market_p2p.sql` (base) +
  * `0020_market_payout_deed_executors.sql` (GoLive executor trail columns +

@@ -66,6 +66,8 @@ const {
   assertMainnetRealMoneyContext,
   sizeClipMicro,
   oracleMinOutClvAtomic,
+  resolveJupiterBaseUrl,
+  resolveClvSwapExecutingStaleMs,
 } = await import('../clv-swap-live');
 
 if (!DB_URL_WAS_SET) {
@@ -117,6 +119,7 @@ interface Harness {
   swapRequests: Array<Record<string, unknown>>;
   sentRaw: Uint8Array[];
   sleeps: number[];
+  alerts: Array<Record<string, unknown>>;
 }
 
 function makeHarness(opts: {
@@ -145,6 +148,7 @@ function makeHarness(opts: {
   const swapRequests: Harness['swapRequests'] = [];
   const sentRaw: Uint8Array[] = [];
   const sleeps: number[] = [];
+  const alerts: Array<Record<string, unknown>> = [];
 
   const findFunding = (fid: string) =>
     [...funding.values()].find((f) => f.id === fid) as Record<string, unknown> | undefined;
@@ -158,6 +162,15 @@ function makeHarness(opts: {
     async listPlannedQueueRows(limit: number) {
       return [...queue.values()]
         .filter((r) => r.status === 'planned')
+        .slice(0, limit)
+        .map((r) => ({ ...r }));
+    },
+    async listStaleExecutingQueueRows(cutoff: Date, limit: number) {
+      return [...queue.values()]
+        .filter(
+          (r) =>
+            r.status === 'executing' && r.claimedAt instanceof Date && r.claimedAt < cutoff,
+        )
         .slice(0, limit)
         .map((r) => ({ ...r }));
     },
@@ -357,9 +370,13 @@ function makeHarness(opts: {
     sleep: async (ms: number) => {
       sleeps.push(ms);
     },
+    alert: async (params) => {
+      log.push('alert');
+      alerts.push(params as unknown as Record<string, unknown>);
+    },
   };
 
-  return { deps, log, queue, funding, quoteRequests, swapRequests, sentRaw, sleeps };
+  return { deps, log, queue, funding, quoteRequests, swapRequests, sentRaw, sleeps, alerts };
 }
 
 const settledCheckout = (over: Record<string, unknown> = {}) => ({
@@ -407,6 +424,8 @@ beforeEach(() => {
   delete process.env.CLV_SWAP_SLIPPAGE_BPS;
   delete process.env.CLV_SWAP_MAX_IMPACT_BPS;
   delete process.env.CLV_SWAP_CLIP_SPACING_MS;
+  delete process.env.CLV_SWAP_JUPITER_BASE_URL;
+  delete process.env.CLV_SWAP_EXECUTING_STALE_MS;
 });
 
 afterAll(() => {
@@ -806,6 +825,91 @@ describe('runLiveClvSwapTick — sweep-then-execute per planned row', () => {
     expect(out[0].execute?.ok).toBe(true);
     expect(h.queue.get('q-1')!.status).toBe('executed');
     expect(h.funding.get(SRC)!.status).toBe('swept');
+    expect(h.alerts.length).toBe(0); // nothing stale — nothing paged
+  });
+
+  it("STALE-CLAIM ALERTING: a row stuck 'executing' past the floor pages ops — no retry, no mutation", async () => {
+    const h = makeHarness({
+      queueRows: [
+        plannedQueueRow({
+          id: 'q-stale',
+          status: 'executing',
+          claimId: 'dead-claim',
+          claimedAt: new Date(Date.now() - 10 * 60_000), // well past the 5-min default
+        }),
+      ],
+    });
+    const out = await runLiveClvSwapTick(h.deps);
+    expect(out).toEqual([]); // not planned — never swept/executed by the tick
+    expect(h.alerts.length).toBe(1);
+    expect(h.alerts[0]).toMatchObject({ severity: 'warning', source: 'clv-swap-live' });
+    expect(String(h.alerts[0].message)).toContain('q-stale');
+    // ALERT-ONLY discipline: the row is untouched (manual reconcile), custody
+    // was never loaded, no claim/send ever ran.
+    const row = h.queue.get('q-stale')!;
+    expect(row.status).toBe('executing');
+    expect(row.claimId).toBe('dead-claim');
+    expect(h.log).not.toContain('claimQueueRow');
+    expect(h.log).not.toContain('loadSwapKeypair');
+    expect(h.log).not.toContain('sendRaw');
+  });
+
+  it('a FRESH executing claim (younger than the stale floor) is NOT paged', async () => {
+    const h = makeHarness({
+      queueRows: [
+        plannedQueueRow({
+          id: 'q-live',
+          status: 'executing',
+          claimId: 'live-claim',
+          claimedAt: new Date(), // in-flight right now
+        }),
+      ],
+    });
+    await runLiveClvSwapTick(h.deps);
+    expect(h.alerts.length).toBe(0);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+describe('resolveJupiterBaseUrl — HOST ALLOWLIST (SSRF guard)', () => {
+  it('unset → the keyless lite-api default', () => {
+    delete process.env.CLV_SWAP_JUPITER_BASE_URL;
+    expect(resolveJupiterBaseUrl()).toBe('https://lite-api.jup.ag');
+  });
+
+  it('api.jup.ag (the paid base) is accepted; trailing slashes trimmed', () => {
+    process.env.CLV_SWAP_JUPITER_BASE_URL = 'https://api.jup.ag/';
+    expect(resolveJupiterBaseUrl()).toBe('https://api.jup.ag');
+  });
+
+  it('an OFF-ALLOWLIST https host falls back to the default (never a silent redirect of the money wire)', () => {
+    process.env.CLV_SWAP_JUPITER_BASE_URL = 'https://evil.example.com';
+    expect(resolveJupiterBaseUrl()).toBe('https://lite-api.jup.ag');
+    process.env.CLV_SWAP_JUPITER_BASE_URL = 'https://jup.ag.evil.example';
+    expect(resolveJupiterBaseUrl()).toBe('https://lite-api.jup.ag');
+  });
+
+  it('non-https / embedded credentials / garbage all fall back to the default', () => {
+    process.env.CLV_SWAP_JUPITER_BASE_URL = 'http://lite-api.jup.ag';
+    expect(resolveJupiterBaseUrl()).toBe('https://lite-api.jup.ag');
+    process.env.CLV_SWAP_JUPITER_BASE_URL = 'https://user:pass@api.jup.ag';
+    expect(resolveJupiterBaseUrl()).toBe('https://lite-api.jup.ag');
+    process.env.CLV_SWAP_JUPITER_BASE_URL = 'not a url';
+    expect(resolveJupiterBaseUrl()).toBe('https://lite-api.jup.ag');
+  });
+});
+
+describe('resolveClvSwapExecutingStaleMs — default + hard floor', () => {
+  it('default 300s; below-floor values refuse to the default; valid override honored', () => {
+    delete process.env.CLV_SWAP_EXECUTING_STALE_MS;
+    expect(resolveClvSwapExecutingStaleMs()).toBe(300_000);
+    process.env.CLV_SWAP_EXECUTING_STALE_MS = '1000'; // below the 180s floor
+    expect(resolveClvSwapExecutingStaleMs()).toBe(300_000);
+    process.env.CLV_SWAP_EXECUTING_STALE_MS = 'garbage';
+    expect(resolveClvSwapExecutingStaleMs()).toBe(300_000);
+    process.env.CLV_SWAP_EXECUTING_STALE_MS = '240000';
+    expect(resolveClvSwapExecutingStaleMs()).toBe(240_000);
+    delete process.env.CLV_SWAP_EXECUTING_STALE_MS;
   });
 });
 

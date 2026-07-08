@@ -280,6 +280,11 @@ export interface PayoutSettlementRow {
   payoutSellerTxSignature: string | null;
   payoutRakeTxSignature: string | null;
   payoutClvAtomic: string | null;
+  /** The rake amount actually captured with the rake leg — surfaced from the
+   *  durable `metadata.payoutRakeClvAtomic` stamp written by
+   *  `captureRakeSignature` (2026-07-08, Codex re-review: replay/resume
+   *  reporting no longer hardcodes rake '0' when a real rake was paid). */
+  payoutRakeClvAtomic: string | null;
   payoutExecutedRate: string | null;
   payoutFailureReason: string | null;
 }
@@ -370,6 +375,7 @@ const fillsSchema = z.array(
 type SettlementSelect = typeof marketSettlements.$inferSelect;
 
 function toPayoutRow(r: SettlementSelect): PayoutSettlementRow {
+  const meta = (r.metadata ?? {}) as Record<string, unknown>;
   return {
     id: r.id,
     listingId: r.listingId,
@@ -387,6 +393,8 @@ function toPayoutRow(r: SettlementSelect): PayoutSettlementRow {
     payoutSellerTxSignature: r.payoutSellerTxSignature,
     payoutRakeTxSignature: r.payoutRakeTxSignature,
     payoutClvAtomic: r.payoutClvAtomic,
+    payoutRakeClvAtomic:
+      typeof meta.payoutRakeClvAtomic === 'string' ? meta.payoutRakeClvAtomic : null,
     payoutExecutedRate: r.payoutExecutedRate,
     payoutFailureReason: r.payoutFailureReason,
   };
@@ -697,7 +705,9 @@ function replayResult(row: PayoutSettlementRow, resumed: boolean): MarketPayoutR
     sellerTxSignature: row.payoutSellerTxSignature ?? '',
     rakeTxSignature: row.payoutRakeTxSignature,
     sellerClvAtomic: row.payoutClvAtomic ?? '0',
-    rakeClvAtomic: '0',
+    // The REAL captured rake from the durable metadata stamp; '0' only when no
+    // rake was ever captured (zero-rake / dust-floor settlements).
+    rakeClvAtomic: row.payoutRakeClvAtomic ?? '0',
     sellerDestination: row.sellerPayoutPubkey ?? '',
     rakeDestination: null,
     replay: true,
@@ -1243,7 +1253,9 @@ export async function resumeMarketPayout(
         sellerTxSignature: taken.payoutSellerTxSignature ?? '',
         rakeTxSignature: taken.payoutRakeTxSignature,
         sellerClvAtomic: taken.payoutClvAtomic ?? '0',
-        rakeClvAtomic: '0',
+        // The REAL captured rake from the durable metadata stamp (a Case-A row
+        // by definition captured a rake signature — the amount rode with it).
+        rakeClvAtomic: taken.payoutRakeClvAtomic ?? '0',
         sellerDestination: taken.sellerPayoutPubkey ?? '',
         rakeDestination: null,
         replay: false,

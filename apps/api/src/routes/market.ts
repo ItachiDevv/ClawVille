@@ -161,7 +161,7 @@ marketRoutes.post('/listings', requireAuthOrAgentSession, requireNonGuestIdentit
         ? 404
         : result.code === 'not_parcel_owner'
           ? 403
-          : 409; // not_transferable_tenure / parcel_already_listed / earned_not_available
+          : 409; // not_transferable_tenure / hold_transfer_not_supported / parcel_already_listed / earned_not_available
     return c.json({ error: result.code, code: result.code }, status);
   }
 
