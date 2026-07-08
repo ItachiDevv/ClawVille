@@ -21,6 +21,7 @@ import {
   resetPasswordTemplate,
 } from '../templates/email-templates';
 import { logEventFromContext } from '../services/event-logger';
+import { deactivateAutonomyForOwner } from '../services/agent-autonomy-activation';
 import type { AppContext } from '../types';
 import { z } from 'zod';
 import { DEFAULT_AGENT_MODEL_KEY } from '@clawville/shared';
@@ -240,6 +241,20 @@ authRoutes.get('/me/agent-session', requireAuth, async (c) => {
 authRoutes.post('/logout', requireAuth, async (c) => {
   const session = c.get('session');
   const user = c.get('user');
+  // §B.1 money-path guard (2026-07-08): AUTHORITATIVE server-side autonomy
+  // teardown on explicit logout, BEFORE the Lucia session is invalidated. The
+  // client's own `postAutonomy(false)` (fired from resetStore) races the cookie
+  // invalidation and would 401 after logout, so the client sequencing must NOT
+  // be the only guard for a real-CT settling path — else the driver keeps acting
+  // + settling CT on the avatar of a logged-out user. Idempotent + in-memory
+  // (no-op when the owner isn't enrolled); never-throw so it can never block
+  // logout. This is the EXPLICIT-exit teardown — browser-close (no /logout call)
+  // still persists the agent to its 24h TTL per D6.
+  try {
+    await deactivateAutonomyForOwner(user.id);
+  } catch (err) {
+    console.warn('[logout] autonomy deactivate failed (non-fatal):', err);
+  }
   await lucia.invalidateSession(session.id);
   const cookie = lucia.createBlankSessionCookie();
   c.header('Set-Cookie', cookie.serialize());

@@ -440,3 +440,65 @@ describe('(7) eligibility guards', () => {
     expect(agentAutonomyDriver.userAgentCount()).toBe(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// (8) ENROLLMENT MUST NOT OUTLIVE ITS SESSION — the logout CT-leak + TTL-zombie
+//     fix (money-path teardown found in the staging browser pass).
+//     These exercise the exact primitives the two authoritative server-side
+//     teardowns call: POST /api/auth/logout → deactivateAutonomyForOwner(userId)
+//     (cookie-INDEPENDENT), and the 24h TTL sweep → unregisterUserAgent(agentId).
+//     The route + sweeper wiring itself is staging-verified (the route graph +
+//     the DB sweep can't load DB-free); here we lock the teardown SEMANTICS.
+// ---------------------------------------------------------------------------
+describe('(8) enrollment must not outlive its session (logout + TTL teardown)', () => {
+  it('logout-unenrolls: deactivate keyed by userId tears down WITHOUT any cookie/bearer', async () => {
+    await activateAutonomyForOwner(OWNER);
+    expect(agentAutonomyDriver.isOwnerEnrolled(OWNER)).toBe(true);
+    // The logout route calls exactly this, keyed on the Lucia user id — no
+    // session/bearer needed, so it works even after the cookie is (about to be)
+    // invalidated. The driver stops settling CT the instant the entry is gone.
+    await deactivateAutonomyForOwner(OWNER);
+    expect(agentAutonomyDriver.isOwnerEnrolled(OWNER)).toBe(false);
+    expect(agentAutonomyDriver.userAgentCount()).toBe(0);
+  });
+
+  it('ttl-expiry-unenrolls: the sweep primitive (unregisterUserAgent by agentId) drops the entry', async () => {
+    await activateAutonomyForOwner(OWNER);
+    expect(agentAutonomyDriver.getEnrolledAgentForOwner(OWNER)).toBe(PLATFORM_AGENT_ID);
+    // The 24h TTL sweep calls this for every genuinely-expired agentId (after its
+    // two reconnect guards), so a dead session can't leave a live driver entry.
+    agentAutonomyDriver.unregisterUserAgent(PLATFORM_AGENT_ID);
+    expect(agentAutonomyDriver.isOwnerEnrolled(OWNER)).toBe(false);
+    expect(agentAutonomyDriver.userAgentCount()).toBe(0);
+  });
+
+  it('browser-close-persists (regression): NO passive op unenrolls — only explicit teardown does', async () => {
+    await activateAutonomyForOwner(OWNER);
+    // A raw tab close fires NO server teardown (it hits /world/leave, not
+    // /logout, and never expires the TTL). Simulate the passive per-tick signals
+    // that keep running while the world stream is open — none must unenroll.
+    npcSimulation.refreshHumanControlledOpenClawForUser(OWNER); // 5 Hz position tick
+    npcSimulation.avatarAutonomyManager.unregister(OWNER); // idempotent bridge op
+    expect(agentAutonomyDriver.isOwnerEnrolled(OWNER)).toBe(true);
+    expect(agentAutonomyDriver.userAgentCount()).toBe(1);
+  });
+
+  it('teardown is idempotent + house-safe (the sweep calls it for EVERY swept agentId)', () => {
+    agentAutonomyDriver.registerHouseAgent({
+      agentId: 'house-agent-ttl',
+      bodyId: 'ocb-house-ttl',
+      platformAgentId: 'house-platform-ttl',
+      systemUserId: 'system-user',
+      houseUserId: 'house-user-ttl',
+      avatarId: 'house-avatar-ttl',
+    });
+    // Swept a house session's agentId → must NOT remove the house driver entry.
+    agentAutonomyDriver.unregisterUserAgent('house-agent-ttl');
+    expect(agentAutonomyDriver.hasHouseAgent('house-agent-ttl')).toBe(true);
+    // Swept an unknown / never-enrolled agentId → no throw, no effect.
+    expect(() => agentAutonomyDriver.unregisterUserAgent('unknown-agent')).not.toThrow();
+    // Over-calling on a real user entry is idempotent.
+    // (no user entry enrolled here → still a safe no-op)
+    expect(agentAutonomyDriver.userAgentCount()).toBe(0);
+  });
+});
