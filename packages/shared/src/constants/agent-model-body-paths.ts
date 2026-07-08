@@ -29,15 +29,15 @@ export interface AgentModelBodyRef {
 
 export const AGENT_MODEL_BODY_PATHS: Record<AgentModelKey, AgentModelBodyRef> = {
   // ── OpenClaw (crustaceans) — GLB bodies ──
-  lobster: { path: '/models/lobster.glb', format: 'glb' },
-  sweet_crab: { path: '/models/sweet_crab_sketchfabweekly.glb', format: 'glb' },
-  lobster_plush: { path: '/models/lobster_plush.glb', format: 'glb' },
-  hermitcrab: { path: '/models/hermitcrab.glb', format: 'glb' },
+  lobster: { path: '/models/lobster-ktx.glb', format: 'glb' },
+  sweet_crab: { path: '/models/sweet_crab_sketchfabweekly-ktx.glb', format: 'glb' },
+  lobster_plush: { path: '/models/lobster_plush-ktx.glb', format: 'glb' },
+  hermitcrab: { path: '/models/hermitcrab-ktx.glb', format: 'glb' },
 
   // ── Other (sea creatures) — GLB bodies ──
-  jellyfish: { path: '/models/jellyfish.glb', format: 'glb' },
-  octopus: { path: '/models/octopus_toy.glb', format: 'glb' },
-  seahorse: { path: '/models/sea_horse.glb', format: 'glb' },
+  jellyfish: { path: '/models/jellyfish-ktx.glb', format: 'glb' },
+  octopus: { path: '/models/octopus_toy-ktx.glb', format: 'glb' },
+  seahorse: { path: '/models/sea_horse-ktx.glb', format: 'glb' },
 
   // ── Milady (VRM humanoid) ──
   milady_official_1: { path: '/avatars/milady-official-1.vrm', format: 'vrm' },

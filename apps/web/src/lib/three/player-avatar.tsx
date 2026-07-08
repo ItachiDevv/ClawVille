@@ -2,7 +2,7 @@
 
 import { useRef, useMemo, useEffect, Suspense } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
-import { useGLTF } from '@react-three/drei';
+import { preloadKTX2Bytes, useGLTFWithKTX2 } from '@/lib/three/use-gltf-ktx2';
 import * as THREE from 'three';
 import { useGameStore, avatarPositionRef } from '@/stores/game';
 import {
@@ -44,7 +44,7 @@ import {
 } from '@/lib/three/collision/world-colliders';
 
 // ---------------------------------------------------------------------------
-// GLB-based player avatar — lobster.glb model = 1-2 draw calls
+// GLB-based player avatar — lobster-ktx.glb model = 1-2 draw calls
 // Original had 46 meshes built from primitives
 // ---------------------------------------------------------------------------
 
@@ -53,8 +53,8 @@ const HALF_H = MAP_HEIGHT / 2;
 const SPEED = 550;
 const BOB_SPEED = 5;
 const BOB_AMPLITUDE = 0.3;
-// AVATAR_SCALE=40 targets ~45 world-unit height for lobster.glb on the 5120-unit map.
-// lobster.glb geometry has bbox max.y = 1.12 native units (verified 2026-04-17 via GLTF
+// AVATAR_SCALE=40 targets ~45 world-unit height for lobster-ktx.glb on the 5120-unit map.
+// lobster-ktx.glb geometry has bbox max.y = 1.12 native units (verified 2026-04-17 via GLTF
 // accessor bounds). AVATAR_SCALE=40 → 40 × 1.12 = 44.8 wu ≈ TARGET_NPC_HEIGHT=45.
 // Bug history: AVATAR_SCALE was at 20 (from pass 2 of scale-down 2026-04-16), which was
 // calibrated when the lobster GLB had native height ~2.4 units (20 × 2.4 = 48 wu).
@@ -190,7 +190,7 @@ function mapToWorld(px: number, py: number): [number, number, number] {
 }
 
 // Preload
-useGLTF.preload('/models/lobster.glb');
+preloadKTX2Bytes('/models/lobster-ktx.glb');
 
 // Scratch objects for computeLocalMinY — module-scope to avoid GC in useMemo.
 const _avatarBbox = new THREE.Box3();
@@ -738,7 +738,7 @@ function PlayerAvatarGLBInner() {
   const reg: ModelRegistryEntry =
     MODEL_REGISTRY[avatarModelKey as keyof typeof MODEL_REGISTRY] ?? MODEL_REGISTRY.lobster;
 
-  const { scene } = useGLTF(reg.path);
+  const { scene } = useGLTFWithKTX2(reg.path);
 
   // Whether to use the legacy LobsterAnimator (skeletal bone discovery) or
   // the universal CharacterAnimator. Mirrors the same routing in arena-npcs.tsx

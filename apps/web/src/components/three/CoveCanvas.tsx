@@ -21,6 +21,7 @@ import { Suspense, useEffect, useState } from 'react';
 import { Canvas, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
 import CoveInteriorScene from '@/lib/three/cove-interior';
+import { KTX2LoaderSetup } from '@/lib/three/ktx2-loader-setup';
 
 // ---------------------------------------------------------------------------
 // Low-end GPU detection — mirrors World3DCanvas pattern exactly
@@ -140,6 +141,7 @@ export default function CoveCanvas() {
           powerPreference: 'low-power',
         }}
       >
+        <KTX2LoaderSetup />
         <SceneBackground />
         <PreCompilePipelines />
 

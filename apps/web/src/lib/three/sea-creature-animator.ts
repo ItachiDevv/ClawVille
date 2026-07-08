@@ -40,6 +40,7 @@ import {
   type SeaCreatureAnimState,
 } from './sea-creature-types';
 import { SEA_CREATURE_MANIFEST } from './sea-creature-manifest';
+import { getKTX2Loader } from './ktx2-loader-setup';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -69,10 +70,13 @@ const GLB_CACHE = new Map<string, GltfCacheEntry>();
 let _loader: GLTFLoader | null = null;
 
 function getLoader(): GLTFLoader {
-  if (_loader) return _loader;
-  _loader = new GLTFLoader();
-  // Meshy/Tripo GLB exports are typically meshopt-compressed.
-  _loader.setMeshoptDecoder(MeshoptDecoder);
+  if (!_loader) {
+    _loader = new GLTFLoader();
+    // Meshy/Tripo GLB exports are typically meshopt-compressed.
+    _loader.setMeshoptDecoder(MeshoptDecoder);
+  }
+  const ktx2 = getKTX2Loader();
+  if (ktx2) _loader.setKTX2Loader(ktx2);
   return _loader;
 }
 
@@ -151,7 +155,9 @@ export async function createSeaCreatureAnimator(
   // Fast-path: manifest says no rig — skip the network entirely.
   if (!manifest.hasRig) return null;
 
-  const baseUrl = `/models/sea-creatures/${species}/base.glb`;
+  const baseUrl = species === 'lobster'
+    ? '/models/sea-creatures/lobster/base-ktx.glb'
+    : `/models/sea-creatures/${species}/base.glb`;
 
   // Load base mesh. Any error → fall back to static mesh.
   let baseGltf: GLTF;
@@ -187,7 +193,9 @@ export async function createSeaCreatureAnimator(
   // priority logic below picks a substitute.
   const clipLoadPromises: Promise<void>[] = [];
   for (const state of manifest.availableStates) {
-    const url = `/models/sea-creatures/${species}/animations/${state}.glb`;
+    const url = species === 'lobster'
+      ? `/models/sea-creatures/lobster/animations/${state}-ktx.glb`
+      : `/models/sea-creatures/${species}/animations/${state}.glb`;
     const p = loadGlb(url)
       .then((gltf) => {
         if (!gltf.animations.length) {

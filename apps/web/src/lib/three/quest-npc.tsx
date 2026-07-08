@@ -18,18 +18,18 @@
  *   - TSL MeshBasicNodeMaterial for the marker (AdditiveBlending)
  *   - ~2–4 draw calls (GLB meshes) + 1 marker = ~3–5 total
  *
- * TODO: replace crayfish.glb with a dedicated "quest giver" character GLB
+ * TODO: replace crayfish-ktx.glb with a dedicated "quest giver" character GLB
  *       once an artist produces one. The crayfish is a functional placeholder.
  */
 
 import { useRef, useMemo, useEffect, memo, Suspense, useCallback } from 'react';
 import type { RefObject } from 'react';
 import { useFrame } from '@react-three/fiber';
-import { useGLTF } from '@react-three/drei';
 import * as THREE from 'three/webgpu';
 import { color, float, sin, time } from 'three/tsl';
 import { useGameStore } from '@/stores/game';
 import { applyFattenedFrustumCulling } from '@/lib/three/vrm-loader';
+import { preloadKTX2Bytes, useGLTFWithKTX2 } from '@/lib/three/use-gltf-ktx2';
 
 // ---------------------------------------------------------------------------
 // World-space position
@@ -46,7 +46,7 @@ const QUEST_NPC_Z = -60;
 const QUEST_NPC_FLOOR_Y = -2;
 
 // Preload so GLB is ready before first render
-useGLTF.preload('/models/crayfish.glb');
+preloadKTX2Bytes('/models/crayfish-ktx.glb');
 
 // Gold color for the quest marker octahedron
 const MARKER_COLOR = 0xffd700;
@@ -100,7 +100,7 @@ const QuestNpcInner = memo(function QuestNpcInner() {
   const animRef    = useRef<THREE.Group>(null!);
   const hoveredRef = useRef(false);
 
-  const { scene } = useGLTF('/models/crayfish.glb');
+  const { scene } = useGLTFWithKTX2('/models/crayfish-ktx.glb');
 
   // Clone + normalize to ~61 world units (×1.75 of original 35, matches 2026-04-23
   // CHARACTER_HEIGHT bump 55→96 in arena-location-npcs.tsx so the town-center

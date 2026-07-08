@@ -43,6 +43,7 @@ import ReefRaceBoostRibbons  from './ReefRaceBoostRibbons';
 import ReefRaceHazards       from './ReefRaceHazards';
 import ReefRaceApexMarkers   from './ReefRaceApexMarkers';
 import { ActivityBursts }    from '@/lib/three/activities/shared/activity-particles';
+import { KTX2LoaderSetup }   from '@/lib/three/ktx2-loader-setup';
 import { RiverScene }       from './river-scene';
 import { useActivityStore } from '@/stores/activity';
 import {
@@ -514,6 +515,7 @@ export default function ReefRaceScene({ roomId, selfAvatarId = null }: ReefRaceS
       style={{ width: '100%', height: '100%' }}
       dpr={[1, 1.5]}
     >
+      <KTX2LoaderSetup />
       <SceneContents
         entities={entities ?? new Map()}
         selfAvatarId={selfAvatarId}

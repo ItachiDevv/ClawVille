@@ -48,6 +48,15 @@ useGLTFWithKTX2.preload = (path: string | string[]) => {
 };
 
 /**
+ * Warm the browser HTTP cache for KTX2 GLBs without parsing them. Use this
+ * before <KTX2LoaderSetup /> exists, such as page-level boot preloads.
+ */
+export function preloadKTX2Bytes(path: string): void {
+  if (typeof window === 'undefined') return;
+  void fetch(path, { cache: 'force-cache' }).catch(() => {});
+}
+
+/**
  * Clear a GLB from the loader cache.
  */
 useGLTFWithKTX2.clear = (path: string | string[]) => {

@@ -39,6 +39,8 @@ import { clone as skeletonClone } from 'three/examples/jsm/utils/SkeletonUtils.j
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { makeGeometryWebGPUSafe } from '@/lib/three/webgpu-geometry';
 import { RiverScene } from '@/lib/three/activities/reef-race/river-scene';
+import { KTX2LoaderSetup } from '@/lib/three/ktx2-loader-setup';
+import { preloadKTX2Bytes, useGLTFWithKTX2 } from '@/lib/three/use-gltf-ktx2';
 
 // ─── Spline instance (always v2, bypasses env flag) ──────────────────────────
 // Import the same singleton used by ReefRaceTrack so we share the pre-built
@@ -79,7 +81,7 @@ const DIR_SHADOW_CAM_BOUNDS = 12000;
 
 // ─── Preload assets ───────────────────────────────────────────────────────────
 useGLTF.preload('/models/reef-race/surfboards/surfboard_1.glb');
-useGLTF.preload('/models/lobster.glb');
+preloadKTX2Bytes('/models/lobster-ktx.glb');
 
 // ─── Camera mode ─────────────────────────────────────────────────────────────
 const CAMERA_MODES = ['free-orbit', 'top-down', 'cinematic', 'side-on'] as const;
@@ -447,7 +449,7 @@ interface KartProps {
 
 function SplineSurfboardKart({ t, color, onMounted, visible = true }: KartProps) {
   const { scene: sbSrc }   = useGLTF('/models/reef-race/surfboards/surfboard_1.glb');
-  const { scene: lobSrc }  = useGLTF('/models/lobster.glb');
+  const { scene: lobSrc }  = useGLTFWithKTX2('/models/lobster-ktx.glb');
 
   const groupRef   = useRef<THREE.Group>(null);
   const gliderRef  = useRef<THREE.Group>(null);
@@ -991,6 +993,7 @@ function ReefRacePreviewInner() {
         dpr={[1, 1.5]}
         style={{ width: '100%', height: '100%' }}
       >
+        <KTX2LoaderSetup />
         <Suspense fallback={null}>
           <SceneContents
             mode={mode}

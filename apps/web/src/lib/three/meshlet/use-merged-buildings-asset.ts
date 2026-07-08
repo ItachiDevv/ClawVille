@@ -25,6 +25,7 @@ import {
   BUILDING_TARGET_HEIGHT,
   type BuildingSpec,
 } from './buildings-manifest';
+import { getKTX2Loader } from '@/lib/three/ktx2-loader-setup';
 
 export interface BuildingLoadStatus {
   id: string;
@@ -161,6 +162,8 @@ export function useMergedBuildingsAsset(): UseMergedBuildingsAssetReturn {
 
     const loader = new GLTFLoader();
     loader.setMeshoptDecoder(MeshoptDecoder);
+    const ktx2 = getKTX2Loader();
+    if (ktx2) loader.setKTX2Loader(ktx2);
     const draco = new DRACOLoader();
     draco.setDecoderPath('https://www.gstatic.com/draco/versioned/decoders/1.5.6/');
     loader.setDRACOLoader(draco);

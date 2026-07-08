@@ -2,7 +2,7 @@
 
 import { useRef, useMemo, useEffect, memo, Suspense } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
-import { useGLTF } from '@react-three/drei';
+import { preloadKTX2Bytes, useGLTFWithKTX2 } from '@/lib/three/use-gltf-ktx2';
 import * as THREE from 'three';
 import { useWorldLabel, WorldLabel } from '@/lib/three/world-labels-overlay';
 import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
@@ -297,16 +297,16 @@ function getTerrainY(x: number, z: number, _scene: THREE.Scene): number {
 
 // Map species strings to GLB paths + model keys for the new character system
 const SPECIES_MODEL: Record<string, { path: string; key: string }> = {
-  lobster:       { path: '/models/lobster.glb',                    key: 'lobster' },
-  crayfish:      { path: '/models/crayfish.glb',                   key: 'crayfish' },
-  sweet_crab:    { path: '/models/sweet_crab_sketchfabweekly.glb', key: 'sweet_crab' },
-  lobster_plush: { path: '/models/lobster_plush.glb',              key: 'lobster_plush' },
-  hermitcrab:    { path: '/models/hermitcrab.glb',                 key: 'hermitcrab' },
+  lobster:       { path: '/models/lobster-ktx.glb',                    key: 'lobster' },
+  crayfish:      { path: '/models/crayfish-ktx.glb',                   key: 'crayfish' },
+  sweet_crab:    { path: '/models/sweet_crab_sketchfabweekly-ktx.glb', key: 'sweet_crab' },
+  lobster_plush: { path: '/models/lobster_plush-ktx.glb',              key: 'lobster_plush' },
+  hermitcrab:    { path: '/models/hermitcrab-ktx.glb',                 key: 'hermitcrab' },
   // chihiro / priestess / chibi_goku removed 2026-04-21 — GLBs deleted from disk.
   // Any legacy DB rows with these species values will fall back to DEFAULT_SPECIES (lobster).
-  jellyfish:     { path: '/models/jellyfish.glb',                  key: 'jellyfish' },
-  octopus:       { path: '/models/octopus_toy.glb',                key: 'octopus' },
-  seahorse:      { path: '/models/sea_horse.glb',                  key: 'seahorse' },
+  jellyfish:     { path: '/models/jellyfish-ktx.glb',                  key: 'jellyfish' },
+  octopus:       { path: '/models/octopus_toy-ktx.glb',                key: 'octopus' },
+  seahorse:      { path: '/models/sea_horse-ktx.glb',                  key: 'seahorse' },
 };
 const DEFAULT_SPECIES = SPECIES_MODEL.lobster;
 
@@ -340,7 +340,7 @@ function resolveSpecies(raw: string): string {
 // Preload only the live roaming GLB species. Legacy / user-configured species
 // still resolve through SPECIES_MODEL, but they load on demand instead of adding
 // every retired sea-creature GLB to the open-world boot path.
-useGLTF.preload(DEFAULT_SPECIES.path);
+preloadKTX2Bytes(DEFAULT_SPECIES.path);
 
 // Per-species npcScale override. computeNpcScale measures the bind-pose
 // Per-species scale overrides — calibrated AFTER the SkeletonUtils.clone fix.
@@ -354,7 +354,7 @@ useGLTF.preload(DEFAULT_SPECIES.path);
 //   - sweet_crab: 7.6 → bbox 56×53×67 reads acceptable in-game
 //   - lobster:    no override — computeNpcScale returns ~40 (matches
 //                 player-avatar AVATAR_SCALE=40); only re-add an override if the
-//                 lobster.glb is re-compressed and the bind-pose bbox shifts.
+//                 lobster-ktx.glb is re-compressed and the bind-pose bbox shifts.
 const SPECIES_WANDER_SCALE_OVERRIDE: Partial<Record<string, number>> = {
   hermitcrab: 4,
   sweet_crab: 7.6,
@@ -489,7 +489,7 @@ export const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteStat
 
   const resolvedSpecies = resolveSpecies(npc.species);
   const speciesInfo = SPECIES_MODEL[resolvedSpecies] ?? DEFAULT_SPECIES;
-  const { scene } = useGLTF(speciesInfo.path);
+  const { scene } = useGLTFWithKTX2(speciesInfo.path);
 
   // Determine which animation system to use
   const useNewSystem = speciesInfo.key !== 'lobster' && speciesInfo.key !== 'crayfish';
