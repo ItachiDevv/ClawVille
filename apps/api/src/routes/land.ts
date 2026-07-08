@@ -637,6 +637,56 @@ async function reconcileArchivedStructureOnAcquire(
   }
 }
 
+/**
+ * Deed-lock guard (marketplace C4 cross-domain seam, 2026-07-07). A parcel is
+ * DEED-LOCKED when a live P2P marketplace listing holds its deed: a
+ * `market_deed_locks` row exists (the authoritative HELD marker — created in the
+ * listing tx, held THROUGH 'settled' until the Codex-gated transfer executor
+ * releases it), OR a live ('active'|'pending_settlement') land_deed
+ * `market_listings` row references it (defense-in-depth for any future lockless
+ * listing path). While locked, the parcel MUST NOT revert to the pool (voluntary
+ * /release OR a rent-sweeper lapse/eviction) — doing so lets the seller
+ * double-sell a deed a buyer already settled. MUST be called with the parcel row
+ * already locked FOR UPDATE and under the per-owner advisory lock in `tx`, so it
+ * serializes against the marketplace lister/fulfiller (same advisory OUTER +
+ * parcel FOR UPDATE INNER order — no new deadlock edge). Raw SQL by table name
+ * so land.ts stays decoupled from the market schema (owned by token-economy).
+ */
+export async function parcelHasLiveDeedLock(tx: LandTx, parcelId: string): Promise<boolean> {
+  try {
+    const rows = await tx.execute<{ hit: number }>(
+      sql`SELECT 1 AS hit
+          WHERE EXISTS (SELECT 1 FROM market_deed_locks WHERE parcel_id = ${parcelId})
+             OR EXISTS (
+               SELECT 1 FROM market_listings
+               WHERE item_kind = 'land_deed'
+                 AND item_ref = ${parcelId}
+                 AND status IN ('active', 'pending_settlement')
+             )`,
+    );
+    return Array.from(rows as Iterable<unknown>).length > 0;
+  } catch (err) {
+    // Migration-order safety: on a DB where 0017 (market tables) is not applied,
+    // the relation doesn't exist (Postgres 42P01) — no marketplace means nothing
+    // can be deed-locked, so treat as UNLOCKED. Re-throw anything else so a real
+    // fault is never silently swallowed on a money path.
+    //
+    // Error-surface note (verified): drizzle-orm 0.33.0 + postgres-js does NOT
+    // wrap driver errors, so PostgresError's SQLSTATE lands directly on
+    // `err.code`. The `cause.code` + exact-message checks are a NARROW fallback
+    // (undefined_table's canonical message form only) in case a future drizzle
+    // upgrade wraps the driver error — never a generic swallow.
+    const e = err as { code?: string; message?: string; cause?: { code?: string; message?: string } } | undefined;
+    const undefinedTable =
+      e?.code === '42P01' ||
+      e?.cause?.code === '42P01' ||
+      (typeof e?.message === 'string' && /relation "[^"]+" does not exist/.test(e.message)) ||
+      (typeof e?.cause?.message === 'string' && /relation "[^"]+" does not exist/.test(e.cause.message));
+    if (undefinedTable) return false;
+    throw err;
+  }
+}
+
 // ─── Service listings — run-a-store (Slice 4, P3) ───────────────────────────
 //
 // A peer CT service: an avatar with an ACTIVE 'shop' structure lists a
@@ -1757,6 +1807,15 @@ landRoutes.post('/parcels/:parcelId/release', requireAuthOrAgentSession, require
       if (p.owner_avatar_id !== avatarId) {
         throw new HTTPException(403, { message: 'not_parcel_owner' });
       }
+      // DEED-LOCK GUARD (marketplace C4 seam): a live P2P listing holds this
+      // parcel's deed in escrow — releasing it to the pool would let the seller
+      // double-sell a deed a buyer may have already settled. Refuse; the seller
+      // must cancel the listing first (which releases the lock). Checked under
+      // the advisory + parcel FOR UPDATE already held, so it serializes against
+      // the lister/fulfiller.
+      if (await parcelHasLiveDeedLock(tx, p.id)) {
+        throw new HTTPException(409, { message: 'deed_locked_by_listing' });
+      }
       if (p.tenure !== 'deposit' && p.tenure !== 'hold') {
         // Legacy tenures (starter/owned/rented) keep their existing lifecycle —
         // release is a Phase-B surface only.
@@ -1853,7 +1912,10 @@ landRoutes.post('/parcels/:parcelId/release', requireAuthOrAgentSession, require
     });
   } catch (err) {
     if (err instanceof HTTPException) {
-      return c.json({ error: err.message }, err.status as 403 | 404 | 409);
+      // `code` mirrors `error` (every message on this route is already a
+      // snake_case code) so the web ApiError rule — UI branches on `err.code`,
+      // never the message — holds for the new `deed_locked_by_listing` refusal.
+      return c.json({ error: err.message, code: err.message }, err.status as 403 | 404 | 409);
     }
     throw err;
   }
