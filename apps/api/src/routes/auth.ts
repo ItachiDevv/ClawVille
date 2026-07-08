@@ -85,7 +85,16 @@ authRoutes.get('/me', requireAuth, async (c) => {
 // truthfully by the bot-row branch above, which takes precedence over this
 // carve-out. isHostedHarness() is the connect-namespace helper; wiring it here
 // would falsely demote working hosted hermes avatars behind a disabled flag.
-const HOSTED_HARNESSES = new Set(['milady', 'hermes']);
+//
+// 'openclaw' added 2026-07-08 (scope-audit finding): SIGNUP_HARNESSES lets a
+// user pick openclaw at signup and provisioning mints the same platform_agents
+// avatar-agent (hosted ElizaOS runtime, chattable via /me/chat, bridge-driven
+// in Autonomous) — excluding it here told those users "no agent connected"
+// while their hosted agent was demonstrably running. A BYO openclaw agent is
+// unaffected: its openclaw_bots row hits the bot-row branch above first.
+// 'custom' stays out — not signup-selectable; BYO-gateway semantics are
+// ambiguous and a custom row without a live bot should not read "hosted".
+const HOSTED_HARNESSES = new Set(['milady', 'hermes', 'openclaw']);
 const EXTERNAL_ACTIVE_WINDOW_MS = (() => {
   const raw = process.env.EXTERNAL_BOT_ACTIVE_WINDOW_SECONDS;
   const n = raw ? Number.parseInt(raw, 10) : 300;
