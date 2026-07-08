@@ -602,6 +602,26 @@ class NpcSimulation {
   }
 
   /**
+   * PUBLIC (§B.1, 2026-07-08): fully release the Controlled-mode human-control
+   * state for (userId, agentId) — BOTH the durable launch binding AND the
+   * immediate suppression until-entry. Called on Autonomous activation.
+   *
+   * Why both: `refreshHumanControlledOpenClawForUser` runs UNCONDITIONALLY on
+   * every 5 Hz /api/world/position upload, and each refresh routes through
+   * `markHumanControlledOpenClaw`, which CLEARS the body's A* path +
+   * destinationBuildingId. If the launch binding survived into Autonomous mode,
+   * the driver's body would have its path wiped 5×/sec and never move (the
+   * freeze bug). Deleting the binding stops the refresh at its source; deleting
+   * the until-entry lifts the current suppression window immediately instead of
+   * waiting out its TTL. Scoped to the exact (userId, agentId) pair — other
+   * launched agents bound to the same user keep their suppression.
+   */
+  releaseHumanControlledOpenClaw(userId: string, agentId: string): void {
+    this.forgetHumanControlledOpenClawLaunch(agentId, userId);
+    this.humanControlledOpenClawUntil.delete(agentId);
+  }
+
+  /**
    * Refresh suppression only for Hatcher proxies this user actually launched.
    * Called on the owner's 5 Hz /api/world/position uploads. Because the binding
    * outlives the short TTL, a resumed upload after a >3s stall re-primes the
