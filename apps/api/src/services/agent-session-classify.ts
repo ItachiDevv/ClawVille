@@ -23,6 +23,8 @@
  * is ClawVille-hosted. GENUINE BYO rows are byte-identical to before.
  */
 
+import { HOSTED_AVATAR_IDENTITY_TYPE } from './hosted-avatar-agent-session-plan';
+
 /** ClawVille-hosted signup harnesses. 'custom' stays OUT — not signup-selectable;
  *  a custom row without a live bot must not read "hosted". */
 export const HOSTED_HARNESSES = new Set(['milady', 'hermes', 'openclaw']);
@@ -68,19 +70,35 @@ export type AgentSessionClassification =
   | { kind: 'cold-fallthrough' };
 
 /**
- * TRUE iff a bot row is the user's OWN hosted avatar-agent internal session (§B.2):
- * the row's `agentId` equals the user's avatar-agent's `platform_agents.id`
- * (`avatars.platformAgentId`) AND the avatar's harness is ClawVille-hosted. This is
- * the un-spoofable discriminator that separates a minted hosted session from a
- * genuine BYO/external `openclaw_bots` row.
+ * TRUE iff a bot row is the user's OWN hosted avatar-agent internal session (§B.2).
+ * THREE conjuncts, all required (the founder's stated marker):
+ *   1. the row's `agentId` equals the user's avatar-agent's `platform_agents.id`
+ *      (`avatars.platformAgentId` — a UUID WE generate);
+ *   2. the row's `identityType` is exactly what the §B.2 mint writes
+ *      (`HOSTED_AVATAR_IDENTITY_TYPE` = 'nanoclaw'); AND
+ *   3. the avatar's harness is ClawVille-hosted (HOSTED_HARNESSES).
+ *
+ * Conjunct 2 was added after a Codex adversarial pass (2026-07-08): `agentId` is
+ * caller-supplied at `POST /api/agent/connect` and `identityType` is a public enum
+ * that INCLUDES 'nanoclaw', so a HARNESS-only + agentId-match discriminator could
+ * mislabel a same-user BYO agent (one that deliberately connected with
+ * `agentId == its owner's platformAgentId` and a non-nanoclaw identity) as
+ * 'hosted' AND mask its dead/expired state. Requiring identityType 'nanoclaw'
+ * closes the realistic gap: a BYO agent connecting as openclaw/hermes/milady/
+ * custom/hatcher no longer matches. (Cross-user is already impossible — the
+ * `/me/agent-session` bot query is keyed by the AUTHED user's own id; the sole
+ * residual is a user maximally self-spoofing all three conjuncts of their OWN
+ * account label, which carries zero security/economy impact and points at their
+ * own hosted avatar-agent id anyway.)
  */
 export function isHostedAvatarAgentSessionRow(
-  bot: Pick<AgentSessionBotInput, 'agentId'>,
+  bot: Pick<AgentSessionBotInput, 'agentId' | 'identityType'>,
   avatar: AgentSessionAvatarInput | null,
 ): boolean {
   return (
     !!avatar?.platformAgentId &&
     bot.agentId === avatar.platformAgentId &&
+    bot.identityType === HOSTED_AVATAR_IDENTITY_TYPE &&
     HOSTED_HARNESSES.has(avatar.harness ?? '')
   );
 }
