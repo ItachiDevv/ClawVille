@@ -534,6 +534,51 @@ export interface GameState {
   resetStore: () => void;
 }
 
+// ---------------------------------------------------------------------------
+// §B.1 (2026-07-08) — Autonomous-mode SERVER enrollment.
+//
+// The client control-mode toggle only flips local loops; the SERVER must be told
+// so the owner's hosted avatar-agent rides the FULL autonomy driver
+// (perceive→decide→act([ACTION:])→settle REAL CT to the owner's avatar). One
+// idempotent endpoint: POST /api/world/autonomy { active }. Authed by the Lucia
+// cookie ONLY — the body carries just the boolean; the agent identity is derived
+// server-side from the user's active avatar. The response NEVER carries a bearer,
+// so this does not touch the no-bearer-refetch invariant (game/page.tsx).
+//
+// B3 (restart re-enrollment): the driver registry is server process-memory, so an
+// API restart/deploy drops the enrollment. While Autonomous, re-POST on an
+// interval so autonomy survives deploys (the endpoint is idempotent + cheap when
+// already enrolled).
+// ---------------------------------------------------------------------------
+const AUTONOMY_API_BASE = process.env.NEXT_PUBLIC_API_URL || '';
+const AUTONOMY_KEEPALIVE_MS = 5 * 60 * 1000; // re-arm every 5 min (survives API restarts)
+let autonomyKeepaliveTimer: ReturnType<typeof setInterval> | null = null;
+
+async function postAutonomy(
+  active: boolean,
+): Promise<{ ok: boolean; code?: string; status: number }> {
+  try {
+    const res = await fetch(`${AUTONOMY_API_BASE}/api/world/autonomy`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ active }),
+    });
+    const data = (await res.json().catch(() => ({}))) as { code?: string };
+    return { ok: res.ok, code: data.code, status: res.status };
+  } catch {
+    // Network/offline — treat as a soft failure; the keepalive re-arm retries.
+    return { ok: false, status: 0 };
+  }
+}
+
+function stopAutonomyKeepalive(): void {
+  if (autonomyKeepaliveTimer) {
+    clearInterval(autonomyKeepaliveTimer);
+    autonomyKeepaliveTimer = null;
+  }
+}
+
 export const useGameStore = create<GameState>((set, get) => ({
   controlMode: 'explore',
   hasAgent: false,
@@ -585,6 +630,46 @@ export const useGameStore = create<GameState>((set, get) => ({
     if (mode === 'autonomous' && prev !== 'autonomous') {
       const { useAutonomyStore } = require('@/stores/autonomy') as typeof import('@/stores/autonomy');
       useAutonomyStore.getState().startAutonomy();
+    }
+
+    // §B.1 — SERVER Autonomous enrollment (see the module header above). Enroll
+    // the owner's hosted avatar-agent in the full autonomy driver, and start a
+    // keepalive re-arm so autonomy survives an API restart (B3). On a rejection
+    // (capacity / not-eligible / auth) toast the reason (branch on `code`, never
+    // message text) and REVERT to Controlled — the agent is NOT autonomous
+    // server-side, so the client must not pretend it is.
+    if (mode === 'autonomous' && prev !== 'autonomous') {
+      void postAutonomy(true).then((r) => {
+        if (r.ok) return;
+        const msg =
+          r.code === 'autonomy_capacity'
+            ? 'Autonomous agents are at capacity right now — try again soon.'
+            : r.code === 'guest_forbidden'
+              ? 'Create a free account to run your agent autonomously.'
+              : r.code === 'no_agent' || r.code === 'not_eligible' || r.code === 'no_avatar'
+                ? 'No eligible agent to run autonomously yet.'
+                : r.status === 401
+                  ? 'Log in to run your agent autonomously.'
+                  : 'Could not start autonomous mode — please try again.';
+        get().addToast(r.code === 'autonomy_capacity' ? '⏳' : '⚠️', msg, 4500);
+        // Only revert if the user is still in Autonomous (they may have toggled
+        // away while the request was in flight).
+        if (get().controlMode === 'autonomous') get().setControlMode('player');
+      });
+      if (typeof window !== 'undefined') {
+        stopAutonomyKeepalive();
+        autonomyKeepaliveTimer = setInterval(() => {
+          if (useGameStore.getState().controlMode === 'autonomous') void postAutonomy(true);
+          else stopAutonomyKeepalive();
+        }, AUTONOMY_KEEPALIVE_MS);
+      }
+    }
+    // Hand autonomy back to the server on leaving Autonomous (idempotent; the
+    // §B.2 session stays live per D6, only the driver stops + the body is
+    // suppressed while the human drives).
+    if (prev === 'autonomous' && mode !== 'autonomous') {
+      stopAutonomyKeepalive();
+      void postAutonomy(false);
     }
     set({
       controlMode: mode,
