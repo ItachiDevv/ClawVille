@@ -15,8 +15,8 @@
  *   updated on player input direction — immune to knockback). lerpAngle via
  *   shortest arc applied across interpolated snapshots.
  *
- *   Bug 3 — Hardcoded sea_horse.glb ignoring entity.species. Fixed: branch on
- *   species === 'sea_horse' → sea_horse.glb, else → lobster.glb. The procedural
+ *   Bug 3 — Hardcoded sea_horse-ktx.glb ignoring entity.species. Fixed: branch on
+ *   species === 'sea_horse' → sea_horse-ktx.glb, else → lobster-ktx.glb. The procedural
  *   applySwimmingAnim traverses by bone name (spine/tail/fin) and works on both
  *   models — lobster has these bones per lobster-parts.ts discovery patterns, so
  *   the swimming motion degrades gracefully (fish-like) on lobsters. No species-
@@ -104,11 +104,12 @@ import {
 import { getAnimatorIdByPath } from '@/lib/three/agent-model-registry';
 import { useActivityStore } from '@/stores/activity';
 import { triggerBurst } from '@/lib/three/activities/shared/activity-particles';
+import { preloadKTX2Bytes, useGLTFWithKTX2 } from '@/lib/three/use-gltf-ktx2';
 
 // ─── Preloads — fire at module scope ─────────────────────────────────────────
-useGLTF.preload('/models/sea_horse.glb');
-useGLTF.preload('/models/lobster.glb');
-useGLTF.preload('/models/crayfish.glb');  // SPEC 1 — 3rd species, static mesh
+preloadKTX2Bytes('/models/sea_horse-ktx.glb');
+preloadKTX2Bytes('/models/lobster-ktx.glb');
+preloadKTX2Bytes('/models/crayfish-ktx.glb');  // SPEC 1 — 3rd species, static mesh
 // v2 spline path surfboard — plain .clone() (no skeleton, static mesh).
 // Asset: surfboard_1.glb, 3 220 tris, 660 KB, CC-BY 4.0 (see ATTRIBUTIONS.md).
 useGLTF.preload('/models/reef-race/surfboards/surfboard_1.glb');
@@ -278,11 +279,11 @@ interface SnapRecord {
 /**
  * Apply swimming animation to the avatar scene.
  *
- * For RIGGED meshes (sea_horse.glb — 93 bone nodes): delegates to the bone-based
+ * For RIGGED meshes (sea_horse-ktx.glb — 93 bone nodes): delegates to the bone-based
  * undulation path via applyTransformSwim's internal `hasBones` branch, which
  * returns early and lets the original bone traversal run via the scene.traverse below.
  *
- * For STATIC meshes (lobster.glb — 0 bones): applyTransformSwim does pure
+ * For STATIC meshes (lobster-ktx.glb — 0 bones): applyTransformSwim does pure
  * rotation.x / rotation.z / position.y oscillation on the whole scene group —
  * producing visible swimming motion that was a complete no-op before this change.
  *
@@ -295,11 +296,11 @@ interface SnapRecord {
  * scene's rotation/position untouched for the traverse to work on.
  */
 function applySwimmingAnim(scene: THREE.Object3D, avatarId: string, delta: number, speed: number): void {
-  // Transform-only path for static meshes (lobster.glb, crayfish.glb, etc.).
+  // Transform-only path for static meshes (lobster-ktx.glb, crayfish-ktx.glb, etc.).
   // Returns early internally when bones are present, so rigged meshes pass through.
   applyTransformSwim(scene, avatarId, delta, speed, 0);
 
-  // Bone-based undulation for rigged species (sea_horse.glb, future rigged GLBs).
+  // Bone-based undulation for rigged species (sea_horse-ktx.glb, future rigged GLBs).
   // applyTransformSwim's hasBones=true guard ensures transform is NOT also applied.
   if (!_swimTime[avatarId]) _swimTime[avatarId] = 0;
   _swimTime[avatarId] += delta;
@@ -411,7 +412,7 @@ function ReefRacePlayerInner({ entity, isSelf = false, triggerScreenShake }: Ree
   //
   // SPEC 2 — Milady VRM branch: when species starts with 'milady_official_',
   // we render via useVRMInstance in ReefRaceVRMRiderInner (Suspense boundary).
-  // The GLB path falls back to lobster.glb in that case, but effectiveSrcScene
+  // The GLB path falls back to lobster-ktx.glb in that case, but effectiveSrcScene
   // is set to null so GLB rendering is suppressed while VRM renders.
   //
   // NOTE: pre-existing spelling gap — AGENT_MODELS registry uses key 'seahorse'
@@ -426,26 +427,26 @@ function ReefRacePlayerInner({ entity, isSelf = false, triggerScreenShake }: Ree
   // Determine GLB path. For VRM species use lobster as the sentinel so the
   // useGLTF hook is always called (Rules of Hooks).
   const glbPath = (() => {
-    if (isVRM) return '/models/lobster.glb'; // sentinel — not rendered when isVRM
+    if (isVRM) return '/models/lobster-ktx.glb'; // sentinel — not rendered when isVRM
     switch (speciesKey) {
-      case 'crayfish':  return '/models/crayfish.glb';
+      case 'crayfish':  return '/models/crayfish-ktx.glb';
       case 'seahorse':
-      case 'sea_horse': return '/models/sea_horse.glb';
+      case 'sea_horse': return '/models/sea_horse-ktx.glb';
       default:
         // Unknown non-VRM species — log once, render lobster.
         if (!_warnedVrmKeys.has(speciesKey)) {
           _warnedVrmKeys.add(speciesKey);
           console.warn(
-            `[ReefRacePlayer] unknown species="${speciesKey}" — rendering lobster.glb as fallback`,
+            `[ReefRacePlayer] unknown species="${speciesKey}" — rendering lobster-ktx.glb as fallback`,
           );
         }
-        return '/models/lobster.glb';
+        return '/models/lobster-ktx.glb';
     }
   })();
 
   // Always call useGLTF (Rules of Hooks). When isVRM=true, srcScene is a
   // lobster sentinel that is never mounted (effectiveSrcScene = null).
-  const { scene: srcScene } = useGLTF(glbPath);
+  const { scene: srcScene } = useGLTFWithKTX2(glbPath);
   // Gate all GLB clone/mount logic on this. Null when VRM branch is active.
   const effectiveSrcScene = isVRM ? null : srcScene;
 

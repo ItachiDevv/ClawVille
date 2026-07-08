@@ -27,7 +27,7 @@
  *   - Import useGLTFWithKTX2 instead of useGLTF for any GLB with KTX2 textures
  */
 
-import { useEffect, type ReactNode } from 'react';
+import { type ReactNode } from 'react';
 import { useThree } from '@react-three/fiber';
 // Use Three.js r182's KTX2Loader (not three-stdlib's) — it has detectSupport()
 // with proper WebGPURenderer support via renderer.hasFeature().
@@ -79,8 +79,7 @@ export function extendLoaderWithKTX2(loader: GLTFLoader): void {
 export function KTX2LoaderSetup(): ReactNode {
   const { gl } = useThree();
 
-  useEffect(() => {
-    if (_ktx2Loader) return; // already initialised
+  if (!_ktx2Loader) {
 
     const loader = new KTX2Loader();
     loader.setTranscoderPath('/basis/');
@@ -90,15 +89,7 @@ export function KTX2LoaderSetup(): ReactNode {
     loader.detectSupport(gl as any);
 
     _ktx2Loader = loader;
-
-    return () => {
-      // Don't dispose on unmount — the Canvas may remount but the singleton
-      // should persist for the page lifetime to avoid re-init cost.
-      // Disposal happens at page unload naturally.
-    };
-    // gl is a stable R3F ref — intentionally omitted from deps
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }
 
   return null;
 }

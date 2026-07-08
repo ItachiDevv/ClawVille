@@ -7,6 +7,7 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { MAP_WIDTH, MAP_HEIGHT, TILE_SIZE, buildingZones } from '@/lib/pixi/tilemap-data';
 import { makeGeometryWebGPUSafe, makeObject3DWebGPUSafe } from '@/lib/three/webgpu-geometry';
 import { initTerrainHeightfield } from '@/lib/three/terrain-heightfield';
+import { preloadKTX2Bytes, useGLTFWithKTX2 } from '@/lib/three/use-gltf-ktx2';
 
 // ---------------------------------------------------------------------------
 // Terrain: Bikini Bottom GLB + sand floor + coral/kelp decorations
@@ -164,14 +165,14 @@ interface DecoEntry {
 // Small props (anchor, barrel, chest, lantern, tower2) already safe at their caps.
 const DECO_TYPES = [
   // Coral — moderate presence, capped at 15 to prevent 500+ wu wide clusters
-  { model: '/models/coral-reef1.glb', weight: 3, minScale: 4,   maxScale: 15  },
-  { model: '/models/coral-reef2.glb', weight: 3, minScale: 3,   maxScale: 13  },
-  { model: '/models/coral-reef3.glb', weight: 3, minScale: 3,   maxScale: 12  },
+  { model: '/models/coral-reef1-ktx.glb', weight: 3, minScale: 4,   maxScale: 15  },
+  { model: '/models/coral-reef2-ktx.glb', weight: 3, minScale: 3,   maxScale: 13  },
+  { model: '/models/coral-reef3-ktx.glb', weight: 3, minScale: 3,   maxScale: 12  },
   // Kelp — tall accent, capped at 15 (was 30; was producing 600+ wu wide blades)
   { model: '/models/kelp.glb',        weight: 3, minScale: 6,   maxScale: 15  },
   // Shells — clusters of tiny to medium (was maxScale 18-20, now 12)
-  { model: '/models/building-shell.glb',    weight: 5, minScale: 2,   maxScale: 12  },
-  { model: '/models/building-seashell.glb', weight: 5, minScale: 2,   maxScale: 12  },
+  { model: '/models/building-shell-ktx.glb',    weight: 5, minScale: 2,   maxScale: 12  },
+  { model: '/models/building-seashell-ktx.glb', weight: 5, minScale: 2,   maxScale: 12  },
   // Anchors — scattered singles, small to moderate
   { model: '/models/building-anchor.glb', weight: 4, minScale: 3,   maxScale: 14  },
   // Barrels — common ocean-floor clutter
@@ -179,9 +180,9 @@ const DECO_TYPES = [
   // Chests — treasure accents
   { model: '/models/building-chest.glb',  weight: 4, minScale: 3,   maxScale: 12  },
   // Lanterns — ambient glow props, small to medium
-  { model: '/models/building-lantern.glb', weight: 3, minScale: 4,  maxScale: 12  },
+  { model: '/models/building-lantern-ktx.glb', weight: 3, minScale: 4,  maxScale: 12  },
   // Crayfish — scattered critters, small
-  { model: '/models/crayfish.glb',         weight: 3, minScale: 3,  maxScale: 10  },
+  { model: '/models/crayfish-ktx.glb',         weight: 3, minScale: 3,  maxScale: 10  },
   // Tower2 — distinctive landmark towers, rare
   { model: '/models/building-tower2.glb',  weight: 2, minScale: 4,  maxScale: 14  },
   // Shipwrecks and submarines are placed as FIXED LANDMARKS below (not scattered)
@@ -383,17 +384,17 @@ function disposeClone(root: THREE.Object3D): void {
 
 // All 12 unique decoration model paths (must match DECO_TYPES exactly)
 const DECO_MODEL_PATHS = [
-  '/models/coral-reef1.glb',
-  '/models/coral-reef2.glb',
-  '/models/coral-reef3.glb',
+  '/models/coral-reef1-ktx.glb',
+  '/models/coral-reef2-ktx.glb',
+  '/models/coral-reef3-ktx.glb',
   '/models/kelp.glb',
-  '/models/building-shell.glb',
-  '/models/building-seashell.glb',
+  '/models/building-shell-ktx.glb',
+  '/models/building-seashell-ktx.glb',
   '/models/building-anchor.glb',
   '/models/building-barrel.glb',
   '/models/building-chest.glb',
-  '/models/building-lantern.glb',
-  '/models/crayfish.glb',
+  '/models/building-lantern-ktx.glb',
+  '/models/crayfish-ktx.glb',
   '/models/building-tower2.glb',
 ] as const;
 
@@ -426,18 +427,18 @@ interface MergedBucket {
 /** Inner component — loaded inside a Suspense; receives all 12 scenes via hooks. */
 function MergedDecorationsInner() {
   // Fixed-count hook calls — one per unique model path. Order is stable (constant array).
-  const { scene: s0  } = useGLTF(DECO_MODEL_PATHS[0]);
-  const { scene: s1  } = useGLTF(DECO_MODEL_PATHS[1]);
-  const { scene: s2  } = useGLTF(DECO_MODEL_PATHS[2]);
-  const { scene: s3  } = useGLTF(DECO_MODEL_PATHS[3]);
-  const { scene: s4  } = useGLTF(DECO_MODEL_PATHS[4]);
-  const { scene: s5  } = useGLTF(DECO_MODEL_PATHS[5]);
-  const { scene: s6  } = useGLTF(DECO_MODEL_PATHS[6]);
-  const { scene: s7  } = useGLTF(DECO_MODEL_PATHS[7]);
-  const { scene: s8  } = useGLTF(DECO_MODEL_PATHS[8]);
-  const { scene: s9  } = useGLTF(DECO_MODEL_PATHS[9]);
-  const { scene: s10 } = useGLTF(DECO_MODEL_PATHS[10]);
-  const { scene: s11 } = useGLTF(DECO_MODEL_PATHS[11]);
+  const { scene: s0  } = useGLTFWithKTX2(DECO_MODEL_PATHS[0]);
+  const { scene: s1  } = useGLTFWithKTX2(DECO_MODEL_PATHS[1]);
+  const { scene: s2  } = useGLTFWithKTX2(DECO_MODEL_PATHS[2]);
+  const { scene: s3  } = useGLTFWithKTX2(DECO_MODEL_PATHS[3]);
+  const { scene: s4  } = useGLTFWithKTX2(DECO_MODEL_PATHS[4]);
+  const { scene: s5  } = useGLTFWithKTX2(DECO_MODEL_PATHS[5]);
+  const { scene: s6  } = useGLTFWithKTX2(DECO_MODEL_PATHS[6]);
+  const { scene: s7  } = useGLTFWithKTX2(DECO_MODEL_PATHS[7]);
+  const { scene: s8  } = useGLTFWithKTX2(DECO_MODEL_PATHS[8]);
+  const { scene: s9  } = useGLTFWithKTX2(DECO_MODEL_PATHS[9]);
+  const { scene: s10 } = useGLTFWithKTX2(DECO_MODEL_PATHS[10]);
+  const { scene: s11 } = useGLTFWithKTX2(DECO_MODEL_PATHS[11]);
 
   // Build a lookup: model path → GLTF scene
   const sceneMap = useMemo<Map<string, THREE.Object3D>>(() => {
@@ -667,18 +668,10 @@ export function DeferredTerrainPreloads(): ReactElement | null {
   useEffect(() => {
     const raf = requestAnimationFrame(() => {
       // Scatter decoration models
-      useGLTF.preload('/models/coral-reef1.glb');
-      useGLTF.preload('/models/coral-reef2.glb');
-      useGLTF.preload('/models/coral-reef3.glb');
-      useGLTF.preload('/models/kelp.glb');
-      useGLTF.preload('/models/building-shell.glb');
-      useGLTF.preload('/models/building-seashell.glb');
-      useGLTF.preload('/models/building-anchor.glb');
-      useGLTF.preload('/models/building-barrel.glb');
-      useGLTF.preload('/models/building-chest.glb');
-      useGLTF.preload('/models/building-lantern.glb');
-      useGLTF.preload('/models/crayfish.glb');
-      useGLTF.preload('/models/building-tower2.glb');
+      for (const model of DECO_MODEL_PATHS) {
+        if (model.includes('-ktx.glb')) preloadKTX2Bytes(model);
+        else useGLTF.preload(model);
+      }
       // Note: building-lighthouse.glb is intentionally omitted here — arena-buildings.tsx
       // already preloads it via its module-scope loop over BUILDING_MODELS.
       // REMOVED 2026-04-16: preloads for building-shipwreck, building-submarine, and

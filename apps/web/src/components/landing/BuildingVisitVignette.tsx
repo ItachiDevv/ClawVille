@@ -35,6 +35,8 @@ import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { useGLTF } from '@react-three/drei';
 import * as THREE from 'three';
 import { useVisibleFrameloop } from '@/lib/use-visible-frameloop';
+import { KTX2LoaderSetup } from '@/lib/three/ktx2-loader-setup';
+import { preloadKTX2Bytes, useGLTFWithKTX2 } from '@/lib/three/use-gltf-ktx2';
 import {
   useVRMInstance,
   disposeVRMInstance,
@@ -50,7 +52,7 @@ import type { VRM } from '@pixiv/three-vrm';
 const VRM_PATH   = '/avatars/milady-official-3.vrm';
 const VRM_ID     = 'building-visit-vignette';
 const IDLE_PATH  = '/avatars/animations/idle.glb'; // Milady stands + breathes (no walk)
-const BLDG_PATH  = '/models/pineapple-house-opt1.glb?v=2';
+const BLDG_PATH  = '/models/pineapple-house-opt1-ktx.glb?v=2';
 const SB_PATH    = '/models/characters/spongebob.glb';
 const GARY_PATH  = '/models/characters/gary.glb';
 
@@ -216,7 +218,7 @@ function SandSeabed() {
 // Preloads — fire-and-forget at module eval time (client-only via dynamic import)
 // ---------------------------------------------------------------------------
 preloadVRMBytes(VRM_PATH);
-useGLTF.preload(BLDG_PATH);
+preloadKTX2Bytes(BLDG_PATH);
 useGLTF.preload(IDLE_PATH);
 useGLTF.preload(SB_PATH);
 useGLTF.preload(GARY_PATH);
@@ -260,7 +262,7 @@ function computeNormalizedScaleSimple(
 // Building — pineapple house with the boxy "Sand" base + decorations stripped.
 // ---------------------------------------------------------------------------
 const BuildingMesh = memo(function BuildingMesh() {
-  const { scene: src } = useGLTF(BLDG_PATH);
+  const { scene: src } = useGLTFWithKTX2(BLDG_PATH);
 
   const { group, scale, px, py, pz } = useMemo(() => {
     const g = src.clone(true);
@@ -615,6 +617,7 @@ export default function BuildingVisitVignette() {
         gl={{ antialias: false, powerPreference: 'high-performance' }}
         frameloop={frameloop}
       >
+        <KTX2LoaderSetup />
         <VignetteScene />
         <BubbleTimer onTick={setLoopT} />
       </Canvas>

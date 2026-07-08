@@ -135,7 +135,7 @@ export const cosmeticVariants = pgTable(
     /**
      * Path to the asset under apps/web/public/cosmetics/, OR for shaders/
      * textures, the registry key the cosmetic-loader maps to a runtime
-     * resource. e.g. 'cosmetics/hats/pirate/lobster.glb' or 'shader:aura-rainbow'.
+     * resource. e.g. 'cosmetics/hats/pirate/lobster-ktx.glb' or 'shader:aura-rainbow'.
      */
     assetUrl: text('asset_url').notNull(),
     /**

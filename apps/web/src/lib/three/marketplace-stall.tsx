@@ -3,7 +3,7 @@
 /**
  * MarketplaceStall — world-surface anchor for the Exchange modal.
  *
- * Asset: /models/shisha-oasis.glb (DAE bazaar — shisha oasis, user-supplied
+ * Asset: /models/shisha-oasis-ktx.glb (DAE bazaar — shisha oasis, user-supplied
  * 2026-05-21, optimised via gltf-transform resize 1024 + webp = 1.6 MB).
  * DO NOT re-optimise. Replaces the prior `marketplace-food-stall.glb` which
  * never thematically matched the Exchange modal it opens.
@@ -20,15 +20,15 @@
  */
 
 import { useMemo, useEffect, memo } from 'react';
-import { useGLTF } from '@react-three/drei';
 import * as THREE from 'three/webgpu';
 import { useGameStore } from '@/stores/game';
 import { groundedYOffset } from '@/lib/three/utils/ground-prop';
+import { preloadKTX2Bytes, useGLTFWithKTX2 } from '@/lib/three/use-gltf-ktx2';
 
 // ---------------------------------------------------------------------------
 // Preload at module scope so Suspense has the data ready before first render.
 // ---------------------------------------------------------------------------
-useGLTF.preload('/models/shisha-oasis.glb');
+preloadKTX2Bytes('/models/shisha-oasis-ktx.glb');
 
 // ---------------------------------------------------------------------------
 // World position (Y computed at runtime via groundedYOffset — same canonical
@@ -64,7 +64,7 @@ function computeScale(root: THREE.Group): number {
 // Inner component (wrapped in memo — position never changes)
 // ---------------------------------------------------------------------------
 const MarketplaceStallInner = memo(function MarketplaceStallInner() {
-  const { scene } = useGLTF('/models/shisha-oasis.glb');
+  const { scene } = useGLTFWithKTX2('/models/shisha-oasis-ktx.glb');
 
   // Clone so multiple mounts don't share mutable scene state.
   const cloned = useMemo(() => scene.clone(true), [scene]);

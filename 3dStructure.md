@@ -1,5 +1,7 @@
 # ClawVille — 3D Structure
 
+**Last edit:** 2026-07-07 (P1 texture-memory fix: world-geometry GLB baseColor/emissive textures converted to new sibling `*-ktx.glb` files with ETC1S/KHR_texture_basisu, leaving normal/metallicRoughness/occlusion slots uncompressed; source GLBs stay on disk as rollback. Runtime loaders that consume converted GLBs now attach `KTX2Loader` through `KTX2LoaderSetup`/`useGLTFWithKTX2` or explicit manual `GLTFLoader.setKTX2Loader`, and module-scope boot preloads for converted assets fetch bytes only until a Canvas renderer can detect support. `sw.js` cache version bumped to v9 for the new URLs.)
+
 > **Strict rule:** every code change that touches world dimensions, camera,
 > lighting, fog, GPU constraints, animation systems, terrain shaders,
 > asset-load pipeline, or activity-room rendering MUST update this doc in the

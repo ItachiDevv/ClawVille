@@ -10,7 +10,7 @@
  * No custom TSL materials. Old stepped-cylinder base, torus rim, and spotlight
  * cone were all removed — the dome is the whole visual.
  *
- * Inside the dome: floating jellyfish.glb (already preloaded) acts as the
+ * Inside the dome: floating jellyfish-ktx.glb (already preloaded) acts as the
  * "featured lot". It spins slowly on the Y axis and floats at 60% of dome
  * height (~228wu off the dome group origin).
  *
@@ -28,6 +28,7 @@
 import { useRef, useMemo, useEffect, memo, Suspense } from 'react';
 import { useFrame } from '@react-three/fiber';
 import { useGLTF } from '@react-three/drei';
+import { preloadKTX2Bytes, useGLTFWithKTX2 } from '@/lib/three/use-gltf-ktx2';
 import * as THREE from 'three/webgpu';
 import { useGameStore } from '@/stores/game';
 
@@ -35,7 +36,7 @@ import { useGameStore } from '@/stores/game';
 // Preloads at module scope
 // ---------------------------------------------------------------------------
 useGLTF.preload('/models/auction-dome.glb');
-useGLTF.preload('/models/jellyfish.glb');
+preloadKTX2Bytes('/models/jellyfish-ktx.glb');
 
 // ---------------------------------------------------------------------------
 // World position — unchanged from old podium
@@ -75,7 +76,7 @@ function computeScale(root: THREE.Group, targetHeight: number): number {
 // ---------------------------------------------------------------------------
 function FloatingJellyfish() {
   const floatRef = useRef<THREE.Group>(null!);
-  const { scene } = useGLTF('/models/jellyfish.glb');
+  const { scene } = useGLTFWithKTX2('/models/jellyfish-ktx.glb');
 
   const cloned = useMemo(() => {
     const c = scene.clone(true);

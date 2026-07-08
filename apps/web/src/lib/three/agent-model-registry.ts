@@ -67,15 +67,15 @@ export const MODEL_REGISTRY = {
   // All scales normalized to 10 so models fit cleanly in the picker's clear
   // zone above the config modal. Lobster was previously `scale: 14` which
   // pushed its mid-section behind the modal card.
-  lobster:       { path: '/models/lobster.glb',                    scale: 10, label: 'Reef Lobster',    category: 'openclaw', avatar_type: 'glb' },
-  sweet_crab:    { path: '/models/sweet_crab_sketchfabweekly.glb', scale: 10, label: 'Sweet Crab',      category: 'openclaw', avatar_type: 'glb' },
-  lobster_plush: { path: '/models/lobster_plush.glb',              scale: 10, label: 'Lobster Plush',   category: 'openclaw', avatar_type: 'glb' },
-  hermitcrab:    { path: '/models/hermitcrab.glb',                 scale: 10, label: 'Hermit Crab',     category: 'openclaw', avatar_type: 'glb' },
+  lobster:       { path: '/models/lobster-ktx.glb',                    scale: 10, label: 'Reef Lobster',    category: 'openclaw', avatar_type: 'glb' },
+  sweet_crab:    { path: '/models/sweet_crab_sketchfabweekly-ktx.glb', scale: 10, label: 'Sweet Crab',      category: 'openclaw', avatar_type: 'glb' },
+  lobster_plush: { path: '/models/lobster_plush-ktx.glb',              scale: 10, label: 'Lobster Plush',   category: 'openclaw', avatar_type: 'glb' },
+  hermitcrab:    { path: '/models/hermitcrab-ktx.glb',                 scale: 10, label: 'Hermit Crab',     category: 'openclaw', avatar_type: 'glb' },
 
   // ── Other (sea creatures) ─────────────────────────────────────────────────
-  jellyfish:     { path: '/models/jellyfish.glb',                  scale: 10, label: 'Jellyfish',       category: 'other',    avatar_type: 'glb', yOffset: 1.5 },
-  octopus:       { path: '/models/octopus_toy.glb',                scale: 10, label: 'Octopus',         category: 'other',    avatar_type: 'glb' },
-  seahorse:      { path: '/models/sea_horse.glb',                  scale: 8,  label: 'Sea Horse',       category: 'other',    avatar_type: 'glb' },
+  jellyfish:     { path: '/models/jellyfish-ktx.glb',                  scale: 10, label: 'Jellyfish',       category: 'other',    avatar_type: 'glb', yOffset: 1.5 },
+  octopus:       { path: '/models/octopus_toy-ktx.glb',                scale: 10, label: 'Octopus',         category: 'other',    avatar_type: 'glb' },
+  seahorse:      { path: '/models/sea_horse-ktx.glb',                  scale: 8,  label: 'Sea Horse',       category: 'other',    avatar_type: 'glb' },
 
   // ── Milady (VRM humanoid avatars) ─────────────────────────────────────────
   // VRM spec: human-scale models with feet at origin (Y=0 at ground plane).

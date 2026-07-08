@@ -178,8 +178,8 @@ export const FLAG_WAVE_FREQ = 3.0;
 // ─── Player kart ─────────────────────────────────────────────────────────────
 
 /**
- * Scale applied to sea_horse.glb clone.
- * sea_horse.glb native bbox.max.y needs verification at runtime;
+ * Scale applied to sea_horse-ktx.glb clone.
+ * sea_horse-ktx.glb native bbox.max.y needs verification at runtime;
  * if it differs significantly, computeKartScale() in ReefRacePlayer.tsx
  * corrects it. Default 20 targets ~40wu kart height.
  */
@@ -219,7 +219,7 @@ export const GLIDER_LENGTH = 5;
  *   BOB_AMP_LOCAL = 0.04 local = 0.8 wu — gentle float, never sinks below board
  *   Worst-case low  = (1.45 - 0.04) × 20 = 28.2 wu  (still 20.7 wu above board top)
  *
- * lobster.glb bbox: origin is not measured; assuming center-of-mass pivot.
+ * lobster-ktx.glb bbox: origin is not measured; assuming center-of-mass pivot.
  * The 21.5 wu static clearance above board top is sufficient for any origin
  * placement (feet, center, or head) at KART_SCALE=20.
  *
