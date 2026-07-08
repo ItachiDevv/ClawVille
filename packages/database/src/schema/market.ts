@@ -37,11 +37,20 @@
  *        state is never observable outside the transaction in v1]
  *   active ────────────────► cancelled            [POST /listings/:id/cancel,
  *        seller-only; the ONLY seller-driven exit]
- *   active ────────────────► expired              [RESERVED for a future
- *        expiry sweeper. v1 treats expiry as a PREDICATE: a listing with
- *        expires_at <= now() is hidden from browse and refused at
- *        quote/preflight/fulfiller, but the row is NOT flipped; it remains
- *        status='active' and therefore CANCELLABLE (which releases the lock).]
+ *   active ────────────────► expired              [the LISTING-EXPIRY SWEEPER
+ *        (`services/market-listing-expiry-sweeper.ts`, boot-wired, hourly, task
+ *        D 2026-07-08) flips an `active` listing whose expires_at <= now() to
+ *        the terminal `expired` state AND releases its `market_deed_locks` row —
+ *        so an abandoned expired listing can't hold its deed lock forever and
+ *        park land's rent-lapse eviction (the squatting hole once the land
+ *        deed-lock guard shipped). Expiry is ALSO still a PREDICATE at
+ *        read/quote/preflight/fulfiller (browse hides + settle refuses an
+ *        expired-but-not-yet-swept row), so nothing settles against it in the
+ *        window before the sweeper runs; while still `active` it also stays
+ *        seller-CANCELLABLE (which releases the lock immediately). The sweeper
+ *        locks in the fulfiller order (listing FOR UPDATE → advisory(seller) →
+ *        parcel FOR UPDATE) and touches ONLY `active` rows — never
+ *        pending_settlement/settled, whose locks the deed-transfer executor owns.]
  *
  *   settled / cancelled / expired are terminal. There is NO transition out of
  *   settled — a sold listing is never re-activated (relist = a NEW row).
