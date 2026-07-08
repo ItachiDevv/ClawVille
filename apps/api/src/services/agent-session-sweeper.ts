@@ -27,6 +27,7 @@ import { agentOrchestrator } from './agent-orchestrator';
 import { logEvent } from './event-logger';
 import { notifyHatcherSessionEnded } from './hatcher-session-webhook';
 import { npcSimulation } from './npc-simulation';
+import { agentAutonomyDriver } from './agent-autonomy-driver';
 
 const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000; // 24h
 
@@ -282,6 +283,18 @@ export async function sweepExpiredSessions(): Promise<number> {
       // (2) reconnected inside the sweep window — keep the fresh body.
       continue;
     }
+    // §B.1 TTL-zombie guard (2026-07-08): a §B.2 hosted-avatar session that hits
+    // its 24h TTL while still enrolled in the autonomy driver would leave a live
+    // driver entry perceiving/deciding against a now-dead session (its body is
+    // removed just below) — enrollment outliving its session, the SAME defect
+    // class as the logout leak. Unenroll the driver entry on genuine TTL expiry
+    // (this branch is reached ONLY after both reconnect guards pass). Keyed by
+    // agentId and a no-op for house / non-user agentIds (unregisterUserAgent only
+    // touches the userAgents map), so this is safe to call for every swept row.
+    // This is a TTL-EXPIRY teardown (an explicit end-of-life), NOT idle-despawn:
+    // body idle-despawn leaves the session live and MUST NOT unenroll (the agent
+    // re-bodies) — that path never reaches here.
+    agentAutonomyDriver.unregisterUserAgent(row.agentId);
     try {
       for (const sid of snapshotSids) {
         npcSimulation.unregisterAgentBot(sid);

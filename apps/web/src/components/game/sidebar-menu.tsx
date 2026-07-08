@@ -797,8 +797,17 @@ function SidebarContent({ closeMenu }: SidebarContentProps) {
       const { useAutonomyStore } = require('@/stores/autonomy') as typeof import('@/stores/autonomy');
       useAutonomyStore.getState().stopAutonomy();
 
-      await api.logout();
+      // §B.1 money-path belt (2026-07-08): resetStore() fires the Autonomous
+      // server-deactivate POST (leaveAutonomousServerCleanup). Run it BEFORE
+      // api.logout() so that POST goes out with a STILL-VALID cookie instead of
+      // 401ing after the session is invalidated. Belt only — the POST is
+      // fire-and-forget so it still races the cookie invalidation; the
+      // AUTHORITATIVE guard is the server-side unenroll in POST /logout
+      // (cookie-independent). Tradeoff: resetStore runs even if api.logout()
+      // network-fails — acceptable (the client is already deactivated + the
+      // server route is the real guarantee).
       resetStore();
+      await api.logout();
       // Auth-state-reconciliation fix (2026-06-19). resetStore() only resets the
       // GAME Zustand slice — the SHARED SPA QueryClient still holds the logged-out
       // user's ['auth-me'] / ['avatar'] / ['agent-session'] (+ everything else),
