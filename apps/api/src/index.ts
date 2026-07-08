@@ -809,6 +809,22 @@ process.on('uncaughtException', (err) => {
     console.error('[API] Land rent sweeper failed to start:', err);
   }
 
+  // 2026-07-08 — start the MARKETPLACE LISTING-EXPIRY sweeper (Tokenomics C4
+  // follow-up). Runs hourly, flips expired `active` land_deed listings to the
+  // terminal `expired` state and RELEASES their `market_deed_locks` row, so an
+  // abandoned expired listing can't hold its deed lock forever and park land's
+  // rent-lapse eviction (the squatting hole once the land deed-lock guard
+  // shipped). NOT a money path — no CT/CLV/USDC; safe to run live. See
+  // `services/market-listing-expiry-sweeper.ts`.
+  try {
+    const { startMarketListingExpirySweeper } = await import(
+      './services/market-listing-expiry-sweeper'
+    );
+    startMarketListingExpirySweeper();
+  } catch (err) {
+    console.error('[API] Market listing-expiry sweeper failed to start:', err);
+  }
+
   // Q2 Activity Portals — recover orphaned LIVE/COUNTDOWN rooms (pod
   // crash recovery per backend §12.1), hydrate persisted queue entries,
   // then start the room sweeper + matchmaker intervals. Order matters:
@@ -1353,6 +1369,14 @@ async function gracefulShutdown(signal: string) {
     try {
       const { stopLandRentSweeper } = await import('./services/land-rent-sweeper');
       stopLandRentSweeper();
+    } catch {
+      // If the sweeper module failed to load earlier, there's nothing to stop.
+    }
+    try {
+      const { stopMarketListingExpirySweeper } = await import(
+        './services/market-listing-expiry-sweeper'
+      );
+      stopMarketListingExpirySweeper();
     } catch {
       // If the sweeper module failed to load earlier, there's nothing to stop.
     }
