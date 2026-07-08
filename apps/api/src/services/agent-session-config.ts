@@ -746,9 +746,10 @@ export function buildAvatarSessionConfig(
     // the row's gatewayUrl. Dummy default matches the mint paths verbatim.
     gatewayUrl: inputs.gatewayUrl ?? 'http://localhost:0',
     authToken: inputs.authToken ?? '',
-    // Narrow-cast: 'hermes-local' is the server-internal widening (see
-    // InWorldWireProtocol) — the shared registration type stays on the
-    // partner-protected AgentWireProtocol union; AgentSubstrateClient re-widens on read.
+    // Narrow-cast: 'hermes-local' / 'openclaw-local' are the server-internal
+    // widenings (see InWorldWireProtocol) — the shared registration type stays on
+    // the partner-protected AgentWireProtocol union; AgentSubstrateClient re-widens
+    // on read.
     protocol: protocol as AgentWireProtocol,
     mode: 'avatar',
     autonomyMode: resolveAutonomyMode(
@@ -784,7 +785,8 @@ export function buildOverrideSessionConfig(
     sessionKey: inputs.sessionId,
     gatewayUrl: inputs.gatewayUrl ?? 'http://localhost:0',
     authToken: inputs.authToken ?? '',
-    // Narrow-cast: same server-internal widening note as the avatar builder.
+    // Narrow-cast: same server-internal widening note as the avatar builder
+    // ('hermes-local' / 'openclaw-local').
     protocol: protocol as AgentWireProtocol,
     mode: 'override',
     autonomyMode: resolveAutonomyMode(

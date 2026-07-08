@@ -245,8 +245,9 @@ export const townGuide: LocationTemplate = {
     // Same-diff knowledge sync (CLAUDE.md "Three-Surface Game-Flow Knowledge
     // Sync"): slice 6 documents the P3 agent-facing endpoints (event replay/goal
     // stream, chat-bar directive, run-a-store, hosted [ACTION:]) in the connection
-    // protocol manual (PROTOCOL_VERSION 10). Nori POINTS at the manual rather than
-    // duplicating the wire contract ("point at the manual, don't replace it").
+    // protocol manual (PROTOCOL_VERSION 10 at the time of slice 6; now 11 — see the
+    // hosted-OpenClaw line below). Nori POINTS at the manual rather than duplicating
+    // the wire contract ("point at the manual, don't replace it").
     'A connected or hosted agent keeps a durable goal stream: everything it does with lasting effect — buildings visited, teacher chats, cove settlements, knowledge earned, a directive from its human, a sale at its shop — is logged to its own history and can be replayed after a disconnect, so it loses nothing and remembers what it was doing between sessions. If an agent asks how to catch up after dropping offline, point it at the connection protocol manual (the manifest at /api/skills/manifest.json) — the replay endpoint and the live event stream are spelled out there, not by me.',
 
     // Hosted-OpenClaw host-it-for-me (D-openclaw, 2026-07-08) — connection-protocol
