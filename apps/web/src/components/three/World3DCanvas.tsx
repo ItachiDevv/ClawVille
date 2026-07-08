@@ -510,7 +510,7 @@ function FPSFollowCamera({
     const controls = controlsRef.current;
     if (!controls) return;
 
-    const { controlMode, possessedNpcId } = useGameStore.getState();
+    const { controlMode, possessedNpcId, autonomousBodyId } = useGameStore.getState();
 
     // One-shot camera focus SNAP (town-fast-travel warp re-anchor, 2026-06-19).
     // The WarpOverlay teleports avatarPositionRef at its flash midpoint and then
@@ -557,8 +557,23 @@ function FPSFollowCamera({
       if (!npc) return;
       gameX = npc.x;
       gameY = npc.y;
+    } else if (controlMode === 'autonomous') {
+      // §B.1b — Autonomous: PlayerAvatar is unmounted (see the render gate
+      // below), so avatarPositionRef is FROZEN at whatever it last held before
+      // the mode flip. Follow the server-streamed `ocb-` agent body instead —
+      // it lands in the SAME npc.ts entity-interpolation array as any other
+      // agent bot (npc-simulation.ts registerAgentBot), so this is the same
+      // lookup-by-id pattern as the NPC-possession branch above. Hold position
+      // (no-op this frame) until the id is confirmed and/or has streamed in —
+      // avoids snapping the camera to the map origin during the brief window
+      // between the toggle and the activation response / first SSE tick.
+      if (!autonomousBodyId) return;
+      const body = useNpcStore.getState().npcs.find((n) => n.id === autonomousBodyId);
+      if (!body) return;
+      gameX = body.x;
+      gameY = body.y;
     } else {
-      // 'player' or 'autonomous' — follow player avatar
+      // 'player' — follow the locally-driven avatar
       gameX = avatarPositionRef.x;
       gameY = avatarPositionRef.y;
     }
@@ -859,7 +874,17 @@ function MinimapPositionTracker() {
     if (mode === 'npc' && store.possessedNpcId) {
       const npc = useNpcStore.getState().npcs.find((n) => n.id === store.possessedNpcId);
       if (npc) { mapX = npc.x; mapY = npc.y; }
-    } else if (mode === 'player' || mode === 'autonomous') {
+    } else if (mode === 'autonomous') {
+      // §B.1b — PlayerAvatar is unmounted in Autonomous, so nothing writes
+      // avatarPositionRef anymore; source the minimap blip from the streamed
+      // `ocb-` body the same way FPSFollowCamera does, or leave the blip at
+      // its last position if the body id isn't confirmed/streamed in yet.
+      if (store.autonomousBodyId) {
+        const body = useNpcStore.getState().npcs.find((n) => n.id === store.autonomousBodyId);
+        if (body) { mapX = body.x; mapY = body.y; }
+      }
+      if (mapX == null || mapY == null) return;
+    } else if (mode === 'player') {
       // Keep whatever player-avatar wrote; don't overwrite from camera (camera can
       // be far from the avatar while orbiting). Only avatar mesh position is authoritative.
       return;
@@ -891,6 +916,7 @@ function PreCompilePipelines() {
     // scale issues without an extra deploy cycle. Safe — no runtime cost.
     if (typeof window !== 'undefined') {
       (window as any).__R3F = { scene, camera, gl };
+      (window as any).__CV_STORES__ = { useGameStore, useNpcStore };
     }
     const raf = requestAnimationFrame(() => {
       if (typeof (gl as any).compileAsync === 'function') {
@@ -1391,8 +1417,11 @@ const SceneContents = memo(function SceneContents({
 
       {/* Camera controller routing based on controlMode:
             explore           → WASDCameraController (free cam, WASD pans world)
-            player            → FPSFollowCamera (follows player avatar)
-            autonomous        → FPSFollowCamera (follows player avatar)
+            player            → FPSFollowCamera (follows the local PlayerAvatar)
+            autonomous        → FPSFollowCamera (follows the streamed `ocb-`
+                                 agent body by autonomousBodyId — §B.1b; the
+                                 local PlayerAvatar is unmounted in this mode,
+                                 see the player-avatar render gate below)
             npc               → FPSFollowCamera (follows possessed NPC)
           Arrow key rotation is always active in all modes. */}
       {!useFollowCam ? (
@@ -1620,12 +1649,26 @@ const SceneContents = memo(function SceneContents({
         </group>
       )}
 
-      {/* Click-to-move — only in modes where the user drives a character */}
-      {isGame && !staticOnly && (controlMode === 'player' || controlMode === 'autonomous') && <ClickToMove />}
+      {/* Click-to-move — path-dot visuals for a programmatic warp/fast-travel
+          (see click-to-move.tsx header). warpTo() is gated to controlMode
+          === 'player' only, so this stays player-only too — mounting it in
+          Autonomous would render dead space for a warp that can never fire. */}
+      {isGame && !staticOnly && controlMode === 'player' && <ClickToMove />}
 
-      {/* Player avatar lobster — only renders when an agent is connected (player/autonomous).
-          Explore = floating spectator (no character), NPC = user controls a spawned NPC. */}
-      {isGame && !staticOnly && (controlMode === 'player' || controlMode === 'autonomous') && (
+      {/* Player avatar lobster — the LOCALLY-DRIVEN body. Renders ONLY in
+          'player' (Controlled): the human is driving it directly, camera
+          follows it (FPSFollowCamera above).
+          §B.1b (double-body fix, 2026-07-08): Autonomous does NOT mount this
+          — the visible body there is the server-streamed `ocb-` agent bot
+          (npc-simulation.ts registerAgentBot → npc.ts autonomousBodyId roster,
+          rendered by ArenaNpcs like any other agent bot), which the
+          FPSFollowCamera/MinimapPositionTracker branches above now follow
+          instead of avatarPositionRef. Mounting PlayerAvatar in BOTH modes was
+          the bug: the human's local avatar rendered at its frozen last
+          position WHILE the streamed agent body also rendered nearby — two
+          visible copies of the same character. Explore = floating spectator
+          (no character), NPC = user controls a spawned NPC. */}
+      {isGame && !staticOnly && controlMode === 'player' && (
         <group name="perf:player-avatar" userData={{ perfChunk: 'player-avatar' }}>
           <PlayerAvatar />
         </group>

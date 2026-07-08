@@ -35,6 +35,10 @@ import {
   validateLiveAgentSession,
 } from '../middleware/require-auth-or-agent';
 import { npcSimulation } from '../services/npc-simulation';
+import {
+  activateAutonomyForOwner,
+  deactivateAutonomyForOwner,
+} from '../services/agent-autonomy-activation';
 import { roomRegistry, ROOM_MAX_PLAYERS, PresenceSupersededError } from '../services/room-registry';
 import { signRoomTicket, resolveRecoveryRoomId } from '../services/room-ticket';
 import { createRateLimiter, getClientIp } from '../middleware/rate-limit';
@@ -290,6 +294,22 @@ const positionSchema = z.object({
   activity: z.string().max(32).default('idle'),
 });
 
+// §B.1 — Autonomous-mode toggle. ONE idempotent endpoint: `active:true` enrolls
+// the owner's hosted avatar-agent in the autonomy driver (safe to re-call as a
+// keepalive re-arm after an API restart), `active:false` hands back to
+// Controlled. The body carries ONLY the boolean — the agent identity is derived
+// SERVER-SIDE from the Lucia user's active avatar, never accepted from the
+// client (one user must not be able to force-enroll / force-spend another's
+// agent).
+const autonomySchema = z.object({ active: z.boolean() });
+
+// 10/min/IP: a toggle + keepalive surface, not a hot path. Per-IP (not
+// per-user) so an unauthenticated spray is bounded before any DB work.
+const autonomyRateLimiter = createRateLimiter({
+  maxPerWindow: 10,
+  windowMs: 60_000,
+});
+
 // ---------------------------------------------------------------------------
 // Routes
 // ---------------------------------------------------------------------------
@@ -430,6 +450,81 @@ worldRoutes.post('/position', async (c) => {
     npcSimulation.refreshHumanControlledOpenClawForUser(presence.userId);
   }
   return c.json({ ok: true });
+});
+
+/**
+ * POST /api/world/autonomy — §B.1 Autonomous-mode toggle for the LOGGED-IN
+ * owner's hosted avatar-agent.
+ *
+ * Request:  { active: boolean }
+ * Auth:     Lucia cookie ONLY (agents don't toggle their own autonomy; guests
+ *           are demo-economy and rejected).
+ * Responses:
+ *   200 { ok:true, enrolled:true,  reused:boolean, bodyId:string }  (activated)
+ *   200 { ok:true, enrolled:false }                                  (deactivated)
+ *   400 invalid body
+ *   401 { code:'auth_required' }      not logged in
+ *   403 { code:'guest_forbidden' }    guest account (demo economy)
+ *   409 { code:'no_avatar' | 'no_agent' | 'not_eligible' }
+ *   429 { code:'autonomy_capacity' }  user-agent registry full (typed, never a
+ *                                     silent drop) / { code:'rate_limited' }
+ *
+ * SECURITY: the response NEVER carries the agent bearer (server-side only) —
+ * `bodyId` is the deterministic non-secret in-world body id already broadcast
+ * in every public snapshot. Clients branch on `code`, never on message text.
+ */
+worldRoutes.post('/autonomy', async (c) => {
+  const ip = getClientIp(c.req.raw.headers);
+  if (!autonomyRateLimiter.check(ip)) {
+    return c.json(
+      { error: 'Too many autonomy toggles — try again in a minute', code: 'rate_limited' },
+      429,
+    );
+  }
+  const user = c.get('user');
+  if (!user) {
+    return c.json({ error: 'Login required to toggle agent autonomy', code: 'auth_required' }, 401);
+  }
+  const body = (await c.req.json().catch(() => ({}))) as unknown;
+  const parsed = autonomySchema.safeParse(body);
+  if (!parsed.success) {
+    throw new HTTPException(400, { message: parsed.error.message });
+  }
+
+  if (!parsed.data.active) {
+    await deactivateAutonomyForOwner(user.id);
+    return c.json({ ok: true, enrolled: false });
+  }
+
+  const result = await activateAutonomyForOwner(user.id);
+  if (!result.ok) {
+    switch (result.code) {
+      case 'autonomy_capacity':
+        return c.json(
+          {
+            error: 'Autonomous-agent capacity is full right now — try again later',
+            code: result.code,
+          },
+          429,
+        );
+      case 'guest_forbidden':
+        return c.json(
+          {
+            error: 'Guests run a demo economy — create a free account to go autonomous',
+            code: result.code,
+          },
+          403,
+        );
+      default:
+        // no_avatar / no_agent / not_eligible — the account isn't in a state
+        // that can go autonomous (409: conflict with current resource state).
+        return c.json(
+          { error: 'This account has no eligible agent to run autonomously', code: result.code },
+          409,
+        );
+    }
+  }
+  return c.json({ ok: true, enrolled: true, reused: result.reused, bodyId: result.bodyId });
 });
 
 worldRoutes.get('/:roomId/stream', async (c) => {
