@@ -585,4 +585,30 @@ describe('(9) durable enrollment flag lifecycle', () => {
     }
     expect(order).toEqual(['flag-clear', 'unregister']);
   });
+
+  it('RETRIES a transient flag-clear failure then persists (money-safe, not a silent swallow)', async () => {
+    await activateAutonomyForOwner(OWNER);
+    let calls = 0;
+    activationSeams.clearEnrolledFlagForOwner = async () => {
+      calls++;
+      if (calls < 2) throw new Error('transient DB blip');
+    };
+    await deactivateAutonomyForOwner(OWNER);
+    expect(calls).toBe(2); // failed once, succeeded on retry — flag IS cleared
+    expect(agentAutonomyDriver.isOwnerEnrolled(OWNER)).toBe(false);
+  });
+
+  it('exhausts retries on a persistent clear failure but STILL tears down in-memory (loud CRITICAL, never re-enroll-silently)', async () => {
+    await activateAutonomyForOwner(OWNER);
+    let calls = 0;
+    activationSeams.clearEnrolledFlagForOwner = async () => {
+      calls++;
+      throw new Error('persistent DB failure');
+    };
+    await deactivateAutonomyForOwner(OWNER); // must NOT throw
+    expect(calls).toBe(3); // CLEAR_FLAG_MAX_ATTEMPTS — bounded, loud on exhaustion
+    // Driving still stops NOW; the CRITICAL log + the 24h TTL sweep clear are the
+    // durable-flag backstops if the row genuinely can't be written.
+    expect(agentAutonomyDriver.isOwnerEnrolled(OWNER)).toBe(false);
+  });
 });

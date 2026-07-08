@@ -58,6 +58,42 @@ import { sessionDigest } from './session-digest';
  *  Mirrors the D3 heartbeat mark TTL in routes/avatars.ts. */
 const HANDBACK_SUPPRESSION_TTL_MS = 15_000;
 
+/** MONEY-CRITICAL: the durable flag CLEAR on teardown must reliably persist — a
+ *  stale `autonomy_enrolled=true` is resurrected by the reconcile (and a
+ *  re-enrolled agent slides its TTL, so it never self-heals). A single UPDATE can
+ *  blip transiently, so retry a few times; only on total exhaustion do we log
+ *  CRITICAL (observable, never silent). */
+const CLEAR_FLAG_MAX_ATTEMPTS = 3;
+const CLEAR_FLAG_RETRY_DELAY_MS = 100;
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+/**
+ * Clear the durable enrollment flag for an owner AUTHORITATIVELY — retry on
+ * transient failure, and on exhaustion log CRITICAL (so a stale flag that the
+ * reconcile could resurrect is loudly observable + operable, not a silent money
+ * leak). Returns true iff the clear is confirmed persisted. The SET path stays
+ * best-effort by contract (a failed set only loses restart-survival — never
+ * resurrects — so it does NOT get this treatment).
+ */
+async function clearEnrolledFlagAuthoritatively(ownerUserId: string): Promise<boolean> {
+  for (let attempt = 1; attempt <= CLEAR_FLAG_MAX_ATTEMPTS; attempt++) {
+    try {
+      await activationSeams.clearEnrolledFlagForOwner(ownerUserId);
+      return true;
+    } catch (err) {
+      if (attempt >= CLEAR_FLAG_MAX_ATTEMPTS) {
+        console.error(
+          `[AutonomyActivation] CRITICAL: could not clear autonomy_enrolled for owner ${sessionDigest(ownerUserId)} after ${attempt} attempts — the reconcile may RE-ENROLL a deactivated/logged-out user until this row clears (a later teardown or the 24h TTL sweep will heal it):`,
+          err instanceof Error ? err.message : err,
+        );
+        return false;
+      }
+      await sleep(CLEAR_FLAG_RETRY_DELAY_MS);
+    }
+  }
+  return false;
+}
+
 export type ActivationFailureCode =
   | 'no_avatar'
   | 'guest_forbidden'
@@ -201,17 +237,15 @@ export async function activateAutonomyForOwner(
  */
 export async function deactivateAutonomyForOwner(ownerUserId: string): Promise<void> {
   // Clear the DURABLE intent FIRST + by userId (authoritative, cookie/registry
-  // independent). Ordering is money-safe: if we crash after this, the reconcile
-  // can NEVER re-enroll a user who deactivated/logged out (flag already false);
-  // the in-memory entry that may linger this process is wiped on the next
-  // restart. Clearing by userId (not the enrolled agentId) means logout still
-  // tears down the intent even when the in-memory entry is absent (e.g. a logout
-  // right after a restart, before the reconcile re-enrolled). Non-fatal.
-  try {
-    await activationSeams.clearEnrolledFlagForOwner(ownerUserId);
-  } catch (err) {
-    console.warn('[AutonomyActivation] clear enrolled flag failed (non-fatal):', err);
-  }
+  // independent). Ordering is money-safe: a crash AFTER this can never re-enroll
+  // a user who deactivated/logged out (flag already false); the in-memory entry
+  // that may linger this process is wiped on the next restart. Clearing by userId
+  // (not the enrolled agentId) means logout still tears down the intent even when
+  // the in-memory entry is absent (e.g. a logout right after a restart, before
+  // the reconcile re-enrolled). MONEY-CRITICAL: this is RELIABLE (retry + CRITICAL
+  // log on exhaustion) — NOT a silent non-fatal swallow — because a stale flag is
+  // resurrected by the reconcile (Codex fa2d0201 finding).
+  await clearEnrolledFlagAuthoritatively(ownerUserId);
 
   const agentId = agentAutonomyDriver.getEnrolledAgentForOwner(ownerUserId);
   if (!agentId) return; // not in-memory-enrolled — durable flag already cleared
