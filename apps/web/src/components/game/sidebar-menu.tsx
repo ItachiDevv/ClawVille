@@ -77,6 +77,7 @@ import { api } from '@/lib/api';
 
 function CharacterFrame({ onCreateAvatar }: { onCreateAvatar: () => void }) {
   const { data: avatar, isLoading } = useAvatar();
+  const openWalletLink = useGameStore((s: GameState) => s.openWalletLink);
 
   if (isLoading) {
     return (
@@ -243,6 +244,53 @@ function CharacterFrame({ onCreateAvatar }: { onCreateAvatar: () => void }) {
           {tokens.toLocaleString()}
         </span>
       </div>
+
+      {/* Wallet entry — opens the wallet-visibility modal (custodial deposit
+          address + linked self-custody wallet). This is the mobile-accessible
+          entry point (the desktop-only avatar-status-bar has its own chip).
+          Only for real accounts with a provisioned custodial wallet. */}
+      {(avatar as { walletAddress?: string | null }).walletAddress && (
+        <button
+          type="button"
+          onClick={openWalletLink}
+          title="View your wallet"
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 8,
+            padding: '6px 10px',
+            borderRadius: 6,
+            background: 'rgba(10, 22, 40, 0.65)',
+            border: '1px solid rgba(56, 189, 248, 0.25)',
+            cursor: 'pointer',
+            width: '100%',
+          }}
+        >
+          <span
+            style={{
+              fontSize: 9,
+              letterSpacing: '0.16em',
+              textTransform: 'uppercase',
+              color: 'rgba(56, 189, 248, 0.7)',
+              fontWeight: 700,
+            }}
+          >
+            👛 Wallet
+          </span>
+          <span
+            style={{
+              fontFamily: 'var(--font-orbitron, ui-sans-serif), sans-serif',
+              fontSize: 11,
+              fontWeight: 700,
+              letterSpacing: '0.06em',
+              color: '#38bdf8',
+            }}
+          >
+            View
+          </span>
+        </button>
+      )}
 
       {/* Multiplayer Phase 1 — room code chip + invite-friends button. Renders
           beneath the ClawTokens strip so it sits in the same per-player metadata
