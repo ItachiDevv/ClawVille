@@ -198,6 +198,17 @@ function getIdentityAdapter(identityType: string): IdentityAdapter {
 export const HERMES_LOCAL_GATEWAY_URL = 'http://localhost:8642';
 
 /**
+ * Optional bearer for the local Hermes runtime (2026-07-08, real-runtime
+ * deploy). Hermes ≥0.12 REFUSES to start its OpenAI-compat API server without
+ * an API_SERVER_KEY, even on loopback — so the real hosted runtime demands a
+ * key the D7 "bare POST" contract didn't carry. Read ONCE at module load like
+ * the gate above. Unset ⇒ no Authorization header is sent (the mock-hermes
+ * harness contract is unchanged). This is a same-box shared secret, not a
+ * user credential: it never leaves localhost and is never logged.
+ */
+export const HERMES_LOCAL_GATEWAY_KEY = process.env.HERMES_LOCAL_GATEWAY_KEY ?? '';
+
+/**
  * Boot-time gate for the 'hermes-local' upgrade. Read ONCE at module load (the
  * documented single env read of this module — matches how the deploy sets env
  * per-box); tests exercise both states via the explicit parameter on

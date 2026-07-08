@@ -5,7 +5,11 @@ import type {
 import { signPayload } from './service-issuer';
 import { validateHatcherProxyUrlResolved, validateOutboundUrlResolved } from './hatcher-config';
 import { PROTOCOL_VERSION } from './skill-protocol';
-import { HERMES_LOCAL_GATEWAY_URL, type InWorldWireProtocol } from './agent-session-config';
+import {
+  HERMES_LOCAL_GATEWAY_URL,
+  HERMES_LOCAL_GATEWAY_KEY,
+  type InWorldWireProtocol,
+} from './agent-session-config';
 
 // The IN-WORLD protocol union — the shared AgentWireProtocol widened by the
 // server-internal 'hermes-local' (D7 host-it-for-me Hermes; derivation +
@@ -344,8 +348,10 @@ export class AgentSubstrateClient {
    * This target is a compile-time SERVER-SIDE constant that no caller input or
    * bot-row column can influence, so the localhost-rejecting guard would only
    * veto the one address the feature is FOR. The general guard on every
-   * caller-supplied gatewayUrl is untouched. No auth header either — nothing
-   * secret to send, and the runtime is same-box only.
+   * caller-supplied gatewayUrl is untouched. Auth: a same-box shared secret
+   * (`HERMES_LOCAL_GATEWAY_KEY`) is carried as a Bearer when configured —
+   * hermes ≥0.12 refuses to serve its API without one, even on loopback;
+   * unset ⇒ bare POST (mock-hermes harness contract).
    *
    * FAIL SOFT like the nanoclaw stub: ANY error (runtime not running /
    * ECONNREFUSED, timeout, non-2xx, redirect, malformed JSON) returns '' — an
@@ -366,6 +372,12 @@ export class AgentSubstrateClient {
         redirect: 'manual',
         headers: {
           'Content-Type': 'application/json',
+          // Hermes ≥0.12 requires API_SERVER_KEY even on loopback; carry the
+          // same-box shared secret when configured. Unset ⇒ bare POST (the
+          // mock-hermes harness contract, unchanged).
+          ...(HERMES_LOCAL_GATEWAY_KEY
+            ? { Authorization: `Bearer ${HERMES_LOCAL_GATEWAY_KEY}` }
+            : {}),
         },
         body: JSON.stringify({
           // Fixed model name per the hermes OpenAI-compat contract — NOT
