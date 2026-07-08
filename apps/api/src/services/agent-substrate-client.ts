@@ -9,12 +9,16 @@ import {
   HERMES_LOCAL_GATEWAY_URL,
   HERMES_LOCAL_GATEWAY_KEY,
   HERMES_LOCAL_TIMEOUT_MS,
+  OPENCLAW_LOCAL_GATEWAY_URL,
+  OPENCLAW_LOCAL_GATEWAY_KEY,
+  OPENCLAW_LOCAL_TIMEOUT_MS,
   type InWorldWireProtocol,
 } from './agent-session-config';
 
 // The IN-WORLD protocol union — the shared AgentWireProtocol widened by the
-// server-internal 'hermes-local' (D7 host-it-for-me Hermes; derivation +
-// rationale in agent-session-config.ts).
+// server-internal 'hermes-local' (D7 host-it-for-me Hermes) and 'openclaw-local'
+// (D-openclaw host-it-for-me OpenClaw; derivation + rationale in
+// agent-session-config.ts).
 type Protocol = InWorldWireProtocol;
 
 /**
@@ -135,6 +139,8 @@ export class AgentSubstrateClient {
         return '';
       case 'hermes-local':
         return this.chatHermesLocal(messages);
+      case 'openclaw-local':
+        return this.chatOpenclawLocal(messages);
       case 'hatcher-proxy':
         return this.chatHatcherProxy(messages);
       case 'anthropic':
@@ -426,6 +432,98 @@ export class AgentSubstrateClient {
     }
   }
 
+  /**
+   * D-openclaw host-it-for-me OpenClaw cognition (shared-inference onboarding,
+   * 2026-07-08) — the exact mirror of `chatHermesLocal`. POSTs an OpenAI-compat
+   * chat-completions body ({model:'openclaw', messages}) to the HARDCODED local
+   * OpenClaw runtime (`OPENCLAW_LOCAL_GATEWAY_URL`, localhost:8643). Reached ONLY
+   * when `resolveInWorldProtocol` derived 'openclaw-local' — i.e. a GATEWAY-LESS
+   * 'openclaw' identity with the env gate on.
+   *
+   * NO SSRF CHECK, ON PURPOSE (identical to chatHermesLocal):
+   * `validateOutboundUrlResolved` exists to stop a CALLER-SUPPLIED URL from aiming
+   * our POSTs at localhost/RFC1918/metadata. This target is a compile-time
+   * SERVER-SIDE constant that no caller input or bot-row column can influence, so
+   * the localhost-rejecting guard would only veto the one address the feature is
+   * FOR. The general guard on every caller-supplied gatewayUrl is untouched.
+   * Auth: a same-box shared secret (`OPENCLAW_LOCAL_GATEWAY_KEY`) is carried as a
+   * Bearer when configured — the real OpenClaw gateway (like hermes ≥0.12) can
+   * refuse to serve its API without one, even on loopback; unset ⇒ bare POST
+   * (mock-openclaw harness contract).
+   *
+   * FAIL SOFT like the nanoclaw stub: ANY error (runtime not running /
+   * ECONNREFUSED, timeout, non-2xx, redirect, malformed JSON) returns '' — an
+   * unreachable local runtime must never crash or stall the shared sim; the body
+   * just doesn't speak this turn.
+   */
+  private async chatOpenclawLocal(messages: ChatMessage[]): Promise<string> {
+    const controller = new AbortController();
+    // Leash sized for the REAL hosted agent loop (OPENCLAW_LOCAL_TIMEOUT_MS,
+    // default 10s, clamp [1s,30s]) — a hung local runtime must not pin the sim's
+    // conversation tick, but a hosted OpenClaw loop on a local model is no faster
+    // than the real Hermes loop (7.3s idle on qwen3.6:27b), so the leash is
+    // env-tunable where 10s is too tight. Mirrors HERMES_LOCAL_TIMEOUT_MS.
+    const timeout = setTimeout(() => controller.abort(), OPENCLAW_LOCAL_TIMEOUT_MS);
+    try {
+      const res = await fetch(`${OPENCLAW_LOCAL_GATEWAY_URL}/v1/chat/completions`, {
+        method: 'POST',
+        // Consistency with every other outbound chat path: never follow a
+        // redirect, even from our own localhost constant — a 3xx here is a
+        // misbehaving runtime, not a routing instruction.
+        redirect: 'manual',
+        headers: {
+          'Content-Type': 'application/json',
+          // The real OpenClaw gateway may require an API key even on loopback;
+          // carry the same-box shared secret when configured. Unset ⇒ bare POST
+          // (the mock-openclaw harness contract, unchanged). Mirrors chatHermesLocal.
+          ...(OPENCLAW_LOCAL_GATEWAY_KEY
+            ? { Authorization: `Bearer ${OPENCLAW_LOCAL_GATEWAY_KEY}` }
+            : {}),
+        },
+        body: JSON.stringify({
+          // Fixed model name per the OpenClaw OpenAI-compat contract — NOT
+          // this.model (which is the `openclaw:<agentId>` gateway default).
+          model: 'openclaw',
+          messages,
+          max_tokens: this.maxTokens,
+          temperature: 0.8,
+        }),
+        signal: controller.signal,
+      });
+
+      if (res.type === 'opaqueredirect' || (res.status >= 300 && res.status < 400)) {
+        console.error(
+          `[OpenClaw-local] local runtime attempted redirect (status ${res.status}) for agent ${this.agentId} — refusing to follow, failing soft`,
+        );
+        return '';
+      }
+
+      if (!res.ok) {
+        // Status only — never the body (keeps log hygiene uniform with the other
+        // cognition paths even though this one carries no bearer).
+        console.error(
+          `[OpenClaw-local] local runtime returned ${res.status} for agent ${this.agentId} — failing soft`,
+        );
+        return '';
+      }
+
+      const data = (await res.json()) as ChatCompletionResponse;
+      const content = data.choices?.[0]?.message?.content ?? '';
+      // Same bounded-reply defense as the hatcher/hermes paths: the reply flows
+      // into the sim's shared [ACTION:] parser surface, so cap it at the source
+      // regardless of how trusted the local runtime is.
+      return content.length > MAX_HATCHER_REPLY_LEN
+        ? content.slice(0, MAX_HATCHER_REPLY_LEN)
+        : content;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`[OpenClaw-local] local runtime chat failed for agent ${this.agentId}: ${msg} — failing soft`);
+      return '';
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
   private async chatOpenAI(messages: ChatMessage[]): Promise<string> {
     // SSRF guard (Codex round-2 R2-6, 2026-06-12). gatewayUrl is an arbitrary
     // agent-supplied URL validated only by `z.string().url()` at /connect — never
@@ -612,11 +710,17 @@ export class AgentSubstrateClient {
 
   async ping(): Promise<boolean> {
     // nanoclaw agents have no outbound gateway to ping — treat them as
-    // always-reachable so registration doesn't block. Same for hermes-local:
-    // the agent is a self-managed pull agent whose local cognition runtime is
-    // strictly BEST-EFFORT (chatHermesLocal fails soft to ''), so a not-yet-
-    // running localhost:8642 must never block a hermes connect/registration.
-    if (this.protocol === 'nanoclaw' || this.protocol === 'hermes-local') return true;
+    // always-reachable so registration doesn't block. Same for hermes-local and
+    // openclaw-local: the local cognition runtime is strictly BEST-EFFORT
+    // (chatHermesLocal / chatOpenclawLocal fail soft to ''), so a not-yet-running
+    // localhost:8642 / localhost:8643 must never block a connect/registration.
+    if (
+      this.protocol === 'nanoclaw' ||
+      this.protocol === 'hermes-local' ||
+      this.protocol === 'openclaw-local'
+    ) {
+      return true;
+    }
     try {
       const result = await this.chat([
         { role: 'user', content: 'Hello' },
