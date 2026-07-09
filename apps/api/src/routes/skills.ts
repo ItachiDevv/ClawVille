@@ -33,6 +33,7 @@ import { getBooksForBuilding, BUILDING_OPENCLAW_THEMES } from '@clawville/shared
 import { lucia } from '../lib/auth';
 import { logEventFromContext } from '../services/event-logger';
 import { requirePartnerKey, partnerRateLimit } from '../middleware/partner-key';
+import { createRateLimiter } from '../middleware/rate-limit';
 import {
   PROTOCOL_VERSION,
   buildProtocolManual,
@@ -54,8 +55,12 @@ export const skillsRoutes = new Hono<AppContext>();
 //     protocol manual (the three-surface "connection SKILL.md" — closes the
 //     documented infra gap).
 //
-// Both, plus the per-building `:buildingId/skill.md` reads, are gated by
-// `requirePartnerKey('skills:read')` + a generous per-partner rate ceiling.
+// Both, plus the per-building `:buildingId/skill.md` reads, accept EITHER a
+// partner key (`skills:read` + a per-partner rate ceiling) OR a live
+// connected/hosted agent session on `X-Clawville-Agent-Session` (the same
+// fail-closed `validateLiveAgentSession` gate every agent economy surface uses,
+// per-agent rate-limited) — so a non-partner connected agent can pull the manual
+// it is pointed at (2026-07-09, closes the documented Agent-Connect gap).
 // The `clawville-play` meta skill stays PUBLIC (open-onboarding brand priority).
 // See `.claude/plans/hatcher-integration.md` §4.
 
@@ -64,6 +69,76 @@ export const skillsRoutes = new Hono<AppContext>();
 // whole partner). Generous ceiling for the manifest poll + per-skill fetches.
 // POD-LOCAL — see `middleware/partner-key.ts` header re: the Redis swap.
 const partnerSkillsRateLimit = partnerRateLimit({ maxPerWindow: 60, windowMs: 60_000 });
+
+// Per-agent-session limiter for the broadened manifest + protocol reads (2026-07-09).
+// Keyed on the STABLE agentId (see the gate below), mirroring the partner 60/min
+// ceiling — one connected agent cannot hammer the 60s manifest cache into a DoS.
+const agentSkillsRateLimit = createRateLimiter({ maxPerWindow: 60, windowMs: 60_000 });
+
+// Own `skills:read` partner-key validator for the manifest/protocol composite
+// gate. (The per-building gate below keeps its own instance; both are the same
+// scope — a separate closure just localizes this diff.)
+const skillsPartnerKeyGate = requirePartnerKey('skills:read');
+
+// ---------------------------------------------------------------------------
+// Composite auth for the manifest + protocol-manual reads (2026-07-09).
+// ---------------------------------------------------------------------------
+// Closes the documented Agent-Connect discovery gap: a connected/hosted agent is
+// TOLD (Nori knowledge[], the register-response `protocol` pointer, this manual
+// §4) that the manual lives at `/api/skills/manifest.json` + `/protocol/skill.md`,
+// but those were partner-key-ONLY — a non-partner connected agent got 401 there.
+// We now accept EITHER:
+//   (a) a live connected/hosted AGENT SESSION on `X-Clawville-Agent-Session` —
+//       validated through the SAME fail-closed liveness gate every agent economy
+//       surface uses (`validateLiveAgentSession`: Map hit OR restore-from-row,
+//       `session_expires_at > now` [NULL = expired], rotation-current hash) —
+//       rate-limited PER-AGENT; OR
+//   (b) a valid partner key (`requirePartnerKey('skills:read')` + per-partner
+//       limit) — BYTE-IDENTICAL to before for Hatcher (Hatcher never sends the
+//       agent-session header, so it falls straight through to this branch).
+// Anonymous (neither) stays an opaque 401 via `requirePartnerKey`.
+//
+// The agent branch is tried FIRST but ONLY wins on a LIVE session; a
+// missing / expired / rotated-away header falls through to the partner-key gate,
+// so a partner that erroneously carries a stale agent header still authes on its
+// key. The raw session id is NEVER logged: it arrives in a HEADER (not a URL
+// path, so the global `hono/logger` — which prints paths — cannot leak it), and
+// this code adds no log of its own. The served manifest/protocol bodies contain
+// NOTHING partner-private (versions, content hashes, public relative URLs), so
+// serving the auth-agnostic 60s cache to an agent session is safe.
+const agentSessionOrPartnerKey: MiddlewareHandler<AppContext> = async (c, next) => {
+  const sessionId = c.req.header('X-Clawville-Agent-Session');
+  if (sessionId) {
+    // Dynamic import breaks any static route↔middleware cycle (mirrors this
+    // file's existing dynamic `npc-simulation` import). A transient
+    // validator/restore-DB error must NOT deny a caller that ALSO holds a valid
+    // partner key — swallow it and fall through to the partner-key gate (which
+    // itself fails closed to an opaque 401 on its own DB error).
+    let live: import('../middleware/require-auth-or-agent').LiveAgentSession | null = null;
+    try {
+      const { validateLiveAgentSession } = await import('../middleware/require-auth-or-agent');
+      live = await validateLiveAgentSession(sessionId);
+    } catch {
+      live = null;
+    }
+    if (live) {
+      // Rate-limit on the STABLE agentId, not the rotating sessionId, so a
+      // reconnect can't reset the budget.
+      if (!agentSkillsRateLimit.check(`agent-skills:${live.config.agentId}`)) {
+        return c.json(
+          { error: 'rate_limited', message: 'Too many requests. Try again shortly.' },
+          429,
+        );
+      }
+      await next();
+      return;
+    }
+    // header present but not a live session → fall through to the partner-key gate.
+  }
+  return skillsPartnerKeyGate(c, async () => {
+    await partnerSkillsRateLimit(c, next);
+  });
+};
 
 // ---------------------------------------------------------------------------
 // Protocol manual — the STABLE, token-free connection SKILL.md surface.
@@ -115,8 +190,7 @@ let manifestCache: ManifestCache | null = null;
 
 skillsRoutes.get(
   '/manifest.json',
-  requirePartnerKey('skills:read'),
-  partnerSkillsRateLimit,
+  agentSessionOrPartnerKey,
   async (c) => {
     if (manifestCache && manifestCache.expiresAt > Date.now()) {
       c.header('Cache-Control', 'private, max-age=60');
@@ -185,8 +259,7 @@ skillsRoutes.get(
 // The per-token connect block stays dynamic on /api/agent/connect-skill.
 skillsRoutes.get(
   '/protocol/skill.md',
-  requirePartnerKey('skills:read'),
-  partnerSkillsRateLimit,
+  agentSessionOrPartnerKey,
   (c) => {
     const md = buildProtocolManual(resolveApiBase());
     return new Response(md, {
@@ -236,23 +309,42 @@ async function hasEndUserIdentity(c: import('hono').Context<AppContext>): Promis
     }
   }
 
-  // Connected-agent session: a Bearer sessionId that resolves to a LIVE
-  // OpenClaw bot session. We deliberately do NOT trust a bare
-  // X-Clawville-Agent-Id header as proof of identity here — a partner key
-  // holder could otherwise spoof any agent-id to get the organic `via=undefined`
-  // tag and farm leaderboard rank for arbitrary agents. The header must be
-  // backed by a resolvable live session (the same in-memory session map the
-  // gateway maintains). A partner KEY is also presented as
-  // `Authorization: Bearer <token>`; an unresolvable bearer falls through to
-  // requirePartnerKey, which validates whether it is in fact a partner key.
+  // Connected/hosted agent session on the canonical `X-Clawville-Agent-Session`
+  // header — validated through the SAME fail-closed liveness gate the rest of the
+  // agent surface uses (`validateLiveAgentSession`: Map hit OR restore-from-row,
+  // `session_expires_at > now` [NULL = expired], rotation-current hash). This is
+  // the header the manifest + protocol reads and every economy surface honor, so
+  // the per-building URLs the manifest lists are reachable with the SAME header
+  // (2026-07-09). A live session tags the fetch organic (`via=undefined`), so it
+  // counts toward the leaderboard under the 11/day cap exactly like the legacy
+  // Bearer path below.
+  const agentSessionHeader = c.req.header('X-Clawville-Agent-Session');
+  if (agentSessionHeader) {
+    try {
+      const { validateLiveAgentSession } = await import('../middleware/require-auth-or-agent');
+      const live = await validateLiveAgentSession(agentSessionHeader);
+      if (live) return true;
+    } catch {
+      /* fall through */
+    }
+  }
+
+  // Legacy connected-agent path: a session id on `Authorization: Bearer` (some
+  // harnesses send it here instead of `X-Clawville-Agent-Session`). Validated
+  // through the SAME fail-closed `validateLiveAgentSession` gate as the header
+  // above — NOT bare `getAgentBotConfig` Map membership, which let an EXPIRED /
+  // rotated-away session keep reaching per-building bodies (Codex 2026-07-09).
+  // A partner KEY is also presented as `Authorization: Bearer <token>`; it
+  // map-misses + fails the row-hash restore, resolves to null, and falls through
+  // to requirePartnerKey, which validates whether it is in fact a partner key.
   const auth = c.req.header('Authorization');
   if (auth?.startsWith('Bearer ')) {
     const sid = auth.slice(7).trim();
     if (sid) {
       try {
-        const { npcSimulation } = await import('../services/npc-simulation');
-        const cfg = npcSimulation.getAgentBotConfig(sid);
-        if (cfg?.agentId) return true;
+        const { validateLiveAgentSession } = await import('../middleware/require-auth-or-agent');
+        const live = await validateLiveAgentSession(sid);
+        if (live) return true;
       } catch {
         /* fall through to partner-key gate */
       }
