@@ -19,7 +19,10 @@
  *     elapsed → LAPSE: any remainder FORFEITS to the treasury (nothing refunds
  *     on lapse), parcel reverts to the pool, structure archives.
  *   - `hold` (Phase B2 hold-to-keep): unless grandfathered, RE-CHECK the
- *     subject's CLV against the stacked thresholds — CONFIRMED-below → open
+ *     subject's CLV against the stacked thresholds of the owner's holds WITH
+ *     THE SAME `hold_subject` — 'user' holds back the linked self-custody
+ *     wallet, 'agent' holds back the custodial avatar wallet; different
+ *     wallets, so the sums never cross-count — CONFIRMED-below → open
  *     grace, skip upkeep. UNCONFIRMED (RPC down / wallet unlinked / subject
  *     unresolvable) → FAIL-OPEN: LOUD warn, skip the hold check, still charge
  *     upkeep — a tenant is NEVER graced/lapsed on an unconfirmed balance (the
@@ -589,7 +592,19 @@ async function sweepHold(tx: LandTx, p: LockedParcelRow): Promise<SweepAction> {
         `[LandRentSweeper] HOLD CHECK SKIPPED (fail-open) for ${p.parcel_code} owner=${ownerAvatarId}: ${clv.why} — charging upkeep, hold re-checks next sweep`,
       );
     } else {
-      // Stacked requirement: the owner's OTHER non-grandfathered holds that are
+      // Stacked requirement — scoped PER hold_subject (fixed 2026-07-09): only
+      // the owner's holds stamped with THIS parcel's hold_subject count,
+      // because resolveHoldClv reads the wallet THAT subject backs ('user' →
+      // users.linked_wallet_pubkey, 'agent' → avatars.wallet_address — two
+      // DIFFERENT wallets). One avatar can legitimately carry BOTH a 'user'
+      // hold (claimed via a human session) AND an 'agent' hold (claimed via an
+      // agent session on the same bound avatar); a subject-blind sum compared
+      // BOTH subjects' thresholds against ONE subject's wallet and wrongly
+      // graced/lapsed fully-funded holds. (p.hold_subject is non-NULL on this
+      // path — the NULL-subject anomaly returns 'unconfirmed' above and never
+      // reaches this sum; grandfathered rows carry NULL hold_subject and stay
+      // excluded, as before, by the grandfathered predicate.)
+      // Within the subject: the owner's OTHER non-grandfathered holds that are
       // NOT already in grace, PLUS THIS parcel regardless of its own grace
       // state. Self-inclusion is load-bearing: without it a single-parcel
       // holder in grace would compare against 0 and trivially "recover".
@@ -601,6 +616,7 @@ async function sweepHold(tx: LandTx, p: LockedParcelRow): Promise<SweepAction> {
             FROM land_parcels
             WHERE owner_avatar_id = ${ownerAvatarId}
               AND tenure = 'hold'
+              AND hold_subject = ${p.hold_subject}
               AND grandfathered = false
               AND (grace_until IS NULL OR id = ${p.id})`,
       );
