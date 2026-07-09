@@ -75,7 +75,15 @@ import { api } from '@/lib/api';
 // Character frame — top-of-sidebar "unit frame" showing the avatar identity.
 // ---------------------------------------------------------------------------
 
-function CharacterFrame({ onCreateAvatar }: { onCreateAvatar: () => void }) {
+function CharacterFrame({
+  onCreateAvatar,
+  onNavigate,
+}: {
+  onCreateAvatar: () => void;
+  /** Close the menu drawer before opening an overlay (mobile: the drawer
+      otherwise stacks ABOVE the wallet modal and buries it). */
+  onNavigate?: () => void;
+}) {
   const { data: avatar, isLoading } = useAvatar();
   const openWalletLink = useGameStore((s: GameState) => s.openWalletLink);
 
@@ -252,7 +260,10 @@ function CharacterFrame({ onCreateAvatar }: { onCreateAvatar: () => void }) {
       {(avatar as { walletAddress?: string | null }).walletAddress && (
         <button
           type="button"
-          onClick={openWalletLink}
+          onClick={() => {
+            onNavigate?.();
+            openWalletLink();
+          }}
           title="View your wallet"
           style={{
             display: 'flex',
@@ -887,7 +898,7 @@ function SidebarContent({ closeMenu }: SidebarContentProps) {
         minHeight: 0,
       }}
     >
-      <CharacterFrame onCreateAvatar={handleCreateAgent} />
+      <CharacterFrame onCreateAvatar={handleCreateAgent} onNavigate={closeMenu} />
 
       <div
         className="rpg-sidebar-scroll"
