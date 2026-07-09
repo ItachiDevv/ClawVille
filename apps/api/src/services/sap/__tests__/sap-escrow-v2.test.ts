@@ -28,9 +28,11 @@ import {
   buildWithdrawEscrowV2Ix,
   buildCloseDisputeIx,
   buildClosePendingSettlementIx,
+  assembleV2SplRemaining,
   SETTLEMENT_SECURITY,
   DISPUTE_OUTCOME,
 } from '../sap-escrow-v2';
+import { TOKEN_PROGRAM_ID } from '../sap-spl';
 
 // ── deterministic-ish test fixtures ───────────────────────────────────────────
 // Distinct fresh pubkeys per account slot so an order/identity mistake is caught by
@@ -42,7 +44,9 @@ const pk = () => Keypair.generate().publicKey;
 const depositor = pk();
 const workerWallet = pk();
 const agentPda = pk();
+const agentStakePda = pk();
 const agentStatsPda = pk();
+const pricingMenuPda = pk();
 const escrowPda = pk();
 const pendingPda = pk();
 const disputePda = pk();
@@ -51,6 +55,11 @@ const payer = pk();
 const coSignerKey = pk();
 const arbiterOptKey = pk();
 const tokenMint = pk();
+// ATA/PDA fixtures for the assembleV2SplRemaining wire-order tests.
+const vaultAta = pk();
+const depositorAta = pk();
+const workerAta = pk();
+const treasuryAta = pk();
 
 const NONCE = 7n;
 const PRICE = 1_000_000n;
@@ -103,10 +112,13 @@ const sampleRemaining: AccountMeta[] = [
 ];
 
 describe('buildCreateEscrowV2Ix', () => {
-  it('has disc eb470a24ce3796bb + the full DisputeWindow arg buffer + named accounts', () => {
+  it('has disc eb470a24ce3796bb + the full DisputeWindow arg buffer + 7 named accounts', () => {
     const ix = buildCreateEscrowV2Ix({
       depositor,
       agentPda,
+      agentStakePda,
+      agentStatsPda,
+      pricingMenuPda,
       escrowPda,
       programId: PROGRAM_ID,
       escrowNonce: NONCE,
@@ -143,20 +155,28 @@ describe('buildCreateEscrowV2Ix', () => {
     ]);
     expect(Buffer.from(ix.data).equals(expected)).toBe(true);
 
-    // named accounts: [depositor(S,W), agent(ro), escrow(W), system(ro)] + remaining
-    expect(ix.keys.length).toBe(4 + sampleRemaining.length);
+    // DEVNET-VERIFIED 0.25-family 7 named accounts:
+    // [depositor(S,W), agent(ro), agent_stake(ro), agent_stats(W), pricing_menu(ro),
+    //  escrow(W), system(ro)] + remaining
+    expect(ix.keys.length).toBe(7 + sampleRemaining.length);
     expectKey(ix.keys[0], depositor, true, true);
     expectKey(ix.keys[1], agentPda, false, false);
-    expectKey(ix.keys[2], escrowPda, false, true);
-    expectKey(ix.keys[3], SYSTEM_PROGRAM_ID, false, false);
-    expectKey(ix.keys[4], remA, false, true);
-    expectKey(ix.keys[5], remB, false, false);
+    expectKey(ix.keys[2], agentStakePda, false, false);
+    expectKey(ix.keys[3], agentStatsPda, false, true);
+    expectKey(ix.keys[4], pricingMenuPda, false, false);
+    expectKey(ix.keys[5], escrowPda, false, true);
+    expectKey(ix.keys[6], SYSTEM_PROGRAM_ID, false, false);
+    expectKey(ix.keys[7], remA, false, true);
+    expectKey(ix.keys[8], remB, false, false);
   });
 
   it('encodes CoSigned as security=1 + Some(co_signer) + None(arbiter)', () => {
     const ix = buildCreateEscrowV2Ix({
       depositor,
       agentPda,
+      agentStakePda,
+      agentStatsPda,
+      pricingMenuPda,
       escrowPda,
       programId: PROGRAM_ID,
       escrowNonce: NONCE,
@@ -212,7 +232,9 @@ describe('buildDepositEscrowV2Ix', () => {
 });
 
 describe('buildSettleCallsV2Ix', () => {
-  it('has disc 3a872bd72d600f91 + [nonce,calls,hash32] args + accounts (DisputeWindow remaining=[])', () => {
+  it('has disc 3a872bd72d600f91 + [nonce,calls,hash32] args + 5 named accounts + appended remaining', () => {
+    // 0.25-family settle keeps 5 NAMED accounts (NOT the future-0.25 IDL's 6 — no
+    // settlement_receipt) and carries the SPL fee/pending leg in remaining_accounts.
     const ix = buildSettleCallsV2Ix({
       workerWallet,
       agentPda,
@@ -222,7 +244,7 @@ describe('buildSettleCallsV2Ix', () => {
       escrowNonce: NONCE,
       callsToSettle: CALLS,
       serviceHash: HASH32,
-      remaining: [],
+      remaining: sampleRemaining,
     });
     expect(disc(ix)).toBe('3a872bd72d600f91');
     const expected = Buffer.concat([
@@ -232,13 +254,15 @@ describe('buildSettleCallsV2Ix', () => {
       HASH32,
     ]);
     expect(Buffer.from(ix.data).equals(expected)).toBe(true);
-    // [worker(S,W), agent(ro), agentStats(W), escrow(W), system(ro)]
-    expect(ix.keys.length).toBe(5);
+    // [worker(S,W), agent(ro), agentStats(W), escrow(W), system(ro)] + remaining
+    expect(ix.keys.length).toBe(5 + sampleRemaining.length);
     expectKey(ix.keys[0], workerWallet, true, true);
     expectKey(ix.keys[1], agentPda, false, false);
     expectKey(ix.keys[2], agentStatsPda, false, true);
     expectKey(ix.keys[3], escrowPda, false, true);
     expectKey(ix.keys[4], SYSTEM_PROGRAM_ID, false, false);
+    expectKey(ix.keys[5], remA, false, true);
+    expectKey(ix.keys[6], remB, false, false);
   });
 
   it('rejects a non-32-byte service hash', () => {
@@ -438,5 +462,68 @@ describe('buildCloseDisputeIx / buildClosePendingSettlementIx', () => {
     expect(ix.keys.length).toBe(2);
     expectKey(ix.keys[0], payer, true, true);
     expectKey(ix.keys[1], pendingPda, false, true);
+  });
+});
+
+// ── SPL remaining_accounts wire order — the DEVNET-VERIFIED SSOT ────────────────
+// Locks the EXACT order + writability of the token remaining_accounts each V2 money
+// instruction carries. A drift here is a malformed on-chain tx (wrong fee/pending leg).
+describe('assembleV2SplRemaining (devnet-verified 2026-07-09 wire order)', () => {
+  it('create → [depositorAta(W), vaultAta(W), tokenProgram(ro)] (NO mint)', () => {
+    const metas = assembleV2SplRemaining('create', { vaultAta, depositorAta, tokenMint });
+    expect(metas.length).toBe(3);
+    expectKey(metas[0], depositorAta, false, true);
+    expectKey(metas[1], vaultAta, false, true);
+    expectKey(metas[2], TOKEN_PROGRAM_ID, false, false);
+  });
+
+  it('deposit → [depositorAta(W), vaultAta(W), tokenProgram(ro)] (same as create)', () => {
+    const metas = assembleV2SplRemaining('deposit', { vaultAta, depositorAta, tokenMint });
+    expect(metas.length).toBe(3);
+    expectKey(metas[0], depositorAta, false, true);
+    expectKey(metas[1], vaultAta, false, true);
+    expectKey(metas[2], TOKEN_PROGRAM_ID, false, false);
+  });
+
+  it('settle → [vaultAta(W), workerAta(W), tokenProgram(ro,idx2), treasuryAta(W,idx3), pendingPda(W,idx4)]', () => {
+    const metas = assembleV2SplRemaining('settle', {
+      vaultAta,
+      workerAta,
+      treasuryAta,
+      pendingPda,
+      tokenMint,
+    });
+    // ORDER IS LOAD-BEARING — tokenProgram idx2, treasury fee-leg idx3, pending PDA (W) idx4.
+    expect(metas.length).toBe(5);
+    expectKey(metas[0], vaultAta, false, true);
+    expectKey(metas[1], workerAta, false, true);
+    expectKey(metas[2], TOKEN_PROGRAM_ID, false, false);
+    expectKey(metas[3], treasuryAta, false, true);
+    expectKey(metas[4], pendingPda, false, true);
+  });
+
+  it('finalize → [vaultAta(W), workerAta(W), tokenProgram(ro)] (NO mint)', () => {
+    const metas = assembleV2SplRemaining('finalize', { vaultAta, workerAta, tokenMint });
+    expect(metas.length).toBe(3);
+    expectKey(metas[0], vaultAta, false, true);
+    expectKey(metas[1], workerAta, false, true);
+    expectKey(metas[2], TOKEN_PROGRAM_ID, false, false);
+  });
+
+  it('withdraw → [vaultAta(W), depositorAta(W), tokenProgram(ro)] (NO mint)', () => {
+    const metas = assembleV2SplRemaining('withdraw', { vaultAta, depositorAta, tokenMint });
+    expect(metas.length).toBe(3);
+    expectKey(metas[0], vaultAta, false, true);
+    expectKey(metas[1], depositorAta, false, true);
+    expectKey(metas[2], TOKEN_PROGRAM_ID, false, false);
+  });
+
+  it('throws when a required ATA/PDA is missing (programming-error guard)', () => {
+    expect(() => assembleV2SplRemaining('create', { vaultAta, tokenMint })).toThrow();
+    expect(() =>
+      assembleV2SplRemaining('settle', { vaultAta, workerAta, treasuryAta, tokenMint }),
+    ).toThrow(); // pendingPda missing
+    expect(() => assembleV2SplRemaining('finalize', { vaultAta, tokenMint })).toThrow();
+    expect(() => assembleV2SplRemaining('withdraw', { vaultAta, tokenMint })).toThrow();
   });
 });

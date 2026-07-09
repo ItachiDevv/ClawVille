@@ -42,7 +42,6 @@ import {
   PublicKey,
   SystemProgram,
   Transaction,
-  type AccountMeta,
   type Commitment,
   type SimulatedTransactionResponse,
 } from '@solana/web3.js';
@@ -63,6 +62,7 @@ import {
   findStatsPda,
   findGlobalPda,
   findStakePda,
+  findPricingPda,
   findToolPda,
   findFeedbackPda,
   findAttestationPda,
@@ -85,11 +85,11 @@ import {
   buildCreateEscrowV2Ix,
   buildDepositEscrowV2Ix,
   buildSettleCallsV2Ix,
-  buildCreatePendingSettlementIx,
   buildFinalizeSettlementIx,
   buildFileDisputeIx,
   buildResolveDisputeIx,
   buildWithdrawEscrowV2Ix,
+  assembleV2SplRemaining,
   SETTLEMENT_SECURITY,
   DISPUTE_OUTCOME,
   type DisputeOutcome,
@@ -102,13 +102,28 @@ import {
   USDC_DECIMALS,
 } from './sap-spl';
 
-// AUTHORITATIVE IDL = what is DEPLOYED on devnet (fetched via Anchor
-// `Program.fetchIdl`), NOT the ahead-of-deployment repo IDL. The deployed
-// program is 0.18.0; the repo IDL (`…idl.future-0.25.json`, kept for reference)
-// is 0.25.0 with DIFFERENT account contexts (register/createEscrow/settle drop
-// accounts; 0.18.0 has NO on-chain stake-gate and NO settle receipt anti-replay).
-// Every account list + PDA seed below matches THIS file.
-import idlJson from './synapse_agent_sap.onchain.idl.json' with { type: 'json' };
+// DEPLOYED PROGRAM IS 0.25-FAMILY (empirically confirmed 2026-07-09 via a full
+// devnet DisputeWindow USDC lifecycle). We load the future-0.25 IDL because its
+// ANCHOR-driven identity/stake/pricing instructions (register / init_stake /
+// deposit_stake / request_unstake / complete_unstake / update_agent) match the
+// deployed binary — in particular register + update_agent carry the `pricing_menu`
+// account the stale 0.18 onchain IDL lacks (Anchor cannot pass an account absent
+// from the loaded IDL, so update_agent pricing provisioning REQUIRES this IDL).
+//
+// ⚠️ BOTH vendored IDLs are WRONG, in different places — the escrow-V2 MONEY family
+// is HAND-ROLLED in sap-escrow-v2.ts to the devnet-verified shapes, NOT taken from
+// either IDL: the future-0.25 IDL declares a 6th `settlement_receipt` account on
+// settle_calls_v2 the deployed program does NOT take (→ InvalidProgramExecutable
+// 3009), and it lists create_pending_settlement which is DEPRECATED on-chain
+// (6161). The 0.18 onchain IDL is stale the other way (4-acct create, no
+// pricing_menu). See sap-escrow-v2.ts header + docs/sap-integration.md.
+//
+// NOTE: the legacy SOL-only escrow rail (`createEscrow`/`settleCalls`/`closeEscrow`
+// Anchor calls below) was 0.18-shaped and is NOT migrated — under this IDL its
+// `accountsStrict` calls fail-closed (throw "Account … not provided", caught →
+// structured error). It is gated OFF (SAP_ESCROW_ENABLED default false) + dry-run,
+// so this is safe; a separate SOL-rail migration is out of this diff's scope.
+import idlJson from './synapse_agent_sap.idl.future-0.25.json' with { type: 'json' };
 
 const COMMITMENT: Commitment = 'confirmed';
 const SYSTEM_PROGRAM_ID = SystemProgram.programId;
@@ -133,6 +148,11 @@ export type SapErrorCode =
   | 'mainnet_broadcast_refused'
   | 'rpc_unreachable'
   | 'on_chain_error'
+  // Distinct, caller-actionable deployed-program custom errors (0.25, devnet-confirmed 2026-07-09).
+  | 'insufficient_escrow_balance' // 6062 — deposit too small for the protocol fee
+  | 'stake_below_minimum' // 6107 — agent must stake >= 0.1 SOL first
+  | 'pricing_tier_not_found' // 6148 — provision a pricing tier matching price_per_call first
+  | 'pending_settlement_deprecated' // 6161 — create_pending_settlement removed; use settle_calls_v2
   | 'internal';
 
 export interface SapDryRunResult {
@@ -332,6 +352,38 @@ export async function loadAvatarWalletForSigning(
 
 // ─── error classification ─────────────────────────────────────────────────────
 
+/**
+ * Map a deployed-program custom error NUMBER (Anchor error code) to a stable,
+ * caller-actionable `code`. Lets a route react ("provision your pricing tier /
+ * stake first") instead of parsing a raw Anchor message. The numbers are the
+ * deployed 0.25 program's (devnet-confirmed 2026-07-09); extend as new ones surface.
+ */
+const SAP_ONCHAIN_ERROR_CODES: Record<number, SapErrorCode> = {
+  6062: 'insufficient_escrow_balance', // 0x17ae — deposit too small for the fee (raise initialDeposit)
+  6107: 'stake_below_minimum', // 0x17db — agent must stake >= 0.1 SOL first
+  6148: 'pricing_tier_not_found', // 0x1804 — provision a pricing tier matching price_per_call first
+  6161: 'pending_settlement_deprecated', // 0x1811 — create_pending_settlement removed; use settle_calls_v2
+};
+
+/** Extract the Anchor custom error number from a message string OR a tx `err` object. */
+function extractCustomErrorNumber(input: unknown): number | null {
+  // tx confirmation `value.err` shape: { InstructionError: [i, { Custom: <n> }] }
+  if (input && typeof input === 'object') {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const ie = (input as any).InstructionError;
+    if (Array.isArray(ie) && ie[1] && typeof ie[1] === 'object' && typeof ie[1].Custom === 'number') {
+      return ie[1].Custom as number;
+    }
+  }
+  const msg = typeof input === 'string' ? input : input instanceof Error ? input.message : JSON.stringify(input ?? '');
+  // "custom program error: 0x1804" (hex) or "Error Number: 6148" (dec)
+  const hex = msg.match(/custom program error:\s*0x([0-9a-fA-F]+)/);
+  if (hex) return parseInt(hex[1], 16);
+  const dec = msg.match(/Error Number:\s*(\d+)/);
+  if (dec) return parseInt(dec[1], 10);
+  return null;
+}
+
 function classifyChainError(label: string, err: unknown): SapFailure {
   const msg = err instanceof Error ? err.message : String(err);
   if (
@@ -346,6 +398,16 @@ function classifyChainError(label: string, err: unknown): SapFailure {
       ok: false,
       code: 'rpc_unreachable',
       message: `SAP RPC unreachable during ${label}.`,
+    };
+  }
+  // Map a known deployed-program custom error to a distinct, caller-actionable code.
+  const errNo = extractCustomErrorNumber(err);
+  const mapped = errNo !== null ? SAP_ONCHAIN_ERROR_CODES[errNo] : undefined;
+  if (mapped) {
+    return {
+      ok: false,
+      code: mapped,
+      message: `SAP ${label} rejected on-chain (error ${errNo}): ${msg}`,
     };
   }
   return {
@@ -420,8 +482,9 @@ async function executeTx(
     // blockhash / sendRawTransaction reject) falls through to the outer catch with
     // NO `broadcast` flag (nothing hit the wire — a clean retry/delete is safe).
     const signature = await connection.sendRawTransaction(tx.serialize());
+    let confirmed;
     try {
-      await connection.confirmTransaction(
+      confirmed = await connection.confirmTransaction(
         { signature, blockhash, lastValidBlockHeight },
         COMMITMENT,
       );
@@ -430,6 +493,19 @@ async function executeTx(
       // failure so the caller persists a recoverable state + signature and NEVER
       // auto-deletes/retries.
       const failure = classifyChainError(`${label}:confirm`, confirmErr);
+      return { ...failure, broadcast: true, signature };
+    }
+    // N1 fix — confirmTransaction RESOLVES even when the tx CONFIRMED WITH A PROGRAM
+    // ERROR (it only rejects on non-landing). If `value.err` is non-null the tx landed
+    // but REVERTED on-chain: returning ok:true here would let a ledger mark a bounty
+    // "settled" when the chain reverted (e.g. 6062/6148). Surface it as a structured
+    // failure carrying `broadcast:true` + the signature (the reverted tx did hit the
+    // wire — the caller must NOT blindly retry without checking on-chain state).
+    if (confirmed.value?.err) {
+      const failure = classifyChainError(
+        `${label}:reverted`,
+        confirmed.value.err as unknown,
+      );
       return { ...failure, broadcast: true, signature };
     }
     return { ok: true, dryRun: false, signature, accounts };
@@ -549,11 +625,11 @@ export async function registerAgent(input: RegisterAgentInput): Promise<SapWrite
   const { keypair, publicKey: wallet } = handle as AvatarWalletHandle;
 
   const program = getProgram();
-  // 0.18.0 register_agent accounts = [wallet, agent, agent_stats, global_registry,
-  // system_program] — NO pricing_menu account (the 0.25.0 IDL added it; the
-  // deployed program does not have it). The `pricing` ARG (empty for the MVP)
-  // is unchanged; only the ACCOUNT is omitted.
-  const { agent, stats, global } = deriveAgentPdaSet(cfg.programId, wallet);
+  // 0.25-family register_agent accounts = [wallet, agent, agent_stats, pricing_menu,
+  // global_registry, system_program] — the deployed binary carries a `pricing_menu`
+  // account (empirically confirmed 2026-07-09; the stale 0.18 onchain IDL lacked it).
+  // The `pricing` ARG (empty for the MVP) is unchanged. pricing_menu PDA = deriveAgentPdaSet(...).pricing.
+  const { agent, stats, pricing, global } = deriveAgentPdaSet(cfg.programId, wallet);
 
   const capabilities = input.capabilities.map((c) => ({
     id: c.id,
@@ -578,6 +654,7 @@ export async function registerAgent(input: RegisterAgentInput): Promise<SapWrite
         wallet,
         agent,
         agentStats: stats,
+        pricingMenu: pricing,
         globalRegistry: global,
         systemProgram: SYSTEM_PROGRAM_ID,
       })
@@ -587,6 +664,7 @@ export async function registerAgent(input: RegisterAgentInput): Promise<SapWrite
       wallet: wallet.toBase58(),
       agent: agent.toBase58(),
       agentStats: stats.toBase58(),
+      pricingMenu: pricing.toBase58(),
       globalRegistry: global.toBase58(),
     });
   } catch (err) {
@@ -1068,6 +1146,176 @@ export async function depositStake(input: StakeInput): Promise<SapWriteResult> {
     });
   } catch (err) {
     return classifyChainError('depositStake:build', err);
+  }
+}
+
+/**
+ * request_unstake — begin the timelocked withdrawal of `lamports` from the agent's
+ * AgentStake PDA (starts the cooldown; funds are NOT released yet). 0.25-family
+ * 3-acct context [wallet(S), agent, stake(W)] (NO system_program). Signer = the
+ * agent OWNER's own custodial wallet. Retrieves (does NOT spend) SOL; gated behind
+ * the escrow rail + dry-run like the other stake ops.
+ */
+export async function requestUnstake(input: StakeInput): Promise<SapWriteResult> {
+  const cfg = getConfig();
+  const gate = escrowGate(cfg);
+  if (gate) return gate;
+  if (input.lamports <= 0n) {
+    return { ok: false, code: 'invalid_amount', message: 'unstake amount must be > 0.' };
+  }
+  const handle = await loadAvatarWallet(input.avatarId);
+  if ('ok' in handle && handle.ok === false) return handle;
+  const { keypair, publicKey: wallet } = handle as AvatarWalletHandle;
+
+  const program = getProgram();
+  const [agent] = findAgentPda(cfg.programId, wallet);
+  const [stake] = findStakePda(cfg.programId, agent);
+
+  try {
+    const tx: Transaction = await program.methods
+      .requestUnstake(new BN(input.lamports.toString()))
+      .accountsStrict({ wallet, agent, stake })
+      .transaction();
+    return executeTx(cfg, 'requestUnstake', tx, keypair, {
+      wallet: wallet.toBase58(),
+      agent: agent.toBase58(),
+      stake: stake.toBase58(),
+    });
+  } catch (err) {
+    return classifyChainError('requestUnstake:build', err);
+  }
+}
+
+/**
+ * complete_unstake — finalize a matured unstake request, releasing the cooled-down
+ * lamports from the AgentStake PDA back to the owner wallet. No args. 0.25-family
+ * 3-acct context [wallet(S,W), agent, stake(W)] (NO system_program). Signer = the
+ * agent OWNER's own custodial wallet.
+ */
+export async function completeUnstake(input: { avatarId: string }): Promise<SapWriteResult> {
+  const cfg = getConfig();
+  const gate = escrowGate(cfg);
+  if (gate) return gate;
+  const handle = await loadAvatarWallet(input.avatarId);
+  if ('ok' in handle && handle.ok === false) return handle;
+  const { keypair, publicKey: wallet } = handle as AvatarWalletHandle;
+
+  const program = getProgram();
+  const [agent] = findAgentPda(cfg.programId, wallet);
+  const [stake] = findStakePda(cfg.programId, agent);
+
+  try {
+    const tx: Transaction = await program.methods
+      .completeUnstake()
+      .accountsStrict({ wallet, agent, stake })
+      .transaction();
+    return executeTx(cfg, 'completeUnstake', tx, keypair, {
+      wallet: wallet.toBase58(),
+      agent: agent.toBase58(),
+      stake: stake.toBase58(),
+    });
+  } catch (err) {
+    return classifyChainError('completeUnstake:build', err);
+  }
+}
+
+export interface UpdateAgentPricingInput {
+  /** The agent OWNER (worker) avatar — provisions its OWN pricing tier as ITS wallet. */
+  avatarId: string;
+  /** Escrow price per call (base units) the "standard" tier advertises. */
+  pricePerCall: bigint;
+  /** Max calls/sec (u32). Default 100. */
+  rateLimit?: number;
+  /** Max calls/session (u32; 0=unlimited on-chain). Default 1000. */
+  maxCallsPerSession?: number;
+}
+
+/**
+ * update_agent(pricing) — provision the agent's on-chain AgentPricingMenu with ONE
+ * Escrow-mode USDC tier ("standard"). This is the pricing-provisioning PREREQUISITE
+ * a worker MUST run before any create_escrow_v2 against it, or create fails
+ * PricingTierNotFound 6148 (see the createEscrowV2Usdc FEATURE_GATE note — pricing
+ * is NOT auto-provisioned in the create path: update_agent is owner-signed while
+ * create is depositor-signed, so it cannot be bundled). Signer = the agent OWNER's
+ * own custodial wallet (update_agent is owner-gated on-chain).
+ *
+ * 0.25-family 4-acct context [wallet(S), agent(W), pricing_menu(W), system_program].
+ * Only the `pricing` arg is Some([tier]); every other update_agent option is None,
+ * so name/description/capabilities/etc. are left untouched. The tier binds the
+ * cluster USDC mint (6 dp), Escrow settlement mode — the shape create_escrow_v2
+ * requires. (devnet-confirmed 2026-07-09 tx 5SWRTNhjb82uSGcJvHDb3QShdMrN4CdpRYV2TSvwbXTNrz3yAareNY7jTvpYWniVywdQ8gpK8Rs8RUiTbVz6Y6y)
+ */
+export async function updateAgentPricing(
+  input: UpdateAgentPricingInput,
+): Promise<SapWriteResult> {
+  const cfg = getConfig();
+  const gate = escrowGate(cfg);
+  if (gate) return gate;
+  if (input.pricePerCall <= 0n) {
+    return { ok: false, code: 'invalid_amount', message: 'pricePerCall must be > 0.' };
+  }
+  const rateLimit = input.rateLimit ?? 100;
+  const maxCallsPerSession = input.maxCallsPerSession ?? 1000;
+  if (!Number.isInteger(rateLimit) || rateLimit < 0 || rateLimit > 0xffff_ffff) {
+    return { ok: false, code: 'invalid_amount', message: 'rateLimit must be a u32 (0..4294967295).' };
+  }
+  if (
+    !Number.isInteger(maxCallsPerSession) ||
+    maxCallsPerSession < 0 ||
+    maxCallsPerSession > 0xffff_ffff
+  ) {
+    return { ok: false, code: 'invalid_amount', message: 'maxCallsPerSession must be a u32 (0..4294967295).' };
+  }
+
+  const handle = await loadAvatarWallet(input.avatarId);
+  if ('ok' in handle && handle.ok === false) return handle;
+  const { keypair, publicKey: wallet } = handle as AvatarWalletHandle;
+
+  const program = getProgram();
+  const [agent] = findAgentPda(cfg.programId, wallet);
+  const [pricingMenu] = findPricingPda(cfg.programId, agent);
+
+  // ONE Escrow-mode USDC tier "standard" bound to the cluster USDC mint (6 dp).
+  // Anchor field names are camelCase; fieldless enums are `{ variantName: {} }`
+  // (verified: PascalCase `{ Usdc: {} }` throws "unable to infer src variant").
+  const tier = {
+    tierId: 'standard',
+    pricePerCall: new BN(input.pricePerCall.toString()),
+    minPricePerCall: null,
+    maxPricePerCall: null,
+    rateLimit,
+    maxCallsPerSession,
+    burstLimit: null,
+    tokenType: { usdc: {} },
+    tokenMint: cfg.usdcMint,
+    tokenDecimals: USDC_DECIMALS,
+    settlementMode: { escrow: {} },
+    minEscrowDeposit: null,
+    batchIntervalSec: null,
+    volumeCurve: null,
+  };
+
+  try {
+    const tx: Transaction = await program.methods
+      .updateAgent(
+        null, // name
+        null, // description
+        null, // capabilities
+        [tier], // pricing = Some([tier])
+        null, // protocols
+        null, // agent_id
+        null, // agent_uri
+        null, // x402_endpoint
+      )
+      .accountsStrict({ wallet, agent, pricingMenu, systemProgram: SYSTEM_PROGRAM_ID })
+      .transaction();
+    return executeTx(cfg, 'updateAgentPricing', tx, keypair, {
+      wallet: wallet.toBase58(),
+      agent: agent.toBase58(),
+      pricingMenu: pricingMenu.toBase58(),
+    });
+  } catch (err) {
+    return classifyChainError('updateAgentPricing:build', err);
   }
 }
 
@@ -1764,102 +2012,32 @@ export async function withdrawEscrowUsdc(input: WithdrawEscrowUsdcInput): Promis
 
 // ─── SAP Escrow V2 (DisputeWindow default / CoSigned pluggable) ────────────────
 //
-// The founder-locked BOUNTY settlement flow, on the V2 escrow family:
+// The founder-locked BOUNTY settlement flow, on the 0.25-family V2 escrow rail:
 //   post → fund (create_escrow_v2) → accept → complete →
-//   settle_calls_v2 + create_pending_settlement → (dispute window elapses) →
-//   finalize_settlement  |  file_dispute → arbiter resolve_dispute.
+//   settle_calls_v2 (charges fee + INITS pending) → (dispute window elapses) →
+//   finalize_settlement (releases principal)  |  file_dispute → arbiter resolve_dispute.
 //
-// Every builder these executors call is byte-precise-verified against the deployed
-// 0.18.0 IDL in sap-escrow-v2.ts (discriminators / account order / args / PDA seeds).
-// These executors only assemble the V2 accounts + SPL remaining, read the on-chain
-// settlement_index, and reuse the SAME rails as the V1 USDC path: the usdcEscrowGate
-// (enabled AND escrowEnabled AND usdcEscrowEnabled), the custodial loadAvatarWallet
-// (decrypt-in-memory-only; the acting agent is ALWAYS its own wallet — no body pubkey
-// is ever a signer), and the executeTx dry-run/live + genesis-guard tail. SAP_DRY_RUN
-// defaults true ⇒ NOTHING broadcasts; a dry-run only simulates.
+// Every builder these executors call is DEVNET-VERIFIED (2026-07-09) in sap-escrow-v2.ts
+// (discriminators / account order / args / SPL remaining). These executors only assemble
+// the V2 accounts, read the on-chain settlement_index, ensure the destination ATAs exist,
+// and reuse the SAME rails as the V1 USDC path: the usdcEscrowGate (enabled AND
+// escrowEnabled AND usdcEscrowEnabled), the custodial loadAvatarWallet (decrypt-in-memory-
+// only; the acting agent is ALWAYS its own wallet — no body pubkey is ever a signer), and
+// the executeTx dry-run/live + genesis-guard tail. SAP_DRY_RUN defaults true ⇒ NOTHING
+// broadcasts; a dry-run only simulates.
 //
-// SPL-ORDER DISCIPLINE — assembleV2SplRemaining() below is the SINGLE source of truth
-// for the token `remaining_accounts` wire order, so a wrong order can only be wrong in
-// exactly one place and every unconfirmed layout is flagged inline:
-//   - create / deposit          : [depositorAta(W), vaultAta(W), mint(ro), tokenProgram(ro)]
-//                                  — SDK `attachSplAccounts` convention (well-supported).
-//   - settle_calls_v2 (Dispute) : remaining=[] — in DisputeWindow mode settle moves NO
-//                                  tokens (only bumps pending_amount/settlement_index);
-//                                  the token release is deferred to finalize_settlement.
-//                                  (CoSigned's dev-confirmed [co_signer(S,ro), treasury,
-//                                  ...spl] is intentionally NOT used here — the founder-
-//                                  locked flow is DisputeWindow.)
-//   - finalize / resolve / withdraw : NOT dev-confirmed. Best-support defaults are
-//                                  assembled below and EACH carries a TODO(devnet-confirm).
-//                                  Never silently guessed without the marker.
+// SPL-ORDER DISCIPLINE — `assembleV2SplRemaining()` (now co-located with the builders in
+// sap-escrow-v2.ts, imported above) is the SINGLE source of truth for the token
+// `remaining_accounts` wire order. DEVNET-VERIFIED orders (2026-07-09):
+//   - create / deposit : [depositorAta(W), vaultAta(W), tokenProgram(ro)]  (NO mint)
+//   - settle_calls_v2  : [vaultAta(W), workerAta(W), tokenProgram(ro), treasuryAta(W),
+//                         pendingPda(W)] — settle CHARGES the fee to treasury + INITS the
+//                         pending settlement (create_pending_settlement is DEPRECATED 6161).
+//   - finalize         : [vaultAta(W), workerAta(W), tokenProgram(ro)]     (NO mint)
+//   - withdraw         : [vaultAta(W), depositorAta(W), tokenProgram(ro)]  (NO mint)
+//   - resolve          : NOT dev-confirmed — keeps its TODO(devnet-confirm); DisputeWindow
+//                         is the only verified flow, do NOT flip resolve live off the guess.
 // Vault ATA is ALWAYS getAssociatedTokenAddress(mint, escrowPda, /*allowOwnerOffCurve*/ true).
-
-/** The ATAs an SPL remaining-account list may reference (per-kind required subset). */
-interface V2SplAtas {
-  vaultAta: PublicKey;
-  tokenMint: PublicKey;
-  depositorAta?: PublicKey;
-  workerAta?: PublicKey;
-}
-
-/** Which V2 token-moving instruction an SPL remaining-account list is being built for. */
-type V2SplKind = 'create' | 'deposit' | 'finalize' | 'resolve' | 'withdraw';
-
-/**
- * Assemble the SPL `remaining_accounts` for a V2 token-moving instruction — the
- * SINGLE place the wire order lives. AccountMeta flags: every token account is
- * WRITABLE (its balance changes); the mint + SPL token program are READONLY. The
- * requested ATAs are validated per-kind (a missing one is a programming error, not a
- * silent wrong-account).
- *
- * CONFIRMED:
- *   create/deposit → [depositorAta, vaultAta, mint, tokenProgram] (SDK convention).
- * UNCONFIRMED (best-support default; MUST be devnet-verified before a live flip):
- *   finalize/resolve/withdraw → flagged inline with TODO(devnet-confirm).
- */
-function assembleV2SplRemaining(kind: V2SplKind, atas: V2SplAtas): AccountMeta[] {
-  const w = (pubkey: PublicKey): AccountMeta => ({ pubkey, isSigner: false, isWritable: true });
-  const ro = (pubkey: PublicKey): AccountMeta => ({ pubkey, isSigner: false, isWritable: false });
-  const mint = ro(atas.tokenMint);
-  const tokenProgram = ro(TOKEN_PROGRAM_ID);
-  const vault = w(atas.vaultAta);
-  switch (kind) {
-    case 'create':
-    case 'deposit': {
-      // SDK `attachSplAccounts` convention: depositor pays IN → vault.
-      if (!atas.depositorAta) throw new Error(`assembleV2SplRemaining(${kind}): depositorAta required`);
-      return [w(atas.depositorAta), vault, mint, tokenProgram];
-    }
-    case 'finalize': {
-      // TODO(devnet-confirm): SPL remaining order/treasury for finalize_settlement not
-      // dev-verified. Best-support default releases vault → worker. The treasury FEE
-      // account POSITION is unconfirmed and is intentionally NOT invented here (a wrong
-      // extra account would fail the whole release); wire it only once devnet confirms.
-      if (!atas.workerAta) throw new Error('assembleV2SplRemaining(finalize): workerAta required');
-      return [vault, w(atas.workerAta), mint, tokenProgram];
-    }
-    case 'resolve': {
-      // TODO(devnet-confirm): SPL remaining order/identity for resolve_dispute not
-      // dev-verified. Best-support default carries BOTH destinations (vault → depositor
-      // on refund, vault → worker on release); the program selects by outcome.
-      if (!atas.depositorAta || !atas.workerAta) {
-        throw new Error('assembleV2SplRemaining(resolve): depositorAta + workerAta required');
-      }
-      return [vault, w(atas.depositorAta), w(atas.workerAta), mint, tokenProgram];
-    }
-    case 'withdraw': {
-      // TODO(devnet-confirm): SPL remaining order for withdraw_escrow_v2 not dev-verified.
-      // Best-support default refunds vault → depositor.
-      if (!atas.depositorAta) throw new Error('assembleV2SplRemaining(withdraw): depositorAta required');
-      return [vault, w(atas.depositorAta), mint, tokenProgram];
-    }
-    default: {
-      // Exhaustiveness guard — a new V2SplKind must add a case above.
-      const _exhaustive: never = kind;
-      throw new Error(`assembleV2SplRemaining: unhandled kind ${String(_exhaustive)}`);
-    }
-  }
-}
 
 /**
  * Load the ClawVille ARBITER keypair used to sign `resolve_dispute` (DisputeWindow).
@@ -1936,6 +2114,37 @@ export async function createEscrowV2Usdc(
     };
   }
 
+  // ── MONEY RULE: initial_deposit MUST EXCEED the call obligation (fee headroom) ──
+  // The deployed settle_calls_v2 charges a protocol fee FROM THE VAULT to treasury.
+  // The live devnet lifecycle measured the fee at EXACTLY 0.5% (4,500 on a 900,000
+  // obligation) — matching `sap-config.ts`'s "0.5% fee sink". If initial_deposit ==
+  // price_per_call × max_calls (the bare obligation), the vault has no room for the
+  // fee and settle fails InsufficientEscrowBalance 6062.
+  //
+  // We require headroom = ceil(obligation × feeBps / 10000), floored at 1 base unit.
+  // feeBps = 100 (1%) is deliberately DOUBLE the observed 0.5% on-chain fee — NOT a
+  // tight match — so that (a) per-batch integer ceil rounding across a MULTI-settle
+  // escrow (K partial settles can each round the fee up, summing above a single
+  // ceil(0.5%) headroom) and (b) a future fee-schedule wobble both still settle.
+  // feeBps is a client-side PRE-FLIGHT guard, NOT the on-chain fee (see
+  // docs/sap-integration.md); revisit if the protocol fee schedule changes.
+  const obligation = input.pricePerCall * input.maxCalls;
+  const FEE_HEADROOM_BPS = 100n; // 1% — 2× the measured 0.5% on-chain fee, for multi-settle + drift margin
+  const feeCeil = (obligation * FEE_HEADROOM_BPS + 9999n) / 10000n; // ceil division
+  const headroom = feeCeil > 1n ? feeCeil : 1n; // max(1, ceil)
+  const requiredMinDeposit = obligation + headroom;
+  if (input.initialDeposit < requiredMinDeposit) {
+    return {
+      ok: false,
+      code: 'invalid_amount',
+      message:
+        `initialDeposit (${input.initialDeposit}) must EXCEED the call obligation ` +
+        `(price_per_call × max_calls = ${obligation}) by a protocol-fee headroom of ` +
+        `${headroom} base units; required ≥ ${requiredMinDeposit}. A bare-obligation deposit ` +
+        `fails at settle (InsufficientEscrowBalance 6062).`,
+    };
+  }
+
   // Resolve the mode's SettlementSecurity tag + the required authority pubkey.
   let settlementSecurity: SettlementSecurityMode;
   let coSigner: PublicKey | null = null;
@@ -1988,9 +2197,34 @@ export async function createEscrowV2Usdc(
 
   const mint = usdcMintForEscrow(cfg);
   const [agentPda] = findAgentPda(cfg.programId, workerWallet);
+  // 0.25-family create_escrow_v2 is 7-acct: the deployed program enforces the on-chain
+  // stake gate (agent_stake) + writes agent_stats + reads the pricing_menu tier. Derive
+  // all three from the WORKER's agent PDA.
+  const [agentStakePda] = findStakePda(cfg.programId, agentPda);
+  const [agentStatsPda] = findStatsPda(cfg.programId, agentPda);
+  const [pricingMenuPda] = findPricingPda(cfg.programId, agentPda);
   const [escrowPda] = findEscrowPda(cfg.programId, agentPda, depositor, input.escrowNonce);
   const vaultAta = getAssociatedTokenAddress(mint, escrowPda, true);
   const depositorAta = getAssociatedTokenAddress(mint, depositor, false);
+
+  // FEATURE_GATE: sap_agent_stake_provisioning
+  // Status: create_escrow_v2 is wired for the 0.25-family 7-acct shape (stake+stats+
+  //   pricing_menu), but the worker's ON-CHAIN PREREQUISITES are NOT auto-provisioned
+  //   here — every worker agent must, as ITS OWN owner-signed steps, FIRST:
+  //     (a) register_agent (~0.055 SOL rent), (b) init_stake ≥ 0.1 SOL (hard-enforced
+  //     on-chain, StakeBelowMinimum 6107), (c) updateAgentPricing() to seed a matching
+  //     Escrow-mode USDC tier (else create fails PricingTierNotFound 6148).
+  //   We do NOT bundle those into this depositor-signed create: update_agent/init_stake
+  //   are OWNER(worker)-signed while create is DEPOSITOR-signed (a single tx can't carry
+  //   both), AND the 0.1-SOL stake is a real SOL spend that must never be auto-run. So
+  //   provisioning stays an explicit, separate, worker-driven flow.
+  // Metric to graduate: SAP escrow rail enabled (SAP_ESCROW_ENABLED + SAP_USDC_ESCROW_ENABLED
+  //   true, SAP_DRY_RUN=false) with a funded stake-provisioning flow that stakes each
+  //   worker agent ≥ 0.1 SOL + seeds its pricing tier before its first escrow.
+  // Current reading: rail OFF (all SAP_* gates default false, SAP_DRY_RUN default true).
+  // Review deadline: 2026-10-01
+  // On deadline: re-evaluate — keep gated if no funded provisioning flow exists, else graduate.
+  // Reference: docs/sap-integration.md §9; CLAUDE.md "no scaffolding theater".
 
   try {
     const tx = new Transaction();
@@ -2003,11 +2237,14 @@ export async function createEscrowV2Usdc(
         mint,
       }),
     );
-    // (2) create_escrow_v2 (fund-at-create) — SPL remaining pays depositor → vault.
+    // (2) create_escrow_v2 (fund-at-create) — 7 named accts + SPL remaining pays depositor → vault.
     tx.add(
       buildCreateEscrowV2Ix({
         depositor,
         agentPda,
+        agentStakePda,
+        agentStatsPda,
+        pricingMenuPda,
         escrowPda,
         programId: cfg.programId,
         escrowNonce: input.escrowNonce,
@@ -2028,6 +2265,9 @@ export async function createEscrowV2Usdc(
       depositor: depositor.toBase58(),
       worker: workerWallet.toBase58(),
       agent: agentPda.toBase58(),
+      agentStake: agentStakePda.toBase58(),
+      agentStats: agentStatsPda.toBase58(),
+      pricingMenu: pricingMenuPda.toBase58(),
       escrow: escrowPda.toBase58(),
       vaultAta: vaultAta.toBase58(),
       depositorAta: depositorAta.toBase58(),
@@ -2105,7 +2345,7 @@ export async function depositEscrowV2Usdc(
   }
 }
 
-export interface SettleAndCreatePendingUsdcInput {
+export interface SettleCallsV2UsdcInput {
   /** WORKER agent (signer) — settles as ITS own custodial wallet (the agent PDA seed). */
   workerAvatarId: string;
   /** Depositor's wallet pubkey (base58) — the escrow PDA seed component. */
@@ -2114,21 +2354,43 @@ export interface SettleAndCreatePendingUsdcInput {
   callsToSettle: bigint;
   /** Verification provider's 32-byte audit root → on-chain service_hash. */
   auditRoot: Uint8Array;
-  /** The pending release amount (base units) recorded for finalize/dispute. */
+  /**
+   * The pending release amount (base units) the CALLER records off-chain for its own
+   * ledger/reconciliation. NOTE: the deployed settle computes the on-chain pending
+   * amount itself (calls × price − fee); this value is NOT sent to the program.
+   */
   amount: bigint;
 }
 
 /**
- * DisputeWindow release STEP 1 — ONE tx = settle_calls_v2 + create_pending_settlement.
- * In DisputeWindow mode settle_calls_v2 moves NO tokens (remaining=[]); it only bumps
- * pending_amount + settlement_index. create_pending_settlement records the pending
- * release the finalize/dispute path acts on. The pending PDA is seeded by the escrow's
- * CURRENT (pre-increment) settlement_index, READ from chain here (Anchor decodes the
- * on-chain `settlement_index` u64 as a BN under the camelCase `settlementIndex`
- * accessor). Signer = the worker's OWN custodial wallet.
+ * DisputeWindow release STEP 1 — settle_calls_v2 (0.25-family).
+ *
+ * ONE instruction now does the whole settle: the deployed settle_calls_v2 CHARGES the
+ * protocol fee from the vault → treasury AND INITS the pending settlement itself. The
+ * separate `create_pending_settlement` call is DEPRECATED on-chain (6161) and is NO
+ * longer bundled. It does NOT release principal — finalize_settlement does, after the
+ * dispute window. The SPL remaining carries the vault + worker + treasury ATAs and the
+ * pending PDA (order LOAD-BEARING — see assembleV2SplRemaining('settle')).
+ *
+ * The pending PDA is seeded by the escrow's CURRENT (pre-increment) settlement_index,
+ * READ from chain here (Anchor decodes the on-chain `settlement_index` u64 as a BN under
+ * the camelCase `settlementIndex` accessor). Signer = the worker's OWN custodial wallet.
+ *
+ * ⛔ FLIP-GATE BLOCKER (B1 — do NOT enable/wire this live until resolved) ⛔
+ * This V2 settle path is NOT yet routed through the `escrow-gate.ts` idempotency ledger
+ * (that ledger currently drives only the V1 `settleCallsUsdc`). On-chain there is NO
+ * per-(escrow, service_hash) anti-replay receipt (the `["sap_recv", …]` PDA is unused by
+ * the deployed settle), and settle_calls_v2 reads the CURRENT on-chain settlement_index,
+ * which INCREMENTS each settle. So a settle retried after a landed-but-unobserved first
+ * attempt would read the NEW index, init a SECOND pending, RE-CHARGE the 0.5% fee, and
+ * settle another batch (bounded only by max_calls + vault balance). Before any live flip,
+ * route settle/finalize/withdraw through the `escrow-gate` ledger (or an equivalent
+ * (escrowPda, jobId/service_hash) claim), and honor the executeTx `broadcast:true`
+ * NEVER-auto-retry contract. Tracked as the #1 item in the flip checklist
+ * (docs/sap-integration.md §"FLIP-TO-LIVE CHECKLIST").
  */
-export async function settleAndCreatePendingUsdc(
-  input: SettleAndCreatePendingUsdcInput,
+export async function settleCallsV2Usdc(
+  input: SettleCallsV2UsdcInput,
 ): Promise<SapWriteResult> {
   const cfg = getConfig();
   const gate = usdcEscrowGate(cfg);
@@ -2164,9 +2426,15 @@ export async function settleAndCreatePendingUsdc(
   if ('ok' in handle && handle.ok === false) return handle;
   const { keypair, publicKey: workerWallet } = handle as AvatarWalletHandle;
 
+  const mint = usdcMintForEscrow(cfg);
   const [agentPda] = findAgentPda(cfg.programId, workerWallet);
   const [agentStatsPda] = findStatsPda(cfg.programId, agentPda);
   const [escrowPda] = findEscrowPda(cfg.programId, agentPda, depositorWallet, input.escrowNonce);
+  const vaultAta = getAssociatedTokenAddress(mint, escrowPda, true);
+  const workerAta = getAssociatedTokenAddress(mint, workerWallet, false);
+  // Treasury may be a PDA/off-curve — derive with allowOwnerOffCurve=true (per the
+  // devnet-verified settle; treasury = cfg.treasuryPubkey, the protocol fee sink).
+  const treasuryAta = getAssociatedTokenAddress(mint, cfg.treasuryPubkey, true);
 
   // READ the escrow's CURRENT settlement_index (pre-increment) — the value the pending
   // PDA seed uses. On a dry-run rehearsal the escrow may not exist yet (fetchNullable ⇒
@@ -2189,14 +2457,14 @@ export async function settleAndCreatePendingUsdc(
           ok: false,
           code: 'on_chain_error',
           message:
-            'settleAndCreatePendingUsdc: escrow account not found on-chain — refusing a ' +
+            'settleCallsV2Usdc: escrow account not found on-chain — refusing a ' +
             'LIVE settle against a nonexistent/unfunded escrow (would build a wrong pending PDA).',
         };
       }
       settlementIndex = 0n;
     }
   } catch (err) {
-    return classifyChainError('settleAndCreatePendingUsdc:readIndex', err);
+    return classifyChainError('settleCallsV2Usdc:readIndex', err);
   }
 
   const [pendingPda] = findPendingPda(cfg.programId, escrowPda, settlementIndex);
@@ -2204,7 +2472,26 @@ export async function settleAndCreatePendingUsdc(
 
   try {
     const tx = new Transaction();
-    // (1) settle_calls_v2 — DisputeWindow: NO token move (remaining=[]), bumps pending.
+    // Idempotent creates for the fee destination (treasury) + the worker ATA the settle
+    // references. Payer = the worker (settle signer). No-op if they already exist.
+    tx.add(
+      createAssociatedTokenAccountIdempotentInstruction({
+        payer: workerWallet,
+        ata: treasuryAta,
+        owner: cfg.treasuryPubkey,
+        mint,
+      }),
+    );
+    tx.add(
+      createAssociatedTokenAccountIdempotentInstruction({
+        payer: workerWallet,
+        ata: workerAta,
+        owner: workerWallet,
+        mint,
+      }),
+    );
+    // settle_calls_v2 — charges the fee to treasury + INITS the pending settlement.
+    // SPL remaining order is LOAD-BEARING (tokenProgram idx2, treasury idx3, pending W idx4).
     tx.add(
       buildSettleCallsV2Ix({
         workerWallet,
@@ -2215,33 +2502,28 @@ export async function settleAndCreatePendingUsdc(
         escrowNonce: input.escrowNonce,
         callsToSettle: input.callsToSettle,
         serviceHash: auditRoot,
-        remaining: [], // DisputeWindow — the token release is deferred to finalize.
+        remaining: assembleV2SplRemaining('settle', {
+          vaultAta,
+          workerAta,
+          treasuryAta,
+          pendingPda,
+          tokenMint: mint,
+        }),
       }),
     );
-    // (2) create_pending_settlement — record the pending release (pre-increment index).
-    tx.add(
-      buildCreatePendingSettlementIx({
-        workerWallet,
-        agentPda,
-        escrowPda,
-        pendingPda,
-        programId: cfg.programId,
-        settlementIndex,
-        callsToSettle: input.callsToSettle,
-        amount: input.amount,
-        serviceHash: auditRoot,
-      }),
-    );
-    return executeTx(cfg, 'settleAndCreatePendingUsdc', tx, keypair, {
+    return executeTx(cfg, 'settleCallsV2Usdc', tx, keypair, {
       worker: workerWallet.toBase58(),
       agent: agentPda.toBase58(),
       agentStats: agentStatsPda.toBase58(),
       escrow: escrowPda.toBase58(),
+      vaultAta: vaultAta.toBase58(),
+      workerAta: workerAta.toBase58(),
+      treasuryAta: treasuryAta.toBase58(),
       pending: pendingPda.toBase58(),
       settlementIndex: settlementIndex.toString(),
     });
   } catch (err) {
-    return classifyChainError('settleAndCreatePendingUsdc:build', err);
+    return classifyChainError('settleCallsV2Usdc:build', err);
   }
 }
 
@@ -2260,12 +2542,11 @@ export interface FinalizeSettlementUsdcInput {
 }
 
 /**
- * DisputeWindow release STEP 2 — finalize_settlement releases vault → worker after the
- * dispute window elapses with no dispute. Prepends an idempotent worker-ATA create (the
- * release destination). Permissionless: signer = any funded payer/crank avatar.
- *
- * TODO(devnet-confirm): SPL remaining order/treasury for finalize_settlement not
- * dev-verified (assembleV2SplRemaining).
+ * DisputeWindow release STEP 2 — finalize_settlement releases the PRINCIPAL vault →
+ * worker after the dispute window elapses with no dispute. Prepends an idempotent
+ * worker-ATA create (the release destination). Permissionless: signer = any funded
+ * payer/crank avatar. SPL remaining [vaultAta, workerAta, tokenProgram] (NO mint).
+ * (devnet-confirmed 2026-07-09 tx 21QKsYjxm3PK8i79KWPKabPjXbwWQXhTAMTQSfMNdgKPqFg5cZor7Exo8KHu3vAkPJibHwyVHCugC3WxyMSSc7iy)
  */
 export async function finalizeSettlementUsdc(
   input: FinalizeSettlementUsdcInput,
@@ -2524,11 +2805,11 @@ export interface WithdrawEscrowV2UsdcInput {
 
 /**
  * withdraw_escrow_v2 (USDC) — the DEPOSITOR (creator) reclaims unspent USDC after the
- * work-deadline expires (or on cancel). Prepends an idempotent depositor-ATA create
- * (the refund destination may have been closed). Signer = the depositor.
- *
- * TODO(devnet-confirm): SPL remaining order for withdraw_escrow_v2 not dev-verified
- * (assembleV2SplRemaining).
+ * work-deadline expires (or on cancel; works on an ACTIVE escrow — recovery path).
+ * Prepends an idempotent depositor-ATA create (the refund destination may have been
+ * closed). Signer = the depositor. SPL remaining [vaultAta, depositorAta, tokenProgram]
+ * (NO mint).
+ * (devnet-confirmed 2026-07-09 tx 3TXwu7CnzNGQGMHS43b1VtMBLTcRRy6BY5zUKKHo4ZTRXPhDxyMZqw1zDSrbBwZiqZWWkUf3SFmkdCTvyzq69Frg)
  */
 export async function withdrawEscrowV2Usdc(
   input: WithdrawEscrowV2UsdcInput,
