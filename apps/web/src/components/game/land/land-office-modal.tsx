@@ -46,10 +46,12 @@ import { RpgModal, RpgButton } from '@/components/rpg';
 import { useGameStore } from '@/stores/game';
 import { useAvatar, useSetSpawnPreference } from '@/hooks/use-avatar';
 import { useIsMobile } from '@/hooks/use-is-mobile';
+import { useIsGuest } from '@/hooks/use-is-guest';
 import { useWalletLink } from '@/hooks/use-wallet-link';
 import { api, ApiError } from '@/lib/api';
 import { useLandStore, type ParcelState } from '@/stores/land';
 import { LAND_PARCELS_QUERY_KEY } from '@/lib/three/land-state-hydrator';
+import GuestLandSandbox from './guest-land-sandbox';
 import type {
   LandParcelDTO,
   LandStructureDTO,
@@ -137,6 +139,16 @@ function errCode(err: unknown): { code: string | undefined; status: number | und
   if (err instanceof ApiError) return { code: err.code ?? err.message, status: err.status };
   return { code: undefined, status: undefined };
 }
+
+/**
+ * Backstop copy for the server's `guest_not_allowed` 403 (land.ts
+ * `requireNonGuestIdentity`). Guests render <GuestLandSandbox/> instead of the
+ * real tabs, so this should not normally fire — but every land write error map
+ * carries it as defense-in-depth so a guest NEVER sees a raw failure toast if a
+ * real write path is somehow reached.
+ */
+const GUEST_NOT_ALLOWED_MSG =
+  'Sign up to own real land — you’re browsing as a guest (this is the demo sandbox).';
 
 // ---------------------------------------------------------------------------
 // Tier badge + price pill
@@ -533,6 +545,8 @@ function claimHoldErrorMessage(
   heldClv: number | null,
 ): string {
   switch (code) {
+    case 'guest_not_allowed':
+      return GUEST_NOT_ALLOWED_MSG;
     case 'wallet_not_linked':
       return 'Link a self-custody wallet first — your $CLAWVILLE hold is verified against it.';
     // Agent-only (humans shouldn't hit this) — handled defensively.
@@ -727,6 +741,8 @@ function ClaimHoldModal({
  */
 function starterClaimErrorMessage(code: string | undefined, status: number | undefined): string {
   switch (code) {
+    case 'guest_not_allowed':
+      return GUEST_NOT_ALLOWED_MSG;
     case 'insufficient_clawtokens':
       return `You need ${LAND_STARTER_DEPOSIT_CT.toLocaleString()} CT for the refundable deposit — top up and try again.`;
     case 'no_starter_available':
@@ -1042,6 +1058,8 @@ function MyLandTab({
 
 function placeErrorMessage(code: string | undefined, status: number | undefined): string {
   switch (code) {
+    case 'guest_not_allowed':
+      return GUEST_NOT_ALLOWED_MSG;
     case 'sku_not_allowed_for_tier':
       return 'That building isn’t allowed on this tier — buy a higher tier to unlock it.';
     case 'structure_exists':
@@ -1060,6 +1078,8 @@ function placeErrorMessage(code: string | undefined, status: number | undefined)
 
 function upgradeErrorMessage(code: string | undefined, status: number | undefined, maxLevel: number): string {
   switch (code) {
+    case 'guest_not_allowed':
+      return GUEST_NOT_ALLOWED_MSG;
     case 'tier_max_level':
     case 'max_level_reached':
       return `This tier caps at Lv${maxLevel} — buy a higher tier to build bigger.`;
@@ -1439,6 +1459,8 @@ function structure_tier(catalog: LandCatalogTierResponse): LandTier {
 
 function serviceBuyErrorMessage(code: string | undefined, status: number | undefined, priceCt: number, have: number): string {
   switch (code) {
+    case 'guest_not_allowed':
+      return GUEST_NOT_ALLOWED_MSG;
     case 'self_purchase':
       return 'You can’t buy your own listing.';
     case 'listing_not_active':
@@ -1457,6 +1479,8 @@ function serviceBuyErrorMessage(code: string | undefined, status: number | undef
 
 function serviceListErrorMessage(code: string | undefined, status: number | undefined): string {
   switch (code) {
+    case 'guest_not_allowed':
+      return GUEST_NOT_ALLOWED_MSG;
     case 'not_a_shop':
       return 'Only a shop can list services — build a shop first.';
     case 'structure_archived':
@@ -1477,6 +1501,8 @@ function serviceListErrorMessage(code: string | undefined, status: number | unde
 
 function serviceUpdateErrorMessage(code: string | undefined, status: number | undefined): string {
   switch (code) {
+    case 'guest_not_allowed':
+      return GUEST_NOT_ALLOWED_MSG;
     case 'not_listing_owner':
       return 'You don’t own that listing.';
     case 'listing_not_found':
@@ -2029,6 +2055,10 @@ export default function LandOfficeModal() {
   const queryClient = useQueryClient();
   const isMobile = useIsMobile();
   const { data: avatar } = useAvatar();
+  // Guest signal via the canonical hook (shares the ['auth-me'] cache with the
+  // avatar-status-bar DEMO badge — no extra round trip). A guest gets the
+  // client-side sandbox (below) instead of the real, server-gated tabs.
+  const isGuest = useIsGuest();
   const setSpawnPreference = useSetSpawnPreference();
   const hasAvatar = !!avatar;
   const avatarId: string | null = (avatar as { id?: string } | null | undefined)?.id ?? null;
@@ -2112,6 +2142,8 @@ export default function LandOfficeModal() {
   // auto-switch to the For-Sale tab so the highlighted card is visible.
   useEffect(() => {
     if (!open) return;
+    // Guests use the client-side sandbox — never touch the real land reads.
+    if (isGuest) return;
     refreshMyLand();
     hydrateOverlay(avatarId);
     if (focusParcelCode) {
@@ -2121,7 +2153,7 @@ export default function LandOfficeModal() {
     // react to the open event, not to every focus change. Tab auto-switch on
     // each new open is the correct semantic.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, refreshMyLand, hydrateOverlay, avatarId]);
+  }, [open, isGuest, refreshMyLand, hydrateOverlay, avatarId]);
 
   // Helper — invalidate the world parcel query so LandStateHydrator refetches
   // and the 3D scene reflects the new ownership without a page reload.
@@ -2201,6 +2233,12 @@ export default function LandOfficeModal() {
         tier="legendary"
         maxWidth={1000}
       >
+        {isGuest ? (
+          // A guest cannot own real land (every land write 403s server-side);
+          // render the client-side SANDBOX instead of the real, gated tabs.
+          <GuestLandSandbox />
+        ) : (
+        <>
         {/* Tabs */}
         <div className="mb-4 flex flex-wrap gap-2 border-b border-cyan-400/20 pb-3">
           <TabButton label="🏝️ For Sale" active={tab === 'for-sale'} onClick={() => setTab('for-sale')} />
@@ -2248,9 +2286,13 @@ export default function LandOfficeModal() {
         {tab === 'services' && (
           <ServicesTab hasAvatar={hasAvatar} avatarId={avatarId} clawTokens={clawTokens} shops={myShops} />
         )}
+        </>
+        )}
       </RpgModal>
 
-      {claimTarget && (
+      {/* Claim confirm modals drive the real (server) write paths, so they are
+          never mounted for a guest — the guest sandbox handles its own flow. */}
+      {!isGuest && claimTarget && (
         <ClaimHoldModal
           parcel={claimTarget}
           linked={walletLinked}
@@ -2262,7 +2304,7 @@ export default function LandOfficeModal() {
         />
       )}
 
-      {starterClaimOpen && (
+      {!isGuest && starterClaimOpen && (
         <StarterClaimModal
           clawTokens={clawTokens}
           onClose={() => setStarterClaimOpen(false)}

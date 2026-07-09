@@ -9,7 +9,7 @@ import { getHouseTreasuryAvatarId } from '../services/house-treasury-seeder';
 import { requireAuth } from '../middleware/auth';
 import { sessionMiddleware } from '../middleware/auth';
 import { requireAuthOrAgentSession } from '../middleware/require-auth-or-agent';
-import { requireNonGuestIdentity } from '../middleware/require-non-guest';
+import { isGuestUser } from '../middleware/require-non-guest';
 import { agentOrchestrator } from '../services/agent-orchestrator';
 import { embedText } from '@clawville/agent-runtime';
 import { logEventFromContext } from '../services/event-logger';
@@ -66,7 +66,7 @@ const buySchema = z.object({
   itemId: z.string().min(1).max(50),
 });
 
-itemRoutes.post('/buy', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
+itemRoutes.post('/buy', requireAuthOrAgentSession, async (c) => {
   const identity = c.get('identity');
   const userId = identity.userId;
   const body = await c.req.json();
@@ -89,6 +89,98 @@ itemRoutes.post('/buy', requireAuthOrAgentSession, requireNonGuestIdentity, asyn
     throw new HTTPException(404, { message: 'No avatar found' });
   }
 
+  // ── GUEST DEMO SETTLEMENT (founder ruling 2026-07-06; mirrors the cove) ──────
+  // A guest is a REAL Lucia user + avatar + a 100-CT DEMO soft-balance that
+  // settles OFF the real ledger. This SUPERSEDES the 2026-07-07 guest-403 on
+  // `/buy` (which `requireNonGuestIdentity` enforced): guests now BUY on demo CT,
+  // exactly like they PLAY the cove card games on a demo session balance. Like the
+  // cove (`cove-blackjack.ts` getSubject → guest tier), a guest here NEVER touches
+  // `claw-token-ledger`, the house treasury, or leaderboard/quest events / XP —
+  // those are the REAL economy. The demo balance IS `avatars.clawTokens`, which for
+  // a guest is 100% SOFT (seeded `clawTokens == softBalance == 100`, bought/earned
+  // = 0, and every guest EARN/on-ramp path is gated off-ledger, so the vCLAW
+  // buckets stay soft-only). We debit it with a raw, CHECK-safe, row-locked UPDATE
+  // (decrement `claw_tokens` AND `soft_balance` together so the
+  // `avatars_vclaw_balance_sum` CHECK never sees a torn state) and write NO
+  // `claw_token_transactions` row. A connected/hosted AGENT is NEVER a guest
+  // (`identity.kind === 'agent'`, Rule E5), so the real-CT agent path below is
+  // structurally unreachable from this branch.
+  const isGuest = identity.kind === 'user' && (await isGuestUser(userId));
+  if (isGuest) {
+    const demo = await db.transaction(async (tx) => {
+      // Row-lock the guest avatar and read the SOFT demo balance under the lock
+      // (mirrors the ledger's FOR UPDATE read so two concurrent guest buys on the
+      // same avatar can't double-spend the demo balance).
+      const [row] = await tx.execute<{ claw_tokens: number | string; soft_balance: number | string }>(
+        sql`SELECT claw_tokens, soft_balance FROM avatars WHERE id = ${avatar.id} FOR UPDATE`,
+      );
+      if (!row) throw new HTTPException(404, { message: 'No avatar found' });
+      const total = Number(row.claw_tokens);
+      const soft = Number(row.soft_balance);
+      if (total < book.price) {
+        return { insufficient: true as const, total };
+      }
+      // Demo debit — burn from the SOFT bucket only (a guest is soft-only).
+      // Decrement `claw_tokens` AND `soft_balance` in ONE update so the vCLAW
+      // CHECK holds. NO ledger row, NO house-treasury credit: this is demo money,
+      // off the real ledger, and must never move supply into the real economy.
+      const balanceAfter = total - book.price;
+      await tx
+        .update(avatars)
+        .set({ clawTokens: balanceAfter, softBalance: soft - book.price })
+        .where(eq(avatars.id, avatar.id));
+
+      // Grant the inventory row — scoped to the guest's OWN avatar. Guests have a
+      // real `avatars` row and `avatar_inventory` is strictly per-avatar (nothing
+      // shared or global), so this is harmless demo state. Identical insert/
+      // increment to the real path below.
+      const existingItem = await tx.query.avatarInventory.findFirst({
+        where: and(
+          eq(avatarInventory.avatarId, avatar.id),
+          eq(avatarInventory.itemId, result.data.itemId),
+        ),
+      });
+      if (existingItem) {
+        await tx
+          .update(avatarInventory)
+          .set({ quantity: existingItem.quantity + 1 })
+          .where(eq(avatarInventory.id, existingItem.id));
+      } else {
+        await tx.insert(avatarInventory).values({
+          avatarId: avatar.id,
+          itemId: result.data.itemId,
+          quantity: 1,
+        });
+      }
+      return { insufficient: false as const, balanceAfter };
+    });
+
+    if (demo.insufficient) {
+      // Same 400 as the real path, plus a STRING `code` the client branches on
+      // (the global onError serializes HTTPException with a NUMERIC `code`, so we
+      // return a coded JSON here for a clean UI branch — see shop-overlay.tsx).
+      return c.json(
+        {
+          error: `Not enough demo ClawTokens. Need ${book.price}, have ${demo.total}.`,
+          code: 'insufficient_ct',
+        },
+        400,
+      );
+    }
+
+    // NO `item.purchased` event and NO XP for guests — demo play feeds NOTHING
+    // persistent (mirrors the cove guest tier). The `item.purchased` emitter below
+    // feeds the tutorial-quest validators (`quests.ts`), which a guest can never
+    // claim (real-CT rewards are guest-403'd), so emitting it would be dead state.
+    return c.json({
+      success: true,
+      clawTokens: demo.balanceAfter,
+      item: { id: book.id, name: book.name, isBook: true },
+      demo: true,
+    });
+  }
+
+  // ── REAL-CT SETTLEMENT (non-guest user OR connected/hosted agent) — UNCHANGED ──
   if (avatar.clawTokens < book.price) {
     throw new HTTPException(400, { message: `Not enough ClawTokens. Need ${book.price}, have ${avatar.clawTokens}.` });
   }
