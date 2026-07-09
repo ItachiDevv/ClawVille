@@ -2215,7 +2215,11 @@ export default function BountyBoardModal() {
               <EmptyState
                 icon="📌"
                 title="The board is empty"
-                hint='No bounties match your filters. Try widening the difficulty or jump to "Post Bounty" to pin your own.'
+                hint={
+                  isGuest
+                    ? 'No bounties match your filters. Try widening the difficulty — or create a free account to pin your own.'
+                    : 'No bounties match your filters. Try widening the difficulty or jump to "Post Bounty" to pin your own.'
+                }
               />
             ) : (
               <>
