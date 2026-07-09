@@ -73,6 +73,15 @@ import {
   settleCalls,
   withdrawEscrow,
   closeEscrow,
+  // V2 (SDK 1.0.0) funding-side executors — SAFE to route directly (the DEPOSITOR
+  // funds its OWN escrow; the OWNER stakes its OWN SOL — no unauthorized release).
+  // The V2 RELEASE path (settle/finalize/withdraw) is deliberately NOT routed here:
+  // it must go through the escrow-gate's approval/ceiling/idempotency (a gate→V2
+  // two-phase retrofit — see docs/sap-integration.md FLIP checklist B1).
+  provisionAgentStake,
+  createEscrowV2Usdc,
+  depositEscrowV2Usdc,
+  withdrawEscrowV2Usdc,
   type SapWriteResult,
   type SapFailure,
 } from '../services/sap/sap-client';
@@ -544,6 +553,131 @@ sapRoutes.post('/escrow/deposit', requireAuthOrAgentSession, requireNonGuestIden
     depositorAvatarId: identity.avatarId,
     serviceAgentPda: parsed.data.serviceAgentPda,
     nonce: BigInt(parsed.data.nonce),
+    amount: BigInt(parsed.data.amount),
+  });
+  return respondWrite(c, result);
+});
+
+// ─── V2 escrow (SDK 1.0.0) — FUNDING-SIDE routes only ─────────────────────────
+// These expose the "spend-your-own" V2 operations: an OWNER staking its own SOL,
+// and a DEPOSITOR funding its OWN escrow. Neither can release another party's
+// funds, so they are safe to route directly (behind requireAuthOrAgentSession +
+// requireLedgerCapable + the gates + SAP_DRY_RUN). E5 parity: BOTH a human and a
+// connected/hosted agent act AS THEMSELVES (bound to identity.avatarId). The V2
+// RELEASE path (settle/finalize/withdraw) is intentionally NOT routed here — it
+// must be driven through the escrow-gate's approval/ceiling/at-most-once layer (a
+// gate→V2 two-phase retrofit; see docs/sap-integration.md FLIP checklist B1).
+
+const provisionStakeSchema = z.object({ targetLamports: u64Str }).strict();
+
+sapRoutes.post('/escrow/v2/provision-stake', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
+  const gated = gate503(c, true);
+  if (gated) return gated;
+  if (!writeLimiter.check(getClientIp(c.req.raw.headers))) {
+    return c.json({ error: 'rate_limited' }, 429);
+  }
+  const parsed = provisionStakeSchema.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) return c.json({ error: 'invalid_body', code: 'invalid_body' }, 400);
+  const identity = c.get('identity');
+  const notLedger = requireLedgerCapable(c, identity);
+  if (notLedger) return notLedger;
+  // The acting avatar stakes its OWN SOL up to the target (init-or-deposit).
+  const result = await provisionAgentStake({
+    avatarId: identity.avatarId,
+    targetLamports: BigInt(parsed.data.targetLamports),
+  });
+  return respondWrite(c, result);
+});
+
+const createEscrowV2Schema = z
+  .object({
+    workerWalletPubkey: z.string().min(32).max(64),
+    escrowNonce: u64Str,
+    pricePerCall: u64Str,
+    maxCalls: u64Str,
+    initialDeposit: u64Str,
+    expiresAt: z.string().regex(/^\d+$/).max(20),
+  })
+  .strict();
+
+sapRoutes.post('/escrow/v2/create', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
+  const gated = gate503(c, true, true);
+  if (gated) return gated;
+  if (!writeLimiter.check(getClientIp(c.req.raw.headers))) {
+    return c.json({ error: 'rate_limited' }, 429);
+  }
+  const parsed = createEscrowV2Schema.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) return c.json({ error: 'invalid_body', code: 'invalid_body' }, 400);
+  const identity = c.get('identity');
+  const notLedger = requireLedgerCapable(c, identity);
+  if (notLedger) return notLedger;
+  // The acting avatar is the DEPOSITOR funding its OWN escrow against the worker.
+  const result = await createEscrowV2Usdc({
+    depositorAvatarId: identity.avatarId,
+    workerWalletPubkey: parsed.data.workerWalletPubkey,
+    escrowNonce: BigInt(parsed.data.escrowNonce),
+    pricePerCall: BigInt(parsed.data.pricePerCall),
+    maxCalls: BigInt(parsed.data.maxCalls),
+    initialDeposit: BigInt(parsed.data.initialDeposit),
+    expiresAt: BigInt(parsed.data.expiresAt),
+  });
+  return respondWrite(c, result);
+});
+
+const depositEscrowV2Schema = z
+  .object({
+    workerWalletPubkey: z.string().min(32).max(64),
+    escrowNonce: u64Str,
+    amount: u64Str,
+  })
+  .strict();
+
+sapRoutes.post('/escrow/v2/deposit', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
+  const gated = gate503(c, true, true);
+  if (gated) return gated;
+  if (!writeLimiter.check(getClientIp(c.req.raw.headers))) {
+    return c.json({ error: 'rate_limited' }, 429);
+  }
+  const parsed = depositEscrowV2Schema.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) return c.json({ error: 'invalid_body', code: 'invalid_body' }, 400);
+  const identity = c.get('identity');
+  const notLedger = requireLedgerCapable(c, identity);
+  if (notLedger) return notLedger;
+  const result = await depositEscrowV2Usdc({
+    depositorAvatarId: identity.avatarId,
+    workerWalletPubkey: parsed.data.workerWalletPubkey,
+    escrowNonce: BigInt(parsed.data.escrowNonce),
+    amount: BigInt(parsed.data.amount),
+  });
+  return respondWrite(c, result);
+});
+
+const withdrawEscrowV2Schema = z
+  .object({
+    workerWalletPubkey: z.string().min(32).max(64),
+    escrowNonce: u64Str,
+    amount: u64Str,
+  })
+  .strict();
+
+// withdraw is SELF-CUSTODY: the DEPOSITOR reclaims its OWN unspent (free) balance
+// (on-chain enforces free = balance − pendingAmount, so reserved/pending funds can't
+// be pulled). No counterparty is paid → no gate approval needed; safe bucket with create/deposit.
+sapRoutes.post('/escrow/v2/withdraw', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
+  const gated = gate503(c, true, true);
+  if (gated) return gated;
+  if (!writeLimiter.check(getClientIp(c.req.raw.headers))) {
+    return c.json({ error: 'rate_limited' }, 429);
+  }
+  const parsed = withdrawEscrowV2Schema.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) return c.json({ error: 'invalid_body', code: 'invalid_body' }, 400);
+  const identity = c.get('identity');
+  const notLedger = requireLedgerCapable(c, identity);
+  if (notLedger) return notLedger;
+  const result = await withdrawEscrowV2Usdc({
+    depositorAvatarId: identity.avatarId,
+    workerWalletPubkey: parsed.data.workerWalletPubkey,
+    escrowNonce: BigInt(parsed.data.escrowNonce),
     amount: BigInt(parsed.data.amount),
   });
   return respondWrite(c, result);
