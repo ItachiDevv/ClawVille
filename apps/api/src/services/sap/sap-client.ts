@@ -1842,6 +1842,90 @@ export function resolveUsdcEscrowAddresses(input: {
   return { ok: true, addrs, mint };
 }
 
+/**
+ * Resolve the nonce-scoped V2 escrow PDA without signing or sending. The gate
+ * needs this deterministic key before its claim-first/fund-second insert.
+ */
+export function resolveV2UsdcEscrowAddress(input: {
+  workerWalletPubkey: string;
+  depositorWalletPubkey: string;
+  escrowNonce: bigint;
+}): { ok: true; escrowPda: PublicKey; mint: PublicKey } | SapFailure {
+  const cfg = getConfig();
+  const gate = usdcEscrowGate(cfg);
+  if (gate) return gate;
+  let workerWallet: PublicKey;
+  let depositorWallet: PublicKey;
+  try {
+    workerWallet = new PublicKey(input.workerWalletPubkey);
+    depositorWallet = new PublicKey(input.depositorWalletPubkey);
+  } catch {
+    return { ok: false, code: 'invalid_pubkey', message: 'invalid worker/depositor wallet pubkey.' };
+  }
+  const [agentPda] = findAgentPda(cfg.programId, workerWallet);
+  const [escrowPda] = findEscrowPda(
+    cfg.programId,
+    agentPda,
+    depositorWallet,
+    input.escrowNonce,
+  );
+  return { ok: true, escrowPda, mint: usdcMintForEscrow(cfg) };
+}
+
+/**
+ * Read the authoritative V2 settlement index and whether its PendingSettlement
+ * PDA already exists. The gate calls this before claiming so a replay is routed
+ * to finalize without ever rebuilding/re-sending settle_calls_v2.
+ */
+export async function inspectV2SettlementState(input: {
+  workerWalletPubkey: string;
+  depositorWalletPubkey: string;
+  escrowNonce: bigint;
+  /** When supplied, inspect this persisted pre-send index, not the escrow's incremented current index. */
+  settlementIndex?: bigint;
+}): Promise<
+  | { ok: true; escrowPda: string; settlementIndex: bigint; pendingExists: boolean }
+  | SapFailure
+> {
+  const cfg = getConfig();
+  const gate = usdcEscrowGate(cfg);
+  if (gate) return gate;
+  const resolved = resolveV2UsdcEscrowAddress(input);
+  if (resolved.ok === false) return resolved;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const escrow = await (getProgram().account as any).escrowAccountV2.fetchNullable(
+      resolved.escrowPda,
+    );
+    if (!escrow) {
+      if (!cfg.dryRun) {
+        return {
+          ok: false,
+          code: 'on_chain_error',
+          message: 'V2 escrow account not found on-chain.',
+        };
+      }
+      return {
+        ok: true,
+        escrowPda: resolved.escrowPda.toBase58(),
+        settlementIndex: 0n,
+        pendingExists: false,
+      };
+    }
+    const settlementIndex = input.settlementIndex ?? BigInt(escrow.settlementIndex.toString());
+    const [pendingPda] = findPendingPda(cfg.programId, resolved.escrowPda, settlementIndex);
+    const pendingExists = (await getConnection().getAccountInfo(pendingPda, COMMITMENT)) !== null;
+    return {
+      ok: true,
+      escrowPda: resolved.escrowPda.toBase58(),
+      settlementIndex,
+      pendingExists,
+    };
+  } catch (err) {
+    return classifyChainError('inspectV2SettlementState', err);
+  }
+}
+
 export interface CreateEscrowUsdcInput {
   /** The DEPOSITOR (signer + payer) avatar — funds the escrow as ITS own wallet. */
   depositorAvatarId: string;
@@ -2462,19 +2546,17 @@ export interface SettleCallsV2UsdcInput {
  * the camelCase `settlementIndex` accessor). Signer = the worker's OWN custodial wallet.
  *
  * FEATURE_GATE: sap_v2_release_path
- * Status: BUILT (wire byte-parity + escrow account decode-parity both devnet-verified,
- *   2026-07-09) but NOT ROUTED — there is NO HTTP release route and NO internal caller
- *   (the escrow-gate.ts ledger drives only the V1 `settleCallsUsdc`). Only the V2 FUNDING
- *   side (create/deposit/withdraw/provision-stake) is routed. So the V2 RELEASE path is
- *   reachable ONLY from a direct code call or the devnet smoke.
+ * Status: ROUTED THROUGH THE ESCROW GATE, GATED OFF. The nonce-scoped V2 open,
+ *   worker settle, and permissionless finalize routes all use the durable money ledger;
+ *   the existing SAP/SAP_ESCROW/SAP_USDC triple gate remains default-OFF and
+ *   SAP_DRY_RUN remains default-true. Staging end-to-end sign-off is still required.
  * Metric to graduate: the escrow-gate ledger drives the V2 TWO-PHASE DisputeWindow
  *   settle→window→finalize with the V1 gate's authorization ported — depositor approval,
  *   per-job release ceiling, self-dealing block, at-most-once claim — AND the T5 idempotency
  *   contract below, verified by an adversarial + codex money-lens pass on staging.
  * Review deadline: 2026-10-01.
- * On deadline: if the gate→V2 retrofit has not landed, DELETE the unrouted release executors
- *   (settleCallsV2Usdc / finalizeSettlementUsdc) rather than let them rot as reachable-by-code
- *   scaffolding; keep the wire-parity-tested builders for a future revisit.
+ * On deadline: if the gated path has not passed the staging open→settle→window→finalize
+ *   smoke, keep it OFF and re-evaluate or delete it; do not silently extend the deadline.
  * Reference: docs/sap-integration.md §"FLIP-TO-LIVE CHECKLIST" B1 (gate→V2 two-phase retrofit).
  *
  * ── T5 idempotency (on-chain anti-replay is authoritative in 1.0.0) ────────────

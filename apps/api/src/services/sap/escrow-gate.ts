@@ -102,6 +102,12 @@ import {
   settleCallsUsdc,
   withdrawEscrowUsdc,
   resolveUsdcEscrowAddresses,
+  createEscrowV2Usdc,
+  depositEscrowV2Usdc,
+  settleCallsV2Usdc,
+  finalizeSettlementUsdc,
+  resolveV2UsdcEscrowAddress,
+  inspectV2SettlementState,
   sapConfigSnapshot,
   type SapWriteResult,
   type SapFailure,
@@ -183,6 +189,11 @@ export type EscrowGateErrorCode =
   | 'refund_in_progress'
   // BLOCKING #5 — the (escrow, job) is in funding_unknown and must be reconciled.
   | 'funding_unconfirmed'
+  | 'settle_unconfirmed'
+  | 'finalize_unconfirmed'
+  | 'finalize_not_ready'
+  | 'finalize_in_progress'
+  | 'release_rail_forbidden'
   // payai rail — the job was opened on (or requested for) the PayAI x402
   // settlement rail while SAP_PAYAI_SETTLEMENT_ENABLED is off. Fail-closed:
   // a payai row NEVER falls back to the on-chain vault (it was never funded
@@ -257,6 +268,16 @@ export interface EscrowGateSettleResult {
   replay: boolean;
 }
 
+export interface EscrowGatePendingResult {
+  ok: true;
+  phase: 'pending';
+  settlement: SapEscrowSettlement;
+  chain: SapWriteResult | null;
+  replay: boolean;
+  /** The principal is reserved on-chain; callers must use the V2 finalize route. */
+  next: 'finalize';
+}
+
 export interface EscrowGateRefundResult {
   ok: true;
   phase: 'refunded';
@@ -274,6 +295,7 @@ export type EscrowGateResult =
   | EscrowGateSubmitResult
   | EscrowGateApproveResult
   | EscrowGateSettleResult
+  | EscrowGatePendingResult
   | EscrowGateRefundResult
   | EscrowGateFailure;
 
@@ -423,6 +445,8 @@ async function escrowFundsLedger(escrowPda: string): Promise<{
   funded: bigint;
   released: bigint;
   refunded: bigint;
+  reserved: bigint;
+  fees: bigint;
   /** funded − released − refunded, floored at 0 (the spendable vault balance). */
   remaining: bigint;
 }> {
@@ -433,12 +457,20 @@ async function escrowFundsLedger(escrowPda: string): Promise<{
       fundedAmount: true,
       releasedAmount: true,
       refundedAmount: true,
+      reservedPrincipalAmount: true,
+      feeAmount: true,
     },
   });
   let funded = 0n;
   let released = 0n;
   let refunded = 0n;
+  let reserved = 0n;
+  let fees = 0n;
   for (const r of rows) {
+    // A settle_unknown row quarantines exactly its own funded allocation. Skip
+    // the row as a unit: adding no funding and then subtracting its provisional
+    // reservation would over-quarantine sibling jobs by the reservation twice.
+    if (r.status === 'settle_unknown') continue;
     // Only count funding that actually landed. A `funding_unknown` row's deposit
     // is UNCONFIRMED — exclude it from the spendable balance (fail-closed: it can
     // only be counted after reconciliation flips it to a funded status).
@@ -447,9 +479,46 @@ async function escrowFundsLedger(escrowPda: string): Promise<{
     }
     released += u64(r.releasedAmount);
     refunded += u64(r.refundedAmount);
+    reserved += u64(r.reservedPrincipalAmount);
+    fees += u64(r.feeAmount);
   }
-  const net = funded - released - refunded;
-  return { funded, released, refunded, remaining: net < 0n ? 0n : net };
+  const net = funded - released - refunded - reserved - fees;
+  return { funded, released, refunded, reserved, fees, remaining: net < 0n ? 0n : net };
+}
+
+/**
+ * Deployed V2 protocol fee: 50 bps with integer-floor arithmetic. The V2
+ * executor does not return the fee separately, so the ledger mirrors the
+ * program's fixed-bps integer calculation; this is intentionally distinct from
+ * create's conservative 100-bps/ceil funding-headroom preflight.
+ */
+export function computeV2ProtocolFee(principal: bigint): bigint {
+  return principal <= 0n ? 0n : (principal * 50n) / 10_000n;
+}
+
+function dryRunSimulationError(result: SapWriteResult): unknown | null {
+  if (!result.ok || !result.dryRun) return null;
+  if (result.simulation.err) return result.simulation.err;
+  if (!result.accepted || result.programReached !== 'yes') {
+    return {
+      kind: 'inconclusive_simulation',
+      accepted: result.accepted,
+      programReached: result.programReached,
+    };
+  }
+  return null;
+}
+
+function isV2ReplaySignal(value: unknown): boolean {
+  let rendered: string;
+  try {
+    rendered = typeof value === 'string' ? value : JSON.stringify(value);
+  } catch {
+    rendered = String(value);
+  }
+  return /(?:6138|6097|6099|SettlementReplay|EscrowNonceReused|SettlementAlreadyFinalized)/i.test(
+    rendered,
+  );
 }
 
 // ─── 1. OPEN (deposit) ────────────────────────────────────────────────────────
@@ -475,6 +544,13 @@ export interface OpenEscrowInput {
    * NOTE (payai): `expiresAt` has no on-chain enforcement on this rail (there
    * is no vault); expiry semantics live with the caller (e.g. bounty expiry).
    */
+  rail?: EscrowSettlementRail;
+}
+
+export interface OpenEscrowV2Input extends Omit<OpenEscrowInput, 'rail'> {
+  /** Explicit u64 seed for ["sap_escrow_v2", agent, depositor, nonce]. */
+  escrowNonce: bigint;
+  /** Test/defense seam only: V2 release is on-chain-only and rejects payai. */
   rail?: EscrowSettlementRail;
 }
 
@@ -696,6 +772,113 @@ export async function openEscrow(input: OpenEscrowInput): Promise<EscrowGateResu
   return { ok: true, phase: 'open', settlement: funded, chain, replay: false };
 }
 
+/** Nonce-scoped V2 open with the same claim-first/fund-second posture as V1. */
+export async function openEscrowV2(input: OpenEscrowV2Input): Promise<EscrowGateResult> {
+  const gated = gateOpen();
+  if (gated) return gated;
+  if (input.rail === 'payai') {
+    return { ok: false, code: 'release_rail_forbidden', message: 'V2 escrows support only the onchain release rail.' };
+  }
+  if (input.depositorAvatarId === input.workerAvatarId) {
+    return { ok: false, code: 'self_dealing_forbidden', message: 'depositor and worker cannot be the same avatar (self-dealing escrow forbidden).' };
+  }
+  if (input.pricePerCall <= 0n || input.maxCalls <= 0n || input.initialDeposit <= 0n) {
+    return { ok: false, code: 'invalid_amount', message: 'pricePerCall, maxCalls, and initialDeposit must be > 0.' };
+  }
+  // Apply createEscrowV2Usdc's conservative fee-headroom preflight here too.
+  // A nonce may already exist and dispatch to depositEscrowV2Usdc, whose generic
+  // top-up executor cannot know this new job's full obligation.
+  const obligation = input.pricePerCall * input.maxCalls;
+  const headroom = ((obligation * 100n + 9_999n) / 10_000n) || 1n;
+  const minimumDeposit = obligation + headroom;
+  if (input.initialDeposit < minimumDeposit) {
+    return {
+      ok: false,
+      code: 'invalid_amount',
+      message: `initialDeposit must cover obligation plus V2 fee headroom (required >= ${minimumDeposit}).`,
+    };
+  }
+  const cfg = sapConfigSnapshot();
+  const workerWalletPubkey = await avatarWalletPubkey(input.workerAvatarId);
+  const depositorWalletPubkey = await avatarWalletPubkey(input.depositorAvatarId);
+  if (!workerWalletPubkey || !depositorWalletPubkey) {
+    return { ok: false, code: 'wallet_pubkey_missing', message: 'worker or depositor avatar has no custodial wallet.' };
+  }
+  const addr = resolveV2UsdcEscrowAddress({ workerWalletPubkey, depositorWalletPubkey, escrowNonce: input.escrowNonce });
+  if (addr.ok === false) return { ok: false, code: addr.code, message: addr.message };
+  const escrowPda = addr.escrowPda.toBase58();
+  return withKeyedMutex(escrowMutexKey(escrowPda), async () => {
+  let row: SapEscrowSettlement;
+  let isTopUp = false;
+  try {
+    const prior = await db.query.sapEscrowSettlements.findFirst({
+      where: eq(sapEscrowSettlements.escrowPda, escrowPda),
+      columns: { id: true, escrowVersion: true, escrowNonce: true, metadata: true },
+    });
+    isTopUp = !!prior;
+    if (prior && (prior.escrowVersion !== 'v2' || prior.escrowNonce !== input.escrowNonce.toString())) {
+      return { ok: false, code: 'internal', message: 'V2 escrow ledger coordinates do not match the requested nonce.' };
+    }
+    if (prior && settlementRail(prior) !== 'onchain') {
+      return { ok: false, code: 'release_rail_forbidden', message: 'a payai row cannot share a V2 on-chain escrow.' };
+    }
+    [row] = await db.insert(sapEscrowSettlements).values({
+      escrowPda,
+      escrowVersion: 'v2',
+      escrowNonce: input.escrowNonce.toString(),
+      jobId: input.jobId,
+      depositorAvatarId: input.depositorAvatarId,
+      workerAvatarId: input.workerAvatarId,
+      workerWalletPubkey,
+      depositorWalletPubkey,
+      tokenMint: addr.mint.toBase58(),
+      pricePerCall: input.pricePerCall.toString(),
+      maxCalls: input.maxCalls.toString(),
+      fundedAmount: '0',
+      status: 'open',
+      dryRun: cfg.dryRun,
+      metadata: { isTopUp, funded: false, rail: 'onchain' },
+    }).returning();
+  } catch (err) {
+    if (isUniqueViolation(err)) {
+      const existing = await db.query.sapEscrowSettlements.findFirst({
+        where: and(eq(sapEscrowSettlements.escrowPda, escrowPda), eq(sapEscrowSettlements.jobId, input.jobId)),
+      });
+      if (existing) return { ok: true, phase: 'open', settlement: existing, chain: null, replay: true };
+    }
+    return { ok: false, code: 'internal', message: 'failed to record V2 escrow settlement.' };
+  }
+  const chain = isTopUp
+    ? await depositEscrowV2Usdc({ depositorAvatarId: input.depositorAvatarId, workerWalletPubkey, escrowNonce: input.escrowNonce, amount: input.initialDeposit })
+    : await createEscrowV2Usdc({ depositorAvatarId: input.depositorAvatarId, workerWalletPubkey, escrowNonce: input.escrowNonce, pricePerCall: input.pricePerCall, maxCalls: input.maxCalls, initialDeposit: input.initialDeposit, expiresAt: input.expiresAt });
+  if (chain.ok === false) {
+    if (chain.broadcast) {
+      await db.update(sapEscrowSettlements).set({
+        status: 'funding_unknown', fundingSignature: chain.signature ?? null, dryRun: false,
+        metadata: { ...((row.metadata as object) ?? {}), isTopUp, funded: false, fundingError: chain.code }, updatedAt: new Date(),
+      }).where(eq(sapEscrowSettlements.id, row.id));
+      return { ok: false, code: 'funding_unconfirmed', message: 'V2 escrow fund tx was broadcast but unconfirmed; reconcile before retry.' };
+    }
+    await db.delete(sapEscrowSettlements).where(eq(sapEscrowSettlements.id, row.id));
+    return { ok: false, code: chain.code, message: chain.message };
+  }
+  const fundingSimulationError = dryRunSimulationError(chain);
+  if (fundingSimulationError) {
+    await db.delete(sapEscrowSettlements).where(eq(sapEscrowSettlements.id, row.id));
+    return {
+      ok: false,
+      code: 'on_chain_error',
+      message: `V2 escrow funding simulation failed before broadcast: ${JSON.stringify(fundingSimulationError)}`,
+    };
+  }
+  const [funded] = await db.update(sapEscrowSettlements).set({
+    dryRun: chain.dryRun, fundedAmount: input.initialDeposit.toString(),
+    metadata: { isTopUp, funded: true, rail: 'onchain' }, updatedAt: new Date(),
+  }).where(eq(sapEscrowSettlements.id, row.id)).returning();
+  return { ok: true, phase: 'open', settlement: funded, chain, replay: false };
+  });
+}
+
 // ─── 2. SUBMIT ────────────────────────────────────────────────────────────────
 
 /**
@@ -800,7 +983,11 @@ export async function approveJob(input: ApproveJobInput): Promise<EscrowGateResu
   if (!row) {
     return { ok: false, code: 'job_not_found', message: 'no settlement row for (escrow, job).' };
   }
-
+  // V2 inserts its durable open claim before funding. Refuse approval during
+  // that zero-funded window so an approval cannot outlive a clean-delete/reopen.
+  if (row.escrowVersion === 'v2' && u64(row.fundedAmount) === 0n) {
+    return { ok: false, code: 'job_not_open', message: 'V2 escrow funding has not completed; approval is not yet allowed.' };
+  }
   // ONLY the depositor (funds owner) may approve a release of their own escrow.
   if (row.depositorAvatarId !== input.callerAvatarId) {
     return {
@@ -944,6 +1131,10 @@ async function settleJobLocked(input: SettleJobInput): Promise<EscrowGateResult>
   });
   if (!row) {
     return { ok: false, code: 'job_not_found', message: 'no settlement row for (escrow, job).' };
+  }
+
+  if ((row.escrowVersion ?? 'v1') !== 'v1') {
+    return { ok: false, code: 'job_not_open', message: 'V2 rows must use the two-phase V2 settle path.' };
   }
 
   // Rule E5 — the worker settles AS ITSELF. The acting caller MUST be the
@@ -1176,6 +1367,7 @@ async function settleJobLocked(input: SettleJobInput): Promise<EscrowGateResult>
     let lReleased = 0n;
     let lRefunded = 0n;
     for (const r of lockedLedgerRows) {
+      if (r.status === 'settle_unknown') continue;
       if (r.status !== 'funding_unknown') lFunded += u64(r.fundedAmount);
       lReleased += u64(r.releasedAmount);
       lRefunded += u64(r.refundedAmount);
@@ -1355,6 +1547,243 @@ async function settleJobLocked(input: SettleJobInput): Promise<EscrowGateResult>
   return { ok: true, phase: 'settled', settlement: settled, chain, replay: false };
 }
 
+/** V2 settle: authorize exactly like V1, then reserve principal in PendingSettlement. */
+export async function settleJobV2(input: SettleJobInput): Promise<EscrowGateResult> {
+  const gated = gateOpen();
+  if (gated) return gated;
+  return withKeyedMutex(escrowMutexKey(input.escrowPda), async () => {
+    const provider = input.provider ?? defaultVerificationProvider;
+    const row = await db.query.sapEscrowSettlements.findFirst({
+      where: and(eq(sapEscrowSettlements.escrowPda, input.escrowPda), eq(sapEscrowSettlements.jobId, input.jobId)),
+    });
+    if (!row) return { ok: false, code: 'job_not_found', message: 'no settlement row for (escrow, job).' };
+    if (row.escrowVersion !== 'v2' || row.escrowNonce == null) {
+      return { ok: false, code: 'job_not_open', message: 'this row is not a V2 escrow.' };
+    }
+    if (settlementRail(row) !== 'onchain') {
+      return { ok: false, code: 'release_rail_forbidden', message: 'V2 settle is onchain-only; payai rows are refused.' };
+    }
+    if (row.workerAvatarId !== input.callerAvatarId) {
+      return { ok: false, code: 'unauthorized_caller', message: 'only the worker (settle beneficiary) can settle this job.' };
+    }
+    if (row.status === 'settled') return { ok: true, phase: 'settled', settlement: row, chain: null, replay: true };
+    if (row.status === 'pending') return { ok: true, phase: 'pending', settlement: row, chain: null, replay: true, next: 'finalize' };
+    if (row.status === 'settling') return { ok: false, code: 'settle_in_progress', message: 'a settle is already in progress for this job.' };
+    if (row.status === 'settle_unknown') return { ok: false, code: 'settle_unconfirmed', message: 'settle broadcast is unconfirmed; reconcile it and never auto-retry.' };
+    if (row.status === 'finalizing') return { ok: false, code: 'finalize_in_progress', message: 'finalize is already in progress.' };
+    if (row.status === 'finalize_unknown') return { ok: false, code: 'finalize_unconfirmed', message: 'finalize broadcast is unconfirmed; reconcile it and never auto-retry.' };
+    if (row.status === 'refunding') return { ok: false, code: 'refund_in_progress', message: 'a refund is in progress for this job; cannot settle.' };
+    if (row.status === 'funding_unknown') return { ok: false, code: 'funding_unconfirmed', message: 'job funding is unconfirmed; cannot settle until reconciled.' };
+    if (row.status === 'refunded' || row.status === 'failed') return { ok: false, code: 'job_not_open', message: `job is ${row.status}; cannot settle.` };
+
+    const approval = await db.query.sapEscrowApprovals.findFirst({
+      where: and(eq(sapEscrowApprovals.escrowPda, input.escrowPda), eq(sapEscrowApprovals.jobId, input.jobId)),
+    });
+    if (!approval) return { ok: false, code: 'not_approved', message: 'the depositor has not approved this job; no settle.' };
+    if (approval.approverAvatarId !== row.depositorAvatarId) return { ok: false, code: 'approver_mismatch', message: 'persisted approval approver is not the escrow depositor.' };
+    if (row.depositorAvatarId === row.workerAvatarId) return { ok: false, code: 'self_dealing_forbidden', message: 'depositor and worker are the same avatar; refusing to settle.' };
+
+    const pricePerCall = u64(row.pricePerCall);
+    if (pricePerCall <= 0n) return { ok: false, code: 'internal', message: 'escrow has no valid pricePerCall.' };
+    if (input.callsToSettle <= 0n) return { ok: false, code: 'over_release', message: 'callsToSettle must be > 0.' };
+    const maxCalls = u64(row.maxCalls);
+    const alreadySettled = u64(row.callsSettled);
+    const ledger = await escrowFundsLedger(input.escrowPda);
+    const jobFunded = u64(row.fundedAmount);
+    const jobReleased = u64(row.releasedAmount);
+    const jobReserved = u64(row.reservedPrincipalAmount);
+    const jobFees = u64(row.feeAmount);
+    const jobConsumed = jobReleased + jobReserved + jobFees;
+    const jobRemainingFunded = jobFunded > jobConsumed ? jobFunded - jobConsumed : 0n;
+    const ceiling = computeSettleCeiling({
+      maxCalls,
+      callsAlreadySettled: alreadySettled,
+      approvedCalls: u64(approval.approvedCalls),
+      pricePerCall,
+      escrowRemaining: ledger.remaining,
+      jobRemainingFunded,
+    });
+    const principal = input.callsToSettle * pricePerCall;
+    const fee = computeV2ProtocolFee(principal);
+    const totalDebit = principal + fee;
+    if (ceiling <= 0n || input.callsToSettle > ceiling || totalDebit > ledger.remaining || totalDebit > jobRemainingFunded) {
+      return { ok: false, code: 'over_release', message: `requested ${input.callsToSettle} calls exceeds the V2 settleable ceiling ${ceiling} or funded fee headroom.` };
+    }
+
+    const verdict = await provider.verify({
+      escrowId: row.escrowPda,
+      jobId: row.jobId,
+      depositorAvatarId: row.depositorAvatarId,
+      workerAvatarId: row.workerAvatarId,
+      signal: { approved: true, approverAvatarId: approval.approverAvatarId, approvedAt: approval.approvedAt.toISOString() },
+    });
+    const auth = evaluateSettleAuthorization(verdict);
+    if (!auth.authorized) {
+      if (!verdict.passed) await db.update(sapEscrowSettlements).set({
+        verificationProvider: provider.id, verificationPassed: false,
+        verificationDetail: verdict.detail ?? null, updatedAt: new Date(),
+      }).where(and(eq(sapEscrowSettlements.id, row.id), sql`${sapEscrowSettlements.status} IN ('open','submitted')`));
+      return { ok: false, code: 'verification_failed', message: auth.reason };
+    }
+
+    const nonce = u64(row.escrowNonce);
+    const inspected = await inspectV2SettlementState({
+      workerWalletPubkey: row.workerWalletPubkey,
+      depositorWalletPubkey: row.depositorWalletPubkey,
+      escrowNonce: nonce,
+    });
+    if (inspected.ok === false) return { ok: false, code: inspected.code, message: inspected.message };
+    if (inspected.escrowPda !== row.escrowPda) return { ok: false, code: 'internal', message: 'persisted V2 escrow PDA does not match derived coordinates.' };
+    if (inspected.pendingExists) {
+      const [pending] = await db.update(sapEscrowSettlements).set({
+        status: 'pending', settlementIndex: inspected.settlementIndex.toString(),
+        callsSettled: (alreadySettled + input.callsToSettle).toString(),
+        reservedPrincipalAmount: (jobReserved + principal).toString(), feeAmount: (jobFees + fee).toString(),
+        verificationProvider: provider.id, verificationPassed: true, verificationDetail: verdict.detail ?? null,
+        auditRootHex: auth.auditRootHex, updatedAt: new Date(),
+        metadata: { ...((row.metadata as object) ?? {}), replayReconciledFromPendingPda: true },
+      }).where(and(eq(sapEscrowSettlements.id, row.id), sql`${sapEscrowSettlements.status} IN ('open','submitted')`)).returning();
+      if (pending) return { ok: true, phase: 'pending', settlement: pending, chain: null, replay: true, next: 'finalize' };
+      return { ok: false, code: 'settle_in_progress', message: 'the row changed while reconciling the on-chain pending settlement.' };
+    }
+
+    const claim = await db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${input.escrowPda}, 0))`);
+      const lockedRows = await tx.select({
+        status: sapEscrowSettlements.status, fundedAmount: sapEscrowSettlements.fundedAmount,
+        releasedAmount: sapEscrowSettlements.releasedAmount, refundedAmount: sapEscrowSettlements.refundedAmount,
+        reservedPrincipalAmount: sapEscrowSettlements.reservedPrincipalAmount, feeAmount: sapEscrowSettlements.feeAmount,
+      }).from(sapEscrowSettlements).where(eq(sapEscrowSettlements.escrowPda, input.escrowPda));
+      let remaining = 0n;
+      for (const r of lockedRows) {
+        if (r.status === 'settle_unknown') continue;
+        if (r.status !== 'funding_unknown') remaining += u64(r.fundedAmount);
+        remaining -= u64(r.releasedAmount) + u64(r.refundedAmount) + u64(r.reservedPrincipalAmount) + u64(r.feeAmount);
+      }
+      if (remaining < totalDebit) return { kind: 'ledger_short' as const, remaining };
+      const claimed = await tx.update(sapEscrowSettlements).set({
+        status: 'settling', settlementIndex: inspected.settlementIndex.toString(),
+        // Reserve both V2 money legs INSIDE the advisory-lock transaction. A
+        // second API process can only observe the row after these values commit,
+        // so a sibling claim/refund cannot spend principal or fee headroom while
+        // this process is broadcasting settle.
+        reservedPrincipalAmount: (jobReserved + principal).toString(),
+        feeAmount: (jobFees + fee).toString(),
+        verificationProvider: provider.id, verificationPassed: true,
+        verificationDetail: verdict.detail ?? null, auditRootHex: auth.auditRootHex, updatedAt: new Date(),
+      }).where(and(eq(sapEscrowSettlements.id, row.id), sql`${sapEscrowSettlements.status} IN ('open','submitted')`)).returning({ id: sapEscrowSettlements.id });
+      return { kind: 'claimed' as const, count: claimed.length };
+    });
+    if (claim.kind === 'ledger_short') return { ok: false, code: 'over_release', message: `escrow was drawn below this V2 debit (remaining=${claim.remaining}, need=${totalDebit}).` };
+    if (claim.count !== 1) return { ok: false, code: 'settle_in_progress', message: 'a settle is already in progress for this job.' };
+
+    const chain = await settleCallsV2Usdc({
+      workerAvatarId: row.workerAvatarId, depositorWalletPubkey: row.depositorWalletPubkey,
+      escrowNonce: nonce, callsToSettle: input.callsToSettle, auditRoot: verdict.auditRoot, amount: principal,
+    });
+    const simError = dryRunSimulationError(chain);
+    if (chain.ok === false || simError) {
+      if (isV2ReplaySignal(chain.ok === false ? chain : simError)) {
+        const replayCheck = await inspectV2SettlementState({
+          workerWalletPubkey: row.workerWalletPubkey, depositorWalletPubkey: row.depositorWalletPubkey,
+          escrowNonce: nonce, settlementIndex: inspected.settlementIndex,
+        });
+        if (replayCheck.ok && replayCheck.pendingExists) {
+          const [pending] = await db.update(sapEscrowSettlements).set({
+            status: 'pending', callsSettled: (alreadySettled + input.callsToSettle).toString(),
+            reservedPrincipalAmount: (jobReserved + principal).toString(), feeAmount: (jobFees + fee).toString(), updatedAt: new Date(),
+          }).where(and(eq(sapEscrowSettlements.id, row.id), eq(sapEscrowSettlements.status, 'settling'))).returning();
+          return { ok: true, phase: 'pending', settlement: pending, chain: null, replay: true, next: 'finalize' };
+        }
+      }
+      const failure = chain.ok === false ? chain : null;
+      const unknown = failure?.broadcast === true;
+      await db.update(sapEscrowSettlements).set({
+        status: unknown ? 'settle_unknown' : 'failed',
+        settleSignature: unknown ? (failure?.signature ?? null) : null, updatedAt: new Date(),
+        // A broadcast-unknown may have charged/reserved on-chain, so retain the
+        // pessimistic claim reservation. A provably pre-broadcast refusal moved
+        // nothing and restores the prior ledger values.
+        reservedPrincipalAmount: unknown ? (jobReserved + principal).toString() : jobReserved.toString(),
+        feeAmount: unknown ? (jobFees + fee).toString() : jobFees.toString(),
+        metadata: { ...((row.metadata as object) ?? {}), settleError: failure?.code ?? 'simulation_error', settleBroadcastUnconfirmed: unknown, simulationError: simError ?? undefined },
+      }).where(and(eq(sapEscrowSettlements.id, row.id), eq(sapEscrowSettlements.status, 'settling')));
+      return unknown
+        ? { ok: false, code: 'settle_unconfirmed', message: 'V2 settle broadcast was unconfirmed; reconcile and never auto-retry.' }
+        : { ok: false, code: failure?.code ?? 'on_chain_error', message: failure?.message ?? 'V2 settle simulation failed after the durable claim.' };
+    }
+
+    const settlementIndex = u64(chain.accounts.settlementIndex) || inspected.settlementIndex;
+    const [pending] = await db.update(sapEscrowSettlements).set({
+      status: 'pending', settlementIndex: settlementIndex.toString(),
+      settleSignature: chain.dryRun ? null : chain.signature,
+      callsSettled: (alreadySettled + input.callsToSettle).toString(),
+      reservedPrincipalAmount: (jobReserved + principal).toString(), feeAmount: (jobFees + fee).toString(),
+      dryRun: chain.dryRun, updatedAt: new Date(),
+    }).where(and(eq(sapEscrowSettlements.id, row.id), eq(sapEscrowSettlements.status, 'settling'))).returning();
+    return { ok: true, phase: 'pending', settlement: pending, chain, replay: false, next: 'finalize' };
+  });
+}
+
+export interface FinalizeJobV2Input { escrowPda: string; jobId: string; callerAvatarId: string }
+
+/** Permissionless authenticated crank for V2 pending principal. */
+export async function finalizeJobV2(input: FinalizeJobV2Input): Promise<EscrowGateResult> {
+  const gated = gateOpen();
+  if (gated) return gated;
+  return withKeyedMutex(escrowMutexKey(input.escrowPda), async () => {
+    const row = await db.query.sapEscrowSettlements.findFirst({
+      where: and(eq(sapEscrowSettlements.escrowPda, input.escrowPda), eq(sapEscrowSettlements.jobId, input.jobId)),
+    });
+    if (!row) return { ok: false, code: 'job_not_found', message: 'no settlement row for (escrow, job).' };
+    if (row.escrowVersion !== 'v2' || row.escrowNonce == null || row.settlementIndex == null) return { ok: false, code: 'job_not_open', message: 'row has no finalized V2 settle coordinates.' };
+    if (settlementRail(row) !== 'onchain') return { ok: false, code: 'release_rail_forbidden', message: 'V2 finalize is onchain-only; payai rows are refused.' };
+    if (row.status === 'settled') return { ok: true, phase: 'settled', settlement: row, chain: null, replay: true };
+    if (row.status === 'finalizing') return { ok: false, code: 'finalize_in_progress', message: 'finalize is already in progress.' };
+    if (row.status === 'finalize_unknown') return { ok: false, code: 'finalize_unconfirmed', message: 'finalize broadcast is unconfirmed; reconcile it and never auto-retry.' };
+    if (row.status === 'settle_unknown') return { ok: false, code: 'settle_unconfirmed', message: 'settle broadcast is unconfirmed; reconcile before finalize.' };
+    if (row.status !== 'pending') return { ok: false, code: 'finalize_not_ready', message: `job is ${row.status}; only pending V2 settlements can finalize.` };
+
+    const claimed = await db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${input.escrowPda}, 0))`);
+      return tx.update(sapEscrowSettlements).set({ status: 'finalizing', updatedAt: new Date() })
+        .where(and(eq(sapEscrowSettlements.id, row.id), eq(sapEscrowSettlements.status, 'pending')))
+        .returning({ id: sapEscrowSettlements.id });
+    });
+    if (claimed.length !== 1) return { ok: false, code: 'finalize_in_progress', message: 'another crank claimed finalize.' };
+
+    const chain = await finalizeSettlementUsdc({
+      payerAvatarId: input.callerAvatarId, workerWalletPubkey: row.workerWalletPubkey,
+      depositorWalletPubkey: row.depositorWalletPubkey, escrowNonce: u64(row.escrowNonce),
+      settlementIndex: u64(row.settlementIndex),
+    });
+    const simError = dryRunSimulationError(chain);
+    if (chain.ok === false || simError) {
+      const failure = chain.ok === false ? chain : null;
+      if (failure?.broadcast) {
+        await db.update(sapEscrowSettlements).set({
+          status: 'finalize_unknown', finalizeSignature: failure.signature ?? null, updatedAt: new Date(),
+          metadata: { ...((row.metadata as object) ?? {}), finalizeError: failure.code, finalizeBroadcastUnconfirmed: true },
+        }).where(and(eq(sapEscrowSettlements.id, row.id), eq(sapEscrowSettlements.status, 'finalizing')));
+        return { ok: false, code: 'finalize_unconfirmed', message: 'V2 finalize broadcast was unconfirmed; reconcile and never auto-retry.' };
+      }
+      await db.update(sapEscrowSettlements).set({
+        status: 'pending', updatedAt: new Date(),
+        metadata: { ...((row.metadata as object) ?? {}), finalizeError: failure?.code ?? 'simulation_error', simulationError: simError ?? undefined },
+      }).where(and(eq(sapEscrowSettlements.id, row.id), eq(sapEscrowSettlements.status, 'finalizing')));
+      return { ok: false, code: 'finalize_not_ready', message: failure?.message ?? 'V2 finalize simulation refused before broadcast; pending remains retryable.' };
+    }
+
+    const released = u64(row.releasedAmount) + u64(row.reservedPrincipalAmount);
+    const [settled] = await db.update(sapEscrowSettlements).set({
+      status: 'settled', releasedAmount: released.toString(), reservedPrincipalAmount: '0',
+      finalizeSignature: chain.dryRun ? null : chain.signature, dryRun: chain.dryRun,
+      settledAt: new Date(), updatedAt: new Date(),
+    }).where(and(eq(sapEscrowSettlements.id, row.id), eq(sapEscrowSettlements.status, 'finalizing'))).returning();
+    return { ok: true, phase: 'settled', settlement: settled, chain, replay: false };
+  });
+}
+
 // ─── 5. REFUND (cancel / expiry / verify-fail) ────────────────────────────────
 
 export interface RefundEscrowInput {
@@ -1404,6 +1833,9 @@ async function refundEscrowLocked(input: RefundEscrowInput): Promise<EscrowGateR
     ),
   });
   if (!row) return { ok: false, code: 'job_not_found', message: 'no settlement row for (escrow, job).' };
+  if ((row.escrowVersion ?? 'v1') !== 'v1') {
+    return { ok: false, code: 'job_not_open', message: 'V2 rows cannot use the V1 refund executor.' };
+  }
 
   // The depositor must be the row's depositor (the route already binds identity,
   // but re-assert here as defense-in-depth on the money path).
@@ -1480,6 +1912,7 @@ async function refundEscrowLocked(input: RefundEscrowInput): Promise<EscrowGateR
     let lReleased = 0n;
     let lRefunded = 0n;
     for (const r of lockedLedgerRows) {
+      if (r.status === 'settle_unknown') continue;
       if (r.status !== 'funding_unknown') lFunded += u64(r.fundedAmount);
       lReleased += u64(r.releasedAmount);
       lRefunded += u64(r.refundedAmount);
