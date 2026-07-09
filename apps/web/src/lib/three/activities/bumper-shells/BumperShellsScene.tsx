@@ -31,6 +31,7 @@ import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { playActivitySound } from '@/lib/activity-audio';
+import { KTX2LoaderSetup } from '@/lib/three/ktx2-loader-setup';
 
 import BumperShellsArena    from './BumperShellsArena';
 import BumperShellsHazard   from './BumperShellsHazard';
@@ -645,6 +646,7 @@ export default function BumperShellsScene({
         style={{ width: '100%', height: '100%' }}
         dpr={[1, 1.5]} // Clamp pixel ratio for Iris Xe
       >
+        <KTX2LoaderSetup />
         <SceneContents
           entities={entities ?? new Map()}
           pickups={pickups ?? new Map()}

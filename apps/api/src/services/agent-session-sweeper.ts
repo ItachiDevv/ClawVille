@@ -27,6 +27,7 @@ import { agentOrchestrator } from './agent-orchestrator';
 import { logEvent } from './event-logger';
 import { notifyHatcherSessionEnded } from './hatcher-session-webhook';
 import { npcSimulation } from './npc-simulation';
+import { agentAutonomyDriver } from './agent-autonomy-driver';
 
 const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000; // 24h
 
@@ -103,7 +104,10 @@ export async function expireSession(agentId: string): Promise<void> {
     // retain a bearer commitment a future change could re-honor. A subsequent
     // /connect/register mints a fresh sessionId and writes a new hash, so this
     // does not break legitimate reconnect.
-    .set({ sessionExpiresAt: now, sessionSweptAt: now, sessionKeyHash: null, updatedAt: now })
+    // §B.1 durable autonomy: an explicit /disconnect is a terminal session
+    // teardown, so clear the autonomy-enrolled intent atomically here too (the
+    // reconcile must not re-enroll a deliberately-disconnected session).
+    .set({ sessionExpiresAt: now, sessionSweptAt: now, sessionKeyHash: null, autonomyEnrolled: false, updatedAt: now })
     .where(eq(agentBots.agentId, agentId))
     .returning({ userId: agentBots.userId, identityType: agentBots.identityType });
 
@@ -188,7 +192,14 @@ export async function sweepExpiredSessions(): Promise<number> {
   // hash.
   await db
     .update(agentBots)
-    .set({ sessionSweptAt: now, sessionKeyHash: null, updatedAt: now })
+    // §B.1 durable autonomy: clear the autonomy-enrolled intent ATOMICALLY with
+    // the mark-swept, for EVERY expired row (unconditional here, before the
+    // per-row reconnect guards) — a genuinely-expired 24h session's autonomy
+    // intent is dead. Combined with the per-row unregisterUserAgent below (in
+    // both the genuine-expiry and the re-read-failure branches), the driver
+    // entry + the durable flag are both torn down, so the reconcile can never
+    // resurrect an expired session.
+    .set({ sessionSweptAt: now, sessionKeyHash: null, autonomyEnrolled: false, updatedAt: now })
     .where(
       sql`${agentBots.id} IN (${sql.join(expired.map((r) => sql`${r.id}`), sql`, `)})`,
     )
@@ -276,12 +287,33 @@ export async function sweepExpiredSessions(): Promise<number> {
         `[SessionSweeper] TTL re-read failed for ${row.agentId} — skipping body removal (non-fatal):`,
         err,
       );
+      // §B.1 MONEY-SAFE fail direction (Codex a00693c9 finding): the row was
+      // query-flagged expired AND already marked swept above, so a re-read
+      // failure here means it is NOT retried on the next sweep. A leaked BODY is
+      // cosmetic (skipped, recovered on restart), but a leaked DRIVER entry keeps
+      // SETTLING CT — so on an inconclusive re-read we still tear down the driver
+      // enrollment (idempotent, house-safe). A false positive (the row was
+      // actually reconnected in-window) simply re-enrolls via the client's 5-min
+      // keepalive — cheap + recoverable, unlike an unbounded CT leak.
+      agentAutonomyDriver.unregisterUserAgent(row.agentId);
       continue;
     }
     if (current?.sessionExpiresAt && current.sessionExpiresAt.getTime() > now.getTime()) {
       // (2) reconnected inside the sweep window — keep the fresh body.
       continue;
     }
+    // §B.1 TTL-zombie guard (2026-07-08): a §B.2 hosted-avatar session that hits
+    // its 24h TTL while still enrolled in the autonomy driver would leave a live
+    // driver entry perceiving/deciding against a now-dead session (its body is
+    // removed just below) — enrollment outliving its session, the SAME defect
+    // class as the logout leak. Unenroll the driver entry on genuine TTL expiry
+    // (this branch is reached ONLY after both reconnect guards pass). Keyed by
+    // agentId and a no-op for house / non-user agentIds (unregisterUserAgent only
+    // touches the userAgents map), so this is safe to call for every swept row.
+    // This is a TTL-EXPIRY teardown (an explicit end-of-life), NOT idle-despawn:
+    // body idle-despawn leaves the session live and MUST NOT unenroll (the agent
+    // re-bodies) — that path never reaches here.
+    agentAutonomyDriver.unregisterUserAgent(row.agentId);
     try {
       for (const sid of snapshotSids) {
         npcSimulation.unregisterAgentBot(sid);

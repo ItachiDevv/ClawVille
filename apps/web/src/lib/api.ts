@@ -18,6 +18,7 @@ import type {
   ClaimStarterResponse,
   BuyParcelResponse,
   RentParcelResponse,
+  ClaimHoldResponse,
   PlaceStructureResponse,
   UpgradeStructureResponse,
   ParcelStructureResponse,
@@ -358,6 +359,52 @@ export const api = {
     }),
 
   getMyAvatar: () => request<{ avatar: any }>('/api/avatars/me'),
+
+  // ── Self-custody wallet link (Tokenomics Phase A / routes/wallet-link.ts) ──
+  // Read the linked wallet + its (cached, mainnet) CLV balance. `linked:false`
+  // when the user has not linked a self-custody wallet yet.
+  getWalletLink: () =>
+    request<{
+      linked: boolean;
+      walletPubkey: string | null;
+      clv: {
+        available: boolean;
+        amountAtomic: string | null;
+        decimals: number | null;
+        uiAmount: number | null;
+        cached: boolean;
+        fetchedAt: string | null;
+      };
+    }>('/api/wallet/link'),
+
+  // Issue a nonce + the EXACT human-readable message the wallet must sign
+  // (SIWS-lite, account-bound — see wallet-link-challenge.ts).
+  walletLinkChallenge: () =>
+    request<{ nonce: string; expiresAt: string; messageToSign: string }>(
+      '/api/wallet/link/challenge',
+      { method: 'POST' },
+    ),
+
+  // Prove control of a self-custody wallet by presenting the signed nonce →
+  // persist the pubkey as a POINTER (users.linked_wallet_pubkey). Public-key +
+  // signature only; no secret ever leaves the wallet.
+  linkWallet: (body: { walletPubkey: string; nonce: string; signature: string }) =>
+    request<{
+      ok: boolean;
+      linked: boolean;
+      walletPubkey: string;
+      clv: {
+        available: boolean;
+        amountAtomic: string | null;
+        decimals: number | null;
+        uiAmount: number | null;
+        cached: boolean;
+        fetchedAt: string | null;
+      };
+    }>('/api/wallet/link', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
 
   // Avatar chat (chat with your own avatar)
   sendAvatarChat: (content: string) =>
@@ -1145,7 +1192,13 @@ export const api = {
     (): Promise<LandCatalogAllResponse>;
   },
 
-  /** Claim the free starter home (auth). Idempotent — `alreadyOwned` on repeat. */
+  /**
+   * Claim a Starter Cove (auth, non-guest). NO body/parcelId — the server
+   * AUTO-PICKS an available starter and debits the refundable
+   * LAND_STARTER_DEPOSIT_CT (2000 CT) into escrow (NOT free, NOT a purchase;
+   * weekly upkeep auto-draws from it). Idempotent — `alreadyOwned: true` on
+   * repeat, never re-charged.
+   */
   claimStarterPlot: () =>
     honoRequest<ClaimStarterResponse>('/api/land/claim-starter', {
       method: 'POST',
@@ -1166,6 +1219,19 @@ export const api = {
   rentParcel: (parcelId: string) =>
     honoRequest<RentParcelResponse>(
       `/api/land/parcels/${encodeURIComponent(parcelId)}/rent`,
+      { method: 'POST', body: JSON.stringify({}) },
+    ),
+
+  /**
+   * Claim a c/b/a/founder parcel by PROVING a CLV hold (Phase B2 hold-to-keep,
+   * auth non-guest). EMPTY body (`emptyStrictBodySchema` rejects stray fields) —
+   * NO client price/threshold EVER reaches the write: the server derives the
+   * stacked CLV requirement and reads the live balance itself. No CT is debited
+   * at claim; the weekly CT upkeep is auto-charged by the rent sweeper.
+   */
+  claimHoldParcel: (parcelId: string) =>
+    honoRequest<ClaimHoldResponse>(
+      `/api/land/parcels/${encodeURIComponent(parcelId)}/claim-hold`,
       { method: 'POST', body: JSON.stringify({}) },
     ),
 

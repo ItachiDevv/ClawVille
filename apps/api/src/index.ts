@@ -809,6 +809,22 @@ process.on('uncaughtException', (err) => {
     console.error('[API] Land rent sweeper failed to start:', err);
   }
 
+  // 2026-07-08 — start the MARKETPLACE LISTING-EXPIRY sweeper (Tokenomics C4
+  // follow-up). Runs hourly, flips expired `active` land_deed listings to the
+  // terminal `expired` state and RELEASES their `market_deed_locks` row, so an
+  // abandoned expired listing can't hold its deed lock forever and park land's
+  // rent-lapse eviction (the squatting hole once the land deed-lock guard
+  // shipped). NOT a money path — no CT/CLV/USDC; safe to run live. See
+  // `services/market-listing-expiry-sweeper.ts`.
+  try {
+    const { startMarketListingExpirySweeper } = await import(
+      './services/market-listing-expiry-sweeper'
+    );
+    startMarketListingExpirySweeper();
+  } catch (err) {
+    console.error('[API] Market listing-expiry sweeper failed to start:', err);
+  }
+
   // Q2 Activity Portals — recover orphaned LIVE/COUNTDOWN rooms (pod
   // crash recovery per backend §12.1), hydrate persisted queue entries,
   // then start the room sweeper + matchmaker intervals. Order matters:
@@ -1284,21 +1300,32 @@ process.on('uncaughtException', (err) => {
       console.error('[API] CLV price oracle init failed (non-fatal):', err);
     }
 
-    // CLV SWAP DRY-RUN WORKER (Tokenomics C3, 2026-07-07) — scans
-    // `clv_buy_queue` planned rows and LOGS the clip plan it WOULD execute
-    // (oracle quote + LP depth + planClips). NO signing, NO tx, NO row
-    // mutation — live execution is Codex-review-gated (CLV_SWAP_EXECUTE=true
-    // already refused to boot at module load via the static import above; a
-    // gate throw here is re-escalated to a crash rather than swallowed).
+    // CLV SWAP WORKER (Tokenomics C3 + GoLive executors; CONDITIONAL wiring,
+    // Codex re-review 2026-07-08). Default (CLV_SWAP_EXECUTE unset/false): the
+    // DRY-RUN worker scans `clv_buy_queue` planned rows and LOGS the clip plan
+    // it WOULD execute — NO signing, NO tx, NO row mutation. With
+    // CLV_SWAP_EXECUTE='true': the LIVE worker (clv-swap-live.ts) is selected
+    // instead. TODAY the live branch is UNREACHABLE — the module-load throw in
+    // clv-swap-executor.ts (static import above) already refused boot under
+    // the flag — so this wiring is dark-safe. AFTER the Codex-reviewed go-live
+    // change (remove ONLY that module-load throw), the flag cleanly selects
+    // the live worker here instead of crash-looping the whole API on the
+    // dry-run worker's `assertNoLiveClvSwapExecution()` gate.
     try {
-      startClvSwapWorker();
-      console.log('[API] CLV swap dry-run worker started');
+      if (process.env.CLV_SWAP_EXECUTE === 'true') {
+        const { startClvSwapLiveWorker } = await import('./services/clv-swap-live');
+        startClvSwapLiveWorker();
+        console.log('[API] CLV swap LIVE worker started (CLV_SWAP_EXECUTE=true)');
+      } else {
+        startClvSwapWorker();
+        console.log('[API] CLV swap dry-run worker started');
+      }
     } catch (err) {
       if ((err as Error)?.message?.includes('Codex-review-gated')) {
         console.error('[API] FATAL:', (err as Error).message);
         process.exit(1);
       }
-      console.error('[API] CLV swap dry-run worker init failed (non-fatal):', err);
+      console.error('[API] CLV swap worker init failed (non-fatal):', err);
     }
   } catch (err) {
     console.error('[API] Activity portal init failed:', err);
@@ -1357,14 +1384,27 @@ async function gracefulShutdown(signal: string) {
       // If the sweeper module failed to load earlier, there's nothing to stop.
     }
     try {
+      const { stopMarketListingExpirySweeper } = await import(
+        './services/market-listing-expiry-sweeper'
+      );
+      stopMarketListingExpirySweeper();
+    } catch {
+      // If the sweeper module failed to load earlier, there's nothing to stop.
+    }
+    try {
       const { stopClvPriceOracle } = await import('./services/clv-price-oracle');
       stopClvPriceOracle();
     } catch {
       // If the oracle module failed to load earlier, there's nothing to stop.
     }
-    // Tokenomics C3 — stop the CLV swap dry-run worker (statically imported;
-    // idempotent no-op when it never started).
+    // Tokenomics C3 + GoLive — stop whichever CLV swap worker boot selected
+    // (dry-run statically imported; the LIVE module is imported only when the
+    // flag selected it — mirror the boot condition). Both stops idempotent.
     try {
+      if (process.env.CLV_SWAP_EXECUTE === 'true') {
+        const { stopClvSwapLiveWorker } = await import('./services/clv-swap-live');
+        stopClvSwapLiveWorker();
+      }
       stopClvSwapWorker();
     } catch {
       // Nothing to stop.

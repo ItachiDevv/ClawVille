@@ -6,6 +6,15 @@
  * interval, SEPARATE from the 200ms NpcSimulation tick, so a slow LLM brain can
  * NEVER stall the shared single-threaded world sim.
  *
+ * §B.1 (2026-07-08): the SAME loop now also drives USER-OWNED hosted
+ * avatar-agents (Autonomous mode) via a PARALLEL `userAgents` registry —
+ * separate cap (`MAX_AUTONOMOUS_USER_AGENTS`), typed capacity rejection,
+ * one-enrollment-per-owner, `isHouse:false` runtime warm (hosted-user inference
+ * route + normal orchestrator sweep), teardown that can never touch the house
+ * fleet. Settlement was ALREADY generic on `entry.avatarId`, so a user entry
+ * settles real CT + leaderboard to the OWNER's active avatar with zero changes
+ * to the money path. Enrollment lifecycle lives in `agent-autonomy-activation.ts`.
+ *
  * Per house agent, per drive:
  *   1. `npcSimulation.buildPerception(bodyId)` — the SAME shared perception the
  *      authed gateway serves (self pose + nearby npcs + all buildings + focus).
@@ -68,6 +77,15 @@ type DrivePhase = 'deciding' | 'walking' | 'arrived' | 'talking';
 interface HouseAgentEntry {
   /** Stable public agent id (openclaw_bots.agent_id). */
   agentId: string;
+  /**
+   * §B.1 (2026-07-08): true for boot-seeded HOUSE fleet agents, false for
+   * USER-OWNED hosted avatar-agents enrolled via `registerUserAgent`. Drives the
+   * lazy runtime-warm flag verbatim (`{ isHouse: entry.isHouse }`): house stays
+   * `isHouse:true` (fleet inference route + 30-min sweep exemption, byte-identical
+   * to pre-§B.1), user entries warm `isHouse:false` so they take the
+   * 'hosted-user' inference route and keep the normal orchestrator sweep.
+   */
+  isHouse: boolean;
   /** In-world body id (`ocb-<base64url(agentId)>`) — the sim/perception key. */
   bodyId: string;
   /** platform_agents.id whose warmed ElizaOS runtime backs the decision. */
@@ -123,10 +141,27 @@ type DecideFn = (prompt: string) => Promise<string>;
 
 // Cadence + safety constants.
 const TICK_MS = 30_000; // driver interval — NOT the 200ms sim tick
+// §B.1 durable autonomy — run the server-side re-enrollment reconcile every N
+// driver ticks (10 × 30s = ~5 min), AND on tick 1 (~30s after start/boot) so a
+// deploy re-enrolls browser-closed persisting agents promptly with no client.
+// The periodic cadence also heals a crash mid-teardown. The reconcile carries its
+// own overlap guard, so a slow pass never stacks.
+const RECONCILE_EVERY_N_TICKS = 10;
 const LLM_TIMEOUT_MS = 15_000; // hard ceiling on one decision
 const WALK_TIMEOUT_MS = 120_000; // give up walking + replan if not arrived
 const TALK_COOLDOWN_MS = 60_000; // linger after a conversation before re-deciding
 const MAX_HOUSE_AGENTS = 64; // bound the registry
+// §B.1 — SEPARATE bound for user-owned autonomous agents (never shares the house
+// cap: a wave of user activations can never crowd out the fleet, and the fleet
+// can never consume user capacity). Env-overridable; default 12; floor 1. Over
+// cap is a LOUD, TYPED rejection (`{ok:false, reason:'capacity'}` → HTTP 429
+// `autonomy_capacity`), never a silent drop — a user must be able to see WHY
+// their agent didn't go autonomous.
+const MAX_AUTONOMOUS_USER_AGENTS = (() => {
+  const raw = Number.parseInt(process.env.MAX_AUTONOMOUS_USER_AGENTS ?? '', 10);
+  if (!Number.isFinite(raw)) return 12;
+  return Math.max(1, raw);
+})();
 const DECIDE_MAX_TOKENS = 200;
 // R2: if a runtime warm has been in-flight longer than this, evict it from the
 // `warming` map so a fresh warm can launch — a never-settling warm must not wedge
@@ -142,7 +177,13 @@ const EMPTY_DECIDE_WARN_THRESHOLD = 3;
 // turn per hour. In-memory (resets on restart — acceptable; the daily CT probe
 // is the money bound), bounded by TALK_COOLDOWN_MAP_MAX with expired-first eviction.
 const TALK_BUILDING_COOLDOWN_MS = 60 * 60 * 1000;
-const TALK_COOLDOWN_MAP_MAX = 1024; // MAX_HOUSE_AGENTS * ~10 buildings, headroom
+// §B.1: sized for BOTH registries — (house + user caps) × ~12 buildings of
+// headroom, floored at the pre-§B.1 1024 so a small user cap can never SHRINK
+// the bound below what the house fleet was already provisioned for.
+const TALK_COOLDOWN_MAP_MAX = Math.max(
+  1024,
+  (MAX_HOUSE_AGENTS + MAX_AUTONOMOUS_USER_AGENTS) * 12,
+);
 // Memory read-back bound. P3 slice 3: readRecentLessons now converges onto the
 // agent's OWN ElizaOS runtime (semantic RAG — embed a query + vector search),
 // falling back to the keyword store only when the runtime isn't warm. The RAG
@@ -186,6 +227,16 @@ export function extractTalkMessage(reply: string): string | null {
 
 class AgentAutonomyDriver {
   private houseAgents = new Map<string, HouseAgentEntry>(); // agentId -> entry
+  // §B.1 — PARALLEL registry for user-owned hosted avatar-agents. Kept SEPARATE
+  // from `houseAgents` on purpose: independent cap, independent teardown
+  // (`unregisterUserAgent` can NEVER remove a house agent), and the house path
+  // stays byte-identical. Same entry shape — `driveOnce`/settlement are already
+  // generic on `entry.avatarId`, so a user entry settles to the OWNER's avatar.
+  private userAgents = new Map<string, HouseAgentEntry>(); // agentId -> entry
+  // §B.1 — ownerUserId -> enrolled agentId. O(1) `isOwnerEnrolled` for the
+  // heartbeat hot path + the one-enrollment-per-owner invariant (an owner has
+  // exactly ONE active avatar, so at most one autonomous agent).
+  private enrolledOwners = new Map<string, string>();
   private inFlight = new Set<string>(); // agentIds mid-decision (overlap guard)
   private warming = new Map<string, number>(); // agentId -> warmingSince ms (overlap guard + R2 watchdog)
   private interval: ReturnType<typeof setInterval> | null = null;
@@ -226,6 +277,7 @@ class AgentAutonomyDriver {
     }
     this.houseAgents.set(entry.agentId, {
       agentId: entry.agentId,
+      isHouse: true,
       bodyId: entry.bodyId,
       platformAgentId: entry.platformAgentId,
       systemUserId: entry.systemUserId,
@@ -247,7 +299,12 @@ class AgentAutonomyDriver {
   }
 
   unregisterHouseAgent(agentId: string): void {
-    this.houseAgents.delete(agentId);
+    // §B.1 guard: only clear the shared inFlight/warming guards when this id
+    // actually WAS a house agent — a caller passing a user agentId here must not
+    // strip the user entry's overlap guards (teardown of user entries is
+    // `unregisterUserAgent`'s job). For every real house id this is byte-identical
+    // to the pre-§B.1 behavior.
+    if (!this.houseAgents.delete(agentId)) return;
     this.inFlight.delete(agentId);
     this.warming.delete(agentId);
   }
@@ -259,6 +316,145 @@ class AgentAutonomyDriver {
 
   hasHouseAgent(agentId: string): boolean {
     return this.houseAgents.has(agentId);
+  }
+
+  // ── §B.1 user-owned autonomous agents (parallel registry) ──────────────────
+
+  /**
+   * Capacity pre-check for the activation path — TRUE when `agentId` is already
+   * enrolled (idempotent re-activation never trips the cap) OR a slot is free.
+   * The activation service calls this BEFORE minting the §B.2 session/body so a
+   * full registry never produces an orphan body.
+   */
+  canEnrollUser(agentId: string): boolean {
+    return this.userAgents.has(agentId) || this.userAgents.size < MAX_AUTONOMOUS_USER_AGENTS;
+  }
+
+  /** The user-agent cap (env `MAX_AUTONOMOUS_USER_AGENTS`, default 12, floor 1). */
+  getUserAgentCapacity(): number {
+    return MAX_AUTONOMOUS_USER_AGENTS;
+  }
+
+  /**
+   * Enroll a USER-OWNED hosted avatar-agent for autonomous driving.
+   *
+   *  - IDEMPOTENT by agentId: a re-activation of an already-enrolled agent whose
+   *    body/avatar are unchanged KEEPS the live entry (phase machine untouched —
+   *    a client keepalive must not reset a mid-walk agent back to 'deciding')
+   *    and reports `reused:true` without consuming capacity. A changed bodyId
+   *    (§B.2 re-mint spawned a fresh body) or avatarId re-seats a fresh entry.
+   *  - ONE PER OWNER: if this owner already has a DIFFERENT agent enrolled
+   *    (avatar re-bound to a new platform agent), the stale one is unregistered
+   *    first so an owner can never drive two autonomous bodies.
+   *  - CAP: over `MAX_AUTONOMOUS_USER_AGENTS` → LOUD typed rejection
+   *    (`{ok:false, reason:'capacity'}`), which the endpoint maps to HTTP 429
+   *    `code:'autonomy_capacity'`. Never a silent drop (D1/D2).
+   *  - House isolation: never touches `houseAgents`; a (theoretically impossible)
+   *    agentId collision with a house agent is refused loudly rather than letting
+   *    a user enrollment shadow a fleet entry.
+   */
+  registerUserAgent(entry: {
+    agentId: string;
+    bodyId: string;
+    platformAgentId: string;
+    /** The OWNER's userId (runtime warm runs as the owner, isHouse:false). */
+    systemUserId: string;
+    /** Same owner userId — kept for entry-shape parity with the house path. */
+    houseUserId: string;
+    /** The OWNER's ACTIVE avatars.id — the settle target for CT + leaderboard. */
+    avatarId: string;
+  }): { ok: true; reused: boolean } | { ok: false; reason: 'capacity' } {
+    if (this.houseAgents.has(entry.agentId)) {
+      console.error(
+        `[AutonomyDriver] refusing user enrollment for ${sessionDigest(entry.agentId)} — id collides with a HOUSE agent`,
+      );
+      return { ok: false, reason: 'capacity' };
+    }
+
+    const existing = this.userAgents.get(entry.agentId);
+
+    // One-per-owner: unregister a stale DIFFERENT agent this owner had enrolled.
+    const priorAgentId = this.enrolledOwners.get(entry.houseUserId);
+    if (priorAgentId && priorAgentId !== entry.agentId) {
+      console.log(
+        `[AutonomyDriver] owner re-enrolled with a new agent — dropping stale ${sessionDigest(priorAgentId)}`,
+      );
+      this.unregisterUserAgent(priorAgentId);
+    }
+
+    if (existing) {
+      if (existing.bodyId === entry.bodyId && existing.avatarId === entry.avatarId) {
+        // Keepalive fast-path: live entry, phase machine untouched.
+        this.enrolledOwners.set(entry.houseUserId, entry.agentId);
+        return { ok: true, reused: true };
+      }
+      // Body/avatar rotated (re-mint / avatar switch) → re-seat a fresh entry
+      // below. Still `reused:true` (the ENROLLMENT persisted; no cap consumption).
+    } else if (this.userAgents.size >= MAX_AUTONOMOUS_USER_AGENTS) {
+      console.warn(
+        `[AutonomyDriver] user-agent registry full (${MAX_AUTONOMOUS_USER_AGENTS}) — rejecting ${sessionDigest(entry.agentId)} (typed capacity rejection, surfaced as 429 autonomy_capacity)`,
+      );
+      return { ok: false, reason: 'capacity' };
+    }
+
+    this.userAgents.set(entry.agentId, {
+      agentId: entry.agentId,
+      isHouse: false,
+      bodyId: entry.bodyId,
+      platformAgentId: entry.platformAgentId,
+      systemUserId: entry.systemUserId,
+      houseUserId: entry.houseUserId,
+      avatarId: entry.avatarId,
+      phase: 'deciding',
+      phaseSince: Date.now(),
+      targetBuildingId: null,
+      lastBuildingId: null,
+      consecutiveEmptyDecides: 0,
+      lastLesson: null,
+      cursorSeeded: false,
+      recentEventSummary: null,
+    });
+    this.enrolledOwners.set(entry.houseUserId, entry.agentId);
+    console.log(
+      `[AutonomyDriver] registered user agent ${sessionDigest(entry.agentId)} (${this.userAgents.size}/${MAX_AUTONOMOUS_USER_AGENTS} user, ${this.houseAgents.size} house)`,
+    );
+    return { ok: true, reused: !!existing };
+  }
+
+  /**
+   * Remove a USER enrollment (Autonomous → Controlled handback, or a stale
+   * one-per-owner replacement). Cleans the owner index + the shared overlap
+   * guards. GUARANTEED no-op for house agents — the registries are disjoint and
+   * this only acts when the id was present in `userAgents`.
+   */
+  unregisterUserAgent(agentId: string): void {
+    if (!this.userAgents.delete(agentId)) return;
+    this.inFlight.delete(agentId);
+    this.warming.delete(agentId);
+    for (const [ownerUserId, enrolledAgentId] of this.enrolledOwners) {
+      if (enrolledAgentId === agentId) this.enrolledOwners.delete(ownerUserId);
+    }
+  }
+
+  /** O(1): does this owner currently have a driver-enrolled autonomous agent?
+   *  Consulted on the heartbeat hot path (bridge double-drive exclusion, C1). */
+  isOwnerEnrolled(userId: string): boolean {
+    return this.enrolledOwners.has(userId);
+  }
+
+  /** The agentId enrolled for this owner, or null. Server-side only. */
+  getEnrolledAgentForOwner(userId: string): string | null {
+    return this.enrolledOwners.get(userId) ?? null;
+  }
+
+  /** Current user-agent enrollment count (capacity introspection). */
+  userAgentCount(): number {
+    return this.userAgents.size;
+  }
+
+  /** Server-side enumeration of enrolled user agent ids (never on the wire). */
+  getUserAgentIds(): string[] {
+    return [...this.userAgents.keys()];
   }
 
   start(): void {
@@ -275,19 +471,50 @@ class AgentAutonomyDriver {
   }
 
   /**
+   * §B.1 durable autonomy — run one reconcile pass (re-enroll persisted-flag
+   * agents). LAZY-imported so the driver keeps NO static import of the reconcile
+   * module (which imports the activation service, which imports THIS driver) — a
+   * static edge would form a cycle; the runtime import resolves cleanly since the
+   * driver + activation singletons are already constructed by first tick. Never
+   * throws into the tick loop.
+   */
+  private async runReconcile(): Promise<void> {
+    try {
+      const { reconcileDurableAutonomy } = await import('./agent-autonomy-reconcile');
+      await reconcileDurableAutonomy();
+    } catch (err) {
+      console.warn(
+        '[AutonomyDriver] durable-autonomy reconcile failed (non-fatal):',
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+
+  /**
    * One driver tick. Fires each house agent's drive fire-and-forget (never
    * awaited — a slow brain must not delay the next agent or the next tick). The
    * in-flight guard skips an agent whose previous decision is still running.
    */
   private tick(): void {
     this.tickCount++;
+    // §B.1 durable autonomy: re-enroll persisted-flag agents with NO client.
+    // Tick 1 (~30s after start) covers the "on driver start" case (a deploy
+    // re-enrolls away-agents promptly); every RECONCILE_EVERY_N_TICKS after also
+    // heals a crash mid-teardown. Fire-and-forget — a slow DB read must never
+    // delay the drive loop; the reconcile module guards its own overlap.
+    if (this.tickCount % RECONCILE_EVERY_N_TICKS === 1) {
+      void this.runReconcile();
+    }
     // Human-presence INDEPENDENT cadence: the agent runs the SAME decision loop
     // whether or not a human is in the world. ClawVille's premise is that hosted
     // agents ARE the living economy — they must act continuously with ZERO
     // external users present, not dial themselves down when nobody is watching
     // (founder, 2026-07-02). Cost is controlled by the tick cadence + the planned
     // migration to open-source/free decision models, NOT by gating on humans.
-    for (const entry of this.houseAgents.values()) {
+    // §B.1: drive BOTH registries — house fleet first (unchanged order), then
+    // user-owned enrollments. Same phase machine, same guards; the ONLY
+    // house/user divergence inside the loop is the warm flag (`entry.isHouse`).
+    for (const entry of [...this.houseAgents.values(), ...this.userAgents.values()]) {
       if (this.inFlight.has(entry.agentId)) continue;
       const runtime = agentOrchestrator.getRunningAgentRuntime(entry.platformAgentId);
       if (!runtime) {
@@ -317,8 +544,13 @@ class AgentAutonomyDriver {
         if (!this.warming.has(entry.agentId)) {
           const warmToken = Date.now();
           this.warming.set(entry.agentId, warmToken);
+          // §B.1: warm with the entry's OWN flag — house entries stay
+          // `isHouse:true` (fleet inference route + sweep exemption, identical to
+          // pre-§B.1); user entries warm `isHouse:false` so they take the
+          // 'hosted-user' inference route and the normal 30-min orchestrator sweep
+          // (cost model: user autonomy is user-priced, never fleet-priced).
           void agentOrchestrator
-            .ensureAgentRuntime(entry.platformAgentId, entry.systemUserId, { isHouse: true })
+            .ensureAgentRuntime(entry.platformAgentId, entry.systemUserId, { isHouse: entry.isHouse })
             .catch((err) =>
               console.warn(
                 `[AutonomyDriver] runtime warm failed for ${sessionDigest(entry.agentId)} — retry next tick:`,
@@ -369,7 +601,8 @@ class AgentAutonomyDriver {
     agentId: string,
     decide: DecideFn,
   ): Promise<void> {
-    const entry = this.houseAgents.get(agentId);
+    // §B.1: an agent lives in exactly ONE of the two disjoint registries.
+    const entry = this.houseAgents.get(agentId) ?? this.userAgents.get(agentId);
     if (!entry) return;
 
     const perception = npcSimulation.buildPerception(entry.bodyId);

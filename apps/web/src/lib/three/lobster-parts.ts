@@ -37,7 +37,7 @@ function gatherMeshes(root: THREE.Object3D): MeshInfo[] {
 }
 
 /**
- * Discover lobster body parts from a cloned lobster.glb scene using
+ * Discover lobster body parts from a cloned lobster-ktx.glb scene using
  * spatial heuristics (bounding box positions relative to model center).
  */
 export function discoverLobsterParts(root: THREE.Object3D): LobsterRefs {
@@ -70,7 +70,7 @@ export function discoverLobsterParts(root: THREE.Object3D): LobsterRefs {
   const behindBody: MeshInfo[] = []; // z behind body (toward tail)
   const frontBody: MeshInfo[] = [];  // z in front (toward head)
 
-  // Determine model orientation: lobster.glb typically faces -Z or +Z
+  // Determine model orientation: lobster-ktx.glb typically faces -Z or +Z
   // We use the model's own extent to define thresholds
   const xThreshold = modelSize.x * 0.05; // near center-line
   const yUpperThreshold = bodyCenter.y + modelSize.y * 0.15;

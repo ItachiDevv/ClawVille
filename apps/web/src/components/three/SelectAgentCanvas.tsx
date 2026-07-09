@@ -28,6 +28,8 @@ import {
   applyColorTint,
   type CharacterAnimator,
 } from '@/lib/three/character-animations';
+import { KTX2LoaderSetup } from '@/lib/three/ktx2-loader-setup';
+import { preloadKTX2Bytes, useGLTFWithKTX2 } from '@/lib/three/use-gltf-ktx2';
 
 import { DEFAULT_AGENT_MODEL_KEY } from '@clawville/shared';
 import {
@@ -358,7 +360,7 @@ const PlatformModelGLB = memo(function PlatformModelGLB({
   // Cast to ModelKey for index safety; unknown keys fall back to lobster at runtime.
   const reg: ModelRegistryEntry = MODEL_REGISTRY[modelKey as ModelKey] ?? MODEL_REGISTRY[DEFAULT_AGENT_MODEL_KEY];
 
-  const { scene } = useGLTF(reg.path);
+  const { scene } = useGLTFWithKTX2(reg.path);
   const groupRef     = useRef<THREE.Group>(null!);
   const animGroupRef = useRef<THREE.Group>(null!);
 
@@ -583,7 +585,8 @@ export default function SelectAgentCanvas({
       if (m.avatar_type === 'vrm') {
         preloadVRMBytes(m.path);
       } else {
-        useGLTF.preload(m.path);
+        if (m.path.includes('-ktx.glb')) preloadKTX2Bytes(m.path);
+        else useGLTF.preload(m.path);
       }
     });
   }, []);
@@ -619,6 +622,7 @@ export default function SelectAgentCanvas({
           if (onCanvasReady && gl.domElement) onCanvasReady(gl.domElement);
         }}
       >
+        <KTX2LoaderSetup />
         <SceneContents modelKey={modelKey} color={color} />
       </Canvas>
     </div>

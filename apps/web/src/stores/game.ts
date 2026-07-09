@@ -123,6 +123,22 @@ export interface GameState {
   controlMode: ControlMode;
   hasAgent: boolean;
   possessedNpcId: string | null;
+  /**
+   * §B.1b — the server-confirmed `ocb-<base64url(agentId)>` in-world body id for
+   * the CURRENT Autonomous enrollment, or null when not enrolled / not yet
+   * confirmed. Set from the `bodyId` field of a successful `POST
+   * /api/world/autonomy {active:true}` response (see `postAutonomy`/
+   * `setControlMode` below) — NEVER derived client-side, so it can't drift from
+   * the server's `avatarBodyId()` encoding. Consumed by `World3DCanvas.tsx` to
+   * (a) hide the locally-driven `PlayerAvatar` while an agent body is streaming
+   * in its place (the double-body render bug) and (b) retarget `FPSFollowCamera`
+   * onto that streamed npc.ts entry instead of the frozen local avatar ref.
+   * Cleared to null the instant control leaves Autonomous by ANY path
+   * (`setControlMode`, `setAgentConnection`, `setAgentPaired`, `resetStore`) so
+   * the local avatar reappears in the SAME tick controlMode flips, without
+   * waiting on the async `postAutonomy(false)` response.
+   */
+  autonomousBodyId: string | null;
   setControlMode: (mode: ControlMode) => void;
   toggleControlMode: () => void;
   setHasAgent: (v: boolean) => void;
@@ -231,6 +247,16 @@ export interface GameState {
   // Avatar settings modal
   settingsModalOpen: boolean;
   setSettingsModalOpen: (open: boolean) => void;
+
+  // Wallet-visibility modal (Tokenomics Phase A) — the persistent HUD entry
+  // point (avatar-status-bar chip / sidebar) opens this; the Land Office
+  // deep-links to it via openWalletLink() when a human hits wallet_not_linked.
+  // Mounted always (top-level), inert until opened. NOTE: the modal shows the
+  // full wallet surface (custodial deposit address + linked wallet), not only
+  // the link action — the name reflects the land-team call site (frozen contract).
+  walletLinkModalOpen: boolean;
+  openWalletLink: () => void;
+  closeWalletLink: () => void;
 
   // Q3 plan §4.4 — cosmetic drawer (Phase 3 surface). Drawer lists owned
   // cosmetics with equip/unequip toggles. Catalog is empty at Phase 3 launch;
@@ -534,10 +560,104 @@ export interface GameState {
   resetStore: () => void;
 }
 
+// ---------------------------------------------------------------------------
+// §B.1 (2026-07-08) — Autonomous-mode SERVER enrollment.
+//
+// The client control-mode toggle only flips local loops; the SERVER must be told
+// so the owner's hosted avatar-agent rides the FULL autonomy driver
+// (perceive→decide→act([ACTION:])→settle REAL CT to the owner's avatar). One
+// idempotent endpoint: POST /api/world/autonomy { active }. Authed by the Lucia
+// cookie ONLY — the body carries just the boolean; the agent identity is derived
+// server-side from the user's active avatar. The response NEVER carries a bearer,
+// so this does not touch the no-bearer-refetch invariant (game/page.tsx).
+//
+// B3 (restart re-enrollment): the driver registry is server process-memory, so an
+// API restart/deploy drops the enrollment. While Autonomous, re-POST on an
+// interval so autonomy survives deploys (the endpoint is idempotent + cheap when
+// already enrolled).
+// ---------------------------------------------------------------------------
+const AUTONOMY_API_BASE = process.env.NEXT_PUBLIC_API_URL || '';
+const AUTONOMY_KEEPALIVE_MS = 5 * 60 * 1000; // re-arm every 5 min (survives API restarts)
+let autonomyKeepaliveTimer: ReturnType<typeof setInterval> | null = null;
+
+// §B.1b (Codex round 1 BLOCKING fix): monotonic token for the CURRENT
+// Autonomous *session* (one increment per fresh 'player'->'autonomous'
+// transition, captured into a closure-local `epoch` at the point the
+// activation fetch fires). A rapid double-toggle (autonomous[A] -> player ->
+// autonomous[B]) leaves request A's in-flight `.then()` racing against B's
+// activation. The success case is provably harmless on its own — `bodyId` is
+// `ocb-<base64url(agentId)>`, a pure function of the user's OWN agent, so a
+// stale success writing it is idempotent-safe even under B. The FAILURE case
+// is NOT harmless: without this token, request A's failure callback also only
+// checks `controlMode === 'autonomous'`, which is true again once B starts —
+// so a lagging failed A would wrongly revert the legitimate B session to
+// 'player' and post a misleading toast, even though B's own activation may
+// still succeed. Every `.then()` below is gated on `epoch === autonomyEpoch`
+// (the CURRENT session) before writing success OR reverting on failure.
+let autonomyEpoch = 0;
+
+async function postAutonomy(
+  active: boolean,
+): Promise<{ ok: boolean; code?: string; status: number; bodyId?: string }> {
+  try {
+    const res = await fetch(`${AUTONOMY_API_BASE}/api/world/autonomy`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ active }),
+    });
+    // §B.1b: on activation the route returns the deterministic `bodyId`
+    // (`ocb-<base64url(agentId)>`) it just enrolled — see world.ts POST
+    // /autonomy doc comment. Not present on deactivate ({enrolled:false}) or
+    // on any error response.
+    const data = (await res.json().catch(() => ({}))) as { code?: string; bodyId?: string };
+    return { ok: res.ok, code: data.code, status: res.status, bodyId: data.bodyId };
+  } catch {
+    // Network/offline — treat as a soft failure; the keepalive re-arm retries.
+    return { ok: false, status: 0 };
+  }
+}
+
+function stopAutonomyKeepalive(): void {
+  if (autonomyKeepaliveTimer) {
+    clearInterval(autonomyKeepaliveTimer);
+    autonomyKeepaliveTimer = null;
+  }
+}
+
+/**
+ * Tear down the SERVER Autonomous enrollment + the client keepalive when the
+ * store leaves Autonomous by a path OTHER than `setControlMode` — agent
+ * disconnect/unpair (`setAgentConnection` / `setAgentPaired(false)`), losing the
+ * agent (`setHasAgent`), or logout (`resetStore`). Without this, the 5-min
+ * keepalive interval keeps re-arming enrollment and the server driver keeps
+ * acting + settling REAL CT on the avatar after the user has disconnected /
+ * logged out. Idempotent + safe to over-call: `postAutonomy(false)` is a
+ * server-side no-op when nothing is enrolled, and `stopAutonomyKeepalive` is a
+ * no-op when no timer is set. Guarded on the PRIOR mode so it fires ONLY on a
+ * genuine departure from Autonomous.
+ *
+ * D6 tab-close persistence is unaffected: no store method runs on a raw tab
+ * close, so the timer dies with the page and the server session persists to its
+ * 24h TTL — exactly the "user leaves, agent keeps acting" contract. This cleanup
+ * covers only the EXPLICIT exits (disconnect / unpair / logout).
+ */
+function leaveAutonomousServerCleanup(priorMode: ControlMode): void {
+  if (priorMode !== 'autonomous') return;
+  stopAutonomyKeepalive();
+  // §B.1b: clear the confirmed streamed-body id synchronously so callers that
+  // exit Autonomous via a path OTHER than setControlMode (agent
+  // disconnect/unpair, logout) also remount PlayerAvatar immediately instead
+  // of leaving a stale id pointed at a body the server is about to un-enroll.
+  useGameStore.setState({ autonomousBodyId: null });
+  void postAutonomy(false);
+}
+
 export const useGameStore = create<GameState>((set, get) => ({
   controlMode: 'explore',
   hasAgent: false,
   possessedNpcId: null,
+  autonomousBodyId: null,
   setControlMode: (mode) => {
     const prev = get().controlMode;
     let possessedNpcId: string | null = get().possessedNpcId;
@@ -586,10 +706,94 @@ export const useGameStore = create<GameState>((set, get) => ({
       const { useAutonomyStore } = require('@/stores/autonomy') as typeof import('@/stores/autonomy');
       useAutonomyStore.getState().startAutonomy();
     }
+
+    // §B.1 — SERVER Autonomous enrollment (see the module header above). Enroll
+    // the owner's hosted avatar-agent in the full autonomy driver, and start a
+    // keepalive re-arm so autonomy survives an API restart (B3). On a rejection
+    // (capacity / not-eligible / auth) toast the reason (branch on `code`, never
+    // message text) and REVERT to Controlled — the agent is NOT autonomous
+    // server-side, so the client must not pretend it is.
+    if (mode === 'autonomous' && prev !== 'autonomous') {
+      // §B.1b (Codex round 1): mint this session's token BEFORE firing the
+      // fetch, and close over it — every callback below (activation +
+      // keepalive re-arms) checks its OWN captured `epoch` against the
+      // CURRENT `autonomyEpoch`, not just `controlMode === 'autonomous'`
+      // (which a NEWER autonomous session would also satisfy).
+      const epoch = ++autonomyEpoch;
+      void postAutonomy(true).then((r) => {
+        if (r.ok) {
+          // §B.1b — only THIS session's confirmation may write the body id;
+          // a stale response from a toggle the user already flipped away
+          // from (and possibly re-entered) must not resurrect a hidden local
+          // avatar's replacement after the fact.
+          if (r.bodyId && epoch === autonomyEpoch && get().controlMode === 'autonomous') {
+            set({ autonomousBodyId: r.bodyId });
+          }
+          return;
+        }
+        // A lagging failure from an EARLIER session must never revert a
+        // legitimate NEWER autonomous session — checking controlMode alone
+        // can't tell the two apart, since both read 'autonomous'.
+        if (epoch !== autonomyEpoch) return;
+        // Codex round 2 polish: also skip the toast (not just the revert) if
+        // the user already left Autonomous by some OTHER path (e.g. logged
+        // out, disconnected the agent) before this same-epoch failure landed
+        // — a "could not start autonomous mode" toast would be confusing to
+        // see after the user is no longer even trying to be in that mode.
+        if (get().controlMode !== 'autonomous') return;
+        const msg =
+          r.code === 'autonomy_capacity'
+            ? 'Autonomous agents are at capacity right now — try again soon.'
+            : r.code === 'guest_forbidden'
+              ? 'Create a free account to run your agent autonomously.'
+              : r.code === 'no_agent' || r.code === 'not_eligible' || r.code === 'no_avatar'
+                ? 'No eligible agent to run autonomously yet.'
+                : r.status === 401
+                  ? 'Log in to run your agent autonomously.'
+                  : 'Could not start autonomous mode — please try again.';
+        get().addToast(r.code === 'autonomy_capacity' ? '⏳' : '⚠️', msg, 4500);
+        // The controlMode !== 'autonomous' early-return above already proved
+        // we're still in this exact session's Autonomous mode, so the revert
+        // is unconditional here (no redundant re-check needed).
+        get().setControlMode('player');
+      });
+      if (typeof window !== 'undefined') {
+        stopAutonomyKeepalive();
+        autonomyKeepaliveTimer = setInterval(() => {
+          if (useGameStore.getState().controlMode === 'autonomous') {
+            void postAutonomy(true).then((r) => {
+              // Backfill bodyId on a re-arm if the initial activation response
+              // was lost/raced — deterministic id, safe to (re)apply
+              // idempotently, but still epoch-gated for consistency (a
+              // keepalive tick from a torn-down session must not write into a
+              // newer one either, even though the id itself would be identical
+              // for this same agent).
+              if (r.ok && r.bodyId && epoch === autonomyEpoch && useGameStore.getState().controlMode === 'autonomous') {
+                useGameStore.setState({ autonomousBodyId: r.bodyId });
+              }
+            });
+          } else {
+            stopAutonomyKeepalive();
+          }
+        }, AUTONOMY_KEEPALIVE_MS);
+      }
+    }
+    // Hand autonomy back to the server on leaving Autonomous (idempotent; the
+    // §B.2 session stays live per D6, only the driver stops + the body is
+    // suppressed while the human drives).
+    if (prev === 'autonomous' && mode !== 'autonomous') {
+      stopAutonomyKeepalive();
+      void postAutonomy(false);
+    }
     set({
       controlMode: mode,
       isSpectator: mode === 'explore',
       possessedNpcId,
+      // §B.1b: clear the confirmed body id THIS tick on any exit from
+      // Autonomous so PlayerAvatar remounts immediately (no waiting on the
+      // async postAutonomy(false) round trip). Entering Autonomous leaves it
+      // as-is — the .then() above writes it once the server confirms.
+      ...(mode !== 'autonomous' ? { autonomousBodyId: null } : {}),
       // Any explicit control-mode change ends Hatcher launch-spectate — the
       // owner has taken the wheel, so the explore→player auto-promotion guard
       // is no longer needed and must not strand them in spectate. The launch
@@ -597,7 +801,13 @@ export const useGameStore = create<GameState>((set, get) => ({
       // call, so this never clears the flag during launch setup.
       hatcherSpectate: false,
       // Clear stale nearLocation when switching to explore (no character = no proximity)
-      ...(mode === 'explore' ? { nearLocation: null, nearCharacter: null } : {}),
+      // or autonomous (§B.1b: PlayerAvatar unmounts, so the per-frame proximity
+      // check that keeps nearLocation/nearCharacter current also stops — without
+      // this, a nearLocation set the instant before the toggle would freeze
+      // non-null and LocationHUD would keep showing a stale "press E to enter"
+      // prompt the human could fire against a building the spectated agent has
+      // long since walked away from).
+      ...(mode === 'explore' || mode === 'autonomous' ? { nearLocation: null, nearCharacter: null } : {}),
     });
   },
   toggleControlMode: () => {
@@ -613,6 +823,10 @@ export const useGameStore = create<GameState>((set, get) => ({
     }
   },
   setHasAgent: (v) => {
+    // §B.1: losing/setting the agent moves out of Autonomous — tear down the
+    // server enrollment + keepalive first (this method sets a non-autonomous
+    // mode below and bypasses setControlMode's own cleanup).
+    leaveAutonomousServerCleanup(get().controlMode);
     // Reset jump state before mode change — prevents avatar being airborne on agent connect/disconnect
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const { resetJump } = require('@/lib/three/jump-state') as typeof import('@/lib/three/jump-state');
@@ -627,6 +841,9 @@ export const useGameStore = create<GameState>((set, get) => ({
       controlMode: v ? 'player' : 'explore',
       isSpectator: !v,
       possessedNpcId: null,
+      // §B.1b: this method never lands in 'autonomous' — belt-and-suspenders
+      // alongside leaveAutonomousServerCleanup's clear above.
+      autonomousBodyId: null,
     });
   },
   setPossessedNpcId: (id) => set({ possessedNpcId: id }),
@@ -821,6 +1038,10 @@ export const useGameStore = create<GameState>((set, get) => ({
   settingsModalOpen: false,
   setSettingsModalOpen: (open) => set({ settingsModalOpen: open }),
 
+  walletLinkModalOpen: false,
+  openWalletLink: () => set({ walletLinkModalOpen: true }),
+  closeWalletLink: () => set({ walletLinkModalOpen: false }),
+
   cosmeticDrawerOpen: false,
   setCosmeticDrawerOpen: (open) => set({ cosmeticDrawerOpen: open }),
 
@@ -911,6 +1132,12 @@ export const useGameStore = create<GameState>((set, get) => ({
     const connected = !!sessionId;
     const prev = get();
 
+    // §B.1: any connect/disconnect that moves out of Autonomous must tear down
+    // the SERVER driver enrollment + the keepalive (this method sets a
+    // non-autonomous mode below, bypassing setControlMode's cleanup). Fires only
+    // when prev was Autonomous; deactivate is a server no-op otherwise.
+    leaveAutonomousServerCleanup(prev.controlMode);
+
     // If the user was mid-autonomous session and the claw is being disconnected,
     // stop the autonomy engine's tick interval before wiping the mode — otherwise
     // the 500ms interval would keep running and fire goal planning against a
@@ -961,6 +1188,9 @@ export const useGameStore = create<GameState>((set, get) => ({
       controlMode: connected || keepEmbodied ? 'player' : 'explore',
       isSpectator: connected || keepEmbodied ? false : true,
       possessedNpcId: connected ? null : s.possessedNpcId,
+      // §B.1b: this method never lands in 'autonomous' — belt-and-suspenders
+      // alongside leaveAutonomousServerCleanup's clear above.
+      autonomousBodyId: null,
     }));
   },
 
@@ -986,6 +1216,10 @@ export const useGameStore = create<GameState>((set, get) => ({
       // churn control mode (a useAvatar refetch re-runs the hydration effect).
       const prev = get();
       if (prev.agentPaired && prev.agentConnected && prev.agentSessionId === null) return;
+      // §B.1: a re-pair that moves out of Autonomous tears down the server
+      // enrollment + keepalive (after the no-op early-return above, so a stable
+      // paired-no-bearer hydration does NOT deactivate a live autonomous agent).
+      leaveAutonomousServerCleanup(prev.controlMode);
       // Hatcher-launch spectate preservation (Codex pass-8): a successful launch
       // lands the owner in 'explore' + hatcherSpectate to watch the agent. If
       // /api/auth/me/agent-session resolves AFTER the exchange, this paired
@@ -1000,6 +1234,9 @@ export const useGameStore = create<GameState>((set, get) => ({
         controlMode: keepSpectate ? 'explore' : 'player',
         isSpectator: keepSpectate ? true : false,
         possessedNpcId: null,
+        // §B.1b: this branch never lands in 'autonomous' — belt-and-suspenders
+        // alongside leaveAutonomousServerCleanup's clear above.
+        autonomousBodyId: null,
       });
       return;
     }
@@ -1010,6 +1247,8 @@ export const useGameStore = create<GameState>((set, get) => ({
     // if it was running against the now-unpaired agent.
     const prev = get();
     if (prev.controlMode === 'autonomous') {
+      // §B.1: server driver + keepalive teardown on unpair (agent gone).
+      leaveAutonomousServerCleanup(prev.controlMode);
       const { useAutonomyStore } = require('@/stores/autonomy') as typeof import('@/stores/autonomy');
       useAutonomyStore.getState().stopAutonomy();
     }
@@ -1022,6 +1261,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       controlMode: keepEmbodied ? 'player' : 'explore',
       isSpectator: keepEmbodied ? false : true,
       possessedNpcId: s.possessedNpcId,
+      autonomousBodyId: null,
     }));
   },
 
@@ -1192,6 +1432,10 @@ export const useGameStore = create<GameState>((set, get) => ({
     resetJump();
     // Stop autonomy engine if running — resetStore is called on logout
     if (get().controlMode === 'autonomous') {
+      // §B.1: logout must also tear down the SERVER driver enrollment + the
+      // keepalive, or the agent keeps acting + settling CT after logout (and the
+      // 5-min keepalive keeps re-arming). Idempotent server no-op otherwise.
+      leaveAutonomousServerCleanup('autonomous');
       try {
         const { useAutonomyStore } = require('@/stores/autonomy') as typeof import('@/stores/autonomy');
         useAutonomyStore.getState().stopAutonomy();
@@ -1215,6 +1459,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     controlMode: 'explore',
     hasAgent: false,
     possessedNpcId: null,
+    autonomousBodyId: null,
     isSpectator: true,
     avatarSpecies: 'cat',
     avatarColor: 'green',
@@ -1239,6 +1484,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     movementFrozen: false,
     menuOpen: false,
     settingsModalOpen: false,
+    walletLinkModalOpen: false,
     locationConfigModalOpen: false,
     locationConfigTarget: null,
     inventoryOpen: false,

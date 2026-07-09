@@ -142,6 +142,23 @@ export const agentBots = pgTable('openclaw_bots', {
    * agent to outsiders — see CLAUDE.md "undetectable is_house flag").
    */
   isHouse: boolean('is_house').default(false).notNull(),
+  /**
+   * §B.1 durable autonomy (2026-07-08) — the persisted "this owner's hosted
+   * avatar-agent intends to run AUTONOMOUS" flag, so a server restart / deploy
+   * re-enrolls it into the autonomy driver with ZERO client involvement (the
+   * `agent-autonomy-reconcile` loop queries `autonomy_enrolled = true AND
+   * session_expires_at > now()` and re-activates). Without this, a browser-closed
+   * persisting agent (D6, 24h TTL) was re-enrolled ONLY by the client keepalive,
+   * so every deploy silently killed away-users' agents until they returned.
+   *
+   * Lifecycle (owned by agent-autonomy-activation + the sweeper):
+   *   - SET true  → `activateAutonomyForOwner` AFTER a successful enroll (by agent_id).
+   *   - SET false → `deactivateAutonomyForOwner` (explicit toggle + logout route),
+   *     cleared FIRST/atomically by user_id so a crash can't re-enroll a user who
+   *     left; AND the 24h TTL sweep clears it in its mark-swept UPDATE.
+   * Only ever true on a hosted-avatar (is_house=false, nanoclaw) session row.
+   */
+  autonomyEnrolled: boolean('autonomy_enrolled').default(false).notNull(),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 }, (table) => ({

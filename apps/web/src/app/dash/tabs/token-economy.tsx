@@ -217,7 +217,7 @@ export default async function TokenEconomyTab() {
           Q3 plan §0 L21 · paying with $CLAWVILLE = +25% bonus on any tier
         </p>
         <Table
-          head={['Tier', 'CT', 'USD', '$/CT', 'vs Starter', 'CT @ +25% CLV']}
+          head={['Tier', 'CT', 'USD', '$/CT', 'vs Starter', 'CT @ +25% $CLAWVILLE']}
           rows={CT_BUNDLES.map((b) => [
             b.tier,
             b.ct.toLocaleString(),
@@ -273,12 +273,12 @@ export default async function TokenEconomyTab() {
             [
               'Inbound treasury',
               process.env.CLV_INBOUND_TREASURY_PUBKEY ?? '— not set —',
-              'Receives CLV from user top-ups (held, never spent)',
+              'Receives $CLAWVILLE from user top-ups (held, never spent)',
             ],
             [
               'Payout reserve',
               process.env.CLV_PAYOUT_RESERVE_PUBKEY ?? '— not set —',
-              'Sends CLV payouts to top-ranked agents (Phase 5)',
+              'Sends $CLAWVILLE payouts to top-ranked agents (Phase 5)',
             ],
           ]}
         />

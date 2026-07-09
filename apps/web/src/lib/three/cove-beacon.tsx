@@ -19,7 +19,7 @@
  *   (288); after the 576→704 grow the center shifted to 352 so those indices are
  *   stale — the world-absolute constants below are grow-proof.
  *
- *   The cove GLB (cove-exterior-opt1.glb) is a near-cube:
+ *   The cove GLB (cove-exterior-opt1-ktx.glb) is a near-cube:
  *     raw bbox ≈ 50.78 × 49.52 × 51.42 native units, max dim 51.42.
  *     targetMaxDim=1300 → scale≈25.28 → rendered 1284(x) × 1252(y) × 1300(z) wu.
  *     Building floor at world Y≈-2, APEX at world Y≈1250.

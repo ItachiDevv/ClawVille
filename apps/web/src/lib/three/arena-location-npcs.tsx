@@ -24,6 +24,7 @@ import { getTerrainHeightAt, isTerrainHeightfieldReady } from '@/lib/three/terra
 import { applyColorTint } from '@/lib/three/character-animations';
 import { clampMovement2D } from '@/lib/three/collision/world-colliders';
 import { applyFattenedFrustumCulling } from '@/lib/three/vrm-loader';
+import { extendLoaderWithKTX2 } from '@/lib/three/ktx2-loader-setup';
 
 // ---------------------------------------------------------------------------
 // Location NPCs — SpongeBob characters at their canonical buildings
@@ -154,7 +155,7 @@ const LOCATION_NPCS: Record<string, LocationNpcConfig> = {
   // lobster_plush had a broken bbox (world height 331 at CH=32). SkinnedMesh exclusion
   // should fix normalization; scaleOverride=55 is fallback assuming visual_native_H≈1.0 (= CHARACTER_HEIGHT/1.0).
   // Pass 2 (2026-04-16): reduced 90→55 to match CHARACTER_HEIGHT scale-down.
-  'deployment-ops': { name: 'Larry', model: '/models/lobster_plush.glb', color: 0xff2020, scaleOverride: 96 },
+  'deployment-ops': { name: 'Larry', model: '/models/lobster_plush-ktx.glb', color: 0xff2020, scaleOverride: 96 },
 
   // Slot 6 — mcp-tool-use — patty-building (Krusty Krab — Mr. Krabs's restaurant)
   // mr-krabs.glb: non-skinned geometry is only tiny accessories → computed scale > CLAMP_MAX.
@@ -199,6 +200,11 @@ const LOCATION_NPCS: Record<string, LocationNpcConfig> = {
   'agent-security': { name: 'Patrick', model: '/models/characters/patrick.glb' },
 };
 
+const extendLoaderWithMeshoptAndKTX2 = (loader: unknown) => {
+  extendLoaderWithMeshopt(loader as any);
+  extendLoaderWithKTX2(loader as any);
+};
+
 /** Compute NPC world position and facing angle for a given building zone.
  *
  *  Position: moves NPC_INSET_WORLD world units from building center toward village
@@ -206,7 +212,7 @@ const LOCATION_NPCS: Record<string, LocationNpcConfig> = {
  *            NPCs inside wide buildings (pineapple-house footprint is up to 1000 wu).
  *  Facing: SpongeBob character GLBs face +Z at rotation.y=0.
  *          atan2(dx, dz) rotates the +Z-forward model to face toward village center.
- *          No +PI flip needed (unlike lobster.glb which faces -Z). */
+ *          No +PI flip needed (unlike lobster-ktx.glb which faces -Z). */
 function computeNpcPlacement(zone: { x: number; y: number; width: number; height: number }): {
   worldX: number;
   worldZ: number;
@@ -419,7 +425,7 @@ const NpcMesh = memo(function NpcMesh({
   // MeshoptLoaderSetup component handles most cases, but passing extendLoader
   // here ensures the decoder is registered on this exact loader instance so
   // quantized geometry (KHR_mesh_quantization) decodes with full bone data intact.
-  const { scene, animations } = useGLTF(modelCfg.model, undefined, undefined, extendLoaderWithMeshopt);
+  const { scene, animations } = useGLTF(modelCfg.model, undefined, undefined, extendLoaderWithMeshoptAndKTX2);
   const terrainY = useRef(-2);
   const placed = useRef(false);
 

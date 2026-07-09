@@ -82,11 +82,17 @@ interface IdentityAdapter {
    *   - 'hatcher-proxy'    → always 'hatcher-proxy' (cognition via the partner).
    *   - 'hermes-gated'     → 'hermes-local' when the host-it-for-me gate is on,
    *                          else the fail-soft 'nanoclaw' stub.
+   *   - 'openclaw-gated'   → 'openclaw-local' ONLY for a GATEWAY-LESS openclaw
+   *                          connect when the host-it-for-me gate is on; a BYO
+   *                          openclaw that declared its own gateway keeps the
+   *                          declared HTTP protocol under BOTH gate states (the
+   *                          hosted path never captures a real-gateway agent).
+   *                          openclaw ONLY — ironclaw/custom stay 'declared-gateway'.
    *   - 'fail-soft'        → always 'nanoclaw' (no outbound gateway, no network).
    *   - 'declared-gateway' → the row's declared HTTP protocol (default
    *                          'openai-compat') — a REAL reachable gateway.
    */
-  protocolKind: 'hatcher-proxy' | 'hermes-gated' | 'fail-soft' | 'declared-gateway';
+  protocolKind: 'hatcher-proxy' | 'hermes-gated' | 'openclaw-gated' | 'fail-soft' | 'declared-gateway';
   /**
    * Can the in-world body be rebuilt purely from the persisted openclaw_bots row
    * after an API restart? TRUE only for the no-outbound-gateway types (they
@@ -113,13 +119,22 @@ interface IdentityAdapter {
    */
   speciesFallback: 'hatcher' | 'default';
   /**
-   * Does ClawVille GENUINELY server-host this harness's cognition runtime? Drives
-   * the TRUTHFUL `/me/agent-session` "hosted" advertisement (`isHostedHarness`):
+   * Does ClawVille server-host this identity's NATIVE cognition runtime (the
+   * real framework the name implies), read by `isHostedHarness`:
    *   - 'always'       → milady (server-side Eliza, always reachable).
-   *   - 'hermes-gated' → hermes: hosted ONLY when HERMES_LOCAL_GATEWAY_ENABLED
-   *                      (otherwise it's a self-managed BYO pull agent — calling
-   *                      it "hosted, always connected" is a false advertisement).
+   *   - 'hermes-gated' → hermes: a REAL Hermes runtime is reachable ONLY when
+   *                      HERMES_LOCAL_GATEWAY_ENABLED (the hermes-local wire);
+   *                      otherwise a CONNECT-namespace hermes identity is a
+   *                      self-managed BYO pull agent.
    *   - 'never'        → self-managed / external / partner-hosted identities.
+   *
+   * ⚠️ SCOPE — connect-namespace (openclaw_bots identityType) ONLY. This field
+   * does NOT drive the `/me/agent-session` "hosted" advertisement and MUST NOT
+   * be wired there: an AVATAR-agent's hosting is a property of its
+   * platform_agents row (harness-agnostic ElizaOS runtime via the orchestrator),
+   * so a signup-provisioned hermes-HARNESS avatar is genuinely hosted even with
+   * the gate off. Wiring this into auth.ts was DELIBERATELY EXCLUDED in commit
+   * e1b78a49 (P3 slice 6) for exactly that reason — see auth.ts HOSTED_HARNESSES.
    */
   hosted: 'always' | 'hermes-gated' | 'never';
 }
@@ -136,9 +151,21 @@ const IDENTITY_ADAPTERS: Readonly<Record<string, IdentityAdapter>> = {
   // Self-managed pull agent; host-it-for-me gate upgrades its reactive cognition
   // to the server-hosted 'hermes-local' runtime (D7, 2026-07-02).
   hermes:    { protocolKind: 'hermes-gated',     restorableFromRow: true,  selfManaged: true,  speciesFallback: 'default', hosted: 'hermes-gated' },
-  // Real-gateway harnesses: honor the declared HTTP protocol; auth_token never
-  // persisted → NOT restorable from the row (restore returns null → reconnect).
-  openclaw:  { protocolKind: 'declared-gateway', restorableFromRow: false, selfManaged: false, speciesFallback: 'default', hosted: 'never' },
+  // openclaw: a real-gateway harness by default (honor the declared HTTP
+  // protocol; auth_token never persisted → NOT restorable), BUT a GATEWAY-LESS
+  // openclaw connect is the ClawVille-hosted case — when OPENCLAW_LOCAL_GATEWAY_
+  // ENABLED it routes to the fail-soft 'openclaw-local' local runtime (D-openclaw,
+  // 2026-07-08). The gating is on the DECLARED GATEWAY (see resolveInWorldProtocol),
+  // NOT the identity alone, so a BYO openclaw with its own gateway is byte-identical
+  // under both gate states. `restorableFromRow` STAYS false: the adapter can't tell
+  // a gateway-less hosted openclaw from a BYO one (both are identityType 'openclaw'),
+  // so a hosted openclaw reconnects after a restart rather than risk restoring a BYO
+  // row into a mute body — fail-safe, and byte-identical to today's openclaw restore.
+  // `hosted` STAYS 'never': isHostedHarness sees only the identity, not the gateway
+  // state, so it cannot answer "hosted?" for openclaw without falsely claiming a BYO
+  // openclaw is hosted — the gated WIRE resolution (gateway-aware) is the real
+  // hosting mechanism, not this coarse per-identity flag.
+  openclaw:  { protocolKind: 'openclaw-gated',   restorableFromRow: false, selfManaged: false, speciesFallback: 'default', hosted: 'never' },
   ironclaw:  { protocolKind: 'declared-gateway', restorableFromRow: false, selfManaged: false, speciesFallback: 'default', hosted: 'never' },
   custom:    { protocolKind: 'declared-gateway', restorableFromRow: false, selfManaged: false, speciesFallback: 'default', hosted: 'never' },
 };
@@ -189,6 +216,32 @@ function getIdentityAdapter(identityType: string): IdentityAdapter {
 export const HERMES_LOCAL_GATEWAY_URL = 'http://localhost:8642';
 
 /**
+ * Optional bearer for the local Hermes runtime (2026-07-08, real-runtime
+ * deploy). Hermes ≥0.12 REFUSES to start its OpenAI-compat API server without
+ * an API_SERVER_KEY, even on loopback — so the real hosted runtime demands a
+ * key the D7 "bare POST" contract didn't carry. Read ONCE at module load like
+ * the gate above. Unset ⇒ no Authorization header is sent (the mock-hermes
+ * harness contract is unchanged). This is a same-box shared secret, not a
+ * user credential: it never leaves localhost and is never logged.
+ */
+export const HERMES_LOCAL_GATEWAY_KEY = process.env.HERMES_LOCAL_GATEWAY_KEY ?? '';
+
+/**
+ * Leash for a hermes-local cognition POST (ms). The 10s AgentSubstrateClient
+ * default was sized for thin BYO gateways; the REAL hosted Hermes agent loop
+ * measured 7.3s on an idle qwen3.6:27b for a trivial turn (2026-07-08), so a
+ * busier prompt or GPU contention overruns 10s and the body goes fail-soft
+ * silent. Env-tunable, clamped [1s, 30s]; default keeps the design 10s. The
+ * fail-soft contract is unchanged — this only sizes the leash.
+ */
+export const HERMES_LOCAL_TIMEOUT_MS = (() => {
+  const raw = process.env.HERMES_LOCAL_TIMEOUT_MS;
+  const n = raw ? Number.parseInt(raw, 10) : 10_000;
+  if (!Number.isFinite(n)) return 10_000;
+  return Math.min(30_000, Math.max(1_000, n));
+})();
+
+/**
  * Boot-time gate for the 'hermes-local' upgrade. Read ONCE at module load (the
  * documented single env read of this module — matches how the deploy sets env
  * per-box); tests exercise both states via the explicit parameter on
@@ -197,19 +250,81 @@ export const HERMES_LOCAL_GATEWAY_URL = 'http://localhost:8642';
 const HERMES_LOCAL_GATEWAY_ENABLED = process.env.HERMES_LOCAL_GATEWAY_ENABLED === 'true';
 
 /**
- * The wire protocols an IN-WORLD body can actually speak — the shared
- * `AgentWireProtocol` union widened by exactly one SERVER-INTERNAL value:
- * 'hermes-local' (AgentSubstrateClient POSTs to `HERMES_LOCAL_GATEWAY_URL`).
+ * D-openclaw host-it-for-me OpenClaw cognition (shared-inference onboarding,
+ * 2026-07-08) — the exact mirror of the Hermes host-it-for-me gate above.
  *
- * Why 'hermes-local' is NOT added to the shared union: `packages/shared/src/
- * types/agent-substrate.ts` is on the Hatcher partner-protected surface, and this value
- * never crosses a partner wire, is never caller-suppliable (the connect schema's
- * `protocol` field can't request it), and is never authoritative on the row (the
- * in-world protocol is RE-derived from `identityType` on both mint and restore —
- * the D1 pattern). It exists only between this module and AgentSubstrateClient, so it
- * stays a server-internal widening here.
+ * A connect-namespace 'openclaw' agent is a BYO harness by default (it declares
+ * its own `gatewayUrl` at /connect and we POST cognition there). But an openclaw
+ * agent that connects WITHOUT a gateway of its own is the ClawVille-HOSTED case:
+ * when the box runs a local OpenClaw-compatible runtime and flips
+ * `OPENCLAW_LOCAL_GATEWAY_ENABLED=true`, that gateway-less body's REACTIVE/ambient
+ * cognition (autonomous NPC conversations) is upgraded from the silent 'nanoclaw'
+ * stub to an 'openclaw-local' client that POSTs OpenAI-compat chat to the runtime.
+ *
+ * PRECEDENCE (pinned by tests): a BYO openclaw WITH a declared gateway is NEVER
+ * captured — it keeps its declared HTTP protocol byte-identically whether or not
+ * this gate is on. Only the gateway-LESS openclaw connect is hosted.
+ *
+ * SSRF STANCE — READ BEFORE "FIXING" THIS: identical to the Hermes constant. The
+ * URL is a HARDCODED server-side constant, deliberately NOT env-overridable and
+ * NEVER read from caller input or the bot row. `validateOutboundUrlResolved`
+ * (hatcher-config.ts) keeps rejecting localhost/RFC1918 for every CALLER-SUPPLIED
+ * URL — this constant is not a loosening of that guard, it is the one server-owned
+ * exception that never mixes with caller data.
  */
-export type InWorldWireProtocol = AgentWireProtocol | 'hermes-local';
+export const OPENCLAW_LOCAL_GATEWAY_URL = 'http://localhost:8643';
+
+/**
+ * Optional bearer for the local OpenClaw gateway — the exact mirror of
+ * `HERMES_LOCAL_GATEWAY_KEY` (2026-07-08). The real-Hermes deploy proved a hosted
+ * OpenAI-compat runtime can REFUSE to serve without an API key even on loopback;
+ * the real OpenClaw gateway (github.com/openclaw/openclaw) is assumed no
+ * friendlier, so carry a same-box shared secret as `Authorization: Bearer` when
+ * set. Read ONCE at module load like the gate. Unset ⇒ no Authorization header
+ * (the mock-openclaw harness contract is unchanged). Same-box shared secret, not
+ * a user credential: it never leaves localhost and is never logged.
+ */
+export const OPENCLAW_LOCAL_GATEWAY_KEY = process.env.OPENCLAW_LOCAL_GATEWAY_KEY ?? '';
+
+/**
+ * Leash for an openclaw-local cognition POST (ms) — the exact mirror of
+ * `HERMES_LOCAL_TIMEOUT_MS`. The 10s AgentSubstrateClient default was sized for
+ * thin BYO gateways; the real hosted Hermes loop measured 7.3s idle on
+ * qwen3.6:27b, and a hosted OpenClaw loop on a local model is no faster, so a
+ * busier prompt or GPU contention overruns 10s and the body goes fail-soft
+ * silent. Env-tunable, clamped [1s, 30s]; default keeps the design 10s. The
+ * fail-soft contract is unchanged — this only sizes the leash.
+ */
+export const OPENCLAW_LOCAL_TIMEOUT_MS = (() => {
+  const raw = process.env.OPENCLAW_LOCAL_TIMEOUT_MS;
+  const n = raw ? Number.parseInt(raw, 10) : 10_000;
+  if (!Number.isFinite(n)) return 10_000;
+  return Math.min(30_000, Math.max(1_000, n));
+})();
+
+/**
+ * Boot-time gate for the 'openclaw-local' upgrade. Read ONCE at module load (the
+ * SECOND documented env read of this module — matches how the deploy sets env
+ * per-box); tests exercise both states via the explicit parameter on
+ * `resolveInWorldProtocol`, never by mutating process.env.
+ */
+const OPENCLAW_LOCAL_GATEWAY_ENABLED = process.env.OPENCLAW_LOCAL_GATEWAY_ENABLED === 'true';
+
+/**
+ * The wire protocols an IN-WORLD body can actually speak — the shared
+ * `AgentWireProtocol` union widened by exactly TWO SERVER-INTERNAL values:
+ * 'hermes-local' and 'openclaw-local' (AgentSubstrateClient POSTs to the
+ * respective HARDCODED `*_LOCAL_GATEWAY_URL`).
+ *
+ * Why these are NOT added to the shared union: `packages/shared/src/
+ * types/agent-substrate.ts` is on the Hatcher partner-protected surface, and these
+ * values never cross a partner wire, are never caller-suppliable (the connect
+ * schema's `protocol` field can't request them), and are never authoritative on
+ * the row (the in-world protocol is RE-derived from `identityType`+gateway on both
+ * mint and restore — the D1 pattern). They exist only between this module and
+ * AgentSubstrateClient, so they stay server-internal widenings here.
+ */
+export type InWorldWireProtocol = AgentWireProtocol | 'hermes-local' | 'openclaw-local';
 
 /**
  * The render-model fallback for an agent whose row/request carries no explicit
@@ -272,11 +387,21 @@ export function resolveAgentSpecies(
  *   boot-time `HERMES_LOCAL_GATEWAY_ENABLED` env read. Consulted ONLY on the
  *   'hermes' branch; every other identity type derives identically regardless
  *   (the hatcher-inertness test pins this).
+ * @param openclawLocal test seam for the D-openclaw gate (2026-07-08). Consulted
+ *   ONLY on the 'openclaw' branch. `{ enabled }` defaults to the boot-time
+ *   `OPENCLAW_LOCAL_GATEWAY_ENABLED` env read; `{ hasDeclaredGateway }` is the
+ *   load-bearing precedence signal — a BYO openclaw with its own gateway is
+ *   NEVER captured by the hosted path. FAIL-SAFE: when the bag is passed without
+ *   `hasDeclaredGateway`, it is treated as `true` (declared-gateway → the legacy
+ *   BYO behaviour), so only an EXPLICIT gateway-less signal routes to the hosted
+ *   runtime. When the whole bag is omitted (legacy callers / the hermes+hatcher
+ *   tests), the openclaw branch is byte-identical to a declared-gateway harness.
  */
 export function resolveInWorldProtocol(
   identityType: string,
   storedProtocol: string | null | undefined,
   hermesLocalEnabled: boolean = HERMES_LOCAL_GATEWAY_ENABLED,
+  openclawLocal?: { enabled?: boolean; hasDeclaredGateway?: boolean },
 ): InWorldWireProtocol {
   const kind = getIdentityAdapter(identityType).protocolKind;
   if (kind === 'hatcher-proxy') return 'hatcher-proxy';
@@ -284,6 +409,23 @@ export function resolveInWorldProtocol(
   // runtime client. (The registry keys hermes to 'hermes-gated' — never the
   // plain 'fail-soft' — so it can never fall through to the stub when enabled.)
   if (kind === 'hermes-gated') return hermesLocalEnabled ? 'hermes-local' : 'nanoclaw';
+  // openclaw: the host-it-for-me gate upgrades ONLY a GATEWAY-LESS openclaw
+  // connect to the fail-soft local runtime. A BYO openclaw that declared its own
+  // gateway keeps its declared protocol under BOTH gate states (the precedence
+  // the directive pins) — the hosted path never captures a real-gateway agent.
+  // ironclaw/custom are 'declared-gateway', never 'openclaw-gated', so they are
+  // unaffected.
+  if (kind === 'openclaw-gated') {
+    if (openclawLocal) {
+      const enabled = openclawLocal.enabled ?? OPENCLAW_LOCAL_GATEWAY_ENABLED;
+      // FAIL-SAFE default: an absent gateway signal means "assume a declared
+      // gateway" (legacy BYO behaviour), so a caller that opts into the openclaw
+      // path but omits the signal can never mis-route a BYO agent to hosted.
+      const hasDeclaredGateway = openclawLocal.hasDeclaredGateway ?? true;
+      if (enabled && !hasDeclaredGateway) return 'openclaw-local';
+    }
+    return (storedProtocol as AgentWireProtocol) ?? 'openai-compat';
+  }
   if (kind === 'fail-soft') return 'nanoclaw';
   // 'declared-gateway' — a REAL reachable gateway: honor its declared protocol,
   // default openai-compat.
@@ -452,6 +594,11 @@ const PROTOCOL_CAPABILITIES: Readonly<Record<InWorldWireProtocol, ProtocolCapabi
   'hatcher-proxy':  { emitsInWorldActions: true,  proximityGateExempt: true },
   // Server-hosted local runtime (D7) — emits [ACTION:] but STAYS proximity-gated.
   'hermes-local':   { emitsInWorldActions: true,  proximityGateExempt: false },
+  // Server-hosted local runtime (D-openclaw, 2026-07-08) — the hosted-OpenClaw
+  // mirror of hermes-local: emits [ACTION:] but STAYS proximity-gated. The
+  // proximity-gate exemption stays Hatcher-ONLY (contract-locked talk); widening
+  // it to any hosted harness would be an anti-abuse regression.
+  'openclaw-local': { emitsInWorldActions: true,  proximityGateExempt: false },
   // Fail-soft stub — no reply, no action, no exemption.
   'nanoclaw':       { emitsInWorldActions: false, proximityGateExempt: false },
   // BYO gateways — not server-hosted; unchanged in-world behavior.
@@ -487,16 +634,25 @@ export function protocolProximityGateExempt(protocol?: string | null): boolean {
 }
 
 /**
- * TRUTHFUL "is ClawVille genuinely server-hosting this harness's runtime?" —
- * drives the `/me/agent-session` "hosted" advertisement (P3 slice 6 honesty fix,
- * 2026-07-06). Reads the identity registry's `hosted` field (a harness IS an
- * identity type in this namespace):
+ * "Does ClawVille server-host this identity's NATIVE cognition runtime?" —
+ * connect-namespace (openclaw_bots identityType) semantics ONLY:
  *   - milady → always (server-side Eliza runs end-to-end).
- *   - hermes → ONLY when the host-it-for-me local runtime is enabled; otherwise
- *     hermes is a self-managed BYO pull agent and advertising it "hosted, always
- *     connected" is false. Its true liveness comes from the openclaw_bots
- *     lastSeenAt path, not this carve-out.
+ *   - hermes → ONLY when the host-it-for-me local runtime is enabled
+ *     (HERMES_LOCAL_GATEWAY_ENABLED → the hermes-local wire); otherwise a
+ *     connect-namespace hermes identity is a self-managed BYO pull agent whose
+ *     true liveness comes from the openclaw_bots lastSeenAt path.
  *   - everything else (incl. unknown harness / '' ) → false (fail-closed).
+ *
+ * ⚠️ NOT WIRED to `/me/agent-session`, and deliberately so (commit e1b78a49,
+ * P3 slice 6): that route's "hosted" branch describes AVATAR-agents, whose
+ * hosting is a property of the platform_agents row (harness-agnostic ElizaOS
+ * runtime via agent-orchestrator) — gating it on this helper would falsely
+ * demote working hosted hermes-HARNESS avatars behind a disabled env flag.
+ * auth.ts `HOSTED_HARNESSES` is the authoritative avatar-namespace predicate.
+ * This helper currently has NO production call site (tests pin its contract);
+ * it exists as the gate for future host-it-for-me UI in the connect namespace.
+ * If you are about to wire it somewhere, first decide which namespace your
+ * caller is in — avatar (platform_agents) or connect (openclaw_bots).
  *
  * @param hermesLocalEnabled test seam for the D7 gate — defaults to the boot-time
  *   `HERMES_LOCAL_GATEWAY_ENABLED` env read (matches how the deploy sets env
@@ -551,9 +707,26 @@ export interface OverrideConfigInputs extends AgentConfigBase {
   targetNpcId: string;
 }
 
-/** The wire-protocol decision, shared by avatar + override assembly. */
+/**
+ * TRUE iff `gatewayUrl` is a REAL declared outbound gateway (not absent, empty,
+ * or the `http://localhost:0` dummy the no-gateway/hosted paths default to). The
+ * load-bearing precedence signal for the hosted-OpenClaw gate: a gateway-less
+ * openclaw connect is the ClawVille-hosted case; a BYO openclaw that declared its
+ * own gateway must stay byte-identical under both gate states.
+ */
+function hasRealDeclaredGateway(gatewayUrl?: string | null): boolean {
+  return gatewayUrl != null && gatewayUrl !== '' && gatewayUrl !== 'http://localhost:0';
+}
+
+/** The wire-protocol decision, shared by avatar + override assembly. Threads the
+ *  gateway signal so the hosted-OpenClaw gate captures ONLY gateway-less openclaw
+ *  connects (mint and restore both flow through the builders → this). */
 function pickProtocol(base: AgentConfigBase): InWorldWireProtocol {
-  return base.protocolOverride ?? resolveInWorldProtocol(base.identityType, base.storedProtocol);
+  if (base.protocolOverride) return base.protocolOverride;
+  return resolveInWorldProtocol(base.identityType, base.storedProtocol, HERMES_LOCAL_GATEWAY_ENABLED, {
+    enabled: OPENCLAW_LOCAL_GATEWAY_ENABLED,
+    hasDeclaredGateway: hasRealDeclaredGateway(base.gatewayUrl),
+  });
 }
 
 /**
@@ -573,9 +746,10 @@ export function buildAvatarSessionConfig(
     // the row's gatewayUrl. Dummy default matches the mint paths verbatim.
     gatewayUrl: inputs.gatewayUrl ?? 'http://localhost:0',
     authToken: inputs.authToken ?? '',
-    // Narrow-cast: 'hermes-local' is the server-internal widening (see
-    // InWorldWireProtocol) — the shared registration type stays on the
-    // partner-protected AgentWireProtocol union; AgentSubstrateClient re-widens on read.
+    // Narrow-cast: 'hermes-local' / 'openclaw-local' are the server-internal
+    // widenings (see InWorldWireProtocol) — the shared registration type stays on
+    // the partner-protected AgentWireProtocol union; AgentSubstrateClient re-widens
+    // on read.
     protocol: protocol as AgentWireProtocol,
     mode: 'avatar',
     autonomyMode: resolveAutonomyMode(
@@ -611,7 +785,8 @@ export function buildOverrideSessionConfig(
     sessionKey: inputs.sessionId,
     gatewayUrl: inputs.gatewayUrl ?? 'http://localhost:0',
     authToken: inputs.authToken ?? '',
-    // Narrow-cast: same server-internal widening note as the avatar builder.
+    // Narrow-cast: same server-internal widening note as the avatar builder
+    // ('hermes-local' / 'openclaw-local').
     protocol: protocol as AgentWireProtocol,
     mode: 'override',
     autonomyMode: resolveAutonomyMode(

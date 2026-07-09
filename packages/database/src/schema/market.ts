@@ -37,11 +37,20 @@
  *        state is never observable outside the transaction in v1]
  *   active ────────────────► cancelled            [POST /listings/:id/cancel,
  *        seller-only; the ONLY seller-driven exit]
- *   active ────────────────► expired              [RESERVED for a future
- *        expiry sweeper. v1 treats expiry as a PREDICATE: a listing with
- *        expires_at <= now() is hidden from browse and refused at
- *        quote/preflight/fulfiller, but the row is NOT flipped; it remains
- *        status='active' and therefore CANCELLABLE (which releases the lock).]
+ *   active ────────────────► expired              [the LISTING-EXPIRY SWEEPER
+ *        (`services/market-listing-expiry-sweeper.ts`, boot-wired, hourly, task
+ *        D 2026-07-08) flips an `active` listing whose expires_at <= now() to
+ *        the terminal `expired` state AND releases its `market_deed_locks` row —
+ *        so an abandoned expired listing can't hold its deed lock forever and
+ *        park land's rent-lapse eviction (the squatting hole once the land
+ *        deed-lock guard shipped). Expiry is ALSO still a PREDICATE at
+ *        read/quote/preflight/fulfiller (browse hides + settle refuses an
+ *        expired-but-not-yet-swept row), so nothing settles against it in the
+ *        window before the sweeper runs; while still `active` it also stays
+ *        seller-CANCELLABLE (which releases the lock immediately). The sweeper
+ *        locks in the fulfiller order (listing FOR UPDATE → advisory(seller) →
+ *        parcel FOR UPDATE) and touches ONLY `active` rows — never
+ *        pending_settlement/settled, whose locks the deed-transfer executor owns.]
  *
  *   settled / cancelled / expired are terminal. There is NO transition out of
  *   settled — a sold listing is never re-activated (relist = a NEW row).
@@ -58,10 +67,14 @@
  *          per parcel), backed up by `market_listings_live_item_unique`.
  *   release (DELETE)              — on cancel (and by the future expire sweep).
  *   HELD THROUGH 'settled'        — after settlement the deed still belongs to
- *          the seller until the CODEX-GATED transfer executor flips
- *          `land_parcels.owner_avatar_id`; the lock row stays until that
- *          (later, land-domain-reviewed) executor completes the transfer and
- *          releases it. v1 NEVER flips land ownership.
+ *          the seller until the (now-existing but DARK, flag-gated)
+ *          deed-transfer executor (`market-deed-transfer-executor.ts`,
+ *          `MARKET_DEED_TRANSFER_ENABLED` default OFF) flips
+ *          `land_parcels.owner_avatar_id` and DELETEs this lock row in the
+ *          SAME tx. The fulfiller itself NEVER flips land ownership. A
+ *          terminal deed conflict (seller lost the parcel post-settle) keeps
+ *          the lock HELD pending operator resolution — house-favorable freeze,
+ *          never a silent release.
  *
  * SCOPE HONESTY — what the lock does and does not guarantee: land.ts is NOT
  * modified (C4 constraint), so land-side paths (voluntary release, tenure
@@ -81,14 +94,33 @@
  * no-op that never double-queues the buy or double-records the payout intent.
  *
  * v1 LIMITS: `earned_bundle` listings are REFUSED (`earned_not_available`) —
- * EARNED provenance does not exist yet; only `land_deed` may list. Deed-able
- * tenures are 'owned' + 'hold' (ownership tenures); 'rented'/'deposit'/
- * 'starter' refuse `not_transferable_tenure` (a renter/depositor does not own
- * the deed; escrow/hold transfer semantics are the Codex+land-gated executor's
- * problem, not v1's).
+ * EARNED provenance does not exist yet; only `land_deed` may list. The ONLY
+ * deed-able tenure is 'owned' (narrowed from 'owned'+'hold' 2026-07-08, Codex
+ * re-review): 'hold' refuses the typed `hold_transfer_not_supported` because
+ * the deed-flip normalizes tenure='owned' + NULLs the hold cols, which would
+ * strip the CLV-hold obligation — buyer-inherits-obligation transfer is the
+ * gated follow-up (FEATURE_GATE `market_hold_deed_transfer`,
+ * apps/api services/market-listings.ts); 'rented'/'deposit'/'starter' refuse
+ * `not_transferable_tenure` (a renter/depositor does not own the deed).
  *
- * Migration: `packages/database/migrations/0017_market_p2p.sql` (idempotent
- * CREATE TYPE/TABLE/INDEX IF NOT EXISTS; apply by hand/CI — NEVER db:push).
+ * Migrations: `packages/database/migrations/0017_market_p2p.sql` (base) +
+ * `0020_market_payout_deed_executors.sql` (GoLive executor trail columns +
+ * capture-signature partial-UNIQUEs + deed-pending scan index) +
+ * `0020a`/`0020b` (the 'sending'/'reconcile' payout_status values, each ALONE
+ * per the migrate-ci ALTER TYPE rule). Idempotent; apply by hand/CI — NEVER
+ * db:push.
+ *
+ * GoLive executors (2026-07-07, BOTH DARK — default-OFF flags, nothing wired
+ * into index.ts): the deed-transfer executor
+ * (`market-deed-transfer-executor.ts`, `MARKET_DEED_TRANSFER_ENABLED`) flips
+ * `land_parcels.owner_avatar_id` seller→buyer for SETTLED land_deed
+ * settlements (one tx: re-verify seller still owns under the land lock order,
+ * flip, transfer structures, stamp `deed_transferred_at`, release the deed
+ * lock); the payout executor (`market-payout-executor.ts`,
+ * `MARKET_PAYOUT_EXECUTE`) then delivers the seller's CLV + the treasury rake
+ * CLV on-chain, reading `deed_transferred_at` as its precondition — DEED
+ * FIRST, PAYOUT SECOND (funds were secured at settle; the deed must flip
+ * before the seller is ever paid).
  */
 
 import {
@@ -131,14 +163,45 @@ export const marketListingStatusEnum = pgEnum('market_listing_status', [
 
 /**
  * Seller-payout intent lifecycle. v1 ONLY EVER WRITES 'pending_review' — the
- * other values are RESERVED for the Codex-review-gated payout executor
- * (mirrors `clv_buy_status`'s reserved 'executed'/'skipped').
+ * fulfiller records the intent and stops. The GoLive PAYOUT EXECUTOR
+ * (`apps/api/src/services/market-payout-executor.ts`, DARK behind
+ * `MARKET_PAYOUT_EXECUTE`) drives the machine:
+ *
+ *   pending_review → sending    [ATOMIC CLAIM (payout_claim_id) BEFORE any
+ *                                decrypt/sign/send; requires
+ *                                deed_transferred_at IS NOT NULL — the deed
+ *                                flips FIRST, payout second]
+ *   sending → paid              [seller CLV send + treasury rake CLV send both
+ *                                confirmed; each signature CAPTURED in its own
+ *                                committed UPDATE BEFORE the wire was touched]
+ *   sending → pending_review    [pre-capture definitive failure only (custody/
+ *                                RPC/balance) — nothing signed-and-captured,
+ *                                nothing sent: clean re-claim]
+ *   sending → reconcile         [TERMINAL, operator-resolution, NEVER
+ *                                auto-retried. payout_failure_reason says
+ *                                whether money moved: ambiguous sends
+ *                                (money-state UNKNOWN, captured signature =
+ *                                the chain-poll anchor) AND definitive
+ *                                refusals (conservation_violated,
+ *                                destination mismatch, guest seller, on-chain
+ *                                tx failure) both land here]
+ *
+ *   'approved'/'rejected' stay RESERVED for a human review flow layered on top
+ *   (the executor consumes 'pending_review' directly; the default-OFF flag is
+ *   the v1 review gate).
+ *
+ * NOTE: 'sending' and 'reconcile' are listed LAST to mirror the physical
+ * Postgres enum order (ALTER TYPE … ADD VALUE appends — migrations 0020a +
+ * 0020b; drizzle's array order must match the DB, same rule as
+ * `clv_buy_status`'s 'executing').
  */
 export const marketPayoutStatusEnum = pgEnum('market_payout_status', [
-  'pending_review', // recorded intent (the ONLY v1 write)
-  'approved', // RESERVED — operator/Codex-gated review approved the send
-  'rejected', // RESERVED — review refused (manual resolution trail)
-  'paid', // RESERVED — the (gated) executor completed the on-chain CLV send
+  'pending_review', // recorded intent (the ONLY fulfiller write)
+  'approved', // RESERVED — a future human-review flow
+  'rejected', // RESERVED — a future human-review flow (manual resolution trail)
+  'paid', // the (gated) executor completed BOTH on-chain CLV sends
+  'sending', // ATOMICALLY CLAIMED by the (dark) payout executor (0020a)
+  'reconcile', // TERMINAL operator-resolution — see the machine above (0020b)
 ]);
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -239,10 +302,11 @@ export const marketDeedLocks = pgTable(
  *   - the 4.44% treasury CLV-rake INTENT (rake_bps/rake_usd),
  *   - the seller's 95.56% CLV payout as a QUEUED 'pending_review' intent
  *     (seller_payout_usd + payout_status) — NEVER an on-chain send here,
- *   - the deed-transfer seam: `deed_transferred_at` is RESERVED for the
- *     Codex+land-gated transfer executor; v1 never writes it. The deed
- *     transfer completes ONLY when that executor runs; until then the parcel
- *     stays with the seller under the held `market_deed_locks` row.
+ *   - the deed-transfer seam: `deed_transferred_at` is stamped ONLY by the
+ *     (dark, flag-gated) deed-transfer executor; the fulfiller never writes
+ *     it. The deed transfer completes ONLY when that executor runs; until
+ *     then the parcel stays with the seller under the held
+ *     `market_deed_locks` row.
  * `checkout_id` UNIQUE = one settled checkout ⇒ one settlement (idempotency,
  * on top of the engine's per-signature exactly-once).
  */
@@ -283,8 +347,44 @@ export const marketSettlements = pgTable(
     payoutStatus: marketPayoutStatusEnum('payout_status').notNull().default('pending_review'),
     /** Default payout destination (stamped from the listing; review re-validates). */
     sellerPayoutPubkey: varchar('seller_payout_pubkey', { length: 64 }),
-    /** RESERVED — stamped by the Codex+land-gated deed-transfer executor. */
+    /** Stamped by the (dark, flag-gated) deed-transfer executor when the
+     *  parcel ownership flip COMMITS. The payout executor reads this as its
+     *  precondition — deed first, payout second. */
     deedTransferredAt: timestamp('deed_transferred_at', { withTimezone: true }),
+
+    // ── GoLive executors trail (migration 0020, 2026-07-07 — both DARK) ──────
+    /** Deed executor per-row claim AUDIT (uuid per attempt). The cross-process
+     *  mutex is `FOR UPDATE SKIP LOCKED` + the `deed_transferred_at IS NULL`
+     *  predicate inside ONE tx — this column records WHO performed the flip. */
+    deedTransferClaimId: uuid('deed_transfer_claim_id'),
+    deedTransferStartedAt: timestamp('deed_transfer_started_at', { withTimezone: true }),
+    /** TERMINAL deed failure ('deed_transfer_conflict' family — seller no
+     *  longer owns the parcel / live escrow present / parcel missing). Set ⇒
+     *  the executor never retries; ops resolves (refund trail on the checkout). */
+    deedTransferFailureReason: text('deed_transfer_failure_reason'),
+    /** Payout executor atomic-claim token (uuid per claim) + when taken.
+     *  Retained after 'paid' as the audit of the executing claim. */
+    payoutClaimId: uuid('payout_claim_id'),
+    payoutClaimedAt: timestamp('payout_claimed_at', { withTimezone: true }),
+    /** Seller-leg CLV send signature — CAPTURED in its own committed UPDATE
+     *  BEFORE the send (partial-UNIQUE: one on-chain send ⇒ one settlement). */
+    payoutSellerTxSignature: text('payout_seller_tx_signature'),
+    /** Rake-leg CLV send signature — same capture-before-send discipline. */
+    payoutRakeTxSignature: text('payout_rake_tx_signature'),
+    /** The SELLER's CLV payout in atomic units (6-dp mint), derived from
+     *  seller_payout_usd at payout_executed_rate, EXACT-INTEGER floor
+     *  (house-favorable). Stamped at seller-leg capture. */
+    payoutClvAtomic: numeric('payout_clv_atomic'),
+    /** The EXECUTED C3 buy rate (clv_buy_queue.executed_price, USD/CLV) the
+     *  CLV amounts derive from — stamped at seller-leg capture so a resume
+     *  reuses THE SAME rate. */
+    payoutExecutedRate: numeric('payout_executed_rate', { precision: 20, scale: 12 }),
+    /** When payout_status flipped to 'paid' (both legs confirmed). */
+    payoutExecutedAt: timestamp('payout_executed_at', { withTimezone: true }),
+    /** Machine reason for 'reconcile' rows (ambiguous vs definitive — see the
+     *  payout_status machine doc above). */
+    payoutFailureReason: text('payout_failure_reason'),
+
     metadata: jsonb('metadata').$type<Record<string, unknown>>().default({}).notNull(),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   },
@@ -297,6 +397,18 @@ export const marketSettlements = pgTable(
       t.payoutStatus,
       t.createdAt,
     ),
+    /** One on-chain CLV send binds to exactly one settlement (capture keys —
+     *  mirror of clv_swap_funding_sweep_sig_uniq; migration 0020). */
+    payoutSellerSigUniq: uniqueIndex('market_settlements_payout_seller_sig_uniq')
+      .on(t.payoutSellerTxSignature)
+      .where(sql`payout_seller_tx_signature IS NOT NULL`),
+    payoutRakeSigUniq: uniqueIndex('market_settlements_payout_rake_sig_uniq')
+      .on(t.payoutRakeTxSignature)
+      .where(sql`payout_rake_tx_signature IS NOT NULL`),
+    /** Deed-executor scan hot path (pending deeds only; migration 0020). */
+    deedPendingIdx: index('market_settlements_deed_pending_idx')
+      .on(t.createdAt)
+      .where(sql`deed_transferred_at IS NULL AND deed_transfer_failure_reason IS NULL`),
     pricePositive: check('market_settlements_price_vclaw_positive', sql`${t.priceVclaw} > 0`),
     usdCentsPositive: check('market_settlements_usd_cents_positive', sql`${t.usdCents} > 0`),
     rakeBpsRange: check(
