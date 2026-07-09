@@ -191,10 +191,13 @@ export function findEscrowV1Pda(
 /**
  * receipt: ["sap_recv", escrowPda, service_hash(32)]
  *
- * NOTE (audit FIX-A): the DEPLOYED 0.18.0 program has NO settlement_receipt
- * account on settle_calls_v2, so this PDA is NOT used by the live client today.
- * Retained for the future 0.25.0 program (which adds the on-chain receipt) +
- * potential off-chain receipt bookkeeping. Do not wire it into a 0.18.0 settle.
+ * NOTE (0.25-family, devnet-verified 2026-07-09): the DEPLOYED settle_calls_v2 STILL
+ * takes NO named `settlement_receipt` account — despite the future-0.25 IDL declaring
+ * one (passing it → InvalidProgramExecutable 3009). The settle's anti-replay / pending
+ * bookkeeping rides instead on the PENDING settlement PDA (`findPendingPda`, which the
+ * settle carries in its SPL remaining_accounts, idx4, and INITS on-chain). So this
+ * receipt PDA is NOT wired into any live settle; retained for off-chain bookkeeping /
+ * a possible future program only. Do NOT add it as a settle account.
  */
 export function findReceiptPda(
   programId: PublicKey,
