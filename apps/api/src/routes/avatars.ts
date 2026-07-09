@@ -45,6 +45,7 @@ import {
 } from '../services/avatar-agent-provisioning';
 import { resolveOrCreateUserByIdentity, generateIdentityKeypairForUser } from '../services/identity-service';
 import { createRateLimiter, getClientIp } from '../middleware/rate-limit';
+import { moderateText, CONTENT_BLOCKED_CODE, CONTENT_BLOCKED_MESSAGE } from '../services/moderation-service';
 import {
   directiveBodySchema,
   buildDirectiveValue,
@@ -1138,6 +1139,15 @@ avatarRoutes.post('/me/chat', requireAuth, async (c) => {
     throw new HTTPException(400, { message: 'Message must be 1-4000 characters' });
   }
 
+  // Content guardrail (input) — before the runtime/LLM so blocked text never
+  // reaches cognition (saves tokens); fail-open never breaks chat. No output
+  // moderation here: the reply is this human's OWN agent answering the same
+  // human who prompted it (author == recipient), not a public persona.
+  const inMod = await moderateText(result.data.content, { surface: 'avatar-chat', direction: 'input' });
+  if (!inMod.allowed) {
+    return c.json({ error: CONTENT_BLOCKED_MESSAGE, code: CONTENT_BLOCKED_CODE }, 400);
+  }
+
   // Get user's avatar
   const avatar = await db.query.avatars.findFirst({
     where: and(eq(avatars.userId, user.id), eq(avatars.isActive, true)),
@@ -1316,6 +1326,17 @@ avatarRoutes.post('/me/directive', requireAuth, async (c) => {
       },
       400,
     );
+  }
+
+  // Content guardrail (input) — directive text is untrusted user content that is
+  // PERSISTED (platform_agents.config.currentDirective), rendered client-side, and
+  // injected into the running runtime, so moderate it before it lands. Skip the
+  // clear path (no text). Fail-open never blocks a legit directive.
+  if (parsed.data.directive) {
+    const inMod = await moderateText(parsed.data.directive, { surface: 'avatar-directive', direction: 'input' });
+    if (!inMod.allowed) {
+      return c.json({ error: CONTENT_BLOCKED_MESSAGE, code: CONTENT_BLOCKED_CODE }, 400);
+    }
   }
 
   const avatar = await db.query.avatars.findFirst({
