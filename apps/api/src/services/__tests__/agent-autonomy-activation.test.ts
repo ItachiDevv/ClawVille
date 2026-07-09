@@ -607,8 +607,9 @@ describe('(9) durable enrollment flag lifecycle', () => {
     };
     await deactivateAutonomyForOwner(OWNER); // must NOT throw
     expect(calls).toBe(3); // CLEAR_FLAG_MAX_ATTEMPTS — bounded, loud on exhaustion
-    // Driving still stops NOW; the CRITICAL log + the 24h TTL sweep clear are the
-    // durable-flag backstops if the row genuinely can't be written.
+    // Driving still stops NOW; the CRITICAL log + a later successful clear/teardown
+    // are the durable-flag backstops if the row genuinely can't be written (the
+    // TTL sweep alone is not reliable — a re-enrolled row slides its own TTL).
     expect(agentAutonomyDriver.isOwnerEnrolled(OWNER)).toBe(false);
   });
 });
