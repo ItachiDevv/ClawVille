@@ -1,9 +1,8 @@
 'use client';
 
-import { useQuery } from '@tanstack/react-query';
 import { useGameStore, type GameState } from '@/stores/game';
 import { useAvatar } from '@/hooks/use-avatar';
-import { api } from '@/lib/api';
+import { useAuthMe } from '@/hooks/use-auth-me';
 
 export default function ControlModeToggle() {
   const controlMode = useGameStore((s: GameState) => s.controlMode);
@@ -33,17 +32,7 @@ export default function ControlModeToggle() {
   // derives true here, so guests keep the Explore ↔ NPC pair — the
   // guest-promotion-hijack class cannot recur through the labels.
   const { data: avatar } = useAvatar();
-  const { data: authData, isLoading: authLoading } = useQuery({
-    queryKey: ['auth-me'],
-    queryFn: async () => {
-      try {
-        return await api.me();
-      } catch {
-        return null;
-      }
-    },
-    retry: false,
-  });
+  const { data: authData, isLoading: authLoading } = useAuthMe();
   const isResolvedNonGuest =
     !authLoading && !!authData?.user && !authData.user.isGuest;
   const hasProvisionedAgent = agentConnected || (isResolvedNonGuest && !!avatar);

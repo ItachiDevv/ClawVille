@@ -1,12 +1,11 @@
 'use client';
 
-import { useQuery } from '@tanstack/react-query';
 import { useAvatar } from '@/hooks/use-avatar';
 import { AVATAR_SPECIES, KNOWLEDGE_BOOKS } from '@clawville/shared';
 import { useGameStore } from '@/stores/game';
 import { useIsMobile } from '@/hooks/use-is-mobile';
 import { buildingZones } from '@/lib/pixi/tilemap-data';
-import { api } from '@/lib/api';
+import { useAuthMe } from '@/hooks/use-auth-me';
 
 function StatBar({ label, value, max = 20, color = 'bg-emerald-400' }: { label: string; value: number; max?: number; color?: string }) {
   const pct = Math.min(100, Math.round((value / max) * 100));
@@ -33,20 +32,10 @@ export default function AvatarStatusBar() {
   const controlMode = useGameStore((s) => s.controlMode);
   const isMobile = useIsMobile();
   // Guest accounts run an ALL-DEMO economy (founder ruling 2026-07-06): their
-  // tokens are demo-only, so the balance chip must say so. Shares the SAME
-  // react-query cache key as game/page.tsx (['auth-me'] + api.me()), so this
-  // adds no extra network round trip.
-  const { data: authData } = useQuery({
-    queryKey: ['auth-me'],
-    queryFn: async () => {
-      try {
-        return await api.me();
-      } catch {
-        return null;
-      }
-    },
-    retry: false,
-  });
+  // tokens are demo-only, so the balance chip must say so. Shares the canonical
+  // ['auth-me'] query (hooks/use-auth-me.ts), so this adds no extra network
+  // round trip.
+  const { data: authData } = useAuthMe();
   const isGuest = !!(authData as any)?.user?.isGuest;
 
   if (isLoading) return null;

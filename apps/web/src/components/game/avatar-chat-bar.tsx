@@ -6,6 +6,7 @@ import { useAvatar } from '@/hooks/use-avatar';
 import { useGameStore } from '@/stores/game';
 import { useQuestStore, triggerQuestCheck } from '@/stores/quest';
 import { api, ApiError } from '@/lib/api';
+import { AUTH_ME_QUERY_KEY, fetchAuthMe } from '@/hooks/use-auth-me';
 import { KNOWLEDGE_BOOKS, type AgentCategory } from '@clawville/shared';
 import { MODEL_REGISTRY } from '@/lib/three/agent-model-registry';
 
@@ -60,8 +61,8 @@ export default function AvatarChatBar() {
   // from "still loading" so we never evict on a race (default to keeping the
   // body when auth state is unresolved — D2 guidance 2026-06-12).
   const { data: authData, isFetched: authFetched } = useQuery({
-    queryKey: ['auth-me'],
-    queryFn: api.me,
+    queryKey: AUTH_ME_QUERY_KEY,
+    queryFn: fetchAuthMe,
     staleTime: 30_000,
     retry: false,
   });
