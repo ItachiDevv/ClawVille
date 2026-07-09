@@ -28,6 +28,13 @@
  *     insufficient CT → grace; grace elapsed → LAPSE (revert + archive; no CT
  *     moves — nothing was escrowed).
  *
+ * DEED-LOCK GUARD (marketplace C4 seam, 2026-07-07): every pool-revert branch
+ * (rented/hold graceElapsed, deposit lapse) first consults
+ * `parcelHasLiveDeedLock` (routes/land.ts) under the already-held locks — a
+ * parcel whose deed is escrow-locked by a live P2P listing is PARKED (revert
+ * suppressed, grace untouched, loud warn + alert post-commit) instead of
+ * reverted, so a settling buyer can never be double-sold. Re-checked every pass.
+ *
  * IDEMPOTENCY: the `rent_paid_through = now() + period` advance runs UNDER the
  * row lock and is re-read (as `rent_due`) at lock time, so a given due week
  * draws/charges EXACTLY ONCE — two overlapping ticks serialize on the row lock
@@ -72,7 +79,8 @@ import {
   getWalletClvBalance,
 } from './linked-wallet-clv-balance';
 import { broadcastLandEvent } from '../routes/world';
-import { bustOwnedCache, bustParcelsAvailableCache } from '../routes/land';
+import { bustOwnedCache, bustParcelsAvailableCache, parcelHasLiveDeedLock } from '../routes/land';
+import { alertError } from './alert-error';
 
 const DEFAULT_SWEEP_PERIOD_MS = 60 * 60 * 1000; // 1 hour
 const MIN_SWEEP_PERIOD_MS = 5 * 60 * 1000; // 5 min floor (mis-set guard)
@@ -101,6 +109,7 @@ type SweepAction =
   | { kind: 'charged'; parcelCode: string; ownerAvatarId: string }
   | { kind: 'graced' }
   | { kind: 'evicted'; parcelCode: string; tier: LandTier; ownerAvatarId: string }
+  | { kind: 'parked'; parcelCode: string; ownerAvatarId: string; tier: LandTier }
   | { kind: 'skip' };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -216,6 +225,14 @@ async function sweepRented(tx: LandTx, p: LockedParcelRow): Promise<SweepAction>
 
   // (A) EVICTION takes priority — grace window has elapsed.
   if (graceElapsed) {
+    if (await parcelHasLiveDeedLock(tx, p.id)) {
+      // Deed-locked by a live marketplace listing — suppress the pool-revert so
+      // the parcel can't be double-sold out from under a settling buyer. Grace
+      // state is left untouched; the next pass re-checks and normal eviction
+      // resumes once the listing cancels/transfers and the lock clears. LOUD
+      // log + alert happen post-commit (out of the money tx).
+      return { kind: 'parked', parcelCode: p.parcel_code, ownerAvatarId, tier: p.tier };
+    }
     await revertParcelToPool(tx, p.id);
     const meta = JSON.stringify({ reason: 'rent_lapsed', tier: p.tier, parcelCode: p.parcel_code });
     await tx.execute(
@@ -337,6 +354,15 @@ async function sweepDeposit(tx: LandTx, p: LockedParcelRow): Promise<SweepAction
     }
 
     case 'lapse': {
+      if (await parcelHasLiveDeedLock(tx, p.id)) {
+        // Deed-locked by a live marketplace listing — suppress the pool-revert so
+        // the parcel can't be double-sold out from under a settling buyer. Grace
+        // state is left untouched (escrow remainder does NOT forfeit while
+        // parked); the next pass re-checks and normal eviction resumes once the
+        // listing cancels/transfers and the lock clears. LOUD log + alert happen
+        // post-commit (out of the money tx).
+        return { kind: 'parked', parcelCode: p.parcel_code, ownerAvatarId, tier: p.tier };
+      }
       // Grace elapsed → the tenancy ends and any escrow remainder FORFEITS to
       // the treasury. NO tenant debit — the escrow already left the tenant at
       // claim/top-up time; this credit is balanced by those earlier debits
@@ -524,6 +550,14 @@ async function sweepHold(tx: LandTx, p: LockedParcelRow): Promise<SweepAction> {
   // (A) LAPSE takes priority — grace elapsed. No CT moves (nothing escrowed;
   // the missed upkeep was simply never collected).
   if (graceElapsed) {
+    if (await parcelHasLiveDeedLock(tx, p.id)) {
+      // Deed-locked by a live marketplace listing — suppress the pool-revert so
+      // the parcel can't be double-sold out from under a settling buyer. Grace
+      // state is left untouched; the next pass re-checks and normal eviction
+      // resumes once the listing cancels/transfers and the lock clears. LOUD
+      // log + alert happen post-commit (out of the money tx).
+      return { kind: 'parked', parcelCode: p.parcel_code, ownerAvatarId, tier: p.tier };
+    }
     await revertParcelToPool(tx, p.id);
     const meta = JSON.stringify({
       reason: 'hold_lapsed',
@@ -722,7 +756,12 @@ export async function processDueParcel(parcelId: string): Promise<SweepAction> {
  * One sweep pass. Reads the due-candidate set (cheap, partial-indexed), then
  * processes each parcel in its OWN transaction. Returns the action counts.
  */
-export async function sweepDueRents(): Promise<{ charged: number; graced: number; evicted: number }> {
+export async function sweepDueRents(): Promise<{
+  charged: number;
+  graced: number;
+  evicted: number;
+  parked: number;
+}> {
   let candidates: Array<{ id: string }>;
   try {
     const rows = await db.execute<{ id: string }>(
@@ -738,10 +777,10 @@ export async function sweepDueRents(): Promise<{ charged: number; graced: number
     candidates = Array.from(rows as Iterable<{ id: string }>);
   } catch (err) {
     console.warn('[LandRentSweeper] candidate read failed (non-fatal):', err);
-    return { charged: 0, graced: 0, evicted: 0 };
+    return { charged: 0, graced: 0, evicted: 0, parked: 0 };
   }
 
-  if (candidates.length === 0) return { charged: 0, graced: 0, evicted: 0 };
+  if (candidates.length === 0) return { charged: 0, graced: 0, evicted: 0, parked: 0 };
   if (candidates.length >= MAX_CANDIDATES_PER_PASS) {
     console.warn(
       `[LandRentSweeper] candidate cap hit (${MAX_CANDIDATES_PER_PASS}) — remaining due parcels roll to the next pass`,
@@ -751,6 +790,7 @@ export async function sweepDueRents(): Promise<{ charged: number; graced: number
   let charged = 0;
   let graced = 0;
   let evicted = 0;
+  let parked = 0;
 
   for (const { id } of candidates) {
     let action: SweepAction;
@@ -779,18 +819,29 @@ export async function sweepDueRents(): Promise<{ charged: number; graced: number
           status: 'available',
           ownerAvatarId: null,
         });
+      } else if (action.kind === 'parked') {
+        parked++;
+        console.warn(
+          `[LandRentSweeper] EVICTION SUPPRESSED (deed-locked) parcel=${action.parcelCode} owner=${action.ownerAvatarId} tier=${action.tier} — a live marketplace listing holds the deed; parked (revert skipped), re-checks next pass`,
+        );
+        void alertError({
+          severity: 'warning',
+          source: 'land-rent-sweeper',
+          message: `parcel ${action.parcelCode} due for eviction but deed-locked by a live marketplace listing — pool-revert suppressed`,
+          context: { parcelCode: action.parcelCode, ownerAvatarId: action.ownerAvatarId, tier: action.tier },
+        });
       }
     } catch (err) {
       console.warn('[LandRentSweeper] post-commit side effect failed (non-fatal):', err);
     }
   }
 
-  if (charged + graced + evicted > 0) {
+  if (charged + graced + evicted + parked > 0) {
     console.log(
-      `[LandRentSweeper] pass complete — charged=${charged} graced=${graced} evicted=${evicted}`,
+      `[LandRentSweeper] pass complete — charged=${charged} graced=${graced} evicted=${evicted} parked=${parked}`,
     );
   }
-  return { charged, graced, evicted };
+  return { charged, graced, evicted, parked };
 }
 
 let sweepInterval: ReturnType<typeof setInterval> | null = null;

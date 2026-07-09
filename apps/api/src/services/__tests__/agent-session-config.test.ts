@@ -541,13 +541,20 @@ describe('slice 6 — protocol capability table ([ACTION:] parity + proximity ex
   });
 });
 
-describe('slice 6 — isHostedHarness: truthful /me/agent-session advertisement', () => {
+// ⚠️ isHostedHarness is CONNECT-NAMESPACE (openclaw_bots identityType) semantics
+// and has NO production call site today. It is deliberately NOT wired to
+// /me/agent-session (commit e1b78a49): that route's "hosted" branch describes
+// AVATAR-agents, whose hosting is a property of the platform_agents row
+// (harness-agnostic ElizaOS runtime) — a hermes-HARNESS avatar is genuinely
+// hosted with the gate off. These tests pin the helper's contract for the
+// future host-it-for-me connect-namespace gate, nothing more.
+describe('slice 6 — isHostedHarness: connect-namespace native-runtime hosting (NOT the /me/agent-session predicate)', () => {
   test('milady is ALWAYS genuinely hosted, regardless of the hermes gate', () => {
     expect(isHostedHarness('milady', false)).toBe(true);
     expect(isHostedHarness('milady', true)).toBe(true);
   });
-  test('hermes is hosted ONLY when the host-it-for-me runtime is enabled (THE honesty fix)', () => {
-    expect(isHostedHarness('hermes', false)).toBe(false); // was falsely "hosted, always connected"
+  test('a connect-namespace hermes identity is hosted ONLY when the host-it-for-me runtime is enabled', () => {
+    expect(isHostedHarness('hermes', false)).toBe(false); // BYO pull agent when the gate is off
     expect(isHostedHarness('hermes', true)).toBe(true);
   });
   test('every external / self-managed / partner harness is NOT hosted', () => {

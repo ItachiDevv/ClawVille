@@ -472,8 +472,20 @@ describe('createMarketListing — (create) → active + deed lock', () => {
     },
   );
 
-  it("tenure 'hold' is deed-able (ownership tenure)", async () => {
-    executeQueue = [[], [parcelRow({ tenure: 'hold' })], [listingRow()], [{ parcel_id: PARCEL }]];
+  it("tenure 'hold' refuses hold_transfer_not_supported — the CLV-hold obligation can't transfer yet", async () => {
+    // Narrowed 2026-07-08 (Codex re-review): the deed-flip normalizes
+    // tenure='owned' + NULLs the hold cols, so a sold HOLD parcel would escape
+    // the CLV-hold obligation AND the tenure sweep. Refused at list time with
+    // a SPECIFIC code (distinct from the generic not_transferable_tenure)
+    // until buyer-inherits-obligation ships (FEATURE_GATE market_hold_deed_transfer).
+    executeQueue = [[], [parcelRow({ tenure: 'hold' })]];
+    const res = await listings.createMarketListing(createInput);
+    expect(res).toEqual({ ok: false, code: 'hold_transfer_not_supported' });
+    expect(executeCalls.length).toBe(2); // advisory + parcel select only — no INSERT ever runs
+  });
+
+  it("tenure 'owned' still lists (the only deed-able tenure)", async () => {
+    executeQueue = [[], [parcelRow({ tenure: 'owned' })], [listingRow()], [{ parcel_id: PARCEL }]];
     const res = await listings.createMarketListing(createInput);
     expect(res.ok).toBe(true);
   });

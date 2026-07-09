@@ -104,7 +104,11 @@ interface LabelEntry {
    *  on the possessed-player "You" label + self speech bubble so the player's
    *  own body never hides its own label). */
   skipLocalAvatarOcclusion: boolean;
-  /** Frame-stagger phase (0–29) so not all labels raycast in the same frame. */
+  /** Frame-stagger phase (0–29) — used ONLY by the distant-label mid-rate
+   *  projection stagger (LABEL_MID_DISTANCE_FRAME_MOD). Occlusion checks are
+   *  scheduled by the module-scope round-robin cursor instead (see
+   *  _occludeList / _occludeCursor) so at most one label's occlusion state
+   *  refreshes per frame. */
   occludePhase: number;
   /** Cached occlude result — updated at 2Hz, read every frame. */
   _occludeResult: boolean;
@@ -264,32 +268,101 @@ const _scratchRawAnchor = new THREE.Vector3();
 // Occlusion raycaster (module-scope — one allocation at module load)
 // ---------------------------------------------------------------------------
 
-const _occRaycaster = new THREE.Raycaster();
 const _occDir = new THREE.Vector3();
-const _occHits: THREE.Intersection[] = [];
 /** S4 — module scratch for the local-player occluder sphere center (no per-call alloc). */
 const _avatarOccluderCenter = new THREE.Vector3();
-/** Lazily built from userData.isOccluder meshes; rebuilt every 2 s (wall-clock)
- *  so late-mounted buildings and hot-swaps in edit mode are picked up regardless
- *  of framerate. Frame-counter cadence (300 frames) caused a 10 s stale window
- *  at 30 fps (Iris Xe), letting the empty-on-first-frame cache persist forever. */
-let _occluderMeshes: THREE.Mesh[] | null = null;
+/** Cached world-space AABB per occluder mesh, keyed by mesh.uuid. The world is
+ *  static, so an existing entry's box is NEVER recomputed — only meshes not yet
+ *  seen get a fresh (one-time) `setFromObject()`. This turns the hot path from
+ *  a full-mesh Raycaster.intersectObjects (10–30ms against merged high-poly
+ *  building geometry with no BVH, the measured 2026-07-07 uF:labels spike)
+ *  into an analytic ray-vs-box slab test (zero allocations, sub-microsecond). */
+const _occluderBoxCache = new Map<string, THREE.Box3>();
+/** Flat list of boxes matching the currently-mounted occluder mesh set. Rebuilt
+ *  every 2 s alongside the scan below; the hot loop reads ONLY this array, never
+ *  the cache Map (so removed/hot-swapped meshes can't leave stale hits behind). */
+let _occluderBoxes: THREE.Box3[] = [];
 /** Timestamp (performance.now()) of the last occluder-list rebuild. 0 = force rebuild on first frame. */
 let _occluderRebuildTime = 0;
-/** Frame counter incremented in the projection useFrame for 2Hz stagger. */
+/** Frame counter incremented in the projection useFrame — drives the distant-
+ *  label mid-rate projection stagger (LABEL_MID_DISTANCE_FRAME_MOD). Occlusion
+ *  checks no longer use this counter; see _occludeList / _occludeCursor. */
 let _occFrameCounter = 0;
 /** Three.js scene reference captured in WorldLabelsOverlayMount. */
 let _sceneRef: THREE.Scene | null = null;
 
-function _buildOccluderList(scene: THREE.Scene): THREE.Mesh[] {
-  const meshes: THREE.Mesh[] = [];
+/** Ordered list of every registered entry with occlude:true. Maintained by
+ *  useWorldLabel's register/unregister (push on mount, splice on unmount) so
+ *  the round-robin cursor below can advance through it without a scene scan. */
+const _occludeList: LabelEntry[] = [];
+/** Round-robin cursor into _occludeList — advances exactly one step per frame
+ *  so AT MOST ONE label's occlusion state is (re)computed per frame. Wraps at
+ *  list length; a full cycle over ≤30 labels still refreshes each at ≥1Hz. */
+let _occludeCursor = 0;
+/** Ray + scratch hit point for the slab test — module-scope, zero per-check alloc. */
+const _occRay = new THREE.Ray();
+const _occBoxHit = new THREE.Vector3();
+
+function _refreshOccluderBoxes(scene: THREE.Scene): void {
+  const seen = new Set<string>();
+  const boxes: THREE.Box3[] = [];
   scene.traverse((obj) => {
     if (!obj.userData.isOccluder) return;
     obj.traverse((child) => {
-      if ((child as THREE.Mesh).isMesh) meshes.push(child as THREE.Mesh);
+      if (!(child as THREE.Mesh).isMesh) return;
+      const mesh = child as THREE.Mesh;
+      seen.add(mesh.uuid);
+      let box = _occluderBoxCache.get(mesh.uuid);
+      if (!box) {
+        box = new THREE.Box3().setFromObject(mesh);
+        _occluderBoxCache.set(mesh.uuid, box);
+      }
+      boxes.push(box);
     });
   });
-  return meshes;
+  // Prune cache entries for meshes no longer present (unmounted/hot-swapped)
+  // so the cache can't grow unbounded across edit-mode swaps.
+  for (const uuid of _occluderBoxCache.keys()) {
+    if (!seen.has(uuid)) _occluderBoxCache.delete(uuid);
+  }
+  _occluderBoxes = boxes;
+}
+
+/** Analytic ray-vs-AABB slab test against the cached occluder boxes. Zero
+ *  allocations: `_occRay`/`_occBoxHit` are module-scope scratch, reused every
+ *  call. `maxDist` reproduces the old Raycaster.far cutoff (stop short of the
+ *  anchor so an NPC's own building doesn't occlude it). Returns true on the
+ *  first box hit whose distance-from-origin is within maxDist.
+ *
+ *  A box containing the camera OR the label anchor is skipped entirely — it
+ *  can never occlude THIS label. Building AABBs are looser than the visual
+ *  mesh (roof overhangs, entrance recesses stick outside the silhouette but
+ *  are still inside the box), so "inside the box" does not imply "behind a
+ *  wall" the way the old FrontSide mesh raycast (which tested actual
+ *  triangles, not a bbox) implicitly guaranteed. Without this exclusion:
+ *  (1) origin-inside-box makes Ray.intersectBox return the EXIT point
+ *  (tmin<0 → resolves at tmax), which can still be <= maxDist — so pushing
+ *  the chase camera near/under an overhang would false-occlude every label;
+ *  (2) teacher NPCs standing at their own building's entrance sit INSIDE
+ *  that building's full-bbox XZ footprint, so the ray can enter the box
+ *  100-300wu before the anchor (beyond the 80wu margin) even though the real
+ *  geometry is beside/above them — false-occluding their own label in their
+ *  default standing pose. `containsPoint` is branch-only, no allocations. */
+function _rayHitsAnyBox(
+  origin: THREE.Vector3,
+  dir: THREE.Vector3,
+  maxDist: number,
+  anchorWorld: THREE.Vector3,
+): boolean {
+  _occRay.origin.copy(origin);
+  _occRay.direction.copy(dir);
+  for (let i = 0; i < _occluderBoxes.length; i++) {
+    const box = _occluderBoxes[i];
+    if (box.containsPoint(origin) || box.containsPoint(anchorWorld)) continue;
+    const hit = _occRay.intersectBox(box, _occBoxHit);
+    if (hit !== null && hit.distanceTo(origin) <= maxDist) return true;
+  }
+  return false;
 }
 
 /** Returns true if the camera→LABEL ray is blocked by a building mesh, OR (S4)
@@ -307,20 +380,17 @@ function _checkOcclusion(
   // Rebuild every 2 s (wall-clock) so late-mounted buildings are picked up.
   // Initialised to 0 so the very first call always builds the list.
   const now = performance.now();
-  if (!_occluderMeshes || now - _occluderRebuildTime > 2000) {
-    _occluderMeshes = _buildOccluderList(_sceneRef);
+  if (now - _occluderRebuildTime > 2000) {
+    _refreshOccluderBoxes(_sceneRef);
     _occluderRebuildTime = now;
   }
   const labelDist = cameraPos.distanceTo(labelWorld);
   if (labelDist < 10) return false;
   _occDir.subVectors(labelWorld, cameraPos).normalize();
-  _occRaycaster.set(cameraPos, _occDir);
   // Stop 80wu before anchor to avoid catching the building in front of which
   // an NPC is standing (teacher NPCs at building entrances).
-  _occRaycaster.far = Math.max(0, labelDist - 80);
-  _occHits.length = 0;
-  _occRaycaster.intersectObjects(_occluderMeshes, false, _occHits);
-  if (_occHits.length > 0) return true;
+  const maxDist = Math.max(0, labelDist - 80);
+  if (_rayHitsAnyBox(cameraPos, _occDir, maxDist, labelWorld)) return true;
 
   // --- S4: local player avatar as an analytic-sphere occluder ---
   // Tests the camera→BODY ray (NOT the high label point — a torso sphere misses
@@ -427,8 +497,8 @@ export function WorldLabelsOverlayMount() {
   // Capture scene for the module-scope occluder raycaster.
   useEffect(() => {
     _sceneRef = scene;
-    // Invalidate cached occluder list when scene changes; 0 forces rebuild on next frame.
-    _occluderMeshes = null;
+    // Force an immediate occluder-box rebuild for the new scene; stale boxes
+    // from a prior scene self-prune on that rebuild (see _refreshOccluderBoxes).
     _occluderRebuildTime = 0;
     return () => { _sceneRef = null; };
   }, [scene]);
@@ -497,6 +567,34 @@ export function WorldLabelsOverlayMount() {
 
     _occFrameCounter++;
 
+    // --- Occlusion round-robin ---
+    // Exactly ONE occlude:true label (re)computes its occlusion state this
+    // frame; every other label reuses its cached entry._occludeResult below.
+    // Replaces the old mod-30-phase stagger, which clustered 2+ raycasts into
+    // the same frame whenever two labels' `occludePhase % 30` collided (the
+    // measured 22–36ms uF:labels pairs @ ~533ms cadence). A full round-robin
+    // cycle over ≤30 labels still refreshes each label at ≥1Hz.
+    if (_occludeList.length > 0) {
+      if (_occludeCursor >= _occludeList.length) _occludeCursor = 0;
+      const occEntry = _occludeList[_occludeCursor];
+      _occludeCursor++;
+      const occAnchor = occEntry.anchorRef.current;
+      if (occAnchor && occEntry.visible) {
+        occAnchor.getWorldPosition(_scratchRawAnchor);
+        _scratchAnchorWorld.set(
+          _scratchRawAnchor.x + occEntry.offset[0],
+          _scratchRawAnchor.y + occEntry.offset[1],
+          _scratchRawAnchor.z + occEntry.offset[2],
+        );
+        occEntry._occludeResult = _checkOcclusion(
+          _scratchAnchorWorld,
+          _scratchRawAnchor,
+          camera.position,
+          occEntry.skipLocalAvatarOcclusion,
+        );
+      }
+    }
+
     _registry.forEach((entry) => {
       const div = entry.divRef.current;
       if (!div) return;
@@ -552,20 +650,11 @@ export function WorldLabelsOverlayMount() {
         return;
       }
 
-      // --- Occlusion check (2Hz stagger) ---
-      // Only runs for NPC labels (occlude: true). Skip building labels.
-      if (entry.occlude) {
-        if ((_occFrameCounter + entry.occludePhase) % 30 === 0) {
-          entry._occludeResult = _checkOcclusion(
-            _scratchAnchorWorld,
-            _scratchRawAnchor,
-            camera.position,
-            entry.skipLocalAvatarOcclusion,
-          );
-        }
-        if (entry._occludeResult) {
-          targetOpacity = 0;
-        }
+      // --- Occlusion check ---
+      // Only NPC labels (occlude: true) carry a result, refreshed by the
+      // round-robin pass above (at most one label/frame) — just read it here.
+      if (entry.occlude && entry._occludeResult) {
+        targetOpacity = 0;
       }
 
       // If occlusion made it fully transparent, hide the div entirely.
@@ -718,12 +807,20 @@ export function useWorldLabel({
     };
     _registry.set(id, entry);
     _refToId.set(divRef, id);
+    // occlude is fixed for the entry's lifetime (not synced like offset below),
+    // so it's safe to add to _occludeList once here and remove once on cleanup.
+    if (entry.occlude) _occludeList.push(entry);
     _scheduleNotify();
   }
 
   // Cleanup on unmount; reset registeredRef so a strict-mode remount re-registers.
   useEffect(() => {
     return () => {
+      const existing = _registry.get(id);
+      if (existing) {
+        const idx = _occludeList.indexOf(existing);
+        if (idx !== -1) _occludeList.splice(idx, 1);
+      }
       _registry.delete(id);
       _refToId.delete(divRef);
       registeredRef.current = false;

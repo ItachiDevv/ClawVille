@@ -28,6 +28,7 @@ function StatBar({ label, value, max = 20, color = 'bg-emerald-400' }: { label: 
 export default function AvatarStatusBar() {
   const { data: avatar, isLoading } = useAvatar();
   const openInventory = useGameStore((s) => s.openInventory);
+  const openWalletLink = useGameStore((s) => s.openWalletLink);
   const visitedBuildings = useGameStore((s) => s.visitedBuildings);
   const controlMode = useGameStore((s) => s.controlMode);
   const isMobile = useIsMobile();
@@ -129,6 +130,20 @@ export default function AvatarStatusBar() {
           <span className="text-xs">&#x1FA99;</span>
           {avatar.clawTokens ?? 100}{isGuest ? ' DEMO' : ''}
         </span>
+        {/* Wallet chip — opens the wallet-visibility modal (custodial address +
+            linked wallet). Only for real accounts with a provisioned custodial
+            wallet; guests (demo economy) have none. */}
+        {!isGuest && (avatar as { walletAddress?: string | null }).walletAddress && (
+          <button
+            type="button"
+            onClick={openWalletLink}
+            title="View your wallet"
+            aria-label="Open wallet"
+            className="flex items-center justify-center w-6 h-6 rounded-full bg-cyan-500/15 hover:bg-cyan-500/30 border border-cyan-500/25 hover:border-cyan-400/40 text-cyan-200 text-xs transition-colors shrink-0"
+          >
+            &#x1F45B;
+          </button>
+        )}
       </div>
 
       {/* Guest demo-economy caption (light text on dark panel). */}

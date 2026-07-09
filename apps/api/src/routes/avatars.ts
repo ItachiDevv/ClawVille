@@ -31,11 +31,12 @@ import { requireAuth } from '../middleware/auth';
 import { sessionMiddleware } from '../middleware/auth';
 import { agentOrchestrator } from '../services/agent-orchestrator';
 import { npcSimulation } from '../services/npc-simulation';
+import { agentAutonomyDriver } from '../services/agent-autonomy-driver';
 // creditClawTokens import removed 2026-07-07 (A2): the daily-login CT credit —
 // its only use in this file — was retired. Re-add if a new CT credit path lands here.
 import { logEvent, logEventFromContext } from '../services/event-logger';
 import { buildRuntimeServices } from '../services/runtime-services-adapter';
-import { ensureWalletWithFirstTimeSecret } from '../services/wallet-service';
+import { ensureWalletWithFirstTimeSecret, getWalletAddress } from '../services/wallet-service';
 import {
   provisionAvatarAgent,
   AvatarNameTakenError,
@@ -442,9 +443,19 @@ avatarRoutes.get('/me', requireAuth, async (c) => {
     },
   });
 
+  // Wallet-visibility (Tokenomics Phase A, 2026-07-08) — the custodial
+  // Solana address the wallet UI displays. `avatars.wallet_address` is a
+  // MIRROR of the canonical `wallets` row; older avatars can carry a NULL
+  // mirror even though the wallet exists, so backfill from the canonical
+  // table when the mirror is empty. PUBLIC key only — no secret is ever
+  // resolved here (see wallets.ts JSDoc / the "secretKey once" invariant).
+  const walletAddress =
+    avatar.walletAddress ?? (await getWalletAddress('avatar', avatar.id));
+
   return c.json({
     avatar: {
       ...avatar,
+      walletAddress,
       linkedScapePrincipalId: userScape?.linkedScapePrincipalId ?? null,
       linkedScapeDisplayName: userScape?.linkedScapeDisplayName ?? null,
       linkedHatcherPrincipalId: userScape?.linkedHatcherPrincipalId ?? null,
@@ -1435,8 +1446,22 @@ avatarRoutes.post('/me/heartbeat', requireAuth, async (c) => {
 
   // Phase 2: Ensure avatar is registered in the simulation bridge and
   // report user activity so the avatar snaps back to user control.
+  //
+  // §B.1 (C1, 2026-07-08) — DRIVER-ENROLLED owners are EXCLUDED from the bridge
+  // entirely. When the owner's agent is enrolled in the full autonomy driver
+  // (Autonomous mode), the driver owns this avatar's autonomous behavior AND its
+  // settled CT path; letting the idle-avatar bridge also register would
+  // double-drive the avatar and double-credit the `autonomous_visit` faucet.
+  // Checked BOTH here (before the register branch) AND inside the
+  // fire-and-forget `.then()` below — the avatar lookup is async, so an
+  // activation completing while it is in flight would otherwise re-register the
+  // bridge right after the activation unregistered it (the exact race the
+  // adversarial pre-read flagged).
   const bridge = npcSimulation.avatarAutonomyManager;
-  if (!bridge.isRegistered(user.id)) {
+  if (agentAutonomyDriver.isOwnerEnrolled(user.id)) {
+    // Driver owns autonomy for this owner — skip bridge register AND activity
+    // reporting (nothing to snap back; the driver body is the live one).
+  } else if (!bridge.isRegistered(user.id)) {
     // Lazy-load avatar data on first heartbeat (fire-and-forget)
     db.query.avatars
       .findFirst({
@@ -1453,6 +1478,10 @@ avatarRoutes.post('/me/heartbeat', requireAuth, async (c) => {
         // sim CPU. (Guests are not autonomous economic participants: autonomous
         // = an AGENT driving its avatar, and an agent is never a guest.)
         if (avatar.isGuest) return;
+        // §B.1 (C1) race re-check: an Autonomous activation may have completed
+        // while this lookup was in flight — registering now would undo the
+        // activation's bridge.unregister and re-open the double-drive.
+        if (agentAutonomyDriver.isOwnerEnrolled(user.id)) return;
         bridge.register({
           avatarId: avatar.id,
           userId: user.id,

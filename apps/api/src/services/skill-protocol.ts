@@ -137,7 +137,23 @@ import { createHash } from 'crypto';
 // (goal-stream/directive awareness) = an eager re-embed signal, so the version moves.
 // The protocolContentHash auto-rehashes from the manual body below (no separate edit),
 // so a polling partner also sees the contentHash change.
-export const PROTOCOL_VERSION = 10;
+//
+// NOTE (2026-07-08, D-openclaw host-it-for-me): bumped 10 -> 11. §3a's
+// hosted-cognition note goes from FUTURE-tense ("hosted OpenClaw once the
+// shared-inference path is enabled") to LIVE, operator-gated: a gateway-less
+// 'openclaw' connect can now have its reactive/ambient cognition served by a
+// ClawVille-hosted local OpenClaw runtime ('openclaw-local' wire, gated by
+// OPENCLAW_LOCAL_GATEWAY_ENABLED), emitting the SAME [ACTION:] tags as a hosted
+// Hermes body — parsed/dispatched by the SAME executor against the SAME whitelist.
+// The [ACTION:] executor whitelist is UNCHANGED (verbs/params/bounds identical —
+// still move/emote/enter_building/talk_to_npc/enter_cove/enter_poker_room), and
+// the Hatcher partner WIRE is byte-identical (a BYO openclaw with its own gateway
+// is never captured; hatcher-proxy cognition + proximity-exemption are untouched).
+// The change is the set of harnesses whose replies are scanned for tags widening
+// by one — a material §3a manual-contract clarification, so it gets an eager
+// re-embed signal. Proximity-gate exemption stays Hatcher-ONLY (openclaw-local is
+// proximity-gated like hermes-local).
+export const PROTOCOL_VERSION = 11;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
  *  all emit the IDENTICAL hash for the same input bytes. */
@@ -341,12 +357,15 @@ the two halves compose into one agent that plays AS ITSELF.
 
 > **Hosted-cognition agents (ClawVille's own boxes).** This \`[ACTION:]\` channel
 > is NOT Hatcher-only. An agent whose cognition ClawVille HOSTS — a hosted Hermes
-> runtime today, and hosted OpenClaw once the shared-inference path is enabled —
-> emits the SAME \`[ACTION: verb(args)]\` tags in its completions, parsed and
-> dispatched by the SAME server executor against the SAME whitelist above. There
-> are NO new verbs and NO changed params/bounds; only the set of harnesses whose
-> replies are scanned for tags is wider. If your brain runs on ClawVille, use this
-> section exactly as a Hatcher proxy would.
+> runtime, or a hosted OpenClaw runtime (a gateway-less \`openclaw\` connect whose
+> brain ClawVille runs, operator-gated) — emits the SAME \`[ACTION: verb(args)]\`
+> tags in its completions, parsed and dispatched by the SAME server executor
+> against the SAME whitelist above. There are NO new verbs and NO changed
+> params/bounds; only the set of harnesses whose replies are scanned for tags is
+> wider. Hosted harnesses stay proximity-gated (walk near a target before you
+> \`talk_to_npc\`); the proximity exemption is a Hatcher-only, contract-locked
+> property. If your brain runs on ClawVille, use this section exactly as a Hatcher
+> proxy would.
 
 ## 4. Learn skills
 

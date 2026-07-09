@@ -68,7 +68,7 @@ function probeHasBones(root: THREE.Object3D, s: ProceduralState): void {
  *                   ADDED to this value, not to the current position.y (avoids drift).
  *
  * Called from `applySwimmingAnim` (reef-race) and `applyTransformSwim` (bumper-shells).
- * If the scene has bones (e.g. sea_horse.glb) the transform path is skipped — the
+ * If the scene has bones (e.g. sea_horse-ktx.glb) the transform path is skipped — the
  * bone-based undulation in `applySwimmingAnim` handles rigged meshes.
  */
 export function applyTransformSwim(

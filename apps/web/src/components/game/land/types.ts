@@ -35,6 +35,19 @@ export interface LandParcelDTO {
   rentCtWeekly: number | null;
   /** How the parcel is held; null = available/unsold. */
   tenure: LandTenure | null;
+  /**
+   * B1 (deposit tenure): live escrow remainder in CT — the refundable balance
+   * the weekly sweeper draws from. Null on non-deposit rows.
+   */
+  depositRemainingCt: number | null;
+  /**
+   * B2 (hold tenure): the CLV hold threshold (CLV uiAmount) STAMPED at claim
+   * time. Null on non-hold rows — including AVAILABLE hold-tier parcels (the
+   * threshold is stamped only AT claim), so for-sale display/stacking math must
+   * DERIVE the threshold from the tier via `holdThresholdForTier(tier)` and use
+   * this field only for owned parcels.
+   */
+  holdThresholdCt: number | null;
 }
 
 /** A structure (home or shop) placed on an owned parcel. */
@@ -102,6 +115,20 @@ export interface RentParcelResponse {
   parcel: LandParcelDTO;
   amountCt: number;
   rentPaidThrough: string;
+}
+
+/**
+ * POST /api/land/parcels/:id/claim-hold response (Phase B2 hold-to-keep).
+ * `requiredClv` = the server-computed STACKED requirement (Σ existing
+ * non-grandfathered hold thresholds + this tier's threshold); `heldClv` = the
+ * live CLV uiAmount the server verified. NOTE: on the 403 `insufficient_clv_hold`
+ * error path these numbers are DROPPED by honoRequest (only `error`/`code`
+ * survive into ApiError), so error UI must compute them client-side.
+ */
+export interface ClaimHoldResponse {
+  parcel: LandParcelDTO;
+  requiredClv: number;
+  heldClv: number;
 }
 
 /** POST /api/land/parcels/:id/structure response. */

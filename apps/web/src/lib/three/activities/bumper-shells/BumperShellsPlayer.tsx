@@ -35,7 +35,7 @@
  *   - No per-frame allocations — module-scope scratch primitives only.
  *   - import from 'three' (plain), NOT 'three/webgpu'.
  *
- * Draw calls: 1 per player (lobster.glb = 1 SkinnedMesh draw call).
+ * Draw calls: 1 per player (lobster-ktx.glb = 1 SkinnedMesh draw call).
  *
  * External API (imperative handles attached to group):
  *   group.triggerHit?.()               — squash/stretch VFX
@@ -47,7 +47,7 @@
 
 import { useRef, useEffect, useMemo } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
-import { useGLTF, Html } from '@react-three/drei';
+import { Html, useGLTF } from '@react-three/drei';
 // PERF FIX 2026-04-24: 'three' not 'three/webgpu' — two THREE instances = GPU context loss
 import * as THREE from 'three';
 import { clone as skeletonClone } from 'three/examples/jsm/utils/SkeletonUtils.js';
@@ -74,10 +74,11 @@ import type {
 } from '@/lib/three/sea-creature-types';
 import { applyTransformSwim, resetTransformSwimState } from '@/lib/three/sea-creature-swim';
 import { makeObject3DWebGPUSafe } from '@/lib/three/webgpu-geometry';
+import { preloadKTX2Bytes, useGLTFWithKTX2 } from '@/lib/three/use-gltf-ktx2';
 
 // ─── Preloads — fire at module scope so GLBs are warm before a round starts ──
-useGLTF.preload('/models/lobster.glb');
-useGLTF.preload('/models/crayfish.glb');
+preloadKTX2Bytes('/models/lobster-ktx.glb');
+preloadKTX2Bytes('/models/crayfish-ktx.glb');
 
 // ─── Module-scope player group registry ──────────────────────────────────────
 // BumperShellsScene's HitEventProcessor uses this to call triggerCombatAction
@@ -115,7 +116,7 @@ const _speedScratch = { speed: 0 };
 const WALK_SPEED_THRESHOLD = 20;
 
 // ─── Lobster facing note ──────────────────────────────────────────────────────
-// lobster.glb faces +Z at rotation.y=0.
+// lobster-ktx.glb faces +Z at rotation.y=0.
 // BUG FIX (Bug 1): facing now comes from entity.rot (server-authoritative).
 // entity.rot is set server-side as atan2(intent.dir.x, intent.dir.y) only when
 // the player provides input — it does NOT update on knockback impulses.
@@ -172,9 +173,9 @@ function BumperShellsPlayerInner({
   displayName,
 }: BumperShellsPlayerProps) {
   const species = entity.species ?? 'lobster';
-  const glbPath = species === 'crayfish' ? '/models/crayfish.glb' : '/models/lobster.glb';
+  const glbPath = species === 'crayfish' ? '/models/crayfish-ktx.glb' : '/models/lobster-ktx.glb';
 
-  const { scene: srcScene } = useGLTF(glbPath);
+  const { scene: srcScene } = useGLTFWithKTX2(glbPath);
 
   const { camera } = useThree();
 
@@ -481,7 +482,7 @@ function BumperShellsPlayerInner({
       if (animator) {
         animator.update(dt, elapsed, suggestedState, direction);
       }
-      // Transform-only swim for static meshes (lobster.glb / crayfish.glb — 0 bones).
+      // Transform-only swim for static meshes (lobster-ktx.glb / crayfish-ktx.glb — 0 bones).
       // applyTransformSwim internally probes for bones on first call (cached) and
       // skips itself when hasBones=true, so rigged species (if added later) are safe.
       // baseY=0: clonedScene's position.y is 0 relative to meshRoot; bob oscillates around 0.

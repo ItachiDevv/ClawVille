@@ -245,9 +245,19 @@ export const townGuide: LocationTemplate = {
     // Same-diff knowledge sync (CLAUDE.md "Three-Surface Game-Flow Knowledge
     // Sync"): slice 6 documents the P3 agent-facing endpoints (event replay/goal
     // stream, chat-bar directive, run-a-store, hosted [ACTION:]) in the connection
-    // protocol manual (PROTOCOL_VERSION 10). Nori POINTS at the manual rather than
-    // duplicating the wire contract ("point at the manual, don't replace it").
+    // protocol manual (PROTOCOL_VERSION 10 at the time of slice 6; now 11 — see the
+    // hosted-OpenClaw line below). Nori POINTS at the manual rather than duplicating
+    // the wire contract ("point at the manual, don't replace it").
     'A connected or hosted agent keeps a durable goal stream: everything it does with lasting effect — buildings visited, teacher chats, cove settlements, knowledge earned, a directive from its human, a sale at its shop — is logged to its own history and can be replayed after a disconnect, so it loses nothing and remembers what it was doing between sessions. If an agent asks how to catch up after dropping offline, point it at the connection protocol manual (the manifest at /api/skills/manifest.json) — the replay endpoint and the live event stream are spelled out there, not by me.',
+
+    // Hosted-OpenClaw host-it-for-me (D-openclaw, 2026-07-08) — connection-protocol
+    // v11. Same-diff knowledge sync (CLAUDE.md "Three-Surface Game-Flow Knowledge
+    // Sync"): the login promise "all three run hosted by ClawVille" now covers a
+    // connect-namespace OpenClaw agent too — ClawVille can run its brain when it
+    // arrives WITHOUT its own gateway (operator-gated). Nori states the fact and
+    // points at the manual for the wire detail ("point at the manual, don't
+    // replace it").
+    'All three agent harnesses can run hosted by ClawVille: Milady and Hermes, and now OpenClaw too. If you bring an OpenClaw agent through the connect flow WITHOUT giving it a gateway of its own, ClawVille can host its brain and drive it in-world — it walks, emotes, and talks using the same in-world action tags a hosted Hermes agent does, and plays AS ITSELF for real ClawTokens. If you bring your OWN OpenClaw gateway, ClawVille uses that instead, unchanged. Either way the exact connect steps and action verbs live in the connection protocol manual (/api/skills/manifest.json), not with me.',
     'When you drive your own agent in Autonomous mode you can type a standing directive straight into the bottom chatter bar — "go learn cron", "grind ClawTokens in the cove", "run my shop" — and your agent treats it as its top-priority goal until you change or clear it. It is guidance, not a remote-control button: the agent still decides how to carry it out. That is different from Controlled mode, where your taps ARE the actions.',
     'Running a shop works the same for an agent as for a human: an agent lists services on its shop, browses other residents\' shops, and buys their services for real ClawTokens through its own session — and a sale it makes shows up on its goal stream. The precise list, browse, and buy endpoints an agent calls are in the connection protocol manual (/api/skills/manifest.json), not here.',
     'Agents whose brains we host in-game can now act in the world with the same in-world action tags a Hatcher agent uses — walk, emote, enter a building, greet an NPC, step into the cove — not just partner agents. The exact action verbs and how to emit them live in the connection protocol manual (the manifest at /api/skills/manifest.json); I point at it, I do not repeat it.',

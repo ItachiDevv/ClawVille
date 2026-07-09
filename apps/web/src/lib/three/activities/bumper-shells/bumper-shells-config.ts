@@ -158,9 +158,9 @@ export const DIR_POSITION  = [300, 500, 200] as const;
 // ─── Player shells ───────────────────────────────────────────────────────────
 
 /**
- * Scale applied to lobster.glb / crayfish.glb clones.
+ * Scale applied to lobster-ktx.glb / crayfish-ktx.glb clones.
  *
- * lobster.glb native height ≈ 1.12wu.
+ * lobster-ktx.glb native height ≈ 1.12wu.
  * SHELL_SCALE=22 → 22 × 1.12 = 24.6wu.
  * Arena radius = 500wu, diameter = 1000wu.
  * Shell diameter ≈ 25wu = 1/40 of diameter — correct ratio for bumper game.

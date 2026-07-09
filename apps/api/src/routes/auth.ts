@@ -16,11 +16,13 @@ import {
   isAgentProvisioningPending,
   type ProvisionAvatarAgentResult,
 } from '../services/avatar-agent-provisioning';
+import { classifyAgentSessionHot } from '../services/agent-session-classify';
 import {
   verifyEmailTemplate,
   resetPasswordTemplate,
 } from '../templates/email-templates';
 import { logEventFromContext } from '../services/event-logger';
+import { deactivateAutonomyForOwner } from '../services/agent-autonomy-activation';
 import type { AppContext } from '../types';
 import { z } from 'zod';
 import { DEFAULT_AGENT_MODEL_KEY } from '@clawville/shared';
@@ -73,7 +75,32 @@ authRoutes.get('/me', requireAuth, async (c) => {
 // are always reachable (no external process to time out). External harnesses
 // (openclaw / custom) point at a process the user runs locally — their
 // liveness is derived from how recently the bot acted.
-const HOSTED_HARNESSES = new Set(['milady', 'hermes']);
+//
+// ⚠️ DELIBERATE — do NOT "fix" this to isHostedHarness() (commit e1b78a49
+// excluded that wiring on purpose). This set answers the AVATAR-namespace
+// question: does this avatar's platform_agents row back a working server-side
+// runtime? A hermes-HARNESS avatar runs a real ElizaOS runtime through the
+// orchestrator (the chat path is harness-agnostic via platformAgentId), so it
+// is genuinely hosted even while HERMES_LOCAL_GATEWAY_ENABLED is off. That env
+// gate governs the CONNECT namespace (openclaw_bots identityType 'hermes' —
+// BYO pull agents / the hermes-local wire), whose liveness is already handled
+// truthfully by the bot-row branch, which takes precedence over the hosted
+// carve-out. isHostedHarness() is the connect-namespace helper; wiring it here
+// would falsely demote working hosted hermes avatars behind a disabled flag.
+//
+// 'openclaw' added 2026-07-08 (scope-audit finding): SIGNUP_HARNESSES lets a
+// user pick openclaw at signup and provisioning mints the same platform_agents
+// avatar-agent (hosted ElizaOS runtime, chattable via /me/chat, bridge-driven
+// in Autonomous) — excluding it told those users "no agent connected" while
+// their hosted agent was demonstrably running. A BYO openclaw agent is
+// unaffected: its openclaw_bots row hits the bot-row branch first.
+// 'custom' stays out — not signup-selectable; BYO-gateway semantics are
+// ambiguous and a custom row without a live bot should not read "hosted".
+//
+// HOSTED_HARNESSES + the hot-branch classifier (`classifyAgentSessionHot`) + the
+// shared hosted-response builder now live in `services/agent-session-classify.ts`
+// (pure, DB-free, unit-tested) so the mode-label decision is testable without the
+// route graph and the two 'hosted' returns can never drift (§B.2 label fix).
 const EXTERNAL_ACTIVE_WINDOW_MS = (() => {
   const raw = process.env.EXTERNAL_BOT_ACTIVE_WINDOW_SECONDS;
   const n = raw ? Number.parseInt(raw, 10) : 300;
@@ -105,75 +132,32 @@ authRoutes.get('/me/agent-session', requireAuth, async (c) => {
     },
   });
 
-  if (bot) {
-    const now = Date.now();
-    const lastSeenMs = bot.lastSeenAt.getTime();
-    const expired =
-      bot.sessionExpiresAt !== null && bot.sessionExpiresAt.getTime() <= now;
-    const idle = now - lastSeenMs > EXTERNAL_ACTIVE_WINDOW_MS;
-
-    if (expired) {
-      return c.json({
-        connected: false,
-        reason: 'expired',
-        mode: 'external-expired',
-        agentId: bot.agentId,
-        lastSeenAt: bot.lastSeenAt.toISOString(),
-        expiresAt: bot.sessionExpiresAt!.toISOString(),
-      });
-    }
-
-    if (idle) {
-      // Bot still has a valid sessionId (within 24h TTL) but hasn't acted
-      // recently — local process likely killed, laptop slept, etc. UI
-      // should show "paired, idle" rather than green.
-      return c.json({
-        connected: false,
-        reason: 'idle',
-        mode: 'external-idle',
-        agentId: bot.agentId,
-        lastSeenAt: bot.lastSeenAt.toISOString(),
-        idleSinceMs: now - lastSeenMs,
-        canReconnect: true,
-      });
-    }
-
-    return c.json({
-      connected: true,
-      mode: 'external-active',
-      agentId: bot.agentId,
-      harness: avatar?.harness ?? bot.identityType ?? null,
-      expiresAt: bot.sessionExpiresAt?.toISOString() ?? null,
-      lastSeenAt: bot.lastSeenAt.toISOString(),
-    });
-  }
-
-  // No external bot — fall through to the hosted-harness carve-out for
-  // avatars whose runtime ClawVille runs server-side (milady, hermes).
-  // The dismissal flag (avatars.flags.agentBannerDismissed) lets the user
-  // suppress the banner without anything to actually "disconnect" — the
-  // server runtime is always alive in those cases; this is purely a UI
-  // preference. Cleared automatically by /api/agent/connect-token when
-  // the user generates a fresh pair link.
-  const flags = (avatar?.flags as { agentBannerDismissed?: boolean } | null) ?? {};
-  if (flags.agentBannerDismissed === true) {
-    return c.json({
-      connected: false,
-      reason: 'dismissed',
-      mode: 'dismissed',
-      harness: avatar?.harness ?? null,
-    });
-  }
-
-  if (avatar && HOSTED_HARNESSES.has(avatar.harness ?? '') && avatar.platformAgentId) {
-    return c.json({
-      connected: true,
-      mode: 'hosted',
-      agentId: avatar.platformAgentId,
-      harness: avatar.harness,
-      expiresAt: null,
-      lastSeenAt: null,
-    });
+  // Hot branches (bot-row incl. the §B.2 hosted short-circuit → dismissed →
+  // hosted-harness) are classified by the shared PURE function so the mode-label
+  // decision is unit-tested without the route graph and the two 'hosted' returns
+  // can't drift. A `cold-fallthrough` means no hot branch matched → do the lazy
+  // `is_guest` read below (hot branches never pay it).
+  const classified = classifyAgentSessionHot({
+    bot: bot
+      ? {
+          agentId: bot.agentId,
+          lastSeenAt: bot.lastSeenAt,
+          sessionExpiresAt: bot.sessionExpiresAt,
+          identityType: bot.identityType,
+        }
+      : null,
+    avatar: avatar
+      ? {
+          platformAgentId: avatar.platformAgentId ?? null,
+          harness: avatar.harness ?? null,
+          flags: (avatar.flags as { agentBannerDismissed?: boolean } | null) ?? null,
+        }
+      : null,
+    now: Date.now(),
+    externalActiveWindowMs: EXTERNAL_ACTIVE_WINDOW_MS,
+  });
+  if (classified.kind === 'response') {
+    return c.json(classified.body);
   }
 
   // P2 Slice B (2026-07-04) — derived 'agent-provisioning-pending' (D1
@@ -219,6 +203,20 @@ authRoutes.get('/me/agent-session', requireAuth, async (c) => {
 authRoutes.post('/logout', requireAuth, async (c) => {
   const session = c.get('session');
   const user = c.get('user');
+  // §B.1 money-path guard (2026-07-08): AUTHORITATIVE server-side autonomy
+  // teardown on explicit logout, BEFORE the Lucia session is invalidated. The
+  // client's own `postAutonomy(false)` (fired from resetStore) races the cookie
+  // invalidation and would 401 after logout, so the client sequencing must NOT
+  // be the only guard for a real-CT settling path — else the driver keeps acting
+  // + settling CT on the avatar of a logged-out user. Idempotent + in-memory
+  // (no-op when the owner isn't enrolled); never-throw so it can never block
+  // logout. This is the EXPLICIT-exit teardown — browser-close (no /logout call)
+  // still persists the agent to its 24h TTL per D6.
+  try {
+    await deactivateAutonomyForOwner(user.id);
+  } catch (err) {
+    console.warn('[logout] autonomy deactivate failed (non-fatal):', err);
+  }
   await lucia.invalidateSession(session.id);
   const cookie = lucia.createBlankSessionCookie();
   c.header('Set-Cookie', cookie.serialize());

@@ -27,8 +27,8 @@
  *     making them cost ~0 fill-rate when not approached.
  *
  * GLB MODELS — reuse assets already preloaded by DeferredTerrainPreloads:
- *   coral-reef1/2/3.glb, kelp.glb, building-barrel.glb, building-lantern.glb,
- *   building-anchor.glb, building-shell.glb
+ *   coral-reef1/2/3.glb, kelp.glb, building-barrel.glb, building-lantern-ktx.glb,
+ *   building-anchor.glb, building-shell-ktx.glb
  *
  * Iris Xe / WebGPU invariants:
  *   - NO ShaderMaterial / NodeMaterial on any merged mesh
@@ -51,6 +51,7 @@ import { useGLTF } from '@react-three/drei';
 import * as THREE from 'three/webgpu';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { makeGeometryWebGPUSafe } from '@/lib/three/webgpu-geometry';
+import { preloadKTX2Bytes, useGLTFWithKTX2 } from '@/lib/three/use-gltf-ktx2';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -170,27 +171,27 @@ function seededRng(seed: number): () => number {
 
 // Model paths — all already preloaded by DeferredTerrainPreloads in arena-terrain.tsx
 const PROP_MODELS_RING = [
-  '/models/coral-reef1.glb',
-  '/models/coral-reef2.glb',
-  '/models/coral-reef3.glb',
+  '/models/coral-reef1-ktx.glb',
+  '/models/coral-reef2-ktx.glb',
+  '/models/coral-reef3-ktx.glb',
   '/models/kelp.glb',
   '/models/building-barrel.glb',
-  '/models/building-lantern.glb',
+  '/models/building-lantern-ktx.glb',
   '/models/building-anchor.glb',
-  '/models/building-shell.glb',
+  '/models/building-shell-ktx.glb',
 ] as const;
 type PropModel = typeof PROP_MODELS_RING[number];
 
 // Model config: scale range and weight for random selection
 const MODEL_CFG: Array<{ model: PropModel; minS: number; maxS: number; weight: number }> = [
-  { model: '/models/coral-reef1.glb',      minS: 6,  maxS: 18, weight: 4 },
-  { model: '/models/coral-reef2.glb',      minS: 5,  maxS: 14, weight: 3 },
-  { model: '/models/coral-reef3.glb',      minS: 4,  maxS: 12, weight: 3 },
+  { model: '/models/coral-reef1-ktx.glb',      minS: 6,  maxS: 18, weight: 4 },
+  { model: '/models/coral-reef2-ktx.glb',      minS: 5,  maxS: 14, weight: 3 },
+  { model: '/models/coral-reef3-ktx.glb',      minS: 4,  maxS: 12, weight: 3 },
   { model: '/models/kelp.glb',             minS: 7,  maxS: 16, weight: 3 },
   { model: '/models/building-barrel.glb',  minS: 4,  maxS: 8,  weight: 3 },
-  { model: '/models/building-lantern.glb', minS: 5,  maxS: 9,  weight: 3 },
+  { model: '/models/building-lantern-ktx.glb', minS: 5,  maxS: 9,  weight: 3 },
   { model: '/models/building-anchor.glb',  minS: 4,  maxS: 10, weight: 2 },
-  { model: '/models/building-shell.glb',   minS: 3,  maxS: 8,  weight: 3 },
+  { model: '/models/building-shell-ktx.glb',   minS: 3,  maxS: 8,  weight: 3 },
 ];
 const TOTAL_WEIGHT = MODEL_CFG.reduce((s, m) => s + m.weight, 0);
 
@@ -357,14 +358,14 @@ const _ringDecoMatrix = new THREE.Matrix4();
 function LandRingDecorationsInner() {
   // Fixed-count hook calls — one per unique model path. React rules: never
   // change hook count. Count = PROP_MODELS_RING.length = 8 (constant).
-  const { scene: m0 } = useGLTF(PROP_MODELS_RING[0]);
-  const { scene: m1 } = useGLTF(PROP_MODELS_RING[1]);
-  const { scene: m2 } = useGLTF(PROP_MODELS_RING[2]);
-  const { scene: m3 } = useGLTF(PROP_MODELS_RING[3]);
-  const { scene: m4 } = useGLTF(PROP_MODELS_RING[4]);
-  const { scene: m5 } = useGLTF(PROP_MODELS_RING[5]);
-  const { scene: m6 } = useGLTF(PROP_MODELS_RING[6]);
-  const { scene: m7 } = useGLTF(PROP_MODELS_RING[7]);
+  const { scene: m0 } = useGLTFWithKTX2(PROP_MODELS_RING[0]);
+  const { scene: m1 } = useGLTFWithKTX2(PROP_MODELS_RING[1]);
+  const { scene: m2 } = useGLTFWithKTX2(PROP_MODELS_RING[2]);
+  const { scene: m3 } = useGLTFWithKTX2(PROP_MODELS_RING[3]);
+  const { scene: m4 } = useGLTFWithKTX2(PROP_MODELS_RING[4]);
+  const { scene: m5 } = useGLTFWithKTX2(PROP_MODELS_RING[5]);
+  const { scene: m6 } = useGLTFWithKTX2(PROP_MODELS_RING[6]);
+  const { scene: m7 } = useGLTFWithKTX2(PROP_MODELS_RING[7]);
 
   const sceneMap = useMemo<Map<string, THREE.Object3D>>(() => {
     const scenes = [m0, m1, m2, m3, m4, m5, m6, m7];
@@ -528,7 +529,10 @@ function LandRingDecorationsInner() {
 // Preload all prop models so they are warm when the component mounts.
 // These overlap with arena-terrain's DeferredTerrainPreloads for the 8 shared
 // model paths — useGLTF caches by URL so there is NO double-parse cost.
-PROP_MODELS_RING.forEach((path) => useGLTF.preload(path));
+PROP_MODELS_RING.forEach((path) => {
+  if (path.includes('-ktx.glb')) preloadKTX2Bytes(path);
+  else useGLTF.preload(path);
+});
 
 // ---------------------------------------------------------------------------
 // Public export — wrapped in Suspense; null fallback avoids layout shift.

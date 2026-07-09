@@ -3,7 +3,7 @@
 /**
  * BazaarStall — world-surface anchor for the Cosmetics shop modal.
  *
- * Asset: /models/bazaar-merchant-stand.glb (medieval merchant stand /
+ * Asset: /models/bazaar-merchant-stand-ktx.glb (medieval merchant stand /
  * fantasy weapon shop — user-supplied 2026-05-18, replacing the prior
  * fish-stall asset). Name kept as "Bazaar" per user direction even
  * though the stand now functions as the first-party Cosmetics shop —
@@ -21,15 +21,15 @@
  */
 
 import { useMemo, useEffect, memo } from 'react';
-import { useGLTF } from '@react-three/drei';
 import * as THREE from 'three/webgpu';
 import { useGameStore } from '@/stores/game';
 import { groundedYOffset } from '@/lib/three/utils/ground-prop';
+import { preloadKTX2Bytes, useGLTFWithKTX2 } from '@/lib/three/use-gltf-ktx2';
 
 // ---------------------------------------------------------------------------
 // Preload at module scope so Suspense has the data ready before first render.
 // ---------------------------------------------------------------------------
-useGLTF.preload('/models/bazaar-merchant-stand.glb?v=2');
+preloadKTX2Bytes('/models/bazaar-merchant-stand-ktx.glb?v=2');
 
 // ---------------------------------------------------------------------------
 // World position (Y computed at runtime via groundedYOffset — see below).
@@ -66,7 +66,7 @@ function computeScale(root: THREE.Group): number {
 // Inner component (wrapped in memo — position never changes)
 // ---------------------------------------------------------------------------
 const BazaarStallInner = memo(function BazaarStallInner() {
-  const { scene } = useGLTF('/models/bazaar-merchant-stand.glb?v=2');
+  const { scene } = useGLTFWithKTX2('/models/bazaar-merchant-stand-ktx.glb?v=2');
 
   // Clone so multiple mounts don't share mutable scene state.
   const cloned = useMemo(() => scene.clone(true), [scene]);

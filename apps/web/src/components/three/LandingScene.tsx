@@ -41,6 +41,8 @@ import { useGLTF } from '@react-three/drei';
 import * as THREE from 'three';
 import { useVisibleFrameloop } from '@/lib/use-visible-frameloop';
 import { extendLoaderWithMeshopt } from '@/lib/three/meshopt-loader-setup';
+import { KTX2LoaderSetup } from '@/lib/three/ktx2-loader-setup';
+import { preloadKTX2Bytes, useGLTFWithKTX2 } from '@/lib/three/use-gltf-ktx2';
 
 // ─── Ring layout constants ────────────────────────────────────────────────────
 
@@ -106,21 +108,22 @@ interface LandingBuildingDef {
 }
 
 const LANDING_BUILDINGS: LandingBuildingDef[] = [
-  { model: '/models/pineapple-house-opt1.glb?v=2',      rotY:  0.000 },  // visual-creation
-  { model: '/models/chum-bucket-v2-opt1.glb?v=2',       rotY: -0.522 },  // code-development
-  { model: '/models/krusty-krab-v2-opt1.glb?v=2',       rotY: -1.049 },  // mcp-tool-use
-  { model: '/models/salty-spitoon-opt1.glb?v=2',        rotY: -2.093 },  // api-integrations
-  { model: '/models/boating-school-opt1.glb?v=2',       rotY: -2.620 },  // app-publishing
-  { model: '/models/patty-building-opt1.glb?v=2',       rotY:  3.142 },  // cron-automation
-  { model: '/models/building-lighthouse-opt1.glb?v=2',  rotY:  2.620 },  // deployment-ops
-  { model: '/models/arcade/claw-arcade-exterior-opt1.glb?v=2', rotY: 2.093 }, // claw-arcade
-  { model: '/models/patricks-rock-v2-opt1.glb?v=3',    rotY:  1.049 },  // agent-security
-  { model: '/models/squidward-house-opt1.glb?v=3',      rotY:  0.522 },  // memory-rag
+  { model: '/models/pineapple-house-opt1-ktx.glb?v=2',      rotY:  0.000 },  // visual-creation
+  { model: '/models/chum-bucket-v2-opt1-ktx.glb?v=2',       rotY: -0.522 },  // code-development
+  { model: '/models/krusty-krab-v2-opt1-ktx.glb?v=2',       rotY: -1.049 },  // mcp-tool-use
+  { model: '/models/salty-spitoon-opt1-ktx.glb?v=2',        rotY: -2.093 },  // api-integrations
+  { model: '/models/boating-school-opt1-ktx.glb?v=2',       rotY: -2.620 },  // app-publishing
+  { model: '/models/patty-building-opt1-ktx.glb?v=2',       rotY:  3.142 },  // cron-automation
+  { model: '/models/building-lighthouse-opt1-ktx.glb?v=2',  rotY:  2.620 },  // deployment-ops
+  { model: '/models/arcade/claw-arcade-exterior-opt1-ktx.glb?v=2', rotY: 2.093 }, // claw-arcade
+  { model: '/models/patricks-rock-v2-opt1-ktx.glb?v=3',    rotY:  1.049 },  // agent-security
+  { model: '/models/squidward-house-opt1-ktx.glb?v=3',      rotY:  0.522 },  // memory-rag
 ];
 
 // Preload all 10 buildings at module scope.
 LANDING_BUILDINGS.forEach(({ model }) => {
-  useGLTF.preload(model, undefined, undefined, extendLoaderWithMeshopt);
+  if (model.includes('-ktx.glb')) preloadKTX2Bytes(model);
+  else useGLTF.preload(model, undefined, undefined, extendLoaderWithMeshopt);
 });
 
 // ─── Decorative mesh names to strip before bbox measurement ──────────────────
@@ -424,14 +427,14 @@ interface ReefDecoDef {
 // (coral clusters + kelp merged); coral-reef1/2/3 + kelp fill the rest.
 // R5: sizes bumped ~15-20% so decos pop against the new sandy floor.
 const REEF_DECOS: ReefDecoDef[] = [
-  { model: '/models/coral-reef1.glb',            x:  260, z:   30, size: 52, rotY: 0.3 },
-  { model: '/models/coral-reef2.glb',            x: -220, z:  120, size: 46, rotY: 1.8 },
-  { model: '/models/coral-reef3.glb',            x:   80, z: -270, size: 49, rotY: 0.9 },
+  { model: '/models/coral-reef1-ktx.glb',            x:  260, z:   30, size: 52, rotY: 0.3 },
+  { model: '/models/coral-reef2-ktx.glb',            x: -220, z:  120, size: 46, rotY: 1.8 },
+  { model: '/models/coral-reef3-ktx.glb',            x:   80, z: -270, size: 49, rotY: 0.9 },
   { model: '/models/kelp.glb',                   x: -290, z: -100, size: 41, rotY: 2.4 },
   { model: '/models/kelp.glb',                   x:  160, z:  290, size: 35, rotY: 0.6 },
-  { model: '/models/coral-reef1.glb',            x: -150, z: -310, size: 44, rotY: 3.1 },
-  { model: '/models/coral-reef2.glb',            x:  310, z: -200, size: 42, rotY: 1.2 },
-  { model: '/models/coral-reef3.glb',            x: -330, z:  180, size: 46, rotY: 2.7 },
+  { model: '/models/coral-reef1-ktx.glb',            x: -150, z: -310, size: 44, rotY: 3.1 },
+  { model: '/models/coral-reef2-ktx.glb',            x:  310, z: -200, size: 42, rotY: 1.2 },
+  { model: '/models/coral-reef3-ktx.glb',            x: -330, z:  180, size: 46, rotY: 2.7 },
   { model: '/models/underwater-decorations.glb', x:  220, z: -340, size: 58, rotY: 0.5 },
   { model: '/models/underwater-decorations.glb', x: -200, z:  340, size: 56, rotY: 1.5 },
 ];
@@ -441,7 +444,8 @@ const REEF_DECOS: ReefDecoDef[] = [
 // already resolved).
 const _DECO_MODELS = [...new Set(REEF_DECOS.map((d) => d.model))];
 _DECO_MODELS.forEach((m) => {
-  useGLTF.preload(m, undefined, undefined, extendLoaderWithMeshopt);
+  if (m.includes('-ktx.glb')) preloadKTX2Bytes(m);
+  else useGLTF.preload(m, undefined, undefined, extendLoaderWithMeshopt);
 });
 
 // Module-scope bbox scratch for deco sizing (avoids new allocations per mount)
@@ -452,7 +456,7 @@ const _decoCenter = new THREE.Vector3();
 interface ReefDecoInnerProps { def: ReefDecoDef }
 
 function ReefDecoInner({ def }: ReefDecoInnerProps) {
-  const { scene } = useGLTF(def.model, undefined, undefined, extendLoaderWithMeshopt);
+  const { scene } = useGLTFWithKTX2(def.model);
   const groupRef  = useRef<THREE.Group>(null);
 
   const { cloned, scale, pivotOffsetX, pivotOffsetY, pivotOffsetZ } = useMemo(() => {
@@ -545,7 +549,7 @@ interface HeroBuildingProps {
 }
 
 function HeroBuildingInner({ def, posX, posZ }: HeroBuildingProps) {
-  const { scene } = useGLTF(def.model, undefined, undefined, extendLoaderWithMeshopt);
+  const { scene } = useGLTFWithKTX2(def.model);
   const groupRef = useRef<THREE.Group>(null);
 
   const { cloned, scale, pivotOffsetX, pivotOffsetY, pivotOffsetZ } = useMemo(() => {
@@ -706,6 +710,7 @@ export default function LandingScene() {
           scene.background = new THREE.Color(0x081420);
         }}
       >
+        <KTX2LoaderSetup />
         <SceneContents />
       </Canvas>
     </div>

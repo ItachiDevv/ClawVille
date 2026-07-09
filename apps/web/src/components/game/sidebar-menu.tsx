@@ -75,8 +75,17 @@ import { api } from '@/lib/api';
 // Character frame — top-of-sidebar "unit frame" showing the avatar identity.
 // ---------------------------------------------------------------------------
 
-function CharacterFrame({ onCreateAvatar }: { onCreateAvatar: () => void }) {
+function CharacterFrame({
+  onCreateAvatar,
+  onNavigate,
+}: {
+  onCreateAvatar: () => void;
+  /** Close the menu drawer before opening an overlay (mobile: the drawer
+      otherwise stacks ABOVE the wallet modal and buries it). */
+  onNavigate?: () => void;
+}) {
   const { data: avatar, isLoading } = useAvatar();
+  const openWalletLink = useGameStore((s: GameState) => s.openWalletLink);
 
   if (isLoading) {
     return (
@@ -243,6 +252,56 @@ function CharacterFrame({ onCreateAvatar }: { onCreateAvatar: () => void }) {
           {tokens.toLocaleString()}
         </span>
       </div>
+
+      {/* Wallet entry — opens the wallet-visibility modal (custodial deposit
+          address + linked self-custody wallet). This is the mobile-accessible
+          entry point (the desktop-only avatar-status-bar has its own chip).
+          Only for real accounts with a provisioned custodial wallet. */}
+      {(avatar as { walletAddress?: string | null }).walletAddress && (
+        <button
+          type="button"
+          onClick={() => {
+            onNavigate?.();
+            openWalletLink();
+          }}
+          title="View your wallet"
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 8,
+            padding: '6px 10px',
+            borderRadius: 6,
+            background: 'rgba(10, 22, 40, 0.65)',
+            border: '1px solid rgba(56, 189, 248, 0.25)',
+            cursor: 'pointer',
+            width: '100%',
+          }}
+        >
+          <span
+            style={{
+              fontSize: 9,
+              letterSpacing: '0.16em',
+              textTransform: 'uppercase',
+              color: 'rgba(56, 189, 248, 0.7)',
+              fontWeight: 700,
+            }}
+          >
+            👛 Wallet
+          </span>
+          <span
+            style={{
+              fontFamily: 'var(--font-orbitron, ui-sans-serif), sans-serif',
+              fontSize: 11,
+              fontWeight: 700,
+              letterSpacing: '0.06em',
+              color: '#38bdf8',
+            }}
+          >
+            View
+          </span>
+        </button>
+      )}
 
       {/* Multiplayer Phase 1 — room code chip + invite-friends button. Renders
           beneath the ClawTokens strip so it sits in the same per-player metadata
@@ -797,8 +856,17 @@ function SidebarContent({ closeMenu }: SidebarContentProps) {
       const { useAutonomyStore } = require('@/stores/autonomy') as typeof import('@/stores/autonomy');
       useAutonomyStore.getState().stopAutonomy();
 
-      await api.logout();
+      // §B.1 money-path belt (2026-07-08): resetStore() fires the Autonomous
+      // server-deactivate POST (leaveAutonomousServerCleanup). Run it BEFORE
+      // api.logout() so that POST goes out with a STILL-VALID cookie instead of
+      // 401ing after the session is invalidated. Belt only — the POST is
+      // fire-and-forget so it still races the cookie invalidation; the
+      // AUTHORITATIVE guard is the server-side unenroll in POST /logout
+      // (cookie-independent). Tradeoff: resetStore runs even if api.logout()
+      // network-fails — acceptable (the client is already deactivated + the
+      // server route is the real guarantee).
       resetStore();
+      await api.logout();
       // Auth-state-reconciliation fix (2026-06-19). resetStore() only resets the
       // GAME Zustand slice — the SHARED SPA QueryClient still holds the logged-out
       // user's ['auth-me'] / ['avatar'] / ['agent-session'] (+ everything else),
@@ -830,7 +898,7 @@ function SidebarContent({ closeMenu }: SidebarContentProps) {
         minHeight: 0,
       }}
     >
-      <CharacterFrame onCreateAvatar={handleCreateAgent} />
+      <CharacterFrame onCreateAvatar={handleCreateAgent} onNavigate={closeMenu} />
 
       <div
         className="rpg-sidebar-scroll"
@@ -930,8 +998,9 @@ function SidebarContent({ closeMenu }: SidebarContentProps) {
             carve-out, not peer commerce). */}
         <CategoryHeader label="Economy" subtitle="Land · Cosmetics" />
         <div className="rpg-sidebar-group">
-          {/* Land Economy (Phase 1) — browse for-sale parcels, claim a free
-              starter home, buy a priced parcel with CT, place + upgrade a
+          {/* Land Economy (Phase B tenure model) — browse for-sale parcels,
+              claim a Starter Cove (refundable CT deposit) or a higher tier
+              (CLV hold-to-keep; buy-outright retired), place + upgrade a
               building/shop. Higher tiers unlock nicer buildings + higher levels. */}
           <SidebarRow
             icon="🏝️"

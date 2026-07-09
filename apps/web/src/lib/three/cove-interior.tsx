@@ -52,6 +52,8 @@ import { MODEL_REGISTRY, type ModelRegistryEntry } from '@/lib/three/agent-model
 import { makeObject3DWebGPUSafe } from '@/lib/three/webgpu-geometry';
 import { clampCameraToRoom, type RoomBounds } from '@/lib/three/room-camera';
 import { useWorldLabel, WorldLabel, WorldLabelsOverlayMount } from '@/lib/three/world-labels-overlay';
+import { extendLoaderWithKTX2 } from '@/lib/three/ktx2-loader-setup';
+import { preloadKTX2Bytes, useGLTFWithKTX2 } from '@/lib/three/use-gltf-ktx2';
 import type { MachineSlug } from '@/lib/cove/types';
 
 // ---------------------------------------------------------------------------
@@ -61,7 +63,7 @@ import type { MachineSlug } from '@/lib/cove/types';
 /** Gameready GLB path — temporarily pointed at cleaned-v1 to evaluate the
  *  Blender artifact removal pass (pillar fragments + Material4 ghost mesh
  *  removed; stump cleanup possibly over-broad — visual verification pending). */
-const INTERIOR_GLB = '/models/cove/cove-interior-cleaned-v1.glb?v=5';
+const INTERIOR_GLB = '/models/cove/cove-interior-cleaned-v1-ktx.glb?v=5';
 /** Fallback cartoon GLB */
 const FALLBACK_GLB = '/models/cove/cove-interior-fallback.glb';
 
@@ -337,14 +339,16 @@ const _dracoLoader = new DRACOLoader();
 _dracoLoader.setDecoderPath('https://www.gstatic.com/draco/versioned/decoders/1.5.6/');
 
 const extendWithDraco = (loader: unknown) => {
-  (loader as GLTFLoader).setDRACOLoader(_dracoLoader);
+  const gltfLoader = loader as GLTFLoader;
+  gltfLoader.setDRACOLoader(_dracoLoader);
+  extendLoaderWithKTX2(gltfLoader as any);
 };
 
 // Preload both GLBs at module scope
 if (typeof window !== 'undefined') {
-  useGLTF.preload(INTERIOR_GLB, undefined, undefined, extendWithDraco);
+  preloadKTX2Bytes(INTERIOR_GLB);
   useGLTF.preload(FALLBACK_GLB);
-  useGLTF.preload('/models/lobster.glb');
+  preloadKTX2Bytes('/models/lobster-ktx.glb');
   _dracoLoader.preload();
 }
 
@@ -1398,7 +1402,7 @@ function CoveGLBAvatarInner() {
     _coveArrowPitchOffset = 0;
   }, []);
 
-  const { scene } = useGLTF('/models/lobster.glb');
+  const { scene } = useGLTFWithKTX2('/models/lobster-ktx.glb');
 
   const { cloned, pivotOffsetY } = useMemo(() => {
     const c = scene.clone(true);
@@ -1473,7 +1477,7 @@ function CoveGLBAvatarInner() {
       posX.current = Math.max(-BOUNDS_X, Math.min(BOUNDS_X, posX.current));
       posZ.current = Math.max(BOUNDS_Z_MIN, Math.min(BOUNDS_Z_MAX, posZ.current));
       // Bug 1 fix 2026-05-19: lerp rate 0.15→0.08 (smoother yaw, same formula).
-      // lobster.glb faces +Z at rot=0 — see feedback_lobster_faces_negative_z memory.
+      // lobster-ktx.glb faces +Z at rot=0 — see feedback_lobster_faces_negative_z memory.
       const targetRot = Math.atan2(vx, vz);
       let diff = targetRot - rotRef.current;
       while (diff > Math.PI) diff -= Math.PI * 2;

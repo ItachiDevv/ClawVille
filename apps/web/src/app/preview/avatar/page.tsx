@@ -30,6 +30,7 @@ import { GLTFLoader, type GLTF } from 'three/addons/loaders/GLTFLoader.js';
 import { clone as skeletonClone } from 'three/examples/jsm/utils/SkeletonUtils.js';
 import { MeshoptDecoder } from 'meshoptimizer';
 import { applyTransformSwim } from '@/lib/three/sea-creature-swim';
+import { KTX2LoaderSetup, getKTX2Loader } from '@/lib/three/ktx2-loader-setup';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -53,11 +54,11 @@ function isValidMode(m: string | null): m is PreviewMode {
   return MODES.includes(m as PreviewMode);
 }
 
-const GLB_BASE = '/models/lobster.glb';
-const GLB_RIGGED_BASE = '/models/sea-creatures/lobster/base.glb';
-const GLB_IDLE = '/models/sea-creatures/lobster/animations/idle.glb';
-const GLB_SWIM = '/models/sea-creatures/lobster/animations/swim.glb';
-const GLB_HIT = '/models/sea-creatures/lobster/animations/hit.glb';
+const GLB_BASE = '/models/lobster-ktx.glb';
+const GLB_RIGGED_BASE = '/models/sea-creatures/lobster/base-ktx.glb';
+const GLB_IDLE = '/models/sea-creatures/lobster/animations/idle-ktx.glb';
+const GLB_SWIM = '/models/sea-creatures/lobster/animations/swim-ktx.glb';
+const GLB_HIT = '/models/sea-creatures/lobster/animations/hit-ktx.glb';
 const GLB_SKETCHFAB = '/models/sea-creatures/sketchfab/cc0-crab.glb';
 
 // ---------------------------------------------------------------------------
@@ -73,9 +74,12 @@ const _glbCache = new Map<string, CacheEntry>();
 let _gltfLoader: GLTFLoader | null = null;
 
 function getLoader(): GLTFLoader {
-  if (_gltfLoader) return _gltfLoader;
-  _gltfLoader = new GLTFLoader();
-  _gltfLoader.setMeshoptDecoder(MeshoptDecoder);
+  if (!_gltfLoader) {
+    _gltfLoader = new GLTFLoader();
+    _gltfLoader.setMeshoptDecoder(MeshoptDecoder);
+  }
+  const ktx2 = getKTX2Loader();
+  if (ktx2) _gltfLoader.setKTX2Loader(ktx2);
   return _gltfLoader;
 }
 
@@ -399,6 +403,7 @@ function AvatarPreviewInner() {
           camera={{ position: [0, 0, 60], fov: 50, near: 0.1, far: 2000 }}
           style={{ background: BG_COLOR, width: '100%', height: '100%' }}
         >
+          <KTX2LoaderSetup />
           <color attach="background" args={[BG_COLOR]} />
           <Suspense fallback={null}>
             <AvatarScene
