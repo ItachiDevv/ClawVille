@@ -22,8 +22,30 @@
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useGameStore } from '@/stores/game';
+import { ApiError } from '@/lib/api';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || '';
+
+/**
+ * Build a typed ApiError from a failed write response so callers can branch on
+ * the server's machine-readable `code` (e.g. `guest_not_allowed`) — NEVER on
+ * message text. The guest-block body is `{ error, code }`; other refusals may
+ * use `message`. Reads either so the surfaced message is always human copy.
+ */
+function toApiError(res: Response, body: unknown, fallback: string): ApiError {
+  const b = (body ?? {}) as { error?: string; message?: string; code?: string };
+  return new ApiError(b.error ?? b.message ?? `${fallback}: ${res.status}`, res.status, b.code);
+}
+
+/**
+ * Backstop guard — a guest slipped past the preemptive UI gate (auth-me not
+ * yet resolved) and the server 403'd. The consuming modal shows the sign-up
+ * upsell; the hook onError below suppresses the raw toast for this code so a
+ * guest NEVER sees the server string.
+ */
+export function isExchangeGuestBlocked(err: unknown): boolean {
+  return err instanceof ApiError && err.code === 'guest_not_allowed';
+}
 
 // ─── Types (mirror apps/api/src/routes/exchange.ts response shape) ──────────
 
@@ -198,7 +220,7 @@ async function postCreate(input: CreateListingInput): Promise<{ listing: Exchang
   });
   const body = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error((body as { message?: string })?.message ?? `Create failed: ${res.status}`);
+    throw toApiError(res, body, 'Create failed');
   }
   return body as { listing: ExchangeListing };
 }
@@ -213,6 +235,7 @@ export function useCreateExchangeListing() {
       useGameStore.getState().addToast('✦', 'Listing posted to the tide-board.');
     },
     onError: (err: Error) => {
+      if (isExchangeGuestBlocked(err)) return; // guest sees the sign-up upsell, not a raw error
       useGameStore.getState().addToast('⚠', err.message || 'Post failed');
     },
   });
@@ -227,7 +250,7 @@ async function postOrder(listingId: string): Promise<{ order: ExchangeOrder; lis
   });
   const body = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error((body as { message?: string })?.message ?? `Order failed: ${res.status}`);
+    throw toApiError(res, body, 'Order failed');
   }
   return body as { order: ExchangeOrder; listing: ExchangeListing };
 }
@@ -243,6 +266,7 @@ export function useOrderExchangeListing() {
       useGameStore.getState().addToast('⛵', 'Order placed.');
     },
     onError: (err: Error) => {
+      if (isExchangeGuestBlocked(err)) return; // guest sees the sign-up upsell, not a raw error
       useGameStore.getState().addToast('⚠', err.message || 'Order failed');
     },
   });
@@ -264,7 +288,7 @@ async function postSubmit(orderId: string, input: SubmitInput): Promise<{ order:
   });
   const body = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error((body as { message?: string })?.message ?? `Submit failed: ${res.status}`);
+    throw toApiError(res, body, 'Submit failed');
   }
   return body as { order: ExchangeOrder };
 }
@@ -279,6 +303,7 @@ export function useSubmitExchangeOrder() {
       useGameStore.getState().addToast('📦', 'Delivery submitted — awaiting confirm.');
     },
     onError: (err: Error) => {
+      if (isExchangeGuestBlocked(err)) return; // guest sees the sign-up upsell, not a raw error
       useGameStore.getState().addToast('⚠', err.message || 'Submit failed');
     },
   });
@@ -295,7 +320,7 @@ async function postConfirm(orderId: string, reviewNote?: string): Promise<{ orde
   });
   const body = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error((body as { message?: string })?.message ?? `Confirm failed: ${res.status}`);
+    throw toApiError(res, body, 'Confirm failed');
   }
   return body as { order: ExchangeOrder };
 }
@@ -311,6 +336,7 @@ export function useConfirmExchangeOrder() {
       useGameStore.getState().addToast('✓', 'Escrow released. Trade complete.');
     },
     onError: (err: Error) => {
+      if (isExchangeGuestBlocked(err)) return; // guest sees the sign-up upsell, not a raw error
       useGameStore.getState().addToast('⚠', err.message || 'Confirm failed');
     },
   });
@@ -325,7 +351,7 @@ async function postCancelOrder(orderId: string): Promise<{ order: ExchangeOrder 
   });
   const body = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error((body as { message?: string })?.message ?? `Cancel failed: ${res.status}`);
+    throw toApiError(res, body, 'Cancel failed');
   }
   return body as { order: ExchangeOrder };
 }
@@ -340,6 +366,7 @@ export function useCancelExchangeOrder() {
       useGameStore.getState().addToast('↺', 'Order cancelled — escrow refunded.');
     },
     onError: (err: Error) => {
+      if (isExchangeGuestBlocked(err)) return; // guest sees the sign-up upsell, not a raw error
       useGameStore.getState().addToast('⚠', err.message || 'Cancel failed');
     },
   });
@@ -354,7 +381,7 @@ async function postCancelListing(listingId: string): Promise<{ listing: Exchange
   });
   const body = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error((body as { message?: string })?.message ?? `Cancel failed: ${res.status}`);
+    throw toApiError(res, body, 'Cancel failed');
   }
   return body as { listing: ExchangeListing };
 }
@@ -369,6 +396,7 @@ export function useCancelExchangeListing() {
       useGameStore.getState().addToast('↺', 'Listing cancelled.');
     },
     onError: (err: Error) => {
+      if (isExchangeGuestBlocked(err)) return; // guest sees the sign-up upsell, not a raw error
       useGameStore.getState().addToast('⚠', err.message || 'Cancel failed');
     },
   });

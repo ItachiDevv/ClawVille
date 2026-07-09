@@ -43,7 +43,7 @@ export default function WalletModal() {
                 <span aria-hidden>👛</span> Wallet
               </DialogTitle>
               <DialogDescription className="mt-1">
-                Your in-game address and linked wallet
+                Your in-game wallet, withdrawals, and linked wallet
               </DialogDescription>
             </div>
             <DialogClose asChild>

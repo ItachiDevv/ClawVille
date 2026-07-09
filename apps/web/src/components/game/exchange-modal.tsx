@@ -41,6 +41,7 @@ import {
   useConfirmExchangeOrder,
   useCancelExchangeOrder,
   useCancelExchangeListing,
+  isExchangeGuestBlocked,
   EXCHANGE_CATEGORIES,
   CATEGORY_GLYPHS,
   type ExchangeListing,
@@ -61,6 +62,17 @@ import {
   type RarityId,
   type StatusChipTone,
 } from '@/components/rpg';
+import { useIsGuest } from '@/hooks/use-is-guest';
+import { GuestUpsellModal } from '@/components/game/guest-upsell-modal';
+
+// Guests run an all-demo economy (founder ruling 2026-07-06). The Exchange is
+// P2P escrowed trade in REAL ClawTokens — it can't be safely simulated, so a
+// guest hitting any write action gets the sign-up upsell, never a raw toast.
+const EXCHANGE_UPSELL = {
+  headline: 'Trading needs a real account',
+  body: 'The Exchange moves real ClawTokens through escrow between players. Guests run a demo economy — create a free account to post, order, and settle real trades.',
+  ctaLabel: 'Create free account',
+} as const;
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
@@ -1032,9 +1044,13 @@ const initialPostForm: PostFormState = {
 function PostTab({
   tokens,
   onDone,
+  isGuest,
+  onGuestBlocked,
 }: {
   tokens: number;
   onDone: () => void;
+  isGuest: boolean;
+  onGuestBlocked: () => void;
 }) {
   const [f, setF] = useState<PostFormState>(initialPostForm);
   const create = useCreateExchangeListing();
@@ -1055,6 +1071,11 @@ function PostTab({
 
   function submit() {
     if (!canSubmit || !f.type) return;
+    // Preemptive guest gate — never round-trip to the escrow write path.
+    if (isGuest) {
+      onGuestBlocked();
+      return;
+    }
     const tags = f.tagsRaw
       .split(',')
       .map((s) => s.trim())
@@ -1075,6 +1096,10 @@ function PostTab({
         onSuccess: () => {
           setF(initialPostForm);
           onDone();
+        },
+        // Backstop: a guest slipped past the preemptive gate (auth-me race).
+        onError: (err) => {
+          if (isExchangeGuestBlocked(err)) onGuestBlocked();
         },
       },
     );
@@ -1526,6 +1551,11 @@ export default function ExchangeModal() {
   const { data: avatar } = useAvatar();
   const tokens = avatar?.clawTokens ?? 0;
   const myAvatarId = avatar?.id ?? null;
+  const isGuest = useIsGuest();
+
+  // Guest sign-up upsell — shown instead of any real-CT trade action / any
+  // guest_not_allowed 403. One instance for the whole modal.
+  const [guestUpsellOpen, setGuestUpsellOpen] = useState(false);
 
   // Browse filter state
   const [browseType, setBrowseType] = useState<ExchangeListingType>('need');
@@ -1571,50 +1601,88 @@ export default function ExchangeModal() {
     return [...rows].sort((a, b) => (a.priceCt - b.priceCt) * dir);
   }, [browseQ.data, sort]);
 
+  // Preemptive guest gate — a guest never reaches the escrow write path; the
+  // action opens the sign-up upsell instead of a server round-trip. The
+  // onError arm is the backstop for the auth-me-not-yet-resolved race.
   const onOrder = (l: ExchangeListing) => {
     if (orderM.isPending) return;
+    if (isGuest) {
+      setGuestUpsellOpen(true);
+      return;
+    }
     setPendingTarget(l.id);
     orderM.mutate(l.id, {
+      onError: (err) => {
+        if (isExchangeGuestBlocked(err)) setGuestUpsellOpen(true);
+      },
       onSettled: () => setPendingTarget(null),
     });
   };
 
   const onAuthorCancel = (l: ExchangeListing) => {
     if (cancelListingM.isPending) return;
+    if (isGuest) {
+      setGuestUpsellOpen(true);
+      return;
+    }
     if (!window.confirm('Cancel this listing? Open orders will be refunded.')) {
       return;
     }
     setPendingTarget(l.id);
     cancelListingM.mutate(l.id, {
+      onError: (err) => {
+        if (isExchangeGuestBlocked(err)) setGuestUpsellOpen(true);
+      },
       onSettled: () => setPendingTarget(null),
     });
   };
 
   const onSubmitDelivery = (input: { deliveryUrl?: string; deliveryNote?: string }) => {
     if (!submitTarget) return;
+    if (isGuest) {
+      setGuestUpsellOpen(true);
+      return;
+    }
     submitM.mutate(
       { orderId: submitTarget.id, input },
       {
         onSuccess: () => setSubmitTarget(null),
+        onError: (err) => {
+          if (isExchangeGuestBlocked(err)) setGuestUpsellOpen(true);
+        },
       },
     );
   };
 
   const onConfirmRelease = (reviewNote?: string) => {
     if (!confirmTarget) return;
+    if (isGuest) {
+      setGuestUpsellOpen(true);
+      return;
+    }
     confirmM.mutate(
       { orderId: confirmTarget.order.id, reviewNote },
       {
         onSuccess: () => setConfirmTarget(null),
+        onError: (err) => {
+          if (isExchangeGuestBlocked(err)) setGuestUpsellOpen(true);
+        },
       },
     );
   };
 
   const onCancelOrder = (orderId: string) => {
     if (cancelOrderM.isPending) return;
+    if (isGuest) {
+      setGuestUpsellOpen(true);
+      return;
+    }
     if (!window.confirm('Cancel this order? Escrow will be refunded.')) return;
     setPendingTarget(orderId);
     cancelOrderM.mutate(orderId, {
+      onError: (err) => {
+        if (isExchangeGuestBlocked(err)) setGuestUpsellOpen(true);
+      },
       onSettled: () => setPendingTarget(null),
     });
   };
@@ -1853,7 +1921,12 @@ export default function ExchangeModal() {
 
         {/* ═══════════════════════ POST ═══════════════════════ */}
         {tab === 'post' && (
-          <PostTab tokens={tokens} onDone={() => setTab('my-listings')} />
+          <PostTab
+            tokens={tokens}
+            onDone={() => setTab('my-listings')}
+            isGuest={isGuest}
+            onGuestBlocked={() => setGuestUpsellOpen(true)}
+          />
         )}
       </RpgModal>
 
@@ -1873,6 +1946,14 @@ export default function ExchangeModal() {
         recipientName={confirmTarget?.listing.creatorId === myAvatarId
           ? 'the claimant'
           : confirmTarget?.listing.creatorName ?? 'the seller'}
+      />
+
+      <GuestUpsellModal
+        open={guestUpsellOpen}
+        onClose={() => setGuestUpsellOpen(false)}
+        headline={EXCHANGE_UPSELL.headline}
+        body={EXCHANGE_UPSELL.body}
+        ctaLabel={EXCHANGE_UPSELL.ctaLabel}
       />
     </>
   );
