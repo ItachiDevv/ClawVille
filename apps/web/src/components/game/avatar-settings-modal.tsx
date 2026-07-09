@@ -5,6 +5,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useGameStore } from '@/stores/game';
 import { useAvatar } from '@/hooks/use-avatar';
 import { api } from '@/lib/api';
+import { AUTH_ME_QUERY_KEY, fetchAuthMe } from '@/hooks/use-auth-me';
 import { AVATAR_SPECIES, AVATAR_COLORS, AVATAR_ARCHETYPES } from '@clawville/shared';
 import { SetupInstructions } from '@/components/create-agent/setup-instructions';
 import { EditAppearanceSection } from '@/components/game/edit-appearance-section';
@@ -213,16 +214,17 @@ function UsernameSection() {
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const meQuery = useQuery({
-    queryKey: ['auth-me'],
-    queryFn: () => api.me(),
+    queryKey: AUTH_ME_QUERY_KEY,
+    queryFn: fetchAuthMe,
     staleTime: 30_000,
+    retry: false,
   });
   const currentUsername = meQuery.data?.user?.username ?? '';
 
   const mutation = useMutation({
     mutationFn: (username: string) => api.updateUsername(username),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['auth-me'] });
+      queryClient.invalidateQueries({ queryKey: AUTH_ME_QUERY_KEY });
       setEditing(false);
       setError('');
     },

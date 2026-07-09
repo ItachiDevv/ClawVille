@@ -3,8 +3,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import dynamic from 'next/dynamic';
-import { useQuery } from '@tanstack/react-query';
-import { api } from '@/lib/api';
+import { useAuthMe } from '@/hooks/use-auth-me';
 import { useAvatar, useCheckAvatarName } from '@/hooks/use-avatar';
 import {
   MODEL_REGISTRY,
@@ -156,15 +155,12 @@ export default function CreateAgentPage() {
   // code:'guest_not_allowed'. Rather than let a guest enter the forge (and
   // transiently flash Controlled/Autonomous UI on submit), bounce them to the
   // signup/login surface. This is SCOPED to is_guest accounts ONLY: a fully
-  // un-authenticated visitor (api.me 401s → authData undefined) is the
+  // un-authenticated visitor (api.me 401s → authData null) is the
   // legitimate "agent creation IS signup" auto-provision path (POST /api/
   // avatars mints a fresh user for a session-less caller) and MUST NOT be
-  // redirected. retry:false so the 401 resolves without hammering the API.
-  const { data: authData } = useQuery({
-    queryKey: ['auth-me'],
-    queryFn: () => api.me(),
-    retry: false,
-  });
+  // redirected. The canonical fetcher resolves the 401 to `null` (not an
+  // error), so `null?.user?.isGuest === true` is false → not redirected.
+  const { data: authData } = useAuthMe();
   const isGuestAccount = authData?.user?.isGuest === true;
   useEffect(() => {
     if (isGuestAccount) router.replace('/login');

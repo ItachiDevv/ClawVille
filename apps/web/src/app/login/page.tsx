@@ -6,6 +6,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import Link from 'next/link';
 import dynamic from 'next/dynamic';
 import { api } from '@/lib/api';
+import { AUTH_ME_QUERY_KEY } from '@/hooks/use-auth-me';
 import { FIRST_TIME_DISCLOSURE_STORAGE_KEY } from '@/components/game/first-time-backup-modal';
 
 const LandingScene = dynamic(() => import('@/components/three/LandingScene'), { ssr: false });
@@ -36,7 +37,7 @@ function LoginForm() {
   // (/game or /create-agent) fetches them fresh as the just-authed user
   // instead of reading a stale pre-login cache. See handleSubmit for why.
   function purgeAuthCache() {
-    queryClient.removeQueries({ queryKey: ['auth-me'] });
+    queryClient.removeQueries({ queryKey: AUTH_ME_QUERY_KEY });
     queryClient.removeQueries({ queryKey: ['avatar'] });
     queryClient.removeQueries({ queryKey: ['agent-session'] });
   }

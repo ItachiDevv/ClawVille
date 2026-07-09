@@ -22,6 +22,7 @@
 import { useEffect, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
+import { AUTH_ME_QUERY_KEY } from '@/hooks/use-auth-me';
 
 interface MiladyEmbedState {
   isEmbed: boolean;
@@ -92,7 +93,7 @@ export function useMiladyEmbed(): MiladyEmbedState {
           error: null,
         });
         // Invalidate auth query so the page picks up the new session cookie
-        queryClient.invalidateQueries({ queryKey: ['auth-me'] });
+        queryClient.invalidateQueries({ queryKey: AUTH_ME_QUERY_KEY });
         queryClient.invalidateQueries({ queryKey: ['avatar'] });
       })
       .catch((err) => {

@@ -7,6 +7,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useAvatar } from '@/hooks/use-avatar';
 import { useAvatarHeartbeat } from '@/hooks/use-avatar-heartbeat';
 import { useMiladyEmbed } from '@/hooks/use-milady-embed';
+import { useAuthMe } from '@/hooks/use-auth-me';
 import { useWorldStream } from '@/hooks/use-world-stream';
 import { useGameStore, type GameState } from '@/stores/game';
 import { useQuestStore } from '@/stores/quest';
@@ -326,18 +327,9 @@ export default function GamePage() {
   // with the guest user authenticated.
   const miladyEmbed = useMiladyEmbed();
 
-  // Check if user is authenticated (separate from avatar query)
-  const { data: authData, isLoading: authLoading } = useQuery({
-    queryKey: ['auth-me'],
-    queryFn: async () => {
-      try {
-        return await api.me();
-      } catch {
-        return null;
-      }
-    },
-    retry: false,
-  });
+  // Check if user is authenticated (separate from avatar query). Shared
+  // canonical fetcher — see hooks/use-auth-me.ts.
+  const { data: authData, isLoading: authLoading } = useAuthMe();
 
   const isAuthenticated = !!authData?.user;
   const isGuest = !!authData?.user?.isGuest;

@@ -25,6 +25,7 @@
 
 import { useEffect } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
+import { AUTH_ME_QUERY_KEY } from '@/hooks/use-auth-me';
 import { ensureGuestAvatar } from '@/lib/guest-bootstrap';
 import { useGameStore } from '@/stores/game';
 
@@ -50,7 +51,7 @@ export function GuestAvatarBootstrap() {
       // Both caches must agree before the avatar-sync effect runs.
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['avatar'] }),
-        queryClient.invalidateQueries({ queryKey: ['auth-me'] }),
+        queryClient.invalidateQueries({ queryKey: AUTH_ME_QUERY_KEY }),
       ]);
       // Welcome toast — only show when we ACTUALLY minted a guest (not when
       // the server reused an existing session).
