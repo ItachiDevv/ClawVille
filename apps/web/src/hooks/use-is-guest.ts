@@ -28,7 +28,7 @@ import { api } from '@/lib/api';
  * an under-gated optimistic UI can never actually settle real CT.
  */
 export function useIsGuest(): boolean {
-  const { data } = useQuery({
+  const { data, isError } = useQuery({
     queryKey: ['auth-me'],
     queryFn: async () => {
       try {
@@ -40,6 +40,14 @@ export function useIsGuest(): boolean {
     },
     retry: false,
   });
+  // ~10 components share this queryKey with DIFFERENT hand-rolled queryFns,
+  // six of which do NOT catch — react-query's setOptions means whichever
+  // sibling rendered last owns the fetcher, so a refocus refetch can settle
+  // the shared query into `error` (data undefined) instead of our caught
+  // `null` (Codex review f3286668). For THIS key a settled error means "no
+  // valid session" regardless of which fetcher ran → guest tier. Long-term
+  // fix is one shared exported queryFn; out of scope here.
+  if (isError) return true;
   // undefined = still loading (NOT guest yet); null = resolved anonymous
   // (guest tier); object = branch on the server's isGuest flag.
   if (data === undefined) return false;
