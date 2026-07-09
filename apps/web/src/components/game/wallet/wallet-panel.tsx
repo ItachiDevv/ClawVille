@@ -29,6 +29,15 @@
  * double-send), success shown ONLY on server `status:'sent'`, and
  * reconcile/ambiguous outcomes rendered as "contact support" — never success.
  *
+ * CLV LAND-HOLD CONSENT (2026-07-09): a $CLAWVILLE withdrawal that would drop
+ * the custodial wallet below its stacked land-hold requirement 409s with
+ * `code:'hold_at_risk'` BEFORE any row exists. That is NOT an error state —
+ * it renders an explicit consent panel (required vs post-withdrawal balance +
+ * every at-risk parcel + the plain consequence: claim enters grace, parcel
+ * releases if the hold isn't restored). "Withdraw anyway" is the ONLY path
+ * that re-POSTs with `acknowledgeHoldLoss: true` (SAME Idempotency-Key — the
+ * unacknowledged 409 created no row); Cancel never sends and clears the key.
+ *
  * HARD INVARIANT: this component NEVER fetches or displays any secret key. The
  * custodial secret is disclosed exactly once at first-connect and never again;
  * the linked wallet's key never leaves the user's browser wallet.
@@ -45,6 +54,7 @@ import {
   ApiError,
   type WithdrawAsset,
   type WithdrawalReceipt,
+  type WithdrawHoldAtRisk,
 } from '@/lib/api';
 import {
   truncateAddress,
@@ -157,6 +167,14 @@ function atomicToDisplay(atomic: string, decimals: number): string {
   return `${whole}.${frac.toString().padStart(decimals, '0').replace(/0+$/, '')}`;
 }
 
+/** Trim a server fixed-dp decimal string for display ("400.000000" → "400",
+ *  "12.500000" → "12.5"). Pure string ops — the value never changes. */
+function trimDecimalString(v: string): string {
+  if (!v.includes('.')) return v;
+  const trimmed = v.replace(/0+$/, '').replace(/\.$/, '');
+  return trimmed === '' ? '0' : trimmed;
+}
+
 /** Fresh Idempotency-Key: uuid (36 chars, [0-9a-f-]) with a getRandomValues
  *  fallback — both match the server's ^[A-Za-z0-9_-]{8,64}$ gate. */
 function newIdempotencyKey(): string {
@@ -242,8 +260,6 @@ function mapWithdrawError(err: unknown): MappedWithdrawError {
       return { kind: 'terminal', message: 'That withdrawal attempt failed — nothing was sent. Go back to start a new one.', ...extras };
     case 'tx_failed':
       return { kind: 'terminal', message: 'The Solana transaction failed — no assets left your wallet. Go back to start a new withdrawal.', ...extras };
-    case 'daily_cap_exceeded':
-      return { kind: 'terminal', message: "You've reached today's withdrawal limit for this asset. Try again after the daily limit resets.", ...extras };
     case 'capture_lost':
       return { kind: 'retry', message: 'The attempt was interrupted before anything was sent. You can safely try again.', ...extras };
     case 'balance_unavailable':
@@ -271,7 +287,7 @@ function WithdrawCard({ custodialAddress }: { custodialAddress: string }) {
   const balancesQuery = useWalletBalances();
   const data = balancesQuery.data;
 
-  const [step, setStep] = useState<'form' | 'confirm' | 'sent'>('form');
+  const [step, setStep] = useState<'form' | 'confirm' | 'hold_at_risk' | 'sent'>('form');
   const [asset, setAsset] = useState<WithdrawAsset>('SOL');
   const [amountInput, setAmountInput] = useState('');
   const [destination, setDestination] = useState('');
@@ -284,6 +300,18 @@ function WithdrawCard({ custodialAddress }: { custodialAddress: string }) {
   } | null>(null);
   const [submitError, setSubmitError] = useState<MappedWithdrawError | null>(null);
   const [receipt, setReceipt] = useState<{ view: WithdrawalReceipt; replay: boolean } | null>(null);
+  /** The `hold_at_risk` 409 figures (null = payload missing — consent still
+   *  required, rendered without exact numbers). Only meaningful on the
+   *  'hold_at_risk' step. */
+  const [holdAtRisk, setHoldAtRisk] = useState<WithdrawHoldAtRisk | null>(null);
+  /**
+   * True ONLY after the user explicitly clicked "Withdraw anyway" on the
+   * consent panel. Consent is bound to the FROZEN attempt: every re-POST of
+   * that same payload (e.g. "Try again" after a transient error) keeps
+   * `acknowledgeHoldLoss: true`; re-freezing the attempt via Review, Cancel,
+   * or starting over resets it — a changed withdrawal needs fresh consent.
+   */
+  const [holdAcknowledged, setHoldAcknowledged] = useState(false);
   /**
    * Idempotency-Key lifecycle: minted on the FIRST "Confirm & send" click and
    * BOUND to the exact payload fingerprint. Any retry of the same payload —
@@ -299,13 +327,19 @@ function WithdrawCard({ custodialAddress }: { custodialAddress: string }) {
       payload,
       key,
     }: {
-      payload: { asset: WithdrawAsset; amountAtomic: string; destination: string };
+      payload: {
+        asset: WithdrawAsset;
+        amountAtomic: string;
+        destination: string;
+        acknowledgeHoldLoss?: boolean;
+      };
       key: string;
     }) => api.withdraw(payload, key),
     onSuccess: (res) => {
       if (res.withdrawal.status === 'sent') {
         attemptKeyRef.current = null;
         setSubmitError(null);
+        setHoldAtRisk(null);
         setReceipt({ view: res.withdrawal, replay: res.replay });
         setStep('sent');
         addToast('✅', 'Withdrawal sent', 3000);
@@ -318,12 +352,27 @@ function WithdrawCard({ custodialAddress }: { custodialAddress: string }) {
           txSignature: res.withdrawal.txSignature ?? undefined,
           withdrawalId: res.withdrawal.id,
         });
+        // The consent panel doesn't render submitError — surface it on the
+        // confirm panel (which owns the typed-error affordances).
+        setStep((s) => (s === 'hold_at_risk' ? 'confirm' : s));
       }
     },
     onError: (err) => {
+      if (err instanceof ApiError && err.code === 'hold_at_risk') {
+        // CLV LAND-HOLD CONSENT GATE — not an error state: NO row exists,
+        // nothing was sent. Keep the payload-bound Idempotency-Key (the
+        // consented retry MUST reuse it) and ask for explicit consent.
+        setHoldAtRisk(err.holdAtRisk ?? null);
+        setSubmitError(null);
+        setStep('hold_at_risk');
+        return;
+      }
       const mapped = mapWithdrawError(err);
       if (mapped.kind === 'terminal') attemptKeyRef.current = null;
       setSubmitError(mapped);
+      // An error on the consented re-POST renders via the confirm panel's
+      // existing typed-error handling (retry keeps the given consent).
+      setStep((s) => (s === 'hold_at_risk' ? 'confirm' : s));
       if (err instanceof ApiError && err.code === 'withdraw_disabled') {
         // The flag flipped off under us — refetch so the card falls back to
         // the honest "coming soon" state instead of a dead form.
@@ -359,10 +408,21 @@ function WithdrawCard({ custodialAddress }: { custodialAddress: string }) {
     }
     setAttempt({ asset, amountAtomic: atomic.toString(), destination: dest });
     setSubmitError(null);
+    // Re-freezing the attempt (even with identical fields) resets land-hold
+    // consent — consent never silently outlives the review step.
+    setHoldAcknowledged(false);
+    setHoldAtRisk(null);
     setStep('confirm');
   };
 
-  const onConfirmSend = () => {
+  /**
+   * POST the frozen attempt. `ack` carries the land-hold consent: true ONLY
+   * when the user explicitly chose "Withdraw anyway" for THIS attempt.
+   * `acknowledgeHoldLoss` is NOT part of the key fingerprint — mirroring the
+   * server, which excludes it from withdrawal identity: the unacknowledged
+   * 409 created no row, so the consented retry with the SAME key proceeds.
+   */
+  const postWithdrawal = (ack: boolean) => {
     if (!attempt || withdrawMutation.isPending) return;
     const fingerprint = `${attempt.asset}|${attempt.amountAtomic}|${attempt.destination}`;
     let entry = attemptKeyRef.current;
@@ -371,7 +431,29 @@ function WithdrawCard({ custodialAddress }: { custodialAddress: string }) {
       attemptKeyRef.current = entry;
     }
     setSubmitError(null);
-    withdrawMutation.mutate({ payload: attempt, key: entry.key });
+    withdrawMutation.mutate({
+      payload: ack ? { ...attempt, acknowledgeHoldLoss: true } : attempt,
+      key: entry.key,
+    });
+  };
+
+  const onConfirmSend = () => postWithdrawal(holdAcknowledged);
+
+  /** The ONLY path that sets `acknowledgeHoldLoss` — explicit consent. */
+  const onWithdrawAnyway = () => {
+    if (!attempt || withdrawMutation.isPending) return;
+    setHoldAcknowledged(true);
+    postWithdrawal(true);
+  };
+
+  /** Consent declined — never sends. Key cleared so a later attempt is fresh. */
+  const onCancelHoldConsent = () => {
+    attemptKeyRef.current = null;
+    setHoldAtRisk(null);
+    setHoldAcknowledged(false);
+    setSubmitError(null);
+    setAttempt(null);
+    setStep('form');
   };
 
   const onMax = () => {
@@ -398,6 +480,8 @@ function WithdrawCard({ custodialAddress }: { custodialAddress: string }) {
     setReceipt(null);
     setAttempt(null);
     setAmountInput('');
+    setHoldAtRisk(null);
+    setHoldAcknowledged(false);
   };
 
   return (
@@ -457,11 +541,20 @@ function WithdrawCard({ custodialAddress }: { custodialAddress: string }) {
           </>
         ) : step === 'sent' && receipt ? (
           <WithdrawSentPanel receipt={receipt} onDone={resetToForm} />
+        ) : step === 'hold_at_risk' && attempt ? (
+          <WithdrawHoldConsentPanel
+            attempt={attempt}
+            hold={holdAtRisk}
+            pending={withdrawMutation.isPending}
+            onWithdrawAnyway={onWithdrawAnyway}
+            onCancel={onCancelHoldConsent}
+          />
         ) : step === 'confirm' && attempt ? (
           <WithdrawConfirmPanel
             attempt={attempt}
             pending={withdrawMutation.isPending}
             submitError={submitError}
+            holdAcknowledged={holdAcknowledged}
             onConfirm={onConfirmSend}
             onBack={backToEdit}
             onClose={resetToForm}
@@ -633,6 +726,7 @@ function WithdrawConfirmPanel({
   attempt,
   pending,
   submitError,
+  holdAcknowledged,
   onConfirm,
   onBack,
   onClose,
@@ -640,6 +734,10 @@ function WithdrawConfirmPanel({
   attempt: { asset: WithdrawAsset; amountAtomic: string; destination: string };
   pending: boolean;
   submitError: MappedWithdrawError | null;
+  /** True = the user already consented to breaking the land hold for THIS
+   *  attempt (a retry from here re-sends `acknowledgeHoldLoss: true`) — keep
+   *  that consequence visible, never silent. */
+  holdAcknowledged: boolean;
   onConfirm: () => void;
   onBack: () => void;
   onClose: () => void;
@@ -672,6 +770,14 @@ function WithdrawConfirmPanel({
         On-chain withdrawals cannot be reversed. Double-check the address — assets sent to a
         wrong address are unrecoverable.
       </p>
+
+      {holdAcknowledged && (
+        <p className="text-[11px] text-amber-200/90 bg-amber-500/10 border border-amber-400/20 rounded-md px-3 py-2 leading-relaxed">
+          Land-hold warning acknowledged: this withdrawal drops your{' '}
+          <span className="font-mono">$CLAWVILLE</span> below your land-hold requirement — your
+          claim enters grace and the parcel releases if the hold isn&apos;t restored.
+        </p>
+      )}
 
       {submitError && (
         <div
@@ -732,6 +838,116 @@ function WithdrawConfirmPanel({
             )}
           </>
         )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * CLV land-hold informed-consent panel — rendered when the confirm-step POST
+ * 409s with `code:'hold_at_risk'`. NOT an error and NOT a success: no row
+ * exists, nothing was sent, and nothing proceeds without an explicit click.
+ * States the consequence plainly (claim enters grace; parcel releases if the
+ * hold isn't restored), lists every at-risk parcel, and offers exactly two
+ * actions: "Withdraw anyway" (the ONLY path that sets `acknowledgeHoldLoss`,
+ * re-POSTing with the SAME Idempotency-Key) and Cancel (never sends).
+ */
+function WithdrawHoldConsentPanel({
+  attempt,
+  hold,
+  pending,
+  onWithdrawAnyway,
+  onCancel,
+}: {
+  attempt: { asset: WithdrawAsset; amountAtomic: string; destination: string };
+  /** null = the 409 payload was missing/malformed — consent is still required,
+   *  we just can't show exact figures. */
+  hold: WithdrawHoldAtRisk | null;
+  pending: boolean;
+  onWithdrawAnyway: () => void;
+  onCancel: () => void;
+}) {
+  const amountDisplay = atomicToDisplay(attempt.amountAtomic, ASSET_DECIMALS[attempt.asset]);
+  const many = (hold?.parcels.length ?? 0) > 1;
+  return (
+    <div className="space-y-2.5" aria-busy={pending}>
+      <div className="flex items-center gap-2">
+        <span aria-hidden className="text-base">⚠️</span>
+        <p className="text-sm font-bold text-white">This withdrawal breaks your land hold</p>
+      </div>
+
+      <p className="text-xs text-white/80 leading-relaxed">
+        Withdrawing{' '}
+        <span className="font-mono font-bold text-amber-200">{amountDisplay} $CLAWVILLE</span>{' '}
+        leaves this wallet below the{' '}
+        <span className="font-mono">$CLAWVILLE</span> hold backing your land{' '}
+        {many ? 'claims' : 'claim'}. Nothing has been sent yet.
+      </p>
+
+      {hold ? (
+        <div className="bg-black/30 border border-amber-400/25 rounded-lg px-3 py-2.5 space-y-2">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[10px] uppercase tracking-wider font-mono text-white/50">
+              Hold requires
+            </span>
+            <span className="text-xs font-bold text-amber-200 font-mono">
+              {hold.requiredUiAmount.toLocaleString()} $CLAWVILLE
+            </span>
+          </div>
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[10px] uppercase tracking-wider font-mono text-white/50">
+              You&apos;d have
+            </span>
+            <span className="text-xs font-bold text-red-300 font-mono">
+              {trimDecimalString(hold.postUiAmount)} $CLAWVILLE
+            </span>
+          </div>
+          {hold.parcels.length > 0 && (
+            <div className="pt-1.5 border-t border-white/10 space-y-1">
+              <span className="block text-[10px] uppercase tracking-wider font-mono text-white/50">
+                At-risk parcel{many ? 's' : ''}
+              </span>
+              {hold.parcels.map((p) => (
+                <div key={p.parcelCode} className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-mono text-white break-all">{p.parcelCode}</span>
+                  <span className="text-[11px] font-mono text-white/60 shrink-0">
+                    holds {p.holdThresholdCt.toLocaleString()} $CLAWVILLE
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      ) : (
+        <p className="text-xs text-white/80 bg-black/30 border border-amber-400/25 rounded-lg px-3 py-2 leading-relaxed">
+          We couldn&apos;t load the exact figures, but this withdrawal would leave less{' '}
+          <span className="font-mono">$CLAWVILLE</span> than your land hold requires.
+        </p>
+      )}
+
+      <p className="text-[11px] text-amber-200/90 leading-relaxed">
+        If you withdraw anyway, your claim enters a grace period — and the{' '}
+        {many ? 'parcels are' : 'parcel is'} released if the hold isn&apos;t restored before it
+        ends.
+      </p>
+
+      <div className="flex gap-2">
+        <button
+          type="button"
+          onClick={onCancel}
+          disabled={pending}
+          className="flex-1 min-h-[44px] px-3 py-2 rounded-lg bg-white/10 hover:bg-white/15 text-white font-bold text-xs transition-colors disabled:opacity-50"
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          onClick={onWithdrawAnyway}
+          disabled={pending}
+          className="flex-1 min-h-[44px] px-3 py-2 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 border border-amber-400/40 text-amber-100 font-bold text-xs transition-colors disabled:opacity-50 disabled:cursor-progress"
+        >
+          {pending ? 'Sending…' : 'Withdraw anyway'}
+        </button>
       </div>
     </div>
   );
