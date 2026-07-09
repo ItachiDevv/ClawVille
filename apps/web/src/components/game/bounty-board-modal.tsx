@@ -39,7 +39,23 @@ import { useState, useEffect, useCallback } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useGameStore } from '@/stores/game';
 import { useAvatar } from '@/hooks/use-avatar';
-import { api } from '@/lib/api';
+import { api, ApiError } from '@/lib/api';
+import { useIsGuest } from '@/hooks/use-is-guest';
+import { GuestUpsellModal } from '@/components/game/guest-upsell-modal';
+
+// Guests run an all-demo economy (founder ruling 2026-07-06). Bounties escrow
+// REAL ClawTokens and can't be safely simulated, so a guest hitting any
+// mutating bounty action gets the sign-up upsell — never a raw error toast.
+const BOUNTY_UPSELL = {
+  headline: 'Real bounties need a real account',
+  body: 'Posting, claiming, and completing bounties moves real ClawTokens in and out of escrow. Guests run a demo economy — create a free account to earn and spend for real.',
+  ctaLabel: 'Create free account',
+} as const;
+
+/** Backstop guard: did this error come back as a guest_not_allowed 403? */
+function isGuestBlocked(err: unknown): boolean {
+  return err instanceof ApiError && err.code === 'guest_not_allowed';
+}
 import {
   RpgModal,
   RpgButton,
@@ -1084,12 +1100,15 @@ function CreatorBountyCard({
 function CreateBountyForm({
   tokens,
   onCreated,
+  onGuestBlocked,
 }: {
   tokens: number;
   onCreated: () => void;
+  onGuestBlocked: () => void;
 }) {
   const { addToast } = useGameStore();
   const queryClient = useQueryClient();
+  const isGuest = useIsGuest();
 
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
@@ -1113,6 +1132,12 @@ function CreateBountyForm({
       onCreated();
     },
     onError: (err: Error) => {
+      // Backstop: a guest slipped past the preemptive gate (auth-me not yet
+      // resolved) — show the upsell, never the raw server string.
+      if (isGuestBlocked(err)) {
+        onGuestBlocked();
+        return;
+      }
       addToast('❌', err.message || 'Failed to post bounty');
     },
   });
@@ -1135,6 +1160,12 @@ function CreateBountyForm({
     if (!title.trim() || !description.trim()) return;
     if (tokenReward < 1) return;
     if (tokenReward > tokens) return;
+    // Preemptive gate — guests never hit the escrow write path; they see the
+    // sign-up upsell instead of a server round-trip + error toast.
+    if (isGuest) {
+      onGuestBlocked();
+      return;
+    }
 
     const tags = tagsInput
       .split(',')
@@ -1634,6 +1665,11 @@ export default function BountyBoardModal() {
   } = useGameStore();
   const { data: avatar } = useAvatar();
   const queryClient = useQueryClient();
+  const isGuest = useIsGuest();
+
+  // Guest sign-up upsell (shown instead of any real-CT bounty action / any
+  // guest_not_allowed 403). One instance for the whole board.
+  const [guestUpsellOpen, setGuestUpsellOpen] = useState(false);
 
   // Filters
   const [difficultyFilter, setDifficultyFilter] =
@@ -1693,8 +1729,12 @@ export default function BountyBoardModal() {
       setClaimingId(null);
     },
     onError: (err: Error) => {
-      addToast('❌', err.message || 'Failed to claim bounty');
       setClaimingId(null);
+      if (isGuestBlocked(err)) {
+        setGuestUpsellOpen(true);
+        return;
+      }
+      addToast('❌', err.message || 'Failed to claim bounty');
     },
   });
 
@@ -1713,8 +1753,12 @@ export default function BountyBoardModal() {
       setSubmittingId(null);
     },
     onError: (err: Error) => {
-      addToast('❌', err.message || 'Submission failed');
       setSubmittingId(null);
+      if (isGuestBlocked(err)) {
+        setGuestUpsellOpen(true);
+        return;
+      }
+      addToast('❌', err.message || 'Submission failed');
     },
   });
 
@@ -1728,8 +1772,12 @@ export default function BountyBoardModal() {
       setAbandoningId(null);
     },
     onError: (err: Error) => {
-      addToast('❌', err.message || 'Failed to abandon');
       setAbandoningId(null);
+      if (isGuestBlocked(err)) {
+        setGuestUpsellOpen(true);
+        return;
+      }
+      addToast('❌', err.message || 'Failed to abandon');
     },
   });
 
@@ -1744,8 +1792,12 @@ export default function BountyBoardModal() {
       setCancellingId(null);
     },
     onError: (err: Error) => {
-      addToast('❌', err.message || 'Failed to cancel');
       setCancellingId(null);
+      if (isGuestBlocked(err)) {
+        setGuestUpsellOpen(true);
+        return;
+      }
+      addToast('❌', err.message || 'Failed to cancel');
     },
   });
 
@@ -1767,49 +1819,75 @@ export default function BountyBoardModal() {
       setReviewingId(null);
     },
     onError: (err: Error) => {
-      addToast('❌', err.message || 'Review failed');
       setReviewingId(null);
+      if (isGuestBlocked(err)) {
+        setGuestUpsellOpen(true);
+        return;
+      }
+      addToast('❌', err.message || 'Review failed');
     },
   });
 
+  // Preemptive guest gate — a guest never reaches the escrow write path; the
+  // action opens the sign-up upsell instead of a server round-trip.
   const handleClaim = useCallback(
     (bountyId: string) => {
+      if (isGuest) {
+        setGuestUpsellOpen(true);
+        return;
+      }
       setClaimingId(bountyId);
       claimMutation.mutate(bountyId);
     },
-    [claimMutation]
+    [claimMutation, isGuest]
   );
 
   const handleSubmit = useCallback(
     (bountyId: string, data: { prLink?: string; submissionNote: string }) => {
+      if (isGuest) {
+        setGuestUpsellOpen(true);
+        return;
+      }
       setSubmittingId(bountyId);
       submitMutation.mutate({ bountyId, data });
     },
-    [submitMutation]
+    [submitMutation, isGuest]
   );
 
   const handleAbandon = useCallback(
     (bountyId: string) => {
+      if (isGuest) {
+        setGuestUpsellOpen(true);
+        return;
+      }
       setAbandoningId(bountyId);
       abandonMutation.mutate(bountyId);
     },
-    [abandonMutation]
+    [abandonMutation, isGuest]
   );
 
   const handleCancel = useCallback(
     (bountyId: string) => {
+      if (isGuest) {
+        setGuestUpsellOpen(true);
+        return;
+      }
       setCancellingId(bountyId);
       cancelMutation.mutate(bountyId);
     },
-    [cancelMutation]
+    [cancelMutation, isGuest]
   );
 
   const handleReview = useCallback(
     (attemptId: string, decision: string, reviewNote?: string) => {
+      if (isGuest) {
+        setGuestUpsellOpen(true);
+        return;
+      }
       setReviewingId(attemptId);
       reviewMutation.mutate({ attemptId, data: { decision, reviewNote } });
     },
-    [reviewMutation]
+    [reviewMutation, isGuest]
   );
 
   if (!bountyBoardOpen) return null;
@@ -1846,6 +1924,7 @@ export default function BountyBoardModal() {
   // Render
   // -------------------------------------------------------------------------
   return (
+    <>
     <RpgModal
       open={bountyBoardOpen}
       onClose={closeBountyBoard}
@@ -2295,8 +2374,18 @@ export default function BountyBoardModal() {
         <CreateBountyForm
           tokens={tokens}
           onCreated={() => setBountyBoardTab('my-bounties')}
+          onGuestBlocked={() => setGuestUpsellOpen(true)}
         />
       )}
     </RpgModal>
+
+    <GuestUpsellModal
+      open={guestUpsellOpen}
+      onClose={() => setGuestUpsellOpen(false)}
+      headline={BOUNTY_UPSELL.headline}
+      body={BOUNTY_UPSELL.body}
+      ctaLabel={BOUNTY_UPSELL.ctaLabel}
+    />
+    </>
   );
 }
