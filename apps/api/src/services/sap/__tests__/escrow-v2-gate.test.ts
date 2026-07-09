@@ -33,6 +33,10 @@ let inspectIndex = 7n;
 let settleCalls = 0;
 let finalizeCalls = 0;
 let createCalls = 0;
+let createCoverageCalls = 0;
+let depositCoverageCalls = 0;
+let createCoverageOutcome: Record<string, unknown> | null = null;
+let depositCoverageOutcome: Record<string, unknown> | null = null;
 let settleOutcome: Record<string, unknown>;
 let finalizeOutcome: Record<string, unknown>;
 
@@ -182,6 +186,14 @@ mock.module('../sap-client', () => ({
     settlementIndex: inspectIndex,
     pendingExists: inspectPending,
   }),
+  preflightCreateEscrowV2Coverage: async () => {
+    createCoverageCalls += 1;
+    return createCoverageOutcome;
+  },
+  preflightDepositEscrowV2Coverage: async () => {
+    depositCoverageCalls += 1;
+    return depositCoverageOutcome;
+  },
   createEscrowV2Usdc: async () => {
     createCalls += 1;
     return dryRunSuccess({ escrow: ESCROW });
@@ -261,6 +273,10 @@ beforeEach(() => {
   settleCalls = 0;
   finalizeCalls = 0;
   createCalls = 0;
+  createCoverageCalls = 0;
+  depositCoverageCalls = 0;
+  createCoverageOutcome = null;
+  depositCoverageOutcome = null;
   settleOutcome = dryRunSuccess({ escrow: ESCROW, settlementIndex: '7' });
   finalizeOutcome = dryRunSuccess({ escrow: ESCROW });
 });
@@ -279,6 +295,7 @@ describe('SAP V2 gate — two-phase USDC release', () => {
     });
     expect(opened.ok).toBe(true);
     expect(createCalls).toBe(1);
+    expect(createCoverageCalls).toBe(1);
     expect(rows[0]?.escrowVersion).toBe('v2');
     expect(rows[0]?.escrowNonce).toBe('9');
 
@@ -309,6 +326,57 @@ describe('SAP V2 gate — two-phase USDC release', () => {
     expect(rows[0]?.releasedAmount).toBe('2000000');
     expect(rows[0]?.reservedPrincipalAmount).toBe('0');
     expect(finalizeCalls).toBe(1);
+  });
+
+  it('runs a definite create coverage refusal before the ledger claim or chain executor', async () => {
+    createCoverageOutcome = {
+      ok: false,
+      code: 'stake_below_coverage',
+      message: 'top up 50000000 more lamports before opening',
+    };
+
+    const result = await gate.openEscrowV2({
+      depositorAvatarId: DEPOSITOR,
+      workerAvatarId: WORKER,
+      jobId: 'job-coverage-refused',
+      escrowNonce: 10n,
+      pricePerCall: 300_000_000n,
+      maxCalls: 2n,
+      initialDeposit: 606_000_000n,
+      expiresAt: 0n,
+    });
+
+    expect(result.ok).toBeFalse();
+    if (!result.ok) expect(result.code).toBe('stake_below_coverage');
+    expect(createCoverageCalls).toBe(1);
+    expect(rows).toHaveLength(0);
+    expect(createCalls).toBe(0);
+  });
+
+  it('runs a definite top-up cap refusal before adding a sibling ledger job', async () => {
+    rows = [baseRow({ jobId: 'existing-job' })];
+    depositCoverageOutcome = {
+      ok: false,
+      code: 'escrow_coverage_exceeded',
+      message: 'projected balance 200000 exceeds max_obligation 100000',
+    };
+
+    const result = await gate.openEscrowV2({
+      depositorAvatarId: DEPOSITOR,
+      workerAvatarId: WORKER,
+      jobId: 'top-up-refused',
+      escrowNonce: 9n,
+      pricePerCall: 10_000n,
+      maxCalls: 10n,
+      initialDeposit: 150_000n,
+      expiresAt: 0n,
+    });
+
+    expect(result.ok).toBeFalse();
+    if (!result.ok) expect(result.code).toBe('escrow_coverage_exceeded');
+    expect(depositCoverageCalls).toBe(1);
+    expect(rows).toHaveLength(1);
+    expect(createCalls).toBe(0);
   });
 
   it('returns finalize guidance for pending and settled replay without re-sending settle', async () => {

@@ -1,5 +1,7 @@
 # ClawVille — Architecture
 
+**Last Audited:** 2026-07-09 (14): **SAP V2 stake/max-obligation preflight (gated OFF).** Source-derived and live-decoded mirrors now fail fast on a definite create-time stake shortfall and deposit-time stored `max_obligation` breach, while RPC/decode uncertainty fails open to the authoritative chain; 6153 is a balance-cap error, not a dynamic SOL-to-USDC coverage conversion.
+
 **Last Audited:** 2026-07-09 (13): **SAP worker pricing-tier route (gated OFF).** `POST /api/sap/agent/pricing` lets a human or connected agent publish one caller-named Escrow-mode USDC tier through its own `identity.avatarId` custodial wallet; `update_agent(pricing=[tier])` replaces the complete menu (last write wins), and V2 escrow create requires an exact price match or fails `PricingTierNotFound 6148`.
 
 **Last Audited:** 2026-07-09 (12): **SAP V2 release-path escrow-gate retrofit (gated OFF).** Nonce-bound V2 jobs now use the real-money ledger's approval, ceiling, self-dealing, verification, atomic-claim, and reconcile-only unknown-state machinery across the two-phase `settle → pending → finalize` DisputeWindow release; fee and principal are booked separately, finalize is an authenticated permissionless crank, and human/agent custody binds to `identity.avatarId` on the same routes.

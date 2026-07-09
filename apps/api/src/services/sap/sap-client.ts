@@ -95,10 +95,22 @@ import {
   TOKEN_PROGRAM_ID,
   USDC_DECIMALS,
 } from './sap-spl';
-// Official SDK stake math — the on-chain coverage rule mirrored client-side for a
-// fail-fast preflight (never the source of truth; the program enforces it).
-import { computeRequiredStakeLamports } from '@oobe-protocol-labs/synapse-sap-sdk/constants/payments';
-
+import {
+  computeV2EscrowCoverageLimit,
+  preflightV2CreateCoverage,
+  preflightV2DepositCoverage,
+  type V2EscrowCoverageTerms,
+} from './sap-coverage';
+export {
+  checkV2EscrowCoverage,
+  checkV2EscrowDepositCoverage,
+  computeV2EscrowCoverageLimit,
+  preflightV2CreateCoverage,
+  preflightV2DepositCoverage,
+  V2_MIN_STAKE_LAMPORTS,
+  V2_STAKE_COVERAGE_BPS,
+  type V2EscrowCoverageTerms,
+} from './sap-coverage';
 // OFFICIAL SDK IDL — @oobe-protocol-labs/synapse-sap-sdk@1.0.0. OOBE published the SDK
 // + a refreshed on-chain IDL whose account/arg layouts MATCH the deployed 0.25-family
 // program (and match what we had empirically devnet-verified). We load THAT IDL into
@@ -150,6 +162,8 @@ export type SapErrorCode =
   | 'stake_below_minimum' // 6107 — agent must stake >= 0.1 SOL first
   | 'pricing_tier_not_found' // 6148 — provision a pricing tier matching price_per_call first
   | 'pending_settlement_deprecated' // 6161 — create_pending_settlement removed; use settle_calls_v2
+  | 'stake_below_coverage'
+  | 'escrow_coverage_exceeded'
   | 'internal';
 
 export interface SapDryRunResult {
@@ -356,6 +370,8 @@ export async function loadAvatarWalletForSigning(
  * deployed 0.25 program's (devnet-confirmed 2026-07-09); extend as new ones surface.
  */
 const SAP_ONCHAIN_ERROR_CODES: Record<number, SapErrorCode> = {
+  6145: 'stake_below_coverage',
+  6153: 'escrow_coverage_exceeded',
   6062: 'insufficient_escrow_balance', // 0x17ae — deposit too small for the fee (raise initialDeposit)
   6107: 'stake_below_minimum', // 0x17db — agent must stake >= 0.1 SOL first
   6148: 'pricing_tier_not_found', // 0x1804 — provision a pricing tier matching price_per_call first
@@ -1154,49 +1170,134 @@ export async function depositStake(input: StakeInput): Promise<SapWriteResult> {
  * against an unstaked / under-staked worker fail with an actionable code instead of a
  * raw on-chain revert.
  *
- * `requiredLamports` should come from the SDK's `computeRequiredStakeLamports`. For a
- * USDC escrow the on-chain coverage basis is not lamports, so the guaranteed floor is
- * the MIN 0.1 SOL (computeRequiredStakeLamports(0n)); the program stays authoritative.
+ * `computeV2EscrowCoverageLimit` below is the exact raw-unit source mirror. For a
+ * USDC escrow, raw token base units are compared directly to lamports with a 0.1 SOL
+ * minimum; there is no mint-decimal or price-oracle conversion.
  *
  * DRY-RUN rehearsal: when the stake account is simply MISSING on a dry-run (the agent
  * hasn't been provisioned on this cluster yet) we SKIP the preflight so the encoding is
  * still exercised — mirroring settleCallsV2Usdc's missing-escrow handling. A LIVE send
  * with a missing/under stake fails fast (never broadcasts a doomed create).
  */
+/** Narrow read seam for deterministic preflight tests; production omits it. */
+export interface V2CoveragePreflightReaders {
+  readStakeLamports?: (stakePda: PublicKey) => Promise<bigint | null>;
+  readEscrow?: (
+    escrowPda: PublicKey,
+  ) => Promise<{ balance: bigint; maxObligation: bigint } | null>;
+}
+
 async function checkAgentStakeCoverage(
   cfg: SapConfig,
   agentPda: PublicKey,
-  requiredLamports: bigint,
+  terms: V2EscrowCoverageTerms,
+  readStakeLamports?: V2CoveragePreflightReaders['readStakeLamports'],
 ): Promise<SapFailure | null> {
   const [stakePda] = findStakePda(cfg.programId, agentPda);
-  let staked: bigint | null;
-  try {
+  const evaluated = await preflightV2CreateCoverage(terms, async () => {
+    if (readStakeLamports) return readStakeLamports(stakePda);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const acc = await (getProgram().account as any).agentStake.fetchNullable(stakePda);
-    staked = acc && acc.stakedAmount != null ? BigInt(acc.stakedAmount.toString()) : null;
-  } catch (err) {
-    return classifyChainError('checkAgentStakeCoverage', err);
-  }
-  if (staked === null) {
+    if (!acc) return null;
+    const decodedStake = acc.stakedAmount ?? acc.staked_amount;
+    if (decodedStake == null) throw new Error('unexpected AgentStake decode shape');
+    return BigInt(decodedStake.toString());
+  });
+  if (!evaluated) return null;
+  if (evaluated.state === 'missing_stake') {
+    const coverage = computeV2EscrowCoverageLimit(terms);
     if (cfg.dryRun) return null; // rehearsal — encoding still exercised; chain enforces.
     return {
       ok: false,
       code: 'stake_below_minimum',
       message:
         `worker agent ${agentPda.toBase58()} has no AgentStake — provision ≥ ` +
-        `${requiredLamports} lamports (provisionAgentStake / init_stake) before opening an escrow.`,
+        `${coverage.requiredStakeLamports} lamports (provisionAgentStake / init_stake) before opening an escrow.`,
     };
   }
-  if (staked < requiredLamports) {
+  const coverage = evaluated.verdict;
+  const staked = evaluated.stakeLamports;
+  if (!coverage.ok) {
     return {
       ok: false,
-      code: 'stake_below_minimum',
+      code: 'stake_below_coverage',
       message:
-        `worker agent stake ${staked} lamports is below the required coverage ` +
-        `${requiredLamports} lamports; top up (provisionAgentStake / deposit_stake) first.`,
+        `worker stake ${staked} lamports cannot cover max_obligation ` +
+        `${coverage.maxObligation} base units; required stake is ` +
+        `${coverage.requiredStakeLamports} lamports. Top up ` +
+        `${coverage.additionalStakeLamports} more lamports before opening.`,
     };
   }
   return null;
+}
+
+async function checkEscrowDepositCoverage(
+  escrowPda: PublicKey,
+  amount: bigint,
+  readEscrow?: V2CoveragePreflightReaders['readEscrow'],
+): Promise<SapFailure | null> {
+  const verdict = await preflightV2DepositCoverage(amount, async () => {
+    if (readEscrow) {
+      return readEscrow(escrowPda);
+    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const account = await (getProgram().account as any).escrowAccountV2.fetchNullable(escrowPda);
+    return account
+      ? {
+          balance: BigInt(account.balance.toString()),
+          maxObligation: BigInt((account.maxObligation ?? account.max_obligation).toString()),
+        }
+      : null;
+  });
+  if (!verdict || verdict.ok) return null;
+  return {
+    ok: false,
+    code: 'escrow_coverage_exceeded',
+    message:
+      `deposit would raise the V2 escrow balance to ${verdict.projectedBalance} base units, ` +
+      `above max_obligation ${verdict.maxObligation}; maximum additional deposit is ` +
+      `${verdict.maximumAdditionalDeposit} base units. Open a new nonce-scoped escrow ` +
+      `with a larger call obligation instead.`,
+  };
+}
+
+/** Read-only, fail-open coverage preflight usable before a ledger claim. */
+export async function preflightCreateEscrowV2Coverage(input: {
+  workerWalletPubkey: string;
+  pricePerCall: bigint;
+  maxCalls: bigint;
+  initialDeposit: bigint;
+}, readers: V2CoveragePreflightReaders = {}): Promise<SapFailure | null> {
+  let workerWallet: PublicKey;
+  try {
+    workerWallet = new PublicKey(input.workerWalletPubkey);
+  } catch {
+    return { ok: false, code: 'invalid_pubkey', message: 'workerWalletPubkey is not a valid pubkey.' };
+  }
+  const cfg = getConfig();
+  const [agentPda] = findAgentPda(cfg.programId, workerWallet);
+  return checkAgentStakeCoverage(cfg, agentPda, input, readers.readStakeLamports);
+}
+
+/** Read-only, fail-open deposit-cap preflight usable before a ledger claim. */
+export async function preflightDepositEscrowV2Coverage(input: {
+  workerWalletPubkey: string;
+  depositorWalletPubkey: string;
+  escrowNonce: bigint;
+  amount: bigint;
+}, readers: V2CoveragePreflightReaders = {}): Promise<SapFailure | null> {
+  let workerWallet: PublicKey;
+  let depositorWallet: PublicKey;
+  try {
+    workerWallet = new PublicKey(input.workerWalletPubkey);
+    depositorWallet = new PublicKey(input.depositorWalletPubkey);
+  } catch {
+    return { ok: false, code: 'invalid_pubkey', message: 'invalid worker/depositor wallet pubkey.' };
+  }
+  const cfg = getConfig();
+  const [agentPda] = findAgentPda(cfg.programId, workerWallet);
+  const [escrowPda] = findEscrowPda(cfg.programId, agentPda, depositorWallet, input.escrowNonce);
+  return checkEscrowDepositCoverage(escrowPda, input.amount, readers.readEscrow);
 }
 
 export interface ProvisionAgentStakeInput {
@@ -2516,9 +2617,13 @@ export async function createEscrowV2Usdc(
   const depositorAta = getAssociatedTokenAddress(mint, depositor, false);
 
   // Stake-coverage preflight (fail-fast mirror of the on-chain create_escrow_v2 gate).
-  // A USDC escrow's coverage floor is the MIN 0.1 SOL (computeRequiredStakeLamports(0n));
+  // Required stake is max(0.1 SOL, floor(max_obligation * 50%));
   // the program enforces the full rule. Missing stake on a dry-run rehearsal is skipped.
-  const stakeGate = await checkAgentStakeCoverage(cfg, agentPda, computeRequiredStakeLamports(0n));
+  const stakeGate = await checkAgentStakeCoverage(cfg, agentPda, {
+    pricePerCall: input.pricePerCall,
+    maxCalls: input.maxCalls,
+    initialDeposit: input.initialDeposit,
+  });
   if (stakeGate) return stakeGate;
 
   // FEATURE_GATE: sap_agent_stake_provisioning
@@ -2624,6 +2729,9 @@ export async function depositEscrowV2Usdc(
   const [escrowPda] = findEscrowPda(cfg.programId, agentPda, depositor, input.escrowNonce);
   const vaultAta = getAssociatedTokenAddress(mint, escrowPda, true);
   const depositorAta = getAssociatedTokenAddress(mint, depositor, false);
+
+  const coverageGate = await checkEscrowDepositCoverage(escrowPda, input.amount);
+  if (coverageGate) return coverageGate;
 
   try {
     const tx = new Transaction();

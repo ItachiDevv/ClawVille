@@ -1,6 +1,6 @@
 # SAP (Synapse Agent Protocol) — on-chain integration + flip-to-live runbook
 
-**Status:** FULLY built, gated OFF + devnet-first + dry-run by default. **Set 2026-06-20. Last audited 2026-07-09 (rev 4) — workers can now publish the required caller-named Escrow-mode USDC pricing tier through the authenticated, avatar-bound `POST /api/sap/agent/pricing` route; `update_agent(pricing=[tier])` replaces the worker's entire pricing menu, and the tier price must exactly match a later V2 escrow price. Prior rev 3: SAP V2 DisputeWindow release was routed through the escrow-gate ledger as an OFF-by-default, two-phase `settle → pending → finalize` lifecycle; prior rev 2: adopted the official SDK `@oobe-protocol-labs/synapse-sap-sdk@1.0.0`; prior rev 1: 0.18→0.25 migration.**
+**Status:** FULLY built, gated OFF + devnet-first + dry-run by default. **Set 2026-06-20. Last audited 2026-07-09 (rev 5) — the deployed program's V2 stake/max-obligation checks were derived from upstream source at commit `55d29edeafebf5fd11ee6c7a63935625cfe98b1b`, validated against the live devnet escrow, and mirrored as fail-open UX preflights. Prior rev 4: workers can publish the required caller-named Escrow-mode USDC pricing tier through the authenticated, avatar-bound `POST /api/sap/agent/pricing` route; prior rev 3: SAP V2 DisputeWindow release was routed through the escrow-gate ledger; prior rev 2: adopted the official SDK `@oobe-protocol-labs/synapse-sap-sdk@1.0.0`; prior rev 1: 0.18→0.25 migration.**
 **Plan:** `.claude/plans/sap-onchain-agents/PLAN.md` · **Owner:** orchestrator (Claude)
 **FEATURE_GATE:** `sap_onchain_agents` (review deadline 2026-09-20 — see `routes/sap.ts`).
 
@@ -590,8 +590,35 @@ money-path pass. Verdict: safe to push gated; the following gate the flip.**
 - **Pre-flip empirical gate [REQUIRED, Codex 2026-07-09] — re-run `simulate-shapes.ts` GREEN immediately before ANY flag flip.** The byte-parity tests pin the wire against the SDK's BUNDLED IDL offline; only this read-only devnet script proves the DEPLOYED binary still accepts our shapes (OOBE redeploys without notice — it has happened twice). A flip with a stale shape table is a fund-lock risk.
 - **R3 [MED] — deposit idempotency (before ANY real-funds flip).** `deposit_escrow_v2` is additive, so a client double-submit (double-click / 5xx retry) double-funds the depositor's OWN escrow. `executeTx`'s confirm-split stops an SDK auto-resend but NOT a duplicate client POST. Add a route-level idempotency key `(subject, escrowNonce, requestId)` on `/escrow/v2/deposit`. (create is nonce-keyed → a re-create dedups to 6097; deposit is not.)
 - **Decode-parity [INFO] — prove escrow + pending decode vs a REAL devnet escrow.** `simulate-shapes.ts` proved `EscrowAccountV2` decode + `AgentStake` decode against real accounts, but `PendingSettlement` decode is unproven — and the settle→finalize guards read `pending.amount/isFinalized/isDisputed`. Make a real-pending decode a REQUIRED gate in the release-path plan.
-- **Stake coverage [MED, upgraded from LOW — OBSERVED LIVE 2026-07-09] — obligation-based floor.** Route smoke observed the rule in the wild: with a 0.11 SOL worker stake, `create_escrow_v2` at 150,000 USDC base units PASSED but a `deposit_escrow_v2` raising total to 200,000 FAILED `EscrowCoverageExceeded (6153)` — the deployed program DOES bind token-escrow deposits to the SOL-denominated stake via a conversion the SDK does not model (`computeRequiredStakeLamports` takes lamports only — second upstream SDK gap). Derive the exact on-chain formula (read the program's coverage check against live account states) and mirror it in the create/deposit preflight before flip.
-- **Stake coverage [LOW, superseded by the line above] — original note.** The create preflight currently passes `computeRequiredStakeLamports(0n)` = the 0.1-SOL FLOOR only; for a large USDC obligation the on-chain requirement is higher → fail-LATE at simulate (no fund risk). Once the coverage DENOMINATION is devnet-confirmed (does `computeRequiredStakeLamports` take the raw `price_per_call*max_calls` in the escrow's token base units?), compute the real obligation-based floor.
+- **Stake coverage [RESOLVED 2026-07-09 — source-derived + live-decoded].** The earlier premise that
+  `EscrowCoverageExceeded (6153)` dynamically converts a token deposit into SOL stake was wrong.
+  Upstream commit `55d29edeafebf5fd11ee6c7a63935625cfe98b1b` defines two separate checks in
+  [`escrow_v2.rs` lines 98–124](https://github.com/OOBE-PROTOCOL/synapse-sap/blob/55d29edeafebf5fd11ee6c7a63935625cfe98b1b/programs/synapse-agent-sap/src/instructions/escrow_v2.rs#L98-L124)
+  and [`escrow_v2.rs` lines 325–337](https://github.com/OOBE-PROTOCOL/synapse-sap/blob/55d29edeafebf5fd11ee6c7a63935625cfe98b1b/programs/synapse-agent-sap/src/instructions/escrow_v2.rs#L325-L337):
+  at CREATE, `maxPotential = maxCalls == 0 ? initialDeposit : pricePerCall × maxCalls` and
+  `requiredStakeLamports = max(100_000_000, floor(maxPotential × 5_000 / 10_000))`; the program
+  compares the raw token-base-unit `maxPotential` directly with lamports (there is NO mint-decimal
+  or oracle conversion). This is a per-escrow create check, not an aggregate over all of the
+  worker's active escrows; a shortfall is `StakeBelowCoverage (6145)`. It then persists
+  `max_obligation = maxPotential`. At DEPOSIT, 6153 means
+  only `escrow.balance + depositAmount > escrow.max_obligation`; stake is not re-read and the check
+  is skipped only for legacy rows whose `max_obligation == 0`. Constants are pinned in
+  [`state.rs` lines 1246–1257](https://github.com/OOBE-PROTOCOL/synapse-sap/blob/55d29edeafebf5fd11ee6c7a63935625cfe98b1b/programs/synapse-agent-sap/src/state.rs#L1246-L1257).
+  Live decode validates the apparently surprising result: escrow
+  `3CdFnNya9q2GEi9U61rmLARK9boJtNJFsS8X37fX8dry` stores `pricePerCall=10_000`, `maxCalls=10`,
+  `maxObligation=100_000`, `totalDeposited=150_000`, and current `balance=100_000` USDC base
+  units. Its actual agent is `6gCTFRsubnfaoWomt1965Nrc5BnvT24i7eP6nLwY8Q1C`; the correctly
+  derived stake PDA `7GtzMamSwb28VkA5CFSCAi7EBE7czvx7wXFH77yoPxnS` stores
+  `stakedAmount=110_000_000`, `slashedAmount=0` (the agent/stake addresses originally supplied for
+  the investigation were stale/mismatched). Thus create required
+  `max(100_000_000, 100_000×50%) = 100_000_000` lamports and accepted the 110M stake; create also
+  permits its 150,000 initial deposit even though that exceeds stored `max_obligation`, while a
+  later deposit projecting the balance to 200,000 fails because `200_000 > 100_000`.
+  The client now mirrors both checks before wire construction and returns the required/additional
+  stake or deposit-cap details. Read/decode/RPC failure deliberately SKIPS this UX preflight and
+  falls through to the authoritative chain; the mirror must never reject an operation on uncertain
+  state. `openEscrowV2` runs the same create preflight before its ledger claim so a definite
+  under-stake request remains pre-claim and retryable. All flags remain OFF and dry-run remains ON.
 - **R1 [DONE] — withdraw routed.** `/escrow/v2/withdraw` ships in the funding bucket (self-custody, free balance only), so there is NO "can fund, can't defund" trap. `close_escrow_v2` route still pending its executor (self-custody rent reclaim) — route with the funding bucket when added.
 - **V2-withdraw ledger bypass [MED, review finding 2026-07-09 gate-retrofit d6bd9410] — reconcile before flip.** `/escrow/v2/withdraw` moves vault→depositor ON-CHAIN without booking `refundedAmount` into the gate's settlements ledger (V1 refunds go through `refundJob`, which books; the V2 withdraw route predates the gate). Consequence: the ledger's `remaining` can OVERSTATE the vault after an out-of-band withdraw. Fail-closed on-chain — a stale-ceiling settle fails at the program (6062-family) and lands terminal `failed`/reservation-restored, never over-releases — but a depositor withdraw can brick a live job's row. Before flip: either route V2 withdraws through a gate leg that books against the escrow's jobs, or (minimum) re-read the on-chain vault balance inside the settle claim and clamp the ceiling to it.
 - **Replay-reconcile books request, not chain [MED, review finding 2026-07-09 — folds into the Decode-parity gate above].** `settleJobV2`'s pending-PDA-already-exists reconcile books the CALLER's requested `callsToSettle`/principal/fee rather than decoding the on-chain `PendingSettlement`'s actual amount. Unreachable divergence today (our own claim commits before broadcast, so an open|submitted row with an on-chain pending implies an out-of-band writer), but the staging e2e MUST land PendingSettlement decode-parity and switch this reconcile to the decoded amount.
