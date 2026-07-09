@@ -117,7 +117,12 @@ itemRoutes.post('/buy', requireAuthOrAgentSession, async (c) => {
       if (!row) throw new HTTPException(404, { message: 'No avatar found' });
       const total = Number(row.claw_tokens);
       const soft = Number(row.soft_balance);
-      if (total < book.price) {
+      if (total < book.price || soft < book.price) {
+        // The `soft` conjunct is defense-in-depth (Codex review of b450d0b8):
+        // a guest is soft-only TODAY, but that invariant lives in scattered
+        // call-site gates, not the DB — if a future credit path ever gave a
+        // guest bought/earned CT, debiting soft below zero would still pass
+        // the vCLAW sum CHECK. Refuse instead of underflowing.
         return { insufficient: true as const, total };
       }
       // Demo debit — burn from the SOFT bucket only (a guest is soft-only).
