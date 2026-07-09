@@ -14,6 +14,12 @@ import { creditClawTokens } from '../services/claw-token-ledger';
 import { buildRuntimeServices } from '../services/runtime-services-adapter';
 import { getSystemNpcAgent, getSystemAgent } from '../services/system-npc-seeder';
 import { systemAgentRewardLimiter } from '../services/system-agent-reward-limiter';
+import {
+  moderateText,
+  CONTENT_BLOCKED_CODE,
+  CONTENT_BLOCKED_MESSAGE,
+  OUTPUT_REFUSAL_MESSAGE,
+} from '../services/moderation-service';
 import type { AppContext } from '../types';
 import { z } from 'zod';
 import { characterRoomId } from '@clawville/agent-runtime';
@@ -50,6 +56,13 @@ chatRoutes.post('/system/:slug', requireAuth, async (c) => {
 
   if (!result.success) {
     throw new HTTPException(400, { message: 'Message must be 1-4000 characters' });
+  }
+
+  // Content guardrail (input) — runs BEFORE the runtime/LLM so blocked text
+  // never reaches cognition (saves tokens) and fail-open never breaks chat.
+  const inMod = await moderateText(result.data.content, { surface: 'system-chat', direction: 'input' });
+  if (!inMod.allowed) {
+    return c.json({ error: CONTENT_BLOCKED_MESSAGE, code: CONTENT_BLOCKED_CODE }, 400);
   }
 
   const agent = await getSystemAgent(slug);
@@ -149,10 +162,14 @@ chatRoutes.post('/system/:slug', requireAuth, async (c) => {
     },
   });
 
+  // Content guardrail (output) — the persona reply is agent→human, so moderate
+  // it before returning. A block substitutes a safe refusal; fail-open passes.
+  const outMod = await moderateText(response.content, { surface: 'system-chat', direction: 'output' });
+
   return c.json({
     message: {
       role: 'assistant' as const,
-      content: response.content,
+      content: outMod.allowed ? response.content : OUTPUT_REFUSAL_MESSAGE,
       timestamp: response.timestamp.toISOString(),
     },
   });
@@ -166,6 +183,13 @@ chatRoutes.post('/:id/chat', requireAuth, async (c) => {
 
   if (!result.success) {
     throw new HTTPException(400, { message: 'Message must be 1-4000 characters' });
+  }
+
+  // Content guardrail (input) — before agent lookup/runtime so blocked text
+  // never reaches the teacher LLM (saves tokens); fail-open never breaks chat.
+  const inMod = await moderateText(result.data.content, { surface: 'location-chat', direction: 'input' });
+  if (!inMod.allowed) {
+    return c.json({ error: CONTENT_BLOCKED_MESSAGE, code: CONTENT_BLOCKED_CODE }, 400);
   }
 
   // Find agent for this location — first the caller's personal override,
@@ -344,10 +368,14 @@ chatRoutes.post('/:id/chat', requireAuth, async (c) => {
     },
   });
 
+  // Content guardrail (output) — teacher reply is agent→human; moderate before
+  // returning. A block substitutes a safe refusal; fail-open passes through.
+  const outMod = await moderateText(response.content, { surface: 'location-chat', direction: 'output' });
+
   return c.json({
     message: {
       role: 'assistant' as const,
-      content: response.content,
+      content: outMod.allowed ? response.content : OUTPUT_REFUSAL_MESSAGE,
       timestamp: response.timestamp.toISOString(),
     },
   });

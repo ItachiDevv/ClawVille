@@ -31,6 +31,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { NPC_DEFINITIONS } from '@clawville/shared';
 import { createRateLimiter, getClientIp } from '../middleware/rate-limit';
+import { moderateText, CONTENT_BLOCKED_CODE, CONTENT_BLOCKED_MESSAGE } from '../services/moderation-service';
 import type { AppContext } from '../types';
 
 export const transientChatRoutes = new Hono<AppContext>();
@@ -81,6 +82,13 @@ transientChatRoutes.post('/', async (c) => {
   );
   if (!character) {
     return c.json({ error: `Unknown character: ${characterName}` }, 404);
+  }
+
+  // Content guardrail (input) — before the OpenAI call so blocked guest text
+  // never reaches the LLM (saves tokens); fail-open never breaks NPC chat.
+  const inMod = await moderateText(message, { surface: 'transient-chat', direction: 'input' });
+  if (!inMod.allowed) {
+    return c.json({ error: CONTENT_BLOCKED_MESSAGE, code: CONTENT_BLOCKED_CODE }, 400);
   }
 
   const apiKey = process.env.OPENAI_API_KEY;
