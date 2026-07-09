@@ -22,6 +22,10 @@ export * from './building-skills';
 // integrations. Hash-not-plaintext, show-once mint. See `partner-api-keys.ts`.
 export * from './partner-api-keys';
 export * from './wallets';
+// Custodial wallet WITHDRAW (2026-07-08, DARK behind WALLET_WITHDRAW_ENABLED) —
+// exactly-once on-chain withdrawal ledger (SOL/USDC/CLV out of the custodial
+// avatar wallet). Migration 0021. NEVER a ClawToken table.
+export * from './withdrawals';
 export * from './agent-session-tickets';
 // Email-driven auth (password reset + soft email verification). One row per
 // issued token; raw token never stored — only sha256(token).
