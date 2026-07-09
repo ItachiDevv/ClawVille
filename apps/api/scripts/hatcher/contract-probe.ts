@@ -12,7 +12,9 @@
  *  C. PATCH { stats } only → 400 "No mutable fields provided" (Zod strips stats,
  *     refine sees {}). i.e. their "Update avatar" stats edit HARD-FAILS.
  *  D. PATCH { homeX, homeY } only → 400 (same — reposition impossible via PATCH).
- *  E. PATCH { rotateScopedToken:true } only → 400 (same — rotate unhandled).
+ *  E. PATCH { rotateScopedToken:true } only → 200 since FIX-8 (accept-and-ignore
+ *     no-op — declared in patchSchema so the partner intent isn't Zod-stripped,
+ *     which also satisfies the non-empty refine). Pre-FIX-8 this was 400.
  *  F. PATCH { name, stats } → 200 but stats SILENTLY dropped (name carries refine).
  *
  * Run: bun run apps/api/scripts/hatcher/contract-probe.ts \
@@ -94,7 +96,7 @@ async function main() {
 
   // E. PATCH rotateScopedToken only
   const e = await writeSigned('PATCH', `/api/partner/hatcher/agents/${ID}`, { rotateScopedToken: true });
-  show('E PATCH {rotateScopedToken} only (expect 400)', e);
+  show('E PATCH {rotateScopedToken} only (expect 200 — FIX-8 accept-and-ignore no-op)', e);
 
   // F. PATCH name + stats — name carries refine, stats silently dropped
   const f = await writeSigned('PATCH', `/api/partner/hatcher/agents/${ID}`, { name: 'Renamed', stats: { hp: 150, attack: 25, defense: 25, speed: 25 } });

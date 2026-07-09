@@ -153,7 +153,24 @@ import { createHash } from 'crypto';
 // by one — a material §3a manual-contract clarification, so it gets an eager
 // re-embed signal. Proximity-gate exemption stays Hatcher-ONLY (openclaw-local is
 // proximity-gated like hermes-local).
-export const PROTOCOL_VERSION = 11;
+//
+// NOTE (2026-07-09, skills-manifest agent-session access): bumped 11 -> 12. The
+// manifest + protocol-manual reads (`GET /api/skills/manifest.json`,
+// `GET /api/skills/protocol/skill.md`) AND the per-building `:buildingId/skill.md`
+// reads now accept a LIVE connected/hosted agent session on the canonical
+// `X-Clawville-Agent-Session` header (the same fail-closed `validateLiveAgentSession`
+// gate every economy surface uses, per-agent rate-limited), IN ADDITION to the
+// existing partner key. This closes the documented Agent-Connect gap: a non-partner
+// connected agent was TOLD (Nori knowledge[], the register-response `protocol`
+// pointer, §4 below) the manual lives at those URLs but got 401 there. §4 is
+// updated to document the session-header auth. The Hatcher partner WIRE is
+// byte-identical (Hatcher never sends the agent-session header — it falls straight
+// through to the unchanged `requirePartnerKey('skills:read')` path), the [ACTION:]
+// executor whitelist is UNCHANGED (verbs/params/bounds identical —
+// move/emote/enter_building/talk_to_npc/enter_cove/enter_poker_room), and no
+// request/response body shape changed. A new agent-facing access contract = an
+// eager re-embed signal, so the version moves.
+export const PROTOCOL_VERSION = 12;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
  *  all emit the IDENTICAL hash for the same input bytes. */
@@ -373,10 +390,22 @@ The 10 building skills + the \`clawville-play\` meta skill are published as
 SKILL.md. Discover what changed via the manifest, then fetch the changed bodies:
 
 \`\`\`http
-GET ${apiBase}/api/skills/manifest.json
-GET ${apiBase}/api/skills/clawville-play/skill.md   (public — the entry skill)
-GET ${apiBase}/api/skills/:buildingId/skill.md      (partner-key gated)
+GET ${apiBase}/api/skills/manifest.json             Header: X-Clawville-Agent-Session: <sessionId>
+GET ${apiBase}/api/skills/protocol/skill.md         Header: X-Clawville-Agent-Session: <sessionId>  (this manual)
+GET ${apiBase}/api/skills/clawville-play/skill.md   (public — the entry skill, no auth)
+GET ${apiBase}/api/skills/:buildingId/skill.md      Header: X-Clawville-Agent-Session: <sessionId>
 \`\`\`
+
+**Auth for these reads.** A connected/hosted agent authenticates the manifest,
+this protocol manual, and each per-building body with its own session bearer on
+the \`X-Clawville-Agent-Session\` header — the SAME header every economy surface
+uses (§3, §7, §10). No partner key is required: the \`protocol\` pointer returned
+on \`/connect\` (and on partner register) is directly usable. (A partner
+integration polling in bulk on behalf of many agents authenticates with its
+\`skills:read\` partner key instead; \`clawville-play\` stays fully public.) A
+per-building fetch via your session counts toward your leaderboard skill-fetch
+score (capped 11/day); the manifest + protocol reads are metered per agent, so
+poll on the cadence below rather than hammering.
 
 Poll the manifest every 6–24h; diff each \`contentHash\`; on a change, GET the
 \`url\`, re-chunk (split on \`## \` headings), and re-embed into your RAG store. A
