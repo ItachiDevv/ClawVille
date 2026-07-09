@@ -1,82 +1,64 @@
 /**
- * SAP Escrow V2 — the CORRECT USDC escrow instruction builders (hand-assembled).
+ * SAP Escrow V2 — instruction builders, now BUILT BY ANCHOR off the OFFICIAL
+ * `@oobe-protocol-labs/synapse-sap-sdk@1.0.0` IDL (no more hand-rolled
+ * discriminators / borsh / account-meta arrays).
  *
- * ── DEPLOYED PROGRAM IS 0.25-FAMILY (empirically confirmed 2026-07-09) ────────
- * The devnet program `SAPpUhsWLJG1FfkGRcXagEDMrMsWGjbky7AyhGpFETZ` now runs the
- * **0.25-family** binary. A full DisputeWindow USDC lifecycle was driven END-TO-END
- * live on devnet (register → init_stake → update_agent(pricing) → create_escrow_v2
- * → settle_calls_v2 → finalize_settlement → withdraw_escrow_v2; funds moved; zero
- * PrivilegeEscalation). The account/arg/SPL shapes below are the EMPIRICAL,
- * devnet-verified truth captured from those transactions (sigs cited per-builder).
+ * ── Why this changed (2026-07-09) ─────────────────────────────────────────────
+ * OOBE shipped the official SDK 1.0.0 + a refreshed on-chain IDL whose account
+ * layouts MATCH the deployed 0.25-family program (and match what we had
+ * empirically devnet-verified). We now load THAT IDL into the sap-client Anchor
+ * `Program` and let Anchor assemble every V2 escrow instruction. A wire-parity
+ * test (`__tests__/sap-escrow-v2.test.ts`) asserts the Anchor-built `data`
+ * (discriminator + borsh args) and `keys` (named-account metas + order + flags)
+ * are BYTE-IDENTICAL to the previously devnet-verified shapes, so the on-chain
+ * wire is provably unchanged for create/deposit/settle/finalize/withdraw.
  *
- * ⚠️ BOTH vendored IDLs are WRONG, in DIFFERENT places — do NOT "correct" these
- * builders from either IDL:
- *   - `synapse_agent_sap.onchain.idl.json` (0.18.0) is STALE: `create_escrow_v2`
- *     is 4-acct (deployed is 7-acct), `register`/`update_agent` lack `pricing_menu`.
- *   - `synapse_agent_sap.idl.future-0.25.json` (0.25.0) is WRONG for
- *     `settle_calls_v2`: it declares a 6th named `settlement_receipt` account the
- *     DEPLOYED program does NOT take (passing it → InvalidProgramExecutable 3009),
- *     and `create_pending_settlement` is DEPRECATED on-chain (6161) — the deployed
- *     `settle_calls_v2` INITS the pending settlement itself.
- * The client loads the future-0.25 IDL for the Anchor-driven identity/stake/pricing
- * instructions (register/init_stake/deposit_stake/request_unstake/complete_unstake/
- * update_agent — whose account contexts match the deployed binary) and HAND-ROLLS
- * the escrow-V2 money family here to the empirical shapes.
+ * The builders are now THIN async wrappers over `program.methods.X(...)
+ * .accountsStrict({...}).remainingAccounts([...]).instruction()`. They are pure
+ * in the sense that matters for the money path: `.instruction()` performs NO
+ * network I/O and NO signing — it only encodes. The caller (sap-client) attaches
+ * blockhash, fee payer, and signs via the custodial `executeTx` tail (dry-run /
+ * mainnet-genesis-guard / decrypt-in-memory-sign / broadcast-confirm split are
+ * UNCHANGED — we never call the SDK's send-methods, which would bypass them).
  *
- * ── EMPIRICAL 0.25-family shapes (discriminators are name-derived, unchanged) ──
- *   create_escrow_v2 (eb470a24ce3796bb): 7 named accts
- *     [depositor(S,W), agent(ro), agent_stake(ro), agent_stats(W), pricing_menu(ro),
- *      escrow(W), system]; SPL remaining = [depositorAta, vaultAta, tokenProgram]
- *      (NO mint). initial_deposit MUST EXCEED price_per_call×max_calls (a ~0.44%
- *      protocol fee is charged from the vault at settle; deposit==obligation ⇒
- *      settle fails InsufficientEscrowBalance 6062). tx 2J6kxmaUF2mNkomYvs1VfC536wSa6k8NX3mCr8PMd5ZqCGwgmbBo4WkRFB4M9CoPeSamKTMty55hy24ZEJPN7nkv
- *   settle_calls_v2 (3a872bd72d600f91): 5 named accts (NOT 6 — no settlement_receipt)
- *     [wallet(worker,S,W), agent(ro), agent_stats(W), escrow(W), system]; SPL
- *     remaining = [vaultAta, workerAta, tokenProgram, treasuryAta, pendingPda]
- *     (order LOAD-BEARING: tokenProgram idx2, treasury fee-leg idx3, pending PDA
- *     WRITABLE idx4). The deployed settle CHARGES the fee to treasury + INITS the
- *     pending settlement; it does NOT release principal. tx 512iPTGsnHdSry5XQ61ZFvpV9QGZswmc518GyRQCL1W8kbZLar2cYvVF6veGKomVwXopaZK54fw9EUbPDNGCqUnz
- *   create_pending_settlement (fc7c6c094753b804): DEPRECATED on-chain (6161). The
- *     builder is retained for reference ONLY; settle inits the pending itself.
- *   finalize_settlement (dc489877b2c419aa): 5 named (unchanged); SPL remaining =
- *     [vaultAta, workerAta, tokenProgram] (NO mint). Releases principal → worker
- *     after dispute_window_slots. tx 21QKsYjxm3PK8i79KWPKabPjXbwWQXhTAMTQSfMNdgKPqFg5cZor7Exo8KHu3vAkPJibHwyVHCugC3WxyMSSc7iy
- *   withdraw_escrow_v2 (3dc60724023e1747): [depositor(S,W), escrow(W)]; SPL
- *     remaining = [vaultAta, depositorAta, tokenProgram] (NO mint). tx 3TXwu7CnzNGQGMHS43b1VtMBLTcRRy6BY5zUKKHo4ZTRXPhDxyMZqw1zDSrbBwZiqZWWkUf3SFmkdCTvyzq69Frg
- *   resolve_dispute / CoSigned: NOT live-confirmed — assembleV2SplRemaining('resolve')
- *     keeps its TODO(devnet-confirm). Only the DisputeWindow flow is verified.
+ * ── Anti-replay is ON-CHAIN in 1.0.0 (the old "chain has no replay" note is dead)
+ * The deployed program enforces at-most-once settlement ITSELF: each escrow keeps
+ * a monotonic `settlement_index`; `settle_calls_v2` INITS a per-index
+ * `PendingSettlement` PDA atomically, and a duplicate settle for a finalized /
+ * reused index FAILS LOUD on-chain (SettlementReplay 6138 / EscrowNonceReused
+ * 6097 / SettlementAlreadyFinalized 6099). The escrow-gate ledger stays in the
+ * path as JOB-LEVEL hygiene (record intent → send → record sig) and as the
+ * cross-process at-most-once claim, but it is no longer the ONLY replay guard —
+ * the chain is authoritative.
  *
- * ── SPL remaining_accounts ────────────────────────────────────────────────────
- * The token accounts are NOT in the IDL account lists — they ride as Anchor
- * `remaining_accounts`. Every builder takes its SPL/extra remaining accounts as an
- * EXPLICIT `remaining` param assembled by `assembleV2SplRemaining` (the SINGLE
- * source of truth for the wire order, below), rather than hard-coding it per-builder.
- *
- * Pure builders — no network, no DB, no signing. The caller attaches blockhash,
- * fee payer, and signs.
+ * ── 1.0.0 account/arg deltas vs the old hand-rolled builders ──────────────────
+ *   - settle_calls_v2 : 5 named accts [wallet(S,W), agent(ro), agent_stats(W),
+ *       escrow(W), system_program]; NO settlement_receipt (the deployed program
+ *       inits the PendingSettlement itself). SPL remaining carries the fee-leg +
+ *       pending PDA (order LOAD-BEARING — see `assembleV2SplRemaining`).
+ *   - create_escrow_v2 : 7 named accts [depositor(S,W), agent(ro), agent_stake(ro),
+ *       agent_stats(W), pricing_menu(ro), escrow(W), system_program].
+ *   - file_dispute : now takes TWO args — evidence_hash:[u8;32] AND dispute_type:u8
+ *       (DisputeType enum). The old builder omitted dispute_type (malformed).
+ *   - close_escrow_v2 : now 3 accts [depositor(S,W), escrow(W), agent_stats(W)].
+ *   - resolve_dispute : REMOVED — it does not exist in the 1.0.0 program. Dispute
+ *       resolution is now `auto_resolve_dispute` (permissionless, merkle/slash) +
+ *       `submit_agent_evidence`. The old arbiter `resolve_dispute` path was never
+ *       devnet-confirmed; it is dropped here (a future diff may wire auto_resolve).
+ *   - create_pending_settlement : REMOVED — deprecated on-chain (6161); settle
+ *       inits the pending itself.
  */
 
 import {
   PublicKey,
   SystemProgram,
-  TransactionInstruction,
+  type TransactionInstruction,
   type AccountMeta,
 } from '@solana/web3.js';
+import { BN, type Program } from '@coral-xyz/anchor';
 import { USDC_DECIMALS, TOKEN_PROGRAM_ID } from './sap-spl';
 
-// ── discriminators (8-byte prefix; verbatim from the on-chain 0.18.0 IDL) ─────
-const DISC_CREATE_ESCROW_V2 = Buffer.from('eb470a24ce3796bb', 'hex');
-const DISC_DEPOSIT_ESCROW_V2 = Buffer.from('6c35504ec8445bbd', 'hex');
-const DISC_SETTLE_CALLS_V2 = Buffer.from('3a872bd72d600f91', 'hex');
-const DISC_CREATE_PENDING = Buffer.from('fc7c6c094753b804', 'hex');
-const DISC_FINALIZE_SETTLEMENT = Buffer.from('dc489877b2c419aa', 'hex');
-const DISC_FILE_DISPUTE = Buffer.from('d23fdd72d461c39c', 'hex');
-const DISC_RESOLVE_DISPUTE = Buffer.from('e706ca0660670ce6', 'hex');
-const DISC_WITHDRAW_ESCROW_V2 = Buffer.from('3dc60724023e1747', 'hex');
-const DISC_CLOSE_DISPUTE = Buffer.from('3c125caa64c392c4', 'hex');
-const DISC_CLOSE_PENDING = Buffer.from('d36439c417be6bb2', 'hex');
-
-/** SettlementSecurity enum tags (u8), verbatim from the IDL enum order. */
+/** SettlementSecurity enum tags (u8) — verbatim from the 1.0.0 IDL enum order. */
 export const SETTLEMENT_SECURITY = {
   SelfReport: 0,
   CoSigned: 1,
@@ -85,7 +67,25 @@ export const SETTLEMENT_SECURITY = {
 export type SettlementSecurityMode =
   (typeof SETTLEMENT_SECURITY)[keyof typeof SETTLEMENT_SECURITY];
 
-/** DisputeOutcome enum tags (u8) for `resolve_dispute`. */
+/**
+ * DisputeType enum tags (u8) for `file_dispute` — verbatim from the 1.0.0 IDL
+ * `DisputeType` enum variant order. The depositor picks the reason it is
+ * disputing a pending release.
+ */
+export const DISPUTE_TYPE = {
+  NonDelivery: 0,
+  PartialDelivery: 1,
+  Overcharge: 2,
+  Quality: 3,
+} as const;
+export type DisputeTypeTag = (typeof DISPUTE_TYPE)[keyof typeof DISPUTE_TYPE];
+
+/**
+ * DisputeOutcome enum tags — RETAINED for documentation / off-chain bookkeeping
+ * of how a dispute resolved. NOTE: the 1.0.0 program has NO `resolve_dispute`
+ * instruction (resolution is `auto_resolve_dispute` — permissionless, merkle/
+ * slash), so there is no live builder that consumes these tags today.
+ */
 export const DISPUTE_OUTCOME = {
   Pending: 0,
   DepositorWins: 1, // refund the depositor (bounty creator)
@@ -95,52 +95,19 @@ export const DISPUTE_OUTCOME = {
 export type DisputeOutcome =
   (typeof DISPUTE_OUTCOME)[keyof typeof DISPUTE_OUTCOME];
 
-// ── Borsh arg writers ─────────────────────────────────────────────────────────
+// ── helpers ───────────────────────────────────────────────────────────────────
 
-function u64LE(value: bigint): Buffer {
-  if (value < 0n || value > 0xffffffffffffffffn) {
-    throw new Error(`u64 out of range: ${value}`);
-  }
-  const buf = Buffer.alloc(8);
-  buf.writeBigUInt64LE(value, 0);
-  return buf;
+/** bigint → Anchor `BN` (decimal string round-trip; keeps u64/i64 exact). */
+function bn(value: bigint): BN {
+  return new BN(value.toString());
 }
 
-function i64LE(value: bigint): Buffer {
-  const MIN = -(2n ** 63n);
-  const MAX = 2n ** 63n - 1n;
-  if (value < MIN || value > MAX) {
-    throw new Error(`i64 out of range: ${value}`);
-  }
-  const buf = Buffer.alloc(8);
-  buf.writeBigInt64LE(value, 0);
-  return buf;
-}
-
-function u8(value: number): Buffer {
-  if (!Number.isInteger(value) || value < 0 || value > 255) {
-    throw new Error(`u8 out of range: ${value}`);
-  }
-  return Buffer.from([value]);
-}
-
-/** Encode an Option<Pubkey>: 1-byte tag (0=None,1=Some) + (when Some) 32 bytes. */
-function optionPubkey(value: PublicKey | null): Buffer {
-  if (value === null) return Buffer.from([0]);
-  return Buffer.concat([Buffer.from([1]), value.toBuffer()]);
-}
-
-/** Encode an EMPTY Vec<T>: a 4-byte little-endian length prefix of 0. */
-function emptyVec(): Buffer {
-  return Buffer.alloc(4); // length = 0
-}
-
-function assert32(name: string, b: Buffer | Uint8Array): Buffer {
+function assert32(name: string, b: Buffer | Uint8Array): number[] {
   if (b.length !== 32) throw new Error(`${name} must be 32 bytes (got ${b.length})`);
-  return Buffer.from(b);
+  return Array.from(b);
 }
 
-// ── builders ──────────────────────────────────────────────────────────────────
+// ── builders (async — Anchor `.instruction()` encodes, never signs/sends) ──────
 
 export interface CreateEscrowV2Args {
   depositor: PublicKey;
@@ -154,7 +121,6 @@ export interface CreateEscrowV2Args {
   pricingMenuPda: PublicKey;
   /** escrow PDA (["sap_escrow_v2", agentPda, depositor, escrowNonce]). */
   escrowPda: PublicKey;
-  programId: PublicKey;
   escrowNonce: bigint;
   pricePerCall: bigint;
   maxCalls: bigint;
@@ -172,90 +138,76 @@ export interface CreateEscrowV2Args {
   /** Some(ClawVille admin) for DisputeWindow; None otherwise. */
   arbiter: PublicKey | null;
   /**
-   * SPL remaining accounts for the funding transfer (token escrow only). The
-   * caller assembles them via `assembleV2SplRemaining('create', …)` — the
-   * devnet-verified order [depositorAta, vaultAta, tokenProgram] (NO mint). Empty
-   * for a native-SOL escrow.
+   * SPL remaining accounts for the funding transfer (token escrow only), assembled
+   * via `assembleV2SplRemaining('create', …)` — [depositorAta, vaultAta, tokenProgram]
+   * (NO mint). Empty for a native-SOL escrow.
    */
   remaining?: AccountMeta[];
 }
 
 /**
- * create_escrow_v2 — disc eb470a24ce3796bb. Opens + funds the escrow (fund-at-
- * create). DEVNET-VERIFIED 7 named accounts (0.25-family — the 0.18 4-acct form is
- * dead, and the SPL remaining drops the `mint` the base builders wrongly included):
- *   [depositor(S,W), agent(ro), agent_stake(ro), agent_stats(W), pricing_menu(ro),
- *    escrow(W), system_program] + SPL remaining [depositorAta, vaultAta, tokenProgram].
- * A matching pricing tier MUST be provisioned on `pricing_menu` first (update_agent)
- * or create fails PricingTierNotFound 6148. initial_deposit MUST EXCEED
- * price_per_call×max_calls (protocol fee at settle; deposit==obligation ⇒
- * InsufficientEscrowBalance 6062 later). The vault ATA must already exist — prepend
- * an idempotent create-ATA ix. For DisputeWindow pass settlementSecurity=2 +
- * arbiter=Some; for CoSigned pass settlementSecurity=1 + coSigner=Some.
- * (devnet-confirmed 2026-07-09 tx 2J6kxmaUF2mNkomYvs1VfC536wSa6k8NX3mCr8PMd5ZqCGwgmbBo4WkRFB4M9CoPeSamKTMty55hy24ZEJPN7nkv)
+ * create_escrow_v2 — opens + funds the escrow (fund-at-create). 7 named accounts;
+ * a matching pricing tier MUST be provisioned first (update_agent) or create fails
+ * PricingTierNotFound 6148, AND the worker must have staked ≥ the coverage
+ * requirement (StakeBelowMinimum 6107 / insufficient coverage). initial_deposit
+ * MUST EXCEED price_per_call×max_calls (protocol fee at settle). The vault ATA must
+ * already exist — the caller prepends an idempotent create-ATA ix.
  */
-export function buildCreateEscrowV2Ix(args: CreateEscrowV2Args): TransactionInstruction {
-  const data = Buffer.concat([
-    DISC_CREATE_ESCROW_V2,
-    u64LE(args.escrowNonce),
-    u64LE(args.pricePerCall),
-    u64LE(args.maxCalls),
-    u64LE(args.initialDeposit),
-    i64LE(args.expiresAt),
-    emptyVec(), // volume_curve: Vec<VolumeCurveBreakpoint> = []
-    optionPubkey(args.tokenMint),
-    u8(args.tokenDecimals),
-    u8(args.settlementSecurity),
-    u64LE(args.disputeWindowSlots),
-    optionPubkey(args.coSigner),
-    optionPubkey(args.arbiter),
-  ]);
-  return new TransactionInstruction({
-    programId: args.programId,
-    keys: [
-      { pubkey: args.depositor, isSigner: true, isWritable: true },
-      { pubkey: args.agentPda, isSigner: false, isWritable: false },
-      { pubkey: args.agentStakePda, isSigner: false, isWritable: false },
-      { pubkey: args.agentStatsPda, isSigner: false, isWritable: true },
-      { pubkey: args.pricingMenuPda, isSigner: false, isWritable: false },
-      { pubkey: args.escrowPda, isSigner: false, isWritable: true },
-      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
-      ...(args.remaining ?? []),
-    ],
-    data,
-  });
+export function buildCreateEscrowV2Ix(
+  program: Program,
+  args: CreateEscrowV2Args,
+): Promise<TransactionInstruction> {
+  return program.methods
+    .createEscrowV2(
+      bn(args.escrowNonce),
+      bn(args.pricePerCall),
+      bn(args.maxCalls),
+      bn(args.initialDeposit),
+      bn(args.expiresAt),
+      [], // volume_curve: Vec<VolumeCurveBreakpoint> = []
+      args.tokenMint,
+      args.tokenDecimals,
+      args.settlementSecurity,
+      bn(args.disputeWindowSlots),
+      args.coSigner,
+      args.arbiter,
+    )
+    .accountsStrict({
+      depositor: args.depositor,
+      agent: args.agentPda,
+      agentStake: args.agentStakePda,
+      agentStats: args.agentStatsPda,
+      pricingMenu: args.pricingMenuPda,
+      escrow: args.escrowPda,
+      systemProgram: SystemProgram.programId,
+    })
+    .remainingAccounts(args.remaining ?? [])
+    .instruction();
 }
 
 export interface DepositEscrowV2Args {
   depositor: PublicKey;
   escrowPda: PublicKey;
-  programId: PublicKey;
   escrowNonce: bigint;
   amount: bigint;
-  /**
-   * SPL remaining ([depositorAta, vaultAta, tokenProgram] — NO mint). INFERRED from
-   * the devnet-confirmed create funding transfer (same depositor→vault shape); the
-   * deposit_escrow_v2 top-up path itself was NOT independently devnet-exercised.
-   */
+  /** SPL remaining ([depositorAta, vaultAta, tokenProgram] — NO mint). */
   remaining?: AccountMeta[];
 }
 
-/**
- * deposit_escrow_v2 — disc 6c35504ec8445bbd. Top up an existing escrow.
- * Accounts: [depositor(S,W), escrow(W), system_program] + SPL remaining.
- */
-export function buildDepositEscrowV2Ix(args: DepositEscrowV2Args): TransactionInstruction {
-  const data = Buffer.concat([DISC_DEPOSIT_ESCROW_V2, u64LE(args.escrowNonce), u64LE(args.amount)]);
-  return new TransactionInstruction({
-    programId: args.programId,
-    keys: [
-      { pubkey: args.depositor, isSigner: true, isWritable: true },
-      { pubkey: args.escrowPda, isSigner: false, isWritable: true },
-      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
-      ...(args.remaining ?? []),
-    ],
-    data,
-  });
+/** deposit_escrow_v2 — top up an existing escrow. Accounts: [depositor, escrow, system]. */
+export function buildDepositEscrowV2Ix(
+  program: Program,
+  args: DepositEscrowV2Args,
+): Promise<TransactionInstruction> {
+  return program.methods
+    .depositEscrowV2(bn(args.escrowNonce), bn(args.amount))
+    .accountsStrict({
+      depositor: args.depositor,
+      escrow: args.escrowPda,
+      systemProgram: SystemProgram.programId,
+    })
+    .remainingAccounts(args.remaining ?? [])
+    .instruction();
 }
 
 export interface SettleCallsV2Args {
@@ -264,105 +216,42 @@ export interface SettleCallsV2Args {
   agentPda: PublicKey;
   agentStatsPda: PublicKey;
   escrowPda: PublicKey;
-  programId: PublicKey;
   escrowNonce: bigint;
   callsToSettle: bigint;
   /** 32-byte service hash = the Covenant/verification audit root. */
   serviceHash: Buffer | Uint8Array;
   /**
-   * remaining_accounts (DEVNET-VERIFIED, DisputeWindow — order LOAD-BEARING):
-   *   [vaultAta(W), workerAta(W), tokenProgram(ro, idx2), treasuryAta(W, fee-leg idx3),
-   *    pendingPda(W, idx4)].
-   * The deployed settle CHARGES the ~0.44% protocol fee from the vault → treasury AND
+   * remaining_accounts (order LOAD-BEARING):
+   *   [vaultAta(W), workerAta(W), tokenProgram(ro), treasuryAta(W), pendingPda(W)].
+   * The deployed settle CHARGES the protocol fee from the vault → treasury AND
    * INITS the pending settlement itself (pending PDA = ["sap_pending", escrow,
    * settlement_index]). It does NOT release principal (that is finalize_settlement).
-   * This is NOT the old `remaining=[]` shape — see assembleV2SplRemaining('settle').
    */
   remaining?: AccountMeta[];
 }
 
 /**
- * settle_calls_v2 — disc 3a872bd72d600f91. DEVNET-VERIFIED 5 named accounts (NOT the
- * future-0.25 IDL's 6 — do NOT add a `settlement_receipt` account; passing it trips
- * InvalidProgramExecutable 3009):
- *   [wallet(worker,S,W), agent(ro), agent_stats(W), escrow(W), system_program]
- * + SPL remaining [vaultAta, workerAta, tokenProgram, treasuryAta, pendingPda].
- * DisputeWindow: settle CHARGES the fee to treasury + INITS the pending settlement
- * (create_pending_settlement is DEPRECATED 6161 — do NOT bundle it), then finalize
- * releases principal after the window. `create_pending_settlement` builder below is
- * kept for reference only.
- * (devnet-confirmed 2026-07-09 tx 512iPTGsnHdSry5XQ61ZFvpV9QGZswmc518GyRQCL1W8kbZLar2cYvVF6veGKomVwXopaZK54fw9EUbPDNGCqUnz)
+ * settle_calls_v2 — 5 named accounts [wallet(worker,S,W), agent(ro), agent_stats(W),
+ * escrow(W), system_program]. DisputeWindow: settle charges the fee to treasury +
+ * INITS the pending settlement, then finalize releases principal after the window.
+ * On-chain anti-replay: the monotonic settlement_index + per-index pending PDA
+ * (SettlementReplay 6138 on a reused/finalized index).
  */
-export function buildSettleCallsV2Ix(args: SettleCallsV2Args): TransactionInstruction {
-  const serviceHash = assert32('service_hash', args.serviceHash);
-  const data = Buffer.concat([
-    DISC_SETTLE_CALLS_V2,
-    u64LE(args.escrowNonce),
-    u64LE(args.callsToSettle),
-    serviceHash,
-  ]);
-  return new TransactionInstruction({
-    programId: args.programId,
-    keys: [
-      { pubkey: args.workerWallet, isSigner: true, isWritable: true },
-      { pubkey: args.agentPda, isSigner: false, isWritable: false },
-      { pubkey: args.agentStatsPda, isSigner: false, isWritable: true },
-      { pubkey: args.escrowPda, isSigner: false, isWritable: true },
-      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
-      ...(args.remaining ?? []),
-    ],
-    data,
-  });
-}
-
-export interface CreatePendingSettlementArgs {
-  /** the worker/agent registered wallet (signer). */
-  workerWallet: PublicKey;
-  agentPda: PublicKey;
-  escrowPda: PublicKey;
-  pendingPda: PublicKey;
-  programId: PublicKey;
-  settlementIndex: bigint;
-  callsToSettle: bigint;
-  amount: bigint;
-  serviceHash: Buffer | Uint8Array;
-}
-
-/**
- * create_pending_settlement — disc fc7c6c094753b804.
- *
- * ⚠️ DEPRECATED ON-CHAIN (error 6161). The DEPLOYED 0.25-family `settle_calls_v2`
- * INITS the pending settlement ITSELF (it carries the pending PDA in its SPL
- * remaining, idx4). Calling this instruction against the live program now FAILS
- * with 6161. This builder is retained for REFERENCE / historical wire-shape ONLY —
- * the settle executor (`settleCallsV2Usdc`) MUST NOT bundle it. Do not wire it into
- * any live path.
- *
- * (historical) Accounts: [wallet(worker,S,W), agent(ro), escrow(ro), pending(W),
- * system_program]; pending PDA = ["sap_pending", escrow, settlement_index].
- */
-export function buildCreatePendingSettlementIx(
-  args: CreatePendingSettlementArgs,
-): TransactionInstruction {
-  const serviceHash = assert32('service_hash', args.serviceHash);
-  const data = Buffer.concat([
-    DISC_CREATE_PENDING,
-    u64LE(args.settlementIndex),
-    u64LE(args.callsToSettle),
-    u64LE(args.amount),
-    serviceHash,
-  ]);
-  return new TransactionInstruction({
-    programId: args.programId,
-    keys: [
-      { pubkey: args.workerWallet, isSigner: true, isWritable: true },
-      { pubkey: args.agentPda, isSigner: false, isWritable: false },
-      { pubkey: args.escrowPda, isSigner: false, isWritable: false },
-      { pubkey: args.pendingPda, isSigner: false, isWritable: true },
-      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
-    ],
-    data,
-  });
+export function buildSettleCallsV2Ix(
+  program: Program,
+  args: SettleCallsV2Args,
+): Promise<TransactionInstruction> {
+  return program.methods
+    .settleCallsV2(bn(args.escrowNonce), bn(args.callsToSettle), assert32('service_hash', args.serviceHash))
+    .accountsStrict({
+      wallet: args.workerWallet,
+      agent: args.agentPda,
+      agentStats: args.agentStatsPda,
+      escrow: args.escrowPda,
+      systemProgram: SystemProgram.programId,
+    })
+    .remainingAccounts(args.remaining ?? [])
+    .instruction();
 }
 
 export interface FinalizeSettlementArgs {
@@ -373,32 +262,30 @@ export interface FinalizeSettlementArgs {
   escrowPda: PublicKey;
   pendingPda: PublicKey;
   agentStatsPda: PublicKey;
-  programId: PublicKey;
-  /** SPL remaining (DEVNET-VERIFIED release: [vaultAta, workerAta, tokenProgram] — NO mint). */
+  /** SPL remaining ([vaultAta, workerAta, tokenProgram] — NO mint). */
   remaining?: AccountMeta[];
 }
 
 /**
- * finalize_settlement — disc dc489877b2c419aa (DisputeWindow). After the dispute
- * window elapses with no dispute, releases the PRINCIPAL vault → worker. NO args.
- * 5 named accounts (unchanged): [payer(S,W), agent_wallet(W), escrow(W), pending(W),
- * agent_stats(W)] + SPL remaining [vaultAta, workerAta, tokenProgram] (NO mint —
- * see assembleV2SplRemaining('finalize')).
- * (devnet-confirmed 2026-07-09 tx 21QKsYjxm3PK8i79KWPKabPjXbwWQXhTAMTQSfMNdgKPqFg5cZor7Exo8KHu3vAkPJibHwyVHCugC3WxyMSSc7iy)
+ * finalize_settlement — after the dispute window elapses with no dispute, releases
+ * the PRINCIPAL vault → worker. No args. 5 named accounts [payer(S,W),
+ * agent_wallet(W), escrow(W), pending_settlement(W), agent_stats(W)].
  */
-export function buildFinalizeSettlementIx(args: FinalizeSettlementArgs): TransactionInstruction {
-  return new TransactionInstruction({
-    programId: args.programId,
-    keys: [
-      { pubkey: args.payer, isSigner: true, isWritable: true },
-      { pubkey: args.agentWallet, isSigner: false, isWritable: true },
-      { pubkey: args.escrowPda, isSigner: false, isWritable: true },
-      { pubkey: args.pendingPda, isSigner: false, isWritable: true },
-      { pubkey: args.agentStatsPda, isSigner: false, isWritable: true },
-      ...(args.remaining ?? []),
-    ],
-    data: DISC_FINALIZE_SETTLEMENT,
-  });
+export function buildFinalizeSettlementIx(
+  program: Program,
+  args: FinalizeSettlementArgs,
+): Promise<TransactionInstruction> {
+  return program.methods
+    .finalizeSettlement()
+    .accountsStrict({
+      payer: args.payer,
+      agentWallet: args.agentWallet,
+      escrow: args.escrowPda,
+      pendingSettlement: args.pendingPda,
+      agentStats: args.agentStatsPda,
+    })
+    .remainingAccounts(args.remaining ?? [])
+    .instruction();
 }
 
 export interface FileDisputeArgs {
@@ -407,151 +294,140 @@ export interface FileDisputeArgs {
   escrowPda: PublicKey;
   pendingPda: PublicKey;
   disputePda: PublicKey;
-  programId: PublicKey;
   /** 32-byte hash of the depositor's dispute evidence. */
   evidenceHash: Buffer | Uint8Array;
+  /**
+   * DisputeType (u8) — REQUIRED, no silent default. dispute_type is payout-semantic:
+   * it feeds the on-chain auto_resolve/merkle model (NonDelivery → full DepositorWins
+   * vs PartialDelivery → split vs Overcharge → partial), so a wrong/assumed category
+   * biases the resolution against a party. The caller MUST choose it explicitly.
+   */
+  disputeType: DisputeTypeTag;
 }
 
 /**
- * file_dispute — disc d23fdd72d461c39c (DisputeWindow). The depositor disputes a
- * pending release within the window → blocks finalize until the arbiter resolves.
- * Accounts: [depositor(S,W), escrow(ro), pending(W), dispute(W), system_program].
- * dispute PDA = ["sap_dispute", pending].
+ * file_dispute — the depositor disputes a pending release within the window →
+ * blocks finalize until resolution. 5 named accounts [depositor(S,W), escrow(ro),
+ * pending_settlement(W), dispute(W), system_program]. args: evidence_hash:[u8;32]
+ * + dispute_type:u8. dispute PDA = ["sap_dispute", pending].
+ *
+ * NOTE: this BUILDER is retained (correct 1.0.0 shape), but there is NO reachable
+ * executor/route that files a dispute through the ClawVille surface — a filed dispute
+ * sets pending.is_disputed and BLOCKS finalize, and 1.0.0 resolution is the
+ * permissionless auto_resolve_dispute (merkle/slash) which is NOT wired. v1 posture =
+ * DisputeWindow-as-timelock (no dispute filed through us; finalize releases after the
+ * window). An external depositor can still file on-chain directly — an auto_resolve
+ * crank is a REQUIRED follow-up before the rail serves untrusted depositors.
  */
-export function buildFileDisputeIx(args: FileDisputeArgs): TransactionInstruction {
-  const evidenceHash = assert32('evidence_hash', args.evidenceHash);
-  return new TransactionInstruction({
-    programId: args.programId,
-    keys: [
-      { pubkey: args.depositor, isSigner: true, isWritable: true },
-      { pubkey: args.escrowPda, isSigner: false, isWritable: false },
-      { pubkey: args.pendingPda, isSigner: false, isWritable: true },
-      { pubkey: args.disputePda, isSigner: false, isWritable: true },
-      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
-    ],
-    data: Buffer.concat([DISC_FILE_DISPUTE, evidenceHash]),
-  });
-}
-
-export interface ResolveDisputeArgs {
-  /** the arbiter (ClawVille admin) — signs the resolution. */
-  arbiter: PublicKey;
-  depositor: PublicKey;
-  agentWallet: PublicKey;
-  escrowPda: PublicKey;
-  pendingPda: PublicKey;
-  disputePda: PublicKey;
-  agentStatsPda: PublicKey;
-  programId: PublicKey;
-  /** DepositorWins ⇒ refund creator; AgentWins ⇒ release worker. */
-  outcome: DisputeOutcome;
-  /** SPL remaining (release-or-refund transfer). */
-  remaining?: AccountMeta[];
-}
-
-/**
- * resolve_dispute — disc e706ca0660670ce6 (DisputeWindow). The arbiter (ClawVille
- * admin) settles a filed dispute. Accounts: [arbiter(S,W), depositor(W),
- * agent_wallet(W), escrow(W), pending(W), dispute(W), agent_stats(W)] + SPL.
- * arg: outcome:u8 (DisputeOutcome).
- */
-export function buildResolveDisputeIx(args: ResolveDisputeArgs): TransactionInstruction {
-  return new TransactionInstruction({
-    programId: args.programId,
-    keys: [
-      { pubkey: args.arbiter, isSigner: true, isWritable: true },
-      { pubkey: args.depositor, isSigner: false, isWritable: true },
-      { pubkey: args.agentWallet, isSigner: false, isWritable: true },
-      { pubkey: args.escrowPda, isSigner: false, isWritable: true },
-      { pubkey: args.pendingPda, isSigner: false, isWritable: true },
-      { pubkey: args.disputePda, isSigner: false, isWritable: true },
-      { pubkey: args.agentStatsPda, isSigner: false, isWritable: true },
-      ...(args.remaining ?? []),
-    ],
-    data: Buffer.concat([DISC_RESOLVE_DISPUTE, u8(args.outcome)]),
-  });
+export function buildFileDisputeIx(
+  program: Program,
+  args: FileDisputeArgs,
+): Promise<TransactionInstruction> {
+  return program.methods
+    .fileDispute(assert32('evidence_hash', args.evidenceHash), args.disputeType)
+    .accountsStrict({
+      depositor: args.depositor,
+      escrow: args.escrowPda,
+      pendingSettlement: args.pendingPda,
+      dispute: args.disputePda,
+      systemProgram: SystemProgram.programId,
+    })
+    .instruction();
 }
 
 export interface WithdrawEscrowV2Args {
   depositor: PublicKey;
   escrowPda: PublicKey;
-  programId: PublicKey;
   amount: bigint;
-  /** SPL remaining (DEVNET-VERIFIED refund: [vaultAta, depositorAta, tokenProgram] — NO mint). */
+  /** SPL remaining ([vaultAta, depositorAta, tokenProgram] — NO mint). */
   remaining?: AccountMeta[];
 }
 
 /**
- * withdraw_escrow_v2 — disc 3dc60724023e1747. Refund unspent USDC → depositor
- * (bounty creator reclaim after the work-deadline expires, or on cancel; works on
- * an ACTIVE escrow — recovery path). Accounts: [depositor(S,W), escrow(W)] + SPL
- * remaining [vaultAta, depositorAta, tokenProgram] (NO mint — see
- * assembleV2SplRemaining('withdraw')). arg: amount:u64.
- * (devnet-confirmed 2026-07-09 tx 3TXwu7CnzNGQGMHS43b1VtMBLTcRRy6BY5zUKKHo4ZTRXPhDxyMZqw1zDSrbBwZiqZWWkUf3SFmkdCTvyzq69Frg)
+ * withdraw_escrow_v2 — refund unspent USDC → depositor (creator reclaim after the
+ * work-deadline expires, or on cancel; works on an ACTIVE escrow — recovery path).
+ * 2 named accounts [depositor(S,W), escrow(W)] + SPL remaining. arg: amount:u64.
  */
-export function buildWithdrawEscrowV2Ix(args: WithdrawEscrowV2Args): TransactionInstruction {
-  return new TransactionInstruction({
-    programId: args.programId,
-    keys: [
-      { pubkey: args.depositor, isSigner: true, isWritable: true },
-      { pubkey: args.escrowPda, isSigner: false, isWritable: true },
-      ...(args.remaining ?? []),
-    ],
-    data: Buffer.concat([DISC_WITHDRAW_ESCROW_V2, u64LE(args.amount)]),
-  });
+export function buildWithdrawEscrowV2Ix(
+  program: Program,
+  args: WithdrawEscrowV2Args,
+): Promise<TransactionInstruction> {
+  return program.methods
+    .withdrawEscrowV2(bn(args.amount))
+    .accountsStrict({ depositor: args.depositor, escrow: args.escrowPda })
+    .remainingAccounts(args.remaining ?? [])
+    .instruction();
+}
+
+export interface CloseEscrowV2Args {
+  depositor: PublicKey;
+  escrowPda: PublicKey;
+  /** agent_stats PDA — 1.0.0 added it to close_escrow_v2 (was absent in 0.18). */
+  agentStatsPda: PublicKey;
+}
+
+/**
+ * close_escrow_v2 — depositor closes a fully-settled/refunded escrow, reclaiming
+ * rent. 1.0.0: 3 named accounts [depositor(S,W), escrow(W), agent_stats(W)].
+ * On-chain refuses if balance ≠ 0 OR pending_amount ≠ 0 (EscrowNotEmpty/NotClosed).
+ */
+export function buildCloseEscrowV2Ix(
+  program: Program,
+  args: CloseEscrowV2Args,
+): Promise<TransactionInstruction> {
+  return program.methods
+    .closeEscrowV2()
+    .accountsStrict({
+      depositor: args.depositor,
+      escrow: args.escrowPda,
+      agentStats: args.agentStatsPda,
+    })
+    .instruction();
 }
 
 export interface CloseDisputeArgs {
   depositor: PublicKey;
   disputePda: PublicKey;
-  programId: PublicKey;
 }
 
-/** close_dispute — disc 3c125caa64c392c4. Reclaim a resolved dispute's rent. */
-export function buildCloseDisputeIx(args: CloseDisputeArgs): TransactionInstruction {
-  return new TransactionInstruction({
-    programId: args.programId,
-    keys: [
-      { pubkey: args.depositor, isSigner: true, isWritable: true },
-      { pubkey: args.disputePda, isSigner: false, isWritable: true },
-    ],
-    data: DISC_CLOSE_DISPUTE,
-  });
+/** close_dispute — reclaim a resolved dispute's rent. Accounts [depositor(S,W), dispute(W)]. */
+export function buildCloseDisputeIx(
+  program: Program,
+  args: CloseDisputeArgs,
+): Promise<TransactionInstruction> {
+  return program.methods
+    .closeDispute()
+    .accountsStrict({ depositor: args.depositor, dispute: args.disputePda })
+    .instruction();
 }
 
 export interface ClosePendingSettlementArgs {
   payer: PublicKey;
   pendingPda: PublicKey;
-  programId: PublicKey;
 }
 
-/** close_pending_settlement — disc d36439c417be6bb2. Reclaim a finalized pending's rent. */
+/** close_pending_settlement — reclaim a finalized pending's rent. Accounts [payer(S,W), pending(W)]. */
 export function buildClosePendingSettlementIx(
+  program: Program,
   args: ClosePendingSettlementArgs,
-): TransactionInstruction {
-  return new TransactionInstruction({
-    programId: args.programId,
-    keys: [
-      { pubkey: args.payer, isSigner: true, isWritable: true },
-      { pubkey: args.pendingPda, isSigner: false, isWritable: true },
-    ],
-    data: DISC_CLOSE_PENDING,
-  });
+): Promise<TransactionInstruction> {
+  return program.methods
+    .closePendingSettlement()
+    .accountsStrict({ payer: args.payer, pendingSettlement: args.pendingPda })
+    .instruction();
 }
 
 // ── SPL remaining_accounts — the SINGLE source of truth for the V2 wire order ──
 //
-// DEVNET-VERIFIED 2026-07-09 (see the file header for the per-instruction tx sigs).
 // The token accounts ride as Anchor `remaining_accounts` after the named accounts.
-// Flags: token accounts that MAY be debited/credited are WRITABLE; the SPL token
-// program is READONLY. The base/SDK builders WRONGLY included the `mint` in these
-// lists — the deployed program does NOT take it (except the still-unconfirmed
-// `resolve`), so create/deposit/settle/finalize/withdraw DROP the mint.
+// Writable = token accounts that may be debited/credited; the SPL token program is
+// READONLY. The deployed program does NOT take the `mint` here (the base builders
+// wrongly included it), so create/deposit/settle/finalize/withdraw DROP the mint.
 
 /** The ATAs / PDAs a V2 SPL remaining-account list may reference (per-kind subset). */
 export interface V2SplAtas {
   vaultAta: PublicKey;
-  /** Only used by the (unconfirmed) `resolve` list, which still carries the mint. */
+  /** Kept for call-site compatibility; the wire lists below never include the mint. */
   tokenMint: PublicKey;
   depositorAta?: PublicKey;
   workerAta?: PublicKey;
@@ -562,21 +438,18 @@ export interface V2SplAtas {
 }
 
 /** Which V2 token-moving instruction an SPL remaining-account list is being built for. */
-export type V2SplKind = 'create' | 'deposit' | 'settle' | 'finalize' | 'resolve' | 'withdraw';
+export type V2SplKind = 'create' | 'deposit' | 'settle' | 'finalize' | 'withdraw';
 
 /**
  * Assemble the SPL `remaining_accounts` for a V2 token-moving instruction — the
  * SINGLE place the wire order lives. A missing required ATA/PDA is a programming
- * error (throws), never a silent wrong-account.
- *
- * DEVNET-VERIFIED 2026-07-09 (create/settle/finalize/withdraw):
+ * error (throws), never a silent wrong-account. Devnet-verified 2026-07-09 +
+ * confirmed byte-identical to the official SDK 1.0.0 settle assembly:
  *   create/deposit → [depositorAta, vaultAta, tokenProgram]              (NO mint)
  *   settle         → [vaultAta, workerAta, tokenProgram, treasuryAta, pendingPda]
  *                    (order LOAD-BEARING: tokenProgram idx2, treasury idx3, pending idx4)
  *   finalize       → [vaultAta, workerAta, tokenProgram]                 (NO mint)
  *   withdraw       → [vaultAta, depositorAta, tokenProgram]              (NO mint)
- * UNCONFIRMED (best-support default; MUST be devnet-verified before a live flip):
- *   resolve        → flagged inline with TODO(devnet-confirm).
  */
 export function assembleV2SplRemaining(kind: V2SplKind, atas: V2SplAtas): AccountMeta[] {
   const w = (pubkey: PublicKey): AccountMeta => ({ pubkey, isSigner: false, isWritable: true });
@@ -586,12 +459,10 @@ export function assembleV2SplRemaining(kind: V2SplKind, atas: V2SplAtas): Accoun
   switch (kind) {
     case 'create':
     case 'deposit': {
-      // devnet-confirmed 2026-07-09 tx 2J6kxmaUF2mNkomYvs1VfC536wSa6k8NX3mCr8PMd5ZqCGwgmbBo4WkRFB4M9CoPeSamKTMty55hy24ZEJPN7nkv
       if (!atas.depositorAta) throw new Error(`assembleV2SplRemaining(${kind}): depositorAta required`);
       return [w(atas.depositorAta), vault, tokenProgram];
     }
     case 'settle': {
-      // devnet-confirmed 2026-07-09 tx 512iPTGsnHdSry5XQ61ZFvpV9QGZswmc518GyRQCL1W8kbZLar2cYvVF6veGKomVwXopaZK54fw9EUbPDNGCqUnz
       // ORDER IS LOAD-BEARING: tokenProgram idx2, treasury fee-leg idx3, pending PDA (W) idx4.
       if (!atas.workerAta) throw new Error('assembleV2SplRemaining(settle): workerAta required');
       if (!atas.treasuryAta) throw new Error('assembleV2SplRemaining(settle): treasuryAta required');
@@ -599,24 +470,12 @@ export function assembleV2SplRemaining(kind: V2SplKind, atas: V2SplAtas): Accoun
       return [vault, w(atas.workerAta), tokenProgram, w(atas.treasuryAta), w(atas.pendingPda)];
     }
     case 'finalize': {
-      // devnet-confirmed 2026-07-09 tx 21QKsYjxm3PK8i79KWPKabPjXbwWQXhTAMTQSfMNdgKPqFg5cZor7Exo8KHu3vAkPJibHwyVHCugC3WxyMSSc7iy
       if (!atas.workerAta) throw new Error('assembleV2SplRemaining(finalize): workerAta required');
       return [vault, w(atas.workerAta), tokenProgram];
     }
     case 'withdraw': {
-      // devnet-confirmed 2026-07-09 tx 3TXwu7CnzNGQGMHS43b1VtMBLTcRRy6BY5zUKKHo4ZTRXPhDxyMZqw1zDSrbBwZiqZWWkUf3SFmkdCTvyzq69Frg
       if (!atas.depositorAta) throw new Error('assembleV2SplRemaining(withdraw): depositorAta required');
       return [vault, w(atas.depositorAta), tokenProgram];
-    }
-    case 'resolve': {
-      // TODO(devnet-confirm): resolve_dispute / CoSigned SPL order + identity NOT
-      // dev-verified. Best-support default carries BOTH destinations (vault → depositor
-      // on refund, vault → worker on release) + the mint; the program selects by outcome.
-      // DisputeWindow is the only verified flow — do NOT flip resolve live off this guess.
-      if (!atas.depositorAta || !atas.workerAta) {
-        throw new Error('assembleV2SplRemaining(resolve): depositorAta + workerAta required');
-      }
-      return [vault, w(atas.depositorAta), w(atas.workerAta), ro(atas.tokenMint), tokenProgram];
     }
     default: {
       // Exhaustiveness guard — a new V2SplKind must add a case above.
