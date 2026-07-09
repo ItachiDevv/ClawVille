@@ -1,7 +1,7 @@
 'use client';
 
 import { useQuery } from '@tanstack/react-query';
-import { api } from '@/lib/api';
+import { api, ApiError } from '@/lib/api';
 
 /**
  * Canonical `['auth-me']` query — ONE fetcher, shared by every consumer.
@@ -22,32 +22,41 @@ import { api } from '@/lib/api';
  * extra per-observer options like `staleTime`). NEVER hand-roll the key with
  * an inline queryFn again — that re-opens the last-writer-wins race.
  *
- * `fetchAuthMe` NEVER throws: a 401 (no session) or a transient network
- * failure both resolve to `null` (resolved-anonymous), so the query settles
- * to `success` with `data: null` rather than `error` with `data: undefined`.
- * Consumers branch on `data?.user?.…`; `null` and `undefined` are both falsy
- * there, so existing optional-chaining reads are unaffected. The one belt
- * that still reads `isError` (`use-is-guest.ts`) keeps working — `isError`
- * simply never fires now.
+ * `fetchAuthMe` resolves `null` ONLY on a CONFIRMED 401 (no session) and
+ * RE-THROWS everything else (network blip, 5xx). That distinction is
+ * load-bearing (Codex round-3 BLOCKING): on a thrown refetch react-query
+ * KEEPS the last successful `data`, so a logged-in user whose auth-me
+ * refetch transiently fails still reads as logged-in from the cache —
+ * `useIsGuest()` cannot flip to guest mid-session and unmount their
+ * in-progress work (e.g. a bounty draft). Collapsing transient failures
+ * into `null` would erase that distinction and force guest UI onto a real
+ * user. Consumers branch on `data?.user?.…`; `null`/`undefined` are both
+ * falsy there, so optional-chaining reads are unaffected either way.
  */
 
 /** The shared cache key. Keep IDENTICAL so existing invalidate/remove/cache
  *  call sites keep hitting the same query. */
 export const AUTH_ME_QUERY_KEY = ['auth-me'] as const;
 
-/** Resolved auth-me payload, or `null` for anonymous / transient failure. */
+/** Resolved auth-me payload, or `null` for CONFIRMED anonymous (401). */
 export type AuthMe = Awaited<ReturnType<typeof api.me>> | null;
 
 /**
- * The one shared fetcher. Catches so the query settles to `success(null)`
- * instead of `error(undefined)` — see the module header for why that matters.
+ * The one shared fetcher. A confirmed 401 settles to `success(null)`
+ * (resolved-anonymous); anything else re-throws so react-query preserves
+ * the last successful payload — see the module header for why that matters.
  */
 export async function fetchAuthMe(): Promise<AuthMe> {
   try {
     return await api.me();
-  } catch {
-    // 401 (no session) or network failure → resolved-anonymous.
-    return null;
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 401) {
+      // Confirmed: no valid session → resolved-anonymous.
+      return null;
+    }
+    // Transient (network blip, 5xx): let the query error so the cached
+    // last-known payload survives — do NOT masquerade as anonymous.
+    throw err;
   }
 }
 

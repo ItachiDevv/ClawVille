@@ -28,15 +28,19 @@ import { useAuthMe } from '@/hooks/use-auth-me';
  */
 export function useIsGuest(): boolean {
   const { data, isError } = useAuthMe();
-  // Belt: every consumer now shares the SINGLE caught fetcher (use-auth-me.ts),
-  // so a settled `error` no longer happens through the last-writer-wins
-  // race that motivated this guard (Codex review f3286668). It is kept
-  // defensively — for THIS key a settled error would still mean "no valid
-  // session" → guest tier.
-  if (isError) return true;
-  // undefined = still loading (NOT guest yet); null = resolved anonymous
-  // (guest tier); object = branch on the server's isGuest flag.
-  if (data === undefined) return false;
-  if (data === null) return true;
-  return !!(data as { user?: { isGuest?: boolean } }).user?.isGuest;
+  // ORDER MATTERS (Codex round-3 BLOCKING): fetchAuthMe re-throws transient
+  // failures so react-query KEEPS the last successful payload — a logged-in
+  // user whose refetch blips has isError=true AND data={user}. Data must win
+  // over the error belt, or a network blip would flip a real user to guest
+  // mid-session and unmount their in-progress UI (e.g. a bounty draft).
+  if (data === null) return true; // confirmed anonymous (401)
+  if (data !== undefined) {
+    // resolved payload (survives transient refetch errors)
+    return !!(data as { user?: { isGuest?: boolean } }).user?.isGuest;
+  }
+  // Never fetched successfully: still loading → false (fail-open, no demo
+  // flash for real users); settled error with no cached payload → guest-tier
+  // visitor default (their whole session is degraded anyway; server 401/403
+  // backstops hold, and the next successful refetch self-heals).
+  return isError;
 }
