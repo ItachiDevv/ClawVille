@@ -147,6 +147,10 @@ import { oracleRouter } from './routes/oracle';
 // carrying that flag refuses to boot — the x402-config crash-loud pattern.
 import { startClvSwapWorker, stopClvSwapWorker } from './services/clv-swap-executor';
 import { walletLinkRoutes } from './routes/wallet-link';
+// Custodial wallet withdraw (2026-07-08) — DARK behind default-OFF
+// WALLET_WITHDRAW_ENABLED; the route itself refuses with a typed 503 while
+// the flag is unset, so this static import is dark-safe.
+import { walletWithdrawRoutes } from './routes/wallet-withdraw';
 import type { AppContext } from './types';
 
 const app = new Hono<AppContext>();
@@ -458,6 +462,13 @@ app.route('/api/oracle', oracleRouter);
 // /api/wallet/link → linked wallet + its (cached, mainnet) CLV balance. The
 // non-custodial balance-read link backing the hold-tier / seller-license checks.
 app.route('/api/wallet', walletLinkRoutes);
+// Custodial wallet WITHDRAW (2026-07-08, DARK behind default-OFF
+// WALLET_WITHDRAW_ENABLED): POST /api/wallet/withdraw (E5 human+agent, guest/
+// non-ledger 403; Idempotency-Key REQUIRED; capture-before-send exactly-once
+// executor — see services/wallet-withdraw-executor.ts) · GET /api/wallet/
+// balances (read-only custodial SOL+USDC+CLV, live regardless of the flag).
+// LEDGER-UNTOUCHED — on-chain custody assets only, never avatars.clawTokens.
+app.route('/api/wallet', walletWithdrawRoutes);
 // Phase 5.1 — admin identity recovery stub. Returns 501 behind a
 // FEATURE_GATE until the support-chat verification workflow lights up.
 app.route('/api/admin', adminIdentityRoutes);

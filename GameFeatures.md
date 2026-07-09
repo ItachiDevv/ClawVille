@@ -437,6 +437,17 @@ Users could not see their own wallet public key anywhere after the one-time firs
 - **Link flow (self-custody):** minimal injected-provider path (Phantom / Solflare / Backpack via `window.solana`), NO wallet-adapter dependency. `POST /api/wallet/link/challenge` → the browser wallet signs the returned account-bound SIWS-lite `messageToSign` → `POST /api/wallet/link` with `{walletPubkey, nonce, signature(base58)}`. `lib/solana-wallet.ts` does provider detection + signing + base58 (added `bs58` to web). No funds move; no key leaves the wallet.
 - **PARITY (E5):** primarily a HUMAN display/link UI. The **read** surface is already agent-reachable — an agent reads the SAME `avatars.wallet_address` (its custodial deposit address) via its own avatar/session. The **linked-wallet write** (challenge/link) is human-only by the existing `routes/wallet-link.ts` design (`requireNonGuestUser`), which defers agent-owner wallet-linking to **Tokenomics Phase C** (per that route's own parity note) — this UI adds no new economy write path, it surfaces the existing human one. Custodial and linked wallets are the SAME data agents already settle against (§5a/§5b/§5c seller-license reads). Public keys only.
 
+### 5e. Custodial wallet WITHDRAW — move your deposited SOL/USDC/CLV out (2026-07-08, DARK behind `WALLET_WITHDRAW_ENABLED`)
+
+Users can move their OWN deposited on-chain assets (SOL / USDC / CLV) out of their in-game custodial wallet (§5d's "in-game wallet") to a self-custody destination. **Backend only in this slice** — no web UI yet; ships ENTIRELY dark behind the default-OFF `WALLET_WITHDRAW_ENABLED` flag (the write refuses a typed 503 `withdraw_disabled` until the custody-model legal review + the money-review chain clear the flip).
+
+- **Write:** `POST /api/wallet/withdraw` — body `{asset: 'SOL'|'USDC'|'CLV', amountAtomic, destination}` (strict), **`Idempotency-Key` header REQUIRED** (a retried key replays the existing withdrawal's state — never a second send). The server signs with the avatar's custodial keypair SERVER-SIDE (the "secretKey returned exactly once" doctrine is untouched — withdraw never hands out the key) and sends on MAINNET with the market-payout exactly-once discipline (atomic claim → capture-before-send → confirm; ambiguous ⇒ terminal `reconcile`, never auto-retried).
+- **Read:** `GET /api/wallet/balances` — the caller's custodial-wallet SOL+USDC+CLV (atomic + ui), live regardless of the flag (feeds the §5d wallet panel later).
+- **Guardrails:** destination must be an on-curve 32-byte pubkey (PDAs refused) and not the caller's own wallet; amount ≤ on-chain balance; the source always keeps rent-exempt-minimum + tx fee (+ dest-ATA rent when needed) of SOL; optional per-asset daily caps (`WALLET_WITHDRAW_DAILY_CAP_{SOL,USDC,CLV}`).
+- **NOT a cash-out:** this moves on-chain custody assets only — internal vCLAW / `avatars.clawTokens` are untouched (LEDGER-UNTOUCHED; nothing imports `claw-token-ledger`).
+- **PARITY (E5):** human (Lucia) AND connected/hosted ledger-capable agent (`X-Clawville-Agent-Session`) withdraw from THEIR OWN avatar's custodial wallet — same endpoint, middleware-resolved avatar, never body-supplied. Non-ledger agent sessions 403; guests 403 (demo economy). NO KYC.
+- Full machine + table + errors: `ARCHITECTURE.md` (§2 `wallet-withdraw.ts` row, §4 `wallet-withdraw-executor` row, §8 `withdrawals` row).
+
 ---
 
 ## 6. Quests + bounties
