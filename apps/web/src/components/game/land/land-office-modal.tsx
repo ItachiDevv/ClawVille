@@ -310,7 +310,7 @@ function ForSaleTab({
         Parcels closer to the town center belong to higher tiers — they unlock{' '}
         <span className="font-semibold text-cyan-200">premium buildings</span>{' '}
         and <span className="font-semibold text-cyan-200">higher upgrade levels</span>.
-        Higher tiers are <span className="font-semibold text-cyan-200">claimed by holding CLV</span>{' '}
+        Higher tiers are <span className="font-semibold text-cyan-200">claimed by holding $CLAWVILLE</span>{' '}
         in your linked wallet (no CT price — hold to keep, plus a small weekly CT
         upkeep). The hold ladder rises from Starter Cove out at the rim up to
         Founders&apos; Row.
@@ -449,7 +449,7 @@ function ParcelCard({
           {/* Hold-to-keep: show the CLV hold + Claim (replaces the retired Buy). */}
           <div className="flex items-center justify-between gap-2">
             <span className="font-mono text-sm font-bold text-amber-300">
-              Hold {formatClv(tierThreshold ?? 0)} CLV
+              Hold {formatClv(tierThreshold ?? 0)} $CLAWVILLE
             </span>
             <RpgButton
               size="sm"
@@ -479,7 +479,7 @@ function ParcelCard({
                     : 'border-amber-300/40 bg-amber-400/15 text-amber-200'
                 }`}
               >
-                {qualified ? '✓ CLV qualified' : 'CLV short'}
+                {qualified ? '✓ $CLAWVILLE qualified' : '$CLAWVILLE short'}
               </span>
             )}
           </div>
@@ -534,24 +534,24 @@ function claimHoldErrorMessage(
 ): string {
   switch (code) {
     case 'wallet_not_linked':
-      return 'Link a self-custody wallet first — your CLV hold is verified against it.';
+      return 'Link a self-custody wallet first — your $CLAWVILLE hold is verified against it.';
     // Agent-only (humans shouldn't hit this) — handled defensively.
     case 'agent_wallet_missing':
       return 'This agent has no custodial wallet — reconnect the agent and try again.';
     case 'insufficient_clv_hold':
-      return `Not enough CLV held — this claim needs ${formatClv(requiredClv)} CLV in your wallet${
+      return `Not enough $CLAWVILLE held — this claim needs ${formatClv(requiredClv)} $CLAWVILLE in your wallet${
         heldClv != null ? `, you hold ${heldClv.toLocaleString()}` : ''
       }.`;
     // FAIL-CLOSED: the chain read is down — the server never grants unverified.
     case 'clv_balance_unavailable':
-      return 'We can’t verify your CLV balance right now — try again in a minute.';
+      return 'We can’t verify your $CLAWVILLE balance right now — try again in a minute.';
     case 'parcel_not_available':
       return 'Someone just claimed this parcel. Pick another.';
     case 'parcel_cap_reached':
       return `You already hold the maximum of ${MAX_PARCELS_PER_AVATAR} parcels.`;
     // Starter tier shouldn't reach this modal — defensive.
     case 'use_claim_starter':
-      return 'Starter parcels are claimed with a refundable CT deposit (For Sale or My Land), not a CLV hold.';
+      return 'Starter parcels are claimed with a refundable CT deposit (For Sale or My Land), not a $CLAWVILLE hold.';
     // Defensive — marketplace deed escrow-lock (claim-hold doesn't emit it today).
     case 'deed_locked_by_listing':
       return 'This deed is locked by a live marketplace listing — try again once it clears.';
@@ -611,7 +611,7 @@ function ClaimHoldModal({
       const res = await api.claimHoldParcel(parcel.id);
       addToast(
         '🏝️',
-        `Claimed ${res.parcel.parcelCode} — held with ${formatClv(res.parcel.holdThresholdCt ?? tierThreshold)} CLV!`,
+        `Claimed ${res.parcel.parcelCode} — held with ${formatClv(res.parcel.holdThresholdCt ?? tierThreshold)} $CLAWVILLE!`,
       );
       onClaimed();
     } catch (err) {
@@ -632,8 +632,8 @@ function ClaimHoldModal({
             <TierBadge tier={parcel.tier} />
           </div>
           <div className="mt-3 flex items-center justify-between text-sm">
-            <span className="text-slate-200">CLV hold required</span>
-            <span className="font-mono font-bold text-amber-300">{formatClv(requiredClv)} CLV</span>
+            <span className="text-slate-200">$CLAWVILLE hold required</span>
+            <span className="font-mono font-bold text-amber-300">{formatClv(requiredClv)} $CLAWVILLE</span>
           </div>
           {existingHoldSum > 0 && (
             <p className="mt-1 text-right font-mono text-[10px] text-slate-300">
@@ -652,7 +652,7 @@ function ClaimHoldModal({
                 ? 'Wallet not linked'
                 : heldClv == null
                   ? 'Can’t verify right now'
-                  : `${heldClv.toLocaleString()} CLV`}
+                  : `${heldClv.toLocaleString()} $CLAWVILLE`}
             </span>
           </div>
           {qualified != null && (
@@ -665,7 +665,7 @@ function ClaimHoldModal({
             >
               {qualified
                 ? '✓ You qualify'
-                : `${formatClv(requiredClv - (heldClv ?? 0))} CLV short — server has the final say`}
+                : `${formatClv(requiredClv - (heldClv ?? 0))} $CLAWVILLE short — server has the final say`}
             </p>
           )}
         </div>
@@ -674,12 +674,12 @@ function ClaimHoldModal({
         <p className="rounded-lg border border-cyan-400/15 bg-cyan-500/[0.04] px-3 py-2.5 text-[12px] leading-relaxed text-slate-200">
           <span className="font-semibold text-cyan-100">No CT is spent to claim.</span>{' '}
           You keep this parcel by <span className="font-semibold text-cyan-100">holding{' '}
-          {formatClv(requiredClv)} CLV</span> in your linked wallet, plus a weekly upkeep of{' '}
+          {formatClv(requiredClv)} $CLAWVILLE</span> in your linked wallet, plus a weekly upkeep of{' '}
           <span className="font-semibold text-cyan-100">
             {upkeep != null ? `${upkeep.toLocaleString()} CT` : 'CT (stamped at claim)'}
           </span>{' '}
           auto-charged from your balance — like rent. If the upkeep can’t be paid or your
-          CLV drops below the hold, you get a short grace window — then the parcel is{' '}
+          $CLAWVILLE drops below the hold, you get a short grace window — then the parcel is{' '}
           <span className="font-semibold text-amber-200">evicted</span> and returns to the
           pool (your build is preserved).
         </p>
@@ -702,7 +702,7 @@ function ClaimHoldModal({
               onClick={handleClaim}
               loading={claiming}
             >
-              Claim · hold {formatClv(requiredClv)} CLV
+              Claim · hold {formatClv(requiredClv)} $CLAWVILLE
             </RpgButton>
           ) : (
             <RpgButton size="sm" variant="primary" className="min-h-[44px]" onClick={onRequestWalletLink}>

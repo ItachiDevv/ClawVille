@@ -63,7 +63,7 @@ function CustodialWalletCard({ address }: { address: string | null }) {
       <div className="bg-amber-500/10 border border-amber-400/25 rounded-lg p-3 space-y-2.5">
         <p className="text-xs text-white/70 leading-relaxed">
           Your ClawVille Solana address. Send SOL, USDC, or{' '}
-          <span className="font-mono text-amber-200">CLV</span> here to fund in-game
+          <span className="font-mono text-amber-200">$CLAWVILLE</span> here to fund in-game
           purchases — deposits land on this address automatically.
         </p>
         {address ? (
@@ -161,16 +161,16 @@ function LinkedWalletCard() {
           />
           <div className="flex items-center justify-between gap-2 pt-1 border-t border-white/10">
             <span className="text-[11px] uppercase tracking-[0.16em] font-mono text-white/40">
-              CLV balance
+              $CLAWVILLE balance
             </span>
             <span className="text-sm font-bold text-cyan-200 font-mono">
               {clv?.available && clv.uiAmount !== null
-                ? `${clv.uiAmount.toLocaleString(undefined, { maximumFractionDigits: 4 })} CLV`
+                ? `${clv.uiAmount.toLocaleString(undefined, { maximumFractionDigits: 4 })} $CLAWVILLE`
                 : 'unavailable'}
             </span>
           </div>
           <p className="text-[10px] text-white/40 leading-relaxed">
-            Used for hold-tier perks and land hold-to-keep checks. Your CLV never
+            Used for hold-tier perks and land hold-to-keep checks. Your $CLAWVILLE never
             leaves this wallet — ClawVille only reads the balance.
           </p>
         </div>
@@ -178,7 +178,7 @@ function LinkedWalletCard() {
         <div className="bg-cyan-500/10 border border-cyan-400/25 rounded-lg p-3 space-y-2.5">
           <p className="text-xs text-white/70 leading-relaxed">
             Link a self-custody wallet (Phantom, Solflare, Backpack) to prove your{' '}
-            <span className="font-mono text-cyan-200">CLV</span> holdings for hold-tier
+            <span className="font-mono text-cyan-200">$CLAWVILLE</span> holdings for hold-tier
             perks and land benefits. You sign a message — no funds move, no key
             leaves your wallet.
           </p>
