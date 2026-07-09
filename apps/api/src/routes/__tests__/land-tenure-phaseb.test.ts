@@ -27,8 +27,11 @@
  *      from a test would settle OTHER rows in a shared DB); the lapse forfeit
  *      (deposit → treasury, zero net mint); the grandfathered-hold upkeep
  *      charge/grace/evict lifecycle (no CLV RPC — grandfathered skips the
- *      check by design); and the claim-hold FAIL-CLOSED 403s that resolve
- *      BEFORE any RPC (unlinked human wallet; starter tier).
+ *      check by design); the claim-hold FAIL-CLOSED 403s that resolve
+ *      BEFORE any RPC (unlinked human wallet; starter tier); and the
+ *      MIXED-SUBJECT stacked-hold re-check (one avatar holding under BOTH
+ *      hold_subjects — the sweeper's SUM must scope per subject; both CLV
+ *      readers module-mocked, leak-guarded, so no mainnet RPC ever fires).
  *
  *      Starter-pool safety: the claim route picks the first AVAILABLE starter
  *      ORDER BY parcel_code — fixture codes start with '0' ('0' < 'p') so they
@@ -36,8 +39,9 @@
  *      deterministically consume the fixtures, never live supply.
  */
 
-import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
+import { describe, it, expect, beforeAll, afterAll, mock } from 'bun:test';
 import * as dbMod from '@clawville/database';
+import * as realClv from '../../services/linked-wallet-clv-balance';
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { eq, inArray } from 'drizzle-orm';
@@ -60,6 +64,45 @@ import type { AppContext } from '../../types';
 
 const HAS_DB = !!process.env.DATABASE_URL;
 const describeIfDb = HAS_DB ? describe : describe.skip;
+
+// ── CLV-reader module mock (leak-guarded — market.test.ts pattern) ──────────
+// The sweeper's non-grandfathered hold branch resolves LIVE CLV through two
+// MAINNET readers (`getLinkedWalletClvBalance` for hold_subject='user',
+// `getWalletClvBalance` for hold_subject='agent'). The mixed-subject tests
+// below must control EACH subject's wallet independently and never touch an
+// RPC, so both readers are module-mocked with a PASSTHROUGH default: while
+// `clvIntercept` is false (everywhere except inside the mixed-subject
+// describe, and in every later test FILE in this process — mock.module
+// persists), callers get the REAL functions.
+let clvIntercept = false;
+let mockUserClv: realClv.ClvBalanceResult = clvOkResult(0);
+let mockAgentClv: realClv.ClvBalanceResult = clvOkResult(0);
+const REAL_getLinkedWalletClvBalance = realClv.getLinkedWalletClvBalance;
+const REAL_getWalletClvBalance = realClv.getWalletClvBalance;
+
+/** A confirmed on-chain read — the sweeper only consumes `available` + `uiAmount`. */
+function clvOkResult(uiAmount: number): realClv.ClvBalanceResult {
+  return {
+    available: true,
+    amountAtomic: (BigInt(Math.round(uiAmount)) * 1_000_000n).toString(),
+    decimals: 6,
+    uiAmount,
+    cached: false,
+    fetchedAt: new Date().toISOString(),
+  };
+}
+
+mock.module('../../services/linked-wallet-clv-balance', () => ({
+  ...realClv,
+  getLinkedWalletClvBalance: async (userId: string) => {
+    if (!clvIntercept) return REAL_getLinkedWalletClvBalance(userId);
+    return { linked: true, walletPubkey: 'mock-linked-wallet', clv: mockUserClv };
+  },
+  getWalletClvBalance: async (walletPubkey: string) => {
+    if (!clvIntercept) return REAL_getWalletClvBalance(walletPubkey);
+    return mockAgentClv;
+  },
+}));
 
 // ═════════════════════════════════════════════════════════════════════════
 // 1a. Hold stacking math (pure — the SHARED constants the route/sweeper sum)
@@ -761,5 +804,162 @@ describeIfDb('phase B — money-path E2E (requires DATABASE_URL + migration 0013
     });
     expect(res.status).toBe(403);
     expect(((await res.json()) as { error?: string }).error).toBe('not_parcel_owner');
+  });
+
+  // ─── B2 mixed-subject stacked holds — the per-subject SUM re-check ────────
+  //
+  // REGRESSION (fixed 2026-07-09): the sweeper's stacked-requirement SUM was
+  // subject-BLIND — it summed the thresholds of BOTH hold_subjects and
+  // compared that cross-subject total against ONE subject's wallet
+  // (resolveHoldClv reads 'user' → linked wallet, 'agent' → custodial wallet —
+  // different wallets), wrongly gracing a fully-funded hold whenever the same
+  // avatar also held under the OTHER subject. The two "KEEPS" tests FAIL on
+  // the old code and PASS with the hold_subject-scoped SUM; the "still
+  // GRACES" test proves the fix scoped the check rather than disabling it.
+
+  describe('mixed-subject stacked holds (per-subject CLV re-check)', () => {
+    const MIXED_EMAIL = `${TEST_TAG}-mixed@clawville-test.com`;
+    const userHoldCode = `0${TEST_TAG}mu`;
+    const agentHoldCode = `0${TEST_TAG}ma`;
+    let mixedUserId = '';
+    let mixedAvatarId = '';
+    let userHoldId = '';
+    let agentHoldId = '';
+
+    beforeAll(async () => {
+      const mixed = await signupAndCreateAvatar(MIXED_EMAIL);
+      mixedUserId = mixed.userId;
+      mixedAvatarId = mixed.avatarId;
+      // The 'agent' branch of resolveHoldClv reads avatars.wallet_address to
+      // reach the custodial-wallet CLV reader (mocked here) — stamp one. The
+      // 'user' branch reads avatars.user_id (already set by signup) and goes
+      // through the (mocked) linked-wallet reader, so no users-table stamp is
+      // needed.
+      await dbMod.db
+        .update(dbMod.avatars)
+        .set({ walletAddress: `0${TEST_TAG}AgentCustodialWallet` })
+        .where(eq(dbMod.avatars.id, mixedAvatarId));
+
+      // ONE avatar, TWO live non-grandfathered holds under DIFFERENT subjects:
+      // a 'user' c-tier hold (100k CLV) + an 'agent' b-tier hold (500k CLV),
+      // both due now, neither in grace. Unique high-offset grid coords +
+      // '0'-prefixed codes per the fixture convention (sort before real
+      // supply; never collide).
+      const [userHold] = await dbMod.db
+        .insert(dbMod.landParcels)
+        .values({
+          parcelCode: userHoldCode,
+          tier: 'c' as const,
+          status: 'owned' as const,
+          priceCt: 500,
+          ownerAvatarId: mixedAvatarId,
+          tenure: 'hold' as const,
+          grandfathered: false,
+          holdSubject: 'user' as const,
+          holdThresholdCt: 100_000,
+          rentCtWeekly: 100,
+          rentPaidThrough: new Date(Date.now() - 1000),
+          acquiredAt: new Date(),
+          ...nextGrid(),
+        })
+        .returning();
+      userHoldId = userHold.id as string;
+
+      const [agentHold] = await dbMod.db
+        .insert(dbMod.landParcels)
+        .values({
+          parcelCode: agentHoldCode,
+          tier: 'b' as const,
+          status: 'owned' as const,
+          priceCt: 2500,
+          ownerAvatarId: mixedAvatarId,
+          tenure: 'hold' as const,
+          grandfathered: false,
+          holdSubject: 'agent' as const,
+          holdThresholdCt: 500_000,
+          rentCtWeekly: 100,
+          rentPaidThrough: new Date(Date.now() - 1000),
+          acquiredAt: new Date(),
+          ...nextGrid(),
+        })
+        .returning();
+      agentHoldId = agentHold.id as string;
+
+      clvIntercept = true; // route the two CLV readers to the mocks
+    });
+
+    afterAll(async () => {
+      clvIntercept = false; // NEVER leak the mock into later tests/files
+      await dbMod.db
+        .delete(dbMod.landParcels)
+        .where(inArray(dbMod.landParcels.parcelCode, [userHoldCode, agentHoldCode]));
+      if (mixedUserId) {
+        await dbMod.db.delete(dbMod.avatars).where(eq(dbMod.avatars.userId, mixedUserId));
+        await dbMod.db.delete(dbMod.users).where(eq(dbMod.users.id, mixedUserId));
+      }
+    });
+
+    it('KEEPS a fully-funded agent hold when a user hold coexists (agent wallet == agent-subject sum; subject-blind sum would grace)', async () => {
+      await setBalance(mixedAvatarId, 1_000); // plenty for the 100 CT upkeep
+      // Agent custodial wallet covers EXACTLY the agent-subject stack (500k),
+      // NOT user+agent (600k). Linked user wallet deliberately EMPTY — if the
+      // sweeper consults the wrong reader or the wrong sum, this fails.
+      mockAgentClv = clvOkResult(500_000);
+      mockUserClv = clvOkResult(0);
+      const treasuryBefore = await treasuryBalance();
+
+      const action = await processDueParcel(agentHoldId);
+      // OLD subject-blind code: required = 100k + 500k = 600k > 500k → 'graced'.
+      // Per-subject fix: required = 500k == 500k → upkeep charges, hold kept.
+      expect(action.kind).toBe('charged');
+
+      expect(await getBalance(mixedAvatarId)).toBe(900); // weekly upkeep debited
+      expect(await treasuryBalance()).toBe(treasuryBefore + 100);
+      const row = await getParcelByCode(agentHoldCode);
+      expect(row.graceUntil).toBeNull(); // no grace window opened
+      expect(row.ownerAvatarId).toBe(mixedAvatarId);
+    });
+
+    it('KEEPS a fully-funded user hold in the symmetric direction (user wallet == user-subject sum)', async () => {
+      // Defensive: make this direction INDEPENDENTLY damning on the old
+      // subject-blind code. If the previous test failed there, it left the
+      // AGENT hold in grace, and the sum's grace carve-out would then mask
+      // this test's cross-count. Under the fixed code the previous charge
+      // already cleared grace, so this is a no-op.
+      await dbMod.db
+        .update(dbMod.landParcels)
+        .set({ graceUntil: null })
+        .where(eq(dbMod.landParcels.id, agentHoldId));
+      const balBefore = await getBalance(mixedAvatarId);
+      // Linked wallet covers EXACTLY the user-subject stack (100k); custodial
+      // agent wallet deliberately empty — must not be consulted for a 'user' hold.
+      mockUserClv = clvOkResult(100_000);
+      mockAgentClv = clvOkResult(0);
+      const treasuryBefore = await treasuryBalance();
+
+      const action = await processDueParcel(userHoldId);
+      // OLD subject-blind code: required = 600k > 100k → 'graced'.
+      expect(action.kind).toBe('charged');
+
+      expect(await getBalance(mixedAvatarId)).toBe(balBefore - 100);
+      expect(await treasuryBalance()).toBe(treasuryBefore + 100);
+      const row = await getParcelByCode(userHoldCode);
+      expect(row.graceUntil).toBeNull();
+      expect(row.ownerAvatarId).toBe(mixedAvatarId);
+    });
+
+    it("still GRACES when the subject's OWN wallet is short — the fix scoped the sum, it did not disable the check", async () => {
+      await forceDue(agentHoldId); // the first test advanced its week
+      const balBefore = await getBalance(mixedAvatarId);
+      mockAgentClv = clvOkResult(499_999); // 1 CLV below the agent-subject stack
+
+      const action = await processDueParcel(agentHoldId);
+      expect(action.kind).toBe('graced');
+
+      expect(await getBalance(mixedAvatarId)).toBe(balBefore); // no upkeep charged on grace
+      const row = await getParcelByCode(agentHoldCode);
+      expect(row.graceUntil).not.toBeNull(); // grace window opened, parcel not reverted
+      expect(row.ownerAvatarId).toBe(mixedAvatarId);
+    });
   });
 });
