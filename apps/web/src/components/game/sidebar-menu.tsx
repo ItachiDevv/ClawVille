@@ -64,6 +64,7 @@ import { useLocationAgent } from '@/hooks/use-locations';
 import { useAvatar } from '@/hooks/use-avatar';
 import { useIsMobile } from '@/hooks/use-is-mobile';
 import { api } from '@/lib/api';
+import { useAuthMe } from '@/hooks/use-auth-me';
 
 // Responsive: uses the global `useIsMobile` which catches iPad-on-Mac-UA
 // via `navigator.maxTouchPoints > 1`. The previous local hook was a
@@ -691,11 +692,7 @@ function SidebarContent({ closeMenu }: SidebarContentProps) {
   // or unprovisioned users.
   const { data: avatar } = useAvatar();
   const hasAvatar = !!avatar;
-  const { data: authData, isLoading: authLoading } = useQuery({
-    queryKey: ['auth-me'],
-    queryFn: () => api.me(),
-    retry: false,
-  });
+  const { data: authData, isLoading: authLoading } = useAuthMe();
   const showLogout = !!authData?.user && !authData.user.isGuest;
 
   // P2 (2026-07-04) — the durable "Player tier / Upgrade to Trainer" framing
