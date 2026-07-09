@@ -24,7 +24,13 @@
  *        SOL/USDC/CLV out of their custodial avatar wallet to a self-custody
  *        destination. REQUIRES an `Idempotency-Key` header — the
  *        (subject, key) UNIQUE makes any retry replay the existing row's
- *        state, never a second withdrawal.
+ *        state, never a second withdrawal. NO daily caps (removed 2026-07-09).
+ *        CLV ONLY: a withdrawal that would drop the custodial CLV below the
+ *        avatar's stacked agent-subject LAND-HOLD requirement refuses 409
+ *        `hold_at_risk` (+ `holdAtRisk` payload) unless the body carries
+ *        `acknowledgeHoldLoss: true` — informed consent, not enforcement (the
+ *        land rent sweeper owns enforcement). The refusal is PRE-ROW, so the
+ *        acknowledged retry reuses the same Idempotency-Key cleanly.
  *   GET  /api/wallet/balances — the caller's custodial-wallet SOL+USDC+CLV
  *        balances (atomic + ui). Read-only; available regardless of the flag.
  *
@@ -78,6 +84,12 @@ const withdrawSchema = z
     amountAtomic: z.string().regex(/^\d{1,20}$/),
     /** Base58 destination pubkey (executor re-validates: 32 bytes, ON-CURVE, non-self). */
     destination: z.string().min(32).max(44),
+    /** CLV-only consent flag: a `hold_at_risk` 409 told the caller this
+     *  withdrawal drops their custodial CLV below their stacked agent-subject
+     *  land-hold requirement; retrying with `true` (same Idempotency-Key —
+     *  the refusal created no row) proceeds. Bypasses ONLY that consent gate;
+     *  NOT part of the idempotency identity. */
+    acknowledgeHoldLoss: z.boolean().optional(),
   })
   .strict();
 
@@ -86,7 +98,7 @@ const withdrawSchema = z
 const IDEMPOTENCY_KEY_RE = /^[A-Za-z0-9_-]{8,64}$/;
 
 /** Map an executor refusal to its HTTP status (documented in the API contract). */
-function errorStatus(code: Extract<WithdrawResult, { ok: false }>['code']): 400 | 403 | 404 | 409 | 429 | 500 | 502 | 503 {
+function errorStatus(code: Extract<WithdrawResult, { ok: false }>['code']): 400 | 403 | 404 | 409 | 500 | 502 | 503 {
   switch (code) {
     case 'withdraw_disabled':
       return 503;
@@ -103,9 +115,10 @@ function errorStatus(code: Extract<WithdrawResult, { ok: false }>['code']): 400 
     case 'capture_lost':
     case 'not_resumable':
     case 'idempotency_conflict':
+    // CLV consent gate: retry with `acknowledgeHoldLoss: true` (same key —
+    // no row was created) to proceed. Body carries the `holdAtRisk` payload.
+    case 'hold_at_risk':
       return 409;
-    case 'daily_cap_exceeded':
-      return 429;
     case 'balance_unavailable':
     case 'transient_failure':
     case 'resume_transient':
@@ -164,6 +177,7 @@ walletWithdrawRoutes.post(
       amountAtomic: parsed.data.amountAtomic,
       destination: parsed.data.destination,
       idempotencyKey,
+      acknowledgeHoldLoss: parsed.data.acknowledgeHoldLoss,
     });
 
     if (!result.ok) {
@@ -174,6 +188,9 @@ walletWithdrawRoutes.post(
           ...(result.detail ? { detail: result.detail } : {}),
           ...(result.withdrawalId ? { withdrawalId: result.withdrawalId } : {}),
           ...(result.txSignature ? { txSignature: result.txSignature } : {}),
+          // `hold_at_risk` ONLY — the consent-gate payload the UI renders
+          // (required vs post-withdrawal CLV + the at-risk parcels).
+          ...(result.holdAtRisk ? { holdAtRisk: result.holdAtRisk } : {}),
         },
         errorStatus(result.code),
       );

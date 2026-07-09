@@ -93,11 +93,23 @@ export class ApiError extends Error {
   txSignature?: string;
   /** Present on some withdraw refusals — the withdrawal row id (support ref). */
   withdrawalId?: string;
+  /**
+   * Present ONLY on the withdraw `hold_at_risk` 409 (CLV consent gate) — the
+   * land-hold figures the consent UI renders. Additive, like `detail`.
+   * Undefined when the body's payload is missing/malformed — the UI must
+   * still treat `code === 'hold_at_risk'` as consent-required.
+   */
+  holdAtRisk?: WithdrawHoldAtRisk;
   constructor(
     message: string,
     status: number,
     code?: string,
-    extras?: { detail?: string; txSignature?: string; withdrawalId?: string },
+    extras?: {
+      detail?: string;
+      txSignature?: string;
+      withdrawalId?: string;
+      holdAtRisk?: WithdrawHoldAtRisk;
+    },
   ) {
     super(message);
     this.name = 'ApiError';
@@ -106,7 +118,53 @@ export class ApiError extends Error {
     this.detail = extras?.detail;
     this.txSignature = extras?.txSignature;
     this.withdrawalId = extras?.withdrawalId;
+    this.holdAtRisk = extras?.holdAtRisk;
   }
+}
+
+/**
+ * The withdraw `hold_at_risk` 409 payload (routes/wallet-withdraw.ts) — a CLV
+ * withdrawal that would drop the custodial wallet below its stacked land-hold
+ * requirement. INFORMED CONSENT, not enforcement: no withdrawal row exists,
+ * nothing was sent; re-POSTing the SAME payload + SAME Idempotency-Key with
+ * `acknowledgeHoldLoss: true` proceeds cleanly.
+ */
+export interface WithdrawHoldAtRisk {
+  /** Total CLV (uiAmount, integer) the account's land holds require. */
+  requiredUiAmount: number;
+  /** Post-withdrawal CLV balance as an exact 6dp decimal string ("400.000000"). */
+  postUiAmount: string;
+  /** Each parcel whose hold this withdrawal would break. */
+  parcels: Array<{ parcelCode: string; holdThresholdCt: number }>;
+}
+
+/** Defensive parse of the `holdAtRisk` 409 payload — never trust the wire.
+ *  Returns undefined on any shape mismatch (UI falls back to no-figures copy). */
+function parseHoldAtRisk(raw: unknown): WithdrawHoldAtRisk | undefined {
+  if (typeof raw !== 'object' || raw === null) return undefined;
+  const o = raw as Record<string, unknown>;
+  if (
+    typeof o.requiredUiAmount !== 'number' ||
+    !Number.isFinite(o.requiredUiAmount) ||
+    typeof o.postUiAmount !== 'string' ||
+    !Array.isArray(o.parcels)
+  ) {
+    return undefined;
+  }
+  const parcels: Array<{ parcelCode: string; holdThresholdCt: number }> = [];
+  for (const p of o.parcels) {
+    if (typeof p !== 'object' || p === null) return undefined;
+    const pp = p as Record<string, unknown>;
+    if (
+      typeof pp.parcelCode !== 'string' ||
+      typeof pp.holdThresholdCt !== 'number' ||
+      !Number.isFinite(pp.holdThresholdCt)
+    ) {
+      return undefined;
+    }
+    parcels.push({ parcelCode: pp.parcelCode, holdThresholdCt: pp.holdThresholdCt });
+  }
+  return { requiredUiAmount: o.requiredUiAmount, postUiAmount: o.postUiAmount, parcels };
 }
 
 /** Pull the optional typed-error extras out of a parsed error body. */
@@ -114,11 +172,13 @@ function apiErrorExtras(err: Record<string, unknown>): {
   detail?: string;
   txSignature?: string;
   withdrawalId?: string;
+  holdAtRisk?: WithdrawHoldAtRisk;
 } {
   return {
     detail: typeof err.detail === 'string' ? err.detail : undefined,
     txSignature: typeof err.txSignature === 'string' ? err.txSignature : undefined,
     withdrawalId: typeof err.withdrawalId === 'string' ? err.withdrawalId : undefined,
+    holdAtRisk: parseHoldAtRisk(err.holdAtRisk),
   };
 }
 
@@ -497,11 +557,23 @@ export const api = {
    * mint a fresh key per confirmed attempt and REUSE it when retrying the
    * SAME attempt — the server replays the existing withdrawal's state for a
    * reused key, so a retry can never double-send. Refusals throw
-   * ApiError{status, code, detail?, txSignature?, withdrawalId?} — branch on
-   * `err.code`, never the message.
+   * ApiError{status, code, detail?, txSignature?, withdrawalId?, holdAtRisk?}
+   * — branch on `err.code`, never the message.
+   *
+   * CLV consent gate: a CLV withdrawal that would drop the wallet below its
+   * land-hold requirement 409s with `code:'hold_at_risk'` + `err.holdAtRisk`
+   * BEFORE any row exists. After explicit user consent, re-POST the SAME
+   * payload with `acknowledgeHoldLoss: true` REUSING the SAME Idempotency-Key
+   * — the unacknowledged 409 created no row, so the acked retry proceeds
+   * cleanly. Never set `acknowledgeHoldLoss` without the user's consent.
    */
   withdraw: (
-    body: { asset: WithdrawAsset; amountAtomic: string; destination: string },
+    body: {
+      asset: WithdrawAsset;
+      amountAtomic: string;
+      destination: string;
+      acknowledgeHoldLoss?: boolean;
+    },
     idempotencyKey: string,
   ) =>
     request<WithdrawResponse>('/api/wallet/withdraw', {

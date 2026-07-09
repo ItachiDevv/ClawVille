@@ -71,11 +71,15 @@
  *   balance     — amount ≤ on-chain balance; the source keeps
  *                 rent-exempt-minimum + tx fee (+ dest-ATA rent when the token
  *                 destination has no ATA yet) of SOL — never drained below.
- *   daily cap   — optional per-asset env caps (`WALLET_WITHDRAW_DAILY_CAP_
- *                 {SOL,USDC,CLV}`, UI units); the SUM of the avatar's
- *                 pending+sending+sent rows today (UTC), INCLUDING the new
- *                 row, must stay ≤ cap. Checked post-insert so concurrent
- *                 bursts fail closed.
+ *   CLV hold    — INFORMED-CONSENT gate (2026-07-09; NOT enforcement — the
+ *                 land rent sweeper owns enforcement): a CLV withdrawal that
+ *                 would drop the custodial balance below the avatar's stacked
+ *                 AGENT-subject land-hold requirement refuses typed
+ *                 `hold_at_risk` (409) UNLESS the request carries
+ *                 `acknowledgeHoldLoss: true`. PRE-ROW (no row inserted on
+ *                 refusal); FAIL-OPEN on the threshold-query error only.
+ *                 There are NO daily caps (removed 2026-07-09 by founder
+ *                 decision — the balance/fee guards are the only limits).
  *   Balance-read failure ⇒ REFUSE (`balance_unavailable`) — never fail-open.
  *
  * ── LEDGER-UNTOUCHED ────────────────────────────────────────────────────────
@@ -110,10 +114,9 @@ import {
   eq,
   lt,
   sql,
-  inArray,
-  gte,
   type WithdrawalRow,
 } from '@clawville/database';
+import { alertError, type AlertErrorParams } from './alert-error';
 import { decryptWalletRow } from './keypair-vault';
 import { getClvMainnetConnection } from './clv-swap-custody';
 import { readSplTokenBalance } from './solana-token-balance';
@@ -186,12 +189,6 @@ export type WithdrawAsset = (typeof WITHDRAW_ASSETS)[number];
 export const SOL_DECIMALS = 9;
 export const USDC_DECIMALS = 6;
 export const CLV_DECIMALS = 6;
-
-const ASSET_DECIMALS: Record<WithdrawAsset, number> = {
-  SOL: SOL_DECIMALS,
-  USDC: USDC_DECIMALS,
-  CLV: CLV_DECIMALS,
-};
 
 /** Classic SPL Token program (USDC). */
 const TOKEN_PROGRAM_ID = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
@@ -381,31 +378,37 @@ export function resolveWithdrawSubject(
 }
 
 // ---------------------------------------------------------------------------
-// Env caps (per-asset, UI units — deterministic; no price oracle involved)
+// CLV land-hold consent gate (2026-07-09) — types + formatting
 // ---------------------------------------------------------------------------
+// There are NO daily caps (removed 2026-07-09 by founder decision). The only
+// per-request limits are the balance/fee guards above and, for CLV, the
+// informed-consent hold gate below — which warns, never enforces (the land
+// rent sweeper owns hold enforcement; see land-rent-sweeper.ts `sweepHold`).
 
-/** Parse a UI-unit decimal string ("1.5") into atomic units at `decimals`,
- *  floored. null on invalid/absent input (= no cap). '0' = block-all cap. */
-export function parseUiAmountToAtomic(raw: string | undefined, decimals: number): bigint | null {
-  if (raw === undefined) return null;
-  const trimmed = raw.trim();
-  if (!/^\d{1,12}(\.\d{1,12})?$/.test(trimmed)) return null;
-  const [ints, frac = ''] = trimmed.split('.');
-  return BigInt(ints) * 10n ** BigInt(decimals) + BigInt((frac + '0'.repeat(decimals)).slice(0, decimals));
+/** The avatar's stacked AGENT-subject land-hold requirement (CLV uiAmount). */
+export interface HoldRequirement {
+  /** SUM(hold_threshold_ct) over the avatar's agent-subject, non-grandfathered
+   *  'hold' parcels — CLV **uiAmount** integer (despite the `_ct` suffix; see
+   *  packages/database/src/schema/land.ts `holdThresholdCt`). */
+  requiredUiAmount: number;
+  parcels: Array<{ parcelCode: string; holdThresholdCt: number }>;
 }
 
-/** `WALLET_WITHDRAW_DAILY_CAP_{SOL,USDC,CLV}` — optional per-asset per-avatar
- *  daily cap in UI units. Unset/invalid ⇒ no cap. '0' ⇒ blocks the asset. */
-export function resolveWithdrawDailyCapAtomic(asset: WithdrawAsset): bigint | null {
-  return parseUiAmountToAtomic(
-    process.env[`WALLET_WITHDRAW_DAILY_CAP_${asset}`],
-    ASSET_DECIMALS[asset],
-  );
+/** The `hold_at_risk` refusal payload (surfaced verbatim in the 409 body). */
+export interface HoldAtRiskDetail {
+  /** Total CLV (uiAmount, integer) the avatar's agent-subject holds require. */
+  requiredUiAmount: number;
+  /** Post-withdrawal CLV balance as an exact 6dp decimal string (e.g. "400.000000"). */
+  postUiAmount: string;
+  parcels: Array<{ parcelCode: string; holdThresholdCt: number }>;
 }
 
-/** Start of the current UTC day (the daily-cap window). */
-export function utcDayStart(now = new Date()): Date {
-  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+/** Exact decimal string for an atomic amount (no float math on money). */
+export function atomicToDecimalString(atomic: bigint, decimals: number): string {
+  const base = 10n ** BigInt(decimals);
+  const whole = atomic / base;
+  const frac = (atomic % base).toString().padStart(decimals, '0');
+  return `${whole}.${frac}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -452,13 +455,13 @@ export interface WalletWithdrawDb {
   markSent(id: string, claimId: string): Promise<boolean>;
   /** Definitive failure of a CLAIMED row (on-chain err / custody refusal). */
   markFailed(id: string, claimId: string, reason: string): Promise<void>;
-  /** Definitive failure of an UNCLAIMED pending row (daily cap, post-insert). */
-  markPendingFailed(id: string, reason: string): Promise<void>;
   /** TERMINAL — money-state UNKNOWN; operator resolution, never auto-retried. */
   markReconcile(id: string, claimId: string, reason: string): Promise<void>;
-  /** SUM(amount_atomic) of the avatar's pending+sending+sent rows for the
-   *  asset since `since` (the daily-cap window; includes the caller's row). */
-  sumSinceAtomic(avatarId: string, asset: WithdrawAsset, since: Date): Promise<bigint>;
+  /** The avatar's stacked AGENT-subject land-hold requirement (consent gate).
+   *  Mirrors the land-rent-sweeper stacked-SUM semantics: tenure='hold' AND
+   *  hold_subject='agent' AND grandfathered=false. A THROW here FAILS OPEN
+   *  (the gate is consent, not enforcement). */
+  getAgentHoldRequirement(avatarId: string): Promise<HoldRequirement>;
   listStaleSending(cutoff: Date, limit: number): Promise<WithdrawalRow[]>;
 }
 
@@ -495,6 +498,9 @@ export interface WalletWithdrawDeps {
     conn: Connection,
     signature: string,
   ) => Promise<'confirmed' | 'failed' | 'not_found'>;
+  /** Ops alert channel (resume worker pages on reconcile). Default: alertError
+   *  (Telegram, never-throws). Injectable so tests observe the page. */
+  alert?: (params: AlertErrorParams) => Promise<void>;
 }
 
 function pgUniqueViolation(err: unknown): boolean {
@@ -502,8 +508,6 @@ function pgUniqueViolation(err: unknown): boolean {
     (err as { code?: string })?.code ?? (err as { cause?: { code?: string } })?.cause?.code;
   return code === '23505';
 }
-
-const CAP_STATUSES = ['pending', 'sending', 'sent'] as const;
 
 const defaultDb: WalletWithdrawDb = {
   async getWalletPubkey(avatarId) {
@@ -636,18 +640,6 @@ const defaultDb: WalletWithdrawDb = {
         ),
       );
   },
-  async markPendingFailed(id, reason) {
-    await db
-      .update(withdrawals)
-      .set({ status: 'failed', failureReason: reason })
-      .where(
-        and(
-          eq(withdrawals.id, id),
-          eq(withdrawals.status, 'pending'),
-          sql`${withdrawals.txSignature} IS NULL`,
-        ),
-      );
-  },
   async markReconcile(id, claimId, reason) {
     await db
       .update(withdrawals)
@@ -660,20 +652,36 @@ const defaultDb: WalletWithdrawDb = {
         ),
       );
   },
-  async sumSinceAtomic(avatarId, asset, since) {
-    const [row] = await db
-      .select({ total: sql<string>`COALESCE(SUM(${withdrawals.amountAtomic}), 0)::text` })
-      .from(withdrawals)
-      .where(
-        and(
-          eq(withdrawals.avatarId, avatarId),
-          eq(withdrawals.asset, asset),
-          inArray(withdrawals.status, [...CAP_STATUSES]),
-          gte(withdrawals.createdAt, since),
-        ),
-      );
-    // numeric SUM comes back as a decimal string like "1500" (scale 0).
-    return BigInt((row?.total ?? '0').split('.')[0] || '0');
+  async getAgentHoldRequirement(avatarId) {
+    // Mirrors the land-rent-sweeper stacked-requirement semantics (its
+    // `resolveHoldClv` + SUM query, land-rent-sweeper.ts ~§hold): ONLY
+    // AGENT-subject holds are backed by THIS custodial wallet
+    // (hold_subject='user' checks the human's LINKED wallet — unaffected by a
+    // custodial withdrawal); grandfathered legacy holds are never CLV-checked
+    // and are EXCLUDED from the stacked sum. `hold_threshold_ct` is CLV
+    // **uiAmount** (integer), despite the `_ct` suffix — see
+    // packages/database/src/schema/land.ts. One query returns the per-parcel
+    // list; the stacked SUM derives from the same snapshot in JS (ownership
+    // cap keeps this a handful of rows).
+    const rows = await db.execute<{ parcel_code: string; hold_threshold_ct: number | string }>(
+      sql`SELECT parcel_code, hold_threshold_ct
+          FROM land_parcels
+          WHERE owner_avatar_id = ${avatarId}
+            AND tenure = 'hold'
+            AND hold_subject = 'agent'
+            AND grandfathered = false
+            AND hold_threshold_ct IS NOT NULL`,
+    );
+    const parcels = Array.from(
+      rows as Iterable<{ parcel_code: string; hold_threshold_ct: number | string }>,
+    ).map((r) => ({
+      parcelCode: r.parcel_code,
+      holdThresholdCt: Number(r.hold_threshold_ct),
+    }));
+    return {
+      requiredUiAmount: parcels.reduce((sum, p) => sum + p.holdThresholdCt, 0),
+      parcels,
+    };
   },
   async listStaleSending(cutoff, limit) {
     const n = Math.min(Math.max(1, Math.floor(limit)), 100);
@@ -735,6 +743,7 @@ function resolveDeps(deps?: WalletWithdrawDeps): Required<WalletWithdrawDeps> {
           ? 'confirmed'
           : 'not_found';
       }),
+    alert: deps?.alert ?? alertError,
   };
 }
 
@@ -763,7 +772,7 @@ export type WithdrawErrorCode =
   | 'balance_unavailable' // on-chain balance read failed — REFUSE, never fail-open
   | 'insufficient_balance' // amount > on-chain balance
   | 'insufficient_sol_for_fee' // source can't keep rent-exempt min + fee (+ dest-ATA rent)
-  | 'daily_cap_exceeded' // per-asset daily cap tripped (row marked failed)
+  | 'hold_at_risk' // CLV consent gate: withdrawal would break a land hold; retry with acknowledgeHoldLoss
   | 'idempotency_conflict' // the key was reused with a DIFFERENT asset/amount/destination
   | 'withdrawal_in_flight' // a live 'sending' claim holds the row
   | 'withdrawal_failed' // replay of a terminal 'failed' row
@@ -786,6 +795,9 @@ export type WithdrawResult =
       detail?: string;
       withdrawalId?: string;
       txSignature?: string | null;
+      /** Present ONLY on `hold_at_risk` — the consent-gate payload the route
+       *  surfaces verbatim in the 409 body. */
+      holdAtRisk?: HoldAtRiskDetail;
     };
 
 function toView(row: WithdrawalRow): WithdrawalView {
@@ -836,6 +848,12 @@ function replayRow(row: WithdrawalRow, resumed = false): WithdrawResult {
  * reused key with a DIFFERENT asset/amount/destination is a client bug (or an
  * attack) and silently replaying the OLD withdrawal would mislead the caller
  * into believing a NEW one happened. Stripe-style: refuse loudly.
+ *
+ * `acknowledgeHoldLoss` is DELIBERATELY NOT compared — it is a consent flag,
+ * not part of the withdrawal identity. The unacknowledged `hold_at_risk`
+ * refusal created NO row, so the acknowledged retry with the same key inserts
+ * cleanly; and a later replay of an acknowledged row without the flag is
+ * still the same withdrawal.
  */
 function idempotencyBodyMatches(row: WithdrawalRow, input: WithdrawRequest): boolean {
   const normalizedAmount = /^\d+$/.test(input.amountAtomic)
@@ -901,14 +919,21 @@ export interface WithdrawRequest {
   destination: string;
   /** REQUIRED — the (subject, key) UNIQUE makes a retry replay, never re-send. */
   idempotencyKey: string;
+  /** CLV-only consent flag: `true` bypasses ONLY the `hold_at_risk` consent
+   *  gate (the caller has been told the withdrawal breaks their land hold and
+   *  accepts losing the parcel(s) to the rent sweeper). It relaxes NOTHING
+   *  else — balance/fee/on-curve/self-send and every exactly-once guard are
+   *  untouched. NOT part of the idempotency identity. */
+  acknowledgeHoldLoss?: boolean;
 }
 
 /**
- * Validate → idempotency-replay → insert 'pending' → daily-cap check →
- * claim+sign+capture+send+confirm, synchronously. Every path either returns a
- * typed refusal or drives the row to a terminal/'sent' state. NEVER throws for
- * expected money-path outcomes; throws only on the dark-gate/network-guard
- * violations (programming/config errors, loud by design).
+ * Validate → idempotency-replay → balance/fee guards → CLV hold consent gate →
+ * insert 'pending' → claim+sign+capture+send+confirm, synchronously. Every
+ * path either returns a typed refusal or drives the row to a terminal/'sent'
+ * state. NEVER throws for expected money-path outcomes; throws only on the
+ * dark-gate/network-guard violations (programming/config errors, loud by
+ * design).
  */
 export async function requestWithdrawal(
   input: WithdrawRequest,
@@ -964,6 +989,9 @@ export async function requestWithdrawal(
   // 4) Balance + fee headroom (fail CLOSED on read failure — never fail-open).
   let feeReserveLamports: bigint;
   let destAtaMissing = false;
+  // The live CLV atomic balance, captured on the CLV branch below — feeds the
+  // hold consent gate (4b) without a second RPC read.
+  let currentClvAtomic = 0n;
   try {
     const rentMin = await d.getRentExemptMinimum(conn, 0);
     const solBalance = await d.getSolBalance(conn, sourcePubkey);
@@ -994,6 +1022,7 @@ export async function requestWithdrawal(
           detail: `have=${token.amountAtomic} want=${v.amount}`,
         };
       }
+      if (input.asset === 'CLV') currentClvAtomic = token.amountAtomic;
       // Dest ATA rent rides the fee headroom when the ATA doesn't exist yet
       // (the CreateIdempotent's rent is paid by the SOURCE custodial wallet).
       const destAta = findAtaForProgram(v.destination, spec);
@@ -1013,6 +1042,53 @@ export async function requestWithdrawal(
       `[wallet-withdraw] balance read failed (refusing, fail-closed): ${(err as Error).message}`,
     );
     return { ok: false, code: 'balance_unavailable' };
+  }
+
+  // 4b) CLV HOLD CONSENT GATE (2026-07-09) — INFORMED CONSENT ONLY;
+  //     enforcement stays with the land rent sweeper (nothing is released,
+  //     graced, or lapsed here). PRE-ROW: this refusal happens BEFORE the
+  //     insert, so no withdrawal row ever exists for an unacknowledged
+  //     attempt and the acknowledged retry with the SAME Idempotency-Key
+  //     proceeds cleanly. Only AGENT-subject holds are checked — they are the
+  //     ones backed by THIS custodial wallet ('user' holds check the human's
+  //     LINKED wallet and are unaffected); grandfathered holds are excluded —
+  //     both exactly matching the sweeper's stacked-requirement semantics.
+  //     `acknowledgeHoldLoss === true` bypasses ONLY this gate; every guard
+  //     above (balance/fee/on-curve/self-send) already ran and every
+  //     exactly-once guard below is untouched.
+  if (input.asset === 'CLV' && input.acknowledgeHoldLoss !== true) {
+    try {
+      const hold = await d.db.getAgentHoldRequirement(input.subject.avatarId);
+      if (hold.requiredUiAmount > 0) {
+        // Compare in ATOMIC BigInt (CLV 6dp pinned) — never float math on
+        // money. `hold_threshold_ct` is a CLV uiAmount integer.
+        const requiredAtomic = BigInt(hold.requiredUiAmount) * 10n ** BigInt(CLV_DECIMALS);
+        const postAtomic = currentClvAtomic - v.amount; // ≥ 0 (balance-checked in step 4)
+        if (postAtomic < requiredAtomic) {
+          return {
+            ok: false,
+            code: 'hold_at_risk',
+            detail: 'clv_withdrawal_breaks_land_hold',
+            holdAtRisk: {
+              requiredUiAmount: hold.requiredUiAmount,
+              postUiAmount: atomicToDecimalString(postAtomic, CLV_DECIMALS),
+              parcels: hold.parcels,
+            },
+          };
+        }
+      }
+    } catch (err) {
+      // FAIL-OPEN on the threshold-query error ONLY (deliberate, per spec):
+      // a DB/infra hiccup must never block a user withdrawing their OWN
+      // assets. Safe because this gate is CONSENT, not enforcement — the
+      // land rent sweeper re-checks the live CLV balance every pass and its
+      // grace window catches an unbacked hold next sweep; the worst case is
+      // a missed warning, never lost funds or a bypassed money guard.
+      console.warn(
+        `[wallet-withdraw] hold-threshold query failed (fail-open, consent gate skipped): ` +
+          `${(err as Error).message}`,
+      );
+    }
   }
 
   // 5) INSERT the pending row (durable intent BEFORE anything signs).
@@ -1052,23 +1128,9 @@ export async function requestWithdrawal(
     return replayRow(winner);
   }
 
-  // 6) Daily cap — checked POST-insert with the SUM including this row, so a
-  //    concurrent burst fails closed rather than slipping under the cap.
-  const cap = resolveWithdrawDailyCapAtomic(input.asset);
-  if (cap !== null) {
-    const total = await d.db.sumSinceAtomic(input.subject.avatarId, input.asset, utcDayStart());
-    if (total > cap) {
-      await d.db.markPendingFailed(inserted.id, 'daily_cap_exceeded');
-      return {
-        ok: false,
-        code: 'daily_cap_exceeded',
-        detail: `todays_total=${total} cap=${cap}`,
-        withdrawalId: inserted.id,
-      };
-    }
-  }
-
-  // 7) Execute (claim → custody → sign → capture → send → confirm).
+  // 6) Execute (claim → custody → sign → capture → send → confirm).
+  //    (No daily cap — removed 2026-07-09 by founder decision; the balance +
+  //    fee guards in step 4 are the only per-request limits.)
   return executeClaimedWithdrawal(inserted.id, d);
 }
 
@@ -1347,8 +1409,9 @@ export async function resumeWithdrawal(
 
 /**
  * One resume pass over stale 'sending' claims (crash recovery — forward-only,
- * never a re-send). Exported for a (future, reviewed) worker + ops harness —
- * index.ts does NOT call this; the executor ships dark.
+ * never a re-send). Called by the boot-wired resume worker below (which
+ * index.ts starts ONLY when `WALLET_WITHDRAW_ENABLED === 'true'`) and usable
+ * directly from an ops harness. Returns [] while the feature is dark.
  */
 export async function runWithdrawResumeTick(
   deps?: WalletWithdrawDeps,
@@ -1369,6 +1432,99 @@ export async function runWithdrawResumeTick(
     }
   }
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// Resume worker (2026-07-09) — boot-wired, GATED on the dark flag
+// ---------------------------------------------------------------------------
+
+/**
+ * `WALLET_WITHDRAW_RESUME_POLL_MS` — resume-worker poll cadence. Default
+ * 300_000 (5 min); floor 60_000 (mis-set guard — the market-listing-expiry
+ * sweeper's floor pattern).
+ */
+const RESUME_POLL_MS_DEFAULT = 300_000;
+const RESUME_POLL_MS_FLOOR = 60_000;
+export function resolveWithdrawResumePollMs(): number {
+  const raw = process.env.WALLET_WITHDRAW_RESUME_POLL_MS;
+  const n = raw ? Number.parseInt(raw, 10) : NaN;
+  return Number.isFinite(n) && n >= RESUME_POLL_MS_FLOOR ? n : RESUME_POLL_MS_DEFAULT;
+}
+
+/**
+ * One worker pass: run the forward-only resume tick, then page ops (warning
+ * severity via `alertError` → itachi-debug Telegram) for every row that
+ * RESOLVED TO 'reconcile' this pass — money-state UNKNOWN, operator
+ * chain-poll needed, NEVER auto-retried. The alert carries row ids + the
+ * captured signature ONLY — never key material, never a decrypted anything.
+ */
+export async function runWithdrawResumeWorkerPass(
+  deps?: WalletWithdrawDeps,
+): Promise<Array<{ withdrawalId: string; result: WithdrawResult }>> {
+  const d = resolveDeps(deps);
+  const results = await runWithdrawResumeTick(deps);
+  for (const { withdrawalId, result } of results) {
+    if (!result.ok && result.code === 'withdrawal_reconcile') {
+      try {
+        await d.alert({
+          severity: 'warning',
+          source: 'wallet-withdraw-resume',
+          message:
+            `withdrawal ${withdrawalId} resolved to RECONCILE — money-state UNKNOWN; ` +
+            `operator chain-poll required (never auto-retried)`,
+          context: {
+            withdrawalId,
+            txSignature: result.txSignature ?? null,
+            detail: result.detail ?? null,
+          },
+        });
+      } catch {
+        // alertError never throws by contract, but the worker must never die
+        // on a broken alert channel either.
+      }
+    }
+  }
+  return results;
+}
+
+let resumeWorkerInterval: ReturnType<typeof setInterval> | null = null;
+
+/** True while the resume-worker interval is live (tests + ops introspection). */
+export function isWithdrawResumeWorkerRunning(): boolean {
+  return resumeWorkerInterval !== null;
+}
+
+/**
+ * Start the recurring resume worker (idempotent). DARK-SAFE double gate: the
+ * index.ts boot wiring only calls this when `WALLET_WITHDRAW_ENABLED ===
+ * 'true'`, AND this refuses to start while the flag is off — so no worker
+ * ever polls a dark feature (and no stuck rows accumulate while off:
+ * 'sending' rows can only exist after the flag has been on). Each tick is
+ * forward-only crash recovery (`runWithdrawResumeTick`): a captured signature
+ * is chain-checked and NEVER re-signed or re-sent.
+ */
+export function startWithdrawResumeWorker(): void {
+  if (resumeWorkerInterval) return;
+  if (!isWalletWithdrawEnabled()) return; // dark — never poll while off
+  const periodMs = resolveWithdrawResumePollMs();
+  resumeWorkerInterval = setInterval(() => {
+    runWithdrawResumeWorkerPass().catch((err) => {
+      console.error('[wallet-withdraw] resume worker pass failed (non-fatal):', err);
+    });
+  }, periodMs);
+  console.log(
+    `[wallet-withdraw] resume worker started — sweeping stale 'sending' claims every ` +
+      `${Math.round(periodMs / 60_000)}min (forward-only; a captured sig is never re-sent)`,
+  );
+}
+
+/** Stop the resume worker interval (graceful shutdown). Idempotent — safe to
+ *  call even when the worker never started (e.g. the flag was off at boot). */
+export function stopWithdrawResumeWorker(): void {
+  if (resumeWorkerInterval) {
+    clearInterval(resumeWorkerInterval);
+    resumeWorkerInterval = null;
+  }
 }
 
 // ---------------------------------------------------------------------------

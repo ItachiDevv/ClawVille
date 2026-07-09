@@ -10,13 +10,22 @@
  *      u64-bounded), base58 32-byte ON-CURVE destinations (PDAs refused),
  *      self-send refused, balance + fee/rent headroom (SOL source never
  *      drains below rent-exempt + fee; token sends reserve dest-ATA rent),
- *      fail-CLOSED on balance-read failure, per-asset daily caps.
+ *      fail-CLOSED on balance-read failure. NO daily caps (removed
+ *      2026-07-09 by founder decision).
+ *   2b. CLV HOLD CONSENT GATE (2026-07-09): a CLV withdrawal dropping the
+ *      custodial balance below the stacked agent-subject land-hold
+ *      requirement refuses PRE-ROW `hold_at_risk` (payload: required/post/
+ *      parcels) unless `acknowledgeHoldLoss: true`; the ack bypasses ONLY the
+ *      consent gate; SOL/USDC skip it; FAIL-OPEN on the threshold-query error.
  *   3. EXACTLY-ONCE: idempotency replay (a retried key can NEVER create a
  *      second withdrawal); atomic double-claim refuses; CAPTURE-BEFORE-SEND
  *      ordering; ambiguous send/confirm → TERMINAL reconcile (never
  *      re-sent); definitive on-chain failure → 'failed'; resume is
  *      FORWARD-ONLY (confirmed→sent / failed→failed / not_found→reconcile /
  *      nothing-captured→release) and never re-signs a captured signature.
+ *   3b. RESUME WORKER (2026-07-09): start/stop idempotent + dark-gated (flag
+ *      OFF ⇒ never starts); a pass pages ops (alert dep) for every row that
+ *      resolves to 'reconcile' — ids/sigs only, no key material.
  *   4. ASSETS: SOL SystemProgram.transfer; USDC classic-SPL TransferChecked;
  *      CLV Token-2022 TransferChecked; idempotent dest-ATA create.
  *   5. E5 PARITY: agent subjects withdraw from THEIR avatar wallet; non-ledger
@@ -43,9 +52,7 @@ delete process.env.X402_FACILITATOR_PRESET;
 delete process.env.X402_TOPUP_NETWORK;
 delete process.env.CLV_SWAP_EXECUTE; // module-load gate on the import graph
 delete process.env.WALLET_WITHDRAW_ENABLED;
-delete process.env.WALLET_WITHDRAW_DAILY_CAP_SOL;
-delete process.env.WALLET_WITHDRAW_DAILY_CAP_USDC;
-delete process.env.WALLET_WITHDRAW_DAILY_CAP_CLV;
+delete process.env.WALLET_WITHDRAW_RESUME_POLL_MS;
 
 import { describe, it, expect, beforeEach, afterAll } from 'bun:test';
 import { readFileSync } from 'node:fs';
@@ -55,22 +62,28 @@ import { Connection, Keypair, PublicKey, SystemProgram, Transaction } from '@sol
 import bs58 from 'bs58';
 import type { WithdrawalRow } from '@clawville/database';
 import type {
+  HoldRequirement,
   WalletWithdrawDb,
   WalletWithdrawDeps,
   WithdrawAsset,
   WithdrawSubject,
 } from '../wallet-withdraw-executor';
+import type { AlertErrorParams } from '../alert-error';
 
 const {
   requestWithdrawal,
   resumeWithdrawal,
   runWithdrawResumeTick,
+  runWithdrawResumeWorkerPass,
+  startWithdrawResumeWorker,
+  stopWithdrawResumeWorker,
+  isWithdrawResumeWorkerRunning,
+  resolveWithdrawResumePollMs,
   requireWalletWithdrawEnabled,
   assertMainnetWithdrawConnection,
   validateWithdrawStatic,
   resolveWithdrawSubject,
-  parseUiAmountToAtomic,
-  resolveWithdrawDailyCapAtomic,
+  atomicToDecimalString,
   getCustodialWalletBalances,
   WalletWithdrawCustodyError,
   WITHDRAW_TX_FEE_LAMPORTS,
@@ -132,6 +145,10 @@ interface HarnessOpts {
   captureSigConflict?: boolean;
   loadKeypairThrows?: Error;
   endpoint?: string;
+  /** Stacked agent-subject land-hold requirement (CLV uiAmount). Default: none. */
+  holdRequirement?: HoldRequirement;
+  /** The consent gate FAILS OPEN on this — the withdrawal must proceed. */
+  holdRequirementThrows?: boolean;
 }
 
 interface Harness {
@@ -139,6 +156,8 @@ interface Harness {
   log: string[];
   rows: Map<string, WithdrawalRow>;
   sentRaw: Uint8Array[];
+  /** Every alertError the resume worker paged (ids/sigs only — asserted). */
+  alerts: AlertErrorParams[];
 }
 
 function rowOf(over: Partial<WithdrawalRow> & { id: string }): WithdrawalRow {
@@ -168,6 +187,7 @@ function makeHarness(opts: HarnessOpts = {}): Harness {
   const rows = new Map<string, WithdrawalRow>();
   for (const r of opts.rows ?? []) rows.set(r.id, rowOf(r));
   const sentRaw: Uint8Array[] = [];
+  const alerts: AlertErrorParams[] = [];
   const walletPubkey = opts.walletPubkey === undefined ? SOURCE : opts.walletPubkey;
 
   const dbApi: WalletWithdrawDb = {
@@ -270,14 +290,6 @@ function makeHarness(opts: HarnessOpts = {}): Harness {
         r.failureReason = reason;
       }
     },
-    async markPendingFailed(id, reason) {
-      log.push('markPendingFailed');
-      const r = rows.get(id);
-      if (r && r.status === 'pending' && r.txSignature === null) {
-        r.status = 'failed';
-        r.failureReason = reason;
-      }
-    },
     async markReconcile(id, claimId, reason) {
       log.push('markReconcile');
       const r = rows.get(id);
@@ -286,20 +298,10 @@ function makeHarness(opts: HarnessOpts = {}): Harness {
         r.failureReason = reason;
       }
     },
-    async sumSinceAtomic(avatarId, asset, since) {
-      log.push('sumSince');
-      let total = 0n;
-      for (const r of rows.values()) {
-        if (
-          r.avatarId === avatarId &&
-          r.asset === asset &&
-          ['pending', 'sending', 'sent'].includes(r.status) &&
-          r.createdAt >= since
-        ) {
-          total += BigInt(r.amountAtomic);
-        }
-      }
-      return total;
+    async getAgentHoldRequirement() {
+      log.push('holdQuery');
+      if (opts.holdRequirementThrows) throw new Error('boom: hold-threshold query died');
+      return opts.holdRequirement ?? { requiredUiAmount: 0, parcels: [] };
     },
     async listStaleSending(cutoff, limit) {
       return [...rows.values()]
@@ -356,12 +358,16 @@ function makeHarness(opts: HarnessOpts = {}): Harness {
       if (opts.sigStatusThrows) throw new Error('boom: rpc status check died');
       return opts.sigStatus ?? 'not_found';
     },
+    alert: async (params) => {
+      log.push('alert');
+      alerts.push(params);
+    },
   };
 
-  return { deps, log, rows, sentRaw };
+  return { deps, log, rows, sentRaw, alerts };
 }
 
-function requestOf(over: Partial<{ subject: WithdrawSubject; asset: WithdrawAsset; amountAtomic: string; destination: string; idempotencyKey: string }> = {}) {
+function requestOf(over: Partial<{ subject: WithdrawSubject; asset: WithdrawAsset; amountAtomic: string; destination: string; idempotencyKey: string; acknowledgeHoldLoss: boolean }> = {}) {
   return {
     subject: userSubject,
     asset: 'SOL' as WithdrawAsset,
@@ -374,13 +380,13 @@ function requestOf(over: Partial<{ subject: WithdrawSubject; asset: WithdrawAsse
 
 beforeEach(() => {
   process.env.WALLET_WITHDRAW_ENABLED = 'true';
-  delete process.env.WALLET_WITHDRAW_DAILY_CAP_SOL;
-  delete process.env.WALLET_WITHDRAW_DAILY_CAP_USDC;
-  delete process.env.WALLET_WITHDRAW_DAILY_CAP_CLV;
   delete process.env.WALLET_WITHDRAW_STALE_MS;
+  delete process.env.WALLET_WITHDRAW_RESUME_POLL_MS;
+  stopWithdrawResumeWorker(); // never leak an interval across tests
 });
 
 afterAll(() => {
+  stopWithdrawResumeWorker();
   delete process.env.WALLET_WITHDRAW_ENABLED;
 });
 
@@ -551,38 +557,251 @@ describe('VALIDATION — before any claim/sign; nothing persisted on refusal', (
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-describe('DAILY CAP — per-asset env caps over the UTC day (fail closed)', () => {
-  it('parseUiAmountToAtomic: decimals, floor, invalid → null', () => {
-    expect(parseUiAmountToAtomic('1', 9)).toBe(1_000_000_000n);
-    expect(parseUiAmountToAtomic('1.5', 6)).toBe(1_500_000n);
-    expect(parseUiAmountToAtomic('0.0000001', 6)).toBe(0n); // floors sub-atomic
-    expect(parseUiAmountToAtomic('abc', 6)).toBeNull();
-    expect(parseUiAmountToAtomic(undefined, 6)).toBeNull();
-    expect(parseUiAmountToAtomic('-1', 6)).toBeNull();
-    delete process.env.WALLET_WITHDRAW_DAILY_CAP_SOL;
-    expect(resolveWithdrawDailyCapAtomic('SOL')).toBeNull(); // unset = no cap
+describe('CLV HOLD CONSENT GATE — pre-row informed consent; sweeper owns enforcement', () => {
+  // Harness default CLV balance = 1_000_000_000n atomic = 1000 CLV (6dp).
+  const HOLD = {
+    requiredUiAmount: 500,
+    parcels: [
+      { parcelCode: 'C-01', holdThresholdCt: 300 },
+      { parcelCode: 'B-07', holdThresholdCt: 200 },
+    ],
+  };
+
+  it('atomicToDecimalString: exact 6dp strings, no float math', () => {
+    expect(atomicToDecimalString(400_000_000n, 6)).toBe('400.000000');
+    expect(atomicToDecimalString(1_234_567n, 6)).toBe('1.234567');
+    expect(atomicToDecimalString(0n, 6)).toBe('0.000000');
+    expect(atomicToDecimalString(999n, 6)).toBe('0.000999');
   });
 
-  it('a second withdrawal that would exceed the cap fails closed (row marked failed)', async () => {
-    process.env.WALLET_WITHDRAW_DAILY_CAP_SOL = '1'; // 1 SOL / day
-    const h = makeHarness();
-    const first = await requestWithdrawal(
-      requestOf({ amountAtomic: '600000000', idempotencyKey: 'key-first-000001' }),
+  it('over-hold CLV withdrawal WITHOUT ack: typed hold_at_risk with the payload; NO row, nothing signed', async () => {
+    const h = makeHarness({ holdRequirement: HOLD });
+    // 600 CLV out of 1000 leaves 400 < the stacked 500 requirement.
+    const res = await requestWithdrawal(
+      requestOf({ asset: 'CLV', amountAtomic: '600000000' }),
       h.deps,
     );
-    expect(first.ok).toBe(true);
+    expect(res).toMatchObject({
+      ok: false,
+      code: 'hold_at_risk',
+      holdAtRisk: {
+        requiredUiAmount: 500,
+        postUiAmount: '400.000000',
+        parcels: [
+          { parcelCode: 'C-01', holdThresholdCt: 300 },
+          { parcelCode: 'B-07', holdThresholdCt: 200 },
+        ],
+      },
+    });
+    // PRE-ROW: the refusal created NOTHING — no insert, no claim, no custody,
+    // no send. A later acknowledged retry starts clean.
+    expect(h.rows.size).toBe(0);
+    expect(h.log).not.toContain('insert');
+    expect(h.log).not.toContain('claim');
+    expect(h.log).not.toContain('loadKeypair');
+    expect(h.sentRaw.length).toBe(0);
+  });
 
-    const second = await requestWithdrawal(
-      requestOf({ amountAtomic: '500000000', idempotencyKey: 'key-second-00001' }),
+  it('acknowledgeHoldLoss: the SAME Idempotency-Key retry proceeds cleanly (gate skipped, one row, one send)', async () => {
+    const h = makeHarness({ holdRequirement: HOLD });
+    const refused = await requestWithdrawal(
+      requestOf({ asset: 'CLV', amountAtomic: '600000000' }),
       h.deps,
     );
-    expect(second).toMatchObject({ ok: false, code: 'daily_cap_exceeded' });
-    // The over-cap row is terminal 'failed' — it can never be claimed/sent.
-    const failed = [...h.rows.values()].find((r) => r.idempotencyKey === 'key-second-00001')!;
-    expect(failed.status).toBe('failed');
-    expect(failed.failureReason).toBe('daily_cap_exceeded');
-    // Only the FIRST withdrawal ever hit the wire.
-    expect(h.log.filter((l) => l === 'sendRaw').length).toBe(1);
+    expect(refused).toMatchObject({ ok: false, code: 'hold_at_risk' });
+
+    const acked = await requestWithdrawal(
+      requestOf({ asset: 'CLV', amountAtomic: '600000000', acknowledgeHoldLoss: true }),
+      h.deps,
+    );
+    expect(acked.ok).toBe(true);
+    if (!acked.ok) throw new Error('unreachable');
+    expect(acked.withdrawal.status).toBe('sent');
+    expect(h.rows.size).toBe(1);
+    expect(h.sentRaw.length).toBe(1);
+    // The ack SKIPS the gate — the threshold query ran once (the refusal), not twice.
+    expect(h.log.filter((l) => l === 'holdQuery').length).toBe(1);
+  });
+
+  it('acknowledgeHoldLoss bypasses ONLY the consent gate — every other guard still refuses', async () => {
+    // Over-balance still refuses.
+    const over = makeHarness({ holdRequirement: HOLD, tokenBalance: 1_000_000n });
+    expect(
+      await requestWithdrawal(
+        requestOf({ asset: 'CLV', amountAtomic: '2000000', acknowledgeHoldLoss: true }),
+        over.deps,
+      ),
+    ).toMatchObject({ ok: false, code: 'insufficient_balance' });
+    expect(over.rows.size).toBe(0);
+
+    // Off-curve destination still refuses.
+    const pda = makeHarness({ holdRequirement: HOLD });
+    expect(
+      await requestWithdrawal(
+        requestOf({
+          asset: 'CLV',
+          amountAtomic: '1000',
+          destination: offCurveAddress(),
+          acknowledgeHoldLoss: true,
+        }),
+        pda.deps,
+      ),
+    ).toMatchObject({ ok: false, code: 'invalid_destination' });
+
+    // Self-send still refuses.
+    const self = makeHarness({ holdRequirement: HOLD });
+    expect(
+      await requestWithdrawal(
+        requestOf({ asset: 'CLV', amountAtomic: '1000', destination: SOURCE, acknowledgeHoldLoss: true }),
+        self.deps,
+      ),
+    ).toMatchObject({ ok: false, code: 'self_send' });
+  });
+
+  it('post-withdrawal balance ≥ the requirement proceeds without ack (boundary: exactly equal passes)', async () => {
+    // 400 CLV out leaves 600 ≥ 500 — no consent needed.
+    const above = makeHarness({ holdRequirement: HOLD });
+    const res = await requestWithdrawal(
+      requestOf({ asset: 'CLV', amountAtomic: '400000000' }),
+      above.deps,
+    );
+    expect(res.ok).toBe(true);
+    expect(above.log).toContain('holdQuery');
+
+    // 500 CLV out leaves exactly 500 — the hold is still fully backed; passes.
+    const exact = makeHarness({ holdRequirement: HOLD });
+    expect(
+      (await requestWithdrawal(requestOf({ asset: 'CLV', amountAtomic: '500000000' }), exact.deps))
+        .ok,
+    ).toBe(true);
+  });
+
+  it('req = 0 (no agent-subject holds — incl. grandfathered/user-subject-only owners) proceeds', async () => {
+    // The default harness hold requirement is 0 — exactly what the executor's
+    // SQL returns for an owner whose holds are all grandfathered or
+    // user-subject (both are excluded by the WHERE clause; source-verified below).
+    const h = makeHarness();
+    const res = await requestWithdrawal(
+      requestOf({ asset: 'CLV', amountAtomic: '999999999' }),
+      h.deps,
+    );
+    expect(res.ok).toBe(true);
+    expect(h.log).toContain('holdQuery');
+  });
+
+  it('FAIL-OPEN: a thrown threshold query never blocks the withdrawal (consent, not enforcement)', async () => {
+    const h = makeHarness({ holdRequirementThrows: true });
+    const res = await requestWithdrawal(
+      requestOf({ asset: 'CLV', amountAtomic: '600000000' }),
+      h.deps,
+    );
+    expect(res.ok).toBe(true);
+    expect(h.rows.size).toBe(1);
+  });
+
+  it('SOL and USDC withdrawals SKIP the gate entirely (agent holds are CLV-backed only)', async () => {
+    for (const asset of ['SOL', 'USDC'] as const) {
+      const h = makeHarness({ holdRequirement: HOLD });
+      const res = await requestWithdrawal(
+        requestOf({ asset, amountAtomic: asset === 'SOL' ? '1000000000' : '250000' }),
+        h.deps,
+      );
+      expect(res.ok).toBe(true);
+      expect(h.log).not.toContain('holdQuery');
+    }
+  });
+
+  it('SOURCE-VERIFIED: the default threshold SQL mirrors the sweeper — agent-subject, non-grandfathered hold parcels only', () => {
+    const src = readFileSync(resolve(__dirname, '../wallet-withdraw-executor.ts'), 'utf-8');
+    // The exact stacked-requirement filters the land-rent-sweeper uses:
+    expect(src).toMatch(/tenure = 'hold'/);
+    expect(src).toMatch(/hold_subject = 'agent'/);
+    expect(src).toMatch(/grandfathered = false/);
+    expect(src).toMatch(/hold_threshold_ct IS NOT NULL/);
+    // And the gate never touches the ledger (belt for LEDGER-UNTOUCHED).
+    expect(src).not.toMatch(/claw-token-ledger'/);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+describe('RESUME WORKER — dark-gated boot worker; pages ops on reconcile', () => {
+  const staleWorkerClaim = () => ({
+    id: randomUUID(),
+    status: 'sending' as const,
+    claimId: randomUUID(),
+    claimedAt: new Date(Date.now() - 10 * 60_000),
+  });
+
+  it('resolveWithdrawResumePollMs: default 300000; floor 60000; invalid → default', () => {
+    delete process.env.WALLET_WITHDRAW_RESUME_POLL_MS;
+    expect(resolveWithdrawResumePollMs()).toBe(300_000);
+    process.env.WALLET_WITHDRAW_RESUME_POLL_MS = '60000';
+    expect(resolveWithdrawResumePollMs()).toBe(60_000);
+    process.env.WALLET_WITHDRAW_RESUME_POLL_MS = '1000'; // below floor
+    expect(resolveWithdrawResumePollMs()).toBe(300_000);
+    process.env.WALLET_WITHDRAW_RESUME_POLL_MS = 'abc';
+    expect(resolveWithdrawResumePollMs()).toBe(300_000);
+    delete process.env.WALLET_WITHDRAW_RESUME_POLL_MS;
+  });
+
+  it('DARK-SAFE: the worker refuses to start while the flag is off', () => {
+    delete process.env.WALLET_WITHDRAW_ENABLED;
+    startWithdrawResumeWorker();
+    expect(isWithdrawResumeWorkerRunning()).toBe(false);
+  });
+
+  it('start/stop are idempotent (flag on)', () => {
+    startWithdrawResumeWorker();
+    expect(isWithdrawResumeWorkerRunning()).toBe(true);
+    startWithdrawResumeWorker(); // second start: no-op, no double interval
+    expect(isWithdrawResumeWorkerRunning()).toBe(true);
+    stopWithdrawResumeWorker();
+    expect(isWithdrawResumeWorkerRunning()).toBe(false);
+    stopWithdrawResumeWorker(); // second stop: clean no-op
+    expect(isWithdrawResumeWorkerRunning()).toBe(false);
+  });
+
+  it('a pass PAGES OPS (warning) for a row that resolves to reconcile — ids/sigs only, no key material', async () => {
+    const seed = { ...staleWorkerClaim(), txSignature: 'captured-sig-worker-1' };
+    const h = makeHarness({ rows: [seed], sigStatus: 'not_found' });
+    const out = await runWithdrawResumeWorkerPass(h.deps);
+    expect(out.length).toBe(1);
+    expect(out[0].result).toMatchObject({ ok: false, code: 'withdrawal_reconcile' });
+    expect(h.rows.get(seed.id)!.status).toBe('reconcile');
+
+    expect(h.alerts.length).toBe(1);
+    const alert = h.alerts[0];
+    expect(alert.severity).toBe('warning');
+    expect(alert.source).toBe('wallet-withdraw-resume');
+    expect(alert.message).toContain(seed.id);
+    expect(alert.context).toMatchObject({
+      withdrawalId: seed.id,
+      txSignature: 'captured-sig-worker-1',
+    });
+    // No key material anywhere near the alert: resume never touches custody.
+    expect(h.log).not.toContain('loadKeypair');
+    expect(JSON.stringify(alert)).not.toContain('secretKey');
+    expect(h.sentRaw.length).toBe(0); // forward-only — nothing re-sent
+  });
+
+  it('a pass does NOT page for forward progress (confirmed → sent)', async () => {
+    const seed = { ...staleWorkerClaim(), txSignature: 'captured-sig-worker-2' };
+    const h = makeHarness({ rows: [seed], sigStatus: 'confirmed' });
+    const out = await runWithdrawResumeWorkerPass(h.deps);
+    expect(out.length).toBe(1);
+    expect(out[0].result.ok).toBe(true);
+    expect(h.rows.get(seed.id)!.status).toBe('sent');
+    expect(h.alerts.length).toBe(0);
+  });
+
+  it('a pass is a silent no-op while the flag is off (dark)', async () => {
+    delete process.env.WALLET_WITHDRAW_ENABLED;
+    const seed = { ...staleWorkerClaim(), txSignature: 'captured-sig-worker-3' };
+    const h = makeHarness({ rows: [seed], sigStatus: 'not_found' });
+    const out = await runWithdrawResumeWorkerPass(h.deps);
+    expect(out).toEqual([]);
+    expect(h.alerts.length).toBe(0);
+    expect(h.rows.get(seed.id)!.status).toBe('sending'); // untouched
   });
 });
 
@@ -951,6 +1170,10 @@ describe('E5 PARITY — agents withdraw as themselves; guests/non-ledger refused
     expect(routeSrc).toContain('.strict()');
     // E5 non-ledger refusal is wired.
     expect(routeSrc).toContain('resolveWithdrawSubject');
+    // CLV hold consent gate: the ack flag is in the strict body and the 409
+    // carries the holdAtRisk payload.
+    expect(routeSrc).toContain('acknowledgeHoldLoss');
+    expect(routeSrc).toContain('holdAtRisk');
   });
 
   it('LEDGER-UNTOUCHED (source-verified): no claw-token-ledger import anywhere', () => {

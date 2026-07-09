@@ -117,7 +117,8 @@ export const withdrawals = pgTable(
       .where(sql`idempotency_key IS NOT NULL`),
     /** Resume/ops scan hot path (stale 'sending' claims). */
     statusCreatedIdx: index('withdrawals_status_created_idx').on(t.status, t.createdAt),
-    /** Per-subject history + the daily-cap SUM window. */
+    /** Per-subject history reads. (Originally also served a daily-cap SUM —
+     *  caps were removed 2026-07-09 by founder decision; index stays for history.) */
     avatarIdx: index('withdrawals_avatar_idx').on(t.avatarId, t.createdAt),
     subjectTypeValid: check(
       'withdrawals_subject_type_valid',

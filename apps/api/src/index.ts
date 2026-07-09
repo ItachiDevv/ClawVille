@@ -836,6 +836,28 @@ process.on('uncaughtException', (err) => {
     console.error('[API] Market listing-expiry sweeper failed to start:', err);
   }
 
+  // 2026-07-09 — custodial-wallet WITHDRAW RESUME worker, DARK-GATED: starts
+  // ONLY when WALLET_WITHDRAW_ENABLED==='true' (the withdraw feature's
+  // default-OFF flag), so no worker runs while the feature is dark — and none
+  // is needed: 'sending' rows can only exist once the flag has been on. Each
+  // tick chain-checks stale 'sending' claims FORWARD-ONLY (confirmed→sent /
+  // on-chain err→failed / unresolved→reconcile; a captured signature is NEVER
+  // re-signed or re-sent) and pages ops (alertError, warning severity) for
+  // every row that resolves to 'reconcile'. Cadence:
+  // WALLET_WITHDRAW_RESUME_POLL_MS (default 5 min, floor 60s). The worker
+  // itself re-asserts the flag inside startWithdrawResumeWorker() —
+  // belt-and-suspenders. See services/wallet-withdraw-executor.ts.
+  try {
+    if (process.env.WALLET_WITHDRAW_ENABLED === 'true') {
+      const { startWithdrawResumeWorker } = await import(
+        './services/wallet-withdraw-executor'
+      );
+      startWithdrawResumeWorker();
+    }
+  } catch (err) {
+    console.error('[API] Wallet-withdraw resume worker failed to start:', err);
+  }
+
   // Q2 Activity Portals — recover orphaned LIVE/COUNTDOWN rooms (pod
   // crash recovery per backend §12.1), hydrate persisted queue entries,
   // then start the room sweeper + matchmaker intervals. Order matters:
@@ -1401,6 +1423,16 @@ async function gracefulShutdown(signal: string) {
       stopMarketListingExpirySweeper();
     } catch {
       // If the sweeper module failed to load earlier, there's nothing to stop.
+    }
+    try {
+      // Withdraw resume worker — idempotent no-op when the withdraw flag was
+      // off and the worker never started.
+      const { stopWithdrawResumeWorker } = await import(
+        './services/wallet-withdraw-executor'
+      );
+      stopWithdrawResumeWorker();
+    } catch {
+      // If the executor module failed to load earlier, there's nothing to stop.
     }
     try {
       const { stopClvPriceOracle } = await import('./services/clv-price-oracle');
