@@ -79,12 +79,47 @@ async function withFingerprint(
 export class ApiError extends Error {
   status: number;
   code?: string;
-  constructor(message: string, status: number, code?: string) {
+  /**
+   * Optional machine-readable sub-detail on typed refusals — e.g. the wallet
+   * withdraw route's `invalid_destination` carries
+   * `detail: 'not_base58' | 'not_32_bytes' | 'off_curve'`. Additive: only
+   * populated when the error body includes a string `detail`.
+   */
+  detail?: string;
+  /**
+   * Present on withdraw `withdrawal_reconcile` / `send_ambiguous` refusals —
+   * the captured on-chain tx signature the UI must surface for support.
+   */
+  txSignature?: string;
+  /** Present on some withdraw refusals — the withdrawal row id (support ref). */
+  withdrawalId?: string;
+  constructor(
+    message: string,
+    status: number,
+    code?: string,
+    extras?: { detail?: string; txSignature?: string; withdrawalId?: string },
+  ) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
     this.code = code;
+    this.detail = extras?.detail;
+    this.txSignature = extras?.txSignature;
+    this.withdrawalId = extras?.withdrawalId;
   }
+}
+
+/** Pull the optional typed-error extras out of a parsed error body. */
+function apiErrorExtras(err: Record<string, unknown>): {
+  detail?: string;
+  txSignature?: string;
+  withdrawalId?: string;
+} {
+  return {
+    detail: typeof err.detail === 'string' ? err.detail : undefined,
+    txSignature: typeof err.txSignature === 'string' ? err.txSignature : undefined,
+    withdrawalId: typeof err.withdrawalId === 'string' ? err.withdrawalId : undefined,
+  };
 }
 
 async function honoRequest<T>(path: string, options?: RequestInit): Promise<T> {
@@ -97,7 +132,7 @@ async function honoRequest<T>(path: string, options?: RequestInit): Promise<T> {
 
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: 'Request failed' }));
-    throw new ApiError(err.error || `HTTP ${res.status}`, res.status, err.code);
+    throw new ApiError(err.error || `HTTP ${res.status}`, res.status, err.code, apiErrorExtras(err));
   }
 
   return res.json();
@@ -113,10 +148,54 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: 'Request failed' }));
-    throw new ApiError(err.error || `HTTP ${res.status}`, res.status, err.code);
+    throw new ApiError(err.error || `HTTP ${res.status}`, res.status, err.code, apiErrorExtras(err));
   }
 
   return res.json();
+}
+
+// ── Custodial wallet withdraw (routes/wallet-withdraw.ts — FROZEN contract) ──
+// DARK behind server-side `WALLET_WITHDRAW_ENABLED`: `withdrawEnabled` on the
+// balances read is the flag the UI branches on. Amounts are ATOMIC integer
+// strings (SOL 9dp lamports; USDC/CLV 6dp) — convert with integer math only.
+
+export type WithdrawAsset = 'SOL' | 'USDC' | 'CLV';
+
+export interface CustodialAssetBalance {
+  /** false = the on-chain read blipped for THIS asset (fail-soft per asset). */
+  available: boolean;
+  amountAtomic: string | null;
+  decimals: number;
+  uiAmount: number | null;
+}
+
+export interface WalletBalancesResponse {
+  ok: true;
+  /** The caller's custodial wallet pubkey (base58). */
+  wallet: string;
+  network: string;
+  /** The withdraw dark-flag — false ⇒ render "coming soon", never the form. */
+  withdrawEnabled: boolean;
+  balances: Record<WithdrawAsset, CustodialAssetBalance>;
+}
+
+export interface WithdrawalReceipt {
+  id: string;
+  status: 'pending' | 'sending' | 'sent' | 'reconcile' | 'failed';
+  asset: WithdrawAsset;
+  amountAtomic: string;
+  destination: string;
+  txSignature: string | null;
+  explorerUrl: string | null;
+  network: string;
+  createdAt: string;
+  sentAt: string | null;
+}
+
+export interface WithdrawResponse {
+  withdrawal: WithdrawalReceipt;
+  /** true = this key was seen before; the EXISTING withdrawal's state replayed. */
+  replay: boolean;
 }
 
 // Shape returned by POST /api/auth/guest — see auth.ts handler.
@@ -403,6 +482,31 @@ export const api = {
       };
     }>('/api/wallet/link', {
       method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  // ── Custodial wallet withdraw (routes/wallet-withdraw.ts) ────────────────
+  // Read the caller's custodial-wallet on-chain balances + the withdraw flag.
+  // Live regardless of the flag; 404 code:'wallet_missing' when no wallet.
+  walletBalances: () => request<WalletBalancesResponse>('/api/wallet/balances'),
+
+  /**
+   * Move the caller's OWN deposited SOL/USDC/CLV out of their custodial
+   * wallet. `amountAtomic` is an exact integer string (lamports / µ-units) —
+   * NEVER a float. `Idempotency-Key` header is REQUIRED (8-64 [A-Za-z0-9_-]):
+   * mint a fresh key per confirmed attempt and REUSE it when retrying the
+   * SAME attempt — the server replays the existing withdrawal's state for a
+   * reused key, so a retry can never double-send. Refusals throw
+   * ApiError{status, code, detail?, txSignature?, withdrawalId?} — branch on
+   * `err.code`, never the message.
+   */
+  withdraw: (
+    body: { asset: WithdrawAsset; amountAtomic: string; destination: string },
+    idempotencyKey: string,
+  ) =>
+    request<WithdrawResponse>('/api/wallet/withdraw', {
+      method: 'POST',
+      headers: { 'Idempotency-Key': idempotencyKey },
       body: JSON.stringify(body),
     }),
 
