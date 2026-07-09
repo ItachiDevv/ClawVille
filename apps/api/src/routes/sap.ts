@@ -456,10 +456,12 @@ sapRoutes.get('/agent/:pubkey', async (c) => {
 
 // ─── Phase 2 — escrow money rail (SAP_ESCROW_ENABLED) ─────────────────────────
 
+const U64_MAX = 18446744073709551615n;
 const u64Str = z
   .string()
   .regex(/^\d+$/, 'must be a non-negative integer string (lamports / u64)')
-  .max(20);
+  .max(20)
+  .refine((s) => BigInt(s) <= U64_MAX, 'exceeds u64::MAX');
 
 const stakeSchema = z.object({ lamports: u64Str }).strict();
 
