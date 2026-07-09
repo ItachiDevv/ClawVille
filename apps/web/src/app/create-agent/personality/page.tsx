@@ -2,7 +2,8 @@
 
 import { useState, useEffect, useMemo, useRef } from 'react';
 import { useRouter } from 'next/navigation';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQueryClient } from '@tanstack/react-query';
+import { useAuthMe } from '@/hooks/use-auth-me';
 import { useAvatar, useCreateAvatar } from '@/hooks/use-avatar';
 import { useGameStore } from '@/stores/game';
 import { api } from '@/lib/api';
@@ -128,13 +129,10 @@ export default function PersonalityPage() {
   // the server 403s the customize PATCH with code:'guest_not_allowed'. A guest
   // could still deep-link here with a stale createAvatarStep1 draft, so bounce
   // them to /login before they submit. SCOPED to is_guest ONLY: an un-authed
-  // visitor (api.me 401s → authData undefined) is the legitimate POST-create
-  // auto-provision path and must reach the CREATE branch unchanged.
-  const { data: authData } = useQuery({
-    queryKey: ['auth-me'],
-    queryFn: () => api.me(),
-    retry: false,
-  });
+  // visitor (api.me 401s → authData null) is the legitimate POST-create
+  // auto-provision path and must reach the CREATE branch unchanged
+  // (`null?.user?.isGuest === true` is false → not redirected).
+  const { data: authData } = useAuthMe();
   const isGuestAccount = authData?.user?.isGuest === true;
   useEffect(() => {
     if (isGuestAccount) router.replace('/login');

@@ -6,13 +6,14 @@ import { useGameStore } from '@/stores/game';
 import { useAvatar } from '@/hooks/use-avatar';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '@/lib/api';
+import { useAuthMe } from '@/hooks/use-auth-me';
 import { BUILDING_OPENCLAW_THEMES } from '@clawville/shared';
 
 export default function AgentConnectModal() {
   const router = useRouter();
   const { agentConnectModalOpen, agentConnectModalIntent, setAgentConnectModalOpen, agentConnected, agentSessionId, setAgentConnection, addToast, setSkillBuilderOpen } = useGameStore();
   const { data: avatar } = useAvatar();
-  const { data: authData } = useQuery({ queryKey: ['auth-me'], queryFn: () => api.me(), retry: false });
+  const { data: authData } = useAuthMe();
   // Same query the game page uses to hydrate the banner — TanStack dedupes
   // so this is essentially free. `mode` tells us whether the "connected"
   // state comes from a server-hosted avatar (no real disconnect possible,
