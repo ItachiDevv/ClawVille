@@ -83,7 +83,12 @@ async function clearEnrolledFlagAuthoritatively(ownerUserId: string): Promise<bo
     } catch (err) {
       if (attempt >= CLEAR_FLAG_MAX_ATTEMPTS) {
         console.error(
-          `[AutonomyActivation] CRITICAL: could not clear autonomy_enrolled for owner ${sessionDigest(ownerUserId)} after ${attempt} attempts — the reconcile may RE-ENROLL a deactivated/logged-out user until this row clears (a later teardown or the 24h TTL sweep will heal it):`,
+          // NB the 24h TTL sweep is NOT a reliable backstop here: a re-enrolled
+          // agent's session activity slides its own TTL (extendSessionTtl), so a
+          // continuously-reconciled stale row may never expire. The real healers
+          // are a LATER SUCCESSFUL clear/teardown (next toggle/logout retry) or
+          // manual operator intervention — hence CRITICAL (must be actioned).
+          `[AutonomyActivation] CRITICAL: could not clear autonomy_enrolled for owner ${sessionDigest(ownerUserId)} after ${attempt} attempts — the reconcile may RE-ENROLL a deactivated/logged-out user until a later teardown clears the row (the TTL sweep may NOT heal a re-enrolled row — action required):`,
           err instanceof Error ? err.message : err,
         );
         return false;
