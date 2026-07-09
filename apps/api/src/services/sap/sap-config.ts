@@ -108,6 +108,9 @@ export function rpcUrlLooksLikeMainnet(rpcUrl: string): boolean {
 // Minimum self-stake required by the program before an agent can create escrows
 // (mirrors `AgentStake::MIN_STAKE` on-chain = 0.1 SOL). Real, timelocked SOL —
 // surfaced as an explicit, separate step, never auto-staked.
+// HARD-ENFORCED ON-CHAIN: init_stake below this reverts with StakeBelowMinimum 6107
+// (devnet-verified 2026-07-09). The client's ≥-check in `initStake` is a fail-fast
+// mirror of that on-chain floor, not the source of truth.
 export const SAP_MIN_STAKE_LAMPORTS = 100_000_000n; // 0.1 SOL
 
 export interface SapConfig {
