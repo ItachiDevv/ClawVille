@@ -28,6 +28,15 @@
  */
 
 import { PublicKey } from '@solana/web3.js';
+// Adopt the OFFICIAL SDK's protocol constants as the single source of truth (the
+// values already matched our hand-set ones; sourcing them from the SDK makes us
+// drift-proof if OOBE changes the treasury / mint / min-stake on-chain).
+import {
+  USDC_MINT_MAINNET as SDK_USDC_MINT_MAINNET,
+  USDC_MINT_DEVNET as SDK_USDC_MINT_DEVNET,
+  MIN_AGENT_STAKE_LAMPORTS as SDK_MIN_AGENT_STAKE_LAMPORTS,
+} from '@oobe-protocol-labs/synapse-sap-sdk/constants/payments';
+import { TREASURY_WALLET as SDK_TREASURY_WALLET } from '@oobe-protocol-labs/synapse-sap-sdk/constants/treasury';
 
 // ─── the mainnet code gate (edit-to-enable, NOT env) ──────────────────────────
 //
@@ -53,8 +62,10 @@ const DEFAULT_RPC_BY_CLUSTER: Record<SapCluster, string> = {
 // SOL (program error 6091 InvalidPaymentToken = "payment token not accepted
 // (USDC only)"). Pinned by cluster so a devnet escrow can't reference the
 // mainnet mint and vice-versa.
-export const USDC_MINT_MAINNET = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
-export const USDC_MINT_DEVNET = '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU';
+// Sourced from the official SDK (@oobe-protocol-labs/synapse-sap-sdk@1.0.0) —
+// re-exported as base58 strings to keep this module's existing string contract.
+export const USDC_MINT_MAINNET = SDK_USDC_MINT_MAINNET.toBase58();
+export const USDC_MINT_DEVNET = SDK_USDC_MINT_DEVNET.toBase58();
 
 // ── SAP Escrow V2 settlement config (DisputeWindow default / CoSigned pluggable) ──
 // The USDC settle path is the V2 escrow family (create_escrow_v2 → settle_calls_v2
@@ -64,7 +75,7 @@ export const USDC_MINT_DEVNET = '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU';
 // TREASURY_WALLET and the wallet the Covenant dev observed at settle
 // remaining_accounts[1] on the live 0.18.0 program. Passed as a settle/finalize
 // remaining account when a fee is collected.
-export const SAP_TREASURY_PUBKEY_DEFAULT = 'J7PyZAGKvprCz4SQ5DKBLAHstJxgVqZcz6kguUoWpP7P';
+export const SAP_TREASURY_PUBKEY_DEFAULT = SDK_TREASURY_WALLET.toBase58();
 // Covenant's operating co-signer (CoSigned mode ONLY). We hold the PUBKEY, never
 // the private key — a live CoSigned settle needs Covenant to co-sign (joint op).
 export const SAP_COVENANT_COSIGNER_PUBKEY = 'DKxXrxxCzAwLSXRUWzUouiW46GNf4PR2mjjhAbtCAkcK';
@@ -111,7 +122,7 @@ export function rpcUrlLooksLikeMainnet(rpcUrl: string): boolean {
 // HARD-ENFORCED ON-CHAIN: init_stake below this reverts with StakeBelowMinimum 6107
 // (devnet-verified 2026-07-09). The client's ≥-check in `initStake` is a fail-fast
 // mirror of that on-chain floor, not the source of truth.
-export const SAP_MIN_STAKE_LAMPORTS = 100_000_000n; // 0.1 SOL
+export const SAP_MIN_STAKE_LAMPORTS = SDK_MIN_AGENT_STAKE_LAMPORTS; // 0.1 SOL (from SDK)
 
 export interface SapConfig {
   /** Master gate — the whole SAP layer (identity/feedback/tool/discovery). */
