@@ -1,6 +1,6 @@
 # SAP (Synapse Agent Protocol) — on-chain integration + flip-to-live runbook
 
-**Status:** FULLY built, gated OFF + devnet-first + dry-run by default. **Set 2026-06-20. Last audited 2026-07-09 (rev 3) — SAP V2 DisputeWindow release is routed through the escrow-gate ledger as an OFF-by-default, two-phase `settle → pending → finalize` lifecycle. The gate preserves depositor approval, ceiling, self-dealing, verification, atomic claim, and broadcast-unknown recovery invariants while booking fee and principal as separate money legs. Prior rev 2 (2026-07-09): adopted the official SDK `@oobe-protocol-labs/synapse-sap-sdk@1.0.0`; prior rev 1: 0.18→0.25 migration.**
+**Status:** FULLY built, gated OFF + devnet-first + dry-run by default. **Set 2026-06-20. Last audited 2026-07-09 (rev 4) — workers can now publish the required caller-named Escrow-mode USDC pricing tier through the authenticated, avatar-bound `POST /api/sap/agent/pricing` route; `update_agent(pricing=[tier])` replaces the worker's entire pricing menu, and the tier price must exactly match a later V2 escrow price. Prior rev 3: SAP V2 DisputeWindow release was routed through the escrow-gate ledger as an OFF-by-default, two-phase `settle → pending → finalize` lifecycle; prior rev 2: adopted the official SDK `@oobe-protocol-labs/synapse-sap-sdk@1.0.0`; prior rev 1: 0.18→0.25 migration.**
 **Plan:** `.claude/plans/sap-onchain-agents/PLAN.md` · **Owner:** orchestrator (Claude)
 **FEATURE_GATE:** `sap_onchain_agents` (review deadline 2026-09-20 — see `routes/sap.ts`).
 
@@ -56,9 +56,11 @@
 > the observed ~0.44% fee; `FEE_HEADROOM_BPS` is a client guard, not the on-chain fee).
 >
 > **Consequence:** the escrow rail stays HARD-GATED (`SAP_ESCROW_ENABLED=false`, dry-run
-> default) until a funded stake+pricing provisioning flow exists per worker agent
-> (register + ≥0.1 SOL stake + `updateAgentPricing`, NOT auto-provisioned — see the
-> `sap_agent_stake_provisioning` FEATURE_GATE in `sap-client.ts` + §9).
+> default) until the funded worker-provisioning flow passes staging. The prior missing-pricing-
+> route / 6148 application gap is **RESOLVED** by `POST /api/sap/agent/pricing`: the worker signs
+> through its own avatar-bound custodial wallet and publishes one caller-named Escrow-mode USDC tier.
+> Registration + ≥0.1 SOL stake remain separate prerequisites. Pricing is not auto-provisioned;
+> see the `sap_agent_stake_provisioning` FEATURE_GATE in `sap-client.ts` + §9.
 >
 > **NOTE — the 0.18 dry-run harness (`scripts/sap/dry-run-e2e.ts`) + its `0.18.0` version
 > pin are now STALE** and out of scope for this diff; they must be re-vendored/re-pinned to
@@ -136,7 +138,7 @@ is a code-review event, not an ops toggle.
 | `sap-config.ts` | Gate + cluster + program-id + RPC + dry-run + USDC-mints + min-stake loader. `loadSapConfig()` + the mainnet code-gate throw + the mainnet-RPC-hostname guard (FIX-D) + `isHonoredEscrowMint()` (SOL-only, FIX-E) + the mainnet genesis-hash constant. `SAP_MIN_STAKE_LAMPORTS` mirrors the on-chain floor (StakeBelowMinimum 6107). |
 | `sap-pdas.ts` | Pure PDA derivation for every account + `u64LE`, `toolNameHash` (sha256), `serviceHash`. `findReceiptPda` is NOT wired into settle (deployed settle takes no `settlement_receipt`; the pending PDA rides in SPL remaining). |
 | `sap-escrow-v2.ts` | The HAND-ROLLED escrow-V2 money builders (create/settle/finalize/withdraw/dispute + close) built to the devnet-verified 0.25-family shapes, PLUS `assembleV2SplRemaining()` — the SINGLE source of truth for the SPL `remaining_accounts` wire order. Pure; byte-tested in `__tests__/sap-escrow-v2.test.ts`. |
-| `sap-client.ts` | Loads the **future-0.25 IDL** + `Program` (Anchor identity/stake/pricing) + calls the hand-rolled escrow-V2 builders; custodial in-memory signing via `keypair-vault` (FIX-F); honest dry-run program-reached classification (FIX-B); live-send mainnet genesis-hash guard (FIX-D); structured errors; the `deposit>obligation` money pre-flight + `sap_agent_stake_provisioning` FEATURE_GATE. |
+| `sap-client.ts` | Loads the **future-0.25 IDL** + `Program` (Anchor identity/stake/pricing) + calls the hand-rolled escrow-V2 builders; custodial in-memory signing via `keypair-vault` (FIX-F); honest dry-run program-reached classification (FIX-B); live-send mainnet genesis-hash guard (FIX-D); structured errors; worker-owned `updateAgentPricingUsdc` provisioning; the `deposit>obligation` money pre-flight + `sap_agent_stake_provisioning` FEATURE_GATE. |
 | `routes/sap.ts` | `requireAuthOrAgentSession`-gated Hono routes; `requireLedgerCapable` on agent-session writes (FIX-C); Zod on every body; gate → 503 before chain work; FEATURE_GATE block. |
 | `apps/api/scripts/sap/dry-run-e2e.ts` | The 0.18 conformance harness — now STALE (version-pins `0.18.0` + asserts the OLD account sets). Must be re-pinned/re-vendored to the 0.25-family shapes before it can gate again; out of scope for the 2026-07-09 migration diff. |
 
@@ -191,6 +193,7 @@ implicitly ledger-capable.**
 | `POST /api/sap/attestation/revoke` | human/agent | `SAP_ENABLED` | `revoke_attestation` — the ORIGINAL attester revokes its attestation of `subjectAgentPda`. No args on-chain. (POST, not DELETE-with-body — matches the codebase's param-only DELETE convention.) |
 | `GET /api/sap/agents?limit=` | none | `SAP_ENABLED` | Discovery — `AgentAccount.all()` (discriminator memcmp), reputation-sorted. |
 | `GET /api/sap/agent/:pubkey` | none | `SAP_ENABLED` | One agent profile by wallet (404 `not_registered` if none). |
+| `POST /api/sap/agent/pricing` | human/agent | `SAP_ESCROW_ENABLED` + `SAP_USDC_ESCROW_ENABLED` | Worker publishes one caller-named Escrow-mode USDC pricing tier as itself; custody binds to `identity.avatarId`. `update_agent(pricing=[tier])` replaces the complete pricing menu (last write wins), and `pricePerCall` must exactly match a later V2 escrow price or create fails `PricingTierNotFound 6148`. |
 | `POST /api/sap/escrow/stake` | human/agent | `SAP_ESCROW_ENABLED` | `init_stake` ≥0.1 SOL — REAL, timelocked, explicit separate step. |
 | `POST /api/sap/escrow/deposit-stake` | human/agent | `SAP_ESCROW_ENABLED` | `deposit_stake` top-up. |
 | `POST /api/sap/escrow/create` | human/agent | `SAP_ESCROW_ENABLED` | `create_escrow_v2` — prepaid per-call escrow; **SOL ONLY** for now (USDC ⇒ 400 `sol_only_for_now` until the SPL remaining-accounts path is wired, FIX-E). SelfReport. |
@@ -597,7 +600,7 @@ money-path pass. Verdict: safe to push gated; the following gate the flip.**
    FUNDING-side ops are now routed in `routes/sap.ts` behind `requireAuthOrAgentSession` +
    `requireNonGuestIdentity` + `requireLedgerCapable` + `gate503` + `SAP_DRY_RUN`, E5 parity
    (both human + connected agent act AS THEMSELVES, custody bound to `identity.avatarId`, never
-   a body pubkey): `POST /escrow/v2/{provision-stake, create, deposit, withdraw, open, settle, finalize}`. These are
+   a body pubkey): `POST /api/sap/agent/pricing` and `POST /api/sap/escrow/v2/{provision-stake, create, deposit, withdraw, open, settle, finalize}`. These are
    SELF-CUSTODY (owner stakes own SOL; depositor funds/withdraws its OWN escrow — free balance
    only, on-chain enforces free=balance−pendingAmount) so no gate approval is needed. The
    RELEASE ops move money to a counterparty only through the escrow-gate's approval/ceiling/self-
@@ -610,13 +613,17 @@ money-path pass. Verdict: safe to push gated; the following gate the flip.**
    bucket when its executor is added; and give the additive `deposit_escrow_v2` route an
    idempotency key (subject, escrowNonce, requestId) so a client retry can't double-fund
    (create is nonce-keyed → a re-create dedups to 6097; deposit is not).
-3. **Agent stake provisioning (economic prerequisite).** Every agent needs ≥0.1 SOL staked
-   (`init_stake`, MIN hard-enforced 6107) + ~0.055 SOL register rent + a pricing tier matching
-   the escrow price (`update_agent`, else 6148) BEFORE it can create an escrow. This is NOT
-   auto-provisioned (no SOL spend in this diff — see FEATURE_GATE `sap_agent_stake_provisioning`).
-   Build a funded provisioning flow. NOTE: `updateAgentPricing.pricePerCall` (owner-signed) MUST
-   equal `createEscrowV2Usdc.pricePerCall` (depositor-signed) — they are separate txs; the
-   provisioning flow must keep them in sync or add a read-only pre-check.
+3. **Agent stake + pricing provisioning (economic prerequisite; pricing-route gap RESOLVED).**
+   Every agent still needs ≥0.1 SOL staked (`init_stake`, MIN hard-enforced 6107) + ~0.055 SOL
+   register rent before it can accept an escrow. The previously missing application route for the
+   other prerequisite now exists: worker-owned `POST /api/sap/agent/pricing` calls
+   `update_agent(pricing=[tier])` through the worker's own custodial wallet. On-chain this operation
+   **replaces the complete pricing menu** (last write wins), so ClawVille intentionally supports one
+   caller-named Escrow-mode USDC tier per worker for now. Its `pricePerCall` MUST equal
+   `createEscrowV2Usdc.pricePerCall` (depositor-signed), or create fails `PricingTierNotFound 6148`.
+   The pricing route resolves the fail-late 6148 provisioning gap; funded SOL stake provisioning
+   and a read-only price-match precheck remain flip-gate work. Nothing is auto-provisioned and all
+   flags remain OFF with dry-run ON by default.
 4. **Deposit sizing.** `createEscrowV2Usdc` enforces `initialDeposit ≥ obligation + ceil(obligation
    × 1%)` (FEE_HEADROOM_BPS=100, 2× the measured 0.5% fee) so a single-settle escrow can pay the
    fee. For MULTI-settle escrows confirm the per-batch fee rounding stays within the headroom on
