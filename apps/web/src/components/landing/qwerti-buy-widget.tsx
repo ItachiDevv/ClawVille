@@ -75,6 +75,56 @@ declare global {
 }
 
 /**
+ * Late-arrival sweeper (mobile buy-widget leak fix, 2026-07-09).
+ *
+ * Removing the injected <script> element on unmount does NOT abort an in-flight
+ * fetch — on a slow mobile connection the browser finishes downloading buy.js and
+ * EXECUTES it AFTER a client-side nav to /game, where the script mounts its
+ * floating launcher + `#qwerti-widget-root` that nothing then tears down (the
+ * effect cleanup already ran, and `Qwerti.destroy()` at cleanup time was a no-op
+ * because the script hadn't executed yet). This sweeper polls for that late DOM
+ * and kills it. Armed ONLY when the race is actually possible (script injected but
+ * not yet executed at cleanup) so it is zero-cost on the normal path.
+ *
+ * HARD SINGLETON: this module (and the sweeper's shared ROOT_ID/SCRIPT_ID keys)
+ * assumes exactly ONE QwertiBuyWidget render site — a second concurrent mount
+ * would let one instance's sweeper destroy the other's live widget.
+ */
+let cancelLateSweep: (() => void) | null = null;
+
+function startLateSweep() {
+  // Only one sweep at a time — replace any in-flight sweep.
+  cancelLateSweep?.();
+
+  const startedAt = Date.now();
+  const timer = window.setInterval(() => {
+    const arrived =
+      document.getElementById(ROOT_ID) !== null ||
+      typeof window.Qwerti !== 'undefined';
+    // Kill the widget once the late script has mounted it, or give up after 60s.
+    if (arrived || Date.now() - startedAt > 60000) {
+      if (arrived) {
+        try {
+          window.Qwerti?.destroy?.();
+        } catch {
+          /* destroy may throw on a partially-initialised widget — safe to ignore */
+        }
+        document.getElementById(ROOT_ID)?.remove();
+        document.getElementById(STYLE_ID)?.remove();
+        document.getElementById(SCRIPT_ID)?.remove();
+      }
+      stop();
+    }
+  }, 500);
+
+  const stop = () => {
+    window.clearInterval(timer);
+    if (cancelLateSweep === stop) cancelLateSweep = null;
+  };
+  cancelLateSweep = stop;
+}
+
+/**
  * Open the Qwerti buy flow from the branded "Buy $CLAWVILLE" button.
  *
  * Opens the hosted buy page (magic link) in a new tab. We do NOT call the
@@ -92,6 +142,10 @@ export function openQwertiBuy() {
 
 export function QwertiBuyWidget() {
   useEffect(() => {
+    // A live sweep means a prior unmount left a late-load race running; cancel it
+    // so it can't destroy the widget we're about to (re-)inject on this mount.
+    cancelLateSweep?.();
+
     // Never inject twice (React re-mount / strict-mode double-effect).
     if (document.getElementById(SCRIPT_ID)) return;
 
@@ -130,6 +184,8 @@ export function QwertiBuyWidget() {
       } else {
         window.clearTimeout(handle);
       }
+      // Snapshot BEFORE destroy: did the script already execute this mount?
+      const executed = typeof window.Qwerti !== 'undefined';
       try {
         window.Qwerti?.destroy?.();
       } catch {
@@ -138,6 +194,13 @@ export function QwertiBuyWidget() {
       document.getElementById(SCRIPT_ID)?.remove();
       document.getElementById(STYLE_ID)?.remove();
       document.getElementById(ROOT_ID)?.remove();
+
+      // If we injected the script but it hadn't executed yet, its fetch may still
+      // be in flight and will run after this cleanup (see startLateSweep). Removing
+      // the <script> node above does not abort that fetch — arm the sweeper to kill
+      // whatever the late execution mounts. If it already executed, destroy() above
+      // handled it, so no sweep is needed.
+      if (injected && !executed) startLateSweep();
     };
   }, []);
 
