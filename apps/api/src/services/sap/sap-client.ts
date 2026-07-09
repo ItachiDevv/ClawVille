@@ -1431,6 +1431,149 @@ export async function updateAgentPricing(
   }
 }
 
+export interface UpdateAgentPricingUsdcInput {
+  /** The worker avatar whose OWN custodial wallet owns and updates the agent. */
+  workerAvatarId: string;
+  /** Caller-selected pricing tier identifier (1..32 trimmed characters). */
+  tierId: string;
+  /** Escrow price per call in USDC base units. */
+  pricePerCall: bigint;
+  /** Max calls/sec (positive i32). Default 100. */
+  rateLimit?: number;
+  /** Max calls/session (positive i32). Default 1000. */
+  maxCallsPerSession?: number;
+}
+
+const MAX_POSITIVE_I32 = 0x7fff_ffff;
+const MAX_U64 = 0xffff_ffff_ffff_ffffn;
+
+/** Pure service-boundary validation, exported for deterministic contract tests. */
+export function validateUpdateAgentPricingUsdcInput(
+  input: UpdateAgentPricingUsdcInput,
+): SapFailure | null {
+  const tierId = input.tierId.trim();
+  if (tierId.length < 1 || tierId.length > 32) {
+    return {
+      ok: false,
+      code: 'invalid_amount',
+      message: 'tierId must contain 1..32 characters after trimming.',
+    };
+  }
+  if (input.pricePerCall <= 0n || input.pricePerCall > MAX_U64) {
+    return {
+      ok: false,
+      code: 'invalid_amount',
+      message: 'pricePerCall must be within 1..u64::MAX.',
+    };
+  }
+  const rateLimit = input.rateLimit ?? 100;
+  if (!Number.isInteger(rateLimit) || rateLimit <= 0 || rateLimit > MAX_POSITIVE_I32) {
+    return {
+      ok: false,
+      code: 'invalid_amount',
+      message: 'rateLimit must be a positive i32 (1..2147483647).',
+    };
+  }
+  const maxCallsPerSession = input.maxCallsPerSession ?? 1000;
+  if (
+    !Number.isInteger(maxCallsPerSession) ||
+    maxCallsPerSession <= 0 ||
+    maxCallsPerSession > MAX_POSITIVE_I32
+  ) {
+    return {
+      ok: false,
+      code: 'invalid_amount',
+      message: 'maxCallsPerSession must be a positive i32 (1..2147483647).',
+    };
+  }
+  return null;
+}
+
+/**
+ * update_agent(pricing) — publish the worker's on-chain AgentPricingMenu with ONE
+ * Escrow-mode USDC tier. This is the pricing-provisioning PREREQUISITE
+ * a worker MUST run before any create_escrow_v2 against it, or create fails
+ * PricingTierNotFound 6148 (see the createEscrowV2Usdc FEATURE_GATE note — pricing
+ * is NOT auto-provisioned in the create path: update_agent is owner-signed while
+ * create is depositor-signed, so it cannot be bundled). Signer = the agent OWNER's
+ * own custodial wallet (update_agent is owner-gated on-chain).
+ *
+ * IMPORTANT: on-chain `update_agent(pricing = [tier])` REPLACES the worker's whole
+ * pricing menu; it does not append or merge. Last write wins, so this API publishes
+ * one caller-named tier per worker for now. A later multi-tier API must replace the
+ * complete intended menu atomically rather than assuming additive semantics.
+ *
+ * 0.25-family 4-acct context [wallet(S), agent(W), pricing_menu(W), system_program].
+ * Only the `pricing` arg is Some([tier]); every other update_agent option is None,
+ * so name/description/capabilities/etc. are left untouched. The tier binds the
+ * cluster USDC mint (6 dp), Escrow settlement mode — the shape create_escrow_v2
+ * requires. (devnet-confirmed 2026-07-09 tx 5SWRTNhjb82uSGcJvHDb3QShdMrN4CdpRYV2TSvwbXTNrz3yAareNY7jTvpYWniVywdQ8gpK8Rs8RUiTbVz6Y6y)
+ */
+export async function updateAgentPricingUsdc(
+  input: UpdateAgentPricingUsdcInput,
+): Promise<SapWriteResult> {
+  const cfg = getConfig();
+  const gate = usdcEscrowGate(cfg);
+  if (gate) return gate;
+  const invalid = validateUpdateAgentPricingUsdcInput(input);
+  if (invalid) return invalid;
+
+  const tierId = input.tierId.trim();
+  const rateLimit = input.rateLimit ?? 100;
+  const maxCallsPerSession = input.maxCallsPerSession ?? 1000;
+
+  const handle = await loadAvatarWallet(input.workerAvatarId);
+  if ('ok' in handle && handle.ok === false) return handle;
+  const { keypair, publicKey: wallet } = handle as AvatarWalletHandle;
+
+  const program = getProgram();
+  const [agent] = findAgentPda(cfg.programId, wallet);
+  const [pricingMenu] = findPricingPda(cfg.programId, agent);
+
+  // ONE Escrow-mode USDC tier bound to the cluster USDC mint (6 dp).
+  // Anchor field names are camelCase; fieldless enums are `{ variantName: {} }`
+  // (verified: PascalCase `{ Usdc: {} }` throws "unable to infer src variant").
+  const tier = {
+    tierId,
+    pricePerCall: new BN(input.pricePerCall.toString()),
+    minPricePerCall: null,
+    maxPricePerCall: null,
+    rateLimit,
+    maxCallsPerSession,
+    burstLimit: null,
+    tokenType: { usdc: {} },
+    tokenMint: usdcMintForEscrow(cfg),
+    tokenDecimals: USDC_DECIMALS,
+    settlementMode: { escrow: {} },
+    minEscrowDeposit: null,
+    batchIntervalSec: null,
+    volumeCurve: null,
+  };
+
+  try {
+    const tx: Transaction = await program.methods
+      .updateAgent(
+        null, // name
+        null, // description
+        null, // capabilities
+        [tier], // pricing = Some([tier])
+        null, // protocols
+        null, // agent_id
+        null, // agent_uri
+        null, // x402_endpoint
+      )
+      .accountsStrict({ wallet, agent, pricingMenu, systemProgram: SYSTEM_PROGRAM_ID })
+      .transaction();
+    return executeTx(cfg, 'updateAgentPricingUsdc', tx, keypair, {
+      wallet: wallet.toBase58(),
+      agent: agent.toBase58(),
+      pricingMenu: pricingMenu.toBase58(),
+    });
+  } catch (err) {
+    return classifyChainError('updateAgentPricingUsdc:build', err);
+  }
+}
+
 export interface CreateEscrowInput {
   /** The DEPOSITOR (signer + payer) — the consuming agent, as ITS own wallet. */
   depositorAvatarId: string;

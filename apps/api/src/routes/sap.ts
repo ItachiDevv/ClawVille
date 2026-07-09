@@ -51,6 +51,7 @@
 
 import { Hono } from 'hono';
 import { z } from 'zod';
+import { registerSchema } from './sap-route-schemas';
 import { sessionMiddleware } from '../middleware/auth';
 import { requireAuthOrAgentSession } from '../middleware/require-auth-or-agent';
 import type { ActivityAuthContext } from '../middleware/require-auth-or-agent';
@@ -78,6 +79,7 @@ import {
   // V2 settle/finalize are routed below only through the escrow gate; these
   // direct imports remain funding/self-custody operations.
   provisionAgentStake,
+  updateAgentPricingUsdc,
   createEscrowV2Usdc,
   depositEscrowV2Usdc,
   withdrawEscrowV2Usdc,
@@ -240,28 +242,6 @@ sapRoutes.get('/status', (c) => {
 });
 
 // ─── Phase 1 — identity / reputation / tool ───────────────────────────────────
-
-const registerSchema = z
-  .object({
-    name: z.string().min(1).max(64),
-    description: z.string().max(512).default(''),
-    capabilities: z
-      .array(
-        z.object({
-          id: z.string().min(1).max(64),
-          description: z.string().max(256).nullish(),
-          protocolId: z.string().max(64).nullish(),
-          version: z.string().max(32).nullish(),
-        }),
-      )
-      .max(32)
-      .default([]),
-    protocols: z.array(z.string().min(1).max(64)).max(16).default(['clawville']),
-    agentId: z.string().max(64).nullish(),
-    agentUri: z.string().url().max(256).nullish(),
-    x402Endpoint: z.string().url().max(256).nullish(),
-  })
-  .strict();
 
 sapRoutes.post('/register', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
   const gated = gate503(c, false);
@@ -562,9 +542,10 @@ sapRoutes.post('/escrow/deposit', requireAuthOrAgentSession, requireNonGuestIden
   return respondWrite(c, result);
 });
 
-// ─── V2 escrow (SDK 1.0.0) — FUNDING-SIDE routes only ─────────────────────────
-// These expose the "spend-your-own" V2 operations: an OWNER staking its own SOL,
-// and a DEPOSITOR funding its OWN escrow. Neither can release another party's
+// ─── V2 escrow — OWNER CONFIG + FUNDING-SIDE routes only ──────────────────────
+// These expose self-custody V2 operations: an OWNER staking its own SOL or
+// replacing its own pricing menu, and a DEPOSITOR funding its OWN escrow. None
+// can release another party's
 // funds, so they are safe to route directly (behind requireAuthOrAgentSession +
 // requireLedgerCapable + the gates + SAP_DRY_RUN). E5 parity: BOTH a human and a
 // connected/hosted agent act AS THEMSELVES (bound to identity.avatarId). The V2
@@ -573,6 +554,38 @@ sapRoutes.post('/escrow/deposit', requireAuthOrAgentSession, requireNonGuestIden
 // depositor-only self-custody and cannot withdraw reserved pending principal.
 
 const provisionStakeSchema = z.object({ targetLamports: u64Str }).strict();
+
+const updateAgentPricingUsdcSchema = z
+  .object({
+    tierId: z.string().trim().min(1).max(32),
+    pricePerCall: u64Str,
+    rateLimit: z.number().int().positive().max(2_147_483_647).optional(),
+    maxCallsPerSession: z.number().int().positive().max(2_147_483_647).optional(),
+  })
+  .strict();
+
+// Self-custody config: the acting worker replaces ITS OWN on-chain pricing menu.
+// The request body contains tier data only; identity.avatarId is the sole signer source.
+sapRoutes.post('/agent/pricing', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
+  const gated = gate503(c, true, true);
+  if (gated) return gated;
+  if (!writeLimiter.check(getClientIp(c.req.raw.headers))) {
+    return c.json({ error: 'rate_limited' }, 429);
+  }
+  const parsed = updateAgentPricingUsdcSchema.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) return c.json({ error: 'invalid_body', code: 'invalid_body' }, 400);
+  const identity = c.get('identity');
+  const notLedger = requireLedgerCapable(c, identity);
+  if (notLedger) return notLedger;
+  const result = await updateAgentPricingUsdc({
+    workerAvatarId: identity.avatarId,
+    tierId: parsed.data.tierId,
+    pricePerCall: BigInt(parsed.data.pricePerCall),
+    rateLimit: parsed.data.rateLimit,
+    maxCallsPerSession: parsed.data.maxCallsPerSession,
+  });
+  return respondWrite(c, result);
+});
 
 sapRoutes.post('/escrow/v2/provision-stake', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
   const gated = gate503(c, true);
