@@ -1157,15 +1157,19 @@ function CreateBountyForm({
   };
 
   const handleSubmit = () => {
-    if (!title.trim() || !description.trim()) return;
-    if (tokenReward < 1) return;
-    if (tokenReward > tokens) return;
-    // Preemptive gate — guests never hit the escrow write path; they see the
-    // sign-up upsell instead of a server round-trip + error toast.
+    // Preemptive gate FIRST — guests never hit the escrow write path, and this
+    // sits ABOVE the balance/validation early-returns so a guest (anonymous
+    // balance = 0, so `tokenReward > tokens` would silently no-op) always gets
+    // the sign-up upsell rather than a dead Post button. Defense-in-depth: the
+    // Post tab is already hidden for guests (browse-only), this backstops any
+    // regression of that gating.
     if (isGuest) {
       onGuestBlocked();
       return;
     }
+    if (!title.trim() || !description.trim()) return;
+    if (tokenReward < 1) return;
+    if (tokenReward > tokens) return;
 
     const tags = tagsInput
       .split(',')
@@ -1671,6 +1675,21 @@ export default function BountyBoardModal() {
   // guest_not_allowed 403). One instance for the whole board.
   const [guestUpsellOpen, setGuestUpsellOpen] = useState(false);
 
+  // Guests are BROWSE-ONLY (founder 2026-07-09): they can look at bounties but
+  // can't post / claim / attempt. The effective tab is FORCED to 'browse' for a
+  // guest regardless of any persisted store tab, and every place that reads the
+  // active tab (tab highlight, content section, query `enabled`) uses this — so
+  // a guest can never land on, render, or fire a query for a hidden tab, even
+  // for the single render frame before the sync effect below runs.
+  const effectiveTab: BountyTab = isGuest ? 'browse' : bountyBoardTab;
+
+  // Defense-in-depth: keep the persisted store tab off any now-hidden tab.
+  useEffect(() => {
+    if (isGuest && bountyBoardTab !== 'browse') {
+      setBountyBoardTab('browse');
+    }
+  }, [isGuest, bountyBoardTab, setBountyBoardTab]);
+
   // Filters
   const [difficultyFilter, setDifficultyFilter] =
     useState<DifficultyFilter>('all');
@@ -1687,7 +1706,7 @@ export default function BountyBoardModal() {
   // Reset page on filter/tab change
   useEffect(() => {
     setPage(1);
-  }, [bountyBoardTab, difficultyFilter, sortMode]);
+  }, [effectiveTab, difficultyFilter, sortMode]);
 
   // Build query params (preserved byte-for-byte from prior impl so cache keys
   // line up across the visual rewrite).
@@ -1702,21 +1721,21 @@ export default function BountyBoardModal() {
   const { data: bountiesData, isLoading: bountiesLoading } = useQuery({
     queryKey: ['bounties', queryParams],
     queryFn: () => api.getBounties(queryParams),
-    enabled: bountyBoardOpen && bountyBoardTab === 'browse',
+    enabled: bountyBoardOpen && effectiveTab === 'browse',
   });
 
   // My bounties query (creator)
   const { data: myBountiesData, isLoading: myBountiesLoading } = useQuery({
     queryKey: ['my-bounties'],
     queryFn: () => api.getMyBounties(),
-    enabled: bountyBoardOpen && bountyBoardTab === 'my-bounties',
+    enabled: bountyBoardOpen && effectiveTab === 'my-bounties',
   });
 
   // My attempts query (hunter)
   const { data: myAttemptsData, isLoading: myAttemptsLoading } = useQuery({
     queryKey: ['my-bounty-attempts'],
     queryFn: () => api.getMyBountyAttempts(),
-    enabled: bountyBoardOpen && bountyBoardTab === 'my-attempts',
+    enabled: bountyBoardOpen && effectiveTab === 'my-attempts',
   });
 
   // Claim mutation
@@ -1969,14 +1988,17 @@ export default function BountyBoardModal() {
         }}
       >
         {(
-          [
-            { key: 'browse', label: 'Browse' },
-            { key: 'my-bounties', label: 'My Bounties' },
-            { key: 'my-attempts', label: 'My Attempts' },
-            { key: 'create', label: 'Post Bounty' },
-          ] as { key: BountyTab; label: string }[]
+          (isGuest
+            ? // Guests are browse-only — the interact tabs are hidden entirely.
+              [{ key: 'browse', label: 'Browse' }]
+            : [
+                { key: 'browse', label: 'Browse' },
+                { key: 'my-bounties', label: 'My Bounties' },
+                { key: 'my-attempts', label: 'My Attempts' },
+                { key: 'create', label: 'Post Bounty' },
+              ]) as { key: BountyTab; label: string }[]
         ).map((t) => {
-          const isActive = bountyBoardTab === t.key;
+          const isActive = effectiveTab === t.key;
           return (
             <button
               key={t.key}
@@ -2020,8 +2042,50 @@ export default function BountyBoardModal() {
         })}
       </div>
 
+      {/* Guest browse-only banner — persistent (not toast-transient) while a
+          guest is on the board. Light text tokens on the dark panel per the
+          no-dark-text-on-dark rule. flex-wrap keeps it safe at 390px. */}
+      {isGuest && (
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            flexWrap: 'wrap',
+            gap: 10,
+            margin: '12px 22px 0',
+            padding: '10px 14px',
+            borderRadius: 8,
+            background: 'rgba(56, 189, 248, 0.08)',
+            border: '1px solid rgba(56, 189, 248, 0.3)',
+          }}
+        >
+          <span
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 6,
+              fontSize: 12,
+              fontWeight: 600,
+              color: '#e2e8f0',
+              letterSpacing: '0.01em',
+            }}
+          >
+            <span aria-hidden>👀</span>
+            Browsing only — create a free account to post and claim bounties.
+          </span>
+          <RpgButton
+            variant="primary"
+            size="sm"
+            onClick={() => setGuestUpsellOpen(true)}
+          >
+            Create free account
+          </RpgButton>
+        </div>
+      )}
+
       {/* ============================== BROWSE TAB ============================== */}
-      {bountyBoardTab === 'browse' && (
+      {effectiveTab === 'browse' && (
         <div style={{ display: 'flex', flexDirection: 'column' }}>
           {/* Filters */}
           <div
@@ -2100,14 +2164,16 @@ export default function BountyBoardModal() {
               {total} bount{total !== 1 ? 'ies' : 'y'} pinned
             </span>
 
-            <RpgButton
-              variant="primary"
-              size="sm"
-              rarity="legendary"
-              onClick={() => setBountyBoardTab('create')}
-            >
-              + Post New Bounty
-            </RpgButton>
+            {!isGuest && (
+              <RpgButton
+                variant="primary"
+                size="sm"
+                rarity="legendary"
+                onClick={() => setBountyBoardTab('create')}
+              >
+                + Post New Bounty
+              </RpgButton>
+            )}
           </div>
 
           {/* Bounty list */}
@@ -2202,7 +2268,7 @@ export default function BountyBoardModal() {
       )}
 
       {/* ============================== MY BOUNTIES TAB ============================== */}
-      {bountyBoardTab === 'my-bounties' && (
+      {effectiveTab === 'my-bounties' && (
         <div
           style={{
             padding: '14px 22px 18px',
@@ -2283,7 +2349,7 @@ export default function BountyBoardModal() {
       )}
 
       {/* ============================== MY ATTEMPTS TAB ============================== */}
-      {bountyBoardTab === 'my-attempts' && (
+      {effectiveTab === 'my-attempts' && (
         <div
           style={{
             padding: '14px 22px 18px',
@@ -2370,7 +2436,7 @@ export default function BountyBoardModal() {
       )}
 
       {/* ============================== CREATE TAB ============================== */}
-      {bountyBoardTab === 'create' && (
+      {effectiveTab === 'create' && (
         <CreateBountyForm
           tokens={tokens}
           onCreated={() => setBountyBoardTab('my-bounties')}
