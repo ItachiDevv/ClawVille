@@ -108,6 +108,8 @@ import {
   finalizeSettlementUsdc,
   resolveV2UsdcEscrowAddress,
   inspectV2SettlementState,
+  preflightCreateEscrowV2Coverage,
+  preflightDepositEscrowV2Coverage,
   sapConfigSnapshot,
   type SapWriteResult,
   type SapFailure,
@@ -822,6 +824,20 @@ export async function openEscrowV2(input: OpenEscrowV2Input): Promise<EscrowGate
     if (prior && settlementRail(prior) !== 'onchain') {
       return { ok: false, code: 'release_rail_forbidden', message: 'a payai row cannot share a V2 on-chain escrow.' };
     }
+    const coverageGate = prior
+      ? await preflightDepositEscrowV2Coverage({
+          workerWalletPubkey,
+          depositorWalletPubkey,
+          escrowNonce: input.escrowNonce,
+          amount: input.initialDeposit,
+        })
+      : await preflightCreateEscrowV2Coverage({
+          workerWalletPubkey,
+          pricePerCall: input.pricePerCall,
+          maxCalls: input.maxCalls,
+          initialDeposit: input.initialDeposit,
+        });
+    if (coverageGate) return coverageGate;
     [row] = await db.insert(sapEscrowSettlements).values({
       escrowPda,
       escrowVersion: 'v2',
