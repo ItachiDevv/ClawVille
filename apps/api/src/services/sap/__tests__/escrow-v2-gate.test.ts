@@ -614,6 +614,88 @@ describe('SAP V2 gate — two-phase USDC release', () => {
     expect(settleCalls).toBe(0);
   });
 
+  it('A1 — the vault clamp compares against vault MINUS reserved (a drain that still covers reserved is caught)', async () => {
+    // A sibling pending job has 4_000_000 principal reserved — physically in the vault
+    // until finalize. job-1 settles 1 call (debit 1_005_000). The vault holds 4_500_000
+    // (still ≥ reserved), so the OLD min(remaining, vault) would be INERT; physical-free
+    // = 4_500_000 − 4_000_000 = 500_000 < 1_005_000 → over_release.
+    rows = [
+      baseRow(),
+      baseRow({ id: 'row-2', jobId: 'job-2', status: 'pending', settlementIndex: '6', fundedAmount: '4020000', reservedPrincipalAmount: '4000000', feeAmount: '20000' }),
+    ];
+    await persistApproval();
+    const result = await gate.settleJobV2(
+      { escrowPda: ESCROW, jobId: 'job-1', callerAvatarId: WORKER, callsToSettle: 1n },
+      { readVaultBalance: async () => 4_500_000n },
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.code).toBe('over_release');
+    expect(rows[0]?.status).toBe('open');
+    expect(settleCalls).toBe(0);
+  });
+
+  it('A1 — a vault covering reserved PLUS the debit does not block', async () => {
+    rows = [
+      baseRow(),
+      baseRow({ id: 'row-2', jobId: 'job-2', status: 'pending', settlementIndex: '6', fundedAmount: '4020000', reservedPrincipalAmount: '4000000', feeAmount: '20000' }),
+    ];
+    await persistApproval();
+    // vault = reserved 4_000_000 + debit 1_005_000 exactly → physical-free == debit → proceeds.
+    const result = await gate.settleJobV2(
+      { escrowPda: ESCROW, jobId: 'job-1', callerAvatarId: WORKER, callsToSettle: 1n },
+      { readVaultBalance: async () => 5_005_000n },
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.phase).toBe('pending');
+    expect(settleCalls).toBe(1);
+  });
+
+  it('A2 — the pre-claim reconcile refuses when a SIBLING job already owns the on-chain pending index', async () => {
+    // job-2 already owns the pending at settlementIndex 7 (status pending). job-1's
+    // pre-claim reconcile sees the same on-chain pending and MUST NOT book it again.
+    rows = [
+      baseRow(),
+      baseRow({ id: 'row-2', jobId: 'job-2', status: 'pending', settlementIndex: '7', reservedPrincipalAmount: '3000000', feeAmount: '15000' }),
+    ];
+    await persistApproval();
+    inspectPending = true; // inspectIndex default 7 ⇒ the pending is at index 7
+    const result = await gate.settleJobV2({ escrowPda: ESCROW, jobId: 'job-1', callerAvatarId: WORKER, callsToSettle: 1n });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.code).toBe('settle_in_progress');
+    // job-1's row is untouched (never double-booked the sibling's pending).
+    expect(rows[0]?.status).toBe('open');
+    expect(rows[0]?.callsSettled ?? null).toBeNull();
+    expect(settleCalls).toBe(0);
+  });
+
+  it('A2 — the post-broadcast replay reconcile books the decoded pending under the lock (no sibling)', async () => {
+    rows = [baseRow()];
+    await persistApproval();
+    // The chain settle broadcasts and returns a replay signal; the re-probe finds the
+    // pending (index 7). No sibling owns it → book the decoded 2 / 2_000_000.
+    settleOutcome = {
+      ok: false,
+      code: 'on_chain_error',
+      message: 'custom program error: SettlementReplay 6138',
+      broadcast: true,
+      signature: 'replay-sig',
+    };
+    reprobeOutcome = {
+      ok: true,
+      escrowPda: ESCROW,
+      settlementIndex: 7n,
+      pendingExists: true,
+      pending: { callsToSettle: 2n, amount: 2_000_000n, isFinalized: false, isDisputed: false },
+    };
+    const result = await gate.settleJobV2({ escrowPda: ESCROW, jobId: 'job-1', callerAvatarId: WORKER, callsToSettle: 1n });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.phase).toBe('pending');
+    expect(rows[0]?.status).toBe('pending');
+    expect(rows[0]?.callsSettled).toBe('2');
+    expect(rows[0]?.reservedPrincipalAmount).toBe('2000000');
+    expect(settleCalls).toBe(1);
+  });
+
   it('rejects an over-release at the persisted approval ceiling before claiming', async () => {
     rows = [baseRow()];
     await persistApproval(1n);

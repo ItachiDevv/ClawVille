@@ -519,6 +519,60 @@ export function computeV2ProtocolFee(principal: bigint): bigint {
   return principal <= 0n ? 0n : (principal * 50n) / 10_000n;
 }
 
+/** The drizzle transaction handle type, for helpers that run inside `db.transaction`. */
+type SapDbTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+/**
+ * A2 — statuses under which a settlement row already OWNS the on-chain pending at
+ * its recorded `settlementIndex`. If a DIFFERENT row of the same escrow holds one
+ * of these at the index we're about to reconcile, the pending belongs to it and we
+ * must never book it a second time.
+ */
+const PENDING_INDEX_OWNER_STATUSES = [
+  'settling',
+  'pending',
+  'finalizing',
+  'finalize_unknown',
+  'settled',
+] as const;
+
+/**
+ * A2 — does a DIFFERENT settlement row of this escrow already own the on-chain
+ * pending at `settlementIndex`? Must be called UNDER the per-escrow advisory lock so
+ * the check-then-book is atomic across processes (the in-process keyed mutex already
+ * serializes same-escrow settles). Reads the escrow's rows and filters in memory
+ * (small N per escrow; keeps the test seam simple).
+ *
+ * SEMANTICS (verified against OOBE escrow_v2.rs @55d29ed): `settlement_index`
+ * increments INSIDE `settle_calls_v2` (`checked_add(1)` in the DisputeWindow arm),
+ * and the PendingSettlement account is KEPT (marked `is_finalized=true`, NOT closed)
+ * at finalize. So each settle owns a UNIQUE index and this guard is defensive
+ * (out-of-band writer / stale read) — but it is correct under either increment
+ * semantics and is the only thing that stops a sibling job from double-booking one
+ * on-chain pending into two ledger rows.
+ */
+async function siblingOwnsPendingIndex(
+  tx: SapDbTx,
+  escrowPda: string,
+  selfRowId: string,
+  settlementIndex: string,
+): Promise<boolean> {
+  const escrowRows = await tx
+    .select({
+      id: sapEscrowSettlements.id,
+      settlementIndex: sapEscrowSettlements.settlementIndex,
+      status: sapEscrowSettlements.status,
+    })
+    .from(sapEscrowSettlements)
+    .where(eq(sapEscrowSettlements.escrowPda, escrowPda));
+  return escrowRows.some(
+    (r) =>
+      r.id !== selfRowId &&
+      r.settlementIndex === settlementIndex &&
+      (PENDING_INDEX_OWNER_STATUSES as readonly string[]).includes(r.status ?? ''),
+  );
+}
+
 function dryRunSimulationError(result: SapWriteResult): unknown | null {
   if (!result.ok || !result.dryRun) return null;
   if (result.simulation.err) return result.simulation.err;
@@ -935,10 +989,12 @@ export type DepositEscrowV2IdempotentResult =
   | { ok: true; chain: SapWriteResult; replayed: boolean }
   | {
       ok: false;
+      // L1 — reuse the house `avatar_wallet_missing` code (same as the withdraw
+      // wrapper + the SapFailure union), not a bespoke `wallet_pubkey_missing`.
       code:
         | 'deposit_in_flight'
         | 'deposit_request_mismatch'
-        | 'wallet_pubkey_missing'
+        | 'avatar_wallet_missing'
         | 'invalid_pubkey'
         | 'internal';
       message: string;
@@ -1013,7 +1069,7 @@ export async function depositEscrowV2Idempotent(
   // LIVE — resolve the escrow PDA (the fingerprint) then claim idempotency.
   const depositorWalletPubkey = await avatarWalletPubkey(input.depositorAvatarId);
   if (!depositorWalletPubkey) {
-    return { ok: false, code: 'wallet_pubkey_missing', message: 'depositor avatar has no custodial wallet.' };
+    return { ok: false, code: 'avatar_wallet_missing', message: 'depositor avatar has no custodial wallet.' };
   }
   const addr = resolveV2UsdcEscrowAddress({
     workerWalletPubkey: input.workerWalletPubkey,
@@ -2000,54 +2056,70 @@ export async function settleJobV2(
     if (inspected.ok === false) return { ok: false, code: inspected.code, message: inspected.message };
     if (inspected.escrowPda !== row.escrowPda) return { ok: false, code: 'internal', message: 'persisted V2 escrow PDA does not match derived coordinates.' };
     if (inspected.pendingExists) {
-      // FIX 3 (doc line 624) — a PendingSettlement PDA already exists for this
-      // index (settled out-of-band, or by a prior settle we never recorded). Book
-      // the DECODED on-chain principal/calls, NEVER the caller's requested numbers.
+      // FIX 3 (doc line 624) — a PendingSettlement PDA already exists for this index.
+      // Book the DECODED on-chain principal/calls, NEVER the caller's requested numbers.
       // A decode gap is a retryable failure (book nothing) — `inspectV2SettlementState`
       // returns a `SapFailure` on decode/RPC error, but guard defensively too.
       if (!inspected.pending) {
         return { ok: false, code: 'on_chain_error', message: 'on-chain pending settlement could not be decoded; retry.' };
       }
       const p = inspected.pending;
-      // M4 (a) — a DISPUTED pending must never auto-book: finalize is on-chain-
-      // blocked and the outcome needs manual/ops resolution. Row untouched
-      // (still open|submitted), retryable.
+      // M4 (a) — a DISPUTED pending must never auto-book (finalize is on-chain-blocked;
+      // ops must resolve). Books nothing, row untouched (open|submitted), retryable.
+      // No lock needed — it mutates no state.
       if (p.isDisputed) {
         return { ok: false, code: 'on_chain_error', message: 'on-chain pending is disputed; manual resolution required.' };
       }
       const decodedPrincipal = p.amount;
       const decodedCalls = p.callsToSettle;
       const decodedFee = computeV2ProtocolFee(decodedPrincipal);
-      if (p.isFinalized) {
-        // M4 (b) — the pending was ALREADY FINALIZED on-chain (the e2e proved the
-        // account survives finalize with isFinalized=true). The principal was
-        // RELEASED to the worker; booking 'pending' would send finalizeJobV2 at an
-        // already-finalized settlement that fails on-chain forever. Reconcile
-        // TERMINAL 'settled': book the principal as RELEASED (never reserved — we
-        // never reserved it), so finalize never runs and conservation holds.
-        const [settled] = await db.update(sapEscrowSettlements).set({
-          status: 'settled', settlementIndex: inspected.settlementIndex.toString(),
+      const targetIndex = inspected.settlementIndex.toString();
+      // A2 — advisory-lock + sibling guard + book, ALL in one transaction so the
+      // check-then-book is atomic across processes (the in-process keyed mutex already
+      // serializes same-escrow settles here). Without this, two instances — or a
+      // sibling job row that sees the same on-chain pending — could double-book it.
+      const reconcile = await db.transaction(async (tx) => {
+        await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${input.escrowPda}, 0))`);
+        if (await siblingOwnsPendingIndex(tx, input.escrowPda, row.id, targetIndex)) {
+          return { kind: 'sibling' as const };
+        }
+        if (p.isFinalized) {
+          // M4 (b) — already FINALIZED on-chain (the account survives finalize with
+          // isFinalized=true — verified). Booking 'pending' would send finalizeJobV2
+          // at an already-finalized settlement that reverts forever. Reconcile TERMINAL
+          // 'settled' with the principal booked RELEASED (never reserved — we never
+          // reserved it), so finalize never runs and conservation holds.
+          const [settled] = await tx.update(sapEscrowSettlements).set({
+            status: 'settled', settlementIndex: targetIndex,
+            callsSettled: (alreadySettled + decodedCalls).toString(),
+            releasedAmount: (jobReleased + decodedPrincipal).toString(),
+            reservedPrincipalAmount: jobReserved.toString(),
+            feeAmount: (jobFees + decodedFee).toString(),
+            verificationProvider: provider.id, verificationPassed: true, verificationDetail: verdict.detail ?? null,
+            auditRootHex: auth.auditRootHex, settledAt: new Date(), updatedAt: new Date(),
+            metadata: { ...((row.metadata as object) ?? {}), replayReconciledFromPendingPda: true, reconciledFinalized: true },
+          }).where(and(eq(sapEscrowSettlements.id, row.id), sql`${sapEscrowSettlements.status} IN ('open','submitted')`)).returning();
+          return { kind: 'settled' as const, row: settled };
+        }
+        // M4 (c) — a live (not-yet-finalized) pending: book 'pending' for finalize.
+        const [pending] = await tx.update(sapEscrowSettlements).set({
+          status: 'pending', settlementIndex: targetIndex,
           callsSettled: (alreadySettled + decodedCalls).toString(),
-          releasedAmount: (jobReleased + decodedPrincipal).toString(),
-          reservedPrincipalAmount: jobReserved.toString(),
-          feeAmount: (jobFees + decodedFee).toString(),
+          reservedPrincipalAmount: (jobReserved + decodedPrincipal).toString(), feeAmount: (jobFees + decodedFee).toString(),
           verificationProvider: provider.id, verificationPassed: true, verificationDetail: verdict.detail ?? null,
-          auditRootHex: auth.auditRootHex, settledAt: new Date(), updatedAt: new Date(),
-          metadata: { ...((row.metadata as object) ?? {}), replayReconciledFromPendingPda: true, reconciledFinalized: true },
+          auditRootHex: auth.auditRootHex, updatedAt: new Date(),
+          metadata: { ...((row.metadata as object) ?? {}), replayReconciledFromPendingPda: true },
         }).where(and(eq(sapEscrowSettlements.id, row.id), sql`${sapEscrowSettlements.status} IN ('open','submitted')`)).returning();
-        if (settled) return { ok: true, phase: 'settled', settlement: settled, chain: null, replay: true };
+        return { kind: 'pending' as const, row: pending };
+      });
+      if (reconcile.kind === 'sibling') {
+        return { ok: false, code: 'settle_in_progress', message: 'the on-chain pending at this index is already booked to another job; wait for its finalize.' };
+      }
+      if (reconcile.kind === 'settled') {
+        if (reconcile.row) return { ok: true, phase: 'settled', settlement: reconcile.row, chain: null, replay: true };
         return { ok: false, code: 'settle_in_progress', message: 'the row changed while reconciling the finalized on-chain settlement.' };
       }
-      // M4 (c) — a live (not-yet-finalized) pending: book 'pending' for finalize.
-      const [pending] = await db.update(sapEscrowSettlements).set({
-        status: 'pending', settlementIndex: inspected.settlementIndex.toString(),
-        callsSettled: (alreadySettled + decodedCalls).toString(),
-        reservedPrincipalAmount: (jobReserved + decodedPrincipal).toString(), feeAmount: (jobFees + decodedFee).toString(),
-        verificationProvider: provider.id, verificationPassed: true, verificationDetail: verdict.detail ?? null,
-        auditRootHex: auth.auditRootHex, updatedAt: new Date(),
-        metadata: { ...((row.metadata as object) ?? {}), replayReconciledFromPendingPda: true },
-      }).where(and(eq(sapEscrowSettlements.id, row.id), sql`${sapEscrowSettlements.status} IN ('open','submitted')`)).returning();
-      if (pending) return { ok: true, phase: 'pending', settlement: pending, chain: null, replay: true, next: 'finalize' };
+      if (reconcile.row) return { ok: true, phase: 'pending', settlement: reconcile.row, chain: null, replay: true, next: 'finalize' };
       return { ok: false, code: 'settle_in_progress', message: 'the row changed while reconciling the on-chain pending settlement.' };
     }
 
@@ -2060,37 +2132,50 @@ export async function settleJobV2(
         reservedPrincipalAmount: sapEscrowSettlements.reservedPrincipalAmount, feeAmount: sapEscrowSettlements.feeAmount,
       }).from(sapEscrowSettlements).where(eq(sapEscrowSettlements.escrowPda, input.escrowPda));
       let remaining = 0n;
+      // A1 — reserved principal PHYSICALLY still sits in the vault until FINALIZE
+      // (settle only moves the fee out), so the vault holds `free + reserved`. To
+      // clamp the FREE balance we must compare the debit against `vault − reserved`,
+      // not the raw vault. Accumulate reserved over the SAME rows the `remaining` loop
+      // counts (skip settle_unknown identically, so the quarantine isn't double-hit).
+      let reservedInVault = 0n;
       for (const r of lockedRows) {
         if (r.status === 'settle_unknown') continue;
         if (r.status !== 'funding_unknown') remaining += u64(r.fundedAmount);
         remaining -= u64(r.releasedAmount) + u64(r.refundedAmount) + u64(r.reservedPrincipalAmount) + u64(r.feeAmount);
+        reservedInVault += u64(r.reservedPrincipalAmount);
       }
       // M1 — subtract booked V2 withdrawals UNDER THE LOCK too (mirrors
       // escrowFundsLedger: sum ALL rows — only succeeded/broadcast_unknown ever
       // exist). Without this, a withdraw booked AFTER the pre-claim ceiling read but
       // before this claim would be invisible here, so the RPC-null vault fallback
       // would compute a stale (too-high) ceiling. The vault clamp below then takes
-      // the min of this now-truthful ledger and the live vault read.
+      // the min of this now-truthful ledger and the live physical-free balance.
       const lockedWithdrawals = await tx
         .select({ amount: sapEscrowWithdrawals.amount })
         .from(sapEscrowWithdrawals)
         .where(eq(sapEscrowWithdrawals.escrowPda, input.escrowPda));
       for (const w of lockedWithdrawals) remaining -= u64(w.amount);
-      // FIX 2a (doc line 623) — CLAMP the ledger ceiling to the LIVE on-chain vault
-      // balance, read UNDER the advisory lock so the clamp is atomic with the claim.
-      // This catches ANY out-of-band drain (a self-custody withdraw, or any external
-      // mover) that the settlement ledger alone cannot see. A read failure returns
-      // NULL → KEEP the ledger ceiling and never reject on uncertain state; the
-      // on-chain program stays the authoritative fail-closed guard (6062-family).
-      // Holding the lock across one RPC round-trip is acceptable: settle is a rare,
-      // per-escrow-serialized, gated path and a fresh fail-closed read dominates.
+      // FIX 2a + A1 (doc line 623) — CLAMP the ceiling to the LIVE PHYSICAL-FREE vault
+      // balance (= on-chain vault − reserved principal), read UNDER the advisory lock
+      // so the clamp is atomic with the claim. Comparing against `vault − reserved`
+      // (not the raw vault) is what makes this catch ANY out-of-band drain: `min(remaining,
+      // vault)` was INERT for any drain ≤ reserved (the vault still nominally covered
+      // `remaining`), which is exactly the crash-window drain FIX 2b's best-effort
+      // booking can miss. A read failure returns NULL → KEEP the ledger ceiling and
+      // never reject on uncertain state; the on-chain program stays the authoritative
+      // fail-closed guard (6062). Never false-rejects: a consistent state always has
+      // vault − reserved ≥ remaining. Holding the lock across one RPC round-trip is
+      // acceptable: settle is a rare, per-escrow-serialized, gated path and A3 bounds
+      // the read to ~4s so a hung RPC can't pin the lock.
       const vaultBalance = await readVaultBalance({
         workerWalletPubkey: row.workerWalletPubkey,
         depositorWalletPubkey: row.depositorWalletPubkey,
         escrowNonce: nonce,
       });
+      const physicalFree =
+        vaultBalance === null ? null : vaultBalance > reservedInVault ? vaultBalance - reservedInVault : 0n;
       const effectiveRemaining =
-        vaultBalance !== null && vaultBalance < remaining ? vaultBalance : remaining;
+        physicalFree !== null && physicalFree < remaining ? physicalFree : remaining;
       if (effectiveRemaining < totalDebit) return { kind: 'ledger_short' as const, remaining: effectiveRemaining };
       const claimed = await tx.update(sapEscrowSettlements).set({
         status: 'settling', settlementIndex: inspected.settlementIndex.toString(),
@@ -2123,38 +2208,64 @@ export async function settleJobV2(
         if (replayCheck.ok && replayCheck.pendingExists && replayCheck.pending) {
           // FIX 3 (doc line 624) — a settle replay hit an already-existing pending;
           // book the DECODED on-chain principal/calls, NEVER the caller's numbers.
+          // A2 — do the sibling guard + booking UNDER the advisory lock (atomic vs a
+          // cross-process sibling). Our row is already 'settling'; the sibling and
+          // disputed cases UN-CLAIM it back to pre-claim so it never strands 'settling'.
           const p = replayCheck.pending;
           const decodedPrincipal = p.amount;
           const decodedCalls = p.callsToSettle;
           const decodedFee = computeV2ProtocolFee(decodedPrincipal);
-          if (p.isDisputed) {
-            // M4 (a) — disputed: UN-CLAIM (restore pre-claim from 'settling', release
-            // the reservation) + return an ops failure. NEVER strand the row in
-            // 'settling'. Retryable once resolved.
-            await db.update(sapEscrowSettlements).set({
-              status: preClaimStatus, reservedPrincipalAmount: jobReserved.toString(), feeAmount: jobFees.toString(), updatedAt: new Date(),
-              metadata: { ...((row.metadata as object) ?? {}), settleError: failure?.code ?? 'replay_disputed', replaySignalDisputed: true },
-            }).where(and(eq(sapEscrowSettlements.id, row.id), eq(sapEscrowSettlements.status, 'settling')));
+          const targetIndex = inspected.settlementIndex.toString();
+          const reconcile = await db.transaction(async (tx) => {
+            await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${input.escrowPda}, 0))`);
+            if (await siblingOwnsPendingIndex(tx, input.escrowPda, row.id, targetIndex)) {
+              // The on-chain pending at our index belongs to ANOTHER job — our settle
+              // targeted a taken index. UN-CLAIM (release the reservation) + refuse.
+              await tx.update(sapEscrowSettlements).set({
+                status: preClaimStatus, reservedPrincipalAmount: jobReserved.toString(), feeAmount: jobFees.toString(), updatedAt: new Date(),
+                metadata: { ...((row.metadata as object) ?? {}), settleError: failure?.code ?? 'replay_sibling', replaySignalSiblingConflict: true },
+              }).where(and(eq(sapEscrowSettlements.id, row.id), eq(sapEscrowSettlements.status, 'settling')));
+              return { kind: 'sibling' as const };
+            }
+            if (p.isDisputed) {
+              // M4 (a) — disputed: UN-CLAIM (restore pre-claim, release reservation) +
+              // ops failure. NEVER strand the row in 'settling'.
+              await tx.update(sapEscrowSettlements).set({
+                status: preClaimStatus, reservedPrincipalAmount: jobReserved.toString(), feeAmount: jobFees.toString(), updatedAt: new Date(),
+                metadata: { ...((row.metadata as object) ?? {}), settleError: failure?.code ?? 'replay_disputed', replaySignalDisputed: true },
+              }).where(and(eq(sapEscrowSettlements.id, row.id), eq(sapEscrowSettlements.status, 'settling')));
+              return { kind: 'disputed' as const };
+            }
+            if (p.isFinalized) {
+              // M4 (b) — already finalized on-chain: book TERMINAL 'settled' from
+              // 'settling' (principal RELEASED, never reserved). finalize never runs.
+              const [settled] = await tx.update(sapEscrowSettlements).set({
+                status: 'settled', callsSettled: (alreadySettled + decodedCalls).toString(),
+                releasedAmount: (jobReleased + decodedPrincipal).toString(), reservedPrincipalAmount: jobReserved.toString(),
+                feeAmount: (jobFees + decodedFee).toString(), settledAt: new Date(), updatedAt: new Date(),
+                metadata: { ...((row.metadata as object) ?? {}), replayReconciledFromPendingPda: true, reconciledFinalized: true },
+              }).where(and(eq(sapEscrowSettlements.id, row.id), eq(sapEscrowSettlements.status, 'settling'))).returning();
+              return { kind: 'settled' as const, row: settled };
+            }
+            // M4 (c) — a live (not-yet-finalized) pending: book 'pending' for finalize.
+            const [pending] = await tx.update(sapEscrowSettlements).set({
+              status: 'pending', callsSettled: (alreadySettled + decodedCalls).toString(),
+              reservedPrincipalAmount: (jobReserved + decodedPrincipal).toString(), feeAmount: (jobFees + decodedFee).toString(), updatedAt: new Date(),
+            }).where(and(eq(sapEscrowSettlements.id, row.id), eq(sapEscrowSettlements.status, 'settling'))).returning();
+            return { kind: 'pending' as const, row: pending };
+          });
+          if (reconcile.kind === 'sibling') {
+            return { ok: false, code: 'settle_in_progress', message: 'the on-chain pending at this index is already booked to another job; wait for its finalize.' };
+          }
+          if (reconcile.kind === 'disputed') {
             return { ok: false, code: 'on_chain_error', message: 'on-chain pending is disputed; manual resolution required.' };
           }
-          if (p.isFinalized) {
-            // M4 (b) — already finalized on-chain: book TERMINAL 'settled' from
-            // 'settling' (principal RELEASED, never reserved). finalize never runs.
-            const [settled] = await db.update(sapEscrowSettlements).set({
-              status: 'settled', callsSettled: (alreadySettled + decodedCalls).toString(),
-              releasedAmount: (jobReleased + decodedPrincipal).toString(), reservedPrincipalAmount: jobReserved.toString(),
-              feeAmount: (jobFees + decodedFee).toString(), settledAt: new Date(), updatedAt: new Date(),
-              metadata: { ...((row.metadata as object) ?? {}), replayReconciledFromPendingPda: true, reconciledFinalized: true },
-            }).where(and(eq(sapEscrowSettlements.id, row.id), eq(sapEscrowSettlements.status, 'settling'))).returning();
-            if (settled) return { ok: true, phase: 'settled', settlement: settled, chain: null, replay: true };
+          if (reconcile.kind === 'settled') {
+            if (reconcile.row) return { ok: true, phase: 'settled', settlement: reconcile.row, chain: null, replay: true };
             return { ok: false, code: 'settle_in_progress', message: 'the row changed while reconciling the finalized on-chain settlement.' };
           }
-          // M4 (c) — a live (not-yet-finalized) pending: book 'pending' for finalize.
-          const [pending] = await db.update(sapEscrowSettlements).set({
-            status: 'pending', callsSettled: (alreadySettled + decodedCalls).toString(),
-            reservedPrincipalAmount: (jobReserved + decodedPrincipal).toString(), feeAmount: (jobFees + decodedFee).toString(), updatedAt: new Date(),
-          }).where(and(eq(sapEscrowSettlements.id, row.id), eq(sapEscrowSettlements.status, 'settling'))).returning();
-          return { ok: true, phase: 'pending', settlement: pending, chain: null, replay: true, next: 'finalize' };
+          if (reconcile.row) return { ok: true, phase: 'pending', settlement: reconcile.row, chain: null, replay: true, next: 'finalize' };
+          return { ok: false, code: 'settle_in_progress', message: 'the row changed while reconciling the on-chain pending settlement.' };
         }
         // M3 — the replay signal PROVES an on-chain pending exists at our index, but
         // the re-probe failed (RPC down) or could not decode. Do NOT mark terminal

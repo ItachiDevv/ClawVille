@@ -199,6 +199,8 @@ function failureStatus(code: SapFailure['code']): 400 | 404 | 500 | 503 | 502 {
  * Serialize a write result to a clean JSON response (never a 5xx stack leak).
  * `extra` merges extra top-level fields into EVERY branch (e.g. the deposit
  * idempotency `replayed` flag); undefined spreads to nothing for all other callers.
+ * L2 — `...extra` is spread FIRST in every branch so a future extra field can never
+ * clobber a contract field (error/code/message, ok/dryRun/signature/accounts).
  */
 function respondWrite(
   c: { json: (b: unknown, s?: number) => Response },
@@ -207,15 +209,15 @@ function respondWrite(
 ) {
   if (result.ok === false) {
     return c.json(
-      { error: result.code, code: result.code, message: result.message, ...extra },
+      { ...extra, error: result.code, code: result.code, message: result.message },
       failureStatus(result.code),
     );
   }
   if (result.dryRun) {
     return c.json({
+      ...extra,
       ok: true,
       dryRun: true,
-      ...extra,
       // `accepted` is honest now (FIX-B): true ONLY when the program was actually
       // invoked + decoded the instruction. `programReached:'inconclusive'` means
       // the sim aborted before the program ran (under-funded wallet) — read it as
@@ -230,7 +232,7 @@ function respondWrite(
       },
     });
   }
-  return c.json({ ok: true, dryRun: false, ...extra, signature: result.signature, accounts: result.accounts });
+  return c.json({ ...extra, ok: true, dryRun: false, signature: result.signature, accounts: result.accounts });
 }
 
 // ─── status (public, no chain work) ───────────────────────────────────────────
@@ -690,7 +692,7 @@ sapRoutes.post('/escrow/v2/deposit', requireAuthOrAgentSession, requireNonGuestI
     const status =
       result.code === 'deposit_in_flight' || result.code === 'deposit_request_mismatch'
         ? 409
-        : result.code === 'wallet_pubkey_missing'
+        : result.code === 'avatar_wallet_missing'
           ? 404
           : result.code === 'invalid_pubkey'
             ? 400
