@@ -180,6 +180,44 @@ describe('ReefRaceSplineSim — race mechanics (v7)', () => {
     });
   });
 
+  // ── Start-line shuttle (anti lap-farm) ──────────────────────────────────────
+
+  describe('start-line shuttle anti-farm', () => {
+    it('oscillating across the start/finish seam never nets a lap or finishes', () => {
+      reefRaceSplineSim.setBroadcastFn(() => {});
+      reefRaceSplineSim.startRoom('r-shuttle', 'reef-race', [A]);
+      const state = reefRaceSplineSim.__getState('r-shuttle')!;
+      const body = state.bodies.get(A)!;
+
+      const placeAtT = (t: number) => {
+        const p = state.spline.centerlineAt(t);
+        body.x = p.x;
+        body.z = p.z;
+        body.vx = 0;
+        body.vz = 0;
+      };
+
+      // Seed progress just behind the line.
+      placeAtT(0.999);
+      reefRaceSplineSim.__tickOnceForTest('r-shuttle');
+
+      // Shuttle across the seam many times: forward (0.999→0.002) then backward
+      // (0.002→0.998). The old code read the backward cross as +0.98 "forward
+      // progress", letting the next forward cross farm a lap toward a FINISH.
+      for (let i = 0; i < 8; i++) {
+        placeAtT(0.002);
+        reefRaceSplineSim.__tickOnceForTest('r-shuttle'); // forward seam cross
+        placeAtT(0.998);
+        reefRaceSplineSim.__tickOnceForTest('r-shuttle'); // backward seam cross
+      }
+
+      // A backward cross undoes each forward cross → lap never accrues, never
+      // finishes. (A genuine full forward loop is the only way to a lap.)
+      expect(body.lap).toBe(0);
+      expect(body.finishedAt).toBeNull();
+    });
+  });
+
   // ── Determinism (sim clock) ─────────────────────────────────────────────────
 
   describe('deterministic sim clock', () => {

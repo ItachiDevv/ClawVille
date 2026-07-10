@@ -1533,25 +1533,52 @@ export class ReefRaceSplineSim {
 
       const prev = body.progress;
 
-      // Forward seam crossing: was high, now low (unambiguous on a 30k-wu loop).
-      const SEAM_HI = 0.7;
-      const SEAM_LO = 0.3;
-      const crossedSeamForward = prev > SEAM_HI && newProgress < SEAM_LO;
+      // Seam crossings on the periodic loop. A single tick moves ≤ ~31 wu ≈
+      // 0.00035 of the loop, so any within-lap jump > 0.5 is a seam WRAP, not
+      // real motion — in EITHER direction.
+      const SEAM_WRAP = 0.5;
+      const rawDelta = newProgress - prev;
+      const forwardWrap = rawDelta < -SEAM_WRAP;  // prev high, new low → FORWARD
+      const backwardWrap = rawDelta > SEAM_WRAP;  // prev low, new high → BACKWARD
 
-      // Anti-cheat: compute the WRAP-ADJUSTED within-lap delta. A forward wrap
-      // adds 1.0 (the seam) so a legit lap completion is NOT a regression.
-      const wrappedDelta = crossedSeamForward
-        ? newProgress + 1 - prev
-        : newProgress - prev;
-      if (!progressIsMonotonic(wrappedDelta + prev, prev)) {
+      // TRUE signed within-lap delta, wrap-adjusted in BOTH directions (Codex
+      // round-3 BLOCKER 3). The old code only adjusted the FORWARD wrap, so a
+      // reverse low→high seam cross read as ~+0.98 "forward progress" — letting a
+      // body SHUTTLE across the start line to farm laps toward a FINISH (finish
+      // order feeds `activity.match.placed` scoring). A backward wrap is now a
+      // small NEGATIVE delta, and a backward seam cross UNDOES a lap below.
+      const signedDelta = forwardWrap
+        ? rawDelta + 1
+        : backwardWrap
+          ? rawDelta - 1
+          : rawDelta;
+
+      // Regression guard on the TRUE signed delta (small backward moves stay
+      // within tolerance = legit knockback; a real teleport-back trips it).
+      if (!progressIsMonotonic(prev + signedDelta, prev)) {
         this.flag(state, body.avatarId, 'checkpoint_skip',
-          `progress_regression: delta=${wrappedDelta.toFixed(4)} (prev=${prev.toFixed(4)} new=${newProgress.toFixed(4)})`);
+          `progress_regression: delta=${signedDelta.toFixed(4)} (prev=${prev.toFixed(4)} new=${newProgress.toFixed(4)})`);
       }
 
       body.prevProgress = prev;
       body.progress = newProgress;
 
-      if (!crossedSeamForward) continue;
+      if (backwardWrap) {
+        // Crossed the start/finish seam BACKWARD — UNDO one lap so shuttling
+        // across the line can never net a lap gain toward a finish. A legit
+        // racer knocked back over the line just re-crosses forward (net zero).
+        if (body.lap > 0) {
+          body.lap -= 1;
+          body.lastLapAt = now;
+        } else if (body.startCrossed) {
+          // Went back behind the start gun on lap 1 — re-arm the start crossing.
+          body.startCrossed = false;
+          body.lastLapAt = now;
+        }
+        continue;
+      }
+
+      if (!forwardWrap) continue;
 
       // ── Forward seam crossing handling ──────────────────────────────────
       if (!body.startCrossed) {
@@ -1975,7 +2002,8 @@ export class ReefRaceSplineSim {
     const isSelfBuff = (k: ReefPowerUpKind | null | undefined) =>
       k === 'rr-turbo-bubble' || k === 'rr-bubble-shield';
 
-    // Phase 1 — self buffs (shields first).
+    // Phase 1 — SELF buffs (turbo, shield). A shield used this tick is up BEFORE
+    // any offensive item resolves, regardless of body-map order.
     for (const body of state.bodies.values()) {
       if (!body.alive || body.forfeited || body.finishedAt !== null) continue;
       for (const slot of body.pendingPowerUpSlots) {
@@ -1984,62 +2012,91 @@ export class ReefRaceSplineSim {
         }
       }
     }
-    // Phase 2 — offensive / rival-affecting, then clear pending slots.
+
+    // Phase 2 — OFFENSIVE, AGGREGATED for order-independence + a single final
+    // speed clamp per target (Codex round-3 BLOCKERS 1+2). The old per-body
+    // immediate mutation made two effects on the same victim in one tick depend
+    // on body-map order, AND seeker-jelly's impulse was unclamped (an aligned
+    // seeker could push a victim to ~1225, contained only by a later whirlpool's
+    // clamp by roster luck). Now every effect is COLLECTED from the immutable
+    // post-integrate snapshot (positions unchanged this pass; velocities read
+    // as-is), AGGREGATED per target (impulses sum, slows multiply — both
+    // commutative), APPLIED once in a canonical order (impulse then slow), and
+    // clamped ONCE to the 925 hard cap (caps every knockback incl. seeker).
+    const impulseX = new Map<string, number>();
+    const impulseZ = new Map<string, number>();
+    const slowMul = new Map<string, number>();
+    const affected = new Set<string>();
+    const addImpulse = (id: string, dvx: number, dvz: number) => {
+      impulseX.set(id, (impulseX.get(id) ?? 0) + dvx);
+      impulseZ.set(id, (impulseZ.get(id) ?? 0) + dvz);
+      affected.add(id);
+    };
+    const addSlow = (id: string, factor: number) => {
+      slowMul.set(id, (slowMul.get(id) ?? 1) * (1 - factor));
+      affected.add(id);
+    };
+
     for (const body of state.bodies.values()) {
       if (!body.alive || body.forfeited || body.finishedAt !== null) {
         body.pendingPowerUpSlots.length = 0;
         continue;
       }
       for (const slot of body.pendingPowerUpSlots) {
-        if (!isSelfBuff(body.inventory[slot]?.kind as ReefPowerUpKind | null)) {
-          this.tryUsePowerUp(state, body, slot, now);
+        const slotObj = body.inventory[slot];
+        const kind = slotObj?.kind as ReefPowerUpKind | null;
+        if (!slotObj || !kind || isSelfBuff(kind)) continue; // self-buffs: Phase 1
+        if (slotObj.charges <= 0 || slotObj.cooldownUntil > now) continue;
+        const def = getReefPowerUpDef(kind);
+        switch (kind) {
+          // Effect-only (no velocity) — already order-independent (max-expiry).
+          case 'rr-ink-slick':
+            this.applyInkSlick(state, body, now);
+            break;
+          case 'rr-tide-wave':
+            this.collectTideWave(state, body, addSlow);
+            break;
+          case 'rr-seeker-jelly':
+            this.collectSeekerJelly(state, body, addImpulse);
+            break;
+          case 'rr-whirlpool':
+            this.collectWhirlpool(state, body, now, addImpulse);
+            break;
         }
+        this.consumeSlot(body, slot, def, now);
       }
       body.pendingPowerUpSlots.length = 0;
     }
+
+    // Apply the aggregated velocity changes once per target, then one clamp.
+    const cap = REEF_MAX_SPEED * 1.85;
+    for (const id of affected) {
+      const target = state.bodies.get(id);
+      if (!target) continue;
+      target.vx += impulseX.get(id) ?? 0;
+      target.vz += impulseZ.get(id) ?? 0;
+      const sm = slowMul.get(id);
+      if (sm !== undefined) {
+        target.vx *= sm;
+        target.vz *= sm;
+      }
+      const sp = Math.hypot(target.vx, target.vz);
+      if (sp > cap) {
+        target.vx = (target.vx / sp) * cap;
+        target.vz = (target.vz / sp) * cap;
+      }
+    }
   }
 
-  private tryUsePowerUp(
-    state: SplineRoomState,
+  /** Consume one charge of a power-up slot (+ set cooldown / clear the slot). */
+  private consumeSlot(
     body: SplineBody,
     slotIndex: number,
+    def: { cooldownMs: number },
     now: number,
   ): void {
     const slot = body.inventory[slotIndex];
-    if (!slot || slot.kind === null || slot.charges <= 0) return;
-    if (slot.cooldownUntil > now) return;
-
-    const kind = slot.kind as ReefPowerUpKind;
-    const def = getReefPowerUpDef(kind);
-
-    switch (kind) {
-      // Self buffs — timed effect on the user.
-      case 'rr-turbo-bubble':
-      case 'rr-bubble-shield':
-        body.activeEffects.set(
-          kind,
-          now + def.effectMs * body.mults.powerUpDurationMult,
-        );
-        break;
-      // rr-ink-slick — RIVAL slow (bug fix: was set on self, which slowed the
-      // USER despite the HUD advertising a rival slow). Now drops a slick that
-      // slows rivals BEHIND the dropper.
-      case 'rr-ink-slick':
-        this.applyInkSlick(state, body, now);
-        break;
-      // rr-whirlpool — RIVAL knock/pull hazard (bug fix: was an inert self
-      // activeEffect nothing read). Now pulls + briefly slows nearby rivals.
-      case 'rr-whirlpool':
-        this.applyWhirlpool(state, body, now);
-        break;
-      case 'rr-tide-wave':
-        this.applyTideWave(state, body);
-        break;
-      case 'rr-seeker-jelly':
-        this.applySeekerJelly(state, body);
-        break;
-    }
-
+    if (!slot) return;
     slot.charges -= 1;
     if (slot.charges <= 0) {
       body.inventory[slotIndex] = { kind: null, charges: 0, cooldownUntil: 0 };
@@ -2048,23 +2105,54 @@ export class ReefRaceSplineSim {
     }
   }
 
-  private applyTideWave(state: SplineRoomState, src: SplineBody): void {
+  /**
+   * Resolve a SELF-BUFF power-up (turbo / shield) — Phase 1 only. Offensive
+   * items are resolved in the aggregate Phase 2 of `resolvePowerUpUses`, NOT
+   * here.
+   */
+  private tryUsePowerUp(
+    state: SplineRoomState,
+    body: SplineBody,
+    slotIndex: number,
+    now: number,
+  ): void {
+    void state;
+    const slot = body.inventory[slotIndex];
+    if (!slot || slot.kind === null || slot.charges <= 0) return;
+    if (slot.cooldownUntil > now) return;
+
+    const kind = slot.kind as ReefPowerUpKind;
+    if (kind !== 'rr-turbo-bubble' && kind !== 'rr-bubble-shield') return;
+    const def = getReefPowerUpDef(kind);
+    body.activeEffects.set(
+      kind,
+      now + def.effectMs * body.mults.powerUpDurationMult,
+    );
+    this.consumeSlot(body, slotIndex, def, now);
+  }
+
+  /**
+   * Tide-wave — a proximity SLOW. Accumulates a multiplicative slow factor per
+   * rival (order-independent) via `addSlow` instead of mutating velocity
+   * directly; the aggregate apply loop scales + clamps once. (Codex round-3.)
+   */
+  private collectTideWave(
+    state: SplineRoomState,
+    src: SplineBody,
+    addSlow: (id: string, factor: number) => void,
+  ): void {
     const radius = 250;
     for (const target of state.bodies.values()) {
       if (target.avatarId === src.avatarId) continue;
-      if (target.dnf || target.finishedAt !== null) continue;
+      if (!target.alive || target.dnf || target.finishedAt !== null) continue;
       if (target.activeEffects.has('rr-bubble-shield')) continue;
       const dx = target.x - src.x;
       const dz = target.z - src.z;
       const dist = Math.hypot(dx, dz);
       if (dist > radius) continue;
-      const speed = Math.hypot(target.vx, target.vz);
-      if (speed > 0) {
-        const factor =
-          0.4 * (1 - dist / radius) * target.mults.knockbackResistMult;
-        target.vx *= 1 - factor;
-        target.vz *= 1 - factor;
-      }
+      const factor =
+        0.4 * (1 - dist / radius) * target.mults.knockbackResistMult;
+      addSlow(target.avatarId, factor);
       this.broadcastFn(state.roomId, {
         type: 'event.hit',
         srcAvatarId: src.avatarId,
@@ -2075,13 +2163,23 @@ export class ReefRaceSplineSim {
     }
   }
 
-  private applySeekerJelly(state: SplineRoomState, src: SplineBody): void {
+  /**
+   * Seeker-jelly — an impulse AWAY from the user on the closest in-front rival.
+   * Accumulates the impulse via `addImpulse` (order-independent); the aggregate
+   * apply loop sums + CLAMPS it to 925 (Codex round-3 BLOCKER 2 — the old direct
+   * add had no clamp, so an aligned seeker could exceed the cap).
+   */
+  private collectSeekerJelly(
+    state: SplineRoomState,
+    src: SplineBody,
+    addImpulse: (id: string, dvx: number, dvz: number) => void,
+  ): void {
     let best: SplineBody | null = null;
     let bestDist = Infinity;
     const sv = Math.hypot(src.vx, src.vz);
     for (const t of state.bodies.values()) {
       if (t.avatarId === src.avatarId) continue;
-      if (t.dnf || t.finishedAt !== null) continue;
+      if (!t.alive || t.dnf || t.finishedAt !== null) continue;
       if (t.activeEffects.has('rr-bubble-shield')) continue;
       const dx = t.x - src.x;
       const dz = t.z - src.z;
@@ -2099,11 +2197,8 @@ export class ReefRaceSplineSim {
     const dx = best.x - src.x;
     const dz = best.z - src.z;
     const mag = Math.max(Math.hypot(dx, dz), 1);
-    const nx = dx / mag;
-    const nz = dz / mag;
     const impulse = REEF_MAX_SPEED * 0.6 * best.mults.knockbackResistMult;
-    best.vx += nx * impulse;
-    best.vz += nz * impulse;
+    addImpulse(best.avatarId, (dx / mag) * impulse, (dz / mag) * impulse);
     this.broadcastFn(state.roomId, {
       type: 'event.hit',
       srcAvatarId: src.avatarId,
@@ -2166,10 +2261,20 @@ export class ReefRaceSplineSim {
    * slow reuses the `hazard-slow` negative kinetic stack (stored as a
    * multiplier, converted to an additive `-1` in applyIntentForTick).
    */
-  private applyWhirlpool(
+  /**
+   * Whirlpool — a PULL toward the user + a brief slow, on every nearby rival.
+   * Accumulates the pull impulse via `addImpulse` (order-independent) and sets
+   * the `hazard-slow` effect (constant duration → order-independent). The
+   * victim's speed is CLAMPED once in the aggregate apply loop (Codex round-3:
+   * the per-effect clamp moved to the single final clamp so it also bounds a
+   * seeker+whirlpool combo on the same victim). The knockback bypasses the
+   * per-tick delta validator, so the final clamp is what keeps it ≤ 925.
+   */
+  private collectWhirlpool(
     state: SplineRoomState,
     src: SplineBody,
     now: number,
+    addImpulse: (id: string, dvx: number, dvz: number) => void,
   ): void {
     const def = getReefPowerUpDef('rr-whirlpool');
     for (const target of state.bodies.values()) {
@@ -2185,20 +2290,7 @@ export class ReefRaceSplineSim {
       const mag = Math.max(dist, 1);
       const pull =
         WHIRLPOOL_PULL_IMPULSE * falloff * target.mults.knockbackResistMult;
-      target.vx += (dx / mag) * pull;
-      target.vz += (dz / mag) * pull;
-      // Clamp the victim's TOTAL speed to the 1.85× hard cap AFTER the impulse
-      // (Codex finding 4c): the knockback is a direct velocity injection that
-      // bypasses the per-tick delta validator, so without this two aligned
-      // whirlpools could slingshot an unboosted victim past 925 wu/s (the
-      // per-tick hard cap only fires when the victim itself holds a positive
-      // boost key). This clamp is unconditional.
-      const vsp = Math.hypot(target.vx, target.vz);
-      const cap = REEF_MAX_SPEED * 1.85;
-      if (vsp > cap) {
-        target.vx = (target.vx / vsp) * cap;
-        target.vz = (target.vz / vsp) * cap;
-      }
+      addImpulse(target.avatarId, (dx / mag) * pull, (dz / mag) * pull);
       // Brief slow — stored as a multiplier; applyIntentForTick reads (mult - 1).
       target.activeBoosts.set('hazard-slow', {
         expiresAt: now + def.effectMs,
@@ -2471,7 +2563,12 @@ export class ReefRaceSplineSim {
           vx: b.vx,
           vy: b.vz,    // protocol vy = scene vZ
           rot: b.rot,
-          height: b.height !== 0 ? b.height : undefined,
+          // Emit the NUMERIC height, INCLUDING 0 (Codex round-3 nit): the old
+          // `!== 0 ? … : undefined` dropped height on landing, so the client
+          // (which merges deltas) kept the stale airborne height until the next
+          // keyframe. A body only appears in the delta when a field changed, so
+          // this is just one extra number on that body's frame.
+          height: b.height,
           progress: b.progress,
           // CLOSED-LOOP lap state — the render/HUD read these directly.
           lap: b.lap,
