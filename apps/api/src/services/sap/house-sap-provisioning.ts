@@ -133,14 +133,26 @@ const HOUSE_PRICING_TIER_ID = 'bounty-usdc';
 const HOUSE_PRICING_PRICE_PER_CALL = 1_000_000n; // 1 USDC (6 dp)
 
 /**
- * Default target stake. 1 SOL — comfortably above the 0.1-SOL on-chain minimum
- * (`SAP_MIN_STAKE_LAMPORTS`), giving the create_escrow_v2 stake-coverage gate
- * (which requires max(0.1 SOL, ~50% of the max escrow obligation)) real
- * headroom. Overridable via `opts.targetStakeLamports`. Real, timelocked SOL —
- * only actually spent when the flags are ON and `SAP_DRY_RUN=false` (a
- * deliberate, funded ops step).
+ * Default target stake — 0.11 SOL (staging default; overridable via
+ * `opts.targetStakeLamports` and the script's `HOUSE_STAKE_LAMPORTS` env).
+ *
+ * ── STAKE ↔ MAX SINGLE BOUNTY (the create_escrow_v2 coverage gate) ────────────
+ * `create_escrow_v2` requires the WORKER (house) stake ≥ `max(0.1 SOL,
+ * 50% × maxObligation)`, where `maxObligation = pricePerCall × maxCalls` = the
+ * bounty reward in USDC BASE UNITS (6 dp). The DEPLOYED program compares that raw
+ * base-unit number DIRECTLY against lamports with NO mint-decimal / oracle
+ * conversion (unit-naive), so a reward of R whole USDC needs
+ * `max(0.1 SOL, R × 500_000 lamports)` staked. Consequences:
+ *   - 0.10 SOL covers every bounty ≤ $200 (the 0.1-SOL floor dominates there).
+ *   - 0.11 SOL covers a single bounty up to ~$220.
+ *   - a single bounty of $R (R > 200) needs ~`R × 500_000` lamports (≈ 0.0005 SOL/$).
+ * 0.11 SOL is plenty for staging e2e (single bounties ≤ ~$200). The stake is a
+ * one-time, REUSABLE standing coverage bond — it is NOT consumed per bounty — so
+ * ops RAISES it once (script arg / env) before posting a larger single bounty.
+ * Real, timelocked SOL — only spent when the flags are ON and `SAP_DRY_RUN=false`
+ * (a deliberate, funded ops step; devnet SOL is sourced by the orchestrator).
  */
-const DEFAULT_HOUSE_STAKE_LAMPORTS = 1_000_000_000n; // 1 SOL
+const DEFAULT_HOUSE_STAKE_LAMPORTS = 110_000_000n; // 0.11 SOL (staging default)
 
 // ─── result shape ─────────────────────────────────────────────────────────────
 
