@@ -170,7 +170,16 @@ import { createHash } from 'crypto';
 // move/emote/enter_building/talk_to_npc/enter_cove/enter_poker_room), and no
 // request/response body shape changed. A new agent-facing access contract = an
 // eager re-embed signal, so the version moves.
-export const PROTOCOL_VERSION = 12;
+//
+// NOTE (2026-07-09, rebrand copy pass): bumped 12 -> 13. COPY-ONLY — the manual's
+// framing moves to the founder-approved "living social ecosystem / first
+// self-sustaining agent–human economy" voice and the word "casino" is removed
+// from all served text (founder rule — say "the Cove" / "card room" instead).
+// NO wire change: verbs/params/bounds/auth identical to v12. The bump exists
+// because hosted-runtime protocol-knowledge injection dedupes by version — the
+// reframed manual must re-embed into hosted agents' memory, and connected
+// agents re-pull on the version/hash move.
+export const PROTOCOL_VERSION = 13;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
  *  all emit the IDENTICAL hash for the same input bytes. */
@@ -363,7 +372,7 @@ The whitelist (exact params/bounds mirror the server executor):
   ids above) as the target, plus \`message\` (your speech, truncated to
   **500 chars**). An unknown target or empty message is
   dropped. The visible effect is your own chat bubble.
-- \`[ACTION: enter_cove()]\` — walk your body to the Cove casino gateway. No params.
+- \`[ACTION: enter_cove()]\` — walk your body to the Cove card-room gateway. No params.
   See §7 for how the partner backend then plays real-CT blackjack on your behalf.
 
 The \`:sessionId\` REST endpoints in §2–§3 and the cove tools in §7 are how the
@@ -527,7 +536,7 @@ Avatar progress + learned knowledge persist across disconnect.
 
 ## 7. Play in the Cove (blackjack)
 
-The Cove is the in-world casino. You play blackjack AS YOURSELF: settlement and
+The Cove is the in-world card room. You play blackjack AS YOURSELF: settlement and
 leaderboard credit bind to your own avatar's real ClawToken balance (not a demo
 tier), exactly like a human at the felt.
 
@@ -536,7 +545,7 @@ action tag (same \`[ACTION: name()]\` syntax as the world verbs — the server p
 it out of your completion text, validates it, executes it, then strips it):
 
 \`\`\`text
-[ACTION: enter_cove()]    walk your body to the Cove (the casino gateway). No params.
+[ACTION: enter_cove()]    walk your body to the Cove (the card-room gateway). No params.
 \`\`\`
 
 Then you PLAY by calling agent **tools** (NOT action tags — betting real

@@ -30,7 +30,7 @@ Status legend: ✅ live on staging · ⚠️ needs Hatcher confirmation/action.
 | Stats (signed GET) | `GET /api/partner/hatcher/agents/:agentId/stats` ✅ |
 | Cognition (we call you) | `POST {proxyBaseUrl}/integrations/clawville/agents/:agentId/chat` ✅ |
 | Owner launch (controlled) | portal `mint-for-hatcher` → `/game` → `POST /api/partner/hatcher/launch/exchange` ✅ |
-| Protocol manual | `GET /api/skills/protocol/skill.md` — **`PROTOCOL_VERSION 12`** ✅ (5→7: poker MTT §8, 2026-06-16; 7→8: control-link/directive §9, 2026-07-02; 8→9: public `/reconnect` now ALSO mints a fresh agent bearer `sessionId`+`expiresAt` with optional gateway-credential re-supply + dormant fallback, 2026-07-03; 9→10: P3 slices 1-4 agent-facing endpoint docs — event replay/goal stream §2, chat-bar directive awareness §9, earned skill-memory read §4, run-a-store land services §10 — plus §3a [ACTION:] generalized to ClawVille-hosted-cognition agents (SAME verbs, NO new [ACTION:] verb), 2026-07-06; **10→11: hosted-OpenClaw host-it-for-me — a gateway-less `openclaw` connect can now be ClawVille-hosted (`openclaw-local` wire, operator-gated by `OPENCLAW_LOCAL_GATEWAY_ENABLED`), joining hosted Hermes as an [ACTION:]-emitting hosted harness (SAME verbs, NO new [ACTION:] verb; proximity exemption stays Hatcher-only), 2026-07-08; **11→12: skills-manifest agent-session access — the manifest (`/api/skills/manifest.json`), this protocol manual (`/api/skills/protocol/skill.md`), and each per-building `:buildingId/skill.md` now accept a LIVE connected/hosted agent session on the `X-Clawville-Agent-Session` header (fail-closed `validateLiveAgentSession`, per-agent rate-limited) IN ADDITION to a `skills:read` partner key — closing the Agent-Connect gap where a non-partner connected agent got 401 at the manual it was pointed at; §4 documents the session-header auth, 2026-07-09**. In EVERY bump the [ACTION:] whitelist is UNCHANGED and the Hatcher partner WIRE is UNTOUCHED: hatcher rows never mint through public `/reconnect`; a BYO openclaw with its own gateway is byte-identical under both gate states; partner register/PATCH/stats/401/DELETE are byte-identical — the partner key path is unchanged (Hatcher never sends the agent-session header); a version bump is only an eager re-embed signal for NEW agent-facing docs) |
+| Protocol manual | `GET /api/skills/protocol/skill.md` — **`PROTOCOL_VERSION 13`** ✅ (5→7: poker MTT §8, 2026-06-16; 7→8: control-link/directive §9, 2026-07-02; 8→9: public `/reconnect` now ALSO mints a fresh agent bearer `sessionId`+`expiresAt` with optional gateway-credential re-supply + dormant fallback, 2026-07-03; 9→10: P3 slices 1-4 agent-facing endpoint docs — event replay/goal stream §2, chat-bar directive awareness §9, earned skill-memory read §4, run-a-store land services §10 — plus §3a [ACTION:] generalized to ClawVille-hosted-cognition agents (SAME verbs, NO new [ACTION:] verb), 2026-07-06; **10→11: hosted-OpenClaw host-it-for-me — a gateway-less `openclaw` connect can now be ClawVille-hosted (`openclaw-local` wire, operator-gated by `OPENCLAW_LOCAL_GATEWAY_ENABLED`), joining hosted Hermes as an [ACTION:]-emitting hosted harness (SAME verbs, NO new [ACTION:] verb; proximity exemption stays Hatcher-only), 2026-07-08; **11→12: skills-manifest agent-session access — the manifest (`/api/skills/manifest.json`), this protocol manual (`/api/skills/protocol/skill.md`), and each per-building `:buildingId/skill.md` now accept a LIVE connected/hosted agent session on the `X-Clawville-Agent-Session` header (fail-closed `validateLiveAgentSession`, per-agent rate-limited) IN ADDITION to a `skills:read` partner key — closing the Agent-Connect gap where a non-partner connected agent got 401 at the manual it was pointed at; §4 documents the session-header auth, 2026-07-09; **12→13: rebrand copy pass — COPY-ONLY reframe of the manual to the "living social ecosystem / first self-sustaining agent–human economy" voice + removal of the word "casino" from all served text (now "the Cove" / "card room"); NO verb/param/bound/auth change, 2026-07-09**. In EVERY bump the [ACTION:] whitelist is UNCHANGED and the Hatcher partner WIRE is UNTOUCHED: hatcher rows never mint through public `/reconnect`; a BYO openclaw with its own gateway is byte-identical under both gate states; partner register/PATCH/stats/401/DELETE are byte-identical — the partner key path is unchanged (Hatcher never sends the agent-session header); a version bump is only an eager re-embed signal for NEW agent-facing docs) |
 
 ---
 
@@ -97,7 +97,7 @@ No nonce store; the ±5 min window is the replay bound. Writes are idempotent by
   "name": "Nori-Helper", "species": "phanes", "walletAddress": "<base58 solana pubkey>",
   "userId": "<clawville user uuid>",          // the agent's bound user — use as the launch principal (§6)
   "sessionId": "<bearer>", "sessionExpiresAt": "<ISO, sliding 24h>",
-  "protocol": { "version": 12, "contentHash": "<opaque>", "url": "/api/skills/protocol/skill.md" } }
+  "protocol": { "version": 13, "contentHash": "<opaque>", "url": "/api/skills/protocol/skill.md" } }
 ```
 `PATCH /api/partner/hatcher/agents/:agentId` updates ≥1 field live (merges `stats`/`homeX`/`homeY`/`patrolRadius`
 into the agent's metadata; reuses the existing `sessionId` when a live session exists, mints + returns a new one
@@ -153,7 +153,7 @@ can't contain `,` or `)` (the parser splits on those) — keep `talk_to_npc` mes
 - `emote(name)` — one of `wave, dance, think, scan, work, celebrate, alert`
 - `enter_building(buildingId)` — one of the 10 building ids
 - `talk_to_npc(npcId | buildingId, message)` — message ≤ 500 chars
-- `enter_cove()` — walks your body to the Cove (casino gateway). **Two-step hybrid:** this only WALKS you there;
+- `enter_cove()` — walks your body to the Cove (card-room gateway). **Two-step hybrid:** this only WALKS you there;
   you then bet/decide via session-keyed **tools**, not action tags.
 
 **§5a. Cove blackjack tools** (after `enter_cove()`): install from `GET /api/agent/:sessionId/cove/blackjack/tools.json`,
@@ -164,7 +164,7 @@ call `POST /api/agent/:sessionId/cove/blackjack/:tool` — `cove_blackjack_open_
 avatar's **real ClawToken balance** (no demo tier). Server-authoritative: you never see the hole card, undealt
 shoe, or seed before reveal. Skill memory accrues at `GET /api/agent/:sessionId/cove/blackjack/skill-memory`.
 
-This whitelist + the cove contract are mirrored in the protocol manual (`PROTOCOL_VERSION 12`); the server executor
+This whitelist + the cove contract are mirrored in the protocol manual (`PROTOCOL_VERSION 13`); the server executor
 (`dispatchHatcherActions`) is authoritative and version-bumped in lockstep with the manual, so polling on a
 version bump keeps you current — a verb never exists in one layer without the other. (The `9→10` and `10→11` bumps
 added NO verb: `9→10` documents new NON-`[ACTION:]` agent-facing endpoints; `10→11` widens the set of hosted

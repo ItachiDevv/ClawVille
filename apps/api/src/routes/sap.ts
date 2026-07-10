@@ -51,6 +51,7 @@
 
 import { Hono } from 'hono';
 import { z } from 'zod';
+import { registerSchema } from './sap-route-schemas';
 import { sessionMiddleware } from '../middleware/auth';
 import { requireAuthOrAgentSession } from '../middleware/require-auth-or-agent';
 import type { ActivityAuthContext } from '../middleware/require-auth-or-agent';
@@ -73,14 +74,26 @@ import {
   settleCalls,
   withdrawEscrow,
   closeEscrow,
+  // V2 (SDK 1.0.0) funding-side executors — SAFE to route directly (the DEPOSITOR
+  // funds its OWN escrow; the OWNER stakes its OWN SOL — no unauthorized release).
+  // V2 settle/finalize are routed below only through the escrow gate; these
+  // direct imports remain funding/self-custody operations.
+  provisionAgentStake,
+  updateAgentPricingUsdc,
+  createEscrowV2Usdc,
+  depositEscrowV2Usdc,
+  withdrawEscrowV2Usdc,
   type SapWriteResult,
   type SapFailure,
 } from '../services/sap/sap-client';
 import {
   openEscrow,
+  openEscrowV2,
   submitJob,
   approveJob,
   settleJob,
+  settleJobV2,
+  finalizeJobV2,
   refundEscrow,
   type EscrowGateResult,
   type EscrowGateFailure,
@@ -229,28 +242,6 @@ sapRoutes.get('/status', (c) => {
 });
 
 // ─── Phase 1 — identity / reputation / tool ───────────────────────────────────
-
-const registerSchema = z
-  .object({
-    name: z.string().min(1).max(64),
-    description: z.string().max(512).default(''),
-    capabilities: z
-      .array(
-        z.object({
-          id: z.string().min(1).max(64),
-          description: z.string().max(256).nullish(),
-          protocolId: z.string().max(64).nullish(),
-          version: z.string().max(32).nullish(),
-        }),
-      )
-      .max(32)
-      .default([]),
-    protocols: z.array(z.string().min(1).max(64)).max(16).default(['clawville']),
-    agentId: z.string().max(64).nullish(),
-    agentUri: z.string().url().max(256).nullish(),
-    x402Endpoint: z.string().url().max(256).nullish(),
-  })
-  .strict();
 
 sapRoutes.post('/register', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
   const gated = gate503(c, false);
@@ -447,10 +438,12 @@ sapRoutes.get('/agent/:pubkey', async (c) => {
 
 // ─── Phase 2 — escrow money rail (SAP_ESCROW_ENABLED) ─────────────────────────
 
+const U64_MAX = 18446744073709551615n;
 const u64Str = z
   .string()
   .regex(/^\d+$/, 'must be a non-negative integer string (lamports / u64)')
-  .max(20);
+  .max(20)
+  .refine((s) => BigInt(s) <= U64_MAX, 'exceeds u64::MAX');
 
 const stakeSchema = z.object({ lamports: u64Str }).strict();
 
@@ -547,6 +540,259 @@ sapRoutes.post('/escrow/deposit', requireAuthOrAgentSession, requireNonGuestIden
     amount: BigInt(parsed.data.amount),
   });
   return respondWrite(c, result);
+});
+
+// ─── V2 escrow — OWNER CONFIG + FUNDING-SIDE routes only ──────────────────────
+// These expose self-custody V2 operations: an OWNER staking its own SOL or
+// replacing its own pricing menu, and a DEPOSITOR funding its OWN escrow. None
+// can release another party's
+// funds, so they are safe to route directly (behind requireAuthOrAgentSession +
+// requireLedgerCapable + the gates + SAP_DRY_RUN). E5 parity: BOTH a human and a
+// connected/hosted agent act AS THEMSELVES (bound to identity.avatarId). The V2
+// Settle/finalize are exposed separately below through the escrow gate's
+// approval/ceiling/at-most-once two-phase lifecycle. Withdraw remains
+// depositor-only self-custody and cannot withdraw reserved pending principal.
+
+const provisionStakeSchema = z.object({ targetLamports: u64Str }).strict();
+
+const updateAgentPricingUsdcSchema = z
+  .object({
+    tierId: z.string().trim().min(1).max(32),
+    pricePerCall: u64Str,
+    rateLimit: z.number().int().positive().max(2_147_483_647).optional(),
+    maxCallsPerSession: z.number().int().positive().max(2_147_483_647).optional(),
+  })
+  .strict();
+
+// Self-custody config: the acting worker replaces ITS OWN on-chain pricing menu.
+// The request body contains tier data only; identity.avatarId is the sole signer source.
+sapRoutes.post('/agent/pricing', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
+  const gated = gate503(c, true, true);
+  if (gated) return gated;
+  if (!writeLimiter.check(getClientIp(c.req.raw.headers))) {
+    return c.json({ error: 'rate_limited' }, 429);
+  }
+  const parsed = updateAgentPricingUsdcSchema.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) return c.json({ error: 'invalid_body', code: 'invalid_body' }, 400);
+  const identity = c.get('identity');
+  const notLedger = requireLedgerCapable(c, identity);
+  if (notLedger) return notLedger;
+  const result = await updateAgentPricingUsdc({
+    workerAvatarId: identity.avatarId,
+    tierId: parsed.data.tierId,
+    pricePerCall: BigInt(parsed.data.pricePerCall),
+    rateLimit: parsed.data.rateLimit,
+    maxCallsPerSession: parsed.data.maxCallsPerSession,
+  });
+  return respondWrite(c, result);
+});
+
+sapRoutes.post('/escrow/v2/provision-stake', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
+  const gated = gate503(c, true);
+  if (gated) return gated;
+  if (!writeLimiter.check(getClientIp(c.req.raw.headers))) {
+    return c.json({ error: 'rate_limited' }, 429);
+  }
+  const parsed = provisionStakeSchema.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) return c.json({ error: 'invalid_body', code: 'invalid_body' }, 400);
+  const identity = c.get('identity');
+  const notLedger = requireLedgerCapable(c, identity);
+  if (notLedger) return notLedger;
+  // The acting avatar stakes its OWN SOL up to the target (init-or-deposit).
+  const result = await provisionAgentStake({
+    avatarId: identity.avatarId,
+    targetLamports: BigInt(parsed.data.targetLamports),
+  });
+  return respondWrite(c, result);
+});
+
+const createEscrowV2Schema = z
+  .object({
+    workerWalletPubkey: z.string().min(32).max(64),
+    escrowNonce: u64Str,
+    pricePerCall: u64Str,
+    maxCalls: u64Str,
+    initialDeposit: u64Str,
+    expiresAt: z.string().regex(/^\d+$/).max(20),
+  })
+  .strict();
+
+sapRoutes.post('/escrow/v2/create', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
+  const gated = gate503(c, true, true);
+  if (gated) return gated;
+  if (!writeLimiter.check(getClientIp(c.req.raw.headers))) {
+    return c.json({ error: 'rate_limited' }, 429);
+  }
+  const parsed = createEscrowV2Schema.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) return c.json({ error: 'invalid_body', code: 'invalid_body' }, 400);
+  const identity = c.get('identity');
+  const notLedger = requireLedgerCapable(c, identity);
+  if (notLedger) return notLedger;
+  // The acting avatar is the DEPOSITOR funding its OWN escrow against the worker.
+  const result = await createEscrowV2Usdc({
+    depositorAvatarId: identity.avatarId,
+    workerWalletPubkey: parsed.data.workerWalletPubkey,
+    escrowNonce: BigInt(parsed.data.escrowNonce),
+    pricePerCall: BigInt(parsed.data.pricePerCall),
+    maxCalls: BigInt(parsed.data.maxCalls),
+    initialDeposit: BigInt(parsed.data.initialDeposit),
+    expiresAt: BigInt(parsed.data.expiresAt),
+  });
+  return respondWrite(c, result);
+});
+
+const depositEscrowV2Schema = z
+  .object({
+    workerWalletPubkey: z.string().min(32).max(64),
+    escrowNonce: u64Str,
+    amount: u64Str,
+  })
+  .strict();
+
+sapRoutes.post('/escrow/v2/deposit', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
+  const gated = gate503(c, true, true);
+  if (gated) return gated;
+  if (!writeLimiter.check(getClientIp(c.req.raw.headers))) {
+    return c.json({ error: 'rate_limited' }, 429);
+  }
+  const parsed = depositEscrowV2Schema.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) return c.json({ error: 'invalid_body', code: 'invalid_body' }, 400);
+  const identity = c.get('identity');
+  const notLedger = requireLedgerCapable(c, identity);
+  if (notLedger) return notLedger;
+  const result = await depositEscrowV2Usdc({
+    depositorAvatarId: identity.avatarId,
+    workerWalletPubkey: parsed.data.workerWalletPubkey,
+    escrowNonce: BigInt(parsed.data.escrowNonce),
+    amount: BigInt(parsed.data.amount),
+  });
+  return respondWrite(c, result);
+});
+
+const withdrawEscrowV2Schema = z
+  .object({
+    workerWalletPubkey: z.string().min(32).max(64),
+    escrowNonce: u64Str,
+    amount: u64Str,
+  })
+  .strict();
+
+// withdraw is SELF-CUSTODY: the DEPOSITOR reclaims its OWN unspent (free) balance
+// (on-chain enforces free = balance − pendingAmount, so reserved/pending funds can't
+// be pulled). No counterparty is paid → no gate approval needed; safe bucket with create/deposit.
+sapRoutes.post('/escrow/v2/withdraw', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
+  const gated = gate503(c, true, true);
+  if (gated) return gated;
+  if (!writeLimiter.check(getClientIp(c.req.raw.headers))) {
+    return c.json({ error: 'rate_limited' }, 429);
+  }
+  const parsed = withdrawEscrowV2Schema.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) return c.json({ error: 'invalid_body', code: 'invalid_body' }, 400);
+  const identity = c.get('identity');
+  const notLedger = requireLedgerCapable(c, identity);
+  if (notLedger) return notLedger;
+  const result = await withdrawEscrowV2Usdc({
+    depositorAvatarId: identity.avatarId,
+    workerWalletPubkey: parsed.data.workerWalletPubkey,
+    escrowNonce: BigInt(parsed.data.escrowNonce),
+    amount: BigInt(parsed.data.amount),
+  });
+  return respondWrite(c, result);
+});
+
+// -- V2 escrow-gate release lifecycle (triple-gated, default OFF) --
+// Funding and release are one durable claim-first flow here. The acting wallet is
+// always resolved from identity.avatarId; the body names only the counterparty
+// avatar/PDA coordinates and never supplies a signer.
+const openEscrowV2GateSchema = z
+  .object({
+    workerAvatarId: z.string().uuid(),
+    jobId: z.string().min(1).max(128),
+    escrowNonce: u64Str,
+    pricePerCall: u64Str,
+    maxCalls: u64Str,
+    initialDeposit: u64Str,
+    expiresAt: u64Str.default('0'),
+  })
+  .strict();
+
+sapRoutes.post('/escrow/v2/open', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
+  const gated = gate503(c, true, true);
+  if (gated) return gated;
+  if (!writeLimiter.check(getClientIp(c.req.raw.headers))) {
+    return c.json({ error: 'rate_limited' }, 429);
+  }
+  const parsed = openEscrowV2GateSchema.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) return c.json({ error: 'invalid_body', code: 'invalid_body' }, 400);
+  const identity = c.get('identity');
+  const notLedger = requireLedgerCapable(c, identity);
+  if (notLedger) return notLedger;
+  const result = await openEscrowV2({
+    depositorAvatarId: identity.avatarId,
+    workerAvatarId: parsed.data.workerAvatarId,
+    jobId: parsed.data.jobId,
+    escrowNonce: BigInt(parsed.data.escrowNonce),
+    pricePerCall: BigInt(parsed.data.pricePerCall),
+    maxCalls: BigInt(parsed.data.maxCalls),
+    initialDeposit: BigInt(parsed.data.initialDeposit),
+    expiresAt: BigInt(parsed.data.expiresAt),
+  });
+  return respondGate(c, result, true);
+});
+
+const settleJobV2Schema = z
+  .object({
+    escrowPda: z.string().min(32).max(64),
+    jobId: z.string().min(1).max(128),
+    callsToSettle: u64Str,
+  })
+  .strict();
+
+sapRoutes.post('/escrow/v2/settle', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
+  const gated = gate503(c, true, true);
+  if (gated) return gated;
+  if (!writeLimiter.check(getClientIp(c.req.raw.headers))) {
+    return c.json({ error: 'rate_limited' }, 429);
+  }
+  const parsed = settleJobV2Schema.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) return c.json({ error: 'invalid_body', code: 'invalid_body' }, 400);
+  const identity = c.get('identity');
+  const notLedger = requireLedgerCapable(c, identity);
+  if (notLedger) return notLedger;
+  const result = await settleJobV2({
+    escrowPda: parsed.data.escrowPda,
+    jobId: parsed.data.jobId,
+    callerAvatarId: identity.avatarId,
+    callsToSettle: BigInt(parsed.data.callsToSettle),
+  });
+  return respondGate(c, result, true);
+});
+
+const finalizeJobV2Schema = z
+  .object({
+    escrowPda: z.string().min(32).max(64),
+    jobId: z.string().min(1).max(128),
+  })
+  .strict();
+
+sapRoutes.post('/escrow/v2/finalize', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
+  const gated = gate503(c, true, true);
+  if (gated) return gated;
+  if (!writeLimiter.check(getClientIp(c.req.raw.headers))) {
+    return c.json({ error: 'rate_limited' }, 429);
+  }
+  const parsed = finalizeJobV2Schema.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) return c.json({ error: 'invalid_body', code: 'invalid_body' }, 400);
+  const identity = c.get('identity');
+  const notLedger = requireLedgerCapable(c, identity);
+  if (notLedger) return notLedger;
+  // Permissionless crank: any authenticated, ledger-capable avatar pays as itself.
+  const result = await finalizeJobV2({
+    escrowPda: parsed.data.escrowPda,
+    jobId: parsed.data.jobId,
+    callerAvatarId: identity.avatarId,
+  });
+  return respondGate(c, result, true);
 });
 
 const settleSchema = z
@@ -654,7 +900,23 @@ sapRoutes.post('/escrow/close', requireAuthOrAgentSession, requireNonGuestIdenti
 //   worker on settle). No body-supplied pubkey is ever a signer; no guest path.
 
 /** Map an escrow-gate failure code → an HTTP status. */
-function gateFailureStatus(code: EscrowGateFailure['code']): 400 | 403 | 404 | 409 | 500 | 502 | 503 {
+function gateFailureStatus(
+  code: EscrowGateFailure['code'],
+  v2Release = false,
+): 400 | 403 | 404 | 409 | 500 | 502 | 503 {
+  // The founder-authorized V2 release contract exposes chain/program refusals
+  // as an upstream 502. Keep this scoped to the three V2 gate routes: legacy V1
+  // gate callers historically map these codes to 400 and must remain unchanged.
+  if (v2Release) {
+    switch (code) {
+      case 'on_chain_error':
+      case 'insufficient_escrow_balance':
+      case 'stake_below_minimum':
+      case 'pricing_tier_not_found':
+      case 'pending_settlement_deprecated':
+        return 502;
+    }
+  }
   switch (code) {
     case 'gate_disabled':
     case 'sap_disabled':
@@ -683,8 +945,13 @@ function gateFailureStatus(code: EscrowGateFailure['code']): 400 | 403 | 404 | 4
     case 'settle_in_progress':
     case 'refund_in_progress':
     case 'funding_unconfirmed':
+    case 'settle_unconfirmed':
+    case 'finalize_unconfirmed':
+    case 'finalize_not_ready':
+    case 'finalize_in_progress':
     case 'job_not_open':
     case 'rail_mixed_forbidden':
+    case 'release_rail_forbidden':
       // Lifecycle conflicts — the job is in a state that forbids this transition.
       return 409;
     case 'rpc_unreachable':
@@ -697,18 +964,21 @@ function gateFailureStatus(code: EscrowGateFailure['code']): 400 | 403 | 404 | 4
     case 'invalid_mint':
     case 'sol_only_for_now':
     case 'invalid_amount':
-    case 'on_chain_error':
     default:
       return 400;
   }
 }
 
 /** Serialize an escrow-gate result to a clean JSON response. */
-function respondGate(c: { json: (b: unknown, s?: number) => Response }, result: EscrowGateResult) {
+function respondGate(
+  c: { json: (b: unknown, s?: number) => Response },
+  result: EscrowGateResult,
+  v2Release = false,
+) {
   if (result.ok === false) {
     return c.json(
       { error: result.code, code: result.code, message: result.message },
-      gateFailureStatus(result.code),
+      gateFailureStatus(result.code, v2Release),
     );
   }
   // Trim the settlement row to a safe DTO (never echo internal ids the caller
@@ -717,23 +987,30 @@ function respondGate(c: { json: (b: unknown, s?: number) => Response }, result: 
   const settlement = {
     escrowPda: s.escrowPda,
     jobId: s.jobId,
+    escrowVersion: s.escrowVersion,
+    escrowNonce: s.escrowNonce,
     status: s.status,
     pricePerCall: s.pricePerCall,
     maxCalls: s.maxCalls,
     callsSettled: s.callsSettled,
     fundedAmount: s.fundedAmount,
     releasedAmount: s.releasedAmount,
+    reservedPrincipalAmount: s.reservedPrincipalAmount,
+    feeAmount: s.feeAmount,
     refundedAmount: s.refundedAmount,
     verificationProvider: s.verificationProvider,
     verificationPassed: s.verificationPassed,
     auditRootHex: s.auditRootHex,
     settleSignature: s.settleSignature,
+    settlementIndex: s.settlementIndex,
+    finalizeSignature: s.finalizeSignature,
     fundingSignature: s.fundingSignature,
     dryRun: s.dryRun,
     settledAt: s.settledAt,
   };
   const base: Record<string, unknown> = { ok: true, phase: result.phase, settlement };
   if ('replay' in result) base.replay = result.replay;
+  if ('next' in result) base.next = result.next;
   if (result.phase === 'approved') base.approvedCalls = result.approvedCalls;
   if ('chain' in result && result.chain) {
     const chain = result.chain;
