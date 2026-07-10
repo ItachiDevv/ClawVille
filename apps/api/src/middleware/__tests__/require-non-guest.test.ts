@@ -12,7 +12,8 @@
  *   3. requireNonGuestUser passes when there is NO Lucia user (agent path) WITHOUT a DB hit.
  *   4. requireNonGuestIdentity 403s a kind:'user' guest, does NOT call next().
  *   5. requireNonGuestIdentity passes a kind:'user' non-guest.
- *   6. requireNonGuestIdentity passes a kind:'agent' WITHOUT a DB hit  ← E5 AGENT-PASSTHROUGH lock.
+ *   6. requireNonGuestIdentity passes a kind:'agent' bound to a NON-guest owner (WITH a DB hit).
+ *   6b. requireNonGuestIdentity 403s a kind:'agent' whose OWNER is a guest  ← guest-owned-agent lock (2026-07-10).
  *   7. isGuestUser reflects the row's isGuest (true / false / missing → false).
  */
 
@@ -138,9 +139,12 @@ describe('requireNonGuestIdentity (ActivityAuthContext — after requireAuthOrAg
     expect(next).toHaveBeenCalledTimes(1);
   });
 
-  // E5 AGENT-PASSTHROUGH LOCK: an agent is NEVER a guest and must pass without
-  // ever hitting the DB (no needless users lookup on the agent path).
-  it('passes a kind:"agent" identity WITHOUT a DB hit', async () => {
+  // E5 AGENT PARITY (non-guest owner): an agent bound to a NON-guest owner is the
+  // only legit agent and must pass — but now WITH a DB hit, because its OWNER's
+  // guest-ness is checked (2026-07-10 guest-owned-agent fix). An agent is never
+  // itself a guest, but its owner can be, so the passthrough is no longer blind.
+  it('passes a kind:"agent" identity bound to a NON-guest owner (with a DB hit)', async () => {
+    nextUserRow = { isGuest: false };
     const next = mockNext();
     const res: any = await requireNonGuestIdentity(
       makeCtx({ identity: { kind: 'agent', userId: REAL_ID, agentId: 'a1' } }),
@@ -148,7 +152,22 @@ describe('requireNonGuestIdentity (ActivityAuthContext — after requireAuthOrAg
     );
     expect(res).toBe('NEXT');
     expect(next).toHaveBeenCalledTimes(1);
-    expect(usersFindFirst).not.toHaveBeenCalled();
+    expect(usersFindFirst).toHaveBeenCalledTimes(1);
+  });
+
+  // GUEST-OWNED AGENT LOCK (2026-07-10): a guest can mint a connect-token bound to
+  // its own guest userId, so an agent identity whose OWNER is a guest must 403 on
+  // the real-CT surface exactly like a guest human — never settle real CT.
+  it('403s a kind:"agent" identity whose OWNER is a guest', async () => {
+    nextUserRow = { isGuest: true };
+    const next = mockNext();
+    const res: any = await requireNonGuestIdentity(
+      makeCtx({ identity: { kind: 'agent', userId: GUEST_ID, agentId: 'a1' } }),
+      next,
+    );
+    expect(res.status).toBe(403);
+    expect((res.body as any).code).toBe('guest_not_allowed');
+    expect(next).not.toHaveBeenCalled();
   });
 });
 

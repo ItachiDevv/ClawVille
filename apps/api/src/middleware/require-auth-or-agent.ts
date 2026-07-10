@@ -25,7 +25,7 @@
 import { createMiddleware } from 'hono/factory';
 import { HTTPException } from 'hono/http-exception';
 import { eq, and } from 'drizzle-orm';
-import { db, avatars, agentBots } from '@clawville/database';
+import { db, avatars, agentBots, users } from '@clawville/database';
 import { npcSimulation } from '../services/npc-simulation';
 import { sha256Hex } from '../services/session-digest';
 import type { AppContext } from '../types';
@@ -308,6 +308,33 @@ export async function resolveAgentSession(
   // 403 outside this helper so the caller can write an exact error code.
   if (!userId) {
     return { userId: null, avatarId: null, agentId: config.agentId, ledgerCapable };
+  }
+
+  // Guest-owned agent backstop (2026-07-10 security fix). A guest account is a
+  // real Lucia user + avatar (founder ruling 2026-07-06, fully-DEMO economy) and
+  // can currently mint a connect-token bound to its OWN guest userId
+  // (`/api/agent/connect-token` has no is_guest gate), which resolves
+  // `ledgerCapable=true` above. That let a GUEST reach REAL-CT settlement THROUGH
+  // an agent it owns — bypassing the human-branch `isGuestUser` demo guard in
+  // every cove `getSubject` and the `requireNonGuestIdentity` land/bounty gate.
+  // Guests must NEVER touch the real ledger, as a human OR via an agent they own.
+  // Re-validate here (the same resolve-time ledger-gating home as the rebind
+  // check above): if the bound user is a guest, force the session non-ledger so
+  // the cove's `!ledgerCapable` 403 fires and special-events / any future ledger
+  // consumer fails closed. NOT an eviction — the session stays alive so the guest
+  // can still perceive/chat/move in demo presence (those don't gate on the ledger).
+  // Legit connected/hosted agents (E5) bind to NON-guest owners, so this never
+  // fires for them. Only query when still ledger-capable (skips unbound/chat-only
+  // traffic). users.isGuest is the source of truth — no in-place guest→real
+  // conversion exists, so the avatars.isGuest mirror can't be relied on alone.
+  if (ledgerCapable) {
+    const owner = await db.query.users.findFirst({
+      where: eq(users.id, userId),
+      columns: { isGuest: true },
+    });
+    if (owner?.isGuest) {
+      ledgerCapable = false;
+    }
   }
 
   const avatar = await db.query.avatars.findFirst({
