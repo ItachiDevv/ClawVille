@@ -1265,6 +1265,12 @@ export class VRMCharacterAnimator {
    * The VRM scene itself is not disposed here — caller manages scene lifetime.
    */
   dispose(): void {
+    // Idempotent guard — a caller that both awaits init().then(dispose()) AND
+    // disposes again on unmount (e.g. cove-interior.tsx TableSeatedBustInner)
+    // would otherwise null-deref `this.mixer` on the second call. Surfaced as
+    // repeated "Cannot read properties of null (reading 'stopAllAction')"
+    // pageerrors during the Slice 1 cove3d-holdem probe (2026-07-10).
+    if (this.disposed) return;
     // Mark disposed FIRST so any in-flight init() awaiting clip loads bails
     // before touching the about-to-be-nulled vrm/mixer refs.
     this.disposed = true;
