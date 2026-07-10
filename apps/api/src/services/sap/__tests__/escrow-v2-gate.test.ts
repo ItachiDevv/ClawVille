@@ -854,16 +854,21 @@ describe('SAP V2 gate — two-phase USDC release', () => {
     expect(settleCalls).toBe(0);
   });
 
-  it('R5-1 — absent pending + current index === persisted (slot never consumed) restores to submitted', async () => {
+  it('R10-1 — absent pending + current index === persisted (slot never consumed) QUARANTINES settle_unknown, reservation KEPT', async () => {
     rows = [baseRow({ status: 'settling', settlementIndex: '7', reservedPrincipalAmount: '1000000', feeAmount: '5000', updatedAt: staleDate() })];
     // pending absent + escrow counter STILL at 7 (our slot never consumed) ⇒ our settle never landed.
+    // R10-1 — do NOT auto-restore→retry (that dropped the R7-1 slot pin, re-opening a zombie-lands-
+    // after-restore double-pay). Quarantine settle_unknown, KEEP the reservation (a zombie MAY still
+    // land under stalled block production — validity is block-height, not wall-clock); ops resets
+    // a provably-never-landed row via the reconcile endpoint.
     reprobeOutcome = { ok: true, escrowPda: ESCROW, settlementIndex: 7n, currentSettlementIndex: 7n, pendingExists: false };
     const result = await gate.settleJobV2({ escrowPda: ESCROW, jobId: 'job-1', callerAvatarId: WORKER, callsToSettle: 1n });
-    expect(result.ok).toBe(true);
-    if (result.ok) expect(result.phase).toBe('submitted');
-    expect(rows[0]?.status).toBe('submitted');
-    expect(rows[0]?.reservedPrincipalAmount).toBe('0');
-    expect(rows[0]?.feeAmount).toBe('0');
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.code).toBe('settle_unconfirmed');
+    expect(rows[0]?.status).toBe('settle_unknown');
+    expect(rows[0]?.reservedPrincipalAmount).toBe('1000000'); // reservation KEPT (NOT zeroed)
+    expect(rows[0]?.feeAmount).toBe('5000');
+    expect((rows[0]?.metadata as { staleClaimQuarantined?: boolean })?.staleClaimQuarantined).toBe(true);
     expect(settleCalls).toBe(0);
   });
 
