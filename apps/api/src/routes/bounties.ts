@@ -10,10 +10,15 @@ import { requireNonGuestIdentity } from '../middleware/require-non-guest';
 import { adminOnly } from '../middleware/admin-only';
 import { creditClawTokens, debitClawTokens } from '../services/claw-token-ledger';
 import {
+  bountySettlementRail,
+  openComposedBountyEscrow,
   refundBountyEscrow,
+  refundComposedBounty,
   runBountyUsdcSettle,
+  settleComposedBounty,
   usdcRailGateOpen,
 } from '../services/bounty-escrow-link';
+import { alertError } from '../services/alert-error';
 import {
   db,
   avatars,
@@ -104,6 +109,8 @@ function escrowFailureStatus(code: string): 400 | 403 | 404 | 409 | 500 | 502 | 
     case 'approver_mismatch':
     case 'self_dealing_forbidden':
     case 'unauthorized_caller':
+    // Composed rail (V2): a settle/finalize/refund whose row is on the wrong rail.
+    case 'release_rail_forbidden':
       return 403;
     case 'over_release':
       return 400;
@@ -113,10 +120,23 @@ function escrowFailureStatus(code: string): 400 | 403 | 404 | 409 | 500 | 502 | 
     case 'funding_unconfirmed':
     case 'job_not_open':
     case 'rail_mixed_forbidden':
+    // Composed rail (V2 settle/finalize) — ops-reconcile / retryable conflicts.
+    case 'finalize_in_progress':
+    case 'finalize_not_ready':
+    case 'unreconciled_onchain_pending':
+    case 'settle_slot_consumed':
+    // Composed rail (V2 refund idempotency, from `refundComposedBounty`).
+    case 'withdraw_in_flight':
+    case 'withdraw_request_mismatch':
       return 409;
     case 'rpc_unreachable':
     case 'payai_unavailable':
     case 'payai_release_failed':
+    // Composed rail (V2): a broadcast-unknown / unverifiable on-chain state — the
+    // pending/settle/finalize MAY have landed; reconcile, never auto-retry.
+    case 'settle_unconfirmed':
+    case 'finalize_unconfirmed':
+    case 'pending_state_unverifiable':
       return 502;
     case 'internal':
       return 500;
@@ -565,6 +585,55 @@ bountyRoutes.post('/create', requireAuthOrAgentSession, requireNonGuestIdentity,
     return created;
   });
 
+  // ── COMPOSED rail (SLICE 2b): open LEG 1 (the SAP V2 vault) AT POST ──────────
+  // The composed rail custodies the creator's USDC on-chain at CREATE (worker =
+  // the ClawVille house), unlike the legacy usdc path which opens the escrow
+  // LAZILY at approve. The rail decision is made HERE (the live flag) and RECORDED
+  // as `composition_state='vault_held'`, which becomes the IMMUTABLE per-bounty
+  // marker every later transition branches on — a mid-lifecycle flag flip can
+  // never re-route an existing bounty. A chain call must never run inside the DB
+  // transaction, so the open runs AFTER the insert commits.
+  //
+  // ON FAILURE the vault did NOT open ⇒ NO custody ⇒ the bounty must NOT go live.
+  // We DELETE the just-inserted row (its bounty_rewards children cascade via the
+  // FK ON DELETE CASCADE) and throw the gate's mapped error — insert→open→delete-
+  // on-fail keeps the DB consistent (no orphan bounty without custody), and the
+  // delete runs BEFORE the reputation bump so a failed create leaves zero trace.
+  // DRY-RUN: the open simulates + returns a simulated escrowPda ⇒ the bounty is
+  // created `vault_held` with no real custody (the correct dry-run posture).
+  if (isUsdc && bountySettlementRail() === 'sap-payai-composed') {
+    const opened = await openComposedBountyEscrow({
+      bountyId: bounty.id,
+      creatorAvatarId: avatar.id,
+      tokenReward: bounty.tokenReward,
+      expiresAt: bounty.expiresAt,
+    });
+    if (opened.ok === false) {
+      await db.delete(bounties).where(eq(bounties.id, bounty.id));
+      throw new HTTPException(escrowFailureStatus(opened.code), {
+        message: `USDC bounty vault could not be opened (${opened.code}): ${opened.message}. The bounty was not created.`,
+      });
+    }
+    const composedEscrowPda = opened.settlement.escrowPda;
+    if (!composedEscrowPda) {
+      // Defensive: an ok open with no recorded PDA is a broken state — never leave
+      // a live bounty without a resolvable vault. Delete + fail closed.
+      await db.delete(bounties).where(eq(bounties.id, bounty.id));
+      throw new HTTPException(500, {
+        message: 'USDC bounty vault opened but no escrow PDA was recorded; the bounty was not created.',
+      });
+    }
+    await db
+      .update(bounties)
+      .set({
+        escrowPda: composedEscrowPda,
+        escrowJobId: bounty.id,
+        compositionState: 'vault_held',
+        updatedAt: new Date(),
+      })
+      .where(eq(bounties.id, bounty.id));
+  }
+
   // Update reputation: increment totalPosted
   const existingRep = await db.query.bountyReputation.findFirst({
     where: eq(bountyReputation.avatarId, avatar.id),
@@ -707,6 +776,11 @@ bountyRoutes.post('/attempts/:attemptId/review', requireAuthOrAgentSession, requ
 
   const now = new Date();
   const isUsdc = bounty.paymentRail === 'usdc';
+  // The IMMUTABLE composed-rail marker (set to 'vault_held' at create). Every
+  // post-create transition keys off THIS, never the live `bountySettlementRail()`
+  // flag, so a mid-lifecycle flag flip can't re-route an existing bounty. A
+  // composed bounty is a USDC bounty whose LEG-1 vault opened at post.
+  const isComposed = bounty.compositionState != null;
 
   // For a USDC bounty the reviewer (creator=depositor) drives an on-chain
   // custodial sign at settle — require ledger capability, exactly like create.
@@ -833,14 +907,23 @@ bountyRoutes.post('/attempts/:attemptId/review', requireAuthOrAgentSession, requ
       // 4. Mark bounty as 'completed' (guarded on status='open' for symmetry with
       // the atomic approval claim — a bounty can only be completed from open, so a
       // race that somehow re-entered can't re-complete an already-terminal bounty).
-      await tx
-        .update(bounties)
-        .set({
-          status: 'completed',
-          completedAt: now,
-          updatedAt: now,
-        })
-        .where(and(eq(bounties.id, bounty.id), eq(bounties.status, 'open')));
+      //
+      // COMPOSED rail: do NOT mark completed here. A composed bounty is "done" only
+      // when the hunter has actually been PAID (the two-leg settle reaches `paid`,
+      // post-commit below). Marking it completed at approve — while the payout is
+      // still finalizing on-chain (awaiting_finalize) — would show a paid-out state
+      // for an unpaid hunter. The `paid` phase flips status='completed'; the other
+      // phases (awaiting_finalize / reconcile / failed) leave it open + settling.
+      if (!isComposed) {
+        await tx
+          .update(bounties)
+          .set({
+            status: 'completed',
+            completedAt: now,
+            updatedAt: now,
+          })
+          .where(and(eq(bounties.id, bounty.id), eq(bounties.status, 'open')));
+      }
 
       // 4b. Reject all other pending attempts for this bounty (prevent orphans)
       await tx
@@ -929,6 +1012,198 @@ bountyRoutes.post('/attempts/:attemptId/review', requireAuthOrAgentSession, requ
       return { rewards: txRewards, hunterAvatarId: hunterAvatar.id };
     });
 
+    // ── COMPOSED rail (SLICE 2b): PASS verdict → two-leg settle (SAP V2 vault →
+    // PayAI x402). Branches on the IMMUTABLE `composition_state` marker, NOT the
+    // live `bountySettlementRail()` flag. Runs AFTER the DB txn commits (no chain
+    // call in a transaction). `settleComposedBounty` is fully idempotent on the
+    // (escrow, job) ledger + the deterministic vault nonce, so a replay is safe; a
+    // dry-run leg simulates only. Each of the 4 phases persists its exact
+    // `composition_state` and RESPONDS — none falls through to the legacy dispatch.
+    if (isComposed) {
+      if (!bounty.escrowPda) {
+        // Invariant: a composed bounty always carries its LEG-1 vault PDA (persisted
+        // WITH composition_state at create). A null here is a corrupted row — fail
+        // closed rather than settle against an unknown vault.
+        throw new HTTPException(500, {
+          message: 'Composed bounty is missing its escrow PDA; cannot settle. Contact an operator.',
+        });
+      }
+      const result = await settleComposedBounty({
+        bountyId: bounty.id,
+        escrowPda: bounty.escrowPda,
+        creatorAvatarId: bounty.creatorId,
+        hunterAvatarId,
+        tokenReward: bounty.tokenReward,
+      });
+
+      if (result.phase === 'paid') {
+        // Both legs done: LEG 1 finalized the principal to the house AND LEG 2's
+        // x402 paid the hunter exactly the reward. NOW mark the bounty completed
+        // (deferred from the approve txn) + run the deferred completion bump.
+        const paidAt = new Date();
+        await db
+          .update(bounties)
+          .set({
+            status: 'completed',
+            completedAt: paidAt,
+            compositionState: 'paid',
+            payoutEscrowPda: result.payoutEscrowPda,
+            covenantAuditRootHex: result.auditRootHex,
+            covenantVerificationPassed: true,
+            updatedAt: paidAt,
+          })
+          .where(and(eq(bounties.id, bounty.id), eq(bounties.status, 'open')));
+
+        // DEFERRED completion bump — mirror the legacy USDC path: book the hunter's
+        // completion count ONLY now that the payout provably landed (totalEarned is
+        // the CT counter, left untouched for a USDC reward). A crash between the DB
+        // approval and here omits the bump — a conservative undercount, never a
+        // phantom completion for an unpaid bounty.
+        const paidHunterRep = await db.query.bountyReputation.findFirst({
+          where: eq(bountyReputation.avatarId, hunterAvatarId),
+        });
+        if (paidHunterRep) {
+          const bumped = paidHunterRep.totalCompleted + 1;
+          await db
+            .update(bountyReputation)
+            .set({
+              totalCompleted: bumped,
+              tier: calculateReputationTier(bumped) as any,
+              lastActivityAt: paidAt,
+              updatedAt: paidAt,
+            })
+            .where(eq(bountyReputation.id, paidHunterRep.id));
+        } else {
+          await db.insert(bountyReputation).values({
+            avatarId: hunterAvatarId,
+            totalCompleted: 1,
+            totalEarned: 0,
+            tier: calculateReputationTier(1) as any,
+            lastActivityAt: paidAt,
+          });
+        }
+
+        return c.json({
+          success: true,
+          decision: 'approved',
+          paymentRail: bounty.paymentRail,
+          tokensAwarded: 0,
+          usdcReward: bounty.tokenReward,
+          bonusRewardsCount: rewards.length,
+          settlement: {
+            rail: 'sap-payai-composed',
+            state: 'paid',
+            escrowPda: result.escrowPda,
+            payoutEscrowPda: result.payoutEscrowPda,
+            dryRun: result.dryRun,
+          },
+        });
+      }
+
+      if (result.phase === 'awaiting_finalize') {
+        // LEG 1b settled (principal reserved on-chain); LEG 1c finalize is pending
+        // the dispute window (or an ops reconcile). The verdict PASSED but the
+        // hunter is UNPAID and LEG 2 has NOT run — no double-pay is constructible.
+        // Do NOT mark completed. Re-running settleComposedBounty (idempotent) once
+        // the window elapses drives it to `paid`.
+        await db
+          .update(bounties)
+          .set({
+            compositionState: 'awaiting_finalize',
+            covenantVerificationPassed: true,
+            updatedAt: new Date(),
+          })
+          .where(eq(bounties.id, bounty.id));
+
+        return c.json({
+          success: true,
+          decision: 'approved',
+          paymentRail: bounty.paymentRail,
+          usdcReward: bounty.tokenReward,
+          bonusRewardsCount: rewards.length,
+          settlement: {
+            rail: 'sap-payai-composed',
+            state: 'awaiting_finalize',
+            escrowPda: result.escrowPda,
+            payoutPending: true,
+            code: result.code,
+          },
+          message:
+            'Approved — payout settling. The vault release is finalizing on-chain; ' +
+            'the hunter is paid once it completes. Re-running settlement is safe (idempotent) — no double-pay.',
+        });
+      }
+
+      if (result.phase === 'reconcile_payout_failed') {
+        // LEG 1 FINALIZED (the house holds the reward) but LEG 2 (the hunter payout)
+        // failed. Funds are SAFE in the house wallet; LEG 2 replays idempotently.
+        // Persist the reconcile marker + page ops; a re-run of settleComposedBounty
+        // replays legs 1a-1c (no-ops) then retries LEG 2.
+        await db
+          .update(bounties)
+          .set({
+            compositionState: 'reconcile_payout_failed',
+            payoutEscrowPda: result.payoutEscrowPda ?? null,
+            covenantVerificationPassed: true,
+            updatedAt: new Date(),
+          })
+          .where(eq(bounties.id, bounty.id));
+
+        await alertError({
+          severity: 'critical',
+          source: 'bounty-composed-payout',
+          message:
+            `Composed bounty ${bounty.id}: LEG 1 finalized (principal at the house) but LEG 2 ` +
+            `payout to the hunter FAILED (${result.code}): ${result.message}. Funds are safe at the ` +
+            `house; the payout replays idempotently — re-run settleComposedBounty to reconcile.`,
+          context: {
+            bountyId: bounty.id,
+            hunterAvatarId,
+            escrowPda: result.escrowPda,
+            payoutEscrowPda: result.payoutEscrowPda,
+            code: result.code,
+          },
+        });
+
+        // 202 Accepted — the approve + LEG-1 settle were accepted; the payout is
+        // being reconciled asynchronously (ops paged). NOT a clean failure (the
+        // money moved to the house) and NOT complete (the hunter is unpaid).
+        return c.json(
+          {
+            success: true,
+            decision: 'approved',
+            paymentRail: bounty.paymentRail,
+            settlement: {
+              rail: 'sap-payai-composed',
+              state: 'reconcile_payout_failed',
+              escrowPda: result.escrowPda,
+              payoutEscrowPda: result.payoutEscrowPda,
+              payoutPending: true,
+              reconcile: true,
+              code: result.code,
+            },
+            message:
+              'Approved — LEG 1 finalized but the hunter payout is being reconciled by ops. ' +
+              'Funds are safe and the payout will complete; no action needed from you.',
+          },
+          202,
+        );
+      }
+
+      // result.phase === 'failed' — the settle failed BEFORE any money moved; the
+      // creator's USDC is still fully in the vault (composition_state stays
+      // 'vault_held'). Mirror the legacy path: surface the gate error WITHOUT
+      // un-approving the attempt, and — because the approve txn did NOT mark a
+      // composed bounty completed — the bounty is provably NOT completed. Retryable
+      // via an ops crank re-running settleComposedBounty, or reclaim via
+      // admin-fail-refund. No persistence change (the vault still holds the funds).
+      throw new HTTPException(escrowFailureStatus(result.code), {
+        message:
+          `Bounty approved, but the composed USDC settle failed (${result.code}): ${result.message}. ` +
+          `No funds moved — the vault still holds the creator's USDC; retryable.`,
+      });
+    }
+
     // ── USDC rail: PASS verdict → open + approve + settle the SAP escrow ────────
     // Runs AFTER the DB txn commits (no chain call inside a transaction). The
     // reward is released as on-chain USDC to the hunter's custodial wallet. Each
@@ -942,10 +1217,15 @@ bountyRoutes.post('/attempts/:attemptId/review', requireAuthOrAgentSession, requ
     // the rail is re-enabled (idempotent on (escrow, job)); the admin re-settle
     // route (Phase 2) is the operator handle for that. This is an intended
     // fail-closed state, surfaced to the operator, not a fund-loss path.
+    //
+    // `&& !isComposed` is defense-in-depth: the composed branch above ALWAYS
+    // returns/throws (exhaustive over its 4 phases), so this is only ever reached
+    // by a legacy (single-leg) USDC bounty — but the guard makes a hypothetical
+    // fall-through a harmless wrong-response instead of a double-settle.
     let escrowResult:
       | { ok: true; escrowPda: string | null; auditRootHex: string | null; dryRun: boolean }
       | null = null;
-    if (isUsdc) {
+    if (isUsdc && !isComposed) {
       const settle = await runBountyUsdcSettle({
         bountyId: bounty.id,
         creatorAvatarId: bounty.creatorId,
@@ -1164,12 +1444,29 @@ bountyRoutes.post('/:id/admin-fail-refund', adminOnly, async (c) => {
         'approve time; a bounty never approved has nothing on-chain to reclaim).',
     });
   }
-  // SEV-2-B guard (Codex): NEVER attempt a refund on an already-SETTLED bounty.
-  // A PASS verdict (`covenant_verification_passed === true`) means the escrow was
-  // released to the worker — the escrow gate would reject a refund on a `settled`
-  // row anyway, but a clean 409 here is correct + prevents operator confusion (a
-  // fail-refund is only for a FAILED/disputed job, not a paid-out one).
-  if (bounty.covenantVerificationPassed === true) {
+  // The IMMUTABLE composed-rail marker — a composed bounty refunds its LEG-1 SAP
+  // V2 vault, a legacy usdc bounty refunds its V1 escrow. Branch off THIS, never
+  // the live rail flag.
+  const isComposed = bounty.compositionState != null;
+
+  // SEV-2-B guard (Codex): NEVER attempt a refund on an already-SETTLED bounty —
+  // its reward already reached the worker. LEGACY usdc: a PASS verdict
+  // (`covenant_verification_passed === true`) means the escrow was released.
+  // COMPOSED: the paid terminal is `composition_state === 'paid'` (LEG 2 paid the
+  // hunter) — NOT `covenant_verification_passed`, which is ALSO true for the
+  // still-settling awaiting_finalize / reconcile_payout_failed phases (whose funds
+  // are in the vault / at the house, and whose refund attempt fails clean on the
+  // on-chain free-balance check anyway). Blocking only `paid` keeps those
+  // recoverable while refusing a genuine double-refund of a paid-out bounty.
+  if (isComposed) {
+    if (bounty.compositionState === 'paid') {
+      throw new HTTPException(409, {
+        message:
+          'This composed USDC bounty already paid the hunter (composition_state=paid) — ' +
+          'its reward was released and cannot be fail-refunded.',
+      });
+    }
+  } else if (bounty.covenantVerificationPassed === true) {
     throw new HTTPException(409, {
       message:
         'This USDC bounty already settled (PASS verdict) — its escrow was released ' +
@@ -1177,15 +1474,23 @@ bountyRoutes.post('/:id/admin-fail-refund', adminOnly, async (c) => {
     });
   }
 
-  // Drive the depositor-bound refund. The escrow gate re-asserts the depositor,
-  // makes its own atomic `refunding` claim, and ceilings the amount — the admin
-  // can only trigger it, never redirect the funds.
-  const refund = await refundBountyEscrow({
-    bountyId: bounty.id,
-    escrowPda: bounty.escrowPda,
-    creatorAvatarId: bounty.creatorId,
-    tokenReward: bounty.tokenReward,
-  });
+  // Drive the depositor-bound refund. COMPOSED → the SAP V2 vault withdraw
+  // (creator ← the LEG-1 vault, idempotent on `${bountyId}:refund`); LEGACY → the
+  // V1 escrow-gate refund. Both re-assert the depositor + ceiling the amount, so
+  // the admin can only trigger the refund, never redirect the funds.
+  const refund = isComposed
+    ? await refundComposedBounty({
+        bountyId: bounty.id,
+        escrowPda: bounty.escrowPda,
+        creatorAvatarId: bounty.creatorId,
+        tokenReward: bounty.tokenReward,
+      })
+    : await refundBountyEscrow({
+        bountyId: bounty.id,
+        escrowPda: bounty.escrowPda,
+        creatorAvatarId: bounty.creatorId,
+        tokenReward: bounty.tokenReward,
+      });
 
   if (refund.ok === false) {
     throw new HTTPException(escrowFailureStatus(refund.code), {
@@ -1193,7 +1498,11 @@ bountyRoutes.post('/:id/admin-fail-refund', adminOnly, async (c) => {
     });
   }
 
-  // Record the FAIL verdict provenance on the bounty (idempotent).
+  // Record the FAIL verdict provenance on the bounty (idempotent). For a COMPOSED
+  // bounty we deliberately leave `composition_state` AS-IS: the schema's documented
+  // value set has no 'refunded' marker, so (per the slice spec) the terminal
+  // refunded state is carried by covenant_verification_passed=false rather than an
+  // invented enum value. The creator's vault deposit has been reclaimed on-chain.
   await db
     .update(bounties)
     .set({
@@ -1680,14 +1989,94 @@ bountyRoutes.delete('/:id', requireAuthOrAgentSession, requireNonGuestIdentity, 
   }
 
   const isUsdc = bounty.paymentRail === 'usdc';
+  const isComposed = bounty.compositionState != null;
+
+  // ── COMPOSED rail (SLICE 2b): cancel refunds the LEG-1 vault to the creator ──
+  // A composed bounty custodied the creator's USDC in an on-chain SAP V2 vault AT
+  // CREATE (escrow_pda set, composition_state='vault_held'), so — unlike a legacy
+  // usdc bounty — cancel MUST reclaim it (not just flip the row). Refund on the
+  // depositor-bound V2 withdraw (idempotent on `${bountyId}:refund`), THEN flip to
+  // cancelled: refund-FIRST means a refund failure never leaves a 'cancelled'
+  // bounty with an unreclaimed vault; the flip is guarded on status='open', so
+  // concurrent cancels can't double-cancel (the loser 409s after an idempotent
+  // no-op refund — never a double-withdraw). A chain call must not run inside a DB
+  // transaction, so this is refund → guarded-flip, not a single txn.
+  if (isComposed) {
+    // GRIEFING GUARD: a composed bounty with an APPROVED winner is mid-settlement
+    // (the two-leg payout is running or reconciling). Its attempt is 'approved' —
+    // NOT in the active-attempt set checked above — so without this a creator could
+    // cancel-and-refund AFTER approving a winner, reclaiming the vault and cheating
+    // the hunter (whose payout may be one crank away, and whose reward on a `failed`
+    // settle is still fully in the vault). Route a decided bounty's reclaim through
+    // admin-fail-refund / the settle crank, never a plain cancel.
+    const decidedAttempt = await db.query.bountyAttempts.findFirst({
+      where: and(
+        eq(bountyAttempts.bountyId, id),
+        eq(bountyAttempts.status, 'approved'),
+      ),
+    });
+    if (decidedAttempt) {
+      throw new HTTPException(409, {
+        message:
+          'This composed USDC bounty has an approved winner and a settlement in ' +
+          'progress — it cannot be cancelled. Let the payout finalize, or route a ' +
+          'reclaim through POST /:id/admin-fail-refund (admin).',
+      });
+    }
+    // Belt-and-suspenders: a composed bounty always carries its LEG-1 vault PDA.
+    if (!bounty.escrowPda) {
+      throw new HTTPException(500, {
+        message: 'Composed bounty is missing its escrow PDA; cannot refund. Contact an operator.',
+      });
+    }
+
+    // Refund the vault (idempotent chain call / dry-run sim) BEFORE flipping status.
+    const refund = await refundComposedBounty({
+      bountyId: bounty.id,
+      escrowPda: bounty.escrowPda,
+      creatorAvatarId: bounty.creatorId,
+      tokenReward: bounty.tokenReward,
+    });
+    if (refund.ok === false) {
+      throw new HTTPException(escrowFailureStatus(refund.code), {
+        message:
+          `Composed USDC bounty vault refund failed (${refund.code}): ${refund.message}. ` +
+          `The bounty was NOT cancelled; retry.`,
+      });
+    }
+
+    const [claimed] = await db
+      .update(bounties)
+      .set({ status: 'cancelled', updatedAt: new Date() })
+      .where(and(eq(bounties.id, id), eq(bounties.status, 'open')))
+      .returning();
+    if (!claimed) {
+      throw new HTTPException(409, {
+        message: 'Bounty already cancelled or no longer open',
+      });
+    }
+
+    const refundDryRun = refund.chain.ok ? refund.chain.dryRun : undefined;
+    return c.json({
+      success: true,
+      message:
+        'Composed USDC bounty cancelled and the on-chain vault deposit refunded to the creator.',
+      refunded: bounty.tokenReward,
+      dryRun: refundDryRun,
+      // No CT moved on a USDC bounty — the balance is unchanged.
+      clawTokens: avatar.clawTokens,
+    });
+  }
 
   // SEV-1-B guard (Codex, defense-in-depth): a USDC bounty with an OPEN on-chain
   // escrow must NEVER be plain-deleted — that would orphan the escrowed USDC.
-  // Today an escrow only opens at APPROVE (which flips the bounty to `completed`,
-  // so status!='open' already blocks this path), but a future lifecycle change
-  // (e.g. eager-open at claim) could strand funds. Fail closed on a code guard,
-  // not just the comment: route any escrow reclaim through `admin-fail-refund`.
-  if (isUsdc && bounty.escrowPda) {
+  // Today a LEGACY (single-leg) usdc escrow only opens at APPROVE (which flips the
+  // bounty to `completed`, so status!='open' already blocks this path), but a
+  // future lifecycle change (e.g. eager-open at claim) could strand funds. Fail
+  // closed on a code guard, not just the comment: route any escrow reclaim through
+  // `admin-fail-refund`. `!isComposed` — a composed bounty is fully handled +
+  // returned above; this is the legacy/single-leg path only.
+  if (isUsdc && !isComposed && bounty.escrowPda) {
     throw new HTTPException(409, {
       message:
         'This USDC bounty has an open escrow and cannot be cancelled directly — ' +
