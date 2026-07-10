@@ -858,6 +858,27 @@ bountyRoutes.post('/attempts/:attemptId/review', requireAuthOrAgentSession, requ
     });
   }
 
+  // FAIL-CLOSED PRE-FLIGHT (cross-review, impl2 recommendation): refuse an APPROVE of a
+  // composed bounty whose vault binding is INDETERMINATE ('vault_pending' — a create
+  // crashed after the insert stamped 'vault_pending' but BEFORE the vault opened + recorded
+  // 'vault_held'+escrow_pda). Refused HERE, BEFORE the review txn, so the attempt stays
+  // 'submitted' and the recovery path is CLEAN: an operator reconciles the row (derive the
+  // vault from the deterministic bounty nonce, confirm on-chain, set vault_held or delete
+  // the orphan), then the creator simply RE-APPROVES the still-submitted attempt. A post-txn
+  // refusal would leave the attempt 'approved' → the re-approve would 409 ('already
+  // reviewed') → a reconciled bounty stranded with no clean settle path.
+  if (isComposed && decision === 'approved' && bounty.compositionState === 'vault_pending') {
+    throw new HTTPException(409, {
+      message:
+        'This bounty is not settle-ready: its reward-vault binding is indeterminate ' +
+        '(composition_state=vault_pending — a create crashed mid-open, so the on-chain ' +
+        'vault may or may not have opened and its escrow PDA is unrecorded). No review was ' +
+        'applied. An operator must reconcile it (derive the vault from the deterministic ' +
+        'bounty nonce, confirm on-chain, then set vault_held or delete the orphan) before ' +
+        'this bounty can be approved.',
+    });
+  }
+
   if (decision === 'approved') {
     // Entire approval flow in a single transaction to prevent partial
     // state (e.g. tokens credited but bounty not marked completed). NOTE: the
@@ -1067,29 +1088,12 @@ bountyRoutes.post('/attempts/:attemptId/review', requireAuthOrAgentSession, requ
     // dry-run leg simulates only. Each of the 4 phases persists its exact
     // `composition_state` and RESPONDS — none falls through to the legacy dispatch.
     if (isComposed) {
-      // FAIL-CLOSED (cross-review, the important one): a 'vault_pending' marker means a
-      // CREATE crashed AFTER the INSERT (which stamps 'vault_pending' before opening the
-      // vault) but BEFORE the vault opened+recorded ('vault_held' + escrow_pda). The vault
-      // MAY or MAY NOT have opened and escrow_pda is unrecorded — the binding is
-      // INDETERMINATE, so settling is unsafe (we cannot prove the LEG-1 vault holds the
-      // principal). This REPLACES a far worse silent bug: with the OLD null marker this
-      // bounty read isComposed=false, took the LEGACY branch below, opened a SECOND escrow,
-      // and DOUBLE-CHARGED the creator. Refuse here — an operator reconciles (derive the
-      // vault from the deterministic bounty nonce, confirm on-chain, then set vault_held +
-      // escrow_pda or delete the orphan) before this bounty can be approved. Checked BEFORE
-      // the escrow_pda guard so vault_pending (escrow_pda always NULL) gets THIS actionable
-      // 409, not the generic 500.
-      if (bounty.compositionState === 'vault_pending') {
-        throw new HTTPException(409, {
-          message:
-            'This bounty is not settle-ready: its reward-vault binding is indeterminate ' +
-            '(composition_state=vault_pending — a create crashed mid-open, so the on-chain ' +
-            'vault may or may not have opened and its escrow PDA is unrecorded). No settlement ' +
-            'ran. An operator must reconcile it (derive the vault from the deterministic ' +
-            'bounty nonce, confirm on-chain, then set vault_held or delete the orphan) before ' +
-            'this bounty can be approved.',
-        });
-      }
+      // NOTE (cross-review): 'vault_pending' (an indeterminate vault binding from a create
+      // that crashed mid-open) is refused PRE-FLIGHT above — BEFORE the review txn, so the
+      // attempt stays 'submitted' and the reconcile→re-approve recovery path is clean. So a
+      // composed bounty reaching HERE is settle-ready ('vault_held', or a replay of a later
+      // state). This is the fail-closed custody classification that structurally REPLACES the
+      // old null-marker double-charge (vault_pending ⇒ isComposed=true ⇒ legacy branch skipped).
       if (!bounty.escrowPda) {
         // Invariant: a settle-ready composed bounty (state !== 'vault_pending') always
         // carries its LEG-1 vault PDA (persisted WITH composition_state='vault_held' at
