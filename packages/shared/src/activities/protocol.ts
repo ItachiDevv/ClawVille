@@ -290,6 +290,32 @@ export interface RoomMeta {
     hazards: Array<{ id: string; center: Vec2; radius: number }>;
   };
   /**
+   * Reef Race v2 (spline sim) — server-authoritative boost-pad + ramp trigger
+   * zones so the client can render them. Sent ONCE in `snapshot.init`; never
+   * updated. `undefined` for the ellipse sim (which uses `reefStaticZones`
+   * instead) and all non-reef-race rooms. `position` = world centerline point
+   * of the zone center in the `{ x, y }` (y = scene-Z) convention shared with
+   * entity positions; `rot` = atan2(tangent.x, tangent.z) so the client can
+   * orient the quad down-track; `halfLength`/`halfWidth` are the AABB extents
+   * along / perpendicular to the tangent.
+   */
+  reefSplineZones?: {
+    boostPads: Array<{
+      id: string;
+      position: Vec2;
+      halfLength: number;
+      halfWidth: number;
+      rot: number;
+    }>;
+    ramps: Array<{
+      id: string;
+      position: Vec2;
+      halfLength: number;
+      halfWidth: number;
+      rot: number;
+    }>;
+  };
+  /**
    * Phase 3 — Reef Race per-avatar racing profile. Class is derived from
    * `avatars.archetype` (4-bucket mapping); level is from `avatars.level` (1..50).
    * Sent ONCE in `snapshot.init`; never updated. Bots are included with
@@ -375,6 +401,22 @@ export interface EntityDelta {
      * room; carried for HUD "lap X / N" rendering without a separate fetch).
      */
     totalLaps?: number;
+    /**
+     * Reef Race v2 mechanics — surf-carve mini-turbo charge, normalized 0..1
+     * against the tier-2 full-charge threshold (HUD meter fill). 0 when not
+     * charging. Optional; ellipse sim omits it.
+     */
+    miniTurboCharge?: number;
+    /**
+     * Reef Race v2 mechanics — mini-turbo tier the charge has reached so far
+     * (0 = none, 1, 2). Drives the HUD meter color. Optional.
+     */
+    miniTurboLevel?: 0 | 1 | 2;
+    /**
+     * Reef Race v2 mechanics — true while ANY positive boost is active (boost
+     * pad / mini-turbo / launch / slipstream). Drives kart trail/FX. Optional.
+     */
+    boosting?: boolean;
     [k: string]: unknown;
   };
 }
@@ -416,6 +458,20 @@ export interface WorldState {
     rotation: number;
     state: string;
     hp?: number;
+    /**
+     * Reef Race v2 — height above the ribbed water (wu). Omitted (= 0) when
+     * grounded. Carried on keyframes so a keyframe doesn't drop a jump's height.
+     */
+    height?: number;
+    /**
+     * Reef Race v2 mechanics — surf-carve mini-turbo charge 0..1 (HUD meter),
+     * carried on keyframes so the 1 Hz keyframe doesn't blank the meter.
+     */
+    miniTurboCharge?: number;
+    /** Reef Race v2 mechanics — mini-turbo tier reached (0|1|2). */
+    miniTurboLevel?: 0 | 1 | 2;
+    /** Reef Race v2 mechanics — any positive boost active (kart trail/FX). */
+    boosting?: boolean;
   }>;
   powerUps: Array<{
     spawnId: string;
@@ -659,6 +715,28 @@ export type ServerFrame =
       avatarId: string;
       rampId: string;
       launchVel: number;
+    }
+  | {
+      /**
+       * Reef Race v2 mechanics — a body entered a boost-pad AABB on the spline
+       * track. Fired for self, rivals, and bots. Client flashes the pad,
+       * screen-shakes + particle-bursts for the SELF player only (like
+       * event.ramp_launch). Old clients ignore it (switch default → no-op).
+       */
+      type: 'event.boost_pad';
+      avatarId: string;
+      padId: string;
+    }
+  | {
+      /**
+       * Reef Race v2 mechanics — a sustained surf-carve discharged into a
+       * mini-turbo. `level` is the tier reached (1 = small, 2 = big). Fired on
+       * release for self, rivals, and bots. Client plays a spark/whoosh FX.
+       * Old clients ignore it (switch default → no-op).
+       */
+      type: 'event.mini_turbo_fire';
+      avatarId: string;
+      level: 1 | 2;
     }
   // ─── Texas Hold'em (`poker.*`) server frames — ADDITIVE ───────────────────
   //

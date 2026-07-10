@@ -502,6 +502,20 @@ function hydrateFromWorld(world: WorldState): {
       vx: e.velocity.x,
       vy: e.velocity.y,
       alive: e.state !== 'dead' && e.state !== 'eliminated',
+      // Reef Race v2 — carry boost/meter state from keyframes + snapshot.init so
+      // the 1 Hz keyframe (and a mid-match reconnect) doesn't blank the HUD
+      // meter/trail until the next delta (Codex finding 7). The delta path
+      // (applyEntityDelta) already carries these.
+      ...(typeof e.height === 'number' ? { height: e.height } : {}),
+      ...(typeof e.boosting === 'boolean' ? { boosting: e.boosting } : {}),
+      ...(typeof e.miniTurboCharge === 'number'
+        ? { miniTurboCharge: e.miniTurboCharge }
+        : {}),
+      ...(e.miniTurboLevel === 0 ||
+      e.miniTurboLevel === 1 ||
+      e.miniTurboLevel === 2
+        ? { miniTurboLevel: e.miniTurboLevel }
+        : {}),
     });
   }
   const pickups = new Map<string, BumperPickup>();
