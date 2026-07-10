@@ -2263,9 +2263,25 @@ export async function readV2VaultBalanceBaseUnits(input: {
     const [agentPda] = findAgentPda(cfg.programId, workerWallet);
     const [escrowPda] = findEscrowPda(cfg.programId, agentPda, depositorWallet, input.escrowNonce);
     const vaultAta = getAssociatedTokenAddress(mint, escrowPda, true);
-    const bal = await getConnection().getTokenAccountBalance(vaultAta, COMMITMENT);
-    if (!bal?.value?.amount) return null;
-    return BigInt(bal.value.amount);
+    // A3 — bound the lock-hold. The settle claim calls this WHILE holding the
+    // per-escrow advisory lock (+ a pooled DB connection), so a hung RPC could pin
+    // both indefinitely. Race the read against a ~4s timeout that resolves null;
+    // null already falls back to the ledger ceiling, so a slow/hung endpoint degrades
+    // to "no clamp" instead of stalling the settle.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<null>((resolve) => {
+      timer = setTimeout(() => resolve(null), 4000);
+    });
+    try {
+      const bal = await Promise.race([
+        getConnection().getTokenAccountBalance(vaultAta, COMMITMENT),
+        timeout,
+      ]);
+      if (!bal?.value?.amount) return null;
+      return BigInt(bal.value.amount);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   } catch {
     return null;
   }
