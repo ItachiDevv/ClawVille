@@ -153,6 +153,64 @@ function escrowFailureStatus(code: string): 400 | 403 | 404 | 409 | 500 | 502 | 
   }
 }
 
+/**
+ * The escrow-gate failure codes that `openEscrowV2` (escrow-gate.ts, reached via
+ * `openComposedBountyEscrow`) returns ONLY on a PROVABLY PRE-BROADCAST path — the
+ * fund transaction was never broadcast, so the creator's USDC was NEVER moved and
+ * NO on-chain vault can exist. ONLY on one of these is it money-safe to DELETE the
+ * just-inserted composed bounty (there is nothing to orphan). Enumerated against
+ * `openEscrowV2` (escrow-gate.ts ~L1145-1262), each with WHY it is pre-broadcast:
+ *
+ *   - 'release_rail_forbidden'   — rail / row-rail validation, BEFORE any chain call.
+ *   - 'self_dealing_forbidden'   — depositor==worker guard, BEFORE any chain call.
+ *   - 'invalid_amount'           — amount / coverage-floor guard, BEFORE any chain call.
+ *   - 'wallet_pubkey_missing'    — worker/depositor wallet lookup, BEFORE any chain call.
+ *   - 'invalid_pubkey'/'invalid_mint' — V2 PDA-address derivation failure, BEFORE any chain call.
+ *   - 'internal'                 — house-not-provisioned (openComposedBountyEscrow) OR the
+ *                                  settlement-ledger insert failure — BOTH strictly BEFORE the
+ *                                  create/deposit chain send.
+ *   - 'on_chain_error'           — returned ONLY pre-broadcast: the `chain.broadcast===false`
+ *                                  passthrough (the gate already DELETED its own settlement
+ *                                  row) AND the dry-run funding simulation failure "before
+ *                                  broadcast" (the gate deletes its row there too).
+ *   - 'sap_disabled'/'sap_escrow_disabled'/'sap_usdc_escrow_disabled'/'gate_disabled'
+ *                                — the self-gate short-circuit: the rail is OFF, nothing runs.
+ *
+ * DELIBERATELY EXCLUDED — 'funding_unconfirmed': the ONE broadcast-UNKNOWN code
+ * (`chain.broadcast===true` but the confirm never landed). The gate persisted a
+ * `funding_unknown` settlement row + signature and the creator's USDC MAY be in the
+ * vault. And, FAIL-CLOSED, EVERY code NOT in this set defaults to KEEP: an unknown /
+ * newly-added failure code is treated as possible-custody, because a possibly-funded
+ * vault must never be orphaned by a delete. The cost of a false KEEP is an ops reconcile
+ * that finds no vault (derive it from the deterministic bounty nonce); the cost of a
+ * false DELETE is the creator's lost USDC. We bias hard to KEEP.
+ *
+ * Exported so the composed-bounty unit suite can lock this classification (the exact
+ * KEEP-vs-DELETE money decision the create path switches on) without a DB/route harness.
+ */
+export const PRE_BROADCAST_NO_CUSTODY: ReadonlySet<string> = new Set([
+  'release_rail_forbidden',
+  'self_dealing_forbidden',
+  'invalid_amount',
+  'wallet_pubkey_missing',
+  'invalid_pubkey',
+  'invalid_mint',
+  'internal',
+  // The V2 coverage-preflight rejections (escrow-gate.ts L1194-1207 →
+  // preflightCreate/DepositEscrowV2Coverage in sap-client.ts): 'stake_below_coverage'
+  // (checkAgentStakeCoverage — the house worker's on-chain stake does not cover this
+  // bounty's obligation; the REALISTIC over-budget-bounty create failure) and its
+  // top-up sibling 'escrow_coverage_exceeded' (checkEscrowDepositCoverage). BOTH return
+  // strictly BEFORE the L1234 chain send, so no fund tx was broadcast — no custody.
+  'stake_below_coverage',
+  'escrow_coverage_exceeded',
+  'on_chain_error',
+  'sap_disabled',
+  'sap_escrow_disabled',
+  'sap_usdc_escrow_disabled',
+  'gate_disabled',
+]);
+
 const uuidRegex =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -656,18 +714,46 @@ bountyRoutes.post('/create', requireAuthOrAgentSession, requireNonGuestIdentity,
       expiresAt: bounty.expiresAt,
     });
     if (opened.ok === false) {
-      await db.delete(bounties).where(eq(bounties.id, bounty.id));
+      if (PRE_BROADCAST_NO_CUSTODY.has(opened.code)) {
+        // PROVABLY pre-broadcast (see PRE_BROADCAST_NO_CUSTODY): the fund tx never
+        // went out, no on-chain vault exists, nothing to orphan. Safe to DELETE the
+        // just-inserted row (its bounty_rewards children cascade via FK) and fail
+        // the create — insert→open→delete-on-fail keeps the DB consistent.
+        await db.delete(bounties).where(eq(bounties.id, bounty.id));
+        throw new HTTPException(escrowFailureStatus(opened.code), {
+          message: `USDC bounty vault could not be opened (${opened.code}): ${opened.message}. The bounty was not created.`,
+        });
+      }
+      // POSSIBLE CUSTODY — 'funding_unconfirmed' (the ONE broadcast-unknown code) OR any
+      // non-allowlisted / unknown code (fail-closed). The fund tx MAY have landed and the
+      // creator's USDC MAY sit in the vault; DELETING the bounty would ORPHAN that
+      // possibly-funded vault. So we KEEP the row EXACTLY as inserted —
+      // composition_state='vault_pending', escrow_pda NULL — for ops reconciliation. It is
+      // deliberately NOT flipped to 'vault_held' (the vault is UNCONFIRMED, not confirmed-
+      // held). The F1 vault_pending sentinel already fails every post-create transition
+      // closed (approve 409s; cancel/refund reclaims-or-cleans via the deterministic bounty
+      // nonce, refund-first-then-flip), so no double-charge or premature go-live is possible.
+      // Ops resolves the on-chain state via bountyEscrowNonce(bounty.id).
       throw new HTTPException(escrowFailureStatus(opened.code), {
-        message: `USDC bounty vault could not be opened (${opened.code}): ${opened.message}. The bounty was not created.`,
+        message:
+          `USDC bounty vault open is UNCONFIRMED (${opened.code}): ${opened.message}. ` +
+          `The reward MAY already be in the vault, so the bounty is HELD as vault_pending ` +
+          `for reconciliation (it was NOT deleted).`,
       });
     }
     const composedEscrowPda = opened.settlement.escrowPda;
     if (!composedEscrowPda) {
-      // Defensive: an ok open with no recorded PDA is a broken state — never leave
-      // a live bounty without a resolvable vault. Delete + fail closed.
-      await db.delete(bounties).where(eq(bounties.id, bounty.id));
+      // opened.ok === true means the vault WAS funded — a missing recorded PDA is a
+      // possibly-funded vault too, so (exactly like 'funding_unconfirmed' above) we must
+      // NOT delete it. KEEP the row as inserted (composition_state='vault_pending',
+      // escrow_pda NULL) — the funded vault's PDA is derivable from the deterministic
+      // bounty nonce, so ops reconciles + backfills it. Same money-safety principle:
+      // NEVER delete after ok===true.
       throw new HTTPException(500, {
-        message: 'USDC bounty vault opened but no escrow PDA was recorded; the bounty was not created.',
+        message:
+          'USDC bounty vault opened but no escrow PDA was recorded; the bounty is HELD as ' +
+          'vault_pending for reconciliation (it was NOT deleted) — the funded vault PDA is ' +
+          'derivable from the deterministic bounty nonce.',
       });
     }
     await db
@@ -1161,7 +1247,10 @@ bountyRoutes.post('/attempts/:attemptId/review', requireAuthOrAgentSession, requ
             covenantVerificationPassed: true,
             updatedAt: new Date(),
           })
-          .where(eq(bounties.id, bounty.id));
+          // LOW-1 defense-in-depth: guard the non-paid persist symmetrically with the
+          // crank's `ne(compositionState,'paid')` so a future edit / a concurrent →paid
+          // flip can never be downgraded FROM paid back to awaiting_finalize.
+          .where(and(eq(bounties.id, bounty.id), ne(bounties.compositionState, 'paid')));
 
         return c.json({
           success: true,
@@ -1195,7 +1284,9 @@ bountyRoutes.post('/attempts/:attemptId/review', requireAuthOrAgentSession, requ
             covenantVerificationPassed: true,
             updatedAt: new Date(),
           })
-          .where(eq(bounties.id, bounty.id));
+          // LOW-1 defense-in-depth: symmetric non-paid guard (see awaiting_finalize) so a
+          // row the crank already flipped to paid can never be downgraded to reconcile.
+          .where(and(eq(bounties.id, bounty.id), ne(bounties.compositionState, 'paid')));
 
         await alertError({
           severity: 'critical',

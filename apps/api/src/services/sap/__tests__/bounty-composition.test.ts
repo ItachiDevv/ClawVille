@@ -28,6 +28,8 @@ import {
   type ResumeComposedBountyDeps,
 } from '../../bounty-composition-worker';
 import { computeV2ProtocolFee, type EscrowGateResult, type EscrowGateErrorCode } from '../escrow-gate';
+// MED-1: the create route's delete-vs-keep classification for a LEG-1 open failure.
+import { PRE_BROADCAST_NO_CUSTODY } from '../../../routes/bounties';
 
 // ─── fixtures ────────────────────────────────────────────────────────────────
 
@@ -179,6 +181,68 @@ describe('openComposedBountyEscrow (post → vault held)', () => {
     const b = await openComposedBountyEscrow({ bountyId: BOUNTY_ID, creatorAvatarId: CREATOR, tokenReward: REWARD }, deps);
     expect(a.ok && b.ok).toBe(true);
     if (b.ok && 'replay' in b) expect(b.replay).toBe(true);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 2b. CREATE — orphaned-vault safety (MED-1): delete ONLY on a provably
+//     pre-broadcast open failure; KEEP (vault_pending) on any possible-custody code.
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// The composed CREATE route (routes/bounties.ts) inserts the bounty stamped
+// composition_state='vault_pending', opens the LEG-1 vault, and on an open FAILURE
+// decides delete-vs-keep off THIS exact set: a code IN the set was provably NEVER
+// broadcast (no on-chain vault ⇒ nothing to orphan ⇒ safe to delete); anything NOT in
+// it — 'funding_unconfirmed' (the one broadcast-unknown code) OR any unknown/new code —
+// MAY have funded the vault, so the row is KEPT as vault_pending for ops reconciliation,
+// NEVER deleted (a delete would orphan the creator's USDC). No pure DB/route harness
+// exists in this unit file, so we lock the money-critical classification the KEEP-vs-
+// DELETE branch switches on (`PRE_BROADCAST_NO_CUSTODY.has(opened.code)`).
+
+describe('composed create — orphaned-vault safety (MED-1 classification)', () => {
+  it("KEEPS the bounty on 'funding_unconfirmed' — it is NOT deletable (a possibly-funded vault is never orphaned)", () => {
+    // The ONLY broadcast-unknown code openEscrowV2 returns (chain.broadcast===true but
+    // the confirm never landed; the gate persisted a funding_unknown row + signature ⇒
+    // the creator's USDC MAY be in the vault). Excluding it from the delete-set is the
+    // fix: the row survives as vault_pending, it is not deleted.
+    expect(PRE_BROADCAST_NO_CUSTODY.has('funding_unconfirmed')).toBe(false);
+  });
+
+  it('DELETES only on a provably pre-broadcast (no-custody) code — and the set is EXACTLY those codes', () => {
+    // Every code openEscrowV2 (escrow-gate.ts) can return strictly BEFORE broadcasting
+    // the fund tx: validation guards, wallet/PDA lookups, the ledger-insert failure, the
+    // dry-run/broadcast===false passthrough (gate already deleted its own row), and the
+    // self-gate short-circuits. On any of these the create may safely delete the row.
+    const expected = [
+      'release_rail_forbidden',
+      'self_dealing_forbidden',
+      'invalid_amount',
+      'wallet_pubkey_missing',
+      'invalid_pubkey',
+      'invalid_mint',
+      'internal',
+      // V2 coverage-preflight rejections — return BEFORE the L1234 chain send (no custody).
+      'stake_below_coverage',
+      'escrow_coverage_exceeded',
+      'on_chain_error',
+      'sap_disabled',
+      'sap_escrow_disabled',
+      'sap_usdc_escrow_disabled',
+      'gate_disabled',
+    ];
+    for (const code of expected) {
+      expect(PRE_BROADCAST_NO_CUSTODY.has(code)).toBe(true);
+    }
+    // Completeness — no EXTRA code silently widened the delete-set. A wider set is a
+    // money risk: it could delete a possibly-funded vault.
+    expect(PRE_BROADCAST_NO_CUSTODY.size).toBe(expected.length);
+  });
+
+  it('FAILS CLOSED — an unknown / newly-added failure code is NOT deletable ⇒ KEEP (assume possible custody)', () => {
+    expect(PRE_BROADCAST_NO_CUSTODY.has('some_future_unmapped_code')).toBe(false);
+    // 'funding_unknown' is the DB row status, not the return code — must also KEEP.
+    expect(PRE_BROADCAST_NO_CUSTODY.has('funding_unknown')).toBe(false);
+    expect(PRE_BROADCAST_NO_CUSTODY.has('')).toBe(false);
   });
 });
 
