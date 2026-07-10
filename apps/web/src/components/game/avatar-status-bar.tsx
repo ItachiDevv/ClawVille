@@ -138,7 +138,7 @@ export default function AvatarStatusBar() {
       {/* Guest demo-economy caption (light text on dark panel). */}
       {isGuest && (
         <div className="text-[10px] text-amber-200/80 mt-1 md:mb-3">
-          Demo tokens — sign up to earn real CT.
+          Demo tokens — sign up to earn real vCLAW.
         </div>
       )}
 

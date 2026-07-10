@@ -27,7 +27,7 @@ export function createAvatarVisitBuildingAction(deps: AvatarVisitBuildingDeps): 
   return {
     name: 'AVATAR_VISIT_BUILDING',
     description:
-      "Avatar arrives at its destination and performs a building-themed activity. Awards 1 ClawToken. Parameters: userId (whose avatar). The building is inferred from the avatar's destinationBuildingId.",
+      "Avatar arrives at its destination and performs a building-themed activity. Awards 1 vCLAW. Parameters: userId (whose avatar). The building is inferred from the avatar's destinationBuildingId.",
     similes: ['ARRIVE_AT', 'ENTER_BUILDING', 'START_ACTIVITY'],
     parameters: [
       {
@@ -79,7 +79,7 @@ export function createAvatarVisitBuildingAction(deps: AvatarVisitBuildingDeps): 
         .logActivity(
           avatar.avatarId,
           'visit',
-          `Visited ${buildingId} and earned 1 ClawToken`,
+          `Visited ${buildingId} and earned 1 vCLAW`,
           1,
         )
         .catch((err) => {

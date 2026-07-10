@@ -274,7 +274,7 @@ async function claimTutorialQuestReward(def: QuestDefinition, opts?: { silent?: 
       if (!opts?.silent) {
         useGameStore
           .getState()
-          .addToast('💰', `+${res.credited} ClawTokens (balance: ${res.balance})`, 3500);
+          .addToast('💰', `+${res.credited} vCLAW (balance: ${res.balance})`, 3500);
       }
     } else if (res.error === 'already_claimed') {
       useQuestStore.getState().markServerClaimed(def.id);

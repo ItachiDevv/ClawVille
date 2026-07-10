@@ -64,16 +64,16 @@ const TABS: readonly TabMeta[] = [
     label: 'Gold',
     icon: '💰',
     metric: 'gold',
-    unit: 'NT',
-    description: 'Current ClawToken balance.',
+    unit: 'vCLAW',
+    description: 'Current vCLAW balance.',
   },
   {
     value: 'earned',
     label: 'Earned',
     icon: '📈',
     metric: 'earned',
-    unit: 'NT',
-    description: 'Lifetime ClawTokens earned (all sources).',
+    unit: 'vCLAW',
+    description: 'Lifetime vCLAW earned (all sources).',
   },
   {
     value: 'quests',
@@ -433,7 +433,7 @@ export default function LeaderboardModal() {
           <StatusChip
             tone="warning"
             size="sm"
-            label={`${myAvatar.clawTokens?.toLocaleString() ?? 0} CT`}
+            label={`${myAvatar.clawTokens?.toLocaleString() ?? 0} vCLAW`}
           />
         ) : undefined
       }

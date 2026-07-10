@@ -48,7 +48,7 @@ import { GuestUpsellModal } from '@/components/game/guest-upsell-modal';
 // mutating bounty action gets the sign-up upsell — never a raw error toast.
 const BOUNTY_UPSELL = {
   headline: 'Real bounties need a real account',
-  body: 'Posting, claiming, and completing bounties moves real ClawTokens in and out of escrow. Guests run a demo economy — create a free account to earn and spend for real.',
+  body: 'Posting, claiming, and completing bounties moves real vCLAW in and out of escrow. Guests run a demo economy — create a free account to earn and spend for real.',
   ctaLabel: 'Create free account',
 } as const;
 
@@ -439,7 +439,7 @@ function BrowseBountyCard({
   const creatorRepTier = normaliseReputationTier(bounty.creatorReputation?.tier);
 
   const stats: { label: string; value: React.ReactNode }[] = [
-    { label: 'Reward', value: `${bounty.tokenReward ?? 0} NT` },
+    { label: 'Reward', value: `${bounty.tokenReward ?? 0} vCLAW` },
     { label: 'Difficulty', value: DIFFICULTY_LABELS[difficulty] ?? difficulty },
     { label: 'Attempts', value: `${claimedCount} / ${maxAttempts}` },
   ];
@@ -473,7 +473,7 @@ function BrowseBountyCard({
       description={bounty.description}
       stats={stats}
       price={bounty.tokenReward ?? 0}
-      priceUnit="NT"
+      priceUnit="vCLAW"
       badge={
         <StatusChip
           label={bountyStatusLabel(bounty.status || 'open')}
@@ -599,7 +599,7 @@ function AttemptCard({
   };
 
   const stats: { label: string; value: React.ReactNode }[] = [
-    { label: 'Reward', value: `${bounty.tokenReward ?? '?'} NT` },
+    { label: 'Reward', value: `${bounty.tokenReward ?? '?'} vCLAW` },
     { label: 'Difficulty', value: DIFFICULTY_LABELS[difficulty] ?? difficulty },
     { label: 'Status', value: attemptStatusLabel(status) },
   ];
@@ -832,7 +832,7 @@ function CreatorBountyCard({
   };
 
   const stats: { label: string; value: React.ReactNode }[] = [
-    { label: 'Escrow', value: `${bounty.tokenReward ?? 0} NT` },
+    { label: 'Escrow', value: `${bounty.tokenReward ?? 0} vCLAW` },
     { label: 'Difficulty', value: DIFFICULTY_LABELS[difficulty] ?? difficulty },
     {
       label: 'Attempts',
@@ -1236,7 +1236,7 @@ function CreateBountyForm({
               Post New Bounty
             </h3>
             <p style={{ fontSize: 10, color: '#94a3b8', margin: '3px 0 0' }}>
-              Escrow ClawTokens and let the community (or AI agents) take the
+              Escrow vCLAW and let the community (or AI agents) take the
               task.
             </p>
           </div>
@@ -1298,7 +1298,7 @@ function CreateBountyForm({
             <option value="expert">Expert</option>
           </select>
         </Field>
-        <Field label={`Reward (bal: ${tokens} NT)`}>
+        <Field label={`Reward (bal: ${tokens} vCLAW)`}>
           <input
             type="number"
             min={1}
@@ -1459,7 +1459,7 @@ function CreateBountyForm({
               lineHeight: 1.5,
             }}
           >
-            {tokenReward} NT will be held in escrow the moment you post. Tokens
+            {tokenReward} vCLAW will be held in escrow the moment you post. They
             release to the hunter on approval, refund to you on cancel (while
             no attempts are active).
           </p>
@@ -1475,7 +1475,7 @@ function CreateBountyForm({
         loading={createMutation.isPending}
         onClick={handleSubmit}
       >
-        {`Post Bounty · ${tokenReward} NT escrow`}
+        {`Post Bounty · ${tokenReward} vCLAW escrow`}
       </RpgButton>
     </div>
   );
@@ -1954,7 +1954,7 @@ export default function BountyBoardModal() {
       headerIcon={<span>📌</span>}
       maxWidth={1040}
       tokenBadge={
-        <RpgTooltip content="Your ClawToken balance — escrowed on post, released on approval.">
+        <RpgTooltip content="Your vCLAW balance — escrowed on post, released on approval.">
           <span
             style={{
               display: 'inline-flex',
@@ -1973,7 +1973,7 @@ export default function BountyBoardModal() {
             }}
           >
             <span style={{ fontSize: 13 }}>◈</span>
-            {tokens} NT
+            {tokens} vCLAW
           </span>
         </RpgTooltip>
       }
@@ -2329,7 +2329,7 @@ export default function BountyBoardModal() {
                   },
                   {
                     label: 'Total Escrowed',
-                    value: `${totalEscrowed} NT`,
+                    value: `${totalEscrowed} vCLAW`,
                     accent: '#facc15',
                   },
                 ]}

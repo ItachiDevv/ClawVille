@@ -190,7 +190,7 @@ function OutcomeBanner({ outcome, net, rake }: { outcome: BlackjackOutcome; net:
             fontFamily: 'var(--pt-display)',
             lineHeight: 1,
           }}>
-            {netNum > 0 ? `+${netNum}` : `${netNum}`} CT
+            {netNum > 0 ? `+${netNum}` : `${netNum}`} vCLAW
           </div>
         )}
         {rake > 0n && (
@@ -198,7 +198,7 @@ function OutcomeBanner({ outcome, net, rake }: { outcome: BlackjackOutcome; net:
             marginTop: 4, fontSize: 10, fontFamily: 'var(--pt-data)',
             color: 'var(--pt-brass)', letterSpacing: '0.04em',
           }}>
-            {Number(rake)} CT rake kept
+            {Number(rake)} vCLAW rake kept
           </div>
         )}
       </div>
@@ -1218,7 +1218,7 @@ export default function BlackjackModal() {
           ? AGENT_DECISION_WAIT_KEYBOARD_MS
           : AGENT_DECISION_WAIT_BASE_MS;
         pushAdvisor(
-          `Agent will ${decision.action}${decision.amount ? ` ${decision.amount} CT` : ''} in ${Math.round(waitMs / 1000)}s — tap any action to take over.`,
+          `Agent will ${decision.action}${decision.amount ? ` ${decision.amount} vCLAW` : ''} in ${Math.round(waitMs / 1000)}s — tap any action to take over.`,
         );
         setAgentPending({
           action: decision.action,
@@ -1414,7 +1414,7 @@ export default function BlackjackModal() {
               background: 'rgba(150,110,30,0.15)', border: '1px solid rgba(150,110,30,0.3)',
               borderRadius: 6, padding: '3px 10px',
             }}>
-              {balance.toLocaleString()} CT{!isAuthed ? ' demo' : ''}
+              {balance.toLocaleString()} vCLAW{!isAuthed ? ' demo' : ''}
             </div>
             <button
               type="button" onClick={handleClose} aria-label="Close blackjack table"
@@ -1528,7 +1528,7 @@ export default function BlackjackModal() {
                 className="pt-btn pt-btn-ghost"
                 style={{ height: 30, fontSize: 11, minWidth: 80, color: 'var(--pt-amber)', flexShrink: 0 }}
               >
-                Insure ({Math.floor(blackjackBet / 2)} CT)
+                Insure ({Math.floor(blackjackBet / 2)} vCLAW)
               </button>
             </div>
           )}
@@ -1572,7 +1572,7 @@ export default function BlackjackModal() {
                 className="pt-btn pt-btn-primary"
                 style={{ minWidth: 110, height: 40, fontSize: 13, fontWeight: 700 }}
               >
-                {inFlight ? 'Dealing…' : agentMode === 'autonomous' ? `Deal now (${blackjackBet} CT)` : `Deal (${blackjackBet} CT)`}
+                {inFlight ? 'Dealing…' : agentMode === 'autonomous' ? `Deal now (${blackjackBet} vCLAW)` : `Deal (${blackjackBet} vCLAW)`}
               </button>
             )}
 

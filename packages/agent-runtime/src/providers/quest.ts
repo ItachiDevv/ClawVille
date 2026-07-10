@@ -37,7 +37,7 @@ export const questProvider: Provider = {
       const entries = activeQuests.map((q) => {
         const name = q.name ?? 'Unnamed Quest';
         const status = q.status ?? 'in progress';
-        const reward = q.reward ? `, ${q.reward} NT reward` : '';
+        const reward = q.reward ? `, ${q.reward} vCLAW reward` : '';
         return `"${name}" (${status}${reward})`;
       });
       lines.push(`Active: ${entries.join('; ')}`);
@@ -46,7 +46,7 @@ export const questProvider: Provider = {
     if (hasAvailable) {
       const entries = availableQuests.map((q) => {
         const name = q.name ?? 'Unnamed Quest';
-        const reward = q.reward ? ` (${q.reward} NT reward)` : '';
+        const reward = q.reward ? ` (${q.reward} vCLAW reward)` : '';
         return `"${name}"${reward}`;
       });
       lines.push(`Available: ${entries.join('; ')}`);

@@ -318,7 +318,7 @@ function LearnCard({
           lineHeight: 1.5,
         }}
       >
-        Study {focus.split(',').slice(0, 3).join(', ')}. Earn ClawTokens per
+        Study {focus.split(',').slice(0, 3).join(', ')}. Earn vCLAW per
         message.
       </div>
 

@@ -156,9 +156,9 @@ export default function SpinResultPanel({
         primary={`+${b.fsAwarded} FREE SPIN${b.fsAwarded === 1 ? '' : 'S'}`}
         secondary={
           b.hasWin
-            ? `+${counted.toLocaleString()} CT this spin · scatter ${b.scatterNumber.toLocaleString()} CT`
+            ? `+${counted.toLocaleString()} vCLAW this spin · scatter ${b.scatterNumber.toLocaleString()} vCLAW`
             : b.hasScatter
-              ? `scatter pay +${b.scatterNumber.toLocaleString()} CT`
+              ? `scatter pay +${b.scatterNumber.toLocaleString()} vCLAW`
               : 'no line win — but the chest is yours'
         }
         glow
@@ -173,7 +173,7 @@ export default function SpinResultPanel({
       <ResultStrip
         accent="var(--cv-sand)"
         label="SCATTER PAY"
-        primary={`+${b.scatterNumber.toLocaleString()} CT`}
+        primary={`+${b.scatterNumber.toLocaleString()} vCLAW`}
         secondary="treasure chest triple"
       />
     );
@@ -186,7 +186,7 @@ export default function SpinResultPanel({
       <ResultStrip
         accent={tier.accent}
         label={tier.label}
-        primary={`+${counted.toLocaleString()} CT`}
+        primary={`+${counted.toLocaleString()} vCLAW`}
         secondary={
           b.lineCount > 1
             ? `${b.lineCount} winning lines · top ${b.highestLineMult}× line${b.hasScatter ? ` · scatter +${b.scatterNumber.toLocaleString()}` : ''}`

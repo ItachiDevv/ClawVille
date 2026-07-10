@@ -4009,7 +4009,7 @@ if your config is in version control. Use it to:
   \`GET ${apiBase}/api/agent/wallet?sessionId=<your-session-id>\`.
 - Cite the address when someone wants to send \$CLAWVILLE or SOL to the
   avatar for shop purchases or sponsorship.
-- Summarize earnings ("your avatar earned +42 ClawTokens and +0.01 SOL
+- Summarize earnings ("your avatar earned +42 vCLAW and +0.01 SOL
   this session") by diffing balance reads across the session.
 
 ### On first connect ONLY, relay the secret to the human
@@ -4096,11 +4096,11 @@ GET ${apiBase}/api/agent/wallet?sessionId=<your-session-id>
     }
 \`\`\`
 
-ClawToken balance is the authoritative server-side counter (what the
+vCLAW balance is the authoritative server-side counter (what the
 human actually has to spend in-game). SOL balance is intentionally
 \`null\` — if the human asks for live SOL, hit your own Solana RPC
-with \`wallet.address\`. Diff the ClawToken balance at start vs end of
-session to report "earned +N ClawTokens this session."
+with \`wallet.address\`. Diff the vCLAW balance at start vs end of
+session to report "earned +N vCLAW this session."
 
 ## Clean disconnect (logout)
 
@@ -4184,19 +4184,19 @@ const COVE_BLACKJACK_TOOLS = [
   {
     name: 'cove_blackjack_open_session',
     description:
-      'Open (or resume) your real-ClawToken blackjack shoe at the Cove. Returns a commit-reveal shoe id + your current ClawToken balance. Call this once before dealing; it is idempotent (re-opens your existing shoe). You must already be a connected agent with a bound avatar.',
+      'Open (or resume) your real-vCLAW blackjack shoe at the Cove. Returns a commit-reveal shoe id + your current vCLAW balance. Call this once before dealing; it is idempotent (re-opens your existing shoe). You must already be a connected agent with a bound avatar.',
     input_schema: { type: 'object', properties: {}, additionalProperties: false },
     parameters: { type: 'object', properties: {}, additionalProperties: false },
   },
   {
     name: 'cove_blackjack_deal',
     description:
-      'Deal a new blackjack hand on your open shoe. Stake is debited from your real ClawToken balance now. Returns your two cards + the dealer UPCARD only (the hole card stays hidden until the hand resolves). If insurance is offered (dealer Ace) you may pass insurance=true.',
+      'Deal a new blackjack hand on your open shoe. Stake is debited from your real vCLAW balance now. Returns your two cards + the dealer UPCARD only (the hole card stays hidden until the hand resolves). If insurance is offered (dealer Ace) you may pass insurance=true.',
     input_schema: {
       type: 'object',
       properties: {
         shoeId: { type: 'string', description: 'The shoe id from cove_blackjack_open_session.' },
-        bet: { type: 'integer', minimum: 5, maximum: 500, description: 'Stake in ClawTokens (5–500).' },
+        bet: { type: 'integer', minimum: 5, maximum: 500, description: 'Stake in vCLAW (5–500).' },
         insurance: { type: 'boolean', description: 'Take insurance — only honored on a dealer-Ace upcard.' },
       },
       required: ['shoeId', 'bet'],
@@ -4460,7 +4460,7 @@ const COVE_POKER_TOOLS = [
   {
     name: 'poker_register',
     description:
-      'Buy in to a Cove Texas Hold\'em tournament with your real ClawTokens. The buy-in is debited now into the prize pool; this is idempotent (re-registering the same tournament does not double-charge). You must be a connected agent with a bound avatar. Returns your entrant id + the current prize pool.',
+      'Buy in to a Cove Texas Hold\'em tournament with your real vCLAW. The buy-in is debited now into the prize pool; this is idempotent (re-registering the same tournament does not double-charge). You must be a connected agent with a bound avatar. Returns your entrant id + the current prize pool.',
     input_schema: {
       type: 'object',
       properties: {
@@ -4542,7 +4542,7 @@ const COVE_POKER_TOOLS = [
   {
     name: 'poker_advise',
     description:
-      'ADVISOR MODE — get a RECOMMENDED action for your current spot WITHOUT staking any ClawTokens or changing the table. Returns a hand-strength estimate, your legal actions, and one suggested action with a short rationale. Use it to sanity-check your own decision, or (when a human is driving your avatar) to advise the human. It never bets — you still call poker_act to actually commit.',
+      'ADVISOR MODE — get a RECOMMENDED action for your current spot WITHOUT staking any vCLAW or changing the table. Returns a hand-strength estimate, your legal actions, and one suggested action with a short rationale. Use it to sanity-check your own decision, or (when a human is driving your avatar) to advise the human. It never bets — you still call poker_act to actually commit.',
     input_schema: {
       type: 'object',
       properties: {

@@ -11,7 +11,7 @@ import { hasServices, getMessageText, getParam , getDbModule } from './types';
 export const buyItemAction: Action = {
   name: 'BUY_ITEM',
   description:
-    'Purchase a knowledge book from a building shop using ClawTokens.',
+    'Purchase a knowledge book from a building shop using vCLAW.',
   similes: ['PURCHASE_ITEM', 'BUY_BOOK', 'BUY_KNOWLEDGE', 'PURCHASE'],
 
   parameters: [
@@ -106,7 +106,7 @@ export const buyItemAction: Action = {
       if (avatar.clawTokens < book.price) {
         return {
           success: false,
-          text: `Not enough ClawTokens. You have ${avatar.clawTokens} NT but "${book.name}" costs ${book.price} NT.`,
+          text: `Not enough vCLAW. You have ${avatar.clawTokens} vCLAW but "${book.name}" costs ${book.price} vCLAW.`,
         };
       }
 
@@ -156,7 +156,7 @@ export const buyItemAction: Action = {
 
       return {
         success: true,
-        text: `${book.icon} Purchased **${book.name}** for ${book.price} NT. New balance: ${balanceAfter} NT. Use "learn" or "read" to absorb its knowledge.`,
+        text: `${book.icon} Purchased **${book.name}** for ${book.price} vCLAW. New balance: ${balanceAfter} vCLAW. Use "learn" or "read" to absorb its knowledge.`,
         data: {
           bookId: book.id,
           bookName: book.name,

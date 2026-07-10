@@ -352,7 +352,7 @@ function TokenPill({ amount, prefix }: { amount: number | string; prefix?: strin
           textShadow: 'none',
         }}
       >
-        NT
+        vCLAW
       </span>
     </span>
   );
@@ -557,7 +557,7 @@ function QuestListCard({
       description={quest.description}
       stats={stats}
       price={quest.tokenReward}
-      priceUnit="NT"
+      priceUnit="vCLAW"
       glow={isSelected ? 'strong' : undefined}
       onClick={onSelect}
       interactive
@@ -1567,7 +1567,7 @@ export default function QuestBoardModal() {
         headerIcon={<span>📜</span>}
         maxWidth={1060}
         tokenBadge={
-          <RpgTooltip content="Your ClawToken balance — spent on bounties, earned from quest completions.">
+          <RpgTooltip content="Your vCLAW balance — spent on bounties, earned from quest completions.">
             <span
               style={{
                 display: 'inline-flex',
@@ -1586,7 +1586,7 @@ export default function QuestBoardModal() {
               }}
             >
               <span style={{ fontSize: 13 }}>◈</span>
-              {tokens} NT
+              {tokens} vCLAW
             </span>
           </RpgTooltip>
         }
@@ -1977,7 +1977,7 @@ export default function QuestBoardModal() {
                               letterSpacing: '0.1em',
                             }}
                           >
-                            NT
+                            vCLAW
                           </span>
                         </span>
                       }

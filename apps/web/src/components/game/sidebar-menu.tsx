@@ -239,7 +239,7 @@ function CharacterFrame({
             fontWeight: 700,
           }}
         >
-          ClawTokens
+          vCLAW
         </span>
         <span
           style={{

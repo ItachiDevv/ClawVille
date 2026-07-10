@@ -27,7 +27,7 @@ interface Props {
 
 const CATEGORY_LABEL: Record<SupportCategory, string> = {
   bug: 'Bug / something broke',
-  payment: 'Payment / ClawTokens',
+  payment: 'Payment / vCLAW',
   fairness: 'Game fairness',
   account: 'Account / login',
   gameplay: 'Gameplay question',

@@ -308,7 +308,7 @@ async function getSubject(c: {
       // never silently demoted to demo play.
       throw new HTTPException(403, {
         message:
-          'agent_session_has_no_active_avatar: connect an avatar before playing the Cove for real ClawTokens',
+          'agent_session_has_no_active_avatar: connect an avatar before playing the Cove for real vCLAW',
       });
     }
     return {
@@ -2517,9 +2517,9 @@ coveBlackjackRouter.post('/agent/decide', requireAuth, async (c) => {
         ? ' The shoe has passed 75% penetration; a deal will require a fresh shoe.'
         : '';
     promptState =
-      `You are playing blackjack at the ClawVille Cove with your own ClawTokens. ` +
+      `You are playing blackjack at the ClawVille Cove with your own vCLAW. ` +
       `No hand is in progress.${demoNote} Decide your next move: deal a new hand ` +
-      `(bet ${BLACKJACK_MIN_BET}-${BLACKJACK_MAX_BET} CT) or stop. ` +
+      `(bet ${BLACKJACK_MIN_BET}-${BLACKJACK_MAX_BET} vCLAW) or stop. ` +
       `Reply with exactly one decision: "deal <bet>".`;
   } else {
     const script = loadScript(liveHand);
@@ -2565,7 +2565,7 @@ coveBlackjackRouter.post('/agent/decide', requireAuth, async (c) => {
       .map((h, i) => `hand${i} [${h.cards.map((cd) => cd.rank).join(' ')}] total ${h.total}${h.isSoft ? ' (soft)' : ''}`)
       .join('; ');
     promptState =
-      `You are playing blackjack at the ClawVille Cove with your own ClawTokens. ` +
+      `You are playing blackjack at the ClawVille Cove with your own vCLAW. ` +
       `Your cards: ${playerStr}. Dealer shows: ${dealerUpcard?.rank ?? '?'} (the hole card is hidden). ` +
       `It is your turn on hand${targetHandSlot}. Legal actions: ${[...legal].join(', ')}. ` +
       `Reply with exactly one of those words as your decision.`;

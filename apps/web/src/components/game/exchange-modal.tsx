@@ -70,7 +70,7 @@ import { GuestUpsellModal } from '@/components/game/guest-upsell-modal';
 // guest hitting any write action gets the sign-up upsell, never a raw toast.
 const EXCHANGE_UPSELL = {
   headline: 'Trading needs a real account',
-  body: 'The Exchange moves real ClawTokens through escrow between players. Guests run a demo economy — create a free account to post, order, and settle real trades.',
+  body: 'The Exchange moves real vCLAW through escrow between players. Guests run a demo economy — create a free account to post, order, and settle real trades.',
   ctaLabel: 'Create free account',
 } as const;
 
@@ -125,7 +125,7 @@ function listingStatusTone(s: ExchangeListing['status']): StatusChipTone {
 
 function CtPill({ tokens }: { tokens: number }) {
   return (
-    <RpgTooltip content="Your ClawToken balance — escrowed on post (needs) or order (offers), released on confirm.">
+    <RpgTooltip content="Your vCLAW balance — escrowed on post (needs) or order (offers), released on confirm.">
       <span
         style={{
           display: 'inline-flex',
@@ -145,7 +145,7 @@ function CtPill({ tokens }: { tokens: number }) {
         }}
       >
         <span style={{ fontSize: 13 }}>◈</span>
-        {tokens} NT
+        {tokens} vCLAW
       </span>
     </RpgTooltip>
   );
@@ -557,7 +557,7 @@ function ListingCard({
             marginTop: 4,
           }}
         >
-          {isNeed ? 'reward' : 'price'} · NT
+          {isNeed ? 'reward' : 'price'} · vCLAW
         </span>
       }
       stats={[
@@ -721,7 +721,7 @@ function OrderRow({
           >
             {isNeed ? 'CLAIM · ' : 'ORDER · '}
             <span style={{ color: accent, fontWeight: 700 }}>
-              {order.amountCt} NT
+              {order.amountCt} vCLAW
             </span>
             {' · '}
             {new Date(order.createdAt).toLocaleDateString()}
@@ -964,7 +964,7 @@ function ConfirmReleaseDialog({
       open={open}
       onClose={onClose}
       title="Confirm + Release Escrow"
-      subtitle={`${amountCt} NT will move to ${recipientName}`}
+      subtitle={`${amountCt} vCLAW will move to ${recipientName}`}
       tier="legendary"
       maxWidth={520}
     >
@@ -1009,7 +1009,7 @@ function ConfirmReleaseDialog({
             loading={pending}
             onClick={() => onConfirm(note.trim() || undefined)}
           >
-            Release {amountCt} NT
+            Release {amountCt} vCLAW
           </RpgButton>
         </div>
       </div>
@@ -1334,7 +1334,7 @@ function PostTab({
                     ))}
                   </select>
                 </Field>
-                <Field label={isNeed ? 'Reward (NT)' : 'Price / order (NT)'}>
+                <Field label={isNeed ? 'Reward (vCLAW)' : 'Price / order (vCLAW)'}>
                   <input
                     type="number"
                     min={1}
@@ -1416,9 +1416,9 @@ function PostTab({
                 <div style={{ fontSize: 12, color: '#cbd5e1', marginTop: 4, lineHeight: 1.55 }}>
                   Posting this need will lock{' '}
                   <strong style={{ color: '#7dd3fc' }}>
-                    {escrowCost} NT
+                    {escrowCost} vCLAW
                   </strong>{' '}
-                  ({f.priceCt} NT × {f.capacity} slot{f.capacity === 1 ? '' : 's'}) until each claim is approved.
+                  ({f.priceCt} vCLAW × {f.capacity} slot{f.capacity === 1 ? '' : 's'}) until each claim is approved.
                   Refunded on cancel.
                 </div>
               </div>
@@ -1459,9 +1459,9 @@ function PostTab({
               loading={create.isPending}
             >
               {cannotAfford
-                ? 'Not enough NT'
+                ? 'Not enough vCLAW'
                 : isNeed
-                ? `Post Need · escrow ${escrowCost} NT`
+                ? `Post Need · escrow ${escrowCost} vCLAW`
                 : 'Post Offer'}
             </RpgButton>
           </div>
