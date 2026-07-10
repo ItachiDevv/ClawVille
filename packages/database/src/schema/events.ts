@@ -5,6 +5,7 @@ import {
   text,
   uuid,
   jsonb,
+  boolean,
   index,
 } from 'drizzle-orm/pg-core';
 import { users } from './users';
@@ -35,6 +36,19 @@ export const events = pgTable(
     buildingId: text('building_id'),
     sessionId: text('session_id'),
     payload: jsonb('payload').$type<Record<string, unknown>>(),
+    /**
+     * DURABLE guest stamp (2026-07-10) — frozen at event write time by
+     * `event-logger.ts` from the subject's `users.is_guest` (the SoT). The
+     * free-agent leaderboard CTE treats this frozen fact as AUTHORITATIVE: per
+     * leg `subject_was_guest = false OR (subject_was_guest IS NULL AND NOT
+     * EXISTS(<live is_guest join>))`. So `true` is excluded and `false` KEEPS
+     * ranking even after ownership changes (a bot rebind via `/connect` or a
+     * guest-account delete), which the live join alone could not survive; the
+     * live join is consulted ONLY for NULL rows (pre-stamp / a write-time lookup
+     * that couldn't resolve). Guest-ness is immutable per-user (no in-place
+     * guest→real conversion), so a write-time stamp and a read-time lookup agree.
+     */
+    subjectWasGuest: boolean('subject_was_guest'),
     /**
      * Phase 1 anti-farm — sha256(FINGERPRINT_SECRET || browser_fp).
      * Permanent, ClawVille-scoped (server secret never leaves DB), never
