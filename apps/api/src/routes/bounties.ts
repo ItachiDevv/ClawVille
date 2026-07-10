@@ -196,12 +196,20 @@ export const PRE_BROADCAST_NO_CUSTODY: ReadonlySet<string> = new Set([
   'invalid_pubkey',
   'invalid_mint',
   'internal',
-  // The V2 coverage-preflight rejections (escrow-gate.ts L1194-1207 →
+  // The V2 coverage rejections (escrow-gate.ts L1194-1207 →
   // preflightCreate/DepositEscrowV2Coverage in sap-client.ts): 'stake_below_coverage'
   // (checkAgentStakeCoverage — the house worker's on-chain stake does not cover this
   // bounty's obligation; the REALISTIC over-budget-bounty create failure) and its
-  // top-up sibling 'escrow_coverage_exceeded' (checkEscrowDepositCoverage). BOTH return
-  // strictly BEFORE the L1234 chain send, so no fund tx was broadcast — no custody.
+  // top-up sibling 'escrow_coverage_exceeded' (checkEscrowDepositCoverage). These have
+  // TWO origins (impl2 cross-review): (1) the read-only coverage preflight, which returns
+  // strictly BEFORE the L1234 chain send — no broadcast, no custody; AND (2) the on-chain
+  // custom-error map (sap-client 6145→stake_below_coverage / 6153→escrow_coverage_exceeded).
+  // The on-chain origin is STILL delete-safe, but the safety is LOAD-BEARING on an
+  // invariant elsewhere: openEscrowV2's broadcast branch returns ONLY 'funding_unconfirmed'
+  // (never chain.code) on broadcast===true, so a landed-revert 6145/6153 is MASKED and can
+  // reach here ONLY broadcast===false; and 6145/6153 are pre-fund-movement validation
+  // errors (a rejected create moves no USDC → no vault even if it landed-reverted). If that
+  // masking in openEscrowV2 ever changes, RE-REVIEW these two codes' delete-safety.
   'stake_below_coverage',
   'escrow_coverage_exceeded',
   'on_chain_error',
