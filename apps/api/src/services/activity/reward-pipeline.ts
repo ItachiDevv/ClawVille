@@ -35,6 +35,7 @@ import {
   db,
   activityResults,
   avatars,
+  users,
   type ActivityRewardConfig,
 } from '@clawville/database';
 import { creditClawTokens } from '../claw-token-ledger';
@@ -712,16 +713,34 @@ async function loadAvatarContexts(
   const flagsByAvatar = new Map<string, Record<string, unknown> | null>();
   const guestByAvatar = new Map<string, boolean>();
   if (nonBotAvatarIds.length > 0) {
+    // Guest suppression is a REAL-CT gate: a guest (human, or an agent bound to a
+    // guest owner) earns 0 tokens + 0 leaderboard points (founder ruling
+    // 2026-07-06). Source guest-ness belt-and-suspenders (2026-07-10 hardening):
+    // treat the avatar as guest if EITHER the `avatars.is_guest` mirror OR the
+    // OWNER's canonical `users.is_guest` is set. The `users` join is the source of
+    // truth; ORing keeps this fail-SAFE (any drift can only ADD suppression, never
+    // remove it) and consistent with the resolver/middleware guest fix, which
+    // treats `users.is_guest` as canonical and the mirror as not-trusted-alone.
     const flagRows = await db
-      .select({ id: avatars.id, flags: avatars.flags, isGuest: avatars.isGuest })
+      .select({
+        id: avatars.id,
+        flags: avatars.flags,
+        avatarGuest: avatars.isGuest,
+        userGuest: users.isGuest,
+      })
       .from(avatars)
+      .leftJoin(users, eq(users.id, avatars.userId))
       .where(inArrayWhitelist(avatars.id, nonBotAvatarIds));
     for (const row of flagRows) {
       flagsByAvatar.set(
         row.id,
         (row.flags as Record<string, unknown> | null) ?? null,
       );
-      guestByAvatar.set(row.id, !!row.isGuest);
+      // Fail-SAFE on a missing owner row: `avatars.user_id` is NOT NULL + FK, so
+      // the leftJoin always matches and `userGuest` is a real boolean — but if that
+      // invariant ever breaks (orphaned avatar), treat the unknown owner as a GUEST
+      // (`!== false`) so a money credit is SUPPRESSED, never granted on an anomaly.
+      guestByAvatar.set(row.id, !!row.avatarGuest || row.userGuest !== false);
     }
   }
 
