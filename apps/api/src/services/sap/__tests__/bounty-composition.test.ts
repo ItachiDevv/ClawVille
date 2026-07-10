@@ -28,19 +28,31 @@ import {
   type ResumeComposedBountyDeps,
 } from '../../bounty-composition-worker';
 import { computeV2ProtocolFee, type EscrowGateResult, type EscrowGateErrorCode } from '../escrow-gate';
+import type { SapWriteResult } from '../sap-client';
 // MED-1: the create route's delete-vs-keep classification for a LEG-1 open failure.
 import { PRE_BROADCAST_NO_CUSTODY } from '../../../routes/bounties';
 
 // ─── fixtures ────────────────────────────────────────────────────────────────
 
 const BOUNTY_ID = '550e8400-e29b-41d4-a716-446655440000';
+// A SECOND, distinct bounty UUID (different nonce ⇒ different vault PDA) for the
+// house-pricing serialization test — same house avatar ⇒ same pricing mutex key.
+const BOUNTY_ID_2 = '660f9500-f30c-42e5-b827-557766551111';
 const CREATOR = '11111111-1111-4111-8111-111111111111';
 const HUNTER = '22222222-2222-4222-8222-222222222222';
 const HOUSE = '33333333-3333-4333-8333-333333333333';
 const VAULT_PDA = 'VaultPda1111111111111111111111111111111111';
+const VAULT_PDA_2 = 'VaultPda2222222222222222222222222222222222';
 const PAYOUT_PDA = 'PayoutPda111111111111111111111111111111111';
 const AUDIT_ROOT = 'a'.repeat(64);
 const REWARD = 100; // 100 whole USDC
+
+// A passing house-pricing-tier publish (the LEG-1 open prerequisite). Live-shaped
+// SapWriteResult success — the escrow-open slice republishes the menu at the bounty
+// price under the house mutex before every create.
+function pricingOk(): SapWriteResult {
+  return { ok: true, dryRun: false, signature: 'PRICINGSIG', accounts: {} };
+}
 
 // ── gate-result builders (only the fields the orchestration reads) ────────────
 function openOk(escrowPda: string): EscrowGateResult {
@@ -141,6 +153,7 @@ describe('openComposedBountyEscrow (post → vault held)', () => {
       { bountyId: BOUNTY_ID, creatorAvatarId: CREATOR, tokenReward: REWARD, expiresAt: new Date(2_000_000_000_000) },
       {
         resolveHouseAvatarId: async () => HOUSE,
+        updateAgentPricingUsdc: async () => pricingOk(),
         openEscrowV2: async (input) => {
           captured = input;
           return openOk(VAULT_PDA);
@@ -158,6 +171,60 @@ describe('openComposedBountyEscrow (post → vault held)', () => {
     expect(captured.disputeWindowSlots).toBe(bountyDisputeWindowSlots());
   });
 
+  it('publishes the house tier at the bounty price (tier=bounty-usdc, price=reward) BEFORE opening the vault', async () => {
+    // THE 6148 FIX: create_escrow_v2 rejects PricingTierNotFound unless the escrow's
+    // price_per_call matches a tier in the house menu. The escrow-open slice must
+    // (re)publish that tier at the bounty's exact price, and must do so BEFORE the
+    // create — else the vault funds against a menu the create can't consume.
+    const order: string[] = [];
+    let pricingInput: any = null;
+    const opened = await openComposedBountyEscrow(
+      { bountyId: BOUNTY_ID, creatorAvatarId: CREATOR, tokenReward: REWARD },
+      {
+        resolveHouseAvatarId: async () => HOUSE,
+        updateAgentPricingUsdc: async (input) => {
+          pricingInput = input;
+          order.push('pricing');
+          return pricingOk();
+        },
+        openEscrowV2: async (input) => {
+          order.push('open');
+          expect(input.pricePerCall).toBe(usdcRewardBaseUnits(REWARD)); // create price == published tier price
+          return openOk(VAULT_PDA);
+        },
+      },
+    );
+    expect(opened.ok).toBe(true);
+    expect(order).toEqual(['pricing', 'open']); // pricing strictly precedes create
+    expect(pricingInput.workerAvatarId).toBe(HOUSE);
+    expect(pricingInput.tierId).toBe('bounty-usdc');
+    expect(pricingInput.pricePerCall).toBe(usdcRewardBaseUnits(REWARD)); // 100_000_000 for a $100 bounty
+  });
+
+  it('tier publish FAILURE ⇒ typed `internal` failure and the vault is NEVER opened (no 6148-doomed vault)', async () => {
+    let openCalled = false;
+    const opened = await openComposedBountyEscrow(
+      { bountyId: BOUNTY_ID, creatorAvatarId: CREATOR, tokenReward: REWARD },
+      {
+        resolveHouseAvatarId: async () => HOUSE,
+        updateAgentPricingUsdc: async () => ({ ok: false, code: 'rpc_unreachable', message: 'no rpc' }),
+        openEscrowV2: async () => {
+          openCalled = true;
+          return openOk(VAULT_PDA);
+        },
+      },
+    );
+    expect(opened.ok).toBe(false);
+    // 'internal' (NOT the raw 'rpc_unreachable') so the create route's
+    // PRE_BROADCAST_NO_CUSTODY classifier DELETES the phantom bounty — a tier-publish
+    // failure never reaches openEscrowV2, so there is provably no vault to orphan.
+    if (opened.ok === false) {
+      expect(opened.code).toBe('internal');
+      expect(opened.message).toContain('rpc_unreachable'); // underlying sap error preserved for diagnostics
+    }
+    expect(openCalled).toBe(false); // never fund a vault the create would reject
+  });
+
   it('fails closed (no fund) when the house is not provisioned', async () => {
     const opened = await openComposedBountyEscrow(
       { bountyId: BOUNTY_ID, creatorAvatarId: CREATOR, tokenReward: REWARD },
@@ -167,10 +234,15 @@ describe('openComposedBountyEscrow (post → vault held)', () => {
     if (opened.ok === false) expect(opened.code).toBe('internal');
   });
 
-  it('replays idempotently (same nonce ⇒ the gate replays the open — no double fund)', async () => {
+  it('replays idempotently (same nonce ⇒ re-publish tier + the gate replays the open — no double fund)', async () => {
     let opens = 0;
+    let priceUpdates = 0;
     const deps: ComposedBountyDeps = {
       resolveHouseAvatarId: async () => HOUSE,
+      updateAgentPricingUsdc: async () => {
+        priceUpdates += 1;
+        return pricingOk();
+      },
       openEscrowV2: async () => {
         opens += 1;
         // The gate's claim-first insert returns replay:true on the 2nd identical open.
@@ -180,7 +252,51 @@ describe('openComposedBountyEscrow (post → vault held)', () => {
     const a = await openComposedBountyEscrow({ bountyId: BOUNTY_ID, creatorAvatarId: CREATOR, tokenReward: REWARD }, deps);
     const b = await openComposedBountyEscrow({ bountyId: BOUNTY_ID, creatorAvatarId: CREATOR, tokenReward: REWARD }, deps);
     expect(a.ok && b.ok).toBe(true);
+    // A retry re-publishes the tier (whole-menu replace is idempotent in effect) and
+    // replays the escrow open — harmless, no double-fund.
+    expect(priceUpdates).toBe(2);
     if (b.ok && 'replay' in b) expect(b.replay).toBe(true);
+  });
+
+  it('serializes two concurrent opens (different rewards) under the house-pricing mutex — no menu overwrite between a tier-set and its create', async () => {
+    // Two DIFFERENT bounties (distinct nonce ⇒ distinct vault PDA) posted against the
+    // SAME house avatar ⇒ SAME pricing mutex key. Because update_agent replaces the
+    // whole menu, bounty B's tier-set must NOT land between bounty A's tier-set and
+    // A's create (that would make A create at B's price ⇒ 6148). The real
+    // withKeyedMutex (NOT injected) must serialize each (set → create) as a unit.
+    const events: string[] = [];
+    const depsFor = (label: string, vault: string, reward: number): ComposedBountyDeps => ({
+      resolveHouseAvatarId: async () => HOUSE,
+      updateAgentPricingUsdc: async (input) => {
+        events.push(`update-${label}:${input.pricePerCall}`);
+        // Yield across a real timer so a NON-serialized impl would interleave the
+        // other call's tier-set here (proving the mutex actually holds).
+        await new Promise((r) => setTimeout(r, 15));
+        return pricingOk();
+      },
+      openEscrowV2: async () => {
+        events.push(`open-${label}`);
+        return openOk(vault);
+      },
+    });
+    const rewardA = 50;
+    const rewardB = 250;
+    const [a, b] = await Promise.all([
+      openComposedBountyEscrow({ bountyId: BOUNTY_ID, creatorAvatarId: CREATOR, tokenReward: rewardA }, depsFor('A', VAULT_PDA, rewardA)),
+      openComposedBountyEscrow({ bountyId: BOUNTY_ID_2, creatorAvatarId: CREATOR, tokenReward: rewardB }, depsFor('B', VAULT_PDA_2, rewardB)),
+    ]);
+    expect(a.ok && b.ok).toBe(true);
+    // Each call's create must immediately follow its OWN tier-set with nothing between
+    // — i.e. the other call's update never interleaved. Adjacency proves serialization.
+    const aUpdate = events.indexOf(`update-A:${usdcRewardBaseUnits(rewardA)}`);
+    const aOpen = events.indexOf('open-A');
+    const bUpdate = events.indexOf(`update-B:${usdcRewardBaseUnits(rewardB)}`);
+    const bOpen = events.indexOf('open-B');
+    expect(aUpdate).toBeGreaterThanOrEqual(0);
+    expect(bUpdate).toBeGreaterThanOrEqual(0);
+    expect(aOpen).toBe(aUpdate + 1); // A: set → create adjacent
+    expect(bOpen).toBe(bUpdate + 1); // B: set → create adjacent
+    expect(events).toHaveLength(4); // exactly two (set, create) pairs, fully serialized
   });
 });
 
