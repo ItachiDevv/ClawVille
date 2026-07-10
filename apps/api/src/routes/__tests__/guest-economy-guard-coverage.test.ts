@@ -12,9 +12,16 @@
  * (between the path literal and the `async` handler).
  *
  * Guests earn DEMO CT only: every real-CT write surface with no demo tier is
- * guarded by the shared `middleware/require-non-guest.ts` (agents always pass, E5).
- * The cove CARD games (blackjack/baccarat/holdem/slots) are intentionally NOT here
- * — they resolve a guest to a DEMO session balance instead of blocking.
+ * guarded by the shared `middleware/require-non-guest.ts`. NOTE (2026-07-10): the
+ * old "agents always pass, E5" shorthand was WRONG — a guest can own an agent
+ * (guest-minted connect-token), so `requireNonGuestIdentity` now also 403s a
+ * `kind:'agent'` identity whose bound userId is a guest (see require-non-guest.ts +
+ * its unit test). The cove CARD games (blackjack/baccarat/holdem/slots) AND
+ * `items.ts /buy` are intentionally NOT in the middleware MANIFEST below — they
+ * resolve a guest (human OR guest-owned agent) to a DEMO balance instead of
+ * blocking. The demo-resolution surfaces are asserted separately at the bottom of
+ * this file so a regression (a guest-owned agent slipping into the real-CT branch)
+ * still fails.
  */
 
 import { describe, it, expect } from 'bun:test';
@@ -114,12 +121,10 @@ const MANIFEST: Entry[] = [
     guard: 'requireNonGuestUser',
     routes: [p('post', '/:slug/signup')],
   },
-  {
-    // Guest SPEND holes (2026-07-07): guests are FULLY demo — no real-CT spend either.
-    file: 'items.ts',
-    guard: 'requireNonGuestIdentity',
-    routes: [p('post', '/buy')],
-  },
+  // NOTE: items.ts /buy is DELIBERATELY NOT here. The 2026-07-06 all-demo ruling
+  // SUPERSEDED the 2026-07-07 requireNonGuestIdentity-403 on /buy: a guest now BUYS
+  // on demo CT (in-handler demo branch, like the cove card games), never a 403. Its
+  // guest-OWNED-agent safety is asserted by the demo-resolution source check below.
   {
     file: 'cosmetics.ts',
     guard: 'requireNonGuestUser',
@@ -212,5 +217,63 @@ describe('guest→real-CT guard coverage lock', () => {
     expect(mw).toContain('export async function isGuestUser');
     expect(mw).toContain('export const requireNonGuestUser');
     expect(mw).toContain('export const requireNonGuestIdentity');
+  });
+
+  // ── Demo-resolution surfaces (2026-07-10): a guest-OWNED agent must be treated
+  // as a guest, NOT settle real CT — on the paths that resolve guests to a demo
+  // balance instead of 403ing. These bypass requireNonGuestIdentity/ledgerCapable,
+  // so they carry their own guest check. Source-level lock (mirrors the cove-guest
+  // -demo-routing convention) so removing the agent branch fails here. ──
+  describe('guest-owned-agent demo-resolution locks', () => {
+    it("items.ts /buy demo-classifies a guest-OWNED agent (not just kind:'user')", () => {
+      const src = readRoute('items.ts');
+      // The demo `isGuest` classifier must include the agent kind, else a
+      // guest-owned agent falls through to the real-CT debit + house-treasury.
+      expect(
+        src.includes("identity.kind === 'agent'") && src.includes('isGuestUser(userId)'),
+        'items.ts /buy no longer routes a guest-owned agent to the demo branch',
+      ).toBe(true);
+    });
+
+    it('building-reward.ts skips the REAL-CT building reward for a guest owner', () => {
+      const src = readFileSync(
+        join(import.meta.dir, '..', '..', 'services', 'building-reward.ts'),
+        'utf8',
+      );
+      // resolveAvatarIdForBot must consult users.isGuest and return null for a
+      // guest owner (both /visit-building + /building/:id/chat then skip the credit).
+      expect(
+        src.includes('isGuest') && src.includes('return null'),
+        'building-reward.ts resolveAvatarIdForBot no longer gates guest owners off the real-CT credit',
+      ).toBe(true);
+    });
+
+    it('resolveAgentSession demotes a guest-owned session to non-ledger', () => {
+      const src = readFileSync(
+        join(import.meta.dir, '..', '..', 'middleware', 'require-auth-or-agent.ts'),
+        'utf8',
+      );
+      // The keystone: a session whose bound user is a guest must lose ledger
+      // capability so every `!ledgerCapable` 403 (cove ×6, special-events, x402)
+      // fires. Assert the guest lookup sets ledgerCapable = false.
+      const demoted =
+        /owner\??\.isGuest[\s\S]{0,60}ledgerCapable = false/.test(src) ||
+        (src.includes('isGuest') && src.includes('ledgerCapable = false'));
+      expect(
+        demoted,
+        'resolveAgentSession no longer demotes a guest-owned session to non-ledger',
+      ).toBe(true);
+    });
+
+    it('connect-token 403s a guest at the source', () => {
+      const src = readRoute('agent-gateway.ts');
+      // Defense-in-depth: a guest must not be able to MINT a connect-token, so it
+      // can never bind a ledger-capable agent to its guest userId in the first place.
+      const m = src.match(/post\('\/connect-token'[\s\S]*?guest_not_allowed/);
+      expect(
+        m,
+        'agent-gateway.ts /connect-token no longer blocks a guest (guest_not_allowed) at the source',
+      ).not.toBeNull();
+    });
   });
 });

@@ -14,7 +14,7 @@
  * driver imports must never reach it (same rule as `building-center.ts`).
  */
 
-import { db, avatars, eq, sql } from '@clawville/database';
+import { db, avatars, users, eq, sql } from '@clawville/database';
 import { creditClawTokens } from './claw-token-ledger';
 
 // ---------------------------------------------------------------------------
@@ -29,6 +29,23 @@ import { creditClawTokens } from './claw-token-ledger';
 // stays 0) rather than throwing. (2026-06-01, Hatcher Phase A bug fix.)
 export async function resolveAvatarIdForBot(botUserId: string | null): Promise<string | null> {
   if (!botUserId) return null;
+  // Guest-owned backstop (2026-07-10 security fix). Building rewards are REAL CT.
+  // A GUEST account runs a fully-DEMO economy (founder ruling 2026-07-06) and must
+  // NEVER earn to the real ledger — as a human OR via an agent bound to its guest
+  // userId. The `/visit-building` + `/building/:buildingId/chat` gateway routes
+  // resolve their session via `validateLiveAgentSession` ONLY (not
+  // `resolveAgentSession`), so the resolver's `ledgerCapable` guest-demotion never
+  // runs on this path. Gate here on the OWNER's `users.is_guest` (the SOURCE OF
+  // TRUTH — the `avatars.is_guest` mirror is not trusted alone). A guest owner has
+  // NO creditable avatar → return null so BOTH call sites skip the credit honestly
+  // (tokenAwarded stays 0), exactly like the anonymous/no-avatar case. Hosted /
+  // autonomy (`world-teacher-chat.ts`) + Hatcher callers bind NON-guest owners, so
+  // this never fires for them. Short-circuits BEFORE the avatar lookup.
+  const owner = await db.query.users.findFirst({
+    where: eq(users.id, botUserId),
+    columns: { isGuest: true },
+  });
+  if (owner?.isGuest) return null;
   const avatar = await db.query.avatars.findFirst({
     where: eq(avatars.userId, botUserId),
     columns: { id: true },
