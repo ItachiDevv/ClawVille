@@ -789,36 +789,35 @@ async function recoverStaleV2Claim(row: SapEscrowSettlement): Promise<EscrowGate
     }
     // pending PDA ABSENT (escrow PRESENT) — R5-1 gate on the MONOTONIC index. The pending PDA
     // is closable for rent AFTER finalize (buildClosePendingSettlementIx), so "absent" no
-    // longer proves "never landed". current === persisted ⇒ the slot was NEVER consumed ⇒ our
-    // settle never landed ⇒ restore 'submitted' + release (the client retries). current >
-    // persisted ⇒ the slot was consumed on-chain (settled→finalized→closed, OR a later settle
-    // superseded ours that never landed) ⇒ restoring + retrying would DOUBLE-PAY ⇒ refuse
-    // fail-closed regardless of wasStatus. R6-2 — current < persisted is ALSO reachable (inspect
-    // returns currentSettlementIndex 0n on a DRY-RUN rehearsal where the escrow doesn't exist
-    // yet); NOT the restore case, so it falls to the else → slot_consumed (fail-closed, SAFE).
-    // The restore's WHERE status='settling' also bars a finalizing row. (A live ABSENT escrow
-    // ACCOUNT is handled by the R7-3 arm above — it never reaches here.)
+    // longer proves "never landed". current > persisted ⇒ the slot was consumed on-chain
+    // (settled→finalized→closed, OR a later settle superseded ours that never landed) ⇒ refuse
+    // fail-closed `settle_slot_consumed` regardless of wasStatus. current === persisted ⇒ the
+    // slot was NEVER consumed (our settle never landed) — the QUARANTINE arm below. R6-2 —
+    // current < persisted is ALSO reachable (inspect returns currentSettlementIndex 0n on a
+    // DRY-RUN rehearsal where the escrow doesn't exist yet); NOT the current===persisted case, so
+    // it falls to the else → slot_consumed (fail-closed, SAFE). The quarantine's WHERE
+    // status='settling' also bars a finalizing row. (A live ABSENT escrow ACCOUNT is handled by
+    // the R7-3 arm above — it never reaches here.)
     //
-    // R7-1 — the `current === persisted ⇒ restore` arm is SAFE because the client's retry runs
-    // through the INDEX-PINNED executor: the retry and any still-valid zombie broadcast BOTH
-    // target THIS slot, so the program's seeds constraint lets exactly ONE land (the second
-    // reverts); and if the zombie landed first, the retry's unowned-pending guard (R7-2) refuses
-    // it (on-chain pending > gate 0 — the restored 'submitted' row no longer counts). The
-    // blockhash-window backstop (SAP_STALE_CLAIM_MS >> MAX_BLOCKHASH_VALIDITY_MS) is now
-    // DEFENSE-IN-DEPTH, not the guarantee: Solana blockhash validity is ~151 BLOCKS, not a
-    // wall-clock duration, so a zombie can outlive 10 min under stalled block production. The
-    // index-pin + guard are the real invariant; do NOT rely on the wall-clock window alone
-    // (the module-load assertion keeping that window wide is belt-and-suspenders, not the proof).
+    // R10-1 — current === persisted ⇒ QUARANTINE `settle_unknown`; do NOT auto-restore to
+    // 'submitted'. The old restore→retry LIFECYCLE dropped the R7-1 slot pin (the client's retry
+    // FRESH-inspects the CURRENT index, not THIS one), re-opening a double-pay under a zombie-
+    // lands-after-restore interleaving (Codex V3-1 — quarantine is its OWN named alternative).
+    // No auto-retry ⇒ no lifecycle ⇒ that class is DEAD. KEEP the reservation (do NOT zero: a
+    // zombie broadcast MAY still land — Solana blockhash validity is block-height (~151 BLOCKS),
+    // NOT wall-clock, so it can outlive the 10-min stale window under stalled block production);
+    // ops resets a provably-never-landed row via the reconcile endpoint (already REQUIRED
+    // pre-flip). The module-load blockhash-window assertion is now belt-and-suspenders only.
     if (currentIndex === persistedIndex) {
-      const [restored] = await tx
+      const [quarantined] = await tx
         .update(sapEscrowSettlements)
         .set({
-          status: 'submitted', reservedPrincipalAmount: '0', feeAmount: '0', releasedAmount: '0', callsSettled: '0', updatedAt: new Date(),
-          metadata: { ...meta, staleSettleNeverLanded: true },
+          status: 'settle_unknown', updatedAt: new Date(),
+          metadata: { ...meta, staleClaimQuarantined: true, staleSettleZombieRisk: true },
         })
         .where(and(eq(sapEscrowSettlements.id, row.id), eq(sapEscrowSettlements.status, 'settling')))
         .returning();
-      return { kind: 'restored' as const, row: restored };
+      return { kind: 'quarantined' as const, row: quarantined };
     }
     return { kind: 'slot_consumed' as const };
   });
@@ -849,8 +848,11 @@ async function recoverStaleV2Claim(row: SapEscrowSettlement): Promise<EscrowGate
     case 'pending':
       if (outcome.row) return { ok: true, phase: 'pending', settlement: outcome.row, chain: null, replay: true, next: 'finalize' };
       return { ok: false, code: 'settle_in_progress', message: 'the row changed during stale-claim recovery.' };
-    case 'restored':
-      if (outcome.row) return { ok: true, phase: 'submitted', settlement: outcome.row };
+    case 'quarantined':
+      // R10-1 — never-landed stale settle: the slot is still free but a zombie broadcast may yet
+      // land, so QUARANTINE (settle_unknown, reservation KEPT) instead of restoring→retrying.
+      // Return the existing settle_unconfirmed refusal; ops resets it via the reconcile endpoint.
+      if (outcome.row) return { ok: false, code: 'settle_unconfirmed', message: 'stale-claim recovery: our settle never confirmed and its slot is still free, but a zombie broadcast may still land — quarantined settle_unknown; reconcile before retrying (never auto-retried).' };
       return { ok: false, code: 'settle_in_progress', message: 'the row changed during stale-claim recovery.' };
   }
 }
