@@ -114,6 +114,38 @@ export const bounties = pgTable('bounties', {
    */
   escrowJobId: varchar('escrow_job_id', { length: 128 }),
 
+  // ── Composition rail (SLICE 2a) — SAP-V2 vault → PayAI-x402 two-leg settle ────
+  // Only a `payment_rail='usdc'` bounty on the COMPOSED rail
+  // (`bountySettlementRail() === 'sap-payai-composed'`) populates these. NULL for
+  // every CT bounty, and for a USDC bounty on the legacy single-leg vault-less
+  // path. Additive + nullable — see migration 0024_bounty_composition.sql.
+  /**
+   * The V1 PayAI payout escrow PDA (base58) for LEG 2 (house→hunter). Leg 1's
+   * on-chain vault PDA is `escrowPda` above (depositor=creator, worker=house);
+   * THIS is the separate leg-2 escrow (depositor=house, worker=hunter) whose
+   * settle drives the single x402 exact USDC payment to the winning hunter. NULL
+   * until leg 2 opens (i.e. after leg 1 finalizes and the house holds the reward).
+   */
+  payoutEscrowPda: varchar('payout_escrow_pda', { length: 64 }),
+  /**
+   * The composed-rail lifecycle marker, so the release path (slice 2b) can branch
+   * on where a two-leg settle got to WITHOUT re-deriving it from the SAP ledger.
+   * NULL for any non-composed bounty. Documented value set (no enum by design):
+   *   'vault_held'               — leg 1 opened; creator's USDC custodied in the
+   *                                V2 vault at post (worker=house), not yet settled.
+   *   'vault_settled'            — leg 1b settled (principal reserved in a V2
+   *                                PendingSettlement), leg 1c finalize pending.
+   *   'awaiting_finalize'        — leg 1b done; leg 1c finalize not yet confirmed
+   *                                (DisputeWindow not elapsed, or ops-reconcile);
+   *                                the hunter is UNPAID and no double-pay is possible.
+   *   'paid'                     — all legs done: house finalized the principal AND
+   *                                the leg-2 x402 paid the hunter exactly the reward.
+   *   'reconcile_payout_failed'  — leg 1 finalized (house HAS the funds) but leg 2
+   *                                (payout) failed; funds are safe in the house
+   *                                wallet, leg 2 replays idempotently. Ops re-runs.
+   */
+  compositionState: varchar('composition_state', { length: 32 }),
+
   // ── verdict provenance (v1 = requester/admin approval; Phase 3 = Covenant) ───
   /**
    * The SAP settlement row's audit-root hex (the verification provider's 32-byte
