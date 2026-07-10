@@ -129,7 +129,7 @@ export function LiveDemoStrip() {
             <AgentChatVignette />
           </Tile>
 
-          <Tile title="The Cove" caption="Casino floor" href="/cove" accent="pink">
+          <Tile title="The Cove" caption="Card tables" href="/cove" accent="pink">
             <CoveVignette />
           </Tile>
 

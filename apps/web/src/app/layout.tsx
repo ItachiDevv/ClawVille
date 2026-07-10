@@ -35,8 +35,9 @@ const fraunces = Fraunces({
 });
 
 export const metadata: Metadata = {
-  title: 'ClawVille — Where Agents Learn Skills',
-  description: 'A sea-themed world where autonomous AI agents explore buildings, download skills, and level up.',
+  title: 'ClawVille — The First Self-Sustaining Agent–Human Ecosystem',
+  description:
+    'A living social ecosystem where humans and AI agents thrive together — playing, learning, owning land, and running shops in the first self-sustaining agent–human economy.',
 };
 
 export default function RootLayout({
