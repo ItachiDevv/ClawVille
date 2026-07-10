@@ -113,7 +113,11 @@ import {
   preloadClips,
   preloadMixamoClips,
 } from '@/lib/three/vrm-character-animator';
-import { getAnimatorIdByPath } from '@/lib/three/agent-model-registry';
+import {
+  MODEL_REGISTRY,
+  type ModelRegistryEntry,
+} from '@/lib/three/agent-model-registry';
+import { computeVRMAvatarFit } from '@/lib/three/vrm-avatar-sizing';
 import { useActivityStore } from '@/stores/activity';
 import { triggerBurst } from '@/lib/three/activities/shared/activity-particles';
 
@@ -124,6 +128,16 @@ useGLTF.preload('/models/crayfish.glb');  // SPEC 1 — 3rd species, static mesh
 // v2 spline path surfboard — plain .clone() (no skeleton, static mesh).
 // Asset: surfboard_1.glb, 3 220 tris, 660 KB, CC-BY 4.0 (see ATTRIBUTIONS.md).
 useGLTF.preload('/models/reef-race/surfboards/surfboard_1.glb');
+// Registry-driven rider router (2026-07-10) — these GLB creature species are now
+// reachable via MODEL_REGISTRY (previously all rendered as lobster.glb). Not
+// covered by the global tier-2 preload manifest (asset-preload-manifest.ts),
+// so warm them here to avoid a Suspense-cascade stutter mid-race.
+// lobster_plush.glb is already globally preloaded (shared with the "Larry" NPC) —
+// no duplicate call needed.
+useGLTF.preload('/models/sweet_crab_sketchfabweekly.glb');
+useGLTF.preload('/models/hermitcrab.glb');
+useGLTF.preload('/models/jellyfish.glb');
+useGLTF.preload('/models/octopus_toy.glb');
 
 // SPEC 2 — Milady VRM preloads.
 // preloadMixamoClips() warms the raw Mixamo GLB cache (idle/walk/run only).
@@ -138,6 +152,19 @@ preloadMixamoClips();
 preloadClips(['surf_idle', 'wipeout', 'victory']);
 for (let _n = 1; _n <= 8; _n++) {
   preloadVRMBytes(`/avatars/milady-official-${_n}.vrm`);
+}
+// Registry-driven rider router (2026-07-10) — Hermes/Tekk/chibi VRMs are already
+// globally preloaded (asset-preload-manifest.ts tier-2); the Meshy/Hatcher bespoke
+// avatars (Phanes/Cronus/Helen/Clytemnestra/Adinero) are NOT, and are now reachable
+// as reef riders via the generalized registry router. Warm them here.
+for (const _meshyVrmPath of [
+  '/avatars/phanes.vrm?v=2',
+  '/avatars/cronus.vrm?v=2',
+  '/avatars/helen.vrm?v=2',
+  '/avatars/clytemnestra.vrm?v=2',
+  '/avatars/adinero.vrm?v=1',
+]) {
+  preloadVRMBytes(_meshyVrmPath);
 }
 
 // ─── SPEC 2: Milady VRM helpers ───────────────────────────────────────────────
@@ -166,15 +193,28 @@ function surfboardBaseQuat(size: THREE.Vector3): THREE.Quaternion {
  *  (now forward) extent ≈ GLIDER_LENGTH. GLB longest ≈ 2.0 local → ×2.5 ≈ 5.0. */
 const SURFBOARD_UNIFORM_SCALE = 2.5;
 
-/** True when the species string identifies a Milady VRM avatar. */
-function isMiladySpecies(species: string | undefined): species is string {
-  return typeof species === 'string' && species.startsWith('milady_official_');
-}
-
-/** Map 'milady_official_N' → '/avatars/milady-official-N.vrm'. */
-function miladyVrmPath(species: string): string {
-  const n = species.replace('milady_official_', '');
-  return `/avatars/milady-official-${n}.vrm`;
+/**
+ * Registry-driven rider router (2026-07-10 generalization).
+ *
+ * Was: `isMiladySpecies()` hard-gated ONLY `milady_official_N` species into the
+ * VRM rider branch; everything else (hermes_female/male, tekk, chibis, all 8
+ * Hatcher placeholders, the 4 Meshy Hatcher avatars, adinero, AND every non-
+ * lobster/crayfish/sea_horse GLB creature — sweet_crab/lobster_plush/hermitcrab/
+ * jellyfish/octopus) fell through a GLB `switch` that defaulted to lobster.glb
+ * with zero humanoid animation.
+ *
+ * Now: look the species up in MODEL_REGISTRY (the same single source of truth
+ * the /create-agent picker and every other avatar render site uses).
+ * `avatar_type: 'vrm'` → the VRM rider branch below, using the registry's own
+ * `path` (preserves ?v=N cache-bust queries) and `animatorId` directly — no
+ * reverse path→animatorId lookup needed, we already have the full entry.
+ * `avatar_type: 'glb'` → mount the REAL creature mesh (glbPath resolution
+ * below), not a lobster placeholder. Unrecognized species (not in the
+ * registry AND not one of the two legacy special-cased GLB paths below) keep
+ * the pre-existing lobster.glb fallback, logged once.
+ */
+function resolveRegistryEntry(species: string): ModelRegistryEntry | undefined {
+  return (MODEL_REGISTRY as Record<string, ModelRegistryEntry>)[species];
 }
 
 /**
@@ -189,12 +229,72 @@ const WIPEOUT_TELEPORT_THRESHOLD_SQ = 500 * 500;
  * no per-frame allocations. Cleaned up on component unmount. */
 const _lastXZ: Record<string, { x: number; z: number }> = {};
 
-/** Deduplicated warn set — log each unique VRM species key only once. */
-const _warnedVrmKeys = new Set<string>();
+/** Deduplicated warn set — log each unique unrecognized species key only once. */
+const _warnedUnknownSpeciesKeys = new Set<string>();
 
-/** VRM scale in riderMountRef LOCAL space (parent carries KART_SCALE=20).
- * AVATAR_VRM_SCALE(112) / KART_SCALE(20) = 5.6 — matches Milady world-player height. */
-const VRM_RIDER_LOCAL_SCALE = 5.6;
+/**
+ * Consistent WORLD-space rider height (world units) applied to EVERY VRM
+ * species on the surfboard — deliberately NOT each avatar's own world-player
+ * height (SPECIES_TARGET_HEIGHT_WU ranges 135–320wu across chibi/Milady/
+ * Hermes/Tekk/Phanes). Racers read better lined up at one board-relative
+ * scale than at their proportional world height.
+ *
+ * Value derivation (2026-07-10 registry-router generalization — CORRECTED
+ * after a Codex review caught the first pass): `112` is a flat LOCAL SCALE
+ * FACTOR the shipped Milady-only path applied directly to `vrmScene.scale`
+ * (`VRM_RIDER_LOCAL_SCALE=5.6` × `KART_SCALE=20`), NOT a target height in
+ * world units — the actual old rendered height was
+ * `nativeBboxHeight_meters × 112`, which varies per VRM. Measured
+ * `milady-official-1/2/8.vrm`'s native bbox height via a real
+ * GLTFLoader+VRMLoaderPlugin parse (script:
+ * `apps/web/scratch-measure-vrm.mjs`, run 2026-07-10, deleted after use) —
+ * all three read 2.1930964433095035 (VRoid meters, feet at local Y≈0,
+ * min.y=0.0031 confirms). Old world height = 2.1930964433095035 × 112 =
+ * 245.6268016506644wu. Rounded to 245.63 and passed as
+ * computeVRMAvatarFit's targetHeightOverride so every species — not just
+ * Milady — auto-fits to this SAME height, with feet correctly grounded via
+ * the returned offsetY (Milady/VRoid rigs have offsetY≈0 already, so this
+ * preserves Milady's exact prior visual height; Mixamo-rig VRMs — Hermes/
+ * Tekk/chibi/Meshy — previously had NO grounding at all since they never
+ * reached this branch, and now correctly ground via fit.offsetY).
+ */
+const REEF_VRM_RIDER_TARGET_HEIGHT_WU = 245.63;
+
+/**
+ * Rider-mount-LOCAL (not world) bbox-height target for GLB creature riders
+ * (lobster/crayfish/sweet_crab/lobster_plush/hermitcrab/jellyfish/octopus/
+ * sea_horse). These assets were authored at wildly inconsistent native
+ * scales — some calibrated only for the /create-agent picker's camera
+ * framing (agent-model-registry.ts `scale: 10`), several export raw
+ * quantized int16 units in the tens of thousands (verified via
+ * gltf-transform 2026-07-10: sweet_crab/lobster_plush/hermitcrab/crayfish
+ * all measure > 10,000 local units on their longest axis). A fixed scale
+ * constant per species would be fragile and asset-dependent; auto-fitting
+ * each creature's OWN measured bbox height to this LOCAL target — same
+ * technique as computeVRMAvatarFit for VRMs — makes every creature ride the
+ * board at a consistent, non-floating/non-oversized size regardless of its
+ * native units.
+ *
+ * Value chosen to match lobster.glb's own native bbox height (1.1201 local
+ * units, verified via gltf-transform 2026-07-10) so the pre-existing
+ * shipped lobster rider is visually unchanged (fit scale factor ≈ 0.98,
+ * imperceptible).
+ */
+const GLB_RIDER_TARGET_HEIGHT_LOCAL = 1.1;
+
+/**
+ * Per-avatarId GLB rider grounding offset (rider-mount-LOCAL units),
+ * computed once when `clonedScene` is built (auto-fit bbox measurement).
+ * `applySwimmingAnim`'s per-frame `position.y` write (STATIC/unrigged
+ * creatures only — `applyTransformSwim` returns early for rigged meshes)
+ * needs this as its `baseY`; without it, that write resets `position.y`
+ * back to ~0 every frame, undoing the auto-fit grounding. Rigged creatures
+ * (sea_horse/sweet_crab/hermitcrab) never hit that write path, so their
+ * one-time `clonedScene.position.y` assignment persists untouched.
+ * Module scope, no per-frame allocation. Cleaned up on unmount alongside
+ * `_lastXZ`.
+ */
+const _glbRiderBaseY: Record<string, number> = {};
 
 // ─── Shared glider geometry + material (v1, ONE instance for ALL players) ─────
 // Never disposed — page-lifetime, shared across all ReefRacePlayer instances.
@@ -322,18 +422,22 @@ interface SnapRecord {
  * rotation.x / rotation.z / position.y oscillation on the whole scene group —
  * producing visible swimming motion that was a complete no-op before this change.
  *
- * `baseY = 0` because clonedScene is parented to riderMountRef whose position.y
- * is already driven by the bob loop above; position.y on clonedScene itself
- * starts at 0 and we oscillate around that.
+ * `baseY` is the GLB rider auto-fit grounding offset (see
+ * `_glbRiderBaseY`/`GLB_RIDER_TARGET_HEIGHT_LOCAL`) — clonedScene is parented
+ * to riderMountRef whose OWN position.y is already driven by the bob loop
+ * above, so this is the resting Y clonedScene itself oscillates around
+ * (previously hardcoded 0, which was correct only for lobster.glb's
+ * near-zero native offset — every other GLB creature needs its own fitted
+ * offset here or it renders floating/sunk).
  *
  * The bone-path below (traverse + isBone) still handles rigged species correctly
  * because applyTransformSwim returns early when hasBones=true, leaving the
  * scene's rotation/position untouched for the traverse to work on.
  */
-function applySwimmingAnim(scene: THREE.Object3D, avatarId: string, delta: number, speed: number): void {
+function applySwimmingAnim(scene: THREE.Object3D, avatarId: string, delta: number, speed: number, baseY: number): void {
   // Transform-only path for static meshes (lobster.glb, crayfish.glb, etc.).
   // Returns early internally when bones are present, so rigged meshes pass through.
-  applyTransformSwim(scene, avatarId, delta, speed, 0);
+  applyTransformSwim(scene, avatarId, delta, speed, baseY);
 
   // Bone-based undulation for rigged species (sea_horse.glb, future rigged GLBs).
   // applyTransformSwim's hasBones=true guard ensures transform is NOT also applied.
@@ -364,6 +468,8 @@ function applySwimmingAnim(scene: THREE.Object3D, avatarId: string, delta: numbe
 
 interface ReefRaceVRMRiderProps {
   vrmPath: string;
+  /** From the resolved MODEL_REGISTRY entry — every VRM entry defines one. */
+  animatorId: string | undefined;
   avatarId: string;
   riderMountRef: React.RefObject<THREE.Group>;
   onAnimatorReady: (animator: VRMCharacterAnimator) => void;
@@ -371,6 +477,7 @@ interface ReefRaceVRMRiderProps {
 
 function ReefRaceVRMRiderInner({
   vrmPath,
+  animatorId,
   avatarId,
   riderMountRef,
   onAnimatorReady,
@@ -387,11 +494,15 @@ function ReefRaceVRMRiderInner({
   // Initialise animator once we have the VRM.
   useEffect(() => {
     if (!vrm) return;
-    // Reverse-lookup animatorId by path so surf_idle/wipeout/victory use
-    // per-character Mixamo bakes when available (Hermes/Tekk have their own;
-    // Miladies share 'vrm-milady'). Surfaces holding only the path use this
-    // helper instead of importing the full registry.
-    const animator = new VRMCharacterAnimator(vrm, getAnimatorIdByPath(vrmPath));
+    // animatorId comes straight from the resolved MODEL_REGISTRY entry (the
+    // caller already has it — no reverse path→animatorId lookup needed) so
+    // surf_idle/wipeout/victory use per-character Mixamo bakes when available
+    // (Hermes/Tekk/chibi/Meshy each have their own; Miladies share
+    // 'vrm-milady'). No per-character surf_idle override exists today
+    // (character-anim-overrides.json), so every animatorId retargets the same
+    // global skateboarding.glb via its own bone-name/rest-pose differential —
+    // the same retarget pipeline already proven for idle/walk/run.
+    const animator = new VRMCharacterAnimator(vrm, animatorId);
     vrmAnimatorRef.current = animator;
     animator.init('surf_idle').then(() => {
       // setSurfaceClip AFTER init so surf_idle retarget is cached in this.actions;
@@ -405,7 +516,7 @@ function ReefRaceVRMRiderInner({
       vrmAnimatorRef.current = null;
       animator.dispose();
     };
-  }, [vrm, onAnimatorReady]);
+  }, [vrm, animatorId, onAnimatorReady]);
 
   // Attach VRM scene to riderMountRef imperatively.
   useEffect(() => {
@@ -415,10 +526,21 @@ function ReefRaceVRMRiderInner({
     // frustumCulled=false — skinned mesh bind-pose bbox culls animated poses.
     // Consistent with pattern in vrm-loader.ts normaliseVRM() + gotcha memo.
     vrmScene.traverse((o) => { o.frustumCulled = false; });
-    vrmScene.scale.setScalar(VRM_RIDER_LOCAL_SCALE);
+    // Registry-driven rider router (2026-07-10): auto-fit EVERY VRM species
+    // (not just Milady) to a consistent WORLD height via computeVRMAvatarFit,
+    // then convert its WORLD scale/offset down to riderMountRef-LOCAL space
+    // (the parent groupRef already applies KART_SCALE=20, so dividing by it
+    // here is what makes the compounded scale land on
+    // REEF_VRM_RIDER_TARGET_HEIGHT_WU world units tall). This also grounds
+    // Mixamo-rig VRMs (Hermes/Tekk/chibi/Meshy — hips at local Y=0, feet
+    // below) via fit.offsetY; Milady/VRoid rigs have offsetY≈0 already, so
+    // this is a no-visual-regression swap for the previously-shipped path.
+    const fit = computeVRMAvatarFit(vrm, animatorId, REEF_VRM_RIDER_TARGET_HEIGHT_WU);
+    vrmScene.scale.setScalar(fit.scale / KART_SCALE);
+    vrmScene.position.set(0, fit.offsetY / KART_SCALE, 0);
     mount.add(vrmScene);
     return () => { mount.remove(vrmScene); };
-  }, [vrm, riderMountRef]);
+  }, [vrm, animatorId, riderMountRef]);
 
   // Tick the mixer + spring bones every frame.
   // surf context: isMoving=false always (rider stays in surf_idle base).
@@ -441,36 +563,47 @@ interface ReefRacePlayerProps {
 }
 
 function ReefRacePlayerInner({ entity, isSelf = false, triggerScreenShake }: ReefRacePlayerProps) {
-  // SPEC 1 — derive GLB path from entity.species (modelKey from avatars.model_key,
-  // injected by activity store on snapshot.init via reefParticipantMeta).
-  // Falls back to 'lobster' if species is absent or unrecognised (safe default).
+  // Registry-driven rider router (2026-07-10) — derive from entity.species
+  // (modelKey from avatars.model_key, injected by activity store on
+  // snapshot.init via reefParticipantMeta) by looking it up in MODEL_REGISTRY,
+  // the same single source of truth every other avatar render site uses.
+  // Falls back to lobster.glb if species is absent or unrecognised.
   //
-  // SPEC 2 — Milady VRM branch: when species starts with 'milady_official_',
-  // we render via useVRMInstance in ReefRaceVRMRiderInner (Suspense boundary).
-  // The GLB path falls back to lobster.glb in that case, but effectiveSrcScene
-  // is set to null so GLB rendering is suppressed while VRM renders.
+  // `avatar_type: 'vrm'` → render via useVRMInstance in ReefRaceVRMRiderInner
+  // (Suspense boundary), using the registry's own path (preserves ?v=N
+  // cache-bust queries) + animatorId. The GLB path falls back to lobster.glb
+  // sentinel in that case, but effectiveSrcScene is set to null so GLB
+  // rendering is suppressed while VRM renders.
+  // `avatar_type: 'glb'` → mount the registry's real creature mesh.
   //
-  // NOTE: pre-existing spelling gap — AGENT_MODELS registry uses key 'seahorse'
-  // (no underscore); SeaCreatureSpecies type uses 'sea_horse' (underscore); DB
-  // model_key column may store either. Both spellings are handled in the switch
-  // below. Reconcile when seahorse gets a full animator rig (SPEC 2+).
+  // NOTE: pre-existing spelling gap — MODEL_REGISTRY uses key 'seahorse' (no
+  // underscore, already resolves correctly via the registry lookup below);
+  // SeaCreatureSpecies type / some DB rows use 'sea_horse' (underscore) —
+  // NOT in the registry, so it still needs the legacy switch fallback below.
+  // 'crayfish' was removed from MODEL_REGISTRY entirely (still ships as an
+  // asset — see the top-of-file preload comment) so it ALSO needs the legacy
+  // switch fallback. Reconcile when seahorse gets a full animator rig.
   const speciesStr = (entity as ReefRaceEntity & { species?: string }).species;
-  const isVRM = isMiladySpecies(speciesStr);
-  const vrmPath = isVRM ? miladyVrmPath(speciesStr!) : null;
-
   const speciesKey = speciesStr ?? 'lobster';
+  const regEntry = resolveRegistryEntry(speciesKey);
+  const isVRM = regEntry?.avatar_type === 'vrm';
+  const vrmPath = isVRM ? regEntry!.path : null;
+  const vrmAnimatorId = isVRM ? regEntry?.animatorId : undefined;
+
   // Determine GLB path. For VRM species use lobster as the sentinel so the
   // useGLTF hook is always called (Rules of Hooks).
   const glbPath = (() => {
     if (isVRM) return '/models/lobster.glb'; // sentinel — not rendered when isVRM
+    if (regEntry && regEntry.avatar_type === 'glb') return regEntry.path;
     switch (speciesKey) {
       case 'crayfish':  return '/models/crayfish.glb';
       case 'seahorse':
       case 'sea_horse': return '/models/sea_horse.glb';
       default:
-        // Unknown non-VRM species — log once, render lobster.
-        if (!_warnedVrmKeys.has(speciesKey)) {
-          _warnedVrmKeys.add(speciesKey);
+        // Unknown species — not in the registry, not a legacy special case.
+        // Log once, render lobster.
+        if (!_warnedUnknownSpeciesKeys.has(speciesKey)) {
+          _warnedUnknownSpeciesKeys.add(speciesKey);
           console.warn(
             `[ReefRacePlayer] unknown species="${speciesKey}" — rendering lobster.glb as fallback`,
           );
@@ -563,6 +696,11 @@ function ReefRacePlayerInner({ entity, isSelf = false, triggerScreenShake }: Ree
       });
     }
 
+    // GLB rider auto-fit (scale + grounding) is applied in the mount useEffect
+    // below, NOT here — useMemo must stay a pure render-phase function (Codex
+    // review 2026-07-10 caught the original version mutating a module-scope
+    // cache mid-render, which React can legally discard/replay). Cloning +
+    // tinting is a pure transform of the input GLB, safe to memoize.
     return c;
   }, [effectiveSrcScene, entity.color]);
 
@@ -636,6 +774,36 @@ function ReefRacePlayerInner({ entity, isSelf = false, triggerScreenShake }: Ree
     // clonedScene is null when isVRM=true (effectiveSrcScene=null guard in useMemo).
     // In that case the VRM rider manages its own scene graph; this effect is a no-op.
     if (!mount || !clonedScene) return;
+
+    // GLB rider auto-fit (registry-driven rider router, 2026-07-10): normalize
+    // this creature's bbox height to GLB_RIDER_TARGET_HEIGHT_LOCAL so species
+    // whose native mesh scale wasn't authored for this context (see the
+    // constant's doc comment — several export raw quantized units in the
+    // tens of thousands) don't float above / sink through / dwarf the board.
+    // Runs HERE (effect, not the useMemo above) — a Codex review caught the
+    // original version mutating state during render, which is unsafe.
+    // updateMatrixWorld(true) FIRST, then skeleton.update() — Skeleton.update()
+    // reads existing matrixWorld values, it does not recompute them, so a
+    // freshly-cloned hierarchy needs its world matrices current before bone
+    // matrices are derived (mirrors computeVRMAvatarFit's exact ordering,
+    // fixed here after an initial version had the calls swapped).
+    clonedScene.updateMatrixWorld(true);
+    clonedScene.traverse((o) => {
+      const sm = o as THREE.SkinnedMesh;
+      if (sm.isSkinnedMesh && sm.skeleton) sm.skeleton.update();
+    });
+    const fitBox = new THREE.Box3().setFromObject(clonedScene);
+    const fitSize = new THREE.Vector3();
+    fitBox.getSize(fitSize);
+    const fitScale = fitSize.y > 1e-4 ? GLB_RIDER_TARGET_HEIGHT_LOCAL / fitSize.y : 1;
+    clonedScene.scale.setScalar(fitScale);
+    const groundOffsetY = -fitBox.min.y * fitScale;
+    clonedScene.position.y = groundOffsetY;
+    // Stored for applySwimmingAnim's per-frame baseY (static/unrigged creatures
+    // only — rigged creatures never hit that write path, so this assignment
+    // above already persists for them).
+    _glbRiderBaseY[entity.avatarId] = groundOffsetY;
+
     mount.add(clonedScene);
     return () => {
       mount.remove(clonedScene);
@@ -653,6 +821,10 @@ function ReefRacePlayerInner({ entity, isSelf = false, triggerScreenShake }: Ree
   useEffect(() => {
     return () => {
       delete _lastXZ[entity.avatarId];
+      // Registry-driven rider router (2026-07-10): drop the GLB rider
+      // grounding-offset cache alongside _lastXZ so it doesn't accrete dead
+      // avatarIds across remounts (mirrors the forgetTKey cleanup below).
+      delete _glbRiderBaseY[entity.avatarId];
       // SURF ROAD: drop the per-kart elevation XZ→t cache key so the Map in
       // reef-race-elevation doesn't accrete dead avatarIds across remounts.
       forgetTKey(entity.avatarId);
@@ -1163,7 +1335,7 @@ function ReefRacePlayerInner({ entity, isSelf = false, triggerScreenShake }: Ree
       // Fallback path — procedural per-bone undulation on the static GLB.
       // Guard: clonedScene is null when isVRM=true (effectiveSrcScene=null).
       if (clonedScene) {
-        applySwimmingAnim(clonedScene, entity.avatarId, dt, speed);
+        applySwimmingAnim(clonedScene, entity.avatarId, dt, speed, _glbRiderBaseY[entity.avatarId] ?? 0);
       }
     }
 
@@ -1204,7 +1376,8 @@ function ReefRacePlayerInner({ entity, isSelf = false, triggerScreenShake }: Ree
         />
       </group>
       {/*
-       * SPEC 2 — Milady VRM rider (Suspense boundary).
+       * Registry-driven VRM rider (Suspense boundary) — EVERY VRM species in
+       * MODEL_REGISTRY, not just Milady (2026-07-10 generalization).
        * ReefRaceVRMRiderInner throws a Promise on first load (Suspense protocol).
        * fallback={null} means no placeholder is rendered while loading —
        * the board still shows, the rider appears once the VRM parses (~30-80ms).
@@ -1214,6 +1387,7 @@ function ReefRacePlayerInner({ entity, isSelf = false, triggerScreenShake }: Ree
         <Suspense fallback={null}>
           <ReefRaceVRMRiderInner
             vrmPath={vrmPath}
+            animatorId={vrmAnimatorId}
             avatarId={entity.avatarId}
             riderMountRef={riderMountRef as React.RefObject<THREE.Group>}
             onAnimatorReady={onVrmAnimatorReady}

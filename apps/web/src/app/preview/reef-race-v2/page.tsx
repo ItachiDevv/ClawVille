@@ -198,8 +198,14 @@ function CamController({ mode, controlsRef, onCamDist }: CamControllerProps) {
 // ride / board ORIENTATION baked into ReefRacePlayer can be eyeballed WITHOUT a live
 // race. Requires a build with NEXT_PUBLIC_REEF_RACE_USE_SPLINE=true (else ReefRacePlayer
 // takes the flat v1 path). The kart surfs IN PLACE (wave time advances; XZ fixed).
+//
+// `?species=<modelKey>` (added 2026-07-10, registry-driven rider router
+// verification): overrides the rendered species; defaults to 'lobster' so the
+// existing bare `?mode=racer` URL keeps working unchanged. Any MODEL_REGISTRY
+// key works (VRM or GLB), plus the two legacy non-registry keys ('crayfish',
+// 'sea_horse'). Example: /preview/reef-race-v2?mode=racer&species=hermes_male
 const _HARNESS_T = 0.10; // a banked stretch of the spline
-function ReefRaceKartHarness() {
+function ReefRaceKartHarness({ species }: { species: string }) {
   const { camera } = useThree();
   const wrapRef = useRef<THREE.Group>(null);
   const c = clientSpline.centerlineAt(_HARNESS_T);
@@ -207,7 +213,7 @@ function ReefRaceKartHarness() {
   const datumY = elevationAtT(_HARNESS_T);
   const [entity] = useState<ReefRaceEntity>(() => ({
     avatarId: 'harness-1', x: c.x, y: c.z, rot: Math.atan2(tan.x, tan.z),
-    vx: 0, vy: 0, alive: true, color: '#35d0ff', species: 'lobster', lap: 1,
+    vx: 0, vy: 0, alive: true, color: '#35d0ff', species, lap: 1,
   }));
   useFrame(() => {
     // Close, low 3/4 view of the kart so the BOARD PROFILE (flat vs vertical) reads
@@ -236,9 +242,11 @@ interface SceneContentsProps {
   drive: boolean;
   /** RACER harness: mount one real-race ReefRacePlayer (spline path) + a close camera. */
   racer: boolean;
+  /** RACER harness species override (?species=<modelKey>). Defaults to 'lobster'. */
+  species: string;
 }
 
-function SceneContents({ mode, autoRotate, controlsRef, onCamDist, drive, racer }: SceneContentsProps) {
+function SceneContents({ mode, autoRotate, controlsRef, onCamDist, drive, racer, species }: SceneContentsProps) {
   return (
     <>
       {/* Free-orbit / cinematic camera + orbit controls — ONLY in look modes. In
@@ -267,7 +275,7 @@ function SceneContents({ mode, autoRotate, controlsRef, onCamDist, drive, racer 
           them (you ARE the kart) and mounts the keyboard-driven free-drive rig. */}
       <RiverScene showDemoKarts={!drive && !racer} />
       {drive && <ReefFreeDrive />}
-      {racer && <ReefRaceKartHarness />}
+      {racer && <ReefRaceKartHarness species={species} />}
 
       <PreviewLighting />
 
@@ -417,6 +425,10 @@ function ReefRacePreviewInner() {
   // RACER harness mode — mount one real-race ReefRacePlayer (spline path) to eyeball
   // the baked surf-tilt / banked ride / board orientation (needs the spline build flag).
   const racer = rawMode === 'racer';
+  // ?species=<modelKey> override for the racer harness (registry-driven rider
+  // router verification, 2026-07-10). Defaults to 'lobster' — the pre-existing
+  // shipped behaviour when the param is omitted.
+  const speciesParam = searchParams.get('species') ?? 'lobster';
   // Default to free-orbit hero of the whole floating loop in the void.
   const mode: CameraMode = isCameraMode(rawMode) ? rawMode : 'free-orbit';
 
@@ -460,6 +472,7 @@ function ReefRacePreviewInner() {
             onCamDist={handleCamDist}
             drive={drive}
             racer={racer}
+            species={speciesParam}
           />
         </Suspense>
         <FrameTicker onStats={handleStats} />
