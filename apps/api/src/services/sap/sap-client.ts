@@ -2678,6 +2678,16 @@ export interface CreateEscrowV2UsdcInput {
   initialDeposit: bigint;
   /** Absolute unix-seconds work-deadline (i64). REQUIRED (> 0) for a bounty. */
   expiresAt: bigint;
+  /**
+   * Per-escrow DisputeWindow hold, in slots. OPTIONAL — defaults to the global
+   * `cfg.disputeWindowSlots` (env `SAP_DISPUTE_WINDOW_SLOTS`, default 2160 ≈ 15
+   * min) so every existing caller is byte-unchanged. A caller that wants a
+   * different hold (e.g. the bounty composition rail, which threads
+   * `SAP_BOUNTY_DISPUTE_WINDOW_SLOTS` default 1 ≈ instant so the winning hunter is
+   * paid promptly) passes it here. Clamped to the program floor (>= 1) below;
+   * raising it delays finalize (hence hunter payout) by that many slots.
+   */
+  disputeWindowSlots?: bigint;
 }
 
 /**
@@ -2860,7 +2870,13 @@ export async function createEscrowV2Usdc(
         tokenMint: mint,
         tokenDecimals: USDC_DECIMALS,
         settlementSecurity,
-        disputeWindowSlots: cfg.disputeWindowSlots,
+        // Per-escrow override (bounty rail) or the global default; floor at the
+        // program minimum (>= 1) so an over-eager `SAP_BOUNTY_DISPUTE_WINDOW_SLOTS=0`
+        // can never build an invalid create.
+        disputeWindowSlots:
+          input.disputeWindowSlots != null && input.disputeWindowSlots >= 1n
+            ? input.disputeWindowSlots
+            : cfg.disputeWindowSlots,
         coSigner,
         arbiter,
         remaining: assembleV2SplRemaining('create', { vaultAta, depositorAta, tokenMint: mint }),

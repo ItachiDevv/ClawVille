@@ -913,6 +913,14 @@ export interface OpenEscrowV2Input extends Omit<OpenEscrowInput, 'rail'> {
   escrowNonce: bigint;
   /** Test/defense seam only: V2 release is on-chain-only and rejects payai. */
   rail?: EscrowSettlementRail;
+  /**
+   * OPTIONAL per-escrow DisputeWindow hold (slots), forwarded to
+   * `createEscrowV2Usdc`. Omit ⇒ the global `SAP_DISPUTE_WINDOW_SLOTS` default
+   * (byte-unchanged for existing callers). The bounty composition rail passes a
+   * small window so the winning hunter is paid promptly; a top-up (isTopUp) never
+   * re-sets a window (create-only arg), so it is only honored on the create leg.
+   */
+  disputeWindowSlots?: bigint;
 }
 
 /**
@@ -1225,7 +1233,7 @@ export async function openEscrowV2(input: OpenEscrowV2Input): Promise<EscrowGate
   }
   const chain = isTopUp
     ? await depositEscrowV2Usdc({ depositorAvatarId: input.depositorAvatarId, workerWalletPubkey, escrowNonce: input.escrowNonce, amount: input.initialDeposit })
-    : await createEscrowV2Usdc({ depositorAvatarId: input.depositorAvatarId, workerWalletPubkey, escrowNonce: input.escrowNonce, pricePerCall: input.pricePerCall, maxCalls: input.maxCalls, initialDeposit: input.initialDeposit, expiresAt: input.expiresAt });
+    : await createEscrowV2Usdc({ depositorAvatarId: input.depositorAvatarId, workerWalletPubkey, escrowNonce: input.escrowNonce, pricePerCall: input.pricePerCall, maxCalls: input.maxCalls, initialDeposit: input.initialDeposit, expiresAt: input.expiresAt, disputeWindowSlots: input.disputeWindowSlots });
   if (chain.ok === false) {
     if (chain.broadcast) {
       await db.update(sapEscrowSettlements).set({
