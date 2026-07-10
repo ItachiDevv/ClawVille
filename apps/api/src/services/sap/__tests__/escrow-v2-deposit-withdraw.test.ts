@@ -129,7 +129,7 @@ mock.module('../sap-client', () => ({
   },
   // Imports escrow-gate pulls from sap-client but that deposit/withdraw never
   // reach — present so the gate module loads cleanly.
-  readV2VaultPhysicalState: async () => ({ vaultBalance: null, escrowPendingAmount: 0n }),
+  readV2VaultPhysicalState: async () => ({ vaultBalance: null, escrowPendingAmount: 0n, escrowAbsent: false }),
   inspectV2SettlementState: async () => ({ ok: false, code: 'internal', message: 'unused' }),
   createEscrowV2Usdc: async () => ({ ok: false, code: 'internal', message: 'unused' }),
   finalizeSettlementUsdc: async () => ({ ok: false, code: 'internal', message: 'unused' }),

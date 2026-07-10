@@ -240,6 +240,13 @@ export type EscrowGateErrorCode =
   // unresolvable state (the pending provably survives finalize, so its absence
   // after a finalize claim can't be safely interpreted). Ops must reconcile. 409.
   | 'finalize_unresolvable'
+  // R5-1 — a stale claim whose pending PDA is ABSENT but whose settlement slot WAS
+  // consumed on-chain (the monotonic escrow settlement_index advanced past our
+  // persisted index): our settle landed → was finalized → the pending was CLOSED for
+  // rent (buildClosePendingSettlementIx), OR a later settle superseded ours after it
+  // never landed. Either way restoring + retrying would DOUBLE-PAY → refuse
+  // fail-closed. Ops reconciles. 409.
+  | 'settle_slot_consumed'
   | 'internal';
 
 export interface EscrowGateFailure {
@@ -648,15 +655,37 @@ async function recoverStaleV2Claim(row: SapEscrowSettlement): Promise<EscrowGate
 
   // Read-only probe OUTSIDE the txn (RPC). While the row stays stale+same-status the
   // persisted index cannot change, so this decode is still valid inside the lock.
-  const probe = await inspectV2SettlementState({
-    workerWalletPubkey: row.workerWalletPubkey,
-    depositorWalletPubkey: row.depositorWalletPubkey,
-    escrowNonce: nonce,
-    settlementIndex: persistedIndex,
+  // R5-3 — bound the probe with the same ~4s timeout so a hung RPC can't stall the
+  // per-escrow keyed mutex; timeout → retryable failure (never guess).
+  let probeTimer: ReturnType<typeof setTimeout> | undefined;
+  const probeTimeout = new Promise<SapFailure>((resolve) => {
+    probeTimer = setTimeout(
+      () => resolve({ ok: false, code: 'rpc_unreachable', message: 'stale-claim recovery probe timed out' }),
+      4000,
+    );
   });
+  let probe: Awaited<ReturnType<typeof inspectV2SettlementState>>;
+  try {
+    probe = await Promise.race([
+      inspectV2SettlementState({
+        workerWalletPubkey: row.workerWalletPubkey,
+        depositorWalletPubkey: row.depositorWalletPubkey,
+        escrowNonce: nonce,
+        settlementIndex: persistedIndex,
+      }),
+      probeTimeout,
+    ]);
+  } finally {
+    if (probeTimer) clearTimeout(probeTimer);
+  }
   if (probe.ok === false) {
     return { ok: false, code: probe.code, message: `stale-claim recovery could not read on-chain state; retry (${probe.message}).` };
   }
+  // R5-1 — the escrow's MONOTONIC settlement_index (advances ONLY inside settle,
+  // UNTOUCHED by finalize/close) disambiguates an ABSENT pending: current === persisted
+  // ⇒ our slot was NEVER consumed (safe to restore); current > persisted ⇒ the slot was
+  // consumed (settled→finalized→CLOSED, or superseded) ⇒ restoring would double-pay.
+  const currentIndex = probe.currentSettlementIndex;
   const pending = probe.pendingExists && probe.pending ? probe.pending : null;
 
   const outcome = await db.transaction(async (tx) => {
@@ -704,8 +733,15 @@ async function recoverStaleV2Claim(row: SapEscrowSettlement): Promise<EscrowGate
         .returning();
       return { kind: 'pending' as const, row: adopted };
     }
-    // PDA ABSENT
-    if (wasStatus === 'settling') {
+    // PDA ABSENT — R5-1 gate on the MONOTONIC index. The pending PDA is closable for
+    // rent AFTER finalize (buildClosePendingSettlementIx), so "absent" no longer proves
+    // "never landed". current === persisted ⇒ the slot was NEVER consumed ⇒ our settle
+    // never landed ⇒ restore 'submitted' + release (SAFE). current > persisted ⇒ the slot
+    // was consumed on-chain (settled→finalized→closed, OR a later settle superseded ours
+    // that never landed) ⇒ restoring + retrying would DOUBLE-PAY ⇒ refuse fail-closed
+    // regardless of wasStatus. (< persisted is impossible for a monotonic counter read
+    // after our claim; the restore's WHERE status='settling' also bars a finalizing row.)
+    if (currentIndex === persistedIndex) {
       const [restored] = await tx
         .update(sapEscrowSettlements)
         .set({
@@ -716,7 +752,7 @@ async function recoverStaleV2Claim(row: SapEscrowSettlement): Promise<EscrowGate
         .returning();
       return { kind: 'restored' as const, row: restored };
     }
-    return { kind: 'finalize_unresolvable' as const };
+    return { kind: 'slot_consumed' as const };
   });
 
   switch (outcome.kind) {
@@ -726,8 +762,8 @@ async function recoverStaleV2Claim(row: SapEscrowSettlement): Promise<EscrowGate
       return { ok: false, code: 'on_chain_error', message: 'stale-claim recovery: on-chain pending is disputed; manual resolution required.' };
     case 'sibling':
       return { ok: false, code: 'settle_in_progress', message: 'the on-chain pending at this index is booked to another job; wait for its finalize.' };
-    case 'finalize_unresolvable':
-      return { ok: false, code: 'finalize_unresolvable', message: 'stale finalize: the pending PDA is absent and the state is unresolvable; reconcile.' };
+    case 'slot_consumed':
+      return { ok: false, code: 'settle_slot_consumed', message: 'stale settle: the settlement slot was consumed on-chain but its pending is gone (finalized+closed, or superseded); reconcile.' };
     case 'settled':
       if (outcome.row) return { ok: true, phase: 'settled', settlement: outcome.row, chain: null, replay: true };
       return { ok: false, code: 'settle_in_progress', message: 'the row changed during stale-claim recovery.' };
@@ -2408,7 +2444,7 @@ export async function settleJobV2(
       // R4-A — read the LIVE on-chain physical state (vault balance + escrow pending_amount)
       // UNDER the advisory lock so the checks are atomic with the claim. A3 bounds the
       // read to ~4s so a hung RPC can't pin the lock.
-      const { vaultBalance, escrowPendingAmount } = await readVaultState({
+      const { vaultBalance, escrowPendingAmount, escrowAbsent } = await readVaultState({
         workerWalletPubkey: row.workerWalletPubkey,
         depositorWalletPubkey: row.depositorWalletPubkey,
         escrowNonce: nonce,
@@ -2418,12 +2454,16 @@ export async function settleJobV2(
       // (settlement_index exists for exactly that), so an on-chain pending the gate cannot
       // see makes a second settle chain-LEGAL → double-pay. This invariant lives ONLY here
       // (the chain does NOT enforce it), so it must NEVER fail open:
-      //   • `pending_amount` unreadable (RPC/decode fail, or absent escrow) → REFUSE
-      //     (`pending_state_unverifiable`) — we cannot prove there is no untracked pending.
+      //   • escrow account ABSENT → TERMINAL refuse (`job_not_open`) — R5-2 (a funded V2
+      //     escrow can't vanish and stay settleable; a retryable code would spin forever).
+      //   • `pending_amount` unreadable (RPC/decode fail/timeout) → REFUSE
+      //     (`pending_state_unverifiable`, retryable) — can't prove there is no untracked pending.
       //   • on-chain `pending_amount` > what the gate tracks → REFUSE
       //     (`unreconciled_onchain_pending`) — an unowned pending exists; ops reconciles.
       if (escrowPendingAmount === null) {
-        return { kind: 'pending_unverifiable' as const };
+        return escrowAbsent
+          ? { kind: 'escrow_absent' as const }
+          : { kind: 'pending_unverifiable' as const };
       }
       if (escrowPendingAmount > gateLivePending) {
         return { kind: 'unreconciled_pending' as const, onchain: escrowPendingAmount, gate: gateLivePending };
@@ -2452,6 +2492,9 @@ export async function settleJobV2(
       }).where(and(eq(sapEscrowSettlements.id, row.id), sql`${sapEscrowSettlements.status} IN ('open','submitted')`)).returning({ id: sapEscrowSettlements.id });
       return { kind: 'claimed' as const, count: claimed.length };
     });
+    if (claim.kind === 'escrow_absent') {
+      return { ok: false, code: 'job_not_open', message: 'escrow account does not exist on-chain; this V2 escrow cannot settle.' };
+    }
     if (claim.kind === 'pending_unverifiable') {
       return { ok: false, code: 'pending_state_unverifiable', message: 'cannot verify the escrow on-chain pending state; retry.' };
     }
