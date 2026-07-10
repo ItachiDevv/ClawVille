@@ -606,7 +606,7 @@ export class CashTableManager {
       if (buyInCt !== buyIn) {
         throw new CashTableError(
           'buy_in_mismatch',
-          `buy_in must equal the table buy-in (${buyIn} CT)`,
+          `buy_in must equal the table buy-in (${buyIn} vCLAW)`,
         );
       }
 

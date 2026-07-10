@@ -66,7 +66,7 @@ export function createAvatarWorldStateProvider(deps: AvatarWorldStateDeps): Prov
         `Position: (${Math.round(avatar.x)}, ${Math.round(avatar.y)})`,
         `Current activity: ${avatar.activity}${avatar.destinationBuildingId ? ` → ${avatar.destinationBuildingId}` : ''}`,
         `Visits this session: ${avatar.visitCount}`,
-        `ClawTokens earned this session: ${avatar.tokensEarned}`,
+        `vCLAW earned this session: ${avatar.tokensEarned}`,
         ``,
         `Nearest buildings:`,
         nearbyLines,

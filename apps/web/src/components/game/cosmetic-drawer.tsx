@@ -94,7 +94,7 @@ function cosmeticRarity(raw: string): RarityId {
 
 function CtPill({ tokens }: { tokens: number }) {
   return (
-    <RpgTooltip content="Your ClawToken balance. Cosmetics are priced in CT — earn more by playing.">
+    <RpgTooltip content="Your vCLAW balance. Cosmetics are priced in vCLAW — earn more by playing.">
       <span
         style={{
           display: 'inline-flex',
@@ -116,7 +116,7 @@ function CtPill({ tokens }: { tokens: number }) {
         <span style={{ fontSize: 13 }} aria-hidden>
           🪙
         </span>
-        {tokens} CT
+        {tokens} vCLAW
       </span>
     </RpgTooltip>
   );
@@ -792,12 +792,12 @@ function ShopCard({
             loading={pending}
             title={
               canAfford
-                ? `Buy ${item.displayName} for ${item.priceCt} CT`
-                : `You need ${item.priceCt} CT — you have ${tokens}. Earn more by playing.`
+                ? `Buy ${item.displayName} for ${item.priceCt} vCLAW`
+                : `You need ${item.priceCt} vCLAW — you have ${tokens}. Earn more by playing.`
             }
             style={{ width: '100%' }}
           >
-            {canAfford ? `Buy · ${item.priceCt} CT` : `${item.priceCt} CT`}
+            {canAfford ? `Buy · ${item.priceCt} vCLAW` : `${item.priceCt} vCLAW`}
           </RpgButton>
         )
       }

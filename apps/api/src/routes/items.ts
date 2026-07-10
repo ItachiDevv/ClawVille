@@ -166,7 +166,7 @@ itemRoutes.post('/buy', requireAuthOrAgentSession, async (c) => {
       // return a coded JSON here for a clean UI branch — see shop-overlay.tsx).
       return c.json(
         {
-          error: `Not enough demo ClawTokens. Need ${book.price}, have ${demo.total}.`,
+          error: `Not enough demo vCLAW. Need ${book.price}, have ${demo.total}.`,
           code: 'insufficient_ct',
         },
         400,
@@ -187,7 +187,7 @@ itemRoutes.post('/buy', requireAuthOrAgentSession, async (c) => {
 
   // ── REAL-CT SETTLEMENT (non-guest user OR connected/hosted agent) — UNCHANGED ──
   if (avatar.clawTokens < book.price) {
-    throw new HTTPException(400, { message: `Not enough ClawTokens. Need ${book.price}, have ${avatar.clawTokens}.` });
+    throw new HTTPException(400, { message: `Not enough vCLAW. Need ${book.price}, have ${avatar.clawTokens}.` });
   }
 
   // Debit + inventory insert in a single transaction so if the insert

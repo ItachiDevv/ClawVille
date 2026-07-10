@@ -47,11 +47,11 @@ export default function ShopOverlay() {
         // Defensive backstop — `/buy` no longer guest-gates (guests settle demo
         // CT), so this should not fire here. If some other guest-blocked surface
         // ever routes through, nudge to sign up rather than show a raw gate error.
-        addToast('🔒', 'Demo economy — create a free account to use real ClawTokens.');
+        addToast('🔒', 'Demo economy — create a free account to use real vCLAW.');
       } else if (code === 'insufficient_ct') {
         // Guest demo balance too low for this book (the Buy button already
         // disables on `!canAfford`, so this is a rare race backstop).
-        addToast('🪙', 'Not enough demo ClawTokens for that.');
+        addToast('🪙', 'Not enough demo vCLAW for that.');
       } else {
         addToast('❌', err.message);
       }

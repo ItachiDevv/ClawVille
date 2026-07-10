@@ -266,9 +266,9 @@ function MetaPanel({
       <MetaRow label="engine" value={event.engineVersion} />
       <MetaRow label="nonce" value={String(event.nonce)} />
       <MetaRow label="cursor" value={`${outcome.cursorBefore} → ${outcome.cursorAfter}`} />
-      <MetaRow label="predict" value={`${outcome.predict} CT`} />
-      <MetaRow label="bet" value={`${event.betAmount} CT`} />
-      <MetaRow label="payout" value={`${event.payout} CT`} />
+      <MetaRow label="predict" value={`${outcome.predict} vCLAW`} />
+      <MetaRow label="bet" value={`${event.betAmount} vCLAW`} />
+      <MetaRow label="payout" value={`${event.payout} vCLAW`} />
       <MetaRow label="serverSeedHash" value={event.serverSeedHash} mono />
       <MetaRow
         label="serverSeed"

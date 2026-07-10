@@ -15,16 +15,16 @@
 import type { PotDisplayProps } from '@/lib/cove/holdem-types';
 
 function formatPot(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M CT`;
-  if (n >= 1_000)     return `${(n / 1_000).toFixed(1)}k CT`;
-  return `${n.toLocaleString()} CT`;
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M vCLAW`;
+  if (n >= 1_000)     return `${(n / 1_000).toFixed(1)}k vCLAW`;
+  return `${n.toLocaleString()} vCLAW`;
 }
 
 export default function PotDisplay({ pot }: PotDisplayProps) {
   return (
     <div
       role="status"
-      aria-label={`Pot: ${pot} ClawTokens`}
+      aria-label={`Pot: ${pot} vCLAW`}
       style={{
         display: 'flex',
         flexDirection: 'column',

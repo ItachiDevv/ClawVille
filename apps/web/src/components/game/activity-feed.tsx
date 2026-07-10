@@ -99,7 +99,7 @@ export default function ActivityFeed() {
                 <span className="text-[10px] text-gray-500">{timeAgo(entry.createdAt)}</span>
                 {entry.tokensEarned > 0 && (
                   <span className="text-[10px] text-amber-700 font-medium">
-                    +{entry.tokensEarned} NT
+                    +{entry.tokensEarned} vCLAW
                   </span>
                 )}
               </div>

@@ -228,11 +228,11 @@ export default function SlotHUD({
             >
               {balance.toLocaleString()}
             </span>
-            <span className="pt-balance-suffix">CT</span>
+            <span className="pt-balance-suffix">vCLAW</span>
           </div>
           <div className={pnlClass} aria-label={`Session profit and loss: ${sessionPnl}`}>
             <span aria-hidden>{pnlGlyph}</span>
-            <span>{sessionPnl === 0 ? '0' : `${sessionPnl > 0 ? '+' : ''}${sessionPnl.toLocaleString()}`} CT</span>
+            <span>{sessionPnl === 0 ? '0' : `${sessionPnl > 0 ? '+' : ''}${sessionPnl.toLocaleString()}`} vCLAW</span>
           </div>
         </div>
         {freeSpinsRemaining > 0 && (
@@ -266,7 +266,7 @@ export default function SlotHUD({
           value={predict}
           onChange={onPredictChange}
           disabled={isSpinning}
-          ariaLabel="Predict size in ClawTokens"
+          ariaLabel="Predict size in vCLAW"
         />
       </div>
 

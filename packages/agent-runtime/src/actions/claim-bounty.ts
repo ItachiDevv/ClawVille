@@ -180,7 +180,7 @@ export const claimBountyAction: Action = {
             ? `\nRequirements: ${bounty.requirements}`
             : '',
           '',
-          `Reward: ${bounty.tokenReward} NT`,
+          `Reward: ${bounty.tokenReward} vCLAW`,
           bounty.tags && bounty.tags.length > 0
             ? `Tags: ${bounty.tags.join(', ')}`
             : '',

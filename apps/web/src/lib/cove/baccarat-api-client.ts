@@ -205,13 +205,13 @@ export function describeBaccaratError(err: unknown): string {
   switch (err.status) {
     case 400:
       if (err.code?.startsWith('insufficient_clawtokens')) {
-        return 'Not enough ClawTokens for that bet.';
+        return 'Not enough vCLAW for that bet.';
       }
       if (err.code?.startsWith('insufficient_guest_demo_balance')) {
-        return 'Out of demo ClawTokens. Sign up to keep playing with a real balance.';
+        return 'Out of demo vCLAW. Sign up to keep playing with a real balance.';
       }
       if (err.code === 'bet_exceeds_supported_range') {
-        return 'That bet is out of range. Bets are 5–500 ClawTokens.';
+        return 'That bet is out of range. Bets are 5–500 vCLAW.';
       }
       if (err.code?.startsWith('baccarat_engine_error')) {
         return 'Could not deal that coup — start a fresh shoe and try again.';
@@ -234,7 +234,7 @@ export function describeBaccaratError(err: unknown): string {
     case 429:
       return 'Slow down a moment, then try again.';
     case 501:
-      return 'SOL/USDC baccarat is coming later. ClawTokens play is live today.';
+      return 'SOL/USDC baccarat is coming later. vCLAW play is live today.';
     default:
       return err.serverMessage || `Cove server error (${err.status}).`;
   }

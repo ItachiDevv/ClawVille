@@ -86,8 +86,8 @@ export default async function QuestsTab() {
         <h2 className="mb-1 text-lg font-semibold">Tutorial quests (client-tracked, server-credited)</h2>
         <p className="mb-3 text-xs font-mono text-slate-500">
           {TUTORIAL_QUESTS.length} quests · {liveCount} live · {pendingCount} pending ·
-          max <span className="text-amber-300">{TUTORIAL_QUEST_TOTAL_REWARD.toLocaleString()} CT</span> all-tier ·
-          <span className="text-emerald-300"> {TUTORIAL_QUEST_LIVE_REWARD.toLocaleString()} CT</span> earnable today.
+          max <span className="text-amber-300">{TUTORIAL_QUEST_TOTAL_REWARD.toLocaleString()} vCLAW</span> all-tier ·
+          <span className="text-emerald-300"> {TUTORIAL_QUEST_LIVE_REWARD.toLocaleString()} vCLAW</span> earnable today.
           Settled via <code>POST /api/quests/tutorial/:id/claim</code>{' '}
           (idempotency table <code>tutorial_quest_claims</code>).
         </p>
@@ -130,11 +130,11 @@ export default async function QuestsTab() {
                       </div>
                       <p className="mt-1 text-xs text-slate-400">{q.description}</p>
                       <div className="mt-3 flex flex-wrap gap-x-3 gap-y-1 font-mono text-[11px]">
-                        <span className="text-amber-300">+{q.reward} CT</span>
+                        <span className="text-amber-300">+{q.reward} vCLAW</span>
                         <span className="text-slate-500">·</span>
                         <span className="text-cyan-300">{claimCount} claimed</span>
                         <span className="text-slate-500">·</span>
-                        <span className="text-slate-300">{totalCt} CT issued</span>
+                        <span className="text-slate-300">{totalCt} vCLAW issued</span>
                         <span className="text-slate-500">·</span>
                         <span className="font-mono text-[10px] text-slate-500">{q.id}</span>
                       </div>
@@ -146,7 +146,7 @@ export default async function QuestsTab() {
           );
         })}
         <p className="mt-3 text-xs font-mono text-slate-500">
-          Tutorial CT issued (lifetime): <span className="text-amber-300">{totalClaimed.toLocaleString()} CT</span>
+          Tutorial vCLAW issued (lifetime): <span className="text-amber-300">{totalClaimed.toLocaleString()} vCLAW</span>
         </p>
       </section>
 
@@ -166,7 +166,7 @@ export default async function QuestsTab() {
             <table className="min-w-full text-sm">
               <thead className="border-b border-slate-700/50 bg-slate-800/40">
                 <tr>
-                  {['Title', 'Tier', 'Status', 'Reward CT', 'Completions'].map((h) => (
+                  {['Title', 'Tier', 'Status', 'Reward vCLAW', 'Completions'].map((h) => (
                     <th key={h} className="px-3 py-2 text-left font-mono text-[10px] uppercase tracking-[0.18em] text-slate-300">{h}</th>
                   ))}
                 </tr>

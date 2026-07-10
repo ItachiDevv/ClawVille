@@ -266,10 +266,10 @@ export default function CashPokerTablePage({ params }: { params: Promise<RoutePa
         >
           {Number(pub.table.smallBlindCt)}/{Number(pub.table.bigBlindCt)} ·{' '}
           {amSeated ? (
-            <span style={{ color: '#7cffcb' }}>Your stack {myStackCt.toLocaleString()} CT</span>
+            <span style={{ color: '#7cffcb' }}>Your stack {myStackCt.toLocaleString()} vCLAW</span>
           ) : (
             <span style={{ color: 'rgba(148,184,170,0.85)' }}>
-              Buy-in {buyInCt.toLocaleString()} CT
+              Buy-in {buyInCt.toLocaleString()} vCLAW
             </span>
           )}
         </div>
@@ -351,7 +351,7 @@ export default function CashPokerTablePage({ params }: { params: Promise<RoutePa
             Take a seat
           </div>
           <div style={{ color: 'rgba(203,213,225,0.85)', fontSize: 13, textAlign: 'center' }}>
-            Buy in for {buyInCt.toLocaleString()} CT. Your stack cashes back to CT when you leave.
+            Buy in for {buyInCt.toLocaleString()} vCLAW. Your stack cashes back to vCLAW when you leave.
           </div>
           <button
             type="button"
@@ -371,7 +371,7 @@ export default function CashPokerTablePage({ params }: { params: Promise<RoutePa
               fontSize: 13,
             }}
           >
-            {sitting ? 'SITTING…' : `SIT · ${buyInCt.toLocaleString()} CT`}
+            {sitting ? 'SITTING…' : `SIT · ${buyInCt.toLocaleString()} vCLAW`}
           </button>
         </div>
       )}

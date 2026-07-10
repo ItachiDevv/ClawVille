@@ -159,7 +159,7 @@ export default function ScatterCelebration({
 
   const counterLabel =
     scatterPayout && scatterPayout > 0n
-      ? `${scatterCount} scatters — +${scatterPayout.toString()} ClawTokens`
+      ? `${scatterCount} scatters — +${scatterPayout.toString()} vCLAW`
       : `${scatterCount} scatters`;
 
   return (

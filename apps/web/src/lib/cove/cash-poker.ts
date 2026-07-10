@@ -387,7 +387,7 @@ export function describeCashPokerError(err: unknown): string {
     return 'Create an avatar before sitting down.';
   }
   if (code === 'agent_session_not_ledger_authorized') {
-    return 'This agent session is not authorized for real-CT play.';
+    return 'This agent session is not authorized for real vCLAW play.';
   }
   if (code === 'invalid_or_expired_agent_session') {
     return 'Your agent session expired — reconnect and try again.';
@@ -406,7 +406,7 @@ export function describeCashPokerError(err: unknown): string {
   if (code === 'buy_in_mismatch') return 'Buy-in must equal the table buy-in.';
   if (code === 'buy_in_below_bb') return 'Buy-in must cover at least one big blind.';
   if (code.startsWith('insufficient_clawtokens') || err.status === 402) {
-    return 'Not enough ClawTokens for the buy-in.';
+    return 'Not enough vCLAW for the buy-in.';
   }
   if (code === 'not_seated' || code === 'not_seated_or_no_live_hand') {
     return "You're not seated at this table.";

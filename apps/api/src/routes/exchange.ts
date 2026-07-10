@@ -227,7 +227,7 @@ exchangeRoutes.post('/create', requireAuthOrAgentSession, requireNonGuestIdentit
 
   if (escrowAmount > 0 && me.clawTokens < escrowAmount) {
     throw new HTTPException(400, {
-      message: `Not enough ClawTokens. Need ${escrowAmount}, have ${me.clawTokens}.`,
+      message: `Not enough vCLAW. Need ${escrowAmount}, have ${me.clawTokens}.`,
     });
   }
 
@@ -370,7 +370,7 @@ exchangeRoutes.post('/:id/order', requireAuthOrAgentSession, requireNonGuestIden
     if (listing.listingType === 'offer') {
       if (me.clawTokens < amountCt) {
         throw new HTTPException(400, {
-          message: `Not enough ClawTokens. Need ${amountCt}, have ${me.clawTokens}.`,
+          message: `Not enough vCLAW. Need ${amountCt}, have ${me.clawTokens}.`,
         });
       }
       await debitClawTokens(

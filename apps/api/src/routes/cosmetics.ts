@@ -513,7 +513,7 @@ cosmeticsRoutes.post('/:skuId/buy', sessionMiddleware, requireAuth, requireNonGu
       // `err.requested` is the real-CT remainder we tried to debit (after the
       // bonus), `err.available` the buyer's balance — report those, not priceCt.
       throw new HTTPException(400, {
-        message: `Not enough ClawTokens. Need ${err.requested}, have ${err.available}.`,
+        message: `Not enough vCLAW. Need ${err.requested}, have ${err.available}.`,
       });
     }
     throw err;

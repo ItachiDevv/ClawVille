@@ -130,7 +130,7 @@ function CosmeticCard({ c }: { c: DashCosmetic }) {
         <span className="text-slate-400">{c.scope}</span>
       </div>
       <div className="mt-2 flex flex-wrap gap-x-2 gap-y-0.5 font-mono text-[10px]">
-        <span className="text-amber-300">{c.priceCt} CT{c.exclusiveCurrency === 'CLV' ? ' ($CLAWVILLE-only)' : ''}</span>
+        <span className="text-amber-300">{c.priceCt} vCLAW{c.exclusiveCurrency === 'CLV' ? ' ($CLAWVILLE-only)' : ''}</span>
       </div>
       <div className="mt-1 font-mono text-[9px] text-slate-500">
         {c.variantCount} variant{c.variantCount === 1 ? '' : 's'} · {c.ownerCount} owner{c.ownerCount === 1 ? '' : 's'} · {c.equippedNow} equipped

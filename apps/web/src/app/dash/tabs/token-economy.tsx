@@ -131,7 +131,7 @@ export default async function TokenEconomyTab() {
 
       {/* CT FLOW (sources + sinks) */}
       <section>
-        <h2 className="mb-1 text-lg font-semibold">ClawToken flow (last 30d)</h2>
+        <h2 className="mb-1 text-lg font-semibold">vCLAW flow (last 30d)</h2>
         <p className="mb-3 text-xs font-mono text-slate-500">
           From <code>claw_token_transactions</code> grouped by{' '}
           <code>reason</code>. Credits = tokens entering the economy
@@ -141,7 +141,7 @@ export default async function TokenEconomyTab() {
         </p>
         {econ && econ.tokenFlow30d.length > 0 ? (
           <Table
-            head={['Reason', 'Credits (CT in)', 'Debits (CT out)', 'Tx count']}
+            head={['Reason', 'Credits (vCLAW in)', 'Debits (vCLAW out)', 'Tx count']}
             rows={econ.tokenFlow30d.map((r) => [
               r.reason,
               r.credits > 0 ? `+${r.credits.toLocaleString()}` : '—',
@@ -151,7 +151,7 @@ export default async function TokenEconomyTab() {
           />
         ) : (
           <div className="rounded border border-slate-700/50 bg-slate-900/30 p-3 text-xs text-slate-400">
-            No CT transactions in the last 30 days.
+            No vCLAW transactions in the last 30 days.
           </div>
         )}
       </section>
@@ -161,12 +161,12 @@ export default async function TokenEconomyTab() {
         <h2 className="mb-1 text-lg font-semibold">Daily login</h2>
         <p className="mb-3 text-xs font-mono text-slate-500">
           Streak formula: <code>10 + streak × 5</code>, capped at{' '}
-          <code>100 CT/day</code>. Resets on missed day.
+          <code>100 vCLAW/day</code>. Resets on missed day.
           POST <code>/api/avatars/me/daily-login</code>.
         </p>
         {econ ? (
           <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
-            <MiniStat label="Lifetime CT issued" value={econ.dailyLogin.lifetimeCt.toLocaleString()} />
+            <MiniStat label="Lifetime vCLAW issued" value={econ.dailyLogin.lifetimeCt.toLocaleString()} />
             <MiniStat label="Lifetime claims" value={econ.dailyLogin.lifetimeClaims.toLocaleString()} />
             <MiniStat label="Last 24h claims" value={econ.dailyLogin.last24hClaims.toLocaleString()} />
           </div>
@@ -212,19 +212,19 @@ export default async function TokenEconomyTab() {
 
       {/* CT BUNDLES */}
       <section>
-        <h2 className="mb-1 text-lg font-semibold">ClawToken bundles (planned, Phase 4)</h2>
+        <h2 className="mb-1 text-lg font-semibold">vCLAW bundles (planned, Phase 4)</h2>
         <p className="mb-3 text-xs font-mono text-slate-500">
           Q3 plan §0 L21 · paying with $CLAWVILLE = +25% bonus on any tier
         </p>
         <Table
-          head={['Tier', 'CT', 'USD', '$/CT', 'vs Starter', 'CT @ +25% $CLAWVILLE']}
+          head={['Tier', 'vCLAW', 'USD', '$/vCLAW', 'vs Starter', 'vCLAW @ +25% $CLAWVILLE']}
           rows={CT_BUNDLES.map((b) => [
             b.tier,
             b.ct.toLocaleString(),
             `$${b.usd}`,
             `$${b.perCt.toFixed(4)}`,
             b.tier === 'Starter' ? '—' : `${Math.round(((b.perCt - CT_BUNDLES[0].perCt) / CT_BUNDLES[0].perCt) * 100)}%`,
-            `${Math.round(b.ct * 1.25).toLocaleString()} CT`,
+            `${Math.round(b.ct * 1.25).toLocaleString()} vCLAW`,
           ])}
         />
       </section>
@@ -233,10 +233,10 @@ export default async function TokenEconomyTab() {
       <section>
         <h2 className="mb-1 text-lg font-semibold">Tutorial quest rewards</h2>
         <p className="mb-3 text-xs font-mono text-slate-500">
-          From <code>@clawville/shared</code> <code>TUTORIAL_QUEST_REWARDS</code> · server-credited via POST /api/quests/tutorial/:id/claim · total {TUTORIAL_QUEST_TOTAL_REWARD} CT
+          From <code>@clawville/shared</code> <code>TUTORIAL_QUEST_REWARDS</code> · server-credited via POST /api/quests/tutorial/:id/claim · total {TUTORIAL_QUEST_TOTAL_REWARD} vCLAW
         </p>
         <Table
-          head={['Quest ID', 'Reward (CT)']}
+          head={['Quest ID', 'Reward (vCLAW)']}
           rows={Object.entries(TUTORIAL_QUEST_REWARDS).map(([id, ct]) => [id, ct])}
         />
       </section>

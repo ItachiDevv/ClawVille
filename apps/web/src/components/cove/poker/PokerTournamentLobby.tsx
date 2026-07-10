@@ -219,7 +219,7 @@ export default function PokerTournamentLobby({
           message?: string;
         };
         const code = err.error || err.message || `HTTP ${res.status}`;
-        if (res.status === 402) setErrorMsg('Not enough ClawTokens for the buy-in.');
+        if (res.status === 402) setErrorMsg('Not enough vCLAW for the buy-in.');
         else if (res.status === 401) setErrorMsg('Sign in to enter the tournament.');
         else if (res.status === 403) setErrorMsg('Create an avatar before entering.');
         else setErrorMsg(code);
@@ -307,8 +307,8 @@ export default function PokerTournamentLobby({
         {/* Stats card */}
         <RuneFrame tier="epic" glow="subtle" style={{ padding: 18 }}>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
-            <Stat label="Buy-in" value={`${buyIn.toLocaleString()} CT`} accent="#fbbf24" />
-            <Stat label="Prize pool" value={`${prizePool.toLocaleString()} CT`} accent="#7cffcb" />
+            <Stat label="Buy-in" value={`${buyIn.toLocaleString()} vCLAW`} accent="#fbbf24" />
+            <Stat label="Prize pool" value={`${prizePool.toLocaleString()} vCLAW`} accent="#7cffcb" />
             <Stat
               label="Registered"
               value={`${registeredCount}${t ? ` / ${t.maxEntrants}` : ''}`}
@@ -439,7 +439,7 @@ export default function PokerTournamentLobby({
             >
               {tournamentClosed
                 ? 'Registration closed'
-                : `Register · ${buyIn.toLocaleString()} CT`}
+                : `Register · ${buyIn.toLocaleString()} vCLAW`}
             </RpgButton>
           )}
 

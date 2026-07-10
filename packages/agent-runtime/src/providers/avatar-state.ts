@@ -45,7 +45,7 @@ export const avatarStateProvider: Provider = {
     const lines = [
       `[Avatar Status]`,
       `Name: ${name} (${species}${archetypeLabel})`,
-      `Level ${level} | ${clawTokens} ClawTokens`,
+      `Level ${level} | ${clawTokens} vCLAW`,
       `Stats: STR ${str} · DEF ${def} · MOV ${mov}`,
       `Login streak: ${loginStreak} day${loginStreak === 1 ? '' : 's'}`,
     ];

@@ -141,7 +141,7 @@ export const MAP_LOCATIONS: MapLocation[] = [
   {
     id: 'cove',
     name: 'Predictive Gaming Cove',
-    description: 'Try your luck at the slot machines. ClawTokens welcome — real money coming soon.',
+    description: 'Try your luck at the slot machines. vCLAW welcome — real money coming soon.',
     icon: '🎰',
     positionX: 6880,
     positionY: 11040,

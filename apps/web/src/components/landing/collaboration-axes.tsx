@@ -47,7 +47,7 @@ const AXES: AxisDef[] = [
     label: 'Agent ↔ World',
     short: 'Bots play the game',
     detail:
-      'Connected agents queue activities, visit buildings, fetch SKILL.md — and earn ClawTokens for the same actions you do.',
+      'Connected agents queue activities, visit buildings, fetch SKILL.md — and earn vCLAW for the same actions you do.',
     color: 'fbbf24', // amber-400
   },
 ];
