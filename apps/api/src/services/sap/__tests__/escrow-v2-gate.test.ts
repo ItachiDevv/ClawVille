@@ -65,6 +65,9 @@ let createCoverageOutcome: Record<string, unknown> | null = null;
 let depositCoverageOutcome: Record<string, unknown> | null = null;
 let settleOutcome: Record<string, unknown>;
 let finalizeOutcome: Record<string, unknown>;
+// R7-1 — capture the last settle-executor input so a test can assert the send is PINNED to
+// the claim-captured `expectedSettlementIndex` (never a fresh on-chain re-read).
+let lastSettleInput: { expectedSettlementIndex?: bigint } | null = null;
 
 function thenable(value: unknown) {
   return {
@@ -259,8 +262,9 @@ mock.module('../sap-client', () => ({
     return dryRunSuccess({ escrow: ESCROW });
   },
   depositEscrowV2Usdc: async () => dryRunSuccess({ escrow: ESCROW }),
-  settleCallsV2Usdc: async () => {
+  settleCallsV2Usdc: async (settleInput: { expectedSettlementIndex?: bigint }) => {
     settleCalls += 1;
+    lastSettleInput = settleInput;
     return settleOutcome;
   },
   finalizeSettlementUsdc: async () => {
@@ -347,6 +351,7 @@ beforeEach(() => {
   depositCoverageOutcome = null;
   settleOutcome = dryRunSuccess({ escrow: ESCROW, settlementIndex: '7' });
   finalizeOutcome = dryRunSuccess({ escrow: ESCROW });
+  lastSettleInput = null;
 });
 
 describe('SAP V2 gate — two-phase USDC release', () => {
@@ -716,12 +721,16 @@ describe('SAP V2 gate — two-phase USDC release', () => {
     expect(settleCalls).toBe(0);
   });
 
-  it('R4-A — physical-free uses on-chain pending, catching a settle_unknown-landed drain the DB reserved-sum misses (Codex #4)', async () => {
-    // A sibling row is settle_unknown with 4M reserved — the DB reserved-sum SKIPS
-    // settle_unknown, so the OLD vault−reservedInVault clamp would be inert. But the
-    // settle_unknown DID land, so escrow.pending_amount = 4M and the vault holds 4.5M →
-    // physical-free = 500_000 < debit 1_005_000 → over_release. gateLivePending counts
-    // settle_unknown, so the unowned guard passes (4M ≤ 4M) and the clamp bites.
+  it('R7-2 — a landed settle_unknown is NOT counted as gate ownership, so the unowned guard refuses (fail-closed)', async () => {
+    // A sibling row is settle_unknown with 4M reserved. R7-2 — a settle_unknown is UNCONFIRMED,
+    // so it no longer counts toward gateLivePending (counting it would let a phantom never-landed
+    // settle_unknown MASK a real unowned pending of the same size). Here it DID land, so
+    // escrow.pending_amount = 4M but gateLivePending = 0 → 4M > 0 → the unowned guard refuses
+    // (unreconciled_onchain_pending) BEFORE the clamp is even reached. An escrow carrying a
+    // truly-landed settle_unknown refuses ALL settles until ops reconciles — exactly the
+    // reconcile-only quarantine settle_unknown means. (Pre-R7-2 this returned over_release via
+    // the clamp because gateLivePending counted the settle_unknown; the A1 test above still
+    // covers the physical-free clamp with a genuine `pending` sibling.)
     rows = [
       baseRow(),
       baseRow({ id: 'row-2', jobId: 'job-2', status: 'settle_unknown', settlementIndex: '6', reservedPrincipalAmount: '4000000', feeAmount: '20000' }),
@@ -732,9 +741,23 @@ describe('SAP V2 gate — two-phase USDC release', () => {
       { readVaultState: async () => ({ vaultBalance: 4_500_000n, escrowPendingAmount: 4_000_000n, escrowAbsent: false }) },
     );
     expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.code).toBe('over_release');
+    if (!result.ok) expect(result.code).toBe('unreconciled_onchain_pending');
     expect(rows[0]?.status).toBe('open');
     expect(settleCalls).toBe(0);
+  });
+
+  it('R7-1 — the settle send is PINNED to the claim-captured index (never a fresh on-chain re-read)', async () => {
+    rows = [baseRow()];
+    await persistApproval();
+    inspectIndex = 7n; // the escrow's current index the gate inspects + persists at claim
+    const result = await gate.settleJobV2({ escrowPda: ESCROW, jobId: 'job-1', callerAvatarId: WORKER, callsToSettle: 1n });
+    expect(result.ok).toBe(true);
+    expect(settleCalls).toBe(1);
+    // The executor received the SAME index we inspected + persisted at claim — so if an
+    // out-of-band settle moved the on-chain counter after the claim, the program's pending-PDA
+    // seeds check reverts this tx (exactly-once) instead of building a second pending at N+1.
+    expect(lastSettleInput?.expectedSettlementIndex).toBe(7n);
+    expect(rows[0]?.settlementIndex).toBe('7');
   });
 
   it('R4-C — a succeeded direct deposit counts as funding, so settle after deposit+withdraw still passes (Codex #5)', async () => {
@@ -838,6 +861,31 @@ describe('SAP V2 gate — two-phase USDC release', () => {
     if (!result.ok) expect(result.code).toBe('job_not_open');
     expect(rows[0]?.status).toBe('open');
     expect(settleCalls).toBe(0);
+  });
+
+  it('R7-3 — a STALE settling claim whose ESCROW was CLOSED on-chain quarantines settle_unknown (reservation KEPT)', async () => {
+    rows = [baseRow({ status: 'settling', settlementIndex: '7', reservedPrincipalAmount: '1000000', feeAmount: '5000', updatedAt: staleDate() })];
+    // The recovery probe (inspect WITH settlementIndex) finds the escrow ACCOUNT gone (closed
+    // for rent after finalize+close). We must NOT restore or slot_consume — quarantine for ops.
+    reprobeOutcome = { ok: true, escrowPda: ESCROW, settlementIndex: 7n, currentSettlementIndex: 0n, pendingExists: false, escrowAbsent: true };
+    const result = await gate.settleJobV2({ escrowPda: ESCROW, jobId: 'job-1', callerAvatarId: WORKER, callsToSettle: 1n });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.code).toBe('settle_unconfirmed');
+    expect(rows[0]?.status).toBe('settle_unknown');
+    expect(rows[0]?.reservedPrincipalAmount).toBe('1000000'); // reservation KEPT
+    expect((rows[0]?.metadata as { escrowClosedDuringClaim?: boolean })?.escrowClosedDuringClaim).toBe(true);
+    expect(settleCalls).toBe(0);
+  });
+
+  it('R7-3 — a STALE finalizing claim whose ESCROW was CLOSED on-chain quarantines finalize_unknown (reservation KEPT)', async () => {
+    rows = [baseRow({ status: 'finalizing', settlementIndex: '7', callsSettled: '1', reservedPrincipalAmount: '1000000', feeAmount: '5000', updatedAt: staleDate() })];
+    reprobeOutcome = { ok: true, escrowPda: ESCROW, settlementIndex: 7n, currentSettlementIndex: 0n, pendingExists: false, escrowAbsent: true };
+    const result = await gate.finalizeJobV2({ escrowPda: ESCROW, jobId: 'job-1', callerAvatarId: WORKER });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.code).toBe('finalize_unconfirmed');
+    expect(rows[0]?.status).toBe('finalize_unknown');
+    expect(rows[0]?.reservedPrincipalAmount).toBe('1000000'); // reservation KEPT
+    expect(finalizeCalls).toBe(0);
   });
 
   it('R5-4 — a pending row re-entering settle returns replay WITHOUT amount changes (single-settle invariant)', async () => {

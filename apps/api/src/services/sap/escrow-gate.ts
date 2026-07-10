@@ -129,26 +129,30 @@ import {
  */
 const SAP_STALE_CLAIM_MS = 10 * 60 * 1000;
 /**
- * R6-1 — the absolute ceiling on how long a Solana `recentBlockhash` stays valid:
- * 150 slots (~60-90s at 0.4-0.6s/slot) plus margin. NOT a tunable — it is a property
- * of the chain that the stale-recovery absent-arm RELIES ON (see recoverStaleV2Claim):
- * a settle broadcast signed with a recent blockhash (executeTx) becomes permanently
- * unlandable once its blockhash expires, so a stale claim's original broadcast can
- * never land after we restore + retry the row.
+ * R6-1 / R7-1 — a PROBABILISTIC wall-clock ESTIMATE of how long a Solana `recentBlockhash`
+ * typically stays valid: ~151 BLOCKS, i.e. ~60-90s at 0.4-0.6s/slot, plus margin. This is NOT
+ * an absolute ceiling — Solana blockhash validity is counted in BLOCKS (`lastValidBlockHeight`),
+ * not wall-clock seconds, so under slow/stalled block production a broadcast can outlive this
+ * many seconds (Codex #2). It is therefore a DEFENSE-IN-DEPTH backstop, not the safety property.
+ * The real exactly-once GUARANTEE is the INDEX-PINNED settle send (R7-1): a zombie broadcast and
+ * the post-recovery retry both target the SAME claimed index, so the program's pending-PDA seeds
+ * constraint lets exactly one of them land. The module-load assertion below keeps
+ * SAP_STALE_CLAIM_MS comfortably past this estimate as belt-and-suspenders.
  */
 const MAX_BLOCKHASH_VALIDITY_MS = 120_000;
 /**
- * R6-1 crash-loud pin (mirrors the FINGERPRINT_SECRET boot-throw): the stale-claim
- * window MUST stay well past (>= 5x) the max blockhash validity, or a stale row's
- * original settle broadcast could still be landable when the absent-arm restores +
- * retries it -> double-pay at the same index. A future SAP_STALE_CLAIM_MS reduction
- * that violates this refuses to BOOT instead of silently reopening the double-pay.
+ * R6-1 / R7-1 crash-loud pin (mirrors the FINGERPRINT_SECRET boot-throw): keep the stale-claim
+ * window comfortably (>= 5x) past the probabilistic blockhash-validity estimate. This is a
+ * DEFENSE-IN-DEPTH backstop — the index-pinned send (R7-1) is the actual exactly-once guarantee —
+ * but a too-short window makes a stale row's original broadcast likelier to still be landable at
+ * recovery, so a future SAP_STALE_CLAIM_MS reduction that violates this refuses to BOOT rather
+ * than silently weakening the backstop.
  */
 if (SAP_STALE_CLAIM_MS < 5 * MAX_BLOCKHASH_VALIDITY_MS) {
   throw new Error(
     `SAP_STALE_CLAIM_MS (${SAP_STALE_CLAIM_MS}ms) must be >= 5x MAX_BLOCKHASH_VALIDITY_MS ` +
-      `(${5 * MAX_BLOCKHASH_VALIDITY_MS}ms): a shorter stale window can restore a claim whose ` +
-      `original settle broadcast has not yet expired, reopening the R5-1/R6-1 double-pay.`,
+      `(${5 * MAX_BLOCKHASH_VALIDITY_MS}ms): a shorter stale window weakens the R7-1 stale-recovery ` +
+      `backstop (a stale row's original settle broadcast may not have expired at recovery time).`,
   );
 }
 import {
@@ -259,10 +263,6 @@ export type EscrowGateErrorCode =
   // the physical-free clamp which fails open): we cannot prove there is no
   // untracked pending, so we refuse. Retryable. 502.
   | 'pending_state_unverifiable'
-  // R4-D — a stale `finalizing` claim whose pending PDA is ABSENT on-chain is an
-  // unresolvable state (the pending provably survives finalize, so its absence
-  // after a finalize claim can't be safely interpreted). Ops must reconcile. 409.
-  | 'finalize_unresolvable'
   // R5-1 — a stale claim whose pending PDA is ABSENT but whose settlement slot WAS
   // consumed on-chain (the monotonic escrow settlement_index advanced past our
   // persisted index): our settle landed → was finalized → the pending was CLOSED for
@@ -662,14 +662,25 @@ function isStaleClaim(updatedAt: Date): boolean {
  * Probe the pending at the ROW's PERSISTED settlementIndex (not the current escrow
  * index). Outcomes (all UNDER the per-escrow advisory lock, re-reading the row):
  *   • decode/RPC fails → refuse retryable (never guess).
+ *   • R7-3 — escrow ACCOUNT absent (closed for rent after finalize+close) → quarantine
+ *     the row reconcile-only for its phase (`settling` → settle_unknown, `finalizing` →
+ *     finalize_unknown), reservation KEPT, metadata escrowClosedDuringClaim. Ops
+ *     disambiguates from tx history (the settle_slot_consumed runbook covers the method).
  *   • live pending (not finalized/disputed) → (sibling guard first) adopt `pending`.
  *   • isFinalized → terminal `settled`, principal RELEASED (never reserved).
  *   • isDisputed → ops refusal, row untouched.
- *   • PDA ABSENT + was `settling` → restore `submitted` + release the reservation
- *     (SAFE: the pending account provably SURVIVES finalize, so absent ⇒ our settle
- *     never landed). The client retries the settle from a clean state.
- *   • PDA ABSENT + was `finalizing` → refuse `finalize_unresolvable` (a finalized
- *     pending survives, so absence here is unresolvable — reconcile).
+ *   • pending PDA ABSENT but escrow PRESENT → R5-1 gate on the MONOTONIC escrow
+ *     settlement_index. A finalized pending is CLOSABLE for rent (close_pending_settlement),
+ *     so "absent" does NOT prove "never landed" — the counter does. current === persisted ⇒
+ *     the slot was NEVER consumed ⇒ restore `submitted` (was `settling`) for a clean retry;
+ *     current > persisted ⇒ the slot WAS consumed (finalized+closed, or superseded) ⇒ refuse
+ *     `settle_slot_consumed` fail-closed (reservation KEPT), regardless of wasStatus.
+ *
+ * EXACTLY-ONCE ON RETRY (R7-1/R7-2): a restored row is re-settled through the INDEX-PINNED
+ * executor, so a still-valid zombie broadcast and the retry target the SAME slot and the
+ * program lets exactly one land; and if the zombie landed first, the retry's unowned-pending
+ * guard refuses it (on-chain pending > gate). The blockhash window (MAX_BLOCKHASH_VALIDITY_MS)
+ * is defense-in-depth, NOT the guarantee (blockhash validity is ~151 BLOCKS, not wall-clock).
  */
 async function recoverStaleV2Claim(row: SapEscrowSettlement): Promise<EscrowGateResult> {
   const nonce = u64(row.escrowNonce);
@@ -704,6 +715,11 @@ async function recoverStaleV2Claim(row: SapEscrowSettlement): Promise<EscrowGate
   if (probe.ok === false) {
     return { ok: false, code: probe.code, message: `stale-claim recovery could not read on-chain state; retry (${probe.message}).` };
   }
+  // R7-3 — the escrow ACCOUNT is provably ABSENT (closed for rent post-finalize, or gone).
+  // Distinct from a read failure (probe.ok===false, above). Handled by its own arm inside the
+  // lock — an absent escrow makes currentSettlementIndex meaningless, so we must NOT reason
+  // about the slot from it.
+  const escrowAbsent = probe.escrowAbsent === true;
   // R5-1 — the escrow's MONOTONIC settlement_index (advances ONLY inside settle,
   // UNTOUCHED by finalize/close) disambiguates an ABSENT pending: current === persisted
   // ⇒ our slot was NEVER consumed (safe to restore); current > persisted ⇒ the slot was
@@ -721,11 +737,26 @@ async function recoverStaleV2Claim(row: SapEscrowSettlement): Promise<EscrowGate
     if (!c || c.status !== wasStatus || !isStaleClaim(c.updatedAt)) {
       return { kind: 'raced' as const };
     }
+    const meta = { ...((row.metadata as object) ?? {}), staleClaimRecovered: true };
+    // R7-3 — the escrow ACCOUNT itself is GONE (closed for rent after finalize+close_pending
+    // +close_escrow, or otherwise absent). currentSettlementIndex is meaningless for an absent
+    // escrow, so DO NOT restore or slot_consume here — quarantine the row reconcile-only for
+    // its phase (reservation KEPT) and let ops disambiguate from tx history. This un-bricks the
+    // old infinite loop (inspect used to return a generic retryable on_chain_error for an
+    // absent escrow → recovery repeated forever, never touching the row).
+    if (escrowAbsent) {
+      const quarantine = wasStatus === 'finalizing' ? 'finalize_unknown' : 'settle_unknown';
+      const [q] = await tx
+        .update(sapEscrowSettlements)
+        .set({ status: quarantine, updatedAt: new Date(), metadata: { ...meta, escrowClosedDuringClaim: true } })
+        .where(and(eq(sapEscrowSettlements.id, row.id), eq(sapEscrowSettlements.status, wasStatus)))
+        .returning();
+      return { kind: 'escrow_closed' as const, phase: wasStatus, row: q };
+    }
     if (pending && pending.isDisputed) return { kind: 'disputed' as const };
     if (pending && (await siblingOwnsPendingIndex(tx, row.escrowPda, row.id, persistedIndex.toString()))) {
       return { kind: 'sibling' as const };
     }
-    const meta = { ...((row.metadata as object) ?? {}), staleClaimRecovered: true };
     if (pending && pending.isFinalized) {
       const decodedPrincipal = pending.amount;
       const decodedFee = computeV2ProtocolFee(decodedPrincipal);
@@ -756,31 +787,28 @@ async function recoverStaleV2Claim(row: SapEscrowSettlement): Promise<EscrowGate
         .returning();
       return { kind: 'pending' as const, row: adopted };
     }
-    // PDA ABSENT — R5-1 gate on the MONOTONIC index. The pending PDA is closable for
-    // rent AFTER finalize (buildClosePendingSettlementIx), so "absent" no longer proves
-    // "never landed". current === persisted ⇒ the slot was NEVER consumed ⇒ our settle
-    // never landed ⇒ restore 'submitted' + release (SAFE). current > persisted ⇒ the slot
-    // was consumed on-chain (settled→finalized→closed, OR a later settle superseded ours
-    // that never landed) ⇒ restoring + retrying would DOUBLE-PAY ⇒ refuse fail-closed
-    // regardless of wasStatus. R6-2 — current < persisted is ALSO reachable (inspect
-    // returns currentSettlementIndex 0n when the escrow ACCOUNT itself is absent); it is
-    // NOT the restore case, so it falls to the else → slot_consumed (fail-closed, SAFE).
-    // The restore's WHERE status='settling' also bars a finalizing row.
+    // pending PDA ABSENT (escrow PRESENT) — R5-1 gate on the MONOTONIC index. The pending PDA
+    // is closable for rent AFTER finalize (buildClosePendingSettlementIx), so "absent" no
+    // longer proves "never landed". current === persisted ⇒ the slot was NEVER consumed ⇒ our
+    // settle never landed ⇒ restore 'submitted' + release (the client retries). current >
+    // persisted ⇒ the slot was consumed on-chain (settled→finalized→closed, OR a later settle
+    // superseded ours that never landed) ⇒ restoring + retrying would DOUBLE-PAY ⇒ refuse
+    // fail-closed regardless of wasStatus. R6-2 — current < persisted is ALSO reachable (inspect
+    // returns currentSettlementIndex 0n on a DRY-RUN rehearsal where the escrow doesn't exist
+    // yet); NOT the restore case, so it falls to the else → slot_consumed (fail-closed, SAFE).
+    // The restore's WHERE status='settling' also bars a finalizing row. (A live ABSENT escrow
+    // ACCOUNT is handled by the R7-3 arm above — it never reaches here.)
     //
-    // R6-1 — the `current === persisted ⇒ restore` arm additionally rests on a BLOCKHASH
-    // BACKSTOP: the stale claim's original settle broadcast must be unlandable by now, or
-    // it could create the pending AFTER we restore + the client retries (double-pay at this
-    // index). Three invariants, all TRUE today, guarantee it:
-    //   (i)   SAP_STALE_CLAIM_MS >> max blockhash validity — pinned by the module-load
-    //         assertion (SAP_STALE_CLAIM_MS >= 5x MAX_BLOCKHASH_VALIDITY_MS).
-    //   (ii)  updatedAt tracks broadcast time — the claim commits updatedAt (status→settling)
-    //         and executeTx's blockhash-fetch + send immediately follow, so a row stale by
-    //         SAP_STALE_CLAIM_MS had its blockhash fetched ~that long ago.
-    //   (iii) settle_calls_v2 signs with a RECENT blockhash (executeTx getLatestBlockhash),
-    //         NOT a durable nonce — so that long-old blockhash is expired and the original
-    //         broadcast can never land. SWITCHING executeTx TO DURABLE NONCES (which never
-    //         expire) BREAKS this backstop and reopens the double-pay; the module-load
-    //         assertion is the tripwire.
+    // R7-1 — the `current === persisted ⇒ restore` arm is SAFE because the client's retry runs
+    // through the INDEX-PINNED executor: the retry and any still-valid zombie broadcast BOTH
+    // target THIS slot, so the program's seeds constraint lets exactly ONE land (the second
+    // reverts); and if the zombie landed first, the retry's unowned-pending guard (R7-2) refuses
+    // it (on-chain pending > gate 0 — the restored 'submitted' row no longer counts). The
+    // blockhash-window backstop (SAP_STALE_CLAIM_MS >> MAX_BLOCKHASH_VALIDITY_MS) is now
+    // DEFENSE-IN-DEPTH, not the guarantee: Solana blockhash validity is ~151 BLOCKS, not a
+    // wall-clock duration, so a zombie can outlive 10 min under stalled block production. The
+    // index-pin + guard are the real invariant; do NOT rely on the wall-clock window alone
+    // (the module-load assertion keeping that window wide is belt-and-suspenders, not the proof).
     if (currentIndex === persistedIndex) {
       const [restored] = await tx
         .update(sapEscrowSettlements)
@@ -798,6 +826,17 @@ async function recoverStaleV2Claim(row: SapEscrowSettlement): Promise<EscrowGate
   switch (outcome.kind) {
     case 'raced':
       return { ok: false, code: 'settle_in_progress', message: 'the stale claim was resolved concurrently; retry.' };
+    case 'escrow_closed':
+      // R7-3 — escrow closed during the claim; the row is now in its reconcile-only quarantine
+      // (settle_unknown / finalize_unknown, reservation KEPT). Return the SAME refusal a row
+      // already in that quarantine gives, so ops reconciles from tx history and never auto-
+      // retries. We NEVER guess the outcome (settled vs never-landed) — that is ops' call.
+      if (outcome.row) {
+        return outcome.phase === 'finalizing'
+          ? { ok: false, code: 'finalize_unconfirmed', message: 'stale-claim recovery: the escrow account was closed on-chain during the claim; finalize is unconfirmed — reconcile from tx history and never auto-retry.' }
+          : { ok: false, code: 'settle_unconfirmed', message: 'stale-claim recovery: the escrow account was closed on-chain during the claim; settle is unconfirmed — reconcile from tx history and never auto-retry.' };
+      }
+      return { ok: false, code: 'settle_in_progress', message: 'the row changed during stale-claim recovery.' };
     case 'disputed':
       return { ok: false, code: 'on_chain_error', message: 'stale-claim recovery: on-chain pending is disputed; manual resolution required.' };
     case 'sibling':
@@ -2449,17 +2488,21 @@ export async function settleJobV2(
         reservedPrincipalAmount: sapEscrowSettlements.reservedPrincipalAmount, feeAmount: sapEscrowSettlements.feeAmount,
       }).from(sapEscrowSettlements).where(eq(sapEscrowSettlements.escrowPda, input.escrowPda));
       let remaining = 0n;
-      // R4-A — `gateLivePending` is the sum of reserved principal over EVERY row the
-      // gate believes holds (or might hold) an on-chain pending: pending | finalizing |
-      // finalize_unknown | settle_unknown. It is compared against the escrow's on-chain
-      // `pending_amount` by the unowned-pending guard below.
+      // R4-A / R7-2 — `gateLivePending` is the sum of reserved principal over the rows that
+      // hold a CONFIRMED on-chain pending: pending | finalizing | finalize_unknown. It is
+      // compared against the escrow's on-chain `pending_amount` by the unowned-pending guard
+      // below (on-chain > gate ⇒ an unowned pending exists ⇒ refuse).
       let gateLivePending = 0n;
       for (const r of lockedRows) {
         if (r.status === 'settle_unknown') {
-          // Quarantined from `remaining` (its funding is held) — but its reservation
-          // IS a gate-known pending (a settle_unknown MAY have landed on-chain), so it
-          // counts toward gateLivePending for the reconciliation check.
-          gateLivePending += u64(r.reservedPrincipalAmount);
+          // R7-2 — DELIBERATELY EXCLUDED from BOTH `remaining` (funding held) AND
+          // `gateLivePending`. A settle_unknown is an UNCONFIRMED broadcast — it may have
+          // landed on-chain OR never executed — so it is NOT proof of ownership. Counting it
+          // would let a phantom (never-landed) settle_unknown of X MASK a genuinely-unowned
+          // on-chain pending of X (the guard would see on-chain == gate and PASS → double-pay).
+          // Excluding it fails CLOSED instead: an escrow carrying a truly-landed settle_unknown
+          // now refuses ALL settles (on-chain pending > gate 0 → unreconciled_onchain_pending)
+          // until ops reconciles it — exactly the reconcile-only quarantine settle_unknown means.
           continue;
         }
         if (r.status !== 'funding_unknown') remaining += u64(r.fundedAmount);
@@ -2551,6 +2594,12 @@ export async function settleJobV2(
     const chain = await settleCallsV2Usdc({
       workerAvatarId: row.workerAvatarId, depositorWalletPubkey: row.depositorWalletPubkey,
       escrowNonce: nonce, callsToSettle: input.callsToSettle, auditRoot: verdict.auditRoot, amount: principal,
+      // R7-1 — PIN the send to the index we inspected AND persisted on the row at claim
+      // (settlementIndex: inspected.settlementIndex.toString(), above). The executor derives
+      // the pending PDA from THIS, never a fresh re-read: if an out-of-band settle advanced
+      // the escrow's counter since our claim, the program's seeds check REVERTS this tx
+      // (fail-closed) instead of creating a second pending at N+1 (the TOCTOU double-pay).
+      expectedSettlementIndex: inspected.settlementIndex,
     });
     const simError = dryRunSimulationError(chain);
     if (chain.ok === false || simError) {
