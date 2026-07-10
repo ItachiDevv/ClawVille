@@ -80,6 +80,78 @@ async function bookHunterCompletion(hunterAvatarId: string, now: Date): Promise<
   }
 }
 
+// ── THE ONE shared →paid write path (team-lead ruling) ────────────────────────
+
+export interface BookComposedBountyPaidInput {
+  bountyId: string;
+  /**
+   * The composition_state the caller OBSERVED before the settle reached `paid` —
+   * the compare-and-swap guard. The approve route passes `'vault_held'` (a composed
+   * bounty is created `vault_held` and, under the 1-slot window, settles straight to
+   * paid); the resume crank passes the state it loaded (`'awaiting_finalize'` |
+   * `'reconcile_payout_failed'`). The booking fires ONLY when the row is STILL at
+   * this exact state, so the TWO authors of the →paid transition (route + crank) can
+   * each book it at most once and never double-count.
+   */
+  expectedPriorState: string;
+  hunterAvatarId: string;
+  /** LEG-2 payout escrow PDA from the settle (provenance). */
+  payoutEscrowPda: string | null;
+  /** Verifier audit-root hex from the settle (verdict provenance). */
+  auditRootHex: string | null;
+}
+
+export type BookComposedBountyPaidResult =
+  | { booked: true }
+  | { booked: false; reason: 'already_paid_or_state_drift' };
+
+/**
+ * THE single shared →paid write path (team-lead ruling). The →paid transition is
+ * the ONE seam with two authors — the approve route's instant-paid branch AND the
+ * resume crank's deferred-paid branch — so the completion/reputation bump must book
+ * EXACTLY ONCE. Both callers route through here; nobody writes the paid state
+ * inline.
+ *
+ * Atomic compare-and-swap: flips the bounty to `paid` + `completed` and writes ALL
+ * paid-state fields (composition_state, status/completed_at, payout PDA, audit root,
+ * covenant PASS, escrow_job_id) ONLY when the row is STILL at `expectedPriorState`
+ * (and not already `paid`). The winner — exactly one caller — additionally books the
+ * hunter completion bump (`totalCompleted += 1`; `totalEarned` UNCHANGED, it is a CT
+ * counter a USDC reward must never inflate). A loser (already paid, or the state
+ * drifted under a concurrent crank) returns `booked:false` and touches nothing; its
+ * caller still treats the bounty as paid (idempotent). Keeping EVERY paid-state
+ * write here makes the route and the crank byte-identical on the paid outcome.
+ */
+export async function bookComposedBountyPaid(
+  input: BookComposedBountyPaidInput,
+): Promise<BookComposedBountyPaidResult> {
+  const now = new Date();
+  const claimed = await db
+    .update(bounties)
+    .set({
+      status: 'completed',
+      completedAt: now,
+      compositionState: 'paid',
+      payoutEscrowPda: input.payoutEscrowPda,
+      escrowJobId: input.bountyId,
+      covenantAuditRootHex: input.auditRootHex,
+      covenantVerificationPassed: true,
+      updatedAt: now,
+    })
+    .where(
+      and(
+        eq(bounties.id, input.bountyId),
+        // CAS on the OBSERVED prior + belt-and-braces never-from-paid.
+        eq(bounties.compositionState, input.expectedPriorState),
+        ne(bounties.compositionState, 'paid'),
+      ),
+    )
+    .returning({ id: bounties.id });
+  if (claimed.length !== 1) return { booked: false, reason: 'already_paid_or_state_drift' };
+  await bookHunterCompletion(input.hunterAvatarId, now);
+  return { booked: true };
+}
+
 /**
  * Injectable seam for tests (the resume worker / approve route pass nothing in
  * production, getting the real `settleComposedBounty`). Mirrors the `SettleJobV2Deps`
@@ -96,6 +168,12 @@ export interface ApplyComposedInput {
   /** The persisted LEG-1 V2 vault PDA (set on the bounty row at create). */
   escrowPda: string;
   tokenReward: number;
+  /**
+   * The composition_state the CALLER observed before this settle (the crank's
+   * loaded state). Threaded into `bookComposedBountyPaid` as the CAS guard so the
+   * paid booking fires at most once. See `BookComposedBountyPaidInput`.
+   */
+  expectedPriorState: string;
 }
 
 /**
@@ -103,9 +181,10 @@ export interface ApplyComposedInput {
  * bounty row. Returns the raw `SettleComposedBountyResult` so the caller can build
  * its HTTP response / decide whether to surface an error. Persistence by phase:
  *
- *   - `paid`                    → composition_state='paid' + payout PDA + audit root
- *     + covenant PASS; then (once, under the atomic claim) the hunter completion
- *     bump. Never double-books on replay.
+ *   - `paid`                    → delegates to the shared `bookComposedBountyPaid`
+ *     (atomic CAS on `input.expectedPriorState`): writes all paid-state fields +
+ *     books the hunter completion EXACTLY ONCE. The approve route calls the SAME
+ *     function, so the two →paid authors never double-count.
  *   - `awaiting_finalize`       → composition_state='awaiting_finalize' (hunter
  *     UNPAID; the resume worker finalizes leg 1c once the dispute window elapses).
  *   - `reconcile_payout_failed` → composition_state='reconcile_payout_failed' +
@@ -133,33 +212,18 @@ export async function applyComposedSettleOutcome(
 
   switch (settled.phase) {
     case 'paid': {
-      // Atomic transition INTO paid (never FROM paid). Exactly one caller (this
-      // approve, or a later crank) claims the row and proceeds to the once-only
-      // completion bump; a concurrent/replayed run claims 0 rows and no-ops.
-      const claimed = await db
-        .update(bounties)
-        .set({
-          // The two-leg settle reached `paid` — mark the bounty COMPLETED now
-          // (the approve txn deferred this for composed bounties: a bounty whose
-          // payout was still finalizing must NOT show completed). This mirrors the
-          // approve route's own `paid` branch so the awaiting_finalize→crank→paid
-          // path and the approve→paid path converge on the same terminal state.
-          status: 'completed',
-          completedAt: now,
-          compositionState: 'paid',
-          payoutEscrowPda: settled.payoutEscrowPda,
-          escrowJobId: input.bountyId,
-          covenantAuditRootHex: settled.auditRootHex,
-          covenantVerificationPassed: true,
-          updatedAt: now,
-        })
-        .where(and(eq(bounties.id, input.bountyId), ne(bounties.compositionState, 'paid')))
-        .returning({ id: bounties.id });
-      if (claimed.length === 1) {
-        // Book the winning hunter's completion ONCE (the auto-reclaim of the
-        // creator's dust already fired inside `settleComposedBounty` leg 1d).
-        await bookHunterCompletion(input.hunterAvatarId, now);
-      }
+      // The ONE shared →paid write path (team-lead ruling): the crank and the
+      // approve route BOTH book the paid state + the once-only completion bump
+      // through `bookComposedBountyPaid` (atomic CAS on the observed prior state),
+      // so the two authors of this transition can never double-count. The dust
+      // auto-reclaim already fired inside `settleComposedBounty` leg 1d.
+      await bookComposedBountyPaid({
+        bountyId: input.bountyId,
+        expectedPriorState: input.expectedPriorState,
+        hunterAvatarId: input.hunterAvatarId,
+        payoutEscrowPda: settled.payoutEscrowPda,
+        auditRootHex: settled.auditRootHex,
+      });
       break;
     }
     case 'awaiting_finalize': {
@@ -300,6 +364,9 @@ export async function resumeComposedBounty(
       hunterAvatarId: ctx.hunterAvatarId,
       escrowPda: ctx.escrowPda,
       tokenReward: ctx.tokenReward,
+      // The CAS guard: the crank books →paid only if the row is STILL at the state
+      // it just loaded (awaiting_finalize | reconcile_payout_failed).
+      expectedPriorState: ctx.compositionState,
     },
     deps,
   );
