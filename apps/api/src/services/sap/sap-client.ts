@@ -2117,9 +2117,35 @@ export function resolveV2UsdcEscrowAddress(input: {
 }
 
 /**
- * Read the authoritative V2 settlement index and whether its PendingSettlement
- * PDA already exists. The gate calls this before claiming so a replay is routed
- * to finalize without ever rebuilding/re-sending settle_calls_v2.
+ * The DECODED on-chain PendingSettlement fields the gate books on a replay-
+ * reconcile (flip-gate fix, docs/sap-integration.md line 624). ALL values come
+ * from the chain account, NEVER the caller's request — the reconcile must record
+ * what the program actually reserved.
+ */
+export interface DecodedPendingSettlement {
+  /** `PendingSettlement.calls_to_settle` (u64) — the calls this pending covers. */
+  callsToSettle: bigint;
+  /**
+   * `PendingSettlement.amount` (u64) — the GROSS principal reserved for release
+   * (= calls × price; devnet-proven `amount=100000` for 10 × 10000, doc line 592),
+   * i.e. exactly what the gate books as `reservedPrincipalAmount`. The protocol
+   * fee is a SEPARATE leg the caller re-derives via `computeV2ProtocolFee(amount)`.
+   */
+  amount: bigint;
+  isFinalized: boolean;
+  isDisputed: boolean;
+}
+
+/**
+ * Read the authoritative V2 settlement index and — when its PendingSettlement PDA
+ * already exists — DECODE that account so the gate books the on-chain principal /
+ * calls on a replay-reconcile instead of the caller's requested numbers (doc line
+ * 624). The gate calls this before claiming so a replay is routed to finalize
+ * without ever rebuilding/re-sending settle_calls_v2.
+ *
+ * `pending` is populated ONLY when `pendingExists` is true and the Anchor decode
+ * succeeded. A decode/RPC failure returns a structured `SapFailure` (retryable) so
+ * the caller books NOTHING — never a fabricated amount.
  */
 export async function inspectV2SettlementState(input: {
   workerWalletPubkey: string;
@@ -2128,7 +2154,14 @@ export async function inspectV2SettlementState(input: {
   /** When supplied, inspect this persisted pre-send index, not the escrow's incremented current index. */
   settlementIndex?: bigint;
 }): Promise<
-  | { ok: true; escrowPda: string; settlementIndex: bigint; pendingExists: boolean }
+  | {
+      ok: true;
+      escrowPda: string;
+      settlementIndex: bigint;
+      pendingExists: boolean;
+      /** The decoded pending account — present iff `pendingExists`. */
+      pending?: DecodedPendingSettlement;
+    }
   | SapFailure
 > {
   const cfg = getConfig();
@@ -2158,15 +2191,83 @@ export async function inspectV2SettlementState(input: {
     }
     const settlementIndex = input.settlementIndex ?? BigInt(escrow.settlementIndex.toString());
     const [pendingPda] = findPendingPda(cfg.programId, resolved.escrowPda, settlementIndex);
-    const pendingExists = (await getConnection().getAccountInfo(pendingPda, COMMITMENT)) !== null;
+    // Anchor-DECODE the pending account (not a raw getAccountInfo existence probe):
+    // a non-null fetch both proves existence AND yields the authoritative reserved
+    // principal + calls for the reconcile. `fetchNullable` returns null when the
+    // PDA is absent (never settled at this index, or already finalized+closed).
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const pendingAcc = await (getProgram().account as any).pendingSettlement.fetchNullable(
+      pendingPda,
+    );
+    if (!pendingAcc) {
+      return {
+        ok: true,
+        escrowPda: resolved.escrowPda.toBase58(),
+        settlementIndex,
+        pendingExists: false,
+      };
+    }
+    const callsRaw = pendingAcc.callsToSettle ?? pendingAcc.calls_to_settle;
+    const amountRaw = pendingAcc.amount;
+    if (callsRaw == null || amountRaw == null) {
+      // Decode succeeded structurally but the money fields are missing — refuse to
+      // guess. Surface a retryable failure so the caller books nothing.
+      throw new Error('PendingSettlement decode missing calls_to_settle/amount');
+    }
     return {
       ok: true,
       escrowPda: resolved.escrowPda.toBase58(),
       settlementIndex,
-      pendingExists,
+      pendingExists: true,
+      pending: {
+        callsToSettle: BigInt(callsRaw.toString()),
+        amount: BigInt(amountRaw.toString()),
+        isFinalized: Boolean(pendingAcc.isFinalized ?? pendingAcc.is_finalized),
+        isDisputed: Boolean(pendingAcc.isDisputed ?? pendingAcc.is_disputed),
+      },
     };
   } catch (err) {
     return classifyChainError('inspectV2SettlementState', err);
+  }
+}
+
+/**
+ * Read the LIVE on-chain USDC balance of a V2 escrow's vault ATA (flip-gate fix,
+ * docs/sap-integration.md line 623). The settle claim clamps its release ceiling
+ * to this so an out-of-band vault drain (a self-custody withdraw, or ANY external
+ * mover) can never let the gate reserve more than the vault physically holds.
+ *
+ * Returns the vault balance in USDC base units, or NULL on ANY failure (gate off,
+ * bad pubkey, missing vault ATA, RPC error). NULL means "uncertain" — the caller
+ * MUST fall back to the ledger ceiling and NEVER reject on it: the on-chain
+ * program stays the authoritative fail-closed guard (6062-family). Read-only; no
+ * signing, no broadcast.
+ */
+export async function readV2VaultBalanceBaseUnits(input: {
+  workerWalletPubkey: string;
+  depositorWalletPubkey: string;
+  escrowNonce: bigint;
+}): Promise<bigint | null> {
+  try {
+    const cfg = getConfig();
+    if (usdcEscrowGate(cfg)) return null;
+    let workerWallet: PublicKey;
+    let depositorWallet: PublicKey;
+    try {
+      workerWallet = new PublicKey(input.workerWalletPubkey);
+      depositorWallet = new PublicKey(input.depositorWalletPubkey);
+    } catch {
+      return null;
+    }
+    const mint = usdcMintForEscrow(cfg);
+    const [agentPda] = findAgentPda(cfg.programId, workerWallet);
+    const [escrowPda] = findEscrowPda(cfg.programId, agentPda, depositorWallet, input.escrowNonce);
+    const vaultAta = getAssociatedTokenAddress(mint, escrowPda, true);
+    const bal = await getConnection().getTokenAccountBalance(vaultAta, COMMITMENT);
+    if (!bal?.value?.amount) return null;
+    return BigInt(bal.value.amount);
+  } catch {
+    return null;
   }
 }
 

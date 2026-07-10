@@ -337,3 +337,147 @@ export const sapEscrowApprovals = pgTable(
 
 export type SapEscrowApproval = typeof sapEscrowApprovals.$inferSelect;
 export type NewSapEscrowApproval = typeof sapEscrowApprovals.$inferInsert;
+
+/**
+ * sap_deposit_requests — R3 DEPOSIT IDEMPOTENCY (flip-gate fix, doc line 591).
+ *
+ * `deposit_escrow_v2` is ADDITIVE: a duplicate client POST (double-click / 5xx
+ * retry) would top up the depositor's OWN escrow twice. `executeTx`'s
+ * broadcast/confirm split stops an SDK auto-resend but NOT a fresh duplicate
+ * request. This table is the durable route-level idempotency guard on
+ * `POST /api/sap/escrow/v2/deposit`.
+ *
+ * ── Key shape (deliberate deviation from the doc's `(subject, escrowNonce,
+ *    requestId)`) ──────────────────────────────────────────────────────────────
+ * The doc suggested keying on `escrowNonce`, but a nonce alone does NOT identify
+ * an escrow — the V2 PDA is `["sap_escrow_v2", agentPda(worker), depositor,
+ * nonce]`, so the SAME nonce can address two different escrows against two
+ * different workers. We use STANDARD STRICT idempotency instead:
+ *   - UNIQUE (subject_avatar_id, request_id) is the idempotency key.
+ *   - (escrow_pda, amount) is the request FINGERPRINT stored alongside it.
+ *     A replay with the same key + same fingerprint returns the recorded outcome
+ *     (`replayed:true`, NO re-send); the same key + a DIFFERENT fingerprint is
+ *     key reuse → typed 409; an in-flight duplicate → typed 409.
+ *
+ * ── Lifecycle (LIVE only — dry-run skips this table entirely) ─────────────────
+ *   in_flight        — the claim was won; the on-chain deposit is being built/sent.
+ *                      A concurrent duplicate finds this and 409s (`deposit_in_flight`).
+ *   succeeded         — the deposit confirmed on-chain; `signature` +
+ *                      `outcome_accounts` record the outcome for a faithful replay.
+ *   broadcast_unknown — the deposit tx was BROADCAST but its confirmation was
+ *                      never observed (it MAY have landed). Terminal + reconcile-
+ *                      only: a replay returns the same unconfirmed signal, NEVER
+ *                      re-sends (mirrors the settlement funding_unknown discipline).
+ * A failure BEFORE broadcast books NOTHING — the row is DELETED so the SAME
+ * request_id can be retried cleanly (nothing hit the wire).
+ *
+ * PURELY ADDITIVE new table; gated OFF with the rest of the V2 release path.
+ */
+export const sapDepositRequests = pgTable(
+  'sap_deposit_requests',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+
+    /**
+     * The depositor (requester) avatar acting on the deposit — resolved from
+     * `identity.avatarId` (Rule E5: a human OR a connected/hosted agent, never a
+     * body pubkey). The idempotency key's subject half.
+     */
+    subjectAvatarId: uuid('subject_avatar_id')
+      .notNull()
+      .references(() => avatars.id, { onDelete: 'cascade' }),
+    /** Caller-supplied idempotency token — the key's request half. */
+    requestId: varchar('request_id', { length: 128 }).notNull(),
+
+    // ── request fingerprint (guards against key reuse for a DIFFERENT deposit) ──
+    /** The derived V2 escrow PDA (base58) this request funds. */
+    escrowPda: varchar('escrow_pda', { length: 64 }).notNull(),
+    /** The USDC base-unit amount (u64 string) this request deposits. */
+    amount: varchar('amount', { length: 32 }).notNull(),
+
+    /** in_flight | succeeded | broadcast_unknown (CHECK-enforced in the migration). */
+    status: varchar('status', { length: 24 }).notNull().default('in_flight'),
+    /** Confirmed / broadcast-unknown deposit tx signature (base58). NULL until sent. */
+    signature: varchar('signature', { length: 128 }),
+    /** The chain executor's accounts map, stored for a faithful replay response. */
+    outcomeAccounts: jsonb('outcome_accounts').$type<Record<string, string>>(),
+    /** The chain failure code on a broadcast_unknown terminal (for reconciliation). */
+    failureCode: varchar('failure_code', { length: 64 }),
+
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    /** THE idempotency key — one logical deposit per (subject, requestId). */
+    subjectRequestUnique: uniqueIndex('sap_deposit_requests_subject_request_unique').on(
+      t.subjectAvatarId,
+      t.requestId,
+    ),
+    /** Per-escrow audit / reconciliation scan. */
+    escrowIdx: index('sap_deposit_requests_escrow_idx').on(t.escrowPda, t.createdAt),
+  }),
+);
+
+export type SapDepositRequest = typeof sapDepositRequests.$inferSelect;
+export type NewSapDepositRequest = typeof sapDepositRequests.$inferInsert;
+
+/**
+ * sap_escrow_withdrawals — V2-WITHDRAW GATE-LEDGER LEG (flip-gate fix, doc line 623).
+ *
+ * `POST /api/sap/escrow/v2/withdraw` moves USDC vault→depositor ON-CHAIN
+ * (self-custody free balance) but historically booked NOTHING into the gate's
+ * settlements ledger (V1 refunds go through `refundJob`, which books
+ * `refundedAmount`; the V2 withdraw route predates the gate). Consequence: the
+ * ledger's `remaining` OVERSTATES the vault after an out-of-band withdraw, so a
+ * later settle ceiling could be computed against funds that already left.
+ *
+ * This ESCROW-SCOPED (not job-scoped) ledger records each successful/broadcast-
+ * unknown withdraw so `escrowFundsLedger` subtracts it from `remaining`. It is a
+ * SEPARATE table (not a synthetic settlement row) on purpose: it never collides
+ * with a caller-supplied `job_id`, never overloads the settlement status enum,
+ * and leaves the `settle_unknown` quarantine + every V1 path untouched (a V1
+ * escrow simply has no rows here). Paired with the live-vault clamp inside the
+ * settle claim (the same doc-line-623 fix), the ledger stays truthful even when
+ * the clamp's RPC read falls back.
+ *
+ * ── What the ledger subtracts ─────────────────────────────────────────────────
+ *   succeeded         — the withdraw confirmed on-chain; funds definitely left.
+ *   broadcast_unknown — the withdraw broadcast but was never confirmed; it MAY
+ *                      have moved funds, so it is subtracted PESSIMISTICALLY
+ *                      (fail-closed — never over-state the spendable vault).
+ * A pre-broadcast failure books NOTHING (nothing left the vault). LIVE only —
+ * dry-run moves nothing on-chain and writes no row.
+ *
+ * PURELY ADDITIVE new table; gated OFF with the rest of the V2 release path.
+ */
+export const sapEscrowWithdrawals = pgTable(
+  'sap_escrow_withdrawals',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+
+    /** The on-chain V2 escrow PDA (base58) the withdraw drew from. */
+    escrowPda: varchar('escrow_pda', { length: 64 }).notNull(),
+    /** The depositor avatar that withdrew (Rule E5 — its own custodial wallet). */
+    subjectAvatarId: uuid('subject_avatar_id')
+      .notNull()
+      .references(() => avatars.id, { onDelete: 'cascade' }),
+    /** The V2 nonce (u64 string), recorded for audit / reconciliation. */
+    escrowNonce: varchar('escrow_nonce', { length: 32 }),
+
+    /** USDC base units withdrawn (u64 string) — subtracted from the funds ledger. */
+    amount: varchar('amount', { length: 32 }).notNull(),
+    /** succeeded | broadcast_unknown (CHECK-enforced in the migration). */
+    status: varchar('status', { length: 24 }).notNull(),
+    /** Confirmed / broadcast-unknown withdraw tx signature (base58). */
+    signature: varchar('signature', { length: 128 }),
+
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    /** "all withdrawals for this escrow" — the funds-ledger subtraction scan. */
+    escrowIdx: index('sap_escrow_withdrawals_escrow_idx').on(t.escrowPda, t.createdAt),
+  }),
+);
+
+export type SapEscrowWithdrawal = typeof sapEscrowWithdrawals.$inferSelect;
+export type NewSapEscrowWithdrawal = typeof sapEscrowWithdrawals.$inferInsert;

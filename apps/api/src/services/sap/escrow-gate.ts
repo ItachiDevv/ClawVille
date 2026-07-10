@@ -94,6 +94,8 @@ import {
   wallets,
   sapEscrowSettlements,
   sapEscrowApprovals,
+  sapDepositRequests,
+  sapEscrowWithdrawals,
   type SapEscrowSettlement,
 } from '@clawville/database';
 import {
@@ -104,10 +106,12 @@ import {
   resolveUsdcEscrowAddresses,
   createEscrowV2Usdc,
   depositEscrowV2Usdc,
+  withdrawEscrowV2Usdc,
   settleCallsV2Usdc,
   finalizeSettlementUsdc,
   resolveV2UsdcEscrowAddress,
   inspectV2SettlementState,
+  readV2VaultBalanceBaseUnits,
   preflightCreateEscrowV2Coverage,
   preflightDepositEscrowV2Coverage,
   sapConfigSnapshot,
@@ -449,7 +453,12 @@ async function escrowFundsLedger(escrowPda: string): Promise<{
   refunded: bigint;
   reserved: bigint;
   fees: bigint;
-  /** funded − released − refunded, floored at 0 (the spendable vault balance). */
+  /** V2 self-custody withdraws booked against this escrow (doc line 623 fix). */
+  withdrawn: bigint;
+  /**
+   * funded − released − refunded − reserved − fees − withdrawn, floored at 0
+   * (the spendable vault balance).
+   */
   remaining: bigint;
 }> {
   const rows = await db.query.sapEscrowSettlements.findMany({
@@ -463,11 +472,22 @@ async function escrowFundsLedger(escrowPda: string): Promise<{
       feeAmount: true,
     },
   });
+  // FIX (doc line 623) — book V2 self-custody withdraws. `/escrow/v2/withdraw`
+  // moves USDC vault→depositor ON-CHAIN without a settlement row, so without this
+  // the ledger OVERSTATES the vault after an out-of-band withdraw. Only
+  // `succeeded`/`broadcast_unknown` rows are ever written (a pre-broadcast failure
+  // books nothing), so summing every row is correct AND pessimistic — a
+  // broadcast-unknown withdraw MAY have moved funds and is subtracted fail-closed.
+  const withdrawRows = await db.query.sapEscrowWithdrawals.findMany({
+    where: eq(sapEscrowWithdrawals.escrowPda, escrowPda),
+    columns: { amount: true },
+  });
   let funded = 0n;
   let released = 0n;
   let refunded = 0n;
   let reserved = 0n;
   let fees = 0n;
+  let withdrawn = 0n;
   for (const r of rows) {
     // A settle_unknown row quarantines exactly its own funded allocation. Skip
     // the row as a unit: adding no funding and then subtracting its provisional
@@ -484,8 +504,9 @@ async function escrowFundsLedger(escrowPda: string): Promise<{
     reserved += u64(r.reservedPrincipalAmount);
     fees += u64(r.feeAmount);
   }
-  const net = funded - released - refunded - reserved - fees;
-  return { funded, released, refunded, reserved, fees, remaining: net < 0n ? 0n : net };
+  for (const w of withdrawRows) withdrawn += u64(w.amount);
+  const net = funded - released - refunded - reserved - fees - withdrawn;
+  return { funded, released, refunded, reserved, fees, withdrawn, remaining: net < 0n ? 0n : net };
 }
 
 /**
@@ -893,6 +914,286 @@ export async function openEscrowV2(input: OpenEscrowV2Input): Promise<EscrowGate
   }).where(eq(sapEscrowSettlements.id, row.id)).returning();
   return { ok: true, phase: 'open', settlement: funded, chain, replay: false };
   });
+}
+
+// ─── 1b. V2 DEPOSIT — idempotent top-up (FIX 1, doc line 591) ──────────────────
+
+export interface DepositEscrowV2IdempotentInput {
+  /** Depositor (requester) avatar — funds its OWN escrow. Rule E5 parity. */
+  depositorAvatarId: string;
+  /** Worker's registered wallet pubkey (base58) — the escrow PDA seed component. */
+  workerWalletPubkey: string;
+  /** Explicit V2 u64 nonce identifying the escrow. */
+  escrowNonce: bigint;
+  /** USDC base units to top up. */
+  amount: bigint;
+  /** Caller idempotency token (trimmed / validated at the route). */
+  requestId: string;
+}
+
+export type DepositEscrowV2IdempotentResult =
+  | { ok: true; chain: SapWriteResult; replayed: boolean }
+  | {
+      ok: false;
+      code:
+        | 'deposit_in_flight'
+        | 'deposit_request_mismatch'
+        | 'wallet_pubkey_missing'
+        | 'invalid_pubkey'
+        | 'internal';
+      message: string;
+    };
+
+/** Reconstruct the response `chain` object recorded on a terminal idempotency row. */
+function reconstructDepositChain(row: {
+  status: string;
+  signature: string | null;
+  outcomeAccounts: Record<string, string> | null;
+  failureCode: string | null;
+}): SapWriteResult {
+  if (row.status === 'succeeded') {
+    return {
+      ok: true,
+      dryRun: false,
+      signature: row.signature ?? '',
+      accounts: row.outcomeAccounts ?? {},
+    };
+  }
+  // broadcast_unknown — the prior deposit MAY have landed; NEVER re-send.
+  return {
+    ok: false,
+    code: (row.failureCode as SapFailure['code']) ?? 'on_chain_error',
+    message:
+      'a prior deposit with this requestId was broadcast but never confirmed; ' +
+      'reconcile the recorded signature before any retry (never auto-retried).',
+    broadcast: true,
+    signature: row.signature ?? undefined,
+  };
+}
+
+/**
+ * FIX 1 (doc line 591) — idempotent V2 escrow top-up.
+ *
+ * `deposit_escrow_v2` is additive, so a duplicate client POST double-funds the
+ * depositor's OWN escrow. This wraps `depositEscrowV2Usdc` with a DB-backed
+ * route-level idempotency claim keyed UNIQUE (subject avatarId, requestId), with
+ * (escrowPda, amount) as the request fingerprint:
+ *   - a replay with the same key + same fingerprint returns the RECORDED outcome
+ *     (`replayed:true`, NO re-send);
+ *   - a replay with the same key + a DIFFERENT fingerprint is key reuse → 409
+ *     `deposit_request_mismatch`;
+ *   - an in-flight duplicate → 409 `deposit_in_flight`.
+ *
+ * The claim is INSERTed BEFORE any wire construction. A pre-broadcast failure
+ * DELETEs the claim so the SAME requestId retries cleanly; a broadcast-unknown is
+ * held terminal (reconcile-only, NEVER auto-retried), mirroring the
+ * `funding_unknown` discipline.
+ *
+ * DRY-RUN skips the idempotency table entirely — a dry-run sends nothing on-chain,
+ * so persisting a claim would wrongly block a later real request. This keeps the
+ * currently-reachable (flags OFF + dry-run) behavior byte-identical to a direct
+ * `depositEscrowV2Usdc` call; the guard activates only on a deliberate live flip.
+ */
+export async function depositEscrowV2Idempotent(
+  input: DepositEscrowV2IdempotentInput,
+): Promise<DepositEscrowV2IdempotentResult> {
+  const cfg = sapConfigSnapshot();
+
+  // DRY-RUN — no persistence (see the JSDoc). Proxy straight to the executor.
+  if (cfg.dryRun) {
+    const chain = await depositEscrowV2Usdc({
+      depositorAvatarId: input.depositorAvatarId,
+      workerWalletPubkey: input.workerWalletPubkey,
+      escrowNonce: input.escrowNonce,
+      amount: input.amount,
+    });
+    return { ok: true, chain, replayed: false };
+  }
+
+  // LIVE — resolve the escrow PDA (the fingerprint) then claim idempotency.
+  const depositorWalletPubkey = await avatarWalletPubkey(input.depositorAvatarId);
+  if (!depositorWalletPubkey) {
+    return { ok: false, code: 'wallet_pubkey_missing', message: 'depositor avatar has no custodial wallet.' };
+  }
+  const addr = resolveV2UsdcEscrowAddress({
+    workerWalletPubkey: input.workerWalletPubkey,
+    depositorWalletPubkey,
+    escrowNonce: input.escrowNonce,
+  });
+  if (addr.ok === false) {
+    // The route already gated; this is defense-in-depth. Surface a bad pubkey
+    // precisely, map any other resolver failure to a tight `internal`.
+    const code = addr.code === 'invalid_pubkey' ? 'invalid_pubkey' : 'internal';
+    return { ok: false, code, message: addr.message };
+  }
+  const escrowPda = addr.escrowPda.toBase58();
+  const amountStr = input.amount.toString();
+
+  // ── ATOMIC INSERT-claim BEFORE any wire construction (the unique index is the lock) ──
+  let claimId: string;
+  try {
+    const [claim] = await db
+      .insert(sapDepositRequests)
+      .values({
+        subjectAvatarId: input.depositorAvatarId,
+        requestId: input.requestId,
+        escrowPda,
+        amount: amountStr,
+        status: 'in_flight',
+      })
+      .returning({ id: sapDepositRequests.id });
+    claimId = claim.id;
+  } catch (err) {
+    if (isUniqueViolation(err)) {
+      const existing = await db.query.sapDepositRequests.findFirst({
+        where: and(
+          eq(sapDepositRequests.subjectAvatarId, input.depositorAvatarId),
+          eq(sapDepositRequests.requestId, input.requestId),
+        ),
+      });
+      if (!existing) {
+        return { ok: false, code: 'internal', message: 'idempotency claim raced without a readable row.' };
+      }
+      // Fingerprint FIRST — a same-key / different-(escrow,amount) is ALWAYS key
+      // reuse (a client error), whether or not the prior request is still in flight.
+      if (existing.escrowPda !== escrowPda || existing.amount !== amountStr) {
+        return {
+          ok: false,
+          code: 'deposit_request_mismatch',
+          message: 'requestId already used for a different deposit (escrow/amount fingerprint mismatch).',
+        };
+      }
+      if (existing.status === 'in_flight') {
+        return { ok: false, code: 'deposit_in_flight', message: 'an identical deposit request is already in flight.' };
+      }
+      // Terminal (succeeded | broadcast_unknown) — replay the recorded outcome, NO re-send.
+      return { ok: true, chain: reconstructDepositChain(existing), replayed: true };
+    }
+    return { ok: false, code: 'internal', message: 'failed to claim deposit idempotency.' };
+  }
+
+  // We hold the claim — now (and only now) touch the chain.
+  const chain = await depositEscrowV2Usdc({
+    depositorAvatarId: input.depositorAvatarId,
+    workerWalletPubkey: input.workerWalletPubkey,
+    escrowNonce: input.escrowNonce,
+    amount: input.amount,
+  });
+
+  if (chain.ok === true) {
+    // Confirmed (live) — persist the terminal outcome for a faithful replay.
+    await db
+      .update(sapDepositRequests)
+      .set({
+        status: 'succeeded',
+        signature: chain.dryRun ? null : chain.signature,
+        outcomeAccounts: chain.dryRun ? null : chain.accounts,
+        updatedAt: new Date(),
+      })
+      .where(eq(sapDepositRequests.id, claimId));
+    return { ok: true, chain, replayed: false };
+  }
+
+  if (chain.broadcast) {
+    // Broadcast-unknown — the deposit MAY have landed. Hold the claim terminal +
+    // record the signature so a replay returns the same unconfirmed signal and
+    // NEVER re-sends (mirrors funding_unknown). Reconcile-only.
+    await db
+      .update(sapDepositRequests)
+      .set({
+        status: 'broadcast_unknown',
+        signature: chain.signature ?? null,
+        failureCode: chain.code,
+        updatedAt: new Date(),
+      })
+      .where(eq(sapDepositRequests.id, claimId));
+    return { ok: true, chain, replayed: false };
+  }
+
+  // Pre-broadcast failure — nothing hit the wire. DELETE the claim so the SAME
+  // requestId can be retried cleanly (documented contract: retry reuses the key).
+  await db.delete(sapDepositRequests).where(eq(sapDepositRequests.id, claimId));
+  return { ok: true, chain, replayed: false };
+}
+
+// ─── 1c. V2 WITHDRAW — books the gate ledger (FIX 2b, doc line 623) ────────────
+
+export interface WithdrawEscrowV2BookedInput {
+  /** Depositor avatar — reclaims its OWN unspent (free) vault balance. */
+  depositorAvatarId: string;
+  workerWalletPubkey: string;
+  escrowNonce: bigint;
+  amount: bigint;
+}
+
+/**
+ * FIX 2b (doc line 623) — book a V2 self-custody withdraw into the gate ledger.
+ *
+ * `/escrow/v2/withdraw` moves USDC vault→depositor ON-CHAIN. Without booking, the
+ * gate's `escrowFundsLedger.remaining` overstates the vault, so a later settle
+ * ceiling could be computed against funds that already left. This wraps
+ * `withdrawEscrowV2Usdc` and records the drain into `sap_escrow_withdrawals`
+ * (escrow-scoped) so the ledger subtracts it. Together with the live-vault clamp
+ * inside the settle claim (FIX 2a), a settle can never reserve more than the vault
+ * physically holds.
+ *
+ * DRY-RUN books nothing (it moves nothing on-chain) — identical to a direct
+ * `withdrawEscrowV2Usdc` call, so the currently-reachable path is unchanged.
+ */
+export async function withdrawEscrowV2Booked(
+  input: WithdrawEscrowV2BookedInput,
+): Promise<SapWriteResult> {
+  const cfg = sapConfigSnapshot();
+
+  // DRY-RUN — no on-chain movement, so book nothing (mirror the convention).
+  if (cfg.dryRun) {
+    return withdrawEscrowV2Usdc(input);
+  }
+
+  // Resolve the escrow PDA for the escrow-scoped booking BEFORE the send (a bad
+  // resolve must fail before touching the chain). depositorWalletPubkey is the
+  // acting avatar's own wallet — the same pubkey withdrawEscrowV2Usdc signs with.
+  const depositorWalletPubkey = await avatarWalletPubkey(input.depositorAvatarId);
+  if (!depositorWalletPubkey) {
+    return { ok: false, code: 'avatar_wallet_missing', message: 'depositor avatar has no custodial wallet.' };
+  }
+  const addr = resolveV2UsdcEscrowAddress({
+    workerWalletPubkey: input.workerWalletPubkey,
+    depositorWalletPubkey,
+    escrowNonce: input.escrowNonce,
+  });
+  if (addr.ok === false) return addr;
+  const escrowPda = addr.escrowPda.toBase58();
+
+  const chain = await withdrawEscrowV2Usdc(input);
+
+  // Book AFTER the outcome is known. The live-vault clamp inside the settle claim
+  // is the authoritative physical guard, so a rare crash between a confirmed send
+  // and this booking is covered there; this booking keeps the ledger truthful for
+  // the common case + the clamp's RPC-read fallback.
+  if (chain.ok === true && !chain.dryRun) {
+    await db.insert(sapEscrowWithdrawals).values({
+      escrowPda,
+      subjectAvatarId: input.depositorAvatarId,
+      escrowNonce: input.escrowNonce.toString(),
+      amount: input.amount.toString(),
+      status: 'succeeded',
+      signature: chain.signature,
+    });
+  } else if (chain.ok === false && chain.broadcast) {
+    // Broadcast-unknown — the withdraw MAY have moved funds. Book PESSIMISTICALLY
+    // so the ledger fail-closes (never over-states the spendable vault).
+    await db.insert(sapEscrowWithdrawals).values({
+      escrowPda,
+      subjectAvatarId: input.depositorAvatarId,
+      escrowNonce: input.escrowNonce.toString(),
+      amount: input.amount.toString(),
+      status: 'broadcast_unknown',
+      signature: chain.signature ?? null,
+    });
+  }
+  // A pre-broadcast failure books nothing (nothing left the vault).
+  return chain;
 }
 
 // ─── 2. SUBMIT ────────────────────────────────────────────────────────────────
@@ -1563,8 +1864,27 @@ async function settleJobLocked(input: SettleJobInput): Promise<EscrowGateResult>
   return { ok: true, phase: 'settled', settlement: settled, chain, replay: false };
 }
 
+/** Injected dependencies for `settleJobV2` (test seam; production uses defaults). */
+export interface SettleJobV2Deps {
+  /**
+   * FIX 2a (doc line 623) — the LIVE on-chain vault-balance reader used to clamp
+   * the settle ceiling. Production omits it (defaults to
+   * `readV2VaultBalanceBaseUnits`); tests inject a deterministic fake, mirroring
+   * the coverage-preflight reader seam. Returns the vault USDC base units, or NULL
+   * on any read failure → the claim falls back to the ledger ceiling (never rejects).
+   */
+  readVaultBalance?: (args: {
+    workerWalletPubkey: string;
+    depositorWalletPubkey: string;
+    escrowNonce: bigint;
+  }) => Promise<bigint | null>;
+}
+
 /** V2 settle: authorize exactly like V1, then reserve principal in PendingSettlement. */
-export async function settleJobV2(input: SettleJobInput): Promise<EscrowGateResult> {
+export async function settleJobV2(
+  input: SettleJobInput,
+  deps: SettleJobV2Deps = {},
+): Promise<EscrowGateResult> {
   const gated = gateOpen();
   if (gated) return gated;
   return withKeyedMutex(escrowMutexKey(input.escrowPda), async () => {
@@ -1651,10 +1971,21 @@ export async function settleJobV2(input: SettleJobInput): Promise<EscrowGateResu
     if (inspected.ok === false) return { ok: false, code: inspected.code, message: inspected.message };
     if (inspected.escrowPda !== row.escrowPda) return { ok: false, code: 'internal', message: 'persisted V2 escrow PDA does not match derived coordinates.' };
     if (inspected.pendingExists) {
+      // FIX 3 (doc line 624) — a PendingSettlement PDA already exists for this
+      // index (settled out-of-band, or by a prior settle we never recorded). Book
+      // the DECODED on-chain principal/calls, NEVER the caller's requested numbers.
+      // A decode gap is a retryable failure (book nothing) — `inspectV2SettlementState`
+      // returns a `SapFailure` on decode/RPC error, but guard defensively too.
+      if (!inspected.pending) {
+        return { ok: false, code: 'on_chain_error', message: 'on-chain pending settlement could not be decoded; retry.' };
+      }
+      const decodedPrincipal = inspected.pending.amount;
+      const decodedCalls = inspected.pending.callsToSettle;
+      const decodedFee = computeV2ProtocolFee(decodedPrincipal);
       const [pending] = await db.update(sapEscrowSettlements).set({
         status: 'pending', settlementIndex: inspected.settlementIndex.toString(),
-        callsSettled: (alreadySettled + input.callsToSettle).toString(),
-        reservedPrincipalAmount: (jobReserved + principal).toString(), feeAmount: (jobFees + fee).toString(),
+        callsSettled: (alreadySettled + decodedCalls).toString(),
+        reservedPrincipalAmount: (jobReserved + decodedPrincipal).toString(), feeAmount: (jobFees + decodedFee).toString(),
         verificationProvider: provider.id, verificationPassed: true, verificationDetail: verdict.detail ?? null,
         auditRootHex: auth.auditRootHex, updatedAt: new Date(),
         metadata: { ...((row.metadata as object) ?? {}), replayReconciledFromPendingPda: true },
@@ -1663,6 +1994,7 @@ export async function settleJobV2(input: SettleJobInput): Promise<EscrowGateResu
       return { ok: false, code: 'settle_in_progress', message: 'the row changed while reconciling the on-chain pending settlement.' };
     }
 
+    const readVaultBalance = deps.readVaultBalance ?? readV2VaultBalanceBaseUnits;
     const claim = await db.transaction(async (tx) => {
       await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${input.escrowPda}, 0))`);
       const lockedRows = await tx.select({
@@ -1676,7 +2008,22 @@ export async function settleJobV2(input: SettleJobInput): Promise<EscrowGateResu
         if (r.status !== 'funding_unknown') remaining += u64(r.fundedAmount);
         remaining -= u64(r.releasedAmount) + u64(r.refundedAmount) + u64(r.reservedPrincipalAmount) + u64(r.feeAmount);
       }
-      if (remaining < totalDebit) return { kind: 'ledger_short' as const, remaining };
+      // FIX 2a (doc line 623) — CLAMP the ledger ceiling to the LIVE on-chain vault
+      // balance, read UNDER the advisory lock so the clamp is atomic with the claim.
+      // This catches ANY out-of-band drain (a self-custody withdraw, or any external
+      // mover) that the settlement ledger alone cannot see. A read failure returns
+      // NULL → KEEP the ledger ceiling and never reject on uncertain state; the
+      // on-chain program stays the authoritative fail-closed guard (6062-family).
+      // Holding the lock across one RPC round-trip is acceptable: settle is a rare,
+      // per-escrow-serialized, gated path and a fresh fail-closed read dominates.
+      const vaultBalance = await readVaultBalance({
+        workerWalletPubkey: row.workerWalletPubkey,
+        depositorWalletPubkey: row.depositorWalletPubkey,
+        escrowNonce: nonce,
+      });
+      const effectiveRemaining =
+        vaultBalance !== null && vaultBalance < remaining ? vaultBalance : remaining;
+      if (effectiveRemaining < totalDebit) return { kind: 'ledger_short' as const, remaining: effectiveRemaining };
       const claimed = await tx.update(sapEscrowSettlements).set({
         status: 'settling', settlementIndex: inspected.settlementIndex.toString(),
         // Reserve both V2 money legs INSIDE the advisory-lock transaction. A
@@ -1704,10 +2051,17 @@ export async function settleJobV2(input: SettleJobInput): Promise<EscrowGateResu
           workerWalletPubkey: row.workerWalletPubkey, depositorWalletPubkey: row.depositorWalletPubkey,
           escrowNonce: nonce, settlementIndex: inspected.settlementIndex,
         });
-        if (replayCheck.ok && replayCheck.pendingExists) {
+        if (replayCheck.ok && replayCheck.pendingExists && replayCheck.pending) {
+          // FIX 3 (doc line 624) — a settle replay hit an already-existing pending;
+          // book the DECODED on-chain principal/calls, NEVER the caller's numbers.
+          // (A decode gap ⇒ replayCheck.pending is absent ⇒ fall through to the
+          // failure/quarantine handler below and book nothing.)
+          const decodedPrincipal = replayCheck.pending.amount;
+          const decodedCalls = replayCheck.pending.callsToSettle;
+          const decodedFee = computeV2ProtocolFee(decodedPrincipal);
           const [pending] = await db.update(sapEscrowSettlements).set({
-            status: 'pending', callsSettled: (alreadySettled + input.callsToSettle).toString(),
-            reservedPrincipalAmount: (jobReserved + principal).toString(), feeAmount: (jobFees + fee).toString(), updatedAt: new Date(),
+            status: 'pending', callsSettled: (alreadySettled + decodedCalls).toString(),
+            reservedPrincipalAmount: (jobReserved + decodedPrincipal).toString(), feeAmount: (jobFees + decodedFee).toString(), updatedAt: new Date(),
           }).where(and(eq(sapEscrowSettlements.id, row.id), eq(sapEscrowSettlements.status, 'settling'))).returning();
           return { ok: true, phase: 'pending', settlement: pending, chain: null, replay: true, next: 'finalize' };
         }
