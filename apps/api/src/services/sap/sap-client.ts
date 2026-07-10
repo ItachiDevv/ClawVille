@@ -2158,6 +2158,17 @@ export async function inspectV2SettlementState(input: {
       ok: true;
       escrowPda: string;
       settlementIndex: bigint;
+      /**
+       * R5-1 — the escrow's CURRENT on-chain `settlement_index` (the monotonic
+       * counter, incremented ONLY inside settle_calls_v2 and UNTOUCHED by
+       * finalize/close), ALWAYS surfaced — distinct from `settlementIndex`, which
+       * echoes the caller's `input.settlementIndex` when supplied. The stale-claim
+       * absent-arm uses this to prove whether a slot was ever consumed
+       * (`current === persisted` ⇒ never landed) vs finalized-and-closed
+       * (`current > persisted`), disambiguating an absent PendingSettlement PDA.
+       * `0n` on the dry-run rehearsal where the escrow account doesn't exist yet.
+       */
+      currentSettlementIndex: bigint;
       pendingExists: boolean;
       /** The decoded pending account — present iff `pendingExists`. */
       pending?: DecodedPendingSettlement;
@@ -2186,10 +2197,12 @@ export async function inspectV2SettlementState(input: {
         ok: true,
         escrowPda: resolved.escrowPda.toBase58(),
         settlementIndex: 0n,
+        currentSettlementIndex: 0n,
         pendingExists: false,
       };
     }
-    const settlementIndex = input.settlementIndex ?? BigInt(escrow.settlementIndex.toString());
+    const currentSettlementIndex = BigInt(escrow.settlementIndex.toString());
+    const settlementIndex = input.settlementIndex ?? currentSettlementIndex;
     const [pendingPda] = findPendingPda(cfg.programId, resolved.escrowPda, settlementIndex);
     // Anchor-DECODE the pending account (not a raw getAccountInfo existence probe):
     // a non-null fetch both proves existence AND yields the authoritative reserved
@@ -2204,6 +2217,7 @@ export async function inspectV2SettlementState(input: {
         ok: true,
         escrowPda: resolved.escrowPda.toBase58(),
         settlementIndex,
+        currentSettlementIndex,
         pendingExists: false,
       };
     }
@@ -2218,6 +2232,7 @@ export async function inspectV2SettlementState(input: {
       ok: true,
       escrowPda: resolved.escrowPda.toBase58(),
       settlementIndex,
+      currentSettlementIndex,
       pendingExists: true,
       pending: {
         callsToSettle: BigInt(callsRaw.toString()),
@@ -2251,6 +2266,14 @@ export interface V2VaultPhysicalState {
    * when the escrow account is ABSENT (both → the unowned guard fails CLOSED).
    */
   escrowPendingAmount: bigint | null;
+  /**
+   * R5-2 — TRUE iff the escrow account itself is ABSENT on-chain (Anchor
+   * `fetchNullable` returned null), as opposed to a read/decode failure or timeout.
+   * Absent is TERMINAL (a V2 escrow that was funded cannot vanish and still be
+   * settleable) → the caller refuses with a terminal `job_not_open` instead of the
+   * retryable `pending_state_unverifiable` retry-loop. False on a read failure.
+   */
+  escrowAbsent: boolean;
 }
 
 export async function readV2VaultPhysicalState(input: {
@@ -2258,7 +2281,7 @@ export async function readV2VaultPhysicalState(input: {
   depositorWalletPubkey: string;
   escrowNonce: bigint;
 }): Promise<V2VaultPhysicalState> {
-  const empty: V2VaultPhysicalState = { vaultBalance: null, escrowPendingAmount: null };
+  const empty: V2VaultPhysicalState = { vaultBalance: null, escrowPendingAmount: null, escrowAbsent: false };
   try {
     const cfg = getConfig();
     if (usdcEscrowGate(cfg)) return empty;
@@ -2286,22 +2309,27 @@ export async function readV2VaultPhysicalState(input: {
       .getTokenAccountBalance(vaultAta, COMMITMENT)
       .then((r) => (r?.value?.amount ? BigInt(r.value.amount) : null))
       .catch(() => null);
-    const pendingP: Promise<bigint | null> = // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // R5-2 — 3-state: bigint (pending amount) | 'absent' (escrow null) | null (read fail).
+    const pendingP: Promise<bigint | 'absent' | null> = // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (getProgram().account as any).escrowAccountV2
         .fetchNullable(escrowPda)
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        .then((acc: any) => {
-          if (!acc) return null; // ABSENT escrow ⇒ unverifiable (fail-closed at caller)
+        .then((acc: any): bigint | 'absent' => {
+          if (!acc) return 'absent'; // escrow account does not exist on-chain (terminal)
           const pa = acc.pendingAmount ?? acc.pending_amount;
           return pa != null ? BigInt(pa.toString()) : 0n;
         })
         .catch(() => null);
     try {
-      const [vaultBalance, escrowPendingAmount] = await Promise.all([
+      const [vaultBalance, pendingResult] = await Promise.all([
         Promise.race([balP, timeout]),
         Promise.race([pendingP, timeout]),
       ]);
-      return { vaultBalance: vaultBalance ?? null, escrowPendingAmount: escrowPendingAmount ?? null };
+      return {
+        vaultBalance: vaultBalance ?? null,
+        escrowPendingAmount: typeof pendingResult === 'bigint' ? pendingResult : null,
+        escrowAbsent: pendingResult === 'absent',
+      };
     } finally {
       if (timer) clearTimeout(timer);
     }

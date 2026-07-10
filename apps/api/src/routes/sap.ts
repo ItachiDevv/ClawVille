@@ -1013,9 +1013,11 @@ function gateFailureStatus(
     case 'release_rail_forbidden':
     // R4-A — an unowned on-chain pending exists (out-of-band / settle_unknown-landed);
     // ops must reconcile before settling. R4-D — a stale finalize whose pending PDA is
-    // absent is unresolvable. Both are lifecycle/ops conflicts (retryable after ops). 409.
+    // absent is unresolvable. R5-1 — a stale settle whose slot was consumed on-chain but
+    // its pending is gone (finalized+closed). All lifecycle/ops conflicts (ops reconcile). 409.
     case 'unreconciled_onchain_pending':
     case 'finalize_unresolvable':
+    case 'settle_slot_consumed':
       // Lifecycle conflicts — the job is in a state that forbids this transition.
       return 409;
     case 'rpc_unreachable':
