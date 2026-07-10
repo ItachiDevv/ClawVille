@@ -384,14 +384,21 @@ describe('resumeComposedBounty (finalize/payout crank)', () => {
     expect(applied.bountyId).toBe(BOUNTY_ID);
     expect(applied.escrowPda).toBe(VAULT_PDA);
     expect(applied.hunterAvatarId).toBe(HUNTER);
+    // The observed prior state is threaded as the →paid CAS guard.
+    expect(applied.expectedPriorState).toBe('awaiting_finalize');
   });
 
-  it('re-drives a reconcile_payout_failed bounty (leg 2 retry)', async () => {
+  it('re-drives a reconcile_payout_failed bounty (leg 2 retry) — threads reconcile as the CAS prior', async () => {
+    let applied: any = null;
     const out = await resumeComposedBounty(BOUNTY_ID, {
       loadContext: async () => ctx({ compositionState: 'reconcile_payout_failed' }),
-      applyOutcome: async () => ({ ok: true, phase: 'paid', escrowPda: VAULT_PDA, payoutEscrowPda: PAYOUT_PDA, auditRootHex: AUDIT_ROOT, dryRun: true }),
+      applyOutcome: async (input) => {
+        applied = input;
+        return { ok: true, phase: 'paid', escrowPda: VAULT_PDA, payoutEscrowPda: PAYOUT_PDA, auditRootHex: AUDIT_ROOT, dryRun: true };
+      },
     } as ResumeComposedBountyDeps);
     expect(out).toEqual({ resumed: true, phase: 'paid' });
+    expect(applied.expectedPriorState).toBe('reconcile_payout_failed');
   });
 
   it('skips a non-composed bounty (composition_state null)', async () => {
