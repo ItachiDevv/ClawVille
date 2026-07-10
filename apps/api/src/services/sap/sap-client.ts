@@ -1,5 +1,5 @@
 /**
- * SAP on-chain client — load the vendored 0.25.0 IDL + `Program`, a CUSTODIAL
+ * SAP on-chain client — load the official SDK 1.0.0 IDL + `Program`, a CUSTODIAL
  * signer wrapping `keypair-vault`, and the Phase-1 (identity/reputation/tool/
  * discovery) + Phase-2 (stake/escrow money rail) instruction builders.
  *
@@ -46,7 +46,6 @@ import {
   type SimulatedTransactionResponse,
 } from '@solana/web3.js';
 import { AnchorProvider, BN, Program } from '@coral-xyz/anchor';
-import bs58 from 'bs58';
 import { db, eq, and, wallets } from '@clawville/database';
 import { decryptWalletRow } from '../keypair-vault';
 import {
@@ -68,7 +67,6 @@ import {
   findAttestationPda,
   findEscrowPda,
   findPendingPda,
-  findDisputePda,
   toolNameHash,
   sha256Bytes,
   serviceHash as deriveServiceHash,
@@ -86,13 +84,9 @@ import {
   buildDepositEscrowV2Ix,
   buildSettleCallsV2Ix,
   buildFinalizeSettlementIx,
-  buildFileDisputeIx,
-  buildResolveDisputeIx,
   buildWithdrawEscrowV2Ix,
   assembleV2SplRemaining,
   SETTLEMENT_SECURITY,
-  DISPUTE_OUTCOME,
-  type DisputeOutcome,
   type SettlementSecurityMode,
 } from './sap-escrow-v2';
 import {
@@ -101,29 +95,44 @@ import {
   TOKEN_PROGRAM_ID,
   USDC_DECIMALS,
 } from './sap-spl';
-
-// DEPLOYED PROGRAM IS 0.25-FAMILY (empirically confirmed 2026-07-09 via a full
-// devnet DisputeWindow USDC lifecycle). We load the future-0.25 IDL because its
-// ANCHOR-driven identity/stake/pricing instructions (register / init_stake /
-// deposit_stake / request_unstake / complete_unstake / update_agent) match the
-// deployed binary — in particular register + update_agent carry the `pricing_menu`
-// account the stale 0.18 onchain IDL lacks (Anchor cannot pass an account absent
-// from the loaded IDL, so update_agent pricing provisioning REQUIRES this IDL).
+import {
+  computeV2EscrowCoverageLimit,
+  preflightV2CreateCoverage,
+  preflightV2DepositCoverage,
+  type V2EscrowCoverageTerms,
+} from './sap-coverage';
+export {
+  checkV2EscrowCoverage,
+  checkV2EscrowDepositCoverage,
+  computeV2EscrowCoverageLimit,
+  preflightV2CreateCoverage,
+  preflightV2DepositCoverage,
+  V2_MIN_STAKE_LAMPORTS,
+  V2_STAKE_COVERAGE_BPS,
+  type V2EscrowCoverageTerms,
+} from './sap-coverage';
+// OFFICIAL SDK IDL — @oobe-protocol-labs/synapse-sap-sdk@1.0.0. OOBE published the SDK
+// + a refreshed on-chain IDL whose account/arg layouts MATCH the deployed 0.25-family
+// program (and match what we had empirically devnet-verified). We load THAT IDL into
+// the Anchor `Program` and let Anchor assemble every escrow-V2 money instruction (see
+// sap-escrow-v2.ts) — NO more hand-rolled discriminators / borsh / account lists. A
+// wire-parity test asserts the Anchor-built instructions are byte-identical to the
+// devnet-verified shapes, so the on-chain wire is provably unchanged.
 //
-// ⚠️ BOTH vendored IDLs are WRONG, in different places — the escrow-V2 MONEY family
-// is HAND-ROLLED in sap-escrow-v2.ts to the devnet-verified shapes, NOT taken from
-// either IDL: the future-0.25 IDL declares a 6th `settlement_receipt` account on
-// settle_calls_v2 the deployed program does NOT take (→ InvalidProgramExecutable
-// 3009), and it lists create_pending_settlement which is DEPRECATED on-chain
-// (6161). The 0.18 onchain IDL is stale the other way (4-acct create, no
-// pricing_menu). See sap-escrow-v2.ts header + docs/sap-integration.md.
+// The refreshed IDL is correct where the two old vendored IDLs were each wrong:
+// settle_calls_v2 = 5 accounts (NO settlement_receipt), create_escrow_v2 = 7 accounts
+// (agent_stake + agent_stats + pricing_menu), and it drops the deprecated
+// create_pending_settlement (settle inits the pending itself). register / update_agent
+// / init_stake / deposit_stake / request_unstake / complete_unstake / feedback /
+// attestation contexts were verified IDENTICAL to the prior vendored IDL, so their
+// accountsStrict calls below are unchanged.
 //
 // NOTE: the legacy SOL-only escrow rail (`createEscrow`/`settleCalls`/`closeEscrow`
-// Anchor calls below) was 0.18-shaped and is NOT migrated — under this IDL its
+// Anchor calls below) is 0.18-shaped and NOT migrated — under this IDL its
 // `accountsStrict` calls fail-closed (throw "Account … not provided", caught →
-// structured error). It is gated OFF (SAP_ESCROW_ENABLED default false) + dry-run,
-// so this is safe; a separate SOL-rail migration is out of this diff's scope.
-import idlJson from './synapse_agent_sap.idl.future-0.25.json' with { type: 'json' };
+// structured error). It is gated OFF (SAP_ESCROW_ENABLED default false) + dry-run, so
+// this is safe; a separate SOL-rail migration is out of this diff's scope.
+import idlJson from '@oobe-protocol-labs/synapse-sap-sdk/idl/synapse_agent_sap.json' with { type: 'json' };
 
 const COMMITMENT: Commitment = 'confirmed';
 const SYSTEM_PROGRAM_ID = SystemProgram.programId;
@@ -153,6 +162,8 @@ export type SapErrorCode =
   | 'stake_below_minimum' // 6107 — agent must stake >= 0.1 SOL first
   | 'pricing_tier_not_found' // 6148 — provision a pricing tier matching price_per_call first
   | 'pending_settlement_deprecated' // 6161 — create_pending_settlement removed; use settle_calls_v2
+  | 'stake_below_coverage'
+  | 'escrow_coverage_exceeded'
   | 'internal';
 
 export interface SapDryRunResult {
@@ -261,7 +272,7 @@ function getProgram(): Program {
     { commitment: COMMITMENT, preflightCommitment: COMMITMENT },
   );
   // Anchor 0.31 — 2-arg `new Program(idl, provider)`; idl.address carries the
-  // program id (the vendored 0.25.0 IDL pins SAPpU…FETZ).
+  // program id (the SDK 1.0.0 IDL pins SAPpU…FETZ).
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   cachedProgram = new Program(idlJson as any, provider);
   return cachedProgram;
@@ -359,6 +370,8 @@ export async function loadAvatarWalletForSigning(
  * deployed 0.25 program's (devnet-confirmed 2026-07-09); extend as new ones surface.
  */
 const SAP_ONCHAIN_ERROR_CODES: Record<number, SapErrorCode> = {
+  6145: 'stake_below_coverage',
+  6153: 'escrow_coverage_exceeded',
   6062: 'insufficient_escrow_balance', // 0x17ae — deposit too small for the fee (raise initialDeposit)
   6107: 'stake_below_minimum', // 0x17db — agent must stake >= 0.1 SOL first
   6148: 'pricing_tier_not_found', // 0x1804 — provision a pricing tier matching price_per_call first
@@ -1150,6 +1163,206 @@ export async function depositStake(input: StakeInput): Promise<SapWriteResult> {
 }
 
 /**
+ * Stake-coverage preflight — a FAIL-FAST client mirror of the on-chain gate, NOT the
+ * source of truth. The deployed create_escrow_v2 requires the WORKER agent to hold an
+ * AgentStake PDA with staked_amount ≥ the coverage requirement (StakeBelowMinimum 6107
+ * / insufficient coverage otherwise). Reading it here BEFORE building lets a create
+ * against an unstaked / under-staked worker fail with an actionable code instead of a
+ * raw on-chain revert.
+ *
+ * `computeV2EscrowCoverageLimit` below is the exact raw-unit source mirror. For a
+ * USDC escrow, raw token base units are compared directly to lamports with a 0.1 SOL
+ * minimum; there is no mint-decimal or price-oracle conversion.
+ *
+ * DRY-RUN rehearsal: when the stake account is simply MISSING on a dry-run (the agent
+ * hasn't been provisioned on this cluster yet) we SKIP the preflight so the encoding is
+ * still exercised — mirroring settleCallsV2Usdc's missing-escrow handling. A LIVE send
+ * with a missing/under stake fails fast (never broadcasts a doomed create).
+ */
+/** Narrow read seam for deterministic preflight tests; production omits it. */
+export interface V2CoveragePreflightReaders {
+  readStakeLamports?: (stakePda: PublicKey) => Promise<bigint | null>;
+  readEscrow?: (
+    escrowPda: PublicKey,
+  ) => Promise<{ balance: bigint; maxObligation: bigint } | null>;
+}
+
+async function checkAgentStakeCoverage(
+  cfg: SapConfig,
+  agentPda: PublicKey,
+  terms: V2EscrowCoverageTerms,
+  readStakeLamports?: V2CoveragePreflightReaders['readStakeLamports'],
+): Promise<SapFailure | null> {
+  const [stakePda] = findStakePda(cfg.programId, agentPda);
+  const evaluated = await preflightV2CreateCoverage(terms, async () => {
+    if (readStakeLamports) return readStakeLamports(stakePda);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const acc = await (getProgram().account as any).agentStake.fetchNullable(stakePda);
+    if (!acc) return null;
+    const decodedStake = acc.stakedAmount ?? acc.staked_amount;
+    if (decodedStake == null) throw new Error('unexpected AgentStake decode shape');
+    return BigInt(decodedStake.toString());
+  });
+  if (!evaluated) return null;
+  if (evaluated.state === 'missing_stake') {
+    const coverage = computeV2EscrowCoverageLimit(terms);
+    if (cfg.dryRun) return null; // rehearsal — encoding still exercised; chain enforces.
+    return {
+      ok: false,
+      code: 'stake_below_minimum',
+      message:
+        `worker agent ${agentPda.toBase58()} has no AgentStake — provision ≥ ` +
+        `${coverage.requiredStakeLamports} lamports (provisionAgentStake / init_stake) before opening an escrow.`,
+    };
+  }
+  const coverage = evaluated.verdict;
+  const staked = evaluated.stakeLamports;
+  if (!coverage.ok) {
+    return {
+      ok: false,
+      code: 'stake_below_coverage',
+      message:
+        `worker stake ${staked} lamports cannot cover max_obligation ` +
+        `${coverage.maxObligation} base units; required stake is ` +
+        `${coverage.requiredStakeLamports} lamports. Top up ` +
+        `${coverage.additionalStakeLamports} more lamports before opening.`,
+    };
+  }
+  return null;
+}
+
+async function checkEscrowDepositCoverage(
+  escrowPda: PublicKey,
+  amount: bigint,
+  readEscrow?: V2CoveragePreflightReaders['readEscrow'],
+): Promise<SapFailure | null> {
+  const verdict = await preflightV2DepositCoverage(amount, async () => {
+    if (readEscrow) {
+      return readEscrow(escrowPda);
+    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const account = await (getProgram().account as any).escrowAccountV2.fetchNullable(escrowPda);
+    return account
+      ? {
+          balance: BigInt(account.balance.toString()),
+          maxObligation: BigInt((account.maxObligation ?? account.max_obligation).toString()),
+        }
+      : null;
+  });
+  if (!verdict || verdict.ok) return null;
+  return {
+    ok: false,
+    code: 'escrow_coverage_exceeded',
+    message:
+      `deposit would raise the V2 escrow balance to ${verdict.projectedBalance} base units, ` +
+      `above max_obligation ${verdict.maxObligation}; maximum additional deposit is ` +
+      `${verdict.maximumAdditionalDeposit} base units. Open a new nonce-scoped escrow ` +
+      `with a larger call obligation instead.`,
+  };
+}
+
+/** Read-only, fail-open coverage preflight usable before a ledger claim. */
+export async function preflightCreateEscrowV2Coverage(input: {
+  workerWalletPubkey: string;
+  pricePerCall: bigint;
+  maxCalls: bigint;
+  initialDeposit: bigint;
+}, readers: V2CoveragePreflightReaders = {}): Promise<SapFailure | null> {
+  let workerWallet: PublicKey;
+  try {
+    workerWallet = new PublicKey(input.workerWalletPubkey);
+  } catch {
+    return { ok: false, code: 'invalid_pubkey', message: 'workerWalletPubkey is not a valid pubkey.' };
+  }
+  const cfg = getConfig();
+  const [agentPda] = findAgentPda(cfg.programId, workerWallet);
+  return checkAgentStakeCoverage(cfg, agentPda, input, readers.readStakeLamports);
+}
+
+/** Read-only, fail-open deposit-cap preflight usable before a ledger claim. */
+export async function preflightDepositEscrowV2Coverage(input: {
+  workerWalletPubkey: string;
+  depositorWalletPubkey: string;
+  escrowNonce: bigint;
+  amount: bigint;
+}, readers: V2CoveragePreflightReaders = {}): Promise<SapFailure | null> {
+  let workerWallet: PublicKey;
+  let depositorWallet: PublicKey;
+  try {
+    workerWallet = new PublicKey(input.workerWalletPubkey);
+    depositorWallet = new PublicKey(input.depositorWalletPubkey);
+  } catch {
+    return { ok: false, code: 'invalid_pubkey', message: 'invalid worker/depositor wallet pubkey.' };
+  }
+  const cfg = getConfig();
+  const [agentPda] = findAgentPda(cfg.programId, workerWallet);
+  const [escrowPda] = findEscrowPda(cfg.programId, agentPda, depositorWallet, input.escrowNonce);
+  return checkEscrowDepositCoverage(escrowPda, input.amount, readers.readEscrow);
+}
+
+export interface ProvisionAgentStakeInput {
+  /** The agent OWNER avatar — stakes its OWN SOL as its own custodial wallet. */
+  avatarId: string;
+  /** Target TOTAL staked_amount (lamports). Must be ≥ the 0.1 SOL minimum. */
+  targetLamports: bigint;
+}
+
+/**
+ * provisionAgentStake — bring the agent's AgentStake up to `targetLamports`, choosing
+ * init_stake (no stake yet) vs deposit_stake (top up the delta) by READING the current
+ * on-chain stake. EXPLICIT + operator-driven: flag-gated (escrowGate) and dry-run-
+ * honored, and NEVER auto-called from a create path — the 0.1+ SOL is a real spend that
+ * must be a deliberate step. Signer = the agent owner's OWN custodial wallet. Composes
+ * the existing initStake / depositStake executors (same gates + executeTx tail).
+ */
+export async function provisionAgentStake(
+  input: ProvisionAgentStakeInput,
+): Promise<SapWriteResult> {
+  const cfg = getConfig();
+  const gate = escrowGate(cfg);
+  if (gate) return gate;
+  if (input.targetLamports < cfg.minStakeLamports) {
+    return {
+      ok: false,
+      code: 'invalid_amount',
+      message: `target stake must be ≥ ${cfg.minStakeLamports} lamports (0.1 SOL).`,
+    };
+  }
+  const handle = await loadAvatarWallet(input.avatarId);
+  if ('ok' in handle && handle.ok === false) return handle;
+  const { publicKey: wallet } = handle as AvatarWalletHandle;
+  const [agent] = findAgentPda(cfg.programId, wallet);
+  const [stakePda] = findStakePda(cfg.programId, agent);
+
+  // Read current stake to pick init vs deposit + compute the top-up delta. A MISSING
+  // account (incl. on a dry-run rehearsal) ⇒ the init path; an existing account ⇒ deposit.
+  let current: bigint;
+  let accMissing: boolean;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const acc = await (getProgram().account as any).agentStake.fetchNullable(stakePda);
+    accMissing = !acc;
+    current = acc && acc.stakedAmount != null ? BigInt(acc.stakedAmount.toString()) : 0n;
+  } catch (err) {
+    return classifyChainError('provisionAgentStake:read', err);
+  }
+
+  if (accMissing) {
+    // No stake account yet → init_stake with the full target (init requires ≥ MIN).
+    return initStake({ avatarId: input.avatarId, lamports: input.targetLamports });
+  }
+  if (current >= input.targetLamports) {
+    return {
+      ok: false,
+      code: 'invalid_amount',
+      message: `agent stake ${current} already ≥ target ${input.targetLamports}; nothing to provision.`,
+    };
+  }
+  // Top up the delta to reach the target.
+  return depositStake({ avatarId: input.avatarId, lamports: input.targetLamports - current });
+}
+
+/**
  * request_unstake — begin the timelocked withdrawal of `lamports` from the agent's
  * AgentStake PDA (starts the cooldown; funds are NOT released yet). 0.25-family
  * 3-acct context [wallet(S), agent, stake(W)] (NO system_program). Signer = the
@@ -1316,6 +1529,149 @@ export async function updateAgentPricing(
     });
   } catch (err) {
     return classifyChainError('updateAgentPricing:build', err);
+  }
+}
+
+export interface UpdateAgentPricingUsdcInput {
+  /** The worker avatar whose OWN custodial wallet owns and updates the agent. */
+  workerAvatarId: string;
+  /** Caller-selected pricing tier identifier (1..32 trimmed characters). */
+  tierId: string;
+  /** Escrow price per call in USDC base units. */
+  pricePerCall: bigint;
+  /** Max calls/sec (positive i32). Default 100. */
+  rateLimit?: number;
+  /** Max calls/session (positive i32). Default 1000. */
+  maxCallsPerSession?: number;
+}
+
+const MAX_POSITIVE_I32 = 0x7fff_ffff;
+const MAX_U64 = 0xffff_ffff_ffff_ffffn;
+
+/** Pure service-boundary validation, exported for deterministic contract tests. */
+export function validateUpdateAgentPricingUsdcInput(
+  input: UpdateAgentPricingUsdcInput,
+): SapFailure | null {
+  const tierId = input.tierId.trim();
+  if (tierId.length < 1 || tierId.length > 32) {
+    return {
+      ok: false,
+      code: 'invalid_amount',
+      message: 'tierId must contain 1..32 characters after trimming.',
+    };
+  }
+  if (input.pricePerCall <= 0n || input.pricePerCall > MAX_U64) {
+    return {
+      ok: false,
+      code: 'invalid_amount',
+      message: 'pricePerCall must be within 1..u64::MAX.',
+    };
+  }
+  const rateLimit = input.rateLimit ?? 100;
+  if (!Number.isInteger(rateLimit) || rateLimit <= 0 || rateLimit > MAX_POSITIVE_I32) {
+    return {
+      ok: false,
+      code: 'invalid_amount',
+      message: 'rateLimit must be a positive i32 (1..2147483647).',
+    };
+  }
+  const maxCallsPerSession = input.maxCallsPerSession ?? 1000;
+  if (
+    !Number.isInteger(maxCallsPerSession) ||
+    maxCallsPerSession <= 0 ||
+    maxCallsPerSession > MAX_POSITIVE_I32
+  ) {
+    return {
+      ok: false,
+      code: 'invalid_amount',
+      message: 'maxCallsPerSession must be a positive i32 (1..2147483647).',
+    };
+  }
+  return null;
+}
+
+/**
+ * update_agent(pricing) — publish the worker's on-chain AgentPricingMenu with ONE
+ * Escrow-mode USDC tier. This is the pricing-provisioning PREREQUISITE
+ * a worker MUST run before any create_escrow_v2 against it, or create fails
+ * PricingTierNotFound 6148 (see the createEscrowV2Usdc FEATURE_GATE note — pricing
+ * is NOT auto-provisioned in the create path: update_agent is owner-signed while
+ * create is depositor-signed, so it cannot be bundled). Signer = the agent OWNER's
+ * own custodial wallet (update_agent is owner-gated on-chain).
+ *
+ * IMPORTANT: on-chain `update_agent(pricing = [tier])` REPLACES the worker's whole
+ * pricing menu; it does not append or merge. Last write wins, so this API publishes
+ * one caller-named tier per worker for now. A later multi-tier API must replace the
+ * complete intended menu atomically rather than assuming additive semantics.
+ *
+ * 0.25-family 4-acct context [wallet(S), agent(W), pricing_menu(W), system_program].
+ * Only the `pricing` arg is Some([tier]); every other update_agent option is None,
+ * so name/description/capabilities/etc. are left untouched. The tier binds the
+ * cluster USDC mint (6 dp), Escrow settlement mode — the shape create_escrow_v2
+ * requires. (devnet-confirmed 2026-07-09 tx 5SWRTNhjb82uSGcJvHDb3QShdMrN4CdpRYV2TSvwbXTNrz3yAareNY7jTvpYWniVywdQ8gpK8Rs8RUiTbVz6Y6y)
+ */
+export async function updateAgentPricingUsdc(
+  input: UpdateAgentPricingUsdcInput,
+): Promise<SapWriteResult> {
+  const cfg = getConfig();
+  const gate = usdcEscrowGate(cfg);
+  if (gate) return gate;
+  const invalid = validateUpdateAgentPricingUsdcInput(input);
+  if (invalid) return invalid;
+
+  const tierId = input.tierId.trim();
+  const rateLimit = input.rateLimit ?? 100;
+  const maxCallsPerSession = input.maxCallsPerSession ?? 1000;
+
+  const handle = await loadAvatarWallet(input.workerAvatarId);
+  if ('ok' in handle && handle.ok === false) return handle;
+  const { keypair, publicKey: wallet } = handle as AvatarWalletHandle;
+
+  const program = getProgram();
+  const [agent] = findAgentPda(cfg.programId, wallet);
+  const [pricingMenu] = findPricingPda(cfg.programId, agent);
+
+  // ONE Escrow-mode USDC tier bound to the cluster USDC mint (6 dp).
+  // Anchor field names are camelCase; fieldless enums are `{ variantName: {} }`
+  // (verified: PascalCase `{ Usdc: {} }` throws "unable to infer src variant").
+  const tier = {
+    tierId,
+    pricePerCall: new BN(input.pricePerCall.toString()),
+    minPricePerCall: null,
+    maxPricePerCall: null,
+    rateLimit,
+    maxCallsPerSession,
+    burstLimit: null,
+    tokenType: { usdc: {} },
+    tokenMint: usdcMintForEscrow(cfg),
+    tokenDecimals: USDC_DECIMALS,
+    settlementMode: { escrow: {} },
+    minEscrowDeposit: null,
+    batchIntervalSec: null,
+    volumeCurve: null,
+  };
+
+  try {
+    const tx: Transaction = await program.methods
+      .updateAgent(
+        null, // name
+        null, // description
+        null, // capabilities
+        [tier], // pricing = Some([tier])
+        null, // protocols
+        null, // agent_id
+        null, // agent_uri
+        null, // x402_endpoint
+      )
+      .accountsStrict({ wallet, agent, pricingMenu, systemProgram: SYSTEM_PROGRAM_ID })
+      .transaction();
+    return executeTx(cfg, 'updateAgentPricingUsdc', tx, keypair, {
+      wallet: wallet.toBase58(),
+      agent: agent.toBase58(),
+      pricingMenu: pricingMenu.toBase58(),
+    });
+  } catch (err) {
+    return classifyChainError('updateAgentPricingUsdc:build', err);
   }
 }
 
@@ -1730,6 +2086,90 @@ export function resolveUsdcEscrowAddresses(input: {
   return { ok: true, addrs, mint };
 }
 
+/**
+ * Resolve the nonce-scoped V2 escrow PDA without signing or sending. The gate
+ * needs this deterministic key before its claim-first/fund-second insert.
+ */
+export function resolveV2UsdcEscrowAddress(input: {
+  workerWalletPubkey: string;
+  depositorWalletPubkey: string;
+  escrowNonce: bigint;
+}): { ok: true; escrowPda: PublicKey; mint: PublicKey } | SapFailure {
+  const cfg = getConfig();
+  const gate = usdcEscrowGate(cfg);
+  if (gate) return gate;
+  let workerWallet: PublicKey;
+  let depositorWallet: PublicKey;
+  try {
+    workerWallet = new PublicKey(input.workerWalletPubkey);
+    depositorWallet = new PublicKey(input.depositorWalletPubkey);
+  } catch {
+    return { ok: false, code: 'invalid_pubkey', message: 'invalid worker/depositor wallet pubkey.' };
+  }
+  const [agentPda] = findAgentPda(cfg.programId, workerWallet);
+  const [escrowPda] = findEscrowPda(
+    cfg.programId,
+    agentPda,
+    depositorWallet,
+    input.escrowNonce,
+  );
+  return { ok: true, escrowPda, mint: usdcMintForEscrow(cfg) };
+}
+
+/**
+ * Read the authoritative V2 settlement index and whether its PendingSettlement
+ * PDA already exists. The gate calls this before claiming so a replay is routed
+ * to finalize without ever rebuilding/re-sending settle_calls_v2.
+ */
+export async function inspectV2SettlementState(input: {
+  workerWalletPubkey: string;
+  depositorWalletPubkey: string;
+  escrowNonce: bigint;
+  /** When supplied, inspect this persisted pre-send index, not the escrow's incremented current index. */
+  settlementIndex?: bigint;
+}): Promise<
+  | { ok: true; escrowPda: string; settlementIndex: bigint; pendingExists: boolean }
+  | SapFailure
+> {
+  const cfg = getConfig();
+  const gate = usdcEscrowGate(cfg);
+  if (gate) return gate;
+  const resolved = resolveV2UsdcEscrowAddress(input);
+  if (resolved.ok === false) return resolved;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const escrow = await (getProgram().account as any).escrowAccountV2.fetchNullable(
+      resolved.escrowPda,
+    );
+    if (!escrow) {
+      if (!cfg.dryRun) {
+        return {
+          ok: false,
+          code: 'on_chain_error',
+          message: 'V2 escrow account not found on-chain.',
+        };
+      }
+      return {
+        ok: true,
+        escrowPda: resolved.escrowPda.toBase58(),
+        settlementIndex: 0n,
+        pendingExists: false,
+      };
+    }
+    const settlementIndex = input.settlementIndex ?? BigInt(escrow.settlementIndex.toString());
+    const [pendingPda] = findPendingPda(cfg.programId, resolved.escrowPda, settlementIndex);
+    const pendingExists = (await getConnection().getAccountInfo(pendingPda, COMMITMENT)) !== null;
+    return {
+      ok: true,
+      escrowPda: resolved.escrowPda.toBase58(),
+      settlementIndex,
+      pendingExists,
+    };
+  } catch (err) {
+    return classifyChainError('inspectV2SettlementState', err);
+  }
+}
+
 export interface CreateEscrowUsdcInput {
   /** The DEPOSITOR (signer + payer) avatar — funds the escrow as ITS own wallet. */
   depositorAvatarId: string;
@@ -2012,63 +2452,32 @@ export async function withdrawEscrowUsdc(input: WithdrawEscrowUsdcInput): Promis
 
 // ─── SAP Escrow V2 (DisputeWindow default / CoSigned pluggable) ────────────────
 //
-// The founder-locked BOUNTY settlement flow, on the 0.25-family V2 escrow rail:
+// The founder-locked BOUNTY settlement flow, on the deployed 0.25-family V2 escrow rail:
 //   post → fund (create_escrow_v2) → accept → complete →
 //   settle_calls_v2 (charges fee + INITS pending) → (dispute window elapses) →
-//   finalize_settlement (releases principal)  |  file_dispute → arbiter resolve_dispute.
+//   finalize_settlement (releases principal)  |  file_dispute (depositor).
+//   Dispute RESOLUTION in 1.0.0 is auto_resolve_dispute (merkle/slash) — NOT wired here.
 //
-// Every builder these executors call is DEVNET-VERIFIED (2026-07-09) in sap-escrow-v2.ts
-// (discriminators / account order / args / SPL remaining). These executors only assemble
-// the V2 accounts, read the on-chain settlement_index, ensure the destination ATAs exist,
-// and reuse the SAME rails as the V1 USDC path: the usdcEscrowGate (enabled AND
-// escrowEnabled AND usdcEscrowEnabled), the custodial loadAvatarWallet (decrypt-in-memory-
-// only; the acting agent is ALWAYS its own wallet — no body pubkey is ever a signer), and
-// the executeTx dry-run/live + genesis-guard tail. SAP_DRY_RUN defaults true ⇒ NOTHING
+// Every instruction these executors emit is now BUILT BY ANCHOR off the OFFICIAL SDK
+// 1.0.0 IDL (sap-escrow-v2.ts), and the escrow-v2 wire-parity test asserts it is
+// byte-identical to the devnet-verified shapes. These executors only assemble the V2
+// accounts, read the on-chain settlement_index, ensure the destination ATAs exist, and
+// reuse the SAME rails as the V1 USDC path: the usdcEscrowGate (enabled AND escrowEnabled
+// AND usdcEscrowEnabled), the custodial loadAvatarWallet (decrypt-in-memory-only; the
+// acting agent is ALWAYS its own wallet — no body pubkey is ever a signer), and the
+// executeTx dry-run/live + genesis-guard tail. SAP_DRY_RUN defaults true ⇒ NOTHING
 // broadcasts; a dry-run only simulates.
 //
-// SPL-ORDER DISCIPLINE — `assembleV2SplRemaining()` (now co-located with the builders in
+// SPL-ORDER DISCIPLINE — `assembleV2SplRemaining()` (co-located with the builders in
 // sap-escrow-v2.ts, imported above) is the SINGLE source of truth for the token
-// `remaining_accounts` wire order. DEVNET-VERIFIED orders (2026-07-09):
+// `remaining_accounts` wire order (byte-identical to the official SDK's settle assembly):
 //   - create / deposit : [depositorAta(W), vaultAta(W), tokenProgram(ro)]  (NO mint)
 //   - settle_calls_v2  : [vaultAta(W), workerAta(W), tokenProgram(ro), treasuryAta(W),
 //                         pendingPda(W)] — settle CHARGES the fee to treasury + INITS the
 //                         pending settlement (create_pending_settlement is DEPRECATED 6161).
 //   - finalize         : [vaultAta(W), workerAta(W), tokenProgram(ro)]     (NO mint)
 //   - withdraw         : [vaultAta(W), depositorAta(W), tokenProgram(ro)]  (NO mint)
-//   - resolve          : NOT dev-confirmed — keeps its TODO(devnet-confirm); DisputeWindow
-//                         is the only verified flow, do NOT flip resolve live off the guess.
 // Vault ATA is ALWAYS getAssociatedTokenAddress(mint, escrowPda, /*allowOwnerOffCurve*/ true).
-
-/**
- * Load the ClawVille ARBITER keypair used to sign `resolve_dispute` (DisputeWindow).
- * Read from `SAP_ARBITER_KEYPAIR` as EITHER a base58 secret key OR a JSON byte array
- * (the two shapes `solana-keygen` / wallet exports use). The secret lives in memory
- * only for the sign — it is NEVER logged, echoed, or returned. Unset/invalid ⇒ a
- * structured `internal` failure (a route returns a clean 5xx, never a stack leak).
- *
- * SEPARATE from the per-avatar custodial wallets: the arbiter is the ClawVille admin
- * the escrow's on-chain `arbiter` field pins (= cfg.arbiterPubkey), not an agent.
- */
-function loadArbiterKeypair(): { keypair: Keypair } | SapFailure {
-  const raw = process.env.SAP_ARBITER_KEYPAIR?.trim();
-  if (!raw) {
-    return { ok: false, code: 'internal', message: 'arbiter keypair not configured' };
-  }
-  try {
-    let secret: Uint8Array;
-    if (raw.startsWith('[')) {
-      const arr = JSON.parse(raw) as number[];
-      secret = Uint8Array.from(arr);
-    } else {
-      secret = bs58.decode(raw);
-    }
-    const keypair = Keypair.fromSecretKey(secret);
-    return { keypair };
-  } catch {
-    // Do NOT echo the caught error — it may reference the secret key material.
-    return { ok: false, code: 'internal', message: 'arbiter keypair not configured' };
-  }
-}
 
 export interface CreateEscrowV2UsdcInput {
   /** DEPOSITOR (bounty creator) avatar — funds + signs as ITS own custodial wallet. */
@@ -2207,6 +2616,16 @@ export async function createEscrowV2Usdc(
   const vaultAta = getAssociatedTokenAddress(mint, escrowPda, true);
   const depositorAta = getAssociatedTokenAddress(mint, depositor, false);
 
+  // Stake-coverage preflight (fail-fast mirror of the on-chain create_escrow_v2 gate).
+  // Required stake is max(0.1 SOL, floor(max_obligation * 50%));
+  // the program enforces the full rule. Missing stake on a dry-run rehearsal is skipped.
+  const stakeGate = await checkAgentStakeCoverage(cfg, agentPda, {
+    pricePerCall: input.pricePerCall,
+    maxCalls: input.maxCalls,
+    initialDeposit: input.initialDeposit,
+  });
+  if (stakeGate) return stakeGate;
+
   // FEATURE_GATE: sap_agent_stake_provisioning
   // Status: create_escrow_v2 is wired for the 0.25-family 7-acct shape (stake+stats+
   //   pricing_menu), but the worker's ON-CHAIN PREREQUISITES are NOT auto-provisioned
@@ -2239,14 +2658,13 @@ export async function createEscrowV2Usdc(
     );
     // (2) create_escrow_v2 (fund-at-create) — 7 named accts + SPL remaining pays depositor → vault.
     tx.add(
-      buildCreateEscrowV2Ix({
+      await buildCreateEscrowV2Ix(getProgram(), {
         depositor,
         agentPda,
         agentStakePda,
         agentStatsPda,
         pricingMenuPda,
         escrowPda,
-        programId: cfg.programId,
         escrowNonce: input.escrowNonce,
         pricePerCall: input.pricePerCall,
         maxCalls: input.maxCalls,
@@ -2312,6 +2730,9 @@ export async function depositEscrowV2Usdc(
   const vaultAta = getAssociatedTokenAddress(mint, escrowPda, true);
   const depositorAta = getAssociatedTokenAddress(mint, depositor, false);
 
+  const coverageGate = await checkEscrowDepositCoverage(escrowPda, input.amount);
+  if (coverageGate) return coverageGate;
+
   try {
     const tx = new Transaction();
     // Idempotent vault-ATA create (no-op if it exists) so a deposit never fails on a
@@ -2325,10 +2746,9 @@ export async function depositEscrowV2Usdc(
       }),
     );
     tx.add(
-      buildDepositEscrowV2Ix({
+      await buildDepositEscrowV2Ix(getProgram(), {
         depositor,
         escrowPda,
-        programId: cfg.programId,
         escrowNonce: input.escrowNonce,
         amount: input.amount,
         remaining: assembleV2SplRemaining('deposit', { vaultAta, depositorAta, tokenMint: mint }),
@@ -2376,18 +2796,29 @@ export interface SettleCallsV2UsdcInput {
  * READ from chain here (Anchor decodes the on-chain `settlement_index` u64 as a BN under
  * the camelCase `settlementIndex` accessor). Signer = the worker's OWN custodial wallet.
  *
- * ⛔ FLIP-GATE BLOCKER (B1 — do NOT enable/wire this live until resolved) ⛔
- * This V2 settle path is NOT yet routed through the `escrow-gate.ts` idempotency ledger
- * (that ledger currently drives only the V1 `settleCallsUsdc`). On-chain there is NO
- * per-(escrow, service_hash) anti-replay receipt (the `["sap_recv", …]` PDA is unused by
- * the deployed settle), and settle_calls_v2 reads the CURRENT on-chain settlement_index,
- * which INCREMENTS each settle. So a settle retried after a landed-but-unobserved first
- * attempt would read the NEW index, init a SECOND pending, RE-CHARGE the 0.5% fee, and
- * settle another batch (bounded only by max_calls + vault balance). Before any live flip,
- * route settle/finalize/withdraw through the `escrow-gate` ledger (or an equivalent
- * (escrowPda, jobId/service_hash) claim), and honor the executeTx `broadcast:true`
- * NEVER-auto-retry contract. Tracked as the #1 item in the flip checklist
- * (docs/sap-integration.md §"FLIP-TO-LIVE CHECKLIST").
+ * FEATURE_GATE: sap_v2_release_path
+ * Status: ROUTED THROUGH THE ESCROW GATE, GATED OFF. The nonce-scoped V2 open,
+ *   worker settle, and permissionless finalize routes all use the durable money ledger;
+ *   the existing SAP/SAP_ESCROW/SAP_USDC triple gate remains default-OFF and
+ *   SAP_DRY_RUN remains default-true. Staging end-to-end sign-off is still required.
+ * Metric to graduate: the escrow-gate ledger drives the V2 TWO-PHASE DisputeWindow
+ *   settle→window→finalize with the V1 gate's authorization ported — depositor approval,
+ *   per-job release ceiling, self-dealing block, at-most-once claim — AND the T5 idempotency
+ *   contract below, verified by an adversarial + codex money-lens pass on staging.
+ * Review deadline: 2026-10-01.
+ * On deadline: if the gated path has not passed the staging open→settle→window→finalize
+ *   smoke, keep it OFF and re-evaluate or delete it; do not silently extend the deadline.
+ * Reference: docs/sap-integration.md §"FLIP-TO-LIVE CHECKLIST" B1 (gate→V2 two-phase retrofit).
+ *
+ * ── T5 idempotency (on-chain anti-replay is authoritative in 1.0.0) ────────────
+ * The deployed program enforces at-most-once settlement ITSELF: settle inits a per-index
+ * `PendingSettlement` PDA, and a duplicate settle for a reused/finalized index FAILS LOUD
+ * (SettlementReplay 6138 / EscrowNonceReused 6097 / SettlementAlreadyFinalized 6099). So the
+ * old "no on-chain anti-replay" concern is RESOLVED — the chain is the replay guard. The
+ * gate integration (metric above) is still required for AUTHORIZATION (approval/ceiling), not
+ * for replay. The retrofit MUST treat "pending PDA already exists for the current index" as
+ * ALREADY-SETTLED → route to FINALIZE, NEVER re-settle (re-init aborts), and honor the
+ * executeTx `broadcast:true` NEVER-auto-retry contract.
  */
 export async function settleCallsV2Usdc(
   input: SettleCallsV2UsdcInput,
@@ -2493,12 +2924,11 @@ export async function settleCallsV2Usdc(
     // settle_calls_v2 — charges the fee to treasury + INITS the pending settlement.
     // SPL remaining order is LOAD-BEARING (tokenProgram idx2, treasury idx3, pending W idx4).
     tx.add(
-      buildSettleCallsV2Ix({
+      await buildSettleCallsV2Ix(getProgram(), {
         workerWallet,
         agentPda,
         agentStatsPda,
         escrowPda,
-        programId: cfg.programId,
         escrowNonce: input.escrowNonce,
         callsToSettle: input.callsToSettle,
         serviceHash: auditRoot,
@@ -2589,13 +3019,12 @@ export async function finalizeSettlementUsdc(
       }),
     );
     tx.add(
-      buildFinalizeSettlementIx({
+      await buildFinalizeSettlementIx(getProgram(), {
         payer,
         agentWallet: workerWallet,
         escrowPda,
         pendingPda,
         agentStatsPda,
-        programId: cfg.programId,
         remaining: assembleV2SplRemaining('finalize', { vaultAta, workerAta, tokenMint: mint }),
       }),
     );
@@ -2614,187 +3043,23 @@ export async function finalizeSettlementUsdc(
   }
 }
 
-export interface FileDisputeUsdcInput {
-  /** DEPOSITOR (bounty creator) avatar — the ONLY party that can dispute; signs. */
-  depositorAvatarId: string;
-  workerWalletPubkey: string;
-  escrowNonce: bigint;
-  settlementIndex: bigint;
-  /** 32-byte hash of the depositor's dispute evidence. */
-  evidenceHash: Uint8Array;
-}
-
-/**
- * file_dispute (DisputeWindow) — the depositor disputes a pending release within the
- * window, blocking finalize until the arbiter resolves. No token move. Signer = the
- * depositor. dispute PDA = ["sap_dispute", pending].
- */
-export async function fileDisputeUsdc(input: FileDisputeUsdcInput): Promise<SapWriteResult> {
-  const cfg = getConfig();
-  const gate = usdcEscrowGate(cfg);
-  if (gate) return gate;
-  const modeGate = disputeWindowModeGate(cfg);
-  if (modeGate) return modeGate;
-  if (input.evidenceHash.length !== 32) {
-    return { ok: false, code: 'invalid_amount', message: 'evidenceHash must be 32 bytes.' };
-  }
-  let workerWallet: PublicKey;
-  try {
-    workerWallet = new PublicKey(input.workerWalletPubkey);
-  } catch {
-    return { ok: false, code: 'invalid_pubkey', message: 'workerWalletPubkey is not a valid pubkey.' };
-  }
-
-  const handle = await loadAvatarWallet(input.depositorAvatarId);
-  if ('ok' in handle && handle.ok === false) return handle;
-  const { keypair, publicKey: depositor } = handle as AvatarWalletHandle;
-
-  const [agentPda] = findAgentPda(cfg.programId, workerWallet);
-  const [escrowPda] = findEscrowPda(cfg.programId, agentPda, depositor, input.escrowNonce);
-  const [pendingPda] = findPendingPda(cfg.programId, escrowPda, input.settlementIndex);
-  const [disputePda] = findDisputePda(cfg.programId, pendingPda);
-
-  try {
-    const tx = new Transaction();
-    tx.add(
-      buildFileDisputeIx({
-        depositor,
-        escrowPda,
-        pendingPda,
-        disputePda,
-        programId: cfg.programId,
-        evidenceHash: Buffer.from(input.evidenceHash),
-      }),
-    );
-    return executeTx(cfg, 'fileDisputeUsdc', tx, keypair, {
-      depositor: depositor.toBase58(),
-      escrow: escrowPda.toBase58(),
-      pending: pendingPda.toBase58(),
-      dispute: disputePda.toBase58(),
-    });
-  } catch (err) {
-    return classifyChainError('fileDisputeUsdc:build', err);
-  }
-}
-
-export interface ResolveDisputeUsdcInput {
-  workerWalletPubkey: string;
-  depositorWalletPubkey: string;
-  escrowNonce: bigint;
-  settlementIndex: bigint;
-  /** DepositorWins (refund) or AgentWins (release) — the only valid resolutions. */
-  outcome: DisputeOutcome;
-}
-
-/**
- * resolve_dispute (DisputeWindow) — the ClawVille ARBITER settles a filed dispute:
- * DepositorWins refunds the creator, AgentWins releases to the worker. Signer = the
- * arbiter keypair (SAP_ARBITER_KEYPAIR), which MUST match the escrow's on-chain
- * `arbiter` (= cfg.arbiterPubkey when set). Prepends idempotent depositor + worker ATA
- * creates (either may be the destination; the arbiter pays rent).
- *
- * TODO(devnet-confirm): SPL remaining order/identity for resolve_dispute not
- * dev-verified (assembleV2SplRemaining).
- */
-export async function resolveDisputeUsdc(
-  input: ResolveDisputeUsdcInput,
-): Promise<SapWriteResult> {
-  const cfg = getConfig();
-  const gate = usdcEscrowGate(cfg);
-  if (gate) return gate;
-  const modeGate = disputeWindowModeGate(cfg);
-  if (modeGate) return modeGate;
-  if (input.outcome !== DISPUTE_OUTCOME.DepositorWins && input.outcome !== DISPUTE_OUTCOME.AgentWins) {
-    return {
-      ok: false,
-      code: 'invalid_amount',
-      message: 'outcome must be DepositorWins (1) or AgentWins (2).',
-    };
-  }
-  let workerWallet: PublicKey;
-  let depositorWallet: PublicKey;
-  try {
-    workerWallet = new PublicKey(input.workerWalletPubkey);
-    depositorWallet = new PublicKey(input.depositorWalletPubkey);
-  } catch {
-    return { ok: false, code: 'invalid_pubkey', message: 'invalid worker/depositor wallet pubkey.' };
-  }
-
-  const arbiterHandle = loadArbiterKeypair();
-  if ('ok' in arbiterHandle && arbiterHandle.ok === false) return arbiterHandle;
-  const { keypair: arbiterKeypair } = arbiterHandle as { keypair: Keypair };
-  // Defense-in-depth: the loaded arbiter MUST be the escrow's configured arbiter, or the
-  // on-chain arbiter constraint fails. Catch the misconfig BEFORE building the tx.
-  if (cfg.arbiterPubkey && !cfg.arbiterPubkey.equals(arbiterKeypair.publicKey)) {
-    return {
-      ok: false,
-      code: 'internal',
-      message: 'SAP_ARBITER_KEYPAIR does not match the configured SAP_ARBITER_PUBKEY.',
-    };
-  }
-
-  const mint = usdcMintForEscrow(cfg);
-  const [agentPda] = findAgentPda(cfg.programId, workerWallet);
-  const [agentStatsPda] = findStatsPda(cfg.programId, agentPda);
-  const [escrowPda] = findEscrowPda(cfg.programId, agentPda, depositorWallet, input.escrowNonce);
-  const [pendingPda] = findPendingPda(cfg.programId, escrowPda, input.settlementIndex);
-  const [disputePda] = findDisputePda(cfg.programId, pendingPda);
-  const vaultAta = getAssociatedTokenAddress(mint, escrowPda, true);
-  const depositorAta = getAssociatedTokenAddress(mint, depositorWallet, false);
-  const workerAta = getAssociatedTokenAddress(mint, workerWallet, false);
-
-  try {
-    const tx = new Transaction();
-    // Idempotent creates for BOTH possible destinations (arbiter pays rent) — the
-    // program releases to depositor (refund) or worker (release) by outcome.
-    tx.add(
-      createAssociatedTokenAccountIdempotentInstruction({
-        payer: arbiterKeypair.publicKey,
-        ata: depositorAta,
-        owner: depositorWallet,
-        mint,
-      }),
-    );
-    tx.add(
-      createAssociatedTokenAccountIdempotentInstruction({
-        payer: arbiterKeypair.publicKey,
-        ata: workerAta,
-        owner: workerWallet,
-        mint,
-      }),
-    );
-    tx.add(
-      buildResolveDisputeIx({
-        arbiter: arbiterKeypair.publicKey,
-        depositor: depositorWallet,
-        agentWallet: workerWallet,
-        escrowPda,
-        pendingPda,
-        disputePda,
-        agentStatsPda,
-        programId: cfg.programId,
-        outcome: input.outcome,
-        remaining: assembleV2SplRemaining('resolve', {
-          vaultAta,
-          depositorAta,
-          workerAta,
-          tokenMint: mint,
-        }),
-      }),
-    );
-    return executeTx(cfg, 'resolveDisputeUsdc', tx, arbiterKeypair, {
-      arbiter: arbiterKeypair.publicKey.toBase58(),
-      depositor: depositorWallet.toBase58(),
-      worker: workerWallet.toBase58(),
-      escrow: escrowPda.toBase58(),
-      pending: pendingPda.toBase58(),
-      dispute: disputePda.toBase58(),
-      outcome: String(input.outcome),
-    });
-  } catch (err) {
-    return classifyChainError('resolveDisputeUsdc:build', err);
-  }
-}
+// ── DISPUTE PATH DISABLED (SDK 1.0.0) ─────────────────────────────────────────
+// There is deliberately NO reachable executor/route that files OR resolves a
+// dispute through the ClawVille surface:
+//   - resolve_dispute DOES NOT EXIST in the deployed 1.0.0 program (the old
+//     arbiter-signed path targeted a phantom instruction → InstructionFallbackNotFound;
+//     removed). 1.0.0 resolution is the permissionless `auto_resolve_dispute`
+//     (merkle-proof + stake-slash) + `submit_agent_evidence` — NOT wired (it moves
+//     real stake on a lost dispute; a deliberate follow-up).
+//   - file_dispute: the `buildFileDisputeIx` BUILDER stays (correct 1.0.0 shape,
+//     wire-parity tested), but NO `fileDisputeUsdc` executor is exposed. A filed
+//     dispute sets pending.is_disputed and BLOCKS finalize with no resolution path
+//     we control, so v1 posture is DisputeWindow-as-timelock: no dispute filed
+//     through our surface; finalize releases after the window elapses. An EXTERNAL
+//     depositor can still call file_dispute on-chain directly (the program is public)
+//     → an `auto_resolve_dispute` crank is a REQUIRED follow-up BEFORE the rail serves
+//     untrusted external depositors. Safe to defer now — the rail is gated OFF and
+//     early smoke uses a ClawVille-controlled depositor.
 
 export interface WithdrawEscrowV2UsdcInput {
   depositorAvatarId: string;
@@ -2849,10 +3114,9 @@ export async function withdrawEscrowV2Usdc(
       }),
     );
     tx.add(
-      buildWithdrawEscrowV2Ix({
+      await buildWithdrawEscrowV2Ix(getProgram(), {
         depositor,
         escrowPda,
-        programId: cfg.programId,
         amount: input.amount,
         remaining: assembleV2SplRemaining('withdraw', { vaultAta, depositorAta, tokenMint: mint }),
       }),

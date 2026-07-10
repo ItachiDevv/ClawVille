@@ -1,6 +1,6 @@
 # SAP (Synapse Agent Protocol) — on-chain integration + flip-to-live runbook
 
-**Status:** FULLY built, gated OFF + devnet-first + dry-run by default. **Set 2026-06-20. Last audited 2026-07-09 — MIGRATED the escrow-V2 client from the stale 0.18-shaped builders to the DEVNET-VERIFIED 0.25-family shapes (7-acct create, 5-acct settle w/ fee+pending SPL, create_pending DEPRECATED, deposit>obligation money rule, 0.1-SOL stake prerequisite; loads the future-0.25 IDL for the Anchor identity/stake/pricing instructions). Prior 2026-06-21: cross-agent attestation rung.**
+**Status:** FULLY built, gated OFF + devnet-first + dry-run by default. **Set 2026-06-20. Last audited 2026-07-09 (rev 5) — the deployed program's V2 stake/max-obligation checks were derived from upstream source at commit `55d29edeafebf5fd11ee6c7a63935625cfe98b1b`, validated against the live devnet escrow, and mirrored as fail-open UX preflights. Prior rev 4: workers can publish the required caller-named Escrow-mode USDC pricing tier through the authenticated, avatar-bound `POST /api/sap/agent/pricing` route; prior rev 3: SAP V2 DisputeWindow release was routed through the escrow-gate ledger; prior rev 2: adopted the official SDK `@oobe-protocol-labs/synapse-sap-sdk@1.0.0`; prior rev 1: 0.18→0.25 migration.**
 **Plan:** `.claude/plans/sap-onchain-agents/PLAN.md` · **Owner:** orchestrator (Claude)
 **FEATURE_GATE:** `sap_onchain_agents` (review deadline 2026-09-20 — see `routes/sap.ts`).
 
@@ -11,23 +11,25 @@
 > settle_calls_v2 → finalize_settlement → withdraw_escrow_v2; funds moved; zero
 > PrivilegeEscalation). The escrow-V2 client is built to those EMPIRICAL shapes.
 >
-> **NEITHER vendored IDL is authoritative — they are wrong in DIFFERENT places:**
-> - `synapse_agent_sap.onchain.idl.json` (0.18.0) is STALE: `create_escrow_v2` is
->   4-acct (deployed is 7-acct); `register`/`update_agent` lack `pricing_menu`.
-> - `synapse_agent_sap.idl.future-0.25.json` (0.25.0) is WRONG for `settle_calls_v2`:
->   it declares a 6th named `settlement_receipt` the DEPLOYED program does NOT take
->   (passing it → `InvalidProgramExecutable 3009`), and lists `create_pending_settlement`
->   which is **DEPRECATED on-chain (6161)**.
+> **RESOLVED 2026-07-09 (rev 2) — the OFFICIAL SDK 1.0.0 IDL is now authoritative.** OOBE
+> published `@oobe-protocol-labs/synapse-sap-sdk@1.0.0` with a refreshed IDL whose account/
+> arg layouts MATCH the deployed 0.25-family program (and match what we devnet-verified). We
+> now load THAT IDL and let Anchor build every escrow-V2 instruction. The two old vendored
+> IDLs (`synapse_agent_sap.onchain.idl.json` 0.18, `synapse_agent_sap.idl.future-0.25.json`)
+> are superseded — the SDK IDL is correct where each was wrong: `settle_calls_v2` = 5 accts
+> (NO `settlement_receipt`), `create_escrow_v2` = 7 accts (stake+stats+pricing_menu), and it
+> drops the deprecated `create_pending_settlement`.
 >
-> **What the client actually does (2026-07-09):**
-> - **Loads the future-0.25 IDL** (`sap-client.ts`) for the ANCHOR-driven identity/stake/
->   pricing instructions — register / init_stake / deposit_stake / request_unstake /
->   complete_unstake / update_agent — because their account contexts (incl. the
->   `pricing_menu` on register + update_agent) match the deployed binary. Anchor cannot
->   pass an account absent from the loaded IDL, so update_agent pricing provisioning
->   REQUIRES this IDL (the stale onchain IDL lacks `pricing_menu`).
-> - **HAND-ROLLS the escrow-V2 money family** in `sap-escrow-v2.ts` to the devnet-verified
->   shapes (NOT taken from either IDL):
+> **What the client actually does (2026-07-09 rev 2):**
+> - **Loads the SDK 1.0.0 IDL** (`sap-client.ts`, imported from
+>   `@oobe-protocol-labs/synapse-sap-sdk/idl/synapse_agent_sap.json`) for BOTH the Anchor-driven
+>   identity/stake/pricing instructions (register / init_stake / deposit_stake / request_unstake /
+>   complete_unstake / update_agent / feedback / attestation — contexts verified byte-identical to
+>   the prior vendored IDL) AND the escrow-V2 money family.
+> - **Anchor BUILDS the escrow-V2 money family** in `sap-escrow-v2.ts` via
+>   `program.methods.X().accountsStrict().remainingAccounts().instruction()` — no hand-rolled
+>   discriminators/borsh/account lists. A wire-parity test (`__tests__/sap-escrow-v2.test.ts`)
+>   asserts the Anchor-built `data`+`keys` are byte-identical to the devnet-verified shapes below:
 >
 > | Instruction | DEPLOYED 0.25-family shape (empirical) | devnet tx |
 > |---|---|---|
@@ -54,9 +56,11 @@
 > the observed ~0.44% fee; `FEE_HEADROOM_BPS` is a client guard, not the on-chain fee).
 >
 > **Consequence:** the escrow rail stays HARD-GATED (`SAP_ESCROW_ENABLED=false`, dry-run
-> default) until a funded stake+pricing provisioning flow exists per worker agent
-> (register + ≥0.1 SOL stake + `updateAgentPricing`, NOT auto-provisioned — see the
-> `sap_agent_stake_provisioning` FEATURE_GATE in `sap-client.ts` + §9).
+> default) until the funded worker-provisioning flow passes staging. The prior missing-pricing-
+> route / 6148 application gap is **RESOLVED** by `POST /api/sap/agent/pricing`: the worker signs
+> through its own avatar-bound custodial wallet and publishes one caller-named Escrow-mode USDC tier.
+> Registration + ≥0.1 SOL stake remain separate prerequisites. Pricing is not auto-provisioned;
+> see the `sap_agent_stake_provisioning` FEATURE_GATE in `sap-client.ts` + §9.
 >
 > **NOTE — the 0.18 dry-run harness (`scripts/sap/dry-run-e2e.ts`) + its `0.18.0` version
 > pin are now STALE** and out of scope for this diff; they must be re-vendored/re-pinned to
@@ -134,7 +138,7 @@ is a code-review event, not an ops toggle.
 | `sap-config.ts` | Gate + cluster + program-id + RPC + dry-run + USDC-mints + min-stake loader. `loadSapConfig()` + the mainnet code-gate throw + the mainnet-RPC-hostname guard (FIX-D) + `isHonoredEscrowMint()` (SOL-only, FIX-E) + the mainnet genesis-hash constant. `SAP_MIN_STAKE_LAMPORTS` mirrors the on-chain floor (StakeBelowMinimum 6107). |
 | `sap-pdas.ts` | Pure PDA derivation for every account + `u64LE`, `toolNameHash` (sha256), `serviceHash`. `findReceiptPda` is NOT wired into settle (deployed settle takes no `settlement_receipt`; the pending PDA rides in SPL remaining). |
 | `sap-escrow-v2.ts` | The HAND-ROLLED escrow-V2 money builders (create/settle/finalize/withdraw/dispute + close) built to the devnet-verified 0.25-family shapes, PLUS `assembleV2SplRemaining()` — the SINGLE source of truth for the SPL `remaining_accounts` wire order. Pure; byte-tested in `__tests__/sap-escrow-v2.test.ts`. |
-| `sap-client.ts` | Loads the **future-0.25 IDL** + `Program` (Anchor identity/stake/pricing) + calls the hand-rolled escrow-V2 builders; custodial in-memory signing via `keypair-vault` (FIX-F); honest dry-run program-reached classification (FIX-B); live-send mainnet genesis-hash guard (FIX-D); structured errors; the `deposit>obligation` money pre-flight + `sap_agent_stake_provisioning` FEATURE_GATE. |
+| `sap-client.ts` | Loads the **future-0.25 IDL** + `Program` (Anchor identity/stake/pricing) + calls the hand-rolled escrow-V2 builders; custodial in-memory signing via `keypair-vault` (FIX-F); honest dry-run program-reached classification (FIX-B); live-send mainnet genesis-hash guard (FIX-D); structured errors; worker-owned `updateAgentPricingUsdc` provisioning; the `deposit>obligation` money pre-flight + `sap_agent_stake_provisioning` FEATURE_GATE. |
 | `routes/sap.ts` | `requireAuthOrAgentSession`-gated Hono routes; `requireLedgerCapable` on agent-session writes (FIX-C); Zod on every body; gate → 503 before chain work; FEATURE_GATE block. |
 | `apps/api/scripts/sap/dry-run-e2e.ts` | The 0.18 conformance harness — now STALE (version-pins `0.18.0` + asserts the OLD account sets). Must be re-pinned/re-vendored to the 0.25-family shapes before it can gate again; out of scope for the 2026-07-09 migration diff. |
 
@@ -189,6 +193,7 @@ implicitly ledger-capable.**
 | `POST /api/sap/attestation/revoke` | human/agent | `SAP_ENABLED` | `revoke_attestation` — the ORIGINAL attester revokes its attestation of `subjectAgentPda`. No args on-chain. (POST, not DELETE-with-body — matches the codebase's param-only DELETE convention.) |
 | `GET /api/sap/agents?limit=` | none | `SAP_ENABLED` | Discovery — `AgentAccount.all()` (discriminator memcmp), reputation-sorted. |
 | `GET /api/sap/agent/:pubkey` | none | `SAP_ENABLED` | One agent profile by wallet (404 `not_registered` if none). |
+| `POST /api/sap/agent/pricing` | human/agent | `SAP_ESCROW_ENABLED` + `SAP_USDC_ESCROW_ENABLED` | Worker publishes one caller-named Escrow-mode USDC pricing tier as itself; custody binds to `identity.avatarId`. `update_agent(pricing=[tier])` replaces the complete pricing menu (last write wins), and `pricePerCall` must exactly match a later V2 escrow price or create fails `PricingTierNotFound 6148`. |
 | `POST /api/sap/escrow/stake` | human/agent | `SAP_ESCROW_ENABLED` | `init_stake` ≥0.1 SOL — REAL, timelocked, explicit separate step. |
 | `POST /api/sap/escrow/deposit-stake` | human/agent | `SAP_ESCROW_ENABLED` | `deposit_stake` top-up. |
 | `POST /api/sap/escrow/create` | human/agent | `SAP_ESCROW_ENABLED` | `create_escrow_v2` — prepaid per-call escrow; **SOL ONLY** for now (USDC ⇒ 400 `sol_only_for_now` until the SPL remaining-accounts path is wired, FIX-E). SelfReport. |
@@ -475,6 +480,16 @@ excludes it from the spendable balance).
 | `POST /escrow/usdc/settle` | WORKER as itself | read the PERSISTED approval → clamp `callsToSettle` to maxCalls/approved/funded → atomic claim → release vault → worker ATA (≤ once per (escrow, job)) |
 | `POST /escrow/usdc/refund` | DEPOSITOR as itself | atomic `refunding` claim → reclaim unspent USDC (cancel / expiry / verify-fail); books `refunded_amount` |
 
+### V2 release routes (`/api/sap/escrow/v2/*` — all triple-gated 503, Zod, requireAuthOrAgentSession + non-guest ledger identity)
+
+| Route | Role / acting avatar | What |
+|---|---|---|
+| `POST /escrow/v2/open` | DEPOSITOR as itself | claim the nonce-bound `(escrowPda, jobId)` ledger row before funding through the existing V2 create/deposit executors; persists `escrowVersion='v2'` + `escrowNonce`; broadcast-unknown funding becomes reconcile-only `funding_unknown` |
+| `POST /escrow/v2/settle` | WORKER as itself | enforce persisted depositor approval + ceiling + verification, atomically claim the job, then charge the protocol-fee leg and initialize the per-index PendingSettlement PDA; success records `settlementIndex`, `settleSignature`, fee, and `callsSettled`, then enters `pending` |
+| `POST /escrow/v2/finalize` | any authenticated non-guest avatar | permissionless crank using the caller's avatar wallet only as payer; finalize the persisted settlement index after the dispute window, release principal to the worker, book `releasedAmount`, and enter terminal `settled` |
+
+V2 release is on-chain-only: a row recorded with `metadata.rail='payai'` is refused before either V2 executor. A settle replay in `pending` returns finalize guidance without another chain send; a replay in `settled` returns the terminal row. Clean pre-broadcast finalize failures leave `pending` retryable. Broadcast-but-unconfirmed settle/finalize outcomes become `settle_unknown` / `finalize_unknown` with the observed signature and are never automatically retried. Fee and principal are deliberately separate ledger legs: settle may charge only the fee; finalize releases principal.
+
 ### Rule E5 parity
 
 BOTH a human (Lucia cookie) AND a connected/hosted agent (`X-Clawville-Agent-Session`)
@@ -528,11 +543,23 @@ before `SAP_USDC_ESCROW_ENABLED` is EVER flipped on for real money:
 
 ---
 
+## Empirical verification + upstream SDK notes (2026-07-09 rev 2, SDK adoption)
+
+Run `bun run apps/api/scripts/sap/simulate-shapes.ts` (READ-ONLY devnet — no sends, no funds, no signer) to reproduce. It reads the four LANDED devnet txs our builders were verified against and reports the DEPLOYED program's ACCEPTED account shape (a landed tx = what the program took), then decodes the on-chain escrow via the new SDK IDL.
+
+- **SPL shape (trap-list T2) — RESOLVED: the deployed program DROPS the token mint.** All four landed txs (create/settle/finalize/withdraw) carry NO mint in `remaining_accounts` — exactly what our `assembleV2SplRemaining` sends. settle = `[vaultAta, workerAta, tokenProgram, treasuryAta, pendingPda]` (treasury idx3, pending idx4), create/deposit = `[depositorAta, vaultAta, tokenProgram]`, finalize/withdraw = `[vault, otherAta, tokenProgram]`.
+- **DECODE parity — RESOLVED.** The on-chain `EscrowAccountV2` decodes cleanly via the SDK 1.0.0 IDL: `settlementIndex=1, balance=95500, pendingAmount=0, tokenMint=<devnet USDC>, settlementSecurity=DisputeWindow` — the 95,500 residual matches the documented conservation (1,000,000 deposit − 900,000 principal − 4,500 fee). The settle→finalize state-machine reads (settlementIndex/pendingAmount/balance/amount/isFinalized/isDisputed) therefore operate on a layout the swapped IDL decodes correctly (encode-parity ≠ decode-parity — both now proven).
+
+**UPSTREAM SDK notes (report to the OOBE dev):**
+- The SDK's `EscrowV2Module.deposit()` (send-module) validates `splAccounts.length >= 4` expecting `[depositorAta, escrowAta, tokenMint, tokenProgram]` (WITH mint) — but the deployed devnet program accepts the 3-account NO-mint shape (proven above). The SDK's mint expectation is AHEAD of / mismatched with this deployment. We build our own remaining-accounts (no mint) and do NOT use the SDK send-module.
+- The SDK ships TWO PDA modules; `/pdas` (plural) is BROKEN (drops the escrow depositor seed, 4-byte nonce, stake-from-wallet, mis-seeded dispute → un-fundable addresses). We import `/pda` (singular) semantics only and keep our own `sap-pdas.ts`; a `sap-pda-parity.test.ts` asserts ours === the SDK `/pda` for every escrow-V2 account.
+
 ## FLIP-TO-LIVE CHECKLIST — SAP Escrow V2 (0.25-family) — added 2026-07-09
 
-The 0.18→0.25 client migration (branch `feat/sap-v2-settlement`) lands the DEVNET-VERIFIED
-builder/executor shapes but is **gated OFF and wired to NOTHING** (the `*V2Usdc` executors
-have no route/orchestrator/ledger caller). It is safe to ship as scaffolding. The items
+The 0.18→0.25 client migration (branch `feat/sap-v2-settlement`) landed the DEVNET-VERIFIED
+builder/executor shapes. The V2 funding and release executors are now routed, with counterparty
+release reachable only through the escrow-gate ledger; the whole surface remains **gated OFF**.
+The items
 below MUST be resolved before ANY enablement (SAP_ENABLED / SAP_ESCROW_ENABLED /
 SAP_USDC_ESCROW_ENABLED = true, SAP_DRY_RUN=false) — this is the Codex flip pass scope.
 
@@ -540,24 +567,90 @@ SAP_USDC_ESCROW_ENABLED = true, SAP_DRY_RUN=false) — this is the Codex flip pa
 on-chain: 1,000,000 = 900,000 principal + 4,500 fee(0.5%) + 95,500 residual) + an adversarial
 money-path pass. Verdict: safe to push gated; the following gate the flip.**
 
-1. **⛔ B1 — Idempotency ledger integration (MUST-FIX before flip).** The V2 settle/finalize/
-   withdraw path is NOT routed through `escrow-gate.ts` (which drives only the V1 path). There
-   is no on-chain per-(escrow, service_hash) anti-replay (the `sap_recv` receipt PDA is unused
-   by the deployed settle), and settle reads the incrementing on-chain `settlement_index`. A
-   retried settle after a landed-but-unobserved first attempt double-charges the fee + over-
-   settles. Wire V2 settle/finalize/withdraw through the `escrow-gate` ledger (or an equivalent
-   `(escrowPda, jobId/service_hash)` claim) + honor the `executeTx` `broadcast:true` no-auto-retry
-   contract. See the ⛔ block on `settleCallsV2Usdc` in `sap-client.ts`.
-2. **Wiring + E5 parity.** Expose the V2 path through `routes/sap.ts` using the SAME
-   `requireAuthOrAgentSession` + `requireNonGuestIdentity` resolver the existing routes use, so
-   BOTH a human and a connected/hosted agent settle as themselves (bind to `identity.avatarId`).
-3. **Agent stake provisioning (economic prerequisite).** Every agent needs ≥0.1 SOL staked
-   (`init_stake`, MIN hard-enforced 6107) + ~0.055 SOL register rent + a pricing tier matching
-   the escrow price (`update_agent`, else 6148) BEFORE it can create an escrow. This is NOT
-   auto-provisioned (no SOL spend in this diff — see FEATURE_GATE `sap_agent_stake_provisioning`).
-   Build a funded provisioning flow. NOTE: `updateAgentPricing.pricePerCall` (owner-signed) MUST
-   equal `createEscrowV2Usdc.pricePerCall` (depositor-signed) — they are separate txs; the
-   provisioning flow must keep them in sync or add a read-only pre-check.
+1. **B1 — Escrow-gate integration for the RELEASE path (approval/ceiling/job-hygiene) — ROUTED, GATED OFF.**
+   *(Premise CORRECTED 2026-07-09 rev 2: the earlier "no on-chain anti-replay" claim is WRONG for
+   1.0.0.)* The deployed 1.0.0 program DOES enforce at-most-once settlement on-chain — each escrow
+   keeps a monotonic `settlement_index`, `settle_calls_v2` INITs a per-index `PendingSettlement`
+   PDA atomically, and a duplicate settle for a finalized/reused index FAILS LOUD
+   (`SettlementReplay 6138` / `EscrowNonceReused 6097` / `SettlementAlreadyFinalized 6099`). So the
+   chain is the authoritative replay guard; a naive settle retry can no longer silently double-
+   charge. The V2 RELEASE path now enters the same ledger gate through nonce-bound V2 open and
+   retains the V1 authorization layer: worker-only settle, persisted depositor approval, ceiling
+   rejection (never truncation), self-dealing re-check, server-built verification signal, and the
+   keyed-mutex + PostgreSQL advisory-lock conditional claim before chain dispatch. DisputeWindow
+   release is explicitly two-phase: `open|submitted → settling → pending → settled`. Settle books
+   only the protocol fee and consumes `callsSettled`; finalize books principal in `releasedAmount`.
+   `settle_unknown` and `finalize_unknown` are reconcile-only states for broadcast-but-unconfirmed
+   outcomes. A clean pre-broadcast early-finalize refusal leaves `pending` retryable. Replay-family
+   errors (6097/6099/6138) reconcile toward `pending` and direct the caller to finalize; settle is
+   never blindly resent. This retrofit remains behind the three existing OFF-by-default SAP/USDC
+   gates and `SAP_DRY_RUN=true`; the staging end-to-end deadline remains open before any live flip.
+   FUNDING-side V2 (create/deposit — the depositor spending its OWN escrow) is safe to route now.
+**Release-path (B1) flip-gate follow-ups — from the 2026-07-09 money-lens review (APPROVED, non-blocking while the rail is OFF + DRY_RUN):**
+- **Pre-flip empirical gate [REQUIRED, Codex 2026-07-09] — re-run `simulate-shapes.ts` GREEN immediately before ANY flag flip.** The byte-parity tests pin the wire against the SDK's BUNDLED IDL offline; only this read-only devnet script proves the DEPLOYED binary still accepts our shapes (OOBE redeploys without notice — it has happened twice). A flip with a stale shape table is a fund-lock risk.
+- **R3 [MED] — deposit idempotency (before ANY real-funds flip).** `deposit_escrow_v2` is additive, so a client double-submit (double-click / 5xx retry) double-funds the depositor's OWN escrow. `executeTx`'s confirm-split stops an SDK auto-resend but NOT a duplicate client POST. Add a route-level idempotency key `(subject, escrowNonce, requestId)` on `/escrow/v2/deposit`. (create is nonce-keyed → a re-create dedups to 6097; deposit is not.)
+- **Decode-parity [PROVEN 2026-07-09 — live staging e2e].** `PendingSettlement` decode verified against the REAL pending created by the route-driven e2e (escrow `85G3oP5zNysqdo9FV9QBfYUccwPGKgn4RD1M6oox1Qv` nonce 1, pending `476Ht3LNDVcug434NMZXsnfuxTAJ7j6192pqWKh63S4Q` index 0): on-chain `amount=100000 / callsToSettle=10 / settlementIndex=0 / serviceHash=6028dfe2…` matched the gate ledger byte-for-byte; post-finalize `isFinalized=true, outcome=autoReleased`. Escrow decode also live-verified (`balance` tracked 110000→109500→9500 through settle/finalize; `disputeWindowSlots=2160`; `maxObligation` field present, confirming the deposit-cap rule's on-chain source). Decode script: `apps/api/scripts/sap/_decode-pending-e2e.ts` (untracked, re-runnable). REMAINING from this line: switch settleJobV2's replay-reconcile to book the DECODED pending amount (see the replay-reconcile MED below) — the decode itself is now proven safe to rely on.
+- **Stake coverage [RESOLVED 2026-07-09 — source-derived + live-decoded].** The earlier premise that
+  `EscrowCoverageExceeded (6153)` dynamically converts a token deposit into SOL stake was wrong.
+  Upstream commit `55d29edeafebf5fd11ee6c7a63935625cfe98b1b` defines two separate checks in
+  [`escrow_v2.rs` lines 98–124](https://github.com/OOBE-PROTOCOL/synapse-sap/blob/55d29edeafebf5fd11ee6c7a63935625cfe98b1b/programs/synapse-agent-sap/src/instructions/escrow_v2.rs#L98-L124)
+  and [`escrow_v2.rs` lines 325–337](https://github.com/OOBE-PROTOCOL/synapse-sap/blob/55d29edeafebf5fd11ee6c7a63935625cfe98b1b/programs/synapse-agent-sap/src/instructions/escrow_v2.rs#L325-L337):
+  at CREATE, `maxPotential = maxCalls == 0 ? initialDeposit : pricePerCall × maxCalls` and
+  `requiredStakeLamports = max(100_000_000, floor(maxPotential × 5_000 / 10_000))`; the program
+  compares the raw token-base-unit `maxPotential` directly with lamports (there is NO mint-decimal
+  or oracle conversion). This is a per-escrow create check, not an aggregate over all of the
+  worker's active escrows; a shortfall is `StakeBelowCoverage (6145)`. It then persists
+  `max_obligation = maxPotential`. At DEPOSIT, 6153 means
+  only `escrow.balance + depositAmount > escrow.max_obligation`; stake is not re-read and the check
+  is skipped only for legacy rows whose `max_obligation == 0`. Constants are pinned in
+  [`state.rs` lines 1246–1257](https://github.com/OOBE-PROTOCOL/synapse-sap/blob/55d29edeafebf5fd11ee6c7a63935625cfe98b1b/programs/synapse-agent-sap/src/state.rs#L1246-L1257).
+  Live decode validates the apparently surprising result: escrow
+  `3CdFnNya9q2GEi9U61rmLARK9boJtNJFsS8X37fX8dry` stores `pricePerCall=10_000`, `maxCalls=10`,
+  `maxObligation=100_000`, `totalDeposited=150_000`, and current `balance=100_000` USDC base
+  units. Its actual agent is `6gCTFRsubnfaoWomt1965Nrc5BnvT24i7eP6nLwY8Q1C`; the correctly
+  derived stake PDA `7GtzMamSwb28VkA5CFSCAi7EBE7czvx7wXFH77yoPxnS` stores
+  `stakedAmount=110_000_000`, `slashedAmount=0` (the agent/stake addresses originally supplied for
+  the investigation were stale/mismatched). Thus create required
+  `max(100_000_000, 100_000×50%) = 100_000_000` lamports and accepted the 110M stake; create also
+  permits its 150,000 initial deposit even though that exceeds stored `max_obligation`, while a
+  later deposit projecting the balance to 200,000 fails because `200_000 > 100_000`.
+  The client now mirrors both checks before wire construction and returns the required/additional
+  stake or deposit-cap details. Read/decode/RPC failure deliberately SKIPS this UX preflight and
+  falls through to the authoritative chain; the mirror must never reject an operation on uncertain
+  state. `openEscrowV2` runs the same create preflight before its ledger claim so a definite
+  under-stake request remains pre-claim and retryable. All flags remain OFF and dry-run remains ON.
+- **R1 [DONE] — withdraw routed.** `/escrow/v2/withdraw` ships in the funding bucket (self-custody, free balance only), so there is NO "can fund, can't defund" trap. `close_escrow_v2` route still pending its executor (self-custody rent reclaim) — route with the funding bucket when added.
+- **V2-withdraw ledger bypass [MED, review finding 2026-07-09 gate-retrofit d6bd9410] — reconcile before flip.** `/escrow/v2/withdraw` moves vault→depositor ON-CHAIN without booking `refundedAmount` into the gate's settlements ledger (V1 refunds go through `refundJob`, which books; the V2 withdraw route predates the gate). Consequence: the ledger's `remaining` can OVERSTATE the vault after an out-of-band withdraw. Fail-closed on-chain — a stale-ceiling settle fails at the program (6062-family) and lands terminal `failed`/reservation-restored, never over-releases — but a depositor withdraw can brick a live job's row. Before flip: either route V2 withdraws through a gate leg that books against the escrow's jobs, or (minimum) re-read the on-chain vault balance inside the settle claim and clamp the ceiling to it.
+- **Replay-reconcile books request, not chain [MED, review finding 2026-07-09 — folds into the Decode-parity gate above].** `settleJobV2`'s pending-PDA-already-exists reconcile books the CALLER's requested `callsToSettle`/principal/fee rather than decoding the on-chain `PendingSettlement`'s actual amount. Unreachable divergence today (our own claim commits before broadcast, so an open|submitted row with an on-chain pending implies an out-of-band writer), but the staging e2e MUST land PendingSettlement decode-parity and switch this reconcile to the decoded amount.
+
+2. **Wiring + E5 parity (ROUTED, GATED OFF).** The V2
+   FUNDING-side ops are now routed in `routes/sap.ts` behind `requireAuthOrAgentSession` +
+   `requireNonGuestIdentity` + `requireLedgerCapable` + `gate503` + `SAP_DRY_RUN`, E5 parity
+   (both human + connected agent act AS THEMSELVES, custody bound to `identity.avatarId`, never
+   a body pubkey): `POST /api/sap/agent/pricing` and `POST /api/sap/escrow/v2/{provision-stake, create, deposit, withdraw, open, settle, finalize}`. These are
+   SELF-CUSTODY (owner stakes own SOL; depositor funds/withdraws its OWN escrow — free balance
+   only, on-chain enforces free=balance−pendingAmount) so no gate approval is needed. The
+   RELEASE ops move money to a counterparty only through the escrow-gate's approval/ceiling/self-
+   dealing/at-most-once layer. `/settle` binds the caller to the recorded worker; `/finalize` is a
+   permissionless crank for any authenticated non-guest avatar and uses that avatar only as payer.
+   Custody always comes from `identity.avatarId`; body pubkeys remain counterparty/PDA seeds.
+   Gated as `FEATURE_GATE sap_v2_release_path` (see the block on `settleCallsV2Usdc`). ⚠️ **The
+   release path is routed but is not live: all feature flags remain OFF and dry-run remains ON.**
+   Also: route `close_escrow_v2` (self-custody rent reclaim on an empty escrow) with the funding
+   bucket when its executor is added; and give the additive `deposit_escrow_v2` route an
+   idempotency key (subject, escrowNonce, requestId) so a client retry can't double-fund
+   (create is nonce-keyed → a re-create dedups to 6097; deposit is not).
+3. **Agent stake + pricing provisioning (economic prerequisite; pricing-route gap RESOLVED).**
+   Every agent still needs ≥0.1 SOL staked (`init_stake`, MIN hard-enforced 6107) + ~0.055 SOL
+   register rent before it can accept an escrow. The previously missing application route for the
+   other prerequisite now exists: worker-owned `POST /api/sap/agent/pricing` calls
+   `update_agent(pricing=[tier])` through the worker's own custodial wallet. On-chain this operation
+   **replaces the complete pricing menu** (last write wins), so ClawVille intentionally supports one
+   caller-named Escrow-mode USDC tier per worker for now. Its `pricePerCall` MUST equal
+   `createEscrowV2Usdc.pricePerCall` (depositor-signed), or create fails `PricingTierNotFound 6148`.
+   The pricing route resolves the fail-late 6148 provisioning gap; funded SOL stake provisioning
+   and a read-only price-match precheck remain flip-gate work. Nothing is auto-provisioned and all
+   flags remain OFF with dry-run ON by default.
 4. **Deposit sizing.** `createEscrowV2Usdc` enforces `initialDeposit ≥ obligation + ceil(obligation
    × 1%)` (FEE_HEADROOM_BPS=100, 2× the measured 0.5% fee) so a single-settle escrow can pay the
    fee. For MULTI-settle escrows confirm the per-batch fee rounding stays within the headroom on
@@ -567,8 +660,13 @@ money-path pass. Verdict: safe to push gated; the following gate the flip.**
    (`broadcast:true`+signature), not `ok:true`. N2 — the deployed custom errors 6062/6107/6148/6161
    map to distinct `SapErrorCode`s (`insufficient_escrow_balance` / `stake_below_minimum` /
    `pricing_tier_not_found` / `pending_settlement_deprecated`).
-6. **Devnet-confirm still-UNVERIFIED paths** before their flip: `resolve_dispute` + CoSigned SPL
-   orders (kept `TODO(devnet-confirm)`; DisputeWindow is the only live-verified flow),
-   `deposit_escrow_v2` top-up SPL (inferred from create), and `register_agent`'s new 6-acct shape
-   (rode the live lifecycle but not isolated). Update `scripts/sap/v2-dispute-window-smoke.ts`
-   (still calls the now-deprecated `create_pending_settlement`).
+6. **Dispute RESOLUTION model changed in 1.0.0.** `resolve_dispute` (the arbiter-signed
+   DepositorWins/AgentWins path) DOES NOT EXIST in the deployed program — it was a phantom
+   instruction and has been REMOVED from the client (`buildResolveDisputeIx` + `resolveDisputeUsdc`
+   deleted). 1.0.0 resolves a filed dispute via `auto_resolve_dispute` (permissionless, merkle-proof
+   + stake-slash) + `submit_agent_evidence`. `file_dispute` (the depositor's dispute FILING, now with
+   a `dispute_type` arg) stays wired; wiring the auto-resolve/slash model is a deliberate follow-up
+   (it moves real stake). CoSigned settle remains unimplemented (DisputeWindow is the wired flow).
+   `deposit_escrow_v2` top-up SPL was inferred from create (now Anchor-built off the SDK IDL, wire-
+   parity tested). The SDK adoption makes `scripts/sap/v2-dispute-window-smoke.ts` current
+   (rewritten to the SDK path: no `create_pending_settlement`, settle inits the pending itself).

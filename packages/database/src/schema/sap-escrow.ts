@@ -6,6 +6,9 @@
  * PROVEN OOBE SelfReport USDC settle (the deployed program has NO on-chain
  * settlement-receipt anti-replay — see `oobe-usdc-selfreport-spec.md`). So the
  * anti-double-release invariant lives HERE, in this table, not on-chain.
+ * V2 adds an authoritative on-chain PendingSettlement replay guard; this ledger
+ * still supplies the authorization, atomic broadcast claim, accounting, and
+ * broadcast-unknown reconciliation state around that chain guard.
  *
  * ── Money-load-bearing invariant (the whole reason this table exists) ─────────
  * A `settle_calls` (which RELEASES USDC from the escrow vault to the worker
@@ -60,8 +63,8 @@ import { avatars } from './avatars';
  *   settling   — the atomic claim: a settle is IN FLIGHT for this (escrow, job).
  *                The unique index on (escrow_pda, job_id) makes the INSERT of
  *                this state the lock — a concurrent second settle loses the race.
- *   settled    — the on-chain (or dry-run) settle returned; funds released. The
- *                `settle_signature` / `dry_run` columns record the outcome.
+ *   settled    — terminal release: V1 settle or V2 finalize confirmed (or
+ *                completed its honest dry-run equivalent).
  *   refunding  — the atomic refund claim: a withdraw is IN FLIGHT (BLOCKING #4 fix).
  *                Claimed from `open|submitted` BEFORE any chain send so a refund
  *                and a settle can never both broadcast against the same escrow.
@@ -77,6 +80,14 @@ import { avatars } from './avatars';
  *                that actually landed in the vault). A human/reconciler must poll
  *                the broadcast signature / on-chain escrow account before the slot
  *                is reused. Terminal-but-recoverable; never auto-settled.
+ *   pending    — V2 settle confirmed: the fee leg was charged and a per-index
+ *                PendingSettlement PDA reserves principal for later finalize.
+ *   settle_unknown — V2 settle broadcast but confirmation is unknown. Reconcile
+ *                only: retrying may double-charge the fee or trip chain replay.
+ *   finalizing — atomic V2 permissionless-finalize claim; prevents two cranks
+ *                from broadcasting the same principal release concurrently.
+ *   finalize_unknown — V2 finalize broadcast but confirmation is unknown.
+ *                Principal may have moved; reconcile only, never auto-retry.
  */
 export const sapEscrowSettlementStatusEnum = pgEnum('sap_escrow_settlement_status', [
   'open',
@@ -87,6 +98,10 @@ export const sapEscrowSettlementStatusEnum = pgEnum('sap_escrow_settlement_statu
   'refunded',
   'failed',
   'funding_unknown',
+  'pending',
+  'settle_unknown',
+  'finalizing',
+  'finalize_unknown',
 ]);
 
 /**
@@ -101,12 +116,15 @@ export const sapEscrowSettlements = pgTable(
 
     // ── identity of the escrow + job (the idempotency key) ──
     /**
-     * The on-chain escrow PDA (base58) = `["sap_escrow", agentPda, depositor]`.
-     * One escrow per (agent, depositor) pair (NO nonce in the V1 USDC path), so
-     * a second job for the same pair TOPS UP the same escrow — and is
-     * disambiguated from the first job by `job_id`, not by a new escrow.
+     * The on-chain escrow PDA (base58). V1 uses
+     * `["sap_escrow", agentPda, depositor]`; V2 uses nonce'd
+     * `["sap_escrow_v2", agentPda, depositor, escrowNonce]` seeds.
      */
     escrowPda: varchar('escrow_pda', { length: 64 }).notNull(),
+    /** Wire generation for this row; V1 remains the default for old writers. */
+    escrowVersion: varchar('escrow_version', { length: 8 }).notNull().default('v1'),
+    /** V2's explicit u64 nonce; NULL for the nonce-less V1 shared vault. */
+    escrowNonce: varchar('escrow_nonce', { length: 32 }),
     /**
      * Off-chain job identifier (caller-supplied, namespaced by the use case,
      * e.g. an AI↔AI bounty id). Combined with `escrow_pda` it is the UNIQUE
@@ -144,9 +162,9 @@ export const sapEscrowSettlements = pgTable(
      */
     maxCalls: varchar('max_calls', { length: 32 }),
     /**
-     * The USDC this job funded into the SHARED per-(agent,depositor) vault (u64
-     * string). The escrow PDA has NO nonce, so many jobs share one vault; this is
-     * the per-job funded portion that the cross-job accounting invariant
+     * The USDC this job funded into its escrow vault (u64 string). V1 escrows are
+     * shared per (agent,depositor); V2 escrows are nonce'd. This is the per-job
+     * funded portion that the cross-job accounting invariant
      * (BLOCKING #3 fix) enforces releases against: sum of a job's releases may
      * never exceed its own `funded_amount`, and the escrow-wide
      * sum(released)+sum(refunded) may never exceed sum(funded).
@@ -155,12 +173,22 @@ export const sapEscrowSettlements = pgTable(
     /** Number of calls released on the settle so far (u64 as a decimal string). */
     callsSettled: varchar('calls_settled', { length: 32 }),
     /**
-     * USDC base units actually released to the worker for THIS job (u64 string;
-     * pricePerCall × callsSettled). The per-job + escrow-wide accounting ledger
-     * reads this to enforce sum(released)+sum(refunded) ≤ sum(funded). NULL until
-     * a settle releases.
+     * USDC base units actually released to the worker for THIS job (u64 string).
+     * For V2 this remains NULL while principal is reserved in `pending` and is
+     * booked only after finalize confirms. The per-job + escrow-wide accounting
+     * ledger reads this to enforce sum(released)+sum(refunded) ≤ sum(funded).
      */
     releasedAmount: varchar('released_amount', { length: 32 }),
+    /**
+     * V2 principal reserved by a confirmed settle but not yet released by
+     * finalize. Moved into `released_amount` only after finalize confirms.
+     */
+    reservedPrincipalAmount: varchar('reserved_principal_amount', { length: 32 }),
+    /**
+     * V2 protocol fee charged during settle (a separate money leg from
+     * principal). NULL for V1 and before V2 settle confirms.
+     */
+    feeAmount: varchar('fee_amount', { length: 32 }),
     /**
      * USDC base units refunded to the depositor for THIS job (u64 string). Counts
      * toward the escrow-wide sum(released)+sum(refunded) ≤ sum(funded) invariant.
@@ -184,10 +212,15 @@ export const sapEscrowSettlements = pgTable(
     // ── settle outcome ──
     status: sapEscrowSettlementStatusEnum('status').notNull().default('open'),
     /**
-     * The confirmed settle tx signature (base58) when a LIVE send landed. NULL
-     * for a dry-run settle (simulate only) or an un-settled row.
+     * Settle tx signature (base58) from a LIVE send: confirmed on `settled`/V2
+     * `pending`, or the reconciliation anchor on V2 `settle_unknown`. NULL for
+     * dry-run simulation and before a live settle broadcasts.
      */
     settleSignature: varchar('settle_signature', { length: 128 }),
+    /** V2 pre-increment index that seeds the PendingSettlement PDA. */
+    settlementIndex: varchar('settlement_index', { length: 32 }),
+    /** Confirmed or broadcast-unknown V2 finalize signature. */
+    finalizeSignature: varchar('finalize_signature', { length: 128 }),
     /**
      * The broadcast signature of an OPEN (create/top-up) tx whose confirmation we
      * never observed (BLOCKING #5 fix). Persisted with `status='funding_unknown'`
