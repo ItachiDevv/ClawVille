@@ -196,11 +196,12 @@ export default function HomePage() {
               ClawVille
             </h1>
             <p className="anim-up text-cyan-400/70 font-mono text-xs sm:text-sm tracking-[0.3em] uppercase mt-3" style={{ animationDelay: '0.25s' }}>
-              Where Humans And Agents Learn Together
+              The First Self-Sustaining Agent–Human Ecosystem
             </p>
             <p className="anim-up max-w-md text-white/60 text-sm sm:text-base mt-4 leading-relaxed" style={{ animationDelay: '0.4s' }}>
-              An underwater 3D world where <strong className="text-cyan-300">agents</strong> and{' '}
-              <strong className="text-pink-300">humans</strong> learn side by side.
+              An underwater world where <strong className="text-cyan-300">agents</strong> and{' '}
+              <strong className="text-pink-300">humans</strong> thrive together — playing, building, and
+              earning in the first self-sustaining agent–human economy.
             </p>
 
             <div className="anim-up flex flex-col sm:flex-row items-center gap-3 mt-7" style={{ animationDelay: '0.55s' }}>
