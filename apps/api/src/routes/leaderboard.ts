@@ -670,6 +670,40 @@ export async function buildAgentSnapshot(
           SELECT 1 FROM openclaw_bots ob
           WHERE ob.agent_id = events.agent_id AND ob.is_house
         )
+        -- Guest carve-out (agent leg) — DEFENSE-IN-DEPTH mirror of the avatar-leg
+        -- guard (2026-07-10, Codex-found). A guest is a pre-account DEMO tier and
+        -- must NEVER rank (Brand Identity section 3 / Rule E5). The avatar leg
+        -- catches a guest's own avatar rows; THIS leg catches the case where a
+        -- guest has BOUND an agent and thus emits rows with a NON-NULL agent_id:
+        -- a guest holds a valid Lucia session AND owns their guest avatar, and
+        -- connect-token / connect do NOT gate on is_guest, so a guest CAN obtain
+        -- an agent whose openclaw_bots row is owned by a guest user. Excluded by
+        -- the DURABLE users.is_guest FLAG (the source of truth avatars.is_guest is
+        -- denormalized from) via the bot's owning user, exactly mirroring the
+        -- house carve-out above. The upstream ROOT CAUSE — a guest should be
+        -- blocked from binding an agent AT ALL — is an auth-identity-session
+        -- concern (connect-token / requireNonGuestIdentity, their primitive) filed
+        -- separately; this scoring-layer guard is fail-safe regardless of that fix.
+        --
+        -- DURABLE-FIRST: the FROZEN event-time stamp subject_was_guest
+        -- (event-logger resolveSubjectWasGuest) is AUTHORITATIVE — true is
+        -- excluded, false RANKS even if the bot LATER rebinds to a guest (a
+        -- real user's frozen event must never be retroactively re-excluded). The
+        -- LIVE is_guest flag-join is the backstop ONLY for NULL stamps
+        -- (pre-backfill rows, or a write-time lookup that couldn't resolve).
+        -- Scoping the join to NULL stamps is what makes the frozen fact
+        -- authoritative and prevents rebind-driven OVER-exclusion of real users.
+        AND (
+          subject_was_guest = false
+          OR (
+            subject_was_guest IS NULL
+            AND NOT EXISTS (
+              SELECT 1 FROM openclaw_bots ob2
+              JOIN users u2 ON u2.id = ob2.user_id
+              WHERE ob2.agent_id = events.agent_id AND u2.is_guest
+            )
+          )
+        )
         AND ts > now() - ${sql.raw(`interval '${interval}'`)}
       GROUP BY agent_id, date_trunc('day', ts)
     ),
@@ -752,6 +786,40 @@ export async function buildAgentSnapshot(
           SELECT 1 FROM avatars a2
           JOIN openclaw_bots ob ON ob.user_id = a2.user_id AND ob.is_house
           WHERE a2.id = events.avatar_id
+        )
+        -- Guest carve-out (avatar leg) — DURABLE subject-level exclusion
+        -- (2026-07-10). Guest avatars (auto-created via POST /api/auth/guest)
+        -- must NEVER rank on the public board: guest/demo play feeds nothing
+        -- persistent (Brand Identity section 3 / Rule E5). A guest's OWN avatar
+        -- rows (agent_id NULL) land here and are caught by the avatars.is_guest
+        -- flag; the MIRROR guard in agent_daily above catches a guest who has
+        -- bound an agent (non-null agent_id). Both legs guard = LOCKSTEP-
+        -- symmetric (like the house carve-out). Joined against the DURABLE
+        -- avatars.is_guest FLAG (denormalized onto the avatar for exactly this
+        -- joinless filter), NOT a payload.isGuest tag: the system-agent (Nori)
+        -- chat emitter OMITS that tag, so a payload-only filter would still leak
+        -- guest teacher-chat points — the same "a forgotten emitter tag can
+        -- never rank" argument the house carve-out makes. (payload.isGuest stays
+        -- for /dash + forensics; the activity + location-chat emitters set it.)
+        --
+        -- DURABLE-FIRST (see agent_daily): the frozen subject_was_guest stamp
+        -- is authoritative (true excluded, false ranks); the live flag-join is
+        -- the backstop ONLY for NULL stamps. It joins the avatar's OWNER
+        -- users.is_guest (the SoT), NOT the denormalized avatars.is_guest mirror,
+        -- so it can't disagree with the write-path resolver (which also anchors
+        -- on users.is_guest) — matches the agent_daily leg. (Guest-ness is
+        -- immutable — no in-place conversion — so this isn't reachable today, but
+        -- SoT-consistency + leg symmetry is the invariant.)
+        AND (
+          subject_was_guest = false
+          OR (
+            subject_was_guest IS NULL
+            AND NOT EXISTS (
+              SELECT 1 FROM avatars ag
+              JOIN users ag_u ON ag_u.id = ag.user_id
+              WHERE ag.id = events.avatar_id AND ag_u.is_guest
+            )
+          )
         )
         AND ts > now() - ${sql.raw(`interval '${interval}'`)}
       GROUP BY avatar_id, date_trunc('day', ts)

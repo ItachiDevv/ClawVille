@@ -20,7 +20,8 @@
  * naive recurse would silently truncate Date values to {}.
  */
 
-import { db, events, eventWriteFailures } from '@clawville/database';
+import { db, events, eventWriteFailures, users, avatars, agentBots } from '@clawville/database';
+import { eq, sql } from 'drizzle-orm';
 import { alertError } from './alert-error';
 import { sessionDigest } from './session-digest';
 
@@ -189,6 +190,143 @@ export interface EventInput {
   ipPrefixHash?: string | null;
 }
 
+// ─── DURABLE guest resolution (2026-07-10) ──────────────────────────────────
+//
+// The free-agent leaderboard must exclude guests EVEN AFTER ownership changes
+// (a bot rebind or a guest-account delete), which a live `is_guest` join can't
+// survive because `events.agent_id` is immutable TEXT and `user_id`/`avatar_id`
+// are ON DELETE SET NULL. So we FREEZE the guest fact on the event row at write
+// time. Guest-ness is anchored on the SoT `users.is_guest`, resolved from EVERY
+// subject id present (userId, avatarId→owner, agentId→bot-owner).
+//
+// Semantics (returns boolean | null):
+//   - true  ⇒ at least one present subject id resolves to a GUEST user (OR).
+//   - false ⇒ EVERY present id resolved to a DEFINITIVE non-guest (no guest, no
+//             indeterminate) — only then is it safe to freeze an authoritative
+//             non-guest fact.
+//   - null  ⇒ INDETERMINATE (no subject ids, or every lookup found no row /
+//             timed out / errored). NULL rows fall through to the CTE's LIVE
+//             flag-join backstop; a stamped true/false is authoritative.
+//
+// Caching (findings from adversarial review):
+//   - We cache ONLY userId + avatarId results, which derive from an IMMUTABLE
+//     user property (`users.is_guest` never flips in-place — guests only
+//     expire→delete). The agentId path is DERIVED THROUGH THE MUTABLE
+//     `openclaw_bots.user_id` (`/connect` rebinds ownership), so it is NEVER
+//     cached — always resolved fresh at write time.
+//   - We NEVER cache a "no row found" result: a caller-supplied agentId/userId
+//     with no row yet (e.g. the public skill route's `X-Clawville-Agent-Id`)
+//     must not poison a later real binding with a stale `false`.
+//   - The cache-MISS lookups for an event run in ONE transaction (a single
+//     `SET LOCAL statement_timeout` + one SELECT per miss), so a multi-id event
+//     costs one BEGIN/COMMIT, not three, and the caller-visible worst case is
+//     one deadline, not N×. Bounding: `SET LOCAL statement_timeout` is the REAL
+//     server-side cancel (an abandoned lookup can't hold a pooled connection);
+//     `withResolveTimeout` is the client-side belt (covers a hang while still
+//     acquiring the pool connection, before SET LOCAL runs) → the caller gets
+//     null and never stalls. Systemic pool-level statement_timeout is FILED to
+//     the database domain (packages/database client config).
+const guestResolveCache = new Map<string, boolean>();
+const GUEST_RESOLVE_CACHE_MAX = 20_000;
+const GUEST_RESOLVE_TIMEOUT_MS = 750;
+
+function withResolveTimeout<T>(p: Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout>;
+  const guarded = p.finally(() => clearTimeout(timer));
+  // Register a terminal handler so that if the timeout WINS the race and `p`
+  // (the abandoned transaction) later REJECTS, the rejection is not "unhandled"
+  // (classic Promise.race footgun → Node unhandledRejection). This does not
+  // change what the race returns; it only prevents the orphaned branch's
+  // rejection from surfacing globally. (The abandoned query itself is bounded
+  // server-side by SET LOCAL statement_timeout; a pool-level statement_timeout
+  // is filed to the database domain for the pool-checkout-phase.)
+  guarded.catch(() => {});
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error('guest-resolve-timeout')), GUEST_RESOLVE_TIMEOUT_MS);
+  });
+  return Promise.race([guarded, timeout]);
+}
+
+// One-SELECT-per-id inside a caller-supplied tx. Returns true (guest) / false
+// (non-guest row) / null (no row) — no throw handling here; the caller's
+// try/catch + timeout wrap the whole transaction.
+async function lookupGuest(
+  tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
+  kind: 'u' | 'a' | 'g',
+  id: string,
+): Promise<boolean | null> {
+  let rows: Array<{ g: boolean | null }>;
+  if (kind === 'u') {
+    rows = await tx.select({ g: users.isGuest }).from(users).where(eq(users.id, id)).limit(1);
+  } else if (kind === 'a') {
+    // SoT via the avatar's owner (not the denormalized avatars.is_guest mirror).
+    rows = await tx.select({ g: users.isGuest }).from(avatars)
+      .innerJoin(users, eq(users.id, avatars.userId)).where(eq(avatars.id, id)).limit(1);
+  } else {
+    rows = await tx.select({ g: users.isGuest }).from(agentBots)
+      .innerJoin(users, eq(users.id, agentBots.userId)).where(eq(agentBots.agentId, id)).limit(1);
+  }
+  return rows.length === 0 ? null : !!rows[0].g;
+}
+
+async function resolveSubjectWasGuest(input: EventInput): Promise<boolean | null> {
+  const ids: Array<['u' | 'a' | 'g', string]> = [];
+  if (input.userId) ids.push(['u', input.userId]);
+  if (input.avatarId) ids.push(['a', input.avatarId]);
+  if (input.agentId) ids.push(['g', input.agentId]);
+  if (ids.length === 0) return null;
+
+  const resolved = new Map<string, boolean | null>();
+  const misses: Array<['u' | 'a' | 'g', string]> = [];
+  for (const [kind, id] of ids) {
+    if (kind !== 'g') {
+      const c = guestResolveCache.get(`${kind}:${id}`);
+      if (c !== undefined) { resolved.set(`${kind}:${id}`, c); continue; }
+    }
+    misses.push([kind, id]);
+  }
+
+  if (misses.length > 0) {
+    try {
+      const pairs = await withResolveTimeout(
+        db.transaction(async (tx) => {
+          // Fixed literal (never user input) — safe under sql.raw.
+          await tx.execute(sql.raw(`SET LOCAL statement_timeout = ${GUEST_RESOLVE_TIMEOUT_MS}`));
+          const out: Array<[string, boolean | null]> = [];
+          for (const [kind, id] of misses) {
+            out.push([`${kind}:${id}`, await lookupGuest(tx, kind, id)]);
+          }
+          return out;
+        }),
+      );
+      for (const [k, r] of pairs) {
+        resolved.set(k, r);
+        // Cache ONLY definitive user/avatar results (immutable). Never agent
+        // (mutable ownership), never null (no-row anti-poison).
+        if (r !== null && !k.startsWith('g:')) {
+          if (guestResolveCache.size >= GUEST_RESOLVE_CACHE_MAX) guestResolveCache.clear();
+          guestResolveCache.set(k, r);
+        }
+      }
+    } catch {
+      // Transaction / timeout / error → every miss is INDETERMINATE (null).
+      for (const [kind, id] of misses) resolved.set(`${kind}:${id}`, null);
+    }
+  }
+
+  // Three-way OR: ANY id guest → true. Otherwise false ONLY when EVERY present
+  // id resolved to a DEFINITIVE non-guest; any INDETERMINATE (null) id → null so
+  // the CTE's live-join backstop still checks — a null must never be laundered
+  // into an authoritative `false` by a sibling `false`.
+  let allDefinitivelyNonGuest = true;
+  for (const [kind, id] of ids) {
+    const r = resolved.get(`${kind}:${id}`) ?? null;
+    if (r === true) return true;
+    if (r === null) allDefinitivelyNonGuest = false;
+  }
+  return allDefinitivelyNonGuest ? false : null;
+}
+
 // ─── Q2 Activity Portals — event taxonomy ──────────────────────────────────
 //
 // These are the new event_type strings introduced by the Q2 activity-portal
@@ -263,19 +401,12 @@ export interface ActivityMatchPlacedPayload {
    * True when the participant is an un-authed guest (created via
    * `POST /api/auth/guest`).
    *
-   * STALE-CLAIM FIX (2026-07-04, verified against live code): the agent
-   * leaderboard SQL does NOT filter on this key — there is no
-   * `isGuest`/`is_guest` predicate anywhere in
-   * `apps/api/src/routes/leaderboard.ts`; the exclusions that DO exist
-   * there are the bot carve-out (`payload->>'subjectType' <> 'bot'`), the
-   * partner-import skill_md carve-out (`payload->>'via' <>
-   * 'partner-import'`), and the house-agent NOT-EXISTS join. Guests CAN
-   * rank on the global board today. Whether they should be excluded is an
-   * OPEN FOUNDER DECISION —
-   * see docs/agent-metaverse-p2-plan.md "Explicit NON-goals". The key is
-   * still written by emitters so the decision can be encoded later
-   * without a payload backfill. Defaults to undefined (omitted) for
-   * non-guest writers.
+   * NOTE (2026-07-10): guests are now EXCLUDED from the free-agent leaderboard
+   * (founder-confirmed full exclusion), but NOT via this payload key — the
+   * exclusion is the durable `events.subject_was_guest` event-time stamp +
+   * a `users.is_guest` live-join backstop in `buildAgentSnapshot` (see
+   * ARCHITECTURE.md §5b). This key is retained for `/dash` + forensics only;
+   * the scoring CTE does not read it. Defaults to undefined for non-guest writers.
    */
   isGuest?: boolean;
 }
@@ -403,6 +534,10 @@ async function writeEvent(input: EventInput): Promise<bigint | null> {
   // `GROUP BY agent_id` is preserved. This closes the spoofable-header injection
   // path: skills.ts logs the caller-supplied `X-Clawville-Agent-Id` into
   // events.agent_id, and a client could put a raw `ag-/oc-/hat-` bearer there.
+  // Freeze the subject's guest-ness on the row (durable leaderboard exclusion —
+  // see resolveSubjectWasGuest). Best-effort + never throws.
+  const subjectWasGuest = await resolveSubjectWasGuest(input);
+
   const row = {
     eventType: input.eventType,
     userId: input.userId ?? null,
@@ -411,6 +546,7 @@ async function writeEvent(input: EventInput): Promise<bigint | null> {
     buildingId: input.buildingId ?? null,
     sessionId: redactBearer(input.sessionId ?? null) as string | null,
     payload: redactBearersDeep(sanitize(input.payload)) as Record<string, unknown> | undefined,
+    subjectWasGuest,
     fpHash: input.fpHash ?? null,
     ipPrefixHash: input.ipPrefixHash ?? null,
   };
