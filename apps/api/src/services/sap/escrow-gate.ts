@@ -128,6 +128,29 @@ import {
  * genuinely stuck row recovers on the next attempt.
  */
 const SAP_STALE_CLAIM_MS = 10 * 60 * 1000;
+/**
+ * R6-1 — the absolute ceiling on how long a Solana `recentBlockhash` stays valid:
+ * 150 slots (~60-90s at 0.4-0.6s/slot) plus margin. NOT a tunable — it is a property
+ * of the chain that the stale-recovery absent-arm RELIES ON (see recoverStaleV2Claim):
+ * a settle broadcast signed with a recent blockhash (executeTx) becomes permanently
+ * unlandable once its blockhash expires, so a stale claim's original broadcast can
+ * never land after we restore + retry the row.
+ */
+const MAX_BLOCKHASH_VALIDITY_MS = 120_000;
+/**
+ * R6-1 crash-loud pin (mirrors the FINGERPRINT_SECRET boot-throw): the stale-claim
+ * window MUST stay well past (>= 5x) the max blockhash validity, or a stale row's
+ * original settle broadcast could still be landable when the absent-arm restores +
+ * retries it -> double-pay at the same index. A future SAP_STALE_CLAIM_MS reduction
+ * that violates this refuses to BOOT instead of silently reopening the double-pay.
+ */
+if (SAP_STALE_CLAIM_MS < 5 * MAX_BLOCKHASH_VALIDITY_MS) {
+  throw new Error(
+    `SAP_STALE_CLAIM_MS (${SAP_STALE_CLAIM_MS}ms) must be >= 5x MAX_BLOCKHASH_VALIDITY_MS ` +
+      `(${5 * MAX_BLOCKHASH_VALIDITY_MS}ms): a shorter stale window can restore a claim whose ` +
+      `original settle broadcast has not yet expired, reopening the R5-1/R6-1 double-pay.`,
+  );
+}
 import {
   defaultVerificationProvider,
   type VerificationProvider,
@@ -739,8 +762,25 @@ async function recoverStaleV2Claim(row: SapEscrowSettlement): Promise<EscrowGate
     // never landed ⇒ restore 'submitted' + release (SAFE). current > persisted ⇒ the slot
     // was consumed on-chain (settled→finalized→closed, OR a later settle superseded ours
     // that never landed) ⇒ restoring + retrying would DOUBLE-PAY ⇒ refuse fail-closed
-    // regardless of wasStatus. (< persisted is impossible for a monotonic counter read
-    // after our claim; the restore's WHERE status='settling' also bars a finalizing row.)
+    // regardless of wasStatus. R6-2 — current < persisted is ALSO reachable (inspect
+    // returns currentSettlementIndex 0n when the escrow ACCOUNT itself is absent); it is
+    // NOT the restore case, so it falls to the else → slot_consumed (fail-closed, SAFE).
+    // The restore's WHERE status='settling' also bars a finalizing row.
+    //
+    // R6-1 — the `current === persisted ⇒ restore` arm additionally rests on a BLOCKHASH
+    // BACKSTOP: the stale claim's original settle broadcast must be unlandable by now, or
+    // it could create the pending AFTER we restore + the client retries (double-pay at this
+    // index). Three invariants, all TRUE today, guarantee it:
+    //   (i)   SAP_STALE_CLAIM_MS >> max blockhash validity — pinned by the module-load
+    //         assertion (SAP_STALE_CLAIM_MS >= 5x MAX_BLOCKHASH_VALIDITY_MS).
+    //   (ii)  updatedAt tracks broadcast time — the claim commits updatedAt (status→settling)
+    //         and executeTx's blockhash-fetch + send immediately follow, so a row stale by
+    //         SAP_STALE_CLAIM_MS had its blockhash fetched ~that long ago.
+    //   (iii) settle_calls_v2 signs with a RECENT blockhash (executeTx getLatestBlockhash),
+    //         NOT a durable nonce — so that long-old blockhash is expired and the original
+    //         broadcast can never land. SWITCHING executeTx TO DURABLE NONCES (which never
+    //         expire) BREAKS this backstop and reopens the double-pay; the module-load
+    //         assertion is the tripwire.
     if (currentIndex === persistedIndex) {
       const [restored] = await tx
         .update(sapEscrowSettlements)
