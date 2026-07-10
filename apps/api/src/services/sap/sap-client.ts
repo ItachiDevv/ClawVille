@@ -2232,61 +2232,81 @@ export async function inspectV2SettlementState(input: {
 }
 
 /**
- * Read the LIVE on-chain USDC balance of a V2 escrow's vault ATA (flip-gate fix,
- * docs/sap-integration.md line 623). The settle claim clamps its release ceiling
- * to this so an out-of-band vault drain (a self-custody withdraw, or ANY external
- * mover) can never let the gate reserve more than the vault physically holds.
- *
- * Returns the vault balance in USDC base units, or NULL on ANY failure (gate off,
- * bad pubkey, missing vault ATA, RPC error). NULL means "uncertain" — the caller
- * MUST fall back to the ledger ceiling and NEVER reject on it: the on-chain
- * program stays the authoritative fail-closed guard (6062-family). Read-only; no
- * signing, no broadcast.
+ * The LIVE on-chain physical state of a V2 escrow: the vault ATA token balance AND
+ * the escrow account's aggregate `pending_amount` (R4-A, docs line 623/624). Both
+ * feed the settle claim:
+ *   - `physicalFree = vaultBalance − escrowPendingAmount` clamps the release ceiling
+ *     (fail-OPEN — null → ledger fallback; the chain stays the 6062 fail-closed guard).
+ *   - `escrowPendingAmount` is the AUTHORITATIVE reserved term and the ONLY source of
+ *     the unowned-pending guard (fail-CLOSED). Unlike the DB's reserved sum, it
+ *     includes out-of-band settles AND settle_unknown-landed pendings the gate cannot
+ *     see (verified field: EscrowAccountV2.pending_amount u64, accessor `pendingAmount`).
  */
-export async function readV2VaultBalanceBaseUnits(input: {
+export interface V2VaultPhysicalState {
+  /** Vault ATA USDC base units, or null on read failure. */
+  vaultBalance: bigint | null;
+  /**
+   * The escrow's on-chain aggregate `pending_amount` (sum of all settled-but-not-
+   * finalized principal reserved in the vault), or null on read/decode failure OR
+   * when the escrow account is ABSENT (both → the unowned guard fails CLOSED).
+   */
+  escrowPendingAmount: bigint | null;
+}
+
+export async function readV2VaultPhysicalState(input: {
   workerWalletPubkey: string;
   depositorWalletPubkey: string;
   escrowNonce: bigint;
-}): Promise<bigint | null> {
+}): Promise<V2VaultPhysicalState> {
+  const empty: V2VaultPhysicalState = { vaultBalance: null, escrowPendingAmount: null };
   try {
     const cfg = getConfig();
-    if (usdcEscrowGate(cfg)) return null;
+    if (usdcEscrowGate(cfg)) return empty;
     let workerWallet: PublicKey;
     let depositorWallet: PublicKey;
     try {
       workerWallet = new PublicKey(input.workerWalletPubkey);
       depositorWallet = new PublicKey(input.depositorWalletPubkey);
     } catch {
-      return null;
+      return empty;
     }
     const mint = usdcMintForEscrow(cfg);
     const [agentPda] = findAgentPda(cfg.programId, workerWallet);
     const [escrowPda] = findEscrowPda(cfg.programId, agentPda, depositorWallet, input.escrowNonce);
     const vaultAta = getAssociatedTokenAddress(mint, escrowPda, true);
-    // A3 — bound the lock-hold. The settle claim calls this WHILE holding the
-    // per-escrow advisory lock (+ a pooled DB connection), so a hung RPC could pin
-    // both indefinitely. Race the read against a ~4s timeout that resolves null;
-    // null already falls back to the ledger ceiling, so a slow/hung endpoint degrades
-    // to "no clamp" instead of stalling the settle.
+    // A3 — bound the lock-hold. The settle claim calls this WHILE holding the per-escrow
+    // advisory lock (+ a pooled DB connection), so a hung RPC could pin both. Both reads
+    // race a shared ~4s timeout; each independently resolves to null on timeout/failure.
+    // R3-2 — each read carries its own .catch so a slow-then-reject can't unhandled-reject.
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<null>((resolve) => {
       timer = setTimeout(() => resolve(null), 4000);
     });
-    // R3-2 — attach the rejection handler to the RPC promise itself so a slow-then-
-    // rejecting RPC (that settles AFTER the 4s timeout already won the race) can't
-    // surface as an unhandled rejection. A rejection resolves to null (ledger fallback).
-    const balP = getConnection()
+    const balP: Promise<bigint | null> = getConnection()
       .getTokenAccountBalance(vaultAta, COMMITMENT)
+      .then((r) => (r?.value?.amount ? BigInt(r.value.amount) : null))
       .catch(() => null);
+    const pendingP: Promise<bigint | null> = // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (getProgram().account as any).escrowAccountV2
+        .fetchNullable(escrowPda)
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        .then((acc: any) => {
+          if (!acc) return null; // ABSENT escrow ⇒ unverifiable (fail-closed at caller)
+          const pa = acc.pendingAmount ?? acc.pending_amount;
+          return pa != null ? BigInt(pa.toString()) : 0n;
+        })
+        .catch(() => null);
     try {
-      const bal = await Promise.race([balP, timeout]);
-      if (!bal?.value?.amount) return null;
-      return BigInt(bal.value.amount);
+      const [vaultBalance, escrowPendingAmount] = await Promise.all([
+        Promise.race([balP, timeout]),
+        Promise.race([pendingP, timeout]),
+      ]);
+      return { vaultBalance: vaultBalance ?? null, escrowPendingAmount: escrowPendingAmount ?? null };
     } finally {
       if (timer) clearTimeout(timer);
     }
   } catch {
-    return null;
+    return empty;
   }
 }
 

@@ -21,6 +21,7 @@ let configDryRun = false;
 let depositOutcome: Record<string, unknown>;
 let withdrawOutcome: Record<string, unknown>;
 let depositThrows = false; // M2 — force the executor to THROW (not return a failure)
+let withdrawThrows = false; // R4-B — force the withdraw executor to THROW
 let depositCalls = 0;
 let withdrawCalls = 0;
 let depositRows: Array<Record<string, unknown>>;
@@ -33,10 +34,10 @@ const liveSuccess = (signature: string, accounts: Record<string, string> = { esc
   accounts,
 });
 
-/** Naive single-row update builder (mirrors escrow-v2-gate.test.ts's pattern). */
-function depositUpdateBuilder(set: Record<string, unknown>) {
+/** Single-row update builder over a given idempotency-rows array. */
+function rowUpdateBuilder(arr: () => Array<Record<string, unknown>>, set: Record<string, unknown>) {
   const apply = () => {
-    const r = depositRows[0];
+    const r = arr()[0];
     if (r) Object.assign(r, set);
   };
   return {
@@ -47,51 +48,54 @@ function depositUpdateBuilder(set: Record<string, unknown>) {
   };
 }
 
+// R4-B — deposit and withdraw idempotency now use the SAME claim-first pattern on
+// sap_deposit_requests / sap_escrow_withdrawals respectively. The fakeDb routes by table.
+function rowsFor(table: unknown): 'deposit' | 'withdraw' | null {
+  if (table === realDatabase.sapDepositRequests) return 'deposit';
+  if (table === realDatabase.sapEscrowWithdrawals) return 'withdraw';
+  return null;
+}
+
 const fakeDb = {
   query: {
     wallets: { findFirst: async () => ({ publicKey: DEPOSITOR_WALLET }) },
     sapDepositRequests: { findFirst: async () => depositRows[0] ?? null },
+    sapEscrowWithdrawals: { findFirst: async () => withdrawRows[0] ?? null },
   },
   insert(table: unknown) {
+    const which = rowsFor(table);
     return {
       values(values: Record<string, unknown>) {
-        if (table === realDatabase.sapDepositRequests) {
-          // The UNIQUE (subject_avatar_id, request_id) claim lock.
-          const duplicate = depositRows.some(
-            (r) => r.subjectAvatarId === values.subjectAvatarId && r.requestId === values.requestId,
-          );
-          if (duplicate) {
-            const error = Object.assign(new Error('duplicate'), { code: '23505' });
-            return { returning: async () => Promise.reject(error) };
-          }
-          const row = {
-            id: `dep-${depositRows.length + 1}`,
-            signature: null,
-            outcomeAccounts: null,
-            failureCode: null,
-            ...values,
-          };
-          depositRows.push(row);
-          return { returning: async () => [row] };
+        const arr = which === 'deposit' ? depositRows : withdrawRows;
+        // The UNIQUE (subject_avatar_id, request_id) claim lock.
+        const duplicate = arr.some(
+          (r) => r.subjectAvatarId === values.subjectAvatarId && r.requestId === values.requestId,
+        );
+        if (duplicate) {
+          const error = Object.assign(new Error('duplicate'), { code: '23505' });
+          return { returning: async () => Promise.reject(error) };
         }
-        // sapEscrowWithdrawals — inserted without .returning() (awaited directly).
-        const row = { id: `wd-${withdrawRows.length + 1}`, ...values };
-        withdrawRows.push(row);
-        return {
-          then(resolve: (v: unknown) => unknown) {
-            return Promise.resolve(resolve(undefined));
-          },
+        const row = {
+          id: `${which === 'deposit' ? 'dep' : 'wd'}-${arr.length + 1}`,
+          signature: null,
+          outcomeAccounts: null,
+          failureCode: null,
+          ...values,
         };
+        arr.push(row);
+        return { returning: async () => [row] };
       },
     };
   },
-  update() {
-    return { set: (values: Record<string, unknown>) => depositUpdateBuilder(values) };
+  update(table: unknown) {
+    const which = rowsFor(table);
+    return { set: (values: Record<string, unknown>) => rowUpdateBuilder(() => (which === 'deposit' ? depositRows : withdrawRows), values) };
   },
-  delete() {
+  delete(table: unknown) {
     return {
       where: async () => {
-        depositRows = [];
+        if (rowsFor(table) === 'deposit') depositRows = [];
+        else withdrawRows = [];
       },
     };
   },
@@ -120,11 +124,12 @@ mock.module('../sap-client', () => ({
   },
   withdrawEscrowV2Usdc: async () => {
     withdrawCalls += 1;
+    if (withdrawThrows) throw new Error('unexpected withdraw executor throw');
     return withdrawOutcome;
   },
   // Imports escrow-gate pulls from sap-client but that deposit/withdraw never
   // reach — present so the gate module loads cleanly.
-  readV2VaultBalanceBaseUnits: async () => null,
+  readV2VaultPhysicalState: async () => ({ vaultBalance: null, escrowPendingAmount: 0n }),
   inspectV2SettlementState: async () => ({ ok: false, code: 'internal', message: 'unused' }),
   createEscrowV2Usdc: async () => ({ ok: false, code: 'internal', message: 'unused' }),
   finalizeSettlementUsdc: async () => ({ ok: false, code: 'internal', message: 'unused' }),
@@ -144,6 +149,7 @@ const gate = await import('../escrow-gate');
 beforeEach(() => {
   configDryRun = false;
   depositThrows = false;
+  withdrawThrows = false;
   depositCalls = 0;
   withdrawCalls = 0;
   depositRows = [];
@@ -347,66 +353,120 @@ describe('FIX 1 — V2 deposit idempotency', () => {
   });
 });
 
-describe('FIX 2b — V2 withdraw books the gate ledger', () => {
-  it('a confirmed live withdraw books a succeeded ledger row', async () => {
+function seedWithdrawRow(overrides: Record<string, unknown> = {}) {
+  withdrawRows = [
+    {
+      id: 'wd-existing',
+      subjectAvatarId: DEPOSITOR,
+      requestId: REQ,
+      escrowPda: ESCROW,
+      amount: '500000',
+      status: 'in_flight',
+      signature: null,
+      outcomeAccounts: null,
+      failureCode: null,
+      ...overrides,
+    },
+  ];
+}
+
+const wd = (extra: Record<string, unknown> = {}) => ({
+  depositorAvatarId: DEPOSITOR,
+  workerWalletPubkey: WORKER_WALLET,
+  escrowNonce: 9n,
+  amount: 500_000n,
+  requestId: REQ,
+  ...extra,
+});
+
+describe('R4-B — V2 withdraw idempotency (claim-first, mirrors deposit)', () => {
+  it('a fresh live withdraw claims, sends, and records the succeeded outcome', async () => {
     withdrawOutcome = liveSuccess('withdraw-sig-9');
-    const result = await gate.withdrawEscrowV2Booked({
-      depositorAvatarId: DEPOSITOR,
-      workerWalletPubkey: WORKER_WALLET,
-      escrowNonce: 9n,
-      amount: 500_000n,
-    });
+    const result = await gate.withdrawEscrowV2Idempotent(wd());
     expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.replayed).toBe(false);
+      expect(result.chain.ok).toBe(true);
+    }
     expect(withdrawCalls).toBe(1);
     expect(withdrawRows).toHaveLength(1);
     expect(withdrawRows[0]?.status).toBe('succeeded');
     expect(withdrawRows[0]?.amount).toBe('500000');
-    expect(withdrawRows[0]?.escrowPda).toBe(ESCROW);
     expect(withdrawRows[0]?.signature).toBe('withdraw-sig-9');
   });
 
-  it('a broadcast-unknown withdraw books PESSIMISTICALLY (subtracted from remaining)', async () => {
-    withdrawOutcome = {
-      ok: false,
-      code: 'rpc_unreachable',
-      message: 'confirmation timeout',
-      broadcast: true,
-      signature: 'withdraw-broadcast-sig',
-    };
-    const result = await gate.withdrawEscrowV2Booked({
-      depositorAvatarId: DEPOSITOR,
-      workerWalletPubkey: WORKER_WALLET,
-      escrowNonce: 9n,
-      amount: 500_000n,
-    });
+  it('a concurrent in-flight duplicate is refused WITHOUT re-sending', async () => {
+    seedWithdrawRow({ status: 'in_flight' });
+    const result = await gate.withdrawEscrowV2Idempotent(wd());
     expect(result.ok).toBe(false);
-    expect(withdrawRows).toHaveLength(1);
-    expect(withdrawRows[0]?.status).toBe('broadcast_unknown');
-    expect(withdrawRows[0]?.signature).toBe('withdraw-broadcast-sig');
+    if (!result.ok) expect(result.code).toBe('withdraw_in_flight');
+    expect(withdrawCalls).toBe(0);
   });
 
-  it('a pre-broadcast withdraw failure books NOTHING (nothing left the vault)', async () => {
-    withdrawOutcome = { ok: false, code: 'on_chain_error', message: 'sim rejected', broadcast: false };
-    const result = await gate.withdrawEscrowV2Booked({
-      depositorAvatarId: DEPOSITOR,
-      workerWalletPubkey: WORKER_WALLET,
-      escrowNonce: 9n,
-      amount: 500_000n,
-    });
+  it('a replay after terminal success returns the recorded outcome and NEVER re-sends', async () => {
+    seedWithdrawRow({ status: 'succeeded', signature: 'prior-withdraw-sig', outcomeAccounts: { escrow: ESCROW } });
+    const result = await gate.withdrawEscrowV2Idempotent(wd());
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.replayed).toBe(true);
+      if (result.chain.ok && !result.chain.dryRun) expect(result.chain.signature).toBe('prior-withdraw-sig');
+    }
+    expect(withdrawCalls).toBe(0);
+  });
+
+  it('the SAME key with a DIFFERENT fingerprint (amount) is 409 key reuse', async () => {
+    seedWithdrawRow({ status: 'succeeded', amount: '500000', signature: 'prior' });
+    const result = await gate.withdrawEscrowV2Idempotent(wd({ amount: 999_999n }));
     expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.code).toBe('withdraw_request_mismatch');
+    expect(withdrawCalls).toBe(0);
+  });
+
+  it('a pre-broadcast failure DELETES the claim so the same requestId retries cleanly', async () => {
+    withdrawOutcome = { ok: false, code: 'on_chain_error', message: 'sim rejected', broadcast: false };
+    const result = await gate.withdrawEscrowV2Idempotent(wd());
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.chain.ok).toBe(false);
+    expect(withdrawCalls).toBe(1);
     expect(withdrawRows).toHaveLength(0);
   });
 
-  it('DRY-RUN books nothing (passthrough)', async () => {
+  it('a broadcast-unknown withdraw is held terminal and a replay never re-sends', async () => {
+    withdrawOutcome = { ok: false, code: 'rpc_unreachable', message: 'timeout', broadcast: true, signature: 'wd-broadcast-sig' };
+    const first = await gate.withdrawEscrowV2Idempotent(wd());
+    expect(first.ok).toBe(true);
+    if (first.ok) expect(first.chain.ok).toBe(false);
+    expect(withdrawRows[0]?.status).toBe('broadcast_unknown');
+    expect(withdrawRows[0]?.signature).toBe('wd-broadcast-sig');
+
+    withdrawOutcome = liveSuccess('should-not-be-used');
+    const replay = await gate.withdrawEscrowV2Idempotent(wd());
+    expect(replay.ok).toBe(true);
+    if (replay.ok) {
+      expect(replay.replayed).toBe(true);
+      expect(replay.chain.ok).toBe(false);
+      if (!replay.chain.ok) expect(replay.chain.broadcast).toBe(true);
+    }
+    expect(withdrawCalls).toBe(1);
+  });
+
+  it('a THROW after the claim parks broadcast_unknown + failureCode internal', async () => {
+    withdrawThrows = true;
+    const first = await gate.withdrawEscrowV2Idempotent(wd());
+    expect(first.ok).toBe(false);
+    if (!first.ok) expect(first.code).toBe('internal');
+    expect(withdrawRows).toHaveLength(1);
+    expect(withdrawRows[0]?.status).toBe('broadcast_unknown');
+    expect(withdrawRows[0]?.failureCode).toBe('internal');
+    expect(withdrawCalls).toBe(1);
+  });
+
+  it('DRY-RUN is a full passthrough with zero persistence', async () => {
     configDryRun = true;
     withdrawOutcome = { ok: true, dryRun: true, simulation: { err: null, logs: [] }, accepted: true, programReached: 'yes', accounts: {} };
-    const result = await gate.withdrawEscrowV2Booked({
-      depositorAvatarId: DEPOSITOR,
-      workerWalletPubkey: WORKER_WALLET,
-      escrowNonce: 9n,
-      amount: 500_000n,
-    });
+    const result = await gate.withdrawEscrowV2Idempotent(wd());
     expect(result.ok).toBe(true);
+    if (result.ok) expect(result.replayed).toBe(false);
     expect(withdrawCalls).toBe(1);
     expect(withdrawRows).toHaveLength(0);
   });

@@ -466,16 +466,38 @@ export const sapEscrowWithdrawals = pgTable(
 
     /** USDC base units withdrawn (u64 string) — subtracted from the funds ledger. */
     amount: varchar('amount', { length: 32 }).notNull(),
-    /** succeeded | broadcast_unknown (CHECK-enforced in the migration). */
+    /**
+     * in_flight | succeeded | broadcast_unknown (CHECK-enforced in the migration).
+     * R4-B — the funds ledger subtracts ALL rows (including `in_flight`), so a
+     * claim-first `in_flight` row PESSIMISTICALLY holds the amount until the send
+     * resolves; that is intentional (a concurrent settle sees the reduced remaining).
+     */
     status: varchar('status', { length: 24 }).notNull(),
     /** Confirmed / broadcast-unknown withdraw tx signature (base58). */
     signature: varchar('signature', { length: 128 }),
 
+    // ── R4-B idempotency (mirrors sap_deposit_requests) ──
+    /**
+     * Caller idempotency token. NULL for pre-R4-B rows + the (deprecated) unbooked
+     * path; a partial UNIQUE (subject_avatar_id, request_id) WHERE request_id IS NOT
+     * NULL is the claim lock. Fingerprint = (escrow_pda, amount).
+     */
+    requestId: varchar('request_id', { length: 128 }),
+    /** The chain executor's accounts map, stored for a faithful replay response. */
+    outcomeAccounts: jsonb('outcome_accounts').$type<Record<string, string>>(),
+    /** The chain failure code on a broadcast_unknown terminal (for reconciliation). */
+    failureCode: varchar('failure_code', { length: 64 }),
+
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
   },
   (t) => ({
     /** "all withdrawals for this escrow" — the funds-ledger subtraction scan. */
     escrowIdx: index('sap_escrow_withdrawals_escrow_idx').on(t.escrowPda, t.createdAt),
+    /** R4-B idempotency key — one logical withdraw per (subject, requestId). */
+    subjectRequestUnique: uniqueIndex('sap_escrow_withdrawals_subject_request_unique')
+      .on(t.subjectAvatarId, t.requestId)
+      .where(sql`${t.requestId} IS NOT NULL`),
   }),
 );
 

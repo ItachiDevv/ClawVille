@@ -88,7 +88,7 @@ import {
   openEscrow,
   openEscrowV2,
   depositEscrowV2Idempotent,
-  withdrawEscrowV2Booked,
+  withdrawEscrowV2Idempotent,
   submitJob,
   approveJob,
   settleJob,
@@ -707,6 +707,15 @@ const withdrawEscrowV2Schema = z
     workerWalletPubkey: z.string().min(32).max(64),
     escrowNonce: u64Str,
     amount: u64Str,
+    // R4-B (doc line 623) — REQUIRED idempotency token (mirrors deposit). A duplicate
+    // POST with the same requestId + same (escrow, amount) replays the recorded
+    // outcome instead of submitting a second real withdraw. Trimmed, 8–128 charset-safe.
+    requestId: z
+      .string()
+      .trim()
+      .min(8)
+      .max(128)
+      .regex(/^[A-Za-z0-9._:-]+$/, 'requestId must be 8–128 chars of [A-Za-z0-9._:-]'),
   })
   .strict();
 
@@ -724,15 +733,30 @@ sapRoutes.post('/escrow/v2/withdraw', requireAuthOrAgentSession, requireNonGuest
   const identity = c.get('identity');
   const notLedger = requireLedgerCapable(c, identity);
   if (notLedger) return notLedger;
-  // FIX 2b (doc line 623) — book the withdraw into the gate ledger so a later
-  // settle ceiling never overstates the vault after this out-of-band drain.
-  const result = await withdrawEscrowV2Booked({
+  // FIX 2b + R4-B (doc line 623) — book the withdraw into the gate ledger AND make it
+  // idempotent: a duplicate POST (same subject+requestId, same escrow+amount) replays
+  // the recorded outcome (replayed:true) and NEVER submits a second real withdraw.
+  const result = await withdrawEscrowV2Idempotent({
     depositorAvatarId: identity.avatarId,
     workerWalletPubkey: parsed.data.workerWalletPubkey,
     escrowNonce: BigInt(parsed.data.escrowNonce),
     amount: BigInt(parsed.data.amount),
+    requestId: parsed.data.requestId,
   });
-  return respondWrite(c, result);
+  if (!result.ok) {
+    // 409 for the idempotency conflicts (in-flight duplicate / key reuse); missing
+    // wallet 404, bad pubkey 400, else 500 — mirrors the deposit route.
+    const status =
+      result.code === 'withdraw_in_flight' || result.code === 'withdraw_request_mismatch'
+        ? 409
+        : result.code === 'avatar_wallet_missing'
+          ? 404
+          : result.code === 'invalid_pubkey'
+            ? 400
+            : 500;
+    return c.json({ error: result.code, code: result.code, message: result.message }, status);
+  }
+  return respondWrite(c, result.chain, { replayed: result.replayed });
 });
 
 // -- V2 escrow-gate release lifecycle (triple-gated, default OFF) --
@@ -987,11 +1011,19 @@ function gateFailureStatus(
     case 'job_not_open':
     case 'rail_mixed_forbidden':
     case 'release_rail_forbidden':
+    // R4-A — an unowned on-chain pending exists (out-of-band / settle_unknown-landed);
+    // ops must reconcile before settling. R4-D — a stale finalize whose pending PDA is
+    // absent is unresolvable. Both are lifecycle/ops conflicts (retryable after ops). 409.
+    case 'unreconciled_onchain_pending':
+    case 'finalize_unresolvable':
       // Lifecycle conflicts — the job is in a state that forbids this transition.
       return 409;
     case 'rpc_unreachable':
     case 'payai_unavailable':
     case 'payai_release_failed':
+    // R4-A — could not READ the escrow's on-chain pending_amount; the unowned-pending
+    // guard fails CLOSED and refuses (retryable). Treat like an upstream read failure. 502.
+    case 'pending_state_unverifiable':
       return 502;
     case 'internal':
       return 500;
