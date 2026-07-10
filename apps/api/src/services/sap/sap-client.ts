@@ -2157,6 +2157,16 @@ export async function inspectV2SettlementState(input: {
   | {
       ok: true;
       escrowPda: string;
+      /**
+       * R7-3 — the escrow ACCOUNT itself is provably ABSENT on-chain (closed for rent after
+       * finalize+close, or never created). DISTINCT from a read FAILURE (which returns a
+       * `SapFailure` from the catch below — `fetchNullable` only returns null for a genuinely
+       * missing account, never on RPC error). The stale-claim recovery uses this to quarantine
+       * a row whose escrow was closed during the claim (settle_unknown / finalize_unknown),
+       * instead of looping forever on a generic retryable read error. `undefined`/false when
+       * the escrow exists.
+       */
+      escrowAbsent?: boolean;
       settlementIndex: bigint;
       /**
        * R5-1 — the escrow's CURRENT on-chain `settlement_index` (the monotonic
@@ -2187,10 +2197,19 @@ export async function inspectV2SettlementState(input: {
     );
     if (!escrow) {
       if (!cfg.dryRun) {
+        // R7-3 — surface escrow ABSENCE distinctly (was a generic retryable `on_chain_error`
+        // that bricked stale recovery in an infinite retry loop). `fetchNullable` returns null
+        // ONLY for a genuinely-missing account (a real RPC failure THROWS → the catch below →
+        // retryable), so this is a PROVABLE absence: recovery quarantines the row for ops, the
+        // settle claim's readVaultState guard already refuses `job_not_open`, and the replay
+        // re-probe falls to its broadcast-gated handler (pendingExists:false).
         return {
-          ok: false,
-          code: 'on_chain_error',
-          message: 'V2 escrow account not found on-chain.',
+          ok: true,
+          escrowPda: resolved.escrowPda.toBase58(),
+          escrowAbsent: true,
+          settlementIndex: input.settlementIndex ?? 0n,
+          currentSettlementIndex: 0n,
+          pendingExists: false,
         };
       }
       return {
@@ -2943,6 +2962,16 @@ export interface SettleCallsV2UsdcInput {
   /** Verification provider's 32-byte audit root → on-chain service_hash. */
   auditRoot: Uint8Array;
   /**
+   * R7-1 — the settlement index CAPTURED AT CLAIM TIME (the escrow's current index the
+   * gate inspected and persisted on the row BEFORE this send). The pending PDA is derived
+   * from THIS index, NEVER a fresh on-chain re-read. If an out-of-band settle advanced the
+   * escrow's counter between the gate's claim and this send, the program's pending-PDA
+   * seeds constraint REVERTS this tx (fail-closed, exactly-once per slot) instead of
+   * silently building a SECOND pending at N+1 (the TOCTOU double-pay). A dry-run rehearsal
+   * passes the rehearsal 0n so the encoding is still exercised.
+   */
+  expectedSettlementIndex: bigint;
+  /**
    * The pending release amount (base units) the CALLER records off-chain for its own
    * ledger/reconciliation. NOTE: the deployed settle computes the on-chain pending
    * amount itself (calls × price − fee); this value is NOT sent to the program.
@@ -2960,9 +2989,12 @@ export interface SettleCallsV2UsdcInput {
  * dispute window. The SPL remaining carries the vault + worker + treasury ATAs and the
  * pending PDA (order LOAD-BEARING — see assembleV2SplRemaining('settle')).
  *
- * The pending PDA is seeded by the escrow's CURRENT (pre-increment) settlement_index,
- * READ from chain here (Anchor decodes the on-chain `settlement_index` u64 as a BN under
- * the camelCase `settlementIndex` accessor). Signer = the worker's OWN custodial wallet.
+ * The pending PDA is seeded by the escrow's CURRENT (pre-increment) settlement_index. R7-1
+ * — that index is PINNED from `input.expectedSettlementIndex` (the value the gate inspected +
+ * persisted at claim), NOT re-read here: a fresh read is a TOCTOU (an out-of-band settle that
+ * moved the counter between the claim and this send would make us build a second pending at
+ * the next index → double-pay). Pinning defers the exactly-once check to the program's seeds
+ * constraint, which reverts if the counter moved. Signer = the worker's OWN custodial wallet.
  *
  * FEATURE_GATE: sap_v2_release_path
  * Status: ROUTED THROUGH THE ESCROW GATE, GATED OFF. The nonce-scoped V2 open,
@@ -3035,37 +3067,16 @@ export async function settleCallsV2Usdc(
   // devnet-verified settle; treasury = cfg.treasuryPubkey, the protocol fee sink).
   const treasuryAta = getAssociatedTokenAddress(mint, cfg.treasuryPubkey, true);
 
-  // READ the escrow's CURRENT settlement_index (pre-increment) — the value the pending
-  // PDA seed uses. On a dry-run rehearsal the escrow may not exist yet (fetchNullable ⇒
-  // null) → default 0n so the encoding can still be exercised; a real RPC failure is
-  // surfaced as rpc_unreachable (never a silent wrong index).
-  let settlementIndex: bigint;
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const escrowAcc = await (getProgram().account as any).escrowAccountV2.fetchNullable(escrowPda);
-    if (escrowAcc && escrowAcc.settlementIndex != null) {
-      settlementIndex = BigInt(escrowAcc.settlementIndex.toString());
-    } else {
-      // Escrow account not found. On a DRY-RUN rehearsal the escrow may legitimately
-      // not exist yet — default 0n so the encoding can still be exercised. But on a
-      // LIVE settle a missing escrow means we'd broadcast a real tx built against a
-      // nonexistent / wrong on-chain state (wrong pending PDA, guaranteed-fail-or-
-      // worse) — so FAIL LOUD instead (SEV: Codex money-path finding).
-      if (!cfg.dryRun) {
-        return {
-          ok: false,
-          code: 'on_chain_error',
-          message:
-            'settleCallsV2Usdc: escrow account not found on-chain — refusing a ' +
-            'LIVE settle against a nonexistent/unfunded escrow (would build a wrong pending PDA).',
-        };
-      }
-      settlementIndex = 0n;
-    }
-  } catch (err) {
-    return classifyChainError('settleCallsV2Usdc:readIndex', err);
-  }
-
+  // R7-1 — PIN the pending PDA to the CLAIM-CAPTURED index (input.expectedSettlementIndex),
+  // NEVER a fresh on-chain re-read. The OLD code re-read the escrow's CURRENT index HERE, so
+  // an out-of-band settle landing between the gate's claim and this send shifted the counter
+  // and this tx built a SECOND pending at N+1 — a chain-LEGAL double-pay (the program permits
+  // sequential settles). Pinning to the claimed index means: if the counter moved before this
+  // tx executes, the program's pending-PDA `init` seeds constraint (seeded by the escrow's
+  // CURRENT settlement_index) REVERTS this tx — exactly-once per slot, enforced ON-CHAIN. An
+  // absent / again-settled escrow is already refused by the gate's under-lock readVaultState
+  // guard; a dry-run rehearsal passes 0n so the encoding is still exercised.
+  const settlementIndex = input.expectedSettlementIndex;
   const [pendingPda] = findPendingPda(cfg.programId, escrowPda, settlementIndex);
   const auditRoot = Buffer.from(input.auditRoot);
 
